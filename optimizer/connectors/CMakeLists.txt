@@ -14,7 +14,12 @@
 
 velox_add_library(velox_connector_metadata ConnectorMetadata.cpp)
 
-velox_link_libraries(velox_connector_metadata velox_common_base velox_memory
-                     velox_connector)
+velox_link_libraries(
+  velox_connector_metadata
+  velox_common_base velox_memory velox_connector)
+
+
 
 add_subdirectory(hive)
+
+

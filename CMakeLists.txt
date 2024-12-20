@@ -113,11 +113,9 @@ velox_resolve_dependency(Boost 1.77.0 COMPONENTS ${BOOST_INCLUDE_LIBRARIES})
 velox_set_source(folly)
 velox_resolve_dependency(folly)
 
-velox_set_source(abseil)
-velox_resolve_dependency(abseil)
-
 # Use xxhash and xsimd from Velox for now.
 include_directories(.)
+include_directories(${CMAKE_BINARY_DIR})
 include_directories(SYSTEM velox)
 include_directories(SYSTEM velox/velox/external/xxhash)
 include_directories(SYSTEM ${CMAKE_BINARY_DIR}/_deps/xsimd-src/include/)
