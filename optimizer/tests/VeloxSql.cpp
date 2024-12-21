@@ -271,7 +271,7 @@ class VeloxRunner {
         0,
         schemaQueryCtx_->queryConfig().sessionTimezone());
 
-    schema_ = std::make_shared<facebook::velox::runner::Schema>(connector_, "");
+    schema_ = std::make_shared<facebook::velox::optimizer::SchemaResolver>(connector_, "");
 
     planner_ = std::make_unique<core::DuckDbQueryPlanner>(optimizerPool_.get());
     auto& tables = dynamic_cast<connector::hive::LocalHiveConnectorMetadata*>(

@@ -92,7 +92,7 @@ Schema::Schema(
   }
 }
 
-Schema::Schema(const char* _name, velox::runner::Schema* source, LocusCP locus)
+Schema::Schema(const char* _name, SchemaResolver* source, LocusCP locus)
     : name_(_name), source_(source), defaultLocus_(locus) {}
 
 SchemaTableCP Schema::findTable(std::string_view name) const {

@@ -17,7 +17,7 @@
 #pragma once
 
 #include "optimizer/PlanObject.h"
-#include "velox/runner/Schema.h"
+#include "optimizer/SchemaResolver.h"
 
 /// Schema representation for use in query planning. All objects are
 /// arena allocated for the duration of planning the query. We do
@@ -431,15 +431,15 @@ struct SchemaTable {
 /// arena. Schema is owned by the application and is not from the
 /// optimization arena.  Objects of different catalogs/schemas get
 /// added to 'this' on first use. The Schema feeds from a
-/// runner::Schema which interfaces to a local/remote metadata
+/// SchemaResolver which interfaces to a local/remote metadata
 /// repository. The objects have a default Locus for convenience.
 class Schema {
  public:
-  /// Constructs a testing schema without runner schema.
+  /// Constructs a testing schema without SchemaResolver.
   Schema(Name _name, std::vector<SchemaTableCP> tables, LocusCP locus);
 
   /// Constructs a Schema for producing executable plans, backed by 'source'.
-  Schema(Name _name, velox::runner::Schema* source, LocusCP locus);
+  Schema(Name _name, SchemaResolver* source, LocusCP locus);
 
   /// Returns the table with 'name' or nullptr if not found.
   SchemaTableCP findTable(std::string_view name) const;
@@ -453,7 +453,7 @@ class Schema {
  private:
   Name name_;
   mutable NameMap<SchemaTableCP> tables_;
-  velox::runner::Schema* source_{nullptr};
+  SchemaResolver* source_{nullptr};
   LocusCP defaultLocus_;
 };
 

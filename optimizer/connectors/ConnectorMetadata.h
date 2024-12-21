@@ -345,13 +345,16 @@ class PartitionHandle {
 /// Enumerates splits. The table and partitions to cover are given to
 /// ConnectorSplitManager.
 class SplitSource {
- public:
+public:
+  static constexpr uint32_t kUngroupedGroupId =
+      std::numeric_limits<uint32_t>::max();
+
   /// Result of getSplits. Each split belongs to a group. A nullptr split for
-  /// group n means that there are on more splits for the group. In ungrouped
-  /// execution, the group is always 0.
+  /// group means that there are no more splits for the group. In ungrouped
+  /// execution, the group is always kUngroupedGroupId.
   struct SplitAndGroup {
     std::shared_ptr<ConnectorSplit> split;
-    uint32_t group;
+    uint32_t group{kUngroupedGroupId};
   };
 
   virtual ~SplitSource() = default;
