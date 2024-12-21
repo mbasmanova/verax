@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "velox/optimizer/connectors/hive/LocalHiveConnectorMetadata.h"
+#include "optimizer/connectors/hive/LocalHiveConnectorMetadata.h"
 #include "velox/common/base/Fs.h"
 #include "velox/connectors/Connector.h"
 #include "velox/connectors/hive/HiveConnectorSplit.h"

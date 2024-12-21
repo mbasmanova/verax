@@ -16,8 +16,8 @@
 
 #pragma once
 
-#include "velox/optimizer/QueryGraph.h"
-#include "velox/optimizer/Schema.h"
+#include "optimizer/QueryGraph.h"
+#include "optimizer/Schema.h"
 
 /// Plan candidates.
 /// A candidate plan is constructed based  on the join graph/derived table

@@ -17,7 +17,7 @@
 #pragma once
 
 #include <folly/Range.h>
-#include "velox/optimizer/QueryGraph.h"
+#include "optimizer/QueryGraph.h"
 
 namespace facebook::velox::optimizer {
 

@@ -16,7 +16,7 @@
 
 #pragma once
 
-#include "velox/optimizer/PlanObject.h"
+#include "optimizer/PlanObject.h"
 #include "velox/runner/Schema.h"
 
 /// Schema representation for use in query planning. All objects are

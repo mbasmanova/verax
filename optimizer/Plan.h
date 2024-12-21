@@ -17,8 +17,8 @@
 
 #include "velox/connectors/Connector.h"
 #include "velox/core/PlanNode.h"
-#include "velox/optimizer/Cost.h"
-#include "velox/optimizer/RelationOp.h"
+#include "optimizer/Cost.h"
+#include "optimizer/RelationOp.h"
 #include "velox/runner/MultiFragmentPlan.h"
 
 /// Planning-time data structures. Represent the state of the planning process

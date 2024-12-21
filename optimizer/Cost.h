@@ -16,7 +16,7 @@
 
 #pragma once
 
-#include "velox/optimizer/RelationOp.h"
+#include "optimizer/RelationOp.h"
 
 namespace facebook::velox::optimizer {
 

@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "velox/optimizer/QueryGraphContext.h"
+#include "optimizer/QueryGraphContext.h"
 
 namespace facebook::velox::optimizer {
 

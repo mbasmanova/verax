@@ -23,7 +23,7 @@
 #include "velox/core/QueryCtx.h"
 #include "velox/dwio/common/Options.h"
 #include "velox/dwio/dwrf/writer/StatisticsBuilder.h"
-#include "velox/optimizer/connectors/hive/HiveConnectorMetadata.h"
+#include "optimizer/connectors/hive/HiveConnectorMetadata.h"
 
 namespace facebook::velox::connector::hive {
 

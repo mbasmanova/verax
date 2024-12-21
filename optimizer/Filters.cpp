@@ -16,9 +16,9 @@
 
 #include "velox/common/base/SimdUtil.h"
 #include "velox/common/base/SuccinctPrinter.h"
-#include "velox/optimizer/Plan.h"
-#include "velox/optimizer/PlanUtils.h"
-#include "velox/optimizer/QueryGraph.h"
+#include "optimizer/Plan.h"
+#include "optimizer/PlanUtils.h"
+#include "optimizer/QueryGraph.h"
 
 namespace facebook::velox::optimizer {
 

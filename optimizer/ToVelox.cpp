@@ -18,8 +18,8 @@
 #include "velox/exec/HashPartitionFunction.h"
 #include "velox/expression/ExprToSubfieldFilter.h"
 #include "velox/expression/ScopedVarSetter.h"
-#include "velox/optimizer/Plan.h"
-#include "velox/optimizer/PlanUtils.h"
+#include "optimizer/Plan.h"
+#include "optimizer/PlanUtils.h"
 
 namespace facebook::velox::optimizer {
 

@@ -19,7 +19,7 @@
 #include "velox/connectors/hive/HiveConfig.h"
 #include "velox/connectors/hive/HiveConnector.h"
 #include "velox/dwio/common/Options.h"
-#include "velox/optimizer/connectors/ConnectorMetadata.h"
+#include "optimizer/connectors/ConnectorMetadata.h"
 
 namespace facebook::velox::connector::hive {
 
