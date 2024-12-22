@@ -34,7 +34,6 @@ list(PREPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/CMake"
      "${PROJECT_SOURCE_DIR}/velox/CMake")
 include(ResolveDependency)
 
-set(VELOX_BUILD_TESTING OFF)
 set(VELOX_BUILD_VECTOR_TEST_UTILS
     ON
     CACHE BOOL "Velox vector test utilities (VectorMaker).")
@@ -43,6 +42,20 @@ set(VELOX_DEPENDENCY_SOURCE
     CACHE STRING "Default dependency source: AUTO SYSTEM or BUNDLED.")
 
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
+
+set(BOOST_INCLUDE_LIBRARIES
+    atomic
+    context
+    date_time
+    filesystem
+    program_options
+    regex
+    system
+    thread)
+
+velox_set_source(Boost)
+velox_resolve_dependency(Boost 1.77.0 COMPONENTS ${BOOST_INCLUDE_LIBRARIES})
+
 
 # Ignore known compiler warnings.
 check_cxx_compiler_flag("-Wstringop-overread" COMPILER_HAS_W_STRINGOP_OVERREAD)

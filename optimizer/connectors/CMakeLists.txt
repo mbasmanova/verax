@@ -26,7 +26,6 @@ velox_link_libraries(
   velox_connector_split_source
   velox_connector_metadata
   velox_local_runner
-  velox_schema
   velox_multifragment_plan
   velox_common_base
   velox_memory

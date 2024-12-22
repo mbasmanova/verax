@@ -39,7 +39,7 @@ std::shared_ptr<SplitSource> LocalHiveSplitManager::getSplitSource(
     std::vector<std::shared_ptr<const PartitionHandle>> partitions) {
   // Since there are only unpartitioned tables now, always makes a SplitSource
   // that goes over all the files in the handle's layout.
-  auto tableName = tableHandle->tableName();
+  auto tableName = tableHandle->name();
   auto* metadata = getConnector(tableHandle->connectorId())->metadata();
   auto* table = metadata->findTable(tableName);
   VELOX_CHECK_NOT_NULL(
@@ -180,10 +180,11 @@ void addStats(
     }
   }
 }
+  
 std::unique_ptr<ColumnStatistics> toRunnerStats(
     std::unique_ptr<dwio::common::ColumnStatistics> dwioStats) {
   auto result = std::make_unique<ColumnStatistics>();
-  result->numDistinct = dwioStats->numDistinct();
+  //result->numDistinct = dwioStats->numDistinct();
 
   return result;
 }

@@ -42,9 +42,9 @@
 #include "optimizer/VeloxHistory.h"
 #include "velox/parse/QueryPlanner.h"
 #include "velox/parse/TypeResolver.h"
-#include "velox/runner/ConnectorSplitSource.h"
+#include "optimizer/connectors/ConnectorSplitSource.h"
 #include "velox/runner/LocalRunner.h"
-#include "velox/runner/Schema.h"
+#include "optimizer/SchemaResolver.h"
 #include "velox/serializers/PrestoSerializer.h"
 #include "velox/vector/VectorSaver.h"
 
@@ -226,7 +226,7 @@ class VeloxRunner {
     std::unordered_map<std::string, std::string> connectorConfig;
     connectorConfig[connector::hive::HiveConfig::kLocalDataPath] =
         FLAGS_data_path;
-    connectorConfig[connector::hive::HiveConfig::kLocalDefaultFileFormat] =
+    connectorConfig[connector::hive::HiveConfig::kLocalFileFormat] =
         FLAGS_data_format;
     auto config =
         std::make_shared<config::ConfigBase>(std::move(connectorConfig));
@@ -513,7 +513,7 @@ class VeloxRunner {
       runner = std::make_shared<LocalRunner>(
           fragmentedPlan,
           queryCtx,
-          std::make_shared<runner::ConnectorSplitSourceFactory>());
+          std::make_shared<connector::ConnectorSplitSourceFactory>());
       std::vector<RowVectorPtr> results;
       runInner(*runner, results, runStats);
 
@@ -665,7 +665,7 @@ class VeloxRunner {
   std::shared_ptr<core::QueryCtx> schemaQueryCtx_;
   std::shared_ptr<connector::ConnectorQueryCtx> connectorQueryCtx_;
   std::shared_ptr<connector::Connector> connector_;
-  std::shared_ptr<runner::Schema> schema_;
+  std::shared_ptr<optimizer::SchemaResolver> schema_;
   std::unique_ptr<facebook::velox::optimizer::VeloxHistory> history_;
   std::unique_ptr<core::DuckDbQueryPlanner> planner_;
   std::unordered_map<std::string, std::string> config_;
