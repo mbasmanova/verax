@@ -56,7 +56,6 @@ set(BOOST_INCLUDE_LIBRARIES
 velox_set_source(Boost)
 velox_resolve_dependency(Boost 1.77.0 COMPONENTS ${BOOST_INCLUDE_LIBRARIES})
 
-
 # Ignore known compiler warnings.
 check_cxx_compiler_flag("-Wstringop-overread" COMPILER_HAS_W_STRINGOP_OVERREAD)
 if(COMPILER_HAS_W_STRINGOP_OVERREAD)
