@@ -461,7 +461,12 @@ void LocalHiveConnectorMetadata::loadTable(
 
   table->setType(tableType);
   table->makeDefaultLayout(std::move(files), *this);
-  table->sampleNumDistincts(2, schemaPool_.get());
+  float pct = 10;
+  if (table->numRows() > 1000000) {
+    // Set pct to sample ~100K rows.
+    pct = 100 * 100000 / table->numRows();
+  }
+  table->sampleNumDistincts(pct, schemaPool_.get());
 }
 
 void LocalTable::sampleNumDistincts(float samplePct, memory::MemoryPool* pool) {
