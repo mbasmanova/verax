@@ -34,4 +34,3 @@ velox_link_libraries(
   velox_dwio_dwrf_writer
   velox_exec
   velox_cursor)
-

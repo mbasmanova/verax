@@ -17,7 +17,7 @@
 #pragma once
 
 #include <string>
-#include "optimizer/connectors/ConnectorMetadata.h"
+#include "optimizer/connectors/ConnectorMetadata.h" //@manual
 #include "velox/vector/ComplexVector.h"
 
 namespace facebook::velox::optimizer {

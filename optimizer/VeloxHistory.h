@@ -16,8 +16,8 @@
 
 #pragma once
 
+#include "optimizer/Plan.h" //@manual
 #include "velox/exec/TaskStats.h"
-#include "optimizer/Plan.h"
 #include "velox/runner/MultiFragmentPlan.h"
 
 namespace facebook::velox::optimizer {

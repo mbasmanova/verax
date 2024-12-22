@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "optimizer/SchemaResolver.h"
+#include "optimizer/SchemaResolver.h" //@manual
 
 namespace facebook::velox::optimizer {
 
@@ -47,4 +47,4 @@ const connector::Table* SchemaResolver::findTable(const std::string& name) {
   return connector->metadata()->findTable(lookupName);
 }
 
-} // namespace facebook::velox::runner
+} // namespace facebook::velox::optimizer

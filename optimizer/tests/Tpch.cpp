@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "optimizer/tests/Tpch.h"
+#include "optimizer/tests/Tpch.h" //@manual
 #include "velox/tpch/gen/TpchGen.h"
 
 namespace facebook::velox::optimizer {

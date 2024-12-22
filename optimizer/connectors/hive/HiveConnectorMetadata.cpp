@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "optimizer/connectors/hive/HiveConnectorMetadata.h"
+#include "optimizer/connectors/hive/HiveConnectorMetadata.h" //@manual
 #include "velox/connectors/hive/HiveConnector.h"
 #include "velox/connectors/hive/TableHandle.h"
 #include "velox/expression/ExprToSubfieldFilter.h"

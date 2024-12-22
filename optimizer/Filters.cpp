@@ -14,11 +14,11 @@
  * limitations under the License.
  */
 
+#include "optimizer/Plan.h" //@manual
+#include "optimizer/PlanUtils.h" //@manual
+#include "optimizer/QueryGraph.h" //@manual
 #include "velox/common/base/SimdUtil.h"
 #include "velox/common/base/SuccinctPrinter.h"
-#include "optimizer/Plan.h"
-#include "optimizer/PlanUtils.h"
-#include "optimizer/QueryGraph.h"
 
 namespace facebook::velox::optimizer {
 

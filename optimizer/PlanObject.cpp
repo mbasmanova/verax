@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
+#include "optimizer/QueryGraph.h" //@manual
 #include "velox/common/base/SimdUtil.h"
-#include "optimizer/QueryGraph.h"
 
 namespace facebook::velox::optimizer {
 

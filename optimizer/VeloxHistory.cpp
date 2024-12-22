@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "optimizer/VeloxHistory.h"
+#include "optimizer/VeloxHistory.h" //@manual
 #include "velox/exec/Operator.h"
 #include "velox/exec/TaskStats.h"
 

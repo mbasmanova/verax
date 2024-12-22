@@ -42,10 +42,7 @@ using TypedExprPtr = std::shared_ptr<const ITypedExpr>;
 /// metadata stores and provide different metadata, e.g. order,
 /// partitioning, bucketing etc.
 namespace facebook::velox::connector {
-class Connector;
-class ConnectorTableHandle;
-using ConnectorTableHandlePtr = std::shared_ptr<const ConnectorTableHandle>;
-class ConnectorSplit;
+
 /// Represents statistics of a column. The statistics may represent the column
 /// across the table or may be calculated over a sample of a layout of the
 /// table. All fields are optional.
@@ -345,7 +342,7 @@ class PartitionHandle {
 /// Enumerates splits. The table and partitions to cover are given to
 /// ConnectorSplitManager.
 class SplitSource {
-public:
+ public:
   static constexpr uint32_t kUngroupedGroupId =
       std::numeric_limits<uint32_t>::max();
 

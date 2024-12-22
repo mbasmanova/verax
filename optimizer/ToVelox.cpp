@@ -14,12 +14,12 @@
  * limitations under the License.
  */
 
+#include "optimizer/Plan.h" //@manual
+#include "optimizer/PlanUtils.h" //@manual
 #include "velox/core/PlanNode.h"
 #include "velox/exec/HashPartitionFunction.h"
 #include "velox/expression/ExprToSubfieldFilter.h"
 #include "velox/expression/ScopedVarSetter.h"
-#include "optimizer/Plan.h"
-#include "optimizer/PlanUtils.h"
 
 namespace facebook::velox::optimizer {
 
@@ -282,9 +282,6 @@ core::PlanNodePtr Optimization::makeAggregation(
   std::vector<core::AggregationNode::Aggregate> aggregates;
   bool isRawInput = op.step == core::AggregationNode::Step::kPartial ||
       op.step == core::AggregationNode::Step::kSingle;
-  bool isIntermediateOutput =
-      op.step == core::AggregationNode::Step::kPartial ||
-      op.step == core::AggregationNode::Step::kIntermediate;
   int32_t numKeys = op.grouping.size();
   for (auto i = 0; i < op.aggregates.size(); ++i) {
     aggregateNames.push_back(op.columns()[i + numKeys]->toString());

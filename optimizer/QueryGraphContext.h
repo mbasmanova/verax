@@ -16,8 +16,8 @@
 
 #pragma once
 
+#include "optimizer/ArenaCache.h" //@manual
 #include "velox/common/memory/HashStringAllocator.h"
-#include "optimizer/ArenaCache.h"
 
 // #define QG_USE_MALLOC
 #define QG_CACHE_ARENA

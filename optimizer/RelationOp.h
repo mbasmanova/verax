@@ -16,8 +16,8 @@
 
 #pragma once
 
-#include "optimizer/QueryGraph.h"
-#include "optimizer/Schema.h"
+#include "optimizer/QueryGraph.h" //@manual
+#include "optimizer/Schema.h" //@manual
 
 /// Plan candidates.
 /// A candidate plan is constructed based  on the join graph/derived table

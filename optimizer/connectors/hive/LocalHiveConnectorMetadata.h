@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include "optimizer/connectors/hive/HiveConnectorMetadata.h" //@manual
 #include "velox/common/base/Fs.h"
 #include "velox/common/memory/HashStringAllocator.h"
 #include "velox/connectors/hive/HiveConnector.h"
@@ -23,7 +24,6 @@
 #include "velox/core/QueryCtx.h"
 #include "velox/dwio/common/Options.h"
 #include "velox/dwio/dwrf/writer/StatisticsBuilder.h"
-#include "optimizer/connectors/hive/HiveConnectorMetadata.h"
 
 namespace facebook::velox::connector::hive {
 

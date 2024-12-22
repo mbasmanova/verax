@@ -16,8 +16,8 @@
 
 #pragma once
 
-#include "optimizer/PlanObject.h"
-#include "optimizer/SchemaResolver.h"
+#include "optimizer/PlanObject.h" //@manual
+#include "optimizer/SchemaResolver.h" //@manual
 
 /// Schema representation for use in query planning. All objects are
 /// arena allocated for the duration of planning the query. We do

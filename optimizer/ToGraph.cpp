@@ -14,10 +14,10 @@
  * limitations under the License.
  */
 
+#include "optimizer/Plan.h" //@manual
+#include "optimizer/PlanUtils.h" //@manual
 #include "velox/exec/Aggregate.h"
 #include "velox/expression/ConstantExpr.h"
-#include "optimizer/Plan.h"
-#include "optimizer/PlanUtils.h"
 
 namespace facebook::velox::optimizer {
 
@@ -223,7 +223,7 @@ AggregationP Optimization::translateAggregation(
             aggregation->grouping[i]->as<Column>());
       } else {
         auto name = toName(source.outputType()->nameOf(i));
-        auto type = toType(source.outputType()->childAt(i));
+        toType(source.outputType()->childAt(i));
 
         auto* column = make<Column>(
             name, currentSelect_, aggregation->grouping[i]->value());

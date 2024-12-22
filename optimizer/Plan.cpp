@@ -14,9 +14,9 @@
  * limitations under the License.
  */
 
-#include "optimizer/Plan.h"
-#include "optimizer/Cost.h"
-#include "optimizer/PlanUtils.h"
+#include "optimizer/Plan.h" //@manual
+#include "optimizer/Cost.h" //@manual
+#include "optimizer/PlanUtils.h" //@manual
 
 #include <iostream>
 
@@ -51,9 +51,8 @@ void Optimization::trace(
     RelationOp& plan) {
   if (event & traceFlags_) {
     std::cout << (event == kRetained ? "Retained: " : "Abandoned: ") << id
-              << ":"
-              << " " << succinctNumber(cost.unitCost + cost.setupCost) << " "
-              << plan.toString(true, false) << std::endl;
+              << ":" << " " << succinctNumber(cost.unitCost + cost.setupCost)
+              << " " << plan.toString(true, false) << std::endl;
   }
 }
 
@@ -1174,7 +1173,6 @@ void Optimization::addJoin(
     crossJoin(plan, candidate, state, toTry);
     return;
   }
-  auto initialSize = toTry.size();
   joinByIndex(plan, candidate, state, toTry);
   auto sizeAfterIndex = toTry.size();
   joinByHash(plan, candidate, state, toTry);

@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "optimizer/tests/ParquetTpchTest.h"
+#include "optimizer/tests/ParquetTpchTest.h" //@manual
 
 DEFINE_string(
     data_path,

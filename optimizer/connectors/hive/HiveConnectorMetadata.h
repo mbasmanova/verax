@@ -16,10 +16,10 @@
 
 #pragma once
 
+#include "optimizer/connectors/ConnectorMetadata.h" //@manual
 #include "velox/connectors/hive/HiveConfig.h"
 #include "velox/connectors/hive/HiveConnector.h"
 #include "velox/dwio/common/Options.h"
-#include "optimizer/connectors/ConnectorMetadata.h"
 
 namespace facebook::velox::connector::hive {
 

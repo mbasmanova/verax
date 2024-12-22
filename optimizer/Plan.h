@@ -15,10 +15,10 @@
  */
 #pragma once
 
+#include "optimizer/Cost.h" //@manual
+#include "optimizer/RelationOp.h" //@manual
 #include "velox/connectors/Connector.h"
 #include "velox/core/PlanNode.h"
-#include "optimizer/Cost.h"
-#include "optimizer/RelationOp.h"
 #include "velox/runner/MultiFragmentPlan.h"
 
 /// Planning-time data structures. Represent the state of the planning process

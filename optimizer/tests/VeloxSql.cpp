@@ -20,6 +20,7 @@
 #include <sys/resource.h>
 #include <sys/time.h>
 
+#include "optimizer/connectors/hive/LocalHiveConnectorMetadata.h" //@manual
 #include "velox/common/base/SuccinctPrinter.h"
 #include "velox/common/file/FileSystems.h"
 #include "velox/common/memory/MmapAllocator.h"
@@ -29,8 +30,11 @@
 #include "velox/dwio/dwrf/reader/DwrfReader.h"
 #include "velox/dwio/parquet/RegisterParquetReader.h"
 #include "velox/exec/Exchange.h"
-#include "optimizer/connectors/hive/LocalHiveConnectorMetadata.h"
 
+#include "optimizer/Plan.h" //@manual
+#include "optimizer/SchemaResolver.h" //@manual
+#include "optimizer/VeloxHistory.h" //@manual
+#include "optimizer/connectors/ConnectorSplitSource.h" //@manual
 #include "velox/exec/PlanNodeStats.h"
 #include "velox/exec/Split.h"
 #include "velox/exec/tests/utils/HiveConnectorTestBase.h"
@@ -38,13 +42,9 @@
 #include "velox/expression/Expr.h"
 #include "velox/functions/prestosql/aggregates/RegisterAggregateFunctions.h"
 #include "velox/functions/prestosql/registration/RegistrationFunctions.h"
-#include "optimizer/Plan.h"
-#include "optimizer/VeloxHistory.h"
 #include "velox/parse/QueryPlanner.h"
 #include "velox/parse/TypeResolver.h"
-#include "optimizer/connectors/ConnectorSplitSource.h"
 #include "velox/runner/LocalRunner.h"
-#include "optimizer/SchemaResolver.h"
 #include "velox/serializers/PrestoSerializer.h"
 #include "velox/vector/VectorSaver.h"
 
@@ -271,7 +271,8 @@ class VeloxRunner {
         0,
         schemaQueryCtx_->queryConfig().sessionTimezone());
 
-    schema_ = std::make_shared<facebook::velox::optimizer::SchemaResolver>(connector_, "");
+    schema_ = std::make_shared<facebook::velox::optimizer::SchemaResolver>(
+        connector_, "");
 
     planner_ = std::make_unique<core::DuckDbQueryPlanner>(optimizerPool_.get());
     auto& tables = dynamic_cast<connector::hive::LocalHiveConnectorMetadata*>(

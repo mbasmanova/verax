@@ -14,19 +14,19 @@
  * limitations under the License.
  */
 
-#include "optimizer/Plan.h"
-#include "optimizer/VeloxHistory.h"
+#include "optimizer/Plan.h" //@manual
+#include "optimizer/VeloxHistory.h" //@manual
 
 #include <folly/init/Init.h>
 #include <gtest/gtest.h>
+#include "optimizer/tests/ParquetTpchTest.h" //@manual
+#include "optimizer/tests/Tpch.h" //@manual
 #include "velox/common/file/FileSystems.h"
 #include "velox/dwio/parquet/RegisterParquetReader.h"
 #include "velox/exec/tests/utils/TpchQueryBuilder.h"
 #include "velox/expression/Expr.h"
 #include "velox/functions/prestosql/aggregates/RegisterAggregateFunctions.h"
 #include "velox/functions/prestosql/registration/RegistrationFunctions.h"
-#include "optimizer/tests/ParquetTpchTest.h"
-#include "optimizer/tests/Tpch.h"
 #include "velox/parse/TypeResolver.h"
 
 DEFINE_int32(trace, 0, "Enable trace 1=retained plans, 2=abandoned, 3=both");

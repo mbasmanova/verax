@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "optimizer/connectors/ConnectorMetadata.h"
+#include "optimizer/connectors/ConnectorMetadata.h" //@manual
 
 namespace facebook::velox::connectors {
 

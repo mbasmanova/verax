@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "optimizer/connectors/hive/LocalHiveConnectorMetadata.h"
+#include "optimizer/connectors/hive/LocalHiveConnectorMetadata.h" //@manual
 #include "velox/common/base/Fs.h"
 #include "velox/connectors/Connector.h"
 #include "velox/connectors/hive/HiveConnectorSplit.h"
@@ -120,7 +120,7 @@ void LocalHiveConnectorMetadata::ensureInitialized() const {
   const_cast<LocalHiveConnectorMetadata*>(this)->initialize();
   initialized_ = true;
 }
-  
+
 void LocalHiveConnectorMetadata::makeQueryCtx() {
   std::unordered_map<std::string, std::string> config;
   std::unordered_map<std::string, std::shared_ptr<config::ConfigBase>>
@@ -180,11 +180,11 @@ void addStats(
     }
   }
 }
-  
+
 std::unique_ptr<ColumnStatistics> toRunnerStats(
     std::unique_ptr<dwio::common::ColumnStatistics> dwioStats) {
   auto result = std::make_unique<ColumnStatistics>();
-  //result->numDistinct = dwioStats->numDistinct();
+  // result->numDistinct = dwioStats->numDistinct();
 
   return result;
 }

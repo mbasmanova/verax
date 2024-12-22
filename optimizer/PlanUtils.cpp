@@ -14,8 +14,8 @@
  * limitations under the License.
  */
 
-#include "optimizer/PlanUtils.h"
-#include "optimizer/QueryGraph.h"
+#include "optimizer/PlanUtils.h" //@manual
+#include "optimizer/QueryGraph.h" //@manual
 
 namespace facebook::velox::optimizer {
 

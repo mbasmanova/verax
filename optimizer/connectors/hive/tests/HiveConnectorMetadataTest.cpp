@@ -1,4 +1,3 @@
-
 /*
  * Copyright (c) Facebook, Inc. and its affiliates.
  *
@@ -15,10 +14,10 @@
  * limitations under the License.
  */
 
+#include "optimizer/connectors/hive/LocalHiveConnectorMetadata.h" //@manual //@manual
 #include "velox/exec/tests/utils/DistributedPlanBuilder.h"
 #include "velox/exec/tests/utils/LocalRunnerTestBase.h"
 #include "velox/exec/tests/utils/QueryAssertions.h"
-#include "optimizer/connectors/hive/LocalHiveConnectorMetadata.h"
 
 using namespace facebook::velox;
 using namespace facebook::velox::exec;
