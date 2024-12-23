@@ -104,9 +104,6 @@ message("FINAL CMAKE_CXX_FLAGS=${CMAKE_CXX_FLAGS}")
 
 include(CTest) # include after project() but before add_subdirectory()
 
-# This doesn't necessarily need to be a dependency (we can check in the
-# generated .cpp/.h files), but adding this for convenience for now.
-find_package(FlatBuffers REQUIRED)
 
 velox_set_source(gtest)
 velox_resolve_dependency(gtest)
