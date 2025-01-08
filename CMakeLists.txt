@@ -37,6 +37,9 @@ include(ResolveDependency)
 set(VELOX_BUILD_VECTOR_TEST_UTILS
     ON
     CACHE BOOL "Velox vector test utilities (VectorMaker).")
+
+set(VELOX_ENABLE_PARQUET ON)
+
 set(VELOX_DEPENDENCY_SOURCE
     AUTO
     CACHE STRING "Default dependency source: AUTO SYSTEM or BUNDLED.")

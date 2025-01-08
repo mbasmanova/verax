@@ -1,3 +1,7 @@
 [submodule "velox"]
 	path = velox
+<<<<<<< HEAD
 	url = https://github.com/facebookincubator/velox.git
+=======
+	url = git@github.com:facebookincubator/velox.git
+>>>>>>> init2
