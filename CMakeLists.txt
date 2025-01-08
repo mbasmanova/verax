@@ -104,7 +104,6 @@ message("FINAL CMAKE_CXX_FLAGS=${CMAKE_CXX_FLAGS}")
 
 include(CTest) # include after project() but before add_subdirectory()
 
-
 velox_set_source(gtest)
 velox_resolve_dependency(gtest)
 
