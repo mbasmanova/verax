@@ -53,7 +53,20 @@ class QueryTestBase : public exec::test::LocalRunnerTestBase {
   /// Reads the data directory and picks up new tables.
   void tablesCreated();
 
+  optimizer::PlanAndStats planVelox(
+      const logical_plan::LogicalPlanNodePtr& plan,
+      std::string* planString = nullptr);
+
+  optimizer::PlanAndStats planVelox(
+      const logical_plan::LogicalPlanNodePtr& plan,
+      const runner::MultiFragmentPlan::Options& options,
+      std::string* planString = nullptr);
+
   TestResult runVelox(const logical_plan::LogicalPlanNodePtr& plan);
+
+  TestResult runVelox(
+      const logical_plan::LogicalPlanNodePtr& plan,
+      const runner::MultiFragmentPlan::Options& options);
 
   TestResult runFragmentedPlan(const optimizer::PlanAndStats& plan);
 
@@ -62,10 +75,6 @@ class QueryTestBase : public exec::test::LocalRunnerTestBase {
   TestResult assertSame(
       const core::PlanNodePtr& reference,
       const optimizer::PlanAndStats& experiment);
-
-  optimizer::PlanAndStats planVelox(
-      const logical_plan::LogicalPlanNodePtr& plan,
-      std::string* planString = nullptr);
 
   std::shared_ptr<core::QueryCtx> getQueryCtx();
 

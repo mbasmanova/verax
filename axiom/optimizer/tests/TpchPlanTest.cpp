@@ -76,13 +76,9 @@ class TpchPlanTest : public virtual test::QueryTestBase {
 
     auto referenceResult = assertSame(referencePlan, fragmentedPlan);
 
-    const auto numWorkers = FLAGS_num_workers;
-    if (numWorkers != 1) {
-      gflags::FlagSaver saver;
-      FLAGS_num_workers = 1;
-
-      auto singlePlan = planVelox(logicalPlan);
-      ASSERT_TRUE(singlePlan.plan != nullptr);
+    if (FLAGS_num_workers != 1) {
+      auto singlePlan =
+          planVelox(logicalPlan, {.numWorkers = 1, .numDrivers = 4});
       auto singleResult = runFragmentedPlan(singlePlan);
       exec::test::assertEqualResults(
           referenceResult.results, singleResult.results);
