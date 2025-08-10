@@ -38,7 +38,7 @@ struct TestResult {
   /// Human readable Velox plan.
   std::string veloxString;
 
-  /// Human readable Verax  output.
+  /// Human readable Verax output.
   std::string planString;
 
   std::vector<exec::TaskStats> stats;
@@ -55,13 +55,13 @@ class QueryTestBase : public exec::test::LocalRunnerTestBase {
 
   TestResult runVelox(const logical_plan::LogicalPlanNodePtr& plan);
 
-  TestResult runFragmentedPlan(optimizer::PlanAndStats& plan);
+  TestResult runFragmentedPlan(const optimizer::PlanAndStats& plan);
 
   /// Checks that 'reference' and 'experiment' produce the same result.
-  void assertSame(
+  /// @return 'reference' result.
+  TestResult assertSame(
       const core::PlanNodePtr& reference,
-      optimizer::PlanAndStats& experiment,
-      TestResult* referenceReturn = nullptr);
+      const optimizer::PlanAndStats& experiment);
 
   optimizer::PlanAndStats planVelox(
       const logical_plan::LogicalPlanNodePtr& plan,
@@ -79,21 +79,11 @@ class QueryTestBase : public exec::test::LocalRunnerTestBase {
   std::shared_ptr<optimizer::SchemaResolver> schema_;
 
  private:
-  core::PlanNodePtr toTableScan(
-      const std::string& id,
-      const std::string& name,
-      const RowTypePtr& rowType,
-      const std::vector<std::string>& columnNames);
-
   std::shared_ptr<memory::MemoryPool> rootPool_;
   std::shared_ptr<memory::MemoryPool> optimizerPool_;
-  std::shared_ptr<memory::MemoryPool> schemaPool_;
-  std::shared_ptr<memory::MemoryPool> schemaRootPool_;
-  std::shared_ptr<core::QueryCtx> schemaQueryCtx_;
 
   // A QueryCtx created for each compiled query.
   std::shared_ptr<core::QueryCtx> queryCtx_;
-  std::shared_ptr<connector::ConnectorQueryCtx> connectorQueryCtx_;
   std::shared_ptr<connector::Connector> connector_;
   std::unique_ptr<velox::optimizer::VeloxHistory> history_;
 
