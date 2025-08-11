@@ -19,7 +19,6 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include "axiom/logical_plan/PlanBuilder.h"
-#include "axiom/optimizer/VeloxHistory.h"
 #include "axiom/optimizer/connectors/tests/TestConnector.h"
 #include "axiom/optimizer/tests/ParquetTpchTest.h"
 #include "axiom/optimizer/tests/PlanMatcher.h"
@@ -28,41 +27,30 @@
 #include "velox/expression/ExprToSubfieldFilter.h"
 #include "velox/type/tests/SubfieldFiltersBuilder.h"
 
-DEFINE_int32(num_repeats, 1, "Number of repeats for optimization timing");
-
-DECLARE_int32(optimizer_trace);
 DECLARE_int32(num_workers);
-DECLARE_string(history_save_path);
 
 namespace lp = facebook::velox::logical_plan;
 
 namespace facebook::velox::optimizer {
 namespace {
 
-class PlanTest : public virtual test::ParquetTpchTest,
-                 public virtual test::QueryTestBase {
+class PlanTest : public virtual test::QueryTestBase {
  protected:
   static constexpr auto kTestConnectorId = "test";
 
   static void SetUpTestCase() {
-    ParquetTpchTest::SetUpTestCase();
+    test::ParquetTpchTest::createTables();
+
     LocalRunnerTestBase::testDataPath_ = FLAGS_data_path;
     LocalRunnerTestBase::localFileFormat_ = "parquet";
-    connector::unregisterConnector(exec::test::kHiveConnectorId);
-    connector::unregisterConnectorFactory("hive");
     LocalRunnerTestBase::SetUpTestCase();
   }
 
   static void TearDownTestCase() {
-    if (!FLAGS_history_save_path.empty()) {
-      suiteHistory().saveToFile(FLAGS_history_save_path);
-    }
     LocalRunnerTestBase::TearDownTestCase();
-    ParquetTpchTest::TearDownTestCase();
   }
 
   void SetUp() override {
-    ParquetTpchTest::SetUp();
     QueryTestBase::SetUp();
     allocator_ = std::make_unique<HashStringAllocator>(pool_.get());
     context_ = std::make_unique<QueryGraphContext>(*allocator_);
@@ -74,12 +62,12 @@ class PlanTest : public virtual test::ParquetTpchTest,
   }
 
   void TearDown() override {
+    connector::unregisterConnector(kTestConnectorId);
+
     context_.reset();
     queryCtx() = nullptr;
     allocator_.reset();
-    ParquetTpchTest::TearDown();
     QueryTestBase::TearDown();
-    connector::unregisterConnector(kTestConnectorId);
   }
 
   void checkSame(
