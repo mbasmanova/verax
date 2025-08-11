@@ -100,6 +100,7 @@ DEFINE_string(
     "",
     "Name of SQL file with a single query. Writes the "
     "output to <name>.ref for use with --check");
+
 DEFINE_string(
     check,
     "",
@@ -752,16 +753,48 @@ class VeloxRunner : public QueryBenchmarkBase {
 // static
 const std::string VeloxRunner::kHiveConnectorId = exec::test::kHiveConnectorId;
 
+// Reads multi-line command from 'in' until encounters ';' followed by zero or
+// more whitespaces.
+// @return Command text with leading and trailing whitespaces as well as
+// trailing ';' removed.
 std::string readCommand(std::istream& in, bool& end) {
-  std::string line;
   std::stringstream command;
   end = false;
+
+  bool stripLeadingSpaces = true;
+
+  std::string line;
   while (std::getline(in, line)) {
-    if (!line.empty() && line.back() == ';') {
-      command << line.substr(0, line.size() - 1);
-      return command.str();
+    int64_t startPos = 0;
+    if (stripLeadingSpaces) {
+      for (; startPos < line.size(); ++startPos) {
+        if (std::isspace(line[startPos])) {
+          continue;
+        }
+        break;
+      }
     }
-    command << line << std::endl;
+
+    if (startPos == line.size()) {
+      continue;
+    }
+
+    // Allow spaces after ';'.
+    for (int64_t i = line.size() - 1; i >= startPos; --i) {
+      if (std::isspace(line[i])) {
+        continue;
+      }
+
+      if (line[i] == ';') {
+        command << line.substr(startPos, i - startPos);
+        return command.str();
+      }
+
+      break;
+    }
+
+    stripLeadingSpaces = false;
+    command << line.substr(startPos) << std::endl;
   }
   end = true;
   return "";
@@ -778,32 +811,40 @@ void readCommands(
     if (end) {
       break;
     }
+
     if (command.empty()) {
       continue;
     }
-    auto cstr = command.c_str();
-    if (command.substr(0, 4) == "help") {
+
+    if (command.starts_with("exit") || command.starts_with("quit")) {
+      break;
+    }
+
+    if (command.starts_with("help")) {
       std::cout << helpText;
       continue;
     }
+
     char* flag = nullptr;
     char* value = nullptr;
-    if (sscanf(cstr, "flag %ms = %ms", &flag, &value) == 2) {
+    if (sscanf(command.c_str(), "flag %ms = %ms", &flag, &value) == 2) {
       auto message = gflags::SetCommandLineOption(flag, value);
       if (!message.empty()) {
         std::cout << message;
         runner.modifiedFlags().insert(std::string(flag));
       } else {
-        std::cout << "No flag " << flag << std::endl;
+        std::cout << "Failed to set flag '" << flag << "' to '" << value << "'"
+                  << std::endl;
       }
       free(flag);
       free(value);
       continue;
     }
-    if (sscanf(cstr, "clear %ms", &flag) == 1) {
+
+    if (sscanf(command.c_str(), "clear %ms", &flag) == 1) {
       gflags::CommandLineFlagInfo info;
       if (!gflags::GetCommandLineFlagInfo(flag, &info)) {
-        std::cout << "No flag " << flag << std::endl;
+        std::cout << "Failed to clear flag '" << flag << "'" << std::endl;
         continue;
       }
       auto message =
@@ -813,9 +854,11 @@ void readCommands(
       }
       continue;
     }
-    if (command == "flags") {
-      std::cout << "Modified flags:\n";
-      for (auto& name : runner.modifiedFlags()) {
+
+    if (command.starts_with("flags")) {
+      const auto& names = runner.modifiedFlags();
+      std::cout << "Modified flags (" << names.size() << "):\n";
+      for (const auto& name : names) {
         std::string value;
         if (gflags::GetCommandLineOption(name.c_str(), &value)) {
           std::cout << name << " = " << value << std::endl;
@@ -823,21 +866,26 @@ void readCommands(
       }
       continue;
     }
-    if (sscanf(cstr, "session %ms = %ms", &flag, &value) == 2) {
-      std::cout << "session " << flag << " set to " << value << std::endl;
+
+    if (sscanf(command.c_str(), "session %ms = %ms", &flag, &value) == 2) {
+      std::cout << "Session '" << flag << "' set to '" << value << "'"
+                << std::endl;
       runner.sessionConfig()[std::string(flag)] = std::string(value);
       free(flag);
       free(value);
       continue;
     }
-    if (command.substr(0, 11) == "savehistory") {
+
+    if (command.starts_with("savehistory")) {
       runner.saveHistory();
       continue;
     }
-    if (command.substr(0, 12) == "clearhistory") {
+
+    if (command.starts_with("clearhistory")) {
       runner.clearHistory();
       continue;
     }
+
     runner.run(command);
   }
 }
