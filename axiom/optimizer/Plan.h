@@ -1379,7 +1379,12 @@ class Optimization {
   };
 
   velox::runner::MultiFragmentPlan::Options options_;
+
+  // TODO Move this into MultiFragmentPlan::Options.
+  const VectorSerde::Kind exchangeSerdeKind_{VectorSerde::Kind::kPresto};
+
   PlanNodeIdGenerator idGenerator_;
+
   // Limit for a possible limit/top k order by for while making a Velox plan. -1
   // means no limit.
   int32_t toVeloxLimit_{-1};

@@ -106,7 +106,38 @@ void waitForCompletion(const std::shared_ptr<runner::LocalRunner>& runner) {
     }
   }
 }
+
+void gatherScans(
+    const core::PlanNodePtr& plan,
+    std::vector<core::TableScanNodePtr>& scans) {
+  if (auto scan = std::dynamic_pointer_cast<const core::TableScanNode>(plan)) {
+    scans.push_back(scan);
+    return;
+  }
+  for (auto& source : plan->sources()) {
+    gatherScans(source, scans);
+  }
+}
+
 } // namespace
+
+TestResult QueryTestBase::runVelox(const core::PlanNodePtr& plan) {
+  runner::MultiFragmentPlan::Options options = {
+      .queryId = fmt::format("q{}", ++queryCounter_),
+      .numWorkers = 1,
+      .numDrivers = FLAGS_num_drivers};
+
+  runner::ExecutableFragment fragment(fmt::format("{}.0", options.queryId));
+  fragment.fragment = core::PlanFragment(plan);
+  gatherScans(plan, fragment.scans);
+
+  optimizer::PlanAndStats planAndStats = {
+      .plan = std::make_shared<runner::MultiFragmentPlan>(
+          std::vector<runner::ExecutableFragment>{std::move(fragment)},
+          std::move(options))};
+
+  return runFragmentedPlan(planAndStats);
+}
 
 TestResult QueryTestBase::runFragmentedPlan(
     const optimizer::PlanAndStats& fragmentedPlan) {
@@ -250,38 +281,10 @@ std::string QueryTestBase::veloxString(
   return out.str();
 }
 
-namespace {
-void gatherScans(
-    const core::PlanNodePtr& plan,
-    std::vector<core::TableScanNodePtr>& scans) {
-  if (auto scan = std::dynamic_pointer_cast<const core::TableScanNode>(plan)) {
-    scans.push_back(scan);
-    return;
-  }
-  for (auto& source : plan->sources()) {
-    gatherScans(source, scans);
-  }
-}
-} // namespace
-
 TestResult QueryTestBase::assertSame(
     const core::PlanNodePtr& reference,
     const optimizer::PlanAndStats& experiment) {
-  runner::MultiFragmentPlan::Options options = {
-      .queryId = fmt::format("q{}", ++queryCounter_),
-      .numWorkers = 1,
-      .numDrivers = FLAGS_num_drivers};
-
-  runner::ExecutableFragment fragment(fmt::format("{}.0", options.queryId));
-  fragment.fragment = core::PlanFragment(reference);
-  gatherScans(reference, fragment.scans);
-
-  optimizer::PlanAndStats referencePlanAndStats = {
-      .plan = std::make_shared<runner::MultiFragmentPlan>(
-          std::vector<runner::ExecutableFragment>{std::move(fragment)},
-          std::move(options))};
-
-  auto referenceResult = runFragmentedPlan(referencePlanAndStats);
+  auto referenceResult = runVelox(reference);
   auto experimentResult = runFragmentedPlan(experiment);
 
   exec::test::assertEqualResults(
