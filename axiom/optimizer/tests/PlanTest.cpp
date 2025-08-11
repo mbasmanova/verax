@@ -27,14 +27,12 @@
 #include "velox/expression/ExprToSubfieldFilter.h"
 #include "velox/type/tests/SubfieldFiltersBuilder.h"
 
-DECLARE_int32(num_workers);
-
 namespace lp = facebook::velox::logical_plan;
 
 namespace facebook::velox::optimizer {
 namespace {
 
-class PlanTest : public virtual test::QueryTestBase {
+class PlanTest : public test::QueryTestBase {
  protected:
   static constexpr auto kTestConnectorId = "test";
 
@@ -52,9 +50,6 @@ class PlanTest : public virtual test::QueryTestBase {
 
   void SetUp() override {
     QueryTestBase::SetUp();
-    allocator_ = std::make_unique<HashStringAllocator>(pool_.get());
-    context_ = std::make_unique<QueryGraphContext>(*allocator_);
-    queryCtx() = context_.get();
 
     testConnector_ =
         std::make_shared<connector::TestConnector>(kTestConnectorId);
@@ -64,31 +59,26 @@ class PlanTest : public virtual test::QueryTestBase {
   void TearDown() override {
     connector::unregisterConnector(kTestConnectorId);
 
-    context_.reset();
-    queryCtx() = nullptr;
-    allocator_.reset();
     QueryTestBase::TearDown();
   }
 
   void checkSame(
       const lp::LogicalPlanNodePtr& planNode,
-      core::PlanNodePtr referencePlan) {
+      core::PlanNodePtr referencePlan,
+      const runner::MultiFragmentPlan::Options& options = {
+          .numWorkers = 4,
+          .numDrivers = 4}) {
+    VELOX_CHECK_NOT_NULL(planNode);
     VELOX_CHECK_NOT_NULL(referencePlan);
 
-    auto fragmentedPlan = planVelox(planNode);
-    ASSERT_TRUE(fragmentedPlan.plan != nullptr);
-
+    auto fragmentedPlan = planVelox(planNode, options);
     auto referenceResult = assertSame(referencePlan, fragmentedPlan);
 
-    auto numWorkers = FLAGS_num_workers;
-    if (numWorkers != 1) {
-      gflags::FlagSaver saver;
-      FLAGS_num_workers = 1;
-
-      auto singlePlan = planVelox(planNode);
-      ASSERT_TRUE(singlePlan.plan != nullptr);
-
+    if (options.numWorkers != 1) {
+      auto singlePlan = planVelox(
+          planNode, {.numWorkers = 1, .numDrivers = options.numDrivers});
       auto singleResult = runFragmentedPlan(singlePlan);
+
       exec::test::assertEqualResults(
           referenceResult.results, singleResult.results);
     }
@@ -97,20 +87,15 @@ class PlanTest : public virtual test::QueryTestBase {
   core::PlanNodePtr toSingleNodePlan(
       const lp::LogicalPlanNodePtr& logicalPlan,
       const std::shared_ptr<connector::Connector>& defaultConnector = nullptr) {
-    gflags::FlagSaver saver;
-    FLAGS_num_workers = 1;
-
     schema_ = std::make_shared<velox::optimizer::SchemaResolver>(
         defaultConnector == nullptr ? testConnector_ : defaultConnector, "");
 
-    auto plan = planVelox(logicalPlan).plan;
+    auto plan = planVelox(logicalPlan, {.numWorkers = 1, .numDrivers = 4}).plan;
 
     EXPECT_EQ(1, plan->fragments().size());
     return plan->fragments().at(0).fragment.planNode;
   }
 
-  std::unique_ptr<HashStringAllocator> allocator_;
-  std::unique_ptr<QueryGraphContext> context_;
   std::shared_ptr<connector::TestConnector> testConnector_;
 };
 
@@ -134,6 +119,7 @@ auto lt(const std::string& name, double d) {
   return common::test::singleSubfieldFilter(name, exec::lessThanDouble(d));
 }
 
+// TODO Move this test into its own file.
 TEST_F(PlanTest, queryGraph) {
   TypePtr row1 = ROW({{"c1", ROW({{"c1a", INTEGER()}})}, {"c2", DOUBLE()}});
   TypePtr row2 = row1 =
@@ -144,6 +130,14 @@ TEST_F(PlanTest, queryGraph) {
        {"m1", MAP(INTEGER(), ARRAY(INTEGER()))}});
   TypePtr differentNames =
       ROW({{"different", ROW({{"c1a", INTEGER()}})}, {"c2", DOUBLE()}});
+
+  auto allocator = std::make_unique<HashStringAllocator>(pool_.get());
+  auto context = std::make_unique<QueryGraphContext>(*allocator);
+  queryCtx() = context.get();
+
+  SCOPE_EXIT {
+    queryCtx() = nullptr;
+  };
 
   auto* dedupRow1 = toType(row1);
   auto* dedupRow2 = toType(row2);
@@ -546,11 +540,6 @@ TEST_F(PlanTest, unionAll) {
     ASSERT_TRUE(matcher->match(plan));
   }
 
-  // Skip distributed run. Problem with local exchange source with
-  // multiple inputs.
-  gflags::FlagSaver saver;
-  FLAGS_num_workers = 1;
-
   auto referencePlan = exec::test::PlanBuilder(pool_.get())
                            .tableScan("nation", nationType)
                            .filter("n_nationkey < 11 or n_nationkey > 13")
@@ -643,11 +632,6 @@ TEST_F(PlanTest, unionJoin) {
     ASSERT_TRUE(matcher->match(plan));
   }
 
-  // Skip distributed run. Problem with local exchange source with
-  // multiple inputs.
-  gflags::FlagSaver saver;
-  FLAGS_num_workers = 1;
-
   auto idGenerator = std::make_shared<core::PlanNodeIdGenerator>();
   auto referencePlan =
       exec::test::PlanBuilder(idGenerator)
@@ -669,7 +653,9 @@ TEST_F(PlanTest, unionJoin) {
           .singleAggregation({}, {"sum(1)"})
           .planNode();
 
-  checkSame(logicalPlan, referencePlan);
+  // Skip distributed run. Problem with local exchange source with
+  // multiple inputs.
+  checkSame(logicalPlan, referencePlan, {.numWorkers = 1, .numDrivers = 4});
 }
 
 TEST_F(PlanTest, intersect) {
