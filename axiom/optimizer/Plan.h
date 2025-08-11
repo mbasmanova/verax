@@ -1164,6 +1164,12 @@ class Optimization {
       velox::runner::ExecutableFragment& fragment,
       std::vector<velox::runner::ExecutableFragment>& stages);
 
+  // @pre op.sNoLimit() is true.
+  velox::core::PlanNodePtr makeOffset(
+      const Limit& op,
+      velox::runner::ExecutableFragment& fragment,
+      std::vector<velox::runner::ExecutableFragment>& stages);
+
   velox::core::PlanNodePtr makeScan(
       const TableScan& scan,
       velox::runner::ExecutableFragment& fragment,

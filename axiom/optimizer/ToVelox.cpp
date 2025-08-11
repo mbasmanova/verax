@@ -700,10 +700,41 @@ core::PlanNodePtr Optimization::makeOrderBy(
   return merge;
 }
 
+velox::core::PlanNodePtr Optimization::makeOffset(
+    const Limit& op,
+    velox::runner::ExecutableFragment& fragment,
+    std::vector<velox::runner::ExecutableFragment>& stages) {
+  if (isSingle_) {
+    auto input = makeFragment(op.input(), fragment, stages);
+    return addFinalLimit(nextId(), op.offset, op.limit, input);
+  }
+
+  auto source = newFragment();
+  auto input = makeFragment(op.input(), source, stages);
+
+  source.fragment.planNode = core::PartitionedOutputNode::single(
+      nextId(), input->outputType(), exchangeSerdeKind_, input);
+
+  auto exchange = std::make_shared<core::ExchangeNode>(
+      nextId(), input->outputType(), exchangeSerdeKind_);
+
+  auto limitNode = addFinalLimit(nextId(), op.offset, op.limit, exchange);
+
+  fragment.width = 1;
+  fragment.inputStages.push_back(InputStage{exchange->id(), source.taskPrefix});
+  stages.push_back(std::move(source));
+
+  return limitNode;
+}
+
 core::PlanNodePtr Optimization::makeLimit(
     const Limit& op,
     ExecutableFragment& fragment,
     std::vector<ExecutableFragment>& stages) {
+  if (op.isNoLimit()) {
+    return makeOffset(op, fragment, stages);
+  }
+
   if (isSingle_) {
     auto input = makeFragment(op.input(), fragment, stages);
     if (options_.numDrivers == 1) {

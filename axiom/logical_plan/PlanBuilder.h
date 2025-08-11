@@ -243,7 +243,9 @@ class PlanBuilder {
     return limit(0, count);
   }
 
-  PlanBuilder& limit(int32_t offset, int32_t count);
+  PlanBuilder& limit(int64_t offset, int64_t count);
+
+  PlanBuilder& offset(int64_t offset);
 
   PlanBuilder& as(const std::string& alias);
 

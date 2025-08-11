@@ -481,7 +481,8 @@ class LimitNode : public LogicalPlanNode {
  public:
   /// @param offset Zero-based index of the first row to return. Must be >= 0.
   /// @param count Maximum number of rows to return. Must be >= 0. If zero, the
-  /// node produces empty dataset.
+  /// node produces empty dataset. Use std::numeric_limits<int64_t>::max() to
+  /// indicate no limit, in which case offset must be > 0.
   LimitNode(
       const std::string& id,
       const LogicalPlanNodePtr& input,
@@ -492,6 +493,11 @@ class LimitNode : public LogicalPlanNode {
         count_{count} {
     VELOX_USER_CHECK_GE(offset, 0);
     VELOX_USER_CHECK_GE(count, 0);
+
+    if (count == std::numeric_limits<int64_t>::max()) {
+      VELOX_USER_CHECK_NE(
+          offset, 0, "Offset must be > zero if there is no limit");
+    }
   }
 
   int64_t offset() const {

@@ -508,6 +508,11 @@ struct Limit : public RelationOp {
   const int64_t limit;
   const int64_t offset;
 
+  bool isNoLimit() const {
+    static const auto kMax = std::numeric_limits<int64_t>::max();
+    return limit >= (kMax - offset);
+  }
+
   std::string toString(bool recursive, bool detail) const override;
 };
 
