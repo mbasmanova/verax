@@ -49,13 +49,6 @@ std::string itemsToString(const T* items, int32_t n) {
 }
 } // namespace
 
-std::string RelationOp::toString(bool recursive, bool detail) const {
-  if (input_ && recursive) {
-    return input_->toString(true, detail);
-  }
-  return "";
-}
-
 // static
 Distribution TableScan::outputDistribution(
     const BaseTable* baseTable,
@@ -425,6 +418,34 @@ std::string Project::toString(bool recursive, bool detail) const {
     out << ")\n";
   } else {
     out << "project " << exprs_.size() << " columns ";
+  }
+  return out.str();
+}
+
+std::string OrderBy::toString(bool recursive, bool detail) const {
+  std::stringstream out;
+  if (recursive) {
+    out << input()->toString(true, detail) << " ";
+  }
+
+  if (detail) {
+    out << "OrderBy (" << distribution_.toString() << ")\n";
+  } else {
+    out << "order by " << distribution_.order.size() << " columns ";
+  }
+  return out.str();
+}
+
+std::string Limit::toString(bool recursive, bool detail) const {
+  std::stringstream out;
+  if (recursive) {
+    out << input()->toString(true, detail) << " ";
+  }
+
+  if (detail) {
+    out << "Limit (" << offset << ", " << limit << ")\n";
+  } else {
+    out << "offset " << offset << " limit " << limit << " ";
   }
   return out.str();
 }
