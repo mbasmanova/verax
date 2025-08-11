@@ -79,8 +79,7 @@ class TpchPlanTest : public virtual test::ParquetTpchTest,
     auto fragmentedPlan = planVelox(logicalPlan);
     auto referencePlan = referenceBuilder_->getQueryPlan(query).plan;
 
-    test::TestResult referenceResult;
-    assertSame(referencePlan, fragmentedPlan, &referenceResult);
+    auto referenceResult = assertSame(referencePlan, fragmentedPlan);
 
     const auto numWorkers = FLAGS_num_workers;
     if (numWorkers != 1) {
@@ -151,8 +150,7 @@ class TpchPlanTest : public virtual test::ParquetTpchTest,
     auto fragmentedPlan = planVelox(logicalPlan);
     auto referencePlan = referenceBuilder_->getQueryPlan(query).plan;
 
-    test::TestResult referenceResult;
-    assertSame(referencePlan, fragmentedPlan, &referenceResult);
+    auto referenceResult = assertSame(referencePlan, fragmentedPlan);
   }
 
   std::unique_ptr<HashStringAllocator> allocator_;
