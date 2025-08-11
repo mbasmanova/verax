@@ -25,6 +25,7 @@
 #include "velox/connectors/hive/HiveConnector.h"
 #include "velox/dwio/dwrf/RegisterDwrfReader.h"
 #include "velox/dwio/parquet/RegisterParquetReader.h"
+#include "velox/parse/TypeResolver.h"
 
 #include "axiom/logical_plan/PlanPrinter.h"
 #include "axiom/optimizer/Plan.h"
@@ -54,9 +55,13 @@ DEFINE_string(
     "",
     "Root path of data. Data layout must follow Hive-style partitioning. ");
 
+// Defined in velox/benchmarks/QueryBenchmarkBase.cpp
 DECLARE_string(ssd_path);
 DECLARE_int32(ssd_cache_gb);
 DECLARE_int32(ssd_checkpoint_interval_gb);
+DECLARE_int32(cache_gb);
+
+DEFINE_bool(use_mmap, false, "Use mmap for buffers and cache");
 
 DEFINE_int32(optimizer_trace, 0, "Optimizer trace level");
 
@@ -68,19 +73,22 @@ DEFINE_bool(print_short_plan, false, "Print one line plan from optimizer.");
 
 DEFINE_bool(print_velox_plan, false, "Print executable Velox plan");
 
-DEFINE_bool(print_stats, false, "print statistics");
+DEFINE_bool(
+    print_stats,
+    false,
+    "Print executable Velox plan annotated with runtime statistics");
+
+// Defined in velox/benchmarks/QueryBenchmarkBase.cpp
 DECLARE_bool(include_custom_stats);
 
 DEFINE_int32(max_rows, 100, "Max number of printed result rows");
 
 DEFINE_int32(num_workers, 4, "Number of in-process workers");
 
+// Defined in velox/benchmarks/QueryBenchmarkBase.cpp
 DECLARE_int32(num_drivers);
+
 DEFINE_int64(split_target_bytes, 16 << 20, "Approx bytes covered by one split");
-
-DECLARE_int32(cache_gb);
-
-DEFINE_bool(use_mmap, false, "Use mmap for buffers and cache");
 
 DEFINE_string(
     query,
@@ -266,25 +274,45 @@ class VeloxRunner : public QueryBenchmarkBase {
     return results;
   }
 
-  /// stores results and plans to 'ref', to be used with --check.
+  // Stores results and plans to 'ref', to be used with --check.
   void setRecordStream(std::ofstream* ref) {
     record_ = ref;
   }
 
-  /// Compares results to data in 'ref'. 'ref' is produced with --record.
+  // Compares results to data in 'ref'. 'ref' is produced with --record.
   void setCheckStream(std::ifstream* ref) {
     check_ = ref;
   }
 
   void run(const std::string& sql) {
+    optimizer::test::SqlStatementPtr sqlStatement;
+    try {
+      sqlStatement = parser_->parse(sql);
+    } catch (std::exception& e) {
+      std::cerr << "Failed to parse SQL: " << e.what() << std::endl;
+      return;
+    }
+
+    if (sqlStatement->isExplain()) {
+      runExplain(
+          *sqlStatement->asUnchecked<optimizer::test::ExplainStatement>());
+      return;
+    }
+
+    CHECK(sqlStatement->isSelect());
+
+    const auto logicalPlan =
+        sqlStatement->asUnchecked<optimizer::test::SelectStatement>()->plan();
+
     if (record_ || check_) {
       std::string error;
       std::string plan;
       std::vector<RowVectorPtr> result;
-      runSql(sql, nullptr, nullptr, &error);
+      runSql(logicalPlan, nullptr, nullptr, &error);
       if (error.empty()) {
-        runSql(sql, &result, &plan, &error);
+        runSql(logicalPlan, &result, &plan, &error);
       }
+
       if (record_) {
         if (!error.empty()) {
           writeString(error, *record_);
@@ -334,7 +362,7 @@ class VeloxRunner : public QueryBenchmarkBase {
       }
     } else {
       if (!FLAGS_test_flags_file.empty()) {
-        sql_ = sql;
+        logicalPlan_ = logicalPlan;
         try {
           parameters_.clear();
           runStats_.clear();
@@ -349,7 +377,7 @@ class VeloxRunner : public QueryBenchmarkBase {
         referenceResult_.clear();
         referenceRunner_.reset();
       } else {
-        runSql(sql);
+        runSql(logicalPlan);
       }
     }
   }
@@ -384,19 +412,10 @@ class VeloxRunner : public QueryBenchmarkBase {
     return fmt::format("predicted={} actual={} ", predicted, actual);
   }
 
-  /// Runs a query and returns the result as a single vector in *resultVector,
-  /// the plan text in *planString and the error message in *errorString.
-  /// *errorString is not set if no error. Any of these may be nullptr.
-  std::shared_ptr<runner::LocalRunner> runSql(
-      const std::string& sql,
-      std::vector<RowVectorPtr>* resultVector = nullptr,
-      std::string* planString = nullptr,
-      std::string* errorString = nullptr,
-      std::vector<exec::TaskStats>* statsReturn = nullptr,
-      RunStats* runStatsReturn = nullptr) {
+  std::shared_ptr<core::QueryCtx> newQuery() {
     ++queryCounter_;
 
-    auto queryCtx = core::QueryCtx::create(
+    return core::QueryCtx::create(
         executor_.get(),
         core::QueryConfig(config_),
         {},
@@ -404,21 +423,28 @@ class VeloxRunner : public QueryBenchmarkBase {
         rootPool_->shared_from_this(),
         spillExecutor_.get(),
         fmt::format("query_{}", queryCounter_));
+  }
 
-    logical_plan::LogicalPlanNodePtr plan;
-    try {
-      plan = parser_->parse(sql);
-    } catch (std::exception& e) {
-      std::cerr << "parse error: " << e.what() << std::endl;
-      if (errorString) {
-        *errorString = fmt::format("Parse error: {}", e.what());
-      }
-      return nullptr;
-    }
+  void runExplain(const optimizer::test::ExplainStatement& statement) {
+    CHECK(statement.statement()->isSelect());
 
+    auto plan = optimize(
+        statement.statement()
+            ->asUnchecked<optimizer::test::SelectStatement>()
+            ->plan(),
+        newQuery());
+
+    std::cout << plan.plan->toString() << std::endl;
+  }
+
+  optimizer::PlanAndStats optimize(
+      const logical_plan::LogicalPlanNodePtr& logicalPlan,
+      const std::shared_ptr<core::QueryCtx>& queryCtx,
+      const std::function<void(const optimizer::Plan&)>& peakAtBestPlan =
+          nullptr) {
     if (FLAGS_print_logical_plan) {
       std::cout << "Logical plan: " << std::endl
-                << logical_plan::PlanPrinter::toText(*plan) << std::endl;
+                << logical_plan::PlanPrinter::toText(*logicalPlan) << std::endl;
     }
 
     runner::MultiFragmentPlan::Options opts;
@@ -433,47 +459,71 @@ class VeloxRunner : public QueryBenchmarkBase {
       optimizer::queryCtx() = nullptr;
     };
 
+    // The default Locus for planning is the system and data of
+    // 'connector_'.
+    optimizer::Locus locus(connector_->connectorId().c_str(), connector_.get());
+    optimizer::Schema veraxSchema("test", schema_.get(), &locus);
+    exec::SimpleExpressionEvaluator evaluator(
+        queryCtx.get(), optimizerPool_.get());
+
+    optimizer::Optimization optimization(
+        *logicalPlan,
+        veraxSchema,
+        *history_,
+        queryCtx,
+        evaluator,
+        {.traceFlags = FLAGS_optimizer_trace},
+        opts);
+
+    auto best = optimization.bestPlan();
+
+    if (peakAtBestPlan) {
+      peakAtBestPlan(*best);
+    }
+
+    if (FLAGS_print_short_plan) {
+      std::cout << "Physical plan (oneline): " << best->toString(false)
+                << std::endl;
+    }
+
+    if (FLAGS_print_plan) {
+      std::cout << "Physical plan: " << std::endl
+                << best->toString(true) << std::endl;
+    }
+
+    return optimization.toVeloxPlan(best->op, opts);
+  }
+
+  /// Runs a query and returns the result as a single vector in *resultVector,
+  /// the plan text in *planString and the error message in *errorString.
+  /// *errorString is not set if no error. Any of these may be nullptr.
+  std::shared_ptr<runner::LocalRunner> runSql(
+      const logical_plan::LogicalPlanNodePtr& logicalPlan,
+      std::vector<RowVectorPtr>* resultVector = nullptr,
+      std::string* planString = nullptr,
+      std::string* errorString = nullptr,
+      std::vector<exec::TaskStats>* statsReturn = nullptr,
+      RunStats* runStatsReturn = nullptr) {
+    auto queryCtx = newQuery();
+
     optimizer::PlanAndStats planAndStats;
     try {
-      // The default Locus for planning is the system and data of 'connector_'.
-      optimizer::Locus locus(
-          connector_->connectorId().c_str(), connector_.get());
-      optimizer::Schema veraxSchema("test", schema_.get(), &locus);
-      exec::SimpleExpressionEvaluator evaluator(
-          queryCtx.get(), optimizerPool_.get());
-      optimizer::OptimizerOptions optimizerOpts = {
-          .traceFlags = FLAGS_optimizer_trace};
-      optimizer::Optimization opt(
-          *plan,
-          veraxSchema,
-          *history_,
-          queryCtx,
-          evaluator,
-          optimizerOpts,
-          opts);
-      auto best = opt.bestPlan();
-      if (planString) {
-        *planString = best->op->toString(true, false);
-      }
-      if (FLAGS_print_short_plan) {
-        std::cout << "Plan: " << best->toString(false);
-      }
-      if (FLAGS_print_plan) {
-        std::cout << "Plan: " << best->toString(true);
-      }
-
-      planAndStats = opt.toVeloxPlan(best->op, opts);
-
-      if (FLAGS_print_velox_plan) {
-        std::cout << "Velox executable plan: " << std::endl
-                  << planAndStats.plan->toString() << std::endl;
-      }
+      planAndStats = optimize(logicalPlan, queryCtx, [&](const auto& best) {
+        if (planString) {
+          *planString = best.op->toString(true, false);
+        }
+      });
     } catch (const std::exception& e) {
-      std::cerr << "optimizer error: " << e.what() << std::endl;
+      std::cerr << "Failed to optimize: " << e.what() << std::endl;
       if (errorString) {
-        *errorString = fmt::format("optimizer error: {}", e.what());
+        *errorString = fmt::format("Failed to optimize: {}", e.what());
       }
       return nullptr;
+    }
+
+    if (FLAGS_print_velox_plan) {
+      std::cout << "Velox executable plan: " << std::endl
+                << planAndStats.plan->toString() << std::endl;
     }
 
     RunStats runStats;
@@ -540,7 +590,8 @@ class VeloxRunner : public QueryBenchmarkBase {
 
   void runMain(std::ostream& out, RunStats& runStats) override {
     std::vector<RowVectorPtr> result;
-    auto runner = runSql(sql_, &result, nullptr, nullptr, nullptr, &runStats);
+    auto runner =
+        runSql(logicalPlan_, &result, nullptr, nullptr, nullptr, &runStats);
     if (FLAGS_check_test_flag_combinations) {
       if (hasReferenceResult_) {
         exec::test::assertEqualResults(referenceResult_, result);
@@ -565,8 +616,8 @@ class VeloxRunner : public QueryBenchmarkBase {
     }
   }
 
-  /// Returns exit status for run. 0 is passed, 1 is plan differences only, 2 is
-  /// result differences.
+  /// Returns exit status for run. 0 is passed, 1 is plan differences only, 2
+  /// is result differences.
   int32_t checkStatus() {
     std::cerr << numPassed_ << " passed " << numFailed_ << " failed "
               << numPlanMismatch_ << " plan mismatch " << numResultMismatch_
@@ -689,7 +740,7 @@ class VeloxRunner : public QueryBenchmarkBase {
   int32_t numPlanMismatch_{0};
   int32_t numResultMismatch_{0};
   int32_t queryCounter_{0};
-  std::string sql_;
+  logical_plan::LogicalPlanNodePtr logicalPlan_;
   bool hasReferenceResult_{false};
   // Keeps live 'referenceResult_'.
   std::shared_ptr<runner::LocalRunner> referenceRunner_;
@@ -743,7 +794,7 @@ void readCommands(
         std::cout << message;
         runner.modifiedFlags().insert(std::string(flag));
       } else {
-        std::cout << "No flag " << flag;
+        std::cout << "No flag " << flag << std::endl;
       }
       free(flag);
       free(value);

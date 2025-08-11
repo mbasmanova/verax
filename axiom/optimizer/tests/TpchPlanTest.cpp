@@ -136,7 +136,11 @@ class TpchPlanTest : public virtual test::QueryTestBase {
     auto parser = makeQueryParser();
 
     auto sql = readSqlFromFile(fmt::format("tpch.queries/q{}.sql", query));
-    auto logicalPlan = parser.parse(sql);
+    auto statement = parser.parse(sql);
+
+    ASSERT_TRUE(statement->isSelect());
+
+    auto logicalPlan = statement->asUnchecked<test::SelectStatement>()->plan();
 
     auto fragmentedPlan = planVelox(logicalPlan);
     auto referencePlan = referenceBuilder_->getQueryPlan(query).plan;

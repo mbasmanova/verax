@@ -153,7 +153,7 @@ class RelationOp : public Relation {
   ///     - HashJoin
   ///       - Scan(region as t3)
   ///       - Scan(nation as t2)
-  virtual std::string toString(bool recursive, bool detail) const;
+  virtual std::string toString(bool recursive, bool detail) const = 0;
 
  protected:
   // adds a line of cost information to 'out'
@@ -470,6 +470,8 @@ struct OrderBy : public RelationOp {
   // another key or keys. These can be late materialized or converted
   // to payload.
   PlanObjectSet dependentKeys;
+
+  std::string toString(bool recursive, bool detail) const override;
 };
 
 /// Represents a union all.
@@ -505,6 +507,8 @@ struct Limit : public RelationOp {
 
   const int64_t limit;
   const int64_t offset;
+
+  std::string toString(bool recursive, bool detail) const override;
 };
 
 } // namespace facebook::velox::optimizer
