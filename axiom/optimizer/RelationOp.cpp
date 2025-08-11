@@ -206,6 +206,27 @@ std::string TableScan::toString(bool /*recursive*/, bool detail) const {
   return out.str();
 }
 
+const QGstring& Values::historyKey() const {
+  if (!key_.empty()) {
+    return key_;
+  }
+  std::stringstream out;
+  out << "values " << valuesTable.values.id();
+  key_ = sanitizeHistoryKey(out.str());
+  return key_;
+}
+
+std::string Values::toString(bool /*recursive*/, bool detail) const {
+  VELOX_DCHECK(!input());
+  std::stringstream out;
+  out << valuesTable.values.id() << " " << valuesTable.cname;
+  if (detail) {
+    printCost(detail, out);
+    out << distribution_.toString() << std::endl;
+  }
+  return out.str();
+}
+
 std::pair<std::string, std::string> joinKeysString(
     const ExprVector& left,
     const ExprVector& right) {

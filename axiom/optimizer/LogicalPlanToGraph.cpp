@@ -200,9 +200,11 @@ void Optimization::getExprForField(
       resultColumn = maybeColumn->as<Column>();
       resultExpr = nullptr;
       context = nullptr;
-      VELOX_CHECK_NOT_NULL(resultColumn->relation());
-      if (resultColumn->relation()->type() == PlanType::kTable) {
-        VELOX_CHECK(leaf == resultColumn->relation());
+      const auto* relation = resultColumn->relation();
+      VELOX_CHECK_NOT_NULL(relation);
+      if (relation->type() == PlanType::kTable ||
+          relation->type() == PlanType::kValuesTable) {
+        VELOX_CHECK(leaf == relation);
       }
       return;
     }
@@ -989,10 +991,8 @@ PlanObjectP Optimization::makeBaseTable(const lp::TableScanNode& tableScan) {
   auto channels = usedChannels(&tableScan);
   const auto& type = tableScan.outputType();
   const auto& names = tableScan.columnNames();
-  for (auto i = 0; i < type->size(); ++i) {
-    if (std::find(channels.begin(), channels.end(), i) == channels.end()) {
-      continue;
-    }
+  for (auto i : channels) {
+    VELOX_DCHECK_LT(i, type->size());
 
     const auto& name = names[i];
     auto schemaColumn = schemaTable->findColumn(name);
@@ -1038,6 +1038,31 @@ PlanObjectP Optimization::makeBaseTable(const lp::TableScanNode& tableScan) {
   currentSelect_->tables.push_back(baseTable);
   currentSelect_->tableSet.add(baseTable);
   return baseTable;
+}
+
+PlanObjectP Optimization::makeValuesTable(const lp::ValuesNode& values) {
+  auto* valuesTable = make<ValuesTable>(values);
+  valuesTable->cname = newCName("vt");
+  logicalPlanLeaves_[&values] = valuesTable;
+
+  auto channels = usedChannels(&values);
+  const auto& type = values.outputType();
+  const auto& names = values.outputType()->names();
+  const auto cardinality = valuesTable->cardinality();
+  for (auto i : channels) {
+    VELOX_DCHECK_LT(i, type->size());
+
+    const auto& name = names[i];
+    Value value{type->childAt(i).get(), cardinality};
+    auto* column = make<Column>(toName(name), valuesTable, value);
+    valuesTable->columns.push_back(column);
+
+    renames_[name] = column;
+  }
+
+  currentSelect_->tables.push_back(valuesTable);
+  currentSelect_->tableSet.add(valuesTable);
+  return valuesTable;
 }
 
 namespace {
@@ -1135,7 +1160,7 @@ PlanObjectP Optimization::addAggregation(const lp::AggregateNode& aggNode) {
   return currentSelect_;
 }
 
-PlanObjectP Optimization::addLimit(const logical_plan::LimitNode& limitNode) {
+PlanObjectP Optimization::addLimit(const lp::LimitNode& limitNode) {
   currentSelect_->limit = limitNode.count();
   currentSelect_->offset = limitNode.offset();
   return currentSelect_;
@@ -1346,9 +1371,7 @@ PlanObjectP Optimization::makeQueryGraph(
     uint64_t allowedInDt) {
   switch (node.kind()) {
     case lp::NodeKind::kValues:
-      VELOX_NYI(
-          "Unsupported PlanNode {}",
-          logical_plan::NodeKindName::toName(node.kind()));
+      return makeValuesTable(*node.asUnchecked<lp::ValuesNode>());
 
     case lp::NodeKind::kTableScan:
       return makeBaseTable(*node.asUnchecked<lp::TableScanNode>());

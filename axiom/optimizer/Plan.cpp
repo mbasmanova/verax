@@ -188,7 +188,7 @@ void PlanState::setTargetColumnsForDt(const PlanObjectSet& target) {
   }
 }
 
-PlanObjectSet PlanState::downstreamColumns() const {
+const PlanObjectSet& PlanState::downstreamColumns() const {
   auto it = downstreamPrecomputed.find(placed);
   if (it != downstreamPrecomputed.end()) {
     return it->second;
@@ -232,8 +232,7 @@ PlanObjectSet PlanState::downstreamColumns() const {
     }
   }
   result.unionSet(targetColumns);
-  downstreamPrecomputed[placed] = result;
-  return result;
+  return downstreamPrecomputed[placed] = std::move(result);
 }
 
 std::string PlanState::printCost() const {
@@ -338,6 +337,8 @@ PlanPtr PlanSet::best(const Distribution& distribution, bool& needsShuffle) {
 const JoinEdgeVector& joinedBy(PlanObjectCP table) {
   if (table->type() == PlanType::kTable) {
     return table->as<BaseTable>()->joinedBy;
+  } else if (table->type() == PlanType::kValuesTable) {
+    return table->as<ValuesTable>()->joinedBy;
   }
   VELOX_DCHECK(table->type() == PlanType::kDerivedTable);
   return table->as<DerivedTable>()->joinedBy;
@@ -373,7 +374,8 @@ void reducingJoinsRecursive(
     if (!state.dt->hasTable(other.table) || !state.dt->hasJoin(join)) {
       continue;
     }
-    if (other.table->type() != PlanType::kTable) {
+    if (other.table->type() != PlanType::kTable &&
+        other.table->type() != PlanType::kValuesTable) {
       continue;
     }
     if (visited.contains(other.table)) {
@@ -952,8 +954,9 @@ void Optimization::joinByIndex(
     const JoinCandidate& candidate,
     PlanState& state,
     std::vector<NextJoin>& toTry) {
-  if (candidate.tables.at(0)->type() != PlanType::kTable ||
-      candidate.tables.size() > 1 || !candidate.existences.empty()) {
+  if (candidate.tables.size() != 1 ||
+      candidate.tables[0]->type() != PlanType::kTable ||
+      !candidate.existences.empty()) {
     // Index applies to single base tables.
     return;
   }
@@ -989,7 +992,7 @@ void Optimization::joinByIndex(
     // The number of keys is  the prefix that matches index order.
     lookupKeys.resize(info.lookupKeys.size());
     state.columns.unionSet(TableScan::availableColumns(rightTable, index));
-    PlanObjectSet c = state.downstreamColumns();
+    auto c = state.downstreamColumns();
     c.intersect(state.columns);
     for (auto& filter : rightTable->filter) {
       c.unionSet(filter->columns());
@@ -1036,6 +1039,10 @@ PlanObjectSet availableColumns(PlanObjectCP object) {
   PlanObjectSet set;
   if (object->type() == PlanType::kTable) {
     for (auto& c : object->as<BaseTable>()->columns) {
+      set.add(c);
+    }
+  } else if (object->type() == PlanType::kValuesTable) {
+    for (auto& c : object->as<ValuesTable>()->columns) {
       set.add(c);
     }
   } else if (object->type() == PlanType::kDerivedTable) {
@@ -1442,9 +1449,8 @@ ColumnVector indexColumns(
     if (table != column->relation()) {
       return;
     }
-    if (position(index->columns(), *object->as<Column>()->schemaColumn()) !=
-        kNotFound) {
-      result.push_back(object->as<Column>());
+    if (position(index->columns(), *column->schemaColumn()) != kNotFound) {
+      result.push_back(column);
     }
   });
   return result;
@@ -1510,18 +1516,16 @@ void Optimization::placeDerivedTable(DerivedTableCP from, PlanState& state) {
 
   state.placed.add(from);
 
-  PlanObjectSet columns = state.downstreamColumns();
-
   PlanObjectSet dtColumns;
   for (const auto& column : from->columns) {
     dtColumns.add(column);
   }
 
-  columns.intersect(dtColumns);
-  state.columns.unionSet(columns);
+  dtColumns.intersect(state.downstreamColumns());
+  state.columns.unionSet(dtColumns);
 
   MemoKey key;
-  key.columns = columns;
+  key.columns = std::move(dtColumns);
   key.firstTable = from;
   key.tables.add(from);
 
@@ -1634,6 +1638,8 @@ float startingScore(PlanObjectCP table) {
         ->schemaTable->columnGroups[0]
         ->distribution()
         .cardinality;
+  } else if (table->type() == PlanType::kValuesTable) {
+    return table->as<ValuesTable>()->cardinality();
   }
   return 10;
 }
@@ -1661,24 +1667,41 @@ void Optimization::makeJoins(RelationOpPtr plan, PlanState& state) {
         auto table = from->as<BaseTable>();
         auto indices = table->as<BaseTable>()->chooseLeafIndex();
         // Make plan starting with each relevant index of the table.
-        auto downstream = state.downstreamColumns();
+        const auto downstream = state.downstreamColumns();
         for (auto index : indices) {
           PlanStateSaver save(state);
           state.placed.add(table);
           auto columns = indexColumns(downstream, table, index);
 
+          state.columns.unionObjects(columns);
+          auto distribution =
+              TableScan::outputDistribution(table, index, columns);
           auto* scan = make<TableScan>(
               nullptr,
-              TableScan::outputDistribution(table, index, columns),
+              std::move(distribution),
               table,
               index,
               index->distribution().cardinality * table->filterSelectivity,
-              columns);
-
-          state.columns.unionObjects(columns);
+              std::move(columns));
           state.addCost(*scan);
           makeJoins(scan, state);
         }
+      } else if (from->type() == PlanType::kValuesTable) {
+        const auto* valuesTable = from->as<ValuesTable>();
+        ColumnVector columns;
+        state.downstreamColumns().forEach([&](PlanObjectCP object) {
+          auto* column = object->as<Column>();
+          if (valuesTable == column->relation()) {
+            columns.push_back(column);
+          }
+        });
+
+        PlanStateSaver save{state};
+        state.placed.add(valuesTable);
+        state.columns.unionObjects(columns);
+        auto* scan = make<Values>(*valuesTable, std::move(columns));
+        state.addCost(*scan);
+        makeJoins(scan, state);
       } else {
         // Start with a derived table.
         placeDerivedTable(from->as<const DerivedTable>(), state);
