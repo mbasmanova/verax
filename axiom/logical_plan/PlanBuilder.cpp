@@ -943,10 +943,19 @@ PlanBuilder& PlanBuilder::sort(const std::vector<std::string>& sortingKeys) {
   return *this;
 }
 
-PlanBuilder& PlanBuilder::limit(int32_t offset, int32_t count) {
+PlanBuilder& PlanBuilder::limit(int64_t offset, int64_t count) {
   VELOX_USER_CHECK_NOT_NULL(node_, "Limit node cannot be a leaf node");
 
   node_ = std::make_shared<LimitNode>(nextId(), node_, offset, count);
+
+  return *this;
+}
+
+PlanBuilder& PlanBuilder::offset(int64_t offset) {
+  VELOX_USER_CHECK_NOT_NULL(node_, "Offset node cannot be a leaf node");
+
+  node_ = std::make_shared<LimitNode>(
+      nextId(), node_, offset, std::numeric_limits<int64_t>::max());
 
   return *this;
 }

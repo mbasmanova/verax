@@ -247,6 +247,45 @@ TEST_F(HiveLimitQueriesTest, offset) {
   }
 }
 
+// OFFSET 5
+// <no limit>
+TEST_F(HiveLimitQueriesTest, offsetOnly) {
+  lp::PlanBuilder::Context context(exec::test::kHiveConnectorId);
+  const auto nationType = getSchema("nation");
+
+  auto plan = lp::PlanBuilder(context).tableScan("nation").offset(5).build();
+
+  const auto noLimit = std::numeric_limits<int64_t>::max();
+  auto reference = exec::test::PlanBuilder()
+                       .tableScan("nation", nationType)
+                       .limit(5, noLimit, false)
+                       .planNode();
+
+  checkResults(plan, reference);
+}
+
+// OFFSET <very large>
+// <no limit>
+// Verify handling of offset + limit exceeding max.
+TEST_F(HiveLimitQueriesTest, veryLargeOffset) {
+  lp::PlanBuilder::Context context(exec::test::kHiveConnectorId);
+  const auto nationType = getSchema("nation");
+
+  const auto noLimit = std::numeric_limits<int64_t>::max();
+
+  auto plan = lp::PlanBuilder(context)
+                  .tableScan("nation")
+                  .limit(noLimit - 5, 100)
+                  .build();
+
+  auto reference = exec::test::PlanBuilder()
+                       .tableScan("nation", nationType)
+                       .limit(noLimit - 5, 100, false)
+                       .planNode();
+
+  checkResults(plan, reference);
+}
+
 // ORDER BY name DESC
 // LIMIT 10
 TEST_F(HiveLimitQueriesTest, orderByLimit) {
