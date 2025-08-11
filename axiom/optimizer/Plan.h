@@ -487,9 +487,6 @@ struct hash<::facebook::velox::optimizer::MemoKey> {
 namespace facebook::velox::optimizer {
 
 struct OptimizerOptions {
-  /// Do not make shuffles or final gather stage.
-  bool singleStage{false};
-
   /// Parallelizes independent projections over this many threads. 1 means no
   /// parallel projection.
   int32_t parallelProjectWidth = 1;

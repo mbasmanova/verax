@@ -158,13 +158,20 @@ std::shared_ptr<core::QueryCtx> QueryTestBase::getQueryCtx() {
 optimizer::PlanAndStats QueryTestBase::planVelox(
     const logical_plan::LogicalPlanNodePtr& plan,
     std::string* planString) {
+  return planVelox(
+      plan,
+      {.numWorkers = FLAGS_num_workers, .numDrivers = FLAGS_num_drivers},
+      planString);
+}
+
+optimizer::PlanAndStats QueryTestBase::planVelox(
+    const logical_plan::LogicalPlanNodePtr& plan,
+    const runner::MultiFragmentPlan::Options& options,
+    std::string* planString) {
   auto queryCtx = getQueryCtx();
 
   // The default Locus for planning is the system and data of 'connector_'.
   optimizer::Locus locus(connector_->connectorId().c_str(), connector_.get());
-  runner::MultiFragmentPlan::Options opts;
-  opts.numWorkers = FLAGS_num_workers;
-  opts.numDrivers = FLAGS_num_drivers;
   auto allocator = std::make_unique<HashStringAllocator>(optimizerPool_.get());
   auto context =
       std::make_unique<velox::optimizer::QueryGraphContext>(*allocator);
@@ -183,22 +190,27 @@ optimizer::PlanAndStats QueryTestBase::planVelox(
       queryCtx_,
       evaluator,
       optimizerOptions_,
-      opts);
+      options);
   auto best = opt.bestPlan();
   if (planString) {
     *planString = best->op->toString(true, false);
   }
-  return opt.toVeloxPlan(best->op, opts);
+  return opt.toVeloxPlan(best->op, options);
 }
 
 TestResult QueryTestBase::runVelox(
     const logical_plan::LogicalPlanNodePtr& plan) {
   TestResult result;
-  auto fragmentedPlan = planVelox(plan, &result.planString);
-  if (!fragmentedPlan.plan) {
-    return result;
-  }
-  return runFragmentedPlan(fragmentedPlan);
+  auto veloxPlan = planVelox(plan, &result.planString);
+  return runFragmentedPlan(veloxPlan);
+}
+
+TestResult QueryTestBase::runVelox(
+    const logical_plan::LogicalPlanNodePtr& plan,
+    const runner::MultiFragmentPlan::Options& options) {
+  TestResult result;
+  auto veloxPlan = planVelox(plan, options, &result.planString);
+  return runFragmentedPlan(veloxPlan);
 }
 
 std::string QueryTestBase::veloxString(
