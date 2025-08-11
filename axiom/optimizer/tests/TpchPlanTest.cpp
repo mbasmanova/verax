@@ -35,15 +35,13 @@ namespace lp = facebook::velox::logical_plan;
 namespace facebook::velox::optimizer {
 namespace {
 
-class TpchPlanTest : public virtual test::ParquetTpchTest,
-                     public virtual test::QueryTestBase {
+class TpchPlanTest : public virtual test::QueryTestBase {
  protected:
   static void SetUpTestCase() {
-    ParquetTpchTest::SetUpTestCase();
+    test::ParquetTpchTest::createTables();
+
     LocalRunnerTestBase::testDataPath_ = FLAGS_data_path;
     LocalRunnerTestBase::localFileFormat_ = "parquet";
-    connector::unregisterConnector(exec::test::kHiveConnectorId);
-    connector::unregisterConnectorFactory("hive");
     LocalRunnerTestBase::SetUpTestCase();
   }
 
@@ -52,11 +50,9 @@ class TpchPlanTest : public virtual test::ParquetTpchTest,
       suiteHistory().saveToFile(FLAGS_history_save_path);
     }
     LocalRunnerTestBase::TearDownTestCase();
-    ParquetTpchTest::TearDownTestCase();
   }
 
   void SetUp() override {
-    ParquetTpchTest::SetUp();
     QueryTestBase::SetUp();
     allocator_ = std::make_unique<HashStringAllocator>(pool_.get());
     context_ = std::make_unique<QueryGraphContext>(*allocator_);
@@ -71,7 +67,6 @@ class TpchPlanTest : public virtual test::ParquetTpchTest,
     context_.reset();
     queryCtx() = nullptr;
     allocator_.reset();
-    ParquetTpchTest::TearDown();
     QueryTestBase::TearDown();
   }
 
