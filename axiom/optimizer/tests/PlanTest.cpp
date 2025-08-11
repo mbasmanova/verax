@@ -90,8 +90,7 @@ class PlanTest : public virtual test::ParquetTpchTest,
     auto fragmentedPlan = planVelox(planNode);
     ASSERT_TRUE(fragmentedPlan.plan != nullptr);
 
-    optimizer::test::TestResult referenceResult;
-    assertSame(referencePlan, fragmentedPlan, &referenceResult);
+    auto referenceResult = assertSame(referencePlan, fragmentedPlan);
 
     auto numWorkers = FLAGS_num_workers;
     if (numWorkers != 1) {
