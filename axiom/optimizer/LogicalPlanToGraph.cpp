@@ -46,7 +46,7 @@ void Optimization::setDerivedTableOutput(
   }
 }
 
-DerivedTableP Optimization::makeQueryGraphFromLogical() {
+DerivedTableP Optimization::makeQueryGraph() {
   markAllSubfields(logicalPlan_->outputType().get(), logicalPlan_);
 
   root_ = newDt();
@@ -69,17 +69,6 @@ void Optimization::translateConjuncts(
   } else {
     flat.push_back(translateExpr(input));
   }
-}
-
-std::shared_ptr<const exec::ConstantExpr> Optimization::foldConstant(
-    const core::TypedExprPtr& typedExpr) {
-  auto exprSet = evaluator_.compile(typedExpr);
-  const auto& first = exprSet->exprs().front();
-
-  if (first->isConstant()) {
-    return std::dynamic_pointer_cast<exec::ConstantExpr>(first);
-  }
-  return nullptr;
 }
 
 ExprCP Optimization::tryFoldConstant(
@@ -690,6 +679,18 @@ ExprCP Optimization::translateLambda(const lp::LambdaExpr* lambda) {
   return make<Lambda>(std::move(args), toType(lambda->type()), body);
 }
 
+namespace {
+// Returns a mask that allows 'op' in the same derived table.
+uint64_t allow(PlanType op) {
+  return 1UL << static_cast<int32_t>(op);
+}
+
+// True if 'op' is in 'mask.
+bool contains(uint64_t mask, PlanType op) {
+  return 0 != (mask & (1UL << static_cast<int32_t>(op)));
+}
+} // namespace
+
 std::optional<ExprCP> Optimization::translateSubfieldFunction(
     const lp::CallExpr* call,
     const FunctionMetadata* metadata) {
@@ -919,6 +920,7 @@ void extractNonInnerJoinEqualities(
     }
   }
 }
+
 } // namespace
 
 void Optimization::translateJoin(const lp::JoinNode& join) {
@@ -1184,10 +1186,7 @@ PlanObjectP Optimization::addFilter(const lp::FilterNode* filter) {
 }
 
 PlanObjectP Optimization::addAggregation(const lp::AggregateNode& aggNode) {
-  aggFinalType_ = aggNode.outputType();
-
   currentSelect_->aggregation = translateAggregation(aggNode);
-
   return currentSelect_;
 }
 
@@ -1277,19 +1276,8 @@ void Optimization::makeUnionDistributionAndStats(
         setDt->columns.size(),
         "Union inputs must have same arity also after pruning");
 
-    MemoKey key;
-    key.firstTable = innerDt;
-    key.tables.add(innerDt);
-    for (auto& column : innerDt->columns) {
-      key.columns.add(column);
-    }
+    auto plan = innerDt->bestInitialPlan()->op;
 
-    auto it = memo_.find(key);
-    VELOX_CHECK(it != memo_.end(), "Expecting to find a plan for union branch");
-
-    bool ignore;
-    Distribution emptyDistribution;
-    auto plan = it->second.best(emptyDistribution, ignore)->op;
     setDt->distribution->cardinality += plan->distribution().cardinality;
     for (auto i = 0; i < setDt->columns.size(); ++i) {
       // The Column is created in setDt before all branches are planned so the
@@ -1393,6 +1381,15 @@ DerivedTableP Optimization::translateUnion(
   }
   return setDt;
 }
+
+namespace {
+// Removes 'op' from the set of operators allowed in the current derived
+// table. makeQueryGraph() starts a new derived table if it finds an operator
+// that does not belong to the mask.
+uint64_t makeDtIf(uint64_t mask, PlanType op) {
+  return mask & ~(1UL << static_cast<int32_t>(op));
+}
+} // namespace
 
 PlanObjectP Optimization::makeQueryGraph(
     const lp::LogicalPlanNode& node,
