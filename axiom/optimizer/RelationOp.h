@@ -302,7 +302,7 @@ class Repartition : public RelationOp {
   std::string toString(bool recursive, bool detail) const override;
 };
 
-using RepartitionPtr = const Repartition*;
+using RepartitionCP = const Repartition*;
 
 /// Represents a usually multitable filter not associated with any non-inner
 /// join. Non-equality constraints over inner joins become Filters.
@@ -402,7 +402,7 @@ struct Join : public RelationOp {
   std::string toString(bool recursive, bool detail) const override;
 };
 
-using JoinPtr = Join*;
+using JoinCP = const Join*;
 
 /// Occurs as right input of JoinOp with type kHash. Contains the
 /// cost and memory specific to building the table. Can be
@@ -430,7 +430,7 @@ struct HashBuild : public RelationOp {
   std::string toString(bool recursive, bool detail) const override;
 };
 
-using HashBuildPtr = HashBuild*;
+using HashBuildCP = const HashBuild*;
 
 /// Represents aggregation with or without grouping.
 struct Aggregation : public RelationOp {
@@ -472,30 +472,16 @@ struct Aggregation : public RelationOp {
 
 /// Represents an order by. The order is given by the distribution.
 struct OrderBy : public RelationOp {
-  OrderBy(
-      RelationOpPtr input,
-      ExprVector keys,
-      OrderTypeVector orderType,
-      PlanObjectSet dependentKeys = {})
+  OrderBy(RelationOpPtr input, ExprVector keys, OrderTypeVector orderType)
       : RelationOp(
             RelType::kOrderBy,
             input,
-            input ? input->distribution().copyWithOrder(keys, orderType)
-                  : Distribution(
-                        DistributionType(),
-                        1,
-                        {},
-                        std::move(keys),
-                        std::move(orderType))),
-        dependentKeys(std::move(dependentKeys)) {}
-
-  // Keys where the key expression is functionally dependent on
-  // another key or keys. These can be late materialized or converted
-  // to payload.
-  PlanObjectSet dependentKeys;
+            input->distribution().copyWithOrder(keys, orderType)) {}
 
   std::string toString(bool recursive, bool detail) const override;
 };
+
+using OrderByCP = const OrderBy*;
 
 /// Represents a union all.
 struct UnionAll : public RelationOp {
@@ -515,6 +501,8 @@ struct UnionAll : public RelationOp {
 
   const RelationOpPtrVector inputs;
 };
+
+using UnionAllCP = const UnionAll*;
 
 struct Limit : public RelationOp {
   Limit(RelationOpPtr input, int64_t limit, int64_t offset)
@@ -538,5 +526,7 @@ struct Limit : public RelationOp {
 
   std::string toString(bool recursive, bool detail) const override;
 };
+
+using LimitCP = const Limit*;
 
 } // namespace facebook::velox::optimizer
