@@ -27,7 +27,7 @@ class JoinEdge;
 using JoinEdgeP = JoinEdge*;
 using JoinEdgeVector = std::vector<JoinEdgeP, QGAllocator<JoinEdgeP>>;
 
-struct AggregationPlan;
+class AggregationPlan;
 using AggregationPlanCP = const AggregationPlan*;
 
 enum class OrderType;
@@ -113,6 +113,7 @@ struct DerivedTable : public PlanObject {
 
   /// Postprocessing clauses, group by, having, order by, limit, offset.
   AggregationPlanCP aggregation{nullptr};
+
   ExprVector having;
 
   /// Order by.

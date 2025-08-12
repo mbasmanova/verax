@@ -436,34 +436,23 @@ using HashBuildCP = const HashBuild*;
 /// Represents aggregation with or without grouping.
 struct Aggregation : public RelationOp {
   Aggregation(
-      const Aggregation& other,
       RelationOpPtr input,
-      velox::core::AggregationNode::Step _step);
-
-  Aggregation(RelationOpPtr input, ExprVector _grouping)
+      ExprVector groupingKeys,
+      AggregateVector aggregates,
+      velox::core::AggregationNode::Step step,
+      ColumnVector columns)
       : RelationOp(
             RelType::kAggregation,
             input,
-            // TODO Remove call sites that pass null input.
-            input ? input->distribution() : Distribution::gather()),
-        grouping(std::move(_grouping)) {}
+            input->distribution(),
+            columns),
+        groupingKeys(std::move(groupingKeys)),
+        aggregates(std::move(aggregates)),
+        step{step} {}
 
-  // Grouping keys.
-  ExprVector grouping;
-
-  // Keys where the key expression is functionally dependent on
-  // another key or keys. These can be late materialized or converted
-  // to any() aggregates.
-  PlanObjectSet dependentKeys;
-
-  std::vector<AggregateCP, QGAllocator<AggregateCP>> aggregates;
-
-  velox::core::AggregationNode::Step step{
-      velox::core::AggregationNode::Step::kSingle};
-
-  // 'columns' of RelationOp is the final columns. 'intermediateColumns is the
-  // output of the corresponding partial aggregation.
-  ColumnVector intermediateColumns;
+  const ExprVector groupingKeys;
+  const AggregateVector aggregates;
+  const velox::core::AggregationNode::Step step;
 
   void setCost(const PlanState& input) override;
 

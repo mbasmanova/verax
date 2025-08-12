@@ -1099,7 +1099,7 @@ core::PlanNodePtr Optimization::makeAggregation(
 
   const bool isRawInput = op.step == core::AggregationNode::Step::kPartial ||
       op.step == core::AggregationNode::Step::kSingle;
-  const int32_t numKeys = op.grouping.size();
+  const int32_t numKeys = op.groupingKeys.size();
 
   TempProjections projections(*this, *op.input());
   std::vector<std::string> aggregateNames;
@@ -1141,12 +1141,12 @@ core::PlanNodePtr Optimization::makeAggregation(
   }
 
   std::vector<std::string> keyNames;
-  keyNames.reserve(op.grouping.size());
-  for (auto i = 0; i < op.grouping.size(); ++i) {
-    keyNames.push_back(op.intermediateColumns[i]->toString());
+  keyNames.reserve(op.groupingKeys.size());
+  for (auto i = 0; i < op.groupingKeys.size(); ++i) {
+    keyNames.push_back(op.columns()[i]->toString());
   }
 
-  auto keys = projections.toFieldRefs(op.grouping, &keyNames);
+  auto keys = projections.toFieldRefs(op.groupingKeys, &keyNames);
   auto project = projections.maybeProject(input);
   if (options_.numDrivers > 1 &&
       (op.step == core::AggregationNode::Step::kFinal ||

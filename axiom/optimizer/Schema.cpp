@@ -326,8 +326,8 @@ IndexInfo joinCardinality(PlanObjectCP table, CPSpan<Column> keys) {
   const auto* distribution = dt->distribution;
   VELOX_CHECK_NOT_NULL(distribution);
   computeCardinalities(distribution->cardinality);
-  result.unique = dt->aggregation &&
-      keys.size() >= dt->aggregation->aggregation->grouping.size();
+  result.unique =
+      dt->aggregation && keys.size() >= dt->aggregation->groupingKeys().size();
   return result;
 }
 
