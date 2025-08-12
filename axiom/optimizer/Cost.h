@@ -95,6 +95,40 @@ class History {
   std::unordered_map<std::string, float> leafSelectivities_;
 };
 
+/// Collection of per operation costs for a target system.  The base
+/// unit is the time to memcpy a cache line in a large memcpy on one
+/// core. This is ~6GB/s, so ~10ns. Other times are expressed as
+/// multiples of that.
+struct Costs {
+  static float byteShuffleCost() {
+    return 12; // ~500MB/s
+  }
+
+  static float hashProbeCost(float cardinality) {
+    return cardinality < 10000 ? kArrayProbeCost
+        : cardinality < 500000 ? kSmallHashCost
+                               : kLargeHashCost;
+  }
+
+  static constexpr float kKeyCompareCost =
+      6; // ~30 instructions to find, decode and an compare
+  static constexpr float kArrayProbeCost = 2; // ~10 instructions.
+  static constexpr float kSmallHashCost = 10; // 50 instructions
+  static constexpr float kLargeHashCost = 40; // 2 LLC misses
+  static constexpr float kColumnRowCost = 5;
+  static constexpr float kColumnByteCost = 0.1;
+
+  /// Cost of hash function on one column.
+  static constexpr float kHashColumnCost = 0.5;
+
+  /// Cost of getting a column from a hash table
+  static constexpr float kHashExtractColumnCost = 0.5;
+
+  /// Minimal cost of calling a filter function, e.g. comparing two numeric
+  /// exprss.
+  static constexpr float kMinimumFilterCost = 2;
+};
+
 float shuffleCost(const ColumnVector& columns);
 
 float shuffleCost(const ExprVector& columns);
