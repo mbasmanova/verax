@@ -269,7 +269,7 @@ struct Values : RelationOp {
       : RelationOp{
           RelType::kValues,
           nullptr,
-          Distribution{DistributionType{}, valuesTable.cardinality(), {}},
+          Distribution{DistributionType::gather(), valuesTable.cardinality(), {}},
           std::move(columns)},
         valuesTable{valuesTable} {
     cost_.fanout = valuesTable.cardinality();
@@ -299,6 +299,7 @@ class Repartition : public RelationOp {
             std::move(columns)) {}
 
   void setCost(const PlanState& input) override;
+
   std::string toString(bool recursive, bool detail) const override;
 };
 
@@ -443,7 +444,8 @@ struct Aggregation : public RelationOp {
       : RelationOp(
             RelType::kAggregation,
             input,
-            input ? input->distribution() : Distribution()),
+            // TODO Remove call sites that pass null input.
+            input ? input->distribution() : Distribution::gather()),
         grouping(std::move(_grouping)) {}
 
   // Grouping keys.

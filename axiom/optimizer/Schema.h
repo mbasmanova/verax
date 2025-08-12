@@ -189,7 +189,6 @@ struct Distribution {
   /// fragments. Specifying order will create a merging exchange when the
   /// Distribution occurs in a Repartition.
   static Distribution gather(
-      DistributionType type,
       const ExprVector& order = {},
       const OrderTypeVector& orderType = {}) {
     return Distribution(DistributionType::gather(), 1, {}, order, orderType);
