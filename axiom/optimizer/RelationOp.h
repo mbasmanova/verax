@@ -472,11 +472,7 @@ struct Aggregation : public RelationOp {
 
 /// Represents an order by. The order is given by the distribution.
 struct OrderBy : public RelationOp {
-  OrderBy(RelationOpPtr input, ExprVector keys, OrderTypeVector orderType)
-      : RelationOp(
-            RelType::kOrderBy,
-            input,
-            input->distribution().copyWithOrder(keys, orderType)) {}
+  OrderBy(RelationOpPtr input, ExprVector keys, OrderTypeVector orderType);
 
   std::string toString(bool recursive, bool detail) const override;
 };
@@ -505,14 +501,7 @@ struct UnionAll : public RelationOp {
 using UnionAllCP = const UnionAll*;
 
 struct Limit : public RelationOp {
-  Limit(RelationOpPtr input, int64_t limit, int64_t offset)
-      : RelationOp(
-            RelType::kLimit,
-            input,
-            input->distribution(),
-            input->columns()),
-        limit{limit},
-        offset{offset} {}
+  Limit(RelationOpPtr input, int64_t limit, int64_t offset);
 
   void setCost(const PlanState& input) override;
 
