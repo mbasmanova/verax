@@ -335,12 +335,12 @@ PlanPtr PlanSet::best(const Distribution& distribution, bool& needsShuffle) {
 }
 
 const JoinEdgeVector& joinedBy(PlanObjectCP table) {
-  if (table->type() == PlanType::kTable) {
+  if (table->type() == PlanType::kTableNode) {
     return table->as<BaseTable>()->joinedBy;
-  } else if (table->type() == PlanType::kValuesTable) {
+  } else if (table->type() == PlanType::kValuesTableNode) {
     return table->as<ValuesTable>()->joinedBy;
   }
-  VELOX_DCHECK(table->type() == PlanType::kDerivedTable);
+  VELOX_DCHECK(table->type() == PlanType::kDerivedTableNode);
   return table->as<DerivedTable>()->joinedBy;
 }
 
@@ -374,8 +374,8 @@ void reducingJoinsRecursive(
     if (!state.dt->hasTable(other.table) || !state.dt->hasJoin(join)) {
       continue;
     }
-    if (other.table->type() != PlanType::kTable &&
-        other.table->type() != PlanType::kValuesTable) {
+    if (other.table->type() != PlanType::kTableNode &&
+        other.table->type() != PlanType::kValuesTableNode) {
       continue;
     }
     if (visited.contains(other.table)) {
@@ -539,7 +539,8 @@ JoinSide JoinCandidate::sideOf(PlanObjectCP side, bool other) const {
 
 namespace {
 bool hasEqual(ExprCP key, const ExprVector& keys) {
-  if (key->type() != PlanType::kColumn || !key->as<Column>()->equivalence()) {
+  if (key->type() != PlanType::kColumnExpr ||
+      !key->as<Column>()->equivalence()) {
     return false;
   }
 
@@ -844,7 +845,7 @@ template <typename V>
 CPSpan<Column> leadingColumns(V& exprs) {
   int32_t i = 0;
   for (; i < exprs.size(); ++i) {
-    if (exprs[i]->type() != PlanType::kColumn) {
+    if (exprs[i]->type() != PlanType::kColumnExpr) {
       break;
     }
   }
@@ -905,7 +906,7 @@ RelationOpPtr repartitionForIndex(
     auto nthKey = position(
         info.lookupKeys,
         [](auto c) {
-          return c->type() == PlanType::kColumn
+          return c->type() == PlanType::kColumnExpr
               ? c->template as<Column>()->schemaColumn()
               : c;
         },
@@ -950,7 +951,7 @@ void Optimization::joinByIndex(
     PlanState& state,
     std::vector<NextJoin>& toTry) {
   if (candidate.tables.size() != 1 ||
-      candidate.tables[0]->type() != PlanType::kTable ||
+      candidate.tables[0]->type() != PlanType::kTableNode ||
       !candidate.existences.empty()) {
     // Index applies to single base tables.
     return;
@@ -1032,15 +1033,15 @@ std::vector<uint32_t> joinKeyPartition(
 namespace {
 PlanObjectSet availableColumns(PlanObjectCP object) {
   PlanObjectSet set;
-  if (object->type() == PlanType::kTable) {
+  if (object->type() == PlanType::kTableNode) {
     for (auto& c : object->as<BaseTable>()->columns) {
       set.add(c);
     }
-  } else if (object->type() == PlanType::kValuesTable) {
+  } else if (object->type() == PlanType::kValuesTableNode) {
     for (auto& c : object->as<ValuesTable>()->columns) {
       set.add(c);
     }
-  } else if (object->type() == PlanType::kDerivedTable) {
+  } else if (object->type() == PlanType::kDerivedTableNode) {
     for (auto& c : object->as<DerivedTable>()->columns) {
       set.add(c);
     }
@@ -1154,7 +1155,7 @@ void Optimization::joinByHash(
   // The build side tables are all joined if the first build is a
   // table but if it is a derived table (most often with aggregation),
   // only some of the tables may be fully joined.
-  if (candidate.tables[0]->type() == PlanType::kDerivedTable) {
+  if (candidate.tables[0]->type() == PlanType::kDerivedTableNode) {
     state.placed.add(candidate.tables[0]);
     state.placed.unionSet(buildPlan->fullyImported);
   } else {
@@ -1631,12 +1632,12 @@ bool Optimization::placeConjuncts(
 namespace {
 
 float startingScore(PlanObjectCP table) {
-  if (table->type() == PlanType::kTable) {
+  if (table->type() == PlanType::kTableNode) {
     return table->as<BaseTable>()
         ->schemaTable->columnGroups[0]
         ->distribution()
         .cardinality;
-  } else if (table->type() == PlanType::kValuesTable) {
+  } else if (table->type() == PlanType::kValuesTableNode) {
     return table->as<ValuesTable>()->cardinality();
   }
   return 10;
@@ -1661,7 +1662,7 @@ void Optimization::makeJoins(RelationOpPtr plan, PlanState& state) {
     });
     for (auto i : ids) {
       auto from = firstTables.at(i);
-      if (from->type() == PlanType::kTable) {
+      if (from->type() == PlanType::kTableNode) {
         auto table = from->as<BaseTable>();
         auto indices = table->as<BaseTable>()->chooseLeafIndex();
         // Make plan starting with each relevant index of the table.
@@ -1684,7 +1685,7 @@ void Optimization::makeJoins(RelationOpPtr plan, PlanState& state) {
           state.addCost(*scan);
           makeJoins(scan, state);
         }
-      } else if (from->type() == PlanType::kValuesTable) {
+      } else if (from->type() == PlanType::kValuesTableNode) {
         const auto* valuesTable = from->as<ValuesTable>();
         ColumnVector columns;
         state.downstreamColumns().forEach([&](PlanObjectCP object) {
@@ -1815,7 +1816,7 @@ PlanPtr Optimization::makePlan(
     float existsFanout,
     PlanState& state,
     bool& needsShuffle) {
-  if (key.firstTable->type() == PlanType::kDerivedTable &&
+  if (key.firstTable->type() == PlanType::kDerivedTableNode &&
       key.firstTable->as<DerivedTable>()->setOp.has_value()) {
     const auto* setDt = key.firstTable->as<DerivedTable>();
 
@@ -1906,7 +1907,7 @@ PlanPtr Optimization::makeDtPlan(
     dt.import(
         *state.dt, key.firstTable, key.tables, key.existences, existsFanout);
     PlanState inner(*this, &dt);
-    if (key.firstTable->type() == PlanType::kDerivedTable) {
+    if (key.firstTable->type() == PlanType::kDerivedTableNode) {
       inner.setTargetColumnsForDt(key.columns);
     } else {
       inner.targetColumns = key.columns;
