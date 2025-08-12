@@ -814,16 +814,42 @@ class Aggregate : public Call {
 };
 
 using AggregateCP = const Aggregate*;
+using AggregateVector = std::vector<AggregateCP, QGAllocator<AggregateCP>>;
 
-struct Aggregation;
-using AggregationP = Aggregation*;
+class AggregationPlan : public PlanObject {
+ public:
+  AggregationPlan(
+      ExprVector groupingKeys,
+      AggregateVector aggregates,
+      ColumnVector columns,
+      ColumnVector intermediateColumns)
+      : PlanObject(PlanType::kAggregationNode),
+        groupingKeys_(std::move(groupingKeys)),
+        aggregates_(std::move(aggregates)),
+        columns_(std::move(columns)),
+        intermediateColumns_(std::move(intermediateColumns)) {}
 
-/// Wraps an Aggregation RelationOp. This gives the aggregation a PlanObject id
-struct AggregationPlan : public PlanObject {
-  explicit AggregationPlan(AggregationP agg)
-      : PlanObject(PlanType::kAggregationNode), aggregation(agg) {}
+  const ExprVector& groupingKeys() const {
+    return groupingKeys_;
+  }
 
-  AggregationP aggregation;
+  const AggregateVector& aggregates() const {
+    return aggregates_;
+  }
+
+  const ColumnVector& columns() const {
+    return columns_;
+  }
+
+  const ColumnVector& intermediateColumns() const {
+    return intermediateColumns_;
+  }
+
+ private:
+  const ExprVector groupingKeys_;
+  const AggregateVector aggregates_;
+  const ColumnVector columns_;
+  const ColumnVector intermediateColumns_;
 };
 
 using AggregationPlanCP = const AggregationPlan*;

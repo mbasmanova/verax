@@ -1003,11 +1003,7 @@ class Optimization {
   // Adds order by information to the enclosing DerivedTable.
   OrderByCP translateOrderBy(const velox::core::OrderByNode& order);
 
-  // Adds aggregation information to the enclosing DerivedTable.
-  AggregationP translateAggregation(
-      const velox::core::AggregationNode& aggregation);
-
-  AggregationP translateAggregation(
+  AggregationPlanCP translateAggregation(
       const logical_plan::AggregateNode& aggregation);
 
   // Adds 'node' and descendants to query graph wrapped inside a

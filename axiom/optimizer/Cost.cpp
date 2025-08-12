@@ -150,7 +150,7 @@ void Values::setCost(const PlanState& input) {
 void Aggregation::setCost(const PlanState& input) {
   RelationOp::setCost(input);
   float cardinality = 1;
-  for (auto key : grouping) {
+  for (auto key : groupingKeys) {
     cardinality *= key->value().cardinality;
   }
   // The estimated output is input minus the times an input is a
@@ -162,8 +162,8 @@ void Aggregation::setCost(const PlanState& input) {
   auto nOut = cardinality -
       cardinality * pow(1.0 - (1.0 / cardinality), cost_.inputCardinality);
   cost_.fanout = nOut / cost_.inputCardinality;
-  cost_.unitCost = grouping.size() * Costs::hashProbeCost(nOut);
-  float rowBytes = byteSize(grouping) + byteSize(aggregates);
+  cost_.unitCost = groupingKeys.size() * Costs::hashProbeCost(nOut);
+  float rowBytes = byteSize(groupingKeys) + byteSize(aggregates);
   cost_.totalBytes = nOut * rowBytes;
 }
 

@@ -777,29 +777,30 @@ ExprVector Optimization::translateColumns(
   return result;
 }
 
-AggregationP Optimization::translateAggregation(
+AggregationPlanCP Optimization::translateAggregation(
     const lp::AggregateNode& logicalAgg) {
-  auto* aggregation =
-      make<Aggregation>(nullptr, translateColumns(logicalAgg.groupingKeys()));
+  ExprVector groupingKeys = translateColumns(logicalAgg.groupingKeys());
+  AggregateVector aggregates;
+  ColumnVector columns;
 
   for (auto i = 0; i < logicalAgg.groupingKeys().size(); ++i) {
     auto name = toName(logicalAgg.outputType()->nameOf(i));
-    auto* key = aggregation->grouping[i];
+    auto* key = groupingKeys[i];
 
     if (key->type() == PlanType::kColumnExpr) {
-      aggregation->mutableColumns().push_back(key->as<Column>());
+      columns.push_back(key->as<Column>());
     } else {
       toType(logicalAgg.outputType()->childAt(i));
 
       auto* column = make<Column>(name, currentSelect_, key->value());
-      aggregation->mutableColumns().push_back(column);
+      columns.push_back(column);
     }
 
-    renames_[name] = aggregation->mutableColumns().back();
+    renames_[name] = columns.back();
   }
 
   // The keys for intermediate are the same as for final.
-  aggregation->intermediateColumns = aggregation->columns();
+  ColumnVector intermediateColumns = columns;
   for (auto channel : usedChannels(&logicalAgg)) {
     if (channel < logicalAgg.groupingKeys().size()) {
       continue;
@@ -836,19 +837,24 @@ AggregationP Optimization::translateAggregation(
         accumulatorType);
     auto name = toName(logicalAgg.outputNames()[channel]);
     auto* column = make<Column>(name, currentSelect_, agg->value());
-    aggregation->mutableColumns().push_back(column);
+    columns.push_back(column);
+
     auto intermediateValue = agg->value();
     intermediateValue.type = accumulatorType;
     auto* intermediateColumn =
         make<Column>(name, currentSelect_, intermediateValue);
-    aggregation->intermediateColumns.push_back(intermediateColumn);
+    intermediateColumns.push_back(intermediateColumn);
     auto dedupped = queryCtx()->dedup(agg);
-    aggregation->aggregates.push_back(dedupped->as<Aggregate>());
+    aggregates.push_back(dedupped->as<Aggregate>());
 
-    renames_[name] = aggregation->columns().back();
+    renames_[name] = columns.back();
   }
 
-  return aggregation;
+  return make<AggregationPlan>(
+      std::move(groupingKeys),
+      std::move(aggregates),
+      std::move(columns),
+      std::move(intermediateColumns));
 }
 
 PlanObjectP Optimization::addOrderBy(const lp::SortNode& order) {
@@ -1180,8 +1186,7 @@ PlanObjectP Optimization::addFilter(const lp::FilterNode* filter) {
 PlanObjectP Optimization::addAggregation(const lp::AggregateNode& aggNode) {
   aggFinalType_ = aggNode.outputType();
 
-  auto* aggPlan = make<AggregationPlan>(translateAggregation(aggNode));
-  currentSelect_->aggregation = aggPlan;
+  currentSelect_->aggregation = translateAggregation(aggNode);
 
   return currentSelect_;
 }
@@ -1245,11 +1250,8 @@ DerivedTableP Optimization::translateSetJoin(
     renames_[type->nameOf(i)] = columns.back();
   }
 
-  auto agg = make<Aggregation>(nullptr, exprs);
-  agg->mutableColumns() = columns;
-  agg->intermediateColumns = columns;
-
-  setDt->aggregation = make<AggregationPlan>(agg);
+  setDt->aggregation =
+      make<AggregationPlan>(exprs, AggregateVector{}, columns, columns);
   for (auto& c : columns) {
     setDt->exprs.push_back(c);
   }

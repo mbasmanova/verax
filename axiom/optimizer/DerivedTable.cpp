@@ -191,7 +191,7 @@ bool isSingleRowDt(PlanObjectCP object) {
   if (object->type() == PlanType::kDerivedTableNode) {
     auto dt = object->as<DerivedTable>();
     return dt->limit == 1 ||
-        (dt->aggregation && dt->aggregation->aggregation->grouping.empty());
+        (dt->aggregation && dt->aggregation->groupingKeys().empty());
   }
   return false;
 }
@@ -697,7 +697,6 @@ void DerivedTable::distributeConjuncts() {
   std::vector<DerivedTableP> changedDts;
   if (!having.empty()) {
     VELOX_CHECK_NOT_NULL(aggregation);
-    VELOX_CHECK_NOT_NULL(aggregation->aggregation);
 
     // Push HAVING clause that uses only grouping keys below the aggregation.
     //
@@ -705,17 +704,15 @@ void DerivedTable::distributeConjuncts() {
     //   =>
     //     SELECT a, sum(b) FROM t WHERE a > 0 GROUP BY a
 
-    const auto* op = aggregation->aggregation;
-
     // Gather the columns of grouping expressions. If a having depends
     // on these alone it can move below the aggregation and gets
     // translated from the aggregation output columns to the columns
     // inside the agg. Consider both the grouping expr nd its rename
     // after the aggregation.
     PlanObjectSet grouping;
-    for (auto i = 0; i < op->grouping.size(); ++i) {
-      grouping.unionSet(op->columns()[i]->columns());
-      grouping.unionSet(op->grouping[i]->columns());
+    for (auto i = 0; i < aggregation->groupingKeys().size(); ++i) {
+      grouping.unionSet(aggregation->columns()[i]->columns());
+      grouping.unionSet(aggregation->groupingKeys()[i]->columns());
     }
 
     for (auto i = 0; i < having.size(); ++i) {
@@ -728,7 +725,8 @@ void DerivedTable::distributeConjuncts() {
       // names. Pre/post agg names may differ for dts in set
       // operations. If already in pre-agg names, no-op.
       if (having[i]->columns().isSubset(grouping)) {
-        conjuncts.push_back(importExpr(having[i], op->columns(), op->grouping));
+        conjuncts.push_back(importExpr(
+            having[i], aggregation->columns(), aggregation->groupingKeys()));
         having.erase(having.begin() + i);
         --i;
       }
