@@ -159,7 +159,7 @@ void PlanState::addCost(RelationOp& op) {
 void PlanState::addNextJoin(
     const JoinCandidate* candidate,
     RelationOpPtr plan,
-    BuildSet builds,
+    HashBuildVector builds,
     std::vector<NextJoin>& toTry) const {
   if (!isOverBest()) {
     toTry.emplace_back(candidate, plan, cost, placed, columns, builds);
@@ -168,7 +168,7 @@ void PlanState::addNextJoin(
   }
 }
 
-void PlanState::addBuilds(const BuildSet& added) {
+void PlanState::addBuilds(const HashBuildVector& added) {
   for (auto build : added) {
     if (std::find(builds.begin(), builds.end(), build) == builds.end()) {
       builds.push_back(build);
@@ -825,11 +825,8 @@ void Optimization::addPostprocess(
     state.addCost(*filter);
     plan = filter;
   }
-  if (dt->orderBy) {
-    auto* orderBy = make<OrderBy>(
-        plan,
-        dt->orderBy->distribution().order,
-        dt->orderBy->distribution().orderType);
+  if (dt->hasOrderBy()) {
+    auto* orderBy = make<OrderBy>(plan, dt->orderByKeys, dt->orderByTypes);
     state.addCost(*orderBy);
     plan = orderBy;
   }
@@ -837,7 +834,7 @@ void Optimization::addPostprocess(
     auto* project = make<Project>(plan, dt->exprs, dt->columns);
     plan = project;
   }
-  if (dt->orderBy == nullptr && dt->limit >= 0) {
+  if (!dt->hasOrderBy() && dt->hasLimit()) {
     auto limit = make<Limit>(plan, dt->limit, dt->offset);
     state.addCost(*limit);
     plan = limit;
