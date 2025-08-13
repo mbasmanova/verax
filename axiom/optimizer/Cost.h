@@ -60,12 +60,6 @@ class History {
 
   virtual std::pair<float, float> sampleJoin(JoinEdge* edge) = 0;
 
-  /// Returns the history record for the plan fragment represented in 'key'.
-  /// nullptr if not recorded.
-  virtual NodePrediction* getHistory(const std::string key) = 0;
-
-  virtual void setHistory(const std::string& key, NodePrediction history) = 0;
-
   virtual void recordLeafSelectivity(
       const std::string& handle,
       float selectivity,

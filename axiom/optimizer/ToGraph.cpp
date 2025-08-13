@@ -1047,13 +1047,15 @@ PlanObjectP ToGraph::makeBaseTable(const lp::TableScanNode& tableScan) {
     renames_[type->nameOf(i)] = column;
   }
 
+  auto* optimization = queryCtx()->optimization();
+
+  optimization->filterUpdated(baseTable, false);
+
   ColumnVector top;
   std::unordered_map<ColumnCP, TypePtr> map;
-  filterUpdated(baseTable, false);
-
-  auto* optimization = queryCtx()->optimization();
   auto scanType = optimization->subfieldPushdownScanType(
       baseTable, baseTable->columns, top, map);
+
   optimization->setLeafSelectivity(*baseTable, scanType);
   currentSelect_->tables.push_back(baseTable);
   currentSelect_->tableSet.add(baseTable);

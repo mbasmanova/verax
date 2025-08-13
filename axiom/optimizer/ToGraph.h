@@ -206,6 +206,10 @@ class ToGraph {
     return &evaluator_;
   }
 
+  static logical_plan::ExprPtr stepToLogicalPlanGetter(
+      Step,
+      const logical_plan::ExprPtr& arg);
+
  private:
   // For comparisons, swaps the args to have a canonical form for
   // deduplication. E.g column op constant, and Smaller plan object id
