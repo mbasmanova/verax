@@ -264,13 +264,15 @@ std::pair<DerivedTableP, JoinEdgeP> makeExistsDtAndJoin(
     JoinEdgeP existsJoin) {
   auto firstExistsTable = existsJoin->rightKeys()[0]->singleTable();
   VELOX_CHECK(firstExistsTable);
+
   MemoKey existsDtKey;
   existsDtKey.firstTable = firstExistsTable;
+  existsDtKey.tables.unionObjects(existsTables);
   for (auto& column : existsJoin->rightKeys()) {
     existsDtKey.columns.unionColumns(column);
   }
+
   auto optimization = queryCtx()->optimization();
-  existsDtKey.tables.unionObjects(existsTables);
   auto it = optimization->existenceDts().find(existsDtKey);
   DerivedTableP existsDt;
   if (it == optimization->existenceDts().end()) {
@@ -982,13 +984,13 @@ void DerivedTable::expandConjuncts() {
 }
 
 void DerivedTable::makeInitialPlan() {
-  auto optimization = queryCtx()->optimization();
   MemoKey key;
   key.firstTable = this;
   key.tables.add(this);
   for (auto& column : columns) {
     key.columns.add(column);
   }
+
   distributeConjuncts();
   addImpliedJoins();
   linkTablesToJoins();
@@ -996,6 +998,8 @@ void DerivedTable::makeInitialPlan() {
     join->guessFanout();
   }
   setStartTables();
+
+  auto optimization = queryCtx()->optimization();
   PlanState state(*optimization, this);
   for (auto expr : exprs) {
     state.targetColumns.unionColumns(expr);
@@ -1019,6 +1023,23 @@ void DerivedTable::makeInitialPlan() {
       orderType);
   this->distribution = dtDist;
   optimization->memo()[key] = std::move(state.plans);
+}
+
+PlanPtr DerivedTable::bestInitialPlan() const {
+  MemoKey key;
+  key.firstTable = this;
+  key.tables.add(this);
+  for (auto& column : columns) {
+    key.columns.add(column);
+  }
+
+  auto& memo = queryCtx()->optimization()->memo();
+  auto it = memo.find(key);
+  VELOX_CHECK(it != memo.end(), "Expecting to find a plan for union branch");
+
+  bool ignore;
+  Distribution emptyDistribution;
+  return it->second.best(emptyDistribution, ignore);
 }
 
 std::string DerivedTable::toString() const {

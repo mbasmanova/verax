@@ -714,28 +714,9 @@ class Optimization {
  private:
   static constexpr uint64_t kAllAllowedInDt = ~0UL;
 
-  // True if 'op' is in 'mask.
-  static bool contains(uint64_t mask, PlanType op) {
-    return 0 != (mask & (1UL << static_cast<int32_t>(op)));
-  }
-
-  // Returns a mask that allows 'op' in the same derived table.
-  uint64_t allow(PlanType op) {
-    return 1UL << static_cast<int32_t>(op);
-  }
-
-  // Removes 'op' from the set of operators allowed in the current derived
-  // table. makeQueryGraph() starts a new derived table if it finds an operator
-  // that does not belong to the mask.
-  static uint64_t makeDtIf(uint64_t mask, PlanType op) {
-    return mask & ~(1UL << static_cast<int32_t>(op));
-  }
-
   // Initializes a tree of DerivedTables with JoinEdges from 'plan' given at
   // construction. Sets 'root_' to the root DerivedTable.
   DerivedTableP makeQueryGraph();
-
-  DerivedTableP makeQueryGraphFromLogical();
 
   // Converts 'plan' to PlanObjects and records join edges into
   // 'currentSelect_'. If 'node' does not match  allowedInDt, wraps 'node' in a
@@ -743,9 +724,6 @@ class Optimization {
   PlanObjectP makeQueryGraph(
       const logical_plan::LogicalPlanNode& node,
       uint64_t allowedInDt);
-
-  // Converts a table scan into a BaseTable wen building a DerivedTable.
-  PlanObjectP makeBaseTable(const core::TableScanNode* tableScan);
 
   PlanObjectP makeBaseTable(const logical_plan::TableScanNode& tableScan);
 
@@ -758,24 +736,14 @@ class Optimization {
       ColumnCP column,
       const BitSet& paths);
 
-  // Interprets a Project node and adds its information into the DerivedTable
-  // being assembled.
-  void addProjection(const core::ProjectNode* project);
-
   PlanObjectP addProjection(const logical_plan::ProjectNode* project);
 
   // Interprets a Filter node and adds its information into the DerivedTable
   // being assembled.
-  void addFilter(const core::FilterNode* Filter);
-
   PlanObjectP addFilter(const logical_plan::FilterNode* Filter);
 
   // Interprets an AggregationNode and adds its information to the DerivedTable
   // being assembled.
-  PlanObjectP addAggregation(
-      const core::AggregationNode& aggNode,
-      uint64_t allowedInDt);
-
   PlanObjectP addAggregation(const logical_plan::AggregateNode& aggNode);
 
   PlanObjectP addLimit(const logical_plan::LimitNode& limitNode);
@@ -791,11 +759,6 @@ class Optimization {
   // Returns a literal from applying 'call' or 'cast' to 'literals'. nullptr if
   // not successful.
   ExprCP tryFoldConstant(
-      const velox::core::CallTypedExpr* call,
-      const velox::core::CastTypedExpr* cast,
-      const ExprVector& literals);
-
-  ExprCP tryFoldConstant(
       const logical_plan::CallExpr* call,
       const logical_plan::SpecialFormExpr* cast,
       const ExprVector& literals);
@@ -807,18 +770,11 @@ class Optimization {
   logical_plan::ConstantExprPtr maybeFoldLogicalConstant(
       const logical_plan::ExprPtr expr);
 
-  // Returns a constant expression if 'typedExprcan be folded, nullptr
-  // otherwise.
-  std::shared_ptr<const exec::ConstantExpr> foldConstant(
-      const core::TypedExprPtr& typedExpr);
-
   // Returns the ordinal positions of actually referenced outputs of 'node'.
   std::vector<int32_t> usedChannels(const logical_plan::LogicalPlanNode* node);
 
   // Returns the ordinal position of used arguments for a function call that
   // produces a complex type.
-  std::vector<int32_t> usedArgs(const core::ITypedExpr* call);
-
   std::vector<int32_t> usedArgs(const logical_plan::Expr* call);
 
   void markFieldAccessed(
@@ -856,11 +812,6 @@ class Optimization {
       const std::vector<logical_plan::ExprPtr>& columns);
 
   bool isSubfield(
-      const core::ITypedExpr* expr,
-      Step& step,
-      core::TypedExprPtr& input);
-
-  bool isSubfield(
       const logical_plan::Expr* expr,
       Step& step,
       logical_plan::ExprPtr& input);
@@ -872,18 +823,11 @@ class Optimization {
       const FunctionMetadata* metadata);
 
   BitSet functionSubfields(
-      const core::CallTypedExpr* call,
-      bool controlOnly,
-      bool payloadOnly);
-
-  BitSet functionSubfields(
       const logical_plan::CallExpr* call,
       bool controlOnly,
       bool payloadOnly);
 
   // Makes a deduplicated Expr tree from 'expr'.
-  ExprCP translateExpr(const velox::core::TypedExprPtr& expr);
-
   ExprCP translateExpr(const logical_plan::ExprPtr& expr);
 
   // For comparisons, swaps the args to have a canonical form for
@@ -897,11 +841,7 @@ class Optimization {
   deduppedCall(Name name, Value value, ExprVector args, FunctionSet flags);
 
   // Returns a deduplicated Literal from the value in 'constant'.
-  ExprCP makeConstant(const core::ConstantTypedExprPtr& constant);
-
   ExprCP makeConstant(const logical_plan::ConstantExpr& constant);
-
-  ExprCP translateLambda(const velox::core::LambdaTypedExpr* lambda);
 
   ExprCP translateLambda(const logical_plan::LambdaExpr* lambda);
 
@@ -924,16 +864,10 @@ class Optimization {
   // Translates a complex type function where the generated Exprs  depend on the
   // accessed subfields.
   std::optional<ExprCP> translateSubfieldFunction(
-      const core::CallTypedExpr* call,
-      const FunctionMetadata* metadata);
-
-  std::optional<ExprCP> translateSubfieldFunction(
       const logical_plan::CallExpr* call,
       const FunctionMetadata* metadata);
 
   // Calls translateSubfieldFunction() if not already called.
-  void ensureFunctionSubfields(const core::TypedExprPtr& expr);
-
   void ensureFunctionSubfields(const logical_plan::ExprPtr& expr);
 
   // Makes dedupped getters for 'steps'. if steps is below skyline,
@@ -944,21 +878,11 @@ class Optimization {
   ExprCP makeGettersOverSkyline(
       const std::vector<Step>& steps,
       const SubfieldProjections* skyline,
-      const core::TypedExprPtr& base,
-      ColumnCP column);
-
-  ExprCP makeGettersOverSkyline(
-      const std::vector<Step>& steps,
-      const SubfieldProjections* skyline,
       const logical_plan::ExprPtr& base,
       ColumnCP column);
 
   // Adds conjuncts combined by any number of enclosing ands from 'input' to
   // 'flat'.
-  void translateConjuncts(
-      const velox::core::TypedExprPtr& input,
-      ExprVector& flat);
-
   void translateConjuncts(const logical_plan::ExprPtr& input, ExprVector& flat);
 
   // Converts 'name' to a deduplicated ExprCP. If 'name' is assigned to an
@@ -967,14 +891,9 @@ class Optimization {
   ExprCP translateColumn(const std::string& name);
 
   //  Applies translateColumn to a 'source'.
-  ExprVector translateColumns(
-      const std::vector<velox::core::FieldAccessTypedExprPtr>& source);
-
   ExprVector translateColumns(const std::vector<logical_plan::ExprPtr>& source);
 
   // Adds a JoinEdge corresponding to 'join' to the enclosing DerivedTable.
-  void translateJoin(const velox::core::AbstractJoinNode& join);
-
   void translateJoin(const logical_plan::JoinNode& join);
 
   DerivedTableP translateSetJoin(
@@ -993,15 +912,6 @@ class Optimization {
       DerivedTableP setDt,
       bool isTopLevel,
       bool& isLeftLeaf);
-
-  // Makes an extra column for existence flag.
-  ColumnCP makeMark(const velox::core::AbstractJoinNode& join);
-
-  // Adds a join edge for a join with no equalities.
-  void translateNonEqualityJoin(const velox::core::NestedLoopJoinNode& join);
-
-  // Adds order by information to the enclosing DerivedTable.
-  OrderByCP translateOrderBy(const velox::core::OrderByNode& order);
 
   AggregationPlanCP translateAggregation(
       const logical_plan::AggregateNode& aggregation);
@@ -1251,8 +1161,11 @@ class Optimization {
 
   // Source of historical cost/cardinality information.
   History& history_;
+
   std::shared_ptr<core::QueryCtx> queryCtx_;
+
   velox::core::ExpressionEvaluator& evaluator_;
+
   // Top DerivedTable when making a QueryGraph from PlanNode.
   DerivedTableP root_;
 
@@ -1318,8 +1231,6 @@ class Optimization {
 
   /// Expressions corresponding to skyline paths over a subfield decomposable
   /// function.
-  std::unordered_map<const core::ITypedExpr*, SubfieldProjections>
-      functionSubfields_;
 
   std::unordered_map<const logical_plan::CallExpr*, SubfieldProjections>
       logicalFunctionSubfields_;
@@ -1331,8 +1242,6 @@ class Optimization {
 
   // Complex type functions that have been checke for explode and
   // 'functionSubfields_'.
-  std::unordered_set<const core::CallTypedExpr*> translatedSubfieldFuncs_;
-
   std::unordered_set<const logical_plan::CallExpr*>
       logicalTranslatedSubfieldFuncs_;
 
@@ -1351,11 +1260,6 @@ class Optimization {
 
   // Generates unique ids for build sides.
   int32_t buildCounter_{0};
-
-  // When making a graph from 'inputPlan_' the output of an aggregation comes
-  // from the topmost (final) and the input from the lefmost (whichever consumes
-  // raw values). Records the output type of the final aggregation.
-  velox::RowTypePtr aggFinalType_;
 
   // Map from leaf PlanNode to corresponding PlanObject
   std::unordered_map<const logical_plan::LogicalPlanNode*, PlanObjectCP>

@@ -88,7 +88,7 @@ Optimization::Optimization(
       options_(std::move(options)),
       isSingle_(options_.numWorkers == 1) {
   queryCtx()->optimization() = this;
-  root_ = makeQueryGraphFromLogical();
+  root_ = makeQueryGraph();
   root_->distributeConjuncts();
   root_->addImpliedJoins();
   root_->linkTablesToJoins();
