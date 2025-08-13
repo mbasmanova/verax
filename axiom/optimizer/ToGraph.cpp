@@ -950,11 +950,10 @@ void ToGraph::translateJoin(const lp::JoinNode& join) {
     auto* edge = make<JoinEdge>(
         leftTableVector.size() == 1 ? leftTableVector[0] : nullptr,
         rightTable,
-        conjuncts,
-        leftOptional,
-        rightOptional,
-        false,
-        false);
+        JoinEdge::Spec{
+            .filter = std::move(conjuncts),
+            .leftOptional = leftOptional,
+            .rightOptional = rightOptional});
     currentSelect_->joins.push_back(edge);
     for (auto i = 0; i < leftKeys.size(); ++i) {
       edge->addEquality(leftKeys[i], rightKeys[i]);
@@ -1213,13 +1212,15 @@ DerivedTableP ToGraph::translateSetJoin(
   const bool exists = set.operation() == lp::SetOperation::kIntersect;
   const bool anti = set.operation() == lp::SetOperation::kExcept;
 
+  VELOX_CHECK(exists || anti);
+
   const auto* left = setDt->tables[0]->as<DerivedTable>();
 
   for (auto i = 1; i < setDt->tables.size(); ++i) {
     const auto* right = setDt->tables[i]->as<DerivedTable>();
 
-    auto* joinEdge =
-        make<JoinEdge>(left, right, ExprVector{}, false, false, exists, anti);
+    auto* joinEdge = exists ? JoinEdge::makeExists(left, right)
+                            : JoinEdge::makeNotExists(left, right);
     for (auto i = 0; i < left->columns.size(); ++i) {
       joinEdge->addEquality(left->columns[i], right->columns[i]);
     }
