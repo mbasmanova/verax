@@ -62,20 +62,37 @@ ExceptionContext makeExceptionContext(ToGraphContext* ctx) {
   return e;
 }
 
-void ToGraph::setDerivedTableOutput(
+void ToGraph::setDtOutput(
     DerivedTableP dt,
     const lp::LogicalPlanNode& logicalPlan) {
   const auto& outputType = logicalPlan.outputType();
   for (auto i = 0; i < outputType->size(); ++i) {
-    const auto& fieldType = outputType->childAt(i);
-    const auto& fieldName = outputType->nameOf(i);
+    const auto& type = outputType->childAt(i);
+    const auto& name = outputType->nameOf(i);
 
-    auto expr = translateColumn(fieldName);
-    Value value(toType(fieldType), 0);
-    auto* column = make<Column>(toName(fieldName), dt, value);
-    dt->columns.push_back(column);
-    dt->exprs.push_back(expr);
-    renames_[fieldName] = column;
+    auto inner = translateColumn(name);
+    dt->exprs.push_back(inner);
+
+    Value value(toType(type), 0);
+    auto* outer = make<Column>(toName(name), dt, value);
+    dt->columns.push_back(outer);
+    renames_[name] = outer;
+  }
+}
+
+void ToGraph::setDtUsedOutput(
+    DerivedTableP dt,
+    const lp::LogicalPlanNode& node) {
+  const auto& type = node.outputType();
+  for (auto i : usedChannels(node)) {
+    const auto& name = type->nameOf(i);
+
+    const auto* inner = translateColumn(name);
+    dt->exprs.push_back(inner);
+
+    const auto* outer = make<Column>(toName(name), dt, inner->value());
+    dt->columns.push_back(outer);
+    renames_[name] = outer;
   }
 }
 
@@ -841,7 +858,7 @@ AggregationPlanCP ToGraph::translateAggregation(
     } else {
       toType(logicalAgg.outputType()->childAt(i));
 
-      auto* column = make<Column>(name, currentSelect_, key->value());
+      auto* column = make<Column>(name, currentDt_, key->value());
       columns.push_back(column);
     }
 
@@ -885,13 +902,13 @@ AggregationPlanCP ToGraph::translateAggregation(
         false,
         accumulatorType);
     auto name = toName(logicalAgg.outputNames()[channel]);
-    auto* column = make<Column>(name, currentSelect_, agg->value());
+    auto* column = make<Column>(name, currentDt_, agg->value());
     columns.push_back(column);
 
     auto intermediateValue = agg->value();
     intermediateValue.type = accumulatorType;
     auto* intermediateColumn =
-        make<Column>(name, currentSelect_, intermediateValue);
+        make<Column>(name, currentDt_, intermediateValue);
     intermediateColumns.push_back(intermediateColumn);
     auto dedupped = queryCtx()->dedup(agg);
     aggregates.push_back(dedupped->as<Aggregate>());
@@ -920,10 +937,10 @@ PlanObjectP ToGraph::addOrderBy(const lp::SortNode& order) {
     keys.push_back(translateExpr(field.expression));
   }
 
-  currentSelect_->orderByKeys = keys;
-  currentSelect_->orderByTypes = orderType;
+  currentDt_->orderByKeys = keys;
+  currentDt_->orderByTypes = orderType;
 
-  return currentSelect_;
+  return currentDt_;
 }
 
 namespace {
@@ -982,14 +999,26 @@ void ToGraph::translateJoin(const lp::JoinNode& join) {
 
   // For an inner join a join tree on the right can be flattened, for all other
   // kinds it must be kept together in its own dt.
+
+  DerivedTableP previousDt = nullptr;
+  if (isNondeterministicWrap_) {
+    previousDt = currentDt_;
+    currentDt_ = newDt();
+
+    isNondeterministicWrap_ = false;
+  }
   makeQueryGraph(*joinRight, isInner ? allow(PlanType::kJoinNode) : 0);
+
+  if (previousDt) {
+    finalizeDt(*joinRight, previousDt);
+  }
 
   ExprVector conjuncts;
   translateConjuncts(join.condition(), conjuncts);
 
   if (isInner) {
-    currentSelect_->conjuncts.insert(
-        currentSelect_->conjuncts.end(), conjuncts.begin(), conjuncts.end());
+    currentDt_->conjuncts.insert(
+        currentDt_->conjuncts.end(), conjuncts.begin(), conjuncts.end());
   } else {
     const bool leftOptional =
         joinType == lp::JoinType::kRight || joinType == lp::JoinType::kFull;
@@ -998,7 +1027,7 @@ void ToGraph::translateJoin(const lp::JoinNode& join) {
 
     // If non-inner, and many tables on the right they are one dt. If a single
     // table then this too is the last in 'tables'.
-    auto rightTable = currentSelect_->tables.back();
+    auto rightTable = currentDt_->tables.back();
 
     ExprVector leftKeys;
     ExprVector rightKeys;
@@ -1018,7 +1047,7 @@ void ToGraph::translateJoin(const lp::JoinNode& join) {
             .filter = std::move(conjuncts),
             .leftOptional = leftOptional,
             .rightOptional = rightOptional});
-    currentSelect_->joins.push_back(edge);
+    currentDt_->joins.push_back(edge);
     for (auto i = 0; i < leftKeys.size(); ++i) {
       edge->addEquality(leftKeys[i], rightKeys[i]);
     }
@@ -1032,31 +1061,27 @@ DerivedTableP ToGraph::newDt() {
 }
 
 PlanObjectP ToGraph::wrapInDt(const lp::LogicalPlanNode& node) {
-  DerivedTableP previousDt = currentSelect_;
-  auto* dt = newDt();
+  DerivedTableP previousDt = currentDt_;
 
-  currentSelect_ = dt;
+  currentDt_ = newDt();
   makeQueryGraph(node, kAllAllowedInDt);
 
-  currentSelect_ = previousDt;
+  finalizeDt(node, previousDt);
 
-  const auto& type = node.outputType();
-  for (auto i : usedChannels(node)) {
-    const auto& name = type->nameOf(i);
+  return currentDt_;
+}
 
-    const auto* inner = translateColumn(name);
-    dt->exprs.push_back(inner);
+void ToGraph::finalizeDt(
+    const lp::LogicalPlanNode& node,
+    DerivedTableP outerDt) {
+  DerivedTableP dt = currentDt_;
+  setDtUsedOutput(dt, node);
 
-    const auto* outer = make<Column>(toName(name), dt, inner->value());
-    dt->columns.push_back(outer);
-    renames_[name] = outer;
-  }
+  currentDt_ = outerDt != nullptr ? outerDt : newDt();
+  currentDt_->tables.push_back(dt);
+  currentDt_->tableSet.add(dt);
 
-  currentSelect_->tables.push_back(dt);
-  currentSelect_->tableSet.add(dt);
   dt->makeInitialPlan();
-
-  return dt;
 }
 
 PlanObjectP ToGraph::makeBaseTable(const lp::TableScanNode& tableScan) {
@@ -1124,8 +1149,8 @@ PlanObjectP ToGraph::makeBaseTable(const lp::TableScanNode& tableScan) {
       baseTable, baseTable->columns, top, map);
 
   optimization->setLeafSelectivity(*baseTable, scanType);
-  currentSelect_->tables.push_back(baseTable);
-  currentSelect_->tableSet.add(baseTable);
+  currentDt_->tables.push_back(baseTable);
+  currentDt_->tableSet.add(baseTable);
   return baseTable;
 }
 
@@ -1149,8 +1174,8 @@ PlanObjectP ToGraph::makeValuesTable(const lp::ValuesNode& values) {
     renames_[name] = column;
   }
 
-  currentSelect_->tables.push_back(valuesTable);
-  currentSelect_->tableSet.add(valuesTable);
+  currentDt_->tables.push_back(valuesTable);
+  currentDt_->tableSet.add(valuesTable);
   return valuesTable;
 }
 
@@ -1229,7 +1254,7 @@ PlanObjectP ToGraph::addProjection(const lp::ProjectNode* project) {
     renames_[names[i]] = expr;
   }
 
-  return currentSelect_;
+  return currentDt_;
 }
 
 PlanObjectP ToGraph::addFilter(const lp::FilterNode* filter) {
@@ -1237,28 +1262,39 @@ PlanObjectP ToGraph::addFilter(const lp::FilterNode* filter) {
 
   ExprVector flat;
   translateConjuncts(filter->predicate(), flat);
-  if (exprSource_->kind() == lp::NodeKind::kAggregate) {
-    VELOX_CHECK(
-        currentSelect_->having.empty(),
-        "Must have all of HAVING in one filter");
-    currentSelect_->having = flat;
+
+  if (currentDt_->hasAggregation()) {
+    currentDt_->having.insert(
+        currentDt_->having.end(), flat.begin(), flat.end());
   } else {
-    currentSelect_->conjuncts.insert(
-        currentSelect_->conjuncts.end(), flat.begin(), flat.end());
+    currentDt_->conjuncts.insert(
+        currentDt_->conjuncts.end(), flat.begin(), flat.end());
   }
 
-  return currentSelect_;
+  return currentDt_;
 }
 
 PlanObjectP ToGraph::addAggregation(const lp::AggregateNode& aggNode) {
-  currentSelect_->aggregation = translateAggregation(aggNode);
-  return currentSelect_;
+  currentDt_->aggregation = translateAggregation(aggNode);
+  return currentDt_;
 }
 
 PlanObjectP ToGraph::addLimit(const lp::LimitNode& limitNode) {
-  currentSelect_->limit = limitNode.count();
-  currentSelect_->offset = limitNode.offset();
-  return currentSelect_;
+  if (currentDt_->hasLimit()) {
+    currentDt_->offset += limitNode.offset();
+
+    if (currentDt_->limit <= limitNode.offset()) {
+      currentDt_->limit = 0;
+    } else {
+      currentDt_->limit =
+          std::min(limitNode.count(), currentDt_->limit - limitNode.offset());
+    }
+  } else {
+    currentDt_->limit = limitNode.count();
+    currentDt_->offset = limitNode.offset();
+  }
+
+  return currentDt_;
 }
 
 namespace {
@@ -1281,8 +1317,8 @@ bool hasNondeterministic(const lp::ExprPtr& expr) {
 DerivedTableP ToGraph::translateSetJoin(
     const lp::SetNode& set,
     DerivedTableP setDt) {
-  auto previousDt = currentSelect_;
-  currentSelect_ = setDt;
+  auto previousDt = currentDt_;
+  currentDt_ = setDt;
   for (auto& input : set.inputs()) {
     wrapInDt(*input);
   }
@@ -1323,7 +1359,7 @@ DerivedTableP ToGraph::translateSetJoin(
   }
   setDt->columns = columns;
   setDt->makeInitialPlan();
-  currentSelect_ = previousDt;
+  currentDt_ = previousDt;
   return setDt;
 }
 
@@ -1368,7 +1404,7 @@ DerivedTableP ToGraph::translateUnion(
   auto initialRenames = renames_;
   std::vector<DerivedTableP, QGAllocator<DerivedTable*>> children;
   bool isFirst = true;
-  DerivedTableP previousDt = currentSelect_;
+  DerivedTableP previousDt = currentDt_;
   for (auto& input : set.inputs()) {
     if (!isFirst) {
       renames_ = initialRenames;
@@ -1376,9 +1412,9 @@ DerivedTableP ToGraph::translateUnion(
       isFirst = false;
     }
 
-    currentSelect_ = newDt();
+    currentDt_ = newDt();
 
-    auto& newDt = currentSelect_;
+    auto& newDt = currentDt_;
 
     auto isUnionLike =
         [](const lp::LogicalPlanNode& node) -> const lp::SetNode* {
@@ -1430,7 +1466,7 @@ DerivedTableP ToGraph::translateUnion(
     }
   }
 
-  currentSelect_ = previousDt;
+  currentDt_ = previousDt;
   if (isTopLevel) {
     setDt->children = std::move(children);
     setDt->setOp = set.operation();
@@ -1452,11 +1488,9 @@ DerivedTableP ToGraph::translateUnion(
 DerivedTableP ToGraph::makeQueryGraph(const lp::LogicalPlanNode& logicalPlan) {
   markAllSubfields(logicalPlan.outputType().get(), logicalPlan);
 
-  auto root = newDt();
-  currentSelect_ = root;
-
+  currentDt_ = newDt();
   makeQueryGraph(logicalPlan, kAllAllowedInDt);
-  return root;
+  return currentDt_;
 }
 
 namespace {
@@ -1481,25 +1515,38 @@ PlanObjectP ToGraph::makeQueryGraph(
       return makeBaseTable(*node.asUnchecked<lp::TableScanNode>());
 
     case lp::NodeKind::kFilter: {
-      if (!contains(allowedInDt, PlanType::kFilterNode)) {
-        return wrapInDt(node);
-      }
-
+      // Multiple filters are allowed before a limit. If DT has a groupBy, then
+      // filter is added to 'having', otherwise, to 'conjuncts'.
       const auto* filter = node.asUnchecked<lp::FilterNode>();
+
       if (!isNondeterministicWrap_ &&
           hasNondeterministic(filter->predicate())) {
         // Force wrap the filter and its input inside a dt so the filter
-        // does not get mixed with parrent nodes.
+        // does not get mixed with parent nodes.
+        makeQueryGraph(*node.onlyInput(), allowedInDt);
+
+        if (currentDt_->hasLimit()) {
+          finalizeDt(*node.onlyInput());
+        }
+
+        addFilter(filter);
+        finalizeDt(node);
+
         isNondeterministicWrap_ = true;
-        return makeQueryGraph(node, 0);
+        return currentDt_;
       }
 
       isNondeterministicWrap_ = false;
       makeQueryGraph(*node.onlyInput(), allowedInDt);
+
+      if (currentDt_->hasLimit()) {
+        finalizeDt(*node.onlyInput());
+      }
       return addFilter(filter);
     }
 
     case lp::NodeKind::kProject:
+      // A project is always allowed in a DT. Multiple projects are combined.
       makeQueryGraph(*node.onlyInput(), allowedInDt);
       return addProjection(node.asUnchecked<lp::ProjectNode>());
 
@@ -1508,9 +1555,21 @@ PlanObjectP ToGraph::makeQueryGraph(
         return wrapInDt(node);
       }
 
-      makeQueryGraph(
-          *node.onlyInput(), makeDtIf(allowedInDt, PlanType::kAggregationNode));
-      return addAggregation(*node.asUnchecked<lp::AggregateNode>());
+      // A single groupBy is allowed before a limit. If arrives after orderBy,
+      // then orderBy is dropped. If arrives after limit, then starts a new DT.
+
+      makeQueryGraph(*node.onlyInput(), allowedInDt);
+
+      if (currentDt_->hasAggregation() || currentDt_->hasLimit()) {
+        finalizeDt(*node.onlyInput());
+      } else if (currentDt_->hasOrderBy()) {
+        currentDt_->orderByKeys.clear();
+        currentDt_->orderByTypes.clear();
+      }
+
+      addAggregation(*node.asUnchecked<lp::AggregateNode>());
+
+      return currentDt_;
 
     case lp::NodeKind::kJoin:
       if (!contains(allowedInDt, PlanType::kJoinNode)) {
@@ -1518,29 +1577,24 @@ PlanObjectP ToGraph::makeQueryGraph(
       }
 
       translateJoin(*node.asUnchecked<lp::JoinNode>());
-      return currentSelect_;
+      return currentDt_;
 
     case lp::NodeKind::kSort:
-      if (!contains(allowedInDt, PlanType::kOrderByNode)) {
-        return wrapInDt(node);
+      // Multiple orderBys are allowed before a limit. Last one wins. Previous
+      // are dropped. If arrives after limit, then starts a new DT.
+
+      makeQueryGraph(*node.onlyInput(), allowedInDt);
+
+      if (currentDt_->hasLimit()) {
+        finalizeDt(*node.onlyInput());
       }
 
-      makeQueryGraph(
-          *node.onlyInput(), makeDtIf(allowedInDt, PlanType::kOrderByNode));
       return addOrderBy(*node.asUnchecked<lp::SortNode>());
 
     case lp::NodeKind::kLimit: {
-      // TODO Allow multiple limits.
-      //
-      // SELECT * FROM (SELECT * FROM t LIMIT 10 OFFSET 5) LIMIT 10 OFFSET 5
-      // is equivalent to
-      //    SELECT * FROM t LIMIT 5 OFFSET 10
-      if (!contains(allowedInDt, PlanType::kLimitNode)) {
-        return wrapInDt(node);
-      }
-
-      makeQueryGraph(
-          *node.onlyInput(), makeDtIf(allowedInDt, PlanType::kLimitNode));
+      // Multiple limits are allowed. If already present, then it is combined
+      // with the new limit.
+      makeQueryGraph(*node.onlyInput(), allowedInDt);
       return addLimit(*node.asUnchecked<lp::LimitNode>());
     }
 
@@ -1555,9 +1609,9 @@ PlanObjectP ToGraph::makeQueryGraph(
       } else {
         translateSetJoin(*set, setDt);
       }
-      currentSelect_->tables.push_back(setDt);
-      currentSelect_->tableSet.add(setDt);
-      return currentSelect_;
+      currentDt_->tables.push_back(setDt);
+      currentDt_->tableSet.add(setDt);
+      return currentDt_;
     }
     case lp::NodeKind::kUnnest:
     default:
