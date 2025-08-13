@@ -15,6 +15,10 @@
  */
 #pragma once
 
+#include <string>
+#include <unordered_map>
+#include <vector>
+
 namespace facebook::velox::optimizer {
 
 struct OptimizerOptions {
@@ -34,5 +38,15 @@ struct OptimizerOptions {
 
   /// Produce trace of plan candidates.
   int32_t traceFlags{0};
+
+  bool isMapAsStruct(const char* table, const char* column) const {
+    auto it = mapAsStruct.find(table);
+    if (it == mapAsStruct.end()) {
+      return false;
+    }
+    return (
+        std::find(it->second.begin(), it->second.end(), column) !=
+        it->second.end());
+  }
 };
 } // namespace facebook::velox::optimizer

@@ -484,7 +484,10 @@ lp::ExprPtr makeKey(const TypePtr& type, T value) {
 }
 } // namespace
 
-lp::ExprPtr stepToLogicalPlanGetter(Step step, const lp::ExprPtr& arg) {
+// static
+lp::ExprPtr ToGraph::stepToLogicalPlanGetter(
+    Step step,
+    const lp::ExprPtr& arg) {
   const auto& argType = arg->type();
   switch (step.kind) {
     case StepKind::kField: {

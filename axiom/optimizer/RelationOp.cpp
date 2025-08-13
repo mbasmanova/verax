@@ -706,14 +706,18 @@ Distribution makeOrderByDistribution(
 OrderBy::OrderBy(
     RelationOpPtr input,
     ExprVector keys,
-    OrderTypeVector orderType)
+    OrderTypeVector orderType,
+    int64_t limit,
+    int64_t offset)
     : RelationOp(
           RelType::kOrderBy,
           input,
           makeOrderByDistribution(
               input,
               std::move(keys),
-              std::move(orderType))) {
+              std::move(orderType))),
+      limit{limit},
+      offset{offset} {
   cost_.inputCardinality = inputCardinality();
   cost_.fanout = 1;
 
