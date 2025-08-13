@@ -29,34 +29,22 @@ PlanObjectCP singleTable(PlanObjectCP object) {
 }
 } // namespace
 
-void DerivedTable::addJoinEquality(
-    ExprCP left,
-    ExprCP right,
-    const ExprVector& filter,
-    bool leftOptional,
-    bool rightOptional,
-    bool rightExists,
-    bool rightNotExists) {
+void DerivedTable::addJoinEquality(ExprCP left, ExprCP right) {
   auto leftTable = singleTable(left);
   auto rightTable = singleTable(right);
   for (auto& join : joins) {
     if (join->leftTable() == leftTable && join->rightTable() == rightTable) {
       join->addEquality(left, right);
       return;
-    } else if (
-        join->rightTable() == leftTable && join->leftTable() == rightTable) {
+    }
+
+    if (join->rightTable() == leftTable && join->leftTable() == rightTable) {
       join->addEquality(right, left);
       return;
     }
   }
-  auto* join = make<JoinEdge>(
-      leftTable,
-      rightTable,
-      filter,
-      leftOptional,
-      rightOptional,
-      rightExists,
-      rightNotExists);
+
+  auto* join = JoinEdge::makeInner(leftTable, rightTable);
   join->addEquality(left, right);
   joins.push_back(join);
 }
@@ -91,14 +79,7 @@ void fillJoins(
   for (auto& other : equivalence.columns) {
     if (!hasEdge(edges, column->id(), other->id())) {
       addEdge(edges, column->id(), other->id());
-      dt->addJoinEquality(
-          column->as<Column>(),
-          other->as<Column>(),
-          {},
-          false,
-          false,
-          false,
-          false);
+      dt->addJoinEquality(column->as<Column>(), other->as<Column>());
     }
   }
 }
@@ -163,8 +144,7 @@ JoinEdgeP makeExists(PlanObjectCP table, const PlanObjectSet& tables) {
       if (!tables.contains(join->rightTable())) {
         continue;
       }
-      auto* exists = make<JoinEdge>(
-          table, join->rightTable(), ExprVector{}, false, false, true, false);
+      auto* exists = JoinEdge::makeExists(table, join->rightTable());
       for (auto i = 0; i < join->leftKeys().size(); ++i) {
         exists->addEquality(join->leftKeys()[i], join->rightKeys()[i]);
       }
@@ -176,8 +156,7 @@ JoinEdgeP makeExists(PlanObjectCP table, const PlanObjectSet& tables) {
         continue;
       }
 
-      auto* exists = make<JoinEdge>(
-          table, join->leftTable(), ExprVector{}, false, false, true, false);
+      auto* exists = JoinEdge::makeExists(table, join->leftTable());
       for (auto i = 0; i < join->leftKeys().size(); ++i) {
         exists->addEquality(join->rightKeys()[i], join->leftKeys()[i]);
       }
@@ -294,8 +273,7 @@ std::pair<DerivedTableP, JoinEdgeP> makeExistsDtAndJoin(
   } else {
     existsDt = it->second;
   }
-  auto* joinWithDt = make<JoinEdge>(
-      firstTable, existsDt, ExprVector{}, false, false, true, false);
+  auto* joinWithDt = JoinEdge::makeExists(firstTable, existsDt);
   joinWithDt->setFanouts(existsFanout, 1);
   for (auto i = 0; i < existsJoin->leftKeys().size(); ++i) {
     joinWithDt->addEquality(existsJoin->leftKeys()[i], existsDt->columns[i]);
@@ -372,8 +350,8 @@ JoinEdgeP importedDtJoin(
   auto left = singleTable(innerKey);
   VELOX_CHECK(left);
   auto otherKey = dt->columns[0];
-  auto* newJoin = make<JoinEdge>(
-      left, dt, ExprVector{}, false, false, !fullyImported, false);
+  auto* newJoin = !fullyImported ? JoinEdge::makeExists(left, dt)
+                                 : JoinEdge::makeExists(left, dt);
   newJoin->addEquality(innerKey, otherKey);
   return newJoin;
 }
@@ -440,8 +418,8 @@ JoinEdgeP importedJoin(
   auto left = singleTable(innerKey);
   VELOX_CHECK(left);
   auto otherKey = join->sideOf(other).keys[0];
-  auto* newJoin = make<JoinEdge>(
-      left, other, ExprVector{}, false, false, !fullyImported, false);
+  auto* newJoin = !fullyImported ? JoinEdge::makeExists(left, other)
+                                 : JoinEdge::makeInner(left, other);
   newJoin->addEquality(innerKey, otherKey);
   return newJoin;
 }
@@ -686,8 +664,7 @@ findJoin(DerivedTableP dt, std::vector<PlanObjectP>& tables, bool create) {
     }
   }
   if (create) {
-    auto* join = make<JoinEdge>(
-        tables[0], tables[1], ExprVector{}, false, false, false, false);
+    auto* join = JoinEdge::makeInner(tables[0], tables[1]);
     dt->joins.push_back(join);
     return join;
   }
