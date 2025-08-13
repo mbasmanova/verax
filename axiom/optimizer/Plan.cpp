@@ -83,9 +83,10 @@ Optimization::Optimization(
       logicalPlan_(&plan),
       history_(history),
       queryCtx_(std::move(_queryCtx)),
-      toGraph_{schema, evaluator, opts_},
       options_(std::move(options)),
-      isSingle_(options_.numWorkers == 1) {
+      isSingle_(options_.numWorkers == 1),
+      toGraph_{schema, evaluator, opts_},
+      toVelox_{options_, opts_} {
   queryCtx()->optimization() = this;
   root_ = toGraph_.makeQueryGraph(*logicalPlan_);
   root_->distributeConjuncts();
@@ -835,7 +836,8 @@ void Optimization::addPostprocess(
     plan = filter;
   }
   if (dt->hasOrderBy()) {
-    auto* orderBy = make<OrderBy>(plan, dt->orderByKeys, dt->orderByTypes);
+    auto* orderBy = make<OrderBy>(
+        plan, dt->orderByKeys, dt->orderByTypes, dt->limit, dt->offset);
     state.addCost(*orderBy);
     plan = orderBy;
   }

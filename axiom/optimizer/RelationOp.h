@@ -377,7 +377,15 @@ struct Aggregation : public RelationOp {
 
 /// Represents an order by. The order is given by the distribution.
 struct OrderBy : public RelationOp {
-  OrderBy(RelationOpPtr input, ExprVector keys, OrderTypeVector orderType);
+  OrderBy(
+      RelationOpPtr input,
+      ExprVector keys,
+      OrderTypeVector orderType,
+      int64_t limit = -1,
+      int64_t offset = 0);
+
+  const int64_t limit;
+  const int64_t offset;
 
   std::string toString(bool recursive, bool detail) const override;
 };
