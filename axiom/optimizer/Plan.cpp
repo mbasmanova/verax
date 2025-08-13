@@ -190,6 +190,7 @@ const PlanObjectSet& PlanState::downstreamColumns() const {
   if (it != downstreamPrecomputed.end()) {
     return it->second;
   }
+
   PlanObjectSet result;
   for (auto join : dt->joins) {
     bool addFilter = false;
@@ -205,16 +206,13 @@ const PlanObjectSet& PlanState::downstreamColumns() const {
       result.unionColumns(join->filter());
     }
   }
-  for (auto& filter : dt->conjuncts) {
-    if (!placed.contains(filter)) {
-      result.unionColumns(filter);
-    }
-  }
+
   for (auto& conjunct : dt->conjuncts) {
     if (!placed.contains(conjunct)) {
       result.unionColumns(conjunct);
     }
   }
+
   if (dt->aggregation && !placed.contains(dt->aggregation)) {
     auto aggToPlace = dt->aggregation;
     for (auto i = 0; i < aggToPlace->columns().size(); ++i) {
@@ -228,6 +226,7 @@ const PlanObjectSet& PlanState::downstreamColumns() const {
       }
     }
   }
+
   result.unionSet(targetColumns);
   return downstreamPrecomputed[placed] = std::move(result);
 }
