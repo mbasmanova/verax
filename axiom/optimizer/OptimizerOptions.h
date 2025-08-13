@@ -13,34 +13,26 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
-#include "axiom/optimizer/Plan.h"
-#include "axiom/optimizer/QueryGraph.h"
+#pragma once
 
 namespace facebook::velox::optimizer {
 
-Cost filterCost(CPSpan<Expr> conjuncts) {
-  return Cost();
-}
+struct OptimizerOptions {
+  /// Parallelizes independent projections over this many threads. 1 means no
+  /// parallel projection.
+  int32_t parallelProjectWidth = 1;
 
-ExprCP Optimization::combineLeftDeep(
-    Name func,
-    const ExprVector& set1,
-    const ExprVector& set2) {
-  ExprVector all = set1;
-  all.insert(all.end(), set2.begin(), set2.end());
-  std::sort(all.begin(), all.end(), [&](ExprCP left, ExprCP right) {
-    return left->id() < right->id();
-  });
-  ExprCP result = all[0];
-  for (auto i = 1; i < all.size(); ++i) {
-    result = toGraph_.deduppedCall(
-        func,
-        result->value(),
-        ExprVector{result, all[i]},
-        result->functions() | all[i]->functions());
-  }
-  return result;
-}
+  /// Produces skyline subfield sets of complex type columns as top level
+  /// columns in table scan.
+  bool pushdownSubfields{false};
 
+  /// Map from table name to  list of map columns to be read as structs unless
+  /// the whole map is accessed as a map.
+  std::unordered_map<std::string, std::vector<std::string>> mapAsStruct;
+
+  bool sampleJoins{true};
+
+  /// Produce trace of plan candidates.
+  int32_t traceFlags{0};
+};
 } // namespace facebook::velox::optimizer

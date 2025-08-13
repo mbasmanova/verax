@@ -79,23 +79,22 @@ Optimization::Optimization(
     velox::core::ExpressionEvaluator& evaluator,
     OptimizerOptions opts,
     runner::MultiFragmentPlan::Options options)
-    : schema_(schema),
-      opts_(std::move(opts)),
+    : opts_(std::move(opts)),
       logicalPlan_(&plan),
       history_(history),
       queryCtx_(std::move(_queryCtx)),
-      evaluator_(evaluator),
+      toGraph_{schema, evaluator, opts_},
       options_(std::move(options)),
       isSingle_(options_.numWorkers == 1) {
   queryCtx()->optimization() = this;
-  root_ = makeQueryGraph();
+  root_ = toGraph_.makeQueryGraph(*logicalPlan_);
   root_->distributeConjuncts();
   root_->addImpliedJoins();
   root_->linkTablesToJoins();
   for (auto* join : root_->joins) {
     join->guessFanout();
   }
-  setDerivedTableOutput(root_, *logicalPlan_);
+  toGraph_.setDerivedTableOutput(root_, *logicalPlan_);
 }
 
 void Optimization::trace(

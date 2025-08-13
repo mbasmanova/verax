@@ -446,7 +446,7 @@ core::TypedExprPtr Optimization::toTypedExpr(ExprCP expr) {
         return std::make_shared<core::ConstantTypedExpr>(variantToVector(
             toTypePtr(literal->value().type),
             literal->literal(),
-            evaluator_.pool()));
+            evaluator()->pool()));
       }
       return std::make_shared<core::ConstantTypedExpr>(
           toTypePtr(literal->value().type), literal->literal());
@@ -885,8 +885,9 @@ bool hasSubfieldPushdown(const TableScan& scan) {
   return false;
 }
 
-} // namespace
-
+// Returns a struct with fields for skyline map keys of 'column' in
+// 'baseTable'. This is the type to return from the table reader
+// for the map column.
 RowTypePtr skylineStruct(BaseTableCP baseTable, ColumnCP column) {
   std::vector<std::string> names;
   std::vector<TypePtr> types;
@@ -919,6 +920,7 @@ RowTypePtr skylineStruct(BaseTableCP baseTable, ColumnCP column) {
 
   return ROW(std::move(names), std::move(types));
 }
+} // namespace
 
 RowTypePtr Optimization::scanOutputType(
     const TableScan& scan,
