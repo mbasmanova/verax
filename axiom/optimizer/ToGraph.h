@@ -187,7 +187,7 @@ class ToGraph {
 
   // Sets the columns to project out from the root DerivedTable based on
   // 'logicalPlan'.
-  void setDerivedTableOutput(
+  void setDtOutput(
       DerivedTableP dt,
       const logical_plan::LogicalPlanNode& logicalPlan);
 
@@ -224,7 +224,7 @@ class ToGraph {
   void canonicalizeCall(Name& name, ExprVector& args);
 
   // Converts 'plan' to PlanObjects and records join edges into
-  // 'currentSelect_'. If 'node' does not match  allowedInDt, wraps 'node' in
+  // 'currentDt_'. If 'node' does not match  allowedInDt, wraps 'node' in
   // a new DerivedTable.
   PlanObjectP makeQueryGraph(
       const logical_plan::LogicalPlanNode& node,
@@ -414,6 +414,16 @@ class ToGraph {
   // are not freely reorderable with its parents' descendents.
   PlanObjectP wrapInDt(const logical_plan::LogicalPlanNode& node);
 
+  // Start new DT and add 'currentDt_' as a child. Set 'currentDt_' to the new
+  // DT.
+  void finalizeDt(
+      const logical_plan::LogicalPlanNode& node,
+      DerivedTableP outerDt = nullptr);
+
+  void setDtUsedOutput(
+      DerivedTableP dt,
+      const logical_plan::LogicalPlanNode& node);
+
   DerivedTableP newDt();
 
   static constexpr uint64_t kAllAllowedInDt = ~0UL;
@@ -425,7 +435,7 @@ class ToGraph {
   const OptimizerOptions& options_;
 
   // Innermost DerivedTable when making a QueryGraph from PlanNode.
-  DerivedTableP currentSelect_;
+  DerivedTableP currentDt_;
 
   // True if wrapping a nondeterministic filter inside a DT in ToGraph.
   bool isNondeterministicWrap_{false};

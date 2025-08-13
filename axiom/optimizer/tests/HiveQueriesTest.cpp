@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include "axiom/logical_plan/PlanBuilder.h"
 #include "axiom/optimizer/tests/HiveQueriesTestBase.h"
 #include "velox/exec/tests/utils/PlanBuilder.h"
 
@@ -64,6 +65,68 @@ TEST_F(HiveQueriesTest, basic) {
           .localPartition({})
           .singleAggregation({"r_name"}, {"count(*)"})
           .planNode());
+}
+
+TEST_F(HiveQueriesTest, orderOfOperations) {
+  auto test = [&](lp::PlanBuilder& planBuilder,
+                  core::PlanMatcherBuilder& matcherBuilder) {
+    auto plan =
+        planVelox(planBuilder.build(), {.numWorkers = 1, .numDrivers = 1});
+
+    auto matcher = matcherBuilder.build();
+    checkSingleNodePlan(plan, matcher);
+  };
+
+  auto scan = [&](const std::string& tableName) {
+    lp::PlanBuilder::Context context(exec::test::kHiveConnectorId);
+    return lp::PlanBuilder(context).tableScan(tableName);
+  };
+
+  auto scanMatcher = [&]() { return core::PlanMatcherBuilder().tableScan(); };
+
+  // Multiple limits.
+  test(scan("nation").limit(10).limit(5), scanMatcher().finalLimit(0, 5));
+
+  test(scan("nation").limit(10).limit(15), scanMatcher().finalLimit(0, 10));
+
+  test(
+      scan("nation").limit(10).offset(7).limit(5),
+      scanMatcher().finalLimit(7, 3));
+
+  // Multiple orderBys. Last one wins.
+  test(
+      scan("nation").orderBy({"n_nationkey"}).orderBy({"n_name desc"}),
+      scanMatcher().orderBy({"\"t2.n_name\" desc"}));
+
+  // orderBy -> limit becomes topN.
+  // limit -> orderBy stays as is.
+  test(
+      scan("nation")
+          .limit(20)
+          .orderBy({"n_nationkey"})
+          .limit(10)
+          .orderBy({"n_name desc"}),
+      scanMatcher().limit().topN().orderBy());
+
+  // GroupBy drops preceding orderBy.
+  test(
+      scan("nation")
+          .orderBy({"n_nationkey"})
+          .aggregate({"n_name"}, {"count(1)"})
+          .orderBy({"n_name desc"}),
+      // Fix this plan. There should be no partial agg.
+      scanMatcher().partialAggregation().finalAggregation().orderBy());
+
+  // Multiple filters after groupBy. Filters that depend solely on grouping keys
+  // are pushed down below the groupBy.
+  test(
+      scan("nation")
+          .aggregate({"n_name"}, {"count(1) as cnt"})
+          .filter("n_name > 'a'")
+          .filter("cnt > 10")
+          .filter("length(n_name) < cnt"),
+      scanMatcher().partialAggregation().finalAggregation().filter(
+          "\"dt1.cnt\" > 10 and \"dt1.cnt\" > length(\"t2.n_name\")"));
 }
 
 } // namespace
