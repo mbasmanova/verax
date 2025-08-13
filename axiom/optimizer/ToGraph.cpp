@@ -228,7 +228,7 @@ void ToGraph::getExprForField(
 
 std::optional<ExprCP> ToGraph::translateSubfield(const lp::ExprPtr& inputExpr) {
   std::vector<Step> steps;
-  auto* source = logicalExprSource_;
+  auto* source = exprSource_;
   auto expr = inputExpr;
   for (;;) {
     lp::ExprPtr input;
@@ -259,8 +259,8 @@ std::optional<ExprCP> ToGraph::translateSubfield(const lp::ExprPtr& inputExpr) {
         } else {
           ensureFunctionSubfields(expr);
           auto call = expr->asUnchecked<lp::CallExpr>();
-          auto it = logicalFunctionSubfields_.find(call);
-          if (it != logicalFunctionSubfields_.end()) {
+          auto it = functionSubfields_.find(call);
+          if (it != functionSubfields_.end()) {
             skyline = &it->second;
           }
         }
@@ -348,7 +348,7 @@ ExprCP ToGraph::makeGettersOverSkyline(
                   << toPath(steps)->toString() << std::endl;
         std::cout << "base=" << lp::ExprPrinter::toText(*base) << std::endl;
         std::cout << "Columns=";
-        for (auto& name : logicalExprSource_->outputType()->names()) {
+        for (auto& name : exprSource_->outputType()->names()) {
           std::cout << name << " ";
         }
         std::cout << std::endl;
@@ -418,7 +418,7 @@ ExprCP ToGraph::makeGettersOverSkyline(
 
 namespace {
 std::optional<BitSet> findSubfields(
-    const LogicalPlanSubfields& fields,
+    const PlanSubfields& fields,
     const lp::CallExpr* call) {
   auto it = fields.argFields.find(call);
   if (it == fields.argFields.end()) {
@@ -439,13 +439,13 @@ BitSet ToGraph::functionSubfields(
     bool payloadOnly) {
   BitSet subfields;
   if (!controlOnly) {
-    auto maybe = findSubfields(logicalPayloadSubfields_, call);
+    auto maybe = findSubfields(payloadSubfields_, call);
     if (maybe.has_value()) {
       subfields = maybe.value();
     }
   }
   if (!payloadOnly) {
-    auto maybe = findSubfields(logicalControlSubfields_, call);
+    auto maybe = findSubfields(controlSubfields_, call);
     if (maybe.has_value()) {
       subfields.unionSet(maybe.value());
     }
@@ -460,7 +460,7 @@ void ToGraph::ensureFunctionSubfields(const lp::ExprPtr& expr) {
     if (!metadata) {
       return;
     }
-    if (!logicalTranslatedSubfieldFuncs_.count(call)) {
+    if (!translatedSubfieldFuncs_.count(call)) {
       translateExpr(expr);
     }
   }
@@ -733,7 +733,7 @@ bool contains(uint64_t mask, PlanType op) {
 std::optional<ExprCP> ToGraph::translateSubfieldFunction(
     const lp::CallExpr* call,
     const FunctionMetadata* metadata) {
-  logicalTranslatedSubfieldFuncs_.insert(call);
+  translatedSubfieldFuncs_.insert(call);
   auto subfields = functionSubfields(call, false, false);
   if (subfields.empty()) {
     // The function is accessed as a whole.
@@ -800,7 +800,7 @@ std::optional<ExprCP> ToGraph::translateSubfieldFunction(
     });
 
     if (!translated.empty()) {
-      logicalFunctionSubfields_[call] =
+      functionSubfields_[call] =
           SubfieldProjections{.pathToExpr = std::move(translated)};
       return nullptr;
     }
@@ -1067,7 +1067,7 @@ PlanObjectP ToGraph::makeBaseTable(const lp::TableScanNode& tableScan) {
   auto* baseTable = make<BaseTable>();
   baseTable->cname = newCName("t");
   baseTable->schemaTable = schemaTable;
-  logicalPlanLeaves_[&tableScan] = baseTable;
+  planLeaves_[&tableScan] = baseTable;
 
   auto channels = usedChannels(tableScan);
   const auto& type = tableScan.outputType();
@@ -1086,16 +1086,15 @@ PlanObjectP ToGraph::makeBaseTable(const lp::TableScanNode& tableScan) {
     if (kind == TypeKind::ARRAY || kind == TypeKind::ROW ||
         kind == TypeKind::MAP) {
       BitSet allPaths;
-      if (logicalControlSubfields_.hasColumn(&tableScan, i)) {
+      if (controlSubfields_.hasColumn(&tableScan, i)) {
         baseTable->controlSubfields.ids.push_back(column->id());
-        allPaths =
-            logicalControlSubfields_.nodeFields[&tableScan].resultPaths[i];
+        allPaths = controlSubfields_.nodeFields[&tableScan].resultPaths[i];
         baseTable->controlSubfields.subfields.push_back(allPaths);
       }
-      if (logicalPayloadSubfields_.hasColumn(&tableScan, i)) {
+      if (payloadSubfields_.hasColumn(&tableScan, i)) {
         baseTable->payloadSubfields.ids.push_back(column->id());
         auto payloadPaths =
-            logicalPayloadSubfields_.nodeFields[&tableScan].resultPaths[i];
+            payloadSubfields_.nodeFields[&tableScan].resultPaths[i];
         baseTable->payloadSubfields.subfields.push_back(payloadPaths);
         allPaths.unionSet(payloadPaths);
       }
@@ -1133,7 +1132,7 @@ PlanObjectP ToGraph::makeBaseTable(const lp::TableScanNode& tableScan) {
 PlanObjectP ToGraph::makeValuesTable(const lp::ValuesNode& values) {
   auto* valuesTable = make<ValuesTable>(values);
   valuesTable->cname = newCName("vt");
-  logicalPlanLeaves_[&values] = valuesTable;
+  planLeaves_[&values] = valuesTable;
 
   auto channels = usedChannels(values);
   const auto& type = values.outputType();
@@ -1202,7 +1201,7 @@ void ToGraph::makeSubfieldColumns(
 }
 
 PlanObjectP ToGraph::addProjection(const lp::ProjectNode* project) {
-  logicalExprSource_ = project->onlyInput().get();
+  exprSource_ = project->onlyInput().get();
   const auto& names = project->names();
   const auto& exprs = project->expressions();
   auto channels = usedChannels(*project);
@@ -1234,11 +1233,11 @@ PlanObjectP ToGraph::addProjection(const lp::ProjectNode* project) {
 }
 
 PlanObjectP ToGraph::addFilter(const lp::FilterNode* filter) {
-  logicalExprSource_ = filter->onlyInput().get();
+  exprSource_ = filter->onlyInput().get();
 
   ExprVector flat;
   translateConjuncts(filter->predicate(), flat);
-  if (logicalExprSource_->kind() == lp::NodeKind::kAggregate) {
+  if (exprSource_->kind() == lp::NodeKind::kAggregate) {
     VELOX_CHECK(
         currentSelect_->having.empty(),
         "Must have all of HAVING in one filter");
