@@ -127,6 +127,22 @@ TEST_F(HiveQueriesTest, orderOfOperations) {
           .filter("length(n_name) < cnt"),
       scanMatcher().partialAggregation().finalAggregation().filter(
           "\"dt1.cnt\" > 10 and \"dt1.cnt\" > length(\"t2.n_name\")"));
+
+  // Multiple filters are allowed before a limit.
+  test(
+      scan("nation")
+          .filter("n_nationkey > 2")
+          .limit(10)
+          .filter("n_nationkey < 100")
+          .filter("n_regionkey > 10")
+          .limit(5)
+          .filter("n_nationkey > 70")
+          .filter("n_regionkey < 7"),
+      scanMatcher()
+          .finalLimit(0, 10)
+          .filter("\"dt1.n_nationkey\" < 100 AND \"dt1.n_regionkey\" > 10")
+          .finalLimit(0, 5)
+          .filter("\"dt3.n_nationkey\" > 70 AND \"dt3.n_regionkey\" < 7"));
 }
 
 } // namespace
