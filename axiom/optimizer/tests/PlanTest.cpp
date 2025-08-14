@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 
-#include "axiom/optimizer/Plan.h"
 #include <folly/init/Init.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -190,7 +189,6 @@ TEST_F(PlanTest, agg) {
                      .partialAggregation()
                      .localPartition()
                      .finalAggregation()
-                     .project()
                      .build();
 
   ASSERT_TRUE(matcher->match(plan));
@@ -220,55 +218,37 @@ TEST_F(PlanTest, inList) {
   testConnector_->createTable(
       "numbers", ROW({"a", "b", "c"}, {BIGINT(), DOUBLE(), VARCHAR()}));
 
+  auto scan = [&]() {
+    lp::PlanBuilder::Context context(kTestConnectorId, getQueryCtx());
+    return lp::PlanBuilder(context).tableScan("numbers");
+  };
+
+  auto scanMatcher = [&]() { return core::PlanMatcherBuilder().tableScan(); };
+
   {
-    lp::PlanBuilder::Context ctx(std::nullopt, getQueryCtx());
-    auto logicalPlan = lp::PlanBuilder(ctx)
-                           .tableScan(kTestConnectorId, "numbers", {"a", "b"})
-                           .filter("1 in (1, 2, 3)")
-                           .map({"a + 2"})
-                           .build();
+    auto logicalPlan = scan().filter("1 in (1, 2, 3)").map({"a + 2"}).build();
+
+    auto matcher = scanMatcher().filter("true").project().build();
 
     auto plan = toSingleNodePlan(logicalPlan);
+    ASSERT_TRUE(matcher->match(plan));
+  }
+  {
+    auto logicalPlan = scan().filter("4 in (1, 2, 3)").map({"a + 2"}).build();
+
+    auto matcher = scanMatcher().filter("false").project().build();
+
+    auto plan = toSingleNodePlan(logicalPlan);
+    ASSERT_TRUE(matcher->match(plan));
+  }
+  {
+    auto logicalPlan =
+        scan().filter("a in (1, 2, 3) and b > 1.2").map({"a + 2"}).build();
 
     auto matcher =
-        core::PlanMatcherBuilder().tableScan().filter("true").project().build();
-
-    ASSERT_TRUE(matcher->match(plan));
-  }
-  {
-    lp::PlanBuilder::Context ctx(std::nullopt, getQueryCtx());
-    auto logicalPlan = lp::PlanBuilder(ctx)
-                           .tableScan(kTestConnectorId, "numbers", {"a", "b"})
-                           .filter("4 in (1, 2, 3)")
-                           .map({"a + 2"})
-                           .build();
+        scanMatcher().filter("a in (1, 2, 3) and b > 1.2").project().build();
 
     auto plan = toSingleNodePlan(logicalPlan);
-
-    auto matcher = core::PlanMatcherBuilder()
-                       .tableScan()
-                       .filter("false")
-                       .project()
-                       .build();
-
-    ASSERT_TRUE(matcher->match(plan));
-  }
-  {
-    lp::PlanBuilder::Context ctx(std::nullopt, getQueryCtx());
-    auto logicalPlan = lp::PlanBuilder(ctx)
-                           .tableScan(kTestConnectorId, "numbers", {"a", "b"})
-                           .filter("a in (1, 2, 3) and b > 1.2")
-                           .map({"a + 2"})
-                           .build();
-
-    auto plan = toSingleNodePlan(logicalPlan);
-
-    auto matcher = core::PlanMatcherBuilder()
-                       .tableScan()
-                       .filter("\"t2.a\" in (1, 2, 3) and \"t2.b\" > 1.2")
-                       .project()
-                       .build();
-
     ASSERT_TRUE(matcher->match(plan));
   }
 }
@@ -298,7 +278,6 @@ TEST_F(PlanTest, multipleConnectors) {
       core::PlanMatcherBuilder()
           .tableScan("table1")
           .hashJoin(core::PlanMatcherBuilder().tableScan("table2").build())
-          .project()
           .build();
 
   ASSERT_TRUE(matcher->match(plan));
@@ -328,7 +307,6 @@ TEST_F(PlanTest, filterToJoinEdge) {
                                      .tableScan("nation")
                                      .project()
                                      .build())
-                       .project()
                        .build();
 
     ASSERT_TRUE(matcher->match(plan));
@@ -362,28 +340,19 @@ TEST_F(PlanTest, filterToJoinEdge) {
 
   {
     auto plan = toSingleNodePlan(logicalPlan, connector);
-    auto matcher =
-        core::PlanMatcherBuilder()
-            .tableScan("nation")
-            // TODO Why is this filter not pushed down into scan?
-            .filter("rand() < 2.0")
-            // TODO Fix this plan. There should be only one project node.
-            .project()
-            .project()
-            .hashJoin(core::PlanMatcherBuilder()
-                          .tableScan("region")
-                          .filter("rand() < 3.0")
-                          // TODO Fix this plan. There should be only one
-                          // project node.
-                          .project()
-                          .project()
-                          .project()
-                          .build())
-            .filter("rand() < 4.0")
-            // TODO Fix this plan. There should be only one project node.
-            .project()
-            .project()
-            .build();
+    auto matcher = core::PlanMatcherBuilder()
+                       .tableScan("nation")
+                       // TODO Why is this filter not pushed down into scan?
+                       .filter("rand() < 2.0")
+                       .project()
+                       .hashJoin(core::PlanMatcherBuilder()
+                                     .tableScan("region")
+                                     .filter("rand() < 3.0")
+                                     .project()
+                                     .build())
+                       .filter("rand() < 4.0")
+                       .project()
+                       .build();
 
     ASSERT_TRUE(matcher->match(plan));
   }
@@ -410,8 +379,7 @@ TEST_F(PlanTest, filterImport) {
                        .partialAggregation()
                        .localPartition()
                        .finalAggregation()
-                       .filter("gt(\"dt1.a0\",200)")
-                       .project()
+                       .filter("a0 > 200.0")
                        .build();
 
     ASSERT_TRUE(matcher->match(plan));
@@ -523,7 +491,6 @@ TEST_F(PlanTest, filterBreakup) {
             .partialAggregation()
             .localPartition()
             .finalAggregation()
-            .project()
             .build();
 
     ASSERT_TRUE(matcher->match(plan));
@@ -567,7 +534,6 @@ TEST_F(PlanTest, unionAll) {
         core::PlanMatcherBuilder()
             .hiveScan(
                 "nation", lte("n_nationkey", 10), "(n_regionkey + 1) % 3 = 1")
-            .project()
             .localPartition(core::PlanMatcherBuilder()
                                 .hiveScan(
                                     "nation",
@@ -640,7 +606,6 @@ TEST_F(PlanTest, unionJoin) {
     auto matcher =
         core::PlanMatcherBuilder()
             .hiveScan("partsupp", lte("ps_availqty", 999))
-            .project()
             .localPartition(
                 core::PlanMatcherBuilder()
                     .hiveScan("partsupp", gte("ps_availqty", 2001))
@@ -655,7 +620,6 @@ TEST_F(PlanTest, unionJoin) {
             .hashJoin(
                 core::PlanMatcherBuilder()
                     .hiveScan("part", lt("p_retailprice", 1100.0))
-                    .project()
                     .localPartition(
                         core::PlanMatcherBuilder()
                             .hiveScan("part", gt("p_retailprice", 1200.0))
@@ -667,7 +631,6 @@ TEST_F(PlanTest, unionJoin) {
             .partialAggregation()
             .localPartition()
             .finalAggregation()
-            .project()
             .build();
 
     ASSERT_TRUE(matcher->match(plan));
@@ -736,27 +699,22 @@ TEST_F(PlanTest, intersect) {
                        // TODO Fix this plan to push down (n_regionkey + 1) % 3
                        // = 1 to all branches of 'intersect'.
                        .hiveScan("nation", gte("n_nationkey", 13))
-                       .project()
                        .hashJoin(
                            core::PlanMatcherBuilder()
                                .hiveScan("nation", gte("n_nationkey", 12))
-                               .project()
                                .hashJoin(
                                    core::PlanMatcherBuilder()
                                        .hiveScan(
                                            "nation",
                                            lte("n_nationkey", 20),
                                            "(n_regionkey + 1) % 3 = 1")
-                                       .project()
                                        .build(),
                                    core::JoinType::kRightSemiFilter)
                                .build(),
                            core::JoinType::kRightSemiFilter)
-                       .project()
                        .partialAggregation()
                        .localPartition()
                        .finalAggregation()
-                       .project()
                        .project()
                        .build();
 
@@ -809,26 +767,21 @@ TEST_F(PlanTest, except) {
         core::PlanMatcherBuilder()
             .hiveScan(
                 "nation", lte("n_nationkey", 20), "(n_regionkey + 1) % 3 = 1")
-            .project()
             .hashJoin(
                 core::PlanMatcherBuilder()
                     // TODO Fix this plan to push down (n_regionkey + 1) % 3 = 1
                     // to all branches of 'except'.
                     .hiveScan("nation", gte("n_nationkey", 17))
-                    .project()
                     .build(),
                 core::JoinType::kAnti)
             .hashJoin(
                 core::PlanMatcherBuilder()
                     .hiveScan("nation", lte("n_nationkey", 5))
-                    .project()
                     .build(),
                 core::JoinType::kAnti)
-            .project()
             .partialAggregation()
             .localPartition()
             .finalAggregation()
-            .project()
             .project()
             .build();
 
@@ -869,9 +822,7 @@ TEST_F(PlanTest, valuesComplex) {
       ROW({BIGINT(), VARCHAR()}),
   });
 
-  // TODO: extra project() node should not be here.
-  auto matcher =
-      core::PlanMatcherBuilder().values(expectedType).project().build();
+  auto matcher = core::PlanMatcherBuilder().values(expectedType).build();
   ASSERT_TRUE(matcher->match(plan));
 }
 
