@@ -44,8 +44,6 @@ class TestConnectorQueryTest : public QueryTestBase {
     QueryTestBase::SetUp();
     connector_ = std::make_shared<connector::TestConnector>(kTestConnectorId);
     connector::registerConnector(connector_);
-    options_.numWorkers = 1;
-    options_.numDrivers = 16;
   }
 
   void TearDown() override {
@@ -88,15 +86,10 @@ class TestConnectorQueryTest : public QueryTestBase {
     return std::make_shared<runner::MultiFragmentPlan>(fragments, options_);
   }
 
-  void executePlanChecked(
-      const lp::LogicalPlanNodePtr& logicalPlan,
-      const RowVectorPtr& expected) {
-    auto results = runVelox(logicalPlan, options_);
-    exec::test::assertEqualResults(results.results, {expected});
-  }
-
   std::shared_ptr<connector::TestConnector> connector_;
-  runner::MultiFragmentPlan::Options options_;
+  const runner::MultiFragmentPlan::Options options_{
+      .numWorkers = 1,
+      .numDrivers = 16};
 };
 
 TEST_F(TestConnectorQueryTest, selectFiltered) {
@@ -107,9 +100,12 @@ TEST_F(TestConnectorQueryTest, selectFiltered) {
   connector_->appendData("t", vector);
 
   lp::PlanBuilder::Context context(kTestConnectorId);
-  auto plan = lp::PlanBuilder(context).tableScan("t").filter("a > 0").build();
+  auto logicalPlan =
+      lp::PlanBuilder(context).tableScan("t").filter("a > 0").build();
   auto expected = makeRowVector({makeFlatVector<int64_t>({1, 2})});
-  executePlanChecked(plan, expected);
+
+  auto results = runVelox(logicalPlan, options_);
+  exec::test::assertEqualResults(results.results, {expected});
 }
 
 TEST_F(TestConnectorQueryTest, writeFiltered) {
@@ -123,12 +119,14 @@ TEST_F(TestConnectorQueryTest, writeFiltered) {
   EXPECT_NE(table, nullptr);
 
   lp::PlanBuilder::Context context;
-  auto plan = lp::PlanBuilder(context).values({vector}).filter("b < 2").build();
-  auto expected = makeRowVector(
-      {makeFlatVector<int64_t>({0, 1}),
-       makeFlatVector<StringView>({"str", "ing"})});
+  auto logicalPlan =
+      lp::PlanBuilder(context).values({vector}).filter("b < 2").build();
+  auto expected = makeRowVector({
+      makeFlatVector<int64_t>({0, 1}),
+      makeFlatVector<StringView>({"str", "ing"}),
+  });
 
-  auto fragmentedPlan = planVelox(plan, options_);
+  auto fragmentedPlan = planVelox(logicalPlan, options_);
   fragmentedPlan.plan = appendTableWrite(fragmentedPlan.plan, schema, "u");
   runFragmentedPlan(fragmentedPlan);
 

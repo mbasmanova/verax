@@ -33,14 +33,6 @@ class PlanMatcherImpl : public PlanMatcher {
 
   bool match(const PlanNodePtr& plan) const override {
     const auto* specificNode = dynamic_cast<const T*>(plan.get());
-
-    // Ignore project nodes until optimizer is fixed to avoid adding redundant
-    // ones.
-    if (specificNode == nullptr &&
-        dynamic_cast<const ProjectNode*>(plan.get())) {
-      return match(plan->sources()[0]);
-    }
-
     EXPECT_TRUE(specificNode != nullptr)
         << "Expected " << folly::demangle(typeid(T).name()) << ", but got "
         << plan->toString(false, false);
