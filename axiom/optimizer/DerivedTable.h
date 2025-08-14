@@ -62,6 +62,8 @@ struct DerivedTable : public PlanObject {
   /// from enclosing query. Set for a non-top level dt.
   DistributionP distribution{nullptr};
 
+  float cardinality{};
+
   /// Correlation name.
   Name cname{nullptr};
 

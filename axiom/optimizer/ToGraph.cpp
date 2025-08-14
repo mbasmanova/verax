@@ -1219,8 +1219,7 @@ void ToGraph::makeSubfieldColumns(
   SubfieldProjections projections;
   auto* ctx = queryCtx();
   float card =
-      baseTable->schemaTable->columnGroups[0]->distribution().cardinality *
-      baseTable->filterSelectivity;
+      baseTable->schemaTable->cardinality * baseTable->filterSelectivity;
   paths.forEach([&](auto id) {
     auto* path = ctx->pathById(id);
     auto type = pathType(column->value().type, path);
@@ -1379,8 +1378,7 @@ void ToGraph::makeUnionDistributionAndStats(
     DerivedTableP setDt,
     DerivedTableP innerDt) {
   if (setDt->distribution == nullptr) {
-    DistributionType empty;
-    setDt->distribution = make<Distribution>(empty, 0, ExprVector{});
+    setDt->distribution = make<Distribution>();
   }
   if (innerDt == nullptr) {
     innerDt = setDt;
@@ -1393,7 +1391,7 @@ void ToGraph::makeUnionDistributionAndStats(
 
     auto plan = innerDt->bestInitialPlan()->op;
 
-    setDt->distribution->cardinality += plan->distribution().cardinality;
+    setDt->cardinality += plan->resultCardinality();
     for (auto i = 0; i < setDt->columns.size(); ++i) {
       // The Column is created in setDt before all branches are planned so the
       // value is mutated here.
