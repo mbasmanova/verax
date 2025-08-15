@@ -25,7 +25,6 @@ DEFINE_double(
     "Log a warning if cardinality estimate is more than this many times off. 0 means no warnings.");
 
 using namespace facebook::velox::exec;
-using namespace facebook::velox::runner;
 
 namespace facebook::velox::optimizer {
 
@@ -130,7 +129,7 @@ bool VeloxHistory::setLeafSelectivity(BaseTable& table, RowTypePtr scanType) {
 
 std::shared_ptr<const core::TableScanNode> findScan(
     const core::PlanNodeId& id,
-    const runner::MultiFragmentPlanPtr& plan) {
+    const axiom::runner::MultiFragmentPlanPtr& plan) {
   for (auto& fragment : plan->fragments()) {
     for (auto& scan : fragment.scans) {
       if (scan->id() == id) {

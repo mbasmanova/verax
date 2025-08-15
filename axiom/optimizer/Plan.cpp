@@ -78,7 +78,7 @@ Optimization::Optimization(
     std::shared_ptr<core::QueryCtx> _queryCtx,
     velox::core::ExpressionEvaluator& evaluator,
     OptimizerOptions opts,
-    runner::MultiFragmentPlan::Options options)
+    axiom::runner::MultiFragmentPlan::Options options)
     : opts_(std::move(opts)),
       logicalPlan_(&plan),
       history_(history),
