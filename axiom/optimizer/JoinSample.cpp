@@ -180,9 +180,7 @@ std::shared_ptr<axiom::runner::Runner> prepareSampleRunner(
       FunctionSet());
   RelationOpPtr filter = make<Filter>(proj, ExprVector{filterExpr});
 
-  axiom::runner::MultiFragmentPlan::Options& options =
-      queryCtx()->optimization()->options();
-  auto plan = queryCtx()->optimization()->toVeloxPlan(filter, options);
+  auto plan = queryCtx()->optimization()->toVeloxPlan(filter);
   return std::make_shared<axiom::runner::LocalRunner>(
       plan.plan,
       sampleQueryCtx(queryCtx()->optimization()->queryCtxShared()),

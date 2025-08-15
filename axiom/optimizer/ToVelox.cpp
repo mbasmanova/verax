@@ -59,7 +59,7 @@ std::vector<common::Subfield> columnSubfields(BaseTableCP table, int32_t id) {
             break;
           }
           if (first &&
-              optimization->opts().isMapAsStruct(
+              optimization->options().isMapAsStruct(
                   table->schemaTable->name, columnName)) {
             elements.push_back(std::make_unique<common::Subfield::NestedField>(
                 step.field ? std::string(step.field)

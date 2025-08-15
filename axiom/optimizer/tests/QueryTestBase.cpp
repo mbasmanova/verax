@@ -229,7 +229,7 @@ optimizer::PlanAndStats QueryTestBase::planVelox(
   if (planString) {
     *planString = best->op->toString(true, false);
   }
-  return opt.toVeloxPlan(best->op, options);
+  return opt.toVeloxPlan(best->op);
 }
 
 TestResult QueryTestBase::runVelox(

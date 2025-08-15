@@ -493,7 +493,7 @@ class VeloxRunner : public QueryBenchmarkBase {
                 << best->toString(true) << std::endl;
     }
 
-    return optimization.toVeloxPlan(best->op, opts);
+    return optimization.toVeloxPlan(best->op);
   }
 
   /// Runs a query and returns the result as a single vector in *resultVector,
