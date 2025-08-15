@@ -21,8 +21,8 @@
 #include "axiom/optimizer/RelationOp.h"
 #include "axiom/optimizer/ToGraph.h"
 #include "axiom/optimizer/ToVelox.h"
+#include "axiom/runner/MultiFragmentPlan.h"
 #include "velox/connectors/Connector.h"
-#include "velox/runner/MultiFragmentPlan.h"
 
 /// Planning-time data structures. Represent the state of the planning process
 /// plus utilities.
@@ -367,8 +367,10 @@ class Optimization {
       std::shared_ptr<core::QueryCtx> queryCtx,
       velox::core::ExpressionEvaluator& evaluator,
       OptimizerOptions opts = OptimizerOptions(),
-      runner::MultiFragmentPlan::Options options =
-          runner::MultiFragmentPlan::Options{.numWorkers = 5, .numDrivers = 5});
+      axiom::runner::MultiFragmentPlan::Options options =
+          axiom::runner::MultiFragmentPlan::Options{
+              .numWorkers = 5,
+              .numDrivers = 5});
 
   Optimization(const Optimization& other) = delete;
 
@@ -382,7 +384,7 @@ class Optimization {
   /// each relevant node for costing future queries.
   PlanAndStats toVeloxPlan(
       RelationOpPtr plan,
-      const velox::runner::MultiFragmentPlan::Options& options) {
+      const axiom::runner::MultiFragmentPlan::Options& options) {
     return toVelox_.toVeloxPlan(plan, options);
   }
 
@@ -465,7 +467,7 @@ class Optimization {
     return toGraph_.builtinNames();
   }
 
-  runner::MultiFragmentPlan::Options& options() {
+  axiom::runner::MultiFragmentPlan::Options& options() {
     return options_;
   }
 
@@ -625,7 +627,7 @@ class Optimization {
   // Generates unique ids for build sides.
   int32_t buildCounter_{0};
 
-  velox::runner::MultiFragmentPlan::Options options_;
+  axiom::runner::MultiFragmentPlan::Options options_;
 
   const bool isSingle_;
 
