@@ -16,8 +16,8 @@
 
 #include "axiom/logical_plan/ExprPrinter.h"
 #include "axiom/optimizer/FunctionRegistry.h"
-#include "axiom/optimizer/Plan.h"
 #include "axiom/optimizer/PlanUtils.h"
+#include "axiom/optimizer/ToGraph.h"
 
 namespace lp = facebook::velox::logical_plan;
 

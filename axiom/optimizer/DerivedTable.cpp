@@ -1037,7 +1037,7 @@ void DerivedTable::makeInitialPlan() {
   optimization->memo()[key] = std::move(state.plans);
 }
 
-PlanPtr DerivedTable::bestInitialPlan() const {
+PlanP DerivedTable::bestInitialPlan() const {
   MemoKey key;
   key.firstTable = this;
   key.tables.add(this);
