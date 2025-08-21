@@ -13,7 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 #pragma once
 
 #include <sys/types.h>
@@ -21,28 +20,27 @@
 
 #include <antlr4-runtime/antlr4-runtime.h>
 
-namespace facebook::velox::sql {
-
-/// This class is a thin wrapper around ANTLRInputStream to allow streams to be
-/// case-insensitive by always forcing the stream to be upper case. This is done
-/// by wrapping the look-ahead and checking if the value returned != 0. For now,
-/// we uppercase all; however, we may need to reconsider EOF or use sophisicated
-/// unicode when supported.
-class UpperCasedInput final : public antlr4::ANTLRInputStream {
+namespace axiom::sql::presto {
+/**
+ * This class is a thin wrapper around ANTLRInputStream to allow streams to be
+ * case-insensitive by always forcing the stream to be upper case. This is done
+ * by wrapping the look-ahead and checking if the value returned != 0. For now,
+ * we uppercase all; however, we may need to reconsider EOF or use sophisicated
+ * unicode when supported.
+ */
+class UpperCaseInputStream final : public antlr4::ANTLRInputStream {
  public:
-  explicit UpperCasedInput(const std::string& input)
+  explicit UpperCaseInputStream(const std::string& input)
       : antlr4::ANTLRInputStream(input) {}
-
-  /// Force the lookahead function casing to be upper case.
+  // Force the casing to be upper case
   size_t LA(ssize_t i) override {
     size_t c = antlr4::ANTLRInputStream::LA(i);
     if (c == 0) {
       return c;
     }
-    // ANTLRInputStream consumes the input and on LA, we want to convert the
-    // input symbol to be upper case so that grammars can be case insensitive.
+
     return toupper(c);
   }
 };
 
-} // namespace facebook::velox::sql
+} // namespace axiom::sql::presto

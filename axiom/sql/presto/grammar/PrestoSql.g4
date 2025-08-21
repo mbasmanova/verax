@@ -1,5 +1,5 @@
 /*
-* Copyright (c) Facebook, Inc. and its affiliates.
+* Copyright (c) Meta Platforms, Inc. and its affiliates.
 *
 * Licensed under the Apache License, Version 2.0 (the "License");
 * you may not use this file except in compliance with the License.
@@ -15,8 +15,7 @@
 */
 
 /*
- * Note: this is completely taken Presto's SqlBase exactly with slight modifications
- * to handle C++ key words
+ * Originally copied from Presto's SqlBase.g4.
  */
 
 grammar PrestoSql;
@@ -391,7 +390,7 @@ valueExpression
 primaryExpression
     : NULL_LITERAL                                                                                #nullLiteral
     | interval                                                                            #intervalLiteral
-    | identifier string                                                                   #typeConstructor
+    | type string                                                                   #typeConstructor
     | DOUBLE_PRECISION string                                                             #typeConstructor
     | number                                                                              #numericLiteral
     | booleanValue                                                                        #booleanLiteral
@@ -788,7 +787,7 @@ NO: 'NO';
 NONE: 'NONE';
 NORMALIZE: 'NORMALIZE';
 NOT: 'NOT';
-NULL_LITERAL: 'NULL_LITERAL';
+NULL_LITERAL: 'NULL';
 NULLIF: 'NULLIF';
 NULLS: 'NULLS';
 OF: 'OF';
