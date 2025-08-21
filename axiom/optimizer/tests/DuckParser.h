@@ -16,81 +16,20 @@
 
 #pragma once
 
-#include "axiom/logical_plan/LogicalPlanNode.h"
+#include "axiom/optimizer/tests/SqlStatement.h"
 #include "velox/vector/ComplexVector.h"
 
 #include <duckdb.hpp> // @manual
 
 namespace facebook::velox::optimizer::test {
 
-enum class SqlStatementKind {
-  kSelect,
-  kExplain,
-};
-
-class SqlStatement {
- public:
-  SqlStatement(SqlStatementKind kind) : kind_{kind} {}
-
-  virtual ~SqlStatement() = default;
-
-  SqlStatementKind kind() const {
-    return kind_;
-  }
-
-  bool isSelect() const {
-    return kind_ == SqlStatementKind::kSelect;
-  }
-
-  bool isExplain() const {
-    return kind_ == SqlStatementKind::kExplain;
-  }
-
-  template <typename T>
-  const T* asUnchecked() const {
-    return dynamic_cast<const T*>(this);
-  }
-
- private:
-  const SqlStatementKind kind_;
-};
-
-using SqlStatementPtr = std::shared_ptr<const SqlStatement>;
-
-class SelectStatement : public SqlStatement {
- public:
-  SelectStatement(logical_plan::LogicalPlanNodePtr plan)
-      : SqlStatement(SqlStatementKind::kSelect), plan_{std::move(plan)} {}
-
-  logical_plan::LogicalPlanNodePtr plan() const {
-    return plan_;
-  }
-
- private:
-  const logical_plan::LogicalPlanNodePtr plan_;
-};
-
-class ExplainStatement : public SqlStatement {
- public:
-  ExplainStatement(SqlStatementPtr statement)
-      : SqlStatement(SqlStatementKind::kExplain),
-        statement_{std::move(statement)} {}
-
-  SqlStatementPtr statement() const {
-    return statement_;
-  }
-
- private:
-  const SqlStatementPtr statement_;
-};
-
-class QuerySqlParser {
+class DuckParser {
  public:
   /// TODO Add support for queries that use tables from multiple connectors.
   ///
   /// @param connectorId The ID of the connector that can read all tables in the
   /// query.
-  QuerySqlParser(const std::string& connectorId, memory::MemoryPool* pool)
+  DuckParser(const std::string& connectorId, memory::MemoryPool* pool)
       : connectorId_{connectorId}, pool_{pool} {}
 
   void registerTable(const std::string& name, const RowTypePtr& type);
