@@ -1258,9 +1258,7 @@ velox::core::PlanNodePtr ToVelox::makeRepartition(
 
   auto partitionFunctionFactory = createPartitionFunctionSpec(
       partitioningInput->outputType(), keys, distribution.isBroadcast);
-  if (distribution.isBroadcast) {
-    source.numBroadcastDestinations = fragment.width;
-  }
+
   source.fragment.planNode = std::make_shared<core::PartitionedOutputNode>(
       nextId(),
       distribution.isBroadcast
