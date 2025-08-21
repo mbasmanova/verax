@@ -11,3 +11,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+add_executable(velox_presto_parser_test GrammarTest.cpp)
+
+add_test(velox_presto_parser_test velox_presto_parser_test)
+
+target_link_libraries(
+  velox_presto_parser_test
+  velox_presto_grammar_lib
+  GTest::gtest
+  GTest::gtest_main
+  antlr4_shared)

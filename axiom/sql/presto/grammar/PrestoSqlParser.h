@@ -20,7 +20,7 @@
 
 #include "antlr4-runtime.h"
 
-namespace facebook::velox::sql {
+namespace axiom::sql::presto {
 
 class PrestoSqlParser : public antlr4::Parser {
  public:
@@ -384,10 +384,10 @@ class PrestoSqlParser : public antlr4::Parser {
   virtual std::string getGrammarFileName() const override;
   virtual const antlr4::atn::ATN& getATN() const override {
     return _atn;
-  };
+  }
   virtual const std::vector<std::string>& getTokenNames() const override {
     return _tokenNames;
-  }; // deprecated: use vocabulary instead.
+  } // deprecated: use vocabulary instead.
   virtual const std::vector<std::string>& getRuleNames() const override;
   virtual antlr4::dfa::Vocabulary& getVocabulary() const override;
 
@@ -548,7 +548,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class ExplainContext : public StatementContext {
    public:
-    ExplainContext(StatementContext* ctx);
+    explicit ExplainContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* EXPLAIN();
     StatementContext* statement();
@@ -565,7 +565,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class PrepareContext : public StatementContext {
    public:
-    PrepareContext(StatementContext* ctx);
+    explicit PrepareContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* PREPARE();
     IdentifierContext* identifier();
@@ -580,7 +580,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class DropMaterializedViewContext : public StatementContext {
    public:
-    DropMaterializedViewContext(StatementContext* ctx);
+    explicit DropMaterializedViewContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* DROP();
     antlr4::tree::TerminalNode* MATERIALIZED();
@@ -597,7 +597,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class UseContext : public StatementContext {
    public:
-    UseContext(StatementContext* ctx);
+    explicit UseContext(StatementContext* ctx);
 
     PrestoSqlParser::IdentifierContext* schema = nullptr;
     PrestoSqlParser::IdentifierContext* catalog = nullptr;
@@ -613,7 +613,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class AddConstraintContext : public StatementContext {
    public:
-    AddConstraintContext(StatementContext* ctx);
+    explicit AddConstraintContext(StatementContext* ctx);
 
     PrestoSqlParser::QualifiedNameContext* tableName = nullptr;
     antlr4::tree::TerminalNode* ALTER();
@@ -632,7 +632,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class DeallocateContext : public StatementContext {
    public:
-    DeallocateContext(StatementContext* ctx);
+    explicit DeallocateContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* DEALLOCATE();
     antlr4::tree::TerminalNode* PREPARE();
@@ -646,7 +646,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class RenameTableContext : public StatementContext {
    public:
-    RenameTableContext(StatementContext* ctx);
+    explicit RenameTableContext(StatementContext* ctx);
 
     PrestoSqlParser::QualifiedNameContext* from = nullptr;
     PrestoSqlParser::QualifiedNameContext* to = nullptr;
@@ -667,7 +667,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class CommitContext : public StatementContext {
    public:
-    CommitContext(StatementContext* ctx);
+    explicit CommitContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* COMMIT();
     antlr4::tree::TerminalNode* WORK();
@@ -680,7 +680,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class CreateRoleContext : public StatementContext {
    public:
-    CreateRoleContext(StatementContext* ctx);
+    explicit CreateRoleContext(StatementContext* ctx);
 
     PrestoSqlParser::IdentifierContext* name = nullptr;
     antlr4::tree::TerminalNode* CREATE();
@@ -698,7 +698,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class ShowCreateFunctionContext : public StatementContext {
    public:
-    ShowCreateFunctionContext(StatementContext* ctx);
+    explicit ShowCreateFunctionContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* SHOW();
     antlr4::tree::TerminalNode* CREATE();
@@ -714,7 +714,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class DropColumnContext : public StatementContext {
    public:
-    DropColumnContext(StatementContext* ctx);
+    explicit DropColumnContext(StatementContext* ctx);
 
     PrestoSqlParser::QualifiedNameContext* tableName = nullptr;
     PrestoSqlParser::QualifiedNameContext* column = nullptr;
@@ -737,7 +737,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class DropViewContext : public StatementContext {
    public:
-    DropViewContext(StatementContext* ctx);
+    explicit DropViewContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* DROP();
     antlr4::tree::TerminalNode* VIEW();
@@ -753,7 +753,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class ShowTablesContext : public StatementContext {
    public:
-    ShowTablesContext(StatementContext* ctx);
+    explicit ShowTablesContext(StatementContext* ctx);
 
     PrestoSqlParser::StringContext* pattern = nullptr;
     PrestoSqlParser::StringContext* escape = nullptr;
@@ -775,7 +775,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class ShowCatalogsContext : public StatementContext {
    public:
-    ShowCatalogsContext(StatementContext* ctx);
+    explicit ShowCatalogsContext(StatementContext* ctx);
 
     PrestoSqlParser::StringContext* pattern = nullptr;
     PrestoSqlParser::StringContext* escape = nullptr;
@@ -794,7 +794,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class ShowRolesContext : public StatementContext {
    public:
-    ShowRolesContext(StatementContext* ctx);
+    explicit ShowRolesContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* SHOW();
     antlr4::tree::TerminalNode* ROLES();
@@ -811,7 +811,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class RenameColumnContext : public StatementContext {
    public:
-    RenameColumnContext(StatementContext* ctx);
+    explicit RenameColumnContext(StatementContext* ctx);
 
     PrestoSqlParser::QualifiedNameContext* tableName = nullptr;
     PrestoSqlParser::IdentifierContext* from = nullptr;
@@ -837,7 +837,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class RevokeRolesContext : public StatementContext {
    public:
-    RevokeRolesContext(StatementContext* ctx);
+    explicit RevokeRolesContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* REVOKE();
     RolesContext* roles();
@@ -859,7 +859,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class ShowCreateTableContext : public StatementContext {
    public:
-    ShowCreateTableContext(StatementContext* ctx);
+    explicit ShowCreateTableContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* SHOW();
     antlr4::tree::TerminalNode* CREATE();
@@ -874,7 +874,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class ShowColumnsContext : public StatementContext {
    public:
-    ShowColumnsContext(StatementContext* ctx);
+    explicit ShowColumnsContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* SHOW();
     antlr4::tree::TerminalNode* COLUMNS();
@@ -892,7 +892,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class ShowRoleGrantsContext : public StatementContext {
    public:
-    ShowRoleGrantsContext(StatementContext* ctx);
+    explicit ShowRoleGrantsContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* SHOW();
     antlr4::tree::TerminalNode* ROLE();
@@ -909,7 +909,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class AddColumnContext : public StatementContext {
    public:
-    AddColumnContext(StatementContext* ctx);
+    explicit AddColumnContext(StatementContext* ctx);
 
     PrestoSqlParser::QualifiedNameContext* tableName = nullptr;
     PrestoSqlParser::ColumnDefinitionContext* column = nullptr;
@@ -933,7 +933,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class ResetSessionContext : public StatementContext {
    public:
-    ResetSessionContext(StatementContext* ctx);
+    explicit ResetSessionContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* RESET();
     antlr4::tree::TerminalNode* SESSION();
@@ -947,7 +947,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class DropConstraintContext : public StatementContext {
    public:
-    DropConstraintContext(StatementContext* ctx);
+    explicit DropConstraintContext(StatementContext* ctx);
 
     PrestoSqlParser::QualifiedNameContext* tableName = nullptr;
     PrestoSqlParser::IdentifierContext* name = nullptr;
@@ -970,7 +970,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class InsertIntoContext : public StatementContext {
    public:
-    InsertIntoContext(StatementContext* ctx);
+    explicit InsertIntoContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* INSERT();
     antlr4::tree::TerminalNode* INTO();
@@ -986,7 +986,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class ShowSessionContext : public StatementContext {
    public:
-    ShowSessionContext(StatementContext* ctx);
+    explicit ShowSessionContext(StatementContext* ctx);
 
     PrestoSqlParser::StringContext* pattern = nullptr;
     PrestoSqlParser::StringContext* escape = nullptr;
@@ -1005,7 +1005,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class CreateSchemaContext : public StatementContext {
    public:
-    CreateSchemaContext(StatementContext* ctx);
+    explicit CreateSchemaContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* CREATE();
     antlr4::tree::TerminalNode* SCHEMA();
@@ -1024,7 +1024,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class ExecuteContext : public StatementContext {
    public:
-    ExecuteContext(StatementContext* ctx);
+    explicit ExecuteContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* EXECUTE();
     IdentifierContext* identifier();
@@ -1040,7 +1040,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class RenameSchemaContext : public StatementContext {
    public:
-    RenameSchemaContext(StatementContext* ctx);
+    explicit RenameSchemaContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* ALTER();
     antlr4::tree::TerminalNode* SCHEMA();
@@ -1057,7 +1057,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class DropRoleContext : public StatementContext {
    public:
-    DropRoleContext(StatementContext* ctx);
+    explicit DropRoleContext(StatementContext* ctx);
 
     PrestoSqlParser::IdentifierContext* name = nullptr;
     antlr4::tree::TerminalNode* DROP();
@@ -1072,7 +1072,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class AnalyzeContext : public StatementContext {
    public:
-    AnalyzeContext(StatementContext* ctx);
+    explicit AnalyzeContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* ANALYZE();
     QualifiedNameContext* qualifiedName();
@@ -1087,7 +1087,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class SetRoleContext : public StatementContext {
    public:
-    SetRoleContext(StatementContext* ctx);
+    explicit SetRoleContext(StatementContext* ctx);
 
     PrestoSqlParser::IdentifierContext* role = nullptr;
     antlr4::tree::TerminalNode* SET();
@@ -1104,7 +1104,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class CreateFunctionContext : public StatementContext {
    public:
-    CreateFunctionContext(StatementContext* ctx);
+    explicit CreateFunctionContext(StatementContext* ctx);
 
     PrestoSqlParser::QualifiedNameContext* functionName = nullptr;
     PrestoSqlParser::TypeContext* returnType = nullptr;
@@ -1131,7 +1131,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class ShowGrantsContext : public StatementContext {
    public:
-    ShowGrantsContext(StatementContext* ctx);
+    explicit ShowGrantsContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* SHOW();
     antlr4::tree::TerminalNode* GRANTS();
@@ -1147,7 +1147,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class DropSchemaContext : public StatementContext {
    public:
-    DropSchemaContext(StatementContext* ctx);
+    explicit DropSchemaContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* DROP();
     antlr4::tree::TerminalNode* SCHEMA();
@@ -1165,7 +1165,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class ShowCreateViewContext : public StatementContext {
    public:
-    ShowCreateViewContext(StatementContext* ctx);
+    explicit ShowCreateViewContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* SHOW();
     antlr4::tree::TerminalNode* CREATE();
@@ -1180,7 +1180,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class CreateTableContext : public StatementContext {
    public:
-    CreateTableContext(StatementContext* ctx);
+    explicit CreateTableContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* CREATE();
     antlr4::tree::TerminalNode* TABLE();
@@ -1203,7 +1203,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class StartTransactionContext : public StatementContext {
    public:
-    StartTransactionContext(StatementContext* ctx);
+    explicit StartTransactionContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* START();
     antlr4::tree::TerminalNode* TRANSACTION();
@@ -1218,7 +1218,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class CreateTableAsSelectContext : public StatementContext {
    public:
-    CreateTableAsSelectContext(StatementContext* ctx);
+    explicit CreateTableAsSelectContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* CREATE();
     antlr4::tree::TerminalNode* TABLE();
@@ -1245,7 +1245,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class ShowStatsContext : public StatementContext {
    public:
-    ShowStatsContext(StatementContext* ctx);
+    explicit ShowStatsContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* SHOW();
     antlr4::tree::TerminalNode* STATS();
@@ -1260,7 +1260,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class DropFunctionContext : public StatementContext {
    public:
-    DropFunctionContext(StatementContext* ctx);
+    explicit DropFunctionContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* DROP();
     antlr4::tree::TerminalNode* FUNCTION();
@@ -1278,7 +1278,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class RevokeContext : public StatementContext {
    public:
-    RevokeContext(StatementContext* ctx);
+    explicit RevokeContext(StatementContext* ctx);
 
     PrestoSqlParser::PrincipalContext* grantee = nullptr;
     antlr4::tree::TerminalNode* REVOKE();
@@ -1303,7 +1303,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class UpdateContext : public StatementContext {
    public:
-    UpdateContext(StatementContext* ctx);
+    explicit UpdateContext(StatementContext* ctx);
 
     PrestoSqlParser::BooleanExpressionContext* where = nullptr;
     antlr4::tree::TerminalNode* UPDATE();
@@ -1322,7 +1322,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class CreateTypeContext : public StatementContext {
    public:
-    CreateTypeContext(StatementContext* ctx);
+    explicit CreateTypeContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* CREATE();
     antlr4::tree::TerminalNode* TYPE();
@@ -1340,7 +1340,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class DeleteContext : public StatementContext {
    public:
-    DeleteContext(StatementContext* ctx);
+    explicit DeleteContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* DELETE();
     antlr4::tree::TerminalNode* FROM();
@@ -1356,7 +1356,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class DescribeInputContext : public StatementContext {
    public:
-    DescribeInputContext(StatementContext* ctx);
+    explicit DescribeInputContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* DESCRIBE();
     antlr4::tree::TerminalNode* INPUT();
@@ -1370,7 +1370,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class ShowStatsForQueryContext : public StatementContext {
    public:
-    ShowStatsForQueryContext(StatementContext* ctx);
+    explicit ShowStatsForQueryContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* SHOW();
     antlr4::tree::TerminalNode* STATS();
@@ -1385,7 +1385,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class StatementDefaultContext : public StatementContext {
    public:
-    StatementDefaultContext(StatementContext* ctx);
+    explicit StatementDefaultContext(StatementContext* ctx);
 
     QueryContext* query();
     virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
@@ -1397,7 +1397,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class TruncateTableContext : public StatementContext {
    public:
-    TruncateTableContext(StatementContext* ctx);
+    explicit TruncateTableContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* TRUNCATE();
     antlr4::tree::TerminalNode* TABLE();
@@ -1411,7 +1411,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class AlterColumnSetNotNullContext : public StatementContext {
    public:
-    AlterColumnSetNotNullContext(StatementContext* ctx);
+    explicit AlterColumnSetNotNullContext(StatementContext* ctx);
 
     PrestoSqlParser::QualifiedNameContext* tableName = nullptr;
     PrestoSqlParser::IdentifierContext* column = nullptr;
@@ -1435,7 +1435,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class CreateMaterializedViewContext : public StatementContext {
    public:
-    CreateMaterializedViewContext(StatementContext* ctx);
+    explicit CreateMaterializedViewContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* CREATE();
     antlr4::tree::TerminalNode* MATERIALIZED();
@@ -1459,7 +1459,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class AlterFunctionContext : public StatementContext {
    public:
-    AlterFunctionContext(StatementContext* ctx);
+    explicit AlterFunctionContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* ALTER();
     antlr4::tree::TerminalNode* FUNCTION();
@@ -1475,7 +1475,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class SetSessionContext : public StatementContext {
    public:
-    SetSessionContext(StatementContext* ctx);
+    explicit SetSessionContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* SET();
     antlr4::tree::TerminalNode* SESSION();
@@ -1491,7 +1491,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class CreateViewContext : public StatementContext {
    public:
-    CreateViewContext(StatementContext* ctx);
+    explicit CreateViewContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* CREATE();
     antlr4::tree::TerminalNode* VIEW();
@@ -1512,7 +1512,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class ShowSchemasContext : public StatementContext {
    public:
-    ShowSchemasContext(StatementContext* ctx);
+    explicit ShowSchemasContext(StatementContext* ctx);
 
     PrestoSqlParser::StringContext* pattern = nullptr;
     PrestoSqlParser::StringContext* escape = nullptr;
@@ -1534,7 +1534,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class DropTableContext : public StatementContext {
    public:
-    DropTableContext(StatementContext* ctx);
+    explicit DropTableContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* DROP();
     antlr4::tree::TerminalNode* TABLE();
@@ -1550,7 +1550,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class RollbackContext : public StatementContext {
    public:
-    RollbackContext(StatementContext* ctx);
+    explicit RollbackContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* ROLLBACK();
     antlr4::tree::TerminalNode* WORK();
@@ -1563,7 +1563,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class RenameViewContext : public StatementContext {
    public:
-    RenameViewContext(StatementContext* ctx);
+    explicit RenameViewContext(StatementContext* ctx);
 
     PrestoSqlParser::QualifiedNameContext* from = nullptr;
     PrestoSqlParser::QualifiedNameContext* to = nullptr;
@@ -1584,7 +1584,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class AlterColumnDropNotNullContext : public StatementContext {
    public:
-    AlterColumnDropNotNullContext(StatementContext* ctx);
+    explicit AlterColumnDropNotNullContext(StatementContext* ctx);
 
     PrestoSqlParser::QualifiedNameContext* tableName = nullptr;
     PrestoSqlParser::IdentifierContext* column = nullptr;
@@ -1608,7 +1608,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class GrantRolesContext : public StatementContext {
    public:
-    GrantRolesContext(StatementContext* ctx);
+    explicit GrantRolesContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* GRANT();
     RolesContext* roles();
@@ -1630,7 +1630,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class CallContext : public StatementContext {
    public:
-    CallContext(StatementContext* ctx);
+    explicit CallContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* CALL();
     QualifiedNameContext* qualifiedName();
@@ -1645,7 +1645,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class RefreshMaterializedViewContext : public StatementContext {
    public:
-    RefreshMaterializedViewContext(StatementContext* ctx);
+    explicit RefreshMaterializedViewContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* REFRESH();
     antlr4::tree::TerminalNode* MATERIALIZED();
@@ -1662,7 +1662,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class ShowCreateMaterializedViewContext : public StatementContext {
    public:
-    ShowCreateMaterializedViewContext(StatementContext* ctx);
+    explicit ShowCreateMaterializedViewContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* SHOW();
     antlr4::tree::TerminalNode* CREATE();
@@ -1678,7 +1678,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class ShowFunctionsContext : public StatementContext {
    public:
-    ShowFunctionsContext(StatementContext* ctx);
+    explicit ShowFunctionsContext(StatementContext* ctx);
 
     PrestoSqlParser::StringContext* pattern = nullptr;
     PrestoSqlParser::StringContext* escape = nullptr;
@@ -1697,7 +1697,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class DescribeOutputContext : public StatementContext {
    public:
-    DescribeOutputContext(StatementContext* ctx);
+    explicit DescribeOutputContext(StatementContext* ctx);
 
     antlr4::tree::TerminalNode* DESCRIBE();
     antlr4::tree::TerminalNode* OUTPUT();
@@ -1711,7 +1711,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class GrantContext : public StatementContext {
    public:
-    GrantContext(StatementContext* ctx);
+    explicit GrantContext(StatementContext* ctx);
 
     PrestoSqlParser::PrincipalContext* grantee = nullptr;
     std::vector<antlr4::tree::TerminalNode*> GRANT();
@@ -1736,7 +1736,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class SetTablePropertiesContext : public StatementContext {
    public:
-    SetTablePropertiesContext(StatementContext* ctx);
+    explicit SetTablePropertiesContext(StatementContext* ctx);
 
     PrestoSqlParser::QualifiedNameContext* tableName = nullptr;
     antlr4::tree::TerminalNode* ALTER();
@@ -2148,7 +2148,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class QueryTermDefaultContext : public QueryTermContext {
    public:
-    QueryTermDefaultContext(QueryTermContext* ctx);
+    explicit QueryTermDefaultContext(QueryTermContext* ctx);
 
     QueryPrimaryContext* queryPrimary();
     virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
@@ -2160,7 +2160,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class SetOperationContext : public QueryTermContext {
    public:
-    SetOperationContext(QueryTermContext* ctx);
+    explicit SetOperationContext(QueryTermContext* ctx);
 
     PrestoSqlParser::QueryTermContext* left = nullptr;
     antlr4::Token* op = nullptr;
@@ -2195,7 +2195,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class SubqueryContext : public QueryPrimaryContext {
    public:
-    SubqueryContext(QueryPrimaryContext* ctx);
+    explicit SubqueryContext(QueryPrimaryContext* ctx);
 
     QueryNoWithContext* queryNoWith();
     virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
@@ -2207,7 +2207,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class QueryPrimaryDefaultContext : public QueryPrimaryContext {
    public:
-    QueryPrimaryDefaultContext(QueryPrimaryContext* ctx);
+    explicit QueryPrimaryDefaultContext(QueryPrimaryContext* ctx);
 
     QuerySpecificationContext* querySpecification();
     virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
@@ -2219,7 +2219,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class TableContext : public QueryPrimaryContext {
    public:
-    TableContext(QueryPrimaryContext* ctx);
+    explicit TableContext(QueryPrimaryContext* ctx);
 
     antlr4::tree::TerminalNode* TABLE();
     QualifiedNameContext* qualifiedName();
@@ -2232,7 +2232,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class InlineTableContext : public QueryPrimaryContext {
    public:
-    InlineTableContext(QueryPrimaryContext* ctx);
+    explicit InlineTableContext(QueryPrimaryContext* ctx);
 
     antlr4::tree::TerminalNode* VALUES();
     std::vector<ExpressionContext*> expression();
@@ -2332,7 +2332,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class MultipleGroupingSetsContext : public GroupingElementContext {
    public:
-    MultipleGroupingSetsContext(GroupingElementContext* ctx);
+    explicit MultipleGroupingSetsContext(GroupingElementContext* ctx);
 
     antlr4::tree::TerminalNode* GROUPING();
     antlr4::tree::TerminalNode* SETS();
@@ -2347,7 +2347,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class SingleGroupingSetContext : public GroupingElementContext {
    public:
-    SingleGroupingSetContext(GroupingElementContext* ctx);
+    explicit SingleGroupingSetContext(GroupingElementContext* ctx);
 
     GroupingSetContext* groupingSet();
     virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
@@ -2359,7 +2359,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class CubeContext : public GroupingElementContext {
    public:
-    CubeContext(GroupingElementContext* ctx);
+    explicit CubeContext(GroupingElementContext* ctx);
 
     antlr4::tree::TerminalNode* CUBE();
     std::vector<ExpressionContext*> expression();
@@ -2373,7 +2373,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class RollupContext : public GroupingElementContext {
    public:
-    RollupContext(GroupingElementContext* ctx);
+    explicit RollupContext(GroupingElementContext* ctx);
 
     antlr4::tree::TerminalNode* ROLLUP();
     std::vector<ExpressionContext*> expression();
@@ -2453,7 +2453,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class SelectAllContext : public SelectItemContext {
    public:
-    SelectAllContext(SelectItemContext* ctx);
+    explicit SelectAllContext(SelectItemContext* ctx);
 
     QualifiedNameContext* qualifiedName();
     antlr4::tree::TerminalNode* ASTERISK();
@@ -2466,7 +2466,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class SelectSingleContext : public SelectItemContext {
    public:
-    SelectSingleContext(SelectItemContext* ctx);
+    explicit SelectSingleContext(SelectItemContext* ctx);
 
     ExpressionContext* expression();
     IdentifierContext* identifier();
@@ -2493,7 +2493,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class RelationDefaultContext : public RelationContext {
    public:
-    RelationDefaultContext(RelationContext* ctx);
+    explicit RelationDefaultContext(RelationContext* ctx);
 
     SampledRelationContext* sampledRelation();
     virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
@@ -2505,7 +2505,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class JoinRelationContext : public RelationContext {
    public:
-    JoinRelationContext(RelationContext* ctx);
+    explicit JoinRelationContext(RelationContext* ctx);
 
     PrestoSqlParser::RelationContext* left = nullptr;
     PrestoSqlParser::SampledRelationContext* right = nullptr;
@@ -2657,7 +2657,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class SubqueryRelationContext : public RelationPrimaryContext {
    public:
-    SubqueryRelationContext(RelationPrimaryContext* ctx);
+    explicit SubqueryRelationContext(RelationPrimaryContext* ctx);
 
     QueryContext* query();
     virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
@@ -2669,7 +2669,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class ParenthesizedRelationContext : public RelationPrimaryContext {
    public:
-    ParenthesizedRelationContext(RelationPrimaryContext* ctx);
+    explicit ParenthesizedRelationContext(RelationPrimaryContext* ctx);
 
     RelationContext* relation();
     virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
@@ -2681,7 +2681,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class UnnestContext : public RelationPrimaryContext {
    public:
-    UnnestContext(RelationPrimaryContext* ctx);
+    explicit UnnestContext(RelationPrimaryContext* ctx);
 
     antlr4::tree::TerminalNode* UNNEST();
     std::vector<ExpressionContext*> expression();
@@ -2697,7 +2697,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class LateralContext : public RelationPrimaryContext {
    public:
-    LateralContext(RelationPrimaryContext* ctx);
+    explicit LateralContext(RelationPrimaryContext* ctx);
 
     antlr4::tree::TerminalNode* LATERAL();
     QueryContext* query();
@@ -2710,7 +2710,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class TableNameContext : public RelationPrimaryContext {
    public:
-    TableNameContext(RelationPrimaryContext* ctx);
+    explicit TableNameContext(RelationPrimaryContext* ctx);
 
     QualifiedNameContext* qualifiedName();
     TableVersionExpressionContext* tableVersionExpression();
@@ -2753,7 +2753,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class LogicalNotContext : public BooleanExpressionContext {
    public:
-    LogicalNotContext(BooleanExpressionContext* ctx);
+    explicit LogicalNotContext(BooleanExpressionContext* ctx);
 
     antlr4::tree::TerminalNode* NOT();
     BooleanExpressionContext* booleanExpression();
@@ -2766,7 +2766,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class PredicatedContext : public BooleanExpressionContext {
    public:
-    PredicatedContext(BooleanExpressionContext* ctx);
+    explicit PredicatedContext(BooleanExpressionContext* ctx);
 
     PrestoSqlParser::ValueExpressionContext* valueExpressionContext = nullptr;
     ValueExpressionContext* valueExpression();
@@ -2780,7 +2780,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class LogicalBinaryContext : public BooleanExpressionContext {
    public:
-    LogicalBinaryContext(BooleanExpressionContext* ctx);
+    explicit LogicalBinaryContext(BooleanExpressionContext* ctx);
 
     PrestoSqlParser::BooleanExpressionContext* left = nullptr;
     antlr4::Token* op = nullptr;
@@ -2800,7 +2800,7 @@ class PrestoSqlParser : public antlr4::Parser {
   BooleanExpressionContext* booleanExpression(int precedence);
   class PredicateContext : public antlr4::ParserRuleContext {
    public:
-    antlr4::ParserRuleContext* value;
+    antlr4::ParserRuleContext* value{};
     PredicateContext(antlr4::ParserRuleContext* parent, size_t invokingState);
     PredicateContext(
         antlr4::ParserRuleContext* parent,
@@ -2816,7 +2816,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class ComparisonContext : public PredicateContext {
    public:
-    ComparisonContext(PredicateContext* ctx);
+    explicit ComparisonContext(PredicateContext* ctx);
 
     PrestoSqlParser::ValueExpressionContext* right = nullptr;
     ComparisonOperatorContext* comparisonOperator();
@@ -2830,7 +2830,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class LikeContext : public PredicateContext {
    public:
-    LikeContext(PredicateContext* ctx);
+    explicit LikeContext(PredicateContext* ctx);
 
     PrestoSqlParser::ValueExpressionContext* pattern = nullptr;
     PrestoSqlParser::ValueExpressionContext* escape = nullptr;
@@ -2848,7 +2848,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class InSubqueryContext : public PredicateContext {
    public:
-    InSubqueryContext(PredicateContext* ctx);
+    explicit InSubqueryContext(PredicateContext* ctx);
 
     antlr4::tree::TerminalNode* IN();
     QueryContext* query();
@@ -2862,7 +2862,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class DistinctFromContext : public PredicateContext {
    public:
-    DistinctFromContext(PredicateContext* ctx);
+    explicit DistinctFromContext(PredicateContext* ctx);
 
     PrestoSqlParser::ValueExpressionContext* right = nullptr;
     antlr4::tree::TerminalNode* IS();
@@ -2879,7 +2879,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class InListContext : public PredicateContext {
    public:
-    InListContext(PredicateContext* ctx);
+    explicit InListContext(PredicateContext* ctx);
 
     antlr4::tree::TerminalNode* IN();
     std::vector<ExpressionContext*> expression();
@@ -2894,7 +2894,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class NullPredicateContext : public PredicateContext {
    public:
-    NullPredicateContext(PredicateContext* ctx);
+    explicit NullPredicateContext(PredicateContext* ctx);
 
     antlr4::tree::TerminalNode* IS();
     antlr4::tree::TerminalNode* NULL_LITERAL();
@@ -2908,7 +2908,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class BetweenContext : public PredicateContext {
    public:
-    BetweenContext(PredicateContext* ctx);
+    explicit BetweenContext(PredicateContext* ctx);
 
     PrestoSqlParser::ValueExpressionContext* lower = nullptr;
     PrestoSqlParser::ValueExpressionContext* upper = nullptr;
@@ -2926,7 +2926,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class QuantifiedComparisonContext : public PredicateContext {
    public:
-    QuantifiedComparisonContext(PredicateContext* ctx);
+    explicit QuantifiedComparisonContext(PredicateContext* ctx);
 
     ComparisonOperatorContext* comparisonOperator();
     ComparisonQuantifierContext* comparisonQuantifier();
@@ -2955,7 +2955,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class ValueExpressionDefaultContext : public ValueExpressionContext {
    public:
-    ValueExpressionDefaultContext(ValueExpressionContext* ctx);
+    explicit ValueExpressionDefaultContext(ValueExpressionContext* ctx);
 
     PrimaryExpressionContext* primaryExpression();
     virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
@@ -2967,7 +2967,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class ConcatenationContext : public ValueExpressionContext {
    public:
-    ConcatenationContext(ValueExpressionContext* ctx);
+    explicit ConcatenationContext(ValueExpressionContext* ctx);
 
     PrestoSqlParser::ValueExpressionContext* left = nullptr;
     PrestoSqlParser::ValueExpressionContext* right = nullptr;
@@ -2983,7 +2983,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class ArithmeticBinaryContext : public ValueExpressionContext {
    public:
-    ArithmeticBinaryContext(ValueExpressionContext* ctx);
+    explicit ArithmeticBinaryContext(ValueExpressionContext* ctx);
 
     PrestoSqlParser::ValueExpressionContext* left = nullptr;
     antlr4::Token* op = nullptr;
@@ -3004,7 +3004,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class ArithmeticUnaryContext : public ValueExpressionContext {
    public:
-    ArithmeticUnaryContext(ValueExpressionContext* ctx);
+    explicit ArithmeticUnaryContext(ValueExpressionContext* ctx);
 
     antlr4::Token* op = nullptr;
     ValueExpressionContext* valueExpression();
@@ -3019,7 +3019,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class AtTimeZoneContext : public ValueExpressionContext {
    public:
-    AtTimeZoneContext(ValueExpressionContext* ctx);
+    explicit AtTimeZoneContext(ValueExpressionContext* ctx);
 
     ValueExpressionContext* valueExpression();
     antlr4::tree::TerminalNode* AT();
@@ -3048,7 +3048,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class DereferenceContext : public PrimaryExpressionContext {
    public:
-    DereferenceContext(PrimaryExpressionContext* ctx);
+    explicit DereferenceContext(PrimaryExpressionContext* ctx);
 
     PrestoSqlParser::PrimaryExpressionContext* base = nullptr;
     PrestoSqlParser::IdentifierContext* fieldName = nullptr;
@@ -3063,9 +3063,9 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class TypeConstructorContext : public PrimaryExpressionContext {
    public:
-    TypeConstructorContext(PrimaryExpressionContext* ctx);
+    explicit TypeConstructorContext(PrimaryExpressionContext* ctx);
 
-    IdentifierContext* identifier();
+    TypeContext* type();
     StringContext* string();
     antlr4::tree::TerminalNode* DOUBLE_PRECISION();
     virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
@@ -3077,7 +3077,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class SpecialDateTimeFunctionContext : public PrimaryExpressionContext {
    public:
-    SpecialDateTimeFunctionContext(PrimaryExpressionContext* ctx);
+    explicit SpecialDateTimeFunctionContext(PrimaryExpressionContext* ctx);
 
     antlr4::Token* name = nullptr;
     antlr4::Token* precision = nullptr;
@@ -3096,7 +3096,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class SubstringContext : public PrimaryExpressionContext {
    public:
-    SubstringContext(PrimaryExpressionContext* ctx);
+    explicit SubstringContext(PrimaryExpressionContext* ctx);
 
     antlr4::tree::TerminalNode* SUBSTRING();
     std::vector<ValueExpressionContext*> valueExpression();
@@ -3112,7 +3112,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class CastContext : public PrimaryExpressionContext {
    public:
-    CastContext(PrimaryExpressionContext* ctx);
+    explicit CastContext(PrimaryExpressionContext* ctx);
 
     antlr4::tree::TerminalNode* CAST();
     ExpressionContext* expression();
@@ -3128,7 +3128,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class LambdaContext : public PrimaryExpressionContext {
    public:
-    LambdaContext(PrimaryExpressionContext* ctx);
+    explicit LambdaContext(PrimaryExpressionContext* ctx);
 
     std::vector<IdentifierContext*> identifier();
     IdentifierContext* identifier(size_t i);
@@ -3142,7 +3142,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class ParenthesizedExpressionContext : public PrimaryExpressionContext {
    public:
-    ParenthesizedExpressionContext(PrimaryExpressionContext* ctx);
+    explicit ParenthesizedExpressionContext(PrimaryExpressionContext* ctx);
 
     ExpressionContext* expression();
     virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
@@ -3154,7 +3154,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class ParameterContext : public PrimaryExpressionContext {
    public:
-    ParameterContext(PrimaryExpressionContext* ctx);
+    explicit ParameterContext(PrimaryExpressionContext* ctx);
 
     virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
     virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
@@ -3165,7 +3165,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class NormalizeContext : public PrimaryExpressionContext {
    public:
-    NormalizeContext(PrimaryExpressionContext* ctx);
+    explicit NormalizeContext(PrimaryExpressionContext* ctx);
 
     antlr4::tree::TerminalNode* NORMALIZE();
     ValueExpressionContext* valueExpression();
@@ -3179,7 +3179,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class IntervalLiteralContext : public PrimaryExpressionContext {
    public:
-    IntervalLiteralContext(PrimaryExpressionContext* ctx);
+    explicit IntervalLiteralContext(PrimaryExpressionContext* ctx);
 
     IntervalContext* interval();
     virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
@@ -3191,7 +3191,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class NumericLiteralContext : public PrimaryExpressionContext {
    public:
-    NumericLiteralContext(PrimaryExpressionContext* ctx);
+    explicit NumericLiteralContext(PrimaryExpressionContext* ctx);
 
     NumberContext* number();
     virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
@@ -3203,7 +3203,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class BooleanLiteralContext : public PrimaryExpressionContext {
    public:
-    BooleanLiteralContext(PrimaryExpressionContext* ctx);
+    explicit BooleanLiteralContext(PrimaryExpressionContext* ctx);
 
     BooleanValueContext* booleanValue();
     virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
@@ -3215,7 +3215,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class SimpleCaseContext : public PrimaryExpressionContext {
    public:
-    SimpleCaseContext(PrimaryExpressionContext* ctx);
+    explicit SimpleCaseContext(PrimaryExpressionContext* ctx);
 
     PrestoSqlParser::ExpressionContext* elseExpression = nullptr;
     antlr4::tree::TerminalNode* CASE();
@@ -3234,7 +3234,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class ColumnReferenceContext : public PrimaryExpressionContext {
    public:
-    ColumnReferenceContext(PrimaryExpressionContext* ctx);
+    explicit ColumnReferenceContext(PrimaryExpressionContext* ctx);
 
     IdentifierContext* identifier();
     virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
@@ -3246,7 +3246,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class NullLiteralContext : public PrimaryExpressionContext {
    public:
-    NullLiteralContext(PrimaryExpressionContext* ctx);
+    explicit NullLiteralContext(PrimaryExpressionContext* ctx);
 
     antlr4::tree::TerminalNode* NULL_LITERAL();
     virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
@@ -3258,7 +3258,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class RowConstructorContext : public PrimaryExpressionContext {
    public:
-    RowConstructorContext(PrimaryExpressionContext* ctx);
+    explicit RowConstructorContext(PrimaryExpressionContext* ctx);
 
     std::vector<ExpressionContext*> expression();
     ExpressionContext* expression(size_t i);
@@ -3272,7 +3272,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class SubscriptContext : public PrimaryExpressionContext {
    public:
-    SubscriptContext(PrimaryExpressionContext* ctx);
+    explicit SubscriptContext(PrimaryExpressionContext* ctx);
 
     PrestoSqlParser::PrimaryExpressionContext* value = nullptr;
     PrestoSqlParser::ValueExpressionContext* index = nullptr;
@@ -3287,7 +3287,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class SubqueryExpressionContext : public PrimaryExpressionContext {
    public:
-    SubqueryExpressionContext(PrimaryExpressionContext* ctx);
+    explicit SubqueryExpressionContext(PrimaryExpressionContext* ctx);
 
     QueryContext* query();
     virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
@@ -3299,7 +3299,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class BinaryLiteralContext : public PrimaryExpressionContext {
    public:
-    BinaryLiteralContext(PrimaryExpressionContext* ctx);
+    explicit BinaryLiteralContext(PrimaryExpressionContext* ctx);
 
     antlr4::tree::TerminalNode* BINARY_LITERAL();
     virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
@@ -3311,7 +3311,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class CurrentUserContext : public PrimaryExpressionContext {
    public:
-    CurrentUserContext(PrimaryExpressionContext* ctx);
+    explicit CurrentUserContext(PrimaryExpressionContext* ctx);
 
     antlr4::Token* name = nullptr;
     antlr4::tree::TerminalNode* CURRENT_USER();
@@ -3324,7 +3324,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class ExtractContext : public PrimaryExpressionContext {
    public:
-    ExtractContext(PrimaryExpressionContext* ctx);
+    explicit ExtractContext(PrimaryExpressionContext* ctx);
 
     antlr4::tree::TerminalNode* EXTRACT();
     IdentifierContext* identifier();
@@ -3339,7 +3339,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class StringLiteralContext : public PrimaryExpressionContext {
    public:
-    StringLiteralContext(PrimaryExpressionContext* ctx);
+    explicit StringLiteralContext(PrimaryExpressionContext* ctx);
 
     StringContext* string();
     virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
@@ -3351,7 +3351,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class ArrayConstructorContext : public PrimaryExpressionContext {
    public:
-    ArrayConstructorContext(PrimaryExpressionContext* ctx);
+    explicit ArrayConstructorContext(PrimaryExpressionContext* ctx);
 
     antlr4::tree::TerminalNode* ARRAY();
     std::vector<ExpressionContext*> expression();
@@ -3365,7 +3365,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class FunctionCallContext : public PrimaryExpressionContext {
    public:
-    FunctionCallContext(PrimaryExpressionContext* ctx);
+    explicit FunctionCallContext(PrimaryExpressionContext* ctx);
 
     QualifiedNameContext* qualifiedName();
     antlr4::tree::TerminalNode* ASTERISK();
@@ -3388,7 +3388,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class ExistsContext : public PrimaryExpressionContext {
    public:
-    ExistsContext(PrimaryExpressionContext* ctx);
+    explicit ExistsContext(PrimaryExpressionContext* ctx);
 
     antlr4::tree::TerminalNode* EXISTS();
     QueryContext* query();
@@ -3401,7 +3401,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class PositionContext : public PrimaryExpressionContext {
    public:
-    PositionContext(PrimaryExpressionContext* ctx);
+    explicit PositionContext(PrimaryExpressionContext* ctx);
 
     antlr4::tree::TerminalNode* POSITION();
     std::vector<ValueExpressionContext*> valueExpression();
@@ -3416,7 +3416,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class SearchedCaseContext : public PrimaryExpressionContext {
    public:
-    SearchedCaseContext(PrimaryExpressionContext* ctx);
+    explicit SearchedCaseContext(PrimaryExpressionContext* ctx);
 
     PrestoSqlParser::ExpressionContext* elseExpression = nullptr;
     antlr4::tree::TerminalNode* CASE();
@@ -3434,7 +3434,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class GroupingOperationContext : public PrimaryExpressionContext {
    public:
-    GroupingOperationContext(PrimaryExpressionContext* ctx);
+    explicit GroupingOperationContext(PrimaryExpressionContext* ctx);
 
     antlr4::tree::TerminalNode* GROUPING();
     std::vector<QualifiedNameContext*> qualifiedName();
@@ -3461,7 +3461,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class UnicodeStringLiteralContext : public StringContext {
    public:
-    UnicodeStringLiteralContext(StringContext* ctx);
+    explicit UnicodeStringLiteralContext(StringContext* ctx);
 
     antlr4::tree::TerminalNode* UNICODE_STRING();
     antlr4::tree::TerminalNode* UESCAPE();
@@ -3475,7 +3475,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class BasicStringLiteralContext : public StringContext {
    public:
-    BasicStringLiteralContext(StringContext* ctx);
+    explicit BasicStringLiteralContext(StringContext* ctx);
 
     antlr4::tree::TerminalNode* STRING();
     virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
@@ -3521,7 +3521,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class TimeZoneIntervalContext : public TimeZoneSpecifierContext {
    public:
-    TimeZoneIntervalContext(TimeZoneSpecifierContext* ctx);
+    explicit TimeZoneIntervalContext(TimeZoneSpecifierContext* ctx);
 
     antlr4::tree::TerminalNode* TIME();
     antlr4::tree::TerminalNode* ZONE();
@@ -3535,7 +3535,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class TimeZoneStringContext : public TimeZoneSpecifierContext {
    public:
-    TimeZoneStringContext(TimeZoneSpecifierContext* ctx);
+    explicit TimeZoneStringContext(TimeZoneSpecifierContext* ctx);
 
     antlr4::tree::TerminalNode* TIME();
     antlr4::tree::TerminalNode* ZONE();
@@ -3856,7 +3856,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class BoundedFrameContext : public FrameBoundContext {
    public:
-    BoundedFrameContext(FrameBoundContext* ctx);
+    explicit BoundedFrameContext(FrameBoundContext* ctx);
 
     antlr4::Token* boundType = nullptr;
     ExpressionContext* expression();
@@ -3871,7 +3871,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class UnboundedFrameContext : public FrameBoundContext {
    public:
-    UnboundedFrameContext(FrameBoundContext* ctx);
+    explicit UnboundedFrameContext(FrameBoundContext* ctx);
 
     antlr4::Token* boundType = nullptr;
     antlr4::tree::TerminalNode* UNBOUNDED();
@@ -3886,7 +3886,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class CurrentRowBoundContext : public FrameBoundContext {
    public:
-    CurrentRowBoundContext(FrameBoundContext* ctx);
+    explicit CurrentRowBoundContext(FrameBoundContext* ctx);
 
     antlr4::tree::TerminalNode* CURRENT();
     antlr4::tree::TerminalNode* ROW();
@@ -3933,7 +3933,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class ExplainFormatContext : public ExplainOptionContext {
    public:
-    ExplainFormatContext(ExplainOptionContext* ctx);
+    explicit ExplainFormatContext(ExplainOptionContext* ctx);
 
     antlr4::Token* value = nullptr;
     antlr4::tree::TerminalNode* FORMAT();
@@ -3949,7 +3949,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class ExplainTypeContext : public ExplainOptionContext {
    public:
-    ExplainTypeContext(ExplainOptionContext* ctx);
+    explicit ExplainTypeContext(ExplainOptionContext* ctx);
 
     antlr4::Token* value = nullptr;
     antlr4::tree::TerminalNode* TYPE();
@@ -3981,7 +3981,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class TransactionAccessModeContext : public TransactionModeContext {
    public:
-    TransactionAccessModeContext(TransactionModeContext* ctx);
+    explicit TransactionAccessModeContext(TransactionModeContext* ctx);
 
     antlr4::Token* accessMode = nullptr;
     antlr4::tree::TerminalNode* READ();
@@ -3996,7 +3996,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class IsolationLevelContext : public TransactionModeContext {
    public:
-    IsolationLevelContext(TransactionModeContext* ctx);
+    explicit IsolationLevelContext(TransactionModeContext* ctx);
 
     antlr4::tree::TerminalNode* ISOLATION();
     antlr4::tree::TerminalNode* LEVEL();
@@ -4025,7 +4025,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class ReadUncommittedContext : public LevelOfIsolationContext {
    public:
-    ReadUncommittedContext(LevelOfIsolationContext* ctx);
+    explicit ReadUncommittedContext(LevelOfIsolationContext* ctx);
 
     antlr4::tree::TerminalNode* READ();
     antlr4::tree::TerminalNode* UNCOMMITTED();
@@ -4038,7 +4038,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class SerializableContext : public LevelOfIsolationContext {
    public:
-    SerializableContext(LevelOfIsolationContext* ctx);
+    explicit SerializableContext(LevelOfIsolationContext* ctx);
 
     antlr4::tree::TerminalNode* SERIALIZABLE();
     virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
@@ -4050,7 +4050,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class ReadCommittedContext : public LevelOfIsolationContext {
    public:
-    ReadCommittedContext(LevelOfIsolationContext* ctx);
+    explicit ReadCommittedContext(LevelOfIsolationContext* ctx);
 
     antlr4::tree::TerminalNode* READ();
     antlr4::tree::TerminalNode* COMMITTED();
@@ -4063,7 +4063,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class RepeatableReadContext : public LevelOfIsolationContext {
    public:
-    RepeatableReadContext(LevelOfIsolationContext* ctx);
+    explicit RepeatableReadContext(LevelOfIsolationContext* ctx);
 
     antlr4::tree::TerminalNode* REPEATABLE();
     antlr4::tree::TerminalNode* READ();
@@ -4091,7 +4091,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class PositionalArgumentContext : public CallArgumentContext {
    public:
-    PositionalArgumentContext(CallArgumentContext* ctx);
+    explicit PositionalArgumentContext(CallArgumentContext* ctx);
 
     ExpressionContext* expression();
     virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
@@ -4103,7 +4103,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class NamedArgumentContext : public CallArgumentContext {
    public:
-    NamedArgumentContext(CallArgumentContext* ctx);
+    explicit NamedArgumentContext(CallArgumentContext* ctx);
 
     IdentifierContext* identifier();
     ExpressionContext* expression();
@@ -4167,7 +4167,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class TableVersionContext : public TableVersionExpressionContext {
    public:
-    TableVersionContext(TableVersionExpressionContext* ctx);
+    explicit TableVersionContext(TableVersionExpressionContext* ctx);
 
     antlr4::Token* tableVersionType = nullptr;
     antlr4::tree::TerminalNode* FOR();
@@ -4201,7 +4201,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class TableversionbeforeContext : public TableVersionStateContext {
    public:
-    TableversionbeforeContext(TableVersionStateContext* ctx);
+    explicit TableversionbeforeContext(TableVersionStateContext* ctx);
 
     antlr4::tree::TerminalNode* BEFORE();
     virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
@@ -4213,7 +4213,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class TableversionasofContext : public TableVersionStateContext {
    public:
-    TableversionasofContext(TableVersionStateContext* ctx);
+    explicit TableversionasofContext(TableVersionStateContext* ctx);
 
     antlr4::tree::TerminalNode* AS();
     antlr4::tree::TerminalNode* OF();
@@ -4239,7 +4239,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class CurrentUserGrantorContext : public GrantorContext {
    public:
-    CurrentUserGrantorContext(GrantorContext* ctx);
+    explicit CurrentUserGrantorContext(GrantorContext* ctx);
 
     antlr4::tree::TerminalNode* CURRENT_USER();
     virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
@@ -4251,7 +4251,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class SpecifiedPrincipalContext : public GrantorContext {
    public:
-    SpecifiedPrincipalContext(GrantorContext* ctx);
+    explicit SpecifiedPrincipalContext(GrantorContext* ctx);
 
     PrincipalContext* principal();
     virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
@@ -4263,7 +4263,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class CurrentRoleGrantorContext : public GrantorContext {
    public:
-    CurrentRoleGrantorContext(GrantorContext* ctx);
+    explicit CurrentRoleGrantorContext(GrantorContext* ctx);
 
     antlr4::tree::TerminalNode* CURRENT_ROLE();
     virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
@@ -4288,7 +4288,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class UnspecifiedPrincipalContext : public PrincipalContext {
    public:
-    UnspecifiedPrincipalContext(PrincipalContext* ctx);
+    explicit UnspecifiedPrincipalContext(PrincipalContext* ctx);
 
     IdentifierContext* identifier();
     virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
@@ -4300,7 +4300,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class UserPrincipalContext : public PrincipalContext {
    public:
-    UserPrincipalContext(PrincipalContext* ctx);
+    explicit UserPrincipalContext(PrincipalContext* ctx);
 
     antlr4::tree::TerminalNode* USER();
     IdentifierContext* identifier();
@@ -4313,7 +4313,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class RolePrincipalContext : public PrincipalContext {
    public:
-    RolePrincipalContext(PrincipalContext* ctx);
+    explicit RolePrincipalContext(PrincipalContext* ctx);
 
     antlr4::tree::TerminalNode* ROLE();
     IdentifierContext* identifier();
@@ -4355,7 +4355,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class BackQuotedIdentifierContext : public IdentifierContext {
    public:
-    BackQuotedIdentifierContext(IdentifierContext* ctx);
+    explicit BackQuotedIdentifierContext(IdentifierContext* ctx);
 
     antlr4::tree::TerminalNode* BACKQUOTED_IDENTIFIER();
     virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
@@ -4367,7 +4367,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class QuotedIdentifierContext : public IdentifierContext {
    public:
-    QuotedIdentifierContext(IdentifierContext* ctx);
+    explicit QuotedIdentifierContext(IdentifierContext* ctx);
 
     antlr4::tree::TerminalNode* QUOTED_IDENTIFIER();
     virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
@@ -4379,7 +4379,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class DigitIdentifierContext : public IdentifierContext {
    public:
-    DigitIdentifierContext(IdentifierContext* ctx);
+    explicit DigitIdentifierContext(IdentifierContext* ctx);
 
     antlr4::tree::TerminalNode* DIGIT_IDENTIFIER();
     virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
@@ -4391,7 +4391,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class UnquotedIdentifierContext : public IdentifierContext {
    public:
-    UnquotedIdentifierContext(IdentifierContext* ctx);
+    explicit UnquotedIdentifierContext(IdentifierContext* ctx);
 
     antlr4::tree::TerminalNode* IDENTIFIER();
     NonReservedContext* nonReserved();
@@ -4417,7 +4417,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class DecimalLiteralContext : public NumberContext {
    public:
-    DecimalLiteralContext(NumberContext* ctx);
+    explicit DecimalLiteralContext(NumberContext* ctx);
 
     antlr4::tree::TerminalNode* DECIMAL_VALUE();
     virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
@@ -4429,7 +4429,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class DoubleLiteralContext : public NumberContext {
    public:
-    DoubleLiteralContext(NumberContext* ctx);
+    explicit DoubleLiteralContext(NumberContext* ctx);
 
     antlr4::tree::TerminalNode* DOUBLE_VALUE();
     virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
@@ -4441,7 +4441,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
   class IntegerLiteralContext : public NumberContext {
    public:
-    IntegerLiteralContext(NumberContext* ctx);
+    explicit IntegerLiteralContext(NumberContext* ctx);
 
     antlr4::tree::TerminalNode* INTEGER_VALUE();
     virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
@@ -4820,4 +4820,4 @@ class PrestoSqlParser : public antlr4::Parser {
   static Initializer _init;
 };
 
-} // namespace facebook::velox::sql
+} // namespace axiom::sql::presto

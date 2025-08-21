@@ -12,15 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-add_executable(velox_presto_parser_test GrammarTest.cpp)
+add_subdirectory(tests)
 
-find_package(antlr4-runtime REQUIRED)
-
-add_test(velox_presto_parser_test velox_presto_parser_test)
+add_library(
+  axiom_sql_presto_grammar
+  PrestoSqlBaseListener.cpp
+  PrestoSqlBaseVisitor.cpp
+  PrestoSqlLexer.cpp
+  PrestoSqlListener.cpp
+  PrestoSqlParser.cpp
+  PrestoSqlVisitor.cpp)
 
 target_link_libraries(
-  velox_presto_parser_test
-  velox_presto_grammar_lib
-  GTest::gtest
-  GTest::gtest_main
-  antlr4_shared)
+  axiom_sql_presto_grammar antlr4_shared)

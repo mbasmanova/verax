@@ -62,8 +62,9 @@ std::unique_ptr<DuckParser> makeDuckParser(velox::memory::MemoryPool* pool) {
 
 void HiveQueriesTestBase::SetUp() {
   test::QueryTestBase::SetUp();
-  duckParser_ = makeDuckParser(pool());
   test::ParquetTpchTest::registerTpchConnector(kTpchConnectorId);
+  duckParser_ = makeDuckParser(pool());
+  // prestoParser_ = std::make_unique<PrestoParser>(kTpchConnectorId, pool());
 }
 
 void HiveQueriesTestBase::TearDown() {

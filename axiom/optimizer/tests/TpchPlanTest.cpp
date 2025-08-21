@@ -235,6 +235,8 @@ TEST_F(TpchPlanTest, q07) {
           .build();
 
   checkTpch(7, logicalPlan);
+
+  // checkTpchSql(7);
 }
 
 TEST_F(TpchPlanTest, q08) {
@@ -280,6 +282,8 @@ TEST_F(TpchPlanTest, q08) {
           .build();
 
   checkTpch(8, logicalPlan);
+
+  // checkTpchSql(8);
 }
 
 TEST_F(TpchPlanTest, q09) {
@@ -308,6 +312,8 @@ TEST_F(TpchPlanTest, q09) {
   // Plan does not minimize build size. To adjust build cost and check that
   // import of existences to build side does not affect join cardinality.
   checkTpch(9, logicalPlan);
+
+  // checkTpchSql(9);
 }
 
 TEST_F(TpchPlanTest, q10) {
@@ -423,6 +429,8 @@ TEST_F(TpchPlanTest, q12) {
 
   // Fix string in filter
   checkTpch(12, logicalPlan);
+
+  // checkTpchSql(12);
 }
 
 TEST_F(TpchPlanTest, q13) {
@@ -462,6 +470,8 @@ TEST_F(TpchPlanTest, q14) {
           .build();
 
   checkTpch(14, logicalPlan);
+
+  // checkTpchSql(14);
 }
 
 TEST_F(TpchPlanTest, DISABLED_q15) {
@@ -512,6 +522,8 @@ TEST_F(TpchPlanTest, q19) {
           .build();
 
   checkTpch(19, logicalPlan);
+
+  // checkTpchSql(19);
 }
 
 TEST_F(TpchPlanTest, DISABLED_q20) {
