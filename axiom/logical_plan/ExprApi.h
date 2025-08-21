@@ -45,7 +45,7 @@ class SubqueryExpr : public core::IExpr {
  public:
   // @param subquery A plan tree that produces a single column.
   explicit SubqueryExpr(logical_plan::LogicalPlanNodePtr subquery)
-      : IExpr({}), subquery_(std::move(subquery)) {}
+      : IExpr(IExpr::Kind::kSubquery, {}), subquery_(std::move(subquery)) {}
 
   const logical_plan::LogicalPlanNodePtr& subquery() const {
     return subquery_;
@@ -53,6 +53,11 @@ class SubqueryExpr : public core::IExpr {
 
   std::string toString() const override {
     return "<subquery>";
+  }
+
+  ExprPtr replaceInputs(std::vector<ExprPtr> newInputs) const override {
+    VELOX_CHECK_EQ(newInputs.size(), 0);
+    return std::make_shared<SubqueryExpr>(subquery_);
   }
 
  private:
