@@ -60,6 +60,24 @@ class SubqueryExpr : public core::IExpr {
     return std::make_shared<SubqueryExpr>(subquery_);
   }
 
+  bool operator==(const IExpr& other) const override {
+    if (!other.is(Kind::kSubquery)) {
+      return false;
+    }
+
+    auto* otherSubquery = other.as<SubqueryExpr>();
+    // Compare the subquery plan pointers. Two SubqueryExprs are equal if they
+    // reference the same logical plan node.
+    return subquery_ == otherSubquery->subquery_ &&
+        compareAliasAndInputs(other);
+  }
+
+ protected:
+  size_t localHash() const override {
+    // Hash the pointer to the logical plan node
+    return std::hash<logical_plan::LogicalPlanNodePtr>{}(subquery_);
+  }
+
  private:
   const logical_plan::LogicalPlanNodePtr subquery_;
 };
