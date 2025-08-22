@@ -89,12 +89,6 @@ class TpchPlanTest : public virtual test::HiveQueriesTestBase {
   }
 
   void checkTpchSql(int32_t query) {
-    // TODO Figure out how to make this work in OSS CI.
-    if (velox::test::getDataFilePath("axiom", "").find("fbcode") ==
-        std::string::npos) {
-      return;
-    }
-
     auto sql = readSqlFromFile(fmt::format("tpch.queries/q{}.sql", query));
     auto referencePlan = referenceBuilder_->getQueryPlan(query).plan;
     checkResults(sql, referencePlan);
