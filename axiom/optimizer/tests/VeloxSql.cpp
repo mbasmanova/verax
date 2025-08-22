@@ -300,7 +300,7 @@ class VeloxRunner : public QueryBenchmarkBase {
       if (FLAGS_use_duck_parser) {
         sqlStatement = duckParser_->parse(sql);
       } else {
-        sqlStatement = prestoParser_->parseQuery(sql);
+        sqlStatement = prestoParser_->parse(sql);
       }
     } catch (std::exception& e) {
       std::cerr << "Failed to parse SQL: " << e.what() << std::endl;

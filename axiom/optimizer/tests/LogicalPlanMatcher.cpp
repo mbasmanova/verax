@@ -90,6 +90,16 @@ LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::aggregate() {
   return *this;
 }
 
+LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::unnest() {
+  if (matcher_ != nullptr) {
+    matcher_ = std::make_shared<LogicalPlanMatcherImpl<UnnestNode>>(matcher_);
+  } else {
+    matcher_ = std::make_shared<LogicalPlanMatcherImpl<UnnestNode>>();
+  }
+
+  return *this;
+}
+
 LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::join(
     const std::shared_ptr<LogicalPlanMatcher>& rightMatcher) {
   VELOX_USER_CHECK_NOT_NULL(matcher_);

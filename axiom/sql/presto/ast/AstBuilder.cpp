@@ -86,7 +86,7 @@ std::any AstBuilder::visitQueryNoWith(
   OrderByPtr orderBy = nullptr;
   if (ctx->ORDER() != nullptr) {
     orderBy = std::make_shared<OrderBy>(
-        getLocation(ctx->ORDER()), visitAllContext<SortItem>(ctx->sortItem()));
+        getLocation(ctx->ORDER()), visitTyped<SortItem>(ctx->sortItem()));
   }
 
   OffsetPtr offset = nullptr;
@@ -134,10 +134,10 @@ std::any AstBuilder::visitQuerySpecification(
     PrestoSqlParser::QuerySpecificationContext* ctx) {
   trace("visitQuerySpecification");
 
-  auto selectItems = visitAllContext<SelectItem>(ctx->selectItem());
+  auto selectItems = visitTyped<SelectItem>(ctx->selectItem());
 
   RelationPtr from;
-  auto relations = visitAllContext<Relation>(ctx->relation());
+  auto relations = visitTyped<Relation>(ctx->relation());
   if (!relations.empty()) {
     // Synthesize implicit join nodes
     auto iterator = relations.begin();
@@ -190,7 +190,7 @@ std::any AstBuilder::visitAliasedRelation(
 
   std::vector<IdentifierPtr> aliases;
   if (ctx->columnAliases() != nullptr) {
-    aliases = visitAllContext<Identifier>(ctx->columnAliases()->identifier());
+    aliases = visitTyped<Identifier>(ctx->columnAliases()->identifier());
   }
 
   return std::static_pointer_cast<Relation>(std::make_shared<AliasedRelation>(
@@ -222,7 +222,7 @@ std::any AstBuilder::visitUnquotedIdentifier(
 // private
 QualifiedNamePtr AstBuilder::getQualifiedName(
     PrestoSqlParser::QualifiedNameContext* ctx) {
-  auto identifiers = visitAllContext<Identifier>(ctx->identifier());
+  auto identifiers = visitTyped<Identifier>(ctx->identifier());
 
   std::vector<std::string> names;
   names.reserve(identifiers.size());
@@ -778,8 +778,7 @@ std::any AstBuilder::visitSortItem(PrestoSqlParser::SortItemContext* ctx) {
 std::any AstBuilder::visitGroupBy(PrestoSqlParser::GroupByContext* ctx) {
   trace("visitGroupBy");
 
-  auto groupingElements =
-      visitAllContext<GroupingElement>(ctx->groupingElement());
+  auto groupingElements = visitTyped<GroupingElement>(ctx->groupingElement());
 
   return std::make_shared<GroupBy>(
       getLocation(ctx), isDistinct(ctx), groupingElements);
@@ -789,8 +788,7 @@ std::any AstBuilder::visitSingleGroupingSet(
     PrestoSqlParser::SingleGroupingSetContext* ctx) {
   trace("visitSingleGroupingSet");
 
-  auto expressions =
-      visitAllContext<Expression>(ctx->groupingSet()->expression());
+  auto expressions = visitTyped<Expression>(ctx->groupingSet()->expression());
   return std::static_pointer_cast<GroupingElement>(
       std::make_shared<SimpleGroupBy>(getLocation(ctx), expressions));
 }
@@ -932,7 +930,10 @@ std::any AstBuilder::visitSubqueryRelation(
 
 std::any AstBuilder::visitUnnest(PrestoSqlParser::UnnestContext* ctx) {
   trace("visitUnnest");
-  return visitChildren(ctx);
+  return std::static_pointer_cast<Relation>(std::make_shared<Unnest>(
+      getLocation(ctx),
+      visitTyped<Expression>(ctx->expression()),
+      ctx->ORDINALITY() != nullptr));
 }
 
 std::any AstBuilder::visitLateral(PrestoSqlParser::LateralContext* ctx) {
@@ -1059,7 +1060,7 @@ std::any AstBuilder::visitInList(PrestoSqlParser::InListContext* ctx) {
       getLocation(ctx),
       visitTyped<Expression>(ctx->value),
       std::make_shared<InListExpression>(
-          getLocation(ctx), visitAllContext<Expression>(ctx->expression())));
+          getLocation(ctx), visitTyped<Expression>(ctx->expression())));
 
   return wrapInNot(inPredicate, ctx->NOT());
 }
@@ -1548,7 +1549,9 @@ std::any AstBuilder::visitStringLiteral(
 std::any AstBuilder::visitArrayConstructor(
     PrestoSqlParser::ArrayConstructorContext* ctx) {
   trace("visitArrayConstructor");
-  return visitChildren(ctx);
+  return std::static_pointer_cast<Expression>(
+      std::make_shared<ArrayConstructor>(
+          getLocation(ctx), visitTyped<Expression>(ctx->expression())));
 }
 
 std::any AstBuilder::visitFunctionCall(
@@ -1557,7 +1560,7 @@ std::any AstBuilder::visitFunctionCall(
 
   auto name = getQualifiedName(ctx->qualifiedName());
 
-  auto args = visitAllContext<Expression>(ctx->expression());
+  auto args = visitTyped<Expression>(ctx->expression());
 
   return std::static_pointer_cast<Expression>(std::make_shared<FunctionCall>(
       getLocation(ctx), name, nullptr /* window */, isDistinct(ctx), args));
@@ -1580,7 +1583,7 @@ std::any AstBuilder::visitSearchedCase(
   return std::static_pointer_cast<Expression>(
       std::make_shared<SearchedCaseExpression>(
           getLocation(ctx),
-          visitAllContext<WhenClause>(ctx->whenClause()),
+          visitTyped<WhenClause>(ctx->whenClause()),
           visitTyped<Expression>(ctx->elseExpression)));
 }
 

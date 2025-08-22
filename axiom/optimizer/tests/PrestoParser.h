@@ -24,9 +24,7 @@ class PrestoParser {
   PrestoParser(const std::string& defaultConnectorId, memory::MemoryPool* pool)
       : defaultConnectorId_{defaultConnectorId}, pool_{pool} {}
 
-  SqlStatementPtr parseQuery(
-      const std::string& sql,
-      bool enableTracing = false);
+  SqlStatementPtr parse(const std::string& sql, bool enableTracing = false);
 
   logical_plan::ExprPtr parseExpression(
       const std::string& sql,

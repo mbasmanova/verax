@@ -292,7 +292,14 @@ RowTypePtr UnnestNode::makeOutputType(
       0,
       "Unnest requires at least one ARRAY or MAP to expand");
 
-  auto size = input->outputType()->size();
+  RowTypePtr inputType;
+  if (input != nullptr) {
+    inputType = input->outputType();
+  } else {
+    inputType = ROW({});
+  }
+
+  auto size = inputType->size();
   for (const auto& names : unnestedNames) {
     size += names.size();
   }
@@ -303,8 +310,8 @@ RowTypePtr UnnestNode::makeOutputType(
   std::vector<TypePtr> types;
   types.reserve(size);
 
-  names = input->outputType()->names();
-  types = input->outputType()->children();
+  names = inputType->names();
+  types = inputType->children();
 
   const auto numUnnest = unnestExpressions.size();
   for (auto i = 0; i < numUnnest; ++i) {
