@@ -33,6 +33,7 @@
 #include "axiom/optimizer/VeloxHistory.h"
 #include "axiom/optimizer/connectors/ConnectorSplitSource.h"
 #include "axiom/optimizer/tests/DuckParser.h"
+#include "axiom/optimizer/tests/PrestoParser.h"
 #include "axiom/runner/LocalRunner.h"
 #include "velox/benchmarks/QueryBenchmarkBase.h"
 #include "velox/exec/PlanNodeStats.h"
@@ -55,6 +56,11 @@ DEFINE_string(
     data_path,
     "",
     "Root path of data. Data layout must follow Hive-style partitioning. ");
+
+DEFINE_bool(
+    use_duck_parser,
+    false,
+    "Use DuckDB SQL parser instead of built-in Presto SQL parser.");
 
 // Defined in velox/benchmarks/QueryBenchmarkBase.cpp
 DECLARE_string(ssd_path);
@@ -188,7 +194,9 @@ class VeloxRunner : public QueryBenchmarkBase {
 
     schema_ = std::make_shared<optimizer::SchemaResolver>();
 
-    parser_ = setupQueryParser();
+    duckParser_ = setupQueryParser();
+    prestoParser_ = std::make_unique<optimizer::test::PrestoParser>(
+        kHiveConnectorId, optimizerPool_.get());
 
     history_ = std::make_unique<optimizer::VeloxHistory>();
     history_->updateFromFile(FLAGS_data_path + "/.history");
@@ -289,7 +297,11 @@ class VeloxRunner : public QueryBenchmarkBase {
   void run(const std::string& sql) {
     optimizer::test::SqlStatementPtr sqlStatement;
     try {
-      sqlStatement = parser_->parse(sql);
+      if (FLAGS_use_duck_parser) {
+        sqlStatement = duckParser_->parse(sql);
+      } else {
+        sqlStatement = prestoParser_->parseQuery(sql);
+      }
     } catch (std::exception& e) {
       std::cerr << "Failed to parse SQL: " << e.what() << std::endl;
       return;
@@ -735,7 +747,8 @@ class VeloxRunner : public QueryBenchmarkBase {
   std::shared_ptr<connector::Connector> connector_;
   std::shared_ptr<optimizer::SchemaResolver> schema_;
   std::unique_ptr<optimizer::VeloxHistory> history_;
-  std::unique_ptr<optimizer::test::DuckParser> parser_;
+  std::unique_ptr<optimizer::test::DuckParser> duckParser_;
+  std::unique_ptr<optimizer::test::PrestoParser> prestoParser_;
   std::ofstream* record_{nullptr};
   std::ifstream* check_{nullptr};
   int32_t numPassed_{0};

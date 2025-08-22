@@ -64,7 +64,7 @@ void HiveQueriesTestBase::SetUp() {
   test::QueryTestBase::SetUp();
   test::ParquetTpchTest::registerTpchConnector(kTpchConnectorId);
   duckParser_ = makeDuckParser(pool());
-  // prestoParser_ = std::make_unique<PrestoParser>(kTpchConnectorId, pool());
+  prestoParser_ = std::make_unique<PrestoParser>(kTpchConnectorId, pool());
 }
 
 void HiveQueriesTestBase::TearDown() {
@@ -85,7 +85,7 @@ void HiveQueriesTestBase::checkResults(
   SCOPED_TRACE(sql);
   VELOX_CHECK_NOT_NULL(referencePlan);
 
-  auto statement = duckParser_->parse(sql);
+  auto statement = prestoParser_->parseQuery(sql);
 
   ASSERT_TRUE(statement->isSelect());
   auto logicalPlan = statement->asUnchecked<test::SelectStatement>()->plan();
