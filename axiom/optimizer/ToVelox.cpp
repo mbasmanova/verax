@@ -1323,11 +1323,18 @@ core::PlanNodePtr ToVelox::makeValues(
   const auto newType = makeOutputType(newColumns);
   VELOX_DCHECK_EQ(newColumns.size(), newType->size());
 
+  const auto& type = values.valuesTable.values.outputType();
   const auto& data = values.valuesTable.values.data();
   std::vector<RowVectorPtr> newValues;
-  if ([[maybe_unused]] auto* row = std::get_if<std::vector<Variant>>(&data)) {
-    [[maybe_unused]] auto& newValue = newValues.emplace_back();
-    VELOX_NYI("Translate rows from vector<Variant> to RowVector");
+  if ([[maybe_unused]] auto* rows = std::get_if<std::vector<Variant>>(&data)) {
+    auto* pool = queryCtx()->optimization()->evaluator()->pool();
+
+    newValues.reserve(rows->size());
+    for (const auto& row : *rows) {
+      newValues.emplace_back(std::dynamic_pointer_cast<RowVector>(
+          BaseVector::wrappedVectorShared(variantToVector(type, row, pool))));
+    }
+
   } else {
     const auto& oldValues = std::get<std::vector<RowVectorPtr>>(data);
     newValues.reserve(oldValues.size());
