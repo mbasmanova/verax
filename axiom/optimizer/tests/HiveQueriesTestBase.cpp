@@ -85,7 +85,7 @@ void HiveQueriesTestBase::checkResults(
   SCOPED_TRACE(sql);
   VELOX_CHECK_NOT_NULL(referencePlan);
 
-  auto statement = prestoParser_->parseQuery(sql);
+  auto statement = prestoParser_->parse(sql);
 
   ASSERT_TRUE(statement->isSelect());
   auto logicalPlan = statement->asUnchecked<test::SelectStatement>()->plan();
