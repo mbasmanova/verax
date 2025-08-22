@@ -660,6 +660,16 @@ class RelationPlanner : public sql::AstVisitor {
             parseType(literal->valueType()), lp::Lit(literal->value()));
       }
 
+      case sql::NodeType::kArrayConstructor: {
+        auto* array = node->as<sql::ArrayConstructor>();
+        std::vector<lp::ExprApi> values;
+        for (const auto& value : array->values()) {
+          values.emplace_back(toExpr(value));
+        }
+
+        return lp::Call("array_constructor", values);
+      }
+
       case sql::NodeType::kFunctionCall: {
         auto* call = node->as<sql::FunctionCall>();
 
@@ -753,13 +763,27 @@ class RelationPlanner : public sql::AstVisitor {
           sql::NodeTypeName::toName(query->type()));
     }
 
+    if (relation->is(sql::NodeType::kUnnest)) {
+      auto* unnest = relation->as<sql::Unnest>();
+      std::vector<lp::ExprApi> inputs;
+      for (const auto& expr : unnest->expressions()) {
+        inputs.push_back(toExpr(expr));
+      }
+
+      builder_->unnest(inputs, unnest->isWithOrdinality());
+      return;
+    }
+
     if (relation->is(sql::NodeType::kJoin)) {
       auto* join = relation->as<sql::Join>();
       processFrom(join->left());
 
       auto leftBuilder = builder_;
 
-      builder_ = newBuilder();
+      lp::PlanBuilder::Scope scope;
+      leftBuilder->captureScope(scope);
+
+      builder_ = newBuilder(scope);
       processFrom(join->right());
       auto rightBuilder = builder_;
 
@@ -1039,9 +1063,10 @@ class RelationPlanner : public sql::AstVisitor {
 
   void visitQuerySpecification(sql::QuerySpecification* node) override {}
 
-  std::shared_ptr<lp::PlanBuilder> newBuilder() {
+  std::shared_ptr<lp::PlanBuilder> newBuilder(
+      const lp::PlanBuilder::Scope& outerScope = nullptr) {
     return std::make_shared<lp::PlanBuilder>(
-        context_, /* enableCoersions */ true);
+        context_, /* enableCoersions */ true, outerScope);
   }
 
   lp::PlanBuilder::Context context_;
@@ -1050,7 +1075,7 @@ class RelationPlanner : public sql::AstVisitor {
 
 } // namespace
 
-SqlStatementPtr PrestoParser::parseQuery(
+SqlStatementPtr PrestoParser::parse(
     const std::string& sql,
     bool enableTracing) {
   return std::make_shared<SelectStatement>(doParse(sql, enableTracing));

@@ -615,11 +615,11 @@ class AstBuilder : public PrestoSqlVisitor {
 
  private:
   template <typename T, typename TContext>
-  std::vector<std::shared_ptr<T>> visitAllContext(
-      const std::vector<TContext*>& ctxs) {
+  std::vector<std::shared_ptr<T>> visitTyped(
+      const std::vector<TContext*>& contexts) {
     std::vector<std::shared_ptr<T>> result;
-    result.reserve(ctxs.size());
-    for (auto ctx : ctxs) {
+    result.reserve(contexts.size());
+    for (auto ctx : contexts) {
       result.emplace_back(visitTyped<T>(ctx));
     }
     return result;

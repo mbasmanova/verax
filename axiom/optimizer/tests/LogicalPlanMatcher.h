@@ -37,6 +37,8 @@ class LogicalPlanMatcherBuilder {
 
   LogicalPlanMatcherBuilder& aggregate();
 
+  LogicalPlanMatcherBuilder& unnest();
+
   LogicalPlanMatcherBuilder& join(
       const std::shared_ptr<LogicalPlanMatcher>& rightMatcher);
 
