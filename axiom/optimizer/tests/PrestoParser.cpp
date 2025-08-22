@@ -232,9 +232,11 @@ class RelationPlanner : public sql::AstVisitor {
         return "gt";
       case sql::ComparisonExpression::Operator::kGreaterThanOrEqual:
         return "gte";
-      default:
-        VELOX_NYI("Not yet supported comparison operator: {}", op);
+      case sql::ComparisonExpression::Operator::kIsDistinctFrom:
+        VELOX_NYI("Not yet supported comparison operator: is_distinct_from");
     }
+
+    folly::assume_unreachable();
   }
 
   static std::string toFunctionName(
@@ -251,6 +253,8 @@ class RelationPlanner : public sql::AstVisitor {
       case sql::ArithmeticBinaryExpression::Operator::kModulus:
         return "modulus";
     }
+
+    folly::assume_unreachable();
   }
 
   static int32_t parseYearMonthInterval(
@@ -694,6 +698,8 @@ class RelationPlanner : public sql::AstVisitor {
       case sql::Join::Type::kFull:
         return lp::JoinType::kFull;
     }
+
+    folly::assume_unreachable();
   }
 
   void processFrom(const sql::RelationPtr& relation) {
@@ -1068,11 +1074,11 @@ logical_plan::LogicalPlanNodePtr PrestoParser::doParse(
     const std::string& sql,
     bool enableTracing) {
   sql::ParserHelper helper(sql);
-  auto* queryContext = helper.parse();
+  auto* context = helper.parse();
 
   sql::AstBuilder astBuilder(enableTracing);
   auto query =
-      astBuilder.visit(queryContext).as<std::shared_ptr<sql::Statement>>();
+      std::any_cast<std::shared_ptr<sql::Statement>>(astBuilder.visit(context));
 
   if (enableTracing) {
     std::stringstream astString;
