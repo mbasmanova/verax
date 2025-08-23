@@ -804,7 +804,7 @@ core::TypedExprPtr ExprResolver::makeConstantTypedExpr(
 }
 
 ExprPtr ExprResolver::makeConstant(const VectorPtr& vector) const {
-  auto variant = std::make_shared<Variant>(vectorToVariant(vector, 0));
+  auto variant = std::make_shared<Variant>(vector->variantAt(0));
   return std::make_shared<ConstantExpr>(vector->type(), std::move(variant));
 }
 
