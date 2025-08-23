@@ -84,7 +84,10 @@ velox_link_libraries(
 
 add_executable(velox_optimizer_tests_tpch_plan TpchPlanTest.cpp)
 
-add_test(velox_optimizer_tests_tpch_plan velox_optimizer_tests_tpch_plan)
+add_test(
+  NAME velox_optimizer_tests_tpch_plan
+  COMMAND velox_optimizer_tests_tpch_plan
+  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
 target_link_libraries(
   velox_optimizer_tests_tpch_plan
