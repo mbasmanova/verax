@@ -712,6 +712,50 @@ class RelationPlanner : public sql::AstVisitor {
     folly::assume_unreachable();
   }
 
+  static std::optional<
+      std::pair<const sql::Unnest*, const sql::AliasedRelation*>>
+  tryGetUnnest(const sql::RelationPtr& relation) {
+    if (relation->is(sql::NodeType::kAliasedRelation)) {
+      const auto* aliasedRelation = relation->as<sql::AliasedRelation>();
+      if (aliasedRelation->relation()->is(sql::NodeType::kUnnest)) {
+        return std::make_pair(
+            aliasedRelation->relation()->as<sql::Unnest>(), aliasedRelation);
+      }
+      return std::nullopt;
+    }
+
+    if (relation->is(sql::NodeType::kUnnest)) {
+      return std::make_pair(relation->as<sql::Unnest>(), nullptr);
+    }
+
+    return std::nullopt;
+  }
+
+  void addCrossJoinUnnest(
+      const sql::Unnest& unnest,
+      const sql::AliasedRelation* aliasedRelation) {
+    std::vector<lp::ExprApi> inputs;
+    for (const auto& expr : unnest.expressions()) {
+      inputs.push_back(toExpr(expr));
+    }
+
+    if (aliasedRelation) {
+      std::vector<std::string> columnNames;
+      columnNames.reserve(aliasedRelation->columnNames().size());
+      for (const auto& name : aliasedRelation->columnNames()) {
+        columnNames.emplace_back(name->value());
+      }
+
+      builder_->unnest(
+          inputs,
+          unnest.isWithOrdinality(),
+          aliasedRelation->alias()->value(),
+          columnNames);
+    } else {
+      builder_->unnest(inputs, unnest.isWithOrdinality());
+    }
+  }
+
   void processFrom(const sql::RelationPtr& relation) {
     if (relation == nullptr) {
       // SELECT 1; type of query.
@@ -777,6 +821,11 @@ class RelationPlanner : public sql::AstVisitor {
     if (relation->is(sql::NodeType::kJoin)) {
       auto* join = relation->as<sql::Join>();
       processFrom(join->left());
+
+      if (auto unnest = tryGetUnnest(join->right())) {
+        addCrossJoinUnnest(*unnest->first, unnest->second);
+        return;
+      }
 
       auto leftBuilder = builder_;
 

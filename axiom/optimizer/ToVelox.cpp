@@ -196,6 +196,8 @@ PlanAndStats ToVelox::toVeloxPlan(
     plan = addGather(plan);
   }
 
+  LOG(ERROR) << std::endl << plan->toString(true, true);
+
   ExecutableFragment top;
   std::vector<ExecutableFragment> stages;
   top.fragment.planNode = makeFragment(std::move(plan), top, stages);
@@ -1376,6 +1378,43 @@ core::PlanNodePtr ToVelox::makeValues(
   return valuesNode;
 }
 
+core::PlanNodePtr ToVelox::makeUnnest(
+    const Unnest& unnest,
+    axiom::runner::ExecutableFragment& fragment,
+    std::vector<axiom::runner::ExecutableFragment>& stages) {
+  auto input = makeFragment(unnest.input(), fragment, stages);
+
+  TempProjections project(*this, *unnest.input());
+  auto unnestExprs = project.toFieldRefs(unnest.unnestExprs());
+
+  std::vector<core::FieldAccessTypedExprPtr> replicatedColumns;
+  replicatedColumns.reserve(input->outputType()->size());
+  for (auto i = 0; i < input->outputType()->size(); ++i) {
+    replicatedColumns.emplace_back(project.toFieldRef(unnest.columns()[i]));
+  }
+
+  auto unnestInput = project.maybeProject(input);
+
+  std::vector<std::string> unnestNames;
+  for (auto i = input->outputType()->size(); i < unnest.columns().size(); ++i) {
+    auto column = unnest.columns()[i];
+    unnestNames.push_back(outputName(column));
+  }
+
+  auto unnestNode = std::make_shared<core::UnnestNode>(
+      nextId(),
+      replicatedColumns,
+      unnestExprs,
+      unnestNames,
+      /* ordinalityName */ std::nullopt,
+      /* emptyUnnestValueName */ std::nullopt,
+      unnestInput);
+
+  makePredictionAndHistory(unnestNode->id(), &unnest);
+
+  return unnestNode;
+}
+
 void ToVelox::makePredictionAndHistory(
     const core::PlanNodeId& id,
     const RelationOp* op) {
@@ -1413,6 +1452,8 @@ core::PlanNodePtr ToVelox::makeFragment(
       return makeUnionAll(*op->as<UnionAll>(), fragment, stages);
     case RelType::kValues:
       return makeValues(*op->as<Values>(), fragment);
+    case RelType::kUnnest:
+      return makeUnnest(*op->as<Unnest>(), fragment, stages);
     default:
       VELOX_FAIL(
           "Unsupported RelationOp {}", static_cast<int32_t>(op->relType()));

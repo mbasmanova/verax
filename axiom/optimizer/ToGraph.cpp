@@ -931,6 +931,46 @@ PlanObjectP ToGraph::addOrderBy(const lp::SortNode& order) {
   return currentDt_;
 }
 
+void ToGraph::translateUnnest(const logical_plan::UnnestNode& unnest) {
+  VELOX_CHECK(!unnest.inputs().empty());
+
+  makeQueryGraph(*unnest.onlyInput(), allow(PlanType::kJoinNode));
+
+  auto* unnestTable = make<UnnestTable>();
+  unnestTable->cname = newCName("ut");
+  planLeaves_[&unnest] = unnestTable;
+
+  const auto numInputColumns = unnest.onlyInput()->outputType()->size();
+
+  const auto& type = unnest.outputType();
+
+  for (auto i = numInputColumns; i < type->size(); ++i) {
+    const auto& name = type->nameOf(i);
+    Value value{toType(type->childAt(i)), 1};
+    auto* column = make<Column>(toName(name), unnestTable, value, toName(name));
+
+    unnestTable->columns.push_back(column);
+    renames_[name] = column;
+  }
+
+  currentDt_->tables.push_back(unnestTable);
+  currentDt_->tableSet.add(unnestTable);
+
+  // Add join edges.
+  for (const auto& unnestExpr : unnest.unnestExpressions()) {
+    auto expr = translateExpr(unnestExpr);
+    auto leftTables = expr->allTables();
+
+    auto leftTableVector = leftTables.toVector();
+
+    auto* edge = make<JoinEdge>(
+        leftTableVector.size() == 1 ? leftTableVector[0] : nullptr,
+        unnestTable,
+        JoinEdge::Spec{.filter = {expr}, .directed = true});
+    currentDt_->joins.push_back(edge);
+  }
+}
+
 namespace {
 
 // Fills 'leftKeys' and 'rightKeys's from 'conjuncts' so that
@@ -1023,10 +1063,7 @@ void ToGraph::translateJoin(const lp::JoinNode& join) {
     extractNonInnerJoinEqualities(
         conjuncts, rightTable, leftKeys, rightKeys, leftTables);
 
-    std::vector<PlanObjectCP> leftTableVector;
-    leftTableVector.reserve(leftTables.size());
-    leftTables.forEach(
-        [&](PlanObjectCP table) { leftTableVector.push_back(table); });
+    auto leftTableVector = leftTables.toVector();
 
     auto* edge = make<JoinEdge>(
         leftTableVector.size() == 1 ? leftTableVector[0] : nullptr,
@@ -1612,6 +1649,8 @@ PlanObjectP ToGraph::makeQueryGraph(
       return currentDt_;
     }
     case lp::NodeKind::kUnnest:
+      translateUnnest(*node.asUnchecked<lp::UnnestNode>());
+      return currentDt_;
     default:
       VELOX_NYI(
           "Unsupported PlanNode {}", lp::NodeKindName::toName(node.kind()));

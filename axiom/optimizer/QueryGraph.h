@@ -545,7 +545,8 @@ class JoinEdge {
         markColumn_(spec.markColumn),
         directed_(spec.directed) {
     VELOX_CHECK_NOT_NULL(rightTable);
-    if (isInner()) {
+    // inner + directed == unnest.
+    if (isInner() && !directed_) {
       VELOX_CHECK(filter_.empty());
     }
   }
@@ -597,6 +598,14 @@ class JoinEdge {
   }
 
   void addEquality(ExprCP left, ExprCP right, bool update = false);
+
+  bool isSemi() const {
+    return rightExists_;
+  }
+
+  bool isAnti() const {
+    return rightNotExists_;
+  }
 
   /// True if inner join.
   bool isInner() const {
@@ -805,6 +814,28 @@ struct ValuesTable : public PlanObject {
 
   float cardinality() const {
     return values.cardinality();
+  }
+
+  bool isTable() const override {
+    return true;
+  }
+
+  void addJoinedBy(JoinEdgeP join);
+
+  std::string toString() const override;
+};
+
+struct UnnestTable : public PlanObject {
+  explicit UnnestTable() : PlanObject{PlanType::kUnnestTableNode} {}
+
+  Name cname{nullptr};
+
+  ColumnVector columns;
+
+  JoinEdgeVector joinedBy;
+
+  float cardinality() const {
+    return 1;
   }
 
   bool isTable() const override {

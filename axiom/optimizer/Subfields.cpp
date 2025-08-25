@@ -105,6 +105,35 @@ void ToGraph::markFieldAccessed(
       return;
     }
 
+    if (kind == lp::NodeKind::kUnnest) {
+      auto* unnest = source.planNode->asUnchecked<lp::UnnestNode>();
+      if (!unnest->inputs().empty()) {
+        const auto& input = unnest->onlyInput();
+
+        const std::vector<const RowType*> inputContext = {
+            input->outputType().get()};
+        const std::vector<LogicalContextSource> inputSources = {
+            {.planNode = input.get()}};
+        std::vector<Step> subSteps;
+        auto mark = [&](const lp::ExprPtr& expr) {
+          markSubfields(expr, subSteps, isControl, inputContext, inputSources);
+        };
+
+        const auto& inputType = input->outputType();
+        if (ordinal < inputType->size()) {
+          auto expr = std::make_shared<lp::InputReferenceExpr>(
+              inputType->childAt(ordinal), inputType->nameOf(ordinal));
+          mark(expr);
+
+        } else {
+          const auto& unnestExpr =
+              unnest->unnestExpressions().at(ordinal - inputType->size());
+          mark(unnestExpr);
+        }
+      }
+      return;
+    }
+
     if (kind == lp::NodeKind::kSet) {
       const auto* set = source.planNode->asUnchecked<lp::SetNode>();
       for (const auto& input : set->inputs()) {

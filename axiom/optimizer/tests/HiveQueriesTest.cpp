@@ -35,6 +35,25 @@ class HiveQueriesTest : public test::HiveQueriesTestBase {
   }
 };
 
+TEST_F(HiveQueriesTest, unnest) {
+  auto scan = [&](const std::string& tableName) {
+    return exec::test::PlanBuilder().tableScan(tableName, getSchema(tableName));
+  };
+
+  checkResults(
+      "SELECT length(n_name), x + n_nationkey "
+      "FROM nation, unnest(array[n_nationkey, n_regionkey]) as t(x)",
+      scan("nation")
+          .project(
+              {"n_name",
+               "n_nationkey",
+               "n_regionkey",
+               "array[n_nationkey, n_regionkey] as a"})
+          .unnest({"n_name", "n_nationkey"}, {"a"})
+          .project({"length(n_name)", "a_e + n_nationkey"})
+          .planNode());
+}
+
 TEST_F(HiveQueriesTest, basic) {
   auto planNodeIdGenerator = std::make_shared<core::PlanNodeIdGenerator>();
   auto scan = [&](const std::string& tableName) {

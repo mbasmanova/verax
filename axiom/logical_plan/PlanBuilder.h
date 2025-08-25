@@ -250,7 +250,9 @@ class PlanBuilder {
 
   PlanBuilder& unnest(
       const std::vector<ExprApi>& unnestExprs,
-      bool withOrdinality = false);
+      bool withOrdinality = false,
+      const std::optional<std::string>& alias = std::nullopt,
+      const std::vector<std::string>& unnestAliases = {});
 
   PlanBuilder& join(
       const PlanBuilder& right,
