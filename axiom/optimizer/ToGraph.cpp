@@ -1023,10 +1023,7 @@ void ToGraph::translateJoin(const lp::JoinNode& join) {
     extractNonInnerJoinEqualities(
         conjuncts, rightTable, leftKeys, rightKeys, leftTables);
 
-    std::vector<PlanObjectCP> leftTableVector;
-    leftTableVector.reserve(leftTables.size());
-    leftTables.forEach(
-        [&](PlanObjectCP table) { leftTableVector.push_back(table); });
+    auto leftTableVector = leftTables.toObjects();
 
     auto* edge = make<JoinEdge>(
         leftTableVector.size() == 1 ? leftTableVector[0] : nullptr,

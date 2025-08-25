@@ -290,7 +290,7 @@ void DerivedTable::import(
     const std::vector<PlanObjectSet>& existences,
     float existsFanout) {
   tableSet = _tables;
-  _tables.forEach([&](auto table) { tables.push_back(table); });
+  tables = _tables.toObjects();
   for (auto join : super.joins) {
     if (_tables.contains(join->rightTable()) && join->leftTable() &&
         _tables.contains(join->leftTable())) {
@@ -305,8 +305,7 @@ void DerivedTable::import(
     // of these tables goes into its own derived table which is joined
     // with exists to the main table(s) in the 'this'.
     importedExistences.unionSet(exists);
-    PlanObjectVector existsTables;
-    exists.forEach([&](auto object) { existsTables.push_back(object); });
+    auto existsTables = exists.toObjects();
     auto existsJoin = makeExists(firstTable, exists);
     if (existsTables.size() > 1) {
       // There is a join on the right of exists. Needs its own dt.

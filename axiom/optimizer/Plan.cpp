@@ -1666,8 +1666,7 @@ float startingScore(PlanObjectCP table) {
 void Optimization::makeJoins(RelationOpPtr plan, PlanState& state) {
   auto& dt = state.dt;
   if (!plan) {
-    std::vector<PlanObjectCP> firstTables;
-    dt->startTables.forEach([&](auto table) { firstTables.push_back(table); });
+    auto firstTables = dt->startTables.toObjects();
     std::vector<float> scores(firstTables.size());
     for (auto i = 0; i < firstTables.size(); ++i) {
       auto table = firstTables[i];
