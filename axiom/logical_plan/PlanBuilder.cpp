@@ -388,8 +388,26 @@ PlanBuilder& PlanBuilder::unnest(
 PlanBuilder& PlanBuilder::unnest(
     const std::vector<ExprApi>& unnestExprs,
     bool withOrdinality) {
+  return unnest(unnestExprs, withOrdinality, std::nullopt, {});
+}
+
+PlanBuilder& PlanBuilder::unnest(
+    const std::vector<ExprApi>& unnestExprs,
+    bool withOrdinality,
+    const std::optional<std::string>& alias,
+    const std::vector<std::string>& unnestAliases) {
   auto newOutputMapping =
       node_ != nullptr ? outputMapping_ : std::make_shared<NameMappings>();
+
+  size_t index = 0;
+
+  auto addOutputMapping = [&](const std::string& name, const std::string& id) {
+    if (!newOutputMapping->lookup(name)) {
+      newOutputMapping->add(name, id);
+    }
+    newOutputMapping->add({.alias = alias, .name = name}, id);
+    ++index;
+  };
 
   std::vector<ExprPtr> exprs;
   std::vector<std::vector<std::string>> outputNames;
@@ -406,12 +424,36 @@ PlanBuilder& PlanBuilder::unnest(
     } else {
       switch (expr->type()->kind()) {
         case TypeKind::ARRAY:
-          outputNames.emplace_back(std::vector<std::string>{newName("e_")});
+          if (!unnestAliases.empty()) {
+            VELOX_USER_CHECK_LT(index, unnestAliases.size());
+
+            const auto& outputName = unnestAliases.at(index);
+            outputNames.emplace_back(
+                std::vector<std::string>{newName(outputName)});
+
+            addOutputMapping(outputName, outputNames.back().back());
+          } else {
+            outputNames.emplace_back(std::vector<std::string>{newName("e")});
+          }
           break;
+
         case TypeKind::MAP:
-          outputNames.emplace_back(
-              std::vector<std::string>{newName("k_"), newName("v_")});
+          if (!unnestAliases.empty()) {
+            VELOX_USER_CHECK_LT(index, unnestAliases.size());
+
+            const auto& keyName = unnestAliases.at(index);
+            const auto& valueName = unnestAliases.at(index + 1);
+            outputNames.emplace_back(
+                std::vector<std::string>{newName(keyName), newName(valueName)});
+
+            addOutputMapping(keyName, outputNames.back().at(0));
+            addOutputMapping(valueName, outputNames.back().at(1));
+          } else {
+            outputNames.emplace_back(
+                std::vector<std::string>{newName("k"), newName("v")});
+          }
           break;
+
         default:
           VELOX_USER_FAIL(
               "Unsupported type to unnest: {}", expr->type()->toString());

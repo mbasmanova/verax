@@ -117,15 +117,14 @@ TEST_F(PrestoParserTest, unnest) {
   }
 
   {
-    auto matcher = lp::LogicalPlanMatcherBuilder().tableScan().join(
-        lp::LogicalPlanMatcherBuilder().unnest().build());
+    auto matcher = lp::LogicalPlanMatcherBuilder().tableScan().unnest();
     testSql(
         "SELECT * FROM nation, unnest(array[n_nationkey, n_regionkey])",
         matcher);
   }
+
   {
-    auto matcher = lp::LogicalPlanMatcherBuilder().tableScan().join(
-        lp::LogicalPlanMatcherBuilder().unnest().project().build());
+    auto matcher = lp::LogicalPlanMatcherBuilder().tableScan().unnest();
 
     testSql(
         "SELECT * FROM nation, unnest(array[n_nationkey, n_regionkey]) as t(x)",
