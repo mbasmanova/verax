@@ -340,7 +340,9 @@ TEST_F(PlanPrinterTest, unnest) {
     EXPECT_THAT(
         lines,
         testing::ElementsAre(
-            testing::Eq("- Unnest: -> ROW<e:INTEGER>"), testing::Eq("")));
+            testing::Eq("- Unnest: -> ROW<e:INTEGER>"),
+            testing::Eq("    [e] := [1,2,3]"),
+            testing::Eq("")));
   }
 
   {
@@ -358,6 +360,7 @@ TEST_F(PlanPrinterTest, unnest) {
             testing::StartsWith("    x := x"),
             testing::StartsWith("    expr := plus(x, CAST(1 AS INTEGER))"),
             testing::Eq("  - Unnest: -> ROW<x:INTEGER>"),
+            testing::Eq("      [x] := [1,2,3]"),
             testing::Eq("")));
   }
 
@@ -372,6 +375,7 @@ TEST_F(PlanPrinterTest, unnest) {
         lines,
         testing::ElementsAre(
             testing::Eq("- Unnest: -> ROW<k:INTEGER,v:INTEGER>"),
+            testing::Eq("    [k, v] := map([1,2,3], [10,20,30])"),
             testing::Eq("")));
   }
 
@@ -390,6 +394,7 @@ TEST_F(PlanPrinterTest, unnest) {
             testing::StartsWith("- Project:"),
             testing::StartsWith("    expr := plus(x, y)"),
             testing::Eq("  - Unnest: -> ROW<x:INTEGER,y:INTEGER>"),
+            testing::Eq("      [x, y] := map([1,2,3], [10,20,30])"),
             testing::Eq("")));
   }
 
@@ -411,6 +416,8 @@ TEST_F(PlanPrinterTest, unnest) {
             testing::StartsWith("    expr_0 := plus(x, CAST(y AS BIGINT))"),
             testing::StartsWith("    z := z"),
             testing::StartsWith("  - Unnest:"),
+            testing::StartsWith("      [x] := d"),
+            testing::StartsWith("      [y, z] := e"),
             testing::StartsWith("    - TableScan: test.test"),
             testing::Eq("")));
   }
