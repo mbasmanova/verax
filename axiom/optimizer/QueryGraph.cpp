@@ -415,6 +415,13 @@ void JoinEdge::guessFanout() {
   if (fanoutsFixed_) {
     return;
   }
+
+  if (leftTable_ == nullptr) {
+    lrFanout_ = 1.1;
+    rlFanout_ = 1;
+    return;
+  }
+
   auto* opt = queryCtx()->optimization();
   auto samplePair = opt->history().sampleJoin(this);
   auto left = joinCardinality(leftTable_, toRangeCast<Column>(leftKeys_));
