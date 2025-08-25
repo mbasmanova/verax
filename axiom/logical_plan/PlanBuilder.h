@@ -252,6 +252,19 @@ class PlanBuilder {
       const std::vector<ExprApi>& unnestExprs,
       bool withOrdinality = false);
 
+  /// An alternative way to specify aliases for unnested columns. A preferred
+  /// way is by using ExprApi::unnestAs.
+  ///
+  /// @param alias Optional alias for the relation produced by unnest.
+  /// @param columnAliases An optional list of aliases for columns produced by
+  /// unnest. The list can be empty or must have a non-empty alias for each
+  /// column.
+  PlanBuilder& unnest(
+      const std::vector<ExprApi>& unnestExprs,
+      bool withOrdinality,
+      const std::optional<std::string>& alias,
+      const std::vector<std::string>& columnAliases);
+
   PlanBuilder& join(
       const PlanBuilder& right,
       const std::string& condition,
