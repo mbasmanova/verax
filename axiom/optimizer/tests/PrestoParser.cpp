@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <cctype>
 #include "axiom/logical_plan/PlanBuilder.h"
+#include "axiom/optimizer/connectors/ConnectorMetadata.h"
 #include "axiom/sql/presto/ParserHelper.h"
 #include "axiom/sql/presto/ast/AstBuilder.h"
 #include "axiom/sql/presto/ast/AstPrinter.h"
@@ -1170,10 +1171,36 @@ SqlStatementPtr PrestoParser::doParse(
     query->as<sql::Explain>()->statement()->accept(&planner);
     return std::make_shared<ExplainStatement>(
         std::make_shared<SelectStatement>(planner.getPlan()));
-  } else {
-    query->accept(&planner);
-    return std::make_shared<SelectStatement>(planner.getPlan());
   }
+
+  if (query->is(sql::NodeType::kShowColumns)) {
+    const auto tableName = query->as<sql::ShowColumns>()->table()->suffix();
+
+    auto table = connector::getConnector(defaultConnectorId_)
+                     ->metadata()
+                     ->findTable(tableName);
+
+    VELOX_USER_CHECK_NOT_NULL(table, "Table not found: {}", tableName);
+
+    const auto& schema = table->rowType();
+
+    std::vector<Variant> data;
+    data.reserve(schema->size());
+    for (auto i = 0; i < schema->size(); ++i) {
+      data.emplace_back(
+          Variant::row({schema->nameOf(i), schema->childAt(i)->toString()}));
+    }
+
+    lp::PlanBuilder::Context ctx(defaultConnectorId_);
+
+    return std::make_shared<SelectStatement>(
+        lp::PlanBuilder(ctx)
+            .values(ROW({"column", "type"}, {VARCHAR(), VARCHAR()}), data)
+            .build());
+  }
+
+  query->accept(&planner);
+  return std::make_shared<SelectStatement>(planner.getPlan());
 }
 
 } // namespace facebook::velox::optimizer::test
