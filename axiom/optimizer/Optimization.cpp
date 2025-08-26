@@ -666,14 +666,16 @@ void Optimization::joinByIndex(
     // Index applies to single base tables.
     return;
   }
-  auto rightTable = candidate.tables.at(0)->as<BaseTable>();
-  auto left = candidate.sideOf(rightTable, true);
-  auto right = candidate.sideOf(rightTable);
+
+  auto [right, left] = candidate.joinSides();
+
   auto& keys = right.keys;
   auto keyColumns = leadingColumns(keys);
   if (keyColumns.empty()) {
     return;
   }
+
+  auto rightTable = candidate.tables.at(0)->as<BaseTable>();
   for (auto& index : rightTable->schemaTable->columnGroups) {
     auto info = rightTable->schemaTable->indexInfo(index, keyColumns);
     if (info.lookupKeys.empty()) {
@@ -727,8 +729,7 @@ void Optimization::joinByHash(
     PlanState& state,
     std::vector<NextJoin>& toTry) {
   VELOX_DCHECK(!candidate.tables.empty());
-  auto build = candidate.sideOf(candidate.tables[0]);
-  auto probe = candidate.sideOf(candidate.tables[0], true);
+  auto [build, probe] = candidate.joinSides();
 
   const auto partKeys = joinKeyPartition(plan, probe.keys);
   ExprVector copartition;
@@ -882,8 +883,7 @@ void Optimization::joinByHashRight(
     PlanState& state,
     std::vector<NextJoin>& toTry) {
   VELOX_DCHECK(!candidate.tables.empty());
-  auto probe = candidate.sideOf(candidate.tables[0]);
-  auto build = candidate.sideOf(candidate.tables[0], true);
+  auto [probe, build] = candidate.joinSides();
 
   PlanStateSaver save(state, candidate);
 
