@@ -359,9 +359,8 @@ JoinEdgeP importedDtJoin(
 
 bool isProjected(PlanObjectCP table, const PlanObjectSet& columns) {
   bool projected = false;
-  columns.forEach([&](PlanObjectCP column) {
-    projected |= column->as<Column>()->relation() == table;
-  });
+  columns.forEach<Column>(
+      [&](auto column) { projected |= column->relation() == table; });
   return projected;
 }
 
@@ -1002,9 +1001,7 @@ void DerivedTable::makeInitialPlan() {
   MemoKey key;
   key.firstTable = this;
   key.tables.add(this);
-  for (auto& column : columns) {
-    key.columns.add(column);
-  }
+  key.columns.unionObjects(columns);
 
   distributeConjuncts();
   addImpliedJoins();
@@ -1020,7 +1017,7 @@ void DerivedTable::makeInitialPlan() {
     state.targetColumns.unionColumns(expr);
   }
 
-  optimization->makeJoins(nullptr, state);
+  optimization->makeJoins(state);
 
   auto plan = state.plans.best()->op;
 
@@ -1043,9 +1040,7 @@ PlanP DerivedTable::bestInitialPlan() const {
   MemoKey key;
   key.firstTable = this;
   key.tables.add(this);
-  for (auto& column : columns) {
-    key.columns.add(column);
-  }
+  key.columns.unionObjects(columns);
 
   auto& memo = queryCtx()->optimization()->memo();
   auto it = memo.find(key);

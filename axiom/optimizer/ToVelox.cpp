@@ -108,10 +108,7 @@ void ToVelox::filterUpdated(BaseTableCP table, bool updateSelectivity) {
   for (auto& filter : table->columnFilters) {
     columnSet.unionSet(filter->columns());
   }
-  ColumnVector leafColumns;
-  columnSet.forEach([&](auto obj) {
-    leafColumns.push_back(reinterpret_cast<const Column*>(obj));
-  });
+  auto leafColumns = columnSet.toObjects<Column>();
 
   columnAlteredTypes_.clear();
 
