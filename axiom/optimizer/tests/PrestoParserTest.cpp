@@ -460,5 +460,14 @@ TEST_F(PrestoParserTest, explain) {
   ASSERT_TRUE(matcher.build()->match(logicalPlan));
 }
 
+TEST_F(PrestoParserTest, describe) {
+  auto matcher = lp::LogicalPlanMatcherBuilder().values();
+  testSql("DESCRIBE nation", matcher);
+
+  testSql("DESC orders", matcher);
+
+  testSql("SHOW COLUMNS FROM lineitem", matcher);
+}
+
 } // namespace
 } // namespace facebook::velox::optimizer::test
