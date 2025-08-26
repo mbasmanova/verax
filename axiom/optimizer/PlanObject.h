@@ -153,10 +153,7 @@ class PlanObjectSet : public BitSet {
 
   /// Adds ids of all columns 'expr' depends on.
   void unionColumns(ExprCP expr);
-
-  /// Adds ids of all columns 'exprs' depend on.
   void unionColumns(const ExprVector& exprs);
-  void unionColumns(const ColumnVector& exprs);
 
   /// Adds ids of all objects in 'objects'.
   template <typename V>
@@ -180,9 +177,14 @@ class PlanObjectSet : public BitSet {
   /// Applies 'func' to each object in 'this'.
   template <typename Func>
   void forEach(Func func) const {
+    forEach<PlanObject, Func>(func);
+  }
+
+  template <typename T, typename Func>
+  void forEach(Func func) const {
     auto ctx = queryCtx();
     velox::bits::forEachSetBit(bits_.data(), 0, bits_.size() * 64, [&](auto i) {
-      func(ctx->objectAt(i));
+      func(ctx->objectAt(i)->template as<T>());
     });
   }
 
