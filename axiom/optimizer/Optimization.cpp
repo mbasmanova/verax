@@ -16,6 +16,8 @@
 
 #include "axiom/optimizer/Optimization.h"
 #include <iostream>
+#include "axiom/optimizer/VeloxHistory.h"
+#include "velox/expression/Expr.h"
 
 namespace lp = facebook::velox::logical_plan;
 
@@ -46,6 +48,41 @@ Optimization::Optimization(
     join->guessFanout();
   }
   toGraph_.setDtOutput(root_, *logicalPlan_);
+}
+
+// static
+PlanAndStats Optimization::toVeloxPlan(
+    const lp::LogicalPlanNode& logicalPlan,
+    velox::memory::MemoryPool& pool,
+    OptimizerOptions options,
+    axiom::runner::MultiFragmentPlan::Options runnerOptions) {
+  auto allocator = std::make_unique<velox::HashStringAllocator>(&pool);
+  auto context = std::make_unique<QueryGraphContext>(*allocator);
+  queryCtx() = context.get();
+  SCOPE_EXIT {
+    queryCtx() = nullptr;
+  };
+
+  auto veloxQueryCtx = velox::core::QueryCtx::create();
+  velox::exec::SimpleExpressionEvaluator evaluator(veloxQueryCtx.get(), &pool);
+
+  auto schemaResolver = std::make_shared<SchemaResolver>();
+
+  VeloxHistory history;
+
+  Schema schema("default", schemaResolver.get(), /* locus */ nullptr);
+
+  Optimization opt(
+      logicalPlan,
+      schema,
+      history,
+      veloxQueryCtx,
+      evaluator,
+      options,
+      runnerOptions);
+
+  auto best = opt.bestPlan();
+  return opt.toVeloxPlan(best->op);
 }
 
 void Optimization::trace(
