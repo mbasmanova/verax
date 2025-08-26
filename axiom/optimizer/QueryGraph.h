@@ -604,6 +604,14 @@ class JoinEdge {
         !rightNotExists_;
   }
 
+  bool isSemi() const {
+    return rightExists_;
+  }
+
+  bool isAnti() const {
+    return rightNotExists_;
+  }
+
   /// True if all tables referenced from 'leftKeys' must be placed before
   /// placing this.
   bool isNonCommutative() const {
