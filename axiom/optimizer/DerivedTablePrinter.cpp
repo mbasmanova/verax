@@ -54,6 +54,8 @@ std::string tableName(PlanObjectCP table) {
       return table->as<BaseTable>()->cname;
     case PlanType::kValuesTableNode:
       return table->as<ValuesTable>()->cname;
+    case PlanType::kUnnestTableNode:
+      return table->as<UnnestTable>()->cname;
     case PlanType::kDerivedTableNode:
       return table->as<DerivedTable>()->cname;
     default:
@@ -82,6 +84,12 @@ std::string visitValuesTable(const ValuesTable& values) {
   return out.str();
 }
 
+std::string visitUnnestTable(const UnnestTable& unnest) {
+  std::stringstream out;
+  out << unnest.cname << ": " << columnNames(unnest.columns) << std::endl;
+  return out.str();
+}
+
 std::string visitJoinEdge(const JoinEdge& edge) {
   std::stringstream out;
   if (edge.leftTable() != nullptr) {
@@ -94,6 +102,8 @@ std::string visitJoinEdge(const JoinEdge& edge) {
     out << " SEMI ";
   } else if (edge.isAnti()) {
     out << " ANTI ";
+  } else if (edge.isUnnest()) {
+    out << " CROSS JOIN UNNEST ";
   } else if (edge.leftOptional() && edge.rightOptional()) {
     out << " FULL OUTER ";
   } else if (edge.leftOptional()) {
@@ -108,13 +118,23 @@ std::string visitJoinEdge(const JoinEdge& edge) {
 
   out << " ON ";
 
-  for (auto i = 0; i < edge.leftKeys().size(); ++i) {
-    if (i > 0) {
-      out << " AND ";
-    }
+  if (edge.isUnnest()) {
+    for (auto i = 0; i < edge.leftKeys().size(); ++i) {
+      if (i > 0) {
+        out << ", ";
+      }
 
-    out << edge.leftKeys()[i]->toString() << " = "
-        << edge.rightKeys()[i]->toString();
+      out << edge.leftKeys()[i]->toString();
+    }
+  } else {
+    for (auto i = 0; i < edge.leftKeys().size(); ++i) {
+      if (i > 0) {
+        out << " AND ";
+      }
+
+      out << edge.leftKeys()[i]->toString() << " = "
+          << edge.rightKeys()[i]->toString();
+    }
   }
 
   if (!edge.filter().empty()) {
@@ -216,6 +236,9 @@ std::string visitDerivedTable(const DerivedTable& dt) {
         break;
       case PlanType::kValuesTableNode:
         out << visitValuesTable(*table->as<ValuesTable>());
+        break;
+      case PlanType::kUnnestTableNode:
+        out << visitUnnestTable(*table->as<UnnestTable>());
         break;
       case PlanType::kDerivedTableNode:
         return visitDerivedTable(*table->as<DerivedTable>());
