@@ -444,5 +444,21 @@ TEST_F(PrestoParserTest, everything) {
       matcher);
 }
 
+TEST_F(PrestoParserTest, explain) {
+  test::PrestoParser parser(kTpchConnectorId, pool());
+
+  auto statement = parser.parse("EXPLAIN SELECT * FROM nation");
+  ASSERT_TRUE(statement->isExplain());
+
+  auto selectStatement =
+      statement->asUnchecked<test::ExplainStatement>()->statement();
+  ASSERT_TRUE(selectStatement->isSelect());
+
+  auto matcher = lp::LogicalPlanMatcherBuilder().tableScan();
+
+  auto logicalPlan = selectStatement->asUnchecked<SelectStatement>()->plan();
+  ASSERT_TRUE(matcher.build()->match(logicalPlan));
+}
+
 } // namespace
 } // namespace facebook::velox::optimizer::test
