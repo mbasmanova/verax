@@ -784,7 +784,7 @@ struct BaseTable : public PlanObject {
   BitSet columnSubfields(int32_t id, bool payloadOnly, bool controlOnly) const;
 
   /// Returns possible indices for driving table scan of 'table'.
-  std::vector<ColumnGroupP> chooseLeafIndex() const {
+  std::vector<ColumnGroupCP> chooseLeafIndex() const {
     VELOX_DCHECK(!schemaTable->columnGroups.empty());
     return {schemaTable->columnGroups[0]};
   }
