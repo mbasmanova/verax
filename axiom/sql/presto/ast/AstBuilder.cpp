@@ -466,7 +466,11 @@ std::any AstBuilder::visitShowGrants(PrestoSqlParser::ShowGrantsContext* ctx) {
 
 std::any AstBuilder::visitExplain(PrestoSqlParser::ExplainContext* ctx) {
   trace("visitExplain");
-  return visitChildren(ctx);
+
+  return std::static_pointer_cast<Statement>(std::make_shared<Explain>(
+      getLocation(ctx),
+      visitTyped<Statement>(ctx->statement()),
+      visitTyped<ExplainOption>(ctx->explainOption())));
 }
 
 std::any AstBuilder::visitShowCreateTable(
