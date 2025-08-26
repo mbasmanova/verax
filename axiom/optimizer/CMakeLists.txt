@@ -32,6 +32,7 @@ add_library(
   DerivedTablePrinter.cpp
   ToGraph.cpp
   Subfields.cpp
+  Optimization.cpp
   Plan.cpp
   BitSet.cpp
   ParallelExpr.cpp
