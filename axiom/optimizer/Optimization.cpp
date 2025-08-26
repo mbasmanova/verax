@@ -422,30 +422,32 @@ bool isIndexColocated(
     const IndexInfo& info,
     const ExprVector& lookupValues,
     const RelationOpPtr& input) {
-  if (info.index->distribution().isBroadcast &&
+  const auto& distribution = info.index->distribution;
+  if (distribution.isBroadcast &&
       input->distribution().distributionType.locus ==
-          info.index->distribution().distributionType.locus) {
+          distribution.distributionType.locus) {
     return true;
   }
 
   // True if 'input' is partitioned so that each partitioning key is joined to
   // the corresponding partition key in 'info'.
-  if (input->distribution().distributionType !=
-      info.index->distribution().distributionType) {
+  if (input->distribution().distributionType != distribution.distributionType) {
     return false;
   }
+
   if (input->distribution().partition.empty()) {
     return false;
   }
-  if (input->distribution().partition.size() !=
-      info.index->distribution().partition.size()) {
+
+  if (input->distribution().partition.size() != distribution.partition.size()) {
     return false;
   }
+
   for (auto i = 0; i < input->distribution().partition.size(); ++i) {
     auto nthKey = position(lookupValues, *input->distribution().partition[i]);
     if (nthKey != kNotFound) {
       if (info.schemaColumn(info.lookupKeys.at(nthKey)) !=
-          info.index->distribution().partition.at(i)) {
+          distribution.partition.at(i)) {
         return false;
       }
     } else {
@@ -464,8 +466,10 @@ RelationOpPtr repartitionForIndex(
     return plan;
   }
 
+  const auto& distribution = info.index->distribution;
+
   ExprVector keyExprs;
-  auto& partition = info.index->distribution().partition;
+  auto& partition = distribution.partition;
   for (auto key : partition) {
     // partition is in schema columns, lookupKeys is in BaseTable columns. Use
     // the schema column of lookup key for matching.
@@ -484,10 +488,10 @@ RelationOpPtr repartitionForIndex(
     keyExprs.push_back(lookupValues[nthKey]);
   }
 
-  Distribution distribution{
-      info.index->distribution().distributionType, std::move(keyExprs)};
-  auto* repartition =
-      make<Repartition>(plan, std::move(distribution), plan->columns());
+  auto* repartition = make<Repartition>(
+      plan,
+      Distribution{distribution.distributionType, std::move(keyExprs)},
+      plan->columns());
   state.addCost(*repartition);
   return repartition;
 }
@@ -536,6 +540,20 @@ PlanObjectSet availableColumns(PlanObjectCP object) {
     VELOX_UNREACHABLE("Joinable must be a table or derived table");
   }
   return set;
+}
+
+PlanObjectSet availableColumns(BaseTableCP baseTable, ColumnGroupCP index) {
+  // The columns of base table that exist in 'index'.
+  PlanObjectSet result;
+  for (auto column : index->columns) {
+    for (auto baseColumn : baseTable->columns) {
+      if (baseColumn->name() == column->name()) {
+        result.add(baseColumn);
+        break;
+      }
+    }
+  }
+  return result;
 }
 
 bool isBroadcastableSize(PlanP build, PlanState& /*state*/) {
@@ -679,7 +697,7 @@ void Optimization::joinByIndex(
     auto lookupKeys = left.keys;
     // The number of keys is the prefix that matches index order.
     lookupKeys.resize(info.lookupKeys.size());
-    state.columns.unionSet(TableScan::availableColumns(rightTable, index));
+    state.columns.unionSet(availableColumns(rightTable, index));
     auto c = state.downstreamColumns();
     c.intersect(state.columns);
     for (auto& filter : rightTable->filter) {
@@ -1183,7 +1201,7 @@ namespace {
 ColumnVector indexColumns(
     const PlanObjectSet& downstream,
     BaseTableCP table,
-    ColumnGroupP index) {
+    ColumnGroupCP index) {
   ColumnVector result;
   downstream.forEach<Column>([&](auto column) {
     if (!column->schemaColumn()) {
@@ -1192,7 +1210,7 @@ ColumnVector indexColumns(
     if (table != column->relation()) {
       return;
     }
-    if (position(index->columns(), *column->schemaColumn()) != kNotFound) {
+    if (position(index->columns, *column->schemaColumn()) != kNotFound) {
       result.push_back(column);
     }
   });
@@ -1501,6 +1519,7 @@ PlanP Optimization::makeDtPlan(
   PlanSet* plans;
   if (it == memo_.end()) {
     DerivedTable dt;
+    dt.cname = newCName("tmp_dt");
     dt.import(
         *state.dt, key.firstTable, key.tables, key.existences, existsFanout);
 
