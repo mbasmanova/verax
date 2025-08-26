@@ -104,8 +104,6 @@ struct PlanSet {
 /// Represents the next table/derived table to join. May consist of several
 /// tables for a bushy build side.
 struct JoinCandidate {
-  JoinCandidate() = default;
-
   JoinCandidate(JoinEdgeP _join, PlanObjectCP _right, float _fanout)
       : join(_join), tables({_right}), fanout(_fanout) {}
 

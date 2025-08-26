@@ -146,13 +146,14 @@ void reducingJoinsRecursive(
   }
 }
 
-JoinCandidate reducingJoins(
+// For an inner join, see if can bundle reducing joins on the build.
+std::optional<JoinCandidate> reducingJoins(
     const PlanState& state,
     const JoinCandidate& candidate) {
-  // For an inner join, see if can bundle reducing joins on the build.
-  JoinCandidate reducing;
-  reducing.join = candidate.join;
-  reducing.fanout = candidate.fanout;
+  std::vector<PlanObjectCP> tables;
+  std::vector<PlanObjectSet> existences;
+  float fanout = candidate.fanout;
+
   PlanObjectSet reducingSet;
   if (candidate.join->isInner()) {
     PlanObjectSet visited = state.placed;
@@ -172,15 +173,16 @@ JoinCandidate reducingJoins(
         reduction);
     if (reduction < 0.9) {
       // The only table in 'candidate' must be first in the bushy table list.
-      reducing.tables = candidate.tables;
+      tables = candidate.tables;
       reducingSet.forEach([&](auto object) {
-        if (object != reducing.tables[0]) {
-          reducing.tables.push_back(object);
+        if (object != tables[0]) {
+          tables.push_back(object);
         }
       });
-      reducing.fanout = candidate.fanout * reduction;
+      fanout = candidate.fanout * reduction;
     }
   }
+
   if (!state.dt->noImportOfExists) {
     PlanObjectSet exists;
     float reduction = 1;
@@ -209,18 +211,24 @@ JoinCandidate reducingJoins(
             for (auto i = 1; i < path.size(); ++i) {
               added.add(path[i]);
             }
-            reducing.existences.push_back(std::move(added));
+            existences.push_back(std::move(added));
           }
         });
   }
-  if (reducing.tables.empty() && reducing.existences.empty()) {
+
+  if (tables.empty() && existences.empty()) {
     // No reduction.
-    return JoinCandidate{};
+    return std::nullopt;
   }
-  if (reducing.tables.empty()) {
+
+  if (tables.empty()) {
     // No reducing joins but reducing existences from probe side.
-    reducing.tables = candidate.tables;
+    tables = candidate.tables;
   }
+
+  JoinCandidate reducing(candidate.join, tables[0], fanout);
+  reducing.tables = std::move(tables);
+  reducing.existences = std::move(existences);
   return reducing;
 }
 
@@ -301,15 +309,15 @@ std::vector<JoinCandidate> Optimization::nextJoins(PlanState& state) {
         }
       });
 
-  std::vector<JoinCandidate> bushes;
   // Take the  first hand joined tables and bundle them with reducing joins that
   // can go on the build side.
+  std::vector<JoinCandidate> bushes;
   for (auto& candidate : candidates) {
-    auto bush = reducingJoins(state, candidate);
-    if (!bush.tables.empty()) {
-      bushes.push_back(std::move(bush));
+    if (auto bush = reducingJoins(state, candidate)) {
+      bushes.push_back(std::move(bush.value()));
     }
   }
+
   candidates.insert(candidates.begin(), bushes.begin(), bushes.end());
   std::sort(
       candidates.begin(),
