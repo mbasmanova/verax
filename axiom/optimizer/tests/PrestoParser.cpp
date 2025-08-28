@@ -454,7 +454,10 @@ class RelationPlanner : public sql::AstVisitor {
         if (query->is(sql::NodeType::kQuery)) {
           auto builder = std::move(builder_);
 
-          builder_ = newBuilder();
+          lp::PlanBuilder::Scope scope;
+          builder->captureScope(scope);
+
+          builder_ = newBuilder(scope);
           processQuery(query->as<sql::Query>());
           auto subqueryBuider = builder_;
 
