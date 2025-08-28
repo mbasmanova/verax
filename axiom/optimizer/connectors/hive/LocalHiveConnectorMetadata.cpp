@@ -44,7 +44,7 @@ std::vector<PartitionHandlePtr> LocalHiveSplitManager::listPartitions(
 
 std::shared_ptr<SplitSource> LocalHiveSplitManager::getSplitSource(
     const ConnectorTableHandlePtr& tableHandle,
-    std::vector<PartitionHandlePtr> /*partitions*/,
+    const std::vector<PartitionHandlePtr>& /*partitions*/,
     SplitOptions options) {
   // Since there are only unpartitioned tables now, always makes a SplitSource
   // that goes over all the files in the handle's layout.
@@ -226,17 +226,19 @@ void LocalHiveConnectorMetadata::readTables(const std::string& path) {
 std::pair<int64_t, int64_t> LocalHiveTableLayout::sample(
     const connector::ConnectorTableHandlePtr& handle,
     float pct,
-    std::vector<core::TypedExprPtr> extraFilters,
+    const std::vector<core::TypedExprPtr>& extraFilters,
     RowTypePtr scanType,
     const std::vector<common::Subfield>& fields,
     HashStringAllocator* allocator,
     std::vector<ColumnStatistics>* statistics) const {
-  std::vector<std::unique_ptr<StatisticsBuilder>> builders;
   VELOX_CHECK(extraFilters.empty());
+
+  std::vector<std::unique_ptr<StatisticsBuilder>> builders;
   auto result = sample(handle, pct, scanType, fields, allocator, &builders);
   if (!statistics) {
     return result;
   }
+
   statistics->resize(builders.size());
   for (auto i = 0; i < builders.size(); ++i) {
     ColumnStatistics runnerStats;
@@ -305,10 +307,10 @@ std::pair<int64_t, int64_t> LocalHiveTableLayout::sample(
       }
       passingRows += data->size();
       if (!builders.empty()) {
-        StatisticsBuilder::updateStatsBuilders(data, builders);
+        StatisticsBuilder::updateBuilders(data, builders);
       }
       if (scannedRows + dataSource->getCompletedRows() >
-          table()->numRows() * (pct / 100)) {
+          table().numRows() * (pct / 100)) {
         scannedRows += dataSource->getCompletedRows();
         break;
       }
@@ -371,25 +373,34 @@ std::shared_ptr<LocalTable> LocalHiveConnectorMetadata::createTableFromSchema(
   }
   VELOX_CHECK_EQ(jsons.size(), 1);
   auto json = jsons[0];
-  auto table = std::make_shared<LocalTable>(name, format_);
-  tables_[table->name()] = table;
+
+  type::fbhive::HiveTypeParser parser;
+
   std::vector<std::string> names;
   std::vector<TypePtr> types;
   std::vector<std::unique_ptr<Column>> columns;
-  type::fbhive::HiveTypeParser parser;
-  std::vector<const Column*> partition;
   for (auto column : json["dataColumns"]) {
     names.push_back(column["name"].asString());
     types.push_back(parser.parse(column["type"].asString()));
     columns.push_back(std::make_unique<Column>(names.back(), types.back()));
   }
+
+  std::vector<const Column*> partition;
   for (auto column : json["partitionColumns"]) {
     names.push_back(column["name"].asString());
     types.push_back(parser.parse(column["type"].asString()));
     columns.push_back(std::make_unique<Column>(names.back(), types.back()));
     partition.push_back(columns.back().get());
   }
-  table->type_ = ROW(std::move(names), std::move(types));
+
+  std::unordered_map<std::string, std::string> options;
+  if (json.count("compressionKind")) {
+    options["compression_kind"] = json["compressionKind"].asString();
+  }
+
+  auto table = std::make_shared<LocalTable>(
+      name, ROW(std::move(names), std::move(types)), std::move(options));
+  tables_[name] = table;
 
   std::vector<const Column*> columnOrder;
   for (auto& column : columns) {
@@ -406,27 +417,28 @@ std::shared_ptr<LocalTable> LocalHiveConnectorMetadata::createTableFromSchema(
   if (json.count("bucketProperty")) {
     auto buckets = json["bucketProperty"];
     if (buckets.count("bucketedBy")) {
-      for (auto name : buckets["bucketedBy"]) {
+      for (const auto& name : buckets["bucketedBy"]) {
         auto column = table->findColumn(name.asString());
-        VELOX_CHECK_NOT_NULL(column);
+        VELOX_CHECK_NOT_NULL(
+            column, "Bucketed-by column not found: {}", name.asString());
         bucket.push_back(column);
       }
-      for (auto name : buckets["sortedBy"]) {
+      for (const auto& name : buckets["sortedBy"]) {
         auto column = table->findColumn(name.asString());
-        VELOX_CHECK_NOT_NULL(column);
-        order.push_back(column);
-        sortOrder.push_back(SortOrder(true, true));
+        VELOX_CHECK_NOT_NULL(
+            column, "Sorted-by column not found: {}", name.asString());
+        order.emplace_back(column);
+        sortOrder.emplace_back(SortOrder{true, true}); // ASC NULLS FIRST.
       }
       numBuckets = atoi(buckets["bucketCount"].asString().c_str());
     }
   }
-  if (json.count("compressionKind")) {
-    table->options_["compression_kind"] = json["compressionKind"].asString();
-  }
+
   auto format = format_;
   if (json.count("fileFormat")) {
     format = dwio::common::toFileFormat(json["fileFormat"].asString());
   }
+
   std::vector<const Column*> empty;
   auto layout = std::make_unique<LocalHiveTableLayout>(
       table->name(),
@@ -513,32 +525,28 @@ void LocalHiveConnectorMetadata::loadTable(
     const fs::path& tablePath) {
   // open each file in the directory and check their type and add up the row
   // counts.
-  RowTypePtr tableType;
   auto table = createTableFromSchema(tableName, tablePath);
+
+  RowTypePtr tableType;
   if (table) {
-    tableType = table->rowType();
+    tableType = table->type();
   }
+
   std::function<int32_t(const std::string&)> parseBucketNumber = nullptr;
   if (table && !table->layouts()[0]->partitionColumns().empty()) {
     parseBucketNumber = extractDigitsAfterLastSlash;
   }
+
   std::vector<std::unique_ptr<const FileInfo>> files;
   std::string pathString = tablePath;
   listFiles(pathString, parseBucketNumber, pathString.size(), files);
 
   for (auto& info : files) {
-    auto it = tables_.find(tableName);
-    if (it != tables_.end()) {
-      table = it->second;
-    } else {
-      tables_[tableName] = std::make_shared<LocalTable>(tableName, format_);
-      table = tables_[tableName];
-    }
-    dwio::common::ReaderOptions readerOptions{schemaPool_.get()};
     // If the table has a schema it has a layout that gives the file format.
     // Otherwise we default it from 'this'.
+    dwio::common::ReaderOptions readerOptions{schemaPool_.get()};
     readerOptions.setFileFormat(
-        table->layouts().empty()
+        table == nullptr || table->layouts().empty()
             ? format_
             : reinterpret_cast<const HiveTableLayout*>(table->layouts()[0])
                   ->fileFormat());
@@ -548,7 +556,8 @@ void LocalHiveConnectorMetadata::loadTable(
     std::unique_ptr<dwio::common::Reader> reader =
         dwio::common::getReaderFactory(readerOptions.fileFormat())
             ->createReader(std::move(input), readerOptions);
-    const auto fileType = reader->rowType();
+
+    const auto& fileType = reader->rowType();
     if (!tableType) {
       tableType = fileType;
     } else if (fileType->size() > tableType->size()) {
@@ -556,13 +565,23 @@ void LocalHiveConnectorMetadata::loadTable(
       // TODO: Check the column types are compatible where they overlap.
       tableType = fileType;
     }
-    const auto rows = reader->numberOfRows();
 
+    auto it = tables_.find(tableName);
+    if (it != tables_.end()) {
+      table = it->second;
+    } else {
+      tables_[tableName] = std::make_shared<LocalTable>(tableName, tableType);
+      table = tables_[tableName];
+    }
+
+    const auto rows = reader->numberOfRows();
     if (rows.has_value()) {
       table->numRows_ += rows.value();
     }
+
     for (auto i = 0; i < fileType->size(); ++i) {
-      auto name = fileType->nameOf(i);
+      const auto& name = fileType->nameOf(i);
+
       Column* column;
       auto columnIt = table->columns().find(name);
       if (columnIt != table->columns().end()) {
@@ -586,7 +605,6 @@ void LocalHiveConnectorMetadata::loadTable(
   }
   VELOX_CHECK_NOT_NULL(table, "Table directory {} is empty", tablePath);
 
-  table->setType(tableType);
   table->makeDefaultLayout(std::move(files), *this);
   float pct = 10;
   if (table->numRows() > 1000000) {
@@ -597,7 +615,7 @@ void LocalHiveConnectorMetadata::loadTable(
 }
 
 bool isMixedOrder(const StatisticsBuilder& stats) {
-  return stats.numAsc() && stats.numDesc();
+  return stats.numAscending() && stats.numDescending();
 }
 
 bool isInteger(TypeKind kind) {
@@ -634,6 +652,7 @@ T numericValue(const variant& v) {
 
 void LocalTable::sampleNumDistincts(float samplePct, memory::MemoryPool* pool) {
   std::vector<common::Subfield> fields;
+  fields.reserve(type_->size());
   for (auto i = 0; i < type_->size(); ++i) {
     fields.push_back(common::Subfield(type_->nameOf(i)));
   }
@@ -641,11 +660,14 @@ void LocalTable::sampleNumDistincts(float samplePct, memory::MemoryPool* pool) {
   // Sample the table. Adjust distinct values according to the samples.
   auto allocator = std::make_unique<HashStringAllocator>(pool);
   auto* layout = layouts_[0].get();
+
   std::vector<connector::ColumnHandlePtr> columns;
+  columns.reserve(type_->size());
   for (auto i = 0; i < type_->size(); ++i) {
     columns.push_back(layout->connector()->metadata()->createColumnHandle(
         *layout, type_->nameOf(i)));
   }
+
   auto* metadata = dynamic_cast<const LocalHiveConnectorMetadata*>(
       layout->connector()->metadata());
   auto& evaluator = *metadata->connectorQueryCtx()->expressionEvaluator();
@@ -714,8 +736,7 @@ const std::unordered_map<std::string, const Column*>& LocalTable::columnMap()
   return exportedColumns_;
 }
 
-ConnectorTablePtr LocalHiveConnectorMetadata::findTable(
-    const std::string& name) {
+TablePtr LocalHiveConnectorMetadata::findTable(const std::string& name) {
   ensureInitialized();
   std::lock_guard<std::mutex> l(mutex_);
   return findTableLocked(name);
@@ -767,7 +788,7 @@ void createDir(const std::string& path) {
   }
 }
 
-void LocalHiveConnectorMetadata::createTableWithOptions(
+void LocalHiveConnectorMetadata::createTable(
     const std::string& tableName,
     const RowTypePtr& rowType,
     const std::unordered_map<std::string, std::string>& options,
@@ -886,8 +907,7 @@ void LocalHiveConnectorMetadata::finishWrite(
     const ConnectorSessionPtr& /*session*/) {
   std::lock_guard<std::mutex> l(mutex_);
   auto localHandle = dynamic_cast<const HiveInsertTableHandle*>(handle.get());
-  loadTable(
-      layout.table()->name(), localHandle->locationHandle()->targetPath());
+  loadTable(layout.table().name(), localHandle->locationHandle()->targetPath());
 }
 
 namespace {
