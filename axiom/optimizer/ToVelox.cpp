@@ -153,7 +153,7 @@ void ToVelox::filterUpdated(BaseTableCP table, bool updateSelectivity) {
 
   columnAlteredTypes_.clear();
 
-  auto& dataColumns = table->schemaTable->connectorTable->rowType();
+  auto& dataColumns = table->schemaTable->connectorTable->type();
   auto* layout = table->schemaTable->columnGroups[0]->layout;
   auto connector = layout->connector();
   std::vector<connector::ColumnHandlePtr> columns;
