@@ -16,6 +16,7 @@
 
 #include "axiom/optimizer/ToVelox.h"
 #include "axiom/optimizer/Optimization.h"
+#include "velox/core/PlanConsistencyChecker.h"
 #include "velox/core/PlanNode.h"
 #include "velox/exec/HashPartitionFunction.h"
 #include "velox/exec/RoundRobinPartitionFunction.h"
@@ -196,8 +197,12 @@ PlanAndStats ToVelox::toVeloxPlan(
   ExecutableFragment top;
   std::vector<ExecutableFragment> stages;
   top.fragment.planNode = makeFragment(std::move(plan), top, stages);
-
   stages.push_back(std::move(top));
+
+  for (const auto& stage : stages) {
+    velox::core::PlanConsistencyChecker::check(stage.fragment.planNode);
+  }
+
   return PlanAndStats{
       std::make_shared<axiom::runner::MultiFragmentPlan>(
           std::move(stages), options),
