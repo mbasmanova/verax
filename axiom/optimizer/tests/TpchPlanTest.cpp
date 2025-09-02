@@ -111,6 +111,28 @@ class TpchPlanTest : public virtual test::HiveQueriesTestBase {
   std::unique_ptr<exec::test::TpchQueryBuilder> referenceBuilder_;
 };
 
+TEST_F(TpchPlanTest, stats) {
+  auto verifyStats = [&](const auto& tableName, auto cardinality) {
+    SCOPED_TRACE(tableName);
+
+    auto logicalPlan = lp::PlanBuilder()
+                           .tableScan(exec::test::kHiveConnectorId, tableName)
+                           .build();
+
+    auto planAndStats = planVelox(logicalPlan);
+    auto stats = planAndStats.prediction;
+    ASSERT_EQ(stats.size(), 1);
+
+    ASSERT_EQ(stats.begin()->first, logicalPlan->id());
+    ASSERT_EQ(stats.begin()->second.cardinality, cardinality);
+  };
+
+  verifyStats("region", 5);
+  verifyStats("nation", 25);
+  verifyStats("orders", 15'000);
+  verifyStats("lineitem", 60'175);
+}
+
 TEST_F(TpchPlanTest, q01) {
   auto logicalPlan =
       lp::PlanBuilder()

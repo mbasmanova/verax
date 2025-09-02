@@ -54,7 +54,7 @@ class History {
   /// cost and plan cardinality.
   virtual bool setLeafSelectivity(
       BaseTable& baseTable,
-      RowTypePtr scanType) = 0;
+      const RowTypePtr& scanType) = 0;
 
   virtual void recordJoinSample(const std::string& key, float lr, float rl) = 0;
 
