@@ -257,14 +257,13 @@ std::string QueryTestBase::veloxString(
     auto* fragmentRoot = fragment.fragment.planNode.get();
     auto planNodeDetails = [&](const core::PlanNodeId& planNodeId,
                                const std::string& indentation,
-                               std::stringstream& stream) {
+                               std::ostream& stream) {
       auto node = core::PlanNode::findFirstNode(
           fragmentRoot, [&](auto* node) { return node->id() == planNodeId; });
       if (!node) {
         return;
       }
       if (auto* scan = dynamic_cast<const core::TableScanNode*>(node)) {
-        stream << std::endl;
         for (auto& pair : scan->assignments()) {
           auto* hiveColumn =
               dynamic_cast<const connector::hive::HiveColumnHandle*>(
