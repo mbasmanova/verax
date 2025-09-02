@@ -255,8 +255,7 @@ class ToVelox {
   std::unordered_map<ExprCP, core::TypedExprPtr> projectedExprs_;
 
   // Map from plan object id to pair of handle with pushdown filters and list
-  // of
-  // filters to eval on the result from the handle.
+  // of filters to eval on the result from the handle.
   std::unordered_map<
       int32_t,
       std::pair<

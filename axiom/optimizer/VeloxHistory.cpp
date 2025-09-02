@@ -89,11 +89,13 @@ std::pair<float, float> VeloxHistory::sampleJoin(JoinEdge* edge) {
   return pair;
 }
 
-bool VeloxHistory::setLeafSelectivity(BaseTable& table, RowTypePtr scanType) {
+bool VeloxHistory::setLeafSelectivity(
+    BaseTable& table,
+    const RowTypePtr& scanType) {
   auto options = queryCtx()->optimization()->options();
-  auto handlePair = queryCtx()->optimization()->leafHandle(table.id());
-  auto handle = handlePair.first;
-  auto string = handle->toString();
+  auto [tableHandle, filters] =
+      queryCtx()->optimization()->leafHandle(table.id());
+  const auto string = tableHandle->toString();
 
   // Check whether leaf selectivity is already cached for this handle.
   {
@@ -105,7 +107,7 @@ bool VeloxHistory::setLeafSelectivity(BaseTable& table, RowTypePtr scanType) {
     }
   }
 
-  auto runnerTable = table.schemaTable->connectorTable;
+  auto* runnerTable = table.schemaTable->connectorTable;
 
   // If there is no physical table to go to or filter sampling
   // has been explicitly disabled, assume 1/10 if any filters
@@ -121,11 +123,18 @@ bool VeloxHistory::setLeafSelectivity(BaseTable& table, RowTypePtr scanType) {
 
   // Determine and cache leaf selectivity for the table handle
   // by sampling the layout for the physical table.
-  uint64_t start = getCurrentTimeMicro();
-  auto sample = runnerTable->layouts()[0]->sample(
-      handlePair.first, 1, handlePair.second, scanType);
-  table.filterSelectivity =
-      static_cast<float>(sample.second) / (sample.first + 1);
+  const uint64_t start = getCurrentTimeMicro();
+  auto sample =
+      runnerTable->layouts()[0]->sample(tableHandle, 1, filters, scanType);
+  VELOX_CHECK_GE(sample.first, 0);
+  VELOX_CHECK_GE(sample.first, sample.second);
+
+  if (sample.first == 0) {
+    table.filterSelectivity = 1;
+    return true;
+  }
+
+  table.filterSelectivity = static_cast<float>(sample.second) / sample.first;
   recordLeafSelectivity(string, table.filterSelectivity, false);
 
   bool trace = (options.traceFlags & OptimizerOptions::kSample) != 0;

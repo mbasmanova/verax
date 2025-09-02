@@ -226,9 +226,9 @@ std::pair<int64_t, int64_t> TpchTableLayout::sample(
     const std::vector<common::Subfield>& /* fields */,
     HashStringAllocator* /* allocator */,
     std::vector<ColumnStatistics>* /* statistics */) const {
+  // TODO Add support for filter in 'handle' and 'extraFilters'.
   const auto totalRows = velox::tpch::getRowCount(tpchTable_, scaleFactor_);
-  const auto sampleRows = static_cast<int64_t>(totalRows * (pct / 100.0));
-  return std::pair(sampleRows, sampleRows);
+  return std::pair(totalRows, totalRows);
 }
 
 void TpchTable::makeDefaultLayout(
