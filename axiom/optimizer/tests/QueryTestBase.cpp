@@ -250,38 +250,32 @@ TestResult QueryTestBase::runVelox(
 
 std::string QueryTestBase::veloxString(
     const axiom::runner::MultiFragmentPlanPtr& plan) {
-  std::stringstream out;
-  for (auto i = 0; i < plan->fragments().size(); ++i) {
-    auto& fragment = plan->fragments()[i];
-    out << "Fragment " << i << ":\n";
-    auto* fragmentRoot = fragment.fragment.planNode.get();
-    auto planNodeDetails = [&](const core::PlanNodeId& planNodeId,
-                               const std::string& indentation,
-                               std::ostream& stream) {
-      auto node = core::PlanNode::findFirstNode(
-          fragmentRoot, [&](auto* node) { return node->id() == planNodeId; });
-      if (!node) {
-        return;
-      }
-      if (auto* scan = dynamic_cast<const core::TableScanNode*>(node)) {
-        for (auto& pair : scan->assignments()) {
-          auto* hiveColumn =
-              dynamic_cast<const connector::hive::HiveColumnHandle*>(
-                  pair.second.get());
-          if (!hiveColumn) {
-            continue;
-          }
-          stream << indentation << pair.first << " = " << hiveColumn->toString()
+  std::unordered_map<core::PlanNodeId, const core::TableScanNode*> scans;
+  for (const auto& fragment : plan->fragments()) {
+    for (const auto& scan : fragment.scans) {
+      scans.emplace(scan->id(), scan.get());
+    }
+  }
+
+  auto planNodeDetails = [&](const core::PlanNodeId& planNodeId,
+                             const std::string& indentation,
+                             std::ostream& stream) {
+    auto it = scans.find(planNodeId);
+    if (it != scans.end()) {
+      const auto* scan = it->second;
+      for (auto& pair : scan->assignments()) {
+        // TODO Add toString() API to ColumnHandle.
+        if (auto* hiveColumn =
+                dynamic_cast<const connector::hive::HiveColumnHandle*>(
+                    pair.second.get())) {
+          stream << indentation << pair.first << " = " << hiveColumn->name()
                  << std::endl;
         }
       }
-    };
+    }
+  };
 
-    out << fragment.fragment.planNode->toString(true, true, planNodeDetails)
-        << std::endl;
-  }
-  out << std::endl;
-  return out.str();
+  return plan->toString(true, planNodeDetails);
 }
 
 TestResult QueryTestBase::assertSame(
