@@ -465,7 +465,7 @@ class VeloxRunner : public QueryBenchmarkBase {
             ->plan(),
         newQuery());
 
-    std::cout << plan.plan->toString() << std::endl;
+    std::cout << plan.toString() << std::endl;
   }
 
   optimizer::PlanAndStats optimize(

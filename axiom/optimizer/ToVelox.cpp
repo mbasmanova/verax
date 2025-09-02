@@ -29,6 +29,21 @@ using namespace facebook::axiom::runner;
 
 namespace facebook::velox::optimizer {
 
+std::string PlanAndStats::toString() const {
+  return plan->toString(
+      true,
+      [&](const core::PlanNodeId& planNodeId,
+          const std::string& indentation,
+          std::ostream& out) {
+        auto it = prediction.find(planNodeId);
+        if (it != prediction.end()) {
+          out << indentation << "Estimate: " << it->second.cardinality
+              << " rows, " << succinctBytes(it->second.peakMemory)
+              << " peak memory" << std::endl;
+        }
+      });
+}
+
 namespace {
 
 std::vector<common::Subfield> columnSubfields(BaseTableCP table, int32_t id) {
