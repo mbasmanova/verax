@@ -37,6 +37,10 @@ struct PlanAndStats {
   axiom::runner::MultiFragmentPlanPtr plan;
   NodeHistoryMap history;
   NodePredictionMap prediction;
+
+  /// Returns a string representation of the plan annotated with estimates from
+  /// 'prediction'.
+  std::string toString() const;
 };
 
 class ToVelox {
