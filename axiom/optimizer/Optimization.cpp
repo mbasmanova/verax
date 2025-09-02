@@ -16,6 +16,7 @@
 
 #include "axiom/optimizer/Optimization.h"
 #include <iostream>
+#include <utility>
 #include "axiom/optimizer/VeloxHistory.h"
 #include "velox/expression/Expr.h"
 
@@ -24,7 +25,7 @@ namespace lp = facebook::velox::logical_plan;
 namespace facebook::velox::optimizer {
 
 Optimization::Optimization(
-    const lp::LogicalPlanNode& plan,
+    const lp::LogicalPlanNode& logicalPlan,
     const Schema& schema,
     History& history,
     std::shared_ptr<core::QueryCtx> veloxQueryCtx,
@@ -34,7 +35,7 @@ Optimization::Optimization(
     : options_(std::move(options)),
       runnerOptions_(std::move(runnerOptions)),
       isSingleWorker_(runnerOptions_.numWorkers == 1),
-      logicalPlan_(&plan),
+      logicalPlan_(&logicalPlan),
       history_(history),
       veloxQueryCtx_(std::move(veloxQueryCtx)),
       toGraph_{schema, evaluator, options_},
@@ -72,14 +73,14 @@ PlanAndStats Optimization::toVeloxPlan(
 
   Schema schema("default", schemaResolver.get(), /* locus */ nullptr);
 
-  Optimization opt(
+  Optimization opt{
       logicalPlan,
       schema,
       history,
       veloxQueryCtx,
       evaluator,
-      options,
-      runnerOptions);
+      std::move(options),
+      std::move(runnerOptions)};
 
   auto best = opt.bestPlan();
   return opt.toVeloxPlan(best->op);

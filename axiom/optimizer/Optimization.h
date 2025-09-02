@@ -31,7 +31,7 @@ namespace facebook::velox::optimizer {
 class Optimization {
  public:
   Optimization(
-      const logical_plan::LogicalPlanNode& plan,
+      const logical_plan::LogicalPlanNode& logicalPlan,
       const Schema& schema,
       History& history,
       std::shared_ptr<core::QueryCtx> veloxQueryCtx,

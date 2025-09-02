@@ -804,8 +804,8 @@ std::optional<ExprCP> ToGraph::translateSubfieldFunction(
   auto* name = toName(exec::sanitizeName(call->name()));
   funcs = funcs | functionBits(name);
 
-  if (metadata->logicalExplode) {
-    auto map = metadata->logicalExplode(call, paths);
+  if (metadata->explode) {
+    auto map = metadata->explode(call, paths);
     std::unordered_map<PathCP, ExprCP> translated;
     for (const auto& [path, expr] : map) {
       translated[path] = translateExpr(expr);
@@ -848,20 +848,19 @@ ExprVector ToGraph::translateColumns(const std::vector<lp::ExprPtr>& source) {
   return result;
 }
 
-AggregationPlanCP ToGraph::translateAggregation(
-    const lp::AggregateNode& logicalAgg) {
-  ExprVector groupingKeys = translateColumns(logicalAgg.groupingKeys());
+AggregationPlanCP ToGraph::translateAggregation(const lp::AggregateNode& agg) {
+  ExprVector groupingKeys = translateColumns(agg.groupingKeys());
   AggregateVector aggregates;
   ColumnVector columns;
 
-  for (auto i = 0; i < logicalAgg.groupingKeys().size(); ++i) {
-    auto name = toName(logicalAgg.outputType()->nameOf(i));
+  for (auto i = 0; i < agg.groupingKeys().size(); ++i) {
+    auto name = toName(agg.outputType()->nameOf(i));
     auto* key = groupingKeys[i];
 
     if (key->is(PlanType::kColumnExpr)) {
       columns.push_back(key->as<Column>());
     } else {
-      toType(logicalAgg.outputType()->childAt(i));
+      toType(agg.outputType()->childAt(i));
 
       auto* column = make<Column>(name, currentDt_, key->value(), name);
       columns.push_back(column);
@@ -872,13 +871,13 @@ AggregationPlanCP ToGraph::translateAggregation(
 
   // The keys for intermediate are the same as for final.
   ColumnVector intermediateColumns = columns;
-  for (auto channel : usedChannels(logicalAgg)) {
-    if (channel < logicalAgg.groupingKeys().size()) {
+  for (auto channel : usedChannels(agg)) {
+    if (channel < agg.groupingKeys().size()) {
       continue;
     }
 
-    const auto i = channel - logicalAgg.groupingKeys().size();
-    const auto& aggregate = logicalAgg.aggregates()[i];
+    const auto i = channel - agg.groupingKeys().size();
+    const auto& aggregate = agg.aggregates()[i];
     ExprVector args = translateColumns(aggregate->inputs());
 
     FunctionSet funcs;
@@ -897,7 +896,7 @@ AggregationPlanCP ToGraph::translateAggregation(
     auto accumulatorType = toType(
         exec::resolveAggregateFunction(aggregate->name(), argTypes).second);
     Value finalValue = Value(toType(aggregate->type()), 1);
-    auto* agg = make<Aggregate>(
+    auto* aggregateExpr = make<Aggregate>(
         aggName,
         finalValue,
         args,
@@ -906,16 +905,16 @@ AggregationPlanCP ToGraph::translateAggregation(
         condition,
         false,
         accumulatorType);
-    auto name = toName(logicalAgg.outputNames()[channel]);
-    auto* column = make<Column>(name, currentDt_, agg->value(), name);
+    auto name = toName(agg.outputNames()[channel]);
+    auto* column = make<Column>(name, currentDt_, aggregateExpr->value(), name);
     columns.push_back(column);
 
-    auto intermediateValue = agg->value();
+    auto intermediateValue = aggregateExpr->value();
     intermediateValue.type = accumulatorType;
     auto* intermediateColumn =
         make<Column>(name, currentDt_, intermediateValue, name);
     intermediateColumns.push_back(intermediateColumn);
-    auto dedupped = queryCtx()->dedup(agg);
+    auto dedupped = queryCtx()->dedup(aggregateExpr);
     aggregates.push_back(dedupped->as<Aggregate>());
 
     renames_[name] = columns.back();
