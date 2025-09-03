@@ -452,7 +452,7 @@ class VeloxRunner : public QueryBenchmarkBase {
     RunStats unused;
     auto results = runInner(*runner, unused);
 
-    printPlanWithStats(planAndStats, runner->stats());
+    printPlanWithStats(*runner, planAndStats.prediction);
 
     std::cout << "(" << countResults(results) << " rows in " << results.size()
               << " batches)" << std::endl
@@ -516,44 +516,22 @@ class VeloxRunner : public QueryBenchmarkBase {
     return optimization.toVeloxPlan(best->op);
   }
 
-  void printPlanWithStats(
-      const optimizer::PlanAndStats& planAndStats,
-      const std::vector<exec::TaskStats>& taskStats) {
-    std::unordered_set<core::PlanNodeId> leafNodeIds;
-    for (const auto& fragment : planAndStats.plan->fragments()) {
-      for (const auto& nodeId : fragment.fragment.planNode->leafPlanNodeIds()) {
-        leafNodeIds.insert(nodeId);
+  static void printPlanWithStats(
+      facebook::axiom::runner::LocalRunner& runner,
+      const optimizer::NodePredictionMap& estimates) {
+    std::cout << runner.printPlanWithStats([&](const core::PlanNodeId& nodeId,
+                                               const std::string& indentation,
+                                               std::ostream& out) {
+      auto it = estimates.find(nodeId);
+      if (it != estimates.end()) {
+        out << indentation << "Estimate: " << it->second.cardinality
+            << " rows, " << succinctBytes(it->second.peakMemory)
+            << " peak memory" << std::endl;
       }
-    }
-
-    std::unordered_map<core::PlanNodeId, std::string> planNodeStats;
-    for (const auto& stats : taskStats) {
-      auto planStats = exec::toPlanStats(stats);
-      for (const auto& [id, nodeStats] : planStats) {
-        planNodeStats[id] = nodeStats.toString(leafNodeIds.contains(id));
-      }
-    }
-
-    std::cout << planAndStats.plan->toString(
-        true,
-        [&](const core::PlanNodeId& planNodeId,
-            const std::string& indentation,
-            std::ostream& out) {
-          auto it = planAndStats.prediction.find(planNodeId);
-          if (it != planAndStats.prediction.end()) {
-            out << indentation << "Estimate: " << it->second.cardinality
-                << " rows, " << succinctBytes(it->second.peakMemory)
-                << " peak memory" << std::endl;
-          }
-
-          auto statsIt = planNodeStats.find(planNodeId);
-          if (statsIt != planNodeStats.end()) {
-            out << indentation << statsIt->second << std::endl;
-          }
-        });
+    });
   }
 
-  std::shared_ptr<facebook::axiom::runner::LocalRunner> makeRunner(
+  static std::shared_ptr<facebook::axiom::runner::LocalRunner> makeRunner(
       const optimizer::PlanAndStats& planAndStats,
       const std::shared_ptr<core::QueryCtx>& queryCtx) {
     connector::SplitOptions splitOptions{
@@ -633,7 +611,7 @@ class VeloxRunner : public QueryBenchmarkBase {
       const int numRows = printResults(results);
 
       if (FLAGS_print_stats) {
-        printPlanWithStats(planAndStats, stats);
+        printPlanWithStats(*runner, planAndStats.prediction);
       }
 
       history_->recordVeloxExecution(planAndStats, stats);
