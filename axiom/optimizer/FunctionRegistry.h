@@ -185,6 +185,10 @@ class FunctionRegistry {
   /// registered.
   FunctionMetadataCP metadata(std::string_view name) const;
 
+  const std::string& equality() const {
+    return equality_;
+  }
+
   /// @return a mapping of reversible functions.
   const folly::F14FastMap<std::string, std::string>& reversibleFunctions()
       const {
@@ -198,9 +202,11 @@ class FunctionRegistry {
       std::string_view name,
       std::unique_ptr<FunctionMetadata> metadata);
 
+  void registerEquality(std::string_view name);
+
   /// Registers a function that takes 2 arguments whose order can be changed
-  /// without affecting the results, i.e. f(x, y) == f(y, x). For example, plus,
-  /// multiple, eq.
+  /// without affecting the results, i.e. f(x, y) == f(y, x). For example,
+  /// plus, multiple, eq.
   /// @return true if registered 'name' successfully, false if function is
   /// already registered.
   bool registerReversibleFunction(std::string_view name);
@@ -222,6 +228,7 @@ class FunctionRegistry {
 
  private:
   folly::F14FastMap<std::string, std::unique_ptr<FunctionMetadata>> metadata_;
+  std::string equality_{"eq"};
   folly::F14FastMap<std::string, std::string> reversibleFunctions_;
 };
 

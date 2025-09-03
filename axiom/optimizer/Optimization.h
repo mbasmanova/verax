@@ -118,6 +118,14 @@ class Optimization {
     return toGraph_.newCName(prefix);
   }
 
+  bool isJoinEquality(
+      ExprCP expr,
+      std::vector<PlanObjectP>& tables,
+      ExprCP& left,
+      ExprCP& right) const {
+    return toGraph_.isJoinEquality(expr, tables, left, right);
+  }
+
   const OptimizerOptions& options() const {
     return options_;
   }

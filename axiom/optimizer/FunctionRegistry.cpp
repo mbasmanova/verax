@@ -30,16 +30,26 @@ FunctionMetadataCP FunctionRegistry::metadata(std::string_view name) const {
 bool FunctionRegistry::registerFunction(
     std::string_view name,
     std::unique_ptr<FunctionMetadata> metadata) {
+  VELOX_USER_CHECK(!name.empty());
   return metadata_.emplace(name, std::move(metadata)).second;
+}
+
+void FunctionRegistry::registerEquality(std::string_view name) {
+  VELOX_USER_CHECK(!name.empty());
+
+  equality_ = name;
 }
 
 bool FunctionRegistry::registerReversibleFunction(
     std::string_view name,
     std::string_view reverseName) {
+  VELOX_USER_CHECK(!name.empty());
+  VELOX_USER_CHECK(!reverseName.empty());
   return reversibleFunctions_.emplace(name, reverseName).second;
 }
 
 bool FunctionRegistry::registerReversibleFunction(std::string_view name) {
+  VELOX_USER_CHECK(!name.empty());
   return reversibleFunctions_.emplace(name, name).second;
 }
 

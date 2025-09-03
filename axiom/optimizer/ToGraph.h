@@ -25,7 +25,6 @@ namespace facebook::velox::optimizer {
 struct BuiltinNames {
   BuiltinNames();
 
-  Name eq;
   Name _and;
   Name _or;
   Name cast;
@@ -198,6 +197,15 @@ class ToGraph {
   /// deterministic, a new ExprCP is remembered for reuse.
   ExprCP
   deduppedCall(Name name, Value value, ExprVector args, FunctionSet flags);
+
+  /// True if 'expr' is of the form a = b where a depends on one of 'tables' and
+  /// b on the other. If true, returns the side depending on tables[0] in 'left'
+  /// and the other in 'right'.
+  bool isJoinEquality(
+      ExprCP expr,
+      std::vector<PlanObjectP>& tables,
+      ExprCP& left,
+      ExprCP& right) const;
 
   core::ExpressionEvaluator* evaluator() const {
     return &evaluator_;
@@ -509,6 +517,8 @@ class ToGraph {
       planLeaves_;
 
   std::unique_ptr<BuiltinNames> builtinNames_;
+
+  Name equality_;
 
   std::unordered_map<Name, Name> reversibleFunctions_;
 };
