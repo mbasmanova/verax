@@ -263,14 +263,8 @@ std::string QueryTestBase::veloxString(
     auto it = scans.find(planNodeId);
     if (it != scans.end()) {
       const auto* scan = it->second;
-      for (auto& pair : scan->assignments()) {
-        // TODO Add toString() API to ColumnHandle.
-        if (auto* hiveColumn =
-                dynamic_cast<const connector::hive::HiveColumnHandle*>(
-                    pair.second.get())) {
-          stream << indentation << pair.first << " = " << hiveColumn->name()
-                 << std::endl;
-        }
+      for (const auto& [name, handle] : scan->assignments()) {
+        stream << indentation << name << " = " << handle->name() << std::endl;
       }
     }
   };
