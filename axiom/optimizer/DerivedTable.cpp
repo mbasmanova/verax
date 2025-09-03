@@ -492,7 +492,7 @@ importExpr(ExprCP expr, const ColumnVector& outer, const ExprVector& inner) {
     }
       [[fallthrough]];
     default:
-      VELOX_UNREACHABLE();
+      VELOX_UNREACHABLE("{}", expr->toString());
   }
 }
 

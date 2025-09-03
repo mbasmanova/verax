@@ -75,6 +75,8 @@ void QueryTestBase::SetUp() {
   }
   optimizerOptions_ = OptimizerOptions();
   optimizerOptions_.traceFlags = FLAGS_optimizer_trace;
+
+  velox::optimizer::FunctionRegistry::registerPrestoFunctions();
 }
 
 void QueryTestBase::TearDown() {
