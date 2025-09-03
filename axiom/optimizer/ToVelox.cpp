@@ -1086,18 +1086,14 @@ velox::core::PlanNodePtr ToVelox::makeScan(
   auto connectorMetadata = scan.index->layout->connector()->metadata();
   connector::ColumnHandleMap assignments;
   for (auto column : scanColumns) {
-    // TODO: Make assignments have a ConnectorTableHandlePtr instead of
-    // non-const shared_ptr.
     std::vector<common::Subfield> subfields =
         columnSubfields(scan.baseTable, column->id());
     // No correlation name in scan output if pushed down subfield projection
     // follows.
     auto scanColumnName =
         isSubfieldPushdown ? column->name() : outputName(column);
-    assignments[scanColumnName] =
-        std::const_pointer_cast<connector::ColumnHandle>(
-            connectorMetadata->createColumnHandle(
-                *scan.index->layout, column->name(), std::move(subfields)));
+    assignments[scanColumnName] = connectorMetadata->createColumnHandle(
+        *scan.index->layout, column->name(), std::move(subfields));
   }
 
   auto scanNode = std::make_shared<core::TableScanNode>(
