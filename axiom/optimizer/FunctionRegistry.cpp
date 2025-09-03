@@ -33,6 +33,16 @@ bool FunctionRegistry::registerFunction(
   return metadata_.emplace(name, std::move(metadata)).second;
 }
 
+bool FunctionRegistry::registerReversibleFunction(
+    std::string_view name,
+    std::string_view reverseName) {
+  return reversibleFunctions_.emplace(name, reverseName).second;
+}
+
+bool FunctionRegistry::registerReversibleFunction(std::string_view name) {
+  return reversibleFunctions_.emplace(name, name).second;
+}
+
 // static
 FunctionRegistry* FunctionRegistry::instance() {
   static auto registry = std::make_unique<FunctionRegistry>();
@@ -131,6 +141,14 @@ void FunctionRegistry::registerPrestoFunctions(std::string_view prefix) {
     metadata->explode = rowConstructorExplode;
     registerFunction("row_constructor", std::move(metadata));
   }
+
+  FunctionRegistry::instance()->registerReversibleFunction("eq");
+  FunctionRegistry::instance()->registerReversibleFunction("lt", "gt");
+  FunctionRegistry::instance()->registerReversibleFunction("lte", "gte");
+  FunctionRegistry::instance()->registerReversibleFunction("plus");
+  FunctionRegistry::instance()->registerReversibleFunction("multiply");
+  FunctionRegistry::instance()->registerReversibleFunction("and");
+  FunctionRegistry::instance()->registerReversibleFunction("or");
 }
 
 } // namespace facebook::velox::optimizer

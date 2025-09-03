@@ -185,6 +185,12 @@ class FunctionRegistry {
   /// registered.
   FunctionMetadataCP metadata(std::string_view name) const;
 
+  /// @return a mapping of reversible functions.
+  const folly::F14FastMap<std::string, std::string>& reversibleFunctions()
+      const {
+    return reversibleFunctions_;
+  }
+
   /// Registers function 'name' with specified 'metadata' if 'name' is not
   /// already registered.
   /// @return true if registered 'name' successfully, false otherwise.
@@ -192,14 +198,31 @@ class FunctionRegistry {
       std::string_view name,
       std::unique_ptr<FunctionMetadata> metadata);
 
+  /// Registers a function that takes 2 arguments whose order can be changed
+  /// without affecting the results, i.e. f(x, y) == f(y, x). For example, plus,
+  /// multiple, eq.
+  /// @return true if registered 'name' successfully, false if function is
+  /// already registered.
+  bool registerReversibleFunction(std::string_view name);
+
+  /// Registers a pair of functions that take 2 arguments such that name(x, y)
+  /// == reverseName(y, x) for any x and y. For example, {lt, gt}, {lte, gte}.
+  /// @return true if registered 'name' successfully, false if 'name' is
+  /// already registered.s
+  bool registerReversibleFunction(
+      std::string_view name,
+      std::string_view reverseName);
+
   static FunctionRegistry* instance();
 
   /// Registers Presto functions transform, transform_values, zip, and
-  /// row_constructor.
+  /// row_constructor along with metadata. Registers reversible Presto functions
+  /// eq, lt, gt, lte, gte, plus, multiply, and, or.
   static void registerPrestoFunctions(std::string_view prefix = "");
 
  private:
   folly::F14FastMap<std::string, std::unique_ptr<FunctionMetadata>> metadata_;
+  folly::F14FastMap<std::string, std::string> reversibleFunctions_;
 };
 
 /// Shortcut for FunctionRegistry::instance()->metadata(name).

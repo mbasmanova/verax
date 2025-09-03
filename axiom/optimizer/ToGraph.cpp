@@ -62,8 +62,20 @@ ExceptionContext makeExceptionContext(ToGraphContext* ctx) {
   e.arg = ctx;
   return e;
 }
-
 } // namespace
+
+ToGraph::ToGraph(
+    const Schema& schema,
+    core::ExpressionEvaluator& evaluator,
+    const OptimizerOptions& options)
+    : schema_{schema}, evaluator_{evaluator}, options_{options} {
+  const auto& reversibleFunctions =
+      FunctionRegistry::instance()->reversibleFunctions();
+  for (const auto& [name, reverseName] : reversibleFunctions) {
+    reversibleFunctions_[toName(name)] = toName(reverseName);
+    reversibleFunctions_[toName(reverseName)] = toName(name);
+  }
+}
 
 void ToGraph::setDtOutput(
     DerivedTableP dt,
@@ -107,6 +119,7 @@ bool isConstantTrue(ExprCP expr) {
   if (expr->isNot(PlanType::kLiteralExpr)) {
     return false;
   }
+
   const auto& variant = expr->as<Literal>()->literal();
   return variant.kind() == TypeKind::BOOLEAN && !variant.isNull() &&
       variant.value<bool>();
@@ -505,12 +518,6 @@ void ToGraph::ensureFunctionSubfields(const lp::ExprPtr& expr) {
 
 BuiltinNames::BuiltinNames()
     : eq(toName("eq")),
-      lt(toName("lt")),
-      lte(toName("lte")),
-      gt(toName("gt")),
-      gte(toName("gte")),
-      plus(toName("plus")),
-      multiply(toName("multiply")),
       _and(toName(SpecialFormCallNames::kAnd)),
       _or(toName(SpecialFormCallNames::kOr)),
       cast(toName(SpecialFormCallNames::kCast)),
@@ -519,33 +526,7 @@ BuiltinNames::BuiltinNames()
       coalesce(toName(SpecialFormCallNames::kCoalesce)),
       _if(toName(SpecialFormCallNames::kIf)),
       _switch(toName(SpecialFormCallNames::kSwitch)),
-      in(toName(SpecialFormCallNames::kIn)) {
-  canonicalizable.insert(eq);
-  canonicalizable.insert(lt);
-  canonicalizable.insert(lte);
-  canonicalizable.insert(gt);
-  canonicalizable.insert(gte);
-  canonicalizable.insert(plus);
-  canonicalizable.insert(multiply);
-  canonicalizable.insert(_and);
-  canonicalizable.insert(_or);
-}
-
-Name BuiltinNames::reverse(Name name) const {
-  if (name == lt) {
-    return gt;
-  }
-  if (name == lte) {
-    return gte;
-  }
-  if (name == gt) {
-    return lt;
-  }
-  if (name == gte) {
-    return lte;
-  }
-  return name;
-}
+      in(toName(SpecialFormCallNames::kIn)) {}
 
 BuiltinNames& ToGraph::builtinNames() {
   if (!builtinNames_) {
@@ -564,23 +545,34 @@ namespace {
 ///
 ///  #2. If none are literal, but the id on the left is higher.
 bool shouldInvert(ExprCP left, ExprCP right) {
-  return (left->is(PlanType::kLiteralExpr) &&
-          right->isNot(PlanType::kLiteralExpr)) ||
-      (left->isNot(PlanType::kLiteralExpr) &&
-       right->isNot(PlanType::kLiteralExpr) && left->id() > right->id());
+  if (left->is(PlanType::kLiteralExpr) &&
+      right->isNot(PlanType::kLiteralExpr)) {
+    return true;
+  }
+
+  if (left->isNot(PlanType::kLiteralExpr) &&
+      right->isNot(PlanType::kLiteralExpr) && (left->id() > right->id())) {
+    return true;
+  }
+
+  return false;
 }
 
 } // namespace
 
 void ToGraph::canonicalizeCall(Name& name, ExprVector& args) {
-  auto& names = builtinNames();
-  if (!names.isCanonicalizable(name)) {
+  if (args.size() != 2) {
     return;
   }
-  VELOX_CHECK_EQ(args.size(), 2, "Expecting binary op {}", name);
+
+  auto it = reversibleFunctions_.find(name);
+  if (it == reversibleFunctions_.end()) {
+    return;
+  }
+
   if (shouldInvert(args[0], args[1])) {
     std::swap(args[0], args[1]);
-    name = names.reverse(name);
+    name = it->second;
   }
 }
 
@@ -589,10 +581,9 @@ ExprCP ToGraph::deduppedCall(
     Value value,
     ExprVector args,
     FunctionSet flags) {
-  if (args.size() == 2) {
-    canonicalizeCall(name, args);
-  }
+  canonicalizeCall(name, args);
   ExprDedupKey key = {name, &args};
+
   auto it = functionDedup_.find(key);
   if (it != functionDedup_.end()) {
     return it->second;

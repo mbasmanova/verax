@@ -25,19 +25,7 @@ namespace facebook::velox::optimizer {
 struct BuiltinNames {
   BuiltinNames();
 
-  Name reverse(Name name) const;
-
-  bool isCanonicalizable(Name name) const {
-    return canonicalizable.contains(name);
-  }
-
   Name eq;
-  Name lt;
-  Name lte;
-  Name gt;
-  Name gte;
-  Name plus;
-  Name multiply;
   Name _and;
   Name _or;
   Name cast;
@@ -47,8 +35,6 @@ struct BuiltinNames {
   Name _if;
   Name _switch;
   Name in;
-
-  folly::F14FastSet<Name> canonicalizable;
 };
 
 /// Struct for resolving which logical PlanNode or Lambda defines which
@@ -189,8 +175,7 @@ class ToGraph {
   ToGraph(
       const Schema& schema,
       core::ExpressionEvaluator& evaluator,
-      const OptimizerOptions& options)
-      : schema_{schema}, evaluator_{evaluator}, options_{options} {}
+      const OptimizerOptions& options);
 
   /// Converts 'logicalPlan' to a tree of DerivedTables. Returns the root
   /// DerivedTable.
@@ -524,6 +509,8 @@ class ToGraph {
       planLeaves_;
 
   std::unique_ptr<BuiltinNames> builtinNames_;
+
+  std::unordered_map<Name, Name> reversibleFunctions_;
 };
 
 } // namespace facebook::velox::optimizer
