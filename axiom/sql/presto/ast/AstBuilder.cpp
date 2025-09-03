@@ -470,6 +470,8 @@ std::any AstBuilder::visitExplain(PrestoSqlParser::ExplainContext* ctx) {
   return std::static_pointer_cast<Statement>(std::make_shared<Explain>(
       getLocation(ctx),
       visitTyped<Statement>(ctx->statement()),
+      ctx->ANALYZE() != nullptr,
+      ctx->VERBOSE() != nullptr,
       visitTyped<ExplainOption>(ctx->explainOption())));
 }
 
