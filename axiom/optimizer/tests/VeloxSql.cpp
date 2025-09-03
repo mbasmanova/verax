@@ -325,8 +325,17 @@ class VeloxRunner : public QueryBenchmarkBase {
     }
 
     if (sqlStatement->isExplain()) {
-      runExplain(
-          *sqlStatement->asUnchecked<optimizer::test::ExplainStatement>());
+      auto* explain =
+          sqlStatement->asUnchecked<optimizer::test::ExplainStatement>();
+
+      CHECK(explain->statement()->isSelect());
+      auto* select =
+          explain->statement()->asUnchecked<optimizer::test::SelectStatement>();
+      if (explain->isAnalyze()) {
+        runExplainAnalyze(*select);
+      } else {
+        runExplain(*select);
+      }
       return;
     }
 
@@ -413,36 +422,6 @@ class VeloxRunner : public QueryBenchmarkBase {
     }
   }
 
-  const exec::OperatorStats* findOperatorStats(
-      const exec::TaskStats& taskStats,
-      const core::PlanNodeId& id) {
-    for (auto& p : taskStats.pipelineStats) {
-      for (auto& o : p.operatorStats) {
-        if (o.planNodeId == id) {
-          return &o;
-        }
-      }
-    }
-    return nullptr;
-  }
-
-  std::string predictionString(
-      const core::PlanNodeId& id,
-      const exec::TaskStats& taskStats,
-      const optimizer::NodePredictionMap& prediction) {
-    auto it = prediction.find(id);
-    if (it == prediction.end()) {
-      return "";
-    }
-    auto* operatorStats = findOperatorStats(taskStats, id);
-    if (!operatorStats) {
-      return fmt::format("*** missing stats for {}", id);
-    }
-    auto predicted = it->second.cardinality;
-    auto actual = operatorStats->outputPositions;
-    return fmt::format("predicted={} actual={} ", predicted, actual);
-  }
-
   std::shared_ptr<core::QueryCtx> newQuery() {
     ++queryCounter_;
 
@@ -456,16 +435,28 @@ class VeloxRunner : public QueryBenchmarkBase {
         fmt::format("query_{}", queryCounter_));
   }
 
-  void runExplain(const optimizer::test::ExplainStatement& statement) {
-    CHECK(statement.statement()->isSelect());
-
-    auto plan = optimize(
-        statement.statement()
-            ->asUnchecked<optimizer::test::SelectStatement>()
-            ->plan(),
-        newQuery());
-
+  void runExplain(const optimizer::test::SelectStatement& statement) {
+    auto plan = optimize(statement.plan(), newQuery());
     std::cout << plan.toString() << std::endl;
+  }
+
+  void runExplainAnalyze(const optimizer::test::SelectStatement& statement) {
+    auto queryCtx = newQuery();
+    auto planAndStats = optimize(statement.plan(), queryCtx);
+
+    auto runner = makeRunner(planAndStats, queryCtx);
+    SCOPE_EXIT {
+      waitForCompletion(runner);
+    };
+
+    RunStats unused;
+    auto results = runInner(*runner, unused);
+
+    printPlanWithStats(planAndStats, runner->stats());
+
+    std::cout << "(" << countResults(results) << " rows in " << results.size()
+              << " batches)" << std::endl
+              << std::endl;
   }
 
   optimizer::PlanAndStats optimize(
@@ -525,6 +516,56 @@ class VeloxRunner : public QueryBenchmarkBase {
     return optimization.toVeloxPlan(best->op);
   }
 
+  void printPlanWithStats(
+      const optimizer::PlanAndStats& planAndStats,
+      const std::vector<exec::TaskStats>& taskStats) {
+    std::unordered_set<core::PlanNodeId> leafNodeIds;
+    for (const auto& fragment : planAndStats.plan->fragments()) {
+      for (const auto& nodeId : fragment.fragment.planNode->leafPlanNodeIds()) {
+        leafNodeIds.insert(nodeId);
+      }
+    }
+
+    std::unordered_map<core::PlanNodeId, std::string> planNodeStats;
+    for (const auto& stats : taskStats) {
+      auto planStats = exec::toPlanStats(stats);
+      for (const auto& [id, nodeStats] : planStats) {
+        planNodeStats[id] = nodeStats.toString(leafNodeIds.contains(id));
+      }
+    }
+
+    std::cout << planAndStats.plan->toString(
+        true,
+        [&](const core::PlanNodeId& planNodeId,
+            const std::string& indentation,
+            std::ostream& out) {
+          auto it = planAndStats.prediction.find(planNodeId);
+          if (it != planAndStats.prediction.end()) {
+            out << indentation << "Estimate: " << it->second.cardinality
+                << " rows, " << succinctBytes(it->second.peakMemory)
+                << " peak memory" << std::endl;
+          }
+
+          auto statsIt = planNodeStats.find(planNodeId);
+          if (statsIt != planNodeStats.end()) {
+            out << indentation << statsIt->second << std::endl;
+          }
+        });
+  }
+
+  std::shared_ptr<facebook::axiom::runner::LocalRunner> makeRunner(
+      const optimizer::PlanAndStats& planAndStats,
+      const std::shared_ptr<core::QueryCtx>& queryCtx) {
+    connector::SplitOptions splitOptions{
+        .targetSplitCount = FLAGS_num_workers * FLAGS_num_drivers * 2,
+        .fileBytesPerSplit = static_cast<uint64_t>(FLAGS_split_target_bytes)};
+
+    return std::make_shared<facebook::axiom::runner::LocalRunner>(
+        planAndStats.plan,
+        queryCtx,
+        std::make_shared<connector::ConnectorSplitSourceFactory>(splitOptions));
+  }
+
   /// Runs a query and returns the result as a single vector in *resultVector,
   /// the plan text in *planString and the error message in *errorString.
   /// *errorString is not set if no error. Any of these may be nullptr.
@@ -536,7 +577,6 @@ class VeloxRunner : public QueryBenchmarkBase {
       std::vector<exec::TaskStats>* statsReturn = nullptr,
       RunStats* runStatsReturn = nullptr) {
     auto queryCtx = newQuery();
-
     optimizer::PlanAndStats planAndStats;
     try {
       planAndStats = optimize(logicalPlan, queryCtx, [&](const auto& best) {
@@ -557,18 +597,13 @@ class VeloxRunner : public QueryBenchmarkBase {
                 << planAndStats.plan->toString() << std::endl;
     }
 
-    RunStats runStats;
-    std::shared_ptr<facebook::axiom::runner::LocalRunner> runner;
     try {
-      connector::SplitOptions splitOptions{
-          .targetSplitCount = FLAGS_num_workers * FLAGS_num_drivers * 2,
-          .fileBytesPerSplit = static_cast<uint64_t>(FLAGS_split_target_bytes)};
-      runner = std::make_shared<facebook::axiom::runner::LocalRunner>(
-          planAndStats.plan,
-          queryCtx,
-          std::make_shared<connector::ConnectorSplitSourceFactory>(
-              splitOptions));
+      auto runner = makeRunner(planAndStats, queryCtx);
+      SCOPE_EXIT {
+        waitForCompletion(runner);
+      };
 
+      RunStats runStats;
       auto results = runInner(*runner, runStats);
 
       if (resultVector) {
@@ -580,43 +615,38 @@ class VeloxRunner : public QueryBenchmarkBase {
         *statsReturn = stats;
       }
 
-      const int numRows = printResults(results);
-
       const auto& fragments = planAndStats.plan->fragments();
-      for (int32_t i = fragments.size() - 1; i >= 0; --i) {
-        for (const auto& pipeline : stats[i].pipelineStats) {
-          const auto& first = pipeline.operatorStats[0];
-          if (first.operatorType == "TableScan") {
-            runStats.rawInputBytes += first.rawInputBytes;
+      for (auto i = 0; i < fragments.size(); ++i) {
+        auto nodeStats = exec::toPlanStats(stats[i]);
+        for (const auto& scan : fragments[i].scans) {
+          auto statsIt = nodeStats.find(scan->id());
+          if (statsIt != nodeStats.end()) {
+            runStats.rawInputBytes += statsIt->second.rawInputBytes;
           }
         }
-        if (FLAGS_print_stats) {
-          std::cout << "Fragment " << i << ":" << std::endl;
-          std::cout << exec::printPlanWithStats(
-              *fragments[i].fragment.planNode,
-              stats[i],
-              FLAGS_include_custom_stats,
-              [&](auto id) {
-                return predictionString(id, stats[i], planAndStats.prediction);
-              });
-          std::cout << std::endl;
-        }
       }
+
+      if (runStatsReturn) {
+        *runStatsReturn = runStats;
+      }
+
+      const int numRows = printResults(results);
+
+      if (FLAGS_print_stats) {
+        printPlanWithStats(planAndStats, stats);
+      }
+
       history_->recordVeloxExecution(planAndStats, stats);
       std::cout << numRows << " rows " << runStats.toString(false) << std::endl;
+
+      return runner;
     } catch (const std::exception& e) {
       std::cerr << "Query terminated with: " << e.what() << std::endl;
       if (errorString) {
         *errorString = fmt::format("Runtime error: {}", e.what());
       }
-      waitForCompletion(runner);
       return nullptr;
     }
-    waitForCompletion(runner);
-    if (runStatsReturn) {
-      *runStatsReturn = runStats;
-    }
-    return runner;
   }
 
   void runMain(std::ostream& out, RunStats& runStats) override {
@@ -643,7 +673,7 @@ class VeloxRunner : public QueryBenchmarkBase {
     if (runner) {
       try {
         runner->waitForCompletion(500000);
-      } catch (const std::exception& /*ignore*/) {
+      } catch (const std::exception&) {
       }
     }
   }
@@ -719,11 +749,16 @@ class VeloxRunner : public QueryBenchmarkBase {
     }
   }
 
-  static int32_t printResults(const std::vector<RowVectorPtr>& results) {
-    int32_t numRows = 0;
+  static int64_t countResults(const std::vector<RowVectorPtr>& results) {
+    int64_t numRows = 0;
     for (const auto& result : results) {
       numRows += result->size();
     }
+    return numRows;
+  }
+
+  static int32_t printResults(const std::vector<RowVectorPtr>& results) {
+    const auto numRows = countResults(results);
 
     auto printFooter = [&]() {
       std::cout << "(" << numRows << " rows in " << results.size()

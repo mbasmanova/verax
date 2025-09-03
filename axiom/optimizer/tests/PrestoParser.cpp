@@ -1171,9 +1171,11 @@ SqlStatementPtr PrestoParser::doParse(
 
   RelationPlanner planner(defaultConnectorId_);
   if (query->is(sql::NodeType::kExplain)) {
-    query->as<sql::Explain>()->statement()->accept(&planner);
+    auto* explain = query->as<sql::Explain>();
+    explain->statement()->accept(&planner);
     return std::make_shared<ExplainStatement>(
-        std::make_shared<SelectStatement>(planner.getPlan()));
+        std::make_shared<SelectStatement>(planner.getPlan()),
+        explain->isAnalyze());
   }
 
   if (query->is(sql::NodeType::kShowColumns)) {
