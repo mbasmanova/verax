@@ -16,8 +16,26 @@
 
 #include "axiom/optimizer/QueryGraphContext.h"
 #include "axiom/optimizer/BitSet.h"
+#include "axiom/optimizer/QueryGraph.h"
 
 namespace facebook::velox::optimizer {
+
+QueryGraphContext::QueryGraphContext(velox::HashStringAllocator& allocator)
+    : allocator_(allocator), cache_(allocator_) {
+  auto addName = [&](const char* name) {
+    names_.emplace(std::string_view(name, strlen(name)));
+  };
+
+  addName(SpecialFormCallNames::kAnd);
+  addName(SpecialFormCallNames::kOr);
+  addName(SpecialFormCallNames::kCast);
+  addName(SpecialFormCallNames::kTryCast);
+  addName(SpecialFormCallNames::kTry);
+  addName(SpecialFormCallNames::kCoalesce);
+  addName(SpecialFormCallNames::kIf);
+  addName(SpecialFormCallNames::kSwitch);
+  addName(SpecialFormCallNames::kIn);
+}
 
 QueryGraphContext*& queryCtx() {
   static thread_local QueryGraphContext* context;
@@ -34,6 +52,7 @@ const char* QueryGraphContext::toName(std::string_view str) {
   if (it != names_.end()) {
     return it->data();
   }
+
   char* data = allocator_.allocate(str.size() + 1)->begin(); // NOLINT
   memcpy(data, str.data(), str.size());
   data[str.size()] = 0;

@@ -189,6 +189,12 @@ class FunctionRegistry {
     return equality_;
   }
 
+  std::string specialForm(logical_plan::SpecialForm specialForm) {
+    auto it = specialForms_.find(specialForm);
+    VELOX_USER_CHECK(it != specialForms_.end());
+    return it->second;
+  }
+
   /// @return a mapping of reversible functions.
   const folly::F14FastMap<std::string, std::string>& reversibleFunctions()
       const {
@@ -203,6 +209,10 @@ class FunctionRegistry {
       std::unique_ptr<FunctionMetadata> metadata);
 
   void registerEquality(std::string_view name);
+
+  bool registerSpecialForm(
+      logical_plan::SpecialForm specialForm,
+      std::string_view name);
 
   /// Registers a function that takes 2 arguments whose order can be changed
   /// without affecting the results, i.e. f(x, y) == f(y, x). For example,
@@ -230,9 +240,12 @@ class FunctionRegistry {
   folly::F14FastMap<std::string, std::unique_ptr<FunctionMetadata>> metadata_;
   std::string equality_{"eq"};
   folly::F14FastMap<std::string, std::string> reversibleFunctions_;
+  folly::F14FastMap<logical_plan::SpecialForm, std::string> specialForms_;
 };
 
 /// Shortcut for FunctionRegistry::instance()->metadata(name).
 FunctionMetadataCP functionMetadata(std::string_view name);
+
+std::string specialForm(logical_plan::SpecialForm specialForm);
 
 } // namespace facebook::velox::optimizer

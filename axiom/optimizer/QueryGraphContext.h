@@ -231,8 +231,7 @@ struct VectorDedupComparer {
 /// references this via a thread local through queryCtx().
 class QueryGraphContext {
  public:
-  explicit QueryGraphContext(velox::HashStringAllocator& allocator)
-      : allocator_(allocator), cache_(allocator_) {}
+  explicit QueryGraphContext(velox::HashStringAllocator& allocator);
 
   /// Returns a new unique id to use for 'object' and associates 'object' to
   /// this id. Tagging objects with integere ids is useful for efficiently

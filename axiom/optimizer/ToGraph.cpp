@@ -78,6 +78,9 @@ ToGraph::ToGraph(
     reversibleFunctions_[toName(name)] = toName(reverseName);
     reversibleFunctions_[toName(reverseName)] = toName(name);
   }
+
+  reversibleFunctions_[SpecialFormCallNames::kAnd] = SpecialFormCallNames::kAnd;
+  reversibleFunctions_[SpecialFormCallNames::kOr] = SpecialFormCallNames::kOr;
 }
 
 void ToGraph::setDtOutput(
@@ -519,24 +522,6 @@ void ToGraph::ensureFunctionSubfields(const lp::ExprPtr& expr) {
   }
 }
 
-BuiltinNames::BuiltinNames()
-    : _and(toName(SpecialFormCallNames::kAnd)),
-      _or(toName(SpecialFormCallNames::kOr)),
-      cast(toName(SpecialFormCallNames::kCast)),
-      tryCast(toName(SpecialFormCallNames::kTryCast)),
-      _try(toName(SpecialFormCallNames::kTry)),
-      coalesce(toName(SpecialFormCallNames::kCoalesce)),
-      _if(toName(SpecialFormCallNames::kIf)),
-      _switch(toName(SpecialFormCallNames::kSwitch)),
-      in(toName(SpecialFormCallNames::kIn)) {}
-
-BuiltinNames& ToGraph::builtinNames() {
-  if (!builtinNames_) {
-    builtinNames_ = std::make_unique<BuiltinNames>();
-  }
-  return *builtinNames_;
-}
-
 namespace {
 
 /// If we should reverse the sides of a binary expression to canonicalize it. We
@@ -709,9 +694,8 @@ ExprCP ToGraph::translateExpr(const lp::ExprPtr& expr) {
       }
     }
 
-    auto name = call
-        ? toName(callName)
-        : toName(SpecialFormCallNames::toCallName(specialForm->form()));
+    auto name = call ? toName(callName)
+                     : SpecialFormCallNames::toCallName(specialForm->form());
     if (allConstant) {
       if (auto literal = tryFoldConstant(expr->type(), name, args)) {
         return literal;

@@ -15,6 +15,7 @@
  */
 
 #include "axiom/optimizer/ToVelox.h"
+#include "axiom/optimizer/FunctionRegistry.h"
 #include "axiom/optimizer/Optimization.h"
 #include "velox/core/PlanConsistencyChecker.h"
 #include "velox/core/PlanNode.h"
@@ -26,6 +27,8 @@
 
 using namespace facebook::velox::exec;
 using namespace facebook::axiom::runner;
+
+namespace lp = facebook::velox::logical_plan;
 
 namespace facebook::velox::optimizer {
 
@@ -164,7 +167,7 @@ void ToVelox::filterUpdated(BaseTableCP table, bool updateSelectivity) {
       remainingFilter = std::make_shared<core::CallTypedExpr>(
           BOOLEAN(),
           std::vector<core::TypedExprPtr>{remainingFilter, conjunct},
-          SpecialFormCallNames::kAnd);
+          specialForm(lp::SpecialForm::kAnd));
     }
   }
 
@@ -268,7 +271,7 @@ core::TypedExprPtr ToVelox::toAnd(const ExprVector& exprs) {
       result = std::make_shared<core::CallTypedExpr>(
           BOOLEAN(),
           std::vector<core::TypedExprPtr>{result, conjunct},
-          SpecialFormCallNames::kAnd);
+          specialForm(lp::SpecialForm::kAnd));
     }
   }
   return result;
@@ -419,9 +422,8 @@ core::TypedExprPtr ToVelox::toTypedExpr(ExprCP expr) {
     case PlanType::kCallExpr: {
       std::vector<core::TypedExprPtr> inputs;
       auto call = expr->as<Call>();
-      const auto& builtinNames = queryCtx()->optimization()->builtinNames();
 
-      if (call->name() == builtinNames.in) {
+      if (call->name() == SpecialFormCallNames::kIn) {
         VELOX_USER_CHECK_GE(call->args().size(), 2);
         inputs.push_back(toTypedExpr(call->args().at(0)));
         inputs.push_back(createArrayForInList(*call, inputs.back()->type()));
@@ -431,14 +433,22 @@ core::TypedExprPtr ToVelox::toTypedExpr(ExprCP expr) {
         }
       }
 
-      if (call->name() == builtinNames.cast) {
-        return std::make_shared<core::CastTypedExpr>(
-            toTypePtr(expr->value().type), std::move(inputs), false);
-      }
+      if (auto form =
+              SpecialFormCallNames::tryFromCallName(toName(call->name()))) {
+        if (form == lp::SpecialForm::kCast) {
+          return std::make_shared<core::CastTypedExpr>(
+              toTypePtr(expr->value().type), std::move(inputs), false);
+        }
 
-      if (call->name() == builtinNames.tryCast) {
-        return std::make_shared<core::CastTypedExpr>(
-            toTypePtr(expr->value().type), std::move(inputs), true);
+        if (form == lp::SpecialForm::kTryCast) {
+          return std::make_shared<core::CastTypedExpr>(
+              toTypePtr(expr->value().type), std::move(inputs), true);
+        }
+
+        return std::make_shared<core::CallTypedExpr>(
+            toTypePtr(expr->value().type),
+            std::move(inputs),
+            specialForm(form.value()));
       }
 
       return std::make_shared<core::CallTypedExpr>(
@@ -1017,7 +1027,7 @@ core::TypedExprPtr toAndWithAliases(
   auto result = conjuncts.size() == 1
       ? conjuncts.at(0)
       : std::make_shared<core::CallTypedExpr>(
-            BOOLEAN(), conjuncts, SpecialFormCallNames::kAnd);
+            BOOLEAN(), conjuncts, specialForm(lp::SpecialForm::kAnd));
 
   std::unordered_set<Name> usedFieldNames;
   collectFieldNames(result, usedFieldNames);
