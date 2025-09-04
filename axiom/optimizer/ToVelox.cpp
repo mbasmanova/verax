@@ -48,6 +48,14 @@ std::string PlanAndStats::toString() const {
       });
 }
 
+ToVelox::ToVelox(
+    const axiom::runner::MultiFragmentPlan::Options& options,
+    const OptimizerOptions& optimizerOptions)
+    : options_{options},
+      optimizerOptions_{optimizerOptions},
+      isSingle_{options.numWorkers == 1},
+      subscript_{FunctionRegistry::instance()->subscript()} {}
+
 namespace {
 
 std::vector<common::Subfield> columnSubfields(BaseTableCP table, int32_t id) {
@@ -166,8 +174,9 @@ void ToVelox::filterUpdated(BaseTableCP table, bool updateSelectivity) {
     } else {
       remainingFilter = std::make_shared<core::CallTypedExpr>(
           BOOLEAN(),
-          std::vector<core::TypedExprPtr>{remainingFilter, conjunct},
-          specialForm(lp::SpecialForm::kAnd));
+          specialForm(lp::SpecialForm::kAnd),
+          remainingFilter,
+          conjunct);
     }
   }
 
@@ -269,9 +278,7 @@ core::TypedExprPtr ToVelox::toAnd(const ExprVector& exprs) {
       result = conjunct;
     } else {
       result = std::make_shared<core::CallTypedExpr>(
-          BOOLEAN(),
-          std::vector<core::TypedExprPtr>{result, conjunct},
-          specialForm(lp::SpecialForm::kAnd));
+          BOOLEAN(), specialForm(lp::SpecialForm::kAnd), result, conjunct);
     }
   }
   return result;
@@ -306,7 +313,8 @@ core::TypedExprPtr createArrayForInList(
   return std::make_shared<core::ConstantTypedExpr>(arrayVector);
 }
 
-core::TypedExprPtr stepToGetter(Step step, core::TypedExprPtr arg) {
+core::TypedExprPtr
+stepToGetter(Step step, core::TypedExprPtr arg, const std::string& subscript) {
   switch (step.kind) {
     case StepKind::kField: {
       if (step.field) {
@@ -343,15 +351,13 @@ core::TypedExprPtr stepToGetter(Step step, core::TypedExprPtr arg) {
         }
 
         return std::make_shared<core::CallTypedExpr>(
-            type->as<TypeKind::MAP>().childAt(1),
-            std::vector<core::TypedExprPtr>{arg, key},
-            "subscript");
+            type->childAt(1), subscript, arg, key);
       }
       return std::make_shared<core::CallTypedExpr>(
           type->childAt(0),
-          std::vector<core::TypedExprPtr>{
-              arg, makeKey(INTEGER(), static_cast<int32_t>(step.id))},
-          "subscript");
+          subscript,
+          arg,
+          makeKey(INTEGER(), static_cast<int32_t>(step.id)));
     }
 
     default:
@@ -386,12 +392,12 @@ ToVelox::pathToGetter(ColumnCP column, PathCP path, core::TypedExprPtr field) {
   for (auto& step : path->steps()) {
     Step newStep;
     if (first && alterStep(column, step, newStep)) {
-      field = stepToGetter(newStep, field);
+      field = stepToGetter(newStep, field, subscript_.value());
       first = false;
       continue;
     }
     first = false;
-    field = stepToGetter(step, field);
+    field = stepToGetter(step, field, subscript_.value());
   }
   return field;
 }
@@ -1262,17 +1268,14 @@ core::PlanNodePtr ToVelox::makeAggregation(
           type,
           projections.toFieldRefs<core::TypedExprPtr>(aggregate->args()),
           aggregate->name());
-      aggregates.push_back({call, rawInputTypes, mask, {}, {}, false});
+      aggregates.push_back({.call = call, .rawInputTypes = rawInputTypes});
     } else {
       auto call = std::make_shared<core::CallTypedExpr>(
           type,
-          std::vector<core::TypedExprPtr>{
-              std::make_shared<core::FieldAccessTypedExpr>(
-                  toTypePtr(aggregate->intermediateType()),
-                  aggregateNames.back())},
-          aggregate->name());
-      aggregates.push_back(
-          {call, rawInputTypes, /* mask */ nullptr, {}, {}, false});
+          aggregate->name(),
+          std::make_shared<core::FieldAccessTypedExpr>(
+              toTypePtr(aggregate->intermediateType()), aggregateNames.back()));
+      aggregates.push_back({.call = call, .rawInputTypes = rawInputTypes});
     }
   }
 

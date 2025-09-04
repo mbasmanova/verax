@@ -282,15 +282,15 @@ void ToGraph::markSubfields(
   }
 
   if (expr->isCall()) {
-    const auto& name = expr->asUnchecked<lp::CallExpr>()->name();
-    if (name == "cardinality") {
+    auto name = toName(expr->asUnchecked<lp::CallExpr>()->name());
+    if (name == cardinality_) {
       steps.push_back({.kind = StepKind::kCardinality});
       markSubfields(expr->inputAt(0), steps, isControl, context);
       steps.pop_back();
       return;
     }
 
-    if (name == "subscript" || name == "element_at") {
+    if (name == subscript_ || name == elementAt_) {
       auto constant = tryFoldConstant(expr->inputAt(1));
       if (!constant) {
         std::vector<Step> subSteps;
@@ -502,78 +502,6 @@ std::vector<int32_t> ToGraph::usedChannels(const lp::LogicalPlanNode& node) {
       payload.resultPaths | std::views::keys,
       std::back_inserter(result));
   return result;
-}
-
-namespace {
-
-template <typename T>
-lp::ExprPtr makeKey(const TypePtr& type, T value) {
-  return std::make_shared<lp::ConstantExpr>(
-      type, std::make_shared<Variant>(value));
-}
-} // namespace
-
-// static
-lp::ExprPtr ToGraph::stepToLogicalPlanGetter(
-    Step step,
-    const lp::ExprPtr& arg) {
-  const auto& argType = arg->type();
-  switch (step.kind) {
-    case StepKind::kField: {
-      lp::ExprPtr key;
-      const TypePtr* type{};
-      if (step.field) {
-        key = makeKey(VARCHAR(), step.field);
-        type = &argType->asRow().findChild(step.field);
-      } else {
-        key = makeKey(INTEGER(), static_cast<int32_t>(step.id));
-        type = &argType->childAt(step.id);
-      }
-
-      return std::make_shared<lp::SpecialFormExpr>(
-          *type,
-          lp::SpecialForm::kDereference,
-          arg,
-          makeKey(VARCHAR(), step.field));
-    }
-
-    case StepKind::kSubscript: {
-      if (argType->kind() == TypeKind::ARRAY) {
-        return std::make_shared<lp::CallExpr>(
-            argType->childAt(0),
-            "subscript",
-            arg,
-            makeKey(INTEGER(), static_cast<int32_t>(step.id)));
-      }
-
-      lp::ExprPtr key;
-      switch (argType->childAt(0)->kind()) {
-        case TypeKind::VARCHAR:
-          key = makeKey(VARCHAR(), step.field);
-          break;
-        case TypeKind::BIGINT:
-          key = makeKey(BIGINT(), step.id);
-          break;
-        case TypeKind::INTEGER:
-          key = makeKey(INTEGER(), static_cast<int32_t>(step.id));
-          break;
-        case TypeKind::SMALLINT:
-          key = makeKey(SMALLINT(), static_cast<int16_t>(step.id));
-          break;
-        case TypeKind::TINYINT:
-          key = makeKey(TINYINT(), static_cast<int8_t>(step.id));
-          break;
-        default:
-          VELOX_FAIL("Unsupported key type");
-      }
-
-      return std::make_shared<lp::CallExpr>(
-          argType->childAt(1), "subscript", arg, key);
-    }
-
-    default:
-      VELOX_NYI();
-  }
 }
 
 std::string PlanSubfields::toString() const {

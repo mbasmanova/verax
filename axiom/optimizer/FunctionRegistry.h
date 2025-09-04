@@ -189,6 +189,18 @@ class FunctionRegistry {
     return equality_;
   }
 
+  const std::optional<std::string>& elementAt() const {
+    return elementAt_;
+  }
+
+  const std::optional<std::string>& subscript() const {
+    return subscript_;
+  }
+
+  const std::optional<std::string>& cardinality() const {
+    return cardinality_;
+  }
+
   std::string specialForm(logical_plan::SpecialForm specialForm) {
     auto it = specialForms_.find(specialForm);
     VELOX_USER_CHECK(it != specialForms_.end());
@@ -208,7 +220,30 @@ class FunctionRegistry {
       std::string_view name,
       std::unique_ptr<FunctionMetadata> metadata);
 
+  /// Registers function 'name' that has semantics of Presto's 'eq'.
   void registerEquality(std::string_view name);
+
+  /// Registers function 'name' that has semantics of Presto's 'element_at'.
+  /// When applied to an array, returns element of the array at the specified
+  /// zero-based index. When applies to a map, returns value correspondig to the
+  /// specified key. Returns null if array index is out of bounds or map key is
+  /// not found.
+  /// @return true if successfully registered, false if a different 'element_at'
+  /// function is already registered.
+  bool registerElementAt(std::string_view name);
+
+  /// Registers function 'name' that has semantics of Presto's 'subfield'.
+  /// Similar to 'element_at', but throws if array index is out of bounds or map
+  /// key is missing.
+  /// @return true if successfully registered, false if a different 'subfield'
+  /// function is already registered.
+  bool registerSubscript(std::string_view name);
+
+  /// Registers function 'name' that has semantics of Presto's 'cardinality',
+  /// i.e. returns the number of entries in an array or map.
+  /// @return true if successfully registered, false if a different
+  /// 'cardinality' function is already registered.
+  bool registerCardinality(std::string_view name);
 
   bool registerSpecialForm(
       logical_plan::SpecialForm specialForm,
@@ -239,6 +274,9 @@ class FunctionRegistry {
  private:
   folly::F14FastMap<std::string, std::unique_ptr<FunctionMetadata>> metadata_;
   std::string equality_{"eq"};
+  std::optional<std::string> elementAt_;
+  std::optional<std::string> subscript_;
+  std::optional<std::string> cardinality_;
   folly::F14FastMap<std::string, std::string> reversibleFunctions_;
   folly::F14FastMap<logical_plan::SpecialForm, std::string> specialForms_;
 };

@@ -16,7 +16,6 @@
 
 #include "axiom/logical_plan/PlanBuilder.h"
 #include "axiom/optimizer/FunctionRegistry.h"
-#include "axiom/optimizer/ToGraph.h"
 #include "axiom/optimizer/tests/FeatureGen.h"
 #include "axiom/optimizer/tests/Genies.h"
 #include "axiom/optimizer/tests/PlanMatcher.h"
@@ -37,6 +36,73 @@ using namespace facebook::velox::exec::test;
 namespace lp = facebook::velox::logical_plan;
 
 namespace facebook::velox::optimizer {
+namespace {
+
+template <typename T>
+lp::ExprPtr makeKey(const TypePtr& type, T value) {
+  return std::make_shared<lp::ConstantExpr>(
+      type, std::make_shared<Variant>(value));
+}
+
+lp::ExprPtr stepToLogicalPlanGetter(Step step, const lp::ExprPtr& arg) {
+  const auto& argType = arg->type();
+  switch (step.kind) {
+    case StepKind::kField: {
+      lp::ExprPtr key;
+      const TypePtr* type{};
+      if (step.field) {
+        key = makeKey(VARCHAR(), step.field);
+        type = &argType->asRow().findChild(step.field);
+      } else {
+        key = makeKey(INTEGER(), static_cast<int32_t>(step.id));
+        type = &argType->childAt(step.id);
+      }
+
+      return std::make_shared<lp::SpecialFormExpr>(
+          *type,
+          lp::SpecialForm::kDereference,
+          arg,
+          makeKey(VARCHAR(), step.field));
+    }
+
+    case StepKind::kSubscript: {
+      if (argType->kind() == TypeKind::ARRAY) {
+        return std::make_shared<lp::CallExpr>(
+            argType->childAt(0),
+            "subscript",
+            arg,
+            makeKey(INTEGER(), static_cast<int32_t>(step.id)));
+      }
+
+      lp::ExprPtr key;
+      switch (argType->childAt(0)->kind()) {
+        case TypeKind::VARCHAR:
+          key = makeKey(VARCHAR(), step.field);
+          break;
+        case TypeKind::BIGINT:
+          key = makeKey(BIGINT(), step.id);
+          break;
+        case TypeKind::INTEGER:
+          key = makeKey(INTEGER(), static_cast<int32_t>(step.id));
+          break;
+        case TypeKind::SMALLINT:
+          key = makeKey(SMALLINT(), static_cast<int16_t>(step.id));
+          break;
+        case TypeKind::TINYINT:
+          key = makeKey(TINYINT(), static_cast<int8_t>(step.id));
+          break;
+        default:
+          VELOX_FAIL("Unsupported key type");
+      }
+
+      return std::make_shared<lp::CallExpr>(
+          argType->childAt(1), "subscript", arg, key);
+    }
+
+    default:
+      VELOX_NYI();
+  }
+}
 
 class SubfieldTest : public QueryTestBase,
                      public testing::WithParamInterface<int32_t> {
@@ -123,7 +189,7 @@ class SubfieldTest : public QueryTestBase,
 
       // Here, for the sake of example, we make every odd key return identity.
       if (steps[1].id % 2 == 1) {
-        it->second = ToGraph::stepToLogicalPlanGetter(steps[1], args[nth]);
+        it->second = stepToLogicalPlanGetter(steps[1], args[nth]);
         continue;
       }
 
@@ -133,7 +199,7 @@ class SubfieldTest : public QueryTestBase,
             REAL(),
             "plus",
             std::vector<lp::ExprPtr>{
-                ToGraph::stepToLogicalPlanGetter(steps[1], args[nth]),
+                stepToLogicalPlanGetter(steps[1], args[nth]),
                 std::make_shared<lp::ConstantExpr>(
                     REAL(),
                     std::make_shared<variant>(
@@ -147,12 +213,12 @@ class SubfieldTest : public QueryTestBase,
             ARRAY(BIGINT()),
             "array_distinct",
             std::vector<lp::ExprPtr>{
-                ToGraph::stepToLogicalPlanGetter(steps[1], args[nth])});
+                stepToLogicalPlanGetter(steps[1], args[nth])});
         continue;
       }
 
       // Access to idslf. Identity.
-      it->second = ToGraph::stepToLogicalPlanGetter(steps[1], args[nth]);
+      it->second = stepToLogicalPlanGetter(steps[1], args[nth]);
     }
     return result;
   }
@@ -641,4 +707,5 @@ VELOX_INSTANTIATE_TEST_SUITE_P(
     SubfieldTest,
     testing::ValuesIn(std::vector<int32_t>{1, 2, 3}));
 
+} // namespace
 } // namespace facebook::velox::optimizer
