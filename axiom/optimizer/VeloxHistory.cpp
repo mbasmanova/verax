@@ -56,28 +56,25 @@ std::pair<float, float> VeloxHistory::sampleJoin(JoinEdge* edge) {
     }
   }
 
-  const bool trace = (options.traceFlags & OptimizerOptions::kSample) != 0;
+  auto rightTable = edge->rightTable()->as<BaseTable>()->schemaTable;
+  auto leftTable = edge->leftTable()->as<BaseTable>()->schemaTable;
 
   std::pair<float, float> pair;
   uint64_t start = getCurrentTimeMicro();
   if (keyPair.second) {
     pair = optimizer::sampleJoin(
-        edge->rightTable()->as<BaseTable>()->schemaTable,
-        edge->rightKeys(),
-        edge->leftTable()->as<BaseTable>()->schemaTable,
-        edge->leftKeys());
+        rightTable, edge->rightKeys(), leftTable, edge->leftKeys());
   } else {
     pair = optimizer::sampleJoin(
-        edge->leftTable()->as<BaseTable>()->schemaTable,
-        edge->leftKeys(),
-        edge->rightTable()->as<BaseTable>()->schemaTable,
-        edge->rightKeys());
+        leftTable, edge->leftKeys(), rightTable, edge->rightKeys());
   }
 
   {
     std::lock_guard<std::mutex> l(mutex_);
     joinSamples_[keyPair.first] = pair;
   }
+
+  const bool trace = (options.traceFlags & OptimizerOptions::kSample) != 0;
   if (trace) {
     std::cout << "Sample join " << keyPair.first << ": " << pair.first << " :"
               << pair.second
