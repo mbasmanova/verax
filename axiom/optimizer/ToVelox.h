@@ -47,10 +47,7 @@ class ToVelox {
  public:
   ToVelox(
       const axiom::runner::MultiFragmentPlan::Options& options,
-      const OptimizerOptions& optimizerOptions)
-      : options_{options},
-        optimizerOptions_{optimizerOptions},
-        isSingle_{options.numWorkers == 1} {}
+      const OptimizerOptions& optimizerOptions);
 
   /// Converts physical plan (a tree of RelationOp) to an executable
   /// multi-fragment Velox plan.
@@ -268,6 +265,8 @@ class ToVelox {
 
   // Serial number for stages in executable plan.
   int32_t stageCounter_{0};
+
+  const std::optional<std::string> subscript_;
 };
 
 } // namespace facebook::velox::optimizer

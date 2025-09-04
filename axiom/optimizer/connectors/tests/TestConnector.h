@@ -382,7 +382,7 @@ class TestConnector : public Connector {
     return metadata_.get();
   }
 
-  bool supportsSplitPreload() override {
+  bool supportsSplitPreload() const override {
     return true;
   }
 

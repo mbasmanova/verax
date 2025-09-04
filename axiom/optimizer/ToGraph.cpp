@@ -72,8 +72,9 @@ ToGraph::ToGraph(
       evaluator_{evaluator},
       options_{options},
       equality_{toName(FunctionRegistry::instance()->equality())} {
-  const auto& reversibleFunctions =
-      FunctionRegistry::instance()->reversibleFunctions();
+  auto* registry = FunctionRegistry::instance();
+
+  const auto& reversibleFunctions = registry->reversibleFunctions();
   for (const auto& [name, reverseName] : reversibleFunctions) {
     reversibleFunctions_[toName(name)] = toName(reverseName);
     reversibleFunctions_[toName(reverseName)] = toName(name);
@@ -81,6 +82,18 @@ ToGraph::ToGraph(
 
   reversibleFunctions_[SpecialFormCallNames::kAnd] = SpecialFormCallNames::kAnd;
   reversibleFunctions_[SpecialFormCallNames::kOr] = SpecialFormCallNames::kOr;
+
+  if (auto elementAt = registry->elementAt()) {
+    elementAt_ = toName(elementAt.value());
+  }
+
+  if (auto subscript = registry->subscript()) {
+    subscript_ = toName(subscript.value());
+  }
+
+  if (auto cardinality = registry->cardinality()) {
+    cardinality_ = toName(cardinality.value());
+  }
 }
 
 void ToGraph::setDtOutput(
@@ -199,8 +212,8 @@ bool ToGraph::isSubfield(
   }
 
   if (const auto* call = expr->asUnchecked<lp::CallExpr>()) {
-    auto name = call->name();
-    if (name == "subscript" || name == "element_at") {
+    auto name = toName(call->name());
+    if (name == subscript_ || name == elementAt_) {
       auto subscript = translateExpr(call->inputAt(1));
       if (subscript->is(PlanType::kLiteralExpr)) {
         step.kind = StepKind::kSubscript;
@@ -223,7 +236,7 @@ bool ToGraph::isSubfield(
       }
       return false;
     }
-    if (name == "cardinality") {
+    if (name == cardinality_) {
       step.kind = StepKind::kCardinality;
       input = expr->inputAt(0);
       return true;
@@ -449,16 +462,13 @@ ExprCP ToGraph::makeGettersOverSkyline(
           };
 
           expr = make<Call>(
-              toName("subscript"),
-              Value(valueType, 1),
-              std::move(args),
-              FunctionSet());
+              subscript_, Value(valueType, 1), std::move(args), FunctionSet());
           break;
         }
 
         case StepKind::kCardinality: {
           expr = make<Call>(
-              toName("cardinality"),
+              cardinality_,
               Value(toType(INTEGER()), 1),
               ExprVector{expr},
               FunctionSet());

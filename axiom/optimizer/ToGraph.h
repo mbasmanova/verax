@@ -195,10 +195,6 @@ class ToGraph {
     return &evaluator_;
   }
 
-  static logical_plan::ExprPtr stepToLogicalPlanGetter(
-      Step,
-      const logical_plan::ExprPtr& arg);
-
   template <typename Func>
   void trace(uint32_t event, Func f) {
     if ((options_.traceFlags & event) != 0) {
@@ -501,6 +497,9 @@ class ToGraph {
       planLeaves_;
 
   Name equality_;
+  Name elementAt_{nullptr};
+  Name subscript_{nullptr};
+  Name cardinality_{nullptr};
 
   std::unordered_map<Name, Name> reversibleFunctions_;
 };

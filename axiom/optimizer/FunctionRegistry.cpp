@@ -15,6 +15,7 @@
  */
 
 #include "axiom/optimizer/FunctionRegistry.h"
+#include "velox/expression/ExprConstants.h"
 
 namespace facebook::velox::optimizer {
 namespace lp = facebook::velox::logical_plan;
@@ -36,8 +37,34 @@ bool FunctionRegistry::registerFunction(
 
 void FunctionRegistry::registerEquality(std::string_view name) {
   VELOX_USER_CHECK(!name.empty());
-
   equality_ = name;
+}
+
+bool FunctionRegistry::registerElementAt(std::string_view name) {
+  VELOX_USER_CHECK(!name.empty());
+  if (elementAt_.has_value() && elementAt_.value() != name) {
+    return false;
+  }
+  elementAt_ = name;
+  return true;
+}
+
+bool FunctionRegistry::registerSubscript(std::string_view name) {
+  VELOX_USER_CHECK(!name.empty());
+  if (subscript_.has_value() && subscript_.value() != name) {
+    return false;
+  }
+  subscript_ = name;
+  return true;
+}
+
+bool FunctionRegistry::registerCardinality(std::string_view name) {
+  VELOX_USER_CHECK(!name.empty());
+  if (cardinality_.has_value() && cardinality_.value() != name) {
+    return false;
+  }
+  cardinality_ = name;
+  return true;
 }
 
 bool FunctionRegistry::registerSpecialForm(
@@ -111,13 +138,15 @@ std::unordered_map<PathCP, lp::ExprPtr> rowConstructorExplode(
 
 // static
 void FunctionRegistry::registerPrestoFunctions(std::string_view prefix) {
+  auto fullName = [&](std::string_view name) {
+    return prefix.empty() ? std::string(name)
+                          : fmt::format("{}{}", prefix, name);
+  };
+
   auto registerFunction = [&](std::string_view name,
                               std::unique_ptr<FunctionMetadata> metadata) {
-    auto fullName =
-        prefix.empty() ? std::string(name) : fmt::format("{}{}", prefix, name);
-
     FunctionRegistry::instance()->registerFunction(
-        fullName, std::move(metadata));
+        fullName(name), std::move(metadata));
   };
 
   {
@@ -165,21 +194,28 @@ void FunctionRegistry::registerPrestoFunctions(std::string_view prefix) {
 
   auto* registry = FunctionRegistry::instance();
 
-  registry->registerReversibleFunction("eq");
-  registry->registerReversibleFunction("lt", "gt");
-  registry->registerReversibleFunction("lte", "gte");
-  registry->registerReversibleFunction("plus");
-  registry->registerReversibleFunction("multiply");
+  registry->registerEquality(fullName("eq"));
+  registry->registerElementAt(fullName("element_at"));
+  registry->registerSubscript(fullName("subscript"));
+  registry->registerCardinality(fullName("cardinality"));
 
-  registry->registerSpecialForm(lp::SpecialForm::kAnd, "and");
-  registry->registerSpecialForm(lp::SpecialForm::kOr, "or");
-  registry->registerSpecialForm(lp::SpecialForm::kCast, "cast");
-  registry->registerSpecialForm(lp::SpecialForm::kTryCast, "trycast");
-  registry->registerSpecialForm(lp::SpecialForm::kTry, "try");
-  registry->registerSpecialForm(lp::SpecialForm::kIf, "if");
-  registry->registerSpecialForm(lp::SpecialForm::kCoalesce, "coalesce");
-  registry->registerSpecialForm(lp::SpecialForm::kSwitch, "switch");
-  registry->registerSpecialForm(lp::SpecialForm::kIn, "in");
+  registry->registerReversibleFunction(fullName("eq"));
+  registry->registerReversibleFunction(fullName("lt"), fullName("gt"));
+  registry->registerReversibleFunction(fullName("lte"), fullName("gte"));
+  registry->registerReversibleFunction(fullName("plus"));
+  registry->registerReversibleFunction(fullName("multiply"));
+
+  registry->registerSpecialForm(lp::SpecialForm::kAnd, expression::kAnd);
+  registry->registerSpecialForm(lp::SpecialForm::kOr, expression::kOr);
+  registry->registerSpecialForm(lp::SpecialForm::kCast, expression::kCast);
+  registry->registerSpecialForm(
+      lp::SpecialForm::kTryCast, expression::kTryCast);
+  registry->registerSpecialForm(lp::SpecialForm::kTry, expression::kTry);
+  registry->registerSpecialForm(lp::SpecialForm::kIf, expression::kIf);
+  registry->registerSpecialForm(
+      lp::SpecialForm::kCoalesce, expression::kCoalesce);
+  registry->registerSpecialForm(lp::SpecialForm::kSwitch, expression::kSwitch);
+  registry->registerSpecialForm(lp::SpecialForm::kIn, fullName("in"));
 }
 
 } // namespace facebook::velox::optimizer
