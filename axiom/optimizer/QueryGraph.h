@@ -316,50 +316,80 @@ class Call : public Expr {
 using CallCP = const Call*;
 
 struct SpecialFormCallNames {
-  static constexpr const char* kAnd = "and";
-  static constexpr const char* kOr = "or";
-  static constexpr const char* kCast = "cast";
-  static constexpr const char* kTryCast = "trycast";
-  static constexpr const char* kTry = "try";
-  static constexpr const char* kCoalesce = "coalesce";
-  static constexpr const char* kIf = "if";
-  static constexpr const char* kSwitch = "switch";
-  static constexpr const char* kIn = "in";
+  static const char* kAnd;
+  static const char* kOr;
+  static const char* kCast;
+  static const char* kTryCast;
+  static const char* kTry;
+  static const char* kCoalesce;
+  static const char* kIf;
+  static const char* kSwitch;
+  static const char* kIn;
 
   static const char* toCallName(const logical_plan::SpecialForm& form) {
-    namespace lp = facebook::velox::logical_plan;
-
     switch (form) {
-      case lp::SpecialForm::kAnd:
+      case logical_plan::SpecialForm::kAnd:
         return SpecialFormCallNames::kAnd;
-      case lp::SpecialForm::kOr:
+      case logical_plan::SpecialForm::kOr:
         return SpecialFormCallNames::kOr;
-      case lp::SpecialForm::kCast:
+      case logical_plan::SpecialForm::kCast:
         return SpecialFormCallNames::kCast;
-      case lp::SpecialForm::kTryCast:
+      case logical_plan::SpecialForm::kTryCast:
         return SpecialFormCallNames::kTryCast;
-      case lp::SpecialForm::kTry:
+      case logical_plan::SpecialForm::kTry:
         return SpecialFormCallNames::kTry;
-      case lp::SpecialForm::kCoalesce:
+      case logical_plan::SpecialForm::kCoalesce:
         return SpecialFormCallNames::kCoalesce;
-      case lp::SpecialForm::kIf:
+      case logical_plan::SpecialForm::kIf:
         return SpecialFormCallNames::kIf;
-      case lp::SpecialForm::kSwitch:
+      case logical_plan::SpecialForm::kSwitch:
         return SpecialFormCallNames::kSwitch;
-      case lp::SpecialForm::kIn:
+      case logical_plan::SpecialForm::kIn:
         return SpecialFormCallNames::kIn;
       default:
         VELOX_FAIL(
             "No function call name for special form: {}",
-            lp::SpecialFormName::toName(form));
+            logical_plan::SpecialFormName::toName(form));
     }
+  }
+
+  static std::optional<logical_plan::SpecialForm> tryFromCallName(
+      const char* name) {
+    if (name == kAnd) {
+      return logical_plan::SpecialForm::kAnd;
+    }
+    if (name == kOr) {
+      return logical_plan::SpecialForm::kOr;
+    }
+    if (name == kCast) {
+      return logical_plan::SpecialForm::kCast;
+    }
+    if (name == kTryCast) {
+      return logical_plan::SpecialForm::kTryCast;
+    }
+    if (name == kTry) {
+      return logical_plan::SpecialForm::kTry;
+    }
+    if (name == kCoalesce) {
+      return logical_plan::SpecialForm::kCoalesce;
+    }
+    if (name == kIf) {
+      return logical_plan::SpecialForm::kIf;
+    }
+    if (name == kSwitch) {
+      return logical_plan::SpecialForm::kSwitch;
+    }
+    if (name == kIn) {
+      return logical_plan::SpecialForm::kIn;
+    }
+
+    return std::nullopt;
   }
 };
 
 /// True if 'expr' is a call to function 'name'.
 inline bool isCallExpr(ExprCP expr, Name name) {
-  return expr->type() == PlanType::kCallExpr &&
-      expr->as<Call>()->name() == name;
+  return expr->is(PlanType::kCallExpr) && expr->as<Call>()->name() == name;
 }
 
 /// Represents a lambda. May occur as an immediate argument of selected

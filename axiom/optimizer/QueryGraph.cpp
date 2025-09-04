@@ -22,6 +22,25 @@
 
 namespace facebook::velox::optimizer {
 
+// static
+const char* SpecialFormCallNames::kAnd = "__and";
+// static
+const char* SpecialFormCallNames::kOr = "__or";
+// static
+const char* SpecialFormCallNames::kCast = "__cast";
+// static
+const char* SpecialFormCallNames::kTryCast = "__trycast";
+// static
+const char* SpecialFormCallNames::kTry = "__try";
+// static
+const char* SpecialFormCallNames::kCoalesce = "__coalesce";
+// static
+const char* SpecialFormCallNames::kIf = "__if";
+// static
+const char* SpecialFormCallNames::kSwitch = "__switch";
+// static
+const char* SpecialFormCallNames::kIn = "__in";
+
 void Column::equals(ColumnCP other) const {
   if (!equivalence_ && !other->equivalence_) {
     auto* equiv = make<Equivalence>();

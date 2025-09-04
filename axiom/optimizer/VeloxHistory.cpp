@@ -73,6 +73,7 @@ std::pair<float, float> VeloxHistory::sampleJoin(JoinEdge* edge) {
         edge->rightTable()->as<BaseTable>()->schemaTable,
         edge->rightKeys());
   }
+
   {
     std::lock_guard<std::mutex> l(mutex_);
     joinSamples_[keyPair.first] = pair;

@@ -40,6 +40,13 @@ void FunctionRegistry::registerEquality(std::string_view name) {
   equality_ = name;
 }
 
+bool FunctionRegistry::registerSpecialForm(
+    lp::SpecialForm specialForm,
+    std::string_view name) {
+  VELOX_USER_CHECK(!name.empty());
+  return specialForms_.emplace(specialForm, name).second;
+}
+
 bool FunctionRegistry::registerReversibleFunction(
     std::string_view name,
     std::string_view reverseName) {
@@ -61,6 +68,10 @@ FunctionRegistry* FunctionRegistry::instance() {
 
 FunctionMetadataCP functionMetadata(std::string_view name) {
   return FunctionRegistry::instance()->metadata(name);
+}
+
+std::string specialForm(lp::SpecialForm specialForm) {
+  return FunctionRegistry::instance()->specialForm(specialForm);
 }
 
 namespace {
@@ -152,13 +163,23 @@ void FunctionRegistry::registerPrestoFunctions(std::string_view prefix) {
     registerFunction("row_constructor", std::move(metadata));
   }
 
-  FunctionRegistry::instance()->registerReversibleFunction("eq");
-  FunctionRegistry::instance()->registerReversibleFunction("lt", "gt");
-  FunctionRegistry::instance()->registerReversibleFunction("lte", "gte");
-  FunctionRegistry::instance()->registerReversibleFunction("plus");
-  FunctionRegistry::instance()->registerReversibleFunction("multiply");
-  FunctionRegistry::instance()->registerReversibleFunction("and");
-  FunctionRegistry::instance()->registerReversibleFunction("or");
+  auto* registry = FunctionRegistry::instance();
+
+  registry->registerReversibleFunction("eq");
+  registry->registerReversibleFunction("lt", "gt");
+  registry->registerReversibleFunction("lte", "gte");
+  registry->registerReversibleFunction("plus");
+  registry->registerReversibleFunction("multiply");
+
+  registry->registerSpecialForm(lp::SpecialForm::kAnd, "and");
+  registry->registerSpecialForm(lp::SpecialForm::kOr, "or");
+  registry->registerSpecialForm(lp::SpecialForm::kCast, "cast");
+  registry->registerSpecialForm(lp::SpecialForm::kTryCast, "trycast");
+  registry->registerSpecialForm(lp::SpecialForm::kTry, "try");
+  registry->registerSpecialForm(lp::SpecialForm::kIf, "if");
+  registry->registerSpecialForm(lp::SpecialForm::kCoalesce, "coalesce");
+  registry->registerSpecialForm(lp::SpecialForm::kSwitch, "switch");
+  registry->registerSpecialForm(lp::SpecialForm::kIn, "in");
 }
 
 } // namespace facebook::velox::optimizer
