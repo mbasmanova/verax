@@ -17,6 +17,7 @@
 #pragma once
 
 #include "axiom/logical_plan/LogicalPlanNode.h"
+#include "axiom/optimizer/FunctionRegistry.h"
 #include "axiom/optimizer/Schema.h"
 #include "velox/core/PlanNode.h"
 
@@ -28,39 +29,6 @@
 /// representing constraints on partial plans but otherwise these stay
 /// constant.
 namespace facebook::velox::optimizer {
-
-/// A bit set that qualifies an Expr. Represents which functions/kinds
-/// of functions are found inside the children of an Expr.
-class FunctionSet {
- public:
-  /// Indicates an aggregate function in the set.
-  static constexpr uint64_t kAggregate = 1;
-
-  /// Indicates a non-determinstic function in the set.
-  static constexpr uint64_t kNonDeterministic = 1UL << 1U;
-
-  FunctionSet() : set_(0) {}
-
-  explicit FunctionSet(uint64_t set) : set_(set) {}
-
-  /// True if 'item' is in 'this'.
-  bool contains(uint64_t item) const {
-    return 0 != (set_ & item);
-  }
-
-  /// Unions 'this' and 'other' and returns the result.
-  FunctionSet operator|(const FunctionSet& other) const {
-    return FunctionSet(set_ | other.set_);
-  }
-
-  /// Unions 'this' and 'other' and returns the result.
-  FunctionSet operator|(uint64_t other) const {
-    return FunctionSet(set_ | other);
-  }
-
- private:
-  uint64_t set_;
-};
 
 /// Superclass for all expressions.
 class Expr : public PlanObject {
@@ -278,57 +246,6 @@ struct SubfieldSet {
   std::vector<BitSet, QGAllocator<BitSet>> subfields;
 
   std::optional<BitSet> findSubfields(int32_t id) const;
-};
-
-/// Describes where the args given to a lambda come from.
-enum class LambdaArg : int8_t { kKey, kValue, kElement };
-
-// Lambda function process arrays or maps using lambda expressions.
-// Example:
-//
-//    filter(array, x -> x > 0)
-//
-//    LambdaInfo{.ordinal = 1, .lambdaArg = {kElement}, .argOrdinal = {0}}
-//
-// , where .ordinal = 1 says that lambda expression is the second argument of
-// the function; .lambdaArg = {kElement} together with .argOrdinal = {0} say
-// that the lambda expression takes one argument, which is the element of the
-// array, which is to be found in the first argument of the function.
-//
-// clang-format off
-//    transform_values(map, (k, v) -> v + 1)
-//
-//    LambdaInfo{.ordinal = 1, .lambdaArg = {kKey, kValue}, .argOrdinal = {0, 0}}
-// clang-format on
-//
-// , where ordinal = 1 says that lambda expression is the second argument of the
-// function; .lambdaArg = {kKey, kValue} together with .argOrdinal = {0, 0} say
-// that lambda expression takes two arguments, which are the key and the value
-// of the same map, which is to be found in the first argument of the function.
-//
-// clang-format off
-//    zip(a, b, (x, y) -> x + y)
-//
-//    LambdaInfo{.ordinal = 2, .lambdaArg = {kElement, kElement}, .argOrdinal = {0, 1}}
-// clang-format on
-//
-// , where ordinal = 2 says that lambda expression is the third argument of the
-// function; .lambdaArg = {kElement, kElement} together with .argOrdinal = {0,
-// 1} say that lambda expression takes two arguments: first is an element of the
-// array in the first argument of the function; second is an element of the
-// array in the second argument of the function.
-//
-struct LambdaInfo {
-  /// The ordinal of the lambda in the function's args.
-  int32_t ordinal;
-
-  /// Getter applied to the collection given in corresponding 'argOrdinal' to
-  /// get each argument of the lambda.
-  std::vector<LambdaArg> lambdaArg;
-
-  /// The ordinal of the array or map that provides the lambda argument in the
-  /// function's args. 1:1 with lambdaArg.
-  std::vector<int32_t> argOrdinal;
 };
 
 struct FunctionMetadata;

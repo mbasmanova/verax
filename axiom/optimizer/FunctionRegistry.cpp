@@ -27,10 +27,10 @@ FunctionMetadataCP FunctionRegistry::metadata(std::string_view name) const {
   return it->second.get();
 }
 
-void FunctionRegistry::registerFunction(
+bool FunctionRegistry::registerFunction(
     std::string_view name,
     std::unique_ptr<FunctionMetadata> metadata) {
-  metadata_[name] = std::move(metadata);
+  return metadata_.emplace(name, std::move(metadata)).second;
 }
 
 // static
@@ -78,7 +78,17 @@ std::unordered_map<PathCP, lp::ExprPtr> rowConstructorExplode(
 }
 } // namespace
 
-bool declareBuiltIn() {
+// static
+void FunctionRegistry::registerPrestoFunctions(std::string_view prefix) {
+  auto registerFunction = [&](std::string_view name,
+                              std::unique_ptr<FunctionMetadata> metadata) {
+    auto fullName =
+        prefix.empty() ? std::string(name) : fmt::format("{}{}", prefix, name);
+
+    FunctionRegistry::instance()->registerFunction(
+        fullName, std::move(metadata));
+  };
+
   {
     LambdaInfo info{
         .ordinal = 1,
@@ -89,9 +99,9 @@ bool declareBuiltIn() {
     metadata->lambdas.push_back(std::move(info));
     metadata->subfieldArg = 0;
     metadata->cost = 40;
-    FunctionRegistry::instance()->registerFunction(
-        "transform_values", std::move(metadata));
+    registerFunction("transform_values", std::move(metadata));
   }
+
   {
     LambdaInfo info{
         .ordinal = 1, .lambdaArg = {LambdaArg::kElement}, .argOrdinal = {0}};
@@ -100,9 +110,9 @@ bool declareBuiltIn() {
     metadata->lambdas.push_back(std::move(info));
     metadata->subfieldArg = 0;
     metadata->cost = 20;
-    FunctionRegistry::instance()->registerFunction(
-        "transform", std::move(metadata));
+    registerFunction("transform", std::move(metadata));
   }
+
   {
     LambdaInfo info{
         .ordinal = 2,
@@ -112,20 +122,15 @@ bool declareBuiltIn() {
     auto metadata = std::make_unique<FunctionMetadata>();
     metadata->lambdas.push_back(std::move(info));
     metadata->cost = 20;
-    FunctionRegistry::instance()->registerFunction("zip", std::move(metadata));
+    registerFunction("zip", std::move(metadata));
   }
+
   {
     auto metadata = std::make_unique<FunctionMetadata>();
     metadata->valuePathToArgPath = rowConstructorSubfield;
     metadata->explode = rowConstructorExplode;
-    FunctionRegistry::instance()->registerFunction(
-        "row_constructor", std::move(metadata));
+    registerFunction("row_constructor", std::move(metadata));
   }
-  return true;
-}
-
-namespace {
-bool temp = declareBuiltIn();
 }
 
 } // namespace facebook::velox::optimizer

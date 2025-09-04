@@ -154,6 +154,8 @@ class VeloxRunner : public QueryBenchmarkBase {
     aggregate::prestosql::registerAllAggregateFunctions();
     parse::registerTypeResolver();
 
+    optimizer::FunctionRegistry::registerPrestoFunctions();
+
     filesystems::registerLocalFileSystem();
     parquet::registerParquetReaderFactory();
     dwrf::registerDwrfReaderFactory();
