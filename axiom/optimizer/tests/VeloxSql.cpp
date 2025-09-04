@@ -27,7 +27,6 @@
 #include "axiom/optimizer/connectors/ConnectorSplitSource.h"
 #include "axiom/optimizer/connectors/hive/LocalHiveConnectorMetadata.h"
 #include "axiom/optimizer/connectors/tpch/TpchConnectorMetadata.h"
-#include "axiom/optimizer/tests/DuckParser.h"
 #include "axiom/optimizer/tests/PrestoParser.h"
 #include "axiom/runner/LocalRunner.h"
 #include "velox/benchmarks/QueryBenchmarkBase.h"
@@ -50,11 +49,6 @@ DEFINE_string(
     data_path,
     "",
     "Root path of data. Data layout must follow Hive-style partitioning. ");
-
-DEFINE_bool(
-    use_duck_parser,
-    false,
-    "Use DuckDB SQL parser instead of built-in Presto SQL parser.");
 
 // Defined in velox/benchmarks/QueryBenchmarkBase.cpp
 DECLARE_string(ssd_path);
@@ -174,13 +168,8 @@ class VeloxRunner : public QueryBenchmarkBase {
 
     schema_ = std::make_shared<optimizer::SchemaResolver>();
 
-    if (FLAGS_use_duck_parser) {
-      VELOX_CHECK(!FLAGS_data_path.empty());
-      duckParser_ = setupQueryParser();
-    } else {
-      prestoParser_ = std::make_unique<optimizer::test::PrestoParser>(
-          connector_->connectorId(), optimizerPool_.get());
-    }
+    prestoParser_ = std::make_unique<optimizer::test::PrestoParser>(
+        connector_->connectorId(), optimizerPool_.get());
 
     history_ = std::make_unique<optimizer::VeloxHistory>();
 
@@ -263,19 +252,6 @@ class VeloxRunner : public QueryBenchmarkBase {
     return connector;
   }
 
-  std::unique_ptr<optimizer::test::DuckParser> setupQueryParser() {
-    auto parser = std::make_unique<optimizer::test::DuckParser>(
-        connector_->connectorId(), optimizerPool_.get());
-    auto& tables = dynamic_cast<connector::hive::LocalHiveConnectorMetadata*>(
-                       connector_->metadata())
-                       ->tables();
-    for (const auto& [name, table] : tables) {
-      parser->registerTable(name, table->type());
-    }
-
-    return parser;
-  }
-
   std::vector<RowVectorPtr> runInner(
       facebook::axiom::runner::LocalRunner& runner,
       RunStats& stats) {
@@ -316,11 +292,7 @@ class VeloxRunner : public QueryBenchmarkBase {
   void run(const std::string& sql) {
     optimizer::test::SqlStatementPtr sqlStatement;
     try {
-      if (FLAGS_use_duck_parser) {
-        sqlStatement = duckParser_->parse(sql);
-      } else {
-        sqlStatement = prestoParser_->parse(sql);
-      }
+      sqlStatement = prestoParser_->parse(sql);
     } catch (std::exception& e) {
       std::cerr << "Failed to parse SQL: " << e.what() << std::endl;
       return;
@@ -848,7 +820,6 @@ class VeloxRunner : public QueryBenchmarkBase {
   std::shared_ptr<connector::Connector> connector_;
   std::shared_ptr<optimizer::SchemaResolver> schema_;
   std::unique_ptr<optimizer::VeloxHistory> history_;
-  std::unique_ptr<optimizer::test::DuckParser> duckParser_;
   std::unique_ptr<optimizer::test::PrestoParser> prestoParser_;
   std::ofstream* record_{nullptr};
   std::ifstream* check_{nullptr};
