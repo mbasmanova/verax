@@ -68,7 +68,10 @@ ToGraph::ToGraph(
     const Schema& schema,
     core::ExpressionEvaluator& evaluator,
     const OptimizerOptions& options)
-    : schema_{schema}, evaluator_{evaluator}, options_{options} {
+    : schema_{schema},
+      evaluator_{evaluator},
+      options_{options},
+      equality_{toName(FunctionRegistry::instance()->equality())} {
   const auto& reversibleFunctions =
       FunctionRegistry::instance()->reversibleFunctions();
   for (const auto& [name, reverseName] : reversibleFunctions) {
@@ -517,8 +520,7 @@ void ToGraph::ensureFunctionSubfields(const lp::ExprPtr& expr) {
 }
 
 BuiltinNames::BuiltinNames()
-    : eq(toName("eq")),
-      _and(toName(SpecialFormCallNames::kAnd)),
+    : _and(toName(SpecialFormCallNames::kAnd)),
       _or(toName(SpecialFormCallNames::kOr)),
       cast(toName(SpecialFormCallNames::kCast)),
       tryCast(toName(SpecialFormCallNames::kTryCast)),
@@ -594,6 +596,32 @@ ExprCP ToGraph::deduppedCall(
     functionDedup_[key] = call;
   }
   return call;
+}
+
+bool ToGraph::isJoinEquality(
+    ExprCP expr,
+    std::vector<PlanObjectP>& tables,
+    ExprCP& left,
+    ExprCP& right) const {
+  if (expr->is(PlanType::kCallExpr)) {
+    auto call = expr->as<Call>();
+    if (call->name() == equality_) {
+      left = call->argAt(0);
+      right = call->argAt(1);
+
+      auto leftTable = left->singleTable();
+      auto rightTable = right->singleTable();
+      if (!leftTable || !rightTable) {
+        return false;
+      }
+
+      if (leftTable == tables[1]) {
+        std::swap(left, right);
+      }
+      return true;
+    }
+  }
+  return false;
 }
 
 ExprCP ToGraph::makeConstant(const lp::ConstantExpr& constant) {
@@ -946,13 +974,12 @@ namespace {
 // conjuncts that are not equalities or have both sides depending
 // on right and something else are left in 'conjuncts'.
 void extractNonInnerJoinEqualities(
+    Name eq,
     ExprVector& conjuncts,
     PlanObjectCP right,
     ExprVector& leftKeys,
     ExprVector& rightKeys,
     PlanObjectSet& allLeft) {
-  const auto* eq = toName("eq");
-
   for (auto i = 0; i < conjuncts.size(); ++i) {
     const auto* conjunct = conjuncts[i];
     if (isCallExpr(conjunct, eq)) {
@@ -1026,7 +1053,7 @@ void ToGraph::translateJoin(const lp::JoinNode& join) {
     ExprVector rightKeys;
     PlanObjectSet leftTables;
     extractNonInnerJoinEqualities(
-        conjuncts, rightTable, leftKeys, rightKeys, leftTables);
+        equality_, conjuncts, rightTable, leftKeys, rightKeys, leftTables);
 
     auto leftTableVector = leftTables.toObjects();
 

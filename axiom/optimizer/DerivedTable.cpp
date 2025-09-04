@@ -621,32 +621,6 @@ void DerivedTable::makeProjection(const ExprVector& exprs) {
 }
 
 namespace {
-// True if 'expr' is of the form a = b where a depends on one of ''tables' and
-// b on the other. If true, returns the side depending on tables[0] in 'left'
-// and the other in 'right'.
-bool isJoinEquality(
-    ExprCP expr,
-    std::vector<PlanObjectP>& tables,
-    ExprCP& left,
-    ExprCP& right) {
-  if (expr->is(PlanType::kCallExpr)) {
-    auto call = expr->as<Call>();
-    if (call->name() == toName("eq")) {
-      left = call->argAt(0);
-      right = call->argAt(1);
-      auto leftTable = singleTable(left);
-      auto rightTable = singleTable(right);
-      if (!leftTable || !rightTable) {
-        return false;
-      }
-      if (leftTable == tables[1]) {
-        std::swap(left, right);
-      }
-      return true;
-    }
-  }
-  return false;
-}
 
 // Finds a JoinEdge between tables[0] and tables[1]. Sets tables[0] to the
 // left and [1] to the right table of the found join. Returns the JoinEdge. If
@@ -802,7 +776,8 @@ void DerivedTable::distributeConjuncts() {
       // there is no edge or the edge is inner, add the equality. For other
       // cases, leave the conjunct in place, to be evaluated when its
       // dependences are known.
-      if (isJoinEquality(conjuncts[i], tables, left, right)) {
+      if (queryCtx()->optimization()->isJoinEquality(
+              conjuncts[i], tables, left, right)) {
         auto join = findJoin(this, tables, true);
         if (join->isInner()) {
           if (left->is(PlanType::kColumnExpr) &&
