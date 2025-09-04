@@ -630,6 +630,9 @@ class RelationPlanner : public sql::AstVisitor {
       case sql::NodeType::kNullLiteral:
         return lp::Lit(Variant::null(TypeKind::UNKNOWN));
 
+      case sql::NodeType::kBooleanLiteral:
+        return lp::Lit(node->as<sql::BooleanLiteral>()->value());
+
       case sql::NodeType::kLongLiteral:
         return lp::Lit(node->as<sql::LongLiteral>()->value());
 

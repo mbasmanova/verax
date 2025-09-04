@@ -77,9 +77,9 @@ TEST_F(HiveQueriesTest, basic) {
           .planNode());
 }
 
-TEST_F(HiveQueriesTest, anyJoin) {
+TEST_F(HiveQueriesTest, crossJoin) {
   auto statement =
-      duckParser().parse("SELECT * FROM nation JOIN region ON true");
+      prestoParser_->parse("SELECT * FROM nation JOIN region ON true", true);
 
   ASSERT_TRUE(statement->isSelect());
   auto logicalPlan = statement->asUnchecked<test::SelectStatement>()->plan();
