@@ -856,11 +856,9 @@ ExprVector extractPerTable(
   for (auto& pair : perTable) {
     ExprVector tableAnds;
     for (auto& tableAnd : pair.second) {
-      tableAnds.push_back(
-          optimization->combineLeftDeep(names._and, tableAnd, {}));
+      tableAnds.push_back(optimization->combineLeftDeep(names._and, tableAnd));
     }
-    conjuncts.push_back(
-        optimization->combineLeftDeep(names._or, tableAnds, {}));
+    conjuncts.push_back(optimization->combineLeftDeep(names._or, tableAnds));
   }
   return conjuncts;
 }
@@ -929,9 +927,9 @@ ExprVector extractCommon(ExprVector& disjuncts, ExprCP* replacement) {
   if (changeOriginal) {
     ExprVector ands;
     for (const auto& inner : flat) {
-      ands.push_back(optimization->combineLeftDeep(names._and, inner, {}));
+      ands.push_back(optimization->combineLeftDeep(names._and, inner));
     }
-    *replacement = optimization->combineLeftDeep(names._or, ands, {});
+    *replacement = optimization->combineLeftDeep(names._or, ands);
   }
 
   return result;

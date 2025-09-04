@@ -160,10 +160,9 @@ class Optimization {
   }
 
   /// Returns a dedupped left deep reduction with 'func' for the
-  /// elements in set1 and set2. The elements are sorted on plan object
+  /// elements in 'expr'. The elements are sorted on plan object
   /// id and then combined into a left deep reduction on 'func'.
-  ExprCP
-  combineLeftDeep(Name func, const ExprVector& set1, const ExprVector& set2);
+  ExprCP combineLeftDeep(Name func, const ExprVector& exprs);
 
   /// Produces trace output if event matches 'traceFlags_'.
   void trace(uint32_t event, int32_t id, const Cost& cost, RelationOp& plan)
