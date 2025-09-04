@@ -252,7 +252,7 @@ class RelationPlanner : public sql::AstVisitor {
       case sql::ArithmeticBinaryExpression::Operator::kDivide:
         return "divide";
       case sql::ArithmeticBinaryExpression::Operator::kModulus:
-        return "modulus";
+        return "mod";
     }
 
     folly::assume_unreachable();
