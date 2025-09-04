@@ -98,14 +98,13 @@ ConnectorTableHandlePtr HiveConnectorMetadata::createTableHandle(
           "and");
     }
   }
-  return std::dynamic_pointer_cast<const ConnectorTableHandle>(
-      std::make_shared<HiveTableHandle>(
-          hiveConnector_->connectorId(),
-          hiveLayout->table().name(),
-          true,
-          std::move(subfieldFilters),
-          remainingFilter,
-          dataColumns ? dataColumns : layout.rowType()));
+  return std::make_shared<HiveTableHandle>(
+      hiveConnector_->connectorId(),
+      hiveLayout->table().name(),
+      true,
+      std::move(subfieldFilters),
+      remainingFilter,
+      dataColumns ? dataColumns : layout.rowType());
 }
 
 ConnectorInsertTableHandlePtr HiveConnectorMetadata::createInsertTableHandle(

@@ -22,13 +22,11 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include "axiom/optimizer/JsonUtil.h"
-#include "velox/common/base/Fs.h"
 #include "velox/connectors/Connector.h"
 #include "velox/connectors/hive/HiveConnectorSplit.h"
 #include "velox/dwio/common/BufferedInput.h"
 #include "velox/dwio/common/Reader.h"
 #include "velox/dwio/common/ReaderFactory.h"
-#include "velox/dwio/dwrf/common/Statistics.h"
 #include "velox/expression/Expr.h"
 #include "velox/type/fbhive/HiveTypeParser.h"
 #include "velox/type/fbhive/HiveTypeSerializer.h"
@@ -94,7 +92,7 @@ std::vector<SplitSource::SplitAndGroup> LocalHiveSplitSource::getSplits(
       }
 
       currentSplit_ = 0;
-      auto filePath = files_[currentFile_]->path;
+      const auto& filePath = files_[currentFile_]->path;
       const auto fileSize = fs::file_size(filePath);
       int64_t splitsPerFile =
           ceil2<uint64_t>(fileSize, options_.fileBytesPerSplit);
@@ -111,7 +109,7 @@ std::vector<SplitSource::SplitAndGroup> LocalHiveSplitSource::getSplits(
       // Take the upper bound.
       const int64_t splitSize = ceil2<uint64_t>(fileSize, splitsPerFile);
       for (int i = 0; i < splitsPerFile; ++i) {
-        auto builder = connector::hive::HiveConnectorSplitBuilder(filePath)
+        auto builder = HiveConnectorSplitBuilder(filePath)
                            .connectorId(connectorId_)
                            .fileFormat(format_)
                            .start(i * splitSize)
@@ -259,63 +257,67 @@ std::pair<int64_t, int64_t> LocalHiveTableLayout::sample(
     std::vector<std::unique_ptr<StatisticsBuilder>>* statsBuilders) const {
   StatisticsBuilderOptions options = {
       .maxStringLength = 100, .countDistincts = true, .allocator = allocator};
-  std::vector<std::unique_ptr<StatisticsBuilder>> builders;
 
-  velox::connector::ColumnHandleMap columnHandles;
+  std::vector<std::unique_ptr<StatisticsBuilder>> builders;
+  ColumnHandleMap columnHandles;
+
   std::vector<std::string> names;
   std::vector<TypePtr> types;
-  for (auto& field : fields) {
-    auto& path = field.path();
-    auto column =
-        dynamic_cast<const common::Subfield::NestedField*>(path[0].get())
-            ->name();
-    const auto idx = rowType()->getChildIdx(column);
-    names.push_back(rowType()->nameOf(idx));
-    types.push_back(rowType()->childAt(idx));
-    columnHandles[names.back()] =
-        std::make_shared<connector::hive::HiveColumnHandle>(
-            names.back(),
-            connector::hive::HiveColumnHandle::ColumnType::kRegular,
-            types.back(),
-            types.back());
-    builders.push_back(StatisticsBuilder::create(types.back(), options));
+  names.reserve(fields.size());
+  types.reserve(fields.size());
+
+  for (const auto& field : fields) {
+    const auto& name = field.baseName();
+    const auto& type = rowType()->findChild(name);
+
+    names.push_back(name);
+    types.push_back(type);
+
+    columnHandles[name] = std::make_shared<HiveColumnHandle>(
+        name, HiveColumnHandle::ColumnType::kRegular, type, type);
+    builders.push_back(StatisticsBuilder::create(type, options));
   }
 
   const auto outputType = ROW(std::move(names), std::move(types));
+
+  auto connectorQueryCtx =
+      reinterpret_cast<LocalHiveConnectorMetadata*>(connector()->metadata())
+          ->connectorQueryCtx();
+
+  const auto maxRowsToScan = table().numRows() * (pct / 100);
+
   int64_t passingRows = 0;
   int64_t scannedRows = 0;
-  for (auto& file : files_) {
-    auto connectorQueryCtx =
-        reinterpret_cast<LocalHiveConnectorMetadata*>(connector()->metadata())
-            ->connectorQueryCtx();
+  for (const auto& file : files_) {
     auto dataSource = connector()->createDataSource(
         outputType, tableHandle, columnHandles, connectorQueryCtx.get());
 
-    auto split = connector::hive::HiveConnectorSplitBuilder(file->path)
+    auto split = HiveConnectorSplitBuilder(file->path)
                      .fileFormat(fileFormat_)
                      .connectorId(connector()->connectorId())
                      .build();
     dataSource->addSplit(split);
-    constexpr int32_t kBatchSize = 1000;
+    constexpr int32_t kBatchSize = 1'000;
     for (;;) {
       ContinueFuture ignore{ContinueFuture::makeEmpty()};
-
       auto data = dataSource->next(kBatchSize, ignore).value();
       if (data == nullptr) {
         scannedRows += dataSource->getCompletedRows();
         break;
       }
+
       passingRows += data->size();
       if (!builders.empty()) {
         StatisticsBuilder::updateBuilders(data, builders);
       }
-      if (scannedRows + dataSource->getCompletedRows() >
-          table().numRows() * (pct / 100)) {
+
+      if (scannedRows + dataSource->getCompletedRows() > maxRowsToScan) {
         scannedRows += dataSource->getCompletedRows();
         break;
       }
     }
   }
+
   if (statsBuilders) {
     *statsBuilders = std::move(builders);
   }
@@ -332,36 +334,27 @@ void LocalTable::makeDefaultLayout(
     return;
   }
   std::vector<const Column*> columns;
-  for (auto i = 0; i < type_->size(); ++i) {
-    auto name = type_->nameOf(i);
+  columns.reserve(type_->size());
+  for (const auto& name : type_->names()) {
     columns.push_back(columns_[name].get());
   }
-  auto* connector = metadata.hiveConnector();
-  auto format = metadata.fileFormat();
+
   std::vector<const Column*> empty;
   auto layout = std::make_unique<LocalHiveTableLayout>(
       name_,
       this,
-      connector,
+      metadata.hiveConnector(),
       std::move(columns),
       empty,
       empty,
       std::vector<SortOrder>{},
       empty,
       empty,
-      format,
+      metadata.fileFormat(),
       std::nullopt);
   layout->setFiles(std::move(files));
   exportedLayouts_.push_back(layout.get());
   layouts_.push_back(std::move(layout));
-}
-
-void mergeReaderStats(
-    Column* column,
-    velox::dwio::common::ColumnStatistics* input) {
-  auto* stats = column->mutableStats();
-  auto c = input->getNumberOfValues();
-  stats->numValues += c.has_value() ? c.value() : 0;
 }
 
 std::shared_ptr<LocalTable> LocalHiveConnectorMetadata::createTableFromSchema(
@@ -587,15 +580,16 @@ void LocalHiveConnectorMetadata::loadTable(
       if (columnIt != table->columns().end()) {
         column = columnIt->second.get();
       } else {
-        table->columns()[name] =
-            std::make_unique<Column>(name, fileType->childAt(i));
-        column = table->columns()[name].get();
+        auto newColumn = std::make_unique<Column>(name, fileType->childAt(i));
+        column = newColumn.get();
+        table->columns()[name] = std::move(newColumn);
       }
 
-      auto readerStats = reader->columnStatistics(i);
-      if (readerStats) {
-        auto numValues = readerStats->getNumberOfValues();
-        mergeReaderStats(column, readerStats.get());
+      if (auto readerStats = reader->columnStatistics(i)) {
+        column->mutableStats()->numValues +=
+            readerStats->getNumberOfValues().value_or(0);
+
+        const auto numValues = readerStats->getNumberOfValues();
         if (rows.has_value() && rows.value() > 0 && numValues.has_value()) {
           column->mutableStats()->nullPct =
               100 * (rows.value() - numValues.value()) / rows.value();
@@ -607,12 +601,14 @@ void LocalHiveConnectorMetadata::loadTable(
 
   table->makeDefaultLayout(std::move(files), *this);
   float pct = 10;
-  if (table->numRows() > 1000000) {
+  if (table->numRows() > 1'000'000) {
     // Set pct to sample ~100K rows.
-    pct = 100 * 100000 / table->numRows();
+    pct = 100 * 100'000 / table->numRows();
   }
   table->sampleNumDistincts(pct, schemaPool_.get());
 }
+
+namespace {
 
 bool isMixedOrder(const StatisticsBuilder& stats) {
   return stats.numAscending() && stats.numDescending();
@@ -631,7 +627,7 @@ bool isInteger(TypeKind kind) {
 }
 
 template <typename T>
-T numericValue(const variant& v) {
+T numericValue(const Variant& v) {
   switch (v.kind()) {
     case TypeKind::TINYINT:
       return static_cast<T>(v.value<TypeKind::TINYINT>());
@@ -649,6 +645,7 @@ T numericValue(const variant& v) {
       VELOX_UNREACHABLE();
   }
 }
+} // namespace
 
 void LocalTable::sampleNumDistincts(float samplePct, memory::MemoryPool* pool) {
   std::vector<common::Subfield> fields;
@@ -730,8 +727,8 @@ const std::unordered_map<std::string, const Column*>& LocalTable::columnMap()
   if (columns_.empty()) {
     return exportedColumns_;
   }
-  for (auto& pair : columns_) {
-    exportedColumns_[pair.first] = pair.second.get();
+  for (const auto& [name, column] : columns_) {
+    exportedColumns_[name] = column.get();
   }
   return exportedColumns_;
 }
@@ -751,16 +748,21 @@ std::shared_ptr<LocalTable> LocalHiveConnectorMetadata::findTableLocked(
   return it->second;
 }
 
+namespace {
+
 // Helper: Recursively delete directory contents
 void deleteDirectoryContents(const std::string& path) {
   DIR* dir = opendir(path.c_str());
-  if (!dir)
+  if (!dir) {
     return;
+  }
+
   struct dirent* entry;
   while ((entry = readdir(dir)) != nullptr) {
     std::string name = entry->d_name;
-    if (name == "." || name == "..")
+    if (name == "." || name == "..") {
       continue;
+    }
     std::string fullPath = path + "/" + name;
     struct stat st;
     if (stat(fullPath.c_str(), &st) == 0) {
@@ -775,7 +777,7 @@ void deleteDirectoryContents(const std::string& path) {
   closedir(dir);
 }
 
-// Helper: Check if directory exists
+// Helper: Check if directory exists.
 bool dirExists(const std::string& path) {
   struct stat info;
   return stat(path.c_str(), &info) == 0 && S_ISDIR(info.st_mode);
@@ -787,6 +789,7 @@ void createDir(const std::string& path) {
     throw std::runtime_error("Failed to create directory: " + path);
   }
 }
+} // namespace
 
 void LocalHiveConnectorMetadata::createTable(
     const std::string& tableName,
