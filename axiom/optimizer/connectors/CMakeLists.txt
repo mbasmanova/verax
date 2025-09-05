@@ -16,15 +16,10 @@ add_subdirectory(tpch)
 
 add_subdirectory(tests)
 
-velox_add_library(velox_connector_metadata ConnectorMetadata.cpp
-                  StatisticsBuilder.cpp)
+velox_add_library(velox_connector_metadata ConnectorMetadata.cpp)
 
-velox_link_libraries(
-  velox_connector_metadata
-  velox_common_base
-  velox_memory
-  velox_connector
-  velox_dwio_dwrf_writer)
+velox_link_libraries(velox_connector_metadata velox_common_base velox_memory
+                     velox_connector)
 
 velox_add_library(velox_connector_split_source ConnectorSplitSource.cpp)
 

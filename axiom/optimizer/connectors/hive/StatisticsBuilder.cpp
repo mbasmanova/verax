@@ -16,7 +16,7 @@
 
 #include "velox/dwio/dwrf/writer/StatisticsBuilder.h"
 #include "axiom/optimizer/connectors/ConnectorMetadata.h"
-#include "axiom/optimizer/connectors/StatisticsBuilder.h"
+#include "axiom/optimizer/connectors/hive/StatisticsBuilder.h"
 
 namespace facebook::velox::connector {
 
