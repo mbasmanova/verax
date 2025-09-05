@@ -17,7 +17,6 @@
 
 #include "velox/common/memory/HashStringAllocator.h"
 #include "velox/connectors/Connector.h"
-#include "velox/core/QueryCtx.h"
 #include "velox/type/Subfield.h"
 #include "velox/type/Type.h"
 #include "velox/type/Variant.h"
@@ -89,44 +88,6 @@ struct ColumnStatistics {
   /// map, may have one element for each key. In all cases, stats may be
   /// missing.
   std::vector<ColumnStatistics> children;
-};
-
-/// Options for StatisticsBuilder.
-struct StatisticsBuilderOptions {
-  int32_t maxStringLength{100};
-  int32_t initialSize{0};
-  bool countDistincts{false};
-  HashStringAllocator* allocator{nullptr};
-};
-
-/// Abstract class for building statistics from samples.
-class StatisticsBuilder {
- public:
-  virtual ~StatisticsBuilder() = default;
-
-  static std::unique_ptr<StatisticsBuilder> create(
-      const TypePtr& type,
-      const StatisticsBuilderOptions& opts);
-
-  static void updateBuilders(
-      const RowVectorPtr& data,
-      std::vector<std::unique_ptr<StatisticsBuilder>>& builders);
-
-  virtual TypePtr type() const = 0;
-
-  /// Accumulates elements of 'vector' into stats.
-  virtual void add(VectorPtr& data) = 0;
-
-  /// Merges the statistics of 'other' into 'this'.
-  virtual void merge(const StatisticsBuilder& other) = 0;
-
-  /// Fills 'result' with the accumulated stats. Scales up counts by
-  /// 'sampleFraction', e.g. 0.1 means 10x.
-  virtual void build(ColumnStatistics& result, float sampleFraction = 1) = 0;
-
-  virtual int64_t numAscending() const = 0;
-  virtual int64_t numRepeat() const = 0;
-  virtual int64_t numDescending() const = 0;
 };
 
 /// Base class for column. The column's name and type are immutable but the
@@ -321,8 +282,6 @@ class TableLayout {
   const RowTypePtr rowType_;
 };
 
-class Schema;
-
 /// Base class for table. This is used for name resolution. A TableLayout is
 /// used for accessing physical organization like partitioning and sort order.
 /// The Table object maintains ownership over the objects it contains, including
@@ -440,7 +399,7 @@ class ConnectorSplitManager {
  public:
   virtual ~ConnectorSplitManager() = default;
 
-  /// Returns the list of all partitions that match the filters in
+  /// Returns a list of all partitions that match the filters in
   /// 'tableHandle'. A non-partitioned table returns one partition.
   virtual std::vector<PartitionHandlePtr> listPartitions(
       const ConnectorTableHandlePtr& tableHandle) = 0;
