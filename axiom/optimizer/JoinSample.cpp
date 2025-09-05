@@ -41,6 +41,19 @@ struct HashMix {
   }
 };
 
+template <typename TExec>
+struct Sample {
+  VELOX_DEFINE_FUNCTION_TYPES(TExec);
+
+  FOLLY_ALWAYS_INLINE void call(
+      bool& result,
+      const int64_t& value,
+      const int64_t& mod,
+      const int64_t& limit) {
+    result = (value % mod) < limit;
+  }
+};
+
 template <typename... T>
 ExprCP makeCall(std::string_view name, const TypePtr& type, T... inputs) {
   return make<Call>(
@@ -105,9 +118,16 @@ std::shared_ptr<axiom::runner::Runner> prepareSampleRunner(
     int64_t lim) {
   static folly::once_flag kInitialized;
   static const char* kHashMix = "$internal$hash_mix";
+  static const char* kSample = "$internal$sample";
 
   folly::call_once(kInitialized, []() {
     registerFunction<HashMix, int64_t, int64_t, Variadic<int64_t>>({kHashMix});
+    registerFunction<
+        Sample,
+        bool,
+        int64_t,
+        Constant<int64_t>,
+        Constant<int64_t>>({kSample});
   });
 
   auto base = make<BaseTable>();
@@ -142,8 +162,8 @@ std::shared_ptr<axiom::runner::Runner> prepareSampleRunner(
       make<Project>(scan, ExprVector{hash}, ColumnVector{hashColumn});
 
   // (hash % mod) < lim
-  ExprCP hashMod = makeCall("mod", BIGINT(), hashColumn, bigintLit(mod));
-  ExprCP filterExpr = makeCall("lt", BOOLEAN(), hashMod, bigintLit(lim));
+  ExprCP filterExpr =
+      makeCall(kSample, BOOLEAN(), hashColumn, bigintLit(mod), bigintLit(lim));
   RelationOpPtr filter = make<Filter>(project, ExprVector{filterExpr});
 
   auto plan = queryCtx()->optimization()->toVeloxPlan(filter);
