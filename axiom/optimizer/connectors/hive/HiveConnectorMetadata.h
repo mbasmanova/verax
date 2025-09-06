@@ -17,11 +17,9 @@
 #pragma once
 
 #include "axiom/optimizer/connectors/ConnectorMetadata.h"
-#include "velox/connectors/hive/HiveConfig.h"
 #include "velox/connectors/hive/HiveConnector.h"
 #include "velox/connectors/hive/HiveDataSink.h"
 #include "velox/dwio/common/Options.h"
-#include "velox/dwio/dwrf/writer/StatisticsBuilder.h"
 
 namespace facebook::velox::connector::hive {
 
@@ -97,13 +95,7 @@ class HiveTableLayout : public TableLayout {
  protected:
   const dwio::common::FileFormat fileFormat_;
   const std::vector<const Column*> hivePartitionColumns_;
-  std::optional<int32_t> numBuckets_;
-
-  // Feeds 'data' into 'builders'. Builders and children of 'data' correspond
-  // pairwise. 'builders' may have a nullptr for some columns.
-  void updateStatsBuilders(
-      const RowVectorPtr& data,
-      std::vector<std::unique_ptr<dwrf::StatisticsBuilder>>& builders);
+  const std::optional<int32_t> numBuckets_;
 };
 
 class HiveConnectorMetadata : public ConnectorMetadata {
