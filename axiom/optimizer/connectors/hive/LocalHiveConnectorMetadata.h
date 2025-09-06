@@ -16,11 +16,11 @@
 
 #pragma once
 
+#include "axiom/optimizer/connectors/StatisticsBuilder.h"
 #include "axiom/optimizer/connectors/hive/HiveConnectorMetadata.h"
 #include "velox/common/base/Fs.h"
 #include "velox/common/memory/HashStringAllocator.h"
 #include "velox/connectors/hive/HiveConnector.h"
-#include "velox/connectors/hive/TableHandle.h"
 #include "velox/core/QueryCtx.h"
 #include "velox/dwio/common/Options.h"
 

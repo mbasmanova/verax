@@ -16,22 +16,24 @@
 
 #include "velox/dwio/dwrf/writer/StatisticsBuilder.h"
 #include "axiom/optimizer/connectors/ConnectorMetadata.h"
+#include "axiom/optimizer/connectors/StatisticsBuilder.h"
 
 namespace facebook::velox::connector {
 
+namespace {
 /// StatisticsBuilder using dwrf::StaticsBuilder
 class StatisticsBuilderImpl : public StatisticsBuilder {
  public:
   StatisticsBuilderImpl(
-      const TypePtr& type,
+      TypePtr type,
       std::unique_ptr<dwrf::StatisticsBuilder> builder)
-      : type_(type), builder_(std::move(builder)) {}
+      : type_(std::move(type)), builder_(std::move(builder)) {}
 
-  TypePtr type() const override {
+  const TypePtr& type() const override {
     return type_;
   }
 
-  void add(VectorPtr& data) override;
+  void add(const VectorPtr& data) override;
 
   void merge(const StatisticsBuilder& other) override;
 
@@ -61,6 +63,7 @@ class StatisticsBuilderImpl : public StatisticsBuilder {
   int64_t numDesc_{0};
   int64_t numRows_{0};
 };
+} // namespace
 
 std::unique_ptr<StatisticsBuilder> StatisticsBuilder::create(
     const TypePtr& type,
@@ -121,37 +124,36 @@ void StatisticsBuilderImpl::addStats(
   }
 }
 
-void StatisticsBuilderImpl::add(VectorPtr& data) {
-  auto loadChild = [](VectorPtr& data) {
-    data = BaseVector::loadedVectorShared(data);
+void StatisticsBuilderImpl::add(const VectorPtr& data) {
+  auto loadData = [](const VectorPtr& data) {
+    return BaseVector::loadedVectorShared(data);
   };
+
   switch (type_->kind()) {
     case TypeKind::SMALLINT:
-      loadChild(data);
-      addStats<dwrf::IntegerStatisticsBuilder, short>(builder_.get(), *data);
+      addStats<dwrf::IntegerStatisticsBuilder, short>(
+          builder_.get(), *loadData(data));
       break;
     case TypeKind::INTEGER:
-      loadChild(data);
-      addStats<dwrf::IntegerStatisticsBuilder, int32_t>(builder_.get(), *data);
+      addStats<dwrf::IntegerStatisticsBuilder, int32_t>(
+          builder_.get(), *loadData(data));
       break;
     case TypeKind::BIGINT:
-      loadChild(data);
-      addStats<dwrf::IntegerStatisticsBuilder, int64_t>(builder_.get(), *data);
+      addStats<dwrf::IntegerStatisticsBuilder, int64_t>(
+          builder_.get(), *loadData(data));
       break;
     case TypeKind::REAL:
-      loadChild(data);
-      addStats<dwrf::DoubleStatisticsBuilder, float>(builder_.get(), *data);
+      addStats<dwrf::DoubleStatisticsBuilder, float>(
+          builder_.get(), *loadData(data));
       break;
     case TypeKind::DOUBLE:
-      loadChild(data);
-      addStats<dwrf::DoubleStatisticsBuilder, double>(builder_.get(), *data);
+      addStats<dwrf::DoubleStatisticsBuilder, double>(
+          builder_.get(), *loadData(data));
       break;
     case TypeKind::VARCHAR:
-      loadChild(data);
       addStats<dwrf::StringStatisticsBuilder, StringView>(
-          builder_.get(), *data);
+          builder_.get(), *loadData(data));
       break;
-
     default:
       break;
   }

@@ -21,6 +21,7 @@
 #include "axiom/optimizer/ToGraph.h"
 #include "axiom/optimizer/ToVelox.h"
 #include "axiom/runner/MultiFragmentPlan.h"
+#include "velox/core/QueryCtx.h"
 
 namespace facebook::velox::optimizer {
 
