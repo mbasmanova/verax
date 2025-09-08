@@ -25,7 +25,6 @@
 #include "axiom/optimizer/Plan.h"
 #include "axiom/optimizer/SchemaResolver.h"
 #include "axiom/optimizer/VeloxHistory.h"
-#include "axiom/optimizer/connectors/ConnectorSplitSource.h"
 #include "axiom/runner/tests/LocalRunnerTestBase.h"
 #include "velox/exec/tests/utils/HiveConnectorTestBase.h"
 #include "velox/exec/tests/utils/LocalExchangeSource.h"
@@ -156,9 +155,7 @@ TestResult QueryTestBase::runFragmentedPlan(
   };
 
   result.runner = std::make_shared<axiom::runner::LocalRunner>(
-      fragmentedPlan.plan,
-      getQueryCtx(),
-      std::make_shared<connector::ConnectorSplitSourceFactory>());
+      fragmentedPlan.plan, getQueryCtx());
 
   while (auto rows = result.runner->next()) {
     result.results.push_back(std::move(rows));

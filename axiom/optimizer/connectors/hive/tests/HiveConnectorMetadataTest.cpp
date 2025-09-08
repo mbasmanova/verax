@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 
-#include "axiom/optimizer/connectors/ConnectorSplitSource.h"
 #include "axiom/optimizer/connectors/hive/LocalHiveConnectorMetadata.h"
 #include "axiom/runner/tests/DistributedPlanBuilder.h"
 #include "axiom/runner/tests/LocalRunnerTestBase.h"
@@ -217,12 +216,8 @@ TEST_F(HiveConnectorMetadataTest, createTable) {
       rootBuilder.fragments(), std::move(runnerOptions));
   auto rootPool = memory::memoryManager()->addRootPool("readQ");
 
-  auto splitSourceFactory =
-      std::make_shared<connector::ConnectorSplitSourceFactory>();
   auto localRunner = std::make_shared<axiom::runner::LocalRunner>(
-      std::move(readPlan),
-      makeQueryCtx(id, rootPool.get()),
-      splitSourceFactory);
+      std::move(readPlan), makeQueryCtx(id, rootPool.get()));
   auto results = axiom::runner::test::readCursor(localRunner);
   exec::test::assertEqualResults({data}, results);
 }
