@@ -16,7 +16,6 @@
 
 #include "axiom/optimizer/Optimization.h"
 #include "axiom/optimizer/Plan.h"
-#include "axiom/optimizer/connectors/ConnectorSplitSource.h"
 #include "axiom/runner/LocalRunner.h"
 #include "velox/common/base/AsyncSource.h"
 #include "velox/functions/Macros.h"
@@ -155,9 +154,7 @@ std::shared_ptr<axiom::runner::Runner> prepareSampleRunner(
 
   auto plan = queryCtx()->optimization()->toVeloxPlan(filter);
   return std::make_shared<axiom::runner::LocalRunner>(
-      plan.plan,
-      sampleQueryCtx(*queryCtx()->optimization()->veloxQueryCtx()),
-      std::make_shared<connector::ConnectorSplitSourceFactory>());
+      plan.plan, sampleQueryCtx(*queryCtx()->optimization()->veloxQueryCtx()));
 }
 
 // Maps hash value to number of times it appears in a table.

@@ -25,7 +25,6 @@
 #include "axiom/optimizer/Plan.h"
 #include "axiom/optimizer/SchemaResolver.h"
 #include "axiom/optimizer/VeloxHistory.h"
-#include "axiom/optimizer/connectors/ConnectorSplitSource.h"
 #include "axiom/optimizer/connectors/tpch/TpchConnectorMetadata.h"
 #include "axiom/optimizer/tests/PrestoParser.h"
 #include "axiom/runner/LocalRunner.h"
@@ -515,7 +514,8 @@ class VeloxRunner : public QueryBenchmarkBase {
     return std::make_shared<facebook::axiom::runner::LocalRunner>(
         planAndStats.plan,
         queryCtx,
-        std::make_shared<connector::ConnectorSplitSourceFactory>(splitOptions));
+        std::make_shared<facebook::axiom::runner::ConnectorSplitSourceFactory>(
+            splitOptions));
   }
 
   /// Runs a query and returns the result as a single vector in *resultVector,
