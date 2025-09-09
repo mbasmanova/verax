@@ -220,15 +220,18 @@ class VeloxRunner : public QueryBenchmarkBase {
   }
 
   std::shared_ptr<connector::Connector> registerTpchConnector() {
-    connector::tpch::registerTpchConnectorMetadataFactory(
-        std::make_unique<connector::tpch::TpchConnectorMetadataFactoryImpl>());
-
     auto emptyConfig = std::make_shared<config::ConfigBase>(
         std::unordered_map<std::string, std::string>());
 
     connector::tpch::TpchConnectorFactory factory;
     auto connector = factory.newConnector("tpch", emptyConfig);
     connector::registerConnector(connector);
+
+    connector::ConnectorMetadata::registerMetadata(
+        connector->connectorId(),
+        std::make_shared<connector::tpch::TpchConnectorMetadata>(
+            dynamic_cast<connector::tpch::TpchConnector*>(connector.get())));
+
     return connector;
   }
 
