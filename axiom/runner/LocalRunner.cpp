@@ -57,8 +57,9 @@ std::shared_ptr<velox::connector::SplitSource>
 ConnectorSplitSourceFactory::splitSourceForScan(
     const velox::core::TableScanNode& scan) {
   const auto& handle = scan.tableHandle();
-  auto connector = velox::connector::getConnector(handle->connectorId());
-  auto splitManager = connector->metadata()->splitManager();
+  auto metadata =
+      velox::connector::ConnectorMetadata::metadata(handle->connectorId());
+  auto splitManager = metadata->splitManager();
 
   auto partitions = splitManager->listPartitions(handle);
   return splitManager->getSplitSource(handle, partitions, options_);

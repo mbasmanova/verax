@@ -54,8 +54,7 @@ void HiveQueriesTestBase::TearDown() {
 }
 
 RowTypePtr HiveQueriesTestBase::getSchema(const std::string& tableName) {
-  return connector::getConnector(exec::test::kHiveConnectorId)
-      ->metadata()
+  return connector::ConnectorMetadata::metadata(exec::test::kHiveConnectorId)
       ->findTable(tableName)
       ->type();
 }

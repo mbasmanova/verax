@@ -95,7 +95,7 @@ void QueryTestBase::TearDown() {
 
 void QueryTestBase::tablesCreated() {
   auto metadata = dynamic_cast<connector::hive::LocalHiveConnectorMetadata*>(
-      connector_->metadata());
+      connector::ConnectorMetadata::metadata(connector_.get()));
   VELOX_CHECK_NOT_NULL(metadata);
   metadata->reinitialize();
 }

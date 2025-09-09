@@ -82,8 +82,8 @@ class HiveConnectorMetadataTest
 };
 
 TEST_F(HiveConnectorMetadataTest, basic) {
-  auto connector = getConnector(velox::exec::test::kHiveConnectorId);
-  auto metadata = connector->metadata();
+  auto metadata =
+      ConnectorMetadata::metadata(velox::exec::test::kHiveConnectorId);
   ASSERT_TRUE(metadata != nullptr);
   auto table = metadata->findTable("T");
   ASSERT_TRUE(table != nullptr);
@@ -114,9 +114,9 @@ TEST_F(HiveConnectorMetadataTest, basic) {
 
 TEST_F(HiveConnectorMetadataTest, createTable) {
   constexpr int32_t kTestSize = 2048;
-  auto connector = getConnector(velox::exec::test::kHiveConnectorId);
+
   auto metadata = dynamic_cast<connector::hive::HiveConnectorMetadata*>(
-      connector->metadata());
+      ConnectorMetadata::metadata(velox::exec::test::kHiveConnectorId));
   ASSERT_TRUE(metadata != nullptr);
 
   auto tableType = ROW(

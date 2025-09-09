@@ -47,7 +47,7 @@ std::shared_ptr<SplitSource> LocalHiveSplitManager::getSplitSource(
   // Since there are only unpartitioned tables now, always makes a SplitSource
   // that goes over all the files in the handle's layout.
   auto tableName = tableHandle->name();
-  auto* metadata = getConnector(tableHandle->connectorId())->metadata();
+  auto* metadata = ConnectorMetadata::metadata(tableHandle->connectorId());
   auto table = metadata->findTable(tableName);
   VELOX_CHECK_NOT_NULL(
       table, "Could not find {} in its ConnectorMetadata", tableName);
@@ -277,9 +277,9 @@ std::pair<int64_t, int64_t> LocalHiveTableLayout::sample(
 
   const auto outputType = ROW(std::move(names), std::move(types));
 
-  auto connectorQueryCtx =
-      reinterpret_cast<LocalHiveConnectorMetadata*>(connector()->metadata())
-          ->connectorQueryCtx();
+  auto connectorQueryCtx = reinterpret_cast<LocalHiveConnectorMetadata*>(
+                               ConnectorMetadata::metadata(connector()))
+                               ->connectorQueryCtx();
 
   const auto maxRowsToScan = table().numRows() * (pct / 100);
 
@@ -655,24 +655,30 @@ void LocalTable::sampleNumDistincts(float samplePct, memory::MemoryPool* pool) {
   auto allocator = std::make_unique<HashStringAllocator>(pool);
   auto* layout = layouts_[0].get();
 
+  auto* metadata = ConnectorMetadata::metadata(layout->connector());
+
   std::vector<connector::ColumnHandlePtr> columns;
   columns.reserve(type_->size());
   for (auto i = 0; i < type_->size(); ++i) {
-    columns.push_back(layout->connector()->metadata()->createColumnHandle(
-        *layout, type_->nameOf(i)));
+    columns.push_back(metadata->createColumnHandle(*layout, type_->nameOf(i)));
   }
 
-  auto* metadata = dynamic_cast<const LocalHiveConnectorMetadata*>(
-      layout->connector()->metadata());
-  auto& evaluator = *metadata->connectorQueryCtx()->expressionEvaluator();
+  auto* localHiveMetadata =
+      dynamic_cast<const LocalHiveConnectorMetadata*>(metadata);
+  auto& evaluator =
+      *localHiveMetadata->connectorQueryCtx()->expressionEvaluator();
+
   std::vector<core::TypedExprPtr> ignore;
-  auto handle = layout->connector()->metadata()->createTableHandle(
-      *layout, columns, evaluator, {}, ignore);
-  std::vector<std::unique_ptr<StatisticsBuilder>> statsBuilders;
+  auto handle =
+      metadata->createTableHandle(*layout, columns, evaluator, {}, ignore);
+
   auto* localLayout = dynamic_cast<LocalHiveTableLayout*>(layout);
   VELOX_CHECK_NOT_NULL(localLayout, "Expecting a local hive layout");
+
+  std::vector<std::unique_ptr<StatisticsBuilder>> statsBuilders;
   auto [sampled, passed] = localLayout->sample(
       handle, samplePct, type_, fields, allocator.get(), &statsBuilders);
+
   numSampledRows_ = sampled;
   for (auto i = 0; i < statsBuilders.size(); ++i) {
     if (statsBuilders[i]) {

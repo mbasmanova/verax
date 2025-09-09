@@ -115,4 +115,14 @@ const Column* TableLayout::findColumn(const std::string& name) const {
   return nullptr;
 }
 
+// static
+ConnectorMetadata* ConnectorMetadata::metadata(std::string_view connectorId) {
+  return getConnector(std::string(connectorId))->metadata();
+}
+
+// static
+ConnectorMetadata* ConnectorMetadata::metadata(Connector* connector) {
+  return connector->metadata();
+}
+
 } // namespace facebook::velox::connector
