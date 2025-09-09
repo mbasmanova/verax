@@ -1184,8 +1184,7 @@ SqlStatementPtr PrestoParser::doParse(
   if (query->is(sql::NodeType::kShowColumns)) {
     const auto tableName = query->as<sql::ShowColumns>()->table()->suffix();
 
-    auto table = connector::getConnector(defaultConnectorId_)
-                     ->metadata()
+    auto table = connector::ConnectorMetadata::metadata(defaultConnectorId_)
                      ->findTable(tableName);
 
     VELOX_USER_CHECK_NOT_NULL(table, "Table not found: {}", tableName);

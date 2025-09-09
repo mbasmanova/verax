@@ -65,13 +65,12 @@ void LocalRunnerTestBase::setupConnector() {
   configs[velox::connector::hive::HiveConfig::kLocalDataPath] = testDataPath_;
   configs[velox::connector::hive::HiveConfig::kLocalFileFormat] =
       localFileFormat_;
-  auto hiveConnector =
-      velox::connector::getConnectorFactory(
-          velox::connector::hive::HiveConnectorFactory::kHiveConnectorName)
-          ->newConnector(
-              velox::exec::test::kHiveConnectorId,
-              std::make_shared<velox::config::ConfigBase>(std::move(configs)),
-              ioExecutor_.get());
+
+  velox::connector::hive::HiveConnectorFactory factory;
+  auto hiveConnector = factory.newConnector(
+      velox::exec::test::kHiveConnectorId,
+      std::make_shared<velox::config::ConfigBase>(std::move(configs)),
+      ioExecutor_.get());
   velox::connector::registerConnector(hiveConnector);
 }
 

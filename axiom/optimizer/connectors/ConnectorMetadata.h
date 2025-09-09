@@ -527,6 +527,11 @@ VELOX_DECLARE_ENUM_NAME(WriteKind);
 
 class ConnectorMetadata {
  public:
+  /// Temporary APIs to assist in removing dependency on ConnectorMetadata from
+  /// Velox.
+  static ConnectorMetadata* metadata(std::string_view connectorId);
+  static ConnectorMetadata* metadata(Connector* connector);
+
   virtual ~ConnectorMetadata() = default;
 
   /// Post-construction initialization. This is called after adding

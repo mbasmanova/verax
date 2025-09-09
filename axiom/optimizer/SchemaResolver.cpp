@@ -32,8 +32,6 @@ connector::TablePtr SchemaResolver::findTable(
         parser.catalog().value(),
         "Input catalog must match table catalog specifier");
   }
-  connector::Connector* connector =
-      velox::connector::getConnector(catalog).get();
 
   std::string lookupName;
   if (parser.schema().has_value()) {
@@ -43,7 +41,7 @@ connector::TablePtr SchemaResolver::findTable(
   } else {
     lookupName = parser.table();
   }
-  return connector->metadata()->findTable(lookupName);
+  return connector::ConnectorMetadata::metadata(catalog)->findTable(lookupName);
 }
 
 } // namespace facebook::velox::optimizer
