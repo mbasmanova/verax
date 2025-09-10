@@ -30,10 +30,11 @@ DEFINE_string(
 DEFINE_bool(create_dataset, true, "Creates the TPC-H tables");
 DEFINE_double(tpch_scale, 0.01, "Scale factor");
 
+using namespace facebook::velox;
 using namespace facebook::velox::exec;
 using namespace facebook::velox::exec::test;
 
-namespace facebook::velox::optimizer::test {
+namespace facebook::axiom::optimizer::test {
 
 namespace {
 void doCreateTables(std::string_view path) {
@@ -144,4 +145,4 @@ void ParquetTpchTest::unregisterTpchConnector(const std::string& id) {
   connector::unregisterConnector(id);
 }
 
-} // namespace facebook::velox::optimizer::test
+} // namespace facebook::axiom::optimizer::test
