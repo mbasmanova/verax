@@ -128,11 +128,11 @@ metadataRegistry() {
 // static
 ConnectorMetadata* ConnectorMetadata::metadata(std::string_view connectorId) {
   auto it = metadataRegistry().find(connectorId);
-  if (it != metadataRegistry().end()) {
-    return it->second.get();
-  }
-
-  return getConnector(std::string(connectorId))->metadata();
+  VELOX_CHECK(
+      it != metadataRegistry().end(),
+      "Connector metadata is not registered: {}",
+      connectorId);
+  return it->second.get();
 }
 
 // static
@@ -144,6 +144,8 @@ ConnectorMetadata* ConnectorMetadata::metadata(Connector* connector) {
 void ConnectorMetadata::registerMetadata(
     std::string_view connectorId,
     std::shared_ptr<ConnectorMetadata> metadata) {
+  VELOX_CHECK_NOT_NULL(metadata);
+  VELOX_CHECK(!connectorId.empty());
   metadataRegistry().emplace(connectorId, std::move(metadata));
 }
 
