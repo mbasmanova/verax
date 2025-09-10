@@ -40,20 +40,23 @@ class PrestoParserTest : public testing::Test {
     auto emptyConfig = std::make_shared<config::ConfigBase>(
         std::unordered_map<std::string, std::string>());
 
-    velox::connector::tpch::registerTpchConnectorMetadataFactory(
-        std::make_unique<
-            velox::connector::tpch::TpchConnectorMetadataFactoryImpl>());
-
     connector::tpch::TpchConnectorFactory tpchConnectorFactory;
     auto tpchConnector =
         tpchConnectorFactory.newConnector(kTpchConnectorId, emptyConfig);
-    connector::registerConnector(std::move(tpchConnector));
+    connector::registerConnector(tpchConnector);
+
+    connector::ConnectorMetadata::registerMetadata(
+        kTpchConnectorId,
+        std::make_shared<connector::tpch::TpchConnectorMetadata>(
+            dynamic_cast<connector::tpch::TpchConnector*>(
+                tpchConnector.get())));
 
     functions::prestosql::registerAllScalarFunctions();
     aggregate::prestosql::registerAllAggregateFunctions();
   }
 
   static void TearDownTestCase() {
+    connector::ConnectorMetadata::unregisterMetadata(kTpchConnectorId);
     connector::unregisterConnector(kTpchConnectorId);
   }
 

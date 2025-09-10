@@ -41,6 +41,8 @@ class ParquetTpchTest {
   static void createTables(std::string_view path);
 
   static void registerTpchConnector(const std::string& id);
+
+  static void unregisterTpchConnector(const std::string& id);
 };
 
 } // namespace facebook::velox::optimizer::test

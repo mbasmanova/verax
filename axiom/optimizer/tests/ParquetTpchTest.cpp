@@ -100,8 +100,7 @@ void ParquetTpchTest::createTables(std::string_view path) {
   SCOPE_EXIT {
     connector::unregisterConnector(
         std::string(PlanBuilder::kHiveDefaultConnectorId));
-    connector::unregisterConnector(
-        std::string(PlanBuilder::kTpchDefaultConnectorId));
+    unregisterTpchConnector(std::string(PlanBuilder::kTpchDefaultConnectorId));
 
     parquet::unregisterParquetWriterFactory();
   };
@@ -126,14 +125,23 @@ void ParquetTpchTest::createTables(std::string_view path) {
 
 // static
 void ParquetTpchTest::registerTpchConnector(const std::string& id) {
-  connector::tpch::registerTpchConnectorMetadataFactory(
-      std::make_unique<connector::tpch::TpchConnectorMetadataFactoryImpl>());
-
   auto emptyConfig = std::make_shared<config::ConfigBase>(
       std::unordered_map<std::string, std::string>());
 
   connector::tpch::TpchConnectorFactory factory;
-  connector::registerConnector(factory.newConnector(id, emptyConfig));
+  auto connector = factory.newConnector(id, emptyConfig);
+  connector::registerConnector(connector);
+
+  connector::ConnectorMetadata::registerMetadata(
+      id,
+      std::make_shared<connector::tpch::TpchConnectorMetadata>(
+          dynamic_cast<connector::tpch::TpchConnector*>(connector.get())));
+}
+
+// static
+void ParquetTpchTest::unregisterTpchConnector(const std::string& id) {
+  connector::ConnectorMetadata::unregisterMetadata(id);
+  connector::unregisterConnector(id);
 }
 
 } // namespace facebook::velox::optimizer::test

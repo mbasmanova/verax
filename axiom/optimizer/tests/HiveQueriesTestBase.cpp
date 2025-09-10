@@ -49,7 +49,7 @@ void HiveQueriesTestBase::SetUp() {
 }
 
 void HiveQueriesTestBase::TearDown() {
-  connector::unregisterConnector(kTpchConnectorId);
+  test::ParquetTpchTest::unregisterTpchConnector(kTpchConnectorId);
   test::QueryTestBase::TearDown();
 }
 
