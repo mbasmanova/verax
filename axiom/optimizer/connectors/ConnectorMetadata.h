@@ -531,6 +531,10 @@ class ConnectorMetadata {
   /// Velox.
   static ConnectorMetadata* metadata(std::string_view connectorId);
   static ConnectorMetadata* metadata(Connector* connector);
+  static void registerMetadata(
+      std::string_view connectorId,
+      std::shared_ptr<ConnectorMetadata> metadata);
+  static void unregisterMetadata(std::string_view connectorId);
 
   virtual ~ConnectorMetadata() = default;
 

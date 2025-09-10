@@ -916,22 +916,4 @@ void LocalHiveConnectorMetadata::finishWrite(
   loadTable(layout.table().name(), localHandle->locationHandle()->targetPath());
 }
 
-namespace {
-class LocalHiveConnectorMetadataFactory : public HiveConnectorMetadataFactory {
- public:
-  std::shared_ptr<ConnectorMetadata> create(HiveConnector* connector) override {
-    auto hiveConfig =
-        std::make_shared<HiveConfig>(connector->connectorConfig());
-    auto path = hiveConfig->hiveLocalDataPath();
-    if (path.empty()) {
-      return nullptr;
-    }
-    return std::make_shared<LocalHiveConnectorMetadata>(connector);
-  }
-};
-
-bool dummy = registerHiveConnectorMetadataFactory(
-    std::make_unique<LocalHiveConnectorMetadataFactory>());
-} // namespace
-
 } // namespace facebook::velox::connector::hive
