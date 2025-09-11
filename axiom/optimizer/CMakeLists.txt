@@ -16,8 +16,6 @@ if(AXIOM_BUILD_TESTING)
   add_subdirectory(tests)
 endif()
 
-add_subdirectory(connectors)
-
 add_library(axiom_model Model.cpp)
 
 target_link_libraries(
