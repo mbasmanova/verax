@@ -126,13 +126,22 @@ metadataRegistry() {
 } // namespace
 
 // static
-ConnectorMetadata* ConnectorMetadata::metadata(std::string_view connectorId) {
+ConnectorMetadata* ConnectorMetadata::tryMetadata(
+    std::string_view connectorId) {
   auto it = metadataRegistry().find(connectorId);
-  VELOX_CHECK(
-      it != metadataRegistry().end(),
-      "Connector metadata is not registered: {}",
-      connectorId);
-  return it->second.get();
+  if (it != metadataRegistry().end()) {
+    return it->second.get();
+  }
+
+  return nullptr;
+}
+
+// static
+ConnectorMetadata* ConnectorMetadata::metadata(std::string_view connectorId) {
+  auto* metadata = tryMetadata(connectorId);
+  VELOX_CHECK_NOT_NULL(
+      metadata, "Connector metadata is not registered: {}", connectorId);
+  return metadata;
 }
 
 // static

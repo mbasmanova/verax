@@ -530,6 +530,7 @@ class ConnectorMetadata {
   /// Temporary APIs to assist in removing dependency on ConnectorMetadata from
   /// Velox.
   static ConnectorMetadata* metadata(std::string_view connectorId);
+  static ConnectorMetadata* tryMetadata(std::string_view connectorId);
   static ConnectorMetadata* metadata(velox::connector::Connector* connector);
   static void registerMetadata(
       std::string_view connectorId,
