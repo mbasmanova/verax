@@ -15,9 +15,12 @@
  */
 
 #include "axiom/logical_plan/PlanBuilder.h"
+#include <velox/common/base/Exceptions.h>
+#include <vector>
 #include "axiom/connectors/ConnectorMetadata.h"
 #include "axiom/logical_plan/NameMappings.h"
 #include "velox/connectors/Connector.h"
+#include "velox/duckdb/conversion/DuckParser.h"
 #include "velox/exec/Aggregate.h"
 #include "velox/exec/AggregateFunctionRegistry.h"
 #include "velox/expression/Expr.h"
@@ -342,12 +345,34 @@ PlanBuilder& PlanBuilder::with(const std::vector<ExprApi>& projections) {
 PlanBuilder& PlanBuilder::aggregate(
     const std::vector<std::string>& groupingKeys,
     const std::vector<std::string>& aggregates) {
-  return aggregate(parse(groupingKeys), parse(aggregates));
+  std::vector<AggregateOptions> options;
+  options.reserve(aggregates.size());
+  for (const auto& sql : aggregates) {
+    auto aggregateExpr = velox::duckdb::parseAggregateExpr(sql, {});
+
+    std::vector<SortingField> ordering;
+    for (const auto& orderBy : aggregateExpr.orderBy) {
+      auto sortKeyExpr = resolveScalarTypes(orderBy.expr);
+      SortOrder order{orderBy.ascending, orderBy.nullsFirst};
+      ordering.emplace_back(sortKeyExpr, order);
+    }
+
+    ExprPtr filter;
+    if (aggregateExpr.maskExpr != nullptr) {
+      filter = resolveScalarTypes(aggregateExpr.maskExpr);
+    }
+
+    options.emplace_back(
+        std::move(filter), std::move(ordering), aggregateExpr.distinct);
+  }
+
+  return aggregate(parse(groupingKeys), parse(aggregates), options);
 }
 
 PlanBuilder& PlanBuilder::aggregate(
     const std::vector<ExprApi>& groupingKeys,
-    const std::vector<ExprApi>& aggregates) {
+    const std::vector<ExprApi>& aggregates,
+    const std::vector<AggregateOptions>& options) {
   VELOX_USER_CHECK_NOT_NULL(node_, "Aggregate node cannot be a leaf node");
 
   std::vector<std::string> outputNames;
@@ -363,8 +388,16 @@ PlanBuilder& PlanBuilder::aggregate(
   std::vector<AggregateExprPtr> exprs;
   exprs.reserve(aggregates.size());
 
-  for (const auto& aggregate : aggregates) {
-    auto expr = resolveAggregateTypes(aggregate.expr());
+  VELOX_USER_CHECK(options.size() == aggregates.size());
+  for (size_t i = 0; i < aggregates.size(); ++i) {
+    const auto& aggregate = aggregates[i];
+
+    AggregateExprPtr expr;
+    expr = resolveAggregateTypes(
+        aggregate.expr(),
+        options[i].filters,
+        options[i].orderings,
+        options[i].distinct);
 
     if (aggregate.name().has_value()) {
       const auto& alias = aggregate.name().value();
@@ -374,7 +407,7 @@ PlanBuilder& PlanBuilder::aggregate(
       outputNames.push_back(newName(expr->name()));
     }
 
-    exprs.push_back(expr);
+    exprs.emplace_back(std::move(expr));
   }
 
   node_ = std::make_shared<AggregateNode>(
@@ -1052,7 +1085,10 @@ ExprPtr ExprResolver::resolveScalarTypes(
 
 AggregateExprPtr ExprResolver::resolveAggregateTypes(
     const velox::core::ExprPtr& expr,
-    const InputNameResolver& inputNameResolver) const {
+    const InputNameResolver& inputNameResolver,
+    const ExprPtr& filter,
+    const std::vector<SortingField>& ordering,
+    bool distinct) const {
   const auto* call = dynamic_cast<const velox::core::CallExpr*>(expr.get());
   VELOX_USER_CHECK_NOT_NULL(
       call, "Aggregate must be a call expression: {}", expr->toString());
@@ -1073,7 +1109,8 @@ AggregateExprPtr ExprResolver::resolveAggregateTypes(
 
   if (auto type =
           velox::exec::resolveAggregateFunction(name, inputTypes).first) {
-    return std::make_shared<AggregateExpr>(type, name, inputs);
+    return std::make_shared<AggregateExpr>(
+        type, name, inputs, filter, ordering, distinct);
   }
 
   auto allSignatures = velox::exec::getAggregateFunctionSignatures();
@@ -1284,11 +1321,18 @@ ExprPtr PlanBuilder::resolveScalarTypes(
 }
 
 AggregateExprPtr PlanBuilder::resolveAggregateTypes(
-    const velox::core::ExprPtr& expr) const {
+    const velox::core::ExprPtr& expr,
+    const ExprPtr& filter,
+    const std::vector<SortingField>& ordering,
+    bool distinct) const {
   return resolver_.resolveAggregateTypes(
-      expr, [&](const auto& alias, const auto& name) {
+      expr,
+      [&](const auto& alias, const auto& name) {
         return resolveInputName(alias, name);
-      });
+      },
+      filter,
+      ordering,
+      distinct);
 }
 
 PlanBuilder& PlanBuilder::as(const std::string& alias) {

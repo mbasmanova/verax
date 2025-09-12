@@ -988,7 +988,8 @@ class RelationPlanner : public sql::AstVisitor {
       projections.emplace_back(expr);
     }
 
-    builder_->aggregate(groupingKeys, aggregates);
+    std::vector<lp::PlanBuilder::AggregateOptions> options(aggregates.size());
+    builder_->aggregate(groupingKeys, aggregates, options);
 
     const auto outputNames = builder_->findOrAssignOutputNames();
 

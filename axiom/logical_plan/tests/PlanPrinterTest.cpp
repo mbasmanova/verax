@@ -333,6 +333,110 @@ TEST_F(PlanPrinterTest, aggregate) {
           testing::Eq("")));
 }
 
+TEST_F(PlanPrinterTest, distinctAgg) {
+  auto rowType = ROW({"a", "b"}, {INTEGER(), INTEGER()});
+  std::vector<Variant> data{
+      Variant::row({1, 10}),
+      Variant::row({1, 10}),
+      Variant::row({2, 20}),
+  };
+
+  auto plan = PlanBuilder()
+                  .values(rowType, data)
+                  .aggregate({"a"}, {"sum(distinct b) as distinct_sum"})
+                  .build();
+
+  auto lines = toLines(plan);
+
+  EXPECT_THAT(
+      lines,
+      testing::ElementsAre(
+          testing::StartsWith("- Aggregate"),
+          testing::StartsWith("    distinct_sum := sum(DISTINCT b)"),
+          testing::StartsWith("  - Values"),
+          testing::Eq("")));
+}
+
+TEST_F(PlanPrinterTest, sortedAgg) {
+  auto rowType = ROW({"a", "b", "c"}, {INTEGER(), INTEGER(), INTEGER()});
+  std::vector<Variant> data{
+      Variant::row({1, 10, 100}),
+      Variant::row({1, 20, 200}),
+      Variant::row({2, 30, 300}),
+  };
+
+  auto plan =
+      PlanBuilder()
+          .values(rowType, data)
+          .aggregate({"a"}, {"array_agg(b order by c desc) as ordered_array"})
+          .build();
+
+  auto lines = toLines(plan);
+
+  EXPECT_THAT(
+      lines,
+      testing::ElementsAre(
+          testing::StartsWith("- Aggregate"),
+          testing::StartsWith(
+              "    ordered_array := array_agg(b ORDER BY c DESC"),
+          testing::StartsWith("  - Values"),
+          testing::Eq("")));
+}
+
+TEST_F(PlanPrinterTest, maskedAgg) {
+  auto rowType = ROW({"a", "b", "d"}, {INTEGER(), INTEGER(), BOOLEAN()});
+  std::vector<Variant> data{
+      Variant::row({1, 10, true}),
+      Variant::row({1, 20, false}),
+      Variant::row({2, 30, true}),
+  };
+
+  auto plan = PlanBuilder()
+                  .values(rowType, data)
+                  .aggregate({"a"}, {"sum(b) filter (where d) as filtered_sum"})
+                  .build();
+
+  auto lines = toLines(plan);
+
+  EXPECT_THAT(
+      lines,
+      testing::ElementsAre(
+          testing::StartsWith("- Aggregate"),
+          testing::StartsWith("    filtered_sum := sum(b) FILTER (WHERE d)"),
+          testing::StartsWith("  - Values"),
+          testing::Eq("")));
+}
+
+TEST_F(PlanPrinterTest, distinctSortedMaskedAgg) {
+  auto rowType =
+      ROW({"a", "b", "c", "d"}, {INTEGER(), INTEGER(), INTEGER(), BOOLEAN()});
+  std::vector<Variant> data{
+      Variant::row({1, 10, 100, true}),
+      Variant::row({1, 10, 200, true}),
+      Variant::row({1, 20, 300, false}),
+      Variant::row({2, 30, 400, true}),
+  };
+
+  auto plan =
+      PlanBuilder()
+          .values(rowType, data)
+          .aggregate(
+              {"a"},
+              {"array_agg(distinct b order by c desc) filter (where d) as complex_agg"})
+          .build();
+
+  auto lines = toLines(plan);
+
+  EXPECT_THAT(
+      lines,
+      testing::ElementsAre(
+          testing::StartsWith("- Aggregate"),
+          testing::StartsWith(
+              "    complex_agg := array_agg(DISTINCT b ORDER BY c DESC NULLS LAST) FILTER (WHERE d)"),
+          testing::StartsWith("  - Values"),
+          testing::Eq("")));
+}
+
 TEST_F(PlanPrinterTest, unnest) {
   {
     auto plan = PlanBuilder().unnest({"array[1, 2, 3]"}).build();
