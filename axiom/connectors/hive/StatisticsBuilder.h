@@ -18,7 +18,7 @@
 #include "velox/common/memory/HashStringAllocator.h"
 #include "velox/vector/ComplexVector.h"
 
-namespace facebook::velox::connector {
+namespace facebook::axiom::connector {
 
 struct ColumnStatistics;
 
@@ -27,7 +27,7 @@ struct StatisticsBuilderOptions {
   int32_t maxStringLength{100};
   int32_t initialSize{0};
   bool countDistincts{false};
-  HashStringAllocator* allocator{nullptr};
+  velox::HashStringAllocator* allocator{nullptr};
 };
 
 /// Abstract class for building statistics from samples.
@@ -36,17 +36,17 @@ class StatisticsBuilder {
   virtual ~StatisticsBuilder() = default;
 
   static std::unique_ptr<StatisticsBuilder> create(
-      const TypePtr& type,
+      const velox::TypePtr& type,
       const StatisticsBuilderOptions& opts);
 
   static void updateBuilders(
-      const RowVectorPtr& data,
+      const velox::RowVectorPtr& data,
       std::vector<std::unique_ptr<StatisticsBuilder>>& builders);
 
-  virtual const TypePtr& type() const = 0;
+  virtual const velox::TypePtr& type() const = 0;
 
   /// Accumulates elements of 'vector' into stats.
-  virtual void add(const VectorPtr& data) = 0;
+  virtual void add(const velox::VectorPtr& data) = 0;
 
   /// Merges the statistics of 'other' into 'this'.
   virtual void merge(const StatisticsBuilder& other) = 0;
@@ -60,4 +60,4 @@ class StatisticsBuilder {
   virtual int64_t numDescending() const = 0;
 };
 
-} // namespace facebook::velox::connector
+} // namespace facebook::axiom::connector

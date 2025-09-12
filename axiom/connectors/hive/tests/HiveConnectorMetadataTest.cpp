@@ -24,9 +24,9 @@
 #include <folly/init/Init.h>
 
 using namespace facebook::velox;
-using namespace facebook::velox::connector;
+using namespace facebook::axiom::connector;
 
-namespace facebook::velox::connector::hive {
+namespace facebook::axiom::connector::hive {
 namespace {
 
 class HiveConnectorMetadataTest
@@ -92,7 +92,7 @@ TEST_F(HiveConnectorMetadataTest, basic) {
   EXPECT_EQ(250'000, table->numRows());
   auto* layout = table->layouts()[0];
   auto columnHandle = metadata->createColumnHandle(*layout, "c0");
-  std::vector<ColumnHandlePtr> columns = {columnHandle};
+  std::vector<velox::connector::ColumnHandlePtr> columns = {columnHandle};
   std::vector<core::TypedExprPtr> filters;
   std::vector<core::TypedExprPtr> rejectedFilters;
   auto ctx = dynamic_cast<hive::LocalHiveConnectorMetadata*>(metadata)
@@ -193,7 +193,7 @@ TEST_F(HiveConnectorMetadataTest, createTable) {
       handle,
       false,
       resultType,
-      connector::CommitStrategy::kNoCommit,
+      velox::connector::CommitStrategy::kNoCommit,
       builder.planNode());
   auto result = exec::test::AssertQueryBuilder(plan).copyResults(pool());
   metadata->finishWrite(
@@ -203,7 +203,7 @@ TEST_F(HiveConnectorMetadataTest, createTable) {
   axiom::runner::MultiFragmentPlan::Options runnerOptions = {
       .queryId = id, .numWorkers = 1, .numDrivers = 1};
 
-  connector::ColumnHandleMap assignments;
+  velox::connector::ColumnHandleMap assignments;
   for (auto i = 0; i < tableType->size(); ++i) {
     assignments[tableType->nameOf(i)] =
         metadata->createColumnHandle(*layout, tableType->nameOf(i));
@@ -223,7 +223,7 @@ TEST_F(HiveConnectorMetadataTest, createTable) {
 }
 
 } // namespace
-} // namespace facebook::velox::connector::hive
+} // namespace facebook::axiom::connector::hive
 
 int main(int argc, char** argv) {
   testing::InitGoogleTest(&argc, argv);

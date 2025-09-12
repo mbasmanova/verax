@@ -67,11 +67,11 @@ class PlanTest : public test::QueryTestBase {
 
     testConnector_ =
         std::make_shared<connector::TestConnector>(kTestConnectorId);
-    connector::registerConnector(testConnector_);
+    velox::connector::registerConnector(testConnector_);
   }
 
   void TearDown() override {
-    connector::unregisterConnector(kTestConnectorId);
+    velox::connector::unregisterConnector(kTestConnectorId);
 
     QueryTestBase::TearDown();
   }
@@ -484,9 +484,9 @@ TEST_F(PlanTest, inList) {
 
 TEST_F(PlanTest, multipleConnectors) {
   auto extraConnector = std::make_shared<connector::TestConnector>("extra");
-  connector::registerConnector(extraConnector);
+  velox::connector::registerConnector(extraConnector);
   SCOPE_EXIT {
-    connector::unregisterConnector("extra");
+    velox::connector::unregisterConnector("extra");
   };
 
   testConnector_->createTable("table1", ROW({"a"}, {BIGINT()}));
@@ -517,7 +517,7 @@ TEST_F(PlanTest, filterToJoinEdge) {
   auto regionType = ROW({"r_regionkey"}, {BIGINT()});
 
   const auto connectorId = exec::test::kHiveConnectorId;
-  const auto connector = connector::getConnector(connectorId);
+  const auto connector = velox::connector::getConnector(connectorId);
 
   lp::PlanBuilder::Context context;
   auto logicalPlan = lp::PlanBuilder(context)
@@ -593,7 +593,7 @@ TEST_F(PlanTest, filterImport) {
   auto ordersType = ROW({"o_custkey", "o_totalprice"}, {BIGINT(), DOUBLE()});
 
   const auto connectorId = exec::test::kHiveConnectorId;
-  const auto connector = connector::getConnector(connectorId);
+  const auto connector = velox::connector::getConnector(connectorId);
 
   auto logicalPlan = lp::PlanBuilder()
                          .tableScan(connectorId, "orders", ordersType->names())
@@ -669,7 +669,7 @@ TEST_F(PlanTest, filterBreakup) {
        {"p_size", INTEGER()}});
 
   const auto connectorId = exec::test::kHiveConnectorId;
-  const auto connector = connector::getConnector(connectorId);
+  const auto connector = velox::connector::getConnector(connectorId);
 
   lp::PlanBuilder::Context context;
   auto logicalPlan =
@@ -736,7 +736,7 @@ TEST_F(PlanTest, unionAll) {
           {BIGINT(), BIGINT(), VARCHAR(), VARCHAR()});
 
   const auto connectorId = exec::test::kHiveConnectorId;
-  const auto connector = connector::getConnector(connectorId);
+  const auto connector = velox::connector::getConnector(connectorId);
 
   const std::vector<std::string>& names = nationType->names();
 
@@ -787,7 +787,7 @@ TEST_F(PlanTest, unionJoin) {
   auto partSuppType = ROW({"ps_partkey", "ps_availqty"}, {BIGINT(), INTEGER()});
 
   const auto connectorId = exec::test::kHiveConnectorId;
-  const auto connector = connector::getConnector(connectorId);
+  const auto connector = velox::connector::getConnector(connectorId);
 
   lp::PlanBuilder::Context ctx;
   auto ps1 =
@@ -891,7 +891,7 @@ TEST_F(PlanTest, intersect) {
           {BIGINT(), BIGINT(), VARCHAR(), VARCHAR()});
 
   const auto connectorId = exec::test::kHiveConnectorId;
-  const auto connector = connector::getConnector(connectorId);
+  const auto connector = velox::connector::getConnector(connectorId);
 
   const std::vector<std::string>& names = nationType->names();
 
@@ -958,7 +958,7 @@ TEST_F(PlanTest, except) {
           {BIGINT(), BIGINT(), VARCHAR(), VARCHAR()});
 
   const auto connectorId = exec::test::kHiveConnectorId;
-  const auto connector = connector::getConnector(connectorId);
+  const auto connector = velox::connector::getConnector(connectorId);
 
   const std::vector<std::string>& names = nationType->names();
 
@@ -1029,7 +1029,7 @@ TEST_F(PlanTest, valuesComplex) {
   });
 
   const auto connectorId = exec::test::kHiveConnectorId;
-  const auto connector = connector::getConnector(connectorId);
+  const auto connector = velox::connector::getConnector(connectorId);
 
   lp::PlanBuilder::Context ctx{connectorId};
   auto logicalPlan = lp::PlanBuilder(ctx).values({rowVector}).build();

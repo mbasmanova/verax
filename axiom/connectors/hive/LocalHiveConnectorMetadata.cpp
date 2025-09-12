@@ -31,17 +31,17 @@
 #include "velox/type/fbhive/HiveTypeParser.h"
 #include "velox/type/fbhive/HiveTypeSerializer.h"
 
-namespace facebook::velox::connector::hive {
+namespace facebook::axiom::connector::hive {
 
 std::vector<PartitionHandlePtr> LocalHiveSplitManager::listPartitions(
-    const ConnectorTableHandlePtr& tableHandle) {
+    const velox::connector::ConnectorTableHandlePtr& tableHandle) {
   // All tables are unpartitioned.
   std::unordered_map<std::string, std::optional<std::string>> empty;
   return {std::make_shared<HivePartitionHandle>(empty, std::nullopt)};
 }
 
 std::shared_ptr<SplitSource> LocalHiveSplitManager::getSplitSource(
-    const ConnectorTableHandlePtr& tableHandle,
+    const velox::connector::ConnectorTableHandlePtr& tableHandle,
     const std::vector<PartitionHandlePtr>& /*partitions*/,
     SplitOptions options) {
   // Since there are only unpartitioned tables now, always makes a SplitSource
@@ -109,11 +109,12 @@ std::vector<SplitSource::SplitAndGroup> LocalHiveSplitSource::getSplits(
       // Take the upper bound.
       const int64_t splitSize = ceil2<uint64_t>(fileSize, splitsPerFile);
       for (int i = 0; i < splitsPerFile; ++i) {
-        auto builder = HiveConnectorSplitBuilder(filePath)
-                           .connectorId(connectorId_)
-                           .fileFormat(format_)
-                           .start(i * splitSize)
-                           .length(splitSize);
+        auto builder =
+            velox::connector::hive::HiveConnectorSplitBuilder(filePath)
+                .connectorId(connectorId_)
+                .fileFormat(format_)
+                .start(i * splitSize)
+                .length(splitSize);
 
         auto* info = files_[currentFile_];
         if (info->bucketNumber.has_value()) {
@@ -127,7 +128,8 @@ std::vector<SplitSource::SplitAndGroup> LocalHiveSplitSource::getSplits(
     }
     result.push_back(SplitAndGroup{std::move(fileSplits_[currentSplit_++]), 0});
     bytes +=
-        reinterpret_cast<const HiveConnectorSplit*>(result.back().split.get())
+        reinterpret_cast<const velox::connector::hive::HiveConnectorSplit*>(
+            result.back().split.get())
             ->length;
     if (bytes > targetBytes) {
       return result;
@@ -136,7 +138,7 @@ std::vector<SplitSource::SplitAndGroup> LocalHiveSplitSource::getSplits(
 }
 
 LocalHiveConnectorMetadata::LocalHiveConnectorMetadata(
-    HiveConnector* hiveConnector)
+    velox::connector::hive::HiveConnector* hiveConnector)
     : HiveConnectorMetadata(hiveConnector), splitManager_(this) {}
 
 void LocalHiveConnectorMetadata::reinitialize() {
@@ -149,9 +151,9 @@ void LocalHiveConnectorMetadata::reinitialize() {
 void LocalHiveConnectorMetadata::initialize() {
   auto formatName = hiveConfig_->hiveLocalFileFormat();
   auto path = hiveConfig_->hiveLocalDataPath();
-  format_ = formatName == "dwrf" ? dwio::common::FileFormat::DWRF
-      : formatName == "parquet"  ? dwio::common::FileFormat::PARQUET
-                                 : dwio::common::FileFormat::UNKNOWN;
+  format_ = formatName == "dwrf" ? velox::dwio::common::FileFormat::DWRF
+      : formatName == "parquet"  ? velox::dwio::common::FileFormat::PARQUET
+                                 : velox::dwio::common::FileFormat::UNKNOWN;
   makeQueryCtx();
   makeConnectorQueryCtx();
   readTables(path);
@@ -166,19 +168,19 @@ void LocalHiveConnectorMetadata::ensureInitialized() const {
   initialized_ = true;
 }
 
-std::shared_ptr<core::QueryCtx> LocalHiveConnectorMetadata::makeQueryCtx(
+std::shared_ptr<velox::core::QueryCtx> LocalHiveConnectorMetadata::makeQueryCtx(
     const std::string& queryId) {
   std::unordered_map<std::string, std::string> config;
-  std::unordered_map<std::string, std::shared_ptr<config::ConfigBase>>
+  std::unordered_map<std::string, std::shared_ptr<velox::config::ConfigBase>>
       connectorConfigs;
   connectorConfigs[hiveConnector_->connectorId()] =
-      std::const_pointer_cast<config::ConfigBase>(hiveConfig_->config());
+      std::const_pointer_cast<velox::config::ConfigBase>(hiveConfig_->config());
 
-  return core::QueryCtx::create(
+  return velox::core::QueryCtx::create(
       hiveConnector_->executor(),
-      core::QueryConfig(config),
+      velox::core::QueryConfig(config),
       std::move(connectorConfigs),
-      cache::AsyncDataCache::getInstance(),
+      velox::cache::AsyncDataCache::getInstance(),
       rootPool_->shared_from_this(),
       nullptr,
       queryId);
@@ -189,16 +191,16 @@ void LocalHiveConnectorMetadata::makeQueryCtx() {
 }
 
 void LocalHiveConnectorMetadata::makeConnectorQueryCtx() {
-  common::SpillConfig spillConfig;
-  common::PrefixSortConfig prefixSortConfig;
+  velox::common::SpillConfig spillConfig;
+  velox::common::PrefixSortConfig prefixSortConfig;
   schemaPool_ = queryCtx_->pool()->addLeafChild("schemaReader");
-  connectorQueryCtx_ = std::make_shared<connector::ConnectorQueryCtx>(
+  connectorQueryCtx_ = std::make_shared<velox::connector::ConnectorQueryCtx>(
       schemaPool_.get(),
       queryCtx_->pool(),
       queryCtx_->connectorSessionProperties(hiveConnector_->connectorId()),
       &spillConfig,
       prefixSortConfig,
-      std::make_unique<exec::SimpleExpressionEvaluator>(
+      std::make_unique<velox::exec::SimpleExpressionEvaluator>(
           queryCtx_.get(), schemaPool_.get()),
       queryCtx_->cache(),
       "scan_for_schema",
@@ -219,12 +221,12 @@ void LocalHiveConnectorMetadata::readTables(const std::string& path) {
 }
 
 std::pair<int64_t, int64_t> LocalHiveTableLayout::sample(
-    const connector::ConnectorTableHandlePtr& handle,
+    const velox::connector::ConnectorTableHandlePtr& handle,
     float pct,
-    const std::vector<core::TypedExprPtr>& extraFilters,
-    RowTypePtr scanType,
-    const std::vector<common::Subfield>& fields,
-    HashStringAllocator* allocator,
+    const std::vector<velox::core::TypedExprPtr>& extraFilters,
+    velox::RowTypePtr scanType,
+    const std::vector<velox::common::Subfield>& fields,
+    velox::HashStringAllocator* allocator,
     std::vector<ColumnStatistics>* statistics) const {
   VELOX_CHECK(extraFilters.empty());
 
@@ -246,20 +248,20 @@ std::pair<int64_t, int64_t> LocalHiveTableLayout::sample(
 }
 
 std::pair<int64_t, int64_t> LocalHiveTableLayout::sample(
-    const connector::ConnectorTableHandlePtr& tableHandle,
+    const velox::connector::ConnectorTableHandlePtr& tableHandle,
     float pct,
-    RowTypePtr scanType,
-    const std::vector<common::Subfield>& fields,
-    HashStringAllocator* allocator,
+    velox::RowTypePtr scanType,
+    const std::vector<velox::common::Subfield>& fields,
+    velox::HashStringAllocator* allocator,
     std::vector<std::unique_ptr<StatisticsBuilder>>* statsBuilders) const {
   StatisticsBuilderOptions options = {
       .maxStringLength = 100, .countDistincts = true, .allocator = allocator};
 
   std::vector<std::unique_ptr<StatisticsBuilder>> builders;
-  ColumnHandleMap columnHandles;
+  velox::connector::ColumnHandleMap columnHandles;
 
   std::vector<std::string> names;
-  std::vector<TypePtr> types;
+  std::vector<velox::TypePtr> types;
   names.reserve(fields.size());
   types.reserve(fields.size());
 
@@ -270,8 +272,12 @@ std::pair<int64_t, int64_t> LocalHiveTableLayout::sample(
     names.push_back(name);
     types.push_back(type);
 
-    columnHandles[name] = std::make_shared<HiveColumnHandle>(
-        name, HiveColumnHandle::ColumnType::kRegular, type, type);
+    columnHandles[name] =
+        std::make_shared<velox::connector::hive::HiveColumnHandle>(
+            name,
+            velox::connector::hive::HiveColumnHandle::ColumnType::kRegular,
+            type,
+            type);
     builders.push_back(StatisticsBuilder::create(type, options));
   }
 
@@ -289,14 +295,14 @@ std::pair<int64_t, int64_t> LocalHiveTableLayout::sample(
     auto dataSource = connector()->createDataSource(
         outputType, tableHandle, columnHandles, connectorQueryCtx.get());
 
-    auto split = HiveConnectorSplitBuilder(file->path)
+    auto split = velox::connector::hive::HiveConnectorSplitBuilder(file->path)
                      .fileFormat(fileFormat_)
                      .connectorId(connector()->connectorId())
                      .build();
     dataSource->addSplit(split);
     constexpr int32_t kBatchSize = 1'000;
     for (;;) {
-      ContinueFuture ignore{ContinueFuture::makeEmpty()};
+      velox::ContinueFuture ignore{velox::ContinueFuture::makeEmpty()};
       auto data = dataSource->next(kBatchSize, ignore).value();
       if (data == nullptr) {
         scannedRows += dataSource->getCompletedRows();
@@ -364,10 +370,10 @@ std::shared_ptr<LocalTable> LocalHiveConnectorMetadata::createTableFromSchema(
   VELOX_CHECK_EQ(jsons.size(), 1);
   auto json = jsons[0];
 
-  type::fbhive::HiveTypeParser parser;
+  velox::type::fbhive::HiveTypeParser parser;
 
   std::vector<std::string> names;
-  std::vector<TypePtr> types;
+  std::vector<velox::TypePtr> types;
   std::vector<std::unique_ptr<Column>> columns;
   for (auto column : json["dataColumns"]) {
     names.push_back(column["name"].asString());
@@ -426,7 +432,7 @@ std::shared_ptr<LocalTable> LocalHiveConnectorMetadata::createTableFromSchema(
 
   auto format = format_;
   if (json.count("fileFormat")) {
-    format = dwio::common::toFileFormat(json["fileFormat"].asString());
+    format = velox::dwio::common::toFileFormat(json["fileFormat"].asString());
   }
 
   std::vector<const Column*> empty;
@@ -517,7 +523,7 @@ void LocalHiveConnectorMetadata::loadTable(
   // counts.
   auto table = createTableFromSchema(tableName, tablePath);
 
-  RowTypePtr tableType;
+  velox::RowTypePtr tableType;
   if (table) {
     tableType = table->type();
   }
@@ -534,17 +540,17 @@ void LocalHiveConnectorMetadata::loadTable(
   for (auto& info : files) {
     // If the table has a schema it has a layout that gives the file format.
     // Otherwise we default it from 'this'.
-    dwio::common::ReaderOptions readerOptions{schemaPool_.get()};
+    velox::dwio::common::ReaderOptions readerOptions{schemaPool_.get()};
     readerOptions.setFileFormat(
         table == nullptr || table->layouts().empty()
             ? format_
             : reinterpret_cast<const HiveTableLayout*>(table->layouts()[0])
                   ->fileFormat());
-    auto input = std::make_unique<dwio::common::BufferedInput>(
-        std::make_shared<LocalReadFile>(info->path),
+    auto input = std::make_unique<velox::dwio::common::BufferedInput>(
+        std::make_shared<velox::LocalReadFile>(info->path),
         readerOptions.memoryPool());
-    std::unique_ptr<dwio::common::Reader> reader =
-        dwio::common::getReaderFactory(readerOptions.fileFormat())
+    std::unique_ptr<velox::dwio::common::Reader> reader =
+        velox::dwio::common::getReaderFactory(readerOptions.fileFormat())
             ->createReader(std::move(input), readerOptions);
 
     const auto& fileType = reader->rowType();
@@ -611,12 +617,12 @@ bool isMixedOrder(const StatisticsBuilder& stats) {
   return stats.numAscending() && stats.numDescending();
 }
 
-bool isInteger(TypeKind kind) {
+bool isInteger(velox::TypeKind kind) {
   switch (kind) {
-    case TypeKind::TINYINT:
-    case TypeKind::SMALLINT:
-    case TypeKind::INTEGER:
-    case TypeKind::BIGINT:
+    case velox::TypeKind::TINYINT:
+    case velox::TypeKind::SMALLINT:
+    case velox::TypeKind::INTEGER:
+    case velox::TypeKind::BIGINT:
       return true;
     default:
       return false;
@@ -624,40 +630,42 @@ bool isInteger(TypeKind kind) {
 }
 
 template <typename T>
-T numericValue(const Variant& v) {
+T numericValue(const velox::Variant& v) {
   switch (v.kind()) {
-    case TypeKind::TINYINT:
-      return static_cast<T>(v.value<TypeKind::TINYINT>());
-    case TypeKind::SMALLINT:
-      return static_cast<T>(v.value<TypeKind::SMALLINT>());
-    case TypeKind::INTEGER:
-      return static_cast<T>(v.value<TypeKind::INTEGER>());
-    case TypeKind::BIGINT:
-      return static_cast<T>(v.value<TypeKind::BIGINT>());
-    case TypeKind::REAL:
-      return static_cast<T>(v.value<TypeKind::REAL>());
-    case TypeKind::DOUBLE:
-      return static_cast<T>(v.value<TypeKind::DOUBLE>());
+    case velox::TypeKind::TINYINT:
+      return static_cast<T>(v.value<velox::TypeKind::TINYINT>());
+    case velox::TypeKind::SMALLINT:
+      return static_cast<T>(v.value<velox::TypeKind::SMALLINT>());
+    case velox::TypeKind::INTEGER:
+      return static_cast<T>(v.value<velox::TypeKind::INTEGER>());
+    case velox::TypeKind::BIGINT:
+      return static_cast<T>(v.value<velox::TypeKind::BIGINT>());
+    case velox::TypeKind::REAL:
+      return static_cast<T>(v.value<velox::TypeKind::REAL>());
+    case velox::TypeKind::DOUBLE:
+      return static_cast<T>(v.value<velox::TypeKind::DOUBLE>());
     default:
       VELOX_UNREACHABLE();
   }
 }
 } // namespace
 
-void LocalTable::sampleNumDistincts(float samplePct, memory::MemoryPool* pool) {
-  std::vector<common::Subfield> fields;
+void LocalTable::sampleNumDistincts(
+    float samplePct,
+    velox::memory::MemoryPool* pool) {
+  std::vector<velox::common::Subfield> fields;
   fields.reserve(type_->size());
   for (auto i = 0; i < type_->size(); ++i) {
-    fields.push_back(common::Subfield(type_->nameOf(i)));
+    fields.push_back(velox::common::Subfield(type_->nameOf(i)));
   }
 
   // Sample the table. Adjust distinct values according to the samples.
-  auto allocator = std::make_unique<HashStringAllocator>(pool);
+  auto allocator = std::make_unique<velox::HashStringAllocator>(pool);
   auto* layout = layouts_[0].get();
 
   auto* metadata = ConnectorMetadata::metadata(layout->connector());
 
-  std::vector<connector::ColumnHandlePtr> columns;
+  std::vector<velox::connector::ColumnHandlePtr> columns;
   columns.reserve(type_->size());
   for (auto i = 0; i < type_->size(); ++i) {
     columns.push_back(metadata->createColumnHandle(*layout, type_->nameOf(i)));
@@ -668,7 +676,7 @@ void LocalTable::sampleNumDistincts(float samplePct, memory::MemoryPool* pool) {
   auto& evaluator =
       *localHiveMetadata->connectorQueryCtx()->expressionEvaluator();
 
-  std::vector<core::TypedExprPtr> ignore;
+  std::vector<velox::core::TypedExprPtr> ignore;
   auto handle =
       metadata->createTableHandle(*layout, columns, evaluator, {}, ignore);
 
@@ -796,7 +804,7 @@ void createDir(const std::string& path) {
 
 void LocalHiveConnectorMetadata::createTable(
     const std::string& tableName,
-    const RowTypePtr& rowType,
+    const velox::RowTypePtr& rowType,
     const std::unordered_map<std::string, std::string>& options,
     const ConnectorSessionPtr& session,
     bool errorIfExists,
@@ -820,15 +828,15 @@ void LocalHiveConnectorMetadata::createTable(
   auto it = options.find("compression_kind");
   if (it != options.end()) {
     //  Check the kind is recognized.
-    common::stringToCompressionKind(it->second);
+    velox::common::stringToCompressionKind(it->second);
     schema["compressionKind"] = it->second;
   }
   it = options.find("file_format");
   std::string fileFormat;
   if (it != options.end()) {
     VELOX_USER_CHECK(
-        dwio::common::toFileFormat(it->second) !=
-            dwio::common::FileFormat::UNKNOWN,
+        velox::dwio::common::toFileFormat(it->second) !=
+            velox::dwio::common::FileFormat::UNKNOWN,
         "Bad file format {}",
         it->second);
     fileFormat = it->second;
@@ -882,7 +890,7 @@ void LocalHiveConnectorMetadata::createTable(
     folly::dynamic c = folly::dynamic::object();
     c["name"] = name;
     c["type"] =
-        type::fbhive::HiveTypeSerializer::serialize(rowType->childAt(i));
+        velox::type::fbhive::HiveTypeSerializer::serialize(rowType->childAt(i));
 
     if (std::find(tokens.begin(), tokens.end(), name) == tokens.end()) {
       if (isPartition) {
@@ -907,13 +915,15 @@ void LocalHiveConnectorMetadata::createTable(
 
 void LocalHiveConnectorMetadata::finishWrite(
     const TableLayout& layout,
-    const ConnectorInsertTableHandlePtr& handle,
-    const std::vector<RowVectorPtr>& /*writerResult*/,
+    const velox::connector::ConnectorInsertTableHandlePtr& handle,
+    const std::vector<velox::RowVectorPtr>& /*writerResult*/,
     WriteKind /*kind*/,
     const ConnectorSessionPtr& /*session*/) {
   std::lock_guard<std::mutex> l(mutex_);
-  auto localHandle = dynamic_cast<const HiveInsertTableHandle*>(handle.get());
+  auto localHandle =
+      dynamic_cast<const velox::connector::hive::HiveInsertTableHandle*>(
+          handle.get());
   loadTable(layout.table().name(), localHandle->locationHandle()->targetPath());
 }
 
-} // namespace facebook::velox::connector::hive
+} // namespace facebook::axiom::connector::hive

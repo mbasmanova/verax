@@ -184,7 +184,7 @@ void ToVelox::filterUpdated(BaseTableCP table, bool updateSelectivity) {
   auto* layout = table->schemaTable->columnGroups[0]->layout;
 
   auto connector = layout->connector();
-  auto* metadata = velox::connector::ConnectorMetadata::metadata(connector);
+  auto* metadata = connector::ConnectorMetadata::metadata(connector);
 
   std::vector<velox::connector::ColumnHandlePtr> columns;
   for (int32_t i = 0; i < dataColumns->size(); ++i) {
@@ -1111,8 +1111,8 @@ velox::core::PlanNodePtr ToVelox::makeScan(
         scan.baseTable, allColumns, scanColumns, columnAlteredTypes_);
   }
 
-  auto* connectorMetadata = velox::connector::ConnectorMetadata::metadata(
-      scan.index->layout->connector());
+  auto* connectorMetadata =
+      connector::ConnectorMetadata::metadata(scan.index->layout->connector());
 
   velox::connector::ColumnHandleMap assignments;
   for (auto column : scanColumns) {

@@ -52,7 +52,7 @@ ColumnGroupCP SchemaTable::addIndex(
     DistributionType distributionType,
     const ColumnVector& partition,
     ColumnVector columnsVector,
-    const velox::connector::TableLayout* layout) {
+    const connector::TableLayout* layout) {
   VELOX_CHECK_LE(numKeysUnique, keys.size());
 
   Distribution distribution;

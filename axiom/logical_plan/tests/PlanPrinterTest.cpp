@@ -49,11 +49,11 @@ class PlanPrinterTest : public testing::Test {
              VARCHAR(),
              ARRAY(BIGINT()),
              MAP(INTEGER(), REAL())}));
-    connector::registerConnector(connector);
+    velox::connector::registerConnector(connector);
   }
 
   void TearDown() override {
-    connector::unregisterConnector(kTestConnectorId);
+    velox::connector::unregisterConnector(kTestConnectorId);
   }
 
   static std::vector<std::string> toLines(const LogicalPlanNodePtr& plan) {

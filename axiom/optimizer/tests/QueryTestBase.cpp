@@ -54,7 +54,7 @@ using namespace facebook::velox::exec;
 
 void QueryTestBase::SetUp() {
   axiom::runner::test::LocalRunnerTestBase::SetUp();
-  connector_ = connector::getConnector(exec::test::kHiveConnectorId);
+  connector_ = velox::connector::getConnector(exec::test::kHiveConnectorId);
   rootPool_ = memory::memoryManager()->addRootPool("velox_sql");
   optimizerPool_ = rootPool_->addLeafChild("optimizer");
 
@@ -87,7 +87,7 @@ void QueryTestBase::TearDown() {
     gSuiteHistory = std::move(history_);
   }
   queryCtx_.reset();
-  connector::unregisterConnector(exec::test::kHiveConnectorId);
+  velox::connector::unregisterConnector(exec::test::kHiveConnectorId);
   connector_.reset();
   optimizerPool_.reset();
   schema_.reset();

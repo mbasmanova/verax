@@ -33,7 +33,7 @@ class SplitSourceFactory {
   /// Returns a splitSource for one TableScan across all Tasks of
   /// the fragment. The source will be invoked to produce splits for
   /// each individual worker running the scan.
-  virtual std::shared_ptr<velox::connector::SplitSource> splitSourceForScan(
+  virtual std::shared_ptr<connector::SplitSource> splitSourceForScan(
       const velox::core::TableScanNode& scan) = 0;
 };
 
@@ -46,7 +46,7 @@ class SimpleSplitSourceFactory : public SplitSourceFactory {
           nodeSplitMap)
       : nodeSplitMap_(std::move(nodeSplitMap)) {}
 
-  std::shared_ptr<velox::connector::SplitSource> splitSourceForScan(
+  std::shared_ptr<connector::SplitSource> splitSourceForScan(
       const velox::core::TableScanNode& scan) override;
 
  private:
@@ -59,14 +59,14 @@ class SimpleSplitSourceFactory : public SplitSourceFactory {
 /// Generic SplitSourceFactory that delegates the work to ConnectorSplitManager.
 class ConnectorSplitSourceFactory : public SplitSourceFactory {
  public:
-  ConnectorSplitSourceFactory(velox::connector::SplitOptions options = {})
+  ConnectorSplitSourceFactory(connector::SplitOptions options = {})
       : options_(std::move(options)) {}
 
-  std::shared_ptr<velox::connector::SplitSource> splitSourceForScan(
+  std::shared_ptr<connector::SplitSource> splitSourceForScan(
       const velox::core::TableScanNode& scan) override;
 
  protected:
-  const velox::connector::SplitOptions options_;
+  const connector::SplitOptions options_;
 };
 
 /// Runner for in-process execution of a distributed plan.
@@ -134,7 +134,7 @@ class LocalRunner : public Runner,
 
   void makeStages(const std::shared_ptr<velox::exec::Task>& lastStageTask);
 
-  std::shared_ptr<velox::connector::SplitSource> splitSourceForScan(
+  std::shared_ptr<connector::SplitSource> splitSourceForScan(
       const velox::core::TableScanNode& scan);
 
   // Serializes 'cursor_' and 'error_'.

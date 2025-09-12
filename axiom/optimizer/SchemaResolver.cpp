@@ -20,7 +20,7 @@
 
 namespace facebook::axiom::optimizer {
 
-velox::connector::TablePtr SchemaResolver::findTable(
+connector::TablePtr SchemaResolver::findTable(
     const std::string& catalog,
     const std::string& name) {
   TableNameParser parser(name);
@@ -41,8 +41,7 @@ velox::connector::TablePtr SchemaResolver::findTable(
   } else {
     lookupName = parser.table();
   }
-  return velox::connector::ConnectorMetadata::metadata(catalog)->findTable(
-      lookupName);
+  return connector::ConnectorMetadata::metadata(catalog)->findTable(lookupName);
 }
 
 } // namespace facebook::axiom::optimizer

@@ -16,7 +16,7 @@
 
 #include "axiom/connectors/ConnectorMetadata.h"
 
-namespace facebook::velox::connector {
+namespace facebook::axiom::connector {
 
 namespace {
 const auto& tableKindNames() {
@@ -43,11 +43,11 @@ VELOX_DEFINE_ENUM_NAME(TableKind, tableKindNames);
 VELOX_DEFINE_ENUM_NAME(WriteKind, writeKindNames);
 
 namespace {
-RowTypePtr makeRowType(const std::vector<const Column*>& columns) {
+velox::RowTypePtr makeRowType(const std::vector<const Column*>& columns) {
   std::unordered_set<std::string> uniqueNames;
 
   std::vector<std::string> names;
-  std::vector<TypePtr> types;
+  std::vector<velox::TypePtr> types;
 
   names.reserve(columns.size());
   types.reserve(columns.size());
@@ -71,7 +71,7 @@ RowTypePtr makeRowType(const std::vector<const Column*>& columns) {
 TableLayout::TableLayout(
     std::string name,
     const Table* table,
-    connector::Connector* connector,
+    velox::connector::Connector* connector,
     std::vector<const Column*> columns,
     std::vector<const Column*> partitionColumns,
     std::vector<const Column*> orderColumns,
@@ -136,7 +136,8 @@ ConnectorMetadata* ConnectorMetadata::metadata(std::string_view connectorId) {
 }
 
 // static
-ConnectorMetadata* ConnectorMetadata::metadata(Connector* connector) {
+ConnectorMetadata* ConnectorMetadata::metadata(
+    velox::connector::Connector* connector) {
   return ConnectorMetadata::metadata(connector->connectorId());
 }
 
@@ -154,4 +155,4 @@ void ConnectorMetadata::unregisterMetadata(std::string_view connectorId) {
   metadataRegistry().erase(connectorId);
 }
 
-} // namespace facebook::velox::connector
+} // namespace facebook::axiom::connector

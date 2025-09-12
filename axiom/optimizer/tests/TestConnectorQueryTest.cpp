@@ -44,11 +44,11 @@ class TestConnectorQueryTest : public QueryTestBase {
   void SetUp() override {
     QueryTestBase::SetUp();
     connector_ = std::make_shared<connector::TestConnector>(kTestConnectorId);
-    connector::registerConnector(connector_);
+    velox::connector::registerConnector(connector_);
   }
 
   void TearDown() override {
-    connector::unregisterConnector(kTestConnectorId);
+    velox::connector::unregisterConnector(kTestConnectorId);
     connector_.reset();
     QueryTestBase::TearDown();
   }
@@ -73,7 +73,7 @@ class TestConnectorQueryTest : public QueryTestBase {
         std::move(handle),
         /*hasPartitioningScheme=*/false,
         exec::TableWriteTraits::outputType(std::nullopt),
-        connector::CommitStrategy::kTaskCommit,
+        velox::connector::CommitStrategy::kTaskCommit,
         source);
 
     axiom::runner::ExecutableFragment writeFragment(executableFragment);

@@ -41,15 +41,15 @@ class PrestoParserTest : public testing::Test {
     auto emptyConfig = std::make_shared<config::ConfigBase>(
         std::unordered_map<std::string, std::string>());
 
-    connector::tpch::TpchConnectorFactory tpchConnectorFactory;
+    velox::connector::tpch::TpchConnectorFactory tpchConnectorFactory;
     auto tpchConnector =
         tpchConnectorFactory.newConnector(kTpchConnectorId, emptyConfig);
-    connector::registerConnector(tpchConnector);
+    velox::connector::registerConnector(tpchConnector);
 
     connector::ConnectorMetadata::registerMetadata(
         kTpchConnectorId,
         std::make_shared<connector::tpch::TpchConnectorMetadata>(
-            dynamic_cast<connector::tpch::TpchConnector*>(
+            dynamic_cast<velox::connector::tpch::TpchConnector*>(
                 tpchConnector.get())));
 
     functions::prestosql::registerAllScalarFunctions();
@@ -58,7 +58,7 @@ class PrestoParserTest : public testing::Test {
 
   static void TearDownTestCase() {
     connector::ConnectorMetadata::unregisterMetadata(kTpchConnectorId);
-    connector::unregisterConnector(kTpchConnectorId);
+    velox::connector::unregisterConnector(kTpchConnectorId);
   }
 
   memory::MemoryPool* pool() {
