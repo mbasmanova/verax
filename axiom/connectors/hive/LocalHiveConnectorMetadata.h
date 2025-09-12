@@ -24,7 +24,7 @@
 #include "velox/core/QueryCtx.h"
 #include "velox/dwio/common/Options.h"
 
-namespace facebook::velox::connector::hive {
+namespace facebook::axiom::connector::hive {
 
 /// Describes a file in a table. Input to split enumeration.
 struct FileInfo {
@@ -37,7 +37,7 @@ class LocalHiveSplitSource : public SplitSource {
  public:
   LocalHiveSplitSource(
       std::vector<const FileInfo*> files,
-      dwio::common::FileFormat format,
+      velox::dwio::common::FileFormat format,
       const std::string& connectorId,
       SplitOptions options)
       : options_(options),
@@ -50,10 +50,10 @@ class LocalHiveSplitSource : public SplitSource {
 
  private:
   const SplitOptions options_;
-  const dwio::common::FileFormat format_;
+  const velox::dwio::common::FileFormat format_;
   const std::string connectorId_;
   std::vector<const FileInfo*> files_;
-  std::vector<std::shared_ptr<connector::ConnectorSplit>> fileSplits_;
+  std::vector<std::shared_ptr<velox::connector::ConnectorSplit>> fileSplits_;
   int32_t currentFile_{-1};
   int32_t currentSplit_{0};
 };
@@ -64,10 +64,10 @@ class LocalHiveSplitManager : public ConnectorSplitManager {
  public:
   LocalHiveSplitManager(LocalHiveConnectorMetadata* /* metadata */) {}
   std::vector<PartitionHandlePtr> listPartitions(
-      const ConnectorTableHandlePtr& tableHandle) override;
+      const velox::connector::ConnectorTableHandlePtr& tableHandle) override;
 
   std::shared_ptr<SplitSource> getSplitSource(
-      const ConnectorTableHandlePtr& tableHandle,
+      const velox::connector::ConnectorTableHandlePtr& tableHandle,
       const std::vector<PartitionHandlePtr>& partitions,
       SplitOptions options = {}) override;
 };
@@ -79,14 +79,14 @@ class LocalHiveTableLayout : public HiveTableLayout {
   LocalHiveTableLayout(
       const std::string& name,
       const Table* table,
-      connector::Connector* connector,
+      velox::connector::Connector* connector,
       std::vector<const Column*> columns,
       std::vector<const Column*> partitioning,
       std::vector<const Column*> orderColumns,
       std::vector<SortOrder> sortOrder,
       std::vector<const Column*> lookupKeys,
       std::vector<const Column*> hivePartitionColumns,
-      dwio::common::FileFormat fileFormat,
+      velox::dwio::common::FileFormat fileFormat,
       std::optional<int32_t> numBuckets = std::nullopt)
       : HiveTableLayout(
             name,
@@ -102,12 +102,12 @@ class LocalHiveTableLayout : public HiveTableLayout {
             numBuckets) {}
 
   std::pair<int64_t, int64_t> sample(
-      const connector::ConnectorTableHandlePtr& handle,
+      const velox::connector::ConnectorTableHandlePtr& handle,
       float pct,
-      const std::vector<core::TypedExprPtr>& extraFilters,
-      RowTypePtr outputType,
-      const std::vector<common::Subfield>& fields,
-      HashStringAllocator* allocator,
+      const std::vector<velox::core::TypedExprPtr>& extraFilters,
+      velox::RowTypePtr outputType,
+      const std::vector<velox::common::Subfield>& fields,
+      velox::HashStringAllocator* allocator,
       std::vector<ColumnStatistics>* statistics) const override;
 
   const std::vector<std::unique_ptr<const FileInfo>>& files() const {
@@ -120,11 +120,11 @@ class LocalHiveTableLayout : public HiveTableLayout {
 
   /// Like sample() above, but fills 'builders' with the data.
   std::pair<int64_t, int64_t> sample(
-      const connector::ConnectorTableHandlePtr& handle,
+      const velox::connector::ConnectorTableHandlePtr& handle,
       float pct,
-      RowTypePtr scanType,
-      const std::vector<common::Subfield>& fields,
-      HashStringAllocator* allocator,
+      velox::RowTypePtr scanType,
+      const std::vector<velox::common::Subfield>& fields,
+      velox::HashStringAllocator* allocator,
       std::vector<std::unique_ptr<StatisticsBuilder>>* statsBuilders) const;
 
  private:
@@ -136,7 +136,7 @@ class LocalTable : public Table {
  public:
   LocalTable(
       std::string name,
-      RowTypePtr type,
+      velox::RowTypePtr type,
       std::unordered_map<std::string, std::string> options = {})
       : Table(
             std::move(name),
@@ -164,7 +164,7 @@ class LocalTable : public Table {
 
   /// Samples  'samplePct' % rows of the table and sets the num distincts
   /// estimate for the columns. uses 'pool' for temporary data.
-  void sampleNumDistincts(float samplePct, memory::MemoryPool* pool);
+  void sampleNumDistincts(float samplePct, velox::memory::MemoryPool* pool);
 
  private:
   // Serializes initialization, e.g. exportedColumns_.
@@ -192,7 +192,8 @@ class LocalTable : public Table {
 
 class LocalHiveConnectorMetadata : public HiveConnectorMetadata {
  public:
-  explicit LocalHiveConnectorMetadata(HiveConnector* hiveConnector);
+  explicit LocalHiveConnectorMetadata(
+      velox::connector::hive::HiveConnector* hiveConnector);
 
   void initialize() override;
 
@@ -203,15 +204,16 @@ class LocalHiveConnectorMetadata : public HiveConnectorMetadata {
     return &splitManager_;
   }
 
-  dwio::common::FileFormat fileFormat() const override {
+  velox::dwio::common::FileFormat fileFormat() const override {
     return format_;
   }
 
-  const std::shared_ptr<ConnectorQueryCtx>& connectorQueryCtx() const {
+  const std::shared_ptr<velox::connector::ConnectorQueryCtx>&
+  connectorQueryCtx() const {
     return connectorQueryCtx_;
   }
 
-  HiveConnector* hiveConnector() const {
+  velox::connector::hive::HiveConnector* hiveConnector() const {
     return hiveConnector_;
   }
 
@@ -229,11 +231,12 @@ class LocalHiveConnectorMetadata : public HiveConnectorMetadata {
     return tables_;
   }
 
-  std::shared_ptr<core::QueryCtx> makeQueryCtx(const std::string& queryId);
+  std::shared_ptr<velox::core::QueryCtx> makeQueryCtx(
+      const std::string& queryId);
 
   void createTable(
       const std::string& tableName,
-      const RowTypePtr& rowType,
+      const velox::RowTypePtr& rowType,
       const std::unordered_map<std::string, std::string>& options,
       const ConnectorSessionPtr& session,
       bool errorIfExists = true,
@@ -241,8 +244,8 @@ class LocalHiveConnectorMetadata : public HiveConnectorMetadata {
 
   void finishWrite(
       const TableLayout& layout,
-      const ConnectorInsertTableHandlePtr& /*handle*/,
-      const std::vector<RowVectorPtr>& /*writerResult*/,
+      const velox::connector::ConnectorInsertTableHandlePtr& /*handle*/,
+      const std::vector<velox::RowVectorPtr>& /*writerResult*/,
       WriteKind /*kind*/,
       const ConnectorSessionPtr& /*session*/) override;
 
@@ -251,12 +254,12 @@ class LocalHiveConnectorMetadata : public HiveConnectorMetadata {
     return hiveConfig_->hiveLocalDataPath();
   }
 
-  std::shared_ptr<connector::hive::LocationHandle> makeLocationHandle(
+  std::shared_ptr<velox::connector::hive::LocationHandle> makeLocationHandle(
       std::string targetDirectory,
       std::optional<std::string> writeDirectory = std::nullopt,
-      connector::hive::LocationHandle::TableType tableType =
-          connector::hive::LocationHandle::TableType::kNew) override {
-    return std::make_shared<connector::hive::LocationHandle>(
+      velox::connector::hive::LocationHandle::TableType tableType =
+          velox::connector::hive::LocationHandle::TableType::kNew) override {
+    return std::make_shared<velox::connector::hive::LocationHandle>(
         targetDirectory, writeDirectory.value_or(targetDirectory), tableType);
   }
 
@@ -275,14 +278,14 @@ class LocalHiveConnectorMetadata : public HiveConnectorMetadata {
 
   mutable std::mutex mutex_;
   mutable bool initialized_{false};
-  std::shared_ptr<memory::MemoryPool> rootPool_{
-      memory::memoryManager()->addRootPool()};
-  std::shared_ptr<memory::MemoryPool> schemaPool_;
-  std::shared_ptr<core::QueryCtx> queryCtx_;
-  std::shared_ptr<ConnectorQueryCtx> connectorQueryCtx_;
-  dwio::common::FileFormat format_;
+  std::shared_ptr<velox::memory::MemoryPool> rootPool_{
+      velox::memory::memoryManager()->addRootPool()};
+  std::shared_ptr<velox::memory::MemoryPool> schemaPool_;
+  std::shared_ptr<velox::core::QueryCtx> queryCtx_;
+  std::shared_ptr<velox::connector::ConnectorQueryCtx> connectorQueryCtx_;
+  velox::dwio::common::FileFormat format_;
   std::unordered_map<std::string, std::shared_ptr<LocalTable>> tables_;
   LocalHiveSplitManager splitManager_;
 };
 
-} // namespace facebook::velox::connector::hive
+} // namespace facebook::axiom::connector::hive

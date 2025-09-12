@@ -64,10 +64,11 @@ void doCreateTables(std::string_view path) {
             .endTableWriter()
             .planNode();
 
-    std::vector<std::shared_ptr<connector::ConnectorSplit>> splits;
+    std::vector<std::shared_ptr<velox::connector::ConnectorSplit>> splits;
     for (auto i = 0; i < numSplits; ++i) {
-      splits.push_back(std::make_shared<connector::tpch::TpchConnectorSplit>(
-          std::string(PlanBuilder::kTpchDefaultConnectorId), numSplits, i));
+      splits.push_back(
+          std::make_shared<velox::connector::tpch::TpchConnectorSplit>(
+              std::string(PlanBuilder::kTpchDefaultConnectorId), numSplits, i));
     }
 
     const int32_t numDrivers =
@@ -88,8 +89,8 @@ void registerHiveConnector(const std::string& id) {
   auto emptyConfig = std::make_shared<config::ConfigBase>(
       std::unordered_map<std::string, std::string>());
 
-  connector::hive::HiveConnectorFactory factory;
-  connector::registerConnector(factory.newConnector(id, emptyConfig));
+  velox::connector::hive::HiveConnectorFactory factory;
+  velox::connector::registerConnector(factory.newConnector(id, emptyConfig));
 }
 
 } // namespace
@@ -99,7 +100,7 @@ void ParquetTpchTest::createTables(std::string_view path) {
   memory::MemoryManager::testingSetInstance(memory::MemoryManager::Options{});
 
   SCOPE_EXIT {
-    connector::unregisterConnector(
+    velox::connector::unregisterConnector(
         std::string(PlanBuilder::kHiveDefaultConnectorId));
     unregisterTpchConnector(std::string(PlanBuilder::kTpchDefaultConnectorId));
 
@@ -114,10 +115,10 @@ void ParquetTpchTest::createTables(std::string_view path) {
   auto emptyConfig = std::make_shared<config::ConfigBase>(
       std::unordered_map<std::string, std::string>());
 
-  connector::hive::HiveConnectorFactory hiveConnectorFactory;
+  velox::connector::hive::HiveConnectorFactory hiveConnectorFactory;
   auto hiveConnector = hiveConnectorFactory.newConnector(
       std::string(PlanBuilder::kHiveDefaultConnectorId), emptyConfig);
-  connector::registerConnector(std::move(hiveConnector));
+  velox::connector::registerConnector(std::move(hiveConnector));
 
   registerTpchConnector(std::string(PlanBuilder::kTpchDefaultConnectorId));
 
@@ -129,20 +130,21 @@ void ParquetTpchTest::registerTpchConnector(const std::string& id) {
   auto emptyConfig = std::make_shared<config::ConfigBase>(
       std::unordered_map<std::string, std::string>());
 
-  connector::tpch::TpchConnectorFactory factory;
+  velox::connector::tpch::TpchConnectorFactory factory;
   auto connector = factory.newConnector(id, emptyConfig);
-  connector::registerConnector(connector);
+  velox::connector::registerConnector(connector);
 
   connector::ConnectorMetadata::registerMetadata(
       id,
       std::make_shared<connector::tpch::TpchConnectorMetadata>(
-          dynamic_cast<connector::tpch::TpchConnector*>(connector.get())));
+          dynamic_cast<velox::connector::tpch::TpchConnector*>(
+              connector.get())));
 }
 
 // static
 void ParquetTpchTest::unregisterTpchConnector(const std::string& id) {
   connector::ConnectorMetadata::unregisterMetadata(id);
-  connector::unregisterConnector(id);
+  velox::connector::unregisterConnector(id);
 }
 
 } // namespace facebook::axiom::optimizer::test

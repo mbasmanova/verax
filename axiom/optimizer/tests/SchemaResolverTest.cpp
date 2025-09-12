@@ -24,7 +24,7 @@
 
 using namespace facebook::velox;
 
-namespace facebook::axiom::optimizer::test {
+namespace facebook::axiom::optimizer {
 namespace {
 
 class SchemaResolverTest : public ::testing::Test {
@@ -37,8 +37,8 @@ class SchemaResolverTest : public ::testing::Test {
   }
 
   void TearDown() override {
-    connector::unregisterConnector("base");
-    connector::unregisterConnector("other");
+    velox::connector::unregisterConnector("base");
+    velox::connector::unregisterConnector("other");
   }
 
   struct Catalog {
@@ -51,7 +51,7 @@ class SchemaResolverTest : public ::testing::Test {
       const std::string& id,
       const std::string& schema) {
     auto connector = std::make_shared<connector::TestConnector>(id);
-    connector::registerConnector(connector);
+    velox::connector::registerConnector(connector);
     return Catalog{
         .id = id,
         .schema = schema,
@@ -134,4 +134,4 @@ TEST_F(SchemaResolverTest, catalogMismatch) {
 }
 
 } // namespace
-} // namespace facebook::axiom::optimizer::test
+} // namespace facebook::axiom::optimizer

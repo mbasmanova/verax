@@ -18,22 +18,22 @@
 #include "axiom/connectors/ConnectorMetadata.h"
 #include "axiom/connectors/hive/StatisticsBuilder.h"
 
-namespace facebook::velox::connector {
+namespace facebook::axiom::connector {
 
 namespace {
 /// StatisticsBuilder using dwrf::StaticsBuilder
 class StatisticsBuilderImpl : public StatisticsBuilder {
  public:
   StatisticsBuilderImpl(
-      TypePtr type,
-      std::unique_ptr<dwrf::StatisticsBuilder> builder)
+      velox::TypePtr type,
+      std::unique_ptr<velox::dwrf::StatisticsBuilder> builder)
       : type_(std::move(type)), builder_(std::move(builder)) {}
 
-  const TypePtr& type() const override {
+  const velox::TypePtr& type() const override {
     return type_;
   }
 
-  void add(const VectorPtr& data) override;
+  void add(const velox::VectorPtr& data) override;
 
   void merge(const StatisticsBuilder& other) override;
 
@@ -54,10 +54,10 @@ class StatisticsBuilderImpl : public StatisticsBuilder {
   template <typename Builder, typename T>
   void addStats(
       velox::dwrf::StatisticsBuilder* builder,
-      const BaseVector& vector);
+      const velox::BaseVector& vector);
 
-  TypePtr type_;
-  std::unique_ptr<dwrf::StatisticsBuilder> builder_;
+  velox::TypePtr type_;
+  std::unique_ptr<velox::dwrf::StatisticsBuilder> builder_;
   int64_t numAsc_{0};
   int64_t numRepeat_{0};
   int64_t numDesc_{0};
@@ -66,28 +66,31 @@ class StatisticsBuilderImpl : public StatisticsBuilder {
 } // namespace
 
 std::unique_ptr<StatisticsBuilder> StatisticsBuilder::create(
-    const TypePtr& type,
+    const velox::TypePtr& type,
     const StatisticsBuilderOptions& options) {
-  dwrf::StatisticsBuilderOptions dwrfOptions(
+  velox::dwrf::StatisticsBuilderOptions dwrfOptions(
       options.maxStringLength,
       options.initialSize,
       options.countDistincts,
       options.allocator);
   switch (type->kind()) {
-    case TypeKind::BIGINT:
-    case TypeKind::INTEGER:
-    case TypeKind::SMALLINT:
+    case velox::TypeKind::BIGINT:
+    case velox::TypeKind::INTEGER:
+    case velox::TypeKind::SMALLINT:
       return std::make_unique<StatisticsBuilderImpl>(
-          type, std::make_unique<dwrf::IntegerStatisticsBuilder>(dwrfOptions));
+          type,
+          std::make_unique<velox::dwrf::IntegerStatisticsBuilder>(dwrfOptions));
 
-    case TypeKind::REAL:
-    case TypeKind::DOUBLE:
+    case velox::TypeKind::REAL:
+    case velox::TypeKind::DOUBLE:
       return std::make_unique<StatisticsBuilderImpl>(
-          type, std::make_unique<dwrf::DoubleStatisticsBuilder>(dwrfOptions));
+          type,
+          std::make_unique<velox::dwrf::DoubleStatisticsBuilder>(dwrfOptions));
 
-    case TypeKind::VARCHAR:
+    case velox::TypeKind::VARCHAR:
       return std::make_unique<StatisticsBuilderImpl>(
-          type, std::make_unique<dwrf::StringStatisticsBuilder>(dwrfOptions));
+          type,
+          std::make_unique<velox::dwrf::StringStatisticsBuilder>(dwrfOptions));
 
     default:
       return nullptr;
@@ -97,8 +100,8 @@ std::unique_ptr<StatisticsBuilder> StatisticsBuilder::create(
 template <typename Builder, typename T>
 void StatisticsBuilderImpl::addStats(
     velox::dwrf::StatisticsBuilder* builder,
-    const BaseVector& vector) {
-  auto* typedVector = vector.asUnchecked<SimpleVector<T>>();
+    const velox::BaseVector& vector) {
+  auto* typedVector = vector.asUnchecked<velox::SimpleVector<T>>();
   T previous{};
   bool hasPrevious = false;
   for (auto i = 0; i < typedVector->size(); ++i) {
@@ -124,34 +127,34 @@ void StatisticsBuilderImpl::addStats(
   }
 }
 
-void StatisticsBuilderImpl::add(const VectorPtr& data) {
-  auto loadData = [](const VectorPtr& data) {
-    return BaseVector::loadedVectorShared(data);
+void StatisticsBuilderImpl::add(const velox::VectorPtr& data) {
+  auto loadData = [](const velox::VectorPtr& data) {
+    return velox::BaseVector::loadedVectorShared(data);
   };
 
   switch (type_->kind()) {
-    case TypeKind::SMALLINT:
-      addStats<dwrf::IntegerStatisticsBuilder, short>(
+    case velox::TypeKind::SMALLINT:
+      addStats<velox::dwrf::IntegerStatisticsBuilder, short>(
           builder_.get(), *loadData(data));
       break;
-    case TypeKind::INTEGER:
-      addStats<dwrf::IntegerStatisticsBuilder, int32_t>(
+    case velox::TypeKind::INTEGER:
+      addStats<velox::dwrf::IntegerStatisticsBuilder, int32_t>(
           builder_.get(), *loadData(data));
       break;
-    case TypeKind::BIGINT:
-      addStats<dwrf::IntegerStatisticsBuilder, int64_t>(
+    case velox::TypeKind::BIGINT:
+      addStats<velox::dwrf::IntegerStatisticsBuilder, int64_t>(
           builder_.get(), *loadData(data));
       break;
-    case TypeKind::REAL:
-      addStats<dwrf::DoubleStatisticsBuilder, float>(
+    case velox::TypeKind::REAL:
+      addStats<velox::dwrf::DoubleStatisticsBuilder, float>(
           builder_.get(), *loadData(data));
       break;
-    case TypeKind::DOUBLE:
-      addStats<dwrf::DoubleStatisticsBuilder, double>(
+    case velox::TypeKind::DOUBLE:
+      addStats<velox::dwrf::DoubleStatisticsBuilder, double>(
           builder_.get(), *loadData(data));
       break;
-    case TypeKind::VARCHAR:
-      addStats<dwrf::StringStatisticsBuilder, StringView>(
+    case velox::TypeKind::VARCHAR:
+      addStats<velox::dwrf::StringStatisticsBuilder, velox::StringView>(
           builder_.get(), *loadData(data));
       break;
     default:
@@ -160,14 +163,14 @@ void StatisticsBuilderImpl::add(const VectorPtr& data) {
 }
 
 void StatisticsBuilder::updateBuilders(
-    const RowVectorPtr& row,
+    const velox::RowVectorPtr& row,
     std::vector<std::unique_ptr<StatisticsBuilder>>& builders) {
   for (auto column = 0; column < builders.size(); ++column) {
     if (!builders[column]) {
       continue;
     }
     auto* builder = builders[column].get();
-    VectorPtr data = row->childAt(column);
+    velox::VectorPtr data = row->childAt(column);
     builder->add(data);
   }
 }
@@ -187,31 +190,31 @@ void StatisticsBuilderImpl::build(
   auto stats = builder_->build();
   auto optNumValues = stats->getNumberOfValues();
   auto numValues = optNumValues.has_value() ? optNumValues.value() : 0;
-  if (auto ints =
-          dynamic_cast<dwio::common::IntegerColumnStatistics*>(stats.get())) {
+  if (auto ints = dynamic_cast<velox::dwio::common::IntegerColumnStatistics*>(
+          stats.get())) {
     auto min = ints->getMinimum();
     auto max = ints->getMaximum();
     if (min.has_value() && max.has_value()) {
-      result.min = Variant(min.value());
-      result.max = Variant(max.value());
+      result.min = velox::Variant(min.value());
+      result.max = velox::Variant(max.value());
     }
   } else if (
-      auto* dbl =
-          dynamic_cast<dwio::common::DoubleColumnStatistics*>(stats.get())) {
+      auto* dbl = dynamic_cast<velox::dwio::common::DoubleColumnStatistics*>(
+          stats.get())) {
     auto min = dbl->getMinimum();
     auto max = dbl->getMaximum();
     if (min.has_value() && max.has_value()) {
-      result.min = Variant(min.value());
-      result.max = Variant(max.value());
+      result.min = velox::Variant(min.value());
+      result.max = velox::Variant(max.value());
     }
   } else if (
-      auto* str =
-          dynamic_cast<dwio::common::StringColumnStatistics*>(stats.get())) {
+      auto* str = dynamic_cast<velox::dwio::common::StringColumnStatistics*>(
+          stats.get())) {
     auto min = str->getMinimum();
     auto max = str->getMaximum();
     if (min.has_value() && max.has_value()) {
-      result.min = Variant(min.value());
-      result.max = Variant(max.value());
+      result.min = velox::Variant(min.value());
+      result.max = velox::Variant(max.value());
     }
     if (numValues) {
       result.avgLength = str->getTotalLength().value() / numValues;
@@ -224,4 +227,4 @@ void StatisticsBuilderImpl::build(
   result.numDistinct = stats->numDistinct();
 }
 
-} // namespace facebook::velox::connector
+} // namespace facebook::axiom::connector

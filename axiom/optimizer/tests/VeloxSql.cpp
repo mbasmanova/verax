@@ -134,7 +134,7 @@ const char* helpText =
     "\n"
     "include_custom_stats - Prints per operator runtime stats.\n";
 
-class VeloxRunner : public QueryBenchmarkBase {
+class VeloxRunner : public velox::QueryBenchmarkBase {
  public:
   void initialize() override {
     initializeMemoryManager();
@@ -219,37 +219,39 @@ class VeloxRunner : public QueryBenchmarkBase {
     return nullptr;
   }
 
-  std::shared_ptr<connector::Connector> registerTpchConnector() {
+  std::shared_ptr<velox::connector::Connector> registerTpchConnector() {
     auto emptyConfig = std::make_shared<config::ConfigBase>(
         std::unordered_map<std::string, std::string>());
 
-    connector::tpch::TpchConnectorFactory factory;
+    velox::connector::tpch::TpchConnectorFactory factory;
     auto connector = factory.newConnector("tpch", emptyConfig);
-    connector::registerConnector(connector);
+    velox::connector::registerConnector(connector);
 
     connector::ConnectorMetadata::registerMetadata(
         connector->connectorId(),
         std::make_shared<connector::tpch::TpchConnectorMetadata>(
-            dynamic_cast<connector::tpch::TpchConnector*>(connector.get())));
+            dynamic_cast<velox::connector::tpch::TpchConnector*>(
+                connector.get())));
 
     return connector;
   }
 
-  std::shared_ptr<connector::Connector> registerHiveConnector(
+  std::shared_ptr<velox::connector::Connector> registerHiveConnector(
       const std::string& dataPath) {
     ioExecutor_ = std::make_unique<folly::IOThreadPoolExecutor>(8);
 
     std::unordered_map<std::string, std::string> connectorConfig = {
-        {connector::hive::HiveConfig::kLocalDataPath, dataPath},
-        {connector::hive::HiveConfig::kLocalFileFormat, FLAGS_data_format},
+        {velox::connector::hive::HiveConfig::kLocalDataPath, dataPath},
+        {velox::connector::hive::HiveConfig::kLocalFileFormat,
+         FLAGS_data_format},
     };
 
     auto config =
         std::make_shared<config::ConfigBase>(std::move(connectorConfig));
 
-    connector::hive::HiveConnectorFactory factory;
+    velox::connector::hive::HiveConnectorFactory factory;
     auto connector = factory.newConnector("hive", config, ioExecutor_.get());
-    connector::registerConnector(connector);
+    velox::connector::registerConnector(connector);
 
     return connector;
   }
@@ -820,7 +822,7 @@ class VeloxRunner : public QueryBenchmarkBase {
   std::unique_ptr<folly::IOThreadPoolExecutor> cacheExecutor_;
   std::shared_ptr<folly::CPUThreadPoolExecutor> executor_;
   std::shared_ptr<folly::IOThreadPoolExecutor> spillExecutor_;
-  std::shared_ptr<connector::Connector> connector_;
+  std::shared_ptr<velox::connector::Connector> connector_;
   std::shared_ptr<optimizer::SchemaResolver> schema_;
   std::unique_ptr<optimizer::VeloxHistory> history_;
   std::unique_ptr<optimizer::test::PrestoParser> prestoParser_;

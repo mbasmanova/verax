@@ -24,8 +24,10 @@
 #include "velox/type/Type.h"
 #include "velox/vector/tests/utils/VectorTestBase.h"
 
-namespace facebook::velox::connector {
+namespace facebook::axiom::connector {
 namespace {
+
+using namespace facebook::velox;
 
 class TestConnectorTest : public ::testing::Test, public test::VectorTestBase {
  protected:
@@ -35,12 +37,12 @@ class TestConnectorTest : public ::testing::Test, public test::VectorTestBase {
 
   void SetUp() override {
     connector_ = std::make_shared<TestConnector>("test");
-    registerConnector(connector_);
+    velox::connector::registerConnector(connector_);
     metadata_ = ConnectorMetadata::metadata(connector_->connectorId());
   }
 
   void TearDown() override {
-    unregisterConnector(connector_->connectorId());
+    velox::connector::unregisterConnector(connector_->connectorId());
   }
 
   std::shared_ptr<TestConnector> connector_;
@@ -50,7 +52,7 @@ class TestConnectorTest : public ::testing::Test, public test::VectorTestBase {
 TEST_F(TestConnectorTest, connectorRegister) {
   const auto connectorId = "registration-test";
   VELOX_ASSERT_THROW(
-      getConnector(connectorId),
+      velox::connector::getConnector(connectorId),
       "Connector with ID 'registration-test' not registered");
 
   auto connector = std::make_shared<TestConnector>(connectorId);
@@ -58,12 +60,12 @@ TEST_F(TestConnectorTest, connectorRegister) {
 
   registerConnector(connector);
 
-  EXPECT_EQ(getConnector(connectorId).get(), connector.get());
+  EXPECT_EQ(velox::connector::getConnector(connectorId).get(), connector.get());
   EXPECT_NE(ConnectorMetadata::metadata(connectorId), nullptr);
 
-  unregisterConnector(connectorId);
+  velox::connector::unregisterConnector(connectorId);
   VELOX_ASSERT_THROW(
-      getConnector(connectorId),
+      velox::connector::getConnector(connectorId),
       "Connector with ID 'registration-test' not registered");
 }
 
@@ -125,7 +127,8 @@ TEST_F(TestConnectorTest, splitManager) {
 }
 
 TEST_F(TestConnectorTest, splits) {
-  auto split = std::make_shared<ConnectorSplit>(connector_->connectorId());
+  auto split = std::make_shared<velox::connector::ConnectorSplit>(
+      connector_->connectorId());
   EXPECT_EQ(split->connectorId, connector_->connectorId());
 }
 
@@ -136,7 +139,7 @@ TEST_F(TestConnectorTest, dataSink) {
   EXPECT_EQ(table->numRows(), 0);
 
   auto dataSink = connector_->createDataSink(
-      schema, handle, nullptr, CommitStrategy::kNoCommit);
+      schema, handle, nullptr, velox::connector::CommitStrategy::kNoCommit);
   EXPECT_NE(dataSink, nullptr);
 
   auto vector = makeRowVector({makeFlatVector<int>({0, 1, 2})});
@@ -159,7 +162,7 @@ TEST_F(TestConnectorTest, dataSource) {
   auto table = connector_->createTable("table", schema);
   auto& layout = *table->layouts()[0];
 
-  std::vector<ColumnHandlePtr> columns;
+  std::vector<velox::connector::ColumnHandlePtr> columns;
   columns.push_back(metadata_->createColumnHandle(layout, "a"));
   columns.push_back(metadata_->createColumnHandle(layout, "b"));
 
@@ -176,14 +179,15 @@ TEST_F(TestConnectorTest, dataSource) {
       {makeFlatVector<int>({3, 4}), makeFlatVector<StringView>({"d", "e"})});
   connector_->appendData("table", vector2);
 
-  ColumnHandleMap handleMap;
+  velox::connector::ColumnHandleMap handleMap;
   handleMap.emplace("a", metadata_->createColumnHandle(layout, "a"));
   handleMap.emplace("b", metadata_->createColumnHandle(layout, "b"));
   auto dataSource = std::make_shared<TestDataSource>(
       schema, std::move(handleMap), table, pool());
   EXPECT_EQ(dataSource->getCompletedRows(), 0);
 
-  auto split = std::make_shared<ConnectorSplit>(connector_->connectorId());
+  auto split = std::make_shared<velox::connector::ConnectorSplit>(
+      connector_->connectorId());
   dataSource->addSplit(split);
 
   velox::ContinueFuture future;
@@ -236,7 +240,7 @@ TEST_F(TestConnectorTest, tableLayout) {
 }
 
 } // namespace
-} // namespace facebook::velox::connector
+} // namespace facebook::axiom::connector
 
 int main(int argc, char** argv) {
   testing::InitGoogleTest(&argc, argv);

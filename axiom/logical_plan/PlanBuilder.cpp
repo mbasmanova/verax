@@ -121,7 +121,7 @@ PlanBuilder& PlanBuilder::tableScan(
     const std::string& tableName) {
   VELOX_USER_CHECK_NULL(node_, "Table scan node must be the leaf node");
 
-  auto* metadata = velox::connector::ConnectorMetadata::metadata(connectorId);
+  auto* metadata = connector::ConnectorMetadata::metadata(connectorId);
   auto table = metadata->findTable(tableName);
   VELOX_USER_CHECK_NOT_NULL(table, "Table not found: {}", tableName);
   const auto& schema = table->type();
@@ -166,7 +166,7 @@ PlanBuilder& PlanBuilder::tableScan(
     const std::vector<std::string>& columnNames) {
   VELOX_USER_CHECK_NULL(node_, "Table scan node must be the leaf node");
 
-  auto* metadata = velox::connector::ConnectorMetadata::metadata(connectorId);
+  auto* metadata = connector::ConnectorMetadata::metadata(connectorId);
   auto table = metadata->findTable(tableName);
   VELOX_USER_CHECK_NOT_NULL(table, "Table not found: {}", tableName);
   const auto& schema = table->type();

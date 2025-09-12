@@ -242,7 +242,7 @@ struct ColumnGroup {
       SchemaTableCP table,
       Distribution distribution,
       ColumnVector columns,
-      const velox::connector::TableLayout* layout = nullptr)
+      const connector::TableLayout* layout = nullptr)
       : name{name},
         table{table},
         layout{layout},
@@ -251,7 +251,7 @@ struct ColumnGroup {
 
   Name name;
   SchemaTableCP table;
-  const velox::connector::TableLayout* layout;
+  const connector::TableLayout* layout;
   const Distribution distribution;
   const ColumnVector columns;
 
@@ -321,7 +321,7 @@ struct SchemaTable {
       DistributionType distributionType,
       const ColumnVector& partition,
       ColumnVector columns,
-      const velox::connector::TableLayout* layout);
+      const connector::TableLayout* layout);
 
   /// Finds or adds a column with 'name' and 'value'.
   ColumnCP column(const std::string& name, const Value& value);
@@ -357,7 +357,7 @@ struct SchemaTable {
 
   // Table description from external schema. This is the
   // source-dependent representation from which 'this' was created.
-  const velox::connector::Table* connectorTable{nullptr};
+  const connector::Table* connectorTable{nullptr};
 };
 
 /// Represents a collection of tables. Normally filled in ad hoc given

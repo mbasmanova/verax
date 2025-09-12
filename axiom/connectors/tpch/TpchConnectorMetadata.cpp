@@ -22,7 +22,7 @@
 #include "velox/connectors/tpch/TpchConnectorSplit.h"
 #include "velox/tpch/gen/TpchGen.h"
 
-namespace facebook::velox::connector::tpch {
+namespace facebook::axiom::connector::tpch {
 
 const std::unordered_map<std::string, double>& scaleFactorNamespaceMap() {
   const static std::unordered_map<std::string, double> sfmap = {
@@ -43,16 +43,17 @@ FOLLY_ALWAYS_INLINE constexpr std::string_view defaultTpchNamespace() {
 }
 
 std::vector<PartitionHandlePtr> TpchSplitManager::listPartitions(
-    const ConnectorTableHandlePtr& /*tableHandle*/) {
+    const velox::connector::ConnectorTableHandlePtr& /*tableHandle*/) {
   return {std::make_shared<connector::PartitionHandle>()};
 }
 
 std::shared_ptr<SplitSource> TpchSplitManager::getSplitSource(
-    const ConnectorTableHandlePtr& tableHandle,
+    const velox::connector::ConnectorTableHandlePtr& tableHandle,
     const std::vector<PartitionHandlePtr>& /*partitions*/,
     SplitOptions options) {
   auto* tpchTableHandle =
-      dynamic_cast<const TpchTableHandle*>(tableHandle.get());
+      dynamic_cast<const velox::connector::tpch::TpchTableHandle*>(
+          tableHandle.get());
   VELOX_CHECK_NOT_NULL(
       tpchTableHandle, "Expected TpchTableHandle for TPCH connector");
 
@@ -82,7 +83,8 @@ std::vector<SplitSource::SplitAndGroup> TpchSplitSource::getSplits(
     // TODO: adjust numSplits based on options_.targetSplitCount
     for (int64_t i = 0; i < numSplits; ++i) {
       splits_.push_back(
-          std::make_shared<TpchConnectorSplit>(connectorId_, numSplits, i));
+          std::make_shared<velox::connector::tpch::TpchConnectorSplit>(
+              connectorId_, numSplits, i));
     }
   }
 
@@ -111,7 +113,8 @@ std::vector<SplitSource::SplitAndGroup> TpchSplitSource::getSplits(
   return result;
 }
 
-TpchConnectorMetadata::TpchConnectorMetadata(TpchConnector* tpchConnector)
+TpchConnectorMetadata::TpchConnectorMetadata(
+    velox::connector::tpch::TpchConnector* tpchConnector)
     : tpchConnector_(tpchConnector), splitManager_(this) {
   VELOX_CHECK_NOT_NULL(tpchConnector);
 }
@@ -134,38 +137,39 @@ void TpchConnectorMetadata::makeQueryCtx() {
   queryCtx_ = makeQueryCtx("tpch_metadata");
 }
 
-std::shared_ptr<core::QueryCtx> TpchConnectorMetadata::makeQueryCtx(
+std::shared_ptr<velox::core::QueryCtx> TpchConnectorMetadata::makeQueryCtx(
     const std::string& queryId) {
   std::unordered_map<std::string, std::string> config;
-  std::unordered_map<std::string, std::shared_ptr<config::ConfigBase>>
+  std::unordered_map<std::string, std::shared_ptr<velox::config::ConfigBase>>
       connectorConfigs;
 
-  return core::QueryCtx::create(
+  return velox::core::QueryCtx::create(
       tpchConnector_->executor(),
-      core::QueryConfig(config),
+      velox::core::QueryConfig(config),
       std::move(connectorConfigs),
-      cache::AsyncDataCache::getInstance(),
+      velox::cache::AsyncDataCache::getInstance(),
       rootPool_->shared_from_this(),
       nullptr,
       queryId);
 }
 
-ColumnHandlePtr TpchConnectorMetadata::createColumnHandle(
+velox::connector::ColumnHandlePtr TpchConnectorMetadata::createColumnHandle(
     const TableLayout& layoutData,
     const std::string& columnName,
-    std::vector<common::Subfield> subfields,
-    std::optional<TypePtr> castToType,
+    std::vector<velox::common::Subfield> subfields,
+    std::optional<velox::TypePtr> castToType,
     SubfieldMapping subfieldMapping) {
-  return std::make_shared<connector::tpch::TpchColumnHandle>(columnName);
+  return std::make_shared<velox::connector::tpch::TpchColumnHandle>(columnName);
 }
 
-ConnectorTableHandlePtr TpchConnectorMetadata::createTableHandle(
+velox::connector::ConnectorTableHandlePtr
+TpchConnectorMetadata::createTableHandle(
     const TableLayout& layout,
-    std::vector<ColumnHandlePtr> /*columnHandles*/,
-    core::ExpressionEvaluator& /*evaluator*/,
-    std::vector<core::TypedExprPtr> filters,
-    std::vector<core::TypedExprPtr>& /*rejectedFilters*/,
-    RowTypePtr /*dataColumns*/,
+    std::vector<velox::connector::ColumnHandlePtr> /*columnHandles*/,
+    velox::core::ExpressionEvaluator& /*evaluator*/,
+    std::vector<velox::core::TypedExprPtr> filters,
+    std::vector<velox::core::TypedExprPtr>& /*rejectedFilters*/,
+    velox::RowTypePtr /*dataColumns*/,
     std::optional<LookupKeys> /*lookupKeys*/) {
   auto* tpchLayout = dynamic_cast<const TpchTableLayout*>(&layout);
   velox::core::TypedExprPtr filterExpression;
@@ -180,7 +184,8 @@ ConnectorTableHandlePtr TpchConnectorMetadata::createTableHandle(
           "and");
     }
   }
-  return std::make_shared<TpchTableHandle>(
+
+  return std::make_shared<velox::connector::tpch::TpchTableHandle>(
       tpchConnector_->connectorId(),
       tpchLayout->getTpchTable(),
       tpchLayout->getScaleFactor(),
@@ -221,12 +226,12 @@ void TpchConnectorMetadata::loadTable(
 }
 
 std::pair<int64_t, int64_t> TpchTableLayout::sample(
-    const connector::ConnectorTableHandlePtr& handle,
+    const velox::connector::ConnectorTableHandlePtr& handle,
     float pct,
-    const std::vector<core::TypedExprPtr>& /* extraFilters */,
-    RowTypePtr /* outputType */,
-    const std::vector<common::Subfield>& /* fields */,
-    HashStringAllocator* /* allocator */,
+    const std::vector<velox::core::TypedExprPtr>& /* extraFilters */,
+    velox::RowTypePtr /* outputType */,
+    const std::vector<velox::common::Subfield>& /* fields */,
+    velox::HashStringAllocator* /* allocator */,
     std::vector<ColumnStatistics>* /* statistics */) const {
   // TODO Add support for filter in 'handle' and 'extraFilters'.
   const auto totalRows = velox::tpch::getRowCount(tpchTable_, scaleFactor_);
@@ -294,4 +299,4 @@ TablePtr TpchConnectorMetadata::findTable(const std::string& name) {
   return it->second;
 }
 
-} // namespace facebook::velox::connector::tpch
+} // namespace facebook::axiom::connector::tpch

@@ -409,7 +409,8 @@ class SubfieldTest : public QueryTestBase,
 
     for (const auto& [_, handle] : assignments) {
       auto hiveHandle =
-          dynamic_cast<const connector::hive::HiveColumnHandle*>(handle.get());
+          dynamic_cast<const velox::connector::hive::HiveColumnHandle*>(
+              handle.get());
       ASSERT_TRUE(hiveHandle != nullptr);
 
       const auto& name = hiveHandle->name();

@@ -37,7 +37,7 @@ void LocalRunnerTestBase::SetUp() {
 }
 
 void LocalRunnerTestBase::TearDown() {
-  velox::connector::ConnectorMetadata::unregisterMetadata(
+  connector::ConnectorMetadata::unregisterMetadata(
       velox::exec::test::kHiveConnectorId);
   velox::connector::unregisterConnector(velox::exec::test::kHiveConnectorId);
   HiveConnectorTestBase::TearDown();
@@ -78,9 +78,9 @@ void LocalRunnerTestBase::setupConnector() {
       ioExecutor_.get());
   velox::connector::registerConnector(hiveConnector);
 
-  velox::connector::ConnectorMetadata::registerMetadata(
+  connector::ConnectorMetadata::registerMetadata(
       velox::exec::test::kHiveConnectorId,
-      std::make_shared<velox::connector::hive::LocalHiveConnectorMetadata>(
+      std::make_shared<connector::hive::LocalHiveConnectorMetadata>(
           dynamic_cast<velox::connector::hive::HiveConnector*>(
               hiveConnector.get())));
 }
