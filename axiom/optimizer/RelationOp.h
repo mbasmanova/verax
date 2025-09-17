@@ -95,7 +95,7 @@ enum class RelType {
   kUnnest,
 };
 
-VELOX_DECLARE_ENUM_NAME(RelType)
+AXIOM_DECLARE_ENUM_NAME(RelType)
 
 /// Physical relational operator. This is the common base class of all
 /// elements of plan candidates. The immutable Exprs, Columns and
