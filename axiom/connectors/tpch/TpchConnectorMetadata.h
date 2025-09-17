@@ -120,10 +120,12 @@ class TpchTable : public Table {
       std::string name,
       velox::RowTypePtr type,
       velox::tpch::Table tpchTable,
-      double scaleFactor)
+      double scaleFactor,
+      int64_t numRows)
       : Table(std::move(name), std::move(type)),
         tpchTable_(tpchTable),
-        scaleFactor_(scaleFactor) {}
+        scaleFactor_(scaleFactor),
+        numRows_{numRows} {}
 
   folly::F14FastMap<std::string, std::unique_ptr<Column>>& columns() {
     return columns_;
@@ -142,11 +144,11 @@ class TpchTable : public Table {
     return numRows_;
   }
 
-  velox::tpch::Table getTpchTable() const {
+  velox::tpch::Table tpchTable() const {
     return tpchTable_;
   }
 
-  double getScaleFactor() const {
+  double scaleFactor() const {
     return scaleFactor_;
   }
 
@@ -165,9 +167,7 @@ class TpchTable : public Table {
 
   const double scaleFactor_;
 
-  int64_t numRows_{0};
-
-  friend class TpchConnectorMetadata;
+  const int64_t numRows_;
 };
 
 class TpchConnectorMetadata : public ConnectorMetadata {
@@ -177,7 +177,7 @@ class TpchConnectorMetadata : public ConnectorMetadata {
 
   void initialize() override {}
 
-  TablePtr findTable(const std::string& name) override;
+  TablePtr findTable(std::string_view name) override;
 
   ConnectorSplitManager* splitManager() override {
     return &splitManager_;
@@ -243,10 +243,6 @@ class TpchConnectorMetadata : public ConnectorMetadata {
   }
 
  private:
-  TablePtr loadTable(
-      const std::optional<std::string>& ns,
-      const std::string& name);
-
   velox::connector::tpch::TpchConnector* tpchConnector_;
   std::shared_ptr<velox::memory::MemoryPool> rootPool_{
       velox::memory::memoryManager()->addRootPool()};
