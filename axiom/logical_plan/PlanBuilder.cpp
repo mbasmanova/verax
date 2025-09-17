@@ -274,14 +274,9 @@ void PlanBuilder::resolveProjections(
   }
 }
 
-PlanBuilder& PlanBuilder::project(const std::vector<std::string>& projections) {
-  return project(parse(projections));
-}
-
 PlanBuilder& PlanBuilder::project(const std::vector<ExprApi>& projections) {
   if (!node_) {
-    values(
-        velox::ROW({}), std::vector<velox::Variant>{velox::Variant::row({})});
+    values(velox::ROW({}), {velox::Variant::row({})});
   }
 
   std::vector<std::string> outputNames;
@@ -304,8 +299,7 @@ PlanBuilder& PlanBuilder::project(const std::vector<ExprApi>& projections) {
 
 PlanBuilder& PlanBuilder::with(const std::vector<ExprApi>& projections) {
   if (!node_) {
-    values(
-        velox::ROW({}), std::vector<velox::Variant>{velox::Variant::row({})});
+    values(velox::ROW({}), {velox::Variant::row({})});
   }
 
   std::vector<std::string> outputNames;
@@ -424,24 +418,15 @@ PlanBuilder& PlanBuilder::aggregate(
 }
 
 PlanBuilder& PlanBuilder::unnest(
-    const std::vector<std::string>& unnestExprs,
-    bool withOrdinality) {
-  return unnest(parse(unnestExprs), withOrdinality);
-}
-
-PlanBuilder& PlanBuilder::unnest(
-    const std::vector<ExprApi>& unnestExprs,
-    bool withOrdinality) {
-  return unnest(unnestExprs, withOrdinality, std::nullopt, {});
-}
-
-PlanBuilder& PlanBuilder::unnest(
     const std::vector<ExprApi>& unnestExprs,
     bool withOrdinality,
     const std::optional<std::string>& alias,
     const std::vector<std::string>& unnestAliases) {
-  auto newOutputMapping =
-      node_ != nullptr ? outputMapping_ : std::make_shared<NameMappings>();
+  if (!node_) {
+    values(velox::ROW({}), {velox::Variant::row({})});
+  }
+
+  auto newOutputMapping = outputMapping_;
 
   size_t index = 0;
 
