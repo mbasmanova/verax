@@ -987,9 +987,8 @@ AggregationPlanCP ToGraph::translateAggregation(const lp::AggregateNode& agg) {
         finalValue,
         args,
         funcs,
-        false,
+        aggregate->isDistinct(),
         condition,
-        false,
         accumulatorType);
     auto name = toName(agg.outputNames()[channel]);
     auto* column = make<Column>(name, currentDt_, aggregateExpr->value(), name);

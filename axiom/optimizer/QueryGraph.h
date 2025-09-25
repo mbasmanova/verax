@@ -830,7 +830,6 @@ class Aggregate : public Call {
       FunctionSet functions,
       bool isDistinct,
       ExprCP condition,
-      bool isAccumulator,
       const velox::Type* intermediateType)
       : Call(
             PlanType::kAggregateExpr,
@@ -840,7 +839,6 @@ class Aggregate : public Call {
             functions | FunctionSet::kAggregate),
         isDistinct_(isDistinct),
         condition_(condition),
-        isAccumulator_(isAccumulator),
         intermediateType_(intermediateType) {
     for (auto& arg : this->args()) {
       rawInputType_.push_back(arg->value().type);
@@ -858,10 +856,6 @@ class Aggregate : public Call {
     return isDistinct_;
   }
 
-  bool isAccumulator() const {
-    return isAccumulator_;
-  }
-
   const velox::Type* intermediateType() const {
     return intermediateType_;
   }
@@ -873,7 +867,6 @@ class Aggregate : public Call {
  private:
   bool isDistinct_;
   ExprCP condition_;
-  bool isAccumulator_;
   const velox::Type* intermediateType_;
   TypeVector rawInputType_;
 };
