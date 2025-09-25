@@ -809,8 +809,7 @@ TEST_F(PlanTest, unionJoin) {
                             .build())
                     .build(),
                 core::JoinType::kInner)
-            .project()
-            .singleAggregation()
+            .singleAggregation({}, {"sum(1)"})
             .build();
 
     ASSERT_TRUE(matcher->match(plan));
