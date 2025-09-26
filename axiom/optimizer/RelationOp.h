@@ -431,12 +431,13 @@ using HashBuildCP = const HashBuild*;
 struct Unnest : public RelationOp {
   Unnest(
       RelationOpPtr input,
-      ColumnVector replicateColumns,
+      ExprVector replicateColumns,
       ExprVector unnestExprs,
       ColumnVector unnestedColumns);
 
-  ColumnVector replicateColumns;
+  ExprVector replicateColumns;
   ExprVector unnestExprs;
+
   // Columns correspond to expressions but not 1:1,
   // it can be 2:1 (for MAP) and 1:1 (for ARRAY).
   ColumnVector unnestedColumns;

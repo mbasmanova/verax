@@ -40,7 +40,7 @@ class Optimization {
       OptimizerOptions options = {},
       runner::MultiFragmentPlan::Options runnerOptions = {});
 
-  // Simplified API for usage in testing and tooling.
+  /// Simplified API for usage in testing and tooling.
   static PlanAndStats toVeloxPlan(
       const logical_plan::LogicalPlanNode& logicalPlan,
       velox::memory::MemoryPool& pool,

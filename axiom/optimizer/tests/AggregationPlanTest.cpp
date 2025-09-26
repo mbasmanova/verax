@@ -18,9 +18,7 @@
 #include "axiom/connectors/tests/TestConnector.h"
 #include "axiom/logical_plan/PlanBuilder.h"
 #include "axiom/optimizer/Optimization.h"
-#include "axiom/optimizer/VeloxHistory.h"
 #include "axiom/optimizer/tests/PlanMatcher.h"
-#include "velox/expression/Expr.h"
 #include "velox/functions/prestosql/aggregates/RegisterAggregateFunctions.h"
 #include "velox/functions/prestosql/registration/RegistrationFunctions.h"
 
@@ -54,8 +52,17 @@ class AggregationPlanTest : public testing::Test {
     velox::connector::unregisterConnector(kTestConnectorId);
   }
 
-  velox::core::PlanNodePtr planVelox(
-      const logical_plan::LogicalPlanNodePtr& plan);
+  velox::core::PlanNodePtr planVelox(const lp::LogicalPlanNodePtr& plan) {
+    auto distributedPlan = Optimization::toVeloxPlan(
+                               *plan,
+                               *optimizerPool_,
+                               {}, // optimizerOptions
+                               {.numWorkers = 1, .numDrivers = 1})
+                               .plan;
+
+    VELOX_CHECK_EQ(1, distributedPlan->fragments().size());
+    return distributedPlan->fragments().at(0).fragment.planNode;
+  }
 
   std::shared_ptr<velox::memory::MemoryPool> rootPool_;
   std::shared_ptr<velox::memory::MemoryPool> optimizerPool_;
@@ -84,41 +91,6 @@ TEST_F(AggregationPlanTest, dedupGroupingKeysAndAggregates) {
 
     ASSERT_TRUE(matcher->match(plan));
   }
-}
-
-velox::core::PlanNodePtr AggregationPlanTest::planVelox(
-    const logical_plan::LogicalPlanNodePtr& plan) {
-  auto queryCtx = core::QueryCtx::create();
-
-  // The default Locus for planning is the system and data of 'connector_'.
-  optimizer::Locus locus(
-      testConnector_->connectorId().c_str(), testConnector_.get());
-  auto allocator = std::make_unique<HashStringAllocator>(optimizerPool_.get());
-  auto context = std::make_unique<optimizer::QueryGraphContext>(*allocator);
-  optimizer::queryCtx() = context.get();
-  SCOPE_EXIT {
-    optimizer::queryCtx() = nullptr;
-  };
-  exec::SimpleExpressionEvaluator evaluator(
-      queryCtx.get(), optimizerPool_.get());
-
-  SchemaResolver schema;
-  VeloxHistory history;
-
-  optimizer::Schema veraxSchema("test", &schema, &locus);
-  optimizer::Optimization opt(
-      *plan,
-      veraxSchema,
-      history,
-      queryCtx,
-      evaluator,
-      {}, // optimizerOptions
-      {.numWorkers = 1, .numDrivers = 1});
-  auto best = opt.bestPlan();
-  auto distributedPlan = opt.toVeloxPlan(best->op).plan;
-
-  VELOX_CHECK_EQ(1, distributedPlan->fragments().size());
-  return distributedPlan->fragments().at(0).fragment.planNode;
 }
 
 } // namespace
