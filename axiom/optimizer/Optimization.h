@@ -97,6 +97,10 @@ class Optimization {
     return memo_;
   }
 
+  DerivedTableCP rootDt() const {
+    return root_;
+  }
+
   auto& existenceDts() {
     return existenceDts_;
   }
