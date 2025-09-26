@@ -168,6 +168,10 @@ class RelationOp {
     return input_;
   }
 
+  bool is(RelType relType) const {
+    return relType_ == relType;
+  }
+
   template <typename T>
   const T* as() const {
     return static_cast<const T*>(this);
