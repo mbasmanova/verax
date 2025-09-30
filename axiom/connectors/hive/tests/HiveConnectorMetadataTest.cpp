@@ -36,6 +36,10 @@ class HiveConnectorMetadataTest : public runner::test::LocalRunnerTestBase {
   static constexpr int32_t kRowsPerVector = 10000;
 
   static void SetUpTestCase() {
+    // Creates the data and schema from 'testTables_'. These are created on the
+    // first test fixture initialization.
+    LocalRunnerTestBase::SetUpTestCase();
+
     // The lambdas will be run after this scope returns, so make captures
     // static.
     static int32_t counter1;
@@ -56,17 +60,14 @@ class HiveConnectorMetadataTest : public runner::test::LocalRunnerTestBase {
             .customizeData = customize1},
     };
 
-    // Creates the data and schema from 'testTables_'. These are created on the
-    // first test fixture initialization.
-    LocalRunnerTestBase::SetUpTestCase();
     parquet::registerParquetReaderFactory();
     parquet::registerParquetWriterFactory();
   }
 
   static void TearDownTestCase() {
-    LocalRunnerTestBase::TearDownTestCase();
     parquet::unregisterParquetWriterFactory();
     parquet::unregisterParquetReaderFactory();
+    LocalRunnerTestBase::TearDownTestCase();
   }
 
   static void makeAscending(const RowVectorPtr& rows, int32_t& counter) {

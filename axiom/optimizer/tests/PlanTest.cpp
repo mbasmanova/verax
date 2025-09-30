@@ -38,6 +38,8 @@ class PlanTest : public test::QueryTestBase {
   static constexpr auto kTestConnectorId = "test";
 
   static void SetUpTestCase() {
+    test::QueryTestBase::SetUpTestCase();
+
     std::string path;
     if (FLAGS_data_path.empty()) {
       gTempDirectory = velox::exec::test::TempDirectoryPath::create();
@@ -52,14 +54,13 @@ class PlanTest : public test::QueryTestBase {
 
     LocalRunnerTestBase::testDataPath_ = path;
     LocalRunnerTestBase::localFileFormat_ = "parquet";
-    LocalRunnerTestBase::SetUpTestCase();
 
     test::registerDfFunctions();
   }
 
   static void TearDownTestCase() {
-    LocalRunnerTestBase::TearDownTestCase();
     gTempDirectory.reset();
+    test::QueryTestBase::TearDownTestCase();
   }
 
   void SetUp() override {

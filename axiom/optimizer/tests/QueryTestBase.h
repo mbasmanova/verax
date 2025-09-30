@@ -35,12 +35,8 @@ struct TestResult {
   /// runner's cursor, so runner must destruct last.
   std::vector<velox::RowVectorPtr> results;
 
-  /// Human readable Velox plan.
-  std::string veloxString;
-
-  /// Human readable Verax output.
-  std::string planString;
-
+  /// Runtime stats retrieved from Velox tasks. One entry per fragment. See
+  /// LocalRunner::stats() for details.
   std::vector<velox::exec::TaskStats> stats;
 };
 
@@ -71,23 +67,26 @@ class QueryTestBase : public runner::test::LocalRunnerTestBase {
 
   TestResult runFragmentedPlan(const optimizer::PlanAndStats& plan);
 
-  TestResult runVelox(
-      const velox::core::PlanNodePtr& plan,
-      runner::MultiFragmentPlan::Options options = {
-          .numWorkers = 1,
-          .numDrivers = 4,
-      });
+  /// Runs the given single-stage Velox plan single-threaded.
+  TestResult runVelox(const velox::core::PlanNodePtr& plan);
 
   /// Checks that 'reference' and 'experiment' produce the same result.
+  /// Runs 'reference' plan single-threaded.
   /// @return 'reference' result.
-  TestResult assertSame(
-      const velox::core::PlanNodePtr& reference,
+  TestResult checkSame(
       const optimizer::PlanAndStats& experiment,
-      const runner::MultiFragmentPlan::Options& options = {
-          .numWorkers = 1,
-          .numDrivers = 4,
-      });
+      const velox::core::PlanNodePtr& reference);
 
+  /// Checks that 'reference' and 'velox' produce the same result.
+  /// Runs 'referencePlan' single-threaded. Runs 'planNode' multiple times using
+  /// different parallelism settings. Runs single-node-single-threaded,
+  /// single-node-multi-threaded, multi-node-single-threaded, and
+  /// multi-node-multi-threaded. Uses options.numWorkers for multi-node runs and
+  /// options.numDrivers for multi-threaded runs. Doesn't run with higher
+  /// parallelism than specified in 'options'. E.g. if options = {.numWorkers =
+  /// 1, .numDrivers = 1}, then runs only once (single-node-single-threaded).
+  /// All runs are expected to produce the same result that matches result of
+  /// 'referencePlan'.
   void checkSame(
       const logical_plan::LogicalPlanNodePtr& planNode,
       const velox::core::PlanNodePtr& referencePlan,
@@ -100,16 +99,13 @@ class QueryTestBase : public runner::test::LocalRunnerTestBase {
       const logical_plan::LogicalPlanNodePtr& logicalPlan,
       int32_t numDrivers = 1);
 
-  std::shared_ptr<velox::core::QueryCtx> getQueryCtx();
-
-  std::string veloxString(const runner::MultiFragmentPlanPtr& plan);
+  std::shared_ptr<velox::core::QueryCtx>& getQueryCtx();
 
   static VeloxHistory& suiteHistory() {
     return *gSuiteHistory;
   }
 
   OptimizerOptions optimizerOptions_;
-  std::shared_ptr<optimizer::SchemaResolver> schema_;
 
  private:
   std::shared_ptr<velox::memory::MemoryPool> rootPool_;
