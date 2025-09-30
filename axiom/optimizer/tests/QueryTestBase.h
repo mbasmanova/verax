@@ -18,7 +18,6 @@
 
 #include <folly/executors/CPUThreadPoolExecutor.h>
 #include <gflags/gflags.h>
-#include "axiom/optimizer/SchemaResolver.h"
 #include "axiom/optimizer/VeloxHistory.h"
 #include "axiom/runner/LocalRunner.h"
 #include "axiom/runner/tests/LocalRunnerTestBase.h"
@@ -45,9 +44,6 @@ class QueryTestBase : public runner::test::LocalRunnerTestBase {
   void SetUp() override;
 
   void TearDown() override;
-
-  /// Reads the data directory and picks up new tables.
-  void tablesCreated();
 
   optimizer::PlanAndStats planVelox(
       const logical_plan::LogicalPlanNodePtr& plan,
@@ -108,12 +104,10 @@ class QueryTestBase : public runner::test::LocalRunnerTestBase {
   OptimizerOptions optimizerOptions_;
 
  private:
-  std::shared_ptr<velox::memory::MemoryPool> rootPool_;
   std::shared_ptr<velox::memory::MemoryPool> optimizerPool_;
 
   // A QueryCtx created for each compiled query.
   std::shared_ptr<velox::core::QueryCtx> queryCtx_;
-  std::shared_ptr<velox::connector::Connector> connector_;
   std::unique_ptr<optimizer::VeloxHistory> history_;
 
   inline static int32_t gQueryCounter{0};

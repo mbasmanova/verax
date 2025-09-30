@@ -214,11 +214,10 @@ TEST_F(HiveConnectorMetadataTest, createTable) {
   rootBuilder.tableScan("test", tableType, {}, {}, "", tableType, assignments);
   auto readPlan = std::make_shared<runner::MultiFragmentPlan>(
       rootBuilder.fragments(), std::move(runnerOptions));
-  auto rootPool = memory::memoryManager()->addRootPool("readQ");
 
   auto localRunner = std::make_shared<runner::LocalRunner>(
-      std::move(readPlan), makeQueryCtx(id, rootPool.get()));
-  auto results = runner::test::readCursor(localRunner);
+      std::move(readPlan), makeQueryCtx(id));
+  auto results = readCursor(localRunner);
   exec::test::assertEqualResults({data}, results);
 }
 

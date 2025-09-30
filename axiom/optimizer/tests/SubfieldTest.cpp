@@ -107,8 +107,9 @@ class SubfieldTest : public QueryTestBase,
  protected:
   static void SetUpTestCase() {
     QueryTestBase::SetUpTestCase();
-    testDataPath_ = FLAGS_subfield_data_path;
-    LocalRunnerTestBase::localFileFormat_ = "dwrf";
+    LocalRunnerTestBase::localDataPath_ = FLAGS_subfield_data_path;
+    LocalRunnerTestBase::localFileFormat_ =
+        velox::dwio::common::FileFormat::DWRF;
     registerDfFunctions();
   }
 
@@ -366,11 +367,11 @@ class SubfieldTest : public QueryTestBase,
       const std ::vector<RowVectorPtr>& vectors,
       const std::shared_ptr<dwrf::Config>& config =
           std::make_shared<dwrf::Config>()) {
-    auto fs = filesystems::getFileSystem(testDataPath_, {});
-    fs->mkdir(fmt::format("{}/{}", testDataPath_, name));
+    auto fs = filesystems::getFileSystem(localDataPath_, {});
+    fs->mkdir(fmt::format("{}/{}", localDataPath_, name));
 
     const auto filePath =
-        fmt::format("{}/{}/{}.dwrf", testDataPath_, name, name);
+        fmt::format("{}/{}/{}.dwrf", localDataPath_, name, name);
     writeToFile(filePath, vectors, config);
     tablesCreated();
   }

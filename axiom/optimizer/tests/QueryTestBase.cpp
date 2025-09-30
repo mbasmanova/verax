@@ -15,29 +15,17 @@
  */
 
 #include "axiom/optimizer/tests/QueryTestBase.h"
-
-#include "axiom/connectors/hive/LocalHiveConnectorMetadata.h"
-#include "velox/dwio/dwrf/RegisterDwrfReader.h"
-#include "velox/dwio/parquet/RegisterParquetReader.h"
-#include "velox/exec/tests/utils/QueryAssertions.h"
-
 #include "axiom/optimizer/Optimization.h"
 #include "axiom/optimizer/Plan.h"
 #include "axiom/optimizer/SchemaResolver.h"
 #include "axiom/optimizer/VeloxHistory.h"
 #include "axiom/runner/tests/LocalRunnerTestBase.h"
-#include "velox/exec/tests/utils/HiveConnectorTestBase.h"
-#include "velox/exec/tests/utils/LocalExchangeSource.h"
+#include "velox/exec/tests/utils/QueryAssertions.h"
 #include "velox/expression/Expr.h"
-#include "velox/serializers/PrestoSerializer.h"
 
 DECLARE_string(data_path);
 
 DEFINE_uint32(optimizer_trace, 0, "Optimizer trace level");
-
-DEFINE_bool(print_plan, false, "Print optimizer results");
-
-DEFINE_string(data_format, "parquet", "Data format");
 
 DEFINE_string(
     history_save_path,
@@ -47,29 +35,18 @@ DEFINE_string(
 using namespace facebook::velox;
 
 namespace facebook::axiom::optimizer::test {
-using namespace facebook::velox::exec;
 
 void QueryTestBase::SetUp() {
   runner::test::LocalRunnerTestBase::SetUp();
-  connector_ = velox::connector::getConnector(exec::test::kHiveConnectorId);
-  rootPool_ = memory::memoryManager()->addRootPool("axiom_sql");
-  optimizerPool_ = rootPool_->addLeafChild("optimizer");
 
-  parquet::registerParquetReaderFactory();
-  dwrf::registerDwrfReaderFactory();
-  exec::ExchangeSource::registerFactory(exec::test::createLocalExchangeSource);
-  if (!isRegisteredVectorSerde()) {
-    serializer::presto::PrestoVectorSerde::registerVectorSerde();
-  }
-  if (!isRegisteredNamedVectorSerde(VectorSerde::Kind::kPresto)) {
-    serializer::presto::PrestoVectorSerde::registerNamedVectorSerde();
-  }
+  optimizerPool_ = rootPool_->addLeafChild("optimizer");
 
   if (gSuiteHistory) {
     history_ = std::move(gSuiteHistory);
   } else {
     history_ = std::make_unique<optimizer::VeloxHistory>();
   }
+
   optimizerOptions_ = OptimizerOptions();
   optimizerOptions_.traceFlags = FLAGS_optimizer_trace;
 
@@ -83,18 +60,8 @@ void QueryTestBase::TearDown() {
     gSuiteHistory = std::move(history_);
   }
   queryCtx_.reset();
-  velox::connector::unregisterConnector(exec::test::kHiveConnectorId);
-  connector_.reset();
   optimizerPool_.reset();
-  rootPool_.reset();
   LocalRunnerTestBase::TearDown();
-}
-
-void QueryTestBase::tablesCreated() {
-  auto metadata = dynamic_cast<connector::hive::LocalHiveConnectorMetadata*>(
-      connector::ConnectorMetadata::metadata(connector_.get()));
-  VELOX_CHECK_NOT_NULL(metadata);
-  metadata->reinitialize();
 }
 
 namespace {
@@ -136,10 +103,7 @@ TestResult QueryTestBase::runFragmentedPlan(
 
   result.runner =
       std::make_shared<runner::LocalRunner>(fragmentedPlan.plan, getQueryCtx());
-
-  while (auto rows = result.runner->next()) {
-    result.results.push_back(std::move(rows));
-  }
+  result.results = readCursor(result.runner);
   result.stats = result.runner->stats();
   history_->recordVeloxExecution(fragmentedPlan, result.stats);
 
@@ -151,21 +115,9 @@ std::shared_ptr<core::QueryCtx>& QueryTestBase::getQueryCtx() {
     return queryCtx_;
   }
 
-  ++gQueryCounter;
+  queryCtx_ = runner::test::LocalRunnerTestBase::makeQueryCtx(
+      fmt::format("q{}", ++gQueryCounter));
 
-  std::unordered_map<std::string, std::shared_ptr<config::ConfigBase>>
-      connectorConfigs = {
-          {exec::test::kHiveConnectorId,
-           std::make_shared<config::ConfigBase>(folly::copy(hiveConfig_))}};
-
-  queryCtx_ = core::QueryCtx::create(
-      executor_.get(),
-      core::QueryConfig(config_),
-      std::move(connectorConfigs),
-      cache::AsyncDataCache::getInstance(),
-      rootPool_->shared_from_this(),
-      spillExecutor_.get(),
-      fmt::format("query_{}", gQueryCounter));
   return queryCtx_;
 }
 
@@ -175,8 +127,6 @@ optimizer::PlanAndStats QueryTestBase::planVelox(
     std::string* planString) {
   auto& queryCtx = getQueryCtx();
 
-  // The default Locus for planning is the system and data of 'connector_'.
-  optimizer::Locus locus(connector_->connectorId().c_str(), connector_.get());
   auto allocator = std::make_unique<HashStringAllocator>(optimizerPool_.get());
   auto context = std::make_unique<optimizer::QueryGraphContext>(*allocator);
   optimizer::queryCtx() = context.get();
@@ -187,7 +137,7 @@ optimizer::PlanAndStats QueryTestBase::planVelox(
       queryCtx.get(), optimizerPool_.get());
 
   optimizer::SchemaResolver schemaResolver;
-  optimizer::Schema veraxSchema("test", &schemaResolver, &locus);
+  optimizer::Schema veraxSchema("test", &schemaResolver, /*locus=*/nullptr);
 
   optimizer::Optimization opt(
       *plan,
