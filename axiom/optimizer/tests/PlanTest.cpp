@@ -52,8 +52,9 @@ class PlanTest : public test::QueryTestBase {
       }
     }
 
-    LocalRunnerTestBase::testDataPath_ = path;
-    LocalRunnerTestBase::localFileFormat_ = "parquet";
+    LocalRunnerTestBase::localDataPath_ = path;
+    LocalRunnerTestBase::localFileFormat_ =
+        velox::dwio::common::FileFormat::PARQUET;
 
     test::registerDfFunctions();
   }
@@ -680,8 +681,8 @@ TEST_F(PlanTest, filterBreakup) {
   }
 
   auto referenceBuilder = std::make_unique<exec::test::TpchQueryBuilder>(
-      dwio::common::FileFormat::PARQUET);
-  referenceBuilder->initialize(LocalRunnerTestBase::testDataPath_);
+      LocalRunnerTestBase::localFileFormat_);
+  referenceBuilder->initialize(LocalRunnerTestBase::localDataPath_);
 
   auto referencePlan = referenceBuilder->getQueryPlan(19).plan;
 

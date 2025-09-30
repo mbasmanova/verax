@@ -26,12 +26,14 @@ class HiveQueriesTestBase : public test::QueryTestBase {
  protected:
   static void SetUpTestCase();
 
+  /// Creates TPC-H tables in a temp directory using PARQUET file format.
   void SetUp() override;
 
   void TearDown() override;
 
   static void TearDownTestCase();
 
+  /// Returns a schema of a TPC-H table.
   velox::RowTypePtr getSchema(std::string_view tableName);
 
   void checkResults(

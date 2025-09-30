@@ -29,8 +29,9 @@ void HiveQueriesTestBase::SetUpTestCase() {
   gTempDirectory = exec::test::TempDirectoryPath::create();
   test::ParquetTpchTest::createTables(gTempDirectory->getPath());
 
-  LocalRunnerTestBase::testDataPath_ = gTempDirectory->getPath();
-  LocalRunnerTestBase::localFileFormat_ = "parquet";
+  LocalRunnerTestBase::localDataPath_ = gTempDirectory->getPath();
+  LocalRunnerTestBase::localFileFormat_ =
+      velox::dwio::common::FileFormat::PARQUET;
 }
 
 // static
