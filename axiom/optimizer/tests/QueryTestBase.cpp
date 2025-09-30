@@ -65,7 +65,6 @@ void QueryTestBase::SetUp() {
     serializer::presto::PrestoVectorSerde::registerNamedVectorSerde();
   }
 
-  schema_ = std::make_shared<optimizer::SchemaResolver>();
   if (gSuiteHistory) {
     history_ = std::move(gSuiteHistory);
   } else {
@@ -87,7 +86,6 @@ void QueryTestBase::TearDown() {
   velox::connector::unregisterConnector(exec::test::kHiveConnectorId);
   connector_.reset();
   optimizerPool_.reset();
-  schema_.reset();
   rootPool_.reset();
   LocalRunnerTestBase::TearDown();
 }
@@ -110,12 +108,11 @@ void waitForCompletion(const std::shared_ptr<runner::LocalRunner>& runner) {
 }
 } // namespace
 
-TestResult QueryTestBase::runVelox(
-    const core::PlanNodePtr& plan,
-    runner::MultiFragmentPlan::Options options) {
-  if (options.queryId.empty()) {
-    options.queryId = fmt::format("q{}", ++gQueryCounter);
-  }
+TestResult QueryTestBase::runVelox(const core::PlanNodePtr& plan) {
+  runner::MultiFragmentPlan::Options options;
+  options.numWorkers = 1;
+  options.numDrivers = 1;
+  options.queryId = fmt::format("q{}", ++gQueryCounter);
 
   runner::ExecutableFragment fragment(fmt::format("{}.0", options.queryId));
   fragment.fragment = core::PlanFragment(plan);
@@ -131,7 +128,6 @@ TestResult QueryTestBase::runVelox(
 TestResult QueryTestBase::runFragmentedPlan(
     const optimizer::PlanAndStats& fragmentedPlan) {
   TestResult result;
-  result.veloxString = veloxString(fragmentedPlan.plan);
 
   SCOPE_EXIT {
     waitForCompletion(result.runner);
@@ -150,7 +146,7 @@ TestResult QueryTestBase::runFragmentedPlan(
   return result;
 }
 
-std::shared_ptr<core::QueryCtx> QueryTestBase::getQueryCtx() {
+std::shared_ptr<core::QueryCtx>& QueryTestBase::getQueryCtx() {
   if (queryCtx_) {
     return queryCtx_;
   }
@@ -177,7 +173,7 @@ optimizer::PlanAndStats QueryTestBase::planVelox(
     const logical_plan::LogicalPlanNodePtr& plan,
     const runner::MultiFragmentPlan::Options& options,
     std::string* planString) {
-  auto queryCtx = getQueryCtx();
+  auto& queryCtx = getQueryCtx();
 
   // The default Locus for planning is the system and data of 'connector_'.
   optimizer::Locus locus(connector_->connectorId().c_str(), connector_.get());
@@ -188,14 +184,16 @@ optimizer::PlanAndStats QueryTestBase::planVelox(
     optimizer::queryCtx() = nullptr;
   };
   exec::SimpleExpressionEvaluator evaluator(
-      queryCtx_.get(), optimizerPool_.get());
+      queryCtx.get(), optimizerPool_.get());
 
-  optimizer::Schema veraxSchema("test", schema_.get(), &locus);
+  optimizer::SchemaResolver schemaResolver;
+  optimizer::Schema veraxSchema("test", &schemaResolver, &locus);
+
   optimizer::Optimization opt(
       *plan,
       veraxSchema,
       *history_,
-      queryCtx_,
+      queryCtx,
       evaluator,
       optimizerOptions_,
       options);
@@ -209,44 +207,14 @@ optimizer::PlanAndStats QueryTestBase::planVelox(
 TestResult QueryTestBase::runVelox(
     const logical_plan::LogicalPlanNodePtr& plan,
     const runner::MultiFragmentPlan::Options& options) {
-  TestResult result;
-  auto veloxPlan = planVelox(plan, options, &result.planString);
+  auto veloxPlan = planVelox(plan, options);
   return runFragmentedPlan(veloxPlan);
 }
 
-std::string QueryTestBase::veloxString(
-    const runner::MultiFragmentPlanPtr& plan) {
-  folly::F14FastMap<core::PlanNodeId, const core::TableScanNode*> scans;
-  for (const auto& fragment : plan->fragments()) {
-    velox::core::PlanNode::findFirstNode(
-        fragment.fragment.planNode.get(), [&](const auto* node) {
-          if (auto scan = dynamic_cast<const core::TableScanNode*>(node)) {
-            scans.emplace(scan->id(), scan);
-          }
-          return false;
-        });
-  }
-
-  auto planNodeDetails = [&](const core::PlanNodeId& planNodeId,
-                             std::string_view indentation,
-                             std::ostream& stream) {
-    auto it = scans.find(planNodeId);
-    if (it != scans.end()) {
-      const auto* scan = it->second;
-      for (const auto& [name, handle] : scan->assignments()) {
-        stream << indentation << name << " = " << handle->name() << std::endl;
-      }
-    }
-  };
-
-  return plan->toString(true, planNodeDetails);
-}
-
-TestResult QueryTestBase::assertSame(
-    const core::PlanNodePtr& reference,
+TestResult QueryTestBase::checkSame(
     const optimizer::PlanAndStats& experiment,
-    const runner::MultiFragmentPlan::Options& options) {
-  auto referenceResult = runVelox(reference, options);
+    const core::PlanNodePtr& reference) {
+  auto referenceResult = runVelox(reference);
   auto experimentResult = runFragmentedPlan(experiment);
 
   exec::test::assertEqualResults(
@@ -305,8 +273,6 @@ void QueryTestBase::checkSame(
 velox::core::PlanNodePtr QueryTestBase::toSingleNodePlan(
     const logical_plan::LogicalPlanNodePtr& logicalPlan,
     int32_t numDrivers) {
-  schema_ = std::make_shared<SchemaResolver>();
-
   auto plan =
       planVelox(logicalPlan, {.numWorkers = 1, .numDrivers = numDrivers}).plan;
 

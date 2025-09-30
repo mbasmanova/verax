@@ -26,8 +26,6 @@ class HiveQueriesTestBase : public test::QueryTestBase {
  protected:
   static void SetUpTestCase();
 
-  static constexpr auto kTpchConnectorId = "tpch";
-
   void SetUp() override;
 
   void TearDown() override;
@@ -54,6 +52,7 @@ class HiveQueriesTestBase : public test::QueryTestBase {
     return *prestoParser_;
   }
 
+ private:
   inline static std::shared_ptr<velox::exec::test::TempDirectoryPath>
       gTempDirectory;
 

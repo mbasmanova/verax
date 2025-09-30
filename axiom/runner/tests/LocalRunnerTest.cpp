@@ -33,6 +33,10 @@ class LocalRunnerTest : public test::LocalRunnerTestBase {
   static constexpr int32_t kNumRows = kNumFiles * kNumVectors * kRowsPerVector;
 
   static void SetUpTestCase() {
+    // Creates the data and schema from 'testTables_'. These are created on the
+    // first test fixture initialization.
+    LocalRunnerTestBase::SetUpTestCase();
+
     // The lambdas will be run after this scope returns, so make captures
     // static.
     static int32_t counter1;
@@ -64,10 +68,6 @@ class LocalRunnerTest : public test::LocalRunnerTestBase {
             .numVectorsPerFile = kNumVectors,
             .numFiles = kNumFiles,
             .customizeData = customize2}};
-
-    // Creates the data and schema from 'testTables_'. These are created on the
-    // first test fixture initialization.
-    LocalRunnerTestBase::SetUpTestCase();
   }
 
   void TearDown() override {
