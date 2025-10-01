@@ -104,7 +104,7 @@ PlanP Optimization::bestPlan() {
   targetColumns.unionObjects(root_->columns);
 
   topState_.dt = root_;
-  topState_.setTargetColumnsForDt(targetColumns);
+  topState_.setTargetExprsForDt(targetColumns);
 
   makeJoins(topState_);
 
@@ -1743,9 +1743,9 @@ PlanP Optimization::makeDtPlan(
 
     PlanState inner(*this, &dt);
     if (key.firstTable->is(PlanType::kDerivedTableNode)) {
-      inner.setTargetColumnsForDt(key.columns);
+      inner.setTargetExprsForDt(key.columns);
     } else {
-      inner.targetColumns = key.columns;
+      inner.targetExprs = key.columns;
     }
 
     makeJoins(inner);
