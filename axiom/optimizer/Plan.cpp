@@ -76,11 +76,19 @@ PlanStateSaver::PlanStateSaver(PlanState& state, const JoinCandidate& candidate)
 #endif
 }
 
+namespace {
+PlanObjectSet exprColumns(const PlanObjectSet& exprs) {
+  PlanObjectSet columns;
+  exprs.forEach<Expr>([&](ExprCP expr) { columns.unionSet(expr->columns()); });
+  return columns;
+}
+} // namespace
+
 Plan::Plan(RelationOpPtr op, const PlanState& state)
     : op(std::move(op)),
       cost(state.cost),
       tables(state.placed),
-      columns(state.targetColumns),
+      columns(exprColumns(state.targetExprs)),
       fullyImported(state.dt->fullyImported) {}
 
 bool Plan::isStateBetter(const PlanState& state, float perRowMargin) const {
@@ -129,15 +137,11 @@ void PlanState::addBuilds(const HashBuildVector& added) {
   }
 }
 
-void PlanState::setTargetColumnsForDt(const PlanObjectSet& target) {
-  targetColumns = target;
+void PlanState::setTargetExprsForDt(const PlanObjectSet& target) {
   for (auto i = 0; i < dt->columns.size(); ++i) {
     if (target.contains(dt->columns[i])) {
-      targetColumns.unionColumns(dt->exprs[i]);
+      targetExprs.add(dt->exprs[i]);
     }
-  }
-  for (const auto& having : dt->having) {
-    targetColumns.unionColumns(having);
   }
 }
 
@@ -172,18 +176,26 @@ const PlanObjectSet& PlanState::downstreamColumns() const {
   if (dt->aggregation && !placed.contains(dt->aggregation)) {
     auto aggToPlace = dt->aggregation;
     const auto numGroupingKeys = aggToPlace->groupingKeys().size();
+
     for (auto i = 0; i < aggToPlace->columns().size(); ++i) {
-      // Grouping columns must be computed anyway, aggregates only if referenced
-      // by enclosing.
       if (i < numGroupingKeys) {
         result.unionColumns(aggToPlace->groupingKeys()[i]);
-      } else if (targetColumns.contains(aggToPlace->columns()[i])) {
+      } else {
         result.unionColumns(aggToPlace->aggregates()[i - numGroupingKeys]);
       }
     }
   }
 
-  result.unionSet(targetColumns);
+  for (const auto* having : dt->having) {
+    result.unionColumns(having);
+  }
+
+  for (const auto* key : dt->orderKeys) {
+    result.unionColumns(key);
+  }
+
+  targetExprs.forEach<Expr>([&](ExprCP expr) { result.unionColumns(expr); });
+
   return downstreamPrecomputed[placed] = std::move(result);
 }
 

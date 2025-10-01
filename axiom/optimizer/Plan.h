@@ -205,10 +205,10 @@ struct PlanState {
   /// The columns that have a value from placed tables.
   PlanObjectSet columns;
 
-  /// The columns that need a value at the end of the plan. A dt can be
-  /// planned for just join/filter columns or all payload. Initially,
-  /// columns the selected columns of the dt depend on.
-  PlanObjectSet targetColumns;
+  /// The expressions that need a value at the end of the plan. A dt can be
+  /// planned for just join/filter columns or all payload. Initially, the
+  /// selected expressions of the dt.
+  PlanObjectSet targetExprs;
 
   /// lookup keys for an index based derived table.
   PlanObjectSet input;
@@ -242,9 +242,9 @@ struct PlanState {
   /// Adds 'added' to all hash join builds.
   void addBuilds(const HashBuildVector& added);
 
-  /// Specifies that the plan-to-make only references 'target' columns and
-  /// whatever these depend on. These refer to 'columns' of 'dt'.
-  void setTargetColumnsForDt(const PlanObjectSet& target);
+  /// Specifies that the plan-to-make only produces 'target' expressions and.
+  /// These refer to 'exprs' of 'dt'.
+  void setTargetExprsForDt(const PlanObjectSet& target);
 
   /// Returns the set of columns referenced in unplaced joins/filters union
   /// targetColumns. Gets smaller as more tables are placed.
