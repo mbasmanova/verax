@@ -1,0 +1,6 @@
+# vim: set filetype=yaml :
+
+line_length: 100
+indent: 2
+extensions:
+  - velox/velox/scripts/ci/gersemi_cmd_definitions.py
