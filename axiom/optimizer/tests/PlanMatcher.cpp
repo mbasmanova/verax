@@ -304,6 +304,10 @@ class ProjectMatcher : public PlanMatcherImpl<ProjectNode> {
           newSymbols[expected->alias().value()] = plan.names()[i];
         }
 
+        if (!symbols.empty()) {
+          expected = rewriteInputNames(expected, symbols);
+        }
+
         EXPECT_EQ(
             plan.projections()[i]->toString(),
             expected->dropAlias()->toString());
@@ -459,7 +463,7 @@ class TopNMatcher : public PlanMatcherImpl<TopNNode> {
       EXPECT_EQ(plan.count(), count_.value());
     }
 
-    AXIOM_TEST_RETURN
+    return MatchResult::success(symbols);
   }
 
  private:
@@ -500,7 +504,7 @@ class OrderByMatcher : public PlanMatcherImpl<OrderByNode> {
       }
     }
 
-    return MatchResult::success();
+    return MatchResult::success(symbols);
   }
 
  private:
