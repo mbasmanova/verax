@@ -210,6 +210,10 @@ struct PlanState {
   /// selected expressions of the dt.
   PlanObjectSet targetExprs;
 
+  /// A mapping of expressions to pre-computed columns. See
+  /// PrecomputeProjection.
+  folly::F14FastMap<ExprCP, ExprCP> exprToColumn;
+
   /// lookup keys for an index based derived table.
   PlanObjectSet input;
 
@@ -228,10 +232,6 @@ struct PlanState {
   /// example, best by cost and maybe plans with interesting orders.
   PlanSet plans;
 
-  /// Caches results of downstreamColumns(). This is a pure function of
-  /// 'placed', 'targetColumns' and 'dt'.
-  mutable folly::F14FastMap<PlanObjectSet, PlanObjectSet> downstreamPrecomputed;
-
   /// Ordered set of tables placed so far. Used for setting a
   /// breakpoint before a specific join order gets costed.
   std::vector<int32_t> debugPlacedTables;
@@ -249,6 +249,10 @@ struct PlanState {
   /// Returns the set of columns referenced in unplaced joins/filters union
   /// targetColumns. Gets smaller as more tables are placed.
   const PlanObjectSet& downstreamColumns() const;
+
+  /// Replace expressions with pre-computed columns using 'exprToColumn'
+  /// mapping.
+  ExprVector exprsToColumns(const ExprVector& exprs) const;
 
   /// Adds a placed join to the set of partial queries to be developed. No-op if
   /// cost exceeds best so far and cutoff is enabled.
@@ -272,6 +276,12 @@ struct PlanState {
   }
 
   void debugSetFirstTable(int32_t id);
+
+ private:
+  /// Caches results of downstreamColumns(). This is a pure function of
+  /// 'placed', 'targetExprs' and 'dt'.
+  mutable folly::F14FastMap<PlanObjectSet, PlanObjectSet>
+      downstreamColumnsCache;
 };
 
 /// A scoped guard that restores fields of PlanState on destruction.

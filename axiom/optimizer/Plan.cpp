@@ -146,57 +146,92 @@ void PlanState::setTargetExprsForDt(const PlanObjectSet& target) {
 }
 
 const PlanObjectSet& PlanState::downstreamColumns() const {
-  auto it = downstreamPrecomputed.find(placed);
-  if (it != downstreamPrecomputed.end()) {
+  auto it = downstreamColumnsCache.find(placed);
+  if (it != downstreamColumnsCache.end()) {
     return it->second;
   }
 
   PlanObjectSet result;
+
+  auto addExpr = [&](ExprCP expr) {
+    auto it = exprToColumn.find(expr);
+    if (it != exprToColumn.end()) {
+      result.unionColumns(it->second);
+    } else {
+      result.unionColumns(expr);
+    }
+  };
+
+  auto addExprs = [&](ExprVector exprs) {
+    for (auto expr : exprs) {
+      addExpr(expr);
+    }
+  };
+
+  // Joins.
   for (auto join : dt->joins) {
     bool addFilter = false;
     if (!placed.contains(join->rightTable())) {
       addFilter = true;
-      result.unionColumns(join->leftKeys());
+      addExprs(join->leftKeys());
     }
     if (join->leftTable() && !placed.contains(join->leftTable())) {
       addFilter = true;
-      result.unionColumns(join->rightKeys());
+      addExprs(join->rightKeys());
     }
     if (addFilter && !join->filter().empty()) {
-      result.unionColumns(join->filter());
+      addExprs(join->filter());
     }
   }
 
-  for (auto& conjunct : dt->conjuncts) {
+  // Filters.
+  for (const auto* conjunct : dt->conjuncts) {
     if (!placed.contains(conjunct)) {
-      result.unionColumns(conjunct);
+      addExpr(conjunct);
     }
   }
 
+  // Aggregations.
   if (dt->aggregation && !placed.contains(dt->aggregation)) {
     auto aggToPlace = dt->aggregation;
-    const auto numGroupingKeys = aggToPlace->groupingKeys().size();
-
-    for (auto i = 0; i < aggToPlace->columns().size(); ++i) {
-      if (i < numGroupingKeys) {
-        result.unionColumns(aggToPlace->groupingKeys()[i]);
-      } else {
-        result.unionColumns(aggToPlace->aggregates()[i - numGroupingKeys]);
-      }
+    addExprs(aggToPlace->groupingKeys());
+    for (auto& aggregate : aggToPlace->aggregates()) {
+      addExpr(aggregate);
     }
   }
 
-  for (const auto* having : dt->having) {
-    result.unionColumns(having);
+  // Filters after aggregation.
+  for (const auto* conjunct : dt->having) {
+    if (!placed.contains(conjunct)) {
+      addExpr(conjunct);
+    }
   }
 
+  // Order by.
   for (const auto* key : dt->orderKeys) {
-    result.unionColumns(key);
+    if (!placed.contains(key)) {
+      addExpr(key);
+    }
   }
 
-  targetExprs.forEach<Expr>([&](ExprCP expr) { result.unionColumns(expr); });
+  // Output expressions.
+  targetExprs.forEach<Expr>([&](ExprCP expr) { addExpr(expr); });
 
-  return downstreamPrecomputed[placed] = std::move(result);
+  return downstreamColumnsCache[placed] = std::move(result);
+}
+
+ExprVector PlanState::exprsToColumns(const ExprVector& exprs) const {
+  ExprVector newExprs;
+  newExprs.reserve(exprs.size());
+  for (auto expr : exprs) {
+    auto it = exprToColumn.find(expr);
+    if (it != exprToColumn.end()) {
+      newExprs.emplace_back(it->second);
+    } else {
+      newExprs.emplace_back(expr);
+    }
+  }
+  return newExprs;
 }
 
 std::string PlanState::printCost() const {
