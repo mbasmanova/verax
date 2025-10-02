@@ -73,19 +73,6 @@ release:          #: Build the release version
 unittest: debug   #: Build with debugging and run unit tests
 	cd $(BUILD_BASE_DIR)/debug && ctest -j ${NUM_THREADS} -VV --output-on-failure
 
-format-fix:       #: Fix formatting issues in the main branch
-	scripts/format-check.py format main --fix
-
-format-check:     #: Check for formatting issues on the main branch
-	clang-format --version
-	scripts/format-check.py format main
-
-header-fix:       #: Fix license header issues in the current branch
-	scripts/format-check.py header main --fix
-
-header-check:     #: Check for license header issues on the main branch
-	scripts/format-check.py header main
-
 help:             #: Show the help messages
 	@cat $(firstword $(MAKEFILE_LIST)) | \
 	awk '/^[-a-z]+:/' | \
