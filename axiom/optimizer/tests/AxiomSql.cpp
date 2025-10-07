@@ -24,6 +24,7 @@
 #include "axiom/connectors/hive/LocalHiveConnectorMetadata.h"
 #include "axiom/connectors/tpch/TpchConnectorMetadata.h"
 #include "axiom/logical_plan/PlanPrinter.h"
+#include "axiom/optimizer/DerivedTablePrinter.h"
 #include "axiom/optimizer/Optimization.h"
 #include "axiom/optimizer/Plan.h"
 #include "axiom/optimizer/VeloxHistory.h"
@@ -322,7 +323,7 @@ class VeloxRunner : public velox::QueryBenchmarkBase {
       if (explain->isAnalyze()) {
         runExplainAnalyze(*select);
       } else {
-        runExplain(*select);
+        runExplain(*select, explain->type());
       }
       return;
     }
@@ -423,9 +424,27 @@ class VeloxRunner : public velox::QueryBenchmarkBase {
         fmt::format("query_{}", queryCounter_));
   }
 
-  void runExplain(const optimizer::test::SelectStatement& statement) {
-    auto plan = optimize(statement.plan(), newQuery());
-    std::cout << plan.toString() << std::endl;
+  void runExplain(
+      const optimizer::test::SelectStatement& statement,
+      optimizer::test::ExplainStatement::Type type) {
+    switch (type) {
+      case optimizer::test::ExplainStatement::Type::kLogical:
+        std::cout << logical_plan::PlanPrinter::toText(*statement.plan())
+                  << std::endl;
+        break;
+
+      case optimizer::test::ExplainStatement::Type::kGraph:
+        optimize(statement.plan(), newQuery(), [](const auto& dt) {
+          std::cout << optimizer::DerivedTablePrinter::toText(dt) << std::endl;
+          return false; // Stop optimization.
+        });
+        break;
+
+      case optimizer::test::ExplainStatement::Type::kDistributed:
+        std::cout << optimize(statement.plan(), newQuery()).toString()
+                  << std::endl;
+        break;
+    }
   }
 
   void runExplainAnalyze(const optimizer::test::SelectStatement& statement) {
@@ -447,10 +466,19 @@ class VeloxRunner : public velox::QueryBenchmarkBase {
               << std::endl;
   }
 
+  // Optimizes provided logical plan.
+  // @param checkDerivedTable Optional lambda to call after to-graph stage of
+  // optimization. If returns 'false', the optimization stops and returns an
+  // empty result.
+  // @param checkBestPlan Optional lambda to call after selecting best physical
+  // plan. If returns 'false', the optimization stops and returns an empty
+  // result.
   optimizer::PlanAndStats optimize(
       const logical_plan::LogicalPlanNodePtr& logicalPlan,
       const std::shared_ptr<core::QueryCtx>& queryCtx,
-      const std::function<void(const optimizer::Plan&)>& peakAtBestPlan =
+      const std::function<bool(const optimizer::DerivedTable&)>&
+          checkDerivedTable = nullptr,
+      const std::function<bool(const optimizer::Plan&)>& checkBestPlan =
           nullptr) {
     if (FLAGS_print_logical_plan) {
       std::cout << "Logical plan: " << std::endl
@@ -485,10 +513,14 @@ class VeloxRunner : public velox::QueryBenchmarkBase {
         {.traceFlags = FLAGS_optimizer_trace},
         opts);
 
+    if (checkDerivedTable && !checkDerivedTable(*optimization.rootDt())) {
+      return {};
+    }
+
     auto best = optimization.bestPlan();
 
-    if (peakAtBestPlan) {
-      peakAtBestPlan(*best);
+    if (checkBestPlan && !checkBestPlan(*best)) {
+      return {};
     }
 
     if (FLAGS_print_short_plan) {
@@ -547,11 +579,16 @@ class VeloxRunner : public velox::QueryBenchmarkBase {
     auto queryCtx = newQuery();
     optimizer::PlanAndStats planAndStats;
     try {
-      planAndStats = optimize(logicalPlan, queryCtx, [&](const auto& best) {
-        if (planString) {
-          *planString = best.op->toString(true, false);
-        }
-      });
+      planAndStats = optimize(
+          logicalPlan,
+          queryCtx,
+          /*checkDerivedTable=*/nullptr,
+          [&](const auto& best) {
+            if (planString) {
+              *planString = best.op->toString(true, false);
+            }
+            return true; // Continue the optimization.
+          });
     } catch (const std::exception& e) {
       std::cerr << "Failed to optimize: " << e.what() << std::endl;
       if (errorString) {
