@@ -647,14 +647,14 @@ bool ToGraph::isJoinEquality(
 }
 
 ExprCP ToGraph::makeConstant(const lp::ConstantExpr& constant) {
-  auto temp = constant.value();
+  TypedVariant temp{toType(constant.type()), constant.value()};
   auto it = constantDedup_.find(temp);
   if (it != constantDedup_.end()) {
     return it->second;
   }
-  auto* literal = make<Literal>(Value(toType(constant.type()), 1), temp.get());
-  // The variant will stay live for the optimization duration.
-  reverseConstantDedup_[literal] = temp;
+
+  auto* literal = make<Literal>(Value(temp.type, 1), temp.value.get());
+
   constantDedup_[std::move(temp)] = literal;
   return literal;
 }

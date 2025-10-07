@@ -61,17 +61,23 @@ struct ExprDedupHasher {
 using FunctionDedupMap =
     folly::F14FastMap<ExprDedupKey, ExprCP, ExprDedupHasher>;
 
-struct VariantPtrHasher {
-  size_t operator()(const std::shared_ptr<const velox::Variant>& value) const {
-    return value->hash();
+struct TypedVariant {
+  /// Canonical Type pointer returned by QueryGraphContext::toType.
+  const velox::Type* type;
+  std::shared_ptr<const velox::Variant> value;
+};
+
+struct TypedVariantHasher {
+  size_t operator()(const TypedVariant& value) const {
+    return velox::bits::hashMix(
+        std::hash<const velox::Type*>()(value.type), value.value->hash());
   }
 };
 
-struct VariantPtrComparer {
-  bool operator()(
-      const std::shared_ptr<const velox::Variant>& left,
-      const std::shared_ptr<const velox::Variant>& right) const {
-    return *left == *right;
+struct TypedVariantComparer {
+  bool operator()(const TypedVariant& left, const TypedVariant& right) const {
+    // Types have been deduped, hence, we compare pointers.
+    return left.type == right.type && *left.value == *right.value;
   }
 };
 
@@ -446,18 +452,9 @@ class ToGraph {
   // Maps names in project nodes of input logical plan to deduplicated Exprs.
   folly::F14FastMap<std::string, ExprCP> renames_;
 
-  folly::F14FastMap<
-      std::shared_ptr<const velox::Variant>,
-      ExprCP,
-      VariantPtrHasher,
-      VariantPtrComparer>
-      constantDedup_;
-
-  // Reverse map from dedupped literal to the shared_ptr. We put the
-  // shared ptr back into the result plan so the variant never gets
-  // copied.
-  folly::F14FastMap<ExprCP, std::shared_ptr<const velox::Variant>>
-      reverseConstantDedup_;
+  folly::
+      F14FastMap<TypedVariant, ExprCP, TypedVariantHasher, TypedVariantComparer>
+          constantDedup_;
 
   // Dedup map from name + ExprVector to corresponding CallExpr.
   FunctionDedupMap functionDedup_;
