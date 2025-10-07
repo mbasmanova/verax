@@ -487,11 +487,7 @@ velox::core::TypedExprPtr ToVelox::toTypedExpr(ExprCP expr) {
       break;
     }
     case PlanType::kLiteralExpr: {
-      auto literal = expr->as<Literal>();
-      if (literal->vector()) {
-        return std::make_shared<velox::core::ConstantTypedExpr>(
-            queryCtx()->toVectorPtr(literal->vector()));
-      }
+      const auto* literal = expr->as<Literal>();
       // Complex constants must be vectors for constant folding to work.
       if (literal->value().type->kind() >= velox::TypeKind::ARRAY) {
         return std::make_shared<velox::core::ConstantTypedExpr>(variantToVector(

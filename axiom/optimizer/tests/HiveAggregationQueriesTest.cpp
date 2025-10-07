@@ -119,7 +119,7 @@ TEST_F(HiveAggregationQueriesTest, distinct) {
           .singleAggregation({}, {"count(distinct n_regionkey)"})
           .planNode();
 
-  checkSame(logicalPlan, referencePlan, {.numWorkers = 1, .numDrivers = 1});
+  checkSameSingleNode(logicalPlan, referencePlan);
 }
 
 TEST_F(HiveAggregationQueriesTest, orderBy) {
@@ -158,7 +158,7 @@ TEST_F(HiveAggregationQueriesTest, orderBy) {
                "array_agg(n_name ORDER BY n_nationkey)"})
           .planNode();
 
-  checkSame(logicalPlan, referencePlan, {.numWorkers = 1, .numDrivers = 1});
+  checkSameSingleNode(logicalPlan, referencePlan);
 }
 
 TEST_F(HiveAggregationQueriesTest, maskWithOrderBy) {
@@ -198,7 +198,7 @@ TEST_F(HiveAggregationQueriesTest, maskWithOrderBy) {
               {"array_agg(n_name ORDER BY n_nationkey) FILTER (WHERE mask)"})
           .planNode();
 
-  checkSame(logicalPlan, referencePlan, {.numWorkers = 1, .numDrivers = 1});
+  checkSameSingleNode(logicalPlan, referencePlan);
 }
 
 TEST_F(HiveAggregationQueriesTest, distinctWithOrderBy) {

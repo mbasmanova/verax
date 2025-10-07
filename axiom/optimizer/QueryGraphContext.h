@@ -204,19 +204,6 @@ struct PathComparer {
   }
 };
 
-struct VectorDedupHasher {
-  size_t operator()(const velox::BaseVector* vector) const {
-    return vector->hashValueAt(0);
-  }
-};
-
-struct VectorDedupComparer {
-  bool operator()(const velox::BaseVector* left, const velox::BaseVector* right)
-      const {
-    return left->type() == right->type() && left->equalValueAt(right, 0, 0);
-  }
-};
-
 /// Context for making a query plan. Owns all memory associated to
 /// planning, except for the input PlanNode tree. The result of
 /// planning is also owned by 'this', so the planning result must be
@@ -314,10 +301,6 @@ class QueryGraphContext {
     return allVariants_.back().get();
   }
 
-  const velox::BaseVector* toVector(const velox::VectorPtr& vector);
-
-  velox::VectorPtr toVectorPtr(const velox::BaseVector* vector);
-
  private:
   velox::TypePtr dedupType(const velox::TypePtr& type);
 
@@ -337,14 +320,6 @@ class QueryGraphContext {
   folly::F14FastMap<const velox::Type*, velox::TypePtr> toTypePtr_;
 
   folly::F14FastSet<PathCP, PathHasher, PathComparer> deduppedPaths_;
-
-  // Complex type literals. Referenced with raw pointer from PlanObject.
-  folly::F14FastMap<
-      const velox::BaseVector*,
-      velox::VectorPtr,
-      VectorDedupHasher,
-      VectorDedupComparer>
-      deduppedVectors_;
 
   std::vector<PathCP> pathById_;
 
