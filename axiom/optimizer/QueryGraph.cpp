@@ -147,28 +147,7 @@ std::string Aggregate::toString() const {
   }
 
   if (!orderKeys_.empty()) {
-    out << " ORDER BY ";
-    for (auto i = 0; i < orderKeys_.size(); ++i) {
-      if (i > 0) {
-        out << ", ";
-      }
-      out << orderKeys_[i]->toString();
-
-      switch (orderTypes_[i]) {
-        case OrderType::kAscNullsFirst:
-          out << " ASC NULLS FIRST";
-          break;
-        case OrderType::kAscNullsLast:
-          out << " ASC NULLS LAST";
-          break;
-        case OrderType::kDescNullsFirst:
-          out << " DESC NULLS FIRST";
-          break;
-        case OrderType::kDescNullsLast:
-          out << " DESC NULLS LAST";
-          break;
-      }
-    }
+    out << " ORDER BY " << orderByToString(orderKeys_, orderTypes_);
   }
 
   out << ")";
@@ -468,23 +447,15 @@ Column::Column(
 
 void BaseTable::addFilter(ExprCP expr) {
   const auto& columns = expr->columns();
-  bool isMultiColumn = false;
-  bool isSingleColumn = false;
-  columns.forEach([&](PlanObjectCP object) {
-    if (!isMultiColumn) {
-      if (isSingleColumn) {
-        isMultiColumn = true;
-      } else {
-        isSingleColumn = true;
-      }
-    };
-  });
-  if (isSingleColumn) {
+
+  VELOX_CHECK_GT(columns.size(), 0);
+
+  if (columns.size() == 1) {
     columnFilters.push_back(expr);
-    queryCtx()->optimization()->filterUpdated(this);
-    return;
+  } else {
+    filter.push_back(expr);
   }
-  filter.push_back(expr);
+
   queryCtx()->optimization()->filterUpdated(this);
 }
 
