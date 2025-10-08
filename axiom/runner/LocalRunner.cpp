@@ -46,6 +46,7 @@ class SimpleSplitSource : public connector::SplitSource {
 
 std::shared_ptr<connector::SplitSource>
 SimpleSplitSourceFactory::splitSourceForScan(
+    const connector::ConnectorSessionPtr& /* session */,
     const velox::core::TableScanNode& scan) {
   auto it = nodeSplitMap_.find(scan.id());
   if (it == nodeSplitMap_.end()) {
@@ -56,13 +57,14 @@ SimpleSplitSourceFactory::splitSourceForScan(
 
 std::shared_ptr<connector::SplitSource>
 ConnectorSplitSourceFactory::splitSourceForScan(
+    const connector::ConnectorSessionPtr& session,
     const velox::core::TableScanNode& scan) {
   const auto& handle = scan.tableHandle();
   auto metadata = connector::ConnectorMetadata::metadata(handle->connectorId());
   auto splitManager = metadata->splitManager();
 
-  auto partitions = splitManager->listPartitions(handle);
-  return splitManager->getSplitSource(handle, partitions, options_);
+  auto partitions = splitManager->listPartitions(session, handle);
+  return splitManager->getSplitSource(session, handle, partitions, options_);
 }
 
 namespace {
@@ -186,8 +188,9 @@ void LocalRunner::start() {
 }
 
 std::shared_ptr<connector::SplitSource> LocalRunner::splitSourceForScan(
+    const connector::ConnectorSessionPtr& session,
     const velox::core::TableScanNode& scan) {
-  return splitSourceFactory_->splitSourceForScan(scan);
+  return splitSourceFactory_->splitSourceForScan(session, scan);
 }
 
 void LocalRunner::abort() {
@@ -327,7 +330,7 @@ void LocalRunner::makeStages(
     gatherScans(fragment.fragment.planNode, scans);
 
     for (const auto& scan : scans) {
-      auto source = splitSourceForScan(*scan);
+      auto source = splitSourceForScan(/*session=*/nullptr, *scan);
 
       std::vector<connector::SplitSource::SplitAndGroup> splits;
       int32_t splitIdx = 0;
