@@ -25,6 +25,7 @@
 namespace facebook::axiom::optimizer {
 
 Optimization::Optimization(
+    SessionPtr session,
     const logical_plan::LogicalPlanNode& logicalPlan,
     const Schema& schema,
     History& history,
@@ -32,14 +33,15 @@ Optimization::Optimization(
     velox::core::ExpressionEvaluator& evaluator,
     OptimizerOptions options,
     runner::MultiFragmentPlan::Options runnerOptions)
-    : options_(std::move(options)),
+    : session_{std::move(session)},
+      options_(std::move(options)),
       runnerOptions_(std::move(runnerOptions)),
       isSingleWorker_(runnerOptions_.numWorkers == 1),
       logicalPlan_(&logicalPlan),
       history_(history),
       veloxQueryCtx_(std::move(veloxQueryCtx)),
       toGraph_{schema, evaluator, options_},
-      toVelox_{runnerOptions_, options_} {
+      toVelox_{session_, runnerOptions_, options_} {
   queryCtx()->optimization() = this;
   root_ = toGraph_.makeQueryGraph(*logicalPlan_);
   root_->distributeConjuncts();
@@ -73,7 +75,10 @@ PlanAndStats Optimization::toVeloxPlan(
 
   Schema schema("default", schemaResolver.get(), /* locus */ nullptr);
 
+  auto session = std::make_shared<Session>(veloxQueryCtx->queryId());
+
   Optimization opt{
+      session,
       logicalPlan,
       schema,
       history,

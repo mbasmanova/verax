@@ -504,7 +504,10 @@ class VeloxRunner : public velox::QueryBenchmarkBase {
     exec::SimpleExpressionEvaluator evaluator(
         queryCtx.get(), optimizerPool_.get());
 
+    auto session = std::make_shared<Session>(queryCtx->queryId());
+
     optimizer::Optimization optimization(
+        session,
         *logicalPlan,
         veraxSchema,
         *history_,
