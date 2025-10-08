@@ -17,6 +17,7 @@
 #include "axiom/connectors/hive/HiveConnectorMetadata.h"
 #include "velox/connectors/hive/HiveConnector.h"
 #include "velox/connectors/hive/TableHandle.h"
+#include "velox/exec/TableWriter.h"
 #include "velox/expression/ExprToSubfieldFilter.h"
 
 namespace facebook::axiom::connector::hive {
@@ -108,6 +109,17 @@ HiveConnectorMetadata::createTableHandle(
       dataColumns ? dataColumns : layout.rowType());
 }
 
+namespace {
+std::shared_ptr<velox::connector::hive::LocationHandle> makeLocationHandle(
+    std::string targetDirectory,
+    std::optional<std::string> writeDirectory) {
+  return std::make_shared<velox::connector::hive::LocationHandle>(
+      targetDirectory,
+      writeDirectory.value_or(targetDirectory),
+      velox::connector::hive::LocationHandle::TableType::kNew);
+}
+} // namespace
+
 ConnectorWriteHandlePtr HiveConnectorMetadata::beginWrite(
     const TablePtr& table,
     WriteKind kind,
@@ -172,17 +184,22 @@ ConnectorWriteHandlePtr HiveConnectorMetadata::beginWrite(
             std::move(types),
             std::move(sortedBy));
   }
-  auto insertHandle =
+
+  auto veloxHandle =
       std::make_shared<velox::connector::hive::HiveInsertTableHandle>(
           inputColumns,
-          makeLocationHandle(tablePath(table->name()), std::nullopt),
+          makeLocationHandle(
+              tablePath(table->name()), makeStagingDirectory(table->name())),
           storageFormat,
           bucketProperty,
           compressionKind,
           serdeParameters,
           writerOptions);
   return std::make_shared<HiveConnectorWriteHandle>(
-      std::move(insertHandle), table, kind);
+      std::move(veloxHandle),
+      velox::exec::TableWriteTraits::outputType(std::nullopt),
+      table,
+      kind);
 }
 
 void HiveConnectorMetadata::validateOptions(
