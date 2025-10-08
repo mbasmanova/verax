@@ -15,10 +15,9 @@
  */
 #pragma once
 
+#include <folly/container/F14Map.h>
 #include <algorithm>
 #include <cstdint>
-#include <string>
-#include <vector>
 
 namespace facebook::axiom::optimizer {
 
