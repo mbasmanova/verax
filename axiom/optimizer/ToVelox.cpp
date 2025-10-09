@@ -195,7 +195,10 @@ void ToVelox::filterUpdated(BaseTableCP table, bool updateSelectivity) {
     auto subfields = columnSubfields(table, id.value());
 
     columns.push_back(metadata->createColumnHandle(
-        *layout, dataColumns->nameOf(i), std::move(subfields)));
+        /*session=*/nullptr,
+        *layout,
+        dataColumns->nameOf(i),
+        std::move(subfields)));
   }
   auto allFilters = std::move(pushdownConjuncts);
   if (remainingFilter) {
@@ -203,7 +206,12 @@ void ToVelox::filterUpdated(BaseTableCP table, bool updateSelectivity) {
   }
   std::vector<velox::core::TypedExprPtr> rejectedFilters;
   auto handle = metadata->createTableHandle(
-      *layout, columns, *evaluator, std::move(allFilters), rejectedFilters);
+      /*session=*/nullptr,
+      *layout,
+      columns,
+      *evaluator,
+      std::move(allFilters),
+      rejectedFilters);
 
   setLeafHandle(table->id(), handle, std::move(rejectedFilters));
   if (updateSelectivity) {
@@ -1059,7 +1067,10 @@ velox::core::PlanNodePtr ToVelox::makeScan(
     auto scanColumnName =
         isSubfieldPushdown ? column->name() : column->outputName();
     assignments[scanColumnName] = connectorMetadata->createColumnHandle(
-        *scan.index->layout, column->name(), std::move(subfields));
+        /*session=*/nullptr,
+        *scan.index->layout,
+        column->name(),
+        std::move(subfields));
   }
 
   velox::core::PlanNodePtr result =
