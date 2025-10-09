@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include "axiom/common/Session.h"
 #include "axiom/optimizer/Cost.h"
 #include "axiom/optimizer/OptimizerOptions.h"
 #include "axiom/optimizer/QueryGraph.h"
@@ -47,6 +48,7 @@ struct PlanAndStats {
 class ToVelox {
  public:
   ToVelox(
+      SessionPtr session,
       const runner::MultiFragmentPlan::Options& options,
       const OptimizerOptions& optimizerOptions);
 
@@ -233,6 +235,8 @@ class ToVelox {
   // TODO Move this into MultiFragmentPlan::Options.
   const velox::VectorSerde::Kind exchangeSerdeKind_{
       velox::VectorSerde::Kind::kPresto};
+
+  const SessionPtr session_;
 
   runner::MultiFragmentPlan::Options options_;
 

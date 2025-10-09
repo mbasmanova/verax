@@ -45,9 +45,11 @@ std::string PlanAndStats::toString() const {
 }
 
 ToVelox::ToVelox(
+    SessionPtr session,
     const runner::MultiFragmentPlan::Options& options,
     const OptimizerOptions& optimizerOptions)
-    : options_{options},
+    : session_{std::move(session)},
+      options_{options},
       optimizerOptions_{optimizerOptions},
       isSingle_{options.numWorkers == 1},
       subscript_{FunctionRegistry::instance()->subscript()} {}
@@ -184,6 +186,8 @@ void ToVelox::filterUpdated(BaseTableCP table, bool updateSelectivity) {
   auto* layout = table->schemaTable->columnGroups[0]->layout;
 
   auto connector = layout->connector();
+  auto connectorSession =
+      session_->toConnectorSession(connector->connectorId());
   auto* metadata = connector::ConnectorMetadata::metadata(connector);
 
   std::vector<velox::connector::ColumnHandlePtr> columns;
@@ -195,7 +199,7 @@ void ToVelox::filterUpdated(BaseTableCP table, bool updateSelectivity) {
     auto subfields = columnSubfields(table, id.value());
 
     columns.push_back(metadata->createColumnHandle(
-        /*session=*/nullptr,
+        connectorSession,
         *layout,
         dataColumns->nameOf(i),
         std::move(subfields)));
@@ -206,7 +210,7 @@ void ToVelox::filterUpdated(BaseTableCP table, bool updateSelectivity) {
   }
   std::vector<velox::core::TypedExprPtr> rejectedFilters;
   auto handle = metadata->createTableHandle(
-      /*session=*/nullptr,
+      connectorSession,
       *layout,
       columns,
       *evaluator,
@@ -1055,8 +1059,10 @@ velox::core::PlanNodePtr ToVelox::makeScan(
         scan.baseTable, allColumns, scanColumns, columnAlteredTypes_);
   }
 
-  auto* connectorMetadata =
-      connector::ConnectorMetadata::metadata(scan.index->layout->connector());
+  auto* connector = scan.index->layout->connector();
+  auto connectorSession =
+      session_->toConnectorSession(connector->connectorId());
+  auto* connectorMetadata = connector::ConnectorMetadata::metadata(connector);
 
   velox::connector::ColumnHandleMap assignments;
   for (auto column : scanColumns) {
@@ -1067,7 +1073,7 @@ velox::core::PlanNodePtr ToVelox::makeScan(
     auto scanColumnName =
         isSubfieldPushdown ? column->name() : column->outputName();
     assignments[scanColumnName] = connectorMetadata->createColumnHandle(
-        /*session=*/nullptr,
+        connectorSession,
         *scan.index->layout,
         column->name(),
         std::move(subfields));

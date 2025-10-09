@@ -80,7 +80,10 @@ class DerivedTablePrinterTest : public ::testing::Test {
     auto schemaResolver = std::make_shared<connector::SchemaResolver>();
     Schema schema("default", schemaResolver.get(), /* locus */ nullptr);
 
+    auto session = std::make_shared<Session>(veloxQueryCtx->queryId());
+
     Optimization opt{
+        session,
         *plan,
         schema,
         history,
