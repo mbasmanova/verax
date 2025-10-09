@@ -105,6 +105,7 @@ add_executable(
   PlanTest.cpp
   UnnestTest.cpp
   ParquetTpchTest.cpp
+  SyntacticJoinOrderTest.cpp
   SubfieldTest.cpp
   FeatureGen.cpp
   Genies.cpp

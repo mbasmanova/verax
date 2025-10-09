@@ -335,7 +335,7 @@ class Optimization {
 
   // The top level PlanState. Contains the set of top level interesting plans.
   // Must stay alive as long as the Plans and RelationOps are reeferenced.
-  PlanState topState_{*this, nullptr};
+  PlanState topState_;
 
   // Controls tracing.
   int32_t traceFlags_{0};

@@ -58,6 +58,11 @@ struct OptimizerOptions {
   /// Produce trace of plan candidates.
   uint32_t traceFlags{0};
 
+  /// Disable cost-based join order selection. Perform the joins in the exact
+  /// sequence specified in the query.
+  /// TODO Make this work for non-inner joins.
+  bool syntacticJoinOrder = false;
+
   bool isMapAsStruct(const char* table, const char* column) const {
     if (allMapsAsStruct) {
       return true;

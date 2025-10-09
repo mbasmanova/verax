@@ -91,6 +91,14 @@ class QueryTestBase : public runner::test::LocalRunnerTestBase {
           .numDrivers = 4,
       });
 
+  void checkSame(
+      const logical_plan::LogicalPlanNodePtr& planNode,
+      const std::vector<velox::RowVectorPtr>& referenceResult,
+      const axiom::runner::MultiFragmentPlan::Options& options = {
+          .numWorkers = 4,
+          .numDrivers = 4,
+      });
+
   velox::core::PlanNodePtr toSingleNodePlan(
       const logical_plan::LogicalPlanNodePtr& logicalPlan,
       int32_t numDrivers = 1);
@@ -101,6 +109,10 @@ class QueryTestBase : public runner::test::LocalRunnerTestBase {
       int32_t numDrivers = 1) {
     checkSame(
         planNode, referencePlan, {.numWorkers = 1, .numDrivers = numDrivers});
+  }
+
+  velox::memory::MemoryPool& optimizerPool() const {
+    return *optimizerPool_;
   }
 
   std::shared_ptr<velox::core::QueryCtx>& getQueryCtx();
