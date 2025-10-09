@@ -865,8 +865,12 @@ velox::core::PartitionFunctionSpecPtr createPartitionFunctionSpec(
   std::vector<velox::column_index_t> keyIndices;
   keyIndices.reserve(keys.size());
   for (const auto& key : keys) {
+    VELOX_CHECK(
+        key->isFieldAccessKind(),
+        "Expected field reference, but got: {}",
+        key->toString());
     keyIndices.push_back(inputType->getChildIdx(
-        dynamic_cast<const velox::core::FieldAccessTypedExpr*>(key.get())
+        key->template asUnchecked<velox::core::FieldAccessTypedExpr>()
             ->name()));
   }
   return std::make_shared<HashPartitionFunctionSpec>(

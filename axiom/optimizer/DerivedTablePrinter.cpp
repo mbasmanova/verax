@@ -173,6 +173,9 @@ std::string visitDerivedTable(const DerivedTable& dt) {
     for (const auto& joinEdge : dt.joins) {
       out << "    " << visitJoinEdge(*joinEdge) << std::endl;
     }
+
+    out << "  syntactic join order: " << folly::join(", ", dt.joinOrder)
+        << std::endl;
   }
 
   if (dt.hasAggregation()) {

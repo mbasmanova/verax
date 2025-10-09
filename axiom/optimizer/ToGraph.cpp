@@ -926,8 +926,7 @@ void ToGraph::translateUnnest(const lp::UnnestNode& unnest, bool isNewDt) {
       JoinEdge::makeUnnest(leftTable, unnestTable, std::move(unnestExprs));
 
   planLeaves_[&unnest] = unnestTable;
-  currentDt_->tables.push_back(unnestTable);
-  currentDt_->tableSet.add(unnestTable);
+  currentDt_->addTable(unnestTable);
   currentDt_->joins.push_back(edge);
 }
 
@@ -1141,6 +1140,11 @@ void extractNonInnerJoinEqualities(
       const auto* eq = conjunct->as<Call>();
       const auto leftTables = eq->argAt(0)->allTables();
       const auto rightTables = eq->argAt(1)->allTables();
+
+      if (leftTables.empty() || rightTables.empty()) {
+        continue;
+      }
+
       if (rightTables.size() == 1 && rightTables.contains(right) &&
           !leftTables.contains(right)) {
         allLeft.unionSet(leftTables);
@@ -1185,7 +1189,11 @@ void ToGraph::translateJoin(const lp::JoinNode& join) {
 
     isNondeterministicWrap_ = false;
   }
-  makeQueryGraph(*joinRight, isInner ? allowedInDt : 0);
+  makeQueryGraph(
+      *joinRight,
+      (isInner && !queryCtx()->optimization()->options().syntacticJoinOrder)
+          ? allowedInDt
+          : 0);
 
   if (previousDt) {
     finalizeDt(*joinRight, previousDt);
@@ -1253,8 +1261,7 @@ void ToGraph::finalizeDt(
   setDtUsedOutput(dt, node);
 
   currentDt_ = outerDt != nullptr ? outerDt : newDt();
-  currentDt_->tables.push_back(dt);
-  currentDt_->tableSet.add(dt);
+  currentDt_->addTable(dt);
 
   dt->makeInitialPlan();
 }
@@ -1332,8 +1339,8 @@ PlanObjectP ToGraph::makeBaseTable(const lp::TableScanNode& tableScan) {
       baseTable, baseTable->columns, top, map);
 
   optimization->setLeafSelectivity(*baseTable, scanType);
-  currentDt_->tables.push_back(baseTable);
-  currentDt_->tableSet.add(baseTable);
+  currentDt_->addTable(baseTable);
+
   return baseTable;
 }
 
@@ -1358,8 +1365,8 @@ PlanObjectP ToGraph::makeValuesTable(const lp::ValuesNode& values) {
     renames_[name] = column;
   }
 
-  currentDt_->tables.push_back(valuesTable);
-  currentDt_->tableSet.add(valuesTable);
+  currentDt_->addTable(valuesTable);
+
   return valuesTable;
 }
 
@@ -1789,8 +1796,7 @@ PlanObjectP ToGraph::makeQueryGraph(
       } else {
         translateSetJoin(*set, setDt);
       }
-      currentDt_->tables.push_back(setDt);
-      currentDt_->tableSet.add(setDt);
+      currentDt_->addTable(setDt);
       return currentDt_;
     }
 
