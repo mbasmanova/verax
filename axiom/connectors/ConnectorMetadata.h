@@ -100,7 +100,15 @@ class Column {
   virtual ~Column() = default;
 
   Column(std::string name, velox::TypePtr type)
-      : name_(std::move(name)), type_(std::move(type)) {}
+      : name_{std::move(name)},
+        type_{std::move(type)},
+        defaultValue_{velox::Variant::null(type_->kind())} {}
+
+  /// Default value can be specified to be used for table write.
+  Column(std::string name, velox::TypePtr type, velox::Variant defaultValue)
+      : name_{std::move(name)},
+        type_{std::move(type)},
+        defaultValue_{std::move(defaultValue)} {}
 
   const ColumnStatistics* stats() const {
     return latestStats_;
@@ -130,6 +138,10 @@ class Column {
     return type_;
   }
 
+  const velox::Variant& defaultValue() const {
+    return defaultValue_;
+  }
+
   /// Returns approximate number of distinct values. Returns 'defaultValue' if
   /// no information.
   int64_t approxNumDistinct(int64_t defaultValue = 1000) const {
@@ -143,6 +155,7 @@ class Column {
  protected:
   const std::string name_;
   const velox::TypePtr type_;
+  const velox::Variant defaultValue_;
 
   // The latest element added to 'allStats_'.
   velox::tsan_atomic<ColumnStatistics*> latestStats_{nullptr};
@@ -289,7 +302,7 @@ class TableLayout {
 /// used for accessing physical organization like partitioning and sort order.
 /// The Table object maintains ownership over the objects it contains, including
 /// the TableLayout and Columns contained in the Table.
-class Table {
+class Table : public std::enable_shared_from_this<Table> {
  public:
   virtual ~Table() = default;
 
@@ -480,6 +493,8 @@ enum class WriteKind {
 
 AXIOM_DECLARE_ENUM_NAME(WriteKind);
 
+using RowsFuture = folly::SemiFuture<int64_t>;
+
 class ConnectorMetadata {
  public:
   /// Temporary APIs to assist in removing dependency on ConnectorMetadata from
@@ -593,17 +608,18 @@ class ConnectorMetadata {
 
   /// Finalizes the table write operation represented by the provided handle.
   /// This runs once after all the table writers have finished. The result sets
-  /// from the table writer fragments are passed as 'writerResult'. Their
-  /// format and meaning is connector-specific. The type of 'writerResult' must
+  /// from the table writer fragments are passed as 'writeResults'. Their
+  /// format and meaning is connector-specific. The type of 'writeResults' must
   /// match ConnectorWriteHandle::resultType returned from beginWrite.
   /// finishWrite returns a ContinueFuture which must be waited for to finalize
   /// the commit. If the implementation is synchronous, finishWrite should
   /// return an already-fulfilled future to the caller. ConnectorSession may be
   /// null for connectors which do not require it.
-  virtual velox::ContinueFuture finishWrite(
+  /// The returned future contains the number of rows "written".
+  virtual RowsFuture finishWrite(
       const ConnectorSessionPtr& session,
       const ConnectorWriteHandlePtr& handle,
-      const std::vector<velox::RowVectorPtr>& writerResult) {
+      const std::vector<velox::RowVectorPtr>& writeResults) {
     VELOX_UNSUPPORTED();
   }
 
@@ -616,8 +632,8 @@ class ConnectorMetadata {
   /// an already-fulfilled future.
   virtual velox::ContinueFuture abortWrite(
       const ConnectorSessionPtr& session,
-      const ConnectorWriteHandlePtr& handle) {
-    return velox::ContinueFuture();
+      const ConnectorWriteHandlePtr& handle) noexcept {
+    return {};
   }
 
   /// Returns column handles whose value uniquely identifies a row for creating

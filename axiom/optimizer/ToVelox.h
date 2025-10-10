@@ -39,6 +39,7 @@ struct PlanAndStats {
   runner::MultiFragmentPlanPtr plan;
   NodeHistoryMap history;
   NodePredictionMap prediction;
+  runner::FinishWrite finishWrite;
 
   /// Returns a string representation of the plan annotated with estimates from
   /// 'prediction'.
@@ -195,6 +196,11 @@ class ToVelox {
       const Values& values,
       runner::ExecutableFragment& fragment);
 
+  velox::core::PlanNodePtr makeWrite(
+      const TableWrite& write,
+      runner::ExecutableFragment& fragment,
+      std::vector<runner::ExecutableFragment>& stages);
+
   // Makes a tree of PlanNode for a tree of
   // RelationOp. 'fragment' is the fragment that 'op'
   // belongs to. If op or children are repartitions then the
@@ -283,6 +289,8 @@ class ToVelox {
   int32_t stageCounter_{0};
 
   const std::optional<std::string> subscript_;
+
+  runner::FinishWrite finishWrite_;
 };
 
 } // namespace facebook::axiom::optimizer

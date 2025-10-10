@@ -555,7 +555,7 @@ class VeloxRunner : public velox::QueryBenchmarkBase {
   }
 
   static std::shared_ptr<runner::LocalRunner> makeRunner(
-      const optimizer::PlanAndStats& planAndStats,
+      optimizer::PlanAndStats& planAndStats,
       const std::shared_ptr<core::QueryCtx>& queryCtx) {
     connector::SplitOptions splitOptions{
         .targetSplitCount =
@@ -565,6 +565,7 @@ class VeloxRunner : public velox::QueryBenchmarkBase {
 
     return std::make_shared<runner::LocalRunner>(
         planAndStats.plan,
+        std::move(planAndStats.finishWrite),
         queryCtx,
         std::make_shared<runner::ConnectorSplitSourceFactory>(splitOptions));
   }

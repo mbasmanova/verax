@@ -1489,6 +1489,62 @@ PlanObjectP ToGraph::addLimit(const lp::LimitNode& limitNode) {
   return currentDt_;
 }
 
+PlanObjectP ToGraph::addWrite(const lp::TableWriteNode& tableWrite) {
+  const auto writeKind =
+      static_cast<connector::WriteKind>(tableWrite.writeKind());
+  if (writeKind != connector::WriteKind::kInsert) {
+    VELOX_NYI("Only INSERT supported for TableWrite");
+  }
+  VELOX_CHECK_NULL(
+      currentDt_->write, "Only one TableWrite per DerivedTable is allowed");
+  const auto* schemaTable =
+      schema_.findTable(tableWrite.connectorId(), tableWrite.tableName());
+  VELOX_CHECK_NOT_NULL(
+      schemaTable,
+      "Table not found: {} via connector {}",
+      tableWrite.tableName(),
+      tableWrite.connectorId());
+  const auto* connectorTable = schemaTable->connectorTable;
+  VELOX_DCHECK_NOT_NULL(connectorTable);
+  const auto& tableSchema = *connectorTable->type();
+
+  ExprVector columnExprs;
+  columnExprs.reserve(tableSchema.size());
+  for (uint32_t i = 0; i < tableSchema.size(); ++i) {
+    const auto& columnName = tableSchema.nameOf(i);
+
+    auto it = std::ranges::find(tableWrite.columnNames(), columnName);
+    if (it != tableWrite.columnNames().end()) {
+      const auto nth = it - tableWrite.columnNames().begin();
+      const auto& columnExpr = tableWrite.columnExpressions()[nth];
+      columnExprs.push_back(translateExpr(columnExpr));
+    } else {
+      const auto* tableColumn = connectorTable->findColumn(columnName);
+      VELOX_DCHECK_NOT_NULL(tableColumn);
+      columnExprs.push_back(make<Literal>(
+          Value{toType(tableColumn->type()), 1}, &tableColumn->defaultValue()));
+    }
+    VELOX_DCHECK(*tableSchema.childAt(i) == *columnExprs.back()->value().type);
+  }
+
+  renames_.clear();
+  auto& outputType = *tableWrite.outputType();
+  for (uint32_t i = 0; i < outputType.size(); ++i) {
+    const auto& outputName = outputType.nameOf(i);
+    const auto* outputColumn = toName(outputName);
+    renames_[outputName] = make<Column>(
+        outputColumn,
+        currentDt_,
+        Value{toType(outputType.childAt(i)), 1},
+        outputColumn);
+  }
+
+  currentDt_->write =
+      make<WritePlan>(*connectorTable, writeKind, std::move(columnExprs));
+
+  return currentDt_;
+}
+
 namespace {
 
 bool hasNondeterministic(const lp::ExprPtr& expr) {
@@ -1818,6 +1874,10 @@ PlanObjectP ToGraph::makeQueryGraph(
       translateUnnest(*node.asUnchecked<lp::UnnestNode>(), isNewDt);
       return currentDt_;
     }
+
+    case lp::NodeKind::kTableWrite:
+      wrapInDt(*node.onlyInput());
+      return addWrite(*node.asUnchecked<lp::TableWriteNode>());
 
     default:
       VELOX_NYI(

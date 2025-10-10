@@ -140,17 +140,26 @@ std::vector<ExecutableFragment> topologicalSort(
 
 LocalRunner::LocalRunner(
     MultiFragmentPlanPtr plan,
+    FinishWrite finishWrite,
     std::shared_ptr<velox::core::QueryCtx> queryCtx,
     std::shared_ptr<SplitSourceFactory> splitSourceFactory,
     std::shared_ptr<velox::memory::MemoryPool> outputPool)
     : plan_{std::move(plan)},
       fragments_{topologicalSort(plan_->fragments())},
+      finishWrite_{std::move(finishWrite)},
       splitSourceFactory_{std::move(splitSourceFactory)} {
   params_.queryCtx = std::move(queryCtx);
   params_.outputPool = std::move(outputPool);
+
+  VELOX_CHECK_NOT_NULL(splitSourceFactory_);
+  VELOX_CHECK(!finishWrite_ || params_.outputPool != nullptr);
 }
 
 velox::RowVectorPtr LocalRunner::next() {
+  if (finishWrite_) {
+    return nextWrite();
+  }
+
   if (!cursor_) {
     start();
   }
@@ -161,6 +170,52 @@ velox::RowVectorPtr LocalRunner::next() {
   }
 
   return cursor_->current();
+}
+
+int64_t LocalRunner::runWrite() {
+  std::vector<velox::RowVectorPtr> result;
+  auto finishWrite = std::move(finishWrite_);
+  auto state = State::kError;
+  SCOPE_EXIT {
+    state_ = state;
+  };
+  try {
+    start();
+    while (cursor_->moveNext()) {
+      result.push_back(cursor_->current());
+    }
+  } catch (const std::exception&) {
+    try {
+      waitForCompletion(1'000'000);
+    } catch (const std::exception& e) {
+      LOG(ERROR) << e.what()
+                 << " while waiting for completion after error in write query";
+      throw;
+    }
+    std::move(finishWrite).abort().get();
+    throw;
+  }
+
+  auto rows = std::move(finishWrite).commit(result).get();
+  state = State::kFinished;
+  return rows;
+}
+
+velox::RowVectorPtr LocalRunner::nextWrite() {
+  VELOX_DCHECK(finishWrite_);
+
+  const int64_t rows = runWrite();
+
+  auto child = velox::BaseVector::create<velox::FlatVector<int64_t>>(
+      velox::BIGINT(), /*length=*/1, params_.outputPool.get());
+  child->set(0, rows);
+
+  return std::make_shared<velox::RowVector>(
+      params_.outputPool.get(),
+      velox::ROW("rows", velox::BIGINT()),
+      /*nulls=*/nullptr,
+      /*length=*/1,
+      std::vector<velox::VectorPtr>{std::move(child)});
 }
 
 void LocalRunner::start() {

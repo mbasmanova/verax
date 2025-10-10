@@ -85,15 +85,16 @@ TestResult QueryTestBase::runVelox(const core::PlanNodePtr& plan) {
   fragment.fragment = core::PlanFragment(plan);
 
   optimizer::PlanAndStats planAndStats = {
-      .plan = std::make_shared<runner::MultiFragmentPlan>(
+      std::make_shared<runner::MultiFragmentPlan>(
           std::vector<runner::ExecutableFragment>{std::move(fragment)},
-          std::move(options))};
+          std::move(options)),
+  };
 
   return runFragmentedPlan(planAndStats);
 }
 
 TestResult QueryTestBase::runFragmentedPlan(
-    const optimizer::PlanAndStats& fragmentedPlan) {
+    optimizer::PlanAndStats& planAndStats) {
   TestResult result;
 
   SCOPE_EXIT {
@@ -101,11 +102,15 @@ TestResult QueryTestBase::runFragmentedPlan(
     queryCtx_.reset();
   };
 
-  result.runner =
-      std::make_shared<runner::LocalRunner>(fragmentedPlan.plan, getQueryCtx());
+  result.runner = std::make_shared<runner::LocalRunner>(
+      planAndStats.plan,
+      std::move(planAndStats.finishWrite),
+      getQueryCtx(),
+      std::make_shared<runner::ConnectorSplitSourceFactory>(),
+      optimizerPool_);
   result.results = readCursor(result.runner);
   result.stats = result.runner->stats();
-  history_->recordVeloxExecution(fragmentedPlan, result.stats);
+  history_->recordVeloxExecution(planAndStats, result.stats);
 
   return result;
 }
@@ -165,7 +170,7 @@ TestResult QueryTestBase::runVelox(
 }
 
 TestResult QueryTestBase::checkSame(
-    const optimizer::PlanAndStats& experiment,
+    optimizer::PlanAndStats& experiment,
     const core::PlanNodePtr& reference) {
   auto referenceResult = runVelox(reference);
   auto experimentResult = runFragmentedPlan(experiment);
