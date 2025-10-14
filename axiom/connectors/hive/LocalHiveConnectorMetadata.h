@@ -145,11 +145,19 @@ class LocalTable : public Table {
             std::move(name),
             std::move(type),
             TableKind::kTable,
-            std::move(options)) {}
+            std::move(options)) {
+    for (auto i = 0; i < Table::type()->size(); ++i) {
+      const auto& name = Table::type()->nameOf(i);
+      auto column = std::make_unique<Column>(name, Table::type()->childAt(i));
+      exportedColumns_[name] = column.get();
+      columns_.emplace(name, std::move(column));
+    }
+  }
 
   folly::F14FastMap<std::string, std::unique_ptr<Column>>& columns() {
     return columns_;
   }
+
   const std::vector<const TableLayout*>& layouts() const override {
     return exportedLayouts_;
   }
@@ -157,12 +165,21 @@ class LocalTable : public Table {
   const folly::F14FastMap<std::string, const Column*>& columnMap()
       const override;
 
+  void addLayout(std::unique_ptr<LocalHiveTableLayout> layout) {
+    exportedLayouts_.push_back(layout.get());
+    layouts_.push_back(std::move(layout));
+  }
+
   void makeDefaultLayout(
       std::vector<std::unique_ptr<const FileInfo>> files,
       LocalHiveConnectorMetadata& metadata);
 
   uint64_t numRows() const override {
     return numRows_;
+  }
+
+  void incrementNumRows(uint64_t n) {
+    numRows_ += n;
   }
 
   /// Samples  'samplePct' % rows of the table and sets the num distincts
@@ -189,8 +206,6 @@ class LocalTable : public Table {
 
   int64_t numRows_{0};
   int64_t numSampledRows_{0};
-
-  friend class LocalHiveConnectorMetadata;
 };
 
 class LocalHiveConnectorMetadata : public HiveConnectorMetadata {
@@ -265,9 +280,6 @@ class LocalHiveConnectorMetadata : public HiveConnectorMetadata {
   void ensureInitialized() const override;
   void makeQueryCtx();
   void makeConnectorQueryCtx();
-  std::shared_ptr<LocalTable> createTableFromSchema(
-      std::string_view name,
-      std::string_view path);
   void readTables(std::string_view path);
 
   void loadTable(std::string_view tableName, const fs::path& tablePath);
