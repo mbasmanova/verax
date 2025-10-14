@@ -1275,6 +1275,59 @@ SqlStatementPtr PrestoParser::doParse(
     return std::make_shared<InsertStatement>(planner.getPlan());
   }
 
+  if (query->is(sql::NodeType::kCreateTableAsSelect)) {
+    auto* ctas = query->as<sql::CreateTableAsSelect>();
+    auto tableName = ctas->name()->suffix();
+
+    ctas->query()->accept(&planner);
+
+    auto& planBuilder = planner.builder();
+
+    auto columnTypes = planBuilder.outputTypes();
+
+    const auto inputColumns = planBuilder.outputNames();
+    const auto numInputColumns = inputColumns.size();
+
+    std::vector<std::string> columnNames;
+    if (ctas->columns().empty()) {
+      columnNames.reserve(numInputColumns);
+      for (auto i = 0; i < numInputColumns; ++i) {
+        const auto& name = inputColumns[i];
+        VELOX_USER_CHECK(
+            name.has_value(),
+            "Column name not specified at position {}",
+            i + 1);
+        columnNames.emplace_back(name.value());
+      }
+
+      planBuilder.tableWrite(
+          defaultConnectorId_,
+          tableName,
+          lp::WriteKind::kCreate,
+          columnNames,
+          columnNames);
+    } else {
+      VELOX_USER_CHECK_EQ(ctas->columns().size(), numInputColumns);
+
+      columnNames.reserve(numInputColumns);
+      for (const auto& column : ctas->columns()) {
+        columnNames.emplace_back(column->value());
+      }
+
+      planBuilder.tableWrite(
+          defaultConnectorId_,
+          tableName,
+          lp::WriteKind::kCreate,
+          columnNames,
+          planBuilder.findOrAssignOutputNames());
+    }
+
+    return std::make_shared<CreateTableAsSelectStatement>(
+        std::move(tableName),
+        velox::ROW(std::move(columnNames), std::move(columnTypes)),
+        planner.getPlan());
+  }
+
   query->accept(&planner);
   return std::make_shared<SelectStatement>(planner.getPlan());
 }

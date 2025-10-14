@@ -68,6 +68,16 @@ class WriteTest : public test::HiveQueriesTestBase {
     EXPECT_EQ(flat->valueAt(0), expected);
   }
 
+  void checkTableData(
+      const std::string& tableName,
+      const RowVectorPtr& expectedData) {
+    auto logicalPlan = lp::PlanBuilder()
+                           .tableScan(exec::test::kHiveConnectorId, tableName)
+                           .build();
+
+    checkSameSingleNode(logicalPlan, {expectedData});
+  }
+
   std::vector<RowVectorPtr> makeTestData(
       size_t numBatches,
       vector_size_t batchSize) {
@@ -194,7 +204,7 @@ TEST_F(WriteTest, basic) {
   }
 }
 
-TEST_F(WriteTest, sql) {
+TEST_F(WriteTest, insertSql) {
   createTable(
       "test", ROW({"a", "b", "c"}, {BIGINT(), DOUBLE(), VARCHAR()}), {});
 
@@ -225,19 +235,85 @@ TEST_F(WriteTest, sql) {
     checkWriteResults(runVelox(logicalPlan), 3);
   }
 
-  {
-    auto readPlan = lp::PlanBuilder()
-                        .tableScan(exec::test::kHiveConnectorId, "test")
-                        .build();
+  checkTableData(
+      "test",
+      makeRowVector({
+          makeFlatVector<int64_t>({1, 2, 3, 4, 5}),
+          makeFlatVector<double>({0.123, 1.23, 0.3, 0.4, 0.5}),
+          makeNullableFlatVector<std::string>(
+              {"foo", "bar", std::nullopt, std::nullopt, std::nullopt}),
+      }));
+}
 
-    checkSameSingleNode(
-        readPlan,
-        {makeRowVector({
-            makeFlatVector<int64_t>({1, 2, 3, 4, 5}),
-            makeFlatVector<double>({0.123, 1.23, 0.3, 0.4, 0.5}),
-            makeNullableFlatVector<std::string>(
-                {"foo", "bar", std::nullopt, std::nullopt, std::nullopt}),
-        })});
+TEST_F(WriteTest, createTableAsSelectSql) {
+  auto parseSql = [&](std::string_view sql) {
+    test::PrestoParser parser(exec::test::kHiveConnectorId, pool());
+
+    auto statement = parser.parse(sql);
+    VELOX_CHECK(statement->isCreateTableAsSelect());
+    return dynamic_pointer_cast<const test::CreateTableAsSelectStatement>(
+        statement);
+  };
+
+  metadata_->dropTableIfExists("test");
+
+  {
+    auto statement =
+        parseSql("CREATE TABLE test(a, b, c) AS SELECT 1, 0.123, 'foo'");
+
+    createTable(
+        statement->tableName(), statement->tableSchema(), /*options=*/{});
+    SCOPE_EXIT {
+      metadata_->dropTableIfExists(statement->tableName());
+    };
+
+    checkWriteResults(runVelox(statement->plan()), 1);
+    ASSERT_TRUE(metadata_->findTable("test") != nullptr);
+    checkTableData(
+        "test",
+        makeRowVector({
+            makeFlatVector<int64_t>({1}),
+            makeFlatVector<double>({0.123}),
+            makeFlatVector<std::string>({"foo"}),
+        }));
+  }
+
+  {
+    auto statement = parseSql(
+        "CREATE TABLE test AS "
+        "SELECT x, x * 0.1 as y FROM unnest(array[1, 2, 3]) as t(x)");
+
+    createTable(
+        statement->tableName(), statement->tableSchema(), /*options=*/{});
+    SCOPE_EXIT {
+      metadata_->dropTableIfExists(statement->tableName());
+    };
+
+    checkWriteResults(runVelox(statement->plan()), 3);
+    ASSERT_TRUE(metadata_->findTable("test") != nullptr);
+    checkTableData(
+        "test",
+        makeRowVector({
+            makeFlatVector<int64_t>({1, 2, 3}),
+            makeFlatVector<double>({0.1, 0.2, 0.3}),
+        }));
+  }
+
+  // Verify that newly created table is deleted if write fails.
+  {
+    auto statement =
+        parseSql("CREATE TABLE test(a, b, c) AS SELECT 1, 0.123, 123 % 0");
+
+    createTable(
+        statement->tableName(), statement->tableSchema(), /*options=*/{});
+
+    SCOPE_EXIT {
+      metadata_->dropTableIfExists(statement->tableName());
+    };
+
+    VELOX_ASSERT_THROW(runVelox(statement->plan()), "Cannot divide by 0");
+
+    ASSERT_TRUE(metadata_->findTable("test") == nullptr);
   }
 }
 
