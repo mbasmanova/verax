@@ -283,6 +283,8 @@ class TestConnectorMetadata : public ConnectorMetadata {
   /// into the internal memory pool associated with the table.
   void appendData(std::string_view name, const velox::RowVectorPtr& data);
 
+  bool dropTableIfExists(const std::string& name);
+
  private:
   TestConnector* connector_;
   folly::F14FastMap<std::string, std::shared_ptr<TestTable>> tables_;
@@ -387,6 +389,8 @@ class TestConnector : public velox::connector::Connector {
   /// DataSource corresponding to this table. Appended data is copied
   /// to the internal memory pool of the associated table.
   void appendData(std::string_view name, const velox::RowVectorPtr& data);
+
+  bool dropTableIfExists(const std::string& name);
 
  private:
   const std::shared_ptr<TestConnectorMetadata> metadata_;

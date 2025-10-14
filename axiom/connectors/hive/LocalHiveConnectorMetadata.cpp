@@ -1021,8 +1021,14 @@ velox::ContinueFuture LocalHiveConnectorMetadata::abortWrite(
 }
 
 std::optional<std::string> LocalHiveConnectorMetadata::makeStagingDirectory(
-    std::string_view table) const {
-  return createTemporaryDirectory(hiveConfig_->hiveLocalDataPath(), table);
+    std::string_view tableName) const {
+  return createTemporaryDirectory(hiveConfig_->hiveLocalDataPath(), tableName);
+}
+
+bool LocalHiveConnectorMetadata::dropTableIfExists(std::string_view tableName) {
+  std::lock_guard<std::mutex> l(mutex_);
+  deleteDirectoryRecursive(tablePath(tableName));
+  return tables_.erase(tableName) == 1;
 }
 
 } // namespace facebook::axiom::connector::hive

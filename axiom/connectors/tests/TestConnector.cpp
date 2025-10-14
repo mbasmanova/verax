@@ -123,6 +123,10 @@ std::shared_ptr<TestTable> TestConnectorMetadata::addTable(
   return it->second;
 }
 
+bool TestConnectorMetadata::dropTableIfExists(const std::string& name) {
+  return tables_.erase(name) == 1;
+}
+
 void TestConnectorMetadata::appendData(
     std::string_view name,
     const velox::RowVectorPtr& data) {
@@ -226,6 +230,10 @@ std::shared_ptr<TestTable> TestConnector::addTable(
     const std::string& name,
     const velox::RowTypePtr& schema) {
   return metadata_->addTable(name, schema);
+}
+
+bool TestConnector::dropTableIfExists(const std::string& name) {
+  return metadata_->dropTableIfExists(name);
 }
 
 void TestConnector::appendData(

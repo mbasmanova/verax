@@ -47,6 +47,8 @@ class WriteTest : public test::HiveQueriesTestBase {
       const std::string& name,
       const RowTypePtr& tableType,
       const folly::F14FastMap<std::string, std::string>& options) {
+    metadata_->dropTableIfExists(name);
+
     auto session = std::make_shared<connector::ConnectorSession>("test");
     auto table = metadata_->createTable(session, name, tableType, options);
     auto handle =
@@ -97,7 +99,7 @@ class WriteTest : public test::HiveQueriesTestBase {
   connector::hive::LocalHiveConnectorMetadata* metadata_;
 };
 
-TEST_F(WriteTest, write) {
+TEST_F(WriteTest, basic) {
   lp::PlanBuilder::Context context(exec::test::kHiveConnectorId);
 
   static constexpr vector_size_t kTestBatchSize = 2048;
@@ -132,7 +134,7 @@ TEST_F(WriteTest, write) {
 
   auto countTestTable = [&] {
     auto countPlan = lp::PlanBuilder(context)
-                         .tableScan(exec::test::kHiveConnectorId, "test")
+                         .tableScan("test")
                          .aggregate({}, {"count(1)"})
                          .build();
 
@@ -142,9 +144,8 @@ TEST_F(WriteTest, write) {
 
   EXPECT_EQ(kTestBatchSize * 10, countTestTable());
 
-  auto errorData = makeTestData(100, kTestBatchSize);
   auto errorPlan = lp::PlanBuilder(context)
-                       .values(errorData)
+                       .values(makeTestData(100, kTestBatchSize))
                        .tableWrite(
                            exec::test::kHiveConnectorId,
                            "test",
@@ -156,28 +157,28 @@ TEST_F(WriteTest, write) {
 
   EXPECT_EQ(kTestBatchSize * 10, countTestTable());
 
-  auto readPlan = lp::PlanBuilder(context)
-                      .tableScan(
-                          exec::test::kHiveConnectorId,
-                          "test",
-                          {"key1", "key2", "data", "data2", "ds"})
-                      .filter("data2 is null")
-                      .project({"key1", "key2", "data", "ds"})
-                      .build();
+  std::vector<RowVectorPtr> expectedData;
+  expectedData.reserve(data.size());
+  for (const auto& vector : data) {
+    expectedData.emplace_back(makeRowVector({
+        vector->childAt(0),
+        vector->childAt(1),
+        vector->childAt(2),
+        /*data2*/ makeAllNullFlatVector<std::string>(vector->size()),
+        vector->childAt(3),
+    }));
+  }
 
   {
-    auto result = runVelox(readPlan);
-    exec::test::assertEqualResults(data, result.results);
+    auto readPlan = lp::PlanBuilder(context).tableScan("test").build();
+    checkSameSingleNode(readPlan, expectedData);
   }
 
   // Create a second table to copy the first one into.
   createTable("test2", tableType, options);
 
   auto copyPlan = lp::PlanBuilder(context)
-                      .tableScan(
-                          exec::test::kHiveConnectorId,
-                          "test",
-                          {"key1", "key2", "data", "data2", "ds"})
+                      .tableScan("test")
                       .tableWrite(
                           exec::test::kHiveConnectorId,
                           "test2",
@@ -187,18 +188,56 @@ TEST_F(WriteTest, write) {
                       .build();
   checkWriteResults(runVelox(copyPlan), kTestBatchSize * 10);
 
-  readPlan = lp::PlanBuilder(context)
-                 .tableScan(
-                     exec::test::kHiveConnectorId,
-                     "test2",
-                     {"key1", "key2", "data", "data2", "ds"})
-                 .filter("data2 is null")
-                 .project({"key1", "key2", "data", "ds"})
-                 .build();
+  {
+    auto readPlan = lp::PlanBuilder(context).tableScan("test2").build();
+    checkSameSingleNode(readPlan, expectedData);
+  }
+}
+
+TEST_F(WriteTest, sql) {
+  createTable(
+      "test", ROW({"a", "b", "c"}, {BIGINT(), DOUBLE(), VARCHAR()}), {});
+
+  auto parseSql = [&](std::string_view sql) {
+    test::PrestoParser parser(exec::test::kHiveConnectorId, pool());
+
+    auto statement = parser.parse(sql);
+    VELOX_CHECK(statement->isInsert());
+
+    return statement->asUnchecked<test::InsertStatement>()->plan();
+  };
 
   {
-    auto result = runVelox(readPlan);
-    exec::test::assertEqualResults(data, result.results);
+    auto logicalPlan = parseSql("INSERT INTO test SELECT 1, 0.123, 'foo'");
+    checkWriteResults(runVelox(logicalPlan), 1);
+  }
+
+  {
+    auto logicalPlan =
+        parseSql("INSERT INTO test(c, a, b) SELECT 'bar', 2, 1.23");
+    checkWriteResults(runVelox(logicalPlan), 1);
+  }
+
+  {
+    auto logicalPlan = parseSql(
+        "INSERT INTO test(a, b) "
+        "SELECT x, x * 0.1 FROM unnest(array[3, 4, 5]) as t(x)");
+    checkWriteResults(runVelox(logicalPlan), 3);
+  }
+
+  {
+    auto readPlan = lp::PlanBuilder()
+                        .tableScan(exec::test::kHiveConnectorId, "test")
+                        .build();
+
+    checkSameSingleNode(
+        readPlan,
+        {makeRowVector({
+            makeFlatVector<int64_t>({1, 2, 3, 4, 5}),
+            makeFlatVector<double>({0.123, 1.23, 0.3, 0.4, 0.5}),
+            makeNullableFlatVector<std::string>(
+                {"foo", "bar", std::nullopt, std::nullopt, std::nullopt}),
+        })});
   }
 }
 

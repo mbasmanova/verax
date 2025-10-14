@@ -22,6 +22,7 @@ namespace facebook::axiom::optimizer::test {
 
 enum class SqlStatementKind {
   kSelect,
+  kInsert,
   kExplain,
 };
 
@@ -37,6 +38,10 @@ class SqlStatement {
 
   bool isSelect() const {
     return kind_ == SqlStatementKind::kSelect;
+  }
+
+  bool isInsert() const {
+    return kind_ == SqlStatementKind::kInsert;
   }
 
   bool isExplain() const {
@@ -58,6 +63,19 @@ class SelectStatement : public SqlStatement {
  public:
   explicit SelectStatement(logical_plan::LogicalPlanNodePtr plan)
       : SqlStatement(SqlStatementKind::kSelect), plan_{std::move(plan)} {}
+
+  const logical_plan::LogicalPlanNodePtr& plan() const {
+    return plan_;
+  }
+
+ private:
+  const logical_plan::LogicalPlanNodePtr plan_;
+};
+
+class InsertStatement : public SqlStatement {
+ public:
+  explicit InsertStatement(logical_plan::LogicalPlanNodePtr plan)
+      : SqlStatement(SqlStatementKind::kInsert), plan_{std::move(plan)} {}
 
   const logical_plan::LogicalPlanNodePtr& plan() const {
     return plan_;
