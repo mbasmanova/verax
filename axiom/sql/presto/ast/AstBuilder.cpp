@@ -275,7 +275,29 @@ std::any AstBuilder::visitRenameSchema(
 std::any AstBuilder::visitCreateTableAsSelect(
     PrestoSqlParser::CreateTableAsSelectContext* ctx) {
   trace("visitCreateTableAsSelect");
-  return visitChildren(ctx);
+
+  // TODO Add support for properties.
+
+  std::optional<std::string> comment;
+  if (ctx->COMMENT() != nullptr) {
+    comment = visitExpression(ctx->string())->as<StringLiteral>()->value();
+  }
+
+  std::vector<std::shared_ptr<Identifier>> columns;
+  if (ctx->columnAliases()) {
+    columns = visitTyped<Identifier>(ctx->columnAliases()->identifier());
+  }
+
+  return std::static_pointer_cast<Statement>(
+      std::make_shared<CreateTableAsSelect>(
+          getLocation(ctx),
+          getQualifiedName(ctx->qualifiedName()),
+          visitTyped<Statement>(ctx->query()),
+          /*notExists=*/ctx->EXISTS() != nullptr,
+          /*properties=*/std::vector<std::shared_ptr<Property>>{},
+          /*withData=*/ctx->NO() == nullptr,
+          std::move(columns),
+          std::move(comment)));
 }
 
 std::any AstBuilder::visitCreateTable(

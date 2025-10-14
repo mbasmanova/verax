@@ -1393,6 +1393,30 @@ size_t PlanBuilder::numOutput() const {
   return node_->outputType()->size();
 }
 
+std::vector<std::optional<std::string>> PlanBuilder::outputNames() const {
+  auto size = numOutput();
+
+  std::vector<std::optional<std::string>> names;
+  names.reserve(size);
+
+  for (auto i = 0; i < size; i++) {
+    auto id = node_->outputType()->nameOf(i);
+
+    if (outputMapping_->reverseLookup(id).empty()) {
+      names.push_back(std::nullopt);
+    } else {
+      names.push_back(id);
+    }
+  }
+
+  return names;
+}
+
+std::vector<velox::TypePtr> PlanBuilder::outputTypes() const {
+  VELOX_CHECK_NOT_NULL(node_);
+  return node_->outputType()->children();
+}
+
 std::vector<std::string> PlanBuilder::findOrAssignOutputNames() const {
   auto size = numOutput();
 

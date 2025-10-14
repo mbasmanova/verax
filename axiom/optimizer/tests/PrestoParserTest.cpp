@@ -88,9 +88,30 @@ class PrestoParserTest : public testing::Test {
     ASSERT_TRUE(statement->isInsert());
 
     auto insertStatement = statement->asUnchecked<test::InsertStatement>();
-    ASSERT_TRUE(insertStatement->isInsert());
 
     auto logicalPlan = insertStatement->plan();
+    ASSERT_TRUE(matcher.build()->match(logicalPlan))
+        << lp::PlanPrinter::toText(*logicalPlan);
+  }
+
+  void testCtasSql(
+      std::string_view sql,
+      const std::string& tableName,
+      const RowTypePtr& tableSchema,
+      lp::LogicalPlanMatcherBuilder& matcher) {
+    SCOPED_TRACE(sql);
+    test::PrestoParser parser(kTpchConnectorId, pool());
+
+    auto statement = parser.parse(sql);
+    ASSERT_TRUE(statement->isCreateTableAsSelect());
+
+    auto ctasStatement =
+        statement->asUnchecked<test::CreateTableAsSelectStatement>();
+
+    ASSERT_EQ(ctasStatement->tableName(), tableName);
+    ASSERT_TRUE(*ctasStatement->tableSchema() == *tableSchema);
+
+    auto logicalPlan = ctasStatement->plan();
     ASSERT_TRUE(matcher.build()->match(logicalPlan))
         << lp::PlanPrinter::toText(*logicalPlan);
   }
@@ -576,6 +597,48 @@ TEST_F(PrestoParserTest, insertIntoTable) {
     VELOX_ASSERT_THROW(
         parser.parse("INSERT INTO nation SELECT 100, 'n-100', 2, 3"),
         "Wrong column type: BIGINT vs. VARCHAR, column n_comment in table nation");
+  }
+}
+
+TEST_F(PrestoParserTest, createTableAsSelect) {
+  {
+    auto nationSchema = connector::ConnectorMetadata::metadata(kTpchConnectorId)
+                            ->findTable("nation")
+                            ->type();
+
+    auto matcher = lp::LogicalPlanMatcherBuilder().tableScan().tableWrite();
+    testCtasSql(
+        "CREATE TABLE t AS SELECT * FROM nation", "t", nationSchema, matcher);
+  }
+
+  {
+    auto matcher =
+        lp::LogicalPlanMatcherBuilder().tableScan().project().tableWrite();
+    testCtasSql(
+        "CREATE TABLE t AS SELECT n_nationkey * 100 as a, n_name as b FROM nation",
+        "t",
+        ROW({"a", "b"}, {BIGINT(), VARCHAR()}),
+        matcher);
+  }
+
+  // Missing column names.
+  {
+    test::PrestoParser parser(kTpchConnectorId, pool());
+
+    VELOX_ASSERT_THROW(
+        parser.parse(
+            "CREATE TABLE t AS SELECT n_nationkey * 100, n_name FROM nation"),
+        "Column name not specified at position 1");
+  }
+
+  {
+    auto matcher =
+        lp::LogicalPlanMatcherBuilder().tableScan().project().tableWrite();
+    testCtasSql(
+        "CREATE TABLE t(a, b) AS SELECT n_nationkey * 100, n_name FROM nation",
+        "t",
+        ROW({"a", "b"}, {BIGINT(), VARCHAR()}),
+        matcher);
   }
 }
 

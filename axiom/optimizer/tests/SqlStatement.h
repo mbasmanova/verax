@@ -23,6 +23,7 @@ namespace facebook::axiom::optimizer::test {
 enum class SqlStatementKind {
   kSelect,
   kInsert,
+  kCreateTableAsSelect,
   kExplain,
 };
 
@@ -42,6 +43,10 @@ class SqlStatement {
 
   bool isInsert() const {
     return kind_ == SqlStatementKind::kInsert;
+  }
+
+  bool isCreateTableAsSelect() const {
+    return kind_ == SqlStatementKind::kCreateTableAsSelect;
   }
 
   bool isExplain() const {
@@ -82,6 +87,35 @@ class InsertStatement : public SqlStatement {
   }
 
  private:
+  const logical_plan::LogicalPlanNodePtr plan_;
+};
+
+class CreateTableAsSelectStatement : public SqlStatement {
+ public:
+  explicit CreateTableAsSelectStatement(
+      std::string tableName,
+      velox::RowTypePtr tableSchema,
+      logical_plan::LogicalPlanNodePtr plan)
+      : SqlStatement(SqlStatementKind::kCreateTableAsSelect),
+        tableName_{std::move(tableName)},
+        tableSchema_{std::move(tableSchema)},
+        plan_{std::move(plan)} {}
+
+  const std::string& tableName() const {
+    return tableName_;
+  }
+
+  const velox::RowTypePtr& tableSchema() const {
+    return tableSchema_;
+  }
+
+  const logical_plan::LogicalPlanNodePtr& plan() const {
+    return plan_;
+  }
+
+ private:
+  const std::string tableName_;
+  const velox::RowTypePtr tableSchema_;
   const logical_plan::LogicalPlanNodePtr plan_;
 };
 
