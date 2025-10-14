@@ -220,6 +220,10 @@ class RelationPlanner : public sql::AstVisitor {
     return builder_->build();
   }
 
+  lp::PlanBuilder& builder() {
+    return *builder_;
+  }
+
  private:
   static std::string toFunctionName(sql::ComparisonExpression::Operator op) {
     switch (op) {
@@ -1236,6 +1240,39 @@ SqlStatementPtr PrestoParser::doParse(
         lp::PlanBuilder(ctx)
             .values(ROW({"column", "type"}, {VARCHAR(), VARCHAR()}), data)
             .build());
+  }
+
+  if (query->is(sql::NodeType::kInsert)) {
+    auto* insert = query->as<sql::Insert>();
+    auto tableName = insert->target()->suffix();
+
+    auto table = connector::ConnectorMetadata::metadata(defaultConnectorId_)
+                     ->findTable(tableName);
+    VELOX_USER_CHECK_NOT_NULL(table, "Table not found: {}", tableName);
+
+    std::vector<std::string> columnNames;
+    if (insert->columns().empty()) {
+      columnNames = table->type()->names();
+    } else {
+      columnNames.reserve(insert->columns().size());
+      for (const auto& column : insert->columns()) {
+        columnNames.emplace_back(column->value());
+      }
+    }
+
+    insert->query()->accept(&planner);
+
+    auto inputColumns = planner.builder().findOrAssignOutputNames();
+    VELOX_CHECK_EQ(inputColumns.size(), columnNames.size());
+
+    planner.builder().tableWrite(
+        defaultConnectorId_,
+        tableName,
+        lp::WriteKind::kInsert,
+        columnNames,
+        inputColumns);
+
+    return std::make_shared<InsertStatement>(planner.getPlan());
   }
 
   query->accept(&planner);

@@ -29,6 +29,8 @@ class LogicalPlanMatcher {
 
 class LogicalPlanMatcherBuilder {
  public:
+  LogicalPlanMatcherBuilder& tableWrite();
+
   LogicalPlanMatcherBuilder& tableScan();
 
   LogicalPlanMatcherBuilder& values();

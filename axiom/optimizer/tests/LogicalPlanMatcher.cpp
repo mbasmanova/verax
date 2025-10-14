@@ -66,6 +66,12 @@ class LogicalPlanMatcherImpl : public LogicalPlanMatcher {
 };
 } // namespace
 
+LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::tableWrite() {
+  VELOX_USER_CHECK_NOT_NULL(matcher_);
+  matcher_ = std::make_shared<LogicalPlanMatcherImpl<TableWriteNode>>(matcher_);
+  return *this;
+}
+
 LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::tableScan() {
   VELOX_USER_CHECK_NULL(matcher_);
   matcher_ = std::make_shared<LogicalPlanMatcherImpl<TableScanNode>>();

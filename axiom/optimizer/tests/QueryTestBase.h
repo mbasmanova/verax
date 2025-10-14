@@ -111,6 +111,14 @@ class QueryTestBase : public runner::test::LocalRunnerTestBase {
         planNode, referencePlan, {.numWorkers = 1, .numDrivers = numDrivers});
   }
 
+  void checkSameSingleNode(
+      const logical_plan::LogicalPlanNodePtr& planNode,
+      const std::vector<velox::RowVectorPtr>& referenceResult,
+      int32_t numDrivers = 1) {
+    checkSame(
+        planNode, referenceResult, {.numWorkers = 1, .numDrivers = numDrivers});
+  }
+
   velox::memory::MemoryPool& optimizerPool() const {
     return *optimizerPool_;
   }

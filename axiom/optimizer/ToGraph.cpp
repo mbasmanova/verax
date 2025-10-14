@@ -1530,7 +1530,12 @@ PlanObjectP ToGraph::addWrite(const lp::TableWriteNode& tableWrite) {
       columnExprs.push_back(make<Literal>(
           Value{toType(tableColumn->type()), 1}, &tableColumn->defaultValue()));
     }
-    VELOX_DCHECK(*tableSchema.childAt(i) == *columnExprs.back()->value().type);
+    VELOX_DCHECK(
+        *tableSchema.childAt(i) == *columnExprs.back()->value().type,
+        "Wrong column type: {}, {} vs. {}",
+        columnName,
+        tableSchema.childAt(i)->toString(),
+        columnExprs.back()->value().type->toString());
   }
 
   renames_.clear();
