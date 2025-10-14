@@ -21,6 +21,7 @@
 #include "axiom/logical_plan/ExprPrinter.h"
 #include "axiom/logical_plan/PlanPrinter.h"
 #include "axiom/optimizer/tests/LogicalPlanMatcher.h"
+#include "velox/common/base/tests/GTestUtils.h"
 #include "velox/connectors/tpch/TpchConnector.h"
 #include "velox/functions/prestosql/aggregates/RegisterAggregateFunctions.h"
 #include "velox/functions/prestosql/registration/RegistrationFunctions.h"
@@ -73,7 +74,25 @@ class PrestoParserTest : public testing::Test {
     ASSERT_TRUE(statement->isSelect());
 
     auto logicalPlan = statement->asUnchecked<test::SelectStatement>()->plan();
-    ASSERT_TRUE(matcher.build()->match(logicalPlan));
+    ASSERT_TRUE(matcher.build()->match(logicalPlan))
+        << lp::PlanPrinter::toText(*logicalPlan);
+  }
+
+  void testInsertSql(
+      std::string_view sql,
+      lp::LogicalPlanMatcherBuilder& matcher) {
+    SCOPED_TRACE(sql);
+    test::PrestoParser parser(kTpchConnectorId, pool());
+
+    auto statement = parser.parse(sql);
+    ASSERT_TRUE(statement->isInsert());
+
+    auto insertStatement = statement->asUnchecked<test::InsertStatement>();
+    ASSERT_TRUE(insertStatement->isInsert());
+
+    auto logicalPlan = insertStatement->plan();
+    ASSERT_TRUE(matcher.build()->match(logicalPlan))
+        << lp::PlanPrinter::toText(*logicalPlan);
   }
 
   template <typename T>
@@ -517,6 +536,47 @@ TEST_F(PrestoParserTest, describe) {
   testSql("DESC orders", matcher);
 
   testSql("SHOW COLUMNS FROM lineitem", matcher);
+}
+
+TEST_F(PrestoParserTest, insertIntoTable) {
+  {
+    auto matcher =
+        lp::LogicalPlanMatcherBuilder().values().project().tableWrite();
+    testInsertSql(
+        "INSERT INTO nation SELECT 100, 'n-100', 2, 'test comment'", matcher);
+  }
+
+  {
+    auto matcher = lp::LogicalPlanMatcherBuilder().tableScan().tableWrite();
+    testInsertSql("INSERT INTO nation SELECT * FROM nation", matcher);
+  }
+
+  // Omit n_comment. Expect to be filled with default value.
+  {
+    auto matcher =
+        lp::LogicalPlanMatcherBuilder().values().project().tableWrite();
+    testInsertSql(
+        "INSERT INTO nation(n_nationkey, n_name, n_regionkey) SELECT 100, 'n-100', 2",
+        matcher);
+  }
+
+  // Change the order of columns.
+  {
+    auto matcher =
+        lp::LogicalPlanMatcherBuilder().values().project().tableWrite();
+    testInsertSql(
+        "INSERT INTO nation(n_nationkey, n_regionkey, n_name) SELECT 100, 2, 'n-100'",
+        matcher);
+  }
+
+  // Wrong types.
+  {
+    test::PrestoParser parser(kTpchConnectorId, pool());
+
+    VELOX_ASSERT_THROW(
+        parser.parse("INSERT INTO nation SELECT 100, 'n-100', 2, 3"),
+        "Wrong column type: BIGINT vs. VARCHAR, column n_comment in table nation");
+  }
 }
 
 } // namespace

@@ -1268,11 +1268,42 @@ PlanBuilder& PlanBuilder::tableWrite(
     const std::vector<ExprApi>& columnExprs,
     folly::F14FastMap<std::string, std::string> options) {
   VELOX_USER_CHECK_NOT_NULL(node_, "Table write node cannot be a leaf node");
+  VELOX_USER_CHECK_GT(columnNames.size(), 0);
+  VELOX_USER_CHECK_EQ(columnNames.size(), columnExprs.size());
 
   std::vector<ExprPtr> columnExpressions;
   columnExpressions.reserve(columnExprs.size());
   for (const auto& expr : columnExprs) {
     columnExpressions.push_back(resolveScalarTypes(expr.expr()));
+  }
+
+  if (kind == WriteKind::kInsert) {
+    // Check input types.
+    // TODO Add coercions if necessary.
+    auto* metadata = connector::ConnectorMetadata::metadata(connectorId);
+    auto table = metadata->findTable(tableName);
+    VELOX_USER_CHECK_NOT_NULL(table, "Table not found: {}", tableName);
+    const auto& schema = table->type();
+
+    for (auto i = 0; i < columnNames.size(); i++) {
+      const auto& name = columnNames[i];
+      const auto index = schema->getChildIdxIfExists(name);
+      VELOX_USER_CHECK(
+          index.has_value(),
+          "Column not found: {} in table {}",
+          name,
+          tableName);
+
+      const auto& inputType = columnExpressions[i]->type();
+      const auto& schemaType = schema->childAt(index.value());
+      VELOX_USER_CHECK(
+          schemaType->equivalent(*inputType),
+          "Wrong column type: {} vs. {}, column {} in table {}",
+          inputType->toString(),
+          schemaType->toString(),
+          name,
+          tableName);
+    }
   }
 
   node_ = std::make_shared<TableWriteNode>(

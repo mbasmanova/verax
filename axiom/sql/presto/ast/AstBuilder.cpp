@@ -291,7 +291,17 @@ std::any AstBuilder::visitDropTable(PrestoSqlParser::DropTableContext* ctx) {
 
 std::any AstBuilder::visitInsertInto(PrestoSqlParser::InsertIntoContext* ctx) {
   trace("visitInsertInto");
-  return visitChildren(ctx);
+
+  std::vector<std::shared_ptr<Identifier>> columns;
+  if (ctx->columnAliases()) {
+    columns = visitTyped<Identifier>(ctx->columnAliases()->identifier());
+  };
+
+  return std::static_pointer_cast<Statement>(std::make_shared<Insert>(
+      getLocation(ctx),
+      getQualifiedName(ctx->qualifiedName()),
+      std::move(columns),
+      visitTyped<Statement>(ctx->query())));
 }
 
 std::any AstBuilder::visitDelete(PrestoSqlParser::DeleteContext* ctx) {

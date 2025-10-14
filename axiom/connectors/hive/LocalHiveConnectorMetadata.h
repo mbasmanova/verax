@@ -252,12 +252,14 @@ class LocalHiveConnectorMetadata : public HiveConnectorMetadata {
       const ConnectorSessionPtr& session,
       const ConnectorWriteHandlePtr& handle) noexcept override;
 
-  std::string tablePath(std::string_view table) const override {
-    return fmt::format("{}/{}", hiveConfig_->hiveLocalDataPath(), table);
+  std::string tablePath(std::string_view tableName) const override {
+    return fmt::format("{}/{}", hiveConfig_->hiveLocalDataPath(), tableName);
   }
 
   std::optional<std::string> makeStagingDirectory(
-      std::string_view table) const override;
+      std::string_view tableName) const override;
+
+  bool dropTableIfExists(std::string_view tableName);
 
  private:
   void ensureInitialized() const override;
