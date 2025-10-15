@@ -434,45 +434,38 @@ struct CreateTableOptions {
   std::vector<std::string> sortedByColumns;
 };
 
-// Split a set of string tokens with ',' delimiter. Trim leading and trailing
-// spaces around tokens.
-void parseTokens(const std::string& option, std::vector<std::string>& tokens) {
-  tokens.clear();
-  folly::split(",", option, tokens);
-  for (auto& token : tokens) {
-    token = folly::trimWhitespace(token);
-  }
-}
-
 CreateTableOptions parseCreateTableOptions(
-    const folly::F14FastMap<std::string, std::string>& options,
+    const folly::F14FastMap<std::string, velox::Variant>& options,
     velox::dwio::common::FileFormat defaultFileFormat) {
   CreateTableOptions result;
 
   auto it = options.find(HiveWriteOptions::kCompressionKind);
   if (it != options.end()) {
-    result.compressionKind = velox::common::stringToCompressionKind(it->second);
+    result.compressionKind =
+        velox::common::stringToCompressionKind(it->second.value<std::string>());
   }
 
   it = options.find(HiveWriteOptions::kFileFormat);
   if (it != options.end()) {
-    result.fileFormat = velox::dwio::common::toFileFormat(it->second);
+    result.fileFormat =
+        velox::dwio::common::toFileFormat(it->second.value<std::string>());
     VELOX_USER_CHECK(
         result.fileFormat != velox::dwio::common::FileFormat::UNKNOWN,
         "Bad file format: {}",
-        it->second);
+        it->second.value<std::string>());
   } else {
     result.fileFormat = defaultFileFormat;
   }
 
   it = options.find(HiveWriteOptions::kPartitionedBy);
   if (it != options.end()) {
-    parseTokens(it->second, result.partitionedByColumns);
+    result.partitionedByColumns = it->second.array<std::string>();
   }
 
   it = options.find(HiveWriteOptions::kBucketedBy);
   if (it != options.end()) {
-    parseTokens(it->second, result.bucketedByColumns);
+    result.bucketedByColumns = it->second.array<std::string>();
+
     it = options.find(HiveWriteOptions::kBucketCount);
     VELOX_USER_CHECK(
         it != options.end(),
@@ -480,7 +473,7 @@ CreateTableOptions parseCreateTableOptions(
         HiveWriteOptions::kBucketCount,
         HiveWriteOptions::kBucketedBy);
 
-    const auto numBuckets = atoi(it->second.c_str());
+    const auto numBuckets = it->second.value<int32_t>();
     VELOX_USER_CHECK_GT(numBuckets, 0, "bucket_count must be > 0");
     VELOX_USER_CHECK_EQ(
         numBuckets & (numBuckets - 1), 0, "bucket_count must be power of 2");
@@ -489,7 +482,7 @@ CreateTableOptions parseCreateTableOptions(
 
     it = options.find("sorted_by");
     if (it != options.end()) {
-      parseTokens(it->second, result.sortedByColumns);
+      result.sortedByColumns = it->second.array<std::string>();
     }
   }
 
@@ -618,7 +611,7 @@ std::shared_ptr<LocalTable> createLocalTable(
     const velox::RowTypePtr& schema,
     const CreateTableOptions& createTableOptions,
     velox::connector::Connector* connector) {
-  folly::F14FastMap<std::string, std::string> options;
+  folly::F14FastMap<std::string, velox::Variant> options;
   if (createTableOptions.compressionKind.has_value()) {
     options[HiveWriteOptions::kCompressionKind] =
         velox::common::compressionKindToString(
@@ -626,8 +619,8 @@ std::shared_ptr<LocalTable> createLocalTable(
   }
 
   if (createTableOptions.fileFormat.has_value()) {
-    options[HiveWriteOptions::kFileFormat] =
-        velox::dwio::common::toString(createTableOptions.fileFormat.value());
+    options[HiveWriteOptions::kFileFormat] = std::string(
+        velox::dwio::common::toString(createTableOptions.fileFormat.value()));
   }
 
   auto table = std::make_shared<LocalTable>(
@@ -1042,7 +1035,7 @@ TablePtr LocalHiveConnectorMetadata::createTable(
     const ConnectorSessionPtr& session,
     const std::string& tableName,
     const velox::RowTypePtr& rowType,
-    const folly::F14FastMap<std::string, std::string>& options) {
+    const folly::F14FastMap<std::string, velox::Variant>& options) {
   validateOptions(options);
   ensureInitialized();
   auto path = tablePath(tableName);

@@ -46,7 +46,7 @@ class WriteTest : public test::HiveQueriesTestBase {
   void createTable(
       const std::string& name,
       const RowTypePtr& tableType,
-      const folly::F14FastMap<std::string, std::string>& options) {
+      const folly::F14FastMap<std::string, velox::Variant>& options) {
     metadata_->dropTableIfExists(name);
 
     auto session = std::make_shared<connector::ConnectorSession>("test");
@@ -122,7 +122,7 @@ TEST_F(WriteTest, basic) {
       {"ds", VARCHAR()},
   });
 
-  folly::F14FastMap<std::string, std::string> options = {
+  folly::F14FastMap<std::string, velox::Variant> options = {
       {"file_format", "parquet"},
       {"compression_kind", "snappy"},
   };

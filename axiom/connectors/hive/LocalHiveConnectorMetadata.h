@@ -140,7 +140,7 @@ class LocalTable : public Table {
   LocalTable(
       std::string name,
       velox::RowTypePtr type,
-      folly::F14FastMap<std::string, std::string> options = {})
+      folly::F14FastMap<std::string, velox::Variant> options = {})
       : Table(
             std::move(name),
             std::move(type),
@@ -256,7 +256,7 @@ class LocalHiveConnectorMetadata : public HiveConnectorMetadata {
       const ConnectorSessionPtr& session,
       const std::string& tableName,
       const velox::RowTypePtr& rowType,
-      const folly::F14FastMap<std::string, std::string>& options) override;
+      const folly::F14FastMap<std::string, velox::Variant>& options) override;
 
   RowsFuture finishWrite(
       const ConnectorSessionPtr& session,

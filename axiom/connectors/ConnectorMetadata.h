@@ -310,7 +310,7 @@ class Table : public std::enable_shared_from_this<Table> {
       std::string name,
       velox::RowTypePtr type,
       TableKind kind = TableKind::kTable,
-      folly::F14FastMap<std::string, std::string> options = {})
+      folly::F14FastMap<std::string, velox::Variant> options = {})
       : name_(std::move(name)),
         type_(std::move(type)),
         kind_(kind),
@@ -350,7 +350,8 @@ class Table : public std::enable_shared_from_this<Table> {
   /// Returns an estimate of the number of rows in 'this'.
   virtual uint64_t numRows() const = 0;
 
-  virtual const folly::F14FastMap<std::string, std::string>& options() const {
+  virtual const folly::F14FastMap<std::string, velox::Variant>& options()
+      const {
     return options_;
   }
 
@@ -360,10 +361,8 @@ class Table : public std::enable_shared_from_this<Table> {
   // Discovered from data. In the event of different types, we take the
   // latest (i.e. widest) table type.
   const velox::RowTypePtr type_;
-
   const TableKind kind_;
-
-  const folly::F14FastMap<std::string, std::string> options_;
+  const folly::F14FastMap<std::string, velox::Variant> options_;
 };
 
 using TablePtr = std::shared_ptr<const Table>;
@@ -587,7 +586,7 @@ class ConnectorMetadata {
       const ConnectorSessionPtr& session,
       const std::string& tableName,
       const velox::RowTypePtr& rowType,
-      const folly::F14FastMap<std::string, std::string>& options) {
+      const folly::F14FastMap<std::string, velox::Variant>& options) {
     VELOX_UNSUPPORTED();
   }
 

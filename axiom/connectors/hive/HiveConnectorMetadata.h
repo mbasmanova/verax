@@ -185,7 +185,7 @@ class HiveConnectorMetadata : public ConnectorMetadata {
   virtual void ensureInitialized() const {}
 
   virtual void validateOptions(
-      const folly::F14FastMap<std::string, std::string>& options) const;
+      const folly::F14FastMap<std::string, velox::Variant>& options) const;
 
   /// Return the filesystem path for the storage of the specified table.
   virtual std::string tablePath(std::string_view table) const = 0;

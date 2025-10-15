@@ -143,7 +143,8 @@ ConnectorWriteHandlePtr HiveConnectorMetadata::beginWrite(
   auto it =
       hiveLayout->table().options().find(HiveWriteOptions::kCompressionKind);
   if (it != hiveLayout->table().options().end()) {
-    compressionKind = velox::common::stringToCompressionKind(it->second);
+    compressionKind =
+        velox::common::stringToCompressionKind(it->second.value<std::string>());
   } else {
     compressionKind = velox::common::CompressionKind::CompressionKind_ZSTD;
   }
@@ -205,7 +206,7 @@ ConnectorWriteHandlePtr HiveConnectorMetadata::beginWrite(
 }
 
 void HiveConnectorMetadata::validateOptions(
-    const folly::F14FastMap<std::string, std::string>& options) const {
+    const folly::F14FastMap<std::string, velox::Variant>& options) const {
   static const folly::F14FastSet<std::string_view> kAllowed = {
       HiveWriteOptions::kBucketedBy,
       HiveWriteOptions::kBucketCount,
@@ -214,6 +215,7 @@ void HiveConnectorMetadata::validateOptions(
       HiveWriteOptions::kFileFormat,
       HiveWriteOptions::kCompressionKind,
   };
+
   for (auto& pair : options) {
     if (!kAllowed.contains(pair.first)) {
       VELOX_USER_FAIL("Option {} is not supported", pair.first);
