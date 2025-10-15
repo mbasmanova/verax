@@ -18,6 +18,7 @@
 
 #include <folly/executors/CPUThreadPoolExecutor.h>
 #include <gflags/gflags.h>
+#include "axiom/connectors/SchemaResolver.h"
 #include "axiom/optimizer/VeloxHistory.h"
 #include "axiom/runner/LocalRunner.h"
 #include "axiom/runner/tests/LocalRunnerTestBase.h"
@@ -54,8 +55,26 @@ class QueryTestBase : public runner::test::LocalRunnerTestBase {
           },
       std::string* planString = nullptr);
 
+  optimizer::PlanAndStats planVelox(
+      const logical_plan::LogicalPlanNodePtr& plan,
+      const connector::SchemaResolver& schemaResolver,
+      const runner::MultiFragmentPlan::Options& options =
+          {
+              .numWorkers = 4,
+              .numDrivers = 4,
+          },
+      std::string* planString = nullptr);
+
   TestResult runVelox(
       const logical_plan::LogicalPlanNodePtr& plan,
+      const runner::MultiFragmentPlan::Options& options = {
+          .numWorkers = 4,
+          .numDrivers = 4,
+      });
+
+  TestResult runVelox(
+      const logical_plan::LogicalPlanNodePtr& plan,
+      const connector::SchemaResolver& schemaResolver,
       const runner::MultiFragmentPlan::Options& options = {
           .numWorkers = 4,
           .numDrivers = 4,
