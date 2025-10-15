@@ -224,219 +224,6 @@ class RelationPlanner : public sql::AstVisitor {
     return *builder_;
   }
 
- private:
-  static std::string toFunctionName(sql::ComparisonExpression::Operator op) {
-    switch (op) {
-      case sql::ComparisonExpression::Operator::kEqual:
-        return "eq";
-      case sql::ComparisonExpression::Operator::kNotEqual:
-        return "neq";
-      case sql::ComparisonExpression::Operator::kLessThan:
-        return "lt";
-      case sql::ComparisonExpression::Operator::kLessThanOrEqual:
-        return "lte";
-      case sql::ComparisonExpression::Operator::kGreaterThan:
-        return "gt";
-      case sql::ComparisonExpression::Operator::kGreaterThanOrEqual:
-        return "gte";
-      case sql::ComparisonExpression::Operator::kIsDistinctFrom:
-        VELOX_NYI("Not yet supported comparison operator: is_distinct_from");
-    }
-
-    folly::assume_unreachable();
-  }
-
-  static std::string toFunctionName(
-      sql::ArithmeticBinaryExpression::Operator op) {
-    switch (op) {
-      case sql::ArithmeticBinaryExpression::Operator::kAdd:
-        return "plus";
-      case sql::ArithmeticBinaryExpression::Operator::kSubtract:
-        return "minus";
-      case sql::ArithmeticBinaryExpression::Operator::kMultiply:
-        return "multiply";
-      case sql::ArithmeticBinaryExpression::Operator::kDivide:
-        return "divide";
-      case sql::ArithmeticBinaryExpression::Operator::kModulus:
-        return "mod";
-    }
-
-    folly::assume_unreachable();
-  }
-
-  static int32_t parseYearMonthInterval(
-      const std::string& value,
-      sql::IntervalLiteral::IntervalField start,
-      std::optional<sql::IntervalLiteral::IntervalField> end) {
-    VELOX_USER_CHECK(
-        !end.has_value() || start == end.value(),
-        "Multi-part intervals are not supported yet: {}",
-        value);
-
-    if (value.empty()) {
-      return 0;
-    }
-
-    const auto n = atoi(value.c_str());
-
-    switch (start) {
-      case sql::IntervalLiteral::IntervalField::kYear:
-        return n * 12;
-      case sql::IntervalLiteral::IntervalField::kMonth:
-        return n;
-      default:
-        VELOX_UNREACHABLE();
-    }
-  }
-
-  static int64_t parseDayTimeInterval(
-      const std::string& value,
-      sql::IntervalLiteral::IntervalField start,
-      std::optional<sql::IntervalLiteral::IntervalField> end) {
-    VELOX_USER_CHECK(
-        !end.has_value() || start == end.value(),
-        "Multi-part intervals are not supported yet: {}",
-        value);
-
-    if (value.empty()) {
-      return 0;
-    }
-
-    auto n = atol(value.c_str());
-
-    switch (start) {
-      case sql::IntervalLiteral::IntervalField::kDay:
-        return n * 24 * 60 * 60;
-      case sql::IntervalLiteral::IntervalField::kHour:
-        return n * 60 * 60;
-      case sql::IntervalLiteral::IntervalField::kMinute:
-        return n * 60;
-      case sql::IntervalLiteral::IntervalField::kSecond:
-        return n;
-      default:
-        VELOX_UNREACHABLE();
-    }
-  }
-
-  static lp::ExprApi parseDecimal(std::string_view value) {
-    VELOX_USER_CHECK(!value.empty(), "Invalid decimal value: '{}'", value);
-
-    size_t startPos = 0;
-    if (value.at(0) == '+' || value.at(0) == '-') {
-      startPos = 1;
-    }
-
-    int32_t periodPos = -1;
-    int32_t firstNonZeroPos = -1;
-
-    for (auto i = startPos; i < value.size(); ++i) {
-      if (value.at(i) == '.') {
-        VELOX_USER_CHECK_EQ(
-            periodPos, -1, "Invalid decimal value: '{}'", value);
-        periodPos = i;
-      } else {
-        VELOX_USER_CHECK(
-            std::isdigit(value.at(i)), "Invalid decimal value: '{}'", value);
-
-        if (firstNonZeroPos == -1 && value.at(i) != '0') {
-          firstNonZeroPos = i;
-        }
-      }
-    }
-
-    size_t precision;
-    size_t scale;
-    std::string unscaledValue;
-
-    if (periodPos == -1) {
-      if (firstNonZeroPos == -1) {
-        // All zeros: 000000. Treat as 0.
-        precision = 1;
-      } else {
-        precision = value.size() - firstNonZeroPos;
-      }
-
-      scale = 0;
-      unscaledValue = value;
-    } else {
-      scale = value.size() - periodPos - 1;
-
-      if (firstNonZeroPos == -1 || firstNonZeroPos > periodPos) {
-        // All zeros before decimal point. Treat as .0123.
-        precision = scale > 0 ? scale : 1;
-      } else {
-        precision = value.size() - firstNonZeroPos - 1;
-      }
-
-      unscaledValue = fmt::format(
-          "{}{}", value.substr(0, periodPos), value.substr(periodPos + 1));
-    }
-
-    if (precision <= velox::ShortDecimalType::kMaxPrecision) {
-      int64_t v = atol(unscaledValue.c_str());
-      return lp::Lit(v, DECIMAL(precision, scale));
-    }
-
-    if (precision <= velox::LongDecimalType::kMaxPrecision) {
-      return lp::Lit(
-          folly::to<int128_t>(unscaledValue), DECIMAL(precision, scale));
-    }
-
-    VELOX_USER_FAIL(
-        "Invalid decimal value: '{}'. Precision exceeds maximum: {} > {}.",
-        value,
-        precision,
-        velox::LongDecimalType::kMaxPrecision);
-  }
-
-  static int32_t parseInt(const sql::TypeSignaturePtr& type) {
-    VELOX_USER_CHECK_EQ(type->parameters().size(), 0);
-    return atoi(type->baseName().c_str());
-  }
-
-  static TypePtr parseType(const sql::TypeSignaturePtr& type) {
-    auto baseName = type->baseName();
-    std::transform(
-        baseName.begin(), baseName.end(), baseName.begin(), [](char c) {
-          return (std::toupper(c));
-        });
-
-    if (baseName == "INT") {
-      baseName = "INTEGER";
-    }
-
-    std::vector<TypeParameter> parameters;
-    if (!type->parameters().empty()) {
-      const auto numParams = type->parameters().size();
-      parameters.reserve(numParams);
-
-      if (baseName == "ARRAY") {
-        VELOX_USER_CHECK_EQ(1, numParams);
-        parameters.emplace_back(parseType(type->parameters().at(0)));
-      } else if (baseName == "MAP") {
-        VELOX_USER_CHECK_EQ(2, numParams);
-        parameters.emplace_back(parseType(type->parameters().at(0)));
-        parameters.emplace_back(parseType(type->parameters().at(1)));
-      } else if (baseName == "ROW") {
-        for (const auto& param : type->parameters()) {
-          parameters.emplace_back(parseType(param), param->rowFieldName());
-        }
-      } else if (baseName == "DECIMAL") {
-        VELOX_USER_CHECK_EQ(2, numParams);
-        parameters.emplace_back(parseInt(type->parameters().at(0)));
-        parameters.emplace_back(parseInt(type->parameters().at(1)));
-
-      } else {
-        VELOX_USER_FAIL("Unknown parametric type: {}", baseName);
-      }
-    }
-
-    auto veloxType = getType(baseName, parameters);
-
-    VELOX_CHECK_NOT_NULL(veloxType, "Cannot resolve type: {}", baseName);
-    return veloxType;
-  }
-
   lp::ExprApi toExpr(const sql::ExpressionPtr& node) {
     switch (node->type()) {
       case sql::NodeType::kIdentifier:
@@ -699,7 +486,220 @@ class RelationPlanner : public sql::AstVisitor {
             "Unsupported expression type: {}",
             sql::NodeTypeName::toName(node->type()));
     }
-  } // namespace
+  }
+
+ private:
+  static std::string toFunctionName(sql::ComparisonExpression::Operator op) {
+    switch (op) {
+      case sql::ComparisonExpression::Operator::kEqual:
+        return "eq";
+      case sql::ComparisonExpression::Operator::kNotEqual:
+        return "neq";
+      case sql::ComparisonExpression::Operator::kLessThan:
+        return "lt";
+      case sql::ComparisonExpression::Operator::kLessThanOrEqual:
+        return "lte";
+      case sql::ComparisonExpression::Operator::kGreaterThan:
+        return "gt";
+      case sql::ComparisonExpression::Operator::kGreaterThanOrEqual:
+        return "gte";
+      case sql::ComparisonExpression::Operator::kIsDistinctFrom:
+        VELOX_NYI("Not yet supported comparison operator: is_distinct_from");
+    }
+
+    folly::assume_unreachable();
+  }
+
+  static std::string toFunctionName(
+      sql::ArithmeticBinaryExpression::Operator op) {
+    switch (op) {
+      case sql::ArithmeticBinaryExpression::Operator::kAdd:
+        return "plus";
+      case sql::ArithmeticBinaryExpression::Operator::kSubtract:
+        return "minus";
+      case sql::ArithmeticBinaryExpression::Operator::kMultiply:
+        return "multiply";
+      case sql::ArithmeticBinaryExpression::Operator::kDivide:
+        return "divide";
+      case sql::ArithmeticBinaryExpression::Operator::kModulus:
+        return "mod";
+    }
+
+    folly::assume_unreachable();
+  }
+
+  static int32_t parseYearMonthInterval(
+      const std::string& value,
+      sql::IntervalLiteral::IntervalField start,
+      std::optional<sql::IntervalLiteral::IntervalField> end) {
+    VELOX_USER_CHECK(
+        !end.has_value() || start == end.value(),
+        "Multi-part intervals are not supported yet: {}",
+        value);
+
+    if (value.empty()) {
+      return 0;
+    }
+
+    const auto n = atoi(value.c_str());
+
+    switch (start) {
+      case sql::IntervalLiteral::IntervalField::kYear:
+        return n * 12;
+      case sql::IntervalLiteral::IntervalField::kMonth:
+        return n;
+      default:
+        VELOX_UNREACHABLE();
+    }
+  }
+
+  static int64_t parseDayTimeInterval(
+      const std::string& value,
+      sql::IntervalLiteral::IntervalField start,
+      std::optional<sql::IntervalLiteral::IntervalField> end) {
+    VELOX_USER_CHECK(
+        !end.has_value() || start == end.value(),
+        "Multi-part intervals are not supported yet: {}",
+        value);
+
+    if (value.empty()) {
+      return 0;
+    }
+
+    auto n = atol(value.c_str());
+
+    switch (start) {
+      case sql::IntervalLiteral::IntervalField::kDay:
+        return n * 24 * 60 * 60;
+      case sql::IntervalLiteral::IntervalField::kHour:
+        return n * 60 * 60;
+      case sql::IntervalLiteral::IntervalField::kMinute:
+        return n * 60;
+      case sql::IntervalLiteral::IntervalField::kSecond:
+        return n;
+      default:
+        VELOX_UNREACHABLE();
+    }
+  }
+
+  static lp::ExprApi parseDecimal(std::string_view value) {
+    VELOX_USER_CHECK(!value.empty(), "Invalid decimal value: '{}'", value);
+
+    size_t startPos = 0;
+    if (value.at(0) == '+' || value.at(0) == '-') {
+      startPos = 1;
+    }
+
+    int32_t periodPos = -1;
+    int32_t firstNonZeroPos = -1;
+
+    for (auto i = startPos; i < value.size(); ++i) {
+      if (value.at(i) == '.') {
+        VELOX_USER_CHECK_EQ(
+            periodPos, -1, "Invalid decimal value: '{}'", value);
+        periodPos = i;
+      } else {
+        VELOX_USER_CHECK(
+            std::isdigit(value.at(i)), "Invalid decimal value: '{}'", value);
+
+        if (firstNonZeroPos == -1 && value.at(i) != '0') {
+          firstNonZeroPos = i;
+        }
+      }
+    }
+
+    size_t precision;
+    size_t scale;
+    std::string unscaledValue;
+
+    if (periodPos == -1) {
+      if (firstNonZeroPos == -1) {
+        // All zeros: 000000. Treat as 0.
+        precision = 1;
+      } else {
+        precision = value.size() - firstNonZeroPos;
+      }
+
+      scale = 0;
+      unscaledValue = value;
+    } else {
+      scale = value.size() - periodPos - 1;
+
+      if (firstNonZeroPos == -1 || firstNonZeroPos > periodPos) {
+        // All zeros before decimal point. Treat as .0123.
+        precision = scale > 0 ? scale : 1;
+      } else {
+        precision = value.size() - firstNonZeroPos - 1;
+      }
+
+      unscaledValue = fmt::format(
+          "{}{}", value.substr(0, periodPos), value.substr(periodPos + 1));
+    }
+
+    if (precision <= velox::ShortDecimalType::kMaxPrecision) {
+      int64_t v = atol(unscaledValue.c_str());
+      return lp::Lit(v, DECIMAL(precision, scale));
+    }
+
+    if (precision <= velox::LongDecimalType::kMaxPrecision) {
+      return lp::Lit(
+          folly::to<int128_t>(unscaledValue), DECIMAL(precision, scale));
+    }
+
+    VELOX_USER_FAIL(
+        "Invalid decimal value: '{}'. Precision exceeds maximum: {} > {}.",
+        value,
+        precision,
+        velox::LongDecimalType::kMaxPrecision);
+  }
+
+  static int32_t parseInt(const sql::TypeSignaturePtr& type) {
+    VELOX_USER_CHECK_EQ(type->parameters().size(), 0);
+    return atoi(type->baseName().c_str());
+  }
+
+  static TypePtr parseType(const sql::TypeSignaturePtr& type) {
+    auto baseName = type->baseName();
+    std::transform(
+        baseName.begin(), baseName.end(), baseName.begin(), [](char c) {
+          return (std::toupper(c));
+        });
+
+    if (baseName == "INT") {
+      baseName = "INTEGER";
+    }
+
+    std::vector<TypeParameter> parameters;
+    if (!type->parameters().empty()) {
+      const auto numParams = type->parameters().size();
+      parameters.reserve(numParams);
+
+      if (baseName == "ARRAY") {
+        VELOX_USER_CHECK_EQ(1, numParams);
+        parameters.emplace_back(parseType(type->parameters().at(0)));
+      } else if (baseName == "MAP") {
+        VELOX_USER_CHECK_EQ(2, numParams);
+        parameters.emplace_back(parseType(type->parameters().at(0)));
+        parameters.emplace_back(parseType(type->parameters().at(1)));
+      } else if (baseName == "ROW") {
+        for (const auto& param : type->parameters()) {
+          parameters.emplace_back(parseType(param), param->rowFieldName());
+        }
+      } else if (baseName == "DECIMAL") {
+        VELOX_USER_CHECK_EQ(2, numParams);
+        parameters.emplace_back(parseInt(type->parameters().at(0)));
+        parameters.emplace_back(parseInt(type->parameters().at(1)));
+
+      } else {
+        VELOX_USER_FAIL("Unknown parametric type: {}", baseName);
+      }
+    }
+
+    auto veloxType = getType(baseName, parameters);
+
+    VELOX_CHECK_NOT_NULL(veloxType, "Cannot resolve type: {}", baseName);
+    return veloxType;
+  }
 
   void addFilter(const sql::ExpressionPtr& filter) {
     if (filter != nullptr) {
@@ -1160,6 +1160,25 @@ lp::ExprPtr PrestoParser::parseExpression(
   return project->expressionAt(0);
 }
 
+namespace {
+lp::ExprPtr parseSqlExpression(const sql::ExpressionPtr& expr) {
+  RelationPlanner planner("__unused__");
+
+  auto plan = lp::PlanBuilder()
+                  .values(velox::ROW({}), {velox::Variant::row({})})
+                  .project({planner.toExpr(expr)})
+                  .build();
+  VELOX_USER_CHECK(plan->is(lp::NodeKind::kProject));
+
+  auto project = plan->asUnchecked<lp::ProjectNode>();
+  VELOX_CHECK_NOT_NULL(project);
+
+  VELOX_USER_CHECK_EQ(1, project->expressions().size());
+
+  return project->expressionAt(0);
+}
+} // namespace
+
 SqlStatementPtr PrestoParser::doParse(
     std::string_view sql,
     bool enableTracing) {
@@ -1281,6 +1300,13 @@ SqlStatementPtr PrestoParser::doParse(
 
     ctas->query()->accept(&planner);
 
+    std::unordered_map<std::string, lp::ExprPtr> properties;
+    for (const auto& p : ctas->properties()) {
+      const auto& name = p->name()->value();
+      bool ok = properties.emplace(name, parseSqlExpression(p->value())).second;
+      VELOX_USER_CHECK(ok, "Duplicate property: {}", name);
+    }
+
     auto& planBuilder = planner.builder();
 
     auto columnTypes = planBuilder.outputTypes();
@@ -1325,6 +1351,7 @@ SqlStatementPtr PrestoParser::doParse(
     return std::make_shared<CreateTableAsSelectStatement>(
         std::move(tableName),
         velox::ROW(std::move(columnNames), std::move(columnTypes)),
+        std::move(properties),
         planner.getPlan());
   }
 

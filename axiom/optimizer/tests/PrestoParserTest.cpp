@@ -98,7 +98,8 @@ class PrestoParserTest : public testing::Test {
       std::string_view sql,
       const std::string& tableName,
       const RowTypePtr& tableSchema,
-      lp::LogicalPlanMatcherBuilder& matcher) {
+      lp::LogicalPlanMatcherBuilder& matcher,
+      const std::unordered_map<std::string, std::string>& properties = {}) {
     SCOPED_TRACE(sql);
     test::PrestoParser parser(kTpchConnectorId, pool());
 
@@ -114,6 +115,14 @@ class PrestoParserTest : public testing::Test {
     auto logicalPlan = ctasStatement->plan();
     ASSERT_TRUE(matcher.build()->match(logicalPlan))
         << lp::PlanPrinter::toText(*logicalPlan);
+
+    const auto& actualProperties = ctasStatement->properties();
+    ASSERT_EQ(properties.size(), actualProperties.size());
+
+    for (const auto& [key, value] : properties) {
+      ASSERT_TRUE(actualProperties.contains(key));
+      ASSERT_EQ(lp::ExprPrinter::toText(*actualProperties.at(key)), value);
+    }
   }
 
   template <typename T>
@@ -611,15 +620,14 @@ TEST_F(PrestoParserTest, createTableAsSelect) {
         "CREATE TABLE t AS SELECT * FROM nation", "t", nationSchema, matcher);
   }
 
-  {
-    auto matcher =
-        lp::LogicalPlanMatcherBuilder().tableScan().project().tableWrite();
-    testCtasSql(
-        "CREATE TABLE t AS SELECT n_nationkey * 100 as a, n_name as b FROM nation",
-        "t",
-        ROW({"a", "b"}, {BIGINT(), VARCHAR()}),
-        matcher);
-  }
+  auto matcher =
+      lp::LogicalPlanMatcherBuilder().tableScan().project().tableWrite();
+
+  testCtasSql(
+      "CREATE TABLE t AS SELECT n_nationkey * 100 as a, n_name as b FROM nation",
+      "t",
+      ROW({"a", "b"}, {BIGINT(), VARCHAR()}),
+      matcher);
 
   // Missing column names.
   {
@@ -631,15 +639,34 @@ TEST_F(PrestoParserTest, createTableAsSelect) {
         "Column name not specified at position 1");
   }
 
-  {
-    auto matcher =
-        lp::LogicalPlanMatcherBuilder().tableScan().project().tableWrite();
-    testCtasSql(
-        "CREATE TABLE t(a, b) AS SELECT n_nationkey * 100, n_name FROM nation",
-        "t",
-        ROW({"a", "b"}, {BIGINT(), VARCHAR()}),
-        matcher);
-  }
+  testCtasSql(
+      "CREATE TABLE t(a, b) AS SELECT n_nationkey * 100, n_name FROM nation",
+      "t",
+      ROW({"a", "b"}, {BIGINT(), VARCHAR()}),
+      matcher);
+
+  // Table properties.
+  testCtasSql(
+      "CREATE TABLE t WITH (partitioned_by = ARRAY['ds']) AS "
+      "SELECT n_nationkey, n_name, '2025-10-04' as ds FROM nation",
+      "t",
+      ROW({"n_nationkey", "n_name", "ds"}, {BIGINT(), VARCHAR(), VARCHAR()}),
+      matcher,
+      {
+          {"partitioned_by", "array_constructor(ds)"},
+      });
+
+  testCtasSql(
+      "CREATE TABLE t WITH (partitioned_by = ARRAY['ds'], bucket_count = 4, bucketed_by = ARRAY['n_nationkey']) AS "
+      "SELECT n_nationkey, n_name, '2025-10-04' as ds FROM nation",
+      "t",
+      ROW({"n_nationkey", "n_name", "ds"}, {BIGINT(), VARCHAR(), VARCHAR()}),
+      matcher,
+      {
+          {"partitioned_by", "array_constructor(ds)"},
+          {"bucket_count", "4"},
+          {"bucketed_by", "array_constructor(n_nationkey)"},
+      });
 }
 
 } // namespace
