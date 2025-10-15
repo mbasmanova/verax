@@ -276,8 +276,6 @@ std::any AstBuilder::visitCreateTableAsSelect(
     PrestoSqlParser::CreateTableAsSelectContext* ctx) {
   trace("visitCreateTableAsSelect");
 
-  // TODO Add support for properties.
-
   std::optional<std::string> comment;
   if (ctx->COMMENT() != nullptr) {
     comment = visitExpression(ctx->string())->as<StringLiteral>()->value();
@@ -288,13 +286,18 @@ std::any AstBuilder::visitCreateTableAsSelect(
     columns = visitTyped<Identifier>(ctx->columnAliases()->identifier());
   }
 
+  std::vector<std::shared_ptr<Property>> properties;
+  if (ctx->properties() != nullptr) {
+    properties = visitTyped<Property>(ctx->properties()->property());
+  }
+
   return std::static_pointer_cast<Statement>(
       std::make_shared<CreateTableAsSelect>(
           getLocation(ctx),
           getQualifiedName(ctx->qualifiedName()),
           visitTyped<Statement>(ctx->query()),
           /*notExists=*/ctx->EXISTS() != nullptr,
-          /*properties=*/std::vector<std::shared_ptr<Property>>{},
+          std::move(properties),
           /*withData=*/ctx->NO() == nullptr,
           std::move(columns),
           std::move(comment)));
@@ -677,7 +680,11 @@ std::any AstBuilder::visitProperties(PrestoSqlParser::PropertiesContext* ctx) {
 
 std::any AstBuilder::visitProperty(PrestoSqlParser::PropertyContext* ctx) {
   trace("visitProperty");
-  return visitChildren(ctx);
+
+  return std::make_shared<Property>(
+      getLocation(ctx),
+      visitIdentifier(ctx->identifier()),
+      visitTyped<Expression>(ctx->expression()));
 }
 
 std::any AstBuilder::visitSqlParameterDeclaration(
