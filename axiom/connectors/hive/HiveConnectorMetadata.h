@@ -45,7 +45,7 @@ struct HivePartitionHandle : public PartitionHandle {
 /// TableLayout. The partitioning in TableLayout referes to bucketing.
 /// 'numBuckets' is the number of Hive buckets if
 /// 'partitionColumns' is not empty. 'hivePartitionColumns' refers to Hive
-/// partitioning, i.e. columns whose value gives a directory in the ile storage
+/// partitioning, i.e. columns whose value gives a directory in the file storage
 /// tree.
 class HiveTableLayout : public TableLayout {
  public:

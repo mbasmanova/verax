@@ -263,6 +263,11 @@ class TableLayout {
     return rowType_;
   }
 
+  template <typename T>
+  const T* as() const {
+    return dynamic_cast<const T*>(this);
+  }
+
   /// Samples 'pct' percent of rows. Applies filters in 'handle' before
   /// sampling. Returns {count of sampled, count matching filters}.
   /// 'extraFilters' is a list of conjuncts to evaluate in addition to the
@@ -353,6 +358,11 @@ class Table : public std::enable_shared_from_this<Table> {
   virtual const folly::F14FastMap<std::string, velox::Variant>& options()
       const {
     return options_;
+  }
+
+  template <typename T>
+  const T* as() const {
+    return dynamic_cast<const T*>(this);
   }
 
  protected:
@@ -456,6 +466,11 @@ class ConnectorWriteHandle {
 
   const velox::RowTypePtr& resultType() const {
     return resultType_;
+  }
+
+  template <typename T>
+  const T* as() const {
+    return dynamic_cast<const T*>(this);
   }
 
  private:
@@ -642,6 +657,11 @@ class ConnectorMetadata {
       const Table& table,
       WriteKind kind) {
     VELOX_UNSUPPORTED();
+  }
+
+  template <typename T>
+  const T* as() const {
+    return dynamic_cast<const T*>(this);
   }
 };
 

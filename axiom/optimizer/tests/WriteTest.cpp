@@ -15,10 +15,12 @@
  */
 
 #include "axiom/connectors/hive/LocalHiveConnectorMetadata.h"
+#include "axiom/logical_plan/ExprVisitor.h"
 #include "axiom/logical_plan/PlanBuilder.h"
 #include "axiom/optimizer/tests/HiveQueriesTestBase.h"
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/dwio/parquet/RegisterParquetWriter.h"
+#include "velox/expression/Expr.h"
 
 namespace facebook::axiom::optimizer {
 namespace {
@@ -60,12 +62,14 @@ class WriteTest : public test::HiveQueriesTestBase {
       const test::CreateTableAsSelectStatement& statement) {
     metadata_->dropTableIfExists(statement.tableName());
 
+    folly::F14FastMap<std::string, velox::Variant> options;
+    for (const auto& [key, value] : statement.properties()) {
+      options[key] = evaluateConstantExpr(*value);
+    }
+
     auto session = std::make_shared<connector::ConnectorSession>("test");
     return metadata_->createTable(
-        session,
-        statement.tableName(),
-        statement.tableSchema(),
-        /*options*/ {});
+        session, statement.tableName(), statement.tableSchema(), options);
   }
 
   void runCtas(
@@ -150,6 +154,9 @@ class WriteTest : public test::HiveQueriesTestBase {
 
   std::shared_ptr<velox::connector::Connector> connector_;
   connector::hive::LocalHiveConnectorMetadata* metadata_;
+
+ private:
+  velox::Variant evaluateConstantExpr(const lp::Expr& expr);
 };
 
 TEST_F(WriteTest, basic) {
@@ -344,6 +351,167 @@ TEST_F(WriteTest, createTableAsSelectSql) {
 
     ASSERT_TRUE(metadata_->findTable("test") == nullptr);
   }
+}
+
+TEST_F(WriteTest, createTableAsSelectPartitionedSql) {
+  SCOPE_EXIT {
+    metadata_->dropTableIfExists("test");
+  };
+
+  runCtas(
+      "CREATE TABLE test WITH (partitioned_by = ARRAY['pk']) AS "
+      "SELECT n_nationkey, n_name, n_nationkey % 3 as pk FROM nation",
+      25);
+
+  auto table = metadata_->findTable("test");
+  ASSERT_TRUE(table != nullptr);
+
+  ASSERT_EQ(1, table->layouts().size());
+
+  auto layout =
+      table->layouts().at(0)->as<connector::hive::LocalHiveTableLayout>();
+  ASSERT_EQ(1, layout->hivePartitionColumns().size());
+  ASSERT_EQ("pk", layout->hivePartitionColumns().at(0)->name());
+
+  ASSERT_EQ(0, layout->partitionColumns().size());
+}
+
+TEST_F(WriteTest, createTableAsSelectBucketedSql) {
+  {
+    SCOPE_EXIT {
+      metadata_->dropTableIfExists("test");
+    };
+
+    runCtas(
+        "CREATE TABLE test WITH (bucket_count = 4, bucketed_by = ARRAY['b']) AS "
+        "SELECT n_nationkey, n_name, n_nationkey % 4 as b FROM nation",
+        25);
+
+    auto table = metadata_->findTable("test");
+    ASSERT_TRUE(table != nullptr);
+
+    ASSERT_EQ(1, table->layouts().size());
+
+    auto layout =
+        table->layouts().at(0)->as<connector::hive::LocalHiveTableLayout>();
+    ASSERT_EQ(1, layout->partitionColumns().size());
+    ASSERT_EQ("b", layout->partitionColumns().at(0)->name());
+
+    ASSERT_EQ(4, layout->numBuckets());
+
+    ASSERT_EQ(0, layout->orderColumns().size());
+    ASSERT_EQ(0, layout->sortOrder().size());
+    ASSERT_EQ(0, layout->hivePartitionColumns().size());
+  }
+
+  {
+    SCOPE_EXIT {
+      metadata_->dropTableIfExists("test");
+    };
+
+    runCtas(
+        "CREATE TABLE test WITH (bucket_count = 4, bucketed_by = ARRAY['b'], sorted_by = ARRAY['b']) AS "
+        "SELECT n_nationkey, n_name, n_nationkey % 4 as b FROM nation",
+        25);
+
+    auto table = metadata_->findTable("test");
+    ASSERT_TRUE(table != nullptr);
+
+    ASSERT_EQ(1, table->layouts().size());
+
+    auto layout =
+        table->layouts().at(0)->as<connector::hive::LocalHiveTableLayout>();
+    ASSERT_EQ(1, layout->partitionColumns().size());
+    ASSERT_EQ("b", layout->partitionColumns().at(0)->name());
+
+    ASSERT_EQ(1, layout->orderColumns().size());
+    ASSERT_EQ("b", layout->orderColumns().at(0)->name());
+
+    ASSERT_EQ(1, layout->sortOrder().size());
+    ASSERT_TRUE(layout->sortOrder().at(0).isAscending);
+    ASSERT_TRUE(layout->sortOrder().at(0).isNullsFirst);
+
+    ASSERT_EQ(4, layout->numBuckets());
+
+    ASSERT_EQ(0, layout->hivePartitionColumns().size());
+  }
+}
+
+class ExprTranslatorContext : public lp::ExprVisitorContext {
+ public:
+  velox::core::TypedExprPtr veloxExpr;
+};
+
+class ExprTranslator : public lp::ExprVisitor {
+ public:
+  void visit(
+      const lp::InputReferenceExpr& expr,
+      lp::ExprVisitorContext& context) const {
+    auto& myCtx = static_cast<ExprTranslatorContext&>(context);
+
+    myCtx.veloxExpr =
+        std::make_shared<core::FieldAccessTypedExpr>(expr.type(), expr.name());
+  }
+
+  void visit(const lp::CallExpr& expr, lp::ExprVisitorContext& context) const {
+    auto& myCtx = static_cast<ExprTranslatorContext&>(context);
+
+    std::vector<core::TypedExprPtr> inputs;
+    inputs.reserve(expr.inputs().size());
+    for (const auto& input : expr.inputs()) {
+      input->accept(*this, context);
+      inputs.push_back(myCtx.veloxExpr);
+    }
+
+    myCtx.veloxExpr =
+        std::make_shared<core::CallTypedExpr>(expr.type(), inputs, expr.name());
+  }
+
+  void visit(const lp::SpecialFormExpr& expr, lp::ExprVisitorContext& context)
+      const {
+    VELOX_NYI();
+  }
+
+  void visit(const lp::AggregateExpr& expr, lp::ExprVisitorContext& context)
+      const {
+    VELOX_NYI();
+  }
+
+  void visit(const lp::WindowExpr& expr, lp::ExprVisitorContext& context)
+      const {
+    VELOX_NYI();
+  }
+
+  void visit(const lp::ConstantExpr& expr, lp::ExprVisitorContext& context)
+      const {
+    auto& myCtx = static_cast<ExprTranslatorContext&>(context);
+
+    myCtx.veloxExpr =
+        std::make_shared<core::ConstantTypedExpr>(expr.type(), *expr.value());
+  }
+
+  void visit(const lp::LambdaExpr& expr, lp::ExprVisitorContext& context)
+      const {
+    VELOX_NYI();
+  }
+
+  void visit(const lp::SubqueryExpr& expr, lp::ExprVisitorContext& context)
+      const {
+    VELOX_NYI();
+  }
+};
+
+velox::Variant WriteTest::evaluateConstantExpr(const lp::Expr& expr) {
+  ExprTranslatorContext context;
+  ExprTranslator translator;
+  expr.accept(translator, context);
+
+  auto result = velox::exec::tryEvaluateConstantExpression(
+      context.veloxExpr, pool(), core::QueryCtx::create());
+
+  VELOX_CHECK_NOT_NULL(result);
+
+  return result->variantAt(0);
 }
 
 } // namespace

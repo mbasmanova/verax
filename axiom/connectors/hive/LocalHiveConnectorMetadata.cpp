@@ -473,7 +473,7 @@ CreateTableOptions parseCreateTableOptions(
         HiveWriteOptions::kBucketCount,
         HiveWriteOptions::kBucketedBy);
 
-    const auto numBuckets = it->second.value<int32_t>();
+    const auto numBuckets = it->second.value<int64_t>();
     VELOX_USER_CHECK_GT(numBuckets, 0, "bucket_count must be > 0");
     VELOX_USER_CHECK_EQ(
         numBuckets & (numBuckets - 1), 0, "bucket_count must be power of 2");
