@@ -95,10 +95,12 @@ class CreateTableAsSelectStatement : public SqlStatement {
   explicit CreateTableAsSelectStatement(
       std::string tableName,
       velox::RowTypePtr tableSchema,
+      std::unordered_map<std::string, logical_plan::ExprPtr> properties,
       logical_plan::LogicalPlanNodePtr plan)
       : SqlStatement(SqlStatementKind::kCreateTableAsSelect),
         tableName_{std::move(tableName)},
         tableSchema_{std::move(tableSchema)},
+        properties_{std::move(properties)},
         plan_{std::move(plan)} {}
 
   const std::string& tableName() const {
@@ -109,6 +111,11 @@ class CreateTableAsSelectStatement : public SqlStatement {
     return tableSchema_;
   }
 
+  const std::unordered_map<std::string, logical_plan::ExprPtr>& properties()
+      const {
+    return properties_;
+  }
+
   const logical_plan::LogicalPlanNodePtr& plan() const {
     return plan_;
   }
@@ -116,6 +123,7 @@ class CreateTableAsSelectStatement : public SqlStatement {
  private:
   const std::string tableName_;
   const velox::RowTypePtr tableSchema_;
+  std::unordered_map<std::string, logical_plan::ExprPtr> properties_;
   const logical_plan::LogicalPlanNodePtr plan_;
 };
 
