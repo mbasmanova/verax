@@ -104,7 +104,7 @@ ColumnCP SchemaTable::findColumn(std::string_view name) const {
 
 Schema::Schema(
     const char* name,
-    connector::SchemaResolver* source,
+    const connector::SchemaResolver* source,
     LocusCP locus)
     : name_{name}, source_{source}, defaultLocus_{locus} {}
 

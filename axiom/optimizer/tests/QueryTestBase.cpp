@@ -130,6 +130,15 @@ optimizer::PlanAndStats QueryTestBase::planVelox(
     const logical_plan::LogicalPlanNodePtr& plan,
     const runner::MultiFragmentPlan::Options& options,
     std::string* planString) {
+  connector::SchemaResolver schemaResolver;
+  return planVelox(plan, schemaResolver, options, planString);
+}
+
+optimizer::PlanAndStats QueryTestBase::planVelox(
+    const logical_plan::LogicalPlanNodePtr& plan,
+    const connector::SchemaResolver& schemaResolver,
+    const runner::MultiFragmentPlan::Options& options,
+    std::string* planString) {
   auto& queryCtx = getQueryCtx();
 
   auto allocator = std::make_unique<HashStringAllocator>(optimizerPool_.get());
@@ -141,7 +150,6 @@ optimizer::PlanAndStats QueryTestBase::planVelox(
   exec::SimpleExpressionEvaluator evaluator(
       queryCtx.get(), optimizerPool_.get());
 
-  connector::SchemaResolver schemaResolver;
   optimizer::Schema veraxSchema("test", &schemaResolver, /*locus=*/nullptr);
 
   auto session = std::make_shared<Session>(queryCtx->queryId());
@@ -165,7 +173,15 @@ optimizer::PlanAndStats QueryTestBase::planVelox(
 TestResult QueryTestBase::runVelox(
     const logical_plan::LogicalPlanNodePtr& plan,
     const runner::MultiFragmentPlan::Options& options) {
-  auto veloxPlan = planVelox(plan, options);
+  auto veloxPlan = planVelox(plan, options, nullptr);
+  return runFragmentedPlan(veloxPlan);
+}
+
+TestResult QueryTestBase::runVelox(
+    const logical_plan::LogicalPlanNodePtr& plan,
+    const connector::SchemaResolver& schemaResolver,
+    const runner::MultiFragmentPlan::Options& options) {
+  auto veloxPlan = planVelox(plan, schemaResolver, options, nullptr);
   return runFragmentedPlan(veloxPlan);
 }
 

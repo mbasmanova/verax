@@ -56,16 +56,59 @@ class WriteTest : public test::HiveQueriesTestBase {
     metadata_->finishWrite(session, handle, {}).get();
   }
 
-  void checkWriteResults(const test::TestResult& result, int64_t expected) {
+  connector::TablePtr createTable(
+      const test::CreateTableAsSelectStatement& statement) {
+    metadata_->dropTableIfExists(statement.tableName());
+
+    auto session = std::make_shared<connector::ConnectorSession>("test");
+    return metadata_->createTable(
+        session,
+        statement.tableName(),
+        statement.tableSchema(),
+        /*options*/ {});
+  }
+
+  void runCtas(
+      const std::string& sql,
+      int64_t writtenRows,
+      const runner::MultiFragmentPlan::Options& options = {
+          .numWorkers = 4,
+          .numDrivers = 4,
+      }) {
+    SCOPED_TRACE(sql);
+
+    test::PrestoParser parser(exec::test::kHiveConnectorId, pool());
+
+    auto statement = parser.parse(sql);
+    VELOX_CHECK(statement->isCreateTableAsSelect());
+
+    auto ctasStatement =
+        statement->asUnchecked<test::CreateTableAsSelectStatement>();
+
+    auto table = createTable(*ctasStatement);
+
+    connector::SchemaResolver schemaResolver;
+    schemaResolver.setTargetTable(exec::test::kHiveConnectorId, table);
+
+    auto result = runVelox(ctasStatement->plan(), schemaResolver, options);
+
+    checkWrittenRows(result, writtenRows);
+  }
+
+  static void checkWrittenRows(
+      const test::TestResult& result,
+      int64_t writtenRows) {
     ASSERT_EQ(1, result.results.size());
     ASSERT_EQ(1, result.results[0]->size());
+
     const auto& child = result.results[0]->childAt(0);
     ASSERT_TRUE(child);
-    auto* flat = result.results[0]->childAt(0)->as<FlatVector<int64_t>>();
-    ASSERT_TRUE(flat);
-    ASSERT_EQ(flat->size(), 1);
-    ASSERT_TRUE(!flat->isNullAt(0));
-    EXPECT_EQ(flat->valueAt(0), expected);
+    ASSERT_EQ(1, child->size());
+
+    const auto value = child->variantAt(0);
+    ASSERT_TRUE(!value.isNull());
+
+    ASSERT_EQ(writtenRows, value.value<int64_t>());
   }
 
   void checkTableData(
@@ -110,9 +153,10 @@ class WriteTest : public test::HiveQueriesTestBase {
 };
 
 TEST_F(WriteTest, basic) {
-  lp::PlanBuilder::Context context(exec::test::kHiveConnectorId);
-
-  static constexpr vector_size_t kTestBatchSize = 2048;
+  SCOPE_EXIT {
+    metadata_->dropTableIfExists("test");
+    metadata_->dropTableIfExists("test2");
+  };
 
   auto tableType = ROW({
       {"key1", BIGINT()},
@@ -129,8 +173,10 @@ TEST_F(WriteTest, basic) {
 
   createTable("test", tableType, options);
 
+  static constexpr vector_size_t kTestBatchSize = 2048;
   auto data = makeTestData(10, kTestBatchSize);
 
+  lp::PlanBuilder::Context context(exec::test::kHiveConnectorId);
   auto writePlan = lp::PlanBuilder(context)
                        .values({data})
                        .tableWrite(
@@ -140,7 +186,7 @@ TEST_F(WriteTest, basic) {
                            {"key1", "key2", "data", "ds"},
                            {"key1", "key2", "data", "ds"})
                        .build();
-  checkWriteResults(runVelox(writePlan), kTestBatchSize * 10);
+  checkWrittenRows(runVelox(writePlan), kTestBatchSize * 10);
 
   auto countTestTable = [&] {
     auto countPlan = lp::PlanBuilder(context)
@@ -196,7 +242,7 @@ TEST_F(WriteTest, basic) {
                           {"key1", "key2", "data", "data2", "ds"},
                           {"key1", "key2", "data", "data2", "ds"})
                       .build();
-  checkWriteResults(runVelox(copyPlan), kTestBatchSize * 10);
+  checkWrittenRows(runVelox(copyPlan), kTestBatchSize * 10);
 
   {
     auto readPlan = lp::PlanBuilder(context).tableScan("test2").build();
@@ -205,6 +251,10 @@ TEST_F(WriteTest, basic) {
 }
 
 TEST_F(WriteTest, insertSql) {
+  SCOPE_EXIT {
+    metadata_->dropTableIfExists("test");
+  };
+
   createTable(
       "test", ROW({"a", "b", "c"}, {BIGINT(), DOUBLE(), VARCHAR()}), {});
 
@@ -219,20 +269,20 @@ TEST_F(WriteTest, insertSql) {
 
   {
     auto logicalPlan = parseSql("INSERT INTO test SELECT 1, 0.123, 'foo'");
-    checkWriteResults(runVelox(logicalPlan), 1);
+    checkWrittenRows(runVelox(logicalPlan), 1);
   }
 
   {
     auto logicalPlan =
         parseSql("INSERT INTO test(c, a, b) SELECT 'bar', 2, 1.23");
-    checkWriteResults(runVelox(logicalPlan), 1);
+    checkWrittenRows(runVelox(logicalPlan), 1);
   }
 
   {
     auto logicalPlan = parseSql(
         "INSERT INTO test(a, b) "
         "SELECT x, x * 0.1 FROM unnest(array[3, 4, 5]) as t(x)");
-    checkWriteResults(runVelox(logicalPlan), 3);
+    checkWrittenRows(runVelox(logicalPlan), 3);
   }
 
   checkTableData(
@@ -246,28 +296,13 @@ TEST_F(WriteTest, insertSql) {
 }
 
 TEST_F(WriteTest, createTableAsSelectSql) {
-  auto parseSql = [&](std::string_view sql) {
-    test::PrestoParser parser(exec::test::kHiveConnectorId, pool());
-
-    auto statement = parser.parse(sql);
-    VELOX_CHECK(statement->isCreateTableAsSelect());
-    return dynamic_pointer_cast<const test::CreateTableAsSelectStatement>(
-        statement);
-  };
-
-  metadata_->dropTableIfExists("test");
-
   {
-    auto statement =
-        parseSql("CREATE TABLE test(a, b, c) AS SELECT 1, 0.123, 'foo'");
-
-    createTable(
-        statement->tableName(), statement->tableSchema(), /*options=*/{});
     SCOPE_EXIT {
-      metadata_->dropTableIfExists(statement->tableName());
+      metadata_->dropTableIfExists("test");
     };
 
-    checkWriteResults(runVelox(statement->plan()), 1);
+    runCtas("CREATE TABLE test(a, b, c) AS SELECT 1, 0.123, 'foo'", 1);
+
     ASSERT_TRUE(metadata_->findTable("test") != nullptr);
     checkTableData(
         "test",
@@ -279,17 +314,15 @@ TEST_F(WriteTest, createTableAsSelectSql) {
   }
 
   {
-    auto statement = parseSql(
-        "CREATE TABLE test AS "
-        "SELECT x, x * 0.1 as y FROM unnest(array[1, 2, 3]) as t(x)");
-
-    createTable(
-        statement->tableName(), statement->tableSchema(), /*options=*/{});
     SCOPE_EXIT {
-      metadata_->dropTableIfExists(statement->tableName());
+      metadata_->dropTableIfExists("test");
     };
 
-    checkWriteResults(runVelox(statement->plan()), 3);
+    runCtas(
+        "CREATE TABLE test AS "
+        "SELECT x, x * 0.1 as y FROM unnest(array[1, 2, 3]) as t(x)",
+        3);
+
     ASSERT_TRUE(metadata_->findTable("test") != nullptr);
     checkTableData(
         "test",
@@ -301,17 +334,13 @@ TEST_F(WriteTest, createTableAsSelectSql) {
 
   // Verify that newly created table is deleted if write fails.
   {
-    auto statement =
-        parseSql("CREATE TABLE test(a, b, c) AS SELECT 1, 0.123, 123 % 0");
-
-    createTable(
-        statement->tableName(), statement->tableSchema(), /*options=*/{});
-
     SCOPE_EXIT {
-      metadata_->dropTableIfExists(statement->tableName());
+      metadata_->dropTableIfExists("test");
     };
 
-    VELOX_ASSERT_THROW(runVelox(statement->plan()), "Cannot divide by 0");
+    VELOX_ASSERT_THROW(
+        runCtas("CREATE TABLE test(a, b, c) AS SELECT 1, 0.123, 123 % 0", 0),
+        "Cannot divide by 0");
 
     ASSERT_TRUE(metadata_->findTable("test") == nullptr);
   }
