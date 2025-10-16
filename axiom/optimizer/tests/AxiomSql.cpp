@@ -35,7 +35,9 @@
 #include "velox/common/file/FileSystems.h"
 #include "velox/connectors/hive/HiveConnector.h"
 #include "velox/dwio/dwrf/RegisterDwrfReader.h"
+#include "velox/dwio/dwrf/RegisterDwrfWriter.h"
 #include "velox/dwio/parquet/RegisterParquetReader.h"
+#include "velox/dwio/parquet/RegisterParquetWriter.h"
 #include "velox/exec/PlanNodeStats.h"
 #include "velox/exec/tests/utils/LocalExchangeSource.h"
 #include "velox/exec/tests/utils/QueryAssertions.h"
@@ -154,8 +156,11 @@ class VeloxRunner : public velox::QueryBenchmarkBase {
     optimizer::FunctionRegistry::registerPrestoFunctions();
 
     filesystems::registerLocalFileSystem();
+    dwio::common::registerFileSinks();
     parquet::registerParquetReaderFactory();
+    parquet::registerParquetWriterFactory();
     dwrf::registerDwrfReaderFactory();
+    dwrf::registerDwrfWriterFactory();
     exec::ExchangeSource::registerFactory(
         exec::test::createLocalExchangeSource);
     serializer::presto::PrestoVectorSerde::registerVectorSerde();
@@ -304,6 +309,21 @@ class VeloxRunner : public velox::QueryBenchmarkBase {
     check_ = ref;
   }
 
+  connector::TablePtr createTable(
+      const optimizer::test::CreateTableAsSelectStatement& statement) {
+    auto metadata =
+        connector::ConnectorMetadata::metadata(connector_->connectorId());
+
+    folly::F14FastMap<std::string, velox::Variant> options;
+
+    // TODO Add support for create table properties.
+    CHECK(statement.properties().empty());
+
+    auto session = std::make_shared<connector::ConnectorSession>("test");
+    return metadata->createTable(
+        session, statement.tableName(), statement.tableSchema(), options);
+  }
+
   void run(std::string_view sql) {
     optimizer::test::SqlStatementPtr sqlStatement;
     try {
@@ -325,6 +345,32 @@ class VeloxRunner : public velox::QueryBenchmarkBase {
       } else {
         runExplain(*select, explain->type());
       }
+      return;
+    }
+
+    if (sqlStatement->isCreateTableAsSelect()) {
+      const auto* ctas =
+          sqlStatement
+              ->asUnchecked<optimizer::test::CreateTableAsSelectStatement>();
+
+      auto table = createTable(*ctas);
+
+      auto originalSchemaResolver = schema_;
+      SCOPE_EXIT {
+        schema_ = originalSchemaResolver;
+      };
+
+      schema_ = std::make_shared<connector::SchemaResolver>();
+      schema_->setTargetTable(connector_->connectorId(), table);
+
+      runSql(ctas->plan());
+      return;
+    }
+
+    if (sqlStatement->isInsert()) {
+      const auto* insert =
+          sqlStatement->asUnchecked<optimizer::test::InsertStatement>();
+      runSql(insert->plan());
       return;
     }
 
@@ -551,7 +597,7 @@ class VeloxRunner : public velox::QueryBenchmarkBase {
     });
   }
 
-  static std::shared_ptr<runner::LocalRunner> makeRunner(
+  std::shared_ptr<runner::LocalRunner> makeRunner(
       optimizer::PlanAndStats& planAndStats,
       const std::shared_ptr<core::QueryCtx>& queryCtx) {
     connector::SplitOptions splitOptions{
@@ -564,7 +610,8 @@ class VeloxRunner : public velox::QueryBenchmarkBase {
         planAndStats.plan,
         std::move(planAndStats.finishWrite),
         queryCtx,
-        std::make_shared<runner::ConnectorSplitSourceFactory>(splitOptions));
+        std::make_shared<runner::ConnectorSplitSourceFactory>(splitOptions),
+        optimizerPool_);
   }
 
   /// Runs a query and returns the result as a single vector in *resultVector,
