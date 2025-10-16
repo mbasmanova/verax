@@ -484,6 +484,18 @@ void verifyPartitionedLayout(
   ASSERT_EQ(0, layout.hivePartitionColumns().size());
 }
 
+TEST_F(WriteTest, xxx) {
+  SCOPE_EXIT {
+    metadata_->dropTableIfExists("test");
+    metadata_->dropTableIfExists("test2");
+  };
+
+  runCtas(
+      "CREATE TABLE test WITH (file_format = 'parquet') AS "
+      "SELECT rand() as key, l_linenumber, cast(rand() as varchar) as x FROM lineitem",
+      60175);
+}
+
 TEST_F(WriteTest, createTableAsSelectBucketedSql) {
   {
     SCOPE_EXIT {
@@ -499,7 +511,7 @@ TEST_F(WriteTest, createTableAsSelectBucketedSql) {
 
     runCtas(
         "CREATE TABLE test WITH (bucket_count = 8, bucketed_by = ARRAY['key']) AS "
-        "SELECT rand() as key, l_orderkey, l_partkey, l_linenumber FROM lineitem",
+        "SELECT rand() as key, l_orderkey, l_partkey, l_linenumber, 'foo' as x FROM lineitem",
         60175,
         verifyPartitionedWrite);
 
@@ -508,7 +520,7 @@ TEST_F(WriteTest, createTableAsSelectBucketedSql) {
     // Copy bucketed table with a larger bucket_count. Expect no shuffle.
     runCtas(
         "CREATE TABLE test3 WITH (bucket_count = 16, bucketed_by = ARRAY['key']) AS "
-        "SELECT key, l_orderkey, l_linenumber + 1 as x FROM test",
+        "SELECT key, l_orderkey, 'l_linenumber + 1' as x FROM test",
         60175,
         verifyCollocatedWrite);
 
