@@ -349,13 +349,13 @@ void LocalTable::makeDefaultLayout(
       this,
       metadata.hiveConnector(),
       std::move(columns),
+      std::nullopt,
       empty,
       empty,
       std::vector<SortOrder>{},
       empty,
       empty,
-      metadata.fileFormat(),
-      std::nullopt);
+      metadata.fileFormat());
   layout->setFiles(std::move(files));
   exportedLayouts_.push_back(layout.get());
   layouts_.push_back(std::move(layout));
@@ -663,13 +663,13 @@ std::shared_ptr<LocalTable> createLocalTable(
       table.get(),
       connector,
       columns,
+      numBuckets,
       bucketedBy,
       sortedBy,
       sortOrders,
       /*lookupKeys=*/std::vector<const Column*>{},
       partitionedBy,
-      createTableOptions.fileFormat.value(),
-      numBuckets);
+      createTableOptions.fileFormat.value());
   table->addLayout(std::move(layout));
   return table;
 }
