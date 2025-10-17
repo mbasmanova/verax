@@ -21,7 +21,7 @@
 #include "axiom/logical_plan/PlanBuilder.h"
 #include "axiom/optimizer/Optimization.h"
 #include "axiom/optimizer/VeloxHistory.h"
-#include "axiom/optimizer/tests/PrestoParser.h"
+#include "axiom/sql/presto/PrestoParser.h"
 #include "velox/expression/Expr.h"
 #include "velox/functions/prestosql/aggregates/RegisterAggregateFunctions.h"
 #include "velox/functions/prestosql/registration/RegistrationFunctions.h"
@@ -56,11 +56,13 @@ class DerivedTablePrinterTest : public ::testing::Test {
     velox::connector::unregisterConnector(kTestConnectorId);
   }
   std::vector<std::string> toLines(const std::string& sql) {
-    test::PrestoParser parser{kTestConnectorId, optimizerPool_.get()};
+    ::axiom::sql::presto::PrestoParser parser{
+        kTestConnectorId, optimizerPool_.get()};
     auto statement = parser.parse(sql);
     VELOX_CHECK(statement->isSelect());
 
-    const auto& plan = *statement->asUnchecked<test::SelectStatement>()->plan();
+    const auto& plan =
+        *statement->as<::axiom::sql::presto::SelectStatement>()->plan();
 
     return toLines(plan);
   }

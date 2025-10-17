@@ -18,7 +18,7 @@
 
 #include "axiom/logical_plan/LogicalPlanNode.h"
 
-namespace facebook::axiom::logical_plan {
+namespace facebook::axiom::logical_plan::test {
 
 class LogicalPlanMatcher {
  public:
@@ -58,4 +58,4 @@ class LogicalPlanMatcherBuilder {
   std::shared_ptr<LogicalPlanMatcher> matcher_;
 };
 
-} // namespace facebook::axiom::logical_plan
+} // namespace facebook::axiom::logical_plan::test
