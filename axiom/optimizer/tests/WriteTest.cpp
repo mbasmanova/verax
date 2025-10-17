@@ -15,13 +15,12 @@
  */
 
 #include "axiom/connectors/hive/LocalHiveConnectorMetadata.h"
-#include "axiom/logical_plan/ExprVisitor.h"
 #include "axiom/logical_plan/PlanBuilder.h"
+#include "axiom/optimizer/ConstantExprEvaluator.h"
 #include "axiom/optimizer/tests/HiveQueriesTestBase.h"
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/core/QueryConfig.h"
 #include "velox/dwio/parquet/RegisterParquetWriter.h"
-#include "velox/expression/Expr.h"
 
 namespace facebook::axiom::optimizer {
 namespace {
@@ -68,7 +67,7 @@ class WriteTest : public test::HiveQueriesTestBase {
 
     folly::F14FastMap<std::string, velox::Variant> options;
     for (const auto& [key, value] : statement.properties()) {
-      options[key] = evaluateConstantExpr(*value);
+      options[key] = ConstantExprEvaluator::evaluateConstantExpr(*value);
     }
 
     auto session = std::make_shared<connector::ConnectorSession>("test");
@@ -609,83 +608,6 @@ TEST_F(WriteTest, createTableAsSelectBucketedSql) {
 
     verifyPartitionedLayout(getLayout("test"), "n_nationkey", 16, "n_name");
   }
-}
-
-class ExprTranslatorContext : public lp::ExprVisitorContext {
- public:
-  velox::core::TypedExprPtr veloxExpr;
-};
-
-class ExprTranslator : public lp::ExprVisitor {
- public:
-  void visit(
-      const lp::InputReferenceExpr& expr,
-      lp::ExprVisitorContext& context) const {
-    auto& myCtx = static_cast<ExprTranslatorContext&>(context);
-
-    myCtx.veloxExpr =
-        std::make_shared<core::FieldAccessTypedExpr>(expr.type(), expr.name());
-  }
-
-  void visit(const lp::CallExpr& expr, lp::ExprVisitorContext& context) const {
-    auto& myCtx = static_cast<ExprTranslatorContext&>(context);
-
-    std::vector<core::TypedExprPtr> inputs;
-    inputs.reserve(expr.inputs().size());
-    for (const auto& input : expr.inputs()) {
-      input->accept(*this, context);
-      inputs.push_back(myCtx.veloxExpr);
-    }
-
-    myCtx.veloxExpr =
-        std::make_shared<core::CallTypedExpr>(expr.type(), inputs, expr.name());
-  }
-
-  void visit(const lp::SpecialFormExpr& expr, lp::ExprVisitorContext& context)
-      const {
-    VELOX_NYI();
-  }
-
-  void visit(const lp::AggregateExpr& expr, lp::ExprVisitorContext& context)
-      const {
-    VELOX_NYI();
-  }
-
-  void visit(const lp::WindowExpr& expr, lp::ExprVisitorContext& context)
-      const {
-    VELOX_NYI();
-  }
-
-  void visit(const lp::ConstantExpr& expr, lp::ExprVisitorContext& context)
-      const {
-    auto& myCtx = static_cast<ExprTranslatorContext&>(context);
-
-    myCtx.veloxExpr =
-        std::make_shared<core::ConstantTypedExpr>(expr.type(), *expr.value());
-  }
-
-  void visit(const lp::LambdaExpr& expr, lp::ExprVisitorContext& context)
-      const {
-    VELOX_NYI();
-  }
-
-  void visit(const lp::SubqueryExpr& expr, lp::ExprVisitorContext& context)
-      const {
-    VELOX_NYI();
-  }
-};
-
-velox::Variant WriteTest::evaluateConstantExpr(const lp::Expr& expr) {
-  ExprTranslatorContext context;
-  ExprTranslator translator;
-  expr.accept(translator, context);
-
-  auto result = velox::exec::tryEvaluateConstantExpression(
-      context.veloxExpr, pool(), core::QueryCtx::create());
-
-  VELOX_CHECK_NOT_NULL(result);
-
-  return result->variantAt(0);
 }
 
 #undef AXIOM_ASSERT_PLAN
