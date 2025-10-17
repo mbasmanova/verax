@@ -83,14 +83,13 @@ class DerivedTablePrinterTest : public ::testing::Test {
     VeloxHistory history;
 
     auto schemaResolver = std::make_shared<connector::SchemaResolver>();
-    Schema schema("default", schemaResolver.get());
 
     auto session = std::make_shared<Session>(veloxQueryCtx->queryId());
 
     Optimization opt{
         session,
         plan,
-        schema,
+        *schemaResolver,
         history,
         veloxQueryCtx,
         evaluator,
