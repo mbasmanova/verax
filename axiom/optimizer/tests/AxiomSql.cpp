@@ -324,6 +324,24 @@ class VeloxRunner : public velox::QueryBenchmarkBase {
         session, statement.tableName(), statement.tableSchema(), options);
   }
 
+  void dropTable(const optimizer::test::DropTableStatement& statement) {
+    auto metadata =
+        connector::ConnectorMetadata::metadata(connector_->connectorId());
+
+    const auto& tableName = statement.tableName();
+
+    auto session = std::make_shared<connector::ConnectorSession>("test");
+    const bool dropped =
+        metadata->dropTable(session, tableName, statement.ifExists());
+
+    if (dropped) {
+      std::cout << "Dropped table: " << tableName << std::endl;
+    } else {
+      std::cout << "Table doesn't exist: " << tableName << std::endl;
+    }
+    return;
+  }
+
   void run(std::string_view sql) {
     optimizer::test::SqlStatementPtr sqlStatement;
     try {
@@ -371,6 +389,14 @@ class VeloxRunner : public velox::QueryBenchmarkBase {
       const auto* insert =
           sqlStatement->asUnchecked<optimizer::test::InsertStatement>();
       runSql(insert->plan());
+      return;
+    }
+
+    if (sqlStatement->isDropTable()) {
+      const auto* drop =
+          sqlStatement->asUnchecked<optimizer::test::DropTableStatement>();
+
+      dropTable(*drop);
       return;
     }
 

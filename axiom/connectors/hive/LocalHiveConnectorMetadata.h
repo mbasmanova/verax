@@ -274,7 +274,15 @@ class LocalHiveConnectorMetadata : public HiveConnectorMetadata {
   std::optional<std::string> makeStagingDirectory(
       std::string_view tableName) const override;
 
-  bool dropTableIfExists(std::string_view tableName);
+  bool dropTable(
+      const ConnectorSessionPtr& session,
+      std::string_view tableName,
+      bool ifExists) override;
+
+  /// Shortcut for dropTable(session, tableName, true).
+  bool dropTableIfExists(std::string_view tableName) {
+    return dropTable(nullptr, tableName, true);
+  }
 
  private:
   void ensureInitialized() const override;

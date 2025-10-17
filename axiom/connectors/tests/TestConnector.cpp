@@ -119,12 +119,20 @@ std::shared_ptr<TestTable> TestConnectorMetadata::addTable(
     const velox::RowTypePtr& schema) {
   auto table = std::make_shared<TestTable>(name, schema, connector_);
   auto [it, ok] = tables_.emplace(name, std::move(table));
-  VELOX_CHECK(ok, "table {} already exists", name);
+  VELOX_CHECK(ok, "Table already exists: {}", name);
   return it->second;
 }
 
-bool TestConnectorMetadata::dropTableIfExists(const std::string& name) {
-  return tables_.erase(name) == 1;
+bool TestConnectorMetadata::dropTable(
+    const ConnectorSessionPtr& /* session */,
+    std::string_view tableName,
+    bool ifExists) {
+  const bool dropped = tables_.erase(tableName) == 1;
+  if (!ifExists) {
+    VELOX_USER_CHECK(dropped, "Table doesn't exist: {}", tableName);
+  }
+
+  return dropped;
 }
 
 void TestConnectorMetadata::appendData(

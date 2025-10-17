@@ -1129,8 +1129,18 @@ std::optional<std::string> LocalHiveConnectorMetadata::makeStagingDirectory(
   return createTemporaryDirectory(hiveConfig_->hiveLocalDataPath(), tableName);
 }
 
-bool LocalHiveConnectorMetadata::dropTableIfExists(std::string_view tableName) {
+bool LocalHiveConnectorMetadata::dropTable(
+    const ConnectorSessionPtr& /* session */,
+    std::string_view tableName,
+    bool ifExists) {
   std::lock_guard<std::mutex> l(mutex_);
+  if (!tables_.contains(tableName)) {
+    if (ifExists) {
+      return false;
+    }
+    VELOX_USER_FAIL("Table does not exist: {}", tableName);
+  }
+
   deleteDirectoryRecursive(tablePath(tableName));
   return tables_.erase(tableName) == 1;
 }

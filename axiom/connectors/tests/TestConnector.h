@@ -283,7 +283,15 @@ class TestConnectorMetadata : public ConnectorMetadata {
   /// into the internal memory pool associated with the table.
   void appendData(std::string_view name, const velox::RowVectorPtr& data);
 
-  bool dropTableIfExists(const std::string& name);
+  bool dropTable(
+      const ConnectorSessionPtr& session,
+      std::string_view tableName,
+      bool ifExists) override;
+
+  /// Shortcut for dropTable(session, tableName, true).
+  bool dropTableIfExists(std::string_view tableName) {
+    return dropTable(nullptr, tableName, true);
+  }
 
  private:
   TestConnector* connector_;
