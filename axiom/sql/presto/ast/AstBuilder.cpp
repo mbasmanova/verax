@@ -311,7 +311,11 @@ std::any AstBuilder::visitCreateTable(
 
 std::any AstBuilder::visitDropTable(PrestoSqlParser::DropTableContext* ctx) {
   trace("visitDropTable");
-  return visitChildren(ctx);
+
+  return std::static_pointer_cast<Statement>(std::make_shared<DropTable>(
+      getLocation(ctx),
+      getQualifiedName(ctx->qualifiedName()),
+      ctx->EXISTS() != nullptr));
 }
 
 std::any AstBuilder::visitInsertInto(PrestoSqlParser::InsertIntoContext* ctx) {

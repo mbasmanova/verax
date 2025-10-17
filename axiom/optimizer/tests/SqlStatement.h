@@ -22,8 +22,9 @@ namespace facebook::axiom::optimizer::test {
 
 enum class SqlStatementKind {
   kSelect,
-  kInsert,
   kCreateTableAsSelect,
+  kInsert,
+  kDropTable,
   kExplain,
 };
 
@@ -41,12 +42,16 @@ class SqlStatement {
     return kind_ == SqlStatementKind::kSelect;
   }
 
+  bool isCreateTableAsSelect() const {
+    return kind_ == SqlStatementKind::kCreateTableAsSelect;
+  }
+
   bool isInsert() const {
     return kind_ == SqlStatementKind::kInsert;
   }
 
-  bool isCreateTableAsSelect() const {
-    return kind_ == SqlStatementKind::kCreateTableAsSelect;
+  bool isDropTable() const {
+    return kind_ == SqlStatementKind::kDropTable;
   }
 
   bool isExplain() const {
@@ -92,7 +97,7 @@ class InsertStatement : public SqlStatement {
 
 class CreateTableAsSelectStatement : public SqlStatement {
  public:
-  explicit CreateTableAsSelectStatement(
+  CreateTableAsSelectStatement(
       std::string tableName,
       velox::RowTypePtr tableSchema,
       std::unordered_map<std::string, logical_plan::ExprPtr> properties,
@@ -125,6 +130,26 @@ class CreateTableAsSelectStatement : public SqlStatement {
   const velox::RowTypePtr tableSchema_;
   std::unordered_map<std::string, logical_plan::ExprPtr> properties_;
   const logical_plan::LogicalPlanNodePtr plan_;
+};
+
+class DropTableStatement : public SqlStatement {
+ public:
+  DropTableStatement(std::string tableName, bool ifExists)
+      : SqlStatement(SqlStatementKind::kDropTable),
+        tableName_{std::move(tableName)},
+        ifExists_{ifExists} {}
+
+  const std::string& tableName() const {
+    return tableName_;
+  }
+
+  bool ifExists() const {
+    return ifExists_;
+  }
+
+ private:
+  const std::string tableName_;
+  const bool ifExists_;
 };
 
 class ExplainStatement : public SqlStatement {

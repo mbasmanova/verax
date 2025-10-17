@@ -1177,6 +1177,179 @@ lp::ExprPtr parseSqlExpression(const sql::ExpressionPtr& expr) {
 
   return project->expressionAt(0);
 }
+
+SqlStatementPtr parseExplain(
+    const sql::Explain& explain,
+    const std::string& connectorId) {
+  RelationPlanner planner(connectorId);
+  explain.statement()->accept(&planner);
+
+  if (explain.isAnalyze()) {
+    return std::make_shared<ExplainStatement>(
+        std::make_shared<SelectStatement>(planner.getPlan()),
+        /*analyze=*/true);
+  }
+
+  ExplainStatement::Type type = ExplainStatement::Type::kDistributed;
+
+  for (const auto& option : explain.options()) {
+    if (option->is(sql::NodeType::kExplainType)) {
+      const auto explainType = option->as<sql::ExplainType>()->explainType();
+      switch (explainType) {
+        case sql::ExplainType::Type::kLogical:
+          type = ExplainStatement::Type::kLogical;
+          break;
+        case sql::ExplainType::Type::kGraph:
+          type = ExplainStatement::Type::kGraph;
+          break;
+        case sql::ExplainType::Type::kDistributed:
+          type = ExplainStatement::Type::kDistributed;
+          break;
+        default:
+          VELOX_USER_FAIL("Unsupported EXPLAIN type");
+      }
+    }
+  }
+
+  return std::make_shared<ExplainStatement>(
+      std::make_shared<SelectStatement>(planner.getPlan()),
+      /*analyze=*/false,
+      type);
+}
+
+SqlStatementPtr parseShowColumns(
+    const sql::ShowColumns& showColumns,
+    const std::string& connectorId) {
+  const auto tableName = showColumns.table()->suffix();
+
+  auto table =
+      connector::ConnectorMetadata::metadata(connectorId)->findTable(tableName);
+
+  VELOX_USER_CHECK_NOT_NULL(table, "Table not found: {}", tableName);
+
+  const auto& schema = table->type();
+
+  std::vector<Variant> data;
+  data.reserve(schema->size());
+  for (auto i = 0; i < schema->size(); ++i) {
+    data.emplace_back(
+        Variant::row({schema->nameOf(i), schema->childAt(i)->toString()}));
+  }
+
+  lp::PlanBuilder::Context ctx(connectorId);
+  return std::make_shared<SelectStatement>(
+      lp::PlanBuilder(ctx)
+          .values(ROW({"column", "type"}, {VARCHAR(), VARCHAR()}), data)
+          .build());
+}
+
+SqlStatementPtr parseInsert(
+    const sql::Insert& insert,
+    const std::string& connectorId) {
+  auto tableName = insert.target()->suffix();
+
+  auto table =
+      connector::ConnectorMetadata::metadata(connectorId)->findTable(tableName);
+  VELOX_USER_CHECK_NOT_NULL(table, "Table not found: {}", tableName);
+
+  const auto& columns = insert.columns();
+
+  std::vector<std::string> columnNames;
+  if (columns.empty()) {
+    columnNames = table->type()->names();
+  } else {
+    columnNames.reserve(columns.size());
+    for (const auto& column : columns) {
+      columnNames.emplace_back(column->value());
+    }
+  }
+
+  RelationPlanner planner(connectorId);
+  insert.query()->accept(&planner);
+
+  auto inputColumns = planner.builder().findOrAssignOutputNames();
+  VELOX_CHECK_EQ(inputColumns.size(), columnNames.size());
+
+  planner.builder().tableWrite(
+      connectorId,
+      tableName,
+      lp::WriteKind::kInsert,
+      columnNames,
+      inputColumns);
+
+  return std::make_shared<InsertStatement>(planner.getPlan());
+}
+
+SqlStatementPtr parseCreateTableAsSelect(
+    const sql::CreateTableAsSelect& ctas,
+    const std::string& connectorId) {
+  auto tableName = ctas.name()->suffix();
+
+  RelationPlanner planner(connectorId);
+  ctas.query()->accept(&planner);
+
+  std::unordered_map<std::string, lp::ExprPtr> properties;
+  for (const auto& p : ctas.properties()) {
+    const auto& name = p->name()->value();
+    bool ok = properties.emplace(name, parseSqlExpression(p->value())).second;
+    VELOX_USER_CHECK(ok, "Duplicate property: {}", name);
+  }
+
+  auto& planBuilder = planner.builder();
+
+  auto columnTypes = planBuilder.outputTypes();
+
+  const auto inputColumns = planBuilder.outputNames();
+  const auto numInputColumns = inputColumns.size();
+
+  std::vector<std::string> columnNames;
+  if (ctas.columns().empty()) {
+    columnNames.reserve(numInputColumns);
+    for (auto i = 0; i < numInputColumns; ++i) {
+      const auto& name = inputColumns[i];
+      VELOX_USER_CHECK(
+          name.has_value(), "Column name not specified at position {}", i + 1);
+      columnNames.emplace_back(name.value());
+    }
+
+    planBuilder.tableWrite(
+        connectorId,
+        tableName,
+        lp::WriteKind::kCreate,
+        columnNames,
+        columnNames);
+  } else {
+    VELOX_USER_CHECK_EQ(ctas.columns().size(), numInputColumns);
+
+    columnNames.reserve(numInputColumns);
+    for (const auto& column : ctas.columns()) {
+      columnNames.emplace_back(column->value());
+    }
+
+    planBuilder.tableWrite(
+        connectorId,
+        tableName,
+        lp::WriteKind::kCreate,
+        columnNames,
+        planBuilder.findOrAssignOutputNames());
+  }
+
+  return std::make_shared<CreateTableAsSelectStatement>(
+      std::move(tableName),
+      velox::ROW(std::move(columnNames), std::move(columnTypes)),
+      std::move(properties),
+      planner.getPlan());
+}
+
+SqlStatementPtr parseDropTable(
+    const sql::DropTable& dropTable,
+    const std::string& connectorId) {
+  auto tableName = dropTable.tableName()->suffix();
+
+  return std::make_shared<DropTableStatement>(
+      std::move(tableName), dropTable.isExists());
+}
+
 } // namespace
 
 SqlStatementPtr PrestoParser::doParse(
@@ -1197,164 +1370,29 @@ SqlStatementPtr PrestoParser::doParse(
     std::cout << "AST: " << astString.str() << std::endl;
   }
 
-  RelationPlanner planner(defaultConnectorId_);
   if (query->is(sql::NodeType::kExplain)) {
-    auto* explain = query->as<sql::Explain>();
-    explain->statement()->accept(&planner);
-
-    if (explain->isAnalyze()) {
-      return std::make_shared<ExplainStatement>(
-          std::make_shared<SelectStatement>(planner.getPlan()),
-          /*analyze=*/true);
-    } else {
-      ExplainStatement::Type type = ExplainStatement::Type::kDistributed;
-
-      for (const auto& option : explain->options()) {
-        if (option->is(sql::NodeType::kExplainType)) {
-          const auto explainType =
-              option->as<sql::ExplainType>()->explainType();
-          switch (explainType) {
-            case sql::ExplainType::Type::kLogical:
-              type = ExplainStatement::Type::kLogical;
-              break;
-            case sql::ExplainType::Type::kGraph:
-              type = ExplainStatement::Type::kGraph;
-              break;
-            case sql::ExplainType::Type::kDistributed:
-              type = ExplainStatement::Type::kDistributed;
-              break;
-            default:
-              VELOX_USER_FAIL("Unsupported EXPLAIN type");
-          }
-        }
-      }
-
-      return std::make_shared<ExplainStatement>(
-          std::make_shared<SelectStatement>(planner.getPlan()),
-          /*analyze=*/false,
-          type);
-    }
+    return parseExplain(*query->as<sql::Explain>(), defaultConnectorId_);
   }
 
   if (query->is(sql::NodeType::kShowColumns)) {
-    const auto tableName = query->as<sql::ShowColumns>()->table()->suffix();
-
-    auto table = connector::ConnectorMetadata::metadata(defaultConnectorId_)
-                     ->findTable(tableName);
-
-    VELOX_USER_CHECK_NOT_NULL(table, "Table not found: {}", tableName);
-
-    const auto& schema = table->type();
-
-    std::vector<Variant> data;
-    data.reserve(schema->size());
-    for (auto i = 0; i < schema->size(); ++i) {
-      data.emplace_back(
-          Variant::row({schema->nameOf(i), schema->childAt(i)->toString()}));
-    }
-
-    lp::PlanBuilder::Context ctx(defaultConnectorId_);
-
-    return std::make_shared<SelectStatement>(
-        lp::PlanBuilder(ctx)
-            .values(ROW({"column", "type"}, {VARCHAR(), VARCHAR()}), data)
-            .build());
+    return parseShowColumns(
+        *query->as<sql::ShowColumns>(), defaultConnectorId_);
   }
 
   if (query->is(sql::NodeType::kInsert)) {
-    auto* insert = query->as<sql::Insert>();
-    auto tableName = insert->target()->suffix();
-
-    auto table = connector::ConnectorMetadata::metadata(defaultConnectorId_)
-                     ->findTable(tableName);
-    VELOX_USER_CHECK_NOT_NULL(table, "Table not found: {}", tableName);
-
-    std::vector<std::string> columnNames;
-    if (insert->columns().empty()) {
-      columnNames = table->type()->names();
-    } else {
-      columnNames.reserve(insert->columns().size());
-      for (const auto& column : insert->columns()) {
-        columnNames.emplace_back(column->value());
-      }
-    }
-
-    insert->query()->accept(&planner);
-
-    auto inputColumns = planner.builder().findOrAssignOutputNames();
-    VELOX_CHECK_EQ(inputColumns.size(), columnNames.size());
-
-    planner.builder().tableWrite(
-        defaultConnectorId_,
-        tableName,
-        lp::WriteKind::kInsert,
-        columnNames,
-        inputColumns);
-
-    return std::make_shared<InsertStatement>(planner.getPlan());
+    return parseInsert(*query->as<sql::Insert>(), defaultConnectorId_);
   }
 
   if (query->is(sql::NodeType::kCreateTableAsSelect)) {
-    auto* ctas = query->as<sql::CreateTableAsSelect>();
-    auto tableName = ctas->name()->suffix();
-
-    ctas->query()->accept(&planner);
-
-    std::unordered_map<std::string, lp::ExprPtr> properties;
-    for (const auto& p : ctas->properties()) {
-      const auto& name = p->name()->value();
-      bool ok = properties.emplace(name, parseSqlExpression(p->value())).second;
-      VELOX_USER_CHECK(ok, "Duplicate property: {}", name);
-    }
-
-    auto& planBuilder = planner.builder();
-
-    auto columnTypes = planBuilder.outputTypes();
-
-    const auto inputColumns = planBuilder.outputNames();
-    const auto numInputColumns = inputColumns.size();
-
-    std::vector<std::string> columnNames;
-    if (ctas->columns().empty()) {
-      columnNames.reserve(numInputColumns);
-      for (auto i = 0; i < numInputColumns; ++i) {
-        const auto& name = inputColumns[i];
-        VELOX_USER_CHECK(
-            name.has_value(),
-            "Column name not specified at position {}",
-            i + 1);
-        columnNames.emplace_back(name.value());
-      }
-
-      planBuilder.tableWrite(
-          defaultConnectorId_,
-          tableName,
-          lp::WriteKind::kCreate,
-          columnNames,
-          columnNames);
-    } else {
-      VELOX_USER_CHECK_EQ(ctas->columns().size(), numInputColumns);
-
-      columnNames.reserve(numInputColumns);
-      for (const auto& column : ctas->columns()) {
-        columnNames.emplace_back(column->value());
-      }
-
-      planBuilder.tableWrite(
-          defaultConnectorId_,
-          tableName,
-          lp::WriteKind::kCreate,
-          columnNames,
-          planBuilder.findOrAssignOutputNames());
-    }
-
-    return std::make_shared<CreateTableAsSelectStatement>(
-        std::move(tableName),
-        velox::ROW(std::move(columnNames), std::move(columnTypes)),
-        std::move(properties),
-        planner.getPlan());
+    return parseCreateTableAsSelect(
+        *query->as<sql::CreateTableAsSelect>(), defaultConnectorId_);
   }
 
+  if (query->is(sql::NodeType::kDropTable)) {
+    return parseDropTable(*query->as<sql::DropTable>(), defaultConnectorId_);
+  }
+
+  RelationPlanner planner(defaultConnectorId_);
   query->accept(&planner);
   return std::make_shared<SelectStatement>(planner.getPlan());
 }
