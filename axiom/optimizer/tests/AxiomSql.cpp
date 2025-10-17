@@ -401,7 +401,6 @@ class VeloxRunner {
       optimizer::queryCtx() = nullptr;
     };
 
-    optimizer::Schema veraxSchema("test", schema_.get());
     exec::SimpleExpressionEvaluator evaluator(
         queryCtx.get(), optimizerPool_.get());
 
@@ -410,7 +409,7 @@ class VeloxRunner {
     optimizer::Optimization optimization(
         session,
         *logicalPlan,
-        veraxSchema,
+        *schema_,
         *history_,
         queryCtx,
         evaluator,
