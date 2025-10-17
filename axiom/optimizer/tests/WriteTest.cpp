@@ -62,7 +62,7 @@ class WriteTest : public test::HiveQueriesTestBase {
   }
 
   connector::TablePtr createTable(
-      const test::CreateTableAsSelectStatement& statement) {
+      const ::axiom::sql::presto::CreateTableAsSelectStatement& statement) {
     metadata_->dropTableIfExists(statement.tableName());
 
     folly::F14FastMap<std::string, velox::Variant> options;
@@ -86,13 +86,14 @@ class WriteTest : public test::HiveQueriesTestBase {
       }) {
     SCOPED_TRACE(sql);
 
-    test::PrestoParser parser(exec::test::kHiveConnectorId, pool());
+    ::axiom::sql::presto::PrestoParser parser(
+        exec::test::kHiveConnectorId, pool());
 
     auto statement = parser.parse(sql);
     VELOX_CHECK(statement->isCreateTableAsSelect());
 
     auto ctasStatement =
-        statement->asUnchecked<test::CreateTableAsSelectStatement>();
+        statement->as<::axiom::sql::presto::CreateTableAsSelectStatement>();
 
     auto table = createTable(*ctasStatement);
 
@@ -289,12 +290,13 @@ TEST_F(WriteTest, insertSql) {
       "test", ROW({"a", "b", "c"}, {BIGINT(), DOUBLE(), VARCHAR()}), {});
 
   auto parseSql = [&](std::string_view sql) {
-    test::PrestoParser parser(exec::test::kHiveConnectorId, pool());
+    ::axiom::sql::presto::PrestoParser parser(
+        exec::test::kHiveConnectorId, pool());
 
     auto statement = parser.parse(sql);
     VELOX_CHECK(statement->isInsert());
 
-    return statement->asUnchecked<test::InsertStatement>()->plan();
+    return statement->as<::axiom::sql::presto::InsertStatement>()->plan();
   };
 
   {

@@ -29,8 +29,8 @@
 #include "axiom/optimizer/Optimization.h"
 #include "axiom/optimizer/Plan.h"
 #include "axiom/optimizer/VeloxHistory.h"
-#include "axiom/optimizer/tests/PrestoParser.h"
 #include "axiom/runner/LocalRunner.h"
+#include "axiom/sql/presto/PrestoParser.h"
 #include "velox/benchmarks/QueryBenchmarkBase.h"
 #include "velox/common/caching/SsdCache.h"
 #include "velox/common/file/FileSystems.h"
@@ -177,7 +177,7 @@ class VeloxRunner : public velox::QueryBenchmarkBase {
 
     schema_ = std::make_shared<connector::SchemaResolver>();
 
-    prestoParser_ = std::make_unique<optimizer::test::PrestoParser>(
+    prestoParser_ = std::make_unique<::axiom::sql::presto::PrestoParser>(
         connector_->connectorId(), optimizerPool_.get());
 
     history_ = std::make_unique<optimizer::VeloxHistory>();
@@ -311,7 +311,7 @@ class VeloxRunner : public velox::QueryBenchmarkBase {
   }
 
   connector::TablePtr createTable(
-      const optimizer::test::CreateTableAsSelectStatement& statement) {
+      const ::axiom::sql::presto::CreateTableAsSelectStatement& statement) {
     auto metadata =
         connector::ConnectorMetadata::metadata(connector_->connectorId());
 
@@ -326,7 +326,7 @@ class VeloxRunner : public velox::QueryBenchmarkBase {
         session, statement.tableName(), statement.tableSchema(), options);
   }
 
-  void dropTable(const optimizer::test::DropTableStatement& statement) {
+  void dropTable(const ::axiom::sql::presto::DropTableStatement& statement) {
     auto metadata =
         connector::ConnectorMetadata::metadata(connector_->connectorId());
 
@@ -345,7 +345,7 @@ class VeloxRunner : public velox::QueryBenchmarkBase {
   }
 
   void run(std::string_view sql) {
-    optimizer::test::SqlStatementPtr sqlStatement;
+    ::axiom::sql::presto::SqlStatementPtr sqlStatement;
     try {
       sqlStatement = prestoParser_->parse(sql);
     } catch (std::exception& e) {
@@ -355,11 +355,11 @@ class VeloxRunner : public velox::QueryBenchmarkBase {
 
     if (sqlStatement->isExplain()) {
       auto* explain =
-          sqlStatement->asUnchecked<optimizer::test::ExplainStatement>();
+          sqlStatement->as<::axiom::sql::presto::ExplainStatement>();
 
       CHECK(explain->statement()->isSelect());
       auto* select =
-          explain->statement()->asUnchecked<optimizer::test::SelectStatement>();
+          explain->statement()->as<::axiom::sql::presto::SelectStatement>();
       if (explain->isAnalyze()) {
         runExplainAnalyze(*select);
       } else {
@@ -371,7 +371,7 @@ class VeloxRunner : public velox::QueryBenchmarkBase {
     if (sqlStatement->isCreateTableAsSelect()) {
       const auto* ctas =
           sqlStatement
-              ->asUnchecked<optimizer::test::CreateTableAsSelectStatement>();
+              ->as<::axiom::sql::presto::CreateTableAsSelectStatement>();
 
       auto table = createTable(*ctas);
 
@@ -389,14 +389,14 @@ class VeloxRunner : public velox::QueryBenchmarkBase {
 
     if (sqlStatement->isInsert()) {
       const auto* insert =
-          sqlStatement->asUnchecked<optimizer::test::InsertStatement>();
+          sqlStatement->as<::axiom::sql::presto::InsertStatement>();
       runSql(insert->plan());
       return;
     }
 
     if (sqlStatement->isDropTable()) {
       const auto* drop =
-          sqlStatement->asUnchecked<optimizer::test::DropTableStatement>();
+          sqlStatement->as<::axiom::sql::presto::DropTableStatement>();
 
       dropTable(*drop);
       return;
@@ -405,7 +405,7 @@ class VeloxRunner : public velox::QueryBenchmarkBase {
     CHECK(sqlStatement->isSelect());
 
     const auto logicalPlan =
-        sqlStatement->asUnchecked<optimizer::test::SelectStatement>()->plan();
+        sqlStatement->as<::axiom::sql::presto::SelectStatement>()->plan();
 
     if (record_ || check_) {
       std::string error;
@@ -499,29 +499,30 @@ class VeloxRunner : public velox::QueryBenchmarkBase {
   }
 
   void runExplain(
-      const optimizer::test::SelectStatement& statement,
-      optimizer::test::ExplainStatement::Type type) {
+      const ::axiom::sql::presto::SelectStatement& statement,
+      ::axiom::sql::presto::ExplainStatement::Type type) {
     switch (type) {
-      case optimizer::test::ExplainStatement::Type::kLogical:
+      case ::axiom::sql::presto::ExplainStatement::Type::kLogical:
         std::cout << logical_plan::PlanPrinter::toText(*statement.plan())
                   << std::endl;
         break;
 
-      case optimizer::test::ExplainStatement::Type::kGraph:
+      case ::axiom::sql::presto::ExplainStatement::Type::kGraph:
         optimize(statement.plan(), newQuery(), [](const auto& dt) {
           std::cout << optimizer::DerivedTablePrinter::toText(dt) << std::endl;
           return false; // Stop optimization.
         });
         break;
 
-      case optimizer::test::ExplainStatement::Type::kDistributed:
+      case ::axiom::sql::presto::ExplainStatement::Type::kDistributed:
         std::cout << optimize(statement.plan(), newQuery()).toString()
                   << std::endl;
         break;
     }
   }
 
-  void runExplainAnalyze(const optimizer::test::SelectStatement& statement) {
+  void runExplainAnalyze(
+      const ::axiom::sql::presto::SelectStatement& statement) {
     auto queryCtx = newQuery();
     auto planAndStats = optimize(statement.plan(), queryCtx);
 
@@ -954,7 +955,7 @@ class VeloxRunner : public velox::QueryBenchmarkBase {
   std::shared_ptr<velox::connector::Connector> connector_;
   std::shared_ptr<connector::SchemaResolver> schema_;
   std::unique_ptr<optimizer::VeloxHistory> history_;
-  std::unique_ptr<optimizer::test::PrestoParser> prestoParser_;
+  std::unique_ptr<::axiom::sql::presto::PrestoParser> prestoParser_;
   std::ofstream* record_{nullptr};
   std::ifstream* check_{nullptr};
   int32_t numPassed_{0};

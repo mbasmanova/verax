@@ -14,23 +14,77 @@
  * limitations under the License.
  */
 
-#include "axiom/optimizer/tests/PrestoParser.h"
+#include "axiom/sql/presto/PrestoParser.h"
 #include <algorithm>
 #include <cctype>
 #include "axiom/connectors/ConnectorMetadata.h"
 #include "axiom/logical_plan/PlanBuilder.h"
-#include "axiom/sql/presto/ParserHelper.h"
 #include "axiom/sql/presto/ast/AstBuilder.h"
 #include "axiom/sql/presto/ast/AstPrinter.h"
+#include "axiom/sql/presto/ast/UpperCaseInputStream.h"
+#include "axiom/sql/presto/grammar/PrestoSqlLexer.h"
+#include "axiom/sql/presto/grammar/PrestoSqlParser.h"
 #include "velox/exec/Aggregate.h"
 
-namespace sql = axiom::sql::presto;
-
-namespace facebook::axiom::optimizer::test {
+namespace axiom::sql::presto {
 namespace {
 
 using namespace facebook::velox;
 namespace lp = facebook::axiom::logical_plan;
+
+class ErrorListener : public antlr4::BaseErrorListener {
+ public:
+  void syntaxError(
+      antlr4::Recognizer* recognizer,
+      antlr4::Token* offendingSymbol,
+      size_t line,
+      size_t charPositionInLine,
+      const std::string& msg,
+      std::exception_ptr e) override {
+    if (firstError.empty()) {
+      firstError = fmt::format(
+          "Syntax error at {}:{}: {}", line, charPositionInLine, msg);
+    }
+  }
+
+  std::string firstError;
+};
+
+class ParserHelper {
+ public:
+  explicit ParserHelper(std::string_view sql)
+      : inputStream_(std::make_unique<UpperCaseInputStream>(sql)),
+        lexer_(std::make_unique<PrestoSqlLexer>(inputStream_.get())),
+        tokenStream_(std::make_unique<antlr4::CommonTokenStream>(lexer_.get())),
+        parser_(std::make_unique<PrestoSqlParser>(tokenStream_.get())) {
+    lexer_->removeErrorListeners();
+    lexer_->addErrorListener(&errorListener_);
+
+    parser_->removeErrorListeners();
+    parser_->addErrorListener(&errorListener_);
+  }
+
+  PrestoSqlParser& parser() const {
+    return *parser_;
+  }
+
+  PrestoSqlParser::StatementContext* parse() const {
+    auto ctx = parser_->statement();
+
+    if (parser_->getNumberOfSyntaxErrors() > 0) {
+      throw std::runtime_error(errorListener_.firstError);
+    }
+
+    return ctx;
+  }
+
+ private:
+  std::unique_ptr<antlr4::ANTLRInputStream> inputStream_;
+  std::unique_ptr<PrestoSqlLexer> lexer_;
+  std::unique_ptr<antlr4::CommonTokenStream> tokenStream_;
+  std::unique_ptr<PrestoSqlParser> parser_;
+  ErrorListener errorListener_;
+};
 
 using ExprMap = folly::
     F14FastMap<core::ExprPtr, core::ExprPtr, core::IExprHash, core::IExprEqual>;
@@ -73,7 +127,7 @@ void findAggregates(
     case core::IExpr::Kind::kFieldAccess:
       return;
     case core::IExpr::Kind::kCall: {
-      if (velox::exec::getAggregateFunctionEntry(
+      if (facebook::velox::exec::getAggregateFunctionEntry(
               expr->as<core::CallExpr>()->name())) {
         aggregates.emplace_back(lp::ExprApi(expr));
       } else {
@@ -98,15 +152,15 @@ void findAggregates(
 }
 
 bool asQualifiedName(
-    const sql::ExpressionPtr& expr,
+    const ExpressionPtr& expr,
     std::vector<std::string>& names) {
-  if (expr->is(sql::NodeType::kIdentifier)) {
-    names.push_back(expr->as<sql::Identifier>()->value());
+  if (expr->is(NodeType::kIdentifier)) {
+    names.push_back(expr->as<Identifier>()->value());
     return true;
   }
 
-  if (expr->is(sql::NodeType::kDereferenceExpression)) {
-    auto* dereference = expr->as<sql::DereferenceExpression>();
+  if (expr->is(NodeType::kDereferenceExpression)) {
+    auto* dereference = expr->as<DereferenceExpression>();
     names.push_back(dereference->field()->value());
     return asQualifiedName(dereference->base(), names);
   }
@@ -117,39 +171,38 @@ bool asQualifiedName(
 // Analizes the expression to find out whether there are any aggregate function
 // calls and to verify that aggregate calls are not nested, e.g. sum(count(x))
 // is not allowed.
-class ExprAnalyzer : public sql::AstVisitor {
+class ExprAnalyzer : public AstVisitor {
  public:
   bool hasAggregate() const {
     return numAggregates_ > 0;
   }
 
  private:
-  void defaultVisit(sql::Node* node) override {
-    if (dynamic_cast<sql::Literal*>(node) != nullptr) {
+  void defaultVisit(Node* node) override {
+    if (dynamic_cast<Literal*>(node) != nullptr) {
       // Literals have no function calls.
       return;
     }
 
     VELOX_NYI(
-        "Not yet supported node type: {}",
-        sql::NodeTypeName::toName(node->type()));
+        "Not yet supported node type: {}", NodeTypeName::toName(node->type()));
   }
 
-  void visitCast(sql::Cast* node) override {
+  void visitCast(Cast* node) override {
     node->expression()->accept(this);
   }
 
-  void visitDereferenceExpression(sql::DereferenceExpression* node) override {
+  void visitDereferenceExpression(DereferenceExpression* node) override {
     node->base()->accept(this);
   }
 
-  void visitExtract(sql::Extract* node) override {
+  void visitExtract(Extract* node) override {
     node->expression()->accept(this);
   }
 
-  void visitFunctionCall(sql::FunctionCall* node) override {
+  void visitFunctionCall(FunctionCall* node) override {
     const auto& name = node->name()->suffix();
-    if (velox::exec::getAggregateFunctionEntry(name)) {
+    if (facebook::velox::exec::getAggregateFunctionEntry(name)) {
       VELOX_USER_CHECK(
           !aggregateName_.has_value(),
           "Cannot nest aggregations inside aggregation: {}({})",
@@ -168,23 +221,22 @@ class ExprAnalyzer : public sql::AstVisitor {
   }
 
   void visitArithmeticBinaryExpression(
-      sql::ArithmeticBinaryExpression* node) override {
+      ArithmeticBinaryExpression* node) override {
     node->left()->accept(this);
     node->right()->accept(this);
   }
 
-  void visitLogicalBinaryExpression(
-      sql::LogicalBinaryExpression* node) override {
+  void visitLogicalBinaryExpression(LogicalBinaryExpression* node) override {
     node->left()->accept(this);
     node->right()->accept(this);
   }
 
-  void visitComparisonExpression(sql::ComparisonExpression* node) override {
+  void visitComparisonExpression(ComparisonExpression* node) override {
     node->left()->accept(this);
     node->right()->accept(this);
   }
 
-  void visitLikePredicate(sql::LikePredicate* node) override {
+  void visitLikePredicate(LikePredicate* node) override {
     node->value()->accept(this);
     node->pattern()->accept(this);
     if (node->escape() != nullptr) {
@@ -192,7 +244,7 @@ class ExprAnalyzer : public sql::AstVisitor {
     }
   }
 
-  void visitSearchedCaseExpression(sql::SearchedCaseExpression* node) override {
+  void visitSearchedCaseExpression(SearchedCaseExpression* node) override {
     for (const auto& clause : node->whenClauses()) {
       clause->operand()->accept(this);
       clause->result()->accept(this);
@@ -203,7 +255,7 @@ class ExprAnalyzer : public sql::AstVisitor {
     }
   }
 
-  void visitIdentifier(sql::Identifier* node) override {
+  void visitIdentifier(Identifier* node) override {
     // No function calls.
   }
 
@@ -211,7 +263,7 @@ class ExprAnalyzer : public sql::AstVisitor {
   std::optional<std::string> aggregateName_;
 };
 
-class RelationPlanner : public sql::AstVisitor {
+class RelationPlanner : public AstVisitor {
  public:
   explicit RelationPlanner(const std::string& defaultConnectorId)
       : context_{defaultConnectorId}, builder_(newBuilder()) {}
@@ -224,35 +276,35 @@ class RelationPlanner : public sql::AstVisitor {
     return *builder_;
   }
 
-  lp::ExprApi toExpr(const sql::ExpressionPtr& node) {
+  lp::ExprApi toExpr(const ExpressionPtr& node) {
     switch (node->type()) {
-      case sql::NodeType::kIdentifier:
-        return lp::Col(node->as<sql::Identifier>()->value());
+      case NodeType::kIdentifier:
+        return lp::Col(node->as<Identifier>()->value());
 
-      case sql::NodeType::kDereferenceExpression: {
+      case NodeType::kDereferenceExpression: {
         std::vector<std::string> names;
         if (asQualifiedName(node, names)) {
           VELOX_USER_CHECK_EQ(2, names.size());
           return lp::Col(names.at(0), lp::Col(names.at(1)));
         }
 
-        auto* dereference = node->as<sql::DereferenceExpression>();
+        auto* dereference = node->as<DereferenceExpression>();
         return lp::Col(
             dereference->field()->value(), toExpr(dereference->base()));
       }
 
-      case sql::NodeType::kSubqueryExpression: {
-        auto* subquery = node->as<sql::SubqueryExpression>();
+      case NodeType::kSubqueryExpression: {
+        auto* subquery = node->as<SubqueryExpression>();
         auto query = subquery->query();
 
-        if (query->is(sql::NodeType::kQuery)) {
+        if (query->is(NodeType::kQuery)) {
           auto builder = std::move(builder_);
 
           lp::PlanBuilder::Scope scope;
           builder->captureScope(scope);
 
           builder_ = newBuilder(scope);
-          processQuery(query->as<sql::Query>());
+          processQuery(query->as<Query>());
           auto subqueryBuider = builder_;
 
           builder_ = std::move(builder);
@@ -261,24 +313,24 @@ class RelationPlanner : public sql::AstVisitor {
 
         VELOX_NYI(
             "Subquery type is not supported yet: {}",
-            sql::NodeTypeName::toName(query->type()));
+            NodeTypeName::toName(query->type()));
       }
 
-      case sql::NodeType::kComparisonExpression: {
-        auto* comparison = node->as<sql::ComparisonExpression>();
+      case NodeType::kComparisonExpression: {
+        auto* comparison = node->as<ComparisonExpression>();
         return lp::Call(
             toFunctionName(comparison->op()),
             toExpr(comparison->left()),
             toExpr(comparison->right()));
       }
 
-      case sql::NodeType::kNotExpression: {
-        auto* negation = node->as<sql::NotExpression>();
+      case NodeType::kNotExpression: {
+        auto* negation = node->as<NotExpression>();
         return lp::Call("not", toExpr(negation->value()));
       }
 
-      case sql::NodeType::kLikePredicate: {
-        auto* like = node->as<sql::LikePredicate>();
+      case NodeType::kLikePredicate: {
+        auto* like = node->as<LikePredicate>();
 
         std::vector<lp::ExprApi> inputs;
         inputs.emplace_back(toExpr(like->value()));
@@ -290,30 +342,30 @@ class RelationPlanner : public sql::AstVisitor {
         return lp::Call("like", std::move(inputs));
       }
 
-      case sql::NodeType::kLogicalBinaryExpression: {
-        auto* logical = node->as<sql::LogicalBinaryExpression>();
+      case NodeType::kLogicalBinaryExpression: {
+        auto* logical = node->as<LogicalBinaryExpression>();
         auto left = toExpr(logical->left());
         auto right = toExpr(logical->right());
 
         switch (logical->op()) {
-          case sql::LogicalBinaryExpression::Operator::kAnd:
+          case LogicalBinaryExpression::Operator::kAnd:
             return left && right;
 
-          case sql::LogicalBinaryExpression::Operator::kOr:
+          case LogicalBinaryExpression::Operator::kOr:
             return left || right;
         }
       }
 
-      case sql::NodeType::kArithmeticBinaryExpression: {
-        auto* binary = node->as<sql::ArithmeticBinaryExpression>();
+      case NodeType::kArithmeticBinaryExpression: {
+        auto* binary = node->as<ArithmeticBinaryExpression>();
         return lp::Call(
             toFunctionName(binary->op()),
             toExpr(binary->left()),
             toExpr(binary->right()));
       }
 
-      case sql::NodeType::kBetweenPredicate: {
-        auto* between = node->as<sql::BetweenPredicate>();
+      case NodeType::kBetweenPredicate: {
+        auto* between = node->as<BetweenPredicate>();
         return lp::Call(
             "between",
             toExpr(between->value()),
@@ -321,14 +373,14 @@ class RelationPlanner : public sql::AstVisitor {
             toExpr(between->max()));
       }
 
-      case sql::NodeType::kInPredicate: {
-        auto* inPredicate = node->as<sql::InPredicate>();
+      case NodeType::kInPredicate: {
+        auto* inPredicate = node->as<InPredicate>();
         const auto& valueList = inPredicate->valueList();
 
         const auto value = toExpr(inPredicate->value());
 
-        if (valueList->is(sql::NodeType::kInListExpression)) {
-          auto inList = valueList->as<sql::InListExpression>();
+        if (valueList->is(NodeType::kInListExpression)) {
+          auto inList = valueList->as<InListExpression>();
 
           std::vector<lp::ExprApi> inputs;
           inputs.reserve(1 + inList->values().size());
@@ -341,17 +393,17 @@ class RelationPlanner : public sql::AstVisitor {
           return lp::Call("in", inputs);
         }
 
-        if (valueList->is(sql::NodeType::kSubqueryExpression)) {
+        if (valueList->is(NodeType::kSubqueryExpression)) {
           return lp::Call("in", value, toExpr(valueList));
         }
 
         VELOX_USER_FAIL(
             "Unexpected IN predicate: {}",
-            sql::NodeTypeName::toName(valueList->type()));
+            NodeTypeName::toName(valueList->type()));
       }
 
-      case sql::NodeType::kCast: {
-        auto* cast = node->as<sql::Cast>();
+      case NodeType::kCast: {
+        auto* cast = node->as<Cast>();
         const auto type = parseType(cast->toType());
 
         if (cast->isSafe()) {
@@ -361,8 +413,8 @@ class RelationPlanner : public sql::AstVisitor {
         }
       }
 
-      case sql::NodeType::kSearchedCaseExpression: {
-        auto* searchedCase = node->as<sql::SearchedCaseExpression>();
+      case NodeType::kSearchedCaseExpression: {
+        auto* searchedCase = node->as<SearchedCaseExpression>();
 
         std::vector<lp::ExprApi> inputs;
         inputs.reserve(1 + searchedCase->whenClauses().size());
@@ -379,70 +431,70 @@ class RelationPlanner : public sql::AstVisitor {
         return lp::Call("switch", inputs);
       }
 
-      case sql::NodeType::kExtract: {
-        auto* extract = node->as<sql::Extract>();
+      case NodeType::kExtract: {
+        auto* extract = node->as<Extract>();
         auto expr = toExpr(extract->expression());
 
         switch (extract->field()) {
-          case sql::Extract::Field::kYear:
+          case Extract::Field::kYear:
             return lp::Call("year", expr);
-          case sql::Extract::Field::kQuarter:
+          case Extract::Field::kQuarter:
             return lp::Call("quarter", expr);
-          case sql::Extract::Field::kMonth:
+          case Extract::Field::kMonth:
             return lp::Call("month", expr);
-          case sql::Extract::Field::kWeek:
+          case Extract::Field::kWeek:
             return lp::Call("week", expr);
-          case sql::Extract::Field::kDay:
+          case Extract::Field::kDay:
             [[fallthrough]];
-          case sql::Extract::Field::kDayOfMonth:
+          case Extract::Field::kDayOfMonth:
             return lp::Call("day", expr);
-          case sql::Extract::Field::kDow:
+          case Extract::Field::kDow:
             [[fallthrough]];
-          case sql::Extract::Field::kDayOfWeek:
+          case Extract::Field::kDayOfWeek:
             return lp::Call("day_of_week", expr);
-          case sql::Extract::Field::kDoy:
+          case Extract::Field::kDoy:
             [[fallthrough]];
-          case sql::Extract::Field::kDayOfYear:
+          case Extract::Field::kDayOfYear:
             return lp::Call("day_of_year", expr);
-          case sql::Extract::Field::kYow:
+          case Extract::Field::kYow:
             [[fallthrough]];
-          case sql::Extract::Field::kYearOfWeek:
+          case Extract::Field::kYearOfWeek:
             return lp::Call("year_of_week", expr);
-          case sql::Extract::Field::kHour:
+          case Extract::Field::kHour:
             return lp::Call("hour", expr);
-          case sql::Extract::Field::kMinute:
+          case Extract::Field::kMinute:
             return lp::Call("minute", expr);
-          case sql::Extract::Field::kSecond:
+          case Extract::Field::kSecond:
             return lp::Call("second", expr);
-          case sql::Extract::Field::kTimezoneHour:
+          case Extract::Field::kTimezoneHour:
             return lp::Call("timezone_hour", expr);
-          case sql::Extract::Field::kTimezoneMinute:
+          case Extract::Field::kTimezoneMinute:
             return lp::Call("timezone_minute", expr);
         }
       }
 
-      case sql::NodeType::kNullLiteral:
+      case NodeType::kNullLiteral:
         return lp::Lit(Variant::null(TypeKind::UNKNOWN));
 
-      case sql::NodeType::kBooleanLiteral:
-        return lp::Lit(node->as<sql::BooleanLiteral>()->value());
+      case NodeType::kBooleanLiteral:
+        return lp::Lit(node->as<BooleanLiteral>()->value());
 
-      case sql::NodeType::kLongLiteral:
-        return lp::Lit(node->as<sql::LongLiteral>()->value());
+      case NodeType::kLongLiteral:
+        return lp::Lit(node->as<LongLiteral>()->value());
 
-      case sql::NodeType::kDoubleLiteral:
-        return lp::Lit(node->as<sql::DoubleLiteral>()->value());
+      case NodeType::kDoubleLiteral:
+        return lp::Lit(node->as<DoubleLiteral>()->value());
 
-      case sql::NodeType::kDecimalLiteral:
-        return parseDecimal(node->as<sql::DecimalLiteral>()->value());
+      case NodeType::kDecimalLiteral:
+        return parseDecimal(node->as<DecimalLiteral>()->value());
 
-      case sql::NodeType::kStringLiteral:
-        return lp::Lit(node->as<sql::StringLiteral>()->value());
+      case NodeType::kStringLiteral:
+        return lp::Lit(node->as<StringLiteral>()->value());
 
-      case sql::NodeType::kIntervalLiteral: {
-        const auto interval = node->as<sql::IntervalLiteral>();
+      case NodeType::kIntervalLiteral: {
+        const auto interval = node->as<IntervalLiteral>();
         const int32_t multiplier =
-            interval->sign() == sql::IntervalLiteral::Sign::kPositive ? 1 : -1;
+            interval->sign() == IntervalLiteral::Sign::kPositive ? 1 : -1;
 
         if (interval->isYearToMonth()) {
           const auto months = parseYearMonthInterval(
@@ -455,14 +507,14 @@ class RelationPlanner : public sql::AstVisitor {
         }
       }
 
-      case sql::NodeType::kGenericLiteral: {
-        auto literal = node->as<sql::GenericLiteral>();
+      case NodeType::kGenericLiteral: {
+        auto literal = node->as<GenericLiteral>();
         return lp::Cast(
             parseType(literal->valueType()), lp::Lit(literal->value()));
       }
 
-      case sql::NodeType::kArrayConstructor: {
-        auto* array = node->as<sql::ArrayConstructor>();
+      case NodeType::kArrayConstructor: {
+        auto* array = node->as<ArrayConstructor>();
         std::vector<lp::ExprApi> values;
         for (const auto& value : array->values()) {
           values.emplace_back(toExpr(value));
@@ -471,8 +523,8 @@ class RelationPlanner : public sql::AstVisitor {
         return lp::Call("array_constructor", values);
       }
 
-      case sql::NodeType::kFunctionCall: {
-        auto* call = node->as<sql::FunctionCall>();
+      case NodeType::kFunctionCall: {
+        auto* call = node->as<FunctionCall>();
 
         std::vector<lp::ExprApi> args;
         for (const auto& arg : call->arguments()) {
@@ -484,44 +536,43 @@ class RelationPlanner : public sql::AstVisitor {
       default:
         VELOX_NYI(
             "Unsupported expression type: {}",
-            sql::NodeTypeName::toName(node->type()));
+            NodeTypeName::toName(node->type()));
     }
   }
 
  private:
-  static std::string toFunctionName(sql::ComparisonExpression::Operator op) {
+  static std::string toFunctionName(ComparisonExpression::Operator op) {
     switch (op) {
-      case sql::ComparisonExpression::Operator::kEqual:
+      case ComparisonExpression::Operator::kEqual:
         return "eq";
-      case sql::ComparisonExpression::Operator::kNotEqual:
+      case ComparisonExpression::Operator::kNotEqual:
         return "neq";
-      case sql::ComparisonExpression::Operator::kLessThan:
+      case ComparisonExpression::Operator::kLessThan:
         return "lt";
-      case sql::ComparisonExpression::Operator::kLessThanOrEqual:
+      case ComparisonExpression::Operator::kLessThanOrEqual:
         return "lte";
-      case sql::ComparisonExpression::Operator::kGreaterThan:
+      case ComparisonExpression::Operator::kGreaterThan:
         return "gt";
-      case sql::ComparisonExpression::Operator::kGreaterThanOrEqual:
+      case ComparisonExpression::Operator::kGreaterThanOrEqual:
         return "gte";
-      case sql::ComparisonExpression::Operator::kIsDistinctFrom:
+      case ComparisonExpression::Operator::kIsDistinctFrom:
         VELOX_NYI("Not yet supported comparison operator: is_distinct_from");
     }
 
     folly::assume_unreachable();
   }
 
-  static std::string toFunctionName(
-      sql::ArithmeticBinaryExpression::Operator op) {
+  static std::string toFunctionName(ArithmeticBinaryExpression::Operator op) {
     switch (op) {
-      case sql::ArithmeticBinaryExpression::Operator::kAdd:
+      case ArithmeticBinaryExpression::Operator::kAdd:
         return "plus";
-      case sql::ArithmeticBinaryExpression::Operator::kSubtract:
+      case ArithmeticBinaryExpression::Operator::kSubtract:
         return "minus";
-      case sql::ArithmeticBinaryExpression::Operator::kMultiply:
+      case ArithmeticBinaryExpression::Operator::kMultiply:
         return "multiply";
-      case sql::ArithmeticBinaryExpression::Operator::kDivide:
+      case ArithmeticBinaryExpression::Operator::kDivide:
         return "divide";
-      case sql::ArithmeticBinaryExpression::Operator::kModulus:
+      case ArithmeticBinaryExpression::Operator::kModulus:
         return "mod";
     }
 
@@ -530,8 +581,8 @@ class RelationPlanner : public sql::AstVisitor {
 
   static int32_t parseYearMonthInterval(
       const std::string& value,
-      sql::IntervalLiteral::IntervalField start,
-      std::optional<sql::IntervalLiteral::IntervalField> end) {
+      IntervalLiteral::IntervalField start,
+      std::optional<IntervalLiteral::IntervalField> end) {
     VELOX_USER_CHECK(
         !end.has_value() || start == end.value(),
         "Multi-part intervals are not supported yet: {}",
@@ -544,9 +595,9 @@ class RelationPlanner : public sql::AstVisitor {
     const auto n = atoi(value.c_str());
 
     switch (start) {
-      case sql::IntervalLiteral::IntervalField::kYear:
+      case IntervalLiteral::IntervalField::kYear:
         return n * 12;
-      case sql::IntervalLiteral::IntervalField::kMonth:
+      case IntervalLiteral::IntervalField::kMonth:
         return n;
       default:
         VELOX_UNREACHABLE();
@@ -555,8 +606,8 @@ class RelationPlanner : public sql::AstVisitor {
 
   static int64_t parseDayTimeInterval(
       const std::string& value,
-      sql::IntervalLiteral::IntervalField start,
-      std::optional<sql::IntervalLiteral::IntervalField> end) {
+      IntervalLiteral::IntervalField start,
+      std::optional<IntervalLiteral::IntervalField> end) {
     VELOX_USER_CHECK(
         !end.has_value() || start == end.value(),
         "Multi-part intervals are not supported yet: {}",
@@ -569,13 +620,13 @@ class RelationPlanner : public sql::AstVisitor {
     auto n = atol(value.c_str());
 
     switch (start) {
-      case sql::IntervalLiteral::IntervalField::kDay:
+      case IntervalLiteral::IntervalField::kDay:
         return n * 24 * 60 * 60;
-      case sql::IntervalLiteral::IntervalField::kHour:
+      case IntervalLiteral::IntervalField::kHour:
         return n * 60 * 60;
-      case sql::IntervalLiteral::IntervalField::kMinute:
+      case IntervalLiteral::IntervalField::kMinute:
         return n * 60;
-      case sql::IntervalLiteral::IntervalField::kSecond:
+      case IntervalLiteral::IntervalField::kSecond:
         return n;
       default:
         VELOX_UNREACHABLE();
@@ -636,12 +687,12 @@ class RelationPlanner : public sql::AstVisitor {
           "{}{}", value.substr(0, periodPos), value.substr(periodPos + 1));
     }
 
-    if (precision <= velox::ShortDecimalType::kMaxPrecision) {
+    if (precision <= facebook::velox::ShortDecimalType::kMaxPrecision) {
       int64_t v = atol(unscaledValue.c_str());
       return lp::Lit(v, DECIMAL(precision, scale));
     }
 
-    if (precision <= velox::LongDecimalType::kMaxPrecision) {
+    if (precision <= facebook::velox::LongDecimalType::kMaxPrecision) {
       return lp::Lit(
           folly::to<int128_t>(unscaledValue), DECIMAL(precision, scale));
     }
@@ -650,15 +701,15 @@ class RelationPlanner : public sql::AstVisitor {
         "Invalid decimal value: '{}'. Precision exceeds maximum: {} > {}.",
         value,
         precision,
-        velox::LongDecimalType::kMaxPrecision);
+        facebook::velox::LongDecimalType::kMaxPrecision);
   }
 
-  static int32_t parseInt(const sql::TypeSignaturePtr& type) {
+  static int32_t parseInt(const TypeSignaturePtr& type) {
     VELOX_USER_CHECK_EQ(type->parameters().size(), 0);
     return atoi(type->baseName().c_str());
   }
 
-  static TypePtr parseType(const sql::TypeSignaturePtr& type) {
+  static TypePtr parseType(const TypeSignaturePtr& type) {
     auto baseName = type->baseName();
     std::transform(
         baseName.begin(), baseName.end(), baseName.begin(), [](char c) {
@@ -701,53 +752,52 @@ class RelationPlanner : public sql::AstVisitor {
     return veloxType;
   }
 
-  void addFilter(const sql::ExpressionPtr& filter) {
+  void addFilter(const ExpressionPtr& filter) {
     if (filter != nullptr) {
       builder_->filter(toExpr(filter));
     }
   }
 
-  static lp::JoinType toJoinType(sql::Join::Type type) {
+  static lp::JoinType toJoinType(Join::Type type) {
     switch (type) {
-      case sql::Join::Type::kCross:
+      case Join::Type::kCross:
         return lp::JoinType::kInner;
-      case sql::Join::Type::kImplicit:
+      case Join::Type::kImplicit:
         return lp::JoinType::kInner;
-      case sql::Join::Type::kInner:
+      case Join::Type::kInner:
         return lp::JoinType::kInner;
-      case sql::Join::Type::kLeft:
+      case Join::Type::kLeft:
         return lp::JoinType::kLeft;
-      case sql::Join::Type::kRight:
+      case Join::Type::kRight:
         return lp::JoinType::kRight;
-      case sql::Join::Type::kFull:
+      case Join::Type::kFull:
         return lp::JoinType::kFull;
     }
 
     folly::assume_unreachable();
   }
 
-  static std::optional<
-      std::pair<const sql::Unnest*, const sql::AliasedRelation*>>
-  tryGetUnnest(const sql::RelationPtr& relation) {
-    if (relation->is(sql::NodeType::kAliasedRelation)) {
-      const auto* aliasedRelation = relation->as<sql::AliasedRelation>();
-      if (aliasedRelation->relation()->is(sql::NodeType::kUnnest)) {
+  static std::optional<std::pair<const Unnest*, const AliasedRelation*>>
+  tryGetUnnest(const RelationPtr& relation) {
+    if (relation->is(NodeType::kAliasedRelation)) {
+      const auto* aliasedRelation = relation->as<AliasedRelation>();
+      if (aliasedRelation->relation()->is(NodeType::kUnnest)) {
         return std::make_pair(
-            aliasedRelation->relation()->as<sql::Unnest>(), aliasedRelation);
+            aliasedRelation->relation()->as<Unnest>(), aliasedRelation);
       }
       return std::nullopt;
     }
 
-    if (relation->is(sql::NodeType::kUnnest)) {
-      return std::make_pair(relation->as<sql::Unnest>(), nullptr);
+    if (relation->is(NodeType::kUnnest)) {
+      return std::make_pair(relation->as<Unnest>(), nullptr);
     }
 
     return std::nullopt;
   }
 
   void addCrossJoinUnnest(
-      const sql::Unnest& unnest,
-      const sql::AliasedRelation* aliasedRelation) {
+      const Unnest& unnest,
+      const AliasedRelation* aliasedRelation) {
     std::vector<lp::ExprApi> inputs;
     for (const auto& expr : unnest.expressions()) {
       inputs.push_back(toExpr(expr));
@@ -770,21 +820,21 @@ class RelationPlanner : public sql::AstVisitor {
     }
   }
 
-  void processFrom(const sql::RelationPtr& relation) {
+  void processFrom(const RelationPtr& relation) {
     if (relation == nullptr) {
       // SELECT 1; type of query.
       builder_->values(ROW({}), {Variant::row({})});
       return;
     }
 
-    if (relation->is(sql::NodeType::kTable)) {
-      auto* table = relation->as<sql::Table>();
+    if (relation->is(NodeType::kTable)) {
+      auto* table = relation->as<Table>();
       builder_->tableScan(table->name()->suffix());
       return;
     }
 
-    if (relation->is(sql::NodeType::kAliasedRelation)) {
-      auto* aliasedRelation = relation->as<sql::AliasedRelation>();
+    if (relation->is(NodeType::kAliasedRelation)) {
+      auto* aliasedRelation = relation->as<AliasedRelation>();
 
       processFrom(aliasedRelation->relation());
 
@@ -807,22 +857,22 @@ class RelationPlanner : public sql::AstVisitor {
       return;
     }
 
-    if (relation->is(sql::NodeType::kTableSubquery)) {
-      auto* subquery = relation->as<sql::TableSubquery>();
+    if (relation->is(NodeType::kTableSubquery)) {
+      auto* subquery = relation->as<TableSubquery>();
       auto query = subquery->query();
 
-      if (query->is(sql::NodeType::kQuery)) {
-        processQuery(query->as<sql::Query>());
+      if (query->is(NodeType::kQuery)) {
+        processQuery(query->as<Query>());
         return;
       }
 
       VELOX_NYI(
           "Subquery type is not supported yet: {}",
-          sql::NodeTypeName::toName(query->type()));
+          NodeTypeName::toName(query->type()));
     }
 
-    if (relation->is(sql::NodeType::kUnnest)) {
-      auto* unnest = relation->as<sql::Unnest>();
+    if (relation->is(NodeType::kUnnest)) {
+      auto* unnest = relation->as<Unnest>();
       std::vector<lp::ExprApi> inputs;
       for (const auto& expr : unnest->expressions()) {
         inputs.push_back(toExpr(expr));
@@ -832,8 +882,8 @@ class RelationPlanner : public sql::AstVisitor {
       return;
     }
 
-    if (relation->is(sql::NodeType::kJoin)) {
-      auto* join = relation->as<sql::Join>();
+    if (relation->is(NodeType::kJoin)) {
+      auto* join = relation->as<Join>();
       processFrom(join->left());
 
       if (auto unnest = tryGetUnnest(join->right())) {
@@ -855,12 +905,12 @@ class RelationPlanner : public sql::AstVisitor {
       std::optional<lp::ExprApi> condition;
 
       if (const auto& criteria = join->criteria()) {
-        if (criteria->is(sql::NodeType::kJoinOn)) {
-          condition = toExpr(criteria->as<sql::JoinOn>()->expression());
+        if (criteria->is(NodeType::kJoinOn)) {
+          condition = toExpr(criteria->as<JoinOn>()->expression());
         } else {
           VELOX_NYI(
               "Join criteria type is not supported yet: {}",
-              sql::NodeTypeName::toName(criteria->type()));
+              NodeTypeName::toName(criteria->type()));
         }
       }
 
@@ -870,24 +920,24 @@ class RelationPlanner : public sql::AstVisitor {
 
     VELOX_NYI(
         "Relation type is not supported yet: {}",
-        sql::NodeTypeName::toName(relation->type()));
+        NodeTypeName::toName(relation->type()));
   }
 
   // Returns true if 'selectItems' contains a single SELECT *.
-  static bool isSelectAll(const std::vector<sql::SelectItemPtr>& selectItems) {
+  static bool isSelectAll(const std::vector<SelectItemPtr>& selectItems) {
     if (selectItems.size() == 1 &&
-        selectItems.at(0)->is(sql::NodeType::kAllColumns)) {
+        selectItems.at(0)->is(NodeType::kAllColumns)) {
       return true;
     }
 
     return false;
   }
 
-  void addProject(const std::vector<sql::SelectItemPtr>& selectItems) {
+  void addProject(const std::vector<SelectItemPtr>& selectItems) {
     std::vector<lp::ExprApi> exprs;
     for (const auto& item : selectItems) {
-      VELOX_CHECK(item->is(sql::NodeType::kSingleColumn));
-      auto* singleColumn = item->as<sql::SingleColumn>();
+      VELOX_CHECK(item->is(NodeType::kSingleColumn));
+      auto* singleColumn = item->as<SingleColumn>();
 
       lp::ExprApi expr = toExpr(singleColumn->expression());
 
@@ -900,9 +950,9 @@ class RelationPlanner : public sql::AstVisitor {
     builder_->project(exprs);
   }
 
-  lp::ExprApi toSortingKey(const sql::ExpressionPtr& expr) {
-    if (expr->is(sql::NodeType::kLongLiteral)) {
-      const auto n = expr->as<sql::LongLiteral>()->value();
+  lp::ExprApi toSortingKey(const ExpressionPtr& expr) {
+    if (expr->is(NodeType::kLongLiteral)) {
+      const auto n = expr->as<LongLiteral>()->value();
       const auto name = builder_->findOrAssignOutputNameAt(n - 1);
 
       return lp::Col(name);
@@ -911,11 +961,11 @@ class RelationPlanner : public sql::AstVisitor {
     return toExpr(expr);
   }
 
-  bool tryAddGlobalAgg(const std::vector<sql::SelectItemPtr>& selectItems) {
+  bool tryAddGlobalAgg(const std::vector<SelectItemPtr>& selectItems) {
     bool hasAggregate = false;
     for (const auto& item : selectItems) {
-      VELOX_CHECK(item->is(sql::NodeType::kSingleColumn));
-      auto* singleColumn = item->as<sql::SingleColumn>();
+      VELOX_CHECK(item->is(NodeType::kSingleColumn));
+      auto* singleColumn = item->as<SingleColumn>();
 
       ExprAnalyzer exprAnalyzer;
       singleColumn->expression()->accept(&exprAnalyzer);
@@ -935,29 +985,29 @@ class RelationPlanner : public sql::AstVisitor {
   }
 
   void addGroupBy(
-      const std::vector<sql::SelectItemPtr>& selectItems,
-      const std::vector<sql::GroupingElementPtr>& groupingElements) {
+      const std::vector<SelectItemPtr>& selectItems,
+      const std::vector<GroupingElementPtr>& groupingElements) {
     // Go over grouping keys and collect expressions. Ordinals refer to output
     // columns (selectItems). Non-ordinals refer to input columns.
 
     std::vector<lp::ExprApi> groupingKeys;
 
     for (const auto& groupingElement : groupingElements) {
-      VELOX_CHECK_EQ(groupingElement->type(), sql::NodeType::kSimpleGroupBy);
-      const auto* simple = groupingElement->as<sql::SimpleGroupBy>();
+      VELOX_CHECK_EQ(groupingElement->type(), NodeType::kSimpleGroupBy);
+      const auto* simple = groupingElement->as<SimpleGroupBy>();
 
       for (const auto& expr : simple->expressions()) {
-        if (expr->is(sql::NodeType::kLongLiteral)) {
+        if (expr->is(NodeType::kLongLiteral)) {
           // 1-based index.
-          const auto n = expr->as<sql::LongLiteral>()->value();
+          const auto n = expr->as<LongLiteral>()->value();
 
           VELOX_CHECK_GE(n, 1);
           VELOX_CHECK_LE(n, selectItems.size());
 
           const auto& item = selectItems.at(n - 1);
-          VELOX_CHECK(item->is(sql::NodeType::kSingleColumn));
+          VELOX_CHECK(item->is(NodeType::kSingleColumn));
 
-          const auto* singleColumn = item->as<sql::SingleColumn>();
+          const auto* singleColumn = item->as<SingleColumn>();
           groupingKeys.emplace_back(toExpr(singleColumn->expression()));
         } else {
           groupingKeys.emplace_back(toExpr(expr));
@@ -975,8 +1025,8 @@ class RelationPlanner : public sql::AstVisitor {
     std::vector<lp::ExprApi> projections;
     std::vector<lp::ExprApi> aggregates;
     for (const auto& item : selectItems) {
-      VELOX_CHECK(item->is(sql::NodeType::kSingleColumn));
-      auto* singleColumn = item->as<sql::SingleColumn>();
+      VELOX_CHECK(item->is(NodeType::kSingleColumn));
+      auto* singleColumn = item->as<SingleColumn>();
 
       lp::ExprApi expr = toExpr(singleColumn->expression());
       findAggregates(expr.expr(), aggregates);
@@ -1044,7 +1094,7 @@ class RelationPlanner : public sql::AstVisitor {
     }
   }
 
-  void addOrderBy(const sql::OrderByPtr& orderBy) {
+  void addOrderBy(const OrderByPtr& orderBy) {
     if (orderBy == nullptr) {
       return;
     }
@@ -1064,7 +1114,7 @@ class RelationPlanner : public sql::AstVisitor {
     return std::atol(value.value().c_str());
   }
 
-  void addOffset(const sql::OffsetPtr& offset) {
+  void addOffset(const OffsetPtr& offset) {
     if (offset == nullptr) {
       return;
     }
@@ -1080,12 +1130,12 @@ class RelationPlanner : public sql::AstVisitor {
     builder_->limit(parseInt64(limit));
   }
 
-  void processQuery(sql::Query* query) {
+  void processQuery(Query* query) {
     const auto& queryBody = query->queryBody();
 
     VELOX_CHECK_NOT_NULL(queryBody);
-    VELOX_CHECK(queryBody->is(sql::NodeType::kQuerySpecification));
-    auto* querySpec = queryBody->as<sql::QuerySpecification>();
+    VELOX_CHECK(queryBody->is(NodeType::kQuerySpecification));
+    auto* querySpec = queryBody->as<QuerySpecification>();
 
     // FROM t -> builder.tableScan(t)
     processFrom(querySpec->from());
@@ -1121,11 +1171,11 @@ class RelationPlanner : public sql::AstVisitor {
     addLimit(query->limit());
   }
 
-  void visitQuery(sql::Query* query) override {
+  void visitQuery(Query* query) override {
     processQuery(query);
   }
 
-  void visitQuerySpecification(sql::QuerySpecification* node) override {}
+  void visitQuerySpecification(QuerySpecification* node) override {}
 
   std::shared_ptr<lp::PlanBuilder> newBuilder(
       const lp::PlanBuilder::Scope& outerScope = nullptr) {
@@ -1149,7 +1199,7 @@ lp::ExprPtr PrestoParser::parseExpression(
   auto statement = doParse(fmt::format("SELECT {}", sql), enableTracing);
   VELOX_USER_CHECK(statement->isSelect());
 
-  auto plan = statement->asUnchecked<SelectStatement>()->plan();
+  auto plan = statement->as<SelectStatement>()->plan();
 
   VELOX_USER_CHECK(plan->is(lp::NodeKind::kProject));
 
@@ -1161,13 +1211,14 @@ lp::ExprPtr PrestoParser::parseExpression(
 }
 
 namespace {
-lp::ExprPtr parseSqlExpression(const sql::ExpressionPtr& expr) {
+lp::ExprPtr parseSqlExpression(const ExpressionPtr& expr) {
   RelationPlanner planner("__unused__");
 
-  auto plan = lp::PlanBuilder()
-                  .values(velox::ROW({}), {velox::Variant::row({})})
-                  .project({planner.toExpr(expr)})
-                  .build();
+  auto plan =
+      lp::PlanBuilder()
+          .values(facebook::velox::ROW({}), {facebook::velox::Variant::row({})})
+          .project({planner.toExpr(expr)})
+          .build();
   VELOX_USER_CHECK(plan->is(lp::NodeKind::kProject));
 
   auto project = plan->asUnchecked<lp::ProjectNode>();
@@ -1179,7 +1230,7 @@ lp::ExprPtr parseSqlExpression(const sql::ExpressionPtr& expr) {
 }
 
 SqlStatementPtr parseExplain(
-    const sql::Explain& explain,
+    const Explain& explain,
     const std::string& connectorId) {
   RelationPlanner planner(connectorId);
   explain.statement()->accept(&planner);
@@ -1193,16 +1244,16 @@ SqlStatementPtr parseExplain(
   ExplainStatement::Type type = ExplainStatement::Type::kDistributed;
 
   for (const auto& option : explain.options()) {
-    if (option->is(sql::NodeType::kExplainType)) {
-      const auto explainType = option->as<sql::ExplainType>()->explainType();
+    if (option->is(NodeType::kExplainType)) {
+      const auto explainType = option->as<ExplainType>()->explainType();
       switch (explainType) {
-        case sql::ExplainType::Type::kLogical:
+        case ExplainType::Type::kLogical:
           type = ExplainStatement::Type::kLogical;
           break;
-        case sql::ExplainType::Type::kGraph:
+        case ExplainType::Type::kGraph:
           type = ExplainStatement::Type::kGraph;
           break;
-        case sql::ExplainType::Type::kDistributed:
+        case ExplainType::Type::kDistributed:
           type = ExplainStatement::Type::kDistributed;
           break;
         default:
@@ -1218,12 +1269,13 @@ SqlStatementPtr parseExplain(
 }
 
 SqlStatementPtr parseShowColumns(
-    const sql::ShowColumns& showColumns,
+    const ShowColumns& showColumns,
     const std::string& connectorId) {
   const auto tableName = showColumns.table()->suffix();
 
   auto table =
-      connector::ConnectorMetadata::metadata(connectorId)->findTable(tableName);
+      facebook::axiom::connector::ConnectorMetadata::metadata(connectorId)
+          ->findTable(tableName);
 
   VELOX_USER_CHECK_NOT_NULL(table, "Table not found: {}", tableName);
 
@@ -1244,12 +1296,13 @@ SqlStatementPtr parseShowColumns(
 }
 
 SqlStatementPtr parseInsert(
-    const sql::Insert& insert,
+    const Insert& insert,
     const std::string& connectorId) {
   auto tableName = insert.target()->suffix();
 
   auto table =
-      connector::ConnectorMetadata::metadata(connectorId)->findTable(tableName);
+      facebook::axiom::connector::ConnectorMetadata::metadata(connectorId)
+          ->findTable(tableName);
   VELOX_USER_CHECK_NOT_NULL(table, "Table not found: {}", tableName);
 
   const auto& columns = insert.columns();
@@ -1281,7 +1334,7 @@ SqlStatementPtr parseInsert(
 }
 
 SqlStatementPtr parseCreateTableAsSelect(
-    const sql::CreateTableAsSelect& ctas,
+    const CreateTableAsSelect& ctas,
     const std::string& connectorId) {
   auto tableName = ctas.name()->suffix();
 
@@ -1336,13 +1389,13 @@ SqlStatementPtr parseCreateTableAsSelect(
 
   return std::make_shared<CreateTableAsSelectStatement>(
       std::move(tableName),
-      velox::ROW(std::move(columnNames), std::move(columnTypes)),
+      facebook::velox::ROW(std::move(columnNames), std::move(columnTypes)),
       std::move(properties),
       planner.getPlan());
 }
 
 SqlStatementPtr parseDropTable(
-    const sql::DropTable& dropTable,
+    const DropTable& dropTable,
     const std::string& connectorId) {
   auto tableName = dropTable.tableName()->suffix();
 
@@ -1355,41 +1408,40 @@ SqlStatementPtr parseDropTable(
 SqlStatementPtr PrestoParser::doParse(
     std::string_view sql,
     bool enableTracing) {
-  sql::ParserHelper helper(sql);
+  ParserHelper helper(sql);
   auto* context = helper.parse();
 
-  sql::AstBuilder astBuilder(enableTracing);
+  AstBuilder astBuilder(enableTracing);
   auto query =
-      std::any_cast<std::shared_ptr<sql::Statement>>(astBuilder.visit(context));
+      std::any_cast<std::shared_ptr<Statement>>(astBuilder.visit(context));
 
   if (enableTracing) {
     std::stringstream astString;
-    sql::AstPrinter printer(astString);
+    AstPrinter printer(astString);
     query->accept(&printer);
 
     std::cout << "AST: " << astString.str() << std::endl;
   }
 
-  if (query->is(sql::NodeType::kExplain)) {
-    return parseExplain(*query->as<sql::Explain>(), defaultConnectorId_);
+  if (query->is(NodeType::kExplain)) {
+    return parseExplain(*query->as<Explain>(), defaultConnectorId_);
   }
 
-  if (query->is(sql::NodeType::kShowColumns)) {
-    return parseShowColumns(
-        *query->as<sql::ShowColumns>(), defaultConnectorId_);
+  if (query->is(NodeType::kShowColumns)) {
+    return parseShowColumns(*query->as<ShowColumns>(), defaultConnectorId_);
   }
 
-  if (query->is(sql::NodeType::kInsert)) {
-    return parseInsert(*query->as<sql::Insert>(), defaultConnectorId_);
+  if (query->is(NodeType::kInsert)) {
+    return parseInsert(*query->as<Insert>(), defaultConnectorId_);
   }
 
-  if (query->is(sql::NodeType::kCreateTableAsSelect)) {
+  if (query->is(NodeType::kCreateTableAsSelect)) {
     return parseCreateTableAsSelect(
-        *query->as<sql::CreateTableAsSelect>(), defaultConnectorId_);
+        *query->as<CreateTableAsSelect>(), defaultConnectorId_);
   }
 
-  if (query->is(sql::NodeType::kDropTable)) {
-    return parseDropTable(*query->as<sql::DropTable>(), defaultConnectorId_);
+  if (query->is(NodeType::kDropTable)) {
+    return parseDropTable(*query->as<DropTable>(), defaultConnectorId_);
   }
 
   RelationPlanner planner(defaultConnectorId_);
@@ -1397,4 +1449,4 @@ SqlStatementPtr PrestoParser::doParse(
   return std::make_shared<SelectStatement>(planner.getPlan());
 }
 
-} // namespace facebook::axiom::optimizer::test
+} // namespace axiom::sql::presto

@@ -14,19 +14,19 @@
  * limitations under the License.
  */
 
-#include "axiom/optimizer/tests/PrestoParser.h"
+#include "axiom/sql/presto/PrestoParser.h"
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include "axiom/connectors/tpch/TpchConnectorMetadata.h"
 #include "axiom/logical_plan/ExprPrinter.h"
 #include "axiom/logical_plan/PlanPrinter.h"
-#include "axiom/optimizer/tests/LogicalPlanMatcher.h"
+#include "axiom/sql/presto/tests/LogicalPlanMatcher.h"
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/connectors/tpch/TpchConnector.h"
 #include "velox/functions/prestosql/aggregates/RegisterAggregateFunctions.h"
 #include "velox/functions/prestosql/registration/RegistrationFunctions.h"
 
-namespace facebook::axiom::optimizer::test {
+namespace axiom::sql::presto {
 namespace {
 
 using namespace facebook::velox;
@@ -42,15 +42,16 @@ class PrestoParserTest : public testing::Test {
     auto emptyConfig = std::make_shared<config::ConfigBase>(
         std::unordered_map<std::string, std::string>{});
 
-    velox::connector::tpch::TpchConnectorFactory tpchConnectorFactory;
+    facebook::velox::connector::tpch::TpchConnectorFactory tpchConnectorFactory;
     auto tpchConnector =
         tpchConnectorFactory.newConnector(kTpchConnectorId, emptyConfig);
-    velox::connector::registerConnector(tpchConnector);
+    facebook::velox::connector::registerConnector(tpchConnector);
 
-    connector::ConnectorMetadata::registerMetadata(
+    facebook::axiom::connector::ConnectorMetadata::registerMetadata(
         kTpchConnectorId,
-        std::make_shared<connector::tpch::TpchConnectorMetadata>(
-            dynamic_cast<velox::connector::tpch::TpchConnector*>(
+        std::make_shared<
+            facebook::axiom::connector::tpch::TpchConnectorMetadata>(
+            dynamic_cast<facebook::velox::connector::tpch::TpchConnector*>(
                 tpchConnector.get())));
 
     functions::prestosql::registerAllScalarFunctions();
@@ -58,36 +59,39 @@ class PrestoParserTest : public testing::Test {
   }
 
   static void TearDownTestCase() {
-    connector::ConnectorMetadata::unregisterMetadata(kTpchConnectorId);
-    velox::connector::unregisterConnector(kTpchConnectorId);
+    facebook::axiom::connector::ConnectorMetadata::unregisterMetadata(
+        kTpchConnectorId);
+    facebook::velox::connector::unregisterConnector(kTpchConnectorId);
   }
 
   memory::MemoryPool* pool() {
     return pool_.get();
   }
 
-  void testSql(std::string_view sql, lp::LogicalPlanMatcherBuilder& matcher) {
+  void testSql(
+      std::string_view sql,
+      lp::test::LogicalPlanMatcherBuilder& matcher) {
     SCOPED_TRACE(sql);
-    test::PrestoParser parser(kTpchConnectorId, pool());
+    PrestoParser parser(kTpchConnectorId, pool());
 
     auto statement = parser.parse(sql);
     ASSERT_TRUE(statement->isSelect());
 
-    auto logicalPlan = statement->asUnchecked<test::SelectStatement>()->plan();
+    auto logicalPlan = statement->as<SelectStatement>()->plan();
     ASSERT_TRUE(matcher.build()->match(logicalPlan))
         << lp::PlanPrinter::toText(*logicalPlan);
   }
 
   void testInsertSql(
       std::string_view sql,
-      lp::LogicalPlanMatcherBuilder& matcher) {
+      lp::test::LogicalPlanMatcherBuilder& matcher) {
     SCOPED_TRACE(sql);
-    test::PrestoParser parser(kTpchConnectorId, pool());
+    PrestoParser parser(kTpchConnectorId, pool());
 
     auto statement = parser.parse(sql);
     ASSERT_TRUE(statement->isInsert());
 
-    auto insertStatement = statement->asUnchecked<test::InsertStatement>();
+    auto insertStatement = statement->as<InsertStatement>();
 
     auto logicalPlan = insertStatement->plan();
     ASSERT_TRUE(matcher.build()->match(logicalPlan))
@@ -98,16 +102,15 @@ class PrestoParserTest : public testing::Test {
       std::string_view sql,
       const std::string& tableName,
       const RowTypePtr& tableSchema,
-      lp::LogicalPlanMatcherBuilder& matcher,
+      lp::test::LogicalPlanMatcherBuilder& matcher,
       const std::unordered_map<std::string, std::string>& properties = {}) {
     SCOPED_TRACE(sql);
-    test::PrestoParser parser(kTpchConnectorId, pool());
+    PrestoParser parser(kTpchConnectorId, pool());
 
     auto statement = parser.parse(sql);
     ASSERT_TRUE(statement->isCreateTableAsSelect());
 
-    auto ctasStatement =
-        statement->asUnchecked<test::CreateTableAsSelectStatement>();
+    auto ctasStatement = statement->as<CreateTableAsSelectStatement>();
 
     ASSERT_EQ(ctasStatement->tableName(), tableName);
     ASSERT_TRUE(*ctasStatement->tableSchema() == *tableSchema);
@@ -129,7 +132,7 @@ class PrestoParserTest : public testing::Test {
   void testDecimal(std::string_view sql, T value, const TypePtr& type) {
     SCOPED_TRACE(sql);
 
-    test::PrestoParser parser(kTpchConnectorId, pool());
+    PrestoParser parser(kTpchConnectorId, pool());
     auto expr = parser.parseExpression(sql);
 
     ASSERT_TRUE(expr->isConstant());
@@ -148,7 +151,7 @@ class PrestoParserTest : public testing::Test {
 
 TEST_F(PrestoParserTest, unnest) {
   {
-    auto matcher = lp::LogicalPlanMatcherBuilder().values().unnest();
+    auto matcher = lp::test::LogicalPlanMatcherBuilder().values().unnest();
     testSql("SELECT * FROM unnest(array[1, 2, 3])", matcher);
 
     testSql(
@@ -161,7 +164,8 @@ TEST_F(PrestoParserTest, unnest) {
   }
 
   {
-    auto matcher = lp::LogicalPlanMatcherBuilder().values().unnest().project();
+    auto matcher =
+        lp::test::LogicalPlanMatcherBuilder().values().unnest().project();
     testSql("SELECT * FROM unnest(array[1, 2, 3]) as t(x)", matcher);
 
     testSql(
@@ -170,14 +174,14 @@ TEST_F(PrestoParserTest, unnest) {
   }
 
   {
-    auto matcher = lp::LogicalPlanMatcherBuilder().tableScan().unnest();
+    auto matcher = lp::test::LogicalPlanMatcherBuilder().tableScan().unnest();
     testSql(
         "SELECT * FROM nation, unnest(array[n_nationkey, n_regionkey])",
         matcher);
   }
 
   {
-    auto matcher = lp::LogicalPlanMatcherBuilder().tableScan().unnest();
+    auto matcher = lp::test::LogicalPlanMatcherBuilder().tableScan().unnest();
 
     testSql(
         "SELECT * FROM nation, unnest(array[n_nationkey, n_regionkey]) as t(x)",
@@ -186,7 +190,7 @@ TEST_F(PrestoParserTest, unnest) {
 }
 
 TEST_F(PrestoParserTest, syntaxErrors) {
-  test::PrestoParser parser(kTpchConnectorId, pool());
+  PrestoParser parser(kTpchConnectorId, pool());
   EXPECT_THAT(
       [&]() { parser.parse("SELECT * FROM"); },
       ThrowsMessage<std::runtime_error>(::testing::HasSubstr(
@@ -203,7 +207,7 @@ TEST_F(PrestoParserTest, syntaxErrors) {
 }
 
 TEST_F(PrestoParserTest, types) {
-  test::PrestoParser parser(kTpchConnectorId, pool());
+  PrestoParser parser(kTpchConnectorId, pool());
 
   auto test = [&](std::string_view sql, const TypePtr& expectedType) {
     SCOPED_TRACE(sql);
@@ -233,7 +237,7 @@ TEST_F(PrestoParserTest, types) {
 }
 
 TEST_F(PrestoParserTest, intervalDayTime) {
-  test::PrestoParser parser(kTpchConnectorId, pool());
+  PrestoParser parser(kTpchConnectorId, pool());
 
   auto test = [&](std::string_view sql, int64_t expected) {
     SCOPED_TRACE(sql);
@@ -262,7 +266,7 @@ TEST_F(PrestoParserTest, intervalDayTime) {
 }
 
 TEST_F(PrestoParserTest, decimal) {
-  test::PrestoParser parser(kTpchConnectorId, pool());
+  PrestoParser parser(kTpchConnectorId, pool());
 
   auto testShort =
       [&](std::string_view sql, int64_t value, const TypePtr& type) {
@@ -322,7 +326,7 @@ TEST_F(PrestoParserTest, decimal) {
 }
 
 TEST_F(PrestoParserTest, intervalYearMonth) {
-  test::PrestoParser parser(kTpchConnectorId, pool());
+  PrestoParser parser(kTpchConnectorId, pool());
 
   auto test = [&](std::string_view sql, int64_t expected) {
     auto expr = parser.parseExpression(sql);
@@ -346,12 +350,12 @@ TEST_F(PrestoParserTest, intervalYearMonth) {
 }
 
 TEST_F(PrestoParserTest, selectStar) {
-  auto matcher = lp::LogicalPlanMatcherBuilder().tableScan();
+  auto matcher = lp::test::LogicalPlanMatcherBuilder().tableScan();
   testSql("SELECT * FROM nation", matcher);
 }
 
 TEST_F(PrestoParserTest, countStar) {
-  auto matcher = lp::LogicalPlanMatcherBuilder().tableScan().aggregate();
+  auto matcher = lp::test::LogicalPlanMatcherBuilder().tableScan().aggregate();
 
   testSql("SELECT count(*) FROM nation", matcher);
   testSql("SELECT count(1) FROM nation", matcher);
@@ -359,7 +363,8 @@ TEST_F(PrestoParserTest, countStar) {
 
 TEST_F(PrestoParserTest, simpleGroupBy) {
   {
-    auto matcher = lp::LogicalPlanMatcherBuilder().tableScan().aggregate();
+    auto matcher =
+        lp::test::LogicalPlanMatcherBuilder().tableScan().aggregate();
 
     testSql("SELECT n_name, count(1) FROM nation GROUP BY 1", matcher);
     testSql("SELECT n_name, count(1) FROM nation GROUP BY n_name", matcher);
@@ -367,7 +372,7 @@ TEST_F(PrestoParserTest, simpleGroupBy) {
 
   {
     auto matcher =
-        lp::LogicalPlanMatcherBuilder().tableScan().aggregate().project();
+        lp::test::LogicalPlanMatcherBuilder().tableScan().aggregate().project();
     testSql(
         "SELECT count(1) FROM nation GROUP BY n_name, n_regionkey", matcher);
   }
@@ -376,13 +381,13 @@ TEST_F(PrestoParserTest, simpleGroupBy) {
 TEST_F(PrestoParserTest, distinct) {
   {
     auto matcher =
-        lp::LogicalPlanMatcherBuilder().tableScan().project().aggregate();
+        lp::test::LogicalPlanMatcherBuilder().tableScan().project().aggregate();
     testSql("SELECT DISTINCT n_regionkey FROM nation", matcher);
     testSql("SELECT DISTINCT n_regionkey, length(n_name) FROM nation", matcher);
   }
 
   {
-    auto matcher = lp::LogicalPlanMatcherBuilder()
+    auto matcher = lp::test::LogicalPlanMatcherBuilder()
                        .tableScan()
                        .aggregate()
                        .project()
@@ -392,7 +397,8 @@ TEST_F(PrestoParserTest, distinct) {
   }
 
   {
-    auto matcher = lp::LogicalPlanMatcherBuilder().tableScan().aggregate();
+    auto matcher =
+        lp::test::LogicalPlanMatcherBuilder().tableScan().aggregate();
     testSql("SELECT DISTINCT * FROM nation", matcher);
   }
 }
@@ -400,7 +406,7 @@ TEST_F(PrestoParserTest, distinct) {
 TEST_F(PrestoParserTest, groupingKeyExpr) {
   {
     auto matcher =
-        lp::LogicalPlanMatcherBuilder().tableScan().aggregate().project();
+        lp::test::LogicalPlanMatcherBuilder().tableScan().aggregate().project();
 
     testSql(
         "SELECT n_name, count(1), length(n_name) FROM nation GROUP BY 1",
@@ -408,7 +414,8 @@ TEST_F(PrestoParserTest, groupingKeyExpr) {
   }
 
   {
-    auto matcher = lp::LogicalPlanMatcherBuilder().tableScan().aggregate();
+    auto matcher =
+        lp::test::LogicalPlanMatcherBuilder().tableScan().aggregate();
     testSql(
         "SELECT substr(n_name, 1, 2), count(1) FROM nation GROUP BY 1",
         matcher);
@@ -416,7 +423,7 @@ TEST_F(PrestoParserTest, groupingKeyExpr) {
 
   {
     auto matcher =
-        lp::LogicalPlanMatcherBuilder().tableScan().aggregate().project();
+        lp::test::LogicalPlanMatcherBuilder().tableScan().aggregate().project();
     testSql(
         "SELECT count(1) FROM nation GROUP BY substr(n_name, 1, 2)", matcher);
   }
@@ -424,7 +431,7 @@ TEST_F(PrestoParserTest, groupingKeyExpr) {
 
 TEST_F(PrestoParserTest, scalarOverAgg) {
   auto matcher =
-      lp::LogicalPlanMatcherBuilder().tableScan().aggregate().project();
+      lp::test::LogicalPlanMatcherBuilder().tableScan().aggregate().project();
 
   testSql(
       "SELECT sum(n_regionkey) + count(1), avg(length(n_name)) * 0.3 "
@@ -440,8 +447,8 @@ TEST_F(PrestoParserTest, scalarOverAgg) {
 
 TEST_F(PrestoParserTest, join) {
   {
-    auto matcher = lp::LogicalPlanMatcherBuilder().tableScan().join(
-        lp::LogicalPlanMatcherBuilder().tableScan().build());
+    auto matcher = lp::test::LogicalPlanMatcherBuilder().tableScan().join(
+        lp::test::LogicalPlanMatcherBuilder().tableScan().build());
 
     testSql("SELECT * FROM nation, region", matcher);
 
@@ -456,9 +463,9 @@ TEST_F(PrestoParserTest, join) {
 
   {
     auto matcher =
-        lp::LogicalPlanMatcherBuilder()
+        lp::test::LogicalPlanMatcherBuilder()
             .tableScan()
-            .join(lp::LogicalPlanMatcherBuilder().tableScan().build())
+            .join(lp::test::LogicalPlanMatcherBuilder().tableScan().build())
             .filter();
 
     testSql(
@@ -468,9 +475,9 @@ TEST_F(PrestoParserTest, join) {
 
   {
     auto matcher =
-        lp::LogicalPlanMatcherBuilder()
+        lp::test::LogicalPlanMatcherBuilder()
             .tableScan()
-            .join(lp::LogicalPlanMatcherBuilder().tableScan().build())
+            .join(lp::test::LogicalPlanMatcherBuilder().tableScan().build())
             .filter()
             .project();
 
@@ -481,12 +488,13 @@ TEST_F(PrestoParserTest, join) {
 }
 
 TEST_F(PrestoParserTest, everything) {
-  auto matcher = lp::LogicalPlanMatcherBuilder()
-                     .tableScan()
-                     .join(lp::LogicalPlanMatcherBuilder().tableScan().build())
-                     .filter()
-                     .aggregate()
-                     .sort();
+  auto matcher =
+      lp::test::LogicalPlanMatcherBuilder()
+          .tableScan()
+          .join(lp::test::LogicalPlanMatcherBuilder().tableScan().build())
+          .filter()
+          .aggregate()
+          .sort();
 
   testSql(
       "SELECT r_name, count(*) FROM nation, region "
@@ -497,23 +505,23 @@ TEST_F(PrestoParserTest, everything) {
 }
 
 TEST_F(PrestoParserTest, explain) {
-  test::PrestoParser parser(kTpchConnectorId, pool());
+  PrestoParser parser(kTpchConnectorId, pool());
 
   {
     auto statement = parser.parse("EXPLAIN SELECT * FROM nation");
     ASSERT_TRUE(statement->isExplain());
 
-    auto explainStatement = statement->asUnchecked<test::ExplainStatement>();
+    auto explainStatement = statement->as<ExplainStatement>();
     ASSERT_FALSE(explainStatement->isAnalyze());
     ASSERT_TRUE(
-        explainStatement->type() == test::ExplainStatement::Type::kDistributed);
+        explainStatement->type() == ExplainStatement::Type::kDistributed);
 
     auto selectStatement = explainStatement->statement();
     ASSERT_TRUE(selectStatement->isSelect());
 
-    auto matcher = lp::LogicalPlanMatcherBuilder().tableScan();
+    auto matcher = lp::test::LogicalPlanMatcherBuilder().tableScan();
 
-    auto logicalPlan = selectStatement->asUnchecked<SelectStatement>()->plan();
+    auto logicalPlan = selectStatement->as<SelectStatement>()->plan();
     ASSERT_TRUE(matcher.build()->match(logicalPlan));
   }
 
@@ -521,7 +529,7 @@ TEST_F(PrestoParserTest, explain) {
     auto statement = parser.parse("EXPLAIN ANALYZE SELECT * FROM nation");
     ASSERT_TRUE(statement->isExplain());
 
-    auto explainStatement = statement->asUnchecked<test::ExplainStatement>();
+    auto explainStatement = statement->as<ExplainStatement>();
     ASSERT_TRUE(explainStatement->isAnalyze());
   }
 
@@ -530,10 +538,9 @@ TEST_F(PrestoParserTest, explain) {
         parser.parse("EXPLAIN (TYPE LOGICAL) SELECT * FROM nation", true);
     ASSERT_TRUE(statement->isExplain());
 
-    auto explainStatement = statement->asUnchecked<test::ExplainStatement>();
+    auto explainStatement = statement->as<ExplainStatement>();
     ASSERT_FALSE(explainStatement->isAnalyze());
-    ASSERT_TRUE(
-        explainStatement->type() == test::ExplainStatement::Type::kLogical);
+    ASSERT_TRUE(explainStatement->type() == ExplainStatement::Type::kLogical);
   }
 
   {
@@ -541,10 +548,9 @@ TEST_F(PrestoParserTest, explain) {
         parser.parse("EXPLAIN (TYPE GRAPH) SELECT * FROM nation", true);
     ASSERT_TRUE(statement->isExplain());
 
-    auto explainStatement = statement->asUnchecked<test::ExplainStatement>();
+    auto explainStatement = statement->as<ExplainStatement>();
     ASSERT_FALSE(explainStatement->isAnalyze());
-    ASSERT_TRUE(
-        explainStatement->type() == test::ExplainStatement::Type::kGraph);
+    ASSERT_TRUE(explainStatement->type() == ExplainStatement::Type::kGraph);
   }
 
   {
@@ -552,15 +558,15 @@ TEST_F(PrestoParserTest, explain) {
         parser.parse("EXPLAIN (TYPE DISTRIBUTED) SELECT * FROM nation");
     ASSERT_TRUE(statement->isExplain());
 
-    auto explainStatement = statement->asUnchecked<test::ExplainStatement>();
+    auto explainStatement = statement->as<ExplainStatement>();
     ASSERT_FALSE(explainStatement->isAnalyze());
     ASSERT_TRUE(
-        explainStatement->type() == test::ExplainStatement::Type::kDistributed);
+        explainStatement->type() == ExplainStatement::Type::kDistributed);
   }
 }
 
 TEST_F(PrestoParserTest, describe) {
-  auto matcher = lp::LogicalPlanMatcherBuilder().values();
+  auto matcher = lp::test::LogicalPlanMatcherBuilder().values();
   testSql("DESCRIBE nation", matcher);
 
   testSql("DESC orders", matcher);
@@ -571,20 +577,21 @@ TEST_F(PrestoParserTest, describe) {
 TEST_F(PrestoParserTest, insertIntoTable) {
   {
     auto matcher =
-        lp::LogicalPlanMatcherBuilder().values().project().tableWrite();
+        lp::test::LogicalPlanMatcherBuilder().values().project().tableWrite();
     testInsertSql(
         "INSERT INTO nation SELECT 100, 'n-100', 2, 'test comment'", matcher);
   }
 
   {
-    auto matcher = lp::LogicalPlanMatcherBuilder().tableScan().tableWrite();
+    auto matcher =
+        lp::test::LogicalPlanMatcherBuilder().tableScan().tableWrite();
     testInsertSql("INSERT INTO nation SELECT * FROM nation", matcher);
   }
 
   // Omit n_comment. Expect to be filled with default value.
   {
     auto matcher =
-        lp::LogicalPlanMatcherBuilder().values().project().tableWrite();
+        lp::test::LogicalPlanMatcherBuilder().values().project().tableWrite();
     testInsertSql(
         "INSERT INTO nation(n_nationkey, n_name, n_regionkey) SELECT 100, 'n-100', 2",
         matcher);
@@ -593,7 +600,7 @@ TEST_F(PrestoParserTest, insertIntoTable) {
   // Change the order of columns.
   {
     auto matcher =
-        lp::LogicalPlanMatcherBuilder().values().project().tableWrite();
+        lp::test::LogicalPlanMatcherBuilder().values().project().tableWrite();
     testInsertSql(
         "INSERT INTO nation(n_nationkey, n_regionkey, n_name) SELECT 100, 2, 'n-100'",
         matcher);
@@ -601,7 +608,7 @@ TEST_F(PrestoParserTest, insertIntoTable) {
 
   // Wrong types.
   {
-    test::PrestoParser parser(kTpchConnectorId, pool());
+    PrestoParser parser(kTpchConnectorId, pool());
 
     VELOX_ASSERT_THROW(
         parser.parse("INSERT INTO nation SELECT 100, 'n-100', 2, 3"),
@@ -611,17 +618,19 @@ TEST_F(PrestoParserTest, insertIntoTable) {
 
 TEST_F(PrestoParserTest, createTableAsSelect) {
   {
-    auto nationSchema = connector::ConnectorMetadata::metadata(kTpchConnectorId)
+    auto nationSchema = facebook::axiom::connector::ConnectorMetadata::metadata(
+                            kTpchConnectorId)
                             ->findTable("nation")
                             ->type();
 
-    auto matcher = lp::LogicalPlanMatcherBuilder().tableScan().tableWrite();
+    auto matcher =
+        lp::test::LogicalPlanMatcherBuilder().tableScan().tableWrite();
     testCtasSql(
         "CREATE TABLE t AS SELECT * FROM nation", "t", nationSchema, matcher);
   }
 
   auto matcher =
-      lp::LogicalPlanMatcherBuilder().tableScan().project().tableWrite();
+      lp::test::LogicalPlanMatcherBuilder().tableScan().project().tableWrite();
 
   testCtasSql(
       "CREATE TABLE t AS SELECT n_nationkey * 100 as a, n_name as b FROM nation",
@@ -631,7 +640,7 @@ TEST_F(PrestoParserTest, createTableAsSelect) {
 
   // Missing column names.
   {
-    test::PrestoParser parser(kTpchConnectorId, pool());
+    PrestoParser parser(kTpchConnectorId, pool());
 
     VELOX_ASSERT_THROW(
         parser.parse(
@@ -670,13 +679,13 @@ TEST_F(PrestoParserTest, createTableAsSelect) {
 }
 
 TEST_F(PrestoParserTest, dropTable) {
-  test::PrestoParser parser(kTpchConnectorId, pool());
+  PrestoParser parser(kTpchConnectorId, pool());
 
   {
     auto statement = parser.parse("DROP TABLE t");
     ASSERT_TRUE(statement->isDropTable());
 
-    const auto* dropTable = statement->asUnchecked<test::DropTableStatement>();
+    const auto* dropTable = statement->as<DropTableStatement>();
     ASSERT_EQ("t", dropTable->tableName());
     ASSERT_FALSE(dropTable->ifExists());
   }
@@ -685,11 +694,11 @@ TEST_F(PrestoParserTest, dropTable) {
     auto statement = parser.parse("DROP TABLE IF EXISTS u");
     ASSERT_TRUE(statement->isDropTable());
 
-    const auto* dropTable = statement->asUnchecked<test::DropTableStatement>();
+    const auto* dropTable = statement->as<DropTableStatement>();
     ASSERT_EQ("u", dropTable->tableName());
     ASSERT_TRUE(dropTable->ifExists());
   }
 }
 
 } // namespace
-} // namespace facebook::axiom::optimizer::test
+} // namespace axiom::sql::presto

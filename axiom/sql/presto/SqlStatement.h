@@ -18,7 +18,7 @@
 
 #include "axiom/logical_plan/LogicalPlanNode.h"
 
-namespace facebook::axiom::optimizer::test {
+namespace axiom::sql::presto {
 
 enum class SqlStatementKind {
   kSelect,
@@ -59,7 +59,7 @@ class SqlStatement {
   }
 
   template <typename T>
-  const T* asUnchecked() const {
+  const T* as() const {
     return dynamic_cast<const T*>(this);
   }
 
@@ -71,37 +71,40 @@ using SqlStatementPtr = std::shared_ptr<const SqlStatement>;
 
 class SelectStatement : public SqlStatement {
  public:
-  explicit SelectStatement(logical_plan::LogicalPlanNodePtr plan)
+  explicit SelectStatement(
+      facebook::axiom::logical_plan::LogicalPlanNodePtr plan)
       : SqlStatement(SqlStatementKind::kSelect), plan_{std::move(plan)} {}
 
-  const logical_plan::LogicalPlanNodePtr& plan() const {
+  const facebook::axiom::logical_plan::LogicalPlanNodePtr& plan() const {
     return plan_;
   }
 
  private:
-  const logical_plan::LogicalPlanNodePtr plan_;
+  const facebook::axiom::logical_plan::LogicalPlanNodePtr plan_;
 };
 
 class InsertStatement : public SqlStatement {
  public:
-  explicit InsertStatement(logical_plan::LogicalPlanNodePtr plan)
+  explicit InsertStatement(
+      facebook::axiom::logical_plan::LogicalPlanNodePtr plan)
       : SqlStatement(SqlStatementKind::kInsert), plan_{std::move(plan)} {}
 
-  const logical_plan::LogicalPlanNodePtr& plan() const {
+  const facebook::axiom::logical_plan::LogicalPlanNodePtr& plan() const {
     return plan_;
   }
 
  private:
-  const logical_plan::LogicalPlanNodePtr plan_;
+  const facebook::axiom::logical_plan::LogicalPlanNodePtr plan_;
 };
 
 class CreateTableAsSelectStatement : public SqlStatement {
  public:
   CreateTableAsSelectStatement(
       std::string tableName,
-      velox::RowTypePtr tableSchema,
-      std::unordered_map<std::string, logical_plan::ExprPtr> properties,
-      logical_plan::LogicalPlanNodePtr plan)
+      facebook::velox::RowTypePtr tableSchema,
+      std::unordered_map<std::string, facebook::axiom::logical_plan::ExprPtr>
+          properties,
+      facebook::axiom::logical_plan::LogicalPlanNodePtr plan)
       : SqlStatement(SqlStatementKind::kCreateTableAsSelect),
         tableName_{std::move(tableName)},
         tableSchema_{std::move(tableSchema)},
@@ -112,24 +115,25 @@ class CreateTableAsSelectStatement : public SqlStatement {
     return tableName_;
   }
 
-  const velox::RowTypePtr& tableSchema() const {
+  const facebook::velox::RowTypePtr& tableSchema() const {
     return tableSchema_;
   }
 
-  const std::unordered_map<std::string, logical_plan::ExprPtr>& properties()
-      const {
+  const std::unordered_map<std::string, facebook::axiom::logical_plan::ExprPtr>&
+  properties() const {
     return properties_;
   }
 
-  const logical_plan::LogicalPlanNodePtr& plan() const {
+  const facebook::axiom::logical_plan::LogicalPlanNodePtr& plan() const {
     return plan_;
   }
 
  private:
   const std::string tableName_;
-  const velox::RowTypePtr tableSchema_;
-  std::unordered_map<std::string, logical_plan::ExprPtr> properties_;
-  const logical_plan::LogicalPlanNodePtr plan_;
+  const facebook::velox::RowTypePtr tableSchema_;
+  std::unordered_map<std::string, facebook::axiom::logical_plan::ExprPtr>
+      properties_;
+  const facebook::axiom::logical_plan::LogicalPlanNodePtr plan_;
 };
 
 class DropTableStatement : public SqlStatement {
@@ -184,4 +188,4 @@ class ExplainStatement : public SqlStatement {
   const Type type_;
 };
 
-} // namespace facebook::axiom::optimizer::test
+} // namespace axiom::sql::presto
