@@ -14,10 +14,10 @@
  * limitations under the License.
  */
 
-#include "axiom/optimizer/tests/LogicalPlanMatcher.h"
+#include "axiom/sql/presto/tests/LogicalPlanMatcher.h"
 #include <gtest/gtest.h>
 
-namespace facebook::axiom::logical_plan {
+namespace facebook::axiom::logical_plan::test {
 namespace {
 
 template <typename T = LogicalPlanNode>
@@ -126,4 +126,4 @@ LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::sort() {
   return *this;
 }
 
-} // namespace facebook::axiom::logical_plan
+} // namespace facebook::axiom::logical_plan::test
