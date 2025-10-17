@@ -133,6 +133,7 @@ target_link_libraries(
   axiom_hive_connector_metadata
   axiom_tpch_connector_metadata
   axiom_sql_presto_parser
+  ${READLINE_LIBRARIES}
   velox_query_benchmark
   velox_exec_test_lib
   velox_dwio_common

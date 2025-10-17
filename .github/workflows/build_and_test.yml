@@ -41,7 +41,7 @@ jobs:
       matrix:
         build_type: [debug, release]
     name: Build Axiom
-    runs-on: 16-core-ubuntu
+    runs-on: 32-core-ubuntu
     container:
       image: ghcr.io/facebookincubator/velox-dev:centos9
     env:
@@ -88,6 +88,10 @@ jobs:
       - name: Clear CCache Statistics
         run: |
           ccache -sz
+
+      - name: Install Readline
+        run: |
+          dnf install -y readline-devel
 
       - name: Build Axiom ${{ matrix.build_type }}
         env:
