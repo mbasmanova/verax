@@ -24,6 +24,7 @@
 #include "axiom/connectors/hive/LocalHiveConnectorMetadata.h"
 #include "axiom/connectors/tpch/TpchConnectorMetadata.h"
 #include "axiom/logical_plan/PlanPrinter.h"
+#include "axiom/optimizer/ConstantExprEvaluator.h"
 #include "axiom/optimizer/DerivedTablePrinter.h"
 #include "axiom/optimizer/Optimization.h"
 #include "axiom/optimizer/Plan.h"
@@ -315,9 +316,10 @@ class VeloxRunner : public velox::QueryBenchmarkBase {
         connector::ConnectorMetadata::metadata(connector_->connectorId());
 
     folly::F14FastMap<std::string, velox::Variant> options;
-
-    // TODO Add support for create table properties.
-    CHECK(statement.properties().empty());
+    for (const auto& [key, value] : statement.properties()) {
+      options[key] =
+          optimizer::ConstantExprEvaluator::evaluateConstantExpr(*value);
+    }
 
     auto session = std::make_shared<connector::ConnectorSession>("test");
     return metadata->createTable(
