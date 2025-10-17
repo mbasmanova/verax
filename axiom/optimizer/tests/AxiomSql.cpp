@@ -18,6 +18,8 @@
 #include <folly/executors/IOThreadPoolExecutor.h>
 #include <folly/init/Init.h>
 #include <gflags/gflags.h>
+#include <readline/history.h>
+#include <readline/readline.h>
 #include <sys/resource.h>
 #include <sys/time.h>
 #include <iostream>
@@ -645,14 +647,21 @@ class VeloxRunner {
 // more whitespaces.
 // @return Command text with leading and trailing whitespaces as well as
 // trailing ';' removed.
-std::string readCommand(std::istream& in, bool& end) {
+std::string readCommand(bool& atEnd) {
   std::stringstream command;
-  end = false;
+  atEnd = false;
 
   bool stripLeadingSpaces = true;
 
-  std::string line;
-  while (std::getline(in, line)) {
+  while (char* rawLine = readline("")) {
+    SCOPE_EXIT {
+      if (rawLine != nullptr) {
+        free(rawLine);
+      }
+    };
+
+    std::string line(rawLine);
+
     int64_t startPos = 0;
     if (stripLeadingSpaces) {
       for (; startPos < line.size(); ++startPos) {
@@ -675,6 +684,7 @@ std::string readCommand(std::istream& in, bool& end) {
 
       if (line[i] == ';') {
         command << line.substr(startPos, i - startPos);
+        add_history(fmt::format("{};", command.str()).c_str());
         return command.str();
       }
 
@@ -684,19 +694,16 @@ std::string readCommand(std::istream& in, bool& end) {
     stripLeadingSpaces = false;
     command << line.substr(startPos) << std::endl;
   }
-  end = true;
+  atEnd = true;
   return "";
 }
 
-void readCommands(
-    VeloxRunner& runner,
-    std::string_view prompt,
-    std::istream& in) {
+void readCommands(VeloxRunner& runner, std::string_view prompt) {
   for (;;) {
     std::cout << prompt;
-    bool end;
-    std::string command = readCommand(in, end);
-    if (end) {
+    bool atEnd;
+    std::string command = readCommand(atEnd);
+    if (atEnd) {
       break;
     }
 
@@ -801,7 +808,7 @@ int main(int argc, char** argv) {
                    "flag name = value; sets a gflag.\n"
                    "help; prints help text."
                 << std::endl;
-      readCommands(runner, "SQL> ", std::cin);
+      readCommands(runner, "SQL> ");
     }
   } catch (std::exception& e) {
     std::cerr << "Error: " << e.what() << std::endl;
