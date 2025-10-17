@@ -156,6 +156,26 @@ class DropTableStatement : public SqlStatement {
   const bool ifExists_;
 };
 
+class DropTableStatement : public SqlStatement {
+ public:
+  DropTableStatement(std::string tableName, bool ifExists)
+      : SqlStatement(SqlStatementKind::kDropTable),
+        tableName_{std::move(tableName)},
+        ifExists_{ifExists} {}
+
+  const std::string& tableName() const {
+    return tableName_;
+  }
+
+  bool ifExists() const {
+    return ifExists_;
+  }
+
+ private:
+  const std::string tableName_;
+  const bool ifExists_;
+};
+
 class ExplainStatement : public SqlStatement {
  public:
   enum class Type { kLogical, kGraph, kDistributed };

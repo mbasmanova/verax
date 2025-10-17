@@ -311,7 +311,6 @@ class VeloxRunner {
         dropTable(*drop);
       } catch (std::exception& e) {
         std::cerr << "DROP TABLE failed: " << e.what() << std::endl;
-        return;
       }
       return;
     }
