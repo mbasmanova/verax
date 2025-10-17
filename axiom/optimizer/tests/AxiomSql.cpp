@@ -638,7 +638,6 @@ class VeloxRunner {
   std::unordered_map<std::string, std::string> config_;
   std::unique_ptr<optimizer::VeloxHistory> history_;
   std::unique_ptr<::axiom::sql::presto::PrestoParser> prestoParser_;
-
   int32_t queryCounter_{0};
   std::set<std::string> modifiedFlags_;
 };
