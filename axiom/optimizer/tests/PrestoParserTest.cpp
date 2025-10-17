@@ -669,5 +669,27 @@ TEST_F(PrestoParserTest, createTableAsSelect) {
       });
 }
 
+TEST_F(PrestoParserTest, dropTable) {
+  test::PrestoParser parser(kTpchConnectorId, pool());
+
+  {
+    auto statement = parser.parse("DROP TABLE t");
+    ASSERT_TRUE(statement->isDropTable());
+
+    const auto* dropTable = statement->asUnchecked<test::DropTableStatement>();
+    ASSERT_EQ("t", dropTable->tableName());
+    ASSERT_FALSE(dropTable->ifExists());
+  }
+
+  {
+    auto statement = parser.parse("DROP TABLE IF EXISTS u");
+    ASSERT_TRUE(statement->isDropTable());
+
+    const auto* dropTable = statement->asUnchecked<test::DropTableStatement>();
+    ASSERT_EQ("u", dropTable->tableName());
+    ASSERT_TRUE(dropTable->ifExists());
+  }
+}
+
 } // namespace
 } // namespace facebook::axiom::optimizer::test

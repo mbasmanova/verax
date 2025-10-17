@@ -695,6 +695,16 @@ class ConnectorMetadata {
     return {};
   }
 
+  /// Drop table with the specified name. If table doesn't exist and 'ifExists'
+  /// is false, raises an error. Otherwise, returns true if table was dropped
+  /// and false if table didn't exist.
+  virtual bool dropTable(
+      const ConnectorSessionPtr& session,
+      std::string_view tableName,
+      bool ifExists) {
+    VELOX_UNSUPPORTED();
+  }
+
   /// Returns column handles whose value uniquely identifies a row for creating
   /// an update or delete record. These may be for example some connector
   /// specific opaque row id or primary key columns.
