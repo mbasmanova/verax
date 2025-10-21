@@ -18,8 +18,6 @@
 #include <folly/executors/IOThreadPoolExecutor.h>
 #include <folly/init/Init.h>
 #include <gflags/gflags.h>
-#include <readline/history.h>
-#include <readline/readline.h>
 #include <sys/resource.h>
 #include <sys/time.h>
 #include <iostream>
@@ -32,6 +30,7 @@
 #include "axiom/optimizer/Optimization.h"
 #include "axiom/optimizer/Plan.h"
 #include "axiom/optimizer/VeloxHistory.h"
+#include "axiom/optimizer/tests/linenoise/linenoise.h"
 #include "axiom/runner/LocalRunner.h"
 #include "axiom/sql/presto/PrestoParser.h"
 #include "velox/common/file/FileSystems.h"
@@ -649,13 +648,13 @@ class VeloxRunner {
 // more whitespaces.
 // @return Command text with leading and trailing whitespaces as well as
 // trailing ';' removed.
-std::string readCommand(bool& atEnd) {
+std::string readCommand(const std::string& prompt, bool& atEnd) {
   std::stringstream command;
   atEnd = false;
 
   bool stripLeadingSpaces = true;
 
-  while (char* rawLine = readline("")) {
+  while (char* rawLine = linenoise(prompt.c_str())) {
     SCOPE_EXIT {
       if (rawLine != nullptr) {
         free(rawLine);
@@ -686,7 +685,7 @@ std::string readCommand(bool& atEnd) {
 
       if (line[i] == ';') {
         command << line.substr(startPos, i - startPos);
-        add_history(fmt::format("{};", command.str()).c_str());
+        linenoiseHistoryAdd(fmt::format("{};", command.str()).c_str());
         return command.str();
       }
 
@@ -700,11 +699,13 @@ std::string readCommand(bool& atEnd) {
   return "";
 }
 
-void readCommands(VeloxRunner& runner, std::string_view prompt) {
+void readCommands(VeloxRunner& runner, const std::string& prompt) {
+  linenoiseSetMultiLine(1);
+  linenoiseHistorySetMaxLen(1024);
+
   for (;;) {
-    std::cout << prompt;
     bool atEnd;
-    std::string command = readCommand(atEnd);
+    std::string command = readCommand(prompt, atEnd);
     if (atEnd) {
       break;
     }
