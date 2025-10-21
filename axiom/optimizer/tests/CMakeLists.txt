@@ -123,7 +123,7 @@ target_link_libraries(
   GTest::gtest_main
 )
 
-add_executable(axiom_sql AxiomSql.cpp)
+add_executable(axiom_sql AxiomSql.cpp linenoise/linenoise.c)
 
 target_link_libraries(
   axiom_sql
@@ -133,7 +133,6 @@ target_link_libraries(
   axiom_hive_connector_metadata
   axiom_tpch_connector_metadata
   axiom_sql_presto_parser
-  ${READLINE_LIBRARIES}
   velox_query_benchmark
   velox_exec_test_lib
   velox_dwio_common
