@@ -51,13 +51,6 @@ const auto& relTypeNames() {
 
 AXIOM_DEFINE_ENUM_NAME(RelType, relTypeNames)
 
-const Value& RelationOp::value(ExprCP expr) const {
-  // Compute new Value by applying restrictions from operators
-  // between the place Expr is first defined and the output of
-  // 'this'. Memoize the result in 'this'.
-  return expr->value();
-}
-
 namespace {
 template <typename T>
 std::string itemsToString(const T* items, size_t n) {
@@ -107,9 +100,24 @@ float orderPrefixDistance(
 } // namespace
 
 TableScan::TableScan(
+    BaseTableCP table,
+    ColumnGroupCP index,
+    const ColumnVector& columns)
+    : TableScan(
+          /*input=*/nullptr,
+          TableScan::outputDistribution(table, index, columns),
+          table,
+          index,
+          /*fanout=*/index->table->cardinality * table->filterSelectivity,
+          columns,
+          /*lookupKeys=*/{},
+          velox::core::JoinType::kInner,
+          /*joinFilter=*/{}) {}
+
+TableScan::TableScan(
     RelationOpPtr input,
     Distribution distribution,
-    const BaseTable* table,
+    BaseTableCP table,
     ColumnGroupCP index,
     float fanout,
     ColumnVector columns,
@@ -658,13 +666,8 @@ void Aggregation::accept(
   visitor.visit(*this, context);
 }
 
-HashBuild::HashBuild(
-    RelationOpPtr input,
-    int32_t id,
-    ExprVector keysVector,
-    PlanP plan)
+HashBuild::HashBuild(RelationOpPtr input, ExprVector keysVector, PlanP plan)
     : RelationOp{RelType::kHashBuild, std::move(input)},
-      buildId{id},
       keys{std::move(keysVector)},
       plan{plan} {
   cost_.inputCardinality = inputCardinality();
