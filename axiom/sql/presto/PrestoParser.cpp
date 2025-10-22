@@ -1258,7 +1258,7 @@ SqlStatementPtr parseExplain(
         /*analyze=*/true);
   }
 
-  ExplainStatement::Type type = ExplainStatement::Type::kDistributed;
+  ExplainStatement::Type type = ExplainStatement::Type::kExecutable;
 
   for (const auto& option : explain.options()) {
     if (option->is(NodeType::kExplainType)) {
@@ -1270,8 +1270,13 @@ SqlStatementPtr parseExplain(
         case ExplainType::Type::kGraph:
           type = ExplainStatement::Type::kGraph;
           break;
+        case ExplainType::Type::kOptimized:
+          type = ExplainStatement::Type::kOptimized;
+          break;
+        case ExplainType::Type::kExecutable:
+          [[fallthrough]];
         case ExplainType::Type::kDistributed:
-          type = ExplainStatement::Type::kDistributed;
+          type = ExplainStatement::Type::kExecutable;
           break;
         default:
           VELOX_USER_FAIL("Unsupported EXPLAIN type");

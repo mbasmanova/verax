@@ -158,7 +158,19 @@ class DropTableStatement : public SqlStatement {
 
 class ExplainStatement : public SqlStatement {
  public:
-  enum class Type { kLogical, kGraph, kDistributed };
+  enum class Type {
+    /// Logical plan. Input to the optimizer.
+    kLogical,
+
+    /// Query graph.
+    kGraph,
+
+    /// Optimize physical plan.
+    kOptimized,
+
+    /// Executable Velox plan.
+    kExecutable,
+  };
 
   /// 'type' applies only when 'analyze' is false.
   explicit ExplainStatement(

@@ -514,10 +514,13 @@ class VeloxRunner : public velox::QueryBenchmarkBase {
         });
         break;
 
-      case ::axiom::sql::presto::ExplainStatement::Type::kDistributed:
+      case ::axiom::sql::presto::ExplainStatement::Type::kExecutable:
         std::cout << optimize(statement.plan(), newQuery()).toString()
                   << std::endl;
         break;
+
+      default:
+        VELOX_UNSUPPORTED();
     }
   }
 

@@ -1875,6 +1875,10 @@ ExplainType::Type toExplainType(PrestoSqlParser::ExplainTypeContext* ctx) {
       return ExplainType::Type::kLogical;
     case PrestoSqlParser::GRAPH:
       return ExplainType::Type::kGraph;
+    case PrestoSqlParser::OPTIMIZED:
+      return ExplainType::Type::kOptimized;
+    case PrestoSqlParser::EXECUTABLE:
+      return ExplainType::Type::kExecutable;
     case PrestoSqlParser::DISTRIBUTED:
       return ExplainType::Type::kDistributed;
     case PrestoSqlParser::VALIDATE:

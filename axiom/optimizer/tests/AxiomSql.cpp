@@ -29,6 +29,7 @@
 #include "axiom/optimizer/DerivedTablePrinter.h"
 #include "axiom/optimizer/Optimization.h"
 #include "axiom/optimizer/Plan.h"
+#include "axiom/optimizer/RelationOpPrinter.h"
 #include "axiom/optimizer/VeloxHistory.h"
 #include "axiom/optimizer/tests/linenoise/linenoise.h"
 #include "axiom/runner/LocalRunner.h"
@@ -354,7 +355,14 @@ class VeloxRunner {
         });
         break;
 
-      case ::axiom::sql::presto::ExplainStatement::Type::kDistributed:
+      case ::axiom::sql::presto::ExplainStatement::Type::kOptimized:
+        optimize(statement.plan(), newQuery(), nullptr, [](const auto& plan) {
+          std::cout << optimizer::RelationOpPrinter::toText(plan) << std::endl;
+          return false; // Stop optimization.
+        });
+        break;
+
+      case ::axiom::sql::presto::ExplainStatement::Type::kExecutable:
         std::cout << optimize(statement.plan(), newQuery()).toString()
                   << std::endl;
         break;
@@ -385,11 +393,16 @@ class VeloxRunner {
   // @param checkDerivedTable Optional lambda to call after to-graph stage of
   // optimization. If returns 'false', the optimization stops and returns an
   // empty result.
+  // @param checkBestPlan Optional lambda to call towards the end of
+  // optimization after best plan is found. If returns 'false', the optimization
+  // stops and returns an empty result.
   optimizer::PlanAndStats optimize(
       const logical_plan::LogicalPlanNodePtr& logicalPlan,
       const std::shared_ptr<core::QueryCtx>& queryCtx,
       const std::function<bool(const optimizer::DerivedTable&)>&
-          checkDerivedTable = nullptr) {
+          checkDerivedTable = nullptr,
+      const std::function<bool(const optimizer::RelationOp&)>& checkBestPlan =
+          nullptr) {
     runner::MultiFragmentPlan::Options opts;
     opts.numWorkers = FLAGS_num_workers;
     opts.numDrivers = FLAGS_num_drivers;
@@ -422,6 +435,10 @@ class VeloxRunner {
     }
 
     auto best = optimization.bestPlan();
+    if (checkBestPlan && !checkBestPlan(*best->op)) {
+      return {};
+    }
+
     return optimization.toVeloxPlan(best->op);
   }
 
