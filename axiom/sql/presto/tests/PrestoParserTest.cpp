@@ -547,7 +547,7 @@ TEST_F(PrestoParserTest, explain) {
     auto explainStatement = statement->as<ExplainStatement>();
     ASSERT_FALSE(explainStatement->isAnalyze());
     ASSERT_TRUE(
-        explainStatement->type() == ExplainStatement::Type::kDistributed);
+        explainStatement->type() == ExplainStatement::Type::kExecutable);
 
     auto selectStatement = explainStatement->statement();
     ASSERT_TRUE(selectStatement->isSelect());
@@ -588,13 +588,34 @@ TEST_F(PrestoParserTest, explain) {
 
   {
     auto statement =
+        parser.parse("EXPLAIN (TYPE OPTIMIZED) SELECT * FROM nation");
+    ASSERT_TRUE(statement->isExplain());
+
+    auto explainStatement = statement->as<ExplainStatement>();
+    ASSERT_FALSE(explainStatement->isAnalyze());
+    ASSERT_TRUE(explainStatement->type() == ExplainStatement::Type::kOptimized);
+  }
+
+  {
+    auto statement =
+        parser.parse("EXPLAIN (TYPE EXECUTABLE) SELECT * FROM nation");
+    ASSERT_TRUE(statement->isExplain());
+
+    auto explainStatement = statement->as<ExplainStatement>();
+    ASSERT_FALSE(explainStatement->isAnalyze());
+    ASSERT_TRUE(
+        explainStatement->type() == ExplainStatement::Type::kExecutable);
+  }
+
+  {
+    auto statement =
         parser.parse("EXPLAIN (TYPE DISTRIBUTED) SELECT * FROM nation");
     ASSERT_TRUE(statement->isExplain());
 
     auto explainStatement = statement->as<ExplainStatement>();
     ASSERT_FALSE(explainStatement->isAnalyze());
     ASSERT_TRUE(
-        explainStatement->type() == ExplainStatement::Type::kDistributed);
+        explainStatement->type() == ExplainStatement::Type::kExecutable);
   }
 }
 
