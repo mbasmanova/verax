@@ -830,6 +830,7 @@ class RelationPlanner : public AstVisitor {
     if (relation->is(NodeType::kTable)) {
       auto* table = relation->as<Table>();
       builder_->tableScan(table->name()->suffix());
+      builder_->as(table->name()->suffix());
       return;
     }
 
