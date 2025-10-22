@@ -27,46 +27,45 @@ namespace facebook::axiom::optimizer {
 class RelationOpVisitorContext;
 class RelationOpVisitor;
 
-// Represents the cost and cardinality of a RelationOp or Plan. A Cost has a
-// per-row cost, a per-row fanout and a one-time setup cost. For example, a hash
-// join probe has a fanout of 0.3 if 3 of 10 input rows are expected to hit, a
-// constant small per-row cost that is fixed and a setup cost that is
-// the one time cost of the build side subplan. The inputCardinality
-// is a precalculated product of the left deep inputs for the hash
-// probe. For a leaf table scan, input cardinality is 1 and the fanout
-// is the estimated cardinality after filters, the unitCost is the
-// cost of the scan and all filters. For an index lookup, the unit
-// cost is a function of the index size and the input spacing and
-// input cardinality. A lookup that hits densely is cheaper than one
-// that hits sparsely. An index lookup has no setup cost.
+/// Represents the cost and cardinality of a RelationOp or Plan. A Cost has a
+/// per-row cost, a per-row fanout and a one-time setup cost. For example, a
+/// hash join probe has a fanout of 0.3 if 3 of 10 input rows are expected to
+/// hit, a constant small per-row cost that is fixed and a setup cost that is
+/// the one time cost of the build side subplan. The inputCardinality is a
+/// precalculated product of the left deep inputs for the hash probe. For a leaf
+/// table scan, input cardinality is 1 and the fanout is the estimated
+/// cardinality after filters, the unitCost is the cost of the scan and all
+/// filters. For an index lookup, the unit cost is a function of the index size
+/// and the input spacing and input cardinality. A lookup that hits densely is
+/// cheaper than one that hits sparsely. An index lookup has no setup cost.
 struct Cost {
-  // Cardinality of the output of the left deep input tree. 1 for a leaf
-  // scan.
+  /// Cardinality of the output of the left deep input tree. 1 for a leaf
+  /// scan.
   float inputCardinality{1};
 
-  // Cost of processing one input tuple. Complete cost of the operation for a
-  // leaf.
+  /// Cost of processing one input tuple. Complete cost of the operation for a
+  /// leaf.
   float unitCost{0};
 
-  // 'fanout * inputCardinality' is the number of result rows. For a leaf scan,
-  // this is the number of rows.
+  /// 'fanout * inputCardinality' is the number of result rows. For a leaf scan,
+  /// this is the number of rows.
   float fanout{1};
 
-  // One time setup cost. Cost of build subplan for the first use of a hash
-  // build side. 0 for the second use of a hash build side. 0 for table scan
-  // or index access.
+  /// One time setup cost. Cost of build subplan for the first use of a hash
+  /// build side. 0 for the second use of a hash build side. 0 for table scan
+  /// or index access.
   float setupCost{0};
 
-  // Estimate of total data volume  for a hash join build or group/order
-  // by/distinct / repartition. The memory footprint may not be this if the
-  // operation is streaming or spills.
+  /// Estimate of total data volume  for a hash join build or group / order
+  /// by / distinct / repartition. The memory footprint may not be this if the
+  /// operation is streaming or spills.
   float totalBytes{0};
 
   /// Shuffle data volume
   float transferBytes{0};
 
-  // Maximum memory occupancy. If the operation is blocking, e.g. group by, the
-  // amount of spill is 'totalBytes' - 'peakResidentBytes'.
+  /// Maximum memory occupancy. If the operation is blocking, e.g. group by, the
+  /// amount of spill is 'totalBytes' - 'peakResidentBytes'.
   float peakResidentBytes{0};
 
   /// If 'isUnit' shows the cost/cardinality for one row, else for
@@ -124,6 +123,8 @@ class RelationOp {
         columns_(std::move(columns)),
         input_(std::move(input)) {}
 
+  /// Convenience constructor for operators that project all input columns as
+  /// is. E.g. Repartition or OrderBy.
   RelationOp(
       RelType type,
       boost::intrusive_ptr<RelationOp> input,
@@ -133,6 +134,8 @@ class RelationOp {
         columns_{input->columns()},
         input_{std::move(input)} {}
 
+  /// Convenience constructor for operators that preserve input's distribution.
+  /// E.g. Join or Project.
   RelationOp(
       RelType type,
       boost::intrusive_ptr<RelationOp> input,
@@ -142,6 +145,8 @@ class RelationOp {
         columns_{std::move(columns)},
         input_{std::move(input)} {}
 
+  /// Convenience constructor for operators that preserve input's distribution
+  /// and project all input columns as is. E.g. Filter.
   RelationOp(RelType type, boost::intrusive_ptr<RelationOp> input)
       : relType_{type},
         distribution_{input->distribution()},
@@ -199,6 +204,10 @@ class RelationOp {
     return cost_.inputCardinality * cost_.fanout;
   }
 
+  /// @return 1 for a leaf node, otherwise returns 'resultCardinality()' of the
+  /// input. Nodes with multiple inputs, e.g. Join, UnionAll, return the
+  /// 'resultCardinality()' of the left-most input, which is not the same as
+  /// 'input cardinality'.
   float inputCardinality() const {
     if (input() == nullptr) {
       return 1;
@@ -206,12 +215,6 @@ class RelationOp {
 
     return input()->resultCardinality();
   }
-
-  /// Returns the value constraints of 'expr' at the output of
-  /// 'this'. For example, a filter or join may limit values. An Expr
-  /// will for example have no more distinct values than the number of
-  /// rows. This is computed on first use.
-  const Value& value(ExprCP expr) const;
 
   /// Returns a key for retrieving/storing a historical record of execution for
   /// future costing.
@@ -245,7 +248,7 @@ class RelationOp {
 
   // Input of filter/project/group by etc., Left side of join, nullptr for a
   // leaf table scan.
-  boost::intrusive_ptr<class RelationOp> input_;
+  const boost::intrusive_ptr<class RelationOp> input_;
 
   Cost cost_;
 
@@ -278,6 +281,13 @@ using RelationOpPtrVector = QGVector<RelationOpPtr>;
 
 /// Represents a full table scan or an index lookup.
 struct TableScan : public RelationOp {
+  /// Constructor for a full table scan.
+  TableScan(
+      BaseTableCP table,
+      ColumnGroupCP index,
+      const ColumnVector& columns);
+
+  /// Constructor for an index lookup.
   TableScan(
       RelationOpPtr input,
       Distribution distribution,
@@ -285,9 +295,9 @@ struct TableScan : public RelationOp {
       ColumnGroupCP index,
       float fanout,
       ColumnVector columns,
-      ExprVector lookupKeys = {},
-      velox::core::JoinType joinType = velox::core::JoinType::kInner,
-      ExprVector joinFilter = {});
+      ExprVector lookupKeys,
+      velox::core::JoinType joinType,
+      ExprVector joinFilter);
 
   /// Returns the distribution given the table, index and columns. If
   /// partitioning/ordering columns are in the output columns, the
@@ -305,27 +315,22 @@ struct TableScan : public RelationOp {
       const RelationOpVisitor& visitor,
       RelationOpVisitorContext& context) const override;
 
-  // The base table reference. May occur in multiple scans if the base
-  // table decomposes into access via secondary index joined to pk or
-  // if doing another pass for late materialization.
-  BaseTableCP baseTable;
+  /// The base table reference. May occur in multiple scans if the base
+  /// table decomposes into access via secondary index joined to pk or
+  /// if doing another pass for late materialization.
+  BaseTableCP const baseTable;
 
-  // Index (or other materialization of table) used for the physical data
-  // access.
-  ColumnGroupCP index;
+  /// Index (or other materialization of table) used for the physical data
+  /// access.
+  ColumnGroupCP const index;
 
-  // Columns read from 'baseTable'. Can be more than 'columns' if
-  // there are filters that need columns that are not projected out to
-  // next op.
-  PlanObjectSet extractedColumns;
+  /// Lookup keys, empty if full table scan.
+  const ExprVector keys;
 
-  // Lookup keys, empty if full table scan.
-  ExprVector keys;
+  /// If this is a lookup, 'joinType' can be inner, left or anti.
+  const velox::core::JoinType joinType;
 
-  // If this is a lookup, 'joinType' can  be inner, left or anti.
-  velox::core::JoinType joinType{velox::core::JoinType::kInner};
-
-  // If this is a non-inner join,  extra filter for the join.
+  /// If this is a non-inner join,  extra filter for the join.
   const ExprVector joinFilter;
 };
 
@@ -436,14 +441,14 @@ struct Join : public RelationOp {
   static Join*
   makeCrossJoin(RelationOpPtr input, RelationOpPtr right, ColumnVector columns);
 
-  JoinMethod method;
-  velox::core::JoinType joinType;
-  RelationOpPtr right;
-  ExprVector leftKeys;
-  ExprVector rightKeys;
-  ExprVector filter;
+  const JoinMethod method;
+  const velox::core::JoinType joinType;
+  const RelationOpPtr right;
+  const ExprVector leftKeys;
+  const ExprVector rightKeys;
+  const ExprVector filter;
 
-  // Total cost of build side plan. For documentation.
+  /// Total cost of build side plan. For documentation.
   Cost buildCost;
 
   const QGString& historyKey() const override;
@@ -463,11 +468,10 @@ using JoinCP = const Join*;
 /// cardinality of this is counted as setup cost in the first
 /// referencing join and not counted in subsequent ones.
 struct HashBuild : public RelationOp {
-  HashBuild(RelationOpPtr input, int32_t id, ExprVector keys, PlanP plan);
+  HashBuild(RelationOpPtr input, ExprVector keys, PlanP plan);
 
-  int32_t buildId{0};
+  const ExprVector keys;
 
-  ExprVector keys;
   // The plan producing the build data. Used for deduplicating joins.
   PlanP plan;
 
@@ -487,12 +491,12 @@ struct Unnest : public RelationOp {
       ExprVector unnestExprs,
       ColumnVector unnestedColumns);
 
-  ExprVector replicateColumns;
-  ExprVector unnestExprs;
+  const ExprVector replicateColumns;
+  const ExprVector unnestExprs;
 
   // Columns correspond to expressions but not 1:1,
   // it can be 2:1 (for MAP) and 1:1 (for ARRAY).
-  ColumnVector unnestedColumns;
+  const ColumnVector unnestedColumns;
 
   std::string toString(bool recursive, bool detail) const override;
 
@@ -595,7 +599,7 @@ struct TableWrite : public RelationOp {
       const RelationOpVisitor& visitor,
       RelationOpVisitorContext& context) const override;
 
-  ExprVector inputColumns;
+  const ExprVector inputColumns;
   const WritePlan* write;
 };
 

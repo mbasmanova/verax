@@ -991,11 +991,10 @@ void Optimization::joinByIndex(
     // The number of keys is the prefix that matches index order.
     lookupKeys.resize(info.lookupKeys.size());
     state.columns.unionSet(availableColumns(rightTable, index));
+
     auto c = state.downstreamColumns();
     c.intersect(state.columns);
-    for (auto& filter : rightTable->filter) {
-      c.unionSet(filter->columns());
-    }
+    c.unionColumns(rightTable->filter);
 
     auto* scan = make<TableScan>(
         newPartition,
@@ -1111,8 +1110,7 @@ void Optimization::joinByHash(
   auto buildKeys = precomputeBuild.toColumns(build.keys);
   buildInput = std::move(precomputeBuild).maybeProject();
 
-  auto* buildOp =
-      make<HashBuild>(buildInput, ++buildCounter_, build.keys, buildPlan);
+  auto* buildOp = make<HashBuild>(buildInput, build.keys, buildPlan);
   buildState.addCost(*buildOp);
 
   const auto joinType = build.leftJoinType();
@@ -1231,8 +1229,7 @@ void Optimization::joinByHashRight(
   auto buildKeys = precomputeBuild.toColumns(build.keys);
   buildInput = std::move(precomputeBuild).maybeProject();
 
-  auto* buildOp =
-      make<HashBuild>(buildInput, ++buildCounter_, build.keys, nullptr);
+  auto* buildOp = make<HashBuild>(buildInput, build.keys, nullptr);
   state.addCost(*buildOp);
 
   PlanObjectSet buildColumns;
@@ -1715,15 +1712,7 @@ void Optimization::makeJoins(PlanState& state) {
         state.placed.add(table);
         state.columns.unionObjects(columns);
 
-        auto distribution =
-            TableScan::outputDistribution(table, index, columns);
-        auto* scan = make<TableScan>(
-            nullptr,
-            std::move(distribution),
-            table,
-            index,
-            index->table->cardinality * table->filterSelectivity,
-            std::move(columns));
+        auto* scan = make<TableScan>(table, index, columns);
         state.addCost(*scan);
         makeJoins(scan, state);
       }

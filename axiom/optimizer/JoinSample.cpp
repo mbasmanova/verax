@@ -130,13 +130,7 @@ std::shared_ptr<runner::Runner> prepareSampleRunner(
 
   auto columns = sampleColumns.toObjects<Column>();
   auto index = base->chooseLeafIndex()[0];
-  auto* scan = make<TableScan>(
-      nullptr,
-      TableScan::outputDistribution(base, index, columns),
-      base,
-      index,
-      index->table->cardinality,
-      columns);
+  auto* scan = make<TableScan>(base, index, columns);
 
   ExprVector hashes;
   hashes.reserve(keys.size());

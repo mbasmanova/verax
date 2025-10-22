@@ -340,9 +340,6 @@ class Optimization {
   // Controls tracing.
   int32_t traceFlags_{0};
 
-  // Generates unique ids for build sides.
-  int32_t buildCounter_{0};
-
   bool cnamesInExpr_{true};
 
   ToGraph toGraph_;
