@@ -457,6 +457,14 @@ TEST_F(PrestoParserTest, join) {
         matcher);
 
     testSql(
+        "SELECT * FROM nation RIGHT JOIN region ON nation.n_regionkey = region.r_regionkey",
+        matcher);
+
+    testSql(
+        "SELECT * FROM nation n LEFT JOIN region r ON n.n_regionkey = r.r_regionkey",
+        matcher);
+
+    testSql(
         "SELECT * FROM nation FULL OUTER JOIN region ON n_regionkey = r_regionkey",
         matcher);
   }
