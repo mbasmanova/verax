@@ -487,6 +487,31 @@ TEST_F(PrestoParserTest, join) {
   }
 }
 
+TEST_F(PrestoParserTest, unionAll) {
+  auto matcher =
+      lp::test::LogicalPlanMatcherBuilder().tableScan().project().setOperation(
+          lp::SetOperation::kUnionAll,
+          lp::test::LogicalPlanMatcherBuilder().tableScan().project().build());
+
+  testSql(
+      "SELECT n_name FROM nation UNION ALL SELECT r_name FROM region", matcher);
+}
+
+TEST_F(PrestoParserTest, union) {
+  auto matcher = lp::test::LogicalPlanMatcherBuilder()
+                     .tableScan()
+                     .project()
+                     .setOperation(
+                         lp::SetOperation::kUnionAll,
+                         lp::test::LogicalPlanMatcherBuilder()
+                             .tableScan()
+                             .project()
+                             .build())
+                     .aggregate();
+
+  testSql("SELECT n_name FROM nation UNION SELECT r_name FROM region", matcher);
+}
+
 TEST_F(PrestoParserTest, everything) {
   auto matcher =
       lp::test::LogicalPlanMatcherBuilder()
