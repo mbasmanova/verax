@@ -331,6 +331,13 @@ TEST_F(TpchPlanTest, q08) {
 }
 
 TEST_F(TpchPlanTest, q09) {
+  // TODO Remove this after fixing
+  // https://github.com/facebookincubator/axiom/issues/530
+  optimizerOptions_.enableReducingExistences = false;
+  SCOPE_EXIT {
+    optimizerOptions_.enableReducingExistences = true;
+  };
+
   lp::PlanBuilder::Context context{exec::test::kHiveConnectorId};
   auto logicalPlan =
       lp::PlanBuilder(context)

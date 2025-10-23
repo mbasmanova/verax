@@ -75,11 +75,16 @@ TEST_F(SyntacticJoinOrderTest, innerJoins) {
     return core::PlanMatcherBuilder().tableScan(tableName);
   };
 
-  // Optimized join order: lineitem x (customer x orders).
+  // Cardinalities after filters:
+  //  - lineitem - 32.3K
+  //  - orders - 7.2K
+  //  - customer - 337
+
+  // Optimized join order: lineitem x (orders x customer).
   auto optimizedMatcher =
       startMatcher("lineitem")
-          .hashJoin(startMatcher("customer")
-                        .hashJoin(startMatcher("orders").build())
+          .hashJoin(startMatcher("orders")
+                        .hashJoin(startMatcher("customer").build())
                         .build())
           .aggregation()
           .build();
