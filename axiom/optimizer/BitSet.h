@@ -66,6 +66,7 @@ class BitSet {
           }
         });
   }
+
   size_t size() const {
     return velox::bits::countBits(
         bits_.data(), 0, static_cast<int32_t>(bits_.size() * 64));
