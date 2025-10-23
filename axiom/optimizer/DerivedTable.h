@@ -152,15 +152,17 @@ struct DerivedTable : public PlanObject {
   // Write.
   WritePlanCP write{nullptr};
 
-  /// Adds an equijoin edge between 'left' and 'right'.
-  void addJoinEquality(ExprCP left, ExprCP right);
+  /// Moves suitable elements of 'conjuncts' into join edges or single
+  /// table filters. May be called repeatedly if enclosing dt's add
+  /// more conjuncts. May call itself recursively on component dts.
+  void distributeConjuncts();
+
+  /// Completes 'joins' with edges implied by column equivalences.
+  void addImpliedJoins();
 
   /// After 'joins' is filled in, links tables to their direct and
   /// equivalence-implied joins.
   void linkTablesToJoins();
-
-  /// Completes 'joins' with edges implied by column equivalences.
-  void addImpliedJoins();
 
   /// Extracts implied conjuncts and removes duplicates from
   /// 'conjuncts' and updates 'conjuncts'. Extracted conjuncts may
@@ -222,11 +224,6 @@ struct DerivedTable : public PlanObject {
   void setStartTables();
 
   void addJoinedBy(JoinEdgeP join);
-
-  /// Moves suitable elements of 'conjuncts' into join edges or single
-  /// table filters. May be called repeatedly if enclosing dt's add
-  /// more conjuncts. May call itself recursively on component dts.
-  void distributeConjuncts();
 
   /// Memoizes plans for 'this' and fills in 'distribution_'. Needed
   /// before adding 'this' as a join side because join sides must have
