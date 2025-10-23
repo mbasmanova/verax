@@ -1638,9 +1638,6 @@ DerivedTableP ToGraph::translateSetJoin(
 void ToGraph::makeUnionDistributionAndStats(
     DerivedTableP setDt,
     DerivedTableP innerDt) {
-  if (setDt->distribution == nullptr) {
-    setDt->distribution = make<Distribution>();
-  }
   if (innerDt == nullptr) {
     innerDt = setDt;
   }
@@ -1651,8 +1648,8 @@ void ToGraph::makeUnionDistributionAndStats(
         "Union inputs must have same arity also after pruning");
 
     auto plan = innerDt->bestInitialPlan()->op;
-
     setDt->cardinality += plan->resultCardinality();
+
     for (auto i = 0; i < setDt->columns.size(); ++i) {
       // The Column is created in setDt before all branches are planned so the
       // value is mutated here.

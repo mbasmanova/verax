@@ -59,13 +59,6 @@ using WritePlanCP = const WritePlan*;
 struct DerivedTable : public PlanObject {
   DerivedTable() : PlanObject(PlanType::kDerivedTableNode) {}
 
-  /// Distribution that gives partition, cardinality and
-  /// order/uniqueness for the dt alone. This is expressed in terms of
-  /// outside visible 'columns'. Actual uses of the dt in candidate
-  /// plans may be modified from this by e.g. importing restrictions
-  /// from enclosing query. Set for a non-top level dt.
-  DistributionP distribution{nullptr};
-
   float cardinality{};
 
   /// Correlation name.
@@ -110,9 +103,6 @@ struct DerivedTable : public PlanObject {
   /// conditions of explicit joins and not equalities between columns of joined
   /// tables.
   ExprVector conjuncts;
-
-  /// Number of fully processed leading elements of 'conjuncts'.
-  int32_t numCanonicalConjuncts{0};
 
   /// Set of reducing joined tables imported to reduce build size. Set if 'this'
   /// represents a build side join.
@@ -164,19 +154,12 @@ struct DerivedTable : public PlanObject {
   /// equivalence-implied joins.
   void linkTablesToJoins();
 
-  /// Extracts implied conjuncts and removes duplicates from
-  /// 'conjuncts' and updates 'conjuncts'. Extracted conjuncts may
-  /// allow extra pushdown or allow create join edges. May be called
-  /// repeatedly, each e.g. after pushing down conjuncts from outer
-  /// DTs.
-  void expandConjuncts();
-
   /// Initializes 'this' to join 'tables' from 'super'. Adds the joins from
   /// 'existences' as semijoins to limit cardinality when making a hash join
   /// build side. Allows importing a reducing join from probe to build.
   /// 'firstTable' is the joined table that is restricted by the other tables in
-  /// 'tables' and 'existences'. 'existsFanout' us the reduction from joining
-  /// 'firstTable' with 'existences'.
+  /// 'superTables' and 'existences'. 'existsFanout' is the reduction from
+  /// joining 'firstTable' with 'existences'.
   void import(
       const DerivedTable& super,
       PlanObjectCP firstTable,
@@ -219,10 +202,6 @@ struct DerivedTable : public PlanObject {
     return limit >= 0;
   }
 
-  /// Fills in 'startTables_' to 'tables_' that are not to the right of
-  /// non-commutative joins.
-  void setStartTables();
-
   void addJoinedBy(JoinEdgeP join);
 
   /// Memoizes plans for 'this' and fills in 'distribution_'. Needed
@@ -235,6 +214,10 @@ struct DerivedTable : public PlanObject {
   std::string toString() const override;
 
  private:
+  /// Fills in 'startTables_' to 'tables_' that are not to the right of
+  /// non-commutative joins.
+  void setStartTables();
+
   // Imports the joins in 'this' inside 'firstDt', which must be a
   // member of 'this'. The import is possible if the join is not
   // through aggregates in 'firstDt'. On return, all joins that can go
@@ -246,11 +229,13 @@ struct DerivedTable : public PlanObject {
   // Sets 'dt' to be the complete contents of 'this'.
   void flattenDt(const DerivedTable* dt);
 
-  // Finds single row dts from non-correlated scalar subqueries.
-  void findSingleRowDts();
-
   // Sets 'columns' and 'exprs'.
   void makeProjection(const ExprVector& exprs);
+
+  /// Number of fully processed leading elements of 'conjuncts'. Set by
+  /// distributeConjuncts(). Used to avoid reprocessing conjuncts in repeated
+  /// calls to distributeConjuncts().
+  int32_t numCanonicalConjuncts{0};
 };
 
 using DerivedTableP = DerivedTable*;
