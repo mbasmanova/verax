@@ -29,11 +29,15 @@ PlanObjectCP singleTable(PlanObjectCP object) {
   return nullptr;
 }
 
-} // namespace
-
-void DerivedTable::addJoinEquality(ExprCP left, ExprCP right) {
+// Adds an equijoin edge between 'left' and 'right'.
+void addJoinEquality(ExprCP left, ExprCP right, JoinEdgeVector& joins) {
   auto leftTable = singleTable(left);
   auto rightTable = singleTable(right);
+
+  VELOX_CHECK_NOT_NULL(leftTable);
+  VELOX_CHECK_NOT_NULL(rightTable);
+  VELOX_CHECK(leftTable != rightTable);
+
   for (auto& join : joins) {
     if (join->leftTable() == leftTable && join->rightTable() == rightTable) {
       join->addEquality(left, right);
@@ -51,26 +55,20 @@ void DerivedTable::addJoinEquality(ExprCP left, ExprCP right) {
   joins.push_back(join);
 }
 
-namespace {
-
+// Set of pairs of column IDs. Each pair represents a join equality condition.
+// Pairs are canonicalized so that first ID is < second ID.
 using EdgeSet = folly::F14FastSet<std::pair<int32_t, int32_t>>;
 
-void addEdge(EdgeSet& edges, int32_t id1, int32_t id2) {
-  if (id1 > id2) {
-    edges.insert(std::pair<int32_t, int32_t>(id2, id1));
-  } else {
-    edges.insert(std::pair<int32_t, int32_t>(id1, id2));
+bool addEdge(EdgeSet& edges, PlanObjectCP left, PlanObjectCP right) {
+  if (left->id() == right->id()) {
+    return false;
   }
-}
 
-bool hasEdge(const EdgeSet& edges, int32_t id1, int32_t id2) {
-  if (id1 == id2) {
-    return true;
+  if (left->id() < right->id()) {
+    return edges.emplace(left->id(), right->id()).second;
+  } else {
+    return edges.emplace(right->id(), left->id()).second;
   }
-  auto it = edges.find(
-      id1 > id2 ? std::pair<int32_t, int32_t>(id2, id1)
-                : std::pair<int32_t, int32_t>(id1, id2));
-  return it != edges.end();
 }
 
 void fillJoins(
@@ -79,9 +77,8 @@ void fillJoins(
     EdgeSet& edges,
     DerivedTableP dt) {
   for (auto& other : equivalence.columns) {
-    if (!hasEdge(edges, column->id(), other->id())) {
-      addEdge(edges, column->id(), other->id());
-      dt->addJoinEquality(column->as<Column>(), other->as<Column>());
+    if (addEdge(edges, column, other)) {
+      addJoinEquality(column->as<Column>(), other->as<Column>(), dt->joins);
     }
   }
 }
@@ -95,7 +92,7 @@ void DerivedTable::addImpliedJoins() {
         const auto* leftKey = join->leftKeys()[i];
         const auto* rightKey = join->rightKeys()[i];
         if (leftKey->isColumn() && rightKey->isColumn()) {
-          addEdge(edges, leftKey->id(), rightKey->id());
+          addEdge(edges, leftKey, rightKey);
         }
       }
     }
