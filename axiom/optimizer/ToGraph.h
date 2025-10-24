@@ -192,7 +192,7 @@ class ToGraph {
       const logical_plan::ExprPtr& expr,
       logical_plan::SpecialForm form) {
     return expr->isSpecialForm() &&
-        expr->asUnchecked<logical_plan::SpecialFormExpr>()->form() == form;
+        expr->as<logical_plan::SpecialFormExpr>()->form() == form;
   }
 
   // For comparisons, swaps the args to have a canonical form for

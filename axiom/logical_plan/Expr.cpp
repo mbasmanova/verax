@@ -124,7 +124,7 @@ void validateDereferenceInputs(
       inputs[1]->isConstant(),
       "Second input to DEREFERENCE must be a constant");
 
-  const auto* fieldExpr = inputs[1]->asUnchecked<ConstantExpr>();
+  const auto* fieldExpr = inputs[1]->as<ConstantExpr>();
   VELOX_USER_CHECK(
       !fieldExpr->isNull(), "Second input to DEREFERENCE must not be null");
 
@@ -235,7 +235,7 @@ void validateInInputs(
   VELOX_USER_CHECK_GE(inputs.size(), 2, "IN must have at least two inputs");
   if (inputs[1]->isSubquery()) {
     VELOX_USER_CHECK_EQ(inputs.size(), 2, "IN subquery must have two inputs");
-    auto subquery = inputs[1]->asUnchecked<SubqueryExpr>();
+    auto subquery = inputs[1]->as<SubqueryExpr>();
     VELOX_USER_CHECK_EQ(
         subquery->subquery()->outputType()->size(),
         1,

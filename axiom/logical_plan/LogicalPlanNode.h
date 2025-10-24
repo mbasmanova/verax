@@ -80,7 +80,7 @@ class LogicalPlanNode {
   }
 
   template <typename T>
-  const T* asUnchecked() const {
+  const T* as() const {
     static_assert(std::is_base_of_v<LogicalPlanNode, T>);
     return dynamic_cast<const T*>(this);
   }

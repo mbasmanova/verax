@@ -203,7 +203,7 @@ bool ToGraph::isSubfield(
   if (isSpecialForm(expr, lp::SpecialForm::kDereference)) {
     step.kind = StepKind::kField;
     auto maybeIndex =
-        maybeIntegerLiteral(expr->inputAt(1)->asUnchecked<lp::ConstantExpr>());
+        maybeIntegerLiteral(expr->inputAt(1)->as<lp::ConstantExpr>());
     Name name = nullptr;
     int64_t id = 0;
     auto& rowType = expr->inputAt(0)->type()->as<velox::TypeKind::ROW>();
@@ -211,7 +211,7 @@ bool ToGraph::isSubfield(
       id = maybeIndex.value();
       name = toName(rowType.nameOf(maybeIndex.value()));
     } else {
-      auto& field = expr->inputAt(1)->asUnchecked<lp::ConstantExpr>()->value();
+      auto& field = expr->inputAt(1)->as<lp::ConstantExpr>()->value();
       name = toName(field->value<velox::TypeKind::VARCHAR>());
       id = rowType.getChildIdx(name);
     }
@@ -222,7 +222,7 @@ bool ToGraph::isSubfield(
   }
 
   if (expr->isCall()) {
-    const auto* call = expr->asUnchecked<lp::CallExpr>();
+    const auto* call = expr->as<lp::CallExpr>();
     auto name = toName(call->name());
     if (name == subscript_ || name == elementAt_) {
       auto subscript = translateExpr(call->inputAt(1));
@@ -262,7 +262,7 @@ void ToGraph::getExprForField(
     ColumnCP& resultColumn,
     const lp::LogicalPlanNode*& context) {
   while (context) {
-    const auto& name = field->asUnchecked<lp::InputReferenceExpr>()->name();
+    const auto& name = field->as<lp::InputReferenceExpr>()->name();
 
     if (auto it = lambdaSignature_.find(name); it != lambdaSignature_.end()) {
       resultColumn = it->second;
@@ -273,11 +273,11 @@ void ToGraph::getExprForField(
 
     const auto ordinal = context->outputType()->getChildIdx(name);
     if (context->is(lp::NodeKind::kProject)) {
-      const auto* project = context->asUnchecked<lp::ProjectNode>();
+      const auto* project = context->as<lp::ProjectNode>();
       auto& def = project->expressions()[ordinal];
       context = context->inputAt(0).get();
       if (def->isInputReference()) {
-        const auto* innerField = def->asUnchecked<lp::InputReferenceExpr>();
+        const auto* innerField = def->as<lp::InputReferenceExpr>();
         field = innerField;
         continue;
       }
@@ -289,7 +289,7 @@ void ToGraph::getExprForField(
 
     const bool checkInContext = [&] {
       if (context->is(lp::NodeKind::kUnnest)) {
-        const auto* unnest = context->asUnchecked<lp::UnnestNode>();
+        const auto* unnest = context->as<lp::UnnestNode>();
         return ordinal >= unnest->onlyInput()->outputType()->size();
       }
       return sources.empty();
@@ -357,7 +357,7 @@ std::optional<ExprCP> ToGraph::translateSubfield(const lp::ExprPtr& inputExpr) {
         }
       } else {
         ensureFunctionSubfields(expr);
-        auto call = expr->asUnchecked<lp::CallExpr>();
+        auto call = expr->as<lp::CallExpr>();
         auto it = functionSubfields_.find(call);
         if (it != functionSubfields_.end()) {
           skyline = &it->second;
@@ -549,7 +549,7 @@ BitSet ToGraph::functionSubfields(
 
 void ToGraph::ensureFunctionSubfields(const lp::ExprPtr& expr) {
   if (expr->isCall()) {
-    const auto* call = expr->asUnchecked<lp::CallExpr>();
+    const auto* call = expr->as<lp::CallExpr>();
     if (functionMetadata(velox::exec::sanitizeName(call->name()))) {
       if (!translatedSubfieldFuncs_.contains(call)) {
         translateExpr(expr);
@@ -676,11 +676,11 @@ FunctionSet functionBits(Name name) {
 
 ExprCP ToGraph::translateExpr(const lp::ExprPtr& expr) {
   if (expr->isInputReference()) {
-    return translateColumn(expr->asUnchecked<lp::InputReferenceExpr>()->name());
+    return translateColumn(expr->as<lp::InputReferenceExpr>()->name());
   }
 
   if (expr->isConstant()) {
-    return makeConstant(*expr->asUnchecked<lp::ConstantExpr>());
+    return makeConstant(*expr->as<lp::ConstantExpr>());
   }
 
   if (auto path = translateSubfield(expr)) {
@@ -688,14 +688,13 @@ ExprCP ToGraph::translateExpr(const lp::ExprPtr& expr) {
   }
 
   if (expr->isLambda()) {
-    return translateLambda(expr->asUnchecked<lp::LambdaExpr>());
+    return translateLambda(expr->as<lp::LambdaExpr>());
   }
 
   ToGraphContext ctx(expr.get());
   velox::ExceptionContextSetter exceptionContext(makeExceptionContext(&ctx));
 
-  const auto* call =
-      expr->isCall() ? expr->asUnchecked<lp::CallExpr>() : nullptr;
+  const auto* call = expr->isCall() ? expr->as<lp::CallExpr>() : nullptr;
   std::string callName;
   if (call) {
     callName = velox::exec::sanitizeName(call->name());
@@ -708,9 +707,8 @@ ExprCP ToGraph::translateExpr(const lp::ExprPtr& expr) {
     }
   }
 
-  const auto* specialForm = expr->isSpecialForm()
-      ? expr->asUnchecked<lp::SpecialFormExpr>()
-      : nullptr;
+  const auto* specialForm =
+      expr->isSpecialForm() ? expr->as<lp::SpecialFormExpr>() : nullptr;
 
   if (call || specialForm) {
     FunctionSet funcs;
@@ -1455,8 +1453,7 @@ void ToGraph::addProjection(const lp::ProjectNode& project) {
 
   for (auto i : channels) {
     if (exprs[i]->isInputReference()) {
-      const auto& name =
-          exprs[i]->asUnchecked<lp::InputReferenceExpr>()->name();
+      const auto& name = exprs[i]->as<lp::InputReferenceExpr>()->name();
       // A variable projected to itself adds no renames. Inputs contain this
       // all the time.
       if (name == names[i]) {
@@ -1564,7 +1561,7 @@ namespace {
 
 bool hasNondeterministic(const lp::ExprPtr& expr) {
   if (expr->isCall()) {
-    const auto* call = expr->asUnchecked<lp::CallExpr>();
+    const auto* call = expr->as<lp::CallExpr>();
     if (functionBits(toName(call->name()))
             .contains(FunctionSet::kNonDeterministic)) {
       return true;
@@ -1669,7 +1666,7 @@ DerivedTableP ToGraph::translateUnion(
     auto isUnionLike =
         [](const lp::LogicalPlanNode& node) -> const lp::SetNode* {
       if (node.kind() == lp::NodeKind::kSet) {
-        const auto* set = node.asUnchecked<lp::SetNode>();
+        const auto* set = node.as<lp::SetNode>();
         if (set->operation() == lp::SetOperation::kUnion ||
             set->operation() == lp::SetOperation::kUnionAll) {
           return set;
@@ -1752,17 +1749,17 @@ void ToGraph::makeQueryGraph(
   velox::ExceptionContextSetter exceptionContext{makeExceptionContext(&ctx)};
   switch (node.kind()) {
     case lp::NodeKind::kValues: {
-      makeValuesTable(*node.asUnchecked<lp::ValuesNode>());
+      makeValuesTable(*node.as<lp::ValuesNode>());
       return;
     }
     case lp::NodeKind::kTableScan: {
-      makeBaseTable(*node.asUnchecked<lp::TableScanNode>());
+      makeBaseTable(*node.as<lp::TableScanNode>());
       return;
     }
     case lp::NodeKind::kFilter: {
       // Multiple filters are allowed before a limit. If DT has a groupBy, then
       // filter is added to 'having', otherwise, to 'conjuncts'.
-      const auto& filter = *node.asUnchecked<lp::FilterNode>();
+      const auto& filter = *node.as<lp::FilterNode>();
 
       if (!isNondeterministicWrap_ && hasNondeterministic(filter.predicate())) {
         // Force wrap the filter and its input inside a dt so the filter
@@ -1792,7 +1789,7 @@ void ToGraph::makeQueryGraph(
     case lp::NodeKind::kProject: {
       // A project is always allowed in a DT. Multiple projects are combined.
       makeQueryGraph(*node.onlyInput(), allowedInDt);
-      addProjection(*node.asUnchecked<lp::ProjectNode>());
+      addProjection(*node.as<lp::ProjectNode>());
       return;
     }
     case lp::NodeKind::kAggregate: {
@@ -1814,7 +1811,7 @@ void ToGraph::makeQueryGraph(
       }
 
       currentDt_->aggregation =
-          translateAggregation(*node.asUnchecked<lp::AggregateNode>());
+          translateAggregation(*node.as<lp::AggregateNode>());
 
       return;
     }
@@ -1824,7 +1821,7 @@ void ToGraph::makeQueryGraph(
         return;
       }
 
-      translateJoin(*node.asUnchecked<lp::JoinNode>());
+      translateJoin(*node.as<lp::JoinNode>());
       return;
     }
     case lp::NodeKind::kSort: {
@@ -1837,20 +1834,20 @@ void ToGraph::makeQueryGraph(
         finalizeDt(*node.onlyInput());
       }
 
-      addOrderBy(*node.asUnchecked<lp::SortNode>());
+      addOrderBy(*node.as<lp::SortNode>());
       return;
     }
     case lp::NodeKind::kLimit: {
       // Multiple limits are allowed. If already present, then it is combined
       // with the new limit.
       makeQueryGraph(*node.onlyInput(), allowedInDt);
-      addLimit(*node.asUnchecked<lp::LimitNode>());
+      addLimit(*node.as<lp::LimitNode>());
       return;
     }
     case lp::NodeKind::kSet: {
       auto* setDt = newDt();
 
-      auto* set = node.asUnchecked<lp::SetNode>();
+      auto* set = node.as<lp::SetNode>();
       if (set->operation() == lp::SetOperation::kUnion ||
           set->operation() == lp::SetOperation::kUnionAll) {
         bool isLeftLeaf = true;
@@ -1877,12 +1874,12 @@ void ToGraph::makeQueryGraph(
       if (isNewDt) {
         finalizeDt(input);
       }
-      translateUnnest(*node.asUnchecked<lp::UnnestNode>(), isNewDt);
+      translateUnnest(*node.as<lp::UnnestNode>(), isNewDt);
       return;
     }
     case lp::NodeKind::kTableWrite: {
       wrapInDt(*node.onlyInput());
-      addWrite(*node.asUnchecked<lp::TableWriteNode>());
+      addWrite(*node.as<lp::TableWriteNode>());
       return;
     }
     default:
