@@ -31,6 +31,8 @@ enum class ExprKind {
   kSubquery = 7,
 };
 
+AXIOM_DECLARE_ENUM_NAME(ExprKind);
+
 class Expr;
 using ExprPtr = std::shared_ptr<const Expr>;
 
@@ -54,6 +56,10 @@ class Expr {
 
   ExprKind kind() const {
     return kind_;
+  }
+
+  std::string_view kindName() const {
+    return ExprKindName::toName(kind_);
   }
 
   const velox::TypePtr& type() const {
@@ -117,6 +123,8 @@ class Expr {
 
   virtual void accept(const ExprVisitor& visitor, ExprVisitorContext& context)
       const = 0;
+
+  std::string toString() const;
 
  protected:
   const ExprKind kind_;

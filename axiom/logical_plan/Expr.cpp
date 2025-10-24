@@ -17,10 +17,33 @@
 #include <boost/algorithm/string.hpp>
 
 #include "axiom/logical_plan/Expr.h"
+#include "axiom/logical_plan/ExprPrinter.h"
 #include "axiom/logical_plan/ExprVisitor.h"
 #include "axiom/logical_plan/LogicalPlanNode.h"
 
 namespace facebook::axiom::logical_plan {
+
+namespace {
+const auto& exprKindNames() {
+  static const folly::F14FastMap<ExprKind, std::string_view> kNames = {
+      {ExprKind::kInputReference, "InputReference"},
+      {ExprKind::kConstant, "Constant"},
+      {ExprKind::kCall, "Call"},
+      {ExprKind::kSpecialForm, "SpecialForm"},
+      {ExprKind::kAggregate, "Aggregate"},
+      {ExprKind::kWindow, "Window"},
+      {ExprKind::kLambda, "Lambda"},
+      {ExprKind::kSubquery, "Subquery"},
+  };
+  return kNames;
+}
+} // namespace
+
+AXIOM_DEFINE_ENUM_NAME(ExprKind, exprKindNames);
+
+std::string Expr::toString() const {
+  return ExprPrinter::toText(*this);
+}
 
 void InputReferenceExpr::accept(
     const ExprVisitor& visitor,

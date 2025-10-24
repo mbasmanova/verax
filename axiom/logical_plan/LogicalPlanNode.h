@@ -75,6 +75,10 @@ class LogicalPlanNode {
     return kind_;
   }
 
+  std::string_view kindName() const {
+    return NodeKindName::toName(kind_);
+  }
+
   bool is(NodeKind kind) const {
     return kind_ == kind;
   }
@@ -109,6 +113,8 @@ class LogicalPlanNode {
   const velox::RowTypePtr& outputType() const {
     return outputType_;
   }
+
+  std::string toString() const;
 
   virtual void accept(
       const PlanNodeVisitor& visitor,
