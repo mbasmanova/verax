@@ -1220,7 +1220,7 @@ lp::ExprPtr PrestoParser::parseExpression(
 
   VELOX_USER_CHECK(plan->is(lp::NodeKind::kProject));
 
-  auto project = plan->asUnchecked<lp::ProjectNode>();
+  auto project = plan->as<lp::ProjectNode>();
   VELOX_CHECK_NOT_NULL(project);
 
   VELOX_USER_CHECK_EQ(1, project->expressions().size());
@@ -1238,7 +1238,7 @@ lp::ExprPtr parseSqlExpression(const ExpressionPtr& expr) {
           .build();
   VELOX_USER_CHECK(plan->is(lp::NodeKind::kProject));
 
-  auto project = plan->asUnchecked<lp::ProjectNode>();
+  auto project = plan->as<lp::ProjectNode>();
   VELOX_CHECK_NOT_NULL(project);
 
   VELOX_USER_CHECK_EQ(1, project->expressions().size());
