@@ -552,6 +552,14 @@ class JoinEdge {
     return rightOptional_;
   }
 
+  bool rightExists() const {
+    return rightExists_;
+  }
+
+  bool rightNotExists() const {
+    return rightNotExists_;
+  }
+
   bool directed() const {
     return directed_;
   }
