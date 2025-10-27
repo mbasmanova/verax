@@ -60,7 +60,7 @@ class TpchPlanTest : public virtual test::HiveQueriesTestBase {
 
   void checkTpch(int32_t query, const lp::LogicalPlanNodePtr& logicalPlan) {
     auto referencePlan = referenceBuilder_->getQueryPlan(query).plan;
-    checkResults(logicalPlan, referencePlan);
+    checkSame(logicalPlan, referencePlan);
   }
 
   static std::string readSqlFromFile(const std::string& filePath) {
@@ -109,9 +109,9 @@ class TpchPlanTest : public virtual test::HiveQueriesTestBase {
   }
 
   void checkTpchSql(int32_t query) {
-    auto logicalPlan = parseTpchSql(query);
+    auto sql = readTpchSql(query);
     auto referencePlan = referenceBuilder_->getQueryPlan(query).plan;
-    checkResults(logicalPlan, referencePlan);
+    checkResults(sql, referencePlan);
   }
 
   std::unique_ptr<exec::test::TpchQueryBuilder> referenceBuilder_;
