@@ -520,8 +520,9 @@ TEST_F(TpchPlanTest, q14) {
   checkTpchSql(14);
 }
 
-TEST_F(TpchPlanTest, DISABLED_q15) {
-  // TODO Implement.
+TEST_F(TpchPlanTest, q15) {
+  // TODO Add support for subqueries.
+  parseTpchSql(15);
 }
 
 TEST_F(TpchPlanTest, DISABLED_q16) {

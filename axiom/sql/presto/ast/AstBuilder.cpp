@@ -69,10 +69,9 @@ std::any AstBuilder::visitQuery(PrestoSqlParser::QueryContext* ctx) {
 
   auto queryNoWith = visitTyped<Query>(ctx->queryNoWith());
 
-  // TODO: Handle with
   return std::static_pointer_cast<Statement>(std::make_shared<Query>(
       getLocation(ctx),
-      queryNoWith->with(),
+      visitTyped<With>(ctx->with()),
       queryNoWith->queryBody(),
       queryNoWith->orderBy(),
       queryNoWith->offset(),
@@ -661,7 +660,10 @@ std::any AstBuilder::visitUpdate(PrestoSqlParser::UpdateContext* ctx) {
 
 std::any AstBuilder::visitWith(PrestoSqlParser::WithContext* ctx) {
   trace("visitWith");
-  return visitChildren(ctx);
+  return std::make_shared<With>(
+      getLocation(ctx),
+      ctx->RECURSIVE() != nullptr,
+      visitTyped<WithQuery>(ctx->namedQuery()));
 }
 
 std::any AstBuilder::visitTableElement(
@@ -900,7 +902,17 @@ std::any AstBuilder::visitGroupingSet(
 
 std::any AstBuilder::visitNamedQuery(PrestoSqlParser::NamedQueryContext* ctx) {
   trace("visitNamedQuery");
-  return visitChildren(ctx);
+
+  std::optional<std::vector<std::shared_ptr<Identifier>>> columns;
+  if (ctx->columnAliases()) {
+    columns = visitTyped<Identifier>(ctx->columnAliases()->identifier());
+  }
+
+  return std::make_shared<WithQuery>(
+      getLocation(ctx),
+      visitIdentifier(ctx->name),
+      visitTyped<Statement>(ctx->query()),
+      columns);
 }
 
 std::any AstBuilder::visitSetQuantifier(

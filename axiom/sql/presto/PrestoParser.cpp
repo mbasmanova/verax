@@ -834,6 +834,14 @@ class RelationPlanner : public AstVisitor {
 
     if (relation->is(NodeType::kTable)) {
       auto* table = relation->as<Table>();
+
+      auto withIt = withQueries_.find(table->name()->suffix());
+      if (withIt != withQueries_.end()) {
+        // TODO Change WithQuery to store Query and not Statement.
+        processQuery(dynamic_cast<Query*>(withIt->second->query().get()));
+        return;
+      }
+
       builder_->tableScan(table->name()->suffix());
       builder_->as(table->name()->suffix());
       return;
@@ -1047,6 +1055,10 @@ class RelationPlanner : public AstVisitor {
         }
       }
 
+      if (singleColumn->alias() != nullptr) {
+        expr = expr.as(singleColumn->alias()->value());
+      }
+
       projections.emplace_back(expr);
     }
 
@@ -1089,6 +1101,12 @@ class RelationPlanner : public AstVisitor {
       for (auto i = 0; i < projections.size(); ++i) {
         if (i < flatInputs.size()) {
           if (projections.at(i).expr() != flatInputs.at(i)) {
+            identityProjection = false;
+            break;
+          }
+
+          const auto& alias = projections.at(i).alias();
+          if (alias.has_value() && alias.value() != outputNames.at(i)) {
             identityProjection = false;
             break;
           }
@@ -1138,6 +1156,12 @@ class RelationPlanner : public AstVisitor {
   }
 
   void processQuery(Query* query) {
+    if (const auto& with = query->with()) {
+      for (const auto& query : with->queries()) {
+        withQueries_.emplace(query->name()->value(), query);
+      }
+    }
+
     query->queryBody()->accept(this);
 
     addOrderBy(query->orderBy());
@@ -1208,6 +1232,7 @@ class RelationPlanner : public AstVisitor {
 
   lp::PlanBuilder::Context context_;
   std::shared_ptr<lp::PlanBuilder> builder_;
+  std::unordered_map<std::string, std::shared_ptr<WithQuery>> withQueries_;
 };
 
 } // namespace
