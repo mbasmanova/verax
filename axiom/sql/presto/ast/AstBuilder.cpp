@@ -1443,7 +1443,14 @@ std::any AstBuilder::visitSpecialDateTimeFunction(
 
 std::any AstBuilder::visitSubstring(PrestoSqlParser::SubstringContext* ctx) {
   trace("visitSubstring");
-  return visitChildren(ctx);
+
+  return std::static_pointer_cast<Expression>(std::make_shared<FunctionCall>(
+      getLocation(ctx),
+      std::make_shared<QualifiedName>(
+          getLocation(ctx), std::vector<std::string>{"substr"}),
+      /*window=*/nullptr,
+      /*=distinct*/ false,
+      visitTyped<Expression>(ctx->valueExpression())));
 }
 
 std::any AstBuilder::visitCast(PrestoSqlParser::CastContext* ctx) {

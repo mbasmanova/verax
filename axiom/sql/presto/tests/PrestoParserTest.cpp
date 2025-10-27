@@ -429,6 +429,20 @@ TEST_F(PrestoParserTest, groupingKeyExpr) {
   }
 }
 
+TEST_F(PrestoParserTest, having) {
+  {
+    auto matcher = lp::test::LogicalPlanMatcherBuilder()
+                       .tableScan()
+                       .aggregate()
+                       .filter()
+                       .project();
+
+    testSql(
+        "SELECT n_name FROM nation GROUP BY 1 HAVING sum(length(n_comment)) > 10",
+        matcher);
+  }
+}
+
 TEST_F(PrestoParserTest, scalarOverAgg) {
   auto matcher =
       lp::test::LogicalPlanMatcherBuilder().tableScan().aggregate().project();

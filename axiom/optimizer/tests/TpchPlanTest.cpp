@@ -525,8 +525,9 @@ TEST_F(TpchPlanTest, q15) {
   parseTpchSql(15);
 }
 
-TEST_F(TpchPlanTest, DISABLED_q16) {
+TEST_F(TpchPlanTest, q16) {
   // TODO Implement.
+  parseTpchSql(16);
 }
 
 TEST_F(TpchPlanTest, q17) {
@@ -534,8 +535,9 @@ TEST_F(TpchPlanTest, q17) {
   parseTpchSql(17);
 }
 
-TEST_F(TpchPlanTest, DISABLED_q18) {
-  // TODO Implement.
+TEST_F(TpchPlanTest, q18) {
+  // TODO Add support for subqueries.
+  parseTpchSql(18);
 }
 
 TEST_F(TpchPlanTest, q19) {
@@ -574,16 +576,19 @@ TEST_F(TpchPlanTest, q19) {
   checkTpchSql(19);
 }
 
-TEST_F(TpchPlanTest, DISABLED_q20) {
-  // TODO Implement.
+TEST_F(TpchPlanTest, q20) {
+  // TODO Add support for subqueries.
+  parseTpchSql(20);
 }
 
-TEST_F(TpchPlanTest, DISABLED_q21) {
-  // TODO Implement.
+TEST_F(TpchPlanTest, q21) {
+  // TODO Add support for subqueries.
+  parseTpchSql(21);
 }
 
-TEST_F(TpchPlanTest, DISABLED_q22) {
-  // TODO Implement.
+TEST_F(TpchPlanTest, q22) {
+  // TODO Add support for subqueries.
+  parseTpchSql(22);
 }
 
 } // namespace
