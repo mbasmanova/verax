@@ -995,13 +995,14 @@ class RelationPlanner : public AstVisitor {
       return false;
     }
 
-    addGroupBy(selectItems, {});
+    addGroupBy(selectItems, {}, nullptr);
     return true;
   }
 
   void addGroupBy(
       const std::vector<SelectItemPtr>& selectItems,
-      const std::vector<GroupingElementPtr>& groupingElements) {
+      const std::vector<GroupingElementPtr>& groupingElements,
+      const ExpressionPtr& having) {
     // Go over grouping keys and collect expressions. Ordinals refer to output
     // columns (selectItems). Non-ordinals refer to input columns.
 
@@ -1062,6 +1063,13 @@ class RelationPlanner : public AstVisitor {
       projections.emplace_back(expr);
     }
 
+    std::optional<lp::ExprApi> filter;
+    if (having != nullptr) {
+      lp::ExprApi expr = toExpr(having);
+      findAggregates(expr.expr(), aggregates);
+      filter = expr;
+    }
+
     std::vector<lp::PlanBuilder::AggregateOptions> options(aggregates.size());
     builder_->aggregate(groupingKeys, aggregates, options);
 
@@ -1081,6 +1089,11 @@ class RelationPlanner : public AstVisitor {
       flatInputs.emplace_back(lp::Col(outputNames.at(index)).expr());
       inputs.emplace(agg.expr(), flatInputs.back());
       ++index;
+    }
+
+    if (filter.has_value()) {
+      filter = replaceInputs(filter.value().expr(), inputs);
+      builder_->filter(filter.value());
     }
 
     // Go over SELECT expressions and replace sub-expressions matching 'inputs'
@@ -1186,8 +1199,7 @@ class RelationPlanner : public AstVisitor {
       VELOX_USER_CHECK(
           !groupBy->isDistinct(),
           "GROUP BY with DISTINCT is not supported yet");
-      addGroupBy(selectItems, groupBy->groupingElements());
-      addFilter(node->having());
+      addGroupBy(selectItems, groupBy->groupingElements(), node->having());
     } else {
       if (isSelectAll(selectItems)) {
         // SELECT *. No project needed.
