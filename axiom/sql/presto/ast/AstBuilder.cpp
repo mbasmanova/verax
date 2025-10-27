@@ -1651,7 +1651,11 @@ std::any AstBuilder::visitFunctionCall(
 
 std::any AstBuilder::visitExists(PrestoSqlParser::ExistsContext* ctx) {
   trace("visitExists");
-  return visitChildren(ctx);
+
+  return std::static_pointer_cast<Expression>(std::make_shared<ExistsPredicate>(
+      getLocation(ctx),
+      std::make_shared<SubqueryExpression>(
+          getLocation(ctx), visitTyped<Statement>(ctx->query()))));
 }
 
 std::any AstBuilder::visitPosition(PrestoSqlParser::PositionContext* ctx) {

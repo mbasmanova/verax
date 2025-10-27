@@ -402,6 +402,11 @@ class RelationPlanner : public AstVisitor {
             NodeTypeName::toName(valueList->type()));
       }
 
+      case NodeType::kExistsPredicate: {
+        auto* exists = node->as<ExistsPredicate>();
+        return lp::Exists(toExpr(exists->subquery()));
+      }
+
       case NodeType::kCast: {
         auto* cast = node->as<Cast>();
         const auto type = parseType(cast->toType());
