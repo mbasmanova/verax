@@ -193,9 +193,12 @@ TEST_F(TpchPlanTest, q03) {
   checkTpchSql(3);
 }
 
-TEST_F(TpchPlanTest, DISABLED_q04) {
+TEST_F(TpchPlanTest, q04) {
   // Incorrect with distributed plan at larger scales.
   // TODO Implement.
+
+  // TODO Add support for subqueries.
+  parseTpchSql(4);
 }
 
 TEST_F(TpchPlanTest, q05) {
