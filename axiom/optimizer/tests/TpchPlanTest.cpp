@@ -521,13 +521,11 @@ TEST_F(TpchPlanTest, q14) {
 }
 
 TEST_F(TpchPlanTest, q15) {
-  // TODO Add support for subqueries.
-  parseTpchSql(15);
+  checkTpchSql(15);
 }
 
 TEST_F(TpchPlanTest, q16) {
-  // TODO Implement.
-  parseTpchSql(16);
+  checkTpchSql(16);
 }
 
 TEST_F(TpchPlanTest, q17) {
@@ -536,8 +534,7 @@ TEST_F(TpchPlanTest, q17) {
 }
 
 TEST_F(TpchPlanTest, q18) {
-  // TODO Add support for subqueries.
-  parseTpchSql(18);
+  checkTpchSql(18);
 }
 
 TEST_F(TpchPlanTest, q19) {

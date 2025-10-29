@@ -445,6 +445,12 @@ void ToGraph::markSubfields(
     return;
   }
 
+  if (expr->isSubquery()) {
+    // TODO We may not necessarily need all outputs of the subquery.
+    markAllSubfields(*expr->as<lp::SubqueryExpr>()->subquery());
+    return;
+  }
+
   VELOX_UNREACHABLE("Unhandled expr: {}", lp::ExprPrinter::toText(*expr));
 }
 

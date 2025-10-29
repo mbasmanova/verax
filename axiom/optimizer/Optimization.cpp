@@ -1882,12 +1882,15 @@ PlanP Optimization::makeDtPlan(
   auto it = memo_.find(key);
   PlanSet* plans{};
   if (it == memo_.end()) {
-    DerivedTable dt;
-    dt.cname = newCName("tmp_dt");
-    dt.import(
+    // Allocate temp DT in the arena. The DT may get flattened and then
+    // PrecomputeProjection may create columns that reference that DT. Hence,
+    // the DT's lifetime must extend to the lifetime of the optimization.
+    auto dt = make<DerivedTable>();
+    dt->cname = newCName("tmp_dt");
+    dt->import(
         *state.dt, key.firstTable, key.tables, key.existences, existsFanout);
 
-    PlanState inner(*this, &dt);
+    PlanState inner(*this, dt);
     if (key.firstTable->is(PlanType::kDerivedTableNode)) {
       inner.setTargetExprsForDt(key.columns);
     } else {

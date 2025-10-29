@@ -691,6 +691,11 @@ ExprCP ToGraph::translateExpr(const lp::ExprPtr& expr) {
     return translateLambda(expr->as<lp::LambdaExpr>());
   }
 
+  auto it = subqueries_.find(expr);
+  if (it != subqueries_.end()) {
+    return it->second;
+  }
+
   ToGraphContext ctx(expr.get());
   velox::ExceptionContextSetter exceptionContext(makeExceptionContext(&ctx));
 
@@ -1267,16 +1272,16 @@ DerivedTableP ToGraph::newDt() {
   return dt;
 }
 
-void ToGraph::wrapInDt(const lp::LogicalPlanNode& node) {
+DerivedTableP ToGraph::wrapInDt(const lp::LogicalPlanNode& node) {
   DerivedTableP previousDt = currentDt_;
 
   currentDt_ = newDt();
   makeQueryGraph(node, kAllAllowedInDt);
 
-  finalizeDt(node, previousDt);
+  return finalizeDt(node, previousDt);
 }
 
-void ToGraph::finalizeDt(
+DerivedTableP ToGraph::finalizeDt(
     const lp::LogicalPlanNode& node,
     DerivedTableP outerDt) {
   DerivedTableP dt = currentDt_;
@@ -1286,6 +1291,8 @@ void ToGraph::finalizeDt(
   currentDt_->addTable(dt);
 
   dt->makeInitialPlan();
+
+  return dt;
 }
 
 void ToGraph::makeBaseTable(const lp::TableScanNode& tableScan) {
@@ -1465,8 +1472,76 @@ void ToGraph::addProjection(const lp::ProjectNode& project) {
   }
 }
 
+namespace {
+void extractSubqueries(
+    const lp::ExprPtr& expr,
+    std::vector<lp::SubqueryExprPtr>& subqueries,
+    std::vector<lp::ExprPtr>& inPredicateSubqueries) {
+  if (expr->isSubquery()) {
+    subqueries.push_back(
+        std::static_pointer_cast<const lp::SubqueryExpr>(expr));
+    return;
+  }
+
+  if (expr->isSpecialForm()) {
+    const auto* specialForm = expr->as<lp::SpecialFormExpr>();
+    if (specialForm->form() == lp::SpecialForm::kIn &&
+        specialForm->inputAt(1)->isSubquery()) {
+      inPredicateSubqueries.push_back(expr);
+      return;
+    }
+  }
+
+  for (const auto& input : expr->inputs()) {
+    extractSubqueries(input, subqueries, inPredicateSubqueries);
+  }
+}
+} // namespace
+
+void ToGraph::processSubqueries(const logical_plan::FilterNode& filter) {
+  // Assuming subqueries are not correlated, extract each into its own DT.
+  std::vector<lp::SubqueryExprPtr> subqueries;
+  std::vector<lp::ExprPtr> inPredicateSubqueries;
+  extractSubqueries(filter.predicate(), subqueries, inPredicateSubqueries);
+
+  for (const auto& subquery : subqueries) {
+    auto subqueryDt = wrapInDt(*subquery->subquery());
+    VELOX_CHECK_EQ(1, subqueryDt->columns.size());
+    subqueries_.emplace(subquery, subqueryDt->columns.front());
+  }
+
+  for (const auto& expr : inPredicateSubqueries) {
+    auto subqueryDt =
+        wrapInDt(*expr->inputAt(1)->as<lp::SubqueryExpr>()->subquery());
+    VELOX_CHECK_EQ(1, subqueryDt->columns.size());
+
+    // Add a join edge and replace 'expr' with 'mark' column in the join output.
+    auto* mark = toName("mark");
+    auto* markColumn =
+        make<Column>(mark, currentDt_, Value{toType(velox::BOOLEAN()), 2});
+    renames_[mark] = markColumn;
+
+    auto leftKey = translateExpr(expr->inputAt(0));
+    auto leftTable = leftKey->singleTable();
+    VELOX_CHECK_NOT_NULL(
+        leftTable,
+        "<expr> IN <subquery> with multi-table <expr> is not supported yet");
+
+    auto* edge = make<JoinEdge>(
+        leftTable, subqueryDt, JoinEdge::Spec{.markColumn = markColumn});
+
+    currentDt_->joins.push_back(edge);
+    edge->addEquality(leftKey, subqueryDt->columns.front());
+
+    subqueries_.emplace(expr, markColumn);
+  }
+}
+
 void ToGraph::addFilter(const lp::FilterNode& filter) {
   exprSource_ = filter.onlyInput().get();
+
+  // TODO Add support for correlated subqueries.
+  processSubqueries(filter);
 
   ExprVector flat;
   translateConjuncts(filter.predicate(), flat);
