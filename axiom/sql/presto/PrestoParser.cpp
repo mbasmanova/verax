@@ -308,7 +308,7 @@ class RelationPlanner : public AstVisitor {
           auto subqueryBuider = builder_;
 
           builder_ = std::move(builder);
-          return lp::Subquery(subqueryBuider->build());
+          return lp::Subquery(subqueryBuider->build(/*useIds=*/true));
         }
 
         VELOX_NYI(

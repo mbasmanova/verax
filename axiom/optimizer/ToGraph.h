@@ -400,11 +400,13 @@ class ToGraph {
   // DerivedTable. Done for joins to the right of non-inner joins,
   // group bys as non-top operators, whenever descendents of 'node'
   // are not freely reorderable with its parents' descendents.
-  void wrapInDt(const logical_plan::LogicalPlanNode& node);
+  // @return Newly created DT.
+  DerivedTableP wrapInDt(const logical_plan::LogicalPlanNode& node);
 
   // Start new DT and add 'currentDt_' as a child.
   // Set 'currentDt_' to the new DT.
-  void finalizeDt(
+  // @return The finalized DT (which is now a child of 'currentDt_').
+  DerivedTableP finalizeDt(
       const logical_plan::LogicalPlanNode& node,
       DerivedTableP outerDt = nullptr);
 
@@ -428,6 +430,14 @@ class ToGraph {
   std::pair<ExprVector, OrderTypeVector> dedupOrdering(
       const std::vector<logical_plan::SortingField>& ordering);
 
+  // Process non-correlated subqueries used in filter's predicate and populate
+  // subqueries_ map. For each IN <subquery> expression, create a separate DT
+  // for the subquery and add a semi-join edge. Replace the whole IN predicate
+  // with a 'mark' column produced by the join. For other <subquery>
+  // expressions, create a separate DT and replace the expression with the only
+  // column produced by the DT.
+  void processSubqueries(const logical_plan::FilterNode& filter);
+
   // Cache of resolved table schemas.
   Schema schema_;
 
@@ -450,6 +460,10 @@ class ToGraph {
 
   // Maps names in project nodes of input logical plan to deduplicated Exprs.
   folly::F14FastMap<std::string, ExprCP> renames_;
+
+  // Maps an expression that contains a subquery to a column that should be used
+  // instead. Populated in 'processSubqueries()'.
+  folly::F14FastMap<logical_plan::ExprPtr, ColumnCP> subqueries_;
 
   folly::
       F14FastMap<TypedVariant, ExprCP, TypedVariantHasher, TypedVariantComparer>
