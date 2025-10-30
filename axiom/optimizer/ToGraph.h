@@ -369,14 +369,19 @@ class ToGraph {
       bool isControl,
       const MarkFieldsAccessedContext& context);
 
-  void markAllSubfields(const logical_plan::LogicalPlanNode& node);
+  void markAllSubfields(
+      const logical_plan::LogicalPlanNode& node,
+      const MarkFieldsAccessedContext& context);
 
-  void markControl(const logical_plan::LogicalPlanNode& node);
+  void markControl(
+      const logical_plan::LogicalPlanNode& node,
+      const MarkFieldsAccessedContext& context);
 
   void markColumnSubfields(
       const logical_plan::LogicalPlanNodePtr& source,
       std::span<const logical_plan::ExprPtr> columns,
-      bool isControl = true);
+      bool isControl,
+      const MarkFieldsAccessedContext& context);
 
   BitSet functionSubfields(
       const logical_plan::CallExpr* call,
@@ -465,6 +470,16 @@ class ToGraph {
 
   // Maps names in project nodes of input logical plan to deduplicated Exprs.
   folly::F14FastMap<std::string, ExprCP> renames_;
+
+  // Symbols from the 'outer' query. Used when processing correlated subqueries.
+  folly::F14FastMap<std::string, ExprCP> correlations_;
+
+  // True if expression is allowed to reference symbols from the 'outer' query.
+  bool allowCorrelations_{false};
+
+  // Filter conjuncts found in a subquery that reference symbols from the
+  // 'outer' query.
+  ExprVector correlatedConjuncts_;
 
   // Maps an expression that contains a subquery to a column that should be used
   // instead. Populated in 'processSubqueries()'.
