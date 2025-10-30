@@ -252,7 +252,7 @@ JoinSide JoinEdge::sideOf(PlanObjectCP side, bool other) const {
       rightOptional_,
       false,
       false,
-      nullptr,
+      markColumn_,
       leftUnique_};
 }
 

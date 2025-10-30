@@ -193,13 +193,6 @@ TEST_F(TpchPlanTest, q03) {
 }
 
 TEST_F(TpchPlanTest, q04) {
-  // TODO Fix the plan when 'syntacticJoinOrder' is false.
-  const bool originalSyntacticJoinOrder = optimizerOptions_.syntacticJoinOrder;
-  optimizerOptions_.syntacticJoinOrder = true;
-  SCOPE_EXIT {
-    optimizerOptions_.syntacticJoinOrder = originalSyntacticJoinOrder;
-  };
-
   checkTpchSql(4);
 }
 
@@ -427,32 +420,9 @@ TEST_F(TpchPlanTest, q11) {
           .orderBy({"value desc"})
           .build();
 
-  // TODO Make above plan with a non-correlated subquery work.
-  logicalPlan =
-      lp::PlanBuilder(context)
-          .from({"partsupp", "supplier", "nation"})
-          .filter(
-              "ps_suppkey = s_suppkey and s_nationkey = n_nationkey and n_name = 'GERMANY'")
-          .aggregate(
-              {"ps_partkey"},
-              {"sum(ps_supplycost * ps_availqty::double) as value"})
-          .crossJoin(
-              lp::PlanBuilder(context)
-                  .from({"partsupp", "supplier", "nation"})
-                  .filter(
-                      "ps_suppkey = s_suppkey and s_nationkey = n_nationkey and n_name = 'GERMANY'")
-                  .aggregate(
-                      {}, {"sum(ps_supplycost * ps_availqty::double) as total"})
-                  .project({"total * 0.0001 as threshold"}))
-          .filter("value > threshold")
-          .orderBy({"value desc"})
-          .project({"ps_partkey", "value"})
-          .build();
-
   checkTpch(11, logicalPlan);
 
-  // TODO Add subquery support to the optimizer.
-  // checkTpchSql(11);
+  checkTpchSql(11);
 }
 
 TEST_F(TpchPlanTest, q12) {
@@ -575,34 +545,22 @@ TEST_F(TpchPlanTest, q19) {
 }
 
 TEST_F(TpchPlanTest, q20) {
-  // TODO Fix the plan when 'syntacticJoinOrder' is false.
-  const bool originalSyntacticJoinOrder = optimizerOptions_.syntacticJoinOrder;
-  optimizerOptions_.syntacticJoinOrder = true;
+  // TODO Fix the plan when 'enableReducingExistences' is true.
+  const bool originalEnableReducingExistences =
+      optimizerOptions_.enableReducingExistences;
+  optimizerOptions_.enableReducingExistences = false;
   SCOPE_EXIT {
-    optimizerOptions_.syntacticJoinOrder = originalSyntacticJoinOrder;
+    optimizerOptions_.enableReducingExistences =
+        originalEnableReducingExistences;
   };
   checkTpchSql(20);
 }
 
 TEST_F(TpchPlanTest, q21) {
-  // TODO Fix the plan when 'syntacticJoinOrder' is false.
-  const bool originalSyntacticJoinOrder = optimizerOptions_.syntacticJoinOrder;
-  optimizerOptions_.syntacticJoinOrder = true;
-  SCOPE_EXIT {
-    optimizerOptions_.syntacticJoinOrder = originalSyntacticJoinOrder;
-  };
-
   checkTpchSql(21);
 }
 
 TEST_F(TpchPlanTest, q22) {
-  // TODO Fix the plan when 'syntacticJoinOrder' is false.
-  const bool originalSyntacticJoinOrder = optimizerOptions_.syntacticJoinOrder;
-  optimizerOptions_.syntacticJoinOrder = true;
-  SCOPE_EXIT {
-    optimizerOptions_.syntacticJoinOrder = originalSyntacticJoinOrder;
-  };
-
   checkTpchSql(22);
 }
 
