@@ -472,7 +472,7 @@ class ToGraph {
   folly::F14FastMap<std::string, ExprCP> renames_;
 
   // Symbols from the 'outer' query. Used when processing correlated subqueries.
-  folly::F14FastMap<std::string, ExprCP> correlations_;
+  const folly::F14FastMap<std::string, ExprCP>* correlations_;
 
   // True if expression is allowed to reference symbols from the 'outer' query.
   bool allowCorrelations_{false};
