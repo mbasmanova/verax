@@ -194,11 +194,14 @@ TEST_F(TpchPlanTest, q03) {
 }
 
 TEST_F(TpchPlanTest, q04) {
-  // Incorrect with distributed plan at larger scales.
-  // TODO Implement.
+  // TODO Fix the plan when 'syntacticJoinOrder' is false.
+  const bool originalSyntacticJoinOrder = optimizerOptions_.syntacticJoinOrder;
+  optimizerOptions_.syntacticJoinOrder = true;
+  SCOPE_EXIT {
+    optimizerOptions_.syntacticJoinOrder = originalSyntacticJoinOrder;
+  };
 
-  // TODO Add support for subqueries.
-  parseTpchSql(4);
+  checkTpchSql(4);
 }
 
 TEST_F(TpchPlanTest, q05) {
@@ -579,13 +582,25 @@ TEST_F(TpchPlanTest, q20) {
 }
 
 TEST_F(TpchPlanTest, q21) {
-  // TODO Add support for subqueries.
-  parseTpchSql(21);
+  // TODO Fix the plan when 'syntacticJoinOrder' is false.
+  const bool originalSyntacticJoinOrder = optimizerOptions_.syntacticJoinOrder;
+  optimizerOptions_.syntacticJoinOrder = true;
+  SCOPE_EXIT {
+    optimizerOptions_.syntacticJoinOrder = originalSyntacticJoinOrder;
+  };
+
+  checkTpchSql(21);
 }
 
 TEST_F(TpchPlanTest, q22) {
-  // TODO Add support for subqueries.
-  parseTpchSql(22);
+  // TODO Fix the plan when 'syntacticJoinOrder' is false.
+  const bool originalSyntacticJoinOrder = optimizerOptions_.syntacticJoinOrder;
+  optimizerOptions_.syntacticJoinOrder = true;
+  SCOPE_EXIT {
+    optimizerOptions_.syntacticJoinOrder = originalSyntacticJoinOrder;
+  };
+
+  checkTpchSql(22);
 }
 
 } // namespace

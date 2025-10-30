@@ -891,6 +891,13 @@ ExprCP ToGraph::translateColumn(std::string_view name) const {
   if (auto it = renames_.find(name); it != renames_.end()) {
     return it->second;
   }
+
+  if (allowCorrelations_) {
+    if (auto it = correlations_.find(name); it != correlations_.end()) {
+      return it->second;
+    }
+  }
+
   VELOX_FAIL("Cannot resolve column name: {}", name);
 }
 
@@ -1285,6 +1292,8 @@ DerivedTableP ToGraph::wrapInDt(const lp::LogicalPlanNode& node) {
 DerivedTableP ToGraph::finalizeDt(
     const lp::LogicalPlanNode& node,
     DerivedTableP outerDt) {
+  VELOX_CHECK_EQ(0, correlatedConjuncts_.size());
+
   DerivedTableP dt = currentDt_;
   setDtUsedOutput(dt, node);
 
@@ -1477,7 +1486,8 @@ namespace {
 void extractSubqueries(
     const lp::ExprPtr& expr,
     std::vector<lp::SubqueryExprPtr>& subqueries,
-    std::vector<lp::ExprPtr>& inPredicateSubqueries) {
+    std::vector<lp::ExprPtr>& inPredicateSubqueries,
+    std::vector<lp::ExprPtr>& existsSubqueries) {
   if (expr->isSubquery()) {
     subqueries.push_back(
         std::static_pointer_cast<const lp::SubqueryExpr>(expr));
@@ -1491,21 +1501,45 @@ void extractSubqueries(
       inPredicateSubqueries.push_back(expr);
       return;
     }
+
+    if (specialForm->form() == lp::SpecialForm::kExists) {
+      existsSubqueries.push_back(expr);
+      return;
+    }
   }
 
   for (const auto& input : expr->inputs()) {
-    extractSubqueries(input, subqueries, inPredicateSubqueries);
+    extractSubqueries(
+        input, subqueries, inPredicateSubqueries, existsSubqueries);
   }
 }
 } // namespace
 
 DerivedTableP ToGraph::translateSubquery(
     const logical_plan::LogicalPlanNode& node) {
-  auto originalRenames = std::move(renames_);
+  correlations_ = std::move(renames_);
   renames_.clear();
 
-  auto dt = wrapInDt(node);
-  renames_ = std::move(originalRenames);
+  VELOX_CHECK(correlatedConjuncts_.empty());
+
+  DerivedTableP dt;
+  {
+    DerivedTableP previousDt = currentDt_;
+
+    currentDt_ = newDt();
+    makeQueryGraph(node, kAllAllowedInDt);
+
+    dt = currentDt_;
+    setDtUsedOutput(dt, node);
+
+    currentDt_ = previousDt;
+    currentDt_->addTable(dt);
+
+    dt->makeInitialPlan();
+  }
+
+  renames_ = std::move(correlations_);
+  correlations_.clear();
 
   for (const auto* column : dt->columns) {
     renames_[column->name()] = column;
@@ -1523,14 +1557,16 @@ ColumnCP ToGraph::addMarkColumn() {
 }
 
 void ToGraph::processSubqueries(const logical_plan::FilterNode& filter) {
-  // Assuming subqueries are not correlated, extract each into its own DT.
   std::vector<lp::SubqueryExprPtr> subqueries;
   std::vector<lp::ExprPtr> inPredicateSubqueries;
-  extractSubqueries(filter.predicate(), subqueries, inPredicateSubqueries);
+  std::vector<lp::ExprPtr> existsSubqueries;
+  extractSubqueries(
+      filter.predicate(), subqueries, inPredicateSubqueries, existsSubqueries);
 
   for (const auto& subquery : subqueries) {
     auto subqueryDt = translateSubquery(*subquery->subquery());
     VELOX_CHECK_EQ(1, subqueryDt->columns.size());
+    VELOX_CHECK(correlatedConjuncts_.empty());
     subqueries_.emplace(subquery, subqueryDt->columns.front());
   }
 
@@ -1538,6 +1574,7 @@ void ToGraph::processSubqueries(const logical_plan::FilterNode& filter) {
     auto subqueryDt = translateSubquery(
         *expr->inputAt(1)->as<lp::SubqueryExpr>()->subquery());
     VELOX_CHECK_EQ(1, subqueryDt->columns.size());
+    VELOX_CHECK(correlatedConjuncts_.empty());
 
     // Add a join edge and replace 'expr' with 'mark' column in the join output.
     const auto* markColumn = addMarkColumn();
@@ -1556,23 +1593,94 @@ void ToGraph::processSubqueries(const logical_plan::FilterNode& filter) {
 
     subqueries_.emplace(expr, markColumn);
   }
+
+  for (const auto& expr : existsSubqueries) {
+    auto subqueryDt = translateSubquery(
+        *expr->inputAt(0)->as<lp::SubqueryExpr>()->subquery());
+    VELOX_CHECK(!correlatedConjuncts_.empty());
+
+    PlanObjectCP leftTable = nullptr;
+    ExprVector leftKeys;
+    ExprVector rightKeys;
+    ExprVector filter;
+    for (auto i = 0; i < correlatedConjuncts_.size(); ++i) {
+      const auto* conjunct = subqueryDt->exportExpr(correlatedConjuncts_[i]);
+
+      auto tables = conjunct->allTables();
+      tables.erase(subqueryDt);
+
+      VELOX_CHECK_EQ(1, tables.size());
+      if (leftTable == nullptr) {
+        leftTable = tables.toObjects().front();
+      } else {
+        VELOX_CHECK(leftTable == tables.toObjects().front());
+      }
+
+      ExprCP left = nullptr;
+      ExprCP right = nullptr;
+      if (isJoinEquality(conjunct, leftTable, subqueryDt, left, right)) {
+        leftKeys.push_back(left);
+        rightKeys.push_back(right);
+      } else {
+        filter.push_back(conjunct);
+      }
+    }
+
+    VELOX_CHECK(!leftKeys.empty());
+
+    correlatedConjuncts_.clear();
+
+    const auto* markColumn = addMarkColumn();
+
+    auto* existsEdge = make<JoinEdge>(
+        leftTable,
+        subqueryDt,
+        JoinEdge::Spec{.filter = filter, .markColumn = markColumn});
+    currentDt_->joins.push_back(existsEdge);
+
+    for (auto i = 0; i < leftKeys.size(); ++i) {
+      existsEdge->addEquality(leftKeys[i], rightKeys[i]);
+    }
+
+    subqueries_.emplace(expr, markColumn);
+  }
 }
 
 void ToGraph::addFilter(const lp::FilterNode& filter) {
   exprSource_ = filter.onlyInput().get();
 
-  // TODO Add support for correlated subqueries.
   processSubqueries(filter);
 
   ExprVector flat;
-  translateConjuncts(filter.predicate(), flat);
+  {
+    allowCorrelations_ = true;
+    SCOPE_EXIT {
+      allowCorrelations_ = false;
+    };
 
-  if (currentDt_->hasAggregation()) {
-    currentDt_->having.insert(
-        currentDt_->having.end(), flat.begin(), flat.end());
-  } else {
-    currentDt_->conjuncts.insert(
-        currentDt_->conjuncts.end(), flat.begin(), flat.end());
+    translateConjuncts(filter.predicate(), flat);
+
+    PlanObjectSet tables = currentDt_->tableSet;
+    tables.add(currentDt_);
+    for (auto it = flat.begin(); it != flat.end();) {
+      const auto* conjunct = *it;
+      if (conjunct->allTables().isSubset(tables)) {
+        ++it;
+      } else {
+        correlatedConjuncts_.push_back(conjunct);
+        it = flat.erase(it);
+      }
+    }
+  }
+
+  if (!flat.empty()) {
+    if (currentDt_->hasAggregation()) {
+      currentDt_->having.insert(
+          currentDt_->having.end(), flat.begin(), flat.end());
+    } else {
+      currentDt_->conjuncts.insert(
+          currentDt_->conjuncts.end(), flat.begin(), flat.end());
+    }
   }
 }
 
@@ -1832,7 +1940,7 @@ DerivedTableP ToGraph::translateUnion(
 }
 
 DerivedTableP ToGraph::makeQueryGraph(const lp::LogicalPlanNode& logicalPlan) {
-  markAllSubfields(logicalPlan);
+  markAllSubfields(logicalPlan, {});
 
   currentDt_ = newDt();
   makeQueryGraph(logicalPlan, kAllAllowedInDt);

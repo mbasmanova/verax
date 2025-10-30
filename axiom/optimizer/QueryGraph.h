@@ -525,6 +525,8 @@ class JoinEdge {
     return rightTable_;
   }
 
+  PlanObjectSet allTables() const;
+
   size_t numKeys() const {
     VELOX_DCHECK_LE(rightKeys_.size(), leftKeys_.size());
     return rightKeys_.size();
@@ -560,6 +562,10 @@ class JoinEdge {
 
   bool rightNotExists() const {
     return rightNotExists_;
+  }
+
+  ColumnCP markColumn() const {
+    return markColumn_;
   }
 
   bool directed() const {
