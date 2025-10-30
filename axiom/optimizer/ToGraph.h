@@ -167,12 +167,13 @@ class ToGraph {
   ExprCP
   deduppedCall(Name name, Value value, ExprVector args, FunctionSet flags);
 
-  /// True if 'expr' is of the form a = b where a depends on one of 'tables' and
-  /// b on the other. If true, returns the side depending on tables[0] in 'left'
-  /// and the other in 'right'.
+  /// True if 'expr' is of the form a = b where a depends on leftTable and b on
+  /// rightTable or vice versa. If true, returns the side depending on
+  /// 'leftTable' in 'left' and the other in 'right'.
   bool isJoinEquality(
       ExprCP expr,
-      std::vector<PlanObjectP>& tables,
+      PlanObjectCP leftTable,
+      PlanObjectCP rightTable,
       ExprCP& left,
       ExprCP& right) const;
 
@@ -217,8 +218,8 @@ class ToGraph {
   std::vector<int32_t> usedChannels(const logical_plan::LogicalPlanNode& node);
 
   // if 'step' applied to result of the function of 'metadata'
-  // corresponds to an argument, returns the ordinal of the argument/
-  std::optional<int32_t> stepToArg(
+  // corresponds to an argument, returns the ordinal of the argument.
+  static std::optional<int32_t> stepToArg(
       const Step& step,
       const FunctionMetadata* metadata);
 
@@ -243,7 +244,7 @@ class ToGraph {
   // Converts 'name' to a deduplicated ExprCP. If 'name' is assigned to an
   // expression in a projection, returns the deduplicated ExprPtr of the
   // expression.
-  ExprCP translateColumn(std::string_view name);
+  ExprCP translateColumn(std::string_view name) const;
 
   //  Applies translateExpr to a 'source'.
   ExprVector translateExprs(const std::vector<logical_plan::ExprPtr>& source);
@@ -438,6 +439,10 @@ class ToGraph {
   // column produced by the DT.
   void processSubqueries(const logical_plan::FilterNode& filter);
 
+  DerivedTableP translateSubquery(const logical_plan::LogicalPlanNode& node);
+
+  ColumnCP addMarkColumn();
+
   // Cache of resolved table schemas.
   Schema schema_;
 
@@ -475,6 +480,10 @@ class ToGraph {
   // Counter for generating unique correlation names for BaseTables and
   // DerivedTables.
   int32_t nameCounter_{0};
+
+  // Counter for generating unique names for 'mark' columns produced by semi
+  // joins.
+  int32_t markCounter_{0};
 
   // Column and subfield access info for filters, joins, grouping and other
   // things affecting result row selection.
