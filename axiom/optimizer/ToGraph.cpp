@@ -892,8 +892,8 @@ ExprCP ToGraph::translateColumn(std::string_view name) const {
     return it->second;
   }
 
-  if (allowCorrelations_) {
-    if (auto it = correlations_.find(name); it != correlations_.end()) {
+  if (allowCorrelations_ && correlations_ != nullptr) {
+    if (auto it = correlations_->find(name); it != correlations_->end()) {
       return it->second;
     }
   }
@@ -1517,8 +1517,13 @@ void extractSubqueries(
 
 DerivedTableP ToGraph::translateSubquery(
     const logical_plan::LogicalPlanNode& node) {
-  correlations_ = std::move(renames_);
+  auto originalRenames = std::move(renames_);
   renames_.clear();
+
+  correlations_ = &originalRenames;
+  SCOPE_EXIT {
+    correlations_ = nullptr;
+  };
 
   VELOX_CHECK(correlatedConjuncts_.empty());
 
@@ -1538,8 +1543,7 @@ DerivedTableP ToGraph::translateSubquery(
     dt->makeInitialPlan();
   }
 
-  renames_ = std::move(correlations_);
-  correlations_.clear();
+  renames_ = std::move(originalRenames);
 
   for (const auto* column : dt->columns) {
     renames_[column->name()] = column;
@@ -1565,9 +1569,52 @@ void ToGraph::processSubqueries(const logical_plan::FilterNode& filter) {
 
   for (const auto& subquery : subqueries) {
     auto subqueryDt = translateSubquery(*subquery->subquery());
-    VELOX_CHECK_EQ(1, subqueryDt->columns.size());
-    VELOX_CHECK(correlatedConjuncts_.empty());
-    subqueries_.emplace(subquery, subqueryDt->columns.front());
+
+    if (correlatedConjuncts_.empty()) {
+      VELOX_CHECK_EQ(1, subqueryDt->columns.size());
+      subqueries_.emplace(subquery, subqueryDt->columns.front());
+    } else {
+      VELOX_CHECK_EQ(
+          correlatedConjuncts_.size() + 1, subqueryDt->columns.size());
+
+      // Add LEFT join.
+      PlanObjectCP leftTable = nullptr;
+      ExprVector leftKeys;
+      ExprVector rightKeys;
+      for (const auto* conjunct : correlatedConjuncts_) {
+        const auto tables = conjunct->allTables().toObjects();
+        VELOX_CHECK_EQ(2, tables.size());
+
+        ExprCP left = nullptr;
+        ExprCP right = nullptr;
+        if (isJoinEquality(conjunct, tables[0], tables[1], left, right)) {
+          if (tables[1] == subqueryDt) {
+            leftKeys.push_back(left);
+            rightKeys.push_back(right);
+            leftTable = tables[0];
+          } else {
+            leftKeys.push_back(right);
+            rightKeys.push_back(left);
+            leftTable = tables[1];
+          }
+        } else {
+          VELOX_FAIL(
+              "Expected correlated conjunct of the form a = b: {}",
+              conjunct->toString());
+        }
+      }
+
+      correlatedConjuncts_.clear();
+
+      auto* join = make<JoinEdge>(
+          leftTable, subqueryDt, JoinEdge::Spec{.rightOptional = true});
+      for (auto i = 0; i < leftKeys.size(); ++i) {
+        join->addEquality(leftKeys[i], rightKeys[i]);
+      }
+
+      currentDt_->joins.push_back(join);
+      subqueries_.emplace(subquery, subqueryDt->columns.back());
+    }
   }
 
   for (const auto& expr : inPredicateSubqueries) {
@@ -2015,8 +2062,77 @@ void ToGraph::makeQueryGraph(
         currentDt_->orderTypes.clear();
       }
 
-      currentDt_->aggregation =
-          translateAggregation(*node.as<lp::AggregateNode>());
+      auto* agg = translateAggregation(*node.as<lp::AggregateNode>());
+
+      if (!correlatedConjuncts_.empty()) {
+        VELOX_CHECK(agg->groupingKeys().empty());
+
+        // Expect all conjuncts to have the form of f(outer) = g(inner).
+        ExprVector groupingKeys;
+        ColumnVector columns;
+        ExprVector leftKeys;
+        for (const auto* conjunct : correlatedConjuncts_) {
+          const auto tables = conjunct->allTables().toObjects();
+          VELOX_CHECK_EQ(2, tables.size());
+
+          ExprCP left = nullptr;
+          ExprCP right = nullptr;
+          ExprCP key = nullptr;
+          if (isJoinEquality(conjunct, tables[0], tables[1], left, right)) {
+            if (currentDt_->tableSet.contains(tables[0])) {
+              key = left;
+              leftKeys.push_back(right);
+            } else {
+              key = right;
+              leftKeys.push_back(left);
+            }
+
+            if (key->is(PlanType::kColumnExpr)) {
+              columns.push_back(key->as<Column>());
+            } else {
+              auto* column =
+                  make<Column>(newCName("__gk"), currentDt_, key->value());
+              columns.push_back(column);
+            }
+
+            groupingKeys.push_back(key);
+          } else {
+            VELOX_FAIL(
+                "Expected correlated conjunct of the form a = b: {}",
+                conjunct->toString());
+          }
+        }
+
+        correlatedConjuncts_.clear();
+        for (auto i = 0; i < leftKeys.size(); ++i) {
+          currentDt_->exprs.push_back(columns[i]);
+          currentDt_->columns.push_back(
+              make<Column>(newCName("__gk"), currentDt_, columns[i]->value()));
+
+          correlatedConjuncts_.push_back(
+              make<Call>(
+                  equality_,
+                  Value(toType(velox::BOOLEAN()), 2),
+                  ExprVector{leftKeys[i], currentDt_->columns.back()},
+                  FunctionSet()));
+        }
+
+        auto intermediateColumns = columns;
+
+        for (const auto* column : agg->columns()) {
+          columns.push_back(column);
+        }
+
+        for (const auto* column : agg->intermediateColumns()) {
+          intermediateColumns.push_back(column);
+        }
+
+        currentDt_->aggregation = make<AggregationPlan>(
+            groupingKeys, agg->aggregates(), columns, intermediateColumns);
+
+      } else {
+        currentDt_->aggregation = agg;
+      }
 
       return;
     }
