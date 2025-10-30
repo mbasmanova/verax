@@ -955,7 +955,7 @@ void DerivedTable::distributeConjuncts() {
       // cases, leave the conjunct in place, to be evaluated when its
       // dependences are known.
       if (queryCtx()->optimization()->isJoinEquality(
-              conjuncts[i], tables, left, right)) {
+              conjuncts[i], tables[0], tables[1], left, right)) {
         auto join = findJoin(this, tables, true);
         if (join->isInner()) {
           if (left->is(PlanType::kColumnExpr) &&

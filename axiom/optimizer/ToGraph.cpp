@@ -29,10 +29,10 @@
 #include "velox/expression/FunctionSignature.h"
 #include "velox/functions/FunctionRegistry.h"
 
+namespace lp = facebook::axiom::logical_plan;
+
 namespace facebook::axiom::optimizer {
 namespace {
-
-namespace lp = facebook::axiom::logical_plan;
 
 OrderType toOrderType(lp::SortOrder sort) {
   if (sort.isAscending()) {
@@ -175,9 +175,8 @@ ExprCP ToGraph::tryFoldConstant(
     const ExprVector& literals) {
   try {
     Value value(toType(returnType), 1);
-    auto* veraxExpr = make<Call>(
-        PlanType::kCallExpr, toName(callName), value, literals, FunctionSet());
-    auto typedExpr = queryCtx()->optimization()->toTypedExpr(veraxExpr);
+    auto* call = make<Call>(toName(callName), value, literals, FunctionSet());
+    auto typedExpr = queryCtx()->optimization()->toTypedExpr(call);
     auto exprSet = evaluator_.compile(typedExpr);
     const auto& first = *exprSet->exprs().front();
     if (first.specialFormKind() != velox::exec::SpecialFormKind::kConstant) {
@@ -620,7 +619,8 @@ ExprCP ToGraph::deduppedCall(
 
 bool ToGraph::isJoinEquality(
     ExprCP expr,
-    std::vector<PlanObjectP>& tables,
+    PlanObjectCP leftTable,
+    PlanObjectCP rightTable,
     ExprCP& left,
     ExprCP& right) const {
   if (expr->is(PlanType::kCallExpr)) {
@@ -629,16 +629,17 @@ bool ToGraph::isJoinEquality(
       left = call->argAt(0);
       right = call->argAt(1);
 
-      auto leftTable = left->singleTable();
-      auto rightTable = right->singleTable();
-      if (!leftTable || !rightTable) {
-        return false;
+      auto* lt = left->singleTable();
+      auto* rt = right->singleTable();
+
+      if (lt == rightTable && rt == leftTable) {
+        std::swap(left, right);
+        return true;
       }
 
-      if (leftTable == tables[1]) {
-        std::swap(left, right);
+      if (lt == leftTable && rt == rightTable) {
+        return true;
       }
-      return true;
     }
   }
   return false;
@@ -883,7 +884,7 @@ std::optional<ExprCP> ToGraph::translateSubfieldFunction(
   return callExpr;
 }
 
-ExprCP ToGraph::translateColumn(std::string_view name) {
+ExprCP ToGraph::translateColumn(std::string_view name) const {
   if (auto it = lambdaSignature_.find(name); it != lambdaSignature_.end()) {
     return it->second;
   }
@@ -904,7 +905,7 @@ ExprVector ToGraph::translateExprs(const std::vector<lp::ExprPtr>& source) {
 void ToGraph::translateUnnest(const lp::UnnestNode& unnest, bool isNewDt) {
   if (unnest.ordinalityName().has_value()) {
     VELOX_NYI(
-        "Unnest ordinality column is not supported in Verax optimizer. Unnest node: {}",
+        "Unnest ordinality column is not supported in the optimizer. Unnest node: {}",
         unnest.id());
   }
   PlanObjectCP leftTable = nullptr;
@@ -1498,6 +1499,29 @@ void extractSubqueries(
 }
 } // namespace
 
+DerivedTableP ToGraph::translateSubquery(
+    const logical_plan::LogicalPlanNode& node) {
+  auto originalRenames = std::move(renames_);
+  renames_.clear();
+
+  auto dt = wrapInDt(node);
+  renames_ = std::move(originalRenames);
+
+  for (const auto* column : dt->columns) {
+    renames_[column->name()] = column;
+  }
+
+  return dt;
+}
+
+ColumnCP ToGraph::addMarkColumn() {
+  auto* mark = toName(fmt::format("__mark{}", markCounter_++));
+  auto* markColumn =
+      make<Column>(mark, currentDt_, Value{toType(velox::BOOLEAN()), 2});
+  renames_[mark] = markColumn;
+  return markColumn;
+}
+
 void ToGraph::processSubqueries(const logical_plan::FilterNode& filter) {
   // Assuming subqueries are not correlated, extract each into its own DT.
   std::vector<lp::SubqueryExprPtr> subqueries;
@@ -1505,21 +1529,18 @@ void ToGraph::processSubqueries(const logical_plan::FilterNode& filter) {
   extractSubqueries(filter.predicate(), subqueries, inPredicateSubqueries);
 
   for (const auto& subquery : subqueries) {
-    auto subqueryDt = wrapInDt(*subquery->subquery());
+    auto subqueryDt = translateSubquery(*subquery->subquery());
     VELOX_CHECK_EQ(1, subqueryDt->columns.size());
     subqueries_.emplace(subquery, subqueryDt->columns.front());
   }
 
   for (const auto& expr : inPredicateSubqueries) {
-    auto subqueryDt =
-        wrapInDt(*expr->inputAt(1)->as<lp::SubqueryExpr>()->subquery());
+    auto subqueryDt = translateSubquery(
+        *expr->inputAt(1)->as<lp::SubqueryExpr>()->subquery());
     VELOX_CHECK_EQ(1, subqueryDt->columns.size());
 
     // Add a join edge and replace 'expr' with 'mark' column in the join output.
-    auto* mark = toName("mark");
-    auto* markColumn =
-        make<Column>(mark, currentDt_, Value{toType(velox::BOOLEAN()), 2});
-    renames_[mark] = markColumn;
+    const auto* markColumn = addMarkColumn();
 
     auto leftKey = translateExpr(expr->inputAt(0));
     auto leftTable = leftKey->singleTable();

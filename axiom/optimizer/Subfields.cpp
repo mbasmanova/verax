@@ -217,6 +217,7 @@ void ToGraph::markFieldAccessed(
   VELOX_FAIL("Should have found source for expr {}", fieldName);
 }
 
+// static
 std::optional<int32_t> ToGraph::stepToArg(
     const Step& step,
     const FunctionMetadata* metadata) {
