@@ -135,8 +135,8 @@ TEST_F(TpchPlanTest, stats) {
 
   verifyStats("region", 5);
   verifyStats("nation", 25);
-  verifyStats("orders", 15'000);
-  verifyStats("lineitem", 60'175);
+  verifyStats("orders", 150'000);
+  verifyStats("lineitem", 600'572);
 }
 
 TEST_F(TpchPlanTest, q01) {
@@ -379,6 +379,7 @@ TEST_F(TpchPlanTest, q10) {
                "c_comment"},
               {"sum(l_extendedprice * (1.0 - l_discount)) as revenue"})
           .orderBy({"revenue desc"})
+          .limit(20)
           .project(
               {"c_custkey",
                "c_name",
