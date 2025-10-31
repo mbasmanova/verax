@@ -565,6 +565,29 @@ TEST_F(TpchPlanTest, q22) {
   checkTpchSql(22);
 }
 
+// Use to re-generate the plans stored in tpch.plans directory.
+TEST_F(TpchPlanTest, DISABLED_makePlans) {
+  const auto path =
+      velox::test::getDataFilePath("axiom/optimizer/tests", "tpch.plans");
+
+  const runner::MultiFragmentPlan::Options options{
+      .numWorkers = 1, .numDrivers = 1};
+
+  for (auto q = 1; q <= 22; ++q) {
+    LOG(ERROR) << "q" << q;
+    const bool originalEnableReducingExistences =
+        optimizerOptions_.enableReducingExistences;
+    optimizerOptions_.enableReducingExistences = (q != 20);
+    SCOPE_EXIT {
+      optimizerOptions_.enableReducingExistences =
+          originalEnableReducingExistences;
+    };
+
+    auto logicalPlan = parseTpchSql(q);
+    planVelox(logicalPlan, options, fmt::format("{}/q{}", path, q));
+  }
+}
+
 } // namespace
 } // namespace facebook::axiom::optimizer
 
