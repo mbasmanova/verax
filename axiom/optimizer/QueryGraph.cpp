@@ -261,6 +261,11 @@ bool JoinEdge::isBroadcastableType() const {
 }
 
 void JoinEdge::addEquality(ExprCP left, ExprCP right, bool update) {
+  for (auto i = 0; i < leftKeys_.size(); ++i) {
+    if (leftKeys_[i] == left && rightKeys_[i] == right) {
+      return;
+    }
+  }
   leftKeys_.push_back(left);
   rightKeys_.push_back(right);
   if (update) {
