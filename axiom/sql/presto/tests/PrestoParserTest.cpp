@@ -692,7 +692,7 @@ TEST_F(PrestoParserTest, insertIntoTable) {
 
     VELOX_ASSERT_THROW(
         parser.parse("INSERT INTO nation SELECT 100, 'n-100', 2, 3"),
-        "Wrong column type: BIGINT vs. VARCHAR, column n_comment in table nation");
+        "Wrong column type: BIGINT vs. VARCHAR, column n_comment in table tiny.nation");
   }
 }
 
