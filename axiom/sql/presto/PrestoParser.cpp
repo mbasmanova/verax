@@ -263,6 +263,32 @@ class ExprAnalyzer : public AstVisitor {
   std::optional<std::string> aggregateName_;
 };
 
+std::pair<std::string, std::string> toConnectorTable(
+    const QualifiedName& name,
+    const std::optional<std::string>& defaultConnectorId) {
+  const auto& parts = name.parts();
+  VELOX_CHECK(!parts.empty(), "Table name cannot be empty");
+
+  const auto& tableName = parts.back();
+
+  if (parts.size() == 1) {
+    // name
+    VELOX_CHECK(defaultConnectorId.has_value());
+    return {defaultConnectorId.value(), tableName};
+  }
+
+  if (parts.size() == 2) {
+    // schema.name
+    VELOX_CHECK(defaultConnectorId.has_value());
+    return {
+        defaultConnectorId.value(), fmt::format("{}.{}", parts[0], tableName)};
+  }
+
+  // connector.schema.name
+  VELOX_CHECK_EQ(3, parts.size());
+  return {parts[0], fmt::format("{}.{}", parts[1], tableName)};
+}
+
 class RelationPlanner : public AstVisitor {
  public:
   explicit RelationPlanner(const std::string& defaultConnectorId)
@@ -842,8 +868,12 @@ class RelationPlanner : public AstVisitor {
         return;
       }
 
-      builder_->tableScan(table->name()->suffix());
-      builder_->as(table->name()->suffix());
+      const auto connectorTable =
+          toConnectorTable(*table->name(), context_.defaultConnectorId);
+      builder_->tableScan(connectorTable.first, connectorTable.second);
+
+      const auto& tableName = table->name()->suffix();
+      builder_->as(tableName);
       return;
     }
 
@@ -1333,18 +1363,24 @@ SqlStatementPtr parseExplain(
       type);
 }
 
+static facebook::axiom::connector::TablePtr findTable(
+    const QualifiedName& name,
+    const std::string& defaultConnectorId) {
+  const auto connectorTable = toConnectorTable(name, defaultConnectorId);
+
+  auto table = facebook::axiom::connector::ConnectorMetadata::metadata(
+                   connectorTable.first)
+                   ->findTable(connectorTable.second);
+
+  VELOX_USER_CHECK_NOT_NULL(
+      table, "Table not found: {}", name.fullyQualifiedName());
+  return table;
+}
+
 SqlStatementPtr parseShowColumns(
     const ShowColumns& showColumns,
     const std::string& connectorId) {
-  const auto tableName = showColumns.table()->suffix();
-
-  auto table =
-      facebook::axiom::connector::ConnectorMetadata::metadata(connectorId)
-          ->findTable(tableName);
-
-  VELOX_USER_CHECK_NOT_NULL(table, "Table not found: {}", tableName);
-
-  const auto& schema = table->type();
+  const auto schema = findTable(*showColumns.table(), connectorId)->type();
 
   std::vector<Variant> data;
   data.reserve(schema->size());
@@ -1363,12 +1399,7 @@ SqlStatementPtr parseShowColumns(
 SqlStatementPtr parseInsert(
     const Insert& insert,
     const std::string& connectorId) {
-  auto tableName = insert.target()->suffix();
-
-  auto table =
-      facebook::axiom::connector::ConnectorMetadata::metadata(connectorId)
-          ->findTable(tableName);
-  VELOX_USER_CHECK_NOT_NULL(table, "Table not found: {}", tableName);
+  const auto table = findTable(*insert.target(), connectorId);
 
   const auto& columns = insert.columns();
 
@@ -1390,7 +1421,7 @@ SqlStatementPtr parseInsert(
 
   planner.builder().tableWrite(
       connectorId,
-      tableName,
+      table->name(),
       lp::WriteKind::kInsert,
       columnNames,
       inputColumns);
