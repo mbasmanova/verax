@@ -157,7 +157,8 @@ void ToVelox::filterUpdated(BaseTableCP table, bool updateSelectivity) {
   for (auto filter : table->columnFilters) {
     auto typedExpr = toTypedExpr(filter);
     try {
-      auto pair = velox::exec::toSubfieldFilter(typedExpr, evaluator);
+      auto pair = velox::exec::ExprToSubfieldFilterParser::getInstance()
+                      ->toSubfieldFilter(typedExpr, evaluator);
       if (!pair.second) {
         remainingConjuncts.push_back(std::move(typedExpr));
         continue;

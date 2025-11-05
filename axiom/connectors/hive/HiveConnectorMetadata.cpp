@@ -157,7 +157,8 @@ HiveConnectorMetadata::createTableHandle(
   velox::common::SubfieldFilters subfieldFilters;
   for (auto& typedExpr : filters) {
     try {
-      auto pair = velox::exec::toSubfieldFilter(typedExpr, &evaluator);
+      auto pair = velox::exec::ExprToSubfieldFilterParser::getInstance()
+                      ->toSubfieldFilter(typedExpr, &evaluator);
       if (!pair.second) {
         remainingConjuncts.push_back(std::move(typedExpr));
         continue;
