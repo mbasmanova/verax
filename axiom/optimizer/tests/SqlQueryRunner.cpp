@@ -15,8 +15,6 @@
  */
 
 #include "axiom/optimizer/tests/SqlQueryRunner.h"
-#include "axiom/connectors/hive/LocalHiveConnectorMetadata.h"
-#include "axiom/connectors/tpch/TpchConnectorMetadata.h"
 #include "axiom/logical_plan/PlanPrinter.h"
 #include "axiom/optimizer/ConstantExprEvaluator.h"
 #include "axiom/optimizer/DerivedTablePrinter.h"
@@ -24,11 +22,6 @@
 #include "axiom/optimizer/Plan.h"
 #include "axiom/optimizer/RelationOpPrinter.h"
 #include "velox/common/file/FileSystems.h"
-#include "velox/connectors/hive/HiveConnector.h"
-#include "velox/dwio/dwrf/RegisterDwrfReader.h"
-#include "velox/dwio/dwrf/RegisterDwrfWriter.h"
-#include "velox/dwio/parquet/RegisterParquetReader.h"
-#include "velox/dwio/parquet/RegisterParquetWriter.h"
 #include "velox/exec/tests/utils/LocalExchangeSource.h"
 #include "velox/expression/Expr.h"
 #include "velox/functions/prestosql/aggregates/RegisterAggregateFunctions.h"
@@ -41,53 +34,9 @@ using namespace facebook::axiom;
 
 namespace axiom::sql {
 
-namespace {
-std::shared_ptr<velox::connector::Connector> registerTpchConnector() {
-  auto emptyConfig = std::make_shared<velox::config::ConfigBase>(
-      std::unordered_map<std::string, std::string>{});
-
-  velox::connector::tpch::TpchConnectorFactory factory;
-  auto connector = factory.newConnector("tpch", emptyConfig);
-  velox::connector::registerConnector(connector);
-
-  connector::ConnectorMetadata::registerMetadata(
-      connector->connectorId(),
-      std::make_shared<connector::tpch::TpchConnectorMetadata>(
-          dynamic_cast<velox::connector::tpch::TpchConnector*>(
-              connector.get())));
-
-  return connector;
-}
-
-std::shared_ptr<velox::connector::Connector> registerHiveConnector(
-    const std::string& dataPath,
-    const std::string& dataFormat,
-    folly::IOThreadPoolExecutor* ioExecutor) {
-  std::unordered_map<std::string, std::string> connectorConfig = {
-      {velox::connector::hive::HiveConfig::kLocalDataPath, dataPath},
-      {velox::connector::hive::HiveConfig::kLocalFileFormat, dataFormat},
-  };
-
-  auto config =
-      std::make_shared<velox::config::ConfigBase>(std::move(connectorConfig));
-
-  velox::connector::hive::HiveConnectorFactory factory;
-  auto connector = factory.newConnector("hive", config, ioExecutor);
-  velox::connector::registerConnector(connector);
-
-  connector::ConnectorMetadata::registerMetadata(
-      connector->connectorId(),
-      std::make_shared<connector::hive::LocalHiveConnectorMetadata>(
-          dynamic_cast<velox::connector::hive::HiveConnector*>(
-              connector.get())));
-
-  return connector;
-}
-} // namespace
-
 void SqlQueryRunner::initialize(
-    const std::string& dataPath,
-    const std::string& dataFormat) {
+    const std::function<std::string(optimizer::VeloxHistory& history)>&
+        initializeConnectors) {
   velox::memory::MemoryManager::testingSetInstance(
       velox::memory::MemoryManager::Options{});
 
@@ -101,11 +50,7 @@ void SqlQueryRunner::initialize(
   optimizer::FunctionRegistry::registerPrestoFunctions();
 
   velox::filesystems::registerLocalFileSystem();
-  velox::dwio::common::registerFileSinks();
-  velox::parquet::registerParquetReaderFactory();
-  velox::parquet::registerParquetWriterFactory();
-  velox::dwrf::registerDwrfReaderFactory();
-  velox::dwrf::registerDwrfWriterFactory();
+
   velox::exec::ExchangeSource::registerFactory(
       velox::exec::test::createLocalExchangeSource);
   velox::serializer::presto::PrestoVectorSerde::registerVectorSerde();
@@ -113,26 +58,14 @@ void SqlQueryRunner::initialize(
     velox::serializer::presto::PrestoVectorSerde::registerNamedVectorSerde();
   }
 
-  std::shared_ptr<velox::connector::Connector> connector;
-  if (!dataPath.empty()) {
-    ioExecutor_ = std::make_unique<folly::IOThreadPoolExecutor>(8);
-    connector = registerHiveConnector(dataPath, dataFormat, ioExecutor_.get());
-  } else {
-    connector = registerTpchConnector();
-  }
+  history_ = std::make_unique<optimizer::VeloxHistory>();
 
-  defaultConnectorId_ = connector->connectorId();
+  defaultConnectorId_ = initializeConnectors(*history_);
 
   schema_ = std::make_shared<connector::SchemaResolver>();
 
   prestoParser_ = std::make_unique<presto::PrestoParser>(
       defaultConnectorId_, optimizerPool_.get());
-
-  history_ = std::make_unique<optimizer::VeloxHistory>();
-
-  if (!dataPath.empty()) {
-    history_->updateFromFile(dataPath + "/.history");
-  }
 
   spillExecutor_ = std::make_shared<folly::IOThreadPoolExecutor>(4);
 }
