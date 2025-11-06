@@ -21,7 +21,6 @@
 #include "velox/core/PlanNode.h"
 #include "velox/exec/HashPartitionFunction.h"
 #include "velox/exec/RoundRobinPartitionFunction.h"
-#include "velox/expression/ExprToSubfieldFilter.h"
 #include "velox/expression/ScopedVarSetter.h"
 #include "velox/vector/VariantToVector.h"
 
@@ -150,35 +149,14 @@ void ToVelox::filterUpdated(BaseTableCP table, bool updateSelectivity) {
   auto* optimization = queryCtx()->optimization();
   auto* evaluator = optimization->evaluator();
 
-  std::vector<velox::core::TypedExprPtr> remainingConjuncts;
-  std::vector<velox::core::TypedExprPtr> pushdownConjuncts;
+  std::vector<velox::core::TypedExprPtr> filterConjuncts;
   velox::ScopedVarSetter noAlias(&makeVeloxExprWithNoAlias_, true);
   velox::ScopedVarSetter getters(&getterForPushdownSubfield_, true);
   for (auto filter : table->columnFilters) {
-    auto typedExpr = toTypedExpr(filter);
-    try {
-      auto pair = velox::exec::ExprToSubfieldFilterParser::getInstance()
-                      ->toSubfieldFilter(typedExpr, evaluator);
-      if (!pair.second) {
-        remainingConjuncts.push_back(std::move(typedExpr));
-        continue;
-      }
-      pushdownConjuncts.push_back(typedExpr);
-    } catch (const std::exception&) {
-      remainingConjuncts.push_back(std::move(typedExpr));
-    }
+    filterConjuncts.push_back(toTypedExpr(filter));
   }
   for (auto expr : table->filter) {
-    remainingConjuncts.push_back(toTypedExpr(expr));
-  }
-  velox::core::TypedExprPtr remainingFilter;
-  if (remainingConjuncts.size() == 1) {
-    remainingFilter = std::move(remainingConjuncts[0]);
-  } else if (!remainingConjuncts.empty()) {
-    remainingFilter = std::make_shared<velox::core::CallTypedExpr>(
-        velox::BOOLEAN(),
-        specialForm(logical_plan::SpecialForm::kAnd),
-        std::move(remainingConjuncts));
+    filterConjuncts.push_back(toTypedExpr(expr));
   }
 
   columnAlteredTypes_.clear();
@@ -205,17 +183,14 @@ void ToVelox::filterUpdated(BaseTableCP table, bool updateSelectivity) {
         dataColumns->nameOf(i),
         std::move(subfields)));
   }
-  auto allFilters = std::move(pushdownConjuncts);
-  if (remainingFilter) {
-    allFilters.push_back(remainingFilter);
-  }
+
   std::vector<velox::core::TypedExprPtr> rejectedFilters;
   auto handle = metadata->createTableHandle(
       connectorSession,
       *layout,
       columns,
       *evaluator,
-      std::move(allFilters),
+      std::move(filterConjuncts),
       rejectedFilters);
 
   setLeafHandle(table->id(), handle, std::move(rejectedFilters));
