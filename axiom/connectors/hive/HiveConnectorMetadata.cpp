@@ -16,9 +16,10 @@
 
 #include "axiom/connectors/hive/HiveConnectorMetadata.h"
 #include "velox/connectors/hive/HiveConnector.h"
+#include "velox/connectors/hive/HiveConnectorUtil.h"
 #include "velox/connectors/hive/TableHandle.h"
 #include "velox/exec/TableWriter.h"
-#include "velox/expression/ExprToSubfieldFilter.h"
+#include "velox/expression/ExprConstants.h"
 
 namespace facebook::axiom::connector::hive {
 
@@ -181,36 +182,22 @@ HiveConnectorMetadata::createTableHandle(
 
   std::vector<velox::core::TypedExprPtr> remainingConjuncts;
   velox::common::SubfieldFilters subfieldFilters;
+  double sampleRate = 1.0;
   for (auto& typedExpr : filters) {
-    try {
-      auto pair = velox::exec::ExprToSubfieldFilterParser::getInstance()
-                      ->toSubfieldFilter(typedExpr, &evaluator);
-      if (!pair.second) {
-        remainingConjuncts.push_back(std::move(typedExpr));
-        continue;
-      }
-      auto it = subfieldFilters.find(pair.first);
-      if (it != subfieldFilters.end()) {
-        auto merged = it->second->mergeWith(pair.second.get());
-        subfieldFilters[std::move(pair.first)] = std::move(merged);
-      } else {
-        subfieldFilters[std::move(pair.first)] = std::move(pair.second);
-      }
-    } catch (const std::exception&) {
-      remainingConjuncts.push_back(std::move(typedExpr));
+    auto remaining = velox::connector::hive::extractFiltersFromRemainingFilter(
+        typedExpr, &evaluator, subfieldFilters, sampleRate);
+
+    if (remaining != nullptr) {
+      remainingConjuncts.push_back(std::move(remaining));
     }
   }
 
   velox::core::TypedExprPtr remainingFilter;
-  for (const auto& conjunct : remainingConjuncts) {
-    if (!remainingFilter) {
-      remainingFilter = conjunct;
-    } else {
-      remainingFilter = std::make_shared<velox::core::CallTypedExpr>(
-          velox::BOOLEAN(),
-          std::vector<velox::core::TypedExprPtr>{remainingFilter, conjunct},
-          "and");
-    }
+  if (remainingConjuncts.size() == 1) {
+    remainingFilter = std::move(remainingConjuncts[0]);
+  } else if (remainingConjuncts.size() > 1) {
+    remainingFilter = std::make_shared<velox::core::CallTypedExpr>(
+        velox::BOOLEAN(), remainingConjuncts, velox::expression::kAnd);
   }
 
   std::vector<velox::connector::hive::HiveColumnHandlePtr> filterColumnHandles;
@@ -230,7 +217,8 @@ HiveConnectorMetadata::createTableHandle(
       remainingFilter,
       dataColumns ? dataColumns : layout.rowType(),
       /*tableParameters=*/std::unordered_map<std::string, std::string>{},
-      filterColumnHandles);
+      filterColumnHandles,
+      sampleRate);
 }
 
 namespace {
