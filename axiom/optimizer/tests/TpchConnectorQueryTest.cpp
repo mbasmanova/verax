@@ -67,6 +67,19 @@ class TpchConnectorQueryTest : public QueryTestBase {
   }
 };
 
+TEST_F(TpchConnectorQueryTest, lambda) {
+  auto query =
+      "SELECT n_regionkey, transform(array_agg(n_nationkey), x -> x * 2) FROM nation "
+      "WHERE all_match(sequence(1, n_nationkey), x -> x < 3) "
+      "GROUP BY 1";
+
+  auto expected = makeRowVector({
+      makeFlatVector<int64_t>({0, 1}),
+      makeArrayVectorFromJson<int64_t>({"[0]", "[2, 4]"}),
+  });
+  checkSame(parseSql(query), {expected});
+}
+
 TEST_F(TpchConnectorQueryTest, scaleFactors) {
   ASSERT_EQ(15'000, runCountStar("orders"));
   ASSERT_EQ(15'000, runCountStar("tiny.orders"));
