@@ -823,7 +823,8 @@ std::any AstBuilder::visitTable(PrestoSqlParser::TableContext* ctx) {
 std::any AstBuilder::visitInlineTable(
     PrestoSqlParser::InlineTableContext* ctx) {
   trace("visitInlineTable");
-  return visitChildren(ctx);
+  return std::static_pointer_cast<QueryBody>(std::make_shared<Values>(
+      getLocation(ctx), visitTyped<Expression>(ctx->expression())));
 }
 
 std::any AstBuilder::visitSubquery(PrestoSqlParser::SubqueryContext* ctx) {
@@ -1541,7 +1542,8 @@ std::any AstBuilder::visitNullLiteral(
 std::any AstBuilder::visitRowConstructor(
     PrestoSqlParser::RowConstructorContext* ctx) {
   trace("visitRowConstructor");
-  return visitChildren(ctx);
+  return std::static_pointer_cast<Expression>(std::make_shared<Row>(
+      getLocation(ctx), visitTyped<Expression>(ctx->expression())));
 }
 
 std::any AstBuilder::visitSubscript(PrestoSqlParser::SubscriptContext* ctx) {

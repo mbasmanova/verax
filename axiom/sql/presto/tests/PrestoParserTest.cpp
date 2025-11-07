@@ -552,6 +552,12 @@ TEST_F(PrestoParserTest, lambda) {
   testSql("SELECT filter(array[1,2,3], x -> x > 1)", matcher);
 }
 
+TEST_F(PrestoParserTest, values) {
+  auto matcher = lp::test::LogicalPlanMatcherBuilder().values();
+
+  testSql("SELECT * FROM (VALUES (1, 1.1, 'foo'), (2, null, 'bar'))", matcher);
+}
+
 TEST_F(PrestoParserTest, everything) {
   auto matcher =
       lp::test::LogicalPlanMatcherBuilder()
