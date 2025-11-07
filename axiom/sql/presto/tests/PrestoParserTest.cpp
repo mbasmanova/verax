@@ -546,6 +546,12 @@ TEST_F(PrestoParserTest, exists) {
       matcher);
 }
 
+TEST_F(PrestoParserTest, lambda) {
+  auto matcher = lp::test::LogicalPlanMatcherBuilder().values().project();
+
+  testSql("SELECT filter(array[1,2,3], x -> x > 1)", matcher);
+}
+
 TEST_F(PrestoParserTest, everything) {
   auto matcher =
       lp::test::LogicalPlanMatcherBuilder()
