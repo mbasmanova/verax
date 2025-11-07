@@ -1268,6 +1268,38 @@ class RelationPlanner : public AstVisitor {
     }
   }
 
+  void visitValues(Values* node) override {
+    VELOX_CHECK(!node->rows().empty());
+
+    const auto numColumns = node->rows().front()->as<Row>()->items().size();
+
+    std::vector<Variant> rows;
+    for (const auto& row : node->rows()) {
+      const auto& columns = row->as<Row>()->items();
+
+      VELOX_CHECK_EQ(numColumns, columns.size());
+
+      std::vector<Variant> values;
+      for (const auto& expr : columns) {
+        auto value = toExpr(expr);
+        VELOX_CHECK(value.expr()->is(core::IExpr::Kind::kConstant));
+
+        values.emplace_back(value.expr()->as<core::ConstantExpr>()->value());
+      }
+
+      rows.emplace_back(Variant::row(values));
+    }
+
+    auto rowType = asRowType(rows.front().inferType());
+    std::vector<std::string> names;
+    names.reserve(rowType->size());
+    for (auto i = 0; i < rowType->size(); ++i) {
+      names.emplace_back(fmt::format("c{}", i));
+    }
+
+    builder_->values(ROW(names, rowType->children()), rows);
+  }
+
   void visitUnion(Union* node) override {
     node->left()->accept(this);
 
