@@ -188,6 +188,12 @@ class ExprAnalyzer : public AstVisitor {
         "Not yet supported node type: {}", NodeTypeName::toName(node->type()));
   }
 
+  void visitArrayConstructor(ArrayConstructor* node) override {
+    for (const auto& value : node->values()) {
+      value->accept(this);
+    }
+  }
+
   void visitCast(Cast* node) override {
     node->expression()->accept(this);
   }
@@ -218,6 +224,10 @@ class ExprAnalyzer : public AstVisitor {
     }
 
     aggregateName_.reset();
+  }
+
+  void visitLambdaExpression(LambdaExpression* node) override {
+    node->body()->accept(this);
   }
 
   void visitArithmeticBinaryExpression(
@@ -562,6 +572,18 @@ class RelationPlanner : public AstVisitor {
           args.push_back(toExpr(arg));
         }
         return lp::Call(call->name()->suffix(), args);
+      }
+
+      case NodeType::kLambdaExpression: {
+        auto* lambda = node->as<LambdaExpression>();
+
+        std::vector<std::string> names;
+        names.reserve(lambda->arguments().size());
+        for (const auto& arg : lambda->arguments()) {
+          names.emplace_back(arg->name()->value());
+        }
+
+        return lp::Lambda(names, toExpr(lambda->body()));
       }
 
       default:

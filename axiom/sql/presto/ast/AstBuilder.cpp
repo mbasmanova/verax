@@ -1469,7 +1469,19 @@ std::any AstBuilder::visitCast(PrestoSqlParser::CastContext* ctx) {
 
 std::any AstBuilder::visitLambda(PrestoSqlParser::LambdaContext* ctx) {
   trace("visitLambda");
-  return visitChildren(ctx);
+
+  std::vector<std::shared_ptr<LambdaArgumentDeclaration>> arguments;
+  arguments.reserve(ctx->identifier().size());
+  for (auto* identifierCtx : ctx->identifier()) {
+    arguments.emplace_back(
+        std::make_shared<LambdaArgumentDeclaration>(
+            getLocation(identifierCtx), visitIdentifier(identifierCtx)));
+  }
+
+  auto body = visitTyped<Expression>(ctx->expression());
+
+  return std::static_pointer_cast<Expression>(
+      std::make_shared<LambdaExpression>(getLocation(ctx), arguments, body));
 }
 
 std::any AstBuilder::visitParenthesizedExpression(
