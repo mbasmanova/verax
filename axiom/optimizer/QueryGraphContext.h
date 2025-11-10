@@ -216,7 +216,7 @@ class QueryGraphContext {
   explicit QueryGraphContext(velox::HashStringAllocator& allocator);
 
   /// Returns a new unique id to use for 'object' and associates 'object' to
-  /// this id. Tagging objects with integere ids is useful for efficiently
+  /// this id. Tagging objects with integers ids is useful for efficiently
   /// representing sets of objects as bitmaps.
   int32_t newId(PlanObject* object) {
     objects_.push_back(object);
