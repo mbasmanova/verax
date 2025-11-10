@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "axiom/optimizer/tests/SqlQueryRunner.h"
+#include "axiom/cli/SqlQueryRunner.h"
 #include "axiom/logical_plan/PlanPrinter.h"
 #include "axiom/optimizer/ConstantExprEvaluator.h"
 #include "axiom/optimizer/DerivedTablePrinter.h"
