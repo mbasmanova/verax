@@ -21,7 +21,7 @@
 
 namespace facebook::axiom::optimizer {
 
-/// Enum for types of query graph nodes. Used when making a tree into
+/// Enum for types of query graph objects. Used when making a tree into
 /// a query graph and later to differentiate between tables, derived
 /// tables and different expressions.
 enum class PlanType : uint32_t {
