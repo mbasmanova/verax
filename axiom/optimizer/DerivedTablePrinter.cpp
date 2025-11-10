@@ -145,11 +145,9 @@ std::string visitDerivedTable(const DerivedTable& dt) {
     VELOX_CHECK_EQ(dt.columns.size(), dt.exprs.size());
   }
 
-  out << "  output:" << std::endl;
-  for (auto i = 0; i < dt.columns.size(); ++i) {
-    if (dt.setOp.has_value()) {
-      out << "    " << dt.columns.at(i)->name() << std::endl;
-    } else {
+  if (!dt.setOp.has_value()) {
+    out << "  output:" << std::endl;
+    for (auto i = 0; i < dt.columns.size(); ++i) {
       out << "    " << dt.columns.at(i)->name()
           << " := " << dt.exprs.at(i)->toString() << std::endl;
     }
@@ -247,6 +245,25 @@ std::string visitDerivedTable(const DerivedTable& dt) {
         break;
       default:
         VELOX_FAIL();
+    }
+  }
+
+  if (dt.setOp.has_value()) {
+    out << "  " << logical_plan::SetOperationName::toName(dt.setOp.value())
+        << ": ";
+    int32_t i = 0;
+    for (const auto* child : dt.children) {
+      if (i > 0) {
+        out << ", ";
+      }
+      i++;
+      out << child->cname;
+    }
+    out << std::endl;
+
+    for (const auto* child : dt.children) {
+      out << std::endl;
+      out << visitDerivedTable(*child);
     }
   }
 
