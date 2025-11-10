@@ -185,6 +185,45 @@ TEST_F(DerivedTablePrinterTest, basic) {
   }
 }
 
+TEST_F(DerivedTablePrinterTest, union) {
+  connector_->addTable("t", ROW({"a", "b"}, INTEGER()));
+  connector_->addTable("u", ROW({"a", "b"}, INTEGER()));
+
+  {
+    auto lines = toLines("SELECT * FROM t UNION ALL SELECT * FROM u");
+    EXPECT_THAT(
+        lines,
+        testing::ElementsAre(
+            testing::Eq("dt1: a, b"),
+            testing::Eq("  output:"),
+            testing::Eq("    a := dt2.a"),
+            testing::Eq("    b := dt2.b"),
+            testing::Eq("  tables: dt2"),
+            testing::Eq(""),
+            testing::Eq("dt2: a, b"),
+            testing::Eq("  UNION ALL: dt3, dt5"),
+            testing::Eq(""),
+            testing::Eq("dt3: a, b"),
+            testing::Eq("  output:"),
+            testing::Eq("    a := t4.a"),
+            testing::Eq("    b := t4.b"),
+            testing::Eq("  tables: t4"),
+            testing::Eq(""),
+            testing::Eq("t4: a, b"),
+            testing::Eq("  table: t"),
+            testing::Eq(""),
+            testing::Eq("dt5: a, b"),
+            testing::Eq("  output:"),
+            testing::Eq("    a := t6.a"),
+            testing::Eq("    b := t6.b"),
+            testing::Eq("  tables: t6"),
+            testing::Eq(""),
+            testing::Eq("t6: a, b"),
+            testing::Eq("  table: u"),
+            testing::Eq("")));
+  }
+}
+
 TEST_F(DerivedTablePrinterTest, write) {
   connector_->addTable("c", ROW({"a", "b"}, INTEGER()));
   connector_->addTable("z", ROW({"x", "y"}, INTEGER()));
