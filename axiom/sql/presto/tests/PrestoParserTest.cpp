@@ -74,7 +74,7 @@ class PrestoParserTest : public testing::Test {
     SCOPED_TRACE(sql);
     PrestoParser parser(kTpchConnectorId, pool());
 
-    auto statement = parser.parse(sql);
+    auto statement = parser.parse(sql, true);
     ASSERT_TRUE(statement->isSelect());
 
     auto logicalPlan = statement->as<SelectStatement>()->plan();
@@ -532,6 +532,38 @@ TEST_F(PrestoParserTest, union) {
                      .aggregate();
 
   testSql("SELECT n_name FROM nation UNION SELECT r_name FROM region", matcher);
+}
+
+TEST_F(PrestoParserTest, except) {
+  auto matcher = lp::test::LogicalPlanMatcherBuilder()
+                     .tableScan()
+                     .project()
+                     .setOperation(
+                         lp::SetOperation::kExcept,
+                         lp::test::LogicalPlanMatcherBuilder()
+                             .tableScan()
+                             .project()
+                             .build())
+                     .aggregate();
+
+  testSql(
+      "SELECT n_name FROM nation EXCEPT SELECT r_name FROM region", matcher);
+}
+
+TEST_F(PrestoParserTest, intersect) {
+  auto matcher = lp::test::LogicalPlanMatcherBuilder()
+                     .tableScan()
+                     .project()
+                     .setOperation(
+                         lp::SetOperation::kIntersect,
+                         lp::test::LogicalPlanMatcherBuilder()
+                             .tableScan()
+                             .project()
+                             .build())
+                     .aggregate();
+
+  testSql(
+      "SELECT n_name FROM nation INTERSECT SELECT r_name FROM region", matcher);
 }
 
 TEST_F(PrestoParserTest, exists) {

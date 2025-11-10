@@ -1300,8 +1300,36 @@ class RelationPlanner : public AstVisitor {
     builder_->values(ROW(names, rowType->children()), rows);
   }
 
+  void visitExcept(Except* node) override {
+    visitSetOperation(
+        lp::SetOperation::kExcept,
+        node->left(),
+        node->right(),
+        node->isDistinct());
+  }
+
+  void visitIntersect(Intersect* node) override {
+    visitSetOperation(
+        lp::SetOperation::kIntersect,
+        node->left(),
+        node->right(),
+        node->isDistinct());
+  }
+
   void visitUnion(Union* node) override {
-    node->left()->accept(this);
+    visitSetOperation(
+        lp::SetOperation::kUnionAll,
+        node->left(),
+        node->right(),
+        node->isDistinct());
+  }
+
+  void visitSetOperation(
+      lp::SetOperation op,
+      const std::shared_ptr<QueryBody>& left,
+      const std::shared_ptr<QueryBody>& right,
+      bool distinct) {
+    left->accept(this);
 
     auto leftBuilder = builder_;
 
@@ -1309,13 +1337,13 @@ class RelationPlanner : public AstVisitor {
     leftBuilder->captureScope(scope);
 
     builder_ = newBuilder(scope);
-    node->right()->accept(this);
+    right->accept(this);
     auto rightBuilder = builder_;
 
     builder_ = leftBuilder;
-    builder_->unionAll(*rightBuilder);
+    builder_->setOperation(op, *rightBuilder);
 
-    if (node->isDistinct()) {
+    if (distinct) {
       builder_->aggregate(builder_->findOrAssignOutputNames(), {});
     }
   }
