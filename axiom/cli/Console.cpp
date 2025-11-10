@@ -14,10 +14,10 @@
  * limitations under the License.
  */
 
-#include "axiom/optimizer/tests/Console.h"
+#include "axiom/cli/Console.h"
 #include <sys/resource.h>
 #include <iostream>
-#include "axiom/optimizer/tests/linenoise/linenoise.h"
+#include "axiom/cli/linenoise/linenoise.h"
 
 DEFINE_string(
     data_path,
