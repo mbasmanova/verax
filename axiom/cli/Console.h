@@ -15,7 +15,7 @@
  */
 #pragma once
 
-#include "axiom/optimizer/tests/SqlQueryRunner.h"
+#include "axiom/cli/SqlQueryRunner.h"
 
 DECLARE_string(data_path);
 DECLARE_string(data_format);

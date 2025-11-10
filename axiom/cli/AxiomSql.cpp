@@ -16,10 +16,9 @@
 
 #include <folly/init/Init.h>
 #include <gflags/gflags.h>
+#include "axiom/cli/Console.h"
 #include "axiom/connectors/hive/LocalHiveConnectorMetadata.h"
 #include "axiom/connectors/tpch/TpchConnectorMetadata.h"
-#include "axiom/optimizer/tests/Console.h"
-#include "axiom/optimizer/tests/SqlQueryRunner.h"
 #include "velox/connectors/Connector.h"
 #include "velox/connectors/hive/HiveConnector.h"
 #include "velox/dwio/dwrf/RegisterDwrfReader.h"
