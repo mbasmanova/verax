@@ -122,8 +122,9 @@ int main(int argc, char** argv) {
   facebook::axiom::Connectors connectors{FLAGS_data_path, FLAGS_data_format};
 
   axiom::sql::SqlQueryRunner runner;
-  runner.initialize(
-      [&](auto& history) { return connectors.initialize(history); });
+  runner.initialize([&](auto& history) {
+    return std::make_pair(connectors.initialize(history), std::nullopt);
+  });
 
   axiom::sql::Console console{runner};
   console.initialize();
