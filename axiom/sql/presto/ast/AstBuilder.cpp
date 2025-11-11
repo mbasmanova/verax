@@ -1208,7 +1208,12 @@ std::any AstBuilder::visitValueExpressionDefault(
 std::any AstBuilder::visitConcatenation(
     PrestoSqlParser::ConcatenationContext* ctx) {
   trace("visitConcatenation");
-  return visitChildren(ctx);
+
+  return std::static_pointer_cast<Expression>(std::make_shared<FunctionCall>(
+      getLocation(ctx),
+      std::make_shared<QualifiedName>(
+          getLocation(ctx), std::vector<std::string>{"concat"}),
+      visitTyped<Expression>(ctx->valueExpression())));
 }
 
 namespace {
@@ -1270,7 +1275,6 @@ std::any AstBuilder::visitDereference(
 }
 
 namespace {
-
 std::string getIntervalFieldType(
     PrestoSqlParser::IntervalFieldContext* intervalField) {
   if (intervalField->YEAR() != nullptr) {
@@ -1450,8 +1454,6 @@ std::any AstBuilder::visitSubstring(PrestoSqlParser::SubstringContext* ctx) {
       getLocation(ctx),
       std::make_shared<QualifiedName>(
           getLocation(ctx), std::vector<std::string>{"substr"}),
-      /*window=*/nullptr,
-      /*=distinct*/ false,
       visitTyped<Expression>(ctx->valueExpression())));
 }
 
@@ -1766,7 +1768,6 @@ std::any AstBuilder::visitBooleanValue(
 }
 
 namespace {
-
 IntervalLiteral::Sign toIntervalSign(antlr4::Token* token) {
   if (token == nullptr) {
     return IntervalLiteral::Sign::kPositive;
@@ -2073,8 +2074,8 @@ std::any AstBuilder::visitDecimalLiteral(
     PrestoSqlParser::DecimalLiteralContext* ctx) {
   trace("visitDecimalLiteral");
 
-  // TODO Introduce ParsingOptions to allow parsing decimal as either double or
-  // decimal.
+  // TODO Introduce ParsingOptions to allow parsing decimal as either double
+  // or decimal.
 
   return std::static_pointer_cast<Expression>(std::make_shared<DoubleLiteral>(
       getLocation(ctx), std::stod(ctx->getText())));

@@ -219,6 +219,16 @@ class FunctionCall : public Expression {
         distinct_(distinct),
         arguments_(arguments) {}
 
+  FunctionCall(
+      NodeLocation location,
+      const std::shared_ptr<QualifiedName>& name,
+      const std::vector<ExpressionPtr>& arguments)
+      : Expression(NodeType::kFunctionCall, location),
+        name_(name),
+        window_(nullptr),
+        distinct_(false),
+        arguments_(arguments) {}
+
   const std::shared_ptr<QualifiedName>& name() const {
     return name_;
   }
