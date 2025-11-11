@@ -27,11 +27,11 @@ namespace axiom::sql {
 class SqlQueryRunner {
  public:
   /// @param initializeConnectors Lambda to call to initialize connectors and
-  /// return the ID of the default connector. Takes a reference to the history
-  /// to allow for loading from persistent storage.
+  /// return a pair of default {connector ID, schema}. Takes a reference to the
+  /// history to allow for loading from persistent storage.
   void initialize(
-      const std::function<
-          std::string(facebook::axiom::optimizer::VeloxHistory& history)>&
+      const std::function<std::pair<std::string, std::optional<std::string>>(
+          facebook::axiom::optimizer::VeloxHistory& history)>&
           initializeConnectors);
 
   /// Results of running a query. SELECT queries return a vector of results.
@@ -125,7 +125,6 @@ class SqlQueryRunner {
   std::shared_ptr<facebook::velox::memory::MemoryPool> optimizerPool_;
   std::shared_ptr<folly::CPUThreadPoolExecutor> executor_;
   std::shared_ptr<folly::IOThreadPoolExecutor> spillExecutor_;
-  std::string defaultConnectorId_;
   std::shared_ptr<facebook::axiom::connector::SchemaResolver> schema_;
   std::unordered_map<std::string, std::string> config_;
   std::unique_ptr<facebook::axiom::optimizer::VeloxHistory> history_;

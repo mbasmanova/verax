@@ -35,8 +35,8 @@ using namespace facebook::axiom;
 namespace axiom::sql {
 
 void SqlQueryRunner::initialize(
-    const std::function<std::string(optimizer::VeloxHistory& history)>&
-        initializeConnectors) {
+    const std::function<std::pair<std::string, std::optional<std::string>>(
+        optimizer::VeloxHistory& history)>& initializeConnectors) {
   velox::memory::MemoryManager::testingSetInstance(
       velox::memory::MemoryManager::Options{});
 
@@ -60,12 +60,13 @@ void SqlQueryRunner::initialize(
 
   history_ = std::make_unique<optimizer::VeloxHistory>();
 
-  defaultConnectorId_ = initializeConnectors(*history_);
+  const auto [defaultConnectorId, defaultSchema] =
+      initializeConnectors(*history_);
 
   schema_ = std::make_shared<connector::SchemaResolver>();
 
   prestoParser_ = std::make_unique<presto::PrestoParser>(
-      defaultConnectorId_, optimizerPool_.get());
+      defaultConnectorId, defaultSchema, optimizerPool_.get());
 
   spillExecutor_ = std::make_shared<folly::IOThreadPoolExecutor>(4);
 }
@@ -83,7 +84,8 @@ std::vector<velox::RowVectorPtr> fetchResults(runner::LocalRunner& runner) {
 
 connector::TablePtr SqlQueryRunner::createTable(
     const presto::CreateTableAsSelectStatement& statement) {
-  auto metadata = connector::ConnectorMetadata::metadata(defaultConnectorId_);
+  auto metadata =
+      connector::ConnectorMetadata::metadata(statement.connectorId());
 
   folly::F14FastMap<std::string, velox::Variant> options;
   for (const auto& [key, value] : statement.properties()) {
@@ -98,7 +100,8 @@ connector::TablePtr SqlQueryRunner::createTable(
 
 std::string SqlQueryRunner::dropTable(
     const presto::DropTableStatement& statement) {
-  auto metadata = connector::ConnectorMetadata::metadata(defaultConnectorId_);
+  auto metadata =
+      connector::ConnectorMetadata::metadata(statement.connectorId());
 
   const auto& tableName = statement.tableName();
 
@@ -141,7 +144,7 @@ SqlQueryRunner::SqlResult SqlQueryRunner::run(
     };
 
     schema_ = std::make_shared<connector::SchemaResolver>();
-    schema_->setTargetTable(defaultConnectorId_, table);
+    schema_->setTargetTable(ctas->connectorId(), table);
 
     return {.results = runSql(ctas->plan(), options)};
   }

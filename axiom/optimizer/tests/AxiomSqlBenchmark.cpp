@@ -178,7 +178,7 @@ class VeloxRunner : public velox::QueryBenchmarkBase {
     schema_ = std::make_shared<connector::SchemaResolver>();
 
     prestoParser_ = std::make_unique<::axiom::sql::presto::PrestoParser>(
-        connector_->connectorId(), optimizerPool_.get());
+        connector_->connectorId(), std::nullopt, optimizerPool_.get());
 
     history_ = std::make_unique<optimizer::VeloxHistory>();
 

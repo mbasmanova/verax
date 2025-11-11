@@ -100,16 +100,22 @@ class InsertStatement : public SqlStatement {
 class CreateTableAsSelectStatement : public SqlStatement {
  public:
   CreateTableAsSelectStatement(
+      std::string connectorId,
       std::string tableName,
       facebook::velox::RowTypePtr tableSchema,
       std::unordered_map<std::string, facebook::axiom::logical_plan::ExprPtr>
           properties,
       facebook::axiom::logical_plan::LogicalPlanNodePtr plan)
       : SqlStatement(SqlStatementKind::kCreateTableAsSelect),
+        connectorId_{std::move(connectorId)},
         tableName_{std::move(tableName)},
         tableSchema_{std::move(tableSchema)},
         properties_{std::move(properties)},
         plan_{std::move(plan)} {}
+
+  const std::string& connectorId() const {
+    return connectorId_;
+  }
 
   const std::string& tableName() const {
     return tableName_;
@@ -129,6 +135,7 @@ class CreateTableAsSelectStatement : public SqlStatement {
   }
 
  private:
+  const std::string connectorId_;
   const std::string tableName_;
   const facebook::velox::RowTypePtr tableSchema_;
   std::unordered_map<std::string, facebook::axiom::logical_plan::ExprPtr>
@@ -138,10 +145,18 @@ class CreateTableAsSelectStatement : public SqlStatement {
 
 class DropTableStatement : public SqlStatement {
  public:
-  DropTableStatement(std::string tableName, bool ifExists)
+  DropTableStatement(
+      std::string connectorId,
+      std::string tableName,
+      bool ifExists)
       : SqlStatement(SqlStatementKind::kDropTable),
+        connectorId_{std::move(connectorId)},
         tableName_{std::move(tableName)},
         ifExists_{ifExists} {}
+
+  const std::string& connectorId() const {
+    return connectorId_;
+  }
 
   const std::string& tableName() const {
     return tableName_;
@@ -152,6 +167,7 @@ class DropTableStatement : public SqlStatement {
   }
 
  private:
+  const std::string connectorId_;
   const std::string tableName_;
   const bool ifExists_;
 };

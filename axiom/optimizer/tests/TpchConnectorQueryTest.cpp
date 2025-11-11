@@ -42,7 +42,8 @@ class TpchConnectorQueryTest : public QueryTestBase {
   }
 
   lp::LogicalPlanNodePtr parseSql(std::string_view sql) {
-    ::axiom::sql::presto::PrestoParser parser(kTpchConnectorId, pool());
+    ::axiom::sql::presto::PrestoParser parser(
+        kTpchConnectorId, std::nullopt, pool());
     auto statement = parser.parse(sql);
 
     VELOX_CHECK(statement->isSelect());

@@ -1133,6 +1133,8 @@ bool LocalHiveConnectorMetadata::dropTable(
     const ConnectorSessionPtr& /* session */,
     std::string_view tableName,
     bool ifExists) {
+  ensureInitialized();
+
   std::lock_guard<std::mutex> l(mutex_);
   if (!tables_.contains(tableName)) {
     if (ifExists) {
