@@ -350,6 +350,11 @@ TEST_F(PrestoParserTest, intervalYearMonth) {
   test("INTERVAL '-3' MONTH", -3);
 }
 
+TEST_F(PrestoParserTest, concat) {
+  auto matcher = lp::test::LogicalPlanMatcherBuilder().tableScan().project();
+  testSql("SELECT n_name || n_comment FROM nation", matcher);
+}
+
 TEST_F(PrestoParserTest, selectStar) {
   auto matcher = lp::test::LogicalPlanMatcherBuilder().tableScan();
   testSql("SELECT * FROM nation", matcher);
