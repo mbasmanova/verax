@@ -35,6 +35,7 @@ namespace lp = facebook::axiom::logical_plan;
 class PrestoParserTest : public testing::Test {
  public:
   static constexpr const char* kTpchConnectorId = "tpch";
+  static constexpr const char* kTinySchema = "tiny";
 
   static void SetUpTestCase() {
     memory::MemoryManager::testingSetInstance(memory::MemoryManager::Options{});
@@ -72,7 +73,7 @@ class PrestoParserTest : public testing::Test {
       std::string_view sql,
       lp::test::LogicalPlanMatcherBuilder& matcher) {
     SCOPED_TRACE(sql);
-    PrestoParser parser(kTpchConnectorId, pool());
+    PrestoParser parser(kTpchConnectorId, kTinySchema, pool());
 
     auto statement = parser.parse(sql, true);
     ASSERT_TRUE(statement->isSelect());
@@ -86,7 +87,7 @@ class PrestoParserTest : public testing::Test {
       std::string_view sql,
       lp::test::LogicalPlanMatcherBuilder& matcher) {
     SCOPED_TRACE(sql);
-    PrestoParser parser(kTpchConnectorId, pool());
+    PrestoParser parser(kTpchConnectorId, kTinySchema, pool());
 
     auto statement = parser.parse(sql);
     ASSERT_TRUE(statement->isInsert());
@@ -105,7 +106,7 @@ class PrestoParserTest : public testing::Test {
       lp::test::LogicalPlanMatcherBuilder& matcher,
       const std::unordered_map<std::string, std::string>& properties = {}) {
     SCOPED_TRACE(sql);
-    PrestoParser parser(kTpchConnectorId, pool());
+    PrestoParser parser(kTpchConnectorId, kTinySchema, pool());
 
     auto statement = parser.parse(sql);
     ASSERT_TRUE(statement->isCreateTableAsSelect());
@@ -132,7 +133,7 @@ class PrestoParserTest : public testing::Test {
   void testDecimal(std::string_view sql, T value, const TypePtr& type) {
     SCOPED_TRACE(sql);
 
-    PrestoParser parser(kTpchConnectorId, pool());
+    PrestoParser parser(kTpchConnectorId, kTinySchema, pool());
     auto expr = parser.parseExpression(sql);
 
     ASSERT_TRUE(expr->isConstant());
@@ -190,7 +191,7 @@ TEST_F(PrestoParserTest, unnest) {
 }
 
 TEST_F(PrestoParserTest, syntaxErrors) {
-  PrestoParser parser(kTpchConnectorId, pool());
+  PrestoParser parser(kTpchConnectorId, kTinySchema, pool());
   EXPECT_THAT(
       [&]() { parser.parse("SELECT * FROM"); },
       ThrowsMessage<std::runtime_error>(::testing::HasSubstr(
@@ -207,7 +208,7 @@ TEST_F(PrestoParserTest, syntaxErrors) {
 }
 
 TEST_F(PrestoParserTest, types) {
-  PrestoParser parser(kTpchConnectorId, pool());
+  PrestoParser parser(kTpchConnectorId, kTinySchema, pool());
 
   auto test = [&](std::string_view sql, const TypePtr& expectedType) {
     SCOPED_TRACE(sql);
@@ -237,7 +238,7 @@ TEST_F(PrestoParserTest, types) {
 }
 
 TEST_F(PrestoParserTest, intervalDayTime) {
-  PrestoParser parser(kTpchConnectorId, pool());
+  PrestoParser parser(kTpchConnectorId, kTinySchema, pool());
 
   auto test = [&](std::string_view sql, int64_t expected) {
     SCOPED_TRACE(sql);
@@ -266,7 +267,7 @@ TEST_F(PrestoParserTest, intervalDayTime) {
 }
 
 TEST_F(PrestoParserTest, decimal) {
-  PrestoParser parser(kTpchConnectorId, pool());
+  PrestoParser parser(kTpchConnectorId, kTinySchema, pool());
 
   auto testShort =
       [&](std::string_view sql, int64_t value, const TypePtr& type) {
@@ -326,7 +327,7 @@ TEST_F(PrestoParserTest, decimal) {
 }
 
 TEST_F(PrestoParserTest, intervalYearMonth) {
-  PrestoParser parser(kTpchConnectorId, pool());
+  PrestoParser parser(kTpchConnectorId, kTinySchema, pool());
 
   auto test = [&](std::string_view sql, int64_t expected) {
     auto expr = parser.parseExpression(sql);
@@ -608,7 +609,7 @@ TEST_F(PrestoParserTest, everything) {
 }
 
 TEST_F(PrestoParserTest, explain) {
-  PrestoParser parser(kTpchConnectorId, pool());
+  PrestoParser parser(kTpchConnectorId, kTinySchema, pool());
 
   {
     auto statement = parser.parse("EXPLAIN SELECT * FROM nation");
@@ -732,7 +733,7 @@ TEST_F(PrestoParserTest, insertIntoTable) {
 
   // Wrong types.
   {
-    PrestoParser parser(kTpchConnectorId, pool());
+    PrestoParser parser(kTpchConnectorId, kTinySchema, pool());
 
     VELOX_ASSERT_THROW(
         parser.parse("INSERT INTO nation SELECT 100, 'n-100', 2, 3"),
@@ -750,7 +751,10 @@ TEST_F(PrestoParserTest, createTableAsSelect) {
     auto matcher =
         lp::test::LogicalPlanMatcherBuilder().tableScan().tableWrite();
     testCtasSql(
-        "CREATE TABLE t AS SELECT * FROM nation", "t", nationSchema, matcher);
+        "CREATE TABLE t AS SELECT * FROM nation",
+        "tiny.t",
+        nationSchema,
+        matcher);
   }
 
   auto matcher =
@@ -758,13 +762,13 @@ TEST_F(PrestoParserTest, createTableAsSelect) {
 
   testCtasSql(
       "CREATE TABLE t AS SELECT n_nationkey * 100 as a, n_name as b FROM nation",
-      "t",
+      "tiny.t",
       ROW({"a", "b"}, {BIGINT(), VARCHAR()}),
       matcher);
 
   // Missing column names.
   {
-    PrestoParser parser(kTpchConnectorId, pool());
+    PrestoParser parser(kTpchConnectorId, kTinySchema, pool());
 
     VELOX_ASSERT_THROW(
         parser.parse(
@@ -774,7 +778,7 @@ TEST_F(PrestoParserTest, createTableAsSelect) {
 
   testCtasSql(
       "CREATE TABLE t(a, b) AS SELECT n_nationkey * 100, n_name FROM nation",
-      "t",
+      "tiny.t",
       ROW({"a", "b"}, {BIGINT(), VARCHAR()}),
       matcher);
 
@@ -782,7 +786,7 @@ TEST_F(PrestoParserTest, createTableAsSelect) {
   testCtasSql(
       "CREATE TABLE t WITH (partitioned_by = ARRAY['ds']) AS "
       "SELECT n_nationkey, n_name, '2025-10-04' as ds FROM nation",
-      "t",
+      "tiny.t",
       ROW({"n_nationkey", "n_name", "ds"}, {BIGINT(), VARCHAR(), VARCHAR()}),
       matcher,
       {
@@ -792,7 +796,7 @@ TEST_F(PrestoParserTest, createTableAsSelect) {
   testCtasSql(
       "CREATE TABLE t WITH (partitioned_by = ARRAY['ds'], bucket_count = 4, bucketed_by = ARRAY['n_nationkey']) AS "
       "SELECT n_nationkey, n_name, '2025-10-04' as ds FROM nation",
-      "t",
+      "tiny.t",
       ROW({"n_nationkey", "n_name", "ds"}, {BIGINT(), VARCHAR(), VARCHAR()}),
       matcher,
       {
@@ -803,14 +807,14 @@ TEST_F(PrestoParserTest, createTableAsSelect) {
 }
 
 TEST_F(PrestoParserTest, dropTable) {
-  PrestoParser parser(kTpchConnectorId, pool());
+  PrestoParser parser(kTpchConnectorId, kTinySchema, pool());
 
   {
     auto statement = parser.parse("DROP TABLE t");
     ASSERT_TRUE(statement->isDropTable());
 
     const auto* dropTable = statement->as<DropTableStatement>();
-    ASSERT_EQ("t", dropTable->tableName());
+    ASSERT_EQ("tiny.t", dropTable->tableName());
     ASSERT_FALSE(dropTable->ifExists());
   }
 
@@ -819,7 +823,7 @@ TEST_F(PrestoParserTest, dropTable) {
     ASSERT_TRUE(statement->isDropTable());
 
     const auto* dropTable = statement->as<DropTableStatement>();
-    ASSERT_EQ("u", dropTable->tableName());
+    ASSERT_EQ("tiny.u", dropTable->tableName());
     ASSERT_TRUE(dropTable->ifExists());
   }
 }

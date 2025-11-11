@@ -44,7 +44,7 @@ void HiveQueriesTestBase::SetUp() {
   test::QueryTestBase::SetUp();
 
   prestoParser_ = std::make_unique<::axiom::sql::presto::PrestoParser>(
-      exec::test::kHiveConnectorId, pool());
+      exec::test::kHiveConnectorId, std::nullopt, pool());
 }
 
 void HiveQueriesTestBase::TearDown() {

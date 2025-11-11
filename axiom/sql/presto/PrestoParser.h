@@ -19,12 +19,20 @@
 
 namespace axiom::sql::presto {
 
+/// SQL Parser compatible with PrestoSQL dialect.
 class PrestoParser {
  public:
+  /// @param defaultConnectorId Connector ID to use for tables that do not
+  /// specify catalog, i.e. SELECT * FROM schema.name.
+  /// @param defaultSchema Optional default schema to use for tables that do not
+  /// specify schema, i.e. SELECT * FROM name.
   PrestoParser(
       const std::string& defaultConnectorId,
+      const std::optional<std::string>& defaultSchema,
       facebook::velox::memory::MemoryPool* pool)
-      : defaultConnectorId_{defaultConnectorId}, pool_{pool} {}
+      : defaultConnectorId_{defaultConnectorId},
+        defaultSchema_{defaultSchema},
+        pool_{pool} {}
 
   SqlStatementPtr parse(std::string_view sql, bool enableTracing = false);
 
@@ -36,6 +44,7 @@ class PrestoParser {
   SqlStatementPtr doParse(std::string_view sql, bool enableTracing);
 
   const std::string defaultConnectorId_;
+  const std::optional<std::string> defaultSchema_;
   facebook::velox::memory::MemoryPool* pool_;
 };
 

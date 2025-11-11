@@ -55,9 +55,10 @@ class DerivedTablePrinterTest : public ::testing::Test {
   void TearDown() override {
     velox::connector::unregisterConnector(kTestConnectorId);
   }
+
   std::vector<std::string> toLines(const std::string& sql) {
     ::axiom::sql::presto::PrestoParser parser{
-        kTestConnectorId, optimizerPool_.get()};
+        kTestConnectorId, std::nullopt, optimizerPool_.get()};
     auto statement = parser.parse(sql);
     VELOX_CHECK(statement->isSelect());
 
