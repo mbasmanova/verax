@@ -16,12 +16,14 @@
 
 #include <velox/common/base/Exceptions.h>
 #include <iostream>
+#include <ranges>
 #include "axiom/logical_plan/ExprPrinter.h"
 #include "axiom/logical_plan/PlanPrinter.h"
 #include "axiom/optimizer/FunctionRegistry.h"
 #include "axiom/optimizer/Optimization.h"
 #include "axiom/optimizer/Plan.h"
 #include "axiom/optimizer/PlanUtils.h"
+#include "axiom/optimizer/SubfieldTracker.h"
 #include "velox/exec/Aggregate.h"
 #include "velox/exec/AggregateFunctionRegistry.h"
 #include "velox/expression/ConstantExpr.h"
@@ -141,6 +143,17 @@ void ToGraph::setDtUsedOutput(
   }
 }
 
+std::vector<int32_t> ToGraph::usedChannels(const lp::LogicalPlanNode& node) {
+  const auto& control = controlSubfields_.nodeFields[&node];
+  const auto& payload = payloadSubfields_.nodeFields[&node];
+  std::vector<int32_t> result;
+  std::ranges::set_union(
+      control.resultPaths | std::views::keys,
+      payload.resultPaths | std::views::keys,
+      std::back_inserter(result));
+  return result;
+}
+
 namespace {
 bool isConstantTrue(ExprCP expr) {
   if (expr->isNot(PlanType::kLiteralExpr)) {
@@ -167,6 +180,36 @@ void ToGraph::translateConjuncts(const lp::ExprPtr& input, ExprVector& flat) {
       flat.push_back(translatedExpr);
     }
   }
+}
+
+namespace {
+
+bool looksConstant(const lp::ExprPtr& expr) {
+  if (expr->isConstant()) {
+    return true;
+  }
+  if (expr->isInputReference()) {
+    return false;
+  }
+  return std::ranges::all_of(expr->inputs(), looksConstant);
+}
+
+} // namespace
+
+lp::ConstantExprPtr ToGraph::tryFoldConstant(const lp::ExprPtr& expr) {
+  if (expr->isConstant()) {
+    return std::static_pointer_cast<const lp::ConstantExpr>(expr);
+  }
+
+  if (looksConstant(expr)) {
+    auto literal = translateExpr(expr);
+    if (literal->is(PlanType::kLiteralExpr)) {
+      return std::make_shared<lp::ConstantExpr>(
+          toTypePtr(literal->value().type),
+          std::make_shared<velox::Variant>(literal->as<Literal>()->literal()));
+    }
+  }
+  return nullptr;
 }
 
 ExprCP ToGraph::tryFoldConstant(
@@ -826,7 +869,7 @@ std::optional<ExprCP> ToGraph::translateSubfieldFunction(
       }
 
       const auto& step = paths[i]->steps()[0];
-      if (auto maybeArg = stepToArg(step, metadata)) {
+      if (auto maybeArg = SubfieldTracker::stepToArg(step, metadata)) {
         usedArgs.add(maybeArg.value());
       }
     }
@@ -1999,8 +2042,10 @@ void ToGraph::translateUnion(const lp::SetNode& set) {
 }
 
 DerivedTableP ToGraph::makeQueryGraph(const lp::LogicalPlanNode& logicalPlan) {
-  // Populate controlSubfields_ and payloadSubfields_.
-  markAllSubfields(logicalPlan, {});
+  std::tie(controlSubfields_, payloadSubfields_) =
+      SubfieldTracker([&](const auto& expr) {
+        return tryFoldConstant(expr);
+      }).markAll(logicalPlan);
 
   currentDt_ = newDt();
   makeQueryGraph(logicalPlan, kAllAllowedInDt);

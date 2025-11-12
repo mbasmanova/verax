@@ -14,16 +14,35 @@
  * limitations under the License.
  */
 
+#include "axiom/optimizer/SubfieldTracker.h"
+#include <ranges>
 #include "axiom/logical_plan/ExprPrinter.h"
 #include "axiom/optimizer/FunctionRegistry.h"
 #include "axiom/optimizer/PlanUtils.h"
-#include "axiom/optimizer/ToGraph.h"
-
-#include <ranges>
 
 namespace lp = facebook::axiom::logical_plan;
 
 namespace facebook::axiom::optimizer {
+
+SubfieldTracker::SubfieldTracker(
+    std::function<logical_plan::ConstantExprPtr(const logical_plan::ExprPtr&)>
+        tryFoldConstant)
+    : tryFoldConstant_(std::move(tryFoldConstant)) {
+  auto* registry = FunctionRegistry::instance();
+
+  if (auto elementAt = registry->elementAt()) {
+    elementAt_ = toName(elementAt.value());
+  }
+
+  if (auto subscript = registry->subscript()) {
+    subscript_ = toName(subscript.value());
+  }
+
+  if (auto cardinality = registry->cardinality()) {
+    cardinality_ = toName(cardinality.value());
+  }
+}
+
 namespace {
 
 PathCP stepsToPath(std::span<const Step> steps) {
@@ -98,7 +117,7 @@ MarkFieldsAccessedContextVector fromNodes(
 
 } // namespace
 
-void ToGraph::markFieldAccessed(
+void SubfieldTracker::markFieldAccessed(
     const lp::ProjectNode& project,
     int32_t ordinal,
     std::vector<Step>& steps,
@@ -108,7 +127,7 @@ void ToGraph::markFieldAccessed(
   markSubfields(project.expressionAt(ordinal), steps, isControl, ctx.toCtx());
 }
 
-void ToGraph::markFieldAccessed(
+void SubfieldTracker::markFieldAccessed(
     const lp::UnnestNode& unnest,
     int32_t ordinal,
     std::vector<Step>& steps,
@@ -120,7 +139,7 @@ void ToGraph::markFieldAccessed(
   }
 }
 
-void ToGraph::markFieldAccessed(
+void SubfieldTracker::markFieldAccessed(
     const lp::AggregateNode& agg,
     int32_t ordinal,
     std::vector<Step>& steps,
@@ -153,7 +172,7 @@ void ToGraph::markFieldAccessed(
   }
 }
 
-void ToGraph::markFieldAccessed(
+void SubfieldTracker::markFieldAccessed(
     const lp::SetNode& set,
     int32_t ordinal,
     std::vector<Step>& steps,
@@ -164,7 +183,7 @@ void ToGraph::markFieldAccessed(
   }
 }
 
-void ToGraph::markFieldAccessed(
+void SubfieldTracker::markFieldAccessed(
     const LogicalContextSource& source,
     int32_t ordinal,
     std::vector<Step>& steps,
@@ -249,7 +268,7 @@ void ToGraph::markFieldAccessed(
 }
 
 // static
-std::optional<int32_t> ToGraph::stepToArg(
+std::optional<int32_t> SubfieldTracker::stepToArg(
     const Step& step,
     const FunctionMetadata* metadata) {
   const auto begin = metadata->fieldIndexForArg.begin();
@@ -260,36 +279,6 @@ std::optional<int32_t> ToGraph::stepToArg(
     return metadata->argOrdinal[it - begin];
   }
   return std::nullopt;
-}
-
-namespace {
-
-bool looksConstant(const lp::ExprPtr& expr) {
-  if (expr->isConstant()) {
-    return true;
-  }
-  if (expr->isInputReference()) {
-    return false;
-  }
-  return std::ranges::all_of(expr->inputs(), looksConstant);
-}
-
-} // namespace
-
-lp::ConstantExprPtr ToGraph::tryFoldConstant(const lp::ExprPtr& expr) {
-  if (expr->isConstant()) {
-    return std::static_pointer_cast<const lp::ConstantExpr>(expr);
-  }
-
-  if (looksConstant(expr)) {
-    auto literal = translateExpr(expr);
-    if (literal->is(PlanType::kLiteralExpr)) {
-      return std::make_shared<lp::ConstantExpr>(
-          toTypePtr(literal->value().type),
-          std::make_shared<velox::Variant>(literal->as<Literal>()->literal()));
-    }
-  }
-  return nullptr;
 }
 
 namespace {
@@ -313,9 +302,16 @@ MarkFieldsAccessedContextVector makeContextForLambdaArg(
 
   return {newRowTypes, newSources};
 }
+
+bool isSpecialForm(
+    const logical_plan::ExprPtr& expr,
+    logical_plan::SpecialForm form) {
+  return expr->isSpecialForm() &&
+      expr->as<logical_plan::SpecialFormExpr>()->form() == form;
+}
 } // namespace
 
-void ToGraph::markSubfields(
+void SubfieldTracker::markSubfields(
     const lp::ExprPtr& expr,
     std::vector<Step>& steps,
     bool isControl,
@@ -369,7 +365,7 @@ void ToGraph::markSubfields(
     }
 
     if (name == subscript_ || name == elementAt_) {
-      auto constant = tryFoldConstant(expr->inputAt(1));
+      auto constant = tryFoldConstant_(expr->inputAt(1));
       if (!constant) {
         std::vector<Step> subSteps;
         markSubfields(expr->inputAt(1), subSteps, isControl, context);
@@ -382,7 +378,7 @@ void ToGraph::markSubfields(
 
       const auto& value = constant->value();
       if (value->kind() == velox::TypeKind::VARCHAR) {
-        const auto& str = value->value<velox::TypeKind::VARCHAR>();
+        const auto& str = value->template value<velox::TypeKind::VARCHAR>();
         steps.push_back({.kind = StepKind::kSubscript, .field = toName(str)});
       } else {
         const auto& id = integerValue(value.get());
@@ -511,7 +507,7 @@ void ToGraph::markSubfields(
   VELOX_UNREACHABLE("Unhandled expr: {}", lp::ExprPrinter::toText(*expr));
 }
 
-void ToGraph::markColumnSubfields(
+void SubfieldTracker::markColumnSubfields(
     const lp::LogicalPlanNodePtr& source,
     std::span<const lp::ExprPtr> columns,
     bool isControl,
@@ -524,7 +520,7 @@ void ToGraph::markColumnSubfields(
   }
 }
 
-void ToGraph::markControl(
+void SubfieldTracker::markControl(
     const lp::LogicalPlanNode& node,
     const MarkFieldsAccessedContext& context) {
   const auto kind = node.kind();
@@ -599,7 +595,7 @@ void ToGraph::markControl(
   }
 }
 
-void ToGraph::markAllSubfields(
+void SubfieldTracker::markAllSubfields(
     const lp::LogicalPlanNode& node,
     const MarkFieldsAccessedContext& context) {
   markControl(node, context);
@@ -610,17 +606,6 @@ void ToGraph::markAllSubfields(
     markFieldAccessed(source, i, steps, /*isControl=*/false, context);
     VELOX_CHECK(steps.empty());
   }
-}
-
-std::vector<int32_t> ToGraph::usedChannels(const lp::LogicalPlanNode& node) {
-  const auto& control = controlSubfields_.nodeFields[&node];
-  const auto& payload = payloadSubfields_.nodeFields[&node];
-  std::vector<int32_t> result;
-  std::ranges::set_union(
-      control.resultPaths | std::views::keys,
-      payload.resultPaths | std::views::keys,
-      std::back_inserter(result));
-  return result;
 }
 
 namespace {
