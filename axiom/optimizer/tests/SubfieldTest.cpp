@@ -421,33 +421,6 @@ class SubfieldTest : public QueryTestBase,
   static core::PlanNodePtr extractPlanNode(const PlanAndStats& plan) {
     return plan.plan->fragments().at(0).fragment.planNode;
   }
-
-  static std::string veloxString(const runner::MultiFragmentPlanPtr& plan) {
-    folly::F14FastMap<core::PlanNodeId, const core::TableScanNode*> scans;
-    for (const auto& fragment : plan->fragments()) {
-      velox::core::PlanNode::findFirstNode(
-          fragment.fragment.planNode.get(), [&](const auto* node) {
-            if (auto scan = dynamic_cast<const core::TableScanNode*>(node)) {
-              scans.emplace(scan->id(), scan);
-            }
-            return false;
-          });
-    }
-
-    auto planNodeDetails = [&](const core::PlanNodeId& planNodeId,
-                               std::string_view indentation,
-                               std::ostream& stream) {
-      auto it = scans.find(planNodeId);
-      if (it != scans.end()) {
-        const auto* scan = it->second;
-        for (const auto& [name, handle] : scan->assignments()) {
-          stream << indentation << name << " = " << handle->name() << std::endl;
-        }
-      }
-    };
-
-    return plan->toString(true, planNodeDetails);
-  }
 };
 
 TEST_P(SubfieldTest, structs) {
@@ -484,7 +457,6 @@ TEST_P(SubfieldTest, maps) {
   auto vectors = makeFeatures(1, 100, opts, pool_.get());
 
   const auto rowType = vectors[0]->rowType();
-  const auto fields = rowType->names();
 
   auto config = std::make_shared<dwrf::Config>();
   config->set(dwrf::Config::FLATTEN_MAP, true);
@@ -496,14 +468,14 @@ TEST_P(SubfieldTest, maps) {
   testMakeRowFromMap();
 
   {
-    lp::PlanBuilder::Context ctx;
-    auto builder =
+    lp::PlanBuilder::Context ctx(kHiveConnectorId);
+    auto logicalPlan =
         lp::PlanBuilder(ctx)
-            .tableScan(kHiveConnectorId, "features", fields)
+            .tableScan("features")
             .project({"uid", "float_features as ff"})
             .join(
                 lp::PlanBuilder(ctx)
-                    .tableScan(kHiveConnectorId, "features", fields)
+                    .tableScan("features")
                     .filter(
                         "uid % 2 = 1 and cast(float_features[10300::int] as integer) % 2::int = 0::int")
                     .project({"uid as opt_uid", "float_features as opt_ff"}),
@@ -515,15 +487,16 @@ TEST_P(SubfieldTest, maps) {
                  "ff[10100::int] as f10",
                  "ff[10200::int] as f20",
                  "opt_ff[10100::int] as o10",
-                 "opt_ff[10200::int] as o20"});
+                 "opt_ff[10200::int] as o20"})
+            .build();
 
-    auto plan = veloxString(planVelox(builder.build()).plan);
+    auto plan = extractPlanNode(planVelox(logicalPlan));
     // TODO Add verification.
   }
   {
     auto logicalPlan =
         lp::PlanBuilder()
-            .tableScan(kHiveConnectorId, "features", fields)
+            .tableScan(kHiveConnectorId, "features")
             .project(
                 {"float_features[10100::int] as f1",
                  "float_features[10200::int] as f2",
@@ -540,7 +513,7 @@ TEST_P(SubfieldTest, maps) {
   }
   {
     auto logicalPlan = lp::PlanBuilder()
-                           .tableScan(kHiveConnectorId, "features", fields)
+                           .tableScan(kHiveConnectorId, "features")
                            .project(
                                {"float_features[10000::int] as ff",
                                 "id_score_list_features[200800::int] as sc1",
@@ -555,9 +528,10 @@ TEST_P(SubfieldTest, maps) {
             {"id_score_list_features", {subfield("200800", "[1]")}},
         });
   }
+
   {
     auto logicalPlan = lp::PlanBuilder()
-                           .tableScan(kHiveConnectorId, "features", fields)
+                           .tableScan(kHiveConnectorId, "features")
                            .project(
                                {"float_features[10100::int] as ff",
                                 "id_score_list_features[200800::int] as sc1",
@@ -585,7 +559,7 @@ TEST_P(SubfieldTest, maps) {
   {
     auto logicalPlan =
         lp::PlanBuilder()
-            .tableScan(kHiveConnectorId, "features", fields)
+            .tableScan(kHiveConnectorId, "features")
             .project(
                 {"genie(uid, float_features, id_list_features, id_score_list_features) as g"})
             // Access some fields of the genie by name, others by index.
@@ -605,11 +579,12 @@ TEST_P(SubfieldTest, maps) {
             {"id_list_features", {subfield("201600")}},
         });
   }
+
   // All of genie is returned.
   {
     auto logicalPlan =
         lp::PlanBuilder()
-            .tableScan(kHiveConnectorId, "features", fields)
+            .tableScan(kHiveConnectorId, "features")
             .project(
                 {"genie(uid, float_features, id_list_features, id_score_list_features) as gtemp"})
             .project({"gtemp as g"})
@@ -634,9 +609,9 @@ TEST_P(SubfieldTest, maps) {
 
   // We expect the genie to explode and the filters to be first.
   {
-    auto builder =
+    auto logicalPlan =
         lp::PlanBuilder()
-            .tableScan(kHiveConnectorId, "features", fields)
+            .tableScan(kHiveConnectorId, "features")
             .project(
                 {"exploding_genie(uid, float_features, id_list_features, id_score_list_features) as g"})
             .project({"g[2] as ff", "g as gg"})
@@ -646,15 +621,22 @@ TEST_P(SubfieldTest, maps) {
                  "ff[10200::int] as f2",
                  "gg[2][10200::int] + 22::REAL as f2b",
                  "gg[3][200600::int] as idl100"})
-            .filter("f10 < 10::REAL and f11 < 10::REAL");
+            .filter("f10 < 10::REAL and f11 < 10::REAL")
+            .build();
 
-    auto plan = veloxString(planVelox(builder.build()).plan);
-    // TODO Add verification.
+    auto plan = extractPlanNode(planVelox(logicalPlan));
+    verifyRequiredSubfields(
+        plan,
+        {
+            {"float_features", {subfield("10100"), subfield("10200")}},
+            {"id_list_features", {subfield("200600")}},
+        });
   }
+
   {
     auto builder =
         lp::PlanBuilder()
-            .tableScan(kHiveConnectorId, "features", fields)
+            .tableScan(kHiveConnectorId, "features")
             .project(
                 {"transform(id_list_features[201800::int], x -> x + 1) as ids"});
 
