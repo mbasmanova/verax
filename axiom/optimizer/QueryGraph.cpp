@@ -159,7 +159,7 @@ std::string Field::toString() const {
   return out.str();
 }
 
-std::optional<BitSet> SubfieldSet::findSubfields(int32_t id) const {
+std::optional<PathSet> SubfieldSet::findSubfields(int32_t id) const {
   for (auto i = 0; i < ids.size(); ++i) {
     if (ids[i] == id) {
       return subfields[i];
@@ -181,21 +181,15 @@ std::optional<int32_t> BaseTable::columnId(Name column) const {
   return std::nullopt;
 }
 
-BitSet BaseTable::columnSubfields(
-    int32_t id,
-    bool controlOnly,
-    bool payloadOnly) const {
-  BitSet subfields;
-  if (!controlOnly) {
-    if (auto maybe = payloadSubfields.findSubfields(id)) {
-      subfields = maybe.value();
-    }
+PathSet BaseTable::columnSubfields(int32_t id) const {
+  PathSet subfields;
+  if (auto maybe = payloadSubfields.findSubfields(id)) {
+    subfields = maybe.value();
   }
-  if (!payloadOnly) {
-    if (auto maybe = controlSubfields.findSubfields(id)) {
-      subfields.unionSet(maybe.value());
-    }
+  if (auto maybe = controlSubfields.findSubfields(id)) {
+    subfields.unionSet(maybe.value());
   }
+
   Path::subfieldSkyline(subfields);
   return subfields;
 }

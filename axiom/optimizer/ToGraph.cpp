@@ -508,40 +508,41 @@ ExprCP ToGraph::makeGettersOverSkyline(
   return expr;
 }
 
-namespace {
-std::optional<BitSet> findSubfields(
-    const PlanSubfields& fields,
-    const lp::CallExpr* call) {
-  auto it = fields.argFields.find(call);
-  if (it == fields.argFields.end()) {
+bool PlanSubfields::hasColumn(
+    const logical_plan::LogicalPlanNode* node,
+    int32_t ordinal) const {
+  auto it = nodeFields.find(node);
+  if (it == nodeFields.end()) {
+    return false;
+  }
+  return it->second.resultPaths.contains(ordinal);
+}
+
+std::optional<PathSet> PlanSubfields::findSubfields(
+    const logical_plan::Expr* expr) const {
+  auto it = argFields.find(expr);
+  if (it == argFields.end()) {
     return std::nullopt;
   }
-  auto& paths = it->second.resultPaths;
-  auto it2 = paths.find(ResultAccess::kSelf);
-  if (it2 == paths.end()) {
-    return {};
-  }
-  return it2->second;
-}
-} // namespace
 
-BitSet ToGraph::functionSubfields(
-    const lp::CallExpr* call,
-    bool controlOnly,
-    bool payloadOnly) {
-  BitSet subfields;
-  if (!controlOnly) {
-    auto maybe = findSubfields(payloadSubfields_, call);
-    if (maybe.has_value()) {
-      subfields = maybe.value();
-    }
+  const auto& paths = it->second.resultPaths;
+  auto pathIt = paths.find(ResultAccess::kSelf);
+  if (pathIt == paths.end()) {
+    return std::nullopt;
   }
-  if (!payloadOnly) {
-    auto maybe = findSubfields(controlSubfields_, call);
-    if (maybe.has_value()) {
-      subfields.unionSet(maybe.value());
-    }
+  return pathIt->second;
+}
+
+PathSet ToGraph::functionSubfields(const lp::CallExpr* call) {
+  PathSet subfields;
+  if (auto maybe = payloadSubfields_.findSubfields(call)) {
+    subfields = maybe.value();
   }
+
+  if (auto maybe = controlSubfields_.findSubfields(call)) {
+    subfields.unionSet(maybe.value());
+  }
+
   Path::subfieldSkyline(subfields);
   return subfields;
 }
@@ -799,17 +800,16 @@ std::optional<ExprCP> ToGraph::translateSubfieldFunction(
     const FunctionMetadata* metadata) {
   translatedSubfieldFuncs_.insert(call);
 
-  auto subfields = functionSubfields(call, false, false);
+  auto subfields = functionSubfields(call);
   if (subfields.empty()) {
     // The function is accessed as a whole.
     return std::nullopt;
   }
 
-  auto* ctx = queryCtx();
   std::vector<PathCP> paths;
-  subfields.forEach([&](auto id) { paths.push_back(ctx->pathById(id)); });
+  subfields.forEachPath([&](PathCP path) { paths.push_back(path); });
 
-  BitSet usedArgs;
+  PathSet usedArgs;
   bool allUsed = false;
 
   const auto& argOrginal = metadata->argOrdinal;
@@ -1332,14 +1332,12 @@ const velox::Type* pathType(const velox::Type* type, PathCP path) {
 SubfieldProjections makeSubfieldColumns(
     BaseTable& baseTable,
     ColumnCP column,
-    const BitSet& paths) {
+    const PathSet& paths) {
   const float cardinality =
       baseTable.schemaTable->cardinality * baseTable.filterSelectivity;
 
   SubfieldProjections projections;
-  auto* ctx = queryCtx();
-  paths.forEach([&](auto id) {
-    auto* path = ctx->pathById(id);
+  paths.forEachPath([&](PathCP path) {
     auto type = pathType(column->value().type, path);
     Value value(type, cardinality);
     auto name = fmt::format("{}.{}", column->name(), path->toString());
@@ -1394,7 +1392,7 @@ void ToGraph::makeBaseTable(const lp::TableScanNode& tableScan) {
     const auto kind = column->value().type->kind();
     if (kind == velox::TypeKind::ARRAY || kind == velox::TypeKind::ROW ||
         kind == velox::TypeKind::MAP) {
-      BitSet allPaths;
+      PathSet allPaths;
       if (controlSubfields_.hasColumn(&tableScan, i)) {
         baseTable->controlSubfields.ids.push_back(column->id());
         allPaths = controlSubfields_.nodeFields[&tableScan].resultPaths[i];

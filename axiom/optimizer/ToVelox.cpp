@@ -62,11 +62,11 @@ std::vector<velox::common::Subfield> columnSubfields(
 
   const auto columnName = queryCtx()->objectAt(id)->as<Column>()->name();
 
-  BitSet set = table->columnSubfields(id, false, false);
+  PathSet set = table->columnSubfields(id);
 
   std::vector<velox::common::Subfield> subfields;
-  set.forEach([&](auto id) {
-    auto steps = queryCtx()->pathById(id)->steps();
+  set.forEachPath([&](PathCP path) {
+    const auto& steps = path->steps();
     std::vector<std::unique_ptr<velox::common::Subfield::PathElement>> elements;
     elements.push_back(
         std::make_unique<velox::common::Subfield::NestedField>(columnName));
@@ -818,7 +818,7 @@ bool hasSubfieldPushdown(const TableScan& scan) {
 // 'baseTable'. This is the type to return from the table reader
 // for the map column.
 velox::RowTypePtr skylineStruct(BaseTableCP baseTable, ColumnCP column) {
-  BitSet allFields;
+  PathSet allFields;
   if (auto fields = baseTable->controlSubfields.findSubfields(column->id())) {
     allFields = *fields;
   }
@@ -832,10 +832,8 @@ velox::RowTypePtr skylineStruct(BaseTableCP baseTable, ColumnCP column) {
   names.reserve(numOutputs);
   types.reserve(numOutputs);
 
-  auto* ctx = queryCtx();
   auto valueType = column->value().type->childAt(1);
-  allFields.forEach([&](int32_t id) {
-    const auto* path = ctx->pathById(id);
+  allFields.forEachPath([&](PathCP path) {
     const auto& first = path->steps()[0];
     auto name =
         first.field ? std::string{first.field} : fmt::format("{}", first.id);
