@@ -20,24 +20,9 @@
 #include "axiom/optimizer/PathSet.h"
 #include "axiom/optimizer/QueryGraph.h"
 #include "axiom/optimizer/Schema.h"
+#include "axiom/optimizer/SubfieldTracker.h"
 
 namespace facebook::axiom::optimizer {
-
-/// Struct for resolving which logical PlanNode or Lambda defines which
-/// field for column and subfield tracking.
-/// Only one of planNode or call + lambdaOrdinal is set.
-struct LogicalContextSource {
-  const logical_plan::LogicalPlanNode* planNode{nullptr};
-  const logical_plan::CallExpr* call{nullptr};
-  int32_t lambdaOrdinal{-1};
-};
-
-struct MarkFieldsAccessedContext {
-  // 1:1 with 'sources'. Either output type of the plan node or signature of a
-  // lambda.
-  std::span<const velox::RowType* const> rowTypes;
-  std::span<const LogicalContextSource> sources;
-};
 
 struct ExprDedupKey {
   Name func;
@@ -100,31 +85,6 @@ struct PathExprHasher {
         ? velox::bits::hashMix(hash, expr.subscriptExpr->id())
         : hash;
   }
-};
-
-/// Set of accessed subfields given ordinal of output column or function
-/// argument.
-struct ResultAccess {
-  // Key in 'resultPaths' to indicate the path is applied to the function
-  // itself, not the ith argument.
-  static constexpr int32_t kSelf = -1;
-  std::map<int32_t, PathSet> resultPaths;
-};
-
-/// PlanNode output columns and function arguments with accessed subfields.
-struct PlanSubfields {
-  folly::F14FastMap<const logical_plan::LogicalPlanNode*, ResultAccess>
-      nodeFields;
-  folly::F14FastMap<const logical_plan::Expr*, ResultAccess> argFields;
-
-  /// Return true if 'ordinal' output column of 'node' is accessed.
-  bool hasColumn(const logical_plan::LogicalPlanNode* node, int32_t ordinal)
-      const;
-
-  /// Return a set of accessed subfields for the result of 'expr'.
-  std::optional<PathSet> findSubfields(const logical_plan::Expr* expr) const;
-
-  std::string toString() const;
 };
 
 /// Lists the subfield paths physically produced by a source. The
@@ -215,12 +175,6 @@ class ToGraph {
 
   // Returns the ordinal positions of actually referenced outputs of 'node'.
   std::vector<int32_t> usedChannels(const logical_plan::LogicalPlanNode& node);
-
-  // if 'step' applied to result of the function of 'metadata'
-  // corresponds to an argument, returns the ordinal of the argument.
-  static std::optional<int32_t> stepToArg(
-      const Step& step,
-      const FunctionMetadata* metadata);
 
   // Returns a deduplicated Literal from the value in 'constant'.
   ExprCP makeConstant(const logical_plan::ConstantExpr& constant);
@@ -326,57 +280,6 @@ class ToGraph {
       const SubfieldProjections* skyline,
       const logical_plan::ExprPtr& base,
       ColumnCP column);
-
-  void markSubfields(
-      const logical_plan::ExprPtr& expr,
-      std::vector<Step>& steps,
-      bool isControl,
-      const MarkFieldsAccessedContext& context);
-
-  void markFieldAccessed(
-      const logical_plan::ProjectNode& project,
-      int32_t ordinal,
-      std::vector<Step>& steps,
-      bool isControl);
-
-  void markFieldAccessed(
-      const logical_plan::UnnestNode& unnest,
-      int32_t ordinal,
-      std::vector<Step>& steps,
-      bool isControl);
-
-  void markFieldAccessed(
-      const logical_plan::AggregateNode& agg,
-      int32_t ordinal,
-      std::vector<Step>& steps,
-      bool isControl);
-
-  void markFieldAccessed(
-      const logical_plan::SetNode& set,
-      int32_t ordinal,
-      std::vector<Step>& steps,
-      bool isControl);
-
-  void markFieldAccessed(
-      const LogicalContextSource& source,
-      int32_t ordinal,
-      std::vector<Step>& steps,
-      bool isControl,
-      const MarkFieldsAccessedContext& context);
-
-  void markAllSubfields(
-      const logical_plan::LogicalPlanNode& node,
-      const MarkFieldsAccessedContext& context);
-
-  void markControl(
-      const logical_plan::LogicalPlanNode& node,
-      const MarkFieldsAccessedContext& context);
-
-  void markColumnSubfields(
-      const logical_plan::LogicalPlanNodePtr& source,
-      std::span<const logical_plan::ExprPtr> columns,
-      bool isControl,
-      const MarkFieldsAccessedContext& context);
 
   PathSet functionSubfields(const logical_plan::CallExpr* call);
 
