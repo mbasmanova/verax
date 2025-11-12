@@ -265,6 +265,11 @@ class ExprAnalyzer : public AstVisitor {
     }
   }
 
+  void visitSubscriptExpression(SubscriptExpression* node) override {
+    node->base()->accept(this);
+    node->index()->accept(this);
+  }
+
   void visitIdentifier(Identifier* node) override {
     // No function calls.
   }
@@ -594,6 +599,12 @@ class RelationPlanner : public AstVisitor {
         }
 
         return lp::Lambda(names, toExpr(lambda->body()));
+      }
+
+      case NodeType::kSubscriptExpression: {
+        auto* subscript = node->as<SubscriptExpression>();
+        return lp::Call(
+            "subscript", toExpr(subscript->base()), toExpr(subscript->index()));
       }
 
       default:
