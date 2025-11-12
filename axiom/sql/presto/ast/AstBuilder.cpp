@@ -1550,7 +1550,11 @@ std::any AstBuilder::visitRowConstructor(
 
 std::any AstBuilder::visitSubscript(PrestoSqlParser::SubscriptContext* ctx) {
   trace("visitSubscript");
-  return visitChildren(ctx);
+  return std::static_pointer_cast<Expression>(
+      std::make_shared<SubscriptExpression>(
+          getLocation(ctx),
+          visitTyped<Expression>(ctx->primaryExpression()),
+          visitTyped<Expression>(ctx->valueExpression())));
 }
 
 std::any AstBuilder::visitSubqueryExpression(
