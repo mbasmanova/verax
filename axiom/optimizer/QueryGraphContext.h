@@ -19,7 +19,6 @@
 #include "axiom/optimizer/ArenaCache.h"
 #include "velox/common/memory/HashStringAllocator.h"
 #include "velox/type/Variant.h"
-#include "velox/vector/BaseVector.h"
 
 // #define QG_USE_MALLOC
 #define QG_CACHE_ARENA
