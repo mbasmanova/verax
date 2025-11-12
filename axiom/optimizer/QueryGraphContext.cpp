@@ -188,6 +188,10 @@ bool Path::hasPrefix(const Path& prefix) const {
 }
 
 std::string Path::toString() const {
+  if (steps_.empty()) {
+    return "<empty>";
+  }
+
   std::stringstream out;
   for (auto& step : steps_) {
     switch (step.kind) {

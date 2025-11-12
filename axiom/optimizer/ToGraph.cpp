@@ -1992,6 +1992,7 @@ void ToGraph::translateUnion(const lp::SetNode& set) {
 }
 
 DerivedTableP ToGraph::makeQueryGraph(const lp::LogicalPlanNode& logicalPlan) {
+  // Populate controlSubfields_ and payloadSubfields_.
   markAllSubfields(logicalPlan, {});
 
   currentDt_ = newDt();

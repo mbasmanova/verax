@@ -623,31 +623,75 @@ std::vector<int32_t> ToGraph::usedChannels(const lp::LogicalPlanNode& node) {
   return result;
 }
 
+namespace {
+
+std::string pathsToString(const BitSet& pathIds) {
+  std::stringstream out;
+  size_t i = 0;
+  pathIds.forEach([&](auto id) {
+    if (i > 0) {
+      out << ", ";
+    }
+    i++;
+    out << queryCtx()->pathById(id)->toString();
+  });
+
+  return out.str();
+}
+
+bool hasNonEmptyPath(const BitSet& pathIds) {
+  if (pathIds.empty()) {
+    return false;
+  }
+
+  if (pathIds.size() == 1) {
+    bool empty = false;
+    pathIds.forEach(
+        [&](auto id) { empty = queryCtx()->pathById(id)->steps().empty(); });
+
+    return !empty;
+  }
+
+  return true;
+}
+} // namespace
+
 std::string PlanSubfields::toString() const {
   std::stringstream out;
 
-  auto appendPaths = [&](const auto& resultPaths) {
-    for (const auto& [index, paths] : resultPaths) {
-      out << index << " -> {";
-      paths.forEach(
-          [&](auto i) { out << queryCtx()->pathById(i)->toString(); });
-      out << "}" << std::endl;
-    }
-  };
-
-  out << "Nodes: ";
+  out << "Plan nodes: " << nodeFields.size() << "\n";
   for (const auto& [node, access] : nodeFields) {
-    out << "Node " << node->id() << " = {";
-    appendPaths(access.resultPaths);
-    out << "}" << std::endl;
+    const auto& names = node->outputType()->names();
+
+    out << "  " << node->kindName() << " #" << node->id() << ": "
+        << access.resultPaths.size() << " out of " << names.size() << "\n";
+
+    for (const auto& [index, paths] : access.resultPaths) {
+      out << "    " << names[index] << " #" << index;
+      if (hasNonEmptyPath(paths)) {
+        out << ", " << paths.size() << " paths: " << pathsToString(paths);
+      }
+      out << "\n";
+    }
   }
 
   if (!argFields.empty()) {
-    out << "Functions: ";
+    out << "Functions: " << argFields.size() << "\n";
     for (const auto& [expr, access] : argFields) {
-      out << "Func " << lp::ExprPrinter::toText(*expr) << " = {";
-      appendPaths(access.resultPaths);
-      out << "}" << std::endl;
+      out << "  " << expr->toString() << ": " << access.resultPaths.size()
+          << "\n";
+
+      for (const auto& [index, paths] : access.resultPaths) {
+        if (index == ResultAccess::kSelf) {
+          out << "    self";
+        } else {
+          out << "    arg #" << index;
+        }
+        if (hasNonEmptyPath(paths)) {
+          out << ", " << paths.size() << " paths: " << pathsToString(paths);
+        }
+        out << "\n";
+      }
     }
   }
   return out.str();
