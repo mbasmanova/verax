@@ -1305,6 +1305,60 @@ DerivedTableP ToGraph::finalizeDt(
   return dt;
 }
 
+namespace {
+const velox::Type* pathType(const velox::Type* type, PathCP path) {
+  for (auto& step : path->steps()) {
+    switch (step.kind) {
+      case StepKind::kField:
+        if (step.field) {
+          type = type->childAt(type->as<velox::TypeKind::ROW>().getChildIdx(
+                                   step.field))
+                     .get();
+          break;
+        }
+        type = type->childAt(step.id).get();
+        break;
+      case StepKind::kSubscript:
+        type =
+            type->childAt(type->kind() == velox::TypeKind::ARRAY ? 0 : 1).get();
+        break;
+      default:
+        VELOX_NYI();
+    }
+  }
+  return type;
+}
+
+SubfieldProjections makeSubfieldColumns(
+    BaseTable& baseTable,
+    ColumnCP column,
+    const BitSet& paths) {
+  const float cardinality =
+      baseTable.schemaTable->cardinality * baseTable.filterSelectivity;
+
+  SubfieldProjections projections;
+  auto* ctx = queryCtx();
+  paths.forEach([&](auto id) {
+    auto* path = ctx->pathById(id);
+    auto type = pathType(column->value().type, path);
+    Value value(type, cardinality);
+    auto name = fmt::format("{}.{}", column->name(), path->toString());
+    auto* subcolumn = make<Column>(
+        toName(name),
+        &baseTable,
+        value,
+        /*alias=*/nullptr,
+        /*nameInTable=*/nullptr,
+        column,
+        path);
+    baseTable.columns.push_back(subcolumn);
+    projections.pathToExpr[path] = subcolumn;
+  });
+
+  return projections;
+}
+} // namespace
+
 void ToGraph::makeBaseTable(const lp::TableScanNode& tableScan) {
   const auto* schemaTable =
       schema_.findTable(tableScan.connectorId(), tableScan.tableName());
@@ -1361,7 +1415,8 @@ void ToGraph::makeBaseTable(const lp::TableScanNode& tableScan) {
                       << baseTable->schemaTable->name() << " " << column->name()
                       << ":" << allPaths.size() << std::endl;
           });
-          makeSubfieldColumns(baseTable, column, allPaths);
+          allColumnSubfields_[column] =
+              makeSubfieldColumns(*baseTable, column, allPaths);
         }
       }
     }
@@ -1404,52 +1459,6 @@ void ToGraph::makeValuesTable(const lp::ValuesNode& values) {
   }
 
   currentDt_->addTable(valuesTable);
-}
-
-namespace {
-const velox::Type* pathType(const velox::Type* type, PathCP path) {
-  for (auto& step : path->steps()) {
-    switch (step.kind) {
-      case StepKind::kField:
-        if (step.field) {
-          type = type->childAt(type->as<velox::TypeKind::ROW>().getChildIdx(
-                                   step.field))
-                     .get();
-          break;
-        }
-        type = type->childAt(step.id).get();
-        break;
-      case StepKind::kSubscript:
-        type =
-            type->childAt(type->kind() == velox::TypeKind::ARRAY ? 0 : 1).get();
-        break;
-      default:
-        VELOX_NYI();
-    }
-  }
-  return type;
-}
-} // namespace
-
-void ToGraph::makeSubfieldColumns(
-    BaseTable* baseTable,
-    ColumnCP column,
-    const BitSet& paths) {
-  SubfieldProjections projections;
-  auto* ctx = queryCtx();
-  float card =
-      baseTable->schemaTable->cardinality * baseTable->filterSelectivity;
-  paths.forEach([&](auto id) {
-    auto* path = ctx->pathById(id);
-    auto type = pathType(column->value().type, path);
-    Value value(type, card);
-    auto name = fmt::format("{}.{}", column->name(), path->toString());
-    auto* subcolumn = make<Column>(
-        toName(name), baseTable, value, nullptr, nullptr, column, path);
-    baseTable->columns.push_back(subcolumn);
-    projections.pathToExpr[path] = subcolumn;
-  });
-  allColumnSubfields_[column] = std::move(projections);
 }
 
 void ToGraph::addProjection(const lp::ProjectNode& project) {
