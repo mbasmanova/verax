@@ -391,13 +391,6 @@ class ToGraph {
 
   void makeValuesTable(const logical_plan::ValuesNode& values);
 
-  // Decomposes complex type columns into parts projected out as top
-  // level if subfield pushdown is on.
-  void makeSubfieldColumns(
-      BaseTable* baseTable,
-      ColumnCP column,
-      const BitSet& paths);
-
   // Adds 'node' and descendants to query graph wrapped inside a
   // DerivedTable. Done for joins to the right of non-inner joins,
   // group bys as non-top operators, whenever descendents of 'node'
