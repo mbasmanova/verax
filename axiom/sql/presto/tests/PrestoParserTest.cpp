@@ -355,6 +355,11 @@ TEST_F(PrestoParserTest, concat) {
   testSql("SELECT n_name || n_comment FROM nation", matcher);
 }
 
+TEST_F(PrestoParserTest, subscript) {
+  auto matcher = lp::test::LogicalPlanMatcherBuilder().tableScan().project();
+  testSql("SELECT array[1, 2, 3][1] FROM nation", matcher);
+}
+
 TEST_F(PrestoParserTest, selectStar) {
   auto matcher = lp::test::LogicalPlanMatcherBuilder().tableScan();
   testSql("SELECT * FROM nation", matcher);
