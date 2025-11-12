@@ -75,6 +75,7 @@ class BitSet {
         bits_.data(), 0, static_cast<int32_t>(bits_.size() * 64));
   }
 
+  /// @param func A function that takes zero-based bit index as an argument.
   template <typename Func>
   void forEach(Func f) const {
     velox::bits::forEachSetBit(bits_.data(), 0, bits_.size() * 64, f);
