@@ -18,6 +18,7 @@
 
 #include "axiom/logical_plan/LogicalPlanNode.h"
 #include "axiom/optimizer/FunctionRegistry.h"
+#include "axiom/optimizer/PathSet.h"
 #include "axiom/optimizer/Schema.h"
 #include "velox/core/PlanNode.h"
 
@@ -233,9 +234,9 @@ struct SubfieldSet {
 
   /// Set of subfield paths that are accessed for the corresponding 'column'.
   /// empty means that all subfields are accessed.
-  QGVector<BitSet> subfields;
+  QGVector<PathSet> subfields;
 
-  std::optional<BitSet> findSubfields(int32_t id) const;
+  std::optional<PathSet> findSubfields(int32_t id) const;
 };
 
 struct FunctionMetadata;
@@ -759,7 +760,7 @@ struct BaseTable : public PlanObject {
 
   std::optional<int32_t> columnId(Name column) const;
 
-  BitSet columnSubfields(int32_t id, bool controlOnly, bool payloadOnly) const;
+  PathSet columnSubfields(int32_t id) const;
 
   /// Returns possible indices for driving table scan of 'table'.
   std::vector<ColumnGroupCP> chooseLeafIndex() const {

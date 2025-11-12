@@ -17,6 +17,7 @@
 
 #include "axiom/optimizer/DerivedTable.h"
 #include "axiom/optimizer/OptimizerOptions.h"
+#include "axiom/optimizer/PathSet.h"
 #include "axiom/optimizer/QueryGraph.h"
 #include "axiom/optimizer/Schema.h"
 
@@ -107,7 +108,7 @@ struct ResultAccess {
   // Key in 'resultPaths' to indicate the path is applied to the function
   // itself, not the ith argument.
   static constexpr int32_t kSelf = -1;
-  std::map<int32_t, BitSet> resultPaths;
+  std::map<int32_t, PathSet> resultPaths;
 };
 
 /// PlanNode output columns and function arguments with accessed subfields.
@@ -116,14 +117,12 @@ struct PlanSubfields {
       nodeFields;
   folly::F14FastMap<const logical_plan::Expr*, ResultAccess> argFields;
 
+  /// Return true if 'ordinal' output column of 'node' is accessed.
   bool hasColumn(const logical_plan::LogicalPlanNode* node, int32_t ordinal)
-      const {
-    auto it = nodeFields.find(node);
-    if (it == nodeFields.end()) {
-      return false;
-    }
-    return it->second.resultPaths.contains(ordinal);
-  }
+      const;
+
+  /// Return a set of accessed subfields for the result of 'expr'.
+  std::optional<PathSet> findSubfields(const logical_plan::Expr* expr) const;
 
   std::string toString() const;
 };
@@ -379,10 +378,7 @@ class ToGraph {
       bool isControl,
       const MarkFieldsAccessedContext& context);
 
-  BitSet functionSubfields(
-      const logical_plan::CallExpr* call,
-      bool controlOnly,
-      bool payloadOnly);
+  PathSet functionSubfields(const logical_plan::CallExpr* call);
 
   // Calls translateSubfieldFunction() if not already called.
   void ensureFunctionSubfields(const logical_plan::ExprPtr& expr);

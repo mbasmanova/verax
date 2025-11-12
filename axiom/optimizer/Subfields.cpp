@@ -625,15 +625,15 @@ std::vector<int32_t> ToGraph::usedChannels(const lp::LogicalPlanNode& node) {
 
 namespace {
 
-std::string pathsToString(const BitSet& pathIds) {
+std::string pathsToString(const PathSet& pathIds) {
   std::stringstream out;
   size_t i = 0;
-  pathIds.forEach([&](auto id) {
+  pathIds.forEachPath([&](PathCP path) {
     if (i > 0) {
       out << ", ";
     }
     i++;
-    out << queryCtx()->pathById(id)->toString();
+    out << path->toString();
   });
 
   return out.str();
