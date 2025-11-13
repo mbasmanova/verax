@@ -340,6 +340,11 @@ class ToGraph {
 
   ColumnCP addMarkColumn();
 
+  void addJoinColumns(
+      const logical_plan::LogicalPlanNode& joinSide,
+      ColumnVector& columns,
+      ExprVector& exprs);
+
   // Cache of resolved table schemas.
   Schema schema_;
 

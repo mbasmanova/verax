@@ -1247,6 +1247,28 @@ void extractNonInnerJoinEqualities(
 
 } // namespace
 
+void ToGraph::addJoinColumns(
+    const logical_plan::LogicalPlanNode& joinSide,
+    ColumnVector& columns,
+    ExprVector& exprs) {
+  const auto& names = joinSide.outputType()->names();
+  for (auto channel : usedChannels(joinSide)) {
+    const auto& name = names[channel];
+    auto* expr = translateColumn(name);
+
+    Name alias = nullptr;
+    if (expr->isColumn()) {
+      alias = expr->as<Column>()->alias();
+    }
+
+    auto* column = make<Column>(toName(name), currentDt_, expr->value(), alias);
+    renames_[name] = column;
+
+    columns.push_back(column);
+    exprs.push_back(expr);
+  }
+}
+
 void ToGraph::translateJoin(const lp::JoinNode& join) {
   const auto& joinLeft = join.left();
   const auto& joinRight = join.right();
@@ -1301,13 +1323,24 @@ void ToGraph::translateJoin(const lp::JoinNode& join) {
     extractNonInnerJoinEqualities(
         equality_, conjuncts, rightTable, leftKeys, rightKeys, leftTables);
 
+    JoinEdge::Spec joinSpec{
+        .filter = std::move(conjuncts),
+        .leftOptional = leftOptional,
+        .rightOptional = rightOptional,
+    };
+
+    if (leftOptional) {
+      addJoinColumns(*join.left(), joinSpec.leftColumns, joinSpec.leftExprs);
+    }
+
+    if (rightOptional) {
+      addJoinColumns(*join.right(), joinSpec.rightColumns, joinSpec.rightExprs);
+    }
+
     auto* edge = make<JoinEdge>(
         leftTables.size() == 1 ? leftTables.onlyObject() : nullptr,
         rightTable,
-        JoinEdge::Spec{
-            .filter = std::move(conjuncts),
-            .leftOptional = leftOptional,
-            .rightOptional = rightOptional});
+        std::move(joinSpec));
     currentDt_->joins.push_back(edge);
     for (auto i = 0; i < leftKeys.size(); ++i) {
       edge->addEquality(leftKeys[i], rightKeys[i]);
