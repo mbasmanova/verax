@@ -1693,8 +1693,7 @@ void ToGraph::processSubqueries(const logical_plan::FilterNode& filter) {
         leftTable,
         "<expr> IN <subquery> with multi-table <expr> is not supported yet");
 
-    auto* edge = make<JoinEdge>(
-        leftTable, subqueryDt, JoinEdge::Spec{.markColumn = markColumn});
+    auto* edge = JoinEdge::makeExists(leftTable, subqueryDt, markColumn);
 
     currentDt_->joins.push_back(edge);
     edge->addEquality(leftKey, subqueryDt->columns.front());
@@ -1740,10 +1739,8 @@ void ToGraph::processSubqueries(const logical_plan::FilterNode& filter) {
 
     const auto* markColumn = addMarkColumn();
 
-    auto* existsEdge = make<JoinEdge>(
-        leftTable,
-        subqueryDt,
-        JoinEdge::Spec{.filter = filter, .markColumn = markColumn});
+    auto* existsEdge = JoinEdge::makeExists(
+        leftTable, subqueryDt, markColumn, std::move(filter));
     currentDt_->joins.push_back(existsEdge);
 
     for (auto i = 0; i < leftKeys.size(); ++i) {
