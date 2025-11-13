@@ -1301,10 +1301,8 @@ void ToGraph::translateJoin(const lp::JoinNode& join) {
     extractNonInnerJoinEqualities(
         equality_, conjuncts, rightTable, leftKeys, rightKeys, leftTables);
 
-    auto leftTableVector = leftTables.toObjects();
-
     auto* edge = make<JoinEdge>(
-        leftTableVector.size() == 1 ? leftTableVector[0] : nullptr,
+        leftTables.size() == 1 ? leftTables.onlyObject() : nullptr,
         rightTable,
         JoinEdge::Spec{
             .filter = std::move(conjuncts),
@@ -1721,9 +1719,9 @@ void ToGraph::processSubqueries(const logical_plan::FilterNode& filter) {
 
       VELOX_CHECK_EQ(1, tables.size());
       if (leftTable == nullptr) {
-        leftTable = tables.toObjects().front();
+        leftTable = tables.onlyObject();
       } else {
-        VELOX_CHECK(leftTable == tables.toObjects().front());
+        VELOX_CHECK(leftTable == tables.onlyObject());
       }
 
       ExprCP left = nullptr;

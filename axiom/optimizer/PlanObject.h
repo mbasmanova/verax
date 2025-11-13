@@ -188,6 +188,16 @@ class PlanObjectSet : public BitSet {
     return objects;
   }
 
+  /// Returns the only object stored in this set. The caller must ensure the set
+  /// contains exactly one object.
+  template <typename T = PlanObject>
+  const T* onlyObject() const {
+    VELOX_DCHECK_EQ(size(), 1);
+
+    auto id = velox::bits::findFirstBit(bits_.data(), 0, bits_.size() * 64);
+    return queryCtx()->objectAt(id)->template as<T>();
+  }
+
   /// Applies 'func' to each object in 'this'.
   template <typename Func>
   void forEach(Func func) const {
