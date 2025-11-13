@@ -108,10 +108,15 @@ class Literal : public Expr {
   const velox::Variant* const literal_;
 };
 
-/// Represents a column. A column is always defined by a relation, whether table
-/// or derived table.
+/// Represents a column or a subfield.
 class Column : public Expr {
  public:
+  /// @param value Type and cardinality (number of distinct values / ndv) of
+  /// 'this'. Cardinality represents the data at the time it is first produced
+  /// by a table. Cardinality may change as the column flows through filters and
+  /// joins.
+  /// @param nameInTable Name of the column in the BaseTable. Nullptr if
+  /// 'relation' is not a BaseTable. Used to populate 'schemaColumn'.
   Column(
       Name name,
       PlanObjectCP relation,
@@ -125,6 +130,8 @@ class Column : public Expr {
     return name_;
   }
 
+  /// A relation that produced the column. Nullptr if 'this' is an argument of a
+  /// lambda.
   PlanObjectCP relation() const {
     return relation_;
   }
@@ -133,11 +140,13 @@ class Column : public Expr {
     return alias_;
   }
 
+  /// Name of the column in the BaseTable. Nullptr if 'relation' is not a
+  /// BaseTable.
   ColumnCP schemaColumn() const {
     return schemaColumn_;
   }
 
-  // Returns column name to use in the Velox plan.
+  /// Returns column name to use in the Velox plan.
   std::string outputName() const {
     return alias_ != nullptr ? alias_ : toString();
   }
@@ -153,10 +162,13 @@ class Column : public Expr {
     return equivalence_;
   }
 
+  /// Set if 'this' is a subfield (a key of a map, an element of an array or a
+  /// field of a struct).
   ColumnCP topColumn() const {
     return topColumn_;
   }
 
+  /// Path from 'topColumn'.
   PathCP path() const {
     return path_;
   }
@@ -429,7 +441,7 @@ struct JoinSide {
   const ExprVector& keys;
   const float fanout;
   const bool isOptional;
-  const bool isNonOptionalOfOuter;
+  const bool isOtherOptional;
   const bool isExists;
   const bool isNotExists;
   ColumnCP markColumn;
@@ -440,19 +452,26 @@ struct JoinSide {
     if (isNotExists) {
       return velox::core::JoinType::kAnti;
     }
+
     if (isExists) {
+      if (markColumn) {
+        return velox::core::JoinType::kLeftSemiProject;
+      }
       return velox::core::JoinType::kLeftSemiFilter;
     }
+
+    if (isOptional && isOtherOptional) {
+      return velox::core::JoinType::kFull;
+    }
+
     if (isOptional) {
       return velox::core::JoinType::kLeft;
     }
-    if (isNonOptionalOfOuter) {
+
+    if (isOtherOptional) {
       return velox::core::JoinType::kRight;
     }
 
-    if (markColumn) {
-      return velox::core::JoinType::kLeftSemiProject;
-    }
     return velox::core::JoinType::kInner;
   }
 };
@@ -467,15 +486,34 @@ class JoinEdge {
  public:
   /// Default is INNER JOIN.
   struct Spec {
+    /// Filter conjuncts to be applied after the join. Only for non-inner joins.
     ExprVector filter;
+
+    /// True for RIGHT and FULL OUTER JOIN. The output may have no match on the
+    /// left side.
     bool leftOptional{false};
+
+    /// True for LEFT and FULL OUTER JOIN. The output may have no match on the
+    /// right side.
     bool rightOptional{false};
+
+    /// True for EXISTS subquery. Mutually exclusive with 'rightNotExists'.
     bool rightExists{false};
+
+    /// True for NOT EXISTS subquery. Mutually exclusive with 'rightExists'.
     bool rightNotExists{false};
+
+    /// Marker column produced by 'exists' or 'not exists' join. If set, the
+    /// 'rightExists' or 'rightNotExists' must be true.
     ColumnCP markColumn{nullptr};
+
     bool directed{false};
   };
 
+  /// @param leftTable The left table of the join. May be nullptr if 'leftKeys'
+  /// come from different tables. If so, 'this' must be not inner and not full
+  /// outer.
+  /// @param rightTable The right table of the join. Cannot be nullptr.
   JoinEdge(PlanObjectCP leftTable, PlanObjectCP rightTable, Spec spec)
       : leftTable_(leftTable),
         rightTable_(rightTable),
@@ -487,16 +525,37 @@ class JoinEdge {
         directed_(spec.directed),
         markColumn_(spec.markColumn) {
     VELOX_CHECK_NOT_NULL(rightTable);
-    // filter_ is only for non-inner joins.
-    VELOX_CHECK(filter_.empty() || !isInner());
+
+    if (isInner()) {
+      VELOX_CHECK_NOT_NULL(
+          leftTable, "Hyper edge is not supported for an inner join");
+      VELOX_CHECK(filter_.empty(), "Filter is not allowed for an inner join");
+    }
+
+    VELOX_CHECK(!rightExists_ || !rightNotExists_);
+
+    if (markColumn_) {
+      VELOX_CHECK(rightExists_);
+    }
   }
 
   static JoinEdge* makeInner(PlanObjectCP leftTable, PlanObjectCP rightTable) {
     return make<JoinEdge>(leftTable, rightTable, Spec{});
   }
 
-  static JoinEdge* makeExists(PlanObjectCP leftTable, PlanObjectCP rightTable) {
-    return make<JoinEdge>(leftTable, rightTable, Spec{.rightExists = true});
+  static JoinEdge* makeExists(
+      PlanObjectCP leftTable,
+      PlanObjectCP rightTable,
+      ColumnCP markColumn = nullptr,
+      ExprVector filter = {}) {
+    return make<JoinEdge>(
+        leftTable,
+        rightTable,
+        Spec{
+            .filter = std::move(filter),
+            .rightExists = true,
+            .markColumn = markColumn,
+        });
   }
 
   static JoinEdge* makeNotExists(
@@ -578,11 +637,11 @@ class JoinEdge {
   /// True if inner join.
   bool isInner() const {
     return !leftOptional_ && !rightOptional_ && !rightExists_ &&
-        !rightNotExists_ && !markColumn_;
+        !rightNotExists_;
   }
 
   bool isSemi() const {
-    return rightExists_ || (markColumn_ != nullptr);
+    return rightExists_;
   }
 
   bool isAnti() const {
@@ -598,7 +657,7 @@ class JoinEdge {
     }
 
     return !leftTable_ || rightOptional_ || leftOptional_ || rightExists_ ||
-        rightNotExists_ || markColumn_ || directed_;
+        rightNotExists_ || directed_;
   }
 
   /// True if has a hash based variant that builds on the left and probes on the
@@ -612,12 +671,13 @@ class JoinEdge {
   JoinSide sideOf(PlanObjectCP side, bool other = false) const;
 
   /// Returns the table on the other side of 'table' and the number of rows in
-  /// the returned table for one row in 'table'. If the join is not inner
-  /// returns {nullptr, 0}.
+  /// the returned table for one row in 'table'. Returns {nullptr, 0} if the
+  /// 'other' side of the join has multiple tables.
   std::pair<PlanObjectCP, float> otherTable(PlanObjectCP table) const {
-    return leftTable_ == table && !leftOptional_
+    VELOX_DCHECK_NOT_NULL(table);
+    return leftTable_ == table
         ? std::pair<PlanObjectCP, float>{rightTable_, lrFanout_}
-        : rightTable_ == table && !rightOptional_ && !rightExists_
+        : rightTable_ == table && leftTable_ != nullptr
         ? std::pair<PlanObjectCP, float>{leftTable_, rlFanout_}
         : std::pair<PlanObjectCP, float>{nullptr, 0};
   }
