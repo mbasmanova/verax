@@ -92,6 +92,7 @@ add_executable(
   HiveAggregationQueriesTest.cpp
   HiveLimitQueriesTest.cpp
   HiveQueriesTest.cpp
+  JoinTest.cpp
   PrecomputeProjectionTest.cpp
   PlanTest.cpp
   RelationOpPrinterTest.cpp

@@ -471,7 +471,6 @@ struct JoinSide {
     if (isOtherOptional) {
       return velox::core::JoinType::kRight;
     }
-
     return velox::core::JoinType::kInner;
   }
 };
@@ -504,8 +503,22 @@ class JoinEdge {
     bool rightNotExists{false};
 
     /// Marker column produced by 'exists' or 'not exists' join. If set, the
-    /// 'rightExists' or 'rightNotExists' must be true.
+    /// 'rightExists' must be true.
     ColumnCP markColumn{nullptr};
+
+    /// Columns produced by the 'left' side of a RIGHT or FULL OUTER join.
+    /// Requires 'leftOptional' to be true.
+    ColumnVector leftColumns;
+
+    /// Input expressions corresponding 1:1 to 'leftColumns'.
+    ExprVector leftExprs;
+
+    /// Columns produced by the 'right' side of a LEFT or FULL OUTER join.
+    /// Requires 'rightOptional' to be true.
+    ColumnVector rightColumns;
+
+    /// Input expressions corresponding 1:1 to 'rightColumns'.
+    ExprVector rightExprs;
 
     bool directed{false};
   };
@@ -523,7 +536,11 @@ class JoinEdge {
         rightExists_(spec.rightExists),
         rightNotExists_(spec.rightNotExists),
         directed_(spec.directed),
-        markColumn_(spec.markColumn) {
+        markColumn_(spec.markColumn),
+        leftColumns_{spec.leftColumns},
+        leftExprs_{spec.leftExprs},
+        rightColumns_{spec.rightColumns},
+        rightExprs_{spec.rightExprs} {
     VELOX_CHECK_NOT_NULL(rightTable);
 
     if (isInner()) {
@@ -536,6 +553,16 @@ class JoinEdge {
 
     if (markColumn_) {
       VELOX_CHECK(rightExists_);
+    }
+
+    if (!leftColumns_.empty()) {
+      VELOX_CHECK(leftOptional_);
+      VELOX_CHECK_EQ(leftColumns_.size(), leftExprs_.size());
+    }
+
+    if (!rightColumns_.empty()) {
+      VELOX_CHECK(rightOptional_);
+      VELOX_CHECK_EQ(rightColumns_.size(), rightExprs_.size());
     }
   }
 
@@ -626,6 +653,22 @@ class JoinEdge {
 
   ColumnCP markColumn() const {
     return markColumn_;
+  }
+
+  const ColumnVector& leftColumns() const {
+    return leftColumns_;
+  }
+
+  const ExprVector& leftExprs() const {
+    return leftExprs_;
+  }
+
+  const ColumnVector& rightColumns() const {
+    return rightColumns_;
+  }
+
+  const ExprVector& rightExprs() const {
+    return rightExprs_;
   }
 
   bool directed() const {
@@ -770,6 +813,11 @@ class JoinEdge {
 
   // Flag to set if right side has a match.
   ColumnCP const markColumn_;
+
+  const ColumnVector leftColumns_;
+  const ExprVector leftExprs_;
+  const ColumnVector rightColumns_;
+  const ExprVector rightExprs_;
 };
 
 using JoinEdgeP = JoinEdge*;

@@ -236,6 +236,11 @@ const PlanObjectSet& PlanState::downstreamColumns() const {
     if (addFilter && !join->filter().empty()) {
       addExprs(join->filter());
     }
+
+    if (addFilter) {
+      addExprs(join->leftExprs());
+      addExprs(join->rightExprs());
+    }
   }
 
   // Filters.
