@@ -1306,10 +1306,12 @@ void Optimization::joinByHashRight(
   buildColumns.unionObjects(buildInput->columns());
 
   const auto leftJoinType = probe.leftJoinType();
-  const auto fanout = fanoutJoinTypeLimit(leftJoinType, candidate.fanout);
-
   // Change the join type to the right join variant.
   const auto rightJoinType = reverseJoinType(leftJoinType);
+
+  const auto fanout =
+      fanoutJoinTypeLimit(rightJoinType, candidate.join->rlFanout());
+
   VELOX_CHECK(
       leftJoinType != rightJoinType,
       "Join type does not have right hash join variant");
