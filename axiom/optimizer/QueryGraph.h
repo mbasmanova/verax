@@ -643,14 +643,6 @@ class JoinEdge {
     return rightOptional_;
   }
 
-  bool rightExists() const {
-    return rightExists_;
-  }
-
-  bool rightNotExists() const {
-    return rightNotExists_;
-  }
-
   ColumnCP markColumn() const {
     return markColumn_;
   }
