@@ -1,5 +1,3 @@
-Axiom is an experimental frontend for the Velox ecosystem.
-
 ## License
 
 Axiom is licensed under the Apache 2.0 License. A copy of the license
@@ -7,7 +5,7 @@ Axiom is licensed under the Apache 2.0 License. A copy of the license
 
 ## Code Organization
 
-Axiom is a collection of reusable extensible Velox-compatible components that can be used to put together front-end to Velox-powered query execution. These components include:
+Axiom is a set of reusable and extensible components designed to be compatible with Velox. These components are:
 
 * SQL Parser compatible with PrestoSQL dialect.
   * top-level “sql” directory
