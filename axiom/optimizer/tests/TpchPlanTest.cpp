@@ -108,6 +108,10 @@ class TpchPlanTest : public virtual test::HiveQueriesTestBase {
     checkResults(sql, referencePlan);
   }
 
+  velox::core::PlanNodePtr planTpch(int32_t query) {
+    return toSingleNodePlan(parseTpchSql(query));
+  }
+
   std::unique_ptr<exec::test::TpchQueryBuilder> referenceBuilder_;
 };
 
@@ -136,7 +140,17 @@ TEST_F(TpchPlanTest, stats) {
 TEST_F(TpchPlanTest, q01) {
   checkTpchSql(1);
 
-  // TODO Verify the plan.
+  // The query is a simple scan of lineitem with a very low cardinality group
+  // by. All the work is in the table scan (65%) and partial aggregation (30%).
+
+  auto matcher = core::PlanMatcherBuilder()
+                     .tableScan("lineitem")
+                     .project()
+                     .aggregation()
+                     .orderBy()
+                     .build();
+
+  AXIOM_ASSERT_PLAN(planTpch(1), matcher);
 }
 
 TEST_F(TpchPlanTest, q02) {
@@ -148,13 +162,55 @@ TEST_F(TpchPlanTest, q02) {
 TEST_F(TpchPlanTest, q03) {
   checkTpchSql(3);
 
-  // TODO Verify the plan.
+  // The query is straightforward to do by hash. We select 1/5 of customer and
+  // 1/2 of orders. We first join orders x customer, build on that and then
+  // probe on lineitem. There is anti-correlation between the date filters on
+  // lineitem and orders but that does not affect the best plan choice.
+
+  auto startMatcher = [&](const std::string& tableName) {
+    return core::PlanMatcherBuilder().tableScan(tableName);
+  };
+
+  auto matcher =
+      startMatcher("lineitem")
+          .hashJoin(
+              startMatcher("orders")
+                  .hashJoin(
+                      startMatcher("customer").build(), core::JoinType::kInner)
+                  .build(),
+              core::JoinType::kInner)
+          .project()
+          .aggregation()
+          .topN()
+          .project()
+          .build();
+
+  AXIOM_ASSERT_PLAN(planTpch(3), matcher);
 }
 
 TEST_F(TpchPlanTest, q04) {
   checkTpchSql(4);
 
-  // TODO Verify the plan.
+  // The trick in q4 is using a right hand semijoin to do the exists. If we
+  // probed with orders and built on lineitem, we would get a much larger build
+  // side. But using the right hand semijoin, we get to build on the smaller
+  // side. If we had shared key order between lineitem and orders we could look
+  // at other plans but in the hash based plan space we have the best outcome.
+
+  auto startMatcher = [&](const std::string& tableName) {
+    return core::PlanMatcherBuilder().tableScan(tableName);
+  };
+
+  auto matcher =
+      startMatcher("lineitem")
+          .hashJoin(
+              startMatcher("orders").build(), core::JoinType::kRightSemiProject)
+          .filter()
+          .aggregation()
+          .orderBy()
+          .build();
+
+  AXIOM_ASSERT_PLAN(planTpch(4), matcher);
 }
 
 TEST_F(TpchPlanTest, q05) {
@@ -166,7 +222,15 @@ TEST_F(TpchPlanTest, q05) {
 TEST_F(TpchPlanTest, q06) {
   checkTpchSql(6);
 
-  // TODO Verify the plan.
+  // We have a single scan, so there are no query optimization choices here.
+
+  auto matcher = core::PlanMatcherBuilder()
+                     .tableScan("lineitem")
+                     .project()
+                     .aggregation()
+                     .build();
+
+  AXIOM_ASSERT_PLAN(planTpch(6), matcher);
 }
 
 TEST_F(TpchPlanTest, q07) {
@@ -202,7 +266,22 @@ TEST_F(TpchPlanTest, q11) {
 TEST_F(TpchPlanTest, q12) {
   checkTpchSql(12);
 
-  // TODO Verify the plan.
+  // In this query, we end up building on lineitem since the filters on it make
+  // it the smaller of the two tables. Everything else is unsurprising.
+
+  auto startMatcher = [&](const std::string& tableName) {
+    return core::PlanMatcherBuilder().tableScan(tableName);
+  };
+
+  auto matcher =
+      startMatcher("orders")
+          .hashJoin(startMatcher("lineitem").build(), core::JoinType::kInner)
+          .project()
+          .aggregation()
+          .orderBy()
+          .build();
+
+  AXIOM_ASSERT_PLAN(planTpch(12), matcher);
 }
 
 TEST_F(TpchPlanTest, q13) {
@@ -214,7 +293,22 @@ TEST_F(TpchPlanTest, q13) {
 TEST_F(TpchPlanTest, q14) {
   checkTpchSql(14);
 
-  // TODO Verify the plan.
+  // The only noteworthy aspect is that we build on lineitem since its filters
+  // (1 month out of 7 years) make it smaller than part.
+
+  auto startMatcher = [&](const std::string& tableName) {
+    return core::PlanMatcherBuilder().tableScan(tableName);
+  };
+
+  auto matcher =
+      startMatcher("part")
+          .hashJoin(startMatcher("lineitem").build(), core::JoinType::kInner)
+          .project()
+          .aggregation()
+          .project()
+          .build();
+
+  AXIOM_ASSERT_PLAN(planTpch(14), matcher);
 }
 
 TEST_F(TpchPlanTest, q15) {
@@ -226,7 +320,25 @@ TEST_F(TpchPlanTest, q15) {
 TEST_F(TpchPlanTest, q16) {
   checkTpchSql(16);
 
-  // TODO Verify the plan.
+  // The join is biggest table first, with  part joined first because it is
+  // quite selective, more so than the exists with supplier.
+
+  auto startMatcher = [&](const std::string& tableName) {
+    return core::PlanMatcherBuilder().tableScan(tableName);
+  };
+
+  auto matcher =
+      startMatcher("partsupp")
+          .hashJoin(startMatcher("part").build(), core::JoinType::kInner)
+          .hashJoin(
+              startMatcher("supplier").build(),
+              core::JoinType::kLeftSemiProject)
+          .filter()
+          .aggregation()
+          .orderBy()
+          .build();
+
+  AXIOM_ASSERT_PLAN(planTpch(16), matcher);
 }
 
 TEST_F(TpchPlanTest, q17) {
