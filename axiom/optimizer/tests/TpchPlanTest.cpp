@@ -287,7 +287,24 @@ TEST_F(TpchPlanTest, q12) {
 TEST_F(TpchPlanTest, q13) {
   checkTpchSql(13);
 
-  // TODO Verify the plan.
+  // This query has only two possible plans, left and right hand outer join. We
+  // correctly produce the right outer join, building on the left, i.e.
+  // customer, as it is much smaller than orders.
+
+  auto startMatcher = [&](const std::string& tableName) {
+    return core::PlanMatcherBuilder().tableScan(tableName);
+  };
+
+  auto matcher =
+      startMatcher("orders")
+          .hashJoin(startMatcher("customer").build(), core::JoinType::kRight)
+          .aggregation()
+          .project()
+          .aggregation()
+          .orderBy()
+          .build();
+
+  AXIOM_ASSERT_PLAN(planTpch(13), matcher);
 }
 
 TEST_F(TpchPlanTest, q14) {
