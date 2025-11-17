@@ -603,13 +603,13 @@ void ToGraph::ensureFunctionSubfields(const lp::ExprPtr& expr) {
 
 namespace {
 
-/// If we should reverse the sides of a binary expression to canonicalize it. We
-/// invert in two cases:
-///
-///  #1. If there is a literal in the left and something else in the right:
-///    f("literal", col) => f(col, "literal")
-///
-///  #2. If none are literal, but the id on the left is higher.
+// If we should reverse the sides of a binary expression to canonicalize it. We
+// invert in two cases:
+//
+//  #1. If there is a literal in the left and something else in the right:
+//    f("literal", col) => f(col, "literal")
+//
+//  #2. If none are literal, but the id on the left is higher.
 bool shouldInvert(ExprCP left, ExprCP right) {
   if (left->is(PlanType::kLiteralExpr) &&
       right->isNot(PlanType::kLiteralExpr)) {
@@ -786,9 +786,19 @@ ExprCP ToGraph::translateExpr(const lp::ExprPtr& expr) {
       }
     }
 
+    auto* exprType = toType(expr->type());
+
+    // Drop redundant cast.
+    //    CAST(x as t) ==> x if typeof(x) == t.
+    if (specialForm && specialForm->form() == lp::SpecialForm::kCast) {
+      if (args[0]->value().type == exprType) {
+        return args[0];
+      }
+    }
+
     funcs = funcs | functionBits(name);
     auto* callExpr = deduppedCall(
-        name, Value(toType(expr->type()), cardinality), std::move(args), funcs);
+        name, Value(exprType, cardinality), std::move(args), funcs);
     return callExpr;
   }
 

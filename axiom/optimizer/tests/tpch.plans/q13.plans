@@ -61,12 +61,12 @@ Project (redundant) -> dt4.c_count, dt4.custdist
 Executable Velox plan:
 
 Fragment 0:  numWorkers=0:
--- OrderBy[12][custdist DESC NULLS LAST, c_count DESC NULLS LAST] -> c_count:BIGINT, custdist:BIGINT
-  -- Aggregation[11][SINGLE [c_count] custdist := count()] -> c_count:BIGINT, custdist:BIGINT
-    -- Project[10][expressions: (c_count:BIGINT, "count")] -> c_count:BIGINT
-      -- Aggregation[9][SINGLE [c_custkey] count := count("o_orderkey")] -> c_custkey:BIGINT, count:BIGINT
-        -- HashJoin[8][RIGHT o_custkey=c_custkey, filter: not(like("o_comment",%special%requests%))] -> c_custkey:BIGINT, o_orderkey:BIGINT
-          -- TableScan[6][table: orders, data columns: ROW<o_orderkey:BIGINT,o_custkey:BIGINT,o_orderstatus:VARCHAR,o_totalprice:DOUBLE,o_orderdate:DATE,o_orderpriority:VARCHAR,o_clerk:VARCHAR,o_shippriority:INTEGER,o_comment:VARCHAR>] -> o_orderkey:BIGINT, o_custkey:BIGINT, o_comment:VARCHAR
-          -- TableScan[7][table: customer, data columns: ROW<c_custkey:BIGINT,c_name:VARCHAR,c_address:VARCHAR,c_nationkey:BIGINT,c_phone:VARCHAR,c_acctbal:DOUBLE,c_mktsegment:VARCHAR,c_comment:VARCHAR>] -> c_custkey:BIGINT
+-- OrderBy[6][custdist DESC NULLS LAST, c_count DESC NULLS LAST] -> c_count:BIGINT, custdist:BIGINT
+  -- Aggregation[5][SINGLE [c_count] custdist := count()] -> c_count:BIGINT, custdist:BIGINT
+    -- Project[4][expressions: (c_count:BIGINT, "count")] -> c_count:BIGINT
+      -- Aggregation[3][SINGLE [c_custkey] count := count("o_orderkey")] -> c_custkey:BIGINT, count:BIGINT
+        -- HashJoin[2][RIGHT o_custkey=c_custkey, filter: not(like("o_comment",%special%requests%))] -> c_custkey:BIGINT, o_orderkey:BIGINT
+          -- TableScan[0][table: orders, data columns: ROW<o_orderkey:BIGINT,o_custkey:BIGINT,o_orderstatus:VARCHAR,o_totalprice:DOUBLE,o_orderdate:DATE,o_orderpriority:VARCHAR,o_clerk:VARCHAR,o_shippriority:INTEGER,o_comment:VARCHAR>] -> o_orderkey:BIGINT, o_custkey:BIGINT, o_comment:VARCHAR
+          -- TableScan[1][table: customer, data columns: ROW<c_custkey:BIGINT,c_name:VARCHAR,c_address:VARCHAR,c_nationkey:BIGINT,c_phone:VARCHAR,c_acctbal:DOUBLE,c_mktsegment:VARCHAR,c_comment:VARCHAR>] -> c_custkey:BIGINT
 
 ___END___
