@@ -20,6 +20,7 @@
 #include "axiom/optimizer/tests/HiveQueriesTestBase.h"
 #include "velox/dwio/common/tests/utils/DataFiles.h"
 #include "velox/exec/tests/utils/TpchQueryBuilder.h"
+#include "velox/type/tests/SubfieldFiltersBuilder.h"
 
 DEFINE_int32(num_repeats, 1, "Number of repeats for optimization timing");
 
@@ -143,12 +144,14 @@ TEST_F(TpchPlanTest, q01) {
   // The query is a simple scan of lineitem with a very low cardinality group
   // by. All the work is in the table scan (65%) and partial aggregation (30%).
 
-  auto matcher = core::PlanMatcherBuilder()
-                     .tableScan("lineitem")
-                     .project()
-                     .aggregation()
-                     .orderBy()
-                     .build();
+  auto matcher =
+      core::PlanMatcherBuilder()
+          .hiveScan(
+              "lineitem", test::lte("l_shipdate", DATE()->toDays("1998-09-02")))
+          .project()
+          .aggregation()
+          .orderBy()
+          .build();
 
   AXIOM_ASSERT_PLAN(planTpch(1), matcher);
 }
@@ -197,18 +200,22 @@ TEST_F(TpchPlanTest, q04) {
   // side. If we had shared key order between lineitem and orders we could look
   // at other plans but in the hash based plan space we have the best outcome.
 
-  auto startMatcher = [&](const std::string& tableName) {
-    return core::PlanMatcherBuilder().tableScan(tableName);
-  };
-
-  auto matcher =
-      startMatcher("lineitem")
-          .hashJoin(
-              startMatcher("orders").build(), core::JoinType::kRightSemiProject)
-          .filter()
-          .aggregation()
-          .orderBy()
-          .build();
+  auto matcher = core::PlanMatcherBuilder()
+                     .hiveScan("lineitem", {}, "l_commitdate < l_receiptdate")
+                     .hashJoin(
+                         core::PlanMatcherBuilder()
+                             .hiveScan(
+                                 "orders",
+                                 test::between(
+                                     "o_orderdate",
+                                     DATE()->toDays("1993-07-01"),
+                                     DATE()->toDays("1993-09-30")))
+                             .build(),
+                         core::JoinType::kRightSemiProject)
+                     .filter()
+                     .aggregation()
+                     .orderBy()
+                     .build();
 
   AXIOM_ASSERT_PLAN(planTpch(4), matcher);
 }
@@ -224,8 +231,18 @@ TEST_F(TpchPlanTest, q06) {
 
   // We have a single scan, so there are no query optimization choices here.
 
+  auto subfieldFilters =
+      velox::common::test::SubfieldFiltersBuilder()
+          .add(
+              "l_shipdate",
+              velox::exec::between(
+                  DATE()->toDays("1994-01-01"), DATE()->toDays("1994-12-31")))
+          .add("l_discount", velox::exec::betweenDouble(0.05, 0.07))
+          .add("l_quantity", velox::exec::lessThanDouble(24))
+          .build();
+
   auto matcher = core::PlanMatcherBuilder()
-                     .tableScan("lineitem")
+                     .hiveScan("lineitem", std::move(subfieldFilters))
                      .project()
                      .aggregation()
                      .build();
@@ -269,13 +286,28 @@ TEST_F(TpchPlanTest, q12) {
   // In this query, we end up building on lineitem since the filters on it make
   // it the smaller of the two tables. Everything else is unsurprising.
 
-  auto startMatcher = [&](const std::string& tableName) {
-    return core::PlanMatcherBuilder().tableScan(tableName);
-  };
+  auto subfieldFilters =
+      velox::common::test::SubfieldFiltersBuilder()
+          .add(
+              "l_shipmode",
+              velox::exec::in(std::vector<std::string>{"MAIL", "SHIP"}))
+          .add(
+              "l_receiptdate",
+              velox::exec::between(
+                  DATE()->toDays("1994-01-01"), DATE()->toDays("1994-12-31")))
+          .build();
 
   auto matcher =
-      startMatcher("orders")
-          .hashJoin(startMatcher("lineitem").build(), core::JoinType::kInner)
+      core::PlanMatcherBuilder()
+          .tableScan("orders")
+          .hashJoin(
+              core::PlanMatcherBuilder()
+                  .hiveScan(
+                      "lineitem",
+                      std::move(subfieldFilters),
+                      "l_commitdate < l_receiptdate AND l_shipdate < l_commitdate")
+                  .build(),
+              core::JoinType::kInner)
           .project()
           .aggregation()
           .orderBy()
@@ -313,17 +345,22 @@ TEST_F(TpchPlanTest, q14) {
   // The only noteworthy aspect is that we build on lineitem since its filters
   // (1 month out of 7 years) make it smaller than part.
 
-  auto startMatcher = [&](const std::string& tableName) {
-    return core::PlanMatcherBuilder().tableScan(tableName);
-  };
-
-  auto matcher =
-      startMatcher("part")
-          .hashJoin(startMatcher("lineitem").build(), core::JoinType::kInner)
-          .project()
-          .aggregation()
-          .project()
-          .build();
+  auto matcher = core::PlanMatcherBuilder()
+                     .tableScan("part")
+                     .hashJoin(
+                         core::PlanMatcherBuilder()
+                             .hiveScan(
+                                 "lineitem",
+                                 test::between(
+                                     "l_shipdate",
+                                     DATE()->toDays("1995-09-01"),
+                                     DATE()->toDays("1995-09-30")))
+                             .build(),
+                         core::JoinType::kInner)
+                     .project()
+                     .aggregation()
+                     .project()
+                     .build();
 
   AXIOM_ASSERT_PLAN(planTpch(14), matcher);
 }

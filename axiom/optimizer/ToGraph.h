@@ -156,7 +156,7 @@ class ToGraph {
   }
 
   // For comparisons, swaps the args to have a canonical form for
-  // deduplication. E.g column op constant, and Smaller plan object id
+  // deduplication. E.g column op constant, and smaller plan object id
   // to the left.
   void canonicalizeCall(Name& name, ExprVector& args);
 
