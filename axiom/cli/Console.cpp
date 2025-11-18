@@ -41,6 +41,8 @@ DEFINE_string(
     "",
     "Text of query. If empty, reads ';' separated queries from standard input");
 
+DEFINE_bool(debug, false, "Enable debug mode");
+
 using namespace facebook::velox;
 
 namespace axiom::sql {
@@ -225,6 +227,7 @@ void Console::runNoThrow(std::string_view sql) {
                   .numDrivers = FLAGS_num_drivers,
                   .splitTargetBytes = FLAGS_split_target_bytes,
                   .optimizerTraceFlags = FLAGS_optimizer_trace,
+                  .debugMode = FLAGS_debug,
               });
         },
         timing);

@@ -226,17 +226,20 @@ std::string SqlQueryRunner::runExplain(
 namespace {
 std::string printPlanWithStats(
     runner::LocalRunner& runner,
-    const optimizer::NodePredictionMap& estimates) {
-  return runner.printPlanWithStats([&](const velox::core::PlanNodeId& nodeId,
-                                       std::string_view indentation,
-                                       std::ostream& out) {
-    auto it = estimates.find(nodeId);
-    if (it != estimates.end()) {
-      out << indentation << "Estimate: " << it->second.cardinality << " rows, "
-          << velox::succinctBytes(it->second.peakMemory) << " peak memory"
-          << std::endl;
-    }
-  });
+    const optimizer::NodePredictionMap& estimates,
+    bool includeCustomStats) {
+  return runner.printPlanWithStats(
+      includeCustomStats,
+      [&](const velox::core::PlanNodeId& nodeId,
+          std::string_view indentation,
+          std::ostream& out) {
+        auto it = estimates.find(nodeId);
+        if (it != estimates.end()) {
+          out << indentation << "Estimate: " << it->second.cardinality
+              << " rows, " << velox::succinctBytes(it->second.peakMemory)
+              << " peak memory" << std::endl;
+        }
+      });
 }
 } // namespace
 
@@ -254,7 +257,8 @@ std::string SqlQueryRunner::runExplainAnalyze(
   auto results = fetchResults(*runner);
 
   std::stringstream out;
-  out << printPlanWithStats(*runner, planAndStats.prediction);
+  out << printPlanWithStats(
+      *runner, planAndStats.prediction, options.debugMode);
 
   return out.str();
 }

@@ -464,7 +464,35 @@ std::vector<velox::exec::TaskStats> LocalRunner::stats() const {
   return result;
 }
 
+namespace {
+void printCustomStats(
+    const std::unordered_map<std::string, velox::RuntimeMetric>& stats,
+    std::string_view indentation,
+    std::ostream& stream) {
+  int width = 0;
+  for (const auto& entry : stats) {
+    if (width < entry.first.size()) {
+      width = entry.first.size();
+    }
+  }
+  width += 3;
+
+  // Copy to a map to get a deterministic output.
+  std::map<std::string_view, velox::RuntimeMetric> orderedStats;
+  for (const auto& [name, metric] : stats) {
+    orderedStats[name] = metric;
+  }
+
+  for (const auto& [name, metric] : orderedStats) {
+    stream << indentation << std::left << std::setw(width) << name;
+    metric.printMetric(stream);
+    stream << std::endl;
+  }
+}
+} // namespace
+
 std::string LocalRunner::printPlanWithStats(
+    bool includeCustomStats,
     const std::function<void(
         const velox::core::PlanNodeId& nodeId,
         std::string_view indentation,
@@ -477,11 +505,18 @@ std::string LocalRunner::printPlanWithStats(
   }
 
   const auto taskStats = stats();
-  folly::F14FastMap<velox::core::PlanNodeId, std::string> planNodeStats;
+
+  folly::F14FastMap<velox::core::PlanNodeId, velox::exec::PlanNodeStats>
+      planNodeStats;
   for (const auto& stats : taskStats) {
     auto planStats = velox::exec::toPlanStats(stats);
-    for (const auto& [id, nodeStats] : planStats) {
-      planNodeStats[id] = nodeStats.toString(leafNodeIds.contains(id));
+    for (auto& [id, nodeStats] : planStats) {
+      bool ok = planNodeStats.emplace(id, std::move(nodeStats)).second;
+      VELOX_CHECK(
+          ok,
+          "Plan node IDs must be unique across fragments. "
+          "Found duplicate ID: {}",
+          id);
     }
   }
 
@@ -493,7 +528,12 @@ std::string LocalRunner::printPlanWithStats(
 
         auto statsIt = planNodeStats.find(planNodeId);
         if (statsIt != planNodeStats.end()) {
-          out << indentation << statsIt->second << std::endl;
+          out << indentation
+              << statsIt->second.toString(leafNodeIds.contains(planNodeId))
+              << std::endl;
+          if (includeCustomStats) {
+            printCustomStats(statsIt->second.customStats, indentation, out);
+          }
         }
       });
 }

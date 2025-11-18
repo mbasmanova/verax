@@ -47,6 +47,9 @@ class SqlQueryRunner {
     int32_t numDrivers{4};
     uint64_t splitTargetBytes{16 << 20};
     uint32_t optimizerTraceFlags{0};
+
+    /// If true, EXPLAIN ANALYZE output includes custom operator stats.
+    bool debugMode{false};
   };
 
   SqlResult run(std::string_view sql, const RunOptions& options);

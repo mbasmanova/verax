@@ -109,11 +109,13 @@ class LocalRunner : public Runner,
   /// Prints the distributed plan annotated with runtime stats. Similar to
   /// velox::exec::printPlanWithStats and velox::exec::Task::printPlanWithStats
   /// APIs.
+  /// @param includeCustomStats If true, prints operator-specific counters.
   /// @param addContext Optional lambda to add context to plan nodes. Receives
   /// plan node ID, indentation and std::ostream where to append the context.
   /// Start each line of context with 'indentation' and end with a new-line
   /// character.
   std::string printPlanWithStats(
+      bool includeCustomStats = false,
       const std::function<void(
           const velox::core::PlanNodeId& nodeId,
           std::string_view indentation,
