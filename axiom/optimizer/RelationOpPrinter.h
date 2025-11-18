@@ -22,6 +22,10 @@ namespace facebook::axiom::optimizer {
 struct RelationOpToTextOptions {
   /// Include the estimate of the cardinality and cost of each plan node.
   bool includeCost{false};
+
+  /// Maximum depth of the plan tree to print. 0 means print only the root node.
+  /// Default is unlimited.
+  std::optional<int32_t> maxDepth;
 };
 
 class RelationOpPrinter {
