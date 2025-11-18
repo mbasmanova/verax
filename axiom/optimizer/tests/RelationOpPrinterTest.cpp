@@ -313,5 +313,77 @@ TEST_F(RelationOpPrinterTest, cost) {
           testing::Eq("")));
 }
 
+TEST_F(RelationOpPrinterTest, maxDepth) {
+  connector_->addTable("t", ROW({"t_key", "a"}, INTEGER()));
+  connector_->addTable("u", ROW({"u_key", "b"}, INTEGER()));
+
+  const auto sql =
+      "SELECT count(*) FROM t LEFT JOIN u ON t_key = u_key AND a > b";
+
+  {
+    auto lines = toLines(sql, {.maxDepth = 0});
+
+    EXPECT_THAT(
+        lines,
+        testing::ElementsAre(
+            testing::StartsWith("Project (redundant)"),
+            testing::StartsWith("    "),
+            testing::Eq("")));
+  }
+
+  {
+    auto lines = toLines(sql, {.maxDepth = 1});
+
+    EXPECT_THAT(
+        lines,
+        testing::ElementsAre(
+            testing::StartsWith("Project (redundant)"),
+            testing::StartsWith("    "),
+            testing::StartsWith("  Aggregation"),
+            testing::StartsWith("      "), // count(*)
+            testing::Eq("")));
+  }
+
+  {
+    auto lines = toLines(sql, {.maxDepth = 3});
+
+    EXPECT_THAT(
+        lines,
+        testing::ElementsAre(
+            testing::StartsWith("Project (redundant)"),
+            testing::StartsWith("    "),
+            testing::StartsWith("  Aggregation"),
+            testing::StartsWith("      "), // count(*)
+            testing::StartsWith("    Join LEFT Hash "),
+            testing::StartsWith("      "), // t_key = u_key
+            testing::HasSubstr("gt"), // a > b
+            testing::StartsWith("      TableScan"),
+            testing::StartsWith("        table: t"),
+            testing::StartsWith("      HashBuild"),
+            testing::Eq("")));
+  }
+
+  {
+    auto lines = toLines(sql, {.maxDepth = 10});
+
+    EXPECT_THAT(
+        lines,
+        testing::ElementsAre(
+            testing::StartsWith("Project (redundant)"),
+            testing::StartsWith("    "),
+            testing::StartsWith("  Aggregation"),
+            testing::StartsWith("      "), // count(*)
+            testing::StartsWith("    Join LEFT Hash "),
+            testing::StartsWith("      "), // t_key = u_key
+            testing::HasSubstr("gt"), // a > b
+            testing::StartsWith("      TableScan"),
+            testing::StartsWith("        table: t"),
+            testing::StartsWith("      HashBuild"),
+            testing::StartsWith("        TableScan"),
+            testing::StartsWith("          table: u"),
+            testing::Eq("")));
+  }
+}
+
 } // namespace
 } // namespace facebook::axiom::optimizer
