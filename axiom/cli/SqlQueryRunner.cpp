@@ -211,7 +211,8 @@ std::string SqlQueryRunner::runExplain(
           options,
           nullptr,
           [&](const auto& plan) {
-            text = optimizer::RelationOpPrinter::toText(plan);
+            text = optimizer::RelationOpPrinter::toText(
+                plan, {.includeCost = true});
             return false; // Stop optimization.
           });
       return text;

@@ -25,8 +25,13 @@ namespace {
 class ToTextVisitor : public RelationOpVisitor {
  public:
   struct Context : public RelationOpVisitorContext {
+    const RelationOpToTextOptions& options;
+
     std::stringstream out;
     size_t indent{0};
+
+    explicit Context(const RelationOpToTextOptions& options)
+        : options(options) {}
   };
 
   void visit(const TableScan& op, RelationOpVisitorContext& context)
@@ -226,6 +231,14 @@ class ToTextVisitor : public RelationOpVisitor {
       context.out << " " << extra;
     }
     context.out << " -> " << columnsToString(op.columns()) << std::endl;
+
+    if (context.options.includeCost) {
+      context.out << toIndentation(context.indent + 1)
+                  << "Estimates: cardinality = " << std::fixed
+                  << std::setprecision(0) << op.resultCardinality()
+                  << ", cost = " << std::fixed << std::setprecision(2)
+                  << op.cost().totalCost() << std::endl;
+    }
   }
 
   void printInput(const RelationOp& op, Context& context) const {
@@ -331,8 +344,10 @@ class OnelineVisitor : public RelationOpVisitor {
 } // namespace
 
 // static
-std::string RelationOpPrinter::toText(const RelationOp& root) {
-  ToTextVisitor::Context context;
+std::string RelationOpPrinter::toText(
+    const RelationOp& root,
+    const RelationOpToTextOptions& options) {
+  ToTextVisitor::Context context(options);
   ToTextVisitor visitor;
   root.accept(visitor, context);
   return context.out.str();
