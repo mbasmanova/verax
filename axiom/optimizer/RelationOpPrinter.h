@@ -19,10 +19,17 @@
 
 namespace facebook::axiom::optimizer {
 
+struct RelationOpToTextOptions {
+  /// Include the estimate of the cardinality and cost of each plan node.
+  bool includeCost{false};
+};
+
 class RelationOpPrinter {
  public:
   /// Returns a multi-line text representatino of the plan tree.
-  static std::string toText(const RelationOp& root);
+  static std::string toText(
+      const RelationOp& root,
+      const RelationOpToTextOptions& options = {});
 
   /// Returns a one-line summary of the plan. Includes tables and joins. Useful
   /// for debugging join order.

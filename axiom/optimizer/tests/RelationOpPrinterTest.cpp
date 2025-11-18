@@ -55,14 +55,18 @@ class RelationOpPrinterTest : public ::testing::Test {
     velox::connector::unregisterConnector(kTestConnectorId);
   }
 
-  std::vector<std::string> toLines(const std::string& sql) {
-    return toLines(*parse(sql));
+  std::vector<std::string> toLines(
+      const std::string& sql,
+      const RelationOpToTextOptions& options = {}) {
+    return toLines(*parse(sql), options);
   }
 
-  std::vector<std::string> toLines(const lp::LogicalPlanNode& logicalPlan) {
+  std::vector<std::string> toLines(
+      const lp::LogicalPlanNode& logicalPlan,
+      const RelationOpToTextOptions& options = {}) {
     std::vector<std::string> lines;
     optimize(logicalPlan, [&](const RelationOp& op) {
-      const auto planString = RelationOpPrinter::toText(op);
+      const auto planString = RelationOpPrinter::toText(op, options);
 
       LOG(INFO) << std::endl << planString;
       folly::split('\n', planString, lines);
@@ -275,6 +279,37 @@ TEST_F(RelationOpPrinterTest, unionAll) {
           testing::StartsWith("        "),
           testing::StartsWith("      TableScan"),
           testing::StartsWith("        table: u"),
+          testing::Eq("")));
+}
+
+TEST_F(RelationOpPrinterTest, cost) {
+  connector_->addTable("t", ROW({"t_key", "a"}, INTEGER()));
+  connector_->addTable("u", ROW({"u_key", "b"}, INTEGER()));
+
+  const auto sql =
+      "SELECT count(*) FROM t LEFT JOIN u ON t_key = u_key AND a > b";
+  auto lines = toLines(sql, {.includeCost = true});
+  EXPECT_THAT(
+      lines,
+      testing::ElementsAre(
+          testing::StartsWith("Project (redundant)"),
+          testing::StartsWith("  Estimates: cardinality"),
+          testing::StartsWith("    "),
+          testing::StartsWith("  Aggregation"),
+          testing::StartsWith("    Estimates: cardinality"),
+          testing::StartsWith("      "), // count(*)
+          testing::StartsWith("    Join LEFT Hash "),
+          testing::StartsWith("      Estimates: cardinality"),
+          testing::StartsWith("      "), // t_key = u_key
+          testing::HasSubstr("gt"), // a > b
+          testing::StartsWith("      TableScan"),
+          testing::StartsWith("        Estimates: cardinality"),
+          testing::StartsWith("        table: t"),
+          testing::StartsWith("      HashBuild"),
+          testing::StartsWith("        Estimates: cardinality"),
+          testing::StartsWith("        TableScan"),
+          testing::StartsWith("          Estimates: cardinality"),
+          testing::StartsWith("          table: u"),
           testing::Eq("")));
 }
 
