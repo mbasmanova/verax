@@ -242,6 +242,11 @@ class ToTextVisitor : public RelationOpVisitor {
   }
 
   void printInput(const RelationOp& op, Context& context) const {
+    if (context.options.maxDepth.has_value() &&
+        context.indent >= *context.options.maxDepth) {
+      return;
+    }
+
     context.indent++;
     SCOPE_EXIT {
       context.indent--;
