@@ -616,16 +616,18 @@ class VeloxRunner : public velox::QueryBenchmarkBase {
   static void printPlanWithStats(
       runner::LocalRunner& runner,
       const optimizer::NodePredictionMap& estimates) {
-    std::cout << runner.printPlanWithStats([&](const core::PlanNodeId& nodeId,
-                                               std::string_view indentation,
-                                               std::ostream& out) {
-      auto it = estimates.find(nodeId);
-      if (it != estimates.end()) {
-        out << indentation << "Estimate: " << it->second.cardinality
-            << " rows, " << succinctBytes(it->second.peakMemory)
-            << " peak memory" << std::endl;
-      }
-    });
+    std::cout << runner.printPlanWithStats(
+        /*includeCustomStats=*/true,
+        [&](const core::PlanNodeId& nodeId,
+            std::string_view indentation,
+            std::ostream& out) {
+          auto it = estimates.find(nodeId);
+          if (it != estimates.end()) {
+            out << indentation << "Estimate: " << it->second.cardinality
+                << " rows, " << succinctBytes(it->second.peakMemory)
+                << " peak memory" << std::endl;
+          }
+        });
   }
 
   std::shared_ptr<runner::LocalRunner> makeRunner(
