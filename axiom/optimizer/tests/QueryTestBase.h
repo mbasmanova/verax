@@ -165,6 +165,17 @@ class QueryTestBase : public runner::test::LocalRunnerTestBase {
   inline static std::unique_ptr<VeloxHistory> gSuiteHistory;
 };
 
+/// Filters on BIGINT columns.
+inline auto lt(const std::string& name, int64_t n) {
+  return velox::common::test::singleSubfieldFilter(
+      name, velox::exec::lessThan(n));
+}
+
+inline auto gt(const std::string& name, int64_t n) {
+  return velox::common::test::singleSubfieldFilter(
+      name, velox::exec::greaterThan(n));
+}
+
 inline auto gte(const std::string& name, int64_t n) {
   return velox::common::test::singleSubfieldFilter(
       name, velox::exec::greaterThanOrEqual(n));
@@ -180,6 +191,7 @@ inline auto between(const std::string& name, int64_t min, int64_t max) {
       name, velox::exec::between(min, max));
 }
 
+/// Filters on DOUBLE columns.
 inline auto gt(const std::string& name, double d) {
   return velox::common::test::singleSubfieldFilter(
       name, velox::exec::greaterThanDouble(d));

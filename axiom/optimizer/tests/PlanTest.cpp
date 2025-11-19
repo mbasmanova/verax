@@ -554,38 +554,6 @@ TEST_F(PlanTest, filterToJoinEdge) {
   checkSame(logicalPlan, referencePlan);
 }
 
-TEST_F(PlanTest, filterImport) {
-  auto ordersType = ROW({"o_custkey", "o_totalprice"}, {BIGINT(), DOUBLE()});
-
-  const auto connectorId = exec::test::kHiveConnectorId;
-
-  auto logicalPlan = lp::PlanBuilder()
-                         .tableScan(connectorId, "orders", ordersType->names())
-                         .aggregate({"o_custkey"}, {"sum(o_totalprice) as a0"})
-                         .filter("o_custkey < 100 and a0 > 200.0")
-                         .build();
-
-  {
-    auto plan = toSingleNodePlan(logicalPlan);
-    auto matcher = core::PlanMatcherBuilder()
-                       .tableScan("orders")
-                       .singleAggregation()
-                       .filter("a0 > 200.0")
-                       .build();
-
-    AXIOM_ASSERT_PLAN(plan, matcher);
-  }
-
-  auto referencePlan =
-      exec::test::PlanBuilder()
-          .tableScan("orders", ordersType)
-          .singleAggregation({"o_custkey"}, {"sum(o_totalprice)"})
-          .filter("o_custkey < 100 and a0 > 200.0")
-          .planNode();
-
-  checkSame(logicalPlan, referencePlan);
-}
-
 TEST_F(PlanTest, filterBreakup) {
   const char* filterText =
       "        (\n"
