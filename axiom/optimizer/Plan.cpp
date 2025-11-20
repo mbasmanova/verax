@@ -172,12 +172,47 @@ void PlanState::setTargetExprsForDt(const PlanObjectSet& target) {
   }
 }
 
+ExprCP PlanState::isDownstreamFilterOnly(ColumnCP column) const {
+  ExprCP result = nullptr;
+
+  for (const auto* conjunct : dt->conjuncts) {
+    if (!placed.contains(conjunct)) {
+      const auto& columns = conjunct->columns();
+      if (columns.size() == 1 && columns.onlyObject() == column) {
+        if (result != nullptr) {
+          // Found multiple conjuncts that use the column.
+          return nullptr;
+        }
+
+        result = conjunct;
+      }
+    }
+  }
+
+  if (result == nullptr) {
+    return nullptr;
+  }
+
+  if (computeDownstreamColumns(/*includeFilters=*/false).contains(column)) {
+    // Column has non-filter usage.
+    return nullptr;
+  }
+
+  return result;
+}
+
 const PlanObjectSet& PlanState::downstreamColumns() const {
   auto it = downstreamColumnsCache_.find(placed);
   if (it != downstreamColumnsCache_.end()) {
     return it->second;
   }
 
+  auto result = computeDownstreamColumns(/*includeFilters=*/true);
+
+  return downstreamColumnsCache_[placed] = std::move(result);
+}
+
+PlanObjectSet PlanState::computeDownstreamColumns(bool includeFilters) const {
   PlanObjectSet result;
 
   auto translateExpr = [&](ExprCP expr) {
@@ -244,9 +279,11 @@ const PlanObjectSet& PlanState::downstreamColumns() const {
   }
 
   // Filters.
-  for (const auto* conjunct : dt->conjuncts) {
-    if (!placed.contains(conjunct)) {
-      addExpr(conjunct);
+  if (includeFilters) {
+    for (const auto* conjunct : dt->conjuncts) {
+      if (!placed.contains(conjunct)) {
+        addExpr(conjunct);
+      }
     }
   }
 
@@ -282,7 +319,7 @@ const PlanObjectSet& PlanState::downstreamColumns() const {
   // Output expressions.
   targetExprs.forEach<Expr>([&](ExprCP expr) { addExpr(expr); });
 
-  return downstreamColumnsCache_[placed] = std::move(result);
+  return result;
 }
 
 ExprCP PlanState::toColumn(ExprCP expr) const {

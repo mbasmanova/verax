@@ -23,7 +23,7 @@
 
 namespace facebook::axiom::optimizer::test {
 
-class HiveQueriesTestBase : public test::QueryTestBase {
+class HiveQueriesTestBase : public QueryTestBase {
  protected:
   static void SetUpTestCase();
 
@@ -36,6 +36,14 @@ class HiveQueriesTestBase : public test::QueryTestBase {
 
   /// Returns a schema of a TPC-H table.
   velox::RowTypePtr getSchema(std::string_view tableName);
+
+  logical_plan::LogicalPlanNodePtr parseSelect(std::string_view sql);
+
+  using QueryTestBase::toSingleNodePlan;
+
+  velox::core::PlanNodePtr toSingleNodePlan(
+      std::string_view sql,
+      int32_t numDrivers = 1);
 
   void checkResults(
       std::string_view sql,
