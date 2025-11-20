@@ -41,6 +41,11 @@ void FunctionRegistry::registerEquality(std::string_view name) {
   equality_ = name;
 }
 
+void FunctionRegistry::registerNegation(std::string_view name) {
+  VELOX_USER_CHECK(!name.empty());
+  negation_ = name;
+}
+
 bool FunctionRegistry::registerElementAt(std::string_view name) {
   VELOX_USER_CHECK(!name.empty());
   if (elementAt_.has_value() && elementAt_.value() != name) {
@@ -202,6 +207,7 @@ void FunctionRegistry::registerPrestoFunctions(std::string_view prefix) {
   auto* registry = FunctionRegistry::instance();
 
   registry->registerEquality(fullName("eq"));
+  registry->registerNegation(fullName("not"));
   registry->registerElementAt(fullName("element_at"));
   registry->registerSubscript(fullName("subscript"));
   registry->registerCardinality(fullName("cardinality"));
