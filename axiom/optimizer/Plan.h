@@ -248,6 +248,10 @@ struct PlanState {
   /// targetColumns. Gets smaller as more tables are placed.
   const PlanObjectSet& downstreamColumns() const;
 
+  /// Checks if 'column' is used downstream just for filtering and that usage is
+  /// limited to a single conjunct. Returns that conjunct or nullptr.
+  ExprCP isDownstreamFilterOnly(ColumnCP column) const;
+
   /// Replace expression with pre-computed column using 'exprToColumn'
   /// mapping.
   ExprCP toColumn(ExprCP expr) const;
@@ -281,8 +285,10 @@ struct PlanState {
   void debugSetFirstTable(int32_t id);
 
  private:
-  /// Caches results of downstreamColumns(). This is a pure function of
-  /// 'placed', 'targetExprs' and 'dt'.
+  PlanObjectSet computeDownstreamColumns(bool includeFilters) const;
+
+  // Caches results of downstreamColumns(). This is a pure function of
+  // 'placed', 'targetExprs' and 'dt'.
   mutable folly::F14FastMap<PlanObjectSet, PlanObjectSet>
       downstreamColumnsCache_;
 

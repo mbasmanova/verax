@@ -89,6 +89,7 @@ add_executable(
   axiom_optimizer_tests
   AggregationPlanTest.cpp
   DerivedTablePrinterTest.cpp
+  FilterPushdownTest.cpp
   HiveAggregationQueriesTest.cpp
   HiveLimitQueriesTest.cpp
   HiveQueriesTest.cpp
@@ -97,6 +98,7 @@ add_executable(
   PlanTest.cpp
   RelationOpPrinterTest.cpp
   SetTest.cpp
+  SubqueryTest.cpp
   UnnestTest.cpp
   ParquetTpchTest.cpp
   SyntacticJoinOrderTest.cpp

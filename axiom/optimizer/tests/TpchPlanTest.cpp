@@ -153,7 +153,8 @@ TEST_F(TpchPlanTest, q01) {
           .orderBy()
           .build();
 
-  AXIOM_ASSERT_PLAN(planTpch(1), matcher);
+  auto plan = planTpch(1);
+  AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
 TEST_F(TpchPlanTest, q02) {
@@ -188,7 +189,8 @@ TEST_F(TpchPlanTest, q03) {
           .project()
           .build();
 
-  AXIOM_ASSERT_PLAN(planTpch(3), matcher);
+  auto plan = planTpch(3);
+  AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
 TEST_F(TpchPlanTest, q04) {
@@ -211,13 +213,13 @@ TEST_F(TpchPlanTest, q04) {
                                      DATE()->toDays("1993-07-01"),
                                      DATE()->toDays("1993-09-30")))
                              .build(),
-                         core::JoinType::kRightSemiProject)
-                     .filter()
+                         core::JoinType::kRightSemiFilter)
                      .aggregation()
                      .orderBy()
                      .build();
 
-  AXIOM_ASSERT_PLAN(planTpch(4), matcher);
+  auto plan = planTpch(4);
+  AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
 TEST_F(TpchPlanTest, q05) {
@@ -247,7 +249,8 @@ TEST_F(TpchPlanTest, q06) {
                      .aggregation()
                      .build();
 
-  AXIOM_ASSERT_PLAN(planTpch(6), matcher);
+  auto plan = planTpch(6);
+  AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
 TEST_F(TpchPlanTest, q07) {
@@ -313,7 +316,8 @@ TEST_F(TpchPlanTest, q12) {
           .orderBy()
           .build();
 
-  AXIOM_ASSERT_PLAN(planTpch(12), matcher);
+  auto plan = planTpch(12);
+  AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
 TEST_F(TpchPlanTest, q13) {
@@ -336,7 +340,8 @@ TEST_F(TpchPlanTest, q13) {
           .orderBy()
           .build();
 
-  AXIOM_ASSERT_PLAN(planTpch(13), matcher);
+  auto plan = planTpch(13);
+  AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
 TEST_F(TpchPlanTest, q14) {
@@ -362,7 +367,8 @@ TEST_F(TpchPlanTest, q14) {
                      .project()
                      .build();
 
-  AXIOM_ASSERT_PLAN(planTpch(14), matcher);
+  auto plan = planTpch(14);
+  AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
 TEST_F(TpchPlanTest, q15) {
@@ -392,7 +398,8 @@ TEST_F(TpchPlanTest, q16) {
           .orderBy()
           .build();
 
-  AXIOM_ASSERT_PLAN(planTpch(16), matcher);
+  auto plan = planTpch(16);
+  AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
 TEST_F(TpchPlanTest, q17) {

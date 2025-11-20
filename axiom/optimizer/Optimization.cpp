@@ -1064,6 +1064,33 @@ folly::F14FastMap<PlanObjectCP, ExprCP> makeJoinColumnMapping(
   return mapping;
 }
 
+namespace {
+
+// Check if 'mark' column produced by a SemiProject join is used only to filter
+// the results using 'mark' or 'not(mark)' condition. If so, replace the join
+// with a SemiFilter and remove the filter.
+void tryOptimizeSemiProject(
+    velox::core::JoinType& joinType,
+    ColumnCP& mark,
+    PlanState& state) {
+  if (mark) {
+    if (joinType == velox::core::JoinType::kLeftSemiProject ||
+        joinType == velox::core::JoinType::kRightSemiProject) {
+      if (auto markFilter = state.isDownstreamFilterOnly(mark)) {
+        if (markFilter == mark) {
+          joinType = joinType == velox::core::JoinType::kLeftSemiProject
+              ? velox::core::JoinType::kLeftSemiFilter
+              : velox::core::JoinType::kRightSemiFilter;
+          mark = nullptr;
+          state.placed.add(markFilter);
+        }
+        // TODO check for not(mark) and switch to anti.
+      }
+    }
+  }
+}
+} // namespace
+
 void Optimization::joinByHash(
     const RelationOpPtr& plan,
     const JoinCandidate& candidate,
@@ -1164,7 +1191,7 @@ void Optimization::joinByHash(
   auto* buildOp = make<HashBuild>(buildInput, build.keys, buildPlan);
   buildState.addCost(*buildOp);
 
-  const auto joinType = build.leftJoinType();
+  auto joinType = build.leftJoinType();
   const bool probeOnly = joinType == velox::core::JoinType::kLeftSemiFilter ||
       joinType == velox::core::JoinType::kLeftSemiProject ||
       joinType == velox::core::JoinType::kAnti;
@@ -1205,6 +1232,8 @@ void Optimization::joinByHash(
 
     projectionBuilder.add(column, column);
   });
+
+  tryOptimizeSemiProject(joinType, mark, state);
 
   // If there is an existence flag, it is the rightmost result column.
   if (mark) {
@@ -1307,7 +1336,7 @@ void Optimization::joinByHashRight(
 
   const auto leftJoinType = probe.leftJoinType();
   // Change the join type to the right join variant.
-  const auto rightJoinType = reverseJoinType(leftJoinType);
+  auto rightJoinType = reverseJoinType(leftJoinType);
 
   const auto fanout =
       fanoutJoinTypeLimit(rightJoinType, candidate.join->rlFanout());
@@ -1353,6 +1382,8 @@ void Optimization::joinByHashRight(
 
     projectionBuilder.add(column, column);
   });
+
+  tryOptimizeSemiProject(rightJoinType, mark, state);
 
   if (mark) {
     const_cast<Value*>(&mark->value())->trueFraction =
@@ -1854,6 +1885,10 @@ void Optimization::makeJoins(RelationOpPtr plan, PlanState& state) {
     if (placeConjuncts(plan, state, true)) {
       return;
     }
+
+    LOG(ERROR) << plan->toOneline();
+    LOG(ERROR) << "Cost: " << std::fixed << std::setprecision(2)
+               << plan->cost().totalCost();
 
     addPostprocess(dt, plan, state);
     auto kept = state.plans.addPlan(plan, state);

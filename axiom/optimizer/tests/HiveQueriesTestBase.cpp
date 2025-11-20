@@ -62,18 +62,25 @@ RowTypePtr HiveQueriesTestBase::getSchema(std::string_view tableName) {
   return metadata_->findTable(tableName)->type();
 }
 
+velox::core::PlanNodePtr HiveQueriesTestBase::toSingleNodePlan(
+    std::string_view sql,
+    int32_t numDrivers) {
+  auto logicalPlan = parseSelect(sql);
+
+  auto plan =
+      planVelox(logicalPlan, {.numWorkers = 1, .numDrivers = numDrivers}).plan;
+
+  EXPECT_EQ(1, plan->fragments().size());
+  return plan->fragments().at(0).fragment.planNode;
+}
+
 void HiveQueriesTestBase::checkResults(
     std::string_view sql,
     const core::PlanNodePtr& referencePlan) {
   SCOPED_TRACE(sql);
   VELOX_CHECK_NOT_NULL(referencePlan);
 
-  auto statement = prestoParser_->parse(sql);
-
-  ASSERT_TRUE(statement->isSelect());
-  auto logicalPlan =
-      statement->as<::axiom::sql::presto::SelectStatement>()->plan();
-
+  auto logicalPlan = parseSelect(sql);
   checkSame(logicalPlan, referencePlan);
 }
 
@@ -93,6 +100,13 @@ void HiveQueriesTestBase::checkSingleNodePlan(
   ASSERT_EQ(1, fragments.size());
 
   ASSERT_TRUE(matcher->match(fragments.at(0).fragment.planNode));
+}
+
+lp::LogicalPlanNodePtr HiveQueriesTestBase::parseSelect(std::string_view sql) {
+  auto statement = prestoParser_->parse(sql);
+
+  VELOX_CHECK(statement->isSelect());
+  return statement->as<::axiom::sql::presto::SelectStatement>()->plan();
 }
 
 } // namespace facebook::axiom::optimizer::test
