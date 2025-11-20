@@ -15,7 +15,6 @@
  */
 
 #include "axiom/logical_plan/PlanBuilder.h"
-#include "axiom/logical_plan/PlanPrinter.h"
 #include "axiom/optimizer/tests/HiveQueriesTestBase.h"
 #include "velox/exec/tests/utils/PlanBuilder.h"
 
@@ -82,11 +81,10 @@ TEST_F(HiveQueriesTest, crossJoin) {
 TEST_F(HiveQueriesTest, orderOfOperations) {
   auto test = [&](lp::PlanBuilder& planBuilder,
                   core::PlanMatcherBuilder& matcherBuilder) {
-    auto plan =
-        planVelox(planBuilder.build(), {.numWorkers = 1, .numDrivers = 1});
+    auto plan = toSingleNodePlan(planBuilder.build());
 
     auto matcher = matcherBuilder.build();
-    checkSingleNodePlan(plan, matcher);
+    AXIOM_ASSERT_PLAN(plan, matcher);
   };
 
   auto scan = [&](const std::string& tableName) {

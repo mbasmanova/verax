@@ -202,6 +202,22 @@ inline auto lt(const std::string& name, double d) {
       name, velox::exec::lessThanDouble(d));
 }
 
+/// Filters on VARCHAR columns.
+inline auto eq(const std::string& name, const std::string& value) {
+  return velox::common::test::singleSubfieldFilter(
+      name, velox::exec::equal(value));
+}
+
+inline auto lt(const std::string& name, const std::string& value) {
+  return velox::common::test::singleSubfieldFilter(
+      name, velox::exec::lessThan(value));
+}
+
+inline auto gt(const std::string& name, const std::string& value) {
+  return velox::common::test::singleSubfieldFilter(
+      name, velox::exec::greaterThan(value));
+}
+
 } // namespace facebook::axiom::optimizer::test
 
 #define AXIOM_ASSERT_PLAN(plan, matcher) \
