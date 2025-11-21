@@ -551,20 +551,47 @@ RelationOpPtr repartitionForIndex(
   return repartition;
 }
 
-float fanoutJoinTypeLimit(velox::core::JoinType joinType, float fanout) {
+// Join edge: a -- b. Left is a. Right is b.
+// @param fanout For each row in 'a' there are so many matches in 'b'.
+// @param rlFanout For each row in 'b' there are so many matches in 'a'.
+// @param rightToLeftRatio |b| / |a|
+float fanoutJoinTypeLimit(
+    velox::core::JoinType joinType,
+    float fanout,
+    float rlFanout,
+    float rightToLeftRatio) {
   switch (joinType) {
+    case velox::core::JoinType::kInner:
+      return fanout;
     case velox::core::JoinType::kLeft:
       return std::max<float>(1, fanout);
+    case velox::core::JoinType::kRight:
+      return std::max<float>(1, rlFanout) * rightToLeftRatio;
+    case velox::core::JoinType::kFull:
+      return std::max<float>(std::max<float>(1, fanout), rightToLeftRatio);
+    case velox::core::JoinType::kLeftSemiProject:
+      return 1;
     case velox::core::JoinType::kLeftSemiFilter:
       return std::min<float>(1, fanout);
-    case velox::core::JoinType::kAnti:
-      return 1 - std::min<float>(1, fanout);
-    case velox::core::JoinType::kLeftSemiProject:
     case velox::core::JoinType::kRightSemiProject:
-      return 1;
+      return rightToLeftRatio;
+    case velox::core::JoinType::kRightSemiFilter:
+      return std::min<float>(1, rlFanout) * rightToLeftRatio;
+    case velox::core::JoinType::kAnti:
+      return std::max<float>(0, 1 - fanout);
     default:
-      return fanout;
+      VELOX_UNREACHABLE();
   }
+}
+
+void setMarkTrueFraction(
+    ColumnCP mark,
+    velox::core::JoinType joinType,
+    float fanout,
+    float rlFanout) {
+  const_cast<Value*>(&mark->value())->trueFraction = std::min<float>(
+      1,
+      joinType == velox::core::JoinType::kLeftSemiProject ? fanout : rlFanout);
 }
 
 // Returns the positions in 'keys' for the expressions that determine the
@@ -989,8 +1016,15 @@ void Optimization::joinByIndex(
       // Not available by index.
       return;
     }
-    auto fanout = fanoutJoinTypeLimit(
-        joinType, info.scanCardinality * rightTable->filterSelectivity);
+
+    auto fanout = info.scanCardinality * rightTable->filterSelectivity;
+    if (joinType == velox::core::JoinType::kLeft) {
+      fanout = std::max<float>(1, fanout);
+    } else if (joinType == velox::core::JoinType::kLeftSemiProject) {
+      fanout = 1;
+    } else if (joinType == velox::core::JoinType::kLeftSemiFilter) {
+      fanout = std::min<float>(1, fanout);
+    }
 
     auto lookupKeys = left.keys;
     // The number of keys is the prefix that matches index order.
@@ -1246,17 +1280,25 @@ void Optimization::joinByHash(
     projectionBuilder.add(column, column);
   });
 
+  if (mark) {
+    setMarkTrueFraction(
+        mark, joinType, candidate.fanout, candidate.join->rlFanout());
+  }
+
   tryOptimizeSemiProject(joinType, mark, state, negation_);
 
   // If there is an existence flag, it is the rightmost result column.
   if (mark) {
-    const_cast<Value*>(&mark->value())->trueFraction =
-        std::min<float>(1, candidate.fanout);
     projectionBuilder.add(mark, mark);
   }
 
   state.columns = projectionBuilder.outputColumns();
-  const auto fanout = fanoutJoinTypeLimit(joinType, candidate.fanout);
+
+  const auto fanout = fanoutJoinTypeLimit(
+      joinType,
+      candidate.fanout,
+      candidate.join->rlFanout(),
+      buildState.cost.cardinality / state.cost.cardinality);
 
   PrecomputeProjection precomputeProbe(probeInput, state.dt);
   auto probeKeys = precomputeProbe.toColumns(probe.keys);
@@ -1351,9 +1393,6 @@ void Optimization::joinByHashRight(
   // Change the join type to the right join variant.
   auto rightJoinType = reverseJoinType(leftJoinType);
 
-  const auto fanout =
-      fanoutJoinTypeLimit(rightJoinType, candidate.join->rlFanout());
-
   VELOX_CHECK(
       leftJoinType != rightJoinType,
       "Join type does not have right hash join variant");
@@ -1396,13 +1435,22 @@ void Optimization::joinByHashRight(
     projectionBuilder.add(column, column);
   });
 
+  if (mark) {
+    setMarkTrueFraction(
+        mark, rightJoinType, candidate.join->rlFanout(), candidate.fanout);
+  }
+
   tryOptimizeSemiProject(rightJoinType, mark, state, negation_);
 
   if (mark) {
-    const_cast<Value*>(&mark->value())->trueFraction =
-        std::min<float>(1, candidate.fanout);
     projectionBuilder.add(mark, mark);
   }
+
+  const auto fanout = fanoutJoinTypeLimit(
+      rightJoinType,
+      candidate.join->rlFanout(),
+      candidate.fanout,
+      state.cost.cardinality / probeState.cost.cardinality);
 
   const auto buildCost = state.cost;
 
@@ -1898,10 +1946,6 @@ void Optimization::makeJoins(RelationOpPtr plan, PlanState& state) {
     if (placeConjuncts(plan, state, true)) {
       return;
     }
-
-    LOG(ERROR) << plan->toOneline();
-    LOG(ERROR) << "Cost: " << std::fixed << std::setprecision(2)
-               << plan->cost().totalCost();
 
     addPostprocess(dt, plan, state);
     auto kept = state.plans.addPlan(plan, state);

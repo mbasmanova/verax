@@ -321,23 +321,27 @@ TEST_F(SetTest, intersect) {
           .build();
 
   {
+    auto startMatcher = [&](auto&& filters,
+                            const std::string& remainingFilter = "") {
+      return core::PlanMatcherBuilder().hiveScan(
+          "nation", std::move(filters), remainingFilter);
+    };
+
+    // TODO Fix this plan to push down (n_regionkey + 1) % 3
+    // = 1 to all branches of 'intersect'.
+
     auto plan = toSingleNodePlan(logicalPlan);
     auto matcher =
-        core::PlanMatcherBuilder()
-            // TODO Fix this plan to push down (n_regionkey + 1) % 3
-            // = 1 to all branches of 'intersect'.
-            .hiveScan(
-                "nation", lte("n_nationkey", 20), "(n_regionkey + 1) % 3 = 1")
+        startMatcher(gte("n_nationkey", 13))
             .hashJoin(
-                core::PlanMatcherBuilder()
-                    .hiveScan("nation", gte("n_nationkey", 12))
+                startMatcher(gte("n_nationkey", 12))
+                    .hashJoin(
+                        startMatcher(
+                            lte("n_nationkey", 20), "(n_regionkey + 1) % 3 = 1")
+                            .build(),
+                        core::JoinType::kRightSemiFilter)
                     .build(),
-                core::JoinType::kLeftSemiFilter)
-            .hashJoin(
-                core::PlanMatcherBuilder()
-                    .hiveScan("nation", gte("n_nationkey", 13))
-                    .build(),
-                core::JoinType::kLeftSemiFilter)
+                core::JoinType::kRightSemiFilter)
             .singleAggregation()
             .project()
             .build();
