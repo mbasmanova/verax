@@ -343,6 +343,8 @@ class Optimization {
 
   bool cnamesInExpr_{true};
 
+  Name const negation_;
+
   ToGraph toGraph_;
 
   ToVelox toVelox_;

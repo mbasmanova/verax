@@ -43,6 +43,7 @@ Optimization::Optimization(
       history_(history),
       veloxQueryCtx_(std::move(veloxQueryCtx)),
       topState_{*this, nullptr},
+      negation_{toName(FunctionRegistry::instance()->negation())},
       toGraph_{schema, evaluator, options_},
       toVelox_{session_, runnerOptions_, options_} {
   queryCtx()->optimization() = this;
@@ -1072,19 +1073,31 @@ namespace {
 void tryOptimizeSemiProject(
     velox::core::JoinType& joinType,
     ColumnCP& mark,
-    PlanState& state) {
+    PlanState& state,
+    Name negation) {
   if (mark) {
-    if (joinType == velox::core::JoinType::kLeftSemiProject ||
-        joinType == velox::core::JoinType::kRightSemiProject) {
+    const bool leftProject =
+        joinType == velox::core::JoinType::kLeftSemiProject;
+    const bool rightProject =
+        joinType == velox::core::JoinType::kRightSemiProject;
+
+    if (leftProject || rightProject) {
       if (auto markFilter = state.isDownstreamFilterOnly(mark)) {
         if (markFilter == mark) {
-          joinType = joinType == velox::core::JoinType::kLeftSemiProject
-              ? velox::core::JoinType::kLeftSemiFilter
-              : velox::core::JoinType::kRightSemiFilter;
+          joinType = leftProject ? velox::core::JoinType::kLeftSemiFilter
+                                 : velox::core::JoinType::kRightSemiFilter;
           mark = nullptr;
           state.placed.add(markFilter);
+          return;
         }
-        // TODO check for not(mark) and switch to anti.
+
+        if (leftProject && isCallExpr(markFilter, negation) &&
+            markFilter->as<Call>()->argAt(0) == mark) {
+          joinType = velox::core::JoinType::kAnti;
+          mark = nullptr;
+          state.placed.add(markFilter);
+          return;
+        }
       }
     }
   }
@@ -1233,7 +1246,7 @@ void Optimization::joinByHash(
     projectionBuilder.add(column, column);
   });
 
-  tryOptimizeSemiProject(joinType, mark, state);
+  tryOptimizeSemiProject(joinType, mark, state, negation_);
 
   // If there is an existence flag, it is the rightmost result column.
   if (mark) {
@@ -1383,7 +1396,7 @@ void Optimization::joinByHashRight(
     projectionBuilder.add(column, column);
   });
 
-  tryOptimizeSemiProject(rightJoinType, mark, state);
+  tryOptimizeSemiProject(rightJoinType, mark, state, negation_);
 
   if (mark) {
     const_cast<Value*>(&mark->value())->trueFraction =

@@ -111,19 +111,19 @@ Project (redundant) -> dt1.s_name, dt1.s_address
 Executable Velox plan:
 
 Fragment 0:  numWorkers=0:
--- OrderBy[19][s_name ASC NULLS LAST] -> s_name:VARCHAR, s_address:VARCHAR
-  -- HashJoin[18][LEFT SEMI (FILTER) s_suppkey=ps_suppkey] -> s_name:VARCHAR, s_address:VARCHAR
-    -- HashJoin[8][INNER s_nationkey=n_nationkey] -> s_suppkey:BIGINT, s_name:VARCHAR, s_address:VARCHAR
-      -- TableScan[6][table: supplier, data columns: ROW<s_suppkey:BIGINT,s_name:VARCHAR,s_address:VARCHAR,s_nationkey:BIGINT,s_phone:VARCHAR,s_acctbal:DOUBLE,s_comment:VARCHAR>] -> s_suppkey:BIGINT, s_name:VARCHAR, s_address:VARCHAR, s_nationkey:BIGINT
-      -- TableScan[7][table: nation, range filters: [(n_name, Filter(BytesValues, deterministic, no nulls))], data columns: ROW<n_nationkey:BIGINT,n_name:VARCHAR,n_regionkey:BIGINT,n_comment:VARCHAR>, filter column handles: [HiveColumnHandle [name: n_name, columnType: Regular, dataType: VARCHAR, requiredSubfields: [ ]]]] -> n_nationkey:BIGINT
-    -- Project[17][expressions: (ps_suppkey:BIGINT, "ps_suppkey")] -> ps_suppkey:BIGINT
-      -- Filter[9][expression: lt("expr",cast("ps_availqty" as DOUBLE))] -> ps_suppkey:BIGINT, ps_availqty:INTEGER, expr:DOUBLE
-        -- HashJoin[16][LEFT ps_partkey=dt6.__gk8 AND ps_suppkey=dt6.__gk9] -> ps_suppkey:BIGINT, ps_availqty:INTEGER, expr:DOUBLE
-          -- HashJoin[12][LEFT SEMI (FILTER) ps_partkey=p_partkey] -> ps_partkey:BIGINT, ps_suppkey:BIGINT, ps_availqty:INTEGER
-            -- TableScan[10][table: partsupp, data columns: ROW<ps_partkey:BIGINT,ps_suppkey:BIGINT,ps_availqty:INTEGER,ps_supplycost:DOUBLE,ps_comment:VARCHAR>] -> ps_partkey:BIGINT, ps_suppkey:BIGINT, ps_availqty:INTEGER
-            -- TableScan[11][table: part, remaining filter: (like("p_name",forest%)), data columns: ROW<p_partkey:BIGINT,p_name:VARCHAR,p_mfgr:VARCHAR,p_brand:VARCHAR,p_type:VARCHAR,p_size:INTEGER,p_container:VARCHAR,p_retailprice:DOUBLE,p_comment:VARCHAR>, filter column handles: [HiveColumnHandle [name: p_name, columnType: Regular, dataType: VARCHAR, requiredSubfields: [ ]]]] -> p_partkey:BIGINT
-          -- Project[15][expressions: (dt6.__gk8:BIGINT, "l_partkey"), (dt6.__gk9:BIGINT, "l_suppkey"), (expr:DOUBLE, multiply("sum",0.5))] -> "dt6.__gk8":BIGINT, "dt6.__gk9":BIGINT, expr:DOUBLE
-            -- Aggregation[14][SINGLE [l_partkey, l_suppkey] sum := sum("l_quantity")] -> l_partkey:BIGINT, l_suppkey:BIGINT, sum:DOUBLE
-              -- TableScan[13][table: lineitem, range filters: [(l_shipdate, BigintRange: [8766, 9130] no nulls)], data columns: ROW<l_orderkey:BIGINT,l_partkey:BIGINT,l_suppkey:BIGINT,l_linenumber:INTEGER,l_quantity:DOUBLE,l_extendedprice:DOUBLE,l_discount:DOUBLE,l_tax:DOUBLE,l_returnflag:VARCHAR,l_linestatus:VARCHAR,l_shipdate:DATE,l_commitdate:DATE,l_receiptdate:DATE,l_shipinstruct:VARCHAR,l_shipmode:VARCHAR,l_comment:VARCHAR>, filter column handles: [HiveColumnHandle [name: l_shipdate, columnType: Regular, dataType: DATE, requiredSubfields: [ ]]]] -> l_partkey:BIGINT, l_suppkey:BIGINT, l_quantity:DOUBLE
+-- OrderBy[13][s_name ASC NULLS LAST] -> s_name:VARCHAR, s_address:VARCHAR
+  -- HashJoin[12][LEFT SEMI (FILTER) s_suppkey=ps_suppkey] -> s_name:VARCHAR, s_address:VARCHAR
+    -- HashJoin[2][INNER s_nationkey=n_nationkey] -> s_suppkey:BIGINT, s_name:VARCHAR, s_address:VARCHAR
+      -- TableScan[0][table: supplier, data columns: ROW<s_suppkey:BIGINT,s_name:VARCHAR,s_address:VARCHAR,s_nationkey:BIGINT,s_phone:VARCHAR,s_acctbal:DOUBLE,s_comment:VARCHAR>] -> s_suppkey:BIGINT, s_name:VARCHAR, s_address:VARCHAR, s_nationkey:BIGINT
+      -- TableScan[1][table: nation, range filters: [(n_name, Filter(BytesValues, deterministic, no nulls))], data columns: ROW<n_nationkey:BIGINT,n_name:VARCHAR,n_regionkey:BIGINT,n_comment:VARCHAR>, filter column handles: [HiveColumnHandle [name: n_name, columnType: Regular, dataType: VARCHAR, requiredSubfields: [ ]]]] -> n_nationkey:BIGINT
+    -- Project[11][expressions: (ps_suppkey:BIGINT, "ps_suppkey")] -> ps_suppkey:BIGINT
+      -- Filter[3][expression: lt("expr",cast("ps_availqty" as DOUBLE))] -> ps_suppkey:BIGINT, ps_availqty:INTEGER, expr:DOUBLE
+        -- HashJoin[10][LEFT ps_partkey=dt6.__gk8 AND ps_suppkey=dt6.__gk9] -> ps_suppkey:BIGINT, ps_availqty:INTEGER, expr:DOUBLE
+          -- HashJoin[6][LEFT SEMI (FILTER) ps_partkey=p_partkey] -> ps_partkey:BIGINT, ps_suppkey:BIGINT, ps_availqty:INTEGER
+            -- TableScan[4][table: partsupp, data columns: ROW<ps_partkey:BIGINT,ps_suppkey:BIGINT,ps_availqty:INTEGER,ps_supplycost:DOUBLE,ps_comment:VARCHAR>] -> ps_partkey:BIGINT, ps_suppkey:BIGINT, ps_availqty:INTEGER
+            -- TableScan[5][table: part, remaining filter: (like("p_name",forest%)), data columns: ROW<p_partkey:BIGINT,p_name:VARCHAR,p_mfgr:VARCHAR,p_brand:VARCHAR,p_type:VARCHAR,p_size:INTEGER,p_container:VARCHAR,p_retailprice:DOUBLE,p_comment:VARCHAR>, filter column handles: [HiveColumnHandle [name: p_name, columnType: Regular, dataType: VARCHAR, requiredSubfields: [ ]]]] -> p_partkey:BIGINT
+          -- Project[9][expressions: (dt6.__gk8:BIGINT, "l_partkey"), (dt6.__gk9:BIGINT, "l_suppkey"), (expr:DOUBLE, multiply("sum",0.5))] -> "dt6.__gk8":BIGINT, "dt6.__gk9":BIGINT, expr:DOUBLE
+            -- Aggregation[8][SINGLE [l_partkey, l_suppkey] sum := sum("l_quantity")] -> l_partkey:BIGINT, l_suppkey:BIGINT, sum:DOUBLE
+              -- TableScan[7][table: lineitem, range filters: [(l_shipdate, BigintRange: [8766, 9130] no nulls)], data columns: ROW<l_orderkey:BIGINT,l_partkey:BIGINT,l_suppkey:BIGINT,l_linenumber:INTEGER,l_quantity:DOUBLE,l_extendedprice:DOUBLE,l_discount:DOUBLE,l_tax:DOUBLE,l_returnflag:VARCHAR,l_linestatus:VARCHAR,l_shipdate:DATE,l_commitdate:DATE,l_receiptdate:DATE,l_shipinstruct:VARCHAR,l_shipmode:VARCHAR,l_comment:VARCHAR>, filter column handles: [HiveColumnHandle [name: l_shipdate, columnType: Regular, dataType: DATE, requiredSubfields: [ ]]]] -> l_partkey:BIGINT, l_suppkey:BIGINT, l_quantity:DOUBLE
 
 ___END___
