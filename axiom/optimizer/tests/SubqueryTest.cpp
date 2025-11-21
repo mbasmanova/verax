@@ -68,8 +68,6 @@ TEST_F(SubqueryTest, scalar) {
   }
 
   // NOT IN <subquery>
-  // TODO Optimize to use replace kLeftSemiProject + filter with null-aware
-  // kAnti join.
   {
     auto query =
         "select * from nation where n_regionkey "
@@ -83,9 +81,7 @@ TEST_F(SubqueryTest, scalar) {
                            core::PlanMatcherBuilder()
                                .hiveScan("region", gt("r_name", "ASIA"))
                                .build(),
-                           velox::core::JoinType::kLeftSemiProject)
-                       .filter()
-                       .project()
+                           velox::core::JoinType::kAnti)
                        .build();
 
     AXIOM_ASSERT_PLAN(plan, matcher);

@@ -194,6 +194,10 @@ class FunctionRegistry {
     return equality_;
   }
 
+  const std::string& negation() const {
+    return negation_;
+  }
+
   const std::optional<std::string>& elementAt() const {
     return elementAt_;
   }
@@ -227,6 +231,9 @@ class FunctionRegistry {
 
   /// Registers function 'name' that has semantics of Presto's 'eq'.
   void registerEquality(std::string_view name);
+
+  /// Registers function 'name' that has semantics of Presto's 'not'.
+  void registerNegation(std::string_view name);
 
   /// Registers function 'name' that has semantics of Presto's 'element_at'.
   /// When applied to an array, returns element of the array at the specified
@@ -279,6 +286,7 @@ class FunctionRegistry {
  private:
   folly::F14FastMap<std::string, std::unique_ptr<FunctionMetadata>> metadata_;
   std::string equality_{"eq"};
+  std::string negation_{"not"};
   std::optional<std::string> elementAt_;
   std::optional<std::string> subscript_;
   std::optional<std::string> cardinality_;
