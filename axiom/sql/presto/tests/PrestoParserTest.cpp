@@ -350,6 +350,15 @@ TEST_F(PrestoParserTest, intervalYearMonth) {
   test("INTERVAL '-3' MONTH", -3);
 }
 
+TEST_F(PrestoParserTest, null) {
+  auto matcher = lp::test::LogicalPlanMatcherBuilder().values().project();
+  testSql("SELECT 1 is null", matcher);
+  testSql("SELECT 1 IS NULL", matcher);
+
+  testSql("SELECT 1 is not null", matcher);
+  testSql("SELECT 1 IS NOT NULL", matcher);
+}
+
 TEST_F(PrestoParserTest, in) {
   auto matcher = lp::test::LogicalPlanMatcherBuilder().values().project();
   testSql("SELECT 1 in (2,3,4)", matcher);
