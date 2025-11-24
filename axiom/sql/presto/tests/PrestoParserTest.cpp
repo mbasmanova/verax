@@ -386,6 +386,11 @@ TEST_F(PrestoParserTest, selectStar) {
   testSql("SELECT * FROM nation", matcher);
 }
 
+TEST_F(PrestoParserTest, mixedCaseColumnNames) {
+  auto matcher = lp::test::LogicalPlanMatcherBuilder().tableScan().project();
+  testSql("SELECT N_NAME, n_ReGiOnKeY FROM nation", matcher);
+}
+
 TEST_F(PrestoParserTest, countStar) {
   auto matcher = lp::test::LogicalPlanMatcherBuilder().tableScan().aggregate();
 

@@ -151,11 +151,28 @@ void findAggregates(
   }
 }
 
+std::string canonicalizeIdentifier(const Identifier& identifier) {
+  if (identifier.isDelimited()) {
+    return identifier.value();
+  }
+
+  const auto& name = identifier.value();
+
+  std::string canonicalName;
+  canonicalName.resize(name.size());
+  std::transform(
+      name.begin(), name.end(), canonicalName.begin(), [](unsigned char c) {
+        return std::tolower(c);
+      });
+
+  return canonicalName;
+}
+
 bool asQualifiedName(
     const ExpressionPtr& expr,
     std::vector<std::string>& names) {
   if (expr->is(NodeType::kIdentifier)) {
-    names.push_back(expr->as<Identifier>()->value());
+    names.push_back(canonicalizeIdentifier(*expr->as<Identifier>()));
     return true;
   }
 
@@ -349,7 +366,7 @@ class RelationPlanner : public AstVisitor {
   lp::ExprApi toExpr(const ExpressionPtr& node) {
     switch (node->type()) {
       case NodeType::kIdentifier:
-        return lp::Col(node->as<Identifier>()->value());
+        return lp::Col(canonicalizeIdentifier(*node->as<Identifier>()));
 
       case NodeType::kDereferenceExpression: {
         std::vector<std::string> names;
@@ -964,7 +981,7 @@ class RelationPlanner : public AstVisitor {
         for (auto i = 0; i < numColumns; ++i) {
           renames.push_back(
               lp::Col(builder_->findOrAssignOutputNameAt(i))
-                  .as(columnAliases.at(i)->value()));
+                  .as(canonicalizeIdentifier(*columnAliases.at(i))));
         }
 
         builder_->project(renames);
@@ -1059,7 +1076,7 @@ class RelationPlanner : public AstVisitor {
       lp::ExprApi expr = toExpr(singleColumn->expression());
 
       if (singleColumn->alias() != nullptr) {
-        expr = expr.as(singleColumn->alias()->value());
+        expr = expr.as(canonicalizeIdentifier(*singleColumn->alias()));
       }
       exprs.push_back(expr);
     }
@@ -1153,13 +1170,13 @@ class RelationPlanner : public AstVisitor {
           aggregates.back().expr().get() == expr.expr().get()) {
         // Preserve the alias.
         if (singleColumn->alias() != nullptr) {
-          aggregates.back() =
-              aggregates.back().as(singleColumn->alias()->value());
+          aggregates.back() = aggregates.back().as(
+              canonicalizeIdentifier(*singleColumn->alias()));
         }
       }
 
       if (singleColumn->alias() != nullptr) {
-        expr = expr.as(singleColumn->alias()->value());
+        expr = expr.as(canonicalizeIdentifier(*singleColumn->alias()));
       }
 
       projections.emplace_back(expr);
