@@ -382,6 +382,9 @@ TEST_F(PrestoParserTest, countStar) {
 
   testSql("SELECT count(*) FROM nation", matcher);
   testSql("SELECT count(1) FROM nation", matcher);
+
+  testSql("SELECT count(1) \"count\" FROM nation", matcher);
+  testSql("SELECT count(1) AS \"count\" FROM nation", matcher);
 }
 
 TEST_F(PrestoParserTest, simpleGroupBy) {
