@@ -237,6 +237,14 @@ class ExprAnalyzer : public AstVisitor {
     node->valueList()->accept(this);
   }
 
+  void visitIsNullPredicate(IsNullPredicate* node) override {
+    node->value()->accept(this);
+  }
+
+  void visitIsNotNullPredicate(IsNotNullPredicate* node) override {
+    node->value()->accept(this);
+  }
+
   void visitLambdaExpression(LambdaExpression* node) override {
     node->body()->accept(this);
   }
@@ -616,6 +624,16 @@ class RelationPlanner : public AstVisitor {
         auto* subscript = node->as<SubscriptExpression>();
         return lp::Call(
             "subscript", toExpr(subscript->base()), toExpr(subscript->index()));
+      }
+
+      case NodeType::kIsNullPredicate: {
+        auto* isNull = node->as<IsNullPredicate>();
+        return lp::Call("is_null", toExpr(isNull->value()));
+      }
+
+      case NodeType::kIsNotNullPredicate: {
+        auto* isNull = node->as<IsNotNullPredicate>();
+        return lp::Call("not", lp::Call("is_null", toExpr(isNull->value())));
       }
 
       default:
