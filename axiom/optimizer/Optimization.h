@@ -317,6 +317,8 @@ class Optimization {
 
   const bool isSingleWorker_;
 
+  const bool isSingleDriver_;
+
   // Top level plan to optimize.
   const logical_plan::LogicalPlanNode* const logicalPlan_;
 

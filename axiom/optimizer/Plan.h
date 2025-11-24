@@ -212,19 +212,12 @@ struct PlanState {
   /// PrecomputeProjection.
   folly::F14FastMap<ExprCP, ExprCP> exprToColumn;
 
-  /// lookup keys for an index based derived table.
-  PlanObjectSet input;
-
   /// The total cost for the PlanObjects placed thus far.
   PlanCost cost;
 
   /// All the hash join builds in any branch of the partial plan constructed so
   /// far.
   HashBuildVector builds;
-
-  /// True if we should backtrack when 'cost' exceeds the best cost with
-  /// shuffle from already generated plans.
-  bool hasCutoff{true};
 
   /// Interesting completed plans for the dt being planned. For
   /// example, best by cost and maybe plans with interesting orders.
@@ -279,7 +272,7 @@ struct PlanState {
   /// True if the costs accumulated so far are so high that this should not be
   /// explored further.
   bool isOverBest() const {
-    return hasCutoff && cost.cost > plans.bestCostWithShuffle;
+    return hasCutoff_ && cost.cost > plans.bestCostWithShuffle;
   }
 
   void debugSetFirstTable(int32_t id);
@@ -293,6 +286,10 @@ struct PlanState {
       downstreamColumnsCache_;
 
   const bool syntacticJoinOrder_;
+
+  // True if we should backtrack when 'cost' exceeds the best cost with
+  // shuffle from already generated plans.
+  const bool hasCutoff_{true};
 };
 
 /// A scoped guard that restores fields of PlanState on destruction.
