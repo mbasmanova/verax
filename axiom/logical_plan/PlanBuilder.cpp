@@ -23,6 +23,7 @@
 #include "velox/exec/Aggregate.h"
 #include "velox/exec/AggregateFunctionRegistry.h"
 #include "velox/expression/Expr.h"
+#include "velox/expression/FunctionSignature.h"
 #include "velox/expression/SignatureBinder.h"
 #include "velox/functions/FunctionRegistry.h"
 #include "velox/parse/Expressions.h"
@@ -794,15 +795,16 @@ const velox::exec::FunctionSignature* FOLLY_NULLABLE findLambdaSignature(
 
 const velox::exec::FunctionSignature* findLambdaSignature(
     const std::shared_ptr<const velox::core::CallExpr>& callExpr) {
+  const auto name = velox::exec::sanitizeName(callExpr->name());
+
   // Look for a scalar lambda function.
-  auto scalarSignatures = velox::getFunctionSignatures(callExpr->name());
+  auto scalarSignatures = velox::getFunctionSignatures(name);
   if (!scalarSignatures.empty()) {
     return findLambdaSignature(scalarSignatures, callExpr);
   }
 
   // Look for an aggregate lambda function.
-  if (auto signatures =
-          velox::exec::getAggregateFunctionSignatures(callExpr->name())) {
+  if (auto signatures = velox::exec::getAggregateFunctionSignatures(name)) {
     return findLambdaSignature(signatures.value(), callExpr);
   }
 
@@ -816,11 +818,17 @@ ExprPtr ExprResolver::tryResolveCallWithLambdas(
   if (callExpr == nullptr) {
     return nullptr;
   }
-  auto signature = findLambdaSignature(callExpr);
 
-  if (signature == nullptr) {
+  if (!std::ranges::any_of(callExpr->inputs(), [](const auto& input) {
+        return input->is(velox::core::IExpr::Kind::kLambda);
+      })) {
+    // Not lambda inputs.
     return nullptr;
   }
+
+  auto signature = findLambdaSignature(callExpr);
+  VELOX_CHECK_NOT_NULL(
+      signature, "Cannot resolve lambda function: {}", callExpr->toString());
 
   // Resolve non-lambda arguments first.
   auto numArgs = callExpr->inputs().size();
@@ -862,12 +870,14 @@ ExprPtr ExprResolver::tryResolveCallWithLambdas(
     types.push_back(child->type());
   }
 
+  const auto name = velox::exec::sanitizeName(callExpr->name());
+
   std::vector<velox::TypePtr> coersions;
-  auto returnType = resolveScalarFunction(
-      callExpr->name(), types, enableCoersions_, coersions);
+  auto returnType =
+      resolveScalarFunction(name, types, enableCoersions_, coersions);
   applyCoersions(children, coersions);
 
-  return std::make_shared<CallExpr>(returnType, callExpr->name(), children);
+  return std::make_shared<CallExpr>(returnType, name, children);
 }
 
 velox::core::TypedExprPtr ExprResolver::makeConstantTypedExpr(
@@ -1008,7 +1018,7 @@ ExprPtr ExprResolver::resolveScalarTypes(
 
   if (const auto* call =
           dynamic_cast<const velox::core::CallExpr*>(expr.get())) {
-    const auto& name = call->name();
+    const auto name = velox::exec::sanitizeName(call->name());
 
     if (hook_ != nullptr) {
       auto result = hook_(name, inputs);
@@ -1075,7 +1085,7 @@ AggregateExprPtr ExprResolver::resolveAggregateTypes(
   VELOX_USER_CHECK_NOT_NULL(
       call, "Aggregate must be a call expression: {}", expr->toString());
 
-  const auto& name = call->name();
+  const auto name = velox::exec::sanitizeName(call->name());
 
   std::vector<ExprPtr> inputs;
   inputs.reserve(expr->inputs().size());

@@ -226,6 +226,17 @@ class ExprAnalyzer : public AstVisitor {
     aggregateName_.reset();
   }
 
+  void visitInListExpression(InListExpression* node) override {
+    for (const auto& value : node->values()) {
+      value->accept(this);
+    }
+  }
+
+  void visitInPredicate(InPredicate* node) override {
+    node->value()->accept(this);
+    node->valueList()->accept(this);
+  }
+
   void visitLambdaExpression(LambdaExpression* node) override {
     node->body()->accept(this);
   }
