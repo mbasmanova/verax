@@ -350,6 +350,18 @@ TEST_F(PrestoParserTest, intervalYearMonth) {
   test("INTERVAL '-3' MONTH", -3);
 }
 
+TEST_F(PrestoParserTest, in) {
+  auto matcher = lp::test::LogicalPlanMatcherBuilder().values().project();
+  testSql("SELECT 1 in (2,3,4)", matcher);
+  testSql("SELECT 1 IN (2,3,4)", matcher);
+}
+
+TEST_F(PrestoParserTest, coalesce) {
+  auto matcher = lp::test::LogicalPlanMatcherBuilder().tableScan().project();
+  testSql("SELECT coalesce(n_name, 'foo') FROM nation", matcher);
+  testSql("SELECT COALESCE(n_name, 'foo') FROM nation", matcher);
+}
+
 TEST_F(PrestoParserTest, concat) {
   auto matcher = lp::test::LogicalPlanMatcherBuilder().tableScan().project();
   testSql("SELECT n_name || n_comment FROM nation", matcher);
@@ -593,6 +605,7 @@ TEST_F(PrestoParserTest, lambda) {
   auto matcher = lp::test::LogicalPlanMatcherBuilder().values().project();
 
   testSql("SELECT filter(array[1,2,3], x -> x > 1)", matcher);
+  testSql("SELECT FILTER(array[1,2,3], x -> x > 1)", matcher);
 }
 
 TEST_F(PrestoParserTest, values) {
