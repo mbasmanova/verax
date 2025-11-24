@@ -2056,10 +2056,24 @@ std::any AstBuilder::visitRoles(PrestoSqlParser::RolesContext* ctx) {
   return visitChildren(ctx);
 }
 
+static void
+replaceAll(std::string& str, const std::string& from, const std::string& to) {
+  auto pos = str.find(from);
+  while (pos != std::string::npos) {
+    str.replace(pos, from.length(), to);
+    pos = str.find(from, pos + to.length());
+  }
+}
+
 std::any AstBuilder::visitQuotedIdentifier(
     PrestoSqlParser::QuotedIdentifierContext* ctx) {
   trace("visitQuotedIdentifier");
-  return visitChildren(ctx);
+
+  auto token = ctx->getText();
+  token = token.substr(1, token.size() - 2);
+  replaceAll(token, "\"\"", "\"");
+
+  return std::make_shared<Identifier>(getLocation(ctx), token, true);
 }
 
 std::any AstBuilder::visitBackQuotedIdentifier(
