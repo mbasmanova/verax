@@ -39,6 +39,7 @@ Optimization::Optimization(
       options_(std::move(options)),
       runnerOptions_(std::move(runnerOptions)),
       isSingleWorker_(runnerOptions_.numWorkers == 1),
+      isSingleDriver_(runnerOptions_.numDrivers == 1),
       logicalPlan_(&logicalPlan),
       history_(history),
       veloxQueryCtx_(std::move(veloxQueryCtx)),
@@ -905,7 +906,7 @@ void Optimization::addAggregation(
 
   plan = std::move(precompute).maybeProject();
 
-  if (isSingleWorker_ && runnerOptions_.numDrivers == 1) {
+  if (isSingleWorker_ && isSingleDriver_) {
     auto* singleAgg = make<Aggregation>(
         plan,
         std::move(groupingKeys),

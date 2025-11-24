@@ -351,9 +351,6 @@ PlanP PlanSet::addPlan(RelationOpPtr plan, PlanState& state) {
     // add the new one and delete the old one.
     for (auto i = 0; i < plans.size(); ++i) {
       auto old = plans[i].get();
-      if (state.input != old->input) {
-        continue;
-      }
 
       const bool newIsBetter = old->isStateBetter(state);
       const bool newIsBetterWithShuffle = old->isStateBetter(state, shuffle);
