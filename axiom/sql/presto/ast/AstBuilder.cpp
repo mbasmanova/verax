@@ -1190,7 +1190,15 @@ std::any AstBuilder::visitLike(PrestoSqlParser::LikeContext* ctx) {
 std::any AstBuilder::visitNullPredicate(
     PrestoSqlParser::NullPredicateContext* ctx) {
   trace("visitNullPredicate");
-  return visitChildren(ctx);
+
+  if (ctx->NOT()) {
+    return std::static_pointer_cast<Expression>(
+        std::make_shared<IsNotNullPredicate>(
+            getLocation(ctx), visitTyped<Expression>(ctx->value)));
+  }
+
+  return std::static_pointer_cast<Expression>(std::make_shared<IsNullPredicate>(
+      getLocation(ctx), visitTyped<Expression>(ctx->value)));
 }
 
 std::any AstBuilder::visitDistinctFrom(
