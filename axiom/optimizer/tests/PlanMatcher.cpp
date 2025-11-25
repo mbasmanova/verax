@@ -829,6 +829,14 @@ PlanMatcherBuilder& PlanMatcherBuilder::hashJoin(
   return *this;
 }
 
+PlanMatcherBuilder& PlanMatcherBuilder::nestedLoopJoin(
+    const std::shared_ptr<PlanMatcher>& rightMatcher) {
+  VELOX_USER_CHECK_NOT_NULL(matcher_);
+  matcher_ = std::make_shared<PlanMatcherImpl<NestedLoopJoinNode>>(
+      std::vector<std::shared_ptr<PlanMatcher>>{matcher_, rightMatcher});
+  return *this;
+}
+
 PlanMatcherBuilder& PlanMatcherBuilder::localPartition() {
   VELOX_USER_CHECK_NOT_NULL(matcher_);
   matcher_ = std::make_shared<PlanMatcherImpl<LocalPartitionNode>>(
