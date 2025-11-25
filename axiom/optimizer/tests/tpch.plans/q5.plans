@@ -44,7 +44,7 @@ t7: r_regionkey, r_name
 
 Optimized plan (oneline):
 
-((lineitem INNER ((orders INNER customer) INNER (nation INNER region))) INNER supplier)
+agg(((lineitem INNER ((orders INNER customer) INNER (nation INNER region))) INNER supplier))
 
 Optimized plan:
 

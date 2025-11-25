@@ -304,7 +304,10 @@ class OnelineVisitor : public RelationOpVisitor {
 
   void visit(const Aggregation& op, RelationOpVisitorContext& context)
       const override {
-    visitDefault(op, context);
+    auto& myCtx = static_cast<Context&>(context);
+    myCtx.out << "agg(";
+    op.input()->accept(*this, context);
+    myCtx.out << ")";
   }
 
   void visit(const OrderBy& op, RelationOpVisitorContext& context)

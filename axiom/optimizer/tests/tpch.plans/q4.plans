@@ -47,7 +47,7 @@ t4: l_orderkey, l_partkey, l_suppkey, l_linenumber, l_quantity, l_extendedprice,
 
 Optimized plan (oneline):
 
-(lineitem RIGHT SEMI (FILTER) orders)
+agg((lineitem RIGHT SEMI (FILTER) orders))
 
 Optimized plan:
 

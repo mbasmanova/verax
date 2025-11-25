@@ -46,7 +46,7 @@ t6: l_orderkey, l_quantity
 
 Optimized plan (oneline):
 
-((lineitem INNER (orders INNER customer)) LEFT SEMI (FILTER) lineitem)
+agg(((lineitem INNER (orders INNER customer)) LEFT SEMI (FILTER) agg(lineitem)))
 
 Optimized plan:
 

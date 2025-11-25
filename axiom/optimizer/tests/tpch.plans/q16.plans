@@ -38,7 +38,7 @@ t5: s_suppkey, s_comment
 
 Optimized plan (oneline):
 
-((partsupp INNER part) ANTI supplier)
+agg(((partsupp INNER part) ANTI supplier))
 
 Optimized plan:
 

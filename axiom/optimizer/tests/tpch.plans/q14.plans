@@ -22,7 +22,7 @@ t3: p_partkey, p_type
 
 Optimized plan (oneline):
 
-(part INNER lineitem)
+agg((part INNER lineitem))
 
 Optimized plan:
 

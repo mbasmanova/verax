@@ -35,8 +35,8 @@ class RelationOpPrinter {
       const RelationOp& root,
       const RelationOpToTextOptions& options = {});
 
-  /// Returns a one-line summary of the plan. Includes tables and joins. Useful
-  /// for debugging join order.
+  /// Returns a one-line summary of the plan. Includes tables, joins and
+  /// aggregations. Useful for debugging join order.
   static std::string toOneline(const RelationOp& root);
 };
 

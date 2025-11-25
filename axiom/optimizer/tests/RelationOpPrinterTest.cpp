@@ -162,7 +162,7 @@ TEST_F(RelationOpPrinterTest, basic) {
             testing::HasSubstr("gt"), // a > 0
             testing::Eq("")));
 
-    EXPECT_EQ("t", toOneline(sql));
+    EXPECT_EQ("agg(t)", toOneline(sql));
   }
 
   {
@@ -186,11 +186,11 @@ TEST_F(RelationOpPrinterTest, basic) {
             testing::StartsWith("          table: u"),
             testing::Eq("")));
 
-    EXPECT_EQ("(t LEFT u)", toOneline(sql));
+    EXPECT_EQ("agg((t LEFT u))", toOneline(sql));
   }
 
   EXPECT_EQ(
-      "((t INNER u) INNER v)",
+      "agg(((t INNER u) INNER v))",
       toOneline(
           "SELECT count(*) FROM t, u, v WHERE t_key = u_key AND u_key = v_key"));
 }
