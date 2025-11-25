@@ -305,7 +305,7 @@ std::string JoinEdge::toString() const {
   } else if (markColumn_) {
     out << " exists project ";
   } else if (rightOptional_) {
-    out << " left";
+    out << " left ";
   } else if (rightExists_) {
     out << " exists ";
   } else if (rightNotExists_) {
