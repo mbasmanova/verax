@@ -1049,7 +1049,7 @@ void Optimization::joinByIndex(
 
     state.columns.unionSet(c);
     state.addCost(*scan);
-    state.addNextJoin(&candidate, scan, {}, toTry);
+    state.addNextJoin(&candidate, scan, toTry);
   }
 }
 
@@ -1323,7 +1323,7 @@ void Optimization::joinByHash(
     join = projectionBuilder.build(join);
   }
 
-  state.addNextJoin(&candidate, join, {buildOp}, toTry);
+  state.addNextJoin(&candidate, join, toTry);
 }
 
 void Optimization::joinByHashRight(
@@ -1479,7 +1479,7 @@ void Optimization::joinByHashRight(
     join = projectionBuilder.build(join);
   }
 
-  state.addNextJoin(&candidate, join, {buildOp}, toTry);
+  state.addNextJoin(&candidate, join, toTry);
 }
 
 void Optimization::crossJoin(
@@ -1531,7 +1531,7 @@ void Optimization::crossJoinUnnest(
     state.columns.unionObjects(unnestedColumns);
     state.addCost(*plan);
   }
-  state.addNextJoin(&candidate, std::move(plan), {}, toTry);
+  state.addNextJoin(&candidate, std::move(plan), toTry);
 }
 
 void Optimization::addJoin(
@@ -1584,7 +1584,6 @@ void Optimization::tryNextJoins(
     state.placed = next.placed;
     state.columns = next.columns;
     state.cost = next.cost;
-    state.addBuilds(next.newBuilds);
     makeJoins(next.plan, state);
   }
 }
