@@ -45,7 +45,11 @@ struct PlanCost {
   }
 
   std::string toString() const {
-    return fmt::format("cost: {}, cardinality: {}", cost, cardinality);
+    return fmt::format(
+        std::locale("en_US.UTF-8"),
+        "cost: {:L}, cardinality: {:L}",
+        cost,
+        cardinality);
   }
 };
 

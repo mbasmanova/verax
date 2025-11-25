@@ -402,7 +402,34 @@ TEST_F(TpchPlanTest, q16) {
 TEST_F(TpchPlanTest, q17) {
   checkTpchSql(17);
 
-  // TODO Verify the plan.
+  // The trick here is that we have a correlated subquery that flattens into a
+  // group by that aggregates over all of lineitem. We correctly observe that
+  // only lineitems with a very specific part will occur on the probe side, so
+  // we copy the restriction inside the group by as a semijoin (exists).
+
+  auto startMatcher = [&](const std::string& tableName) {
+    return core::PlanMatcherBuilder().tableScan(tableName);
+  };
+
+  auto matcher =
+      startMatcher("lineitem")
+          .hashJoin(startMatcher("part").build(), core::JoinType::kInner)
+          .hashJoin(
+              startMatcher("lineitem")
+                  .hashJoin(
+                      startMatcher("part").build(),
+                      core::JoinType::kLeftSemiFilter)
+                  .aggregation()
+                  .project() // TODO Figure out if it can be removed.
+                  .build(),
+              core::JoinType::kLeft)
+          .filter()
+          .aggregation()
+          .project()
+          .build();
+
+  auto plan = planTpch(17);
+  AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
 TEST_F(TpchPlanTest, q18) {
