@@ -151,13 +151,7 @@ void findAggregates(
   }
 }
 
-std::string canonicalizeIdentifier(const Identifier& identifier) {
-  if (identifier.isDelimited()) {
-    return identifier.value();
-  }
-
-  const auto& name = identifier.value();
-
+std::string canonicalizeName(const std::string& name) {
   std::string canonicalName;
   canonicalName.resize(name.size());
   std::transform(
@@ -166,6 +160,14 @@ std::string canonicalizeIdentifier(const Identifier& identifier) {
       });
 
   return canonicalName;
+}
+
+std::string canonicalizeIdentifier(const Identifier& identifier) {
+  if (identifier.isDelimited()) {
+    return identifier.value();
+  }
+
+  return canonicalizeName(identifier.value());
 }
 
 bool asQualifiedName(
@@ -178,7 +180,7 @@ bool asQualifiedName(
 
   if (expr->is(NodeType::kDereferenceExpression)) {
     auto* dereference = expr->as<DereferenceExpression>();
-    names.push_back(dereference->field()->value());
+    names.push_back(canonicalizeIdentifier(*dereference->field()));
     return asQualifiedName(dereference->base(), names);
   }
 
@@ -927,13 +929,13 @@ class RelationPlanner : public AstVisitor {
       std::vector<std::string> columnNames;
       columnNames.reserve(aliasedRelation->columnNames().size());
       for (const auto& name : aliasedRelation->columnNames()) {
-        columnNames.emplace_back(name->value());
+        columnNames.emplace_back(canonicalizeIdentifier(*name));
       }
 
       builder_->unnest(
           inputs,
           unnest.isWithOrdinality(),
-          aliasedRelation->alias()->value(),
+          canonicalizeIdentifier(*aliasedRelation->alias()),
           columnNames);
     } else {
       builder_->unnest(inputs, unnest.isWithOrdinality());
@@ -950,18 +952,22 @@ class RelationPlanner : public AstVisitor {
     if (relation->is(NodeType::kTable)) {
       auto* table = relation->as<Table>();
 
+      const auto tableName = canonicalizeName(table->name()->suffix());
+
       auto withIt = withQueries_.find(table->name()->suffix());
+      if (withIt == withQueries_.end()) {
+        withIt = withQueries_.find(tableName);
+      }
+
       if (withIt != withQueries_.end()) {
         // TODO Change WithQuery to store Query and not Statement.
         processQuery(dynamic_cast<Query*>(withIt->second->query().get()));
-        return;
+      } else {
+        const auto connectorTable = toConnectorTable(
+            *table->name(), context_.defaultConnectorId, defaultSchema_);
+        builder_->tableScan(connectorTable.first, connectorTable.second);
       }
 
-      const auto connectorTable = toConnectorTable(
-          *table->name(), context_.defaultConnectorId, defaultSchema_);
-      builder_->tableScan(connectorTable.first, connectorTable.second);
-
-      const auto& tableName = table->name()->suffix();
       builder_->as(tableName);
       return;
     }
@@ -987,7 +993,7 @@ class RelationPlanner : public AstVisitor {
         builder_->project(renames);
       }
 
-      builder_->as(aliasedRelation->alias()->value());
+      builder_->as(canonicalizeIdentifier(*aliasedRelation->alias()));
       return;
     }
 
@@ -1290,7 +1296,7 @@ class RelationPlanner : public AstVisitor {
   void processQuery(Query* query) {
     if (const auto& with = query->with()) {
       for (const auto& query : with->queries()) {
-        withQueries_.emplace(query->name()->value(), query);
+        withQueries_.emplace(canonicalizeIdentifier(*query->name()), query);
       }
     }
 

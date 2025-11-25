@@ -188,6 +188,18 @@ TEST_F(PrestoParserTest, unnest) {
         "SELECT * FROM nation, unnest(array[n_nationkey, n_regionkey]) as t(x)",
         matcher);
   }
+
+  {
+    auto matcher = lp::test::LogicalPlanMatcherBuilder()
+                       .values()
+                       .project()
+                       .unnest()
+                       .project();
+
+    testSql(
+        "WITH a AS (SELECT array[1,2,3] as x) SELECT t.x + 1 FROM a, unnest(A.x) as T(X)",
+        matcher);
+  }
 }
 
 TEST_F(PrestoParserTest, syntaxErrors) {
@@ -389,6 +401,16 @@ TEST_F(PrestoParserTest, selectStar) {
 TEST_F(PrestoParserTest, mixedCaseColumnNames) {
   auto matcher = lp::test::LogicalPlanMatcherBuilder().tableScan().project();
   testSql("SELECT N_NAME, n_ReGiOnKeY FROM nation", matcher);
+}
+
+TEST_F(PrestoParserTest, with) {
+  auto matcher = lp::test::LogicalPlanMatcherBuilder().values().project();
+  testSql("WITH a as (SELECT 1 as x) SELECT * FROM a", matcher);
+  testSql("WITH a as (SELECT 1 as x) SELECT * FROM A", matcher);
+  testSql("WITH A as (SELECT 1 as x) SELECT * FROM a", matcher);
+
+  matcher.project();
+  testSql("WITH a as (SELECT 1 as x) SELECT A.x FROM a", matcher);
 }
 
 TEST_F(PrestoParserTest, countStar) {
