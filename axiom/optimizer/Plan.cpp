@@ -146,21 +146,11 @@ bool PlanState::mayConsiderNext(PlanObjectCP table) const {
 void PlanState::addNextJoin(
     const JoinCandidate* candidate,
     RelationOpPtr plan,
-    HashBuildVector builds,
     std::vector<NextJoin>& toTry) const {
   if (!isOverBest()) {
-    toTry.emplace_back(
-        candidate, std::move(plan), cost, placed, columns, std::move(builds));
+    toTry.emplace_back(candidate, std::move(plan), cost, placed, columns);
   } else {
     optimization.trace(OptimizerOptions::kExceededBest, dt->id(), cost, *plan);
-  }
-}
-
-void PlanState::addBuilds(const HashBuildVector& added) {
-  for (auto build : added) {
-    if (std::find(builds.begin(), builds.end(), build) == builds.end()) {
-      builds.push_back(build);
-    }
   }
 }
 

@@ -160,23 +160,20 @@ struct NextJoin {
   NextJoin(
       const JoinCandidate* candidate,
       RelationOpPtr plan,
-      const PlanCost& cost,
+      PlanCost cost,
       PlanObjectSet placed,
-      PlanObjectSet columns,
-      HashBuildVector builds)
+      PlanObjectSet columns)
       : candidate{candidate},
         plan{std::move(plan)},
-        cost{cost},
+        cost{std::move(cost)},
         placed{std::move(placed)},
-        columns{std::move(columns)},
-        newBuilds{std::move(builds)} {}
+        columns{std::move(columns)} {}
 
   const JoinCandidate* candidate;
   RelationOpPtr plan;
   PlanCost cost;
   PlanObjectSet placed;
   PlanObjectSet columns;
-  HashBuildVector newBuilds;
 
   /// If true, only 'other' should be tried. Use to compare equivalent joins
   /// with different join method or partitioning.
@@ -197,16 +194,16 @@ struct PlanState {
   /// The derived table from which the tables are drawn.
   DerivedTableCP dt;
 
+  /// The expressions that need a value at the end of the plan. A dt can be
+  /// planned for just join/filter columns or all payload. Initially, the
+  /// selected expressions of the dt.
+  PlanObjectSet targetExprs;
+
   /// The tables that have been placed so far.
   PlanObjectSet placed;
 
   /// The columns that have a value from placed tables.
   PlanObjectSet columns;
-
-  /// The expressions that need a value at the end of the plan. A dt can be
-  /// planned for just join/filter columns or all payload. Initially, the
-  /// selected expressions of the dt.
-  PlanObjectSet targetExprs;
 
   /// A mapping of expressions to pre-computed columns. See
   /// PrecomputeProjection.
@@ -214,10 +211,6 @@ struct PlanState {
 
   /// The total cost for the PlanObjects placed thus far.
   PlanCost cost;
-
-  /// All the hash join builds in any branch of the partial plan constructed so
-  /// far.
-  HashBuildVector builds;
 
   /// Interesting completed plans for the dt being planned. For
   /// example, best by cost and maybe plans with interesting orders.
@@ -229,9 +222,6 @@ struct PlanState {
 
   /// Updates 'cost' to reflect 'op' being placed on top of the partial plan.
   void addCost(RelationOp& op);
-
-  /// Adds 'added' to all hash join builds.
-  void addBuilds(const HashBuildVector& added);
 
   /// Specifies that the plan-to-make only produces 'target' expressions and.
   /// These refer to 'exprs' of 'dt'.
@@ -260,7 +250,6 @@ struct PlanState {
   void addNextJoin(
       const JoinCandidate* candidate,
       RelationOpPtr plan,
-      HashBuildVector builds,
       std::vector<NextJoin>& toTry) const;
 
   std::string printCost() const;
@@ -300,7 +289,6 @@ struct PlanStateSaver {
         placed_(state.placed),
         columns_(state.columns),
         cost_(state.cost),
-        numBuilds_(state.builds.size()),
         numPlaced_(state.debugPlacedTables.size()) {}
 
   PlanStateSaver(PlanState& state, const JoinCandidate& candidate);
@@ -309,7 +297,6 @@ struct PlanStateSaver {
     state_.placed = std::move(placed_);
     state_.columns = std::move(columns_);
     state_.cost = cost_;
-    state_.builds.resize(numBuilds_);
     state_.debugPlacedTables.resize(numPlaced_);
   }
 
@@ -318,7 +305,6 @@ struct PlanStateSaver {
   PlanObjectSet placed_;
   PlanObjectSet columns_;
   const PlanCost cost_;
-  const uint32_t numBuilds_;
   const uint32_t numPlaced_;
 };
 
