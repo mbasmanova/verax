@@ -16,7 +16,7 @@ t2: l_quantity, l_extendedprice, l_discount, l_shipdate
 
 Optimized plan (oneline):
 
-lineitem
+agg(lineitem)
 
 Optimized plan:
 

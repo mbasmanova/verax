@@ -60,7 +60,7 @@ t11: p_partkey, p_name
 
 Optimized plan (oneline):
 
-((lineitem RIGHT (partsupp LEFT SEMI (FILTER) part)) RIGHT SEMI (FILTER) (supplier INNER nation))
+((agg(lineitem) RIGHT (partsupp LEFT SEMI (FILTER) part)) RIGHT SEMI (FILTER) (supplier INNER nation))
 
 Optimized plan:
 

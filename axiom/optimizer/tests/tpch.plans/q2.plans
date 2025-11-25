@@ -71,7 +71,7 @@ t11: r_regionkey, r_name
 
 Optimized plan (oneline):
 
-((partsupp INNER (supplier INNER (nation INNER region))) RIGHT ((partsupp INNER part) INNER (supplier INNER (nation INNER region))))
+(agg((partsupp INNER (supplier INNER (nation INNER region)))) RIGHT ((partsupp INNER part) INNER (supplier INNER (nation INNER region))))
 
 Optimized plan:
 

@@ -34,7 +34,7 @@ t4: l_orderkey, l_extendedprice, l_discount, l_shipdate
 
 Optimized plan (oneline):
 
-(lineitem INNER (orders INNER customer))
+agg((lineitem INNER (orders INNER customer)))
 
 Optimized plan:
 
