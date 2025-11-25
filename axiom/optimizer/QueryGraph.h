@@ -675,12 +675,19 @@ class JoinEdge {
         !rightNotExists_;
   }
 
+  /// True if this is an EXISTS join.
   bool isSemi() const {
     return rightExists_;
   }
 
+  /// True if this is a NOT EXISTS join.
   bool isAnti() const {
     return rightNotExists_;
+  }
+
+  /// True if this is a LEFT join.
+  bool isLeftOuter() const {
+    return rightOptional_ && !leftOptional_ && !isSemi() && !isAnti();
   }
 
   /// True if all tables referenced from 'leftKeys' must be placed before

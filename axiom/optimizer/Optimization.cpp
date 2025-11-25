@@ -142,7 +142,14 @@ void reducingJoinsRecursive(
         resultFunc = {}) {
   bool isLeaf = true;
   for (auto join : joinedBy(candidate)) {
-    if (join->leftOptional() || join->rightOptional()) {
+    if (join->isLeftOuter() && candidate == join->rightTable() &&
+        candidate->is(PlanType::kDerivedTableNode)) {
+      // One can restrict the build of the optional side by a restriction on the
+      // probe. This happens specially when value subqueries are represented as
+      // optional sides of left join. These are often aggregations and there is
+      // no point creating values for groups that can't be probed.
+      ;
+    } else if (join->leftOptional() || join->rightOptional()) {
       continue;
     }
     JoinSide other = join->sideOf(candidate, true);
@@ -228,7 +235,7 @@ std::optional<JoinCandidate> reducingJoins(
           tables.push_back(object);
         }
       });
-      fanout = candidate.fanout * reduction;
+      fanout *= reduction;
     }
   }
 
@@ -261,6 +268,7 @@ std::optional<JoinCandidate> reducingJoins(
               added.add(path[i]);
             }
             existences.push_back(std::move(added));
+            fanout *= reduction;
           }
         });
   }
@@ -359,23 +367,6 @@ std::vector<JoinCandidate> Optimization::nextJoins(PlanState& state) {
         }
       });
 
-  // Take the first hand joined tables and bundle them with reducing joins that
-  // can go on the build side.
-  std::vector<JoinCandidate> bushes;
-  if (!options_.syntacticJoinOrder) {
-    for (auto& candidate : candidates) {
-      if (auto bush = reducingJoins(
-              state, candidate, options_.enableReducingExistences)) {
-        bushes.push_back(std::move(bush.value()));
-      }
-    }
-    candidates.insert(candidates.begin(), bushes.begin(), bushes.end());
-  }
-
-  std::ranges::sort(
-      candidates, [](const JoinCandidate& left, const JoinCandidate& right) {
-        return left.fanout < right.fanout;
-      });
   if (candidates.empty()) {
     // There are no join edges. There could still be cross joins.
     state.dt->startTables.forEach([&](PlanObjectCP object) {
@@ -383,7 +374,29 @@ std::vector<JoinCandidate> Optimization::nextJoins(PlanState& state) {
         candidates.emplace_back(nullptr, object, tableCardinality(object));
       }
     });
+
+    return candidates;
   }
+
+  // Take the first hand joined tables and bundle them with reducing joins that
+  // can go on the build side.
+
+  if (!options_.syntacticJoinOrder && !candidates.empty()) {
+    std::vector<JoinCandidate> bushes;
+    for (auto& candidate : candidates) {
+      if (auto bush = reducingJoins(
+              state, candidate, options_.enableReducingExistences)) {
+        bushes.push_back(std::move(bush.value()));
+      }
+    }
+    candidates.insert(candidates.end(), bushes.begin(), bushes.end());
+  }
+
+  std::ranges::sort(
+      candidates, [](const JoinCandidate& left, const JoinCandidate& right) {
+        return left.fanout < right.fanout;
+      });
+
   return candidates;
 }
 

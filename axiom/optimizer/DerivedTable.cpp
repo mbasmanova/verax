@@ -347,6 +347,7 @@ void DerivedTable::import(
   } else {
     fullyImported = superTables;
   }
+
   linkTablesToJoins();
 }
 
@@ -489,6 +490,12 @@ ExprCP replaceInputs(ExprCP expr, const T& source, const U& target) {
 
 } // namespace
 
+bool DerivedTable::isWrapOnly() const {
+  return tables.size() == 1 && tables[0]->is(PlanType::kDerivedTableNode) &&
+      !hasLimit() && !hasOrderBy() && conjuncts.empty() && !hasAggregation() &&
+      exprs.empty();
+}
+
 ExprCP DerivedTable::exportExpr(ExprCP expr) {
   return replaceInputs(expr, exprs, columns);
 }
@@ -498,7 +505,7 @@ ExprCP DerivedTable::importExpr(ExprCP expr) {
 }
 
 void DerivedTable::importJoinsIntoFirstDt(const DerivedTable* firstDt) {
-  if (tables.size() == 1 && tables[0]->is(PlanType::kDerivedTableNode)) {
+  if (isWrapOnly()) {
     flattenDt(tables[0]->as<DerivedTable>());
     return;
   }
@@ -518,6 +525,10 @@ void DerivedTable::importJoinsIntoFirstDt(const DerivedTable* firstDt) {
   }
 
   auto* newFirst = make<DerivedTable>(*firstDt->as<DerivedTable>());
+  newFirst->cname = firstDt->as<DerivedTable>()->cname;
+  newFirst->conjuncts = firstDt->conjuncts;
+
+  const int32_t previousNumJoins = newFirst->joins.size();
   for (auto& join : joins) {
     auto other = join->otherSide(firstDt);
     if (!other) {
@@ -557,12 +568,14 @@ void DerivedTable::importJoinsIntoFirstDt(const DerivedTable* firstDt) {
       }
     } else {
       auto* chainDt = make<DerivedTable>();
+      chainDt->cname = toName(queryCtx()->optimization()->newCName("rdt"));
+
       PlanObjectSet chainSet;
       chainSet.add(other);
       if (fullyImported) {
         newFirst->fullyImported.add(other);
       }
-      for (auto& object : path) {
+      for (const auto& object : path) {
         chainSet.add(object);
         if (fullyImported) {
           newFirst->fullyImported.add(object);
@@ -583,6 +596,10 @@ void DerivedTable::importJoinsIntoFirstDt(const DerivedTable* firstDt) {
     }
   }
 
+  for (auto i = previousNumJoins; i < newFirst->joins.size(); ++i) {
+    newFirst->joins[i]->guessFanout();
+  }
+
   VELOX_CHECK_EQ(tables.size(), 1);
   for (auto i = 0; i < initialTables.size(); ++i) {
     if (!newFirst->fullyImported.contains(initialTables[i])) {
@@ -599,12 +616,15 @@ void DerivedTable::flattenDt(const DerivedTable* dt) {
   tableSet = dt->tableSet;
   joins = dt->joins;
   joinOrder = dt->joinOrder;
+  conjuncts = dt->conjuncts;
   columns = dt->columns;
   exprs = dt->exprs;
   fullyImported = dt->fullyImported;
   importedExistences.unionSet(dt->importedExistences);
   aggregation = dt->aggregation;
   having = dt->having;
+  limit = dt->limit;
+  offset = dt->offset;
 }
 
 void DerivedTable::makeProjection(const ExprVector& exprs) {
