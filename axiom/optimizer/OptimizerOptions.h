@@ -66,6 +66,10 @@ struct OptimizerOptions {
   /// TODO Make this work for non-inner joins.
   bool syntacticJoinOrder = false;
 
+  /// Disable cost-based decision re: whether to split an aggregation into
+  /// partial + final or not.
+  bool alwaysPlanPartialAggregation = false;
+
   bool isMapAsStruct(std::string_view table, std::string_view column) const {
     if (allMapsAsStruct) {
       return true;

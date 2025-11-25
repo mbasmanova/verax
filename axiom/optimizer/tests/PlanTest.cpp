@@ -167,6 +167,8 @@ TEST_F(PlanTest, agg) {
   testConnector_->addTable(
       "numbers", ROW({"a", "b", "c"}, {DOUBLE(), DOUBLE(), VARCHAR()}));
 
+  optimizerOptions_.alwaysPlanPartialAggregation = true;
+
   auto logicalPlan = lp::PlanBuilder()
                          .tableScan(kTestConnectorId, "numbers", {"a", "b"})
                          .aggregate({"a"}, {"sum(a + b)"})
