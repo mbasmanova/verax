@@ -24,7 +24,7 @@ t3: p_partkey, p_brand, p_size, p_container
 
 Optimized plan (oneline):
 
-(lineitem INNER part)
+agg((lineitem INNER part))
 
 Optimized plan:
 

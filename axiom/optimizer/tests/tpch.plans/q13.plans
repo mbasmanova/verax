@@ -31,7 +31,7 @@ t3: o_orderkey, o_custkey, o_comment
 
 Optimized plan (oneline):
 
-(orders RIGHT customer)
+agg(agg((orders RIGHT customer)))
 
 Optimized plan:
 

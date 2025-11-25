@@ -46,7 +46,7 @@ t7: n_nationkey, n_name
 
 Optimized plan (oneline):
 
-((lineitem INNER (orders INNER (customer INNER nation))) INNER (supplier INNER nation))
+agg(((lineitem INNER (orders INNER (customer INNER nation))) INNER (supplier INNER nation)))
 
 Optimized plan:
 

@@ -27,7 +27,7 @@ t3: l_orderkey, l_shipdate, l_commitdate, l_receiptdate, l_shipmode
 
 Optimized plan (oneline):
 
-(orders INNER lineitem)
+agg((orders INNER lineitem))
 
 Optimized plan:
 

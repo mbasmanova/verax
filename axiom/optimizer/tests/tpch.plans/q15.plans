@@ -52,7 +52,7 @@ t6: l_suppkey, l_extendedprice, l_discount, l_shipdate
 
 Optimized plan (oneline):
 
-((lineitem INNER lineitem) INNER supplier)
+((agg(lineitem) INNER agg(agg(lineitem))) INNER supplier)
 
 Optimized plan:
 

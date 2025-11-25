@@ -86,7 +86,7 @@ t9: l_orderkey, l_partkey, l_suppkey, l_linenumber, l_quantity, l_extendedprice,
 
 Optimized plan (oneline):
 
-(lineitem RIGHT SEMI (FILTER) (lineitem RIGHT SEMI (PROJECT) ((lineitem INNER (supplier INNER nation)) INNER orders)))
+agg((lineitem RIGHT SEMI (FILTER) (lineitem RIGHT SEMI (PROJECT) ((lineitem INNER (supplier INNER nation)) INNER orders))))
 
 Optimized plan:
 

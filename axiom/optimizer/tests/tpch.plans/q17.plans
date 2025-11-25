@@ -35,7 +35,7 @@ t5: l_partkey, l_quantity
 
 Optimized plan (oneline):
 
-(lineitem RIGHT (lineitem INNER part))
+agg((agg(lineitem) RIGHT (lineitem INNER part)))
 
 Optimized plan:
 
