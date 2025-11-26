@@ -265,4 +265,49 @@ TablePtr TpchConnectorMetadata::findTable(std::string_view name) {
   return table;
 }
 
+std::string canonicalizeViewName(const TableNameParser& parser) {
+  return fmt::format("{}.{}", parser.schema().value_or(kTiny), parser.table());
+}
+
+ViewPtr TpchConnectorMetadata::findView(std::string_view name) {
+  TableNameParser parser{name};
+  if (!parser.valid() ||
+      (parser.schema().has_value() &&
+       !isValidTpchSchema(parser.schema().value()))) {
+    return nullptr;
+  }
+
+  auto it = views_.find(canonicalizeViewName(parser));
+  if (it == views_.end()) {
+    return nullptr;
+  }
+
+  return std::make_shared<View>(it->first, it->second.type, it->second.text);
+}
+
+void TpchConnectorMetadata::createView(
+    std::string_view name,
+    velox::RowTypePtr type,
+    std::string_view text) {
+  TableNameParser parser{name};
+  VELOX_USER_CHECK(parser.valid(), "Invalid view name: {}", name);
+  if (parser.schema().has_value()) {
+    VELOX_USER_CHECK(
+        isValidTpchSchema(parser.schema().value()),
+        "Invalid view schema: {}",
+        parser.schema().value());
+  }
+
+  auto ok = views_
+                .emplace(
+                    canonicalizeViewName(parser),
+                    ViewDefinition{type, std::string(text)})
+                .second;
+  VELOX_CHECK(ok, "View already exists: {}", name);
+}
+
+bool TpchConnectorMetadata::dropView(std::string_view name) {
+  return views_.erase(std::string(name)) == 1;
+}
+
 } // namespace facebook::axiom::connector::tpch

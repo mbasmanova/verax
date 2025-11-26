@@ -482,8 +482,6 @@ using RowsFuture = folly::SemiFuture<int64_t>;
 /// the TableLayout and Columns contained in the Table.
 class Table : public std::enable_shared_from_this<Table> {
  public:
-  virtual ~Table() = default;
-
   Table(
       std::string name,
       velox::RowTypePtr type,
@@ -494,6 +492,8 @@ class Table : public std::enable_shared_from_this<Table> {
     VELOX_CHECK(!name_.empty());
     VELOX_CHECK_NOT_NULL(type_);
   }
+
+  virtual ~Table() = default;
 
   const std::string& name() const {
     return name_;
@@ -551,6 +551,41 @@ class Table : public std::enable_shared_from_this<Table> {
 
 using TablePtr = std::shared_ptr<const Table>;
 
+class View {
+ public:
+  View(std::string name, velox::RowTypePtr type, std::string text)
+      : name_(std::move(name)), type_(std::move(type)), text_(std::move(text)) {
+    VELOX_CHECK(!name_.empty());
+
+    VELOX_CHECK_NOT_NULL(type_);
+    VELOX_CHECK_GT(type_->size(), 0);
+
+    VELOX_CHECK(!text_.empty());
+  }
+
+  const std::string& name() const {
+    return name_;
+  }
+
+  /// Returns all columns as RowType.
+  const velox::RowTypePtr& type() const {
+    return type_;
+  }
+
+  const std::string& text() const {
+    return text_;
+  }
+
+  virtual ~View() = default;
+
+ private:
+  const std::string name_;
+  const velox::RowTypePtr type_;
+  const std::string text_;
+};
+
+using ViewPtr = std::shared_ptr<const View>;
+
 /// Contains the information for an in-progress write operation. This may
 /// include insert, update, or delete of an existing table, or insertion into a
 /// new table. The ConnectorWriteHandle is generated when a table write
@@ -605,16 +640,26 @@ class ConnectorMetadata {
 
   virtual ~ConnectorMetadata() = default;
 
-  /// Return a ConnectorTablePtr given the table name. Table name is provided
-  /// without the connector ID prefix for the connector. The returned Table
-  /// object is immutable. If updates to the Table object are required, the
-  /// ConnectorMetadata is required to drop its reference to the existing
+  /// Return a TablePtr given the table name. Table name is provided without the
+  /// connector ID / catalog prefix, but may include the schema. The returned
+  /// Table object is immutable. If updates to the Table object are required,
+  /// the ConnectorMetadata is required to drop its reference to the existing
   /// Table and return a reference to a newly created Table object for
   /// subsequent calls to findTable. The ConnectorMetadata may drop its
-  /// reference ot the Table object at any time, and callers are required
-  /// to retain a reference to the Table to prevent it from being reclaimed
-  /// in the case of Table removal by the ConnectorMetadata.
+  /// reference ot the Table object at any time, and callers are required to
+  /// retain a reference to the Table to prevent it from being reclaimed in the
+  /// case of Table removal by the ConnectorMetadata.
+  ///
+  /// @return nullptr if table doesn't exist.
   virtual TablePtr findTable(std::string_view name) = 0;
+
+  /// Return a ViewPtr given the view name. View name is provided without the
+  /// connector ID / catalog prefix, but may include the schema.
+  ///
+  /// @return nullptr if view doesn't exist.
+  virtual ViewPtr findView(std::string_view name) {
+    return nullptr;
+  }
 
   /// Returns a SplitManager for split enumeration for TableLayouts accessed
   /// through 'this'.
