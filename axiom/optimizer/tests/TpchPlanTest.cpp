@@ -280,7 +280,52 @@ TEST_F(TpchPlanTest, q10) {
 TEST_F(TpchPlanTest, q11) {
   checkTpchSql(11);
 
-  // TODO Verify the plan.
+  // The join order is the usual, from large to small. The only particularity is
+  // the non-correlated subquery that repeats the same join steps. An
+  // optimization opportunity could be to reuse build sides but this is not
+  // something that Velox plans support at this time. Also, practical need for
+  // this is not very high.
+
+  auto startMatcher = [&](const std::string& tableName) {
+    return core::PlanMatcherBuilder().tableScan(tableName);
+  };
+
+  auto matcher =
+      startMatcher("partsupp")
+          .hashJoin(
+              startMatcher("supplier")
+                  .hashJoin(
+                      core::PlanMatcherBuilder()
+                          .hiveScan("nation", test::eq("n_name", "GERMANY"))
+                          .build(),
+                      core::JoinType::kInner)
+                  .build(),
+              core::JoinType::kInner)
+          .project()
+          .aggregation()
+          .nestedLoopJoin(
+              startMatcher("partsupp")
+                  .hashJoin(
+                      startMatcher("supplier")
+                          .hashJoin(
+                              core::PlanMatcherBuilder()
+                                  .hiveScan(
+                                      "nation", test::eq("n_name", "GERMANY"))
+                                  .build(),
+                              core::JoinType::kInner)
+                          .build(),
+                      core::JoinType::kInner)
+                  .project()
+                  .aggregation()
+                  .project()
+                  .build())
+          .filter()
+          .orderBy()
+          .project() // TODO Move this 'project' below the 'orderBy'.
+          .build();
+
+  auto plan = planTpch(11);
+  AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
 TEST_F(TpchPlanTest, q12) {
