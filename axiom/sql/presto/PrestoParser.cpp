@@ -357,8 +357,13 @@ class RelationPlanner : public AstVisitor {
         defaultSchema_{defaultSchema},
         builder_(newBuilder()) {}
 
-  lp::LogicalPlanNodePtr getPlan() {
+  lp::LogicalPlanNodePtr plan() {
     return builder_->build();
+  }
+
+  const std::unordered_map<std::pair<std::string, std::string>, std::string>&
+  views() const {
+    return views_;
   }
 
   lp::PlanBuilder& builder() {
@@ -963,9 +968,29 @@ class RelationPlanner : public AstVisitor {
         // TODO Change WithQuery to store Query and not Statement.
         processQuery(dynamic_cast<Query*>(withIt->second->query().get()));
       } else {
-        const auto connectorTable = toConnectorTable(
+        const auto& [connectorId, tableName] = toConnectorTable(
             *table->name(), context_.defaultConnectorId, defaultSchema_);
-        builder_->tableScan(connectorTable.first, connectorTable.second);
+
+        auto* metadata =
+            facebook::axiom::connector::ConnectorMetadata::metadata(
+                connectorId);
+
+        if (metadata->findTable(tableName) != nullptr) {
+          builder_->tableScan(connectorId, tableName);
+        } else if (auto view = metadata->findView(tableName)) {
+          views_.emplace(std::make_pair(connectorId, tableName), view->text());
+
+          ParserHelper helper(view->text());
+          auto* viewContext = helper.parse();
+
+          AstBuilder astBuilder;
+          auto query = std::any_cast<std::shared_ptr<Statement>>(
+              astBuilder.visit(viewContext));
+          processQuery(dynamic_cast<Query*>(query.get()));
+        } else {
+          VELOX_USER_FAIL(
+              "Table not found: {}", table->name()->fullyQualifiedName());
+        }
       }
 
       builder_->as(tableName);
@@ -1431,6 +1456,7 @@ class RelationPlanner : public AstVisitor {
   const std::optional<std::string> defaultSchema_;
   std::shared_ptr<lp::PlanBuilder> builder_;
   std::unordered_map<std::string, std::shared_ptr<WithQuery>> withQueries_;
+  std::unordered_map<std::pair<std::string, std::string>, std::string> views_;
 };
 
 } // namespace
@@ -1484,7 +1510,7 @@ SqlStatementPtr parseExplain(
 
   if (explain.isAnalyze()) {
     return std::make_shared<ExplainStatement>(
-        std::make_shared<SelectStatement>(planner.getPlan()),
+        std::make_shared<SelectStatement>(planner.plan(), planner.views()),
         /*analyze=*/true);
   }
 
@@ -1515,7 +1541,7 @@ SqlStatementPtr parseExplain(
   }
 
   return std::make_shared<ExplainStatement>(
-      std::make_shared<SelectStatement>(planner.getPlan()),
+      std::make_shared<SelectStatement>(planner.plan(), planner.views()),
       /*analyze=*/false,
       type);
 }
@@ -1590,7 +1616,7 @@ SqlStatementPtr parseInsert(
       columnNames,
       inputColumns);
 
-  return std::make_shared<InsertStatement>(planner.getPlan());
+  return std::make_shared<InsertStatement>(planner.plan(), planner.views());
 }
 
 SqlStatementPtr parseCreateTableAsSelect(
@@ -1654,7 +1680,8 @@ SqlStatementPtr parseCreateTableAsSelect(
       connectorTable.second,
       facebook::velox::ROW(std::move(columnNames), std::move(columnTypes)),
       std::move(properties),
-      planner.getPlan());
+      planner.plan(),
+      planner.views());
 }
 
 SqlStatementPtr parseDropTable(
@@ -1715,7 +1742,7 @@ SqlStatementPtr PrestoParser::doParse(
 
   RelationPlanner planner(defaultConnectorId_, defaultSchema_);
   query->accept(&planner);
-  return std::make_shared<SelectStatement>(planner.getPlan());
+  return std::make_shared<SelectStatement>(planner.plan(), planner.views());
 }
 
 } // namespace axiom::sql::presto

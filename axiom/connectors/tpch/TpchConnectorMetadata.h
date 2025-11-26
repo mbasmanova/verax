@@ -194,6 +194,15 @@ class TpchConnectorMetadata : public ConnectorMetadata {
 
   TablePtr findTable(std::string_view name) override;
 
+  ViewPtr findView(std::string_view name) override;
+
+  void createView(
+      std::string_view name,
+      velox::RowTypePtr type,
+      std::string_view text);
+
+  bool dropView(std::string_view name);
+
   ConnectorSplitManager* splitManager() override {
     return &splitManager_;
   }
@@ -203,10 +212,16 @@ class TpchConnectorMetadata : public ConnectorMetadata {
   }
 
  private:
+  struct ViewDefinition {
+    velox::RowTypePtr type;
+    std::string text;
+  };
+
   velox::connector::tpch::TpchConnector* tpchConnector_;
   std::shared_ptr<velox::memory::MemoryPool> rootPool_{
       velox::memory::memoryManager()->addRootPool()};
   TpchSplitManager splitManager_;
+  std::unordered_map<std::string, ViewDefinition> views_;
 };
 
 } // namespace facebook::axiom::connector::tpch

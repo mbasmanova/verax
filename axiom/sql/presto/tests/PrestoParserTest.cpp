@@ -71,16 +71,30 @@ class PrestoParserTest : public testing::Test {
 
   void testSql(
       std::string_view sql,
-      lp::test::LogicalPlanMatcherBuilder& matcher) {
+      lp::test::LogicalPlanMatcherBuilder& matcher,
+      const std::unordered_set<std::string>& views = {}) {
     SCOPED_TRACE(sql);
     PrestoParser parser(kTpchConnectorId, kTinySchema, pool());
 
     auto statement = parser.parse(sql, true);
     ASSERT_TRUE(statement->isSelect());
 
-    auto logicalPlan = statement->as<SelectStatement>()->plan();
+    auto* selectStatement = statement->as<SelectStatement>();
+
+    auto logicalPlan = selectStatement->plan();
     ASSERT_TRUE(matcher.build()->match(logicalPlan))
         << lp::PlanPrinter::toText(*logicalPlan);
+
+    ASSERT_EQ(views.size(), selectStatement->views().size());
+
+    for (const auto& [k, v] : selectStatement->views()) {
+      LOG(ERROR) << k.first << ", " << k.second;
+    }
+
+    for (const auto& view : views) {
+      ASSERT_TRUE(selectStatement->views().contains({kTpchConnectorId, view}))
+          << "Missing view: " << view;
+    }
   }
 
   void testInsertSql(
@@ -888,6 +902,38 @@ TEST_F(PrestoParserTest, dropTable) {
     ASSERT_EQ("tiny.u", dropTable->tableName());
     ASSERT_TRUE(dropTable->ifExists());
   }
+}
+
+TEST_F(PrestoParserTest, view) {
+  auto* metadata =
+      dynamic_cast<facebook::axiom::connector::tpch::TpchConnectorMetadata*>(
+          facebook::axiom::connector::ConnectorMetadata::metadata(
+              kTpchConnectorId));
+
+  SCOPE_EXIT {
+    metadata->dropView("view");
+  };
+
+  metadata->createView(
+      "view",
+      ROW({"n_nationkey", "cnt"}, {BIGINT(), BIGINT()}),
+      "SELECT n_regionkey as regionkey, count(*) cnt FROM nation GROUP BY 1");
+
+  auto matcher = lp::test::LogicalPlanMatcherBuilder()
+                     .tableScan()
+                     .join(
+                         lp::test::LogicalPlanMatcherBuilder()
+                             .tableScan()
+                             .aggregate()
+                             .project()
+                             .build())
+                     .filter()
+                     .project();
+  testSql(
+      "SELECT n_name, n_regionkey, cnt FROM nation n, view v "
+      "WHERE n_nationkey = regionkey",
+      matcher,
+      {"tiny.view"});
 }
 
 } // namespace
