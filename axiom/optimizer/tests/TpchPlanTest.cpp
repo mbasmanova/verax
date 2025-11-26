@@ -512,7 +512,30 @@ TEST_F(TpchPlanTest, q21) {
 TEST_F(TpchPlanTest, q22) {
   checkTpchSql(22);
 
-  // TODO Verify the plan.
+  auto startMatcher = [&](const std::string& tableName) {
+    return core::PlanMatcherBuilder().tableScan(tableName);
+  };
+
+  // The query is straightforward, with the not exists resolved with a right
+  // semijoin and the non-correlated subquery becoming a cross join to the one
+  // row result set of the non-grouped aggregation.
+
+  auto matcher = startMatcher("orders")
+                     .hashJoin(
+                         startMatcher("customer")
+                             .nestedLoopJoin(
+                                 startMatcher("customer").aggregation().build())
+                             .filter()
+                             .build(),
+                         velox::core::JoinType::kRightSemiProject)
+                     .filter()
+                     .project()
+                     .aggregation()
+                     .orderBy()
+                     .build();
+
+  auto plan = planTpch(22);
+  AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
 // Use to re-generate the plans stored in tpch.plans directory.
