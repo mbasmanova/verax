@@ -69,5 +69,85 @@ TEST_F(FilterPushdownTest, redundantCast) {
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
+TEST_F(FilterPushdownTest, throughJoin) {
+  auto startMatcher = [](const auto& tableName) {
+    return core::PlanMatcherBuilder().tableScan(tableName);
+  };
+
+  // Filter uses columns from both sides of the join. Expected to stay after the
+  // join.
+  for (const auto& filter : {
+           "n_nationkey < r_regionkey",
+           "cardinality(filter(array[n_name], n -> n = r_name)) > 0",
+       }) {
+    lp::PlanBuilder::Context ctx(exec::test::kHiveConnectorId);
+    auto logicalPlan =
+        lp::PlanBuilder(ctx)
+            .from({"nation", "region"})
+            .filter(fmt::format("n_nationkey = r_regionkey and {}", filter))
+            .aggregate({}, {"count(*)"})
+            .build();
+
+    auto plan = toSingleNodePlan(logicalPlan);
+
+    auto matcher =
+        startMatcher("nation")
+            .hashJoin(
+                startMatcher("region").build(), velox::core::JoinType::kInner)
+            .filter()
+            .aggregation()
+            .build();
+
+    AXIOM_ASSERT_PLAN(plan, matcher);
+  }
+
+  // Filter uses columns from only one sides of the join. Expected to be pushed
+  // down below the join.
+  {
+    lp::PlanBuilder::Context ctx(exec::test::kHiveConnectorId);
+    auto logicalPlan =
+        lp::PlanBuilder(ctx)
+            .from({"nation", "region"})
+            .filter("n_nationkey = r_regionkey and n_nationkey < 10")
+            .aggregate({}, {"count(*)"})
+            .build();
+
+    auto plan = toSingleNodePlan(logicalPlan);
+
+    auto matcher =
+        core::PlanMatcherBuilder()
+            .hiveScan("nation", lt("n_nationkey", 10L))
+            .hashJoin(
+                startMatcher("region").build(), velox::core::JoinType::kInner)
+            .aggregation()
+            .build();
+
+    AXIOM_ASSERT_PLAN(plan, matcher);
+  }
+
+  {
+    lp::PlanBuilder::Context ctx(exec::test::kHiveConnectorId);
+    auto logicalPlan =
+        lp::PlanBuilder(ctx)
+            .from({"nation", "region"})
+            .filter("n_nationkey = r_regionkey and r_regionkey < 10")
+            .aggregate({}, {"count(*)"})
+            .build();
+
+    auto plan = toSingleNodePlan(logicalPlan);
+
+    auto matcher = startMatcher("nation")
+                       .hashJoin(
+                           core::PlanMatcherBuilder()
+                               .hiveScan("region", lt("r_regionkey", 10L))
+                               .build(),
+                           velox::core::JoinType::kInner)
+                       .aggregation()
+                       .build();
+
+    AXIOM_ASSERT_PLAN(plan, matcher);
+  }
+}
+
 } // namespace
 } // namespace facebook::axiom::optimizer::test
