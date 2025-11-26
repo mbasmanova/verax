@@ -403,7 +403,15 @@ class Lambda : public Expr {
   Lambda(ColumnVector args, const velox::Type* type, ExprCP body)
       : Expr(PlanType::kLambdaExpr, Value(type, 1)),
         args_(std::move(args)),
-        body_(body) {}
+        body_(body) {
+    auto columns = body_->columns();
+    for (auto arg : args_) {
+      columns.erase(arg);
+    }
+
+    columns_.unionSet(columns);
+  }
+
   const ColumnVector& args() const {
     return args_;
   }
