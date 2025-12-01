@@ -389,6 +389,9 @@ TEST_F(PrestoParserTest, in) {
   auto matcher = lp::test::LogicalPlanMatcherBuilder().values().project();
   testSql("SELECT 1 in (2,3,4)", matcher);
   testSql("SELECT 1 IN (2,3,4)", matcher);
+
+  testSql("SELECT 1 not in (2,3,4)", matcher);
+  testSql("SELECT 1 NOT IN (2,3,4)", matcher);
 }
 
 TEST_F(PrestoParserTest, coalesce) {
@@ -405,6 +408,11 @@ TEST_F(PrestoParserTest, concat) {
 TEST_F(PrestoParserTest, subscript) {
   auto matcher = lp::test::LogicalPlanMatcherBuilder().tableScan().project();
   testSql("SELECT array[1, 2, 3][1] FROM nation", matcher);
+}
+
+TEST_F(PrestoParserTest, row) {
+  auto matcher = lp::test::LogicalPlanMatcherBuilder().tableScan().project();
+  testSql("SELECT row(n_regionkey, n_name) FROM nation", matcher);
 }
 
 TEST_F(PrestoParserTest, selectStar) {

@@ -584,6 +584,11 @@ velox::TypePtr resolveScalarFunction(
     const std::vector<velox::TypePtr>& argTypes,
     bool allowCoersions,
     std::vector<velox::TypePtr>& coercions) {
+  // TODO Add support for coersions.
+  if (auto returnType = velox::resolveCallableSpecialForm(name, argTypes)) {
+    return returnType;
+  }
+
   if (allowCoersions) {
     if (auto type = resolveFunctionWithCoercions(name, argTypes, coercions)) {
       return type;

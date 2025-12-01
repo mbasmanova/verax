@@ -268,6 +268,10 @@ class ExprAnalyzer : public AstVisitor {
     node->body()->accept(this);
   }
 
+  void visitNotExpression(NotExpression* node) override {
+    node->value()->accept(this);
+  }
+
   void visitArithmeticBinaryExpression(
       ArithmeticBinaryExpression* node) override {
     node->left()->accept(this);
@@ -310,6 +314,12 @@ class ExprAnalyzer : public AstVisitor {
 
   void visitIdentifier(Identifier* node) override {
     // No function calls.
+  }
+
+  void visitRow(Row* node) override {
+    for (const auto& item : node->items()) {
+      item->accept(this);
+    }
   }
 
   size_t numAggregates_{0};
@@ -620,6 +630,16 @@ class RelationPlanner : public AstVisitor {
         }
 
         return lp::Call("array_constructor", values);
+      }
+
+      case NodeType::kRow: {
+        auto* row = node->as<Row>();
+        std::vector<lp::ExprApi> items;
+        for (const auto& item : row->items()) {
+          items.emplace_back(toExpr(item));
+        }
+
+        return lp::Call("row_constructor", items);
       }
 
       case NodeType::kFunctionCall: {
