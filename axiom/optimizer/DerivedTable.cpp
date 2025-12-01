@@ -525,8 +525,6 @@ void DerivedTable::importJoinsIntoFirstDt(const DerivedTable* firstDt) {
   }
 
   auto* newFirst = make<DerivedTable>(*firstDt->as<DerivedTable>());
-  newFirst->cname = firstDt->as<DerivedTable>()->cname;
-  newFirst->conjuncts = firstDt->conjuncts;
 
   const int32_t previousNumJoins = newFirst->joins.size();
   for (auto& join : joins) {
