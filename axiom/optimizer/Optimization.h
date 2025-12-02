@@ -117,6 +117,12 @@ class Optimization {
 
   void makeJoins(PlanState& state);
 
+  /// Adds single aggregation on top of 'input'.
+  /// @param dt Derived table with an aggregation.
+  static RelationOpPtr planSingleAggregation(
+      DerivedTableCP dt,
+      RelationOpPtr& input);
+
   const std::shared_ptr<velox::core::QueryCtx>& veloxQueryCtx() const {
     return veloxQueryCtx_;
   }

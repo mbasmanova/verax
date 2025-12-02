@@ -277,6 +277,28 @@ struct LookupKeys {
   bool isAscending{true};
 };
 
+class DiscretePredicates {
+ public:
+  explicit DiscretePredicates(std::vector<const Column*> columns)
+      : columns_(std::move(columns)) {
+    VELOX_CHECK(!columns_.empty());
+  }
+
+  virtual ~DiscretePredicates() = default;
+
+  const std::vector<const Column*>& columns() const {
+    return columns_;
+  }
+
+  /// Returns the next batch of values. Returns empty vector if there are no
+  /// more values. Each velox::Variant is of type 'row' and contains one value
+  /// per column specified in the ctor in order.
+  virtual std::vector<velox::Variant> next() = 0;
+
+ private:
+  const std::vector<const Column*> columns_;
+};
+
 /// Represents a physical manifestation of a table. There is at least
 /// one layout but for tables that have multiple sort orders, partitionings,
 /// indices, column groups, etc. there is a separate layout for each. The layout
@@ -347,6 +369,27 @@ class TableLayout {
   /// Sorting order. Corresponds 1:1 to orderColumns().
   const std::vector<SortOrder>& sortOrder() const {
     return sortOrder_;
+  }
+
+  /// Set of columns that have discrete values that can be enumerated using
+  /// 'discretePredicates' API.
+  /// For example, Hive connector returns a list of partition keys.
+  virtual const std::vector<const Column*>& discretePredicateColumns() const {
+    static const std::vector<const Column*> kEmpty;
+    return kEmpty;
+  }
+
+  /// Returns an iterator into the list of discrete values of the specified
+  /// columns. The union of these values covers all rows of the table. Each
+  /// value corresponds to at least one row in the table. If 'columns' doesn't
+  /// contain all 'discretePredicateColumns', the results may contains duplicate
+  /// values.
+  ///
+  /// @param columns A subset of 'discretePredicateColumns'. Must not be empty.
+  /// Must not contain duplicates.
+  virtual std::unique_ptr<DiscretePredicates> discretePredicates(
+      [[maybe_unused]] const std::vector<const Column*>& columns) const {
+    return nullptr;
   }
 
   /// Returns the key columns usable for index lookup. This is modeled

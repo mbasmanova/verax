@@ -1086,6 +1086,30 @@ void Project::accept(
   visitor.visit(*this, context);
 }
 
+// static
+bool Project::isRedundant(
+    const RelationOpPtr& input,
+    const ExprVector& exprs,
+    const ColumnVector& columns) {
+  const auto& inputColumns = input->columns();
+
+  if (inputColumns.size() != exprs.size()) {
+    return false;
+  }
+
+  for (auto i = 0; i < inputColumns.size(); ++i) {
+    if (inputColumns[i] != exprs[i]) {
+      return false;
+    }
+
+    if (inputColumns[i]->outputName() != columns[i]->outputName()) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 OrderBy::OrderBy(
     RelationOpPtr input,
     ExprVector orderKeys,

@@ -373,9 +373,9 @@ class ToGraph {
   // 'outer' query.
   ExprVector correlatedConjuncts_;
 
-  // Maps an expression that contains a subquery to a column that should be used
-  // instead. Populated in 'processSubqueries()'.
-  folly::F14FastMap<logical_plan::ExprPtr, ColumnCP> subqueries_;
+  // Maps an expression that contains a subquery to a column or constant that
+  // should be used instead. Populated in 'processSubqueries()'.
+  folly::F14FastMap<logical_plan::ExprPtr, ExprCP> subqueries_;
 
   folly::
       F14FastMap<TypedVariant, ExprCP, TypedVariantHasher, TypedVariantComparer>

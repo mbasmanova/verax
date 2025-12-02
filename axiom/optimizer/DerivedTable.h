@@ -188,6 +188,19 @@ struct DerivedTable : public PlanObject {
     joinOrder.push_back(table->id());
   }
 
+  void removeLastTable(PlanObjectCP table) {
+    VELOX_CHECK(!tables.empty());
+    VELOX_CHECK(tables.back() == table);
+
+    tables.pop_back();
+
+    if (std::ranges::find(tables, table) == tables.end()) {
+      tableSet.erase(table);
+    }
+
+    joinOrder.pop_back();
+  }
+
   /// True if 'table' is of 'this'.
   bool hasTable(PlanObjectCP table) const {
     return tableSet.contains(table);

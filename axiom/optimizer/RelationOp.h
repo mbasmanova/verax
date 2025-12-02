@@ -459,6 +459,14 @@ class Project : public RelationOp {
       const RelationOpVisitor& visitor,
       RelationOpVisitorContext& context) const override;
 
+  /// Returns true if input's columns match 'exprs' and 'columns' exactly.
+  /// Specifically, for each input column, input->columns[i] == exprs[i] and
+  /// input->columns[i]->outputName() == columns[i]->outputName().
+  static bool isRedundant(
+      const RelationOpPtr& input,
+      const ExprVector& exprs,
+      const ColumnVector& columns);
+
  private:
   const ExprVector exprs_;
   const bool redundant_;

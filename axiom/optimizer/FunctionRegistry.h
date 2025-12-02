@@ -30,6 +30,13 @@ class FunctionSet {
   /// Indicates a non-determinstic function in the set.
   static constexpr uint64_t kNonDeterministic = 1UL << 1;
 
+  /// Indicates an aggregate function that is sensitive to the order of inputs.
+  /// Same inputs provided in a different order may produce different results.
+  static constexpr uint64_t kOrderSensitiveAggregate = 1UL << 2;
+
+  /// Indicates an aggregate function that ignores duplicate inputs.
+  static constexpr uint64_t kIgnoreDuplicatesAggregate = 1UL << 3;
+
   FunctionSet() : set_(0) {}
 
   explicit FunctionSet(uint64_t set) : set_(set) {}

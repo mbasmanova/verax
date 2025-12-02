@@ -24,6 +24,7 @@
 #include "axiom/optimizer/Plan.h"
 #include "axiom/optimizer/PlanUtils.h"
 #include "axiom/optimizer/SubfieldTracker.h"
+#include "axiom/runner/LocalRunner.h"
 #include "velox/exec/Aggregate.h"
 #include "velox/exec/AggregateFunctionRegistry.h"
 #include "velox/expression/ConstantExpr.h"
@@ -127,11 +128,217 @@ void ToGraph::addDtColumn(DerivedTableP dt, std::string_view name) {
   renames_[name] = outer;
 }
 
+namespace {
+
+std::shared_ptr<velox::core::QueryCtx> constantQueryCtx(
+    const velox::core::QueryCtx& original) {
+  std::atomic<int64_t> kQueryCounter;
+
+  std::unordered_map<std::string, std::string> empty;
+  return velox::core::QueryCtx::create(
+      original.executor(),
+      velox::core::QueryConfig(std::move(empty)),
+      original.connectorSessionProperties(),
+      original.cache(),
+      original.pool()->shared_from_this(),
+      nullptr,
+      fmt::format("constant_fold:{}", ++kQueryCounter));
+}
+
+std::vector<velox::RowVectorPtr> runConstantPlan(
+    PlanAndStats& veloxPlan,
+    velox::memory::MemoryPool* pool) {
+  auto runner = std::make_shared<runner::LocalRunner>(
+      veloxPlan.plan,
+      std::move(veloxPlan.finishWrite),
+      constantQueryCtx(*queryCtx()->optimization()->veloxQueryCtx()));
+
+  std::vector<velox::RowVectorPtr> results;
+  while (auto rows = runner->next()) {
+    VELOX_CHECK_GT(rows->size(), 0);
+    results.push_back(
+        std::dynamic_pointer_cast<velox::RowVector>(
+            velox::BaseVector::copy(*rows, pool)));
+  }
+  runner->waitForCompletion(1'000'000);
+  return results;
+}
+
+std::unique_ptr<connector::DiscretePredicates> allDiscreteColumns(
+    const ColumnVector& columns,
+    const connector::TableLayout& layout) {
+  const auto& discreteColumns = layout.discretePredicateColumns();
+  if (discreteColumns.empty()) {
+    return {nullptr, {}};
+  }
+
+  folly::F14FastMap<std::string_view, const connector::Column*>
+      discreteColumnMap;
+  for (const auto* column : discreteColumns) {
+    discreteColumnMap.emplace(column->name(), column);
+  }
+
+  std::vector<const connector::Column*> connectorColumns;
+  connectorColumns.reserve(columns.size());
+
+  for (auto* column : columns) {
+    auto it = discreteColumnMap.find(column->schemaColumn()->name());
+    if (it == discreteColumnMap.end()) {
+      return {nullptr, {}};
+    }
+
+    connectorColumns.emplace_back(it->second);
+  }
+
+  return layout.discretePredicates(connectorColumns);
+}
+
+velox::RowTypePtr toRowType(const ColumnVector& columns) {
+  std::vector<std::string> names;
+  std::vector<velox::TypePtr> types;
+  names.reserve(columns.size());
+  types.reserve(columns.size());
+  for (auto* column : columns) {
+    names.emplace_back(column->name());
+    types.emplace_back(toTypePtr(column->value().type));
+  }
+
+  return ROW(std::move(names), std::move(types));
+}
+
+std::vector<velox::Variant> toValues(
+    connector::DiscretePredicates& discretePredicates) {
+  std::vector<velox::Variant> valueRows;
+  for (;;) {
+    auto rows = discretePredicates.next();
+    if (rows.empty()) {
+      break;
+    }
+
+    valueRows.reserve(valueRows.size() + rows.size());
+
+    for (auto& row : rows) {
+      valueRows.emplace_back(std::move(row));
+    }
+  }
+
+  return valueRows;
+}
+
+// Constant folds a derived table that represents global aggregation over a base
+// table and uses only discrete-predicate columns. In addition, aggregate
+// functions must ignore duplicate inputs or aggregation must be over distinct
+// inputs (e.g. max(x) or agg(distinct x)).
+lp::ValuesNodePtr tryFoldConstantDt(
+    DerivedTableP dt,
+    velox::memory::MemoryPool* pool) {
+  if (dt->tables.size() > 1 || !dt->tables[0]->is(PlanType::kTableNode)) {
+    return nullptr;
+  }
+
+  if (!dt->hasAggregation() || !dt->aggregation->groupingKeys().empty()) {
+    return nullptr;
+  }
+
+  // DT has a single BaseTable with a global aggregation.
+  const auto* aggPlan = dt->aggregation;
+
+  // Check if aggregation ignores duplicate inputs.
+  for (const auto* agg : aggPlan->aggregates()) {
+    if (!agg->functions().contains(FunctionSet::kIgnoreDuplicatesAggregate) &&
+        !agg->isDistinct()) {
+      return nullptr;
+    }
+  }
+
+  // Check if aggregation uses only 'discretePredicate' columns.
+  auto* baseTable = dt->tables[0]->as<BaseTable>();
+
+  std::unique_ptr<connector::DiscretePredicates> discretePredicates;
+
+  for (auto* layout : baseTable->schemaTable->connectorTable->layouts()) {
+    if (auto predicates = allDiscreteColumns(baseTable->columns, *layout)) {
+      discretePredicates = std::move(predicates);
+      break;
+    }
+  }
+
+  if (discretePredicates == nullptr) {
+    return nullptr;
+  }
+
+  VELOX_CHECK(dt->conjuncts.empty());
+  VELOX_CHECK_NULL(dt->write);
+
+  // TODO Remove this check to allow SELECT count(1) FROM (SELECT distinct ds
+  // FROM t) queries.
+  VELOX_CHECK(!dt->columns.empty());
+
+  if (dt->hasOrderBy() || dt->hasLimit()) {
+    // TODO Add support for these. Order-by can be ignored. Global agg produces
+    // a single row, hence, no need to sort. Limit >= 1 can be ignored as well.
+    // Limit 0 should be optimized.
+    return nullptr;
+  }
+
+  // Create and run Velox plan.
+  const lp::ValuesNode valuesNode{
+      dt->cname, toRowType(baseTable->columns), toValues(*discretePredicates)};
+  auto* valuesTable = make<ValuesTable>(valuesNode);
+  valuesTable->cname = dt->cname;
+  valuesTable->columns = baseTable->columns;
+
+  RelationOpPtr plan = make<Values>(*valuesTable, valuesTable->columns);
+
+  if (!baseTable->columnFilters.empty() || !baseTable->filter.empty()) {
+    auto combinedFilters = baseTable->columnFilters;
+    if (!baseTable->filter.empty()) {
+      combinedFilters.reserve(
+          baseTable->columnFilters.size() + baseTable->filter.size());
+      combinedFilters.insert(
+          combinedFilters.end(),
+          baseTable->filter.begin(),
+          baseTable->filter.end());
+    }
+    plan = make<Filter>(plan, combinedFilters);
+  }
+
+  plan = Optimization::planSingleAggregation(dt, plan);
+
+  if (!dt->having.empty()) {
+    plan = make<Filter>(plan, dt->having);
+  }
+
+  if (!Project::isRedundant(plan, dt->exprs, dt->columns)) {
+    plan = make<Project>(
+        plan,
+        dt->exprs,
+        dt->columns,
+        /*redundantProject=*/false);
+  }
+
+  auto veloxPlan = queryCtx()->optimization()->toVeloxPlan(plan);
+  auto results = runConstantPlan(veloxPlan, pool);
+  if (results.empty()) {
+    VELOX_CHECK_EQ(1, veloxPlan.plan->fragments().size());
+    const auto& rowType =
+        veloxPlan.plan->fragments().front().fragment.planNode->outputType();
+    return std::make_shared<lp::ValuesNode>(
+        dt->cname, rowType, std::vector<velox::Variant>{});
+  }
+
+  return std::make_shared<lp::ValuesNode>(dt->cname, std::move(results));
+}
+
+} // namespace
+
 void ToGraph::setDtOutput(DerivedTableP dt, const lp::LogicalPlanNode& node) {
   const auto& type = *node.outputType();
   for (const auto& name : type.names()) {
     addDtColumn(dt, name);
   }
+
+  // TODO Try constant fold the dt.
 }
 
 void ToGraph::setDtUsedOutput(
@@ -1138,8 +1345,27 @@ AggregationPlanCP ToGraph::translateAggregation(const lp::AggregateNode& agg) {
       condition = translateExpr(aggregate->filter());
     }
 
+    auto aggName = toName(aggregate->name());
+
     const auto& metadata =
         velox::exec::getAggregateFunctionMetadata(aggregate->name());
+
+    if (metadata.ignoreDuplicates) {
+      funcs = funcs | FunctionSet::kIgnoreDuplicatesAggregate;
+    } else {
+      if ((aggName == toName("min") || aggName == toName("max")) &&
+          args.size() == 1) {
+        // Presto's min/max are not marked 'ignoreDuplicates' because while
+        // min(x) and max(x) do ignore duplicates, min(x, n) and max(x, n) do
+        // not.
+        // TODO Figure out a better way.
+        funcs = funcs | FunctionSet::kIgnoreDuplicatesAggregate;
+      }
+    }
+
+    if (metadata.orderSensitive) {
+      funcs = funcs | FunctionSet::kOrderSensitiveAggregate;
+    }
 
     const bool isDistinct =
         !metadata.ignoreDuplicates && aggregate->isDistinct();
@@ -1169,7 +1395,6 @@ AggregationPlanCP ToGraph::translateAggregation(const lp::AggregateNode& agg) {
           "ORDER BY option for aggregation is supported only in single worker, single thread mode");
     }
 
-    auto aggName = toName(aggregate->name());
     auto name = toName(agg.outputNames()[channel]);
 
     AggregateDedupKey key{
@@ -1373,6 +1598,7 @@ void ToGraph::finalizeSubqueryDt(
     DerivedTableP outerDt) {
   VELOX_DCHECK_NOT_NULL(outerDt);
   VELOX_DCHECK_NOT_NULL(currentDt_);
+
   DerivedTableP dt = currentDt_;
   setDtUsedOutput(dt, node);
 
@@ -1538,6 +1764,7 @@ void ToGraph::makeValuesTable(const lp::ValuesNode& values) {
 
 void ToGraph::addProjection(const lp::ProjectNode& project) {
   exprSource_ = project.onlyInput().get();
+
   const auto& names = project.names();
   const auto& exprs = project.expressions();
   auto channels = usedChannels(project);
@@ -1653,6 +1880,30 @@ void ToGraph::processSubqueries(const logical_plan::FilterNode& filter) {
 
     if (correlatedConjuncts_.empty()) {
       VELOX_CHECK_EQ(1, subqueryDt->columns.size());
+
+      if (auto valuesNode = tryFoldConstantDt(subqueryDt, evaluator_.pool())) {
+        VELOX_CHECK_EQ(1, valuesNode->outputType()->size());
+        if (valuesNode->cardinality() == 1) {
+          // Replace subquery with a constant value.
+          const auto value =
+              std::get<std::vector<velox::RowVectorPtr>>(valuesNode->data())
+                  .front()
+                  ->childAt(0)
+                  ->variantAt(0);
+          const auto* literal = make<Literal>(
+              Value{toType(valuesNode->outputType()->childAt(0)), 1},
+              registerVariant(value));
+          subqueries_.emplace(subquery, literal);
+
+          currentDt_->removeLastTable(subqueryDt);
+          continue;
+        }
+
+        // TODO Handle the case when subquery returns no rows. Fail if subquery
+        // is used in a comparison (x = <subquery>), constant fold if used as an
+        // IN LIST (x IN <subquery>).
+      }
+
       subqueries_.emplace(subquery, subqueryDt->columns.front());
     } else {
       VELOX_CHECK_EQ(

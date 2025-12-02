@@ -48,6 +48,10 @@ class QueryTestBase : public runner::test::LocalRunnerTestBase {
 
   void TearDown() override;
 
+  logical_plan::LogicalPlanNodePtr parseSelect(
+      std::string_view sql,
+      const std::string& defaultConnectorId);
+
   /// @param planFilePathPrefix If specified, writes the query graph, optimized
   /// and executable plans to files with specified path prefix.
   optimizer::PlanAndStats planVelox(
