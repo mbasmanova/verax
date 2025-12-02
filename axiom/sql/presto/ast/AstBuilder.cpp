@@ -1689,12 +1689,32 @@ std::any AstBuilder::visitFunctionCall(
     PrestoSqlParser::FunctionCallContext* ctx) {
   trace("visitFunctionCall");
 
+  VELOX_CHECK_NULL(ctx->over(), "Window functions are not supported yet");
+
   auto name = getQualifiedName(ctx->qualifiedName());
+
+  auto filter = visitTyped<Expression>(ctx->filter());
+
+  OrderByPtr orderBy;
+  if (ctx->ORDER() != nullptr) {
+    orderBy = std::make_shared<OrderBy>(
+        getLocation(ctx->ORDER()), visitTyped<SortItem>(ctx->sortItem()));
+  }
+
+  const bool ignoreNulls = ctx->nullTreatment() != nullptr &&
+      ctx->nullTreatment()->IGNORE() != nullptr;
 
   auto args = visitTyped<Expression>(ctx->expression());
 
   return std::static_pointer_cast<Expression>(std::make_shared<FunctionCall>(
-      getLocation(ctx), name, nullptr /* window */, isDistinct(ctx), args));
+      getLocation(ctx),
+      name,
+      /*window=*/nullptr,
+      filter,
+      orderBy,
+      isDistinct(ctx),
+      ignoreNulls,
+      args));
 }
 
 std::any AstBuilder::visitExists(PrestoSqlParser::ExistsContext* ctx) {
@@ -1874,7 +1894,7 @@ std::any AstBuilder::visitWhenClause(PrestoSqlParser::WhenClauseContext* ctx) {
 
 std::any AstBuilder::visitFilter(PrestoSqlParser::FilterContext* ctx) {
   trace("visitFilter");
-  return visitChildren(ctx);
+  return visit(ctx->booleanExpression());
 }
 
 std::any AstBuilder::visitOver(PrestoSqlParser::OverContext* ctx) {

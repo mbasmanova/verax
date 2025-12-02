@@ -29,28 +29,32 @@ class LogicalPlanMatcher {
 
 class LogicalPlanMatcherBuilder {
  public:
-  LogicalPlanMatcherBuilder& tableWrite();
+  using OnMatchCallback = std::function<void(const LogicalPlanNodePtr&)>;
 
-  LogicalPlanMatcherBuilder& tableScan();
+  LogicalPlanMatcherBuilder& tableWrite(OnMatchCallback onMatch = nullptr);
 
-  LogicalPlanMatcherBuilder& values();
+  LogicalPlanMatcherBuilder& tableScan(OnMatchCallback onMatch = nullptr);
 
-  LogicalPlanMatcherBuilder& filter();
+  LogicalPlanMatcherBuilder& values(OnMatchCallback onMatch = nullptr);
 
-  LogicalPlanMatcherBuilder& project();
+  LogicalPlanMatcherBuilder& filter(OnMatchCallback onMatch = nullptr);
 
-  LogicalPlanMatcherBuilder& aggregate();
+  LogicalPlanMatcherBuilder& project(OnMatchCallback onMatch = nullptr);
 
-  LogicalPlanMatcherBuilder& unnest();
+  LogicalPlanMatcherBuilder& aggregate(OnMatchCallback onMatch = nullptr);
+
+  LogicalPlanMatcherBuilder& unnest(OnMatchCallback onMatch = nullptr);
 
   LogicalPlanMatcherBuilder& join(
-      const std::shared_ptr<LogicalPlanMatcher>& rightMatcher);
+      const std::shared_ptr<LogicalPlanMatcher>& rightMatcher,
+      OnMatchCallback onMatch = nullptr);
 
   LogicalPlanMatcherBuilder& setOperation(
       SetOperation op,
-      const std::shared_ptr<LogicalPlanMatcher>& matcher);
+      const std::shared_ptr<LogicalPlanMatcher>& matcher,
+      OnMatchCallback onMatch = nullptr);
 
-  LogicalPlanMatcherBuilder& sort();
+  LogicalPlanMatcherBuilder& sort(OnMatchCallback onMatch = nullptr);
 
   std::shared_ptr<LogicalPlanMatcher> build() {
     VELOX_USER_CHECK_NOT_NULL(

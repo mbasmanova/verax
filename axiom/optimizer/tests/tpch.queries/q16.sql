@@ -5,7 +5,9 @@ select
 	p.p_brand,
 	p.p_type,
 	p.p_size,
-	count(distinct ps.ps_suppkey) as supplier_cnt
+	-- TODO Restore 'distinct' aggregation after adding support
+	-- for planning distinct aggregations in multi-threaded multi-node environment.
+	count(/*distinct*/ ps.ps_suppkey) as supplier_cnt
 from
 	partsupp as ps,
 	part as p

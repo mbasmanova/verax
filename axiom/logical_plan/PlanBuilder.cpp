@@ -344,20 +344,18 @@ PlanBuilder& PlanBuilder::aggregate(
   for (const auto& sql : aggregates) {
     auto aggregateExpr = velox::duckdb::parseAggregateExpr(sql, {});
 
-    std::vector<SortingField> ordering;
+    std::vector<SortKey> sortingKeys;
+    sortingKeys.reserve(aggregateExpr.orderBy.size());
     for (const auto& orderBy : aggregateExpr.orderBy) {
-      auto sortKeyExpr = resolveScalarTypes(orderBy.expr);
-      SortOrder order{orderBy.ascending, orderBy.nullsFirst};
-      ordering.emplace_back(sortKeyExpr, order);
-    }
-
-    ExprPtr filter;
-    if (aggregateExpr.maskExpr != nullptr) {
-      filter = resolveScalarTypes(aggregateExpr.maskExpr);
+      sortingKeys.emplace_back(
+          SortKey{
+              ExprApi(orderBy.expr), orderBy.ascending, orderBy.nullsFirst});
     }
 
     options.emplace_back(
-        std::move(filter), std::move(ordering), aggregateExpr.distinct);
+        std::move(aggregateExpr.maskExpr),
+        std::move(sortingKeys),
+        aggregateExpr.distinct);
   }
 
   return aggregate(parse(groupingKeys), parse(aggregates), options);
@@ -386,12 +384,23 @@ PlanBuilder& PlanBuilder::aggregate(
   for (size_t i = 0; i < aggregates.size(); ++i) {
     const auto& aggregate = aggregates[i];
 
+    ExprPtr filter;
+    if (options[i].filter != nullptr) {
+      filter = resolveScalarTypes(options[i].filter);
+    }
+
+    std::vector<SortingField> sortingFields;
+    sortingFields.reserve(options[i].orderBy.size());
+    for (const auto& key : options[i].orderBy) {
+      auto expr = resolveScalarTypes(key.expr.expr());
+
+      sortingFields.push_back(
+          SortingField{expr, SortOrder(key.ascending, key.nullsFirst)});
+    }
+
     AggregateExprPtr expr;
     expr = resolveAggregateTypes(
-        aggregate.expr(),
-        options[i].filters,
-        options[i].orderings,
-        options[i].distinct);
+        aggregate.expr(), filter, sortingFields, options[i].distinct);
 
     if (aggregate.name().has_value()) {
       const auto& alias = aggregate.name().value();

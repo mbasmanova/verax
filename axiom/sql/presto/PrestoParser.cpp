@@ -380,7 +380,11 @@ class RelationPlanner : public AstVisitor {
     return *builder_;
   }
 
-  lp::ExprApi toExpr(const ExpressionPtr& node) {
+  lp::ExprApi toExpr(
+      const ExpressionPtr& node,
+      std::unordered_map<
+          const facebook::velox::core::IExpr*,
+          lp::PlanBuilder::AggregateOptions>* aggregateOptions = nullptr) {
     switch (node->type()) {
       case NodeType::kIdentifier:
         return lp::Col(canonicalizeIdentifier(*node->as<Identifier>()));
@@ -394,7 +398,8 @@ class RelationPlanner : public AstVisitor {
 
         auto* dereference = node->as<DereferenceExpression>();
         return lp::Col(
-            dereference->field()->value(), toExpr(dereference->base()));
+            dereference->field()->value(),
+            toExpr(dereference->base(), aggregateOptions));
       }
 
       case NodeType::kSubqueryExpression: {
@@ -424,23 +429,23 @@ class RelationPlanner : public AstVisitor {
         auto* comparison = node->as<ComparisonExpression>();
         return lp::Call(
             toFunctionName(comparison->op()),
-            toExpr(comparison->left()),
-            toExpr(comparison->right()));
+            toExpr(comparison->left(), aggregateOptions),
+            toExpr(comparison->right(), aggregateOptions));
       }
 
       case NodeType::kNotExpression: {
         auto* negation = node->as<NotExpression>();
-        return lp::Call("not", toExpr(negation->value()));
+        return lp::Call("not", toExpr(negation->value(), aggregateOptions));
       }
 
       case NodeType::kLikePredicate: {
         auto* like = node->as<LikePredicate>();
 
         std::vector<lp::ExprApi> inputs;
-        inputs.emplace_back(toExpr(like->value()));
-        inputs.emplace_back(toExpr(like->pattern()));
+        inputs.emplace_back(toExpr(like->value(), aggregateOptions));
+        inputs.emplace_back(toExpr(like->pattern(), aggregateOptions));
         if (like->escape()) {
-          inputs.emplace_back(toExpr(like->escape()));
+          inputs.emplace_back(toExpr(like->escape(), aggregateOptions));
         }
 
         return lp::Call("like", std::move(inputs));
@@ -448,8 +453,8 @@ class RelationPlanner : public AstVisitor {
 
       case NodeType::kLogicalBinaryExpression: {
         auto* logical = node->as<LogicalBinaryExpression>();
-        auto left = toExpr(logical->left());
-        auto right = toExpr(logical->right());
+        auto left = toExpr(logical->left(), aggregateOptions);
+        auto right = toExpr(logical->right(), aggregateOptions);
 
         switch (logical->op()) {
           case LogicalBinaryExpression::Operator::kAnd:
@@ -464,24 +469,24 @@ class RelationPlanner : public AstVisitor {
         auto* binary = node->as<ArithmeticBinaryExpression>();
         return lp::Call(
             toFunctionName(binary->op()),
-            toExpr(binary->left()),
-            toExpr(binary->right()));
+            toExpr(binary->left(), aggregateOptions),
+            toExpr(binary->right(), aggregateOptions));
       }
 
       case NodeType::kBetweenPredicate: {
         auto* between = node->as<BetweenPredicate>();
         return lp::Call(
             "between",
-            toExpr(between->value()),
-            toExpr(between->min()),
-            toExpr(between->max()));
+            toExpr(between->value(), aggregateOptions),
+            toExpr(between->min(), aggregateOptions),
+            toExpr(between->max(), aggregateOptions));
       }
 
       case NodeType::kInPredicate: {
         auto* inPredicate = node->as<InPredicate>();
         const auto& valueList = inPredicate->valueList();
 
-        const auto value = toExpr(inPredicate->value());
+        const auto value = toExpr(inPredicate->value(), aggregateOptions);
 
         if (valueList->is(NodeType::kInListExpression)) {
           auto inList = valueList->as<InListExpression>();
@@ -491,14 +496,14 @@ class RelationPlanner : public AstVisitor {
 
           inputs.emplace_back(value);
           for (const auto& expr : inList->values()) {
-            inputs.emplace_back(toExpr(expr));
+            inputs.emplace_back(toExpr(expr, aggregateOptions));
           }
 
           return lp::Call("in", inputs);
         }
 
         if (valueList->is(NodeType::kSubqueryExpression)) {
-          return lp::Call("in", value, toExpr(valueList));
+          return lp::Call("in", value, toExpr(valueList, aggregateOptions));
         }
 
         VELOX_USER_FAIL(
@@ -508,7 +513,7 @@ class RelationPlanner : public AstVisitor {
 
       case NodeType::kExistsPredicate: {
         auto* exists = node->as<ExistsPredicate>();
-        return lp::Exists(toExpr(exists->subquery()));
+        return lp::Exists(toExpr(exists->subquery(), aggregateOptions));
       }
 
       case NodeType::kCast: {
@@ -516,9 +521,10 @@ class RelationPlanner : public AstVisitor {
         const auto type = parseType(cast->toType());
 
         if (cast->isSafe()) {
-          return lp::TryCast(type, toExpr(cast->expression()));
+          return lp::TryCast(
+              type, toExpr(cast->expression(), aggregateOptions));
         } else {
-          return lp::Cast(type, toExpr(cast->expression()));
+          return lp::Cast(type, toExpr(cast->expression(), aggregateOptions));
         }
       }
 
@@ -529,12 +535,13 @@ class RelationPlanner : public AstVisitor {
         inputs.reserve(1 + searchedCase->whenClauses().size());
 
         for (const auto& clause : searchedCase->whenClauses()) {
-          inputs.emplace_back(toExpr(clause->operand()));
-          inputs.emplace_back(toExpr(clause->result()));
+          inputs.emplace_back(toExpr(clause->operand(), aggregateOptions));
+          inputs.emplace_back(toExpr(clause->result(), aggregateOptions));
         }
 
         if (searchedCase->defaultValue()) {
-          inputs.emplace_back(toExpr(searchedCase->defaultValue()));
+          inputs.emplace_back(
+              toExpr(searchedCase->defaultValue(), aggregateOptions));
         }
 
         return lp::Call("switch", inputs);
@@ -542,7 +549,7 @@ class RelationPlanner : public AstVisitor {
 
       case NodeType::kExtract: {
         auto* extract = node->as<Extract>();
-        auto expr = toExpr(extract->expression());
+        auto expr = toExpr(extract->expression(), aggregateOptions);
 
         switch (extract->field()) {
           case Extract::Field::kYear:
@@ -626,7 +633,7 @@ class RelationPlanner : public AstVisitor {
         auto* array = node->as<ArrayConstructor>();
         std::vector<lp::ExprApi> values;
         for (const auto& value : array->values()) {
-          values.emplace_back(toExpr(value));
+          values.emplace_back(toExpr(value, aggregateOptions));
         }
 
         return lp::Call("array_constructor", values);
@@ -636,7 +643,7 @@ class RelationPlanner : public AstVisitor {
         auto* row = node->as<Row>();
         std::vector<lp::ExprApi> items;
         for (const auto& item : row->items()) {
-          items.emplace_back(toExpr(item));
+          items.emplace_back(toExpr(item, aggregateOptions));
         }
 
         return lp::Call("row_constructor", items);
@@ -647,9 +654,41 @@ class RelationPlanner : public AstVisitor {
 
         std::vector<lp::ExprApi> args;
         for (const auto& arg : call->arguments()) {
-          args.push_back(toExpr(arg));
+          args.push_back(toExpr(arg, aggregateOptions));
         }
-        return lp::Call(call->name()->suffix(), args);
+        auto callExpr = lp::Call(call->name()->suffix(), args);
+
+        if (call->isDistinct() || call->filter() != nullptr ||
+            call->orderBy() != nullptr) {
+          VELOX_CHECK_NOT_NULL(aggregateOptions);
+
+          facebook::velox::core::ExprPtr filterExpr;
+          if (call->filter() != nullptr) {
+            filterExpr = toExpr(call->filter()).expr();
+          }
+
+          std::vector<lp::SortKey> sortingKeys;
+          if (call->orderBy() != nullptr) {
+            const auto& sortItems = call->orderBy()->sortItems();
+            for (const auto& item : sortItems) {
+              sortingKeys.emplace_back(
+                  toSortingKey(item->sortKey()),
+                  item->isAscending(),
+                  item->isNullsFirst());
+            }
+          }
+
+          bool inserted =
+              aggregateOptions
+                  ->emplace(
+                      callExpr.expr().get(),
+                      lp::PlanBuilder::AggregateOptions(
+                          filterExpr, sortingKeys, call->isDistinct()))
+                  .second;
+          VELOX_CHECK(inserted);
+        }
+
+        return callExpr;
       }
 
       case NodeType::kLambdaExpression: {
@@ -661,23 +700,27 @@ class RelationPlanner : public AstVisitor {
           names.emplace_back(arg->name()->value());
         }
 
-        return lp::Lambda(names, toExpr(lambda->body()));
+        return lp::Lambda(names, toExpr(lambda->body(), aggregateOptions));
       }
 
       case NodeType::kSubscriptExpression: {
         auto* subscript = node->as<SubscriptExpression>();
         return lp::Call(
-            "subscript", toExpr(subscript->base()), toExpr(subscript->index()));
+            "subscript",
+            toExpr(subscript->base(), aggregateOptions),
+            toExpr(subscript->index(), aggregateOptions));
       }
 
       case NodeType::kIsNullPredicate: {
         auto* isNull = node->as<IsNullPredicate>();
-        return lp::Call("is_null", toExpr(isNull->value()));
+        return lp::Call("is_null", toExpr(isNull->value(), aggregateOptions));
       }
 
       case NodeType::kIsNotNullPredicate: {
         auto* isNull = node->as<IsNotNullPredicate>();
-        return lp::Call("not", lp::Call("is_null", toExpr(isNull->value())));
+        return lp::Call(
+            "not",
+            lp::Call("is_null", toExpr(isNull->value(), aggregateOptions)));
       }
 
       default:
@@ -1210,11 +1253,16 @@ class RelationPlanner : public AstVisitor {
 
     std::vector<lp::ExprApi> projections;
     std::vector<lp::ExprApi> aggregates;
+    std::unordered_map<
+        const facebook::velox::core::IExpr*,
+        lp::PlanBuilder::AggregateOptions>
+        aggregateOptionsMap;
     for (const auto& item : selectItems) {
       VELOX_CHECK(item->is(NodeType::kSingleColumn));
       auto* singleColumn = item->as<SingleColumn>();
 
-      lp::ExprApi expr = toExpr(singleColumn->expression());
+      lp::ExprApi expr =
+          toExpr(singleColumn->expression(), &aggregateOptionsMap);
       findAggregates(expr.expr(), aggregates);
 
       if (!aggregates.empty() &&
@@ -1235,13 +1283,21 @@ class RelationPlanner : public AstVisitor {
 
     std::optional<lp::ExprApi> filter;
     if (having != nullptr) {
-      lp::ExprApi expr = toExpr(having);
+      lp::ExprApi expr = toExpr(having, &aggregateOptionsMap);
       findAggregates(expr.expr(), aggregates);
       filter = expr;
     }
 
-    std::vector<lp::PlanBuilder::AggregateOptions> options(aggregates.size());
-    builder_->aggregate(groupingKeys, aggregates, options);
+    std::vector<lp::PlanBuilder::AggregateOptions> aggregateOptions;
+    for (const auto& agg : aggregates) {
+      auto it = aggregateOptionsMap.find(agg.expr().get());
+      if (it != aggregateOptionsMap.end()) {
+        aggregateOptions.emplace_back(it->second);
+      } else {
+        aggregateOptions.emplace_back();
+      }
+    }
+    builder_->aggregate(groupingKeys, aggregates, aggregateOptions);
 
     const auto outputNames = builder_->findOrAssignOutputNames();
 

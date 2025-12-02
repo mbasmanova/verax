@@ -23,15 +23,19 @@ namespace {
 template <typename T = LogicalPlanNode>
 class LogicalPlanMatcherImpl : public LogicalPlanMatcher {
  public:
-  LogicalPlanMatcherImpl() = default;
-
   explicit LogicalPlanMatcherImpl(
-      const std::vector<std::shared_ptr<LogicalPlanMatcher>>& inputMatchers)
-      : inputMatchers_{inputMatchers} {}
+      std::function<void(const LogicalPlanNodePtr&)> onMatch)
+      : onMatch_{std::move(onMatch)} {}
 
-  explicit LogicalPlanMatcherImpl(
-      const std::shared_ptr<LogicalPlanMatcher>& inputMatcher)
-      : inputMatchers_{{inputMatcher}} {}
+  LogicalPlanMatcherImpl(
+      const std::vector<std::shared_ptr<LogicalPlanMatcher>>& inputMatchers,
+      std::function<void(const LogicalPlanNodePtr&)> onMatch)
+      : inputMatchers_{inputMatchers}, onMatch_{std::move(onMatch)} {}
+
+  LogicalPlanMatcherImpl(
+      const std::shared_ptr<LogicalPlanMatcher>& inputMatcher,
+      std::function<void(const LogicalPlanNodePtr&)> onMatch)
+      : inputMatchers_{{inputMatcher}}, onMatch_{std::move(onMatch)} {}
 
   bool match(const LogicalPlanNodePtr& plan) const override {
     const auto* specificNode = dynamic_cast<const T*>(plan.get());
@@ -54,7 +58,15 @@ class LogicalPlanMatcherImpl : public LogicalPlanMatcher {
       }
     }
 
-    return matchDetails(*specificNode);
+    if (!matchDetails(*specificNode)) {
+      return false;
+    }
+
+    if (onMatch_ != nullptr) {
+      onMatch_(plan);
+    }
+
+    return true;
   }
 
  protected:
@@ -63,6 +75,7 @@ class LogicalPlanMatcherImpl : public LogicalPlanMatcher {
   }
 
   const std::vector<std::shared_ptr<LogicalPlanMatcher>> inputMatchers_;
+  const std::function<void(const LogicalPlanNodePtr&)> onMatch_;
 };
 
 class SetMatcher : public LogicalPlanMatcherImpl<SetNode> {
@@ -70,8 +83,12 @@ class SetMatcher : public LogicalPlanMatcherImpl<SetNode> {
   SetMatcher(
       SetOperation op,
       const std::shared_ptr<LogicalPlanMatcher>& leftMatcher,
-      const std::shared_ptr<LogicalPlanMatcher>& rightMatcher)
-      : LogicalPlanMatcherImpl<SetNode>({leftMatcher, rightMatcher}), op_{op} {}
+      const std::shared_ptr<LogicalPlanMatcher>& rightMatcher,
+      std::function<void(const LogicalPlanNodePtr&)> onMatch)
+      : LogicalPlanMatcherImpl<SetNode>(
+            {leftMatcher, rightMatcher},
+            std::move(onMatch)),
+        op_{op} {}
 
  private:
   bool matchDetails(const SetNode& plan) const override {
@@ -83,71 +100,92 @@ class SetMatcher : public LogicalPlanMatcherImpl<SetNode> {
 };
 } // namespace
 
-LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::tableWrite() {
+LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::tableWrite(
+    OnMatchCallback onMatch) {
   VELOX_USER_CHECK_NOT_NULL(matcher_);
-  matcher_ = std::make_shared<LogicalPlanMatcherImpl<TableWriteNode>>(matcher_);
+  matcher_ = std::make_shared<LogicalPlanMatcherImpl<TableWriteNode>>(
+      matcher_, std::move(onMatch));
   return *this;
 }
 
-LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::tableScan() {
+LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::tableScan(
+    OnMatchCallback onMatch) {
   VELOX_USER_CHECK_NULL(matcher_);
-  matcher_ = std::make_shared<LogicalPlanMatcherImpl<TableScanNode>>();
+  matcher_ = std::make_shared<LogicalPlanMatcherImpl<TableScanNode>>(
+      std::move(onMatch));
   return *this;
 }
 
-LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::values() {
+LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::values(
+    OnMatchCallback onMatch) {
   VELOX_USER_CHECK_NULL(matcher_);
-  matcher_ = std::make_shared<LogicalPlanMatcherImpl<ValuesNode>>();
+  matcher_ =
+      std::make_shared<LogicalPlanMatcherImpl<ValuesNode>>(std::move(onMatch));
   return *this;
 }
 
-LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::filter() {
+LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::filter(
+    OnMatchCallback onMatch) {
   VELOX_USER_CHECK_NOT_NULL(matcher_);
-  matcher_ = std::make_shared<LogicalPlanMatcherImpl<FilterNode>>(matcher_);
+  matcher_ = std::make_shared<LogicalPlanMatcherImpl<FilterNode>>(
+      matcher_, std::move(onMatch));
   return *this;
 }
 
-LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::project() {
+LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::project(
+    OnMatchCallback onMatch) {
   VELOX_USER_CHECK_NOT_NULL(matcher_);
-  matcher_ = std::make_shared<LogicalPlanMatcherImpl<ProjectNode>>(matcher_);
+  matcher_ = std::make_shared<LogicalPlanMatcherImpl<ProjectNode>>(
+      matcher_, std::move(onMatch));
   return *this;
 }
 
-LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::aggregate() {
+LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::aggregate(
+    OnMatchCallback onMatch) {
   VELOX_USER_CHECK_NOT_NULL(matcher_);
-  matcher_ = std::make_shared<LogicalPlanMatcherImpl<AggregateNode>>(matcher_);
+  matcher_ = std::make_shared<LogicalPlanMatcherImpl<AggregateNode>>(
+      matcher_, std::move(onMatch));
   return *this;
 }
 
-LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::unnest() {
+LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::unnest(
+    OnMatchCallback onMatch) {
   if (matcher_ != nullptr) {
-    matcher_ = std::make_shared<LogicalPlanMatcherImpl<UnnestNode>>(matcher_);
+    matcher_ = std::make_shared<LogicalPlanMatcherImpl<UnnestNode>>(
+        matcher_, std::move(onMatch));
   } else {
-    matcher_ = std::make_shared<LogicalPlanMatcherImpl<UnnestNode>>();
+    matcher_ = std::make_shared<LogicalPlanMatcherImpl<UnnestNode>>(
+        std::move(onMatch));
   }
 
   return *this;
 }
 
 LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::join(
-    const std::shared_ptr<LogicalPlanMatcher>& rightMatcher) {
+    const std::shared_ptr<LogicalPlanMatcher>& rightMatcher,
+    OnMatchCallback onMatch) {
   VELOX_USER_CHECK_NOT_NULL(matcher_);
   matcher_ = std::make_shared<LogicalPlanMatcherImpl<JoinNode>>(
-      std::vector<std::shared_ptr<LogicalPlanMatcher>>{matcher_, rightMatcher});
+      std::vector<std::shared_ptr<LogicalPlanMatcher>>{matcher_, rightMatcher},
+      std::move(onMatch));
   return *this;
 }
 
 LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::setOperation(
     SetOperation op,
-    const std::shared_ptr<LogicalPlanMatcher>& matcher) {
+    const std::shared_ptr<LogicalPlanMatcher>& matcher,
+    OnMatchCallback onMatch) {
   VELOX_USER_CHECK_NOT_NULL(matcher_);
-  matcher_ = std::make_shared<SetMatcher>(op, matcher_, matcher);
+  matcher_ =
+      std::make_shared<SetMatcher>(op, matcher_, matcher, std::move(onMatch));
   return *this;
 }
 
-LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::sort() {
+LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::sort(
+    OnMatchCallback onMatch) {
   VELOX_USER_CHECK_NOT_NULL(matcher_);
-  matcher_ = std::make_shared<LogicalPlanMatcherImpl<SortNode>>(matcher_);
+  matcher_ = std::make_shared<LogicalPlanMatcherImpl<SortNode>>(
+      matcher_, std::move(onMatch));
   return *this;
 }
 
