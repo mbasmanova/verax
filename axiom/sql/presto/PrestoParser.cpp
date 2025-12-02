@@ -924,7 +924,18 @@ class RelationPlanner : public AstVisitor {
         parameters.emplace_back(parseType(type->parameters().at(1)));
       } else if (baseName == "ROW") {
         for (const auto& param : type->parameters()) {
-          parameters.emplace_back(parseType(param), param->rowFieldName());
+          auto fieldName = param->rowFieldName();
+
+          // TODO Extend Velox's RowType to support quoted / delimited field
+          // names.
+          if (fieldName.has_value()) {
+            if (fieldName->starts_with('\"') && fieldName->ends_with('\"') &&
+                fieldName->size() >= 2) {
+              fieldName = fieldName->substr(1, fieldName->size() - 2);
+            }
+          }
+
+          parameters.emplace_back(parseType(param), fieldName);
         }
       } else if (baseName == "DECIMAL") {
         VELOX_USER_CHECK_EQ(2, numParams);
