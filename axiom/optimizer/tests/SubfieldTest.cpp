@@ -648,6 +648,31 @@ TEST_P(SubfieldTest, maps) {
   testParallelExpr(opts, rowType);
 }
 
+TEST_P(SubfieldTest, overAggregation) {
+  createTable(
+      "t",
+      {makeRowVector(
+          {"a", "b"},
+          {
+              makeArrayVectorFromJson<int64_t>({"[1, 2]", "[1, 2, 3]"}),
+              makeArrayVectorFromJson<int64_t>({"[10, 20]", "[10, 20, 30]"}),
+          })});
+
+  auto logicalPlan = lp::PlanBuilder()
+                         .tableScan(kHiveConnectorId, "t")
+                         .aggregate({"a"}, {"array_agg(b) as c"})
+                         .map({"a[2]", "c[1]"})
+                         .build();
+
+  auto plan = toSingleNodePlan(logicalPlan);
+
+  auto matcher =
+      core::PlanMatcherBuilder().tableScan().aggregation().project().build();
+  AXIOM_ASSERT_PLAN(plan, matcher);
+
+  verifyRequiredSubfields(plan, {{"a", {}}, {"b", {}}});
+}
+
 TEST_P(SubfieldTest, blackbox) {
   auto data = makeRowVector(
       {"id", "m"},

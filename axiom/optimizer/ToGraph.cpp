@@ -319,11 +319,19 @@ void ToGraph::getExprForField(
       auto& def = project->expressions()[ordinal];
       context = context->inputAt(0).get();
       if (def->isInputReference()) {
-        const auto* innerField = def->as<lp::InputReferenceExpr>();
-        field = innerField;
+        field = def.get();
         continue;
       }
       resultExpr = def;
+      return;
+    }
+
+    if (context->is(lp::NodeKind::kAggregate)) {
+      auto it = renames_.find(name);
+      VELOX_CHECK(it != renames_.end());
+      VELOX_CHECK(it->second->is(PlanType::kColumnExpr));
+      resultColumn = it->second->as<Column>();
+      resultExpr = nullptr;
       return;
     }
 
@@ -356,6 +364,7 @@ void ToGraph::getExprForField(
       return;
     }
 
+    context = nullptr;
     for (const auto& source : sources) {
       const auto& row = source->outputType();
       if (auto maybe = row->getChildIdxIfExists(name)) {
@@ -363,6 +372,8 @@ void ToGraph::getExprForField(
         break;
       }
     }
+
+    VELOX_CHECK_NOT_NULL(context, "Cannot find source for column: {}", name);
   }
   VELOX_FAIL();
 }
@@ -382,7 +393,7 @@ std::optional<ExprCP> ToGraph::translateSubfield(const lp::ExprPtr& inputExpr) {
         return std::nullopt;
       }
 
-      // if this is a field we follow to the expr assigning the field if any.
+      // If this is a field we follow to the expr assigning the field if any.
       ColumnCP column = nullptr;
       if (expr->isInputReference()) {
         getExprForField(expr.get(), expr, column, source);
