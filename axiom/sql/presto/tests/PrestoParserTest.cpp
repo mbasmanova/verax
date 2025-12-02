@@ -257,6 +257,10 @@ TEST_F(PrestoParserTest, types) {
   test(
       "cast(null as row(a int, b double))",
       ROW({"a", "b"}, {INTEGER(), DOUBLE()}));
+
+  test(
+      R"(cast(json_parse('{"foo": 1, "bar": 2}') as row(foo bigint, "BAR" int)).BAR)",
+      INTEGER());
 }
 
 TEST_F(PrestoParserTest, intervalDayTime) {
