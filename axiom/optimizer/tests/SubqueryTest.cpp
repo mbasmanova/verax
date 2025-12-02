@@ -18,13 +18,13 @@
 #include "axiom/optimizer/tests/PlanMatcher.h"
 #include "axiom/optimizer/tests/QueryTestBase.h"
 
-namespace facebook::axiom::optimizer::test {
+namespace facebook::axiom::optimizer {
 namespace {
 
 using namespace velox;
 namespace lp = facebook::axiom::logical_plan;
 
-class SubqueryTest : public HiveQueriesTestBase {};
+class SubqueryTest : public test::HiveQueriesTestBase {};
 
 TEST_F(SubqueryTest, scalar) {
   // = <subquery>
@@ -59,7 +59,7 @@ TEST_F(SubqueryTest, scalar) {
                        .tableScan("nation")
                        .hashJoin(
                            core::PlanMatcherBuilder()
-                               .hiveScan("region", gt("r_name", "ASIA"))
+                               .hiveScan("region", test::gt("r_name", "ASIA"))
                                .build(),
                            velox::core::JoinType::kLeftSemiFilter)
                        .build();
@@ -79,7 +79,7 @@ TEST_F(SubqueryTest, scalar) {
                        .tableScan("nation")
                        .hashJoin(
                            core::PlanMatcherBuilder()
-                               .hiveScan("region", gt("r_name", "ASIA"))
+                               .hiveScan("region", test::gt("r_name", "ASIA"))
                                .build(),
                            velox::core::JoinType::kAnti)
                        .build();
@@ -89,4 +89,4 @@ TEST_F(SubqueryTest, scalar) {
 }
 
 } // namespace
-} // namespace facebook::axiom::optimizer::test
+} // namespace facebook::axiom::optimizer

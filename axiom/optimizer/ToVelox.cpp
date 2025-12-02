@@ -1329,7 +1329,15 @@ velox::core::PlanNodePtr ToVelox::makeValues(
   const auto newType = makeOutputType(newColumns);
   VELOX_DCHECK_EQ(newColumns.size(), newType->size());
 
-  const auto& type = values.valuesTable.values.outputType();
+  const auto& originalRowType = values.valuesTable.values.outputType();
+
+  std::vector<uint32_t> originalIndices;
+  originalIndices.reserve(newColumns.size());
+  for (const auto* column : newColumns) {
+    auto oldColumnIdx = originalRowType->getChildIdx(column->name());
+    originalIndices.emplace_back(oldColumnIdx);
+  }
+
   const auto& data = values.valuesTable.values.data();
   std::vector<velox::RowVectorPtr> newValues;
   if (auto* rows = std::get_if<std::vector<velox::Variant>>(&data)) {
@@ -1337,32 +1345,30 @@ velox::core::PlanNodePtr ToVelox::makeValues(
 
     newValues.reserve(rows->size());
     for (const auto& row : *rows) {
+      const auto& rowValues = row.row();
+      std::vector<velox::Variant> newRowValues;
+      newRowValues.reserve(originalIndices.size());
+      for (auto index : originalIndices) {
+        newRowValues.emplace_back(rowValues[index]);
+      }
       newValues.emplace_back(
           std::dynamic_pointer_cast<velox::RowVector>(
               velox::BaseVector::wrappedVectorShared(
-                  variantToVector(type, row, pool))));
+                  velox::BaseVector::createConstant(
+                      newType, velox::Variant::row(newRowValues), 1, pool))));
     }
 
   } else {
     const auto& oldValues = std::get<std::vector<velox::RowVectorPtr>>(data);
-    newValues.reserve(oldValues.size());
-
     VELOX_DCHECK(!oldValues.empty());
-    const auto oldType = oldValues.front()->rowType();
 
-    std::vector<uint32_t> oldColumnIdxs;
-    oldColumnIdxs.reserve(newColumns.size());
-    for (const auto& column : newColumns) {
-      auto oldColumnIdx = oldType->getChildIdx(column->name());
-      oldColumnIdxs.emplace_back(oldColumnIdx);
-    }
-
+    newValues.reserve(oldValues.size());
     for (const auto& oldValue : oldValues) {
       const auto& oldChildren = oldValue->children();
       std::vector<velox::VectorPtr> newChildren;
-      newChildren.reserve(oldColumnIdxs.size());
-      for (const auto columnIdx : oldColumnIdxs) {
-        newChildren.emplace_back(oldChildren[columnIdx]);
+      newChildren.reserve(originalIndices.size());
+      for (auto index : originalIndices) {
+        newChildren.emplace_back(oldChildren[index]);
       }
 
       auto newValue = std::make_shared<velox::RowVector>(
@@ -1370,8 +1376,7 @@ velox::core::PlanNodePtr ToVelox::makeValues(
           newType,
           oldValue->nulls(),
           oldValue->size(),
-          std::move(newChildren),
-          oldValue->getNullCount());
+          std::move(newChildren));
       newValues.emplace_back(std::move(newValue));
     }
   }

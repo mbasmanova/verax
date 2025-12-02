@@ -20,13 +20,13 @@
 #include "axiom/optimizer/tests/QueryTestBase.h"
 #include "velox/exec/tests/utils/PlanBuilder.h"
 
-namespace facebook::axiom::optimizer::test {
+namespace facebook::axiom::optimizer {
 namespace {
 
 using namespace velox;
 namespace lp = facebook::axiom::logical_plan;
 
-class SetTest : public HiveQueriesTestBase {};
+class SetTest : public test::HiveQueriesTestBase {};
 
 TEST_F(SetTest, unionAll) {
   auto nationType = getSchema("nation");
@@ -48,20 +48,21 @@ TEST_F(SetTest, unionAll) {
 
   {
     auto plan = toSingleNodePlan(logicalPlan);
-    auto matcher =
-        core::PlanMatcherBuilder()
-            .hiveScan(
-                "nation", lte("n_nationkey", 10), "(n_regionkey + 1) % 3 = 1")
-            .localPartition(
-                core::PlanMatcherBuilder()
-                    .hiveScan(
-                        "nation",
-                        gte("n_nationkey", 14),
-                        "(n_regionkey + 1) % 3 = 1")
-                    .project()
-                    .build())
-            .project()
-            .build();
+    auto matcher = core::PlanMatcherBuilder()
+                       .hiveScan(
+                           "nation",
+                           test::lte("n_nationkey", 10),
+                           "(n_regionkey + 1) % 3 = 1")
+                       .localPartition(
+                           core::PlanMatcherBuilder()
+                               .hiveScan(
+                                   "nation",
+                                   test::gte("n_nationkey", 14),
+                                   "(n_regionkey + 1) % 3 = 1")
+                               .project()
+                               .build())
+                       .project()
+                       .build();
 
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
@@ -123,23 +124,24 @@ TEST_F(SetTest, unionJoin) {
     auto plan = toSingleNodePlan(logicalPlan);
     auto matcher =
         core::PlanMatcherBuilder()
-            .hiveScan("partsupp", lte("ps_availqty", 999))
+            .hiveScan("partsupp", test::lte("ps_availqty", 999))
             .localPartition({
                 core::PlanMatcherBuilder()
-                    .hiveScan("partsupp", gte("ps_availqty", 2001))
+                    .hiveScan("partsupp", test::gte("ps_availqty", 2001))
                     .project()
                     .build(),
                 core::PlanMatcherBuilder()
-                    .hiveScan("partsupp", between("ps_availqty", 1200, 1400))
+                    .hiveScan(
+                        "partsupp", test::between("ps_availqty", 1200, 1400))
                     .project()
                     .build(),
             })
             .hashJoin(
                 core::PlanMatcherBuilder()
-                    .hiveScan("part", lt("p_retailprice", 1100.0))
+                    .hiveScan("part", test::lt("p_retailprice", 1100.0))
                     .localPartition(
                         core::PlanMatcherBuilder()
-                            .hiveScan("part", gt("p_retailprice", 1200.0))
+                            .hiveScan("part", test::gt("p_retailprice", 1200.0))
                             .project()
                             .build())
                     .build(),
@@ -331,20 +333,20 @@ TEST_F(SetTest, intersect) {
     // = 1 to all branches of 'intersect'.
 
     auto plan = toSingleNodePlan(logicalPlan);
-    auto matcher =
-        startMatcher(gte("n_nationkey", 13))
-            .hashJoin(
-                startMatcher(gte("n_nationkey", 12))
-                    .hashJoin(
-                        startMatcher(
-                            lte("n_nationkey", 20), "(n_regionkey + 1) % 3 = 1")
-                            .build(),
-                        core::JoinType::kRightSemiFilter)
-                    .build(),
-                core::JoinType::kRightSemiFilter)
-            .singleAggregation()
-            .project()
-            .build();
+    auto matcher = startMatcher(test::gte("n_nationkey", 13))
+                       .hashJoin(
+                           startMatcher(test::gte("n_nationkey", 12))
+                               .hashJoin(
+                                   startMatcher(
+                                       test::lte("n_nationkey", 20),
+                                       "(n_regionkey + 1) % 3 = 1")
+                                       .build(),
+                                   core::JoinType::kRightSemiFilter)
+                               .build(),
+                           core::JoinType::kRightSemiFilter)
+                       .singleAggregation()
+                       .project()
+                       .build();
 
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
@@ -386,25 +388,26 @@ TEST_F(SetTest, except) {
 
   {
     auto plan = toSingleNodePlan(logicalPlan);
-    auto matcher =
-        core::PlanMatcherBuilder()
-            .hiveScan(
-                "nation", lte("n_nationkey", 20), "(n_regionkey + 1) % 3 = 1")
-            .hashJoin(
-                core::PlanMatcherBuilder()
-                    // TODO Fix this plan to push down (n_regionkey + 1) % 3 = 1
-                    // to all branches of 'except'.
-                    .hiveScan("nation", gte("n_nationkey", 17))
-                    .build(),
-                core::JoinType::kAnti)
-            .hashJoin(
-                core::PlanMatcherBuilder()
-                    .hiveScan("nation", lte("n_nationkey", 5))
-                    .build(),
-                core::JoinType::kAnti)
-            .singleAggregation()
-            .project()
-            .build();
+    auto matcher = core::PlanMatcherBuilder()
+                       .hiveScan(
+                           "nation",
+                           test::lte("n_nationkey", 20),
+                           "(n_regionkey + 1) % 3 = 1")
+                       .hashJoin(
+                           core::PlanMatcherBuilder()
+                               // TODO Fix this plan to push down (n_regionkey +
+                               // 1) % 3 = 1 to all branches of 'except'.
+                               .hiveScan("nation", test::gte("n_nationkey", 17))
+                               .build(),
+                           core::JoinType::kAnti)
+                       .hashJoin(
+                           core::PlanMatcherBuilder()
+                               .hiveScan("nation", test::lte("n_nationkey", 5))
+                               .build(),
+                           core::JoinType::kAnti)
+                       .singleAggregation()
+                       .project()
+                       .build();
 
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
@@ -420,4 +423,4 @@ TEST_F(SetTest, except) {
 }
 
 } // namespace
-} // namespace facebook::axiom::optimizer::test
+} // namespace facebook::axiom::optimizer

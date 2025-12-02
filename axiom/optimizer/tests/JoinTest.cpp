@@ -19,18 +19,18 @@
 #include "axiom/optimizer/tests/PlanMatcher.h"
 #include "axiom/optimizer/tests/QueryTestBase.h"
 
-namespace facebook::axiom::optimizer::test {
+namespace facebook::axiom::optimizer {
 namespace {
 
 using namespace velox;
 namespace lp = facebook::axiom::logical_plan;
 
-class JoinTest : public QueryTestBase {
+class JoinTest : public test::QueryTestBase {
  protected:
   static constexpr auto kTestConnectorId = "test";
 
   void SetUp() override {
-    QueryTestBase::SetUp();
+    test::QueryTestBase::SetUp();
 
     testConnector_ =
         std::make_shared<connector::TestConnector>(kTestConnectorId);
@@ -40,7 +40,7 @@ class JoinTest : public QueryTestBase {
   void TearDown() override {
     velox::connector::unregisterConnector(kTestConnectorId);
 
-    QueryTestBase::TearDown();
+    test::QueryTestBase::TearDown();
   }
 
   std::shared_ptr<connector::TestConnector> testConnector_;
@@ -259,4 +259,4 @@ TEST_F(JoinTest, outerJoinWithInnerJoin) {
 }
 
 } // namespace
-} // namespace facebook::axiom::optimizer::test
+} // namespace facebook::axiom::optimizer

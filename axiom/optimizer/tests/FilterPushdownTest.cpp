@@ -19,13 +19,13 @@
 #include "axiom/optimizer/tests/QueryTestBase.h"
 #include "velox/exec/tests/utils/PlanBuilder.h"
 
-namespace facebook::axiom::optimizer::test {
+namespace facebook::axiom::optimizer {
 namespace {
 
 using namespace velox;
 namespace lp = facebook::axiom::logical_plan;
 
-class FilterPushdownTest : public HiveQueriesTestBase {};
+class FilterPushdownTest : public test::HiveQueriesTestBase {};
 
 TEST_F(FilterPushdownTest, throughAggregation) {
   auto logicalPlan = lp::PlanBuilder()
@@ -37,7 +37,7 @@ TEST_F(FilterPushdownTest, throughAggregation) {
   {
     auto plan = toSingleNodePlan(logicalPlan);
     auto matcher = core::PlanMatcherBuilder()
-                       .hiveScan("orders", lt("o_custkey", 100L))
+                       .hiveScan("orders", test::lt("o_custkey", 100L))
                        .singleAggregation()
                        .filter("a0 > 200.0")
                        .build();
@@ -63,7 +63,7 @@ TEST_F(FilterPushdownTest, redundantCast) {
 
   auto plan = toSingleNodePlan(logicalPlan);
   auto matcher = core::PlanMatcherBuilder()
-                     .hiveScan("nation", lt("n_nationkey", 10L))
+                     .hiveScan("nation", test::lt("n_nationkey", 10L))
                      .build();
 
   AXIOM_ASSERT_PLAN(plan, matcher);
@@ -116,7 +116,7 @@ TEST_F(FilterPushdownTest, throughJoin) {
 
     auto matcher =
         core::PlanMatcherBuilder()
-            .hiveScan("nation", lt("n_nationkey", 10L))
+            .hiveScan("nation", test::lt("n_nationkey", 10L))
             .hashJoin(
                 startMatcher("region").build(), velox::core::JoinType::kInner)
             .aggregation()
@@ -139,7 +139,7 @@ TEST_F(FilterPushdownTest, throughJoin) {
     auto matcher = startMatcher("nation")
                        .hashJoin(
                            core::PlanMatcherBuilder()
-                               .hiveScan("region", lt("r_regionkey", 10L))
+                               .hiveScan("region", test::lt("r_regionkey", 10L))
                                .build(),
                            velox::core::JoinType::kInner)
                        .aggregation()
@@ -150,4 +150,4 @@ TEST_F(FilterPushdownTest, throughJoin) {
 }
 
 } // namespace
-} // namespace facebook::axiom::optimizer::test
+} // namespace facebook::axiom::optimizer
