@@ -483,8 +483,19 @@ ExprCP replaceInputs(ExprCP expr, const T& source, const U& target) {
       return make<Call>(
           call->name(), call->value(), std::move(newChildren), functions);
     }
+    case PlanType::kLambdaExpr: {
+      auto* lambda = expr->as<Lambda>();
+      auto* body = lambda->body();
+      auto* newBody = replaceInputs(body, source, target);
+      if (body == newBody) {
+        return expr;
+      }
+
+      return make<Lambda>(lambda->args(), lambda->value().type, newBody);
+    }
     default:
-      VELOX_UNREACHABLE("{}", expr->toString());
+      VELOX_UNREACHABLE(
+          "Unexpected expression: {} - {}", expr->typeName(), expr->toString());
   }
 }
 
