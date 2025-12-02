@@ -94,19 +94,20 @@ add_executable(
   HiveLimitQueriesTest.cpp
   HiveQueriesTest.cpp
   JoinTest.cpp
+  ParquetTpchTest.cpp
   PrecomputeProjectionTest.cpp
   PlanTest.cpp
   RelationOpPrinterTest.cpp
   SetTest.cpp
-  SubqueryTest.cpp
-  UnnestTest.cpp
-  ParquetTpchTest.cpp
-  SyntacticJoinOrderTest.cpp
   SubfieldTest.cpp
+  SubqueryTest.cpp
+  SyntacticJoinOrderTest.cpp
   FeatureGen.cpp
   Genies.cpp
   TestConnectorQueryTest.cpp
   TpchConnectorQueryTest.cpp
+  UnnestTest.cpp
+  ValuesTest.cpp
   WriteTest.cpp
 )
 
