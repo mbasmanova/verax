@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include "axiom/connectors/tests/TestConnector.h"
 #include "axiom/logical_plan/PlanBuilder.h"
 #include "axiom/optimizer/tests/HiveQueriesTestBase.h"
 #include "axiom/optimizer/tests/PlanMatcher.h"
@@ -26,7 +27,25 @@ namespace {
 using namespace velox;
 namespace lp = facebook::axiom::logical_plan;
 
-class SetTest : public test::HiveQueriesTestBase {};
+class SetTest : public test::HiveQueriesTestBase {
+ protected:
+  static constexpr auto kTestConnectorId = "test";
+
+  void SetUp() override {
+    test::HiveQueriesTestBase::SetUp();
+
+    testConnector_ =
+        std::make_shared<connector::TestConnector>(kTestConnectorId);
+    velox::connector::registerConnector(testConnector_);
+  }
+
+  void TearDown() override {
+    velox::connector::unregisterConnector(kTestConnectorId);
+    test::HiveQueriesTestBase::TearDown();
+  }
+
+  std::shared_ptr<connector::TestConnector> testConnector_;
+};
 
 TEST_F(SetTest, unionAll) {
   auto nationType = getSchema("nation");
@@ -75,6 +94,33 @@ TEST_F(SetTest, unionAll) {
                            .planNode();
 
   checkSame(logicalPlan, referencePlan);
+}
+
+TEST_F(SetTest, lambdaFilterPushdownThroughUnionAll) {
+  testConnector_->addTable("t", ROW({"a", "b"}, ARRAY(BIGINT())));
+  testConnector_->addTable("u", ROW({"a", "b"}, ARRAY(BIGINT())));
+
+  lp::PlanBuilder::Context ctx(kTestConnectorId);
+  auto logicalPlan = lp::PlanBuilder(ctx)
+                         .tableScan("t")
+                         .unionAll(lp::PlanBuilder(ctx).tableScan("u"))
+                         .filter("all_match(a, x -> x > 1)")
+                         .build();
+
+  auto plan = toSingleNodePlan(logicalPlan);
+
+  auto matcher = core::PlanMatcherBuilder()
+                     .tableScan("t")
+                     .filter()
+                     .localPartition(
+                         core::PlanMatcherBuilder()
+                             .tableScan("u")
+                             .filter()
+                             .project()
+                             .build())
+                     .build();
+
+  AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
 TEST_F(SetTest, unionJoin) {

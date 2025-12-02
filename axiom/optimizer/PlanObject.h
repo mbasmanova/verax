@@ -77,6 +77,10 @@ class PlanObject {
     return type_;
   }
 
+  std::string_view typeName() const {
+    return PlanTypeName::toName(type_);
+  }
+
   bool isColumn() const {
     return type_ == PlanType::kColumnExpr;
   }
