@@ -240,19 +240,20 @@ class PlanBuilder {
 
   struct AggregateOptions {
     AggregateOptions(
-        ExprPtr filters,
-        std::vector<SortingField> orderings,
+        velox::core::ExprPtr filter,
+        std::vector<SortKey> orderBy,
         bool distinct)
-        : filters(std::move(filters)),
-          orderings(std::move(orderings)),
+        : filter(std::move(filter)),
+          orderBy(std::move(orderBy)),
           distinct(distinct) {}
 
     AggregateOptions() = default;
 
-    ExprPtr filters;
-    std::vector<SortingField> orderings;
+    velox::core::ExprPtr filter;
+    std::vector<SortKey> orderBy;
     bool distinct{false};
   };
+
   PlanBuilder& aggregate(
       const std::vector<ExprApi>& groupingKeys,
       const std::vector<ExprApi>& aggregates,

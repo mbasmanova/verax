@@ -423,6 +423,9 @@ TEST_F(TpchPlanTest, q15) {
 }
 
 TEST_F(TpchPlanTest, q16) {
+  // TODO Fix "DISTINCT option for aggregation is supported only in single
+  // worker, single thread mode" and restore the original text of q16 that uses
+  // count(distinct).
   checkTpchSql(16);
 
   // The join is biggest table first, with part joined first because it is quite

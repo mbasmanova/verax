@@ -87,10 +87,6 @@ class PrestoParserTest : public testing::Test {
 
     ASSERT_EQ(views.size(), selectStatement->views().size());
 
-    for (const auto& [k, v] : selectStatement->views()) {
-      LOG(ERROR) << k.first << ", " << k.second;
-    }
-
     for (const auto& view : views) {
       ASSERT_TRUE(selectStatement->views().contains({kTpchConnectorId, view}))
           << "Missing view: " << view;
@@ -541,6 +537,57 @@ TEST_F(PrestoParserTest, scalarOverAgg) {
       "FROM nation "
       "GROUP BY 1",
       matcher);
+}
+
+TEST_F(PrestoParserTest, aggregateOptions) {
+  lp::AggregateNodePtr agg;
+  auto matcher = lp::test::LogicalPlanMatcherBuilder().tableScan().aggregate(
+      [&](const auto& node) {
+        agg = std::dynamic_pointer_cast<const lp::AggregateNode>(node);
+      });
+
+  testSql("SELECT array_agg(distinct n_regionkey) FROM nation", matcher);
+  ASSERT_TRUE(agg != nullptr);
+  ASSERT_EQ(1, agg->aggregates().size());
+  ASSERT_TRUE(agg->aggregateAt(0)->isDistinct());
+  ASSERT_TRUE(agg->aggregateAt(0)->filter() == nullptr);
+  ASSERT_EQ(0, agg->aggregateAt(0)->ordering().size());
+
+  testSql(
+      "SELECT array_agg(n_nationkey ORDER BY n_regionkey) FROM nation",
+      matcher);
+  ASSERT_TRUE(agg != nullptr);
+  ASSERT_EQ(1, agg->aggregates().size());
+  ASSERT_FALSE(agg->aggregateAt(0)->isDistinct());
+  ASSERT_TRUE(agg->aggregateAt(0)->filter() == nullptr);
+  ASSERT_EQ(1, agg->aggregateAt(0)->ordering().size());
+
+  testSql(
+      "SELECT array_agg(n_nationkey) FILTER (WHERE n_regionkey = 1) FROM nation",
+      matcher);
+  ASSERT_TRUE(agg != nullptr);
+  ASSERT_EQ(1, agg->aggregates().size());
+  ASSERT_FALSE(agg->aggregateAt(0)->isDistinct());
+  ASSERT_FALSE(agg->aggregateAt(0)->filter() == nullptr);
+  ASSERT_EQ(0, agg->aggregateAt(0)->ordering().size());
+
+  testSql(
+      "SELECT array_agg(distinct n_regionkey) FILTER (WHERE n_name like 'A%') FROM nation",
+      matcher);
+  ASSERT_TRUE(agg != nullptr);
+  ASSERT_EQ(1, agg->aggregates().size());
+  ASSERT_TRUE(agg->aggregateAt(0)->isDistinct());
+  ASSERT_FALSE(agg->aggregateAt(0)->filter() == nullptr);
+  ASSERT_EQ(0, agg->aggregateAt(0)->ordering().size());
+
+  testSql(
+      "SELECT array_agg(n_regionkey ORDER BY n_name) FILTER (WHERE n_name like 'A%') FROM nation",
+      matcher);
+  ASSERT_TRUE(agg != nullptr);
+  ASSERT_EQ(1, agg->aggregates().size());
+  ASSERT_FALSE(agg->aggregateAt(0)->isDistinct());
+  ASSERT_FALSE(agg->aggregateAt(0)->filter() == nullptr);
+  ASSERT_EQ(1, agg->aggregateAt(0)->ordering().size());
 }
 
 TEST_F(PrestoParserTest, join) {

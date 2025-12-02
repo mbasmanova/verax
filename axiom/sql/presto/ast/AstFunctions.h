@@ -211,12 +211,18 @@ class FunctionCall : public Expression {
       NodeLocation location,
       const std::shared_ptr<QualifiedName>& name,
       const std::shared_ptr<Window>& window,
+      const std::shared_ptr<Expression>& filter,
+      const std::shared_ptr<OrderBy>& orderBy,
       bool distinct,
+      bool ignoreNulls,
       const std::vector<ExpressionPtr>& arguments)
       : Expression(NodeType::kFunctionCall, location),
         name_(name),
         window_(window),
+        filter_(filter),
+        orderBy_(orderBy),
         distinct_(distinct),
+        ignoreNulls_(ignoreNulls),
         arguments_(arguments) {}
 
   FunctionCall(
@@ -225,8 +231,6 @@ class FunctionCall : public Expression {
       const std::vector<ExpressionPtr>& arguments)
       : Expression(NodeType::kFunctionCall, location),
         name_(name),
-        window_(nullptr),
-        distinct_(false),
         arguments_(arguments) {}
 
   const std::shared_ptr<QualifiedName>& name() const {
@@ -237,8 +241,20 @@ class FunctionCall : public Expression {
     return window_;
   }
 
+  const std::shared_ptr<Expression>& filter() const {
+    return filter_;
+  }
+
+  const std::shared_ptr<OrderBy>& orderBy() const {
+    return orderBy_;
+  }
+
   bool isDistinct() const {
     return distinct_;
+  }
+
+  bool ignoreNulls() const {
+    return ignoreNulls_;
   }
 
   const std::vector<ExpressionPtr>& arguments() const {
@@ -250,7 +266,10 @@ class FunctionCall : public Expression {
  private:
   std::shared_ptr<QualifiedName> name_;
   std::shared_ptr<Window> window_;
-  bool distinct_;
+  const std::shared_ptr<Expression> filter_;
+  const std::shared_ptr<OrderBy> orderBy_;
+  bool distinct_{false};
+  bool ignoreNulls_{false};
   std::vector<ExpressionPtr> arguments_;
 };
 
