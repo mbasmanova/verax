@@ -23,6 +23,7 @@
 #include "velox/exec/Aggregate.h"
 #include "velox/exec/AggregateFunctionRegistry.h"
 #include "velox/expression/Expr.h"
+#include "velox/expression/ExprConstants.h"
 #include "velox/expression/FunctionSignature.h"
 #include "velox/expression/SignatureBinder.h"
 #include "velox/functions/FunctionRegistry.h"
@@ -593,17 +594,14 @@ velox::TypePtr resolveScalarFunction(
     const std::vector<velox::TypePtr>& argTypes,
     bool allowCoersions,
     std::vector<velox::TypePtr>& coercions) {
-  // TODO Add support for coersions.
-  if (auto returnType = velox::resolveCallableSpecialForm(name, argTypes)) {
-    return returnType;
-  }
-
   if (allowCoersions) {
-    if (auto type = resolveFunctionWithCoercions(name, argTypes, coercions)) {
+    if (auto type = velox::resolveFunctionOrCallableSpecialFormWithCoercions(
+            name, argTypes, coercions)) {
       return type;
     }
   } else {
-    if (auto type = resolveFunction(name, argTypes)) {
+    if (auto type =
+            velox::resolveFunctionOrCallableSpecialForm(name, argTypes)) {
       return type;
     }
   }
@@ -621,9 +619,33 @@ velox::TypePtr resolveScalarFunction(
   }
 }
 
+std::vector<velox::TypePtr> toTypes(const std::vector<ExprPtr>& exprs) {
+  std::vector<velox::TypePtr> types;
+  types.reserve(exprs.size());
+  for (auto& expr : exprs) {
+    types.push_back(expr->type());
+  }
+
+  return types;
+}
+
+ExprPtr resolveSpecialFormWithCoersions(
+    SpecialForm form,
+    const std::string& name,
+    std::vector<ExprPtr>& inputs) {
+  std::vector<velox::TypePtr> coercions;
+  auto returnType =
+      resolveCallableSpecialFormWithCoercions(name, toTypes(inputs), coercions);
+  VELOX_CHECK_NOT_NULL(returnType);
+
+  applyCoersions(inputs, coercions);
+  return std::make_shared<SpecialFormExpr>(returnType, form, inputs);
+}
+
 ExprPtr tryResolveSpecialForm(
     const std::string& name,
-    const std::vector<ExprPtr>& resolvedInputs) {
+    std::vector<ExprPtr>& resolvedInputs,
+    bool allowCoersions) {
   if (name == "and") {
     return std::make_shared<SpecialFormExpr>(
         velox::BOOLEAN(), SpecialForm::kAnd, resolvedInputs);
@@ -645,11 +667,20 @@ ExprPtr tryResolveSpecialForm(
   }
 
   if (name == "if") {
+    if (allowCoersions) {
+      return resolveSpecialFormWithCoersions(
+          SpecialForm::kIf, velox::expression::kIf, resolvedInputs);
+    }
+
     return std::make_shared<SpecialFormExpr>(
         resolvedInputs.at(1)->type(), SpecialForm::kIf, resolvedInputs);
   }
 
   if (name == "switch") {
+    if (allowCoersions) {
+      return resolveSpecialFormWithCoersions(
+          SpecialForm::kSwitch, velox::expression::kSwitch, resolvedInputs);
+    }
     return std::make_shared<SpecialFormExpr>(
         resolvedInputs.at(1)->type(), SpecialForm::kSwitch, resolvedInputs);
   }
@@ -878,17 +909,11 @@ ExprPtr ExprResolver::tryResolveCallWithLambdas(
     }
   }
 
-  std::vector<velox::TypePtr> types;
-  types.reserve(children.size());
-  for (auto& child : children) {
-    types.push_back(child->type());
-  }
-
   const auto name = velox::exec::sanitizeName(callExpr->name());
 
   std::vector<velox::TypePtr> coersions;
-  auto returnType =
-      resolveScalarFunction(name, types, enableCoersions_, coersions);
+  auto returnType = resolveScalarFunction(
+      name, toTypes(children), enableCoersions_, coersions);
   applyCoersions(children, coersions);
 
   return std::make_shared<CallExpr>(returnType, name, children);
@@ -1041,22 +1066,17 @@ ExprPtr ExprResolver::resolveScalarTypes(
       }
     }
 
-    if (auto specialForm = tryResolveSpecialForm(name, inputs)) {
+    if (auto specialForm =
+            tryResolveSpecialForm(name, inputs, enableCoersions_)) {
       if (auto folded = tryFoldSpecialForm(name, inputs)) {
         return folded;
       }
       return specialForm;
     }
 
-    std::vector<velox::TypePtr> inputTypes;
-    inputTypes.reserve(inputs.size());
-    for (const auto& input : inputs) {
-      inputTypes.push_back(input->type());
-    }
-
     std::vector<velox::TypePtr> coersions;
-    auto type =
-        resolveScalarFunction(name, inputTypes, enableCoersions_, coersions);
+    auto type = resolveScalarFunction(
+        name, toTypes(inputs), enableCoersions_, coersions);
 
     applyCoersions(inputs, coersions);
 
