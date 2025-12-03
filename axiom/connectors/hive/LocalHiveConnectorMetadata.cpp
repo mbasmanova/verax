@@ -443,6 +443,35 @@ struct CreateTableOptions {
   std::optional<velox::dwio::common::SerDeOptions> serdeOptions;
 };
 
+namespace {
+int32_t parseBucketNumber(const velox::Variant& value) {
+  switch (value.kind()) {
+    case velox::TypeKind::TINYINT:
+      return value.value<int8_t>();
+    case velox::TypeKind::SMALLINT:
+      return value.value<int16_t>();
+    case velox::TypeKind::INTEGER:
+      return value.value<int32_t>();
+    case velox::TypeKind::BIGINT: {
+      const auto numBuckets = value.value<int64_t>();
+      VELOX_USER_CHECK_LE(
+          numBuckets,
+          std::numeric_limits<int32_t>::max(),
+          "{} must not exceed 32-bit integer range",
+          HiveWriteOptions::kBucketCount);
+      VELOX_USER_CHECK_GT(
+          numBuckets, 0, "{} must be > 0", HiveWriteOptions::kBucketCount);
+      return numBuckets;
+    }
+    default:
+      VELOX_USER_FAIL(
+          "Unsupported {} type: {}",
+          HiveWriteOptions::kBucketCount,
+          velox::TypeKindName::toName(value.kind()));
+  }
+}
+} // namespace
+
 CreateTableOptions parseCreateTableOptions(
     const folly::F14FastMap<std::string, velox::Variant>& options,
     velox::dwio::common::FileFormat defaultFileFormat) {
@@ -482,7 +511,8 @@ CreateTableOptions parseCreateTableOptions(
         HiveWriteOptions::kBucketCount,
         HiveWriteOptions::kBucketedBy);
 
-    const auto numBuckets = it->second.value<int64_t>();
+    const auto numBuckets = parseBucketNumber(it->second);
+
     VELOX_USER_CHECK_GT(
         numBuckets, 0, "{} must be > 0", HiveWriteOptions::kBucketCount);
     VELOX_USER_CHECK_EQ(

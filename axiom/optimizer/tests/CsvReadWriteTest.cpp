@@ -125,7 +125,7 @@ TEST_F(CsvReadWriteTest, writeWithInsertStatement) {
   };
 
   auto tableType = ROW({
-      {"id", BIGINT()},
+      {"id", INTEGER()},
       {"description", VARCHAR()},
       {"amount", DOUBLE()},
       {"is_active", BOOLEAN()},
@@ -142,7 +142,7 @@ TEST_F(CsvReadWriteTest, writeWithInsertStatement) {
   auto expectedData = makeRowVector(
       {"id", "description", "amount", "is_active"},
       {
-          makeNullableFlatVector<int64_t>({10, std::nullopt, 30, 40}),
+          makeNullableFlatVector<int32_t>({10, std::nullopt, 30, 40}),
           makeNullableFlatVector<std::string>(
               {"First item", std::nullopt, "Third item", "Fourth item"}),
           makeNullableFlatVector<double>({100.5, 200.0, std::nullopt, 400.25}),

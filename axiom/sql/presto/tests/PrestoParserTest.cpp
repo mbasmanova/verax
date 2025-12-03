@@ -721,11 +721,34 @@ TEST_F(PrestoParserTest, lambda) {
 }
 
 TEST_F(PrestoParserTest, values) {
-  auto matcher = lp::test::LogicalPlanMatcherBuilder().values();
+  lp::ValuesNodePtr valuesNode;
+  auto matcher =
+      lp::test::LogicalPlanMatcherBuilder().values([&](const auto& node) {
+        valuesNode = std::dynamic_pointer_cast<const lp::ValuesNode>(node);
+      });
 
-  testSql("SELECT * FROM (VALUES (1, 1.1, 'foo'), (2, null, 'bar'))", matcher);
+  {
+    testSql(
+        "SELECT * FROM (VALUES (1, 1.1, 'foo'), (2, null, 'bar'))", matcher);
+    ASSERT_TRUE(valuesNode != nullptr);
 
-  testSql("SELECT * FROM (VALUES (1), (2), (3), (4))", matcher);
+    const auto& outputType = valuesNode->outputType();
+    ASSERT_EQ(TypeKind::ROW, outputType->kind());
+    ASSERT_EQ(3, outputType->size());
+    ASSERT_EQ(TypeKind::INTEGER, outputType->childAt(0)->kind());
+    ASSERT_EQ(TypeKind::DOUBLE, outputType->childAt(1)->kind());
+    ASSERT_EQ(TypeKind::VARCHAR, outputType->childAt(2)->kind());
+  }
+
+  {
+    testSql("SELECT * FROM (VALUES (1), (2), (3), (4))", matcher);
+    ASSERT_TRUE(valuesNode != nullptr);
+
+    const auto& outputType = valuesNode->outputType();
+    ASSERT_EQ(TypeKind::ROW, outputType->kind());
+    ASSERT_EQ(1, outputType->size());
+    ASSERT_EQ(TypeKind::INTEGER, outputType->childAt(0)->kind());
+  }
 }
 
 TEST_F(PrestoParserTest, everything) {
@@ -874,7 +897,7 @@ TEST_F(PrestoParserTest, insertIntoTable) {
 
     VELOX_ASSERT_THROW(
         parser.parse("INSERT INTO nation SELECT 100, 'n-100', 2, 3"),
-        "Wrong column type: BIGINT vs. VARCHAR, column n_comment in table tiny.nation");
+        "Wrong column type: INTEGER vs. VARCHAR, column 'n_comment' in table 'tiny.nation'");
   }
 }
 
