@@ -37,26 +37,30 @@ namespace axiom::sql {
 void SqlQueryRunner::initialize(
     const std::function<std::pair<std::string, std::optional<std::string>>(
         optimizer::VeloxHistory& history)>& initializeConnectors) {
-  velox::memory::MemoryManager::testingSetInstance(
-      velox::memory::MemoryManager::Options{});
+  static folly::once_flag kInitialized;
 
-  rootPool_ = velox::memory::memoryManager()->addRootPool("axiom_sql");
+  folly::call_once(kInitialized, []() {
+    velox::functions::prestosql::registerAllScalarFunctions();
+    velox::aggregate::prestosql::registerAllAggregateFunctions();
+    velox::parse::registerTypeResolver();
+
+    optimizer::FunctionRegistry::registerPrestoFunctions();
+
+    velox::filesystems::registerLocalFileSystem();
+
+    velox::exec::ExchangeSource::registerFactory(
+        velox::exec::test::createLocalExchangeSource);
+    velox::serializer::presto::PrestoVectorSerde::registerVectorSerde();
+    if (!isRegisteredNamedVectorSerde(velox::VectorSerde::Kind::kPresto)) {
+      velox::serializer::presto::PrestoVectorSerde::registerNamedVectorSerde();
+    }
+  });
+
+  static std::atomic<int32_t> kCounter{0};
+
+  rootPool_ = velox::memory::memoryManager()->addRootPool(
+      fmt::format("axiom_sql{}", kCounter++));
   optimizerPool_ = rootPool_->addLeafChild("optimizer");
-
-  velox::functions::prestosql::registerAllScalarFunctions();
-  velox::aggregate::prestosql::registerAllAggregateFunctions();
-  velox::parse::registerTypeResolver();
-
-  optimizer::FunctionRegistry::registerPrestoFunctions();
-
-  velox::filesystems::registerLocalFileSystem();
-
-  velox::exec::ExchangeSource::registerFactory(
-      velox::exec::test::createLocalExchangeSource);
-  velox::serializer::presto::PrestoVectorSerde::registerVectorSerde();
-  if (!isRegisteredNamedVectorSerde(velox::VectorSerde::Kind::kPresto)) {
-    velox::serializer::presto::PrestoVectorSerde::registerNamedVectorSerde();
-  }
 
   history_ = std::make_unique<optimizer::VeloxHistory>();
 
