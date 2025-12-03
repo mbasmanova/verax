@@ -238,7 +238,7 @@ class RelationOp {
 
   /// Returns the number of output rows.
   float resultCardinality() const {
-    return cost_.resultCardinality();
+    return std::max<float>(1, cost_.resultCardinality());
   }
 
   /// @return 1 for a leaf node, otherwise returns 'resultCardinality()' of the
