@@ -271,7 +271,7 @@ TEST_F(WriteTest, insertSql) {
   };
 
   createTable(
-      "test", ROW({"a", "b", "c"}, {BIGINT(), DOUBLE(), VARCHAR()}), {});
+      "test", ROW({"a", "b", "c"}, {INTEGER(), DOUBLE(), VARCHAR()}), {});
 
   auto parseSql = [&](std::string_view sql) {
     ::axiom::sql::presto::PrestoParser parser(
@@ -304,7 +304,7 @@ TEST_F(WriteTest, insertSql) {
   checkTableData(
       "test",
       makeRowVector({
-          makeFlatVector<int64_t>({1, 2, 3, 4, 5}),
+          makeFlatVector<int32_t>({1, 2, 3, 4, 5}),
           makeFlatVector<double>({0.123, 1.23, 0.3, 0.4, 0.5}),
           makeNullableFlatVector<std::string>(
               {"foo", "bar", std::nullopt, std::nullopt, std::nullopt}),
@@ -323,7 +323,7 @@ TEST_F(WriteTest, createTableAsSelectSql) {
     checkTableData(
         "test",
         makeRowVector({
-            makeFlatVector<int64_t>({1}),
+            makeFlatVector<int32_t>({1}),
             makeFlatVector<double>({0.123}),
             makeFlatVector<std::string>({"foo"}),
         }));
@@ -343,7 +343,7 @@ TEST_F(WriteTest, createTableAsSelectSql) {
     checkTableData(
         "test",
         makeRowVector({
-            makeFlatVector<int64_t>({1, 2, 3}),
+            makeFlatVector<int32_t>({1, 2, 3}),
             makeFlatVector<double>({0.1, 0.2, 0.3}),
         }));
   }

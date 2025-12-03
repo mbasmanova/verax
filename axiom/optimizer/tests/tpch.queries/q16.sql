@@ -15,7 +15,7 @@ where
 	p.p_partkey = ps.ps_partkey
 	and p.p_brand <> 'Brand#45'
 	and p.p_type not like 'MEDIUM POLISHED%'
-	and cast(p.p_size as bigint) in (49, 14, 23, 45, 19, 3, 36, 9)
+	and p.p_size in (49, 14, 23, 45, 19, 3, 36, 9)
 	and ps.ps_suppkey not in (
 		select
 			s_suppkey
