@@ -1456,20 +1456,29 @@ class RelationPlanner : public AstVisitor {
   void visitValues(Values* node) override {
     VELOX_CHECK(!node->rows().empty());
 
-    const auto numColumns = node->rows().front()->as<Row>()->items().size();
+    const auto& firstRow = node->rows().front();
+    const bool isRow = firstRow->is(NodeType::kRow);
+    const auto numColumns = isRow ? firstRow->as<Row>()->items().size() : 1;
+
+    auto toVariant = [&](const ExpressionPtr& expr) {
+      auto value = toExpr(expr);
+      VELOX_CHECK(value.expr()->is(core::IExpr::Kind::kConstant));
+
+      return value.expr()->as<core::ConstantExpr>()->value();
+    };
 
     std::vector<Variant> rows;
     for (const auto& row : node->rows()) {
-      const auto& columns = row->as<Row>()->items();
-
-      VELOX_CHECK_EQ(numColumns, columns.size());
-
       std::vector<Variant> values;
-      for (const auto& expr : columns) {
-        auto value = toExpr(expr);
-        VELOX_CHECK(value.expr()->is(core::IExpr::Kind::kConstant));
+      if (isRow) {
+        const auto& columns = row->as<Row>()->items();
+        VELOX_CHECK_EQ(numColumns, columns.size());
 
-        values.emplace_back(value.expr()->as<core::ConstantExpr>()->value());
+        for (const auto& expr : columns) {
+          values.emplace_back(toVariant(expr));
+        }
+      } else {
+        values.emplace_back(toVariant(row));
       }
 
       rows.emplace_back(Variant::row(values));

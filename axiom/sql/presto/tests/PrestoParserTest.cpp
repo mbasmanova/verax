@@ -724,6 +724,8 @@ TEST_F(PrestoParserTest, values) {
   auto matcher = lp::test::LogicalPlanMatcherBuilder().values();
 
   testSql("SELECT * FROM (VALUES (1, 1.1, 'foo'), (2, null, 'bar'))", matcher);
+
+  testSql("SELECT * FROM (VALUES (1), (2), (3), (4))", matcher);
 }
 
 TEST_F(PrestoParserTest, everything) {
