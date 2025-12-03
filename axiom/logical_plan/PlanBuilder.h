@@ -140,6 +140,7 @@ class PlanBuilder {
         nameAllocator_{context.nameAllocator},
         outerScope_{std::move(outerScope)},
         parseOptions_{.parseInListAsArray = false},
+        enableCoersions_{enableCoersions},
         resolver_{
             context.queryCtx,
             enableCoersions,
@@ -472,6 +473,7 @@ class PlanBuilder {
   const std::shared_ptr<NameAllocator> nameAllocator_;
   const Scope outerScope_;
   const velox::parse::ParseOptions parseOptions_;
+  const bool enableCoersions_;
 
   LogicalPlanNodePtr node_;
 
