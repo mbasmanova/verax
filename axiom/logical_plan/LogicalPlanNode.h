@@ -132,22 +132,28 @@ class LogicalPlanNode {
 /// A table whose content is embedded in the plan.
 class ValuesNode : public LogicalPlanNode {
  public:
-  using Rows = std::vector<velox::Variant>;
-  using Values = std::vector<velox::RowVectorPtr>;
-  using Data = std::variant<Rows, Values>;
+  using Variants = std::vector<velox::Variant>;
+  using Vectors = std::vector<velox::RowVectorPtr>;
+  using Exprs = std::vector<std::vector<ExprPtr>>;
+  using Data = std::variant<Variants, Vectors, Exprs>;
 
   /// @param rowType Output schema. A list of column names and types. All names
   /// must be non-empty and unique.
   /// @param rows A list of rows. Each row is a list of values, one per column.
   /// The number, order and types of columns must match 'rowType'.
-  ValuesNode(
-      std::string id,
-      velox::RowTypePtr rowType,
-      std::vector<velox::Variant> rows);
+  ValuesNode(std::string id, velox::RowTypePtr rowType, Variants rows);
 
   /// Memory pools used for RowVector's allocation should outlive the execution
   /// of the plan.
-  ValuesNode(std::string id, std::vector<velox::RowVectorPtr> values);
+  ValuesNode(std::string id, Vectors values);
+
+  /// @param rowType Output schema. A list of column names and types. All names
+  /// must be non-empty and unique.
+  /// @param rows A list of rows. Each row is a list of values, one per column.
+  /// Each value is a constant expression, i.e. expression that doesn't have any
+  /// dependencies. E.g. 1 + 2, cast(1 as real). The number, order and types of
+  /// columns must match 'rowType'.
+  ValuesNode(std::string id, velox::RowTypePtr rowType, Exprs rows);
 
   uint64_t cardinality() const {
     return cardinality_;

@@ -95,6 +95,98 @@ PlanBuilder& PlanBuilder::values(
   return *this;
 }
 
+namespace {
+ExprPtr applyCoersion(const ExprPtr& input, const velox::TypePtr& type) {
+  if (input->isSpecialForm() &&
+      input->as<SpecialFormExpr>()->form() == SpecialForm::kCast) {
+    return std::make_shared<SpecialFormExpr>(
+        type, SpecialForm::kCast, input->inputAt(0));
+  }
+
+  return std::make_shared<SpecialFormExpr>(type, SpecialForm::kCast, input);
+}
+
+std::vector<velox::TypePtr> toTypes(const std::vector<ExprPtr>& exprs) {
+  std::vector<velox::TypePtr> types;
+  types.reserve(exprs.size());
+  for (auto& expr : exprs) {
+    types.push_back(expr->type());
+  }
+
+  return types;
+}
+} // namespace
+
+PlanBuilder& PlanBuilder::values(
+    const std::vector<std::string>& names,
+    const std::vector<std::vector<ExprApi>>& values) {
+  VELOX_USER_CHECK_NULL(node_, "Values node must be the leaf node");
+
+  if (values.empty()) {
+    node_ = std::make_shared<ValuesNode>(nextId(), ValuesNode::Vectors{});
+    return *this;
+  }
+
+  const auto numColumns = names.size();
+  const auto numRows = values.size();
+
+  std::vector<std::vector<ExprPtr>> exprs;
+  exprs.reserve(numRows);
+  for (const auto& row : values) {
+    VELOX_USER_CHECK_EQ(numColumns, row.size());
+
+    std::vector<ExprPtr> valueExprs;
+    valueExprs.reserve(numColumns);
+    for (const auto& expr : row) {
+      valueExprs.emplace_back(resolveScalarTypes(expr.expr()));
+    }
+
+    exprs.emplace_back(std::move(valueExprs));
+  }
+
+  auto types = toTypes(exprs.front());
+
+  outputMapping_ = std::make_shared<NameMappings>();
+
+  std::vector<std::string> outputNames;
+  if (numColumns > 0) {
+    outputNames.reserve(numColumns);
+    for (const auto& name : names) {
+      outputNames.push_back(newName(name));
+      outputMapping_->add(name, outputNames.back());
+    }
+  }
+
+  if (enableCoersions_) {
+    for (auto i = 0; i < numRows; ++i) {
+      auto& row = exprs[i];
+      for (auto j = 0; j < numColumns; ++j) {
+        const auto& type = row[j]->type();
+        if (types[j]->equivalent(*type)) {
+          continue;
+        }
+
+        if (velox::TypeCoercer::coercible(type, types[j])) {
+          row[j] = applyCoersion(row[j], types[j]);
+        } else if (velox::TypeCoercer::coercible(types[j], type)) {
+          types[j] = type;
+
+          for (auto k = 0; k < i; ++k) {
+            exprs[k][j] = applyCoersion(exprs[k][j], types[j]);
+          }
+        }
+      }
+    }
+  }
+
+  node_ = std::make_shared<ValuesNode>(
+      nextId(),
+      ROW(std::move(outputNames), std::move(types)),
+      std::move(exprs));
+
+  return *this;
+}
+
 PlanBuilder& PlanBuilder::tableScan(const std::string& tableName) {
   VELOX_USER_CHECK(defaultConnectorId_.has_value());
   return tableScan(defaultConnectorId_.value(), tableName);
@@ -617,16 +709,6 @@ velox::TypePtr resolveScalarFunction(
         toString(name, argTypes),
         toString(functionSignatures));
   }
-}
-
-std::vector<velox::TypePtr> toTypes(const std::vector<ExprPtr>& exprs) {
-  std::vector<velox::TypePtr> types;
-  types.reserve(exprs.size());
-  for (auto& expr : exprs) {
-    types.push_back(expr->type());
-  }
-
-  return types;
 }
 
 ExprPtr resolveSpecialFormWithCoersions(
@@ -1346,8 +1428,8 @@ PlanBuilder& PlanBuilder::tableWrite(
       if (!schemaType->equivalent(*inputType)) {
         if (enableCoersions_ &&
             velox::TypeCoercer::coercible(inputType, schemaType)) {
-          columnExpressions[i] = std::make_shared<SpecialFormExpr>(
-              schemaType, SpecialForm::kCast, columnExpressions[i]);
+          columnExpressions[i] =
+              applyCoersion(columnExpressions[i], schemaType);
         } else {
           VELOX_USER_FAIL(
               "Wrong column type: {} vs. {}, column '{}' in table '{}'",

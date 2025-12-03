@@ -348,16 +348,14 @@ const QGString& Values::historyKey() const {
   if (!key_.empty()) {
     return key_;
   }
-  std::stringstream out;
-  out << "values " << valuesTable.values.id();
-  key_ = sanitizeHistoryKey(out.str());
+  key_ = sanitizeHistoryKey("values");
   return key_;
 }
 
 std::string Values::toString(bool /*recursive*/, bool detail) const {
   VELOX_DCHECK(!input());
   std::stringstream out;
-  out << valuesTable.values.id() << " " << valuesTable.cname;
+  out << valuesTable.cname;
   if (detail) {
     printCost(detail, out);
     out << distribution_.toString() << std::endl;

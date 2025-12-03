@@ -238,7 +238,7 @@ class ValuesMatcher : public PlanMatcherImpl<ValuesNode> {
     if (type_) {
       EXPECT_TRUE(type_->equivalent(*plan.outputType()))
           << "Expected equal output types on ValuesNode, but got '"
-          << type_->toString() << "', and '" << plan.outputType()->toString()
+          << type_->toString() << "' and '" << plan.outputType()->toString()
           << "'.";
     }
 

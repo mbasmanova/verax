@@ -24,6 +24,8 @@
 #include "velox/expression/ScopedVarSetter.h"
 #include "velox/vector/VariantToVector.h"
 
+namespace lp = facebook::axiom::logical_plan;
+
 namespace facebook::axiom::optimizer {
 
 std::string PlanAndStats::toString() const {
@@ -264,7 +266,7 @@ velox::core::TypedExprPtr ToVelox::toAnd(const ExprVector& exprs) {
 
   return std::make_shared<velox::core::CallTypedExpr>(
       velox::BOOLEAN(),
-      specialForm(logical_plan::SpecialForm::kAnd),
+      specialForm(lp::SpecialForm::kAnd),
       toTypedExprs(exprs));
 }
 
@@ -458,12 +460,12 @@ velox::core::TypedExprPtr ToVelox::toTypedExpr(ExprCP expr) {
       }
 
       if (auto form = SpecialFormCallNames::tryFromCallName(call->name())) {
-        if (form == logical_plan::SpecialForm::kCast) {
+        if (form == lp::SpecialForm::kCast) {
           return std::make_shared<velox::core::CastTypedExpr>(
               toTypePtr(expr->value().type), std::move(inputs), false);
         }
 
-        if (form == logical_plan::SpecialForm::kTryCast) {
+        if (form == lp::SpecialForm::kTryCast) {
           return std::make_shared<velox::core::CastTypedExpr>(
               toTypePtr(expr->value().type), std::move(inputs), true);
         }
@@ -941,7 +943,7 @@ velox::core::TypedExprPtr toAndWithAliases(
     result = std::make_shared<velox::core::CallTypedExpr>(
         velox::BOOLEAN(),
         std::move(conjuncts),
-        specialForm(logical_plan::SpecialForm::kAnd));
+        specialForm(lp::SpecialForm::kAnd));
   }
 
   folly::F14FastSet<Name> usedFieldNames;
@@ -1329,22 +1331,22 @@ velox::core::PlanNodePtr ToVelox::makeValues(
   const auto newType = makeOutputType(newColumns);
   VELOX_DCHECK_EQ(newColumns.size(), newType->size());
 
-  const auto& originalRowType = values.valuesTable.values.outputType();
+  const auto& originalRowType = values.valuesTable.dataType->asRow();
 
   std::vector<uint32_t> originalIndices;
   originalIndices.reserve(newColumns.size());
   for (const auto* column : newColumns) {
-    auto oldColumnIdx = originalRowType->getChildIdx(column->name());
+    auto oldColumnIdx = originalRowType.getChildIdx(column->name());
     originalIndices.emplace_back(oldColumnIdx);
   }
 
-  const auto& data = values.valuesTable.values.data();
+  const auto& data = values.valuesTable.data;
   std::vector<velox::RowVectorPtr> newValues;
-  if (auto* rows = std::get_if<std::vector<velox::Variant>>(&data)) {
+  if (auto* rows = std::get_if<ValuesTable::Variants>(&data)) {
     auto* pool = queryCtx()->optimization()->evaluator()->pool();
 
-    newValues.reserve(rows->size());
-    for (const auto& row : *rows) {
+    newValues.reserve((*rows)->size());
+    for (const auto& row : *(*rows)) {
       const auto& rowValues = row.row();
       std::vector<velox::Variant> newRowValues;
       newRowValues.reserve(originalIndices.size());
@@ -1359,7 +1361,7 @@ velox::core::PlanNodePtr ToVelox::makeValues(
     }
 
   } else {
-    const auto& oldValues = std::get<std::vector<velox::RowVectorPtr>>(data);
+    const auto& oldValues = *std::get<ValuesTable::Vectors>(data);
     VELOX_DCHECK(!oldValues.empty());
 
     newValues.reserve(oldValues.size());

@@ -1467,38 +1467,32 @@ class RelationPlanner : public AstVisitor {
     const bool isRow = firstRow->is(NodeType::kRow);
     const auto numColumns = isRow ? firstRow->as<Row>()->items().size() : 1;
 
-    auto toVariant = [&](const ExpressionPtr& expr) {
-      auto value = toExpr(expr);
-      VELOX_CHECK(value.expr()->is(core::IExpr::Kind::kConstant));
+    std::vector<std::vector<lp::ExprApi>> rows;
+    rows.reserve(node->rows().size());
 
-      return value.expr()->as<core::ConstantExpr>()->value();
-    };
-
-    std::vector<Variant> rows;
     for (const auto& row : node->rows()) {
-      std::vector<Variant> values;
+      std::vector<lp::ExprApi> values;
       if (isRow) {
         const auto& columns = row->as<Row>()->items();
         VELOX_CHECK_EQ(numColumns, columns.size());
 
         for (const auto& expr : columns) {
-          values.emplace_back(toVariant(expr));
+          values.emplace_back(toExpr(expr));
         }
       } else {
-        values.emplace_back(toVariant(row));
+        values.emplace_back(toExpr(row));
       }
 
-      rows.emplace_back(Variant::row(values));
+      rows.emplace_back(std::move(values));
     }
 
-    auto rowType = asRowType(rows.front().inferType());
     std::vector<std::string> names;
-    names.reserve(rowType->size());
-    for (auto i = 0; i < rowType->size(); ++i) {
+    names.reserve(numColumns);
+    for (auto i = 0; i < numColumns; ++i) {
       names.emplace_back(fmt::format("c{}", i));
     }
 
-    builder_->values(ROW(names, rowType->children()), rows);
+    builder_->values(names, rows);
   }
 
   void visitExcept(Except* node) override {

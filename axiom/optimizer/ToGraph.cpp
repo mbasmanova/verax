@@ -282,9 +282,9 @@ lp::ValuesNodePtr tryFoldConstantDt(
   }
 
   // Create and run Velox plan.
-  const lp::ValuesNode valuesNode{
-      dt->cname, toRowType(baseTable->columns), toValues(*discretePredicates)};
-  auto* valuesTable = make<ValuesTable>(valuesNode);
+  const auto values = toValues(*discretePredicates);
+  auto* valuesTable =
+      make<ValuesTable>(toType(toRowType(baseTable->columns)), &values);
   valuesTable->cname = dt->cname;
   valuesTable->columns = baseTable->columns;
 
@@ -1739,7 +1739,39 @@ void ToGraph::makeBaseTable(const lp::TableScanNode& tableScan) {
 }
 
 void ToGraph::makeValuesTable(const lp::ValuesNode& values) {
-  auto* valuesTable = make<ValuesTable>(values);
+  ValuesTable::Data data;
+
+  if (const auto* rows =
+          std::get_if<lp::ValuesNode::Variants>(&values.data())) {
+    data = &(*rows);
+  } else if (
+      const auto* rows = std::get_if<lp::ValuesNode::Vectors>(&values.data())) {
+    data = &(*rows);
+  } else if (
+      const auto* rows = std::get_if<lp::ValuesNode::Exprs>(&values.data())) {
+    std::vector<velox::Variant> variants;
+    variants.reserve(rows->size());
+    for (const auto& row : *rows) {
+      std::vector<velox::Variant> rowVariants;
+      rowVariants.reserve(row.size());
+      for (const auto& expr : row) {
+        auto literal = translateExpr(expr);
+        VELOX_USER_CHECK(
+            literal->is(PlanType::kLiteralExpr),
+            "Expressions used in Values node must be constant-foldable: {}",
+            expr->toString());
+
+        rowVariants.emplace_back(literal->as<Literal>()->literal());
+      }
+      variants.emplace_back(velox::Variant::row(std::move(rowVariants)));
+    }
+
+    data =
+        &registerVariant(velox::Variant::array(std::move(variants)))->array();
+  }
+
+  auto* valuesTable =
+      make<ValuesTable>(toType(values.outputType()), std::move(data));
   valuesTable->cname = newCName("vt");
   planLeaves_[&values] = valuesTable;
 
