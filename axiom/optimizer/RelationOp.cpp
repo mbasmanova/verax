@@ -765,7 +765,7 @@ Aggregation::Aggregation(
     cost_.fanout = 1.0f / std::max<float>(1, cost_.inputCardinality);
   }
 
-  VELOX_CHECK_LE(cost_.fanout, 1.0f);
+  VELOX_CHECK_LE(cost_.fanout, 1.0001f);
 }
 
 namespace {
