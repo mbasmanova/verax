@@ -103,13 +103,6 @@ void HiveQueriesTestBase::checkSingleNodePlan(
   ASSERT_TRUE(matcher->match(fragments.at(0).fragment.planNode));
 }
 
-lp::LogicalPlanNodePtr HiveQueriesTestBase::parseSelect(std::string_view sql) {
-  auto statement = prestoParser_->parse(sql);
-
-  VELOX_CHECK(statement->isSelect());
-  return statement->as<::axiom::sql::presto::SelectStatement>()->plan();
-}
-
 lp::LogicalPlanNodePtr HiveQueriesTestBase::parseInsert(std::string_view sql) {
   auto statement = prestoParser_->parse(sql);
 

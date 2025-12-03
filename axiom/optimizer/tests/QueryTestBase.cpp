@@ -20,6 +20,7 @@
 #include "axiom/optimizer/Plan.h"
 #include "axiom/optimizer/VeloxHistory.h"
 #include "axiom/runner/tests/LocalRunnerTestBase.h"
+#include "axiom/sql/presto/PrestoParser.h"
 #include "velox/dwio/common/tests/utils/DataFiles.h"
 #include "velox/exec/tests/utils/QueryAssertions.h"
 #include "velox/expression/Expr.h"
@@ -63,6 +64,18 @@ void QueryTestBase::TearDown() {
   queryCtx_.reset();
   optimizerPool_.reset();
   LocalRunnerTestBase::TearDown();
+}
+
+logical_plan::LogicalPlanNodePtr QueryTestBase::parseSelect(
+    std::string_view sql,
+    const std::string& defaultConnectorId) {
+  ::axiom::sql::presto::PrestoParser parser(
+      defaultConnectorId, std::nullopt, pool());
+
+  auto statement = parser.parse(sql);
+
+  VELOX_CHECK(statement->isSelect());
+  return statement->as<::axiom::sql::presto::SelectStatement>()->plan();
 }
 
 namespace {

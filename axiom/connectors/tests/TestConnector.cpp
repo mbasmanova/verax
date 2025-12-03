@@ -41,10 +41,9 @@ TestTable::TestTable(
         ok, "duplicate column name '{}' in table {}", columnName, name_);
   }
 
-  auto layout =
+  exportedLayout_ =
       std::make_unique<TestTableLayout>(name_, this, connector_, columnVector);
-  layouts_.push_back(layout.get());
-  exportedLayouts_.push_back(std::move(layout));
+  layouts_.push_back(exportedLayout_.get());
   pool_ = velox::memory::memoryManager()->addLeafPool(name_ + "_table");
 }
 
@@ -84,6 +83,70 @@ std::shared_ptr<Table> TestConnectorMetadata::findTableInternal(
 
 TablePtr TestConnectorMetadata::findTable(std::string_view name) {
   return findTableInternal(name);
+}
+
+namespace {
+class TestDiscretePredicates : public DiscretePredicates {
+ public:
+  TestDiscretePredicates(
+      std::vector<const Column*> columns,
+      std::vector<velox::Variant> values)
+      : DiscretePredicates(std::move(columns)), values_{std::move(values)} {}
+
+  std::vector<velox::Variant> next() override {
+    if (atEnd_) {
+      return {};
+    }
+
+    atEnd_ = true;
+
+    return std::move(values_);
+  }
+
+ private:
+  bool atEnd_{false};
+  std::vector<velox::Variant> values_;
+};
+} // namespace
+
+void TestTableLayout::setDiscreteValues(
+    const std::vector<std::string>& columnNames,
+    const std::vector<velox::Variant>& values) {
+  VELOX_CHECK(!columnNames.empty());
+
+  for (const auto& value : values) {
+    VELOX_CHECK_EQ(velox::TypeKind::ROW, value.kind());
+    VELOX_CHECK_EQ(columnNames.size(), value.row().size());
+  }
+
+  std::vector<const Column*> columns;
+  columns.reserve(columnNames.size());
+  for (const auto& columnName : columnNames) {
+    auto column = findColumn(columnName);
+    VELOX_CHECK_NOT_NULL(
+        column, "Column not found: {} in {}", columnName, name());
+    columns.emplace_back(column);
+  }
+
+  discreteValueColumns_ = std::move(columns);
+  discreteValues_ = values;
+}
+
+const std::vector<const Column*>& TestTableLayout::discretePredicateColumns()
+    const {
+  return discreteValueColumns_;
+}
+
+std::unique_ptr<DiscretePredicates> TestTableLayout::discretePredicates(
+    [[maybe_unused]] const std::vector<const Column*>& columns) const {
+  if (discreteValueColumns_.empty()) {
+    return nullptr;
+  }
+
+  // TODO Add logic to prune 'discreteValues_' based on 'columns'.
+
+  return std::make_unique<TestDiscretePredicates>(
+      discreteValueColumns_, discreteValues_);
 }
 
 velox::connector::ColumnHandlePtr TestTableLayout::createColumnHandle(
@@ -136,8 +199,18 @@ void TestConnectorMetadata::appendData(
     std::string_view name,
     const velox::RowVectorPtr& data) {
   auto it = tables_.find(name);
-  VELOX_CHECK(it != tables_.end(), "no table {} exists", name);
+  VELOX_CHECK(it != tables_.end(), "Table doesn't exist: {}", name);
   it->second->addData(data);
+}
+
+void TestConnectorMetadata::setDiscreteValues(
+    const std::string& name,
+    const std::vector<std::string>& columnNames,
+    const std::vector<velox::Variant>& values) {
+  auto it = tables_.find(name);
+  VELOX_CHECK(it != tables_.end(), "Table doesn't exist: {}", name);
+
+  it->second->mutableLayout()->setDiscreteValues(columnNames, values);
 }
 
 TestDataSource::TestDataSource(
@@ -147,7 +220,7 @@ TestDataSource::TestDataSource(
     velox::memory::MemoryPool* pool)
     : outputType_(outputType), pool_(pool) {
   auto maybeTable = std::dynamic_pointer_cast<const TestTable>(table);
-  VELOX_CHECK(maybeTable, "table {} not a TestTable", table->name());
+  VELOX_CHECK(maybeTable, "Table is not a TestTable: {}", table->name());
   data_ = maybeTable->data();
 
   auto tableType = table->type();
@@ -245,6 +318,13 @@ void TestConnector::appendData(
     std::string_view name,
     const velox::RowVectorPtr& data) {
   metadata_->appendData(name, data);
+}
+
+void TestConnector::setDiscreteValues(
+    const std::string& name,
+    const std::vector<std::string>& columnNames,
+    const std::vector<velox::Variant>& values) {
+  metadata_->setDiscreteValues(name, columnNames, values);
 }
 
 std::shared_ptr<velox::connector::Connector> TestConnectorFactory::newConnector(

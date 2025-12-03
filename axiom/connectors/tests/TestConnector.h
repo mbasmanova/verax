@@ -44,6 +44,18 @@ class TestTableLayout : public TableLayout {
             /*lookupKeys=*/{},
             /*supportsScan=*/true) {}
 
+  /// Records discrete values to use in 'discretePredicateColumns' and
+  /// 'discretePredicates' APIs. If called repeatedly, overwrites previous
+  /// values.
+  void setDiscreteValues(
+      const std::vector<std::string>& columnNames,
+      const std::vector<velox::Variant>& values);
+
+  const std::vector<const Column*>& discretePredicateColumns() const override;
+
+  std::unique_ptr<DiscretePredicates> discretePredicates(
+      const std::vector<const Column*>& columns) const override;
+
   std::pair<int64_t, int64_t> sample(
       const velox::connector::ConnectorTableHandlePtr&,
       float,
@@ -70,6 +82,10 @@ class TestTableLayout : public TableLayout {
       std::vector<velox::core::TypedExprPtr>& rejectedFilters,
       velox::RowTypePtr dataColumns,
       std::optional<LookupKeys> lookupKeys) const override;
+
+ private:
+  std::vector<const Column*> discreteValueColumns_;
+  std::vector<velox::Variant> discreteValues_;
 };
 
 /// RowVectors are appended using the addData() interface and the vector
@@ -123,12 +139,16 @@ class TestTable : public Table {
     data_.push_back(copy);
   }
 
+  TestTableLayout* mutableLayout() {
+    return exportedLayout_.get();
+  }
+
  private:
   velox::connector::Connector* connector_;
   folly::F14FastMap<std::string, const Column*> columns_;
   std::vector<std::unique_ptr<Column>> exportedColumns_;
   std::vector<const TableLayout*> layouts_;
-  std::vector<std::unique_ptr<TableLayout>> exportedLayouts_;
+  std::unique_ptr<TestTableLayout> exportedLayout_;
   std::shared_ptr<velox::memory::MemoryPool> pool_;
   std::vector<velox::RowVectorPtr> data_;
 };
@@ -279,6 +299,11 @@ class TestConnectorMetadata : public ConnectorMetadata {
   /// into the internal memory pool associated with the table.
   void appendData(std::string_view name, const velox::RowVectorPtr& data);
 
+  void setDiscreteValues(
+      const std::string& name,
+      const std::vector<std::string>& columnNames,
+      const std::vector<velox::Variant>& values);
+
   bool dropTable(
       const ConnectorSessionPtr& session,
       std::string_view tableName,
@@ -393,6 +418,11 @@ class TestConnector : public velox::connector::Connector {
   /// DataSource corresponding to this table. Appended data is copied
   /// to the internal memory pool of the associated table.
   void appendData(std::string_view name, const velox::RowVectorPtr& data);
+
+  void setDiscreteValues(
+      const std::string& name,
+      const std::vector<std::string>& columnNames,
+      const std::vector<velox::Variant>& values);
 
   bool dropTableIfExists(const std::string& name);
 

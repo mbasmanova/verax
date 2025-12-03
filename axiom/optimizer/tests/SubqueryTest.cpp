@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include "axiom/connectors/tests/TestConnector.h"
 #include "axiom/optimizer/tests/HiveQueriesTestBase.h"
 #include "axiom/optimizer/tests/PlanMatcher.h"
 #include "axiom/optimizer/tests/QueryTestBase.h"
@@ -24,7 +25,26 @@ namespace {
 using namespace velox;
 namespace lp = facebook::axiom::logical_plan;
 
-class SubqueryTest : public test::HiveQueriesTestBase {};
+class SubqueryTest : public test::HiveQueriesTestBase {
+ protected:
+  static constexpr auto kTestConnectorId = "test";
+
+  void SetUp() override {
+    test::HiveQueriesTestBase::SetUp();
+
+    testConnector_ =
+        std::make_shared<connector::TestConnector>(kTestConnectorId);
+    velox::connector::registerConnector(testConnector_);
+  }
+
+  void TearDown() override {
+    velox::connector::unregisterConnector(kTestConnectorId);
+
+    HiveQueriesTestBase::TearDown();
+  }
+
+  std::shared_ptr<connector::TestConnector> testConnector_;
+};
 
 TEST_F(SubqueryTest, scalar) {
   // = <subquery>
@@ -83,6 +103,79 @@ TEST_F(SubqueryTest, scalar) {
                                .build(),
                            velox::core::JoinType::kAnti)
                        .build();
+
+    AXIOM_ASSERT_PLAN(plan, matcher);
+  }
+}
+
+TEST_F(SubqueryTest, foldable) {
+  testConnector_->addTable("t", ROW({"a", "ds"}, {INTEGER(), VARCHAR()}));
+  testConnector_->setDiscreteValues(
+      "t",
+      {"ds"},
+      {
+          Variant::row({"2025-10-29"}),
+          Variant::row({"2025-10-30"}),
+          Variant::row({"2025-10-31"}),
+          Variant::row({"2025-11-01"}),
+          Variant::row({"2025-11-02"}),
+          Variant::row({"2025-11-03"}),
+      });
+
+  auto parseSql = [&](const std::string& sql) {
+    return parseSelect(sql, kTestConnectorId);
+  };
+
+  auto makeMatcher = [&](const std::string& filter) {
+    return core::PlanMatcherBuilder().tableScan("t").filter(filter).build();
+  };
+
+  {
+    auto logicalPlan =
+        parseSql("SELECT * FROM t WHERE ds = (SELECT max(ds) FROM t)");
+
+    auto plan = toSingleNodePlan(logicalPlan);
+    auto matcher = makeMatcher("ds = '2025-11-03'");
+
+    AXIOM_ASSERT_PLAN(plan, matcher);
+  }
+
+  {
+    auto logicalPlan =
+        parseSql("SELECT * FROM t WHERE ds = (SELECT min(ds) FROM t)");
+
+    auto plan = toSingleNodePlan(logicalPlan);
+    auto matcher = makeMatcher("ds = '2025-10-29'");
+
+    AXIOM_ASSERT_PLAN(plan, matcher);
+  }
+
+  {
+    auto logicalPlan = parseSql(
+        "SELECT * FROM t WHERE ds = (SELECT max(ds) FROM t WHERE ds < '2025-11-02')");
+
+    auto plan = toSingleNodePlan(logicalPlan);
+    auto matcher = makeMatcher("ds = '2025-11-01'");
+
+    AXIOM_ASSERT_PLAN(plan, matcher);
+  }
+
+  {
+    auto logicalPlan = parseSql(
+        "SELECT * FROM t WHERE ds = (SELECT max(ds) FROM t WHERE ds like '%-10-%')");
+
+    auto plan = toSingleNodePlan(logicalPlan);
+    auto matcher = makeMatcher("ds = '2025-10-31'");
+
+    AXIOM_ASSERT_PLAN(plan, matcher);
+  }
+
+  {
+    auto logicalPlan = parseSql(
+        "SELECT * FROM t WHERE ds = (SELECT max(ds) FROM t WHERE ds < '2025-01-01')");
+
+    auto plan = toSingleNodePlan(logicalPlan);
+    auto matcher = makeMatcher("ds = null");
 
     AXIOM_ASSERT_PLAN(plan, matcher);
   }

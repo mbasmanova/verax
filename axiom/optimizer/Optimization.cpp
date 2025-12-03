@@ -697,29 +697,6 @@ void alignJoinSides(
   otherInput = repartition;
 }
 
-bool isRedundantProject(
-    const RelationOpPtr& input,
-    const ExprVector& exprs,
-    const ColumnVector& columns) {
-  const auto& inputColumns = input->columns();
-
-  if (inputColumns.size() != exprs.size()) {
-    return false;
-  }
-
-  for (auto i = 0; i < inputColumns.size(); ++i) {
-    if (inputColumns[i] != exprs[i]) {
-      return false;
-    }
-
-    if (inputColumns[i]->outputName() != columns[i]->outputName()) {
-      return false;
-    }
-  }
-
-  return true;
-}
-
 // Check if 'plan' is an identity projection. If so, return its input.
 // Otherwise, return 'plan'.
 const RelationOpPtr& maybeDropProject(const RelationOpPtr& plan) {
@@ -874,7 +851,7 @@ void Optimization::addPostprocess(
         maybeDropProject(plan),
         usedExprs,
         usedColumns,
-        isRedundantProject(plan, usedExprs, usedColumns));
+        Project::isRedundant(plan, usedExprs, usedColumns));
   }
 
   if (!dt->hasOrderBy() && dt->limit > kMaxLimitBeforeProject) {
@@ -884,20 +861,15 @@ void Optimization::addPostprocess(
   }
 }
 
-void Optimization::addAggregation(
-    DerivedTableCP dt,
-    RelationOpPtr& plan,
-    PlanState& state) const {
-  const auto* aggPlan = dt->aggregation;
+namespace {
 
-  PrecomputeProjection precompute(plan, dt, /*projectAllInputs=*/false);
-  auto groupingKeys =
-      precompute.toColumns(aggPlan->groupingKeys(), &aggPlan->columns());
+AggregateVector flattenAggregates(
+    const AggregateVector& aggregates,
+    PrecomputeProjection& precompute) {
+  AggregateVector flatAggregates;
+  flatAggregates.reserve(aggregates.size());
 
-  AggregateVector aggregates;
-  aggregates.reserve(aggPlan->aggregates().size());
-
-  for (const auto& agg : aggPlan->aggregates()) {
+  for (const auto& agg : aggregates) {
     ExprCP condition = nullptr;
     if (agg->condition()) {
       condition = precompute.toColumn(agg->condition());
@@ -905,7 +877,7 @@ void Optimization::addAggregation(
     auto args = precompute.toColumns(
         agg->args(), /*aliases=*/nullptr, /*preserveLiterals=*/true);
     auto orderKeys = precompute.toColumns(agg->orderKeys());
-    aggregates.emplace_back(
+    flatAggregates.emplace_back(
         make<Aggregate>(
             agg->name(),
             agg->value(),
@@ -917,6 +889,41 @@ void Optimization::addAggregation(
             std::move(orderKeys),
             agg->orderTypes()));
   }
+
+  return flatAggregates;
+}
+
+} // namespace
+
+// static
+RelationOpPtr Optimization::planSingleAggregation(
+    DerivedTableCP dt,
+    RelationOpPtr& input) {
+  const auto* aggPlan = dt->aggregation;
+
+  PrecomputeProjection precompute(input, dt, /*projectAllInputs=*/false);
+  auto groupingKeys =
+      precompute.toColumns(aggPlan->groupingKeys(), &aggPlan->columns());
+  auto aggregates = flattenAggregates(aggPlan->aggregates(), precompute);
+
+  return make<Aggregation>(
+      std::move(precompute).maybeProject(),
+      std::move(groupingKeys),
+      std::move(aggregates),
+      velox::core::AggregationNode::Step::kSingle,
+      aggPlan->columns());
+}
+
+void Optimization::addAggregation(
+    DerivedTableCP dt,
+    RelationOpPtr& plan,
+    PlanState& state) const {
+  const auto* aggPlan = dt->aggregation;
+
+  PrecomputeProjection precompute(plan, dt, /*projectAllInputs=*/false);
+  auto groupingKeys =
+      precompute.toColumns(aggPlan->groupingKeys(), &aggPlan->columns());
+  auto aggregates = flattenAggregates(aggPlan->aggregates(), precompute);
 
   plan = std::move(precompute).maybeProject();
   state.placed.add(aggPlan);
@@ -1114,7 +1121,7 @@ struct ProjectionBuilder {
 
   RelationOp* build(RelationOp* input) {
     return make<Project>(
-        input, exprs, columns, isRedundantProject(input, exprs, columns));
+        input, exprs, columns, Project::isRedundant(input, exprs, columns));
   }
 
   ColumnVector inputColumns() const {
