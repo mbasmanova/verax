@@ -37,6 +37,10 @@ class LogicalPlanMatcherBuilder {
 
   LogicalPlanMatcherBuilder& values(OnMatchCallback onMatch = nullptr);
 
+  LogicalPlanMatcherBuilder& values(
+      velox::RowTypePtr outputType,
+      OnMatchCallback onMatch = nullptr);
+
   LogicalPlanMatcherBuilder& filter(OnMatchCallback onMatch = nullptr);
 
   LogicalPlanMatcherBuilder& project(OnMatchCallback onMatch = nullptr);

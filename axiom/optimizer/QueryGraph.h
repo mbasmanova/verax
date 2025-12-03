@@ -889,13 +889,24 @@ struct BaseTable : public PlanObject {
 using BaseTableCP = const BaseTable*;
 
 struct ValuesTable : public PlanObject {
-  explicit ValuesTable(const logical_plan::ValuesNode& values)
-      : PlanObject{PlanType::kValuesTableNode}, values{values} {}
+  using Variants = const std::vector<velox::Variant>*;
+  using Vectors = const std::vector<velox::RowVectorPtr>*;
+  using Data = std::variant<Variants, Vectors>;
+
+  explicit ValuesTable(const velox::Type* _dataType, Data _data)
+      : PlanObject{PlanType::kValuesTableNode},
+        dataType{_dataType},
+        data{std::move(_data)},
+        cardinality_{cardinality(data)} {
+    VELOX_CHECK_NOT_NULL(dataType);
+  }
 
   /// Correlation name, distinguishes between uses of the same values node.
   Name cname{nullptr};
 
-  const logical_plan::ValuesNode& values;
+  const velox::Type* dataType;
+
+  const Data data;
 
   /// All columns referenced from this 'ValuesNode'.
   ColumnVector columns;
@@ -904,7 +915,7 @@ struct ValuesTable : public PlanObject {
   JoinEdgeVector joinedBy;
 
   float cardinality() const {
-    return static_cast<float>(values.cardinality());
+    return cardinality_;
   }
 
   bool isTable() const override {
@@ -914,6 +925,23 @@ struct ValuesTable : public PlanObject {
   void addJoinedBy(JoinEdgeP join);
 
   std::string toString() const override;
+
+ private:
+  static float cardinality(const Data& data) {
+    if (const auto* rows = std::get_if<Variants>(&data)) {
+      return (*rows)->size();
+    }
+
+    float cardinality = 0;
+    const auto* vectors = *std::get_if<Vectors>(&data);
+    for (auto& vector : *vectors) {
+      cardinality += vector->size();
+    }
+
+    return cardinality;
+  }
+
+  float cardinality_;
 };
 
 struct UnnestTable : public PlanObject {
