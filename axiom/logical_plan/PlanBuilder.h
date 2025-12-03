@@ -156,6 +156,21 @@ class PlanBuilder {
 
   PlanBuilder& values(const std::vector<velox::RowVectorPtr>& values);
 
+  PlanBuilder& values(
+      const std::vector<std::string>& names,
+      const std::vector<std::vector<ExprApi>>& values);
+
+  PlanBuilder& values(
+      const std::vector<std::string>& names,
+      const std::vector<std::vector<std::string>>& values) {
+    std::vector<std::vector<ExprApi>> exprs;
+    exprs.reserve(values.size());
+    for (const auto& expr : values) {
+      exprs.emplace_back(parse(expr));
+    }
+    return this->values(names, exprs);
+  }
+
   /// Equivalent to SELECT col1, col2,.. FROM <tableName>.
   PlanBuilder& tableScan(
       const std::string& connectorId,

@@ -98,6 +98,30 @@ class SetMatcher : public LogicalPlanMatcherImpl<SetNode> {
 
   SetOperation op_;
 };
+
+class ValuesMatcher : public LogicalPlanMatcherImpl<ValuesNode> {
+ public:
+  ValuesMatcher(
+      velox::RowTypePtr outputType,
+      std::function<void(const LogicalPlanNodePtr&)> onMatch)
+      : LogicalPlanMatcherImpl<ValuesNode>(std::move(onMatch)),
+        outputType_{std::move(outputType)} {}
+
+ private:
+  bool matchDetails(const ValuesNode& plan) const override {
+    const auto& outputType = plan.outputType();
+
+    EXPECT_EQ(velox::TypeKind::ROW, outputType->kind());
+    EXPECT_EQ(outputType_->size(), outputType->size());
+    EXPECT_TRUE(*outputType_ == *outputType)
+        << "Expected " << outputType_->toString() << ", but got "
+        << outputType->toString();
+
+    return !::testing::Test::HasNonfatalFailure();
+  }
+
+  const velox::RowTypePtr outputType_;
+};
 } // namespace
 
 LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::tableWrite(
@@ -121,6 +145,15 @@ LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::values(
   VELOX_USER_CHECK_NULL(matcher_);
   matcher_ =
       std::make_shared<LogicalPlanMatcherImpl<ValuesNode>>(std::move(onMatch));
+  return *this;
+}
+
+LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::values(
+    velox::RowTypePtr outputType,
+    OnMatchCallback onMatch) {
+  VELOX_USER_CHECK_NULL(matcher_);
+  matcher_ = std::make_shared<ValuesMatcher>(
+      std::move(outputType), std::move(onMatch));
   return *this;
 }
 

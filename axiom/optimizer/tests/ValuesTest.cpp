@@ -83,5 +83,30 @@ TEST_F(ValuesTest, complexTypes) {
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
+TEST_F(ValuesTest, expressions) {
+  auto logicalPlan = lp::PlanBuilder(/*enableCoersions=*/true)
+                         .values(
+                             {"a", "b", "c"},
+                             {
+                                 {"1 + 2", "cast(0.1 as real)", "'foo'"},
+                                 {"10 + 20", "cast(0.2 as real)", "null"},
+                             })
+                         .build();
+  auto plan = toSingleNodePlan(logicalPlan);
+
+  auto expected = makeRowVector(
+      {"a", "b", "c"},
+      {
+          makeFlatVector<int64_t>({3, 30}),
+          makeFlatVector<float>({0.1, 0.2}),
+          makeNullableFlatVector<std::string>({"foo", std::nullopt}),
+      });
+
+  auto matcher = core::PlanMatcherBuilder().values(expected->rowType()).build();
+  AXIOM_ASSERT_PLAN(plan, matcher);
+
+  checkSame(logicalPlan, {expected});
+}
+
 } // namespace
 } // namespace facebook::axiom::optimizer

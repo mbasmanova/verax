@@ -207,8 +207,7 @@ void ValuesTable::addJoinedBy(JoinEdgeP join) {
 
 std::string ValuesTable::toString() const {
   std::stringstream out;
-  out << "{" << PlanObject::toString();
-  out << values.id() << " " << cname << "}";
+  out << "{" << PlanObject::toString() << cname << "}";
   return out.str();
 }
 
@@ -218,8 +217,7 @@ void UnnestTable::addJoinedBy(JoinEdgeP join) {
 
 std::string UnnestTable::toString() const {
   std::stringstream out;
-  out << "{" << PlanObject::toString();
-  out << cname << "}";
+  out << "{" << PlanObject::toString() << cname << "}";
   return out.str();
 }
 

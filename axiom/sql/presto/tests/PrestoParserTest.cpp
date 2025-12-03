@@ -721,33 +721,27 @@ TEST_F(PrestoParserTest, lambda) {
 }
 
 TEST_F(PrestoParserTest, values) {
-  lp::ValuesNodePtr valuesNode;
-  auto matcher =
-      lp::test::LogicalPlanMatcherBuilder().values([&](const auto& node) {
-        valuesNode = std::dynamic_pointer_cast<const lp::ValuesNode>(node);
-      });
-
   {
+    auto matcher = lp::test::LogicalPlanMatcherBuilder().values(
+        ROW({"c0", "c1", "c2"}, {INTEGER(), DOUBLE(), VARCHAR()}));
+
     testSql(
         "SELECT * FROM (VALUES (1, 1.1, 'foo'), (2, null, 'bar'))", matcher);
-    ASSERT_TRUE(valuesNode != nullptr);
 
-    const auto& outputType = valuesNode->outputType();
-    ASSERT_EQ(TypeKind::ROW, outputType->kind());
-    ASSERT_EQ(3, outputType->size());
-    ASSERT_EQ(TypeKind::INTEGER, outputType->childAt(0)->kind());
-    ASSERT_EQ(TypeKind::DOUBLE, outputType->childAt(1)->kind());
-    ASSERT_EQ(TypeKind::VARCHAR, outputType->childAt(2)->kind());
+    testSql(
+        "SELECT * FROM (VALUES (1, null, 'foo'), (2, 2.2, 'bar'))", matcher);
   }
 
   {
+    auto matcher =
+        lp::test::LogicalPlanMatcherBuilder().values(ROW({"c0"}, {INTEGER()}));
     testSql("SELECT * FROM (VALUES (1), (2), (3), (4))", matcher);
-    ASSERT_TRUE(valuesNode != nullptr);
+  }
 
-    const auto& outputType = valuesNode->outputType();
-    ASSERT_EQ(TypeKind::ROW, outputType->kind());
-    ASSERT_EQ(1, outputType->size());
-    ASSERT_EQ(TypeKind::INTEGER, outputType->childAt(0)->kind());
+  {
+    auto matcher = lp::test::LogicalPlanMatcherBuilder().values(
+        ROW({"c0", "c1"}, {REAL(), INTEGER()}));
+    testSql("SELECT * FROM (VALUES (real '1', 1 + 2))", matcher);
   }
 }
 

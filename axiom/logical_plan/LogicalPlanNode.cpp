@@ -75,13 +75,13 @@ velox::RowTypePtr getType(const std::vector<velox::RowVectorPtr>& values) {
 
 } // namespace
 
-ValuesNode::ValuesNode(std::string id, velox::RowTypePtr rowType, Rows rows)
+ValuesNode::ValuesNode(std::string id, velox::RowTypePtr rowType, Variants rows)
     : LogicalPlanNode{NodeKind::kValues, std::move(id), {}, std::move(rowType)},
       cardinality_{rows.size()},
       data_{std::move(rows)} {
   UniqueNameChecker::check(outputType_->names());
 
-  for (const auto& row : std::get<Rows>(data_)) {
+  for (const auto& row : std::get<Variants>(data_)) {
     VELOX_USER_CHECK(
         row.isTypeCompatible(outputType_),
         "All rows should have compatible types: {} vs. {}",
@@ -90,7 +90,7 @@ ValuesNode::ValuesNode(std::string id, velox::RowTypePtr rowType, Rows rows)
   }
 }
 
-ValuesNode::ValuesNode(std::string id, Values values)
+ValuesNode::ValuesNode(std::string id, Vectors values)
     : LogicalPlanNode{NodeKind::kValues, std::move(id), {}, getType(values)},
       cardinality_{[&] {
         uint64_t cardinality = 0;
@@ -99,14 +99,36 @@ ValuesNode::ValuesNode(std::string id, Values values)
           VELOX_USER_CHECK(
               outputType_->equivalent(*value->type()),
               "All values should have equivalent types: {} vs. {}",
-              outputType_->toString(),
-              value->type()->toString());
+              value->type()->toString(),
+              outputType_->toString());
           cardinality += value->size();
         }
         return cardinality;
       }()},
       data_{std::move(values)} {
   UniqueNameChecker::check(outputType_->names());
+}
+
+ValuesNode::ValuesNode(
+    std::string id,
+    velox::RowTypePtr rowType,
+    std::vector<std::vector<ExprPtr>> rows)
+    : LogicalPlanNode{NodeKind::kValues, std::move(id), {}, std::move(rowType)},
+      cardinality_{rows.size()},
+      data_{std::move(rows)} {
+  UniqueNameChecker::check(outputType_->names());
+
+  for (const auto& row : std::get<Exprs>(data_)) {
+    VELOX_USER_CHECK_EQ(row.size(), outputType_->size());
+    for (auto i = 0; i < row.size(); ++i) {
+      const auto& type = row[i]->type();
+      VELOX_USER_CHECK(
+          outputType_->childAt(i)->equivalent(*type),
+          "All values should have equivalent types: {} vs. {}",
+          type->toString(),
+          outputType_->toString());
+    }
+  }
 }
 
 void ValuesNode::accept(
