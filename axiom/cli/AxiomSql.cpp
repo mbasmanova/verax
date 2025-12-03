@@ -123,6 +123,9 @@ class Connectors {
 int main(int argc, char** argv) {
   folly::Init init(&argc, &argv, false);
 
+  facebook::velox::memory::MemoryManager::initialize(
+      facebook::velox::memory::MemoryManager::Options{});
+
   facebook::axiom::Connectors connectors{FLAGS_data_path, FLAGS_data_format};
 
   axiom::sql::SqlQueryRunner runner;
