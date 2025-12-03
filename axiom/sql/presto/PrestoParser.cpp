@@ -595,8 +595,15 @@ class RelationPlanner : public AstVisitor {
       case NodeType::kBooleanLiteral:
         return lp::Lit(node->as<BooleanLiteral>()->value());
 
-      case NodeType::kLongLiteral:
-        return lp::Lit(node->as<LongLiteral>()->value());
+      case NodeType::kLongLiteral: {
+        const auto value = node->as<LongLiteral>()->value();
+        if (value >= std::numeric_limits<int32_t>::min() &&
+            value <= std::numeric_limits<int32_t>::max()) {
+          return lp::Lit(static_cast<int32_t>(value));
+        } else {
+          return lp::Lit(value);
+        }
+      }
 
       case NodeType::kDoubleLiteral:
         return lp::Lit(node->as<DoubleLiteral>()->value());

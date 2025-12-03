@@ -1336,19 +1336,27 @@ PlanBuilder& PlanBuilder::tableWrite(
       const auto index = schema->getChildIdxIfExists(name);
       VELOX_USER_CHECK(
           index.has_value(),
-          "Column not found: {} in table {}",
+          "Column not found: '{}' in table '{}'",
           name,
           tableName);
 
       const auto& inputType = columnExpressions[i]->type();
       const auto& schemaType = schema->childAt(index.value());
-      VELOX_USER_CHECK(
-          schemaType->equivalent(*inputType),
-          "Wrong column type: {} vs. {}, column {} in table {}",
-          inputType->toString(),
-          schemaType->toString(),
-          name,
-          tableName);
+
+      if (!schemaType->equivalent(*inputType)) {
+        if (enableCoersions_ &&
+            velox::TypeCoercer::coercible(inputType, schemaType)) {
+          columnExpressions[i] = std::make_shared<SpecialFormExpr>(
+              schemaType, SpecialForm::kCast, columnExpressions[i]);
+        } else {
+          VELOX_USER_FAIL(
+              "Wrong column type: {} vs. {}, column '{}' in table '{}'",
+              inputType->toString(),
+              schemaType->toString(),
+              name,
+              tableName);
+        }
+      }
     }
   }
 
