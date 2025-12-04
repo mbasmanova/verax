@@ -1743,10 +1743,10 @@ void ToGraph::makeValuesTable(const lp::ValuesNode& values) {
 
   if (const auto* rows =
           std::get_if<lp::ValuesNode::Variants>(&values.data())) {
-    data = &(*rows);
+    data = rows;
   } else if (
       const auto* rows = std::get_if<lp::ValuesNode::Vectors>(&values.data())) {
-    data = &(*rows);
+    data = rows;
   } else if (
       const auto* rows = std::get_if<lp::ValuesNode::Exprs>(&values.data())) {
     std::vector<velox::Variant> variants;

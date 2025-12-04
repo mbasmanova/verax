@@ -132,7 +132,7 @@ void TestTableLayout::setDiscreteValues(
   discreteValues_ = values;
 }
 
-const std::vector<const Column*>& TestTableLayout::discretePredicateColumns()
+std::span<const Column* const> TestTableLayout::discretePredicateColumns()
     const {
   return discreteValueColumns_;
 }
