@@ -108,14 +108,6 @@ struct DerivedTable : public PlanObject {
   /// represents a build side join.
   PlanObjectSet importedExistences;
 
-  /// The set of tables in import() '_tables' that are fully covered by this dt
-  /// and need not be considered outside of it. If 'firstTable' in import is a
-  /// group by dt, for example, some joins may be imported as reducing
-  /// existences but will still have to be considered by the enclosing query.
-  /// Such tables are not included in 'fullyImported' If 'firstTable' in import
-  /// is a base table, then 'fullyImported' is '_tables'.
-  PlanObjectSet fullyImported;
-
   /// True if this dt is already a reducing join imported to a build side. Do
   /// not try to further restrict this with probe side.
   bool noImportOfExists{false};
