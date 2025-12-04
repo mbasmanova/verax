@@ -201,19 +201,39 @@ void reducingJoinsRecursive(
   }
 }
 
+bool allowReducingInnerJoins(const JoinCandidate& candidate) {
+  if (!candidate.join->isInner()) {
+    return false;
+  }
+  if (candidate.tables[0]->is(PlanType::kDerivedTableNode)) {
+    return false;
+  }
+  return true;
+}
+
+// JoinCandidate.tables may contain a single derived table or one or more base
+// tables.
+void checkTables(const JoinCandidate& candidate) {
+  VELOX_DCHECK(!candidate.tables.empty());
+  if (candidate.tables[0]->is(PlanType::kDerivedTableNode)) {
+    VELOX_DCHECK_EQ(1, candidate.tables.size());
+  }
+}
+
 // For an inner join, see if can bundle reducing joins on the build.
 std::optional<JoinCandidate> reducingJoins(
     const PlanState& state,
     const JoinCandidate& candidate,
     bool enableReducingExistences) {
+  checkTables(candidate);
+
   std::vector<PlanObjectCP> tables;
   std::vector<PlanObjectSet> existences;
   float fanout = candidate.fanout;
 
   PlanObjectSet reducingSet;
-  if (candidate.join->isInner()) {
+  if (allowReducingInnerJoins(candidate)) {
     PlanObjectSet visited = state.placed;
-    VELOX_DCHECK(!candidate.tables.empty());
     visited.add(candidate.tables[0]);
     reducingSet.add(candidate.tables[0]);
     std::vector<PlanObjectCP> path{candidate.tables[0]};
@@ -240,15 +260,15 @@ std::optional<JoinCandidate> reducingJoins(
   }
 
   if (enableReducingExistences && !state.dt->noImportOfExists) {
-    PlanObjectSet exists;
-    float reduction = 1;
-    VELOX_DCHECK(!candidate.tables.empty());
     std::vector<PlanObjectCP> path{candidate.tables[0]};
     // Look for reducing joins that were not added before, also covering already
     // placed tables. This may copy reducing joins from a probe to the
     // corresponding build.
     reducingSet.add(candidate.tables[0]);
     reducingSet.unionSet(state.dt->importedExistences);
+
+    PlanObjectSet exists;
+    float reduction = 1;
     reducingJoinsRecursive(
         state,
         candidate.tables[0],
@@ -1200,7 +1220,8 @@ void Optimization::joinByHash(
     const JoinCandidate& candidate,
     PlanState& state,
     std::vector<NextJoin>& toTry) {
-  VELOX_DCHECK(!candidate.tables.empty());
+  checkTables(candidate);
+
   auto [build, probe] = candidate.joinSides();
 
   const auto partKeys = joinKeyPartition(plan, probe.keys);
@@ -1249,15 +1270,7 @@ void Optimization::joinByHash(
       candidate.existsFanout,
       needsShuffle);
 
-  // The build side tables are all joined if the first build is a
-  // table but if it is a derived table (most often with aggregation),
-  // only some of the tables may be fully joined.
-  if (candidate.tables[0]->is(PlanType::kDerivedTableNode)) {
-    state.placed.add(candidate.tables[0]);
-    state.placed.unionSet(buildPlan->fullyImported);
-  } else {
-    state.placed.unionSet(buildTables);
-  }
+  state.placed.unionSet(buildTables);
 
   PlanState buildState(state.optimization, state.dt, buildPlan);
   RelationOpPtr buildInput = buildPlan->op;
@@ -1392,7 +1405,8 @@ void Optimization::joinByHashRight(
     const JoinCandidate& candidate,
     PlanState& state,
     std::vector<NextJoin>& toTry) {
-  VELOX_DCHECK(!candidate.tables.empty());
+  checkTables(candidate);
+
   auto [probe, build] = candidate.joinSides();
 
   PlanStateSaver save(state, candidate);
@@ -1708,7 +1722,6 @@ void Optimization::placeDerivedTable(DerivedTableCP from, PlanState& state) {
   PlanObjectSet visited = state.placed;
   visited.add(from);
   visited.unionSet(state.dt->importedExistences);
-  visited.unionSet(state.dt->fullyImported);
 
   PlanObjectSet reducingSet;
   reducingSet.add(from);
@@ -1723,9 +1736,6 @@ void Optimization::placeDerivedTable(DerivedTableCP from, PlanState& state) {
     key.tables = reducingSet;
     key.columns = state.downstreamColumns();
     plan = makePlan(*state.dt, key, Distribution{}, PlanObjectSet{}, 1, ignore);
-    // Not all reducing joins are necessarily retained in the plan. Only mark
-    // the ones fully imported as placed.
-    state.placed.unionSet(plan->fullyImported);
     state.cost = plan->cost;
     makeJoins(plan->op, state);
   }
@@ -1875,10 +1885,8 @@ PlanP unionPlan(
     Aggregation* distinct) {
   auto& firstState = states[0];
 
-  PlanObjectSet fullyImported = inputPlans[0]->fullyImported;
   for (auto i = 1; i < states.size(); ++i) {
     const auto& otherCost = states[i].cost;
-    fullyImported.intersect(inputPlans[i]->fullyImported);
 
     firstState.cost.cost += otherCost.cost;
     firstState.cost.cardinality += otherCost.cardinality;
@@ -1886,9 +1894,7 @@ PlanP unionPlan(
   if (distinct) {
     firstState.addCost(*distinct);
   }
-  auto plan = make<Plan>(result, states[0]);
-  plan->fullyImported = fullyImported;
-  return plan;
+  return make<Plan>(result, states[0]);
 }
 
 float startingScore(PlanObjectCP table) {

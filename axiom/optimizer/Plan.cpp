@@ -100,8 +100,7 @@ Plan::Plan(RelationOpPtr op, const PlanState& state)
     : op(std::move(op)),
       cost(state.cost),
       tables(state.placed),
-      columns(exprColumns(state.targetExprs)),
-      fullyImported(state.dt->fullyImported) {}
+      columns(exprColumns(state.targetExprs)) {}
 
 bool Plan::isStateBetter(const PlanState& state, float margin) const {
   return cost.cost > state.cost.cost + margin;
