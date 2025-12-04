@@ -1242,7 +1242,12 @@ void Optimization::joinByHash(
   PlanObjectSet empty;
   bool needsShuffle = false;
   auto buildPlan = makePlan(
-      memoKey, forBuild, empty, candidate.existsFanout, state, needsShuffle);
+      *state.dt,
+      memoKey,
+      forBuild,
+      empty,
+      candidate.existsFanout,
+      needsShuffle);
 
   // The build side tables are all joined if the first build is a
   // table but if it is a derived table (most often with aggregation),
@@ -1414,14 +1419,13 @@ void Optimization::joinByHashRight(
   MemoKey memoKey{
       candidate.tables[0], probeColumns, probeTables, candidate.existences};
 
-  PlanObjectSet empty;
   bool needsShuffle = false;
   auto probePlan = makePlan(
+      *state.dt,
       memoKey,
       Distribution{plan->distribution().distributionType, {}},
-      empty,
+      PlanObjectSet{},
       candidate.existsFanout,
-      state,
       needsShuffle);
 
   PlanState probeState(state.optimization, state.dt, probePlan);
@@ -1658,7 +1662,8 @@ RelationOpPtr Optimization::placeSingleRowDt(
 
   PlanObjectSet empty;
   bool needsShuffle = false;
-  auto rightPlan = makePlan(memoKey, broadcast, empty, 1, state, needsShuffle);
+  auto rightPlan =
+      makePlan(*state.dt, memoKey, broadcast, empty, 1, needsShuffle);
 
   auto rightOp = rightPlan->op;
   if (needsShuffle) {
@@ -1692,7 +1697,8 @@ void Optimization::placeDerivedTable(DerivedTableCP from, PlanState& state) {
   key.tables.add(from);
 
   bool ignore = false;
-  auto plan = makePlan(key, Distribution{}, PlanObjectSet{}, 1, state, ignore);
+  auto plan =
+      makePlan(*state.dt, key, Distribution{}, PlanObjectSet{}, 1, ignore);
   state.cost = plan->cost;
 
   // Make plans based on the dt alone as first.
@@ -1716,10 +1722,11 @@ void Optimization::placeDerivedTable(DerivedTableCP from, PlanState& state) {
   if (reduction < 0.9) {
     key.tables = reducingSet;
     key.columns = state.downstreamColumns();
-    plan = makePlan(key, Distribution{}, PlanObjectSet{}, 1, state, ignore);
+    plan = makePlan(*state.dt, key, Distribution{}, PlanObjectSet{}, 1, ignore);
     // Not all reducing joins are necessarily retained in the plan. Only mark
     // the ones fully imported as placed.
     state.placed.unionSet(plan->fullyImported);
+    state.cost = plan->cost;
     makeJoins(plan->op, state);
   }
 }
@@ -2023,27 +2030,27 @@ void Optimization::makeJoins(RelationOpPtr plan, PlanState& state) {
 }
 
 PlanP Optimization::makePlan(
+    const DerivedTable& dt,
     const MemoKey& key,
     const Distribution& distribution,
     const PlanObjectSet& boundColumns,
     float existsFanout,
-    PlanState& state,
     bool& needsShuffle) {
   needsShuffle = false;
   if (key.firstTable->is(PlanType::kDerivedTableNode) &&
       key.firstTable->as<DerivedTable>()->setOp.has_value()) {
     return makeUnionPlan(
-        key, distribution, boundColumns, existsFanout, state, needsShuffle);
+        dt, key, distribution, boundColumns, existsFanout, needsShuffle);
   }
-  return makeDtPlan(key, distribution, existsFanout, state, needsShuffle);
+  return makeDtPlan(dt, key, distribution, existsFanout, needsShuffle);
 }
 
 PlanP Optimization::makeUnionPlan(
+    const DerivedTable& dt,
     const MemoKey& key,
     const Distribution& distribution,
     const PlanObjectSet& boundColumns,
     float existsFanout,
-    PlanState& state,
     bool& needsShuffle) {
   const auto* setDt = key.firstTable->as<DerivedTable>();
 
@@ -2060,12 +2067,7 @@ PlanP Optimization::makeUnionPlan(
 
     bool inputShuffle = false;
     auto inputPlan = makePlan(
-        inputKey,
-        distribution,
-        boundColumns,
-        existsFanout,
-        state,
-        inputShuffle);
+        dt, inputKey, distribution, boundColumns, existsFanout, inputShuffle);
     inputPlans.push_back(inputPlan);
     inputStates.emplace_back(*this, setDt, inputPlans.back());
     inputs.push_back(inputPlan->op);
@@ -2116,10 +2118,10 @@ PlanP Optimization::makeUnionPlan(
 }
 
 PlanP Optimization::makeDtPlan(
+    const DerivedTable& dt,
     const MemoKey& key,
     const Distribution& distribution,
     float existsFanout,
-    PlanState& state,
     bool& needsShuffle) {
   auto it = memo_.find(key);
   PlanSet* plans{};
@@ -2127,12 +2129,11 @@ PlanP Optimization::makeDtPlan(
     // Allocate temp DT in the arena. The DT may get flattened and then
     // PrecomputeProjection may create columns that reference that DT. Hence,
     // the DT's lifetime must extend to the lifetime of the optimization.
-    auto dt = make<DerivedTable>();
-    dt->cname = newCName("tmp_dt");
-    dt->import(
-        *state.dt, key.firstTable, key.tables, key.existences, existsFanout);
+    auto tmpDt = make<DerivedTable>();
+    tmpDt->cname = newCName("tmp_dt");
+    tmpDt->import(dt, key.firstTable, key.tables, key.existences, existsFanout);
 
-    PlanState inner(*this, dt);
+    PlanState inner(*this, tmpDt);
     if (key.firstTable->is(PlanType::kDerivedTableNode)) {
       inner.setTargetExprsForDt(key.columns);
     } else {
