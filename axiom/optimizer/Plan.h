@@ -64,12 +64,6 @@ struct Plan {
   /// Hash join builds placed in the plan. Allows reusing a build.
   HashBuildVector builds;
 
-  /// The tables/derived tables that are contained in this plan and need not be
-  /// addressed by enclosing plans. This is all the tables in a build side join
-  /// but not necessarily all tables that were added to a group by derived
-  /// table.
-  PlanObjectSet fullyImported;
-
   std::string printCost() const;
 
   std::string toString(bool detail) const;
