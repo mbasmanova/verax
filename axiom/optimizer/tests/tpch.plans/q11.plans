@@ -79,8 +79,8 @@ Project -> dt5.ps_partkey, dt5.value
                   t2.ps_suppkey = t3.s_suppkey
                 TableScan -> t2.ps_partkey, t2.ps_suppkey, t2.ps_availqty, t2.ps_supplycost
                   table: partsupp
-                HashBuild -> t3.s_suppkey, t3.s_nationkey, t4.n_nationkey
-                  Join INNER Hash -> t3.s_suppkey, t3.s_nationkey, t4.n_nationkey
+                HashBuild -> t3.s_suppkey
+                  Join INNER Hash -> t3.s_suppkey
                       t3.s_nationkey = t4.n_nationkey
                     TableScan -> t3.s_suppkey, t3.s_nationkey
                       table: supplier
@@ -98,8 +98,8 @@ Project -> dt5.ps_partkey, dt5.value
                   t14.ps_suppkey = t15.s_suppkey
                 TableScan -> t14.ps_suppkey, t14.ps_availqty, t14.ps_supplycost
                   table: partsupp
-                HashBuild -> t15.s_suppkey, t15.s_nationkey, t16.n_nationkey
-                  Join INNER Hash -> t15.s_suppkey, t15.s_nationkey, t16.n_nationkey
+                HashBuild -> t15.s_suppkey
+                  Join INNER Hash -> t15.s_suppkey
                       t15.s_nationkey = t16.n_nationkey
                     TableScan -> t15.s_suppkey, t15.s_nationkey
                       table: supplier
@@ -120,7 +120,7 @@ Fragment 0:  numWorkers=0:
           -- Project[6][expressions: (ps_partkey:BIGINT, "ps_partkey"), (dt1.__p33:DOUBLE, multiply("ps_supplycost",cast("ps_availqty" as DOUBLE)))] -> ps_partkey:BIGINT, "dt1.__p33":DOUBLE
             -- HashJoin[5][INNER ps_suppkey=s_suppkey] -> ps_partkey:BIGINT, ps_availqty:INTEGER, ps_supplycost:DOUBLE
               -- TableScan[1][table: partsupp, data columns: ROW<ps_partkey:BIGINT,ps_suppkey:BIGINT,ps_availqty:INTEGER,ps_supplycost:DOUBLE,ps_comment:VARCHAR>] -> ps_partkey:BIGINT, ps_suppkey:BIGINT, ps_availqty:INTEGER, ps_supplycost:DOUBLE
-              -- HashJoin[4][INNER s_nationkey=n_nationkey] -> s_suppkey:BIGINT, s_nationkey:BIGINT, n_nationkey:BIGINT
+              -- HashJoin[4][INNER s_nationkey=n_nationkey] -> s_suppkey:BIGINT
                 -- TableScan[2][table: supplier, data columns: ROW<s_suppkey:BIGINT,s_name:VARCHAR,s_address:VARCHAR,s_nationkey:BIGINT,s_phone:VARCHAR,s_acctbal:DOUBLE,s_comment:VARCHAR>] -> s_suppkey:BIGINT, s_nationkey:BIGINT
                 -- TableScan[3][table: nation, range filters: [(n_name, Filter(BytesValues, deterministic, no nulls))], data columns: ROW<n_nationkey:BIGINT,n_name:VARCHAR,n_regionkey:BIGINT,n_comment:VARCHAR>, filter column handles: [HiveColumnHandle [name: n_name, columnType: Regular, dataType: VARCHAR, requiredSubfields: [ ]]]] -> n_nationkey:BIGINT
         -- Project[15][expressions: (expr:DOUBLE, multiply("sum",0.0001))] -> expr:DOUBLE
@@ -128,7 +128,7 @@ Fragment 0:  numWorkers=0:
             -- Project[13][expressions: (dt13.__p65:DOUBLE, multiply("ps_supplycost_3",cast("ps_availqty_2" as DOUBLE)))] -> "dt13.__p65":DOUBLE
               -- HashJoin[12][INNER ps_suppkey_1=s_suppkey_5] -> ps_availqty_2:INTEGER, ps_supplycost_3:DOUBLE
                 -- TableScan[8][table: partsupp, data columns: ROW<ps_partkey:BIGINT,ps_suppkey:BIGINT,ps_availqty:INTEGER,ps_supplycost:DOUBLE,ps_comment:VARCHAR>] -> ps_suppkey_1:BIGINT, ps_availqty_2:INTEGER, ps_supplycost_3:DOUBLE
-                -- HashJoin[11][INNER s_nationkey_8=n_nationkey_12] -> s_suppkey_5:BIGINT, s_nationkey_8:BIGINT, n_nationkey_12:BIGINT
+                -- HashJoin[11][INNER s_nationkey_8=n_nationkey_12] -> s_suppkey_5:BIGINT
                   -- TableScan[9][table: supplier, data columns: ROW<s_suppkey:BIGINT,s_name:VARCHAR,s_address:VARCHAR,s_nationkey:BIGINT,s_phone:VARCHAR,s_acctbal:DOUBLE,s_comment:VARCHAR>] -> s_suppkey_5:BIGINT, s_nationkey_8:BIGINT
                   -- TableScan[10][table: nation, range filters: [(n_name, Filter(BytesValues, deterministic, no nulls))], data columns: ROW<n_nationkey:BIGINT,n_name:VARCHAR,n_regionkey:BIGINT,n_comment:VARCHAR>, filter column handles: [HiveColumnHandle [name: n_name, columnType: Regular, dataType: VARCHAR, requiredSubfields: [ ]]]] -> n_nationkey_12:BIGINT
 

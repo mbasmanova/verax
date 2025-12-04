@@ -66,8 +66,8 @@ Project (redundant) -> dt1.c_name, dt1.c_custkey, dt1.o_orderkey, dt1.o_orderdat
             t4.l_orderkey = t3.o_orderkey
           TableScan -> t4.l_orderkey, t4.l_quantity
             table: lineitem
-          HashBuild -> t2.c_custkey, t2.c_name, t3.o_orderkey, t3.o_custkey, t3.o_totalprice, t3.o_orderdate
-            Join INNER Hash -> t2.c_custkey, t2.c_name, t3.o_orderkey, t3.o_custkey, t3.o_totalprice, t3.o_orderdate
+          HashBuild -> t2.c_custkey, t2.c_name, t3.o_orderkey, t3.o_totalprice, t3.o_orderdate
+            Join INNER Hash -> t2.c_custkey, t2.c_name, t3.o_orderkey, t3.o_totalprice, t3.o_orderdate
                 t3.o_custkey = t2.c_custkey
               TableScan -> t3.o_orderkey, t3.o_custkey, t3.o_totalprice, t3.o_orderdate
                 table: orders
@@ -93,7 +93,7 @@ Fragment 0:  numWorkers=0:
     -- HashJoin[9][LEFT SEMI (FILTER) o_orderkey=l_orderkey_17] -> c_custkey:BIGINT, c_name:VARCHAR, o_orderkey:BIGINT, o_totalprice:DOUBLE, o_orderdate:DATE, l_quantity:DOUBLE
       -- HashJoin[4][INNER l_orderkey=o_orderkey] -> c_custkey:BIGINT, c_name:VARCHAR, o_orderkey:BIGINT, o_totalprice:DOUBLE, o_orderdate:DATE, l_quantity:DOUBLE
         -- TableScan[0][table: lineitem, data columns: ROW<l_orderkey:BIGINT,l_partkey:BIGINT,l_suppkey:BIGINT,l_linenumber:INTEGER,l_quantity:DOUBLE,l_extendedprice:DOUBLE,l_discount:DOUBLE,l_tax:DOUBLE,l_returnflag:VARCHAR,l_linestatus:VARCHAR,l_shipdate:DATE,l_commitdate:DATE,l_receiptdate:DATE,l_shipinstruct:VARCHAR,l_shipmode:VARCHAR,l_comment:VARCHAR>] -> l_orderkey:BIGINT, l_quantity:DOUBLE
-        -- HashJoin[3][INNER o_custkey=c_custkey] -> c_custkey:BIGINT, c_name:VARCHAR, o_orderkey:BIGINT, o_custkey:BIGINT, o_totalprice:DOUBLE, o_orderdate:DATE
+        -- HashJoin[3][INNER o_custkey=c_custkey] -> c_custkey:BIGINT, c_name:VARCHAR, o_orderkey:BIGINT, o_totalprice:DOUBLE, o_orderdate:DATE
           -- TableScan[1][table: orders, data columns: ROW<o_orderkey:BIGINT,o_custkey:BIGINT,o_orderstatus:VARCHAR,o_totalprice:DOUBLE,o_orderdate:DATE,o_orderpriority:VARCHAR,o_clerk:VARCHAR,o_shippriority:INTEGER,o_comment:VARCHAR>] -> o_orderkey:BIGINT, o_custkey:BIGINT, o_totalprice:DOUBLE, o_orderdate:DATE
           -- TableScan[2][table: customer, data columns: ROW<c_custkey:BIGINT,c_name:VARCHAR,c_address:VARCHAR,c_nationkey:BIGINT,c_phone:VARCHAR,c_acctbal:DOUBLE,c_mktsegment:VARCHAR,c_comment:VARCHAR>] -> c_custkey:BIGINT, c_name:VARCHAR
       -- Project[8][expressions: (l_orderkey_17:BIGINT, "l_orderkey_0")] -> l_orderkey_17:BIGINT

@@ -117,8 +117,8 @@ Project -> dt1.s_acctbal, dt1.s_name, dt1.n_name, dt1.p_partkey, dt1.p_mfgr, dt1
                         TableScan -> t2.p_partkey
                           table: part
                           single-column filters: eq(t2.p_size, 15) and like(t2.p_type, "%BRASS")
-                HashBuild -> t10.n_nationkey, t10.n_regionkey, t11.r_regionkey
-                  Join INNER Hash -> t10.n_nationkey, t10.n_regionkey, t11.r_regionkey
+                HashBuild -> t10.n_nationkey
+                  Join INNER Hash -> t10.n_nationkey
                       t10.n_regionkey = t11.r_regionkey
                     TableScan -> t10.n_nationkey, t10.n_regionkey
                       table: nation
@@ -126,13 +126,13 @@ Project -> dt1.s_acctbal, dt1.s_name, dt1.n_name, dt1.p_partkey, dt1.p_mfgr, dt1
                       TableScan -> t11.r_regionkey
                         table: region
                         single-column filters: eq(t11.r_name, "EUROPE")
-      HashBuild -> t3.s_suppkey, t3.s_name, t3.s_address, t3.s_nationkey, t3.s_phone, t3.s_acctbal, t3.s_comment, t5.n_nationkey, t5.n_name, t5.n_regionkey, t6.r_regionkey
-        Join INNER Hash -> t3.s_suppkey, t3.s_name, t3.s_address, t3.s_nationkey, t3.s_phone, t3.s_acctbal, t3.s_comment, t5.n_nationkey, t5.n_name, t5.n_regionkey, t6.r_regionkey
+      HashBuild -> t3.s_suppkey, t3.s_name, t3.s_address, t3.s_phone, t3.s_acctbal, t3.s_comment, t5.n_name
+        Join INNER Hash -> t3.s_suppkey, t3.s_name, t3.s_address, t3.s_phone, t3.s_acctbal, t3.s_comment, t5.n_name
             t3.s_nationkey = t5.n_nationkey
           TableScan -> t3.s_suppkey, t3.s_name, t3.s_address, t3.s_nationkey, t3.s_phone, t3.s_acctbal, t3.s_comment
             table: supplier
-          HashBuild -> t5.n_nationkey, t5.n_name, t5.n_regionkey, t6.r_regionkey
-            Join INNER Hash -> t5.n_nationkey, t5.n_name, t5.n_regionkey, t6.r_regionkey
+          HashBuild -> t5.n_nationkey, t5.n_name
+            Join INNER Hash -> t5.n_nationkey, t5.n_name
                 t5.n_regionkey = t6.r_regionkey
               TableScan -> t5.n_nationkey, t5.n_name, t5.n_regionkey
                 table: nation
@@ -160,12 +160,12 @@ Fragment 0:  numWorkers=0:
                 -- HashJoin[24][LEFT SEMI (FILTER) ps_partkey_0=p_partkey] -> ps_partkey_0:BIGINT, ps_suppkey_1:BIGINT, ps_supplycost_3:DOUBLE
                   -- TableScan[22][table: partsupp, data columns: ROW<ps_partkey:BIGINT,ps_suppkey:BIGINT,ps_availqty:INTEGER,ps_supplycost:DOUBLE,ps_comment:VARCHAR>] -> ps_partkey_0:BIGINT, ps_suppkey_1:BIGINT, ps_supplycost_3:DOUBLE
                   -- TableScan[23][table: part, range filters: [(p_size, BigintRange: [15, 15] no nulls)], remaining filter: (like("p_type",%BRASS)), data columns: ROW<p_partkey:BIGINT,p_name:VARCHAR,p_mfgr:VARCHAR,p_brand:VARCHAR,p_type:VARCHAR,p_size:INTEGER,p_container:VARCHAR,p_retailprice:DOUBLE,p_comment:VARCHAR>, filter column handles: [HiveColumnHandle [name: p_type, columnType: Regular, dataType: VARCHAR, requiredSubfields: [ ]], HiveColumnHandle [name: p_size, columnType: Regular, dataType: INTEGER, requiredSubfields: [ ]]]] -> p_partkey:BIGINT
-              -- HashJoin[28][INNER n_regionkey_14=r_regionkey_16] -> n_nationkey_12:BIGINT, n_regionkey_14:BIGINT, r_regionkey_16:BIGINT
+              -- HashJoin[28][INNER n_regionkey_14=r_regionkey_16] -> n_nationkey_12:BIGINT
                 -- TableScan[26][table: nation, data columns: ROW<n_nationkey:BIGINT,n_name:VARCHAR,n_regionkey:BIGINT,n_comment:VARCHAR>] -> n_nationkey_12:BIGINT, n_regionkey_14:BIGINT
                 -- TableScan[27][table: region, range filters: [(r_name, Filter(BytesValues, deterministic, no nulls))], data columns: ROW<r_regionkey:BIGINT,r_name:VARCHAR,r_comment:VARCHAR>, filter column handles: [HiveColumnHandle [name: r_name, columnType: Regular, dataType: VARCHAR, requiredSubfields: [ ]]]] -> r_regionkey_16:BIGINT
-      -- HashJoin[37][INNER s_nationkey=n_nationkey] -> s_suppkey:BIGINT, s_name:VARCHAR, s_address:VARCHAR, s_nationkey:BIGINT, s_phone:VARCHAR, s_acctbal:DOUBLE, s_comment:VARCHAR, n_nationkey:BIGINT, n_name:VARCHAR, n_regionkey:BIGINT, r_regionkey:BIGINT
+      -- HashJoin[37][INNER s_nationkey=n_nationkey] -> s_suppkey:BIGINT, s_name:VARCHAR, s_address:VARCHAR, s_phone:VARCHAR, s_acctbal:DOUBLE, s_comment:VARCHAR, n_name:VARCHAR
         -- TableScan[33][table: supplier, data columns: ROW<s_suppkey:BIGINT,s_name:VARCHAR,s_address:VARCHAR,s_nationkey:BIGINT,s_phone:VARCHAR,s_acctbal:DOUBLE,s_comment:VARCHAR>] -> s_suppkey:BIGINT, s_name:VARCHAR, s_address:VARCHAR, s_nationkey:BIGINT, s_phone:VARCHAR, s_acctbal:DOUBLE, s_comment:VARCHAR
-        -- HashJoin[36][INNER n_regionkey=r_regionkey] -> n_nationkey:BIGINT, n_name:VARCHAR, n_regionkey:BIGINT, r_regionkey:BIGINT
+        -- HashJoin[36][INNER n_regionkey=r_regionkey] -> n_nationkey:BIGINT, n_name:VARCHAR
           -- TableScan[34][table: nation, data columns: ROW<n_nationkey:BIGINT,n_name:VARCHAR,n_regionkey:BIGINT,n_comment:VARCHAR>] -> n_nationkey:BIGINT, n_name:VARCHAR, n_regionkey:BIGINT
           -- TableScan[35][table: region, range filters: [(r_name, Filter(BytesValues, deterministic, no nulls))], data columns: ROW<r_regionkey:BIGINT,r_name:VARCHAR,r_comment:VARCHAR>, filter column handles: [HiveColumnHandle [name: r_name, columnType: Regular, dataType: VARCHAR, requiredSubfields: [ ]]]] -> r_regionkey:BIGINT
 

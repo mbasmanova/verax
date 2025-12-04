@@ -264,6 +264,22 @@ void JoinEdge::addEquality(ExprCP left, ExprCP right, bool update) {
   }
 }
 
+JoinEdge* JoinEdge::reverse(JoinEdge& join) {
+  VELOX_CHECK(join.isInner(), "JoinEdge::reverse only supports inner joins");
+
+  auto* reversed = JoinEdge::makeInner(join.rightTable_, join.leftTable_);
+
+  // Swap the join keys
+  for (auto i = 0; i < join.numKeys(); ++i) {
+    reversed->addEquality(join.rightKeys_[i], join.leftKeys_[i], false);
+  }
+
+  // Swap the fanouts.
+  reversed->setFanouts(join.rlFanout_, join.lrFanout_);
+
+  return reversed;
+}
+
 std::pair<std::string, bool> JoinEdge::sampleKey() const {
   if (!leftTable_ || leftTable_->isNot(PlanType::kTableNode) ||
       rightTable_->isNot(PlanType::kTableNode)) {

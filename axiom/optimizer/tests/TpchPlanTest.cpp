@@ -225,7 +225,54 @@ TEST_F(TpchPlanTest, q04) {
 TEST_F(TpchPlanTest, q05) {
   checkTpchSql(5);
 
-  // TODO Verify the plan.
+  // The filters are on region and order date. There is also a diamond between
+  // supplier and customer, this being that they have the same nation.
+  //
+  // Lineitem is the driving table that is joined to 1/5 of supplier and then
+  // 1/7 of orders. Finally we join with customer on c_custkey and c_nationkey.
+  // The build of customer could have been restricted on c_nationkey being in
+  // the range of s_nationkey but we did not pick this restriction because this
+  // would have gone through a single equality in a join edge of two equalities.
+  // The plan is otherwise good and the extra reduction on customer ends up not
+  // being very important. This is a possible enhancement for completeness.
+
+  auto startMatcher = [&](const std::string& tableName) {
+    return core::PlanMatcherBuilder().tableScan(tableName);
+  };
+
+  // agg((
+  //   (lineitem INNER ((orders INNER customer) INNER (nation INNER region)))
+  //   INNER
+  //   (supplier LEFT SEMI (FILTER) (nation INNER region))
+  // ))
+
+  auto joinNationWithRegion = startMatcher("nation").hashJoin(
+      core::PlanMatcherBuilder()
+          .hiveScan("region", test::eq("r_name", "ASIA"))
+          .build(),
+      core::JoinType::kInner);
+
+  auto matcher =
+      startMatcher("lineitem")
+          .hashJoin(
+              startMatcher("orders")
+                  .hashJoin(
+                      startMatcher("customer").build(), core::JoinType::kInner)
+                  .hashJoin(
+                      joinNationWithRegion.build(), core::JoinType::kInner)
+                  .build())
+          .hashJoin(startMatcher("supplier")
+                        .hashJoin(
+                            joinNationWithRegion.project().build(),
+                            core::JoinType::kLeftSemiFilter)
+                        .build())
+          .project()
+          .aggregation()
+          .orderBy()
+          .build();
+
+  auto plan = planTpch(5);
+  AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
 TEST_F(TpchPlanTest, q06) {
