@@ -51,7 +51,7 @@ class TestTableLayout : public TableLayout {
       const std::vector<std::string>& columnNames,
       const std::vector<velox::Variant>& values);
 
-  const std::vector<const Column*>& discretePredicateColumns() const override;
+  std::span<const Column* const> discretePredicateColumns() const override;
 
   std::unique_ptr<DiscretePredicates> discretePredicates(
       const std::vector<const Column*>& columns) const override;

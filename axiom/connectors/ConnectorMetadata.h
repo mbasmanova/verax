@@ -374,9 +374,8 @@ class TableLayout {
   /// Set of columns that have discrete values that can be enumerated using
   /// 'discretePredicates' API.
   /// For example, Hive connector returns a list of partition keys.
-  virtual const std::vector<const Column*>& discretePredicateColumns() const {
-    static const std::vector<const Column*> kEmpty;
-    return kEmpty;
+  virtual std::span<const Column* const> discretePredicateColumns() const {
+    return {};
   }
 
   /// Returns an iterator into the list of discrete values of the specified
