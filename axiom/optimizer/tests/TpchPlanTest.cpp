@@ -489,7 +489,41 @@ TEST_F(TpchPlanTest, q18) {
 TEST_F(TpchPlanTest, q19) {
   checkTpchSql(19);
 
-  // TODO Verify the plan.
+  // The trick is to extract common pieces to push down into the scan of
+  // lineitem and part from the OR of three ANDs in the single where clause. We
+  // extract the join condition that is present in all three disjuncts of the
+  // or. Then we extract an OR to push down into the scan of part and lineitem.
+  // We build on part, as it is the smaller table.
+
+  auto lineitemFilters =
+      common::test::SubfieldFiltersBuilder()
+          .add("l_shipinstruct", exec::equal("DELIVER IN PERSON"))
+          .add(
+              "l_shipmode",
+              exec::in(std::vector<std::string>{"AIR", "AIR REG"}))
+          .add("l_quantity", exec::betweenDouble(1.0, 30.0))
+          .build();
+
+  auto matcher =
+      core::PlanMatcherBuilder()
+          .hiveScan("lineitem", std::move(lineitemFilters))
+          .hashJoin(
+              core::PlanMatcherBuilder()
+                  .hiveScan(
+                      "part",
+                      {},
+                      "\"or\"(\"and\"(p_size between 1 and 15, (p_brand = 'Brand#34' AND p_container in ('LG CASE', 'LG BOX', 'LG PACK', 'LG PKG'))), "
+                      "   \"or\"(\"and\"(p_size between 1 and 5, (p_brand = 'Brand#12' AND p_container in ('SM CASE', 'SM BOX', 'SM PACK', 'SM PKG'))), "
+                      "          \"and\"(p_size between 1 and 10, (p_brand = 'Brand#23' AND p_container in ('MED BAG', 'MED BOX', 'MED PKG', 'MED PACK')))))")
+                  .build(),
+              core::JoinType::kInner)
+          .filter()
+          .project()
+          .aggregation()
+          .build();
+
+  auto plan = planTpch(19);
+  AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
 TEST_F(TpchPlanTest, q20) {
