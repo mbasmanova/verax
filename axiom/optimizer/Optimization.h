@@ -183,38 +183,37 @@ class Optimization {
   // Retrieves or makes a plan from 'key'. 'key' specifies a set of top level
   // joined tables or a hash join build side table or join.
   //
+  // @param dt the derived table to plan.
   // @param distribution the desired output distribution or a distribution with
   // no partitioning if this does not matter.
   // @param boundColumns a set of columns that are lookup keys for an index
   // based path through the joins in 'key'.
-  // #param existsFanout the selectivity for the 'existences' in 'key', i.e.
+  // @param existsFanout the selectivity for the 'existences' in 'key', i.e.
   // extra reducing joins for a hash join build side, reflecting reducing joins
   // on the probe side. 1 if none.
-  // @param state the state of the caller, empty for a top level call and the
-  // state with the planned objects so far if planning a derived table.
   // @param needsShuffle set to true if a shuffle is needed to align the result
   // of the made plan with 'distribution'.
   PlanP makePlan(
+      const DerivedTable& dt,
       const MemoKey& key,
       const Distribution& distribution,
       const PlanObjectSet& boundColumns,
       float existsFanout,
-      PlanState& state,
       bool& needsShuffle);
 
   PlanP makeUnionPlan(
+      const DerivedTable& dt,
       const MemoKey& key,
       const Distribution& distribution,
       const PlanObjectSet& boundColumns,
       float existsFanout,
-      PlanState& state,
       bool& needsShuffle);
 
   PlanP makeDtPlan(
+      const DerivedTable& dt,
       const MemoKey& key,
       const Distribution& distribution,
       float existsFanout,
-      PlanState& state,
       bool& needsShuffle);
 
   // Returns a sorted list of candidates to add to the plan in 'state'. The
