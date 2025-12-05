@@ -96,7 +96,7 @@ PlanBuilder& PlanBuilder::values(
 }
 
 namespace {
-ExprPtr applyCoersion(const ExprPtr& input, const velox::TypePtr& type) {
+ExprPtr applyCoercion(const ExprPtr& input, const velox::TypePtr& type) {
   if (input->isSpecialForm() &&
       input->as<SpecialFormExpr>()->form() == SpecialForm::kCast) {
     return std::make_shared<SpecialFormExpr>(
@@ -167,12 +167,12 @@ PlanBuilder& PlanBuilder::values(
         }
 
         if (velox::TypeCoercer::coercible(type, types[j])) {
-          row[j] = applyCoersion(row[j], types[j]);
+          row[j] = applyCoercion(row[j], types[j]);
         } else if (velox::TypeCoercer::coercible(types[j], type)) {
           types[j] = type;
 
           for (auto k = 0; k < i; ++k) {
-            exprs[k][j] = applyCoersion(exprs[k][j], types[j]);
+            exprs[k][j] = applyCoercion(exprs[k][j], types[j]);
           }
         }
       }
@@ -666,7 +666,7 @@ std::string toString(
   return out.str();
 }
 
-void applyCoersions(
+void applyCoercions(
     std::vector<ExprPtr>& inputs,
     const std::vector<velox::TypePtr>& coersions) {
   if (coersions.empty()) {
@@ -720,7 +720,7 @@ ExprPtr resolveSpecialFormWithCoersions(
       resolveCallableSpecialFormWithCoercions(name, toTypes(inputs), coercions);
   VELOX_CHECK_NOT_NULL(returnType);
 
-  applyCoersions(inputs, coercions);
+  applyCoercions(inputs, coercions);
   return std::make_shared<SpecialFormExpr>(returnType, form, inputs);
 }
 
@@ -744,6 +744,11 @@ ExprPtr tryResolveSpecialForm(
   }
 
   if (name == "coalesce") {
+    if (allowCoersions) {
+      return resolveSpecialFormWithCoersions(
+          SpecialForm::kCoalesce, velox::expression::kCoalesce, resolvedInputs);
+    }
+
     return std::make_shared<SpecialFormExpr>(
         resolvedInputs.at(0)->type(), SpecialForm::kCoalesce, resolvedInputs);
   }
@@ -794,6 +799,32 @@ ExprPtr tryResolveSpecialForm(
   }
 
   if (name == "in") {
+    if (allowCoersions) {
+      VELOX_USER_CHECK_GE(
+          resolvedInputs.size(), 2, "IN must have at least two inputs");
+
+      auto type = resolvedInputs.at(0)->type();
+      for (auto i = 1; i < resolvedInputs.size(); ++i) {
+        const auto& newType = resolvedInputs.at(i)->type();
+        if (type->equivalent(*newType)) {
+          continue;
+        }
+
+        if (velox::TypeCoercer::coercible(newType, type)) {
+          resolvedInputs[i] = applyCoercion(resolvedInputs[i], type);
+          continue;
+        }
+
+        if (velox::TypeCoercer::coercible(type, newType)) {
+          type = newType;
+
+          for (auto j = 0; j < i; ++j) {
+            resolvedInputs[j] = applyCoercion(resolvedInputs[j], type);
+          }
+        }
+      }
+    }
+
     return std::make_shared<SpecialFormExpr>(
         velox::BOOLEAN(), SpecialForm::kIn, resolvedInputs);
   }
@@ -996,7 +1027,7 @@ ExprPtr ExprResolver::tryResolveCallWithLambdas(
   std::vector<velox::TypePtr> coersions;
   auto returnType = resolveScalarFunction(
       name, toTypes(children), enableCoersions_, coersions);
-  applyCoersions(children, coersions);
+  applyCoercions(children, coersions);
 
   return std::make_shared<CallExpr>(returnType, name, children);
 }
@@ -1160,7 +1191,7 @@ ExprPtr ExprResolver::resolveScalarTypes(
     auto type = resolveScalarFunction(
         name, toTypes(inputs), enableCoersions_, coersions);
 
-    applyCoersions(inputs, coersions);
+    applyCoercions(inputs, coersions);
 
     auto folded = tryFoldCall(type, name, inputs);
     if (folded != nullptr) {
@@ -1429,7 +1460,7 @@ PlanBuilder& PlanBuilder::tableWrite(
         if (enableCoersions_ &&
             velox::TypeCoercer::coercible(inputType, schemaType)) {
           columnExpressions[i] =
-              applyCoersion(columnExpressions[i], schemaType);
+              applyCoercion(columnExpressions[i], schemaType);
         } else {
           VELOX_USER_FAIL(
               "Wrong column type: {} vs. {}, column '{}' in table '{}'",

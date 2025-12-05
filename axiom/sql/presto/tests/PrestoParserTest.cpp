@@ -386,18 +386,29 @@ TEST_F(PrestoParserTest, null) {
 }
 
 TEST_F(PrestoParserTest, in) {
-  auto matcher = lp::test::LogicalPlanMatcherBuilder().values().project();
-  testSql("SELECT 1 in (2,3,4)", matcher);
-  testSql("SELECT 1 IN (2,3,4)", matcher);
+  {
+    auto matcher = lp::test::LogicalPlanMatcherBuilder().values().project();
+    testSql("SELECT 1 in (2,3,4)", matcher);
+    testSql("SELECT 1 IN (2,3,4)", matcher);
 
-  testSql("SELECT 1 not in (2,3,4)", matcher);
-  testSql("SELECT 1 NOT IN (2,3,4)", matcher);
+    testSql("SELECT 1 not in (2,3,4)", matcher);
+    testSql("SELECT 1 NOT IN (2,3,4)", matcher);
+  }
+
+  // Coercions.
+  {
+    auto matcher = lp::test::LogicalPlanMatcherBuilder().tableScan().project();
+    testSql("SELECT n_nationkey in (1, 2, 3) FROM nation", matcher);
+  }
 }
 
 TEST_F(PrestoParserTest, coalesce) {
   auto matcher = lp::test::LogicalPlanMatcherBuilder().tableScan().project();
   testSql("SELECT coalesce(n_name, 'foo') FROM nation", matcher);
   testSql("SELECT COALESCE(n_name, 'foo') FROM nation", matcher);
+
+  // Coercions.
+  testSql("SELECT coalesce(n_regionkey, 1) FROM nation", matcher);
 }
 
 TEST_F(PrestoParserTest, concat) {
