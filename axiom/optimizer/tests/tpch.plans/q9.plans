@@ -67,14 +67,14 @@ Project -> dt1.nation, dt1.o_year, dt1.sum_profit
                 t6.o_orderkey = t4.l_orderkey
               TableScan -> t6.o_orderkey, t6.o_orderdate
                 table: orders
-              HashBuild -> t2.p_partkey, t4.l_orderkey, t4.l_partkey, t4.l_suppkey, t4.l_quantity, t4.l_extendedprice, t4.l_discount, t5.ps_partkey, t5.ps_suppkey, t5.ps_supplycost
-                Join INNER Hash -> t2.p_partkey, t4.l_orderkey, t4.l_partkey, t4.l_suppkey, t4.l_quantity, t4.l_extendedprice, t4.l_discount, t5.ps_partkey, t5.ps_suppkey, t5.ps_supplycost
+              HashBuild -> t4.l_orderkey, t4.l_suppkey, t4.l_quantity, t4.l_extendedprice, t4.l_discount, t5.ps_suppkey, t5.ps_supplycost
+                Join INNER Hash -> t4.l_orderkey, t4.l_suppkey, t4.l_quantity, t4.l_extendedprice, t4.l_discount, t5.ps_suppkey, t5.ps_supplycost
                     t4.l_suppkey = t5.ps_suppkey
                     t4.l_partkey = t5.ps_partkey
                   TableScan -> t4.l_orderkey, t4.l_partkey, t4.l_suppkey, t4.l_quantity, t4.l_extendedprice, t4.l_discount
                     table: lineitem
-                  HashBuild -> t2.p_partkey, t5.ps_partkey, t5.ps_suppkey, t5.ps_supplycost
-                    Join INNER Hash -> t2.p_partkey, t5.ps_partkey, t5.ps_suppkey, t5.ps_supplycost
+                  HashBuild -> t5.ps_partkey, t5.ps_suppkey, t5.ps_supplycost
+                    Join INNER Hash -> t5.ps_partkey, t5.ps_suppkey, t5.ps_supplycost
                         t5.ps_partkey = t2.p_partkey
                       TableScan -> t5.ps_partkey, t5.ps_suppkey, t5.ps_supplycost
                         table: partsupp
@@ -101,9 +101,9 @@ Fragment 0:  numWorkers=0:
           -- HashJoin[20][INNER l_suppkey=s_suppkey] -> s_nationkey:BIGINT, l_quantity:DOUBLE, l_extendedprice:DOUBLE, l_discount:DOUBLE, ps_supplycost:DOUBLE, o_orderdate:DATE
             -- HashJoin[18][INNER o_orderkey=l_orderkey] -> l_suppkey:BIGINT, l_quantity:DOUBLE, l_extendedprice:DOUBLE, l_discount:DOUBLE, ps_suppkey:BIGINT, ps_supplycost:DOUBLE, o_orderdate:DATE
               -- TableScan[12][table: orders, data columns: ROW<o_orderkey:BIGINT,o_custkey:BIGINT,o_orderstatus:VARCHAR,o_totalprice:DOUBLE,o_orderdate:DATE,o_orderpriority:VARCHAR,o_clerk:VARCHAR,o_shippriority:INTEGER,o_comment:VARCHAR>] -> o_orderkey:BIGINT, o_orderdate:DATE
-              -- HashJoin[17][INNER l_suppkey=ps_suppkey AND l_partkey=ps_partkey] -> p_partkey:BIGINT, l_orderkey:BIGINT, l_partkey:BIGINT, l_suppkey:BIGINT, l_quantity:DOUBLE, l_extendedprice:DOUBLE, l_discount:DOUBLE, ps_partkey:BIGINT, ps_suppkey:BIGINT, ps_supplycost:DOUBLE
+              -- HashJoin[17][INNER l_suppkey=ps_suppkey AND l_partkey=ps_partkey] -> l_orderkey:BIGINT, l_suppkey:BIGINT, l_quantity:DOUBLE, l_extendedprice:DOUBLE, l_discount:DOUBLE, ps_suppkey:BIGINT, ps_supplycost:DOUBLE
                 -- TableScan[13][table: lineitem, data columns: ROW<l_orderkey:BIGINT,l_partkey:BIGINT,l_suppkey:BIGINT,l_linenumber:INTEGER,l_quantity:DOUBLE,l_extendedprice:DOUBLE,l_discount:DOUBLE,l_tax:DOUBLE,l_returnflag:VARCHAR,l_linestatus:VARCHAR,l_shipdate:DATE,l_commitdate:DATE,l_receiptdate:DATE,l_shipinstruct:VARCHAR,l_shipmode:VARCHAR,l_comment:VARCHAR>] -> l_orderkey:BIGINT, l_partkey:BIGINT, l_suppkey:BIGINT, l_quantity:DOUBLE, l_extendedprice:DOUBLE, l_discount:DOUBLE
-                -- HashJoin[16][INNER ps_partkey=p_partkey] -> p_partkey:BIGINT, ps_partkey:BIGINT, ps_suppkey:BIGINT, ps_supplycost:DOUBLE
+                -- HashJoin[16][INNER ps_partkey=p_partkey] -> ps_partkey:BIGINT, ps_suppkey:BIGINT, ps_supplycost:DOUBLE
                   -- TableScan[14][table: partsupp, data columns: ROW<ps_partkey:BIGINT,ps_suppkey:BIGINT,ps_availqty:INTEGER,ps_supplycost:DOUBLE,ps_comment:VARCHAR>] -> ps_partkey:BIGINT, ps_suppkey:BIGINT, ps_supplycost:DOUBLE
                   -- TableScan[15][table: part, remaining filter: (like("p_name",%green%)), data columns: ROW<p_partkey:BIGINT,p_name:VARCHAR,p_mfgr:VARCHAR,p_brand:VARCHAR,p_type:VARCHAR,p_size:INTEGER,p_container:VARCHAR,p_retailprice:DOUBLE,p_comment:VARCHAR>, filter column handles: [HiveColumnHandle [name: p_name, columnType: Regular, dataType: VARCHAR, requiredSubfields: [ ]]]] -> p_partkey:BIGINT
             -- TableScan[19][table: supplier, data columns: ROW<s_suppkey:BIGINT,s_name:VARCHAR,s_address:VARCHAR,s_nationkey:BIGINT,s_phone:VARCHAR,s_acctbal:DOUBLE,s_comment:VARCHAR>] -> s_suppkey:BIGINT, s_nationkey:BIGINT

@@ -71,10 +71,10 @@ Project -> dt1.c_custkey, dt1.c_name, dt1.revenue, dt1.c_acctbal, dt1.n_name, dt
           TableScan -> t4.l_orderkey, t4.l_extendedprice, t4.l_discount
             table: lineitem
             single-column filters: eq(t4.l_returnflag, "R")
-          HashBuild -> t2.c_custkey, t2.c_name, t2.c_address, t2.c_nationkey, t2.c_phone, t2.c_acctbal, t2.c_comment, t3.o_orderkey, t3.o_custkey, t5.n_nationkey, t5.n_name
-            Join INNER Hash -> t2.c_custkey, t2.c_name, t2.c_address, t2.c_nationkey, t2.c_phone, t2.c_acctbal, t2.c_comment, t3.o_orderkey, t3.o_custkey, t5.n_nationkey, t5.n_name
+          HashBuild -> t2.c_custkey, t2.c_name, t2.c_address, t2.c_phone, t2.c_acctbal, t2.c_comment, t3.o_orderkey, t5.n_name
+            Join INNER Hash -> t2.c_custkey, t2.c_name, t2.c_address, t2.c_phone, t2.c_acctbal, t2.c_comment, t3.o_orderkey, t5.n_name
                 t2.c_nationkey = t5.n_nationkey
-              Join INNER Hash -> t2.c_custkey, t2.c_name, t2.c_address, t2.c_nationkey, t2.c_phone, t2.c_acctbal, t2.c_comment, t3.o_orderkey, t3.o_custkey
+              Join INNER Hash -> t2.c_custkey, t2.c_name, t2.c_address, t2.c_nationkey, t2.c_phone, t2.c_acctbal, t2.c_comment, t3.o_orderkey
                   t2.c_custkey = t3.o_custkey
                 TableScan -> t2.c_custkey, t2.c_name, t2.c_address, t2.c_nationkey, t2.c_phone, t2.c_acctbal, t2.c_comment
                   table: customer
@@ -96,8 +96,8 @@ Fragment 0:  numWorkers=0:
       -- Project[7][expressions: (c_custkey:BIGINT, "c_custkey"), (c_name:VARCHAR, "c_name"), (c_acctbal:DOUBLE, "c_acctbal"), (c_phone:VARCHAR, "c_phone"), (n_name:VARCHAR, "n_name"), (c_address:VARCHAR, "c_address"), (c_comment:VARCHAR, "c_comment"), (dt1.__p76:DOUBLE, multiply("l_extendedprice",minus(1,"l_discount")))] -> c_custkey:BIGINT, c_name:VARCHAR, c_acctbal:DOUBLE, c_phone:VARCHAR, n_name:VARCHAR, c_address:VARCHAR, c_comment:VARCHAR, "dt1.__p76":DOUBLE
         -- HashJoin[6][INNER l_orderkey=o_orderkey] -> c_custkey:BIGINT, c_name:VARCHAR, c_address:VARCHAR, c_phone:VARCHAR, c_acctbal:DOUBLE, c_comment:VARCHAR, l_extendedprice:DOUBLE, l_discount:DOUBLE, n_name:VARCHAR
           -- TableScan[0][table: lineitem, range filters: [(l_returnflag, Filter(BytesValues, deterministic, no nulls))], data columns: ROW<l_orderkey:BIGINT,l_partkey:BIGINT,l_suppkey:BIGINT,l_linenumber:INTEGER,l_quantity:DOUBLE,l_extendedprice:DOUBLE,l_discount:DOUBLE,l_tax:DOUBLE,l_returnflag:VARCHAR,l_linestatus:VARCHAR,l_shipdate:DATE,l_commitdate:DATE,l_receiptdate:DATE,l_shipinstruct:VARCHAR,l_shipmode:VARCHAR,l_comment:VARCHAR>, filter column handles: [HiveColumnHandle [name: l_returnflag, columnType: Regular, dataType: VARCHAR, requiredSubfields: [ ]]]] -> l_orderkey:BIGINT, l_extendedprice:DOUBLE, l_discount:DOUBLE
-          -- HashJoin[5][INNER c_nationkey=n_nationkey] -> c_custkey:BIGINT, c_name:VARCHAR, c_address:VARCHAR, c_nationkey:BIGINT, c_phone:VARCHAR, c_acctbal:DOUBLE, c_comment:VARCHAR, o_orderkey:BIGINT, o_custkey:BIGINT, n_nationkey:BIGINT, n_name:VARCHAR
-            -- HashJoin[3][INNER c_custkey=o_custkey] -> c_custkey:BIGINT, c_name:VARCHAR, c_address:VARCHAR, c_nationkey:BIGINT, c_phone:VARCHAR, c_acctbal:DOUBLE, c_comment:VARCHAR, o_orderkey:BIGINT, o_custkey:BIGINT
+          -- HashJoin[5][INNER c_nationkey=n_nationkey] -> c_custkey:BIGINT, c_name:VARCHAR, c_address:VARCHAR, c_phone:VARCHAR, c_acctbal:DOUBLE, c_comment:VARCHAR, o_orderkey:BIGINT, n_name:VARCHAR
+            -- HashJoin[3][INNER c_custkey=o_custkey] -> c_custkey:BIGINT, c_name:VARCHAR, c_address:VARCHAR, c_nationkey:BIGINT, c_phone:VARCHAR, c_acctbal:DOUBLE, c_comment:VARCHAR, o_orderkey:BIGINT
               -- TableScan[1][table: customer, data columns: ROW<c_custkey:BIGINT,c_name:VARCHAR,c_address:VARCHAR,c_nationkey:BIGINT,c_phone:VARCHAR,c_acctbal:DOUBLE,c_mktsegment:VARCHAR,c_comment:VARCHAR>] -> c_custkey:BIGINT, c_name:VARCHAR, c_address:VARCHAR, c_nationkey:BIGINT, c_phone:VARCHAR, c_acctbal:DOUBLE, c_comment:VARCHAR
               -- TableScan[2][table: orders, range filters: [(o_orderdate, BigintRange: [8674, 8765] no nulls)], data columns: ROW<o_orderkey:BIGINT,o_custkey:BIGINT,o_orderstatus:VARCHAR,o_totalprice:DOUBLE,o_orderdate:DATE,o_orderpriority:VARCHAR,o_clerk:VARCHAR,o_shippriority:INTEGER,o_comment:VARCHAR>, filter column handles: [HiveColumnHandle [name: o_orderdate, columnType: Regular, dataType: DATE, requiredSubfields: [ ]]]] -> o_orderkey:BIGINT, o_custkey:BIGINT
             -- TableScan[4][table: nation, data columns: ROW<n_nationkey:BIGINT,n_name:VARCHAR,n_regionkey:BIGINT,n_comment:VARCHAR>] -> n_nationkey:BIGINT, n_name:VARCHAR
