@@ -5,24 +5,31 @@ Axiom is licensed under the Apache 2.0 License. A copy of the license
 
 ## Code Organization
 
-Axiom is a set of reusable and extensible components designed to be compatible with Velox. These components are:
+Axiom is a set of reusable and extensible components designed to be compatible
+with Velox. These components are:
 
-* SQL Parser compatible with PrestoSQL dialect.
-  * top-level “sql” directory
-* Logical Plan - a representation of SQL relations and expressions.
-  * top-level “loglcal_plan” directory
-* Cost-based [Optimizer](axiom/optimizer/README.md) compatible with Velox execution.
-  * top-level “optimizer” directory
-* Query Runner capable of orchestrating multi-stage Velox execution.
-  * top-level “runner” directory
-* Connector - an extention of Velox Connector APIs to provide functionality necessary for query parsing and planning.
-  * top-level “connectors” directory
+- SQL Parser compatible with PrestoSQL dialect.
+  - top-level “sql” directory
+- Logical Plan - a representation of SQL relations and expressions.
+  - top-level “loglcal_plan” directory
+- Cost-based [Optimizer](axiom/optimizer/README.md) compatible with Velox
+  execution.
+  - top-level “optimizer” directory
+- Query Runner capable of orchestrating multi-stage Velox execution.
+  - top-level “runner” directory
+- Connector - an extention of Velox Connector APIs to provide functionality
+  necessary for query parsing and planning.
+  - top-level “connectors” directory
 
-These components can be used to put together single-node or distributed execution. Single-node execution can be single-threaded or multi-threaded.
+These components can be used to put together single-node or distributed
+execution. Single-node execution can be single-threaded or multi-threaded.
 
 <img src="axiom-components.png" alt="Axiom Components" width="400">
 
-An example of an end-to-end single-node system is a command line utility that provides interactive SQL query execution against in-memory TPC-H dataset and Hive dataset stored on local disk. The code is located in the top-level directory “cli”. To launch, run
+An example of an end-to-end single-node system is a command line utility that
+provides interactive SQL query execution against in-memory TPC-H dataset and
+Hive dataset stored on local disk. The code is located in the top-level
+directory “cli”. To launch, run
 
 ```
 $ buck run @mode/opt axiom/cli:cli
@@ -59,18 +66,29 @@ The query processing flow goes like this:
 
 ```mermaid
 flowchart TD
-    sql[SQL]
-    df[Dataframe]
-    sql --> lp[Logical Plan]
-    df --> lp
-    lp --> qg[Query Graph]
-    qg --> plan[Physical Plan]
-    plan --> velox[Velox Multi-Fragment Plan]
+    subgraph p[Parser & Analyzer]
+        sql["`SQL
+        (PrestoSQL, SparkSQL, PostgresSQL, etc.)`"]
+        df["`Dataframe
+        (PySpark)`"]
+        sql --> lp[Logical Plan]
+        df --> lp
+    end
+
+    subgraph o[Optimizer]
+        lp --> qg[Query Graph]
+        qg --> plan[Physical Plan]
+        plan --> velox[Velox Multi-Fragment Plan]
+    end
 ```
 
-SQL Parser parses the query into Abstract Syntax Tree (AST), then resolves names and types to produce a Logical Plan. The Optimizer takes a Logical Plan and produces an optimized executable multi-fragment Velox plan. Finally, LocalRunner creates and executed Velox tasks to produce a query result.
+SQL Parser parses the query into Abstract Syntax Tree (AST), then resolves names
+and types to produce a Logical Plan. The Optimizer takes a Logical Plan and
+produces an optimized executable multi-fragment Velox plan. Finally, LocalRunner
+creates and executed Velox tasks to produce a query result.
 
-EXPLAIN command can be used to print an optimized multi-fragment Velox plan without executing it.
+EXPLAIN command can be used to print an optimized multi-fragment Velox plan
+without executing it.
 
 ```
 SQL> explain  select count(*) from nation;
@@ -87,7 +105,8 @@ Fragment 1:  numWorkers=1:
        Input Fragment 0
 ```
 
-EXPLAIN ANALYZE command can be used to execute the query and print Velox plan annotated with runtime statistics.
+EXPLAIN ANALYZE command can be used to execute the query and print Velox plan
+annotated with runtime statistics.
 
 ```
 SQL> explain analyze select count(*) from nation;
@@ -111,9 +130,14 @@ Fragment 1:  numWorkers=1:
 ```
 
 ## Advance Velox Version
-Axiom integrates Velox as a Git submodule, referencing a specific commit of the Velox repository. Advance Velox when your changes depend on code in Velox that is not available in the current commit. To update the Velox version, follow these steps:
-* `git -C velox checkout main`
-* `git -C velox pull`
-* `git add velox`
-* Build and run tests to ensure everything works.
-* Submit a PR, get it approved and merged.
+
+Axiom integrates Velox as a Git submodule, referencing a specific commit of the
+Velox repository. Advance Velox when your changes depend on code in Velox that
+is not available in the current commit. To update the Velox version, follow
+these steps:
+
+- `git -C velox checkout main`
+- `git -C velox pull`
+- `git add velox`
+- Build and run tests to ensure everything works.
+- Submit a PR, get it approved and merged.
