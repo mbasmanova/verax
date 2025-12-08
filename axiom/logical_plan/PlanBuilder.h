@@ -45,11 +45,11 @@ class ExprResolver {
 
   ExprResolver(
       std::shared_ptr<velox::core::QueryCtx> queryCtx,
-      bool enableCoersions,
+      bool enableCoercions,
       FunctionRewriteHook hook = nullptr,
       std::shared_ptr<velox::memory::MemoryPool> pool = nullptr)
       : queryCtx_(std::move(queryCtx)),
-        enableCoersions_{enableCoersions},
+        enableCoercions_{enableCoercions},
         hook_(std::move(hook)),
         pool_(std::move(pool)) {}
 
@@ -92,7 +92,7 @@ class ExprResolver {
       const std::vector<ExprPtr>& inputs) const;
 
   std::shared_ptr<velox::core::QueryCtx> queryCtx_;
-  const bool enableCoersions_;
+  const bool enableCoercions_;
   FunctionRewriteHook hook_;
   std::shared_ptr<velox::memory::MemoryPool> pool_;
 };
@@ -128,22 +128,22 @@ class PlanBuilder {
       const std::optional<std::string>& alias,
       const std::string& name)>;
 
-  explicit PlanBuilder(bool enableCoersions = false, Scope outerScope = nullptr)
-      : PlanBuilder{Context{}, enableCoersions, std::move(outerScope)} {}
+  explicit PlanBuilder(bool enableCoercions = false, Scope outerScope = nullptr)
+      : PlanBuilder{Context{}, enableCoercions, std::move(outerScope)} {}
 
   explicit PlanBuilder(
       const Context& context,
-      bool enableCoersions = false,
+      bool enableCoercions = false,
       Scope outerScope = nullptr)
       : defaultConnectorId_{context.defaultConnectorId},
         planNodeIdGenerator_{context.planNodeIdGenerator},
         nameAllocator_{context.nameAllocator},
         outerScope_{std::move(outerScope)},
         parseOptions_{.parseInListAsArray = false},
-        enableCoersions_{enableCoersions},
+        enableCoercions_{enableCoercions},
         resolver_{
             context.queryCtx,
-            enableCoersions,
+            enableCoercions,
             context.hook,
             context.pool} {
     VELOX_CHECK_NOT_NULL(planNodeIdGenerator_);
@@ -488,7 +488,7 @@ class PlanBuilder {
   const std::shared_ptr<NameAllocator> nameAllocator_;
   const Scope outerScope_;
   const velox::parse::ParseOptions parseOptions_;
-  const bool enableCoersions_;
+  const bool enableCoercions_;
 
   LogicalPlanNodePtr node_;
 

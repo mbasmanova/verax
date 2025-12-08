@@ -157,7 +157,7 @@ PlanBuilder& PlanBuilder::values(
     }
   }
 
-  if (enableCoersions_) {
+  if (enableCoercions_) {
     for (auto i = 0; i < numRows; ++i) {
       auto& row = exprs[i];
       for (auto j = 0; j < numColumns; ++j) {
@@ -1026,7 +1026,7 @@ ExprPtr ExprResolver::tryResolveCallWithLambdas(
 
   std::vector<velox::TypePtr> coersions;
   auto returnType = resolveScalarFunction(
-      name, toTypes(children), enableCoersions_, coersions);
+      name, toTypes(children), enableCoercions_, coersions);
   applyCoercions(children, coersions);
 
   return std::make_shared<CallExpr>(returnType, name, children);
@@ -1180,7 +1180,7 @@ ExprPtr ExprResolver::resolveScalarTypes(
     }
 
     if (auto specialForm =
-            tryResolveSpecialForm(name, inputs, enableCoersions_)) {
+            tryResolveSpecialForm(name, inputs, enableCoercions_)) {
       if (auto folded = tryFoldSpecialForm(name, inputs)) {
         return folded;
       }
@@ -1189,7 +1189,7 @@ ExprPtr ExprResolver::resolveScalarTypes(
 
     std::vector<velox::TypePtr> coersions;
     auto type = resolveScalarFunction(
-        name, toTypes(inputs), enableCoersions_, coersions);
+        name, toTypes(inputs), enableCoercions_, coersions);
 
     applyCoercions(inputs, coersions);
 
@@ -1438,7 +1438,6 @@ PlanBuilder& PlanBuilder::tableWrite(
 
   if (kind == WriteKind::kInsert) {
     // Check input types.
-    // TODO Add coercions if necessary.
     auto* metadata = connector::ConnectorMetadata::metadata(connectorId);
     auto table = metadata->findTable(tableName);
     VELOX_USER_CHECK_NOT_NULL(table, "Table not found: {}", tableName);
@@ -1457,7 +1456,7 @@ PlanBuilder& PlanBuilder::tableWrite(
       const auto& schemaType = schema->childAt(index.value());
 
       if (!schemaType->equivalent(*inputType)) {
-        if (enableCoersions_ &&
+        if (enableCoercions_ &&
             velox::TypeCoercer::coercible(inputType, schemaType)) {
           columnExpressions[i] =
               applyCoercion(columnExpressions[i], schemaType);
