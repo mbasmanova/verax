@@ -1142,8 +1142,8 @@ TEST_F(PlanPrinterTest, specialForms) {
 TEST_F(PlanPrinterTest, lambda) {
   auto rowType = ROW({"a", "b"}, {BIGINT(), BIGINT()});
   std::vector<Variant> data{
-      Variant::row({1L, 10L}),
-      Variant::row({2L, 20L}),
+      Variant::row({1LL, 10LL}),
+      Variant::row({2LL, 20LL}),
   };
 
   auto plan = PlanBuilder()
@@ -1192,8 +1192,8 @@ TEST_F(PlanPrinterTest, lambda) {
 TEST_F(PlanPrinterTest, coercions) {
   auto rowType = ROW({"a", "b"}, {INTEGER(), BIGINT()});
   std::vector<Variant> data{
-      Variant::row({1, 10L}),
-      Variant::row({2, 20L}),
+      Variant::row({1, 10LL}),
+      Variant::row({2, 20LL}),
   };
 
   auto plan = PlanBuilder(/* enableCoersions */ true)
