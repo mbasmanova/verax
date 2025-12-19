@@ -37,7 +37,7 @@ TEST_F(FilterPushdownTest, throughAggregation) {
   {
     auto plan = toSingleNodePlan(logicalPlan);
     auto matcher = core::PlanMatcherBuilder()
-                       .hiveScan("orders", test::lt("o_custkey", 100L))
+                       .hiveScan("orders", test::lt("o_custkey", (int64_t)100))
                        .singleAggregation()
                        .filter("a0 > 200.0")
                        .build();
@@ -63,7 +63,7 @@ TEST_F(FilterPushdownTest, redundantCast) {
 
   auto plan = toSingleNodePlan(logicalPlan);
   auto matcher = core::PlanMatcherBuilder()
-                     .hiveScan("nation", test::lt("n_nationkey", 10L))
+                     .hiveScan("nation", test::lt("n_nationkey", (int64_t)10))
                      .build();
 
   AXIOM_ASSERT_PLAN(plan, matcher);
@@ -116,7 +116,7 @@ TEST_F(FilterPushdownTest, throughJoin) {
 
     auto matcher =
         core::PlanMatcherBuilder()
-            .hiveScan("nation", test::lt("n_nationkey", 10L))
+            .hiveScan("nation", test::lt("n_nationkey", (int64_t)10))
             .hashJoin(
                 startMatcher("region").build(), velox::core::JoinType::kInner)
             .aggregation()
@@ -136,14 +136,15 @@ TEST_F(FilterPushdownTest, throughJoin) {
 
     auto plan = toSingleNodePlan(logicalPlan);
 
-    auto matcher = startMatcher("nation")
-                       .hashJoin(
-                           core::PlanMatcherBuilder()
-                               .hiveScan("region", test::lt("r_regionkey", 10L))
-                               .build(),
-                           velox::core::JoinType::kInner)
-                       .aggregation()
-                       .build();
+    auto matcher =
+        startMatcher("nation")
+            .hashJoin(
+                core::PlanMatcherBuilder()
+                    .hiveScan("region", test::lt("r_regionkey", (int64_t)10))
+                    .build(),
+                velox::core::JoinType::kInner)
+            .aggregation()
+            .build();
 
     AXIOM_ASSERT_PLAN(plan, matcher);
   }

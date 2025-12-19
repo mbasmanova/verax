@@ -266,7 +266,7 @@ TEST_F(LocalHiveConnectorMetadataTest, createTable) {
 
   folly::F14FastMap<std::string, velox::Variant> options = {
       {HiveWriteOptions::kBucketedBy, velox::Variant::array({"key1"})},
-      {HiveWriteOptions::kBucketCount, 4L},
+      {HiveWriteOptions::kBucketCount, 4LL},
       {HiveWriteOptions::kSortedBy, velox::Variant::array({"key1", "key2"})},
       {HiveWriteOptions::kPartitionedBy, velox::Variant::array({"ds"})},
       {HiveWriteOptions::kFileFormat, "parquet"},
