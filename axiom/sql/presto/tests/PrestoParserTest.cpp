@@ -917,6 +917,28 @@ TEST_F(PrestoParserTest, values) {
   }
 }
 
+TEST_F(PrestoParserTest, tablesample) {
+  {
+    auto matcher = lp::test::LogicalPlanMatcherBuilder().tableScan().sample();
+
+    testSql("SELECT * FROM nation TABLESAMPLE BERNOULLI (10.0)", matcher);
+    testSql("SELECT * FROM nation TABLESAMPLE SYSTEM (1.5)", matcher);
+
+    testSql("SELECT * FROM nation TABLESAMPLE BERNOULLI (10)", matcher);
+    testSql("SELECT * FROM nation TABLESAMPLE BERNOULLI (1 + 2)", matcher);
+  }
+
+  {
+    auto matcher =
+        lp::test::LogicalPlanMatcherBuilder().tableScan().aggregate().sample();
+
+    testSql(
+        "SELECT * FROM (SELECT l_orderkey, count(*) FROM lineitem GROUP BY 1) "
+        "TABLESAMPLE BERNOULLI (1.5)",
+        matcher);
+  }
+}
+
 TEST_F(PrestoParserTest, everything) {
   auto matcher =
       lp::test::LogicalPlanMatcherBuilder()

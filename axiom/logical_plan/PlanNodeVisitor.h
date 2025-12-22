@@ -62,6 +62,9 @@ class PlanNodeVisitor {
       const TableWriteNode& node,
       PlanNodeVisitorContext& context) const = 0;
 
+  virtual void visit(const SampleNode& node, PlanNodeVisitorContext& context)
+      const = 0;
+
  protected:
   void visitInputs(const LogicalPlanNode& node, PlanNodeVisitorContext& ctx)
       const {

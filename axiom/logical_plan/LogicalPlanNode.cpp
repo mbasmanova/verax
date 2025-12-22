@@ -34,6 +34,7 @@ const auto& nodeKindNames() {
       {NodeKind::kSet, "SET"},
       {NodeKind::kUnnest, "UNNEST"},
       {NodeKind::kTableWrite, "TABLE_WRITE"},
+      {NodeKind::kSample, "SAMPLE"},
   };
   return kNames;
 }
@@ -419,7 +420,7 @@ void TableWriteNode::accept(
 
 namespace {
 
-folly::F14FastMap<WriteKind, std::string_view> writeKindNames() {
+const auto& writeKindNames() {
   static const folly::F14FastMap<WriteKind, std::string_view> kNames = {
       {WriteKind::kCreate, "CREATE"},
       {WriteKind::kInsert, "INSERT"},
@@ -432,6 +433,30 @@ folly::F14FastMap<WriteKind, std::string_view> writeKindNames() {
 
 } // namespace
 
-VELOX_DEFINE_ENUM_NAME(WriteKind, writeKindNames);
+AXIOM_DEFINE_ENUM_NAME(WriteKind, writeKindNames);
+
+namespace {
+
+const auto& sampleMethodNames() {
+  static const folly::F14FastMap<SampleNode::SampleMethod, std::string_view>
+      kNames = {
+          {SampleNode::SampleMethod::kBernoulli, "BERNOULLI"},
+          {
+              SampleNode::SampleMethod::kSystem,
+              "SYSTEM",
+          }};
+
+  return kNames;
+}
+
+} // namespace
+
+AXIOM_DEFINE_EMBEDDED_ENUM_NAME(SampleNode, SampleMethod, sampleMethodNames);
+
+void SampleNode::accept(
+    const PlanNodeVisitor& visitor,
+    PlanNodeVisitorContext& context) const {
+  visitor.visit(*this, context);
+}
 
 } // namespace facebook::axiom::logical_plan

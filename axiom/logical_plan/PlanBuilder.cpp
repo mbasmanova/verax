@@ -1505,6 +1505,51 @@ PlanBuilder& PlanBuilder::tableWrite(
       std::move(options));
 }
 
+PlanBuilder& PlanBuilder::sample(
+    double percentage,
+    SampleNode::SampleMethod sampleMethod) {
+  VELOX_USER_CHECK_NOT_NULL(node_, "Sample node cannot be a leaf node");
+  VELOX_USER_CHECK_GE(percentage, 0.0, "Sample percentage must be >= 0");
+  VELOX_USER_CHECK_LE(percentage, 100.0, "Sample percentage must be <= 100");
+
+  node_ = std::make_shared<SampleNode>(
+      nextId(),
+      std::move(node_),
+      std::make_shared<ConstantExpr>(
+          velox::DOUBLE(), std::make_shared<velox::Variant>(percentage)),
+      sampleMethod);
+
+  return *this;
+}
+
+PlanBuilder& PlanBuilder::sample(
+    const ExprApi& percentage,
+    SampleNode::SampleMethod sampleMethod) {
+  VELOX_USER_CHECK_NOT_NULL(node_, "Sample node cannot be a leaf node");
+
+  auto expr = resolveScalarTypes(percentage.expr());
+
+  if (!expr->type()->isDouble()) {
+    if (enableCoercions_) {
+      if (velox::TypeCoercer::coercible(expr->type(), velox::DOUBLE())) {
+        expr = applyCoercion(expr, velox::DOUBLE());
+      } else {
+        VELOX_USER_FAIL(
+            "Sample percentage must be coercible to double: {}",
+            expr->toString());
+      }
+    } else {
+      VELOX_USER_FAIL(
+          "Sample percentage must be a double: {}", expr->toString());
+    }
+  }
+
+  node_ = std::make_shared<SampleNode>(
+      nextId(), std::move(node_), std::move(expr), sampleMethod);
+
+  return *this;
+}
+
 ExprPtr PlanBuilder::resolveInputName(
     const std::optional<std::string>& alias,
     const std::string& name) const {
