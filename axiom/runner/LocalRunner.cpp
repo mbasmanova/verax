@@ -437,6 +437,11 @@ void LocalRunner::makeStages(
           for (const auto& remote : sourceSplits) {
             task->addSplit(input.consumerNodeId, velox::exec::Split(remote));
           }
+        }
+      }
+
+      for (const auto& input : fragment.inputStages) {
+        for (auto& task : stage) {
           task->noMoreSplits(input.consumerNodeId);
         }
       }

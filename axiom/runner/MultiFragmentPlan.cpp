@@ -30,12 +30,13 @@ std::string MultiFragmentPlan::toString(
     taskPrefixToIndex[fragments_[i].taskPrefix] = i;
   }
 
-  // Map plan node to the index of the input fragment.
-  folly::F14FastMap<velox::core::PlanNodeId, int32_t> planNodeToIndex;
+  // Map plan node to indices of the input fragment.
+  folly::F14FastMap<velox::core::PlanNodeId, std::vector<int32_t>>
+      planNodeToIndices;
   for (const auto& fragment : fragments_) {
     for (const auto& input : fragment.inputStages) {
-      planNodeToIndex[input.consumerNodeId] =
-          taskPrefixToIndex[input.producerTaskPrefix];
+      planNodeToIndices[input.consumerNodeId].emplace_back(
+          taskPrefixToIndex[input.producerTaskPrefix]);
     }
   }
 
@@ -58,10 +59,15 @@ std::string MultiFragmentPlan::toString(
                  if (addContext != nullptr) {
                    addContext(planNodeId, indentation, stream);
                  }
-                 auto it = planNodeToIndex.find(planNodeId);
-                 if (it != planNodeToIndex.end()) {
-                   stream << indentation << "Input Fragment " << it->second
-                          << std::endl;
+                 auto it = planNodeToIndices.find(planNodeId);
+                 if (it != planNodeToIndices.end()) {
+                   if (it->second.size() == 1) {
+                     stream << indentation << "Input Fragment "
+                            << it->second.front() << std::endl;
+                   } else {
+                     stream << indentation << "Input Fragments "
+                            << folly::join(", ", it->second) << std::endl;
+                   }
                  }
                })
         << std::endl;

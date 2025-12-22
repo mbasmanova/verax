@@ -219,9 +219,7 @@ TEST_F(SetTest, unionJoin) {
           .singleAggregation({}, {"sum(1)"})
           .planNode();
 
-  // Skip distributed run. Problem with local exchange source with
-  // multiple inputs.
-  checkSame(logicalPlan, referencePlan, {.numWorkers = 1, .numDrivers = 4});
+  checkSame(logicalPlan, referencePlan);
 }
 
 // Checks
