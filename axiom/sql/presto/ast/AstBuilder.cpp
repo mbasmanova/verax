@@ -1215,7 +1215,18 @@ std::any AstBuilder::visitNullPredicate(
 std::any AstBuilder::visitDistinctFrom(
     PrestoSqlParser::DistinctFromContext* ctx) {
   trace("visitDistinctFrom");
-  return visitChildren(ctx);
+
+  auto leftExpr = visitExpression(ctx->value);
+  auto rightExpr = visitExpression(ctx->right);
+
+  auto distinctFrom = std::static_pointer_cast<Expression>(
+      std::make_shared<ComparisonExpression>(
+          getLocation(ctx),
+          ComparisonExpression::Operator::kIsDistinctFrom,
+          leftExpr,
+          rightExpr));
+
+  return wrapInNot(distinctFrom, ctx->NOT());
 }
 
 std::any AstBuilder::visitValueExpressionDefault(

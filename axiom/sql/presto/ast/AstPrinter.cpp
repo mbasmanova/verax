@@ -121,6 +121,8 @@ std::string toString(ComparisonExpression::Operator op) {
       return ">";
     case ComparisonExpression::Operator::kGreaterThanOrEqual:
       return ">=";
+    case ComparisonExpression::Operator::kIsDistinctFrom:
+      return "IS DISTINCT FROM";
     default:
       throw std::runtime_error("Unsupported comparison operator");
   }
