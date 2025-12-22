@@ -175,12 +175,26 @@ std::any AstBuilder::visitQuerySpecification(
 std::any AstBuilder::visitSampledRelation(
     PrestoSqlParser::SampledRelationContext* ctx) {
   trace("visitSampledRelation");
-  auto child = visit(ctx->aliasedRelation());
+  auto child = visitTyped<Relation>(ctx->aliasedRelation());
   if (!ctx->TABLESAMPLE()) {
     return child;
   }
 
-  VELOX_NYI("TODO support visitSampledRelation for table sample");
+  SampledRelation::Type sampleType;
+  if (ctx->sampleType()->BERNOULLI() != nullptr) {
+    sampleType = SampledRelation::Type::kBernoulli;
+  } else if (ctx->sampleType()->SYSTEM() != nullptr) {
+    sampleType = SampledRelation::Type::kSystem;
+  } else {
+    throw std::runtime_error(
+        "Unsupported table sample type: " + ctx->sampleType()->getText());
+  }
+
+  return std::static_pointer_cast<Relation>(std::make_shared<SampledRelation>(
+      getLocation(ctx),
+      child,
+      sampleType,
+      visitTyped<Expression>(ctx->percentage)));
 }
 
 std::any AstBuilder::visitAliasedRelation(

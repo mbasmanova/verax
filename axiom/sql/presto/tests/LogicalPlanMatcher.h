@@ -60,6 +60,8 @@ class LogicalPlanMatcherBuilder {
 
   LogicalPlanMatcherBuilder& sort(OnMatchCallback onMatch = nullptr);
 
+  LogicalPlanMatcherBuilder& sample(OnMatchCallback onMatch = nullptr);
+
   std::shared_ptr<LogicalPlanMatcher> build() {
     VELOX_USER_CHECK_NOT_NULL(
         matcher_, "Cannot build an empty LogicalPlanMatcher.");

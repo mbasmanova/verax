@@ -198,6 +198,18 @@ class ToTextVisitor : public PlanNodeVisitor {
     appendInputs(node, myContext);
   }
 
+  void visit(const SampleNode& node, PlanNodeVisitorContext& context)
+      const override {
+    appendNode(
+        "Sample",
+        node,
+        fmt::format(
+            "{}: {}",
+            SampleNode::toName(node.sampleMethod()),
+            node.percentage()->toString()),
+        context);
+  }
+
  private:
   static std::string makeIndent(size_t size) {
     return std::string(size * 2, ' ');
@@ -372,6 +384,11 @@ class CollectExprStatsPlanNodeVisitor : public PlanNodeVisitor {
       const override {
     auto& stats = static_cast<Context&>(context).stats;
     collectExprStats(node.columnExpressions(), stats);
+    visitInputs(node, context);
+  }
+
+  void visit(const SampleNode& node, PlanNodeVisitorContext& context)
+      const override {
     visitInputs(node, context);
   }
 
@@ -658,6 +675,21 @@ class SummarizeToTextVisitor : public PlanNodeVisitor {
       myContext.out << indent << "columns: " << node.columnNames().size()
                     << std::endl;
       appendExpressions(node.columnExpressions(), myContext);
+    }
+
+    appendInputs(node, myContext);
+  }
+
+  void visit(const SampleNode& node, PlanNodeVisitorContext& context)
+      const override {
+    auto& myContext = static_cast<Context&>(context);
+    appendHeader(node, myContext);
+
+    if (!myContext.skeletonOnly) {
+      const auto indent = makeIndent(myContext.indent + 3);
+      myContext.out << indent
+                    << "sample: " << SampleNode::toName(node.sampleMethod())
+                    << " " << node.percentage()->toString() << std::endl;
     }
 
     appendInputs(node, myContext);

@@ -1094,6 +1094,28 @@ class RelationPlanner : public AstVisitor {
       return;
     }
 
+    if (relation->is(NodeType::kSampledRelation)) {
+      auto* sampledRelation = relation->as<SampledRelation>();
+
+      processFrom(sampledRelation->relation());
+
+      lp::SampleNode::SampleMethod sampleMethod;
+      switch (sampledRelation->sampleType()) {
+        case SampledRelation::Type::kBernoulli:
+          sampleMethod = lp::SampleNode::SampleMethod::kBernoulli;
+          break;
+        case SampledRelation::Type::kSystem:
+          sampleMethod = lp::SampleNode::SampleMethod::kSystem;
+          break;
+        default:
+          VELOX_USER_FAIL("Unsupported sample type");
+      }
+
+      auto percentage = toExpr(sampledRelation->samplePercentage());
+      builder_->sample(percentage.expr(), sampleMethod);
+      return;
+    }
+
     if (relation->is(NodeType::kAliasedRelation)) {
       auto* aliasedRelation = relation->as<AliasedRelation>();
 
