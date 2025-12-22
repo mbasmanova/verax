@@ -514,6 +514,22 @@ TEST_F(PrestoParserTest, null) {
   testSql("SELECT 1 IS NOT NULL", matcher);
 }
 
+TEST_F(PrestoParserTest, unaryArithmetic) {
+  lp::ProjectNodePtr project;
+  auto matcher = lp::test::LogicalPlanMatcherBuilder().values().project(
+      [&](const auto& node) {
+        project = std::dynamic_pointer_cast<const lp::ProjectNode>(node);
+      });
+
+  testSql("SELECT -1", matcher);
+  ASSERT_EQ(project->expressions().size(), 1);
+  ASSERT_EQ(project->expressionAt(0)->toString(), "negate(1)");
+
+  testSql("SELECT +1", matcher);
+  ASSERT_EQ(project->expressions().size(), 1);
+  ASSERT_EQ(project->expressionAt(0)->toString(), "1");
+}
+
 TEST_F(PrestoParserTest, in) {
   {
     auto matcher = lp::test::LogicalPlanMatcherBuilder().values().project();

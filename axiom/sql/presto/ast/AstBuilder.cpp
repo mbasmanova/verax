@@ -1271,10 +1271,30 @@ std::any AstBuilder::visitArithmeticBinary(
           getLocation(ctx), op, leftExpr, rightExpr));
 }
 
+namespace {
+ArithmeticUnaryExpression::Sign toArithmeticSign(size_t tokenType) {
+  switch (tokenType) {
+    case PrestoSqlParser::PLUS:
+      return ArithmeticUnaryExpression::Sign::kPlus;
+    case PrestoSqlParser::MINUS:
+      return ArithmeticUnaryExpression::Sign::kMinus;
+    default:
+      throw std::runtime_error(
+          "Unsupported sign: " + std::to_string(tokenType));
+  }
+}
+
+} // namespace
+
 std::any AstBuilder::visitArithmeticUnary(
     PrestoSqlParser::ArithmeticUnaryContext* ctx) {
   trace("visitArithmeticUnary");
-  return visitChildren(ctx);
+
+  auto expr = visitExpression(ctx->valueExpression());
+
+  return std::static_pointer_cast<Expression>(
+      std::make_shared<ArithmeticUnaryExpression>(
+          getLocation(ctx), toArithmeticSign(ctx->op->getType()), expr));
 }
 
 std::any AstBuilder::visitAtTimeZone(PrestoSqlParser::AtTimeZoneContext* ctx) {
