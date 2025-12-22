@@ -424,6 +424,12 @@ class PlanBuilder {
       std::vector<std::string> columnNames,
       folly::F14FastMap<std::string, std::string> options = {});
 
+  PlanBuilder& sample(double percentage, SampleNode::SampleMethod sampleMethod);
+
+  PlanBuilder& sample(
+      const ExprApi& percentage,
+      SampleNode::SampleMethod sampleMethod);
+
   PlanBuilder& as(const std::string& alias);
 
   PlanBuilder& captureScope(Scope& scope) {

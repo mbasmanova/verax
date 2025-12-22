@@ -222,4 +222,12 @@ LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::sort(
   return *this;
 }
 
+LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::sample(
+    OnMatchCallback onMatch) {
+  VELOX_USER_CHECK_NOT_NULL(matcher_);
+  matcher_ = std::make_shared<LogicalPlanMatcherImpl<SampleNode>>(
+      matcher_, std::move(onMatch));
+  return *this;
+}
+
 } // namespace facebook::axiom::logical_plan::test

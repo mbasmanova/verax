@@ -184,6 +184,48 @@ TEST_F(PlanPrinterTest, values) {
           testing::Eq("- VALUES [0]: 2 fields"), testing::Eq("")));
 }
 
+TEST_F(PlanPrinterTest, tablesample) {
+  auto plan = PlanBuilder()
+                  .tableScan(kTestConnectorId, "test", {"a", "b"})
+                  .sample(10, SampleNode::SampleMethod::kBernoulli)
+                  .build();
+
+  auto lines = toLines(plan);
+
+  EXPECT_THAT(
+      lines,
+      testing::ElementsAre(
+          testing::StartsWith("- Sample: BERNOULLI: 10"),
+          testing::StartsWith("  - TableScan: test.test"),
+          testing::Eq("")));
+
+  lines = toSummaryLines(plan);
+
+  EXPECT_THAT(
+      lines,
+      // clang-format off
+      testing::ElementsAre(
+          testing::Eq("- SAMPLE [1]: 2 fields: a BIGINT, b DOUBLE"),
+          testing::Eq("      sample: BERNOULLI 10"),
+          testing::Eq("  - TABLE_SCAN [0]: 2 fields: a BIGINT, b DOUBLE"),
+          testing::Eq("        table: test"),
+          testing::Eq("        connector: test"),
+          testing::Eq(""))
+      // clang-format on
+  );
+
+  lines = toSkeletonLines(plan);
+
+  EXPECT_THAT(
+      lines,
+      testing::ElementsAre(
+          testing::Eq("- SAMPLE [1]: 2 fields"),
+          testing::Eq("  - TABLE_SCAN [0]: 2 fields"),
+          testing::Eq("        table: test"),
+          testing::Eq("        connector: test"),
+          testing::Eq("")));
+}
+
 TEST_F(PlanPrinterTest, inList) {
   auto plan = PlanBuilder()
                   .tableScan(kTestConnectorId, "test", {"a", "b"})
