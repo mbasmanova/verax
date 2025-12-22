@@ -1791,6 +1791,46 @@ static facebook::axiom::connector::TablePtr findTable(
   return table;
 }
 
+lp::ExprApi makeLikeExpr(
+    const std::string& name,
+    const std::string& pattern,
+    const std::optional<std::string>& escape) {
+  std::vector<lp::ExprApi> inputs;
+  inputs.emplace_back(lp::Col(name));
+  inputs.emplace_back(lp::Lit(pattern));
+  if (escape.has_value()) {
+    inputs.emplace_back(lp::Lit(escape.value()));
+  }
+
+  return lp::Call("like", std::move(inputs));
+}
+
+SqlStatementPtr parseShowCatalogs(
+    const ShowCatalogs& showCatalogs,
+    const std::string& defaultConnectorId) {
+  const auto& connectors = facebook::velox::connector::getAllConnectors();
+
+  std::vector<Variant> data;
+  data.reserve(connectors.size());
+  for (const auto& [id, _] : connectors) {
+    data.emplace_back(Variant::row({id, id, id}));
+  }
+
+  lp::PlanBuilder::Context ctx(defaultConnectorId);
+  lp::PlanBuilder builder(ctx);
+  builder.values(
+      ROW({"catalog_name", "connector_id", "connector_name"}, VARCHAR()), data);
+
+  if (showCatalogs.getLikePattern().has_value()) {
+    builder.filter(makeLikeExpr(
+        "catalog_name",
+        showCatalogs.getLikePattern().value(),
+        showCatalogs.getEscape()));
+  }
+
+  return std::make_shared<SelectStatement>(builder.build());
+}
+
 SqlStatementPtr parseShowColumns(
     const ShowColumns& showColumns,
     const std::string& defaultConnectorId,
@@ -1809,17 +1849,13 @@ SqlStatementPtr parseShowColumns(
   lp::PlanBuilder::Context ctx(defaultConnectorId);
   return std::make_shared<SelectStatement>(
       lp::PlanBuilder(ctx)
-          .values(ROW({"column", "type"}, {VARCHAR(), VARCHAR()}), data)
+          .values(ROW({"column", "type"}, VARCHAR()), data)
           .build());
 }
 
 SqlStatementPtr parseShowFunctions(
     const ShowFunctions& showFunctions,
     const std::string& defaultConnectorId) {
-  VELOX_USER_CHECK(
-      !showFunctions.getLikePattern().has_value(), "LIKE not supported");
-  VELOX_USER_CHECK(
-      !showFunctions.getEscape().has_value(), "ESCAPE not supported");
   std::vector<Variant> rows;
 
   auto const& allScalarFunctions = facebook::velox::getFunctionSignatures();
@@ -1866,17 +1902,25 @@ SqlStatementPtr parseShowFunctions(
   }
 
   lp::PlanBuilder::Context ctx(defaultConnectorId);
-  return std::make_shared<SelectStatement>(lp::PlanBuilder(ctx)
-                                               .values(
-                                                   ROW(
-                                                       {
-                                                           "Function",
-                                                           "Function Type",
-                                                           "Signature",
-                                                       },
-                                                       VARCHAR()),
-                                                   rows)
-                                               .build());
+  lp::PlanBuilder builder(ctx);
+  builder.values(
+      ROW(
+          {
+              "Function",
+              "Function Type",
+              "Signature",
+          },
+          VARCHAR()),
+      rows);
+
+  if (showFunctions.getLikePattern().has_value()) {
+    builder.filter(makeLikeExpr(
+        "Function",
+        showFunctions.getLikePattern().value(),
+        showFunctions.getEscape()));
+  }
+
+  return std::make_shared<SelectStatement>(builder.build());
 };
 
 SqlStatementPtr parseInsert(
@@ -2015,11 +2059,6 @@ SqlStatementPtr PrestoParser::doParse(
         *query->as<Explain>(), defaultConnectorId_, defaultSchema_);
   }
 
-  if (query->is(NodeType::kShowColumns)) {
-    return parseShowColumns(
-        *query->as<ShowColumns>(), defaultConnectorId_, defaultSchema_);
-  }
-
   if (query->is(NodeType::kInsert)) {
     return parseInsert(
         *query->as<Insert>(), defaultConnectorId_, defaultSchema_);
@@ -2033,6 +2072,15 @@ SqlStatementPtr PrestoParser::doParse(
   if (query->is(NodeType::kDropTable)) {
     return parseDropTable(
         *query->as<DropTable>(), defaultConnectorId_, defaultSchema_);
+  }
+
+  if (query->is(NodeType::kShowCatalogs)) {
+    return parseShowCatalogs(*query->as<ShowCatalogs>(), defaultConnectorId_);
+  }
+
+  if (query->is(NodeType::kShowColumns)) {
+    return parseShowColumns(
+        *query->as<ShowColumns>(), defaultConnectorId_, defaultSchema_);
   }
 
   if (query->is(NodeType::kShowFunctions)) {

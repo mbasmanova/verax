@@ -724,7 +724,33 @@ class Rollback : public Statement {
   void accept(AstVisitor* visitor) override;
 };
 
-// Show Statements
+/// SHOW statements.
+
+class ShowCatalogs : public Statement {
+ public:
+  ShowCatalogs(
+      NodeLocation location,
+      std::optional<std::string> likePattern,
+      std::optional<std::string> escape)
+      : Statement(NodeType::kShowCatalogs, location),
+        likePattern_(std::move(likePattern)),
+        escape_(std::move(escape)) {}
+
+  const std::optional<std::string>& getLikePattern() const {
+    return likePattern_;
+  }
+
+  const std::optional<std::string>& getEscape() const {
+    return escape_;
+  }
+
+  void accept(AstVisitor* visitor) override;
+
+ private:
+  std::optional<std::string> likePattern_;
+  std::optional<std::string> escape_;
+};
+
 class ShowColumns : public Statement {
  public:
   explicit ShowColumns(

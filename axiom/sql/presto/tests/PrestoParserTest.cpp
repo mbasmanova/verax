@@ -1038,6 +1038,18 @@ TEST_F(PrestoParserTest, explain) {
   }
 }
 
+TEST_F(PrestoParserTest, showCatalogs) {
+  {
+    auto matcher = lp::test::LogicalPlanMatcherBuilder().values();
+    testSql("SHOW CATALOGS", matcher);
+  }
+
+  {
+    auto matcher = lp::test::LogicalPlanMatcherBuilder().values().filter();
+    testSql("SHOW CATALOGS LIKE 'tpch'", matcher);
+  }
+}
+
 TEST_F(PrestoParserTest, describe) {
   auto matcher = lp::test::LogicalPlanMatcherBuilder().values();
   testSql("DESCRIBE nation", matcher);
@@ -1048,8 +1060,15 @@ TEST_F(PrestoParserTest, describe) {
 }
 
 TEST_F(PrestoParserTest, showFunctions) {
-  auto matcher = lp::test::LogicalPlanMatcherBuilder().values();
-  testSql("SHOW FUNCTIONS", matcher);
+  {
+    auto matcher = lp::test::LogicalPlanMatcherBuilder().values();
+    testSql("SHOW FUNCTIONS", matcher);
+  }
+
+  {
+    auto matcher = lp::test::LogicalPlanMatcherBuilder().values().filter();
+    testSql("SHOW FUNCTIONS LIKE 'array%'", matcher);
+  }
 }
 
 TEST_F(PrestoParserTest, insertIntoTable) {
