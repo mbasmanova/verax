@@ -209,6 +209,11 @@ class ExprAnalyzer : public AstVisitor {
         "Not yet supported node type: {}", NodeTypeName::toName(node->type()));
   }
 
+  void visitArithmeticUnaryExpression(
+      ArithmeticUnaryExpression* node) override {
+    node->value()->accept(this);
+  }
+
   void visitArrayConstructor(ArrayConstructor* node) override {
     for (const auto& value : node->values()) {
       value->accept(this);
@@ -465,6 +470,15 @@ class RelationPlanner : public AstVisitor {
           case LogicalBinaryExpression::Operator::kOr:
             return left || right;
         }
+      }
+
+      case NodeType::kArithmeticUnaryExpression: {
+        auto* unary = node->as<ArithmeticUnaryExpression>();
+        if (unary->sign() == ArithmeticUnaryExpression::Sign::kMinus) {
+          return lp::Call("negate", toExpr(unary->value(), aggregateOptions));
+        }
+
+        return toExpr(unary->value(), aggregateOptions);
       }
 
       case NodeType::kArithmeticBinaryExpression: {
