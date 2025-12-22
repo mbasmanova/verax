@@ -569,7 +569,19 @@ std::any AstBuilder::visitShowSchemas(
 std::any AstBuilder::visitShowCatalogs(
     PrestoSqlParser::ShowCatalogsContext* ctx) {
   trace("visitShowCatalogs");
-  return visitChildren(ctx);
+
+  std::optional<std::string> likePattern;
+  std::optional<std::string> escape;
+  if (ctx->LIKE() != nullptr) {
+    likePattern = visitExpression(ctx->pattern)->as<StringLiteral>()->value();
+  }
+
+  if (ctx->ESCAPE() != nullptr) {
+    escape = visitExpression(ctx->escape)->as<StringLiteral>()->value();
+  }
+
+  return std::static_pointer_cast<Statement>((std::make_shared<ShowCatalogs>(
+      getLocation(ctx), std::move(likePattern), std::move(escape))));
 }
 
 std::any AstBuilder::visitShowColumns(
