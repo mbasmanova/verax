@@ -530,6 +530,22 @@ TEST_F(PrestoParserTest, unaryArithmetic) {
   ASSERT_EQ(project->expressionAt(0)->toString(), "1");
 }
 
+TEST_F(PrestoParserTest, distinctFrom) {
+  lp::ProjectNodePtr project;
+  auto matcher = lp::test::LogicalPlanMatcherBuilder().values().project(
+      [&](const auto& node) {
+        project = std::dynamic_pointer_cast<const lp::ProjectNode>(node);
+      });
+
+  testSql("SELECT 1 is distinct from 2", matcher);
+  ASSERT_EQ(project->expressions().size(), 1);
+  ASSERT_EQ(project->expressionAt(0)->toString(), "distinct_from(1, 2)");
+
+  testSql("SELECT 1 is not distinct from 2", matcher);
+  ASSERT_EQ(project->expressions().size(), 1);
+  ASSERT_EQ(project->expressionAt(0)->toString(), "not(distinct_from(1, 2))");
+}
+
 TEST_F(PrestoParserTest, in) {
   {
     auto matcher = lp::test::LogicalPlanMatcherBuilder().values().project();

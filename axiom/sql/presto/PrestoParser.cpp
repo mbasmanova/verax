@@ -769,7 +769,7 @@ class RelationPlanner : public AstVisitor {
       case ComparisonExpression::Operator::kGreaterThanOrEqual:
         return "gte";
       case ComparisonExpression::Operator::kIsDistinctFrom:
-        VELOX_NYI("Not yet supported comparison operator: is_distinct_from");
+        return "distinct_from";
     }
 
     folly::assume_unreachable();
