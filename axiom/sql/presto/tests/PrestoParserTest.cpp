@@ -546,6 +546,12 @@ TEST_F(PrestoParserTest, distinctFrom) {
   ASSERT_EQ(project->expressionAt(0)->toString(), "not(distinct_from(1, 2))");
 }
 
+TEST_F(PrestoParserTest, ifClause) {
+  auto matcher = lp::test::LogicalPlanMatcherBuilder().values().project();
+
+  testSql("SELECT if (1 > 2, 100)", matcher);
+}
+
 TEST_F(PrestoParserTest, in) {
   {
     auto matcher = lp::test::LogicalPlanMatcherBuilder().values().project();
