@@ -757,6 +757,14 @@ ExprPtr tryResolveSpecialForm(
   }
 
   if (name == "if") {
+    if (resolvedInputs.size() == 2) {
+      // Add null ELSE clause.
+      const auto& type = resolvedInputs.back()->type();
+      resolvedInputs.emplace_back(
+          std::make_shared<ConstantExpr>(
+              type, std::make_shared<velox::Variant>(type->kind())));
+    }
+
     if (allowCoersions) {
       return resolveSpecialFormWithCoersions(
           SpecialForm::kIf, velox::expression::kIf, resolvedInputs);
