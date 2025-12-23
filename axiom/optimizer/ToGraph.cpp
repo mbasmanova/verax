@@ -1898,13 +1898,15 @@ ColumnCP ToGraph::addMarkColumn() {
   return markColumn;
 }
 
-void ToGraph::processSubqueries(const logical_plan::FilterNode& filter) {
+void ToGraph::processSubqueries(
+    const lp::LogicalPlanNode& input,
+    const lp::ExprPtr& predicate) {
   Subqueries subqueries;
-  extractSubqueries(filter.predicate(), subqueries);
+  extractSubqueries(predicate, subqueries);
 
   if (currentDt_->hasLimit() ||
       (currentDt_->hasAggregation() && !subqueries.empty())) {
-    finalizeDt(*filter.onlyInput());
+    finalizeDt(input);
   }
 
   for (const auto& subquery : subqueries.scalars) {
@@ -2054,10 +2056,66 @@ void ToGraph::processSubqueries(const logical_plan::FilterNode& filter) {
   }
 }
 
-void ToGraph::addFilter(const lp::FilterNode& filter) {
-  exprSource_ = filter.onlyInput().get();
+void ToGraph::applySampling(
+    const lp::SampleNode& sample,
+    uint64_t allowedInDt) {
+  auto constantPercentageExpr = tryFoldConstant(sample.percentage());
+  VELOX_USER_CHECK_NOT_NULL(
+      constantPercentageExpr,
+      "Sampling percentage must be constant: {}",
+      sample.percentage()->toString());
 
-  processSubqueries(filter);
+  const auto& percentageValue =
+      constantPercentageExpr->as<lp::ConstantExpr>()->value();
+  VELOX_USER_CHECK(
+      !percentageValue->isNull(), "Sampling percentage must not be null");
+  VELOX_USER_CHECK_EQ(
+      percentageValue->kind(),
+      velox::TypeKind::DOUBLE,
+      "Sampling percentage must be a double");
+
+  const auto percentage = percentageValue->value<double>();
+  VELOX_USER_CHECK_GE(percentage, 0, "Sampling percentage must be >= 0");
+  VELOX_USER_CHECK_LE(percentage, 100, "Sampling percentage must be <= 100");
+
+  if (percentage == 100) {
+    makeQueryGraph(*sample.onlyInput(), allowedInDt);
+    return;
+  }
+
+  // TODO Optimize the case when percentage == 0.
+  // TODO Figure out how to avoid hard-coding "rand" and "lt".
+
+  switch (sample.sampleMethod()) {
+    case lp::SampleNode::SampleMethod::kSystem:
+      VELOX_NYI("SYSTEM sampling is not supported yet");
+      break;
+    case lp::SampleNode::SampleMethod::kBernoulli: {
+      // Implement using filter(rand() < percentage / 100.0).
+      auto predicate = std::make_shared<lp::CallExpr>(
+          velox::BOOLEAN(),
+          "lt",
+          std::make_shared<lp::CallExpr>(velox::DOUBLE(), "rand"),
+          std::make_shared<lp::ConstantExpr>(
+              velox::DOUBLE(),
+              std::make_shared<velox::Variant>(percentage / 100.0)));
+
+      const auto& input = *sample.onlyInput();
+      auto* outerDt = std::exchange(currentDt_, newDt());
+      makeQueryGraph(input, kAllAllowedInDt);
+      addFilter(input, predicate);
+      finalizeDt(sample, outerDt);
+      break;
+    }
+  }
+}
+
+void ToGraph::addFilter(
+    const lp::LogicalPlanNode& input,
+    const lp::ExprPtr& predicate) {
+  exprSource_ = &input;
+
+  processSubqueries(input, predicate);
 
   ExprVector flat;
   {
@@ -2066,7 +2124,7 @@ void ToGraph::addFilter(const lp::FilterNode& filter) {
       allowCorrelations_ = false;
     };
 
-    translateConjuncts(filter.predicate(), flat);
+    translateConjuncts(predicate, flat);
   }
   {
     PlanObjectSet tables = currentDt_->tableSet;
@@ -2360,24 +2418,27 @@ void ToGraph::makeQueryGraph(
   ToGraphContext ctx{&node};
   velox::ExceptionContextSetter exceptionContext{makeExceptionContext(&ctx)};
   switch (node.kind()) {
-    case lp::NodeKind::kValues: {
+    case lp::NodeKind::kValues:
       makeValuesTable(*node.as<lp::ValuesNode>());
-    } break;
-    case lp::NodeKind::kTableScan: {
+      break;
+    case lp::NodeKind::kTableScan:
       makeBaseTable(*node.as<lp::TableScanNode>());
-    } break;
+      break;
+    case lp::NodeKind::kSample:
+      applySampling(*node.as<lp::SampleNode>(), allowedInDt);
+      break;
     case lp::NodeKind::kFilter: {
       const auto& input = *node.onlyInput();
       const auto& filter = *node.as<lp::FilterNode>();
       if (hasNondeterministic(filter.predicate())) {
         auto* outerDt = std::exchange(currentDt_, newDt());
         makeQueryGraph(input, kAllAllowedInDt);
-        addFilter(filter);
+        addFilter(input, filter.predicate());
         finalizeDt(node, outerDt);
         break;
       }
       makeQueryGraph(input, allowedInDt);
-      addFilter(filter);
+      addFilter(input, filter.predicate());
     } break;
     case lp::NodeKind::kProject: {
       makeQueryGraph(*node.onlyInput(), allowedInDt);
