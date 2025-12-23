@@ -623,6 +623,12 @@ TEST_F(PrestoParserTest, countStar) {
   testSql("SELECT count(1) AS \"count\" FROM nation", matcher);
 }
 
+TEST_F(PrestoParserTest, aggregateCoercions) {
+  auto matcher = lp::test::LogicalPlanMatcherBuilder().tableScan().aggregate();
+
+  testSql("SELECT corr(n_nationkey, 1.2) FROM nation", matcher);
+}
+
 TEST_F(PrestoParserTest, simpleGroupBy) {
   {
     auto matcher =

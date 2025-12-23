@@ -671,13 +671,13 @@ std::string toString(
 
 void applyCoercions(
     std::vector<ExprPtr>& inputs,
-    const std::vector<velox::TypePtr>& coersions) {
-  if (coersions.empty()) {
+    const std::vector<velox::TypePtr>& coercions) {
+  if (coercions.empty()) {
     return;
   }
 
   for (auto i = 0; i < inputs.size(); ++i) {
-    if (const auto& coersion = coersions.at(i)) {
+    if (const auto& coersion = coercions.at(i)) {
       inputs[i] = std::make_shared<SpecialFormExpr>(
           coersion, SpecialForm::kCast, inputs[i]);
     }
@@ -687,9 +687,9 @@ void applyCoercions(
 velox::TypePtr resolveScalarFunction(
     const std::string& name,
     const std::vector<velox::TypePtr>& argTypes,
-    bool allowCoersions,
+    bool allowCoercions,
     std::vector<velox::TypePtr>& coercions) {
-  if (allowCoersions) {
+  if (allowCoercions) {
     if (auto type = velox::resolveFunctionOrCallableSpecialFormWithCoercions(
             name, argTypes, coercions)) {
       return type;
@@ -714,7 +714,7 @@ velox::TypePtr resolveScalarFunction(
   }
 }
 
-ExprPtr resolveSpecialFormWithCoersions(
+ExprPtr resolveSpecialFormWithCoercions(
     SpecialForm form,
     const std::string& name,
     std::vector<ExprPtr>& inputs) {
@@ -730,7 +730,7 @@ ExprPtr resolveSpecialFormWithCoersions(
 ExprPtr tryResolveSpecialForm(
     const std::string& name,
     std::vector<ExprPtr>& resolvedInputs,
-    bool allowCoersions) {
+    bool allowCoercions) {
   if (name == "and") {
     return std::make_shared<SpecialFormExpr>(
         velox::BOOLEAN(), SpecialForm::kAnd, resolvedInputs);
@@ -747,8 +747,8 @@ ExprPtr tryResolveSpecialForm(
   }
 
   if (name == "coalesce") {
-    if (allowCoersions) {
-      return resolveSpecialFormWithCoersions(
+    if (allowCoercions) {
+      return resolveSpecialFormWithCoercions(
           SpecialForm::kCoalesce, velox::expression::kCoalesce, resolvedInputs);
     }
 
@@ -765,8 +765,8 @@ ExprPtr tryResolveSpecialForm(
               type, std::make_shared<velox::Variant>(type->kind())));
     }
 
-    if (allowCoersions) {
-      return resolveSpecialFormWithCoersions(
+    if (allowCoercions) {
+      return resolveSpecialFormWithCoercions(
           SpecialForm::kIf, velox::expression::kIf, resolvedInputs);
     }
 
@@ -775,8 +775,8 @@ ExprPtr tryResolveSpecialForm(
   }
 
   if (name == "switch") {
-    if (allowCoersions) {
-      return resolveSpecialFormWithCoersions(
+    if (allowCoercions) {
+      return resolveSpecialFormWithCoercions(
           SpecialForm::kSwitch, velox::expression::kSwitch, resolvedInputs);
     }
     return std::make_shared<SpecialFormExpr>(
@@ -810,7 +810,7 @@ ExprPtr tryResolveSpecialForm(
   }
 
   if (name == "in") {
-    if (allowCoersions) {
+    if (allowCoercions) {
       VELOX_USER_CHECK_GE(
           resolvedInputs.size(), 2, "IN must have at least two inputs");
 
@@ -1035,10 +1035,10 @@ ExprPtr ExprResolver::tryResolveCallWithLambdas(
 
   const auto name = velox::exec::sanitizeName(callExpr->name());
 
-  std::vector<velox::TypePtr> coersions;
+  std::vector<velox::TypePtr> coercions;
   auto returnType = resolveScalarFunction(
-      name, toTypes(children), enableCoercions_, coersions);
-  applyCoercions(children, coersions);
+      name, toTypes(children), enableCoercions_, coercions);
+  applyCoercions(children, coercions);
 
   return std::make_shared<CallExpr>(returnType, name, children);
 }
@@ -1198,11 +1198,11 @@ ExprPtr ExprResolver::resolveScalarTypes(
       return specialForm;
     }
 
-    std::vector<velox::TypePtr> coersions;
+    std::vector<velox::TypePtr> coercions;
     auto type = resolveScalarFunction(
-        name, toTypes(inputs), enableCoercions_, coersions);
+        name, toTypes(inputs), enableCoercions_, coercions);
 
-    applyCoercions(inputs, coersions);
+    applyCoercions(inputs, coercions);
 
     auto folded = tryFoldCall(type, name, inputs);
     if (folded != nullptr) {
@@ -1257,22 +1257,18 @@ AggregateExprPtr ExprResolver::resolveAggregateTypes(
     inputTypes.push_back(input->type());
   }
 
-  if (auto type = velox::exec::resolveResultType(name, inputTypes)) {
-    return std::make_shared<AggregateExpr>(
-        type, name, inputs, filter, ordering, distinct);
+  velox::TypePtr type;
+  if (enableCoercions_) {
+    std::vector<velox::TypePtr> coercions;
+    type = velox::exec::resolveResultTypeWithCoercions(
+        name, inputTypes, coercions);
+    applyCoercions(inputs, coercions);
+  } else {
+    type = velox::exec::resolveResultType(name, inputTypes);
   }
 
-  auto allSignatures = velox::exec::getAggregateFunctionSignatures();
-  auto it = allSignatures.find(name);
-  if (it == allSignatures.end()) {
-    VELOX_USER_FAIL("Aggregate function doesn't exist: {}.", name);
-  } else {
-    const auto& functionSignatures = it->second;
-    VELOX_USER_FAIL(
-        "Aggregate function signature is not supported: {}. Supported signatures: {}.",
-        toString(name, inputTypes),
-        toString(functionSignatures));
-  }
+  return std::make_shared<AggregateExpr>(
+      type, name, inputs, filter, ordering, distinct);
 }
 
 PlanBuilder& PlanBuilder::join(
