@@ -155,7 +155,8 @@ class LocalTable : public Table {
       : Table(std::move(name), std::move(type), std::move(options)) {
     for (auto i = 0; i < Table::type()->size(); ++i) {
       const auto& name = Table::type()->nameOf(i);
-      auto column = std::make_unique<Column>(name, Table::type()->childAt(i));
+      auto column = std::make_unique<Column>(
+          name, Table::type()->childAt(i), /*hidden=*/false);
       exportedColumns_[name] = column.get();
       columns_.emplace(name, std::move(column));
     }

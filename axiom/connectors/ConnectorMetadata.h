@@ -101,16 +101,35 @@ class Column {
  public:
   virtual ~Column() = default;
 
-  Column(std::string name, velox::TypePtr type)
+  /// @param name Name of the column. Cannot be empty. Column names within a
+  /// table must be unique.
+  /// @param type Type of the column.
+  /// @param hidden If true, the column doesn't appear in the output of SELECT *
+  /// FROM t query. Still, the column can be accessed by name: SELECT ...,
+  /// foo,... FROM t.
+  Column(std::string name, velox::TypePtr type, bool hidden)
       : name_{std::move(name)},
         type_{std::move(type)},
-        defaultValue_{velox::Variant::null(type_->kind())} {}
+        hidden_{hidden},
+        defaultValue_{velox::Variant::null(type_->kind())} {
+    VELOX_CHECK_NOT_NULL(type_);
+    VELOX_CHECK(!name_.empty());
+  }
 
   /// Default value can be specified to be used for table write.
-  Column(std::string name, velox::TypePtr type, velox::Variant defaultValue)
+  Column(
+      std::string name,
+      velox::TypePtr type,
+      bool hidden,
+      velox::Variant defaultValue)
       : name_{std::move(name)},
         type_{std::move(type)},
-        defaultValue_{std::move(defaultValue)} {}
+        hidden_{hidden},
+        defaultValue_{std::move(defaultValue)} {
+    VELOX_CHECK_NOT_NULL(type_);
+    VELOX_CHECK(!name_.empty());
+    VELOX_CHECK_EQ(type_->kind(), defaultValue_.kind());
+  }
 
   const ColumnStatistics* stats() const {
     return latestStats_;
@@ -140,6 +159,10 @@ class Column {
     return type_;
   }
 
+  bool hidden() const {
+    return hidden_;
+  }
+
   const velox::Variant& defaultValue() const {
     return defaultValue_;
   }
@@ -157,6 +180,7 @@ class Column {
  protected:
   const std::string name_;
   const velox::TypePtr type_;
+  const bool hidden_;
   const velox::Variant defaultValue_;
 
   // The latest element added to 'allStats_'.

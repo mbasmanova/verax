@@ -883,7 +883,8 @@ void LocalHiveConnectorMetadata::loadTable(
       if (columnIt != table->columns().end()) {
         column = columnIt->second.get();
       } else {
-        auto newColumn = std::make_unique<Column>(name, fileType->childAt(i));
+        auto newColumn = std::make_unique<Column>(
+            name, fileType->childAt(i), /*hidden=*/false);
         column = newColumn.get();
         table->columns()[name] = std::move(newColumn);
       }
