@@ -249,13 +249,19 @@ class ToGraph {
 
   void addProjection(const logical_plan::ProjectNode& project);
 
-  void addFilter(const logical_plan::FilterNode& filter);
+  void addFilter(
+      const logical_plan::LogicalPlanNode& input,
+      const logical_plan::ExprPtr& predicate);
 
   void addLimit(const logical_plan::LimitNode& limit);
 
   void addOrderBy(const logical_plan::SortNode& order);
 
   void addWrite(const logical_plan::TableWriteNode& tableWrite);
+
+  void applySampling(
+      const logical_plan::SampleNode& sample,
+      uint64_t allowedInDt);
 
   bool isSubfield(
       const logical_plan::ExprPtr& expr,
@@ -332,7 +338,9 @@ class ToGraph {
   // with a 'mark' column produced by the join. For other <subquery>
   // expressions, create a separate DT and replace the expression with the only
   // column produced by the DT.
-  void processSubqueries(const logical_plan::FilterNode& filter);
+  void processSubqueries(
+      const logical_plan::LogicalPlanNode& input,
+      const logical_plan::ExprPtr& predicate);
 
   DerivedTableP translateSubquery(const logical_plan::LogicalPlanNode& node);
 
