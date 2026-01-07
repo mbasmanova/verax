@@ -225,7 +225,10 @@ std::any AstBuilder::visitTableName(PrestoSqlParser::TableNameContext* ctx) {
 std::any AstBuilder::visitSelectAll(PrestoSqlParser::SelectAllContext* ctx) {
   trace("visitSelectAll");
 
-  auto name = visitTyped<QualifiedName>(ctx->qualifiedName());
+  std::shared_ptr<QualifiedName> name;
+  if (ctx->qualifiedName() != nullptr) {
+    name = getQualifiedName(ctx->qualifiedName());
+  }
 
   return std::static_pointer_cast<SelectItem>(
       std::make_shared<AllColumns>(getLocation(ctx), name));

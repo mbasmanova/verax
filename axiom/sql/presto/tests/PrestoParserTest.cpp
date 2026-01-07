@@ -93,6 +93,13 @@ class PrestoParserTest : public testing::Test {
     }
   }
 
+  SqlStatementPtr parseSql(std::string_view sql) {
+    SCOPED_TRACE(sql);
+    PrestoParser parser(kTpchConnectorId, kTinySchema, pool());
+
+    return parser.parse(sql, true);
+  }
+
   void testInsertSql(
       std::string_view sql,
       lp::test::LogicalPlanMatcherBuilder& matcher) {
@@ -618,6 +625,19 @@ TEST_F(PrestoParserTest, row) {
 TEST_F(PrestoParserTest, selectStar) {
   auto matcher = lp::test::LogicalPlanMatcherBuilder().tableScan();
   testSql("SELECT * FROM nation", matcher);
+
+  // TODO Add support for these query shapes.
+  EXPECT_THROW(parseSql("SELECT *, * FROM nation"), VeloxRuntimeError);
+  EXPECT_THROW(
+      parseSql("SELECT *, n_nationkey FROM nation"), VeloxRuntimeError);
+  EXPECT_THROW(parseSql("SELECT nation.* FROM nation"), VeloxRuntimeError);
+  EXPECT_THROW(
+      parseSql("SELECT nation.*, n_nationkey + 1 FROM nation"),
+      VeloxRuntimeError);
+  EXPECT_THROW(
+      parseSql(
+          "SELECT nation.*, r_regionkey + 1 FROM nation, region WHERE n_regionkey=r_regionkey"),
+      VeloxRuntimeError);
 }
 
 TEST_F(PrestoParserTest, mixedCaseColumnNames) {

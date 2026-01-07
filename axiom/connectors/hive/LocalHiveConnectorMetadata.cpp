@@ -40,6 +40,20 @@ std::vector<PartitionHandlePtr> LocalHiveSplitManager::listPartitions(
   return {std::make_shared<HivePartitionHandle>(empty, std::nullopt)};
 }
 
+namespace {
+velox::common::Filter* findFilter(
+    const velox::connector::hive::HiveTableHandle& tableHandle,
+    const std::string& columnName) {
+  auto it =
+      tableHandle.subfieldFilters().find(velox::common::Subfield(columnName));
+  if (it != tableHandle.subfieldFilters().end()) {
+    return it->second.get();
+  }
+
+  return nullptr;
+}
+} // namespace
+
 std::shared_ptr<SplitSource> LocalHiveSplitManager::getSplitSource(
     const ConnectorSessionPtr& session,
     const velox::connector::ConnectorTableHandlePtr& tableHandle,
@@ -47,18 +61,37 @@ std::shared_ptr<SplitSource> LocalHiveSplitManager::getSplitSource(
     SplitOptions options) {
   // Since there are only unpartitioned tables now, always makes a SplitSource
   // that goes over all the files in the handle's layout.
-  auto tableName = tableHandle->name();
   auto* metadata = ConnectorMetadata::metadata(tableHandle->connectorId());
+  const auto& tableName = tableHandle->name();
   auto table = metadata->findTable(tableName);
   VELOX_CHECK_NOT_NULL(
       table, "Could not find {} in its ConnectorMetadata", tableName);
   auto* layout = dynamic_cast<const LocalHiveTableLayout*>(table->layouts()[0]);
   VELOX_CHECK_NOT_NULL(layout);
-  auto& files = layout->files();
+
+  auto* hiveTableHandle =
+      dynamic_cast<const velox::connector::hive::HiveTableHandle*>(
+          tableHandle.get());
+  VELOX_CHECK_NOT_NULL(hiveTableHandle);
+
+  auto* pathFilter = findFilter(*hiveTableHandle, HiveTable::kPath);
+  auto* bucketFilter = findFilter(*hiveTableHandle, HiveTable::kBucket);
+
+  const auto& files = layout->files();
   std::vector<const FileInfo*> selectedFiles;
-  for (auto& file : files) {
+  for (const auto& file : files) {
+    if (pathFilter &&
+        !pathFilter->testBytes(file->path.c_str(), file->path.size())) {
+      continue;
+    }
+
+    if (bucketFilter && !bucketFilter->testInt64(file->bucketNumber.value())) {
+      continue;
+    }
+
     selectedFiles.push_back(file.get());
   }
+
   return std::make_shared<LocalHiveSplitSource>(
       std::move(selectedFiles),
       layout->fileFormat(),
@@ -273,17 +306,13 @@ std::pair<int64_t, int64_t> LocalHiveTableLayout::sample(
 
   for (const auto& field : fields) {
     const auto& name = field.baseName();
-    const auto& type = rowType()->findChild(name);
+    const auto* column = table().findColumn(name);
+    const auto& type = column->type();
 
     names.push_back(name);
     types.push_back(type);
 
-    columnHandles[name] =
-        std::make_shared<velox::connector::hive::HiveColumnHandle>(
-            name,
-            velox::connector::hive::HiveColumnHandle::ColumnType::kRegular,
-            type,
-            type);
+    columnHandles[name] = createColumnHandle(nullptr, name);
     builders.push_back(StatisticsBuilder::create(type, options));
   }
 

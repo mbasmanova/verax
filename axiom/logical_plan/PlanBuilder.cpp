@@ -187,9 +187,12 @@ PlanBuilder& PlanBuilder::values(
   return *this;
 }
 
-PlanBuilder& PlanBuilder::tableScan(const std::string& tableName) {
+PlanBuilder& PlanBuilder::tableScan(
+    const std::string& tableName,
+    bool includeHiddenColumns) {
   VELOX_USER_CHECK(defaultConnectorId_.has_value());
-  return tableScan(defaultConnectorId_.value(), tableName);
+  return tableScan(
+      defaultConnectorId_.value(), tableName, includeHiddenColumns);
 }
 
 PlanBuilder& PlanBuilder::from(const std::vector<std::string>& tableNames) {
@@ -211,15 +214,21 @@ PlanBuilder& PlanBuilder::from(const std::vector<std::string>& tableNames) {
 
 PlanBuilder& PlanBuilder::tableScan(
     const std::string& connectorId,
-    const std::string& tableName) {
+    const std::string& tableName,
+    bool includeHiddenColumns) {
   VELOX_USER_CHECK_NULL(node_, "Table scan node must be the leaf node");
 
   auto* metadata = connector::ConnectorMetadata::metadata(connectorId);
   auto table = metadata->findTable(tableName);
   VELOX_USER_CHECK_NOT_NULL(table, "Table not found: {}", tableName);
-  const auto& schema = table->type();
 
-  const auto numColumns = schema->size();
+  // Table::type() returns visible columns only.
+  // Table::allColumns() returns all columns, including hidden ones.
+  const auto& schema = table->type();
+  const auto& allColumns = table->allColumns();
+
+  const auto numColumns =
+      includeHiddenColumns ? allColumns.size() : schema->size();
 
   std::vector<velox::TypePtr> columnTypes;
   columnTypes.reserve(numColumns);
@@ -227,21 +236,38 @@ PlanBuilder& PlanBuilder::tableScan(
   std::vector<std::string> outputNames;
   outputNames.reserve(numColumns);
 
+  std::vector<std::string> originalNames;
+  originalNames.reserve(numColumns);
+
   outputMapping_ = std::make_shared<NameMappings>();
 
-  for (auto i = 0; i < schema->size(); ++i) {
-    columnTypes.push_back(schema->childAt(i));
+  auto addColumn = [&](const auto& name, const auto& type) {
+    columnTypes.push_back(type);
 
-    outputNames.push_back(newName(schema->nameOf(i)));
-    outputMapping_->add(schema->nameOf(i), outputNames.back());
+    originalNames.push_back(name);
+    outputNames.push_back(newName(name));
+    outputMapping_->add(name, outputNames.back());
+  };
+
+  for (auto i = 0; i < schema->size(); ++i) {
+    addColumn(schema->nameOf(i), schema->childAt(i));
+  }
+
+  if (includeHiddenColumns) {
+    for (const auto* column : allColumns) {
+      if (column->hidden()) {
+        addColumn(column->name(), column->type());
+        outputMapping_->markHidden(outputNames.back());
+      }
+    }
   }
 
   node_ = std::make_shared<TableScanNode>(
       nextId(),
-      ROW(outputNames, columnTypes),
+      ROW(std::move(outputNames), std::move(columnTypes)),
       connectorId,
       tableName,
-      schema->names());
+      std::move(originalNames));
 
   return *this;
 }
@@ -287,6 +313,57 @@ PlanBuilder& PlanBuilder::tableScan(
       connectorId,
       tableName,
       columnNames);
+
+  return *this;
+}
+
+PlanBuilder& PlanBuilder::dropHiddenColumns() {
+  const auto size = numOutput();
+  const auto& inputType = node_->outputType();
+
+  bool hasHiddenColumns = false;
+  for (const auto& name : inputType->names()) {
+    if (outputMapping_->isHidden(name)) {
+      hasHiddenColumns = true;
+      break;
+    }
+  }
+
+  if (!hasHiddenColumns) {
+    return *this;
+  }
+
+  std::vector<std::string> outputNames;
+  outputNames.reserve(size);
+
+  std::vector<ExprPtr> exprs;
+  exprs.reserve(size);
+
+  auto newOutputMapping = std::make_shared<NameMappings>();
+
+  for (auto i = 0; i < inputType->size(); i++) {
+    const auto& id = inputType->nameOf(i);
+
+    if (outputMapping_->isHidden(id)) {
+      continue;
+    }
+
+    outputNames.push_back(id);
+
+    const auto names = outputMapping_->reverseLookup(id);
+    for (const auto& name : names) {
+      newOutputMapping->add(name, id);
+    }
+
+    exprs.push_back(
+        std::make_shared<InputReferenceExpr>(inputType->childAt(i), id));
+  }
+
+  node_ = std::make_shared<ProjectNode>(
+      nextId(), std::move(node_), std::move(outputNames), std::move(exprs));
+
+  newOutputMapping->enableUnqualifiedAccess();
+  outputMapping_ = std::move(newOutputMapping);
 
   return *this;
 }
@@ -1682,7 +1759,7 @@ std::string PlanBuilder::findOrAssignOutputNameAt(size_t index) const {
   const auto size = numOutput();
   VELOX_CHECK_LT(index, size, "{}", node_->outputType()->toString());
 
-  const auto id = node_->outputType()->nameOf(index);
+  const auto& id = node_->outputType()->nameOf(index);
 
   if (auto name = pickName(outputMapping_->reverseLookup(id))) {
     return name.value();

@@ -345,7 +345,13 @@ void AstPrinter::visitDereferenceExpression(DereferenceExpression* node) {
 }
 
 void AstPrinter::visitAllColumns(AllColumns* node) {
-  printHeader("AllColumns", node, [&](std::ostream& out) { out << "*"; });
+  printHeader("AllColumns", node, [&](std::ostream& out) {
+    if (node->prefix() != nullptr) {
+      out << node->prefix()->fullyQualifiedName() << ".*";
+    } else {
+      out << "*";
+    }
+  });
 }
 
 void AstPrinter::visitJoin(Join* node) {
