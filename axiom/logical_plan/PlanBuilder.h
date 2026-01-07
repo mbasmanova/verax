@@ -178,15 +178,45 @@ class PlanBuilder {
       const std::vector<std::string>& columnNames);
 
   PlanBuilder& tableScan(
+      const std::string& connectorId,
+      const char* tableName,
+      std::initializer_list<const char*> columnNames) {
+    return tableScan(
+        connectorId,
+        tableName,
+        std::vector<std::string>{columnNames.begin(), columnNames.end()});
+  }
+
+  PlanBuilder& tableScan(
       const std::string& tableName,
       const std::vector<std::string>& columnNames);
+
+  PlanBuilder& tableScan(
+      const char* tableName,
+      std::initializer_list<const char*> columnNames) {
+    return tableScan(
+        tableName,
+        std::vector<std::string>{columnNames.begin(), columnNames.end()});
+  }
 
   /// Equivalent to SELECT * FROM <tableName>.
   PlanBuilder& tableScan(
       const std::string& connectorId,
-      const std::string& tableName);
+      const std::string& tableName,
+      bool includeHiddenColumns = false);
 
-  PlanBuilder& tableScan(const std::string& tableName);
+  PlanBuilder& tableScan(
+      const std::string& connectorId,
+      const char* tableName,
+      bool includeHiddenColumns = false) {
+    return tableScan(connectorId, std::string{tableName}, includeHiddenColumns);
+  }
+
+  PlanBuilder& tableScan(
+      const std::string& tableName,
+      bool includeHiddenColumns = false);
+
+  PlanBuilder& dropHiddenColumns();
 
   /// Equivalent to SELECT * FROM t1, t2, t3...
   ///

@@ -1073,7 +1073,8 @@ class RelationPlanner : public AstVisitor {
                 connectorId);
 
         if (metadata->findTable(tableName) != nullptr) {
-          builder_->tableScan(connectorId, tableName);
+          builder_->tableScan(
+              connectorId, tableName, /*includeHiddenColumns=*/true);
         } else if (auto view = metadata->findView(tableName)) {
           views_.emplace(std::make_pair(connectorId, tableName), view->text());
 
@@ -1207,28 +1208,38 @@ class RelationPlanner : public AstVisitor {
         NodeTypeName::toName(relation->type()));
   }
 
-  // Returns true if 'selectItems' contains a single SELECT *.
-  static bool isSelectAll(const std::vector<SelectItemPtr>& selectItems) {
-    if (selectItems.size() == 1 &&
-        selectItems.at(0)->is(NodeType::kAllColumns)) {
-      return true;
+  void addProject(const std::vector<SelectItemPtr>& selectItems) {
+    // SELECT * FROM ...
+    const bool isSingleSelectStar = selectItems.size() == 1 &&
+        selectItems.at(0)->is(NodeType::kAllColumns) &&
+        selectItems.at(0)->as<AllColumns>()->prefix() == nullptr;
+    if (isSingleSelectStar) {
+      builder_->dropHiddenColumns();
+      return;
     }
 
-    return false;
-  }
-
-  void addProject(const std::vector<SelectItemPtr>& selectItems) {
     std::vector<lp::ExprApi> exprs;
     for (const auto& item : selectItems) {
-      VELOX_CHECK(item->is(NodeType::kSingleColumn));
-      auto* singleColumn = item->as<SingleColumn>();
+      if (item->is(NodeType::kAllColumns)) {
+        auto* allColumns = item->as<AllColumns>();
+        if (allColumns->prefix() != nullptr) {
+          // SELECT t.*
+          VELOX_NYI();
+        } else {
+          // SELECT *
+          VELOX_NYI();
+        }
+      } else {
+        VELOX_CHECK(item->is(NodeType::kSingleColumn));
+        auto* singleColumn = item->as<SingleColumn>();
 
-      lp::ExprApi expr = toExpr(singleColumn->expression());
+        lp::ExprApi expr = toExpr(singleColumn->expression());
 
-      if (singleColumn->alias() != nullptr) {
-        expr = expr.as(canonicalizeIdentifier(*singleColumn->alias()));
+        if (singleColumn->alias() != nullptr) {
+          expr = expr.as(canonicalizeIdentifier(*singleColumn->alias()));
+        }
+        exprs.push_back(expr);
       }
-      exprs.push_back(expr);
     }
 
     builder_->project(exprs);
@@ -1246,6 +1257,12 @@ class RelationPlanner : public AstVisitor {
   }
 
   bool tryAddGlobalAgg(const std::vector<SelectItemPtr>& selectItems) {
+    for (const auto& item : selectItems) {
+      if (item->is(NodeType::kAllColumns)) {
+        return false;
+      }
+    }
+
     bool hasAggregate = false;
     for (const auto& item : selectItems) {
       VELOX_CHECK(item->is(NodeType::kSingleColumn));
@@ -1301,11 +1318,11 @@ class RelationPlanner : public AstVisitor {
     }
 
     // Go over SELECT expressions and figure out for each: whether a grouping
-    // key, a function of one or more grouping keys, a constant, an aggregate or
-    // a function over one or more aggregates and possibly grouping keys.
+    // key, a function of one or more grouping keys, a constant, an aggregate
+    // or a function over one or more aggregates and possibly grouping keys.
     //
-    // Collect all individual aggregates. A single select item 'sum(x) / sum(y)'
-    // will produce 2 aggregates: sum(x), sum(y).
+    // Collect all individual aggregates. A single select item 'sum(x) /
+    // sum(y)' will produce 2 aggregates: sum(x), sum(y).
 
     std::vector<lp::ExprApi> projections;
     std::vector<lp::ExprApi> aggregates;
@@ -1378,11 +1395,11 @@ class RelationPlanner : public AstVisitor {
       builder_->filter(filter.value());
     }
 
-    // Go over SELECT expressions and replace sub-expressions matching 'inputs'
-    // with column references.
+    // Go over SELECT expressions and replace sub-expressions matching
+    // 'inputs' with column references.
 
-    // TODO Verify that SELECT expressions doesn't depend on anything other than
-    // grouping keys and aggregates.
+    // TODO Verify that SELECT expressions doesn't depend on anything other
+    // than grouping keys and aggregates.
 
     for (auto i = 0; i < projections.size(); ++i) {
       auto& item = projections.at(i);
@@ -1482,15 +1499,11 @@ class RelationPlanner : public AstVisitor {
           !groupBy->isDistinct(),
           "GROUP BY with DISTINCT is not supported yet");
       addGroupBy(selectItems, groupBy->groupingElements(), node->having());
+    } else if (tryAddGlobalAgg(selectItems)) {
+      // Nothing else to do.
     } else {
-      if (isSelectAll(selectItems)) {
-        // SELECT *. No project needed.
-      } else if (tryAddGlobalAgg(selectItems)) {
-        // Nothing else to do.
-      } else {
-        // SELECT a, b -> builder.project({a, b})
-        addProject(selectItems);
-      }
+      // SELECT a, b -> builder.project({a, b})
+      addProject(selectItems);
     }
 
     if (node->select()->isDistinct()) {

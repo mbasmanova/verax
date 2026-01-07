@@ -133,7 +133,10 @@ class ExprApi {
         alias_{std::move(alias)},
         unnestedAliases_{std::move(unnestedAliases)} {
     if (alias_.has_value()) {
-      VELOX_CHECK(!alias_.value().empty());
+      VELOX_CHECK(
+          !alias_.value().empty(),
+          "Alias, if specified, cannot be empty: {}",
+          expr_->toString());
     }
 
     for (const auto& alias : unnestedAliases_) {

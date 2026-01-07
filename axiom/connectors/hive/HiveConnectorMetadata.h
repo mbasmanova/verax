@@ -68,6 +68,10 @@ class HivePartitionType : public connector::PartitionType {
 
 class HiveTable : public Table {
  public:
+  static constexpr auto kPath = "$path";
+  static constexpr auto kFileSize = "$file_size";
+  static constexpr auto kBucket = "$bucket";
+
   HiveTable(
       std::string name,
       velox::RowTypePtr type,
