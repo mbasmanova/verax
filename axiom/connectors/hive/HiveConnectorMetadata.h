@@ -66,6 +66,15 @@ class HivePartitionType : public connector::PartitionType {
   const std::vector<velox::TypePtr> partitionKeyTypes_;
 };
 
+class HiveTable : public Table {
+ public:
+  HiveTable(
+      std::string name,
+      velox::RowTypePtr type,
+      bool bucketed,
+      folly::F14FastMap<std::string, velox::Variant> options);
+};
+
 /// Describes a Hive table layout. Adds a file format and a list of
 /// Hive partitioning columns and an optional bucket count to the base
 /// TableLayout. The partitioning in TableLayout referes to bucketing.
