@@ -869,7 +869,11 @@ std::any AstBuilder::visitInlineTable(
 
 std::any AstBuilder::visitSubquery(PrestoSqlParser::SubqueryContext* ctx) {
   trace("visitSubquery");
-  return visitChildren(ctx);
+
+  auto queryNoWith = visitTyped<Query>(ctx->queryNoWith());
+
+  return std::static_pointer_cast<QueryBody>(
+      std::make_shared<TableSubquery>(getLocation(ctx), queryNoWith));
 }
 
 std::any AstBuilder::visitSortItem(PrestoSqlParser::SortItemContext* ctx) {

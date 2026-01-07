@@ -625,6 +625,7 @@ TEST_F(PrestoParserTest, row) {
 TEST_F(PrestoParserTest, selectStar) {
   auto matcher = lp::test::LogicalPlanMatcherBuilder().tableScan();
   testSql("SELECT * FROM nation", matcher);
+  testSql("(SELECT * FROM nation)", matcher);
 
   // TODO Add support for these query shapes.
   EXPECT_THROW(parseSql("SELECT *, * FROM nation"), VeloxRuntimeError);

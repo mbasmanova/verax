@@ -369,9 +369,12 @@ class RelationPlanner : public AstVisitor {
  public:
   explicit RelationPlanner(
       const std::string& defaultConnectorId,
-      const std::optional<std::string>& defaultSchema)
+      const std::optional<std::string>& defaultSchema,
+      const std::function<std::shared_ptr<axiom::sql::presto::Statement>(
+          std::string_view /*sql*/)>& parseSql)
       : context_{defaultConnectorId},
         defaultSchema_{defaultSchema},
+        parseSql_{parseSql},
         builder_(newBuilder()) {}
 
   lp::LogicalPlanNodePtr plan() {
@@ -1078,12 +1081,8 @@ class RelationPlanner : public AstVisitor {
         } else if (auto view = metadata->findView(tableName)) {
           views_.emplace(std::make_pair(connectorId, tableName), view->text());
 
-          ParserHelper helper(view->text());
-          auto* viewContext = helper.parse();
-
-          AstBuilder astBuilder;
-          auto query = std::any_cast<std::shared_ptr<Statement>>(
-              astBuilder.visit(viewContext));
+          VELOX_CHECK_NOT_NULL(parseSql_);
+          auto query = parseSql_(view->text());
           processQuery(dynamic_cast<Query*>(query.get()));
         } else {
           VELOX_USER_FAIL(
@@ -1485,6 +1484,10 @@ class RelationPlanner : public AstVisitor {
     processQuery(query);
   }
 
+  void visitTableSubquery(TableSubquery* node) override {
+    node->query()->accept(this);
+  }
+
   void visitQuerySpecification(QuerySpecification* node) override {
     // FROM t -> builder.tableScan(t)
     processFrom(node->from());
@@ -1602,6 +1605,9 @@ class RelationPlanner : public AstVisitor {
 
   lp::PlanBuilder::Context context_;
   const std::optional<std::string> defaultSchema_;
+  const std::function<std::shared_ptr<axiom::sql::presto::Statement>(
+      std::string_view /*sql*/)>
+      parseSql_;
   std::shared_ptr<lp::PlanBuilder> builder_;
   std::unordered_map<std::string, std::shared_ptr<WithQuery>> withQueries_;
   std::unordered_map<std::pair<std::string, std::string>, std::string> views_;
@@ -1726,7 +1732,7 @@ lp::ExprPtr PrestoParser::parseExpression(
 
 namespace {
 lp::ExprPtr parseSqlExpression(const ExpressionPtr& expr) {
-  RelationPlanner planner("__unused__", "__unused__");
+  RelationPlanner planner("__unused__", "__unused__", /*parseSql=*/nullptr);
 
   auto plan =
       lp::PlanBuilder()
@@ -1746,8 +1752,10 @@ lp::ExprPtr parseSqlExpression(const ExpressionPtr& expr) {
 SqlStatementPtr parseExplain(
     const Explain& explain,
     const std::string& defaultConnectorId,
-    const std::optional<std::string>& defaultSchema) {
-  RelationPlanner planner(defaultConnectorId, defaultSchema);
+    const std::optional<std::string>& defaultSchema,
+    const std::function<std::shared_ptr<axiom::sql::presto::Statement>(
+        std::string_view /*sql*/)>& parseSql) {
+  RelationPlanner planner(defaultConnectorId, defaultSchema, parseSql);
   explain.statement()->accept(&planner);
 
   if (explain.isAnalyze()) {
@@ -1939,7 +1947,9 @@ SqlStatementPtr parseShowFunctions(
 SqlStatementPtr parseInsert(
     const Insert& insert,
     const std::string& defaultConnectorId,
-    const std::optional<std::string>& defaultSchema) {
+    const std::optional<std::string>& defaultSchema,
+    const std::function<std::shared_ptr<axiom::sql::presto::Statement>(
+        std::string_view /*sql*/)>& parseSql) {
   const auto table =
       findTable(*insert.target(), defaultConnectorId, defaultSchema);
 
@@ -1955,7 +1965,7 @@ SqlStatementPtr parseInsert(
     }
   }
 
-  RelationPlanner planner(defaultConnectorId, defaultSchema);
+  RelationPlanner planner(defaultConnectorId, defaultSchema, parseSql);
   insert.query()->accept(&planner);
 
   auto inputColumns = planner.builder().findOrAssignOutputNames();
@@ -1974,11 +1984,13 @@ SqlStatementPtr parseInsert(
 SqlStatementPtr parseCreateTableAsSelect(
     const CreateTableAsSelect& ctas,
     const std::string& defaultConnectorId,
-    const std::optional<std::string>& defaultSchema) {
+    const std::optional<std::string>& defaultSchema,
+    const std::function<std::shared_ptr<axiom::sql::presto::Statement>(
+        std::string_view /*sql*/)>& parseSql) {
   auto connectorTable =
       toConnectorTable(*ctas.name(), defaultConnectorId, defaultSchema);
 
-  RelationPlanner planner(defaultConnectorId, defaultSchema);
+  RelationPlanner planner(defaultConnectorId, defaultSchema, parseSql);
   ctas.query()->accept(&planner);
 
   std::unordered_map<std::string, lp::ExprPtr> properties;
@@ -2052,34 +2064,43 @@ SqlStatementPtr parseDropTable(
 SqlStatementPtr PrestoParser::doParse(
     std::string_view sql,
     bool enableTracing) {
-  ParserHelper helper(sql);
-  auto* context = helper.parse();
+  auto parseSql = [enableTracing](std::string_view sql) {
+    ParserHelper helper(sql);
+    auto* context = helper.parse();
 
-  AstBuilder astBuilder(enableTracing);
-  auto query =
-      std::any_cast<std::shared_ptr<Statement>>(astBuilder.visit(context));
+    AstBuilder astBuilder(enableTracing);
+    auto query =
+        std::any_cast<std::shared_ptr<Statement>>(astBuilder.visit(context));
 
-  if (enableTracing) {
-    std::stringstream astString;
-    AstPrinter printer(astString);
-    query->accept(&printer);
+    if (enableTracing) {
+      std::stringstream astString;
+      AstPrinter printer(astString);
+      query->accept(&printer);
 
-    std::cout << "AST: " << astString.str() << std::endl;
-  }
+      std::cout << "AST: " << astString.str() << std::endl;
+    }
+
+    return query;
+  };
+
+  auto query = parseSql(sql);
 
   if (query->is(NodeType::kExplain)) {
     return parseExplain(
-        *query->as<Explain>(), defaultConnectorId_, defaultSchema_);
+        *query->as<Explain>(), defaultConnectorId_, defaultSchema_, parseSql);
   }
 
   if (query->is(NodeType::kInsert)) {
     return parseInsert(
-        *query->as<Insert>(), defaultConnectorId_, defaultSchema_);
+        *query->as<Insert>(), defaultConnectorId_, defaultSchema_, parseSql);
   }
 
   if (query->is(NodeType::kCreateTableAsSelect)) {
     return parseCreateTableAsSelect(
-        *query->as<CreateTableAsSelect>(), defaultConnectorId_, defaultSchema_);
+        *query->as<CreateTableAsSelect>(),
+        defaultConnectorId_,
+        defaultSchema_,
+        parseSql);
   }
 
   if (query->is(NodeType::kDropTable)) {
@@ -2100,7 +2121,7 @@ SqlStatementPtr PrestoParser::doParse(
     return parseShowFunctions(*query->as<ShowFunctions>(), defaultConnectorId_);
   }
 
-  RelationPlanner planner(defaultConnectorId_, defaultSchema_);
+  RelationPlanner planner(defaultConnectorId_, defaultSchema_, parseSql);
   query->accept(&planner);
   return std::make_shared<SelectStatement>(planner.plan(), planner.views());
 }
