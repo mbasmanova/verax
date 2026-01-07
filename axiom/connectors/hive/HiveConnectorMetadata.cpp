@@ -61,6 +61,51 @@ std::string HivePartitionType::toString() const {
 }
 
 namespace {
+
+std::vector<std::unique_ptr<const connector::Column>> makeColumns(
+    const velox::RowTypePtr& type,
+    bool bucketed) {
+  constexpr auto kPath = "$path";
+  constexpr auto kFileSize = "$file_size";
+  constexpr auto kBucket = "$bucket";
+
+  std::vector<std::unique_ptr<const connector::Column>> columns;
+  columns.reserve(type->size() + 2 + (bucketed ? 1 : 0));
+
+  for (auto i = 0; i < type->size(); i++) {
+    columns.emplace_back(
+        std::make_unique<connector::Column>(
+            type->nameOf(i), type->childAt(i), /*hidden=*/false));
+  }
+
+  // Add hidden columns.
+  columns.emplace_back(
+      std::make_unique<connector::Column>(
+          kPath, velox::VARCHAR(), /*hidden=*/true));
+  columns.emplace_back(
+      std::make_unique<connector::Column>(
+          kFileSize, velox::BIGINT(), /*hidden=*/true));
+  if (bucketed) {
+    columns.emplace_back(
+        std::make_unique<connector::Column>(
+            kBucket, velox::INTEGER(), /*hidden=*/true));
+  }
+
+  return columns;
+}
+} // namespace
+
+HiveTable::HiveTable(
+    std::string name,
+    velox::RowTypePtr type,
+    bool bucketed,
+    folly::F14FastMap<std::string, velox::Variant> options)
+    : Table(
+          std::move(name),
+          hive::makeColumns(type, bucketed),
+          std::move(options)) {}
+
+namespace {
 std::vector<velox::TypePtr> extractPartitionKeyTypes(
     const std::vector<const Column*>& partitionedByColumns) {
   std::vector<velox::TypePtr> types;
