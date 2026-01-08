@@ -844,6 +844,64 @@ TEST_F(PrestoParserTest, aggregateOptions) {
   ASSERT_EQ(1, agg->aggregateAt(0)->ordering().size());
 }
 
+TEST_F(PrestoParserTest, orderBy) {
+  {
+    auto matcher = lp::test::LogicalPlanMatcherBuilder()
+                       .tableScan()
+                       .aggregate()
+                       .sort()
+                       .project();
+
+    testSql(
+        "select n_regionkey from nation group by 1 order by count(1)", matcher);
+  }
+
+  {
+    auto matcher =
+        lp::test::LogicalPlanMatcherBuilder().tableScan().aggregate().sort();
+
+    testSql(
+        "select n_regionkey, count(1) from nation group by 1 order by count(1)",
+        matcher);
+
+    testSql(
+        "select n_regionkey, count(1) from nation group by 1 order by 2",
+        matcher);
+
+    testSql(
+        "select n_regionkey, count(1) as c from nation group by 1 order by c",
+        matcher);
+  }
+
+  {
+    auto matcher = lp::test::LogicalPlanMatcherBuilder()
+                       .tableScan()
+                       .aggregate()
+                       .project()
+                       .sort();
+
+    testSql(
+        "select n_regionkey, count(1) * 2 from nation group by 1 order by 2",
+        matcher);
+
+    testSql(
+        "select n_regionkey, count(1) * 2 from nation group by 1 order by count(1) * 2",
+        matcher);
+  }
+
+  {
+    auto matcher = lp::test::LogicalPlanMatcherBuilder()
+                       .tableScan()
+                       .aggregate()
+                       .project()
+                       .sort()
+                       .project();
+    testSql(
+        "select n_regionkey, count(1) * 2 from nation group by 1 order by count(1) * 3",
+        matcher);
+  }
+}
+
 TEST_F(PrestoParserTest, join) {
   {
     auto matcher = lp::test::LogicalPlanMatcherBuilder().tableScan().join(

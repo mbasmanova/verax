@@ -341,9 +341,9 @@ struct SortKey {
   SortKey(ExprApi input, bool ascending, bool nullsFirst)
       : expr{std::move(input)}, ascending{ascending}, nullsFirst(nullsFirst) {}
 
-  const ExprApi expr;
-  const bool ascending;
-  const bool nullsFirst;
+  ExprApi expr;
+  bool ascending;
+  bool nullsFirst;
 };
 
 } // namespace facebook::axiom::logical_plan
