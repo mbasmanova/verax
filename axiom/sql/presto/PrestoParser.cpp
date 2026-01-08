@@ -89,14 +89,18 @@ class ParserHelper {
   ErrorListener errorListener_;
 };
 
-using ExprMap = folly::
-    F14FastMap<core::ExprPtr, core::ExprPtr, core::IExprHash, core::IExprEqual>;
+using ExprSet =
+    folly::F14FastSet<core::ExprPtr, core::IExprHash, core::IExprEqual>;
+
+template <typename V>
+using ExprMap =
+    folly::F14FastMap<core::ExprPtr, V, core::IExprHash, core::IExprEqual>;
 
 // Given an expression, and pairs of search-and-replace sub-expressions,
 // produces a new expression with sub-expressions replaced.
 core::ExprPtr replaceInputs(
     const core::ExprPtr& expr,
-    const ExprMap& replacements) {
+    const ExprMap<core::ExprPtr>& replacements) {
   auto it = replacements.find(expr);
   if (it != replacements.end()) {
     return it->second;
@@ -123,7 +127,8 @@ core::ExprPtr replaceInputs(
 // these to 'aggregates'.
 void findAggregates(
     const core::ExprPtr expr,
-    std::vector<lp::ExprApi>& aggregates) {
+    std::vector<lp::ExprApi>& aggregates,
+    ExprSet& aggregateSet) {
   switch (expr->kind()) {
     case core::IExpr::Kind::kInput:
       return;
@@ -132,16 +137,19 @@ void findAggregates(
     case core::IExpr::Kind::kCall: {
       if (facebook::velox::exec::getAggregateFunctionEntry(
               expr->as<core::CallExpr>()->name())) {
-        aggregates.emplace_back(lp::ExprApi(expr));
+        if (aggregateSet.emplace(expr).second) {
+          aggregates.emplace_back(lp::ExprApi(expr));
+        }
       } else {
         for (const auto& input : expr->inputs()) {
-          findAggregates(input, aggregates);
+          findAggregates(input, aggregates, aggregateSet);
         }
       }
       return;
     }
     case core::IExpr::Kind::kCast:
-      findAggregates(expr->as<core::CastExpr>()->input(), aggregates);
+      findAggregates(
+          expr->as<core::CastExpr>()->input(), aggregates, aggregateSet);
       return;
     case core::IExpr::Kind::kConstant:
       return;
@@ -1305,14 +1313,15 @@ class RelationPlanner : public AstVisitor {
       return false;
     }
 
-    addGroupBy(selectItems, {}, nullptr);
+    addGroupBy(selectItems, {}, /*having=*/nullptr, /*orderBy=*/nullptr);
     return true;
   }
 
   void addGroupBy(
       const std::vector<SelectItemPtr>& selectItems,
       const std::vector<GroupingElementPtr>& groupingElements,
-      const ExpressionPtr& having) {
+      const ExpressionPtr& having,
+      const OrderByPtr& orderBy) {
     // Go over grouping keys and collect expressions. Ordinals refer to output
     // columns (selectItems). Non-ordinals refer to input columns.
 
@@ -1350,6 +1359,7 @@ class RelationPlanner : public AstVisitor {
 
     std::vector<lp::ExprApi> projections;
     std::vector<lp::ExprApi> aggregates;
+    ExprSet aggregateSet;
     std::unordered_map<
         const facebook::velox::core::IExpr*,
         lp::PlanBuilder::AggregateOptions>
@@ -1360,7 +1370,7 @@ class RelationPlanner : public AstVisitor {
 
       lp::ExprApi expr =
           toExpr(singleColumn->expression(), &aggregateOptionsMap);
-      findAggregates(expr.expr(), aggregates);
+      findAggregates(expr.expr(), aggregates, aggregateSet);
 
       if (!aggregates.empty() &&
           aggregates.back().expr().get() == expr.expr().get()) {
@@ -1381,8 +1391,25 @@ class RelationPlanner : public AstVisitor {
     std::optional<lp::ExprApi> filter;
     if (having != nullptr) {
       lp::ExprApi expr = toExpr(having, &aggregateOptionsMap);
-      findAggregates(expr.expr(), aggregates);
+      findAggregates(expr.expr(), aggregates, aggregateSet);
       filter = expr;
+    }
+
+    std::vector<lp::SortKey> sortingKeys;
+    std::vector<lp::ExprApi> sortingAggregates;
+
+    if (orderBy != nullptr) {
+      const auto& sortItems = orderBy->sortItems();
+      for (const auto& item : sortItems) {
+        auto expr = toExpr(item->sortKey(), &aggregateOptionsMap);
+        findAggregates(expr.expr(), sortingAggregates, aggregateSet);
+        sortingKeys.emplace_back(
+            expr, item->isAscending(), item->isNullsFirst());
+      }
+
+      for (const auto& aggregate : sortingAggregates) {
+        aggregates.emplace_back(aggregate);
+      }
     }
 
     std::vector<lp::PlanBuilder::AggregateOptions> aggregateOptions;
@@ -1398,7 +1425,7 @@ class RelationPlanner : public AstVisitor {
 
     const auto outputNames = builder_->findOrAssignOutputNames();
 
-    ExprMap inputs;
+    ExprMap<core::ExprPtr> inputs;
     std::vector<core::ExprPtr> flatInputs;
 
     size_t index = 0;
@@ -1432,6 +1459,36 @@ class RelationPlanner : public AstVisitor {
       item = lp::ExprApi(newExpr, item.name());
     }
 
+    // Go over sorting keys and add projections.
+    std::vector<size_t> sortingKeyOrdinals;
+    {
+      // TODO: Add support for sorting keys that apply expressions over SELECT
+      // projections, i.e. SELECT key, f(count(1)) as c FROM t GROUP BY 1 ORDER
+      // BY g(c).
+      ExprMap<size_t> projectionMap;
+      for (auto i = 0; i < projections.size(); ++i) {
+        projectionMap.emplace(projections.at(i).expr(), i + 1);
+      }
+
+      for (auto i = 0; i < sortingKeys.size(); ++i) {
+        const auto& sortKey = orderBy->sortItems().at(i)->sortKey();
+        if (sortKey->is(NodeType::kLongLiteral)) {
+          const auto n = sortKey->as<LongLiteral>()->value();
+          sortingKeyOrdinals.emplace_back(n);
+        } else {
+          auto key = replaceInputs(sortingKeys.at(i).expr.expr(), inputs);
+          auto [it, inserted] =
+              projectionMap.emplace(key, projections.size() + 1);
+          if (inserted) {
+            sortingKeyOrdinals.emplace_back(projections.size() + 1);
+            projections.emplace_back(key);
+          } else {
+            sortingKeyOrdinals.emplace_back(it->second);
+          }
+        }
+      }
+    }
+
     bool identityProjection = (flatInputs.size() == projections.size());
     if (identityProjection) {
       for (auto i = 0; i < projections.size(); ++i) {
@@ -1452,6 +1509,29 @@ class RelationPlanner : public AstVisitor {
 
     if (!identityProjection) {
       builder_->project(projections);
+    }
+
+    if (!sortingKeys.empty()) {
+      for (auto i = 0; i < sortingKeys.size(); ++i) {
+        const auto name =
+            builder_->findOrAssignOutputNameAt(sortingKeyOrdinals.at(i) - 1);
+
+        auto& key = sortingKeys.at(i);
+        key = lp::SortKey(lp::Col(name), key.ascending, key.nullsFirst);
+      }
+
+      builder_->sort(sortingKeys);
+
+      // Drop projections used only for sorting.
+      if (selectItems.size() < projections.size()) {
+        std::vector<lp::ExprApi> finalProjections;
+        finalProjections.reserve(selectItems.size());
+        for (auto i = 0; i < selectItems.size(); ++i) {
+          finalProjections.emplace_back(
+              lp::Col(builder_->findOrAssignOutputNameAt(i)));
+        }
+        builder_->project(finalProjections);
+      }
     }
   }
 
@@ -1498,9 +1578,15 @@ class RelationPlanner : public AstVisitor {
       }
     }
 
-    query->queryBody()->accept(this);
+    const auto& queryBody = query->queryBody();
+    if (queryBody->is(NodeType::kQuerySpecification)) {
+      visitQuerySpecification(
+          queryBody->as<QuerySpecification>(), query->orderBy());
+    } else {
+      queryBody->accept(this);
+      addOrderBy(query->orderBy());
+    }
 
-    addOrderBy(query->orderBy());
     addOffset(query->offset());
     addLimit(query->limit());
   }
@@ -1514,6 +1600,12 @@ class RelationPlanner : public AstVisitor {
   }
 
   void visitQuerySpecification(QuerySpecification* node) override {
+    visitQuerySpecification(node, /*orderBy=*/nullptr);
+  }
+
+  void visitQuerySpecification(
+      QuerySpecification* node,
+      const OrderByPtr& orderBy) {
     // FROM t -> builder.tableScan(t)
     processFrom(node->from());
 
@@ -1521,21 +1613,31 @@ class RelationPlanner : public AstVisitor {
     addFilter(node->where());
 
     const auto& selectItems = node->select()->selectItems();
+    const bool distinct = node->select()->isDistinct();
 
     if (auto groupBy = node->groupBy()) {
       VELOX_USER_CHECK(
           !groupBy->isDistinct(),
           "GROUP BY with DISTINCT is not supported yet");
-      addGroupBy(selectItems, groupBy->groupingElements(), node->having());
-    } else if (tryAddGlobalAgg(selectItems)) {
-      // Nothing else to do.
-    } else {
-      // SELECT a, b -> builder.project({a, b})
-      addProject(selectItems);
-    }
+      addGroupBy(
+          selectItems, groupBy->groupingElements(), node->having(), orderBy);
 
-    if (node->select()->isDistinct()) {
-      builder_->aggregate(builder_->findOrAssignOutputNames(), {});
+      if (distinct) {
+        builder_->aggregate(builder_->findOrAssignOutputNames(), {});
+      }
+    } else {
+      if (tryAddGlobalAgg(selectItems)) {
+        // Nothing else to do.
+      } else {
+        // SELECT a, b -> builder.project({a, b})
+        addProject(selectItems);
+      }
+
+      if (distinct) {
+        builder_->aggregate(builder_->findOrAssignOutputNames(), {});
+      }
+
+      addOrderBy(orderBy);
     }
   }
 

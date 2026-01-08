@@ -412,6 +412,7 @@ void PlanBuilder::resolveProjections(
     std::vector<std::string>& outputNames,
     std::vector<ExprPtr>& exprs,
     NameMappings& mappings) {
+  std::unordered_set<std::string> identities;
   for (const auto& untypedExpr : projections) {
     auto expr = resolveScalarTypes(untypedExpr.expr());
 
@@ -421,13 +422,20 @@ void PlanBuilder::resolveProjections(
       // Identity projection
       const auto& id = expr->as<InputReferenceExpr>()->name();
       if (!alias.has_value() || id == alias.value()) {
-        outputNames.push_back(id);
+        if (identities.emplace(id).second) {
+          outputNames.push_back(id);
 
-        const auto names = outputMapping_->reverseLookup(id);
-        VELOX_USER_CHECK(!names.empty());
+          const auto names = outputMapping_->reverseLookup(id);
+          VELOX_USER_CHECK(!names.empty());
 
-        for (const auto& name : names) {
-          mappings.add(name, id);
+          for (const auto& name : names) {
+            mappings.add(name, id);
+          }
+        } else {
+          outputNames.push_back(newName(id));
+          if (alias.has_value()) {
+            mappings.add(alias.value(), outputNames.back());
+          }
         }
       } else {
         outputNames.push_back(newName(alias.value()));
