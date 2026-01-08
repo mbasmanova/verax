@@ -25,6 +25,7 @@
 #include "velox/connectors/tpch/TpchConnector.h"
 #include "velox/functions/prestosql/aggregates/RegisterAggregateFunctions.h"
 #include "velox/functions/prestosql/registration/RegistrationFunctions.h"
+#include "velox/functions/prestosql/types/TimestampWithTimeZoneType.h"
 
 namespace axiom::sql::presto {
 namespace {
@@ -532,6 +533,28 @@ TEST_F(PrestoParserTest, doubleLiteral) {
   test("1.23E-5", 1.23e-5);
   test(".5E2", 0.5e2);
   test("1E+5", 1e5);
+}
+
+TEST_F(PrestoParserTest, timestampLiteral) {
+  PrestoParser parser(kTpchConnectorId, kTinySchema, pool());
+
+  auto test = [&](std::string_view sql, const TypePtr& expectedType) {
+    SCOPED_TRACE(sql);
+    auto expr = parser.parseExpression(sql);
+
+    VELOX_ASSERT_EQ_TYPES(expr->type(), expectedType);
+  };
+
+  test("TIMESTAMP '2020-01-01'", TIMESTAMP());
+  test("TIMESTAMP '2020-01-01 00:00:00'", TIMESTAMP());
+  test("TIMESTAMP '2020-01-01 00:00:00.000'", TIMESTAMP());
+  test(
+      "TIMESTAMP '2020-01-01 00:00 America/Los_Angeles'",
+      TIMESTAMP_WITH_TIME_ZONE());
+
+  VELOX_ASSERT_THROW(
+      parser.parseExpression("TIMESTAMP 'foo'"),
+      "Not a valid timestamp literal");
 }
 
 TEST_F(PrestoParserTest, null) {

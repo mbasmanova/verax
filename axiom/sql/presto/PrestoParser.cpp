@@ -27,6 +27,7 @@
 #include "velox/exec/Aggregate.h"
 #include "velox/exec/WindowFunction.h"
 #include "velox/functions/FunctionRegistry.h"
+#include "velox/functions/prestosql/types/TimestampWithTimeZoneType.h"
 
 namespace axiom::sql::presto {
 namespace {
@@ -653,6 +654,30 @@ class RelationPlanner : public AstVisitor {
         auto literal = node->as<GenericLiteral>();
         return lp::Cast(
             parseType(literal->valueType()), lp::Lit(literal->value()));
+      }
+
+      case NodeType::kTimestampLiteral: {
+        auto literal = node->as<TimestampLiteral>();
+
+        auto timestamp = facebook::velox::util::fromTimestampWithTimezoneString(
+            literal->value().c_str(),
+            literal->value().size(),
+            facebook::velox::util::TimestampParseMode::kPrestoCast);
+
+        VELOX_USER_CHECK(
+            !timestamp.hasError(),
+            "Not a valid timestamp literal: {} - {}",
+            literal->value(),
+            timestamp.error());
+
+        if (timestamp.value().timeZone != nullptr) {
+          return lp::Cast(
+              facebook::velox::TIMESTAMP_WITH_TIME_ZONE(),
+              lp::Lit(literal->value()));
+        } else {
+          return lp::Cast(
+              facebook::velox::TIMESTAMP(), lp::Lit(literal->value()));
+        }
       }
 
       case NodeType::kArrayConstructor: {
