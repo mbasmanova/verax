@@ -258,5 +258,41 @@ TEST_F(JoinTest, outerJoinWithInnerJoin) {
   }
 }
 
+TEST_F(JoinTest, nestedOuterJoins) {
+  testConnector_->addTable(
+      "nation",
+      ROW({"n_nationkey", "n_name", "n_regionkey"},
+          {BIGINT(), VARCHAR(), BIGINT()}));
+  testConnector_->addTable(
+      "region", ROW({"r_regionkey", "r_name"}, {BIGINT(), VARCHAR()}));
+
+  auto sql =
+      "SELECT r2.r_name "
+      "FROM nation n "
+      "   FULL OUTER JOIN region r1 ON n.n_regionkey = r1.r_regionkey "
+      "   RIGHT OUTER JOIN region r2 ON n.n_regionkey = r2.r_regionkey "
+      "GROUP BY 1";
+
+  auto logicalPlan = parseSelect(sql, kTestConnectorId);
+  auto plan = toSingleNodePlan(logicalPlan);
+
+  auto matcher =
+      core::PlanMatcherBuilder()
+          .tableScan("region")
+          .hashJoin(
+              core::PlanMatcherBuilder()
+                  .tableScan("nation")
+                  .hashJoin(
+                      core::PlanMatcherBuilder().tableScan("region").build(),
+                      core::JoinType::kFull)
+                  .build(),
+              core::JoinType::kLeft)
+          .aggregation()
+          .project()
+          .build();
+
+  AXIOM_ASSERT_PLAN(plan, matcher);
+}
+
 } // namespace
 } // namespace facebook::axiom::optimizer
