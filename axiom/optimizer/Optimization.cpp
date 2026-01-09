@@ -1298,43 +1298,6 @@ void Optimization::joinByHash(
   RelationOpPtr buildInput = buildPlan->op;
   RelationOpPtr probeInput = plan;
 
-  if (!isSingleWorker_) {
-    if (!partKeys.empty()) {
-      if (needsShuffle) {
-        if (copartition.empty()) {
-          for (auto i : partKeys) {
-            copartition.push_back(build.keys[i]);
-          }
-        }
-        Distribution distribution{
-            plan->distribution().distributionType, copartition};
-        auto* repartition = make<Repartition>(
-            buildInput, std::move(distribution), buildInput->columns());
-        buildState.addCost(*repartition);
-        buildInput = repartition;
-      }
-    } else if (
-        candidate.join->isBroadcastableType() &&
-        isBroadcastableSize(buildPlan)) {
-      auto* broadcast = make<Repartition>(
-          buildInput, Distribution::broadcast(), buildInput->columns());
-      buildState.addCost(*broadcast);
-      buildInput = broadcast;
-    } else {
-      // The probe gets shuffled to align with build. If build is not
-      // partitioned on its keys, shuffle the build too.
-      alignJoinSides(
-          buildInput, build.keys, buildState, probeInput, probe.keys, state);
-    }
-  }
-
-  PrecomputeProjection precomputeBuild(buildInput, state.dt);
-  auto buildKeys = precomputeBuild.toColumns(build.keys);
-  buildInput = std::move(precomputeBuild).maybeProject();
-
-  auto* buildOp = make<HashBuild>(buildInput, build.keys, buildPlan);
-  buildState.addCost(*buildOp);
-
   auto joinType = build.leftJoinType();
   const bool probeOnly = joinType == velox::core::JoinType::kLeftSemiFilter ||
       joinType == velox::core::JoinType::kLeftSemiProject ||
@@ -1397,6 +1360,43 @@ void Optimization::joinByHash(
   PrecomputeProjection precomputeProbe(probeInput, state.dt);
   auto probeKeys = precomputeProbe.toColumns(probe.keys);
   probeInput = std::move(precomputeProbe).maybeProject();
+
+  PrecomputeProjection precomputeBuild(buildInput, state.dt);
+  auto buildKeys = precomputeBuild.toColumns(build.keys);
+  buildInput = std::move(precomputeBuild).maybeProject();
+
+  if (!isSingleWorker_) {
+    if (!partKeys.empty()) {
+      if (needsShuffle) {
+        if (copartition.empty()) {
+          for (auto i : partKeys) {
+            copartition.push_back(build.keys[i]);
+          }
+        }
+        Distribution distribution{
+            plan->distribution().distributionType, copartition};
+        auto* repartition = make<Repartition>(
+            buildInput, std::move(distribution), buildInput->columns());
+        buildState.addCost(*repartition);
+        buildInput = repartition;
+      }
+    } else if (
+        candidate.join->isBroadcastableType() &&
+        isBroadcastableSize(buildPlan)) {
+      auto* broadcast = make<Repartition>(
+          buildInput, Distribution::broadcast(), buildInput->columns());
+      buildState.addCost(*broadcast);
+      buildInput = broadcast;
+    } else {
+      // The probe gets shuffled to align with build. If build is not
+      // partitioned on its keys, shuffle the build too.
+      alignJoinSides(
+          buildInput, buildKeys, buildState, probeInput, probeKeys, state);
+    }
+  }
+
+  auto* buildOp = make<HashBuild>(buildInput, build.keys, buildPlan);
+  buildState.addCost(*buildOp);
 
   RelationOp* join = make<Join>(
       JoinMethod::kHash,
@@ -1466,19 +1466,9 @@ void Optimization::joinByHashRight(
   RelationOpPtr probeInput = probePlan->op;
   RelationOpPtr buildInput = plan;
 
-  if (!isSingleWorker_) {
-    // The build gets shuffled to align with probe. If probe is not partitioned
-    // on its keys, shuffle the probe too.
-    alignJoinSides(
-        probeInput, probe.keys, probeState, buildInput, build.keys, state);
-  }
-
   PrecomputeProjection precomputeBuild(buildInput, state.dt);
   auto buildKeys = precomputeBuild.toColumns(build.keys);
   buildInput = std::move(precomputeBuild).maybeProject();
-
-  auto* buildOp = make<HashBuild>(buildInput, build.keys, nullptr);
-  state.addCost(*buildOp);
 
   PlanObjectSet buildColumns;
   buildColumns.unionObjects(buildInput->columns());
@@ -1555,6 +1545,16 @@ void Optimization::joinByHashRight(
   PrecomputeProjection precomputeProbe(probeInput, state.dt);
   auto probeKeys = precomputeProbe.toColumns(probe.keys);
   probeInput = std::move(precomputeProbe).maybeProject();
+
+  if (!isSingleWorker_) {
+    // The build gets shuffled to align with probe. If probe is not partitioned
+    // on its keys, shuffle the probe too.
+    alignJoinSides(
+        probeInput, probeKeys, probeState, buildInput, buildKeys, state);
+  }
+
+  auto* buildOp = make<HashBuild>(buildInput, buildKeys, nullptr);
+  state.addCost(*buildOp);
 
   RelationOp* join = make<Join>(
       JoinMethod::kHash,

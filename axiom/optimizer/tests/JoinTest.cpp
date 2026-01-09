@@ -294,5 +294,74 @@ TEST_F(JoinTest, nestedOuterJoins) {
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
+TEST_F(JoinTest, joinWithComputedKeys) {
+  testConnector_->addTable(
+      "nation",
+      ROW({"n_nationkey", "n_name", "n_regionkey"},
+          {BIGINT(), VARCHAR(), BIGINT()}));
+  testConnector_->addTable(
+      "region", ROW({"r_regionkey", "r_name"}, {BIGINT(), VARCHAR()}));
+
+  auto sql =
+      "SELECT count(1) FROM nation n RIGHT JOIN region ON coalesce(n_regionkey, 1) = r_regionkey";
+
+  auto logicalPlan = parseSelect(sql, kTestConnectorId);
+  {
+    auto plan = toSingleNodePlan(logicalPlan);
+
+    auto matcher =
+        core::PlanMatcherBuilder()
+            .tableScan("nation")
+            // TODO Remove redundant projection of 'n_regionkey'.
+            .project({"n_regionkey", "coalesce(n_regionkey, 1)"})
+            .hashJoin(
+                core::PlanMatcherBuilder().tableScan("region").build(),
+                core::JoinType::kRight)
+            .aggregation()
+            .build();
+
+    AXIOM_ASSERT_PLAN(plan, matcher);
+  }
+
+  {
+    auto distributedPlan = planVelox(logicalPlan);
+    const auto& fragments = distributedPlan.plan->fragments();
+    ASSERT_EQ(4, fragments.size());
+
+    LOG(ERROR) << distributedPlan.plan->toString();
+
+    auto matcher = core::PlanMatcherBuilder()
+                       .tableScan("region")
+                       .partitionedOutput()
+                       .build();
+    AXIOM_ASSERT_PLAN(fragments.at(0).fragment.planNode, matcher);
+
+    matcher = core::PlanMatcherBuilder()
+                  .tableScan("nation")
+                  // TODO Remove redundant projection of 'n_regionkey'.
+                  .project({"n_regionkey", "coalesce(n_regionkey, 1)"})
+                  .partitionedOutput()
+                  .build();
+    AXIOM_ASSERT_PLAN(fragments.at(1).fragment.planNode, matcher);
+
+    matcher = core::PlanMatcherBuilder()
+                  .exchange()
+                  .hashJoin(
+                      core::PlanMatcherBuilder().exchange().build(),
+                      core::JoinType::kLeft)
+                  .partialAggregation()
+                  .partitionedOutput()
+                  .build();
+    AXIOM_ASSERT_PLAN(fragments.at(2).fragment.planNode, matcher);
+
+    matcher = core::PlanMatcherBuilder()
+                  .exchange()
+                  .localPartition()
+                  .finalAggregation()
+                  .build();
+    AXIOM_ASSERT_PLAN(fragments.at(3).fragment.planNode, matcher);
+  }
+}
+
 } // namespace
 } // namespace facebook::axiom::optimizer

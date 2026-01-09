@@ -114,4 +114,6 @@ std::string orderByToString(
 
 std::string columnsToString(const ColumnVector& columns);
 
+std::string exprsToString(const ExprVector& exprs);
+
 } // namespace facebook::axiom::optimizer
