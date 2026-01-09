@@ -1530,6 +1530,17 @@ void ToGraph::translateJoin(const lp::JoinNode& join) {
   ExprVector conjuncts;
   translateConjuncts(join.condition(), conjuncts);
 
+#ifndef NDEBUG
+  // Sanity check. The join condition should not depend on the output of the
+  // current DT.
+  for (const auto* conjunct : conjuncts) {
+    VELOX_DCHECK(
+        !conjunct->allTables().contains(currentDt_),
+        "Cannot add a join that depends on DT's output: {}",
+        conjunct->toString());
+  }
+#endif
+
   if (isInner) {
     currentDt_->conjuncts.insert(
         currentDt_->conjuncts.end(), conjuncts.begin(), conjuncts.end());
@@ -2409,8 +2420,15 @@ DerivedTableP ToGraph::makeQueryGraph(const lp::LogicalPlanNode& logicalPlan) {
 
 void ToGraph::makeQueryGraph(
     const lp::LogicalPlanNode& node,
-    uint64_t allowedInDt) {
+    uint64_t allowedInDt,
+    bool excludeOuterJoins) {
   if (!contains(allowedInDt, node.kind())) {
+    wrapInDt(node);
+    return;
+  }
+
+  if (excludeOuterJoins && node.is(lp::NodeKind::kJoin) &&
+      node.as<lp::JoinNode>()->joinType() != lp::JoinType::kInner) {
     wrapInDt(node);
     return;
   }
@@ -2540,12 +2558,12 @@ void ToGraph::makeQueryGraph(
           lp::NodeKind::kLimit,
           lp::NodeKind::kFilter,
           lp::NodeKind::kSort);
-      makeQueryGraph(left, allowedInDt);
+      makeQueryGraph(left, allowedInDt, /*excludeOuterJoins=*/true);
       if (join.joinType() != lp::JoinType::kInner ||
           queryCtx()->optimization()->options().syntacticJoinOrder) {
         allowedInDt = deny(allowedInDt, lp::NodeKind::kJoin);
       }
-      makeQueryGraph(right, allowedInDt);
+      makeQueryGraph(right, allowedInDt, /*excludeOuterJoins=*/true);
       translateJoin(join);
     } break;
     case lp::NodeKind::kSort: {
