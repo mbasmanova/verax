@@ -16,7 +16,6 @@
 
 #include "axiom/connectors/tests/TestConnector.h"
 
-#include <folly/init/Init.h>
 #include <gtest/gtest.h>
 
 #include "velox/common/base/tests/GTestUtils.h"
@@ -290,11 +289,234 @@ TEST_F(TestConnectorTest, tableLayout) {
   EXPECT_EQ(nonExistent, nullptr);
 }
 
+// Verifies that addData computes per-column statistics incrementally.
+TEST_F(TestConnectorTest, addDataStats) {
+  auto table = connector_->addTable("t", ROW({"a", "b", "c"}, BIGINT()));
+
+  connector_->appendData(
+      "t",
+      makeRowVector(
+          {makeFlatVector<int64_t>({10, 20, 30}),
+           makeFlatVector<int64_t>({1, 1, 2}),
+           makeNullConstant(TypeKind::BIGINT, 3)}));
+
+  EXPECT_EQ(table->numRows(), 3);
+
+  {
+    SCOPED_TRACE("column a");
+    auto* column = table->findColumn("a");
+    ASSERT_NE(column, nullptr);
+    auto* stats = column->stats();
+    ASSERT_NE(stats, nullptr);
+    EXPECT_EQ(stats->numValues, 3);
+    EXPECT_EQ(stats->nullPct, 0);
+    EXPECT_TRUE(stats->nonNull);
+    EXPECT_EQ(stats->numDistinct, 3);
+    EXPECT_EQ(stats->min, Variant(10LL));
+    EXPECT_EQ(stats->max, Variant(30LL));
+  }
+
+  {
+    SCOPED_TRACE("column b");
+    auto* column = table->findColumn("b");
+    ASSERT_NE(column, nullptr);
+    auto* stats = column->stats();
+    ASSERT_NE(stats, nullptr);
+    EXPECT_EQ(stats->numValues, 3);
+    EXPECT_EQ(stats->nullPct, 0);
+    EXPECT_TRUE(stats->nonNull);
+    EXPECT_EQ(stats->numDistinct, 2);
+    EXPECT_EQ(stats->min, Variant(1LL));
+    EXPECT_EQ(stats->max, Variant(2LL));
+  }
+
+  {
+    SCOPED_TRACE("column c - all nulls");
+    auto* column = table->findColumn("c");
+    ASSERT_NE(column, nullptr);
+    auto* stats = column->stats();
+    ASSERT_NE(stats, nullptr);
+    EXPECT_EQ(stats->numValues, 0);
+    EXPECT_EQ(stats->nullPct, 100);
+    EXPECT_FALSE(stats->nonNull);
+    EXPECT_EQ(stats->numDistinct, 0);
+    EXPECT_FALSE(stats->min.has_value());
+    EXPECT_FALSE(stats->max.has_value());
+  }
+}
+
+// Verifies incremental stat computation across multiple addData calls.
+TEST_F(TestConnectorTest, addDataStatsMultipleBatches) {
+  auto table = connector_->addTable("t", ROW("a", BIGINT()));
+
+  connector_->appendData(
+      "t", makeRowVector({makeFlatVector<int64_t>({10, 20})}));
+  connector_->appendData(
+      "t", makeRowVector({makeFlatVector<int64_t>({20, 30})}));
+
+  EXPECT_EQ(table->numRows(), 4);
+
+  auto* column = table->findColumn("a");
+  ASSERT_NE(column, nullptr);
+  auto* stats = column->stats();
+  ASSERT_NE(stats, nullptr);
+  EXPECT_EQ(stats->numValues, 4);
+  EXPECT_EQ(stats->nullPct, 0);
+  EXPECT_TRUE(stats->nonNull);
+  // 20 appears in both batches, so numDistinct should be 3.
+  EXPECT_EQ(stats->numDistinct, 3);
+  EXPECT_EQ(stats->min, Variant(10LL));
+  EXPECT_EQ(stats->max, Variant(30LL));
+}
+
+// Verifies null statistics.
+TEST_F(TestConnectorTest, addDataStatsWithNulls) {
+  auto table = connector_->addTable("t", ROW("a", BIGINT()));
+
+  connector_->appendData(
+      "t",
+      makeRowVector({makeNullableFlatVector<int64_t>(
+          {10, std::nullopt, 30, std::nullopt})}));
+
+  auto* column = table->findColumn("a");
+  ASSERT_NE(column, nullptr);
+  auto* stats = column->stats();
+  ASSERT_NE(stats, nullptr);
+  EXPECT_EQ(stats->numValues, 2);
+  EXPECT_EQ(stats->nullPct, 50);
+  EXPECT_FALSE(stats->nonNull);
+  EXPECT_EQ(stats->numDistinct, 2);
+  EXPECT_EQ(stats->min, Variant(10LL));
+  EXPECT_EQ(stats->max, Variant(30LL));
+}
+
+// Verifies VARCHAR stats including maxLength.
+TEST_F(TestConnectorTest, addDataStatsVarchar) {
+  auto table = connector_->addTable("t", ROW({"a", "b"}, VARCHAR()));
+
+  connector_->appendData(
+      "t",
+      makeRowVector(
+          {makeFlatVector<std::string>({"abc", "z", "hello"}),
+           makeFlatVector<std::string>({"", "", ""})}));
+
+  {
+    SCOPED_TRACE("non-empty strings");
+    auto* column = table->findColumn("a");
+    ASSERT_NE(column, nullptr);
+    auto* stats = column->stats();
+    ASSERT_NE(stats, nullptr);
+    EXPECT_EQ(stats->numValues, 3);
+    EXPECT_EQ(stats->nullPct, 0);
+    EXPECT_TRUE(stats->nonNull);
+    EXPECT_EQ(stats->numDistinct, 3);
+    EXPECT_EQ(stats->min, Variant("abc"));
+    EXPECT_EQ(stats->max, Variant("z"));
+    EXPECT_EQ(stats->maxLength, 5); // "hello" has 5 bytes
+  }
+
+  {
+    SCOPED_TRACE("empty strings");
+    auto* column = table->findColumn("b");
+    ASSERT_NE(column, nullptr);
+    auto* stats = column->stats();
+    ASSERT_NE(stats, nullptr);
+    EXPECT_EQ(stats->numValues, 3);
+    EXPECT_EQ(stats->nullPct, 0);
+    EXPECT_TRUE(stats->nonNull);
+    EXPECT_EQ(stats->numDistinct, 1);
+    EXPECT_EQ(stats->min, Variant(""));
+    EXPECT_EQ(stats->max, Variant(""));
+    EXPECT_EQ(stats->maxLength, 0);
+  }
+}
+
+// Verifies ARRAY stats: maxLength only, no numDistinct or min/max.
+TEST_F(TestConnectorTest, addDataStatsArray) {
+  auto table = connector_->addTable("t", ROW({"a", "b"}, ARRAY(BIGINT())));
+
+  connector_->appendData(
+      "t",
+      makeRowVector(
+          {makeArrayVector<int64_t>({{1, 2, 3}, {4}, {5, 6}}),
+           makeArrayVector<int64_t>({{}, {}, {}})}));
+
+  {
+    SCOPED_TRACE("non-empty arrays");
+    auto* column = table->findColumn("a");
+    ASSERT_NE(column, nullptr);
+    auto* stats = column->stats();
+    ASSERT_NE(stats, nullptr);
+    EXPECT_EQ(stats->numValues, 3);
+    EXPECT_EQ(stats->nullPct, 0);
+    EXPECT_TRUE(stats->nonNull);
+    EXPECT_FALSE(stats->numDistinct.has_value());
+    EXPECT_FALSE(stats->min.has_value());
+    EXPECT_FALSE(stats->max.has_value());
+    EXPECT_EQ(stats->maxLength, 3); // {1, 2, 3} has 3 elements
+  }
+
+  {
+    SCOPED_TRACE("empty arrays");
+    auto* column = table->findColumn("b");
+    ASSERT_NE(column, nullptr);
+    auto* stats = column->stats();
+    ASSERT_NE(stats, nullptr);
+    EXPECT_EQ(stats->numValues, 3);
+    EXPECT_EQ(stats->nullPct, 0);
+    EXPECT_TRUE(stats->nonNull);
+    EXPECT_FALSE(stats->numDistinct.has_value());
+    EXPECT_FALSE(stats->min.has_value());
+    EXPECT_FALSE(stats->max.has_value());
+    EXPECT_EQ(stats->maxLength, 0);
+  }
+}
+
+// Verifies MAP stats: maxLength only, no numDistinct or min/max.
+TEST_F(TestConnectorTest, addDataStatsMap) {
+  auto table = connector_->addTable("t", ROW("m", MAP(BIGINT(), VARCHAR())));
+
+  connector_->appendData(
+      "t",
+      makeRowVector({makeMapVector<int64_t, std::string>({
+          {{1, "a"}, {2, "b"}},
+          {{3, "c"}},
+      })}));
+
+  auto* column = table->findColumn("m");
+  ASSERT_NE(column, nullptr);
+  auto* stats = column->stats();
+  ASSERT_NE(stats, nullptr);
+  EXPECT_EQ(stats->numValues, 2);
+  EXPECT_EQ(stats->nullPct, 0);
+  EXPECT_TRUE(stats->nonNull);
+  EXPECT_FALSE(stats->numDistinct.has_value());
+  EXPECT_FALSE(stats->min.has_value());
+  EXPECT_FALSE(stats->max.has_value());
+  EXPECT_EQ(stats->maxLength, 2); // first map has 2 entries
+}
+
+// Verifies that setStats and addData cannot be used on the same table.
+TEST_F(TestConnectorTest, addDataAndSetStatsMutualExclusion) {
+  {
+    SCOPED_TRACE("setStats then addData");
+    auto table = connector_->addTable("t1", ROW("a", BIGINT()));
+    table->setStats(100, {{"a", {.numDistinct = 50}}});
+    VELOX_ASSERT_THROW(
+        connector_->appendData(
+            "t1", makeRowVector({makeFlatVector<int64_t>({1})})),
+        "Cannot use both setStats and addData on table 't1'.");
+  }
+
+  {
+    SCOPED_TRACE("addData then setStats");
+    auto table = connector_->addTable("t2", ROW("a", BIGINT()));
+    connector_->appendData("t2", makeRowVector({makeFlatVector<int64_t>({1})}));
+    VELOX_ASSERT_THROW(
+        table->setStats(100, {{"a", {.numDistinct = 50}}}),
+        "Cannot use both setStats and addData on table 't2'.");
+  }
+}
+
 } // namespace
 } // namespace facebook::axiom::connector
-
-int main(int argc, char** argv) {
-  testing::InitGoogleTest(&argc, argv);
-  folly::Init init(&argc, &argv, false);
-  return RUN_ALL_TESTS();
-}

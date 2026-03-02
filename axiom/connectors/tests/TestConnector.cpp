@@ -17,6 +17,7 @@
 #include "axiom/connectors/tests/TestConnector.h"
 #include "velox/exec/TableWriter.h"
 #include "velox/tpch/gen/TpchGen.h"
+#include "velox/vector/ComplexVector.h"
 
 namespace facebook::axiom::connector {
 
@@ -46,6 +47,7 @@ TestTable::TestTable(
       std::make_unique<TestTableLayout>(name, this, connector_, allColumns());
   layouts_.push_back(exportedLayout_.get());
   pool_ = velox::memory::memoryManager()->addLeafPool(name + "_table");
+  columnTrackers_.resize(schema->size());
 }
 
 void TestTable::setStats(
@@ -103,6 +105,76 @@ void TestTable::addData(const velox::RowVectorPtr& data) {
       velox::BaseVector::copy(*data, pool_.get()));
   data_.push_back(copy);
   dataRows_ += data->size();
+
+  // Compute per-column statistics incrementally.
+  const auto& rowType = type();
+  for (auto i = 0; i < data->childrenSize(); ++i) {
+    auto& tracker = columnTrackers_[i];
+    tracker.append(*data->childAt(i));
+
+    const auto& columnName = rowType->nameOf(i);
+    const_cast<Column*>(columnMap().at(columnName))
+        ->setStats(
+            tracker.toColumnStatistics(dataRows_, data->childAt(i)->type()));
+  }
+}
+
+void TestTable::ColumnTracker::append(const velox::BaseVector& vector) {
+  const auto& childType = vector.type();
+
+  for (auto i = 0; i < vector.size(); ++i) {
+    if (vector.isNullAt(i)) {
+      ++nullCount;
+      continue;
+    }
+
+    if (childType->isPrimitiveType()) {
+      distinctHashes.insert(vector.hashValueAt(i));
+      auto value = vector.variantAt(i);
+      if (!min.has_value() || value < min.value()) {
+        min = value;
+      }
+      if (!max.has_value() || max.value() < value) {
+        max = value;
+      }
+    }
+
+    if (childType->isVarchar() || childType->isVarbinary()) {
+      auto value =
+          vector.as<velox::SimpleVector<velox::StringView>>()->valueAt(i);
+      maxLength = std::max(maxLength, static_cast<int32_t>(value.size()));
+    } else if (childType->isArray()) {
+      auto* arrayVector = vector.wrappedVector()->as<velox::ArrayVector>();
+      auto wrappedIndex = vector.wrappedIndex(i);
+      maxLength = std::max(maxLength, arrayVector->sizeAt(wrappedIndex));
+    } else if (childType->isMap()) {
+      auto* mapVector = vector.wrappedVector()->as<velox::MapVector>();
+      auto wrappedIndex = vector.wrappedIndex(i);
+      maxLength = std::max(maxLength, mapVector->sizeAt(wrappedIndex));
+    }
+  }
+}
+
+std::unique_ptr<ColumnStatistics> TestTable::ColumnTracker::toColumnStatistics(
+    uint64_t totalRows,
+    const velox::TypePtr& type) const {
+  auto stats = std::make_unique<ColumnStatistics>();
+  stats->numValues = totalRows - nullCount;
+  stats->nonNull = (nullCount == 0);
+  stats->nullPct = totalRows > 0 ? 100.0f * nullCount / totalRows : 0;
+
+  if (type->isPrimitiveType()) {
+    stats->numDistinct = distinctHashes.size();
+    stats->min = min;
+    stats->max = max;
+  }
+
+  if (type->isVarchar() || type->isVarbinary() || type->isArray() ||
+      type->isMap()) {
+    stats->maxLength = maxLength;
+  }
+
+  return stats;
 }
 
 std::vector<SplitSource::SplitAndGroup> TestSplitSource::getSplits(uint64_t) {
