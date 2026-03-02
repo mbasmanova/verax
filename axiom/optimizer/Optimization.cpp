@@ -3312,7 +3312,7 @@ PlanP Optimization::makeDtPlan(
     // the DT's lifetime must extend to the lifetime of the optimization.
     auto tmpDt = make<DerivedTable>();
     tmpDt->cname = newCName("tmp_dt");
-    tmpDt->import(dt, key.firstTable, key.tables, key.existences, existsFanout);
+    tmpDt->import(dt, key.tables, key.firstTable, key.existences, existsFanout);
 
     PlanState inner(*this, tmpDt);
     if (key.firstTable->is(PlanType::kDerivedTableNode)) {
