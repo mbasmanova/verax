@@ -371,7 +371,7 @@ std::pair<DerivedTableP, JoinEdgeP> makeExistsDtAndJoin(
   if (it == optimization->existenceDts().end()) {
     existsDt = make<DerivedTable>();
     existsDt->cname = optimization->newCName("edt");
-    existsDt->import(super, existsDtKey.firstTable, existsDtKey.tables, {});
+    existsDt->import(super, existsDtKey.tables, existsDtKey.firstTable, {}, 1);
     for (auto& key : rightKeys) {
       auto* existsColumn = make<Column>(
           toName(fmt::format("{}.{}", existsDt->cname, key->toString())),
@@ -396,14 +396,11 @@ std::pair<DerivedTableP, JoinEdgeP> makeExistsDtAndJoin(
 }
 } // namespace
 
-void DerivedTable::import(
+void DerivedTable::copySubset(
     const DerivedTable& super,
-    PlanObjectCP firstTable,
-    const PlanObjectSet& superTables,
-    const std::vector<PlanObjectSet>& existences,
-    float existsFanout) {
-  tableSet = superTables;
-  tables = superTables.toObjects();
+    const PlanObjectSet& subsetTables) {
+  tableSet = subsetTables;
+  tables = subsetTables.toObjects();
 
   for (auto id : super.joinOrder) {
     if (tableSet.BitSet::contains(id)) {
@@ -412,43 +409,64 @@ void DerivedTable::import(
   }
 
   for (auto join : super.joins) {
-    if (superTables.contains(join->rightTable()) && join->leftTable() &&
-        superTables.contains(join->leftTable())) {
+    if (subsetTables.contains(join->rightTable()) && join->leftTable() &&
+        subsetTables.contains(join->leftTable())) {
       joins.push_back(join);
     }
   }
+}
+
+void DerivedTable::addExistences(
+    const DerivedTable& super,
+    PlanObjectCP primaryTable,
+    const std::vector<PlanObjectSet>& existences,
+    float existsFanout) {
+  for (auto& exists : existences) {
+    importedExistences.unionSet(exists);
+    auto existsTables = exists.toObjects();
+    auto existsJoin = makeExists(primaryTable, exists);
+    if (existsTables.size() > 1) {
+      auto [existsDt, joinWithDt] = makeExistsDtAndJoin(
+          super, primaryTable, existsFanout, existsTables, existsJoin);
+      joins.push_back(joinWithDt);
+      addTable(existsDt);
+    } else {
+      joins.push_back(existsJoin);
+      VELOX_DCHECK(!existsTables.empty());
+      addTable(existsTables[0]);
+    }
+  }
+}
+
+void DerivedTable::import(
+    const DerivedTable& super,
+    const PlanObjectSet& superTables,
+    PlanObjectCP primaryTable) {
+  import(super, superTables, primaryTable, {}, 1);
+}
+
+void DerivedTable::import(
+    const DerivedTable& super,
+    const PlanObjectSet& superTables,
+    PlanObjectCP primaryTable,
+    const std::vector<PlanObjectSet>& existences,
+    float existsFanout) {
+  VELOX_DCHECK(tables.empty());
+  VELOX_DCHECK(joins.empty());
+  VELOX_DCHECK(!superTables.empty());
+  VELOX_DCHECK(superTables.contains(primaryTable));
+
+  copySubset(super, superTables);
 
   if (!existences.empty()) {
     if (!queryCtx()->optimization()->options().syntacticJoinOrder) {
-      for (auto& exists : existences) {
-        // We filter the derived table by importing reducing semijoins.
-        // These are based on joins on the outer query but become
-        // existences so as not to change cardinality. The reducing join
-        // is against one or more tables. If more than one table, the join
-        // of these tables goes into its own derived table which is joined
-        // with exists to the main table(s) in the 'this'.
-        importedExistences.unionSet(exists);
-        auto existsTables = exists.toObjects();
-        auto existsJoin = makeExists(firstTable, exists);
-        if (existsTables.size() > 1) {
-          // There is a join on the right of exists. Needs its own dt.
-          auto [existsDt, joinWithDt] = makeExistsDtAndJoin(
-              super, firstTable, existsFanout, existsTables, existsJoin);
-          joins.push_back(joinWithDt);
-          addTable(existsDt);
-        } else {
-          joins.push_back(existsJoin);
-          VELOX_DCHECK(!existsTables.empty());
-          addTable(existsTables[0]);
-        }
-      }
+      addExistences(super, primaryTable, existences, existsFanout);
     }
-
     noImportOfExists = true;
   }
 
-  if (firstTable->is(PlanType::kDerivedTableNode)) {
-    importJoinsIntoFirstDt(firstTable->as<DerivedTable>());
+  if (primaryTable->is(PlanType::kDerivedTableNode)) {
+    pushExistencesIntoSubquery(*primaryTable->as<DerivedTable>());
   }
 
   linkTablesToJoins();
@@ -759,14 +777,14 @@ ExprCP DerivedTable::importExpr(ExprCP expr) const {
   return replaceInputs(expr, columns, exprs);
 }
 
-void DerivedTable::importJoinsIntoFirstDt(const DerivedTable* firstDt) {
+void DerivedTable::pushExistencesIntoSubquery(const DerivedTable& subquery) {
   if (isWrapOnly()) {
     flattenDt(tables[0]->as<DerivedTable>());
     return;
   }
 
   auto initialTables = tables;
-  if (firstDt->hasLimit() || firstDt->hasOrderBy()) {
+  if (subquery.hasLimit() || subquery.hasOrderBy()) {
     // tables can't be imported but are marked as used so not tried again.
     for (auto i = 1; i < tables.size(); ++i) {
       importedExistences.add(tables[i]);
@@ -774,14 +792,14 @@ void DerivedTable::importJoinsIntoFirstDt(const DerivedTable* firstDt) {
     return;
   }
 
-  auto& outer = firstDt->columns;
-  auto& inner = firstDt->exprs;
+  auto& outer = subquery.columns;
+  auto& inner = subquery.exprs;
 
-  auto* newFirst = make<DerivedTable>(*firstDt->as<DerivedTable>());
+  auto* newFirst = make<DerivedTable>(subquery);
 
   const int32_t previousNumJoins = newFirst->joins.size();
   for (auto& join : joins) {
-    auto other = join->otherSide(firstDt);
+    auto other = join->otherSide(&subquery);
     if (!other) {
       continue;
     }
@@ -791,7 +809,7 @@ void DerivedTable::importJoinsIntoFirstDt(const DerivedTable* firstDt) {
       continue;
     }
 
-    auto side = join->sideOf(firstDt);
+    auto side = join->sideOf(&subquery);
     if (side.keys.size() > 1 || !join->filter().empty()) {
       continue;
     }
@@ -804,10 +822,10 @@ void DerivedTable::importJoinsIntoFirstDt(const DerivedTable* firstDt) {
       continue;
     }
 
-    auto otherSide = join->sideOf(firstDt, true);
+    auto otherSide = join->sideOf(&subquery, true);
 
     PlanObjectSet visited;
-    visited.add(firstDt);
+    visited.add(&subquery);
     visited.add(other);
     std::vector<PlanObjectCP> path;
     joinChain(other, joins, visited, path);
@@ -828,7 +846,7 @@ void DerivedTable::importJoinsIntoFirstDt(const DerivedTable* firstDt) {
       chainSet.add(other);
       chainSet.unionObjects(path);
       chainDt->makeProjection(otherSide.keys);
-      chainDt->import(*this, other, chainSet, {});
+      chainDt->import(*this, chainSet, other);
       chainDt->makeInitialPlan();
       newFirst->addTable(chainDt);
       newFirst->joins.push_back(importedDtJoin(join, chainDt, innerKey));

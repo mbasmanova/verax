@@ -172,18 +172,35 @@ struct DerivedTable : public PlanObject {
   /// join edge.
   void initializePlans();
 
-  /// Initializes 'this' to join 'tables' from 'super'. Adds the joins from
-  /// 'existences' as semijoins to limit cardinality when making a hash join
-  /// build side. Allows importing a reducing join from probe to build.
-  /// 'firstTable' is the joined table that is restricted by the other tables in
-  /// 'superTables' and 'existences'. 'existsFanout' is the reduction from
-  /// joining 'firstTable' with 'existences'.
+  /// Populates 'this' as a sub-DT of 'super' and pushes existence semijoins
+  /// into the subquery. Three steps:
+  ///   1. Copy a subset of tables and joins from 'super' (filtered to
+  ///      'superTables').
+  ///   2. Add 'existences' as existence semijoins alongside 'primaryTable'.
+  ///   3. If 'primaryTable' is a subquery, push existence tables inside it
+  ///      below the aggregation boundary.
+  ///
+  /// Requires:
+  ///   - 'this' must be empty (no tables, no joins).
+  ///   - 'superTables' must not be empty and must be a subset of 'super'
+  ///     tables.
+  ///   - 'primaryTable' must be in 'superTables'.
+  ///
+  /// @param primaryTable The main table in 'superTables'. Existence semijoins
+  /// are attached to this table. If this table is a subquery with aggregation,
+  /// existence tables are pushed inside it below the aggregation boundary.
+  /// @param existences Groups of reducing tables to add as existence
+  /// semijoins. Can be empty. Each group is a PlanObjectSet of tables that
+  /// form a single existence semijoin. Single-table groups are added directly;
+  /// multi-table groups are wrapped in their own DerivedTable.
+  /// @param existsFanout Cumulative fanout estimate for the existence
+  /// semijoins. Used to set fanout on multi-table existence DT joins.
   void import(
       const DerivedTable& super,
-      PlanObjectCP firstTable,
       const PlanObjectSet& superTables,
+      PlanObjectCP primaryTable,
       const std::vector<PlanObjectSet>& existences,
-      float existsFanout = 1);
+      float existsFanout);
 
   /// Return a copy of 'expr', replacing references to this DT's 'columns' with
   /// corresponding 'exprs'.
@@ -324,13 +341,31 @@ struct DerivedTable : public PlanObject {
   // to their joins, estimates fanout for each join, and computes start tables.
   void finalizeJoins();
 
-  // Imports the joins in 'this' inside 'firstDt', which must be a
-  // member of 'this'. The import is possible if the join is not
-  // through aggregates in 'firstDt'. On return, all joins that can go
-  // inside firstDt are imported below aggregation in
-  // firstDt. 'firstDt' is not modified, its original contents are
-  // copied in a new dt before the import.
-  void importJoinsIntoFirstDt(const DerivedTable* firstDt);
+  // Pushes the other tables in 'this' into 'subquery' as existence semijoins
+  // below its aggregation boundary. A table can be pushed when the join key
+  // maps to a pre-aggregation expression (not an aggregate result) inside the
+  // subquery. Tables that cannot be pushed remain in 'this'.
+  void pushExistencesIntoSubquery(const DerivedTable& subquery);
+
+  // Populates tables, tableSet, joinOrder, and joins from 'super', filtered
+  // to 'subsetTables'.
+  void copySubset(const DerivedTable& super, const PlanObjectSet& subsetTables);
+
+  // Adds each group in 'existences' as an existence semijoin alongside
+  // 'primaryTable'. Single-table groups are added directly; multi-table groups
+  // are wrapped in their own DerivedTable.
+  void addExistences(
+      const DerivedTable& super,
+      PlanObjectCP primaryTable,
+      const std::vector<PlanObjectSet>& existences,
+      float existsFanout);
+
+  // Populates 'this' as a sub-DT of 'super' without adding existences. Used
+  // when wrapping tables into a chain DT or multi-table existence DT.
+  void import(
+      const DerivedTable& super,
+      const PlanObjectSet& superTables,
+      PlanObjectCP primaryTable);
 
   // Sets 'dt' to be the complete contents of 'this'.
   void flattenDt(const DerivedTable* dt);
