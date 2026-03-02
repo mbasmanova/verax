@@ -17,6 +17,7 @@
 #pragma once
 
 #include <folly/container/F14Map.h>
+#include <folly/container/F14Set.h>
 #include "axiom/connectors/ConnectorMetadata.h"
 
 namespace facebook::axiom::connector {
@@ -115,8 +116,8 @@ class TestTable : public Table {
 
   /// Appends a RowVector to the table's data. Each appended vector generates
   /// a separate TestConnectorSplit. Data is copied into the table's internal
-  /// memory pool. Tracks numRows only; does not compute per-column statistics
-  /// (min/max, numDistinct, nullPct). Cannot be combined with setStats on the
+  /// memory pool. Computes per-column statistics incrementally (numDistinct,
+  /// min/max, nullPct, maxLength). Cannot be combined with setStats on the
   /// same table.
   void addData(const velox::RowVectorPtr& data);
 
@@ -132,6 +133,23 @@ class TestTable : public Table {
       const std::unordered_map<std::string, ColumnStatistics>& columnStats);
 
  private:
+  // Per-column state for incremental stat computation during addData.
+  struct ColumnTracker {
+    // Updates tracker state with values from 'vector'.
+    void append(const velox::BaseVector& vector);
+
+    // Builds ColumnStatistics from accumulated state.
+    std::unique_ptr<ColumnStatistics> toColumnStatistics(
+        uint64_t totalRows,
+        const velox::TypePtr& type) const;
+
+    folly::F14FastSet<uint64_t> distinctHashes;
+    uint64_t nullCount{0};
+    std::optional<velox::Variant> min;
+    std::optional<velox::Variant> max;
+    int32_t maxLength{0};
+  };
+
   velox::connector::Connector* connector_;
   std::vector<const TableLayout*> layouts_;
   std::unique_ptr<TestTableLayout> exportedLayout_;
@@ -139,6 +157,7 @@ class TestTable : public Table {
   std::vector<velox::RowVectorPtr> data_;
   uint64_t numRows_{0};
   uint64_t dataRows_{0};
+  std::vector<ColumnTracker> columnTrackers_;
 };
 
 /// SplitSource generated via the TestSplitManager embedded in the
