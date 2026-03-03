@@ -27,6 +27,7 @@ add_library(
   Filters.cpp
   FunctionRegistry.cpp
   JoinSample.cpp
+  MemoKey.cpp
   Model.cpp
   Optimization.cpp
   ParallelExpr.cpp

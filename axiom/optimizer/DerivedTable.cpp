@@ -81,12 +81,12 @@ void fillJoins(
     }
   }
 }
-
-MemoKey memoKey(const DerivedTable& dt) {
-  return MemoKey::create(
-      &dt, PlanObjectSet::fromObjects(dt.columns), PlanObjectSet::single(&dt));
-}
 } // namespace
+
+MemoKey DerivedTable::memoKey() const {
+  return MemoKey::create(
+      this, PlanObjectSet::fromObjects(columns), PlanObjectSet::single(this));
+}
 
 void DerivedTable::initializePlans() {
   // Pre-order (top-down): push conjuncts to children.
@@ -131,12 +131,12 @@ void DerivedTable::initializePlans() {
     auto plan = state.plans.best()->op;
     this->cardinality = plan->resultCardinality();
 
-    MemoKey key = memoKey(*this);
+    MemoKey key = this->memoKey();
     memo.insert(key, std::move(state.plans));
 
   } else {
     for (const auto* childDt : children) {
-      MemoKey childKey = memoKey(*childDt);
+      MemoKey childKey = childDt->memoKey();
 
       auto* plans = memo.find(childKey);
       VELOX_CHECK(
@@ -832,7 +832,7 @@ void DerivedTable::pushExistencesIntoSubquery(const DerivedTable& subquery) {
     if (path.empty()) {
       if (other->is(PlanType::kDerivedTableNode)) {
         queryCtx()->optimization()->memo().erase(
-            memoKey(*other->as<DerivedTable>()));
+            other->as<DerivedTable>()->memoKey());
         const_cast<PlanObject*>(other)->as<DerivedTable>()->makeInitialPlan();
       }
 
@@ -1596,7 +1596,7 @@ void DerivedTable::makeInitialPlan() {
   auto plan = state.plans.best()->op;
   this->cardinality = plan->resultCardinality();
 
-  MemoKey key = memoKey(*this);
+  MemoKey key = this->memoKey();
   optimization->memo().insert(key, std::move(state.plans));
 }
 

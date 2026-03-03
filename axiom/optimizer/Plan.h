@@ -16,6 +16,7 @@
 #pragma once
 
 #include "axiom/optimizer/DerivedTable.h"
+#include "axiom/optimizer/MemoKey.h"
 #include "axiom/optimizer/RelationOp.h"
 
 /// Planning-time data structures. Represent the state of the planning process
@@ -356,74 +357,6 @@ struct PlanStateSaver {
  private:
   PlanState& state_;
 };
-
-/// Key for collection of memoized partial plans. Any table or derived
-/// table with a particular set of projected out columns and an
-/// optional set of reducing joins and semijoins (existences) is
-/// planned once. The plan is then kept in a memo for future use. The
-/// memo may hold multiple plans with different distribution
-/// properties for one MemoKey. The first table is the table or
-/// derived table to be planned. The 'tables' set is the set of
-/// reducing joins applied to 'firstTable', including the table
-/// itself. 'existences' is another set of reducing joins that are
-/// semijoined to the join of 'tables' in order to restrict the
-/// result. For example, if a reducing join is moved below a group by,
-/// unless it is known never to have duplicates, it must become a
-/// semijoin and the original join must still stay in place in case
-/// there were duplicates.
-///
-/// MemoKey is immutable after construction. Use the static create() method
-/// to construct instances.
-struct MemoKey {
-  static MemoKey create(
-      PlanObjectCP firstTable,
-      PlanObjectSet columns,
-      PlanObjectSet tables,
-      std::vector<PlanObjectSet> existences = {}) {
-    VELOX_CHECK_NOT_NULL(firstTable);
-    VELOX_CHECK(tables.contains(firstTable));
-    return MemoKey{
-        firstTable,
-        std::move(columns),
-        std::move(tables),
-        std::move(existences)};
-  }
-
-  bool operator==(const MemoKey& other) const;
-
-  size_t hash() const;
-
-  std::string toString() const;
-
-  const PlanObjectCP firstTable;
-  const PlanObjectSet columns;
-  const PlanObjectSet tables;
-  const std::vector<PlanObjectSet> existences;
-
- private:
-  MemoKey(
-      PlanObjectCP firstTable,
-      PlanObjectSet columns,
-      PlanObjectSet tables,
-      std::vector<PlanObjectSet> existences)
-      : firstTable(firstTable),
-        columns(std::move(columns)),
-        tables(std::move(tables)),
-        existences(std::move(existences)) {}
-};
-
-} // namespace facebook::axiom::optimizer
-
-namespace std {
-template <>
-struct hash<::facebook::axiom::optimizer::MemoKey> {
-  size_t operator()(const ::facebook::axiom::optimizer::MemoKey& key) const {
-    return key.hash();
-  }
-};
-} // namespace std
-
-namespace facebook::axiom::optimizer {
 
 /// Memoization cache for partial plans. Wraps the underlying map
 /// to provide controlled access for adding entries and looking them up.
