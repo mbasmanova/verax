@@ -3201,6 +3201,38 @@ void Optimization::makeJoins(RelationOpPtr plan, PlanState& state) {
   tryNextJoins(state, nextJoins);
 }
 
+RelationOpPtr Optimization::makeInitialPlan(DerivedTable& dt) {
+  const auto key = dt.memoKey();
+  PlanState state(*this, &dt);
+  RelationOpPtr result;
+
+  if (dt.setOp.has_value()) {
+    // Union: assemble from already-planned children.
+    RelationOpPtrVector childOps;
+    for (auto* childDt : dt.children) {
+      auto* plans = memo_.find(childDt->memoKey());
+      VELOX_CHECK(
+          plans != nullptr, "Expecting to find a plan for union branch");
+      childOps.push_back(plans->best()->op);
+    }
+
+    result = make<UnionAll>(std::move(childOps));
+    if (dt.setOp.value() == logical_plan::SetOperation::kUnion) {
+      result = makeDistinct(result);
+    }
+
+    state.plans.addPlan(result, state);
+  } else {
+    // Non-union.
+    state.targetExprs.unionObjects(dt.exprs);
+    makeJoins(state);
+    result = state.plans.best()->op;
+  }
+
+  memo_.insert(key, std::move(state.plans));
+  return result;
+}
+
 PlanP Optimization::makePlan(
     const DerivedTable& dt,
     const MemoKey& key,

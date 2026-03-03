@@ -482,8 +482,8 @@ class ToGraph {
   //
   // @param node The logical plan node representing the subquery.
   // @param finalize If true (default), adds the subquery DT to currentDt_ and
-  // calls makeInitialPlan(). If false, the caller is responsible for adding
-  // the DT and calling makeInitialPlan(). Use finalize=false when you need to
+  // calls initializePlans(). If false, the caller is responsible for adding
+  // the DT and calling initializePlans(). Use finalize=false when you need to
   // modify the DT before memoization (e.g., applying LIMIT 1 for EXISTS).
   // @return The translated DerivedTable for the subquery.
   DerivedTableP translateSubquery(
