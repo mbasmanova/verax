@@ -119,38 +119,35 @@ void DerivedTable::initializePlans() {
   // Post-order (bottom-up): finalize joins and compute plans.
   finalizeJoins();
 
-  auto optimization = queryCtx()->optimization();
-  auto& memo = optimization->memo();
+  auto plan = queryCtx()->optimization()->makeInitialPlan(*this);
+  updateConstraints(*plan);
+}
 
-  if (!isUnion) {
-    PlanState state(*optimization, this);
-    state.targetExprs.unionObjects(exprs);
+void DerivedTable::updateConstraints(const RelationOp& plan) {
+  cardinality = plan.resultCardinality();
 
-    optimization->makeJoins(state);
+  if (plan.relType() == RelType::kTableWrite) {
+    // TableWrite columns are the data columns being written, not the DT's
+    // output columns (e.g. 'rows').
+    return;
+  }
 
-    auto plan = state.plans.best()->op;
-    this->cardinality = plan->resultCardinality();
+  // A DT may have zero output columns (e.g. a child DT whose parent only
+  // needs a row count). Only cardinality is useful for such DTs.
+  if (columns.empty()) {
+    return;
+  }
 
-    MemoKey key = this->memoKey();
-    memo.insert(key, std::move(state.plans));
-
-  } else {
-    for (const auto* childDt : children) {
-      MemoKey childKey = childDt->memoKey();
-
-      auto* plans = memo.find(childKey);
-      VELOX_CHECK(
-          plans != nullptr, "Expecting to find a plan for union branch");
-
-      const auto& childPlan = *plans->best()->op;
-      this->cardinality += childPlan.resultCardinality();
-
-      for (size_t i = 0; i < columns.size(); ++i) {
-        const auto& setValue = columns[i]->value().cardinality;
-        const auto& childValue = childPlan.columns()[i]->value().cardinality;
-        const_cast<float&>(setValue) += childValue;
-      }
-    }
+  const auto& planColumns = plan.columns();
+  const auto& constraints = plan.constraints();
+  VELOX_CHECK_EQ(columns.size(), planColumns.size());
+  for (size_t i = 0; i < columns.size(); ++i) {
+    auto it = constraints.find(planColumns[i]->id());
+    VELOX_CHECK(
+        it != constraints.end(),
+        "Missing constraint for column: {}",
+        planColumns[i]->toString());
+    const_cast<Value&>(columns[i]->value()) = it->second;
   }
 }
 
@@ -356,9 +353,8 @@ std::pair<DerivedTableP, JoinEdgeP> makeExistsDtAndJoin(
     VELOX_CHECK(firstExistsTable);
 
     PlanObjectSet existsDtColumns;
-    for (auto& column : rightKeys) {
-      existsDtColumns.unionColumns(column);
-    }
+    existsDtColumns.unionColumns(rightKeys);
+
     return MemoKey::create(
         firstExistsTable,
         std::move(existsDtColumns),
@@ -381,7 +377,7 @@ std::pair<DerivedTableP, JoinEdgeP> makeExistsDtAndJoin(
       existsDt->exprs.push_back(key);
     }
     existsDt->noImportOfExists = true;
-    existsDt->makeInitialPlan();
+    existsDt->initializePlans();
     optimization->existenceDts()[existsDtKey] = existsDt;
   } else {
     existsDt = it->second;
@@ -833,7 +829,7 @@ void DerivedTable::pushExistencesIntoSubquery(const DerivedTable& subquery) {
       if (other->is(PlanType::kDerivedTableNode)) {
         queryCtx()->optimization()->memo().erase(
             other->as<DerivedTable>()->memoKey());
-        const_cast<PlanObject*>(other)->as<DerivedTable>()->makeInitialPlan();
+        const_cast<PlanObject*>(other)->as<DerivedTable>()->initializePlans();
       }
 
       newFirst->addTable(other);
@@ -847,7 +843,7 @@ void DerivedTable::pushExistencesIntoSubquery(const DerivedTable& subquery) {
       chainSet.unionObjects(path);
       chainDt->makeProjection(otherSide.keys);
       chainDt->import(*this, chainSet, other);
-      chainDt->makeInitialPlan();
+      chainDt->initializePlans();
       newFirst->addTable(chainDt);
       newFirst->joins.push_back(importedDtJoin(join, chainDt, innerKey));
     }
@@ -1582,22 +1578,6 @@ bool DerivedTable::tryPushdownConjunct(
   VELOX_CHECK(table->is(PlanType::kTableNode));
   table->as<BaseTable>()->addFilter(conjunct);
   return true;
-}
-
-void DerivedTable::makeInitialPlan() {
-  finalizeJoins();
-
-  auto optimization = queryCtx()->optimization();
-  PlanState state(*optimization, this);
-  state.targetExprs.unionObjects(exprs);
-
-  optimization->makeJoins(state);
-
-  auto plan = state.plans.best()->op;
-  this->cardinality = plan->resultCardinality();
-
-  MemoKey key = this->memoKey();
-  optimization->memo().insert(key, std::move(state.plans));
 }
 
 std::string DerivedTable::toString() const {

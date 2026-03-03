@@ -112,15 +112,10 @@ class Optimization {
     return existenceDts_;
   }
 
-  /// Lists the possible joins based on 'state.placed' and adds each on top of
-  /// 'plan'. This is a set of plans extending 'plan' by one join (single table
-  /// or bush). Calls itself on the interesting next plans. If all tables have
-  /// been used, adds postprocess and adds the plan to 'plans' in 'state'. If
-  /// 'state' enables cutoff and a partial plan is worse than the best so far,
-  /// discards the candidate.
-  void makeJoins(RelationOpPtr plan, PlanState& state);
-
-  void makeJoins(PlanState& state);
+  /// Makes an initial plan for 'dt' and memoizes it. Handles both union and
+  /// non-union DTs. Assumes child DTs already have plans in the memo.
+  /// Returns the plan's RelationOp.
+  RelationOpPtr makeInitialPlan(DerivedTable& dt);
 
   /// Adds single aggregation on top of 'input'.
   /// @param dt Derived table with an aggregation.
@@ -185,6 +180,16 @@ class Optimization {
       const;
 
  private:
+  // Lists the possible joins based on 'state.placed' and adds each on top of
+  // 'plan'. This is a set of plans extending 'plan' by one join (single table
+  // or bush). Calls itself on the interesting next plans. If all tables have
+  // been used, adds postprocess and adds the plan to 'plans' in 'state'. If
+  // 'state' enables cutoff and a partial plan is worse than the best so far,
+  // discards the candidate.
+  void makeJoins(RelationOpPtr plan, PlanState& state);
+
+  void makeJoins(PlanState& state);
+
   // Retrieves or makes a plan from 'key'. 'key' specifies a set of top level
   // joined tables or a hash join build side table or join.
   //

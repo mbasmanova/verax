@@ -84,9 +84,41 @@ class CardinalityEstimationTest : public test::QueryTestBase {
         [&](Optimization& optimization) {
           auto* plan = optimization.bestPlan();
           ASSERT_NE(plan, nullptr) << "Best plan should not be null";
+
           callback(*plan);
+
+          verifyDtConstraints(*optimization.rootDt(), *plan->op);
         },
         OptimizerOptions{.sampleJoins = false, .sampleFilters = false});
+  }
+
+  // Verifies that the DT's column constraints match the plan's constraints.
+  // Note: DT constraints are copied from the initial plan, which may differ
+  // from the best plan used here if multiple plans with different distributions
+  // exist.
+  static void verifyDtConstraints(
+      const DerivedTable& dt,
+      const RelationOp& plan) {
+    const auto& planColumns = plan.columns();
+    const auto& constraints = plan.constraints();
+    ASSERT_EQ(dt.columns.size(), planColumns.size());
+
+    for (size_t i = 0; i < planColumns.size(); ++i) {
+      SCOPED_TRACE(dt.columns[i]->toString());
+      ASSERT_EQ(dt.columns[i]->id(), planColumns[i]->id());
+
+      auto it = constraints.find(planColumns[i]->id());
+      ASSERT_NE(it, constraints.end());
+
+      const auto& dtValue = dt.columns[i]->value();
+      const auto& planValue = it->second;
+      EXPECT_EQ(dtValue.cardinality, planValue.cardinality);
+      EXPECT_EQ(dtValue.nullFraction, planValue.nullFraction);
+      EXPECT_EQ(dtValue.trueFraction, planValue.trueFraction);
+      EXPECT_EQ(dtValue.nullable, planValue.nullable);
+      EXPECT_EQ(dtValue.min, planValue.min);
+      EXPECT_EQ(dtValue.max, planValue.max);
+    }
   }
 
   // Returns the constraint for the column at the given position in the
@@ -225,6 +257,32 @@ TEST_F(CardinalityEstimationTest, globalAggregation) {
     const auto& op = *plan.op;
     EXPECT_NEAR(op.resultCardinality(), 1, kCardinalityTolerance);
   });
+}
+
+// Verifies that a global aggregation on top of a subquery correctly
+// propagates constraints. The inner subquery DT (GROUP BY) should get
+// column constraints from its plan, and the outer DT (global count) should
+// produce a single row.
+TEST_F(CardinalityEstimationTest, globalAggregationOnSubquery) {
+  connector_->addTable("t", ROW({"a", "b"}, BIGINT()))
+      ->setStats(
+          10'000,
+          {
+              {"a", {.numDistinct = 50}},
+              {"b", {.numDistinct = 1'000}},
+          });
+
+  verifyPlan(
+      "SELECT count(*) FROM (SELECT a, sum(b) FROM t GROUP BY a) sub",
+      [](const Plan& plan) {
+        const auto& op = *plan.op;
+        EXPECT_NEAR(op.resultCardinality(), 1, kCardinalityTolerance);
+
+        ASSERT_EQ(op.columns().size(), 1);
+        auto count = findConstraint(op, 0);
+        ASSERT_TRUE(count.has_value());
+        EXPECT_NEAR(count->cardinality, 1, kCardinalityTolerance);
+      });
 }
 
 template <typename T = RelationOp>

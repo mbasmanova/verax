@@ -29,6 +29,8 @@ using JoinEdgeP = JoinEdge*;
 using JoinEdgeCP = const JoinEdge*;
 using JoinEdgeVector = QGVector<JoinEdgeP>;
 
+class RelationOp;
+
 class AggregationPlan;
 using AggregationPlanCP = const AggregationPlan*;
 
@@ -318,10 +320,6 @@ struct DerivedTable : public PlanObject {
   /// Returns the memo key for this DT.
   MemoKey memoKey() const;
 
-  /// Memoizes plans for 'this' and fills in 'cardinality'. Needed before adding
-  /// 'this' as a join side because join sides must have a cardinality guess.
-  void makeInitialPlan();
-
   std::string toString() const override;
 
   /// Pushes down filters from 'conjuncts' into join conditions and single-table
@@ -330,6 +328,9 @@ struct DerivedTable : public PlanObject {
   void distributeConjuncts();
 
  private:
+  // Updates cardinality and column constraints from the plan.
+  void updateConstraints(const RelationOp& plan);
+
   // Completes 'joins' with edges implied by column equivalences.
   void addImpliedJoins();
 
