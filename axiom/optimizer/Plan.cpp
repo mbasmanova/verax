@@ -628,40 +628,6 @@ bool NextJoin::isWorse(const NextJoin& other) const {
   return cost.cost > other.cost.cost + shuffle;
 }
 
-size_t MemoKey::hash() const {
-  size_t hash = tables.hash();
-  for (auto& exists : existences) {
-    hash = velox::bits::commutativeHashMix(hash, exists.hash());
-  }
-  return hash;
-}
-
-bool MemoKey::operator==(const MemoKey& other) const {
-  if (firstTable == other.firstTable && columns == other.columns &&
-      tables == other.tables) {
-    if (existences.size() != other.existences.size()) {
-      return false;
-    }
-    for (auto& e : existences) {
-      for (auto& e2 : other.existences) {
-        if (e2 == e) {
-          break;
-        }
-      }
-    }
-    return true;
-  }
-  return false;
-}
-
-std::string MemoKey::toString() const {
-  return fmt::format(
-      "MemoKey({}, columns: {}, tables: {})",
-      cname(firstTable),
-      columns.toString(true),
-      tables.toString(true));
-}
-
 velox::core::JoinType reverseJoinType(velox::core::JoinType joinType) {
   switch (joinType) {
     case velox::core::JoinType::kLeft:
