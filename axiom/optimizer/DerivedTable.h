@@ -16,6 +16,7 @@
 #pragma once
 
 #include "axiom/logical_plan/LogicalPlanNode.h"
+#include "axiom/optimizer/MemoKey.h"
 #include "axiom/optimizer/PlanObject.h"
 
 namespace facebook::axiom::optimizer {
@@ -313,6 +314,9 @@ struct DerivedTable : public PlanObject {
   bool isWrapOnly() const;
 
   void addJoinedBy(JoinEdgeP join);
+
+  /// Returns the memo key for this DT.
+  MemoKey memoKey() const;
 
   /// Memoizes plans for 'this' and fills in 'cardinality'. Needed before adding
   /// 'this' as a join side because join sides must have a cardinality guess.
