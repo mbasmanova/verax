@@ -2162,16 +2162,6 @@ void ToGraph::makeBaseTable(const lp::TableScanNode& tableScan) {
     renames_[type->nameOf(i)] = column;
   }
 
-  auto* optimization = queryCtx()->optimization();
-
-  optimization->filterUpdated(baseTable, false);
-
-  ColumnVector top;
-  folly::F14FastMap<ColumnCP, velox::TypePtr> map;
-  auto scanType = optimization->subfieldPushdownScanType(
-      baseTable, baseTable->columns, top, map);
-
-  optimization->estimateLeafSelectivity(*baseTable, scanType);
   currentDt_->addTable(baseTable);
 }
 

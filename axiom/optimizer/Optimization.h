@@ -66,13 +66,6 @@ class Optimization {
     return toVelox_;
   }
 
-  std::pair<
-      velox::connector::ConnectorTableHandlePtr,
-      std::vector<velox::core::TypedExprPtr>>
-  leafHandle(int32_t id) {
-    return toVelox_.leafHandle(id);
-  }
-
   /// Translates from Expr to Velox.
   velox::core::TypedExprPtr toTypedExpr(ExprCP expr) {
     return toVelox_.toTypedExpr(expr);
@@ -87,17 +80,13 @@ class Optimization {
         baseTable, leafColumns, topColumns, typeMap);
   }
 
-  /// Estimates 'filterSelectivity' of 'baseTable' from history. Returns true if
-  /// set. 'scanType' is the set of sampled columns with possible map to struct
-  /// cast.
-  bool estimateLeafSelectivity(
-      BaseTable& baseTable,
-      const velox::RowTypePtr& scanType) {
-    return history_.estimateLeafSelectivity(baseTable, scanType);
-  }
+  /// Estimates and sets 'filterSelectivity' on 'baseTable' by sampling the
+  /// table's layout. Must be called at most once per base table.
+  void estimateLeafSelectivity(BaseTable& baseTable);
 
-  void filterUpdated(BaseTableCP baseTable, bool updateSelectivity = true) {
-    toVelox_.filterUpdated(baseTable, updateSelectivity);
+  /// See ToVelox::filterUpdated.
+  void filterUpdated(BaseTableCP baseTable) {
+    toVelox_.filterUpdated(baseTable);
   }
 
   auto& memo() {

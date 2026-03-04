@@ -17,6 +17,8 @@
 #pragma once
 
 #include "axiom/optimizer/RelationOp.h"
+#include "velox/connectors/Connector.h"
+#include "velox/core/ITypedExpr.h"
 
 namespace facebook::axiom::optimizer {
 
@@ -49,13 +51,22 @@ class History {
   /// execution.
   virtual void recordCost(const RelationOp& op, Cost cost) = 0;
 
-  /// Estimates 'filterSelectivity' of 'baseTable' from historical data.
-  /// Considers filters only and does not return a cost since the cost depends
-  /// on the columns extracted. This is used first for coming up with join
-  /// orders. The plan candidates are then made and findCost() is used to access
-  /// historical cost and plan cardinality.
-  virtual bool estimateLeafSelectivity(
+  /// Estimates and sets 'filterSelectivity' on 'baseTable'. Also narrows
+  /// column Value constraints (cardinality, min, max, trueFraction,
+  /// nullFraction, nullable) based on the table's filters. Estimates
+  /// selectivity from column statistics (min/max, NDV, null fraction),
+  /// optionally refined by sampling the table's layout.
+  ///
+  /// Must be called at most once per base table. Calling multiple times
+  /// compounds constraint narrowing, producing incorrect estimates.
+  ///
+  /// 'tableHandle' and 'filters' are the connector-level representation of
+  /// the table's current filters. 'scanType' is the row type for sampled
+  /// columns.
+  virtual void estimateLeafSelectivity(
       BaseTable& baseTable,
+      const velox::connector::ConnectorTableHandlePtr& tableHandle,
+      const std::vector<velox::core::TypedExprPtr>& filters,
       const velox::RowTypePtr& scanType) = 0;
 
   virtual void recordJoinSample(std::string_view key, float lr, float rl) = 0;

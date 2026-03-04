@@ -105,12 +105,12 @@ std::pair<float, float> VeloxHistory::sampleJoin(JoinEdge* edge) {
   return pair;
 }
 
-bool VeloxHistory::estimateLeafSelectivity(
+void VeloxHistory::estimateLeafSelectivity(
     BaseTable& table,
+    const velox::connector::ConnectorTableHandlePtr& tableHandle,
+    const std::vector<velox::core::TypedExprPtr>& filters,
     const velox::RowTypePtr& scanType) {
   auto options = queryCtx()->optimization()->options();
-  auto [tableHandle, filters] =
-      queryCtx()->optimization()->leafHandle(table.id());
 
   float conjunctsSelectivityValue = 1.0f;
 
@@ -135,48 +135,48 @@ bool VeloxHistory::estimateLeafSelectivity(
   auto* runnerTable = table.schemaTable->connectorTable;
   VELOX_DCHECK_NOT_NULL(runnerTable);
 
-  if (options.sampleFilters && runnerTable->layouts()[0]->supportsSampling()) {
-    const auto string = tableHandle->toString();
-
-    // Return cached sampled selectivity if available to avoid expensive I/O.
-    if (auto cached = findSampledLeafSelectivity(string)) {
-      table.filterSelectivity = cached.value();
-      return true;
-    }
-
-    // Determine and cache leaf selectivity for the table handle
-    // by sampling the layout for the physical table.
-    const uint64_t start = velox::getCurrentTimeMicro();
-    auto sample =
-        runnerTable->layouts()[0]->sample(tableHandle, 1, filters, scanType);
-    VELOX_CHECK_GE(sample.first, 0);
-    VELOX_CHECK_GE(sample.first, sample.second);
-
-    if (sample.first == 0) {
-      table.filterSelectivity = 1;
-    } else {
-      // When finding no hits, do not make a selectivity of 0 because this
-      // makes /0 or *0 and *0 is 0, which makes any subsequent operations 0
-      // regardless of cost. Use Selectivity::kLikelyTrue as a floor for the
-      // matching row count to ensure a small but non-zero selectivity.
-      table.filterSelectivity =
-          std::max<float>(Selectivity::kLikelyTrue, sample.second) /
-          static_cast<float>(sample.first);
-    }
-    recordSampledLeafSelectivity(string, table.filterSelectivity, false);
-
-    bool trace = (options.traceFlags & OptimizerOptions::kSample) != 0;
-    if (trace) {
-      std::cout << "Sampled scan " << string << "= " << table.filterSelectivity
-                << " time= "
-                << velox::succinctMicros(velox::getCurrentTimeMicro() - start)
-                << std::endl;
-    }
-    return true;
+  if (!options.sampleFilters ||
+      !runnerTable->layouts()[0]->supportsSampling()) {
+    table.filterSelectivity = conjunctsSelectivityValue;
+    return;
   }
 
-  table.filterSelectivity = conjunctsSelectivityValue;
-  return false;
+  const auto string = tableHandle->toString();
+
+  // Return cached sampled selectivity if available to avoid expensive I/O.
+  if (auto cached = findSampledLeafSelectivity(string)) {
+    table.filterSelectivity = cached.value();
+    return;
+  }
+
+  // Determine and cache leaf selectivity for the table handle
+  // by sampling the layout for the physical table.
+  const uint64_t start = velox::getCurrentTimeMicro();
+  auto sample =
+      runnerTable->layouts()[0]->sample(tableHandle, 1, filters, scanType);
+  VELOX_CHECK_GE(sample.first, 0);
+  VELOX_CHECK_GE(sample.first, sample.second);
+
+  if (sample.first == 0) {
+    table.filterSelectivity = 1;
+  } else {
+    // When finding no hits, do not make a selectivity of 0 because this
+    // makes /0 or *0 and *0 is 0, which makes any subsequent operations 0
+    // regardless of cost. Use Selectivity::kLikelyTrue as a floor for the
+    // matching row count to ensure a small but non-zero selectivity.
+    table.filterSelectivity =
+        std::max<float>(Selectivity::kLikelyTrue, sample.second) /
+        static_cast<float>(sample.first);
+  }
+  recordSampledLeafSelectivity(string, table.filterSelectivity, false);
+
+  bool trace = (options.traceFlags & OptimizerOptions::kSample) != 0;
+  if (trace) {
+    std::cout << "Sampled scan " << string << "= " << table.filterSelectivity
+              << " time= "
+              << velox::succinctMicros(velox::getCurrentTimeMicro() - start)
+              << std::endl;
+  }
 }
 
 namespace {
