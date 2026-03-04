@@ -31,6 +31,8 @@
 /// constant.
 namespace facebook::axiom::optimizer {
 
+struct DerivedTable;
+
 /// Superclass for all expressions.
 class Expr : public PlanObject {
  public:
@@ -1273,6 +1275,11 @@ class WindowFunction : public Call {
 using WindowFunctionCP = const WindowFunction*;
 using WindowFunctionVector = QGVector<WindowFunctionCP>;
 
+/// Stores the GROUP BY keys, aggregate functions, and output columns for a
+/// DerivedTable. Output columns are 1:1 with grouping keys followed by
+/// aggregates: columns_[i] corresponds to groupingKeys_[i] for
+/// i < groupingKeys_.size(), and to aggregates_[i - groupingKeys_.size()]
+/// otherwise.
 class AggregationPlan : public PlanObject {
  public:
   AggregationPlan(
@@ -1289,21 +1296,36 @@ class AggregationPlan : public PlanObject {
     VELOX_CHECK_EQ(columns_.size(), intermediateColumns_.size());
   }
 
+  /// GROUP BY columns. Each references a column from a table in the enclosing
+  /// DerivedTable's tableSet or from the DerivedTable itself.
   const ExprVector& groupingKeys() const {
     return groupingKeys_;
   }
 
+  /// Aggregate functions (e.g., sum, count, min). Each references columns from
+  /// tables in the enclosing DerivedTable's tableSet.
   const AggregateVector& aggregates() const {
     return aggregates_;
   }
 
+  /// Output columns produced by this aggregation. The first
+  /// groupingKeys_.size() entries correspond to grouping keys; the rest
+  /// correspond to aggregate results.
   const ColumnVector& columns() const {
     return columns_;
   }
 
+  /// Output columns with intermediate accumulator types, used for partial
+  /// aggregation. 1:1 with columns().
   const ColumnVector& intermediateColumns() const {
     return intermediateColumns_;
   }
+
+  /// Checks that grouping keys and aggregates reference only tables in
+  /// dt.tableSet or 'dt' itself. Verifies that grouping key output columns
+  /// reference tables in dt.tableSet or 'dt', and aggregate output columns
+  /// reference 'dt'.
+  void checkConsistency(const DerivedTable& dt) const;
 
  private:
   const ExprVector groupingKeys_;
@@ -1314,12 +1336,13 @@ class AggregationPlan : public PlanObject {
 
 using AggregationPlanCP = const AggregationPlan*;
 
-/// Stores the window functions and their output columns in a DerivedTable.
-/// Analogous to AggregationPlan for aggregations.
+/// Stores window functions and their output columns for a DerivedTable.
+/// Each window function produces exactly one output column: functions_[i]
+/// corresponds to columns_[i].
 class WindowPlan : public PlanObject {
  public:
   WindowPlan(
-      QGVector<WindowFunctionCP> functions,
+      WindowFunctionVector functions,
       ColumnVector columns,
       std::optional<int32_t> rankingLimit = std::nullopt)
       : PlanObject(PlanType::kWindowPlanNode),
@@ -1332,10 +1355,13 @@ class WindowPlan : public PlanObject {
     }
   }
 
-  const QGVector<WindowFunctionCP>& functions() const {
+  /// Window function definitions (e.g., row_number, rank, sum). Each
+  /// references columns from tables in the enclosing DerivedTable's tableSet.
+  const WindowFunctionVector& functions() const {
     return functions_;
   }
 
+  /// Output columns produced by window functions. 1:1 with functions().
   const ColumnVector& columns() const {
     return columns_;
   }
@@ -1353,11 +1379,15 @@ class WindowPlan : public PlanObject {
   /// Returns a new WindowPlan with additional window functions and columns
   /// appended. Used when merging windows from stacked project nodes.
   const WindowPlan* withFunctions(
-      QGVector<WindowFunctionCP> functions,
+      WindowFunctionVector functions,
       ColumnVector columns) const;
 
+  /// Checks that window functions reference only tables in dt.tableSet or
+  /// 'dt' itself, and that output columns reference 'dt'.
+  void checkConsistency(const DerivedTable& dt) const;
+
  private:
-  const QGVector<WindowFunctionCP> functions_;
+  const WindowFunctionVector functions_;
   const ColumnVector columns_;
   const std::optional<int32_t> rankingLimit_;
 };
