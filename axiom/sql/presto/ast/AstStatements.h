@@ -793,6 +793,31 @@ class ShowColumns : public Statement {
   std::shared_ptr<QualifiedName> table_;
 };
 
+/// Represents SHOW STATS FOR <table>. Returns per-column and table-level
+/// statistics as a VALUES plan with the following columns:
+///   row_count (DOUBLE) - total rows, populated only in the summary row.
+///   column_name (VARCHAR) - column name, NULL in the summary row.
+///   nulls_fraction (DOUBLE) - fraction of null values.
+///   distinct_values_count (BIGINT) - number of distinct values.
+///   avg_length (BIGINT) - average length in bytes for varchar and varbinary;
+///     average number of elements for arrays and maps.
+///   low_value (VARCHAR) - minimum value formatted as string.
+///   high_value (VARCHAR) - maximum value formatted as string.
+class ShowStats : public Statement {
+ public:
+  ShowStats(NodeLocation location, const std::shared_ptr<QualifiedName>& table)
+      : Statement(NodeType::kShowStats, location), table_(table) {}
+
+  const std::shared_ptr<QualifiedName>& table() const {
+    return table_;
+  }
+
+  void accept(AstVisitor* visitor) override;
+
+ private:
+  std::shared_ptr<QualifiedName> table_;
+};
+
 class ShowFunctions : public Statement {
  public:
   ShowFunctions(

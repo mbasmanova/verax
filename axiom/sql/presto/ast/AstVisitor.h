@@ -563,6 +563,10 @@ class AstVisitor {
     defaultVisit(node);
   }
 
+  virtual void visitShowStats(ShowStats* node) {
+    defaultVisit(node);
+  }
+
   virtual void visitShowFunctions(ShowFunctions* node) {
     defaultVisit(node);
   }

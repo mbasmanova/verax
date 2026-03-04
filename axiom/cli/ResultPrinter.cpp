@@ -81,11 +81,15 @@ int32_t printResults(
       if (i > 0) {
         std::cout << " | ";
       }
-      std::cout << std::setw(widths[i]);
       if (alignLeft[i]) {
         std::cout << std::left;
+        // Skip padding on the last column to avoid trailing whitespace.
+        if (i < numColumns - 1) {
+          std::cout << std::setw(widths[i]);
+        }
       } else {
         std::cout << std::right;
+        std::cout << std::setw(widths[i]);
       }
       std::cout << row[i];
     }
