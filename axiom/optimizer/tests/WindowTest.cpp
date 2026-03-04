@@ -56,7 +56,7 @@ class WindowTest : public test::QueryTestBase {
   std::shared_ptr<connector::TestConnector> testConnector_;
 };
 
-TEST_F(WindowTest, singleWindowFunction) {
+TEST_F(WindowTest, singleFunction) {
   // No extra columns to drop, so no final project.
   auto plan = toSingleNodePlan(
       "SELECT n_name, row_number() OVER (ORDER BY n_name) as rn "
@@ -68,7 +68,7 @@ TEST_F(WindowTest, singleWindowFunction) {
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
-TEST_F(WindowTest, windowWithPartitionBy) {
+TEST_F(WindowTest, partitionBy) {
   // Project drops unused columns (n_nationkey).
   auto plan = toSingleNodePlan(
       "SELECT n_name, n_regionkey, "
@@ -84,7 +84,7 @@ TEST_F(WindowTest, windowWithPartitionBy) {
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
-TEST_F(WindowTest, multipleWindowFunctionsSameSpec) {
+TEST_F(WindowTest, multipleFunctionsSameSpec) {
   // Multiple window functions with the same partition/order spec should be
   // grouped into a single Window operator.
   auto plan = toSingleNodePlan(
@@ -186,7 +186,7 @@ TEST_F(WindowTest, differentOrderTypes) {
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
-TEST_F(WindowTest, windowWithFrameBounds) {
+TEST_F(WindowTest, frameBounds) {
   // Precompute projection materializes frame bound constant.
   auto plan = toSingleNodePlan(
       "SELECT n_name, "
@@ -214,7 +214,7 @@ TEST_F(WindowTest, windowWithFrameBounds) {
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
-TEST_F(WindowTest, windowWithExpressionFrameBounds) {
+TEST_F(WindowTest, expressionFrameBounds) {
   // Precompute projection materializes expression frame bounds.
   auto plan = toSingleNodePlan(
       "SELECT n_name, "
@@ -242,7 +242,7 @@ TEST_F(WindowTest, windowWithExpressionFrameBounds) {
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
-TEST_F(WindowTest, windowWithExpressionInputs) {
+TEST_F(WindowTest, expressionInputs) {
   // All inputs to window function are expressions: function args, partition
   // keys, sorting keys, frame start and end. Partition key and frame end share
   // the expression n_regionkey + 1 which is computed once.
@@ -355,6 +355,27 @@ TEST_F(WindowTest, windowOnWindowInFrameBounds) {
                    "ROWS BETWEEN rn PRECEDING AND CURRENT ROW) as s"})
           .project({"n_name", "s"})
           .build();
+  AXIOM_ASSERT_PLAN(plan, matcher);
+}
+
+// Window subquery as a join input must be wrapped in a nested DT.
+// Without wrapping, the join and window end up in the same DT, and the
+// window computes over the joined result instead of the subquery's rows.
+TEST_F(WindowTest, underJoin) {
+  auto plan = toSingleNodePlan(
+      "SELECT n_name, dt.s "
+      "FROM nation "
+      "JOIN ("
+      "  SELECT n_regionkey, SUM(n_nationkey) OVER (ORDER BY n_regionkey) AS s "
+      "  FROM nation"
+      ") dt ON nation.n_regionkey = dt.n_regionkey");
+
+  // The window must be inside a nested DT (below the join), not above it.
+  auto matcher = matchScan("nation")
+                     .hashJoin(
+                         matchScan("nation").window().project().build(),
+                         core::JoinType::kInner)
+                     .build();
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 

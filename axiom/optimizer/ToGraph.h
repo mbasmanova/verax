@@ -165,21 +165,24 @@ class ToGraph {
   void makeQueryGraph(
       const logical_plan::LogicalPlanNode& node,
       uint64_t allowedInDt,
-      bool excludeOuterJoins = false);
+      bool excludeOuterJoins = false,
+      bool excludeWindows = false);
 
   // Handles kFilter in makeQueryGraph. Creates DT boundaries for
   // nondeterministic filters and filters on window function outputs.
   void makeFilterQueryGraph(
       const logical_plan::FilterNode& filter,
       uint64_t allowedInDt,
-      bool excludeOuterJoins);
+      bool excludeOuterJoins,
+      bool excludeWindows);
 
   // Handles kProject in makeQueryGraph. Creates DT boundaries for
   // window-on-window dependencies and windows over LIMIT.
   void makeProjectQueryGraph(
       const logical_plan::ProjectNode& project,
       uint64_t allowedInDt,
-      bool excludeOuterJoins);
+      bool excludeOuterJoins,
+      bool excludeWindows);
 
   PlanObjectCP findLeaf(const logical_plan::LogicalPlanNode* node) {
     auto* leaf = planLeaves_[node];
