@@ -185,10 +185,17 @@ struct DerivedTable : public PlanObject {
   ///
   /// Requires:
   ///   - 'this' must be empty (no tables, no joins).
-  ///   - 'superTables' must not be empty and must be a subset of 'super'
-  ///     tables.
+  ///   - 'super' must not be a union DT (union children are planned
+  ///     individually via importUnionChild).
+  ///   - 'superTables' must not be empty.
   ///   - 'primaryTable' must be in 'superTables'.
   ///
+  /// @param super The outer DerivedTable that owns the tables and joins.
+  /// Joins connecting 'superTables' are copied from 'super'. Must not be a
+  /// set operation (UNION ALL, etc.).
+  /// @param superTables Subset of tables to import. These become 'this'
+  /// DT's tables. Joins from 'super' where both sides are in 'superTables'
+  /// are copied.
   /// @param primaryTable The main table in 'superTables'. Existence semijoins
   /// are attached to this table. If this table is a subquery with aggregation,
   /// existence tables are pushed inside it below the aggregation boundary.
@@ -204,6 +211,13 @@ struct DerivedTable : public PlanObject {
       PlanObjectCP primaryTable,
       const std::vector<PlanObjectSet>& existences,
       float existsFanout);
+
+  /// Populates 'this' by flattening a union child DT. Used when planning
+  /// individual branches of a UNION ALL — the child DT is self-contained
+  /// and does not need tables or joins from an outer DT.
+  ///
+  /// @param child A child from a union DT's 'children' list.
+  void importUnionChild(PlanObjectCP child);
 
   /// Return a copy of 'expr', replacing references to this DT's 'columns' with
   /// corresponding 'exprs'.

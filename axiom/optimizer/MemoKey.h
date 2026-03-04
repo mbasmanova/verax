@@ -20,7 +20,7 @@
 namespace facebook::axiom::optimizer {
 
 /// Key for memoization of partial plans. Identifies a subset of tables
-/// with their required output columns and existence joins.
+/// with their required output columns and optional reducing existence tables.
 struct MemoKey {
   static MemoKey create(
       PlanObjectCP firstTable,
@@ -42,9 +42,18 @@ struct MemoKey {
 
   std::string toString() const;
 
+  /// Starting table for join enumeration. Must be in 'tables'.
   const PlanObjectCP firstTable;
+
+  /// Columns projected out by the plan identified by this key.
   const PlanObjectSet columns;
+
+  /// Tables joined in this partial plan.
   const PlanObjectSet tables;
+
+  /// Groups of reducing tables added as existence semijoins to shrink a hash
+  /// join build side. Each group forms a single existence semijoin. Can be
+  /// empty.
   const std::vector<PlanObjectSet> existences;
 
  private:

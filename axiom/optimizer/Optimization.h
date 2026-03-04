@@ -196,8 +196,6 @@ class Optimization {
   // @param dt the derived table to plan.
   // @param distribution the desired output distribution or a distribution with
   // no partitioning if this does not matter.
-  // @param boundColumns a set of columns that are lookup keys for an index
-  // based path through the joins in 'key'.
   // @param existsFanout the selectivity for the 'existences' in 'key', i.e.
   // extra reducing joins for a hash join build side, reflecting reducing joins
   // on the probe side. 1 if none.
@@ -207,17 +205,16 @@ class Optimization {
       const DerivedTable& dt,
       const MemoKey& key,
       const std::optional<DesiredDistribution>& distribution,
-      const PlanObjectSet& boundColumns,
       float existsFanout,
       bool& needsShuffle);
 
+  // Plans a set operation (UNION ALL, UNION). Plans each child independently
+  // using importUnionChild, combines them with UnionAll, and optionally adds
+  // a distinct aggregation for UNION. Individual child shuffles are handled
+  // internally.
   PlanP makeUnionPlan(
-      const DerivedTable& dt,
       const MemoKey& key,
-      const std::optional<DesiredDistribution>& distribution,
-      const PlanObjectSet& boundColumns,
-      float existsFanout,
-      bool& needsShuffle);
+      const std::optional<DesiredDistribution>& distribution);
 
   PlanP makeDtPlan(
       const DerivedTable& dt,

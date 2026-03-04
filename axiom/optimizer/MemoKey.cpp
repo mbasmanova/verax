@@ -46,11 +46,22 @@ bool MemoKey::operator==(const MemoKey& other) const {
 }
 
 std::string MemoKey::toString() const {
-  return fmt::format(
-      "MemoKey({}, columns: {}, tables: {})",
+  auto result = fmt::format(
+      "MemoKey({}, columns: {}, tables: {}",
       cname(firstTable),
       columns.toString(true),
       tables.toString(true));
+  if (!existences.empty()) {
+    result += ", existences: ";
+    for (auto i = 0; i < existences.size(); ++i) {
+      if (i > 0) {
+        result += "; ";
+      }
+      result += existences[i].toString(true);
+    }
+  }
+  result += ")";
+  return result;
 }
 
 } // namespace facebook::axiom::optimizer

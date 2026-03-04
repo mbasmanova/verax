@@ -208,7 +208,7 @@ optimization but not yet implemented; "N/A" means pushdown is always invalid
 | 6 | Inner join | Yes | innerJoinGroupBy | |
 | 7 | Semi-join (IN) | Yes | semiJoin | |
 | 8 | Left/right join (DT is optional side) | Yes | leftJoinDtIsOptional | |
-| 9 | Left/right join (DT is preserved side) | No | leftJoinDtIsPreserved | |
+| 9 | Left/right join (DT is preserved side) | N/A | leftJoinDtIsPreserved | Would incorrectly remove rows that should appear with NULLs |
 | | **What is pushed (`other`)** | | | |
 | 10 | Base table | Yes | innerJoinGroupBy | Added directly to newFirst |
 | 11 | DerivedTable (subquery) | No | otherIsDerivedTable | Optimizer doesn't choose pushdown |
@@ -219,7 +219,7 @@ optimization but not yet implemented; "N/A" means pushdown is always invalid
 | | **What is the DT (subquery)** | | | |
 | 16 | GROUP BY subquery | Yes | innerJoinGroupBy | Core case |
 | 17 | DISTINCT subquery | Yes | distinctSubquery | GROUP BY variant |
-| 18 | UNION ALL subquery | Yes | `SetTest::joinWithUnionAll` | |
+| 18 | UNION ALL subquery | No | | Join keys reference union DT's columns, not children's |
 | 19 | Window function (key is partition key) | Yes | windowSubquery | |
 | 20 | Window function (key is not partition key) | N/A | windowNonPartitionKey | Changes window computation |
 | 21 | Unnest GROUP BY on unnest output | No | unnestGroupBy | Optimizer doesn't choose pushdown |
@@ -368,3 +368,67 @@ fire the optimization.
 
 TODO: Add e2e tests via `SqlTest.cpp` that run queries with DuckDB comparison
 to verify correctness of results (not just plan structure).
+
+## Limitations
+
+### No multi-key join pushdown
+
+When the join between the outer table and the subquery has multiple equality
+keys (e.g., `ON t.a = dt.x AND t.b = dt.y`), the existence is not pushed even
+if all keys map to grouping keys. `validatePushdown` requires a single equality
+key per join edge. Supporting multi-key pushdown would require constructing a
+composite existence semijoin with multiple key pairs.
+
+### No partial pushdown
+
+When multiple tables join the subquery and some are pushable but others are not,
+the entire pushdown is skipped. The existences arrive as a single package with
+a single fanout estimate, so partial pushdown may not achieve the expected
+cardinality reduction. A future enhancement could push what it can and leave
+the rest outside.
+
+### No pushdown when other is a DerivedTable
+
+When the table being pushed is itself a DerivedTable (subquery) or contains an
+unnest, the optimizer does not choose pushdown. The existence mechanism supports
+it structurally, but `findReducingJoins` does not select these cases.
+
+### No recursive pushdown into nested subqueries
+
+Existence pushdown stops at the first aggregation level. If a subquery contains
+a nested subquery with its own aggregation, the existence is not pushed through
+the inner boundary. Each level would need its own discovery and validation pass.
+
+### No existence pushdown into UNION ALL children
+
+When a UNION ALL subquery is joined with a selective table, it would be
+beneficial to push an existence semijoin into each union child independently:
+
+```sql
+SELECT a FROM t
+JOIN (SELECT x FROM u UNION ALL SELECT x FROM v) w ON a = w.x
+WHERE t.a < 100
+```
+
+Ideally, the optimizer would produce:
+
+```
+HashJoin (t.a = w.x)
+├── TableScan t
+└── UnionAll
+    ├── HashJoin LEFT SEMI (u.x = t.a)  ← pushed into child
+    │   ├── TableScan u
+    │   └── TableScan t
+    └── HashJoin LEFT SEMI (v.x = t.a)  ← pushed into child
+        ├── TableScan v
+        └── TableScan t
+```
+
+This is not implemented. The join edge `t ↔ w` references `w`'s columns, not
+the children's columns. Pushing into children would require translating join
+keys from `w`'s column space to each child's column space. Additionally,
+`addExistences` runs before `flattenDt` in `import`, so the child's internal
+columns are not yet visible when existences are processed.
+
+Currently, `makeUnionPlan` creates child MemoKeys without existences, and the
+join with `t` happens above the union.
