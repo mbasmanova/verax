@@ -226,3 +226,26 @@ buck run axiom/optimizer/tests:tpch_plan -- \
   --gtest_filter="TpchPlanTest.DISABLED_makePlans" \
   --gtest_also_run_disabled_tests
 ```
+
+## 5. Using the CLI with Custom Tables
+
+Use `--init` to create in-memory tables with specific stats for testing
+optimizer behavior outside of TPC-H:
+
+```bash
+buck run fbcode//axiom/cli:cli -- \
+  --num_workers 1 --num_drivers 1 \
+  --init /path/to/init.sql \
+  --query "EXPLAIN SELECT ..."
+```
+
+Example init file:
+```sql
+use test.default;
+create table t as select * from unnest(sequence(1, 100), sequence(1, 100)) as t(a, b);
+create table u as select * from unnest(sequence(1, 10000), sequence(1, 10000)) as t(x, y);
+```
+
+Use `--num_workers 1 --num_drivers 1` to produce single-node plans matching
+`toSingleNodePlan` in C++ tests. Without these flags, the CLI produces
+distributed multi-fragment plans with `LocalPartition` nodes.

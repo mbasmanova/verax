@@ -462,7 +462,12 @@ void DerivedTable::import(
   }
 
   if (primaryTable->is(PlanType::kDerivedTableNode)) {
-    pushExistencesIntoSubquery(*primaryTable->as<DerivedTable>());
+    auto& primaryDt = *primaryTable->as<DerivedTable>();
+    if (isWrapOnly()) {
+      flattenDt(&primaryDt);
+    } else {
+      pushExistencesIntoSubquery(primaryDt);
+    }
   }
 
   linkTablesToJoins();
@@ -475,15 +480,6 @@ void eraseFirst(V& set, E element) {
   auto it = std::find(set.begin(), set.end(), element);
   VELOX_CHECK(it != set.end());
   set.erase(it);
-}
-
-JoinEdgeP importedDtJoin(JoinEdgeP join, DerivedTableP dt, ExprCP innerKey) {
-  auto left = innerKey->singleTable();
-  VELOX_CHECK(left);
-  auto otherKey = dt->columns[0];
-  auto* newJoin = JoinEdge::makeExists(left, dt);
-  newJoin->addEquality(innerKey, otherKey);
-  return newJoin;
 }
 
 // Returns a join partner of starting 'joins' where the partner is not in
@@ -517,16 +513,7 @@ void joinChain(
   }
   visited.add(next);
   path.push_back(next);
-  joinChain(next, joins, visited, path);
-}
-
-JoinEdgeP importedJoin(JoinEdgeP join, PlanObjectCP other, ExprCP innerKey) {
-  auto left = innerKey->singleTable();
-  VELOX_CHECK(left);
-  auto otherKey = join->sideOf(other).keys[0];
-  auto* newJoin = JoinEdge::makeExists(left, other);
-  newJoin->addEquality(innerKey, otherKey);
-  return newJoin;
+  joinChain(next, joins, std::move(visited), path);
 }
 
 // Returns a copy of 'expr', replacing instances of columns in 'source' with
@@ -773,86 +760,185 @@ ExprCP DerivedTable::importExpr(ExprCP expr) const {
   return replaceInputs(expr, columns, exprs);
 }
 
-void DerivedTable::pushExistencesIntoSubquery(const DerivedTable& subquery) {
-  if (isWrapOnly()) {
-    flattenDt(tables[0]->as<DerivedTable>());
-    return;
+void DerivedTable::removeTables(
+    PlanObjectCP table,
+    const std::vector<PlanObjectCP>& chain) {
+  eraseFirst(tables, table);
+  tableSet.erase(table);
+  for (auto& chainTable : chain) {
+    eraseFirst(tables, chainTable);
+    tableSet.erase(chainTable);
   }
+}
 
-  auto initialTables = tables;
+bool DerivedTable::validatePushdown(
+    const DerivedTable& subquery,
+    JoinEdgeVector& validJoins,
+    ExprVector& innerKeys) {
+  validJoins.clear();
+  innerKeys.clear();
+
   if (subquery.hasLimit() || subquery.hasOrderBy()) {
-    // tables can't be imported but are marked as used so not tried again.
-    for (auto i = 1; i < tables.size(); ++i) {
-      importedExistences.add(tables[i]);
-    }
-    return;
+    return false;
   }
 
-  auto& outer = subquery.columns;
-  auto& inner = subquery.exprs;
+  // Collect valid pushdown columns from the subquery. A join key that
+  // references the subquery must resolve to one of these for pushdown
+  // to be valid. Grouping keys can be filtered before aggregation;
+  // window partition keys can be filtered before the window computation.
+  // When both aggregation and window are present, the valid set is the
+  // intersection (the key must be safe for both operations).
+  PlanObjectSet validPushdownColumns;
+  if (subquery.hasAggregation()) {
+    validPushdownColumns.unionColumns(subquery.aggregation->groupingKeys());
+  }
+  if (subquery.hasWindow()) {
+    // Compute partition keys common to ALL window functions.
+    PlanObjectSet windowKeys;
+    bool first = true;
+    for (const auto* func : subquery.windowPlan->functions()) {
+      if (func->partitionKeys().empty()) {
+        windowKeys.clear();
+        break;
+      }
+      if (first) {
+        windowKeys.unionColumns(func->partitionKeys());
+        first = false;
+      } else {
+        PlanObjectSet funcColumns;
+        funcColumns.unionColumns(func->partitionKeys());
+        windowKeys.intersect(funcColumns);
+      }
+    }
+    if (subquery.hasAggregation()) {
+      // Both agg and window: intersect.
+      validPushdownColumns.intersect(windowKeys);
+    } else {
+      validPushdownColumns = std::move(windowKeys);
+    }
+  }
 
-  auto* newFirst = make<DerivedTable>(subquery);
+  // No valid pushdown columns but the subquery has an operation boundary
+  // (aggregation or window). No join key can be pushed below it.
+  if (validPushdownColumns.empty() &&
+      (subquery.hasAggregation() || subquery.hasWindow())) {
+    return false;
+  }
 
-  const int32_t previousNumJoins = newFirst->joins.size();
+  const auto& outer = subquery.columns;
+  const auto& inner = subquery.exprs;
+
+  // Check if all tables can be pushed. The existences come as a single package
+  // with a single fanout estimate. Partial pushdown may not achieve the
+  // expected cardinality reduction, so we push all or none.
   for (auto& join : joins) {
     auto other = join->otherSide(&subquery);
-    if (!other) {
-      continue;
-    }
-
-    if (!tableSet.contains(other)) {
-      // Already placed in some previous join chain.
+    if (!other || !tableSet.contains(other)) {
       continue;
     }
 
     auto side = join->sideOf(&subquery);
     if (side.keys.size() > 1 || !join->filter().empty()) {
-      continue;
+      return false;
     }
 
-    auto innerKey = replaceInputs(side.keys[0], outer, inner);
+    // Resolve the join key through column mappings to get the inner
+    // expression.
+    auto key = replaceInputs(side.keys[0], columns, exprs);
+    auto innerKey = replaceInputs(key, outer, inner);
     VELOX_DCHECK(innerKey);
-    if (innerKey->containsFunction(FunctionSet::kAggregate)) {
-      // If the join key is an aggregate, the join can't be moved below the
-      // agg.
-      continue;
+
+    // Verify the key is a valid pushdown column.
+    if (innerKey->is(PlanType::kColumnExpr) &&
+        innerKey->as<Column>()->relation() == &subquery) {
+      if (!validPushdownColumns.contains(innerKey)) {
+        return false;
+      }
     }
+
+    auto innerTable = innerKey->singleTable();
+    if (!innerTable) {
+      return false;
+    }
+
+    // Skip if the join key resolves to an unnest table column. To support
+    // this, we would need to wrap the base table and its unnest into a new
+    // DerivedTable and create the existence semijoin on that DT. Not yet
+    // implemented.
+    if (innerTable->is(PlanType::kUnnestTableNode)) {
+      return false;
+    }
+
+    validJoins.push_back(join);
+    innerKeys.push_back(innerKey);
+  }
+
+  return true;
+}
+
+void DerivedTable::pushExistencesIntoSubquery(const DerivedTable& subquery) {
+  JoinEdgeVector validJoins;
+  ExprVector innerKeys;
+  if (!validatePushdown(subquery, validJoins, innerKeys)) {
+    return;
+  }
+
+  auto initialTables = tables;
+  auto* newFirst = make<DerivedTable>(subquery);
+
+  auto* optimization = queryCtx()->optimization();
+  const int32_t previousNumJoins = newFirst->joins.size();
+  for (auto i = 0; i < validJoins.size(); ++i) {
+    auto join = validJoins[i];
+    auto innerKey = innerKeys[i];
 
     auto otherSide = join->sideOf(&subquery, true);
+    auto other = otherSide.table;
+    auto otherKey = otherSide.keys[0];
 
     PlanObjectSet visited;
     visited.add(&subquery);
     visited.add(other);
     std::vector<PlanObjectCP> path;
     joinChain(other, joins, visited, path);
+
+    auto innerTable = innerKey->singleTable();
+    VELOX_DCHECK_NOT_NULL(innerTable);
+
+    auto makeExistsJoin = [&](PlanObjectCP table, ExprCP key) {
+      auto* existsJoin = JoinEdge::makeExists(innerTable, table);
+      existsJoin->addEquality(innerKey, key);
+      return existsJoin;
+    };
+
     if (path.empty()) {
       if (other->is(PlanType::kDerivedTableNode)) {
-        queryCtx()->optimization()->memo().erase(
-            other->as<DerivedTable>()->memoKey());
+        optimization->memo().erase(other->as<DerivedTable>()->memoKey());
         const_cast<PlanObject*>(other)->as<DerivedTable>()->initializePlans();
       }
 
       newFirst->addTable(other);
-      newFirst->joins.push_back(importedJoin(join, other, innerKey));
+      newFirst->joins.push_back(makeExistsJoin(other, otherKey));
     } else {
       auto* chainDt = make<DerivedTable>();
-      chainDt->cname = toName(queryCtx()->optimization()->newCName("rdt"));
+      chainDt->cname = toName(optimization->newCName("rdt"));
 
-      PlanObjectSet chainSet;
+      auto chainSet = PlanObjectSet::fromObjects(path);
       chainSet.add(other);
-      chainSet.unionObjects(path);
-      chainDt->makeProjection(otherSide.keys);
+
+      auto column = make<Column>(
+          optimization->newCName("ec"), chainDt, otherKey->value());
+      chainDt->columns.push_back(column);
+      chainDt->exprs.push_back(otherKey);
+
       chainDt->import(*this, chainSet, other);
       chainDt->initializePlans();
+
       newFirst->addTable(chainDt);
-      newFirst->joins.push_back(importedDtJoin(join, chainDt, innerKey));
+      newFirst->joins.push_back(makeExistsJoin(chainDt, column));
     }
-    eraseFirst(tables, other);
-    tableSet.erase(other);
-    for (auto& table : path) {
-      eraseFirst(tables, table);
-      tableSet.erase(table);
-    }
+
+    removeTables(other, path);
   }
 
   for (auto i = previousNumJoins; i < newFirst->joins.size(); ++i) {
@@ -880,16 +966,6 @@ void DerivedTable::flattenDt(const DerivedTable* dt) {
   having = dt->having;
   limit = dt->limit;
   offset = dt->offset;
-}
-
-void DerivedTable::makeProjection(const ExprVector& exprs) {
-  auto optimization = queryCtx()->optimization();
-  for (auto& expr : exprs) {
-    auto* column =
-        make<Column>(optimization->newCName("ec"), this, expr->value());
-    columns.push_back(column);
-    this->exprs.push_back(expr);
-  }
 }
 
 namespace {
