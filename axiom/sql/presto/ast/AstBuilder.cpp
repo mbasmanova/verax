@@ -716,7 +716,8 @@ std::any AstBuilder::visitShowColumns(
 
 std::any AstBuilder::visitShowStats(PrestoSqlParser::ShowStatsContext* ctx) {
   trace("visitShowStats");
-  return visitChildren("visitShowStats", ctx);
+  return std::static_pointer_cast<Statement>(std::make_shared<ShowStats>(
+      getLocation(ctx), getQualifiedName(ctx->qualifiedName())));
 }
 
 std::any AstBuilder::visitShowStatsForQuery(

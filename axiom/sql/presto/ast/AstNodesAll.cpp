@@ -770,6 +770,10 @@ void ShowColumns::accept(AstVisitor* visitor) {
   visitor->visitShowColumns(this);
 }
 
+void ShowStats::accept(AstVisitor* visitor) {
+  visitor->visitShowStats(this);
+}
+
 void ShowFunctions::accept(AstVisitor* visitor) {
   visitor->visitShowFunctions(this);
 }

@@ -1045,6 +1045,8 @@ TEST_F(PrestoParserTest, explainShow) {
   testExplain("EXPLAIN SHOW COLUMNS FROM nation", matcher);
 
   testExplain("EXPLAIN SHOW FUNCTIONS", matcher);
+
+  testExplain("EXPLAIN SHOW STATS FOR nation", matcher);
 }
 
 TEST_F(PrestoParserTest, explainInsert) {
@@ -1108,6 +1110,14 @@ TEST_F(PrestoParserTest, showFunctions) {
     auto matcher = matchValues().filter();
     testSelect("SHOW FUNCTIONS LIKE 'array%'", matcher);
   }
+}
+
+TEST_F(PrestoParserTest, showStats) {
+  auto matcher = matchValues();
+  testSelect("SHOW STATS FOR nation", matcher);
+
+  VELOX_ASSERT_USER_THROW(
+      parseSelect("SHOW STATS FOR no_such_table"), "Table not found");
 }
 
 TEST_F(PrestoParserTest, unqualifiedAccessAfterJoin) {
