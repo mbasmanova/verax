@@ -115,7 +115,7 @@ class Optimization {
   /// Makes an initial plan for 'dt' and memoizes it. Handles both union and
   /// non-union DTs. Assumes child DTs already have plans in the memo.
   /// Returns the plan's RelationOp.
-  RelationOpPtr makeInitialPlan(DerivedTable& dt);
+  RelationOpPtr makeInitialPlan(const DerivedTable& dt);
 
   /// Adds single aggregation on top of 'input'.
   /// @param dt Derived table with an aggregation.
@@ -366,7 +366,7 @@ class Optimization {
 
   // Set of previously planned dts for importing probe side reducing joins to a
   // build side
-  folly::F14FastMap<MemoKey, DerivedTableP> existenceDts_;
+  folly::F14FastMap<MemoKey, DerivedTableCP> existenceDts_;
 
   // The top level PlanState. Contains the set of top level interesting plans.
   // Must stay alive as long as the Plans and RelationOps are reeferenced.

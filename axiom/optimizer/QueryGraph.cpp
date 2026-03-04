@@ -15,6 +15,7 @@
  */
 
 #include "axiom/optimizer/QueryGraph.h"
+#include "axiom/optimizer/DerivedTable.h"
 #include "axiom/optimizer/FunctionRegistry.h"
 #include "axiom/optimizer/Optimization.h"
 #include "axiom/optimizer/PlanUtils.h"
@@ -231,6 +232,59 @@ const WindowPlan* WindowPlan::withFunctions(
   mergedColumns.insert(mergedColumns.end(), columns.begin(), columns.end());
   return make<WindowPlan>(
       std::move(merged), std::move(mergedColumns), rankingLimit_);
+}
+
+namespace {
+// Verifies that all tables referenced by 'exprs' are in dt.tableSet or 'dt'
+// itself.
+template <typename T>
+void checkTableReferences(
+    const DerivedTable& dt,
+    std::span<const T> exprs,
+    const char* context) {
+  for (auto* expr : exprs) {
+    expr->allTables().forEach([&](PlanObjectCP table) {
+      VELOX_CHECK(
+          dt.tableSet.contains(table) || table == &dt,
+          "{} references table not in tableSet or 'this': {}, {}",
+          context,
+          dt.cname,
+          expr->toString());
+    });
+  }
+}
+} // namespace
+
+void AggregationPlan::checkConsistency(const DerivedTable& dt) const {
+  checkTableReferences<ExprCP>(dt, groupingKeys_, "Grouping key");
+  checkTableReferences<AggregateCP>(dt, aggregates_, "Aggregate");
+
+  // Grouping key columns reference one of dt.tables or 'dt' itself.
+  // Aggregate columns must reference the 'dt'.
+  const auto numKeys = groupingKeys_.size();
+  checkTableReferences<ColumnCP>(
+      dt, std::span(columns_).subspan(0, numKeys), "Grouping key");
+  for (size_t i = numKeys; i < columns_.size(); ++i) {
+    auto* relation = columns_[i]->relation();
+    VELOX_CHECK(
+        relation == &dt,
+        "Aggregate column does not reference DT: {}, {}",
+        dt.cname,
+        columns_[i]->toString());
+  }
+}
+
+void WindowPlan::checkConsistency(const DerivedTable& dt) const {
+  checkTableReferences<WindowFunctionCP>(dt, functions_, "Window function");
+
+  // Window output columns must reference the 'dt'.
+  for (auto* column : columns_) {
+    VELOX_CHECK(
+        column->relation() == &dt,
+        "Window column does not reference DT: {}, {}",
+        dt.cname,
+        column->toString());
+  }
 }
 
 std::string Field::toString() const {

@@ -83,6 +83,235 @@ void fillJoins(
 }
 } // namespace
 
+void DerivedTable::checkSetOpConsistency() const {
+  VELOX_CHECK(
+      setOp.value() == logical_plan::SetOperation::kUnion ||
+          setOp.value() == logical_plan::SetOperation::kUnionAll,
+      "setOp must be union or unionAll: {}, {}",
+      cname,
+      logical_plan::SetOperationName::toName(setOp.value()));
+  VELOX_CHECK_EQ(
+      tables.size(), 0, "tables must be empty for set operation: {}", cname);
+  VELOX_CHECK(
+      exprs.empty(), "exprs must be empty for set operation: {}", cname);
+  VELOX_CHECK_GE(
+      children.size(),
+      2,
+      "set operation must have at least 2 children: {}",
+      cname);
+
+  // Union DT cannot have post-processing.
+  VELOX_CHECK_NULL(
+      aggregation, "union DT must not have aggregation: {}", cname);
+  VELOX_CHECK_NULL(windowPlan, "union DT must not have windowPlan: {}", cname);
+  VELOX_CHECK(having.empty(), "union DT must not have having: {}", cname);
+  VELOX_CHECK(conjuncts.empty(), "union DT must not have conjuncts: {}", cname);
+  VELOX_CHECK(joins.empty(), "union DT must not have joins: {}", cname);
+  VELOX_CHECK(
+      startTables.empty(), "union DT must not have startTables: {}", cname);
+  VELOX_CHECK(
+      singleRowDts.empty(), "union DT must not have singleRowDts: {}", cname);
+  VELOX_CHECK(
+      importedExistences.empty(),
+      "union DT must not have importedExistences: {}",
+      cname);
+}
+
+void DerivedTable::checkConsistency() const {
+  VELOX_CHECK_NOT_NULL(cname);
+
+  if (setOp.has_value()) {
+    checkSetOpConsistency();
+    return;
+  }
+
+  // Verifies that all tables referenced by expressions in 'exprs' are in
+  // tableSet or 'this'.
+  auto checkTableReferences = [&](const ExprVector& expressions,
+                                  const char* context) {
+    for (auto* expr : expressions) {
+      expr->allTables().forEach([&](PlanObjectCP table) {
+        VELOX_CHECK(
+            tableSet.contains(table) || table == this,
+            "{} references table not in tableSet or 'this': {}, {}",
+            context,
+            cname,
+            expr->toString());
+      });
+    }
+  };
+
+  // Columns and exprs must be 1:1 when exprs is non-empty.
+  if (!exprs.empty()) {
+    VELOX_CHECK_EQ(
+        columns.size(),
+        exprs.size(),
+        "Size mismatch between columns and exprs: {}",
+        cname);
+    for (size_t i = 0; i < columns.size(); ++i) {
+      auto columnType = columns[i]->value().type;
+      auto exprType = exprs[i]->value().type;
+      VELOX_CHECK(
+          columnType->equivalent(*exprType),
+          "Type mismatch between column and expr: {}, {}, {} vs {}",
+          cname,
+          i,
+          columnType->toString(),
+          exprType->toString());
+    }
+
+    // exprs must reference only tables in tableSet or 'this'.
+    checkTableReferences(exprs, "expr");
+  }
+
+  VELOX_CHECK_EQ(
+      children.size(),
+      0,
+      "children must be empty for non-set-operation: {}",
+      cname);
+  VELOX_CHECK_GT(
+      tables.size(),
+      0,
+      "tables must not be empty for non-set-operation: {}",
+      cname);
+
+  // All entries in tables must be tables. tableSet must contain exactly the
+  // elements in tables.
+  VELOX_CHECK_EQ(
+      tables.size(),
+      tableSet.size(),
+      "Size mismatch between tables and tableSet: {}",
+      cname);
+  for (auto* table : tables) {
+    VELOX_CHECK(
+        table->isTable(),
+        "Entry in tables is not a table: {}, {}",
+        cname,
+        table->typeName());
+    VELOX_CHECK(
+        tableSet.contains(table),
+        "tableSet is missing a table: {}, {}",
+        cname,
+        optimizer::cname(table));
+  }
+
+  // joinOrder must match tables.
+  VELOX_CHECK_EQ(
+      joinOrder.size(),
+      tables.size(),
+      "Size mismatch between joinOrder and tables: {}",
+      cname);
+  for (auto id : joinOrder) {
+    VELOX_CHECK(
+        tableSet.BitSet::contains(id),
+        "joinOrder references unknown table ID {} in {}",
+        id,
+        cname);
+  }
+
+  // At least one side of each join must be in tableSet. The other side may
+  // reference a table outside this DT via implied joins from equivalence
+  // classes. Neither side can be 'this'.
+  for (auto* join : joins) {
+    VELOX_CHECK(
+        (join->leftTable() && tableSet.contains(join->leftTable())) ||
+            tableSet.contains(join->rightTable()),
+        "Neither side of a join is in tableSet: {}, {}",
+        cname,
+        join->toString());
+    VELOX_CHECK(
+        join->rightTable() != this,
+        "Join rightTable is 'this': {}, {}",
+        cname,
+        join->toString());
+    if (join->leftTable()) {
+      VELOX_CHECK(
+          join->leftTable() != this,
+          "Join leftTable is 'this': {}, {}",
+          cname,
+          join->toString());
+    }
+  }
+
+  // Each entry in joinedBy must have 'this' as an end point.
+  for (auto* join : joinedBy) {
+    VELOX_CHECK(
+        join->leftTable() == this || join->rightTable() == this,
+        "joinedBy entry does not reference this: {}, {}",
+        cname,
+        join->toString());
+  }
+
+  // startTables must be a subset of tableSet.
+  startTables.forEach([&](PlanObjectCP table) {
+    VELOX_CHECK(
+        tableSet.contains(table),
+        "startTables entry not in tableSet: {}, {}",
+        cname,
+        optimizer::cname(table));
+  });
+
+  // singleRowDts must be a subset of tableSet.
+  singleRowDts.forEach([&](PlanObjectCP table) {
+    VELOX_CHECK(
+        tableSet.contains(table),
+        "singleRowDts entry not in tableSet: {}, {}",
+        cname,
+        optimizer::cname(table));
+  });
+
+  // orderKeys and orderTypes must have the same size.
+  VELOX_CHECK_EQ(
+      orderKeys.size(),
+      orderTypes.size(),
+      "Size mismatch between orderKeys and orderTypes: {}",
+      cname);
+
+  // orderKeys must reference only tables in tableSet or 'this'.
+  checkTableReferences(orderKeys, "orderKey");
+
+  // Aggregation and window plan consistency.
+  if (aggregation) {
+    aggregation->checkConsistency(*this);
+  }
+
+  if (windowPlan) {
+    windowPlan->checkConsistency(*this);
+  }
+
+  // having requires aggregation. having must reference only columns produced
+  // by the aggregation.
+  if (!having.empty()) {
+    VELOX_CHECK_NOT_NULL(
+        aggregation, "having is not empty but aggregation is null: {}", cname);
+    auto aggColumns = PlanObjectSet::fromObjects(aggregation->columns());
+    for (auto* expr : having) {
+      VELOX_CHECK(
+          expr->columns().isSubset(aggColumns),
+          "having references columns not produced by aggregation: {}, {}",
+          cname,
+          expr->toString());
+    }
+  }
+
+  // conjuncts must reference only tables in tableSet or 'this'.
+  checkTableReferences(conjuncts, "conjunct");
+
+  // importedExistences must be a subset of tableSet.
+  importedExistences.forEach([&](PlanObjectCP table) {
+    VELOX_CHECK(
+        tableSet.contains(table),
+        "importedExistences entry not in tableSet: {}, {}",
+        cname,
+        optimizer::cname(table));
+  });
+
+  // limit and offset.
+  VELOX_CHECK_GE(limit, -1, "limit must be >= -1: {}", cname);
+  VELOX_CHECK_NE(limit, 0, "limit must not be 0: {}", cname);
+  VELOX_CHECK_GE(offset, 0, "offset must be >= 0: {}", cname);
+}
+
 MemoKey DerivedTable::memoKey() const {
   return MemoKey::create(
       this, PlanObjectSet::fromObjects(columns), PlanObjectSet::single(this));
@@ -119,6 +348,9 @@ void DerivedTable::initializePlans() {
   // Post-order (bottom-up): finalize joins and compute plans.
   finalizeJoins();
 
+#ifndef NDEBUG
+  checkConsistency();
+#endif
   auto plan = queryCtx()->optimization()->makeInitialPlan(*this);
   updateConstraints(*plan);
 }
@@ -339,7 +571,7 @@ void DerivedTable::linkTablesToJoins() {
 }
 
 namespace {
-std::pair<DerivedTableP, JoinEdgeP> makeExistsDtAndJoin(
+std::pair<DerivedTableCP, JoinEdgeP> makeExistsDtAndJoin(
     const DerivedTable& super,
     PlanObjectCP firstTable,
     float existsFanout,
@@ -361,27 +593,31 @@ std::pair<DerivedTableP, JoinEdgeP> makeExistsDtAndJoin(
         PlanObjectSet::fromObjects(existsTables));
   }();
 
-  auto optimization = queryCtx()->optimization();
-  auto it = optimization->existenceDts().find(existsDtKey);
-  DerivedTableP existsDt{};
-  if (it == optimization->existenceDts().end()) {
-    existsDt = make<DerivedTable>();
-    existsDt->cname = optimization->newCName("edt");
-    existsDt->import(super, existsDtKey.tables, existsDtKey.firstTable, {}, 1);
+  auto existsDt = [&]() -> DerivedTableCP {
+    auto optimization = queryCtx()->optimization();
+    auto it = optimization->existenceDts().find(existsDtKey);
+    if (it != optimization->existenceDts().end()) {
+      return it->second;
+    }
+
+    auto newExistsDt = make<DerivedTable>();
+    newExistsDt->cname = optimization->newCName("edt");
+    newExistsDt->import(
+        super, existsDtKey.tables, existsDtKey.firstTable, {}, 1);
     for (auto& key : rightKeys) {
       auto* existsColumn = make<Column>(
-          toName(fmt::format("{}.{}", existsDt->cname, key->toString())),
-          existsDt,
+          toName(fmt::format("{}.{}", newExistsDt->cname, key->toString())),
+          newExistsDt,
           key->value());
-      existsDt->columns.push_back(existsColumn);
-      existsDt->exprs.push_back(key);
+      newExistsDt->columns.push_back(existsColumn);
+      newExistsDt->exprs.push_back(key);
     }
-    existsDt->noImportOfExists = true;
-    existsDt->initializePlans();
-    optimization->existenceDts()[existsDtKey] = existsDt;
-  } else {
-    existsDt = it->second;
-  }
+    newExistsDt->noImportOfExists = true;
+    newExistsDt->initializePlans();
+    optimization->existenceDts()[existsDtKey] = newExistsDt;
+
+    return newExistsDt;
+  }();
 
   auto* joinWithDt = JoinEdge::makeExists(firstTable, existsDt);
   joinWithDt->setFanouts(existsFanout, 1);

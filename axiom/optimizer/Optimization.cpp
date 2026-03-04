@@ -3222,7 +3222,7 @@ void Optimization::makeJoins(RelationOpPtr plan, PlanState& state) {
   tryNextJoins(state, nextJoins);
 }
 
-RelationOpPtr Optimization::makeInitialPlan(DerivedTable& dt) {
+RelationOpPtr Optimization::makeInitialPlan(const DerivedTable& dt) {
   const auto key = dt.memoKey();
   PlanState state(*this, &dt);
   RelationOpPtr result;

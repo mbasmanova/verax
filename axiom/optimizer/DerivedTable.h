@@ -104,10 +104,12 @@ struct DerivedTable : public PlanObject {
   /// 'tableSet' are not considered.
   PlanObjectSet tableSet;
 
-  /// Set if this is a set operation. If set, 'children' has the operands.
+  /// Set if this is a union or unionAll. If set, 'children' has at least 2
+  /// operands.
   std::optional<logical_plan::SetOperation> setOp;
 
-  /// Operands if 'this' is a set operation, e.g. union.
+  /// Operands if 'this' is a union or unionAll. Has at least 2 entries when
+  /// 'setOp' is set.
   QGVector<DerivedTable*> children;
 
   /// Single row tables from non-correlated scalar subqueries.
@@ -331,6 +333,9 @@ struct DerivedTable : public PlanObject {
 
   void addJoinedBy(JoinEdgeP join);
 
+  /// Asserts invariants about this DerivedTable.
+  void checkConsistency() const;
+
   /// Returns the memo key for this DT.
   MemoKey memoKey() const;
 
@@ -342,6 +347,9 @@ struct DerivedTable : public PlanObject {
   void distributeConjuncts();
 
  private:
+  // Asserts invariants specific to union / unionAll DerivedTables.
+  void checkSetOpConsistency() const;
+
   // Updates cardinality and column constraints from the plan.
   void updateConstraints(const RelationOp& plan);
 
