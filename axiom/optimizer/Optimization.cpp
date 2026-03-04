@@ -526,7 +526,11 @@ std::vector<JoinCandidate> Optimization::nextJoins(PlanState& state) {
     // There are no join edges. There could still be cross joins.
     state.dt->startTables.forEach([&](PlanObjectCP object) {
       if (!state.isPlaced(object) && state.mayConsiderNext(object)) {
-        candidates.emplace_back(nullptr, object, tableCardinality(object));
+        auto fanout = tableCardinality(object);
+        if (object->is(PlanType::kTableNode)) {
+          fanout *= object->as<BaseTable>()->filterSelectivity;
+        }
+        candidates.emplace_back(nullptr, object, fanout);
       }
     });
 
@@ -3069,7 +3073,8 @@ PlanP unionPlan(
 
 float startingScore(PlanObjectCP table) {
   if (table->is(PlanType::kTableNode)) {
-    return table->as<BaseTable>()->schemaTable->cardinality;
+    auto* baseTable = table->as<BaseTable>();
+    return baseTable->schemaTable->cardinality * baseTable->filterSelectivity;
   }
 
   if (table->is(PlanType::kValuesTableNode)) {
