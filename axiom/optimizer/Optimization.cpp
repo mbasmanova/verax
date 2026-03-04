@@ -2204,15 +2204,9 @@ void Optimization::joinByHash(
         std::move(buildPartKeys)};
   }
 
-  PlanObjectSet empty;
   bool needsShuffle = false;
   auto buildPlan = makePlan(
-      *state.dt,
-      memoKey,
-      forBuild,
-      empty,
-      candidate.existsFanout,
-      needsShuffle);
+      *state.dt, memoKey, forBuild, candidate.existsFanout, needsShuffle);
 
   PlanState buildState(state.optimization, state.dt, buildPlan);
 
@@ -2406,12 +2400,7 @@ void Optimization::joinByHashRight(
 
   bool needsShuffle = false;
   auto probePlan = makePlan(
-      *state.dt,
-      memoKey,
-      std::nullopt,
-      PlanObjectSet{},
-      candidate.existsFanout,
-      needsShuffle);
+      *state.dt, memoKey, std::nullopt, candidate.existsFanout, needsShuffle);
 
   PlanState probeState(state.optimization, state.dt, probePlan);
 
@@ -2559,15 +2548,9 @@ void Optimization::crossJoin(
   MemoKey memoKey =
       MemoKey::create(table, buildColumns, buildTables, candidate.existences);
 
-  PlanObjectSet empty;
   bool needsShuffle = false;
   auto buildPlan = makePlan(
-      *state.dt,
-      memoKey,
-      std::nullopt,
-      empty,
-      candidate.existsFanout,
-      needsShuffle);
+      *state.dt, memoKey, std::nullopt, candidate.existsFanout, needsShuffle);
 
   PlanState buildState(state.optimization, state.dt, buildPlan);
 
@@ -2841,10 +2824,8 @@ RelationOpPtr Optimization::placeSingleRowDt(
       PlanObjectSet::fromObjects(subquery->columns),
       PlanObjectSet::single(subquery));
 
-  PlanObjectSet empty;
   bool needsShuffle = false;
-  auto rightPlan =
-      makePlan(*state.dt, memoKey, std::nullopt, empty, 1, needsShuffle);
+  auto rightPlan = makePlan(*state.dt, memoKey, std::nullopt, 1, needsShuffle);
 
   auto rightOp = rightPlan->op;
 
@@ -2883,8 +2864,7 @@ void Optimization::placeDerivedTable(DerivedTableCP from, PlanState& state) {
       MemoKey::create(from, std::move(dtColumns), PlanObjectSet::single(from));
 
   bool ignore = false;
-  auto plan =
-      makePlan(*state.dt, key, std::nullopt, PlanObjectSet{}, 1, ignore);
+  auto plan = makePlan(*state.dt, key, std::nullopt, 1, ignore);
   state.cost = plan->cost;
 
   // Make plans based on the dt alone as first.
@@ -2919,7 +2899,6 @@ void Optimization::placeDerivedTable(DerivedTableCP from, PlanState& state) {
       *state.dt,
       reducingKey,
       /*distribution=*/std::nullopt,
-      /*boundColumns=*/PlanObjectSet{},
       /*existsFanout=*/result.existenceReduction,
       /*needsShuffle=*/ignore);
   state.cost = plan->cost;
@@ -3279,25 +3258,19 @@ PlanP Optimization::makePlan(
     const DerivedTable& dt,
     const MemoKey& key,
     const std::optional<DesiredDistribution>& distribution,
-    const PlanObjectSet& boundColumns,
     float existsFanout,
     bool& needsShuffle) {
   needsShuffle = false;
   if (key.firstTable->is(PlanType::kDerivedTableNode) &&
       key.firstTable->as<DerivedTable>()->setOp.has_value()) {
-    return makeUnionPlan(
-        dt, key, distribution, boundColumns, existsFanout, needsShuffle);
+    return makeUnionPlan(key, distribution);
   }
   return makeDtPlan(dt, key, distribution, existsFanout, needsShuffle);
 }
 
 PlanP Optimization::makeUnionPlan(
-    const DerivedTable& dt,
     const MemoKey& key,
-    const std::optional<DesiredDistribution>& distribution,
-    const PlanObjectSet& boundColumns,
-    float existsFanout,
-    bool& /*needsShuffle*/) {
+    const std::optional<DesiredDistribution>& distribution) {
   const auto* setDt = key.firstTable->as<DerivedTable>();
 
   RelationOpPtrVector inputs;
@@ -3306,20 +3279,34 @@ PlanP Optimization::makeUnionPlan(
   std::vector<bool> inputNeedsShuffle;
 
   for (auto* inputDt : setDt->children) {
-    MemoKey inputKey = [&]() {
-      PlanObjectSet inputTables = key.tables;
-      inputTables.erase(key.firstTable);
-      inputTables.add(inputDt);
-      return MemoKey::create(
-          inputDt,
-          PlanObjectSet{key.columns},
-          std::move(inputTables),
-          std::vector<PlanObjectSet>{key.existences});
-    }();
+    // Only include the child DT in the input tables. Extra tables from
+    // the parent key (e.g., reducing bushy join tables) reference joins
+    // against the UNION ALL DT which don't exist for individual children.
+    auto inputKey = MemoKey::create(
+        inputDt, PlanObjectSet{key.columns}, PlanObjectSet::single(inputDt));
 
+    PlanP inputPlan;
     bool inputShuffle = false;
-    auto inputPlan = makePlan(
-        dt, inputKey, distribution, boundColumns, existsFanout, inputShuffle);
+    if (inputDt->setOp.has_value()) {
+      // Nested union (e.g., UNION ALL of UNION ALL).
+      // TODO: Flatten nested unions in ToGraph.
+      inputPlan = makeUnionPlan(inputKey, distribution);
+    } else {
+      PlanSet* plans = memo_.find(inputKey);
+      if (plans == nullptr) {
+        auto tmpDt = make<DerivedTable>();
+        tmpDt->cname = newCName("tmp_dt");
+        tmpDt->importUnionChild(inputDt);
+
+        PlanState inner(*this, tmpDt);
+        inner.setTargetExprsForDt(inputKey.columns);
+
+        makeJoins(inner);
+        memo_.insert(inputKey, std::move(inner.plans));
+        plans = memo_.find(inputKey);
+      }
+      inputPlan = plans->best(distribution, inputShuffle);
+    }
     inputPlans.push_back(inputPlan);
     inputStates.emplace_back(*this, setDt, inputPlans.back());
     inputs.push_back(inputPlan->op);

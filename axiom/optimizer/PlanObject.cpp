@@ -61,13 +61,15 @@ void PlanObjectSet::unionColumns(const ExprVector& exprs) {
 
 std::string PlanObjectSet::toString(bool names) const {
   std::stringstream out;
+  bool first = true;
   forEach([&](auto object) {
+    if (!first) {
+      out << ", ";
+    }
+    first = false;
     out << object->id();
     if (names) {
-      out << ": " << (object->isTable() ? cname(object) : object->toString())
-          << " ";
-    } else {
-      out << " ";
+      out << ": " << (object->isTable() ? cname(object) : object->toString());
     }
   });
   return out.str();

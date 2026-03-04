@@ -451,6 +451,7 @@ void DerivedTable::import(
   VELOX_DCHECK(joins.empty());
   VELOX_DCHECK(!superTables.empty());
   VELOX_DCHECK(superTables.contains(primaryTable));
+  VELOX_DCHECK(!super.setOp.has_value(), "Cannot import from a union DT");
 
   copySubset(super, superTables);
 
@@ -470,6 +471,18 @@ void DerivedTable::import(
     }
   }
 
+  linkTablesToJoins();
+  setStartTables();
+}
+
+void DerivedTable::importUnionChild(PlanObjectCP child) {
+  VELOX_DCHECK(tables.empty());
+  VELOX_DCHECK(joins.empty());
+  VELOX_DCHECK(child->is(PlanType::kDerivedTableNode));
+
+  tableSet.add(child);
+  tables = tableSet.toObjects();
+  flattenDt(child->as<DerivedTable>());
   linkTablesToJoins();
   setStartTables();
 }

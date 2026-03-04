@@ -3,6 +3,7 @@
 See also:
 - [Subqueries](docs/Subqueries.md) - How subqueries are implemented in the optimizer
 - [Join Planning](docs/JoinPlanning.md) - Control flow and state management in join order enumeration
+- [Memoization](docs/Memoization.md) - Caching partial plans to avoid redundant work during join enumeration
 - [Filter Selectivity](docs/FilterSelectivity.md) - How filter selectivity is estimated for cost-based optimization
 - [Cardinality Estimation](docs/CardinalityEstimation.md) - How output cardinality is estimated for each operator
 - [Window Functions](docs/WindowFunctions.md) - Window function support and ranking optimizations
