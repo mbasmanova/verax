@@ -61,6 +61,16 @@ Optimization::Optimization(
   root_->initializePlans();
 }
 
+void Optimization::estimateLeafSelectivity(BaseTable& baseTable) {
+  filterUpdated(&baseTable);
+  auto [tableHandle, filters] = toVelox_.leafHandle(baseTable.id());
+  ColumnVector topColumns;
+  folly::F14FastMap<ColumnCP, velox::TypePtr> typeMap;
+  auto scanType = subfieldPushdownScanType(
+      &baseTable, baseTable.columns, topColumns, typeMap);
+  history_.estimateLeafSelectivity(baseTable, tableHandle, filters, scanType);
+}
+
 // static
 PlanAndStats Optimization::toVeloxPlan(
     const logical_plan::LogicalPlanNode& logicalPlan,

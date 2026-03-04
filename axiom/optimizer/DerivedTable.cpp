@@ -317,6 +317,16 @@ MemoKey DerivedTable::memoKey() const {
       this, PlanObjectSet::fromObjects(columns), PlanObjectSet::single(this));
 }
 
+void DerivedTable::estimateBaseTableSelectivity() {
+  auto* optimization = queryCtx()->optimization();
+  for (auto* table : tables) {
+    if (table->is(PlanType::kTableNode)) {
+      auto* baseTable = const_cast<PlanObject*>(table)->as<BaseTable>();
+      optimization->estimateLeafSelectivity(*baseTable);
+    }
+  }
+}
+
 void DerivedTable::initializePlans() {
   // Pre-order (top-down): push conjuncts to children.
   distributeConjuncts();
@@ -344,6 +354,11 @@ void DerivedTable::initializePlans() {
       child->initializePlans();
     }
   }
+
+  // Estimate filter selectivity on base tables after all filters have been
+  // pushed down. This ensures each table is sampled at most once with the
+  // complete filter set.
+  estimateBaseTableSelectivity();
 
   // Post-order (bottom-up): finalize joins and compute plans.
   finalizeJoins();

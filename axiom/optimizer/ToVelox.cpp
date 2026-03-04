@@ -162,11 +162,10 @@ RelationOpPtr addGather(const RelationOpPtr& op) {
 
 } // namespace
 
-void ToVelox::filterUpdated(BaseTableCP table, bool updateSelectivity) {
+void ToVelox::filterUpdated(BaseTableCP table) {
   PlanObjectSet columnSet;
-  for (auto& filter : table->columnFilters) {
-    columnSet.unionSet(filter->columns());
-  }
+  columnSet.unionColumns(table->columnFilters);
+
   auto leafColumns = columnSet.toObjects<Column>();
 
   columnAlteredTypes_.clear();
@@ -218,10 +217,6 @@ void ToVelox::filterUpdated(BaseTableCP table, bool updateSelectivity) {
       rejectedFilters);
 
   setLeafHandle(table->id(), std::move(handle), std::move(rejectedFilters));
-  if (updateSelectivity) {
-    optimization->estimateLeafSelectivity(
-        *const_cast<BaseTable*>(table), scanType);
-  }
 }
 
 velox::core::PlanNodePtr ToVelox::addOutputRenames(
@@ -1114,7 +1109,7 @@ velox::core::PlanNodePtr ToVelox::makeScan(
 
   auto [tableHandle, rejectedFilters] = leafHandle(scan.baseTable->id());
   if (tableHandle == nullptr) {
-    filterUpdated(scan.baseTable, false);
+    filterUpdated(scan.baseTable);
     std::tie(tableHandle, rejectedFilters) = leafHandle(scan.baseTable->id());
     VELOX_CHECK_NOT_NULL(tableHandle, "No table for scan {}", scan.toString());
   }

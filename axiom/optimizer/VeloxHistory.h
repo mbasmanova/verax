@@ -43,10 +43,10 @@ class VeloxHistory : public History {
   /// constraints (cardinality, min, max, trueFraction, nullFraction, nullable)
   /// based on the table's filters. If sampling is enabled and a physical table
   /// is available, samples the table to refine the selectivity estimate.
-  /// Returns true if the estimate is backed by sampling, false if it relies
-  /// solely on statistics-based estimation.
-  bool estimateLeafSelectivity(
+  void estimateLeafSelectivity(
       BaseTable& table,
+      const velox::connector::ConnectorTableHandlePtr& tableHandle,
+      const std::vector<velox::core::TypedExprPtr>& filters,
       const velox::RowTypePtr& scanType) override;
 
   /// Stores observed costs and cardinalities from a query execution. If 'op' is

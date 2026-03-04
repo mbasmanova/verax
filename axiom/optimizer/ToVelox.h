@@ -86,7 +86,9 @@ class ToVelox {
     return fmt::format("{}", nodeCounter_++);
   }
 
-  void filterUpdated(BaseTableCP baseTable, bool updateSelectivity = true);
+  /// Rebuilds the connector table handle for 'baseTable' from its current
+  /// filters and column handles.
+  void filterUpdated(BaseTableCP baseTable);
 
  private:
   // Adds a Velox ProjectNode that renames or reorders output columns per the
