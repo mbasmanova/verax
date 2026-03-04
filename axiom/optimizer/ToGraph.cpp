@@ -1730,6 +1730,21 @@ bool hasSubquery(const lp::ExprPtr& expr) {
   return false;
 }
 
+// Returns true if 'expr' contains a window function at any nesting level.
+bool hasWindow(const lp::ExprPtr& expr) {
+  if (expr->isWindow()) {
+    return true;
+  }
+
+  for (const auto& input : expr->inputs()) {
+    if (hasWindow(input)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 // Splits a logical plan expression on AND into leaf conjuncts.
 void flattenConjuncts(const lp::ExprPtr& expr, std::vector<lp::ExprPtr>& out) {
   if (!expr) {
@@ -3389,7 +3404,8 @@ DerivedTableP ToGraph::makeQueryGraph(const lp::LogicalPlanNode& logicalPlan) {
 void ToGraph::makeFilterQueryGraph(
     const lp::FilterNode& filter,
     uint64_t allowedInDt,
-    bool excludeOuterJoins) {
+    bool excludeOuterJoins,
+    bool excludeWindows) {
   const auto& input = *filter.onlyInput();
 
   if (hasSubquery(filter.predicate())) {
@@ -3404,7 +3420,7 @@ void ToGraph::makeFilterQueryGraph(
     return;
   }
 
-  makeQueryGraph(input, allowedInDt, excludeOuterJoins);
+  makeQueryGraph(input, allowedInDt, excludeOuterJoins, excludeWindows);
 
   // If the current DT has any window function outputs, finalize the DT
   // so that filters are evaluated in the outer DT after the window.
@@ -3420,16 +3436,28 @@ void ToGraph::makeFilterQueryGraph(
 void ToGraph::makeProjectQueryGraph(
     const lp::ProjectNode& project,
     uint64_t allowedInDt,
-    bool excludeOuterJoins) {
-  makeQueryGraph(*project.onlyInput(), allowedInDt, excludeOuterJoins);
+    bool excludeOuterJoins,
+    bool excludeWindows) {
+  // Window functions cannot appear below a join — filtering rows before
+  // the window changes its computation. Wrap the entire project subtree
+  // in a nested DT when windows are excluded (inside join inputs).
+  const bool hasWindow =
+      std::ranges::any_of(project.expressions(), optimizer::hasWindow);
+  if (hasWindow && excludeWindows) {
+    wrapInDt(project);
+    return;
+  }
+
+  makeQueryGraph(
+      *project.onlyInput(), allowedInDt, excludeOuterJoins, excludeWindows);
+
+  // TODO Handle windows wrapped in scalar expressions.
 
   // Check if this project contains window expressions and apply DT
   // boundary rules.
-  bool hasWindow = false;
   bool windowHasPartitionOrOrderKeys = false;
   for (const auto& expr : project.expressions()) {
     if (expr->isWindow()) {
-      hasWindow = true;
       const auto* window = expr->as<lp::WindowExpr>();
       if (!window->partitionKeys().empty() || !window->ordering().empty()) {
         windowHasPartitionOrOrderKeys = true;
@@ -3451,7 +3479,8 @@ void ToGraph::makeProjectQueryGraph(
 void ToGraph::makeQueryGraph(
     const lp::LogicalPlanNode& node,
     uint64_t allowedInDt,
-    bool excludeOuterJoins) {
+    bool excludeOuterJoins,
+    bool excludeWindows) {
   if (!contains(allowedInDt, node.kind())) {
     wrapInDt(node);
     return;
@@ -3477,11 +3506,17 @@ void ToGraph::makeQueryGraph(
       break;
     case lp::NodeKind::kFilter:
       makeFilterQueryGraph(
-          *node.as<lp::FilterNode>(), allowedInDt, excludeOuterJoins);
+          *node.as<lp::FilterNode>(),
+          allowedInDt,
+          excludeOuterJoins,
+          excludeWindows);
       break;
     case lp::NodeKind::kProject:
       makeProjectQueryGraph(
-          *node.as<lp::ProjectNode>(), allowedInDt, excludeOuterJoins);
+          *node.as<lp::ProjectNode>(),
+          allowedInDt,
+          excludeOuterJoins,
+          excludeWindows);
       break;
     case lp::NodeKind::kAggregate: {
       const auto& input = *node.onlyInput();
@@ -3516,7 +3551,11 @@ void ToGraph::makeQueryGraph(
 
       auto [left, right, joinType] = normalizeLogicalJoin(join);
 
-      makeQueryGraph(*left, allowedInDt, /*excludeOuterJoins=*/true);
+      makeQueryGraph(
+          *left,
+          allowedInDt,
+          /*excludeOuterJoins=*/true,
+          /*excludeWindows=*/true);
 
       // For LEFT JOIN with subquery conjuncts, push subquery predicates into
       // the right side. See Subqueries.md.
@@ -3529,7 +3568,11 @@ void ToGraph::makeQueryGraph(
         if (queryCtx()->optimization()->options().syntacticJoinOrder) {
           allowedInDt = deny(allowedInDt, lp::NodeKind::kJoin);
         }
-        makeQueryGraph(*right, allowedInDt, /*excludeOuterJoins=*/true);
+        makeQueryGraph(
+            *right,
+            allowedInDt,
+            /*excludeOuterJoins=*/true,
+            /*excludeWindows=*/true);
       }
 
       translateJoin(left, right, joinType, remainingCondition, join.joinType());

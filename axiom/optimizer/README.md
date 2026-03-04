@@ -425,7 +425,7 @@ DerivedTable dt2 represents EXCEPT as an ANTI join between dt3 and dt5 with a GR
 
 A DerivedTable groups together operations that can be planned as a single unit. The following rules determine what can be combined into the same DT:
 
-1. **Aggregation, Limit, Sort, and Unnest cannot appear below a join.** These operations must complete before their results can be joined. If any of these appear in a join input, they are wrapped in a nested DT. Operations *above* a join are unaffected — for example, `SELECT ... FROM t1 JOIN t2 GROUP BY ...` produces a single DT containing both the join and the aggregation.
+1. **Aggregation, Limit, Sort, Unnest, and Window cannot appear below a join.** These operations must complete before their results can be joined. If any of these appear in a join input, they are wrapped in a nested DT. Operations *above* a join are unaffected — for example, `SELECT ... FROM t1 JOIN t2 GROUP BY ...` produces a single DT containing both the join and the aggregation. Window functions are detected via the `excludeWindows` flag in `makeQueryGraph` since they are embedded inside Project nodes rather than having their own `NodeKind`.
 
 2. **Only inner joins can be flattened together.** Multiple inner joins can be combined into a single DT for join order optimization. Outer joins (LEFT, FULL) cannot be freely reordered, so each outer join and its inputs are wrapped in a nested DT.
 
