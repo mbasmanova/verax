@@ -349,8 +349,20 @@ struct DerivedTable : public PlanObject {
   // Pushes the other tables in 'this' into 'subquery' as existence semijoins
   // below its aggregation boundary. A table can be pushed when the join key
   // maps to a pre-aggregation expression (not an aggregate result) inside the
-  // subquery. Tables that cannot be pushed remain in 'this'.
+  // subquery. If any table cannot be pushed, the entire pushdown is skipped.
   void pushExistencesIntoSubquery(const DerivedTable& subquery);
+
+  // Checks whether all tables in 'this' can be pushed into 'subquery'. Returns
+  // false if pushdown is blocked (LIMIT, ORDER BY, multi-key join, aggregate
+  // key). On success, populates 'validJoins' and 'innerKeys' with the
+  // validated joins and their translated inner keys.
+  bool validatePushdown(
+      const DerivedTable& subquery,
+      JoinEdgeVector& validJoins,
+      ExprVector& innerKeys);
+
+  // Removes 'table' and all tables in 'chain' from 'tables' and 'tableSet'.
+  void removeTables(PlanObjectCP table, const std::vector<PlanObjectCP>& chain);
 
   // Populates tables, tableSet, joinOrder, and joins from 'super', filtered
   // to 'subsetTables'.
@@ -374,9 +386,6 @@ struct DerivedTable : public PlanObject {
 
   // Sets 'dt' to be the complete contents of 'this'.
   void flattenDt(const DerivedTable* dt);
-
-  // Sets 'columns' and 'exprs'.
-  void makeProjection(const ExprVector& exprs);
 
   // Attempts to convert outer joins to less restrictive join types based on
   // filter predicates. A filter that eliminates NULLs on the optional side of

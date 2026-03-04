@@ -249,18 +249,22 @@ void reducingJoinsRecursive(
   }
 }
 
+// Result of searching for bushy reducing joins from a start table.
+struct BushyJoins {
+  PlanObjectSet tables;
+  float reduction;
+};
+
 // Traverses join edges from 'startTable', skipping tables in
 // 'excludedTables', looking for paths whose cumulative fanout is
-// below kReducingPathThreshold. Populates 'reducingTables' with
-// 'startTable' plus any discovered reducing tables. Returns the
-// cumulative reduction (product of leaf fanouts), or 1 if no reducing
-// path is found.
-float findReducingBushyJoins(
+// below kReducingPathThreshold. Returns the set of tables (including
+// 'startTable') and the cumulative reduction, or std::nullopt if no
+// reducing path is found.
+std::optional<BushyJoins> findReducingBushyJoins(
     const PlanState& state,
     PlanObjectCP startTable,
-    PlanObjectSet& reducingTables,
     const PlanObjectSet& excludedTables = {}) {
-  reducingTables = {};
+  PlanObjectSet reducingTables;
   PlanObjectSet visited = state.placed();
   visited.add(startTable);
   visited.unionSet(excludedTables);
@@ -276,7 +280,10 @@ float findReducingBushyJoins(
       visited,
       reducingTables,
       reduction);
-  return reduction;
+  if (reduction < ReducingJoinsMagic::kReducingPathThreshold) {
+    return BushyJoins{std::move(reducingTables), reduction};
+  }
+  return std::nullopt;
 }
 
 // Traverses join edges from 'startTable', skipping tables in
@@ -321,6 +328,54 @@ float findReducingExistences(
   return existenceReduction;
 }
 
+// Result of the two-pass reducing-join discovery: bushy tables and
+// existences, with their respective reductions.
+struct ReducingJoinsResult {
+  std::vector<PlanObjectCP> bushyTables;
+  std::vector<PlanObjectSet> existences;
+  float bushyReduction{1};
+  float existenceReduction{1};
+};
+
+// Runs both reducing-join passes (bushy inner joins + existences) from
+// 'startTable'. Tables in 'excludedTables' are skipped. Bushy joins are
+// only discovered when 'allowBushyJoins' is true.
+ReducingJoinsResult findReducingJoins(
+    const PlanState& state,
+    PlanObjectCP startTable,
+    const PlanObjectSet& excludedTables,
+    bool allowBushyJoins) {
+  ReducingJoinsResult result;
+
+  // Pass 1: bushy reducing inner joins.
+  PlanObjectSet reducingTables;
+  if (allowBushyJoins) {
+    if (auto bushy =
+            findReducingBushyJoins(state, startTable, excludedTables)) {
+      // startTable must be first in bushyTables (see JoinCandidate::tables).
+      result.bushyTables.push_back(startTable);
+      bushy->tables.forEach([&](auto object) {
+        if (object != startTable) {
+          result.bushyTables.push_back(object);
+        }
+      });
+      result.bushyReduction = bushy->reduction;
+      reducingTables = std::move(bushy->tables);
+    }
+  }
+
+  // Pass 2: reducing existences (semi-joins from probe side).
+  if (state.optimization.options().enableReducingExistences &&
+      !state.dt->noImportOfExists) {
+    reducingTables.add(startTable);
+    reducingTables.unionSet(excludedTables);
+    result.existenceReduction = findReducingExistences(
+        state, startTable, reducingTables, result.existences);
+  }
+
+  return result;
+}
+
 bool allowReducingInnerJoins(const JoinCandidate& candidate) {
   if (!candidate.join->isInner()) {
     return false;
@@ -348,72 +403,37 @@ void checkTables(const JoinCandidate& candidate) {
 // Returns a new JoinCandidate with the expanded table list, accumulated
 // existences, and adjusted fanout. Returns std::nullopt if no reduction is
 // found.
-//
-// Two passes are made using reducingJoinsRecursive:
-//   1. Reducing inner joins — DFS from the candidate table over unplaced
-//      neighbors. If the cumulative reduction is below kReducingPathThreshold,
-//      the discovered tables are bundled into a single bushy candidate.
-//   2. Reducing existences — a second DFS that also traverses already-placed
-//      tables and tables found in pass 1. For every reducing leaf whose
-//      cumulative fanout is below kExistenceReductionThreshold, a semi-join
-//      (existence) is recorded so it can later be imported to the build side.
-//
-// Pass 2 is skipped when 'enableReducingExistences' is false or
-// 'noImportOfExists' is set on the derived table.
 std::optional<JoinCandidate> reducingJoins(
     const PlanState& state,
-    const JoinCandidate& candidate,
-    bool enableReducingExistences) {
+    const JoinCandidate& candidate) {
   checkTables(candidate);
 
   VELOX_DCHECK_EQ(candidate.tables.size(), 1);
   auto startTable = candidate.tables[0];
 
-  std::vector<PlanObjectCP> tables;
-  std::vector<PlanObjectSet> existences;
-  float fanout = candidate.fanout;
+  auto result = findReducingJoins(
+      state,
+      startTable,
+      state.dt->importedExistences,
+      /*allowBushyJoins=*/allowReducingInnerJoins(candidate));
 
-  PlanObjectSet reducingTables;
-  if (allowReducingInnerJoins(candidate)) {
-    auto reduction = findReducingBushyJoins(state, startTable, reducingTables);
-    if (reduction < ReducingJoinsMagic::kReducingPathThreshold) {
-      // Start with the candidate's original table, then append the
-      // reducing tables discovered by the DFS.
-      tables.push_back(startTable);
-      reducingTables.forEach([&](auto object) {
-        if (object != startTable) {
-          tables.push_back(object);
-        }
-      });
-      fanout *= reduction;
-    }
-  }
-
-  float existenceReduction = 1;
-  if (enableReducingExistences && !state.dt->noImportOfExists) {
-    // Look for reducing joins that were not added before, also covering already
-    // placed tables. This may copy reducing joins from a probe to the
-    // corresponding build.
-    reducingTables.add(startTable);
-    reducingTables.unionSet(state.dt->importedExistences);
-    existenceReduction =
-        findReducingExistences(state, startTable, reducingTables, existences);
-  }
-
-  if (tables.empty() && existences.empty()) {
-    // No reduction.
+  if (result.bushyTables.empty() && result.existences.empty()) {
     return std::nullopt;
   }
 
-  if (tables.empty()) {
-    // No reducing joins but reducing existences from probe side.
-    tables = candidate.tables;
+  auto fanout = candidate.fanout;
+  if (!result.bushyTables.empty()) {
+    fanout *= result.bushyReduction;
   }
 
   JoinCandidate reducing(candidate.join, startTable, fanout);
-  reducing.tables = std::move(tables);
-  reducing.existences = std::move(existences);
-  reducing.existsFanout = existenceReduction;
+  if (result.bushyTables.empty()) {
+    reducing.tables = candidate.tables;
+  } else {
+    reducing.tables = std::move(result.bushyTables);
+  }
+  reducing.existences = std::move(result.existences);
+  reducing.existsFanout = result.existenceReduction;
   return reducing;
 }
 
@@ -509,8 +529,7 @@ std::vector<JoinCandidate> Optimization::nextJoins(PlanState& state) {
   if (!options_.syntacticJoinOrder && !candidates.empty()) {
     std::vector<JoinCandidate> bushes;
     for (auto& candidate : candidates) {
-      if (auto bush = reducingJoins(
-              state, candidate, options_.enableReducingExistences)) {
+      if (auto bush = reducingJoins(state, candidate)) {
         bushes.push_back(std::move(bush.value()));
         addExtraEdges(state, bushes.back());
       }
@@ -2175,6 +2194,14 @@ void Optimization::joinByHash(
   std::optional<DesiredDistribution> forBuild;
   if (!copartition.empty()) {
     forBuild = {nullptr, copartition};
+  } else if (!partKeys.empty()) {
+    ExprVector buildPartKeys;
+    for (auto i : partKeys) {
+      buildPartKeys.push_back(build.keys[i]);
+    }
+    forBuild = {
+        plan->distribution().distributionType().partitionType(),
+        std::move(buildPartKeys)};
   }
 
   PlanObjectSet empty;
@@ -2848,8 +2875,7 @@ void Optimization::placeDerivedTable(DerivedTableCP from, PlanState& state) {
 
   state.place(from);
 
-  PlanObjectSet dtColumns;
-  dtColumns.unionObjects(from->columns);
+  auto dtColumns = PlanObjectSet::fromObjects(from->columns);
   dtColumns.intersect(state.downstreamColumns());
   state.placeColumns(dtColumns);
 
@@ -2864,24 +2890,40 @@ void Optimization::placeDerivedTable(DerivedTableCP from, PlanState& state) {
   // Make plans based on the dt alone as first.
   makeJoins(plan->op, state);
 
-  // We see if there are reducing joins to import inside the dt.
-  PlanObjectSet reducingTables;
-  auto reduction = findReducingBushyJoins(
-      state, from, reducingTables, state.dt->importedExistences);
+  // Look for reducing joins to import inside the DT. Bushy joins are
+  // only allowed when the primary table is a base table — when it is a
+  // subquery DT, bushy tables would be placed inside the MemoKey alongside
+  // the subquery, but they need to join above the subquery's
+  // aggregation/window boundary. The >= 3 threshold requires at least 2
+  // unplaced tables besides 'from' to form a meaningful bushy build side.
+  auto result = findReducingJoins(
+      state,
+      from,
+      state.dt->importedExistences,
+      /*allowBushyJoins=*/!from->is(PlanType::kDerivedTableNode) &&
+          state.dt->tables.size() >= 3);
 
-  if (reduction < ReducingJoinsMagic::kReducingPathThreshold) {
-    MemoKey reducingKey = MemoKey::create(
-        from, state.downstreamColumns(), std::move(reducingTables));
-    plan = makePlan(
-        *state.dt,
-        reducingKey,
-        /*distribution=*/std::nullopt,
-        /*boundColumns=*/PlanObjectSet{},
-        /*existsFanout=*/1,
-        /*needsShuffle=*/ignore);
-    state.cost = plan->cost;
-    makeJoins(plan->op, state);
+  if (result.bushyTables.empty() && result.existences.empty()) {
+    return;
   }
+
+  auto reducingTables = result.bushyTables.empty()
+      ? PlanObjectSet::single(from)
+      : PlanObjectSet::fromObjects(result.bushyTables);
+  MemoKey reducingKey = MemoKey::create(
+      from,
+      state.downstreamColumns(),
+      std::move(reducingTables),
+      std::move(result.existences));
+  plan = makePlan(
+      *state.dt,
+      reducingKey,
+      /*distribution=*/std::nullopt,
+      /*boundColumns=*/PlanObjectSet{},
+      /*existsFanout=*/result.existenceReduction,
+      /*needsShuffle=*/ignore);
+  state.cost = plan->cost;
+  makeJoins(plan->op, state);
 }
 
 bool Optimization::placeConjuncts(
