@@ -246,13 +246,15 @@ TEST_F(LocalHiveConnectorMetadataTest, basic) {
       /*dataColumns=*/nullptr,
       /*lookupKeys=*/{});
   EXPECT_TRUE(rejectedFilters.empty());
-  std::vector<ColumnStatistics> stats;
   std::vector<common::Subfield> fields;
   auto c0 = common::Subfield::create("c0");
   fields.push_back(std::move(*c0));
   HashStringAllocator allocator(pool_.get());
-  auto pair = layout->sample(
-      tableHandle, 100, {}, layout->rowType(), fields, &allocator, &stats);
+  std::vector<std::unique_ptr<StatisticsBuilder>> statsBuilders;
+  auto* localLayout = dynamic_cast<const LocalHiveTableLayout*>(layout);
+  ASSERT_NE(localLayout, nullptr);
+  auto pair = localLayout->sample(
+      tableHandle, 100, layout->rowType(), fields, &allocator, &statsBuilders);
   EXPECT_EQ(250'000, pair.first);
   EXPECT_EQ(250'000, pair.second);
 }
@@ -290,7 +292,6 @@ TEST_F(LocalHiveConnectorMetadataTest, sampleWithPathFilter) {
       /*lookupKeys=*/{});
   EXPECT_TRUE(rejectedFilters.empty());
 
-  std::vector<ColumnStatistics> stats;
   std::vector<common::Subfield> fields;
   auto c0 = common::Subfield::create("c0");
   fields.push_back(std::move(*c0));
@@ -299,8 +300,9 @@ TEST_F(LocalHiveConnectorMetadataTest, sampleWithPathFilter) {
   // sample() should only sample the file matching $path filter.
   // With 5 files and 50,000 rows per file, filtering to 1 file should
   // result in approximately 50,000 rows sampled (not 250,000).
+  std::vector<std::unique_ptr<StatisticsBuilder>> statsBuilders;
   auto pair = layout->sample(
-      tableHandle, 100, {}, layout->rowType(), fields, &allocator, &stats);
+      tableHandle, 100, layout->rowType(), fields, &allocator, &statsBuilders);
   EXPECT_EQ(kRowsPerVector * kNumVectors, pair.first);
   EXPECT_EQ(kRowsPerVector * kNumVectors, pair.second);
 }

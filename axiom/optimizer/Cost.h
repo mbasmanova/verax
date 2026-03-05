@@ -60,14 +60,11 @@ class History {
   /// Must be called at most once per base table. Calling multiple times
   /// compounds constraint narrowing, producing incorrect estimates.
   ///
-  /// 'tableHandle' and 'filters' are the connector-level representation of
-  /// the table's current filters. 'scanType' is the row type for sampled
-  /// columns.
+  /// 'tableHandle' is the connector-level representation of the table's current
+  /// filters.
   virtual void estimateLeafSelectivity(
       BaseTable& baseTable,
-      const velox::connector::ConnectorTableHandlePtr& tableHandle,
-      const std::vector<velox::core::TypedExprPtr>& filters,
-      const velox::RowTypePtr& scanType) = 0;
+      const velox::connector::ConnectorTableHandlePtr& tableHandle) = 0;
 
   virtual void recordJoinSample(std::string_view key, float lr, float rl) = 0;
 

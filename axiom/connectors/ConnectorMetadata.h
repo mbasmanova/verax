@@ -324,6 +324,18 @@ class DiscretePredicates {
   const std::vector<const Column*> columns_;
 };
 
+/// Result of sampling a table layout. Both fields are non-negative and
+/// numMatched <= numSampled. numSampled may be zero for empty tables; the
+/// caller treats this as selectivity 1.0.
+struct SampleResult {
+  /// Number of rows sampled. Zero for empty tables.
+  int64_t numSampled;
+
+  /// Number of sampled rows matching the filters in 'handle'. At most
+  /// numSampled.
+  int64_t numMatched;
+};
+
 /// Represents a physical manifestation of a table. There is at least
 /// one layout but for tables that have multiple sort orders, partitionings,
 /// indices, column groups, etc. there is a separate layout for each. The layout
@@ -435,7 +447,7 @@ class TableLayout {
   /// True if this layout supports sampling for cardinality estimation. If
   /// false, the optimizer skips sampling and falls back to default estimates.
   virtual bool supportsSampling() const {
-    return true;
+    return false;
   }
 
   /// The columns and their names as a RowType.
@@ -448,24 +460,10 @@ class TableLayout {
     return dynamic_cast<const T*>(this);
   }
 
-  /// Samples 'pct' percent of rows. Applies filters in 'handle' before
-  /// sampling. Returns {count of sampled, count matching filters}.
-  /// 'extraFilters' is a list of conjuncts to evaluate in addition to the
-  /// filters in 'handle'. If 'statistics' is non-nullptr, fills it with
-  /// post-filter statistics for the subfields in 'fields'. When sampling on
-  /// demand, it is usually sufficient to look at a subset of all accessed
-  /// columns, so we specify these instead of defaulting to the columns in
-  /// 'handle'. 'allocator' is used for temporary memory in gathering
-  /// statistics. 'outputType' can specify a cast from map to struct. Filter
-  /// expressions see the 'outputType' and 'subfields' are relative to that.
-  virtual std::pair<int64_t, int64_t> sample(
-      const velox::connector::ConnectorTableHandlePtr& /*handle*/,
-      float /*pct*/,
-      const std::vector<velox::core::TypedExprPtr>& /*extraFilters*/,
-      velox::RowTypePtr /*outputType*/ = nullptr,
-      const std::vector<velox::common::Subfield>& /*fields*/ = {},
-      velox::HashStringAllocator* /*allocator*/ = nullptr,
-      std::vector<ColumnStatistics>* /*statistics*/ = nullptr) const {
+  /// Samples a fraction of rows and applies filters from 'handle'. Returns the
+  /// number of rows sampled and the number matching the filters.
+  virtual SampleResult sample(
+      const velox::connector::ConnectorTableHandlePtr& /*handle*/) const {
     VELOX_UNSUPPORTED("Sampling is not supported for this layout");
   }
 

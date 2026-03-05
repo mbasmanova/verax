@@ -112,14 +112,12 @@ class LocalHiveTableLayout : public HiveTableLayout {
             fileFormat),
         serdeParameters_(std::move(serdeParameters)) {}
 
-  std::pair<int64_t, int64_t> sample(
-      const velox::connector::ConnectorTableHandlePtr& handle,
-      float pct,
-      const std::vector<velox::core::TypedExprPtr>& extraFilters,
-      velox::RowTypePtr outputType,
-      const std::vector<velox::common::Subfield>& fields,
-      velox::HashStringAllocator* allocator,
-      std::vector<ColumnStatistics>* statistics) const override;
+  bool supportsSampling() const override {
+    return true;
+  }
+
+  SampleResult sample(
+      const velox::connector::ConnectorTableHandlePtr& handle) const override;
 
   const std::vector<std::unique_ptr<const FileInfo>>& files() const {
     return files_;

@@ -252,6 +252,14 @@ utilities, do **not** silently work around it. Stop, report the finding, and
 discuss whether to fix the root cause or work around it. Workarounds accumulate
 into technical debt and mask real problems.
 
+### Verify causation before asserting it
+
+When investigating a test failure or regression, do not attribute it to a
+specific commit based on the commit message alone. Verify empirically by
+checking out the parent commit and running the test. Incorrect attribution
+leads to wrong fixes — e.g., updating test expectations when the real problem
+is a bug introduced by a different commit.
+
 ## Directory Structure
 
 | Directory | Description |

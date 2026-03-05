@@ -275,31 +275,11 @@ void LocalHiveConnectorMetadata::readTables(std::string_view path) {
   }
 }
 
-std::pair<int64_t, int64_t> LocalHiveTableLayout::sample(
-    const velox::connector::ConnectorTableHandlePtr& handle,
-    float pct,
-    const std::vector<velox::core::TypedExprPtr>& extraFilters,
-    velox::RowTypePtr scanType,
-    const std::vector<velox::common::Subfield>& fields,
-    velox::HashStringAllocator* allocator,
-    std::vector<ColumnStatistics>* statistics) const {
-  VELOX_CHECK(extraFilters.empty());
-
+SampleResult LocalHiveTableLayout::sample(
+    const velox::connector::ConnectorTableHandlePtr& handle) const {
   std::vector<std::unique_ptr<StatisticsBuilder>> builders;
-  auto result = sample(handle, pct, scanType, fields, allocator, &builders);
-  if (!statistics) {
-    return result;
-  }
-
-  statistics->resize(builders.size());
-  for (size_t i = 0; i < builders.size(); ++i) {
-    ColumnStatistics runnerStats;
-    if (builders[i]) {
-      builders[i]->build(runnerStats);
-    }
-    (*statistics)[i] = std::move(runnerStats);
-  }
-  return result;
+  auto result = sample(handle, 1, rowType(), {}, nullptr, &builders);
+  return SampleResult{result.first, result.second};
 }
 
 std::pair<int64_t, int64_t> LocalHiveTableLayout::sample(
