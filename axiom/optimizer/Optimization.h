@@ -80,7 +80,7 @@ class Optimization {
         baseTable, leafColumns, topColumns, typeMap);
   }
 
-  /// Estimates and sets 'filterSelectivity' on 'baseTable' by sampling the
+  /// Estimates and sets 'filteredCardinality' on 'baseTable' by sampling the
   /// table's layout. Must be called at most once per base table.
   void estimateLeafSelectivity(BaseTable& baseTable);
 

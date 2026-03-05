@@ -90,10 +90,7 @@ std::string tableName(PlanObjectCP table) {
 
 std::string visitBaseTable(const BaseTable& table) {
   std::stringstream out;
-  out << headerLine(
-      table.cname,
-      table.schemaTable->cardinality * table.filterSelectivity,
-      table.columns);
+  out << headerLine(table.cname, table.filteredCardinality, table.columns);
   out << "  table: " << table.schemaTable->name() << std::endl;
   for (const auto& column : table.columns) {
     out << "    " << column->name() << " " << constraintString(column->value())

@@ -122,7 +122,7 @@ TableScan::TableScan(
           TableScan::outputDistribution(table, index, columns),
           table,
           index,
-          /*fanout=*/index->table->cardinality * table->filterSelectivity,
+          /*fanout=*/table->filteredCardinality,
           columns,
           /*lookupKeys=*/{},
           velox::core::JoinType::kInner,
@@ -177,8 +177,7 @@ TableScan::TableScan(
     return;
   }
 
-  const auto cardinality =
-      index->table->cardinality * baseTable->filterSelectivity;
+  const auto cardinality = baseTable->filteredCardinality;
   updateLeafCost(cardinality, columns_, cost_);
 
   // Cap column cardinalities to the output row count.

@@ -528,7 +528,7 @@ std::vector<JoinCandidate> Optimization::nextJoins(PlanState& state) {
       if (!state.isPlaced(object) && state.mayConsiderNext(object)) {
         auto fanout = tableCardinality(object);
         if (object->is(PlanType::kTableNode)) {
-          fanout *= object->as<BaseTable>()->filterSelectivity;
+          fanout = object->as<BaseTable>()->filteredCardinality;
         }
         candidates.emplace_back(nullptr, object, fanout);
       }
@@ -1904,7 +1904,8 @@ void Optimization::joinByIndex(
       return;
     }
 
-    auto fanout = info.scanCardinality * rightTable->filterSelectivity;
+    auto fanout = info.scanCardinality * rightTable->filteredCardinality /
+        rightTable->schemaTable->cardinality;
     if (joinType == velox::core::JoinType::kLeft) {
       fanout = std::max<float>(1, fanout);
     } else if (joinType == velox::core::JoinType::kLeftSemiProject) {
@@ -3074,7 +3075,7 @@ PlanP unionPlan(
 float startingScore(PlanObjectCP table) {
   if (table->is(PlanType::kTableNode)) {
     auto* baseTable = table->as<BaseTable>();
-    return baseTable->schemaTable->cardinality * baseTable->filterSelectivity;
+    return baseTable->filteredCardinality;
   }
 
   if (table->is(PlanType::kValuesTableNode)) {

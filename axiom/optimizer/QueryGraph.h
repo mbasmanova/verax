@@ -980,9 +980,9 @@ struct BaseTable : public PlanObject {
   /// Multicolumn filters dependent on 'this' alone.
   ExprVector filter;
 
-  /// The fraction of base table rows selected by all filters involving this
-  /// table only.
-  float filterSelectivity{1};
+  /// Estimated number of rows after applying all filters involving this table
+  /// only. Initialized to schemaTable->cardinality (no filtering).
+  float filteredCardinality{0};
 
   SubfieldSet controlSubfields;
 
