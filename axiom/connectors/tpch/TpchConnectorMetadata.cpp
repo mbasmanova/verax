@@ -184,19 +184,6 @@ velox::connector::ConnectorTableHandlePtr TpchTableLayout::createTableHandle(
       std::move(filterExpression));
 }
 
-std::pair<int64_t, int64_t> TpchTableLayout::sample(
-    const velox::connector::ConnectorTableHandlePtr& /*handle*/,
-    float /*pct*/,
-    const std::vector<velox::core::TypedExprPtr>& /* extraFilters */,
-    velox::RowTypePtr /* outputType */,
-    const std::vector<velox::common::Subfield>& /* fields */,
-    velox::HashStringAllocator* /* allocator */,
-    std::vector<ColumnStatistics>* /* statistics */) const {
-  // TODO Add support for filter in 'handle' and 'extraFilters'.
-  const auto totalRows = velox::tpch::getRowCount(tpchTable_, scaleFactor_);
-  return std::pair(totalRows, totalRows);
-}
-
 void TpchTable::makeDefaultLayout(TpchConnectorMetadata& metadata) {
   VELOX_CHECK_EQ(0, exportedLayouts_.size());
 

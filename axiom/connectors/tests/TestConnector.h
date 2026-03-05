@@ -25,8 +25,7 @@ namespace facebook::axiom::connector {
 class TestConnector;
 
 /// The Table and Connector objects to which this layout correspond
-/// are specified explicitly at init time. The sample API is
-/// overridden to provide placeholder counts.
+/// are specified explicitly at init time.
 class TestTableLayout : public TableLayout {
  public:
   TestTableLayout(
@@ -56,17 +55,6 @@ class TestTableLayout : public TableLayout {
 
   std::unique_ptr<DiscretePredicates> discretePredicates(
       const std::vector<const Column*>& columns) const override;
-
-  std::pair<int64_t, int64_t> sample(
-      const velox::connector::ConnectorTableHandlePtr&,
-      float,
-      const std::vector<velox::core::TypedExprPtr>&,
-      velox::RowTypePtr,
-      const std::vector<velox::common::Subfield>&,
-      velox::HashStringAllocator*,
-      std::vector<ColumnStatistics>*) const override {
-    return std::make_pair(1'000, 1'000);
-  }
 
   velox::connector::ColumnHandlePtr createColumnHandle(
       const ConnectorSessionPtr& session,

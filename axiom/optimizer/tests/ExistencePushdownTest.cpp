@@ -361,8 +361,7 @@ TEST_F(ExistencePushdownTest, multipleTables) {
   auto plan = toSingleNodePlan(logicalPlan);
 
   auto matcher =
-      matchScan("r")
-          .filter("b < 100")
+      matchScan("s")
           .hashJoin(
               matchScan("u")
                   .hashJoin(
@@ -373,7 +372,8 @@ TEST_F(ExistencePushdownTest, multipleTables) {
                   .singleAggregation({"x", "y"}, {})
                   .build(),
               core::JoinType::kInner)
-          .hashJoin(matchScan("s").build(), core::JoinType::kInner)
+          .hashJoin(
+              matchScan("r").filter("b < 100").build(), core::JoinType::kInner)
           .project()
           .build();
   AXIOM_ASSERT_PLAN(plan, matcher);
@@ -382,8 +382,7 @@ TEST_F(ExistencePushdownTest, multipleTables) {
   auto distributedPlan = planVelox(logicalPlan);
 
   auto distributedMatcher =
-      matchScan("r")
-          .filter("b < 100")
+      matchScan("s")
           .hashJoin(
               matchScan("u")
                   .hashJoin(
@@ -398,7 +397,9 @@ TEST_F(ExistencePushdownTest, multipleTables) {
                   .broadcast()
                   .build(),
               core::JoinType::kInner)
-          .hashJoin(matchScan("s").broadcast().build(), core::JoinType::kInner)
+          .hashJoin(
+              matchScan("r").filter("b < 100").broadcast().build(),
+              core::JoinType::kInner)
           .project()
           .gather()
           .project()

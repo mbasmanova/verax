@@ -63,12 +63,8 @@ Optimization::Optimization(
 
 void Optimization::estimateLeafSelectivity(BaseTable& baseTable) {
   filterUpdated(&baseTable);
-  auto [tableHandle, filters] = toVelox_.leafHandle(baseTable.id());
-  ColumnVector topColumns;
-  folly::F14FastMap<ColumnCP, velox::TypePtr> typeMap;
-  auto scanType = subfieldPushdownScanType(
-      &baseTable, baseTable.columns, topColumns, typeMap);
-  history_.estimateLeafSelectivity(baseTable, tableHandle, filters, scanType);
+  auto tableHandle = toVelox_.leafHandle(baseTable.id()).first;
+  history_.estimateLeafSelectivity(baseTable, tableHandle);
 }
 
 // static
@@ -2810,6 +2806,13 @@ void Optimization::addJoin(
   }
 
   // If one is much better do not try the other.
+  // TODO: NextJoin::isWorse accounts for probe-side shuffle cost but not for
+  // build-side distribution changes. Flipping a LEFT SEMI to RIGHT SEMI can
+  // turn a cheap broadcast into an expensive shuffle (e.g., when the existence
+  // table is small enough to broadcast as LEFT SEMI build, but RIGHT SEMI
+  // forces both sides to be shuffled). Consider build-side distribution cost
+  // in isWorse() or skip the right variant when the left build is
+  // broadcastable.
   if (toTry.size() == 2 && candidate.tables.size() == 1) {
     if (toTry[0].isWorse(toTry[1])) {
       toTry.erase(toTry.begin());

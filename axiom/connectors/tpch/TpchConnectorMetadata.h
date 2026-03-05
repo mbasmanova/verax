@@ -101,14 +101,9 @@ class TpchTableLayout : public TableLayout {
     return scaleFactor_;
   }
 
-  std::pair<int64_t, int64_t> sample(
-      const velox::connector::ConnectorTableHandlePtr& handle,
-      float pct,
-      const std::vector<velox::core::TypedExprPtr>& extraFilters,
-      velox::RowTypePtr outputType = nullptr,
-      const std::vector<velox::common::Subfield>& fields = {},
-      velox::HashStringAllocator* allocator = nullptr,
-      std::vector<ColumnStatistics>* statistics = nullptr) const override;
+  bool supportsSampling() const override {
+    return false;
+  }
 
   velox::connector::ColumnHandlePtr createColumnHandle(
       const ConnectorSessionPtr& session,

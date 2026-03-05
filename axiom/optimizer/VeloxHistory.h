@@ -45,9 +45,7 @@ class VeloxHistory : public History {
   /// is available, samples the table to refine the selectivity estimate.
   void estimateLeafSelectivity(
       BaseTable& table,
-      const velox::connector::ConnectorTableHandlePtr& tableHandle,
-      const std::vector<velox::core::TypedExprPtr>& filters,
-      const velox::RowTypePtr& scanType) override;
+      const velox::connector::ConnectorTableHandlePtr& tableHandle) override;
 
   /// Stores observed costs and cardinalities from a query execution. If 'op' is
   /// non-null, non-leaf costs from non-leaf levels are recorded. Otherwise only

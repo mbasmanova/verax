@@ -107,9 +107,7 @@ std::pair<float, float> VeloxHistory::sampleJoin(JoinEdge* edge) {
 
 void VeloxHistory::estimateLeafSelectivity(
     BaseTable& table,
-    const velox::connector::ConnectorTableHandlePtr& tableHandle,
-    const std::vector<velox::core::TypedExprPtr>& filters,
-    const velox::RowTypePtr& scanType) {
+    const velox::connector::ConnectorTableHandlePtr& tableHandle) {
   auto options = queryCtx()->optimization()->options();
 
   float conjunctsSelectivityValue = 1.0f;
@@ -153,21 +151,21 @@ void VeloxHistory::estimateLeafSelectivity(
   // Determine and cache leaf selectivity for the table handle
   // by sampling the layout for the physical table.
   const uint64_t start = velox::getCurrentTimeMicro();
-  auto sample =
-      runnerTable->layouts()[0]->sample(tableHandle, 1, filters, scanType);
-  VELOX_CHECK_GE(sample.first, 0);
-  VELOX_CHECK_GE(sample.first, sample.second);
+  auto sample = runnerTable->layouts()[0]->sample(tableHandle);
+  VELOX_CHECK_GE(sample.numSampled, 0);
+  VELOX_CHECK_GE(sample.numMatched, 0);
+  VELOX_CHECK_GE(sample.numSampled, sample.numMatched);
 
   float selectivity;
-  if (sample.first == 0) {
+  if (sample.numSampled == 0) {
     selectivity = 1;
   } else {
     // When finding no hits, do not make a selectivity of 0 because this
     // makes /0 or *0 and *0 is 0, which makes any subsequent operations 0
     // regardless of cost. Use Selectivity::kLikelyTrue as a floor for the
     // matching row count to ensure a small but non-zero selectivity.
-    selectivity = std::max<float>(Selectivity::kLikelyTrue, sample.second) /
-        static_cast<float>(sample.first);
+    selectivity = std::max<float>(Selectivity::kLikelyTrue, sample.numMatched) /
+        static_cast<float>(sample.numSampled);
   }
   table.filteredCardinality = table.schemaTable->cardinality * selectivity;
   recordSampledLeafSelectivity(string, selectivity, false);
