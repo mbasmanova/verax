@@ -86,6 +86,7 @@ for the complete guide. Key rules are summarized below.
   - ❌ `// A simple counter.` above `size_t count_{0};`
 - Avoid redundant comments that repeat what the code already says. Comments should explain *why*, not *what*.
 - Use `// TODO: Description.` for future work. Do not include author's username.
+- Do not duplicate comments between `.h` and `.cpp`. Document the function in the header; the implementation should not repeat the same comment. Duplicated comments diverge over time.
 
 ### Naming Conventions
 
@@ -132,8 +133,6 @@ Use conventional commit prefixes with `[Project]` tags:
 [Axiom] feat(optimizer): Add support for window functions
 [Axiom] fix: Validate HAVING column references in SQL parser
 [Axiom] refactor(parser): Extract GroupByPlanner class
-[Axiom] test: Improve LogicalPlanMatcherBuilder API
-[Axiom] docs: Document Query Graphviz CLI
 ```
 
 Format: `[Project] type(scope): Description`
@@ -145,6 +144,14 @@ Format: `[Project] type(scope): Description`
 
 These are frequently violated rules. Check every new or modified line against
 this list before finishing.
+
+### Bug fixes without a failing test first
+
+When fixing a bug, write the test **first**, run it, and confirm it **fails**
+before applying the fix. Then apply the fix and confirm the test passes. If you
+wrote the test after the fix, temporarily revert the fix and verify the test
+fails. A test that passes both with and without the fix proves nothing. This is
+the single most important workflow rule for bug fixes.
 
 ### `///` vs `//` — wrong comment style
 
@@ -164,16 +171,6 @@ namespace {
 // Returns true if 'a' is a prefix of 'b'.
 bool isPrefix(const ExprVector& a, const ExprVector& b);
 } // namespace
-
-// ❌ Wrong — private method is not public API.
- private:
-  /// Recursively replaces window function references.
-  ExprCP resolveWindowRefs(ExprCP expr) const;
-
-// ✅ Correct.
- private:
-  // Recursively replaces window function references.
-  ExprCP resolveWindowRefs(ExprCP expr) const;
 ```
 
 ### One-letter and abbreviated variable names
@@ -186,15 +183,11 @@ variables — must be descriptive.
 // ❌ Wrong — one-letter names and abbreviations.
 bool sameKeys(const ExprVector& a, const ExprVector& b);
 std::sort(groups.begin(), groups.end(), [](const auto& a, const auto& b) { ... });
-for (auto* wf : group.functions) { ... }
-for (size_t gi = 0; gi < groups.size(); ++gi) { ... }
 auto f = [](WindowFunctionCP f) { return f->frame().type == WindowType::kRows; };
 
 // ✅ Correct — descriptive names.
 bool sameKeys(const ExprVector& lhs, const ExprVector& rhs);
 std::sort(groups.begin(), groups.end(), [](const auto& lhs, const auto& rhs) { ... });
-for (auto* windowFunc : group.functions) { ... }
-for (size_t groupIndex = 0; groupIndex < groups.size(); ++groupIndex) { ... }
 auto f = [](WindowFunctionCP func) { return func->frame().type == WindowType::kRows; };
 ```
 
@@ -231,6 +224,33 @@ For optimizer plan tests:
    output into the expected.
 3. Flag suspicious patterns: redundant operators, two gathers with no partition
    keys, extra columns flowing through unnecessary nodes.
+
+### Static analysis instead of CLI experiments
+
+When working on the optimizer, do not spend time reading code and manually
+tracing through logic to predict output (cardinalities, plans, column indices).
+Instead, run a quick CLI experiment:
+
+```bash
+buck run axiom/cli:cli -- --num_workers 1 --num_drivers 1 \
+  --query "EXPLAIN (type optimized) SELECT ..."
+```
+
+Use `--init` with the test connector to create tables with specific data:
+
+```sql
+use test.default;
+create table t as select * from unnest(sequence(1, 100)) as t(a);
+```
+
+A 10-second CLI run is more reliable than 10 minutes of static analysis.
+
+### Working around infrastructure bugs
+
+When you discover a bug in test infrastructure, shared helpers, or common
+utilities, do **not** silently work around it. Stop, report the finding, and
+discuss whether to fix the root cause or work around it. Workarounds accumulate
+into technical debt and mask real problems.
 
 ## Directory Structure
 

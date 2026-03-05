@@ -279,7 +279,7 @@ Selectivity conjunctsSelectivity(
     ConstraintMap& constraints,
     std::span<const ExprCP> conjuncts,
     bool updateConstraints) {
-  // Update constraints for each conjunct before processing.
+  // Derive constraints for all expressions in the conjuncts.
   for (auto* conjunct : conjuncts) {
     exprConstraint(conjunct, constraints, true);
   }

@@ -116,8 +116,16 @@ class CardinalityEstimationTest : public test::QueryTestBase {
       EXPECT_EQ(dtValue.nullFraction, planValue.nullFraction);
       EXPECT_EQ(dtValue.trueFraction, planValue.trueFraction);
       EXPECT_EQ(dtValue.nullable, planValue.nullable);
-      EXPECT_EQ(dtValue.min, planValue.min);
-      EXPECT_EQ(dtValue.max, planValue.max);
+
+      // Compare min/max by value, not pointer identity.
+      EXPECT_EQ(dtValue.min == nullptr, planValue.min == nullptr);
+      if (dtValue.min && planValue.min) {
+        EXPECT_TRUE(dtValue.min->equals(*planValue.min));
+      }
+      EXPECT_EQ(dtValue.max == nullptr, planValue.max == nullptr);
+      if (dtValue.max && planValue.max) {
+        EXPECT_TRUE(dtValue.max->equals(*planValue.max));
+      }
     }
   }
 
@@ -301,6 +309,107 @@ const T& findOp(const RelationOp& op, RelType relType) {
 
   VELOX_FAIL("Cannot find {}: {}", RelTypeName::toName(relType), op.toString());
   folly::assume_unreachable();
+}
+
+// Verifies that a Filter operator scales NDV of non-filtered columns using
+// the coupon collector formula. Without scaling, column 'b' would retain
+// NDV=3 despite the filter reducing output to ~1 row.
+TEST_F(CardinalityEstimationTest, filterOverValues) {
+  verifyPlan(
+      "SELECT * FROM (VALUES (1, 100), (2, 200), (3, 300)) AS t(a, b) "
+      "WHERE a > 1",
+      [](const Plan& plan) {
+        // Plan structure: Project → Filter → Values.
+        const auto& filter = findOp(*plan.op, RelType::kFilter);
+
+        // Filter 'a > 1' uses default selectivity 0.10 (no min/max on VALUES).
+        // 3 * 0.10 = 0.3, clamped to at least 1 row.
+        EXPECT_NEAR(filter.resultCardinality(), 1, kCardinalityTolerance);
+        ASSERT_EQ(filter.columns().size(), 2);
+
+        // Filtered column 'a': conjunctsSelectivity sets NDV. sampledNdv
+        // preserves it since NDV=1 can't decrease further.
+        auto a = findConstraint(filter, 0);
+        ASSERT_TRUE(a.has_value());
+        EXPECT_NEAR(a->cardinality, 1, kCardinalityTolerance);
+
+        // Non-filtered column 'b': sampledNdv(3, 3, 0.10) scales NDV from 3
+        // to 1.
+        auto b = findConstraint(filter, 1);
+        ASSERT_TRUE(b.has_value());
+        EXPECT_NEAR(b->cardinality, 1, kCardinalityTolerance);
+      });
+}
+
+// Verifies that a Filter operator over Unnest scales NDV of non-filtered
+// columns. The replicate column 'b' has high NDV from the base table;
+// after the filter reduces rows, its NDV should scale down.
+TEST_F(CardinalityEstimationTest, filterOverUnnest) {
+  connector_->addTable("t", ROW({"a", "b"}, {ARRAY(BIGINT()), BIGINT()}))
+      ->setStats(
+          1'000,
+          {
+              {"a", {.numDistinct = 100}},
+              {"b", {.numDistinct = 800}},
+          });
+
+  verifyPlan(
+      "SELECT b, e FROM t CROSS JOIN UNNEST(a) AS u(e) WHERE e > 1",
+      [](const Plan& plan) {
+        // Plan structure: Project → Filter → Unnest → TableScan.
+        const auto& filter = findOp(*plan.op, RelType::kFilter);
+
+        // Unnest produces 10,000 rows (1,000 * fanout 10). Filter 'e > 1'
+        // uses default selectivity 0.10 → 1,000 output rows.
+        EXPECT_NEAR(filter.resultCardinality(), 1'000, kCardinalityTolerance);
+
+        // Non-filtered replicate column 'b': NDV=800 from table scan.
+        // sampledNdv(800, 10000, 0.10) ≈ 571.
+        auto b = findConstraint(filter, 0);
+        ASSERT_TRUE(b.has_value());
+        EXPECT_LT(b->cardinality, 800);
+      });
+}
+
+// Verifies that a Filter operator over a join scales NDV of non-filtered
+// columns. The cross-table WHERE clause becomes a Filter on top of the join.
+// Without scaling, column 'c' would retain its join-output NDV even when
+// the filter reduces the row count below the NDV.
+TEST_F(CardinalityEstimationTest, filterOverJoin) {
+  connector_->addTable("t", ROW({"a", "b", "c"}, BIGINT()))
+      ->setStats(
+          1'000,
+          {
+              {"a", {.numDistinct = 100}},
+              {"b", {.min = 1LL, .max = 1'000LL, .numDistinct = 1'000}},
+              {"c", {.numDistinct = 800}},
+          });
+
+  connector_->addTable("u", ROW({"x", "y"}, BIGINT()))
+      ->setStats(
+          10,
+          {
+              {"x", {.numDistinct = 10}},
+              {"y", {.min = 1LL, .max = 1'000LL, .numDistinct = 10}},
+          });
+
+  verifyPlan(
+      "SELECT a, c, x FROM t JOIN u ON a = x WHERE b > y",
+      [](const Plan& plan) {
+        const auto& filter = findOp(*plan.op, RelType::kFilter);
+
+        // Join on a=x: fanout = 10 / max(100, 10) = 0.1.
+        // resultCardinality = 1'000 * 0.1 = 100.
+        // Filter 'b > y': ~50% selectivity → ~50 rows.
+        EXPECT_NEAR(filter.resultCardinality(), 50, kCardinalityTolerance);
+
+        // Column 'c' is not referenced in any filter or join key. After the
+        // join, c NDV was scaled by sampledNdv to ~94. The Filter should
+        // further scale it: sampledNdv(94, 100, 0.5) ≈ 39.
+        auto c = findConstraint(filter, 1);
+        ASSERT_TRUE(c.has_value());
+        EXPECT_LT(c->cardinality, filter.resultCardinality());
+      });
 }
 
 // Verifies cardinality estimation for inner join: output cardinality
