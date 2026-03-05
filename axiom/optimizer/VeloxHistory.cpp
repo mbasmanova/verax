@@ -137,7 +137,8 @@ void VeloxHistory::estimateLeafSelectivity(
 
   if (!options.sampleFilters ||
       !runnerTable->layouts()[0]->supportsSampling()) {
-    table.filterSelectivity = conjunctsSelectivityValue;
+    table.filteredCardinality =
+        table.schemaTable->cardinality * conjunctsSelectivityValue;
     return;
   }
 
@@ -145,7 +146,7 @@ void VeloxHistory::estimateLeafSelectivity(
 
   // Return cached sampled selectivity if available to avoid expensive I/O.
   if (auto cached = findSampledLeafSelectivity(string)) {
-    table.filterSelectivity = cached.value();
+    table.filteredCardinality = table.schemaTable->cardinality * cached.value();
     return;
   }
 
@@ -157,23 +158,23 @@ void VeloxHistory::estimateLeafSelectivity(
   VELOX_CHECK_GE(sample.first, 0);
   VELOX_CHECK_GE(sample.first, sample.second);
 
+  float selectivity;
   if (sample.first == 0) {
-    table.filterSelectivity = 1;
+    selectivity = 1;
   } else {
     // When finding no hits, do not make a selectivity of 0 because this
     // makes /0 or *0 and *0 is 0, which makes any subsequent operations 0
     // regardless of cost. Use Selectivity::kLikelyTrue as a floor for the
     // matching row count to ensure a small but non-zero selectivity.
-    table.filterSelectivity =
-        std::max<float>(Selectivity::kLikelyTrue, sample.second) /
+    selectivity = std::max<float>(Selectivity::kLikelyTrue, sample.second) /
         static_cast<float>(sample.first);
   }
-  recordSampledLeafSelectivity(string, table.filterSelectivity, false);
+  table.filteredCardinality = table.schemaTable->cardinality * selectivity;
+  recordSampledLeafSelectivity(string, selectivity, false);
 
   bool trace = (options.traceFlags & OptimizerOptions::kSample) != 0;
   if (trace) {
-    std::cout << "Sampled scan " << string << "= " << table.filterSelectivity
-              << " time= "
+    std::cout << "Sampled scan " << string << "= " << selectivity << " time= "
               << velox::succinctMicros(velox::getCurrentTimeMicro() - start)
               << std::endl;
   }

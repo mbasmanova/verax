@@ -2073,8 +2073,7 @@ SubfieldProjections makeSubfieldColumns(
     BaseTable& baseTable,
     ColumnCP column,
     const PathSet& paths) {
-  const float cardinality =
-      baseTable.schemaTable->cardinality * baseTable.filterSelectivity;
+  const float cardinality = baseTable.filteredCardinality;
 
   SubfieldProjections projections;
   paths.forEachPath([&](PathCP path) {
@@ -2109,6 +2108,7 @@ void ToGraph::makeBaseTable(const lp::TableScanNode& tableScan) {
   auto* baseTable = make<BaseTable>();
   baseTable->cname = newCName("t");
   baseTable->schemaTable = schemaTable;
+  baseTable->filteredCardinality = schemaTable->cardinality;
   planLeaves_[&tableScan] = baseTable;
 
   auto channels = usedChannels(tableScan);

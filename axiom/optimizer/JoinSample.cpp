@@ -122,6 +122,7 @@ std::shared_ptr<runner::Runner> prepareSampleRunner(
 
   auto base = make<BaseTable>();
   base->schemaTable = table;
+  base->filteredCardinality = table->cardinality;
 
   PlanObjectSet sampleColumns;
   for (auto key : keys) {

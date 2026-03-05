@@ -51,7 +51,7 @@ class History {
   /// execution.
   virtual void recordCost(const RelationOp& op, Cost cost) = 0;
 
-  /// Estimates and sets 'filterSelectivity' on 'baseTable'. Also narrows
+  /// Estimates and sets 'filteredCardinality' on 'baseTable'. Also narrows
   /// column Value constraints (cardinality, min, max, trueFraction,
   /// nullFraction, nullable) based on the table's filters. Estimates
   /// selectivity from column statistics (min/max, NDV, null fraction),

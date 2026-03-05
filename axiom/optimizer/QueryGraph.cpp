@@ -715,7 +715,8 @@ JoinFanout joinFanout(
 
 float baseSelectivity(PlanObjectCP object) {
   if (object->is(PlanType::kTableNode)) {
-    return object->as<BaseTable>()->filterSelectivity;
+    auto* baseTable = object->as<BaseTable>();
+    return baseTable->filteredCardinality / baseTable->schemaTable->cardinality;
   }
   return 1;
 }
