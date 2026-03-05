@@ -27,6 +27,106 @@ These constraints are initially derived from table statistics (e.g., Hive
 metastore) and are progressively refined as the optimizer processes filter
 expressions (see [Constraint Propagation](#constraint-propagation) below).
 
+## API
+
+The primary API is `conjunctsSelectivity` in `Filters.h`:
+
+```cpp
+Selectivity conjunctsSelectivity(
+    ConstraintMap& constraints,
+    std::span<const ExprCP> conjuncts,
+    bool updateConstraints);
+```
+
+**Parameters:**
+
+- `constraints` — A map from expression ID to `Value` (min, max, cardinality,
+  nullFraction). May be empty on entry; the function populates it by seeding
+  each column's `Value` from `expr->value()` via `exprConstraint`. Only columns
+  referenced in the conjuncts are added — columns not mentioned in any filter
+  are absent from the map.
+- `conjuncts` — Filter expressions to evaluate.
+- `updateConstraints` — If true, the function refines constraints in the map
+  based on filter semantics (e.g., `x = 5` narrows x's min/max to 5 and sets
+  cardinality to 1). The refined constraints can then be written back to
+  column `Value` objects for downstream cost estimation.
+
+**Returns:** A `Selectivity` with `trueFraction` (fraction of rows passing the
+filter) and `nullFraction` (fraction producing NULL).
+
+**Algorithm:**
+
+1. Seed constraints from column `Value` objects for all expressions in the
+   conjuncts (via `exprConstraint`).
+2. Classify conjuncts:
+   - Literal-bound comparisons (`x > 5`, `x IN (1, 2)`) are grouped by
+     left-hand-side expression for combined range analysis.
+   - Everything else (column-vs-column comparisons, boolean columns, unknown
+     functions) is evaluated individually.
+3. Compute per-conjunct (or per-group) selectivity.
+4. Combine using the independence assumption: `P(TRUE) = product of all
+   trueFractions`.
+
+**Callers:**
+
+- `VeloxHistory::estimateLeafSelectivity` — called with an empty
+  `ConstraintMap`. After the call, `setBaseTableValues(constraints, table)`
+  writes the refined constraints back to the `BaseTable`'s column `Value`
+  objects. Only columns appearing in the filters are updated; other columns
+  retain their original statistics. The downstream `TableScan` constructor
+  caps all column NDVs at `filteredCardinality`.
+- `Filter::Filter` (RelationOp constructor) — called with constraints
+  inherited from the input operator. After computing selectivity, applies
+  `sampledNdv` (coupon collector formula) to scale all column NDVs based on
+  the combined output row count. See below for why this composes correctly
+  with `conjunctsSelectivity`.
+
+**NDV scaling after `conjunctsSelectivity`:**
+
+`conjunctsSelectivity` refines constraints only for columns referenced in
+filter expressions. Each column's NDV reflects its own filter's value-space
+reduction (e.g., `x = 5` sets NDV=1, `y > 200` scales NDV proportionally
+to the range). It does not account for the combined row reduction from all
+conjuncts.
+
+`Filter::Filter` applies `sampledNdv` on top to account for the row
+reduction. This uses the coupon collector formula: given `d` distinct values
+and `n` output rows, the expected distinct values seen is
+`d × (1 − e^(−n/d))`. It is applied to all columns — both filtered and
+unfiltered — using the combined selectivity as the sampling fraction.
+
+The two operations compose correctly because they address orthogonal
+concerns:
+
+1. `conjunctsSelectivity` narrows the **value space** — how many distinct
+   values are possible given the filter predicates on this column.
+2. `sampledNdv` narrows the **expected count** — how many of those possible
+   values will actually appear given the total number of output rows.
+
+**Example:** Table with 1M rows. Filter: `x = 5 AND y > 200`.
+
+- `x = 5`: selectivity = 0.001. conjunctsSelectivity sets x NDV=1.
+- `y > 200`: selectivity = 0.6. conjunctsSelectivity sets y NDV=300
+  (range reduction from 500).
+- `z`: no filter, NDV=10000 unchanged.
+- Combined selectivity: 0.0006. Output: 600 rows.
+
+After `sampledNdv` with fraction=0.0006:
+- x: `sampledNdv(1, 1M, 0.0006)` = 1. Unchanged — a single value always
+  survives.
+- y: `sampledNdv(300, 1M, 0.0006)` ≈ 259. There are 300 possible y values
+  in [200, 499], but with only 600 output rows we expect to see 259 of them.
+- z: `sampledNdv(10000, 1M, 0.0006)` ≈ 582. Capped from 10000 to a value
+  consistent with 600 output rows.
+
+For column y, there is no double-counting despite the fraction including y's
+own selectivity. The math: each of the 300 distinct y values appears ~2000
+times among the 600K rows satisfying `y > 200`. The `x = 5` filter keeps
+each row with probability 0.001. P(a specific y value has zero surviving
+rows) = (1−0.001)^2000 = e^(−2). Expected distinct = 300 × (1−e^(−2)) ≈ 259.
+This matches `sampledNdv`'s computation: `expectedNumDistincts(600, 300)` =
+300 × (1−e^(−600/300)) = 300 × (1−e^(−2)) ≈ 259.
+
 ## Expression Types
 
 The optimizer recognizes and handles the following expression types:

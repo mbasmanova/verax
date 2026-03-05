@@ -1133,6 +1133,22 @@ double sampledNdv(double ndv, double numRows, double fraction) {
   return expectedNumDistincts(numRows * fraction, ndv);
 }
 
+// Scales NDV of all columns in 'constraints' using the coupon collector
+// formula. Models the effect of keeping a fraction of rows on the number of
+// distinct values seen.
+void scaleCardinalities(
+    ConstraintMap& constraints,
+    float inputCardinality,
+    float fanout) {
+  if (fanout >= 1.0) {
+    return;
+  }
+  for (auto& [columnId, constraint] : constraints) {
+    constraint.cardinality = std::max(
+        1.0, sampledNdv(constraint.cardinality, inputCardinality, fanout));
+  }
+}
+
 // Computes a saturating product using rational saturation function. The
 // result behaves like multiplication when far from max, but asymptotically
 // approaches max as the product increases.
@@ -1504,6 +1520,12 @@ Filter::Filter(RelationOpPtr input, ExprVector exprs)
   // Compute selectivity using filter analysis, updating constraints_
   auto selectivity = conjunctsSelectivity(constraints_, exprs_, true);
   cost_.fanout = selectivity.trueFraction;
+
+  // Scale NDV for all columns using the coupon collector formula.
+  // conjunctsSelectivity narrows the value space for filtered columns;
+  // scaleCardinalities narrows the expected count based on the combined row
+  // reduction. See FilterSelectivity.md for why these compose correctly.
+  scaleCardinalities(constraints_, cost_.inputCardinality, cost_.fanout);
 }
 
 const QGString& Filter::historyKey() const {
@@ -1628,18 +1650,8 @@ OrderBy::OrderBy(
   // rows is equivalent to sampling with fraction s = N/M. Use the coupon
   // collector formula to estimate the number of distinct values surviving the
   // sampling.
-  if (cost_.fanout >= 1.0) {
-    constraints_ = input_->constraints();
-  } else {
-    const auto fraction = cost_.fanout;
-    for (const auto& [columnId, constraint] : input_->constraints()) {
-      Value adjusted = constraint;
-      adjusted.cardinality = std::max(
-          1.0,
-          sampledNdv(constraint.cardinality, cost_.inputCardinality, fraction));
-      constraints_.emplace(columnId, adjusted);
-    }
-  }
+  constraints_ = input_->constraints();
+  scaleCardinalities(constraints_, cost_.inputCardinality, cost_.fanout);
 }
 
 void OrderBy::accept(
@@ -1668,14 +1680,8 @@ Limit::Limit(RelationOpPtr input, int64_t limit, int64_t offset)
   // Limit projects all input columns. Keeping N of M rows is equivalent to
   // sampling with fraction s = N/M. Use the coupon collector formula to
   // estimate the number of distinct values surviving the sampling.
-  const auto fraction = cost_.fanout;
-  for (const auto& [columnId, constraint] : input_->constraints()) {
-    Value adjusted = constraint;
-    adjusted.cardinality = std::max(
-        1.0,
-        sampledNdv(constraint.cardinality, cost_.inputCardinality, fraction));
-    constraints_.emplace(columnId, adjusted);
-  }
+  constraints_ = input_->constraints();
+  scaleCardinalities(constraints_, cost_.inputCardinality, cost_.fanout);
 }
 
 void Limit::accept(
