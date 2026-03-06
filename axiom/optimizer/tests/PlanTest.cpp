@@ -37,6 +37,11 @@ class PlanTest : public test::HiveQueriesTestBase {
 
   static void SetUpTestCase() {
     test::HiveQueriesTestBase::SetUpTestCase();
+    createTpchTables(
+        {velox::tpch::Table::TBL_NATION,
+         velox::tpch::Table::TBL_REGION,
+         velox::tpch::Table::TBL_LINEITEM,
+         velox::tpch::Table::TBL_PART});
     test::registerDfFunctions();
   }
 

@@ -35,17 +35,15 @@ class TpchDataGenerator {
   static int64_t createTable(
       velox::tpch::Table table,
       std::string_view path,
-      double scaleFactor,
-      velox::dwio::common::FileFormat format,
-      velox::common::CompressionKind compression);
+      double scaleFactor = 0.1,
+      velox::dwio::common::FileFormat format =
+          velox::dwio::common::FileFormat::PARQUET,
+      velox::common::CompressionKind compression =
+          velox::common::CompressionKind::CompressionKind_NONE);
 
-  /// Writes all TPC-H tables to 'path' in the specified format.
-  ///
-  /// @param path Directory to write the tables to. Must exist.
-  /// @param scaleFactor TPC-H scale factor (e.g., 0.1, 1, 10). Controls the
-  /// size of the generated data. SF=1 produces ~6M lineitem rows.
-  /// @param format File format to use (PARQUET or DWRF).
+  /// Writes specified TPC-H tables to 'path'.
   static void createTables(
+      const std::vector<velox::tpch::Table>& tables,
       std::string_view path,
       double scaleFactor = 0.1,
       velox::dwio::common::FileFormat format =

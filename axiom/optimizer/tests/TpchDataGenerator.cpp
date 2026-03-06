@@ -105,6 +105,7 @@ int64_t TpchDataGenerator::createTable(
 
 //  static
 void TpchDataGenerator::createTables(
+    const std::vector<velox::tpch::Table>& tables,
     std::string_view path,
     double scaleFactor,
     dwio::common::FileFormat format,
@@ -119,7 +120,7 @@ void TpchDataGenerator::createTables(
 
   LOG(INFO) << "Creating TPC-H tables in " << path;
 
-  for (const auto& table : tpch::tables) {
+  for (const auto& table : tables) {
     const auto tableName = tpch::toTableName(table);
     LOG(INFO) << "Creating TPC-H table " << tableName
               << " scaleFactor=" << scaleFactor;
