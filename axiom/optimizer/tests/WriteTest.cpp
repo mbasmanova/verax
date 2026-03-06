@@ -29,6 +29,12 @@ namespace lp = facebook::axiom::logical_plan;
 
 class WriteTest : public test::HiveQueriesTestBase {
  protected:
+  static void SetUpTestCase() {
+    test::HiveQueriesTestBase::SetUpTestCase();
+    createTpchTables(
+        {velox::tpch::Table::TBL_NATION, velox::tpch::Table::TBL_LINEITEM});
+  }
+
   void SetUp() override {
     HiveQueriesTestBase::SetUp();
     parquet::registerParquetWriterFactory();

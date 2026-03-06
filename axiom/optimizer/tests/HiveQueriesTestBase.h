@@ -21,6 +21,7 @@
 #include "axiom/optimizer/tests/QueryTestBase.h"
 #include "axiom/sql/presto/PrestoParser.h"
 #include "velox/common/testutil/TempDirectoryPath.h"
+#include "velox/tpch/gen/TpchGen.h"
 
 namespace facebook::axiom::optimizer::test {
 
@@ -28,8 +29,10 @@ class HiveQueriesTestBase : public QueryTestBase {
  protected:
   static void SetUpTestCase();
 
-  /// Creates TPC-H tables in a temp directory using PARQUET file format.
   void SetUp() override;
+
+  /// Creates specified TPC-H tables in the temp directory.
+  static void createTpchTables(const std::vector<velox::tpch::Table>& tables);
 
   void TearDown() override;
 

@@ -28,7 +28,6 @@ void HiveQueriesTestBase::SetUpTestCase() {
   test::QueryTestBase::SetUpTestCase();
 
   gTempDirectory = common::testutil::TempDirectoryPath::create();
-  test::TpchDataGenerator::createTables(gTempDirectory->getPath());
 
   LocalRunnerTestBase::localDataPath_ = gTempDirectory->getPath();
   LocalRunnerTestBase::localFileFormat_ =
@@ -50,6 +49,13 @@ void HiveQueriesTestBase::SetUp() {
   connector_ = velox::connector::getConnector(exec::test::kHiveConnectorId);
   metadata_ = dynamic_cast<connector::hive::LocalHiveConnectorMetadata*>(
       connector::ConnectorMetadata::metadata(exec::test::kHiveConnectorId));
+}
+
+// static
+void HiveQueriesTestBase::createTpchTables(
+    const std::vector<velox::tpch::Table>& tables) {
+  VELOX_CHECK(gTempDirectory != nullptr, "SetUpTestCase not called");
+  TpchDataGenerator::createTables(tables, gTempDirectory->getPath());
 }
 
 void HiveQueriesTestBase::TearDown() {

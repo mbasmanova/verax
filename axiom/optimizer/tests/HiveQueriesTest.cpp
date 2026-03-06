@@ -24,7 +24,14 @@ namespace {
 using namespace facebook::velox;
 namespace lp = facebook::axiom::logical_plan;
 
-class HiveQueriesTest : public test::HiveQueriesTestBase {};
+class HiveQueriesTest : public test::HiveQueriesTestBase {
+ protected:
+  static void SetUpTestCase() {
+    test::HiveQueriesTestBase::SetUpTestCase();
+    createTpchTables(
+        {velox::tpch::Table::TBL_NATION, velox::tpch::Table::TBL_REGION});
+  }
+};
 
 TEST_F(HiveQueriesTest, basic) {
   auto planNodeIdGenerator = std::make_shared<core::PlanNodeIdGenerator>();

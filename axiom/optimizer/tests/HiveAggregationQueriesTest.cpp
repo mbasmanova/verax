@@ -27,7 +27,13 @@ namespace {
 using namespace facebook::velox;
 namespace lp = facebook::axiom::logical_plan;
 
-class HiveAggregationQueriesTest : public test::HiveQueriesTestBase {};
+class HiveAggregationQueriesTest : public test::HiveQueriesTestBase {
+ protected:
+  static void SetUpTestCase() {
+    test::HiveQueriesTestBase::SetUpTestCase();
+    createTpchTables({velox::tpch::Table::TBL_NATION});
+  }
+};
 
 TEST_F(HiveAggregationQueriesTest, mask) {
   lp::PlanBuilder::Context context(exec::test::kHiveConnectorId);

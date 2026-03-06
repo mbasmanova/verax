@@ -24,7 +24,13 @@ namespace {
 using namespace facebook::velox;
 namespace lp = facebook::axiom::logical_plan;
 
-class HiveLimitQueriesTest : public test::HiveQueriesTestBase {};
+class HiveLimitQueriesTest : public test::HiveQueriesTestBase {
+ protected:
+  static void SetUpTestCase() {
+    test::HiveQueriesTestBase::SetUpTestCase();
+    createTpchTables({velox::tpch::Table::TBL_NATION});
+  }
+};
 
 // LIMIT 10
 TEST_F(HiveLimitQueriesTest, limit) {

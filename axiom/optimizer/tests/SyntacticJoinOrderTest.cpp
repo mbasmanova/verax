@@ -18,10 +18,8 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include "axiom/logical_plan/PlanBuilder.h"
+#include "axiom/optimizer/tests/HiveQueriesTestBase.h"
 #include "axiom/optimizer/tests/PlanMatcher.h"
-#include "axiom/optimizer/tests/QueryTestBase.h"
-#include "axiom/optimizer/tests/TpchDataGenerator.h"
-#include "axiom/sql/presto/PrestoParser.h"
 #include "velox/exec/tests/utils/PlanBuilder.h"
 
 namespace facebook::axiom::optimizer {
@@ -30,47 +28,21 @@ namespace {
 using namespace facebook::velox;
 namespace lp = facebook::axiom::logical_plan;
 
-class SyntacticJoinOrderTest : public test::QueryTestBase {
+class SyntacticJoinOrderTest : public test::HiveQueriesTestBase {
  protected:
   static void SetUpTestCase() {
-    test::QueryTestBase::SetUpTestCase();
-
-    gTempDirectory = velox::common::testutil::TempDirectoryPath::create();
-
-    auto path = gTempDirectory->getPath();
-    test::TpchDataGenerator::createTables(path);
-
-    LocalRunnerTestBase::localDataPath_ = path;
-    LocalRunnerTestBase::localFileFormat_ =
-        velox::dwio::common::FileFormat::PARQUET;
+    test::HiveQueriesTestBase::SetUpTestCase();
+    createTpchTables(
+        {velox::tpch::Table::TBL_CUSTOMER,
+         velox::tpch::Table::TBL_LINEITEM,
+         velox::tpch::Table::TBL_ORDERS});
   }
-
-  static void TearDownTestCase() {
-    gTempDirectory.reset();
-    test::QueryTestBase::TearDownTestCase();
-  }
-
-  lp::LogicalPlanNodePtr parseSql(const std::string& sql) const {
-    ::axiom::sql::presto::PrestoParser parser{
-        exec::test::kHiveConnectorId, std::nullopt};
-    auto statement = parser.parse(sql);
-    VELOX_CHECK(statement->isSelect());
-
-    return statement->as<::axiom::sql::presto::SelectStatement>()->plan();
-  }
-
-  inline static std::shared_ptr<velox::common::testutil::TempDirectoryPath>
-      gTempDirectory;
 };
 
 TEST_F(SyntacticJoinOrderTest, innerJoins) {
   lp::PlanBuilder::Context context(exec::test::kHiveConnectorId);
 
   optimizerOptions_.sampleJoins = false;
-
-  auto startMatcher = [](const auto& tableName) {
-    return core::PlanMatcherBuilder().tableScan(tableName);
-  };
 
   // Cardinalities after filters:
   //  - lineitem - 32.3K
@@ -79,9 +51,9 @@ TEST_F(SyntacticJoinOrderTest, innerJoins) {
 
   // Optimized join order: lineitem x (orders x customer).
   auto optimizedMatcher =
-      startMatcher("lineitem")
-          .hashJoin(startMatcher("orders")
-                        .hashJoin(startMatcher("customer").build())
+      matchScan("lineitem")
+          .hashJoin(matchScan("orders")
+                        .hashJoin(matchScan("customer").build())
                         .build())
           .aggregation()
           .build();
@@ -159,9 +131,9 @@ TEST_F(SyntacticJoinOrderTest, innerJoins) {
         optimizerOptions_.syntacticJoinOrder = true;
         auto plan = toSingleNodePlan(logicalPlan);
 
-        auto matcher = startMatcher(order[0])
-                           .hashJoin(startMatcher(order[1]).build())
-                           .hashJoin(startMatcher(order[2]).build())
+        auto matcher = matchScan(order[0])
+                           .hashJoin(matchScan(order[1]).build())
+                           .hashJoin(matchScan(order[2]).build())
                            .aggregation()
                            .build();
         AXIOM_ASSERT_PLAN(plan, matcher);
@@ -217,13 +189,12 @@ TEST_F(SyntacticJoinOrderTest, innerJoins) {
         optimizerOptions_.syntacticJoinOrder = true;
         auto plan = toSingleNodePlan(logicalPlan);
 
-        auto matcher =
-            startMatcher(order[0])
-                .hashJoin(startMatcher(order[1])
-                              .hashJoin(startMatcher(order[2]).build())
-                              .build())
-                .aggregation()
-                .build();
+        auto matcher = matchScan(order[0])
+                           .hashJoin(matchScan(order[1])
+                                         .hashJoin(matchScan(order[2]).build())
+                                         .build())
+                           .aggregation()
+                           .build();
         AXIOM_ASSERT_PLAN(plan, matcher);
 
         checkSame(logicalPlan, referenceResults);
@@ -235,14 +206,10 @@ TEST_F(SyntacticJoinOrderTest, innerJoins) {
 TEST_F(SyntacticJoinOrderTest, outerJoins) {
   optimizerOptions_.sampleJoins = false;
 
-  auto startMatcher = [](const auto& tableName) {
-    return core::PlanMatcherBuilder().tableScan(tableName);
-  };
-
   // Optimized join order: lineitem x orders.
   auto optimizedMatcher =
-      startMatcher("lineitem")
-          .hashJoin(startMatcher("orders").build(), core::JoinType::kLeft)
+      matchScan("lineitem")
+          .hashJoin(matchScan("orders").build(), core::JoinType::kLeft)
           .aggregation()
           .build();
 
@@ -271,7 +238,7 @@ TEST_F(SyntacticJoinOrderTest, outerJoins) {
 
   // Syntactic join order: a LEFT JOIN b.
   {
-    auto logicalPlan = parseSql(
+    auto logicalPlan = parseSelect(
         "SELECT count(*) FROM lineitem LEFT JOIN orders ON "
         "l_orderkey = o_orderkey and l_returnflag = 'R'");
 
@@ -294,7 +261,7 @@ TEST_F(SyntacticJoinOrderTest, outerJoins) {
 
   // Syntactic join order: b RIGHT JOIN a.
   {
-    auto logicalPlan = parseSql(
+    auto logicalPlan = parseSelect(
         "SELECT count(*) FROM orders RIGHT JOIN lineitem ON "
         "l_orderkey = o_orderkey and l_returnflag = 'R'");
 
@@ -311,9 +278,8 @@ TEST_F(SyntacticJoinOrderTest, outerJoins) {
       auto plan = toSingleNodePlan(logicalPlan);
 
       auto matcher =
-          startMatcher("orders")
-              .hashJoin(
-                  startMatcher("lineitem").build(), core::JoinType::kRight)
+          matchScan("orders")
+              .hashJoin(matchScan("lineitem").build(), core::JoinType::kRight)
               .aggregation()
               .build();
       AXIOM_ASSERT_PLAN(plan, matcher);

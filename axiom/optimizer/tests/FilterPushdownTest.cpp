@@ -25,7 +25,16 @@ namespace {
 using namespace velox;
 namespace lp = facebook::axiom::logical_plan;
 
-class FilterPushdownTest : public test::HiveQueriesTestBase {};
+class FilterPushdownTest : public test::HiveQueriesTestBase {
+ protected:
+  static void SetUpTestCase() {
+    test::HiveQueriesTestBase::SetUpTestCase();
+    createTpchTables(
+        {velox::tpch::Table::TBL_NATION,
+         velox::tpch::Table::TBL_REGION,
+         velox::tpch::Table::TBL_ORDERS});
+  }
+};
 
 TEST_F(FilterPushdownTest, throughAggregation) {
   auto logicalPlan = lp::PlanBuilder()

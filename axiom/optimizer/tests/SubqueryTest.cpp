@@ -30,6 +30,16 @@ class SubqueryTest : public test::HiveQueriesTestBase {
  protected:
   static constexpr auto kTestConnectorId = "test";
 
+  static void SetUpTestCase() {
+    test::HiveQueriesTestBase::SetUpTestCase();
+    createTpchTables(
+        {velox::tpch::Table::TBL_NATION,
+         velox::tpch::Table::TBL_REGION,
+         velox::tpch::Table::TBL_CUSTOMER,
+         velox::tpch::Table::TBL_ORDERS,
+         velox::tpch::Table::TBL_SUPPLIER});
+  }
+
   void SetUp() override {
     test::HiveQueriesTestBase::SetUp();
 
