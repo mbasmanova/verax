@@ -76,6 +76,10 @@ class FiltersTest : public test::HiveQueriesTestBase {
  protected:
   static void SetUpTestCase() {
     HiveQueriesTestBase::SetUpTestCase();
+    createTpchTables(
+        {velox::tpch::Table::TBL_NATION,
+         velox::tpch::Table::TBL_LINEITEM,
+         velox::tpch::Table::TBL_ORDERS});
   }
 
   static void TearDownTestCase() {

@@ -38,6 +38,7 @@ class TpchPlanTest : public virtual test::HiveQueriesTestBase {
  protected:
   static void SetUpTestCase() {
     test::HiveQueriesTestBase::SetUpTestCase();
+    createTpchTables(velox::tpch::tables);
   }
 
   static void TearDownTestCase() {
