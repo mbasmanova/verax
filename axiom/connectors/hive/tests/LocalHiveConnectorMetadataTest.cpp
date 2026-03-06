@@ -253,8 +253,8 @@ TEST_F(LocalHiveConnectorMetadataTest, basic) {
   std::vector<std::unique_ptr<StatisticsBuilder>> statsBuilders;
   auto* localLayout = dynamic_cast<const LocalHiveTableLayout*>(layout);
   ASSERT_NE(localLayout, nullptr);
-  auto pair = localLayout->sample(
-      tableHandle, 100, layout->rowType(), fields, &allocator, &statsBuilders);
+  auto pair =
+      localLayout->sample(tableHandle, 100, fields, &allocator, &statsBuilders);
   EXPECT_EQ(250'000, pair.first);
   EXPECT_EQ(250'000, pair.second);
 }
@@ -301,8 +301,8 @@ TEST_F(LocalHiveConnectorMetadataTest, sampleWithPathFilter) {
   // With 5 files and 50,000 rows per file, filtering to 1 file should
   // result in approximately 50,000 rows sampled (not 250,000).
   std::vector<std::unique_ptr<StatisticsBuilder>> statsBuilders;
-  auto pair = layout->sample(
-      tableHandle, 100, layout->rowType(), fields, &allocator, &statsBuilders);
+  auto pair =
+      layout->sample(tableHandle, 100, fields, &allocator, &statsBuilders);
   EXPECT_EQ(kRowsPerVector * kNumVectors, pair.first);
   EXPECT_EQ(kRowsPerVector * kNumVectors, pair.second);
 }

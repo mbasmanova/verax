@@ -21,13 +21,16 @@
 #include <folly/json.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <cmath>
 #include "axiom/connectors/hive/HiveMetadataConfig.h"
 #include "axiom/optimizer/JsonUtil.h"
 #include "velox/connectors/Connector.h"
 #include "velox/connectors/hive/HiveConnectorSplit.h"
+#include "velox/connectors/hive/HiveConnectorUtil.h"
 #include "velox/dwio/common/BufferedInput.h"
 #include "velox/dwio/common/Reader.h"
 #include "velox/dwio/common/ReaderFactory.h"
+#include "velox/dwio/common/Statistics.h"
 #include "velox/expression/Expr.h"
 #include "velox/type/fbhive/HiveTypeParser.h"
 #include "velox/type/fbhive/HiveTypeSerializer.h"
@@ -78,6 +81,195 @@ std::vector<const FileInfo*> filterFilesByTableHandle(
   }
   return selectedFiles;
 }
+
+// Tests a partition key value against a filter. 'value' is the string from the
+// directory name (e.g. "2" from "k=2"). 'type' determines how to convert the
+// string before testing.
+bool testPartitionValue(
+    const velox::common::Filter& filter,
+    const std::optional<std::string>& value,
+    const velox::Type& type) {
+  if (!value.has_value()) {
+    return filter.testNull();
+  }
+
+  switch (type.kind()) {
+    case velox::TypeKind::BOOLEAN:
+      return filter.testBool(folly::to<bool>(value.value()));
+    case velox::TypeKind::TINYINT:
+    case velox::TypeKind::SMALLINT:
+    case velox::TypeKind::INTEGER:
+    case velox::TypeKind::BIGINT:
+      return filter.testInt64(folly::to<int64_t>(value.value()));
+    case velox::TypeKind::VARCHAR:
+      return filter.testBytes(
+          value.value().c_str(), static_cast<int32_t>(value.value().size()));
+    default:
+      VELOX_UNREACHABLE(
+          "Unsupported partition column type: {}", type.toString());
+  }
+}
+
+// Represents a filter extracted from a filter conjunct that can be evaluated
+// from file metadata (partition keys, $path, $bucket).
+struct MetadataFilter {
+  std::string columnName;
+  std::shared_ptr<velox::common::Filter> filter;
+
+  // Partition column for partition key filters. Null for $path and $bucket.
+  const Column* column{nullptr};
+};
+
+// Tests whether a file passes a metadata filter.
+bool testFileMetadata(
+    const FileInfo& file,
+    const MetadataFilter& metadataFilter) {
+  if (metadataFilter.columnName == HiveTable::kPath) {
+    return metadataFilter.filter->testBytes(
+        file.path.c_str(), static_cast<int32_t>(file.path.size()));
+  }
+
+  if (metadataFilter.columnName == HiveTable::kBucket) {
+    VELOX_CHECK(file.bucketNumber.has_value());
+    return metadataFilter.filter->testInt64(file.bucketNumber.value());
+  }
+
+  // Partition column filter.
+  VELOX_CHECK_NOT_NULL(metadataFilter.column);
+  auto partitionIt = file.partitionKeys.find(metadataFilter.columnName);
+  VELOX_CHECK(
+      partitionIt != file.partitionKeys.end(),
+      "Partition key not found in file {}: {}",
+      file.path,
+      metadataFilter.columnName);
+  return testPartitionValue(
+      *metadataFilter.filter,
+      partitionIt->second,
+      *metadataFilter.column->type());
+}
+
+// Classifies filter conjuncts by converting each to subfieldFilters. Conjuncts
+// fully converted to subfieldFilters on metadata-evaluable columns (partition
+// keys, $path, $bucket) are collected in 'metadataFilters'. All others are
+// reported in 'rejectedFilterIndices'.
+void classifyFilterConjuncts(
+    const std::vector<velox::core::TypedExprPtr>& filterConjuncts,
+    velox::core::ExpressionEvaluator& evaluator,
+    const folly::F14FastMap<std::string, const Column*>& partitionColumnsByName,
+    std::vector<MetadataFilter>& metadataFilters,
+    std::vector<int32_t>& rejectedFilterIndices) {
+  for (int32_t i = 0; i < filterConjuncts.size(); ++i) {
+    velox::common::SubfieldFilters subfieldFilters;
+    double sampleRate = 1.0;
+    auto remaining = velox::connector::hive::extractFiltersFromRemainingFilter(
+        filterConjuncts[i], &evaluator, subfieldFilters, sampleRate);
+
+    if (remaining != nullptr) {
+      rejectedFilterIndices.push_back(i);
+      continue;
+    }
+
+    bool allMetadata = true;
+    for (auto& [subfield, filter] : subfieldFilters) {
+      const auto& name = subfield.baseName();
+      if (!partitionColumnsByName.count(name) && name != HiveTable::kPath &&
+          name != HiveTable::kBucket) {
+        allMetadata = false;
+        break;
+      }
+    }
+
+    if (!allMetadata) {
+      rejectedFilterIndices.push_back(i);
+      continue;
+    }
+
+    for (auto& [subfield, filter] : subfieldFilters) {
+      const auto& name = subfield.baseName();
+      auto it = partitionColumnsByName.find(name);
+      metadataFilters.emplace_back(
+          MetadataFilter{
+              name,
+              std::move(filter),
+              it != partitionColumnsByName.end() ? it->second : nullptr});
+    }
+  }
+}
+
+// Estimates the number of distinct values expected in a random sample of
+// 'sampleRows' rows from a population with 'ndv' distinct values. Uses the
+// coupon collector formula: ndv * (1 - (1 - 1/ndv)^sampleRows).
+// TODO: Store per-file HyperLogLog sketches in a sidecar metadata file so
+// that per-file NDVs can be computed and merged accurately after partition
+// pruning.
+int64_t estimateNdv(int64_t ndv, uint64_t sampleRows, uint64_t totalRows) {
+  if (sampleRows == 0 || ndv <= 0) {
+    return 0;
+  }
+  if (sampleRows >= totalRows) {
+    return ndv;
+  }
+  auto d = static_cast<double>(ndv);
+  auto estimated = d * (1.0 - std::pow(1.0 - 1.0 / d, sampleRows));
+  return std::max<int64_t>(1, static_cast<int64_t>(estimated));
+}
+
+// Aggregates per-column stats across selected files. Columns missing from a
+// file's columnStats are treated as all-null (numValues = 0, no min/max). This
+// handles schema evolution where a column was added after the file was written.
+std::vector<ColumnStatistics> aggregateColumnStats(
+    const std::vector<const FileInfo*>& files,
+    const std::vector<const Column*>& columns,
+    uint64_t totalRows,
+    uint64_t totalTableRows) {
+  std::vector<ColumnStatistics> result;
+  result.reserve(columns.size());
+
+  for (const auto* column : columns) {
+    ColumnStatistics aggregated;
+    int64_t totalNumValues{0};
+
+    for (const auto* file : files) {
+      auto it = file->columnStats.find(column->name());
+      if (it == file->columnStats.end()) {
+        // Column not in this file (schema evolution). All rows are null.
+        continue;
+      }
+      const auto& fileStats = it->second;
+      totalNumValues += fileStats.numValues;
+
+      if (fileStats.min.has_value()) {
+        if (!aggregated.min.has_value() ||
+            fileStats.min.value() < aggregated.min.value()) {
+          aggregated.min = fileStats.min;
+        }
+      }
+      if (fileStats.max.has_value()) {
+        if (!aggregated.max.has_value() ||
+            aggregated.max.value() < fileStats.max.value()) {
+          aggregated.max = fileStats.max;
+        }
+      }
+    }
+
+    aggregated.numValues = totalNumValues;
+    if (totalRows > 0) {
+      aggregated.nullPct = 100.0f *
+          static_cast<float>(totalRows - totalNumValues) /
+          static_cast<float>(totalRows);
+    }
+
+    if (column->stats() && column->stats()->numDistinct.has_value()) {
+      aggregated.numDistinct = estimateNdv(
+          column->stats()->numDistinct.value(), totalRows, totalTableRows);
+    }
+
+    result.push_back(std::move(aggregated));
+  }
+
+  return result;
+}
+
 } // namespace
 
 std::shared_ptr<SplitSource> LocalHiveSplitManager::getSplitSource(
@@ -278,14 +470,13 @@ void LocalHiveConnectorMetadata::readTables(std::string_view path) {
 SampleResult LocalHiveTableLayout::sample(
     const velox::connector::ConnectorTableHandlePtr& handle) const {
   std::vector<std::unique_ptr<StatisticsBuilder>> builders;
-  auto result = sample(handle, 1, rowType(), {}, nullptr, &builders);
+  auto result = sample(handle, 1, {}, nullptr, &builders);
   return SampleResult{result.first, result.second};
 }
 
 std::pair<int64_t, int64_t> LocalHiveTableLayout::sample(
     const velox::connector::ConnectorTableHandlePtr& tableHandle,
     float pct,
-    velox::RowTypePtr /*scanType*/,
     const std::vector<velox::common::Subfield>& fields,
     velox::HashStringAllocator* allocator,
     std::vector<std::unique_ptr<StatisticsBuilder>>* statsBuilders) const {
@@ -365,6 +556,83 @@ std::pair<int64_t, int64_t> LocalHiveTableLayout::sample(
     *statsBuilders = std::move(builders);
   }
   return std::pair(scannedRows, passingRows);
+}
+
+folly::coro::Task<std::optional<FilteredTableStats>>
+LocalHiveTableLayout::co_estimateStats(
+    ConnectorSessionPtr /*session*/,
+    velox::connector::ConnectorTableHandlePtr /*tableHandle*/,
+    std::vector<std::string> columns,
+    std::vector<velox::core::TypedExprPtr> filterConjuncts) const {
+  // Build a map of partition columns for filter classification.
+  folly::F14FastMap<std::string, const Column*> partitionColumnsByName;
+  for (const auto* column : hivePartitionColumns()) {
+    partitionColumnsByName[column->name()] = column;
+  }
+
+  // Classify filter conjuncts into metadata-evaluable and rejected.
+  auto* connectorMetadata = ConnectorMetadata::metadata(connector());
+  auto* localHiveMetadata =
+      dynamic_cast<const LocalHiveConnectorMetadata*>(connectorMetadata);
+  auto& evaluator =
+      *localHiveMetadata->connectorQueryCtx()->expressionEvaluator();
+
+  std::vector<MetadataFilter> metadataFilters;
+  std::vector<int32_t> rejectedFilterIndices;
+  classifyFilterConjuncts(
+      filterConjuncts,
+      evaluator,
+      partitionColumnsByName,
+      metadataFilters,
+      rejectedFilterIndices);
+
+  // Single pass over files: apply all metadata filters to each file. Return
+  // nullopt if any file lacks row count metadata (e.g. text/CSV format),
+  // falling back to sampling-based estimation.
+  std::vector<const FileInfo*> selectedFiles;
+  for (const auto& file : files_) {
+    if (!file->numRows.has_value()) {
+      co_return std::nullopt;
+    }
+    bool pass = true;
+    for (const auto& metadataFilter : metadataFilters) {
+      if (!testFileMetadata(*file, metadataFilter)) {
+        pass = false;
+        break;
+      }
+    }
+    if (!pass) {
+      continue;
+    }
+    selectedFiles.push_back(file.get());
+  }
+
+  // Aggregate row counts.
+  uint64_t totalRows{0};
+  for (const auto* file : selectedFiles) {
+    VELOX_CHECK(file->numRows.has_value());
+    totalRows += file->numRows.value();
+  }
+
+  // Resolve requested column names to Column objects.
+  std::vector<const Column*> requestedColumns;
+  requestedColumns.reserve(columns.size());
+  for (const auto& columnName : columns) {
+    const auto* column = table().findColumn(columnName);
+    VELOX_CHECK_NOT_NULL(column, "Column not found: {}", columnName);
+    requestedColumns.push_back(column);
+  }
+
+  // Aggregate per-file column stats. Skip for Parquet because its
+  // Reader::columnStatistics() is not implemented and returns nullptr.
+  std::vector<ColumnStatistics> columnStats;
+  if (fileFormat() != velox::dwio::common::FileFormat::PARQUET) {
+    columnStats = aggregateColumnStats(
+        selectedFiles, requestedColumns, totalRows, table().numRows());
+  }
+
+  co_return FilteredTableStats{
+      totalRows, std::move(columnStats), std::move(rejectedFilterIndices)};
 }
 
 void LocalTable::makeDefaultLayout(
@@ -909,13 +1177,20 @@ void LocalHiveConnectorMetadata::loadTable(
       table->incrementNumRows(rows.value());
     }
 
+    // Populate per-file stats from file header metadata. Safe to cast away
+    // const since the FileInfo was just created by listFiles and has not been
+    // shared yet.
+    auto* mutableInfo = const_cast<FileInfo*>(info.get());
+    mutableInfo->numRows = rows;
+
     for (auto i = 0; i < fileType->size(); ++i) {
       const auto& name = fileType->nameOf(i);
 
       const auto* column = table->findColumn(name);
       VELOX_CHECK_NOT_NULL(column, "Column not found: {}", name);
 
-      if (auto readerStats = reader->columnStatistics(i)) {
+      // Node ID 0 is the root RowType; top-level columns start at 1.
+      if (auto readerStats = reader->columnStatistics(i + 1)) {
         auto* stats = const_cast<Column*>(column)->mutableStats();
         stats->numValues += readerStats->getNumberOfValues().value_or(0);
 
@@ -924,6 +1199,45 @@ void LocalHiveConnectorMetadata::loadTable(
           stats->nullPct =
               100 * (rows.value() - numValues.value()) / rows.value();
         }
+
+        // Extract per-file column stats.
+        ColumnStatistics fileColStats;
+        fileColStats.numValues = numValues.value_or(0);
+
+        if (auto* intStats = dynamic_cast<
+                const velox::dwio::common::IntegerColumnStatistics*>(
+                readerStats.get())) {
+          if (intStats->getMinimum().has_value()) {
+            fileColStats.min = velox::Variant(intStats->getMinimum().value());
+          }
+          if (intStats->getMaximum().has_value()) {
+            fileColStats.max = velox::Variant(intStats->getMaximum().value());
+          }
+        } else if (
+            auto* dblStats = dynamic_cast<
+                const velox::dwio::common::DoubleColumnStatistics*>(
+                readerStats.get())) {
+          if (dblStats->getMinimum().has_value()) {
+            fileColStats.min = velox::Variant(dblStats->getMinimum().value());
+          }
+          if (dblStats->getMaximum().has_value()) {
+            fileColStats.max = velox::Variant(dblStats->getMaximum().value());
+          }
+        } else if (
+            auto* strStats = dynamic_cast<
+                const velox::dwio::common::StringColumnStatistics*>(
+                readerStats.get())) {
+          if (strStats->getMinimum().has_value()) {
+            fileColStats.min = velox::Variant::create<velox::TypeKind::VARCHAR>(
+                strStats->getMinimum().value());
+          }
+          if (strStats->getMaximum().has_value()) {
+            fileColStats.max = velox::Variant::create<velox::TypeKind::VARCHAR>(
+                strStats->getMaximum().value());
+          }
+        }
+
+        mutableInfo->columnStats[name] = std::move(fileColStats);
       }
     }
   }
@@ -994,40 +1308,38 @@ LocalTable::LocalTable(
 void LocalTable::sampleNumDistincts(
     float samplePct,
     velox::memory::MemoryPool* pool) {
+  std::vector<velox::connector::ColumnHandlePtr> columns;
+  columns.reserve(type()->size());
+
   std::vector<velox::common::Subfield> fields;
   fields.reserve(type()->size());
-  for (auto i = 0; i < type()->size(); ++i) {
-    fields.emplace_back(type()->nameOf(i));
+
+  auto* layout = layouts_[0].get();
+  for (const auto& name : type()->names()) {
+    columns.push_back(layout->createColumnHandle(
+        /*session=*/nullptr, name));
+    fields.emplace_back(name);
   }
 
   // Sample the table. Adjust distinct values according to the samples.
   auto allocator = std::make_unique<velox::HashStringAllocator>(pool);
-  auto* layout = layouts_[0].get();
 
   auto* metadata = ConnectorMetadata::metadata(layout->connector());
-
-  std::vector<velox::connector::ColumnHandlePtr> columns;
-  columns.reserve(type()->size());
-  for (auto i = 0; i < type()->size(); ++i) {
-    columns.push_back(layout->createColumnHandle(
-        /*session=*/nullptr, type()->nameOf(i)));
-  }
-
   auto* localHiveMetadata =
       dynamic_cast<const LocalHiveConnectorMetadata*>(metadata);
   auto& evaluator =
       *localHiveMetadata->connectorQueryCtx()->expressionEvaluator();
 
-  std::vector<velox::core::TypedExprPtr> ignore;
+  std::vector<velox::core::TypedExprPtr> rejectedFilters;
   auto handle = layout->createTableHandle(
-      /*session=*/nullptr, columns, evaluator, {}, ignore);
+      /*session=*/nullptr, columns, evaluator, /*filters=*/{}, rejectedFilters);
 
   auto* localLayout = dynamic_cast<LocalHiveTableLayout*>(layout);
   VELOX_CHECK_NOT_NULL(localLayout, "Expecting a local hive layout");
 
   std::vector<std::unique_ptr<StatisticsBuilder>> statsBuilders;
   auto [sampled, passed] = localLayout->sample(
-      handle, samplePct, type(), fields, allocator.get(), &statsBuilders);
+      handle, samplePct, fields, allocator.get(), &statsBuilders);
 
   numSampledRows_ = sampled;
   for (size_t i = 0; i < statsBuilders.size(); ++i) {

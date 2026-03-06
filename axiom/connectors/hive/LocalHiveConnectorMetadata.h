@@ -21,6 +21,7 @@
 #include "axiom/connectors/hive/HiveConnectorMetadata.h"
 #include "axiom/connectors/hive/HiveMetadataConfig.h"
 #include "axiom/connectors/hive/StatisticsBuilder.h"
+#include "folly/experimental/coro/Task.h"
 #include "velox/common/base/Fs.h"
 #include "velox/common/memory/HashStringAllocator.h"
 #include "velox/connectors/hive/HiveConnector.h"
@@ -34,6 +35,12 @@ struct FileInfo {
   std::string path;
   folly::F14FastMap<std::string, std::optional<std::string>> partitionKeys;
   std::optional<int32_t> bucketNumber;
+
+  /// Row count from file header metadata.
+  std::optional<uint64_t> numRows;
+
+  /// Per-column stats from file header metadata keyed by column name.
+  folly::F14FastMap<std::string, ColumnStatistics> columnStats;
 };
 
 class LocalHiveSplitSource : public SplitSource {
@@ -136,10 +143,18 @@ class LocalHiveTableLayout : public HiveTableLayout {
   std::pair<int64_t, int64_t> sample(
       const velox::connector::ConnectorTableHandlePtr& handle,
       float pct,
-      velox::RowTypePtr scanType,
       const std::vector<velox::common::Subfield>& fields,
       velox::HashStringAllocator* allocator,
       std::vector<std::unique_ptr<StatisticsBuilder>>* statsBuilders) const;
+
+  /// Returns estimated statistics by pruning files using partition key and
+  /// hidden column filters from 'filterConjuncts', then aggregating per-file
+  /// stats.
+  folly::coro::Task<std::optional<FilteredTableStats>> co_estimateStats(
+      ConnectorSessionPtr session,
+      velox::connector::ConnectorTableHandlePtr tableHandle,
+      std::vector<std::string> columns,
+      std::vector<velox::core::TypedExprPtr> filterConjuncts) const override;
 
  private:
   std::vector<std::unique_ptr<const FileInfo>> files_;

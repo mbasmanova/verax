@@ -19,7 +19,6 @@
 #include "axiom/optimizer/tests/HiveQueriesTestBase.h"
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/core/QueryConfig.h"
-#include "velox/dwio/parquet/RegisterParquetWriter.h"
 
 namespace facebook::axiom::optimizer {
 namespace {
@@ -35,13 +34,7 @@ class WriteTest : public test::HiveQueriesTestBase {
         {velox::tpch::Table::TBL_NATION, velox::tpch::Table::TBL_LINEITEM});
   }
 
-  void SetUp() override {
-    HiveQueriesTestBase::SetUp();
-    parquet::registerParquetWriterFactory();
-  }
-
   void TearDown() override {
-    parquet::unregisterParquetWriterFactory();
     HiveQueriesTestBase::TearDown();
   }
 

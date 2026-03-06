@@ -347,10 +347,13 @@ struct DerivedTable : public PlanObject {
   void distributeConjuncts();
 
  private:
-  // Rebuilds connector table handles and estimates filter selectivity for
-  // each base table in this DT. Called by initializePlans() after all
-  // filters have been pushed down, so each table is sampled at most once.
-  void estimateBaseTableSelectivity();
+  // Recursively distributes conjuncts across the entire DT tree (top-down).
+  // Called as Pass 1 of initializePlans().
+  void distributeAllConjuncts();
+
+  // Recursively finalizes joins and builds initial plans across the entire DT
+  // tree (bottom-up). Called as Pass 3 of initializePlans().
+  void finalizeJoinsAndMakePlans();
 
   // Asserts invariants specific to union / unionAll DerivedTables.
   void checkSetOpConsistency() const;

@@ -40,6 +40,7 @@ change in cardinality.
 | [JoinEstimation.md](JoinEstimation.md) | Detailed join cardinality and constraint propagation for all join types, with worked examples |
 | [JoinEstimationQuickRef.md](JoinEstimationQuickRef.md) | Compact cheat-sheet of all join formulas and constraint tables |
 | [FilterSelectivity.md](FilterSelectivity.md) | How filter selectivity is estimated from expressions (comparisons, logical operators, IN, IS NULL) |
+| [FilteredTableStats.md](FilteredTableStats.md) | Connector-level filtered table statistics API for partition pruning and per-file stats |
 | [PayloadNdvScaling.md](PayloadNdvScaling.md) | Why the coupon collector formula is preferred over linear scaling for NDV estimation |
 | [JoinPlanning.md](JoinPlanning.md) | Join order enumeration: control flow, backtracking, and state management |
 

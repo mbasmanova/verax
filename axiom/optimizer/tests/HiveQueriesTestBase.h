@@ -97,6 +97,10 @@ class HiveQueriesTestBase : public QueryTestBase {
       const std::vector<std::string>& filePaths,
       const folly::F14FastMap<std::string, velox::Variant>& options = {});
 
+  /// Parses a CREATE TABLE AS SELECT statement, creates the table, and
+  /// populates it with data. Drops the table first if it already exists.
+  void runCtas(const std::string& sql);
+
  private:
   inline static std::shared_ptr<velox::common::testutil::TempDirectoryPath>
       gTempDirectory;

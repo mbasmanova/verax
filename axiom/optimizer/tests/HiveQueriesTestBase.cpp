@@ -16,7 +16,10 @@
 
 #include "axiom/optimizer/tests/HiveQueriesTestBase.h"
 #include "axiom/logical_plan/PlanBuilder.h"
+#include "axiom/optimizer/ConstantExprEvaluator.h"
 #include "axiom/optimizer/tests/TpchDataGenerator.h"
+#include "velox/dwio/dwrf/RegisterDwrfWriter.h"
+#include "velox/dwio/parquet/RegisterParquetWriter.h"
 
 namespace facebook::axiom::optimizer::test {
 
@@ -43,6 +46,9 @@ void HiveQueriesTestBase::TearDownTestCase() {
 void HiveQueriesTestBase::SetUp() {
   test::QueryTestBase::SetUp();
 
+  parquet::registerParquetWriterFactory();
+  dwrf::registerDwrfWriterFactory();
+
   prestoParser_ = std::make_unique<::axiom::sql::presto::PrestoParser>(
       exec::test::kHiveConnectorId, std::nullopt);
 
@@ -55,12 +61,16 @@ void HiveQueriesTestBase::SetUp() {
 void HiveQueriesTestBase::createTpchTables(
     const std::vector<velox::tpch::Table>& tables) {
   VELOX_CHECK(gTempDirectory != nullptr, "SetUpTestCase not called");
-  TpchDataGenerator::createTables(tables, gTempDirectory->getPath());
+  TpchDataGenerator::createTables(
+      tables, gTempDirectory->getPath(), /*scaleFactor=*/0.1, localFileFormat_);
 }
 
 void HiveQueriesTestBase::TearDown() {
   metadata_ = nullptr;
   connector_.reset();
+
+  parquet::unregisterParquetWriterFactory();
+  dwrf::unregisterDwrfWriterFactory();
 
   test::QueryTestBase::TearDown();
 }
@@ -162,6 +172,34 @@ void HiveQueriesTestBase::createTableFromFiles(
   }
 
   metadata_->reloadTableFromPath(tableName);
+}
+
+void HiveQueriesTestBase::runCtas(const std::string& sql) {
+  auto statement = prestoParser_->parse(sql);
+  VELOX_CHECK(statement->isCreateTableAsSelect());
+
+  auto ctasStatement =
+      statement->as<::axiom::sql::presto::CreateTableAsSelectStatement>();
+
+  metadata_->dropTableIfExists(ctasStatement->tableName());
+
+  folly::F14FastMap<std::string, Variant> options;
+  for (const auto& [key, value] : ctasStatement->properties()) {
+    options[key] = ConstantExprEvaluator::evaluateConstantExpr(*value);
+  }
+
+  auto session = std::make_shared<connector::ConnectorSession>("test");
+  auto table = metadata_->createTable(
+      session,
+      ctasStatement->tableName(),
+      ctasStatement->tableSchema(),
+      options);
+
+  connector::SchemaResolver schemaResolver;
+  schemaResolver.setTargetTable(exec::test::kHiveConnectorId, table);
+
+  auto plan = planVelox(ctasStatement->plan(), schemaResolver);
+  runFragmentedPlan(plan);
 }
 
 } // namespace facebook::axiom::optimizer::test

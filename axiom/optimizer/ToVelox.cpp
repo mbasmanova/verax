@@ -177,9 +177,10 @@ void ToVelox::filterUpdated(BaseTableCP table) {
   auto* optimization = queryCtx()->optimization();
   auto* evaluator = optimization->evaluator();
 
-  std::vector<velox::core::TypedExprPtr> filterConjuncts;
   velox::ScopedVarSetter noAlias(&makeVeloxExprWithNoAlias_, true);
   velox::ScopedVarSetter getters(&getterForPushdownSubfield_, true);
+
+  std::vector<velox::core::TypedExprPtr> filterConjuncts;
   for (auto filter : table->columnFilters) {
     filterConjuncts.push_back(toTypedExpr(filter));
   }
@@ -198,17 +199,16 @@ void ToVelox::filterUpdated(BaseTableCP table) {
 
   std::vector<velox::connector::ColumnHandlePtr> columns;
   for (const auto* column : allColumns) {
-    auto id = table->columnId(toName(column->name()));
-    if (!id.has_value()) {
-      continue;
-    }
-    auto subfields = columnSubfields(table, id.value());
+    if (auto id = table->columnId(toName(column->name()))) {
+      auto subfields = columnSubfields(table, id.value());
 
-    columns.push_back(layout->createColumnHandle(
-        connectorSession, column->name(), std::move(subfields)));
+      columns.push_back(layout->createColumnHandle(
+          connectorSession, column->name(), std::move(subfields)));
+    }
   }
 
   std::vector<velox::core::TypedExprPtr> rejectedFilters;
+  auto allConjuncts = filterConjuncts;
   auto handle = layout->createTableHandle(
       connectorSession,
       std::move(columns),
@@ -216,7 +216,11 @@ void ToVelox::filterUpdated(BaseTableCP table) {
       std::move(filterConjuncts),
       rejectedFilters);
 
-  setLeafHandle(table->id(), std::move(handle), std::move(rejectedFilters));
+  setLeafData(
+      table->id(),
+      std::move(allConjuncts),
+      std::move(handle),
+      std::move(rejectedFilters));
 }
 
 velox::core::PlanNodePtr ToVelox::addOutputRenames(
@@ -1107,12 +1111,14 @@ velox::core::PlanNodePtr ToVelox::makeScan(
 
   const bool isSubfieldPushdown = hasSubfieldPushdown(scan);
 
-  auto [tableHandle, rejectedFilters] = leafHandle(scan.baseTable->id());
-  if (tableHandle == nullptr) {
+  auto* data = leafData(scan.baseTable->id());
+  if (!data) {
     filterUpdated(scan.baseTable);
-    std::tie(tableHandle, rejectedFilters) = leafHandle(scan.baseTable->id());
-    VELOX_CHECK_NOT_NULL(tableHandle, "No table for scan {}", scan.toString());
+    data = leafData(scan.baseTable->id());
+    VELOX_CHECK_NOT_NULL(data, "No table for scan {}", scan.toString());
   }
+  auto tableHandle = data->handle;
+  auto rejectedFilters = data->extraFilters;
 
   // Add columns used by rejected filters to scan columns.
   ColumnVector allColumns = scan.columns();
