@@ -123,50 +123,7 @@ buck run axiom/cli:cli -- \
   --query "EXPLAIN (type graph) $(cat axiom/optimizer/tests/tpch/queries/q5.sql)"
 ```
 
-## 2. Speeding Up Test Runs with Pre-generated Data
-
-By default, `HiveQueriesTestBase::SetUpTestCase()` generates TPC-H
-Parquet data in a temporary directory on every test run.  This takes
-~10-20 seconds and is wasteful when iterating on optimizer changes.
-
-### The slow path (default)
-
-```cpp
-// static
-void HiveQueriesTestBase::SetUpTestCase() {
-  test::QueryTestBase::SetUpTestCase();
-
-  gTempDirectory = exec::test::TempDirectoryPath::create();
-  test::TpchDataGenerator::createTables(gTempDirectory->getPath());
-
-  LocalRunnerTestBase::localDataPath_ = gTempDirectory->getPath();
-  LocalRunnerTestBase::localFileFormat_ =
-      velox::dwio::common::FileFormat::PARQUET;
-}
-```
-
-### The fast path (for local development)
-
-Comment out the data generation and point to a pre-existing directory:
-
-```cpp
-// static
-void HiveQueriesTestBase::SetUpTestCase() {
-  test::QueryTestBase::SetUpTestCase();
-
-  // gTempDirectory = exec::test::TempDirectoryPath::create();
-  // test::TpchDataGenerator::createTables(gTempDirectory->getPath());
-
-  LocalRunnerTestBase::localDataPath_ = "/home/mbasmanova/tpch/sf0.1"; // <-- replace with your path
-  LocalRunnerTestBase::localFileFormat_ =
-      velox::dwio::common::FileFormat::PARQUET;
-}
-```
-
-**Warning:** Remember to revert this change before committing!
-The CI needs the dynamic data generation.
-
-## 3. Adding Debug Logging
+## 2. Adding Debug Logging
 
 For temporary debugging, use `LOG(ERROR)` to print diagnostic
 information:
@@ -188,7 +145,7 @@ buck test axiom/optimizer/tests:tpch_plan -- q5 --print-passing-details
 
 **Warning:** Remove all debug logging before committing!
 
-## 4. TPC-H Query Tests
+## 3. TPC-H Query Tests
 
 `TpchPlanTest` tests all 22 TPC-H queries. For each query, the test verifies:
 
@@ -227,7 +184,7 @@ buck run axiom/optimizer/tests:tpch_plan -- \
   --gtest_also_run_disabled_tests
 ```
 
-## 5. Using the CLI with Custom Tables
+## 4. Using the CLI with Custom Tables
 
 Use `--init` to create in-memory tables with specific stats for testing
 optimizer behavior outside of TPC-H:

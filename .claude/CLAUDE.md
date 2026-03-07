@@ -124,6 +124,7 @@ for the complete guide. Key rules are summarized below.
 - Prefer free functions in `.cpp` (anonymous namespace) over private/static class methods.
 - Keep method implementations in `.cpp` except for trivial one-liners.
 - Avoid default arguments when all callers can pass values explicitly.
+- Never use `friend`, `FRIEND_TEST`, or any friend declarations. If a test needs access to private members, redesign the API or test through public methods instead.
 
 ## Commit Messages
 

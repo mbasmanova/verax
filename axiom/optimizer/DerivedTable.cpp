@@ -317,50 +317,57 @@ MemoKey DerivedTable::memoKey() const {
       this, PlanObjectSet::fromObjects(columns), PlanObjectSet::single(this));
 }
 
-void DerivedTable::estimateBaseTableSelectivity() {
-  auto* optimization = queryCtx()->optimization();
-  for (auto* table : tables) {
-    if (table->is(PlanType::kTableNode)) {
-      auto* baseTable = const_cast<PlanObject*>(table)->as<BaseTable>();
-      optimization->estimateLeafSelectivity(*baseTable);
+void DerivedTable::initializePlans() {
+  // Pass 1 (top-down): push conjuncts down the entire DT tree.
+  distributeAllConjuncts();
+
+  // Pass 2 (batch): estimate filter selectivity for all base tables. Connectors
+  // that support co_estimateStats have their requests issued concurrently.
+  queryCtx()->optimization()->estimateAllBaseTableSelectivity(*this);
+
+  // Pass 3 (bottom-up): finalize joins and build initial plans.
+  finalizeJoinsAndMakePlans();
+}
+
+void DerivedTable::distributeAllConjuncts() {
+  distributeConjuncts();
+
+  if (!setOp.has_value()) {
+    for (auto* table : tables) {
+      if (table->is(PlanType::kDerivedTableNode)) {
+        const_cast<PlanObject*>(table)
+            ->as<DerivedTable>()
+            ->distributeAllConjuncts();
+      }
+    }
+  } else {
+    for (auto* child : children) {
+      child->distributeAllConjuncts();
     }
   }
 }
 
-void DerivedTable::initializePlans() {
-  // Pre-order (top-down): push conjuncts to children.
-  distributeConjuncts();
-
-  const bool isUnion = setOp.has_value() &&
-      (setOp.value() == logical_plan::SetOperation::kUnion ||
-       setOp.value() == logical_plan::SetOperation::kUnionAll);
-
-  if (!isUnion) {
+void DerivedTable::finalizeJoinsAndMakePlans() {
+  if (!setOp.has_value()) {
     VELOX_CHECK(!tables.empty());
     VELOX_CHECK(children.empty());
 
-    // Recurse to child DerivedTables in 'tables'.
     for (auto* table : tables) {
       if (table->is(PlanType::kDerivedTableNode)) {
-        const_cast<PlanObject*>(table)->as<DerivedTable>()->initializePlans();
+        const_cast<PlanObject*>(table)
+            ->as<DerivedTable>()
+            ->finalizeJoinsAndMakePlans();
       }
     }
   } else {
     VELOX_CHECK(tables.empty());
     VELOX_CHECK(!children.empty());
 
-    // Recurse to children of set operations (UNION, UNION ALL).
     for (auto* child : children) {
-      child->initializePlans();
+      child->finalizeJoinsAndMakePlans();
     }
   }
 
-  // Estimate filter selectivity on base tables after all filters have been
-  // pushed down. This ensures each table is sampled at most once with the
-  // complete filter set.
-  estimateBaseTableSelectivity();
-
-  // Post-order (bottom-up): finalize joins and compute plans.
   finalizeJoins();
 
 #ifndef NDEBUG

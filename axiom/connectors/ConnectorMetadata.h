@@ -19,6 +19,7 @@
 #include "axiom/connectors/ConnectorSession.h"
 #include "axiom/connectors/ConnectorSplitManager.h"
 #include "folly/CppAttributes.h"
+#include "folly/coro/Task.h"
 #include "velox/common/memory/HashStringAllocator.h"
 #include "velox/connectors/Connector.h"
 #include "velox/type/Subfield.h"
@@ -336,6 +337,24 @@ struct SampleResult {
   int64_t numMatched;
 };
 
+/// Result of estimating filtered table statistics from the connector.
+struct FilteredTableStats {
+  /// Estimated row count after applying filters.
+  uint64_t numRows{0};
+
+  /// Per-column statistics corresponding 1:1 to the 'columns' parameter of
+  /// co_estimateStats. Either empty (no column stats available) or has the
+  /// same size as 'columns', in the same order.
+  std::vector<ColumnStatistics> columnStats;
+
+  /// Indices into the 'filterConjuncts' parameter of co_estimateStats
+  /// identifying conjuncts the connector could not account for when
+  /// estimating numRows. The optimizer applies its own selectivity estimation
+  /// for these on top of numRows and column constraints. Empty means all
+  /// conjuncts were accounted for.
+  std::vector<int32_t> rejectedFilterIndices;
+};
+
 /// Represents a physical manifestation of a table. There is at least
 /// one layout but for tables that have multiple sort orders, partitionings,
 /// indices, column groups, etc. there is a separate layout for each. The layout
@@ -465,6 +484,33 @@ class TableLayout {
   virtual SampleResult sample(
       const velox::connector::ConnectorTableHandlePtr& /*handle*/) const {
     VELOX_UNSUPPORTED("Sampling is not supported for this layout");
+  }
+
+  /// Returns estimated statistics for a table scan with the given filters.
+  /// Connectors that have access to partition-level metadata (e.g., Hive
+  /// Metastore) can resolve matching partitions and aggregate their stats
+  /// without reading data.
+  ///
+  /// @param session Connector session for the current query.
+  /// @param tableHandle Table handle for the table.
+  /// @param columns Names of table columns the optimizer is interested in.
+  /// Column names correspond to actual table columns (not synthetic subfield
+  /// projections). If the connector provides per-column statistics, it must
+  /// return them for all requested columns in the same order (1:1), or
+  /// return an empty columnStats vector if per-column stats are unavailable.
+  /// @param filterConjuncts Filter conjuncts applied to the table. This may
+  /// be a superset of filters encoded in the table handle. The connector
+  /// should report indices of conjuncts it could not account for via
+  /// rejectedFilterIndices.
+  ///
+  /// The default implementation returns std::nullopt, meaning the connector
+  /// does not support stats estimation. Connectors opt in by overriding.
+  virtual folly::coro::Task<std::optional<FilteredTableStats>> co_estimateStats(
+      ConnectorSessionPtr /*session*/,
+      velox::connector::ConnectorTableHandlePtr /*tableHandle*/,
+      std::vector<std::string> /*columns*/,
+      std::vector<velox::core::TypedExprPtr> /*filterConjuncts*/) const {
+    co_return std::nullopt;
   }
 
   /// Return a column with the matching name. Returns nullptr if not found.

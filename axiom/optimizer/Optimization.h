@@ -16,6 +16,7 @@
 #pragma once
 
 #include "axiom/common/Session.h"
+#include "axiom/connectors/ConnectorMetadata.h"
 #include "axiom/optimizer/Cost.h"
 #include "axiom/optimizer/OptimizerOptions.h"
 #include "axiom/optimizer/Plan.h"
@@ -83,6 +84,12 @@ class Optimization {
   /// Estimates and sets 'filteredCardinality' on 'baseTable' by sampling the
   /// table's layout. Must be called at most once per base table.
   void estimateLeafSelectivity(BaseTable& baseTable);
+
+  /// Collects all base tables from the DT subtree rooted at 'dt', issues
+  /// co_estimateStats requests concurrently, waits once, and applies results.
+  /// Falls back to the existing estimateLeafSelectivity path for connectors
+  /// that return numRows = std::nullopt.
+  void estimateAllBaseTableSelectivity(DerivedTable& dt);
 
   /// See ToVelox::filterUpdated.
   void filterUpdated(BaseTableCP baseTable) {
@@ -327,6 +334,15 @@ class Optimization {
       PlanState& state,
       std::vector<NextJoin>& toTry);
 
+  // Applies connector-provided FilteredTableStats to a base table.
+  // Falls back to the history-based estimation path if stats is std::nullopt.
+  // Otherwise, sets filteredCardinality from numRows and applies
+  // connector-provided columnStats positionally.
+  void applyFilteredStats(
+      BaseTable& baseTable,
+      const std::optional<connector::FilteredTableStats>& stats,
+      const std::vector<size_t>& columnIndices);
+
   const SessionPtr session_;
 
   const OptimizerOptions options_;
@@ -369,6 +385,11 @@ class Optimization {
   ToGraph toGraph_;
 
   ToVelox toVelox_;
+
+  // Tracks base table IDs that have already been estimated. Prevents
+  // duplicate processing when the same BaseTable appears in multiple DTs
+  // (e.g., via existence pushdown).
+  folly::F14FastSet<int32_t> estimatedBaseTables_;
 };
 
 } // namespace facebook::axiom::optimizer

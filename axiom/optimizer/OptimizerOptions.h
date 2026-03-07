@@ -55,6 +55,11 @@ struct OptimizerOptions {
   /// disabled, a default selectivity will be used.
   bool sampleFilters{true};
 
+  /// Enable using connector-provided table statistics (co_estimateStats) for
+  /// cardinality estimation. When disabled, the optimizer falls back to
+  /// sampling or constraint-based estimation.
+  bool useFilteredTableStats{true};
+
   /// Enable reducing semi joins.
   bool enableReducingExistences{true};
 

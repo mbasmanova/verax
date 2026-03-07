@@ -18,11 +18,15 @@
 #include <algorithm>
 #include <iostream>
 #include <utility>
+#include "axiom/optimizer/Filters.h"
 #include "axiom/optimizer/FunctionRegistry.h"
 #include "axiom/optimizer/Plan.h"
 #include "axiom/optimizer/PlanUtils.h"
 #include "axiom/optimizer/PrecomputeProjection.h"
 #include "axiom/optimizer/VeloxHistory.h"
+#include "folly/coro/BlockingWait.h"
+#include "folly/coro/Collect.h"
+#include "folly/coro/Task.h"
 #include "velox/expression/Expr.h"
 
 namespace lp = facebook::axiom::logical_plan;
@@ -62,9 +66,186 @@ Optimization::Optimization(
 }
 
 void Optimization::estimateLeafSelectivity(BaseTable& baseTable) {
+  if (!estimatedBaseTables_.insert(baseTable.id()).second) {
+    return;
+  }
   filterUpdated(&baseTable);
-  auto tableHandle = toVelox_.leafHandle(baseTable.id()).first;
+  auto tableHandle = toVelox_.leafData(baseTable.id())->handle;
   history_.estimateLeafSelectivity(baseTable, tableHandle);
+}
+
+namespace {
+void collectBaseTables(DerivedTable* dt, std::vector<BaseTable*>& baseTables) {
+  if (dt->setOp.has_value()) {
+    for (auto* child : dt->children) {
+      collectBaseTables(child, baseTables);
+    }
+  } else {
+    for (auto* table : dt->tables) {
+      if (table->is(PlanType::kTableNode)) {
+        baseTables.push_back(const_cast<PlanObject*>(table)->as<BaseTable>());
+      } else if (table->is(PlanType::kDerivedTableNode)) {
+        collectBaseTables(
+            const_cast<PlanObject*>(table)->as<DerivedTable>(), baseTables);
+      }
+    }
+  }
+}
+} // namespace
+
+void Optimization::estimateAllBaseTableSelectivity(DerivedTable& dt) {
+  if (!options_.useFilteredTableStats) {
+    return;
+  }
+
+  std::vector<BaseTable*> baseTables;
+  collectBaseTables(&dt, baseTables);
+
+  if (baseTables.empty()) {
+    return;
+  }
+
+  // Prepare table handles and launch async stats requests.
+  struct TableTask {
+    BaseTable* baseTable;
+    size_t taskIndex;
+    // Indices into baseTable->columns for the top-level columns we requested
+    // stats for. columnStats[i] corresponds to
+    // baseTable->columns[columnIndices[i]].
+    std::vector<size_t> columnIndices;
+  };
+  std::vector<TableTask> tableTasks;
+  std::vector<folly::coro::Task<std::optional<connector::FilteredTableStats>>>
+      tasks;
+
+  for (auto* baseTable : baseTables) {
+    if (estimatedBaseTables_.contains(baseTable->id())) {
+      continue;
+    }
+    filterUpdated(baseTable);
+    const auto* data = toVelox_.leafData(baseTable->id());
+
+    // Collect top-level table column names referenced by the query. Subfield
+    // columns (e.g. m.[1]) don't have connector-level stats.
+    std::vector<std::string> columnNames;
+    std::vector<size_t> columnIndices;
+    for (size_t i = 0; i < baseTable->columns.size(); ++i) {
+      if (baseTable->columns[i]->topColumn() == nullptr) {
+        columnNames.emplace_back(baseTable->columns[i]->name());
+        columnIndices.push_back(i);
+      }
+    }
+
+    auto* layout = baseTable->schemaTable->connectorTable->layouts()[0];
+    auto connectorSession =
+        session_->toConnectorSession(layout->connector()->connectorId());
+    tableTasks.push_back({baseTable, tasks.size(), std::move(columnIndices)});
+    tasks.push_back(layout->co_estimateStats(
+        std::move(connectorSession),
+        data->handle,
+        std::move(columnNames),
+        data->filterConjuncts));
+  }
+
+  if (tasks.empty()) {
+    return;
+  }
+
+  // Wait for all connector stats requests concurrently. Schedule on the
+  // query context executor if available, otherwise run inline.
+  auto collectTask = folly::coro::collectAllRange(std::move(tasks));
+  auto* executor = veloxQueryCtx_->executor();
+  auto results = executor ? folly::coro::blockingWait(co_withExecutor(
+                                executor, std::move(collectTask)))
+                          : folly::coro::blockingWait(std::move(collectTask));
+
+  // Apply results.
+  for (auto& [baseTable, taskIndex, columnIndices] : tableTasks) {
+    applyFilteredStats(*baseTable, results[taskIndex], columnIndices);
+  }
+}
+
+void Optimization::applyFilteredStats(
+    BaseTable& baseTable,
+    const std::optional<connector::FilteredTableStats>& stats,
+    const std::vector<size_t>& columnIndices) {
+  VELOX_CHECK(
+      estimatedBaseTables_.insert(baseTable.id()).second,
+      "Duplicate estimation for BaseTable: {}",
+      baseTable.cname);
+
+  // Fall back to the history-based estimation path if the connector does not
+  // support stats estimation.
+  if (!stats.has_value()) {
+    auto tableHandle = toVelox_.leafData(baseTable.id())->handle;
+    history_.estimateLeafSelectivity(baseTable, tableHandle);
+    return;
+  }
+
+  // Apply connector-provided column statistics first so that
+  // conjunctsSelectivity uses connector-refined values for rejected filters.
+  if (!stats->columnStats.empty()) {
+    VELOX_CHECK_EQ(stats->columnStats.size(), columnIndices.size());
+    for (size_t i = 0; i < stats->columnStats.size(); ++i) {
+      const auto& columnStats = stats->columnStats[i];
+      auto& existing = baseTable.columns[columnIndices[i]]->value();
+      Value value(existing.type, columnStats.numDistinct.value_or(1));
+      value.min = columnStats.min.has_value()
+          ? registerVariant(columnStats.min.value())
+          : nullptr;
+      value.max = columnStats.max.has_value()
+          ? registerVariant(columnStats.max.value())
+          : nullptr;
+      value.nullFraction = columnStats.nullPct / 100.0f;
+      value.nullable = !columnStats.nonNull;
+      const_cast<Value&>(existing) = value;
+    }
+  }
+
+  if (stats->rejectedFilterIndices.empty()) {
+    // Connector estimated all filters.
+    baseTable.filteredCardinality = stats->numRows;
+    return;
+  }
+
+  // Collect the ExprCP filters the connector could not estimate.
+  // Indices refer to columnFilters followed by filter.
+  ExprVector rejectedFilters;
+  rejectedFilters.reserve(stats->rejectedFilterIndices.size());
+  const auto numColumnFilters = baseTable.columnFilters.size();
+  const auto totalFilters = numColumnFilters + baseTable.filter.size();
+  for (auto idx : stats->rejectedFilterIndices) {
+    VELOX_CHECK_LT(
+        idx,
+        totalFilters,
+        "rejectedFilterIndices out of range for BaseTable: {}",
+        baseTable.cname);
+    rejectedFilters.push_back(
+        idx < numColumnFilters ? baseTable.columnFilters[idx]
+                               : baseTable.filter[idx - numColumnFilters]);
+  }
+
+  // Compute selectivity for the rejected filters and apply constraints.
+  ConstraintMap constraints;
+  auto selectivity = conjunctsSelectivity(constraints, rejectedFilters, true);
+
+  baseTable.filteredCardinality = stats->numRows * selectivity.trueFraction;
+
+  // Update column values with refined constraints from rejected filters.
+  for (const auto& [columnId, constrainedValue] : constraints) {
+    for (auto* column : baseTable.columns) {
+      if (column->id() == columnId) {
+        auto& value = const_cast<Value&>(column->value());
+        value.cardinality = constrainedValue.cardinality;
+        value.min = constrainedValue.min;
+        value.max = constrainedValue.max;
+        value.trueFraction = constrainedValue.trueFraction;
+        value.nullFraction = constrainedValue.nullFraction;
+        value.nullable = constrainedValue.nullable;
+        break;
+      }
+    }
+  }
 }
 
 // static

@@ -61,16 +61,29 @@ class ToVelox {
       const runner::MultiFragmentPlan::Options& options,
       const std::vector<logical_plan::OutputNode::Entry>& outputNames = {});
 
-  std::pair<
-      velox::connector::ConnectorTableHandlePtr,
-      std::vector<velox::core::TypedExprPtr>>
-  leafHandle(int32_t id) {
-    auto it = leafHandles_.find(id);
-    return it != leafHandles_.end()
-        ? it->second
-        : std::make_pair<
-              std::shared_ptr<velox::connector::ConnectorTableHandle>,
-              std::vector<velox::core::TypedExprPtr>>(nullptr, {});
+  /// Per-leaf-table data produced by filterUpdated().
+  struct LeafTableData {
+    /// Table handle with filters pushed into the connector.
+    velox::connector::ConnectorTableHandlePtr handle;
+
+    /// Filters rejected by createTableHandle, to be evaluated post-scan.
+    std::vector<velox::core::TypedExprPtr> extraFilters;
+
+    /// All filter conjuncts (columnFilters followed by filter) converted to
+    /// TypedExprPtr. Used by co_estimateStats so the connector can report
+    /// rejected indices.
+    std::vector<velox::core::TypedExprPtr> filterConjuncts;
+  };
+
+  /// Builds the connector table handle for 'baseTable' from its current
+  /// filters and column handles. Populates leafData for the base table.
+  void filterUpdated(BaseTableCP baseTable);
+
+  /// Returns the leaf data for 'id' populated by filterUpdated, or nullptr
+  /// if filterUpdated has not been called for this id.
+  const LeafTableData* leafData(int32_t id) const {
+    auto it = leafData_.find(id);
+    return it != leafData_.end() ? &it->second : nullptr;
   }
 
   velox::core::TypedExprPtr toTypedExpr(ExprCP expr);
@@ -85,10 +98,6 @@ class ToVelox {
   velox::core::PlanNodeId nextId() {
     return fmt::format("{}", nodeCounter_++);
   }
-
-  /// Rebuilds the connector table handle for 'baseTable' from its current
-  /// filters and column handles.
-  void filterUpdated(BaseTableCP baseTable);
 
  private:
   // Adds a Velox ProjectNode that renames or reorders output columns per the
@@ -105,11 +114,13 @@ class ToVelox {
 
   std::vector<velox::core::TypedExprPtr> toTypedExprs(const ExprVector& exprs);
 
-  void setLeafHandle(
+  void setLeafData(
       int32_t id,
+      std::vector<velox::core::TypedExprPtr> filterConjuncts,
       velox::connector::ConnectorTableHandlePtr handle,
       std::vector<velox::core::TypedExprPtr> extraFilters) {
-    leafHandles_[id] = {std::move(handle), std::move(extraFilters)};
+    leafData_[id] = {
+        std::move(handle), std::move(extraFilters), std::move(filterConjuncts)};
   }
 
   /// True if a scan should expose 'column' of 'table' as a struct only
@@ -339,14 +350,7 @@ class ToVelox {
   // the value.
   folly::F14FastMap<ExprCP, velox::core::TypedExprPtr> projectedExprs_;
 
-  // Map from plan object id to pair of handle with pushdown filters and list
-  // of filters to eval on the result from the handle.
-  folly::F14FastMap<
-      int32_t,
-      std::pair<
-          velox::connector::ConnectorTableHandlePtr,
-          std::vector<velox::core::TypedExprPtr>>>
-      leafHandles_;
+  folly::F14FastMap<int32_t, LeafTableData> leafData_;
 
   // Serial number for plan nodes in executable plan.
   int32_t nodeCounter_{0};
