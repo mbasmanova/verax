@@ -429,8 +429,17 @@ class RelationPlanner : public AstVisitor {
     }
 
     if (withIt != withQueries_.end()) {
-      // TODO Change WithQuery to store Query and not Statement.
-      processQuery(dynamic_cast<Query*>(withIt->second->query().get()));
+      // Temporarily remove the CTE from the map while processing its body
+      // to prevent infinite recursion when a CTE has the same name as a
+      // base table it references (e.g. WITH t AS (SELECT * FROM t)).
+      // Non-recursive CTEs cannot reference themselves in Presto.
+      auto withEntry = std::move(withIt->second);
+      withQueries_.erase(withIt);
+      SCOPE_EXIT {
+        withQueries_.insert_or_assign(tableName, std::move(withEntry));
+      };
+      // TODO: Change WithQuery to store Query and not Statement.
+      processQuery(dynamic_cast<Query*>(withEntry->query().get()));
     } else {
       const auto& [connectorId, qualifiedName] = toConnectorTable(
           *table.name(), context_.defaultConnectorId, defaultSchema_);
@@ -766,6 +775,7 @@ class RelationPlanner : public AstVisitor {
     };
 
     if (const auto& with = query->with()) {
+      VELOX_USER_CHECK(!with->isRecursive(), "WITH RECURSIVE is not supported");
       for (const auto& query : with->queries()) {
         withQueries_.insert_or_assign(
             canonicalizeIdentifier(*query->name()), query);

@@ -385,7 +385,7 @@ TEST_F(PrestoParserTest, mixedCaseColumnNames) {
   }
 }
 
-TEST_F(PrestoParserTest, with) {
+TEST_F(PrestoParserTest, withBasic) {
   {
     auto matcher = matchValues().project().output({"x"});
     testSelect("WITH a as (SELECT 1 as x) SELECT * FROM a", matcher);
@@ -399,7 +399,7 @@ TEST_F(PrestoParserTest, with) {
   }
 }
 
-TEST_F(PrestoParserTest, withShadowing) {
+TEST_F(PrestoParserTest, withShadowingCte) {
   // Inner CTE shadows outer CTE with the same name. The inner CTE uses a table
   // scan (producing a Scan node) while the outer uses VALUES. Without proper
   // shadowing, the subquery would resolve to the outer CTE and produce a Values
@@ -418,6 +418,45 @@ TEST_F(PrestoParserTest, withNoLeaking) {
           "SELECT * FROM (WITH t AS (SELECT 1 AS x) SELECT * FROM t) sub "
           "CROSS JOIN t"),
       "Table not found: t");
+}
+
+TEST_F(PrestoParserTest, withShadowingBaseTable) {
+  // CTE with the same name as a base table it references. The inner reference
+  // to 'nation' inside the CTE body must resolve to the base table, not recurse
+  // into the CTE itself.
+  auto matcher = matchScan().project().output({"n_nationkey"});
+  testSelect(
+      "WITH nation AS (SELECT n_nationkey FROM nation) "
+      "SELECT * FROM nation",
+      matcher);
+}
+
+TEST_F(PrestoParserTest, withMultipleCtes) {
+  // Later CTE references earlier CTE.
+  testSelect(
+      "WITH a AS (SELECT n_nationkey, n_name FROM nation), "
+      "     b AS (SELECT * FROM a) "
+      "SELECT * FROM b",
+      matchScan().project().output({"n_nationkey", "n_name"}));
+}
+
+TEST_F(PrestoParserTest, withReferencedMultipleTimes) {
+  // Same CTE referenced twice in a JOIN.
+  auto matcher = matchScan()
+                     .project()
+                     .join(matchScan().project().build())
+                     .project()
+                     .output({"n_nationkey"});
+  testSelect(
+      "WITH a AS (SELECT n_nationkey FROM nation) "
+      "SELECT x.n_nationkey FROM a x JOIN a y ON x.n_nationkey = y.n_nationkey",
+      matcher);
+}
+
+TEST_F(PrestoParserTest, withRecursiveNotSupported) {
+  VELOX_ASSERT_THROW(
+      parseSql("WITH RECURSIVE t AS (SELECT 1 AS x) SELECT * FROM t"),
+      "WITH RECURSIVE is not supported");
 }
 
 TEST_F(PrestoParserTest, orderBy) {
