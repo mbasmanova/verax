@@ -46,14 +46,23 @@ buck run axiom/cli:cli -- \
 
 ### EXPLAIN variants
 
-The `EXPLAIN` command supports several output types:
+The `EXPLAIN` command supports several output types via `EXPLAIN (TYPE <type>) <query>`:
 
 | Command | Output | Description |
 |---------|--------|-------------|
-| `EXPLAIN <query>` | Velox plan | The default output — a distributed execution plan with Velox operators |
-| `EXPLAIN (type logical) <query>` | Logical plan | The unoptimized logical plan tree (the output of `PrestoParser`) |
-| `EXPLAIN (type graph) <query>` | Query graph | The output of `ToGraph` — parsed query structure with tables, joins, filters, and aggregations |
-| `EXPLAIN (type optimized) <query>` | Physical plan | The output of `Optimization::bestPlan` — the optimized logical plan before translation to Velox |
+| `EXPLAIN <query>` | Velox plan | The default output — a distributed execution plan with Velox operators. Same as `EXPLAIN (TYPE EXECUTABLE)` |
+| `EXPLAIN (TYPE LOGICAL) <query>` | Logical plan | The unoptimized logical plan tree (the output of `PrestoParser`) |
+| `EXPLAIN (TYPE GRAPH) <query>` | Query graph | The output of `ToGraph` — parsed query structure with tables, joins, filters, and aggregations |
+| `EXPLAIN (TYPE OPTIMIZED) <query>` | Physical plan | The output of `Optimization::bestPlan` — the optimized logical plan before translation to Velox |
+| `EXPLAIN (TYPE EXECUTABLE) <query>` | Velox plan | The distributed execution plan with Velox operators (same as default `EXPLAIN`) |
+| `EXPLAIN (TYPE DISTRIBUTED) <query>` | Velox plan | Alias for `EXECUTABLE` |
+| `EXPLAIN ANALYZE <query>` | Velox plan + stats | Runs the query and shows the execution plan with runtime statistics (row counts, timings, custom operator stats). Use `--debug` flag for custom operator stats |
+
+The types correspond to stages of the query compilation pipeline:
+1. **LOGICAL** — SQL parsed into a logical plan tree
+2. **GRAPH** — Logical plan converted into a query graph (input to the optimizer)
+3. **OPTIMIZED** — Optimizer produces the best physical plan
+4. **EXECUTABLE** — Physical plan translated to Velox operators for execution
 
 ### TPC-H Data Directories
 
