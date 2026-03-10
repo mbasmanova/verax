@@ -27,6 +27,9 @@ namespace facebook::axiom::optimizer::test {
 
 class HiveQueriesTestBase : public QueryTestBase {
  protected:
+  static const inline std::string kDefaultSchema{
+      connector::hive::LocalHiveConnectorMetadata::kDefaultSchema};
+
   static void SetUpTestCase();
 
   void SetUp() override;
@@ -100,6 +103,11 @@ class HiveQueriesTestBase : public QueryTestBase {
   /// Parses a CREATE TABLE AS SELECT statement, creates the table, and
   /// populates it with data. Drops the table first if it already exists.
   void runCtas(const std::string& sql);
+
+  static velox::core::PlanMatcherBuilder matchHiveScan(
+      const std::string& tableName) {
+    return velox::core::PlanMatcherBuilder().tableScan(tableName);
+  }
 
  private:
   inline static std::shared_ptr<velox::common::testutil::TempDirectoryPath>

@@ -16,8 +16,6 @@
 
 #include <gtest/gtest.h>
 
-#include "velox/common/base/tests/GTestUtils.h"
-
 #include "axiom/connectors/ConnectorMetadata.h"
 #include "axiom/connectors/SchemaResolver.h"
 #include "axiom/connectors/tests/TestConnector.h"
@@ -65,71 +63,44 @@ class SchemaResolverTest : public ::testing::Test {
 };
 
 TEST_F(SchemaResolverTest, bareTable) {
-  auto lookup = "table";
-  auto expect = "baseschema.table";
-  baseCatalog_.connector->addTable(expect);
+  ConnectorMetadata::metadata("base")->createTable(
+      nullptr, {"baseschema", "table"}, ROW({}), {});
 
-  auto table = resolver_->findTable("base", lookup);
+  auto table = resolver_->findTable("base", {"baseschema", "table"});
   ASSERT_NE(table, nullptr);
-  ASSERT_EQ(table->name(), expect);
 
-  table = resolver_->findTable("other", lookup);
+  table = resolver_->findTable("other", {"otherschema", "table"});
   ASSERT_EQ(table, nullptr);
 }
 
-TEST_F(SchemaResolverTest, invalidName) {
-  auto lookup = "table.";
-  VELOX_ASSERT_THROW(
-      resolver_->findTable("base", lookup),
-      fmt::format("Invalid table name: '{}'", lookup));
-
-  lookup = "...";
-  VELOX_ASSERT_THROW(
-      resolver_->findTable("base", lookup),
-      fmt::format("Invalid table name: '{}'", lookup));
-
-  lookup = "catalog.extra.schema.table";
-  VELOX_ASSERT_THROW(
-      resolver_->findTable("base", lookup),
-      fmt::format("Invalid table name: '{}'", lookup));
-}
-
 TEST_F(SchemaResolverTest, tablePlusSchema) {
-  auto lookup = "newschema.table";
-  baseCatalog_.connector->addTable(lookup);
-  auto table = resolver_->findTable("base", lookup);
-  ASSERT_NE(table, nullptr);
-  ASSERT_EQ(table->name(), lookup);
+  ConnectorMetadata::metadata("base")->createTable(
+      nullptr, {"newschema", "table"}, ROW({}), {});
 
-  table = resolver_->findTable("other", lookup);
+  auto table = resolver_->findTable("base", {"newschema", "table"});
+  ASSERT_NE(table, nullptr);
+
+  table = resolver_->findTable("other", {"newschema", "table"});
   ASSERT_EQ(table, nullptr);
 }
 
 TEST_F(SchemaResolverTest, tablePlusSchemaPlusCatalog) {
-  auto lookup = "other.otherschema.table";
-  auto expect = "otherschema.table";
-  otherCatalog_.connector->addTable(expect);
-  auto table = resolver_->findTable("other", lookup);
+  ConnectorMetadata::metadata("other")->createTable(
+      /*session=*/nullptr, {"otherschema", "other_table"}, ROW({}), {});
+  auto table = resolver_->findTable("other", {"otherschema", "other_table"});
   ASSERT_NE(table, nullptr);
-  ASSERT_EQ(table->name(), expect);
 
-  lookup = "base.baseschema.table";
-  expect = "baseschema.table";
-  baseCatalog_.connector->addTable(expect);
-  table = resolver_->findTable("base", lookup);
+  ConnectorMetadata::metadata("base")->createTable(
+      nullptr, {"baseschema", "base_table"}, ROW({}), {});
+  table = resolver_->findTable("base", {"baseschema", "base_table"});
   ASSERT_NE(table, nullptr);
-  ASSERT_EQ(table->name(), expect);
 }
 
 TEST_F(SchemaResolverTest, catalogMismatch) {
-  auto lookupName = "other.otherschema.table";
-  otherCatalog_.connector->addTable(lookupName);
-  VELOX_ASSERT_THROW(
-      resolver_->findTable("base", lookupName),
-      "Input catalog must match table catalog specifier");
-
-  lookupName = "otherschema.table";
-  auto table = resolver_->findTable("base", lookupName);
+  // Table exists in "other" catalog but not in "base".
+  ConnectorMetadata::metadata("other")->createTable(
+      /*session=*/nullptr, {"otherschema", "table"}, ROW({}), {});
+  auto table = resolver_->findTable("base", {"otherschema", "table"});
   ASSERT_EQ(table, nullptr);
 }
 

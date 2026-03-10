@@ -26,9 +26,9 @@ namespace axiom::sql {
 class SqlQueryRunner {
  public:
   /// @param initializeConnectors Lambda to call to initialize connectors and
-  /// return a pair of default {connector ID, optional(schema)}.
+  /// return a pair of default {connector ID, schema}.
   void initialize(
-      const std::function<std::pair<std::string, std::optional<std::string>>()>&
+      const std::function<std::pair<std::string, std::string>()>&
           initializeConnectors);
 
   /// Results of running a query. SELECT queries return a vector of results.
@@ -121,7 +121,7 @@ class SqlQueryRunner {
   }
 
   /// Returns the default schema set during initialization.
-  const std::optional<std::string>& defaultSchema() const {
+  const std::string& defaultSchema() const {
     return defaultSchema_;
   }
 
@@ -203,7 +203,7 @@ class SqlQueryRunner {
   std::shared_ptr<folly::IOThreadPoolExecutor> spillExecutor_;
   std::unordered_map<std::string, std::string> config_;
   std::string defaultConnectorId_;
-  std::optional<std::string> defaultSchema_;
+  std::string defaultSchema_;
   std::atomic<int32_t> queryCounter_{0};
 };
 

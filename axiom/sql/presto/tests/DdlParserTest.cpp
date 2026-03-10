@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include "axiom/common/SchemaTableName.h"
 #include "axiom/sql/presto/tests/PrestoParserTestBase.h"
 #include "velox/common/base/tests/GTestUtils.h"
 
@@ -51,14 +52,14 @@ TEST_F(DdlParserTest, insertIntoTable) {
   // Wrong types.
   VELOX_ASSERT_THROW(
       parseSql("INSERT INTO nation SELECT 100, 'n-100', 2, 3"),
-      "Wrong column type: INTEGER vs. VARCHAR, column 'n_comment' in table 'nation'");
+      "Wrong column type: INTEGER vs. VARCHAR, column 'n_comment' in table \"default\".\"nation\"");
 }
 
 TEST_F(DdlParserTest, createTableAsSelect) {
   {
     auto nationSchema =
         facebook::axiom::connector::ConnectorMetadata::metadata(kConnectorId)
-            ->findTable("nation")
+            ->findTable(facebook::axiom::SchemaTableName{"default", "nation"})
             ->type();
 
     auto matcher = matchScan().tableWrite();
@@ -119,7 +120,7 @@ TEST_F(DdlParserTest, createTable) {
     ASSERT_TRUE(statement->isCreateTable());
 
     const auto* createTable = statement->as<CreateTableStatement>();
-    ASSERT_EQ("t", createTable->tableName());
+    ASSERT_EQ("t", createTable->tableName().table);
     ASSERT_TRUE(createTable->ifNotExists());
   }
 
@@ -188,7 +189,7 @@ TEST_F(DdlParserTest, createTable) {
   {
     auto likeSchema =
         facebook::axiom::connector::ConnectorMetadata::metadata(kConnectorId)
-            ->findTable("nation")
+            ->findTable(facebook::axiom::SchemaTableName{"default", "nation"})
             ->type();
     testCreateTable("CREATE TABLE copy (LIKE nation)", "copy", likeSchema);
   }
@@ -197,7 +198,7 @@ TEST_F(DdlParserTest, createTable) {
   {
     auto likeSchema =
         facebook::axiom::connector::ConnectorMetadata::metadata(kConnectorId)
-            ->findTable("nation")
+            ->findTable(facebook::axiom::SchemaTableName{"default", "nation"})
             ->type();
 
     // should respect the order of (before, LIKE, after)
@@ -287,7 +288,7 @@ TEST_F(DdlParserTest, dropTable) {
     ASSERT_TRUE(statement->isDropTable());
 
     const auto* dropTable = statement->as<DropTableStatement>();
-    ASSERT_EQ("t", dropTable->tableName());
+    ASSERT_EQ("t", dropTable->tableName().table);
     ASSERT_FALSE(dropTable->ifExists());
   }
 
@@ -296,19 +297,19 @@ TEST_F(DdlParserTest, dropTable) {
     ASSERT_TRUE(statement->isDropTable());
 
     const auto* dropTable = statement->as<DropTableStatement>();
-    ASSERT_EQ("u", dropTable->tableName());
+    ASSERT_EQ("u", dropTable->tableName().table);
     ASSERT_TRUE(dropTable->ifExists());
   }
 }
 
 TEST_F(DdlParserTest, view) {
   connector_->createView(
-      "view",
+      {std::string(kDefaultSchema), "view"},
       ROW({"n_nationkey", "cnt"}, {BIGINT(), BIGINT()}),
       "SELECT n_regionkey as regionkey, count(*) cnt FROM nation GROUP BY 1");
 
   SCOPE_EXIT {
-    connector_->dropView("view");
+    connector_->dropView({std::string(kDefaultSchema), "view"});
   };
 
   auto matcher = matchScan()

@@ -17,12 +17,9 @@
 #include <gtest/gtest.h>
 #include "axiom/connectors/tests/TestConnector.h"
 #include "axiom/logical_plan/PlanBuilder.h"
-#include "axiom/optimizer/Optimization.h"
 #include "axiom/optimizer/tests/PlanMatcher.h"
 #include "axiom/optimizer/tests/QueryTestBase.h"
 #include "velox/common/base/tests/GTestUtils.h"
-#include "velox/functions/prestosql/aggregates/RegisterAggregateFunctions.h"
-#include "velox/functions/prestosql/registration/RegistrationFunctions.h"
 
 namespace facebook::axiom::optimizer {
 namespace {
@@ -33,6 +30,8 @@ namespace lp = facebook::axiom::logical_plan;
 class AggregationPlanTest : public test::QueryTestBase {
  protected:
   static constexpr auto kTestConnectorId = "test";
+  static const inline std::string kDefaultSchema{
+      connector::TestConnector::kDefaultSchema};
 
   void SetUp() override {
     test::QueryTestBase::SetUp();
@@ -40,9 +39,6 @@ class AggregationPlanTest : public test::QueryTestBase {
     testConnector_ =
         std::make_shared<connector::TestConnector>(kTestConnectorId);
     velox::connector::registerConnector(testConnector_);
-
-    functions::prestosql::registerAllScalarFunctions();
-    aggregate::prestosql::registerAllAggregateFunctions();
   }
 
   void TearDown() override {
@@ -52,6 +48,9 @@ class AggregationPlanTest : public test::QueryTestBase {
   }
 
   std::shared_ptr<connector::TestConnector> testConnector_;
+  lp::PlanBuilder::Context makeContext() const {
+    return lp::PlanBuilder::Context{kTestConnectorId, kDefaultSchema};
+  }
 };
 
 TEST_F(AggregationPlanTest, dedupGroupingKeysAndAggregates) {
@@ -59,8 +58,8 @@ TEST_F(AggregationPlanTest, dedupGroupingKeysAndAggregates) {
       "numbers", ROW({"a", "b", "c"}, {BIGINT(), BIGINT(), DOUBLE()}));
 
   {
-    auto logicalPlan = lp::PlanBuilder{}
-                           .tableScan(kTestConnectorId, "numbers")
+    auto logicalPlan = lp::PlanBuilder(makeContext())
+                           .tableScan("numbers")
                            .project({"a + b as x", "a + b as y", "c"})
                            .aggregate({"x", "y"}, {"count(1)", "count(1)"})
                            .build();
@@ -81,8 +80,8 @@ TEST_F(AggregationPlanTest, dedupGroupingKeysAndAggregates) {
 TEST_F(AggregationPlanTest, duplicatesBetweenGroupAndAggregate) {
   testConnector_->addTable("t", ROW({"a", "b"}, {BIGINT(), BIGINT()}));
 
-  auto logicalPlan = lp::PlanBuilder{}
-                         .tableScan(kTestConnectorId, "t")
+  auto logicalPlan = lp::PlanBuilder(makeContext())
+                         .tableScan("t")
                          .project({"a + b AS ab1", "a + b AS ab2"})
                          .aggregate({"ab1", "ab2"}, {"count(ab2) AS c1"})
                          .project({"ab1 AS x", "ab2 AS y", "c1 AS z"})
@@ -103,8 +102,8 @@ TEST_F(AggregationPlanTest, duplicatesBetweenGroupAndAggregate) {
 TEST_F(AggregationPlanTest, dedupMask) {
   testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
 
-  auto logicalPlan = lp::PlanBuilder(/*enableCoersions=*/true)
-                         .tableScan(kTestConnectorId, "t")
+  auto logicalPlan = lp::PlanBuilder(makeContext(), /*enableCoercions=*/true)
+                         .tableScan("t")
                          .aggregate(
                              {},
                              {"sum(a) FILTER (WHERE b > 0)",
@@ -132,8 +131,8 @@ TEST_F(AggregationPlanTest, dedupMask) {
 TEST_F(AggregationPlanTest, dedupOrderBy) {
   testConnector_->addTable("t", ROW({"a", "b", "c"}, BIGINT()));
 
-  auto logicalPlan = lp::PlanBuilder(/*enableCoersions=*/true)
-                         .tableScan(kTestConnectorId, "t")
+  auto logicalPlan = lp::PlanBuilder(makeContext(), /*enableCoercions=*/true)
+                         .tableScan("t")
                          .aggregate(
                              {},
                              {"array_agg(a ORDER BY a, a)",
@@ -162,8 +161,8 @@ TEST_F(AggregationPlanTest, dedupSameOptions) {
   testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
 
   auto logicalPlan =
-      lp::PlanBuilder(/*enableCoersions=*/true)
-          .tableScan(kTestConnectorId, "t")
+      lp::PlanBuilder(makeContext(), /*enableCoercions=*/true)
+          .tableScan("t")
           .aggregate(
               {},
               {"array_agg(a ORDER BY a, a, a)",
@@ -232,8 +231,8 @@ TEST_F(AggregationPlanTest, orderBy) {
   // Query with ORDER BY in aggregate should use single aggregation step, even
   // if the optimizer option requires always planning partial aggregation.
   auto logicalPlan =
-      lp::PlanBuilder()
-          .tableScan(kTestConnectorId, "t")
+      lp::PlanBuilder(makeContext())
+          .tableScan("t")
           .aggregate({"k"}, {"array_agg(v1 ORDER BY v2)", "sum(v1)"})
           .build();
   auto matcher =
@@ -255,8 +254,8 @@ TEST_F(AggregationPlanTest, orderBy) {
   }
 
   // Query without ORDER BY - should use partial + final aggregation.
-  logicalPlan = lp::PlanBuilder()
-                    .tableScan(kTestConnectorId, "t")
+  logicalPlan = lp::PlanBuilder(makeContext())
+                    .tableScan("t")
                     .aggregate({"k"}, {"sum(v1)"})
                     .build();
   auto plan = planVelox(logicalPlan);
@@ -291,8 +290,8 @@ TEST_F(AggregationPlanTest, repartitionForAggPartitionSubset) {
 
   // Test current partitionKeys ⊆ required groupingKeys --> no shuffle needed.
   {
-    auto logicalPlan = lp::PlanBuilder()
-                           .tableScan(kTestConnectorId, "t")
+    auto logicalPlan = lp::PlanBuilder(makeContext())
+                           .tableScan("t")
                            .aggregate({"a", "b"}, {})
                            .with({"a + b as d"})
                            .aggregate({"a", "b", "d"}, {})
@@ -318,8 +317,8 @@ TEST_F(AggregationPlanTest, repartitionForAggPartitionSubset) {
 
   // Test current partitionKeys ⊄ required groupingKeys --> shuffle is needed.
   {
-    auto logicalPlan = lp::PlanBuilder()
-                           .tableScan(kTestConnectorId, "t")
+    auto logicalPlan = lp::PlanBuilder(makeContext())
+                           .tableScan("t")
                            .aggregate({"a", "b", "c"}, {})
                            .aggregate({"a", "b"}, {})
                            .build();
@@ -374,8 +373,8 @@ TEST_F(AggregationPlanTest, singleDistinctToGroupBy) {
     // Test global aggregation with multiple DISTINCT aggregates on the same set
     // of columns.
     auto logicalPlan =
-        lp::PlanBuilder()
-            .tableScan(kTestConnectorId, "t")
+        lp::PlanBuilder(makeContext())
+            .tableScan("t")
             .aggregate({}, {"count(DISTINCT b)", "covar_pop(DISTINCT b, b)"})
             .build();
 
@@ -398,8 +397,8 @@ TEST_F(AggregationPlanTest, singleDistinctToGroupBy) {
 
   {
     // Test single DISTINCT aggregate with grouping keys.
-    auto logicalPlan = lp::PlanBuilder()
-                           .tableScan(kTestConnectorId, "t")
+    auto logicalPlan = lp::PlanBuilder(makeContext())
+                           .tableScan("t")
                            .aggregate({"a"}, {"count(DISTINCT b)"})
                            .build();
 
@@ -417,8 +416,8 @@ TEST_F(AggregationPlanTest, singleDistinctToGroupBy) {
   {
     // Test multiple DISTINCT aggregates on the same set of columns.
     auto logicalPlan =
-        lp::PlanBuilder()
-            .tableScan(kTestConnectorId, "t")
+        lp::PlanBuilder(makeContext())
+            .tableScan("t")
             .aggregate({"a"}, {"count(DISTINCT b)", "covar_pop(DISTINCT b, b)"})
             .build();
 
@@ -436,8 +435,8 @@ TEST_F(AggregationPlanTest, singleDistinctToGroupBy) {
   {
     // Test expression-based grouping keys and distinct args.
     auto logicalPlan =
-        lp::PlanBuilder()
-            .tableScan(kTestConnectorId, "t")
+        lp::PlanBuilder(makeContext())
+            .tableScan("t")
             .aggregate(
                 {"a + 1"}, {"count(DISTINCT b + c)", "sum(DISTINCT b + c)"})
             .build();
@@ -457,8 +456,8 @@ TEST_F(AggregationPlanTest, singleDistinctToGroupBy) {
     // Test same set of distinct args with different order and duplicates: (b,
     // c) and (c, b) have the same set {b, c}.
     auto logicalPlan =
-        lp::PlanBuilder()
-            .tableScan(kTestConnectorId, "t")
+        lp::PlanBuilder(makeContext())
+            .tableScan("t")
             .aggregate(
                 {"a"},
                 {"covar_pop(DISTINCT b, c)", "covar_samp(DISTINCT c, b)"})
@@ -477,8 +476,8 @@ TEST_F(AggregationPlanTest, singleDistinctToGroupBy) {
 
   {
     // Test DISTINCT argument overlap with grouping keys.
-    auto logicalPlan = lp::PlanBuilder()
-                           .tableScan(kTestConnectorId, "t")
+    auto logicalPlan = lp::PlanBuilder(makeContext())
+                           .tableScan("t")
                            .aggregate({"b"}, {"covar_pop(DISTINCT b, c)"})
                            .build();
 
@@ -501,8 +500,8 @@ TEST_F(AggregationPlanTest, unsupportedAggregationOverDistinct) {
   {
     // Different DISTINCT arguments across aggregates is not supported yet.
     auto logicalPlan =
-        lp::PlanBuilder()
-            .tableScan(kTestConnectorId, "t")
+        lp::PlanBuilder(makeContext())
+            .tableScan("t")
             .aggregate({"a"}, {"count(DISTINCT b)", "sum(DISTINCT c)"})
             .build();
 
@@ -514,8 +513,8 @@ TEST_F(AggregationPlanTest, unsupportedAggregationOverDistinct) {
   {
     // Different DISTINCT argument sets: {b, c} vs {b}.
     auto logicalPlan =
-        lp::PlanBuilder()
-            .tableScan(kTestConnectorId, "t")
+        lp::PlanBuilder(makeContext())
+            .tableScan("t")
             .aggregate(
                 {"a"},
                 {"covar_pop(DISTINCT b, c)", "covar_samp(DISTINCT b, b)"})
@@ -528,8 +527,8 @@ TEST_F(AggregationPlanTest, unsupportedAggregationOverDistinct) {
 
   {
     // Mix of DISTINCT and non-DISTINCT aggregates is not supported yet.
-    auto logicalPlan = lp::PlanBuilder()
-                           .tableScan(kTestConnectorId, "t")
+    auto logicalPlan = lp::PlanBuilder(makeContext())
+                           .tableScan("t")
                            .aggregate({"a"}, {"count(DISTINCT b)", "sum(c)"})
                            .build();
 
@@ -541,8 +540,8 @@ TEST_F(AggregationPlanTest, unsupportedAggregationOverDistinct) {
   {
     // DISTINCT with ORDER BY is not supported yet.
     auto logicalPlan =
-        lp::PlanBuilder()
-            .tableScan(kTestConnectorId, "t")
+        lp::PlanBuilder(makeContext())
+            .tableScan("t")
             .aggregate({"a"}, {"array_agg(DISTINCT b ORDER BY c)"})
             .build();
 

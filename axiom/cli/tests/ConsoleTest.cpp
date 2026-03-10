@@ -53,7 +53,10 @@ class ConsoleTest : public ::testing::Test {
 
       connectorIds_.emplace_back(testConnector->connectorId());
 
-      return std::make_pair(testConnector->connectorId(), std::nullopt);
+      return std::make_pair(
+          testConnector->connectorId(),
+          std::string(
+              facebook::axiom::connector::TestConnector::kDefaultSchema));
     });
 
     return runner;

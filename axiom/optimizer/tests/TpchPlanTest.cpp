@@ -63,9 +63,7 @@ class TpchPlanTest : public virtual test::HiveQueriesTestBase {
   lp::LogicalPlanNodePtr parseTpchSql(int32_t query) {
     auto sql = tests::readTpchSql(query);
 
-    ::axiom::sql::presto::PrestoParser prestoParser(
-        exec::test::kHiveConnectorId, std::nullopt);
-    auto statement = prestoParser.parse(sql);
+    auto statement = prestoParser().parse(sql);
 
     VELOX_CHECK(statement->isSelect());
 
@@ -93,9 +91,8 @@ TEST_F(TpchPlanTest, stats) {
   auto verifyStats = [&](const auto& tableName, auto cardinality) {
     SCOPED_TRACE(tableName);
 
-    auto logicalPlan = lp::PlanBuilder()
-                           .tableScan(exec::test::kHiveConnectorId, tableName)
-                           .build();
+    lp::PlanBuilder::Context ctx{exec::test::kHiveConnectorId, kDefaultSchema};
+    auto logicalPlan = lp::PlanBuilder(ctx).tableScan(tableName).build();
 
     auto planAndStats = planVelox(logicalPlan);
     auto stats = planAndStats.prediction;

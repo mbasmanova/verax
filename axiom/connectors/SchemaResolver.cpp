@@ -15,44 +15,29 @@
  */
 
 #include "axiom/connectors/SchemaResolver.h"
-#include "axiom/connectors/SchemaUtils.h"
 
 namespace facebook::axiom::connector {
 
-void SchemaResolver::setTargetTable(std::string_view catalog, TablePtr table) {
+void SchemaResolver::setTargetTable(
+    const std::string& connectorId,
+    const SchemaTableName& tableName,
+    TablePtr table) {
   VELOX_CHECK_NULL(targetTable_);
 
-  targetCatalog_ = catalog;
+  targetConnectorId_ = connectorId;
+  targetTableName_ = tableName;
   targetTable_ = std::move(table);
 }
 
 TablePtr SchemaResolver::findTable(
-    std::string_view catalog,
-    std::string_view name) const {
-  TableNameParser parser(name);
-  VELOX_USER_CHECK(parser.valid(), "Invalid table name: '{}'", name);
-
-  if (parser.catalog().has_value()) {
-    VELOX_USER_CHECK_EQ(
-        catalog,
-        parser.catalog().value(),
-        "Input catalog must match table catalog specifier");
-  }
-
-  std::string lookupName;
-  if (parser.schema().has_value()) {
-    lookupName = fmt::format("{}.{}", parser.schema().value(), parser.table());
-  } else if (!defaultSchema_.empty()) {
-    lookupName = fmt::format("{}.{}", defaultSchema_, parser.table());
-  } else {
-    lookupName = parser.table();
-  }
-
-  if (targetCatalog_ == catalog && targetTable_->name() == lookupName) {
+    const std::string& connectorId,
+    const SchemaTableName& tableName) const {
+  if (targetTable_ && connectorId == targetConnectorId_ &&
+      tableName == targetTableName_) {
     return targetTable_;
   }
 
-  return ConnectorMetadata::metadata(catalog)->findTable(lookupName);
+  return ConnectorMetadata::metadata(connectorId)->findTable(tableName);
 }
 
 } // namespace facebook::axiom::connector

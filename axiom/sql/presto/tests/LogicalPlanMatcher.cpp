@@ -562,7 +562,7 @@ LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::tableScan(
     const std::string& tableName) {
   return tableScan([tableName](const LogicalPlanNodePtr& node) {
     auto scan = std::dynamic_pointer_cast<const TableScanNode>(node);
-    EXPECT_EQ(scan->tableName(), tableName);
+    EXPECT_EQ(scan->tableName().table, tableName);
   });
 }
 

@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include "axiom/connectors/hive/LocalHiveConnectorMetadata.h"
 #include "axiom/logical_plan/PlanBuilder.h"
 #include "axiom/optimizer/FunctionRegistry.h"
 #include "axiom/optimizer/tests/FeatureGen.h"
@@ -102,6 +103,13 @@ lp::ExprPtr stepToLogicalPlanGetter(Step step, const lp::ExprPtr& arg) {
 class SubfieldTest : public QueryTestBase,
                      public testing::WithParamInterface<int32_t> {
  protected:
+  static const inline std::string kDefaultSchema{
+      connector::hive::LocalHiveConnectorMetadata::kDefaultSchema};
+
+  lp::PlanBuilder::Context makeContext() const {
+    return lp::PlanBuilder::Context{kHiveConnectorId, kDefaultSchema};
+  }
+
   static void SetUpTestCase() {
     QueryTestBase::SetUpTestCase();
     LocalRunnerTestBase::localDataPath_ = FLAGS_subfield_data_path;
@@ -268,7 +276,10 @@ class SubfieldTest : public QueryTestBase,
 
   void testMakeRowFromMap() {
     lp::PlanBuilder::Context ctx(
-        exec::test::kHiveConnectorId, getQueryCtx(), resolveDfFunction);
+        exec::test::kHiveConnectorId,
+        kDefaultSchema,
+        getQueryCtx(),
+        resolveDfFunction);
     auto logicalPlan =
         lp::PlanBuilder(ctx)
             .tableScan("features")
@@ -399,11 +410,10 @@ TEST_P(SubfieldTest, structs) {
   auto vectors = makeVectors(rowType, 10, 10);
   createTable("structs", vectors);
 
-  auto logicalPlan =
-      lp::PlanBuilder()
-          .tableScan(kHiveConnectorId, "structs", rowType->names())
-          .project({"s.s1", "s.s3[1]"})
-          .build();
+  auto logicalPlan = lp::PlanBuilder(makeContext())
+                         .tableScan("structs", rowType->names())
+                         .project({"s.s1", "s.s3[1]"})
+                         .build();
 
   auto fragmentedPlan = planVelox(logicalPlan);
 
@@ -428,8 +438,8 @@ TEST_P(SubfieldTest, genie) {
   // accessed and should not be in the table scan.
   {
     auto logicalPlan =
-        lp::PlanBuilder()
-            .tableScan(kHiveConnectorId, "features")
+        lp::PlanBuilder(makeContext())
+            .tableScan("features")
             .project(
                 {"genie(uid, float_features, id_list_features, id_score_list_features) as g"})
             // Access some fields of the genie by name, others by index.
@@ -453,8 +463,8 @@ TEST_P(SubfieldTest, genie) {
   // All of genie is returned.
   {
     auto logicalPlan =
-        lp::PlanBuilder()
-            .tableScan(kHiveConnectorId, "features")
+        lp::PlanBuilder(makeContext())
+            .tableScan("features")
             .project(
                 {"genie(uid, float_features, id_list_features, id_score_list_features) as gtemp"})
             .project({"gtemp as g"})
@@ -480,8 +490,8 @@ TEST_P(SubfieldTest, genie) {
   // We expect the genie to explode and the filters to be first.
   {
     auto logicalPlan =
-        lp::PlanBuilder()
-            .tableScan(kHiveConnectorId, "features")
+        lp::PlanBuilder(makeContext())
+            .tableScan("features")
             .project(
                 {"exploding_genie(uid, float_features, id_list_features, id_score_list_features) as g"})
             .project({"g[2] as ff", "g as gg"})
@@ -510,7 +520,7 @@ TEST_P(SubfieldTest, maps) {
   testMakeRowFromMap();
 
   {
-    lp::PlanBuilder::Context ctx(kHiveConnectorId);
+    lp::PlanBuilder::Context ctx(kHiveConnectorId, kDefaultSchema);
     auto logicalPlan =
         lp::PlanBuilder(ctx)
             .tableScan("features")
@@ -537,8 +547,8 @@ TEST_P(SubfieldTest, maps) {
   }
   {
     auto logicalPlan =
-        lp::PlanBuilder()
-            .tableScan(kHiveConnectorId, "features")
+        lp::PlanBuilder(makeContext())
+            .tableScan("features")
             .project(
                 {"float_features[10100::int] as f1",
                  "float_features[10200::int] as f2",
@@ -554,8 +564,8 @@ TEST_P(SubfieldTest, maps) {
         });
   }
   {
-    auto logicalPlan = lp::PlanBuilder()
-                           .tableScan(kHiveConnectorId, "features")
+    auto logicalPlan = lp::PlanBuilder(makeContext())
+                           .tableScan("features")
                            .project(
                                {"float_features[10000::int] as ff",
                                 "id_score_list_features[200800::int] as sc1",
@@ -572,8 +582,8 @@ TEST_P(SubfieldTest, maps) {
   }
 
   {
-    auto logicalPlan = lp::PlanBuilder()
-                           .tableScan(kHiveConnectorId, "features")
+    auto logicalPlan = lp::PlanBuilder(makeContext())
+                           .tableScan("features")
                            .project(
                                {"float_features[10100::int] as ff",
                                 "id_score_list_features[200800::int] as sc1",
@@ -596,8 +606,8 @@ TEST_P(SubfieldTest, maps) {
 
   {
     auto builder =
-        lp::PlanBuilder()
-            .tableScan(kHiveConnectorId, "features")
+        lp::PlanBuilder(makeContext())
+            .tableScan("features")
             .project(
                 {"transform(id_list_features[201800::int], x -> x + 1) as ids"});
 
@@ -638,12 +648,10 @@ TEST_P(SubfieldTest, parallelExpr) {
   opts.rng.seed(1);
   makeLogicalExprs(opts, names, exprs);
 
-  lp::PlanBuilder::Context ctx;
+  auto ctx = makeContext();
   auto logicalPlan = std::make_shared<lp::ProjectNode>(
       ctx.planNodeIdGenerator->next(),
-      lp::PlanBuilder(ctx)
-          .tableScan(kHiveConnectorId, "features", rowType->names())
-          .build(),
+      lp::PlanBuilder(ctx).tableScan("features", rowType->names()).build(),
       std::move(names),
       std::move(exprs));
 
@@ -668,8 +676,8 @@ TEST_P(SubfieldTest, unnest) {
           {makeNestedArrayVectorFromJson<int64_t>(
               {"[[1, 2], [3, 4]]", "[]"})})});
 
-  auto logicalPlan = lp::PlanBuilder()
-                         .tableScan(kHiveConnectorId, "t_unnest")
+  auto logicalPlan = lp::PlanBuilder(makeContext())
+                         .tableScan("t_unnest")
                          .unnest({"a[1]"})
                          .map({"a[3]"})
                          .build();
@@ -693,8 +701,8 @@ TEST_P(SubfieldTest, orderBy) {
       {makeRowVector(
           {"a"}, {makeArrayVectorFromJson<int64_t>({"[1, 2]", "[1, 2, 3]"})})});
 
-  auto logicalPlan = lp::PlanBuilder()
-                         .tableScan(kHiveConnectorId, "t_orderby")
+  auto logicalPlan = lp::PlanBuilder(makeContext())
+                         .tableScan("t_orderby")
                          .orderBy({"a[1]"})
                          .map({"a[3]"})
                          .build();
@@ -778,8 +786,8 @@ TEST_P(SubfieldTest, overAggregation) {
               makeArrayVectorFromJson<int64_t>({"[10, 20]", "[10, 20, 30]"}),
           })});
 
-  auto logicalPlan = lp::PlanBuilder()
-                         .tableScan(kHiveConnectorId, "t")
+  auto logicalPlan = lp::PlanBuilder(makeContext())
+                         .tableScan("t")
                          .aggregate({"a"}, {"array_agg(b) as c"})
                          .map({"a[2]", "c[1]"})
                          .build();
@@ -805,7 +813,7 @@ TEST_P(SubfieldTest, blackbox) {
   createTable("t", {data});
 
   lp::PlanBuilder::Context ctx(
-      kHiveConnectorId, getQueryCtx(), resolveDfFunction);
+      kHiveConnectorId, kDefaultSchema, getQueryCtx(), resolveDfFunction);
 
   auto logicalPlan =
       lp::PlanBuilder(ctx)

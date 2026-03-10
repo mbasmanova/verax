@@ -17,7 +17,7 @@ cnt
 
 ```scrut
 $ $CLI --query "CREATE TABLE test.default.t(a int, b int, c int); SELECT * FROM test.default.t; SHOW STATS FOR test.default.t" 2>/dev/null
-Created table: default.t
+Created table: "default"."t"
 (0 rows in 0 batches)
 
 ROW<row_count:BIGINT,column_name:VARCHAR,nulls_fraction:DOUBLE,distinct_values_count:BIGINT,avg_length:BIGINT,low_value:VARCHAR,high_value:VARCHAR>
@@ -36,7 +36,7 @@ row_count | column_name | nulls_fraction | distinct_values_count | avg_length | 
 
 ```scrut
 $ $CLI --query "CREATE TABLE test.default.t(a int, b int); INSERT INTO test.default.t VALUES (1, 2); SELECT * FROM test.default.t; SHOW STATS FOR test.default.t" 2>/dev/null
-Created table: default.t
+Created table: "default"."t"
 ROW<rows:BIGINT>
 ----
 rows
@@ -66,7 +66,7 @@ row_count | column_name | nulls_fraction | distinct_values_count | avg_length | 
 
 ```scrut
 $ $CLI --catalog test --schema default --query "CREATE TABLE t(x bigint, y bigint); INSERT INTO t VALUES (10, 20); INSERT INTO t VALUES (30, 40); SELECT * FROM t ORDER BY x" 2>/dev/null
-Created table: default.t
+Created table: "default"."t"
 ROW<rows:BIGINT>
 ----
 rows
@@ -95,8 +95,8 @@ ROW<x:BIGINT,y:BIGINT>
 
 ```scrut
 $ $CLI --catalog test --schema default --query "CREATE TABLE t(a int); DROP TABLE t; SELECT 1 as ok" 2>/dev/null
-Created table: default.t
-Dropped table: default.t
+Created table: "default"."t"
+Dropped table: "default"."t"
 ROW<ok:INTEGER>
 --
 ok
@@ -110,7 +110,7 @@ ok
 
 ```scrut
 $ $CLI --catalog test --schema default --query "DROP TABLE IF EXISTS t; SELECT 1 as ok" 2>/dev/null
-Table doesn't exist: default.t
+Table doesn't exist: "default"."t"
 ROW<ok:INTEGER>
 --
 ok
@@ -125,7 +125,7 @@ ok
 ```scrut
 $ $CLI --query "USE test.default; CREATE TABLE t(x int, y int); INSERT INTO t VALUES (1, 2); SELECT * FROM t" 2>/dev/null
 Using test.default
-Created table: default.t
+Created table: "default"."t"
 ROW<rows:BIGINT>
 ----
 rows

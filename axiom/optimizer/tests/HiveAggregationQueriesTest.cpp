@@ -36,7 +36,8 @@ class HiveAggregationQueriesTest : public test::HiveQueriesTestBase {
 };
 
 TEST_F(HiveAggregationQueriesTest, mask) {
-  lp::PlanBuilder::Context context(exec::test::kHiveConnectorId);
+  lp::PlanBuilder::Context context(
+      exec::test::kHiveConnectorId, kDefaultSchema);
   auto logicalPlan =
       lp::PlanBuilder(context)
           .tableScan("nation")
@@ -90,7 +91,8 @@ TEST_F(HiveAggregationQueriesTest, mask) {
 }
 
 TEST_F(HiveAggregationQueriesTest, distinct) {
-  lp::PlanBuilder::Context context(exec::test::kHiveConnectorId);
+  lp::PlanBuilder::Context context(
+      exec::test::kHiveConnectorId, kDefaultSchema);
   auto logicalPlan = lp::PlanBuilder(context)
                          .tableScan("nation")
                          .aggregate({}, {"count(distinct n_regionkey)"})
@@ -129,7 +131,8 @@ TEST_F(HiveAggregationQueriesTest, distinct) {
 }
 
 TEST_F(HiveAggregationQueriesTest, orderBy) {
-  lp::PlanBuilder::Context context(exec::test::kHiveConnectorId);
+  lp::PlanBuilder::Context context(
+      exec::test::kHiveConnectorId, kDefaultSchema);
   auto logicalPlan =
       lp::PlanBuilder(context)
           .tableScan("nation")
@@ -175,7 +178,8 @@ TEST_F(HiveAggregationQueriesTest, orderBy) {
 }
 
 TEST_F(HiveAggregationQueriesTest, maskWithOrderBy) {
-  lp::PlanBuilder::Context context(exec::test::kHiveConnectorId);
+  lp::PlanBuilder::Context context(
+      exec::test::kHiveConnectorId, kDefaultSchema);
   auto logicalPlan =
       lp::PlanBuilder(context)
           .tableScan("nation")
@@ -222,7 +226,8 @@ TEST_F(HiveAggregationQueriesTest, maskWithOrderBy) {
 }
 
 TEST_F(HiveAggregationQueriesTest, distinctWithOrderBy) {
-  lp::PlanBuilder::Context context(exec::test::kHiveConnectorId);
+  lp::PlanBuilder::Context context(
+      exec::test::kHiveConnectorId, kDefaultSchema);
   auto logicalPlan =
       lp::PlanBuilder(context)
           .tableScan("nation")
@@ -240,7 +245,8 @@ TEST_F(HiveAggregationQueriesTest, distinctWithOrderBy) {
 }
 
 TEST_F(HiveAggregationQueriesTest, ignoreDuplicates) {
-  lp::PlanBuilder::Context context(exec::test::kHiveConnectorId);
+  lp::PlanBuilder::Context context(
+      exec::test::kHiveConnectorId, kDefaultSchema);
   auto logicalPlan =
       lp::PlanBuilder(context)
           .tableScan("nation")
@@ -326,7 +332,8 @@ TEST_F(HiveAggregationQueriesTest, ignoreDuplicates) {
 }
 
 TEST_F(HiveAggregationQueriesTest, orderNonSensitive) {
-  lp::PlanBuilder::Context context(exec::test::kHiveConnectorId);
+  lp::PlanBuilder::Context context(
+      exec::test::kHiveConnectorId, kDefaultSchema);
   auto logicalPlan =
       lp::PlanBuilder(context)
           .tableScan("nation")
@@ -406,7 +413,8 @@ TEST_F(HiveAggregationQueriesTest, orderNonSensitive) {
 }
 
 TEST_F(HiveAggregationQueriesTest, ignoreDuplicatesXOrderNonSensitive) {
-  lp::PlanBuilder::Context context(exec::test::kHiveConnectorId);
+  lp::PlanBuilder::Context context(
+      exec::test::kHiveConnectorId, kDefaultSchema);
   auto logicalPlan =
       lp::PlanBuilder(context)
           .tableScan("nation")

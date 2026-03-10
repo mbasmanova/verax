@@ -70,7 +70,7 @@ class TpchSplitManager : public ConnectorSplitManager {
 class TpchTableLayout : public TableLayout {
  public:
   TpchTableLayout(
-      const std::string& name,
+      const std::string& label,
       const Table* table,
       velox::connector::Connector* connector,
       std::vector<const Column*> columns,
@@ -81,7 +81,7 @@ class TpchTableLayout : public TableLayout {
       velox::tpch::Table tpchTable,
       double scaleFactor)
       : TableLayout(
-            name,
+            label,
             table,
             connector,
             std::move(columns),
@@ -129,7 +129,7 @@ class TpchTableLayout : public TableLayout {
 class TpchTable : public Table {
  public:
   TpchTable(
-      std::string name,
+      SchemaTableName name,
       velox::RowTypePtr type,
       velox::tpch::Table tpchTable,
       double scaleFactor,
@@ -176,16 +176,16 @@ class TpchConnectorMetadata : public ConnectorMetadata {
   explicit TpchConnectorMetadata(
       velox::connector::tpch::TpchConnector* tpchConnector);
 
-  TablePtr findTable(std::string_view name) override;
+  TablePtr findTable(const SchemaTableName& tableName) override;
 
-  ViewPtr findView(std::string_view name) override;
+  ViewPtr findView(const SchemaTableName& tableName) override;
 
   void createView(
-      std::string_view name,
+      const SchemaTableName& viewName,
       velox::RowTypePtr type,
       std::string_view text);
 
-  bool dropView(std::string_view name);
+  bool dropView(const SchemaTableName& viewName);
 
   ConnectorSplitManager* splitManager() override {
     return &splitManager_;
@@ -205,7 +205,8 @@ class TpchConnectorMetadata : public ConnectorMetadata {
   std::shared_ptr<velox::memory::MemoryPool> rootPool_{
       velox::memory::memoryManager()->addRootPool()};
   TpchSplitManager splitManager_;
-  std::unordered_map<std::string, ViewDefinition> views_;
+  folly::F14FastMap<SchemaTableName, ViewDefinition, SchemaTableNameHash>
+      views_;
 };
 
 } // namespace facebook::axiom::connector::tpch

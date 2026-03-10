@@ -16,6 +16,7 @@
 #pragma once
 
 #include "axiom/common/Enums.h"
+#include "axiom/common/SchemaTableName.h"
 #include "axiom/logical_plan/Expr.h"
 #include "velox/common/serialization/Serializable.h"
 #include "velox/type/Variant.h"
@@ -192,15 +193,14 @@ class TableScanNode : public LogicalPlanNode {
  public:
   /// @param id Unique ID of the plan node.
   /// @param outputType Output schema. A list of column names and types.
-  /// @param connectorId ID of the connector to use to access the table.
-  /// @param tableName Table name.
+  /// @param tableName Table name with catalog and schema.
   /// @param columnNames A list of column names. Must align with 'outputType',
   /// which may expose columns under different names.
   TableScanNode(
       std::string id,
       velox::RowTypePtr outputType,
       std::string connectorId,
-      std::string tableName,
+      SchemaTableName tableName,
       std::vector<std::string> columnNames)
       : LogicalPlanNode{NodeKind::kTableScan, std::move(id), {}, std::move(outputType)},
         connectorId_{std::move(connectorId)},
@@ -219,7 +219,7 @@ class TableScanNode : public LogicalPlanNode {
     return connectorId_;
   }
 
-  const std::string& tableName() const {
+  const SchemaTableName& tableName() const {
     return tableName_;
   }
 
@@ -236,7 +236,7 @@ class TableScanNode : public LogicalPlanNode {
 
  private:
   const std::string connectorId_;
-  const std::string tableName_;
+  const SchemaTableName tableName_;
   const std::vector<std::string> columnNames_;
 };
 
@@ -756,9 +756,8 @@ AXIOM_DECLARE_ENUM_NAME(WriteKind);
 class TableWriteNode : public LogicalPlanNode {
  public:
   /// @param id Unique ID of the plan node.
-  /// @param input Input node.
-  /// @param connectorId ID of the connector to use to access the table.
-  /// @param tableName Table name.
+  /// @param input The child plan node providing data to write.
+  /// @param tableName Table name with catalog and schema.
   /// @param writeKind The type of write (create/insert/delete/update).
   /// @param columnNames A subset of columns in the table being written.
   /// Correspond 1:1 to 'columnExpressions'. 'columnNames' must refer to columns
@@ -775,7 +774,7 @@ class TableWriteNode : public LogicalPlanNode {
       std::string id,
       LogicalPlanNodePtr input,
       std::string connectorId,
-      std::string tableName,
+      SchemaTableName tableName,
       WriteKind writeKind,
       std::vector<std::string> columnNames,
       std::vector<ExprPtr> columnExpressions,
@@ -785,7 +784,7 @@ class TableWriteNode : public LogicalPlanNode {
     return connectorId_;
   }
 
-  const std::string& tableName() const {
+  const SchemaTableName& tableName() const {
     return tableName_;
   }
 
@@ -814,7 +813,7 @@ class TableWriteNode : public LogicalPlanNode {
 
  private:
   const std::string connectorId_;
-  const std::string tableName_;
+  const SchemaTableName tableName_;
   const WriteKind writeKind_;
   const std::vector<std::string> columnNames_;
   const std::vector<ExprPtr> columnExpressions_;

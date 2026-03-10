@@ -113,6 +113,9 @@ class PlanBuilder {
     /// Identifies the connector to use when tableScan omits the catalog prefix.
     std::optional<std::string> defaultConnectorId;
 
+    /// Schema to use when tableScan receives a plain table name string.
+    std::optional<std::string> defaultSchema;
+
     /// Parses SQL expression strings. Defaults to DuckDB dialect.
     std::shared_ptr<velox::parse::SqlExpressionsParser> sqlParser;
 
@@ -137,12 +140,14 @@ class PlanBuilder {
 
     explicit Context(
         const std::optional<std::string>& defaultConnectorId = std::nullopt,
+        const std::optional<std::string>& defaultSchema = std::nullopt,
         std::shared_ptr<velox::core::QueryCtx> queryCtxPtr = nullptr,
         ExprResolver::FunctionRewriteHook hook = nullptr,
         std::shared_ptr<velox::parse::SqlExpressionsParser> sqlParser =
             std::make_shared<velox::parse::DuckSqlExpressionsParser>(
                 velox::parse::ParseOptions{.parseInListAsArray = false}))
         : defaultConnectorId{defaultConnectorId},
+          defaultSchema{defaultSchema},
           sqlParser{std::move(sqlParser)},
           planNodeIdGenerator{
               std::make_shared<velox::core::PlanNodeIdGenerator>()},
@@ -188,6 +193,7 @@ class PlanBuilder {
       bool allowAmbiguousOutputNames = false,
       Scope outerScope = nullptr)
       : defaultConnectorId_{context.defaultConnectorId},
+        defaultSchema_{context.defaultSchema},
         planNodeIdGenerator_{context.planNodeIdGenerator},
         nameAllocator_{context.nameAllocator},
         outerScope_{std::move(outerScope)},
@@ -234,20 +240,17 @@ class PlanBuilder {
   /// Adds a leaf TableScan node reading specified columns from a table.
   PlanBuilder& tableScan(
       const std::string& connectorId,
+      const std::string& schemaName,
       const std::string& tableName,
       const std::vector<std::string>& columnNames);
 
-  PlanBuilder& tableScan(
-      const std::string& connectorId,
-      const char* tableName,
-      std::initializer_list<const char*> columnNames) {
-    return tableScan(
-        connectorId,
-        tableName,
-        std::vector<std::string>{columnNames.begin(), columnNames.end()});
-  }
-
   /// @overload Uses the default connector ID from Context.
+  PlanBuilder& tableScan(
+      const std::string& schemaName,
+      const std::string& tableName,
+      const std::vector<std::string>& columnNames);
+
+  /// @overload Uses the default connector ID and schema from Context.
   PlanBuilder& tableScan(
       const std::string& tableName,
       const std::vector<std::string>& columnNames);
@@ -263,17 +266,17 @@ class PlanBuilder {
   /// Equivalent to SELECT * FROM <tableName>.
   PlanBuilder& tableScan(
       const std::string& connectorId,
+      const std::string& schemaName,
       const std::string& tableName,
       bool includeHiddenColumns = false);
 
-  PlanBuilder& tableScan(
-      const std::string& connectorId,
-      const char* tableName,
-      bool includeHiddenColumns = false) {
-    return tableScan(connectorId, std::string{tableName}, includeHiddenColumns);
-  }
-
   /// @overload Uses the default connector ID from Context.
+  PlanBuilder& tableScan(
+      const std::string& schemaName,
+      const std::string& tableName,
+      bool includeHiddenColumns = false);
+
+  /// @overload Uses the default connector ID and schema from Context.
   PlanBuilder& tableScan(
       const std::string& tableName,
       bool includeHiddenColumns = false);
@@ -585,6 +588,7 @@ class PlanBuilder {
   /// specified table.
   PlanBuilder& tableWrite(
       std::string connectorId,
+      std::string schemaName,
       std::string tableName,
       WriteKind kind,
       std::vector<std::string> columnNames,
@@ -595,6 +599,7 @@ class PlanBuilder {
   // 'columnExprs'.
   PlanBuilder& tableWrite(
       std::string connectorId,
+      std::string schemaName,
       std::string tableName,
       WriteKind kind,
       std::vector<std::string> columnNames,
@@ -602,6 +607,7 @@ class PlanBuilder {
       folly::F14FastMap<std::string, std::string> options = {}) {
     return tableWrite(
         std::move(connectorId),
+        std::move(schemaName),
         std::move(tableName),
         kind,
         std::move(columnNames),
@@ -612,6 +618,7 @@ class PlanBuilder {
   // A convenience method taking std::vector<std::string> for 'columnExprs'.
   PlanBuilder& tableWrite(
       std::string connectorId,
+      std::string schemaName,
       std::string tableName,
       WriteKind kind,
       std::vector<std::string> columnNames,
@@ -619,6 +626,7 @@ class PlanBuilder {
       folly::F14FastMap<std::string, std::string> options = {}) {
     return tableWrite(
         std::move(connectorId),
+        std::move(schemaName),
         std::move(tableName),
         kind,
         std::move(columnNames),
@@ -626,7 +634,7 @@ class PlanBuilder {
         std::move(options));
   }
 
-  // A shortcut for calling tableWrite with the default connector ID.
+  // A shortcut for calling tableWrite with the default connector ID and schema.
   PlanBuilder& tableWrite(
       std::string tableName,
       WriteKind kind,
@@ -634,8 +642,10 @@ class PlanBuilder {
       const std::initializer_list<std::string>& columnExprs,
       folly::F14FastMap<std::string, std::string> options = {}) {
     VELOX_USER_CHECK(defaultConnectorId_.has_value());
+    VELOX_USER_CHECK(defaultSchema_.has_value());
     return tableWrite(
         defaultConnectorId_.value(),
+        defaultSchema_.value(),
         std::move(tableName),
         kind,
         std::move(columnNames),
@@ -643,9 +653,28 @@ class PlanBuilder {
         std::move(options));
   }
 
+  // A shortcut for calling tableWrite with the default connector ID and schema.
+  PlanBuilder& tableWrite(
+      std::string tableName,
+      WriteKind kind,
+      std::vector<std::string> columnNames,
+      const std::vector<std::string>& columnExprs,
+      folly::F14FastMap<std::string, std::string> options = {}) {
+    VELOX_USER_CHECK(defaultConnectorId_.has_value());
+    VELOX_USER_CHECK(defaultSchema_.has_value());
+    return tableWrite(
+        defaultConnectorId_.value(),
+        defaultSchema_.value(),
+        std::move(tableName),
+        kind,
+        std::move(columnNames),
+        parse(columnExprs),
+        std::move(options));
+  }
+
   /// A shortcut for calling tableWrite with the default connector ID and
-  /// 'columnExprs' that are simple references to the input columns. The number
-  /// of 'columnNames' must match the number of input columns.
+  /// schema. 'columnExprs' are simple references to the input columns. The
+  /// number of 'columnNames' must match the number of input columns.
   PlanBuilder& tableWrite(
       std::string tableName,
       WriteKind kind,
@@ -821,6 +850,9 @@ class PlanBuilder {
 
   // Connector ID used when table names omit the catalog prefix.
   const std::optional<std::string> defaultConnectorId_;
+
+  // Schema used when table names omit the schema prefix.
+  const std::optional<std::string> defaultSchema_;
 
   // Generates unique plan-node IDs (shared across builders via Context).
   const std::shared_ptr<velox::core::PlanNodeIdGenerator> planNodeIdGenerator_;

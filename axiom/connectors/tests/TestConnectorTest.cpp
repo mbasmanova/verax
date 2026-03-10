@@ -15,6 +15,7 @@
  */
 
 #include "axiom/connectors/tests/TestConnector.h"
+#include "axiom/common/SchemaTableName.h"
 
 #include <gtest/gtest.h>
 
@@ -30,6 +31,8 @@ using namespace facebook::velox;
 
 class TestConnectorTest : public ::testing::Test, public test::VectorTestBase {
  protected:
+  static const inline std::string kDefaultSchema{TestConnector::kDefaultSchema};
+
   static void SetUpTestCase() {
     memory::MemoryManager::testingSetInstance(memory::MemoryManager::Options{});
   }
@@ -71,9 +74,9 @@ TEST_F(TestConnectorTest, connectorRegister) {
 TEST_F(TestConnectorTest, table) {
   auto schema = ROW({{"a", INTEGER()}, {"b", VARCHAR()}});
   connector_->addTable("table", schema);
-  auto table = metadata_->findTable("table");
+  auto table = metadata_->findTable({kDefaultSchema, "table"});
   EXPECT_NE(table, nullptr);
-  EXPECT_EQ(table->name(), "table");
+  EXPECT_EQ(table->name(), (SchemaTableName{kDefaultSchema, "table"}));
   EXPECT_EQ(table->numRows(), 0);
   EXPECT_EQ(table->columnMap().size(), 2);
   EXPECT_TRUE(table->columnMap().contains("a"));
@@ -90,13 +93,13 @@ TEST_F(TestConnectorTest, table) {
       connector_->appendData("table", vector),
       "appended data type ROW<c0:INTEGER> must match table type ROW<a:INTEGER,b:VARCHAR>");
 
-  connector_->addTable("noschema");
-  table = metadata_->findTable("noschema");
+  connector_->addTable("noschema", velox::ROW({}));
+  table = metadata_->findTable({kDefaultSchema, "noschema"});
   EXPECT_NE(table, nullptr);
   EXPECT_EQ(table->numRows(), 0);
   EXPECT_EQ(table->columnMap().size(), 0);
 
-  table = metadata_->findTable("notable");
+  table = metadata_->findTable({kDefaultSchema, "notable"});
   EXPECT_EQ(table, nullptr);
 }
 
@@ -104,7 +107,7 @@ TEST_F(TestConnectorTest, columnHandle) {
   auto schema = ROW({{"a", INTEGER()}, {"b", VARCHAR()}});
   connector_->addTable("table", schema);
 
-  auto table = metadata_->findTable("table");
+  auto table = metadata_->findTable({kDefaultSchema, "table"});
   auto& layout = *table->layouts()[0];
 
   auto columnHandle = layout.createColumnHandle(/*session=*/nullptr, "a");
@@ -171,7 +174,8 @@ TEST_F(TestConnectorTest, splits) {
 
 TEST_F(TestConnectorTest, dataSink) {
   auto schema = ROW({"a"}, {INTEGER()});
-  auto handle = std::make_shared<TestInsertTableHandle>("table");
+  auto handle = std::make_shared<TestInsertTableHandle>(
+      SchemaTableName{std::string(TestConnector::kDefaultSchema), "table"});
   auto table = connector_->addTable("table", schema);
   EXPECT_EQ(table->numRows(), 0);
 
@@ -269,7 +273,7 @@ TEST_F(TestConnectorTest, tableLayout) {
   auto table = connector_->addTable("table", schema);
 
   auto& layout = *table->layouts()[0];
-  EXPECT_EQ(layout.name(), "table");
+  EXPECT_EQ(layout.label(), "table");
 
   const auto& columnMap = table->columnMap();
   EXPECT_NE(columnMap.find("a"), columnMap.end());
@@ -505,7 +509,7 @@ TEST_F(TestConnectorTest, addDataAndSetStatsMutualExclusion) {
     VELOX_ASSERT_THROW(
         connector_->appendData(
             "t1", makeRowVector({makeFlatVector<int64_t>({1})})),
-        "Cannot use both setStats and addData on table 't1'.");
+        "Cannot use both setStats and addData on table");
   }
 
   {
@@ -514,7 +518,7 @@ TEST_F(TestConnectorTest, addDataAndSetStatsMutualExclusion) {
     connector_->appendData("t2", makeRowVector({makeFlatVector<int64_t>({1})}));
     VELOX_ASSERT_THROW(
         table->setStats(100, {{"a", {.numDistinct = 50}}}),
-        "Cannot use both setStats and addData on table 't2'.");
+        "Cannot use both setStats and addData on table");
   }
 }
 

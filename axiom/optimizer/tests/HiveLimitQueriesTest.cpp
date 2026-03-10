@@ -34,7 +34,8 @@ class HiveLimitQueriesTest : public test::HiveQueriesTestBase {
 
 // LIMIT 10
 TEST_F(HiveLimitQueriesTest, limit) {
-  lp::PlanBuilder::Context context(exec::test::kHiveConnectorId);
+  lp::PlanBuilder::Context context(
+      exec::test::kHiveConnectorId, kDefaultSchema);
   const auto nationType = getSchema("nation");
 
   auto logicalPlan =
@@ -91,7 +92,8 @@ TEST_F(HiveLimitQueriesTest, limit) {
 // OFFSET 5
 // LIMIT 10
 TEST_F(HiveLimitQueriesTest, offset) {
-  lp::PlanBuilder::Context context(exec::test::kHiveConnectorId);
+  lp::PlanBuilder::Context context(
+      exec::test::kHiveConnectorId, kDefaultSchema);
   const auto nationType = getSchema("nation");
 
   auto logicalPlan =
@@ -148,7 +150,8 @@ TEST_F(HiveLimitQueriesTest, offset) {
 // OFFSET 5
 // <no limit>
 TEST_F(HiveLimitQueriesTest, offsetOnly) {
-  lp::PlanBuilder::Context context(exec::test::kHiveConnectorId);
+  lp::PlanBuilder::Context context(
+      exec::test::kHiveConnectorId, kDefaultSchema);
   const auto nationType = getSchema("nation");
 
   auto plan = lp::PlanBuilder(context).tableScan("nation").offset(5).build();
@@ -166,7 +169,8 @@ TEST_F(HiveLimitQueriesTest, offsetOnly) {
 // <no limit>
 // Verify handling of offset + limit exceeding max.
 TEST_F(HiveLimitQueriesTest, veryLargeOffset) {
-  lp::PlanBuilder::Context context(exec::test::kHiveConnectorId);
+  lp::PlanBuilder::Context context(
+      exec::test::kHiveConnectorId, kDefaultSchema);
   const auto nationType = getSchema("nation");
 
   const auto noLimit = std::numeric_limits<int64_t>::max();
@@ -187,7 +191,8 @@ TEST_F(HiveLimitQueriesTest, veryLargeOffset) {
 // ORDER BY name DESC
 // LIMIT 10
 TEST_F(HiveLimitQueriesTest, orderByLimit) {
-  lp::PlanBuilder::Context context(exec::test::kHiveConnectorId);
+  lp::PlanBuilder::Context context(
+      exec::test::kHiveConnectorId, kDefaultSchema);
   const auto nationType = getSchema("nation");
 
   auto logicalPlan = lp::PlanBuilder(context)
@@ -253,7 +258,8 @@ TEST_F(HiveLimitQueriesTest, orderByLimit) {
 // OFFSET 5
 // LIMIT 10
 TEST_F(HiveLimitQueriesTest, orderByOffsetLimit) {
-  lp::PlanBuilder::Context context(exec::test::kHiveConnectorId);
+  lp::PlanBuilder::Context context(
+      exec::test::kHiveConnectorId, kDefaultSchema);
   const auto nationType = getSchema("nation");
 
   auto plan = lp::PlanBuilder(context)

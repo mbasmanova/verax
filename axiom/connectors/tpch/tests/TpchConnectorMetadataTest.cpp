@@ -51,9 +51,9 @@ TEST_F(TpchConnectorMetadataTest, findAllTables) {
       "supplier",
       "partsupp"};
   for (const auto& tableName : expectedTables) {
-    auto table = metadata_->findTable(tableName);
+    auto table = metadata_->findTable({"tiny", tableName});
     ASSERT_NE(table, nullptr);
-    EXPECT_EQ(table->name(), fmt::format("tiny.{}", tableName));
+    EXPECT_EQ(table->name(), (SchemaTableName{"tiny", tableName}));
   }
 }
 
@@ -62,11 +62,11 @@ TEST_F(TpchConnectorMetadataTest, findAllScaleFactors) {
       1, 10, 100, 1000, 10000, 100000, 30, 300, 3000, 30000};
 
   for (const auto& scaleFactor : scaleFactors) {
-    const auto qualifiedName = fmt::format("sf{}.customer", scaleFactor);
+    const auto schema = fmt::format("sf{}", scaleFactor);
 
-    auto table = metadata_->findTable(qualifiedName);
+    auto table = metadata_->findTable({schema, "customer"});
     ASSERT_NE(table, nullptr);
-    EXPECT_EQ(table->name(), qualifiedName);
+    EXPECT_EQ(table->name(), (SchemaTableName{schema, "customer"}));
 
     auto tpchTable = std::dynamic_pointer_cast<const TpchTable>(table);
     ASSERT_NE(tpchTable, nullptr);
@@ -75,16 +75,16 @@ TEST_F(TpchConnectorMetadataTest, findAllScaleFactors) {
 }
 
 TEST_F(TpchConnectorMetadataTest, invalidLookups) {
-  auto table = metadata_->findTable("invalidtable");
+  auto table = metadata_->findTable({"tiny", "invalidtable"});
   EXPECT_EQ(table, nullptr);
 
-  table = metadata_->findTable("invalidschema.lineitem");
+  table = metadata_->findTable({"invalidschema", "lineitem"});
   EXPECT_EQ(table, nullptr);
 
-  table = metadata_->findTable("sflarge.customer");
+  table = metadata_->findTable({"sflarge", "customer"});
   EXPECT_EQ(table, nullptr);
 
-  table = metadata_->findTable("sf000.supplier");
+  table = metadata_->findTable({"sf000", "supplier"});
   EXPECT_EQ(table, nullptr);
 }
 
@@ -99,7 +99,7 @@ TEST_F(TpchConnectorMetadataTest, verifyTpchSchema) {
       "supplier",
       "partsupp"};
   for (const auto& tableName : tableNames) {
-    auto table = metadata_->findTable(tableName);
+    auto table = metadata_->findTable({"tiny", tableName});
     ASSERT_NE(table, nullptr);
     auto idx = velox::tpch::fromTableName(tableName);
     auto schema = velox::tpch::getTableSchema(idx);
@@ -112,7 +112,7 @@ TEST_F(TpchConnectorMetadataTest, verifyTpchSchema) {
 }
 
 TEST_F(TpchConnectorMetadataTest, createColumnHandle) {
-  auto table = metadata_->findTable("lineitem");
+  auto table = metadata_->findTable({"tiny", "lineitem"});
   ASSERT_NE(table, nullptr);
 
   const auto& layouts = table->layouts();
@@ -130,7 +130,7 @@ TEST_F(TpchConnectorMetadataTest, createColumnHandle) {
 }
 
 TEST_F(TpchConnectorMetadataTest, createTableHandle) {
-  auto table = metadata_->findTable("lineitem");
+  auto table = metadata_->findTable({"tiny", "lineitem"});
   ASSERT_NE(table, nullptr);
   const auto& layouts = table->layouts();
   ASSERT_EQ(layouts.size(), 1);
@@ -156,7 +156,7 @@ TEST_F(TpchConnectorMetadataTest, createTableHandle) {
 }
 
 TEST_F(TpchConnectorMetadataTest, splitGeneration) {
-  auto table = metadata_->findTable("lineitem");
+  auto table = metadata_->findTable({"tiny", "lineitem"});
   ASSERT_NE(table, nullptr);
 
   const auto& layouts = table->layouts();

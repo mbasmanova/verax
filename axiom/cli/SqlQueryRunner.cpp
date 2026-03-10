@@ -45,7 +45,7 @@ using namespace facebook::axiom;
 namespace axiom::sql {
 
 void SqlQueryRunner::initialize(
-    const std::function<std::pair<std::string, std::optional<std::string>>()>&
+    const std::function<std::pair<std::string, std::string>()>&
         initializeConnectors) {
   static folly::once_flag kInitialized;
 
@@ -62,7 +62,8 @@ void SqlQueryRunner::initialize(
     velox::exec::ExchangeSource::registerFactory(
         velox::exec::test::createLocalExchangeSource);
     velox::serializer::presto::PrestoVectorSerde::registerVectorSerde();
-    if (!isRegisteredNamedVectorSerde(velox::VectorSerde::Kind::kPresto)) {
+    if (!velox::isRegisteredNamedVectorSerde(
+            velox::VectorSerde::kindName(velox::VectorSerde::Kind::kPresto))) {
       velox::serializer::presto::PrestoVectorSerde::registerNamedVectorSerde();
     }
   });
@@ -132,7 +133,7 @@ std::string SqlQueryRunner::dropTable(
 
   auto session = std::make_shared<connector::ConnectorSession>("test");
   const bool dropped =
-      metadata->dropTable(session, tableName, statement.ifExists());
+      metadata->dropTable(session, statement.tableName(), statement.ifExists());
 
   if (dropped) {
     return fmt::format("Dropped table: {}", tableName);
@@ -199,8 +200,7 @@ std::vector<presto::SqlStatementPtr> SqlQueryRunner::parseMultiple(
     const RunOptions& options) {
   const std::string& defaultConnectorId =
       options.defaultConnectorId.value_or(defaultConnectorId_);
-  const std::optional<std::string>& defaultSchema =
-      options.defaultSchema ? options.defaultSchema : defaultSchema_;
+  const auto& defaultSchema = options.defaultSchema.value_or(defaultSchema_);
 
   auto prestoParser =
       std::make_unique<presto::PrestoParser>(defaultConnectorId, defaultSchema);
@@ -255,7 +255,7 @@ SqlQueryRunner::SqlResult SqlQueryRunner::run(
     auto table = createTable(*ctas);
 
     auto schema = std::make_shared<connector::SchemaResolver>();
-    schema->setTargetTable(ctas->connectorId(), table);
+    schema->setTargetTable(ctas->connectorId(), ctas->tableName(), table);
 
     return {.results = runLogicalPlan(ctas->plan(), options, schema)};
   }
@@ -355,6 +355,7 @@ std::string SqlQueryRunner::runExplain(
     case presto::ExplainStatement::Type::kExecutable:
       return optimize(logicalPlan, newQuery(options), options).toString();
   }
+  VELOX_UNREACHABLE();
 }
 
 std::shared_ptr<facebook::axiom::runner::LocalRunner>

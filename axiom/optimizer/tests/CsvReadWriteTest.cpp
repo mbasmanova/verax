@@ -22,10 +22,12 @@ namespace facebook::axiom::optimizer {
 namespace {
 
 using namespace velox;
-namespace lp = facebook::axiom::logical_plan;
 
 class CsvReadWriteTest : public test::HiveQueriesTestBase {
  protected:
+  const std::string kDefaultSchema{
+      connector::hive::LocalHiveConnectorMetadata::kDefaultSchema};
+
   void SetUp() override {
     HiveQueriesTestBase::SetUp();
     velox::text::registerTextReaderFactory();
@@ -37,11 +39,15 @@ class CsvReadWriteTest : public test::HiveQueriesTestBase {
     velox::text::unregisterTextWriterFactory();
     HiveQueriesTestBase::TearDown();
   }
+
+  void dropTableIfExists(std::string_view tableName) {
+    hiveMetadata().dropTableIfExists(tableName);
+  }
 };
 
 TEST_F(CsvReadWriteTest, validateSchemaFileProperties) {
   SCOPE_EXIT {
-    hiveMetadata().dropTableIfExists("custom_delimiter_test");
+    dropTableIfExists("custom_delimiter_test");
   };
 
   auto tableType = ROW({
@@ -62,9 +68,10 @@ TEST_F(CsvReadWriteTest, validateSchemaFileProperties) {
   createTableFromFiles(
       "custom_delimiter_test", tableType, {csvFilePath}, options);
 
-  hiveMetadata().reloadTableFromPath("custom_delimiter_test");
+  hiveMetadata().reloadTableFromPath({kDefaultSchema, "custom_delimiter_test"});
 
-  auto table = hiveMetadata().findTable("custom_delimiter_test");
+  auto table =
+      hiveMetadata().findTable({kDefaultSchema, "custom_delimiter_test"});
   ASSERT_NE(table, nullptr);
 
   const auto& tableOptions = table->options();
@@ -83,7 +90,7 @@ TEST_F(CsvReadWriteTest, validateSchemaFileProperties) {
 // Test reading CSV with custom delimiter and representative data types.
 TEST_F(CsvReadWriteTest, readCustomDelimiterWithVariousTypes) {
   SCOPE_EXIT {
-    hiveMetadata().dropTableIfExists("custom_delimiter_test");
+    dropTableIfExists("custom_delimiter_test");
   };
 
   auto tableType = ROW({
@@ -121,7 +128,7 @@ TEST_F(CsvReadWriteTest, readCustomDelimiterWithVariousTypes) {
 // Test writing CSV using INSERT statement with various data types.
 TEST_F(CsvReadWriteTest, writeWithInsertStatement) {
   SCOPE_EXIT {
-    hiveMetadata().dropTableIfExists("csv_write_test");
+    dropTableIfExists("csv_write_test");
   };
 
   auto tableType = ROW({

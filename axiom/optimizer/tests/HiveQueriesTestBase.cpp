@@ -26,6 +26,9 @@ namespace facebook::axiom::optimizer::test {
 using namespace facebook::velox;
 namespace lp = facebook::axiom::logical_plan;
 
+const std::string kDefaultSchema{
+    connector::hive::LocalHiveConnectorMetadata::kDefaultSchema};
+
 // static
 void HiveQueriesTestBase::SetUpTestCase() {
   test::QueryTestBase::SetUpTestCase();
@@ -50,7 +53,8 @@ void HiveQueriesTestBase::SetUp() {
   dwrf::registerDwrfWriterFactory();
 
   prestoParser_ = std::make_unique<::axiom::sql::presto::PrestoParser>(
-      exec::test::kHiveConnectorId, std::nullopt);
+      exec::test::kHiveConnectorId,
+      std::string(connector::hive::LocalHiveConnectorMetadata::kDefaultSchema));
 
   connector_ = velox::connector::getConnector(exec::test::kHiveConnectorId);
   metadata_ = dynamic_cast<connector::hive::LocalHiveConnectorMetadata*>(
@@ -76,7 +80,7 @@ void HiveQueriesTestBase::TearDown() {
 }
 
 RowTypePtr HiveQueriesTestBase::getSchema(std::string_view tableName) {
-  return metadata_->findTable(tableName)->type();
+  return metadata_->findTable({kDefaultSchema, std::string(tableName)})->type();
 }
 
 velox::core::PlanNodePtr HiveQueriesTestBase::toSingleNodePlan(
@@ -130,10 +134,11 @@ void HiveQueriesTestBase::createEmptyTable(
     const std::string& name,
     const RowTypePtr& tableType,
     const folly::F14FastMap<std::string, velox::Variant>& options) {
-  metadata_->dropTableIfExists(name);
+  metadata_->dropTableIfExists({kDefaultSchema, name});
 
   auto session = std::make_shared<connector::ConnectorSession>("test");
-  auto table = metadata_->createTable(session, name, tableType, options);
+  auto table = metadata_->createTable(
+      session, {kDefaultSchema, name}, tableType, options);
   auto handle =
       metadata_->beginWrite(session, table, connector::WriteKind::kCreate);
   metadata_->finishWrite(session, handle, {}).get();
@@ -142,7 +147,8 @@ void HiveQueriesTestBase::createEmptyTable(
 void HiveQueriesTestBase::checkTableData(
     const std::string& tableName,
     const std::vector<RowVectorPtr>& expectedData) {
-  lp::PlanBuilder::Context context(exec::test::kHiveConnectorId);
+  lp::PlanBuilder::Context context(
+      exec::test::kHiveConnectorId, kDefaultSchema);
   auto logicalPlan = lp::PlanBuilder(context).tableScan(tableName).build();
 
   checkSameSingleNode(logicalPlan, expectedData);
@@ -159,9 +165,10 @@ void HiveQueriesTestBase::createTableFromFiles(
   }
 
   auto session = std::make_shared<connector::ConnectorSession>("test");
-  metadata_->createTable(session, tableName, tableType, options);
+  metadata_->createTable(
+      session, {kDefaultSchema, tableName}, tableType, options);
 
-  auto tablePath = metadata_->tablePath(tableName);
+  auto tablePath = metadata_->tablePath({kDefaultSchema, tableName});
   for (const auto& filePath : filePaths) {
     auto fileName = std::filesystem::path(filePath).filename().string();
     std::string targetFilePath = fmt::format("{}/{}", tablePath, fileName);
@@ -171,7 +178,7 @@ void HiveQueriesTestBase::createTableFromFiles(
         std::filesystem::copy_options::overwrite_existing);
   }
 
-  metadata_->reloadTableFromPath(tableName);
+  metadata_->reloadTableFromPath({kDefaultSchema, tableName});
 }
 
 void HiveQueriesTestBase::runCtas(const std::string& sql) {
@@ -196,7 +203,8 @@ void HiveQueriesTestBase::runCtas(const std::string& sql) {
       options);
 
   connector::SchemaResolver schemaResolver;
-  schemaResolver.setTargetTable(exec::test::kHiveConnectorId, table);
+  schemaResolver.setTargetTable(
+      ctasStatement->connectorId(), ctasStatement->tableName(), table);
 
   auto plan = planVelox(ctasStatement->plan(), schemaResolver);
   runFragmentedPlan(plan);

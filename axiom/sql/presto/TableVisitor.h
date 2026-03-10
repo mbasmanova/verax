@@ -28,7 +28,7 @@ class TableVisitor : public DefaultTraversalVisitor {
  public:
   TableVisitor(
       const std::string& defaultConnectorId,
-      const std::optional<std::string>& defaultSchema);
+      const std::string& defaultSchema);
 
   const std::unordered_set<std::string>& inputTables() const {
     return inputTables_;
@@ -56,8 +56,8 @@ class TableVisitor : public DefaultTraversalVisitor {
   std::string constructTableName(const QualifiedName& name) const;
   void setOutputTable(const QualifiedName& name);
 
-  const std::string& defaultConnectorId_;
-  const std::optional<std::string>& defaultSchema_;
+  const std::string defaultConnectorId_;
+  const std::string defaultSchema_;
   std::unordered_set<std::string> ctes_;
   std::unordered_set<std::string> inputTables_;
   std::optional<std::string> outputTable_;

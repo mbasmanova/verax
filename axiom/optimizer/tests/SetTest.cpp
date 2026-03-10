@@ -30,6 +30,8 @@ namespace lp = facebook::axiom::logical_plan;
 class SetTest : public test::HiveQueriesTestBase {
  protected:
   static constexpr auto kTestConnectorId = "test";
+  static const inline std::string kDefaultSchema{
+      connector::hive::LocalHiveConnectorMetadata::kDefaultSchema};
 
   static void SetUpTestCase() {
     test::HiveQueriesTestBase::SetUpTestCase();
@@ -60,7 +62,7 @@ TEST_F(SetTest, unionAll) {
 
   const std::vector<std::string>& names = nationType->names();
 
-  lp::PlanBuilder::Context ctx{exec::test::kHiveConnectorId};
+  lp::PlanBuilder::Context ctx{exec::test::kHiveConnectorId, kDefaultSchema};
   auto t1 = lp::PlanBuilder(ctx)
                 .tableScan("nation", names)
                 .filter("n_nationkey < 11");
@@ -108,7 +110,7 @@ TEST_F(SetTest, lambdaFilterPushdownThroughUnionAll) {
   testConnector_->addTable("t", ROW({"a", "b"}, ARRAY(BIGINT())));
   testConnector_->addTable("u", ROW({"a", "b"}, ARRAY(BIGINT())));
 
-  lp::PlanBuilder::Context ctx(kTestConnectorId);
+  lp::PlanBuilder::Context ctx(kTestConnectorId, kDefaultSchema);
   auto logicalPlan = lp::PlanBuilder(ctx)
                          .tableScan("t")
                          .unionAll(lp::PlanBuilder(ctx).tableScan("u"))
@@ -117,15 +119,9 @@ TEST_F(SetTest, lambdaFilterPushdownThroughUnionAll) {
 
   auto plan = toSingleNodePlan(logicalPlan);
 
-  auto matcher = core::PlanMatcherBuilder()
-                     .tableScan("t")
+  auto matcher = matchScan("t")
                      .filter()
-                     .localPartition(
-                         core::PlanMatcherBuilder()
-                             .tableScan("u")
-                             .filter()
-                             .project()
-                             .build())
+                     .localPartition(matchScan("u").filter().project().build())
                      .build();
 
   AXIOM_ASSERT_PLAN(plan, matcher);
@@ -135,37 +131,32 @@ TEST_F(SetTest, unionJoin) {
   auto partType = ROW({"p_partkey", "p_retailprice"}, {BIGINT(), DOUBLE()});
   auto partSuppType = ROW({"ps_partkey", "ps_availqty"}, {BIGINT(), INTEGER()});
 
-  const auto connectorId = exec::test::kHiveConnectorId;
+  lp::PlanBuilder::Context ctx(exec::test::kHiveConnectorId, kDefaultSchema);
+  auto ps1 = lp::PlanBuilder(ctx)
+                 .tableScan("partsupp", {"ps_partkey", "ps_availqty"})
+                 .filter("ps_availqty < 1000::int")
+                 .project({"ps_partkey"});
 
-  lp::PlanBuilder::Context ctx;
-  auto ps1 =
-      lp::PlanBuilder(ctx)
-          .tableScan(connectorId, "partsupp", {"ps_partkey", "ps_availqty"})
-          .filter("ps_availqty < 1000::int")
-          .project({"ps_partkey"});
+  auto ps2 = lp::PlanBuilder(ctx)
+                 .tableScan("partsupp", {"ps_partkey", "ps_availqty"})
+                 .filter("ps_availqty > 2000::int")
+                 .project({"ps_partkey"});
 
-  auto ps2 =
-      lp::PlanBuilder(ctx)
-          .tableScan(connectorId, "partsupp", {"ps_partkey", "ps_availqty"})
-          .filter("ps_availqty > 2000::int")
-          .project({"ps_partkey"});
-
-  auto ps3 =
-      lp::PlanBuilder(ctx)
-          .tableScan(connectorId, "partsupp", {"ps_partkey", "ps_availqty"})
-          .filter("ps_availqty between 1200::int and 1400::int")
-          .project({"ps_partkey"});
+  auto ps3 = lp::PlanBuilder(ctx)
+                 .tableScan("partsupp", {"ps_partkey", "ps_availqty"})
+                 .filter("ps_availqty between 1200::int and 1400::int")
+                 .project({"ps_partkey"});
 
   // The shape of the partsupp union is ps1 union all (ps2 union all ps3). We
   // verify that a stack of multiple set ops works.
   auto psu2 = ps2.unionAll(ps3);
 
   auto p1 = lp::PlanBuilder(ctx)
-                .tableScan(connectorId, "part", {"p_partkey", "p_retailprice"})
+                .tableScan("part", {"p_partkey", "p_retailprice"})
                 .filter("p_retailprice < 1100.0");
 
   auto p2 = lp::PlanBuilder(ctx)
-                .tableScan(connectorId, "part", {"p_partkey", "p_retailprice"})
+                .tableScan("part", {"p_partkey", "p_retailprice"})
                 .filter("p_retailprice > 1200.0");
 
   auto logicalPlan =
@@ -263,7 +254,7 @@ TEST_F(SetTest, unionFlatten) {
            },
 
        }) {
-    lp::PlanBuilder::Context ctx{exec::test::kHiveConnectorId};
+    lp::PlanBuilder::Context ctx{exec::test::kHiveConnectorId, kDefaultSchema};
     auto makeT1 = [&] {
       return lp::PlanBuilder(ctx)
           .tableScan("nation", names)
@@ -353,7 +344,7 @@ TEST_F(SetTest, intersect) {
 
   const std::vector<std::string>& names = nationType->names();
 
-  lp::PlanBuilder::Context ctx{exec::test::kHiveConnectorId};
+  lp::PlanBuilder::Context ctx{exec::test::kHiveConnectorId, kDefaultSchema};
   auto t1 = lp::PlanBuilder(ctx)
                 .tableScan("nation", names)
                 .filter("n_nationkey < 21")
@@ -418,7 +409,7 @@ TEST_F(SetTest, except) {
 
   const std::vector<std::string>& names = nationType->names();
 
-  lp::PlanBuilder::Context ctx{exec::test::kHiveConnectorId};
+  lp::PlanBuilder::Context ctx{exec::test::kHiveConnectorId, kDefaultSchema};
   auto t1 = lp::PlanBuilder(ctx)
                 .tableScan("nation", names)
                 .filter("n_nationkey < 21")

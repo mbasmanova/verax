@@ -180,7 +180,9 @@ class VeloxRunner : public velox::QueryBenchmarkBase {
     schema_ = std::make_shared<connector::SchemaResolver>();
 
     prestoParser_ = std::make_unique<::axiom::sql::presto::PrestoParser>(
-        connector_->connectorId(), std::nullopt);
+        connector_->connectorId(),
+        std::string(
+            connector::hive::LocalHiveConnectorMetadata::kDefaultSchema));
 
     history_ = std::make_unique<optimizer::VeloxHistory>();
 
@@ -339,9 +341,9 @@ class VeloxRunner : public velox::QueryBenchmarkBase {
         metadata->dropTable(session, tableName, statement.ifExists());
 
     if (dropped) {
-      std::cout << "Dropped table: " << tableName << std::endl;
+      std::cout << "Dropped table: " << tableName.toString() << std::endl;
     } else {
-      std::cout << "Table doesn't exist: " << tableName << std::endl;
+      std::cout << "Table doesn't exist: " << tableName.toString() << std::endl;
     }
     return;
   }
@@ -383,7 +385,7 @@ class VeloxRunner : public velox::QueryBenchmarkBase {
       };
 
       schema_ = std::make_shared<connector::SchemaResolver>();
-      schema_->setTargetTable(connector_->connectorId(), table);
+      schema_->setTargetTable(ctas->connectorId(), ctas->tableName(), table);
 
       runSql(ctas->plan());
       return;

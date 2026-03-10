@@ -360,7 +360,7 @@ struct SchemaTable {
   /// where 'columns' have an equality constraint.
   IndexInfo indexInfo(ColumnGroupCP index, CPSpan<Column> columns) const;
 
-  const std::string& name() const {
+  const SchemaTableName& name() const {
     return connectorTable->name();
   }
 
@@ -393,8 +393,9 @@ class Schema {
   /// Returns the table with 'name' or nullptr if not found, using
   /// the connector specified by connectorId to perform table lookups.
   /// An error is thrown if no connector with the specified ID exists.
-  SchemaTableCP findTable(std::string_view connectorId, std::string_view name)
-      const;
+  SchemaTableCP findTable(
+      std::string_view connectorId,
+      const SchemaTableName& tableName) const;
 
  private:
   struct Table {
@@ -403,13 +404,14 @@ class Schema {
   };
 
   // This map from connector ID to map of tables in that connector.
-  // In the tables map, the key is the full table name and the value is
+  // In the tables map, the key is the SchemaTableName and the value is
   // schema table (optimizer object) and connector table (connector object).
-  template <typename T>
-  using Map = folly::F14FastMap<std::string_view, T>;
+  using TableMap =
+      folly::F14FastMap<SchemaTableName, Table, SchemaTableNameHash>;
+  using ConnectorMap = folly::F14FastMap<std::string_view, TableMap>;
 
   const connector::SchemaResolver* source_;
-  mutable Map<Map<Table>> connectorTables_;
+  mutable ConnectorMap connectorTables_;
 };
 
 } // namespace facebook::axiom::optimizer

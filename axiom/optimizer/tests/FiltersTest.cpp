@@ -118,7 +118,7 @@ class FiltersTest : public test::HiveQueriesTestBase {
     for (auto* table : dt->tables) {
       if (table->is(PlanType::kTableNode)) {
         auto* bt = table->as<BaseTable>();
-        if (bt->schemaTable && bt->schemaTable->name() == tableName) {
+        if (bt->schemaTable && bt->schemaTable->name().table == tableName) {
           return bt;
         }
       }

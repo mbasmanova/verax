@@ -35,6 +35,8 @@ namespace {
 class RelationOpPrinterTest : public ::testing::Test {
  protected:
   static constexpr auto kTestConnectorId = "test";
+  static const inline std::string kDefaultSchema{
+      connector::TestConnector::kDefaultSchema};
 
   static void SetUpTestCase() {
     memory::MemoryManager::testingSetInstance(memory::MemoryManager::Options{});
@@ -87,7 +89,7 @@ class RelationOpPrinterTest : public ::testing::Test {
   }
 
   lp::LogicalPlanNodePtr parse(const std::string& sql) {
-    ::axiom::sql::presto::PrestoParser parser{kTestConnectorId, std::nullopt};
+    ::axiom::sql::presto::PrestoParser parser{kTestConnectorId, kDefaultSchema};
     auto statement = parser.parse(sql);
     VELOX_CHECK(statement->isSelect());
 
@@ -129,6 +131,10 @@ class RelationOpPrinterTest : public ::testing::Test {
     consume(*plan->op);
   }
 
+  lp::PlanBuilder::Context makeContext() const {
+    return lp::PlanBuilder::Context{kTestConnectorId, kDefaultSchema};
+  }
+
   std::shared_ptr<velox::memory::MemoryPool> rootPool_;
   std::shared_ptr<velox::memory::MemoryPool> optimizerPool_;
   std::shared_ptr<connector::TestConnector> connector_;
@@ -157,11 +163,11 @@ TEST_F(RelationOpPrinterTest, basic) {
             testing::StartsWith("        "),
             testing::HasSubstr("plus"), // a + 1
             testing::StartsWith("        TableScan"),
-            testing::StartsWith("          table: t"),
+            testing::StartsWith("          table: \"default\".\"t\""),
             testing::HasSubstr("gt"), // a > 0
             testing::Eq("")));
 
-    EXPECT_EQ("agg(t)", toOneline(sql));
+    EXPECT_EQ("agg(\"default\".\"t\")", toOneline(sql));
   }
 
   {
@@ -179,17 +185,18 @@ TEST_F(RelationOpPrinterTest, basic) {
             testing::StartsWith("      "), // t_key = u_key
             testing::HasSubstr("gt"), // a > b
             testing::StartsWith("      TableScan"),
-            testing::StartsWith("        table: t"),
+            testing::StartsWith("        table: \"default\".\"t\""),
             testing::StartsWith("      HashBuild"),
             testing::StartsWith("        TableScan"),
-            testing::StartsWith("          table: u"),
+            testing::StartsWith("          table: \"default\".\"u\""),
             testing::Eq("")));
 
-    EXPECT_EQ("agg((t LEFT u))", toOneline(sql));
+    EXPECT_EQ(
+        "agg((\"default\".\"t\" LEFT \"default\".\"u\"))", toOneline(sql));
   }
 
   EXPECT_EQ(
-      "agg(((t INNER u) INNER v))",
+      "agg(((\"default\".\"t\" INNER \"default\".\"u\") INNER \"default\".\"v\"))",
       toOneline(
           "SELECT count(*) FROM t, u, v WHERE t_key = u_key AND u_key = v_key"));
 }
@@ -208,7 +215,7 @@ TEST_F(RelationOpPrinterTest, unnest) {
           testing::StartsWith("  Unnest"),
           testing::StartsWith("      "),
           testing::StartsWith("    TableScan"),
-          testing::StartsWith("      table: t"),
+          testing::StartsWith("      table: \"default\".\"t\""),
           testing::Eq("")));
 }
 
@@ -216,8 +223,7 @@ TEST_F(RelationOpPrinterTest, limit) {
   connector_->addTable("t", ROW({"t_key", "a"}, INTEGER()));
 
   {
-    auto plan =
-        lp::PlanBuilder().tableScan(kTestConnectorId, "t").limit(10).build();
+    auto plan = lp::PlanBuilder(makeContext()).tableScan("t").limit(10).build();
     auto lines = toLines(*plan);
     EXPECT_THAT(
         lines,
@@ -227,13 +233,13 @@ TEST_F(RelationOpPrinterTest, limit) {
             testing::StartsWith("    "),
             testing::StartsWith("  Limit (10)"),
             testing::StartsWith("    TableScan"),
-            testing::StartsWith("      table: t"),
+            testing::StartsWith("      table: \"default\".\"t\""),
             testing::Eq("")));
   }
 
   {
-    auto plan = lp::PlanBuilder()
-                    .tableScan(kTestConnectorId, "t")
+    auto plan = lp::PlanBuilder(makeContext())
+                    .tableScan("t")
                     .offset(5)
                     .limit(10)
                     .build();
@@ -246,7 +252,7 @@ TEST_F(RelationOpPrinterTest, limit) {
             testing::StartsWith("    "),
             testing::StartsWith("  Limit (10 offset 5)"),
             testing::StartsWith("    TableScan"),
-            testing::StartsWith("      table: t"),
+            testing::StartsWith("      table: \"default\".\"t\""),
             testing::Eq("")));
   }
 }
@@ -255,7 +261,7 @@ TEST_F(RelationOpPrinterTest, unionAll) {
   connector_->addTable("t", ROW({"t_key", "a"}, INTEGER()));
   connector_->addTable("u", ROW({"u_key", "b"}, INTEGER()));
 
-  lp::PlanBuilder::Context context(kTestConnectorId);
+  auto context = makeContext();
   auto plan = lp::PlanBuilder(context)
                   .tableScan("t")
                   .unionAll(lp::PlanBuilder(context).tableScan("u"))
@@ -272,12 +278,12 @@ TEST_F(RelationOpPrinterTest, unionAll) {
           testing::StartsWith("        "),
           testing::StartsWith("        "),
           testing::StartsWith("      TableScan"),
-          testing::StartsWith("        table: t"),
+          testing::StartsWith("        table: \"default\".\"t\""),
           testing::StartsWith("    Project"),
           testing::StartsWith("        "),
           testing::StartsWith("        "),
           testing::StartsWith("      TableScan"),
-          testing::StartsWith("        table: u"),
+          testing::StartsWith("        table: \"default\".\"u\""),
           testing::Eq("")));
 }
 
@@ -303,12 +309,12 @@ TEST_F(RelationOpPrinterTest, cost) {
           testing::HasSubstr("gt"), // a > b
           testing::StartsWith("      TableScan"),
           testing::StartsWith("        Estimates: fanout"),
-          testing::StartsWith("        table: t"),
+          testing::StartsWith("        table: \"default\".\"t\""),
           testing::StartsWith("      HashBuild"),
           testing::StartsWith("        Estimates: fanout"),
           testing::StartsWith("        TableScan"),
           testing::StartsWith("          Estimates: fanout"),
-          testing::StartsWith("          table: u"),
+          testing::StartsWith("          table: \"default\".\"u\""),
           testing::Eq("")));
 }
 
@@ -357,7 +363,7 @@ TEST_F(RelationOpPrinterTest, maxDepth) {
             testing::StartsWith("      "), // t_key = u_key
             testing::HasSubstr("gt"), // a > b
             testing::StartsWith("      TableScan"),
-            testing::StartsWith("        table: t"),
+            testing::StartsWith("        table: \"default\".\"t\""),
             testing::StartsWith("      HashBuild"),
             testing::Eq("")));
   }
@@ -376,10 +382,10 @@ TEST_F(RelationOpPrinterTest, maxDepth) {
             testing::StartsWith("      "), // t_key = u_key
             testing::HasSubstr("gt"), // a > b
             testing::StartsWith("      TableScan"),
-            testing::StartsWith("        table: t"),
+            testing::StartsWith("        table: \"default\".\"t\""),
             testing::StartsWith("      HashBuild"),
             testing::StartsWith("        TableScan"),
-            testing::StartsWith("          table: u"),
+            testing::StartsWith("          table: \"default\".\"u\""),
             testing::Eq("")));
   }
 }

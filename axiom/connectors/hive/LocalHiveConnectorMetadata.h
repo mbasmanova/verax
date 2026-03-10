@@ -93,7 +93,7 @@ class LocalHiveSplitManager : public ConnectorSplitManager {
 class LocalHiveTableLayout : public HiveTableLayout {
  public:
   LocalHiveTableLayout(
-      const std::string& name,
+      const std::string& label,
       const Table* table,
       velox::connector::Connector* connector,
       std::vector<const Column*> columns,
@@ -106,7 +106,7 @@ class LocalHiveTableLayout : public HiveTableLayout {
       velox::dwio::common::FileFormat fileFormat,
       std::unordered_map<std::string, std::string> serdeParameters = {})
       : HiveTableLayout(
-            name,
+            label,
             table,
             connector,
             std::move(columns),
@@ -165,7 +165,7 @@ class LocalHiveTableLayout : public HiveTableLayout {
 class LocalTable : public HiveTable {
  public:
   LocalTable(
-      std::string name,
+      SchemaTableName name,
       velox::RowTypePtr type,
       bool bucketed,
       folly::F14FastMap<std::string, velox::Variant> options);
@@ -212,10 +212,12 @@ class LocalTable : public HiveTable {
 
 class LocalHiveConnectorMetadata : public HiveConnectorMetadata {
  public:
+  static constexpr std::string_view kDefaultSchema = "default";
+
   explicit LocalHiveConnectorMetadata(
       velox::connector::hive::HiveConnector* hiveConnector);
 
-  TablePtr findTable(std::string_view name) override;
+  TablePtr findTable(const SchemaTableName& tableName) override;
 
   ConnectorSplitManager* splitManager() override {
     ensureInitialized();
@@ -254,7 +256,7 @@ class LocalHiveConnectorMetadata : public HiveConnectorMetadata {
 
   TablePtr createTable(
       const ConnectorSessionPtr& session,
-      const std::string& tableName,
+      const SchemaTableName& tableName,
       const velox::RowTypePtr& rowType,
       const folly::F14FastMap<std::string, velox::Variant>& options) override;
 
@@ -267,27 +269,32 @@ class LocalHiveConnectorMetadata : public HiveConnectorMetadata {
       const ConnectorSessionPtr& session,
       const ConnectorWriteHandlePtr& handle) noexcept override;
 
-  std::string tablePath(std::string_view tableName) const override {
+  std::string tablePath(const SchemaTableName& tableName) const override {
     return fmt::format(
-        "{}/{}", hiveMetadataConfig_->localDataPath(), tableName);
+        "{}/{}", hiveMetadataConfig_->localDataPath(), tableName.table);
   }
 
   std::optional<std::string> makeStagingDirectory(
-      std::string_view tableName) const override;
+      const SchemaTableName& tableName) const override;
 
   bool dropTable(
       const ConnectorSessionPtr& session,
-      std::string_view tableName,
+      const SchemaTableName& tableName,
       bool ifExists) override;
 
   /// Shortcut for dropTable(session, tableName, true).
-  bool dropTableIfExists(std::string_view tableName) {
+  bool dropTableIfExists(const SchemaTableName& tableName) {
     return dropTable(nullptr, tableName, true);
+  }
+
+  bool dropTableIfExists(std::string_view tableName) {
+    return dropTableIfExists(
+        {std::string(kDefaultSchema), std::string(tableName)});
   }
 
   /// Loads or reloads a table from disk, discovering any new files.
   /// This is useful when files are manually added to a table directory.
-  void reloadTableFromPath(std::string_view tableName);
+  void reloadTableFromPath(const SchemaTableName& tableName);
 
  private:
   // Used to lazy initialize this in ensureInitialized() and to implement

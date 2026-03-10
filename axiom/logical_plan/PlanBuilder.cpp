@@ -240,8 +240,12 @@ PlanBuilder& PlanBuilder::tableScan(
     const std::string& tableName,
     bool includeHiddenColumns) {
   VELOX_USER_CHECK(defaultConnectorId_.has_value());
+  VELOX_USER_CHECK(defaultSchema_.has_value());
   return tableScan(
-      defaultConnectorId_.value(), tableName, includeHiddenColumns);
+      defaultConnectorId_.value(),
+      defaultSchema_.value(),
+      tableName,
+      includeHiddenColumns);
 }
 
 PlanBuilder& PlanBuilder::from(const std::vector<std::string>& tableNames) {
@@ -250,7 +254,7 @@ PlanBuilder& PlanBuilder::from(const std::vector<std::string>& tableNames) {
 
   tableScan(tableNames.front());
 
-  Context context{defaultConnectorId_};
+  Context context{defaultConnectorId_, defaultSchema_};
   context.planNodeIdGenerator = planNodeIdGenerator_;
   context.nameAllocator = nameAllocator_;
 
@@ -263,13 +267,16 @@ PlanBuilder& PlanBuilder::from(const std::vector<std::string>& tableNames) {
 
 PlanBuilder& PlanBuilder::tableScan(
     const std::string& connectorId,
+    const std::string& schemaName,
     const std::string& tableName,
     bool includeHiddenColumns) {
   VELOX_USER_CHECK_NULL(node_, "Table scan node must be the leaf node");
 
+  SchemaTableName schemaTableName{schemaName, tableName};
   auto* metadata = connector::ConnectorMetadata::metadata(connectorId);
-  auto table = metadata->findTable(tableName);
-  VELOX_USER_CHECK_NOT_NULL(table, "Table not found: {}", tableName);
+  auto table = metadata->findTable(schemaTableName);
+  VELOX_USER_CHECK_NOT_NULL(
+      table, "Table not found: {}", schemaTableName.toString());
 
   // Table::type() returns visible columns only.
   // Table::allColumns() returns all columns, including hidden ones.
@@ -315,28 +322,54 @@ PlanBuilder& PlanBuilder::tableScan(
       nextId(),
       ROW(std::move(outputNames), std::move(columnTypes)),
       connectorId,
-      tableName,
+      schemaTableName,
       std::move(originalNames));
 
   return *this;
 }
 
 PlanBuilder& PlanBuilder::tableScan(
+    const std::string& schemaName,
+    const std::string& tableName,
+    bool includeHiddenColumns) {
+  VELOX_USER_CHECK(defaultConnectorId_.has_value());
+  return tableScan(
+      defaultConnectorId_.value(), schemaName, tableName, includeHiddenColumns);
+}
+
+PlanBuilder& PlanBuilder::tableScan(
     const std::string& tableName,
     const std::vector<std::string>& columnNames) {
   VELOX_USER_CHECK(defaultConnectorId_.has_value());
-  return tableScan(defaultConnectorId_.value(), tableName, columnNames);
+  VELOX_USER_CHECK(defaultSchema_.has_value());
+  return tableScan(
+      defaultConnectorId_.value(),
+      defaultSchema_.value(),
+      tableName,
+      columnNames);
+}
+
+PlanBuilder& PlanBuilder::tableScan(
+    const std::string& schemaName,
+    const std::string& tableName,
+    const std::vector<std::string>& columnNames) {
+  VELOX_USER_CHECK(defaultConnectorId_.has_value());
+  return tableScan(
+      defaultConnectorId_.value(), schemaName, tableName, columnNames);
 }
 
 PlanBuilder& PlanBuilder::tableScan(
     const std::string& connectorId,
+    const std::string& schemaName,
     const std::string& tableName,
     const std::vector<std::string>& columnNames) {
   VELOX_USER_CHECK_NULL(node_, "Table scan node must be the leaf node");
 
+  SchemaTableName schemaTableName{schemaName, tableName};
   auto* metadata = connector::ConnectorMetadata::metadata(connectorId);
-  auto table = metadata->findTable(tableName);
-  VELOX_USER_CHECK_NOT_NULL(table, "Table not found: {}", tableName);
+  auto table = metadata->findTable(schemaTableName);
+  VELOX_USER_CHECK_NOT_NULL(
+      table, "Table not found: {}", schemaTableName.toString());
   const auto& schema = table->type();
 
   const auto numColumns = columnNames.size();
@@ -360,7 +393,7 @@ PlanBuilder& PlanBuilder::tableScan(
       nextId(),
       ROW(outputNames, columnTypes),
       connectorId,
-      tableName,
+      schemaTableName,
       columnNames);
 
   return *this;
@@ -1673,6 +1706,7 @@ PlanBuilder& PlanBuilder::offset(int64_t offset) {
 
 PlanBuilder& PlanBuilder::tableWrite(
     std::string connectorId,
+    std::string schemaName,
     std::string tableName,
     WriteKind kind,
     std::vector<std::string> columnNames,
@@ -1681,6 +1715,8 @@ PlanBuilder& PlanBuilder::tableWrite(
   VELOX_USER_CHECK_NOT_NULL(node_, "Table write node cannot be a leaf node");
   VELOX_USER_CHECK_GT(columnNames.size(), 0);
   VELOX_USER_CHECK_EQ(columnNames.size(), columnExprs.size());
+
+  SchemaTableName schemaTableName{std::move(schemaName), std::move(tableName)};
 
   std::vector<ExprPtr> columnExpressions;
   columnExpressions.reserve(columnExprs.size());
@@ -1691,8 +1727,9 @@ PlanBuilder& PlanBuilder::tableWrite(
   if (kind == WriteKind::kInsert) {
     // Check input types.
     auto* metadata = connector::ConnectorMetadata::metadata(connectorId);
-    auto table = metadata->findTable(tableName);
-    VELOX_USER_CHECK_NOT_NULL(table, "Table not found: {}", tableName);
+    auto table = metadata->findTable(schemaTableName);
+    VELOX_USER_CHECK_NOT_NULL(
+        table, "Table not found: {}", schemaTableName.toString());
     const auto& schema = table->type();
 
     for (auto i = 0; i < columnNames.size(); i++) {
@@ -1702,7 +1739,7 @@ PlanBuilder& PlanBuilder::tableWrite(
           index.has_value(),
           "Column not found: '{}' in table '{}'",
           name,
-          tableName);
+          schemaTableName.toString());
 
       const auto& inputType = columnExpressions[i]->type();
       const auto& schemaType = schema->childAt(index.value());
@@ -1714,11 +1751,11 @@ PlanBuilder& PlanBuilder::tableWrite(
               applyCoercion(columnExpressions[i], schemaType);
         } else {
           VELOX_USER_FAIL(
-              "Wrong column type: {} vs. {}, column '{}' in table '{}'",
+              "Wrong column type: {} vs. {}, column '{}' in table {}",
               inputType->toString(),
               schemaType->toString(),
               name,
-              tableName);
+              schemaTableName.toString());
         }
       }
     }
@@ -1728,7 +1765,7 @@ PlanBuilder& PlanBuilder::tableWrite(
       nextId(),
       std::move(node_),
       std::move(connectorId),
-      std::move(tableName),
+      std::move(schemaTableName),
       kind,
       std::move(columnNames),
       std::move(columnExpressions),
@@ -1744,9 +1781,11 @@ PlanBuilder& PlanBuilder::tableWrite(
     folly::F14FastMap<std::string, std::string> options) {
   VELOX_USER_CHECK_NOT_NULL(node_, "Table write node cannot be a leaf node");
   VELOX_USER_CHECK(defaultConnectorId_.has_value());
+  VELOX_USER_CHECK(defaultSchema_.has_value());
 
   return tableWrite(
       defaultConnectorId_.value(),
+      defaultSchema_.value(),
       std::move(tableName),
       kind,
       std::move(columnNames),

@@ -31,6 +31,8 @@ namespace {
 class PlanPrinterTest : public testing::Test {
  protected:
   static constexpr auto kTestConnectorId = "test";
+  static constexpr auto kDefaultSchema =
+      connector::TestConnector::kDefaultSchema;
 
   static void SetUpTestCase() {
     memory::MemoryManager::testingSetInstance(memory::MemoryManager::Options{});
@@ -86,6 +88,10 @@ class PlanPrinterTest : public testing::Test {
   }
 
   std::shared_ptr<connector::TestConnector> connector_;
+
+  PlanBuilder::Context context_{
+      std::string(kTestConnectorId),
+      std::string(kDefaultSchema)};
 };
 
 TEST_F(PlanPrinterTest, values) {
@@ -187,8 +193,8 @@ TEST_F(PlanPrinterTest, values) {
 }
 
 TEST_F(PlanPrinterTest, tablesample) {
-  auto plan = PlanBuilder()
-                  .tableScan(kTestConnectorId, "test", {"a", "b"})
+  auto plan = PlanBuilder(context_)
+                  .tableScan("test", {"a", "b"})
                   .sample(10, SampleNode::SampleMethod::kBernoulli)
                   .build();
 
@@ -198,7 +204,7 @@ TEST_F(PlanPrinterTest, tablesample) {
       lines,
       testing::ElementsAre(
           testing::StartsWith("- Sample: BERNOULLI: 10"),
-          testing::StartsWith("  - TableScan: test.test"),
+          testing::StartsWith("  - TableScan: test.\"default\".\"test\""),
           testing::Eq("")));
 
   lines = toSummaryLines(plan);
@@ -210,7 +216,7 @@ TEST_F(PlanPrinterTest, tablesample) {
           testing::Eq("- SAMPLE [1]: 2 fields: a BIGINT, b DOUBLE"),
           testing::Eq("      sample: BERNOULLI 10"),
           testing::Eq("  - TABLE_SCAN [0]: 2 fields: a BIGINT, b DOUBLE"),
-          testing::Eq("        table: test"),
+          testing::Eq("        table: \"default\".\"test\""),
           testing::Eq("        connector: test"),
           testing::Eq(""))
       // clang-format on
@@ -223,14 +229,14 @@ TEST_F(PlanPrinterTest, tablesample) {
       testing::ElementsAre(
           testing::Eq("- SAMPLE [1]: 2 fields"),
           testing::Eq("  - TABLE_SCAN [0]: 2 fields"),
-          testing::Eq("        table: test"),
+          testing::Eq("        table: \"default\".\"test\""),
           testing::Eq("        connector: test"),
           testing::Eq("")));
 }
 
 TEST_F(PlanPrinterTest, inList) {
-  auto plan = PlanBuilder()
-                  .tableScan(kTestConnectorId, "test", {"a", "b"})
+  auto plan = PlanBuilder(context_)
+                  .tableScan("test", {"a", "b"})
                   .filter("a IN (1, 5)")
                   .build();
 
@@ -240,7 +246,7 @@ TEST_F(PlanPrinterTest, inList) {
       lines,
       testing::ElementsAre(
           testing::StartsWith("- Filter: IN(a, 1, 5)"),
-          testing::StartsWith("  - TableScan: test.test"),
+          testing::StartsWith("  - TableScan: test.\"default\".\"test\""),
           testing::Eq("")));
 
   lines = toSummaryLines(plan);
@@ -254,7 +260,7 @@ TEST_F(PlanPrinterTest, inList) {
           testing::Eq("      expressions: IN: 1, constant: 2, field: 1"),
           testing::Eq("      constants: BIGINT: 2"),
           testing::Eq("  - TABLE_SCAN [0]: 2 fields: a BIGINT, b DOUBLE"),
-          testing::Eq("        table: test"),
+          testing::Eq("        table: \"default\".\"test\""),
           testing::Eq("        connector: test"),
           testing::Eq(""))
       // clang-format on
@@ -267,14 +273,14 @@ TEST_F(PlanPrinterTest, inList) {
       testing::ElementsAre(
           testing::Eq("- FILTER [1]: 2 fields"),
           testing::Eq("  - TABLE_SCAN [0]: 2 fields"),
-          testing::Eq("        table: test"),
+          testing::Eq("        table: \"default\".\"test\""),
           testing::Eq("        connector: test"),
           testing::Eq("")));
 }
 
 TEST_F(PlanPrinterTest, tableScan) {
-  auto plan = PlanBuilder()
-                  .tableScan(kTestConnectorId, "test", {"a", "b"})
+  auto plan = PlanBuilder(context_)
+                  .tableScan("test", {"a", "b"})
                   .with({"cast(a as double) * b as c"})
                   .build();
 
@@ -300,7 +306,7 @@ TEST_F(PlanPrinterTest, tableScan) {
           testing::Eq("      functions: multiply: 1"),
           testing::Eq("      projections: 1 out of 3"),
           testing::Eq("  - TABLE_SCAN [0]: 2 fields: a BIGINT, b DOUBLE"),
-          testing::Eq("        table: test"),
+          testing::Eq("        table: \"default\".\"test\""),
           testing::Eq("        connector: test"),
           testing::Eq("")));
 
@@ -310,7 +316,7 @@ TEST_F(PlanPrinterTest, tableScan) {
       lines,
       testing::ElementsAre(
           testing::Eq("- TABLE_SCAN [0]: 2 fields"),
-          testing::Eq("      table: test"),
+          testing::Eq("      table: \"default\".\"test\""),
           testing::Eq("      connector: test"),
           testing::Eq("")));
 }
@@ -795,8 +801,8 @@ TEST_F(PlanPrinterTest, unnest) {
 
   {
     auto plan =
-        PlanBuilder(/* enableCoersions */ true)
-            .tableScan(kTestConnectorId, "test", {"a", "d", "e"})
+        PlanBuilder(context_, /* enableCoercions */ true)
+            .tableScan("test", {"a", "d", "e"})
             .unnest({Col("d").unnestAs("x"), Col("e").unnestAs("y", "z")})
             .project({"a + x", "x + y", "z"})
             .build();
@@ -813,7 +819,7 @@ TEST_F(PlanPrinterTest, unnest) {
             testing::StartsWith("  - Unnest:"),
             testing::StartsWith("      [x] := d"),
             testing::StartsWith("      [y, z] := e"),
-            testing::StartsWith("    - TableScan: test.test"),
+            testing::StartsWith("    - TableScan: test.\"default\".\"test\""),
             testing::Eq("")));
   }
 }
@@ -1512,13 +1518,15 @@ TEST_F(PlanPrinterTest, tableWrite) {
     }
 
     SCOPE_EXIT {
-      connector_->dropTableIfExists("output_table");
+      connector_->dropTableIfExists(
+          {std::string(kDefaultSchema), "output_table"});
     };
 
-    auto plan = PlanBuilder()
-                    .tableScan(kTestConnectorId, "test", {"a", "b"})
+    PlanBuilder::Context context{
+        std::string(kTestConnectorId), std::string(kDefaultSchema)};
+    auto plan = PlanBuilder(context)
+                    .tableScan("test", {"a", "b"})
                     .tableWrite(
-                        kTestConnectorId,
                         "output_table",
                         actualKind,
                         {"col_a", "col_b"},
@@ -1545,12 +1553,12 @@ TEST_F(PlanPrinterTest, tableWrite) {
                 fmt::format(
                     "- TABLE_WRITE {} [1]: 1 fields: rows BIGINT",
                     expectedKind)),
-            testing::Eq("      table: output_table"),
+            testing::Eq("      table: \"default\".\"output_table\""),
             testing::Eq("      connector: test"),
             testing::Eq("      columns: 2"),
             testing::Eq("      expressions: CAST: 1, field: 2"),
             testing::Eq("  - TABLE_SCAN [0]: 2 fields: a BIGINT, b DOUBLE"),
-            testing::Eq("        table: test"),
+            testing::Eq("        table: \"default\".\"test\""),
             testing::Eq("        connector: test"),
             testing::Eq("")));
 
@@ -1562,7 +1570,7 @@ TEST_F(PlanPrinterTest, tableWrite) {
             testing::Eq(
                 fmt::format("- TABLE_WRITE {} [1]: 1 fields", expectedKind)),
             testing::Eq("  - TABLE_SCAN [0]: 2 fields"),
-            testing::Eq("        table: test"),
+            testing::Eq("        table: \"default\".\"test\""),
             testing::Eq("        connector: test"),
             testing::Eq("")));
   }

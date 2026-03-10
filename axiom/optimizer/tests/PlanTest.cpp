@@ -34,6 +34,8 @@ namespace lp = facebook::axiom::logical_plan;
 class PlanTest : public test::HiveQueriesTestBase {
  protected:
   static constexpr auto kTestConnectorId = "test";
+  static const inline std::string kDefaultSchema{
+      connector::TestConnector::kDefaultSchema};
 
   static void SetUpTestCase() {
     test::HiveQueriesTestBase::SetUpTestCase();
@@ -56,6 +58,10 @@ class PlanTest : public test::HiveQueriesTestBase {
   void TearDown() override {
     velox::connector::unregisterConnector(kTestConnectorId);
     HiveQueriesTestBase::TearDown();
+  }
+
+  lp::PlanBuilder::Context makeContext() const {
+    return lp::PlanBuilder::Context{kTestConnectorId, kDefaultSchema};
   }
 
   std::shared_ptr<connector::TestConnector> testConnector_;
@@ -91,8 +97,8 @@ TEST_F(PlanTest, agg) {
 
   optimizerOptions_.alwaysPlanPartialAggregation = true;
 
-  auto logicalPlan = lp::PlanBuilder()
-                         .tableScan(kTestConnectorId, "numbers", {"a", "b"})
+  auto logicalPlan = lp::PlanBuilder(makeContext())
+                         .tableScan("numbers", {"a", "b"})
                          .aggregate({"a"}, {"sum(a + b)"})
                          .build();
 
@@ -131,7 +137,10 @@ TEST_F(PlanTest, rejectedFilters) {
 
   auto scan = [&]() {
     lp::PlanBuilder::Context ctx(
-        kTestConnectorId, getQueryCtx(), test::resolveDfFunction);
+        kTestConnectorId,
+        kDefaultSchema,
+        getQueryCtx(),
+        test::resolveDfFunction);
     return lp::PlanBuilder(ctx, /* enableCoersions */ true).tableScan("t");
   };
 
@@ -141,11 +150,8 @@ TEST_F(PlanTest, rejectedFilters) {
 
     auto plan = toSingleNodePlan(logicalPlan.build());
 
-    auto matcher = core::PlanMatcherBuilder()
-                       .tableScan("t", ROW("a", BIGINT()))
-                       .filter("a > 10")
-                       .project()
-                       .build();
+    auto matcher =
+        matchScan("t", ROW("a", BIGINT())).filter("a > 10").project().build();
 
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
@@ -156,8 +162,7 @@ TEST_F(PlanTest, rejectedFilters) {
 
     auto plan = toSingleNodePlan(logicalPlan.build());
 
-    auto matcher = core::PlanMatcherBuilder()
-                       .tableScan("t", ROW({"a", "b"}, {BIGINT(), DOUBLE()}))
+    auto matcher = matchScan("t", ROW({"a", "b"}, {BIGINT(), DOUBLE()}))
                        .filter("b > 10")
                        .project()
                        .build();
@@ -179,8 +184,7 @@ TEST_F(PlanTest, rejectedFilters) {
 
     auto plan = toSingleNodePlan(logicalPlan);
 
-    auto matcher = core::PlanMatcherBuilder()
-                       .tableScan("t", ROW("c", mapType))
+    auto matcher = matchScan("t", ROW("c", mapType))
                        .filter()
                        .project() // project top-level columns c.x, c.y, c.z
                        .project() // project c.x + 1, c.y + 2, c.z + 3
@@ -202,8 +206,7 @@ TEST_F(PlanTest, rejectedFilters) {
 
     auto plan = toSingleNodePlan(logicalPlan);
 
-    auto matcher = core::PlanMatcherBuilder()
-                       .tableScan("t", ROW("c", mapType))
+    auto matcher = matchScan("t", ROW("c", mapType))
                        .filter("c[1] > 10")
                        .project({"1"})
                        .build();
@@ -224,8 +227,7 @@ TEST_F(PlanTest, rejectedFilters) {
 
     auto plan = toSingleNodePlan(logicalPlan);
 
-    auto matcher = core::PlanMatcherBuilder()
-                       .tableScan("t", ROW("c", mapType))
+    auto matcher = matchScan("t", ROW("c", mapType))
                        .filter("c[1] > 10")
                        .project() // project top-level column c.y
                        .project() // project c.y + 1
@@ -268,8 +270,8 @@ TEST_F(PlanTest, specialFormConstantFold) {
 
   for (const auto& testCase : filterTestCases) {
     SCOPED_TRACE("Filter: " + testCase.expression);
-    auto logicalPlan = lp::PlanBuilder()
-                           .tableScan(kTestConnectorId, "numbers")
+    auto logicalPlan = lp::PlanBuilder(makeContext())
+                           .tableScan("numbers")
                            .filter(testCase.expression)
                            .map({"a + 2"})
                            .build();
@@ -316,8 +318,8 @@ TEST_F(PlanTest, specialFormConstantFold) {
 
   for (const auto& testCase : projectTestCases) {
     SCOPED_TRACE("Expression: " + testCase.expression);
-    auto logicalPlan = lp::PlanBuilder()
-                           .tableScan(kTestConnectorId, "numbers")
+    auto logicalPlan = lp::PlanBuilder(makeContext())
+                           .tableScan("numbers")
                            .project({testCase.expression, "a", "b"})
                            .build();
 
@@ -337,7 +339,8 @@ TEST_F(PlanTest, inList) {
       "numbers", ROW({"a", "b", "c"}, {BIGINT(), DOUBLE(), VARCHAR()}));
 
   auto scan = [&]() {
-    lp::PlanBuilder::Context context(kTestConnectorId, getQueryCtx());
+    lp::PlanBuilder::Context context(
+        kTestConnectorId, kDefaultSchema, getQueryCtx());
     return lp::PlanBuilder(context).tableScan("numbers");
   };
 
@@ -381,22 +384,20 @@ TEST_F(PlanTest, multipleConnectors) {
   testConnector_->addTable("table1", ROW({"a"}, {BIGINT()}));
   extraConnector->addTable("table2", ROW({"b"}, {BIGINT()}));
 
-  lp::PlanBuilder::Context context(kTestConnectorId);
+  auto context = makeContext();
   auto logicalPlan =
       lp::PlanBuilder(context)
           .tableScan("table1")
           .join(
-              lp::PlanBuilder(context).tableScan("extra", "table2"),
+              lp::PlanBuilder(context).tableScan(
+                  "extra", kDefaultSchema, std::string("table2")),
               "a = b",
               lp::JoinType::kInner)
           .build();
   auto plan = toSingleNodePlan(logicalPlan);
 
   auto matcher =
-      core::PlanMatcherBuilder()
-          .tableScan("table1")
-          .hashJoin(core::PlanMatcherBuilder().tableScan("table2").build())
-          .build();
+      matchScan("table1").hashJoin(matchScan("table2").build()).build();
 
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
@@ -405,9 +406,8 @@ TEST_F(PlanTest, filterToJoinEdge) {
   auto nationType = ROW({"n_regionkey"}, BIGINT());
   auto regionType = ROW({"r_regionkey"}, BIGINT());
 
-  const auto connectorId = exec::test::kHiveConnectorId;
-
-  lp::PlanBuilder::Context context(connectorId);
+  lp::PlanBuilder::Context context(
+      exec::test::kHiveConnectorId, kDefaultSchema);
   auto logicalPlan = lp::PlanBuilder(context)
                          .from({"nation", "region"})
                          .map({"n_regionkey", "r_regionkey"})
@@ -447,11 +447,11 @@ TEST_F(PlanTest, filterToJoinEdge) {
   // after the join.
   logicalPlan =
       lp::PlanBuilder(context)
-          .tableScan(connectorId, "nation", nationType->names())
+          .tableScan("nation", nationType->names())
           .filter("rand() < 2.0")
           .crossJoin(
               lp::PlanBuilder(context)
-                  .tableScan(connectorId, "region", regionType->names())
+                  .tableScan("region", regionType->names())
                   .filter("rand() < 3.0"))
           .filter("n_regionkey + 1 = r_regionkey + 1 and rand() < 4.0")
           .build();
@@ -511,7 +511,8 @@ TEST_F(PlanTest, filterBreakup) {
       "                and l_shipinstruct = 'DELIVER IN PERSON'\n"
       "        )\n";
 
-  lp::PlanBuilder::Context context(exec::test::kHiveConnectorId);
+  lp::PlanBuilder::Context context(
+      exec::test::kHiveConnectorId, kDefaultSchema);
   auto logicalPlan =
       lp::PlanBuilder(context)
           .from({"lineitem", "part"})
@@ -577,18 +578,17 @@ TEST_F(PlanTest, values) {
           makeFlatVector<StringView>({"comment1", "comment2", "comment3"}),
       });
 
-  lp::PlanBuilder::Context ctx{exec::test::kHiveConnectorId};
-
   {
+    auto context = makeContext();
     auto makeLogicalPlan = [&](const std::string& filter) {
-      return lp::PlanBuilder(ctx)
+      return lp::PlanBuilder(context)
           .values({rowVector})
           .filter(filter)
           .project({"n_nationkey", "n_regionkey"});
     };
 
     auto logicalPlanExcept =
-        lp::PlanBuilder(ctx)
+        lp::PlanBuilder(context)
             .setOperation(
                 lp::SetOperation::kExcept,
                 {
@@ -622,175 +622,179 @@ TEST_F(PlanTest, values) {
   // t* can be either table scan or values.
   // We don't check produced plan, only that it results in the same rows as
   // correct exection plan.
+  {
+    lp::PlanBuilder::Context ctx(exec::test::kHiveConnectorId, kDefaultSchema);
+    auto makeLogicalPlan = [&](uint8_t leafType,
+                               const std::string& filter,
+                               std::string_view alias) {
+      auto plan = lp::PlanBuilder(ctx);
+      if (leafType == 0) {
+        plan.tableScan("nation", names);
+      } else {
+        plan.values({rowVector});
+      }
+      return plan.filter(filter).project({
+          fmt::format("n_nationkey AS {}1", alias),
+          fmt::format("n_regionkey AS {}2", alias),
+          fmt::format("n_comment AS {}3", alias),
+      });
+    };
 
-  auto makeLogicalPlan =
-      [&](uint8_t leafType, const std::string& filter, std::string_view alias) {
-        auto plan = lp::PlanBuilder(ctx);
-        if (leafType == 0) {
-          plan.tableScan("nation", names);
-        } else {
-          plan.values({rowVector});
-        }
-        return plan.filter(filter).project({
-            fmt::format("n_nationkey AS {}1", alias),
-            fmt::format("n_regionkey AS {}2", alias),
-            fmt::format("n_comment AS {}3", alias),
-        });
-      };
+    auto idGenerator = std::make_shared<core::PlanNodeIdGenerator>();
+    auto makePhysicalPlan =
+        [&](int leafType, const std::string& filter, std::string_view alias) {
+          auto plan = exec::test::PlanBuilder(idGenerator, pool_.get());
+          if (leafType == 0) {
+            plan.tableScan("nation", nationType);
+          } else {
+            plan.values({rowVector});
+          }
+          return plan.filter(filter).project({
+              fmt::format("n_nationkey AS {}1", alias),
+              fmt::format("n_regionkey AS {}2", alias),
+              fmt::format("n_comment AS {}3", alias),
+          });
+        };
 
-  auto idGenerator = std::make_shared<core::PlanNodeIdGenerator>();
-  auto makePhysicalPlan =
-      [&](int leafType, const std::string& filter, std::string_view alias) {
-        auto plan = exec::test::PlanBuilder(idGenerator, pool_.get());
-        if (leafType == 0) {
-          plan.tableScan("nation", nationType);
-        } else {
-          plan.values({rowVector});
-        }
-        return plan.filter(filter).project({
-            fmt::format("n_nationkey AS {}1", alias),
-            fmt::format("n_regionkey AS {}2", alias),
-            fmt::format("n_comment AS {}3", alias),
-        });
-      };
+    auto numJoins = 1;
+    auto numCombinations = 1 << (numJoins + 1);
+    for (int32_t i = 0; i < numCombinations; ++i) {
+      const int leafType1 = bits::isBitSet(&i, 0);
+      const int leafType2 = bits::isBitSet(&i, 1);
 
-  auto numJoins = 1;
-  auto numCombinations = 1 << (numJoins + 1);
-  for (int32_t i = 0; i < numCombinations; ++i) {
-    const int leafType1 = bits::isBitSet(&i, 0);
-    const int leafType2 = bits::isBitSet(&i, 1);
+      SCOPED_TRACE(fmt::format("Join: {} x {}", leafType1, leafType2));
 
-    SCOPED_TRACE(fmt::format("Join: {} x {}", leafType1, leafType2));
+      auto logicalPlan =
+          makeLogicalPlan(leafType1, "n_regionkey < 3", "x")
+              .join(
+                  makeLogicalPlan(leafType2, "n_regionkey > 1", "y"),
+                  "x2 = y2",
+                  lp::JoinType::kInner)
+              .project({"x1", "x2", "y3"})
+              .build();
 
-    auto logicalPlan =
-        makeLogicalPlan(leafType1, "n_regionkey < 3", "x")
-            .join(
-                makeLogicalPlan(leafType2, "n_regionkey > 1", "y"),
-                "x2 = y2",
-                lp::JoinType::kInner)
-            .project({"x1", "x2", "y3"})
-            .build();
+      auto referencePlan =
+          makePhysicalPlan(leafType1, "n_regionkey < 3", "x")
+              .hashJoin(
+                  {"x2"},
+                  {"y2"},
+                  makePhysicalPlan(leafType2, "n_regionkey > 1", "y")
+                      .planNode(),
+                  "",
+                  {"x1", "x2", "y3"})
+              .planNode();
 
-    auto referencePlan =
-        makePhysicalPlan(leafType1, "n_regionkey < 3", "x")
-            .hashJoin(
-                {"x2"},
-                {"y2"},
-                makePhysicalPlan(leafType2, "n_regionkey > 1", "y").planNode(),
-                "",
-                {"x1", "x2", "y3"})
-            .planNode();
+      checkSame(logicalPlan, referencePlan);
+    }
 
-    checkSame(logicalPlan, referencePlan);
-  }
+    numJoins = 2;
+    numCombinations = 1 << (numJoins + 1);
+    for (int32_t i = 0; i < numCombinations; ++i) {
+      const int leafType1 = bits::isBitSet(&i, 0);
+      const int leafType2 = bits::isBitSet(&i, 1);
+      const int leafType3 = bits::isBitSet(&i, 2);
 
-  numJoins = 2;
-  numCombinations = 1 << (numJoins + 1);
-  for (int32_t i = 0; i < numCombinations; ++i) {
-    const int leafType1 = bits::isBitSet(&i, 0);
-    const int leafType2 = bits::isBitSet(&i, 1);
-    const int leafType3 = bits::isBitSet(&i, 2);
+      SCOPED_TRACE(
+          fmt::format("Join: {} x {} x {}", leafType1, leafType2, leafType3));
 
-    SCOPED_TRACE(
-        fmt::format("Join: {} x {} x {}", leafType1, leafType2, leafType3));
+      auto logicalPlan =
+          makeLogicalPlan(leafType1, "n_regionkey < 3", "x")
+              .join(
+                  makeLogicalPlan(leafType2, "n_regionkey < 3", "y")
+                      .join(
+                          makeLogicalPlan(leafType3, "n_regionkey > 1", "z"),
+                          "y2 = z2",
+                          lp::JoinType::kInner),
+                  "x2 = y2",
+                  lp::JoinType::kInner)
+              .project({"x1", "x2", "y1", "z3"})
+              .build();
 
-    auto logicalPlan =
-        makeLogicalPlan(leafType1, "n_regionkey < 3", "x")
-            .join(
-                makeLogicalPlan(leafType2, "n_regionkey < 3", "y")
-                    .join(
-                        makeLogicalPlan(leafType3, "n_regionkey > 1", "z"),
-                        "y2 = z2",
-                        lp::JoinType::kInner),
-                "x2 = y2",
-                lp::JoinType::kInner)
-            .project({"x1", "x2", "y1", "z3"})
-            .build();
+      auto referencePlan =
+          makePhysicalPlan(leafType1, "n_regionkey < 3", "x")
+              .hashJoin(
+                  {"x2"},
+                  {"y2"},
+                  makePhysicalPlan(leafType2, "n_regionkey < 3", "y")
+                      .hashJoin(
+                          {"y2"},
+                          {"z2"},
+                          makePhysicalPlan(leafType3, "n_regionkey > 1", "z")
+                              .planNode(),
+                          "",
+                          {"y1", "y2", "z3"})
+                      .planNode(),
+                  "",
+                  {"x1", "x2", "y1", "z3"})
+              .planNode();
 
-    auto referencePlan =
-        makePhysicalPlan(leafType1, "n_regionkey < 3", "x")
-            .hashJoin(
-                {"x2"},
-                {"y2"},
-                makePhysicalPlan(leafType2, "n_regionkey < 3", "y")
-                    .hashJoin(
-                        {"y2"},
-                        {"z2"},
-                        makePhysicalPlan(leafType3, "n_regionkey > 1", "z")
-                            .planNode(),
-                        "",
-                        {"y1", "y2", "z3"})
-                    .planNode(),
-                "",
-                {"x1", "x2", "y1", "z3"})
-            .planNode();
+      checkSame(logicalPlan, referencePlan);
+    }
 
-    checkSame(logicalPlan, referencePlan);
-  }
+    numJoins = 3;
+    numCombinations = 1 << (numJoins + 1);
+    for (int32_t i = 0; i < numCombinations; ++i) {
+      const int leafType1 = bits::isBitSet(&i, 0);
+      const int leafType2 = bits::isBitSet(&i, 1);
+      const int leafType3 = bits::isBitSet(&i, 2);
+      const int leafType4 = bits::isBitSet(&i, 3);
 
-  numJoins = 3;
-  numCombinations = 1 << (numJoins + 1);
-  for (int32_t i = 0; i < numCombinations; ++i) {
-    const int leafType1 = bits::isBitSet(&i, 0);
-    const int leafType2 = bits::isBitSet(&i, 1);
-    const int leafType3 = bits::isBitSet(&i, 2);
-    const int leafType4 = bits::isBitSet(&i, 3);
+      SCOPED_TRACE(
+          fmt::format(
+              "Join: {} x {} x {} x {}",
+              leafType1,
+              leafType2,
+              leafType3,
+              leafType4));
 
-    SCOPED_TRACE(
-        fmt::format(
-            "Join: {} x {} x {} x {}",
-            leafType1,
-            leafType2,
-            leafType3,
-            leafType4));
+      auto logicalPlan =
+          makeLogicalPlan(leafType1, "n_regionkey < 3", "x")
+              .join(
+                  makeLogicalPlan(leafType2, "n_regionkey < 3", "y")
+                      .join(
+                          makeLogicalPlan(leafType3, "n_regionkey < 3", "z")
+                              .join(
+                                  makeLogicalPlan(
+                                      leafType4, "n_regionkey > 1", "w"),
+                                  "z2 == w2",
+                                  lp::JoinType::kInner)
+                              .project({"z1", "z2", "w3"}),
+                          "y2 == z2",
+                          lp::JoinType::kInner)
+                      .project({"y1", "y2", "z1", "w3"}),
+                  "x2 = y2",
+                  lp::JoinType::kInner)
+              .project({"x1", "x2", "y1", "z1", "w3"})
+              .build();
 
-    auto logicalPlan =
-        makeLogicalPlan(leafType1, "n_regionkey < 3", "x")
-            .join(
-                makeLogicalPlan(leafType2, "n_regionkey < 3", "y")
-                    .join(
-                        makeLogicalPlan(leafType3, "n_regionkey < 3", "z")
-                            .join(
-                                makeLogicalPlan(
-                                    leafType4, "n_regionkey > 1", "w"),
-                                "z2 == w2",
-                                lp::JoinType::kInner)
-                            .project({"z1", "z2", "w3"}),
-                        "y2 == z2",
-                        lp::JoinType::kInner)
-                    .project({"y1", "y2", "z1", "w3"}),
-                "x2 = y2",
-                lp::JoinType::kInner)
-            .project({"x1", "x2", "y1", "z1", "w3"})
-            .build();
+      auto referencePlan =
+          makePhysicalPlan(leafType1, "n_regionkey < 3", "x")
+              .hashJoin(
+                  {"x2"},
+                  {"y2"},
+                  makePhysicalPlan(leafType2, "n_regionkey < 3", "y")
+                      .hashJoin(
+                          {"y2"},
+                          {"z2"},
+                          makePhysicalPlan(leafType3, "n_regionkey < 3", "z")
+                              .hashJoin(
+                                  {"z2"},
+                                  {"w2"},
+                                  makePhysicalPlan(
+                                      leafType4, "n_regionkey > 1", "w")
+                                      .planNode(),
+                                  "",
+                                  {"z1", "z2", "w3"})
+                              .planNode(),
+                          "",
+                          {"y1", "y2", "z1", "w3"})
+                      .planNode(),
+                  "",
+                  {"x1", "x2", "y1", "z1", "w3"})
+              .planNode();
 
-    auto referencePlan =
-        makePhysicalPlan(leafType1, "n_regionkey < 3", "x")
-            .hashJoin(
-                {"x2"},
-                {"y2"},
-                makePhysicalPlan(leafType2, "n_regionkey < 3", "y")
-                    .hashJoin(
-                        {"y2"},
-                        {"z2"},
-                        makePhysicalPlan(leafType3, "n_regionkey < 3", "z")
-                            .hashJoin(
-                                {"z2"},
-                                {"w2"},
-                                makePhysicalPlan(
-                                    leafType4, "n_regionkey > 1", "w")
-                                    .planNode(),
-                                "",
-                                {"z1", "z2", "w3"})
-                            .planNode(),
-                        "",
-                        {"y1", "y2", "z1", "w3"})
-                    .planNode(),
-                "",
-                {"x1", "x2", "y1", "z1", "w3"})
-            .planNode();
-
-    checkSame(logicalPlan, referencePlan);
+      checkSame(logicalPlan, referencePlan);
+    }
   }
 }
 
@@ -798,8 +802,8 @@ TEST_F(PlanTest, tablesample) {
   testConnector_->addTable("t", ROW({"a", "b"}, INTEGER()));
 
   auto makeLogicalPlan = [&](double percentage) {
-    return lp::PlanBuilder{}
-        .tableScan(kTestConnectorId, "t")
+    return lp::PlanBuilder(makeContext())
+        .tableScan("t")
         .sample(percentage, lp::SampleNode::SampleMethod::kBernoulli)
         .build();
   };
@@ -807,17 +811,14 @@ TEST_F(PlanTest, tablesample) {
   {
     auto plan = toSingleNodePlan(makeLogicalPlan(10));
 
-    auto matcher = core::PlanMatcherBuilder{}
-                       .tableScan("t")
-                       .filter("rand() < 0.1")
-                       .build();
+    auto matcher = matchScan("t").filter("rand() < 0.1").build();
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
   {
     auto plan = toSingleNodePlan(makeLogicalPlan(100));
 
-    auto matcher = core::PlanMatcherBuilder{}.tableScan("t").build();
+    auto matcher = matchScan("t").build();
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
 }
@@ -825,8 +826,8 @@ TEST_F(PlanTest, tablesample) {
 TEST_F(PlanTest, limitBeforeProject) {
   testConnector_->addTable("t", ROW({"a", "b"}, {INTEGER(), INTEGER()}));
   {
-    auto logicalPlan = lp::PlanBuilder{}
-                           .tableScan(kTestConnectorId, "t", {"a", "b"})
+    auto logicalPlan = lp::PlanBuilder(makeContext())
+                           .tableScan("t", {"a", "b"})
                            .limit(10)
                            .project({"a + b as c"})
                            .build();
@@ -839,8 +840,8 @@ TEST_F(PlanTest, limitBeforeProject) {
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
   {
-    auto logicalPlan = lp::PlanBuilder{}
-                           .tableScan(kTestConnectorId, "t", {"a", "b"})
+    auto logicalPlan = lp::PlanBuilder(makeContext())
+                           .tableScan("t", {"a", "b"})
                            .limit(10'000)
                            .project({"a + b as c"})
                            .build();
@@ -858,8 +859,8 @@ TEST_F(PlanTest, limitAfterOrderBy) {
   testConnector_->addTable("t", ROW({"a", "b"}, INTEGER()));
 
   for (auto limit : {10, 10'000}) {
-    auto logicalPlan = lp::PlanBuilder{}
-                           .tableScan(kTestConnectorId, "t", {"a", "b"})
+    auto logicalPlan = lp::PlanBuilder(makeContext())
+                           .tableScan("t", {"a", "b"})
                            .project({"a + b as c"})
                            .orderBy({"c"})
                            .limit(limit)
@@ -949,8 +950,8 @@ TEST_F(PlanTest, parallelCse) {
 
   {
     auto logicalPlan =
-        lp::PlanBuilder(/* allowCoersions */ true)
-            .tableScan(kTestConnectorId, "t", {"a", "b", "c"})
+        lp::PlanBuilder(makeContext(), /* enableCoercions */ true)
+            .tableScan("t", {"a", "b", "c"})
             .map({"a + b + c as x"})
             .map({
                 "contains(array[1], cast(if(cast(x as real) < 0, ceil(cast(x as real)), floor(cast(x as real))) as int)) as a",
@@ -971,8 +972,8 @@ TEST_F(PlanTest, parallelCse) {
 
   {
     auto logicalPlan =
-        lp::PlanBuilder(/* allowCoersions */ true)
-            .tableScan(kTestConnectorId, "t", {"a", "b", "c"})
+        lp::PlanBuilder(makeContext(), /* enableCoercions */ true)
+            .tableScan("t", {"a", "b", "c"})
             .with({"a + b as ab"})
             .with({"ab + c as x"})
             .map(
@@ -996,8 +997,8 @@ TEST_F(PlanTest, lastProjection) {
   testConnector_->addTable(
       "numbers", ROW({"a", "b", "c"}, {BIGINT(), DOUBLE(), VARCHAR()}));
 
-  auto logicalPlan = lp::PlanBuilder{}
-                         .tableScan(kTestConnectorId, "numbers", {"a", "b"})
+  auto logicalPlan = lp::PlanBuilder(makeContext())
+                         .tableScan("numbers", {"a", "b"})
                          .aggregate({"a", "b"}, {"count(1)"})
                          .project({"a"})
                          .build();
@@ -1016,15 +1017,14 @@ TEST_F(PlanTest, lastProjection) {
 TEST_F(PlanTest, orderByDuplicateKeys) {
   testConnector_->addTable("t", ROW({"a"}, {BIGINT()}));
 
-  auto logicalPlan = lp::PlanBuilder{}
-                         .tableScan(kTestConnectorId, "t")
+  auto logicalPlan = lp::PlanBuilder(makeContext())
+                         .tableScan("t")
                          .project({"2 * a AS x", "a * 2 AS y"})
                          .orderBy({"x DESC", "y ASC"})
                          .build();
   auto plan = toSingleNodePlan(logicalPlan);
 
-  auto matcher = core::PlanMatcherBuilder()
-                     .tableScan("t")
+  auto matcher = matchScan("t")
                      .project({"multiply(a, 2) as x"})
                      .orderBy({"x DESC"})
                      .project({"x", "x"})
@@ -1037,8 +1037,8 @@ TEST_F(PlanTest, lambdaArgs) {
   testConnector_->addTable(
       "t", ROW({"a", "b"}, {ARRAY(ARRAY(REAL())), BIGINT()}));
 
-  auto logicalPlan = lp::PlanBuilder{}
-                         .tableScan(kTestConnectorId, "t")
+  auto logicalPlan = lp::PlanBuilder(makeContext())
+                         .tableScan("t")
                          .with({"b * 2 as x"})
                          .with({
                              "transform(a, x -> cardinality(x) + b)[1] as y",
@@ -1048,7 +1048,7 @@ TEST_F(PlanTest, lambdaArgs) {
 
   auto plan = toSingleNodePlan(logicalPlan);
 
-  auto matcher = core::PlanMatcherBuilder{}.tableScan("t").project().build();
+  auto matcher = matchScan("t").project().build();
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 

@@ -234,7 +234,8 @@ LogicalPlanNodePtr ValuesNode::create(
 folly::dynamic TableScanNode::serialize() const {
   auto obj = serializeBase("TableScanNode");
   obj["connectorId"] = connectorId_;
-  obj["tableName"] = tableName_;
+  obj["tableName"] = tableName_.table;
+  obj["schema"] = tableName_.schema;
   obj["columnNames"] =
       serializeVector(columnNames_, [](const std::string& s) { return s; });
   return obj;
@@ -244,11 +245,13 @@ folly::dynamic TableScanNode::serialize() const {
 LogicalPlanNodePtr TableScanNode::create(
     const folly::dynamic& obj,
     void* /*context*/) {
+  SchemaTableName tableName{
+      obj.getDefault("schema", "").asString(), obj["tableName"].asString()};
   return std::make_shared<TableScanNode>(
       obj["id"].asString(),
       deserializeOutputType(obj),
       obj["connectorId"].asString(),
-      obj["tableName"].asString(),
+      std::move(tableName),
       deserializeStringVector(obj, "columnNames"));
 }
 
@@ -483,7 +486,8 @@ LogicalPlanNodePtr UnnestNode::create(
 folly::dynamic TableWriteNode::serialize() const {
   auto obj = serializeBase("TableWriteNode");
   obj["connectorId"] = connectorId_;
-  obj["tableName"] = tableName_;
+  obj["tableName"] = tableName_.table;
+  obj["schema"] = tableName_.schema;
   obj["writeKind"] = WriteKindName::toName(writeKind_);
   obj["columnNames"] =
       serializeVector(columnNames_, [](const std::string& s) { return s; });
@@ -506,6 +510,9 @@ LogicalPlanNodePtr TableWriteNode::create(
   auto inputs = deserializeNodeInputs(obj, context);
   VELOX_CHECK_EQ(inputs.size(), 1);
 
+  SchemaTableName tableName{
+      obj.getDefault("schema", "").asString(), obj["tableName"].asString()};
+
   folly::F14FastMap<std::string, std::string> options;
   if (obj.count("options")) {
     for (const auto& [key, value] : obj["options"].items()) {
@@ -517,7 +524,7 @@ LogicalPlanNodePtr TableWriteNode::create(
       obj["id"].asString(),
       inputs[0],
       obj["connectorId"].asString(),
-      obj["tableName"].asString(),
+      std::move(tableName),
       WriteKindName::toWriteKind(obj["writeKind"].asString()),
       deserializeStringVector(obj, "columnNames"),
       deserializeExprs(obj, "columnExpressions", context),
@@ -887,7 +894,7 @@ TableWriteNode::TableWriteNode(
     std::string id,
     LogicalPlanNodePtr input,
     std::string connectorId,
-    std::string tableName,
+    SchemaTableName tableName,
     WriteKind writeKind,
     std::vector<std::string> columnNames,
     std::vector<ExprPtr> columnExpressions,
@@ -900,7 +907,7 @@ TableWriteNode::TableWriteNode(
       columnExpressions_{std::move(columnExpressions)},
       options_{std::move(options)} {
   VELOX_USER_CHECK(!connectorId_.empty());
-  VELOX_USER_CHECK(!tableName_.empty());
+  VELOX_USER_CHECK(!tableName_.table.empty());
   VELOX_USER_CHECK_EQ(columnNames_.size(), columnExpressions_.size());
 
   UniqueNameChecker::check(columnNames_);

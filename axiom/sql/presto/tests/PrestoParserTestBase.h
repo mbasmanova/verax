@@ -30,6 +30,8 @@ namespace axiom::sql::presto::test {
 class PrestoParserTestBase : public testing::Test {
  public:
   static constexpr const char* kConnectorId = "test";
+  static constexpr auto kDefaultSchema =
+      facebook::axiom::connector::TestConnector::kDefaultSchema;
 
   /// Registers Presto scalar and aggregate functions. Called once per suite.
   static void SetUpTestCase();
@@ -111,7 +113,7 @@ class PrestoParserTestBase : public testing::Test {
 
   /// Creates a PrestoParser configured with the test connector.
   PrestoParser makeParser() {
-    return PrestoParser(kConnectorId, std::nullopt);
+    return PrestoParser(kConnectorId, "default");
   }
 
   /// Test connector with TPC-H table schemas. Supports addTable, createView,
