@@ -2102,7 +2102,7 @@ void ToGraph::makeBaseTable(const lp::TableScanNode& tableScan) {
   VELOX_CHECK_NOT_NULL(
       schemaTable,
       "Table not found: {} via connector {}",
-      tableScan.tableName(),
+      tableScan.tableName().toString(),
       tableScan.connectorId());
 
   auto* baseTable = make<BaseTable>();
@@ -3158,7 +3158,7 @@ void ToGraph::addWrite(const lp::TableWriteNode& tableWrite) {
   VELOX_CHECK_NOT_NULL(
       schemaTable,
       "Table not found: {} via connector {}",
-      tableWrite.tableName(),
+      tableWrite.tableName().toString(),
       tableWrite.connectorId());
   const auto* connectorTable = schemaTable->connectorTable;
   VELOX_DCHECK_NOT_NULL(connectorTable);

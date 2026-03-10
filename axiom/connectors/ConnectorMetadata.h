@@ -16,6 +16,7 @@
 #pragma once
 
 #include "axiom/common/Enums.h"
+#include "axiom/common/SchemaTableName.h"
 #include "axiom/connectors/ConnectorSession.h"
 #include "axiom/connectors/ConnectorSplitManager.h"
 #include "folly/CppAttributes.h"
@@ -362,10 +363,9 @@ struct FilteredTableStats {
 /// constraints on the layout a scan or lookup is accessing.
 class TableLayout {
  public:
-  /// @param name Name of the layout (not table) for documentation. If there are
-  /// multiple layouts, this is unique within the table.
+  /// @param label Label for the layout, unique within the table.
   TableLayout(
-      std::string name,
+      std::string label,
       const Table* table,
       velox::connector::Connector* connector,
       std::vector<const Column*> columns,
@@ -377,8 +377,8 @@ class TableLayout {
 
   virtual ~TableLayout() = default;
 
-  const std::string& name() const {
-    return name_;
+  const std::string& label() const {
+    return label_;
   }
 
   /// The Connector to use for generating ColumnHandles and TableHandles for
@@ -554,7 +554,7 @@ class TableLayout {
       std::optional<LookupKeys> lookupKeys = std::nullopt) const = 0;
 
  private:
-  const std::string name_;
+  const std::string label_;
   const Table* table_;
   velox::connector::Connector* connector_;
   const std::vector<const Column*> columns_;
@@ -604,7 +604,7 @@ class Table : public std::enable_shared_from_this<Table> {
   /// @param columns List of all columns, including hidden. Column names must be
   /// non-empty and unique.
   Table(
-      std::string name,
+      SchemaTableName name,
       std::vector<std::unique_ptr<const Column>> columns,
       folly::F14FastMap<std::string, velox::Variant> options = {});
 
@@ -616,7 +616,7 @@ class Table : public std::enable_shared_from_this<Table> {
 
   virtual ~Table() = default;
 
-  const std::string& name() const {
+  const SchemaTableName& name() const {
     return name_;
   }
 
@@ -668,7 +668,7 @@ class Table : public std::enable_shared_from_this<Table> {
   }
 
  private:
-  const std::string name_;
+  const SchemaTableName name_;
   const velox::RowTypePtr type_;
   const std::vector<std::unique_ptr<const Column>> columns_;
   const std::vector<const Column*> columnPtrs_;
@@ -680,9 +680,10 @@ using TablePtr = std::shared_ptr<const Table>;
 
 class View {
  public:
-  View(std::string name, velox::RowTypePtr type, std::string text)
+  View(SchemaTableName name, velox::RowTypePtr type, std::string text)
       : name_(std::move(name)), type_(std::move(type)), text_(std::move(text)) {
-    VELOX_CHECK(!name_.empty());
+    VELOX_CHECK(!name_.schema.empty());
+    VELOX_CHECK(!name_.table.empty());
 
     VELOX_CHECK_NOT_NULL(type_);
     VELOX_CHECK_GT(type_->size(), 0);
@@ -690,7 +691,7 @@ class View {
     VELOX_CHECK(!text_.empty());
   }
 
-  const std::string& name() const {
+  const SchemaTableName& name() const {
     return name_;
   }
 
@@ -706,7 +707,7 @@ class View {
   virtual ~View() = default;
 
  private:
-  const std::string name_;
+  const SchemaTableName name_;
   const velox::RowTypePtr type_;
   const std::string text_;
 };
@@ -768,24 +769,22 @@ class ConnectorMetadata {
 
   virtual ~ConnectorMetadata() = default;
 
-  /// Return a TablePtr given the table name. Table name is provided without the
-  /// connector ID / catalog prefix, but may include the schema. The returned
-  /// Table object is immutable. If updates to the Table object are required,
-  /// the ConnectorMetadata is required to drop its reference to the existing
-  /// Table and return a reference to a newly created Table object for
-  /// subsequent calls to findTable. The ConnectorMetadata may drop its
-  /// reference to the Table object at any time, and callers are required to
-  /// retain a reference to the Table to prevent it from being reclaimed in the
-  /// case of Table removal by the ConnectorMetadata.
+  /// Return a TablePtr given the table name. The returned Table object is
+  /// immutable. If updates to the Table object are required, the
+  /// ConnectorMetadata is required to drop its reference to the existing Table
+  /// and return a reference to a newly created Table object for subsequent
+  /// calls to findTable. The ConnectorMetadata may drop its reference to the
+  /// Table object at any time, and callers are required to retain a reference
+  /// to the Table to prevent it from being reclaimed in the case of Table
+  /// removal by the ConnectorMetadata.
   ///
   /// @return nullptr if table doesn't exist.
-  virtual TablePtr findTable(std::string_view name) = 0;
+  virtual TablePtr findTable(const SchemaTableName& tableName) = 0;
 
-  /// Return a ViewPtr given the view name. View name is provided without the
-  /// connector ID / catalog prefix, but may include the schema.
+  /// Return a ViewPtr given the view name.
   ///
   /// @return nullptr if view doesn't exist.
-  virtual ViewPtr findView(std::string_view /*name*/) {
+  virtual ViewPtr findView(const SchemaTableName& /*tableName*/) {
     return nullptr;
   }
 
@@ -793,24 +792,23 @@ class ConnectorMetadata {
   /// through 'this'.
   virtual ConnectorSplitManager* splitManager() = 0;
 
-  /// Creates a table. 'tableName' is a name with optional 'schema.' followed by
-  /// table name. The connector gives the first part of the three part name. The
-  /// table properties are in 'options'. All options must be understood by the
-  /// connector. To create a table, first make a ConnectorSession in a connector
-  /// dependent manner, then call createTable to retrieve a Table object. Any
-  /// transaction semantics are connector-dependent, and the ConnectorSession
-  /// may be null for connectors which do not require it. Throws an error if the
-  /// table exists. finishWrite should be called to commit the new table and any
-  /// writes even if no data is added. To create an empty table, call
-  /// createTable, then beginWrite/finishWrite with the generated table object.
-  /// To create the table with data, call createTable to generate a Table, call
-  /// beginWrite with the Table object, perform writes against the table using
-  /// the returned insert handle, then finishWrite to commit the changes. The
-  /// table is not available via the findTable interface until after finishWrite
+  /// Creates a table. The table properties are in 'options'. All options must
+  /// be understood by the connector. To create a table, first make a
+  /// ConnectorSession in a connector dependent manner, then call createTable
+  /// to retrieve a Table object. Any transaction semantics are
+  /// connector-dependent, and the ConnectorSession may be null for connectors
+  /// which do not require it. Throws an error if the table exists. finishWrite
+  /// should be called to commit the new table and any writes even if no data
+  /// is added. To create an empty table, call createTable, then
+  /// beginWrite/finishWrite with the generated table object. To create the
+  /// table with data, call createTable to generate a Table, call beginWrite
+  /// with the Table object, perform writes against the table using the
+  /// returned insert handle, then finishWrite to commit the changes. The table
+  /// is not available via the findTable interface until after finishWrite
   /// completes.
   virtual TablePtr createTable(
       const ConnectorSessionPtr& /*session*/,
-      const std::string& /*tableName*/,
+      const SchemaTableName& /*tableName*/,
       const velox::RowTypePtr& /*rowType*/,
       const folly::F14FastMap<std::string, velox::Variant>& /*options*/) {
     VELOX_UNSUPPORTED();
@@ -861,12 +859,12 @@ class ConnectorMetadata {
     return {};
   }
 
-  /// Drop table with the specified name. If table doesn't exist and 'ifExists'
-  /// is false, raises an error. Otherwise, returns true if table was dropped
-  /// and false if table didn't exist.
+  /// Drops a table with the specified name. If table doesn't exist and
+  /// 'ifExists' is false, raises an error. Otherwise, returns true if table
+  /// was dropped and false if table didn't exist.
   virtual bool dropTable(
       const ConnectorSessionPtr& /*session*/,
-      std::string_view /*tableName*/,
+      const SchemaTableName& /*tableName*/,
       bool /*ifExists*/) {
     VELOX_UNSUPPORTED();
   }

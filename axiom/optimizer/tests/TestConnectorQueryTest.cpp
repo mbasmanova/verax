@@ -31,6 +31,8 @@ namespace lp = facebook::axiom::logical_plan;
 class TestConnectorQueryTest : public QueryTestBase {
  protected:
   static constexpr auto kTestConnectorId = "test";
+  static const inline std::string kDefaultSchema{
+      connector::TestConnector::kDefaultSchema};
 
   void SetUp() override {
     QueryTestBase::SetUp();
@@ -55,7 +57,8 @@ class TestConnectorQueryTest : public QueryTestBase {
     auto source = fragment.planNode;
     auto handle = std::make_shared<core::InsertTableHandle>(
         kTestConnectorId,
-        std::make_shared<connector::TestInsertTableHandle>(tableName));
+        std::make_shared<connector::TestInsertTableHandle>(SchemaTableName{
+            std::string(connector::TestConnector::kDefaultSchema), tableName}));
     auto write = std::make_shared<core::TableWriteNode>(
         "writenodeid",
         source->outputType(),
@@ -91,7 +94,7 @@ TEST_F(TestConnectorQueryTest, selectFiltered) {
   connector_->addTable("t", schema);
   connector_->appendData("t", vector);
 
-  lp::PlanBuilder::Context context(kTestConnectorId);
+  lp::PlanBuilder::Context context(kTestConnectorId, kDefaultSchema);
   auto logicalPlan =
       lp::PlanBuilder(context).tableScan("t").filter("a > 0").build();
   auto expected = makeRowVector({makeFlatVector<int64_t>({1, 2})});

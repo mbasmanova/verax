@@ -280,10 +280,11 @@ std::shared_ptr<SplitSource> LocalHiveSplitManager::getSplitSource(
   // Since there are only unpartitioned tables now, always makes a SplitSource
   // that goes over all the files in the handle's layout.
   auto* metadata = ConnectorMetadata::metadata(tableHandle->connectorId());
-  const auto& tableName = tableHandle->name();
-  auto table = metadata->findTable(tableName);
+  auto table = metadata->findTable(
+      {std::string(LocalHiveConnectorMetadata::kDefaultSchema),
+       tableHandle->name()});
   VELOX_CHECK_NOT_NULL(
-      table, "Could not find {} in its ConnectorMetadata", tableName);
+      table, "Could not find {} in its ConnectorMetadata", tableHandle->name());
   auto* layout = dynamic_cast<const LocalHiveTableLayout*>(table->layouts()[0]);
   VELOX_CHECK_NOT_NULL(layout);
 
@@ -394,12 +395,11 @@ void LocalHiveConnectorMetadata::reinitialize() {
 }
 
 void LocalHiveConnectorMetadata::initialize() {
-  auto formatName = hiveMetadataConfig_->localFileFormat();
-  auto path = hiveMetadataConfig_->localDataPath();
-  format_ = formatName == "dwrf" ? velox::dwio::common::FileFormat::DWRF
-      : formatName == "parquet"  ? velox::dwio::common::FileFormat::PARQUET
-      : formatName == "text"     ? velox::dwio::common::FileFormat::TEXT
-                                 : velox::dwio::common::FileFormat::UNKNOWN;
+  const auto formatName = hiveMetadataConfig_->localFileFormat();
+  const auto path = hiveMetadataConfig_->localDataPath();
+
+  format_ = velox::dwio::common::toFileFormat(formatName);
+
   makeQueryCtx();
   makeConnectorQueryCtx();
   readTables(path);
@@ -647,7 +647,7 @@ void LocalTable::makeDefaultLayout(
 
   std::vector<const Column*> empty;
   auto layout = std::make_unique<LocalHiveTableLayout>(
-      name(),
+      name().table,
       /*table=*/this,
       metadata.hiveConnector(),
       allColumns(),
@@ -1020,7 +1020,12 @@ std::shared_ptr<LocalTable> createLocalTable(
   const std::optional<int32_t> numBuckets = createTableOptions.numBuckets;
 
   auto table = std::make_shared<LocalTable>(
-      std::string{name}, schema, numBuckets.has_value(), std::move(options));
+      SchemaTableName{
+          std::string(LocalHiveConnectorMetadata::kDefaultSchema),
+          std::string{name}},
+      schema,
+      numBuckets.has_value(),
+      std::move(options));
 
   std::vector<const Column*> partitionedBy;
   for (const auto& columnName : createTableOptions.partitionedByColumns) {
@@ -1062,7 +1067,7 @@ std::shared_ptr<LocalTable> createLocalTable(
   }
 
   auto layout = std::make_unique<LocalHiveTableLayout>(
-      table->name(),
+      table->name().table,
       table.get(),
       connector,
       table->allColumns(),
@@ -1165,7 +1170,7 @@ void LocalHiveConnectorMetadata::loadTable(
       table = it->second;
     } else {
       tables_[tableName] = std::make_shared<LocalTable>(
-          std::string{tableName},
+          SchemaTableName{std::string(kDefaultSchema), std::string{tableName}},
           tableType,
           /*bucketed=*/false,
           /*options=*/folly::F14FastMap<std::string, velox::Variant>{});
@@ -1294,7 +1299,7 @@ T numericValue(const velox::Variant& v) {
 } // namespace
 
 LocalTable::LocalTable(
-    std::string name,
+    SchemaTableName name,
     velox::RowTypePtr type,
     bool bucketed,
     folly::F14FastMap<std::string, velox::Variant> options)
@@ -1389,10 +1394,16 @@ void LocalTable::sampleNumDistincts(
   }
 }
 
-TablePtr LocalHiveConnectorMetadata::findTable(std::string_view name) {
+TablePtr LocalHiveConnectorMetadata::findTable(
+    const SchemaTableName& tableName) {
+  VELOX_USER_CHECK_EQ(
+      tableName.schema,
+      kDefaultSchema,
+      "Unsupported schema: {}",
+      tableName.schema);
   ensureInitialized();
   std::lock_guard<std::mutex> l(mutex_);
-  return findTableLocked(name);
+  return findTableLocked(tableName.table);
 }
 
 std::shared_ptr<LocalTable> LocalHiveConnectorMetadata::findTableLocked(
@@ -1492,14 +1503,14 @@ void createDir(const std::string& path) {
 
 TablePtr LocalHiveConnectorMetadata::createTable(
     const ConnectorSessionPtr& /*session*/,
-    const std::string& tableName,
+    const SchemaTableName& tableName,
     const velox::RowTypePtr& rowType,
     const folly::F14FastMap<std::string, velox::Variant>& options) {
   validateOptions(options);
   ensureInitialized();
   auto path = tablePath(tableName);
   if (dirExists(path)) {
-    VELOX_USER_FAIL("Table {} already exists", tableName);
+    VELOX_USER_FAIL("Table {} already exists", tableName.toString());
   } else {
     createDir(path);
   }
@@ -1512,7 +1523,9 @@ TablePtr LocalHiveConnectorMetadata::createTable(
 
   std::lock_guard<std::mutex> l(mutex_);
   VELOX_USER_CHECK_NULL(
-      findTableLocked(tableName), "table {} already exists", tableName);
+      findTableLocked(tableName.table),
+      "table {} already exists",
+      tableName.toString());
   {
     std::ofstream outputFile(filePath);
     VELOX_CHECK(outputFile.is_open());
@@ -1521,7 +1534,7 @@ TablePtr LocalHiveConnectorMetadata::createTable(
     outputFile.close();
   }
   return createLocalTable(
-      tableName, rowType, createTableOptions, hiveConnector());
+      tableName.table, rowType, createTableOptions, hiveConnector());
 }
 
 RowsFuture LocalHiveConnectorMetadata::finishWrite(
@@ -1552,14 +1565,14 @@ RowsFuture LocalHiveConnectorMetadata::finishWrite(
 
   move(writePath, targetPath);
   deleteDirectoryRecursive(writePath);
-  loadTable(hiveHandle->table()->name(), targetPath);
+  loadTable(hiveHandle->table()->name().table, targetPath);
   return rows;
 }
 
 void LocalHiveConnectorMetadata::reloadTableFromPath(
-    std::string_view tableName) {
+    const SchemaTableName& tableName) {
   std::lock_guard<std::mutex> l(mutex_);
-  loadTable(tableName, tablePath(tableName));
+  loadTable(tableName.table, tablePath(tableName));
 }
 
 velox::ContinueFuture LocalHiveConnectorMetadata::abortWrite(
@@ -1580,7 +1593,7 @@ velox::ContinueFuture LocalHiveConnectorMetadata::abortWrite(
     const auto& targetPath = veloxHandle->locationHandle()->targetPath();
     deleteDirectoryRecursive(targetPath);
 
-    tables_.erase(hiveHandle->table()->name());
+    tables_.erase(hiveHandle->table()->name().table);
   }
   return {};
 } catch (const std::exception& e) {
@@ -1589,19 +1602,19 @@ velox::ContinueFuture LocalHiveConnectorMetadata::abortWrite(
 }
 
 std::optional<std::string> LocalHiveConnectorMetadata::makeStagingDirectory(
-    std::string_view tableName) const {
+    const SchemaTableName& tableName) const {
   return createTemporaryDirectory(
-      hiveMetadataConfig_->localDataPath(), tableName);
+      hiveMetadataConfig_->localDataPath(), tableName.table);
 }
 
 bool LocalHiveConnectorMetadata::dropTable(
     const ConnectorSessionPtr& /* session */,
-    std::string_view tableName,
+    const SchemaTableName& tableName,
     bool ifExists) {
   ensureInitialized();
 
   std::lock_guard<std::mutex> l(mutex_);
-  if (!tables_.contains(tableName)) {
+  if (!tables_.contains(tableName.table)) {
     if (ifExists) {
       return false;
     }
@@ -1609,7 +1622,7 @@ bool LocalHiveConnectorMetadata::dropTable(
   }
 
   deleteDirectoryRecursive(tablePath(tableName));
-  return tables_.erase(tableName) == 1;
+  return tables_.erase(tableName.table) == 1;
 }
 
 } // namespace facebook::axiom::connector::hive

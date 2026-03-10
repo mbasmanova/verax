@@ -582,7 +582,8 @@ class SummarizeToTextVisitor : public PlanNodeVisitor {
 
     const auto indent = makeIndent(myContext.indent + 3);
 
-    myContext.out << indent << "table: " << node.tableName() << std::endl;
+    myContext.out << indent << "table: " << node.tableName().toString()
+                  << std::endl;
     myContext.out << indent << "connector: " << node.connectorId() << std::endl;
   }
 
@@ -730,7 +731,8 @@ class SummarizeToTextVisitor : public PlanNodeVisitor {
 
     if (!myContext.skeletonOnly) {
       const auto indent = makeIndent(myContext.indent + 3);
-      myContext.out << indent << "table: " << node.tableName() << std::endl;
+      myContext.out << indent << "table: " << node.tableName().toString()
+                    << std::endl;
       myContext.out << indent << "connector: " << node.connectorId()
                     << std::endl;
       myContext.out << indent << "columns: " << node.columnNames().size()

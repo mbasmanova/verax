@@ -125,7 +125,8 @@ void PrestoParserTestBase::testSelect(
   ASSERT_EQ(views.size(), selectStatement->views().size());
 
   for (const auto& view : views) {
-    ASSERT_TRUE(selectStatement->views().contains({kConnectorId, view}))
+    ASSERT_TRUE(selectStatement->views().contains(
+        {kConnectorId, facebook::axiom::SchemaTableName{"default", view}}))
         << "Missing view: " << view;
   }
 }
@@ -160,7 +161,7 @@ void PrestoParserTestBase::testCtas(
 
   auto ctasStatement = statement->as<CreateTableAsSelectStatement>();
 
-  ASSERT_EQ(ctasStatement->tableName(), tableName);
+  ASSERT_EQ(ctasStatement->tableName().table, tableName);
   ASSERT_TRUE(*ctasStatement->tableSchema() == *tableSchema);
 
   auto logicalPlan = ctasStatement->plan();
@@ -190,7 +191,7 @@ void PrestoParserTestBase::testCreateTable(
 
   auto* createTable = statement->as<CreateTableStatement>();
 
-  ASSERT_EQ(createTable->tableName(), tableName);
+  ASSERT_EQ(createTable->tableName().table, tableName);
   ASSERT_TRUE(*createTable->tableSchema() == *tableSchema);
 
   const auto& actualProperties = createTable->properties();

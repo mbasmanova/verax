@@ -75,7 +75,7 @@ folly::F14FastMap<std::string, const Column*> toMap(
 } // namespace
 
 Table::Table(
-    std::string name,
+    SchemaTableName name,
     std::vector<std::unique_ptr<const Column>> columns,
     folly::F14FastMap<std::string, velox::Variant> options)
     : name_(std::move(name)),
@@ -84,7 +84,8 @@ Table::Table(
       columnPtrs_(toPtrs(columns_)),
       columnMap_(toMap(columns_)),
       options_(std::move(options)) {
-  VELOX_CHECK(!name_.empty());
+  VELOX_CHECK(!name_.schema.empty());
+  VELOX_CHECK(!name_.table.empty());
   VELOX_CHECK_NOT_NULL(type_);
 }
 
@@ -131,7 +132,7 @@ velox::RowTypePtr makeRowType(const std::vector<const Column*>& columns) {
 } // namespace
 
 TableLayout::TableLayout(
-    std::string name,
+    std::string label,
     const Table* table,
     velox::connector::Connector* connector,
     std::vector<const Column*> columns,
@@ -140,7 +141,7 @@ TableLayout::TableLayout(
     std::vector<SortOrder> sortOrder,
     std::vector<const Column*> lookupKeys,
     bool supportsScan)
-    : name_(std::move(name)),
+    : label_(std::move(label)),
       table_(table),
       connector_(connector),
       columns_(std::move(columns)),

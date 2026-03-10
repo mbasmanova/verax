@@ -1272,11 +1272,7 @@ TEST_F(UnnestTest, unnestWithFilter) {
 
   auto logicalPlan = parseSelect(query, kTestConnectorId);
 
-  auto matcher = core::PlanMatcherBuilder()
-                     .tableScan("t")
-                     .unnest()
-                     .filter("b = x")
-                     .build();
+  auto matcher = matchScan("t").unnest().filter("b = x").build();
 
   auto plan = toSingleNodePlan(logicalPlan);
   AXIOM_ASSERT_PLAN(plan, matcher);
@@ -1288,8 +1284,7 @@ TEST_F(UnnestTest, multipleTables) {
   auto query = "SELECT * FROM t, UNNEST(a, array[1, 2, 3]) AS u(x, y)";
   auto logicalPlan = parseSelect(query, kTestConnectorId);
 
-  auto matcher =
-      core::PlanMatcherBuilder().tableScan("t").project().unnest().build();
+  auto matcher = matchScan("t").project().unnest().build();
 
   auto plan = toSingleNodePlan(logicalPlan);
   AXIOM_ASSERT_PLAN(plan, matcher);

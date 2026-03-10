@@ -324,7 +324,10 @@ PlanAndStats ToVelox::toVeloxPlan(
 
   if (options.remoteOutput) {
     rootPlanNode = velox::core::PartitionedOutputNode::single(
-        nextId(), rootPlanNode->outputType(), exchangeSerdeKind_, rootPlanNode);
+        nextId(),
+        rootPlanNode->outputType(),
+        velox::VectorSerde::kindName(exchangeSerdeKind_),
+        rootPlanNode);
   }
 
   auto finishWrite = std::move(finishWrite_);
@@ -811,10 +814,17 @@ velox::core::PlanNodePtr ToVelox::makeOrderBy(
   node = addLocalMerge(nextId(), keys, sortOrder, node);
 
   source.fragment.planNode = velox::core::PartitionedOutputNode::single(
-      nextId(), node->outputType(), exchangeSerdeKind_, node);
+      nextId(),
+      node->outputType(),
+      velox::VectorSerde::kindName(exchangeSerdeKind_),
+      node);
 
   auto merge = std::make_shared<velox::core::MergeExchangeNode>(
-      nextId(), node->outputType(), keys, sortOrder, exchangeSerdeKind_);
+      nextId(),
+      node->outputType(),
+      keys,
+      sortOrder,
+      velox::VectorSerde::kindName(exchangeSerdeKind_));
 
   fragment.width = 1;
   fragment.inputStages.emplace_back(merge->id(), source.taskPrefix);
@@ -839,10 +849,15 @@ velox::core::PlanNodePtr ToVelox::makeOffset(
   auto input = makeFragment(op.input(), source, stages);
 
   source.fragment.planNode = velox::core::PartitionedOutputNode::single(
-      nextId(), input->outputType(), exchangeSerdeKind_, input);
+      nextId(),
+      input->outputType(),
+      velox::VectorSerde::kindName(exchangeSerdeKind_),
+      input);
 
   auto exchange = std::make_shared<velox::core::ExchangeNode>(
-      nextId(), input->outputType(), exchangeSerdeKind_);
+      nextId(),
+      input->outputType(),
+      velox::VectorSerde::kindName(exchangeSerdeKind_));
 
   auto limitNode = addFinalLimit(nextId(), op.offset, op.limit, exchange);
 
@@ -887,10 +902,15 @@ velox::core::PlanNodePtr ToVelox::makeLimit(
   }
 
   source.fragment.planNode = velox::core::PartitionedOutputNode::single(
-      nextId(), node->outputType(), exchangeSerdeKind_, node);
+      nextId(),
+      node->outputType(),
+      velox::VectorSerde::kindName(exchangeSerdeKind_),
+      node);
 
   auto exchange = std::make_shared<velox::core::ExchangeNode>(
-      nextId(), node->outputType(), exchangeSerdeKind_);
+      nextId(),
+      node->outputType(),
+      velox::VectorSerde::kindName(exchangeSerdeKind_));
 
   auto finalLimitNode = addFinalLimit(nextId(), op.offset, op.limit, exchange);
 
@@ -1548,12 +1568,19 @@ velox::core::PlanNodePtr ToVelox::makeRepartition(
   if (distribution.isBroadcast()) {
     VELOX_CHECK_EQ(0, keys.size());
     source.fragment.planNode = velox::core::PartitionedOutputNode::broadcast(
-        nextId(), 1, outputType, exchangeSerdeKind_, sourcePlan);
+        nextId(),
+        1,
+        outputType,
+        velox::VectorSerde::kindName(exchangeSerdeKind_),
+        sourcePlan);
   } else if (distribution.isGather()) {
     VELOX_CHECK_EQ(0, keys.size());
     fragment.width = 1;
     source.fragment.planNode = velox::core::PartitionedOutputNode::single(
-        nextId(), outputType, exchangeSerdeKind_, sourcePlan);
+        nextId(),
+        outputType,
+        velox::VectorSerde::kindName(exchangeSerdeKind_),
+        sourcePlan);
   } else {
     VELOX_CHECK_NE(0, keys.size());
     auto partitionFunctionFactory = createPartitionFunctionSpec(
@@ -1568,13 +1595,15 @@ velox::core::PlanNodePtr ToVelox::makeRepartition(
             /*replicateNullsAndAny=*/false,
             std::move(partitionFunctionFactory),
             outputType,
-            exchangeSerdeKind_,
+            velox::VectorSerde::kindName(exchangeSerdeKind_),
             sourcePlan);
   }
 
   if (exchange == nullptr) {
     exchange = std::make_shared<velox::core::ExchangeNode>(
-        nextId(), sourcePlan->outputType(), exchangeSerdeKind_);
+        nextId(),
+        sourcePlan->outputType(),
+        velox::VectorSerde::kindName(exchangeSerdeKind_));
   }
   fragment.inputStages.emplace_back(exchange->id(), source.taskPrefix);
   stages.push_back(std::move(source));

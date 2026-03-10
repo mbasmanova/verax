@@ -30,6 +30,7 @@ add_library(axiom_logical_plan_builder PlanBuilder.cpp NameAllocator.cpp NameMap
 target_link_libraries(
   axiom_logical_plan_builder
   axiom_logical_plan
+  axiom_common
   axiom_connectors
   velox_exec
   velox_function_registry

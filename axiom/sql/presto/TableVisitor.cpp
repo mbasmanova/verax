@@ -24,7 +24,7 @@ namespace axiom::sql::presto {
 
 TableVisitor::TableVisitor(
     const std::string& defaultConnectorId,
-    const std::optional<std::string>& defaultSchema)
+    const std::string& defaultSchema)
     : defaultConnectorId_(defaultConnectorId), defaultSchema_(defaultSchema) {}
 
 void TableVisitor::visitWithQuery(WithQuery* node) {
@@ -104,11 +104,8 @@ std::string TableVisitor::constructTableName(const QualifiedName& name) const {
       name.fullyQualifiedName());
   switch (parts.size()) {
     case 1:
-      if (defaultSchema_.has_value()) {
-        return fmt::format(
-            "{}.{}.{}", defaultConnectorId_, defaultSchema_.value(), parts[0]);
-      }
-      return fmt::format("{}.{}", defaultConnectorId_, parts[0]);
+      return fmt::format(
+          "{}.{}.{}", defaultConnectorId_, defaultSchema_, parts[0]);
     case 2:
       return fmt::format("{}.{}.{}", defaultConnectorId_, parts[0], parts[1]);
     case 3:

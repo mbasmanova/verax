@@ -84,7 +84,7 @@ std::string_view SqlStatement::kindName() const {
 
 CreateTableStatement::CreateTableStatement(
     std::string connectorId,
-    std::string tableName,
+    facebook::axiom::SchemaTableName tableName,
     RowTypePtr tableSchema,
     std::unordered_map<std::string, lp::ExprPtr> properties,
     bool ifNotExists,
@@ -118,11 +118,11 @@ CreateTableStatement::CreateTableStatement(
 
 CreateTableAsSelectStatement::CreateTableAsSelectStatement(
     std::string connectorId,
-    std::string tableName,
+    facebook::axiom::SchemaTableName tableName,
     RowTypePtr tableSchema,
     std::unordered_map<std::string, lp::ExprPtr> properties,
     lp::LogicalPlanNodePtr plan,
-    std::unordered_map<std::pair<std::string, std::string>, std::string> views)
+    ViewMap views)
     : SqlStatement(SqlStatementKind::kCreateTableAsSelect, std::move(views)),
       connectorId_{std::move(connectorId)},
       tableName_{std::move(tableName)},

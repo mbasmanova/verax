@@ -170,11 +170,13 @@ int main(int argc, char** argv) {
   axiom::sql::SqlQueryRunner runner;
   runner.initialize([&]() {
     auto defaultConnector = connectors.registerTpchConnector();
+    auto defaultSchema = "tiny";
     if (!FLAGS_data_path.empty()) {
       defaultConnector = connectors.registerLocalHiveConnector(
           FLAGS_data_path, FLAGS_data_format);
+      defaultSchema = "default";
     }
-    return std::make_pair(defaultConnector->connectorId(), std::nullopt);
+    return std::make_pair(defaultConnector->connectorId(), defaultSchema);
   });
 
   const auto dot = FLAGS_logical_plan ? runner.toLogicalPlanDot(query)

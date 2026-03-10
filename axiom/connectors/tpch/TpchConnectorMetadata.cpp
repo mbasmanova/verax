@@ -16,7 +16,6 @@
 
 #include "axiom/connectors/tpch/TpchConnectorMetadata.h"
 
-#include "axiom/connectors/SchemaUtils.h"
 #include "velox/connectors/Connector.h"
 #include "velox/connectors/tpch/TpchConnector.h"
 #include "velox/connectors/tpch/TpchConnectorSplit.h"
@@ -188,7 +187,7 @@ void TpchTable::makeDefaultLayout(TpchConnectorMetadata& metadata) {
   VELOX_CHECK_EQ(0, exportedLayouts_.size());
 
   auto layout = std::make_unique<TpchTableLayout>(
-      name(),
+      name().table,
       this,
       metadata.tpchConnector(),
       allColumns(),
@@ -202,43 +201,37 @@ void TpchTable::makeDefaultLayout(TpchConnectorMetadata& metadata) {
   layouts_.push_back(std::move(layout));
 }
 
-TablePtr TpchConnectorMetadata::findTable(std::string_view name) {
-  TableNameParser parser{name};
-  if (!parser.valid() || !isValidTpchTableName(parser.table()) ||
-      (parser.schema().has_value() &&
-       !isValidTpchSchema(parser.schema().value()))) {
+TablePtr TpchConnectorMetadata::findTable(const SchemaTableName& tableName) {
+  if (!isValidTpchTableName(tableName.table) ||
+      (!tableName.schema.empty() && !isValidTpchSchema(tableName.schema))) {
     return nullptr;
   }
 
-  velox::tpch::Table tpchTable = velox::tpch::fromTableName(parser.table());
-  const auto schema = parser.schema().value_or(kTiny);
+  velox::tpch::Table tpchTable = velox::tpch::fromTableName(tableName.table);
+  const auto schema = tableName.schema.empty() ? kTiny : tableName.schema;
   const auto scaleFactor = getScaleFactor(schema);
 
-  const auto tableName = fmt::format("{}.{}", schema, parser.table());
   const auto tableType = velox::tpch::getTableSchema(tpchTable);
   const auto numRows = velox::tpch::getRowCount(tpchTable, scaleFactor);
 
   auto table = std::make_shared<TpchTable>(
-      tableName, tableType, tpchTable, scaleFactor, numRows);
+      SchemaTableName{schema, tableName.table},
+      tableType,
+      tpchTable,
+      scaleFactor,
+      numRows);
 
   table->makeDefaultLayout(*this);
 
   return table;
 }
 
-std::string canonicalizeViewName(const TableNameParser& parser) {
-  return fmt::format("{}.{}", parser.schema().value_or(kTiny), parser.table());
-}
-
-ViewPtr TpchConnectorMetadata::findView(std::string_view name) {
-  TableNameParser parser{name};
-  if (!parser.valid() ||
-      (parser.schema().has_value() &&
-       !isValidTpchSchema(parser.schema().value()))) {
+ViewPtr TpchConnectorMetadata::findView(const SchemaTableName& tableName) {
+  if (!tableName.schema.empty() && !isValidTpchSchema(tableName.schema)) {
     return nullptr;
   }
 
-  auto it = views_.find(canonicalizeViewName(parser));
+  auto it = views_.find(tableName);
   if (it == views_.end()) {
     return nullptr;
   }
@@ -247,28 +240,26 @@ ViewPtr TpchConnectorMetadata::findView(std::string_view name) {
 }
 
 void TpchConnectorMetadata::createView(
-    std::string_view name,
+    const SchemaTableName& viewName,
     velox::RowTypePtr type,
     std::string_view text) {
-  TableNameParser parser{name};
-  VELOX_USER_CHECK(parser.valid(), "Invalid view name: {}", name);
-  if (parser.schema().has_value()) {
+  VELOX_USER_CHECK(!viewName.table.empty(), "View name cannot be empty");
+  if (!viewName.schema.empty()) {
     VELOX_USER_CHECK(
-        isValidTpchSchema(parser.schema().value()),
+        isValidTpchSchema(viewName.schema),
         "Invalid view schema: {}",
-        parser.schema().value());
+        viewName.schema);
   }
 
-  auto ok = views_
-                .emplace(
-                    canonicalizeViewName(parser),
-                    ViewDefinition{type, std::string(text)})
-                .second;
-  VELOX_CHECK(ok, "View already exists: {}", name);
+  auto ok =
+      views_
+          .emplace(viewName, ViewDefinition{std::move(type), std::string(text)})
+          .second;
+  VELOX_CHECK(ok, "View already exists: {}", viewName.toString());
 }
 
-bool TpchConnectorMetadata::dropView(std::string_view name) {
-  return views_.erase(std::string(name)) == 1;
+bool TpchConnectorMetadata::dropView(const SchemaTableName& viewName) {
+  return views_.erase(viewName) == 1;
 }
 
 } // namespace facebook::axiom::connector::tpch

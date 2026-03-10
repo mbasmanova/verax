@@ -15,10 +15,8 @@
  */
 
 #include "axiom/connectors/tests/TestConnector.h"
-#include "axiom/logical_plan/PlanBuilder.h"
 #include "axiom/optimizer/tests/PlanMatcher.h"
 #include "axiom/optimizer/tests/QueryTestBase.h"
-#include "velox/common/base/tests/GTestUtils.h"
 
 namespace facebook::axiom::optimizer {
 namespace {
@@ -51,86 +49,83 @@ class RemoteOutputTest : public test::QueryTestBase {
 TEST_F(RemoteOutputTest, simpleScan) {
   testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
 
-  lp::PlanBuilder::Context ctx{kTestConnectorId};
-  auto logicalPlan = lp::PlanBuilder{ctx}.tableScan("t").build();
+  auto logicalPlan = parseSelect("SELECT * FROM t", kTestConnectorId);
 
   // Multi-worker with remote output: results stay distributed, each worker
   // wraps output in a PartitionedOutputNode for remote consumption.
-  auto distributedPlan = planVelox(
-      logicalPlan, {.numWorkers = 2, .numDrivers = 2, .remoteOutput = true});
-  auto matcher = core::PlanMatcherBuilder()
-                     .tableScan("t")
-                     .partitionedOutputSingle()
-                     .build();
-  AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, matcher);
+  {
+    auto plan = planVelox(
+        logicalPlan, {.numWorkers = 2, .numDrivers = 2, .remoteOutput = true});
+    auto matcher = matchScan("t").partitionedOutputSingle().build();
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(plan.plan, matcher);
+  }
 
   // Multi-worker without remote output: a gather stage is added to collect
   // results onto a single node.
-  distributedPlan = planVelox(
-      logicalPlan, {.numWorkers = 2, .numDrivers = 2, .remoteOutput = false});
-  matcher = core::PlanMatcherBuilder().tableScan("t").gather().build();
-  AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, matcher);
+  {
+    auto plan = planVelox(
+        logicalPlan, {.numWorkers = 2, .numDrivers = 2, .remoteOutput = false});
+    auto matcher = matchScan("t").gather().build();
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(plan.plan, matcher);
+  }
 
   // Single worker with remote output: PartitionedOutputNode is still added
   // to enable remote consumption even though there is only one worker.
-  distributedPlan = planVelox(
-      logicalPlan, {.numWorkers = 1, .numDrivers = 2, .remoteOutput = true});
-  matcher = core::PlanMatcherBuilder()
-                .tableScan("t")
-                .partitionedOutputSingle()
-                .build();
-  AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, matcher);
+  {
+    auto plan = planVelox(
+        logicalPlan, {.numWorkers = 1, .numDrivers = 2, .remoteOutput = true});
+    auto matcher = matchScan("t").partitionedOutputSingle().build();
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(plan.plan, matcher);
+  }
 
   // Single worker without remote output: no extra nodes are added, results
   // are consumed locally.
-  distributedPlan = planVelox(
-      logicalPlan, {.numWorkers = 1, .numDrivers = 2, .remoteOutput = false});
-  matcher = core::PlanMatcherBuilder().tableScan("t").build();
-  AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, matcher);
+  {
+    auto plan = planVelox(
+        logicalPlan, {.numWorkers = 1, .numDrivers = 2, .remoteOutput = false});
+    auto matcher = matchScan("t").build();
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(plan.plan, matcher);
+  }
 }
 
 TEST_F(RemoteOutputTest, simpleAggregation) {
   testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
 
-  lp::PlanBuilder::Context ctx{kTestConnectorId};
-  auto logicalPlan =
-      lp::PlanBuilder{ctx}.tableScan("t").aggregate({}, {"sum(b)"}).build();
+  auto logicalPlan = parseSelect("SELECT sum(b) FROM t", kTestConnectorId);
 
   // Multi-worker without remote output: partial aggregation on workers,
   // gather to single node, then final aggregation. No additional gather
   // needed since the final fragment is already single-worker.
-  auto distributedPlan = planVelox(
+  auto plan = planVelox(
       logicalPlan, {.numWorkers = 2, .numDrivers = 2, .remoteOutput = false});
-  auto matcher = core::PlanMatcherBuilder()
-                     .tableScan("t")
+  auto matcher = matchScan("t")
                      .partialAggregation({}, {"sum(b)"})
                      .gather()
                      .localGather()
                      .finalAggregation({}, {"sum(sum)"})
                      .build();
-  AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, matcher);
+  AXIOM_ASSERT_DISTRIBUTED_PLAN(plan.plan, matcher);
 }
 
 TEST_F(RemoteOutputTest, groupByAggregation) {
   testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
 
-  lp::PlanBuilder::Context ctx{kTestConnectorId};
   auto logicalPlan =
-      lp::PlanBuilder{ctx}.tableScan("t").aggregate({"a"}, {"sum(b)"}).build();
+      parseSelect("SELECT sum(b) FROM t GROUP BY a", kTestConnectorId);
 
   // Multi-worker without remote output: shuffle by group-by key, then
   // single aggregation. A gather stage collects results from multiple
   // workers onto a single node.
-  auto distributedPlan = planVelox(
+  auto plan = planVelox(
       logicalPlan, {.numWorkers = 2, .numDrivers = 2, .remoteOutput = false});
-  auto matcher = core::PlanMatcherBuilder()
-                     .tableScan("t")
+  auto matcher = matchScan("t")
                      .shuffle({"a"})
                      .localPartition({"a"})
                      .singleAggregation({"a"}, {"sum(b)"})
+                     .project()
                      .gather()
                      .build();
-  AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, matcher);
+  AXIOM_ASSERT_DISTRIBUTED_PLAN(plan.plan, matcher);
 }
 
 } // namespace

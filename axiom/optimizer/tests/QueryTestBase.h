@@ -80,7 +80,8 @@ class QueryTestBase : public runner::test::LocalRunnerTestBase {
 
   logical_plan::LogicalPlanNodePtr parseSelect(
       std::string_view sql,
-      const std::string& defaultConnectorId);
+      const std::string& defaultConnectorId,
+      const std::string& defaultSchema = "default");
 
   /// @param planFilePathPrefix If specified, writes the query graph, optimized
   /// and executable plans to files with specified path prefix.
@@ -200,7 +201,15 @@ class QueryTestBase : public runner::test::LocalRunnerTestBase {
 
   static velox::core::PlanMatcherBuilder matchScan(
       const std::string& tableName) {
-    return velox::core::PlanMatcherBuilder().tableScan(tableName);
+    return velox::core::PlanMatcherBuilder().tableScan(
+        SchemaTableName{"default", tableName}.toString());
+  }
+
+  static velox::core::PlanMatcherBuilder matchScan(
+      const std::string& tableName,
+      const velox::RowTypePtr& outputType) {
+    return velox::core::PlanMatcherBuilder().tableScan(
+        SchemaTableName{"default", tableName}.toString(), outputType);
   }
 
   OptimizerOptions optimizerOptions_;

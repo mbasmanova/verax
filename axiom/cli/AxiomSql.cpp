@@ -16,6 +16,7 @@
 
 #include <folly/init/Init.h>
 #include <gflags/gflags.h>
+#include <iostream>
 #include "axiom/cli/Connectors.h"
 #include "axiom/cli/Console.h"
 
@@ -35,19 +36,26 @@ int main(int argc, char** argv) {
   axiom::sql::SqlQueryRunner runner;
   runner.initialize([&]() {
     auto defaultConnector = connectors.registerTpchConnector();
+    auto defaultSchema = "tiny";
 
     connectors.registerTestConnector();
 
     if (!FLAGS_data_path.empty()) {
       defaultConnector = connectors.registerLocalHiveConnector(
           FLAGS_data_path, FLAGS_data_format);
+      defaultSchema = "default";
     }
 
     std::string connectorId =
         FLAGS_catalog.empty() ? defaultConnector->connectorId() : FLAGS_catalog;
 
-    std::optional<std::string> schema =
-        FLAGS_schema.empty() ? std::nullopt : std::make_optional(FLAGS_schema);
+    if (FLAGS_schema.empty() &&
+        connectorId != defaultConnector->connectorId()) {
+      std::cerr << "Schema must be specified for connector " << connectorId;
+      exit(1);
+    }
+
+    std::string schema = FLAGS_schema.empty() ? defaultSchema : FLAGS_schema;
 
     return std::make_pair(connectorId, schema);
   });

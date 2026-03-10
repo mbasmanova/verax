@@ -98,7 +98,7 @@ std::vector<std::unique_ptr<const connector::Column>> makeColumns(
 } // namespace
 
 HiveTable::HiveTable(
-    std::string name,
+    SchemaTableName name,
     velox::RowTypePtr type,
     bool bucketed,
     bool includeHiddenColumns,
@@ -121,7 +121,7 @@ std::vector<velox::TypePtr> extractPartitionKeyTypes(
 } // namespace
 
 HiveTableLayout::HiveTableLayout(
-    const std::string& name,
+    const std::string& label,
     const Table* table,
     velox::connector::Connector* connector,
     std::vector<const Column*> columns,
@@ -133,7 +133,7 @@ HiveTableLayout::HiveTableLayout(
     std::vector<const Column*> hivePartitionedByColumns,
     velox::dwio::common::FileFormat fileFormat)
     : TableLayout(
-          name,
+          label,
           table,
           connector,
           std::move(columns),
@@ -202,7 +202,7 @@ velox::connector::ColumnHandlePtr HiveTableLayout::createColumnHandle(
   VELOX_CHECK(subfieldMapping.empty());
   auto* column = findColumn(columnName);
   VELOX_CHECK_NOT_NULL(
-      column, "Column not found: {} in table {}", columnName, name());
+      column, "Column not found: {} in table {}", columnName, table().name());
   return std::make_shared<velox::connector::hive::HiveColumnHandle>(
       columnName,
       columnType(*this, column),
@@ -255,15 +255,18 @@ velox::connector::ConnectorTableHandlePtr HiveTableLayout::createTableHandle(
             createColumnHandle(session, name)));
   }
 
+  const auto& tableName = table().name();
   return std::make_shared<velox::connector::hive::HiveTableHandle>(
       connector()->connectorId(),
-      table().name(),
+      tableName.table,
       std::move(subfieldFilters),
       remainingFilter,
       dataColumns ? dataColumns : rowType(),
+      /*indexColumns=*/std::vector<std::string>{},
       serdeParameters(),
       filterColumnHandles,
-      sampleRate);
+      sampleRate,
+      tableName.schema);
 }
 
 namespace {

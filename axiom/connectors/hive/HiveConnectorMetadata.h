@@ -75,7 +75,7 @@ class HiveTable : public Table {
   static constexpr auto kBucket = "$bucket";
 
   HiveTable(
-      std::string name,
+      SchemaTableName name,
       velox::RowTypePtr type,
       bool bucketed,
       bool includeHiddenColumns,
@@ -99,7 +99,7 @@ class HiveTableLayout : public TableLayout {
   /// 'sortedByColumns'.
   /// @param hivePartitionedByColumns Hive's partitioned-by keys.
   HiveTableLayout(
-      const std::string& name,
+      const std::string& label,
       const Table* table,
       velox::connector::Connector* connector,
       std::vector<const Column*> columns,
@@ -245,14 +245,14 @@ class HiveConnectorMetadata : public ConnectorMetadata {
       const folly::F14FastMap<std::string, velox::Variant>& options) const;
 
   /// Return the filesystem path for the storage of the specified table.
-  virtual std::string tablePath(std::string_view table) const = 0;
+  virtual std::string tablePath(const SchemaTableName& tableName) const = 0;
 
   /// Optionally, create a staging directory for the specified table.
   /// This directory, if provided, will be used for insert/delete/update into
   /// this table.
   /// @return The filesystem path of the staging directory.
   virtual std::optional<std::string> makeStagingDirectory(
-      std::string_view table) const = 0;
+      const SchemaTableName& tableName) const = 0;
 
   velox::connector::hive::HiveConnector* const hiveConnector_;
 

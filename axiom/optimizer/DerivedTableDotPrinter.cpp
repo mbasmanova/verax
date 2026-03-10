@@ -181,7 +181,7 @@ std::string joinCondition(const JoinEdge& edge) {
 void printBaseTable(const BaseTable& table, std::ostream& out) {
   std::string headerText = table.cname;
   if (table.schemaTable != nullptr) {
-    headerText += " (" + table.schemaTable->name() + ")";
+    headerText += fmt::format(" ({})", table.schemaTable->name());
   }
 
   printTableStart(out, &table, headerText);

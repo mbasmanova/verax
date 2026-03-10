@@ -19,6 +19,8 @@
 #include <algorithm>
 #include <cstdint>
 
+#include "axiom/common/SchemaTableName.h"
+
 namespace facebook::axiom::optimizer {
 
 struct OptimizerOptions {
@@ -75,11 +77,15 @@ struct OptimizerOptions {
   /// partial + final or not.
   bool alwaysPlanPartialAggregation = false;
 
-  bool isMapAsStruct(std::string_view table, std::string_view column) const {
+  bool isMapAsStruct(const SchemaTableName& tableName, std::string_view column)
+      const {
     if (allMapsAsStruct) {
       return true;
     }
-    auto it = mapAsStruct.find(table);
+    // TODO: Handle tables from different schemas properly. Currently, the
+    // mapAsStruct config is keyed by bare table name which is ambiguous across
+    // schemas.
+    auto it = mapAsStruct.find(tableName.table);
     if (it == mapAsStruct.end()) {
       return false;
     }

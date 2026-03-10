@@ -125,8 +125,10 @@ class ToVelox {
 
   /// True if a scan should expose 'column' of 'table' as a struct only
   /// containing the accessed keys. 'column' must be a top level map column.
-  bool isMapAsStruct(std::string_view table, std::string_view column) {
-    return optimizerOptions_.isMapAsStruct(table, column);
+  bool isMapAsStruct(
+      const SchemaTableName& tableName,
+      std::string_view column) {
+    return optimizerOptions_.isMapAsStruct(tableName, column);
   }
 
   // Makes an output type for use in PlanNode et al. If 'columnType' is set,

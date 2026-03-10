@@ -18,10 +18,27 @@
 
 #include <unordered_set>
 #include "axiom/common/Enums.h"
+#include "axiom/common/SchemaTableName.h"
 #include "axiom/logical_plan/LogicalPlanNode.h"
 #include "velox/common/base/Exceptions.h"
 
 namespace axiom::sql::presto {
+
+/// Key for the views map: connectorId + schema-qualified view name.
+using ViewKey = std::pair<std::string, facebook::axiom::SchemaTableName>;
+
+/// Hash function for ViewKey.
+struct ViewKeyHash {
+  size_t operator()(const ViewKey& key) const {
+    auto hash = std::hash<std::string>{}(key.first);
+    hash ^= facebook::axiom::SchemaTableNameHash{}(key.second) + 0x9e3779b9 +
+        (hash << 6) + (hash >> 2);
+    return hash;
+  }
+};
+
+/// Map from (connectorId, SchemaTableName) to view SQL text.
+using ViewMap = std::unordered_map<ViewKey, std::string, ViewKeyHash>;
 
 enum class SqlStatementKind {
   kSelect,
@@ -38,10 +55,7 @@ AXIOM_DECLARE_ENUM_NAME(SqlStatementKind);
 
 class SqlStatement {
  public:
-  explicit SqlStatement(
-      SqlStatementKind kind,
-      std::unordered_map<std::pair<std::string, std::string>, std::string>
-          views = {})
+  explicit SqlStatement(SqlStatementKind kind, ViewMap views = {})
       : kind_{kind}, views_{std::move(views)} {}
 
   virtual ~SqlStatement() = default;
@@ -90,16 +104,15 @@ class SqlStatement {
   }
 
   /// A set of views used in the query. Each view is identified by a connector
-  /// ID and a view name. Map value contains the text of the view.
-  const std::unordered_map<std::pair<std::string, std::string>, std::string>&
-  views() const {
+  /// ID and a schema-qualified view name. Map value contains the text of the
+  /// view.
+  const ViewMap& views() const {
     return views_;
   }
 
  private:
   const SqlStatementKind kind_;
-  const std::unordered_map<std::pair<std::string, std::string>, std::string>
-      views_;
+  const ViewMap views_;
 };
 
 using SqlStatementPtr = std::shared_ptr<const SqlStatement>;
@@ -108,8 +121,7 @@ class SelectStatement : public SqlStatement {
  public:
   explicit SelectStatement(
       facebook::axiom::logical_plan::LogicalPlanNodePtr plan,
-      std::unordered_map<std::pair<std::string, std::string>, std::string>
-          views = {})
+      ViewMap views = {})
       : SqlStatement(SqlStatementKind::kSelect, std::move(views)),
         plan_{std::move(plan)} {}
 
@@ -125,8 +137,7 @@ class InsertStatement : public SqlStatement {
  public:
   explicit InsertStatement(
       facebook::axiom::logical_plan::LogicalPlanNodePtr plan,
-      std::unordered_map<std::pair<std::string, std::string>, std::string>
-          views = {})
+      ViewMap views = {})
       : SqlStatement(SqlStatementKind::kInsert, std::move(views)),
         plan_{std::move(plan)} {}
 
@@ -165,7 +176,7 @@ class CreateTableStatement : public SqlStatement {
 
   CreateTableStatement(
       std::string connectorId,
-      std::string tableName,
+      facebook::axiom::SchemaTableName tableName,
       facebook::velox::RowTypePtr tableSchema,
       std::unordered_map<std::string, facebook::axiom::logical_plan::ExprPtr>
           properties,
@@ -176,7 +187,7 @@ class CreateTableStatement : public SqlStatement {
     return connectorId_;
   }
 
-  const std::string& tableName() const {
+  const facebook::axiom::SchemaTableName& tableName() const {
     return tableName_;
   }
 
@@ -208,7 +219,7 @@ class CreateTableStatement : public SqlStatement {
 
  private:
   const std::string connectorId_;
-  const std::string tableName_;
+  const facebook::axiom::SchemaTableName tableName_;
   const facebook::velox::RowTypePtr tableSchema_;
   std::unordered_map<std::string, facebook::axiom::logical_plan::ExprPtr>
       properties_;
@@ -220,19 +231,18 @@ class CreateTableAsSelectStatement : public SqlStatement {
  public:
   CreateTableAsSelectStatement(
       std::string connectorId,
-      std::string tableName,
+      facebook::axiom::SchemaTableName tableName,
       facebook::velox::RowTypePtr tableSchema,
       std::unordered_map<std::string, facebook::axiom::logical_plan::ExprPtr>
           properties,
       facebook::axiom::logical_plan::LogicalPlanNodePtr plan,
-      std::unordered_map<std::pair<std::string, std::string>, std::string>
-          views = {});
+      ViewMap views = {});
 
   const std::string& connectorId() const {
     return connectorId_;
   }
 
-  const std::string& tableName() const {
+  const facebook::axiom::SchemaTableName& tableName() const {
     return tableName_;
   }
 
@@ -252,7 +262,7 @@ class CreateTableAsSelectStatement : public SqlStatement {
 
  private:
   const std::string connectorId_;
-  const std::string tableName_;
+  const facebook::axiom::SchemaTableName tableName_;
   const facebook::velox::RowTypePtr tableSchema_;
   std::unordered_map<std::string, facebook::axiom::logical_plan::ExprPtr>
       properties_;
@@ -263,7 +273,7 @@ class DropTableStatement : public SqlStatement {
  public:
   DropTableStatement(
       std::string connectorId,
-      std::string tableName,
+      facebook::axiom::SchemaTableName tableName,
       bool ifExists)
       : SqlStatement(SqlStatementKind::kDropTable),
         connectorId_{std::move(connectorId)},
@@ -274,7 +284,7 @@ class DropTableStatement : public SqlStatement {
     return connectorId_;
   }
 
-  const std::string& tableName() const {
+  const facebook::axiom::SchemaTableName& tableName() const {
     return tableName_;
   }
 
@@ -284,7 +294,7 @@ class DropTableStatement : public SqlStatement {
 
  private:
   const std::string connectorId_;
-  const std::string tableName_;
+  const facebook::axiom::SchemaTableName tableName_;
   const bool ifExists_;
 };
 

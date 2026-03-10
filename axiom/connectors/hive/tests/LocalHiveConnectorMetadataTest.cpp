@@ -38,6 +38,8 @@ class LocalHiveConnectorMetadataTest
   static constexpr int32_t kNumVectors = 5;
   static constexpr int32_t kRowsPerVector = 10000;
 
+  const std::string kDefaultSchema{LocalHiveConnectorMetadata::kDefaultSchema};
+
   static void SetUpTestCase() {
     // Creates the data and schema from 'testTables_'. These are created on the
     // first test fixture initialization.
@@ -191,9 +193,9 @@ class LocalHiveConnectorMetadataTest
       const std::unordered_map<std::string, std::optional<std::string>>&
           partitionKeys,
       dwio::common::FileFormat format) {
-    std::string tablePath = metadata_->tablePath(tableName);
+    std::string tablePath = metadata_->tablePath({kDefaultSchema, tableName});
     auto files = getDataFiles(tablePath);
-    auto table = metadata_->findTable(tableName);
+    auto table = metadata_->findTable({kDefaultSchema, tableName});
     auto results = readFiles(table, files, partitionKeys, format);
     exec::test::assertEqualResults({expectedData}, {results});
   }
@@ -225,7 +227,7 @@ class LocalHiveConnectorMetadataTest
 };
 
 TEST_F(LocalHiveConnectorMetadataTest, basic) {
-  auto table = metadata_->findTable("T");
+  auto table = metadata_->findTable({kDefaultSchema, "T"});
   ASSERT_TRUE(table != nullptr);
   auto column = table->findColumn("c0");
   ASSERT_TRUE(column != nullptr);
@@ -261,7 +263,7 @@ TEST_F(LocalHiveConnectorMetadataTest, basic) {
 
 // Verifies that sample() only samples files matching $path filter.
 TEST_F(LocalHiveConnectorMetadataTest, sampleWithPathFilter) {
-  auto table = metadata_->findTable("T");
+  auto table = metadata_->findTable({kDefaultSchema, "T"});
   ASSERT_TRUE(table != nullptr);
   auto* layout = dynamic_cast<const LocalHiveTableLayout*>(table->layouts()[0]);
   ASSERT_TRUE(layout != nullptr);
@@ -323,7 +325,8 @@ TEST_F(LocalHiveConnectorMetadataTest, createTable) {
       {HiveWriteOptions::kCompressionKind, "zstd"}};
 
   auto session = std::make_shared<ConnectorSession>("q-test");
-  auto table = metadata_->createTable(session, "test", tableType, options);
+  auto table = metadata_->createTable(
+      session, {kDefaultSchema, "test"}, tableType, options);
 
   constexpr int32_t kTestSize = 2048;
   auto data = makeRowVector(
@@ -352,7 +355,7 @@ TEST_F(LocalHiveConnectorMetadataTest, createTable) {
   writeToTable(
       table, data, WriteKind::kCreate, dwio::common::FileFormat::PARQUET);
 
-  std::string tablePath = metadata_->tablePath("test");
+  std::string tablePath = metadata_->tablePath({kDefaultSchema, "test"});
   std::string partition = "2022-09-01";
   std::string path = fmt::format("{}/ds={}", tablePath, partition);
   auto files = getDataFiles(path);
@@ -383,7 +386,7 @@ TEST_F(LocalHiveConnectorMetadataTest, createTable) {
     EXPECT_TRUE(buckets.contains(i));
   }
 
-  compareTableLayout(table, metadata_->findTable("test"));
+  compareTableLayout(table, metadata_->findTable({kDefaultSchema, "test"}));
   compareTableData(
       "test", data, {{"ds", partition}}, dwio::common::FileFormat::PARQUET);
 }
@@ -397,8 +400,11 @@ TEST_F(LocalHiveConnectorMetadataTest, createEmptyTable) {
        {"ds", VARCHAR()}});
 
   auto session = std::make_shared<ConnectorSession>("q-test");
-  auto table =
-      metadata_->createTable(session, "test_empty", tableType, /*options=*/{});
+  auto table = metadata_->createTable(
+      session,
+      {kDefaultSchema, "test_empty"},
+      tableType,
+      /*options=*/{});
 
   auto emptyData = makeRowVector(tableType, 0);
   EXPECT_EQ(emptyData->size(), 0);
@@ -413,7 +419,8 @@ TEST_F(LocalHiveConnectorMetadataTest, createEmptyTable) {
 
   writeToTable(
       table, emptyData, WriteKind::kCreate, dwio::common::FileFormat::DWRF);
-  compareTableLayout(table, metadata_->findTable("test_empty"));
+  compareTableLayout(
+      table, metadata_->findTable({kDefaultSchema, "test_empty"}));
   compareTableData(
       "test_empty",
       emptyData,
@@ -426,12 +433,15 @@ TEST_F(LocalHiveConnectorMetadataTest, createThenInsert) {
       ROW({{"key1", BIGINT()}, {"key2", BIGINT()}, {"ds", VARCHAR()}});
 
   auto session = std::make_shared<ConnectorSession>("q-test");
-  auto staged =
-      metadata_->createTable(session, "test_insert", tableType, /*options=*/{});
+  auto staged = metadata_->createTable(
+      session,
+      {kDefaultSchema, "test_insert"},
+      tableType,
+      /*options=*/{});
   auto handle = metadata_->beginWrite(session, staged, WriteKind::kCreate);
   metadata_->finishWrite(session, handle, /*writeResults=*/{}).get();
 
-  auto created = metadata_->findTable("test_insert");
+  auto created = metadata_->findTable({kDefaultSchema, "test_insert"});
   compareTableLayout(staged, created);
 
   constexpr int32_t kInsertSize = 1024;
@@ -466,25 +476,35 @@ TEST_F(LocalHiveConnectorMetadataTest, abortCreateWithRetry) {
   auto tableType =
       ROW({{"key1", BIGINT()}, {"key2", BIGINT()}, {"ds", VARCHAR()}});
   auto session = std::make_shared<ConnectorSession>("q-test");
-  std::string tablePath = metadata_->tablePath("test_abort");
+  std::string tablePath = metadata_->tablePath({kDefaultSchema, "test_abort"});
 
-  auto table =
-      metadata_->createTable(session, "test_abort", tableType, /*options=*/{});
+  auto table = metadata_->createTable(
+      session,
+      SchemaTableName{kDefaultSchema, "test_abort"},
+      tableType,
+      /*options=*/{});
   auto handle = metadata_->beginWrite(session, table, WriteKind::kCreate);
   EXPECT_TRUE(std::filesystem::exists(tablePath));
 
   VELOX_ASSERT_THROW(
-      metadata_->createTable(session, "test_abort", tableType, /*options=*/{}),
-      "Table test_abort already exists");
+      metadata_->createTable(
+          session,
+          SchemaTableName{kDefaultSchema, "test_abort"},
+          tableType,
+          /*options=*/{}),
+      "Table \"default\".\"test_abort\" already exists");
   metadata_->abortWrite(session, handle).get();
   EXPECT_FALSE(std::filesystem::exists(tablePath));
 
-  table =
-      metadata_->createTable(session, "test_abort", tableType, /*options=*/{});
+  table = metadata_->createTable(
+      session,
+      SchemaTableName{kDefaultSchema, "test_abort"},
+      tableType,
+      /*options=*/{});
   handle = metadata_->beginWrite(session, table, WriteKind::kCreate);
   metadata_->finishWrite(session, handle, /*writeResults=*/{}).get();
   EXPECT_TRUE(std::filesystem::exists(tablePath));
-  auto created = metadata_->findTable("test_abort");
+  auto created = metadata_->findTable({kDefaultSchema, "test_abort"});
   EXPECT_NE(created, nullptr);
 }
 

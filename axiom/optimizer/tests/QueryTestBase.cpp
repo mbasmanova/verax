@@ -70,8 +70,9 @@ void QueryTestBase::TearDown() {
 
 logical_plan::LogicalPlanNodePtr QueryTestBase::parseSelect(
     std::string_view sql,
-    const std::string& defaultConnectorId) {
-  ::axiom::sql::presto::PrestoParser parser(defaultConnectorId, std::nullopt);
+    const std::string& defaultConnectorId,
+    const std::string& defaultSchema) {
+  ::axiom::sql::presto::PrestoParser parser(defaultConnectorId, defaultSchema);
 
   auto statement = parser.parse(sql);
 

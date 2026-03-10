@@ -121,15 +121,16 @@ const velox::Variant* registerOptionalVariant(
 
 SchemaTableCP Schema::findTable(
     std::string_view connectorId,
-    std::string_view name) const {
+    const SchemaTableName& tableName) const {
   auto& tables = connectorTables_.try_emplace(connectorId).first->second;
-  auto& table = tables.try_emplace(name, Table{}).first->second;
+  auto& table = tables.try_emplace(tableName, Table{}).first->second;
   if (table.schemaTable) {
     return table.schemaTable;
   }
 
   VELOX_CHECK_NOT_NULL(source_);
-  auto connectorTable = source_->findTable(connectorId, name);
+
+  auto connectorTable = source_->findTable(std::string(connectorId), tableName);
   if (!connectorTable) {
     return nullptr;
   }

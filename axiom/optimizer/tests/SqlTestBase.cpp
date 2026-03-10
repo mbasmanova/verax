@@ -81,7 +81,8 @@ void SqlTestBase::createTable(
 std::shared_ptr<runner::LocalRunner> SqlTestBase::makeRunner(
     std::string_view sql) {
   // Parse SQL to logical plan.
-  ::axiom::sql::presto::PrestoParser parser(kTestConnectorId, std::nullopt);
+  ::axiom::sql::presto::PrestoParser parser(
+      kTestConnectorId, std::string(connector::TestConnector::kDefaultSchema));
   auto statement = parser.parse(sql, true);
 
   VELOX_CHECK(

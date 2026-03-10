@@ -20,6 +20,7 @@
 #include <unordered_map>
 #include <utility>
 #include "axiom/cli/SqlQueryRunner.h"
+#include "axiom/sql/presto/SqlStatement.h"
 
 DECLARE_string(data_path);
 DECLARE_string(data_format);
@@ -38,8 +39,7 @@ using PermissionCheck = std::function<void(
     std::string_view sql,
     std::string_view catalog,
     std::optional<std::string_view> schema,
-    const std::unordered_map<std::pair<std::string, std::string>, std::string>&
-        views)>;
+    const presto::ViewMap& views)>;
 
 class Console {
  public:

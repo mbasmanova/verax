@@ -36,6 +36,8 @@ namespace {
 class DerivedTablePrinterTest : public ::testing::Test {
  protected:
   static constexpr auto kTestConnectorId = "test";
+  static const inline std::string kDefaultSchema{
+      connector::TestConnector::kDefaultSchema};
 
   static void SetUpTestCase() {
     memory::MemoryManager::testingSetInstance(memory::MemoryManager::Options{});
@@ -59,7 +61,7 @@ class DerivedTablePrinterTest : public ::testing::Test {
   }
 
   std::vector<std::string> toLines(const std::string& sql) {
-    ::axiom::sql::presto::PrestoParser parser{kTestConnectorId, std::nullopt};
+    ::axiom::sql::presto::PrestoParser parser{kTestConnectorId, kDefaultSchema};
     auto statement = parser.parse(sql);
     VELOX_CHECK(statement->isSelect());
 
@@ -108,6 +110,10 @@ class DerivedTablePrinterTest : public ::testing::Test {
     return lines;
   }
 
+  lp::PlanBuilder::Context makeContext() const {
+    return lp::PlanBuilder::Context{kTestConnectorId, kDefaultSchema};
+  }
+
   std::shared_ptr<velox::memory::MemoryPool> rootPool_;
   std::shared_ptr<velox::memory::MemoryPool> optimizerPool_;
   std::shared_ptr<connector::TestConnector> connector_;
@@ -129,7 +135,7 @@ TEST_F(DerivedTablePrinterTest, basic) {
             testing::Eq("  aggregates: count() AS count"),
             testing::Eq(""),
             testing::Eq("t2: 1.00 rows, <no output columns>"),
-            testing::Eq("  table: t"),
+            testing::Eq("  table: \"default\".\"t\""),
             testing::Eq("")));
   }
 
@@ -154,7 +160,7 @@ TEST_F(DerivedTablePrinterTest, basic) {
             testing::Eq("  orderBy: t2.a DESC NULLS LAST"),
             testing::Eq(""),
             testing::Eq("t2: 0.50 rows, a, b"),
-            testing::Eq("  table: t"),
+            testing::Eq("  table: \"default\".\"t\""),
             testing::Eq("    a INTEGER (cardinality=1.00)"),
             testing::Eq("    b INTEGER (cardinality=1.00)"),
             testing::Eq("  multi-column filters: gt(t2.a, t2.b)"),
@@ -181,12 +187,12 @@ TEST_F(DerivedTablePrinterTest, basic) {
             testing::Eq("  grouping keys: t2.a"),
             testing::Eq(""),
             testing::Eq("t2: 1.00 rows, a, b"),
-            testing::Eq("  table: t"),
+            testing::Eq("  table: \"default\".\"t\""),
             testing::Eq("    a INTEGER (cardinality=1.00)"),
             testing::Eq("    b INTEGER (cardinality=1.00)"),
             testing::Eq(""),
             testing::Eq("t3: 1.00 rows, x, y"),
-            testing::Eq("  table: u"),
+            testing::Eq("  table: \"default\".\"u\""),
             testing::Eq("    x INTEGER (cardinality=1.00)"),
             testing::Eq("    y INTEGER (cardinality=1.00)"),
             testing::Eq("")));
@@ -218,7 +224,7 @@ TEST_F(DerivedTablePrinterTest, union) {
             testing::Eq("  tables: t4"),
             testing::Eq(""),
             testing::Eq("t4: 1.00 rows, a, b"),
-            testing::Eq("  table: t"),
+            testing::Eq("  table: \"default\".\"t\""),
             testing::Eq("    a INTEGER (cardinality=1.00)"),
             testing::Eq("    b INTEGER (cardinality=1.00)"),
             testing::Eq(""),
@@ -229,7 +235,7 @@ TEST_F(DerivedTablePrinterTest, union) {
             testing::Eq("  tables: t6"),
             testing::Eq(""),
             testing::Eq("t6: 1.00 rows, a, b"),
-            testing::Eq("  table: u"),
+            testing::Eq("  table: \"default\".\"u\""),
             testing::Eq("    a INTEGER (cardinality=1.00)"),
             testing::Eq("    b INTEGER (cardinality=1.00)"),
             testing::Eq("")));
@@ -240,15 +246,11 @@ TEST_F(DerivedTablePrinterTest, write) {
   connector_->addTable("c", ROW({"a", "b"}, INTEGER()));
   connector_->addTable("z", ROW({"x", "y"}, INTEGER()));
 
-  auto plan = lp::PlanBuilder()
-                  .tableScan(kTestConnectorId, "c")
-                  .tableWrite(
-                      kTestConnectorId,
-                      "z",
-                      lp::WriteKind::kInsert,
-                      {"y", "x"},
-                      {"a", "b"})
-                  .build();
+  auto plan =
+      lp::PlanBuilder(makeContext())
+          .tableScan("c")
+          .tableWrite("z", lp::WriteKind::kInsert, {"y", "x"}, {"a", "b"})
+          .build();
 
   auto lines = toLines(*plan);
 
@@ -259,7 +261,7 @@ TEST_F(DerivedTablePrinterTest, write) {
           testing::Eq("  output:"),
           testing::Eq("    rows := dt1.rows BIGINT (cardinality=1.00)"),
           testing::Eq("  tables: dt2"),
-          testing::Eq("  write (INSERT) to: z"),
+          testing::Eq("  write (INSERT) to: \"default\".\"z\""),
           testing::Eq("    columns: dt2.b, dt2.a"),
           testing::Eq(""),
           testing::Eq("dt2: 1.00 rows, a, b"),
@@ -269,7 +271,7 @@ TEST_F(DerivedTablePrinterTest, write) {
           testing::Eq("  tables: t3"),
           testing::Eq(""),
           testing::Eq("t3: 1.00 rows, a, b"),
-          testing::Eq("  table: c"),
+          testing::Eq("  table: \"default\".\"c\""),
           testing::Eq("    a INTEGER (cardinality=1.00)"),
           testing::Eq("    b INTEGER (cardinality=1.00)"),
           testing::Eq("")));

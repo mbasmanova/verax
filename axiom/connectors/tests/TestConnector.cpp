@@ -37,16 +37,19 @@ std::vector<std::unique_ptr<const Column>> appendHiddenColumns(
 } // namespace
 
 TestTable::TestTable(
-    const std::string& name,
+    SchemaTableName name,
     const velox::RowTypePtr& schema,
     const velox::RowTypePtr& hiddenColumns,
     TestConnector* connector)
-    : Table(name, appendHiddenColumns(makeColumns(schema), hiddenColumns)),
+    : Table(
+          std::move(name),
+          appendHiddenColumns(makeColumns(schema), hiddenColumns)),
       connector_(connector) {
+  const auto& label = this->name().table;
   exportedLayout_ =
-      std::make_unique<TestTableLayout>(name, this, connector_, allColumns());
+      std::make_unique<TestTableLayout>(label, this, connector_, allColumns());
   layouts_.push_back(exportedLayout_.get());
-  pool_ = velox::memory::memoryManager()->addLeafPool(name + "_table");
+  pool_ = velox::memory::memoryManager()->addLeafPool(label + "_table");
   columnTrackers_.resize(schema->size());
 }
 
@@ -221,20 +224,20 @@ std::shared_ptr<SplitSource> TestSplitManager::getSplitSource(
 }
 
 std::shared_ptr<Table> TestConnectorMetadata::findTableInternal(
-    std::string_view name) {
-  auto it = tables_.find(name);
+    const SchemaTableName& tableName) {
+  auto it = tables_.find(tableName);
   if (it == tables_.end()) {
     return nullptr;
   }
   return it->second;
 }
 
-TablePtr TestConnectorMetadata::findTable(std::string_view name) {
-  return findTableInternal(name);
+TablePtr TestConnectorMetadata::findTable(const SchemaTableName& tableName) {
+  return findTableInternal(tableName);
 }
 
-ViewPtr TestConnectorMetadata::findView(std::string_view name) {
-  auto it = views_.find(name);
+ViewPtr TestConnectorMetadata::findView(const SchemaTableName& tableName) {
+  auto it = views_.find(tableName);
   if (it == views_.end()) {
     return nullptr;
   }
@@ -242,16 +245,16 @@ ViewPtr TestConnectorMetadata::findView(std::string_view name) {
 }
 
 void TestConnectorMetadata::createView(
-    std::string_view name,
+    const SchemaTableName& viewName,
     velox::RowTypePtr type,
     std::string_view text) {
   auto [_, inserted] = views_.emplace(
-      std::string(name), ViewDefinition{std::move(type), std::string(text)});
-  VELOX_CHECK(inserted, "View already exists: {}", name);
+      viewName, ViewDefinition{std::move(type), std::string(text)});
+  VELOX_CHECK(inserted, "View already exists: {}", viewName.toString());
 }
 
-bool TestConnectorMetadata::dropView(std::string_view name) {
-  return views_.erase(std::string(name)) == 1;
+bool TestConnectorMetadata::dropView(const SchemaTableName& viewName) {
+  return views_.erase(viewName) == 1;
 }
 
 namespace {
@@ -293,7 +296,7 @@ void TestTableLayout::setDiscreteValues(
   for (const auto& columnName : columnNames) {
     auto column = findColumn(columnName);
     VELOX_CHECK_NOT_NULL(
-        column, "Column not found: {} in {}", columnName, name());
+        column, "Column not found: {} in {}", columnName, label());
     columns.emplace_back(column);
   }
 
@@ -326,7 +329,7 @@ velox::connector::ColumnHandlePtr TestTableLayout::createColumnHandle(
     SubfieldMapping /*subfieldMapping*/) const {
   auto column = findColumn(columnName);
   VELOX_CHECK_NOT_NULL(
-      column, "Column {} not found in table {}", columnName, name());
+      column, "Column {} not found in table {}", columnName, label());
   return std::make_shared<TestColumnHandle>(
       columnName, castToType.value_or(column->type()));
 }
@@ -344,22 +347,26 @@ velox::connector::ConnectorTableHandlePtr TestTableLayout::createTableHandle(
 }
 
 std::shared_ptr<TestTable> TestConnectorMetadata::addTable(
-    const std::string& name,
+    SchemaTableName tableName,
     const velox::RowTypePtr& schema,
     const velox::RowTypePtr& hiddenColumns) {
   auto table =
-      std::make_shared<TestTable>(name, schema, hiddenColumns, connector_);
-  auto [it, ok] = tables_.emplace(name, std::move(table));
-  VELOX_CHECK(ok, "Table already exists: {}", name);
+      std::make_shared<TestTable>(tableName, schema, hiddenColumns, connector_);
+  auto [it, ok] = tables_.emplace(std::move(tableName), std::move(table));
+  VELOX_CHECK(ok, "Table already exists: {}", it->first.toString());
   return it->second;
 }
 
 TablePtr TestConnectorMetadata::createTable(
     const ConnectorSessionPtr& /*session*/,
-    const std::string& tableName,
+    const SchemaTableName& tableName,
     const velox::RowTypePtr& rowType,
     const folly::F14FastMap<std::string, velox::Variant>& /*options*/) {
-  return addTable(tableName, rowType, velox::ROW({}));
+  auto table = std::make_shared<TestTable>(
+      tableName, rowType, velox::ROW({}), connector_);
+  auto [it, ok] = tables_.emplace(tableName, std::move(table));
+  VELOX_CHECK(ok, "Table already exists: {}", tableName.toString());
+  return it->second;
 }
 
 ConnectorWriteHandlePtr TestConnectorMetadata::beginWrite(
@@ -391,40 +398,43 @@ RowsFuture TestConnectorMetadata::finishWrite(
 
 bool TestConnectorMetadata::dropTable(
     const ConnectorSessionPtr& /* session */,
-    std::string_view tableName,
+    const SchemaTableName& tableName,
     bool ifExists) {
   const bool dropped = tables_.erase(tableName) == 1;
   if (!ifExists) {
-    VELOX_USER_CHECK(dropped, "Table doesn't exist: {}", tableName);
+    VELOX_USER_CHECK(dropped, "Table doesn't exist: {}", tableName.toString());
   }
 
   return dropped;
 }
 
 void TestConnectorMetadata::appendData(
-    std::string_view name,
+    const SchemaTableName& tableName,
     const velox::RowVectorPtr& data) {
-  auto it = tables_.find(name);
-  VELOX_CHECK(it != tables_.end(), "Table doesn't exist: {}", name);
+  auto it = tables_.find(tableName);
+  VELOX_CHECK(
+      it != tables_.end(), "Table doesn't exist: {}", tableName.toString());
   it->second->addData(data);
 }
 
 void TestConnectorMetadata::setDiscreteValues(
-    const std::string& name,
+    const SchemaTableName& tableName,
     const std::vector<std::string>& columnNames,
     const std::vector<velox::Variant>& values) {
-  auto it = tables_.find(name);
-  VELOX_CHECK(it != tables_.end(), "Table doesn't exist: {}", name);
+  auto it = tables_.find(tableName);
+  VELOX_CHECK(
+      it != tables_.end(), "Table doesn't exist: {}", tableName.toString());
 
   it->second->mutableLayout()->setDiscreteValues(columnNames, values);
 }
 
 void TestConnectorMetadata::setStats(
-    const std::string& tableName,
+    const SchemaTableName& tableName,
     uint64_t numRows,
     const std::unordered_map<std::string, ColumnStatistics>& columnStats) {
   auto it = tables_.find(tableName);
-  VELOX_CHECK(it != tables_.end(), "Table doesn't exist: {}", tableName);
+  VELOX_CHECK(
+      it != tables_.end(), "Table doesn't exist: {}", tableName.toString());
   it->second->setStats(numRows, columnStats);
 }
 
@@ -435,7 +445,8 @@ TestDataSource::TestDataSource(
     velox::memory::MemoryPool* pool)
     : outputType_(outputType), pool_(pool) {
   auto maybeTable = std::dynamic_pointer_cast<const TestTable>(table);
-  VELOX_CHECK(maybeTable, "Table is not a TestTable: {}", table->name());
+  VELOX_CHECK(
+      maybeTable, "Table is not a TestTable: {}", table->name().toString());
   data_ = maybeTable->data();
 
   auto tableType = table->type();
@@ -445,7 +456,7 @@ TestDataSource::TestDataSource(
         handles.contains(name),
         "no handle for output column {} for table {}",
         name,
-        table->name());
+        table->name().toString());
     auto handle = handles.find(name)->second;
 
     const auto idx = tableType->getChildIdxIfExists(handle->name());
@@ -453,7 +464,7 @@ TestDataSource::TestDataSource(
         idx.has_value(),
         "column '{}' not found in table '{}'.",
         handle->name(),
-        table->name());
+        table->name().toString());
     outputMappings_.emplace_back(idx.value());
   }
 }
@@ -502,7 +513,10 @@ std::unique_ptr<velox::connector::DataSource> TestConnector::createDataSource(
     const velox::connector::ConnectorTableHandlePtr& tableHandle,
     const velox::connector::ColumnHandleMap& columnHandles,
     velox::connector::ConnectorQueryCtx* connectorQueryCtx) {
-  auto table = metadata_->findTable(tableHandle->name());
+  auto* testHandle = dynamic_cast<const TestTableHandle*>(tableHandle.get());
+  VELOX_CHECK_NOT_NULL(
+      testHandle, "Expected TestTableHandle, got: {}", tableHandle->name());
+  auto table = metadata_->findTable(testHandle->layout().table().name());
   VELOX_CHECK(
       table,
       "cannot create data source for nonexistent table {}",
@@ -517,22 +531,25 @@ std::unique_ptr<velox::connector::DataSink> TestConnector::createDataSink(
     velox::connector::ConnectorQueryCtx*,
     velox::connector::CommitStrategy) {
   VELOX_CHECK(tableHandle, "table handle must be non-null");
-  auto table = metadata_->findTableInternal(tableHandle->toString());
+  auto* testHandle =
+      dynamic_cast<const TestInsertTableHandle*>(tableHandle.get());
+  VELOX_CHECK_NOT_NULL(testHandle, "Expected TestInsertTableHandle");
+  auto table = metadata_->findTableInternal(testHandle->tableName());
   VELOX_CHECK(
       table,
       "cannot create data sink for nonexistent table {}",
-      tableHandle->toString());
+      testHandle->tableName().toString());
   return std::make_unique<TestDataSink>(table);
 }
 
 std::shared_ptr<TestTable> TestConnector::addTable(
-    const std::string& name,
+    SchemaTableName tableName,
     const velox::RowTypePtr& schema,
     const velox::RowTypePtr& hiddenColumns) {
-  return metadata_->addTable(name, schema, hiddenColumns);
+  return metadata_->addTable(std::move(tableName), schema, hiddenColumns);
 }
 
-bool TestConnector::dropTableIfExists(const std::string& name) {
+bool TestConnector::dropTableIfExists(const SchemaTableName& name) {
   return metadata_->dropTableIfExists(name);
 }
 
@@ -545,31 +562,31 @@ void TestConnector::addTpchTables() {
 }
 
 void TestConnector::createView(
-    std::string_view name,
+    const SchemaTableName& viewName,
     velox::RowTypePtr type,
     std::string_view text) {
-  metadata_->createView(name, std::move(type), text);
+  metadata_->createView(viewName, std::move(type), text);
 }
 
-bool TestConnector::dropView(std::string_view name) {
-  return metadata_->dropView(name);
+bool TestConnector::dropView(const SchemaTableName& viewName) {
+  return metadata_->dropView(viewName);
 }
 
 void TestConnector::appendData(
-    std::string_view name,
+    const SchemaTableName& tableName,
     const velox::RowVectorPtr& data) {
-  metadata_->appendData(name, data);
+  metadata_->appendData(tableName, data);
 }
 
 void TestConnector::setDiscreteValues(
-    const std::string& name,
+    const SchemaTableName& tableName,
     const std::vector<std::string>& columnNames,
     const std::vector<velox::Variant>& values) {
-  metadata_->setDiscreteValues(name, columnNames, values);
+  metadata_->setDiscreteValues(tableName, columnNames, values);
 }
 
 void TestConnector::setStats(
-    const std::string& tableName,
+    const SchemaTableName& tableName,
     uint64_t numRows,
     const std::unordered_map<std::string, ColumnStatistics>& columnStats) {
   metadata_->setStats(tableName, numRows, columnStats);

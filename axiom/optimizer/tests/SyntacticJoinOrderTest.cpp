@@ -30,6 +30,9 @@ namespace lp = facebook::axiom::logical_plan;
 
 class SyntacticJoinOrderTest : public test::HiveQueriesTestBase {
  protected:
+  static const inline std::string kDefaultSchema{
+      connector::hive::LocalHiveConnectorMetadata::kDefaultSchema};
+
   static void SetUpTestCase() {
     test::HiveQueriesTestBase::SetUpTestCase();
     createTpchTables(
@@ -40,7 +43,8 @@ class SyntacticJoinOrderTest : public test::HiveQueriesTestBase {
 };
 
 TEST_F(SyntacticJoinOrderTest, innerJoins) {
-  lp::PlanBuilder::Context context(exec::test::kHiveConnectorId);
+  lp::PlanBuilder::Context context(
+      exec::test::kHiveConnectorId, kDefaultSchema);
 
   optimizerOptions_.sampleJoins = false;
 
@@ -51,20 +55,18 @@ TEST_F(SyntacticJoinOrderTest, innerJoins) {
 
   // Optimized join order: lineitem x (orders x customer).
   auto optimizedMatcher =
-      matchScan("lineitem")
-          .hashJoin(matchScan("orders")
-                        .hashJoin(matchScan("customer").build())
+      matchHiveScan("lineitem")
+          .hashJoin(matchHiveScan("orders")
+                        .hashJoin(matchHiveScan("customer").build())
                         .build())
           .aggregation()
           .build();
 
   // Reference Velox plan.
-  auto* metadata =
-      connector::ConnectorMetadata::metadata(exec::test::kHiveConnectorId);
   auto planNodeIdGenerator = std::make_shared<core::PlanNodeIdGenerator>();
   auto startReferencePlan = [&](const auto& tableName) {
     return exec::test::PlanBuilder(planNodeIdGenerator)
-        .tableScan(tableName, metadata->findTable(tableName)->type());
+        .tableScan(tableName, getSchema(tableName));
   };
 
   auto referencePlan =
@@ -131,9 +133,9 @@ TEST_F(SyntacticJoinOrderTest, innerJoins) {
         optimizerOptions_.syntacticJoinOrder = true;
         auto plan = toSingleNodePlan(logicalPlan);
 
-        auto matcher = matchScan(order[0])
-                           .hashJoin(matchScan(order[1]).build())
-                           .hashJoin(matchScan(order[2]).build())
+        auto matcher = matchHiveScan(order[0])
+                           .hashJoin(matchHiveScan(order[1]).build())
+                           .hashJoin(matchHiveScan(order[2]).build())
                            .aggregation()
                            .build();
         AXIOM_ASSERT_PLAN(plan, matcher);
@@ -189,12 +191,13 @@ TEST_F(SyntacticJoinOrderTest, innerJoins) {
         optimizerOptions_.syntacticJoinOrder = true;
         auto plan = toSingleNodePlan(logicalPlan);
 
-        auto matcher = matchScan(order[0])
-                           .hashJoin(matchScan(order[1])
-                                         .hashJoin(matchScan(order[2]).build())
-                                         .build())
-                           .aggregation()
-                           .build();
+        auto matcher =
+            matchHiveScan(order[0])
+                .hashJoin(matchHiveScan(order[1])
+                              .hashJoin(matchHiveScan(order[2]).build())
+                              .build())
+                .aggregation()
+                .build();
         AXIOM_ASSERT_PLAN(plan, matcher);
 
         checkSame(logicalPlan, referenceResults);
@@ -208,18 +211,16 @@ TEST_F(SyntacticJoinOrderTest, outerJoins) {
 
   // Optimized join order: lineitem x orders.
   auto optimizedMatcher =
-      matchScan("lineitem")
-          .hashJoin(matchScan("orders").build(), core::JoinType::kLeft)
+      matchHiveScan("lineitem")
+          .hashJoin(matchHiveScan("orders").build(), core::JoinType::kLeft)
           .aggregation()
           .build();
 
   // Reference Velox plan.
-  auto* metadata =
-      connector::ConnectorMetadata::metadata(exec::test::kHiveConnectorId);
   auto planNodeIdGenerator = std::make_shared<core::PlanNodeIdGenerator>();
   auto startReferencePlan = [&](const auto& tableName) {
     return exec::test::PlanBuilder(planNodeIdGenerator)
-        .tableScan(tableName, metadata->findTable(tableName)->type());
+        .tableScan(tableName, getSchema(tableName));
   };
 
   auto referencePlan = startReferencePlan("lineitem")
@@ -278,8 +279,9 @@ TEST_F(SyntacticJoinOrderTest, outerJoins) {
       auto plan = toSingleNodePlan(logicalPlan);
 
       auto matcher =
-          matchScan("orders")
-              .hashJoin(matchScan("lineitem").build(), core::JoinType::kRight)
+          matchHiveScan("orders")
+              .hashJoin(
+                  matchHiveScan("lineitem").build(), core::JoinType::kRight)
               .aggregation()
               .build();
       AXIOM_ASSERT_PLAN(plan, matcher);

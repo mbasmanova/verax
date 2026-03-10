@@ -95,7 +95,8 @@ TEST_F(HiveQueriesTest, orderOfOperations) {
   };
 
   auto scan = [&](const std::string& tableName) {
-    lp::PlanBuilder::Context context(exec::test::kHiveConnectorId);
+    lp::PlanBuilder::Context context(
+        exec::test::kHiveConnectorId, kDefaultSchema);
     return lp::PlanBuilder(context).tableScan(tableName);
   };
 
@@ -163,7 +164,8 @@ TEST_F(HiveQueriesTest, orderOfOperations) {
 
   // Limit on both sides of the join.
   {
-    lp::PlanBuilder::Context context{exec::test::kHiveConnectorId};
+    lp::PlanBuilder::Context context{
+        exec::test::kHiveConnectorId, kDefaultSchema};
     auto logicalPlan =
         lp::PlanBuilder(context).tableScan("nation").limit(0, 10).join(
             lp::PlanBuilder(context).tableScan("region").limit(0, 5),
@@ -185,7 +187,8 @@ TEST_F(HiveQueriesTest, orderOfOperations) {
 }
 
 TEST_F(HiveQueriesTest, joinWithTopNBothSides) {
-  lp::PlanBuilder::Context context(exec::test::kHiveConnectorId);
+  lp::PlanBuilder::Context context(
+      exec::test::kHiveConnectorId, kDefaultSchema);
   auto logicalPlan = lp::PlanBuilder(context)
                          .tableScan("nation")
                          .orderBy({"n_nationkey"})
@@ -238,7 +241,8 @@ TEST_F(HiveQueriesTest, joinWithTopNBothSides) {
 }
 
 TEST_F(HiveQueriesTest, joinWithLimitBothSides) {
-  lp::PlanBuilder::Context context(exec::test::kHiveConnectorId);
+  lp::PlanBuilder::Context context(
+      exec::test::kHiveConnectorId, kDefaultSchema);
   auto logicalPlan =
       lp::PlanBuilder(context)
           .tableScan("nation")

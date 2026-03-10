@@ -18,6 +18,7 @@
 
 #include <folly/container/F14Map.h>
 #include <folly/container/F14Set.h>
+#include "axiom/common/SchemaTableName.h"
 #include "axiom/connectors/ConnectorMetadata.h"
 
 namespace facebook::axiom::connector {
@@ -29,12 +30,12 @@ class TestConnector;
 class TestTableLayout : public TableLayout {
  public:
   TestTableLayout(
-      const std::string& name,
+      const std::string& label,
       Table* table,
       velox::connector::Connector* connector,
       std::vector<const Column*> columns)
       : TableLayout(
-            name,
+            label,
             table,
             connector,
             std::move(columns),
@@ -85,7 +86,7 @@ class TestTableLayout : public TableLayout {
 class TestTable : public Table {
  public:
   TestTable(
-      const std::string& name,
+      SchemaTableName name,
       const velox::RowTypePtr& schema,
       const velox::RowTypePtr& hiddenColumns,
       TestConnector* connector);
@@ -226,11 +227,12 @@ class TestTableHandle : public velox::connector::ConnectorTableHandle {
       std::vector<velox::core::TypedExprPtr> filters = {})
       : ConnectorTableHandle(layout.connector()->connectorId()),
         layout_(layout),
+        name_(layout.table().name().toString()),
         columnHandles_(std::move(columnHandles)),
         filters_(std::move(filters)) {}
 
   const std::string& name() const override {
-    return layout_.table().name();
+    return name_;
   }
 
   std::string toString() const override {
@@ -251,6 +253,7 @@ class TestTableHandle : public velox::connector::ConnectorTableHandle {
 
  private:
   const TableLayout& layout_;
+  const std::string name_;
   const std::vector<velox::connector::ColumnHandlePtr> columnHandles_;
   const std::vector<velox::core::TypedExprPtr> filters_;
 };
@@ -261,14 +264,19 @@ class TestTableHandle : public velox::connector::ConnectorTableHandle {
 class TestInsertTableHandle
     : public velox::connector::ConnectorInsertTableHandle {
  public:
-  explicit TestInsertTableHandle(const std::string& name) : name_(name) {}
+  explicit TestInsertTableHandle(SchemaTableName tableName)
+      : tableName_(std::move(tableName)) {}
+
+  const SchemaTableName& tableName() const {
+    return tableName_;
+  }
 
   std::string toString() const override {
-    return name_;
+    return tableName_.toString();
   }
 
  private:
-  const std::string name_;
+  const SchemaTableName tableName_;
 };
 
 /// Contains an in-memory map of TestTables inserted via the addTable
@@ -283,41 +291,43 @@ class TestConnectorMetadata : public ConnectorMetadata {
       : connector_(connector),
         splitManager_(std::make_unique<TestSplitManager>()) {}
 
-  TablePtr findTable(std::string_view name) override;
+  TablePtr findTable(const SchemaTableName& tableName) override;
 
   /// Non-interface method which supplies a non-const Table reference
   /// which is capable of performing writes to the underlying table.
-  std::shared_ptr<Table> findTableInternal(std::string_view name);
+  std::shared_ptr<Table> findTableInternal(const SchemaTableName& tableName);
 
   ConnectorSplitManager* splitManager() override {
     return splitManager_.get();
   }
 
-  /// Create and return a TestTable with the specified name and schema in the
-  /// in-memory map maintained in the connector metadata. If the table already
-  /// exists, an error is thrown.
+  /// Creates and returns a TestTable with the specified name and schema in the
+  /// in-memory map maintained in the connector metadata. Throws if the table
+  /// already exists.
   std::shared_ptr<TestTable> addTable(
-      const std::string& name,
+      SchemaTableName tableName,
       const velox::RowTypePtr& schema,
       const velox::RowTypePtr& hiddenColumns);
 
-  /// See TestTable::addData.
-  void appendData(std::string_view name, const velox::RowVectorPtr& data);
+  /// Appends data to the table with the specified name.
+  void appendData(
+      const SchemaTableName& tableName,
+      const velox::RowVectorPtr& data);
 
   void setDiscreteValues(
-      const std::string& name,
+      const SchemaTableName& tableName,
       const std::vector<std::string>& columnNames,
       const std::vector<velox::Variant>& values);
 
   /// See TestTable::setStats.
   void setStats(
-      const std::string& tableName,
+      const SchemaTableName& tableName,
       uint64_t numRows,
       const std::unordered_map<std::string, ColumnStatistics>& columnStats);
 
   TablePtr createTable(
       const ConnectorSessionPtr& session,
-      const std::string& tableName,
+      const SchemaTableName& tableName,
       const velox::RowTypePtr& rowType,
       const folly::F14FastMap<std::string, velox::Variant>& options) override;
 
@@ -333,35 +343,40 @@ class TestConnectorMetadata : public ConnectorMetadata {
 
   bool dropTable(
       const ConnectorSessionPtr& session,
-      std::string_view tableName,
+      const SchemaTableName& tableName,
       bool ifExists) override;
 
   /// Shortcut for dropTable(session, tableName, true).
-  bool dropTableIfExists(std::string_view tableName) {
+  bool dropTableIfExists(const SchemaTableName& tableName) {
     return dropTable(nullptr, tableName, true);
   }
 
-  ViewPtr findView(std::string_view name) override;
+  ViewPtr findView(const SchemaTableName& tableName) override;
 
   /// Register a view with the given name, output schema, and SQL text.
   void createView(
-      std::string_view name,
+      const SchemaTableName& viewName,
       velox::RowTypePtr type,
       std::string_view text);
 
   /// Remove a view by name. Returns true if the view existed.
-  bool dropView(std::string_view name);
+  bool dropView(const SchemaTableName& viewName);
 
  private:
   TestConnector* connector_;
-  folly::F14FastMap<std::string, std::shared_ptr<TestTable>> tables_;
+  folly::F14FastMap<
+      SchemaTableName,
+      std::shared_ptr<TestTable>,
+      SchemaTableNameHash>
+      tables_;
   std::unique_ptr<TestSplitManager> splitManager_;
 
   struct ViewDefinition {
     velox::RowTypePtr type;
     std::string text;
   };
-  folly::F14FastMap<std::string, ViewDefinition> views_;
+  folly::F14FastMap<SchemaTableName, ViewDefinition, SchemaTableNameHash>
+      views_;
 };
 
 /// At DataSource creation time, the data contained in the corresponding Table
@@ -419,6 +434,8 @@ class TestDataSource : public velox::connector::DataSource {
 /// the associated table.
 class TestConnector : public velox::connector::Connector {
  public:
+  static constexpr std::string_view kDefaultSchema = "default";
+
   explicit TestConnector(
       const std::string& id,
       std::shared_ptr<const velox::config::ConfigBase> config = nullptr)
@@ -452,48 +469,76 @@ class TestConnector : public velox::connector::Connector {
       velox::connector::ConnectorQueryCtx* connectorQueryCtx,
       velox::connector::CommitStrategy commitStrategy) override;
 
-  /// Add a TestTable with the specified name and schema to the
-  /// TestConnectorMetadata corresponding to this connector. Throws if a table
+  /// Adds a TestTable with the specified name and schema. Throws if a table
   /// with the same name already exists.
-  ///
-  /// @param name The name of the table to add.
-  /// @param schema The list of names and types of the columns in the table.
-  /// These are returned from SELECT * queries.
-  /// @param hiddenColumns The list of names and types of the hidden columns.
-  /// These are not included in the output of SELECT * and must be queried
-  /// explicitly.
   std::shared_ptr<TestTable> addTable(
-      const std::string& name,
-      const velox::RowTypePtr& schema = velox::ROW({}),
+      SchemaTableName tableName,
+      const velox::RowTypePtr& schema,
       const velox::RowTypePtr& hiddenColumns = velox::ROW({}));
 
-  /// See TestTable::addData.
-  void appendData(std::string_view name, const velox::RowVectorPtr& data);
+  /// Convenience overload that uses kDefaultSchema as the schema.
+  std::shared_ptr<TestTable> addTable(
+      const std::string& name,
+      const velox::RowTypePtr& schema,
+      const velox::RowTypePtr& hiddenColumns = velox::ROW({})) {
+    return addTable({std::string(kDefaultSchema), name}, schema, hiddenColumns);
+  }
+
+  /// Appends data to the table with the specified name.
+  void appendData(
+      const SchemaTableName& tableName,
+      const velox::RowVectorPtr& data);
+
+  /// Convenience overload that uses kDefaultSchema as the schema.
+  void appendData(std::string_view name, const velox::RowVectorPtr& data) {
+    appendData({std::string(kDefaultSchema), std::string(name)}, data);
+  }
 
   void setDiscreteValues(
-      const std::string& name,
+      const SchemaTableName& tableName,
       const std::vector<std::string>& columnNames,
       const std::vector<velox::Variant>& values);
 
-  /// See TestConnectorMetadata::setStats.
+  /// Convenience overload that uses kDefaultSchema as the schema.
+  void setDiscreteValues(
+      const std::string& name,
+      const std::vector<std::string>& columnNames,
+      const std::vector<velox::Variant>& values) {
+    setDiscreteValues({std::string(kDefaultSchema), name}, columnNames, values);
+  }
+
+  /// Sets statistics for the table with the specified name.
   void setStats(
-      const std::string& tableName,
+      const SchemaTableName& tableName,
       uint64_t numRows,
       const std::unordered_map<std::string, ColumnStatistics>& columnStats);
 
-  bool dropTableIfExists(const std::string& name);
+  /// Convenience overload that uses kDefaultSchema as the schema.
+  void setStats(
+      const std::string& tableName,
+      uint64_t numRows,
+      const std::unordered_map<std::string, ColumnStatistics>& columnStats) {
+    setStats({std::string(kDefaultSchema), tableName}, numRows, columnStats);
+  }
+
+  bool dropTableIfExists(const SchemaTableName& name);
+
+  bool dropTableIfExists(std::string_view tableName) {
+    return dropTableIfExists(
+        {std::string(kDefaultSchema), std::string(tableName)});
+  }
 
   /// Registers all 8 TPC-H tables with their canonical schemas.
   void addTpchTables();
 
   /// Register a view with the given name, output schema, and SQL text.
   void createView(
-      std::string_view name,
+      const SchemaTableName& viewName,
       velox::RowTypePtr type,
       std::string_view text);
 
   /// Remove a view by name. Returns true if the view existed.
-  bool dropView(std::string_view name);
+  bool dropView(const SchemaTableName& viewName);
 
  private:
   const std::shared_ptr<TestConnectorMetadata> metadata_;
@@ -519,7 +564,7 @@ class TestDataSink : public velox::connector::DataSink {
  public:
   explicit TestDataSink(std::shared_ptr<Table> table) {
     table_ = std::dynamic_pointer_cast<TestTable>(table);
-    VELOX_CHECK(table_, "table {} not a TestTable", table->name());
+    VELOX_CHECK(table_, "table {} not a TestTable", table->name().toString());
   }
 
   /// Data is copied to the memory pool internal to the

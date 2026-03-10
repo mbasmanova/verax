@@ -18,7 +18,6 @@
 #include "axiom/logical_plan/PlanBuilder.h"
 #include "axiom/optimizer/tests/PlanMatcher.h"
 #include "axiom/optimizer/tests/QueryTestBase.h"
-#include "velox/common/base/tests/GTestUtils.h"
 
 namespace facebook::axiom::optimizer {
 namespace {
@@ -29,6 +28,8 @@ namespace lp = facebook::axiom::logical_plan;
 class JoinTest : public test::QueryTestBase {
  protected:
   static constexpr auto kTestConnectorId = "test";
+  static const inline std::string kDefaultSchema{
+      connector::TestConnector::kDefaultSchema};
 
   void SetUp() override {
     test::QueryTestBase::SetUp();
@@ -45,8 +46,8 @@ class JoinTest : public test::QueryTestBase {
     test::QueryTestBase::TearDown();
   }
 
-  static core::PlanMatcherBuilder matchScan(const std::string& tableName) {
-    return core::PlanMatcherBuilder().tableScan(tableName);
+  lp::PlanBuilder::Context makeContext() const {
+    return lp::PlanBuilder::Context{kTestConnectorId, kDefaultSchema};
   }
 
   std::shared_ptr<connector::TestConnector> testConnector_;
@@ -57,7 +58,7 @@ TEST_F(JoinTest, pushdownFilterThroughJoin) {
   testConnector_->addTable("u", ROW({"u_id", "u_data"}, BIGINT()));
 
   auto makePlan = [&](lp::JoinType joinType) {
-    lp::PlanBuilder::Context ctx{kTestConnectorId};
+    auto ctx = makeContext();
     return lp::PlanBuilder{ctx}
         .tableScan("t")
         .join(lp::PlanBuilder{ctx}.tableScan("u"), "t_id = u_id", joinType)
@@ -69,14 +70,10 @@ TEST_F(JoinTest, pushdownFilterThroughJoin) {
   {
     SCOPED_TRACE("Inner Join");
     auto logicalPlan = makePlan(lp::JoinType::kInner);
-    auto matcher = core::PlanMatcherBuilder{}
-                       .tableScan("t")
+    auto matcher = matchScan("t")
                        .filter("t_data IS NULL")
                        .hashJoin(
-                           core::PlanMatcherBuilder{}
-                               .tableScan("u")
-                               .filter("u_data IS NULL")
-                               .build(),
+                           matchScan("u").filter("u_data IS NULL").build(),
                            core::JoinType::kInner)
                        .build();
     auto plan = toSingleNodePlan(logicalPlan);
@@ -86,12 +83,9 @@ TEST_F(JoinTest, pushdownFilterThroughJoin) {
   {
     SCOPED_TRACE("Left Join");
     auto logicalPlan = makePlan(lp::JoinType::kLeft);
-    auto matcher = core::PlanMatcherBuilder{}
-                       .tableScan("t")
+    auto matcher = matchScan("t")
                        .filter("t_data IS NULL")
-                       .hashJoin(
-                           core::PlanMatcherBuilder{}.tableScan("u").build(),
-                           core::JoinType::kLeft)
+                       .hashJoin(matchScan("u").build(), core::JoinType::kLeft)
                        .filter("u_data IS NULL")
                        .build();
     auto plan = toSingleNodePlan(logicalPlan);
@@ -101,12 +95,9 @@ TEST_F(JoinTest, pushdownFilterThroughJoin) {
   {
     SCOPED_TRACE("Right Join");
     auto logicalPlan = makePlan(lp::JoinType::kRight);
-    auto matcher = core::PlanMatcherBuilder{}
-                       .tableScan("u")
+    auto matcher = matchScan("u")
                        .filter("u_data IS NULL")
-                       .hashJoin(
-                           core::PlanMatcherBuilder{}.tableScan("t").build(),
-                           core::JoinType::kLeft)
+                       .hashJoin(matchScan("t").build(), core::JoinType::kLeft)
                        .filter("t_data IS NULL")
                        .project()
                        .build();
@@ -117,11 +108,8 @@ TEST_F(JoinTest, pushdownFilterThroughJoin) {
   {
     SCOPED_TRACE("Full Join");
     auto logicalPlan = makePlan(lp::JoinType::kFull);
-    auto matcher = core::PlanMatcherBuilder{}
-                       .tableScan("t")
-                       .hashJoin(
-                           core::PlanMatcherBuilder{}.tableScan("u").build(),
-                           core::JoinType::kFull)
+    auto matcher = matchScan("t")
+                       .hashJoin(matchScan("u").build(), core::JoinType::kFull)
                        .filter("t_data IS NULL AND u_data IS NULL")
                        .build();
     auto plan = toSingleNodePlan(logicalPlan);
@@ -134,7 +122,7 @@ TEST_F(JoinTest, hyperEdge) {
   testConnector_->addTable("u", ROW({"u_id", "u_key", "u_data"}, BIGINT()));
   testConnector_->addTable("v", ROW({"v_key", "v_data"}, BIGINT()));
 
-  lp::PlanBuilder::Context ctx{kTestConnectorId};
+  auto ctx = makeContext();
   auto logicalPlan = lp::PlanBuilder{ctx}
                          .from({"t", "u"})
                          .filter("t_id = u_id")
@@ -144,14 +132,9 @@ TEST_F(JoinTest, hyperEdge) {
                              lp::JoinType::kLeft)
                          .build();
 
-  auto matcher = core::PlanMatcherBuilder{}
-                     .tableScan("t")
-                     .hashJoin(
-                         core::PlanMatcherBuilder{}.tableScan("u").build(),
-                         core::JoinType::kInner)
-                     .hashJoin(
-                         core::PlanMatcherBuilder{}.tableScan("v").build(),
-                         core::JoinType::kLeft)
+  auto matcher = matchScan("t")
+                     .hashJoin(matchScan("u").build(), core::JoinType::kInner)
+                     .hashJoin(matchScan("v").build(), core::JoinType::kLeft)
                      .build();
   auto plan = toSingleNodePlan(logicalPlan);
   AXIOM_ASSERT_PLAN(plan, matcher);
@@ -161,7 +144,7 @@ TEST_F(JoinTest, joinWithFilterOverLimit) {
   testConnector_->addTable("t", ROW({"a", "b", "c"}, BIGINT()));
   testConnector_->addTable("u", ROW({"x", "y", "z"}, BIGINT()));
 
-  lp::PlanBuilder::Context ctx(kTestConnectorId);
+  auto ctx = makeContext();
   auto logicalPlan =
       lp::PlanBuilder(ctx)
           .tableScan("t")
@@ -175,17 +158,12 @@ TEST_F(JoinTest, joinWithFilterOverLimit) {
 
   {
     auto plan = toSingleNodePlan(logicalPlan);
-    auto matcher = core::PlanMatcherBuilder()
-                       .tableScan("t")
-                       .limit()
-                       .filter("b > 50")
-                       .hashJoin(
-                           core::PlanMatcherBuilder()
-                               .tableScan("u")
-                               .limit()
-                               .filter("y < 100")
-                               .build())
-                       .build();
+    auto matcher =
+        matchScan("t")
+            .limit()
+            .filter("b > 50")
+            .hashJoin(matchScan("u").limit().filter("y < 100").build())
+            .build();
 
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
@@ -197,13 +175,13 @@ TEST_F(JoinTest, outerJoinWithInnerJoin) {
   testConnector_->addTable("u", ROW({"x", "y", "z"}, BIGINT()));
 
   auto startMatcher = [&](const auto& tableName) {
-    return core::PlanMatcherBuilder().tableScan(tableName);
+    return matchScan(tableName);
   };
 
   {
     SCOPED_TRACE("left join with inner join on right");
 
-    lp::PlanBuilder::Context ctx(kTestConnectorId);
+    auto ctx = makeContext();
     auto logicalPlan = lp::PlanBuilder(ctx)
                            .tableScan("t")
                            .filter("b > 50")
@@ -232,7 +210,7 @@ TEST_F(JoinTest, outerJoinWithInnerJoin) {
   {
     SCOPED_TRACE("aggregation left join filter over inner join");
 
-    lp::PlanBuilder::Context ctx(kTestConnectorId);
+    auto ctx = makeContext();
     auto logicalPlan = lp::PlanBuilder(ctx)
                            .tableScan("t")
                            .filter("b > 50")
@@ -274,14 +252,10 @@ TEST_F(JoinTest, nestedOuterJoins) {
   auto plan = toSingleNodePlan(logicalPlan);
 
   auto matcher =
-      core::PlanMatcherBuilder()
-          .tableScan("region")
+      matchScan("region")
           .hashJoin(
-              core::PlanMatcherBuilder()
-                  .tableScan("nation")
-                  .hashJoin(
-                      core::PlanMatcherBuilder().tableScan("region").build(),
-                      core::JoinType::kFull)
+              matchScan("nation")
+                  .hashJoin(matchScan("region").build(), core::JoinType::kFull)
                   .build(),
               core::JoinType::kLeft)
           .aggregation()
@@ -299,12 +273,9 @@ TEST_F(JoinTest, joinWithComputedKeys) {
   {
     auto plan = toSingleNodePlan(logicalPlan);
 
-    auto matcher = core::PlanMatcherBuilder()
-                       .tableScan("region")
-
+    auto matcher = matchScan("region")
                        .hashJoin(
-                           core::PlanMatcherBuilder()
-                               .tableScan("nation")
+                           matchScan("nation")
                                .project({"coalesce(n_regionkey, 1)"})
                                .build(),
                            core::JoinType::kLeft)
@@ -317,11 +288,9 @@ TEST_F(JoinTest, joinWithComputedKeys) {
   {
     auto distributedPlan = planVelox(logicalPlan);
 
-    auto rightSideMatcher =
-        core::PlanMatcherBuilder().tableScan("region").shuffle().build();
+    auto rightSideMatcher = matchScan("region").shuffle().build();
 
-    auto matcher = core::PlanMatcherBuilder()
-                       .tableScan("nation")
+    auto matcher = matchScan("nation")
                        .project({"coalesce(n_regionkey, 1)"})
                        .shuffle()
                        .hashJoin(rightSideMatcher, core::JoinType::kRight)
@@ -341,7 +310,7 @@ TEST_F(JoinTest, crossJoin) {
   testConnector_->addTable("v", ROW({"n", "m"}, BIGINT()));
 
   {
-    lp::PlanBuilder::Context ctx{kTestConnectorId};
+    auto ctx = makeContext();
     auto logicalPlan =
         lp::PlanBuilder{ctx}.from({"t", "u"}).project({"a + x"}).build();
 
@@ -357,7 +326,7 @@ TEST_F(JoinTest, crossJoin) {
   }
 
   {
-    lp::PlanBuilder::Context ctx{kTestConnectorId};
+    auto ctx = makeContext();
     auto logicalPlan =
         lp::PlanBuilder{ctx}.from({"t", "u"}).filter("a > x").build();
 
@@ -373,7 +342,7 @@ TEST_F(JoinTest, crossJoin) {
   }
 
   {
-    lp::PlanBuilder::Context ctx{kTestConnectorId};
+    auto ctx = makeContext();
     auto logicalPlan = lp::PlanBuilder{ctx}
                            .from({"t", "u"})
                            .aggregate({}, {"count(1)"})
@@ -408,7 +377,7 @@ TEST_F(JoinTest, crossJoin) {
   // Cross join with a single-row subquery whose output is not used. The
   // subquery is ignored.
   {
-    lp::PlanBuilder::Context ctx{kTestConnectorId};
+    auto ctx = makeContext();
     auto logicalPlan = parseSelect(
         "SELECT a FROM t, (SELECT count(*) FROM u)", kTestConnectorId);
 
@@ -421,7 +390,7 @@ TEST_F(JoinTest, crossJoin) {
   }
 
   {
-    lp::PlanBuilder::Context ctx{kTestConnectorId};
+    auto ctx = makeContext();
     auto logicalPlan = parseSelect(
         "SELECT * FROM t, (SELECT count(*) FROM u)", kTestConnectorId);
 
@@ -438,7 +407,7 @@ TEST_F(JoinTest, crossJoin) {
   // Cross join with a subquery that looks like single-row, but may not be. The
   // subquery is not ignored.
   {
-    lp::PlanBuilder::Context ctx{kTestConnectorId};
+    auto ctx = makeContext();
     auto logicalPlan = parseSelect(
         "SELECT a FROM t, (SELECT * FROM u LIMIT 1)", kTestConnectorId);
 
@@ -462,11 +431,9 @@ TEST_F(JoinTest, leftCrossJoin) {
         kTestConnectorId);
 
     auto matcher =
-        core::PlanMatcherBuilder()
-            .tableScan("t")
+        matchScan("t")
             .nestedLoopJoin(
-                core::PlanMatcherBuilder().tableScan("u").aggregation().build(),
-                core::JoinType::kLeft)
+                matchScan("u").aggregation().build(), core::JoinType::kLeft)
             .build();
 
     auto plan = toSingleNodePlan(logicalPlan);
@@ -481,12 +448,10 @@ TEST_F(JoinTest, leftCrossJoin) {
         kTestConnectorId);
 
     auto matcher =
-        core::PlanMatcherBuilder()
-            .tableScan("t")
+        matchScan("t")
             .aggregation()
             .nestedLoopJoin(
-                core::PlanMatcherBuilder().tableScan("u").aggregation().build(),
-                core::JoinType::kLeft)
+                matchScan("u").aggregation().build(), core::JoinType::kLeft)
             .build();
 
     auto plan = toSingleNodePlan(logicalPlan);
@@ -500,14 +465,12 @@ TEST_F(JoinTest, leftCrossJoin) {
         "SELECT a FROM t LEFT JOIN u ON 1 = 1 WHERE coalesce(x, 1) > 0",
         kTestConnectorId);
 
-    auto matcher = core::PlanMatcherBuilder()
-                       .tableScan("t")
-                       .nestedLoopJoin(
-                           core::PlanMatcherBuilder().tableScan("u").build(),
-                           core::JoinType::kLeft)
-                       .filter()
-                       .project()
-                       .build();
+    auto matcher =
+        matchScan("t")
+            .nestedLoopJoin(matchScan("u").build(), core::JoinType::kLeft)
+            .filter()
+            .project()
+            .build();
 
     auto plan = toSingleNodePlan(logicalPlan);
     AXIOM_ASSERT_PLAN(plan, matcher);
@@ -524,13 +487,9 @@ TEST_F(JoinTest, leftCrossJoin) {
 
     auto logicalPlan = parseSelect(query, kTestConnectorId);
 
-    auto matcher = core::PlanMatcherBuilder()
-                       .tableScan("t")
+    auto matcher = matchScan("t")
                        .nestedLoopJoin(
-                           core::PlanMatcherBuilder()
-                               .tableScan("u")
-                               .project({"x", "y + 1"})
-                               .build(),
+                           matchScan("u").project({"x", "y + 1"}).build(),
                            core::JoinType::kLeft)
                        .project()
                        .build();
@@ -557,12 +516,9 @@ TEST_F(JoinTest, rightJoin) {
 
     auto logicalPlan = parseSelect(query, kTestConnectorId);
 
-    auto matcher = core::PlanMatcherBuilder()
-                       .tableScan("u")
+    auto matcher = matchScan("u")
                        .project({"x", "y + 1"})
-                       .hashJoin(
-                           core::PlanMatcherBuilder().tableScan("t").build(),
-                           core::JoinType::kRight)
+                       .hashJoin(matchScan("t").build(), core::JoinType::kRight)
                        .project()
                        .build();
 
@@ -588,11 +544,7 @@ TEST_F(JoinTest, crossThenLeft) {
           // TODO Remove redundant projection.
           .project()
           .hashJoin(
-              core::PlanMatcherBuilder()
-                  .tableScan("u")
-                  .nestedLoopJoin(
-                      core::PlanMatcherBuilder().tableScan("t").build())
-                  .build(),
+              matchScan("u").nestedLoopJoin(matchScan("t").build()).build(),
               velox::core::JoinType::kRight)
           .aggregation()
           .build();
@@ -610,15 +562,11 @@ TEST_F(JoinTest, joinWithComputedAndProjectedKeys) {
       "SELECT * FROM u LEFT JOIN v ON u0 = v0";
   SCOPED_TRACE(query);
 
-  auto matcher = core::PlanMatcherBuilder()
-                     .tableScan("u")
-                     .hashJoin(
-                         core::PlanMatcherBuilder()
-                             .tableScan("t")
-                             .project({"coalesce(t0, 0)"})
-                             .build())
-                     .project()
-                     .build();
+  auto matcher =
+      matchScan("u")
+          .hashJoin(matchScan("t").project({"coalesce(t0, 0)"}).build())
+          .project()
+          .build();
 
   auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
   AXIOM_ASSERT_PLAN(plan, matcher);
@@ -628,10 +576,8 @@ TEST_F(JoinTest, crossThanOrderBy) {
   auto query = "SELECT length(n_name) FROM nation, region ORDER BY 1";
   SCOPED_TRACE(query);
 
-  auto matcher = core::PlanMatcherBuilder()
-                     .tableScan("nation")
-                     .nestedLoopJoin(
-                         core::PlanMatcherBuilder().tableScan("region").build())
+  auto matcher = matchScan("nation")
+                     .nestedLoopJoin(matchScan("region").build())
                      .project({"length(n_name) as l"})
                      .orderBy({"l"})
                      .project()
@@ -652,8 +598,7 @@ TEST_F(JoinTest, filterPushdownThroughCrossJoinUnnest) {
     auto query = "SELECT * FROM t, UNNEST(t1) WHERE t0.a > 0";
     SCOPED_TRACE(query);
 
-    auto matcher =
-        core::PlanMatcherBuilder().tableScan("t").filter().unnest().build();
+    auto matcher = matchScan("t").filter().unnest().build();
 
     auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
     AXIOM_ASSERT_PLAN(plan, matcher);
@@ -686,13 +631,10 @@ TEST_F(JoinTest, joinOnClause) {
     auto query = "SELECT * FROM t JOIN u ON t0.a = u0.a";
     SCOPED_TRACE(query);
 
-    auto matcher =
-        core::PlanMatcherBuilder()
-            .tableScan("t")
-            .project()
-            .hashJoin(
-                core::PlanMatcherBuilder().tableScan("u").project().build())
-            .build();
+    auto matcher = matchScan("t")
+                       .project()
+                       .hashJoin(matchScan("u").project().build())
+                       .build();
 
     auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
     AXIOM_ASSERT_PLAN(plan, matcher);
@@ -702,14 +644,11 @@ TEST_F(JoinTest, joinOnClause) {
     auto query = "SELECT * FROM (SELECT t0, 1 FROM t) JOIN u ON t0.a = u0.a";
     SCOPED_TRACE(query);
 
-    auto matcher =
-        core::PlanMatcherBuilder()
-            .tableScan("t")
-            .project()
-            .hashJoin(
-                core::PlanMatcherBuilder().tableScan("u").project().build())
-            .project()
-            .build();
+    auto matcher = matchScan("t")
+                       .project()
+                       .hashJoin(matchScan("u").project().build())
+                       .project()
+                       .build();
 
     auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
     AXIOM_ASSERT_PLAN(plan, matcher);

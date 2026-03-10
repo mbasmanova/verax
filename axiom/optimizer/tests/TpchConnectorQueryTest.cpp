@@ -42,11 +42,7 @@ class TpchConnectorQueryTest : public QueryTestBase {
   }
 
   lp::LogicalPlanNodePtr parseSql(std::string_view sql) {
-    ::axiom::sql::presto::PrestoParser parser(kTpchConnectorId, std::nullopt);
-    auto statement = parser.parse(sql);
-
-    VELOX_CHECK(statement->isSelect());
-    return statement->as<::axiom::sql::presto::SelectStatement>()->plan();
+    return parseSelect(sql, kTpchConnectorId, "tiny");
   }
 
   // Run "SELECT count(*) FROM <table>" query and return the result.

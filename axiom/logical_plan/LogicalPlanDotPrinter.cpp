@@ -179,7 +179,7 @@ class DotPrinterVisitor : public PlanNodeVisitor {
     printNodeStart(
         context.out,
         node,
-        fmt::format("TableScan: {}", escapeHtml(node.tableName())),
+        fmt::format("TableScan: {}", escapeHtml(node.tableName().toString())),
         kPalette.header);
 
     printOutputColumns(context.out, node);
@@ -382,7 +382,7 @@ class DotPrinterVisitor : public PlanNodeVisitor {
         fmt::format(
             "{}: {}",
             WriteKindName::toName(node.writeKind()),
-            escapeHtml(node.tableName())),
+            escapeHtml(node.tableName().toString())),
         kPalette.header);
 
     for (const auto& name : node.columnNames()) {

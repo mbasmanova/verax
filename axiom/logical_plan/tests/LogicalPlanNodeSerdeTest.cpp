@@ -72,6 +72,10 @@ class LogicalPlanNodeSerdeTest : public testing::Test {
 
   std::shared_ptr<memory::MemoryPool> pool_;
   std::shared_ptr<connector::TestConnector> connector_;
+
+  PlanBuilder::Context context_{
+      std::string(kTestConnectorId),
+      std::string(connector::TestConnector::kDefaultSchema)};
 };
 
 TEST_F(LogicalPlanNodeSerdeTest, valuesNodeWithVariants) {
@@ -138,12 +142,8 @@ TEST_F(LogicalPlanNodeSerdeTest, valuesNodeWithMultipleVectors) {
 }
 
 TEST_F(LogicalPlanNodeSerdeTest, tableScanNode) {
-  auto plan = std::make_shared<TableScanNode>(
-      "scan_0",
-      ROW({"a", "b"}, {BIGINT(), VARCHAR()}),
-      "test_connector",
-      "test_table",
-      std::vector<std::string>{"col_a", "col_b"});
+  auto plan =
+      PlanBuilder(context_).tableScan("test_table", {"a", "b"}).planNode();
   testRoundTrip(plan);
 }
 
@@ -237,16 +237,16 @@ TEST_F(LogicalPlanNodeSerdeTest, unionAllNode) {
 }
 
 TEST_F(LogicalPlanNodeSerdeTest, unnestNode) {
-  auto plan = PlanBuilder()
-                  .tableScan(kTestConnectorId, "test_table", {"arr"})
+  auto plan = PlanBuilder(context_)
+                  .tableScan("test_table", {"arr"})
                   .unnest({Col("arr").unnestAs("elem")})
                   .build();
   testRoundTrip(plan);
 }
 
 TEST_F(LogicalPlanNodeSerdeTest, unnestNodeWithOrdinality) {
-  auto plan = PlanBuilder()
-                  .tableScan(kTestConnectorId, "test_table", {"arr"})
+  auto plan = PlanBuilder(context_)
+                  .tableScan("test_table", {"arr"})
                   .unnest({Col("arr").unnestAs("elem")}, Ordinality())
                   .build();
   testRoundTrip(plan);
@@ -263,10 +263,9 @@ TEST_F(LogicalPlanNodeSerdeTest, sampleNode) {
 }
 
 TEST_F(LogicalPlanNodeSerdeTest, tableWriteNode) {
-  auto plan = PlanBuilder()
-                  .tableScan(kTestConnectorId, "test_table", {"a", "b"})
+  auto plan = PlanBuilder(context_)
+                  .tableScan("test_table", {"a", "b"})
                   .tableWrite(
-                      kTestConnectorId,
                       "output_table",
                       WriteKind::kInsert,
                       {"col_a", "col_b"},
