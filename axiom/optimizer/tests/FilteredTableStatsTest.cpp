@@ -31,10 +31,6 @@ class FilteredTableStatsTest : public test::HiveQueriesTestBase {
  protected:
   static void SetUpTestCase() {
     test::HiveQueriesTestBase::SetUpTestCase();
-    // Use DWRF format because Parquet reader's columnStatistics() is not
-    // implemented and returns nullptr, preventing per-file stats collection.
-    LocalRunnerTestBase::localFileFormat_ =
-        velox::dwio::common::FileFormat::DWRF;
     createTpchTables({velox::tpch::Table::TBL_NATION});
   }
 

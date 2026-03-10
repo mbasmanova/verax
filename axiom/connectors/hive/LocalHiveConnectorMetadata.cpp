@@ -214,6 +214,24 @@ int64_t estimateNdv(int64_t ndv, uint64_t sampleRows, uint64_t totalRows) {
   return std::max<int64_t>(1, static_cast<int64_t>(estimated));
 }
 
+// Creates an integer Variant with the TypeKind matching the column type.
+// IntegerColumnStatistics::getMinimum/getMaximum return int64_t regardless of
+// the actual integer width. Constructing Variant(int64_t) always produces
+// BIGINT, which causes a type mismatch when the column is TINYINT, SMALLINT, or
+// INTEGER. This helper narrows the value to the correct type.
+velox::Variant makeIntegerVariant(velox::TypeKind kind, int64_t value) {
+  switch (kind) {
+    case velox::TypeKind::TINYINT:
+      return velox::Variant(static_cast<int8_t>(value));
+    case velox::TypeKind::SMALLINT:
+      return velox::Variant(static_cast<int16_t>(value));
+    case velox::TypeKind::INTEGER:
+      return velox::Variant(static_cast<int32_t>(value));
+    default:
+      return velox::Variant(value);
+  }
+}
+
 // Aggregates per-column stats across selected files. Columns missing from a
 // file's columnStats are treated as all-null (numValues = 0, no min/max). This
 // handles schema evolution where a column was added after the file was written.
@@ -623,13 +641,8 @@ LocalHiveTableLayout::co_estimateStats(
     requestedColumns.push_back(column);
   }
 
-  // Aggregate per-file column stats. Skip for Parquet because its
-  // Reader::columnStatistics() is not implemented and returns nullptr.
-  std::vector<ColumnStatistics> columnStats;
-  if (fileFormat() != velox::dwio::common::FileFormat::PARQUET) {
-    columnStats = aggregateColumnStats(
-        selectedFiles, requestedColumns, totalRows, table().numRows());
-  }
+  auto columnStats = aggregateColumnStats(
+      selectedFiles, requestedColumns, totalRows, table().numRows());
 
   co_return FilteredTableStats{
       totalRows, std::move(columnStats), std::move(rejectedFilterIndices)};
@@ -1194,8 +1207,8 @@ void LocalHiveConnectorMetadata::loadTable(
       const auto* column = table->findColumn(name);
       VELOX_CHECK_NOT_NULL(column, "Column not found: {}", name);
 
-      // Node ID 0 is the root RowType; top-level columns start at 1.
-      if (auto readerStats = reader->columnStatistics(i + 1)) {
+      const auto& typeWithId = reader->typeWithId()->childByName(name);
+      if (auto readerStats = reader->columnStatistics(typeWithId->id())) {
         auto* stats = const_cast<Column*>(column)->mutableStats();
         stats->numValues += readerStats->getNumberOfValues().value_or(0);
 
@@ -1212,11 +1225,14 @@ void LocalHiveConnectorMetadata::loadTable(
         if (auto* intStats = dynamic_cast<
                 const velox::dwio::common::IntegerColumnStatistics*>(
                 readerStats.get())) {
+          auto columnKind = column->type()->kind();
           if (intStats->getMinimum().has_value()) {
-            fileColStats.min = velox::Variant(intStats->getMinimum().value());
+            fileColStats.min =
+                makeIntegerVariant(columnKind, intStats->getMinimum().value());
           }
           if (intStats->getMaximum().has_value()) {
-            fileColStats.max = velox::Variant(intStats->getMaximum().value());
+            fileColStats.max =
+                makeIntegerVariant(columnKind, intStats->getMaximum().value());
           }
         } else if (
             auto* dblStats = dynamic_cast<
