@@ -14,10 +14,11 @@
  * limitations under the License.
  */
 
-#include "velox/dwio/dwrf/writer/StatisticsBuilder.h"
+#include "velox/dwio/common/StatisticsBuilder.h"
 #include "axiom/connectors/ConnectorMetadata.h"
 #include "axiom/connectors/hive/StatisticsBuilder.h"
 #include "velox/type/Type.h"
+#include "velox/vector/SimpleVector.h"
 
 namespace facebook::axiom::connector {
 
@@ -28,12 +29,12 @@ velox::Variant toVariant(U value) {
   return velox::Variant(static_cast<T>(value));
 }
 
-/// StatisticsBuilder using dwrf::StaticsBuilder
+/// StatisticsBuilder using dwio::stats::StatisticsBuilder.
 class StatisticsBuilderImpl : public StatisticsBuilder {
  public:
   StatisticsBuilderImpl(
       velox::TypePtr type,
-      std::unique_ptr<velox::dwrf::StatisticsBuilder> builder)
+      std::unique_ptr<velox::dwio::stats::StatisticsBuilder> builder)
       : type_(std::move(type)), builder_(std::move(builder)) {}
 
   const velox::TypePtr& type() const override {
@@ -49,11 +50,11 @@ class StatisticsBuilderImpl : public StatisticsBuilder {
  private:
   template <typename Builder, typename T>
   void addStats(
-      velox::dwrf::StatisticsBuilder* builder,
+      velox::dwio::stats::StatisticsBuilder* builder,
       const velox::BaseVector& vector);
 
   velox::TypePtr type_;
-  std::unique_ptr<velox::dwrf::StatisticsBuilder> builder_;
+  std::unique_ptr<velox::dwio::stats::StatisticsBuilder> builder_;
   int64_t numAsc_{0};
   int64_t numRepeat_{0};
   int64_t numDesc_{0};
@@ -64,7 +65,7 @@ class StatisticsBuilderImpl : public StatisticsBuilder {
 std::unique_ptr<StatisticsBuilder> StatisticsBuilder::create(
     const velox::TypePtr& type,
     const StatisticsBuilderOptions& options) {
-  velox::dwrf::StatisticsBuilderOptions dwrfOptions(
+  velox::dwio::stats::StatisticsBuilderOptions dwrfOptions(
       options.maxStringLength,
       /*initialSize=*/std::nullopt,
       options.countDistincts,
@@ -75,18 +76,21 @@ std::unique_ptr<StatisticsBuilder> StatisticsBuilder::create(
     case velox::TypeKind::SMALLINT:
       return std::make_unique<StatisticsBuilderImpl>(
           type,
-          std::make_unique<velox::dwrf::IntegerStatisticsBuilder>(dwrfOptions));
+          std::make_unique<velox::dwio::stats::IntegerStatisticsBuilder>(
+              dwrfOptions));
 
     case velox::TypeKind::REAL:
     case velox::TypeKind::DOUBLE:
       return std::make_unique<StatisticsBuilderImpl>(
           type,
-          std::make_unique<velox::dwrf::DoubleStatisticsBuilder>(dwrfOptions));
+          std::make_unique<velox::dwio::stats::DoubleStatisticsBuilder>(
+              dwrfOptions));
 
     case velox::TypeKind::VARCHAR:
       return std::make_unique<StatisticsBuilderImpl>(
           type,
-          std::make_unique<velox::dwrf::StringStatisticsBuilder>(dwrfOptions));
+          std::make_unique<velox::dwio::stats::StringStatisticsBuilder>(
+              dwrfOptions));
 
     default:
       return nullptr;
@@ -95,7 +99,7 @@ std::unique_ptr<StatisticsBuilder> StatisticsBuilder::create(
 
 template <typename Builder, typename T>
 void StatisticsBuilderImpl::addStats(
-    velox::dwrf::StatisticsBuilder* builder,
+    velox::dwio::stats::StatisticsBuilder* builder,
     const velox::BaseVector& vector) {
   VELOX_CHECK(
       vector.type()->equivalent(*type_),
@@ -122,9 +126,9 @@ void StatisticsBuilderImpl::addStats(
 
       // TODO: Remove explicit std::string_view cast.
       if constexpr (std::is_same_v<T, velox::StringView>) {
-        reinterpret_cast<Builder*>(builder)->addValues(std::string_view(value));
+        dynamic_cast<Builder*>(builder)->addValues(std::string_view(value));
       } else {
-        reinterpret_cast<Builder*>(builder)->addValues(value);
+        dynamic_cast<Builder*>(builder)->addValues(value);
       }
       previous = value;
       hasPrevious = true;
@@ -140,27 +144,27 @@ void StatisticsBuilderImpl::add(const velox::VectorPtr& data) {
 
   switch (type_->kind()) {
     case velox::TypeKind::SMALLINT:
-      addStats<velox::dwrf::IntegerStatisticsBuilder, short>(
+      addStats<velox::dwio::stats::IntegerStatisticsBuilder, short>(
           builder_.get(), *loadData(data));
       break;
     case velox::TypeKind::INTEGER:
-      addStats<velox::dwrf::IntegerStatisticsBuilder, int32_t>(
+      addStats<velox::dwio::stats::IntegerStatisticsBuilder, int32_t>(
           builder_.get(), *loadData(data));
       break;
     case velox::TypeKind::BIGINT:
-      addStats<velox::dwrf::IntegerStatisticsBuilder, int64_t>(
+      addStats<velox::dwio::stats::IntegerStatisticsBuilder, int64_t>(
           builder_.get(), *loadData(data));
       break;
     case velox::TypeKind::REAL:
-      addStats<velox::dwrf::DoubleStatisticsBuilder, float>(
+      addStats<velox::dwio::stats::DoubleStatisticsBuilder, float>(
           builder_.get(), *loadData(data));
       break;
     case velox::TypeKind::DOUBLE:
-      addStats<velox::dwrf::DoubleStatisticsBuilder, double>(
+      addStats<velox::dwio::stats::DoubleStatisticsBuilder, double>(
           builder_.get(), *loadData(data));
       break;
     case velox::TypeKind::VARCHAR:
-      addStats<velox::dwrf::StringStatisticsBuilder, velox::StringView>(
+      addStats<velox::dwio::stats::StringStatisticsBuilder, velox::StringView>(
           builder_.get(), *loadData(data));
       break;
     default:
@@ -192,7 +196,7 @@ void StatisticsBuilderImpl::build(ColumnStatistics& result) const {
   auto stats = builder_->build();
   auto numValues = stats->getNumberOfValues().value_or(0);
 
-  if (auto ints = dynamic_cast<velox::dwio::common::IntegerColumnStatistics*>(
+  if (auto* ints = dynamic_cast<velox::dwio::common::IntegerColumnStatistics*>(
           stats.get())) {
     if (auto min = ints->getMinimum(), max = ints->getMaximum(); min && max) {
       // IntegerStatisticsBuilder uses int64_t accumulator, but we need to
@@ -219,7 +223,6 @@ void StatisticsBuilderImpl::build(ColumnStatistics& result) const {
           result.max = toVariant<velox::int128_t>(*max);
           break;
         default:
-          // For other types, use int64_t as fallback.
           result.min = velox::Variant(*min);
           result.max = velox::Variant(*max);
           break;
