@@ -30,11 +30,16 @@ class HiveQueriesTestBase : public QueryTestBase {
   static const inline std::string kDefaultSchema{
       connector::hive::LocalHiveConnectorMetadata::kDefaultSchema};
 
+  /// Initializes a temporary data directory for Parquet test data. Subclasses
+  /// should call this, then use createTpchTables() to populate test tables.
   static void SetUpTestCase();
 
+  /// Enables reading and writing Hive tables in Parquet and DWRF formats
+  /// and makes prestoParser(), hiveConnector(), and hiveMetadata() available.
   void SetUp() override;
 
-  /// Creates specified TPC-H tables in the temp directory.
+  /// Generates TPC-H data for the specified tables using the file format
+  /// configured in SetUpTestCase().
   static void createTpchTables(const std::vector<velox::tpch::Table>& tables);
 
   void TearDown() override;
