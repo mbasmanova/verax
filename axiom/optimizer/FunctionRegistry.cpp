@@ -91,6 +91,21 @@ bool FunctionRegistry::registerCount(std::string_view name) {
   return true;
 }
 
+bool FunctionRegistry::registerStatsAggregates(StatsAggregates aggregates) {
+  VELOX_USER_CHECK(!aggregates.min.empty());
+  VELOX_USER_CHECK(!aggregates.max.empty());
+  VELOX_USER_CHECK(!aggregates.countIf.empty());
+  VELOX_USER_CHECK(!aggregates.approxDistinct.empty());
+  if (statsAggregates_.has_value()) {
+    return statsAggregates_->min == aggregates.min &&
+        statsAggregates_->max == aggregates.max &&
+        statsAggregates_->countIf == aggregates.countIf &&
+        statsAggregates_->approxDistinct == aggregates.approxDistinct;
+  }
+  statsAggregates_ = std::move(aggregates);
+  return true;
+}
+
 bool FunctionRegistry::registerLessThan(std::string_view name) {
   VELOX_USER_CHECK(!name.empty());
   if (lessThan_.has_value() && lessThan_.value() != name) {
@@ -347,6 +362,13 @@ void FunctionRegistry::registerPrestoFunctions(std::string_view prefix) {
   registry->registerRowNumber(fullName("row_number"));
   registry->registerRank(fullName("rank"));
   registry->registerDenseRank(fullName("dense_rank"));
+
+  registry->registerStatsAggregates({
+      .min = fullName("min"),
+      .max = fullName("max"),
+      .countIf = fullName("count_if"),
+      .approxDistinct = fullName("approx_distinct"),
+  });
 
   registry->registerAggregateEmptyResultResolver(
       {fullName("count_if"), fullName("approx_distinct")},

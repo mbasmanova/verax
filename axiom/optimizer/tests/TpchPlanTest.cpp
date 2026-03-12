@@ -16,6 +16,7 @@
 
 #include <folly/init/Init.h>
 #include <gtest/gtest.h>
+#include "axiom/connectors/hive/HiveMetadataConfig.h"
 #include "axiom/logical_plan/PlanBuilder.h"
 #include "axiom/optimizer/tests/HiveQueriesTestBase.h"
 #include "axiom/optimizer/tests/TpchQueries.h"

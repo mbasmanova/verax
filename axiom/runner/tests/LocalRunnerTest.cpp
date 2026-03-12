@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include "axiom/connectors/hive/HiveMetadataConfig.h"
 #include "axiom/runner/tests/DistributedPlanBuilder.h"
 #include "axiom/runner/tests/LocalRunnerTestBase.h"
 
@@ -33,8 +34,11 @@ class LocalRunnerTest : public test::LocalRunnerTestBase {
   static constexpr int32_t kNumRows = kNumFiles * kNumVectors * kRowsPerVector;
 
   static void SetUpTestCase() {
-    // Creates the data and schema from 'testTables_'. These are created on the
-    // first test fixture initialization.
+    // Disable write-time stats since makeTables() generates data files
+    // without .schema or .stats files.
+    hiveConfig_[connector::hive::HiveMetadataConfig::kUseWriteTimeStats] =
+        "false";
+
     LocalRunnerTestBase::SetUpTestCase();
 
     // The lambdas will be run after this scope returns, so make captures

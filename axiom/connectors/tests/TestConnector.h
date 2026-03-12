@@ -339,7 +339,9 @@ class TestConnectorMetadata : public ConnectorMetadata {
   RowsFuture finishWrite(
       const ConnectorSessionPtr& session,
       const ConnectorWriteHandlePtr& handle,
-      const std::vector<velox::RowVectorPtr>& writeResults) override;
+      const std::vector<velox::RowVectorPtr>& writeResults,
+      velox::RowVectorPtr groupingKeys,
+      std::vector<std::vector<ColumnStatistics>> groupStats) override;
 
   bool dropTable(
       const ConnectorSessionPtr& session,

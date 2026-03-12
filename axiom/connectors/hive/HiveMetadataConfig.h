@@ -34,9 +34,17 @@ class HiveMetadataConfig {
   /// The name of the file format to use for processing data at kLocalDataPath.
   static constexpr const char* kLocalFileFormat = "hive_local_file_format";
 
+  /// Whether to use persisted write-time stats (.stats files) instead of
+  /// reading file headers and sampling data. Enabled by default. Disable
+  /// for tables created outside the Axiom write pipeline (e.g. TPC-H data
+  /// generator) which don't have .stats files.
+  static constexpr const char* kUseWriteTimeStats = "hive_use_write_time_stats";
+
   std::string localDataPath() const;
 
   std::string localFileFormat() const;
+
+  bool useWriteTimeStats() const;
 
   /// HiveMetadataConfig may be initialized from a base config which also
   /// contains execution config defined in velox/connectors/hive/HiveConfig.h,

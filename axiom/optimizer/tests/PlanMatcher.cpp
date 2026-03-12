@@ -1802,6 +1802,12 @@ PlanMatcherBuilder& PlanMatcherBuilder::tableWrite() {
   return *this;
 }
 
+PlanMatcherBuilder& PlanMatcherBuilder::tableWriteMerge() {
+  VELOX_USER_CHECK_NOT_NULL(matcher_);
+  matcher_ = std::make_shared<PlanMatcherImpl<TableWriteMergeNode>>(matcher_);
+  return *this;
+}
+
 PlanMatcherBuilder& PlanMatcherBuilder::enforceSingleRow() {
   VELOX_USER_CHECK_NOT_NULL(matcher_);
   matcher_ = std::make_shared<PlanMatcherImpl<EnforceSingleRowNode>>(matcher_);

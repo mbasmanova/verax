@@ -167,7 +167,14 @@ class HiveConnectorWriteHandle : public ConnectorWriteHandle {
       WriteKind kind)
       : ConnectorWriteHandle{std::move(veloxHandle), std::move(resultType)},
         table_{std::move(table)},
-        kind_{kind} {}
+        kind_{kind} {
+    for (const auto* column : table_->layouts()
+                                  .at(0)
+                                  ->as<HiveTableLayout>()
+                                  ->hivePartitionColumns()) {
+      statsGroupingKeys_.push_back(column->name());
+    }
+  }
 
   const TablePtr& table() const {
     return table_;
@@ -177,9 +184,14 @@ class HiveConnectorWriteHandle : public ConnectorWriteHandle {
     return kind_;
   }
 
+  const std::vector<std::string>& statsGroupingKeys() const override {
+    return statsGroupingKeys_;
+  }
+
  private:
   const TablePtr table_;
   const WriteKind kind_;
+  std::vector<std::string> statsGroupingKeys_;
 };
 
 /// The full list of options accepted for createTable.

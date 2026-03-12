@@ -16,6 +16,7 @@ add_library(axiom_optimizer_tests_tpch_data_generator TpchDataGenerator.cpp)
 
 target_link_libraries(
   axiom_optimizer_tests_tpch_data_generator
+  axiom_cli
   axiom_logical_plan_builder
   axiom_optimizer
   velox_tpch_gen
@@ -24,7 +25,9 @@ target_link_libraries(
   axiom_runner_tests_utils
   velox_exec_test_lib
   velox_dwio_parquet_reader
+  velox_dwio_parquet_writer
   velox_dwio_native_parquet_reader
+  velox_dwio_dwrf_writer
   gtest
   gtest_main
 )

@@ -16,8 +16,11 @@
 #include "axiom/optimizer/ToVelox.h"
 #include "axiom/optimizer/FunctionRegistry.h"
 #include "axiom/optimizer/Optimization.h"
+#include "axiom/optimizer/WriteStatsBuilder.h"
 #include "velox/core/PlanConsistencyChecker.h"
 #include "velox/core/PlanNode.h"
+#include "velox/core/TableWriteTraits.h"
+#include "velox/exec/AggregateFunctionRegistry.h"
 #include "velox/exec/HashPartitionFunction.h"
 #include "velox/exec/RoundRobinPartitionFunction.h"
 #include "velox/expression/ScopedVarSetter.h"
@@ -314,6 +317,22 @@ PlanAndStats ToVelox::toVeloxPlan(
   stages.push_back(std::move(top));
 
   auto& rootPlanNode = stages.back().fragment.planNode;
+
+  // For multi-worker writes, add a coordinator-side TableWriteMerge(kFinal)
+  // to merge intermediate stats from all workers. The local merge on each
+  // worker produces intermediate state; this final merge produces scalar
+  // values.
+  if (finalMergeSpec_.has_value()) {
+    auto outputType =
+        velox::core::TableWriteTraits::outputType(finalMergeSpec_);
+    rootPlanNode = std::make_shared<velox::core::TableWriteMergeNode>(
+        nextId(),
+        std::move(outputType),
+        std::move(finalMergeSpec_.value()),
+        rootPlanNode);
+    finalMergeSpec_.reset();
+  }
+
   if (!outputNames.empty()) {
     rootPlanNode = addOutputRenames(rootPlanNode, outputNames);
   }
@@ -1770,32 +1789,72 @@ velox::core::PlanNodePtr ToVelox::makeWrite(
     }
   }
 
-  auto columnNames = table.type()->names();
-
   auto* connector = layout->connector();
   auto* metadata = connector::ConnectorMetadata::metadata(connector);
   auto session = session_->toConnectorSession(connector->connectorId());
   auto handle =
       metadata->beginWrite(session, table.shared_from_this(), write.kind());
 
-  auto outputType = handle->resultType();
+  auto inputType = ROW(inputNames, inputTypes);
+
+  WriteStatsBuilder statsBuilder(
+      table, inputType, *handle, options_.numDrivers, options_.numWorkers);
+
+  std::optional<velox::core::ColumnStatsSpec> writeStatsSpec;
+  if (statsBuilder.hasStats()) {
+    writeStatsSpec = statsBuilder.writeSpec();
+  }
+
+  auto writeOutputType = writeStatsSpec.has_value()
+      ? velox::core::TableWriteTraits::outputType(writeStatsSpec)
+      : handle->resultType();
 
   VELOX_CHECK(!finishWrite_, "Only single TableWrite per query supported");
   auto insertTableHandle =
       std::make_shared<const velox::core::InsertTableHandle>(
           connector->connectorId(), handle->veloxHandle());
-  finishWrite_ = {metadata, std::move(session), std::move(handle)};
+  finishWrite_ = {
+      metadata,
+      std::move(session),
+      std::move(handle),
+      statsBuilder.statsMapping()};
 
-  return std::make_shared<velox::core::TableWriteNode>(
-      nextId(),
-      ROW(std::move(inputNames), std::move(inputTypes)),
-      std::move(columnNames),
-      /*columnStatsSpec=*/std::nullopt,
-      insertTableHandle,
-      /*hasPartitioningScheme=*/false,
-      std::move(outputType),
-      velox::connector::CommitStrategy::kNoCommit,
-      std::move(input));
+  velox::core::PlanNodePtr result =
+      std::make_shared<velox::core::TableWriteNode>(
+          nextId(),
+          inputType,
+          table.type()->names(),
+          std::move(writeStatsSpec),
+          insertTableHandle,
+          /*hasPartitioningScheme=*/false,
+          std::move(writeOutputType),
+          velox::connector::CommitStrategy::kNoCommit,
+          std::move(input));
+
+  if (statsBuilder.needsMerge()) {
+    // Gather write outputs from all drivers into a single merge driver.
+    result = std::make_shared<velox::core::LocalPartitionNode>(
+        nextId(),
+        velox::core::LocalPartitionNode::Type::kGather,
+        false,
+        std::make_shared<velox::core::GatherPartitionFunctionSpec>(),
+        std::vector<velox::core::PlanNodePtr>{result});
+
+    auto localMergeSpec = statsBuilder.localMergeSpec(result->outputType());
+    auto localMergeOutputType =
+        velox::core::TableWriteTraits::outputType(localMergeSpec);
+    result = std::make_shared<velox::core::TableWriteMergeNode>(
+        nextId(),
+        std::move(localMergeOutputType),
+        std::move(localMergeSpec),
+        std::move(result));
+  }
+
+  if (statsBuilder.needsFinalMerge()) {
+    finalMergeSpec_ = statsBuilder.finalMergeSpec(result->outputType());
+  }
+
+  return result;
 }
 
 velox::core::PlanNodePtr ToVelox::makeEnforceSingleRow(

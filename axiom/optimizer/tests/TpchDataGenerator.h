@@ -16,7 +16,7 @@
 
 #pragma once
 
-#include "velox/common/compression/Compression.h"
+#include <functional>
 #include "velox/dwio/common/Options.h"
 #include "velox/tpch/gen/TpchGen.h"
 
@@ -24,36 +24,23 @@ namespace facebook::axiom::optimizer::test {
 
 class TpchDataGenerator {
  public:
-  /// Generates a single TPC-H table in the specified format.
-  ///
-  /// @param table TPC-H table to generate.
-  /// @param path Directory to write the table to. Must exist.
-  /// @param scaleFactor TPC-H scale factor (e.g., 0.1, 1, 10).
-  /// @param format File format to use (PARQUET or DWRF).
-  /// @param compression Compression codec to use.
-  /// @return Number of rows generated.
-  static int64_t createTable(
-      velox::tpch::Table table,
-      std::string_view path,
-      double scaleFactor = 0.1,
-      velox::dwio::common::FileFormat format =
-          velox::dwio::common::FileFormat::PARQUET,
-      velox::common::CompressionKind compression =
-          velox::common::CompressionKind::CompressionKind_NONE);
+  /// Called before each table is created. Receives the table name.
+  using TableStartingCallback = std::function<void(std::string_view tableName)>;
 
-  /// Writes specified TPC-H tables to 'path'.
+  /// Called after each table is created. Receives the table name and row count.
+  using TableCreatedCallback =
+      std::function<void(std::string_view tableName, int64_t numRows)>;
+
+  /// Creates TPC-H tables via CTAS SQL, producing data files and persisted
+  /// write-time stats (.stats files) for each table.
   static void createTables(
       const std::vector<velox::tpch::Table>& tables,
       std::string_view path,
       double scaleFactor = 0.1,
       velox::dwio::common::FileFormat format =
           velox::dwio::common::FileFormat::PARQUET,
-      velox::common::CompressionKind compression =
-          velox::common::CompressionKind::CompressionKind_NONE);
-
-  static void registerTpchConnector(const std::string& id);
-
-  static void unregisterTpchConnector(const std::string& id);
+      const TableStartingCallback& onTableStarting = nullptr,
+      const TableCreatedCallback& onTableCreated = nullptr);
 };
 
 } // namespace facebook::axiom::optimizer::test

@@ -46,7 +46,15 @@ bool isValidTpchSchema(std::string_view schema) {
   }
 
   bool nonzero = false;
+  bool hasDot = false;
   for (char c : schema.substr(2)) {
+    if (c == '.') {
+      if (hasDot) {
+        return false;
+      }
+      hasDot = true;
+      continue;
+    }
     if (!std::isdigit(c)) {
       return false;
     }
