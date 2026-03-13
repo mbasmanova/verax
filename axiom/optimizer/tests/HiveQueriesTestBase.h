@@ -34,8 +34,7 @@ class HiveQueriesTestBase : public QueryTestBase {
   /// should call this, then use createTpchTables() to populate test tables.
   static void SetUpTestCase();
 
-  /// Enables reading and writing Hive tables in Parquet and DWRF formats
-  /// and makes prestoParser(), hiveConnector(), and hiveMetadata() available.
+  /// Initializes the Presto SQL parser.
   void SetUp() override;
 
   /// Generates TPC-H data for the specified tables using the file format
@@ -77,14 +76,6 @@ class HiveQueriesTestBase : public QueryTestBase {
     return *prestoParser_;
   }
 
-  velox::connector::Connector& hiveConnector() const {
-    return *connector_;
-  }
-
-  connector::hive::LocalHiveConnectorMetadata& hiveMetadata() const {
-    return *metadata_;
-  }
-
   /// Creates an empty table with the given schema and options.
   /// If a table with the same name already exists, it is dropped first.
   void createEmptyTable(
@@ -119,8 +110,6 @@ class HiveQueriesTestBase : public QueryTestBase {
       gTempDirectory;
 
   std::unique_ptr<::axiom::sql::presto::PrestoParser> prestoParser_;
-  std::shared_ptr<velox::connector::Connector> connector_;
-  connector::hive::LocalHiveConnectorMetadata* metadata_{};
 };
 
 } // namespace facebook::axiom::optimizer::test
