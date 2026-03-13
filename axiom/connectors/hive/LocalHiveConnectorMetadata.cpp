@@ -1862,17 +1862,27 @@ TablePtr LocalHiveConnectorMetadata::createTable(
     const ConnectorSessionPtr& /*session*/,
     const SchemaTableName& tableName,
     const velox::RowTypePtr& rowType,
-    const folly::F14FastMap<std::string, velox::Variant>& options) {
+    const folly::F14FastMap<std::string, velox::Variant>& options,
+    bool explain) {
   validateOptions(options);
   ensureInitialized();
+  auto createTableOptions = parseCreateTableOptions(options, format_);
+
+  if (explain) {
+    return createLocalTable(
+        tableName.table,
+        rowType,
+        createTableOptions,
+        hiveConnector(),
+        hiveMetadataConfig_);
+  }
+
   auto path = tablePath(tableName);
   if (dirExists(path)) {
     VELOX_USER_FAIL("Table {} already exists", tableName.toString());
   } else {
     createDir(path);
   }
-
-  auto createTableOptions = parseCreateTableOptions(options, format_);
 
   const std::string jsonStr =
       folly::toPrettyJson(toSchemaJson(rowType, createTableOptions));

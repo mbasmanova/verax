@@ -138,9 +138,9 @@ void HiveQueriesTestBase::createEmptyTable(
 
   auto session = std::make_shared<connector::ConnectorSession>("test");
   auto table = metadata_->createTable(
-      session, {kDefaultSchema, name}, tableType, options);
-  auto handle =
-      metadata_->beginWrite(session, table, connector::WriteKind::kCreate);
+      session, {kDefaultSchema, name}, tableType, options, /*explain=*/false);
+  auto handle = metadata_->beginWrite(
+      session, table, connector::WriteKind::kCreate, /*explain=*/false);
   metadata_->finishWrite(session, handle, {}, nullptr, {}).get();
 }
 
@@ -166,7 +166,11 @@ void HiveQueriesTestBase::createTableFromFiles(
 
   auto session = std::make_shared<connector::ConnectorSession>("test");
   metadata_->createTable(
-      session, {kDefaultSchema, tableName}, tableType, options);
+      session,
+      {kDefaultSchema, tableName},
+      tableType,
+      options,
+      /*explain=*/false);
 
   auto tablePath = metadata_->tablePath({kDefaultSchema, tableName});
   for (const auto& filePath : filePaths) {
@@ -200,7 +204,8 @@ void HiveQueriesTestBase::runCtas(const std::string& sql) {
       session,
       ctasStatement->tableName(),
       ctasStatement->tableSchema(),
-      options);
+      options,
+      /*explain=*/false);
 
   connector::SchemaResolver schemaResolver;
   schemaResolver.setTargetTable(

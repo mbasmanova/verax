@@ -328,7 +328,11 @@ class VeloxRunner : public velox::QueryBenchmarkBase {
 
     auto session = std::make_shared<connector::ConnectorSession>("test");
     return metadata->createTable(
-        session, statement.tableName(), statement.tableSchema(), options);
+        session,
+        statement.tableName(),
+        statement.tableSchema(),
+        options,
+        /*explain=*/false);
   }
 
   void dropTable(const ::axiom::sql::presto::DropTableStatement& statement) {

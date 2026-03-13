@@ -294,7 +294,8 @@ class LocalHiveConnectorMetadata : public HiveConnectorMetadata {
       const ConnectorSessionPtr& session,
       const SchemaTableName& tableName,
       const velox::RowTypePtr& rowType,
-      const folly::F14FastMap<std::string, velox::Variant>& options) override;
+      const folly::F14FastMap<std::string, velox::Variant>& options,
+      bool explain) override;
 
   RowsFuture finishWrite(
       const ConnectorSessionPtr& session,

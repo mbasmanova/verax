@@ -64,7 +64,7 @@ class SchemaResolverTest : public ::testing::Test {
 
 TEST_F(SchemaResolverTest, bareTable) {
   ConnectorMetadata::metadata("base")->createTable(
-      nullptr, {"baseschema", "table"}, ROW({}), {});
+      nullptr, {"baseschema", "table"}, ROW({}), {}, /*explain=*/false);
 
   auto table = resolver_->findTable("base", {"baseschema", "table"});
   ASSERT_NE(table, nullptr);
@@ -75,7 +75,7 @@ TEST_F(SchemaResolverTest, bareTable) {
 
 TEST_F(SchemaResolverTest, tablePlusSchema) {
   ConnectorMetadata::metadata("base")->createTable(
-      nullptr, {"newschema", "table"}, ROW({}), {});
+      nullptr, {"newschema", "table"}, ROW({}), {}, /*explain=*/false);
 
   auto table = resolver_->findTable("base", {"newschema", "table"});
   ASSERT_NE(table, nullptr);
@@ -86,12 +86,16 @@ TEST_F(SchemaResolverTest, tablePlusSchema) {
 
 TEST_F(SchemaResolverTest, tablePlusSchemaPlusCatalog) {
   ConnectorMetadata::metadata("other")->createTable(
-      /*session=*/nullptr, {"otherschema", "other_table"}, ROW({}), {});
+      /*session=*/nullptr,
+      {"otherschema", "other_table"},
+      ROW({}),
+      {},
+      /*explain=*/false);
   auto table = resolver_->findTable("other", {"otherschema", "other_table"});
   ASSERT_NE(table, nullptr);
 
   ConnectorMetadata::metadata("base")->createTable(
-      nullptr, {"baseschema", "base_table"}, ROW({}), {});
+      nullptr, {"baseschema", "base_table"}, ROW({}), {}, /*explain=*/false);
   table = resolver_->findTable("base", {"baseschema", "base_table"});
   ASSERT_NE(table, nullptr);
 }
@@ -99,7 +103,11 @@ TEST_F(SchemaResolverTest, tablePlusSchemaPlusCatalog) {
 TEST_F(SchemaResolverTest, catalogMismatch) {
   // Table exists in "other" catalog but not in "base".
   ConnectorMetadata::metadata("other")->createTable(
-      /*session=*/nullptr, {"otherschema", "table"}, ROW({}), {});
+      /*session=*/nullptr,
+      {"otherschema", "table"},
+      ROW({}),
+      {},
+      /*explain=*/false);
   auto table = resolver_->findTable("base", {"otherschema", "table"});
   ASSERT_EQ(table, nullptr);
 }

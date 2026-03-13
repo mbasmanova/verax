@@ -77,6 +77,10 @@ struct OptimizerOptions {
   /// partial + final or not.
   bool alwaysPlanPartialAggregation = false;
 
+  /// When true, connectors skip side effects in createTable() and
+  /// beginWrite(). Used for EXPLAIN queries.
+  bool explain{false};
+
   bool isMapAsStruct(const SchemaTableName& tableName, std::string_view column)
       const {
     if (allMapsAsStruct) {
