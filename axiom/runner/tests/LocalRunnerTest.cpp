@@ -14,9 +14,10 @@
  * limitations under the License.
  */
 
-#include "axiom/connectors/hive/HiveMetadataConfig.h"
+#include "axiom/runner/LocalRunner.h"
 #include "axiom/runner/tests/DistributedPlanBuilder.h"
 #include "axiom/runner/tests/LocalRunnerTestBase.h"
+#include "velox/common/base/tests/GTestUtils.h"
 
 namespace facebook::axiom::runner {
 namespace {
@@ -24,107 +25,12 @@ namespace {
 using namespace facebook::velox::exec;
 using namespace facebook::velox::exec::test;
 
-constexpr int32_t kWaitTimeoutUs = 500'000;
-
 class LocalRunnerTest : public test::LocalRunnerTestBase {
  public:
   static constexpr int32_t kNumFiles = 5;
   static constexpr int32_t kNumVectors = 5;
   static constexpr int32_t kRowsPerVector = 10000;
   static constexpr int32_t kNumRows = kNumFiles * kNumVectors * kRowsPerVector;
-
-  static void SetUpTestCase() {
-    // Disable write-time stats since makeTables() generates data files
-    // without .schema or .stats files.
-    hiveConfig_[connector::hive::HiveMetadataConfig::kUseWriteTimeStats] =
-        "false";
-
-    LocalRunnerTestBase::SetUpTestCase();
-
-    // The lambdas will be run after this scope returns, so make captures
-    // static.
-    static int32_t counter1;
-    // Clear 'counter1' so that --gtest_repeat runs get the same data.
-    counter1 = 0;
-    auto customize1 = [&](const velox::RowVectorPtr& rows) {
-      makeAscending(rows, counter1);
-    };
-
-    static int32_t counter2;
-    counter2 = kNumRows - 1;
-    auto customize2 = [&](const velox::RowVectorPtr& rows) {
-      makeDescending(rows, counter2);
-    };
-
-    rowType_ = velox::ROW({"c0"}, {velox::BIGINT()});
-    testTables_ = {
-        test::TableSpec{
-            .name = "T",
-            .columns = rowType_,
-            .rowsPerVector = kRowsPerVector,
-            .numVectorsPerFile = kNumVectors,
-            .numFiles = kNumFiles,
-            .customizeData = customize1},
-        test::TableSpec{
-            .name = "U",
-            .columns = rowType_,
-            .rowsPerVector = kRowsPerVector,
-            .numVectorsPerFile = kNumVectors,
-            .numFiles = kNumFiles,
-            .customizeData = customize2}};
-  }
-
-  void TearDown() override {
-    LocalRunnerTestBase::TearDown();
-  }
-
-  // Returns a plan with a table scan. This is a single stage if 'numWorkers' is
-  // 1, otherwise this is a scan stage plus shuffle to a stage that gathers the
-  // scan results.
-  optimizer::MultiFragmentPlanPtr makeScanPlan(int32_t numWorkers) {
-    optimizer::MultiFragmentPlan::Options options = {
-        .queryId = makeQueryId(), .numWorkers = numWorkers, .numDrivers = 2};
-
-    test::DistributedPlanBuilder builder(options, idGenerator_, pool_.get());
-    builder.tableScan("T", rowType_);
-    if (numWorkers > 1) {
-      builder.shufflePartitioned({}, 1, false);
-    }
-    return builder.build();
-  }
-
-  optimizer::MultiFragmentPlanPtr makeJoinPlan(
-      std::string project = "c0",
-      bool broadcastBuild = false) {
-    optimizer::MultiFragmentPlan::Options options = {
-        .queryId = makeQueryId(), .numWorkers = 4, .numDrivers = 2};
-    const int32_t width = 3;
-
-    test::DistributedPlanBuilder rootBuilder(
-        options, idGenerator_, pool_.get());
-    rootBuilder.tableScan("T", rowType_)
-        .project({project})
-        .shufflePartitioned({"c0"}, 3, false)
-        .hashJoin(
-            {"c0"},
-            {"b0"},
-            broadcastBuild
-                ? test::DistributedPlanBuilder(rootBuilder)
-                      .tableScan("U", rowType_)
-                      .project({"c0 as b0"})
-                      .shuffleBroadcastResult()
-                : test::DistributedPlanBuilder(rootBuilder)
-                      .tableScan("U", rowType_)
-                      .project({"c0 as b0"})
-                      .shufflePartitionedResult({"b0"}, width, false),
-            "",
-            {"c0", "b0"})
-        .shufflePartitioned({}, 1, false)
-        .localPartition({})
-        .finalAggregation({}, {"count(1)"}, {{velox::BIGINT()}});
-
-    return rootBuilder.build();
-  }
 
   static void makeAscending(const velox::RowVectorPtr& rows, int32_t& counter) {
     auto ints = rows->childAt(0)->as<velox::FlatVector<int64_t>>();
@@ -144,25 +50,87 @@ class LocalRunnerTest : public test::LocalRunnerTestBase {
     counter -= ints->size();
   }
 
-  std::string makeQueryId() {
-    return fmt::format("q{}", queryCounter_++);
+  void SetUp() override {
+    rowType_ = velox::ROW({"c0"}, {velox::BIGINT()});
+
+    int32_t counter1 = 0;
+    int32_t counter2 = kNumRows - 1;
+
+    // makeTables() is a no-op after the first call.
+    makeTables(
+        {test::TableSpec{
+             .name = "t",
+             .columns = rowType_,
+             .rowsPerVector = kRowsPerVector,
+             .numVectorsPerFile = kNumVectors,
+             .numFiles = kNumFiles,
+             .customizeData =
+                 [&counter1](const velox::RowVectorPtr& rows) {
+                   makeAscending(rows, counter1);
+                 }},
+         test::TableSpec{
+             .name = "u",
+             .columns = rowType_,
+             .rowsPerVector = kRowsPerVector,
+             .numVectorsPerFile = kNumVectors,
+             .numFiles = kNumFiles,
+             .customizeData = [&counter2](const velox::RowVectorPtr& rows) {
+               makeDescending(rows, counter2);
+             }}});
+
+    LocalRunnerTestBase::SetUp();
   }
 
-  void checkScanCount(int32_t numWorkers) {
-    auto scan = makeScanPlan(numWorkers);
-    auto localRunner = makeRunner(scan);
+  // Returns a plan with a table scan. This is a single stage if 'numWorkers' is
+  // 1, otherwise this is a scan stage plus shuffle to a stage that gathers the
+  // scan results.
+  optimizer::MultiFragmentPlanPtr makeScanPlan(int32_t numWorkers) {
+    optimizer::MultiFragmentPlan::Options options = {
+        .queryId = makeQueryId(), .numWorkers = numWorkers, .numDrivers = 2};
 
-    {
-      auto results = readCursor(localRunner);
-
-      int32_t count = 0;
-      for (auto& rows : results) {
-        count += rows->size();
-      }
-      EXPECT_EQ(250'000, count);
+    test::DistributedPlanBuilder builder(options, idGenerator_, pool_.get());
+    builder.tableScan("t", rowType_);
+    if (numWorkers > 1) {
+      builder.shufflePartitioned({}, 1, false);
     }
+    return builder.build();
+  }
 
-    ASSERT_TRUE(localRunner->waitForCompletion(kWaitTimeoutUs));
+  optimizer::MultiFragmentPlanPtr makeJoinPlan(
+      std::string project = "c0",
+      bool broadcastBuild = false) {
+    optimizer::MultiFragmentPlan::Options options = {
+        .queryId = makeQueryId(), .numWorkers = 4, .numDrivers = 2};
+    const int32_t width = 3;
+
+    test::DistributedPlanBuilder rootBuilder(
+        options, idGenerator_, pool_.get());
+    rootBuilder.tableScan("t", rowType_)
+        .project({project})
+        .shufflePartitioned({"c0"}, 3, false)
+        .hashJoin(
+            {"c0"},
+            {"b0"},
+            broadcastBuild
+                ? test::DistributedPlanBuilder(rootBuilder)
+                      .tableScan("u", rowType_)
+                      .project({"c0 as b0"})
+                      .shuffleBroadcastResult()
+                : test::DistributedPlanBuilder(rootBuilder)
+                      .tableScan("u", rowType_)
+                      .project({"c0 as b0"})
+                      .shufflePartitionedResult({"b0"}, width, false),
+            "",
+            {"c0", "b0"})
+        .shufflePartitioned({}, 1, false)
+        .localPartition({})
+        .finalAggregation({}, {"count(1)"}, {{velox::BIGINT()}});
+
+    return rootBuilder.build();
+  }
+
+  std::string makeQueryId() {
+    return fmt::format("q{}", queryCounter_++);
   }
 
   std::shared_ptr<LocalRunner> makeRunner(
@@ -173,20 +141,30 @@ class LocalRunnerTest : public test::LocalRunnerTestBase {
         std::move(plan), optimizer::FinishWrite{}, makeQueryCtx(queryId));
   }
 
+  // Fetches all remaining data from the runner.
+  static std::vector<velox::RowVectorPtr> readCursor(
+      const std::shared_ptr<LocalRunner>& runner) {
+    std::vector<velox::RowVectorPtr> result;
+    while (auto rowVector = runner->next()) {
+      result.push_back(rowVector);
+    }
+    return result;
+  }
+
   std::shared_ptr<velox::core::PlanNodeIdGenerator> idGenerator_{
       std::make_shared<velox::core::PlanNodeIdGenerator>()};
 
   int32_t queryCounter_{0};
 
-  // The below are declared static to be scoped to TestCase so as to reuse the
-  // dataset between tests.
-  inline static velox::RowTypePtr rowType_;
+  velox::RowTypePtr rowType_;
 };
 
 int64_t extractSingleInt64(const std::vector<velox::RowVectorPtr>& vectors) {
   return vectors.at(0)->childAt(0)->as<velox::FlatVector<int64_t>>()->valueAt(
       0);
 }
+
+constexpr int32_t kWaitTimeoutUs = 500'000;
 
 TEST_F(LocalRunnerTest, count) {
   auto join = makeJoinPlan();
@@ -206,12 +184,29 @@ TEST_F(LocalRunnerTest, error) {
   auto join = makeJoinPlan("if (c0 = 111, c0 / 0, c0 + 1) as c0");
   auto localRunner = makeRunner(join);
 
-  EXPECT_THROW(readCursor(localRunner), velox::VeloxUserError);
+  VELOX_ASSERT_THROW(readCursor(localRunner), "division by zero");
   EXPECT_EQ(Runner::State::kError, localRunner->state());
   localRunner->waitForCompletion(kWaitTimeoutUs);
 }
 
 TEST_F(LocalRunnerTest, scan) {
+  auto checkScanCount = [&](int32_t numWorkers) {
+    auto scan = makeScanPlan(numWorkers);
+    auto localRunner = makeRunner(scan);
+
+    {
+      auto results = readCursor(localRunner);
+
+      int32_t count = 0;
+      for (auto& rows : results) {
+        count += rows->size();
+      }
+      EXPECT_EQ(kNumRows, count);
+    }
+
+    ASSERT_TRUE(localRunner->waitForCompletion(kWaitTimeoutUs));
+  };
+
   checkScanCount(1);
   checkScanCount(3);
 }
@@ -236,11 +231,11 @@ TEST_F(LocalRunnerTest, lastStageWithMultipleInputs) {
 
   test::DistributedPlanBuilder rootBuilder(options, idGenerator_, pool_.get());
   auto probe = test::DistributedPlanBuilder(rootBuilder)
-                   .tableScan("T", rowType_)
+                   .tableScan("t", rowType_)
                    .project({"c0"})
                    .shuffleBroadcastResult();
   auto build = test::DistributedPlanBuilder(rootBuilder)
-                   .tableScan("U", rowType_)
+                   .tableScan("u", rowType_)
                    .project({"c0 as b0"})
                    .shuffleBroadcastResult();
   rootBuilder.addNode([&](auto, auto) { return probe; })
