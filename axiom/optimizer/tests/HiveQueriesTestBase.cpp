@@ -15,9 +15,13 @@
  */
 
 #include "axiom/optimizer/tests/HiveQueriesTestBase.h"
+#include "axiom/connectors/hive/HiveMetadataConfig.h"
 #include "axiom/logical_plan/PlanBuilder.h"
 #include "axiom/optimizer/ConstantExprEvaluator.h"
 #include "axiom/optimizer/tests/TpchDataGenerator.h"
+#include "velox/connectors/hive/HiveConnector.h"
+#include "velox/dwio/parquet/RegisterParquetReader.h"
+#include "velox/dwio/parquet/RegisterParquetWriter.h"
 
 namespace facebook::axiom::optimizer::test {
 
@@ -33,18 +37,26 @@ void HiveQueriesTestBase::SetUpTestCase() {
 
   gTempDirectory = common::testutil::TempDirectoryPath::create();
 
-  QueryTestBase::localDataPath_ = gTempDirectory->getPath();
-  QueryTestBase::localFileFormat_ = velox::dwio::common::FileFormat::PARQUET;
+  localDataPath_ = gTempDirectory->getPath();
+  localFileFormat_ = velox::dwio::common::FileFormat::PARQUET;
+
+  velox::parquet::registerParquetReaderFactory();
+  velox::parquet::registerParquetWriterFactory();
 }
 
 // static
 void HiveQueriesTestBase::TearDownTestCase() {
+  velox::parquet::unregisterParquetWriterFactory();
+  velox::parquet::unregisterParquetReaderFactory();
+
   gTempDirectory.reset();
   test::QueryTestBase::TearDownTestCase();
 }
 
 void HiveQueriesTestBase::SetUp() {
   test::QueryTestBase::SetUp();
+
+  setupHiveConnector();
 
   prestoParser_ = std::make_unique<::axiom::sql::presto::PrestoParser>(
       exec::test::kHiveConnectorId,
@@ -60,7 +72,33 @@ void HiveQueriesTestBase::createTpchTables(
 }
 
 void HiveQueriesTestBase::TearDown() {
+  hiveMetadata_ = nullptr;
+  connector::ConnectorMetadata::unregisterMetadata(
+      velox::exec::test::kHiveConnectorId);
+
   test::QueryTestBase::TearDown();
+}
+
+void HiveQueriesTestBase::setupHiveConnector() {
+  std::unordered_map<std::string, std::string> configs;
+  configs[connector::hive::HiveMetadataConfig::kLocalDataPath] = localDataPath_;
+  configs[connector::hive::HiveMetadataConfig::kLocalFileFormat] =
+      velox::dwio::common::toString(localFileFormat_);
+  configs.insert(hiveConfig_.begin(), hiveConfig_.end());
+
+  resetHiveConnector(
+      std::make_shared<velox::config::ConfigBase>(std::move(configs)));
+
+  auto hiveConnector = dynamic_cast<velox::connector::hive::HiveConnector*>(
+      velox::connector::getConnector(velox::exec::test::kHiveConnectorId)
+          .get());
+
+  auto metadata = std::make_shared<connector::hive::LocalHiveConnectorMetadata>(
+      hiveConnector);
+  hiveMetadata_ = metadata.get();
+
+  connector::ConnectorMetadata::registerMetadata(
+      velox::exec::test::kHiveConnectorId, std::move(metadata));
 }
 
 RowTypePtr HiveQueriesTestBase::getSchema(std::string_view tableName) {

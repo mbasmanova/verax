@@ -30,22 +30,26 @@ class HiveQueriesTestBase : public QueryTestBase {
   static const inline std::string kDefaultSchema{
       connector::hive::LocalHiveConnectorMetadata::kDefaultSchema};
 
-  /// Initializes a temporary data directory for Parquet test data. Subclasses
-  /// should call this, then use createTpchTables() to populate test tables.
+  /// Creates a temporary data directory and sets 'localDataPath_' and
+  /// 'localFileFormat_' (Parquet by default). Registers Parquet reader and
+  /// writer. Subclasses should call this, then use createTpchTables() to
+  /// populate test tables.
   static void SetUpTestCase();
 
-  /// Initializes the Presto SQL parser.
+  /// Sets up the Hive connector with LocalHiveConnectorMetadata, and
+  /// initializes the Presto SQL parser.
   void SetUp() override;
 
-  /// Generates TPC-H data for the specified tables using the file format
-  /// configured in SetUpTestCase().
+  /// Generates TPC-H data for the specified tables using 'localFileFormat_'.
   static void createTpchTables(const std::vector<velox::tpch::Table>& tables);
 
+  /// Unregisters Hive connector metadata.
   void TearDown() override;
 
+  /// Unregisters Parquet reader and writer.
   static void TearDownTestCase();
 
-  /// Returns a schema of a TPC-H table.
+  /// Returns a schema of a table.
   velox::RowTypePtr getSchema(std::string_view tableName);
 
   using QueryTestBase::parseSelect;
@@ -75,6 +79,19 @@ class HiveQueriesTestBase : public QueryTestBase {
   ::axiom::sql::presto::PrestoParser& prestoParser() {
     return *prestoParser_;
   }
+
+  connector::hive::LocalHiveConnectorMetadata& hiveMetadata() const {
+    return *hiveMetadata_;
+  }
+
+  /// Hive connector configuration. Entries set before SetUp() are passed to
+  /// the connector via setupHiveConnector().
+  inline static std::unordered_map<std::string, std::string> hiveConfig_;
+
+  /// The top level directory with the test data.
+  inline static std::string localDataPath_;
+  inline static velox::dwio::common::FileFormat localFileFormat_{
+      velox::dwio::common::FileFormat::DWRF};
 
   /// Creates an empty table with the given schema and options.
   /// If a table with the same name already exists, it is dropped first.
@@ -106,10 +123,16 @@ class HiveQueriesTestBase : public QueryTestBase {
   }
 
  private:
+  // Re-creates the Hive connector using 'localDataPath_' and
+  // 'localFileFormat_' and registers LocalHiveConnectorMetadata to provide
+  // metadata access to local tables.
+  void setupHiveConnector();
+
   inline static std::shared_ptr<velox::common::testutil::TempDirectoryPath>
       gTempDirectory;
 
   std::unique_ptr<::axiom::sql::presto::PrestoParser> prestoParser_;
+  connector::hive::LocalHiveConnectorMetadata* hiveMetadata_{};
 };
 
 } // namespace facebook::axiom::optimizer::test

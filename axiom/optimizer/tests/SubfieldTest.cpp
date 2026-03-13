@@ -15,16 +15,14 @@
  */
 
 #include "axiom/connectors/hive/HiveMetadataConfig.h"
-#include "axiom/connectors/hive/LocalHiveConnectorMetadata.h"
 #include "axiom/logical_plan/PlanBuilder.h"
 #include "axiom/optimizer/FunctionRegistry.h"
 #include "axiom/optimizer/tests/FeatureGen.h"
 #include "axiom/optimizer/tests/Genies.h"
+#include "axiom/optimizer/tests/HiveQueriesTestBase.h"
 #include "axiom/optimizer/tests/PlanMatcher.h"
-#include "axiom/optimizer/tests/QueryTestBase.h"
 #include "axiom/optimizer/tests/utils/DfFunctions.h"
 #include "velox/common/base/tests/GTestUtils.h"
-#include "velox/common/testutil/TempDirectoryPath.h"
 #include "velox/exec/tests/utils/PlanBuilder.h"
 #include "velox/vector/tests/utils/VectorMaker.h"
 
@@ -101,39 +99,22 @@ lp::ExprPtr stepToLogicalPlanGetter(Step step, const lp::ExprPtr& arg) {
   }
 }
 
-class SubfieldTest : public QueryTestBase,
+class SubfieldTest : public HiveQueriesTestBase,
                      public testing::WithParamInterface<int32_t> {
  protected:
-  static const inline std::string kDefaultSchema{
-      connector::hive::LocalHiveConnectorMetadata::kDefaultSchema};
-
-  inline static std::shared_ptr<velox::common::testutil::TempDirectoryPath>
-      tempDirectory_;
-
-  lp::PlanBuilder::Context makeContext() const {
-    return lp::PlanBuilder::Context{kHiveConnectorId, kDefaultSchema};
-  }
-
   static void SetUpTestCase() {
-    QueryTestBase::SetUpTestCase();
-    tempDirectory_ = common::testutil::TempDirectoryPath::create();
-    QueryTestBase::localDataPath_ = tempDirectory_->getPath();
-    QueryTestBase::localFileFormat_ = velox::dwio::common::FileFormat::DWRF;
     // Disable write-time stats because this test creates tables by writing
     // files directly (not via CTAS), so no .stats files are produced.
-    // TODO: Switch to CTAS-based table creation using HiveQueriesTestBase.
-    QueryTestBase::hiveConfig_
-        [connector::hive::HiveMetadataConfig::kUseWriteTimeStats] = "false";
+    hiveConfig_[connector::hive::HiveMetadataConfig::kUseWriteTimeStats] =
+        "false";
+    HiveQueriesTestBase::SetUpTestCase();
+
+    localFileFormat_ = velox::dwio::common::FileFormat::DWRF;
     registerDfFunctions();
   }
 
-  static void TearDownTestCase() {
-    tempDirectory_.reset();
-    QueryTestBase::TearDownTestCase();
-  }
-
   void SetUp() override {
-    QueryTestBase::SetUp();
+    HiveQueriesTestBase::SetUp();
     switch (GetParam()) {
       case 1:
         optimizerOptions_ = OptimizerOptions();
@@ -151,10 +132,6 @@ class SubfieldTest : public QueryTestBase,
         break;
     }
     optimizerOptions_.traceFlags = FLAGS_optimizer_trace;
-  }
-
-  void TearDown() override {
-    QueryTestBase::TearDown();
   }
 
   void declareGenies() {
@@ -411,6 +388,10 @@ class SubfieldTest : public QueryTestBase,
   std::vector<velox::RowVectorPtr> createFeaturesTable() {
     FeatureOptions opts;
     return createFeaturesTable(opts);
+  }
+
+  lp::PlanBuilder::Context makeContext() const {
+    return lp::PlanBuilder::Context{kHiveConnectorId, kDefaultSchema};
   }
 };
 
