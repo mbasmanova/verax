@@ -554,8 +554,8 @@ TEST_F(PlanTest, filterBreakup) {
   }
 
   auto referenceBuilder = std::make_unique<exec::test::TpchQueryBuilder>(
-      LocalRunnerTestBase::localFileFormat_);
-  referenceBuilder->initialize(LocalRunnerTestBase::localDataPath_);
+      QueryTestBase::localFileFormat_);
+  referenceBuilder->initialize(QueryTestBase::localDataPath_);
 
   auto referencePlan = referenceBuilder->getQueryPlan(19).plan;
 

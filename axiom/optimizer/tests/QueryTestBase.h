@@ -22,13 +22,16 @@
 #include "axiom/optimizer/VeloxHistory.h"
 #include "axiom/optimizer/tests/PlanMatcher.h"
 #include "axiom/runner/LocalRunner.h"
-#include "axiom/runner/tests/LocalRunnerTestBase.h"
+#include "velox/exec/tests/utils/HiveConnectorTestBase.h"
 #include "velox/expression/ExprToSubfieldFilter.h"
 #include "velox/type/tests/SubfieldFiltersBuilder.h"
 
 DECLARE_string(history_save_path);
 
 namespace facebook::axiom {
+namespace connector::hive {
+class LocalHiveConnectorMetadata;
+} // namespace connector::hive
 namespace logical_plan {
 class LogicalPlanNode;
 } // namespace logical_plan
@@ -72,10 +75,24 @@ struct TestResult {
   }
 };
 
-class QueryTestBase : public runner::test::LocalRunnerTestBase {
+class QueryTestBase : public velox::exec::test::HiveConnectorTestBase {
  protected:
+  /// Enables memory tracking and leak checking. Registers memory arbitrator,
+  /// Presto scalar, aggregate, and window functions, Axiom function registry,
+  /// and the thread pool executor used for query context creation.
+  static void SetUpTestCase();
+
+  /// Shuts down the async data cache, waits for all tasks to be deleted, and
+  /// unregisters the memory arbitrator.
+  static void TearDownTestCase();
+
+  /// Registers Hive connector with LocalHiveConnectorMetadata, Parquet and DWRF
+  /// readers and writers, local exchange source. Initializes the optimizer
+  /// pool.
   void SetUp() override;
 
+  /// Unregisters Hive connector metadata, exchange sources, Parquet and DWRF
+  /// readers and writers.
   void TearDown() override;
 
   logical_plan::LogicalPlanNodePtr parseSelect(
@@ -212,9 +229,39 @@ class QueryTestBase : public runner::test::LocalRunnerTestBase {
         SchemaTableName{"default", tableName}.toString(), outputType);
   }
 
+  /// Creates a QueryCtx with the specified query ID.
+  std::shared_ptr<velox::core::QueryCtx> makeQueryCtx(
+      const std::string& queryId);
+
+  /// Fetches all remaining data from the runner.
+  static std::vector<velox::RowVectorPtr> readCursor(
+      const std::shared_ptr<runner::LocalRunner>& runner);
+
+  connector::hive::LocalHiveConnectorMetadata& hiveMetadata() const {
+    return *hiveMetadata_;
+  }
+
+  inline static std::unordered_map<std::string, std::string> config_;
+
+  /// Hive connector configuration. Entries set before SetUp() are passed to
+  /// the connector via setupHiveConnector().
+  inline static std::unordered_map<std::string, std::string> hiveConfig_;
+
+  /// The top level directory with the test data.
+  inline static std::string localDataPath_;
+  inline static velox::dwio::common::FileFormat localFileFormat_{
+      velox::dwio::common::FileFormat::DWRF};
+
   OptimizerOptions optimizerOptions_;
 
  private:
+  /// Re-creates the Hive connector using 'localDataPath_' and
+  /// 'localFileFormat_' and registers LocalHiveConnectorMetadata to provide
+  /// metadata access to local tables.
+  void setupHiveConnector();
+
+  connector::hive::LocalHiveConnectorMetadata* hiveMetadata_{};
+
   std::shared_ptr<velox::memory::MemoryPool> optimizerPool_;
 
   // A QueryCtx created for each compiled query.
@@ -223,6 +270,7 @@ class QueryTestBase : public runner::test::LocalRunnerTestBase {
 
   inline static int32_t gQueryCounter{0};
   inline static std::unique_ptr<VeloxHistory> gSuiteHistory;
+  inline static std::unique_ptr<folly::CPUThreadPoolExecutor> executor_;
 };
 
 /// Filters on BIGINT columns.
