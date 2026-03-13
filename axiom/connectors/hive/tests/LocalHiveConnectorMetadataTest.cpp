@@ -15,6 +15,7 @@
  */
 
 #include "axiom/connectors/hive/LocalHiveConnectorMetadata.h"
+#include "axiom/connectors/hive/HiveMetadataConfig.h"
 #include "axiom/runner/tests/LocalRunnerTestBase.h"
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/connectors/hive/HivePartitionFunction.h"
@@ -41,8 +42,12 @@ class LocalHiveConnectorMetadataTest
   const std::string kDefaultSchema{LocalHiveConnectorMetadata::kDefaultSchema};
 
   static void SetUpTestCase() {
-    // Creates the data and schema from 'testTables_'. These are created on the
-    // first test fixture initialization.
+    // Disable write-time stats since makeTables() generates data files
+    // without .schema or .stats files.
+    // TODO: Replace makeTables() with CTAS to go through the write pipeline.
+    hiveConfig_[connector::hive::HiveMetadataConfig::kUseWriteTimeStats] =
+        "false";
+
     LocalRunnerTestBase::SetUpTestCase();
 
     // The lambdas will be run after this scope returns, so make captures
@@ -140,7 +145,7 @@ class LocalHiveConnectorMetadataTest
                     .endTableWriter()
                     .planNode();
     auto result = exec::test::AssertQueryBuilder(plan).copyResults(pool());
-    metadata_->finishWrite(session, handle, {result}).get();
+    metadata_->finishWrite(session, handle, {result}, nullptr, {}).get();
   }
 
   /// Read the specified files from the table. All the files must belong to
@@ -215,7 +220,7 @@ class LocalHiveConnectorMetadataTest
          std::filesystem::recursive_directory_iterator(path)) {
       auto file = entry.path().string();
       if (entry.is_regular_file() &&
-          file.find(".schema") == std::string::npos) {
+          entry.path().filename().string()[0] != '.') {
         files.push_back(file);
       }
     }
@@ -439,7 +444,8 @@ TEST_F(LocalHiveConnectorMetadataTest, createThenInsert) {
       tableType,
       /*options=*/{});
   auto handle = metadata_->beginWrite(session, staged, WriteKind::kCreate);
-  metadata_->finishWrite(session, handle, /*writeResults=*/{}).get();
+  metadata_->finishWrite(session, handle, /*writeResults=*/{}, nullptr, {})
+      .get();
 
   auto created = metadata_->findTable({kDefaultSchema, "test_insert"});
   compareTableLayout(staged, created);
@@ -502,7 +508,8 @@ TEST_F(LocalHiveConnectorMetadataTest, abortCreateWithRetry) {
       tableType,
       /*options=*/{});
   handle = metadata_->beginWrite(session, table, WriteKind::kCreate);
-  metadata_->finishWrite(session, handle, /*writeResults=*/{}).get();
+  metadata_->finishWrite(session, handle, /*writeResults=*/{}, nullptr, {})
+      .get();
   EXPECT_TRUE(std::filesystem::exists(tablePath));
   auto created = metadata_->findTable({kDefaultSchema, "test_abort"});
   EXPECT_NE(created, nullptr);

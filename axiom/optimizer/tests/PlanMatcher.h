@@ -391,6 +391,9 @@ class PlanMatcherBuilder {
   /// Matches any TableWrite node.
   PlanMatcherBuilder& tableWrite();
 
+  /// Matches any TableWriteMerge node.
+  PlanMatcherBuilder& tableWriteMerge();
+
   /// Matches an EnforceSingleRow node, which validates that its input
   /// produces exactly one row. Used for scalar subqueries.
   PlanMatcherBuilder& enforceSingleRow();

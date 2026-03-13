@@ -38,19 +38,22 @@ void HiveQueriesTestBase::SetUpTestCase() {
   LocalRunnerTestBase::localDataPath_ = gTempDirectory->getPath();
   LocalRunnerTestBase::localFileFormat_ =
       velox::dwio::common::FileFormat::PARQUET;
+
+  parquet::registerParquetWriterFactory();
+  dwrf::registerDwrfWriterFactory();
 }
 
 // static
 void HiveQueriesTestBase::TearDownTestCase() {
+  parquet::unregisterParquetWriterFactory();
+  dwrf::unregisterDwrfWriterFactory();
+
   gTempDirectory.reset();
   test::QueryTestBase::TearDownTestCase();
 }
 
 void HiveQueriesTestBase::SetUp() {
   test::QueryTestBase::SetUp();
-
-  parquet::registerParquetWriterFactory();
-  dwrf::registerDwrfWriterFactory();
 
   prestoParser_ = std::make_unique<::axiom::sql::presto::PrestoParser>(
       exec::test::kHiveConnectorId,
@@ -72,9 +75,6 @@ void HiveQueriesTestBase::createTpchTables(
 void HiveQueriesTestBase::TearDown() {
   metadata_ = nullptr;
   connector_.reset();
-
-  parquet::unregisterParquetWriterFactory();
-  dwrf::unregisterDwrfWriterFactory();
 
   test::QueryTestBase::TearDown();
 }
@@ -141,7 +141,7 @@ void HiveQueriesTestBase::createEmptyTable(
       session, {kDefaultSchema, name}, tableType, options);
   auto handle =
       metadata_->beginWrite(session, table, connector::WriteKind::kCreate);
-  metadata_->finishWrite(session, handle, {}).get();
+  metadata_->finishWrite(session, handle, {}, nullptr, {}).get();
 }
 
 void HiveQueriesTestBase::checkTableData(

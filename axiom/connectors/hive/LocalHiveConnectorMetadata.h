@@ -88,6 +88,21 @@ class LocalHiveSplitManager : public ConnectorSplitManager {
       SplitOptions options = {}) override;
 };
 
+// Write-time stats for a single partition (or the whole table if
+// unpartitioned). Loaded from persisted .stats files during loadTable.
+struct PartitionStats {
+  // Partition key=value pairs. Empty for unpartitioned tables.
+  folly::F14FastMap<std::string, std::string> partitionKeys;
+
+  // Total number of rows in this partition.
+  uint64_t numRows{0};
+
+  // Per-column stats (min, max, numValues, numDistinct).
+  // TODO: Store HLL sketches instead of NDV counts to allow for more
+  // accurate aggregation across partitions.
+  std::vector<ColumnStatistics> columnStats;
+};
+
 /// A HiveTableLayout backed by local files. Implements sampling by reading
 /// local files and stores the file list inside 'this'.
 class LocalHiveTableLayout : public HiveTableLayout {
@@ -104,6 +119,7 @@ class LocalHiveTableLayout : public HiveTableLayout {
       std::vector<const Column*> lookupKeys,
       std::vector<const Column*> hivePartitionColumns,
       velox::dwio::common::FileFormat fileFormat,
+      std::shared_ptr<HiveMetadataConfig> hiveMetadataConfig,
       std::unordered_map<std::string, std::string> serdeParameters = {})
       : HiveTableLayout(
             label,
@@ -117,6 +133,7 @@ class LocalHiveTableLayout : public HiveTableLayout {
             std::move(lookupKeys),
             std::move(hivePartitionColumns),
             fileFormat),
+        hiveMetadataConfig_(std::move(hiveMetadataConfig)),
         serdeParameters_(std::move(serdeParameters)) {}
 
   bool supportsSampling() const override {
@@ -132,6 +149,11 @@ class LocalHiveTableLayout : public HiveTableLayout {
 
   void setFiles(std::vector<std::unique_ptr<const FileInfo>> files) {
     files_ = std::move(files);
+  }
+
+  /// Sets per-partition write-time stats loaded from persisted .stats files.
+  void setPartitionStats(std::vector<PartitionStats> partitionStats) {
+    partitionStats_ = std::move(partitionStats);
   }
 
   const std::unordered_map<std::string, std::string>& serdeParameters()
@@ -157,8 +179,14 @@ class LocalHiveTableLayout : public HiveTableLayout {
       std::vector<velox::core::TypedExprPtr> filterConjuncts) const override;
 
  private:
+  // Configuration for local Hive metadata, including useWriteTimeStats flag.
+  std::shared_ptr<HiveMetadataConfig> hiveMetadataConfig_;
   std::vector<std::unique_ptr<const FileInfo>> files_;
   std::vector<std::unique_ptr<const FileInfo>> ownedFiles_;
+  // Per-partition (or per-table for unpartitioned) write-time stats loaded
+  // from persisted .stats files. Populated during loadTable when
+  // useWriteTimeStats is enabled.
+  std::vector<PartitionStats> partitionStats_;
   std::unordered_map<std::string, std::string> serdeParameters_;
 };
 
@@ -179,7 +207,9 @@ class LocalTable : public HiveTable {
     layouts_.push_back(std::move(layout));
   }
 
-  void makeDefaultLayout(
+  // Creates or updates the default layout with the given files. Returns the
+  // layout pointer.
+  LocalHiveTableLayout* makeDefaultLayout(
       std::vector<std::unique_ptr<const FileInfo>> files,
       LocalHiveConnectorMetadata& metadata);
 
@@ -237,6 +267,12 @@ class LocalHiveConnectorMetadata : public HiveConnectorMetadata {
     return hiveConnector_;
   }
 
+  /// Returns the metadata configuration (data path, file format,
+  /// useWriteTimeStats flag, etc.).
+  const std::shared_ptr<HiveMetadataConfig>& hiveMetadataConfig() const {
+    return hiveMetadataConfig_;
+  }
+
   /// Rereads the contents of the data path and re-creates the tables
   /// and stats. This is used in tests after adding tables.
   void reinitialize();
@@ -263,7 +299,9 @@ class LocalHiveConnectorMetadata : public HiveConnectorMetadata {
   RowsFuture finishWrite(
       const ConnectorSessionPtr& session,
       const ConnectorWriteHandlePtr& handle,
-      const std::vector<velox::RowVectorPtr>& writeResults) override;
+      const std::vector<velox::RowVectorPtr>& writeResults,
+      velox::RowVectorPtr groupingKeys,
+      std::vector<std::vector<ColumnStatistics>> groupStats) override;
 
   velox::ContinueFuture abortWrite(
       const ConnectorSessionPtr& session,
@@ -305,6 +343,21 @@ class LocalHiveConnectorMetadata : public HiveConnectorMetadata {
   void makeConnectorQueryCtx();
   void readTables(std::string_view path);
   void loadTable(std::string_view tableName, const fs::path& tablePath);
+
+  // Loads persisted write-time stats from .stats files and stores them in the
+  // layout. Sets table-level row count and column stats.
+  void loadTableWithWriteTimeStats(
+      std::shared_ptr<LocalTable> table,
+      LocalHiveTableLayout* layout,
+      const fs::path& tablePath);
+
+  // Reads file headers to discover schema, row counts, and per-file column
+  // stats. Samples NDVs after loading.
+  void loadTableFromFileHeaders(
+      std::string_view tableName,
+      std::shared_ptr<LocalTable> table,
+      std::vector<std::unique_ptr<const FileInfo>> files,
+      const fs::path& tablePath);
 
   std::shared_ptr<LocalTable> findTableLocked(std::string_view name) const;
 

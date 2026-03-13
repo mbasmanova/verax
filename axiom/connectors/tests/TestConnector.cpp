@@ -382,7 +382,9 @@ ConnectorWriteHandlePtr TestConnectorMetadata::beginWrite(
 RowsFuture TestConnectorMetadata::finishWrite(
     const ConnectorSessionPtr& /*session*/,
     const ConnectorWriteHandlePtr& /*handle*/,
-    const std::vector<velox::RowVectorPtr>& writeResults) {
+    const std::vector<velox::RowVectorPtr>& writeResults,
+    velox::RowVectorPtr /*groupingKeys*/,
+    std::vector<std::vector<ColumnStatistics>> /*groupStats*/) {
   int64_t rows = 0;
   velox::DecodedVector decoded;
   for (const auto& result : writeResults) {

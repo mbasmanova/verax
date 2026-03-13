@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include "axiom/connectors/hive/HiveMetadataConfig.h"
 #include "axiom/connectors/hive/LocalHiveConnectorMetadata.h"
 #include "axiom/logical_plan/PlanBuilder.h"
 #include "axiom/optimizer/FunctionRegistry.h"
@@ -115,6 +116,11 @@ class SubfieldTest : public QueryTestBase,
     LocalRunnerTestBase::localDataPath_ = FLAGS_subfield_data_path;
     LocalRunnerTestBase::localFileFormat_ =
         velox::dwio::common::FileFormat::DWRF;
+    // Disable write-time stats because this test creates tables by writing
+    // files directly (not via CTAS), so no .stats files are produced.
+    // TODO: Switch to CTAS-based table creation using HiveQueriesTestBase.
+    LocalRunnerTestBase::hiveConfig_
+        [connector::hive::HiveMetadataConfig::kUseWriteTimeStats] = "false";
     registerDfFunctions();
   }
 

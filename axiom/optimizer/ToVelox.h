@@ -363,6 +363,11 @@ class ToVelox {
   const std::optional<std::string> subscript_;
 
   FinishWrite finishWrite_;
+
+  // Pending final merge spec for multi-worker writes. Set by makeWrite
+  // when numWorkers > 1, consumed by toVeloxPlan to add a
+  // TableWriteMerge(kFinal) after the gather exchange.
+  std::optional<velox::core::ColumnStatsSpec> finalMergeSpec_;
 };
 
 } // namespace facebook::axiom::optimizer

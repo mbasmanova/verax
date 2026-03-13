@@ -249,6 +249,13 @@ create table t as select * from unnest(sequence(1, 100)) as t(a);
 
 A 10-second CLI run is more reliable than 10 minutes of static analysis.
 
+### Silently simplifying an approved plan
+
+Never silently simplify or skip parts of an approved implementation plan. If a
+step turns out to be harder than expected, or you want to defer it, say so
+explicitly and get approval before proceeding with a reduced scope. Reporting
+"done" when a key piece was dropped is worse than asking for help.
+
 ### Working around infrastructure bugs
 
 When you discover a bug in test infrastructure, shared helpers, or common

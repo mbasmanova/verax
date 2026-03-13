@@ -17,8 +17,8 @@
 #include <folly/init/Init.h>
 #include <gtest/gtest.h>
 
+#include "axiom/cli/Connectors.h"
 #include "axiom/optimizer/tests/QueryTestBase.h"
-#include "axiom/optimizer/tests/TpchDataGenerator.h"
 #include "axiom/sql/presto/PrestoParser.h"
 
 namespace facebook::axiom::optimizer::test {
@@ -33,13 +33,16 @@ class TpchConnectorQueryTest : public QueryTestBase {
 
   void SetUp() override {
     QueryTestBase::SetUp();
-    TpchDataGenerator::registerTpchConnector(kTpchConnectorId);
+    connectors_ = std::make_unique<Connectors>();
+    connectors_->registerTpchConnector(kTpchConnectorId);
   }
 
   void TearDown() override {
-    TpchDataGenerator::unregisterTpchConnector(kTpchConnectorId);
+    connectors_.reset();
     QueryTestBase::TearDown();
   }
+
+  std::unique_ptr<Connectors> connectors_;
 
   lp::LogicalPlanNodePtr parseSql(std::string_view sql) {
     return parseSelect(sql, kTpchConnectorId, "tiny");

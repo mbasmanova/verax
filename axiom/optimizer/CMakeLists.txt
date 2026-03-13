@@ -48,6 +48,7 @@ add_library(
   ToGraph.cpp
   ToVelox.cpp
   VeloxHistory.cpp
+  WriteStatsBuilder.cpp
 )
 
 target_link_libraries(

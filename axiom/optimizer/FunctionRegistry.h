@@ -195,6 +195,31 @@ struct FunctionMetadata {
 
 using FunctionMetadataCP = const FunctionMetadata*;
 
+/// Names of aggregate functions used for computing column statistics during
+/// table writes. Registered by the dialect (e.g., Presto) to map semantic
+/// slots to concrete Velox function names.
+///
+/// All functions take a single argument. 'count' is not included here since
+/// it has its own slot via registerCount().
+struct StatsAggregates {
+  /// min(x) -> same type as x. Applicable to orderable types (numeric, date,
+  /// timestamp). Not used for boolean, varchar, varbinary, array, map, or row.
+  std::string min;
+
+  /// max(x) -> same type as x. Applicable to orderable types (numeric, date,
+  /// timestamp). Not used for boolean, varchar, varbinary, array, map, or row.
+  std::string max;
+
+  /// count_if(boolean) -> bigint. Counts the number of TRUE values. Used only
+  /// for boolean columns.
+  std::string countIf;
+
+  /// approx_distinct(x) -> bigint. Estimates the number of distinct values
+  /// using HyperLogLog. Applicable to all comparable types (numeric, date,
+  /// timestamp, varchar, varbinary). Not used for array, map, or row.
+  std::string approxDistinct;
+};
+
 class FunctionRegistry {
   FunctionRegistry() = default;
 
@@ -303,6 +328,17 @@ class FunctionRegistry {
   /// Returns the name of the 'count' aggregate function.
   const std::optional<std::string>& count() const {
     return count_;
+  }
+
+  /// Registers aggregate function names used for computing column statistics
+  /// during table writes. 'count' is omitted since it has its own slot.
+  /// @return true if successfully registered, false if stats aggregates are
+  /// already registered with different names.
+  bool registerStatsAggregates(StatsAggregates aggregates);
+
+  /// Returns the stats aggregate function names, if registered.
+  const std::optional<StatsAggregates>& statsAggregates() const {
+    return statsAggregates_;
   }
 
   /// Registers function 'name' that has semantics of Presto's 'lt',
@@ -477,6 +513,8 @@ class FunctionRegistry {
   // Aggregate functions.
   std::optional<std::string> arbitrary_;
   std::optional<std::string> count_;
+  // Aggregate function names for computing column statistics during writes.
+  std::optional<StatsAggregates> statsAggregates_;
 
   // Window functions.
   std::optional<std::string> rowNumber_;

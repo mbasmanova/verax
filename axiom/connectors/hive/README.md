@@ -26,11 +26,7 @@ a local directory.
 - Filter pushdown: the optimizer pushes filters down to the connector, which
   evaluates them during scan. This includes partition pruning (skipping
   entire files based on partition key values) and within-file filtering.
-- Automatic statistics collection from file headers (row counts, and for DWRF
-  also null counts and min/max values).
-- Sampling: a percentage of rows is read on startup to estimate per-column
-  statistics such as number of distinct values (see
-  [Statistics and Sampling](#statistics-and-sampling)).
+- Table and column statistics for the optimizer (see [Statistics](#statistics)).
 
 **Writes:**
 - `CREATE TABLE` with partitioning, bucketing, sort order, file format, and
@@ -38,6 +34,8 @@ a local directory.
 - `CREATE TABLE AS SELECT`.
 - `INSERT INTO`.
 - `DROP TABLE`.
+- Per-column statistics (`.stats` files) are persisted on write for use by
+  the optimizer.
 
 **Not supported:**
 - Transactions. Writes go directly into the table directory.
@@ -112,13 +110,16 @@ For partitioned tables, data files are organized into subdirectories named
 /data/
 ├── orders/
 │   ├── .schema              # optional: schema and table properties
+│   ├── .stats               # optional: persisted write-time statistics
 │   ├── file1.parquet
 │   └── file2.parquet
 ├── lineitem/
 │   ├── .schema
 │   ├── ds=2024-01-01/       # Hive partition directories
+│   │   ├── .stats           # per-partition statistics
 │   │   └── data.parquet
 │   └── ds=2024-01-02/
+│       ├── .stats
 │       └── data.parquet
 └── users/
     └── data.parquet          # no .schema: schema inferred from files
@@ -160,8 +161,9 @@ The `.schema` file is JSON with the following structure:
 
 All fields except `dataColumns` are optional:
 
-**`dataColumns`** — Array of `{name, type}` objects. Types use Hive syntax
-(e.g. `bigint`, `array<string>`, `struct<a:int,b:string>`).
+**`dataColumns`** — Array of `{name, type}` objects. Types use Velox's JSON
+serialization format, e.g. `{"name": "Type", "type": "BIGINT"}` for scalars,
+or nested objects with `"children"` for complex types like arrays and maps.
 
 **`partitionColumns`** — Array of `{name, type}` objects for Hive partition
 columns. Must correspond to the directory structure.
@@ -182,6 +184,55 @@ CLI flag.
 
 - `fieldDelim` — field delimiter, a single character.
 - `nullString` — string representation of null values.
+
+## .stats File Format
+
+The `.stats` file is JSON with per-table or per-partition statistics. It is
+written by `INSERT INTO` and `CREATE TABLE AS SELECT` and read at load time
+when `hive_use_write_time_stats` is enabled (default).
+
+For unpartitioned tables, a single `.stats` file is placed in the table
+directory. For partitioned tables, each partition directory has its own
+`.stats` file.
+
+```json
+{
+  "numRows": 60175,
+  "columns": [
+    {
+      "name": "orderkey",
+      "numValues": 60175,
+      "nullPct": 0,
+      "min": {"type": "BIGINT", "value": 1},
+      "max": {"type": "BIGINT", "value": 600000},
+      "numDistinct": 60175
+    },
+    {
+      "name": "comment",
+      "numValues": 60175,
+      "nullPct": 0,
+      "maxLength": 79,
+      "avgLength": 32
+    }
+  ]
+}
+```
+
+**`numRows`** — Total number of rows.
+
+**`columns`** — Array of per-column statistics:
+
+- `name` (required) — column name.
+- `numValues` (required) — count of non-null values.
+- `nullPct` (required) — percentage of null values.
+- `min`, `max` (optional) — minimum and maximum values, serialized as Velox
+  Variants.
+- `numDistinct` (optional) — estimated number of distinct values.
+- `maxLength`, `avgLength` (optional) — for variable-length types.
+
+When multiple writes append to the same table or partition, stats are merged:
+row counts and value counts are summed, min/max are updated, and NDV is
+approximated as the max across writes.
 
 ## CREATE TABLE Options
 
@@ -264,22 +315,40 @@ INSERT INTO t SELECT * FROM tpch.sf1.lineitem;
 DROP TABLE t;
 ```
 
-## Statistics and Sampling
+## Statistics
 
-The local implementation collects statistics at startup and after writes:
+The local implementation supports two statistics paths, controlled by the
+`hive_use_write_time_stats` config (default: `true`).
+
+### Write-time stats (default)
+
+Tables created through the write pipeline (`CREATE TABLE`, `INSERT INTO`)
+produce `.stats` files alongside the data. These files store per-partition
+row counts and per-column statistics (min, max, count, NDV). At load time,
+statistics are read directly from `.stats` files without opening data files.
+
+This path requires a `.schema` file.
+
+- **Cost estimation**: The optimizer applies partition key filters to the
+  persisted partition stats, merges column stats across matching partitions,
+  and computes null percentages. NDV is merged using max across partitions.
+  TODO: Replace NDV max with HLL sketch merging for accurate union.
+
+### File-header stats
+
+When write-time stats are disabled (`hive_use_write_time_stats = false`),
+statistics are collected from file headers at load time:
 
 - **File-header stats**: Row counts are read from file metadata without
   reading the data itself. DWRF files also provide per-column stats: null
   counts and min/max values. Parquet files currently provide only row counts
   at the file level. TODO: implement file-level `columnStatistics()` in the
   Parquet reader.
-- **Sampling**: On startup, a percentage of rows is read from each table to
-  estimate NDV and other column-level statistics. For tables with more than
-  1M rows, approximately 100K rows are sampled; for smaller tables, 10% of
-  rows are sampled. This can slow down startup significantly for large
-  datasets. TODO: defer sampling until the optimizer needs it.
-- **Cost estimation**: The optimizer uses partition key filters from query
-  predicates to skip irrelevant files, then aggregates per-file stats to
-  produce cost estimates without reading data.
-
-The optimizer caches sampling results and does not re-run the same sample.
+- **Sampling**: A percentage of rows is read from each table to estimate NDV
+  and other column-level statistics. For tables with more than 1M rows,
+  approximately 100K rows are sampled; for smaller tables, 10% of rows are
+  sampled. This can slow down startup significantly for large datasets.
+  TODO: defer sampling until the optimizer needs it.
+- **Cost estimation**: The optimizer uses partition key filters and `$path` /
+  `$bucket` filters to skip irrelevant files, then aggregates per-file stats
+  to produce cost estimates without reading data.

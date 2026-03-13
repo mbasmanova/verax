@@ -742,6 +742,15 @@ class ConnectorWriteHandle {
     return resultType_;
   }
 
+  /// Returns the column names to use as grouping keys for column statistics
+  /// collection. Stats are aggregated per group and passed to finishWrite
+  /// alongside a grouping keys RowVector. Returns empty if stats should not
+  /// be grouped (e.g. unpartitioned tables produce a single set of stats).
+  virtual const std::vector<std::string>& statsGroupingKeys() const {
+    static const std::vector<std::string> kEmpty;
+    return kEmpty;
+  }
+
   template <typename T>
   const T* as() const {
     return dynamic_cast<const T*>(this);
@@ -830,19 +839,28 @@ class ConnectorMetadata {
   }
 
   /// Finalizes the table write operation represented by the provided handle.
-  /// This runs once after all the table writers have finished. The result sets
-  /// from the table writer fragments are passed as 'writeResults'. Their
-  /// format and meaning is connector-specific. The type of 'writeResults' must
-  /// match ConnectorWriteHandle::resultType returned from beginWrite.
-  /// finishWrite returns a ContinueFuture which must be waited for to finalize
-  /// the commit. If the implementation is synchronous, finishWrite should
-  /// return an already-fulfilled future to the caller. ConnectorSession may be
-  /// null for connectors which do not require it.
-  /// The returned future contains the number of rows "written".
+  /// Returns a future containing the number of rows written.
+  ///
+  /// @param session Connector session.
+  /// @param handle Write handle returned by beginWrite.
+  /// @param writeResults Result sets from the table writer fragments. Contains
+  /// only data rows (row counts and file fragments). Stats rows are stripped
+  /// by the runner before calling finishWrite.
+  /// @param groupingKeys A RowVector with one row per stats group. Contains
+  /// one column per grouping key from ConnectorWriteHandle::statsGroupingKeys,
+  /// followed by a "$row_count" BIGINT column with the exact row count per
+  /// group. nullptr when there are no grouping keys.
+  /// @param groupStats Per-group column statistics. groupStats[i] contains
+  /// per-column statistics for group i, aligned with rows in groupingKeys.
+  /// Empty if no stats were collected. Each ColumnStatistics has a 'name'
+  /// field identifying the table column it describes. Use
+  /// Table::findColumn(stats.name) to match stats to columns.
   virtual RowsFuture finishWrite(
-      const ConnectorSessionPtr& /*session*/,
-      const ConnectorWriteHandlePtr& /*handle*/,
-      const std::vector<velox::RowVectorPtr>& /*writeResults*/) {
+      [[maybe_unused]] const ConnectorSessionPtr& session,
+      [[maybe_unused]] const ConnectorWriteHandlePtr& handle,
+      [[maybe_unused]] const std::vector<velox::RowVectorPtr>& writeResults,
+      [[maybe_unused]] velox::RowVectorPtr groupingKeys,
+      [[maybe_unused]] std::vector<std::vector<ColumnStatistics>> groupStats) {
     VELOX_UNSUPPORTED();
   }
 

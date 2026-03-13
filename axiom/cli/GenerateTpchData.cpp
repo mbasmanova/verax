@@ -28,11 +28,8 @@
 #include <gflags/gflags.h>
 #include <chrono>
 #include <filesystem>
-#include "axiom/cli/Connectors.h"
 #include "axiom/optimizer/tests/TpchDataGenerator.h"
-#include "velox/common/compression/Compression.h"
-#include "velox/common/file/FileSystems.h"
-#include "velox/exec/tests/utils/PlanBuilder.h"
+#include "velox/common/memory/Memory.h"
 #include "velox/tpch/gen/TpchGen.h"
 
 DEFINE_string(data_path, "", "Output directory for TPC-H data.");
@@ -45,39 +42,7 @@ DEFINE_string(
 DEFINE_bool(debug, false, "Enable debug logging.");
 
 using namespace facebook::velox;
-using namespace facebook::velox::exec::test;
 using facebook::axiom::optimizer::test::TpchDataGenerator;
-
-namespace {
-
-void generateTpchData(
-    const std::string& path,
-    double scaleFactor,
-    dwio::common::FileFormat fileFormat,
-    common::CompressionKind compressionKind) {
-  for (const auto& table : tpch::tables) {
-    const auto tableName = tpch::toTableName(table);
-
-    fmt::print(stderr, "Generating {} ...\n", tableName);
-
-    const auto start = std::chrono::steady_clock::now();
-
-    auto numRows = TpchDataGenerator::createTable(
-        table, path, scaleFactor, fileFormat, compressionKind);
-
-    const auto elapsed =
-        std::chrono::duration<double>(std::chrono::steady_clock::now() - start);
-
-    fmt::print(
-        stderr,
-        "Generated {}: {} rows in {:.2f} seconds.\n",
-        tableName,
-        numRows,
-        elapsed.count());
-  }
-}
-
-} // namespace
 
 int main(int argc, char** argv) {
   gflags::SetUsageMessage(
@@ -112,8 +77,7 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  const auto compressionKind =
-      common::stringToCompressionKind(FLAGS_compression);
+  memory::MemoryManager::initialize(memory::MemoryManager::Options{});
 
   std::error_code ec;
   std::filesystem::create_directories(FLAGS_data_path, ec);
@@ -126,17 +90,6 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  memory::MemoryManager::initialize(memory::MemoryManager::Options{});
-  filesystems::registerLocalFileSystem();
-
-  facebook::axiom::Connectors connectors;
-  connectors.registerTpchConnector(
-      std::string(PlanBuilder::kTpchDefaultConnectorId));
-  connectors.registerLocalHiveConnector(
-      FLAGS_data_path,
-      FLAGS_data_format,
-      std::string(PlanBuilder::kHiveDefaultConnectorId));
-
   fmt::print(
       stderr,
       "Generating TPC-H data (sf={}, format={}, compression={}) in {}\n",
@@ -145,7 +98,27 @@ int main(int argc, char** argv) {
       FLAGS_compression,
       FLAGS_data_path);
 
-  generateTpchData(FLAGS_data_path, FLAGS_sf, fileFormat, compressionKind);
+  auto tableStart = std::chrono::steady_clock::now();
+  std::vector<tpch::Table> tables(tpch::tables.begin(), tpch::tables.end());
+  TpchDataGenerator::createTables(
+      tables,
+      FLAGS_data_path,
+      FLAGS_sf,
+      fileFormat,
+      [&tableStart](std::string_view tableName) {
+        fmt::print(stderr, "Generating {} ...\n", tableName);
+        tableStart = std::chrono::steady_clock::now();
+      },
+      [&tableStart](std::string_view tableName, int64_t numRows) {
+        const auto elapsed = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - tableStart);
+        fmt::print(
+            stderr,
+            "Generated {}: {} rows in {:.2f} seconds.\n",
+            tableName,
+            numRows,
+            elapsed.count());
+      });
 
   return 0;
 }

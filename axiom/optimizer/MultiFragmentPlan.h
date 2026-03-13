@@ -16,11 +16,55 @@
 
 #pragma once
 
+#include "axiom/common/Enums.h"
 #include "axiom/connectors/ConnectorMetadata.h"
 #include "velox/core/PlanFragment.h"
 #include "velox/vector/ComplexVector.h"
+#include "velox/vector/SimpleVector.h"
 
 namespace facebook::axiom::optimizer {
+
+/// Identifies which field of ColumnStatistics an aggregate populates.
+enum class ColumnStatField {
+  kCount,
+  kCountIf,
+  kMin,
+  kMax,
+  kApproxDistinct,
+};
+
+AXIOM_DECLARE_ENUM_NAME(ColumnStatField);
+
+/// Maps stats aggregates for one table column to the ColumnStatistics fields
+/// they populate.
+struct ColumnStatMapping {
+  /// Name of the column in the table schema.
+  std::string columnName;
+
+  /// Ordered list of stat fields collected for this column. Each field
+  /// corresponds to one consecutive stats channel in the Velox write output.
+  std::vector<ColumnStatField> fields;
+};
+
+/// Describes how to extract column statistics from Velox write results.
+/// Built by the optimizer alongside ColumnStatsSpec and stored on FinishWrite.
+struct WriteStatsMapping {
+  /// Per-column stat mappings. The aggregate channels appear in this order
+  /// in the stats output, after any grouping key columns.
+  std::vector<ColumnStatMapping> columns;
+
+  /// Number of grouping key columns in the stats aggregation. These appear
+  /// as the first stats columns (after row_count, fragment, context). Zero
+  /// when there are no grouping keys.
+  uint32_t numGroupingKeys{0};
+
+  /// Table-level names for the grouping key columns, in the same order as
+  /// they appear in the stats output. The stats output may use write-input
+  /// column names (e.g. "expr_0"), but the grouping keys RowVector passed to
+  /// finishWrite must use table column names (e.g. "pk"). Empty when there
+  /// are no grouping keys.
+  std::vector<std::string> groupingKeyNames;
+};
 
 /// Describes an exchange source for an ExchangeNode a non-leaf stage.
 struct InputStage {
@@ -45,48 +89,29 @@ class FinishWrite {
   FinishWrite(
       connector::ConnectorMetadata* metadata,
       connector::ConnectorSessionPtr session,
-      connector::ConnectorWriteHandlePtr handle)
-      : metadata_{metadata},
-        session_{std::move(session)},
-        handle_{std::move(handle)} {
-    VELOX_CHECK_NOT_NULL(metadata_);
-    VELOX_CHECK_NOT_NULL(session_);
-    VELOX_CHECK_NOT_NULL(handle_);
-  }
+      connector::ConnectorWriteHandlePtr handle,
+      WriteStatsMapping statsMapping = {});
 
-  ~FinishWrite() {
-    if (*this) {
-      // Best-effort attempt to abort if not already committed or aborted.
-      // We don't wait for the abort to complete, because it's destructor.
-      std::ignore = std::move(*this).abort();
-    }
-  }
+  /// Best-effort abort if not already committed or aborted.
+  ~FinishWrite();
 
   explicit operator bool() const {
     return handle_ != nullptr;
   }
 
+  /// Commits the write by extracting stats from write results and calling
+  /// ConnectorMetadata::finishWrite. Returns the number of rows written.
   [[nodiscard]] connector::RowsFuture commit(
-      const std::vector<velox::RowVectorPtr>& writeResults) && {
-    VELOX_CHECK(*this);
-    SCOPE_EXIT {
-      *this = {};
-    };
-    return metadata_->finishWrite(session_, handle_, writeResults);
-  }
+      const std::vector<velox::RowVectorPtr>& writeResults) &&;
 
-  [[nodiscard]] velox::ContinueFuture abort() && noexcept {
-    VELOX_CHECK(*this);
-    SCOPE_EXIT {
-      *this = {};
-    };
-    return metadata_->abortWrite(session_, handle_);
-  }
+  /// Aborts the write. Must be called if commit is not called.
+  [[nodiscard]] velox::ContinueFuture abort() && noexcept;
 
  private:
   connector::ConnectorMetadata* metadata_{nullptr};
   connector::ConnectorSessionPtr session_;
   connector::ConnectorWriteHandlePtr handle_;
+  WriteStatsMapping statsMapping_;
 };
 
 /// Describes a fragment of a distributed plan. This allows a run

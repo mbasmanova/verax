@@ -52,7 +52,7 @@ class WriteTest : public test::HiveQueriesTestBase {
         session, {kDefaultSchema, name}, tableType, options);
     auto handle =
         metadata.beginWrite(session, table, connector::WriteKind::kCreate);
-    metadata.finishWrite(session, handle, {}).get();
+    metadata.finishWrite(session, handle, {}, nullptr, {}).get();
   }
 
   connector::TablePtr createTable(
@@ -482,6 +482,133 @@ TEST_F(WriteTest, ctasSql) {
   }
 }
 
+// Verifies that CTAS and INSERT on unpartitioned tables populate per-column
+// stats (count, min, max, numDistinct) and that INSERT merges with existing
+// stats.
+TEST_F(WriteTest, columnStatsUnpartitioned) {
+  SCOPE_EXIT {
+    hiveMetadata().dropTableIfExists({kDefaultSchema, "test"});
+  };
+
+  // CTAS: create an unpartitioned table with integer and double columns.
+  runCtas(
+      "CREATE TABLE test AS "
+      "SELECT n_nationkey AS x, n_nationkey * 1.5 AS y "
+      "FROM nation WHERE n_nationkey < 10",
+      10);
+
+  auto verifyStats = [&](int64_t expectedNumValues,
+                         int64_t expectedMinX,
+                         int64_t expectedMaxX) {
+    auto table = hiveMetadata().findTable({kDefaultSchema, "test"});
+    ASSERT_TRUE(table != nullptr);
+
+    // Integer column 'x'.
+    {
+      const auto* column = table->findColumn("x");
+      ASSERT_TRUE(column != nullptr);
+      const auto* stats = column->stats();
+      ASSERT_TRUE(stats != nullptr);
+
+      EXPECT_EQ(expectedNumValues, stats->numValues);
+      ASSERT_TRUE(stats->min.has_value());
+      EXPECT_EQ(expectedMinX, stats->min->value<int64_t>());
+      ASSERT_TRUE(stats->max.has_value());
+      EXPECT_EQ(expectedMaxX, stats->max->value<int64_t>());
+      ASSERT_TRUE(stats->numDistinct.has_value());
+      EXPECT_GT(stats->numDistinct.value(), 0);
+    }
+
+    // Double column 'y'.
+    {
+      const auto* column = table->findColumn("y");
+      ASSERT_TRUE(column != nullptr);
+      const auto* stats = column->stats();
+      ASSERT_TRUE(stats != nullptr);
+
+      EXPECT_EQ(expectedNumValues, stats->numValues);
+      ASSERT_TRUE(stats->min.has_value());
+      ASSERT_TRUE(stats->max.has_value());
+    }
+  };
+
+  verifyStats(10, 0, 9);
+
+  // INSERT more data. Stats should be merged (counts summed, min/max
+  // extended).
+  {
+    auto logicalPlan = parseInsert(
+        "INSERT INTO test "
+        "SELECT n_nationkey, n_nationkey * 1.5 "
+        "FROM nation WHERE n_nationkey >= 10");
+    checkWrittenRows(runVelox(logicalPlan), 15);
+  }
+
+  verifyStats(25, 0, 24);
+}
+
+// Verifies that all-null columns produce zero count and no min/max/ndv.
+TEST_F(WriteTest, columnStatsAllNulls) {
+  SCOPE_EXIT {
+    hiveMetadata().dropTableIfExists({kDefaultSchema, "test"});
+  };
+
+  runCtas(
+      "CREATE TABLE test AS "
+      "SELECT CAST(null AS INTEGER) AS x, CAST(null AS DOUBLE) AS y "
+      "FROM nation",
+      25);
+
+  auto table = hiveMetadata().findTable({kDefaultSchema, "test"});
+  ASSERT_NE(table, nullptr);
+
+  for (const auto& columnName : {"x", "y"}) {
+    SCOPED_TRACE(columnName);
+    const auto* column = table->findColumn(columnName);
+    ASSERT_NE(column, nullptr);
+    const auto* stats = column->stats();
+    ASSERT_NE(stats, nullptr);
+
+    EXPECT_EQ(0, stats->numValues);
+    EXPECT_FALSE(stats->min.has_value());
+    EXPECT_FALSE(stats->max.has_value());
+    ASSERT_TRUE(stats->numDistinct.has_value());
+    EXPECT_EQ(0, stats->numDistinct.value());
+  }
+}
+
+// Verifies that CTAS on partitioned tables stores per-partition stats but
+// does not produce table-level stats.
+TEST_F(WriteTest, columnStatsPartitioned) {
+  SCOPE_EXIT {
+    hiveMetadata().dropTableIfExists({kDefaultSchema, "test"});
+  };
+
+  runCtas(
+      "CREATE TABLE test WITH (partitioned_by = ARRAY['pk']) AS "
+      "SELECT n_nationkey AS x, n_nationkey * 2 AS y, n_nationkey % 3 AS pk "
+      "FROM nation WHERE n_nationkey < 12",
+      12);
+
+  auto table = hiveMetadata().findTable({kDefaultSchema, "test"});
+  ASSERT_NE(table, nullptr);
+
+  const auto tablePath = hiveMetadata().tablePath(table->name());
+
+  // No table-level .stats file for partitioned tables.
+  EXPECT_FALSE(std::filesystem::exists(tablePath + "/.stats"));
+
+  // Each partition directory should have a .stats file.
+  for (const auto& entry : std::filesystem::directory_iterator(tablePath)) {
+    if (!entry.is_directory()) {
+      continue;
+    }
+    auto statsFile = entry.path() / ".stats";
+    EXPECT_TRUE(std::filesystem::exists(statsFile))
+        << "Missing .stats in partition: " << entry.path().filename();
+  }
+}
+
 TEST_F(WriteTest, ctasPartitionedSql) {
   SCOPE_EXIT {
     hiveMetadata().dropTableIfExists({kDefaultSchema, "test"});
@@ -511,7 +638,9 @@ const velox::core::PlanNodePtr nodeAt(
   return plan.fragments().at(index).fragment.planNode;
 }
 
-// Verify that distributed plan has exchange before table write.
+// Verify that distributed plan has exchange before table write and
+// tableWriteMerge after. The coordinator gets a kFinal merge after the
+// gather exchange.
 void verifyPartitionedWrite(const MultiFragmentPlan& plan) {
   auto matcher = core::PlanMatcherBuilder()
                      .tableScan()
@@ -519,7 +648,10 @@ void verifyPartitionedWrite(const MultiFragmentPlan& plan) {
                      .shuffle()
                      .localPartition()
                      .tableWrite()
+                     .localGather()
+                     .tableWriteMerge()
                      .shuffle()
+                     .tableWriteMerge()
                      .build();
   AXIOM_ASSERT_DISTRIBUTED_PLAN(&plan, matcher);
 }
@@ -533,7 +665,10 @@ void verifyCollocatedWrite(const MultiFragmentPlan& plan) {
                      // TODO Enhance the optimizer to eliminate local exchange.
                      .localPartition()
                      .tableWrite()
+                     .localGather()
+                     .tableWriteMerge()
                      .shuffle()
+                     .tableWriteMerge()
                      .build();
   AXIOM_ASSERT_DISTRIBUTED_PLAN(&plan, matcher);
 }
@@ -599,6 +734,8 @@ TEST_F(WriteTest, ctasBucketedSingleNode) {
                            .project()
                            .localPartition()
                            .tableWrite()
+                           .localGather()
+                           .tableWriteMerge()
                            .build();
         AXIOM_ASSERT_PLAN(nodeAt(plan, 0), matcher);
       },
