@@ -40,12 +40,16 @@ class WriteTest : public test::HiveQueriesTestBase {
     HiveQueriesTestBase::TearDown();
   }
 
+  void dropTableIfExists(std::string_view name) {
+    hiveMetadata().dropTableIfExists({kDefaultSchema, std::string(name)});
+  }
+
   void createTable(
       const std::string& name,
       const RowTypePtr& tableType,
       const folly::F14FastMap<std::string, velox::Variant>& options) {
     auto& metadata = hiveMetadata();
-    metadata.dropTableIfExists({kDefaultSchema, name});
+    dropTableIfExists(name);
 
     auto session = std::make_shared<connector::ConnectorSession>("test");
     auto table = metadata.createTable(
@@ -301,8 +305,8 @@ class WriteTest : public test::HiveQueriesTestBase {
 
 TEST_F(WriteTest, basic) {
   SCOPE_EXIT {
-    hiveMetadata().dropTableIfExists({kDefaultSchema, "test"});
-    hiveMetadata().dropTableIfExists({kDefaultSchema, "test2"});
+    dropTableIfExists("test");
+    dropTableIfExists("test2");
   };
 
   auto tableType = ROW({
@@ -394,7 +398,7 @@ TEST_F(WriteTest, basic) {
 
 TEST_F(WriteTest, insertSql) {
   SCOPE_EXIT {
-    hiveMetadata().dropTableIfExists({kDefaultSchema, "test"});
+    dropTableIfExists("test");
   };
 
   createTable(
@@ -438,7 +442,7 @@ TEST_F(WriteTest, insertSql) {
 TEST_F(WriteTest, ctasSql) {
   {
     SCOPE_EXIT {
-      hiveMetadata().dropTableIfExists({kDefaultSchema, "test"});
+      dropTableIfExists("test");
     };
 
     runCtas("CREATE TABLE test(a, b, c) AS SELECT 1, 0.123, 'foo'", 1);
@@ -455,7 +459,7 @@ TEST_F(WriteTest, ctasSql) {
 
   {
     SCOPE_EXIT {
-      hiveMetadata().dropTableIfExists({kDefaultSchema, "test"});
+      dropTableIfExists("test");
     };
 
     runCtas(
@@ -475,7 +479,7 @@ TEST_F(WriteTest, ctasSql) {
   // Verify that newly created table is deleted if write fails.
   {
     SCOPE_EXIT {
-      hiveMetadata().dropTableIfExists({kDefaultSchema, "test"});
+      dropTableIfExists("test");
     };
 
     VELOX_ASSERT_THROW(
@@ -491,7 +495,7 @@ TEST_F(WriteTest, ctasSql) {
 // stats.
 TEST_F(WriteTest, columnStatsUnpartitioned) {
   SCOPE_EXIT {
-    hiveMetadata().dropTableIfExists({kDefaultSchema, "test"});
+    dropTableIfExists("test");
   };
 
   // CTAS: create an unpartitioned table with integer and double columns.
@@ -554,7 +558,7 @@ TEST_F(WriteTest, columnStatsUnpartitioned) {
 // Verifies that all-null columns produce zero count and no min/max/ndv.
 TEST_F(WriteTest, columnStatsAllNulls) {
   SCOPE_EXIT {
-    hiveMetadata().dropTableIfExists({kDefaultSchema, "test"});
+    dropTableIfExists("test");
   };
 
   runCtas(
@@ -585,7 +589,7 @@ TEST_F(WriteTest, columnStatsAllNulls) {
 // does not produce table-level stats.
 TEST_F(WriteTest, columnStatsPartitioned) {
   SCOPE_EXIT {
-    hiveMetadata().dropTableIfExists({kDefaultSchema, "test"});
+    dropTableIfExists("test");
   };
 
   runCtas(
@@ -615,7 +619,7 @@ TEST_F(WriteTest, columnStatsPartitioned) {
 
 TEST_F(WriteTest, ctasPartitionedSql) {
   SCOPE_EXIT {
-    hiveMetadata().dropTableIfExists({kDefaultSchema, "test"});
+    dropTableIfExists("test");
   };
 
   runCtas(
@@ -677,10 +681,31 @@ void verifyCollocatedWrite(const MultiFragmentPlan& plan) {
   AXIOM_ASSERT_DISTRIBUTED_PLAN(&plan, matcher);
 }
 
+// Verifies that CTAS with a Values input (single-fragment, single-threaded
+// pipeline) does not produce LocalGather + TableWriteMerge nodes even when
+// numWorkers > 1 and numDrivers > 1.
+TEST_F(WriteTest, ctasValuesNoMerge) {
+  SCOPE_EXIT {
+    dropTableIfExists("test");
+  };
+
+  runCtas(
+      "CREATE TABLE test(a, b, c) AS SELECT 1, 0.123, 'foo'",
+      1,
+      [](const auto& plan) {
+        ASSERT_EQ(1, plan.fragments().size());
+
+        auto matcher =
+            core::PlanMatcherBuilder().values().project().tableWrite().build();
+        AXIOM_ASSERT_PLAN(nodeAt(plan, 0), matcher);
+      },
+      {.numWorkers = 4, .numDrivers = 4});
+}
+
 TEST_F(WriteTest, ctasBucketedSql) {
   SCOPE_EXIT {
     for (const auto& name : {"test", "more", "same", "fewer"}) {
-      hiveMetadata().dropTableIfExists({kDefaultSchema, name});
+      dropTableIfExists(name);
     }
   };
 
@@ -722,7 +747,7 @@ TEST_F(WriteTest, ctasBucketedSql) {
 
 TEST_F(WriteTest, ctasBucketedSingleNode) {
   SCOPE_EXIT {
-    hiveMetadata().dropTableIfExists({kDefaultSchema, "test"});
+    dropTableIfExists("test");
   };
 
   runCtas(
@@ -750,7 +775,7 @@ TEST_F(WriteTest, ctasBucketedSingleNode) {
 
 TEST_F(WriteTest, ctasBucketedSingleThreaded) {
   SCOPE_EXIT {
-    hiveMetadata().dropTableIfExists({kDefaultSchema, "test"});
+    dropTableIfExists("test");
   };
 
   runCtas(
@@ -775,7 +800,7 @@ TEST_F(WriteTest, ctasBucketedSingleThreaded) {
 
 TEST_F(WriteTest, ctasBucketedAndSorted) {
   SCOPE_EXIT {
-    hiveMetadata().dropTableIfExists({kDefaultSchema, "test"});
+    dropTableIfExists("test");
   };
 
   runCtas(

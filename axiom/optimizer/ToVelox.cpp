@@ -1747,6 +1747,29 @@ velox::core::PlanNodePtr ToVelox::makeValues(
   return valuesNode;
 }
 
+namespace {
+
+// Walks the Velox plan tree from 'node' down within the same pipeline. Returns
+// true if any node requires single-threaded execution. Stops at pipeline
+// boundaries (LocalPartitionNode) or multi-source nodes (joins) since these
+// indicate different pipeline structure.
+bool isSingleThreadedPipeline(const velox::core::PlanNodePtr& node) {
+  auto current = node;
+  for (;;) {
+    if (current->requiresSingleThread()) {
+      return true;
+    }
+
+    if (current->sources().size() != 1) {
+      return false;
+    }
+
+    current = current->sources()[0];
+  }
+}
+
+} // namespace
+
 velox::core::PlanNodePtr ToVelox::makeWrite(
     const TableWrite& tableWrite,
     ExecutableFragment& fragment,
@@ -1800,8 +1823,14 @@ velox::core::PlanNodePtr ToVelox::makeWrite(
 
   auto inputType = ROW(inputNames, inputTypes);
 
+  auto numDrivers = options_.numDrivers;
+  if (fragment.width == 1 && numDrivers > 1 &&
+      isSingleThreadedPipeline(input)) {
+    numDrivers = 1;
+  }
+
   WriteStatsBuilder statsBuilder(
-      table, inputType, *handle, options_.numDrivers, options_.numWorkers);
+      table, inputType, *handle, numDrivers, fragment.width);
 
   std::optional<velox::core::ColumnStatsSpec> writeStatsSpec;
   if (statsBuilder.hasStats()) {
