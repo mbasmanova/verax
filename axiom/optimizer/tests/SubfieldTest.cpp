@@ -24,10 +24,10 @@
 #include "axiom/optimizer/tests/QueryTestBase.h"
 #include "axiom/optimizer/tests/utils/DfFunctions.h"
 #include "velox/common/base/tests/GTestUtils.h"
+#include "velox/common/testutil/TempDirectoryPath.h"
 #include "velox/exec/tests/utils/PlanBuilder.h"
 #include "velox/vector/tests/utils/VectorMaker.h"
 
-DEFINE_string(subfield_data_path, "", "Data directory for subfield test data");
 DECLARE_uint32(optimizer_trace);
 
 namespace facebook::axiom::optimizer {
@@ -107,24 +107,28 @@ class SubfieldTest : public QueryTestBase,
   static const inline std::string kDefaultSchema{
       connector::hive::LocalHiveConnectorMetadata::kDefaultSchema};
 
+  inline static std::shared_ptr<velox::common::testutil::TempDirectoryPath>
+      tempDirectory_;
+
   lp::PlanBuilder::Context makeContext() const {
     return lp::PlanBuilder::Context{kHiveConnectorId, kDefaultSchema};
   }
 
   static void SetUpTestCase() {
     QueryTestBase::SetUpTestCase();
-    LocalRunnerTestBase::localDataPath_ = FLAGS_subfield_data_path;
-    LocalRunnerTestBase::localFileFormat_ =
-        velox::dwio::common::FileFormat::DWRF;
+    tempDirectory_ = common::testutil::TempDirectoryPath::create();
+    QueryTestBase::localDataPath_ = tempDirectory_->getPath();
+    QueryTestBase::localFileFormat_ = velox::dwio::common::FileFormat::DWRF;
     // Disable write-time stats because this test creates tables by writing
     // files directly (not via CTAS), so no .stats files are produced.
     // TODO: Switch to CTAS-based table creation using HiveQueriesTestBase.
-    LocalRunnerTestBase::hiveConfig_
+    QueryTestBase::hiveConfig_
         [connector::hive::HiveMetadataConfig::kUseWriteTimeStats] = "false";
     registerDfFunctions();
   }
 
   static void TearDownTestCase() {
+    tempDirectory_.reset();
     QueryTestBase::TearDownTestCase();
   }
 
@@ -337,7 +341,9 @@ class SubfieldTest : public QueryTestBase,
     const auto filePath =
         fmt::format("{}/{}/{}.dwrf", localDataPath_, name, name);
     writeToFile(filePath, vectors, config);
-    tablesCreated();
+
+    // Re-read the data directory to pick up the new table.
+    hiveMetadata().reinitialize();
   }
 
   // TODO Move to PlanMatcher.

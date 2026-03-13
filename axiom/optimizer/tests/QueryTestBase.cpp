@@ -16,12 +16,17 @@
 
 #include "axiom/optimizer/tests/QueryTestBase.h"
 #include "axiom/connectors/SchemaResolver.h"
+#include "axiom/connectors/hive/HiveMetadataConfig.h"
+#include "axiom/connectors/hive/LocalHiveConnectorMetadata.h"
 #include "axiom/optimizer/Optimization.h"
 #include "axiom/optimizer/Plan.h"
 #include "axiom/optimizer/VeloxHistory.h"
-#include "axiom/runner/tests/LocalRunnerTestBase.h"
 #include "axiom/sql/presto/PrestoParser.h"
+#include "velox/connectors/hive/HiveConnector.h"
 #include "velox/dwio/common/tests/utils/DataFiles.h"
+#include "velox/dwio/parquet/RegisterParquetReader.h"
+#include "velox/dwio/parquet/RegisterParquetWriter.h"
+#include "velox/exec/tests/utils/LocalExchangeSource.h"
 #include "velox/exec/tests/utils/QueryAssertions.h"
 #include "velox/expression/Expr.h"
 #include "velox/functions/prestosql/window/WindowFunctionsRegistration.h"
@@ -39,8 +44,35 @@ using namespace facebook::velox;
 
 namespace facebook::axiom::optimizer::test {
 
+// static
+void QueryTestBase::SetUpTestCase() {
+  HiveConnectorTestBase::SetUpTestCase();
+  velox::window::prestosql::registerAllWindowFunctions();
+
+  executor_ = std::make_unique<folly::CPUThreadPoolExecutor>(4);
+  optimizer::FunctionRegistry::registerPrestoFunctions();
+
+  velox::parquet::registerParquetReaderFactory();
+  velox::parquet::registerParquetWriterFactory();
+}
+
+// static
+void QueryTestBase::TearDownTestCase() {
+  velox::parquet::unregisterParquetWriterFactory();
+  velox::parquet::unregisterParquetReaderFactory();
+
+  executor_.reset();
+  HiveConnectorTestBase::TearDownTestCase();
+}
+
 void QueryTestBase::SetUp() {
-  runner::test::LocalRunnerTestBase::SetUp();
+  HiveConnectorTestBase::SetUp();
+
+  velox::exec::ExchangeSource::factories().clear();
+  velox::exec::ExchangeSource::registerFactory(
+      velox::exec::test::createLocalExchangeSource);
+
+  setupHiveConnector();
 
   optimizerPool_ = rootPool_->addLeafChild("optimizer");
 
@@ -52,9 +84,6 @@ void QueryTestBase::SetUp() {
 
   optimizerOptions_ = OptimizerOptions();
   optimizerOptions_.traceFlags = FLAGS_optimizer_trace;
-
-  optimizer::FunctionRegistry::registerPrestoFunctions();
-  velox::window::prestosql::registerAllWindowFunctions();
 }
 
 void QueryTestBase::TearDown() {
@@ -65,7 +94,12 @@ void QueryTestBase::TearDown() {
   }
   queryCtx_.reset();
   optimizerPool_.reset();
-  LocalRunnerTestBase::TearDown();
+  hiveMetadata_ = nullptr;
+
+  connector::ConnectorMetadata::unregisterMetadata(
+      velox::exec::test::kHiveConnectorId);
+  velox::exec::ExchangeSource::factories().clear();
+  HiveConnectorTestBase::TearDown();
 }
 
 logical_plan::LogicalPlanNodePtr QueryTestBase::parseSelect(
@@ -136,8 +170,7 @@ std::shared_ptr<core::QueryCtx>& QueryTestBase::getQueryCtx() {
     return queryCtx_;
   }
 
-  queryCtx_ = runner::test::LocalRunnerTestBase::makeQueryCtx(
-      fmt::format("q{}", ++gQueryCounter));
+  queryCtx_ = makeQueryCtx(fmt::format("q{}", ++gQueryCounter));
 
   return queryCtx_;
 }
@@ -336,6 +369,55 @@ velox::core::PlanNodePtr QueryTestBase::toSingleNodePlan(
 std::string QueryTestBase::getTestDataPath(const std::string& filename) {
   return velox::test::getDataFilePath(
       "axiom/optimizer/tests", fmt::format("test_data/{}", filename));
+}
+
+void QueryTestBase::setupHiveConnector() {
+  std::unordered_map<std::string, std::string> configs;
+  configs[connector::hive::HiveMetadataConfig::kLocalDataPath] = localDataPath_;
+  configs[connector::hive::HiveMetadataConfig::kLocalFileFormat] =
+      velox::dwio::common::toString(localFileFormat_);
+  configs.insert(hiveConfig_.begin(), hiveConfig_.end());
+
+  resetHiveConnector(
+      std::make_shared<velox::config::ConfigBase>(std::move(configs)));
+
+  auto hiveConnector = dynamic_cast<velox::connector::hive::HiveConnector*>(
+      velox::connector::getConnector(velox::exec::test::kHiveConnectorId)
+          .get());
+
+  auto metadata = std::make_shared<connector::hive::LocalHiveConnectorMetadata>(
+      hiveConnector);
+  hiveMetadata_ = metadata.get();
+
+  connector::ConnectorMetadata::registerMetadata(
+      velox::exec::test::kHiveConnectorId, std::move(metadata));
+}
+
+std::shared_ptr<velox::core::QueryCtx> QueryTestBase::makeQueryCtx(
+    const std::string& queryId) {
+  std::unordered_map<std::string, std::shared_ptr<velox::config::ConfigBase>>
+      connectorConfigs;
+  connectorConfigs[velox::exec::test::kHiveConnectorId] =
+      std::make_shared<velox::config::ConfigBase>(folly::copy(hiveConfig_));
+
+  return velox::core::QueryCtx::create(
+      executor_.get(),
+      velox::core::QueryConfig(folly::copy(config_)),
+      std::move(connectorConfigs),
+      velox::cache::AsyncDataCache::getInstance(),
+      /*pool=*/nullptr,
+      /*spillExecutor=*/nullptr,
+      queryId);
+}
+
+// static
+std::vector<velox::RowVectorPtr> QueryTestBase::readCursor(
+    const std::shared_ptr<runner::LocalRunner>& runner) {
+  std::vector<velox::RowVectorPtr> result;
+  while (auto rowVector = runner->next()) {
+    result.push_back(rowVector);
+  }
+  return result;
 }
 
 } // namespace facebook::axiom::optimizer::test
