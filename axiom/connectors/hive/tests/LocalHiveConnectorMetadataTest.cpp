@@ -15,11 +15,9 @@
  */
 
 #include "axiom/connectors/hive/LocalHiveConnectorMetadata.h"
-#include "axiom/connectors/hive/HiveMetadataConfig.h"
 #include "axiom/runner/tests/LocalRunnerTestBase.h"
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/connectors/hive/HivePartitionFunction.h"
-#include "velox/dwio/parquet/RegisterParquetWriter.h"
 #include "velox/exec/tests/utils/AssertQueryBuilder.h"
 #include "velox/exec/tests/utils/PlanBuilder.h"
 
@@ -41,43 +39,28 @@ class LocalHiveConnectorMetadataTest
 
   const std::string kDefaultSchema{LocalHiveConnectorMetadata::kDefaultSchema};
 
-  static void SetUpTestCase() {
-    // Disable write-time stats since makeTables() generates data files
-    // without .schema or .stats files.
-    // TODO: Replace makeTables() with CTAS to go through the write pipeline.
-    hiveConfig_[connector::hive::HiveMetadataConfig::kUseWriteTimeStats] =
-        "false";
-
-    LocalRunnerTestBase::SetUpTestCase();
-
-    // The lambdas will be run after this scope returns, so make captures
-    // static.
-    static int32_t counter1;
-    // Clear 'counter1' so that --gtest_repeat runs get the same data.
-    counter1 = 0;
-    auto customize1 = [&](const RowVectorPtr& rows) {
-      makeAscending(rows, counter1);
-    };
-
-    rowType_ = ROW({"c0"}, {BIGINT()});
-    testTables_ = {
-        runner::test::TableSpec{
-            .name = "T",
-            .columns = rowType_,
-            .rowsPerVector = kRowsPerVector,
-            .numVectorsPerFile = kNumVectors,
-            .numFiles = kNumFiles,
-            .customizeData = customize1},
-    };
-    parquet::registerParquetWriterFactory();
-  }
-
-  static void TearDownTestCase() {
-    parquet::unregisterParquetWriterFactory();
-    LocalRunnerTestBase::TearDownTestCase();
+  static void makeAscending(const RowVectorPtr& rows, int32_t& counter) {
+    auto ints = rows->childAt(0)->as<FlatVector<int64_t>>();
+    for (auto i = 0; i < ints->size(); ++i) {
+      ints->set(i, counter + i);
+    }
+    counter += ints->size();
   }
 
   void SetUp() override {
+    rowType_ = ROW("c0", BIGINT());
+
+    int32_t counter = 0;
+    makeTables({runner::test::TableSpec{
+        .name = "t",
+        .columns = rowType_,
+        .rowsPerVector = kRowsPerVector,
+        .numVectorsPerFile = kNumVectors,
+        .numFiles = kNumFiles,
+        .customizeData = [&counter](const RowVectorPtr& rows) {
+          makeAscending(rows, counter);
+        }}});
+
     runner::test::LocalRunnerTestBase::SetUp();
     metadata_ = dynamic_cast<LocalHiveConnectorMetadata*>(
         ConnectorMetadata::metadata(velox::exec::test::kHiveConnectorId));
@@ -206,14 +189,6 @@ class LocalHiveConnectorMetadataTest
     exec::test::assertEqualResults({expectedData}, {results});
   }
 
-  static void makeAscending(const RowVectorPtr& rows, int32_t& counter) {
-    auto ints = rows->childAt(0)->as<FlatVector<int64_t>>();
-    for (auto i = 0; i < ints->size(); ++i) {
-      ints->set(i, counter + i);
-    }
-    counter += ints->size();
-  }
-
   static std::vector<std::string> getDataFiles(const std::string& path) {
     EXPECT_TRUE(std::filesystem::is_directory(path));
     std::vector<std::string> files;
@@ -228,12 +203,12 @@ class LocalHiveConnectorMetadataTest
     return files;
   }
 
-  inline static RowTypePtr rowType_;
+  RowTypePtr rowType_;
   LocalHiveConnectorMetadata* metadata_{};
 };
 
 TEST_F(LocalHiveConnectorMetadataTest, basic) {
-  auto table = metadata_->findTable({kDefaultSchema, "T"});
+  auto table = metadata_->findTable({kDefaultSchema, "t"});
   ASSERT_TRUE(table != nullptr);
   auto column = table->findColumn("c0");
   ASSERT_TRUE(column != nullptr);
@@ -269,7 +244,7 @@ TEST_F(LocalHiveConnectorMetadataTest, basic) {
 
 // Verifies that sample() only samples files matching $path filter.
 TEST_F(LocalHiveConnectorMetadataTest, sampleWithPathFilter) {
-  auto table = metadata_->findTable({kDefaultSchema, "T"});
+  auto table = metadata_->findTable({kDefaultSchema, "t"});
   ASSERT_TRUE(table != nullptr);
   auto* layout = dynamic_cast<const LocalHiveTableLayout*>(table->layouts()[0]);
   ASSERT_TRUE(layout != nullptr);

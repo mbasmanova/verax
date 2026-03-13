@@ -19,24 +19,26 @@
 #include "axiom/connectors/hive/LocalHiveConnectorMetadata.h"
 #include "velox/connectors/hive/HiveConnector.h"
 #include "velox/dwio/parquet/RegisterParquetReader.h"
+#include "velox/dwio/parquet/RegisterParquetWriter.h"
 #include "velox/exec/tests/utils/LocalExchangeSource.h"
 
 namespace facebook::axiom::runner::test {
+
+void LocalRunnerTestBase::SetUpTestCase() {
+  HiveConnectorTestBase::SetUpTestCase();
+  executor_ = std::make_unique<folly::CPUThreadPoolExecutor>(4);
+}
 
 void LocalRunnerTestBase::SetUp() {
   HiveConnectorTestBase::SetUp();
 
   velox::parquet::registerParquetReaderFactory();
+  velox::parquet::registerParquetWriterFactory();
 
   velox::exec::ExchangeSource::factories().clear();
   velox::exec::ExchangeSource::registerFactory(
       velox::exec::test::createLocalExchangeSource);
 
-  if (!files_) {
-    makeTables();
-  }
-  // Destroy and rebuild the testing connector. The connector will
-  // show the metadata if the connector is wired for metadata.
   setupConnector();
 }
 
@@ -44,6 +46,7 @@ void LocalRunnerTestBase::TearDown() {
   connector::ConnectorMetadata::unregisterMetadata(
       velox::exec::test::kHiveConnectorId);
   velox::exec::ExchangeSource::factories().clear();
+  velox::parquet::unregisterParquetWriterFactory();
   velox::parquet::unregisterParquetReaderFactory();
   HiveConnectorTestBase::TearDown();
 }
@@ -53,11 +56,12 @@ std::shared_ptr<velox::core::QueryCtx> LocalRunnerTestBase::makeQueryCtx(
   std::unordered_map<std::string, std::shared_ptr<velox::config::ConfigBase>>
       connectorConfigs;
   connectorConfigs[velox::exec::test::kHiveConnectorId] =
-      std::make_shared<velox::config::ConfigBase>(folly::copy(hiveConfig_));
+      std::make_shared<velox::config::ConfigBase>(
+          std::unordered_map<std::string, std::string>{});
 
   return velox::core::QueryCtx::create(
-      schemaExecutor_.get(),
-      velox::core::QueryConfig(folly::copy(config_)),
+      executor_.get(),
+      velox::core::QueryConfig({}),
       std::move(connectorConfigs),
       velox::cache::AsyncDataCache::getInstance(),
       /*pool=*/nullptr,
@@ -67,10 +71,13 @@ std::shared_ptr<velox::core::QueryCtx> LocalRunnerTestBase::makeQueryCtx(
 
 void LocalRunnerTestBase::setupConnector() {
   std::unordered_map<std::string, std::string> configs;
-  configs[connector::hive::HiveMetadataConfig::kLocalDataPath] = localDataPath_;
+  configs[connector::hive::HiveMetadataConfig::kLocalDataPath] =
+      tempDirectory_->getPath();
   configs[connector::hive::HiveMetadataConfig::kLocalFileFormat] =
-      velox::dwio::common::toString(localFileFormat_);
-  configs.insert(hiveConfig_.begin(), hiveConfig_.end());
+      velox::dwio::common::toString(velox::dwio::common::FileFormat::DWRF);
+  // Disable write-time stats since makeTables() generates data files without
+  // .schema or .stats files.
+  configs[connector::hive::HiveMetadataConfig::kUseWriteTimeStats] = "false";
 
   resetHiveConnector(
       std::make_shared<velox::config::ConfigBase>(std::move(configs)));
@@ -85,20 +92,16 @@ void LocalRunnerTestBase::setupConnector() {
               hiveConnector.get())));
 }
 
-void LocalRunnerTestBase::makeTables() {
-  if (initialized_) {
+void LocalRunnerTestBase::makeTables(const std::vector<TableSpec>& specs) {
+  if (tempDirectory_) {
     return;
   }
-  initialized_ = true;
+  tempDirectory_ = velox::common::testutil::TempDirectoryPath::create();
 
-  if (localDataPath_.empty()) {
-    files_ = velox::common::testutil::TempDirectoryPath::create();
-    localDataPath_ = files_->getPath();
-  }
-
-  auto fs = velox::filesystems::getFileSystem(localDataPath_, {});
-  for (const auto& spec : testTables_) {
-    const auto tablePath = fmt::format("{}/{}", localDataPath_, spec.name);
+  const auto dataPath = tempDirectory_->getPath();
+  auto fs = velox::filesystems::getFileSystem(dataPath, {});
+  for (const auto& spec : specs) {
+    const auto tablePath = fmt::format("{}/{}", dataPath, spec.name);
     fs->mkdir(tablePath);
     for (auto i = 0; i < spec.numFiles; ++i) {
       auto vectors = HiveConnectorTestBase::makeVectors(
@@ -109,31 +112,9 @@ void LocalRunnerTestBase::makeTables() {
         }
       }
       auto filePath = fmt::format("{}/f{}", tablePath, i);
-      tableFilePaths_[spec.name].push_back(filePath);
       writeToFile(filePath, vectors);
     }
   }
-}
-
-void LocalRunnerTestBase::tablesCreated() {
-  auto hiveConnector =
-      velox::connector::getConnector(velox::exec::test::kHiveConnectorId);
-
-  auto metadata = dynamic_cast<connector::hive::LocalHiveConnectorMetadata*>(
-      connector::ConnectorMetadata::metadata(hiveConnector.get()));
-  VELOX_CHECK_NOT_NULL(metadata);
-  metadata->reinitialize();
-}
-
-// static
-std::vector<velox::RowVectorPtr> LocalRunnerTestBase::readCursor(
-    const std::shared_ptr<LocalRunner>& runner) {
-  std::vector<velox::RowVectorPtr> result;
-
-  while (auto rowVector = runner->next()) {
-    result.push_back(rowVector);
-  }
-  return result;
 }
 
 } // namespace facebook::axiom::runner::test

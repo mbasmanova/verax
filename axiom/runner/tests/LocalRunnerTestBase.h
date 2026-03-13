@@ -16,7 +16,6 @@
 
 #pragma once
 
-#include "axiom/runner/LocalRunner.h"
 #include "velox/common/testutil/TempDirectoryPath.h"
 #include "velox/exec/tests/utils/HiveConnectorTestBase.h"
 
@@ -41,68 +40,31 @@ struct TableSpec {
 /// of multiple Google unit test cases.
 class LocalRunnerTestBase : public velox::exec::test::HiveConnectorTestBase {
  protected:
-  static void SetUpTestCase() {
-    HiveConnectorTestBase::SetUpTestCase();
-    schemaExecutor_ = std::make_unique<folly::CPUThreadPoolExecutor>(4);
-  }
+  static void SetUpTestCase();
 
-  static void TearDownTestCase() {
-    initialized_ = false;
-    files_.reset();
-    HiveConnectorTestBase::TearDownTestCase();
-  }
-
-  /// Creates test tables with randomly-generated data using 'testTables_'
-  /// specs. Writes tables to 'localDataPath_' in 'localFileFormat_' format. If
-  /// 'localDataPath_' is not set, creates a temp directory. Initializes
-  /// LocalHiveConnectorMetadata to provide metadata access to newly created
-  /// tables.
   void SetUp() override;
 
   void TearDown() override;
 
-  /// Reads 'localDataPath_' directory and picks up new tables.
-  void tablesCreated();
+  static void TearDownTestCase() {
+    tempDirectory_.reset();
+    HiveConnectorTestBase::TearDownTestCase();
+  }
 
-  /// Creates a QueryCtx with 'pool'. 'pool' must be a root pool.
+  /// Creates a QueryCtx for the specified query.
   std::shared_ptr<velox::core::QueryCtx> makeQueryCtx(
       const std::string& queryId);
 
-  /// Fetch all remaining data from the 'runner'. Calls LocalRunner::next() in a
-  /// loop until it returns nullptr.
-  static std::vector<velox::RowVectorPtr> readCursor(
-      const std::shared_ptr<LocalRunner>& runner);
-
-  /// Configs for creating QueryCtx. Must be set before calling
-  /// 'makeQueryCtx()'.
-  inline static std::unordered_map<std::string, std::string> config_;
-  inline static std::unordered_map<std::string, std::string> hiveConfig_;
-
-  /// The specification of the test data. The data is created in
-  /// ensureTestData() called from each SetUp()(.
-  inline static std::vector<TableSpec> testTables_;
-
-  /// The top level directory with the test data.
-  inline static std::string localDataPath_;
-  inline static velox::dwio::common::FileFormat localFileFormat_{
-      velox::dwio::common::FileFormat::DWRF};
+  /// Creates test tables with randomly-generated data in DWRF format.
+  /// Creates a temp directory on the first call. Subsequent calls are no-ops.
+  void makeTables(const std::vector<TableSpec>& specs);
 
  private:
-  void makeTables();
-
-  // Re-creates the connector with kHiveConnectorId with a config
-  // that points to the temp directory created by 'this'. If the
-  // connector factory is wired to capture metadata then the metadata
-  // will be available through the connector.
   void setupConnector();
 
-  inline static bool initialized_;
   inline static std::shared_ptr<velox::common::testutil::TempDirectoryPath>
-      files_;
-  /// Map from table name to list of file system paths.
-  inline static std::unordered_map<std::string, std::vector<std::string>>
-      tableFilePaths_;
-  inline static std::unique_ptr<folly::CPUThreadPoolExecutor> schemaExecutor_;
+      tempDirectory_;
+  inline static std::unique_ptr<folly::CPUThreadPoolExecutor> executor_;
 };
 
 } // namespace facebook::axiom::runner::test
