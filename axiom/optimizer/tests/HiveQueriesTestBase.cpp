@@ -18,8 +18,6 @@
 #include "axiom/logical_plan/PlanBuilder.h"
 #include "axiom/optimizer/ConstantExprEvaluator.h"
 #include "axiom/optimizer/tests/TpchDataGenerator.h"
-#include "velox/dwio/dwrf/RegisterDwrfWriter.h"
-#include "velox/dwio/parquet/RegisterParquetWriter.h"
 
 namespace facebook::axiom::optimizer::test {
 
@@ -35,19 +33,12 @@ void HiveQueriesTestBase::SetUpTestCase() {
 
   gTempDirectory = common::testutil::TempDirectoryPath::create();
 
-  LocalRunnerTestBase::localDataPath_ = gTempDirectory->getPath();
-  LocalRunnerTestBase::localFileFormat_ =
-      velox::dwio::common::FileFormat::PARQUET;
-
-  parquet::registerParquetWriterFactory();
-  dwrf::registerDwrfWriterFactory();
+  QueryTestBase::localDataPath_ = gTempDirectory->getPath();
+  QueryTestBase::localFileFormat_ = velox::dwio::common::FileFormat::PARQUET;
 }
 
 // static
 void HiveQueriesTestBase::TearDownTestCase() {
-  parquet::unregisterParquetWriterFactory();
-  dwrf::unregisterDwrfWriterFactory();
-
   gTempDirectory.reset();
   test::QueryTestBase::TearDownTestCase();
 }
@@ -58,10 +49,6 @@ void HiveQueriesTestBase::SetUp() {
   prestoParser_ = std::make_unique<::axiom::sql::presto::PrestoParser>(
       exec::test::kHiveConnectorId,
       std::string(connector::hive::LocalHiveConnectorMetadata::kDefaultSchema));
-
-  connector_ = velox::connector::getConnector(exec::test::kHiveConnectorId);
-  metadata_ = dynamic_cast<connector::hive::LocalHiveConnectorMetadata*>(
-      connector::ConnectorMetadata::metadata(exec::test::kHiveConnectorId));
 }
 
 // static
@@ -73,14 +60,13 @@ void HiveQueriesTestBase::createTpchTables(
 }
 
 void HiveQueriesTestBase::TearDown() {
-  metadata_ = nullptr;
-  connector_.reset();
-
   test::QueryTestBase::TearDown();
 }
 
 RowTypePtr HiveQueriesTestBase::getSchema(std::string_view tableName) {
-  return metadata_->findTable({kDefaultSchema, std::string(tableName)})->type();
+  return hiveMetadata()
+      .findTable({kDefaultSchema, std::string(tableName)})
+      ->type();
 }
 
 velox::core::PlanNodePtr HiveQueriesTestBase::toSingleNodePlan(
@@ -134,14 +120,14 @@ void HiveQueriesTestBase::createEmptyTable(
     const std::string& name,
     const RowTypePtr& tableType,
     const folly::F14FastMap<std::string, velox::Variant>& options) {
-  metadata_->dropTableIfExists({kDefaultSchema, name});
+  hiveMetadata().dropTableIfExists({kDefaultSchema, name});
 
   auto session = std::make_shared<connector::ConnectorSession>("test");
-  auto table = metadata_->createTable(
+  auto table = hiveMetadata().createTable(
       session, {kDefaultSchema, name}, tableType, options, /*explain=*/false);
-  auto handle = metadata_->beginWrite(
+  auto handle = hiveMetadata().beginWrite(
       session, table, connector::WriteKind::kCreate, /*explain=*/false);
-  metadata_->finishWrite(session, handle, {}, nullptr, {}).get();
+  hiveMetadata().finishWrite(session, handle, {}, nullptr, {}).get();
 }
 
 void HiveQueriesTestBase::checkTableData(
@@ -165,14 +151,14 @@ void HiveQueriesTestBase::createTableFromFiles(
   }
 
   auto session = std::make_shared<connector::ConnectorSession>("test");
-  metadata_->createTable(
+  hiveMetadata().createTable(
       session,
       {kDefaultSchema, tableName},
       tableType,
       options,
       /*explain=*/false);
 
-  auto tablePath = metadata_->tablePath({kDefaultSchema, tableName});
+  auto tablePath = hiveMetadata().tablePath({kDefaultSchema, tableName});
   for (const auto& filePath : filePaths) {
     auto fileName = std::filesystem::path(filePath).filename().string();
     std::string targetFilePath = fmt::format("{}/{}", tablePath, fileName);
@@ -182,7 +168,7 @@ void HiveQueriesTestBase::createTableFromFiles(
         std::filesystem::copy_options::overwrite_existing);
   }
 
-  metadata_->reloadTableFromPath({kDefaultSchema, tableName});
+  hiveMetadata().reloadTableFromPath({kDefaultSchema, tableName});
 }
 
 void HiveQueriesTestBase::runCtas(const std::string& sql) {
@@ -192,7 +178,7 @@ void HiveQueriesTestBase::runCtas(const std::string& sql) {
   auto ctasStatement =
       statement->as<::axiom::sql::presto::CreateTableAsSelectStatement>();
 
-  metadata_->dropTableIfExists(ctasStatement->tableName());
+  hiveMetadata().dropTableIfExists(ctasStatement->tableName());
 
   folly::F14FastMap<std::string, Variant> options;
   for (const auto& [key, value] : ctasStatement->properties()) {
@@ -200,7 +186,7 @@ void HiveQueriesTestBase::runCtas(const std::string& sql) {
   }
 
   auto session = std::make_shared<connector::ConnectorSession>("test");
-  auto table = metadata_->createTable(
+  auto table = hiveMetadata().createTable(
       session,
       ctasStatement->tableName(),
       ctasStatement->tableSchema(),
