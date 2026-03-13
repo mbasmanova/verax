@@ -553,9 +553,9 @@ TEST_F(PlanTest, filterBreakup) {
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
-  auto referenceBuilder = std::make_unique<exec::test::TpchQueryBuilder>(
-      QueryTestBase::localFileFormat_);
-  referenceBuilder->initialize(QueryTestBase::localDataPath_);
+  auto referenceBuilder =
+      std::make_unique<exec::test::TpchQueryBuilder>(localFileFormat_);
+  referenceBuilder->initialize(localDataPath_);
 
   auto referencePlan = referenceBuilder->getQueryPlan(19).plan;
 
