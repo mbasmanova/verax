@@ -815,11 +815,17 @@ class ConnectorMetadata {
   /// returned insert handle, then finishWrite to commit the changes. The table
   /// is not available via the findTable interface until after finishWrite
   /// completes.
+  ///
+  /// When 'explain' is true, the connector must interpret properties and
+  /// return a valid Table with correct layout metadata, but must not create
+  /// directories, write files, or register the table. No cleanup is needed
+  /// after an explain call.
   virtual TablePtr createTable(
       const ConnectorSessionPtr& /*session*/,
       const SchemaTableName& /*tableName*/,
       const velox::RowTypePtr& /*rowType*/,
-      const folly::F14FastMap<std::string, velox::Variant>& /*options*/) {
+      const folly::F14FastMap<std::string, velox::Variant>& /*options*/,
+      bool /*explain*/) {
     VELOX_UNSUPPORTED();
   }
 
@@ -831,10 +837,15 @@ class ConnectorMetadata {
   /// the write handle and call finishWrite. Transaction semantics are
   /// connector-dependent, and ConnectorSession may be null for connectors which
   /// do not require it.
+  ///
+  /// When 'explain' is true, the connector must build and return a valid
+  /// ConnectorWriteHandle for plan display, but must not allocate staging
+  /// directories or acquire resources that need cleanup.
   virtual ConnectorWriteHandlePtr beginWrite(
       const ConnectorSessionPtr& /*session*/,
       const TablePtr& /*table*/,
-      WriteKind /*kind*/) {
+      WriteKind /*kind*/,
+      bool /*explain*/) {
     VELOX_UNSUPPORTED();
   }
 

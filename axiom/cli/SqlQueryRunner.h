@@ -111,10 +111,12 @@ class SqlQueryRunner {
   }
 
   facebook::axiom::connector::TablePtr createTable(
-      const presto::CreateTableStatement& statement);
+      const presto::CreateTableStatement& statement,
+      bool explain = false);
 
   facebook::axiom::connector::TablePtr createTable(
-      const presto::CreateTableAsSelectStatement& statement);
+      const presto::CreateTableAsSelectStatement& statement,
+      bool explain = false);
 
   std::string dropTable(const presto::DropTableStatement& statement);
 
@@ -135,11 +137,15 @@ class SqlQueryRunner {
   std::string runExplain(
       const facebook::axiom::logical_plan::LogicalPlanNodePtr& logicalPlan,
       presto::ExplainStatement::Type type,
-      const RunOptions& options);
+      const RunOptions& options,
+      std::shared_ptr<facebook::axiom::connector::SchemaResolver>
+          schemaResolver = nullptr);
 
   std::string runExplainAnalyze(
       const facebook::axiom::logical_plan::LogicalPlanNodePtr& logicalPlan,
-      const RunOptions& options);
+      const RunOptions& options,
+      std::shared_ptr<facebook::axiom::connector::SchemaResolver>
+          schemaResolver = nullptr);
 
   // Runs SHOW STATS FOR (<query>): optimizes the inner query's logical plan
   // and returns per-column and table-level statistics as a VALUES result.
@@ -168,7 +174,8 @@ class SqlQueryRunner {
       const std::function<bool(const facebook::axiom::optimizer::RelationOp&)>&
           checkBestPlan = nullptr,
       std::shared_ptr<facebook::axiom::connector::SchemaResolver>
-          schemaResolver = nullptr);
+          schemaResolver = nullptr,
+      bool explain = false);
 
   std::shared_ptr<facebook::axiom::runner::LocalRunner> makeLocalRunner(
       facebook::axiom::optimizer::PlanAndStats& planAndStats,

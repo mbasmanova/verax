@@ -16,8 +16,10 @@
 
 #include "axiom/cli/SqlQueryRunner.h"
 #include <folly/init/Init.h>
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include "axiom/connectors/tests/TestConnector.h"
+#include "velox/common/base/tests/GTestUtils.h"
 #include "velox/vector/tests/utils/VectorTestBase.h"
 
 using namespace facebook::velox;
@@ -142,6 +144,51 @@ TEST_F(SqlQueryRunnerTest, parseMultipleWithInvalidStatement) {
   EXPECT_THROW(
       runner_->parseMultiple("SELECT 1; INVALID; SELECT 2", {}),
       std::exception);
+}
+
+TEST_F(SqlQueryRunnerTest, explainCtas) {
+  {
+    auto result = runner_->run(
+        "EXPLAIN (TYPE LOGICAL) CREATE TABLE t AS SELECT 1 AS x", {});
+    ASSERT_TRUE(result.message.has_value());
+    EXPECT_THAT(
+        result.message.value(),
+        ::testing::HasSubstr("- TableWrite CREATE: -> ROW<rows:BIGINT>"));
+  }
+
+  {
+    auto result = runner_->run(
+        "EXPLAIN (TYPE OPTIMIZED) CREATE TABLE t AS SELECT 1 AS x", {});
+    ASSERT_TRUE(result.message.has_value());
+    EXPECT_THAT(
+        result.message.value(),
+        ::testing::HasSubstr("TableWrite [1.00 rows] ->"));
+  }
+
+  {
+    auto result = runner_->run("EXPLAIN CREATE TABLE t AS SELECT 1 AS x", {});
+    ASSERT_TRUE(result.message.has_value());
+    EXPECT_THAT(result.message.value(), ::testing::HasSubstr("-- TableWrite"));
+  }
+
+  // Table should not exist — EXPLAIN is side-effect-free.
+  VELOX_ASSERT_THROW(runner_->run("SELECT * FROM t", {}), "Table not found: t");
+
+  // EXPLAIN ANALYZE runs the query and creates the table.
+  {
+    auto result =
+        runner_->run("EXPLAIN ANALYZE CREATE TABLE t AS SELECT 1 AS x", {});
+    ASSERT_TRUE(result.message.has_value());
+    EXPECT_THAT(result.message.value(), ::testing::HasSubstr("-- TableWrite"));
+  }
+
+  {
+    auto result = runner_->run("SELECT * FROM t", {});
+    ASSERT_FALSE(result.message.has_value());
+    ASSERT_EQ(1, result.results.size());
+    test::assertEqualVectors(
+        result.results[0], makeRowVector({makeFlatVector<int32_t>({1})}));
+  }
 }
 
 TEST_F(SqlQueryRunnerTest, showStats) {

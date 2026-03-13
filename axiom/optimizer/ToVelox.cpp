@@ -1792,8 +1792,11 @@ velox::core::PlanNodePtr ToVelox::makeWrite(
   auto* connector = layout->connector();
   auto* metadata = connector::ConnectorMetadata::metadata(connector);
   auto session = session_->toConnectorSession(connector->connectorId());
-  auto handle =
-      metadata->beginWrite(session, table.shared_from_this(), write.kind());
+  auto handle = metadata->beginWrite(
+      session,
+      table.shared_from_this(),
+      write.kind(),
+      optimizerOptions_.explain);
 
   auto inputType = ROW(inputNames, inputTypes);
 

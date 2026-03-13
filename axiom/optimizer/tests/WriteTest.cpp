@@ -49,9 +49,9 @@ class WriteTest : public test::HiveQueriesTestBase {
 
     auto session = std::make_shared<connector::ConnectorSession>("test");
     auto table = metadata.createTable(
-        session, {kDefaultSchema, name}, tableType, options);
-    auto handle =
-        metadata.beginWrite(session, table, connector::WriteKind::kCreate);
+        session, {kDefaultSchema, name}, tableType, options, /*explain=*/false);
+    auto handle = metadata.beginWrite(
+        session, table, connector::WriteKind::kCreate, /*explain=*/false);
     metadata.finishWrite(session, handle, {}, nullptr, {}).get();
   }
 
@@ -67,7 +67,11 @@ class WriteTest : public test::HiveQueriesTestBase {
 
     auto session = std::make_shared<connector::ConnectorSession>("test");
     return metadata.createTable(
-        session, statement.tableName(), statement.tableSchema(), options);
+        session,
+        statement.tableName(),
+        statement.tableSchema(),
+        options,
+        /*explain=*/false);
   }
 
   void runCtas(

@@ -95,7 +95,8 @@ std::vector<velox::RowVectorPtr> fetchResults(runner::LocalRunner& runner) {
 } // namespace
 
 connector::TablePtr SqlQueryRunner::createTable(
-    const presto::CreateTableStatement& statement) {
+    const presto::CreateTableStatement& statement,
+    bool explain) {
   auto metadata =
       connector::ConnectorMetadata::metadata(statement.connectorId());
 
@@ -107,11 +108,16 @@ connector::TablePtr SqlQueryRunner::createTable(
 
   auto session = std::make_shared<connector::ConnectorSession>("test");
   return metadata->createTable(
-      session, statement.tableName(), statement.tableSchema(), options);
+      session,
+      statement.tableName(),
+      statement.tableSchema(),
+      options,
+      explain);
 }
 
 connector::TablePtr SqlQueryRunner::createTable(
-    const presto::CreateTableAsSelectStatement& statement) {
+    const presto::CreateTableAsSelectStatement& statement,
+    bool explain) {
   auto metadata =
       connector::ConnectorMetadata::metadata(statement.connectorId());
 
@@ -123,7 +129,11 @@ connector::TablePtr SqlQueryRunner::createTable(
 
   auto session = std::make_shared<connector::ConnectorSession>("test");
   return metadata->createTable(
-      session, statement.tableName(), statement.tableSchema(), options);
+      session,
+      statement.tableName(),
+      statement.tableSchema(),
+      options,
+      explain);
 }
 
 std::string SqlQueryRunner::dropTable(
@@ -230,19 +240,33 @@ SqlQueryRunner::SqlResult SqlQueryRunner::run(
     const auto& statement = explain->statement();
 
     logical_plan::LogicalPlanNodePtr logicalPlan;
+    std::shared_ptr<connector::SchemaResolver> schemaResolver;
+
     if (statement->isSelect()) {
       logicalPlan = statement->as<presto::SelectStatement>()->plan();
     } else if (statement->isInsert()) {
       logicalPlan = statement->as<presto::InsertStatement>()->plan();
+    } else if (statement->isCreateTableAsSelect()) {
+      const auto* ctas = statement->as<presto::CreateTableAsSelectStatement>();
+      logicalPlan = ctas->plan();
+
+      // EXPLAIN ANALYZE runs the query for real, so createTable must not
+      // be in explain mode. Regular EXPLAIN must be side-effect-free.
+      auto table = createTable(*ctas, /*explain=*/!explain->isAnalyze());
+      schemaResolver = std::make_shared<connector::SchemaResolver>();
+      schemaResolver->setTargetTable(
+          ctas->connectorId(), ctas->tableName(), table);
     } else {
-      // TODO Add support for EXPLAIN CREATE TABLE AS SELECT ...
       VELOX_NYI("Unsupported EXPLAIN query: {}", statement->kindName());
     }
 
     if (explain->isAnalyze()) {
-      return {.message = runExplainAnalyze(logicalPlan, options)};
+      return {
+          .message = runExplainAnalyze(logicalPlan, options, schemaResolver)};
     } else {
-      return {.message = runExplain(logicalPlan, explain->type(), options)};
+      return {
+          .message = runExplain(
+              logicalPlan, explain->type(), options, schemaResolver)};
     }
   }
 
@@ -323,17 +347,27 @@ std::shared_ptr<velox::core::QueryCtx> SqlQueryRunner::newQuery(
 std::string SqlQueryRunner::runExplain(
     const logical_plan::LogicalPlanNodePtr& logicalPlan,
     presto::ExplainStatement::Type type,
-    const RunOptions& options) {
+    const RunOptions& options,
+    std::shared_ptr<connector::SchemaResolver> schemaResolver) {
+  const bool explain = schemaResolver != nullptr;
+
   switch (type) {
     case presto::ExplainStatement::Type::kLogical:
       return logical_plan::PlanPrinter::toText(*logicalPlan);
 
     case presto::ExplainStatement::Type::kGraph: {
       std::string text;
-      optimize(logicalPlan, newQuery(options), options, [&](const auto& dt) {
-        text = optimizer::DerivedTablePrinter::toText(dt);
-        return false; // Stop optimization.
-      });
+      optimize(
+          logicalPlan,
+          newQuery(options),
+          options,
+          [&](const auto& dt) {
+            text = optimizer::DerivedTablePrinter::toText(dt);
+            return false; // Stop optimization.
+          },
+          nullptr,
+          schemaResolver,
+          explain);
       return text;
     }
 
@@ -352,12 +386,22 @@ std::string SqlQueryRunner::runExplain(
                     .includeConstraints = options.debugMode,
                 });
             return false; // Stop optimization.
-          });
+          },
+          schemaResolver,
+          explain);
       return text;
     }
 
     case presto::ExplainStatement::Type::kExecutable:
-      return optimize(logicalPlan, newQuery(options), options).toString();
+      return optimize(
+                 logicalPlan,
+                 newQuery(options),
+                 options,
+                 nullptr,
+                 nullptr,
+                 schemaResolver,
+                 explain)
+          .toString();
   }
   VELOX_UNREACHABLE();
 }
@@ -404,9 +448,11 @@ std::string printPlanWithStats(
 
 std::string SqlQueryRunner::runExplainAnalyze(
     const logical_plan::LogicalPlanNodePtr& logicalPlan,
-    const RunOptions& options) {
+    const RunOptions& options,
+    std::shared_ptr<connector::SchemaResolver> schemaResolver) {
   auto queryCtx = newQuery(options);
-  auto planAndStats = optimize(logicalPlan, queryCtx, options);
+  auto planAndStats = optimize(
+      logicalPlan, queryCtx, options, nullptr, nullptr, schemaResolver);
 
   auto runner = makeLocalRunner(planAndStats, queryCtx, options);
   SCOPE_EXIT {
@@ -429,9 +475,8 @@ optimizer::PlanAndStats SqlQueryRunner::optimize(
     const std::function<bool(const optimizer::DerivedTable&)>&
         checkDerivedTable,
     const std::function<bool(const optimizer::RelationOp&)>& checkBestPlan,
-    std::shared_ptr<facebook::axiom::connector::SchemaResolver> schemaResolver
-
-) {
+    std::shared_ptr<facebook::axiom::connector::SchemaResolver> schemaResolver,
+    bool explain) {
   optimizer::MultiFragmentPlan::Options opts;
   opts.numWorkers = options.numWorkers;
   opts.numDrivers = options.numDrivers;
@@ -460,7 +505,7 @@ optimizer::PlanAndStats SqlQueryRunner::optimize(
       *history,
       queryCtx,
       evaluator,
-      {.traceFlags = options.optimizerTraceFlags},
+      {.traceFlags = options.optimizerTraceFlags, .explain = explain},
       opts);
 
   if (checkDerivedTable && !checkDerivedTable(*optimization.rootDt())) {

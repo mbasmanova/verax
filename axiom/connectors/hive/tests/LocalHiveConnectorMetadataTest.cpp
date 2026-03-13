@@ -132,7 +132,8 @@ class LocalHiveConnectorMetadataTest
       dwio::common::FileFormat format) {
     std::string outputPath = metadata_->tablePath(table->name());
     auto session = std::make_shared<ConnectorSession>("q-test");
-    auto handle = metadata_->beginWrite(session, table, kind);
+    auto handle =
+        metadata_->beginWrite(session, table, kind, /*explain=*/false);
 
     auto builder = exec::test::PlanBuilder().values({values});
     auto insertHandle = std::make_shared<core::InsertTableHandle>(
@@ -331,7 +332,7 @@ TEST_F(LocalHiveConnectorMetadataTest, createTable) {
 
   auto session = std::make_shared<ConnectorSession>("q-test");
   auto table = metadata_->createTable(
-      session, {kDefaultSchema, "test"}, tableType, options);
+      session, {kDefaultSchema, "test"}, tableType, options, /*explain=*/false);
 
   constexpr int32_t kTestSize = 2048;
   auto data = makeRowVector(
@@ -409,7 +410,8 @@ TEST_F(LocalHiveConnectorMetadataTest, createEmptyTable) {
       session,
       {kDefaultSchema, "test_empty"},
       tableType,
-      /*options=*/{});
+      /*options=*/{},
+      /*explain=*/false);
 
   auto emptyData = makeRowVector(tableType, 0);
   EXPECT_EQ(emptyData->size(), 0);
@@ -442,8 +444,10 @@ TEST_F(LocalHiveConnectorMetadataTest, createThenInsert) {
       session,
       {kDefaultSchema, "test_insert"},
       tableType,
-      /*options=*/{});
-  auto handle = metadata_->beginWrite(session, staged, WriteKind::kCreate);
+      /*options=*/{},
+      /*explain=*/false);
+  auto handle = metadata_->beginWrite(
+      session, staged, WriteKind::kCreate, /*explain=*/false);
   metadata_->finishWrite(session, handle, /*writeResults=*/{}, nullptr, {})
       .get();
 
@@ -471,10 +475,12 @@ TEST_F(LocalHiveConnectorMetadataTest, createThenInsert) {
       dwio::common::FileFormat::DWRF);
 
   VELOX_ASSERT_THROW(
-      metadata_->beginWrite(session, created, WriteKind::kUpdate),
+      metadata_->beginWrite(
+          session, created, WriteKind::kUpdate, /*explain=*/false),
       "Only CREATE/INSERT supported, not UPDATE");
   VELOX_ASSERT_THROW(
-      metadata_->beginWrite(session, created, WriteKind::kDelete),
+      metadata_->beginWrite(
+          session, created, WriteKind::kDelete, /*explain=*/false),
       "Only CREATE/INSERT supported, not DELETE");
 }
 
@@ -488,8 +494,10 @@ TEST_F(LocalHiveConnectorMetadataTest, abortCreateWithRetry) {
       session,
       SchemaTableName{kDefaultSchema, "test_abort"},
       tableType,
-      /*options=*/{});
-  auto handle = metadata_->beginWrite(session, table, WriteKind::kCreate);
+      /*options=*/{},
+      /*explain=*/false);
+  auto handle = metadata_->beginWrite(
+      session, table, WriteKind::kCreate, /*explain=*/false);
   EXPECT_TRUE(std::filesystem::exists(tablePath));
 
   VELOX_ASSERT_THROW(
@@ -497,7 +505,8 @@ TEST_F(LocalHiveConnectorMetadataTest, abortCreateWithRetry) {
           session,
           SchemaTableName{kDefaultSchema, "test_abort"},
           tableType,
-          /*options=*/{}),
+          /*options=*/{},
+          /*explain=*/false),
       "Table \"default\".\"test_abort\" already exists");
   metadata_->abortWrite(session, handle).get();
   EXPECT_FALSE(std::filesystem::exists(tablePath));
@@ -506,8 +515,10 @@ TEST_F(LocalHiveConnectorMetadataTest, abortCreateWithRetry) {
       session,
       SchemaTableName{kDefaultSchema, "test_abort"},
       tableType,
-      /*options=*/{});
-  handle = metadata_->beginWrite(session, table, WriteKind::kCreate);
+      /*options=*/{},
+      /*explain=*/false);
+  handle = metadata_->beginWrite(
+      session, table, WriteKind::kCreate, /*explain=*/false);
   metadata_->finishWrite(session, handle, /*writeResults=*/{}, nullptr, {})
       .get();
   EXPECT_TRUE(std::filesystem::exists(tablePath));

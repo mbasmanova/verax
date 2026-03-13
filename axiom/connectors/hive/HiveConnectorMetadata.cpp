@@ -283,7 +283,8 @@ std::shared_ptr<velox::connector::hive::LocationHandle> makeLocationHandle(
 ConnectorWriteHandlePtr HiveConnectorMetadata::beginWrite(
     const ConnectorSessionPtr& session,
     const TablePtr& table,
-    WriteKind kind) {
+    WriteKind kind,
+    bool explain) {
   ensureInitialized();
   VELOX_CHECK(
       kind == WriteKind::kCreate || kind == WriteKind::kInsert,
@@ -352,7 +353,8 @@ ConnectorWriteHandlePtr HiveConnectorMetadata::beginWrite(
       std::make_shared<velox::connector::hive::HiveInsertTableHandle>(
           inputColumns,
           makeLocationHandle(
-              tablePath(table->name()), makeStagingDirectory(table->name())),
+              tablePath(table->name()),
+              explain ? std::nullopt : makeStagingDirectory(table->name())),
           storageFormat,
           bucketProperty,
           compressionKind,

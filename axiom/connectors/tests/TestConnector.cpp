@@ -361,9 +361,13 @@ TablePtr TestConnectorMetadata::createTable(
     const ConnectorSessionPtr& /*session*/,
     const SchemaTableName& tableName,
     const velox::RowTypePtr& rowType,
-    const folly::F14FastMap<std::string, velox::Variant>& /*options*/) {
+    const folly::F14FastMap<std::string, velox::Variant>& /*options*/,
+    bool explain) {
   auto table = std::make_shared<TestTable>(
       tableName, rowType, velox::ROW({}), connector_);
+  if (explain) {
+    return table;
+  }
   auto [it, ok] = tables_.emplace(tableName, std::move(table));
   VELOX_CHECK(ok, "Table already exists: {}", tableName.toString());
   return it->second;
@@ -372,7 +376,8 @@ TablePtr TestConnectorMetadata::createTable(
 ConnectorWriteHandlePtr TestConnectorMetadata::beginWrite(
     const ConnectorSessionPtr& /*session*/,
     const TablePtr& table,
-    WriteKind /*kind*/) {
+    WriteKind /*kind*/,
+    bool /*explain*/) {
   auto insertHandle = std::make_shared<TestInsertTableHandle>(table->name());
   return std::make_shared<ConnectorWriteHandle>(
       std::move(insertHandle),

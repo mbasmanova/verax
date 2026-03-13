@@ -329,12 +329,14 @@ class TestConnectorMetadata : public ConnectorMetadata {
       const ConnectorSessionPtr& session,
       const SchemaTableName& tableName,
       const velox::RowTypePtr& rowType,
-      const folly::F14FastMap<std::string, velox::Variant>& options) override;
+      const folly::F14FastMap<std::string, velox::Variant>& options,
+      bool explain) override;
 
   ConnectorWriteHandlePtr beginWrite(
       const ConnectorSessionPtr& session,
       const TablePtr& table,
-      WriteKind kind) override;
+      WriteKind kind,
+      bool explain) override;
 
   RowsFuture finishWrite(
       const ConnectorSessionPtr& session,

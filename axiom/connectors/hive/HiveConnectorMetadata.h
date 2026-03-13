@@ -248,7 +248,8 @@ class HiveConnectorMetadata : public ConnectorMetadata {
   ConnectorWriteHandlePtr beginWrite(
       const ConnectorSessionPtr& session,
       const TablePtr& table,
-      WriteKind kind) override;
+      WriteKind kind,
+      bool explain) override;
 
  protected:
   virtual void ensureInitialized() const {}
