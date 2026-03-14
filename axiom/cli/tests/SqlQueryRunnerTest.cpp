@@ -48,15 +48,14 @@ class SqlQueryRunnerTest : public ::testing::Test, public test::VectorTestBase {
   inline static const std::string kDefaultSchema{
       facebook::axiom::connector::TestConnector::kDefaultSchema};
 
-  std::unique_ptr<SqlQueryRunner> makeRunner() {
+  std::unique_ptr<SqlQueryRunner> makeRunner(
+      const std::string& connectorId = "test") {
     auto runner = std::make_unique<SqlQueryRunner>();
 
     runner->initialize([&]() {
-      static int32_t kCounter = 0;
-
       auto testConnector =
           std::make_shared<facebook::axiom::connector::TestConnector>(
-              fmt::format("test{}", kCounter++));
+              connectorId);
       facebook::velox::connector::registerConnector(testConnector);
 
       connectorIds_.emplace_back(testConnector->connectorId());
@@ -67,8 +66,12 @@ class SqlQueryRunnerTest : public ::testing::Test, public test::VectorTestBase {
     return runner;
   }
 
+  SqlQueryRunner::SqlResult run(std::string_view sql) {
+    return runner_->run(sql, {});
+  }
+
   void assertSchemas(const std::vector<std::string>& expected) {
-    auto result = runner_->run("SHOW SCHEMAS", {});
+    auto result = run("SHOW SCHEMAS");
     ASSERT_FALSE(result.message.has_value());
     ASSERT_EQ(1, result.results.size());
     test::assertEqualVectors(
@@ -83,7 +86,7 @@ class SqlQueryRunnerTest : public ::testing::Test, public test::VectorTestBase {
 };
 
 TEST_F(SqlQueryRunnerTest, runSingleStatement) {
-  auto result = runner_->run("SELECT 1", {});
+  auto result = run("SELECT 1");
 
   ASSERT_FALSE(result.message.has_value());
   ASSERT_EQ(1, result.results.size());
@@ -92,8 +95,7 @@ TEST_F(SqlQueryRunnerTest, runSingleStatement) {
 }
 
 TEST_F(SqlQueryRunnerTest, runRejectsMultipleStatements) {
-  EXPECT_THROW(
-      runner_->run("SELECT 1; SELECT 2", {}), facebook::velox::VeloxException);
+  VELOX_ASSERT_THROW(run("SELECT 1; SELECT 2"), "Expected a single statement");
 }
 
 TEST_F(SqlQueryRunnerTest, parseAndRunMixedStatementTypes) {
@@ -101,18 +103,15 @@ TEST_F(SqlQueryRunnerTest, parseAndRunMixedStatementTypes) {
       "SELECT 42; EXPLAIN (TYPE LOGICAL) SELECT 1; select 7", {});
   ASSERT_EQ(3, statements.size());
 
-  // SELECT returns results.
   auto selectResult = runner_->run(*statements[0], {});
   ASSERT_FALSE(selectResult.message.has_value());
   test::assertEqualVectors(
       selectResult.results[0], makeRowVector({makeFlatVector<int32_t>({42})}));
 
-  // EXPLAIN returns a message.
   auto explainResult = runner_->run(*statements[1], {});
   ASSERT_TRUE(explainResult.message.has_value());
   ASSERT_FALSE(explainResult.message.value().empty());
 
-  // Last SELECT returns 7.
   auto lastResult = runner_->run(*statements[2], {});
   ASSERT_FALSE(lastResult.message.has_value());
   test::assertEqualVectors(
@@ -120,8 +119,8 @@ TEST_F(SqlQueryRunnerTest, parseAndRunMixedStatementTypes) {
 }
 
 TEST_F(SqlQueryRunnerTest, multipleRunnerInstances) {
-  auto a = makeRunner();
-  auto b = makeRunner();
+  auto a = makeRunner("test_a");
+  auto b = makeRunner("test_b");
 
   auto resultA = a->run("SELECT 1", {});
   auto resultB = b->run("SELECT 1 + 2, 'foo'", {});
@@ -144,12 +143,10 @@ TEST_F(SqlQueryRunnerTest, multipleRunnerInstances) {
 }
 
 TEST_F(SqlQueryRunnerTest, invalidStatementThrows) {
-  // An invalid query should throw an exception.
-  EXPECT_THROW(runner_->run("INVALID SYNTAX HERE", {}), std::exception);
+  EXPECT_THROW(run("INVALID SYNTAX HERE"), std::exception);
 }
 
 TEST_F(SqlQueryRunnerTest, parseMultipleWithInvalidStatement) {
-  // Parsing invalid SQL should throw.
   EXPECT_THROW(
       runner_->parseMultiple("SELECT 1; INVALID; SELECT 2", {}),
       std::exception);
@@ -157,8 +154,7 @@ TEST_F(SqlQueryRunnerTest, parseMultipleWithInvalidStatement) {
 
 TEST_F(SqlQueryRunnerTest, explainCtas) {
   {
-    auto result = runner_->run(
-        "EXPLAIN (TYPE LOGICAL) CREATE TABLE t AS SELECT 1 AS x", {});
+    auto result = run("EXPLAIN (TYPE LOGICAL) CREATE TABLE t AS SELECT 1 AS x");
     ASSERT_TRUE(result.message.has_value());
     EXPECT_THAT(
         result.message.value(),
@@ -166,8 +162,8 @@ TEST_F(SqlQueryRunnerTest, explainCtas) {
   }
 
   {
-    auto result = runner_->run(
-        "EXPLAIN (TYPE OPTIMIZED) CREATE TABLE t AS SELECT 1 AS x", {});
+    auto result =
+        run("EXPLAIN (TYPE OPTIMIZED) CREATE TABLE t AS SELECT 1 AS x");
     ASSERT_TRUE(result.message.has_value());
     EXPECT_THAT(
         result.message.value(),
@@ -175,24 +171,23 @@ TEST_F(SqlQueryRunnerTest, explainCtas) {
   }
 
   {
-    auto result = runner_->run("EXPLAIN CREATE TABLE t AS SELECT 1 AS x", {});
+    auto result = run("EXPLAIN CREATE TABLE t AS SELECT 1 AS x");
     ASSERT_TRUE(result.message.has_value());
     EXPECT_THAT(result.message.value(), ::testing::HasSubstr("-- TableWrite"));
   }
 
-  // Table should not exist — EXPLAIN is side-effect-free.
-  VELOX_ASSERT_THROW(runner_->run("SELECT * FROM t", {}), "Table not found: t");
+  // EXPLAIN is side-effect-free.
+  VELOX_ASSERT_THROW(run("SELECT * FROM t"), "Table not found: t");
 
   // EXPLAIN ANALYZE runs the query and creates the table.
   {
-    auto result =
-        runner_->run("EXPLAIN ANALYZE CREATE TABLE t AS SELECT 1 AS x", {});
+    auto result = run("EXPLAIN ANALYZE CREATE TABLE t AS SELECT 1 AS x");
     ASSERT_TRUE(result.message.has_value());
     EXPECT_THAT(result.message.value(), ::testing::HasSubstr("-- TableWrite"));
   }
 
   {
-    auto result = runner_->run("SELECT * FROM t", {});
+    auto result = run("SELECT * FROM t");
     ASSERT_FALSE(result.message.has_value());
     ASSERT_EQ(1, result.results.size());
     test::assertEqualVectors(
@@ -200,15 +195,47 @@ TEST_F(SqlQueryRunnerTest, explainCtas) {
   }
 }
 
+TEST_F(SqlQueryRunnerTest, explainCreateTable) {
+  auto result = run("EXPLAIN CREATE TABLE t(x int)");
+  EXPECT_EQ(result.message, R"(CREATE TABLE test."default"."t")");
+
+  // EXPLAIN is side-effect-free.
+  VELOX_ASSERT_THROW(run("SELECT * FROM t"), "Table not found: t");
+
+  // Fails if the table already exists.
+  run("CREATE TABLE t(x int)");
+  VELOX_ASSERT_THROW(
+      run("EXPLAIN CREATE TABLE t(x int)"), "Table already exists");
+
+  // IF NOT EXISTS succeeds even if the table exists.
+  result = run("EXPLAIN CREATE TABLE IF NOT EXISTS t(x int)");
+  EXPECT_EQ(result.message, R"(CREATE TABLE IF NOT EXISTS test."default"."t")");
+}
+
+TEST_F(SqlQueryRunnerTest, explainDropTable) {
+  // Fails if the table doesn't exist.
+  VELOX_ASSERT_THROW(run("EXPLAIN DROP TABLE t"), "Table does not exist");
+
+  // IF EXISTS succeeds even if the table doesn't exist.
+  auto result = run("EXPLAIN DROP TABLE IF EXISTS t");
+  EXPECT_EQ(result.message, R"(DROP TABLE IF EXISTS test."default"."t")");
+
+  run("CREATE TABLE t(x int)");
+
+  result = run("EXPLAIN DROP TABLE t");
+  EXPECT_EQ(result.message, R"(DROP TABLE test."default"."t")");
+
+  // EXPLAIN is side-effect-free.
+  run("DROP TABLE t");
+}
+
 TEST_F(SqlQueryRunnerTest, showStats) {
   // Create a table with 100 rows and 4 columns: x has 100 distinct values,
   // y has 7 distinct values, z is an array column, w is NULL for every 4th row.
-  runner_->run(
-      "CREATE TABLE t AS "
+  run("CREATE TABLE t AS "
       "SELECT x, x % 7 AS y, sequence(1, x % 7 + 1) AS z, "
       "if(x % 4 <> 0, x + x % 7) AS w "
-      "FROM unnest(sequence(1, 100)) AS _(x)",
-      {});
+      "FROM unnest(sequence(1, 100)) AS _(x)");
 
   {
     // SHOW STATS FOR <table>: reports raw connector stats.
@@ -234,7 +261,7 @@ TEST_F(SqlQueryRunnerTest, showStats) {
             {std::nullopt, "100", "6", std::nullopt, "103"}),
     });
 
-    auto result = runner_->run("SHOW STATS FOR t", {});
+    auto result = run("SHOW STATS FOR t");
     ASSERT_FALSE(result.message.has_value());
     ASSERT_EQ(1, result.results.size());
     test::assertEqualVectors(expected, result.results[0]);
@@ -254,7 +281,7 @@ TEST_F(SqlQueryRunnerTest, showStats) {
         expected->childAt(6), // high_value.
     });
 
-    result = runner_->run("SHOW STATS FOR (SELECT * FROM t)", {});
+    result = run("SHOW STATS FOR (SELECT * FROM t)");
     ASSERT_FALSE(result.message.has_value());
     ASSERT_EQ(1, result.results.size());
     test::assertEqualVectors(expected, result.results[0]);
@@ -264,12 +291,10 @@ TEST_F(SqlQueryRunnerTest, showStats) {
 // Verifies that SHOW STATS FOR (<query>) reflects optimizer estimates after
 // filter pushdown: reduced row count, tightened min/max, capped NDV.
 TEST_F(SqlQueryRunnerTest, showStatsForQueryWithFilter) {
-  runner_->run(
-      "CREATE TABLE t AS "
+  run("CREATE TABLE t AS "
       "SELECT x, x % 7 AS y, sequence(1, x % 7 + 1) AS z, "
       "if(x % 4 <> 0, x + x % 7) AS w "
-      "FROM unnest(sequence(1, 100)) AS _(x)",
-      {});
+      "FROM unnest(sequence(1, 100)) AS _(x)");
 
   auto expected = makeRowVector({
       // row_count: 50 (filter x > 50 keeps half the rows).
@@ -293,8 +318,7 @@ TEST_F(SqlQueryRunnerTest, showStatsForQueryWithFilter) {
           {std::nullopt, "100", "6", std::nullopt, "103"}),
   });
 
-  auto result =
-      runner_->run("SHOW STATS FOR (SELECT * FROM t WHERE x > 50)", {});
+  auto result = run("SHOW STATS FOR (SELECT * FROM t WHERE x > 50)");
   ASSERT_FALSE(result.message.has_value());
   ASSERT_EQ(1, result.results.size());
   test::assertEqualVectors(expected, result.results[0]);
@@ -303,60 +327,50 @@ TEST_F(SqlQueryRunnerTest, showStatsForQueryWithFilter) {
 TEST_F(SqlQueryRunnerTest, createAndDropSchema) {
   assertSchemas({kDefaultSchema});
 
-  // Create a new schema.
-  auto createResult = runner_->run("CREATE SCHEMA foo", {});
+  auto createResult = run("CREATE SCHEMA foo");
   EXPECT_EQ("Created schema: foo", createResult.message);
   assertSchemas({kDefaultSchema, "foo"});
 
-  // Drop the schema.
-  auto dropResult = runner_->run("DROP SCHEMA foo", {});
+  auto dropResult = run("DROP SCHEMA foo");
   EXPECT_EQ("Dropped schema: foo", dropResult.message);
   assertSchemas({kDefaultSchema});
 }
 
 TEST_F(SqlQueryRunnerTest, createSchemaErrors) {
-  VELOX_ASSERT_THROW(
-      runner_->run("CREATE SCHEMA default", {}), "Schema already exists");
+  VELOX_ASSERT_THROW(run("CREATE SCHEMA default"), "Schema already exists");
 
-  // IF NOT EXISTS succeeds silently.
-  auto result = runner_->run("CREATE SCHEMA IF NOT EXISTS default", {});
+  auto result = run("CREATE SCHEMA IF NOT EXISTS default");
   EXPECT_EQ("Created schema: default", result.message);
 }
 
 TEST_F(SqlQueryRunnerTest, dropSchemaErrors) {
-  VELOX_ASSERT_THROW(
-      runner_->run("DROP SCHEMA nonexistent", {}), "Schema does not exist");
+  VELOX_ASSERT_THROW(run("DROP SCHEMA nonexistent"), "Schema does not exist");
 
-  // IF EXISTS succeeds silently.
-  auto result = runner_->run("DROP SCHEMA IF EXISTS nonexistent", {});
+  auto result = run("DROP SCHEMA IF EXISTS nonexistent");
   EXPECT_EQ("Dropped schema: nonexistent", result.message);
 
-  // Cannot drop the default schema.
-  VELOX_ASSERT_THROW(
-      runner_->run("DROP SCHEMA default", {}), "Cannot drop the default");
+  VELOX_ASSERT_THROW(run("DROP SCHEMA default"), "Cannot drop the default");
   assertSchemas({kDefaultSchema});
 
-  // CASCADE is not supported.
   VELOX_ASSERT_THROW(
-      runner_->run("DROP SCHEMA default CASCADE", {}),
-      "CASCADE is not supported");
+      run("DROP SCHEMA default CASCADE"), "CASCADE is not supported");
 }
 
 TEST_F(SqlQueryRunnerTest, createTableInNonExistentSchema) {
   VELOX_ASSERT_THROW(
-      runner_->run("CREATE TABLE nonexistent.t AS SELECT 1 AS x", {}),
+      run("CREATE TABLE nonexistent.t AS SELECT 1 AS x"),
       "Schema does not exist: nonexistent");
 }
 
 TEST_F(SqlQueryRunnerTest, showSchemasWithLike) {
-  runner_->run("CREATE SCHEMA dev", {});
-  runner_->run("CREATE SCHEMA staging", {});
+  run("CREATE SCHEMA dev");
+  run("CREATE SCHEMA staging");
   SCOPE_EXIT {
-    runner_->run("DROP SCHEMA IF EXISTS dev", {});
-    runner_->run("DROP SCHEMA IF EXISTS staging", {});
+    run("DROP SCHEMA IF EXISTS dev");
+    run("DROP SCHEMA IF EXISTS staging");
   };
 
-  auto result = runner_->run("SHOW SCHEMAS LIKE 'd%'", {});
+  auto result = run("SHOW SCHEMAS LIKE 'd%'");
   ASSERT_EQ(1, result.results.size());
   test::assertEqualVectors(
       result.results[0],
