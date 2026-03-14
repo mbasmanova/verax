@@ -282,6 +282,40 @@ SqlQueryRunner::SqlResult SqlQueryRunner::run(
       schemaResolver = std::make_shared<connector::SchemaResolver>();
       schemaResolver->setTargetTable(
           ctas->connectorId(), ctas->tableName(), table);
+    } else if (statement->isCreateTable()) {
+      const auto* create = statement->as<presto::CreateTableStatement>();
+      if (!create->ifNotExists()) {
+        auto* metadata =
+            connector::ConnectorMetadata::metadata(create->connectorId());
+        VELOX_USER_CHECK(
+            !metadata->findTable(create->tableName()),
+            "Table already exists: {}.{}",
+            create->connectorId(),
+            create->tableName());
+      }
+      return {
+          .message = fmt::format(
+              "CREATE TABLE {}{}.{}",
+              create->ifNotExists() ? "IF NOT EXISTS " : "",
+              create->connectorId(),
+              create->tableName())};
+    } else if (statement->isDropTable()) {
+      const auto* drop = statement->as<presto::DropTableStatement>();
+      if (!drop->ifExists()) {
+        auto* metadata =
+            connector::ConnectorMetadata::metadata(drop->connectorId());
+        VELOX_USER_CHECK(
+            metadata->findTable(drop->tableName()),
+            "Table does not exist: {}.{}",
+            drop->connectorId(),
+            drop->tableName());
+      }
+      return {
+          .message = fmt::format(
+              "DROP TABLE {}{}.{}",
+              drop->ifExists() ? "IF EXISTS " : "",
+              drop->connectorId(),
+              drop->tableName())};
     } else {
       VELOX_NYI("Unsupported EXPLAIN query: {}", statement->kindName());
     }
