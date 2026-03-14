@@ -154,6 +154,32 @@ std::string SqlQueryRunner::dropTable(
   }
 }
 
+std::string SqlQueryRunner::createSchema(
+    const presto::CreateSchemaStatement& statement) {
+  auto metadata =
+      connector::ConnectorMetadata::metadata(statement.connectorId());
+
+  folly::F14FastMap<std::string, velox::Variant> properties;
+  for (const auto& [key, value] : statement.properties()) {
+    properties[key] =
+        optimizer::ConstantExprEvaluator::evaluateConstantExpr(*value);
+  }
+
+  auto session = std::make_shared<connector::ConnectorSession>("test");
+  metadata->createSchema(
+      session, statement.schemaName(), statement.ifNotExists(), properties);
+  return fmt::format("Created schema: {}", statement.schemaName());
+}
+
+std::string SqlQueryRunner::dropSchema(
+    const presto::DropSchemaStatement& statement) {
+  auto metadata =
+      connector::ConnectorMetadata::metadata(statement.connectorId());
+  auto session = std::make_shared<connector::ConnectorSession>("test");
+  metadata->dropSchema(session, statement.schemaName(), statement.ifExists());
+  return fmt::format("Dropped schema: {}", statement.schemaName());
+}
+
 SqlQueryRunner::SqlResult SqlQueryRunner::run(
     std::string_view sql,
     const RunOptions& options) {
@@ -295,6 +321,16 @@ SqlQueryRunner::SqlResult SqlQueryRunner::run(
     const auto* drop = sqlStatement.as<presto::DropTableStatement>();
 
     return {.message = dropTable(*drop)};
+  }
+
+  if (sqlStatement.isCreateSchema()) {
+    const auto* create = sqlStatement.as<presto::CreateSchemaStatement>();
+    return {.message = createSchema(*create)};
+  }
+
+  if (sqlStatement.isDropSchema()) {
+    const auto* drop = sqlStatement.as<presto::DropSchemaStatement>();
+    return {.message = dropSchema(*drop)};
   }
 
   if (sqlStatement.isShowStatsForQuery()) {

@@ -1864,6 +1864,10 @@ TablePtr LocalHiveConnectorMetadata::createTable(
     const velox::RowTypePtr& rowType,
     const folly::F14FastMap<std::string, velox::Variant>& options,
     bool explain) {
+  VELOX_USER_CHECK(
+      schemaExists(nullptr, tableName.schema),
+      "Schema does not exist: {}",
+      tableName.schema);
   validateOptions(options);
   ensureInitialized();
   auto createTableOptions = parseCreateTableOptions(options, format_);

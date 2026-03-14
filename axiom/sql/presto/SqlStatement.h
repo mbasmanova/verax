@@ -46,6 +46,8 @@ enum class SqlStatementKind {
   kCreateTableAsSelect,
   kInsert,
   kDropTable,
+  kCreateSchema,
+  kDropSchema,
   kExplain,
   kShowStatsForQuery,
   kUse,
@@ -84,6 +86,14 @@ class SqlStatement {
 
   bool isDropTable() const {
     return kind_ == SqlStatementKind::kDropTable;
+  }
+
+  bool isCreateSchema() const {
+    return kind_ == SqlStatementKind::kCreateSchema;
+  }
+
+  bool isDropSchema() const {
+    return kind_ == SqlStatementKind::kDropSchema;
   }
 
   bool isExplain() const {
@@ -295,6 +305,74 @@ class DropTableStatement : public SqlStatement {
  private:
   const std::string connectorId_;
   const facebook::axiom::SchemaTableName tableName_;
+  const bool ifExists_;
+};
+
+class CreateSchemaStatement : public SqlStatement {
+ public:
+  CreateSchemaStatement(
+      std::string connectorId,
+      std::string schemaName,
+      bool ifNotExists,
+      std::unordered_map<std::string, facebook::axiom::logical_plan::ExprPtr>
+          properties)
+      : SqlStatement(SqlStatementKind::kCreateSchema),
+        connectorId_{std::move(connectorId)},
+        schemaName_{std::move(schemaName)},
+        ifNotExists_{ifNotExists},
+        properties_{std::move(properties)} {}
+
+  const std::string& connectorId() const {
+    return connectorId_;
+  }
+
+  const std::string& schemaName() const {
+    return schemaName_;
+  }
+
+  bool ifNotExists() const {
+    return ifNotExists_;
+  }
+
+  const std::unordered_map<std::string, facebook::axiom::logical_plan::ExprPtr>&
+  properties() const {
+    return properties_;
+  }
+
+ private:
+  const std::string connectorId_;
+  const std::string schemaName_;
+  const bool ifNotExists_;
+  const std::unordered_map<std::string, facebook::axiom::logical_plan::ExprPtr>
+      properties_;
+};
+
+class DropSchemaStatement : public SqlStatement {
+ public:
+  DropSchemaStatement(
+      std::string connectorId,
+      std::string schemaName,
+      bool ifExists)
+      : SqlStatement(SqlStatementKind::kDropSchema),
+        connectorId_{std::move(connectorId)},
+        schemaName_{std::move(schemaName)},
+        ifExists_{ifExists} {}
+
+  const std::string& connectorId() const {
+    return connectorId_;
+  }
+
+  const std::string& schemaName() const {
+    return schemaName_;
+  }
+
+  bool ifExists() const {
+    return ifExists_;
+  }
+
+ private:
+  const std::string connectorId_;
+  const std::string schemaName_;
   const bool ifExists_;
 };
 

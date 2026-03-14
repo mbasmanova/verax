@@ -45,6 +45,9 @@ class SqlQueryRunnerTest : public ::testing::Test, public test::VectorTestBase {
     }
   }
 
+  inline static const std::string kDefaultSchema{
+      facebook::axiom::connector::TestConnector::kDefaultSchema};
+
   std::unique_ptr<SqlQueryRunner> makeRunner() {
     auto runner = std::make_unique<SqlQueryRunner>();
 
@@ -58,13 +61,19 @@ class SqlQueryRunnerTest : public ::testing::Test, public test::VectorTestBase {
 
       connectorIds_.emplace_back(testConnector->connectorId());
 
-      return std::make_pair(
-          testConnector->connectorId(),
-          std::string(
-              facebook::axiom::connector::TestConnector::kDefaultSchema));
+      return std::make_pair(testConnector->connectorId(), kDefaultSchema);
     });
 
     return runner;
+  }
+
+  void assertSchemas(const std::vector<std::string>& expected) {
+    auto result = runner_->run("SHOW SCHEMAS", {});
+    ASSERT_FALSE(result.message.has_value());
+    ASSERT_EQ(1, result.results.size());
+    test::assertEqualVectors(
+        result.results[0],
+        makeRowVector({"Schema"}, {makeFlatVector(expected)}));
   }
 
   std::unique_ptr<SqlQueryRunner> runner_;
@@ -289,6 +298,70 @@ TEST_F(SqlQueryRunnerTest, showStatsForQueryWithFilter) {
   ASSERT_FALSE(result.message.has_value());
   ASSERT_EQ(1, result.results.size());
   test::assertEqualVectors(expected, result.results[0]);
+}
+
+TEST_F(SqlQueryRunnerTest, createAndDropSchema) {
+  assertSchemas({kDefaultSchema});
+
+  // Create a new schema.
+  auto createResult = runner_->run("CREATE SCHEMA foo", {});
+  EXPECT_EQ("Created schema: foo", createResult.message);
+  assertSchemas({kDefaultSchema, "foo"});
+
+  // Drop the schema.
+  auto dropResult = runner_->run("DROP SCHEMA foo", {});
+  EXPECT_EQ("Dropped schema: foo", dropResult.message);
+  assertSchemas({kDefaultSchema});
+}
+
+TEST_F(SqlQueryRunnerTest, createSchemaErrors) {
+  VELOX_ASSERT_THROW(
+      runner_->run("CREATE SCHEMA default", {}), "Schema already exists");
+
+  // IF NOT EXISTS succeeds silently.
+  auto result = runner_->run("CREATE SCHEMA IF NOT EXISTS default", {});
+  EXPECT_EQ("Created schema: default", result.message);
+}
+
+TEST_F(SqlQueryRunnerTest, dropSchemaErrors) {
+  VELOX_ASSERT_THROW(
+      runner_->run("DROP SCHEMA nonexistent", {}), "Schema does not exist");
+
+  // IF EXISTS succeeds silently.
+  auto result = runner_->run("DROP SCHEMA IF EXISTS nonexistent", {});
+  EXPECT_EQ("Dropped schema: nonexistent", result.message);
+
+  // Cannot drop the default schema.
+  VELOX_ASSERT_THROW(
+      runner_->run("DROP SCHEMA default", {}), "Cannot drop the default");
+  assertSchemas({kDefaultSchema});
+
+  // CASCADE is not supported.
+  VELOX_ASSERT_THROW(
+      runner_->run("DROP SCHEMA default CASCADE", {}),
+      "CASCADE is not supported");
+}
+
+TEST_F(SqlQueryRunnerTest, createTableInNonExistentSchema) {
+  VELOX_ASSERT_THROW(
+      runner_->run("CREATE TABLE nonexistent.t AS SELECT 1 AS x", {}),
+      "Schema does not exist: nonexistent");
+}
+
+TEST_F(SqlQueryRunnerTest, showSchemasWithLike) {
+  runner_->run("CREATE SCHEMA dev", {});
+  runner_->run("CREATE SCHEMA staging", {});
+  SCOPE_EXIT {
+    runner_->run("DROP SCHEMA IF EXISTS dev", {});
+    runner_->run("DROP SCHEMA IF EXISTS staging", {});
+  };
+
+  auto result = runner_->run("SHOW SCHEMAS LIKE 'd%'", {});
+  ASSERT_EQ(1, result.results.size());
+  test::assertEqualVectors(
+      result.results[0],
+      makeRowVector(
+          {"Schema"}, {makeFlatVector<std::string>({kDefaultSchema, "dev"})}));
 }
 
 } // namespace

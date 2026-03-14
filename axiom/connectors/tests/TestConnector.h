@@ -287,6 +287,8 @@ class TestInsertTableHandle
 /// layout. Filter pushdown is not supported.
 class TestConnectorMetadata : public ConnectorMetadata {
  public:
+  static constexpr std::string_view kDefaultSchema = "default";
+
   explicit TestConnectorMetadata(TestConnector* connector)
       : connector_(connector),
         splitManager_(std::make_unique<TestSplitManager>()) {}
@@ -366,6 +368,25 @@ class TestConnectorMetadata : public ConnectorMetadata {
   /// Remove a view by name. Returns true if the view existed.
   bool dropView(const SchemaTableName& viewName);
 
+  std::vector<std::string> listSchemaNames(
+      const ConnectorSessionPtr& session) override;
+
+  bool schemaExists(
+      const ConnectorSessionPtr& session,
+      const std::string& schemaName) override;
+
+  void createSchema(
+      const ConnectorSessionPtr& session,
+      const std::string& schemaName,
+      bool ifNotExists,
+      const folly::F14FastMap<std::string, velox::Variant>& properties)
+      override;
+
+  void dropSchema(
+      const ConnectorSessionPtr& session,
+      const std::string& schemaName,
+      bool ifExists) override;
+
  private:
   TestConnector* connector_;
   folly::F14FastMap<
@@ -381,6 +402,8 @@ class TestConnectorMetadata : public ConnectorMetadata {
   };
   folly::F14FastMap<SchemaTableName, ViewDefinition, SchemaTableNameHash>
       views_;
+
+  folly::F14FastSet<std::string> schemas_{"default"};
 };
 
 /// At DataSource creation time, the data contained in the corresponding Table
@@ -438,7 +461,8 @@ class TestDataSource : public velox::connector::DataSource {
 /// the associated table.
 class TestConnector : public velox::connector::Connector {
  public:
-  static constexpr std::string_view kDefaultSchema = "default";
+  static constexpr std::string_view kDefaultSchema =
+      TestConnectorMetadata::kDefaultSchema;
 
   explicit TestConnector(
       const std::string& id,

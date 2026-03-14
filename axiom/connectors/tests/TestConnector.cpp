@@ -257,6 +257,40 @@ bool TestConnectorMetadata::dropView(const SchemaTableName& viewName) {
   return views_.erase(viewName) == 1;
 }
 
+std::vector<std::string> TestConnectorMetadata::listSchemaNames(
+    const ConnectorSessionPtr& /*session*/) {
+  return {schemas_.begin(), schemas_.end()};
+}
+
+bool TestConnectorMetadata::schemaExists(
+    const ConnectorSessionPtr& /*session*/,
+    const std::string& schemaName) {
+  return schemas_.contains(schemaName);
+}
+
+void TestConnectorMetadata::createSchema(
+    const ConnectorSessionPtr& /*session*/,
+    const std::string& schemaName,
+    bool ifNotExists,
+    const folly::F14FastMap<std::string, velox::Variant>& /*properties*/) {
+  auto [_, inserted] = schemas_.insert(schemaName);
+  VELOX_USER_CHECK(
+      inserted || ifNotExists, "Schema already exists: {}", schemaName);
+}
+
+void TestConnectorMetadata::dropSchema(
+    const ConnectorSessionPtr& /*session*/,
+    const std::string& schemaName,
+    bool ifExists) {
+  VELOX_USER_CHECK_NE(
+      schemaName,
+      std::string(kDefaultSchema),
+      "Cannot drop the default schema");
+  auto erased = schemas_.erase(schemaName);
+  VELOX_USER_CHECK(
+      erased == 1 || ifExists, "Schema does not exist: {}", schemaName);
+}
+
 namespace {
 class TestDiscretePredicates : public DiscretePredicates {
  public:
@@ -363,6 +397,10 @@ TablePtr TestConnectorMetadata::createTable(
     const velox::RowTypePtr& rowType,
     const folly::F14FastMap<std::string, velox::Variant>& /*options*/,
     bool explain) {
+  VELOX_USER_CHECK(
+      schemas_.contains(tableName.schema),
+      "Schema does not exist: {}",
+      tableName.schema);
   auto table = std::make_shared<TestTable>(
       tableName, rowType, velox::ROW({}), connector_);
   if (explain) {

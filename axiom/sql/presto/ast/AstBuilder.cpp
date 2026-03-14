@@ -381,12 +381,32 @@ std::any AstBuilder::visitUse(PrestoSqlParser::UseContext* ctx) {
 std::any AstBuilder::visitCreateSchema(
     PrestoSqlParser::CreateSchemaContext* ctx) {
   trace("visitCreateSchema");
-  return visitChildren("visitCreateSchema", ctx);
+
+  auto schemaName = getQualifiedName(ctx->qualifiedName());
+  bool notExists = ctx->EXISTS() != nullptr;
+
+  std::vector<std::shared_ptr<Property>> properties;
+  if (ctx->properties() != nullptr) {
+    properties = visitTyped<Property>(ctx->properties()->property());
+  }
+
+  return std::static_pointer_cast<Statement>(std::make_shared<CreateSchema>(
+      getLocation(ctx), schemaName, notExists, properties));
 }
 
 std::any AstBuilder::visitDropSchema(PrestoSqlParser::DropSchemaContext* ctx) {
   trace("visitDropSchema");
-  return visitChildren("visitDropSchema", ctx);
+
+  auto schemaName = getQualifiedName(ctx->qualifiedName());
+  bool exists = ctx->EXISTS() != nullptr;
+
+  DropSchema::DropBehavior behavior = DropSchema::DropBehavior::kRestrict;
+  if (ctx->CASCADE() != nullptr) {
+    behavior = DropSchema::DropBehavior::kCascade;
+  }
+
+  return std::static_pointer_cast<Statement>(std::make_shared<DropSchema>(
+      getLocation(ctx), schemaName, exists, behavior));
 }
 
 std::any AstBuilder::visitRenameSchema(
@@ -686,7 +706,26 @@ std::any AstBuilder::visitShowTables(PrestoSqlParser::ShowTablesContext* ctx) {
 std::any AstBuilder::visitShowSchemas(
     PrestoSqlParser::ShowSchemasContext* ctx) {
   trace("visitShowSchemas");
-  return visitChildren("visitShowSchemas", ctx);
+
+  std::optional<std::string> catalog;
+  if (ctx->identifier() != nullptr) {
+    catalog = visitIdentifier(ctx->identifier())->value();
+  }
+
+  std::optional<std::string> likePattern;
+  std::optional<std::string> escape;
+  if (ctx->LIKE() != nullptr) {
+    likePattern = visitExpression(ctx->pattern)->as<StringLiteral>()->value();
+  }
+  if (ctx->ESCAPE() != nullptr) {
+    escape = visitExpression(ctx->escape)->as<StringLiteral>()->value();
+  }
+
+  return std::static_pointer_cast<Statement>(std::make_shared<ShowSchemas>(
+      getLocation(ctx),
+      std::move(catalog),
+      std::move(likePattern),
+      std::move(escape)));
 }
 
 std::any AstBuilder::visitShowCatalogs(

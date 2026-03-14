@@ -178,6 +178,13 @@ class TpchConnectorMetadata : public ConnectorMetadata {
 
   TablePtr findTable(const SchemaTableName& tableName) override;
 
+  std::vector<std::string> listSchemaNames(
+      const ConnectorSessionPtr& session) override;
+
+  bool schemaExists(
+      const ConnectorSessionPtr& session,
+      const std::string& schemaName) override;
+
   ViewPtr findView(const SchemaTableName& tableName) override;
 
   void createView(
