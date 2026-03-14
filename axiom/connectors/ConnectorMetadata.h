@@ -898,6 +898,42 @@ class ConnectorMetadata {
     VELOX_UNSUPPORTED();
   }
 
+  /// Returns the list of schema names available in this connector. Some
+  /// connectors may return only a representative subset of schemas (e.g.,
+  /// TPC-H returns a fixed list of scale-factor schemas). Use schemaExists()
+  /// to check whether a specific schema exists.
+  virtual std::vector<std::string> listSchemaNames(
+      const ConnectorSessionPtr& session) = 0;
+
+  /// Returns true if the specified schema exists. This may accept schemas
+  /// not listed by listSchemaNames() (e.g., TPC-H accepts any valid
+  /// scale-factor schema like "sf42").
+  virtual bool schemaExists(
+      const ConnectorSessionPtr& session,
+      const std::string& schemaName) = 0;
+
+  /// Creates a schema with the given name and properties. If 'ifNotExists' is
+  /// true, succeeds silently when the schema already exists. Otherwise, raises
+  /// a user error if the schema already exists.
+  virtual void createSchema(
+      [[maybe_unused]] const ConnectorSessionPtr& session,
+      [[maybe_unused]] const std::string& schemaName,
+      [[maybe_unused]] bool ifNotExists,
+      [[maybe_unused]] const folly::F14FastMap<std::string, velox::Variant>&
+          properties) {
+    VELOX_UNSUPPORTED();
+  }
+
+  /// Drops a schema with the given name. If 'ifExists' is true, succeeds
+  /// silently when the schema does not exist. Otherwise, raises a user error
+  /// if the schema does not exist.
+  virtual void dropSchema(
+      [[maybe_unused]] const ConnectorSessionPtr& session,
+      [[maybe_unused]] const std::string& schemaName,
+      [[maybe_unused]] bool ifExists) {
+    VELOX_UNSUPPORTED();
+  }
+
   template <typename T>
   const T* as() const {
     return dynamic_cast<const T*>(this);

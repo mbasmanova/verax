@@ -776,6 +776,38 @@ class ShowCatalogs : public Statement {
   std::optional<std::string> escape_;
 };
 
+class ShowSchemas : public Statement {
+ public:
+  ShowSchemas(
+      NodeLocation location,
+      std::optional<std::string> catalog,
+      std::optional<std::string> likePattern,
+      std::optional<std::string> escape)
+      : Statement(NodeType::kShowSchemas, location),
+        catalog_(std::move(catalog)),
+        likePattern_(std::move(likePattern)),
+        escape_(std::move(escape)) {}
+
+  const std::optional<std::string>& catalog() const {
+    return catalog_;
+  }
+
+  const std::optional<std::string>& getLikePattern() const {
+    return likePattern_;
+  }
+
+  const std::optional<std::string>& getEscape() const {
+    return escape_;
+  }
+
+  void accept(AstVisitor* visitor) override;
+
+ private:
+  std::optional<std::string> catalog_;
+  std::optional<std::string> likePattern_;
+  std::optional<std::string> escape_;
+};
+
 class ShowColumns : public Statement {
  public:
   explicit ShowColumns(

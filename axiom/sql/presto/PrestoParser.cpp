@@ -1553,6 +1553,79 @@ SqlStatementPtr parseDropTable(
       std::move(connectorId), std::move(connectorTable), dropTable.isExists());
 }
 
+SqlStatementPtr parseCreateSchema(
+    const CreateSchema& createSchema,
+    const std::string& defaultConnectorId) {
+  const auto& parts = createSchema.schemaName()->parts();
+  VELOX_USER_CHECK(
+      parts.size() == 1 || parts.size() == 2,
+      "Invalid schema name: {}",
+      createSchema.schemaName()->fullyQualifiedName());
+
+  std::string connectorId = parts.size() == 2 ? parts[0] : defaultConnectorId;
+  std::string schemaName = parts.size() == 2 ? parts[1] : parts[0];
+
+  auto properties = parseTableProperties(createSchema.properties());
+
+  return std::make_shared<CreateSchemaStatement>(
+      std::move(connectorId),
+      std::move(schemaName),
+      createSchema.isNotExists(),
+      std::move(properties));
+}
+
+SqlStatementPtr parseDropSchema(
+    const DropSchema& dropSchema,
+    const std::string& defaultConnectorId) {
+  const auto& parts = dropSchema.schemaName()->parts();
+  VELOX_USER_CHECK(
+      parts.size() == 1 || parts.size() == 2,
+      "Invalid schema name: {}",
+      dropSchema.schemaName()->fullyQualifiedName());
+
+  VELOX_USER_CHECK(
+      dropSchema.behavior() != DropSchema::DropBehavior::kCascade,
+      "DROP SCHEMA CASCADE is not supported");
+
+  std::string connectorId = parts.size() == 2 ? parts[0] : defaultConnectorId;
+  std::string schemaName = parts.size() == 2 ? parts[1] : parts[0];
+
+  return std::make_shared<DropSchemaStatement>(
+      std::move(connectorId), std::move(schemaName), dropSchema.isExists());
+}
+
+SqlStatementPtr parseShowSchemas(
+    const ShowSchemas& showSchemas,
+    const std::string& defaultConnectorId) {
+  const auto connectorId = showSchemas.catalog().value_or(defaultConnectorId);
+
+  auto metadata =
+      facebook::axiom::connector::ConnectorMetadata::metadata(connectorId);
+  auto session = std::make_shared<facebook::axiom::connector::ConnectorSession>(
+      "show-schemas");
+  auto schemaNames = metadata->listSchemaNames(session);
+  std::sort(schemaNames.begin(), schemaNames.end());
+
+  std::vector<Variant> data;
+  data.reserve(schemaNames.size());
+  for (const auto& name : schemaNames) {
+    data.emplace_back(Variant::row({name}));
+  }
+
+  lp::PlanBuilder::Context ctx(defaultConnectorId);
+  lp::PlanBuilder builder(ctx);
+  builder.values(ROW({"Schema"}, VARCHAR()), std::move(data));
+
+  if (showSchemas.getLikePattern().has_value()) {
+    builder.filter(makeLikeExpr(
+        "Schema",
+        showSchemas.getLikePattern().value(),
+        showSchemas.getEscape()));
+  }
+
+  return std::make_shared<SelectStatement>(builder.build());
+}
+
 SqlStatementPtr doPlan(
     const std::shared_ptr<Statement>& query,
     const std::string& defaultConnectorId,
@@ -1580,6 +1653,18 @@ SqlStatementPtr doPlan(
   if (query->is(NodeType::kDropTable)) {
     return parseDropTable(
         *query->as<DropTable>(), defaultConnectorId, defaultSchema);
+  }
+
+  if (query->is(NodeType::kCreateSchema)) {
+    return parseCreateSchema(*query->as<CreateSchema>(), defaultConnectorId);
+  }
+
+  if (query->is(NodeType::kDropSchema)) {
+    return parseDropSchema(*query->as<DropSchema>(), defaultConnectorId);
+  }
+
+  if (query->is(NodeType::kShowSchemas)) {
+    return parseShowSchemas(*query->as<ShowSchemas>(), defaultConnectorId);
   }
 
   if (query->is(NodeType::kShowCatalogs)) {

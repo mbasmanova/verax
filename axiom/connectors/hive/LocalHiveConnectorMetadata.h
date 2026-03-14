@@ -249,6 +249,17 @@ class LocalHiveConnectorMetadata : public HiveConnectorMetadata {
 
   TablePtr findTable(const SchemaTableName& tableName) override;
 
+  std::vector<std::string> listSchemaNames(
+      const ConnectorSessionPtr& session) override {
+    return {std::string(kDefaultSchema)};
+  }
+
+  bool schemaExists(
+      const ConnectorSessionPtr& session,
+      const std::string& schemaName) override {
+    return schemaName == kDefaultSchema;
+  }
+
   ConnectorSplitManager* splitManager() override {
     ensureInitialized();
     return &splitManager_;

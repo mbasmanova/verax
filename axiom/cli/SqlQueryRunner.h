@@ -120,6 +120,10 @@ class SqlQueryRunner {
 
   std::string dropTable(const presto::DropTableStatement& statement);
 
+  std::string createSchema(const presto::CreateSchemaStatement& statement);
+
+  std::string dropSchema(const presto::DropSchemaStatement& statement);
+
   /// Returns the default connector ID set during initialization.
   const std::string& defaultConnectorId() const {
     return defaultConnectorId_;

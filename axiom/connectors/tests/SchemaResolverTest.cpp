@@ -50,6 +50,8 @@ class SchemaResolverTest : public ::testing::Test {
       const std::string& schema) {
     auto connector = std::make_shared<connector::TestConnector>(id);
     velox::connector::registerConnector(connector);
+    ConnectorMetadata::metadata(id)->createSchema(
+        nullptr, schema, /*ifNotExists=*/false, {});
     return Catalog{
         .id = id,
         .schema = schema,
@@ -74,6 +76,8 @@ TEST_F(SchemaResolverTest, bareTable) {
 }
 
 TEST_F(SchemaResolverTest, tablePlusSchema) {
+  ConnectorMetadata::metadata("base")->createSchema(
+      nullptr, "newschema", /*ifNotExists=*/false, {});
   ConnectorMetadata::metadata("base")->createTable(
       nullptr, {"newschema", "table"}, ROW({}), {}, /*explain=*/false);
 

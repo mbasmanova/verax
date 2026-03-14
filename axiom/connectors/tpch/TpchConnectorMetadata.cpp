@@ -234,6 +234,27 @@ TablePtr TpchConnectorMetadata::findTable(const SchemaTableName& tableName) {
   return table;
 }
 
+std::vector<std::string> TpchConnectorMetadata::listSchemaNames(
+    const ConnectorSessionPtr& /*session*/) {
+  return {
+      kTiny,
+      "sf1",
+      "sf100",
+      "sf300",
+      "sf1000",
+      "sf3000",
+      "sf10000",
+      "sf30000",
+      "sf100000",
+  };
+}
+
+bool TpchConnectorMetadata::schemaExists(
+    const ConnectorSessionPtr& /*session*/,
+    const std::string& schemaName) {
+  return isValidTpchSchema(schemaName);
+}
+
 ViewPtr TpchConnectorMetadata::findView(const SchemaTableName& tableName) {
   if (!tableName.schema.empty() && !isValidTpchSchema(tableName.schema)) {
     return nullptr;
