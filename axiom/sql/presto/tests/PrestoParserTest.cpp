@@ -792,26 +792,43 @@ TEST_F(PrestoParserTest, joinOnSubquery) {
 }
 
 TEST_F(PrestoParserTest, unionAll) {
-  auto matcher = matchScan()
-                     .project()
-                     .unionAll(matchScan().project().build())
-                     .output({"n_name"});
+  {
+    auto matcher = matchScan()
+                       .project()
+                       .unionAll(matchScan().project().build())
+                       .output({"n_name"});
 
-  testSelect(
-      "SELECT n_name FROM nation UNION ALL SELECT r_name FROM region", matcher);
+    testSelect(
+        "SELECT n_name FROM nation UNION ALL SELECT r_name FROM region",
+        matcher);
+  }
 
   // 3-way UNION ALL produces nested SetNodes.
-  auto matcher3 = matchScan()
-                      .project()
-                      .unionAll(matchScan().project().build())
-                      .unionAll(matchScan().project().build())
-                      .output({"n_name"});
+  {
+    auto matcher = matchScan()
+                       .project()
+                       .unionAll(matchScan().project().build())
+                       .unionAll(matchScan().project().build())
+                       .output({"n_name"});
 
+    testSelect(
+        "SELECT n_name FROM nation "
+        "UNION ALL SELECT r_name FROM region "
+        "UNION ALL SELECT n_name FROM nation",
+        matcher);
+  }
+}
+
+TEST_F(PrestoParserTest, unionAllFollowedByInSubqueryCoercion) {
+  auto matcher = matchValues()
+                     .project()
+                     .unionAll(matchValues().project().build())
+                     .project()
+                     .output();
   testSelect(
-      "SELECT n_name FROM nation "
-      "UNION ALL SELECT r_name FROM region "
-      "UNION ALL SELECT n_name FROM nation",
-      matcher3);
+      "SELECT t.x IN (SELECT 1) "
+      "FROM (SELECT CAST(1 AS BIGINT) AS x UNION ALL SELECT CAST(2 AS BIGINT)) t",
+      matcher);
 }
 
 TEST_F(PrestoParserTest, union) {
