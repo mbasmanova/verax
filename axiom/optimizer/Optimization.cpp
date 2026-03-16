@@ -1177,22 +1177,25 @@ void Optimization::addPostprocess(
     plan = limit;
   }
 
-  if (!dt->columns.empty()) {
-    ColumnVector usedColumns;
-    ExprVector usedExprs;
-    for (auto i = 0; i < dt->exprs.size(); ++i) {
-      const auto* expr = dt->exprs[i];
-      if (state.targetExprs.contains(expr)) {
-        usedColumns.emplace_back(dt->columns[i]);
-        usedExprs.emplace_back(state.toColumn(expr));
+  if (!dt->outputColumns.empty()) {
+    ExprVector outputExprs;
+    for (auto* column : dt->outputColumns) {
+      bool found = false;
+      for (size_t i = 0; i < dt->columns.size(); ++i) {
+        if (dt->columns[i] == column) {
+          outputExprs.emplace_back(state.toColumn(dt->exprs[i]));
+          found = true;
+          break;
+        }
       }
+      VELOX_CHECK(found, "outputColumn not in columns: {}", column->toString());
     }
 
     plan = make<Project>(
         maybeDropProject(plan),
-        usedExprs,
-        usedColumns,
-        Project::isRedundant(plan, usedExprs, usedColumns));
+        outputExprs,
+        dt->outputColumns,
+        Project::isRedundant(plan, outputExprs, dt->outputColumns));
   }
 
   if (!limitConsumedByWindow && !dt->hasOrderBy() &&
@@ -3173,6 +3176,17 @@ bool Optimization::placeConjuncts(
 
 namespace {
 
+// Restricts dt->outputColumns to only those present in 'needed'.
+void pruneOutputColumns(DerivedTableP dt, const PlanObjectSet& needed) {
+  ColumnVector output;
+  for (auto* column : dt->outputColumns) {
+    if (needed.contains(column)) {
+      output.push_back(column);
+    }
+  }
+  dt->outputColumns = std::move(output);
+}
+
 // Returns a subset of 'downstream' that exist in 'index' of 'table'.
 ColumnVector indexColumns(
     const PlanObjectSet& downstream,
@@ -3498,6 +3512,13 @@ PlanP Optimization::makeUnionPlan(
         tmpDt->cname = newCName("tmp_dt");
         tmpDt->importUnionChild(inputDt);
 
+        // Restrict outputColumns to only the columns needed by the
+        // parent. The child DT inherits all union columns in
+        // outputColumns, but the parent may need only a subset.
+        // Without this, addPostprocess creates a Project that
+        // references columns pruned from the scan.
+        pruneOutputColumns(tmpDt, inputKey.columns);
+
         PlanState inner(*this, tmpDt);
         inner.setTargetExprsForDt(inputKey.columns);
 
@@ -3574,6 +3595,13 @@ PlanP Optimization::makeDtPlan(
     auto tmpDt = make<DerivedTable>();
     tmpDt->cname = newCName("tmp_dt");
     tmpDt->import(dt, key.tables, key.firstTable, key.existences, existsFanout);
+
+    // For subquery DTs, set outputColumns from key.columns rather than
+    // inheriting from the source DT. The temporary DT's output is determined
+    // by the consumer (key.columns), not by the original subquery's output.
+    if (key.firstTable->is(PlanType::kDerivedTableNode)) {
+      pruneOutputColumns(tmpDt, key.columns);
+    }
 
     PlanState inner(*this, tmpDt);
     if (key.firstTable->is(PlanType::kDerivedTableNode)) {

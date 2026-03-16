@@ -78,12 +78,17 @@ struct DerivedTable : public PlanObject {
   /// Correlation name.
   Name cname{nullptr};
 
-  /// Columns projected out. Visible in the enclosing query.
+  /// All columns defined by this DT, including intermediate columns needed for
+  /// HAVING, ORDER BY, etc.
   ColumnVector columns;
 
   /// Exprs projected out. 1:1 to 'columns' or empty if 'this' represents a set
   /// operation (setOp is set).
   ExprVector exprs;
+
+  /// Ordered list of columns this DT produces as output. Subset of 'columns'.
+  /// Determines the schema visible to the enclosing query.
+  ColumnVector outputColumns;
 
   /// True if this DT is expected to produce exactly 1 row and must be validated
   /// at runtime. Set for scalar subqueries that don't naturally guarantee
