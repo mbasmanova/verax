@@ -488,5 +488,146 @@ TEST_F(SetTest, joinWithUnionAll) {
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
+// Verifies that filtering a UNION ALL works when two columns in a child branch
+// map to the same expression object (e.g., SELECT 'x' as a, 'x' as b).
+TEST_F(SetTest, filterOnDuplicateConstantInUnionAll) {
+  auto sql =
+      "SELECT b FROM ("
+      "  SELECT 'x' as a, 'x' as b"
+      "  UNION ALL"
+      "  SELECT 'y', 'z'"
+      ") WHERE a <> ''";
+
+  auto logicalPlan = parseSelect(sql);
+
+  // Constant filters ('x' <> '' and 'y' <> '') remain as Filter nodes.
+  // TODO: Fold and eliminate these constant filters.
+  auto buildMatcher = [&] {
+    return core::PlanMatcherBuilder()
+        .values()
+        .filter("'x' <> ''")
+        .project()
+        .localPartition(
+            core::PlanMatcherBuilder()
+                .values()
+                .filter("'y' <> ''")
+                .project()
+                .build());
+  };
+
+  auto plan = toSingleNodePlan(logicalPlan);
+  AXIOM_ASSERT_PLAN(plan, buildMatcher().build());
+
+  // TODO: The distributed plan has a redundant gather since there are no
+  // table scans. Check isSingleThreadedPipeline in ToVelox.
+  auto distributedPlan = planVelox(logicalPlan);
+  AXIOM_ASSERT_DISTRIBUTED_PLAN(
+      distributedPlan.plan, buildMatcher().gather().build());
+}
+
+// Same as above but with a table column referenced twice (SELECT x as a, x as
+// b) instead of constant expressions.
+TEST_F(SetTest, filterOnDuplicateColumnInUnionAll) {
+  createEmptyTable("t", ROW("x", BIGINT()));
+
+  auto sql =
+      "SELECT b FROM ("
+      "  SELECT x as a, x as b FROM t"
+      "  UNION ALL"
+      "  SELECT 2, 3"
+      ") WHERE a > 0";
+
+  auto logicalPlan = parseSelect(sql);
+
+  // Filter is pushed into the HiveScan as a subfield filter on x.
+  // TODO: Constant filter (2 > 0) should be folded and eliminated.
+  auto buildMatcher = [&] {
+    return core::PlanMatcherBuilder()
+        .hiveScan("t", test::gt("x", 0L))
+        .project()
+        .localPartition(
+            core::PlanMatcherBuilder()
+                .values()
+                .filter("2 > 0")
+                .project()
+                .build());
+  };
+
+  auto plan = toSingleNodePlan(logicalPlan);
+  AXIOM_ASSERT_PLAN(plan, buildMatcher().build());
+
+  auto distributedPlan = planVelox(logicalPlan);
+  AXIOM_ASSERT_DISTRIBUTED_PLAN(
+      distributedPlan.plan, buildMatcher().gather().build());
+}
+
+// Same as above but with a non-trivial expression referenced twice
+// (SELECT x + 1 as a, x + 1 as b). The expression deduplication produces a
+// single expression object shared by both columns.
+TEST_F(SetTest, filterOnDuplicateExpressionInUnionAll) {
+  createEmptyTable("t", ROW("x", BIGINT()));
+
+  auto sql =
+      "SELECT b FROM ("
+      "  SELECT x + 1 as a, x + 1 as b FROM t"
+      "  UNION ALL"
+      "  SELECT x + 2, x + 3 FROM t"
+      ") WHERE a > 0";
+
+  auto logicalPlan = parseSelect(sql);
+
+  // Filter 'a > 0' becomes remaining filters 'x + 1 > 0' and 'x + 2 > 0'
+  // on the respective scan branches.
+  auto buildMatcher = [&] {
+    return core::PlanMatcherBuilder()
+        .hiveScan("t", {}, "x + 1 > 0")
+        .project()
+        .localPartition(
+            core::PlanMatcherBuilder()
+                .hiveScan("t", {}, "x + 2 > 0")
+                .project()
+                .build());
+  };
+
+  auto plan = toSingleNodePlan(logicalPlan);
+  AXIOM_ASSERT_PLAN(plan, buildMatcher().build());
+
+  auto distributedPlan = planVelox(logicalPlan);
+  AXIOM_ASSERT_DISTRIBUTED_PLAN(
+      distributedPlan.plan, buildMatcher().gather().build());
+}
+
+// Verifies that filtering a UNION ALL on a column not included in the outer
+// SELECT works correctly when the filter is pushed into the scan.
+TEST_F(SetTest, filterColumnPruningInUnionAll) {
+  createEmptyTable("t", ROW({"x", "y"}, BIGINT()));
+
+  auto sql =
+      "SELECT y FROM ("
+      "  SELECT x, y FROM t"
+      "  UNION ALL"
+      "  SELECT x, y FROM t"
+      ") WHERE x > 0";
+
+  auto logicalPlan = parseSelect(sql);
+
+  auto buildMatcher = [&] {
+    return core::PlanMatcherBuilder()
+        .hiveScan("t", test::gt("x", 0L))
+        .localPartition(
+            core::PlanMatcherBuilder()
+                .hiveScan("t", test::gt("x", 0L))
+                .project()
+                .build());
+  };
+
+  auto plan = toSingleNodePlan(logicalPlan);
+  AXIOM_ASSERT_PLAN(plan, buildMatcher().build());
+
+  auto distributedPlan = planVelox(logicalPlan);
+  AXIOM_ASSERT_DISTRIBUTED_PLAN(
+      distributedPlan.plan, buildMatcher().gather().build());
+}
+
 } // namespace
 } // namespace facebook::axiom::optimizer
