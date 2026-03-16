@@ -1499,6 +1499,14 @@ AggregationPlanCP ToGraph::translateAggregation(const lp::AggregateNode& agg) {
 
     const auto i = channel - agg.groupingKeys().size();
     const auto& aggregate = agg.aggregates()[i];
+
+    for (const auto& argExpr : aggregate->inputs()) {
+      processSubqueries(input, argExpr, /*filter=*/false);
+    }
+    if (aggregate->filter()) {
+      processSubqueries(input, aggregate->filter(), /*filter=*/false);
+    }
+
     ExprVector args = translateExprs(aggregate->inputs());
 
     FunctionSet funcs;

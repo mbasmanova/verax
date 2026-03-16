@@ -1596,5 +1596,40 @@ TEST_F(SubqueryTest, unsupportedSubqueryInJoin) {
       "Unexpected expression: Subquery");
 }
 
+TEST_F(SubqueryTest, inSubqueryInsideAggregate) {
+  auto matchJoin = [&]() {
+    return matchHiveScan("nation").hashJoin(
+        matchHiveScan("region").build(),
+        core::JoinType::kLeftSemiProject,
+        /*nullAware=*/true);
+  };
+
+  // IN <subquery> inside an aggregate expression.
+  {
+    auto query =
+        "SELECT SUM(CASE WHEN n_regionkey IN "
+        "(SELECT r_regionkey FROM region) THEN 1 ELSE 0 END) FROM nation";
+
+    auto matcher = matchJoin().project().singleAggregation().build();
+
+    SCOPED_TRACE(query);
+    auto plan = toSingleNodePlan(query);
+    AXIOM_ASSERT_PLAN(plan, matcher);
+  }
+
+  // IN <subquery> inside an aggregate FILTER clause.
+  {
+    auto query =
+        "SELECT COUNT(*) FILTER (WHERE n_regionkey IN "
+        "(SELECT r_regionkey FROM region)) FROM nation";
+
+    auto matcher = matchJoin().singleAggregation().build();
+
+    SCOPED_TRACE(query);
+    auto plan = toSingleNodePlan(query);
+    AXIOM_ASSERT_PLAN(plan, matcher);
+  }
+}
+
 } // namespace
 } // namespace facebook::axiom::optimizer
