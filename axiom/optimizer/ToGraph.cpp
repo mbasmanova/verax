@@ -340,6 +340,7 @@ void ToGraph::setDtUsedOutput(
   for (auto i : usedChannels(node)) {
     addDtColumn(dt, type.nameOf(i));
   }
+  dt->outputColumns = dt->columns;
 }
 
 std::vector<int32_t> ToGraph::usedChannels(const lp::LogicalPlanNode& node) {
@@ -2052,6 +2053,7 @@ ColumnCP ToGraph::makeCountStarWrapper(DerivedTableP inputDt) {
 
   wrapperDt->columns = {countColumn};
   wrapperDt->exprs = {countColumn};
+  wrapperDt->outputColumns = wrapperDt->columns;
 
   currentDt_->addTable(wrapperDt);
 
@@ -3278,6 +3280,7 @@ void ToGraph::translateSetJoin(const lp::SetNode& set) {
     setDt->exprs.push_back(c);
   }
   setDt->columns = columns;
+  setDt->outputColumns = columns;
 }
 
 namespace {
@@ -3361,6 +3364,11 @@ void ToGraph::translateUnion(const lp::SetNode& set) {
   };
 
   translateSetOperationInput(set, shouldFlatten, translateUnionInput);
+
+  setDt->outputColumns = setDt->columns;
+  for (auto* child : setDt->children) {
+    child->outputColumns = setDt->columns;
+  }
 
   renames_ = std::move(renames);
   for (const auto* column : setDt->columns) {
