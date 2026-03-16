@@ -166,6 +166,11 @@ class Optimization {
     return cnamesInExpr_;
   }
 
+  /// Tries to evaluate a constant expression (one with no column references).
+  /// Returns the result as a Literal, or nullptr if the expression is not
+  /// constant or evaluation fails.
+  ExprCP tryFoldConstant(ExprCP expr);
+
   /// Returns a dedupped left deep reduction with 'func' for the
   /// elements in 'expr'. The elements are sorted on plan object
   /// id and then combined into a left deep reduction on 'func'.

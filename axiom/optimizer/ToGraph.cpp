@@ -356,24 +356,6 @@ std::vector<int32_t> ToGraph::usedChannels(const lp::LogicalPlanNode& node) {
 
 namespace {
 
-bool isConstantBool(ExprCP expr, bool expected) {
-  if (expr->isNot(PlanType::kLiteralExpr)) {
-    return false;
-  }
-
-  const auto& variant = expr->as<Literal>()->literal();
-  return variant.kind() == velox::TypeKind::BOOLEAN && !variant.isNull() &&
-      variant.value<bool>() == expected;
-}
-
-bool isConstantTrue(ExprCP expr) {
-  return isConstantBool(expr, true);
-}
-
-bool isConstantFalse(ExprCP expr) {
-  return isConstantBool(expr, false);
-}
-
 bool hasConstantFalse(const ExprVector& exprs) {
   return std::ranges::any_of(exprs, isConstantFalse);
 }
@@ -416,26 +398,18 @@ ExprCP ToGraph::tryFoldConstant(
     const velox::TypePtr& returnType,
     std::string_view callName,
     const ExprVector& literals) {
-  try {
-    auto* call = make<Call>(
-        toName(callName), toConstantValue(returnType), literals, FunctionSet());
-    auto typedExpr = queryCtx()->optimization()->toTypedExpr(call);
-    auto exprSet = evaluator_.compile(typedExpr);
-    const auto& first = *exprSet->exprs().front();
-    if (!first.isConstant()) {
-      return nullptr;
-    }
-    const auto& constantExpr =
-        static_cast<const velox::exec::ConstantExpr&>(first);
-    auto typed = std::make_shared<lp::ConstantExpr>(
-        constantExpr.type(),
-        std::make_shared<velox::Variant>(constantExpr.value()->variantAt(0)));
-    return makeConstant(*typed);
-  } catch (const std::exception&) {
-    // Swallow exception.
+  auto* call = make<Call>(
+      toName(callName), toConstantValue(returnType), literals, FunctionSet());
+  auto* folded = queryCtx()->optimization()->tryFoldConstant(call);
+  if (!folded) {
+    return nullptr;
   }
 
-  return nullptr;
+  // Re-create through makeConstant for deduplication.
+  auto typed = lp::ConstantExpr(
+      returnType,
+      std::make_shared<velox::Variant>(folded->as<Literal>()->literal()));
+  return makeConstant(typed);
 }
 
 bool ToGraph::isSubfield(

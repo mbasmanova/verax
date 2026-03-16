@@ -122,6 +122,26 @@ bool isSpecialForm(
 /// structs, the field name will be an empty string.
 Step extractDereferenceStep(const logical_plan::ExprPtr& expr);
 
+/// Returns true if 'expr' is a boolean literal with the given value.
+inline bool isConstantBool(ExprCP expr, bool expected) {
+  if (expr->isNot(PlanType::kLiteralExpr)) {
+    return false;
+  }
+  const auto& variant = expr->as<Literal>()->literal();
+  return variant.kind() == velox::TypeKind::BOOLEAN && !variant.isNull() &&
+      variant.value<bool>() == expected;
+}
+
+/// Returns true if 'expr' is a boolean literal with value true.
+inline bool isConstantTrue(ExprCP expr) {
+  return isConstantBool(expr, true);
+}
+
+/// Returns true if 'expr' is a boolean literal with value false.
+inline bool isConstantFalse(ExprCP expr) {
+  return isConstantBool(expr, false);
+}
+
 std::string conjunctsToString(const ExprVector& conjuncts);
 
 std::string orderByToString(

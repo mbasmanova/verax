@@ -500,19 +500,10 @@ TEST_F(SetTest, filterOnDuplicateConstantInUnionAll) {
 
   auto logicalPlan = parseSelect(sql);
 
-  // Constant filters ('x' <> '' and 'y' <> '') remain as Filter nodes.
-  // TODO: Fold and eliminate these constant filters.
+  // Constant filters ('x' <> '' and 'y' <> '') are folded and eliminated.
   auto buildMatcher = [&] {
-    return core::PlanMatcherBuilder()
-        .values()
-        .filter("'x' <> ''")
-        .project()
-        .localPartition(
-            core::PlanMatcherBuilder()
-                .values()
-                .filter("'y' <> ''")
-                .project()
-                .build());
+    return core::PlanMatcherBuilder().values().project().localPartition(
+        core::PlanMatcherBuilder().values().project().build());
   };
 
   auto plan = toSingleNodePlan(logicalPlan);
@@ -540,17 +531,12 @@ TEST_F(SetTest, filterOnDuplicateColumnInUnionAll) {
   auto logicalPlan = parseSelect(sql);
 
   // Filter is pushed into the HiveScan as a subfield filter on x.
-  // TODO: Constant filter (2 > 0) should be folded and eliminated.
+  // The Values child's constant filter (2 > 0) is folded and eliminated.
   auto buildMatcher = [&] {
     return core::PlanMatcherBuilder()
         .hiveScan("t", test::gt("x", 0L))
         .project()
-        .localPartition(
-            core::PlanMatcherBuilder()
-                .values()
-                .filter("2 > 0")
-                .project()
-                .build());
+        .localPartition(core::PlanMatcherBuilder().values().project().build());
   };
 
   auto plan = toSingleNodePlan(logicalPlan);
@@ -627,6 +613,66 @@ TEST_F(SetTest, filterColumnPruningInUnionAll) {
   auto distributedPlan = planVelox(logicalPlan);
   AXIOM_ASSERT_DISTRIBUTED_PLAN(
       distributedPlan.plan, buildMatcher().gather().build());
+}
+
+// Constant-false filters on UNION ALL branches cause them to be replaced with
+// empty ValuesTable (zero rows) and pruned. Tests three cases:
+// - One branch false, one survives: UNION ALL dissolved.
+// - All branches false: entire UNION ALL becomes empty ValuesTable.
+// - Mix of true/false: false branch pruned, true branches survive without
+//   filters.
+TEST_F(SetTest, constantFalseFilterInUnionAll) {
+  createEmptyTable("t", ROW({"x", "y"}, BIGINT()));
+
+  // One constant-false branch (0 > 0), one table scan branch survives.
+  {
+    auto logicalPlan = parseSelect(
+        "SELECT y FROM ("
+        "  SELECT x, y FROM t"
+        "  UNION ALL"
+        "  SELECT 0, 3"
+        ") WHERE x > 0");
+
+    auto plan = toSingleNodePlan(logicalPlan);
+    AXIOM_ASSERT_PLAN(
+        plan,
+        core::PlanMatcherBuilder().hiveScan("t", test::gt("x", 0L)).build());
+  }
+
+  // All branches constant-false (0 > 0 and -1 > 0).
+  auto matchValues = [&]() { return core::PlanMatcherBuilder().values(); };
+  {
+    auto logicalPlan = parseSelect(
+        "SELECT b FROM ("
+        "  SELECT 0 as a, 1 as b"
+        "  UNION ALL"
+        "  SELECT -1, 2"
+        ") WHERE a > 0");
+
+    auto plan = toSingleNodePlan(logicalPlan);
+    AXIOM_ASSERT_PLAN(plan, matchValues().project().build());
+  }
+
+  // Mix: branch 1 (5 > 0) true, branch 2 (0 > 0) false, branch 3 (3 > 0)
+  // true. False branch pruned, two surviving branches have no filters.
+  {
+    auto logicalPlan = parseSelect(
+        "SELECT b FROM ("
+        "  SELECT 5 as a, 1 as b"
+        "  UNION ALL"
+        "  SELECT 0, 2"
+        "  UNION ALL"
+        "  SELECT 3, 3"
+        ") WHERE a > 0");
+
+    auto plan = toSingleNodePlan(logicalPlan);
+    AXIOM_ASSERT_PLAN(
+        plan,
+        matchValues()
+            .project()
+            .localPartition(matchValues().project().build())
+            .build());
+  }
 }
 
 } // namespace

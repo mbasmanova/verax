@@ -1701,6 +1701,65 @@ bool DerivedTable::isPartitionKeyFilter(ExprCP imported) const {
   return true;
 }
 
+bool DerivedTable::isZeroRows() const {
+  return tables.size() == 1 && tables[0]->is(PlanType::kValuesTableNode) &&
+      tables[0]->as<ValuesTable>()->cardinality() == 0;
+}
+
+void DerivedTable::clearState() {
+  columns.clear();
+  exprs.clear();
+  outputColumns.clear();
+  tables.clear();
+  tableSet = PlanObjectSet{};
+  joins.clear();
+  conjuncts.clear();
+  having.clear();
+  aggregation = nullptr;
+  windowPlan = nullptr;
+  children.clear();
+  setOp = std::nullopt;
+  orderKeys.clear();
+  orderTypes.clear();
+  limit = -1;
+  offset = 0;
+}
+
+void DerivedTable::makeEmpty() {
+  auto* emptyData = &registerVariant(velox::Variant::array({}))->array();
+
+  // Build ValuesTable matching outputColumns schema.
+  auto savedOutputColumns = outputColumns;
+
+  std::vector<std::string> names;
+  std::vector<velox::TypePtr> types;
+  names.reserve(savedOutputColumns.size());
+  types.reserve(savedOutputColumns.size());
+  for (auto* column : savedOutputColumns) {
+    names.push_back(std::string(column->name()));
+    types.push_back(toTypePtr(column->value().type));
+  }
+
+  auto* rowType = toType(velox::ROW(std::move(names), std::move(types)));
+  auto* valuesTable = make<ValuesTable>(rowType, emptyData);
+  valuesTable->cname = queryCtx()->optimization()->newCName("vt");
+
+  ExprVector newExprs;
+  for (auto* column : savedOutputColumns) {
+    auto* valuesColumn = make<Column>(
+        column->name(), valuesTable, Value(column->value().type, 0));
+    valuesTable->columns.push_back(valuesColumn);
+    newExprs.push_back(valuesColumn);
+  }
+
+  clearState();
+
+  columns = savedOutputColumns;
+  exprs = std::move(newExprs);
+  outputColumns = savedOutputColumns;
+  addTable(valuesTable);
+}
+
 bool DerivedTable::addFilter(ExprCP conjunct) {
   // TODO: Support pushing conjuncts below LIMIT by wrapping in a DT.
   if (dtHasLimit(*this)) {
@@ -1713,10 +1772,35 @@ bool DerivedTable::addFilter(ExprCP conjunct) {
       auto ok = child->addFilter(conjunct);
       VELOX_CHECK(ok);
     }
+
+    if (setOp.value() == logical_plan::SetOperation::kUnionAll) {
+      // Drop children that became zero-rows after filter pushdown.
+      std::erase_if(
+          children, [](const auto* child) { return child->isZeroRows(); });
+
+      if (children.size() == 1) {
+        auto* only = children[0];
+        children.clear();
+        setOp = std::nullopt;
+        flattenDt(only);
+      } else if (children.empty()) {
+        makeEmpty();
+      }
+    }
+
     return true;
   }
 
   auto imported = importExpr(conjunct);
+
+  // Fold constant filters. Eliminate constant-true. Replace the DT with an
+  // empty ValuesTable for constant-false (the branch produces no rows).
+  if (auto* folded = queryCtx()->optimization()->tryFoldConstant(imported)) {
+    if (!isConstantTrue(folded)) {
+      makeEmpty();
+    }
+    return true;
+  }
 
   if (windowPlan) {
     if (isPartitionKeyFilter(imported)) {
