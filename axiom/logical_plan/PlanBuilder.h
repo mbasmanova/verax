@@ -811,6 +811,10 @@ class PlanBuilder {
       JoinType joinType,
       const std::vector<velox::TypePtr>& commonTypes);
 
+  // Shared implementation for both setOperation overloads. Applies type
+  // coercions if enabled and creates the SetNode.
+  void setOperationImpl(SetOperation op, std::vector<LogicalPlanNodePtr> nodes);
+
   std::string nextId() {
     return planNodeIdGenerator_->next();
   }

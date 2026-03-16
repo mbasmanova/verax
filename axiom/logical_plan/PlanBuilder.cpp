@@ -1553,7 +1553,19 @@ PlanBuilder& PlanBuilder::except(const PlanBuilder& other) {
 PlanBuilder& PlanBuilder::setOperation(
     SetOperation op,
     const PlanBuilder& other) {
-  return setOperation(op, {std::move(*this), other});
+  // Do not use std::move(*this) — that invalidates resolver_ members
+  // (e.g. planNodeIdGenerator_ becomes null), causing crashes when the
+  // builder is used for expression resolution after the set operation.
+  VELOX_CHECK_NOT_NULL(node_);
+  VELOX_CHECK_NOT_NULL(other.node_);
+
+  std::vector<LogicalPlanNodePtr> nodes;
+  nodes.reserve(2);
+  nodes.push_back(std::move(node_));
+  nodes.push_back(other.node_);
+
+  setOperationImpl(op, std::move(nodes));
+  return *this;
 }
 
 PlanBuilder& PlanBuilder::setOperation(
@@ -1572,6 +1584,13 @@ PlanBuilder& PlanBuilder::setOperation(
     nodes.push_back(builder.node_);
   }
 
+  setOperationImpl(op, std::move(nodes));
+  return *this;
+}
+
+void PlanBuilder::setOperationImpl(
+    SetOperation op,
+    std::vector<LogicalPlanNodePtr> nodes) {
   if (enableCoercions_) {
     // Apply type coercion: find common supertype for each column.
     const auto firstRowType = nodes[0]->outputType();
@@ -1637,7 +1656,6 @@ PlanBuilder& PlanBuilder::setOperation(
   }
 
   node_ = std::make_shared<SetNode>(nextId(), std::move(nodes), op);
-  return *this;
 }
 
 PlanBuilder& PlanBuilder::sort(const std::vector<std::string>& sortingKeys) {
