@@ -27,6 +27,7 @@
 #include "folly/coro/BlockingWait.h"
 #include "folly/coro/Collect.h"
 #include "folly/coro/Task.h"
+#include "velox/expression/ConstantExpr.h"
 #include "velox/expression/Expr.h"
 
 namespace lp = facebook::axiom::logical_plan;
@@ -3632,6 +3633,37 @@ ExprCP Optimization::combineLeftDeep(Name func, const ExprVector& exprs) {
         result->functions() | copy[i]->functions());
   }
   return result;
+}
+
+ExprCP Optimization::tryFoldConstant(ExprCP expr) {
+  if (expr->is(PlanType::kLiteralExpr)) {
+    return expr;
+  }
+
+  if (!expr->columns().empty()) {
+    return nullptr;
+  }
+
+  try {
+    auto typedExpr = toTypedExpr(expr);
+    auto exprSet = evaluator()->compile(typedExpr);
+    const auto& first = *exprSet->exprs().front();
+    if (!first.isConstant()) {
+      return nullptr;
+    }
+    const auto& constantExpr =
+        static_cast<const velox::exec::ConstantExpr&>(first);
+    auto variant = constantExpr.value()->variantAt(0);
+    Value value(toType(constantExpr.type()), 1);
+    auto* registered = registerVariant(std::move(variant));
+    if (constantExpr.type()->isPrimitiveType()) {
+      value.min = registered;
+      value.max = registered;
+    }
+    return make<Literal>(value, registered);
+  } catch (const std::exception&) {
+    return nullptr;
+  }
 }
 
 } // namespace facebook::axiom::optimizer

@@ -326,6 +326,10 @@ struct DerivedTable : public PlanObject {
     });
   }
 
+  /// Returns true if this DT is known to produce zero rows (e.g., an empty
+  /// ValuesTable with no data).
+  bool isZeroRows() const;
+
   /// Sets enforceSingleRow flag if this DT doesn't naturally guarantee
   /// single-row output. A global aggregation (no grouping keys) without
   /// HAVING clause guarantees exactly one row; otherwise, runtime validation
@@ -352,6 +356,13 @@ struct DerivedTable : public PlanObject {
   void distributeConjuncts();
 
  private:
+  // Resets all mutable state to empty defaults.
+  void clearState();
+
+  // Replaces this DT's contents with an empty ValuesTable producing zero rows.
+  // Preserves 'outputColumns' (external interface referenced by parent DTs).
+  void makeEmpty();
+
   // Recursively distributes conjuncts across the entire DT tree (top-down).
   // Called as Pass 1 of initializePlans().
   void distributeAllConjuncts();
