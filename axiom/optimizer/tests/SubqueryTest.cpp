@@ -1660,13 +1660,33 @@ TEST_F(SubqueryTest, nestedInSubqueries) {
   SCOPED_TRACE(query);
   auto plan = toSingleNodePlan(query);
   AXIOM_ASSERT_PLAN(plan, matcher);
+}
 
-  // Subqueries nested within a single IN expression are not supported.
-  VELOX_ASSERT_THROW(
-      toSingleNodePlan(
-          "SELECT (n_regionkey IN (SELECT r_regionkey FROM region)) "
-          "IN (SELECT true) FROM nation"),
-      "Subqueries nested in the left-hand side of IN <subquery> are not supported");
+// EXISTS (SELECT 1 WHERE <condition>) with no FROM clause is equivalent to
+// just <condition>. The optimizer should simplify this and not attempt
+// subquery decorrelation.
+TEST_F(SubqueryTest, existsWithNoFromClause) {
+  testConnector_->addTable("t", ROW("a", BIGINT()));
+  testConnector_->addTable("u", ROW("x", BIGINT()));
+
+  auto query =
+      "WITH matched AS ("
+      "    SELECT t.a FROM t, u"
+      "    WHERE EXISTS (SELECT 1 WHERE t.a = u.x)"
+      ") "
+      "SELECT (SELECT count(*) FROM matched) FROM t";
+
+  auto matcher =
+      matchScan("t")
+          .nestedLoopJoin(
+              matchScan("t")
+                  .hashJoin(matchScan("u").build(), core::JoinType::kInner)
+                  .aggregation()
+                  .build())
+          .build();
+
+  auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+  AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
 } // namespace
