@@ -3458,10 +3458,6 @@ void ToGraph::makeFilterQueryGraph(
     bool excludeWindows) {
   const auto& input = *filter.onlyInput();
 
-  if (hasSubquery(filter.predicate())) {
-    excludeOuterJoins = true;
-  }
-
   if (hasNondeterministic(filter.predicate())) {
     auto* outerDt = std::exchange(currentDt_, newDt());
     makeQueryGraph(input, kAllAllowedInDt, excludeOuterJoins);
@@ -3481,6 +3477,14 @@ void ToGraph::makeFilterQueryGraph(
   }
 
   addFilter(input, filter.predicate());
+
+  // When inside a join input, subquery processing in addFilter may have added
+  // non-inner joins (semi-joins from EXISTS/IN, left joins from scalar
+  // subqueries). Wrap into a child DT so the outer non-inner join sees a
+  // single table on this side.
+  if (excludeOuterJoins && currentDt_->hasNonInnerJoin()) {
+    finalizeDt(filter);
+  }
 }
 
 void ToGraph::makeProjectQueryGraph(
@@ -3524,6 +3528,14 @@ void ToGraph::makeProjectQueryGraph(
   }
 
   addProjection(project);
+
+  // When inside a join input, subquery processing in addProjection may have
+  // added non-inner joins (semi-joins from EXISTS/IN, left joins from scalar
+  // subqueries). Wrap into a child DT so the outer non-inner join sees a
+  // single table on this side.
+  if (excludeOuterJoins && currentDt_->hasNonInnerJoin()) {
+    finalizeDt(project);
+  }
 }
 
 void ToGraph::makeQueryGraph(
