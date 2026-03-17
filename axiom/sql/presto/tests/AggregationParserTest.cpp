@@ -68,6 +68,14 @@ TEST_F(AggregationParserTest, simpleGroupBy) {
   VELOX_ASSERT_THROW(
       parseSql("SELECT n_name AS x FROM nation GROUP BY x"),
       "Cannot resolve column: x");
+
+  // GROUP BY ordinal out of range.
+  VELOX_ASSERT_THROW(
+      parseSql("SELECT 1 GROUP BY 1, 2"),
+      "GROUP BY position is not in select list: 2");
+  VELOX_ASSERT_THROW(
+      parseSql("SELECT 1 GROUP BY 0"),
+      "GROUP BY position is not in select list: 0");
 }
 
 TEST_F(AggregationParserTest, groupingSets) {

@@ -687,8 +687,12 @@ lp::ExprApi GroupByPlanner::resolveGroupingExpression(
     const std::vector<SelectItemPtr>& selectItems) {
   if (expr->is(NodeType::kLongLiteral)) {
     const auto n = expr->as<LongLiteral>()->value();
-    VELOX_CHECK_GE(n, 1);
-    VELOX_CHECK_LE(n, selectItems.size());
+    VELOX_USER_CHECK_GE(n, 1, "GROUP BY position is not in select list: {}", n);
+    VELOX_USER_CHECK_LE(
+        n,
+        selectItems.size(),
+        "GROUP BY position is not in select list: {}",
+        n);
 
     const auto& item = selectItems.at(n - 1);
     VELOX_CHECK(item->is(NodeType::kSingleColumn));
@@ -705,6 +709,13 @@ lp::ExprApi GroupByPlanner::resolveWithCache(
   const Expression* cacheKey = expr.get();
   if (expr->is(NodeType::kLongLiteral)) {
     const auto ordinal = expr->as<LongLiteral>()->value();
+    VELOX_USER_CHECK_GE(
+        ordinal, 1, "GROUP BY position is not in select list: {}", ordinal);
+    VELOX_USER_CHECK_LE(
+        ordinal,
+        selectItems.size(),
+        "GROUP BY position is not in select list: {}",
+        ordinal);
     const auto& selectItem = selectItems.at(ordinal - 1);
     if (selectItem->is(NodeType::kSingleColumn)) {
       cacheKey = selectItem->as<SingleColumn>()->expression().get();
