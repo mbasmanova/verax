@@ -204,7 +204,7 @@ TEST_F(QueryGraphContextTest, stepOrdering) {
     Step b{.kind = StepKind::kSubscript, .field = toName("b")};
     Step c{.kind = StepKind::kCardinality};
 
-    // kField < kSubscript < kCardinality (enum order).
+    // kField < kSubscript < kElementAt < kCardinality (enum order).
     // Verify ordering and asymmetry: if A < B then B > A.
     EXPECT_LT(a, b);
     EXPECT_GT(b, a);
