@@ -144,6 +144,59 @@ TEST_F(QueryGraphContextTest, toType) {
   EXPECT_EQ(interned2, interned);
 }
 
+class TestCustomType : public RowType {
+ public:
+  TestCustomType() : RowType({"f1", "f2"}, {INTEGER(), VARCHAR()}) {}
+
+  const char* name() const override {
+    return "TEST_CUSTOM";
+  }
+
+  bool equivalent(const Type& other) const override {
+    return this == &other;
+  }
+
+  std::span<const TypeParameter> parameters() const override {
+    return {};
+  }
+};
+
+class TestCustomTypeFactory : public CustomTypeFactory {
+ public:
+  explicit TestCustomTypeFactory(TypePtr type) : type_(std::move(type)) {}
+
+  TypePtr getType(
+      const std::vector<TypeParameter>& /*parameters*/) const override {
+    return type_;
+  }
+
+  exec::CastOperatorPtr getCastOperator() const override {
+    return nullptr;
+  }
+
+  AbstractInputGeneratorPtr getInputGenerator(
+      const InputGeneratorConfig&) const override {
+    return nullptr;
+  }
+
+ private:
+  TypePtr type_;
+};
+
+// Custom types (e.g., IPPREFIX) must be preserved by toType, not
+// reconstructed as plain ROW.
+TEST_F(QueryGraphContextTest, customType) {
+  auto customType = std::make_shared<const TestCustomType>();
+  registerCustomType(
+      customType->name(), std::make_unique<TestCustomTypeFactory>(customType));
+  SCOPE_EXIT {
+    unregisterCustomType(customType->name());
+  };
+
+  auto* deduped = toType(customType);
+  EXPECT_EQ(deduped, customType.get());
+}
+
 TEST_F(QueryGraphContextTest, stepOrdering) {
   // Steps with different kinds.
   {
