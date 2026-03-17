@@ -27,19 +27,23 @@ namespace facebook::axiom::optimizer {
 struct ExprDedupKey {
   Name func;
   std::span<const ExprCP> args;
+  // Canonical return type pointer. Distinguishes calls like CAST(x AS double)
+  // and CAST(x AS varchar) which share the same function name and arguments.
+  const velox::Type* type;
 
   bool operator==(const ExprDedupKey& other) const {
-    return func == other.func && std::ranges::equal(args, other.args);
+    return func == other.func && type == other.type &&
+        std::ranges::equal(args, other.args);
   }
 };
 
 struct ExprDedupHasher {
   size_t operator()(const ExprDedupKey& key) const {
-    size_t h =
-        folly::hasher<uintptr_t>()(reinterpret_cast<uintptr_t>(key.func));
+    size_t h = folly::hasher<Name>()(key.func);
     for (auto& a : key.args) {
       h = velox::bits::hashMix(h, folly::hasher<ExprCP>()(a));
     }
+    h = velox::bits::hashMix(h, folly::hasher<const velox::Type*>()(key.type));
     return h;
   }
 };

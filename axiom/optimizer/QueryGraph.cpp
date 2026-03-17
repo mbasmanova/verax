@@ -130,8 +130,13 @@ std::string Call::toString() const {
   std::stringstream out;
   out << name_ << "(";
   for (auto i = 0; i < args_.size(); ++i) {
-    out << args_[i]->toString() << (i == args_.size() - 1 ? ")" : ", ");
+    out << args_[i]->toString() << (i == args_.size() - 1 ? "" : ", ");
   }
+  if (name_ == SpecialFormCallNames::kCast ||
+      name_ == SpecialFormCallNames::kTryCast) {
+    out << " as " << value().type->toString();
+  }
+  out << ")";
   return out.str();
 }
 
