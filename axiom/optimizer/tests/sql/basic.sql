@@ -43,3 +43,6 @@ SELECT a / 0 FROM t
 ----
 -- UNION ALL.
 SELECT a FROM t UNION ALL SELECT b FROM t
+----
+-- CAST to different types on the same column must not be deduplicated.
+SELECT ROW(CAST(a AS varchar), CAST(a AS double)) FROM t

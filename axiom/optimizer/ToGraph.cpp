@@ -856,7 +856,7 @@ ExprCP ToGraph::deduppedCall(
     ExprVector args,
     FunctionSet flags) {
   canonicalizeCall(name, args);
-  ExprDedupKey key = {name, args};
+  ExprDedupKey key = {name, args, value.type};
 
   auto [it, emplaced] = functionDedup_.try_emplace(key);
   if (it->second) {
@@ -1419,8 +1419,7 @@ struct AggregateDedupKey {
 
 struct AggregateDedupHasher {
   size_t operator()(const AggregateDedupKey& key) const {
-    size_t hash =
-        folly::hasher<uintptr_t>()(reinterpret_cast<uintptr_t>(key.func));
+    size_t hash = folly::hasher<Name>()(key.func);
 
     hash = velox::bits::hashMix(hash, folly::hasher<bool>()(key.isDistinct));
 
