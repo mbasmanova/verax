@@ -2931,6 +2931,31 @@ void ToGraph::processExistsSubqueries(const std::vector<lp::ExprPtr>& exists) {
         *existsExpr->inputAt(0)->as<lp::SubqueryExpr>()->subquery(),
         /*finalize=*/false);
 
+    // EXISTS (SELECT <expr> WHERE <condition>) with no FROM clause is
+    // equivalent to just <condition>. The subquery has a single empty-schema
+    // ValuesTable as its source. Replace the EXISTS with the conjunction of
+    // the correlated conjuncts (or TRUE if uncorrelated).
+    if (subqueryDt->tables.size() == 1 &&
+        subqueryDt->tables[0]->is(PlanType::kValuesTableNode) &&
+        subqueryDt->tables[0]->as<ValuesTable>()->columns.empty()) {
+      ExprCP result;
+      if (correlatedConjuncts_.empty()) {
+        result = make<Literal>(
+            toConstantValue(velox::BOOLEAN()), registerVariant(true));
+      } else if (correlatedConjuncts_.size() == 1) {
+        result = correlatedConjuncts_[0];
+      } else {
+        result = deduppedCall(
+            toName(SpecialFormCallNames::kAnd),
+            toValue(velox::BOOLEAN(), 2),
+            std::move(correlatedConjuncts_),
+            FunctionSet());
+      }
+      correlatedConjuncts_.clear();
+      subqueries_.emplace(existsExpr, result);
+      continue;
+    }
+
     ExprCP column;
     if (correlatedConjuncts_.empty()) {
       column = processUncorrelatedExists(subqueryDt);
