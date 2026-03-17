@@ -344,12 +344,14 @@ void SubfieldTracker::markSubfields(
     }
 
     if (name == subscript_ || name == elementAt_) {
+      const auto stepKind =
+          (name == elementAt_) ? StepKind::kElementAt : StepKind::kSubscript;
       auto constant = tryFoldConstant_(expr->inputAt(1));
       if (!constant) {
         std::vector<Step> subSteps;
         markSubfields(expr->inputAt(1), subSteps, isControl, context);
 
-        steps.push_back({.kind = StepKind::kSubscript, .allFields = true});
+        steps.push_back({.kind = stepKind, .allFields = true});
         markSubfields(expr->inputAt(0), steps, isControl, context);
         steps.pop_back();
         return;
@@ -358,10 +360,10 @@ void SubfieldTracker::markSubfields(
       const auto& value = constant->value();
       if (value->kind() == velox::TypeKind::VARCHAR) {
         const auto& str = value->template value<velox::TypeKind::VARCHAR>();
-        steps.push_back({.kind = StepKind::kSubscript, .field = toName(str)});
+        steps.push_back({.kind = stepKind, .field = toName(str)});
       } else {
         const auto& id = integerValue(value.get());
-        steps.push_back({.kind = StepKind::kSubscript, .id = id});
+        steps.push_back({.kind = stepKind, .id = id});
       }
 
       markSubfields(expr->inputAt(0), steps, isControl, context);

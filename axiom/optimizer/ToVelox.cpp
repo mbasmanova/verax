@@ -55,7 +55,8 @@ ToVelox::ToVelox(
       options_{options},
       optimizerOptions_{optimizerOptions},
       isSingle_{options.numWorkers == 1},
-      subscript_{FunctionRegistry::instance()->subscript()} {}
+      subscript_{FunctionRegistry::instance()->subscript()},
+      elementAt_{FunctionRegistry::instance()->elementAt()} {}
 
 namespace {
 
@@ -125,6 +126,7 @@ std::vector<velox::common::Subfield> columnSubfields(
                   step.field));
           break;
         case StepKind::kSubscript:
+        case StepKind::kElementAt:
           if (step.allFields) {
             elements.push_back(
                 std::make_unique<velox::common::Subfield::AllSubscripts>());
@@ -475,7 +477,8 @@ velox::core::TypedExprPtr stepToMapSubscript(
 velox::core::TypedExprPtr stepToGetter(
     Step step,
     velox::core::TypedExprPtr arg,
-    const std::string& subscript) {
+    const std::string& subscript,
+    const std::string& elementAt) {
   switch (step.kind) {
     case StepKind::kField: {
       if (step.field) {
@@ -496,15 +499,18 @@ velox::core::TypedExprPtr stepToGetter(
       return std::make_shared<velox::core::DereferenceTypedExpr>(
           type, arg, step.id);
     }
-    case StepKind::kSubscript: {
+    case StepKind::kSubscript:
+    case StepKind::kElementAt: {
       auto& type = arg->type();
+      auto& funcName =
+          step.kind == StepKind::kElementAt ? elementAt : subscript;
       if (type->isMap()) {
-        return stepToMapSubscript(step, arg, subscript);
+        return stepToMapSubscript(step, arg, funcName);
       }
 
       return std::make_shared<velox::core::CallTypedExpr>(
           type->childAt(0),
-          subscript,
+          funcName,
           arg,
           makeKey(velox::INTEGER(), static_cast<int32_t>(step.id)));
     }
@@ -520,35 +526,35 @@ velox::core::TypedExprPtr ToVelox::pathToGetter(
     ColumnCP column,
     PathCP path,
     velox::core::TypedExprPtr field) {
-  bool first = true;
   // If this is a path over a map that is retrieved as struct, the first getter
   // becomes a struct getter.
-  auto alterStep = [&](ColumnCP, const Step& step, Step& newStep) {
-    auto* rel = column->relation();
-    if (rel->is(PlanType::kTableNode) &&
+  const auto alterStep = [&](ColumnCP, const Step& step, Step& newStep) {
+    auto* relation = column->relation();
+    if (relation->is(PlanType::kTableNode) &&
         isMapAsStruct(
-            rel->as<BaseTable>()->schemaTable->name(), column->name())) {
+            relation->as<BaseTable>()->schemaTable->name(), column->name())) {
       // This column is a map to project out as struct.
       newStep.kind = StepKind::kField;
       if (step.field) {
         newStep.field = step.field;
       } else {
-        newStep.field = toName(fmt::format("{}", step.id));
+        newStep.field = toName(fmt::to_string(step.id));
       }
       return true;
     }
     return false;
   };
 
+  bool first = true;
   for (auto& step : path->steps()) {
     Step newStep;
     if (first && alterStep(column, step, newStep)) {
-      field = stepToGetter(newStep, field, subscript_.value());
-      first = false;
-      continue;
+      field =
+          stepToGetter(newStep, field, subscript_.value(), elementAt_.value());
+    } else {
+      field = stepToGetter(step, field, subscript_.value(), elementAt_.value());
     }
     first = false;
-    field = stepToGetter(step, field, subscript_.value());
   }
   return field;
 }
