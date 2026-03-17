@@ -381,6 +381,24 @@ TEST_F(ExpressionParserTest, timestampLiteral) {
       parseExpr("TIMESTAMP 'foo'"), "Not a valid timestamp literal");
 }
 
+// JSON literals (json '...') should be translated as json_parse('...'),
+// not CAST('...' AS JSON). CAST wraps the value as a JSON string, while
+// json_parse interprets the value as JSON.
+TEST_F(ExpressionParserTest, jsonLiteral) {
+  auto expr = parseExpr(R"(json '{"a": 1}')");
+  ASSERT_TRUE(expr->isCall());
+  auto* call = expr->as<lp::CallExpr>();
+  ASSERT_EQ(call->name(), "json_parse");
+  ASSERT_EQ(call->inputs().size(), 1);
+  ASSERT_TRUE(call->inputAt(0)->isConstant());
+  ASSERT_EQ(
+      call->inputAt(0)
+          ->as<lp::ConstantExpr>()
+          ->value()
+          ->value<TypeKind::VARCHAR>(),
+      R"({"a": 1})");
+}
+
 TEST_F(ExpressionParserTest, atTimeZone) {
   // AT TIME ZONE translates to at_timezone().
   EXPECT_EQ(

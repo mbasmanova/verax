@@ -18,6 +18,7 @@
 #include <folly/String.h>
 #include <algorithm>
 #include <cctype>
+#include "velox/functions/prestosql/types/JsonType.h"
 #include "velox/functions/prestosql/types/TimestampWithTimeZoneType.h"
 
 namespace axiom::sql::presto {
@@ -582,8 +583,14 @@ lp::ExprApi ExpressionPlanner::toExpr(
 
     case NodeType::kGenericLiteral: {
       auto literal = node->as<GenericLiteral>();
-      return lp::Cast(
-          parseType(literal->valueType()), lp::Lit(literal->value()));
+      auto type = parseType(literal->valueType());
+      // JSON literals use json_parse, not CAST. CAST(VARCHAR AS JSON)
+      // wraps the value as a JSON string, while json_parse interprets the
+      // value as JSON.
+      if (facebook::velox::isJsonType(type)) {
+        return lp::Call("json_parse", lp::Lit(literal->value()));
+      }
+      return lp::Cast(type, lp::Lit(literal->value()));
     }
 
     case NodeType::kTimestampLiteral: {
