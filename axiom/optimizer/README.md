@@ -431,7 +431,9 @@ A DerivedTable groups together operations that can be planned as a single unit. 
 
 2. **Only inner joins can be flattened together.** Multiple inner joins can be combined into a single DT for join order optimization. Outer joins (LEFT, FULL) cannot be freely reordered, so each outer join and its inputs are wrapped in a nested DT.
 
-3. **Syntactic join order (optional).** When enabled, the right side of each join is wrapped in a nested DT to preserve the SQL-specified join order.
+3. **Dependent subquery joins must be in separate DTs.** When a subquery references a column produced by a prior subquery join (e.g., a mark column from an IN semi-join), the prior join is wrapped in a nested DT. Independent subquery joins can coexist in the same DT.
+
+4. **Syntactic join order (optional).** When enabled, the right side of each join is wrapped in a nested DT to preserve the SQL-specified join order.
 
 > [!NOTE]
 > Some outer join reorderings are semantically valid. For example, `(a JOIN b) LEFT JOIN c ON f(a, c)` can be reordered to `(a LEFT JOIN c ON f(a, c)) JOIN b`. However, Axiom does not implement this optimization today.
@@ -448,6 +450,6 @@ When a nested DT is needed, there are two patterns:
 
 - **`wrapInDt(node)`**: Converts the logical plan subtree rooted at `node` into a query graph and wraps it in a nested DT. Called when: (1) a node type is not allowed per the `allowedInDt` bitmask, (2) an outer join appears where only inner joins are allowed, (3) for inputs of INTERSECT/EXCEPT set operations, or (4) for inputs of table writes.
 
-- **`finalizeDt`**: Completes `currentDt_` by setting its output columns, nests it inside an outer DT, and updates `currentDt_` to point to the outer DT. Called from `wrapInDt`, but also called directly in cases like adding an aggregation when one already exists, or adding a sort when a limit already exists.
+- **`finalizeDt`**: Completes `currentDt_` by setting its output columns, nests it inside an outer DT, and updates `currentDt_` to point to the outer DT. Called from `wrapInDt`, but also called directly in cases like adding an aggregation when one already exists, adding a sort when a limit already exists, or when `processSubqueries` detects that the DT has non-inner joins, aggregation, or unnest tables before adding new subquery joins.
 
 See `ToGraph::makeQueryGraph` in `ToGraph.cpp` for the full implementation.

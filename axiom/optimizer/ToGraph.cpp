@@ -1453,19 +1453,39 @@ AggregationPlanCP ToGraph::translateAggregation(const lp::AggregateNode& agg) {
     exprSources_.pop_back();
   };
 
-  for (const auto& key : agg.groupingKeys()) {
-    processSubqueries(input, key, /*filter=*/false);
+  const auto numGroupingKeys = agg.groupingKeys().size();
+  const auto channels = usedChannels(agg);
+  {
+    bool mayFinalize = true;
+    for (const auto& key : agg.groupingKeys()) {
+      processSubqueries(input, key, mayFinalize);
+    }
+
+    for (auto channel : channels) {
+      if (channel < numGroupingKeys) {
+        continue;
+      }
+
+      const auto& aggregate = agg.aggregates()[channel - numGroupingKeys];
+
+      for (const auto& expr : aggregate->inputs()) {
+        processSubqueries(input, expr, mayFinalize);
+      }
+      if (aggregate->filter()) {
+        processSubqueries(input, aggregate->filter(), mayFinalize);
+      }
+    }
   }
 
   ColumnVector columns;
 
   ExprVector deduppedGroupingKeys;
-  deduppedGroupingKeys.reserve(agg.groupingKeys().size());
+  deduppedGroupingKeys.reserve(numGroupingKeys);
 
   auto newRenames = renames_;
 
   folly::F14FastMap<ExprCP, ColumnCP> uniqueGroupingKeys;
-  for (auto i = 0; i < agg.groupingKeys().size(); ++i) {
+  for (auto i = 0; i < numGroupingKeys; ++i) {
     auto name = toName(agg.outputType()->nameOf(i));
     auto* key = translateExpr(agg.groupingKeys()[i]);
 
@@ -1492,20 +1512,12 @@ AggregationPlanCP ToGraph::translateAggregation(const lp::AggregateNode& agg) {
 
   // The keys for intermediate are the same as for final.
   ColumnVector intermediateColumns = columns;
-  for (auto channel : usedChannels(agg)) {
-    if (channel < agg.groupingKeys().size()) {
+  for (auto channel : channels) {
+    if (channel < numGroupingKeys) {
       continue;
     }
 
-    const auto i = channel - agg.groupingKeys().size();
-    const auto& aggregate = agg.aggregates()[i];
-
-    for (const auto& argExpr : aggregate->inputs()) {
-      processSubqueries(input, argExpr, /*filter=*/false);
-    }
-    if (aggregate->filter()) {
-      processSubqueries(input, aggregate->filter(), /*filter=*/false);
-    }
+    const auto& aggregate = agg.aggregates()[channel - numGroupingKeys];
 
     ExprVector args = translateExprs(aggregate->inputs());
 
@@ -2249,8 +2261,9 @@ void ToGraph::addProjection(const lp::ProjectNode& project) {
     }
   });
 
+  bool mayFinalize = true;
   for (auto i : channels) {
-    processSubqueries(input, exprs[i], /*filter=*/false);
+    processSubqueries(input, exprs[i], mayFinalize);
   }
 
   QGVector<WindowFunctionCP> windowFunctions;
@@ -2304,6 +2317,29 @@ struct Subqueries {
   }
 };
 
+// Returns true if 'expr' or any of its descendants is a subquery expression.
+bool containsSubquery(const lp::ExprPtr& expr) {
+  if (expr->isSubquery()) {
+    return true;
+  }
+  if (expr->isSpecialForm()) {
+    const auto* specialForm = expr->as<lp::SpecialFormExpr>();
+    if (specialForm->form() == lp::SpecialForm::kExists) {
+      return true;
+    }
+    if (specialForm->form() == lp::SpecialForm::kIn &&
+        specialForm->inputAt(1)->isSubquery()) {
+      return true;
+    }
+  }
+  for (const auto& input : expr->inputs()) {
+    if (containsSubquery(input)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void extractSubqueries(const lp::ExprPtr& expr, Subqueries& subqueries) {
   if (expr->isSubquery()) {
     subqueries.scalars.push_back(
@@ -2315,6 +2351,9 @@ void extractSubqueries(const lp::ExprPtr& expr, Subqueries& subqueries) {
     const auto* specialForm = expr->as<lp::SpecialFormExpr>();
     if (specialForm->form() == lp::SpecialForm::kIn &&
         specialForm->inputAt(1)->isSubquery()) {
+      VELOX_USER_CHECK(
+          !containsSubquery(specialForm->inputAt(0)),
+          "Subqueries nested in the left-hand side of IN <subquery> are not supported");
       subqueries.inPredicates.push_back(expr);
       return;
     }
@@ -2582,24 +2621,35 @@ AggregationPlanCP ToGraph::processCorrelatedAggregation(AggregationPlanCP agg) {
 void ToGraph::processSubqueries(
     const lp::LogicalPlanNode& input,
     const lp::ExprPtr& expr,
-    bool filter) {
+    bool& mayFinalize) {
   Subqueries subqueries;
   extractSubqueries(expr, subqueries);
 
-  if (filter && currentDt_->hasLimit()) {
-    // Filter cannot be added after LIMIT.
-    finalizeDt(input);
-  } else if (currentDt_->hasAggregation() && !subqueries.empty()) {
-    // Scalar subqueries are placed as joins. Joins cannot be added after
-    // aggregation.
-    finalizeDt(input);
-  } else if (currentDt_->hasUnnestTable() && !subqueries.empty()) {
-    // Subqueries are placed as joins. Joins cannot be placed directly on unnest
-    // tables because unnest tables are on the right side of directed
-    // cross-joins.
-    // TODO: Optimize to only wrap when subquery actually references an unnest
-    // table column.
-    finalizeDt(input);
+  if (subqueries.empty()) {
+    return;
+  }
+
+  if (mayFinalize) {
+    mayFinalize = false;
+
+    if (currentDt_->hasNonInnerJoin()) {
+      // Subquery joins (semi-joins, left joins) produce columns (mark columns,
+      // scalar subquery results) that belong to the current DT. If a new
+      // subquery references such a column as a join key, it would create a
+      // self-referencing join edge. Wrapping the current DT avoids this.
+      finalizeDt(input);
+    } else if (currentDt_->hasAggregation()) {
+      // Scalar subqueries are placed as joins. Joins cannot be added after
+      // aggregation.
+      finalizeDt(input);
+    } else if (currentDt_->hasUnnestTable()) {
+      // Subqueries are placed as joins. Joins cannot be placed directly on
+      // unnest tables because unnest tables are on the right side of directed
+      // cross-joins.
+      // TODO: Optimize to only wrap when subquery actually references an unnest
+      // table column.
+      finalizeDt(input);
+    }
   }
 
   processScalarSubqueries(input, subqueries.scalars);
@@ -3089,7 +3139,13 @@ void ToGraph::addFilter(
     exprSources_.pop_back();
   };
 
-  processSubqueries(input, predicate, /*filter=*/true);
+  if (currentDt_->hasLimit()) {
+    // Filter cannot be added after LIMIT.
+    finalizeDt(input);
+  }
+
+  bool mayFinalize = true;
+  processSubqueries(input, predicate, mayFinalize);
 
   ExprVector flat;
   {

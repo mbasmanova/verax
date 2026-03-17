@@ -1631,5 +1631,43 @@ TEST_F(SubqueryTest, inSubqueryInsideAggregate) {
   }
 }
 
+TEST_F(SubqueryTest, nestedInSubqueries) {
+  // IN subquery on a column derived from another IN subquery. The inner IN
+  // produces a mark column used to compute 'flag'. The outer IN uses 'flag'
+  // as its left key. The optimizer wraps the inner semi-join in a child DT
+  // so the outer semi-join references the child DT, not the current DT.
+  auto query =
+      "SELECT IF(flag IN (SELECT 1), 'y', 'n') "
+      "FROM ("
+      " SELECT IF(n_regionkey IN (SELECT r_regionkey FROM region), 1, 0) AS flag "
+      " FROM nation"
+      ") t";
+
+  auto matcher =
+      matchHiveScan("nation")
+          .hashJoin(
+              matchHiveScan("region").build(),
+              velox::core::JoinType::kLeftSemiProject,
+              /*nullAware=*/true)
+          .project()
+          .hashJoin(
+              velox::core::PlanMatcherBuilder().values().project().build(),
+              velox::core::JoinType::kLeftSemiProject,
+              /*nullAware=*/true)
+          .project()
+          .build();
+
+  SCOPED_TRACE(query);
+  auto plan = toSingleNodePlan(query);
+  AXIOM_ASSERT_PLAN(plan, matcher);
+
+  // Subqueries nested within a single IN expression are not supported.
+  VELOX_ASSERT_THROW(
+      toSingleNodePlan(
+          "SELECT (n_regionkey IN (SELECT r_regionkey FROM region)) "
+          "IN (SELECT true) FROM nation"),
+      "Subqueries nested in the left-hand side of IN <subquery> are not supported");
+}
+
 } // namespace
 } // namespace facebook::axiom::optimizer

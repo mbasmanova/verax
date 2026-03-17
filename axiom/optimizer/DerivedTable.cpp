@@ -966,6 +966,11 @@ bool DerivedTable::isWrapOnly() const {
       !hasWindow() && exprs.empty();
 }
 
+bool DerivedTable::hasNonInnerJoin() const {
+  return std::ranges::any_of(
+      joins, [](JoinEdgeP join) { return !join->isInner(); });
+}
+
 void DerivedTable::ensureSingleRow() {
   // Global aggregation (no grouping keys) without HAVING clause guarantees
   // exactly one output row.

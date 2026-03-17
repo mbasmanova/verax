@@ -419,11 +419,14 @@ class ToGraph {
   //
   // @param input The logical plan node to use when finalizing the DT.
   // @param expr The expression to scan for subqueries.
-  // @param filter If true, indicates this is processing a filter predicate.
+  // @param mayFinalize In/out flag. If true on entry and the current DT has
+  // non-inner joins, aggregation, or unnest tables, wraps the DT before
+  // processing subqueries. Set to false after finalization or after processing
+  // subqueries to prevent subsequent calls from finalizing the DT again.
   void processSubqueries(
       const logical_plan::LogicalPlanNode& input,
       const logical_plan::ExprPtr& expr,
-      bool filter);
+      bool& mayFinalize);
 
   // Processes scalar subqueries, creating DTs and joins for each.
   // Populates subqueries_ with mappings from subquery expressions to columns.
