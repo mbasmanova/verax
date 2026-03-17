@@ -1151,5 +1151,39 @@ TEST_F(JoinTest, impliedJoins) {
   }
 }
 
+// LEFT JOIN with no equalities when the DT has 3+ tables. The comma join
+// between nation and region is inlined into the same DT. The EXISTS semi-join
+// adds a 3rd table. The subsequent LEFT JOIN ON clause uses contains() which
+// has no equalities, so leftTables must be inferred from the DT.
+TEST_F(JoinTest, leftJoinNoEqualitiesMultipleTables) {
+  auto query =
+      "WITH base AS ("
+      "   SELECT n_nationkey, n_name "
+      "   FROM nation, region "
+      "   WHERE n_regionkey = r_regionkey"
+      "), "
+      "with_exists AS ("
+      "   SELECT *, "
+      "       EXISTS ("
+      "           SELECT 1 FROM customer WHERE c_nationkey = n_nationkey"
+      "       ) AS has_customer "
+      "   FROM base"
+      ") "
+      "SELECT * FROM with_exists LEFT JOIN supplier ON s_nationkey > n_nationkey";
+  SCOPED_TRACE(query);
+
+  auto matcher =
+      matchScan("nation")
+          .hashJoin(matchScan("region").build(), core::JoinType::kInner)
+          .hashJoin(
+              matchScan("customer").build(), core::JoinType::kLeftSemiProject)
+          .project()
+          .nestedLoopJoin(matchScan("supplier").build(), core::JoinType::kLeft)
+          .build();
+
+  auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+  AXIOM_ASSERT_PLAN(plan, matcher);
+}
+
 } // namespace
 } // namespace facebook::axiom::optimizer
