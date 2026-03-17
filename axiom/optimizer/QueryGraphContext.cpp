@@ -73,12 +73,27 @@ velox::TypePtr QueryGraphContext::dedupType(const velox::TypePtr& type) {
   if (it != deduppedTypes_.end()) {
     return *it;
   }
-  auto size = type->size();
+
+  const auto size = type->size();
   if (size == 0) {
     deduppedTypes_.insert(type);
     toTypePtr_[type.get()] = type;
     return type;
   }
+
+  // Custom types (e.g., IPPREFIX) extend built-in types like RowType.
+  // Reconstructing them as a plain built-in type would lose their identity.
+  // Preserve the original type.
+  if (velox::customTypeExists(type->name())) {
+    VELOX_USER_CHECK(
+        type->parameters().empty(),
+        "Custom types with type parameters are not supported: {}",
+        type->toString());
+    deduppedTypes_.insert(type);
+    toTypePtr_[type.get()] = type;
+    return type;
+  }
+
   std::vector<velox::TypePtr> children;
   children.reserve(size);
   for (auto i = 0; i < size; ++i) {
