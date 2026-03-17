@@ -766,7 +766,9 @@ const auto& setOperationNames() {
       {SetOperation::kUnion, "UNION"},
       {SetOperation::kUnionAll, "UNION ALL"},
       {SetOperation::kIntersect, "INTERSECT"},
+      {SetOperation::kIntersectAll, "INTERSECT ALL"},
       {SetOperation::kExcept, "EXCEPT"},
+      {SetOperation::kExceptAll, "EXCEPT ALL"},
   };
   return kNames;
 }

@@ -832,13 +832,13 @@ TEST_F(PrestoParserTest, unionAllFollowedByInSubqueryCoercion) {
 }
 
 TEST_F(PrestoParserTest, union) {
+  // UNION and UNION DISTINCT are equivalent. Deduplication is part of the
+  // kUnion set operation semantics.
   auto matcher = matchScan()
                      .project()
-                     .unionAll(matchScan().project().build())
-                     .distinct()
+                     .unionDistinct(matchScan().project().build())
                      .output({"n_name"});
 
-  // UNION and UNION DISTINCT are equivalent.
   testSelect(
       "SELECT n_name FROM nation UNION SELECT r_name FROM region", matcher);
   testSelect(
@@ -847,12 +847,11 @@ TEST_F(PrestoParserTest, union) {
 }
 
 TEST_F(PrestoParserTest, except) {
-  // EXCEPT and EXCEPT DISTINCT are equivalent. Both add distinct for
-  // deduplication.
+  // EXCEPT and EXCEPT DISTINCT are equivalent. Deduplication is part of the
+  // kExcept set operation semantics.
   auto matcher = matchScan()
                      .project()
                      .except(matchScan().project().build())
-                     .distinct()
                      .output({"n_name"});
 
   testSelect(
@@ -861,10 +860,10 @@ TEST_F(PrestoParserTest, except) {
       "SELECT n_name FROM nation EXCEPT DISTINCT SELECT r_name FROM region",
       matcher);
 
-  // EXCEPT ALL skips deduplication.
+  // EXCEPT ALL uses kExceptAll which preserves duplicates.
   auto matcherAll = matchScan()
                         .project()
-                        .except(matchScan().project().build())
+                        .exceptAll(matchScan().project().build())
                         .output({"n_name"});
 
   testSelect(
@@ -873,12 +872,11 @@ TEST_F(PrestoParserTest, except) {
 }
 
 TEST_F(PrestoParserTest, intersect) {
-  // INTERSECT and INTERSECT DISTINCT are equivalent. Both add distinct for
-  // deduplication.
+  // INTERSECT and INTERSECT DISTINCT are equivalent. Deduplication is part of
+  // the kIntersect set operation semantics.
   auto matcher = matchScan()
                      .project()
                      .intersect(matchScan().project().build())
-                     .distinct()
                      .output({"n_name"});
 
   testSelect(
@@ -887,10 +885,10 @@ TEST_F(PrestoParserTest, intersect) {
       "SELECT n_name FROM nation INTERSECT DISTINCT SELECT r_name FROM region",
       matcher);
 
-  // INTERSECT ALL skips deduplication.
+  // INTERSECT ALL uses kIntersectAll which preserves duplicates.
   auto matcherAll = matchScan()
                         .project()
-                        .intersect(matchScan().project().build())
+                        .intersectAll(matchScan().project().build())
                         .output({"n_name"});
 
   testSelect(

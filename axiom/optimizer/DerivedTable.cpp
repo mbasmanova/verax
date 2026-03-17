@@ -393,6 +393,13 @@ void DerivedTable::finalizeJoinsAndMakePlans() {
     for (auto* child : children) {
       child->finalizeJoinsAndMakePlans();
     }
+
+    // Set initial cardinality as the sum of children's cardinalities so that
+    // makeInitialPlan can use it when estimating groups for makeDistinct.
+    cardinality = 0;
+    for (const auto* child : children) {
+      cardinality += child->cardinality;
+    }
   }
 
   finalizeJoins();

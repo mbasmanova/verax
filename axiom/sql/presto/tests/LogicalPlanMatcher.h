@@ -172,6 +172,12 @@ class LogicalPlanMatcherBuilder {
       const std::shared_ptr<LogicalPlanMatcher>& matcher,
       OnMatchCallback onMatch = nullptr);
 
+  /// Matches a SetNode with kUnion operation. Named 'unionDistinct' because
+  /// 'union' is a C++ reserved keyword.
+  LogicalPlanMatcherBuilder& unionDistinct(
+      const std::shared_ptr<LogicalPlanMatcher>& matcher,
+      OnMatchCallback onMatch = nullptr);
+
   /// Matches a SetNode with kUnionAll operation.
   LogicalPlanMatcherBuilder& unionAll(
       const std::shared_ptr<LogicalPlanMatcher>& matcher,
@@ -182,8 +188,18 @@ class LogicalPlanMatcherBuilder {
       const std::shared_ptr<LogicalPlanMatcher>& matcher,
       OnMatchCallback onMatch = nullptr);
 
+  /// Matches a SetNode with kExceptAll operation.
+  LogicalPlanMatcherBuilder& exceptAll(
+      const std::shared_ptr<LogicalPlanMatcher>& matcher,
+      OnMatchCallback onMatch = nullptr);
+
   /// Matches a SetNode with kIntersect operation.
   LogicalPlanMatcherBuilder& intersect(
+      const std::shared_ptr<LogicalPlanMatcher>& matcher,
+      OnMatchCallback onMatch = nullptr);
+
+  /// Matches a SetNode with kIntersectAll operation.
+  LogicalPlanMatcherBuilder& intersectAll(
       const std::shared_ptr<LogicalPlanMatcher>& matcher,
       OnMatchCallback onMatch = nullptr);
 
