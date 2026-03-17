@@ -694,8 +694,6 @@ TEST_F(SetTest, exceptUnionAll) {
   auto matchExcept = [](const std::string& left, const std::string& right) {
     return matchScan(left)
         .hashJoin(matchScan(right).build(), core::JoinType::kAnti)
-        // TODO Fix the optimizer to remove redundant aggregation.
-        .singleAggregation()
         .singleAggregation();
   };
 

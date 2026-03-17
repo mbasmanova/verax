@@ -877,33 +877,32 @@ class RelationPlanner : public AstVisitor {
 
   void visitExcept(Except* node) override {
     visitSetOperation(
-        lp::SetOperation::kExcept,
+        node->isDistinct() ? lp::SetOperation::kExcept
+                           : lp::SetOperation::kExceptAll,
         node->left(),
-        node->right(),
-        node->isDistinct());
+        node->right());
   }
 
   void visitIntersect(Intersect* node) override {
     visitSetOperation(
-        lp::SetOperation::kIntersect,
+        node->isDistinct() ? lp::SetOperation::kIntersect
+                           : lp::SetOperation::kIntersectAll,
         node->left(),
-        node->right(),
-        node->isDistinct());
+        node->right());
   }
 
   void visitUnion(Union* node) override {
     visitSetOperation(
-        lp::SetOperation::kUnionAll,
+        node->isDistinct() ? lp::SetOperation::kUnion
+                           : lp::SetOperation::kUnionAll,
         node->left(),
-        node->right(),
-        node->isDistinct());
+        node->right());
   }
 
   void visitSetOperation(
       lp::SetOperation op,
       const std::shared_ptr<QueryBody>& left,
-      const std::shared_ptr<QueryBody>& right,
-      bool distinct) {
+      const std::shared_ptr<QueryBody>& right) {
     left->accept(this);
 
     auto leftBuilder = builder_;
@@ -914,10 +913,6 @@ class RelationPlanner : public AstVisitor {
 
     builder_ = leftBuilder;
     builder_->setOperation(op, *rightBuilder);
-
-    if (distinct) {
-      builder_->distinct();
-    }
   }
 
   std::shared_ptr<lp::PlanBuilder> newBuilder(

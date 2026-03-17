@@ -3309,7 +3309,10 @@ void ToGraph::translateSetJoin(const lp::SetNode& set) {
   const bool exists = set.operation() == lp::SetOperation::kIntersect;
   const bool anti = set.operation() == lp::SetOperation::kExcept;
 
-  VELOX_CHECK(exists || anti);
+  VELOX_USER_CHECK(
+      exists || anti,
+      "Unsupported set operation: {}",
+      lp::SetOperationName::toName(set.operation()));
 
   const auto* left = setDt->tables[0]->as<DerivedTable>();
 

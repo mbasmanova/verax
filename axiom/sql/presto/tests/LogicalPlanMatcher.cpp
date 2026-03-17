@@ -662,6 +662,12 @@ LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::setOperation(
   return *this;
 }
 
+LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::unionDistinct(
+    const std::shared_ptr<LogicalPlanMatcher>& matcher,
+    OnMatchCallback onMatch) {
+  return setOperation(SetOperation::kUnion, matcher, std::move(onMatch));
+}
+
 LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::unionAll(
     const std::shared_ptr<LogicalPlanMatcher>& matcher,
     OnMatchCallback onMatch) {
@@ -674,10 +680,22 @@ LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::except(
   return setOperation(SetOperation::kExcept, matcher, std::move(onMatch));
 }
 
+LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::exceptAll(
+    const std::shared_ptr<LogicalPlanMatcher>& matcher,
+    OnMatchCallback onMatch) {
+  return setOperation(SetOperation::kExceptAll, matcher, std::move(onMatch));
+}
+
 LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::intersect(
     const std::shared_ptr<LogicalPlanMatcher>& matcher,
     OnMatchCallback onMatch) {
   return setOperation(SetOperation::kIntersect, matcher, std::move(onMatch));
+}
+
+LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::intersectAll(
+    const std::shared_ptr<LogicalPlanMatcher>& matcher,
+    OnMatchCallback onMatch) {
+  return setOperation(SetOperation::kIntersectAll, matcher, std::move(onMatch));
 }
 
 LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::sort(

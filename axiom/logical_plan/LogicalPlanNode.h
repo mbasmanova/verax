@@ -578,17 +578,24 @@ using LimitNodePtr = std::shared_ptr<const LimitNode>;
 
 enum class SetOperation {
   /// Returns all rows from all inputs after removing duplicates.
-  kUnion = 0,
+  kUnion,
 
   /// Returns all rows from all inputs.
-  kUnionAll = 1,
+  kUnionAll,
 
-  /// Returns a subset of rows that are present in all inputs.
-  kIntersect = 2,
+  /// Returns distinct rows that are present in all inputs.
+  kIntersect,
 
-  /// Returns a subset of rows in the first input that are not found in any
-  /// other input.
-  kExcept = 3,
+  /// Returns all rows that are present in all inputs, preserving duplicates.
+  kIntersectAll,
+
+  /// Returns distinct rows in the first input that are not found in any other
+  /// input.
+  kExcept,
+
+  /// Returns all rows in the first input that are not found in any other
+  /// input, preserving duplicates.
+  kExceptAll,
 };
 
 AXIOM_DECLARE_ENUM_NAME(SetOperation)
