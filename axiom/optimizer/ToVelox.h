@@ -362,6 +362,7 @@ class ToVelox {
   int32_t stageCounter_{0};
 
   const std::optional<std::string> subscript_;
+  const std::optional<std::string> elementAt_;
 
   FinishWrite finishWrite_;
 

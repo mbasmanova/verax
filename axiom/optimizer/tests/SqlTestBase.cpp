@@ -17,6 +17,7 @@
 #include "axiom/optimizer/tests/SqlTestBase.h"
 #include "axiom/common/Session.h"
 #include "axiom/connectors/SchemaResolver.h"
+#include "axiom/optimizer/FunctionRegistry.h"
 #include "axiom/optimizer/Optimization.h"
 #include "axiom/optimizer/VeloxHistory.h"
 #include "axiom/runner/LocalRunner.h"
@@ -39,6 +40,7 @@ void SqlTestBase::SetUpTestCase() {
   functions::prestosql::registerAllScalarFunctions();
   aggregate::prestosql::registerAllAggregateFunctions();
   window::prestosql::registerAllWindowFunctions();
+  FunctionRegistry::registerPrestoFunctions();
 }
 
 void SqlTestBase::SetUp() {

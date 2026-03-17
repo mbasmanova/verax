@@ -23,6 +23,20 @@
 
 namespace facebook::axiom::optimizer {
 
+namespace {
+const auto& stepKindNames() {
+  static const folly::F14FastMap<StepKind, std::string_view> kNames = {
+      {StepKind::kField, "FIELD"},
+      {StepKind::kSubscript, "SUBSCRIPT"},
+      {StepKind::kElementAt, "ELEMENT_AT"},
+      {StepKind::kCardinality, "CARDINALITY"},
+  };
+  return kNames;
+}
+} // namespace
+
+AXIOM_DEFINE_ENUM_NAME(StepKind, stepKindNames);
+
 QueryGraphContext::QueryGraphContext(velox::HashStringAllocator& allocator)
     : allocator_(allocator), cache_(allocator_) {
   auto addName = [&](const char* name) {
@@ -231,6 +245,7 @@ std::string Path::toString() const {
         out << fmt::format("__{}", step.id);
         break;
       case StepKind::kSubscript:
+      case StepKind::kElementAt:
         if (step.field) {
           out << "[" << step.field << "]";
         } else {

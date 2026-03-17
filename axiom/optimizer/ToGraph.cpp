@@ -428,7 +428,8 @@ bool ToGraph::isSubfield(
     if (name == functionNames_.subscript || name == functionNames_.elementAt) {
       auto subscript = translateExpr(call->inputAt(1));
       if (subscript->is(PlanType::kLiteralExpr)) {
-        step.kind = StepKind::kSubscript;
+        step.kind = (name == functionNames_.elementAt) ? StepKind::kElementAt
+                                                       : StepKind::kSubscript;
         auto& literal = subscript->as<Literal>()->literal();
         switch (subscript->value().type->kind()) {
           case velox::TypeKind::VARCHAR:
@@ -441,7 +442,7 @@ bool ToGraph::isSubfield(
             step.id = integerValue(&literal);
             break;
           default:
-            return false;
+            VELOX_UNREACHABLE();
         }
         input = expr->inputAt(0);
         return true;
@@ -743,7 +744,8 @@ ExprCP ToGraph::makeGetter(const Step& step, ExprCP base) {
       }
     }
 
-    case StepKind::kSubscript: {
+    case StepKind::kSubscript:
+    case StepKind::kElementAt: {
       // Type of array element or map value.
       auto valueType = inputType->childAt(inputType->isArray() ? 0 : 1);
 
@@ -759,7 +761,8 @@ ExprCP ToGraph::makeGetter(const Step& step, ExprCP base) {
       };
 
       return make<Call>(
-          functionNames_.subscript,
+          step.kind == StepKind::kElementAt ? functionNames_.elementAt
+                                            : functionNames_.subscript,
           toConstantValue(valueType),
           std::move(args),
           FunctionSet());
@@ -2069,6 +2072,7 @@ const velox::Type* pathType(const velox::Type* type, PathCP path) {
         type = type->childAt(step.id).get();
         break;
       case StepKind::kSubscript:
+      case StepKind::kElementAt:
         type =
             type->childAt(type->kind() == velox::TypeKind::ARRAY ? 0 : 1).get();
         break;

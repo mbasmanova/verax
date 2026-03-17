@@ -18,6 +18,7 @@
 
 #include <folly/container/F14Map.h>
 #include <folly/container/F14Set.h>
+#include "axiom/common/Enums.h"
 #include "axiom/optimizer/ArenaCache.h"
 #include "velox/common/memory/HashStringAllocator.h"
 #include "velox/type/Variant.h"
@@ -170,7 +171,14 @@ using QGF14FastSet =
 
 /// Elements of subfield paths. The QueryGraphContext holds a dedupped
 /// collection of distinct paths.
-enum class StepKind : uint8_t { kField, kSubscript, kCardinality };
+enum class StepKind : uint8_t {
+  kField,
+  kSubscript,
+  kElementAt,
+  kCardinality,
+};
+
+AXIOM_DECLARE_ENUM_NAME(StepKind);
 
 struct Step {
   StepKind kind;

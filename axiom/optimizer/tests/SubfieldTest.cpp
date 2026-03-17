@@ -60,11 +60,14 @@ lp::ExprPtr stepToLogicalPlanGetter(Step step, const lp::ExprPtr& arg) {
           *type, lp::SpecialForm::kDereference, arg, key);
     }
 
-    case StepKind::kSubscript: {
+    case StepKind::kSubscript:
+    case StepKind::kElementAt: {
+      const auto* funcName =
+          step.kind == StepKind::kElementAt ? "element_at" : "subscript";
       if (argType->kind() == TypeKind::ARRAY) {
         return std::make_shared<lp::CallExpr>(
             argType->childAt(0),
-            "subscript",
+            funcName,
             arg,
             makeKey(INTEGER(), static_cast<int32_t>(step.id)));
       }
@@ -91,7 +94,7 @@ lp::ExprPtr stepToLogicalPlanGetter(Step step, const lp::ExprPtr& arg) {
       }
 
       return std::make_shared<lp::CallExpr>(
-          argType->childAt(1), "subscript", arg, key);
+          argType->childAt(1), funcName, arg, key);
     }
 
     default:
