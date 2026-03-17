@@ -476,6 +476,7 @@ EXISTS—in both correlated and uncorrelated forms. Subqueries can appear in:
   null-supplying side are pushed into that side as filters)
 - **SELECT lists** (projections)
 - **GROUP BY keys** (grouping expressions)
+- **Aggregate function arguments and filters**
 
 **Correlation types:**
 - **Equality correlations** of the form `f(outer) = g(inner)` become join keys
