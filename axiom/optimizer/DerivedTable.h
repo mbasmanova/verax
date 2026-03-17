@@ -326,6 +326,10 @@ struct DerivedTable : public PlanObject {
     });
   }
 
+  // Returns true if any join in this DT is not an inner join (e.g. semi-join,
+  // anti-join, left join).
+  bool hasNonInnerJoin() const;
+
   /// Returns true if this DT is known to produce zero rows (e.g., an empty
   /// ValuesTable with no data).
   bool isZeroRows() const;
