@@ -675,5 +675,38 @@ TEST_F(SetTest, constantFalseFilterInUnionAll) {
   }
 }
 
+// UNION ALL of two EXCEPT branches produces mismatched column names when
+// the same table appears in multiple EXCEPT operands.
+TEST_F(SetTest, exceptUnionAll) {
+  testConnector_->addTable("t", ROW("a", BIGINT()));
+  testConnector_->addTable("u", ROW("x", BIGINT()));
+
+  auto query =
+      "SELECT count(*) FROM ("
+      "    (SELECT * FROM t EXCEPT SELECT * FROM u)"
+      "    UNION ALL"
+      "    (SELECT * FROM u EXCEPT SELECT * FROM t)"
+      ")";
+
+  // Each EXCEPT becomes anti-join + aggregation (distinct). The UNION ALL
+  // combines the two branches via LocalPartition. The second branch gets a
+  // rename project to align column names with the first branch.
+  auto matchExcept = [](const std::string& left, const std::string& right) {
+    return matchScan(left)
+        .hashJoin(matchScan(right).build(), core::JoinType::kAnti)
+        // TODO Fix the optimizer to remove redundant aggregation.
+        .singleAggregation()
+        .singleAggregation();
+  };
+
+  auto matcher = matchExcept("t", "u")
+                     .localPartition(matchExcept("u", "t").project().build())
+                     .singleAggregation()
+                     .build();
+
+  auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+  AXIOM_ASSERT_PLAN(plan, matcher);
+}
+
 } // namespace
 } // namespace facebook::axiom::optimizer

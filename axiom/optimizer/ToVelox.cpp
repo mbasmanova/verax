@@ -59,6 +59,19 @@ ToVelox::ToVelox(
 
 namespace {
 
+// Creates identity projections for all columns in 'type'.
+std::vector<velox::core::TypedExprPtr> identityProjections(
+    const velox::RowTypePtr& type) {
+  std::vector<velox::core::TypedExprPtr> projections;
+  projections.reserve(type->size());
+  for (auto i = 0; i < type->size(); ++i) {
+    projections.push_back(
+        std::make_shared<velox::core::FieldAccessTypedExpr>(
+            type->childAt(i), type->nameOf(i)));
+  }
+  return projections;
+}
+
 // Returns true if 'node' is a ProjectNode where every expression is a plain
 // FieldAccessTypedExpr on an input column (i.e., the project only
 // selects/renames/reorders columns without computing anything). If
@@ -1455,18 +1468,11 @@ velox::core::PlanNodePtr ToVelox::maybeTrimColumns(
   }
 
   auto type = makeOutputType(columns);
-  std::vector<std::string> names;
-  std::vector<velox::core::TypedExprPtr> exprs;
-  names.reserve(columns.size());
-  exprs.reserve(columns.size());
-  for (size_t i = 0; i < columns.size(); ++i) {
-    names.push_back(type->nameOf(i));
-    exprs.push_back(
-        std::make_shared<velox::core::FieldAccessTypedExpr>(
-            type->childAt(i), type->nameOf(i)));
-  }
   return std::make_shared<velox::core::ProjectNode>(
-      nextId(), std::move(names), std::move(exprs), std::move(input));
+      nextId(),
+      folly::copy(type->names()),
+      identityProjections(type),
+      std::move(input));
 }
 
 velox::core::PlanNodePtr ToVelox::makeWindowInput(
@@ -1624,6 +1630,23 @@ velox::core::PlanNodePtr ToVelox::makeUnionAll(
 
   if (exchange) {
     localSources.push_back(exchange);
+  }
+
+  // LocalPartitionNode requires all sources to have the same output type
+  // (including column names). Add a rename project to sources whose column
+  // names differ from the first source.
+  const auto& targetType = localSources[0]->outputType();
+  for (auto i = 1; i < localSources.size(); ++i) {
+    auto& source = localSources[i];
+    const auto& sourceType = source->outputType();
+    if (*targetType != *sourceType) {
+      VELOX_CHECK(targetType->equivalent(*sourceType));
+      source = std::make_shared<velox::core::ProjectNode>(
+          nextId(),
+          folly::copy(targetType->names()),
+          identityProjections(sourceType),
+          source);
+    }
   }
 
   return std::make_shared<velox::core::LocalPartitionNode>(
