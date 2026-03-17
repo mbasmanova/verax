@@ -1904,12 +1904,14 @@ TablePtr LocalHiveConnectorMetadata::createTable(
     outputFile << jsonStr;
     outputFile.close();
   }
-  return createLocalTable(
+  auto table = createLocalTable(
       tableName.table,
       rowType,
       createTableOptions,
       hiveConnector(),
       hiveMetadataConfig_);
+  tables_[tableName.table] = table;
+  return table;
 }
 
 RowsFuture LocalHiveConnectorMetadata::finishWrite(

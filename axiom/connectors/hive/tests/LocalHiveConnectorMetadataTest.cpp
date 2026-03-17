@@ -309,6 +309,10 @@ TEST_F(LocalHiveConnectorMetadataTest, createTable) {
   auto table = metadata_->createTable(
       session, {kDefaultSchema, "test"}, tableType, options, /*explain=*/false);
 
+  // Table should be findable immediately after createTable, before
+  // beginWrite/finishWrite. This is the flow for plain CREATE TABLE (no data).
+  ASSERT_NE(metadata_->findTable({kDefaultSchema, "test"}), nullptr);
+
   constexpr int32_t kTestSize = 2048;
   auto data = makeRowVector(
       tableType->names(),
