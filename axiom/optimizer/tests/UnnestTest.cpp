@@ -1290,5 +1290,25 @@ TEST_F(UnnestTest, multipleTables) {
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
+TEST_F(UnnestTest, unnestWithJoinAndFilter) {
+  testConnector_->addTable("t", ROW("a", ARRAY(INTEGER())));
+  testConnector_->addTable("u", ROW("x", INTEGER()));
+
+  auto query = "SELECT 1 FROM t, u, UNNEST(a) AS _(n) WHERE x = n";
+
+  auto logicalPlan = parseSelect(query, kTestConnectorId);
+  auto plan = toSingleNodePlan(logicalPlan);
+
+  // The filter n = x must not be converted to a join key between
+  // UnnestTable and table u. It must remain as a post-unnest filter.
+  auto matcher = matchScan("u")
+                     .nestedLoopJoin(matchScan("t").build())
+                     .unnest()
+                     .filter("x = n")
+                     .project({"1"})
+                     .build();
+  AXIOM_ASSERT_PLAN(plan, matcher);
+}
+
 } // namespace
 } // namespace facebook::axiom::optimizer

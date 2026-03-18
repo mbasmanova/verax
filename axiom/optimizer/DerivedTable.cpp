@@ -1931,7 +1931,9 @@ void DerivedTable::distributeConjuncts() {
       // cases, leave the conjunct in place, to be evaluated when its
       // dependences are known.
       if (queryCtx()->optimization()->isJoinEquality(
-              conjunct, tables[0], tables[1], left, right)) {
+              conjunct, tables[0], tables[1], left, right) &&
+          !tables[0]->is(PlanType::kUnnestTableNode) &&
+          !tables[1]->is(PlanType::kUnnestTableNode)) {
         auto join = findJoin(this, tables, true);
         if (join->isInner() && !join->isUnnest()) {
           if (left->is(PlanType::kColumnExpr) &&
