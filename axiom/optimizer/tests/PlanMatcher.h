@@ -202,6 +202,10 @@ class PlanMatcherBuilder {
       const std::vector<std::string>& unnestExprs,
       const std::optional<std::string>& ordinalityName = std::nullopt);
 
+  /// Matches an Aggregation node that performs DISTINCT (all input columns as
+  /// grouping keys, no aggregate functions).
+  PlanMatcherBuilder& distinct();
+
   /// Matches any Aggregation node regardless of step or expressions.
   PlanMatcherBuilder& aggregation();
 

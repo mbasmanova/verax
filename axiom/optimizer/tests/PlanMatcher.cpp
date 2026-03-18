@@ -694,6 +694,43 @@ class AggregationMatcher : public PlanMatcherImpl<AggregationNode> {
   const std::vector<std::string> aggregates_;
 };
 
+// Matches an AggregationNode that performs DISTINCT: all input columns as
+// grouping keys and no aggregate functions.
+class DistinctMatcher : public PlanMatcherImpl<AggregationNode> {
+ public:
+  explicit DistinctMatcher(const std::shared_ptr<PlanMatcher>& matcher)
+      : PlanMatcherImpl<AggregationNode>({matcher}) {}
+
+  MatchResult matchDetails(
+      const AggregationNode& plan,
+      const std::unordered_map<std::string, std::string>& /*symbols*/)
+      const override {
+    SCOPED_TRACE(plan.toString(true, false));
+
+    EXPECT_TRUE(plan.aggregates().empty())
+        << "Expected no aggregates for DISTINCT";
+    AXIOM_TEST_RETURN_IF_FAILURE
+
+    // Grouping keys must cover all input columns.
+    const auto& inputType = plan.sources()[0]->outputType();
+    EXPECT_EQ(plan.groupingKeys().size(), inputType->size())
+        << "Expected grouping keys to match all input columns for DISTINCT";
+    AXIOM_TEST_RETURN_IF_FAILURE
+
+    std::unordered_set<std::string> inputColumns;
+    for (const auto& name : inputType->names()) {
+      inputColumns.insert(name);
+    }
+    for (const auto& key : plan.groupingKeys()) {
+      EXPECT_TRUE(inputColumns.contains(key->name()))
+          << "Grouping key " << key->name() << " is not an input column";
+      AXIOM_TEST_RETURN_IF_FAILURE
+    }
+
+    return MatchResult::success();
+  }
+};
+
 class StreamingAggregationMatcher : public AggregationMatcher {
  public:
   explicit StreamingAggregationMatcher(
@@ -1542,6 +1579,12 @@ PlanMatcherBuilder& PlanMatcherBuilder::unnest(
   VELOX_USER_CHECK_NOT_NULL(matcher_);
   matcher_ = std::make_shared<UnnestMatcher>(
       matcher_, replicateExprs, unnestExprs, ordinalityName);
+  return *this;
+}
+
+PlanMatcherBuilder& PlanMatcherBuilder::distinct() {
+  VELOX_USER_CHECK_NOT_NULL(matcher_);
+  matcher_ = std::make_shared<DistinctMatcher>(matcher_);
   return *this;
 }
 
