@@ -613,6 +613,11 @@ class JoinEdge {
   }
 
   static JoinEdge* makeInner(PlanObjectCP leftTable, PlanObjectCP rightTable) {
+    VELOX_CHECK(
+        !leftTable->is(PlanType::kUnnestTableNode) &&
+            !rightTable->is(PlanType::kUnnestTableNode),
+        "UnnestTable cannot participate in inner joins. "
+        "Use makeUnnest() instead.");
     return make<JoinEdge>(leftTable, rightTable, Spec{});
   }
 
