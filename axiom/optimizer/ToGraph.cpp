@@ -2935,27 +2935,37 @@ void ToGraph::processExistsSubqueries(const std::vector<lp::ExprPtr>& exists) {
         *existsExpr->inputAt(0)->as<lp::SubqueryExpr>()->subquery(),
         /*finalize=*/false);
 
-    // EXISTS (SELECT <expr> WHERE <condition>) with no FROM clause is
-    // equivalent to just <condition>. The subquery has a single empty-schema
-    // ValuesTable as its source. Replace the EXISTS with the conjunction of
-    // the correlated conjuncts (or TRUE if uncorrelated).
+    // EXISTS (SELECT <expr> WHERE <condition>) with no FROM clause and no
+    // LIMIT or aggregation is equivalent to just <condition>. The subquery has
+    // a single empty-schema ValuesTable as its source that always produces one
+    // row. Since the ValuesTable has no columns, any uncorrelated conjuncts
+    // must be constants. ORDER BY does not affect the number of rows, so it
+    // can be ignored. Replace the EXISTS with the conjunction of all conjuncts
+    // (correlated and uncorrelated), or TRUE if there are none.
     if (subqueryDt->tables.size() == 1 &&
         subqueryDt->tables[0]->is(PlanType::kValuesTableNode) &&
-        subqueryDt->tables[0]->as<ValuesTable>()->columns.empty()) {
+        subqueryDt->tables[0]->as<ValuesTable>()->columns.empty() &&
+        !subqueryDt->hasLimit() && !subqueryDt->hasAggregation()) {
+      ExprVector allConjuncts = std::move(subqueryDt->conjuncts);
+      allConjuncts.insert(
+          allConjuncts.end(),
+          correlatedConjuncts_.begin(),
+          correlatedConjuncts_.end());
+      correlatedConjuncts_.clear();
+
       ExprCP result;
-      if (correlatedConjuncts_.empty()) {
+      if (allConjuncts.empty()) {
         result = make<Literal>(
             toConstantValue(velox::BOOLEAN()), registerVariant(true));
-      } else if (correlatedConjuncts_.size() == 1) {
-        result = correlatedConjuncts_[0];
+      } else if (allConjuncts.size() == 1) {
+        result = allConjuncts[0];
       } else {
         result = deduppedCall(
             toName(SpecialFormCallNames::kAnd),
             toValue(velox::BOOLEAN(), 2),
-            std::move(correlatedConjuncts_),
+            std::move(allConjuncts),
             FunctionSet());
       }
-      correlatedConjuncts_.clear();
       subqueries_.emplace(existsExpr, result);
       continue;
     }
