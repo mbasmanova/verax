@@ -3544,6 +3544,19 @@ void ToGraph::makeProjectQueryGraph(
     return;
   }
 
+  // Subqueries in projections create non-inner join edges (semi-joins from
+  // IN/EXISTS, left joins from scalar subqueries). When inside a join input
+  // (excludeOuterJoins) and the DT already has tables from other join sides,
+  // the subsequent finalizeDt would wrap all tables (including tables from
+  // other join sides) into a child DT. This causes the join condition to
+  // reference tables trapped inside the child DT, making it appear as a
+  // "correlated" conjunct. Wrap the project upfront to isolate its tables.
+  if (excludeOuterJoins && !currentDt_->tables.empty() &&
+      std::ranges::any_of(project.expressions(), optimizer::hasSubquery)) {
+    wrapInDt(project);
+    return;
+  }
+
   makeQueryGraph(
       *project.onlyInput(), allowedInDt, excludeOuterJoins, excludeWindows);
 

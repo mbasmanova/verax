@@ -1689,5 +1689,39 @@ TEST_F(SubqueryTest, existsWithNoFromClause) {
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
+// IN subquery in a projection combined with a correlated NOT EXISTS in the
+// WHERE clause. The IN subquery creates a semi-join inside the join input,
+// which triggers DT wrapping (excludeOuterJoins). The NOT EXISTS subquery
+// must still be processed correctly.
+TEST_F(SubqueryTest, inSubqueryWithCorrelatedNotExists) {
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
+  testConnector_->addTable("u", ROW("x", BIGINT()));
+  testConnector_->addTable("v", ROW("y", BIGINT()));
+
+  auto query =
+      "SELECT t.a, sub.flag "
+      "FROM t "
+      "JOIN ("
+      "    SELECT u.x, u.x IN (SELECT y FROM v) AS flag FROM u"
+      ") sub ON t.a = sub.x "
+      "WHERE NOT EXISTS (SELECT 1 FROM v WHERE v.y = t.a)";
+
+  // The IN subquery becomes a LEFT SEMI PROJECT (mark) join with v, wrapped
+  // in its own DT. The inner join combines u's projection with t. The NOT
+  // EXISTS becomes an anti-join with v.
+  auto matcher = matchScan("u")
+                     .hashJoin(
+                         matchScan("v").build(),
+                         core::JoinType::kLeftSemiProject,
+                         /*nullAware=*/true)
+                     .project()
+                     .hashJoin(matchScan("t").build(), core::JoinType::kInner)
+                     .hashJoin(matchScan("v").build(), core::JoinType::kAnti)
+                     .build();
+
+  auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+  AXIOM_ASSERT_PLAN(plan, matcher);
+}
+
 } // namespace
 } // namespace facebook::axiom::optimizer
