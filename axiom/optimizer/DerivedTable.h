@@ -360,6 +360,12 @@ struct DerivedTable : public PlanObject {
   void distributeConjuncts();
 
  private:
+  // Wraps a set operation child in a new DT that holds the given filter. Used
+  // when the child cannot accept the filter directly (e.g. due to a window
+  // function or limit). Creates intermediate columns so the wrapper can apply
+  // the filter above the child.
+  DerivedTable* wrapChildWithFilter(DerivedTable* child, ExprCP conjunct);
+
   // Resets all mutable state to empty defaults.
   void clearState();
 
