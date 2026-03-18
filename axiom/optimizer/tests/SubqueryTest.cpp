@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 
-#include "axiom/connectors/tests/TestConnector.h"
 #include "axiom/optimizer/tests/HiveQueriesTestBase.h"
 #include "axiom/optimizer/tests/PlanMatcher.h"
 #include "axiom/optimizer/tests/QueryTestBase.h"
@@ -28,8 +27,6 @@ namespace lp = facebook::axiom::logical_plan;
 
 class SubqueryTest : public test::HiveQueriesTestBase {
  protected:
-  static constexpr auto kTestConnectorId = "test";
-
   static void SetUpTestCase() {
     test::HiveQueriesTestBase::SetUpTestCase();
     createTpchTables(
@@ -39,22 +36,6 @@ class SubqueryTest : public test::HiveQueriesTestBase {
          velox::tpch::Table::TBL_ORDERS,
          velox::tpch::Table::TBL_SUPPLIER});
   }
-
-  void SetUp() override {
-    test::HiveQueriesTestBase::SetUp();
-
-    testConnector_ =
-        std::make_shared<connector::TestConnector>(kTestConnectorId);
-    velox::connector::registerConnector(testConnector_);
-  }
-
-  void TearDown() override {
-    velox::connector::unregisterConnector(kTestConnectorId);
-
-    HiveQueriesTestBase::TearDown();
-  }
-
-  std::shared_ptr<connector::TestConnector> testConnector_;
 };
 
 TEST_F(SubqueryTest, uncorrelatedScalar) {

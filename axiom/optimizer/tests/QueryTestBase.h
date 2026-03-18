@@ -19,6 +19,7 @@
 #include <folly/executors/CPUThreadPoolExecutor.h>
 #include <gflags/gflags.h>
 #include "axiom/connectors/SchemaResolver.h"
+#include "axiom/connectors/tests/TestConnector.h"
 #include "axiom/optimizer/VeloxHistory.h"
 #include "axiom/optimizer/tests/PlanMatcher.h"
 #include "axiom/runner/LocalRunner.h"
@@ -74,6 +75,10 @@ struct TestResult {
 
 class QueryTestBase : public velox::exec::test::HiveConnectorTestBase {
  protected:
+  static constexpr auto kTestConnectorId = "test";
+  static const inline std::string kDefaultSchema{
+      connector::TestConnector::kDefaultSchema};
+
   /// Enables memory tracking and leak checking. Registers memory arbitrator,
   /// Presto scalar, aggregate, and window functions, Axiom function registry,
   /// and the thread pool executor used for query context creation.
@@ -234,6 +239,8 @@ class QueryTestBase : public velox::exec::test::HiveConnectorTestBase {
   inline static std::unordered_map<std::string, std::string> config_;
 
   OptimizerOptions optimizerOptions_;
+
+  std::shared_ptr<connector::TestConnector> testConnector_;
 
  private:
   std::shared_ptr<velox::memory::MemoryPool> optimizerPool_;

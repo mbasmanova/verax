@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 
-#include "axiom/connectors/tests/TestConnector.h"
 #include "axiom/optimizer/tests/PlanMatcher.h"
 #include "axiom/optimizer/tests/QueryTestBase.h"
 
@@ -27,14 +26,8 @@ using namespace velox;
 // docs/ExistencePushdown.md.
 class ExistencePushdownTest : public test::QueryTestBase {
  protected:
-  static constexpr auto kTestConnectorId = "test";
-
   void SetUp() override {
     test::QueryTestBase::SetUp();
-
-    testConnector_ =
-        std::make_shared<connector::TestConnector>(kTestConnectorId);
-    velox::connector::registerConnector(testConnector_);
 
     // Small table — the pushed table.
     testConnector_->addTable("t", ROW({"a", "b", "c"}, BIGINT()))
@@ -70,18 +63,11 @@ class ExistencePushdownTest : public test::QueryTestBase {
              {"b", {.min = 1LL, .max = 100LL, .numDistinct = 100}}});
   }
 
-  void TearDown() override {
-    velox::connector::unregisterConnector(kTestConnectorId);
-    test::QueryTestBase::TearDown();
-  }
-
   using QueryTestBase::toSingleNodePlan;
 
   velox::core::PlanNodePtr toSingleNodePlan(const std::string& sql) {
     return QueryTestBase::toSingleNodePlan(parseSelect(sql, kTestConnectorId));
   }
-
-  std::shared_ptr<connector::TestConnector> testConnector_;
 };
 
 // --- Yes rows: pushdown should fire ---

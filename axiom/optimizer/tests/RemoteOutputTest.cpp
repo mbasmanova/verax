@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 
-#include "axiom/connectors/tests/TestConnector.h"
 #include "axiom/optimizer/tests/PlanMatcher.h"
 #include "axiom/optimizer/tests/QueryTestBase.h"
 
@@ -24,27 +23,7 @@ namespace {
 using namespace velox;
 namespace lp = facebook::axiom::logical_plan;
 
-class RemoteOutputTest : public test::QueryTestBase {
- protected:
-  static constexpr auto kTestConnectorId = "test";
-
-  void SetUp() override {
-    test::QueryTestBase::SetUp();
-
-    testConnector_ =
-        std::make_shared<connector::TestConnector>(kTestConnectorId);
-    velox::connector::registerConnector(testConnector_);
-
-    testConnector_->addTpchTables();
-  }
-
-  void TearDown() override {
-    velox::connector::unregisterConnector(kTestConnectorId);
-    test::QueryTestBase::TearDown();
-  }
-
-  std::shared_ptr<connector::TestConnector> testConnector_;
-};
+class RemoteOutputTest : public test::QueryTestBase {};
 
 TEST_F(RemoteOutputTest, simpleScan) {
   testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));

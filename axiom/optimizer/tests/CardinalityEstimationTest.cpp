@@ -15,7 +15,6 @@
  */
 
 #include <gtest/gtest.h>
-#include "axiom/connectors/tests/TestConnector.h"
 #include "axiom/optimizer/Optimization.h"
 #include "axiom/optimizer/Plan.h"
 #include "axiom/optimizer/RelationOp.h"
@@ -58,21 +57,6 @@ constexpr double kCardinalityTolerance = 1;
 
 class CardinalityEstimationTest : public test::QueryTestBase {
  protected:
-  static constexpr auto kTestConnectorId = "test";
-
-  void SetUp() override {
-    test::QueryTestBase::SetUp();
-
-    connector_ = std::make_shared<connector::TestConnector>(kTestConnectorId);
-    velox::connector::registerConnector(connector_);
-  }
-
-  void TearDown() override {
-    velox::connector::unregisterConnector(kTestConnectorId);
-
-    test::QueryTestBase::TearDown();
-  }
-
   // Parses SQL, optimizes, and invokes the callback with the best plan.
   void verifyPlan(
       const std::string& sql,
@@ -175,7 +159,7 @@ TEST_F(CardinalityEstimationTest, values) {
 // Verifies that a table scan without filters produces cardinality, min/max,
 // numDistinct, and null fraction from connector statistics.
 TEST_F(CardinalityEstimationTest, scan) {
-  connector_->addTable("t", ROW({"a", "b"}, {BIGINT(), VARCHAR()}))
+  testConnector_->addTable("t", ROW({"a", "b"}, {BIGINT(), VARCHAR()}))
       ->setStats(
           1'000,
           {
@@ -206,7 +190,7 @@ TEST_F(CardinalityEstimationTest, scan) {
 // Verifies that a range filter tightens constraints: the filtered column
 // should have reduced cardinality.
 TEST_F(CardinalityEstimationTest, scanWithFilter) {
-  connector_->addTable("t", ROW({"a", "b"}, BIGINT()))
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()))
       ->setStats(
           1'000,
           {
@@ -236,7 +220,7 @@ TEST_F(CardinalityEstimationTest, scanWithFilter) {
 // Verifies cardinality estimation for aggregation: output cardinality
 // should be capped at the number of distinct values of the grouping key.
 TEST_F(CardinalityEstimationTest, aggregation) {
-  connector_->addTable("t", ROW({"a", "b"}, BIGINT()))
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()))
       ->setStats(
           10'000,
           {
@@ -259,7 +243,7 @@ TEST_F(CardinalityEstimationTest, aggregation) {
 
 // Verifies that aggregation without grouping keys produces a single row.
 TEST_F(CardinalityEstimationTest, globalAggregation) {
-  connector_->addTable("t", ROW({"a"}, BIGINT()));
+  testConnector_->addTable("t", ROW({"a"}, BIGINT()));
 
   verifyPlan("SELECT count(*), sum(a) FROM t", [](const Plan& plan) {
     const auto& op = *plan.op;
@@ -272,7 +256,7 @@ TEST_F(CardinalityEstimationTest, globalAggregation) {
 // column constraints from its plan, and the outer DT (global count) should
 // produce a single row.
 TEST_F(CardinalityEstimationTest, globalAggregationOnSubquery) {
-  connector_->addTable("t", ROW({"a", "b"}, BIGINT()))
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()))
       ->setStats(
           10'000,
           {
@@ -345,7 +329,7 @@ TEST_F(CardinalityEstimationTest, filterOverValues) {
 // columns. The replicate column 'b' has high NDV from the base table;
 // after the filter reduces rows, its NDV should scale down.
 TEST_F(CardinalityEstimationTest, filterOverUnnest) {
-  connector_->addTable("t", ROW({"a", "b"}, {ARRAY(BIGINT()), BIGINT()}))
+  testConnector_->addTable("t", ROW({"a", "b"}, {ARRAY(BIGINT()), BIGINT()}))
       ->setStats(
           1'000,
           {
@@ -376,7 +360,7 @@ TEST_F(CardinalityEstimationTest, filterOverUnnest) {
 // Without scaling, column 'c' would retain its join-output NDV even when
 // the filter reduces the row count below the NDV.
 TEST_F(CardinalityEstimationTest, filterOverJoin) {
-  connector_->addTable("t", ROW({"a", "b", "c"}, BIGINT()))
+  testConnector_->addTable("t", ROW({"a", "b", "c"}, BIGINT()))
       ->setStats(
           1'000,
           {
@@ -385,7 +369,7 @@ TEST_F(CardinalityEstimationTest, filterOverJoin) {
               {"c", {.numDistinct = 800}},
           });
 
-  connector_->addTable("u", ROW({"x", "y"}, BIGINT()))
+  testConnector_->addTable("u", ROW({"x", "y"}, BIGINT()))
       ->setStats(
           10,
           {
@@ -416,7 +400,7 @@ TEST_F(CardinalityEstimationTest, filterOverJoin) {
 // should reflect the join fanout based on key cardinalities. Payload
 // cardinalities should scale when the join eliminates rows (fanout < 1).
 TEST_F(CardinalityEstimationTest, innerJoin) {
-  connector_->addTable("t", ROW({"a", "b"}, BIGINT()))
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()))
       ->setStats(
           1'000,
           {
@@ -424,7 +408,7 @@ TEST_F(CardinalityEstimationTest, innerJoin) {
               {"b", {.numDistinct = 500}},
           });
 
-  connector_->addTable("u", ROW({"x", "y"}, BIGINT()));
+  testConnector_->addTable("u", ROW({"x", "y"}, BIGINT()));
 
   const auto sql = "SELECT a, b, x, y FROM t JOIN u ON a = x";
 
@@ -478,7 +462,7 @@ TEST_F(CardinalityEstimationTest, innerJoin) {
   // fanout = |u| / max(ndv(t.a), ndv(u.x)) = 500 / 100 = 5.
   // resultCardinality = 1'000 * 5 = 5'000.
   // All rows survive, so payload cardinalities are preserved from scan.
-  connector_->setStats(
+  testConnector_->setStats(
       "u", 500, {{"x", {.numDistinct = 100}}, {"y", {.numDistinct = 200}}});
   verify({
       .resultCardinality = 5'000,
@@ -495,7 +479,7 @@ TEST_F(CardinalityEstimationTest, innerJoin) {
   //                = 500 * (1 - (499/500)^500) ≈ 316.
   // rlFanout = |t| / max(ndv(t.a), ndv(u.x)) = 1'000 / 100 = 10.
   // Right-side payloads are not filtered (rlFanout > 1).
-  connector_->setStats(
+  testConnector_->setStats(
       "u", 50, {{"x", {.numDistinct = 50}}, {"y", {.numDistinct = 40}}});
   verify({
       .resultCardinality = 500,
@@ -508,7 +492,7 @@ TEST_F(CardinalityEstimationTest, innerJoin) {
 // Verifies that left join preserves left-side row count and left-side
 // columns have zero null fraction.
 TEST_F(CardinalityEstimationTest, leftJoin) {
-  connector_->addTable("t", ROW({"a", "b"}, BIGINT()))
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()))
       ->setStats(
           1'000,
           {
@@ -516,7 +500,7 @@ TEST_F(CardinalityEstimationTest, leftJoin) {
               {"b", {.numDistinct = 500}},
           });
 
-  connector_->addTable("u", ROW({"x", "y"}, BIGINT()))
+  testConnector_->addTable("u", ROW({"x", "y"}, BIGINT()))
       ->setStats(
           100,
           {
@@ -566,14 +550,14 @@ TEST_F(CardinalityEstimationTest, leftJoin) {
 // join with a non-empty filter. The filter selectivity is computed via
 // conjunctsSelectivity in Join::initConstraints.
 TEST_F(CardinalityEstimationTest, leftJoinWithFilter) {
-  connector_->addTable("t", ROW({"a", "b"}, BIGINT()))
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()))
       ->setStats(
           1'000,
           {{"a",
             {
                 .numDistinct = 100,
             }}});
-  connector_->addTable("u", ROW({"x", "y"}, BIGINT()))
+  testConnector_->addTable("u", ROW({"x", "y"}, BIGINT()))
       ->setStats(500, {{"x", {.numDistinct = 50}}});
   verifyPlan(
       "SELECT a, b, x, y FROM t LEFT JOIN u ON a = x AND b > coalesce(y, 0)",
@@ -613,14 +597,14 @@ TEST_F(CardinalityEstimationTest, leftJoinWithFilter) {
 // Uses LEFT JOIN SQL with t smaller than u to force the optimizer to swap
 // sides, producing a RIGHT join (build smaller t, probe larger u).
 TEST_F(CardinalityEstimationTest, rightJoin) {
-  connector_->addTable("t", ROW({"a", "b"}, BIGINT()))
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()))
       ->setStats(
           100,
           {
               {"a", {.nullPct = 10, .numDistinct = 100}},
               {"b", {.numDistinct = 80}},
           });
-  connector_->addTable("u", ROW({"x", "y"}, BIGINT()))
+  testConnector_->addTable("u", ROW({"x", "y"}, BIGINT()))
       ->setStats(
           1'000,
           {
@@ -677,14 +661,14 @@ TEST_F(CardinalityEstimationTest, rightJoin) {
 // Verifies that full join applies updateKey / updatePayload to both sides.
 // Both sides are optional: optionality returns {true, true}.
 TEST_F(CardinalityEstimationTest, fullJoin) {
-  connector_->addTable("t", ROW({"a", "b"}, BIGINT()))
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()))
       ->setStats(
           1'000,
           {
               {"a", {.nullPct = 10, .numDistinct = 100}},
               {"b", {.numDistinct = 500}},
           });
-  connector_->addTable("u", ROW({"x", "y"}, BIGINT()))
+  testConnector_->addTable("u", ROW({"x", "y"}, BIGINT()))
       ->setStats(
           1'000,
           {
@@ -743,10 +727,10 @@ TEST_F(CardinalityEstimationTest, fullJoin) {
 // SELECT list). The mark column's trueFraction should be min(1, fanout) *
 // filterSelectivity.
 TEST_F(CardinalityEstimationTest, semiProjectMark) {
-  connector_->addTable("t", ROW({"a", "b"}, BIGINT()))
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()))
       ->setStats(1'000, {{"a", {.numDistinct = 100}}});
 
-  connector_->addTable("u", ROW({"x", "y"}, BIGINT()));
+  testConnector_->addTable("u", ROW({"x", "y"}, BIGINT()));
 
   const auto sql = "SELECT a, EXISTS(SELECT * FROM u WHERE x = a) FROM t";
 
@@ -774,13 +758,13 @@ TEST_F(CardinalityEstimationTest, semiProjectMark) {
   // fanout > 1: trueFraction clamped to 1.0.
   // fanout = |u| / max(ndv(t.a), ndv(u.x)) = 500 / 200 = 2.5.
   // trueFraction = min(1, 2.5) * 1.0 = 1.0.
-  connector_->setStats("u", 500, {{"x", {.numDistinct = 200}}});
+  testConnector_->setStats("u", 500, {{"x", {.numDistinct = 200}}});
   verify(1.0f);
 
   // fanout < 1: trueFraction reflects the fraction of matching rows.
   // fanout = |u| / max(ndv(t.a), ndv(u.x)) = 50 / max(100, 50) = 0.5.
   // trueFraction = min(1, 0.5) * 1.0 = 0.5.
-  connector_->setStats("u", 50, {{"x", {.numDistinct = 50}}});
+  testConnector_->setStats("u", 50, {{"x", {.numDistinct = 50}}});
   verify(0.5f);
 }
 
@@ -789,7 +773,7 @@ TEST_F(CardinalityEstimationTest, semiProjectMark) {
 // (each matching row appears once). Constraints use inner-join semantics
 // (neither side is optional).
 TEST_F(CardinalityEstimationTest, semiFilter) {
-  connector_->addTable("t", ROW({"a", "b"}, BIGINT()))
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()))
       ->setStats(
           1'000,
           {
@@ -797,7 +781,7 @@ TEST_F(CardinalityEstimationTest, semiFilter) {
               {"b", {.numDistinct = 500}},
           });
 
-  connector_->addTable("u", ROW({"x", "y"}, BIGINT()));
+  testConnector_->addTable("u", ROW({"x", "y"}, BIGINT()));
 
   const auto sql =
       "SELECT a, b FROM t WHERE EXISTS (SELECT * FROM u WHERE x = a)";
@@ -846,7 +830,7 @@ TEST_F(CardinalityEstimationTest, semiFilter) {
   // fanout = |u| / max(ndv(t.a), ndv(u.x)) = 500 / 100 = 5.
   // adjustedFanout = min(1, 5) = 1.
   // resultCardinality = 1'000 * 1 = 1'000.
-  connector_->setStats("u", 500, {{"x", {.numDistinct = 100}}});
+  testConnector_->setStats("u", 500, {{"x", {.numDistinct = 100}}});
   verify({
       .resultCardinality = 1'000,
       .keyCardinality = 100,
@@ -860,7 +844,7 @@ TEST_F(CardinalityEstimationTest, semiFilter) {
   // leftSelectivity = min(1, 0.5) * 1.0 = 0.5.
   // b->cardinality = expectedNumDistincts(1'000 * 0.5, 500)
   //                = 500 * (1 - (499/500)^500) ≈ 316.
-  connector_->setStats("u", 50, {{"x", {.numDistinct = 50}}});
+  testConnector_->setStats("u", 50, {{"x", {.numDistinct = 50}}});
   verify({
       .resultCardinality = 500,
       .keyCardinality = 50,
@@ -872,7 +856,7 @@ TEST_F(CardinalityEstimationTest, semiFilter) {
 // Returns left-side rows that have no match. Fanout is max(0, 1 - fanout):
 // if fanout >= 1 (every left row matches), the anti join returns nothing.
 TEST_F(CardinalityEstimationTest, antiJoin) {
-  connector_->addTable("t", ROW({"a", "b"}, BIGINT()))
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()))
       ->setStats(
           1'000,
           {
@@ -880,7 +864,7 @@ TEST_F(CardinalityEstimationTest, antiJoin) {
               {"b", {.numDistinct = 500}},
           });
 
-  connector_->addTable("u", ROW({"x", "y"}, BIGINT()));
+  testConnector_->addTable("u", ROW({"x", "y"}, BIGINT()));
 
   const auto sql =
       "SELECT a, b FROM t WHERE NOT EXISTS (SELECT * FROM u WHERE x = a)";
@@ -942,7 +926,7 @@ TEST_F(CardinalityEstimationTest, antiJoin) {
   // keyCardinality = max(1, 100 * 0) = 1.
   // payloadCardinality = max(1, 500 * 0) = 1.
   // Only NULL keys survive: nullFraction = 0.1 / (0.1 + 0.9 * 0) = 1.0.
-  connector_->setStats("u", 500, {{"x", {.numDistinct = 100}}});
+  testConnector_->setStats("u", 500, {{"x", {.numDistinct = 100}}});
   verify({
       .resultCardinality = 1,
       .keyCardinality = 1,
@@ -958,7 +942,7 @@ TEST_F(CardinalityEstimationTest, antiJoin) {
   // payloadCardinality = expectedNumDistincts(1'000 * 0.5, 500)
   //                    = 500 * (1 - (499/500)^500) ≈ 316.
   // nullFraction = 0.1 / (0.1 + 0.9 * 0.5) = 0.1 / 0.55 ≈ 0.182.
-  connector_->setStats("u", 50, {{"x", {.numDistinct = 50}}});
+  testConnector_->setStats("u", 50, {{"x", {.numDistinct = 50}}});
   verify({
       .resultCardinality = 500,
       .keyCardinality = 50,
@@ -969,7 +953,7 @@ TEST_F(CardinalityEstimationTest, antiJoin) {
 
 // Verifies cardinality estimation for multi-key aggregation.
 TEST_F(CardinalityEstimationTest, multiKeyAggregation) {
-  connector_->addTable("t", ROW({"a", "b", "c"}, BIGINT()))
+  testConnector_->addTable("t", ROW({"a", "b", "c"}, BIGINT()))
       ->setStats(
           100'000,
           {
@@ -997,14 +981,14 @@ TEST_F(CardinalityEstimationTest, multiKeyAggregation) {
 
 // Verifies constraint propagation through a join followed by aggregation.
 TEST_F(CardinalityEstimationTest, joinThenAggregate) {
-  connector_->addTable("orders", ROW({"o_custkey", "o_total"}, BIGINT()))
+  testConnector_->addTable("o", ROW({"o_custkey", "o_total"}, BIGINT()))
       ->setStats(
           10'000,
           {
               {"o_custkey", {.numDistinct = 1'000}},
               {"o_total", {.numDistinct = 5'000}},
           });
-  connector_->addTable("customer", ROW({"c_custkey", "c_name"}, BIGINT()))
+  testConnector_->addTable("c", ROW({"c_custkey", "c_name"}, BIGINT()))
       ->setStats(
           1'000,
           {
@@ -1013,9 +997,7 @@ TEST_F(CardinalityEstimationTest, joinThenAggregate) {
           });
 
   verifyPlan(
-      "SELECT c_custkey, sum(o_total) FROM orders "
-      "JOIN customer ON o_custkey = c_custkey "
-      "GROUP BY 1",
+      "SELECT c_custkey, sum(o_total) FROM o JOIN c ON o_custkey = c_custkey GROUP BY 1",
       [](const Plan& plan) {
         const auto& op = *plan.op;
         ASSERT_EQ(op.columns().size(), 2);
@@ -1034,7 +1016,7 @@ TEST_F(CardinalityEstimationTest, joinThenAggregate) {
 // input cardinality * fanout heuristic. Replicate columns preserve input
 // constraints; unnested columns have no detailed statistics.
 TEST_F(CardinalityEstimationTest, unnest) {
-  connector_->addTable("t", ROW({"a", "b"}, {ARRAY(BIGINT()), BIGINT()}))
+  testConnector_->addTable("t", ROW({"a", "b"}, {ARRAY(BIGINT()), BIGINT()}))
       ->setStats(
           1'000,
           {
@@ -1067,7 +1049,7 @@ TEST_F(CardinalityEstimationTest, unnest) {
 // Verifies that LIMIT reduces output cardinality and adjusts column
 // constraints accordingly.
 TEST_F(CardinalityEstimationTest, limit) {
-  connector_->addTable("t", ROW({"a", "b"}, BIGINT()))
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()))
       ->setStats(
           1'000,
           {
@@ -1098,7 +1080,7 @@ TEST_F(CardinalityEstimationTest, limit) {
 
 // Verifies that UNION ALL produces combined cardinality.
 TEST_F(CardinalityEstimationTest, unionAll) {
-  connector_->addTable("t", ROW({"a", "b"}, BIGINT()))
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()))
       ->setStats(
           1'000,
           {
@@ -1107,7 +1089,7 @@ TEST_F(CardinalityEstimationTest, unionAll) {
               {"b",
                {.nullPct = 30, .min = 10LL, .max = 200LL, .numDistinct = 400}},
           });
-  connector_->addTable("u", ROW({"x", "y"}, BIGINT()))
+  testConnector_->addTable("u", ROW({"x", "y"}, BIGINT()))
       ->setStats(
           2'000,
           {
@@ -1142,13 +1124,13 @@ TEST_F(CardinalityEstimationTest, unionAll) {
 
 // Verifies that UNION produces deduplicated cardinality.
 TEST_F(CardinalityEstimationTest, unionDistinct) {
-  connector_->addTable("t", ROW({"a"}, BIGINT()))
+  testConnector_->addTable("t", ROW({"a"}, BIGINT()))
       ->setStats(
           1'000,
           {{"a", {.nullPct = 10, .min = 1LL, .max = 500LL, .numDistinct = 100}},
            {"b", {.numDistinct = 500}}});
 
-  connector_->addTable("u", ROW({"a"}, BIGINT()))
+  testConnector_->addTable("u", ROW({"a"}, BIGINT()))
       ->setStats(
           2'000,
           {{"a",
@@ -1177,7 +1159,7 @@ TEST_F(CardinalityEstimationTest, unionDistinct) {
 // Verifies that ORDER BY with LIMIT scales column constraints using
 // sampledNdv, same as Limit.
 TEST_F(CardinalityEstimationTest, orderByWithLimit) {
-  connector_->addTable("t", ROW({"a", "b"}, BIGINT()))
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()))
       ->setStats(
           1'000,
           {
