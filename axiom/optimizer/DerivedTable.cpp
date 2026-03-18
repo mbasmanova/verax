@@ -1772,17 +1772,51 @@ void DerivedTable::makeEmpty() {
   addTable(valuesTable);
 }
 
+DerivedTable* DerivedTable::wrapChildWithFilter(
+    DerivedTable* child,
+    ExprCP conjunct) {
+  auto* wrapper = make<DerivedTable>();
+  wrapper->cname = queryCtx()->optimization()->newCName("wdt");
+
+  // In a set operation, all children share Column objects whose relation_
+  // points to the parent set DT. Create new intermediate columns with relation_
+  // = child so that the wrapper's importExpr translates the conjunct into
+  // child-column space. Without this, the conjunct would reference the set DT
+  // (not in the wrapper's tables), causing an infinite pushdown loop between
+  // the wrapper and the set DT.
+  auto sharedColumns = child->columns;
+
+  ColumnVector childColumns;
+  childColumns.reserve(sharedColumns.size());
+  for (const auto* col : sharedColumns) {
+    childColumns.push_back(
+        make<Column>(col->name(), child, col->value(), col->alias()));
+  }
+
+  child->columns = childColumns;
+  child->outputColumns = childColumns;
+
+  wrapper->addTable(child);
+  wrapper->columns = sharedColumns;
+  wrapper->exprs.assign(childColumns.begin(), childColumns.end());
+  wrapper->outputColumns = std::move(sharedColumns);
+  wrapper->conjuncts.push_back(wrapper->importExpr(conjunct));
+  return wrapper;
+}
+
 bool DerivedTable::addFilter(ExprCP conjunct) {
   // TODO: Support pushing conjuncts below LIMIT by wrapping in a DT.
   if (dtHasLimit(*this)) {
     return false;
   }
 
-  // TODO: Handle not being able to pushdown filter through UNION ALL.
   if (setOp.has_value()) {
-    for (auto* child : children) {
-      auto ok = child->addFilter(conjunct);
-      VELOX_CHECK(ok);
+    for (auto i = 0; i < children.size(); ++i) {
+      if (!children[i]->addFilter(conjunct)) {
+        // The child cannot accept the filter (e.g. it has a window or limit).
+        // Wrap the child in a new DT that holds the filter above it.
+        children[i] = wrapChildWithFilter(children[i], conjunct);
+      }
     }
 
     if (setOp.value() == logical_plan::SetOperation::kUnionAll) {

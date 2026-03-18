@@ -675,6 +675,54 @@ TEST_F(SetTest, constantFalseFilterInUnionAll) {
   }
 }
 
+// Verifies that a filter is pushed down below UNION / UNION ALL when one branch
+// has a window function.
+TEST_F(SetTest, filterOnUnionWithWindow) {
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
+  testConnector_->addTable("u", ROW({"x", "y"}, BIGINT()));
+
+  // UNION ALL.
+  {
+    auto logicalPlan = parseSelect(
+        "SELECT * FROM ("
+        "  (SELECT a, row_number() OVER (ORDER BY a) AS r FROM t)"
+        "  UNION ALL"
+        "  (SELECT x, y FROM u)"
+        ") WHERE r > 1",
+        kTestConnectorId);
+
+    auto plan = toSingleNodePlan(logicalPlan);
+    auto matcher =
+        matchScan("t")
+            .window({"row_number() OVER (ORDER BY a) AS r"})
+            .filter("r > 1")
+            .localPartition(matchScan("u").filter("y > 1").project().build())
+            .build();
+    AXIOM_ASSERT_PLAN(plan, matcher);
+  }
+
+  // UNION.
+  {
+    auto logicalPlan = parseSelect(
+        "SELECT * FROM ("
+        "  (SELECT a, row_number() OVER (ORDER BY a) AS r FROM t)"
+        "  UNION"
+        "  (SELECT x, y FROM u)"
+        ") WHERE r > 1",
+        kTestConnectorId);
+
+    auto plan = toSingleNodePlan(logicalPlan);
+    auto matcher =
+        matchScan("t")
+            .window({"row_number() OVER (ORDER BY a) AS r"})
+            .filter("r > 1")
+            .localPartition(matchScan("u").filter("y > 1").project().build())
+            .distinct()
+            .build();
+    AXIOM_ASSERT_PLAN(plan, matcher);
+  }
+}
+
 // UNION ALL of two EXCEPT branches produces mismatched column names when
 // the same table appears in multiple EXCEPT operands.
 TEST_F(SetTest, exceptUnionAll) {
