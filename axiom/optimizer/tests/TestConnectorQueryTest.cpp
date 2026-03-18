@@ -17,7 +17,6 @@
 #include <folly/init/Init.h>
 #include <gtest/gtest.h>
 
-#include "axiom/connectors/tests/TestConnector.h"
 #include "axiom/logical_plan/PlanBuilder.h"
 #include "axiom/optimizer/tests/QueryTestBase.h"
 #include "velox/exec/TableWriter.h"
@@ -30,22 +29,6 @@ namespace lp = facebook::axiom::logical_plan;
 
 class TestConnectorQueryTest : public QueryTestBase {
  protected:
-  static constexpr auto kTestConnectorId = "test";
-  static const inline std::string kDefaultSchema{
-      connector::TestConnector::kDefaultSchema};
-
-  void SetUp() override {
-    QueryTestBase::SetUp();
-    connector_ = std::make_shared<connector::TestConnector>(kTestConnectorId);
-    velox::connector::registerConnector(connector_);
-  }
-
-  void TearDown() override {
-    velox::connector::unregisterConnector(kTestConnectorId);
-    connector_.reset();
-    QueryTestBase::TearDown();
-  }
-
   MultiFragmentPlanPtr appendTableWrite(
       const MultiFragmentPlanPtr& plan,
       const RowTypePtr& schema,
@@ -81,7 +64,6 @@ class TestConnectorQueryTest : public QueryTestBase {
     return std::make_shared<MultiFragmentPlan>(fragments, options_);
   }
 
-  std::shared_ptr<connector::TestConnector> connector_;
   const MultiFragmentPlan::Options options_{.numWorkers = 1, .numDrivers = 16};
 };
 
@@ -89,8 +71,8 @@ TEST_F(TestConnectorQueryTest, selectFiltered) {
   auto vector = makeRowVector({"a"}, {makeFlatVector<int64_t>({0, 1, 2})});
   auto schema = vector->rowType();
 
-  connector_->addTable("t", schema);
-  connector_->appendData("t", vector);
+  testConnector_->addTable("t", schema);
+  testConnector_->appendData("t", vector);
 
   lp::PlanBuilder::Context context(kTestConnectorId, kDefaultSchema);
   auto logicalPlan =
@@ -108,7 +90,7 @@ TEST_F(TestConnectorQueryTest, writeFiltered) {
        makeFlatVector<StringView>({"str", "ing", "val"})});
   auto schema = vector->rowType();
 
-  auto table = connector_->addTable("u", schema);
+  auto table = testConnector_->addTable("u", schema);
   EXPECT_NE(table, nullptr);
 
   lp::PlanBuilder::Context context;

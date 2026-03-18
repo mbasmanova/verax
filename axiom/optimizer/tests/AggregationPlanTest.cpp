@@ -15,7 +15,6 @@
  */
 
 #include <gtest/gtest.h>
-#include "axiom/connectors/tests/TestConnector.h"
 #include "axiom/logical_plan/PlanBuilder.h"
 #include "axiom/optimizer/tests/PlanMatcher.h"
 #include "axiom/optimizer/tests/QueryTestBase.h"
@@ -29,25 +28,6 @@ namespace lp = facebook::axiom::logical_plan;
 
 class AggregationPlanTest : public test::QueryTestBase {
  protected:
-  static constexpr auto kTestConnectorId = "test";
-  static const inline std::string kDefaultSchema{
-      connector::TestConnector::kDefaultSchema};
-
-  void SetUp() override {
-    test::QueryTestBase::SetUp();
-
-    testConnector_ =
-        std::make_shared<connector::TestConnector>(kTestConnectorId);
-    velox::connector::registerConnector(testConnector_);
-  }
-
-  void TearDown() override {
-    velox::connector::unregisterConnector(kTestConnectorId);
-
-    test::QueryTestBase::TearDown();
-  }
-
-  std::shared_ptr<connector::TestConnector> testConnector_;
   lp::PlanBuilder::Context makeContext() const {
     return lp::PlanBuilder::Context{kTestConnectorId, kDefaultSchema};
   }

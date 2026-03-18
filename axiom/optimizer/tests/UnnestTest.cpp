@@ -13,7 +13,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include "axiom/connectors/tests/TestConnector.h"
 #include "axiom/logical_plan/PlanBuilder.h"
 #include "axiom/optimizer/tests/PlanMatcher.h"
 #include "axiom/optimizer/tests/QueryTestBase.h"
@@ -27,15 +26,8 @@ namespace lp = facebook::axiom::logical_plan;
 
 class UnnestTest : public test::QueryTestBase {
  protected:
-  static constexpr auto kTestConnectorId = "test";
-
- public:
   void SetUp() override {
     test::QueryTestBase::SetUp();
-
-    testConnector_ =
-        std::make_shared<connector::TestConnector>(kTestConnectorId);
-    velox::connector::registerConnector(testConnector_);
 
     rowVector_ = makeRowVector(
         {"x", "a_a_y", "a_a_z"},
@@ -66,11 +58,9 @@ class UnnestTest : public test::QueryTestBase {
 
   void TearDown() override {
     rowVector_.reset();
-    velox::connector::unregisterConnector(kTestConnectorId);
     test::QueryTestBase::TearDown();
   }
 
-  std::shared_ptr<connector::TestConnector> testConnector_;
   RowVectorPtr rowVector_;
 };
 

@@ -61,6 +61,10 @@ void QueryTestBase::SetUp() {
   velox::exec::ExchangeSource::registerFactory(
       velox::exec::test::createLocalExchangeSource);
 
+  testConnector_ = std::make_shared<connector::TestConnector>(kTestConnectorId);
+  velox::connector::registerConnector(testConnector_);
+  testConnector_->addTpchTables();
+
   optimizerPool_ = rootPool_->addLeafChild("optimizer");
 
   if (gSuiteHistory) {
@@ -81,6 +85,8 @@ void QueryTestBase::TearDown() {
   }
   queryCtx_.reset();
   optimizerPool_.reset();
+  velox::connector::unregisterConnector(kTestConnectorId);
+  testConnector_.reset();
   velox::exec::ExchangeSource::factories().clear();
   HiveConnectorTestBase::TearDown();
 }

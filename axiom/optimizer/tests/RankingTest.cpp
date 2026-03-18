@@ -16,7 +16,6 @@
 
 #include <fmt/core.h>
 
-#include "axiom/connectors/tests/TestConnector.h"
 #include "axiom/optimizer/tests/QueryTestBase.h"
 
 namespace facebook::axiom::optimizer {
@@ -26,23 +25,6 @@ using namespace velox;
 
 class RankingTest : public test::QueryTestBase {
  protected:
-  static constexpr auto kTestConnectorId = "test";
-
-  void SetUp() override {
-    test::QueryTestBase::SetUp();
-
-    testConnector_ =
-        std::make_shared<connector::TestConnector>(kTestConnectorId);
-    velox::connector::registerConnector(testConnector_);
-
-    testConnector_->addTpchTables();
-  }
-
-  void TearDown() override {
-    velox::connector::unregisterConnector(kTestConnectorId);
-    test::QueryTestBase::TearDown();
-  }
-
   velox::core::PlanNodePtr toSingleNodePlan(
       std::string_view sql,
       int32_t numDrivers = 1) {
@@ -54,8 +36,6 @@ class RankingTest : public test::QueryTestBase {
     auto logicalPlan = parseSelect(sql, kTestConnectorId);
     return planVelox(logicalPlan).plan;
   }
-
-  std::shared_ptr<connector::TestConnector> testConnector_;
 };
 
 TEST_F(RankingTest, rowNumberWithoutOrderBy) {

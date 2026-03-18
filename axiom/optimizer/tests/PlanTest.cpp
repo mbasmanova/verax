@@ -17,7 +17,6 @@
 #include <folly/init/Init.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include "axiom/connectors/tests/TestConnector.h"
 #include "axiom/logical_plan/PlanBuilder.h"
 #include "axiom/optimizer/tests/HiveQueriesTestBase.h"
 #include "axiom/optimizer/tests/PlanMatcher.h"
@@ -33,10 +32,6 @@ namespace lp = facebook::axiom::logical_plan;
 
 class PlanTest : public test::HiveQueriesTestBase {
  protected:
-  static constexpr auto kTestConnectorId = "test";
-  static const inline std::string kDefaultSchema{
-      connector::TestConnector::kDefaultSchema};
-
   static void SetUpTestCase() {
     test::HiveQueriesTestBase::SetUpTestCase();
     createTpchTables(
@@ -47,24 +42,9 @@ class PlanTest : public test::HiveQueriesTestBase {
     test::registerDfFunctions();
   }
 
-  void SetUp() override {
-    HiveQueriesTestBase::SetUp();
-
-    testConnector_ =
-        std::make_shared<connector::TestConnector>(kTestConnectorId);
-    velox::connector::registerConnector(testConnector_);
-  }
-
-  void TearDown() override {
-    velox::connector::unregisterConnector(kTestConnectorId);
-    HiveQueriesTestBase::TearDown();
-  }
-
   lp::PlanBuilder::Context makeContext() const {
     return lp::PlanBuilder::Context{kTestConnectorId, kDefaultSchema};
   }
-
-  std::shared_ptr<connector::TestConnector> testConnector_;
 };
 
 TEST_F(PlanTest, dedupEmptyArrays) {
