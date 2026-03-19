@@ -20,6 +20,8 @@
 #include <gtest/gtest.h>
 #include "axiom/connectors/tests/TestConnector.h"
 #include "velox/common/base/tests/GTestUtils.h"
+#include "velox/common/time/Timer.h"
+#include "velox/functions/prestosql/types/TimestampWithTimeZoneType.h"
 #include "velox/vector/tests/utils/VectorTestBase.h"
 
 using namespace facebook::velox;
@@ -360,6 +362,26 @@ TEST_F(SqlQueryRunnerTest, createTableInNonExistentSchema) {
   VELOX_ASSERT_THROW(
       run("CREATE TABLE nonexistent.t AS SELECT 1 AS x"),
       "Schema does not exist: nonexistent");
+}
+
+// Verifies that current_timestamp returns a value close to the actual wall
+// clock time. Captures wall clock before and after the query to bound the
+// expected result without relying on an exact match.
+TEST_F(SqlQueryRunnerTest, currentTimestamp) {
+  auto before = getCurrentTimeMs();
+  auto result = run("SELECT current_timestamp");
+  auto after = getCurrentTimeMs();
+
+  ASSERT_FALSE(result.message.has_value());
+  ASSERT_EQ(1, result.results.size());
+  ASSERT_EQ(1, result.results[0]->size());
+
+  auto packed =
+      result.results[0]->childAt(0)->as<SimpleVector<int64_t>>()->valueAt(0);
+  auto millis = unpackMillisUtc(packed);
+
+  EXPECT_GE(millis, before);
+  EXPECT_LE(millis, after);
 }
 
 TEST_F(SqlQueryRunnerTest, showSchemasWithLike) {

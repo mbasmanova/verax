@@ -39,9 +39,43 @@
 #include "velox/functions/prestosql/window/WindowFunctionsRegistration.h"
 #include "velox/parse/TypeResolver.h"
 #include "velox/serializers/PrestoSerializer.h"
+#include "velox/type/tz/TimeZoneMap.h"
 
 namespace velox = facebook::velox;
 using namespace facebook::axiom;
+
+namespace {
+
+// Returns the system's local IANA timezone name. Checks TZ environment variable
+// first, then reads /etc/localtime symlink, falls back to "UTC".
+std::string getLocalTimezone() {
+  // Check TZ environment variable first.
+  if (const char* tz = std::getenv("TZ"); tz != nullptr && tz[0] != '\0') {
+    // TZ may be a POSIX spec (e.g. "EST5EDT") or an IANA name. Validate it.
+    if (velox::tz::locateZone(tz, false) != nullptr) {
+      return tz;
+    }
+  }
+
+  // Read /etc/localtime symlink (e.g. /usr/share/zoneinfo/America/Los_Angeles).
+  std::array<char, 256> buf{};
+  auto len = readlink("/etc/localtime", buf.data(), buf.size() - 1);
+  if (len > 0) {
+    std::string_view target(buf.data(), len);
+    const std::string_view kZoneInfo = "zoneinfo/";
+    auto pos = target.rfind(kZoneInfo);
+    if (pos != std::string_view::npos) {
+      auto name = target.substr(pos + kZoneInfo.size());
+      if (velox::tz::locateZone(name, false) != nullptr) {
+        return std::string(name);
+      }
+    }
+  }
+
+  return "UTC";
+}
+
+} // namespace
 
 namespace axiom::sql {
 
@@ -79,6 +113,12 @@ void SqlQueryRunner::initialize(
   defaultConnectorId_ = std::move(defaultConnectorId);
   defaultSchema_ = std::move(defaultSchema);
   spillExecutor_ = std::make_shared<folly::IOThreadPoolExecutor>(4);
+
+  // Set default session properties to match Presto behavior.
+  config_[velox::core::QueryConfig::kSessionTimezone] = getLocalTimezone();
+  config_[velox::core::QueryConfig::kAdjustTimestampToTimezone] = "true";
+  config_[velox::core::QueryConfig::kSessionStartTime] =
+      std::to_string(velox::getCurrentTimeMs());
 }
 
 namespace {

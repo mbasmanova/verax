@@ -109,6 +109,10 @@ for the complete guide. Key rules are summarized below.
 - Put runtime information (names, values, types) at the **end** of error messages, after the static description.
   - ❌ `VELOX_USER_FAIL("Column '{}' is ambiguous", name);`
   - ✅ `VELOX_USER_FAIL("Column is ambiguous: {}", name);`
+- Use precise terminology when describing errors:
+  - **crash**: unrecoverable error — segfault, `VELOX_UNREACHABLE()`, abort, or similar.
+  - **fail**: controlled error — `VELOX_CHECK`, `VELOX_USER_CHECK`, thrown exception, or returned error code.
+  - Do not use "crash" when the code throws a catchable exception.
 
 ### Variables
 
@@ -125,6 +129,7 @@ for the complete guide. Key rules are summarized below.
 
 - Keep the public API surface small.
 - Prefer free functions in `.cpp` (anonymous namespace) over private/static class methods.
+- Define free functions close to where they are used, not grouped together at the top or bottom of the file.
 - Keep method implementations in `.cpp` except for trivial one-liners.
 - Avoid default arguments when all callers can pass values explicitly.
 - Never use `friend`, `FRIEND_TEST`, or any friend declarations. If a test needs access to private members, redesign the API or test through public methods instead.
@@ -208,6 +213,27 @@ undocumented if the name is self-explanatory.
 // ✅ Correct.
   // Translates a logical WindowExpr to a QueryGraph WindowFunction.
   ExprCP translateWindowExpr(const logical_plan::WindowExpr* window);
+```
+
+### Non-trivial implementations in headers
+
+Keep method implementations in `.cpp` except for trivial one-liners. If a
+method body has more than one statement, it belongs in the `.cpp` file.
+
+```cpp
+// ❌ Wrong — multi-statement body in header.
+  const WindowPlan* withFunctions(
+      const QGVector<WindowFunctionCP>& functions,
+      const ColumnVector& columns) const {
+    auto merged = functions_;
+    merged.insert(merged.end(), functions.begin(), functions.end());
+    return make<WindowPlan>(std::move(merged), columns_);
+  }
+
+// ✅ Correct — declaration only in header, implementation in .cpp.
+  const WindowPlan* withFunctions(
+      const QGVector<WindowFunctionCP>& functions,
+      const ColumnVector& columns) const;
 ```
 
 ### `goto` statements
