@@ -17,6 +17,8 @@ add_library(
   HiveConnectorMetadata.cpp
   HiveMetadataConfig.cpp
   LocalHiveConnectorMetadata.cpp
+  LocalTableBuilder.cpp
+  LocalTableMetadata.cpp
   StatisticsBuilder.cpp
 )
 

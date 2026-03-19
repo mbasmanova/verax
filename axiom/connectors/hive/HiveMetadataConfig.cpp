@@ -27,8 +27,4 @@ std::string HiveMetadataConfig::localFileFormat() const {
   return config_->get<std::string>(kLocalFileFormat, "");
 }
 
-bool HiveMetadataConfig::useWriteTimeStats() const {
-  return config_->get<bool>(kUseWriteTimeStats, true);
-}
-
 } // namespace facebook::axiom::connector::hive

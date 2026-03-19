@@ -22,15 +22,12 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include "axiom/connectors/hive/HiveMetadataConfig.h"
+#include "axiom/connectors/hive/LocalTableMetadata.h"
 #include "axiom/optimizer/JsonUtil.h"
 #include "velox/connectors/Connector.h"
 #include "velox/connectors/hive/HiveConnectorSplit.h"
 #include "velox/connectors/hive/HiveConnectorUtil.h"
 #include "velox/connectors/hive/HivePartitionName.h"
-#include "velox/dwio/common/BufferedInput.h"
-#include "velox/dwio/common/Reader.h"
-#include "velox/dwio/common/ReaderFactory.h"
-#include "velox/dwio/common/Statistics.h"
 #include "velox/expression/Expr.h"
 
 namespace facebook::axiom::connector::hive {
@@ -44,6 +41,72 @@ std::vector<PartitionHandlePtr> LocalHiveSplitManager::listPartitions(
 }
 
 namespace {
+
+// Merges 'source' into 'target': sums numValues, takes min of mins, max of
+// maxes, and max of numDistinct.
+void mergeColumnStatsValues(
+    ColumnStatistics& target,
+    const ColumnStatistics& source) {
+  target.numValues += source.numValues;
+
+  if (source.min.has_value()) {
+    if (!target.min.has_value() || source.min.value() < target.min.value()) {
+      target.min = source.min;
+    }
+  }
+  if (source.max.has_value()) {
+    if (!target.max.has_value() || target.max.value() < source.max.value()) {
+      target.max = source.max;
+    }
+  }
+
+  if (source.numDistinct.has_value()) {
+    target.numDistinct =
+        std::max(target.numDistinct.value_or(0), source.numDistinct.value());
+  }
+}
+
+// Merges a vector of column stats into an existing vector, matching by name.
+void mergeColumnStats(
+    std::vector<ColumnStatistics>& existing,
+    const std::vector<ColumnStatistics>& incoming) {
+  folly::F14FastMap<std::string, size_t> nameToIndex;
+  for (size_t i = 0; i < existing.size(); ++i) {
+    nameToIndex[existing[i].name] = i;
+  }
+
+  for (const auto& stats : incoming) {
+    auto it = nameToIndex.find(stats.name);
+    if (it == nameToIndex.end()) {
+      nameToIndex[stats.name] = existing.size();
+      existing.push_back(stats);
+      continue;
+    }
+
+    mergeColumnStatsValues(existing[it->second], stats);
+  }
+}
+
+// Extracts the leading digits after the last '/' in the file path.
+int32_t extractDigitsAfterLastSlash(std::string_view path) {
+  size_t lastSlashPos = path.find_last_of('/');
+  VELOX_CHECK(lastSlashPos != std::string::npos, "No slash found in {}", path);
+  std::string digits;
+  for (size_t i = lastSlashPos + 1; i < path.size(); ++i) {
+    char c = path[i];
+    if (std::isdigit(c)) {
+      digits += c;
+    } else {
+      break;
+    }
+  }
+  VELOX_CHECK(
+      !digits.empty(),
+      "Bad bucketed file name: No digits at start of name {}",
+      path);
+  return std::stoi(digits);
+}
+
 velox::common::Filter* FOLLY_NULLABLE findFilter(
     const velox::connector::hive::HiveTableHandle& tableHandle,
     const std::string& columnName) {
@@ -118,34 +181,6 @@ struct MetadataFilter {
   const Column* column{nullptr};
 };
 
-// Tests whether a file passes a metadata filter.
-bool testFileMetadata(
-    const FileInfo& file,
-    const MetadataFilter& metadataFilter) {
-  if (metadataFilter.columnName == HiveTable::kPath) {
-    return metadataFilter.filter->testBytes(
-        file.path.c_str(), static_cast<int32_t>(file.path.size()));
-  }
-
-  if (metadataFilter.columnName == HiveTable::kBucket) {
-    VELOX_CHECK(file.bucketNumber.has_value());
-    return metadataFilter.filter->testInt64(file.bucketNumber.value());
-  }
-
-  // Partition column filter.
-  VELOX_CHECK_NOT_NULL(metadataFilter.column);
-  auto partitionIt = file.partitionKeys.find(metadataFilter.columnName);
-  VELOX_CHECK(
-      partitionIt != file.partitionKeys.end(),
-      "Partition key not found in file {}: {}",
-      file.path,
-      metadataFilter.columnName);
-  return testPartitionValue(
-      *metadataFilter.filter,
-      partitionIt->second,
-      *metadataFilter.column->type());
-}
-
 // Classifies filter conjuncts by converting each to subfieldFilters. Conjuncts
 // fully converted to subfieldFilters on accepted columns are collected in
 // 'metadataFilters'. All others are reported in 'rejectedFilterIndices'. When
@@ -195,109 +230,6 @@ void classifyFilterConjuncts(
               it != partitionColumnsByName.end() ? it->second : nullptr});
     }
   }
-}
-
-// Creates an integer Variant with the TypeKind matching the column type.
-// IntegerColumnStatistics::getMinimum/getMaximum return int64_t regardless of
-// the actual integer width. Constructing Variant(int64_t) always produces
-// BIGINT, which causes a type mismatch when the column is TINYINT, SMALLINT, or
-// INTEGER. This helper narrows the value to the correct type.
-velox::Variant makeIntegerVariant(velox::TypeKind kind, int64_t value) {
-  switch (kind) {
-    case velox::TypeKind::TINYINT:
-      return velox::Variant(static_cast<int8_t>(value));
-    case velox::TypeKind::SMALLINT:
-      return velox::Variant(static_cast<int16_t>(value));
-    case velox::TypeKind::INTEGER:
-      return velox::Variant(static_cast<int32_t>(value));
-    default:
-      return velox::Variant(value);
-  }
-}
-
-// Merges 'source' into 'target': sums numValues, takes min of mins, max of
-// maxes, and max of numDistinct.
-// TODO: Replace numDistinct max with HLL sketch merging for accurate union.
-void mergeColumnStatsValues(
-    ColumnStatistics& target,
-    const ColumnStatistics& source) {
-  target.numValues += source.numValues;
-
-  if (source.min.has_value()) {
-    if (!target.min.has_value() || source.min.value() < target.min.value()) {
-      target.min = source.min;
-    }
-  }
-  if (source.max.has_value()) {
-    if (!target.max.has_value() || target.max.value() < source.max.value()) {
-      target.max = source.max;
-    }
-  }
-
-  if (source.numDistinct.has_value()) {
-    target.numDistinct =
-        std::max(target.numDistinct.value_or(0), source.numDistinct.value());
-  }
-}
-
-// Merges a vector of column stats into an existing vector, matching by name.
-// Columns not yet in 'existing' are appended.
-void mergeColumnStats(
-    std::vector<ColumnStatistics>& existing,
-    const std::vector<ColumnStatistics>& incoming) {
-  folly::F14FastMap<std::string, size_t> nameToIndex;
-  for (size_t i = 0; i < existing.size(); ++i) {
-    nameToIndex[existing[i].name] = i;
-  }
-
-  for (const auto& stats : incoming) {
-    auto it = nameToIndex.find(stats.name);
-    if (it == nameToIndex.end()) {
-      nameToIndex[stats.name] = existing.size();
-      existing.push_back(stats);
-      continue;
-    }
-
-    mergeColumnStatsValues(existing[it->second], stats);
-  }
-}
-
-// Aggregates per-column stats across selected files. Columns missing from a
-// file's columnStats are treated as all-null (numValues = 0, no min/max). This
-// handles schema evolution where a column was added after the file was written.
-std::vector<ColumnStatistics> aggregateColumnStats(
-    const std::vector<const FileInfo*>& files,
-    const std::vector<const Column*>& columns,
-    uint64_t totalRows) {
-  std::vector<ColumnStatistics> result;
-  result.reserve(columns.size());
-
-  for (const auto* column : columns) {
-    ColumnStatistics aggregated;
-
-    for (const auto* file : files) {
-      auto it = file->columnStats.find(column->name());
-      if (it == file->columnStats.end()) {
-        // Column not in this file (schema evolution). All rows are null.
-        continue;
-      }
-      mergeColumnStatsValues(aggregated, it->second);
-    }
-
-    if (column->stats() && column->stats()->numDistinct.has_value()) {
-      aggregated.numDistinct = column->stats()->numDistinct.value();
-    }
-
-    if (totalRows > 0) {
-      aggregated.nullPct = 100.0f *
-          static_cast<float>(totalRows - aggregated.numValues) /
-          static_cast<float>(totalRows);
-    }
-
-    result.push_back(std::move(aggregated));
-  }
-
-  return result;
 }
 
 // Estimates table stats from persisted partition-level stats. Applies partition
@@ -373,56 +305,6 @@ FilteredTableStats estimateStatsFromPartitionStats(
       columnStats.push_back(std::move(stats));
     }
   }
-
-  return FilteredTableStats{
-      totalRows, std::move(columnStats), std::move(rejectedFilterIndices)};
-}
-
-// Estimates table stats from per-file header metadata. Applies metadata filters
-// (partition keys, $path, $bucket), aggregates per-file column stats. Returns
-// nullopt if any file lacks row count metadata.
-std::optional<FilteredTableStats> estimateStatsFromFileStats(
-    const std::vector<std::unique_ptr<const FileInfo>>& files,
-    const std::vector<velox::core::TypedExprPtr>& filterConjuncts,
-    velox::core::ExpressionEvaluator& evaluator,
-    const folly::F14FastMap<std::string, const Column*>& partitionColumnsByName,
-    const std::vector<const Column*>& requestedColumns) {
-  std::vector<MetadataFilter> metadataFilters;
-  std::vector<int32_t> rejectedFilterIndices;
-  classifyFilterConjuncts(
-      filterConjuncts,
-      evaluator,
-      partitionColumnsByName,
-      /*allowPathAndBucket=*/true,
-      metadataFilters,
-      rejectedFilterIndices);
-
-  std::vector<const FileInfo*> selectedFiles;
-  for (const auto& file : files) {
-    if (!file->numRows.has_value()) {
-      return std::nullopt;
-    }
-    bool pass = true;
-    for (const auto& metadataFilter : metadataFilters) {
-      if (!testFileMetadata(*file, metadataFilter)) {
-        pass = false;
-        break;
-      }
-    }
-    if (!pass) {
-      continue;
-    }
-    selectedFiles.push_back(file.get());
-  }
-
-  uint64_t totalRows{0};
-  for (const auto* file : selectedFiles) {
-    VELOX_CHECK(file->numRows.has_value());
-    totalRows += file->numRows.value();
-  }
-
-  auto columnStats =
-      aggregateColumnStats(selectedFiles, requestedColumns, totalRows);
 
   return FilteredTableStats{
       totalRows, std::move(columnStats), std::move(rejectedFilterIndices)};
@@ -745,17 +627,8 @@ LocalHiveTableLayout::co_estimateStats(
     requestedColumns.push_back(column);
   }
 
-  if (hiveMetadataConfig_ && hiveMetadataConfig_->useWriteTimeStats()) {
-    co_return estimateStatsFromPartitionStats(
-        partitionStats_,
-        filterConjuncts,
-        evaluator,
-        partitionColumnsByName,
-        requestedColumns);
-  }
-
-  co_return estimateStatsFromFileStats(
-      files_,
+  co_return estimateStatsFromPartitionStats(
+      partitionStats_,
       filterConjuncts,
       evaluator,
       partitionColumnsByName,
@@ -793,66 +666,6 @@ LocalHiveTableLayout* LocalTable::makeDefaultLayout(
 }
 
 namespace {
-
-// Extracts the digits after the last / in the file path and returns them as an
-// integer.
-int32_t extractDigitsAfterLastSlash(std::string_view path) {
-  size_t lastSlashPos = path.find_last_of('/');
-  VELOX_CHECK(lastSlashPos != std::string::npos, "No slash found in {}", path);
-  std::string digits;
-  for (size_t i = lastSlashPos + 1; i < path.size(); ++i) {
-    char c = path[i];
-    if (std::isdigit(c)) {
-      digits += c;
-    } else {
-      break;
-    }
-  }
-  VELOX_CHECK(
-      !digits.empty(),
-      "Bad bucketed file name: No digits at start of name {}",
-      path);
-  return std::stoi(digits);
-}
-
-void listFiles(
-    std::string_view path,
-    const std::function<int32_t(std::string_view)>& parseBucketNumber,
-    int32_t prefixSize,
-    std::vector<std::unique_ptr<const FileInfo>>& result) {
-  for (auto const& dirEntry : fs::directory_iterator{path}) {
-    // Ignore hidden files.
-    if (dirEntry.path().filename().c_str()[0] == '.') {
-      continue;
-    }
-
-    if (dirEntry.is_directory()) {
-      listFiles(
-          fmt::format("{}/{}", path, dirEntry.path().filename().c_str()),
-          parseBucketNumber,
-          prefixSize,
-          result);
-    }
-    if (!dirEntry.is_regular_file()) {
-      continue;
-    }
-    auto file = std::make_unique<FileInfo>();
-    file->path = fmt::format("{}/{}", path, dirEntry.path().filename().c_str());
-    if (parseBucketNumber) {
-      file->bucketNumber = parseBucketNumber(file->path);
-    }
-    std::vector<std::string> dirs;
-    folly::split('/', path.substr(prefixSize, path.size()), dirs);
-    for (auto& dir : dirs) {
-      std::vector<std::string> parts;
-      folly::split('=', dir, parts);
-      if (parts.size() == 2) {
-        file->partitionKeys[parts.at(0)] = parts.at(1);
-      }
-    }
-    result.push_back(std::move(file));
-  }
-}
 
 struct CreateTableOptions {
   std::optional<velox::common::CompressionKind> compressionKind;
@@ -1216,124 +1029,6 @@ std::shared_ptr<LocalTable> createLocalTable(
   return table;
 }
 
-std::string schemaPath(std::string_view path) {
-  return fmt::format("{}/.schema", path);
-}
-
-std::string statsPath(const std::string& path) {
-  return fmt::format("{}/.stats", path);
-}
-
-folly::dynamic columnStatsToJson(const ColumnStatistics& stats) {
-  folly::dynamic json = folly::dynamic::object;
-  json["name"] = stats.name;
-  json["numValues"] = stats.numValues;
-  json["nullPct"] = stats.nullPct;
-  if (stats.min.has_value()) {
-    json["min"] = stats.min->serialize();
-  }
-  if (stats.max.has_value()) {
-    json["max"] = stats.max->serialize();
-  }
-  if (stats.numDistinct.has_value()) {
-    json["numDistinct"] = stats.numDistinct.value();
-  }
-  if (stats.maxLength.has_value()) {
-    json["maxLength"] = stats.maxLength.value();
-  }
-  if (stats.avgLength.has_value()) {
-    json["avgLength"] = stats.avgLength.value();
-  }
-  return json;
-}
-
-struct PersistedStats {
-  uint64_t numRows{0};
-  std::vector<ColumnStatistics> columns;
-};
-
-folly::dynamic persistedStatsToJson(const PersistedStats& stats) {
-  folly::dynamic columns = folly::dynamic::array;
-  for (const auto& colStats : stats.columns) {
-    columns.push_back(columnStatsToJson(colStats));
-  }
-  folly::dynamic json = folly::dynamic::object;
-  json["numRows"] = stats.numRows;
-  json["columns"] = std::move(columns);
-  return json;
-}
-
-ColumnStatistics columnStatsFromJson(const folly::dynamic& json) {
-  ColumnStatistics stats;
-  stats.name = json["name"].asString();
-  stats.numValues = json["numValues"].asInt();
-  stats.nullPct = json["nullPct"].asDouble();
-  if (json.count("min")) {
-    stats.min = velox::Variant::create(json["min"]);
-  }
-  if (json.count("max")) {
-    stats.max = velox::Variant::create(json["max"]);
-  }
-  if (json.count("numDistinct")) {
-    stats.numDistinct = json["numDistinct"].asInt();
-  }
-  if (json.count("maxLength")) {
-    stats.maxLength = json["maxLength"].asInt();
-  }
-  if (json.count("avgLength")) {
-    stats.avgLength = json["avgLength"].asInt();
-  }
-  return stats;
-}
-
-PersistedStats persistedStatsFromJson(const folly::dynamic& json) {
-  PersistedStats result;
-  result.numRows = json["numRows"].asInt();
-  for (const auto& colJson : json["columns"]) {
-    result.columns.push_back(columnStatsFromJson(colJson));
-  }
-  return result;
-}
-
-// Reads persisted stats from the .stats file. Returns std::nullopt if the
-// file doesn't exist.
-std::optional<PersistedStats> readPersistedStats(const std::string& directory) {
-  const auto file = statsPath(directory);
-  if (!std::filesystem::exists(file)) {
-    return std::nullopt;
-  }
-  std::ifstream inputFile(file);
-  if (!inputFile.is_open()) {
-    return std::nullopt;
-  }
-  std::string content(
-      (std::istreambuf_iterator<char>(inputFile)),
-      std::istreambuf_iterator<char>());
-  return persistedStatsFromJson(folly::parseJson(content));
-}
-
-// Writes stats to a .stats file in 'directory', merging with any existing
-// stats from prior writes.
-void persistStats(
-    const std::string& directory,
-    uint64_t numRows,
-    std::vector<ColumnStatistics> columns) {
-  auto existing = readPersistedStats(directory);
-  if (existing.has_value()) {
-    numRows += existing->numRows;
-    mergeColumnStats(existing->columns, columns);
-    columns = std::move(existing->columns);
-  }
-
-  const auto file = statsPath(directory);
-  std::ofstream outputFile(file);
-  VELOX_CHECK(outputFile.is_open(), "Failed to open stats file: {}", file);
-  outputFile << folly::toPrettyJson(
-      persistedStatsToJson({numRows, std::move(columns)}));
-  outputFile.close();
-  VELOX_CHECK(!outputFile.fail(), "Failed to write stats file: {}", file);
-}
-
 std::shared_ptr<LocalTable> createTableFromSchema(
     std::string_view name,
     std::string_view path,
@@ -1355,79 +1050,6 @@ std::shared_ptr<LocalTable> createTableFromSchema(
       name, schema, options, connector, std::move(hiveMetadataConfig));
 }
 
-// Reads column statistics from file headers (min, max, count, null
-// percentage) and populates both table-level Column stats and per-file
-// FileInfo stats.
-void populateFileStats(
-    Table& table,
-    const velox::dwio::common::Reader& reader,
-    const velox::RowType& fileType,
-    FileInfo* fileInfo,
-    std::optional<uint64_t> numRows) {
-  for (auto i = 0; i < fileType.size(); ++i) {
-    const auto& name = fileType.nameOf(i);
-
-    const auto* column = table.findColumn(name);
-    VELOX_CHECK_NOT_NULL(column, "Column not found: {}", name);
-
-    const auto& typeWithId = reader.typeWithId()->childByName(name);
-    auto readerStats = reader.columnStatistics(typeWithId->id());
-    if (!readerStats) {
-      continue;
-    }
-
-    auto* stats = const_cast<Column*>(column)->mutableStats();
-    stats->numValues += readerStats->getNumberOfValues().value_or(0);
-
-    const auto numValues = readerStats->getNumberOfValues();
-    if (numRows.has_value() && numRows.value() > 0 && numValues.has_value()) {
-      stats->nullPct =
-          100 * (numRows.value() - numValues.value()) / numRows.value();
-    }
-
-    ColumnStatistics fileColStats;
-    fileColStats.numValues = numValues.value_or(0);
-
-    if (auto* intStats =
-            dynamic_cast<const velox::dwio::common::IntegerColumnStatistics*>(
-                readerStats.get())) {
-      auto columnKind = column->type()->kind();
-      if (intStats->getMinimum().has_value()) {
-        fileColStats.min =
-            makeIntegerVariant(columnKind, intStats->getMinimum().value());
-      }
-      if (intStats->getMaximum().has_value()) {
-        fileColStats.max =
-            makeIntegerVariant(columnKind, intStats->getMaximum().value());
-      }
-    } else if (
-        auto* dblStats =
-            dynamic_cast<const velox::dwio::common::DoubleColumnStatistics*>(
-                readerStats.get())) {
-      if (dblStats->getMinimum().has_value()) {
-        fileColStats.min = velox::Variant(dblStats->getMinimum().value());
-      }
-      if (dblStats->getMaximum().has_value()) {
-        fileColStats.max = velox::Variant(dblStats->getMaximum().value());
-      }
-    } else if (
-        auto* strStats =
-            dynamic_cast<const velox::dwio::common::StringColumnStatistics*>(
-                readerStats.get())) {
-      if (strStats->getMinimum().has_value()) {
-        fileColStats.min = velox::Variant::create<velox::TypeKind::VARCHAR>(
-            strStats->getMinimum().value());
-      }
-      if (strStats->getMaximum().has_value()) {
-        fileColStats.max = velox::Variant::create<velox::TypeKind::VARCHAR>(
-            strStats->getMaximum().value());
-      }
-    }
-
-    fileInfo->columnStats[name] = std::move(fileColStats);
-  }
-}
-
 } // namespace
 
 // Loads persisted write-time stats from .stats files and stores them in the
@@ -1438,7 +1060,7 @@ void LocalHiveConnectorMetadata::loadTableWithWriteTimeStats(
     LocalHiveTableLayout* layout,
     const fs::path& tablePath) {
   std::vector<PartitionStats> allPartitionStats;
-  auto persistedStats = readPersistedStats(tablePath.string());
+  auto persistedStats = PersistedStats::read(tablePath.string());
   if (persistedStats.has_value()) {
     // Unpartitioned table: single entry with empty partition keys.
     PartitionStats partitionEntry;
@@ -1463,7 +1085,7 @@ void LocalHiveConnectorMetadata::loadTableWithWriteTimeStats(
       if (!entry.is_directory()) {
         continue;
       }
-      auto persisted = readPersistedStats(entry.path().string());
+      auto persisted = PersistedStats::read(entry.path().string());
       if (!persisted.has_value()) {
         continue;
       }
@@ -1488,73 +1110,6 @@ void LocalHiveConnectorMetadata::loadTableWithWriteTimeStats(
   layout->setPartitionStats(std::move(allPartitionStats));
 }
 
-// Reads file headers to discover schema (if no .schema file), row counts, and
-// per-file column stats. Samples NDVs after loading.
-void LocalHiveConnectorMetadata::loadTableFromFileHeaders(
-    std::string_view tableName,
-    std::shared_ptr<LocalTable> table,
-    std::vector<std::unique_ptr<const FileInfo>> files,
-    const fs::path& tablePath) {
-  velox::RowTypePtr tableType;
-  if (table) {
-    tableType = table->type();
-  }
-
-  for (auto& info : files) {
-    velox::dwio::common::ReaderOptions readerOptions{schemaPool_.get()};
-    auto fileFormat = table == nullptr || table->layouts().empty()
-        ? format_
-        : reinterpret_cast<const HiveTableLayout*>(table->layouts()[0])
-              ->fileFormat();
-    readerOptions.setFileFormat(fileFormat);
-
-    if (fileFormat == velox::dwio::common::FileFormat::TEXT && tableType) {
-      readerOptions.setFileSchema(tableType);
-    }
-
-    auto input = std::make_unique<velox::dwio::common::BufferedInput>(
-        std::make_shared<velox::LocalReadFile>(info->path),
-        readerOptions.memoryPool());
-    std::unique_ptr<velox::dwio::common::Reader> reader =
-        velox::dwio::common::getReaderFactory(readerOptions.fileFormat())
-            ->createReader(std::move(input), readerOptions);
-
-    const auto& fileType = reader->rowType();
-    if (!tableType) {
-      tableType = fileType;
-    } else if (fileType->size() > tableType->size()) {
-      tableType = fileType;
-    }
-
-    if (!table) {
-      tables_[tableName] = std::make_shared<LocalTable>(
-          SchemaTableName{std::string(kDefaultSchema), std::string{tableName}},
-          tableType,
-          /*bucketed=*/false,
-          /*options=*/folly::F14FastMap<std::string, velox::Variant>{});
-      table = tables_[tableName];
-    }
-
-    const auto rows = reader->numberOfRows();
-    if (rows.has_value()) {
-      table->incrementNumRows(rows.value());
-    }
-    auto* mutableInfo = const_cast<FileInfo*>(info.get());
-    mutableInfo->numRows = rows;
-
-    populateFileStats(*table, *reader, *fileType, mutableInfo, rows);
-  }
-  VELOX_CHECK_NOT_NULL(table, "Table directory {} is empty", tablePath);
-
-  table->makeDefaultLayout(std::move(files), *this);
-
-  float pct = 10;
-  if (table->numRows() > 1'000'000) {
-    pct = 100 * 100'000 / table->numRows();
-  }
-  table->sampleNumDistincts(pct, schemaPool_.get());
-}
-
 void LocalHiveConnectorMetadata::loadTable(
     std::string_view tableName,
     const fs::path& tablePath) {
@@ -1564,78 +1119,26 @@ void LocalHiveConnectorMetadata::loadTable(
       format_,
       hiveConnector(),
       hiveMetadataConfig_);
+  VELOX_CHECK_NOT_NULL(
+      table,
+      "Schema file (.schema) not found for table: {}. "
+      "Run LocalTableBuilder::build() first.",
+      tablePath);
 
-  if (table) {
-    tables_[tableName] = table;
-  }
-
-  const bool useWriteTimeStats = hiveMetadataConfig_->useWriteTimeStats();
-  if (useWriteTimeStats) {
-    VELOX_CHECK_NOT_NULL(
-        table, "Schema file required for write-time stats: {}", tablePath);
-  }
+  tables_[tableName] = table;
 
   std::function<int32_t(std::string_view)> parseBucketNumber = nullptr;
-  if (table && !table->layouts()[0]->partitionColumns().empty()) {
+  if (!table->layouts()[0]->partitionColumns().empty()) {
     parseBucketNumber = extractDigitsAfterLastSlash;
   }
 
   std::vector<std::unique_ptr<const FileInfo>> files;
   std::string pathString = tablePath;
-  listFiles(
-      pathString,
-      parseBucketNumber,
-      static_cast<int32_t>(pathString.size()),
-      files);
+  FileInfo::listFiles(pathString, parseBucketNumber, pathString.size(), files);
 
-  if (useWriteTimeStats) {
-    auto* layout = table->makeDefaultLayout(std::move(files), *this);
-    loadTableWithWriteTimeStats(table, layout, tablePath);
-  } else {
-    loadTableFromFileHeaders(tableName, table, std::move(files), tablePath);
-  }
+  auto* layout = table->makeDefaultLayout(std::move(files), *this);
+  loadTableWithWriteTimeStats(table, layout, tablePath);
 }
-
-namespace {
-
-bool isMixedOrder(const ColumnStatistics& stats) {
-  return stats.ascendingPct.has_value() && stats.descendingPct.has_value() &&
-      stats.ascendingPct.value() > 0 && stats.descendingPct.value() > 0;
-}
-
-bool isInteger(velox::TypeKind kind) {
-  switch (kind) {
-    case velox::TypeKind::TINYINT:
-    case velox::TypeKind::SMALLINT:
-    case velox::TypeKind::INTEGER:
-    case velox::TypeKind::BIGINT:
-      return true;
-    default:
-      return false;
-  }
-}
-
-template <typename T>
-T numericValue(const velox::Variant& v) {
-  switch (v.kind()) {
-    case velox::TypeKind::TINYINT:
-      return static_cast<T>(v.value<velox::TypeKind::TINYINT>());
-    case velox::TypeKind::SMALLINT:
-      return static_cast<T>(v.value<velox::TypeKind::SMALLINT>());
-    case velox::TypeKind::INTEGER:
-      return static_cast<T>(v.value<velox::TypeKind::INTEGER>());
-    case velox::TypeKind::BIGINT:
-      return static_cast<T>(v.value<velox::TypeKind::BIGINT>());
-    case velox::TypeKind::REAL:
-      return static_cast<T>(v.value<velox::TypeKind::REAL>());
-    case velox::TypeKind::DOUBLE:
-      return static_cast<T>(v.value<velox::TypeKind::DOUBLE>());
-    default:
-      VELOX_UNREACHABLE();
-  }
-}
-
-} // namespace
 
 LocalTable::LocalTable(
     SchemaTableName name,
@@ -1648,90 +1151,6 @@ LocalTable::LocalTable(
           bucketed,
           /*includeHiddenColumns=*/true,
           std::move(options)) {}
-
-void LocalTable::sampleNumDistincts(
-    float samplePct,
-    velox::memory::MemoryPool* pool) {
-  std::vector<velox::connector::ColumnHandlePtr> columns;
-  columns.reserve(type()->size());
-
-  std::vector<velox::common::Subfield> fields;
-  fields.reserve(type()->size());
-
-  auto* layout = layouts_[0].get();
-  for (const auto& name : type()->names()) {
-    columns.push_back(layout->createColumnHandle(
-        /*session=*/nullptr, name));
-    fields.emplace_back(name);
-  }
-
-  // Sample the table. Adjust distinct values according to the samples.
-  auto allocator = std::make_unique<velox::HashStringAllocator>(pool);
-
-  auto* metadata = ConnectorMetadata::metadata(layout->connector());
-  auto* localHiveMetadata =
-      dynamic_cast<const LocalHiveConnectorMetadata*>(metadata);
-  auto& evaluator =
-      *localHiveMetadata->connectorQueryCtx()->expressionEvaluator();
-
-  std::vector<velox::core::TypedExprPtr> rejectedFilters;
-  auto handle = layout->createTableHandle(
-      /*session=*/nullptr, columns, evaluator, /*filters=*/{}, rejectedFilters);
-
-  auto* localLayout = dynamic_cast<LocalHiveTableLayout*>(layout);
-  VELOX_CHECK_NOT_NULL(localLayout, "Expecting a local hive layout");
-
-  std::vector<std::unique_ptr<StatisticsBuilder>> statsBuilders;
-  auto [sampled, passed] = localLayout->sample(
-      handle, samplePct, fields, allocator.get(), &statsBuilders);
-
-  numSampledRows_ = sampled;
-  for (size_t i = 0; i < statsBuilders.size(); ++i) {
-    if (const auto& builder = statsBuilders[i]) {
-      auto columnIdx = static_cast<uint32_t>(i);
-      auto* column = findColumn(type()->nameOf(columnIdx));
-      VELOX_CHECK_NOT_NULL(
-          column, "Column not found: {}", type()->nameOf(columnIdx));
-
-      ColumnStatistics& stats = *const_cast<Column*>(column)->mutableStats();
-      builder->build(stats);
-
-      auto estimate = stats.numDistinct;
-      int64_t approxNumDistinct =
-          estimate.has_value() ? estimate.value() : numRows_;
-
-      // For tiny tables the sample is 100% and the approxNumDistinct is
-      // accurate. For partial samples, the distinct estimate is left to be the
-      // distinct estimate of the sample if there are few distincts. This is an
-      // enumeration where values in unsampled rows are likely the same. If
-      // there are many distincts, we multiply by 1/sample rate assuming that
-      // unsampled rows will mostly have new values.
-      if (numSampledRows_ < numRows_) {
-        if (approxNumDistinct > sampled / 50) {
-          float numDups =
-              numSampledRows_ / static_cast<float>(approxNumDistinct);
-          approxNumDistinct = std::min<float>(numRows_, numRows_ / numDups);
-
-          // If the type is an integer type, num distincts cannot be larger than
-          // max - min.
-
-          if (isInteger(builder->type()->kind())) {
-            auto min = stats.min;
-            auto max = stats.max;
-            if (min.has_value() && max.has_value() && isMixedOrder(stats)) {
-              auto range = numericValue<float>(max.value()) -
-                  numericValue<float>(min.value());
-              approxNumDistinct = std::min<float>(approxNumDistinct, range);
-            }
-          }
-        }
-
-        const_cast<Column*>(column)->mutableStats()->numDistinct =
-            approxNumDistinct;
-      }
-    }
-  }
-}
 
 TablePtr LocalHiveConnectorMetadata::findTable(
     const SchemaTableName& tableName) {
@@ -1969,21 +1388,20 @@ RowsFuture LocalHiveConnectorMetadata::finishWrite(
       auto partitionDirName =
           velox::connector::hive::HivePartitionName::partitionName(
               i, partitionKeys, /*partitionKeyAsLowerCase=*/true);
-      persistStats(
+      PersistedStats::write(
           fmt::format("{}/{}", targetPath, partitionDirName),
-          partitionRows,
-          std::move(groupStats[i]));
+          {static_cast<uint64_t>(partitionRows), std::move(groupStats[i])});
     }
   } else {
-    persistStats(
+    PersistedStats::write(
         targetPath,
-        rows,
-        groupStats.empty() ? std::vector<ColumnStatistics>{}
-                           : std::move(groupStats[0]));
+        {rows,
+         groupStats.empty() ? std::vector<ColumnStatistics>{}
+                            : std::move(groupStats[0])});
   }
 
-  // loadTable reads file headers, samples for NDV, and applies persisted
-  // .stats — populating in-memory Column stats.
+  // loadTable reads the .schema and .stats files, populating in-memory
+  // Column stats.
   loadTable(hiveHandle->table()->name().table, targetPath);
 
   return rows;

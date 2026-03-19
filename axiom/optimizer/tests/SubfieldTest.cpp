@@ -15,6 +15,7 @@
  */
 
 #include "axiom/connectors/hive/HiveMetadataConfig.h"
+#include "axiom/connectors/hive/LocalTableMetadata.h"
 #include "axiom/logical_plan/PlanBuilder.h"
 #include "axiom/optimizer/FunctionRegistry.h"
 #include "axiom/optimizer/tests/FeatureGen.h"
@@ -106,10 +107,6 @@ class SubfieldTest : public HiveQueriesTestBase,
                      public testing::WithParamInterface<int32_t> {
  protected:
   static void SetUpTestCase() {
-    // Disable write-time stats because this test creates tables by writing
-    // files directly (not via CTAS), so no .stats files are produced.
-    hiveConfig_[connector::hive::HiveMetadataConfig::kUseWriteTimeStats] =
-        "false";
     HiveQueriesTestBase::SetUpTestCase();
 
     localFileFormat_ = velox::dwio::common::FileFormat::DWRF;
@@ -316,11 +313,22 @@ class SubfieldTest : public HiveQueriesTestBase,
       const std::shared_ptr<dwrf::Config>& config =
           std::make_shared<dwrf::Config>()) {
     auto fs = filesystems::getFileSystem(localDataPath_, {});
-    fs->mkdir(fmt::format("{}/{}", localDataPath_, name));
+    const auto tablePath = fmt::format("{}/{}", localDataPath_, name);
+    fs->mkdir(tablePath);
 
-    const auto filePath =
-        fmt::format("{}/{}/{}.dwrf", localDataPath_, name, name);
+    const auto filePath = fmt::format("{}/{}.dwrf", tablePath, name);
     writeToFile(filePath, vectors, config);
+
+    // Write .schema and .stats metadata so that
+    // LocalHiveConnectorMetadata::loadTable() can load the table.
+    connector::hive::writeSchemaFile(
+        tablePath, vectors[0]->rowType(), dwio::common::FileFormat::DWRF);
+
+    uint64_t totalRows = 0;
+    for (const auto& vector : vectors) {
+      totalRows += vector->size();
+    }
+    connector::hive::PersistedStats::write(tablePath, {totalRows, {}});
 
     // Re-read the data directory to pick up the new table.
     hiveMetadata().reinitialize();
