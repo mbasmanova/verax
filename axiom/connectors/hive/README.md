@@ -109,8 +109,8 @@ For partitioned tables, data files are organized into subdirectories named
 ```
 /data/
 ├── orders/
-│   ├── .schema              # optional: schema and table properties
-│   ├── .stats               # optional: persisted write-time statistics
+│   ├── .schema              # schema and table properties
+│   ├── .stats               # persisted write-time statistics
 │   ├── file1.parquet
 │   └── file2.parquet
 ├── lineitem/
@@ -122,13 +122,16 @@ For partitioned tables, data files are organized into subdirectories named
 │       ├── .stats
 │       └── data.parquet
 └── users/
-    └── data.parquet          # no .schema: schema inferred from files
+    ├── .schema               # required: schema and table properties
+    ├── .stats                # required: persisted statistics
+    └── data.parquet
 ```
 
-If a table directory contains a `.schema` file, column definitions, partition
-and bucketing information, and file format are read from it. Otherwise, the
-schema is inferred from data files, file format defaults to `--data_format`,
-and no bucketing or Hive partitioning is assumed.
+Every table directory must contain a `.schema` file with column definitions,
+partition and bucketing information, and file format. A `.stats` file with
+row counts and per-column statistics is also required. Both files are produced
+automatically by the write pipeline (`CREATE TABLE`, `INSERT INTO`) or by
+`LocalTableBuilder::build()` for externally created data.
 
 ## .schema File Format
 
@@ -188,8 +191,7 @@ CLI flag.
 ## .stats File Format
 
 The `.stats` file is JSON with per-table or per-partition statistics. It is
-written by `INSERT INTO` and `CREATE TABLE AS SELECT` and read at load time
-when `hive_use_write_time_stats` is enabled (default).
+written by `INSERT INTO` and `CREATE TABLE AS SELECT` and read at load time.
 
 For unpartitioned tables, a single `.stats` file is placed in the table
 directory. For partitioned tables, each partition directory has its own
@@ -317,38 +319,30 @@ DROP TABLE t;
 
 ## Statistics
 
-The local implementation supports two statistics paths, controlled by the
-`hive_use_write_time_stats` config (default: `true`).
+Tables require `.schema` and `.stats` metadata files. These are produced in
+two ways:
 
-### Write-time stats (default)
+### Write pipeline (CREATE TABLE, INSERT INTO)
 
 Tables created through the write pipeline (`CREATE TABLE`, `INSERT INTO`)
-produce `.stats` files alongside the data. These files store per-partition
-row counts and per-column statistics (min, max, count, NDV). At load time,
-statistics are read directly from `.stats` files without opening data files.
-
-This path requires a `.schema` file.
+produce `.schema` and `.stats` files automatically. The `.stats` files store
+per-partition row counts and per-column statistics (min, max, count, NDV).
+At load time, statistics are read directly from these files without opening
+data files.
 
 - **Cost estimation**: The optimizer applies partition key filters to the
   persisted partition stats, merges column stats across matching partitions,
   and computes null percentages. NDV is merged using max across partitions.
   TODO: Replace NDV max with HLL sketch merging for accurate union.
 
-### File-header stats
+### LocalTableBuilder (external data)
 
-When write-time stats are disabled (`hive_use_write_time_stats = false`),
-statistics are collected from file headers at load time:
+For tables created outside the write pipeline (e.g., data files dropped into
+a directory), use `LocalTableBuilder` to generate `.schema` and `.stats`
+files. The builder reads file headers to infer schema and collect per-column
+statistics, and optionally samples data to estimate NDV.
 
-- **File-header stats**: Row counts are read from file metadata without
-  reading the data itself. DWRF files also provide per-column stats: null
-  counts and min/max values. Parquet files currently provide only row counts
-  at the file level. TODO: implement file-level `columnStatistics()` in the
-  Parquet reader.
-- **Sampling**: A percentage of rows is read from each table to estimate NDV
-  and other column-level statistics. For tables with more than 1M rows,
-  approximately 100K rows are sampled; for smaller tables, 10% of rows are
-  sampled. This can slow down startup significantly for large datasets.
-  TODO: defer sampling until the optimizer needs it.
-- **Cost estimation**: The optimizer uses partition key filters and `$path` /
-  `$bucket` filters to skip irrelevant files, then aggregates per-file stats
-  to produce cost estimates without reading data.
+```cpp
+LocalTableBuilder builder(pool, fileFormat, connector);
+builder.build("/path/to/table_dir");
+```

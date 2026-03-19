@@ -17,6 +17,7 @@
 #include "axiom/runner/tests/LocalRunnerTestBase.h"
 #include "axiom/connectors/hive/HiveMetadataConfig.h"
 #include "axiom/connectors/hive/LocalHiveConnectorMetadata.h"
+#include "axiom/connectors/hive/LocalTableMetadata.h"
 #include "velox/connectors/hive/HiveConnector.h"
 #include "velox/dwio/parquet/RegisterParquetReader.h"
 #include "velox/dwio/parquet/RegisterParquetWriter.h"
@@ -75,10 +76,6 @@ void LocalRunnerTestBase::setupConnector() {
       tempDirectory_->getPath();
   configs[connector::hive::HiveMetadataConfig::kLocalFileFormat] =
       velox::dwio::common::toString(velox::dwio::common::FileFormat::DWRF);
-  // Disable write-time stats since makeTables() generates data files without
-  // .schema or .stats files.
-  configs[connector::hive::HiveMetadataConfig::kUseWriteTimeStats] = "false";
-
   resetHiveConnector(
       std::make_shared<velox::config::ConfigBase>(std::move(configs)));
 
@@ -114,6 +111,18 @@ void LocalRunnerTestBase::makeTables(const std::vector<TableSpec>& specs) {
       auto filePath = fmt::format("{}/f{}", tablePath, i);
       writeToFile(filePath, vectors);
     }
+  }
+
+  // Write .schema and .stats metadata for each table so that
+  // LocalHiveConnectorMetadata can load them.
+  for (const auto& spec : specs) {
+    const auto tablePath = fmt::format("{}/{}", dataPath, spec.name);
+    connector::hive::writeSchemaFile(
+        tablePath, spec.columns, velox::dwio::common::FileFormat::DWRF);
+
+    const uint64_t totalRows = static_cast<uint64_t>(spec.rowsPerVector) *
+        spec.numVectorsPerFile * spec.numFiles;
+    connector::hive::PersistedStats::write(tablePath, {totalRows, {}});
   }
 }
 

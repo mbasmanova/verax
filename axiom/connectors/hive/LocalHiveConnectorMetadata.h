@@ -20,6 +20,7 @@
 
 #include "axiom/connectors/hive/HiveConnectorMetadata.h"
 #include "axiom/connectors/hive/HiveMetadataConfig.h"
+#include "axiom/connectors/hive/LocalTableMetadata.h"
 #include "axiom/connectors/hive/StatisticsBuilder.h"
 #include "folly/experimental/coro/Task.h"
 #include "velox/common/base/Fs.h"
@@ -29,19 +30,6 @@
 #include "velox/dwio/common/Options.h"
 
 namespace facebook::axiom::connector::hive {
-
-/// Describes a file in a table. Input to split enumeration.
-struct FileInfo {
-  std::string path;
-  folly::F14FastMap<std::string, std::optional<std::string>> partitionKeys;
-  std::optional<int32_t> bucketNumber;
-
-  /// Row count from file header metadata.
-  std::optional<uint64_t> numRows;
-
-  /// Per-column stats from file header metadata keyed by column name.
-  folly::F14FastMap<std::string, ColumnStatistics> columnStats;
-};
 
 class LocalHiveSplitSource : public SplitSource {
  public:
@@ -179,13 +167,12 @@ class LocalHiveTableLayout : public HiveTableLayout {
       std::vector<velox::core::TypedExprPtr> filterConjuncts) const override;
 
  private:
-  // Configuration for local Hive metadata, including useWriteTimeStats flag.
+  // Configuration for local Hive metadata.
   std::shared_ptr<HiveMetadataConfig> hiveMetadataConfig_;
   std::vector<std::unique_ptr<const FileInfo>> files_;
   std::vector<std::unique_ptr<const FileInfo>> ownedFiles_;
   // Per-partition (or per-table for unpartitioned) write-time stats loaded
-  // from persisted .stats files. Populated during loadTable when
-  // useWriteTimeStats is enabled.
+  // from persisted .stats files. Populated during loadTable.
   std::vector<PartitionStats> partitionStats_;
   std::unordered_map<std::string, std::string> serdeParameters_;
 };
@@ -221,10 +208,6 @@ class LocalTable : public HiveTable {
     numRows_ += n;
   }
 
-  /// Samples  'samplePct' % rows of the table and sets the num distincts
-  /// estimate for the columns. uses 'pool' for temporary data.
-  void sampleNumDistincts(float samplePct, velox::memory::MemoryPool* pool);
-
  private:
   // Serializes initialization, e.g. exportedColumns_.
   mutable std::mutex mutex_;
@@ -237,7 +220,6 @@ class LocalTable : public HiveTable {
   std::vector<const TableLayout*> exportedLayouts_;
 
   int64_t numRows_{0};
-  int64_t numSampledRows_{0};
 };
 
 class LocalHiveConnectorMetadata : public HiveConnectorMetadata {
@@ -278,8 +260,7 @@ class LocalHiveConnectorMetadata : public HiveConnectorMetadata {
     return hiveConnector_;
   }
 
-  /// Returns the metadata configuration (data path, file format,
-  /// useWriteTimeStats flag, etc.).
+  /// Returns the metadata configuration (data path, file format, etc.).
   const std::shared_ptr<HiveMetadataConfig>& hiveMetadataConfig() const {
     return hiveMetadataConfig_;
   }
@@ -361,14 +342,6 @@ class LocalHiveConnectorMetadata : public HiveConnectorMetadata {
   void loadTableWithWriteTimeStats(
       std::shared_ptr<LocalTable> table,
       LocalHiveTableLayout* layout,
-      const fs::path& tablePath);
-
-  // Reads file headers to discover schema, row counts, and per-file column
-  // stats. Samples NDVs after loading.
-  void loadTableFromFileHeaders(
-      std::string_view tableName,
-      std::shared_ptr<LocalTable> table,
-      std::vector<std::unique_ptr<const FileInfo>> files,
       const fs::path& tablePath);
 
   std::shared_ptr<LocalTable> findTableLocked(std::string_view name) const;
