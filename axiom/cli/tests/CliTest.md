@@ -137,6 +137,15 @@ $ $CLI --query "USE blah.default" 2>&1 | grep Reason
 Reason: Catalog does not exist: blah
 ```
 
+## current_timestamp displays a formatted timestamp with timezone
+
+Verify that current_timestamp displays the same as CAST to VARCHAR.
+
+```scrut
+$ $CLI --query "SELECT CAST(current_timestamp AS VARCHAR) AS a, current_timestamp AS b" 2>/dev/null | grep -E '^[0-9]' | awk -F ' \\| ' '{print ($1 == $2) ? "match" : "mismatch"}'
+match
+```
+
 ## Cleanly log dictionary wrapped result vectors (window functions produce encoded vectors)
 
 ```scrut
