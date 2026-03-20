@@ -2881,10 +2881,11 @@ void ToGraph::processInPredicates(
     const auto* markColumn = addMarkColumn();
 
     auto leftKey = translateExpr(predicate->inputAt(0));
-    auto leftTable = leftKey->singleTable();
-    VELOX_CHECK_NOT_NULL(
-        leftTable,
-        "<expr> IN <subquery> with multi-table <expr> is not supported yet");
+    // May be nullptr when the left expression references multiple tables
+    // (e.g., ROW(t.a, u.b) IN (SELECT ...)). Both processUncorrelated and
+    // processCorrelated handle nullptr by creating a join edge without a
+    // specific left table; the optimizer resolves it from the equality keys.
+    auto* leftTable = leftKey->singleTable();
 
     ExprCP column;
     if (correlatedConjuncts_.empty()) {
@@ -2926,7 +2927,12 @@ ExprCP ToGraph::processCorrelatedInPredicate(
   // semi-join with both correlation equalities and IN equality.
   auto decorrelated =
       extractDecorrelatedJoin(functionNames_, correlatedConjuncts_, subqueryDt);
-  decorrelated.leftTables.add(leftTable);
+  if (leftTable) {
+    decorrelated.leftTables.add(leftTable);
+  } else {
+    // Multi-table left expression: add all referenced tables.
+    decorrelated.leftTables.unionSet(leftKey->allTables());
+  }
   correlatedConjuncts_.clear();
 
   PlanObjectCP joinLeftTable = nullptr;
