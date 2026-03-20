@@ -753,12 +753,16 @@ float adjustFanoutForJoinType(
     case velox::core::JoinType::kLeftSemiProject:
       return 1;
     case velox::core::JoinType::kLeftSemiFilter:
+      [[fallthrough]];
+    case velox::core::JoinType::kCountingLeftSemiFilter:
       return std::min<float>(1, fanout);
     case velox::core::JoinType::kRightSemiProject:
       return rightToLeftRatio;
     case velox::core::JoinType::kRightSemiFilter:
       return std::min<float>(1, rlFanout) * rightToLeftRatio;
     case velox::core::JoinType::kAnti:
+      [[fallthrough]];
+    case velox::core::JoinType::kCountingAnti:
       return std::max<float>(0, 1 - fanout);
     default:
       VELOX_UNREACHABLE();
@@ -828,7 +832,8 @@ void Join::initConstraints(
     }
   }
 
-  if (joinType == velox::core::JoinType::kAnti) {
+  if (joinType == velox::core::JoinType::kAnti ||
+      joinType == velox::core::JoinType::kCountingAnti) {
     const float antiSelectivity =
         std::max(0.0f, 1.0f - fanout * filterSelectivity);
     JoinConstraints::updateAntiKeys(
@@ -868,8 +873,8 @@ void Join::initConstraints(
 
   // Scale non-key payload cardinalities when the join eliminates rows.
   // The preserved side of outer joins keeps all rows, so its NDV is unchanged.
-  const bool scaleLeft =
-      leftOptional || isInnerJoin(joinType) || isLeftSemiFilterJoin(joinType);
+  const bool scaleLeft = leftOptional || isInnerJoin(joinType) ||
+      isLeftSemiFilterJoin(joinType) || isCountingLeftSemiFilterJoin(joinType);
   if (scaleLeft) {
     const float leftSelectivity = std::min(1.0f, fanout) * filterSelectivity;
     JoinConstraints::scalePayloadCardinality(

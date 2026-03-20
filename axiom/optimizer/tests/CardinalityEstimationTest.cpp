@@ -890,8 +890,6 @@ TEST_F(CardinalityEstimationTest, antiJoin) {
           expected.resultCardinality,
           kCardinalityTolerance);
 
-      // Key: if 'a' is NULL
-
       // Key: if 'a' is NULL, 'x = a' evaluates to NULL (not true), so
       // NOT EXISTS returns true. Null keys are preserved in anti join
       // output. Cardinality is scaled by antiSelectivity =
@@ -916,8 +914,6 @@ TEST_F(CardinalityEstimationTest, antiJoin) {
       AXIOM_ASSERT_NORANGE(*b);
     });
   };
-
-  // fanout > 1: anti match rate is zero
 
   // fanout > 1: every left row matches, so anti returns (almost) nothing.
   // fanout = |u| / max(ndv(t.a), ndv(u.x)) = 500 / 100 = 5.
@@ -948,6 +944,60 @@ TEST_F(CardinalityEstimationTest, antiJoin) {
       .keyCardinality = 50,
       .keyNullFraction = 0.1f / 0.55f,
       .payloadCardinality = 316,
+  });
+}
+
+// Verifies cardinality estimation for counting left semi filter join
+// (INTERSECT ALL). Uses the same formula as left semi filter:
+// resultCardinality = |left| * min(1, fanout).
+TEST_F(CardinalityEstimationTest, countingSemiFilter) {
+  testConnector_->addTable("t", ROW("a", BIGINT()))
+      ->setStats(1'000, {{"a", {.numDistinct = 100}}});
+  testConnector_->addTable("u", ROW("x", BIGINT()));
+
+  const auto sql = "SELECT a FROM t INTERSECT ALL SELECT x FROM u";
+
+  // fanout > 1: all left rows match.
+  testConnector_->setStats("u", 500, {{"x", {.numDistinct = 100}}});
+  verifyPlan(sql, [](const Plan& plan) {
+    const auto& join = findOp<Join>(*plan.op, RelType::kJoin);
+    EXPECT_EQ(join.joinType, velox::core::JoinType::kCountingLeftSemiFilter);
+    EXPECT_NEAR(join.resultCardinality(), 1'000, kCardinalityTolerance);
+  });
+
+  // fanout < 1: resultCardinality = 1'000 * 0.5 = 500.
+  testConnector_->setStats("u", 50, {{"x", {.numDistinct = 50}}});
+  verifyPlan(sql, [](const Plan& plan) {
+    const auto& join = findOp<Join>(*plan.op, RelType::kJoin);
+    EXPECT_EQ(join.joinType, velox::core::JoinType::kCountingLeftSemiFilter);
+    EXPECT_NEAR(join.resultCardinality(), 500, kCardinalityTolerance);
+  });
+}
+
+// Verifies cardinality estimation for counting anti join (EXCEPT ALL).
+// Uses the same formula as anti join:
+// resultCardinality = |left| * max(0, 1 - fanout).
+TEST_F(CardinalityEstimationTest, countingAnti) {
+  testConnector_->addTable("t", ROW("a", BIGINT()))
+      ->setStats(1'000, {{"a", {.numDistinct = 100}}});
+  testConnector_->addTable("u", ROW("x", BIGINT()));
+
+  const auto sql = "SELECT a FROM t EXCEPT ALL SELECT x FROM u";
+
+  // fanout > 1: anti returns (almost) nothing.
+  testConnector_->setStats("u", 500, {{"x", {.numDistinct = 100}}});
+  verifyPlan(sql, [](const Plan& plan) {
+    const auto& join = findOp<Join>(*plan.op, RelType::kJoin);
+    EXPECT_EQ(join.joinType, velox::core::JoinType::kCountingAnti);
+    EXPECT_NEAR(join.resultCardinality(), 1, kCardinalityTolerance);
+  });
+
+  // fanout < 1: resultCardinality = 1'000 * 0.5 = 500.
+  testConnector_->setStats("u", 50, {{"x", {.numDistinct = 50}}});
+  verifyPlan(sql, [](const Plan& plan) {
+    const auto& join = findOp<Join>(*plan.op, RelType::kJoin);
+    EXPECT_EQ(join.joinType, velox::core::JoinType::kCountingAnti);
+    EXPECT_NEAR(join.resultCardinality(), 500, kCardinalityTolerance);
   });
 }
 

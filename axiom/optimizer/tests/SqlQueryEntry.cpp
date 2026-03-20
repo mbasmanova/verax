@@ -80,7 +80,10 @@ std::vector<QueryEntry> QueryEntry::parse(const std::string& content) {
       continue;
     }
 
-    // Check for annotation comments before the SQL starts.
+    // Blank lines and bare "--" lines before the SQL starts are ignored.
+    if (sqlLines.empty() && (line.empty() || line == "--")) {
+      continue;
+    }
     if (sqlLines.empty() && line.size() >= 3 && line.substr(0, 3) == "-- ") {
       auto annotation = line.substr(3);
 

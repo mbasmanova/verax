@@ -3320,21 +3320,27 @@ void ToGraph::translateSetJoin(const lp::SetNode& set) {
     wrapInDt(*input);
   }
 
-  const bool exists = set.operation() == lp::SetOperation::kIntersect;
-  const bool anti = set.operation() == lp::SetOperation::kExcept;
+  const bool exists = set.operation() == lp::SetOperation::kIntersect ||
+      set.operation() == lp::SetOperation::kIntersectAll;
+  const bool anti = set.operation() == lp::SetOperation::kExcept ||
+      set.operation() == lp::SetOperation::kExceptAll;
 
   VELOX_USER_CHECK(
       exists || anti,
       "Unsupported set operation: {}",
       lp::SetOperationName::toName(set.operation()));
 
+  const bool counting = set.operation() == lp::SetOperation::kIntersectAll ||
+      set.operation() == lp::SetOperation::kExceptAll;
+
   const auto* left = setDt->tables[0]->as<DerivedTable>();
 
   for (auto i = 1; i < setDt->tables.size(); ++i) {
     const auto* right = setDt->tables[i]->as<DerivedTable>();
 
-    auto* joinEdge = exists ? JoinEdge::makeExists(left, right)
-                            : JoinEdge::makeNotExists(left, right);
+    auto* joinEdge = exists
+        ? JoinEdge::makeExists(left, right, nullptr, {}, false, counting)
+        : JoinEdge::makeNotExists(left, right, counting);
     for (auto i = 0; i < left->columns.size(); ++i) {
       joinEdge->addEquality(left->columns[i], right->columns[i]);
     }
@@ -3353,10 +3359,18 @@ void ToGraph::translateSetJoin(const lp::SetNode& set) {
     renames_[type->nameOf(i)] = columns.back();
   }
 
-  setDt->aggregation =
-      make<AggregationPlan>(exprs, AggregateVector{}, columns, columns);
-  for (auto& c : columns) {
-    setDt->exprs.push_back(c);
+  // ALL variants project probe columns to the output schema. DISTINCT variants
+  // add GROUP BY to deduplicate; the aggregation produces the output columns.
+  if (counting) {
+    for (auto& expr : exprs) {
+      setDt->exprs.push_back(expr);
+    }
+  } else {
+    setDt->aggregation =
+        make<AggregationPlan>(exprs, AggregateVector{}, columns, columns);
+    for (auto& column : columns) {
+      setDt->exprs.push_back(column);
+    }
   }
   setDt->columns = columns;
   setDt->outputColumns = columns;
