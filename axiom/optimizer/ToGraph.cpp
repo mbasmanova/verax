@@ -2012,6 +2012,30 @@ void ToGraph::finalizeDt(
   currentDt_->addTable(dt);
 }
 
+void ToGraph::finalizeDtWithCorrelatedConjuncts(
+    const lp::LogicalPlanNode& node) {
+  if (correlatedConjuncts_.empty()) {
+    finalizeDt(node);
+    return;
+  }
+
+  // In correlated subqueries with nested aggregations (e.g., a correlated
+  // scalar subquery over a source that has GROUP BY), the correlated filter
+  // between the two aggregations populates correlatedConjuncts_ before the
+  // outer aggregation triggers finalizeDt. After wrapping, rewrite the
+  // conjuncts so their inner column references point to the wrapped DT's
+  // output columns rather than deeply nested base-table columns.
+  auto* dt = currentDt_;
+  auto saved = std::move(correlatedConjuncts_);
+  correlatedConjuncts_.clear();
+  finalizeDt(node);
+  correlatedConjuncts_ = std::move(saved);
+
+  for (auto& conjunct : correlatedConjuncts_) {
+    conjunct = dt->exportExpr(conjunct);
+  }
+}
+
 ColumnCP ToGraph::makeCountStarWrapper(DerivedTableP inputDt) {
   VELOX_CHECK_NOT_NULL(
       functionNames_.count, "Count aggregate function not registered");
@@ -3653,7 +3677,7 @@ void ToGraph::makeQueryGraph(
       const auto& input = *node.onlyInput();
       makeQueryGraph(input, allowedInDt, excludeOuterJoins);
       if (currentDt_->hasAggregation() || currentDt_->hasLimit()) {
-        finalizeDt(input);
+        finalizeDtWithCorrelatedConjuncts(input);
       } else if (currentDt_->hasOrderBy()) {
         currentDt_->dropOrderBy();
       }

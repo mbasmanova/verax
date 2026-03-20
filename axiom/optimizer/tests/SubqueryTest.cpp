@@ -1034,6 +1034,48 @@ TEST_F(SubqueryTest, nonEquiCorrelatedScalar) {
   }
 }
 
+// Correlated scalar subquery over a source that contains aggregation (e.g., a
+// CTE with GROUP BY). The subquery's own aggregation (COUNT(*)) is stacked on
+// top of the inner aggregation, producing two AggregateNode levels. The
+// correlation predicates include a non-equi condition (BETWEEN).
+TEST_F(SubqueryTest, nonEquiCorrelatedScalarWithNestedAggregation) {
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
+  testConnector_->addTable("u", ROW({"c", "d"}, BIGINT()));
+
+  // The inner derived table (SELECT c, COUNT(*) ...) produces an aggregation.
+  // The outer COUNT(*) adds a second aggregation level. The correlation
+  // references (t.a = x.c AND x.cnt BETWEEN 1 AND t.a) include both equi and
+  // non-equi conditions.
+  auto query =
+      "SELECT * FROM t "
+      "WHERE (SELECT COUNT(*) "
+      "       FROM (SELECT c, COUNT(*) AS cnt FROM u GROUP BY c) x "
+      "       WHERE t.a = x.c AND x.cnt BETWEEN 1 AND t.a) > 0";
+
+  auto matcher =
+      matchScan("t")
+          .assignUniqueId("unique_id")
+          .hashJoin(
+              matchScan("u")
+                  .singleAggregation({"c"}, {"count(*) as inner_cnt"})
+                  .project({"true as marker", "inner_cnt", "c"})
+                  .build(),
+              velox::core::JoinType::kLeft)
+          .streamingAggregation(
+              {"unique_id"},
+              {
+                  "count(*) filter (where marker) as cnt",
+                  "arbitrary(a)",
+                  "arbitrary(b)",
+              })
+          .filter("cnt > 0")
+          .project()
+          .build();
+
+  auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+  AXIOM_ASSERT_PLAN(plan, matcher);
+}
+
 TEST_F(SubqueryTest, nonEquiCorrelatedProject) {
   // Correlated scalar subquery with non-equi correlation condition.
   {
