@@ -8,6 +8,7 @@ See also:
 - [Cardinality Estimation](docs/CardinalityEstimation.md) - How output cardinality is estimated for each operator
 - [Window Functions](docs/WindowFunctions.md) - Window function support and ranking optimizations
 - [Existence Pushdown](docs/ExistencePushdown.md) - Pushing semi-joins into subquery aggregations to reduce data before GROUP BY
+- [Testing](docs/Testing.md) - PlanMatcher for plan shape, SqlTest for correctness, test coverage guidelines
 - [Debugging Tips](docs/DebuggingTips.md) - Using the CLI, generating TPC-H data, speeding up test runs, adding debug logging
 
 The optimizer's input is Logical Plan. This is a tree of relational plan nodes defined using a hierarchy of logical_plan::LogicalPlanNode and logical_plan::Expr classes. Operations represented by the Logical Plan are fully typed and resolved. All names have been bound to schema objects and each operation has defined input and output types.
