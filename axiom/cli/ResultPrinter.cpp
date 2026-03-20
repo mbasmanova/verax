@@ -17,6 +17,7 @@
 #include "axiom/cli/ResultPrinter.h"
 #include <iomanip>
 #include <iostream>
+#include "velox/functions/prestosql/types/TimestampWithTimeZoneType.h"
 #include "velox/vector/DecodedVector.h"
 
 using namespace facebook::velox;
@@ -127,7 +128,13 @@ int32_t printResults(
       auto& rowData = data.back();
       rowData.resize(numColumns);
       for (auto column = 0; column < numColumns; ++column) {
-        rowData[column] = decodedColumns[column].toString(row);
+        if (!decodedColumns[column].isNullAt(row) &&
+            isTimestampWithTimeZoneType(type->childAt(column))) {
+          rowData[column] = TIMESTAMP_WITH_TIME_ZONE()->valueToString(
+              decodedColumns[column].valueAt<int64_t>(row));
+        } else {
+          rowData[column] = decodedColumns[column].toString(row);
+        }
         widths[column] = std::max(widths[column], rowData[column].size());
       }
 
