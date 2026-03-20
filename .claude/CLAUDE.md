@@ -98,6 +98,11 @@ for the complete guide. Key rules are summarized below.
 - **kPascalCase** for static constants and enumerators.
 - Do not abbreviate. Use full, descriptive names. Well-established abbreviations (`id`, `url`, `sql`, `expr`) are acceptable.
 - Prefer `numXxx` over `xxxCount` (e.g. `numRows`, `numKeys`).
+- Never name a file or class `*Utils`, `*Helpers`, or `*Common`. These generic
+  names attract unrelated functions over time and lose cohesion. Name files and
+  classes after the concept they represent. Use a class with static methods to
+  group related operations, and shorten method names since the class name
+  provides context.
 - Type aliases defined elsewhere (e.g., `ExprCP`, `ColumnCP`) should be used as-is.
 
 ### Asserts and CHECKs
@@ -180,6 +185,31 @@ namespace {
 // Returns true if 'a' is a prefix of 'b'.
 bool isPrefix(const ExprVector& a, const ExprVector& b);
 } // namespace
+```
+
+### Generic file and class names (`*Utils`, `*Helpers`, `*Common`)
+
+Never name a file or class `*Utils`, `*Helpers`, or `*Common`. These generic
+names attract unrelated functions over time and lose cohesion. Instead, name
+files and classes after the concept they represent.
+
+When extracting shared functions, ask: "What do these functions have in common
+beyond being useful?" The answer is the name. Use a class with static methods
+to group related operations, and shorten method names since the class name
+provides context.
+
+```cpp
+// ❌ Wrong — generic name, will attract unrelated functions.
+class ParserUtils {
+  static std::vector<size_t> widenProjectionsForSort(...);
+  static void sortAndTrimProjections(...);
+};
+
+// ✅ Correct — named after the concept (sorting + projections).
+class SortProjection {
+  static std::vector<size_t> widenProjections(...);
+  static void sortAndTrim(...);
+};
 ```
 
 ### One-letter and abbreviated variable names
