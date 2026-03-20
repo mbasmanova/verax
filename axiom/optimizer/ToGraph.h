@@ -390,6 +390,12 @@ class ToGraph {
       const logical_plan::LogicalPlanNode& node,
       DerivedTableP outerDt = nullptr);
 
+  // Wraps currentDt_ via finalizeDt, preserving any pending
+  // correlatedConjuncts_. After wrapping, rewrites the conjuncts so their
+  // inner column references point to the wrapped DT's output columns.
+  void finalizeDtWithCorrelatedConjuncts(
+      const logical_plan::LogicalPlanNode& node);
+
   // Creates a wrapper DerivedTable with a COUNT(*) aggregation over 'inputDt'.
   // Returns the count column. The wrapper DT is added to currentDt_.
   ColumnCP makeCountStarWrapper(DerivedTableP inputDt);
