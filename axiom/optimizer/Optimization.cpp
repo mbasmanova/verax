@@ -2630,8 +2630,25 @@ void Optimization::joinByHashRight(
   auto rightJoinType = reverseJoinType(leftJoinType);
 
   VELOX_CHECK(
-      leftJoinType != rightJoinType,
+      leftJoinType != rightJoinType ||
+          velox::core::isCountingLeftSemiFilterJoin(leftJoinType),
       "Join type does not have right hash join variant");
+
+  // For counting joins (INTERSECT ALL), downstream columns reference
+  // build-side keys (the original left side of the set operation). Map them
+  // to probe-side keys through join equalities so the output references the
+  // correct (probe) side.
+  if (velox::core::isCountingJoin(rightJoinType)) {
+    VELOX_DCHECK(
+        joinColumnMapping.empty(),
+        "Counting joins should not have column mappings from outer join "
+        "columns or precomputed expressions");
+    const auto& leftKeys = candidate.join->leftKeys();
+    const auto& rightKeys = candidate.join->rightKeys();
+    for (size_t i = 0; i < candidate.join->numKeys(); ++i) {
+      joinColumnMapping.emplace(leftKeys[i], rightKeys[i]);
+    }
+  }
 
   const bool buildOnly =
       rightJoinType == velox::core::JoinType::kRightSemiFilter ||

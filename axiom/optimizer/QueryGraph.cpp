@@ -375,6 +375,7 @@ JoinSide JoinEdge::sideOf(PlanObjectCP side, bool other) const {
         leftOptional_,
         rightExists_,
         rightNotExists_,
+        counting_,
         markColumn_,
         rightUnique_,
         rightColumns_,
@@ -389,6 +390,7 @@ JoinSide JoinEdge::sideOf(PlanObjectCP side, bool other) const {
       rightOptional_,
       false,
       false,
+      false,
       markColumn_,
       leftUnique_,
       leftColumns_,
@@ -396,7 +398,10 @@ JoinSide JoinEdge::sideOf(PlanObjectCP side, bool other) const {
 }
 
 bool JoinEdge::isBroadcastableType() const {
-  return !leftOptional_;
+  // Counting joins cannot use broadcast because each worker gets its own copy
+  // of build-side per-key counters. With broadcast, multiple workers decrement
+  // independent copies, producing too many output rows.
+  return !leftOptional_ && !counting_;
 }
 
 void JoinEdge::addEquality(ExprCP left, ExprCP right, bool update) {

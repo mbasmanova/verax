@@ -1288,6 +1288,20 @@ velox::core::PlanNodePtr ToVelox::makeJoin(
   auto leftKeys = toFieldRefs(join.leftKeys);
   auto rightKeys = toFieldRefs(join.rightKeys);
 
+  // Counting joins maintain per-key counters on the build side that are
+  // decremented as probe rows match. With multiple drivers, each driver gets
+  // its own copy of the counters, leading to over-emission. Partition the
+  // probe side by join keys so each driver processes a non-overlapping subset
+  // of keys and accesses independent counters. Skip if the probe is already
+  // a counting join (its output is already partitioned by the same keys).
+  if (velox::core::isCountingJoin(join.joinType) && options_.numDrivers > 1) {
+    auto* probeJoin =
+        dynamic_cast<const velox::core::HashJoinNode*>(left.get());
+    if (!probeJoin || !velox::core::isCountingJoin(probeJoin->joinType())) {
+      left = addLocalPartition(nextId(), left, leftKeys);
+    }
+  }
+
   // nullAware is only supported for semi project and anti joins.
   const bool nullAware =
       join.nullAware && velox::core::isNullAwareSupported(join.joinType);
@@ -1605,7 +1619,7 @@ velox::core::PlanNodePtr ToVelox::makeRepartition(
 
   if (exchange == nullptr) {
     exchange = std::make_shared<velox::core::ExchangeNode>(
-        nextId(), sourcePlan->outputType(), exchangeSerdeKind_);
+        nextId(), outputType, exchangeSerdeKind_);
   }
   fragment.inputStages.emplace_back(exchange->id(), source.taskPrefix);
   stages.push_back(std::move(source));

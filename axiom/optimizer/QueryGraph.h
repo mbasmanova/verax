@@ -446,6 +446,8 @@ struct Equivalence {
 
 /// Represents one side of a join. See Join below for the meaning of the
 /// members.
+// TODO: Replace boolean flags (isOptional, isExists, isNotExists, isCounting)
+// with an enum.
 struct JoinSide {
   PlanObjectCP table;
   const ExprVector& keys;
@@ -454,6 +456,7 @@ struct JoinSide {
   const bool isOtherOptional;
   const bool isExists;
   const bool isNotExists;
+  const bool isCounting;
   ColumnCP markColumn;
   const bool isUnique;
   const ColumnVector& columns;
@@ -462,10 +465,16 @@ struct JoinSide {
   /// Returns the join type to use if 'this' is the right side.
   velox::core::JoinType leftJoinType() const {
     if (isNotExists) {
+      if (isCounting) {
+        return velox::core::JoinType::kCountingAnti;
+      }
       return velox::core::JoinType::kAnti;
     }
 
     if (isExists) {
+      if (isCounting) {
+        return velox::core::JoinType::kCountingLeftSemiFilter;
+      }
       if (markColumn) {
         return velox::core::JoinType::kLeftSemiProject;
       }
@@ -518,6 +527,11 @@ class JoinEdge {
     /// semantic is EXISTS / NOT EXISTS. Applies to semi and anti joins.
     bool nullAwareIn{false};
 
+    /// When true, enables counting join semantics: kCountingAnti for EXCEPT
+    /// ALL, kCountingLeftSemiFilter for INTERSECT ALL. Requires 'rightExists'
+    /// or 'rightNotExists' to be true.
+    bool counting{false};
+
     /// Marker column produced by 'exists' or 'not exists' join. If set, the
     /// 'rightExists' must be true.
     ColumnCP markColumn{nullptr};
@@ -569,6 +583,7 @@ class JoinEdge {
         rightExists_(spec.rightExists),
         rightNotExists_(spec.rightNotExists),
         nullAwareIn_(spec.nullAwareIn),
+        counting_(spec.counting),
         directed_(spec.directed),
         markColumn_(spec.markColumn),
         rowNumberColumn_(spec.rowNumberColumn),
@@ -587,6 +602,12 @@ class JoinEdge {
     }
 
     VELOX_CHECK(!rightExists_ || !rightNotExists_);
+
+    if (counting_) {
+      VELOX_CHECK(
+          rightExists_ || rightNotExists_,
+          "Counting join requires rightExists or rightNotExists");
+    }
 
     if (markColumn_) {
       VELOX_CHECK(rightExists_);
@@ -647,7 +668,8 @@ class JoinEdge {
       PlanObjectCP rightTable,
       ColumnCP markColumn = nullptr,
       ExprVector filter = {},
-      bool nullAwareIn = false) {
+      bool nullAwareIn = false,
+      bool counting = false) {
     return make<JoinEdge>(
         leftTable,
         rightTable,
@@ -655,6 +677,7 @@ class JoinEdge {
             .filter = std::move(filter),
             .rightExists = true,
             .nullAwareIn = nullAwareIn,
+            .counting = counting,
             .markColumn = markColumn,
         });
   }
@@ -674,8 +697,12 @@ class JoinEdge {
   /// @return A JoinEdge with rightNotExists=true representing the anti-join.
   static JoinEdge* makeNotExists(
       PlanObjectCP leftTable,
-      PlanObjectCP rightTable) {
-    return make<JoinEdge>(leftTable, rightTable, Spec{.rightNotExists = true});
+      PlanObjectCP rightTable,
+      bool counting = false) {
+    return make<JoinEdge>(
+        leftTable,
+        rightTable,
+        Spec{.rightNotExists = true, .counting = counting});
   }
 
   /// Creates a JoinEdge for CROSS JOIN UNNEST. Stores 'unnestExprs' in
@@ -801,6 +828,12 @@ class JoinEdge {
     return nullAwareIn_;
   }
 
+  /// Returns true for counting join semantics (kCountingAnti for EXCEPT ALL,
+  /// kCountingLeftSemiFilter for INTERSECT ALL).
+  bool isCounting() const {
+    return counting_;
+  }
+
   /// True if this is a LEFT join.
   bool isLeftOuter() const {
     return rightOptional_ && !leftOptional_ && !isSemi() && !isAnti();
@@ -828,6 +861,9 @@ class JoinEdge {
   /// True if has a hash based variant that builds on the left and probes on the
   /// right.
   bool hasRightHashVariant() const {
+    // Counting anti joins (EXCEPT ALL) cannot be reversed — they are
+    // directional. Counting semi joins (INTERSECT ALL) can be reversed
+    // since the operation is symmetric.
     return isNonCommutative() && !rightNotExists_ &&
         rowNumberColumn_ == nullptr;
   }
@@ -932,6 +968,9 @@ class JoinEdge {
 
   // True for IN semantics (nullAware), false for EXISTS semantics.
   const bool nullAwareIn_;
+
+  // True for counting join semantics (kCountingAnti, kCountingLeftSemiFilter).
+  const bool counting_;
 
   // If directed non-outer edge. For example unnest or inner dependent on
   // optional of outer.

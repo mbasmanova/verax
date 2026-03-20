@@ -445,6 +445,194 @@ TEST_F(SetTest, except) {
   checkSame(logicalPlan, referencePlan);
 }
 
+TEST_F(SetTest, exceptAll) {
+  auto logicalPlan = parseSelect(
+      "SELECT n_nationkey, n_regionkey FROM nation WHERE n_nationkey < 21 "
+      "EXCEPT ALL "
+      "SELECT n_nationkey, n_regionkey FROM nation WHERE n_nationkey > 16 "
+      "EXCEPT ALL "
+      "SELECT n_nationkey, n_regionkey FROM nation WHERE n_nationkey <= 5");
+
+  auto matchBuild = [](auto filters) {
+    return core::PlanMatcherBuilder()
+        .hiveScan("nation", std::move(filters))
+        .project()
+        .build();
+  };
+
+  {
+    // Single-node, single-driver: counting anti joins, no aggregation.
+    auto plan = toSingleNodePlan(logicalPlan);
+    auto matcher = core::PlanMatcherBuilder()
+                       .hiveScan("nation", test::lte("n_nationkey", 20))
+                       .hashJoin(
+                           matchBuild(test::gte("n_nationkey", 17)),
+                           core::JoinType::kCountingAnti)
+                       .hashJoin(
+                           matchBuild(test::lte("n_nationkey", 5)),
+                           core::JoinType::kCountingAnti)
+                       .build();
+    AXIOM_ASSERT_PLAN(plan, matcher);
+  }
+
+  {
+    // Multi-driver: local hash repartition on probe side. The second
+    // counting join reuses the partition from the first (no extra repartition).
+    auto plan = toSingleNodePlan(logicalPlan, /*numDrivers=*/4);
+    auto matcher = core::PlanMatcherBuilder()
+                       .hiveScan("nation", test::lte("n_nationkey", 20))
+                       .localPartition({"n_nationkey", "n_regionkey"})
+                       .hashJoin(
+                           matchBuild(test::gte("n_nationkey", 17)),
+                           core::JoinType::kCountingAnti)
+                       .hashJoin(
+                           matchBuild(test::lte("n_nationkey", 5)),
+                           core::JoinType::kCountingAnti)
+                       .build();
+    AXIOM_ASSERT_PLAN(plan, matcher);
+  }
+
+  auto matchPartitionedBuild = [](auto filters) {
+    return core::PlanMatcherBuilder()
+        .hiveScan("nation", std::move(filters))
+        .project()
+        .shuffle()
+        .build();
+  };
+
+  {
+    // Distributed: all sides co-partitioned by join keys (no broadcast).
+    auto distributedPlan = planVelox(logicalPlan);
+    auto matcher = core::PlanMatcherBuilder()
+                       .hiveScan("nation", test::lte("n_nationkey", 20))
+                       .shuffle({"n_nationkey", "n_regionkey"})
+                       .localPartition({"n_nationkey", "n_regionkey"})
+                       .hashJoin(
+                           matchPartitionedBuild(test::gte("n_nationkey", 17)),
+                           core::JoinType::kCountingAnti)
+                       .hashJoin(
+                           matchPartitionedBuild(test::lte("n_nationkey", 5)),
+                           core::JoinType::kCountingAnti)
+                       .gather()
+                       .build();
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, matcher);
+  }
+}
+
+TEST_F(SetTest, intersectAll) {
+  // t1 is much larger than t2 and t3, so the optimizer keeps t1 on probe.
+  testConnector_->addTable("t1", ROW({"a"}, BIGINT()))
+      ->setStats(10'000, {{"a", {.numDistinct = 10'000}}});
+  testConnector_->addTable("t2", ROW({"a"}, BIGINT()))
+      ->setStats(500, {{"a", {.numDistinct = 500}}});
+  testConnector_->addTable("t3", ROW({"a"}, BIGINT()))
+      ->setStats(100, {{"a", {.numDistinct = 100}}});
+
+  auto logicalPlan = parseSelect(
+      "SELECT a FROM t1 "
+      "INTERSECT ALL SELECT a FROM t2 "
+      "INTERSECT ALL SELECT a FROM t3",
+      kTestConnectorId);
+
+  auto matchBuild = [](const std::string& table) {
+    return matchScan(table).project().build();
+  };
+  {
+    // Single-driver: counting left semi filter joins, no aggregation.
+    auto plan = toSingleNodePlan(logicalPlan);
+
+    auto matcher =
+        matchScan("t1")
+            .hashJoin(matchBuild("t2"), core::JoinType::kCountingLeftSemiFilter)
+            .hashJoin(matchBuild("t3"), core::JoinType::kCountingLeftSemiFilter)
+            .build();
+    AXIOM_ASSERT_PLAN(plan, matcher);
+  }
+
+  {
+    // Multi-driver: local hash repartition on probe side. The second
+    // counting join reuses the partition from the first.
+    auto plan = toSingleNodePlan(logicalPlan, /*numDrivers=*/4);
+    auto matcher =
+        matchScan("t1")
+            .localPartition({"a"})
+            .hashJoin(matchBuild("t2"), core::JoinType::kCountingLeftSemiFilter)
+            .hashJoin(matchBuild("t3"), core::JoinType::kCountingLeftSemiFilter)
+            .build();
+    AXIOM_ASSERT_PLAN(plan, matcher);
+  }
+
+  auto matchPartitionedBuild = [](const std::string& table) {
+    return matchScan(table).project().shuffle().build();
+  };
+
+  {
+    // Distributed: all sides co-partitioned by join keys (no broadcast).
+    auto distributedPlan = planVelox(logicalPlan);
+    auto matcher = matchScan("t1")
+                       .shuffle({"a"})
+                       .localPartition({"a"})
+                       .hashJoin(
+                           matchPartitionedBuild("t2"),
+                           core::JoinType::kCountingLeftSemiFilter)
+                       .hashJoin(
+                           matchPartitionedBuild("t3"),
+                           core::JoinType::kCountingLeftSemiFilter)
+                       .gather()
+                       .build();
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, matcher);
+  }
+}
+
+// Verifies the optimizer places the smaller table on build for INTERSECT ALL
+// regardless of input order (INTERSECT ALL is symmetric).
+TEST_F(SetTest, intersectAllSideSwap) {
+  testConnector_->addTable("big", ROW({"a"}, BIGINT()))
+      ->setStats(10'000, {{"a", {.numDistinct = 10'000}}});
+  testConnector_->addTable("small", ROW({"x"}, BIGINT()))
+      ->setStats(100, {{"x", {.numDistinct = 100}}});
+
+  auto startMatcher = [&]() {
+    return matchScan("big").hashJoin(
+        matchScan("small").build(), core::JoinType::kCountingLeftSemiFilter);
+  };
+
+  auto startDistributedMatcher = [&]() {
+    return matchScan("big").shuffle({"a"}).localPartition({"a"}).hashJoin(
+        matchScan("small").shuffle().build(),
+        core::JoinType::kCountingLeftSemiFilter);
+  };
+
+  // big INTERSECT ALL small: 'big' is probe, 'small' is build.
+  {
+    auto logicalPlan = parseSelect(
+        "SELECT a FROM big INTERSECT ALL SELECT x FROM small",
+        kTestConnectorId);
+    AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), startMatcher().build());
+
+    auto distributedPlan = planVelox(logicalPlan);
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(
+        distributedPlan.plan, startDistributedMatcher().gather().build());
+  }
+
+  // Reversed input: optimizer swaps sides — 'big' is still probe, 'small'
+  // is still build. A rename project maps probe columns to output schema.
+  {
+    auto logicalPlan = parseSelect(
+        "SELECT x FROM small INTERSECT ALL SELECT a FROM big",
+        kTestConnectorId);
+    AXIOM_ASSERT_PLAN(
+        toSingleNodePlan(logicalPlan), startMatcher().project().build());
+
+    // Output rename project: join outputs 'a' (probe) but query expects
+    // 'x' (the original left side column name).
+    auto distributedPlan = planVelox(logicalPlan);
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(
+        distributedPlan.plan,
+        startDistributedMatcher().project().gather().build());
+  }
+}
+
 // Verifies that joining with a UNION ALL subquery does not crash with an
 // assertion failure in importJoinsIntoFirstDt.
 TEST_F(SetTest, joinWithUnionAll) {
