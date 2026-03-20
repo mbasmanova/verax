@@ -146,6 +146,20 @@ $ $CLI --query "SELECT CAST(current_timestamp AS VARCHAR) AS a, current_timestam
 match
 ```
 
+## SET SESSION and SHOW SESSION
+
+```scrut
+$ $CLI --query "SET SESSION session_timezone = 'UTC'; SHOW SESSION LIKE '%timezone%'" 2>/dev/null
+Session 'session_timezone' set to 'UTC'
+*-+-* (glob)
+Name*| Value (glob)
+*-+-* (glob)
+adjust_timestamp_to_session_timezone | true
+session_timezone                     | UTC
+(2 rows in 1 batches)
+
+```
+
 ## Cleanly log dictionary wrapped result vectors (window functions produce encoded vectors)
 
 ```scrut

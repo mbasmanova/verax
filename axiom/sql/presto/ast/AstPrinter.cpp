@@ -1196,6 +1196,21 @@ void AstPrinter::visitShowFunctions(ShowFunctions* node) {
   printHeader("ShowFunctions", node);
 }
 
+void AstPrinter::visitShowSession(ShowSession* node) {
+  printHeader("ShowSession", node, [&](std::ostream& out) {
+    if (node->likePattern().has_value()) {
+      out << "LIKE '" << node->likePattern().value() << "'";
+    }
+  });
+}
+
+void AstPrinter::visitSetSession(SetSession* node) {
+  printHeader("SetSession", node, [&](std::ostream& out) {
+    out << node->name()->fullyQualifiedName();
+  });
+  printChild("Value", node->value());
+}
+
 void AstPrinter::visitUse(Use* node) {
   printHeader("Use", node, [&](std::ostream& out) {
     if (node->catalog()) {

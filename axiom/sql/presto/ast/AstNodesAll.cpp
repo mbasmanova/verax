@@ -759,6 +759,14 @@ void ExplainType::accept(AstVisitor* visitor) {
   visitor->visitExplainType(this);
 }
 
+void ShowSession::accept(AstVisitor* visitor) {
+  visitor->visitShowSession(this);
+}
+
+void SetSession::accept(AstVisitor* visitor) {
+  visitor->visitSetSession(this);
+}
+
 void Use::accept(AstVisitor* visitor) {
   visitor->visitUse(this);
 }

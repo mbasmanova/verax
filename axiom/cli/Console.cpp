@@ -330,13 +330,6 @@ void Console::readCommands(const std::string& prompt) {
       continue;
     }
 
-    if (sscanf(command.c_str(), "session %ms = %ms", &flag, &value) == 2) {
-      std::cout << "Session '" << flag << "' set to '" << value << "'"
-                << std::endl;
-      runner_.sessionConfig()[std::string(flag)] = std::string(value);
-      continue;
-    }
-
     runNoThrow(command);
   }
 }

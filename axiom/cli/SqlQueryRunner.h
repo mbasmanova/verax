@@ -191,6 +191,10 @@ class SqlQueryRunner {
       const std::shared_ptr<facebook::velox::core::QueryCtx>& queryCtx,
       const RunOptions& options);
 
+  SqlResult showSession(
+      const presto::ShowSessionStatement& statement,
+      const RunOptions& options);
+
   // Optimizes and executes a logical plan, returning results and the
   // serialized Velox plan string.
   SqlResult runLogicalPlan(
