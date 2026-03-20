@@ -296,6 +296,10 @@ class AstPrinter : public AstVisitor {
 
   void visitShowFunctions(ShowFunctions* node) override;
 
+  void visitShowSession(ShowSession* node) override;
+
+  void visitSetSession(SetSession* node) override;
+
   void visitUse(Use* node) override;
 
  private:

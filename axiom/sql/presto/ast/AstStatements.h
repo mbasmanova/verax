@@ -377,6 +377,49 @@ class CreateType : public Statement {
   std::vector<std::string> enumValues_;
 };
 
+class ShowSession : public Statement {
+ public:
+  explicit ShowSession(
+      NodeLocation location,
+      std::optional<std::string> likePattern = std::nullopt)
+      : Statement(NodeType::kShowSession, location),
+        likePattern_(std::move(likePattern)) {}
+
+  const std::optional<std::string>& likePattern() const {
+    return likePattern_;
+  }
+
+  void accept(AstVisitor* visitor) override;
+
+ private:
+  std::optional<std::string> likePattern_;
+};
+
+class SetSession : public Statement {
+ public:
+  SetSession(
+      NodeLocation location,
+      std::shared_ptr<QualifiedName> name,
+      ExpressionPtr value)
+      : Statement(NodeType::kSetSession, location),
+        name_(std::move(name)),
+        value_(std::move(value)) {}
+
+  const std::shared_ptr<QualifiedName>& name() const {
+    return name_;
+  }
+
+  const ExpressionPtr& value() const {
+    return value_;
+  }
+
+  void accept(AstVisitor* visitor) override;
+
+ private:
+  std::shared_ptr<QualifiedName> name_;
+  ExpressionPtr value_;
+};
+
 class Use : public Statement {
  public:
   Use(NodeLocation location,

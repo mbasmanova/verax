@@ -1623,6 +1623,28 @@ SqlStatementPtr parseShowSchemas(
   return std::make_shared<SelectStatement>(builder.build());
 }
 
+// Extracts the literal value from a SET SESSION statement.
+SqlStatementPtr parseSetSession(const SetSession* setSession) {
+  auto name = setSession->name()->fullyQualifiedName();
+
+  auto* value = setSession->value().get();
+  std::string valueString;
+  if (value->is(NodeType::kStringLiteral)) {
+    valueString = value->as<StringLiteral>()->value();
+  } else if (value->is(NodeType::kLongLiteral)) {
+    valueString = std::to_string(value->as<LongLiteral>()->value());
+  } else if (value->is(NodeType::kBooleanLiteral)) {
+    valueString = value->as<BooleanLiteral>()->value() ? "true" : "false";
+  } else if (value->is(NodeType::kDoubleLiteral)) {
+    valueString = std::to_string(value->as<DoubleLiteral>()->value());
+  } else {
+    VELOX_USER_FAIL("SET SESSION value must be a literal: {}", name);
+  }
+
+  return std::make_shared<SetSessionStatement>(
+      std::move(name), std::move(valueString));
+}
+
 SqlStatementPtr doPlan(
     const std::shared_ptr<Statement>& query,
     const std::string& defaultConnectorId,
@@ -1732,6 +1754,15 @@ SqlStatementPtr PrestoParser::doParse(
     auto sqlStatement = doPlan(
         explain->statement(), defaultConnectorId_, defaultSchema_, parseSql);
     return parseExplain(*explain, sqlStatement);
+  }
+
+  if (query->is(NodeType::kShowSession)) {
+    auto* showSession = query->as<ShowSession>();
+    return std::make_shared<ShowSessionStatement>(showSession->likePattern());
+  }
+
+  if (query->is(NodeType::kSetSession)) {
+    return parseSetSession(query->as<SetSession>());
   }
 
   if (query->is(NodeType::kUse)) {

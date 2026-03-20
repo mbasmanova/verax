@@ -551,6 +551,14 @@ class AstVisitor {
     defaultVisit(node);
   }
 
+  virtual void visitShowSession(ShowSession* node) {
+    defaultVisit(node);
+  }
+
+  virtual void visitSetSession(SetSession* node) {
+    defaultVisit(node);
+  }
+
   virtual void visitUse(Use* node) {
     defaultVisit(node);
   }

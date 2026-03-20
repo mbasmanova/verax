@@ -814,12 +814,22 @@ std::any AstBuilder::visitShowFunctions(
 std::any AstBuilder::visitShowSession(
     PrestoSqlParser::ShowSessionContext* ctx) {
   trace("visitShowSession");
-  return visitChildren("visitShowSession", ctx);
+
+  std::optional<std::string> likePattern;
+  if (ctx->pattern != nullptr) {
+    likePattern = unquote(ctx->pattern->getText());
+  }
+
+  return std::static_pointer_cast<Statement>(
+      std::make_shared<ShowSession>(getLocation(ctx), std::move(likePattern)));
 }
 
 std::any AstBuilder::visitSetSession(PrestoSqlParser::SetSessionContext* ctx) {
   trace("visitSetSession");
-  return visitChildren("visitSetSession", ctx);
+  return std::static_pointer_cast<Statement>(std::make_shared<SetSession>(
+      getLocation(ctx),
+      getQualifiedName(ctx->qualifiedName()),
+      visitTyped<Expression>(ctx->expression())));
 }
 
 std::any AstBuilder::visitResetSession(

@@ -38,6 +38,8 @@ enum class SqlStatementKind {
   kDropSchema,
   kExplain,
   kShowStatsForQuery,
+  kShowSession,
+  kSetSession,
   kUse,
 };
 
@@ -90,6 +92,14 @@ class SqlStatement {
 
   bool isShowStatsForQuery() const {
     return kind_ == SqlStatementKind::kShowStatsForQuery;
+  }
+
+  bool isShowSession() const {
+    return kind_ == SqlStatementKind::kShowSession;
+  }
+
+  bool isSetSession() const {
+    return kind_ == SqlStatementKind::kSetSession;
   }
 
   bool isUse() const {
@@ -425,6 +435,41 @@ class ShowStatsForQueryStatement : public SqlStatement {
 };
 
 /// Sets the default catalog and schema for subsequent queries.
+class ShowSessionStatement : public SqlStatement {
+ public:
+  explicit ShowSessionStatement(
+      std::optional<std::string> likePattern = std::nullopt)
+      : SqlStatement(SqlStatementKind::kShowSession),
+        likePattern_{std::move(likePattern)} {}
+
+  const std::optional<std::string>& likePattern() const {
+    return likePattern_;
+  }
+
+ private:
+  const std::optional<std::string> likePattern_;
+};
+
+class SetSessionStatement : public SqlStatement {
+ public:
+  SetSessionStatement(std::string name, std::string value)
+      : SqlStatement(SqlStatementKind::kSetSession),
+        name_{std::move(name)},
+        value_{std::move(value)} {}
+
+  const std::string& name() const {
+    return name_;
+  }
+
+  const std::string& value() const {
+    return value_;
+  }
+
+ private:
+  const std::string name_;
+  const std::string value_;
+};
+
 class UseStatement : public SqlStatement {
  public:
   UseStatement(std::optional<std::string> catalog, std::string schema)

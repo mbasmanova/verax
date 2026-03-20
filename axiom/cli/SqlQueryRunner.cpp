@@ -17,9 +17,11 @@
 #include "axiom/cli/SqlQueryRunner.h"
 #include <folly/system/HardwareConcurrency.h>
 #include <cmath>
+#include <map>
 #include "axiom/connectors/ConnectorMetadata.h"
 #include "axiom/connectors/SchemaResolver.h"
 #include "axiom/logical_plan/LogicalPlanDotPrinter.h"
+#include "axiom/logical_plan/PlanBuilder.h"
 #include "axiom/logical_plan/PlanPrinter.h"
 #include "axiom/optimizer/ConstantExprEvaluator.h"
 #include "axiom/optimizer/DerivedTableDotPrinter.h"
@@ -409,6 +411,21 @@ SqlQueryRunner::SqlResult SqlQueryRunner::run(
     return {.results = runShowStatsForQuery(sqlStatement, options)};
   }
 
+  if (sqlStatement.isShowSession()) {
+    return showSession(
+        *sqlStatement.as<presto::ShowSessionStatement>(), options);
+  }
+
+  if (sqlStatement.isSetSession()) {
+    const auto* setSession = sqlStatement.as<presto::SetSessionStatement>();
+    config_[setSession->name()] = setSession->value();
+    return {
+        .message = fmt::format(
+            "Session '{}' set to '{}'",
+            setSession->name(),
+            setSession->value())};
+  }
+
   if (sqlStatement.isUse()) {
     const auto* use = sqlStatement.as<presto::UseStatement>();
     const auto& connectorId = use->catalog().has_value()
@@ -644,6 +661,32 @@ std::shared_ptr<runner::LocalRunner> SqlQueryRunner::makeLocalRunner(
       queryCtx,
       std::make_shared<runner::ConnectorSplitSourceFactory>(splitOptions),
       executorPool_);
+}
+
+SqlQueryRunner::SqlResult SqlQueryRunner::showSession(
+    const presto::ShowSessionStatement& statement,
+    const RunOptions& options) {
+  std::map<std::string, std::string> sorted(config_.begin(), config_.end());
+
+  std::vector<velox::Variant> data;
+  data.reserve(sorted.size());
+  for (const auto& [key, value] : sorted) {
+    data.emplace_back(velox::Variant::row({key, value}));
+  }
+
+  namespace lp = facebook::axiom::logical_plan;
+
+  lp::PlanBuilder::Context context(defaultConnectorId_);
+  lp::PlanBuilder builder(context);
+  builder.values(ROW({"Name", "Value"}, velox::VARCHAR()), std::move(data));
+
+  if (statement.likePattern().has_value()) {
+    builder.filter(
+        lp::Call(
+            "like", lp::Col("Name"), lp::Lit(statement.likePattern().value())));
+  }
+
+  return runLogicalPlan(builder.build(), options);
 }
 
 SqlQueryRunner::SqlResult SqlQueryRunner::runLogicalPlan(
