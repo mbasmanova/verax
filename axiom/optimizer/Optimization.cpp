@@ -984,7 +984,8 @@ void alignJoinSides(
     PlanState& state,
     RelationOpPtr& otherInput,
     const ExprVector& otherKeys,
-    PlanState& otherState) {
+    PlanState& otherState,
+    bool replicateNullsAndAny) {
   if (input->distribution().isGather() &&
       otherInput->distribution().isGather()) {
     // No alignment needed.
@@ -993,7 +994,14 @@ void alignJoinSides(
 
   auto part = joinKeyPartition(input, keys);
   if (part.empty()) {
-    Distribution distribution{DistributionType{}, keys};
+    Distribution distribution{
+        DistributionType{},
+        keys,
+        /*orderKeys=*/{},
+        /*orderTypes=*/{},
+        /*numKeysUnique=*/0,
+        /*clusterKeys=*/{},
+        replicateNullsAndAny};
     auto* repartition =
         make<Repartition>(input, std::move(distribution), input->columns());
     state.addCost(*repartition);
@@ -2446,6 +2454,18 @@ void Optimization::joinByHash(
   if (!isSingleWorker_ &&
       !(probeInput->distribution().isGather() &&
         buildInput->distribution().isGather())) {
+    // For null-aware IN/NOT IN, the build side's shuffle must replicate
+    // rows with NULLs in partition keys (and one arbitrary non-null row) to
+    // all workers. Both IN and NOT IN need this:
+    //   NOT IN: each worker must know if the build side contains a NULL
+    //     (return no rows) or is empty (return all probe rows).
+    //   IN: each worker must correctly produce NULL (not false) for the mark
+    //     column when the build side contains a NULL that could match.
+    // Without replication, NULL rows are hash-partitioned to one worker and
+    // other workers produce wrong results.
+    // See https://facebookincubator.github.io/velox/develop/anti-join.html
+    const bool replicateNullsAndAny = candidate.join->isNullAwareIn();
+
     if (!partKeys.empty()) {
       if (needsShuffle) {
         if (copartition.empty()) {
@@ -2454,7 +2474,13 @@ void Optimization::joinByHash(
           }
         }
         Distribution distribution{
-            plan->distribution().distributionType(), copartition};
+            plan->distribution().distributionType(),
+            copartition,
+            /*orderKeys=*/{},
+            /*orderTypes=*/{},
+            /*numKeysUnique=*/0,
+            /*clusterKeys=*/{},
+            replicateNullsAndAny};
         auto* repartition = make<Repartition>(
             buildInput, std::move(distribution), buildInput->columns());
         buildState.addCost(*repartition);
@@ -2471,7 +2497,13 @@ void Optimization::joinByHash(
       // The probe gets shuffled to align with build. If build is not
       // partitioned on its keys, shuffle the build too.
       alignJoinSides(
-          buildInput, buildKeys, buildState, probeInput, probeKeys, state);
+          buildInput,
+          buildKeys,
+          buildState,
+          probeInput,
+          probeKeys,
+          state,
+          replicateNullsAndAny);
     }
   }
 
@@ -2695,8 +2727,17 @@ void Optimization::joinByHashRight(
   if (!isSingleWorker_) {
     // The build gets shuffled to align with probe. If probe is not
     // partitioned on its keys, shuffle the probe too.
+    // In the right-join variant, probeInput is the subquery side (originally
+    // the right/build side). For null-aware IN/NOT IN, it needs
+    // replicateNullsAndAny.
     alignJoinSides(
-        probeInput, probeKeys, probeState, buildInput, buildKeys, state);
+        probeInput,
+        probeKeys,
+        probeState,
+        buildInput,
+        buildKeys,
+        state,
+        candidate.join->isNullAwareIn());
   }
 
   auto* buildOp = make<HashBuild>(buildInput, buildKeys, nullptr);
