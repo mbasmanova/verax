@@ -1174,7 +1174,8 @@ std::optional<Selectivity> processEqualityClause(
   }
 
   if (!rangeConstraints.eqSelectivity.has_value()) {
-    rangeConstraints.eqSelectivity = 1.0 / exprValue.cardinality;
+    rangeConstraints.eqSelectivity =
+        exprValue.cardinality > 0 ? 1.0 / exprValue.cardinality : 1.0;
     rangeConstraints.eqValue = &litValue;
   } else {
     if (rangeConstraints.eqValue != nullptr &&
