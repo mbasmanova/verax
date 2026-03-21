@@ -1410,6 +1410,17 @@ TEST_F(PrestoParserTest, limit) {
         "SELECT * FROM nation ORDER BY n_name FETCH FIRST 100 ROWS ONLY",
         matcher);
   }
+
+  // LIMIT ALL means "no limit" — should not add a LimitNode.
+  {
+    auto matcher = matchScan().output(nationColumns);
+    testSelect("SELECT * FROM nation LIMIT ALL", matcher);
+  }
+
+  {
+    auto matcher = matchScan().sort({"n_name"}).output(nationColumns);
+    testSelect("SELECT * FROM nation ORDER BY n_name LIMIT ALL", matcher);
+  }
 }
 
 TEST_F(PrestoParserTest, offset) {

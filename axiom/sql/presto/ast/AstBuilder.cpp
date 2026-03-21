@@ -199,8 +199,11 @@ std::any AstBuilder::visitQueryNoWith(
     offset = std::make_shared<Offset>(getLocation(ctx), ctx->offset->getText());
   }
 
-  auto limit = getText(ctx->limit);
-  if (!limit.has_value()) {
+  // LIMIT ALL means "no limit" — ignore it.
+  std::optional<std::string> limit;
+  if ((ctx->limit && ctx->limit->getType() != PrestoSqlParser::ALL)) {
+    limit = getText(ctx->limit);
+  } else {
     limit = getText(ctx->fetchFirstNRows);
   }
 
