@@ -1915,10 +1915,15 @@ void ToGraph::translateJoin(
       rightKeys,
       leftTables);
 
+  auto veloxJoinType = (leftOptional && rightOptional)
+      ? velox::core::JoinType::kFull
+      : leftOptional  ? velox::core::JoinType::kRight
+      : rightOptional ? velox::core::JoinType::kLeft
+                      : velox::core::JoinType::kInner;
+
   JoinEdge::Spec joinSpec{
       .filter = std::move(conjuncts),
-      .leftOptional = leftOptional,
-      .rightOptional = rightOptional,
+      .joinType = veloxJoinType,
   };
 
   if (leftOptional) {
@@ -2767,7 +2772,7 @@ ExprCP ToGraph::processCorrelatedScalarSubquery(
     auto* join = make<JoinEdge>(
         correlation.leftTable,
         subqueryDt,
-        JoinEdge::Spec{.rightOptional = true});
+        JoinEdge::Spec{.joinType = velox::core::JoinType::kLeft});
     for (auto i = 0; i < correlation.leftKeys.size(); ++i) {
       join->addEquality(correlation.leftKeys[i], correlation.rightKeys[i]);
     }
@@ -2808,7 +2813,7 @@ ExprCP ToGraph::processCorrelatedScalarSubquery(
         subqueryDt,
         JoinEdge::Spec{
             .filter = exportedFilter,
-            .rightOptional = true,
+            .joinType = velox::core::JoinType::kLeft,
             .rowNumberColumn = rowNumberColumn,
             .multipleMatchesError =
                 toName("Scalar sub-query has returned multiple rows"),
@@ -2846,7 +2851,7 @@ ExprCP ToGraph::processCorrelatedScalarSubquery(
       subqueryDt,
       JoinEdge::Spec{
           .filter = exportedFilter,
-          .rightOptional = true,
+          .joinType = velox::core::JoinType::kLeft,
           .rowNumberColumn = rowNumberColumn,
       });
 

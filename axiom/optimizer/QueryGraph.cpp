@@ -366,35 +366,19 @@ std::string UnnestTable::toString() const {
 }
 
 namespace {
-// Computes the Velox JoinType from the per-side boolean flags.
-velox::core::JoinType computeJoinType(
-    bool isOptional,
-    bool isOtherOptional,
-    bool isExists,
-    bool isNotExists,
-    bool isCounting,
-    ColumnCP markColumn) {
-  if (isNotExists) {
-    return isCounting ? velox::core::JoinType::kCountingAnti
-                      : velox::core::JoinType::kAnti;
+// Returns the JoinType for the left side of a join. The left side is never
+// semi or anti, so the result is always one of kInner, kLeft, kRight, kFull.
+velox::core::JoinType leftSideJoinType(velox::core::JoinType joinType) {
+  switch (joinType) {
+    case velox::core::JoinType::kLeft:
+      return velox::core::JoinType::kRight;
+    case velox::core::JoinType::kRight:
+      return velox::core::JoinType::kLeft;
+    case velox::core::JoinType::kFull:
+      return velox::core::JoinType::kFull;
+    default:
+      return velox::core::JoinType::kInner;
   }
-  if (isExists) {
-    if (isCounting) {
-      return velox::core::JoinType::kCountingLeftSemiFilter;
-    }
-    return markColumn ? velox::core::JoinType::kLeftSemiProject
-                      : velox::core::JoinType::kLeftSemiFilter;
-  }
-  if (isOptional && isOtherOptional) {
-    return velox::core::JoinType::kFull;
-  }
-  if (isOptional) {
-    return velox::core::JoinType::kLeft;
-  }
-  if (isOtherOptional) {
-    return velox::core::JoinType::kRight;
-  }
-  return velox::core::JoinType::kInner;
 }
 } // namespace
 
@@ -404,13 +388,7 @@ JoinSide JoinEdge::sideOf(PlanObjectCP side, bool other) const {
         rightTable_,
         rightKeys_,
         lrFanout_,
-        computeJoinType(
-            rightOptional_,
-            leftOptional_,
-            rightExists_,
-            rightNotExists_,
-            counting_,
-            markColumn_),
+        joinType_,
         markColumn_,
         rightUnique_,
         rightColumns_,
@@ -421,8 +399,7 @@ JoinSide JoinEdge::sideOf(PlanObjectCP side, bool other) const {
       leftTable_,
       leftKeys_,
       rlFanout_,
-      computeJoinType(
-          leftOptional_, rightOptional_, false, false, false, nullptr),
+      leftSideJoinType(joinType_),
       markColumn_,
       leftUnique_,
       leftColumns_,
@@ -433,7 +410,7 @@ bool JoinEdge::isBroadcastableType() const {
   // Counting joins cannot use broadcast because each worker gets its own copy
   // of build-side per-key counters. With broadcast, multiple workers decrement
   // independent copies, producing too many output rows.
-  return !leftOptional_ && !counting_;
+  return !leftOptional() && !isCounting();
 }
 
 void JoinEdge::addEquality(ExprCP left, ExprCP right, bool update) {
@@ -498,22 +475,34 @@ std::pair<std::string, bool> JoinEdge::sampleKey() const {
 std::string JoinEdge::toString() const {
   std::stringstream out;
   out << "<join " << (leftTable_ ? cname(leftTable_) : " multiple tables ");
-  if (leftOptional_ && rightOptional_) {
-    out << " full outer ";
-  } else if (markColumn_) {
-    out << " exists project ";
-  } else if (rightOptional_) {
-    out << " left ";
-  } else if (rightExists_) {
-    out << " exists ";
-  } else if (rightNotExists_) {
-    out << " not exists ";
-  } else if (leftOptional_) {
-    out << " right ";
-  } else if (directed_) {
-    out << " unnest ";
-  } else {
-    out << " inner ";
+  switch (joinType_) {
+    case velox::core::JoinType::kFull:
+      out << " full outer ";
+      break;
+    case velox::core::JoinType::kLeftSemiProject:
+      out << " exists project ";
+      break;
+    case velox::core::JoinType::kLeft:
+      out << " left ";
+      break;
+    case velox::core::JoinType::kLeftSemiFilter:
+    case velox::core::JoinType::kCountingLeftSemiFilter:
+      out << " exists ";
+      break;
+    case velox::core::JoinType::kAnti:
+    case velox::core::JoinType::kCountingAnti:
+      out << " not exists ";
+      break;
+    case velox::core::JoinType::kRight:
+      out << " right ";
+      break;
+    default:
+      if (directed_) {
+        out << " unnest ";
+      } else {
+        out << " inner ";
+      }
+      break;
   }
   out << cname(rightTable_);
   out << " on ";

@@ -475,28 +475,13 @@ class JoinEdge {
     /// Filter conjuncts to be applied after the join. Only for non-inner joins.
     ExprVector filter;
 
-    /// True for RIGHT and FULL OUTER JOIN. The output may have no match on the
-    /// left side.
-    bool leftOptional{false};
-
-    /// True for LEFT and FULL OUTER JOIN. The output may have no match on the
-    /// right side.
-    bool rightOptional{false};
-
-    /// True for EXISTS subquery. Mutually exclusive with 'rightNotExists'.
-    bool rightExists{false};
-
-    /// True for NOT EXISTS subquery. Mutually exclusive with 'rightExists'.
-    bool rightNotExists{false};
+    /// Specifies the join semantics (inner, left, right, full, semi, anti,
+    /// etc.).
+    velox::core::JoinType joinType{velox::core::JoinType::kInner};
 
     /// When true, the join semantic is IN / NOT IN. When false, the join
     /// semantic is EXISTS / NOT EXISTS. Applies to semi and anti joins.
     bool nullAwareIn{false};
-
-    /// When true, enables counting join semantics: kCountingAnti for EXCEPT
-    /// ALL, kCountingLeftSemiFilter for INTERSECT ALL. Requires 'rightExists'
-    /// or 'rightNotExists' to be true.
-    bool counting{false};
 
     /// Marker column produced by 'exists' or 'not exists' join. If set, the
     /// 'rightExists' must be true.
@@ -544,12 +529,8 @@ class JoinEdge {
       : leftTable_(leftTable),
         rightTable_(rightTable),
         filter_(std::move(spec.filter)),
-        leftOptional_(spec.leftOptional),
-        rightOptional_(spec.rightOptional),
-        rightExists_(spec.rightExists),
-        rightNotExists_(spec.rightNotExists),
+        joinType_(spec.joinType),
         nullAwareIn_(spec.nullAwareIn),
-        counting_(spec.counting),
         directed_(spec.directed),
         markColumn_(spec.markColumn),
         rowNumberColumn_(spec.rowNumberColumn),
@@ -567,21 +548,16 @@ class JoinEdge {
       VELOX_CHECK(filter_.empty(), "Filter is not allowed for an inner join");
     }
 
-    VELOX_CHECK(!rightExists_ || !rightNotExists_);
-
-    if (counting_) {
-      VELOX_CHECK(
-          rightExists_ || rightNotExists_,
-          "Counting join requires rightExists or rightNotExists");
-    }
-
     if (markColumn_) {
-      VELOX_CHECK(rightExists_);
+      VELOX_CHECK_EQ(
+          joinType_,
+          velox::core::JoinType::kLeftSemiProject,
+          "Mark column requires kLeftSemiProject join type");
     }
 
     if (rowNumberColumn_) {
-      VELOX_CHECK(!leftOptional_);
-      VELOX_CHECK(rightOptional_);
+      VELOX_CHECK(!leftOptional());
+      VELOX_CHECK(rightOptional());
     }
 
     if (multipleMatchesError_) {
@@ -589,12 +565,12 @@ class JoinEdge {
     }
 
     if (!leftColumns_.empty()) {
-      VELOX_CHECK(leftOptional_);
+      VELOX_CHECK(leftOptional());
       VELOX_CHECK_EQ(leftColumns_.size(), leftExprs_.size());
     }
 
     if (!rightColumns_.empty()) {
-      VELOX_CHECK(rightOptional_);
+      VELOX_CHECK(rightOptional());
       VELOX_CHECK_EQ(rightColumns_.size(), rightExprs_.size());
     }
   }
@@ -636,14 +612,17 @@ class JoinEdge {
       ExprVector filter = {},
       bool nullAwareIn = false,
       bool counting = false) {
+    auto joinType = counting
+        ? velox::core::JoinType::kCountingLeftSemiFilter
+        : (markColumn ? velox::core::JoinType::kLeftSemiProject
+                      : velox::core::JoinType::kLeftSemiFilter);
     return make<JoinEdge>(
         leftTable,
         rightTable,
         Spec{
             .filter = std::move(filter),
-            .rightExists = true,
+            .joinType = joinType,
             .nullAwareIn = nullAwareIn,
-            .counting = counting,
             .markColumn = markColumn,
         });
   }
@@ -668,7 +647,10 @@ class JoinEdge {
     return make<JoinEdge>(
         leftTable,
         rightTable,
-        Spec{.rightNotExists = true, .counting = counting});
+        Spec{
+            .joinType = counting ? velox::core::JoinType::kCountingAnti
+                                 : velox::core::JoinType::kAnti,
+        });
   }
 
   /// Creates a JoinEdge for CROSS JOIN UNNEST. Stores 'unnestExprs' in
@@ -721,11 +703,13 @@ class JoinEdge {
   }
 
   bool leftOptional() const {
-    return leftOptional_;
+    return joinType_ == velox::core::JoinType::kRight ||
+        joinType_ == velox::core::JoinType::kFull;
   }
 
   bool rightOptional() const {
-    return rightOptional_;
+    return joinType_ == velox::core::JoinType::kLeft ||
+        joinType_ == velox::core::JoinType::kFull;
   }
 
   ColumnCP markColumn() const {
@@ -770,18 +754,20 @@ class JoinEdge {
 
   /// True if inner join.
   bool isInner() const {
-    return !leftOptional_ && !rightOptional_ && !rightExists_ &&
-        !rightNotExists_;
+    return joinType_ == velox::core::JoinType::kInner;
   }
 
   /// True if this is an EXISTS join.
   bool isSemi() const {
-    return rightExists_;
+    return joinType_ == velox::core::JoinType::kLeftSemiFilter ||
+        joinType_ == velox::core::JoinType::kLeftSemiProject ||
+        joinType_ == velox::core::JoinType::kCountingLeftSemiFilter;
   }
 
   /// True if this is a NOT EXISTS join.
   bool isAnti() const {
-    return rightNotExists_;
+    return joinType_ == velox::core::JoinType::kAnti ||
+        joinType_ == velox::core::JoinType::kCountingAnti;
   }
 
   /// True if this is an UNNEST join.
@@ -797,12 +783,13 @@ class JoinEdge {
   /// Returns true for counting join semantics (kCountingAnti for EXCEPT ALL,
   /// kCountingLeftSemiFilter for INTERSECT ALL).
   bool isCounting() const {
-    return counting_;
+    return joinType_ == velox::core::JoinType::kCountingAnti ||
+        joinType_ == velox::core::JoinType::kCountingLeftSemiFilter;
   }
 
   /// True if this is a LEFT join.
   bool isLeftOuter() const {
-    return rightOptional_ && !leftOptional_ && !isSemi() && !isAnti();
+    return joinType_ == velox::core::JoinType::kLeft;
   }
 
   /// Original join type if different from this edge. Used to mark LEFT joins
@@ -816,12 +803,12 @@ class JoinEdge {
   /// placing this.
   bool isNonCommutative() const {
     // Inner and full outer joins are commutative.
-    if (rightOptional_ && leftOptional_) {
+    if (joinType_ == velox::core::JoinType::kFull) {
       return false;
     }
 
-    return !leftTable_ || rightOptional_ || leftOptional_ || rightExists_ ||
-        rightNotExists_ || directed_;
+    return !leftTable_ || joinType_ != velox::core::JoinType::kInner ||
+        directed_;
   }
 
   /// True if has a hash based variant that builds on the left and probes on the
@@ -830,8 +817,7 @@ class JoinEdge {
     // Counting anti joins (EXCEPT ALL) cannot be reversed — they are
     // directional. Counting semi joins (INTERSECT ALL) can be reversed
     // since the operation is symmetric.
-    return isNonCommutative() && !rightNotExists_ &&
-        rowNumberColumn_ == nullptr;
+    return isNonCommutative() && !isAnti() && rowNumberColumn_ == nullptr;
   }
 
   /// Returns the join side info for 'table'. If 'other' is set, returns the
@@ -915,28 +901,11 @@ class JoinEdge {
   // 'leftKeys' select max 1 'rightTable' row.
   bool rightUnique_{false};
 
-  // True if an unprobed right side row produces a result with right side
-  // columns set and left side columns as null (right outer join). Possible only
-  // for hash or merge.
-  const bool leftOptional_;
-
-  // True if a right side miss produces a row with left side columns
-  // and a null for right side columns (left outer join). A full outer
-  // join has both left and right optional.
-  const bool rightOptional_;
-
-  // True if the right side is only checked for existence of a match. If
-  // rightOptional is set, this can project out a null for misses.
-  const bool rightExists_;
-
-  // True if produces a result for left if no match on the right.
-  const bool rightNotExists_;
+  // Specifies the join semantics (inner, left, right, full, semi, anti, etc.).
+  const velox::core::JoinType joinType_;
 
   // True for IN semantics (nullAware), false for EXISTS semantics.
   const bool nullAwareIn_;
-
-  // True for counting join semantics (kCountingAnti, kCountingLeftSemiFilter).
-  const bool counting_;
 
   // If directed non-outer edge. For example unnest or inner dependent on
   // optional of outer.
