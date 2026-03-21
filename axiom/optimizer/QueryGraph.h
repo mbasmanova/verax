@@ -446,17 +446,11 @@ struct Equivalence {
 
 /// Represents one side of a join. See Join below for the meaning of the
 /// members.
-// TODO: Replace boolean flags (isOptional, isExists, isNotExists, isCounting)
-// with an enum.
 struct JoinSide {
   PlanObjectCP table;
   const ExprVector& keys;
   const float fanout;
-  const bool isOptional;
-  const bool isOtherOptional;
-  const bool isExists;
-  const bool isNotExists;
-  const bool isCounting;
+  const velox::core::JoinType joinType;
   ColumnCP markColumn;
   const bool isUnique;
   const ColumnVector& columns;
@@ -464,35 +458,7 @@ struct JoinSide {
 
   /// Returns the join type to use if 'this' is the right side.
   velox::core::JoinType leftJoinType() const {
-    if (isNotExists) {
-      if (isCounting) {
-        return velox::core::JoinType::kCountingAnti;
-      }
-      return velox::core::JoinType::kAnti;
-    }
-
-    if (isExists) {
-      if (isCounting) {
-        return velox::core::JoinType::kCountingLeftSemiFilter;
-      }
-      if (markColumn) {
-        return velox::core::JoinType::kLeftSemiProject;
-      }
-      return velox::core::JoinType::kLeftSemiFilter;
-    }
-
-    if (isOptional && isOtherOptional) {
-      return velox::core::JoinType::kFull;
-    }
-
-    if (isOptional) {
-      return velox::core::JoinType::kLeft;
-    }
-
-    if (isOtherOptional) {
-      return velox::core::JoinType::kRight;
-    }
-    return velox::core::JoinType::kInner;
+    return joinType;
   }
 };
 

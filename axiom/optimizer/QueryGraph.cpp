@@ -365,17 +365,52 @@ std::string UnnestTable::toString() const {
   return out.str();
 }
 
+namespace {
+// Computes the Velox JoinType from the per-side boolean flags.
+velox::core::JoinType computeJoinType(
+    bool isOptional,
+    bool isOtherOptional,
+    bool isExists,
+    bool isNotExists,
+    bool isCounting,
+    ColumnCP markColumn) {
+  if (isNotExists) {
+    return isCounting ? velox::core::JoinType::kCountingAnti
+                      : velox::core::JoinType::kAnti;
+  }
+  if (isExists) {
+    if (isCounting) {
+      return velox::core::JoinType::kCountingLeftSemiFilter;
+    }
+    return markColumn ? velox::core::JoinType::kLeftSemiProject
+                      : velox::core::JoinType::kLeftSemiFilter;
+  }
+  if (isOptional && isOtherOptional) {
+    return velox::core::JoinType::kFull;
+  }
+  if (isOptional) {
+    return velox::core::JoinType::kLeft;
+  }
+  if (isOtherOptional) {
+    return velox::core::JoinType::kRight;
+  }
+  return velox::core::JoinType::kInner;
+}
+} // namespace
+
 JoinSide JoinEdge::sideOf(PlanObjectCP side, bool other) const {
   if ((side == rightTable_ && !other) || (side == leftTable_ && other)) {
     return {
         rightTable_,
         rightKeys_,
         lrFanout_,
-        rightOptional_,
-        leftOptional_,
-        rightExists_,
-        rightNotExists_,
-        counting_,
+        computeJoinType(
+            rightOptional_,
+            leftOptional_,
+            rightExists_,
+            rightNotExists_,
+            counting_,
+            markColumn_),
         markColumn_,
         rightUnique_,
         rightColumns_,
@@ -386,11 +421,8 @@ JoinSide JoinEdge::sideOf(PlanObjectCP side, bool other) const {
       leftTable_,
       leftKeys_,
       rlFanout_,
-      leftOptional_,
-      rightOptional_,
-      false,
-      false,
-      false,
+      computeJoinType(
+          leftOptional_, rightOptional_, false, false, false, nullptr),
       markColumn_,
       leftUnique_,
       leftColumns_,
