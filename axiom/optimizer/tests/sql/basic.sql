@@ -27,6 +27,12 @@ SELECT * FROM t LIMIT 0
 -- Filter.
 SELECT a, b FROM t WHERE a > 1
 ----
+-- IN list with non-literal elements.
+SELECT a, b FROM t WHERE 1 IN (a, a + 1)
+----
+-- IN list with mix of literal and non-literal elements.
+SELECT a, b FROM t WHERE a IN (b, 1)
+----
 -- Aggregation.
 SELECT a, sum(b) FROM t GROUP BY 1
 ----
