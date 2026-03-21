@@ -1589,8 +1589,7 @@ JoinEdgeP toInnerJoin(JoinEdgeCP leftJoin) {
 JoinEdgeP toLeftJoin(JoinEdgeCP fullJoin) {
   JoinEdge::Spec joinSpec{
       .filter = fullJoin->filter(),
-      .leftOptional = false,
-      .rightOptional = true,
+      .joinType = velox::core::JoinType::kLeft,
   };
 
   joinSpec.rightColumns = fullJoin->rightColumns();
@@ -1617,8 +1616,7 @@ JoinEdgeP toLeftJoin(JoinEdgeCP fullJoin) {
 JoinEdgeP toNormalizedRightJoin(JoinEdgeCP fullJoin) {
   JoinEdge::Spec joinSpec{
       .filter = fullJoin->filter(),
-      .leftOptional = false,
-      .rightOptional = true,
+      .joinType = velox::core::JoinType::kLeft,
   };
 
   joinSpec.rightColumns = fullJoin->leftColumns();
