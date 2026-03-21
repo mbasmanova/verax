@@ -509,6 +509,31 @@ TEST_F(SubqueryTest, correlatedIn) {
   }
 }
 
+// IN subquery where the left-side expression references multiple tables.
+TEST_F(SubqueryTest, multiTableInSubquery) {
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
+  testConnector_->addTable("u", ROW({"c", "d"}, BIGINT()));
+  testConnector_->addTable("v", ROW({"e", "f"}, BIGINT()));
+
+  auto query =
+      "SELECT * FROM t JOIN u ON t.a = u.c "
+      "WHERE ROW(t.a, u.c) IN (SELECT ROW(e, f) FROM v)";
+
+  // The ROW expression over two tables becomes the left key of a semi-join.
+  // The inner join is computed first, then the semi-join filters rows.
+  auto matcher =
+      matchScan("t")
+          .hashJoin(matchScan("u").build(), velox::core::JoinType::kInner)
+          .project()
+          .hashJoin(
+              matchScan("v").project().build(),
+              velox::core::JoinType::kLeftSemiFilter)
+          .build();
+
+  auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+  AXIOM_ASSERT_PLAN(plan, matcher);
+}
+
 TEST_F(SubqueryTest, correlatedScalar) {
   // Correlated scalar subquery with aggregation in filter.
   {
