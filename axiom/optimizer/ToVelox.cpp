@@ -422,19 +422,33 @@ velox::core::TypedExprPtr makeKey(const velox::TypePtr& type, T v) {
       type, velox::Variant(v));
 }
 
-velox::core::TypedExprPtr createArrayForInList(
-    const Call& call,
-    const velox::TypePtr& elementType) {
+// Returns a constant array expression for the IN list if the call is an IN
+// expression with all-literal elements. Returns nullptr otherwise.
+velox::core::TypedExprPtr tryCreateConstantInList(const Call& call) {
+  if (call.name() != SpecialFormCallNames::kIn) {
+    return nullptr;
+  }
+
+  VELOX_USER_CHECK_GE(call.args().size(), 2);
+
+  const auto& args = call.args();
+  if (!std::all_of(args.begin() + 1, args.end(), [](const auto& arg) {
+        return arg->is(PlanType::kLiteralExpr);
+      })) {
+    return nullptr;
+  }
+
+  auto elementType = toTypePtr(args[0]->value().type);
+
   std::vector<velox::Variant> arrayElements;
-  arrayElements.reserve(call.args().size() - 1);
-  for (size_t i = 1; i < call.args().size(); ++i) {
-    auto arg = call.args().at(i);
+  arrayElements.reserve(args.size() - 1);
+  for (size_t i = 1; i < args.size(); ++i) {
+    auto arg = args.at(i);
     VELOX_USER_CHECK(
         elementType->equivalent(*arg->value().type),
         "All elements of the IN list must have the same type got {} and {}",
         elementType->toString(),
         arg->value().type->toString());
-    VELOX_USER_CHECK(arg->is(PlanType::kLiteralExpr));
     arrayElements.push_back(arg->as<Literal>()->literal());
   }
   auto arrayVector = variantToVector(
@@ -597,10 +611,9 @@ velox::core::TypedExprPtr ToVelox::toTypedExpr(ExprCP expr) {
       std::vector<velox::core::TypedExprPtr> inputs;
       auto call = expr->as<Call>();
 
-      if (call->name() == SpecialFormCallNames::kIn) {
-        VELOX_USER_CHECK_GE(call->args().size(), 2);
+      if (auto inList = tryCreateConstantInList(*call)) {
         inputs.push_back(toTypedExpr(call->args()[0]));
-        inputs.push_back(createArrayForInList(*call, inputs.back()->type()));
+        inputs.push_back(std::move(inList));
       } else {
         for (auto arg : call->args()) {
           inputs.push_back(toTypedExpr(arg));
