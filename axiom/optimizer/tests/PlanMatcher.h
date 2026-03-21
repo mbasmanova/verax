@@ -335,7 +335,11 @@ class PlanMatcherBuilder {
   /// Marks a shuffle boundary with verification of partition keys.
   /// @param keys Expected partition key column names. Supports symbol rewriting
   /// from child matchers.
-  PlanMatcherBuilder& shuffle(const std::vector<std::string>& keys);
+  /// @param replicateNullsAndAny Expected value of the replicateNullsAndAny
+  /// flag on the PartitionedOutput node.
+  PlanMatcherBuilder& shuffle(
+      const std::vector<std::string>& keys,
+      bool replicateNullsAndAny = false);
 
   /// Marks an ordered shuffle boundary (uses MergeExchange instead of
   /// Exchange). In a distributed plan:

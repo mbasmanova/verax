@@ -164,13 +164,15 @@ struct Distribution {
       ExprVector orderKeys = {},
       OrderTypeVector orderTypes = {},
       int32_t numKeysUnique = 0,
-      ExprVector clusterKeys = {})
+      ExprVector clusterKeys = {},
+      bool replicateNullsAndAny = false)
       : distributionType_{distributionType},
         partitionKeys_{std::move(partitionKeys)},
         orderKeys_{std::move(orderKeys)},
         orderTypes_{std::move(orderTypes)},
         numKeysUnique_{numKeysUnique},
         isBroadcast_{false},
+        replicateNullsAndAny_{replicateNullsAndAny},
         clusterKeys_{std::move(clusterKeys)} {
     VELOX_CHECK_EQ(orderKeys_.size(), orderTypes_.size());
     if (isGather()) {
@@ -242,6 +244,10 @@ struct Distribution {
     return clusterKeys_;
   }
 
+  bool isReplicateNullsAndAny() const {
+    return replicateNullsAndAny_;
+  }
+
   Distribution rename(const ExprVector& exprs, const ColumnVector& names) const;
 
   std::string toString() const;
@@ -268,6 +274,11 @@ struct Distribution {
   int32_t numKeysUnique_;
 
   bool isBroadcast_;
+
+  /// When true, rows with NULLs in partition keys are replicated to all
+  /// partitions and one arbitrary non-null row is also replicated. Required
+  /// for correct distributed execution of null-aware anti joins (NOT IN).
+  bool replicateNullsAndAny_{false};
 
   /// Clustering columns. Rows with the same values in these columns are
   /// contiguous but not necessarily ordered. Enables streaming group by

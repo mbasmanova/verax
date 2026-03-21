@@ -404,7 +404,8 @@ Distribution Distribution::rename(
       std::move(orderKeys),
       std::move(orderTypes),
       numKeysUnique_,
-      std::move(clusterKeys));
+      std::move(clusterKeys),
+      replicateNullsAndAny_);
 }
 
 namespace {

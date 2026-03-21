@@ -1771,5 +1771,82 @@ TEST_F(SubqueryTest, inSubqueryWithCorrelatedNotExists) {
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
+// Verifies that the distributed plan for IN / NOT IN subqueries sets
+// replicateNullsAndAny on the PartitionedOutput feeding the null-aware join.
+// Without this flag, NULL rows on the right side are hash-partitioned to only
+// one worker, producing wrong results:
+//   NOT IN: workers missing the NULL incorrectly return rows.
+//   IN: workers missing the NULL produce false instead of NULL for the mark.
+TEST_F(SubqueryTest, inReplicateNullsAndAny) {
+  // Make both tables large enough to trigger hash partitioning instead of
+  // broadcast.
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()))
+      ->setStats(10'000'000, {});
+  testConnector_->addTable("u", ROW({"c", "d"}, BIGINT()))
+      ->setStats(1'000'000, {});
+
+  // NOT IN: the build side (u) must use replicateNullsAndAny=true.
+  {
+    auto query = "SELECT * FROM t WHERE a NOT IN (SELECT c FROM u)";
+    SCOPED_TRACE(query);
+
+    auto matcher = matchScan("t")
+                       .shuffle({"a"})
+                       .hashJoin(
+                           matchScan("u")
+                               .shuffle({"c"}, /*replicateNullsAndAny=*/true)
+                               .build(),
+                           velox::core::JoinType::kAnti,
+                           /*nullAware=*/true)
+                       .gather()
+                       .build();
+
+    auto distributedPlan = planVelox(parseSelect(query, kTestConnectorId));
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, matcher);
+  }
+
+  // IN in projection: stays as kLeftSemiProject with null-aware. The build
+  // side needs replicateNullsAndAny so all workers can produce NULL (not
+  // false) when the build side contains a NULL.
+  {
+    auto query = "SELECT a, a IN (SELECT c FROM u) AS flag FROM t";
+    SCOPED_TRACE(query);
+
+    auto matcher = matchScan("t")
+                       .shuffle({"a"})
+                       .hashJoin(
+                           matchScan("u")
+                               .shuffle({"c"}, /*replicateNullsAndAny=*/true)
+                               .build(),
+                           velox::core::JoinType::kLeftSemiProject,
+                           /*nullAware=*/true)
+                       .project()
+                       .gather()
+                       .build();
+
+    auto distributedPlan = planVelox(parseSelect(query, kTestConnectorId));
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, matcher);
+  }
+
+  // IN in projection with reversed table sizes — exercises joinByHashRight.
+  {
+    auto query = "SELECT c, c IN (SELECT a FROM t) AS flag FROM u";
+    SCOPED_TRACE(query);
+
+    auto matcher = matchScan("t")
+                       .shuffle({"a"}, /*replicateNullsAndAny=*/true)
+                       .hashJoin(
+                           matchScan("u").shuffle({"c"}).build(),
+                           velox::core::JoinType::kRightSemiProject,
+                           /*nullAware=*/true)
+                       .project()
+                       .gather()
+                       .build();
+
+    auto distributedPlan = planVelox(parseSelect(query, kTestConnectorId));
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, matcher);
+  }
+}
+
 } // namespace
 } // namespace facebook::axiom::optimizer

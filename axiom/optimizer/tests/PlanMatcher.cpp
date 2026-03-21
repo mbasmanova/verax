@@ -892,10 +892,12 @@ class ShuffleBoundaryMatcher : public PlanMatcher {
   explicit ShuffleBoundaryMatcher(
       std::shared_ptr<PlanMatcher> producerMatcher,
       std::optional<ShuffleType> type = std::nullopt,
-      std::vector<std::string> keys = {})
+      std::vector<std::string> keys = {},
+      std::optional<bool> replicateNullsAndAny = std::nullopt)
       : producerMatcher_(std::move(producerMatcher)),
         type_(type),
-        keys_(std::move(keys)) {}
+        keys_(std::move(keys)),
+        replicateNullsAndAny_(replicateNullsAndAny) {}
 
   MatchResult match(
       const PlanNodePtr& plan,
@@ -911,6 +913,7 @@ class ShuffleBoundaryMatcher : public PlanMatcher {
   const std::shared_ptr<PlanMatcher> producerMatcher_;
   const std::optional<ShuffleType> type_;
   const std::vector<std::string> keys_;
+  const std::optional<bool> replicateNullsAndAny_;
 };
 
 // Returns the producer fragment for the given Exchange node, or nullptr if not
@@ -1028,6 +1031,17 @@ PlanMatcher::MatchResult ShuffleBoundaryMatcher::match(
       EXPECT_EQ(fieldAccess->name(), expectedKey)
           << "Partition key mismatch at index " << i;
     }
+    AXIOM_TEST_RETURN_IF_FAILURE
+  }
+
+  // Verify replicateNullsAndAny if specified.
+  if (replicateNullsAndAny_.has_value()) {
+    EXPECT_EQ(
+        partitionedOutput->isReplicateNullsAndAny(),
+        replicateNullsAndAny_.value())
+        << "replicateNullsAndAny mismatch: expected "
+        << replicateNullsAndAny_.value() << ", got "
+        << partitionedOutput->isReplicateNullsAndAny();
     AXIOM_TEST_RETURN_IF_FAILURE
   }
 
@@ -1750,10 +1764,11 @@ PlanMatcherBuilder& PlanMatcherBuilder::partitionedOutputSingle() {
 }
 
 PlanMatcherBuilder& PlanMatcherBuilder::shuffle(
-    const std::vector<std::string>& keys) {
+    const std::vector<std::string>& keys,
+    bool replicateNullsAndAny) {
   VELOX_USER_CHECK_NOT_NULL(matcher_);
   matcher_ = std::make_shared<ShuffleBoundaryMatcher>(
-      matcher_, ShuffleType::kPartitioned, keys);
+      matcher_, ShuffleType::kPartitioned, keys, replicateNullsAndAny);
   return *this;
 }
 

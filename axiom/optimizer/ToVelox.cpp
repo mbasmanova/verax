@@ -1610,7 +1610,7 @@ velox::core::PlanNodePtr ToVelox::makeRepartition(
             velox::core::PartitionedOutputNode::Kind::kPartitioned,
             keys,
             fragment.width,
-            /*replicateNullsAndAny=*/false,
+            distribution.isReplicateNullsAndAny(),
             std::move(partitionFunctionFactory),
             outputType,
             exchangeSerdeKind_,
