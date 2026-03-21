@@ -71,6 +71,19 @@ This works across `project`, `singleAggregation`, `partialAggregation`, `finalAg
 
 All expressions use DuckDB SQL syntax. Both function-call form (`le(a, b)`) and operator form (`a <= b`) work, but the operator form should be preferred for readability.
 
+**`IN` operator gotcha:** The operator form `a IN (b, c)` works only when all IN-list values are constants. DuckDB rejects non-constant IN lists, so `a IN (col, 2)` fails to parse. In that case, use the quoted function-call form `"in"(a, col, 2)` (quotes are needed because `in` is a keyword):
+
+```cpp
+// ✅ Works — all constants.
+.filter("n_regionkey IN (1, 2)")
+
+// ❌ Fails — DuckDB requires constant IN list values.
+.filter("n_regionkey IN (max_key, 2)")
+
+// ✅ Works — quoted function-call form bypasses the keyword issue.
+.filter("\"in\"(n_regionkey, max_key, 2)")
+```
+
 #### Controlling cost-based decisions with `setStats`
 
 The optimizer makes cost-based decisions (join ordering, broadcast vs. shuffle, etc.) based on table and column statistics. To make these decisions deterministic in tests, use `TestConnector::setStats` to set row counts and column statistics without adding actual data:

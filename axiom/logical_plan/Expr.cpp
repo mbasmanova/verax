@@ -635,26 +635,13 @@ void validateInInputs(
       velox::TypeKind::BOOLEAN,
       "IN expression must return boolean type");
   VELOX_USER_CHECK_GE(inputs.size(), 2, "IN must have at least two inputs");
-  if (inputs[1]->isSubquery()) {
-    VELOX_USER_CHECK_EQ(inputs.size(), 2, "IN subquery must have two inputs");
-    auto subquery = inputs[1]->as<SubqueryExpr>();
-    VELOX_USER_CHECK_EQ(
-        subquery->subquery()->outputType()->size(),
-        1,
-        "Subquery must return one column");
+  auto leftType = inputs[0]->type();
+  for (size_t i = 1; i < inputs.size(); ++i) {
     VELOX_USER_CHECK(
-        subquery->subquery()->outputType()->childAt(0)->equivalent(
-            *inputs[0]->type()),
-        "IN subquery must return the same type as the left operand");
-  } else {
-    auto leftType = inputs[0]->type();
-    for (size_t i = 1; i < inputs.size(); ++i) {
-      VELOX_USER_CHECK(
-          inputs[i]->type()->equivalent(*leftType),
-          "All inputs to IN must have the same type as the left operand: {} vs {}",
-          inputs[i]->type()->toString(),
-          leftType->toString());
-    }
+        inputs[i]->type()->equivalent(*leftType),
+        "All inputs to IN must have the same type as the left operand: {} vs {}",
+        inputs[i]->type()->toString(),
+        leftType->toString());
   }
 }
 } // namespace
