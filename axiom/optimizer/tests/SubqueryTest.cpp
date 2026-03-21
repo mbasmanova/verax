@@ -121,6 +121,58 @@ TEST_F(SubqueryTest, uncorrelatedScalar) {
   }
 }
 
+// IN list mixing subqueries with non-subquery expressions.
+TEST_F(SubqueryTest, inListWithMixedSubqueries) {
+  // IN list with a scalar subquery and a literal. The scalar subquery is
+  // extracted, cross-joined, and the IN becomes in(n_regionkey, max, 2).
+  {
+    auto query =
+        "SELECT * FROM nation WHERE n_regionkey IN "
+        "((SELECT max(r_regionkey) FROM region), 2)";
+    SCOPED_TRACE(query);
+
+    auto plan = toSingleNodePlan(query);
+    auto matcher =
+        matchHiveScan("nation")
+            .nestedLoopJoin(
+                matchHiveScan("region")
+                    .singleAggregation({}, {"max(r_regionkey) as max_key"})
+                    .build())
+            .filter("\"in\"(n_regionkey, max_key, 2)")
+            .project()
+            .build();
+
+    AXIOM_ASSERT_PLAN(plan, matcher);
+  }
+
+  // IN list with two scalar subqueries. Both are extracted, cross-joined, and
+  // the IN becomes in(n_regionkey, max_key, min_key).
+  {
+    auto query =
+        "SELECT * FROM nation WHERE n_regionkey IN "
+        "((SELECT max(r_regionkey) FROM region), "
+        "(SELECT min(r_regionkey) FROM region))";
+    SCOPED_TRACE(query);
+
+    auto plan = toSingleNodePlan(query);
+    auto matcher =
+        matchHiveScan("nation")
+            .nestedLoopJoin(
+                matchHiveScan("region")
+                    .singleAggregation({}, {"max(r_regionkey) as max_key"})
+                    .build())
+            .nestedLoopJoin(
+                matchHiveScan("region")
+                    .singleAggregation({}, {"min(r_regionkey_2) as min_key"})
+                    .build())
+            .filter("\"in\"(n_regionkey, max_key, min_key)")
+            .project()
+            .build();
+
+    AXIOM_ASSERT_PLAN(plan, matcher);
+  }
+}
+
 TEST_F(SubqueryTest, foldable) {
   testConnector_->addTable("t", ROW({"a", "ds"}, {INTEGER(), VARCHAR()}));
   testConnector_->setDiscreteValues(
@@ -189,6 +241,31 @@ TEST_F(SubqueryTest, foldable) {
 
     auto plan = toSingleNodePlan(logicalPlan);
     auto matcher = makeMatcher("ds = null");
+
+    AXIOM_ASSERT_PLAN(plan, matcher);
+  }
+
+  // IN list with a foldable subquery and a literal. The subquery is
+  // constant-folded, resulting in a regular IN with two constants.
+  {
+    auto logicalPlan = parseSql(
+        "SELECT * FROM t WHERE ds IN ((SELECT max(ds) FROM t), '2025-10-29')");
+
+    auto plan = toSingleNodePlan(logicalPlan);
+    auto matcher = makeMatcher("ds in ('2025-11-03', '2025-10-29')");
+
+    AXIOM_ASSERT_PLAN(plan, matcher);
+  }
+
+  // IN list with two foldable subqueries (prod query pattern). Both subqueries
+  // are constant-folded, resulting in a regular IN with two constants.
+  {
+    auto logicalPlan = parseSql(
+        "SELECT * FROM t WHERE ds IN "
+        "((SELECT max(ds) FROM t), (SELECT min(ds) FROM t))");
+
+    auto plan = toSingleNodePlan(logicalPlan);
+    auto matcher = makeMatcher("ds in ('2025-11-03', '2025-10-29')");
 
     AXIOM_ASSERT_PLAN(plan, matcher);
   }

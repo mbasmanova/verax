@@ -2381,7 +2381,12 @@ void extractSubqueries(const lp::ExprPtr& expr, Subqueries& subqueries) {
 
   if (expr->isSpecialForm()) {
     const auto* specialForm = expr->as<lp::SpecialFormExpr>();
+    // IN with a single subquery: x IN (SELECT ...). Classified as an IN
+    // predicate and converted to a semi-join. Mixed IN lists like
+    // x IN ((SELECT ...), expr) are handled by the recursive case below,
+    // which extracts each subquery as a scalar.
     if (specialForm->form() == lp::SpecialForm::kIn &&
+        specialForm->inputs().size() == 2 &&
         specialForm->inputAt(1)->isSubquery()) {
       VELOX_USER_CHECK(
           !containsSubquery(specialForm->inputAt(0)),

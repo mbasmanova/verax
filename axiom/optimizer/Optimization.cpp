@@ -3193,24 +3193,22 @@ bool Optimization::placeConjuncts(
       // The filter depends on placed tables and non-correlated single row
       // subqueries.
       std::vector<DerivedTableCP> placeable;
-      auto subqColumns = conjunct->columns();
-      subqColumns.except(state.columns());
-      subqColumns.forEach([&](auto /*unused*/) {
-        state.dt->singleRowDts.forEach<DerivedTable>([&](auto subquery) {
-          // If the subquery provides columns for the filter, place it.
-          const auto& conjunctColumns = conjunct->columns();
-          for (auto subqColumn : subquery->columns) {
-            if (conjunctColumns.contains(subqColumn)) {
-              placeable.push_back(subquery);
-              break;
-            }
+      state.dt->singleRowDts.forEach<DerivedTable>([&](auto subquery) {
+        // If the subquery provides columns for the filter, place it.
+        const auto& conjunctColumns = conjunct->columns();
+        for (auto subqColumn : subquery->columns) {
+          if (conjunctColumns.contains(subqColumn)) {
+            placeable.push_back(subquery);
+            break;
           }
-        });
+        }
       });
 
-      for (auto i = 0; i < placeable.size(); ++i) {
+      if (!placeable.empty()) {
         state.place(conjunct);
-        plan = placeSingleRowDt(plan, placeable[i], state);
+        for (auto* subquery : placeable) {
+          plan = placeSingleRowDt(plan, subquery, state);
+        }
 
         plan = make<Filter>(plan, ExprVector{conjunct});
         state.addCost(*plan);
