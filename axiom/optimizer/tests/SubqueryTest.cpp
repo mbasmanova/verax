@@ -1645,6 +1645,35 @@ TEST_F(SubqueryTest, leftJoinOnSubquery) {
   }
 }
 
+// Non-equi LEFT JOIN where the left side contains a scalar subquery. The
+// scalar subquery cross-join adds an extra table to the left side's DT.
+TEST_F(SubqueryTest, nonEquiLeftJoinWithScalarSubquery) {
+  testConnector_->addTable("t", ROW({"a", "b"}, {BIGINT(), BIGINT()}));
+  testConnector_->addTable("u", ROW({"c", "d"}, {BIGINT(), BIGINT()}));
+  testConnector_->addTable("v", ROW({"e"}, {BIGINT()}));
+
+  auto query =
+      "WITH base AS ("
+      "  SELECT a, b, (SELECT e FROM v) x FROM t"
+      ") "
+      "SELECT base.*, u.d "
+      "FROM base LEFT JOIN u ON u.c > base.b";
+  SCOPED_TRACE(query);
+
+  auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+
+  // The scalar subquery is cross-joined, and the non-equi LEFT JOIN uses a
+  // nested-loop join.
+  auto matcher =
+      matchScan("t")
+          .nestedLoopJoin(matchScan("u").build(), velox::core::JoinType::kLeft)
+          .nestedLoopJoin(matchScan("v").enforceSingleRow().build())
+          .project()
+          .build();
+
+  AXIOM_ASSERT_PLAN(plan, matcher);
+}
+
 TEST_F(SubqueryTest, rightJoinOnSubquery) {
   // RIGHT JOIN is normalized to LEFT JOIN. Subqueries referencing the
   // null-supplying side (left in SQL, right after normalization) are supported.
