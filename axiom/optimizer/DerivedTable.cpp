@@ -822,6 +822,45 @@ void joinChain(
   joinChain(next, joins, std::move(visited), path);
 }
 
+// Unions function flags from children into 'functions'.
+void unionChildFunctions(FunctionSet& functions, const ExprVector& children) {
+  for (const auto& child : children) {
+    if (child->isFunction()) {
+      functions = functions | child->as<Call>()->functions();
+    }
+  }
+}
+
+// Returns the function flags for a scalar Call with the given name and new
+// children. Recomputes the call's own flags using functionBits and combines
+// with flags accumulated from new children.
+FunctionSet computeCallFunctions(CallCP call, const ExprVector& newChildren) {
+  FunctionSet functions = functionBits(
+      call->name(), SpecialFormCallNames::isSpecialForm(call->name()));
+  unionChildFunctions(functions, newChildren);
+  return functions;
+}
+
+// Returns the function flags for an Aggregate with new children.
+// Aggregate-specific flags (kIgnoreDuplicatesAggregate,
+// kOrderSensitiveAggregate) are determined by the aggregate name and don't
+// come from children, so they are preserved from the original aggregate.
+// kAggregate is added by the Aggregate constructor automatically.
+FunctionSet computeAggregateFunctions(
+    const Aggregate* aggregate,
+    const ExprVector& newChildren) {
+  FunctionSet functions;
+  if (aggregate->functions().contains(
+          FunctionSet::kIgnoreDuplicatesAggregate)) {
+    functions = functions | FunctionSet::kIgnoreDuplicatesAggregate;
+  }
+  if (aggregate->functions().contains(FunctionSet::kOrderSensitiveAggregate)) {
+    functions = functions | FunctionSet::kOrderSensitiveAggregate;
+  }
+  unionChildFunctions(functions, newChildren);
+  return functions;
+}
+
 // Returns a copy of 'expr', replacing instances of columns in 'source' with
 // the corresponding expression from 'target'
 // @tparam T ColumnVector or ExprVector
@@ -848,14 +887,10 @@ ExprCP replaceInputs(ExprCP expr, const T& source, const U& target) {
     case PlanType::kAggregateExpr: {
       auto children = expr->children();
       ExprVector newChildren(children.size());
-      FunctionSet functions;
       bool anyChange = false;
       for (auto i = 0; i < children.size(); ++i) {
         newChildren[i] = replaceInputs(children[i]->as<Expr>(), source, target);
         anyChange |= newChildren[i] != children[i];
-        if (newChildren[i]->isFunction()) {
-          functions = functions | newChildren[i]->as<Call>()->functions();
-        }
       }
 
       if (expr->type() == PlanType::kAggregateExpr) {
@@ -876,11 +911,12 @@ ExprCP replaceInputs(ExprCP expr, const T& source, const U& target) {
           return expr;
         }
 
+        auto functions = computeAggregateFunctions(aggregate, newChildren);
         return make<Aggregate>(
             aggregate->name(),
             aggregate->value(),
             std::move(newChildren),
-            functions,
+            std::move(functions),
             aggregate->isDistinct(),
             newCondition,
             aggregate->intermediateType(),
@@ -893,8 +929,12 @@ ExprCP replaceInputs(ExprCP expr, const T& source, const U& target) {
       }
 
       const auto* call = expr->as<Call>();
+      auto functions = computeCallFunctions(call, newChildren);
       return make<Call>(
-          call->name(), call->value(), std::move(newChildren), functions);
+          call->name(),
+          call->value(),
+          std::move(newChildren),
+          std::move(functions));
     }
     case PlanType::kFieldExpr: {
       auto* field = expr->as<Field>();
