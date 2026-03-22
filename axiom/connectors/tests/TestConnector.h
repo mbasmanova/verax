@@ -89,7 +89,8 @@ class TestTable : public Table {
       SchemaTableName name,
       const velox::RowTypePtr& schema,
       const velox::RowTypePtr& hiddenColumns,
-      TestConnector* connector);
+      TestConnector* connector,
+      folly::F14FastMap<std::string, velox::Variant> options);
 
   const std::vector<const TableLayout*>& layouts() const override {
     return layouts_;
@@ -288,6 +289,10 @@ class TestInsertTableHandle
 class TestConnectorMetadata : public ConnectorMetadata {
  public:
   static constexpr std::string_view kDefaultSchema = "default";
+
+  /// CREATE TABLE property to mark columns as hidden.
+  /// Example: WITH (hidden = ARRAY['col1', 'col2']).
+  static constexpr std::string_view kHidden = "hidden";
 
   explicit TestConnectorMetadata(TestConnector* connector)
       : connector_(connector),

@@ -40,10 +40,12 @@ TestTable::TestTable(
     SchemaTableName name,
     const velox::RowTypePtr& schema,
     const velox::RowTypePtr& hiddenColumns,
-    TestConnector* connector)
+    TestConnector* connector,
+    folly::F14FastMap<std::string, velox::Variant> options)
     : Table(
           std::move(name),
-          appendHiddenColumns(makeColumns(schema), hiddenColumns)),
+          appendHiddenColumns(makeColumns(schema), hiddenColumns),
+          std::move(options)),
       connector_(connector) {
   const auto& label = this->name().table;
   exportedLayout_ =
@@ -384,8 +386,12 @@ std::shared_ptr<TestTable> TestConnectorMetadata::addTable(
     SchemaTableName tableName,
     const velox::RowTypePtr& schema,
     const velox::RowTypePtr& hiddenColumns) {
-  auto table =
-      std::make_shared<TestTable>(tableName, schema, hiddenColumns, connector_);
+  auto table = std::make_shared<TestTable>(
+      tableName,
+      schema,
+      hiddenColumns,
+      connector_,
+      folly::F14FastMap<std::string, velox::Variant>{});
   auto [it, ok] = tables_.emplace(std::move(tableName), std::move(table));
   VELOX_CHECK(ok, "Table already exists: {}", it->first.toString());
   return it->second;
@@ -395,14 +401,41 @@ TablePtr TestConnectorMetadata::createTable(
     const ConnectorSessionPtr& /*session*/,
     const SchemaTableName& tableName,
     const velox::RowTypePtr& rowType,
-    const folly::F14FastMap<std::string, velox::Variant>& /*options*/,
+    const folly::F14FastMap<std::string, velox::Variant>& options,
     bool explain) {
+  for (const auto& [key, value] : options) {
+    VELOX_USER_CHECK_EQ(
+        key,
+        std::string{kHidden},
+        "TestConnector does not support CREATE TABLE property");
+  }
   VELOX_USER_CHECK(
       schemas_.contains(tableName.schema),
       "Schema does not exist: {}",
       tableName.schema);
+
+  // Parse optional 'hidden' property to add hidden VARCHAR columns.
+  // Hidden columns are not part of the schema — they are created implicitly.
+  velox::RowTypePtr hiddenColumns = velox::ROW({});
+  auto hiddenIt = options.find(std::string{kHidden});
+  if (hiddenIt != options.end()) {
+    auto hiddenNames = hiddenIt->second.array<std::string>();
+    folly::F14FastSet<std::string> seen;
+    for (const auto& name : hiddenNames) {
+      VELOX_USER_CHECK(!name.empty(), "Hidden column name cannot be empty");
+      VELOX_USER_CHECK(
+          seen.insert(name).second, "Duplicate hidden column: {}", name);
+      VELOX_USER_CHECK(
+          !rowType->containsChild(name),
+          "Hidden column conflicts with schema column: {}",
+          name);
+    }
+
+    hiddenColumns = velox::ROW(std::move(hiddenNames), velox::VARCHAR());
+  }
+
   auto table = std::make_shared<TestTable>(
-      tableName, rowType, velox::ROW({}), connector_);
+      tableName, rowType, hiddenColumns, connector_, options);
   if (explain) {
     return table;
   }

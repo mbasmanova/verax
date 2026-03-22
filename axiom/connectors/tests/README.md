@@ -129,10 +129,20 @@ When all columns share the same type, use `ROW(names, type)` instead of
 
 ### Hidden Columns
 
-Tables can have hidden columns that are not included in `SELECT *` or `DESC`
-output but can be queried explicitly. Hidden columns can only be defined via
-the C++ API; there is no SQL syntax to specify them. TODO: Add SQL syntax for
-defining hidden columns.
+Tables can have hidden columns that are not included in `SELECT *`, `DESC`,
+or `SHOW CREATE TABLE` output but can be queried explicitly by name.
+
+Hidden columns can be defined via SQL using the `hidden` property:
+
+```sql
+CREATE TABLE events (event_id BIGINT, payload VARCHAR)
+  WITH (hidden = ARRAY['$timestamp', '$source']);
+```
+
+Hidden column names must not conflict with schema column names. All hidden
+columns are created with type VARCHAR.
+
+Hidden columns can also be defined via the C++ API with explicit types:
 
 ```cpp
 auto table = connector->addTable(

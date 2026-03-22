@@ -571,6 +571,10 @@ class AstVisitor {
     defaultVisit(node);
   }
 
+  virtual void visitShowCreateTable(ShowCreateTable* node) {
+    defaultVisit(node);
+  }
+
   virtual void visitShowColumns(ShowColumns* node) {
     defaultVisit(node);
   }
