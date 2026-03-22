@@ -334,17 +334,24 @@ void gatherScans(
 void LocalRunner::makeStages(
     const std::shared_ptr<velox::exec::Task>& lastStageTask) {
   auto sharedRunner = shared_from_this();
-  auto onError = [self = sharedRunner, this](std::exception_ptr error) {
+  // Use weak_ptr to avoid a reference cycle:
+  // Task -> onError -> shared_ptr<LocalRunner> -> stages_ -> shared_ptr<Task>.
+  auto onError = [weak = std::weak_ptr<LocalRunner>(sharedRunner)](
+                     std::exception_ptr error) {
+    auto self = weak.lock();
+    if (!self) {
+      return;
+    }
     {
-      std::lock_guard<std::mutex> l(mutex_);
-      if (error_) {
+      std::lock_guard<std::mutex> l(self->mutex_);
+      if (self->error_) {
         return;
       }
-      state_ = State::kError;
-      error_ = std::move(error);
+      self->state_ = State::kError;
+      self->error_ = std::move(error);
     }
-    if (cursor_) {
-      abort();
+    if (self->cursor_) {
+      self->abort();
     }
   };
 
