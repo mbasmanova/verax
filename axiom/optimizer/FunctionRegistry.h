@@ -530,6 +530,11 @@ class FunctionRegistry {
 /// Shortcut for FunctionRegistry::instance()->metadata(name).
 FunctionMetadataCP functionMetadata(std::string_view name);
 
+/// Returns FunctionSet bits for a scalar function or special form. If
+/// 'specialForm' is true, the function is treated as a special form (e.g.
+/// COALESCE, IF, SWITCH).
+FunctionSet functionBits(Name name, bool specialForm);
+
 const std::string& specialForm(logical_plan::SpecialForm specialForm);
 
 } // namespace facebook::axiom::optimizer

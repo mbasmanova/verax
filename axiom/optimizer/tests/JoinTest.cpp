@@ -664,6 +664,7 @@ TEST_F(JoinTest, leftJoinOverValues) {
 TEST_F(JoinTest, leftThenFilter) {
   testConnector_->addTable("t", ROW({"a", "b", "c"}, BIGINT()));
   testConnector_->addTable("u", ROW({"x", "y"}, BIGINT()));
+  testConnector_->addTable("v", ROW({"p", "q"}, BIGINT()));
 
   // Post-LEFT JOIN filter that references only columns from the right-hand
   // (optional) table and doesn't eliminate NULLs.
@@ -826,6 +827,31 @@ TEST_F(JoinTest, leftThenFilter) {
             .hashJoin(matchScan("card_t").build(), core::JoinType::kRight)
             .filter("cardinality(coalesce(y, b)) > 0")
             .build();
+
+    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    AXIOM_ASSERT_PLAN(plan, matcher);
+  }
+
+  // Two LEFT JOINs where coalesce(left_col, outer_col) appears in both the
+  // second JOIN condition and the WHERE clause. When the conjunct is pushed
+  // between DerivedTables, replaceInputs must preserve non-default null
+  // behavior flags.
+  {
+    auto query =
+        "SELECT t.a, coalesce(t.b, u.y) "
+        "FROM t "
+        "LEFT JOIN u ON t.a = u.x AND t.b IS NULL "
+        "LEFT JOIN v ON coalesce(t.b, u.y) = v.p "
+        "WHERE coalesce(t.b, u.y) IS NOT NULL";
+    SCOPED_TRACE(query);
+
+    auto matcher = matchScan("t")
+                       .hashJoin(matchScan("u").build(), core::JoinType::kLeft)
+                       .filter("not(is_null(coalesce(b, y)))")
+                       .project()
+                       .hashJoin(matchScan("v").build(), core::JoinType::kLeft)
+                       .project()
+                       .build();
 
     auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
     AXIOM_ASSERT_PLAN(plan, matcher);

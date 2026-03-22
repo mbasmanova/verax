@@ -16,6 +16,7 @@
 
 #include "axiom/optimizer/FunctionRegistry.h"
 #include "velox/expression/ExprConstants.h"
+#include "velox/functions/FunctionRegistry.h"
 
 namespace facebook::axiom::optimizer {
 
@@ -239,6 +240,33 @@ FunctionRegistry* FunctionRegistry::instance() {
 
 FunctionMetadataCP functionMetadata(std::string_view name) {
   return FunctionRegistry::instance()->metadata(name);
+}
+
+FunctionSet functionBits(Name name, bool specialForm) {
+  if (auto* md = functionMetadata(name)) {
+    return md->functionSet;
+  }
+
+  FunctionSet bits;
+
+  if (specialForm) {
+    bits = bits | FunctionSet::kNonDefaultNullBehavior;
+  } else {
+    const auto deterministic = velox::isDeterministic(name);
+    VELOX_CHECK(deterministic.has_value(), "Function not found: {}", name);
+    if (!deterministic.value()) {
+      bits = bits | FunctionSet::kNonDeterministic;
+    }
+
+    const auto defaultNullBehavior = velox::isDefaultNullBehavior(name);
+    VELOX_CHECK(
+        defaultNullBehavior.has_value(), "Function not found: {}", name);
+    if (!defaultNullBehavior.value()) {
+      bits = bits | FunctionSet::kNonDefaultNullBehavior;
+    }
+  }
+
+  return bits;
 }
 
 const std::string& specialForm(lp::SpecialForm specialForm) {

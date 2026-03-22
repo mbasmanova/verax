@@ -960,33 +960,6 @@ ExprCP ToGraph::makeConstant(const lp::ConstantExpr& constant) {
 }
 
 namespace {
-// Returns bits describing function 'name'.
-FunctionSet functionBits(Name name, bool specialForm) {
-  if (auto* md = functionMetadata(name)) {
-    return md->functionSet;
-  }
-
-  FunctionSet bits;
-
-  if (specialForm) {
-    bits = bits | FunctionSet::kNonDefaultNullBehavior;
-  } else {
-    const auto deterministic = velox::isDeterministic(name);
-    VELOX_CHECK(deterministic.has_value(), "Function not found: {}", name);
-    if (!deterministic.value()) {
-      bits = bits | FunctionSet::kNonDeterministic;
-    }
-
-    const auto defaultNullBehavior = velox::isDefaultNullBehavior(name);
-    VELOX_CHECK(
-        defaultNullBehavior.has_value(), "Function not found: {}", name);
-    if (!defaultNullBehavior.value()) {
-      bits = bits | FunctionSet::kNonDefaultNullBehavior;
-    }
-  }
-
-  return bits;
-}
 
 // Estimates the output cardinality of a function call as the maximum
 // cardinality across its arguments, with a minimum of 1.
