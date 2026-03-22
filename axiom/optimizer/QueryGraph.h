@@ -307,7 +307,7 @@ class Call : public Expr {
   }
 
  private:
-  // name of function.
+  // Name of function.
   Name const name_;
 
   // Arguments.
@@ -390,6 +390,10 @@ struct SpecialFormCallNames {
     }
 
     return std::nullopt;
+  }
+
+  static bool isSpecialForm(const char* name) {
+    return tryFromCallName(name).has_value();
   }
 };
 
