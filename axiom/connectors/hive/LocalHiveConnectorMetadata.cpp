@@ -962,6 +962,36 @@ std::shared_ptr<LocalTable> createLocalTable(
     options[HiveWriteOptions::kSerializationNullFormat] = serdeOpts.nullString;
   }
 
+  // Convert a vector of strings to a Variant array of VARCHAR.
+  auto toVariantArray = [](const std::vector<std::string>& values) {
+    std::vector<velox::Variant> variants;
+    variants.reserve(values.size());
+    for (const auto& value : values) {
+      variants.emplace_back(value);
+    }
+    return velox::Variant::array(std::move(variants));
+  };
+
+  if (!createTableOptions.partitionedByColumns.empty()) {
+    options[HiveWriteOptions::kPartitionedBy] =
+        toVariantArray(createTableOptions.partitionedByColumns);
+  }
+
+  if (!createTableOptions.bucketedByColumns.empty()) {
+    options[HiveWriteOptions::kBucketedBy] =
+        toVariantArray(createTableOptions.bucketedByColumns);
+  }
+
+  if (createTableOptions.numBuckets.has_value()) {
+    options[HiveWriteOptions::kBucketCount] =
+        velox::Variant(createTableOptions.numBuckets.value());
+  }
+
+  if (!createTableOptions.sortedByColumns.empty()) {
+    options[HiveWriteOptions::kSortedBy] =
+        toVariantArray(createTableOptions.sortedByColumns);
+  }
+
   const std::optional<int32_t> numBuckets = createTableOptions.numBuckets;
 
   auto table = std::make_shared<LocalTable>(

@@ -34,6 +34,7 @@
 #include "velox/exec/Aggregate.h"
 #include "velox/exec/WindowFunction.h"
 #include "velox/functions/FunctionRegistry.h"
+#include "velox/functions/prestosql/types/PrestoTypeSql.h"
 
 namespace axiom::sql::presto {
 namespace {
@@ -1206,6 +1207,89 @@ SqlStatementPtr parseShowColumns(
           .build());
 }
 
+// Formats a Variant value as a Presto SQL literal for use in WITH clauses.
+std::string variantToSql(const Variant& value) {
+  switch (value.kind()) {
+    case TypeKind::VARCHAR: {
+      auto escaped = value.value<std::string>();
+      // Escape single quotes by doubling them per SQL standard.
+      size_t pos = 0;
+      while ((pos = escaped.find('\'', pos)) != std::string::npos) {
+        escaped.replace(pos, 1, "''");
+        pos += 2;
+      }
+      return fmt::format("'{}'", escaped);
+    }
+    case TypeKind::INTEGER:
+      return std::to_string(value.value<int32_t>());
+    case TypeKind::BIGINT:
+      return std::to_string(value.value<int64_t>());
+    case TypeKind::BOOLEAN:
+      return value.value<bool>() ? "true" : "false";
+    case TypeKind::ARRAY: {
+      const auto& elements = value.array();
+      std::vector<std::string> formatted;
+      formatted.reserve(elements.size());
+      for (const auto& element : elements) {
+        formatted.push_back(variantToSql(element));
+      }
+      return fmt::format("ARRAY[{}]", folly::join(", ", formatted));
+    }
+    default:
+      VELOX_UNSUPPORTED(
+          "Unsupported Variant kind in WITH clause: {}",
+          TypeKindName::toName(value.kind()));
+  }
+}
+
+SqlStatementPtr parseShowCreateTable(
+    const ShowCreateTable& showCreateTable,
+    const std::string& defaultConnectorId,
+    const std::string& defaultSchema) {
+  using facebook::velox::toPrestoTypeSql;
+
+  const auto table =
+      findTable(*showCreateTable.name(), defaultConnectorId, defaultSchema);
+  const auto& schema = table->type();
+  const auto& options = table->options();
+
+  const auto [connectorId, schemaTableName] = toConnectorTable(
+      *showCreateTable.name(), defaultConnectorId, defaultSchema);
+
+  std::stringstream ddl;
+  ddl << "CREATE TABLE " << connectorId << "."
+      << fmt::format("{}", schemaTableName) << " (\n";
+
+  // Column definitions.
+  for (auto i = 0; i < schema->size(); ++i) {
+    if (i > 0) {
+      ddl << ",\n";
+    }
+    ddl << "   " << schema->nameOf(i) << " "
+        << toPrestoTypeSql(schema->childAt(i));
+  }
+  ddl << "\n)";
+
+  // WITH clause from table options.
+  if (!options.empty()) {
+    ddl << "\nWITH (\n";
+    bool first = true;
+    for (const auto& [key, value] : options) {
+      if (!first) {
+        ddl << ",\n";
+      }
+      ddl << "   " << key << " = " << variantToSql(value);
+      first = false;
+    }
+    ddl << "\n)";
+  }
+
+  return std::make_shared<SelectStatement>(
+      lp::PlanBuilder()
+          .values(ROW({"Create Table"}, VARCHAR()), {Variant::row({ddl.str()})})
+          .build());
+}
+
 SqlStatementPtr parseShowStats(
     const ShowStats& showStats,
     const std::string& defaultConnectorId,
@@ -1689,6 +1773,11 @@ SqlStatementPtr doPlan(
 
   if (query->is(NodeType::kShowCatalogs)) {
     return parseShowCatalogs(*query->as<ShowCatalogs>(), defaultConnectorId);
+  }
+
+  if (query->is(NodeType::kShowCreate)) {
+    return parseShowCreateTable(
+        *query->as<ShowCreateTable>(), defaultConnectorId, defaultSchema);
   }
 
   if (query->is(NodeType::kShowColumns)) {

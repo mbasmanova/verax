@@ -72,6 +72,15 @@ class SqlQueryRunnerTest : public ::testing::Test, public test::VectorTestBase {
     return runner_->run(sql, {});
   }
 
+  RowVectorPtr fetchSingleRow(std::string_view sql) {
+    auto result = run(sql);
+    VELOX_CHECK(
+        !result.message.has_value(), "Query failed: {}", *result.message);
+    VELOX_CHECK_EQ(1, result.results.size());
+    VELOX_CHECK_EQ(1, result.results[0]->size());
+    return result.results[0];
+  }
+
   void assertSchemas(const std::vector<std::string>& expected) {
     auto result = run("SHOW SCHEMAS");
     ASSERT_FALSE(result.message.has_value());
@@ -88,12 +97,9 @@ class SqlQueryRunnerTest : public ::testing::Test, public test::VectorTestBase {
 };
 
 TEST_F(SqlQueryRunnerTest, runSingleStatement) {
-  auto result = run("SELECT 1");
-
-  ASSERT_FALSE(result.message.has_value());
-  ASSERT_EQ(1, result.results.size());
   test::assertEqualVectors(
-      result.results[0], makeRowVector({makeFlatVector<int32_t>({1})}));
+      fetchSingleRow("SELECT 1"),
+      makeRowVector({makeFlatVector<int32_t>({1})}));
 }
 
 TEST_F(SqlQueryRunnerTest, runRejectsMultipleStatements) {
@@ -369,15 +375,10 @@ TEST_F(SqlQueryRunnerTest, createTableInNonExistentSchema) {
 // expected result without relying on an exact match.
 TEST_F(SqlQueryRunnerTest, currentTimestamp) {
   auto before = getCurrentTimeMs();
-  auto result = run("SELECT current_timestamp");
+  auto row = fetchSingleRow("SELECT current_timestamp");
   auto after = getCurrentTimeMs();
 
-  ASSERT_FALSE(result.message.has_value());
-  ASSERT_EQ(1, result.results.size());
-  ASSERT_EQ(1, result.results[0]->size());
-
-  auto packed =
-      result.results[0]->childAt(0)->as<SimpleVector<int64_t>>()->valueAt(0);
+  auto packed = row->childAt(0)->as<SimpleVector<int64_t>>()->valueAt(0);
   auto millis = unpackMillisUtc(packed);
 
   EXPECT_GE(millis, before);
@@ -398,6 +399,43 @@ TEST_F(SqlQueryRunnerTest, showSchemasWithLike) {
       result.results[0],
       makeRowVector(
           {"Schema"}, {makeFlatVector<std::string>({kDefaultSchema, "dev"})}));
+}
+
+TEST_F(SqlQueryRunnerTest, showCreateTable) {
+  {
+    run("CREATE TABLE t1 (id INTEGER, name VARCHAR)");
+    auto row = fetchSingleRow("SHOW CREATE TABLE t1");
+    auto ddl = row->childAt(0)->variantAt(0).value<std::string>();
+    EXPECT_EQ(
+        ddl,
+        "CREATE TABLE test.\"default\".\"t1\" (\n"
+        "   id INTEGER,\n"
+        "   name VARCHAR\n"
+        ")");
+  }
+
+  {
+    // Hidden columns are not part of the schema and should not appear
+    // in the DDL. The output should be equivalent to the original
+    // CREATE TABLE statement.
+    run("CREATE TABLE t2 (a INTEGER, b VARCHAR) "
+        "WITH (hidden = ARRAY['h1', 'h2'])");
+    auto row = fetchSingleRow("SHOW CREATE TABLE t2");
+    auto ddl = row->childAt(0)->variantAt(0).value<std::string>();
+    EXPECT_EQ(
+        ddl,
+        "CREATE TABLE test.\"default\".\"t2\" (\n"
+        "   a INTEGER,\n"
+        "   b VARCHAR\n"
+        ")\n"
+        "WITH (\n"
+        "   hidden = ARRAY['h1', 'h2']\n"
+        ")");
+  }
+
+  // Non-existent table.
+  VELOX_ASSERT_USER_THROW(
+      run("SHOW CREATE TABLE no_such_table"), "Table not found");
 }
 
 } // namespace

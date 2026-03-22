@@ -649,6 +649,10 @@ class Table : public std::enable_shared_from_this<Table> {
   /// Returns an estimate of the number of rows in 'this'.
   virtual uint64_t numRows() const = 0;
 
+  /// Returns the table properties specified at creation time (e.g. format,
+  /// partitioned_by, bucket_count). Connectors must store all properties
+  /// passed to createTable so they can be retrieved here. Values are Variant
+  /// scalars (VARCHAR, BIGINT) or arrays of VARCHAR.
   virtual const folly::F14FastMap<std::string, velox::Variant>& options()
       const {
     return options_;

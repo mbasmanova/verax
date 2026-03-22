@@ -851,6 +851,23 @@ class ShowSchemas : public Statement {
   std::optional<std::string> escape_;
 };
 
+/// Represents SHOW CREATE TABLE <table>. Returns the CREATE TABLE DDL
+/// statement as a single-row, single-column result.
+class ShowCreateTable : public Statement {
+ public:
+  ShowCreateTable(NodeLocation location, std::shared_ptr<QualifiedName> name)
+      : Statement(NodeType::kShowCreate, location), name_(std::move(name)) {}
+
+  const std::shared_ptr<QualifiedName>& name() const {
+    return name_;
+  }
+
+  void accept(AstVisitor* visitor) override;
+
+ private:
+  std::shared_ptr<QualifiedName> name_;
+};
+
 class ShowColumns : public Statement {
  public:
   explicit ShowColumns(

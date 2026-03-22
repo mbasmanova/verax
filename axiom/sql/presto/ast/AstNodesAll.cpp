@@ -779,6 +779,10 @@ void ShowSchemas::accept(AstVisitor* visitor) {
   visitor->visitShowSchemas(this);
 }
 
+void ShowCreateTable::accept(AstVisitor* visitor) {
+  visitor->visitShowCreateTable(this);
+}
+
 void ShowColumns::accept(AstVisitor* visitor) {
   visitor->visitShowColumns(this);
 }
