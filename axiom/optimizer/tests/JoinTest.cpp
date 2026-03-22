@@ -805,6 +805,31 @@ TEST_F(JoinTest, leftThenFilter) {
     auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
+
+  // cardinality(coalesce(...)) wrapping a column from the optional side.
+  // cardinality is translated as a subfield access. The subfield getter must
+  // propagate non-default null behavior from coalesce so that the LEFT join
+  // is not incorrectly converted to INNER.
+  {
+    testConnector_->addTable(
+        "card_t", ROW({"a", "b"}, {BIGINT(), ARRAY(BIGINT())}));
+    testConnector_->addTable(
+        "card_u", ROW({"x", "y"}, {BIGINT(), ARRAY(BIGINT())}));
+
+    auto query =
+        "SELECT * FROM card_t LEFT JOIN card_u ON a = x "
+        "WHERE cardinality(coalesce(y, b)) > 0";
+    SCOPED_TRACE(query);
+
+    auto matcher =
+        matchScan("card_u")
+            .hashJoin(matchScan("card_t").build(), core::JoinType::kRight)
+            .filter("cardinality(coalesce(y, b)) > 0")
+            .build();
+
+    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    AXIOM_ASSERT_PLAN(plan, matcher);
+  }
 }
 
 TEST_F(JoinTest, fullThenFilter) {
