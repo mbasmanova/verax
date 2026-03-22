@@ -733,6 +733,15 @@ ExprCP ToGraph::makeGetters(std::span<const Step> steps, ExprCP base) {
 
 ExprCP ToGraph::makeGetter(const Step& step, ExprCP base) {
   const auto& inputType = base->value().type;
+
+  // Propagate function flags from the base expression so that non-default
+  // null behavior (e.g. from COALESCE) is not lost when wrapping with a
+  // getter.
+  auto baseFuncs = [&]() {
+    return base->is(PlanType::kCallExpr) ? base->as<Call>()->functions()
+                                         : FunctionSet();
+  };
+
   switch (step.kind) {
     case StepKind::kField: {
       if (step.field) {
@@ -765,7 +774,7 @@ ExprCP ToGraph::makeGetter(const Step& step, ExprCP base) {
                                             : functionNames_.subscript,
           toConstantValue(valueType),
           std::move(args),
-          FunctionSet());
+          baseFuncs());
     }
 
     case StepKind::kCardinality: {
@@ -773,7 +782,7 @@ ExprCP ToGraph::makeGetter(const Step& step, ExprCP base) {
           functionNames_.cardinality,
           toConstantValue(velox::BIGINT()),
           ExprVector{base},
-          FunctionSet());
+          baseFuncs());
     }
     default:
       VELOX_NYI();
