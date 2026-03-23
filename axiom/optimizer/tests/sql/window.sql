@@ -103,3 +103,6 @@ SELECT a, b, sum(b) OVER (PARTITION BY a) * 2 AS doubled FROM t
 -- Window function mixed with *.
 -- columns
 SELECT *, sum(b) OVER (PARTITION BY a) AS total_b FROM t
+----
+-- Window function with same signature as plain aggregate in GROUP BY.
+SELECT a, sum(a), sum(a) OVER (ORDER BY a) FROM t GROUP BY a
