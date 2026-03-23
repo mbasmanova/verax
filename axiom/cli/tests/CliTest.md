@@ -137,13 +137,16 @@ $ $CLI --query "USE blah.default" 2>&1 | grep Reason
 Reason: Catalog does not exist: blah
 ```
 
-## current_timestamp displays a formatted timestamp with timezone
+## Time and timestamp types display formatted values
 
-Verify that current_timestamp displays the same as CAST to VARCHAR.
+Verify that current_timestamp, localtime, and current_time display the same
+as CAST to VARCHAR.
 
 ```scrut
-$ $CLI --query "SELECT CAST(current_timestamp AS VARCHAR) AS a, current_timestamp AS b" 2>/dev/null | grep -E '^[0-9]' | awk -F ' \\| ' '{print ($1 == $2) ? "match" : "mismatch"}'
-match
+$ for expr in current_timestamp localtime current_time; do $CLI --query "SELECT CAST($expr AS VARCHAR) AS a, $expr AS b" 2>/dev/null | grep -E '^[0-9]' | awk -F ' \\| ' -v e="$expr" '{print e ": " (($1 == $2) ? "match" : "mismatch")}'; done
+current_timestamp: match
+localtime: match
+current_time: match
 ```
 
 ## SET SESSION and SHOW SESSION
