@@ -547,5 +547,22 @@ TEST_F(WindowTest, nonRedundantOrderByMultipleWindowsDifferentOrderBy) {
   AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan, distributedMatcher);
 }
 
+TEST_F(WindowTest, windowOutputAsGroupByKey) {
+  // Window function output used as GROUP BY key in outer query. The window
+  // must be computed before the aggregation.
+  auto plan = toSingleNodePlan(
+      "SELECT n_regionkey, max_key, sum(n_nationkey) "
+      "FROM (SELECT n_regionkey, n_nationkey, max(n_regionkey) OVER (ORDER BY n_nationkey) AS max_key FROM nation) "
+      "GROUP BY 1, 2");
+
+  auto matcher =
+      matchScan("nation")
+          .window({"max(n_regionkey) OVER (ORDER BY n_nationkey) as max_key"})
+          .project()
+          .singleAggregation({"n_regionkey", "max_key"}, {"sum(n_nationkey)"})
+          .build();
+  AXIOM_ASSERT_PLAN(plan, matcher);
+}
+
 } // namespace
 } // namespace facebook::axiom::optimizer
