@@ -3672,7 +3672,8 @@ void ToGraph::makeQueryGraph(
     case lp::NodeKind::kAggregate: {
       const auto& input = *node.onlyInput();
       makeQueryGraph(input, allowedInDt, excludeOuterJoins);
-      if (currentDt_->hasAggregation() || currentDt_->hasLimit()) {
+      if (currentDt_->hasAggregation() || currentDt_->hasLimit() ||
+          currentDt_->windowPlan) {
         finalizeDtWithCorrelatedConjuncts(input);
       } else if (currentDt_->hasOrderBy()) {
         currentDt_->dropOrderBy();
