@@ -1917,11 +1917,14 @@ void ToGraph::translateJoin(
   }
 
   if (leftTables.empty()) {
-    VELOX_CHECK_EQ(
-        2,
-        currentDt_->tables.size(),
-        "The left of a non-inner join is expected to be one table");
-    leftTables.add(currentDt_->tables[0]);
+    for (auto* table : currentDt_->tables) {
+      if (table != rightTable) {
+        leftTables.add(table);
+      }
+    }
+    VELOX_CHECK(
+        !leftTables.empty(),
+        "The left of a non-inner join must have at least one table");
   }
 
   auto* edge = make<JoinEdge>(
