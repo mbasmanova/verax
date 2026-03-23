@@ -671,6 +671,17 @@ TEST_F(AggregationParserTest, groupByWithWindowFunction) {
       parseSql(
           "SELECT b, sum(a), row_number() OVER (ORDER BY sum(a)) FROM t GROUP BY b"),
       "Cannot resolve column: a");
+
+  // Window function call with the same signature as a plain aggregate.
+  testSelect(
+      "SELECT sum(a) OVER (ORDER BY b), sum(a) FROM t GROUP BY a, b",
+      matchScan("t")
+          .aggregate({"a", "b"}, {"sum(a)"})
+          .project({
+              "sum(a) OVER (ORDER BY b)",
+              "sum",
+          })
+          .output());
 }
 
 } // namespace
