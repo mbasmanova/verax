@@ -3564,12 +3564,23 @@ PlanP Optimization::makeUnionPlan(
   std::vector<PlanState> inputStates;
   std::vector<bool> inputNeedsShuffle;
 
+  // For UNION DISTINCT, the deduplication (GROUP BY) requires all the UNION's
+  // output columns. Ensure the needed columns include at least these, even if
+  // the consumer doesn't reference them (e.g., COUNT(*) needs no specific
+  // columns). Without this, pruneOutputColumns can prune children
+  // inconsistently, causing UnionAll::initConstraints to crash.
+  const bool isDistinct = *setDt->setOp == lp::SetOperation::kUnion;
+  PlanObjectSet childColumns{key.columns};
+  if (isDistinct) {
+    childColumns.unionObjects(setDt->columns);
+  }
+
   for (auto* inputDt : setDt->children) {
     // Only include the child DT in the input tables. Extra tables from
     // the parent key (e.g., reducing bushy join tables) reference joins
     // against the UNION ALL DT which don't exist for individual children.
-    auto inputKey = MemoKey::create(
-        inputDt, PlanObjectSet{key.columns}, PlanObjectSet::single(inputDt));
+    auto inputKey =
+        MemoKey::create(inputDt, childColumns, PlanObjectSet::single(inputDt));
 
     PlanP inputPlan;
     bool inputShuffle = false;
@@ -3606,8 +3617,6 @@ PlanP Optimization::makeUnionPlan(
     inputNeedsShuffle.push_back(inputShuffle);
   }
 
-  const bool isDistinct =
-      setDt->setOp.value() == logical_plan::SetOperation::kUnion;
   if (isSingleWorker_) {
     RelationOpPtr result = make<UnionAll>(inputs);
     Aggregation* distinct = nullptr;
