@@ -551,6 +551,13 @@ TEST_F(ExpressionParserTest, switch) {
       parseExpr("case when 1 > 2 then 100 when 3 > 4 then 200 else 300 end")
           ->toString());
 
+  // NULL condition can never be true. Drop the clause.
+  EXPECT_EQ("null", parseExpr("case when null then 1 end")->toString());
+  EXPECT_EQ("2", parseExpr("case when null then 1 else 2 end")->toString());
+  EXPECT_EQ(
+      "SWITCH(gt(1, 2), 100)",
+      parseExpr("case when null then 0 when 1 > 2 then 100 end")->toString());
+
   // Simple CASE (CASE x WHEN v THEN result) desugars to SWITCH(eq(x, v), ...).
   EXPECT_EQ(
       "SWITCH(eq(1, 1), 100, eq(1, 2), 200)",

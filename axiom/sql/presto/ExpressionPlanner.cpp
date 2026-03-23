@@ -467,6 +467,10 @@ lp::ExprApi ExpressionPlanner::toExpr(
       inputs.reserve(1 + searchedCase->whenClauses().size());
 
       for (const auto& clause : searchedCase->whenClauses()) {
+        // A NULL condition can never be true. Drop the clause.
+        if (clause->operand()->is(NodeType::kNullLiteral)) {
+          continue;
+        }
         inputs.emplace_back(
             toExpr(clause->operand(), aggregateOptions, windowOptions));
         inputs.emplace_back(
@@ -476,6 +480,16 @@ lp::ExprApi ExpressionPlanner::toExpr(
       if (searchedCase->defaultValue()) {
         inputs.emplace_back(toExpr(
             searchedCase->defaultValue(), aggregateOptions, windowOptions));
+      }
+
+      // All WHEN clauses were dropped (all had NULL conditions).
+      if (inputs.empty()) {
+        return lp::Lit(Variant::null(TypeKind::UNKNOWN));
+      }
+
+      // Only the ELSE value remains.
+      if (inputs.size() == 1) {
+        return inputs[0];
       }
 
       return lp::Call("switch", inputs);
