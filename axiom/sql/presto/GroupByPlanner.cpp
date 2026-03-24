@@ -597,6 +597,31 @@ void GroupByPlanner::rewritePostAggregateExprs() {
         });
   }
 
+  // Rewrites an ExprApi to reference post-aggregate columns. For window
+  // functions, replaces only the arguments of the call (not the call itself),
+  // since a window function like sum(x) OVER (...) may have the same signature
+  // as a plain aggregate sum(x) but is a different operation.
+  auto rewriteExpr = [&](lp::ExprApi& item) {
+    const auto windowSpec = item.windowSpec();
+    if (windowSpec) {
+      std::vector<core::ExprPtr> newInputs;
+      bool changed = false;
+      for (const auto& input : item.expr()->inputs()) {
+        auto newInput = replaceInputs(
+            input, keyInputs, aggregateInputs, aggregateOptionsMap_);
+        changed |= (newInput.get() != input.get());
+        newInputs.push_back(std::move(newInput));
+      }
+      auto newExpr = changed ? item.expr()->replaceInputs(std::move(newInputs))
+                             : item.expr();
+      item = lp::ExprApi(std::move(newExpr), item.name()).over(*windowSpec);
+    } else {
+      auto newExpr = replaceInputs(
+          item.expr(), keyInputs, aggregateInputs, aggregateOptionsMap_);
+      item = lp::ExprApi(std::move(newExpr), item.name());
+    }
+  };
+
   // Replace sub-expressions in SELECT projections with column references to
   // the aggregate output.
 
@@ -604,24 +629,12 @@ void GroupByPlanner::rewritePostAggregateExprs() {
   // than grouping keys and aggregates.
 
   for (auto& item : projections_) {
-    auto newExpr = replaceInputs(
-        item.expr(), keyInputs, aggregateInputs, aggregateOptionsMap_);
-    const auto windowSpec = item.windowSpec();
-    item = lp::ExprApi(std::move(newExpr), item.name());
-    if (windowSpec) {
-      item = item.over(*windowSpec);
-    }
+    rewriteExpr(item);
   }
 
   // Replace sorting key expressions too.
   for (auto& expr : sortingKeyExprs_) {
-    auto newExpr = replaceInputs(
-        expr.expr(), keyInputs, aggregateInputs, aggregateOptionsMap_);
-    const auto windowSpec = expr.windowSpec();
-    expr = lp::ExprApi(newExpr, expr.name());
-    if (windowSpec) {
-      expr = expr.over(*windowSpec);
-    }
+    rewriteExpr(expr);
   }
 }
 
