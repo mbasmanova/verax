@@ -34,7 +34,7 @@
 #include "velox/exec/Aggregate.h"
 #include "velox/exec/WindowFunction.h"
 #include "velox/functions/FunctionRegistry.h"
-#include "velox/functions/prestosql/types/PrestoTypeSql.h"
+#include "velox/functions/prestosql/types/PrestoTypes.h"
 
 namespace axiom::sql::presto {
 namespace {
@@ -1246,7 +1246,7 @@ SqlStatementPtr parseShowCreateTable(
     const ShowCreateTable& showCreateTable,
     const std::string& defaultConnectorId,
     const std::string& defaultSchema) {
-  using facebook::velox::toPrestoTypeSql;
+  using facebook::velox::PrestoTypes;
 
   const auto table =
       findTable(*showCreateTable.name(), defaultConnectorId, defaultSchema);
@@ -1266,7 +1266,7 @@ SqlStatementPtr parseShowCreateTable(
       ddl << ",\n";
     }
     ddl << "   " << schema->nameOf(i) << " "
-        << toPrestoTypeSql(schema->childAt(i));
+        << PrestoTypes::toSql(schema->childAt(i));
   }
   ddl << "\n)";
 
