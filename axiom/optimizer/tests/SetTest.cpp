@@ -922,5 +922,37 @@ TEST_F(SetTest, exceptUnionAll) {
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
+TEST_F(SetTest, unionDistinctWithUnnestMultipleReferences) {
+  testConnector_->addTable("t", ROW({"a", "b"}, {BIGINT(), ARRAY(BIGINT())}));
+
+  auto query =
+      "WITH u AS ("
+      "  SELECT CAST(r AS BIGINT) AS id"
+      "  FROM t CROSS JOIN UNNEST(b) AS u(r)"
+      "  UNION"
+      "  SELECT a FROM t"
+      ")"
+      "SELECT (SELECT COUNT(*) FROM u), (SELECT COUNT(*) FROM u)";
+
+  auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+
+  auto matchUnion = [&] {
+    return matchScan("t")
+        .unnest()
+        .project()
+        .localPartition(matchScan("t").project().build())
+        .distinct()
+        .singleAggregation({}, {"count(*)"});
+  };
+
+  // TODO: Deduplicate identical scalar subqueries.
+  auto matcher = core::PlanMatcherBuilder()
+                     .values()
+                     .nestedLoopJoin(matchUnion().build())
+                     .nestedLoopJoin(matchUnion().build())
+                     .build();
+  AXIOM_ASSERT_PLAN(plan, matcher);
+}
+
 } // namespace
 } // namespace facebook::axiom::optimizer
