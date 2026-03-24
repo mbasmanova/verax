@@ -17,8 +17,7 @@
 #include "axiom/cli/ResultPrinter.h"
 #include <iomanip>
 #include <iostream>
-#include "velox/functions/prestosql/types/TimeWithTimezoneType.h"
-#include "velox/functions/prestosql/types/TimestampWithTimeZoneType.h"
+#include "velox/functions/prestosql/types/PrestoTypes.h"
 #include "velox/vector/DecodedVector.h"
 
 using namespace facebook::velox;
@@ -129,25 +128,8 @@ int32_t printResults(
       auto& rowData = data.back();
       rowData.resize(numColumns);
       for (auto column = 0; column < numColumns; ++column) {
-        if (decodedColumns[column].isNullAt(row)) {
-          rowData[column] = decodedColumns[column].toString(row);
-        } else {
-          const auto& columnType = type->childAt(column);
-          if (isTimestampWithTimeZoneType(columnType)) {
-            rowData[column] = TIMESTAMP_WITH_TIME_ZONE()->valueToString(
-                decodedColumns[column].valueAt<int64_t>(row));
-          } else if (columnType->isTime()) {
-            char buf[16];
-            rowData[column] = TIME()->valueToString(
-                decodedColumns[column].valueAt<int64_t>(row), buf);
-          } else if (isTimeWithTimeZone(columnType)) {
-            char buf[32];
-            rowData[column] = TIME_WITH_TIME_ZONE()->valueToString(
-                decodedColumns[column].valueAt<int64_t>(row), buf);
-          } else {
-            rowData[column] = decodedColumns[column].toString(row);
-          }
-        }
+        rowData[column] = PrestoTypes::valueToString(
+            decodedColumns[column], row, type->childAt(column));
         widths[column] = std::max(widths[column], rowData[column].size());
       }
 
