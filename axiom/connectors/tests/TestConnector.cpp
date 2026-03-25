@@ -15,6 +15,9 @@
  */
 
 #include "axiom/connectors/tests/TestConnector.h"
+
+#include <algorithm>
+
 #include "velox/exec/TableWriter.h"
 #include "velox/tpch/gen/TpchGen.h"
 #include "velox/vector/ComplexVector.h"
@@ -22,6 +25,37 @@
 namespace facebook::axiom::connector {
 
 namespace {
+
+// Extracts column names to include in EXPLAIN IO output from the options map.
+folly::F14FastSet<std::string> extractExplainIoColumns(
+    const folly::F14FastMap<std::string, velox::Variant>& options) {
+  auto it = options.find(std::string{TestConnectorMetadata::kExplainIo});
+  if (it == options.end()) {
+    return {};
+  }
+  auto names = it->second.array<std::string>();
+  return {names.begin(), names.end()};
+}
+
+// Creates Column objects for a schema, marking specified columns with
+// includeInExplainIo.
+std::vector<std::unique_ptr<const Column>> makeColumnsWithExplainIo(
+    const velox::RowTypePtr& schema,
+    const folly::F14FastSet<std::string>& explainIoColumns) {
+  std::vector<std::unique_ptr<const Column>> columns;
+  columns.reserve(schema->size());
+  for (auto i = 0; i < schema->size(); ++i) {
+    columns.push_back(
+        std::make_unique<const Column>(
+            schema->nameOf(i),
+            schema->childAt(i),
+            /*hidden=*/false,
+            /*includeInExplainIo=*/
+            explainIoColumns.contains(schema->nameOf(i))));
+  }
+  return columns;
+}
+
 std::vector<std::unique_ptr<const Column>> appendHiddenColumns(
     std::vector<std::unique_ptr<const Column>> columns,
     const velox::RowTypePtr& hiddenColumns) {
@@ -34,6 +68,18 @@ std::vector<std::unique_ptr<const Column>> appendHiddenColumns(
   }
   return columns;
 }
+
+} // namespace
+
+namespace {
+std::vector<std::unique_ptr<const Column>> makeTestTableColumns(
+    const velox::RowTypePtr& schema,
+    const velox::RowTypePtr& hiddenColumns,
+    const folly::F14FastMap<std::string, velox::Variant>& options) {
+  return appendHiddenColumns(
+      makeColumnsWithExplainIo(schema, extractExplainIoColumns(options)),
+      hiddenColumns);
+}
 } // namespace
 
 TestTable::TestTable(
@@ -44,8 +90,8 @@ TestTable::TestTable(
     folly::F14FastMap<std::string, velox::Variant> options)
     : Table(
           std::move(name),
-          appendHiddenColumns(makeColumns(schema), hiddenColumns),
-          std::move(options)),
+          makeTestTableColumns(schema, hiddenColumns, options),
+          options),
       connector_(connector) {
   const auto& label = this->name().table;
   exportedLayout_ =
@@ -404,10 +450,10 @@ TablePtr TestConnectorMetadata::createTable(
     const folly::F14FastMap<std::string, velox::Variant>& options,
     bool explain) {
   for (const auto& [key, value] : options) {
-    VELOX_USER_CHECK_EQ(
-        key,
-        std::string{kHidden},
-        "TestConnector does not support CREATE TABLE property");
+    VELOX_USER_CHECK(
+        key == kHidden || key == kExplainIo,
+        "TestConnector does not support CREATE TABLE property: {}",
+        key);
   }
   VELOX_USER_CHECK(
       schemas_.contains(tableName.schema),

@@ -21,6 +21,7 @@
 #include <folly/dynamic.h>
 #include <folly/json.h>
 
+#include "axiom/optimizer/Domain.h"
 #include "axiom/optimizer/QueryGraph.h"
 
 namespace facebook::axiom::optimizer {
@@ -35,6 +36,67 @@ folly::dynamic tableToJson(
       "schemaTable",
       folly::dynamic::object("schema", tableName.schema)(
           "table", tableName.table));
+}
+
+// Serializes a Range to JSON.
+folly::dynamic rangeToJson(const Range& range) {
+  folly::dynamic result = folly::dynamic::object;
+  if (range.isSingleValue()) {
+    folly::dynamic bound = folly::dynamic::object(
+        "value", range.low()->value.serialize()["value"])("bound", "EXACTLY");
+    result["low"] = bound;
+    result["high"] = bound;
+  } else {
+    if (range.low()) {
+      result["low"] = folly::dynamic::object(
+          "value", range.low()->value.serialize()["value"])(
+          "bound", range.low()->inclusive ? "EXACTLY" : "ABOVE");
+    }
+    if (range.high()) {
+      result["high"] = folly::dynamic::object(
+          "value", range.high()->value.serialize()["value"])(
+          "bound", range.high()->inclusive ? "EXACTLY" : "BELOW");
+    }
+  }
+  return result;
+}
+
+// Serializes a Domain to JSON.
+folly::dynamic domainToJson(const Domain& domain) {
+  folly::dynamic result = folly::dynamic::object;
+  result["nullsAllowed"] = domain.nullsAllowed();
+  folly::dynamic ranges = folly::dynamic::array;
+  for (const auto& range : domain.ranges()) {
+    ranges.push_back(rangeToJson(range));
+  }
+  result["ranges"] = std::move(ranges);
+  return result;
+}
+
+// Computes the combined Domain for a column from the table's columnFilters.
+// columnFilters are conjuncts (ANDed), so unconvertible filters are skipped
+// (making the result broader, which is safe).
+Domain columnDomain(ColumnCP column, const ExprVector& columnFilters) {
+  Domain domain = Domain::all();
+  for (auto* filterExpr : columnFilters) {
+    if (!filterExpr->is(PlanType::kCallExpr)) {
+      continue;
+    }
+
+    // columnFilters are single-column predicates. Check if this filter
+    // references the target column.
+    if (!filterExpr->columns().contains(column)) {
+      continue;
+    }
+
+    auto filterDomain = exprToDomain(filterExpr);
+    if (!filterDomain) {
+      // Cannot convert; skip this conjunct (broader is safe).
+      continue;
+    }
+    domain = domain.intersect(*filterDomain);
+  }
+  return domain;
 }
 
 // Recursively collects all BaseTables from a DerivedTable tree.
@@ -53,6 +115,90 @@ void collectBaseTables(
   }
 }
 
+// Per-column domains for a single table. Maps connector column name to Domain.
+using ColumnDomainMap = folly::F14FastMap<std::string, Domain>;
+
+// Computes column domains for a single BaseTable. Returns nullopt if any
+// explain_io column has an empty domain (table should be excluded).
+std::optional<ColumnDomainMap> computeColumnDomains(BaseTableCP baseTable) {
+  const auto* connectorTable = baseTable->schemaTable->connectorTable;
+  ColumnDomainMap domains;
+
+  for (auto* column : baseTable->columns) {
+    auto* schemaColumn = column->schemaColumn();
+    if (!schemaColumn) {
+      continue;
+    }
+
+    auto* connectorColumn = connectorTable->findColumn(schemaColumn->name());
+    VELOX_CHECK_NOT_NULL(connectorColumn);
+    if (!connectorColumn->includeInExplainIo()) {
+      continue;
+    }
+
+    const auto typeKind = connectorColumn->type()->kind();
+    VELOX_USER_CHECK(
+        typeKind == velox::TypeKind::VARCHAR ||
+            typeKind == velox::TypeKind::TINYINT ||
+            typeKind == velox::TypeKind::SMALLINT ||
+            typeKind == velox::TypeKind::INTEGER ||
+            typeKind == velox::TypeKind::BIGINT,
+        "Unsupported type for EXPLAIN IO column. "
+        "Only VARCHAR and integer types are supported: {}.{} {}",
+        baseTable->schemaTable->name(),
+        connectorColumn->name(),
+        connectorColumn->type()->toString());
+
+    auto domain = columnDomain(column, baseTable->columnFilters);
+    if (domain.isNone()) {
+      return std::nullopt;
+    }
+
+    domains.emplace(connectorColumn->name(), std::move(domain));
+  }
+
+  return domains;
+}
+
+// Merges column domains from two scans of the same table by uniting domains
+// for each column.
+void mergeColumnDomains(ColumnDomainMap& target, const ColumnDomainMap& other) {
+  for (const auto& [columnName, domain] : other) {
+    auto it = target.find(columnName);
+    if (it == target.end()) {
+      target.emplace(columnName, domain);
+    } else {
+      it->second = it->second.unite(domain);
+    }
+  }
+}
+
+// Serializes column domains to JSON, omitting unconstrained columns.
+// Sorts by column name for deterministic output.
+folly::dynamic columnDomainsToJson(
+    const ColumnDomainMap& domains,
+    const connector::Table& connectorTable) {
+  std::vector<std::string> columnNames;
+  for (const auto& [columnName, domain] : domains) {
+    if (!domain.isAll()) {
+      columnNames.push_back(columnName);
+    }
+  }
+  std::sort(columnNames.begin(), columnNames.end());
+
+  folly::dynamic constraints = folly::dynamic::array;
+  for (const auto& columnName : columnNames) {
+    auto* connectorColumn = connectorTable.findColumn(columnName);
+    const auto& domain = domains.at(columnName);
+    folly::dynamic constraint = folly::dynamic::object;
+    constraint["columnName"] = columnName;
+    constraint["typeSignature"] = connectorColumn->type()->name();
+    constraint["domain"] = domainToJson(domain);
+    constraints.push_back(std::move(constraint));
+  }
+  return constraints;
+}
+
 } // namespace
 
 std::string explainIo(
@@ -61,26 +207,57 @@ std::string explainIo(
   std::vector<BaseTableCP> baseTables;
   collectBaseTables(rootDt, baseTables);
 
+  // Group BaseTables by connector table and merge column domains. Multiple
+  // scans of the same table (e.g., UNION ALL branches) are combined by
+  // uniting their per-column domains.
+  folly::F14FastMap<const connector::Table*, ColumnDomainMap> mergedDomains;
+  std::vector<const connector::Table*> tableOrder;
+
+  for (auto* baseTable : baseTables) {
+    auto domains = computeColumnDomains(baseTable);
+    if (!domains) {
+      continue;
+    }
+
+    auto* connectorTable = baseTable->schemaTable->connectorTable;
+    auto it = mergedDomains.find(connectorTable);
+    if (it == mergedDomains.end()) {
+      tableOrder.push_back(connectorTable);
+      mergedDomains.emplace(connectorTable, std::move(*domains));
+    } else {
+      mergeColumnDomains(it->second, *domains);
+    }
+  }
+
   // Sort by connector ID, schema, table for deterministic output.
-  std::sort(baseTables.begin(), baseTables.end(), [](auto* lhs, auto* rhs) {
-    auto leftTable = lhs->schemaTable;
-    auto rightTable = rhs->schemaTable;
-    if (leftTable->connectorId() != rightTable->connectorId()) {
-      return leftTable->connectorId() < rightTable->connectorId();
-    }
-    if (leftTable->name().schema != rightTable->name().schema) {
-      return leftTable->name().schema < rightTable->name().schema;
-    }
-    return leftTable->name().table < rightTable->name().table;
-  });
+  std::sort(
+      tableOrder.begin(),
+      tableOrder.end(),
+      [](const auto* lhs, const auto* rhs) {
+        // Use pointer identity for same-table dedup, but sort by name.
+        if (lhs == rhs) {
+          return false;
+        }
+        // Connector ID comes from the table's layouts.
+        const auto& lhsId = lhs->layouts()[0]->connectorId();
+        const auto& rhsId = rhs->layouts()[0]->connectorId();
+        if (lhsId != rhsId) {
+          return lhsId < rhsId;
+        }
+        if (lhs->name().schema != rhs->name().schema) {
+          return lhs->name().schema < rhs->name().schema;
+        }
+        return lhs->name().table < rhs->name().table;
+      });
 
   folly::dynamic tableInfos = folly::dynamic::array;
 
-  for (auto* baseTable : baseTables) {
+  for (auto* connectorTable : tableOrder) {
     folly::dynamic tableInfo = folly::dynamic::object;
     tableInfo["table"] = tableToJson(
-        baseTable->schemaTable->connectorId(), baseTable->schemaTable->name());
-    tableInfo["columnConstraints"] = folly::dynamic::array;
+        connectorTable->layouts()[0]->connectorId(), connectorTable->name());
+    tableInfo["columnConstraints"] =
+        columnDomainsToJson(mergedDomains[connectorTable], *connectorTable);
     tableInfos.push_back(std::move(tableInfo));
   }
 
