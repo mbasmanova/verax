@@ -1000,7 +1000,8 @@ std::shared_ptr<LocalTable> createLocalTable(
           std::string{name}},
       schema,
       numBuckets.has_value(),
-      std::move(options));
+      std::move(options),
+      createTableOptions.partitionedByColumns);
 
   std::vector<const Column*> partitionedBy;
   for (const auto& columnName : createTableOptions.partitionedByColumns) {
@@ -1174,13 +1175,15 @@ LocalTable::LocalTable(
     SchemaTableName name,
     velox::RowTypePtr type,
     bool bucketed,
-    folly::F14FastMap<std::string, velox::Variant> options)
+    folly::F14FastMap<std::string, velox::Variant> options,
+    std::vector<std::string> partitionColumnNames)
     : HiveTable(
           std::move(name),
           std::move(type),
           bucketed,
           /*includeHiddenColumns=*/true,
-          std::move(options)) {}
+          std::move(options),
+          std::move(partitionColumnNames)) {}
 
 TablePtr LocalHiveConnectorMetadata::findTable(
     const SchemaTableName& tableName) {

@@ -183,7 +183,8 @@ class LocalTable : public HiveTable {
       SchemaTableName name,
       velox::RowTypePtr type,
       bool bucketed,
-      folly::F14FastMap<std::string, velox::Variant> options);
+      folly::F14FastMap<std::string, velox::Variant> options,
+      std::vector<std::string> partitionColumnNames = {});
 
   const std::vector<const TableLayout*>& layouts() const override {
     return exportedLayouts_;

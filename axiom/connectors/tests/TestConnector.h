@@ -294,6 +294,10 @@ class TestConnectorMetadata : public ConnectorMetadata {
   /// Example: WITH (hidden = ARRAY['col1', 'col2']).
   static constexpr std::string_view kHidden = "hidden";
 
+  /// CREATE TABLE property to mark columns for EXPLAIN IO output.
+  /// Example: WITH (explain_io = ARRAY['ds']).
+  static constexpr std::string_view kExplainIo = "explain_io";
+
   explicit TestConnectorMetadata(TestConnector* connector)
       : connector_(connector),
         splitManager_(std::make_unique<TestSplitManager>()) {}

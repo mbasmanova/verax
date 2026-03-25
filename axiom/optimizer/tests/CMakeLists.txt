@@ -98,6 +98,7 @@ add_executable(
   CardinalityEstimationTest.cpp
   CsvReadWriteTest.cpp
   DerivedTablePrinterTest.cpp
+  DomainTest.cpp
   ExistencePushdownTest.cpp
   FilterPushdownTest.cpp
   FiltersTest.cpp
