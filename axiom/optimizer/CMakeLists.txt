@@ -28,6 +28,7 @@ add_library(
   DerivedTable.cpp
   DerivedTableDotPrinter.cpp
   DerivedTablePrinter.cpp
+  ExplainIo.cpp
   Filters.cpp
   FunctionRegistry.cpp
   JoinSample.cpp

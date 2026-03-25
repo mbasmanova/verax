@@ -375,6 +375,11 @@ struct SchemaTable {
     return connectorTable->name();
   }
 
+  /// Returns the connector ID (catalog name) for this table.
+  const std::string& connectorId() const {
+    return columnGroups[0]->layout->connectorId();
+  }
+
   /// Table description from external schema.
   /// This is the source-dependent representation from which 'this' was created.
   const connector::Table* const connectorTable;

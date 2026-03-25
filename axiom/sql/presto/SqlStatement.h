@@ -388,6 +388,9 @@ class ExplainStatement : public SqlStatement {
 
     /// Executable Velox plan.
     kExecutable,
+
+    /// IO plan: input/output tables and partition column constraints.
+    kIo,
   };
 
   enum class Format {
