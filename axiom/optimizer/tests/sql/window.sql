@@ -107,5 +107,30 @@ SELECT *, sum(b) OVER (PARTITION BY a) AS total_b FROM t
 -- Window function with same signature as plain aggregate in GROUP BY.
 SELECT a, sum(a), sum(a) OVER (ORDER BY a) FROM t GROUP BY a
 ----
+-- first_value with constant argument.
+SELECT a, b, first_value(42) OVER (PARTITION BY a ORDER BY b) AS fv FROM t
+----
+-- last_value with constant argument.
+SELECT a, b, last_value(42) OVER (PARTITION BY a ORDER BY b ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS lv FROM t
+----
+-- nth_value with constant argument.
+SELECT a, b, nth_value(42, 2) OVER (PARTITION BY a ORDER BY b) AS nv FROM t
+----
+-- nth_value with constant argument and out-of-range offset.
+SELECT a, b, nth_value(42, 100) OVER (PARTITION BY a ORDER BY b) AS nv FROM t
+----
+-- lag with constant argument.
+SELECT a, b, lag(42, 1) OVER (PARTITION BY a ORDER BY b) AS lg FROM t
+----
+-- lead with constant argument.
+SELECT a, b, lead(42, 1) OVER (PARTITION BY a ORDER BY b) AS ld FROM t
+----
+-- first_value with constant argument and empty frames.
+SELECT a, b, first_value(42) OVER (PARTITION BY a ORDER BY b ROWS BETWEEN 2 PRECEDING AND 1 PRECEDING) AS fv FROM t
+----
+-- lead with constant null argument.
+-- duckdb: SELECT a, b, lead(CAST(NULL AS BIGINT), 1) OVER (PARTITION BY a ORDER BY b) AS ld FROM t
+SELECT a, b, lead(null, 1) OVER (PARTITION BY a ORDER BY b) AS ld FROM t
+----
 -- Window function output used as GROUP BY key in outer query.
 SELECT a, max_a, sum(b) FROM (SELECT a, b, max(a) OVER (ORDER BY b) AS max_a FROM t) GROUP BY 1, 2
