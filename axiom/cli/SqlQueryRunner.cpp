@@ -26,6 +26,7 @@
 #include "axiom/optimizer/ConstantExprEvaluator.h"
 #include "axiom/optimizer/DerivedTableDotPrinter.h"
 #include "axiom/optimizer/DerivedTablePrinter.h"
+#include "axiom/optimizer/ExplainIo.h"
 #include "axiom/optimizer/Optimization.h"
 #include "axiom/optimizer/Plan.h"
 #include "axiom/optimizer/RelationOpPrinter.h"
@@ -360,6 +361,34 @@ SqlQueryRunner::SqlResult SqlQueryRunner::run(
       VELOX_NYI("Unsupported EXPLAIN query: {}", statement->kindName());
     }
 
+    if (explain->type() == presto::ExplainStatement::Type::kIo) {
+      std::optional<CatalogSchemaTableName> outputTable;
+      if (statement->isCreateTableAsSelect()) {
+        const auto* ctas =
+            statement->as<presto::CreateTableAsSelectStatement>();
+        outputTable =
+            CatalogSchemaTableName{ctas->connectorId(), ctas->tableName()};
+      } else if (statement->isInsert()) {
+        const auto* writeNode = logicalPlan->as<logical_plan::TableWriteNode>();
+        outputTable = CatalogSchemaTableName{
+            writeNode->connectorId(), writeNode->tableName()};
+      }
+
+      std::string text;
+      optimize(
+          logicalPlan,
+          newQuery(options),
+          options,
+          [&](const auto& dt) {
+            text = optimizer::explainIo(&dt, outputTable);
+            return false; // Stop optimization.
+          },
+          nullptr,
+          schemaResolver,
+          /*explain=*/true);
+      return {.message = std::move(text)};
+    }
+
     if (explain->isAnalyze()) {
       return {
           .message = runExplainAnalyze(logicalPlan, options, schemaResolver)};
@@ -555,6 +584,10 @@ std::string SqlQueryRunner::runExplain(
                  schemaResolver,
                  explain)
           .toString();
+
+    case presto::ExplainStatement::Type::kIo:
+      // Handled in run() before calling runExplain().
+      VELOX_UNREACHABLE();
   }
   VELOX_UNREACHABLE();
 }

@@ -81,6 +81,7 @@ const auto& explainTypeNames() {
           {ExplainStatement::Type::kGraph, "GRAPH"},
           {ExplainStatement::Type::kOptimized, "OPTIMIZED"},
           {ExplainStatement::Type::kExecutable, "EXECUTABLE"},
+          {ExplainStatement::Type::kIo, "IO"},
       };
   return kNames;
 }

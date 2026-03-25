@@ -1094,6 +1094,15 @@ TEST_F(PrestoParserTest, explainSelect) {
     ASSERT_TRUE(
         explainStatement->type() == ExplainStatement::Type::kExecutable);
   }
+
+  {
+    auto statement = parser.parse("EXPLAIN (TYPE IO) SELECT * FROM nation");
+    ASSERT_TRUE(statement->isExplain());
+
+    auto explainStatement = statement->as<ExplainStatement>();
+    ASSERT_FALSE(explainStatement->isAnalyze());
+    ASSERT_EQ(explainStatement->type(), ExplainStatement::Type::kIo);
+  }
 }
 
 TEST_F(PrestoParserTest, explainFormat) {

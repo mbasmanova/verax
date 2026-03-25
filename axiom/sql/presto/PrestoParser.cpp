@@ -1117,6 +1117,9 @@ SqlStatementPtr parseExplain(
         case ExplainType::Type::kDistributed:
           type = ExplainStatement::Type::kExecutable;
           break;
+        case ExplainType::Type::kIo:
+          type = ExplainStatement::Type::kIo;
+          break;
         default:
           VELOX_USER_FAIL("Unsupported EXPLAIN type");
       }

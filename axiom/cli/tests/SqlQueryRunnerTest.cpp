@@ -15,7 +15,9 @@
  */
 
 #include "axiom/cli/SqlQueryRunner.h"
+#include <folly/dynamic.h>
 #include <folly/init/Init.h>
+#include <folly/json.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include "axiom/connectors/tests/TestConnector.h"
@@ -55,14 +57,14 @@ class SqlQueryRunnerTest : public ::testing::Test, public test::VectorTestBase {
     auto runner = std::make_unique<SqlQueryRunner>();
 
     runner->initialize([&]() {
-      auto testConnector =
+      testConnector_ =
           std::make_shared<facebook::axiom::connector::TestConnector>(
               connectorId);
-      facebook::velox::connector::registerConnector(testConnector);
+      facebook::velox::connector::registerConnector(testConnector_);
 
-      connectorIds_.emplace_back(testConnector->connectorId());
+      connectorIds_.emplace_back(testConnector_->connectorId());
 
-      return std::make_pair(testConnector->connectorId(), kDefaultSchema);
+      return std::make_pair(testConnector_->connectorId(), kDefaultSchema);
     });
 
     return runner;
@@ -91,6 +93,7 @@ class SqlQueryRunnerTest : public ::testing::Test, public test::VectorTestBase {
   }
 
   std::unique_ptr<SqlQueryRunner> runner_;
+  std::shared_ptr<facebook::axiom::connector::TestConnector> testConnector_;
 
  private:
   std::vector<std::string> connectorIds_;
@@ -235,6 +238,102 @@ TEST_F(SqlQueryRunnerTest, explainDropTable) {
 
   // EXPLAIN is side-effect-free.
   run("DROP TABLE t");
+}
+
+TEST_F(SqlQueryRunnerTest, explainIo) {
+  testConnector_->addTpchTables();
+
+  // Parses and re-serializes JSON with sorted keys for deterministic
+  // comparison.
+  auto normalizeJson = [](const std::string& jsonStr) {
+    folly::json::serialization_opts opts;
+    opts.pretty_formatting = true;
+    opts.sort_keys = true;
+    return folly::json::serialize(folly::parseJson(jsonStr), opts);
+  };
+
+  auto getJson = [&](const std::string& query) {
+    auto result = run(query);
+    VELOX_CHECK(result.message.has_value());
+    return normalizeJson(result.message.value());
+  };
+
+  // SELECT with no table scans.
+  ASSERT_EQ(
+      getJson("EXPLAIN (TYPE IO) SELECT 1"),
+      normalizeJson(R"({"inputTableColumnInfos": []})"));
+
+  // SELECT with table scan.
+  ASSERT_EQ(
+      getJson("EXPLAIN (TYPE IO) SELECT * FROM nation"), normalizeJson(R"({
+        "inputTableColumnInfos": [{
+          "table": {
+            "catalog": "test",
+            "schemaTable": {"schema": "default", "table": "nation"}
+          },
+          "columnConstraints": []
+        }]
+      })"));
+
+  // CTAS with output table.
+  ASSERT_EQ(
+      getJson("EXPLAIN (TYPE IO) CREATE TABLE t AS SELECT * FROM nation"),
+      normalizeJson(R"({
+        "inputTableColumnInfos": [{
+          "table": {
+            "catalog": "test",
+            "schemaTable": {"schema": "default", "table": "nation"}
+          },
+          "columnConstraints": []
+        }],
+        "outputTable": {
+          "catalog": "test",
+          "schemaTable": {"schema": "default", "table": "t"}
+        }
+      })"));
+
+  // INSERT with output table.
+  testConnector_->addTable("t", ROW({"key", "name"}, {BIGINT(), VARCHAR()}));
+  ASSERT_EQ(
+      getJson(
+          "EXPLAIN (TYPE IO) INSERT INTO t(key, name) "
+          "SELECT r_regionkey, r_name FROM region"),
+      normalizeJson(R"({
+        "inputTableColumnInfos": [{
+          "table": {
+            "catalog": "test",
+            "schemaTable": {"schema": "default", "table": "region"}
+          },
+          "columnConstraints": []
+        }],
+        "outputTable": {
+          "catalog": "test",
+          "schemaTable": {"schema": "default", "table": "t"}
+        }
+      })"));
+
+  // JOIN: multiple input tables sorted by name.
+  ASSERT_EQ(
+      getJson(
+          "EXPLAIN (TYPE IO) SELECT * FROM nation, region WHERE n_regionkey = r_regionkey"),
+      normalizeJson(R"({
+        "inputTableColumnInfos": [
+          {
+            "table": {
+              "catalog": "test",
+              "schemaTable": {"schema": "default", "table": "nation"}
+            },
+            "columnConstraints": []
+          },
+          {
+            "table": {
+              "catalog": "test",
+              "schemaTable": {"schema": "default", "table": "region"}
+            },
+            "columnConstraints": []
+          }
+        ]
+      })"));
 }
 
 TEST_F(SqlQueryRunnerTest, showStats) {
