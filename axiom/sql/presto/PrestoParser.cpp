@@ -1097,6 +1097,7 @@ SqlStatementPtr parseExplain(
   }
 
   ExplainStatement::Type type = ExplainStatement::Type::kExecutable;
+  ExplainStatement::Format format = ExplainStatement::Format::kText;
 
   for (const auto& option : explain.options()) {
     if (option->is(NodeType::kExplainType)) {
@@ -1119,13 +1120,27 @@ SqlStatementPtr parseExplain(
         default:
           VELOX_USER_FAIL("Unsupported EXPLAIN type");
       }
+    } else if (option->is(NodeType::kExplainFormat)) {
+      const auto explainFormat = option->as<ExplainFormat>()->formatType();
+      switch (explainFormat) {
+        case ExplainFormat::Type::kText:
+          format = ExplainStatement::Format::kText;
+          break;
+        case ExplainFormat::Type::kGraphviz:
+          format = ExplainStatement::Format::kGraphviz;
+          break;
+        case ExplainFormat::Type::kJson:
+          format = ExplainStatement::Format::kJson;
+          break;
+      }
     }
   }
 
   return std::make_shared<ExplainStatement>(
       sqlStatement,
       /*analyze=*/false,
-      type);
+      type,
+      format);
 }
 
 static facebook::axiom::connector::TablePtr findTable(

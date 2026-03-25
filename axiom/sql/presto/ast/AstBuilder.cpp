@@ -2357,10 +2357,25 @@ std::any AstBuilder::visitUpdateAssignment(
   return visitChildren("visitUpdateAssignment", ctx);
 }
 
+ExplainFormat::Type toExplainFormat(
+    PrestoSqlParser::ExplainFormatContext* ctx) {
+  switch (ctx->value->getType()) {
+    case PrestoSqlParser::TEXT:
+      return ExplainFormat::Type::kText;
+    case PrestoSqlParser::GRAPHVIZ:
+      return ExplainFormat::Type::kGraphviz;
+    case PrestoSqlParser::JSON:
+      return ExplainFormat::Type::kJson;
+    default:
+      VELOX_USER_FAIL("Unsupported EXPLAIN format: {}", ctx->value->getText());
+  }
+}
+
 std::any AstBuilder::visitExplainFormat(
     PrestoSqlParser::ExplainFormatContext* ctx) {
   trace("visitExplainFormat");
-  return visitChildren("visitExplainFormat", ctx);
+  return std::static_pointer_cast<ExplainOption>(
+      std::make_shared<ExplainFormat>(getLocation(ctx), toExplainFormat(ctx)));
 }
 
 ExplainType::Type toExplainType(PrestoSqlParser::ExplainTypeContext* ctx) {

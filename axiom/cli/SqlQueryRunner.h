@@ -146,6 +146,7 @@ class SqlQueryRunner {
   std::string runExplain(
       const facebook::axiom::logical_plan::LogicalPlanNodePtr& logicalPlan,
       presto::ExplainStatement::Type type,
+      presto::ExplainStatement::Format format,
       const RunOptions& options,
       std::shared_ptr<facebook::axiom::connector::SchemaResolver>
           schemaResolver = nullptr);

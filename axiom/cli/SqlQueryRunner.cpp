@@ -366,7 +366,11 @@ SqlQueryRunner::SqlResult SqlQueryRunner::run(
     } else {
       return {
           .message = runExplain(
-              logicalPlan, explain->type(), options, schemaResolver)};
+              logicalPlan,
+              explain->type(),
+              explain->format(),
+              options,
+              schemaResolver)};
     }
   }
 
@@ -472,12 +476,30 @@ std::shared_ptr<velox::core::QueryCtx> SqlQueryRunner::newQuery(
 std::string SqlQueryRunner::runExplain(
     const logical_plan::LogicalPlanNodePtr& logicalPlan,
     presto::ExplainStatement::Type type,
+    presto::ExplainStatement::Format format,
     const RunOptions& options,
     std::shared_ptr<connector::SchemaResolver> schemaResolver) {
   const bool explain = schemaResolver != nullptr;
 
+  VELOX_USER_CHECK_NE(
+      format,
+      presto::ExplainStatement::Format::kJson,
+      "Unsupported EXPLAIN format: JSON. Supported formats: TEXT, GRAPHVIZ.");
+
+  if (format == presto::ExplainStatement::Format::kGraphviz) {
+    VELOX_USER_CHECK(
+        type == presto::ExplainStatement::Type::kLogical ||
+            type == presto::ExplainStatement::Type::kGraph,
+        "EXPLAIN FORMAT GRAPHVIZ is supported for TYPE LOGICAL and TYPE GRAPH only.");
+  }
+
   switch (type) {
     case presto::ExplainStatement::Type::kLogical:
+      if (format == presto::ExplainStatement::Format::kGraphviz) {
+        std::ostringstream out;
+        logical_plan::LogicalPlanDotPrinter::print(*logicalPlan, out);
+        return out.str();
+      }
       return logical_plan::PlanPrinter::toText(*logicalPlan);
 
     case presto::ExplainStatement::Type::kGraph: {
@@ -487,7 +509,13 @@ std::string SqlQueryRunner::runExplain(
           newQuery(options),
           options,
           [&](const auto& dt) {
-            text = optimizer::DerivedTablePrinter::toText(dt);
+            if (format == presto::ExplainStatement::Format::kGraphviz) {
+              std::ostringstream out;
+              optimizer::DerivedTableDotPrinter::print(dt, out);
+              text = out.str();
+            } else {
+              text = optimizer::DerivedTablePrinter::toText(dt);
+            }
             return false; // Stop optimization.
           },
           nullptr,

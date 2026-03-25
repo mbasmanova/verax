@@ -385,6 +385,38 @@ TEST_F(SqlQueryRunnerTest, currentTimestamp) {
   EXPECT_LE(millis, after);
 }
 
+TEST_F(SqlQueryRunnerTest, explainFormatGraphviz) {
+  for (const auto& type : {"LOGICAL", "GRAPH"}) {
+    SCOPED_TRACE(type);
+
+    // FORMAT GRAPHVIZ produces DOT output.
+    auto graphviz = run(
+        fmt::format("EXPLAIN (TYPE {}, FORMAT GRAPHVIZ) SELECT 1 AS x", type));
+    ASSERT_TRUE(graphviz.message.has_value());
+    EXPECT_THAT(graphviz.message.value(), ::testing::HasSubstr("digraph"));
+
+    // Without FORMAT, produces text (no "digraph").
+    auto text = run(fmt::format("EXPLAIN (TYPE {}) SELECT 1 AS x", type));
+    ASSERT_TRUE(text.message.has_value());
+    EXPECT_THAT(
+        text.message.value(), ::testing::Not(::testing::HasSubstr("digraph")));
+  }
+
+  // FORMAT GRAPHVIZ with unsupported TYPE fails.
+  VELOX_ASSERT_USER_THROW(
+      run("EXPLAIN (TYPE OPTIMIZED, FORMAT GRAPHVIZ) SELECT 1 AS x"),
+      "EXPLAIN FORMAT GRAPHVIZ is supported for TYPE LOGICAL and TYPE GRAPH only");
+
+  VELOX_ASSERT_USER_THROW(
+      run("EXPLAIN (FORMAT GRAPHVIZ) SELECT 1 AS x"),
+      "EXPLAIN FORMAT GRAPHVIZ is supported for TYPE LOGICAL and TYPE GRAPH only");
+
+  // FORMAT JSON is rejected.
+  VELOX_ASSERT_USER_THROW(
+      run("EXPLAIN (FORMAT JSON) SELECT 1 AS x"),
+      "Unsupported EXPLAIN format: JSON");
+}
+
 TEST_F(SqlQueryRunnerTest, showSchemasWithLike) {
   run("CREATE SCHEMA dev");
   run("CREATE SCHEMA staging");
