@@ -138,7 +138,7 @@ class Console {
   void notifyCompletion(const QueryCompletionInfo& info);
 
   // Reads and executes commands from standard input in interactive mode.
-  void readCommands(const std::string& prompt);
+  void readCommands(const std::string& prompt, bool interactive);
 
   SqlQueryRunner& runner_;
   PermissionCheck permissionCheck_;

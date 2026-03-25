@@ -12,6 +12,48 @@ cnt
 
 ```
 
+## Read query from stdin without trailing semicolon
+
+```scrut
+$ echo "SELECT count(*) as cnt FROM nation" | $CLI --query '' 2>/dev/null
+---
+cnt
+---
+ 25
+(1 rows in 1 batches)
+
+```
+
+## Read query from stdin with trailing semicolon
+
+```scrut
+$ echo "SELECT count(*) as cnt FROM nation;" | $CLI --query '' 2>/dev/null
+---
+cnt
+---
+ 25
+(1 rows in 1 batches)
+
+```
+
+## Read multiple queries from stdin
+
+```scrut
+$ echo "SELECT 1 as a;SELECT 2 as b" | $CLI --query '' 2>/dev/null
+-
+a
+-
+1
+(1 rows in 1 batches)
+
+-
+b
+-
+2
+(1 rows in 1 batches)
+
+```
+
 ## Create and query table using test connector
 
 ```scrut
