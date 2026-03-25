@@ -74,9 +74,32 @@ void checkPropertiesLookConstant(
   }
 }
 
+const auto& explainTypeNames() {
+  static const folly::F14FastMap<ExplainStatement::Type, std::string_view>
+      kNames = {
+          {ExplainStatement::Type::kLogical, "LOGICAL"},
+          {ExplainStatement::Type::kGraph, "GRAPH"},
+          {ExplainStatement::Type::kOptimized, "OPTIMIZED"},
+          {ExplainStatement::Type::kExecutable, "EXECUTABLE"},
+      };
+  return kNames;
+}
+
+const auto& explainFormatNames() {
+  static const folly::F14FastMap<ExplainStatement::Format, std::string_view>
+      kNames = {
+          {ExplainStatement::Format::kText, "TEXT"},
+          {ExplainStatement::Format::kGraphviz, "GRAPHVIZ"},
+          {ExplainStatement::Format::kJson, "JSON"},
+      };
+  return kNames;
+}
+
 } // namespace
 
 AXIOM_DEFINE_ENUM_NAME(SqlStatementKind, statementKindNames);
+AXIOM_DEFINE_EMBEDDED_ENUM_NAME(ExplainStatement, Type, explainTypeNames);
+AXIOM_DEFINE_EMBEDDED_ENUM_NAME(ExplainStatement, Format, explainFormatNames);
 
 std::string_view SqlStatement::kindName() const {
   return SqlStatementKindName::toName(kind_);

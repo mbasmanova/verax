@@ -383,22 +383,30 @@ class ExplainStatement : public SqlStatement {
     /// Query graph.
     kGraph,
 
-    /// Optimize physical plan.
+    /// Optimized physical plan.
     kOptimized,
 
     /// Executable Velox plan.
     kExecutable,
   };
 
+  enum class Format {
+    kText,
+    kGraphviz,
+    kJson,
+  };
+
   /// 'type' applies only when 'analyze' is false.
   explicit ExplainStatement(
       SqlStatementPtr statement,
       bool analyze = false,
-      Type type = Type::kLogical)
+      Type type = Type::kLogical,
+      Format format = Format::kText)
       : SqlStatement(SqlStatementKind::kExplain),
         statement_{std::move(statement)},
         analyze_{analyze},
-        type_{type} {}
+        type_{type},
+        format_{format} {}
 
   const SqlStatementPtr& statement() const {
     return statement_;
@@ -408,14 +416,22 @@ class ExplainStatement : public SqlStatement {
     return analyze_;
   }
 
+  AXIOM_DECLARE_EMBEDDED_ENUM_NAME(Type);
+  AXIOM_DECLARE_EMBEDDED_ENUM_NAME(Format);
+
   Type type() const {
     return type_;
+  }
+
+  Format format() const {
+    return format_;
   }
 
  private:
   const SqlStatementPtr statement_;
   const bool analyze_;
   const Type type_;
+  const Format format_;
 };
 
 /// Wraps a SELECT statement whose logical plan should be optimized to extract
@@ -491,3 +507,6 @@ class UseStatement : public SqlStatement {
 };
 
 } // namespace axiom::sql::presto
+
+AXIOM_EMBEDDED_ENUM_FORMATTER(axiom::sql::presto::ExplainStatement, Type);
+AXIOM_EMBEDDED_ENUM_FORMATTER(axiom::sql::presto::ExplainStatement, Format);

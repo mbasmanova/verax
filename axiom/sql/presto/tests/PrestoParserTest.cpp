@@ -1096,6 +1096,38 @@ TEST_F(PrestoParserTest, explainSelect) {
   }
 }
 
+TEST_F(PrestoParserTest, explainFormat) {
+  auto parser = makeParser();
+
+  std::vector<std::pair<std::string, ExplainStatement::Format>> formats = {
+      {"TEXT", ExplainStatement::Format::kText},
+      {"GRAPHVIZ", ExplainStatement::Format::kGraphviz},
+      {"JSON", ExplainStatement::Format::kJson},
+  };
+
+  for (const auto& [formatName, expectedFormat] : formats) {
+    SCOPED_TRACE(formatName);
+    auto statement = parser.parse(
+        fmt::format(
+            "EXPLAIN (TYPE LOGICAL, FORMAT {}) SELECT * FROM nation",
+            formatName),
+        true);
+    ASSERT_TRUE(statement->isExplain());
+
+    auto explainStatement = statement->as<ExplainStatement>();
+    ASSERT_EQ(explainStatement->type(), ExplainStatement::Type::kLogical);
+    ASSERT_EQ(explainStatement->format(), expectedFormat);
+  }
+
+  // Default format is TEXT.
+  {
+    auto statement =
+        parser.parse("EXPLAIN (TYPE LOGICAL) SELECT * FROM nation", true);
+    auto explainStatement = statement->as<ExplainStatement>();
+    ASSERT_EQ(explainStatement->format(), ExplainStatement::Format::kText);
+  }
+}
+
 TEST_F(PrestoParserTest, explainShow) {
   auto matcher = matchValues();
   testExplain("EXPLAIN SHOW CATALOGS", matcher);
