@@ -1480,5 +1480,37 @@ TEST_F(PrestoParserTest, nestedWindowFunction) {
           .output());
 }
 
+TEST_F(PrestoParserTest, friendlySqlTrailingComma) {
+  // Trailing comma in SELECT list works with Friendly SQL (default).
+  auto statement = makeParser().parse("SELECT 1, 2, FROM nation");
+  ASSERT_TRUE(statement->isSelect());
+
+  // Rejected when Friendly SQL is disabled.
+  auto strictParser = makeStrictParser();
+  VELOX_ASSERT_THROW(
+      strictParser.parse("SELECT 1, 2, FROM nation"),
+      "Trailing commas in SELECT list require Friendly SQL mode");
+
+  // No trailing comma — works in both modes.
+  statement = strictParser.parse("SELECT 1, 2 FROM nation");
+  ASSERT_TRUE(statement->isSelect());
+}
+
+TEST_F(PrestoParserTest, friendlySqlFromFirst) {
+  // FROM-first syntax works with Friendly SQL (default).
+  auto parser = makeParser();
+  auto statement = parser.parse("FROM nation");
+  ASSERT_TRUE(statement->isSelect());
+
+  // With WHERE clause.
+  statement = parser.parse("FROM nation WHERE n_regionkey = 1");
+  ASSERT_TRUE(statement->isSelect());
+
+  // Rejected when Friendly SQL is disabled.
+  VELOX_ASSERT_THROW(
+      makeStrictParser().parse("FROM nation"),
+      "FROM-first syntax requires Friendly SQL mode");
+}
+
 } // namespace
 } // namespace axiom::sql::presto::test
