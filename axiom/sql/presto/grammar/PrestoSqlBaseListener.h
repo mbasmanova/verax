@@ -813,6 +813,11 @@ class PrestoSqlBaseListener : public PrestoSqlListener {
   virtual void exitGroupingOperation(
       PrestoSqlParser::GroupingOperationContext* /*ctx*/) override {}
 
+  virtual void enterMethodCall(
+      PrestoSqlParser::MethodCallContext* /*ctx*/) override {}
+  virtual void exitMethodCall(
+      PrestoSqlParser::MethodCallContext* /*ctx*/) override {}
+
   virtual void enterBasicStringLiteral(
       PrestoSqlParser::BasicStringLiteralContext* /*ctx*/) override {}
   virtual void exitBasicStringLiteral(

@@ -1751,6 +1751,28 @@ std::any AstBuilder::visitAtTimeZone(PrestoSqlParser::AtTimeZoneContext* ctx) {
       std::make_shared<AtTimeZone>(getLocation(ctx), value, timeZone));
 }
 
+std::any AstBuilder::visitMethodCall(PrestoSqlParser::MethodCallContext* ctx) {
+  trace("visitMethodCall");
+
+  VELOX_USER_CHECK(
+      options_.friendlySql,
+      "Method-call syntax requires Friendly SQL mode. "
+      "Use {}({}, ...) instead.",
+      ctx->functionName->getText(),
+      ctx->base->getText());
+
+  auto args = visitTyped<Expression>(ctx->arguments);
+  auto base = visitExpression(ctx->base);
+  args.insert(args.begin(), std::move(base));
+
+  auto functionName = visitIdentifier(ctx->functionName);
+  auto name = std::make_shared<QualifiedName>(
+      getLocation(ctx), std::vector<std::string>{functionName->value()});
+
+  return std::static_pointer_cast<Expression>(
+      std::make_shared<FunctionCall>(getLocation(ctx), name, args));
+}
+
 std::any AstBuilder::visitDereference(
     PrestoSqlParser::DereferenceContext* ctx) {
   trace("visitDereference");
@@ -2142,6 +2164,20 @@ std::any AstBuilder::visitFunctionCall(
   std::shared_ptr<Window> window;
   if (ctx->over() != nullptr) {
     window = visitTyped<Window>(ctx->over());
+  }
+
+  // When Friendly SQL is enabled and the function name has exactly 2 parts
+  // (e.g., name.substr), rewrite as a method call: the first part becomes a
+  // column reference prepended to the arguments, and the second part becomes
+  // the function name. This allows col.func(args) to work as func(col, args).
+  if (options_.friendlySql && name->parts().size() == 2 && !filter &&
+      !orderBy && !window && !isDistinct(ctx) && !ignoreNulls) {
+    auto base = std::make_shared<Identifier>(
+        getLocation(ctx), name->parts()[0], /*delimited=*/false);
+    args.insert(
+        args.begin(), std::static_pointer_cast<Expression>(std::move(base)));
+    name = std::make_shared<QualifiedName>(
+        getLocation(ctx), std::vector<std::string>{name->parts()[1]});
   }
 
   return std::static_pointer_cast<Expression>(std::make_shared<FunctionCall>(

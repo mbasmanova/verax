@@ -492,6 +492,9 @@ class PrestoSqlVisitor : public antlr4::tree::AbstractParseTreeVisitor {
   virtual std::any visitGroupingOperation(
       PrestoSqlParser::GroupingOperationContext* context) = 0;
 
+  virtual std::any visitMethodCall(
+      PrestoSqlParser::MethodCallContext* context) = 0;
+
   virtual std::any visitBasicStringLiteral(
       PrestoSqlParser::BasicStringLiteralContext* context) = 0;
 

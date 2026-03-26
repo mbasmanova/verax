@@ -831,6 +831,11 @@ class PrestoSqlBaseVisitor : public PrestoSqlVisitor {
     return visitChildren(ctx);
   }
 
+  virtual std::any visitMethodCall(
+      PrestoSqlParser::MethodCallContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
   virtual std::any visitBasicStringLiteral(
       PrestoSqlParser::BasicStringLiteralContext* ctx) override {
     return visitChildren(ctx);
