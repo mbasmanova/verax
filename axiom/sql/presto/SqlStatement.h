@@ -393,18 +393,21 @@ class ExplainStatement : public SqlStatement {
     kIo,
   };
 
+  AXIOM_DECLARE_EMBEDDED_ENUM_NAME(Type);
+
   enum class Format {
     kText,
     kGraphviz,
     kJson,
   };
 
-  /// 'type' applies only when 'analyze' is false.
-  explicit ExplainStatement(
+  AXIOM_DECLARE_EMBEDDED_ENUM_NAME(Format);
+
+  ExplainStatement(
       SqlStatementPtr statement,
-      bool analyze = false,
-      Type type = Type::kLogical,
-      Format format = Format::kText)
+      bool analyze,
+      Type type,
+      Format format)
       : SqlStatement(SqlStatementKind::kExplain),
         statement_{std::move(statement)},
         analyze_{analyze},
@@ -418,9 +421,6 @@ class ExplainStatement : public SqlStatement {
   bool isAnalyze() const {
     return analyze_;
   }
-
-  AXIOM_DECLARE_EMBEDDED_ENUM_NAME(Type);
-  AXIOM_DECLARE_EMBEDDED_ENUM_NAME(Format);
 
   Type type() const {
     return type_;

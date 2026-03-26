@@ -1176,14 +1176,16 @@ lp::ExprPtr parseSqlExpression(const ExpressionPtr& expr) {
 SqlStatementPtr parseExplain(
     const Explain& explain,
     const SqlStatementPtr& sqlStatement) {
+  ExplainStatement::Type type = ExplainStatement::Type::kExecutable;
+  ExplainStatement::Format format = ExplainStatement::Format::kText;
+
   if (explain.isAnalyze()) {
     return std::make_shared<ExplainStatement>(
         sqlStatement,
-        /*analyze=*/true);
+        /*analyze=*/true,
+        type,
+        format);
   }
-
-  ExplainStatement::Type type = ExplainStatement::Type::kExecutable;
-  ExplainStatement::Format format = ExplainStatement::Format::kText;
 
   for (const auto& option : explain.options()) {
     if (option->is(NodeType::kExplainType)) {
