@@ -79,7 +79,8 @@ class HiveTable : public Table {
       velox::RowTypePtr type,
       bool bucketed,
       bool includeHiddenColumns,
-      folly::F14FastMap<std::string, velox::Variant> options);
+      folly::F14FastMap<std::string, velox::Variant> options,
+      std::vector<std::string> partitionColumnNames = {});
 };
 
 /// Describes a Hive table layout. Adds a file format and a list of

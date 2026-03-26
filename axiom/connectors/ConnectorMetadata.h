@@ -110,10 +110,15 @@ class Column {
   /// @param hidden If true, the column doesn't appear in the output of SELECT *
   /// FROM t query. Still, the column can be accessed by name: SELECT ...,
   /// foo,... FROM t.
-  Column(std::string name, velox::TypePtr type, bool hidden)
+  Column(
+      std::string name,
+      velox::TypePtr type,
+      bool hidden,
+      bool includeInExplainIo = false)
       : name_{std::move(name)},
         type_{std::move(type)},
         hidden_{hidden},
+        includeInExplainIo_{includeInExplainIo},
         defaultValue_{velox::Variant::null(type_->kind())} {
     VELOX_CHECK_NOT_NULL(type_);
     VELOX_CHECK(!name_.empty());
@@ -124,10 +129,12 @@ class Column {
       std::string name,
       velox::TypePtr type,
       bool hidden,
-      velox::Variant defaultValue)
+      velox::Variant defaultValue,
+      bool includeInExplainIo = false)
       : name_{std::move(name)},
         type_{std::move(type)},
         hidden_{hidden},
+        includeInExplainIo_{includeInExplainIo},
         defaultValue_{std::move(defaultValue)} {
     VELOX_CHECK_NOT_NULL(type_);
     VELOX_CHECK(!name_.empty());
@@ -170,6 +177,14 @@ class Column {
     return defaultValue_;
   }
 
+  /// Returns true if this column should appear in EXPLAIN IO output.
+  /// Set by connectors for columns relevant to IO (e.g., partition columns).
+  /// Only VARCHAR and integer types (TINYINT, SMALLINT, INTEGER, BIGINT) are
+  /// supported.
+  bool includeInExplainIo() const {
+    return includeInExplainIo_;
+  }
+
   /// Returns approximate number of distinct values. Returns 'defaultValue' if
   /// no information.
   int64_t approxNumDistinct(int64_t defaultValue = 1000) const {
@@ -184,6 +199,7 @@ class Column {
   const std::string name_;
   const velox::TypePtr type_;
   const bool hidden_;
+  const bool includeInExplainIo_;
   const velox::Variant defaultValue_;
 
   // The latest element added to 'allStats_'.

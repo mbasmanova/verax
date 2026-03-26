@@ -26,9 +26,9 @@ namespace facebook::axiom::optimizer {
 /// Generates EXPLAIN IO JSON from the query graph.
 ///
 /// Walks the DerivedTable tree to find input tables. If 'outputTable' is
-/// provided (INSERT/CTAS), includes it in the JSON output. Column constraints
-/// are not yet implemented — each input table gets an empty columnConstraints
-/// array.
+/// provided (INSERT/CTAS), includes it in the JSON output. For each input
+/// table, extracts column constraints from columnFilters for columns marked
+/// with includeInExplainIo (e.g., partition columns).
 std::string explainIo(
     DerivedTableCP rootDt,
     std::optional<CatalogSchemaTableName> outputTable = std::nullopt);
