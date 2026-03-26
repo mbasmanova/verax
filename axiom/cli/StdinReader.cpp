@@ -34,6 +34,43 @@ std::string collapseWhitespace(std::string str) {
       str.end());
   return str;
 }
+
+// Update block comment state by scanning for /* and */ in the line.
+// Returns true if the end of the line is inside a block comment.
+bool updateBlockCommentState(const std::string& line, bool inBlockComment) {
+  for (size_t i = 0; i < line.size(); ++i) {
+    if (inBlockComment) {
+      if (line[i] == '*' && i + 1 < line.size() && line[i + 1] == '/') {
+        inBlockComment = false;
+        ++i;
+      }
+    } else {
+      if (line[i] == '/' && i + 1 < line.size() && line[i + 1] == '*') {
+        inBlockComment = true;
+        ++i;
+      } else if (line[i] == '-' && i + 1 < line.size() && line[i + 1] == '-') {
+        // Rest of line is a single-line comment.
+        break;
+      }
+    }
+  }
+  return inBlockComment;
+}
+
+// Returns true if the trailing semicolon (at position semicolonPos) is inside
+// a single-line comment (-- ...) or a block comment that was opened on this
+// line and not yet closed.
+bool isSemicolonInLineComment(
+    const std::string& line,
+    int64_t startPos,
+    int64_t semicolonPos) {
+  for (int64_t i = startPos; i < semicolonPos; ++i) {
+    if (line[i] == '-' && i + 1 < semicolonPos && line[i + 1] == '-') {
+      return true;
+    }
+  }
+  return false;
+}
 } // namespace
 
 std::string readCommand(const std::string& prompt, bool& atEnd) {
@@ -41,6 +78,7 @@ std::string readCommand(const std::string& prompt, bool& atEnd) {
   atEnd = false;
 
   bool stripLeadingSpaces = true;
+  bool inBlockComment = false;
 
   while (char* rawLine = linenoise(prompt.c_str())) {
     SCOPE_EXIT {
@@ -65,22 +103,28 @@ std::string readCommand(const std::string& prompt, bool& atEnd) {
       continue;
     }
 
-    // Allow spaces after ';'.
-    for (int64_t i = line.size() - 1; i >= startPos; --i) {
-      if (std::isspace(line[i])) {
-        continue;
-      }
+    bool lineEndInComment = updateBlockCommentState(line, inBlockComment);
 
-      if (line[i] == ';') {
-        command << line.substr(startPos, i - startPos);
-        auto history = collapseWhitespace(command.str());
-        linenoiseHistoryAdd(fmt::format("{};", history).c_str());
-        return command.str();
-      }
+    // Only check for terminal ';' if not inside a block comment.
+    if (!lineEndInComment) {
+      // Allow spaces after ';'.
+      for (int64_t i = line.size() - 1; i >= startPos; --i) {
+        if (std::isspace(line[i])) {
+          continue;
+        }
 
-      break;
+        if (line[i] == ';' && !isSemicolonInLineComment(line, startPos, i)) {
+          command << line.substr(startPos, i - startPos);
+          auto history = collapseWhitespace(command.str());
+          linenoiseHistoryAdd(fmt::format("{};", history).c_str());
+          return command.str();
+        }
+
+        break;
+      }
     }
 
+    inBlockComment = lineEndInComment;
     stripLeadingSpaces = false;
     command << line.substr(startPos) << std::endl;
   }

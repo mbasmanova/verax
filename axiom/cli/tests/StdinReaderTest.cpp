@@ -120,6 +120,24 @@ TEST_F(StdinReaderTest, noSemicolon) {
   EXPECT_TRUE(atEnd);
 }
 
+TEST_F(StdinReaderTest, blockComment) {
+  // Semicolons inside block comments should not split statements.
+  testSingleCommand(
+      "SELECT 1 /* a; b; c; */ FROM t;\n", "SELECT 1 /* a; b; c; */ FROM t");
+}
+
+TEST_F(StdinReaderTest, multiLineBlockComment) {
+  // Multi-line block comment with semicolons should not split.
+  testSingleCommand(
+      "SELECT 1\n/*\nfoo;\nbar;\n*/\nFROM t;\n",
+      "SELECT 1\n/*\nfoo;\nbar;\n*/\nFROM t");
+}
+
+TEST_F(StdinReaderTest, lineComment) {
+  // Semicolon inside a line comment should not split.
+  testSingleCommand("SELECT 1 -- comment;\n;\n", "SELECT 1 -- comment;\n");
+}
+
 TEST_F(StdinReaderTest, history) {
   auto initialSize = getHistory().size();
   testMultiCommand("SELECT\n1;\nSELECT 2;\n", {"SELECT\n1", "SELECT 2"});
