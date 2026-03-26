@@ -45,7 +45,7 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  AstBuilder astBuilder(/*friendlySql=*/true);
+  AstBuilder astBuilder(ParserOptions{});
   auto query =
       std::any_cast<std::shared_ptr<Query>>(astBuilder.visit(queryContext));
 

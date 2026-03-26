@@ -275,7 +275,7 @@ std::any AstBuilder::visitQuerySpecification(
   // FROM-first syntax: FROM t WHERE ... (no SELECT clause).
   const bool fromFirst = ctx->SELECT() == nullptr;
   VELOX_USER_CHECK(
-      !fromFirst || friendlySql_,
+      !fromFirst || options_.friendlySql,
       "FROM-first syntax requires Friendly SQL mode. "
       "Use SELECT * FROM ... instead.");
 
@@ -287,7 +287,7 @@ std::any AstBuilder::visitQuerySpecification(
     selectItems = visitTyped<SelectItem>(ctx->selectItem());
 
     VELOX_USER_CHECK(
-        friendlySql_ || !hasTrailingComma(ctx, selectItems.size()),
+        options_.friendlySql || !hasTrailingComma(ctx, selectItems.size()),
         "Trailing commas in SELECT list require Friendly SQL mode.");
   }
 
@@ -1966,7 +1966,7 @@ std::any AstBuilder::visitNamedRowConstructor(
   trace("visitNamedRowConstructor");
 
   VELOX_USER_CHECK(
-      friendlySql_,
+      options_.friendlySql,
       "Named ROW constructor requires Friendly SQL mode. "
       "Use CAST(ROW(...) AS ROW(name type, ...)) instead.");
 
@@ -2653,18 +2653,19 @@ std::any AstBuilder::visitDecimalLiteral(
     PrestoSqlParser::DecimalLiteralContext* ctx) {
   trace("visitDecimalLiteral");
 
-  // TODO Introduce ParsingOptions to allow parsing decimal as either double
-  // or decimal.
-
-  auto text = stripDigitSeparators(ctx->getText(), friendlySql_);
+  auto text = stripDigitSeparators(ctx->getText(), options_.friendlySql);
+  if (options_.parseDecimalLiteralAsDouble) {
+    return std::static_pointer_cast<Expression>(
+        std::make_shared<DoubleLiteral>(getLocation(ctx), std::stod(text)));
+  }
   return std::static_pointer_cast<Expression>(
-      std::make_shared<DoubleLiteral>(getLocation(ctx), std::stod(text)));
+      std::make_shared<DecimalLiteral>(getLocation(ctx), text));
 }
 
 std::any AstBuilder::visitDoubleLiteral(
     PrestoSqlParser::DoubleLiteralContext* ctx) {
   trace("visitDoubleLiteral");
-  auto text = stripDigitSeparators(ctx->getText(), friendlySql_);
+  auto text = stripDigitSeparators(ctx->getText(), options_.friendlySql);
   return std::static_pointer_cast<Expression>(
       std::make_shared<DoubleLiteral>(getLocation(ctx), std::stod(text)));
 }
@@ -2673,7 +2674,7 @@ std::any AstBuilder::visitIntegerLiteral(
     PrestoSqlParser::IntegerLiteralContext* ctx) {
   trace("visitIntegerLiteral");
 
-  auto text = stripDigitSeparators(ctx->getText(), friendlySql_);
+  auto text = stripDigitSeparators(ctx->getText(), options_.friendlySql);
   int64_t value = std::stoll(text);
 
   return std::static_pointer_cast<Expression>(

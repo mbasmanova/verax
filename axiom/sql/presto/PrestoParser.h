@@ -16,6 +16,7 @@
 #pragma once
 
 #include "axiom/common/CatalogSchemaTableName.h"
+#include "axiom/sql/presto/ParserOptions.h"
 #include "axiom/sql/presto/SqlStatement.h"
 
 namespace axiom::sql::presto {
@@ -30,13 +31,6 @@ struct ReferencedTables {
   /// Any table which would be modified by the query, or
   /// nullopt if the query does not modify any tables.
   std::optional<facebook::axiom::CatalogSchemaTableName> outputTable;
-};
-
-/// Options controlling SQL dialect extensions beyond standard Presto SQL.
-struct ParserOptions {
-  /// Enables Friendly SQL extensions inspired by DuckDB: named ROW
-  /// constructors, trailing commas, FROM-first syntax, etc.
-  bool friendlySql{true};
 };
 
 /// SQL Parser compatible with PrestoSQL dialect.
