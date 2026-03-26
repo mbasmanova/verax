@@ -1928,7 +1928,7 @@ SqlStatementPtr PrestoParser::doParse(
     ParserHelper helper(sql);
     auto* context = helper.parse();
 
-    AstBuilder astBuilder(options_.friendlySql, enableTracing);
+    AstBuilder astBuilder(options_, enableTracing);
     auto query =
         std::any_cast<std::shared_ptr<Statement>>(astBuilder.visit(context));
 
@@ -1978,7 +1978,7 @@ ReferencedTables PrestoParser::getReferencedTables(std::string_view sql) {
   ParserHelper helper(sql);
   auto* context = helper.parse();
 
-  AstBuilder astBuilder(options_.friendlySql, false);
+  AstBuilder astBuilder(options_, false);
   auto statement =
       std::any_cast<std::shared_ptr<Statement>>(astBuilder.visit(context));
 

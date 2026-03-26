@@ -18,6 +18,7 @@
 
 #include <antlr4-runtime.h>
 #include <iostream>
+#include "axiom/sql/presto/ParserOptions.h"
 #include "axiom/sql/presto/ast/AstNodesAll.h"
 #include "axiom/sql/presto/grammar/PrestoSqlParser.h"
 #include "axiom/sql/presto/grammar/PrestoSqlVisitor.h"
@@ -26,8 +27,8 @@ namespace axiom::sql::presto {
 
 class AstBuilder : public PrestoSqlVisitor {
  public:
-  AstBuilder(bool friendlySql, bool enableTracing = false)
-      : friendlySql_{friendlySql}, enableTracing_{enableTracing} {}
+  AstBuilder(const ParserOptions& options, bool enableTracing = false)
+      : options_{options}, enableTracing_{enableTracing} {}
 
   std::any visitSingleStatement(
       PrestoSqlParser::SingleStatementContext* ctx) override;
@@ -690,7 +691,7 @@ class AstBuilder : public PrestoSqlVisitor {
 
   void trace(std::string_view name) const;
 
-  const bool friendlySql_;
+  const ParserOptions options_;
   const bool enableTracing_;
   int tracingIndent_ = 0;
 };
