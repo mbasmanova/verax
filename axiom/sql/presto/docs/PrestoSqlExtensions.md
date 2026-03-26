@@ -19,6 +19,7 @@ Friendly SQL features:
 | Trailing commas in SELECT | `SELECT a, b, FROM t` |
 | FROM-first syntax | `FROM t WHERE x = 1` |
 | Digit separators | `SELECT 1_000_000` |
+| Method-call syntax | `'hello'.upper().substr(1, 3)` |
 
 ## Named ROW Constructor
 
@@ -103,6 +104,35 @@ SELECT 1_000.50
 SELECT 1_000E3
 -- Returns: 1000000.0
 ```
+
+## Method-Call Syntax for Function Chaining
+
+*Friendly SQL feature — requires `friendlySql` flag.*
+
+Allows calling functions using dot notation, where the base expression becomes
+the first argument: `expr.func(args...)` desugars to `func(expr, args...)`.
+
+```sql
+-- Basic method call.
+SELECT 'hello'.upper()
+-- Equivalent to: SELECT upper('hello')
+
+-- With arguments.
+SELECT 'hello'.substr(1, 3)
+-- Equivalent to: SELECT substr('hello', 1, 3)
+
+-- Chaining multiple calls (left-to-right).
+SELECT 'hello'.trim().upper().substr(1, 3)
+-- Equivalent to: SELECT substr(upper(trim('hello')), 1, 3)
+
+-- Works with any non-identifier base expression.
+SELECT (price * quantity).abs()
+-- Equivalent to: SELECT abs(price * quantity)
+```
+
+The method-call syntax supports simple function calls only — no `DISTINCT`,
+`ORDER BY`, `FILTER`, or `OVER` clauses. For those, use standard function call
+syntax.
 
 ## EXCEPT ALL / INTERSECT ALL
 

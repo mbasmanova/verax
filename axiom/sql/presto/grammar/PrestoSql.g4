@@ -426,6 +426,8 @@ primaryExpression
     | ARRAY '[' (expression (',' expression)*)? ']'                                       #arrayConstructor
     | value=primaryExpression '[' index=valueExpression ']'                               #subscript
     | identifier                                                                          #columnReference
+    | base=primaryExpression '.' functionName=identifier
+        '(' (arguments+=expression (',' arguments+=expression)*)? ')'                     #methodCall
     | base=primaryExpression '.' fieldName=identifier                                     #dereference
     | name=CURRENT_DATE                                                                   #specialDateTimeFunction
     | name=CURRENT_TIME ('(' precision=INTEGER_VALUE ')')?                                #specialDateTimeFunction

@@ -730,6 +730,45 @@ TEST_F(ExpressionParserTest, dereference) {
   VELOX_EXPECT_EQ_TYPES(expr->type(), INTEGER());
 }
 
+TEST_F(ExpressionParserTest, methodCall) {
+  // Basic method call: expr.func() desugars to func(expr).
+  EXPECT_EQ("upper(hello)", parseExpr("'hello'.upper()")->toString());
+
+  // Method call with arguments: expr.func(args) desugars to func(expr, args).
+  EXPECT_EQ(
+      "substr(hello, 1, 3)", parseExpr("'hello'.substr(1, 3)")->toString());
+
+  // Multi-level chaining: a.f().g() desugars to g(f(a)).
+  EXPECT_EQ(
+      "upper(trim(hello))", parseExpr("'hello'.trim().upper()")->toString());
+
+  // Chaining on parenthesized expression.
+  EXPECT_EQ("abs(plus(1, 2))", parseExpr("(1 + 2).abs()")->toString());
+
+  // Chaining on function call result.
+  EXPECT_EQ(
+      "substr(upper(hello), 1, 3)",
+      parseExpr("upper('hello').substr(1, 3)")->toString());
+
+  // Column-based method call: col.func(args) desugars to func(col, args).
+  testNationExpr("n_name.substr(1, 3)", "substr(n_name, 1, 3)");
+
+  // Chaining on column: col.func().func2().
+  testNationExpr("n_name.trim().upper()", "upper(trim(n_name))");
+
+  // Dereference without parentheses still works as struct field access.
+  EXPECT_EQ(
+      "DEREFERENCE(CAST(row_constructor(1, 2) AS ROW<a:INTEGER,b:INTEGER>), a)",
+      parseExpr("cast(row(1, 2) as row(a int, b int)).a")->toString());
+}
+
+TEST_F(ExpressionParserTest, methodCallNoFriendlySql) {
+  // Method call syntax is rejected when Friendly SQL is disabled.
+  VELOX_ASSERT_THROW(
+      parseStrictExpr("'hello'.upper()"),
+      "Method-call syntax requires Friendly SQL mode");
+}
+
 TEST_F(ExpressionParserTest, row) {
   testNationExpr(
       "row(n_regionkey, n_name)", "row_constructor(n_regionkey, n_name)");
