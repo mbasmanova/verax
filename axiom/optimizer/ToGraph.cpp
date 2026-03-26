@@ -1432,6 +1432,9 @@ struct AggregateDedupHasher {
 AggregationPlanCP ToGraph::translateAggregation(const lp::AggregateNode& agg) {
   const auto& input = *agg.onlyInput();
 
+  VELOX_USER_CHECK_EQ(
+      0, agg.groupingSets().size(), "Grouping sets are not supported yet");
+
   exprSources_.push_back(&input);
   SCOPE_EXIT {
     exprSources_.pop_back();
