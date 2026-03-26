@@ -26,7 +26,8 @@ namespace axiom::sql::presto {
 
 class AstBuilder : public PrestoSqlVisitor {
  public:
-  AstBuilder(bool enableTracing = false) : enableTracing_{enableTracing} {}
+  AstBuilder(bool friendlySql, bool enableTracing = false)
+      : friendlySql_{friendlySql}, enableTracing_{enableTracing} {}
 
   std::any visitSingleStatement(
       PrestoSqlParser::SingleStatementContext* ctx) override;
@@ -689,6 +690,7 @@ class AstBuilder : public PrestoSqlVisitor {
 
   void trace(std::string_view name) const;
 
+  const bool friendlySql_;
   const bool enableTracing_;
   int tracingIndent_ = 0;
 };

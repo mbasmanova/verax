@@ -4,7 +4,19 @@ Axiom extends Presto SQL with several features not available in Presto Java.
 These are Axiom-specific syntax additions that go beyond the standard Presto
 SQL dialect.
 
+## Friendly SQL
+
+Some extensions are gated behind the `friendlySql` flag in `ParserOptions`.
+These are inspired by [DuckDB's Friendly SQL](https://duckdb.org/docs/sql/dialect/friendly_sql)
+and are enabled by default. To disable them, construct `PrestoParser` with
+`ParserOptions{.friendlySql = false}`.
+
+Friendly SQL features:
+- Named ROW constructor (see below)
+
 ## Named ROW Constructor
+
+*Friendly SQL feature — requires `friendlySql` flag.*
 
 See https://github.com/prestodb/presto/issues/26205.
 
