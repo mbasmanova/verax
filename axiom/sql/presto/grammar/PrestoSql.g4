@@ -19,6 +19,9 @@
  *
  * Changes:
  * - Add 'GRAPH', 'OPTIMIZED', 'EXECUTABLE' to explainType.
+ * - Add named ROW constructor: ROW(expr AS name, ...).
+ * - Friendly SQL: trailing commas in SELECT, FROM-first syntax,
+ *   underscores in numeric literals.
  */
 
 grammar PrestoSql;
@@ -272,8 +275,12 @@ sortItem
     ;
 
 querySpecification
-    : SELECT setQuantifier? selectItem (',' selectItem)*
+    : SELECT setQuantifier? selectItem (',' selectItem)* ','?
       (FROM relation (',' relation)*)?
+      (WHERE where=booleanExpression)?
+      (GROUP BY groupBy)?
+      (HAVING having=booleanExpression)?
+    | FROM relation (',' relation)*
       (WHERE where=booleanExpression)?
       (GROUP BY groupBy)?
       (HAVING having=booleanExpression)?
@@ -922,17 +929,17 @@ BINARY_LITERAL
     ;
 
 INTEGER_VALUE
-    : DIGIT+
+    : DIGIT+ ('_' DIGIT+)*
     ;
 
 DECIMAL_VALUE
-    : DIGIT+ '.' DIGIT*
-    | '.' DIGIT+
+    : DIGIT+ ('_' DIGIT+)* '.' DIGIT* ('_' DIGIT+)*
+    | '.' DIGIT+ ('_' DIGIT+)*
     ;
 
 DOUBLE_VALUE
-    : DIGIT+ ('.' DIGIT*)? EXPONENT
-    | '.' DIGIT+ EXPONENT
+    : DIGIT+ ('_' DIGIT+)* ('.' DIGIT* ('_' DIGIT+)*)? EXPONENT
+    | '.' DIGIT+ ('_' DIGIT+)* EXPONENT
     ;
 
 IDENTIFIER

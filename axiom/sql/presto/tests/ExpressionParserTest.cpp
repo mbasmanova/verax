@@ -36,6 +36,10 @@ class ExpressionParserTest : public PrestoParserTestBase {
     return makeParser().parseExpression(sql, true);
   }
 
+  lp::ExprPtr parseStrictExpr(std::string_view sql) {
+    return makeStrictParser().parseExpression(sql, true);
+  }
+
   // Parses 'SELECT <expr> FROM nation' and verifies the project expression
   // matches expectedExpr via toString().
   void testNationExpr(std::string_view expr, std::string_view expectedExpr) {
@@ -240,6 +244,25 @@ TEST_F(ExpressionParserTest, doubleLiteral) {
   test("1.23E-5", 1.23e-5);
   test(".5E2", 0.5e2);
   test("1E+5", 1e5);
+}
+
+TEST_F(ExpressionParserTest, digitSeparators) {
+  // Integer with underscores.
+  auto expr = parseExpr("10_000");
+  ASSERT_TRUE(expr->isConstant());
+  VELOX_EXPECT_EQ_TYPES(expr->type(), INTEGER());
+  EXPECT_EQ(expr->as<lp::ConstantExpr>()->value()->value<int32_t>(), 10'000);
+
+  // Double with underscores.
+  expr = parseExpr("1_000.5E2");
+  ASSERT_TRUE(expr->isConstant());
+  ASSERT_DOUBLE_EQ(
+      expr->as<lp::ConstantExpr>()->value()->value<double>(), 1000.5e2);
+
+  // Rejected when Friendly SQL is disabled.
+  VELOX_ASSERT_THROW(
+      parseStrictExpr("10_000"),
+      "Underscores in numeric literals require Friendly SQL mode");
 }
 
 TEST_F(ExpressionParserTest, binaryLiteral) {
@@ -707,10 +730,8 @@ TEST_F(ExpressionParserTest, namedRow) {
 
 TEST_F(ExpressionParserTest, namedRowNoFriendlySql) {
   // Named ROW constructor is rejected when Friendly SQL is disabled.
-  PrestoParser parser(
-      kConnectorId, "default", ParserOptions{.friendlySql = false});
   VELOX_ASSERT_THROW(
-      parser.parseExpression("row(1 as x, 'hello' as y)"),
+      parseStrictExpr("row(1 as x, 'hello' as y)"),
       "Named ROW constructor requires Friendly SQL mode");
 }
 
