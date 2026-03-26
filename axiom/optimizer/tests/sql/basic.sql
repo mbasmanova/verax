@@ -50,6 +50,14 @@ SELECT a / 0 FROM t
 -- UNION ALL.
 SELECT a FROM t UNION ALL SELECT b FROM t
 ----
+-- Named ROW constructor.
+-- duckdb: SELECT {'x': 1, 'y': 2}
+SELECT ROW(1 AS x, 2 AS y)
+----
+-- Named ROW constructor with field access.
+-- duckdb: SELECT ({'x': 1, 'y': 2}).x
+SELECT a.x FROM (SELECT ROW(1 AS x, 2 AS y) AS a)
+----
 -- CAST to different types on the same column must not be deduplicated.
 SELECT ROW(CAST(a AS varchar), CAST(a AS double)) FROM t
 ----

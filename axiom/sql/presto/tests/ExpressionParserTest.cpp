@@ -695,6 +695,25 @@ TEST_F(ExpressionParserTest, row) {
       "row(n_regionkey, n_name)", "row_constructor(n_regionkey, n_name)");
 }
 
+TEST_F(ExpressionParserTest, namedRow) {
+  // Named ROW constructor with literals.
+  auto expr = parseExpr("row(1 as x, 'hello' as y)");
+  VELOX_EXPECT_EQ_TYPES(expr->type(), ROW({"x", "y"}, {INTEGER(), VARCHAR()}));
+
+  // Single field.
+  expr = parseExpr("row(42 as answer)");
+  VELOX_EXPECT_EQ_TYPES(expr->type(), ROW({"answer"}, {INTEGER()}));
+}
+
+TEST_F(ExpressionParserTest, namedRowDereference) {
+  // Field access on named ROW.
+  auto expr = parseExpr("row(1 as x, 2 as y).x");
+  VELOX_EXPECT_EQ_TYPES(expr->type(), INTEGER());
+
+  expr = parseExpr("row(1 as x, 'hello' as y).y");
+  VELOX_EXPECT_EQ_TYPES(expr->type(), VARCHAR());
+}
+
 TEST_F(ExpressionParserTest, windowFunction) {
   // row_number() with ORDER BY: SQL standard default frame when ORDER BY is
   // present without explicit frame is RANGE UNBOUNDED PRECEDING to CURRENT ROW.

@@ -409,6 +409,9 @@ class AstBuilder : public PrestoSqlVisitor {
   std::any visitRowConstructor(
       PrestoSqlParser::RowConstructorContext* ctx) override;
 
+  std::any visitNamedRowConstructor(
+      PrestoSqlParser::NamedRowConstructorContext* ctx) override;
+
   std::any visitSubscript(PrestoSqlParser::SubscriptContext* ctx) override;
 
   std::any visitSubqueryExpression(

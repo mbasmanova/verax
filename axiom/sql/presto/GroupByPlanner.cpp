@@ -190,6 +190,11 @@ void findAggregates(
     case core::IExpr::Kind::kSubquery:
       // TODO: Handle aggregates in subqueries.
       return;
+    case core::IExpr::Kind::kConcat:
+      for (const auto& input : expr->inputs()) {
+        findAggregates(input, optionsMap, aggregates, aggregateSet);
+      }
+      return;
     default:
       VELOX_UNSUPPORTED(
           "Unsupported expression kind in findAggregates: {}",

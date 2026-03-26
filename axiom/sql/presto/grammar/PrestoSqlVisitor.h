@@ -456,6 +456,9 @@ class PrestoSqlVisitor : public antlr4::tree::AbstractParseTreeVisitor {
   virtual std::any visitRowConstructor(
       PrestoSqlParser::RowConstructorContext* context) = 0;
 
+  virtual std::any visitNamedRowConstructor(
+      PrestoSqlParser::NamedRowConstructorContext* context) = 0;
+
   virtual std::any visitSubscript(
       PrestoSqlParser::SubscriptContext* context) = 0;
 

@@ -130,6 +130,8 @@ class AstPrinter : public AstVisitor {
 
   void visitRow(Row* node) override;
 
+  void visitNamedRow(NamedRow* node) override;
+
   void visitSubscriptExpression(SubscriptExpression* node) override;
 
   void visitLambdaExpression(LambdaExpression* node) override;

@@ -1918,6 +1918,27 @@ std::any AstBuilder::visitRowConstructor(
       getLocation(ctx), visitTyped<Expression>(ctx->expression())));
 }
 
+std::any AstBuilder::visitNamedRowConstructor(
+    PrestoSqlParser::NamedRowConstructorContext* ctx) {
+  trace("visitNamedRowConstructor");
+
+  auto expressions = ctx->expression();
+  auto identifiers = ctx->identifier();
+
+  std::vector<ExpressionPtr> items;
+  std::vector<std::string> fieldNames;
+  items.reserve(expressions.size());
+  fieldNames.reserve(identifiers.size());
+
+  for (size_t i = 0; i < expressions.size(); ++i) {
+    items.push_back(visitTyped<Expression>(expressions[i]));
+    fieldNames.push_back(identifiers[i]->getText());
+  }
+
+  return std::static_pointer_cast<Expression>(std::make_shared<NamedRow>(
+      getLocation(ctx), std::move(items), std::move(fieldNames)));
+}
+
 std::any AstBuilder::visitSubscript(PrestoSqlParser::SubscriptContext* ctx) {
   trace("visitSubscript");
   return std::static_pointer_cast<Expression>(

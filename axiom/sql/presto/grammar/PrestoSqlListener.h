@@ -612,6 +612,11 @@ class PrestoSqlListener : public antlr4::tree::ParseTreeListener {
   virtual void exitRowConstructor(
       PrestoSqlParser::RowConstructorContext* ctx) = 0;
 
+  virtual void enterNamedRowConstructor(
+      PrestoSqlParser::NamedRowConstructorContext* ctx) = 0;
+  virtual void exitNamedRowConstructor(
+      PrestoSqlParser::NamedRowConstructorContext* ctx) = 0;
+
   virtual void enterSubscript(PrestoSqlParser::SubscriptContext* ctx) = 0;
   virtual void exitSubscript(PrestoSqlParser::SubscriptContext* ctx) = 0;
 
