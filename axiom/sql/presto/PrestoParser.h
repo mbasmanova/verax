@@ -32,6 +32,13 @@ struct ReferencedTables {
   std::optional<facebook::axiom::CatalogSchemaTableName> outputTable;
 };
 
+/// Options controlling SQL dialect extensions beyond standard Presto SQL.
+struct ParserOptions {
+  /// Enables Friendly SQL extensions inspired by DuckDB: named ROW
+  /// constructors, trailing commas, FROM-first syntax, etc.
+  bool friendlySql{true};
+};
+
 /// SQL Parser compatible with PrestoSQL dialect.
 class PrestoParser {
  public:
@@ -41,9 +48,11 @@ class PrestoParser {
   /// specify schema, i.e. SELECT * FROM name.
   PrestoParser(
       const std::string& defaultConnectorId,
-      const std::string& defaultSchema)
+      const std::string& defaultSchema,
+      ParserOptions options = {})
       : defaultConnectorId_{defaultConnectorId},
-        defaultSchema_{defaultSchema} {}
+        defaultSchema_{defaultSchema},
+        options_{options} {}
 
   SqlStatementPtr parse(std::string_view sql, bool enableTracing = false);
 
@@ -77,6 +86,7 @@ class PrestoParser {
 
   const std::string defaultConnectorId_;
   const std::string defaultSchema_;
+  const ParserOptions options_;
 };
 
 } // namespace axiom::sql::presto

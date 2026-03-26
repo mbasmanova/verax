@@ -1922,6 +1922,11 @@ std::any AstBuilder::visitNamedRowConstructor(
     PrestoSqlParser::NamedRowConstructorContext* ctx) {
   trace("visitNamedRowConstructor");
 
+  VELOX_USER_CHECK(
+      friendlySql_,
+      "Named ROW constructor requires Friendly SQL mode. "
+      "Use CAST(ROW(...) AS ROW(name type, ...)) instead.");
+
   auto expressions = ctx->expression();
   auto identifiers = ctx->identifier();
 

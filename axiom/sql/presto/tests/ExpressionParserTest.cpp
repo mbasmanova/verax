@@ -705,6 +705,15 @@ TEST_F(ExpressionParserTest, namedRow) {
   VELOX_EXPECT_EQ_TYPES(expr->type(), ROW({"answer"}, {INTEGER()}));
 }
 
+TEST_F(ExpressionParserTest, namedRowNoFriendlySql) {
+  // Named ROW constructor is rejected when Friendly SQL is disabled.
+  PrestoParser parser(
+      kConnectorId, "default", ParserOptions{.friendlySql = false});
+  VELOX_ASSERT_THROW(
+      parser.parseExpression("row(1 as x, 'hello' as y)"),
+      "Named ROW constructor requires Friendly SQL mode");
+}
+
 TEST_F(ExpressionParserTest, namedRowDereference) {
   // Field access on named ROW.
   auto expr = parseExpr("row(1 as x, 2 as y).x");
