@@ -336,6 +336,240 @@ TEST_F(SqlQueryRunnerTest, explainIo) {
       })"));
 }
 
+TEST_F(SqlQueryRunnerTest, explainIoColumnConstraints) {
+  run("CREATE TABLE t (x BIGINT, ds VARCHAR, region VARCHAR) "
+      "WITH (explain_io = ARRAY['ds', 'region'])");
+  SCOPE_EXIT {
+    run("DROP TABLE t");
+  };
+
+  auto normalizeJson = [](const std::string& jsonStr) {
+    folly::json::serialization_opts opts;
+    opts.pretty_formatting = true;
+    opts.sort_keys = true;
+    return folly::json::serialize(folly::parseJson(jsonStr), opts);
+  };
+
+  auto getJson = [&](const std::string& query) {
+    auto result = run(query);
+    VELOX_CHECK(result.message.has_value());
+    return normalizeJson(result.message.value());
+  };
+
+  auto makeConstraint = [&](const std::string& columnName,
+                            const std::string& typeSignature,
+                            const std::string& domainJson) {
+    return normalizeJson(
+        fmt::format(
+            R"({{"columnName": "{}", "typeSignature": "{}", "domain": {}}})",
+            columnName,
+            typeSignature,
+            domainJson));
+  };
+
+  auto makeTable = [&](const std::string& constraintsJson) {
+    return normalizeJson(
+        fmt::format(
+            R"({{
+          "inputTableColumnInfos": [{{
+            "table": {{
+              "catalog": "test",
+              "schemaTable": {{"schema": "default", "table": "t"}}
+            }},
+            "columnConstraints": [{}]
+          }}]
+        }})",
+            constraintsJson));
+  };
+
+  // Equality constraint.
+  ASSERT_EQ(
+      getJson("EXPLAIN (TYPE IO) SELECT * FROM t WHERE ds = '2026-03-17'"),
+      makeTable(makeConstraint(
+          "ds",
+          "VARCHAR",
+          R"({"nullsAllowed": false, "ranges": [
+            {"low": {"value": "2026-03-17", "bound": "EXACTLY"},
+             "high": {"value": "2026-03-17", "bound": "EXACTLY"}}]})")));
+
+  // IN constraint.
+  ASSERT_EQ(
+      getJson(
+          "EXPLAIN (TYPE IO) SELECT * FROM t "
+          "WHERE ds IN ('2026-03-17', '2026-03-18')"),
+      makeTable(makeConstraint(
+          "ds",
+          "VARCHAR",
+          R"({"nullsAllowed": false, "ranges": [
+            {"low": {"value": "2026-03-17", "bound": "EXACTLY"},
+             "high": {"value": "2026-03-17", "bound": "EXACTLY"}},
+            {"low": {"value": "2026-03-18", "bound": "EXACTLY"},
+             "high": {"value": "2026-03-18", "bound": "EXACTLY"}}]})")));
+
+  // Range constraint.
+  ASSERT_EQ(
+      getJson(
+          "EXPLAIN (TYPE IO) SELECT * FROM t "
+          "WHERE ds >= '2026-03-01' AND ds <= '2026-03-31'"),
+      makeTable(makeConstraint(
+          "ds",
+          "VARCHAR",
+          R"({"nullsAllowed": false, "ranges": [
+            {"low": {"value": "2026-03-01", "bound": "EXACTLY"},
+             "high": {"value": "2026-03-31", "bound": "EXACTLY"}}]})")));
+
+  auto noConstraints = normalizeJson(R"({
+    "inputTableColumnInfos": [{
+      "table": {
+        "catalog": "test",
+        "schemaTable": {"schema": "default", "table": "t"}
+      },
+      "columnConstraints": []
+    }]
+  })");
+
+  // No constraint on explain_io column (filter on non-explain_io column only).
+  ASSERT_EQ(
+      getJson("EXPLAIN (TYPE IO) SELECT * FROM t WHERE x = 1"), noConstraints);
+
+  // Unconvertible filter on explain_io column drops the column entirely.
+  // NOT is not supported, so ds <> 'foo' (which becomes NOT(eq(ds, 'foo')))
+  // causes the column to be dropped.
+  ASSERT_EQ(
+      getJson("EXPLAIN (TYPE IO) SELECT * FROM t WHERE ds <> 'foo'"),
+      noConstraints);
+
+  // Mix of convertible and unconvertible filters: unconvertible conjunct is
+  // skipped (broader is safe), convertible conjunct is shown.
+  ASSERT_EQ(
+      getJson(
+          "EXPLAIN (TYPE IO) SELECT * FROM t "
+          "WHERE ds >= '2026-03-01' AND ds <> 'foo'"),
+      makeTable(makeConstraint(
+          "ds",
+          "VARCHAR",
+          R"({"nullsAllowed": false, "ranges": [
+            {"low": {"value": "2026-03-01", "bound": "EXACTLY"}}]})")));
+
+  // IS NULL OR equality: nullsAllowed is true.
+  ASSERT_EQ(
+      getJson(
+          "EXPLAIN (TYPE IO) SELECT * FROM t "
+          "WHERE ds IS NULL OR ds = '2026-03-17'"),
+      makeTable(makeConstraint(
+          "ds",
+          "VARCHAR",
+          R"({"nullsAllowed": true, "ranges": [
+            {"low": {"value": "2026-03-17", "bound": "EXACTLY"},
+             "high": {"value": "2026-03-17", "bound": "EXACTLY"}}]})")));
+
+  // OR with unconvertible disjunct: the entire OR expression cannot be
+  // converted (dropping a disjunct would narrow the result, which is unsafe).
+  // The unconvertible OR is skipped as a conjunct (broader is safe).
+  ASSERT_EQ(
+      getJson(
+          "EXPLAIN (TYPE IO) SELECT * FROM t "
+          "WHERE ds = '2026-03-17' OR length(ds) > 3"),
+      noConstraints);
+
+  // Constraints on both explain_io columns.
+  ASSERT_EQ(
+      getJson(
+          "EXPLAIN (TYPE IO) SELECT * FROM t "
+          "WHERE ds = '2026-03-17' AND region = 'us'"),
+      normalizeJson(R"({
+        "inputTableColumnInfos": [{
+          "table": {
+            "catalog": "test",
+            "schemaTable": {"schema": "default", "table": "t"}
+          },
+          "columnConstraints": [
+            {
+              "columnName": "ds",
+              "typeSignature": "VARCHAR",
+              "domain": {
+                "nullsAllowed": false,
+                "ranges": [{
+                  "low": {"value": "2026-03-17", "bound": "EXACTLY"},
+                  "high": {"value": "2026-03-17", "bound": "EXACTLY"}
+                }]
+              }
+            },
+            {
+              "columnName": "region",
+              "typeSignature": "VARCHAR",
+              "domain": {
+                "nullsAllowed": false,
+                "ranges": [{
+                  "low": {"value": "us", "bound": "EXACTLY"},
+                  "high": {"value": "us", "bound": "EXACTLY"}
+                }]
+              }
+            }
+          ]
+        }]
+      })"));
+
+  // Greater-than (exclusive low bound).
+  ASSERT_EQ(
+      getJson("EXPLAIN (TYPE IO) SELECT * FROM t WHERE ds > '2026-03-01'"),
+      makeTable(makeConstraint(
+          "ds",
+          "VARCHAR",
+          R"({"nullsAllowed": false, "ranges": [
+            {"low": {"value": "2026-03-01", "bound": "ABOVE"}}]})")));
+
+  // Subquery: constraints are extracted from the inner table scan.
+  ASSERT_EQ(
+      getJson(
+          "EXPLAIN (TYPE IO) "
+          "SELECT * FROM (SELECT * FROM t WHERE ds = '2026-03-17') sub"),
+      makeTable(makeConstraint(
+          "ds",
+          "VARCHAR",
+          R"({"nullsAllowed": false, "ranges": [
+            {"low": {"value": "2026-03-17", "bound": "EXACTLY"},
+             "high": {"value": "2026-03-17", "bound": "EXACTLY"}}]})")));
+
+  // UNION ALL: same table scanned twice, merged into one entry with
+  // united constraints.
+  ASSERT_EQ(
+      getJson(
+          "EXPLAIN (TYPE IO) "
+          "SELECT * FROM t WHERE ds = '2026-03-17' "
+          "UNION ALL "
+          "SELECT * FROM t WHERE ds = '2026-03-18'"),
+      makeTable(makeConstraint(
+          "ds",
+          "VARCHAR",
+          R"({"nullsAllowed": false, "ranges": [
+            {"low": {"value": "2026-03-17", "bound": "EXACTLY"},
+             "high": {"value": "2026-03-17", "bound": "EXACTLY"}},
+            {"low": {"value": "2026-03-18", "bound": "EXACTLY"},
+             "high": {"value": "2026-03-18", "bound": "EXACTLY"}}]})")));
+
+  // UNION (distinct): domains from both branches are united.
+  // (2026-03-17, +inf) ∪ (2026-03-18, +inf) = (2026-03-17, +inf).
+  ASSERT_EQ(
+      getJson(
+          "EXPLAIN (TYPE IO) "
+          "SELECT * FROM t WHERE ds > '2026-03-17' "
+          "UNION "
+          "SELECT * FROM t WHERE ds > '2026-03-18'"),
+      makeTable(makeConstraint(
+          "ds",
+          "VARCHAR",
+          R"({"nullsAllowed": false, "ranges": [
+            {"low": {"value": "2026-03-17", "bound": "ABOVE"}}]})")));
+
+  // ds <= x OR ds >= x covers all values — constraint is omitted.
+  ASSERT_EQ(
+      getJson(
+          "EXPLAIN (TYPE IO) SELECT * FROM t "
+          "WHERE ds <= '2026-03-17' OR ds >= '2026-03-17'"),
+      noConstraints);
+}
+
 TEST_F(SqlQueryRunnerTest, showStats) {
   // Create a table with 100 rows and 4 columns: x has 100 distinct values,
   // y has 7 distinct values, z is an array column, w is NULL for every 4th row.

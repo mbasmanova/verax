@@ -334,6 +334,11 @@ TEST_F(LocalHiveConnectorMetadataTest, createTable) {
   EXPECT_EQ(expected->orderColumns()[1], expected->columns()[1]);
   EXPECT_EQ(expected->hivePartitionColumns().size(), 1);
   EXPECT_EQ(expected->hivePartitionColumns()[0], expected->columns()[3]);
+  EXPECT_TRUE(expected->hivePartitionColumns()[0]->includeInExplainIo());
+  // Non-partition columns should not be included in EXPLAIN IO.
+  EXPECT_FALSE(expected->columns()[0]->includeInExplainIo());
+  EXPECT_FALSE(expected->columns()[1]->includeInExplainIo());
+  EXPECT_FALSE(expected->columns()[2]->includeInExplainIo());
   EXPECT_EQ(expected->fileFormat(), dwio::common::toFileFormat("parquet"));
   EXPECT_EQ(expected->table().options().at("compression_kind"), "zstd");
 

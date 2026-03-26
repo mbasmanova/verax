@@ -17,6 +17,7 @@
 #include "axiom/connectors/hive/HiveConnectorMetadata.h"
 
 #include <folly/CppAttributes.h>
+#include <algorithm>
 #include <utility>
 #include "velox/connectors/hive/HiveConnector.h"
 #include "velox/connectors/hive/HiveConnectorUtil.h"
@@ -68,14 +69,21 @@ namespace {
 std::vector<std::unique_ptr<const connector::Column>> makeColumns(
     const velox::RowTypePtr& type,
     bool bucketed,
-    bool includeHiddenColumns) {
+    bool includeHiddenColumns,
+    const std::vector<std::string>& partitionColumnNames = {}) {
+  const folly::F14FastSet<std::string> partitionColumns(
+      partitionColumnNames.begin(), partitionColumnNames.end());
+
   std::vector<std::unique_ptr<const connector::Column>> columns;
   columns.reserve(type->size() + 2 + (bucketed ? 1 : 0));
 
   for (auto i = 0; i < type->size(); i++) {
     columns.emplace_back(
         std::make_unique<connector::Column>(
-            type->nameOf(i), type->childAt(i), /*hidden=*/false));
+            type->nameOf(i),
+            type->childAt(i),
+            /*hidden=*/false,
+            /*includeInExplainIo=*/partitionColumns.contains(type->nameOf(i))));
   }
 
   if (includeHiddenColumns) {
@@ -102,10 +110,15 @@ HiveTable::HiveTable(
     velox::RowTypePtr type,
     bool bucketed,
     bool includeHiddenColumns,
-    folly::F14FastMap<std::string, velox::Variant> options)
+    folly::F14FastMap<std::string, velox::Variant> options,
+    std::vector<std::string> partitionColumnNames)
     : Table(
           std::move(name),
-          hive::makeColumns(type, bucketed, includeHiddenColumns),
+          hive::makeColumns(
+              type,
+              bucketed,
+              includeHiddenColumns,
+              partitionColumnNames),
           std::move(options)) {}
 
 namespace {
