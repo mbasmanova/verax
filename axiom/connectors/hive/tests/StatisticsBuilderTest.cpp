@@ -182,7 +182,7 @@ TEST_F(StatisticsBuilderTest, addIntegerAscending) {
   ColumnStatistics stats;
   builder->build(stats);
 
-  assertMinMax(stats, TypeKind::BIGINT, 1L, 5L);
+  assertMinMax(stats, TypeKind::BIGINT, int64_t{1}, int64_t{5});
   EXPECT_EQ(stats.nullPct, 0.0f);
   assertOrderingPct(stats, 100.0f, 0.0f);
 }
@@ -194,7 +194,7 @@ TEST_F(StatisticsBuilderTest, addIntegerDescending) {
   ColumnStatistics stats;
   builder->build(stats);
 
-  assertMinMax(stats, TypeKind::BIGINT, 1L, 5L);
+  assertMinMax(stats, TypeKind::BIGINT, int64_t{1}, int64_t{5});
   assertOrderingPct(stats, 0.0f, 100.0f);
 }
 
@@ -205,7 +205,7 @@ TEST_F(StatisticsBuilderTest, addIntegerRepeating) {
   ColumnStatistics stats;
   builder->build(stats);
 
-  assertMinMax(stats, TypeKind::BIGINT, 5L, 5L);
+  assertMinMax(stats, TypeKind::BIGINT, int64_t{5}, int64_t{5});
   assertOrderingPct(stats, 0.0f, 0.0f);
 }
 
@@ -217,7 +217,7 @@ TEST_F(StatisticsBuilderTest, addIntegerMixed) {
   ColumnStatistics stats;
   builder->build(stats);
 
-  assertMinMax(stats, TypeKind::BIGINT, 1L, 5L);
+  assertMinMax(stats, TypeKind::BIGINT, int64_t{1}, int64_t{5});
   // 2 asc / 4 total = 50%, 1 desc / 4 total = 25%
   assertOrderingPct(stats, 50.0f, 25.0f);
 }
@@ -230,7 +230,7 @@ TEST_F(StatisticsBuilderTest, addIntegerWithNulls) {
   ColumnStatistics stats;
   builder->build(stats);
 
-  assertMinMax(stats, TypeKind::BIGINT, 1L, 5L);
+  assertMinMax(stats, TypeKind::BIGINT, int64_t{1}, int64_t{5});
   EXPECT_EQ(stats.nullPct, 40.0f);
   assertOrderingPct(stats, 100.0f, 0.0f);
 }
@@ -354,7 +354,7 @@ TEST_F(StatisticsBuilderTest, addMultipleBatches) {
   ColumnStatistics stats;
   builder->build(stats);
 
-  assertMinMax(stats, TypeKind::BIGINT, 1L, 6L);
+  assertMinMax(stats, TypeKind::BIGINT, int64_t{1}, int64_t{6});
 }
 
 TEST_F(StatisticsBuilderTest, merge) {
@@ -366,7 +366,7 @@ TEST_F(StatisticsBuilderTest, merge) {
   ColumnStatistics stats;
   a->build(stats);
 
-  assertMinMax(stats, TypeKind::BIGINT, 1L, 30L);
+  assertMinMax(stats, TypeKind::BIGINT, int64_t{1}, int64_t{30});
   assertOrderingPct(stats, 100.0f, 0.0f);
 }
 
@@ -456,7 +456,7 @@ TEST_F(StatisticsBuilderTest, mergeWithEmpty) {
     ColumnStatistics stats;
     a->build(stats);
 
-    assertMinMax(stats, TypeKind::BIGINT, 10L, 30L);
+    assertMinMax(stats, TypeKind::BIGINT, int64_t{10}, int64_t{30});
   }
 
   // Merge empty into non-empty.
@@ -469,7 +469,7 @@ TEST_F(StatisticsBuilderTest, mergeWithEmpty) {
     ColumnStatistics stats;
     a->build(stats);
 
-    assertMinMax(stats, TypeKind::BIGINT, 1L, 3L);
+    assertMinMax(stats, TypeKind::BIGINT, int64_t{1}, int64_t{3});
   }
 
   // Merge two empty builders.
@@ -504,7 +504,7 @@ TEST_F(StatisticsBuilderTest, updateBuilders) {
     builders[i]->build(stats[i]);
   }
 
-  assertMinMax(stats[0], TypeKind::BIGINT, 1L, 3L);
+  assertMinMax(stats[0], TypeKind::BIGINT, int64_t{1}, int64_t{3});
   assertMinMax(stats[1], 1.5, 3.5);
   assertMinMax(stats[2], "a", "c");
 }
@@ -527,7 +527,7 @@ TEST_F(StatisticsBuilderTest, updateBuildersWithNullBuilder) {
   builders[0]->build(stats[0]);
   builders[2]->build(stats[2]);
 
-  assertMinMax(stats[0], TypeKind::BIGINT, 1L, 3L);
+  assertMinMax(stats[0], TypeKind::BIGINT, int64_t{1}, int64_t{3});
   assertMinMax(stats[2], "a", "c");
 }
 
@@ -595,7 +595,7 @@ TEST_F(StatisticsBuilderTest, singleElement) {
   ColumnStatistics stats;
   builder->build(stats);
 
-  assertMinMax(stats, TypeKind::BIGINT, 42L, 42L);
+  assertMinMax(stats, TypeKind::BIGINT, int64_t{42}, int64_t{42});
   // Single element has no transitions.
   assertNoOrderingPct(stats);
 }
@@ -622,7 +622,7 @@ TEST_F(StatisticsBuilderTest, negativeIntegers) {
   ColumnStatistics stats;
   builder->build(stats);
 
-  assertMinMax(stats, TypeKind::BIGINT, -100L, 100L);
+  assertMinMax(stats, TypeKind::BIGINT, int64_t{-100}, int64_t{100});
   assertOrderingPct(stats, 100.0f, 0.0f);
 }
 

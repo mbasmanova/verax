@@ -702,7 +702,7 @@ TEST_F(SetTest, filterOnDuplicateColumnInUnionAll) {
   // The Values child's constant filter (2 > 0) is folded and eliminated.
   auto buildMatcher = [&] {
     return core::PlanMatcherBuilder()
-        .hiveScan("t", test::gt("x", 0L))
+        .hiveScan("t", test::gt("x", int64_t{0}))
         .project()
         .localPartition(core::PlanMatcherBuilder().values().project().build());
   };
@@ -767,10 +767,10 @@ TEST_F(SetTest, filterColumnPruningInUnionAll) {
 
   auto buildMatcher = [&] {
     return core::PlanMatcherBuilder()
-        .hiveScan("t", test::gt("x", 0L))
+        .hiveScan("t", test::gt("x", int64_t{0}))
         .localPartition(
             core::PlanMatcherBuilder()
-                .hiveScan("t", test::gt("x", 0L))
+                .hiveScan("t", test::gt("x", int64_t{0}))
                 .project()
                 .build());
   };
@@ -804,7 +804,9 @@ TEST_F(SetTest, constantFalseFilterInUnionAll) {
     auto plan = toSingleNodePlan(logicalPlan);
     AXIOM_ASSERT_PLAN(
         plan,
-        core::PlanMatcherBuilder().hiveScan("t", test::gt("x", 0L)).build());
+        core::PlanMatcherBuilder()
+            .hiveScan("t", test::gt("x", int64_t{0}))
+            .build());
   }
 
   // All branches constant-false (0 > 0 and -1 > 0).

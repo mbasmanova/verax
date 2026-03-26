@@ -5,6 +5,109 @@
 Axiom is licensed under the Apache 2.0 License. A copy of the license
 [can be found here.](LICENSE)
 
+## Getting Started
+
+### Get the Source
+
+```
+git clone --recursive https://github.com/facebookincubator/axiom.git
+cd axiom
+```
+
+If you already cloned without `--recursive`, initialize the Velox submodule:
+
+```
+git submodule sync --recursive
+git submodule update --init --recursive
+```
+
+### System Requirements
+
+Axiom requires a C++20 compiler. Supported platforms:
+
+- **Linux**: Ubuntu 22.04+ with gcc 11+ (tested up to gcc 14) or clang 15+
+- **macOS**: macOS 13+ with Apple Clang 15+ (Xcode 15+)
+
+### Setting up Dependencies
+
+Axiom uses Velox's dependency setup scripts. On macOS, dependencies are
+installed to `deps-install/` by default. Set `INSTALL_PREFIX` to control
+the installation directory:
+
+```
+export INSTALL_PREFIX=$(pwd)/deps-install
+```
+
+Then run the appropriate script for your platform:
+
+**macOS:**
+
+```
+VELOX_BUILD_SHARED=ON PROMPT_ALWAYS_RESPOND=y velox/scripts/setup-macos.sh
+```
+
+**Ubuntu:**
+
+```
+VELOX_BUILD_SHARED=ON PROMPT_ALWAYS_RESPOND=y velox/scripts/setup-ubuntu.sh
+```
+
+`VELOX_BUILD_SHARED=ON` ensures dependencies are built for shared linking,
+which is required by the Velox mono library used in Axiom.
+
+### Building
+
+On macOS, pass the path to the installed dependencies via `EXTRA_CMAKE_FLAGS`:
+
+```
+EXTRA_CMAKE_FLAGS="-DCMAKE_PREFIX_PATH=$(pwd)/deps-install" make debug
+```
+
+Other build targets:
+
+```
+make release                        # optimized build
+make unittest                       # build and run tests
+```
+
+### Running Tests
+
+```
+ctest --test-dir _build/debug -j 8 --output-on-failure
+```
+
+To run a subset of test executables, use `-R` with a regex. Add `-N`
+to list matching tests without running them.
+
+```
+ctest --test-dir _build/debug -R axiom_optimizer      # run all optimizer tests
+ctest --test-dir _build/debug -R axiom_cli_test       # run CLI tests only
+```
+
+To run individual test cases within an executable, use `--gtest_filter`:
+
+```
+_build/debug/axiom/optimizer/tests/axiom_optimizer_tests --gtest_filter="AggregationPlanTest.*"
+```
+
+### Try the CLI
+
+The interactive SQL CLI runs queries against an in-memory TPC-H dataset:
+
+```
+_build/debug/axiom/cli/axiom_sql
+```
+
+```
+SQL> select count(*) from nation;
+ROW<count:BIGINT>
+-----
+count
+-----
+   25
+(1 rows in 1 batches)
+```
+
 ## Code Organization
 
 Axiom is a set of reusable and extensible components designed to be compatible
@@ -33,42 +136,6 @@ These components can be used to put together single-node or distributed
 execution. Single-node execution can be single-threaded or multi-threaded.
 
 <img src="axiom-components.png" alt="Axiom Components" width="400">
-
-An example of an end-to-end single-node system is a command line utility that
-provides interactive SQL query execution against in-memory TPC-H dataset and
-Hive dataset stored on local disk. The code is located in the top-level
-directory “cli”. To launch, run
-
-```
-$ buck run @mode/opt axiom/cli:cli
-
-or
-
-$ ./axiom_sql
-```
-
-Type SQL query at the prompt, finish with a semi-colon and a newline:
-
-```
-SQL> desc nation;
-ROW<column:VARCHAR,type:VARCHAR>
-------------+--------
-column      | type
-------------+--------
-n_nationkey | BIGINT
-n_name      | VARCHAR
-n_regionkey | BIGINT
-n_comment   | VARCHAR
-(4 rows in 4 batches)
-
-SQL> select count(*) from nation;
-ROW<count:BIGINT>
------
-count
------
-   25
-(1 rows in 1 batches)
-```
 
 The query processing flow goes like this:
 

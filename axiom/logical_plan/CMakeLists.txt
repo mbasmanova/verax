@@ -23,7 +23,13 @@ add_library(
   ExprApi.cpp
 )
 
-target_link_libraries(axiom_logical_plan velox_type velox_serialization velox_common_base)
+target_link_libraries(
+  axiom_logical_plan
+  velox_type
+  velox_serialization
+  velox_common_base
+  Boost::headers
+)
 
 add_library(axiom_logical_plan_builder PlanBuilder.cpp NameAllocator.cpp NameMappings.cpp)
 

@@ -26,25 +26,25 @@ on the fly.
 ## Usage
 
 The TPC-H connector is always registered under catalog `tpch` and is the
-default catalog when `--data_path` is not set:
+default catalog when `--data_path` is not set. See the
+[CLI README](../../cli/README.md) for how to launch `axiom_sql`.
 
 ```bash
 # Use default scale factor (tiny).
-buck run @mode/opt axiom/cli:cli -- --query "SELECT count(*) FROM orders"
+axiom_sql --query "SELECT count(*) FROM orders"
 
 # Use sf1 via --schema flag.
-buck run @mode/opt axiom/cli:cli -- --query "SELECT count(*) FROM orders" --schema sf1
+axiom_sql --query "SELECT count(*) FROM orders" --schema sf1
 
 # Use sf1 as a schema qualifier in SQL.
-buck run @mode/opt axiom/cli:cli -- --query "SELECT count(*) FROM sf1.orders"
+axiom_sql --query "SELECT count(*) FROM sf1.orders"
 ```
 
 All 22 standard TPC-H queries are available in
 `axiom/optimizer/tests/tpch/queries/` (e.g. `q1.sql` through `q22.sql`):
 
 ```bash
-cat axiom/optimizer/tests/tpch/queries/q1.sql | \
-    buck run @mode/opt axiom/cli:cli -- --query ""
+cat axiom/optimizer/tests/tpch/queries/q1.sql | axiom_sql --query ""
 ```
 
 ## Tables

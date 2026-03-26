@@ -73,14 +73,14 @@ TEST_F(LogicalPlanNodeEqualityTest, valuesNodeEquality) {
   // Variant-based ValuesNode equality.
   auto makeVariantValues = [] {
     return PlanBuilder()
-        .values(ROW("a", BIGINT()), {Variant::row({Variant(1L)})})
+        .values(ROW("a", BIGINT()), {Variant::row({Variant(int64_t{1})})})
         .planNode();
   };
   EXPECT_EQ(*makeVariantValues(), *makeVariantValues());
 
   auto variantValuesDifferent =
       PlanBuilder()
-          .values(ROW("a", BIGINT()), {Variant::row({Variant(99L)})})
+          .values(ROW("a", BIGINT()), {Variant::row({Variant(int64_t{99})})})
           .planNode();
   EXPECT_NE(*makeVariantValues(), *variantValuesDifferent);
 

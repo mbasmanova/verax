@@ -74,6 +74,12 @@ target_link_libraries(
 
 add_library(axiom_optimizer_tests_tpch_queries TpchQueries.cpp)
 
+target_link_libraries(
+  axiom_optimizer_tests_tpch_queries
+  velox_dwio_common_test_utils
+  Boost::headers
+)
+
 add_executable(axiom_optimizer_tpch_plan_test TpchPlanTest.cpp)
 
 add_test(
