@@ -93,6 +93,7 @@ enum class NodeType {
   kSubqueryExpression,
   kArrayConstructor,
   kRow,
+  kNamedRow,
   kSubscriptExpression,
   kLambdaExpression,
   kLambdaArgumentDeclaration,
