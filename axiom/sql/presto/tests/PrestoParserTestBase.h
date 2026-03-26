@@ -116,6 +116,12 @@ class PrestoParserTestBase : public testing::Test {
     return PrestoParser(kConnectorId, "default");
   }
 
+  /// Creates a PrestoParser with Friendly SQL disabled.
+  PrestoParser makeStrictParser() {
+    return PrestoParser(
+        kConnectorId, "default", ParserOptions{.friendlySql = false});
+  }
+
   /// Test connector with TPC-H table schemas. Supports addTable, createView,
   /// and dropView for test-specific customization.
   std::shared_ptr<facebook::axiom::connector::TestConnector> connector_;
