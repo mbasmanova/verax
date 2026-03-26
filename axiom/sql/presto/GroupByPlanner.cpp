@@ -190,6 +190,10 @@ void findAggregates(
     case core::IExpr::Kind::kSubquery:
       // TODO: Handle aggregates in subqueries.
       return;
+    default:
+      VELOX_UNSUPPORTED(
+          "Unsupported expression kind in findAggregates: {}",
+          expr->toString());
   }
 }
 
