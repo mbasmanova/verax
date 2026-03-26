@@ -663,6 +663,9 @@ class PrestoSqlListener : public antlr4::tree::ParseTreeListener {
   virtual void exitGroupingOperation(
       PrestoSqlParser::GroupingOperationContext* ctx) = 0;
 
+  virtual void enterMethodCall(PrestoSqlParser::MethodCallContext* ctx) = 0;
+  virtual void exitMethodCall(PrestoSqlParser::MethodCallContext* ctx) = 0;
+
   virtual void enterBasicStringLiteral(
       PrestoSqlParser::BasicStringLiteralContext* ctx) = 0;
   virtual void exitBasicStringLiteral(

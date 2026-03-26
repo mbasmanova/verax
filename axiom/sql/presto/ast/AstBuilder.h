@@ -371,6 +371,8 @@ class AstBuilder : public PrestoSqlVisitor {
 
   std::any visitAtTimeZone(PrestoSqlParser::AtTimeZoneContext* ctx) override;
 
+  std::any visitMethodCall(PrestoSqlParser::MethodCallContext* ctx) override;
+
   std::any visitDereference(PrestoSqlParser::DereferenceContext* ctx) override;
 
   std::any visitTypeConstructor(
