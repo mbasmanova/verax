@@ -246,6 +246,23 @@ TEST_F(ExpressionParserTest, doubleLiteral) {
   test("1E+5", 1e5);
 }
 
+TEST_F(ExpressionParserTest, decimalLiteralAsDecimal) {
+  // By default, 1.5 is parsed as DOUBLE.
+  auto expr = parseExpr("1.5");
+  VELOX_EXPECT_EQ_TYPES(expr->type(), DOUBLE());
+
+  // With parseDecimalLiteralAsDouble=false, 1.5 is parsed as DECIMAL(2, 1).
+  PrestoParser parser(
+      kConnectorId,
+      "default",
+      ParserOptions{.parseDecimalLiteralAsDouble = false});
+  expr = parser.parseExpression("1.5");
+  VELOX_EXPECT_EQ_TYPES(expr->type(), DECIMAL(2, 1));
+
+  expr = parser.parseExpression("123.45");
+  VELOX_EXPECT_EQ_TYPES(expr->type(), DECIMAL(5, 2));
+}
+
 TEST_F(ExpressionParserTest, digitSeparators) {
   // Integer with underscores.
   auto expr = parseExpr("10_000");
