@@ -85,7 +85,7 @@ std::string readCommand(const std::string& prompt, bool& atEnd) {
     command << line.substr(startPos) << std::endl;
   }
   atEnd = true;
-  return "";
+  return command.str();
 }
 
 } // namespace axiom::cli

@@ -46,6 +46,11 @@ class StdinReaderTest : public ::testing::Test {
 
     dup2(pipefd[0], STDIN_FILENO);
     close(pipefd[0]);
+
+    // Clear EOF flag on stdin's FILE* after replacing the underlying fd.
+    // Without this, tests that read to EOF (e.g. noSemicolon) leave the
+    // flag set, causing subsequent tests to see immediate EOF.
+    clearerr(stdin);
   }
 
   void testSingleCommand(
@@ -106,6 +111,13 @@ TEST_F(StdinReaderTest, whitespace) {
   testSingleCommand("SELECT 4;\t\t\n", "SELECT 4");
   testSingleCommand("  \t  SELECT 5;  \t  \n", "SELECT 5");
   testSingleCommand("\r\nSELECT 6;\r\n", "SELECT 6");
+}
+
+TEST_F(StdinReaderTest, noSemicolon) {
+  setStdInput("SELECT 1\n");
+  bool atEnd = false;
+  EXPECT_EQ(readCommand("SQL> ", atEnd), "SELECT 1\n");
+  EXPECT_TRUE(atEnd);
 }
 
 TEST_F(StdinReaderTest, history) {
