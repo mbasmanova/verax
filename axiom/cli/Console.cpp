@@ -16,6 +16,7 @@
 
 #include "axiom/cli/Console.h"
 #include <folly/FileUtil.h>
+#include <unistd.h>
 #include <iostream>
 #include <optional>
 #include "axiom/cli/QueryIdGenerator.h"
@@ -104,11 +105,14 @@ void Console::run() {
   if (!FLAGS_query.empty()) {
     runNoThrow(FLAGS_query, false);
   } else {
-    std::cout << "Axiom SQL. Type statement and end with ;.\n"
-                 "flag name = value; sets a gflag.\n"
-                 "help; prints help text."
-              << std::endl;
-    readCommands("SQL> ");
+    const bool interactive = isatty(STDIN_FILENO);
+    if (interactive) {
+      std::cout << "Axiom SQL. Type statement and end with ;.\n"
+                   "flag name = value; sets a gflag.\n"
+                   "help; prints help text."
+                << std::endl;
+    }
+    readCommands("SQL> ", interactive);
   }
 }
 
@@ -249,7 +253,7 @@ void Console::runNoThrow(std::string_view sql, bool isInteractive) {
   }
 }
 
-void Console::readCommands(const std::string& prompt) {
+void Console::readCommands(const std::string& prompt, bool interactive) {
   linenoiseSetMultiLine(1);
   linenoiseHistorySetMaxLen(1024);
 
@@ -264,6 +268,9 @@ void Console::readCommands(const std::string& prompt) {
     bool atEnd;
     std::string command = cli::readCommand(prompt, atEnd);
     if (atEnd) {
+      if (!command.empty()) {
+        runNoThrow(command, interactive);
+      }
       break;
     }
 
@@ -341,7 +348,7 @@ void Console::readCommands(const std::string& prompt) {
       continue;
     }
 
-    runNoThrow(command);
+    runNoThrow(command, interactive);
   }
 }
 } // namespace axiom::sql
