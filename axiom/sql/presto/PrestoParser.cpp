@@ -17,6 +17,7 @@
 #include "axiom/sql/presto/PrestoParser.h"
 #include <folly/ScopeGuard.h>
 #include <cctype>
+#include <unordered_set>
 #include "axiom/common/CatalogSchemaTableName.h"
 #include "axiom/connectors/ConnectorMetadata.h"
 #include "axiom/logical_plan/PlanBuilder.h"
@@ -275,13 +276,15 @@ class RelationPlanner : public AstVisitor {
       const std::string& defaultConnectorId,
       const std::string& defaultSchema,
       const std::function<std::shared_ptr<axiom::sql::presto::Statement>(
-          std::string_view /*sql*/)>& parseSql)
+          std::string_view /*sql*/)>& parseSql,
+      bool friendlySql = true)
       : context_{defaultConnectorId, defaultSchema,
         /*queryCtxPtr=*/nullptr,
         /*hook=*/nullptr, std::make_shared<lp::ThrowingSqlExpressionsParser>()},
         defaultSchema_{defaultSchema},
         parseSql_{parseSql},
-        builder_(newBuilder()) {}
+        builder_(newBuilder()),
+        friendlySql_{friendlySql} {}
 
   lp::LogicalPlanNodePtr plan() {
     return builder_->build();
@@ -669,6 +672,25 @@ class RelationPlanner : public AstVisitor {
     // to how GroupByPlanner handles aggregates in expressions.
     std::unordered_map<const core::IExpr*, lp::WindowSpec> windowOptions;
 
+    // Lateral column alias map: alias name → expression. When friendlySql is
+    // enabled, aliases defined in earlier SELECT items can be referenced in
+    // later items. Populated left-to-right as aliases are encountered.
+    // Column names take priority over aliases to preserve backward
+    // compatibility (e.g., SELECT a AS b, b FROM t — second b is column b).
+    std::unordered_map<std::string, core::ExprPtr> aliasExprs;
+    std::unordered_set<std::string> columnNames;
+    if (friendlySql_) {
+      for (const auto& name : builder_->outputNames()) {
+        if (name.has_value()) {
+          columnNames.insert(name.value());
+        }
+      }
+      exprPlanner_.setLateralAliases(&aliasExprs, &columnNames);
+    }
+    SCOPE_EXIT {
+      exprPlanner_.clearLateralAliases();
+    };
+
     std::vector<lp::ExprApi> exprs;
     for (const auto& item : selectItems) {
       if (item->is(NodeType::kAllColumns)) {
@@ -704,6 +726,9 @@ class RelationPlanner : public AstVisitor {
 
         if (singleColumn->alias() != nullptr) {
           auto alias = canonicalizeIdentifier(*singleColumn->alias());
+          if (friendlySql_) {
+            aliasExprs[alias] = expr.expr();
+          }
           expr = expr.as(alias);
         }
         exprs.push_back(expr);
@@ -1040,6 +1065,7 @@ class RelationPlanner : public AstVisitor {
       }};
   std::unordered_map<std::string, std::shared_ptr<WithQuery>> withQueries_;
   ViewMap views_;
+  bool friendlySql_;
 };
 
 } // namespace
@@ -1841,7 +1867,8 @@ SqlStatementPtr doPlan(
     const std::string& defaultConnectorId,
     const std::string& defaultSchema,
     const std::function<std::shared_ptr<axiom::sql::presto::Statement>(
-        std::string_view /*sql*/)>& parseSql) {
+        std::string_view /*sql*/)>& parseSql,
+    bool friendlySql = true) {
   if (query->is(NodeType::kInsert)) {
     return parseInsert(
         *query->as<Insert>(), defaultConnectorId, defaultSchema, parseSql);
@@ -1911,7 +1938,8 @@ SqlStatementPtr doPlan(
   }
 
   if (query->is(NodeType::kQuery)) {
-    RelationPlanner planner(defaultConnectorId, defaultSchema, parseSql);
+    RelationPlanner planner(
+        defaultConnectorId, defaultSchema, parseSql, friendlySql);
     query->accept(&planner);
     return std::make_shared<SelectStatement>(planner.plan(), planner.views());
   }
@@ -1948,7 +1976,11 @@ SqlStatementPtr PrestoParser::doParse(
   if (query->is(NodeType::kExplain)) {
     auto* explain = query->as<Explain>();
     auto sqlStatement = doPlan(
-        explain->statement(), defaultConnectorId_, defaultSchema_, parseSql);
+        explain->statement(),
+        defaultConnectorId_,
+        defaultSchema_,
+        parseSql,
+        options_.friendlySql);
     return parseExplain(*explain, sqlStatement);
   }
 
@@ -1971,7 +2003,12 @@ SqlStatementPtr PrestoParser::doParse(
         std::move(catalog), use->schema()->value());
   }
 
-  return doPlan(query, defaultConnectorId_, defaultSchema_, parseSql);
+  return doPlan(
+      query,
+      defaultConnectorId_,
+      defaultSchema_,
+      parseSql,
+      options_.friendlySql);
 }
 
 ReferencedTables PrestoParser::getReferencedTables(std::string_view sql) {

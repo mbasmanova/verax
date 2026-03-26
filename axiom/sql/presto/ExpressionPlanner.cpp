@@ -280,8 +280,20 @@ lp::ExprApi ExpressionPlanner::toExpr(
         aggregateOptions,
     std::unordered_map<const core::IExpr*, lp::WindowSpec>* windowOptions) {
   switch (node->type()) {
-    case NodeType::kIdentifier:
-      return lp::Col(canonicalizeIdentifier(*node->as<Identifier>()));
+    case NodeType::kIdentifier: {
+      auto name = canonicalizeIdentifier(*node->as<Identifier>());
+      // Lateral column alias: resolve to the alias expression if the name
+      // matches an alias and is NOT a known column (columns take priority).
+      if (aliasExprs_ != nullptr) {
+        bool isColumn = columnNames_ != nullptr && columnNames_->contains(name);
+        if (!isColumn) {
+          if (auto it = aliasExprs_->find(name); it != aliasExprs_->end()) {
+            return lp::ExprApi(it->second);
+          }
+        }
+      }
+      return lp::Col(name);
+    }
 
     case NodeType::kDereferenceExpression: {
       auto* dereference = node->as<DereferenceExpression>();
