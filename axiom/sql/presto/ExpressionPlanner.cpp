@@ -20,6 +20,7 @@
 #include <cctype>
 #include "velox/functions/prestosql/types/JsonType.h"
 #include "velox/functions/prestosql/types/TimestampWithTimeZoneType.h"
+#include "velox/parse/Expressions.h"
 
 namespace axiom::sql::presto {
 
@@ -646,6 +647,18 @@ lp::ExprApi ExpressionPlanner::toExpr(
       }
 
       return lp::Call("row_constructor", items);
+    }
+
+    case NodeType::kNamedRow: {
+      auto* row = node->as<NamedRow>();
+      std::vector<core::ExprPtr> childExprs;
+      childExprs.reserve(row->items().size());
+      for (const auto& item : row->items()) {
+        childExprs.push_back(
+            toExpr(item, aggregateOptions, windowOptions).expr());
+      }
+      return lp::ExprApi{std::make_shared<core::ConcatExpr>(
+          row->fieldNames(), std::move(childExprs))};
     }
 
     case NodeType::kFunctionCall: {

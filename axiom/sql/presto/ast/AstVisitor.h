@@ -237,6 +237,10 @@ class AstVisitor {
     defaultVisit(node);
   }
 
+  virtual void visitNamedRow(NamedRow* node) {
+    defaultVisit(node);
+  }
+
   virtual void visitSubscriptExpression(SubscriptExpression* node) {
     defaultVisit(node);
   }

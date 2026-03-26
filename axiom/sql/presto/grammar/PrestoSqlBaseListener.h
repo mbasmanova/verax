@@ -751,6 +751,11 @@ class PrestoSqlBaseListener : public PrestoSqlListener {
   virtual void exitRowConstructor(
       PrestoSqlParser::RowConstructorContext* /*ctx*/) override {}
 
+  virtual void enterNamedRowConstructor(
+      PrestoSqlParser::NamedRowConstructorContext* /*ctx*/) override {}
+  virtual void exitNamedRowConstructor(
+      PrestoSqlParser::NamedRowConstructorContext* /*ctx*/) override {}
+
   virtual void enterSubscript(
       PrestoSqlParser::SubscriptContext* /*ctx*/) override {}
   virtual void exitSubscript(

@@ -115,6 +115,13 @@ The `LogicalPlanNode` tree is wrapped in a `SqlStatement` subclass:
 | EXPLAIN | `ExplainStatement` |
 | USE | `UseStatement` |
 
+## Presto SQL Extensions
+
+Axiom extends Presto SQL with several features not available in Presto Java,
+including named ROW constructors, `EXCEPT ALL` / `INTERSECT ALL`, and
+additional `EXPLAIN` types. See
+[docs/PrestoSqlExtensions.md](docs/PrestoSqlExtensions.md) for details.
+
 ## Differences from Presto Java
 
 ### No Separate Analysis Phase

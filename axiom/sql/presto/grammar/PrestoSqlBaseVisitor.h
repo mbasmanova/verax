@@ -768,6 +768,11 @@ class PrestoSqlBaseVisitor : public PrestoSqlVisitor {
     return visitChildren(ctx);
   }
 
+  virtual std::any visitNamedRowConstructor(
+      PrestoSqlParser::NamedRowConstructorContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
   virtual std::any visitSubscript(
       PrestoSqlParser::SubscriptContext* ctx) override {
     return visitChildren(ctx);

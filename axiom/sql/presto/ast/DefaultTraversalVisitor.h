@@ -738,6 +738,12 @@ class DefaultTraversalVisitor : public AstVisitor {
     }
   }
 
+  void visitNamedRow(NamedRow* node) override {
+    for (const auto& item : node->items()) {
+      item->accept(this);
+    }
+  }
+
   void visitSubscriptExpression(SubscriptExpression* node) override {
     if (node->base()) {
       node->base()->accept(this);

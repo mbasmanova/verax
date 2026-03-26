@@ -452,6 +452,32 @@ class Row : public Expression {
   std::vector<ExpressionPtr> items_;
 };
 
+/// Named ROW constructor: ROW(expr1 AS f1, expr2 AS f2, ...).
+class NamedRow : public Expression {
+ public:
+  NamedRow(
+      NodeLocation location,
+      std::vector<ExpressionPtr> items,
+      std::vector<std::string> fieldNames)
+      : Expression(NodeType::kNamedRow, location),
+        items_(std::move(items)),
+        fieldNames_(std::move(fieldNames)) {}
+
+  const std::vector<ExpressionPtr>& items() const {
+    return items_;
+  }
+
+  const std::vector<std::string>& fieldNames() const {
+    return fieldNames_;
+  }
+
+  void accept(AstVisitor* visitor) override;
+
+ private:
+  std::vector<ExpressionPtr> items_;
+  std::vector<std::string> fieldNames_;
+};
+
 class SubscriptExpression : public Expression {
  public:
   SubscriptExpression(

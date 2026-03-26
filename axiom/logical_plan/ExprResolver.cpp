@@ -24,6 +24,7 @@
 #include "velox/expression/FunctionSignature.h"
 #include "velox/expression/SignatureBinder.h"
 #include "velox/functions/FunctionRegistry.h"
+#include "velox/parse/Expressions.h"
 #include "velox/vector/VariantToVector.h"
 
 namespace facebook::axiom::logical_plan {
@@ -828,6 +829,21 @@ ExprPtr ExprResolver::resolveScalarTypes(
   if (const auto* subquery =
           dynamic_cast<const velox::core::SubqueryExpr*>(expr.get())) {
     return std::make_shared<SubqueryExpr>(subquery->subquery());
+  }
+
+  // Named ROW constructor: ROW(expr1 AS f1, expr2 AS f2, ...).
+  // Resolve child types and produce a row_constructor with named ROW type.
+  if (const auto* concat =
+          dynamic_cast<const velox::core::ConcatExpr*>(expr.get())) {
+    std::vector<velox::TypePtr> types;
+    types.reserve(inputs.size());
+    for (const auto& input : inputs) {
+      types.push_back(input->type());
+    }
+    auto rowType =
+        velox::ROW(folly::copy(concat->fieldNames()), std::move(types));
+    return std::make_shared<CallExpr>(
+        rowType, "row_constructor", std::move(inputs));
   }
 
   VELOX_NYI("Can't resolve {}", expr->toString());

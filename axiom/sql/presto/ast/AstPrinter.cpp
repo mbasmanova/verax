@@ -16,6 +16,7 @@
 
 #include "axiom/sql/presto/ast/AstPrinter.h"
 #include <fmt/format.h>
+#include <fmt/ranges.h>
 
 namespace axiom::sql::presto {
 
@@ -697,6 +698,18 @@ void AstPrinter::visitArrayConstructor(ArrayConstructor* node) {
 
 void AstPrinter::visitRow(Row* node) {
   printHeader("Row", node);
+
+  indent_++;
+  for (const auto& item : node->items()) {
+    item->accept(this);
+  }
+  indent_--;
+}
+
+void AstPrinter::visitNamedRow(NamedRow* node) {
+  printHeader("NamedRow", node, [&](std::ostream& out) {
+    out << fmt::format("{}", fmt::join(node->fieldNames(), ", "));
+  });
 
   indent_++;
   for (const auto& item : node->items()) {

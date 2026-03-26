@@ -93,6 +93,7 @@ const auto& nodeTypeNames() {
       {NodeType::kSubqueryExpression, "SubqueryExpression"},
       {NodeType::kArrayConstructor, "ArrayConstructor"},
       {NodeType::kRow, "Row"},
+      {NodeType::kNamedRow, "NamedRow"},
       {NodeType::kSubscriptExpression, "SubscriptExpression"},
       {NodeType::kLambdaExpression, "LambdaExpression"},
       {NodeType::kLambdaArgumentDeclaration, "LambdaArgumentDeclaration"},
@@ -443,6 +444,10 @@ void ArrayConstructor::accept(AstVisitor* visitor) {
 
 void Row::accept(AstVisitor* visitor) {
   visitor->visitRow(this);
+}
+
+void NamedRow::accept(AstVisitor* visitor) {
+  visitor->visitNamedRow(this);
 }
 
 void SubscriptExpression::accept(AstVisitor* visitor) {
