@@ -17,6 +17,7 @@
 
 #include <functional>
 #include <unordered_map>
+#include <unordered_set>
 #include "axiom/logical_plan/ExprApi.h"
 #include "axiom/logical_plan/PlanBuilder.h"
 #include "axiom/sql/presto/ast/AstNodesAll.h"
@@ -78,6 +79,25 @@ class ExpressionPlanner {
       std::unordered_map<const facebook::velox::core::IExpr*, lp::WindowSpec>*
           windowOptions = nullptr);
 
+  /// Sets alias-to-expression mappings for lateral column alias resolution.
+  /// When set, Identifier nodes matching an alias key are resolved to the
+  /// alias's expression instead of being treated as column references.
+  /// Column names take priority over aliases — if a name exists in both
+  /// 'columnNames' and 'aliasExprs', it is treated as a column reference.
+  void setLateralAliases(
+      const std::unordered_map<std::string, facebook::velox::core::ExprPtr>*
+          aliasExprs,
+      const std::unordered_set<std::string>* columnNames) {
+    aliasExprs_ = aliasExprs;
+    columnNames_ = columnNames;
+  }
+
+  /// Clears lateral column alias mappings.
+  void clearLateralAliases() {
+    aliasExprs_ = nullptr;
+    columnNames_ = nullptr;
+  }
+
  private:
   // Converts a Window AST node into a WindowSpec.
   lp::WindowSpec convertWindow(
@@ -88,6 +108,13 @@ class ExpressionPlanner {
 
   SubqueryPlanner subqueryPlanner_;
   SortingKeyResolver sortingKeyResolver_;
+
+  // Lateral column alias mappings. When non-null, Identifier nodes matching
+  // a key are resolved to the corresponding expression, unless the name also
+  // appears in columnNames_ (column names take priority).
+  const std::unordered_map<std::string, facebook::velox::core::ExprPtr>*
+      aliasExprs_{nullptr};
+  const std::unordered_set<std::string>* columnNames_{nullptr};
 };
 
 } // namespace axiom::sql::presto

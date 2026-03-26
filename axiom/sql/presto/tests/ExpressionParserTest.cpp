@@ -769,6 +769,67 @@ TEST_F(ExpressionParserTest, methodCallNoFriendlySql) {
       "Method-call syntax requires Friendly SQL mode");
 }
 
+TEST_F(ExpressionParserTest, lateralColumnAlias) {
+  // Parses 'SELECT <selectList> FROM nation' and verifies each project
+  // expression matches the expected toString() output.
+  auto testExprs = [&](std::string_view selectList,
+                       const std::vector<std::string>& expectedExprs) {
+    SCOPED_TRACE(selectList);
+    testSelect(
+        fmt::format("SELECT {} FROM nation", selectList),
+        matchScan()
+            .project([&](const lp::LogicalPlanNodePtr& node) {
+              auto& project = *node->as<lp::ProjectNode>();
+              ASSERT_EQ(expectedExprs.size(), project.expressions().size());
+              for (size_t i = 0; i < expectedExprs.size(); ++i) {
+                EXPECT_EQ(expectedExprs[i], project.expressionAt(i)->toString())
+                    << "at index " << i;
+              }
+            })
+            .output());
+  };
+
+  // Basic reuse: j is expanded to (n_regionkey + 1).
+  testExprs(
+      "n_regionkey + 1 AS j, j + 2 AS k",
+      {
+          "plus(n_regionkey, CAST(1 AS BIGINT))",
+          "plus(plus(n_regionkey, CAST(1 AS BIGINT)), CAST(2 AS BIGINT))",
+      });
+
+  // Triple chaining: each alias references the previous.
+  testExprs(
+      "n_regionkey AS x, x + 1 AS y, y * 2 AS z",
+      {
+          "n_regionkey",
+          "plus(n_regionkey, CAST(1 AS BIGINT))",
+          "multiply(plus(n_regionkey, CAST(1 AS BIGINT)), CAST(2 AS BIGINT))",
+      });
+
+  // Alias with function call and method-call chaining.
+  testExprs(
+      "upper(n_name) AS u, u.substr(1, 3) AS s",
+      {"upper(n_name)", "substr(upper(n_name), 1, 3)"});
+}
+
+TEST_F(ExpressionParserTest, lateralColumnAliasErrors) {
+  // Forward reference: j is used before it's defined.
+  VELOX_ASSERT_THROW(
+      parseSql("SELECT j + 2 AS k, n_regionkey + 1 AS j FROM nation"),
+      "Cannot resolve column: j");
+
+  // Self-reference: j is not yet in the alias map when the expression is
+  // evaluated, so it resolves as a (non-existent) column reference.
+  VELOX_ASSERT_THROW(
+      parseSql("SELECT j + 1 AS j FROM nation"), "Cannot resolve column: j");
+
+  // Lateral column aliases are not available when Friendly SQL is disabled.
+  VELOX_ASSERT_THROW(
+      makeStrictParser().parse(
+          "SELECT n_regionkey + 1 AS j, j + 2 AS k FROM nation", true),
+      "Cannot resolve column: j");
+}
+
 TEST_F(ExpressionParserTest, row) {
   testNationExpr(
       "row(n_regionkey, n_name)", "row_constructor(n_regionkey, n_name)");

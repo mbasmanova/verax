@@ -20,6 +20,7 @@ Friendly SQL features:
 | FROM-first syntax | `FROM t WHERE x = 1` |
 | Digit separators | `SELECT 1_000_000` |
 | Method-call syntax | `'hello'.upper().substr(1, 3)` |
+| Lateral column aliases | `SELECT i+1 AS j, j+2 AS k` |
 
 ## Named ROW Constructor
 
@@ -133,6 +134,34 @@ SELECT (price * quantity).abs()
 The method-call syntax supports simple function calls only — no `DISTINCT`,
 `ORDER BY`, `FILTER`, or `OVER` clauses. For those, use standard function call
 syntax.
+
+## Lateral Column Aliases
+
+*Friendly SQL feature — requires `friendlySql` flag.*
+
+Allows referencing aliases defined in earlier SELECT items within the same
+SELECT list. The alias is expanded inline — semantically identical to writing
+the expression out by hand.
+
+```sql
+-- Basic reuse.
+SELECT price * quantity AS total, total * tax_rate AS tax FROM orders
+-- Equivalent to: SELECT price * quantity AS total, (price * quantity) * tax_rate AS tax
+
+-- Chaining.
+SELECT a + 1 AS x, x + 2 AS y, y * 3 AS z FROM t
+-- Equivalent to: SELECT a + 1 AS x, (a + 1) + 2 AS y, ((a + 1) + 2) * 3 AS z
+
+-- With functions (combines with method-call syntax).
+SELECT upper(name) AS u, u.substr(1, 3) AS abbrev FROM t
+```
+
+Rules:
+- **Left-to-right only.** Forward references and self-references fail.
+- **Columns take priority.** If a name is both a FROM column and an alias, the
+  column wins (preserves backward compatibility).
+- **SELECT list scope only.** Aliases are not expanded in GROUP BY, HAVING,
+  WHERE, or ORDER BY.
 
 ## EXCEPT ALL / INTERSECT ALL
 
