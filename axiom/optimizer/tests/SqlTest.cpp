@@ -19,7 +19,7 @@
 #include <gtest/gtest.h>
 #include "axiom/optimizer/tests/SqlQueryEntry.h"
 #include "axiom/optimizer/tests/SqlTestBase.h"
-#include "velox/dwio/common/tests/utils/DataFiles.h"
+#include "axiom/optimizer/tests/TestDataPath.h"
 
 namespace facebook::axiom::optimizer::test {
 namespace {
@@ -84,8 +84,7 @@ std::string readFile(const std::string& path) {
 
 // Registers all queries from a .sql file as individual gtest tests.
 void registerQueryFile(const std::string& fileName) {
-  auto path = velox::test::getDataFilePath(
-      "axiom/optimizer/tests", fmt::format("sql/{}", fileName));
+  auto path = getTestFilePath(fmt::format("sql/{}", fileName));
   auto content = readFile(path);
   auto entries = QueryEntry::parse(content);
 

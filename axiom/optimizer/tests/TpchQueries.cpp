@@ -16,13 +16,13 @@
 #include "axiom/optimizer/tests/TpchQueries.h"
 #include <boost/algorithm/string.hpp>
 #include <fstream>
+#include "axiom/optimizer/tests/TestDataPath.h"
 #include "velox/common/base/Exceptions.h"
-#include "velox/dwio/common/tests/utils/DataFiles.h"
 
-namespace facebook::axiom::optimizer::tests {
+namespace facebook::axiom::optimizer::test {
 
 std::string readSqlFromFile(const std::string& filePath) {
-  auto path = velox::test::getDataFilePath("axiom/optimizer/tests", filePath);
+  auto path = getTestFilePath(filePath);
   std::ifstream inputFile(path, std::ifstream::binary);
 
   VELOX_CHECK(inputFile, "Failed to open SQL file: {}", path);
@@ -54,4 +54,4 @@ std::string readTpchSql(int32_t query) {
   return sql;
 }
 
-} // namespace facebook::axiom::optimizer::tests
+} // namespace facebook::axiom::optimizer::test

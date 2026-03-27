@@ -13,16 +13,32 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #pragma once
 
+#include <filesystem>
 #include <string>
+#include "velox/common/base/Exceptions.h"
 
 namespace facebook::axiom::optimizer::test {
 
-/// Reads SQL from a file relative to the axiom/optimizer/tests directory.
-std::string readSqlFromFile(const std::string& filePath);
-
-/// Reads and returns the SQL for the given TPC-H query number.
-std::string readTpchSql(int32_t query);
+/// Returns the full path to a file relative to the optimizer test directory.
+/// Works when run from the test source directory (ctest/Buck) and from the
+/// repo root.
+inline std::string getTestFilePath(const std::string& filePath) {
+  if (std::filesystem::exists(filePath)) {
+    return filePath;
+  }
+  auto withBase = "axiom/optimizer/tests/" + filePath;
+  if (std::filesystem::exists(withBase)) {
+    return withBase;
+  }
+  auto cwd = std::filesystem::current_path().string();
+  VELOX_FAIL(
+      "Test data file not found. Checked '{}' and '{}' relative to cwd '{}'",
+      filePath,
+      withBase,
+      cwd);
+}
 
 } // namespace facebook::axiom::optimizer::test
