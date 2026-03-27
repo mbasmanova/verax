@@ -20,14 +20,14 @@ on:
       - axiom/**
       - velox
       - CMakeLists.txt
-      - .github/workflows/build_and_test.yml
+      - .github/workflows/linux.yml
       - Makefile
   pull_request:
     paths:
       - axiom/**
       - velox
       - CMakeLists.txt
-      - .github/workflows/build_and_test.yml
+      - .github/workflows/linux.yml
       - Makefile
 permissions:
   contents: read
