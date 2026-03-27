@@ -212,7 +212,7 @@ class QueryTestBase : public velox::exec::test::HiveConnectorTestBase {
     return *gSuiteHistory;
   }
 
-  /// Returns the full path to a test data file.
+  /// Returns the full path to a test data file in test_data/.
   static std::string getTestDataPath(const std::string& filename);
 
   static velox::core::PlanMatcherBuilder matchScan(

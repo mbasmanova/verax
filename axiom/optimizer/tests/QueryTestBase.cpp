@@ -19,6 +19,7 @@
 #include "axiom/optimizer/Optimization.h"
 #include "axiom/optimizer/Plan.h"
 #include "axiom/optimizer/VeloxHistory.h"
+#include "axiom/optimizer/tests/TestDataPath.h"
 #include "axiom/sql/presto/PrestoParser.h"
 #include "velox/dwio/common/tests/utils/DataFiles.h"
 #include "velox/exec/tests/utils/LocalExchangeSource.h"
@@ -356,8 +357,7 @@ velox::core::PlanNodePtr QueryTestBase::toSingleNodePlan(
 }
 
 std::string QueryTestBase::getTestDataPath(const std::string& filename) {
-  return velox::test::getDataFilePath(
-      "axiom/optimizer/tests", fmt::format("test_data/{}", filename));
+  return test::getTestFilePath(fmt::format("test_data/{}", filename));
 }
 
 std::shared_ptr<velox::core::QueryCtx> QueryTestBase::makeQueryCtx(

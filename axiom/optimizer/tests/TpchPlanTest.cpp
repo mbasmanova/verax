@@ -19,8 +19,8 @@
 #include "axiom/connectors/hive/HiveMetadataConfig.h"
 #include "axiom/logical_plan/PlanBuilder.h"
 #include "axiom/optimizer/tests/HiveQueriesTestBase.h"
+#include "axiom/optimizer/tests/TestDataPath.h"
 #include "axiom/optimizer/tests/TpchQueries.h"
-#include "velox/dwio/common/tests/utils/DataFiles.h"
 #include "velox/exec/tests/utils/TpchQueryBuilder.h"
 #include "velox/type/tests/SubfieldFiltersBuilder.h"
 
@@ -62,7 +62,7 @@ class TpchPlanTest : public virtual test::HiveQueriesTestBase {
   }
 
   lp::LogicalPlanNodePtr parseTpchSql(int32_t query) {
-    auto sql = tests::readTpchSql(query);
+    auto sql = test::readTpchSql(query);
 
     auto statement = prestoParser().parse(sql);
 
@@ -76,7 +76,7 @@ class TpchPlanTest : public virtual test::HiveQueriesTestBase {
   }
 
   void checkTpchSql(int32_t query) {
-    auto sql = tests::readTpchSql(query);
+    auto sql = test::readTpchSql(query);
     auto referencePlan = referenceBuilder_->getQueryPlan(query).plan;
     checkResults(sql, referencePlan);
   }
@@ -725,8 +725,7 @@ TEST_F(TpchPlanTest, q22) {
 
 // Use to re-generate the plans stored in tpch/plans directory.
 TEST_F(TpchPlanTest, DISABLED_makePlans) {
-  const auto path =
-      velox::test::getDataFilePath("axiom/optimizer/tests", "tpch/plans");
+  const auto path = test::getTestFilePath("tpch/plans");
 
   const MultiFragmentPlan::Options options{.numWorkers = 1, .numDrivers = 1};
 
