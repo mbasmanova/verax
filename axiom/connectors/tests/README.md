@@ -49,8 +49,10 @@ The Test connector is designed for three use cases:
 The Test connector is always registered under catalog `test` with a single
 schema called `default`. All tables are created in `test.default`.
 
+See the [CLI README](../../cli/README.md) for how to launch `axiom_sql`.
+
 ```bash
-buck run @mode/opt axiom/cli:cli
+axiom_sql
 ```
 
 ```sql
@@ -80,7 +82,7 @@ CREATE TABLE t AS SELECT * FROM unnest(ARRAY[1, 2, 3], ARRAY[10, 20, 30]) AS t(a
 ```
 
 ```bash
-buck run @mode/opt axiom/cli:cli -- --init init.sql --query "SELECT sum(b) FROM t"
+axiom_sql --init init.sql --query "SELECT sum(b) FROM t"
 ```
 
 ## C++ API

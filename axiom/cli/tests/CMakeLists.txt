@@ -30,5 +30,5 @@ target_link_libraries(
   velox_vector_test_lib
   GTest::gtest
   GTest::gmock
-  re2
+  re2::re2
 )

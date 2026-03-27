@@ -5,18 +5,20 @@ dataset, local Hive data, or Test Connector tables.
 
 ## Launch
 
-From a CMake build:
-
-```bash
-cd _build/release
-./axiom/cli/axiom_sql
-```
-
 Using Buck:
 
 ```bash
 buck run @mode/opt axiom/cli:cli
 ```
+
+From a CMake build:
+
+```bash
+_build/release/axiom/cli/axiom_sql
+```
+
+The examples below use `axiom_sql` for brevity. With Buck, replace
+`axiom_sql <args>` with `buck run @mode/opt axiom/cli:cli -- <args>`.
 
 ## Command-Line Flags
 

@@ -132,8 +132,13 @@ message("FINAL CMAKE_CXX_FLAGS=${CMAKE_CXX_FLAGS}")
 
 include(CTest) # include after project() but before add_subdirectory()
 
-velox_set_source(gtest)
+# Always bundle gtest to avoid ABI conflicts with system-installed versions.
+set(gtest_SOURCE BUNDLED)
 velox_resolve_dependency(gtest)
+# Ensure bundled gtest headers are found before any system-installed gtest
+# (e.g. /opt/homebrew/include on macOS). Without this, the target-level
+# include from velox_resolve_dependency appears too late in the search order.
+include_directories(SYSTEM ${gtest_SOURCE_DIR}/include)
 
 velox_set_source(glog)
 velox_resolve_dependency(glog)

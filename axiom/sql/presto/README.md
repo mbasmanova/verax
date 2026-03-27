@@ -462,7 +462,11 @@ testNationExpr("n_regionkey + 1", "plus(n_regionkey, 1:INTEGER)");
 #### Running tests
 
 ```bash
+# Buck
 buck test fbcode//axiom/sql/presto/tests:
+
+# CMake
+ctest --test-dir _build/debug -R axiom_sql_presto
 ```
 
 **Note:** The test framework is incomplete. Matchers currently verify the

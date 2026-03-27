@@ -20,9 +20,11 @@ The SQL parser here is almost an exact copy of the Presto Java SQL parser but wi
 
 The generated visitor APIs are meant to be implemented in order to create the AST classes representing the user defined ANTLR4 grammar.
 
-## Current Build Setup
+## Generated Files
 
-The generated ANTLR4 code is currently checked into this directory. The BUCK build system contains an `antlr4_grammar` rule that can regenerate these files from the `PrestoSql.g4` grammar file. The generated files are:
+The ANTLR4 generated code is checked into this directory. The CMake build
+uses these files directly. Regeneration is only needed when modifying
+`PrestoSql.g4`.
 
 - `PrestoSqlLexer.h/cpp` - Lexical analyzer
 - `PrestoSqlParser.h/cpp` - Parser implementation
@@ -31,95 +33,79 @@ The generated ANTLR4 code is currently checked into this directory. The BUCK bui
 - `PrestoSqlBaseVisitor.h/cpp` - Base visitor pattern implementation
 - `PrestoSqlVisitor.h/cpp` - Visitor interface
 
-## How to Regenerate ANTLR Files
+## Running Tests
 
-### Prerequisites
+```bash
+# Buck
+buck test //axiom/sql/presto/grammar/tests:grammar_test
 
-- ANTLR4 C++ runtime (automatically handled by Buck)
-- Python 3 (for license header processing)
+# CMake
+ctest --test-dir _build/debug -R axiom_sql_presto_grammar
+```
 
-### Step-by-Step Instructions
+## Regenerating ANTLR Files
 
-1. **Navigate to the fbcode directory:**
-   ```bash
-   cd /path/to/fbsource/fbcode
-   ```
+Regeneration is only needed when modifying `PrestoSql.g4`.
 
-2. **Regenerate the ANTLR files:**
-   ```bash
-   buck build //axiom/sql/presto/grammar:gen_grammar --show-output
-   ```
+### Using the ANTLR4 jar
 
-3. **Find the Buck output directory:**
-   ```bash
+Download the ANTLR4 tool jar (version must match the runtime version used
+by the project, currently 4.13.2):
 
-   BUCK_OUT_DIR=$(find ../buck-out -path "*gen_grammar_rewrite*" -name "srcs" -type d -printf "%T@ %p\n" | sort -r -n -k1,1 | head -1 | awk '{print $2}')
-   echo "Generated files are in: $BUCK_OUT_DIR"
-   ```
+```bash
+curl -O https://www.antlr.org/download/antlr-4.13.2-complete.jar
+```
 
-4. **Apply license headers to generated files:**
-   ```bash
-   python3 axiom/sql/presto/grammar/add_license_headers.py "$BUCK_OUT_DIR"
-   ```
+Generate C++ files from the grammar (run from the repo root):
 
-5. **Copy the corrected files to source directory:**
-   ```bash
-   cp "$BUCK_OUT_DIR"/* axiom/sql/presto/grammar/
-   ```
+```bash
+java -jar antlr-4.13.2-complete.jar \
+    -Dlanguage=Cpp \
+    -visitor \
+    -package axiom::sql::presto::parser::generated \
+    -o /tmp/antlr-output \
+    axiom/sql/presto/grammar/PrestoSql.g4
+```
 
-5. **Fix coding style:**
-   ```bash
-   arc lint -a
-   ```
+Apply license headers and copy the generated files:
 
-### Complete One-Line Command
+```bash
+python3 axiom/sql/presto/grammar/add_license_headers.py \
+    /tmp/antlr-output/axiom/sql/presto/grammar
+cp /tmp/antlr-output/axiom/sql/presto/grammar/PrestoSql*.{h,cpp} \
+    axiom/sql/presto/grammar/
+```
 
-For convenience, run the provided shell script from fbcode directory:
+### Using Buck (Meta-internal)
+
+From the fbcode directory, run the provided script:
 
 ```bash
 ./axiom/sql/presto/grammar/gen.sh
 ```
 
-### Verification
+Or step by step:
 
-After regeneration, verify the files have been updated:
+1. **Regenerate the ANTLR files:**
+   ```bash
+   buck build //axiom/sql/presto/grammar:gen_grammar --show-output
+   ```
 
-```bash
-# Check that license headers are present
-head -20 axiom/sql/presto/grammar/PrestoSqlLexer.h
+2. **Find the Buck output directory:**
+   ```bash
+   BUCK_OUT_DIR=$(find ../buck-out -path "*gen_grammar_rewrite*" -name "srcs" -type d -printf "%T@ %p\n" | sort -r -n -k1,1 | head -1 | awk '{print $2}')
+   ```
 
-# Verify the build still works
-buck build //axiom/sql/presto/grammar:grammar
-```
+3. **Apply license headers and copy:**
+   ```bash
+   python3 axiom/sql/presto/grammar/add_license_headers.py "$BUCK_OUT_DIR"
+   cp "$BUCK_OUT_DIR"/* axiom/sql/presto/grammar/
+   ```
 
-## ANTLR Grammar Configuration
-
-The BUCK rule is configured with the following settings:
-
-```python
-antlr4_grammar(
-    name = "gen_grammar",
-    srcs = ["PrestoSql.g4"],
-    gen_visitor = True,
-    grammar = "PrestoSql",
-    language = "Cpp",
-    package = "axiom::sql::presto",
-)
-```
-
-This generates:
-- **C++ code** (`language = "Cpp"`)
-- **Visitor pattern classes** (`gen_visitor = True`)
-- **Namespace**: `axiom::sql::presto`
-
-## License Header Preservation
-
-ANTLR4 generation does not preserve license headers by default. The `add_license_headers.py` script automatically adds the required Apache license headers to all generated files.
-
-The script:
-- ✅ Adds Apache 2.0 license headers to all `PrestoSql*.h` and `PrestoSql*.cpp` files
-- ✅ Checks for existing headers to avoid duplication
-- ✅ Uses the same license format as other files in the project
+4. **Fix coding style:**
+   ```bash
+   arc lint -a
+   ```
 
 ## Grammar File Structure
 
@@ -128,53 +114,18 @@ The main grammar file is `PrestoSql.g4`, which defines:
 - **Parser rules**: SQL statement syntax and structure
 - **C++ namespace**: Generated code is placed in `axiom::sql::presto::parser::generated` namespace
 
-## Troubleshooting
-
-### Build Failures
-
-If the build fails:
-
-1. **Clean and rebuild:**
-   ```bash
-   buck clean //axiom/sql/presto/grammar:gen_grammar
-   buck build //axiom/sql/presto/grammar:gen_grammar
-   ```
-
-2. **Check for grammar syntax errors:**
-   ```bash
-   # Look for ANTLR parsing errors in the build output
-   buck build //axiom/sql/presto/grammar:gen_grammar --verbose 2
-   ```
-
-### Missing License Headers
-
-If license headers are missing after regeneration:
-
-```bash
-# Re-run the license header script
-python3 axiom/sql/presto/grammar/add_license_headers.py axiom/sql/presto/grammar/
-```
-
-### File Permission Issues
-
-If you encounter permission errors:
-
-```bash
-# Make sure you have write permissions to the grammar directory
-chmod u+w axiom/sql/presto/grammar/PrestoSql*.{h,cpp}
-```
-
 ## Development Workflow
 
 When modifying the grammar:
 
 1. **Edit** `PrestoSql.g4` with your changes
-2. **Regenerate** using the commands above
+2. **Regenerate** using `gen.sh`
 3. **Update** any affected AST builder code that uses the generated classes
-4. **Test** by running the grammar tests:
-   ```bash
-   buck test //axiom/sql/presto/grammar/tests:grammar_test
-   ```
+4. **Test** by running the grammar tests
+
+## License Header Preservation
+
+ANTLR4 generation does not preserve license headers by default. The `add_license_headers.py` script automatically adds the required Apache license headers to all generated files.
 
 ## Future Improvements
 
@@ -183,7 +134,7 @@ Eventually, the ANTLR4 generated code may be automatically generated as part of 
 ## Files in This Directory
 
 - `PrestoSql.g4` - ANTLR4 grammar definition (source file)
-- `BUCK` - Buck build configuration
+- `gen.sh` - Script to regenerate ANTLR files (Meta-internal, requires Buck)
 - `add_license_headers.py` - Script to add Apache license headers
-- `PrestoSql*.h/cpp` - Generated ANTLR4 files (regenerated from grammar)
+- `PrestoSql*.h/cpp` - Generated ANTLR4 files (checked in, regenerated from grammar)
 - `tests/` - Grammar parsing tests

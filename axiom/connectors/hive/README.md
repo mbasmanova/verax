@@ -49,11 +49,12 @@ a local directory.
 
 Create a directory for storing tables and launch the CLI with `--data_path`
 pointing to it. The directory can be empty; tables will be created in it via
-SQL statements.
+SQL statements. See the [CLI README](../../cli/README.md) for how to launch
+`axiom_sql`.
 
 ```bash
 mkdir -p /tmp/my_data
-buck run @mode/opt axiom/cli:cli -- --data_path /tmp/my_data
+axiom_sql --data_path /tmp/my_data
 ```
 
 The Hive connector becomes the default catalog. Use `--data_format` to specify
@@ -88,7 +89,7 @@ The example below generates data at scale factor 0.1 (~87K total rows) in
 Parquet format with Snappy compression:
 
 ```bash
-buck run @mode/opt axiom/cli:tpchgen -- \
+axiom_tpchgen \
     --data_path /tmp/tpch/sf0.1 --sf 0.1 \
     --data_format parquet --compression snappy
 ```
@@ -96,7 +97,7 @@ buck run @mode/opt axiom/cli:tpchgen -- \
 Then point the CLI at the generated directory:
 
 ```bash
-buck run @mode/opt axiom/cli:cli -- --data_path /tmp/tpch/sf0.1
+axiom_sql --data_path /tmp/tpch/sf0.1
 ```
 
 ## Directory Structure
