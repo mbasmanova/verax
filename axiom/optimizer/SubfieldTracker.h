@@ -80,11 +80,16 @@ class SubfieldTracker {
     return {controlSubfields_, payloadSubfields_};
   }
 
-  // if 'step' applied to result of the function of 'metadata'
-  // corresponds to an argument, returns the ordinal of the argument.
+  /// If 'step' applied to result of the function of 'metadata'
+  /// corresponds to an argument, returns the ordinal of the argument.
   static std::optional<int32_t> stepToArg(
       const Step& step,
       const FunctionMetadata* metadata);
+
+  /// Given a constant array index or map key in 'variant', populates 'step'
+  /// with the corresponding field name or integer id. Returns false if
+  /// 'variant' is null or has an unsupported type.
+  static bool trySetSubscript(Step& step, const velox::Variant& variant);
 
  private:
   void markSubfields(

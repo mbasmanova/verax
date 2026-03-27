@@ -70,6 +70,7 @@ int64_t integerValueInner(const velox::Variant* variant) {
 } // namespace
 
 int64_t integerValue(const velox::Variant* variant) {
+  VELOX_CHECK(!variant->isNull(), "Variant must be non-null");
   switch (variant->kind()) {
     case velox::TypeKind::TINYINT:
       return integerValueInner<int8_t>(variant);
@@ -86,6 +87,9 @@ int64_t integerValue(const velox::Variant* variant) {
 
 std::optional<int64_t> maybeIntegerLiteral(
     const logical_plan::ConstantExpr* expr) {
+  if (expr->value()->isNull()) {
+    return std::nullopt;
+  }
   switch (expr->typeKind()) {
     case velox::TypeKind::TINYINT:
     case velox::TypeKind::SMALLINT:

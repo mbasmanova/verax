@@ -430,19 +430,9 @@ bool ToGraph::isSubfield(
       if (subscript->is(PlanType::kLiteralExpr)) {
         step.kind = (name == functionNames_.elementAt) ? StepKind::kElementAt
                                                        : StepKind::kSubscript;
-        auto& literal = subscript->as<Literal>()->literal();
-        switch (subscript->value().type->kind()) {
-          case velox::TypeKind::VARCHAR:
-            step.field = toName(literal.value<velox::TypeKind::VARCHAR>());
-            break;
-          case velox::TypeKind::BIGINT:
-          case velox::TypeKind::INTEGER:
-          case velox::TypeKind::SMALLINT:
-          case velox::TypeKind::TINYINT:
-            step.id = integerValue(&literal);
-            break;
-          default:
-            return false;
+        if (!SubfieldTracker::trySetSubscript(
+                step, subscript->as<Literal>()->literal())) {
+          return false;
         }
         input = expr->inputAt(0);
         return true;
@@ -959,7 +949,26 @@ ExprCP ToGraph::makeConstant(const lp::ConstantExpr& constant) {
   return literal;
 }
 
+ExprCP ToGraph::makeNullConstant(const velox::TypePtr& type) {
+  auto nullConstant =
+      lp::ConstantExpr(type, std::make_shared<velox::Variant>(type->kind()));
+  return makeConstant(nullConstant);
+}
+
 namespace {
+
+// Returns true if 'expr' is a null literal.
+bool isNullLiteral(ExprCP expr) {
+  return expr->is(PlanType::kLiteralExpr) &&
+      expr->as<Literal>()->literal().isNull();
+}
+
+// Returns true if any element of 'exprs' is a null literal.
+bool hasNullLiteral(const ExprVector& exprs) {
+  return std::any_of(exprs.begin(), exprs.end(), [](ExprCP expr) {
+    return isNullLiteral(expr);
+  });
+}
 
 // Estimates the output cardinality of a function call as the maximum
 // cardinality across its arguments, with a minimum of 1.
@@ -1042,6 +1051,15 @@ ExprCP ToGraph::translateExpr(const lp::ExprPtr& expr) {
       }
     }
 
+    auto callFuncs = functionBits(name, specialForm != nullptr);
+
+    // Propagate null for default-null-behavior functions: if any argument is a
+    // null literal, the result is null.
+    if (!callFuncs.contains(FunctionSet::kNonDefaultNullBehavior) &&
+        hasNullLiteral(args)) {
+      return makeNullConstant(expr->type());
+    }
+
     auto* exprType = toType(expr->type());
 
     // Drop redundant cast.
@@ -1052,7 +1070,7 @@ ExprCP ToGraph::translateExpr(const lp::ExprPtr& expr) {
       }
     }
 
-    funcs = funcs | functionBits(name, specialForm != nullptr);
+    funcs = funcs | callFuncs;
     auto* callExpr = deduppedCall(
         name, Value(exprType, cardinality), std::move(args), funcs);
     return callExpr;

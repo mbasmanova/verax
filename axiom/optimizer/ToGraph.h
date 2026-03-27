@@ -200,6 +200,9 @@ class ToGraph {
   // Returns a deduplicated Literal from the value in 'constant'.
   ExprCP makeConstant(const logical_plan::ConstantExpr& constant);
 
+  // Returns a deduplicated null Literal of 'type'.
+  ExprCP makeNullConstant(const velox::TypePtr& type);
+
   // Folds a logical expr to a constant if can. Should be called only if
   // 'expr' only depends on constants. Identifier scope will may not be not
   // set at time of call. This is before regular constant folding because

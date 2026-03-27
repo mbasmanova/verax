@@ -240,7 +240,7 @@ TEST_F(SubqueryTest, foldable) {
         "SELECT * FROM t WHERE ds = (SELECT max(ds) FROM t WHERE ds < '2025-01-01')");
 
     auto plan = toSingleNodePlan(logicalPlan);
-    auto matcher = makeMatcher("ds = null");
+    auto matcher = makeMatcher("null");
 
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
