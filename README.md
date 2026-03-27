@@ -1,4 +1,5 @@
-[![Linux Build](https://github.com/facebookincubator/axiom/actions/workflows/build_and_test.yml/badge.svg)](https://github.com/facebookincubator/axiom/actions/workflows/build_and_test.yml)
+[![Linux Build](https://github.com/facebookincubator/axiom/actions/workflows/linux.yml/badge.svg)](https://github.com/facebookincubator/axiom/actions/workflows/linux.yml)
+[![macOS Build](https://github.com/facebookincubator/axiom/actions/workflows/macos.yml/badge.svg)](https://github.com/facebookincubator/axiom/actions/workflows/macos.yml)
 
 ## License
 

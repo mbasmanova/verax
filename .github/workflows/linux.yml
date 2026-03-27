@@ -20,14 +20,14 @@ on:
       - axiom/**
       - velox
       - CMakeLists.txt
-      - .github/workflows/build_and_test.yml
+      - .github/workflows/linux.yml
       - Makefile
   pull_request:
     paths:
       - axiom/**
       - velox
       - CMakeLists.txt
-      - .github/workflows/build_and_test.yml
+      - .github/workflows/linux.yml
       - Makefile
 permissions:
   contents: read
@@ -40,7 +40,7 @@ jobs:
       fail-fast: false
       matrix:
         build_type: [debug, release]
-    name: Build Axiom
+    name: Linux ${{ matrix.build_type }}
     runs-on: 32-core-ubuntu
     container:
       image: ghcr.io/facebookincubator/velox-dev:centos9
@@ -54,62 +54,55 @@ jobs:
         with:
           submodules: recursive
           persist-credentials: false
-      # Configure Git to trust the repository directory
       - name: Configure Git Safe Directory
-        run: |
-          git config --global --add safe.directory "/__w/verax/verax"
-          git config --global --add safe.directory "*"
+        run: git config --global --add safe.directory "*"
 
       - name: Ensure Ccache Dir Exists
-        working-directory: ${{ github.workspace }}
-        run: |
-          mkdir -p "$CCACHE_DIR"
+        run: mkdir -p "$CCACHE_DIR"
 
-      # Get ccache from stash
-      - name: Get Ccache Stash
+      - name: Restore Ccache
         uses: apache/infrastructure-actions/stash/restore@3354c1565d4b0e335b78a76aedd82153a9e144d4
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-ubuntu-${{ matrix.build_type }}-default-gcc
+      - name: Ccache Restore Status
+        run: echo "Restored ccache $(du -sh $CCACHE_DIR 2>/dev/null | cut -f1 || echo empty)"
 
-      - name: ${{ matrix.build_type }} Cache Restoration
+      - name: Configure Build
         run: |
-          echo "=== Cache Restoration ${{ matrix.build_type }} ==="
-          if [ -d "$CCACHE_DIR" ]; then
-            echo "Directory size: $(du -sh "$CCACHE_DIR" 2>/dev/null || echo 'Unable to determine size')"
-            echo "Directory contents:"
-            ls -la "$CCACHE_DIR" || echo "Directory is empty or inaccessible"
-            echo "File count: $(find "$CCACHE_DIR" -type f 2>/dev/null | wc -l)"
+          if [ "${{ matrix.build_type }}" = "release" ]; then
+            ccache -sz -M 1Gi
           else
-            echo "✗ Ccache directory does not exist"
+            ccache -sz -M 5Gi
           fi
-          echo "=== End Cache Restoration ${{ matrix.build_type }} ==="
 
-      - name: Clear CCache Statistics
-        run: |
-          ccache -sz
-
-      - name: Build Axiom ${{ matrix.build_type }}
+      - name: Build
         env:
           MAKEFLAGS: NUM_THREADS=4 MAX_HIGH_MEM_JOBS=4 MAX_LINK_JOBS=2
           CPU_TARGET: "avx"
         run: |
           make ${{ matrix.build_type }}
 
-      # Display ccache statistics after build
       - name: CCache Statistics After Build
-        if: always() # Run even if build failed
+        if: always()
         run: |
+          echo "--- ccache summary ---"
+          ccache -s | grep -E "Hits|Misses|size|evicted"
+          echo "Cache dir size: $(du -sh $CCACHE_DIR 2>/dev/null | cut -f1)"
+          echo ""
+          echo "--- ccache full stats ---"
           ccache -vs
+          echo ""
+          echo "--- evicting stale entries ---"
+          ccache --evict-older-than 1d
+          echo "Cache dir size after eviction: $(du -sh $CCACHE_DIR 2>/dev/null | cut -f1)"
 
-      # Save ccache for future runs
-      - name: Save ccache
+      - name: Save Ccache
         uses: apache/infrastructure-actions/stash/save@3354c1565d4b0e335b78a76aedd82153a9e144d4
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-ubuntu-${{ matrix.build_type }}-default-gcc
 
-      - name: Run ${{ matrix.build_type }} tests
-        working-directory: _build/${{ matrix.build_type }}
+      - name: Run Tests
         run: |
-          ctest -j 8 --output-on-failure --no-tests=error
+          ctest --test-dir _build/${{ matrix.build_type }} -j 8 --output-on-failure --no-tests=error

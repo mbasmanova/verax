@@ -158,7 +158,7 @@ target_link_libraries(
 
 add_library(axiom_optimizer_tests_sql_query_entry SqlQueryEntry.cpp)
 
-target_link_libraries(axiom_optimizer_tests_sql_query_entry velox_exception Folly::folly)
+target_link_libraries(axiom_optimizer_tests_sql_query_entry velox_exception)
 
 add_executable(axiom_optimizer_sql_query_entry_test SqlQueryEntryTest.cpp)
 
@@ -201,7 +201,6 @@ target_link_libraries(
   axiom_optimizer_tests_sql_test_base
   axiom_optimizer_tests_sql_query_entry
   velox_dwio_common_test_utils
-  Folly::folly
   GTest::gtest
 )
 
