@@ -24,6 +24,27 @@ namespace lp = facebook::axiom::logical_plan;
 
 namespace facebook::axiom::optimizer {
 
+bool SubfieldTracker::trySetSubscript(
+    Step& step,
+    const velox::Variant& variant) {
+  if (variant.isNull()) {
+    return false;
+  }
+  switch (variant.kind()) {
+    case velox::TypeKind::VARCHAR:
+      step.field = toName(variant.value<velox::TypeKind::VARCHAR>());
+      return true;
+    case velox::TypeKind::BIGINT:
+    case velox::TypeKind::INTEGER:
+    case velox::TypeKind::SMALLINT:
+    case velox::TypeKind::TINYINT:
+      step.id = integerValue(&variant);
+      return true;
+    default:
+      return false;
+  }
+}
+
 SubfieldTracker::SubfieldTracker(
     std::function<logical_plan::ConstantExprPtr(const logical_plan::ExprPtr&)>
         tryFoldConstant)
@@ -357,26 +378,11 @@ void SubfieldTracker::markSubfields(
         return;
       }
 
-      const auto& value = constant->value();
-      switch (value->kind()) {
-        case velox::TypeKind::VARCHAR: {
-          const auto& str = value->template value<velox::TypeKind::VARCHAR>();
-          steps.push_back({.kind = stepKind, .field = toName(str)});
-          break;
-        }
-        case velox::TypeKind::BIGINT:
-        case velox::TypeKind::INTEGER:
-        case velox::TypeKind::SMALLINT:
-        case velox::TypeKind::TINYINT: {
-          const auto& id = integerValue(value.get());
-          steps.push_back({.kind = stepKind, .id = id});
-          break;
-        }
-        default:
-          // Unsupported key type, cannot narrow to specific subfields.
-          steps.push_back({.kind = stepKind, .allFields = true});
-          break;
+      Step step{.kind = stepKind};
+      if (!trySetSubscript(step, *constant->value())) {
+        step.allFields = true;
       }
+      steps.push_back(step);
 
       markSubfields(expr->inputAt(0), steps, isControl, context);
       steps.pop_back();

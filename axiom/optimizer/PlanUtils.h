@@ -102,7 +102,8 @@ inline bool pushBackUnique(V& vector, E& element) {
   return true;
 }
 
-/// Returns the integer value of 'variant'. Throws if this is not an integer.
+/// Returns the integer value of 'variant'. The variant must be non-null and
+/// hold an integer type. Throws otherwise.
 int64_t integerValue(const velox::Variant* variant);
 
 /// Returns the integer value of 'expr' if the type is an integer,

@@ -218,8 +218,7 @@ TEST_F(PlanTest, rejectedFilters) {
 }
 
 TEST_F(PlanTest, specialFormConstantFold) {
-  testConnector_->addTable(
-      "numbers", ROW({"a", "b", "c"}, {BIGINT(), BIGINT(), BIGINT()}));
+  testConnector_->addTable("numbers", ROW({"a", "b", "c"}, BIGINT()));
 
   struct TestCase {
     std::string expression;
@@ -248,23 +247,19 @@ TEST_F(PlanTest, specialFormConstantFold) {
       {"if(a > b, 1 + 2, 3 + 4) > b + 3", "if(a > b, 3, 7) > b + 3"},
   };
 
-  for (const auto& testCase : filterTestCases) {
-    SCOPED_TRACE("Filter: " + testCase.expression);
+  for (const auto& [expr, expected] : filterTestCases) {
+    SCOPED_TRACE("Filter: " + expr);
     auto logicalPlan = lp::PlanBuilder(makeContext())
                            .tableScan("numbers")
-                           .filter(testCase.expression)
+                           .filter(expr)
                            .map({"a + 2"})
                            .build();
 
     std::shared_ptr<velox::core::PlanMatcher> matcher;
-    if (!testCase.expectedExpression.has_value()) {
-      matcher = core::PlanMatcherBuilder().tableScan().project().build();
+    if (!expected.has_value()) {
+      matcher = matchScan("numbers").project().build();
     } else {
-      matcher = core::PlanMatcherBuilder()
-                    .tableScan()
-                    .filter(testCase.expectedExpression.value())
-                    .project()
-                    .build();
+      matcher = matchScan("numbers").filter(expected.value()).project().build();
     }
 
     auto plan = toSingleNodePlan(logicalPlan);
@@ -296,18 +291,53 @@ TEST_F(PlanTest, specialFormConstantFold) {
       {"coalesce(cast(null as bigint), 5 * 2)", "10"},
   };
 
-  for (const auto& testCase : projectTestCases) {
-    SCOPED_TRACE("Expression: " + testCase.expression);
+  for (const auto& [expr, expected] : projectTestCases) {
+    SCOPED_TRACE("Expression: " + expr);
     auto logicalPlan = lp::PlanBuilder(makeContext())
                            .tableScan("numbers")
-                           .project({testCase.expression, "a", "b"})
+                           .project({expr, "a", "b"})
                            .build();
 
-    ASSERT_TRUE(testCase.expectedExpression.has_value());
-    auto matcher = core::PlanMatcherBuilder()
-                       .tableScan()
-                       .project({testCase.expectedExpression.value(), "a", "b"})
-                       .build();
+    ASSERT_TRUE(expected.has_value());
+    auto matcher =
+        matchScan("numbers").project({expected.value(), "a", "b"}).build();
+
+    auto plan = toSingleNodePlan(logicalPlan);
+    AXIOM_ASSERT_PLAN(plan, matcher);
+  }
+}
+
+// Verifies that func(..., null, ...) is folded to null for
+// default-null-behavior functions and is not folded for
+// non-default-null-behavior functions.
+TEST_F(PlanTest, nullPropagation) {
+  testConnector_->addTable("t", ROW({"a", "b", "c"}, BIGINT()));
+
+  struct TestCase {
+    std::string expression;
+    std::string expectedExpression;
+  };
+
+  std::vector<TestCase> testCases = {
+      // All-constant: folds via constant evaluation.
+      {"element_at(map(array[1], array[10]), null)", "null"},
+      // Default-null-behavior function with a null arg and a column arg.
+      {"a + null", "null"},
+      // Null propagation applies to the top-level function even when a child
+      // has non-default null behavior.
+      {"coalesce(a, b) + null", "null"},
+      // Non-default-null-behavior function: null is NOT propagated.
+      {"coalesce(a, null)", "coalesce(a, null)"},
+  };
+
+  for (const auto& [expr, expected] : testCases) {
+    SCOPED_TRACE("Expression: " + expr);
+    auto logicalPlan = lp::PlanBuilder(makeContext(), /*enableCoercions=*/true)
+                           .tableScan("t")
+                           .project({expr, "a", "b"})
+                           .build();
+
+    auto matcher = matchScan("t").project({expected, "a", "b"}).build();
 
     auto plan = toSingleNodePlan(logicalPlan);
     AXIOM_ASSERT_PLAN(plan, matcher);

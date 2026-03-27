@@ -703,19 +703,16 @@ TEST_F(SqlQueryRunnerTest, createTableInNonExistentSchema) {
       "Schema does not exist: nonexistent");
 }
 
-// Verifies that current_timestamp returns a value close to the actual wall
-// clock time. Captures wall clock before and after the query to bound the
-// expected result without relying on an exact match.
+// Verifies that current_timestamp returns the session start time.
 TEST_F(SqlQueryRunnerTest, currentTimestamp) {
-  auto before = getCurrentTimeMs();
   auto row = fetchSingleRow("SELECT current_timestamp");
-  auto after = getCurrentTimeMs();
 
   auto packed = row->childAt(0)->as<SimpleVector<int64_t>>()->valueAt(0);
   auto millis = unpackMillisUtc(packed);
 
-  EXPECT_GE(millis, before);
-  EXPECT_LE(millis, after);
+  auto expected = facebook::velox::core::QueryConfig{runner_->sessionConfig()}
+                      .sessionStartTimeMs();
+  EXPECT_EQ(millis, expected);
 }
 
 TEST_F(SqlQueryRunnerTest, explainFormatGraphviz) {
