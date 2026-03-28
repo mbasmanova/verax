@@ -124,14 +124,18 @@ jobs:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-macos-${{ matrix.build_type }}
 
-      - name: Run Tests
+      - name: Run Set Tests (5x)
         env:
           GTEST_FILTER: 'SqlTest.set_*'
         run: |
-          # Run only set operation tests to verify fix for flakiness.
+          # Verify fix for flaky set operation tests.
           # https://github.com/facebookincubator/axiom/issues/1170
           for i in 1 2 3 4 5; do
             echo "=== Run $i of 5 ==="
             ctest --test-dir _build/$BUILD_TYPE -R axiom_optimizer_sql_test --output-on-failure --no-tests=error || exit 1
           done
           echo "All 5 runs passed."
+
+      - name: Run All Tests
+        run: |
+          ctest --test-dir _build/$BUILD_TYPE -j $NJOBS --output-on-failure --no-tests=error
