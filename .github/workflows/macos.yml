@@ -127,9 +127,8 @@ jobs:
       - name: Run Tests
         env:
           GTEST_FILTER: 'SqlTest.set_*'
-          GLOG_logtostderr: '1'
         run: |
-          # Run only set operation tests to debug flakiness.
+          # Run only set operation tests to verify fix for flakiness.
           # https://github.com/facebookincubator/axiom/issues/1170
           for i in 1 2 3 4 5; do
             echo "=== Run $i of 5 ==="
