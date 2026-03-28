@@ -709,6 +709,11 @@ int32_t parseBucketNumber(const velox::Variant& value) {
           velox::TypeKindName::toName(value.kind()));
   }
 }
+std::string toLower(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(), ::tolower);
+  return value;
+}
+
 } // namespace
 
 CreateTableOptions parseCreateTableOptions(
@@ -718,14 +723,14 @@ CreateTableOptions parseCreateTableOptions(
 
   auto it = options.find(HiveWriteOptions::kCompressionKind);
   if (it != options.end()) {
-    result.compressionKind =
-        velox::common::stringToCompressionKind(it->second.value<std::string>());
+    result.compressionKind = velox::common::stringToCompressionKind(
+        toLower(it->second.value<std::string>()));
   }
 
   it = options.find(HiveWriteOptions::kFileFormat);
   if (it != options.end()) {
-    result.fileFormat =
-        velox::dwio::common::toFileFormat(it->second.value<std::string>());
+    result.fileFormat = velox::dwio::common::toFileFormat(
+        toLower(it->second.value<std::string>()));
     VELOX_USER_CHECK(
         result.fileFormat != velox::dwio::common::FileFormat::UNKNOWN,
         "Bad file format: {}",

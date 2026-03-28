@@ -109,6 +109,110 @@ count
 (1 rows in 1 batches)
 ```
 
+### Query Your Own Data
+
+The [Hive connector](axiom/connectors/hive/README.md) can query Parquet,
+DWRF, and CSV files on the local filesystem. Each subdirectory under the
+data path is treated as a table.
+
+#### Parquet Files
+
+For Parquet (and DWRF) files, use `axiom_hive_import` to auto-infer schema and
+compute statistics from file headers.
+
+The example below uses the [NYC Taxi & Limousine Commission Trip Record
+Data](https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page) — a
+public dataset of ~3 million yellow taxi trips from January 2024 (~50 MB).
+
+**1. Download the data:**
+
+```bash
+mkdir -p /tmp/nyc_taxi/trips
+curl -o /tmp/nyc_taxi/trips/yellow_tripdata_2024-01.parquet \
+  https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet
+```
+
+**2. Import (generate `.schema` and `.stats` metadata):**
+
+```bash
+_build/debug/axiom/cli/axiom_hive_import --data_path /tmp/nyc_taxi
+```
+
+```
+Importing 1 table(s) from '/tmp/nyc_taxi' (format: parquet)
+  trips ... done (0.42s)
+Imported 1 table(s).
+```
+
+**3. Query:**
+
+```bash
+_build/debug/axiom/cli/axiom_sql --data_path /tmp/nyc_taxi
+```
+
+```
+SQL> SELECT count(*) FROM trips;
+-------
+  count
+-------
+2964624
+
+SQL> SELECT passenger_count, avg(total_amount) AS avg_total
+     FROM trips GROUP BY 1;
+----------------+-----------
+passenger_count | avg_total
+----------------+-----------
+              1 |     26.21
+              2 |     29.52
+              3 |     29.14
+...
+```
+
+To add more months, download additional files into the same `trips/`
+directory and re-run `axiom_hive_import --force` to regenerate metadata.
+
+#### CSV Files
+
+For CSV files, create the table with schema first, then copy the files in.
+
+**1. Create the data directory and the table with schema:**
+
+```bash
+mkdir -p /tmp/my_data
+_build/debug/axiom/cli/axiom_sql --data_path /tmp/my_data --data_format text \
+  --query "CREATE TABLE sales (id INTEGER, name VARCHAR, amount DOUBLE)
+           WITH (file_format = 'text', \"field.delim\" = ',')"
+```
+
+**2. Copy CSV files into the table directory:**
+
+```bash
+cp data.csv /tmp/my_data/sales/
+```
+
+Optionally, run `axiom_hive_import` to collect column statistics for the
+optimizer:
+
+```bash
+_build/debug/axiom/cli/axiom_hive_import --data_path /tmp/my_data --data_format text
+```
+
+**3. Query:**
+
+```bash
+_build/debug/axiom/cli/axiom_sql --data_path /tmp/my_data --data_format text
+```
+
+```
+SQL> SELECT * FROM sales;
+---+-------+-------
+id | name  | amount
+---+-------+-------
+ 1 | Alice |  100.5
+ 2 | Bob   |    200
+ 3 | Carol | 150.75
+```
+
 ## Code Organization
 
 Axiom is a set of reusable and extensible components designed to be compatible

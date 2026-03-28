@@ -60,4 +60,8 @@ target_link_libraries(
   velox_exec_test_lib
 )
 
+add_executable(axiom_hive_import ImportHiveData.cpp)
+
+target_link_libraries(axiom_hive_import axiom_cli)
+
 add_subdirectory(tests)

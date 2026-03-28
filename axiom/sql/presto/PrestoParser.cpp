@@ -1402,16 +1402,22 @@ SqlStatementPtr parseShowCreateTable(
   }
   ddl << "\n)";
 
-  // WITH clause from table options.
+  // WITH clause from table options, sorted by key for deterministic output.
   if (!options.empty()) {
-    ddl << "\nWITH (\n";
-    bool first = true;
+    std::vector<std::string> sortedKeys;
+    sortedKeys.reserve(options.size());
     for (const auto& [key, value] : options) {
-      if (!first) {
+      sortedKeys.push_back(key);
+    }
+    std::sort(sortedKeys.begin(), sortedKeys.end());
+
+    ddl << "\nWITH (\n";
+    for (auto i = 0; i < sortedKeys.size(); ++i) {
+      if (i > 0) {
         ddl << ",\n";
       }
-      ddl << "   " << key << " = " << variantToSql(value);
-      first = false;
+      ddl << "   " << sortedKeys[i] << " = "
+          << variantToSql(options.at(sortedKeys[i]));
     }
     ddl << "\n)";
   }
