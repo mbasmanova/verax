@@ -36,8 +36,6 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build-axiom:
-    # Temporarily disabled while debugging macOS set test flakiness (#1170).
-    if: false
     strategy:
       fail-fast: false
       matrix:
