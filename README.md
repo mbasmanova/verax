@@ -1,5 +1,6 @@
 [![Linux Build](https://github.com/facebookincubator/axiom/actions/workflows/linux.yml/badge.svg)](https://github.com/facebookincubator/axiom/actions/workflows/linux.yml)
 [![macOS Build](https://github.com/facebookincubator/axiom/actions/workflows/macos.yml/badge.svg)](https://github.com/facebookincubator/axiom/actions/workflows/macos.yml)
+[![Velox](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/mbasmanova/5cb356397f7f9a4435cf716ffcdffe08/raw/velox-status.json)](https://github.com/facebookincubator/velox)
 
 ## License
 
@@ -312,12 +313,22 @@ Fragment 1:  numWorkers=1:
 ## Advance Velox Version
 
 Axiom integrates Velox as a Git submodule, referencing a specific commit of the
-Velox repository. Advance Velox when your changes depend on code in Velox that
-is not available in the current commit. To update the Velox version, follow
-these steps:
+Velox repository. The Velox badge at the top of this README shows the current
+commit and how far behind it is from Velox main.
 
-- `git -C velox checkout main`
-- `git -C velox pull`
-- `git add velox`
-- Build and run tests to ensure everything works.
-- Submit a PR, get it approved and merged.
+[See what changed since the current Velox commit.](https://github.com/facebookincubator/velox/compare/871c87e82aa71240c7ae02b2cc412eed0c81dfb4...main)
+<!-- pre-commit check-velox-readme validates the SHA above matches the submodule -->
+
+Advance Velox when your changes depend on code in Velox that
+is not available in the current commit, or when the submodule falls too far
+behind. To update the Velox version, follow these steps:
+
+```bash
+git -C velox checkout main
+git -C velox pull
+git add velox
+```
+
+Build and run tests to ensure everything works. The pre-commit hook will
+automatically update the Velox compare link in this README. Submit a PR, get
+it approved and merged.

@@ -31,6 +31,13 @@ repos:
       - id: check-shebang-scripts-are-executable
   - repo: local
     hooks:
+      - id: check-velox-readme
+        name: check-velox-readme
+        description: Verify Velox compare link in README matches submodule.
+        entry: ./scripts/check-velox-readme.sh
+        language: script
+        files: ^(README\.md|velox)$
+        pass_filenames: false
       - id: license-header
         name: license-header
         description: Add missing license headers.
