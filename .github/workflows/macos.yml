@@ -126,9 +126,4 @@ jobs:
 
       - name: Run Tests
         run: |
-          # Exclude flaky set operation tests in debug builds.
-          # https://github.com/facebookincubator/axiom/issues/1170
-          if [ "$BUILD_TYPE" = "debug" ]; then
-            export GTEST_FILTER="-SqlTest.set_*"
-          fi
           ctest --test-dir _build/$BUILD_TYPE -j $NJOBS --output-on-failure --no-tests=error

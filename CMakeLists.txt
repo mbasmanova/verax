@@ -42,9 +42,8 @@ list(
 )
 include(ResolveDependency)
 
-set(VELOX_BUILD_VECTOR_TEST_UTILS ON CACHE BOOL "Velox vector test utilities (VectorMaker).")
-
 set(VELOX_ENABLE_PARQUET ON)
+set(VELOX_ENABLE_SPARK_FUNCTIONS OFF CACHE BOOL "Build Velox Spark SQL functions.")
 set(VELOX_BUILD_TEST_UTILS ON)
 set(VELOX_BUILD_TESTING OFF)
 
