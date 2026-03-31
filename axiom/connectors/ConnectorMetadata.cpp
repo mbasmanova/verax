@@ -16,6 +16,8 @@
 
 #include "axiom/connectors/ConnectorMetadata.h"
 
+#include "folly/Synchronized.h"
+
 namespace facebook::axiom::connector {
 namespace {
 
@@ -181,10 +183,11 @@ TableLayout::findColumn(std::string_view name) const {
 
 namespace {
 
-folly::F14FastMap<std::string, std::shared_ptr<ConnectorMetadata>>&
-metadataRegistry() {
-  static folly::F14FastMap<std::string, std::shared_ptr<ConnectorMetadata>>
-      kRegistry;
+using MetadataMap = folly::Synchronized<
+    folly::F14FastMap<std::string, std::shared_ptr<ConnectorMetadata>>>;
+
+MetadataMap& metadataRegistry() {
+  static MetadataMap kRegistry;
   return kRegistry;
 }
 } // namespace
@@ -192,26 +195,22 @@ metadataRegistry() {
 // static
 ConnectorMetadata* FOLLY_NULLABLE
 ConnectorMetadata::tryMetadata(std::string_view connectorId) {
-  auto it = metadataRegistry().find(connectorId);
-  if (it != metadataRegistry().end()) {
-    return it->second.get();
-  }
-
-  return nullptr;
+  return metadataRegistry().withRLock(
+      [&](const auto& registry) -> ConnectorMetadata* {
+        auto it = registry.find(connectorId);
+        if (it != registry.end()) {
+          return it->second.get();
+        }
+        return nullptr;
+      });
 }
 
 // static
 ConnectorMetadata* ConnectorMetadata::metadata(std::string_view connectorId) {
-  auto* metadata = tryMetadata(connectorId);
+  auto* result = tryMetadata(connectorId);
   VELOX_CHECK_NOT_NULL(
-      metadata, "Connector metadata is not registered: {}", connectorId);
-  return metadata;
-}
-
-// static
-ConnectorMetadata* ConnectorMetadata::metadata(
-    velox::connector::Connector* connector) {
-  return ConnectorMetadata::metadata(connector->connectorId());
+      result, "Connector metadata is not registered: {}", connectorId);
+  return result;
 }
 
 // static
@@ -220,12 +219,41 @@ void ConnectorMetadata::registerMetadata(
     std::shared_ptr<ConnectorMetadata> metadata) {
   VELOX_CHECK_NOT_NULL(metadata);
   VELOX_CHECK(!connectorId.empty());
-  metadataRegistry().emplace(connectorId, std::move(metadata));
+  metadataRegistry().withWLock([&](auto& registry) {
+    registry.emplace(connectorId, std::move(metadata));
+  });
 }
 
 // static
 void ConnectorMetadata::unregisterMetadata(std::string_view connectorId) {
-  metadataRegistry().erase(connectorId);
+  metadataRegistry().withWLock(
+      [&](auto& registry) { registry.erase(connectorId); });
+}
+
+// static
+void ConnectorMetadata::unregisterAllMetadata() {
+  // Move entries out of the registry under the lock, then destroy them
+  // outside the lock to avoid holding it during potentially slow destructors.
+  std::vector<std::shared_ptr<ConnectorMetadata>> entries;
+  metadataRegistry().withWLock([&](auto& registry) {
+    entries.reserve(registry.size());
+    for (auto& [_, metadata] : registry) {
+      entries.push_back(std::move(metadata));
+    }
+    registry.clear();
+  });
+}
+
+// static
+std::vector<std::string> ConnectorMetadata::allMetadataIds() {
+  return metadataRegistry().withRLock([](const auto& registry) {
+    std::vector<std::string> ids;
+    ids.reserve(registry.size());
+    for (const auto& [id, _] : registry) {
+      ids.emplace_back(id);
+    }
+    return ids;
+  });
 }
 
 } // namespace facebook::axiom::connector

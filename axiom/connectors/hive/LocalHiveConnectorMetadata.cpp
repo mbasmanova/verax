@@ -550,9 +550,10 @@ std::pair<int64_t, int64_t> LocalHiveTableLayout::sample(
 
   const auto outputType = ROW(std::move(names), std::move(types));
 
-  auto connectorQueryCtx = reinterpret_cast<LocalHiveConnectorMetadata*>(
-                               ConnectorMetadata::metadata(connector()))
-                               ->connectorQueryCtx();
+  auto connectorQueryCtx =
+      reinterpret_cast<LocalHiveConnectorMetadata*>(
+          ConnectorMetadata::metadata(connector()->connectorId()))
+          ->connectorQueryCtx();
 
   const auto maxRowsToScan = table().numRows() * (pct / 100);
 
@@ -613,7 +614,8 @@ LocalHiveTableLayout::co_estimateStats(
     partitionColumnsByName[column->name()] = column;
   }
 
-  auto* connectorMetadata = ConnectorMetadata::metadata(connector());
+  auto* connectorMetadata =
+      ConnectorMetadata::metadata(connector()->connectorId());
   auto* localHiveMetadata =
       dynamic_cast<const LocalHiveConnectorMetadata*>(connectorMetadata);
   auto& evaluator =

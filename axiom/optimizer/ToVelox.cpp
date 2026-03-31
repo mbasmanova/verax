@@ -1839,9 +1839,9 @@ velox::core::PlanNodePtr ToVelox::makeWrite(
     }
   }
 
-  auto* connector = layout->connector();
-  auto* metadata = connector::ConnectorMetadata::metadata(connector);
-  auto session = session_->toConnectorSession(connector->connectorId());
+  const auto& connectorId = layout->connector()->connectorId();
+  auto* metadata = connector::ConnectorMetadata::metadata(connectorId);
+  auto session = session_->toConnectorSession(connectorId);
   auto handle = metadata->beginWrite(
       session,
       table.shared_from_this(),
@@ -1871,7 +1871,7 @@ velox::core::PlanNodePtr ToVelox::makeWrite(
   VELOX_CHECK(!finishWrite_, "Only single TableWrite per query supported");
   auto insertTableHandle =
       std::make_shared<const velox::core::InsertTableHandle>(
-          connector->connectorId(), handle->veloxHandle());
+          connectorId, handle->veloxHandle());
   finishWrite_ = {
       metadata,
       std::move(session),
