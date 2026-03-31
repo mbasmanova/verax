@@ -1293,11 +1293,12 @@ lp::ExprApi makeLikeExpr(
 SqlStatementPtr parseShowCatalogs(
     const ShowCatalogs& showCatalogs,
     const std::string& defaultConnectorId) {
-  const auto& connectors = connector::getAllConnectors();
+  const auto connectorIds =
+      facebook::axiom::connector::ConnectorMetadata::allMetadataIds();
 
   std::vector<Variant> data;
-  data.reserve(connectors.size());
-  for (const auto& [id, _] : connectors) {
+  data.reserve(connectorIds.size());
+  for (const auto& id : connectorIds) {
     data.emplace_back(Variant::row({id, id, id}));
   }
 

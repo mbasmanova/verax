@@ -785,16 +785,27 @@ using ConnectorWriteHandlePtr = std::shared_ptr<ConnectorWriteHandle>;
 
 class ConnectorMetadata {
  public:
-  /// Temporary APIs to assist in removing dependency on ConnectorMetadata from
-  /// Velox.
+  /// Return the metadata for a given connector ID. Throws if not registered.
   static ConnectorMetadata* metadata(std::string_view connectorId);
+
+  /// Return the metadata for a given connector ID, or nullptr if not
+  /// registered.
   static ConnectorMetadata* FOLLY_NULLABLE
   tryMetadata(std::string_view connectorId);
-  static ConnectorMetadata* metadata(velox::connector::Connector* connector);
+
+  /// Register metadata for a connector ID.
   static void registerMetadata(
       std::string_view connectorId,
       std::shared_ptr<ConnectorMetadata> metadata);
+
+  /// Unregister metadata for a connector ID.
   static void unregisterMetadata(std::string_view connectorId);
+
+  /// Unregister all metadata.
+  static void unregisterAllMetadata();
+
+  /// Return all registered connector IDs.
+  static std::vector<std::string> allMetadataIds();
 
   virtual ~ConnectorMetadata() = default;
 
