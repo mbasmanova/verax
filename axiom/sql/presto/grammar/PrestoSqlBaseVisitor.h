@@ -535,13 +535,38 @@ class PrestoSqlBaseVisitor : public PrestoSqlVisitor {
     return visitChildren(ctx);
   }
 
+  virtual std::any visitSelectAll(
+      PrestoSqlParser::SelectAllContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitSelectColumns(
+      PrestoSqlParser::SelectColumnsContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
   virtual std::any visitSelectSingle(
       PrestoSqlParser::SelectSingleContext* ctx) override {
     return visitChildren(ctx);
   }
 
-  virtual std::any visitSelectAll(
-      PrestoSqlParser::SelectAllContext* ctx) override {
+  virtual std::any visitStarModifiers(
+      PrestoSqlParser::StarModifiersContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitExcludeClause(
+      PrestoSqlParser::ExcludeClauseContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitReplaceClause(
+      PrestoSqlParser::ReplaceClauseContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitReplaceItem(
+      PrestoSqlParser::ReplaceItemContext* ctx) override {
     return visitChildren(ctx);
   }
 

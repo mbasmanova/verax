@@ -21,6 +21,9 @@ Friendly SQL features:
 | Digit separators | `SELECT 1_000_000` |
 | Method-call syntax | `'hello'.upper().substr(1, 3)` |
 | Lateral column aliases | `SELECT i+1 AS j, j+2 AS k` |
+| EXCLUDE | `SELECT * EXCLUDE (col1, col2) FROM t` |
+| REPLACE | `SELECT * REPLACE (expr AS col) FROM t` |
+| COLUMNS | `SELECT COLUMNS('regex') FROM t` |
 
 ## Named ROW Constructor
 
@@ -162,6 +165,125 @@ Rules:
   column wins (preserves backward compatibility).
 - **SELECT list scope only.** Aliases are not expanded in GROUP BY, HAVING,
   WHERE, or ORDER BY.
+
+## SELECT * EXCLUDE
+
+*Friendly SQL feature — requires `friendlySql` flag.*
+
+Removes named columns from a star expansion.
+
+**Syntax:**
+```sql
+SELECT * EXCLUDE (column1, column2, ...) FROM t
+SELECT t.* EXCLUDE (column1) FROM t JOIN s
+```
+
+**Examples:**
+```sql
+-- Remove n_comment from output.
+SELECT * EXCLUDE (n_comment) FROM nation
+-- Returns: n_nationkey, n_name, n_regionkey
+
+-- With qualified star in a join.
+SELECT nation.* EXCLUDE (n_comment) FROM nation, region
+WHERE n_regionkey = r_regionkey
+```
+
+Raises an error if an excluded column does not exist or if all columns are
+excluded.
+
+## SELECT * REPLACE
+
+*Friendly SQL feature — requires `friendlySql` flag.*
+
+Substitutes expressions for named columns in a star expansion. The column keeps
+its position and name, but uses the replacement expression.
+
+**Syntax:**
+```sql
+SELECT * REPLACE (expr AS column, ...) FROM t
+```
+
+**Examples:**
+```sql
+-- Replace n_name with its uppercase version.
+SELECT * REPLACE (upper(n_name) AS n_name) FROM nation
+-- Returns: n_nationkey, upper(n_name) AS n_name, n_regionkey, n_comment
+
+-- Replace with a constant.
+SELECT * REPLACE (0 AS n_regionkey) FROM nation
+
+-- Combine with EXCLUDE.
+SELECT * EXCLUDE (n_comment) REPLACE (upper(n_name) AS n_name) FROM nation
+```
+
+Raises an error if the replaced column does not exist (including if it was
+removed by EXCLUDE). Each column can appear in REPLACE at most once.
+
+EXCLUDE and REPLACE can be chained on the same star expression. EXCLUDE is
+applied first, then REPLACE.
+
+**Limitation:** The REPLACE target is an unqualified column name. In joins with
+overlapping column names, REPLACE on an ambiguous column raises an error. Use
+qualified star and qualified column references in the expression:
+
+```sql
+-- Fails: n_name is ambiguous across both tables.
+SELECT * REPLACE (upper(n_name) AS n_name) FROM nation a, nation b ...
+
+-- Works: qualify both the star and the expression.
+SELECT a.* REPLACE (upper(a.n_name) AS n_name) FROM nation a, nation b ...
+```
+
+## SELECT COLUMNS
+
+*Friendly SQL feature — requires `friendlySql` flag.*
+
+Selects columns matching a regular expression pattern (RE2 syntax).
+
+**Syntax:**
+```sql
+SELECT COLUMNS('regex') FROM t
+SELECT t.COLUMNS('regex') FROM t JOIN s
+```
+
+**Examples:**
+```sql
+-- Select columns starting with 'n_n'.
+SELECT COLUMNS('n_n.*') FROM nation
+-- Returns: n_nationkey, n_name
+
+-- All columns (equivalent to SELECT *).
+SELECT COLUMNS('.*') FROM nation
+
+-- Only from a specific table in a join.
+SELECT nation.COLUMNS('n_n.*') FROM nation, region
+WHERE n_regionkey = r_regionkey
+
+-- Combine with EXCLUDE.
+SELECT COLUMNS('n_n.*') EXCLUDE (n_name) FROM nation
+-- Returns: n_nationkey
+
+-- Mix with other select items.
+SELECT * EXCLUDE (n_name, n_comment), COLUMNS('n_n.*') FROM nation
+-- Returns: n_nationkey, n_regionkey, n_nationkey, n_name
+```
+
+Raises an error if the regex matches no columns or if the regex pattern is
+invalid.
+
+EXCLUDE and REPLACE modifiers can be applied to COLUMNS, same as with star
+expressions.
+
+### Column Name Matching
+
+EXCLUDE, REPLACE, and COLUMNS operate on user-defined column names only.
+Columns without explicit names (e.g., anonymous computed expressions like
+`SELECT a + 1`) cannot be targeted by these modifiers.
+
+For joins with overlapping column names (e.g., self-joins), EXCLUDE removes
+all columns matching the name regardless of source table. Use qualified star
+(`t.* EXCLUDE (...)`) to restrict to a specific table.
 
 ## EXCEPT ALL / INTERSECT ALL
 

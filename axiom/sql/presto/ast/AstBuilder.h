@@ -295,6 +295,20 @@ class AstBuilder : public PrestoSqlVisitor {
 
   std::any visitSelectAll(PrestoSqlParser::SelectAllContext* ctx) override;
 
+  std::any visitSelectColumns(
+      PrestoSqlParser::SelectColumnsContext* ctx) override;
+
+  std::any visitStarModifiers(
+      PrestoSqlParser::StarModifiersContext* ctx) override;
+
+  std::any visitExcludeClause(
+      PrestoSqlParser::ExcludeClauseContext* ctx) override;
+
+  std::any visitReplaceClause(
+      PrestoSqlParser::ReplaceClauseContext* ctx) override;
+
+  std::any visitReplaceItem(PrestoSqlParser::ReplaceItemContext* ctx) override;
+
   std::any visitRelationDefault(
       PrestoSqlParser::RelationDefaultContext* ctx) override;
 

@@ -16,6 +16,8 @@
 
 #include "axiom/sql/presto/ast/AstBuilder.h"
 
+#include <unordered_set>
+
 #include <folly/Unicode.h>
 #include "velox/common/base/Exceptions.h"
 
@@ -157,6 +159,55 @@ std::string decodeUnicodeLiteral(
   return result;
 }
 
+// Extracts exclude column names and replace items from a starModifiers context.
+// Validates no duplicate EXCLUDE or REPLACE clauses.
+std::pair<std::vector<std::shared_ptr<Identifier>>, std::vector<ReplaceItem>>
+extractStarModifiers(
+    PrestoSqlParser::StarModifiersContext* ctx,
+    AstBuilder& builder) {
+  std::vector<std::shared_ptr<Identifier>> excludeColumns;
+  std::vector<ReplaceItem> replaceItems;
+
+  const auto& excludeClauses = ctx->excludeClause();
+  VELOX_USER_CHECK_LE(excludeClauses.size(), 1, "Duplicate EXCLUDE clause");
+
+  const auto& replaceClauses = ctx->replaceClause();
+  VELOX_USER_CHECK_LE(replaceClauses.size(), 1, "Duplicate REPLACE clause");
+
+  for (auto* excludeCtx : excludeClauses) {
+    std::unordered_set<std::string> seenNames;
+    for (auto* identCtx : excludeCtx->identifier()) {
+      auto column =
+          std::any_cast<std::shared_ptr<Identifier>>(builder.visit(identCtx));
+      VELOX_USER_CHECK(
+          seenNames.insert(column->value()).second,
+          "Duplicate column in EXCLUDE: {}",
+          column->value());
+      excludeColumns.emplace_back(std::move(column));
+    }
+  }
+
+  for (auto* replaceCtx : replaceClauses) {
+    std::unordered_set<std::string> seenNames;
+    for (auto* itemCtx : replaceCtx->replaceItem()) {
+      auto expression = std::any_cast<std::shared_ptr<Expression>>(
+          builder.visit(itemCtx->expression()));
+      auto column = std::any_cast<std::shared_ptr<Identifier>>(
+          builder.visit(itemCtx->identifier()));
+
+      auto name = column->value();
+      VELOX_USER_CHECK(
+          seenNames.insert(name).second,
+          "Duplicate column in REPLACE: {}",
+          name);
+
+      replaceItems.emplace_back(ReplaceItem{expression, column});
+    }
+  }
+
+  return {std::move(excludeColumns), std::move(replaceItems)};
+}
+
 } // namespace
 
 void AstBuilder::trace(std::string_view name) const {
@@ -282,7 +333,12 @@ std::any AstBuilder::visitQuerySpecification(
   std::vector<std::shared_ptr<SelectItem>> selectItems;
   if (fromFirst) {
     // Desugar to SELECT *.
-    selectItems.push_back(std::make_shared<AllColumns>(getLocation(ctx)));
+    selectItems.push_back(
+        std::make_shared<AllColumns>(
+            getLocation(ctx),
+            nullptr,
+            std::vector<std::shared_ptr<Identifier>>{},
+            std::vector<ReplaceItem>{}));
   } else {
     selectItems = visitTyped<SelectItem>(ctx->selectItem());
 
@@ -385,8 +441,77 @@ std::any AstBuilder::visitSelectAll(PrestoSqlParser::SelectAllContext* ctx) {
     name = getQualifiedName(ctx->qualifiedName());
   }
 
-  return std::static_pointer_cast<SelectItem>(
-      std::make_shared<AllColumns>(getLocation(ctx), name));
+  std::vector<std::shared_ptr<Identifier>> excludeColumns;
+  std::vector<ReplaceItem> replaceItems;
+  if (ctx->starModifiers() != nullptr) {
+    VELOX_USER_CHECK(
+        options_.friendlySql,
+        "EXCLUDE and REPLACE modifiers require Friendly SQL mode.");
+    std::tie(excludeColumns, replaceItems) =
+        extractStarModifiers(ctx->starModifiers(), *this);
+  }
+
+  return std::static_pointer_cast<SelectItem>(std::make_shared<AllColumns>(
+      getLocation(ctx),
+      name,
+      std::move(excludeColumns),
+      std::move(replaceItems)));
+}
+
+std::any AstBuilder::visitSelectColumns(
+    PrestoSqlParser::SelectColumnsContext* ctx) {
+  trace("visitSelectColumns");
+
+  VELOX_USER_CHECK(
+      options_.friendlySql, "COLUMNS() requires Friendly SQL mode.");
+
+  // Extract pattern string (remove quotes from string literal).
+  auto pattern = unquote(ctx->pattern->getText());
+
+  // Extract optional prefix (qualifiedName).
+  std::shared_ptr<QualifiedName> prefix;
+  if (ctx->qualifiedName() != nullptr) {
+    prefix = getQualifiedName(ctx->qualifiedName());
+  }
+
+  // Extract optional starModifiers.
+  std::vector<std::shared_ptr<Identifier>> excludeColumns;
+  std::vector<ReplaceItem> replaceItems;
+  if (ctx->starModifiers() != nullptr) {
+    std::tie(excludeColumns, replaceItems) =
+        extractStarModifiers(ctx->starModifiers(), *this);
+  }
+
+  return std::static_pointer_cast<SelectItem>(std::make_shared<SelectColumns>(
+      getLocation(ctx),
+      std::move(pattern),
+      std::move(prefix),
+      std::move(excludeColumns),
+      std::move(replaceItems)));
+}
+
+std::any AstBuilder::visitStarModifiers(
+    PrestoSqlParser::StarModifiersContext* ctx) {
+  // Not called directly. Use extractStarModifiers() instead.
+  VELOX_UNREACHABLE();
+}
+
+std::any AstBuilder::visitExcludeClause(
+    PrestoSqlParser::ExcludeClauseContext* ctx) {
+  // Not called directly. Use extractStarModifiers() instead.
+  VELOX_UNREACHABLE();
+}
+
+std::any AstBuilder::visitReplaceClause(
+    PrestoSqlParser::ReplaceClauseContext* ctx) {
+  // Not called directly. Use extractStarModifiers() instead.
+  VELOX_UNREACHABLE();
+}
+
+std::any AstBuilder::visitReplaceItem(
+    PrestoSqlParser::ReplaceItemContext* ctx) {
+  // Not called directly. Use extractStarModifiers() instead.
+  VELOX_UNREACHABLE();
 }
 
 std::any AstBuilder::visitUnquotedIdentifier(

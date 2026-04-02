@@ -523,15 +523,40 @@ class PrestoSqlBaseListener : public PrestoSqlListener {
   virtual void exitSetQuantifier(
       PrestoSqlParser::SetQuantifierContext* /*ctx*/) override {}
 
+  virtual void enterSelectAll(
+      PrestoSqlParser::SelectAllContext* /*ctx*/) override {}
+  virtual void exitSelectAll(
+      PrestoSqlParser::SelectAllContext* /*ctx*/) override {}
+
+  virtual void enterSelectColumns(
+      PrestoSqlParser::SelectColumnsContext* /*ctx*/) override {}
+  virtual void exitSelectColumns(
+      PrestoSqlParser::SelectColumnsContext* /*ctx*/) override {}
+
   virtual void enterSelectSingle(
       PrestoSqlParser::SelectSingleContext* /*ctx*/) override {}
   virtual void exitSelectSingle(
       PrestoSqlParser::SelectSingleContext* /*ctx*/) override {}
 
-  virtual void enterSelectAll(
-      PrestoSqlParser::SelectAllContext* /*ctx*/) override {}
-  virtual void exitSelectAll(
-      PrestoSqlParser::SelectAllContext* /*ctx*/) override {}
+  virtual void enterStarModifiers(
+      PrestoSqlParser::StarModifiersContext* /*ctx*/) override {}
+  virtual void exitStarModifiers(
+      PrestoSqlParser::StarModifiersContext* /*ctx*/) override {}
+
+  virtual void enterExcludeClause(
+      PrestoSqlParser::ExcludeClauseContext* /*ctx*/) override {}
+  virtual void exitExcludeClause(
+      PrestoSqlParser::ExcludeClauseContext* /*ctx*/) override {}
+
+  virtual void enterReplaceClause(
+      PrestoSqlParser::ReplaceClauseContext* /*ctx*/) override {}
+  virtual void exitReplaceClause(
+      PrestoSqlParser::ReplaceClauseContext* /*ctx*/) override {}
+
+  virtual void enterReplaceItem(
+      PrestoSqlParser::ReplaceItemContext* /*ctx*/) override {}
+  virtual void exitReplaceItem(
+      PrestoSqlParser::ReplaceItemContext* /*ctx*/) override {}
 
   virtual void enterRelationDefault(
       PrestoSqlParser::RelationDefaultContext* /*ctx*/) override {}

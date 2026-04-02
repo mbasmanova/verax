@@ -108,6 +108,7 @@ const auto& nodeTypeNames() {
       {NodeType::kSelectItem, "SelectItem"},
       {NodeType::kSingleColumn, "SingleColumn"},
       {NodeType::kAllColumns, "AllColumns"},
+      {NodeType::kSelectColumns, "SelectColumns"},
       {NodeType::kWith, "With"},
       {NodeType::kWithQuery, "WithQuery"},
       {NodeType::kOrderBy, "OrderBy"},
@@ -493,6 +494,10 @@ void SingleColumn::accept(AstVisitor* visitor) {
 
 void AllColumns::accept(AstVisitor* visitor) {
   visitor->visitAllColumns(this);
+}
+
+void SelectColumns::accept(AstVisitor* visitor) {
+  visitor->visitSelectColumns(this);
 }
 
 void With::accept(AstVisitor* visitor) {

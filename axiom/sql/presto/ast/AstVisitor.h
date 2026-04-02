@@ -286,6 +286,10 @@ class AstVisitor {
     defaultVisit(node);
   }
 
+  virtual void visitSelectColumns(SelectColumns* node) {
+    defaultVisit(node);
+  }
+
   virtual void visitWith(With* node) {
     defaultVisit(node);
   }

@@ -312,9 +312,27 @@ setQuantifier
     ;
 
 selectItem
-    : expression (AS? identifier)?  #selectSingle
-    | qualifiedName '.' ASTERISK    #selectAll
-    | ASTERISK                      #selectAll
+    : qualifiedName '.' ASTERISK starModifiers?                       #selectAll
+    | ASTERISK starModifiers?                                         #selectAll
+    | qualifiedName '.' COLUMNS '(' pattern=STRING ')' starModifiers? #selectColumns
+    | COLUMNS '(' pattern=STRING ')' starModifiers?                   #selectColumns
+    | expression (AS? identifier)?                                    #selectSingle
+    ;
+
+starModifiers
+    : (excludeClause | replaceClause)+
+    ;
+
+excludeClause
+    : EXCLUDE '(' identifier (',' identifier)* ')'
+    ;
+
+replaceClause
+    : REPLACE '(' replaceItem (',' replaceItem)* ')'
+    ;
+
+replaceItem
+    : expression AS identifier
     ;
 
 relation
@@ -655,7 +673,7 @@ nonReserved
     | BEFORE | BERNOULLI
     | CALL | CALLED | CASCADE | CATALOGS | COLUMN | COLUMNS | COMMENT | COMMIT | COMMITTED | CURRENT | CURRENT_ROLE
     | DATA | DATE | DAY | DEFINER | DESC | DETERMINISTIC | DISABLED | DISTRIBUTED
-    | ENABLED | ENFORCED | EXECUTABLE | EXCLUDING | EXPLAIN | EXTERNAL
+    | ENABLED | ENFORCED | EXECUTABLE | EXCLUDE | EXCLUDING | EXPLAIN | EXTERNAL
     | FETCH | FILTER | FIRST | FOLLOWING | FORMAT | FUNCTION | FUNCTIONS
     | GRANT | GRANTED | GRANTS | GRAPH | GRAPHVIZ | GROUPS
     | HOUR
@@ -733,6 +751,7 @@ END: 'END';
 ENFORCED: 'ENFORCED';
 ESCAPE: 'ESCAPE';
 EXCEPT: 'EXCEPT';
+EXCLUDE: 'EXCLUDE';
 EXCLUDING: 'EXCLUDING';
 EXECUTABLE: 'EXECUTABLE';
 EXECUTE: 'EXECUTE';

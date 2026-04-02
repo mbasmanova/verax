@@ -350,6 +350,35 @@ void AstPrinter::visitDereferenceExpression(DereferenceExpression* node) {
   indent_--;
 }
 
+namespace {
+// Appends EXCLUDE and REPLACE modifiers to the output stream.
+void appendStarModifiers(
+    std::ostream& out,
+    const std::vector<std::shared_ptr<Identifier>>& excludeColumns,
+    const std::vector<ReplaceItem>& replaceItems) {
+  if (!excludeColumns.empty()) {
+    out << " EXCLUDE (";
+    for (size_t i = 0; i < excludeColumns.size(); ++i) {
+      if (i > 0) {
+        out << ", ";
+      }
+      out << excludeColumns[i]->value();
+    }
+    out << ")";
+  }
+  if (!replaceItems.empty()) {
+    out << " REPLACE (";
+    for (size_t i = 0; i < replaceItems.size(); ++i) {
+      if (i > 0) {
+        out << ", ";
+      }
+      out << "<expr> AS " << replaceItems[i].column->value();
+    }
+    out << ")";
+  }
+}
+} // namespace
+
 void AstPrinter::visitAllColumns(AllColumns* node) {
   printHeader("AllColumns", node, [&](std::ostream& out) {
     if (node->prefix() != nullptr) {
@@ -357,7 +386,30 @@ void AstPrinter::visitAllColumns(AllColumns* node) {
     } else {
       out << "*";
     }
+    appendStarModifiers(out, node->excludeColumns(), node->replaceItems());
   });
+
+  indent_++;
+  for (const auto& item : node->replaceItems()) {
+    printChild("ReplaceExpr", item.expression);
+  }
+  indent_--;
+}
+
+void AstPrinter::visitSelectColumns(SelectColumns* node) {
+  printHeader("SelectColumns", node, [&](std::ostream& out) {
+    if (node->prefix() != nullptr) {
+      out << node->prefix()->fullyQualifiedName() << ".";
+    }
+    out << "COLUMNS('" << node->pattern() << "')";
+    appendStarModifiers(out, node->excludeColumns(), node->replaceItems());
+  });
+
+  indent_++;
+  for (const auto& item : node->replaceItems()) {
+    printChild("ReplaceExpr", item.expression);
+  }
+  indent_--;
 }
 
 void AstPrinter::visitJoin(Join* node) {

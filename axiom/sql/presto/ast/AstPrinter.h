@@ -155,6 +155,8 @@ class AstPrinter : public AstVisitor {
 
   void visitAllColumns(AllColumns* node) override;
 
+  void visitSelectColumns(SelectColumns* node) override;
+
   void visitWith(With* node) override;
 
   void visitWithQuery(WithQuery* node) override;
