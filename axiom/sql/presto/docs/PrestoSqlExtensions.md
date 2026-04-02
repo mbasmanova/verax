@@ -27,7 +27,6 @@ Friendly SQL features:
 
 ## Named ROW Constructor
 
-*Friendly SQL feature — requires `friendlySql` flag.*
 
 See https://github.com/prestodb/presto/issues/26205.
 
@@ -64,7 +63,6 @@ FROM orders
 
 ## Trailing Commas in SELECT
 
-*Friendly SQL feature — requires `friendlySql` flag.*
 
 Allows a trailing comma after the last item in a SELECT list.
 
@@ -78,7 +76,6 @@ FROM nation
 
 ## FROM-First Syntax
 
-*Friendly SQL feature — requires `friendlySql` flag.*
 
 Allows queries to start with `FROM` instead of `SELECT`. An implicit
 `SELECT *` is added.
@@ -93,7 +90,6 @@ FROM nation WHERE n_regionkey = 1
 
 ## Underscores in Numeric Literals
 
-*Friendly SQL feature — requires `friendlySql` flag.*
 
 Allows underscores as digit separators in integer, decimal, and double
 literals for readability.
@@ -111,7 +107,6 @@ SELECT 1_000E3
 
 ## Method-Call Syntax for Function Chaining
 
-*Friendly SQL feature — requires `friendlySql` flag.*
 
 Allows calling functions using dot notation, where the base expression becomes
 the first argument: `expr.func(args...)` desugars to `func(expr, args...)`.
@@ -140,7 +135,6 @@ syntax.
 
 ## Lateral Column Aliases
 
-*Friendly SQL feature — requires `friendlySql` flag.*
 
 Allows referencing aliases defined in earlier SELECT items within the same
 SELECT list. The alias is expanded inline — semantically identical to writing
@@ -168,7 +162,6 @@ Rules:
 
 ## SELECT * EXCLUDE
 
-*Friendly SQL feature — requires `friendlySql` flag.*
 
 Removes named columns from a star expansion.
 
@@ -194,7 +187,6 @@ excluded.
 
 ## SELECT * REPLACE
 
-*Friendly SQL feature — requires `friendlySql` flag.*
 
 Substitutes expressions for named columns in a star expansion. The column keeps
 its position and name, but uses the replacement expression.
@@ -237,7 +229,6 @@ SELECT a.* REPLACE (upper(a.n_name) AS n_name) FROM nation a, nation b ...
 
 ## SELECT COLUMNS
 
-*Friendly SQL feature — requires `friendlySql` flag.*
 
 Selects columns matching a regular expression pattern (RE2 syntax).
 
@@ -274,6 +265,28 @@ invalid.
 
 EXCLUDE and REPLACE modifiers can be applied to COLUMNS, same as with star
 expressions.
+
+### COLUMNS in Expressions
+
+`COLUMNS('regex')` can appear inside an expression. The expression is expanded
+into one select item per matched column — each is a copy of the enclosing
+expression with `COLUMNS(...)` replaced by the column reference. This is syntax
+sugar for writing the same expression for each matching column.
+
+```sql
+-- Syntax sugar for: SELECT n_nationkey + 1, n_regionkey + 1
+SELECT COLUMNS('.*key') + 1 FROM nation
+
+-- Syntax sugar for: SELECT cast(n_nationkey AS varchar), cast(n_regionkey AS varchar)
+SELECT cast(COLUMNS('.*key') AS varchar) FROM nation
+
+-- Alias applies to all expanded columns.
+SELECT COLUMNS('.*key') + 1 AS x FROM nation
+-- Equivalent to: SELECT n_nationkey + 1 AS x, n_regionkey + 1 AS x
+```
+
+Only one `COLUMNS()` call per expression is supported. Multiple calls (e.g.,
+`COLUMNS('a.*') + COLUMNS('b.*')`) will be added in a follow-up.
 
 ### Column Name Matching
 
