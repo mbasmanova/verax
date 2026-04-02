@@ -4,6 +4,14 @@ C++ implementation of the Presto SQL parser. Converts SQL text into an
 Axiom logical plan, which is then fed into the Axiom cost-based optimizer
 to produce an executable multi-fragment Velox plan.
 
+## Presto SQL Extensions
+
+Axiom extends Presto SQL with several features not available in Presto Java,
+including Friendly SQL (EXCLUDE, REPLACE, COLUMNS, trailing commas, FROM-first
+syntax, lateral column aliases, method-call syntax), `EXCEPT ALL` /
+`INTERSECT ALL`, and additional `EXPLAIN` types. See
+[docs/PrestoSqlExtensions.md](docs/PrestoSqlExtensions.md) for details.
+
 ## Architecture
 
 The parser processes SQL in four phases.
@@ -114,13 +122,6 @@ The `LogicalPlanNode` tree is wrapped in a `SqlStatement` subclass:
 | DROP TABLE | `DropTableStatement` |
 | EXPLAIN | `ExplainStatement` |
 | USE | `UseStatement` |
-
-## Presto SQL Extensions
-
-Axiom extends Presto SQL with several features not available in Presto Java,
-including named ROW constructors, `EXCEPT ALL` / `INTERSECT ALL`, and
-additional `EXPLAIN` types. See
-[docs/PrestoSqlExtensions.md](docs/PrestoSqlExtensions.md) for details.
 
 ## Differences from Presto Java
 

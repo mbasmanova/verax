@@ -261,5 +261,42 @@ TEST_F(ColumnFilteringTest, duplicateColumnNames) {
       "mismatched input '.'");
 }
 
+TEST_F(ColumnFilteringTest, selectColumnsInExpression) {
+  // nation has: n_nationkey, n_name, n_regionkey, n_comment
+
+  // Arithmetic over matched columns.
+  // COLUMNS in expressions is syntax sugar: output names match what you'd
+  // get from writing the expressions manually (auto-generated names).
+  testSelect(
+      "SELECT COLUMNS('.*key') + 1 FROM nation",
+      matchScan("nation")
+          .project({"n_nationkey + 1::bigint", "n_regionkey + 1::bigint"})
+          .output());
+
+  // Alias applies to all expanded columns.
+  testSelect(
+      "SELECT COLUMNS('.*key') + 1 AS x FROM nation",
+      matchScan("nation")
+          .project({"n_nationkey + 1::bigint", "n_regionkey + 1::bigint"})
+          .output({"x", "x"}));
+
+  // Cast over matched columns.
+  testSelect(
+      "SELECT cast(COLUMNS('.*key') AS varchar) FROM nation",
+      matchScan("nation")
+          .project({"n_nationkey::varchar", "n_regionkey::varchar"})
+          .output());
+
+  // No columns match in expression context.
+  VELOX_ASSERT_THROW(
+      parseSelect("SELECT COLUMNS('xyz') + 1 FROM nation"),
+      "COLUMNS('xyz') matched no columns");
+
+  // Multiple COLUMNS calls in one expression are not yet supported.
+  VELOX_ASSERT_THROW(
+      parseSelect("SELECT COLUMNS('.*key') + COLUMNS('.*key') FROM nation"),
+      "Multiple COLUMNS() calls in a single expression");
+}
+
 } // namespace
 } // namespace axiom::sql::presto::test
