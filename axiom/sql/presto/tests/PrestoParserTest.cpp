@@ -345,7 +345,10 @@ TEST_F(PrestoParserTest, selectStar) {
 // Tests for star expansion with duplicate column names from joins.
 TEST_F(PrestoParserTest, selectStarDuplicateColumns) {
   auto matchJoin = [&]() {
-    return matchScan().join(matchScan().build()).filter().project();
+    return matchScan("nation")
+        .join(matchScan("nation").build())
+        .filter()
+        .project();
   };
 
   // SELECT *, expr with self-join.
@@ -367,14 +370,11 @@ TEST_F(PrestoParserTest, selectStarDuplicateColumns) {
     EXPECT_EQ(3, plan->outputType()->size());
   }
 
-  // TODO: Nested window function with duplicate column names is not yet
-  // supported. addWindowProjection adds a project node that flattens the
-  // namespace, losing table aliases needed for disambiguation.
-  VELOX_ASSERT_THROW(
-      parseSelect(
-          "SELECT *, sum(a.n_nationkey) OVER () + 1 FROM nation a, nation b "
-          "WHERE a.n_nationkey = b.n_nationkey"),
-      "Cannot resolve column");
+  // Nested window function with duplicate column names.
+  testSelect(
+      "SELECT *, sum(a.n_nationkey) OVER () + 1 FROM nation a, nation b "
+      "WHERE a.n_nationkey = b.n_nationkey",
+      matchJoin().project().output());
 
   // ORDER BY ordinal with duplicate column names.
   testSelect(
