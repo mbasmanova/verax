@@ -419,10 +419,51 @@ class AggregateMatcher : public LogicalPlanMatcherImpl<AggregateNode> {
     EXPECT_EQ(aggregates_.size(), plan.aggregates().size());
     AXIOM_RETURN_IF_FAILURE;
 
+    std::unordered_map<std::string, std::string> newSymbols = symbols;
+    auto numGroupingKeys = plan.groupingKeys().size();
+
+    velox::parse::DuckSqlExpressionsParser parser;
     for (auto i = 0; i < aggregates_.size(); ++i) {
-      EXPECT_EQ(aggregates_[i], plan.aggregateAt(i)->toString())
+      auto parsed = parser.parseAggregateExpr(aggregates_[i]);
+      auto expected = parsed.expr;
+      if (!symbols.empty()) {
+        expected = rewriteInputNames(expected, symbols);
+      }
+
+      // Capture alias for symbol propagation.
+      if (expected->alias()) {
+        newSymbols[expected->alias().value()] =
+            plan.outputType()->nameOf(numGroupingKeys + i);
+      }
+
+      // Compare aggregate function call.
+      const auto& actual = plan.aggregateAt(i);
+      auto expectedCall = std::make_shared<CallExpr>(
+          actual->type(), actual->name(), actual->inputs());
+      EXPECT_EQ(toExprString(*expected->dropAlias()), expectedCall->toString())
           << "at aggregate index " << i;
       AXIOM_RETURN_IF_FAILURE;
+
+      // Compare DISTINCT flag.
+      EXPECT_EQ(parsed.distinct, actual->isDistinct())
+          << "at aggregate index " << i;
+      AXIOM_RETURN_IF_FAILURE;
+
+      // Compare FILTER expression.
+      if (parsed.filter != nullptr) {
+        EXPECT_NE(actual->filter(), nullptr) << "at aggregate index " << i;
+        AXIOM_RETURN_IF_FAILURE;
+        auto expectedFilter = parsed.filter;
+        if (!symbols.empty()) {
+          expectedFilter = rewriteInputNames(expectedFilter, symbols);
+        }
+        EXPECT_EQ(toExprString(*expectedFilter), actual->filter()->toString())
+            << "at aggregate index " << i;
+        AXIOM_RETURN_IF_FAILURE;
+      } else {
+        EXPECT_EQ(actual->filter(), nullptr) << "at aggregate index " << i;
+        AXIOM_RETURN_IF_FAILURE;
+      }
     }
 
     EXPECT_EQ(groupingSets_.size(), plan.groupingSets().size())
@@ -435,7 +476,7 @@ class AggregateMatcher : public LogicalPlanMatcherImpl<AggregateNode> {
       AXIOM_RETURN_IF_FAILURE;
     }
 
-    AXIOM_RETURN_RESULT(symbols)
+    AXIOM_RETURN_RESULT(newSymbols)
   }
 
   const std::vector<std::string> groupingKeys_;

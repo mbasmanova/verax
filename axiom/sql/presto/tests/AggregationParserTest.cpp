@@ -629,7 +629,12 @@ TEST_F(AggregationParserTest, aggregateDeduplication) {
 }
 
 TEST_F(AggregationParserTest, groupByWithWindowFunction) {
-  connector_->addTable("t", ROW({"a", "b"}, {BIGINT(), BIGINT()}));
+  connector_->addTable("t", ROW({"a", "b"}, BIGINT()));
+  connector_->addTable("u", ROW({"a", "c"}, BIGINT()));
+  SCOPE_EXIT {
+    connector_->dropTableIfExists("t");
+    connector_->dropTableIfExists("u");
+  };
 
   // Window function in SELECT with GROUP BY.
   testSelect(
@@ -665,12 +670,24 @@ TEST_F(AggregationParserTest, groupByWithWindowFunction) {
           .project()
           .output());
 
-  // TODO: Aggregate references inside window specs are not yet rewritten to
-  // post-aggregate output names. This valid Presto SQL should work but doesn't.
-  VELOX_ASSERT_THROW(
-      parseSql(
-          "SELECT b, sum(a), row_number() OVER (ORDER BY sum(a)) FROM t GROUP BY b"),
-      "Cannot resolve column: a");
+  // Aggregate reference inside window ORDER BY spec.
+  testSelect(
+      "SELECT b, sum(a), row_number() OVER (ORDER BY sum(a)) FROM t GROUP BY b",
+      matchScan("t")
+          .aggregate({"b"}, {"sum(a) as total"})
+          .project({"b", "total", "row_number() OVER (ORDER BY total)"})
+          .output());
+
+  // Same as above but with PARTITION BY.
+  testSelect(
+      "SELECT b, sum(a), row_number() OVER (PARTITION BY b ORDER BY sum(a)) FROM t GROUP BY b",
+      matchScan("t")
+          .aggregate({"b"}, {"sum(a) as total"})
+          .project(
+              {"b",
+               "total",
+               "row_number() OVER (PARTITION BY b ORDER BY total)"})
+          .output());
 
   // Window function call with the same signature as a plain aggregate.
   testSelect(
@@ -682,6 +699,18 @@ TEST_F(AggregationParserTest, groupByWithWindowFunction) {
               "sum",
           })
           .output());
+
+  // Window function with PARTITION BY referencing a qualified group-by key
+  // that is ambiguous (exists in multiple joined tables).
+  testSelect(
+      "SELECT t.a, u.c, rank() OVER (PARTITION BY t.a) AS rnk "
+      "FROM t JOIN u ON t.a = u.a "
+      "GROUP BY 1, 2",
+      matchScan("t")
+          .join(matchScan("u").build())
+          .aggregate({"a", "c"}, {})
+          .project({"a", "c", "rank() OVER (PARTITION BY a)"})
+          .output({"a", "c", "rnk"}));
 }
 
 } // namespace
