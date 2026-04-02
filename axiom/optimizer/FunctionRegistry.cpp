@@ -368,6 +368,7 @@ void FunctionRegistry::registerPrestoFunctions(std::string_view prefix) {
     auto metadata = std::make_unique<FunctionMetadata>();
     metadata->valuePathToArgPath = rowConstructorSubfield;
     metadata->explode = rowConstructorExplode;
+    metadata->functionSet = FunctionSet(FunctionSet::kNonDefaultNullBehavior);
     // Presto row_constructor created without prefix, so we register it without
     // prefix too.
     registerFunction("row_constructor", std::move(metadata));
