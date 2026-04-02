@@ -573,7 +573,16 @@ void GroupByPlanner::addAggregate(bool useGroupingSets) {
     builder_->aggregate(groupingKeys_, aggregateExprs, aggregateOptions);
   }
 
-  outputNames_ = builder_->findOrAssignOutputNames();
+  auto outputColumns = builder_->findOrAssignOutputNames();
+  outputNames_.clear();
+  outputNames_.reserve(outputColumns.size());
+  for (const auto& column : outputColumns) {
+    VELOX_CHECK(
+        !column.alias.has_value(),
+        "Unexpected ambiguous column after aggregate: {}",
+        column.name);
+    outputNames_.emplace_back(column.name);
+  }
 }
 
 void GroupByPlanner::rewritePostAggregateExprs() {

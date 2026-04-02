@@ -143,10 +143,11 @@ void SortProjection::sortAndTrim(
   std::vector<lp::SortKey> resolvedKeys;
   resolvedKeys.reserve(sortItems.size());
   for (size_t i = 0; i < sortItems.size(); ++i) {
-    const auto name = builder.findOrAssignOutputNameAt(sortKeyOrdinals[i] - 1);
+    const auto column =
+        builder.findOrAssignOutputNameAt(sortKeyOrdinals[i] - 1);
     const auto& item = sortItems[i];
     resolvedKeys.emplace_back(
-        lp::Col(name), item->isAscending(), item->isNullsFirst());
+        column.toCol(), item->isAscending(), item->isNullsFirst());
   }
 
   builder.sort(resolvedKeys);
@@ -157,7 +158,7 @@ void SortProjection::sortAndTrim(
     finalProjections.reserve(numOutputColumns);
     for (size_t i = 0; i < numOutputColumns; ++i) {
       finalProjections.emplace_back(
-          lp::Col(builder.findOrAssignOutputNameAt(i)));
+          builder.findOrAssignOutputNameAt(i).toCol());
     }
     builder.project(finalProjections);
   }
