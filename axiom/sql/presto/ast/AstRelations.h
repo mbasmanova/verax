@@ -16,6 +16,7 @@
 #pragma once
 
 #include <optional>
+#include <string>
 #include <utility>
 #include <vector>
 #include "axiom/sql/presto/ast/AstNode.h"
@@ -195,21 +196,92 @@ class SingleColumn : public SelectItem {
   std::shared_ptr<Identifier> alias_;
 };
 
+/// Represents a single REPLACE item: expression AS column_name.
+struct ReplaceItem {
+  /// Expression that replaces the column value.
+  ExpressionPtr expression;
+  /// Column being replaced.
+  std::shared_ptr<Identifier> column;
+};
+
+/// Represents SELECT * or t.* with optional EXCLUDE and REPLACE modifiers.
 class AllColumns : public SelectItem {
  public:
-  explicit AllColumns(
+  /// Constructs a star expression with optional prefix and modifiers.
+  AllColumns(
       NodeLocation location,
-      const std::shared_ptr<QualifiedName>& prefix = nullptr)
-      : SelectItem(NodeType::kAllColumns, location), prefix_(prefix) {}
+      std::shared_ptr<QualifiedName> prefix,
+      std::vector<std::shared_ptr<Identifier>> excludeColumns,
+      std::vector<ReplaceItem> replaceItems)
+      : SelectItem(NodeType::kAllColumns, location),
+        prefix_(std::move(prefix)),
+        excludeColumns_(std::move(excludeColumns)),
+        replaceItems_(std::move(replaceItems)) {}
 
   const std::shared_ptr<QualifiedName>& prefix() const {
     return prefix_;
+  }
+
+  /// Column names to exclude from star expansion.
+  const std::vector<std::shared_ptr<Identifier>>& excludeColumns() const {
+    return excludeColumns_;
+  }
+
+  /// Replacement expressions for named columns in star expansion.
+  const std::vector<ReplaceItem>& replaceItems() const {
+    return replaceItems_;
   }
 
   void accept(AstVisitor* visitor) override;
 
  private:
   std::shared_ptr<QualifiedName> prefix_;
+  std::vector<std::shared_ptr<Identifier>> excludeColumns_;
+  std::vector<ReplaceItem> replaceItems_;
+};
+
+/// Represents COLUMNS('regex') or t.COLUMNS('regex') in SELECT.
+class SelectColumns : public SelectItem {
+ public:
+  SelectColumns(
+      NodeLocation location,
+      std::string pattern,
+      std::shared_ptr<QualifiedName> prefix,
+      std::vector<std::shared_ptr<Identifier>> excludeColumns,
+      std::vector<ReplaceItem> replaceItems)
+      : SelectItem(NodeType::kSelectColumns, location),
+        pattern_(std::move(pattern)),
+        prefix_(std::move(prefix)),
+        excludeColumns_(std::move(excludeColumns)),
+        replaceItems_(std::move(replaceItems)) {}
+
+  /// Regex pattern to match column names.
+  const std::string& pattern() const {
+    return pattern_;
+  }
+
+  /// Optional table prefix (for t.COLUMNS('regex')).
+  const std::shared_ptr<QualifiedName>& prefix() const {
+    return prefix_;
+  }
+
+  /// Column names to exclude from matched columns.
+  const std::vector<std::shared_ptr<Identifier>>& excludeColumns() const {
+    return excludeColumns_;
+  }
+
+  /// Replacement expressions for named columns.
+  const std::vector<ReplaceItem>& replaceItems() const {
+    return replaceItems_;
+  }
+
+  void accept(AstVisitor* visitor) override;
+
+ private:
+  std::string pattern_;
+  std::shared_ptr<QualifiedName> prefix_;
+  std::vector<std::shared_ptr<Identifier>> excludeColumns_;
+  std::vector<ReplaceItem> replaceItems_;
 };
 
 class Select : public Node {

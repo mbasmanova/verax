@@ -88,203 +88,204 @@ class PrestoSqlParser : public antlr4::Parser {
     ENFORCED = 63,
     ESCAPE = 64,
     EXCEPT = 65,
-    EXCLUDING = 66,
-    EXECUTABLE = 67,
-    EXECUTE = 68,
-    EXISTS = 69,
-    EXPLAIN = 70,
-    EXTRACT = 71,
-    EXTERNAL = 72,
-    FALSE = 73,
-    FETCH = 74,
-    FILTER = 75,
-    FIRST = 76,
-    FOLLOWING = 77,
-    FOR = 78,
-    FORMAT = 79,
-    FROM = 80,
-    FULL = 81,
-    FUNCTION = 82,
-    FUNCTIONS = 83,
-    GRANT = 84,
-    GRANTED = 85,
-    GRANTS = 86,
-    GRAPH = 87,
-    GRAPHVIZ = 88,
-    GROUP = 89,
-    GROUPING = 90,
-    GROUPS = 91,
-    HAVING = 92,
-    HOUR = 93,
-    IF = 94,
-    IGNORE = 95,
-    IN = 96,
-    INCLUDING = 97,
-    INNER = 98,
-    INPUT = 99,
-    INSERT = 100,
-    INTERSECT = 101,
-    INTERVAL = 102,
-    INTO = 103,
-    INVOKER = 104,
-    IO = 105,
-    IS = 106,
-    ISOLATION = 107,
-    JSON = 108,
-    JOIN = 109,
-    KEY = 110,
-    LANGUAGE = 111,
-    LAST = 112,
-    LATERAL = 113,
-    LEFT = 114,
-    LEVEL = 115,
-    LIKE = 116,
-    LIMIT = 117,
-    LOCALTIME = 118,
-    LOCALTIMESTAMP = 119,
-    LOGICAL = 120,
-    MAP = 121,
-    MATERIALIZED = 122,
-    MINUTE = 123,
-    MONTH = 124,
-    NAME = 125,
-    NATURAL = 126,
-    NFC = 127,
-    NFD = 128,
-    NFKC = 129,
-    NFKD = 130,
-    NO = 131,
-    NONE = 132,
-    NORMALIZE = 133,
-    NOT = 134,
-    NULL_LITERAL = 135,
-    NULLIF = 136,
-    NULLS = 137,
-    OF = 138,
-    OFFSET = 139,
-    ON = 140,
-    ONLY = 141,
-    OPTIMIZED = 142,
-    OPTION = 143,
-    OR = 144,
-    ORDER = 145,
-    ORDINALITY = 146,
-    OUTER = 147,
-    OUTPUT = 148,
-    OVER = 149,
-    PARTITION = 150,
-    PARTITIONS = 151,
-    POSITION = 152,
-    PRECEDING = 153,
-    PREPARE = 154,
-    PRIMARY = 155,
-    PRIVILEGES = 156,
-    PROPERTIES = 157,
-    RANGE = 158,
-    READ = 159,
-    RECURSIVE = 160,
-    REFRESH = 161,
-    RELY = 162,
-    RENAME = 163,
-    REPEATABLE = 164,
-    REPLACE = 165,
-    RESET = 166,
-    RESPECT = 167,
-    RESTRICT = 168,
-    RETURN = 169,
-    RETURNS = 170,
-    REVOKE = 171,
-    RIGHT = 172,
-    ROLE = 173,
-    ROLES = 174,
-    ROLLBACK = 175,
-    ROLLUP = 176,
-    ROW = 177,
-    ROWS = 178,
-    SCHEMA = 179,
-    SCHEMAS = 180,
-    SECOND = 181,
-    SECURITY = 182,
-    SELECT = 183,
-    SERIALIZABLE = 184,
-    SESSION = 185,
-    SET = 186,
-    SETS = 187,
-    SHOW = 188,
-    SOME = 189,
-    SQL = 190,
-    START = 191,
-    STATS = 192,
-    SUBSTRING = 193,
-    SYSTEM = 194,
-    SYSTEM_TIME = 195,
-    SYSTEM_VERSION = 196,
-    TABLE = 197,
-    TABLES = 198,
-    TABLESAMPLE = 199,
-    TEMPORARY = 200,
-    TEXT = 201,
-    THEN = 202,
-    TIME = 203,
-    TIMESTAMP = 204,
-    TO = 205,
-    TRANSACTION = 206,
-    TRUE = 207,
-    TRUNCATE = 208,
-    TRY_CAST = 209,
-    TYPE = 210,
-    UESCAPE = 211,
-    UNBOUNDED = 212,
-    UNCOMMITTED = 213,
-    UNION = 214,
-    UNIQUE = 215,
-    UNNEST = 216,
-    UPDATE = 217,
-    USE = 218,
-    USER = 219,
-    USING = 220,
-    VALIDATE = 221,
-    VALUES = 222,
-    VERBOSE = 223,
-    VERSION = 224,
-    VIEW = 225,
-    WHEN = 226,
-    WHERE = 227,
-    WITH = 228,
-    WORK = 229,
-    WRITE = 230,
-    YEAR = 231,
-    ZONE = 232,
-    EQ = 233,
-    NEQ = 234,
-    LT = 235,
-    LTE = 236,
-    GT = 237,
-    GTE = 238,
-    PLUS = 239,
-    MINUS = 240,
-    ASTERISK = 241,
-    SLASH = 242,
-    PERCENT = 243,
-    CONCAT = 244,
-    STRING = 245,
-    UNICODE_STRING = 246,
-    BINARY_LITERAL = 247,
-    INTEGER_VALUE = 248,
-    DECIMAL_VALUE = 249,
-    DOUBLE_VALUE = 250,
-    IDENTIFIER = 251,
-    DIGIT_IDENTIFIER = 252,
-    QUOTED_IDENTIFIER = 253,
-    BACKQUOTED_IDENTIFIER = 254,
-    TIME_WITH_TIME_ZONE = 255,
-    TIMESTAMP_WITH_TIME_ZONE = 256,
-    DOUBLE_PRECISION = 257,
-    SIMPLE_COMMENT = 258,
-    BRACKETED_COMMENT = 259,
-    WS = 260,
-    UNRECOGNIZED = 261,
-    DELIMITER = 262
+    EXCLUDE = 66,
+    EXCLUDING = 67,
+    EXECUTABLE = 68,
+    EXECUTE = 69,
+    EXISTS = 70,
+    EXPLAIN = 71,
+    EXTRACT = 72,
+    EXTERNAL = 73,
+    FALSE = 74,
+    FETCH = 75,
+    FILTER = 76,
+    FIRST = 77,
+    FOLLOWING = 78,
+    FOR = 79,
+    FORMAT = 80,
+    FROM = 81,
+    FULL = 82,
+    FUNCTION = 83,
+    FUNCTIONS = 84,
+    GRANT = 85,
+    GRANTED = 86,
+    GRANTS = 87,
+    GRAPH = 88,
+    GRAPHVIZ = 89,
+    GROUP = 90,
+    GROUPING = 91,
+    GROUPS = 92,
+    HAVING = 93,
+    HOUR = 94,
+    IF = 95,
+    IGNORE = 96,
+    IN = 97,
+    INCLUDING = 98,
+    INNER = 99,
+    INPUT = 100,
+    INSERT = 101,
+    INTERSECT = 102,
+    INTERVAL = 103,
+    INTO = 104,
+    INVOKER = 105,
+    IO = 106,
+    IS = 107,
+    ISOLATION = 108,
+    JSON = 109,
+    JOIN = 110,
+    KEY = 111,
+    LANGUAGE = 112,
+    LAST = 113,
+    LATERAL = 114,
+    LEFT = 115,
+    LEVEL = 116,
+    LIKE = 117,
+    LIMIT = 118,
+    LOCALTIME = 119,
+    LOCALTIMESTAMP = 120,
+    LOGICAL = 121,
+    MAP = 122,
+    MATERIALIZED = 123,
+    MINUTE = 124,
+    MONTH = 125,
+    NAME = 126,
+    NATURAL = 127,
+    NFC = 128,
+    NFD = 129,
+    NFKC = 130,
+    NFKD = 131,
+    NO = 132,
+    NONE = 133,
+    NORMALIZE = 134,
+    NOT = 135,
+    NULL_LITERAL = 136,
+    NULLIF = 137,
+    NULLS = 138,
+    OF = 139,
+    OFFSET = 140,
+    ON = 141,
+    ONLY = 142,
+    OPTIMIZED = 143,
+    OPTION = 144,
+    OR = 145,
+    ORDER = 146,
+    ORDINALITY = 147,
+    OUTER = 148,
+    OUTPUT = 149,
+    OVER = 150,
+    PARTITION = 151,
+    PARTITIONS = 152,
+    POSITION = 153,
+    PRECEDING = 154,
+    PREPARE = 155,
+    PRIMARY = 156,
+    PRIVILEGES = 157,
+    PROPERTIES = 158,
+    RANGE = 159,
+    READ = 160,
+    RECURSIVE = 161,
+    REFRESH = 162,
+    RELY = 163,
+    RENAME = 164,
+    REPEATABLE = 165,
+    REPLACE = 166,
+    RESET = 167,
+    RESPECT = 168,
+    RESTRICT = 169,
+    RETURN = 170,
+    RETURNS = 171,
+    REVOKE = 172,
+    RIGHT = 173,
+    ROLE = 174,
+    ROLES = 175,
+    ROLLBACK = 176,
+    ROLLUP = 177,
+    ROW = 178,
+    ROWS = 179,
+    SCHEMA = 180,
+    SCHEMAS = 181,
+    SECOND = 182,
+    SECURITY = 183,
+    SELECT = 184,
+    SERIALIZABLE = 185,
+    SESSION = 186,
+    SET = 187,
+    SETS = 188,
+    SHOW = 189,
+    SOME = 190,
+    SQL = 191,
+    START = 192,
+    STATS = 193,
+    SUBSTRING = 194,
+    SYSTEM = 195,
+    SYSTEM_TIME = 196,
+    SYSTEM_VERSION = 197,
+    TABLE = 198,
+    TABLES = 199,
+    TABLESAMPLE = 200,
+    TEMPORARY = 201,
+    TEXT = 202,
+    THEN = 203,
+    TIME = 204,
+    TIMESTAMP = 205,
+    TO = 206,
+    TRANSACTION = 207,
+    TRUE = 208,
+    TRUNCATE = 209,
+    TRY_CAST = 210,
+    TYPE = 211,
+    UESCAPE = 212,
+    UNBOUNDED = 213,
+    UNCOMMITTED = 214,
+    UNION = 215,
+    UNIQUE = 216,
+    UNNEST = 217,
+    UPDATE = 218,
+    USE = 219,
+    USER = 220,
+    USING = 221,
+    VALIDATE = 222,
+    VALUES = 223,
+    VERBOSE = 224,
+    VERSION = 225,
+    VIEW = 226,
+    WHEN = 227,
+    WHERE = 228,
+    WITH = 229,
+    WORK = 230,
+    WRITE = 231,
+    YEAR = 232,
+    ZONE = 233,
+    EQ = 234,
+    NEQ = 235,
+    LT = 236,
+    LTE = 237,
+    GT = 238,
+    GTE = 239,
+    PLUS = 240,
+    MINUS = 241,
+    ASTERISK = 242,
+    SLASH = 243,
+    PERCENT = 244,
+    CONCAT = 245,
+    STRING = 246,
+    UNICODE_STRING = 247,
+    BINARY_LITERAL = 248,
+    INTEGER_VALUE = 249,
+    DECIMAL_VALUE = 250,
+    DOUBLE_VALUE = 251,
+    IDENTIFIER = 252,
+    DIGIT_IDENTIFIER = 253,
+    QUOTED_IDENTIFIER = 254,
+    BACKQUOTED_IDENTIFIER = 255,
+    TIME_WITH_TIME_ZONE = 256,
+    TIMESTAMP_WITH_TIME_ZONE = 257,
+    DOUBLE_PRECISION = 258,
+    SIMPLE_COMMENT = 259,
+    BRACKETED_COMMENT = 260,
+    WS = 261,
+    UNRECOGNIZED = 262,
+    DELIMITER = 263
   };
 
   enum {
@@ -322,61 +323,65 @@ class PrestoSqlParser : public antlr4::Parser {
     RuleNamedQuery = 31,
     RuleSetQuantifier = 32,
     RuleSelectItem = 33,
-    RuleRelation = 34,
-    RuleJoinType = 35,
-    RuleJoinCriteria = 36,
-    RuleSampledRelation = 37,
-    RuleSampleType = 38,
-    RuleAliasedRelation = 39,
-    RuleColumnAliases = 40,
-    RuleRelationPrimary = 41,
-    RuleExpression = 42,
-    RuleBooleanExpression = 43,
-    RulePredicate = 44,
-    RuleValueExpression = 45,
-    RulePrimaryExpression = 46,
-    RuleString = 47,
-    RuleNullTreatment = 48,
-    RuleTimeZoneSpecifier = 49,
-    RuleComparisonOperator = 50,
-    RuleComparisonQuantifier = 51,
-    RuleBooleanValue = 52,
-    RuleInterval = 53,
-    RuleIntervalField = 54,
-    RuleNormalForm = 55,
-    RuleTypes = 56,
-    RuleType = 57,
-    RuleTypeParameter = 58,
-    RuleBaseType = 59,
-    RuleWhenClause = 60,
-    RuleFilter = 61,
-    RuleOver = 62,
-    RuleWindowFrame = 63,
-    RuleFrameBound = 64,
-    RuleUpdateAssignment = 65,
-    RuleExplainOption = 66,
-    RuleTransactionMode = 67,
-    RuleLevelOfIsolation = 68,
-    RuleCallArgument = 69,
-    RulePrivilege = 70,
-    RuleQualifiedName = 71,
-    RuleTableVersionExpression = 72,
-    RuleTableVersionState = 73,
-    RuleGrantor = 74,
-    RulePrincipal = 75,
-    RuleRoles = 76,
-    RuleIdentifier = 77,
-    RuleNumber = 78,
-    RuleConstraintSpecification = 79,
-    RuleNamedConstraintSpecification = 80,
-    RuleUnnamedConstraintSpecification = 81,
-    RuleConstraintType = 82,
-    RuleConstraintQualifiers = 83,
-    RuleConstraintQualifier = 84,
-    RuleConstraintRely = 85,
-    RuleConstraintEnabled = 86,
-    RuleConstraintEnforced = 87,
-    RuleNonReserved = 88
+    RuleStarModifiers = 34,
+    RuleExcludeClause = 35,
+    RuleReplaceClause = 36,
+    RuleReplaceItem = 37,
+    RuleRelation = 38,
+    RuleJoinType = 39,
+    RuleJoinCriteria = 40,
+    RuleSampledRelation = 41,
+    RuleSampleType = 42,
+    RuleAliasedRelation = 43,
+    RuleColumnAliases = 44,
+    RuleRelationPrimary = 45,
+    RuleExpression = 46,
+    RuleBooleanExpression = 47,
+    RulePredicate = 48,
+    RuleValueExpression = 49,
+    RulePrimaryExpression = 50,
+    RuleString = 51,
+    RuleNullTreatment = 52,
+    RuleTimeZoneSpecifier = 53,
+    RuleComparisonOperator = 54,
+    RuleComparisonQuantifier = 55,
+    RuleBooleanValue = 56,
+    RuleInterval = 57,
+    RuleIntervalField = 58,
+    RuleNormalForm = 59,
+    RuleTypes = 60,
+    RuleType = 61,
+    RuleTypeParameter = 62,
+    RuleBaseType = 63,
+    RuleWhenClause = 64,
+    RuleFilter = 65,
+    RuleOver = 66,
+    RuleWindowFrame = 67,
+    RuleFrameBound = 68,
+    RuleUpdateAssignment = 69,
+    RuleExplainOption = 70,
+    RuleTransactionMode = 71,
+    RuleLevelOfIsolation = 72,
+    RuleCallArgument = 73,
+    RulePrivilege = 74,
+    RuleQualifiedName = 75,
+    RuleTableVersionExpression = 76,
+    RuleTableVersionState = 77,
+    RuleGrantor = 78,
+    RulePrincipal = 79,
+    RuleRoles = 80,
+    RuleIdentifier = 81,
+    RuleNumber = 82,
+    RuleConstraintSpecification = 83,
+    RuleNamedConstraintSpecification = 84,
+    RuleUnnamedConstraintSpecification = 85,
+    RuleConstraintType = 86,
+    RuleConstraintQualifiers = 87,
+    RuleConstraintQualifier = 88,
+    RuleConstraintRely = 89,
+    RuleConstraintEnabled = 90,
+    RuleConstraintEnforced = 91,
+    RuleNonReserved = 92
   };
 
   explicit PrestoSqlParser(antlr4::TokenStream* input);
@@ -431,6 +436,10 @@ class PrestoSqlParser : public antlr4::Parser {
   class NamedQueryContext;
   class SetQuantifierContext;
   class SelectItemContext;
+  class StarModifiersContext;
+  class ExcludeClauseContext;
+  class ReplaceClauseContext;
+  class ReplaceItemContext;
   class RelationContext;
   class JoinTypeContext;
   class JoinCriteriaContext;
@@ -2358,6 +2367,7 @@ class PrestoSqlParser : public antlr4::Parser {
 
     QualifiedNameContext* qualifiedName();
     antlr4::tree::TerminalNode* ASTERISK();
+    StarModifiersContext* starModifiers();
     virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
     virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
 
@@ -2377,7 +2387,93 @@ class PrestoSqlParser : public antlr4::Parser {
     virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
   };
 
+  class SelectColumnsContext : public SelectItemContext {
+   public:
+    SelectColumnsContext(SelectItemContext* ctx);
+
+    antlr4::Token* pattern = nullptr;
+    QualifiedNameContext* qualifiedName();
+    antlr4::tree::TerminalNode* COLUMNS();
+    antlr4::tree::TerminalNode* STRING();
+    StarModifiersContext* starModifiers();
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
   SelectItemContext* selectItem();
+
+  class StarModifiersContext : public antlr4::ParserRuleContext {
+   public:
+    StarModifiersContext(
+        antlr4::ParserRuleContext* parent,
+        size_t invokingState);
+    virtual size_t getRuleIndex() const override;
+    std::vector<ExcludeClauseContext*> excludeClause();
+    ExcludeClauseContext* excludeClause(size_t i);
+    std::vector<ReplaceClauseContext*> replaceClause();
+    ReplaceClauseContext* replaceClause(size_t i);
+
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  StarModifiersContext* starModifiers();
+
+  class ExcludeClauseContext : public antlr4::ParserRuleContext {
+   public:
+    ExcludeClauseContext(
+        antlr4::ParserRuleContext* parent,
+        size_t invokingState);
+    virtual size_t getRuleIndex() const override;
+    antlr4::tree::TerminalNode* EXCLUDE();
+    std::vector<IdentifierContext*> identifier();
+    IdentifierContext* identifier(size_t i);
+
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  ExcludeClauseContext* excludeClause();
+
+  class ReplaceClauseContext : public antlr4::ParserRuleContext {
+   public:
+    ReplaceClauseContext(
+        antlr4::ParserRuleContext* parent,
+        size_t invokingState);
+    virtual size_t getRuleIndex() const override;
+    antlr4::tree::TerminalNode* REPLACE();
+    std::vector<ReplaceItemContext*> replaceItem();
+    ReplaceItemContext* replaceItem(size_t i);
+
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  ReplaceClauseContext* replaceClause();
+
+  class ReplaceItemContext : public antlr4::ParserRuleContext {
+   public:
+    ReplaceItemContext(antlr4::ParserRuleContext* parent, size_t invokingState);
+    virtual size_t getRuleIndex() const override;
+    ExpressionContext* expression();
+    antlr4::tree::TerminalNode* AS();
+    IdentifierContext* identifier();
+
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  ReplaceItemContext* replaceItem();
 
   class RelationContext : public antlr4::ParserRuleContext {
    public:
@@ -4475,6 +4571,7 @@ class PrestoSqlParser : public antlr4::Parser {
     antlr4::tree::TerminalNode* ENABLED();
     antlr4::tree::TerminalNode* ENFORCED();
     antlr4::tree::TerminalNode* EXECUTABLE();
+    antlr4::tree::TerminalNode* EXCLUDE();
     antlr4::tree::TerminalNode* EXCLUDING();
     antlr4::tree::TerminalNode* EXPLAIN();
     antlr4::tree::TerminalNode* EXTERNAL();

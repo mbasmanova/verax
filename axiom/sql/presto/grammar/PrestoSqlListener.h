@@ -426,11 +426,34 @@ class PrestoSqlListener : public antlr4::tree::ParseTreeListener {
   virtual void exitSetQuantifier(
       PrestoSqlParser::SetQuantifierContext* ctx) = 0;
 
+  virtual void enterSelectAll(PrestoSqlParser::SelectAllContext* ctx) = 0;
+  virtual void exitSelectAll(PrestoSqlParser::SelectAllContext* ctx) = 0;
+
+  virtual void enterSelectColumns(
+      PrestoSqlParser::SelectColumnsContext* ctx) = 0;
+  virtual void exitSelectColumns(
+      PrestoSqlParser::SelectColumnsContext* ctx) = 0;
+
   virtual void enterSelectSingle(PrestoSqlParser::SelectSingleContext* ctx) = 0;
   virtual void exitSelectSingle(PrestoSqlParser::SelectSingleContext* ctx) = 0;
 
-  virtual void enterSelectAll(PrestoSqlParser::SelectAllContext* ctx) = 0;
-  virtual void exitSelectAll(PrestoSqlParser::SelectAllContext* ctx) = 0;
+  virtual void enterStarModifiers(
+      PrestoSqlParser::StarModifiersContext* ctx) = 0;
+  virtual void exitStarModifiers(
+      PrestoSqlParser::StarModifiersContext* ctx) = 0;
+
+  virtual void enterExcludeClause(
+      PrestoSqlParser::ExcludeClauseContext* ctx) = 0;
+  virtual void exitExcludeClause(
+      PrestoSqlParser::ExcludeClauseContext* ctx) = 0;
+
+  virtual void enterReplaceClause(
+      PrestoSqlParser::ReplaceClauseContext* ctx) = 0;
+  virtual void exitReplaceClause(
+      PrestoSqlParser::ReplaceClauseContext* ctx) = 0;
+
+  virtual void enterReplaceItem(PrestoSqlParser::ReplaceItemContext* ctx) = 0;
+  virtual void exitReplaceItem(PrestoSqlParser::ReplaceItemContext* ctx) = 0;
 
   virtual void enterRelationDefault(
       PrestoSqlParser::RelationDefaultContext* ctx) = 0;

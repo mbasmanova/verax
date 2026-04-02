@@ -320,11 +320,26 @@ class PrestoSqlVisitor : public antlr4::tree::AbstractParseTreeVisitor {
   virtual std::any visitSetQuantifier(
       PrestoSqlParser::SetQuantifierContext* context) = 0;
 
+  virtual std::any visitSelectAll(
+      PrestoSqlParser::SelectAllContext* context) = 0;
+
+  virtual std::any visitSelectColumns(
+      PrestoSqlParser::SelectColumnsContext* context) = 0;
+
   virtual std::any visitSelectSingle(
       PrestoSqlParser::SelectSingleContext* context) = 0;
 
-  virtual std::any visitSelectAll(
-      PrestoSqlParser::SelectAllContext* context) = 0;
+  virtual std::any visitStarModifiers(
+      PrestoSqlParser::StarModifiersContext* context) = 0;
+
+  virtual std::any visitExcludeClause(
+      PrestoSqlParser::ExcludeClauseContext* context) = 0;
+
+  virtual std::any visitReplaceClause(
+      PrestoSqlParser::ReplaceClauseContext* context) = 0;
+
+  virtual std::any visitReplaceItem(
+      PrestoSqlParser::ReplaceItemContext* context) = 0;
 
   virtual std::any visitRelationDefault(
       PrestoSqlParser::RelationDefaultContext* context) = 0;

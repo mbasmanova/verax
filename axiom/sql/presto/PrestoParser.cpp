@@ -16,6 +16,7 @@
 
 #include "axiom/sql/presto/PrestoParser.h"
 #include <folly/ScopeGuard.h>
+#include <re2/re2.h>
 #include <cctype>
 #include <unordered_set>
 #include "axiom/common/CatalogSchemaTableName.h"
@@ -652,6 +653,84 @@ class RelationPlanner : public AstVisitor {
     return replacements;
   }
 
+  // Applies EXCLUDE and REPLACE modifiers to a column list and builds
+  // the final expression list. Shared by AllColumns and SelectColumns.
+  void applyExcludeReplaceAndBuild(
+      std::vector<lp::PlanBuilder::OutputColumnName>& columns,
+      const std::vector<std::shared_ptr<Identifier>>& excludeColumns,
+      const std::vector<ReplaceItem>& replaceItems,
+      bool hasNestedWindow,
+      std::unordered_map<const core::IExpr*, lp::WindowSpec>& windowOptions,
+      std::vector<lp::ExprApi>& exprs) {
+    std::unordered_map<std::string, core::ExprPtr> replaceMap;
+    if (!excludeColumns.empty() || !replaceItems.empty()) {
+      // Build set of user-visible names for O(1) lookups.
+      std::unordered_set<std::string> columnNameSet;
+      for (const auto& column : columns) {
+        columnNameSet.insert(column.name);
+      }
+
+      // Apply EXCLUDE: remove excluded columns.
+      if (!excludeColumns.empty()) {
+        std::unordered_set<std::string> excludeSet;
+        for (const auto& excluded : excludeColumns) {
+          auto name = canonicalizeIdentifier(*excluded);
+          VELOX_USER_CHECK(
+              columnNameSet.contains(name),
+              "Column not found for EXCLUDE: {}",
+              name);
+          excludeSet.insert(name);
+        }
+
+        std::erase_if(columns, [&](const auto& column) {
+          return excludeSet.contains(column.name);
+        });
+        VELOX_USER_CHECK(!columns.empty(), "EXCLUDE removed all columns");
+
+        for (const auto& name : excludeSet) {
+          columnNameSet.erase(name);
+        }
+      }
+
+      // Build map of column name to replacement expression. Check for
+      // ambiguous column names (e.g., same column from multiple joined
+      // tables) which would make the REPLACE expression unresolvable.
+      for (const auto& replaceItem : replaceItems) {
+        auto name = canonicalizeIdentifier(*replaceItem.column);
+        VELOX_USER_CHECK(
+            columnNameSet.contains(name),
+            "Column not found for REPLACE: {}",
+            name);
+        auto numMatches = std::count_if(
+            columns.begin(), columns.end(), [&](const auto& column) {
+              return column.name == name;
+            });
+        VELOX_USER_CHECK_EQ(
+            numMatches,
+            1,
+            "Column is ambiguous for REPLACE, use qualified name (e.g., t.{}): {}",
+            name,
+            name);
+        auto expr = toExpr(
+            replaceItem.expression,
+            /*aggregateOptions=*/nullptr,
+            hasNestedWindow ? &windowOptions : nullptr);
+        replaceMap[name] = expr.expr();
+      }
+    }
+
+    // Build expressions: use replacement if present, otherwise column
+    // reference.
+    for (const auto& column : columns) {
+      auto it = replaceMap.find(column.name);
+      if (it != replaceMap.end()) {
+        exprs.push_back(lp::ExprApi(it->second, column.name));
+      } else {
+        exprs.push_back(column.toCol());
+      }
+    }
+  }
+
   // Converts SELECT items to ExprApi projections. Exits early by returning
   // std::nullopt for a single SELECT *.
   std::optional<std::vector<lp::ExprApi>> buildSelectProjections(
@@ -659,7 +738,9 @@ class RelationPlanner : public AstVisitor {
     // SELECT * FROM ...
     const bool isSingleSelectStar = selectItems.size() == 1 &&
         selectItems.at(0)->is(NodeType::kAllColumns) &&
-        selectItems.at(0)->as<AllColumns>()->prefix() == nullptr;
+        selectItems.at(0)->as<AllColumns>()->prefix() == nullptr &&
+        selectItems.at(0)->as<AllColumns>()->excludeColumns().empty() &&
+        selectItems.at(0)->as<AllColumns>()->replaceItems().empty();
     if (isSingleSelectStar) {
       return std::nullopt;
     }
@@ -703,9 +784,44 @@ class RelationPlanner : public AstVisitor {
 
         auto selectedColumns = builder_->findOrAssignOutputNames(
             /*includeHiddenColumns=*/false, prefix);
-        for (const auto& column : selectedColumns) {
-          exprs.push_back(column.toCol());
+
+        applyExcludeReplaceAndBuild(
+            selectedColumns,
+            allColumns->excludeColumns(),
+            allColumns->replaceItems(),
+            hasNestedWindow,
+            windowOptions,
+            exprs);
+      } else if (item->is(NodeType::kSelectColumns)) {
+        auto* selectColumns = item->as<SelectColumns>();
+
+        std::optional<std::string> prefix;
+        if (selectColumns->prefix() != nullptr) {
+          prefix = canonicalizeName(selectColumns->prefix()->suffix());
         }
+
+        auto selectedColumns = builder_->findOrAssignOutputNames(
+            /*includeHiddenColumns=*/false, prefix);
+
+        // Filter by regex pattern using RE2.
+        re2::RE2 pattern(selectColumns->pattern());
+        VELOX_USER_CHECK(
+            pattern.ok(), "Invalid regex pattern: {}", pattern.error());
+        std::erase_if(selectedColumns, [&](const auto& column) {
+          return !re2::RE2::FullMatch(column.name, pattern);
+        });
+        VELOX_USER_CHECK(
+            !selectedColumns.empty(),
+            "COLUMNS('{}') matched no columns",
+            selectColumns->pattern());
+
+        applyExcludeReplaceAndBuild(
+            selectedColumns,
+            selectColumns->excludeColumns(),
+            selectColumns->replaceItems(),
+            hasNestedWindow,
+            windowOptions,
+            exprs);
       } else {
         VELOX_CHECK(item->is(NodeType::kSingleColumn));
         auto* singleColumn = item->as<SingleColumn>();

@@ -34,6 +34,7 @@ target_link_libraries(
   velox_common_base
   velox_presto_types
   antlr4_shared
+  re2::re2
 )
 
 add_subdirectory(tests)

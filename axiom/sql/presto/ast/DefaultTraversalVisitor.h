@@ -137,6 +137,26 @@ class DefaultTraversalVisitor : public AstVisitor {
     if (node->prefix()) {
       node->prefix()->accept(this);
     }
+    for (const auto& identifier : node->excludeColumns()) {
+      identifier->accept(this);
+    }
+    for (const auto& item : node->replaceItems()) {
+      item.expression->accept(this);
+      item.column->accept(this);
+    }
+  }
+
+  void visitSelectColumns(SelectColumns* node) override {
+    if (node->prefix()) {
+      node->prefix()->accept(this);
+    }
+    for (const auto& identifier : node->excludeColumns()) {
+      identifier->accept(this);
+    }
+    for (const auto& item : node->replaceItems()) {
+      item.expression->accept(this);
+      item.column->accept(this);
+    }
   }
 
   void visitWith(With* node) override {

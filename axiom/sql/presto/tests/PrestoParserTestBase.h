@@ -19,6 +19,7 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include "axiom/connectors/tests/TestConnector.h"
+#include "axiom/sql/presto/PrestoParseError.h"
 #include "axiom/sql/presto/PrestoParser.h"
 #include "axiom/sql/presto/tests/LogicalPlanMatcher.h"
 
@@ -64,6 +65,14 @@ class PrestoParserTestBase : public testing::Test {
       std::string_view sql,
       facebook::axiom::logical_plan::test::LogicalPlanMatcherBuilder& matcher,
       const std::unordered_set<std::string>& views = {});
+
+  /// @overload Accepts an rvalue matcher for inline construction.
+  void testSelect(
+      std::string_view sql,
+      facebook::axiom::logical_plan::test::LogicalPlanMatcherBuilder&& matcher,
+      const std::unordered_set<std::string>& views = {}) {
+    testSelect(sql, matcher, views);
+  }
 
   /// Parses an INSERT statement and verifies the logical plan matches.
   void testInsert(
@@ -126,5 +135,13 @@ class PrestoParserTestBase : public testing::Test {
   /// and dropView for test-specific customization.
   std::shared_ptr<facebook::axiom::connector::TestConnector> connector_;
 };
+
+/// Verifies that a statement fails to parse with a message containing the
+/// expected substring.
+#define AXIOM_EXPECT_PARSE_ERROR(statement, expectedMessage)        \
+  EXPECT_THAT(                                                      \
+      [&]() { statement; },                                         \
+      testing::ThrowsMessage<axiom::sql::presto::PrestoParseError>( \
+          testing::HasSubstr(expectedMessage)))
 
 } // namespace axiom::sql::presto::test

@@ -382,7 +382,7 @@ bool GroupByPlanner::tryPlanGlobalAgg(
     const std::vector<SelectItemPtr>& selectItems,
     const ExpressionPtr& having) && {
   for (const auto& item : selectItems) {
-    if (item->is(NodeType::kAllColumns)) {
+    if (item->is(NodeType::kAllColumns) || item->is(NodeType::kSelectColumns)) {
       return false;
     }
   }

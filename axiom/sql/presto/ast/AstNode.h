@@ -108,6 +108,7 @@ enum class NodeType {
   kSelectItem,
   kSingleColumn,
   kAllColumns,
+  kSelectColumns,
   kWith,
   kWithQuery,
   kOrderBy,
