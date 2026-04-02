@@ -38,6 +38,7 @@
 #include "velox/exec/WindowFunction.h"
 #include "velox/functions/FunctionRegistry.h"
 #include "velox/functions/prestosql/types/PrestoTypes.h"
+#include "velox/parse/Expressions.h"
 
 namespace axiom::sql::presto {
 namespace {
@@ -269,6 +270,53 @@ core::ExprPtr replaceInputs(
   }
 
   return changed ? expr->replaceInputs(std::move(newInputs)) : expr;
+}
+
+// Searches an expression tree for COLUMNS('regex') pseudo-function calls.
+// Appends each found call (node pointer + regex pattern) to 'results'.
+void findColumnsCalls(
+    const core::ExprPtr& expr,
+    std::vector<std::pair<const core::IExpr*, std::string>>& results) {
+  if (expr->is(core::IExpr::Kind::kCall)) {
+    auto* callExpr = expr->as<core::CallExpr>();
+    if (callExpr->name() == "COLUMNS") {
+      // The grammar guarantees COLUMNS takes a single string literal argument.
+      VELOX_CHECK_EQ(callExpr->inputs().size(), 1);
+
+      const auto& arg = callExpr->inputAt(0);
+      VELOX_CHECK(arg->is(core::IExpr::Kind::kConstant));
+
+      auto* constExpr = arg->as<core::ConstantExpr>();
+      VELOX_CHECK_EQ(constExpr->type()->kind(), TypeKind::VARCHAR);
+      VELOX_CHECK(!constExpr->value().isNull());
+
+      results.emplace_back(expr.get(), constExpr->value().value<std::string>());
+      return;
+    }
+  }
+
+  for (const auto& input : expr->inputs()) {
+    findColumnsCalls(input, results);
+  }
+}
+
+// Filters output columns by regex pattern. Returns matching columns.
+std::vector<lp::PlanBuilder::OutputColumnName> matchColumnsByRegex(
+    const lp::PlanBuilder& builder,
+    const std::string& pattern,
+    const std::optional<std::string>& prefix = std::nullopt) {
+  re2::RE2 regex(pattern);
+  VELOX_USER_CHECK(regex.ok(), "Invalid regex pattern: {}", regex.error());
+
+  auto columns =
+      builder.findOrAssignOutputNames(/*includeHiddenColumns=*/false, prefix);
+  std::erase_if(columns, [&](const auto& column) {
+    return !re2::RE2::FullMatch(column.name, regex);
+  });
+  VELOX_USER_CHECK(
+      !columns.empty(), "COLUMNS('{}') matched no columns", pattern);
+
+  return columns;
 }
 
 class RelationPlanner : public AstVisitor {
@@ -653,6 +701,46 @@ class RelationPlanner : public AstVisitor {
     return replacements;
   }
 
+  // Expands COLUMNS('regex') pseudo-function calls found inside an
+  // expression. For each matched column, clones the expression tree and
+  // replaces COLUMNS(...) with a column reference. If alias is provided,
+  // applies it to all expanded columns (sugar for SELECT a AS x, b AS x).
+  // Returns true if expansion happened.
+  bool tryExpandColumnsInExpression(
+      const lp::ExprApi& expr,
+      const std::optional<std::string>& alias,
+      std::vector<lp::ExprApi>& exprs) {
+    std::vector<std::pair<const core::IExpr*, std::string>> columnsCalls;
+    findColumnsCalls(expr.expr(), columnsCalls);
+    if (columnsCalls.empty()) {
+      return false;
+    }
+
+    VELOX_USER_CHECK_EQ(
+        columnsCalls.size(),
+        1,
+        "Multiple COLUMNS() calls in a single expression "
+        "are not yet supported");
+
+    auto& [callNode, pattern] = columnsCalls[0];
+    auto matchedColumns = matchColumnsByRegex(*builder_, pattern);
+
+    for (const auto& column : matchedColumns) {
+      std::unordered_map<const core::IExpr*, core::ExprPtr> replacements;
+      replacements.emplace(callNode, column.toCol().expr());
+      auto expandedExpr = replaceInputs(expr.expr(), replacements);
+      if (alias.has_value()) {
+        exprs.push_back(lp::ExprApi(expandedExpr, alias.value()));
+      } else {
+        // No explicit alias — let the plan builder auto-assign a name,
+        // same as if the user wrote out the expression manually.
+        exprs.push_back(lp::ExprApi(expandedExpr));
+      }
+    }
+
+    return true;
+  }
+
   // Applies EXCLUDE and REPLACE modifiers to a column list and builds
   // the final expression list. Shared by AllColumns and SelectColumns.
   void applyExcludeReplaceAndBuild(
@@ -800,20 +888,8 @@ class RelationPlanner : public AstVisitor {
           prefix = canonicalizeName(selectColumns->prefix()->suffix());
         }
 
-        auto selectedColumns = builder_->findOrAssignOutputNames(
-            /*includeHiddenColumns=*/false, prefix);
-
-        // Filter by regex pattern using RE2.
-        re2::RE2 pattern(selectColumns->pattern());
-        VELOX_USER_CHECK(
-            pattern.ok(), "Invalid regex pattern: {}", pattern.error());
-        std::erase_if(selectedColumns, [&](const auto& column) {
-          return !re2::RE2::FullMatch(column.name, pattern);
-        });
-        VELOX_USER_CHECK(
-            !selectedColumns.empty(),
-            "COLUMNS('{}') matched no columns",
-            selectColumns->pattern());
+        auto selectedColumns =
+            matchColumnsByRegex(*builder_, selectColumns->pattern(), prefix);
 
         applyExcludeReplaceAndBuild(
             selectedColumns,
@@ -831,14 +907,23 @@ class RelationPlanner : public AstVisitor {
             /*aggregateOptions=*/nullptr,
             hasNestedWindow ? &windowOptions : nullptr);
 
+        std::optional<std::string> alias;
         if (singleColumn->alias() != nullptr) {
-          auto alias = canonicalizeIdentifier(*singleColumn->alias());
-          if (friendlySql_) {
-            aliasExprs[alias] = expr.expr();
-          }
-          expr = expr.as(alias);
+          alias = canonicalizeIdentifier(*singleColumn->alias());
         }
-        exprs.push_back(expr);
+
+        if (tryExpandColumnsInExpression(expr, alias, exprs)) {
+          // COLUMNS('regex') was found and expanded.
+        } else {
+          // Normal SingleColumn handling.
+          if (alias.has_value()) {
+            if (friendlySql_) {
+              aliasExprs[*alias] = expr.expr();
+            }
+            expr = expr.as(*alias);
+          }
+          exprs.push_back(expr);
+        }
       }
     }
 
