@@ -508,8 +508,8 @@ class RelationPlanner : public AstVisitor {
 
       for (auto i = 0; i < numOutput; ++i) {
         auto name = canonicalizeIdentifier(*columnAliases.at(i));
-        auto column = lp::Col(builder_->findOrAssignOutputNameAt(i));
-        renames.push_back(column.as(name));
+        auto outputColumn = builder_->findOrAssignOutputNameAt(i);
+        renames.push_back(outputColumn.toCol().as(name));
       }
 
       builder_->project(renames);
@@ -625,8 +625,8 @@ class RelationPlanner : public AstVisitor {
 
     std::vector<lp::ExprApi> windowProjection;
     windowProjection.reserve(inputColumns.size() + windowOrder.size());
-    for (const auto& name : inputColumns) {
-      windowProjection.push_back(lp::Col(name));
+    for (const auto& column : inputColumns) {
+      windowProjection.push_back(column.toCol());
     }
 
     // TODO: Deduplicate semantically equivalent window function calls.
@@ -646,8 +646,8 @@ class RelationPlanner : public AstVisitor {
 
     std::unordered_map<const core::IExpr*, core::ExprPtr> replacements;
     for (size_t i = 0; i < windowOrder.size(); ++i) {
-      const auto& name = outputNames.at(inputColumns.size() + i);
-      replacements.emplace(windowOrder[i], lp::Col(name).expr());
+      const auto& column = outputNames.at(inputColumns.size() + i);
+      replacements.emplace(windowOrder[i], column.toCol().expr());
     }
     return replacements;
   }
@@ -696,24 +696,15 @@ class RelationPlanner : public AstVisitor {
       if (item->is(NodeType::kAllColumns)) {
         auto* allColumns = item->as<AllColumns>();
 
-        std::vector<std::string> columnNames;
+        std::optional<std::string> prefix;
         if (allColumns->prefix() != nullptr) {
-          // SELECT t.*
-          const auto prefix = canonicalizeName(allColumns->prefix()->suffix());
-          columnNames = builder_->findOrAssignOutputNames(
-              /*includeHiddenColumns=*/false, prefix);
+          prefix = canonicalizeName(allColumns->prefix()->suffix());
+        }
 
-          for (const auto& name : columnNames) {
-            exprs.push_back(lp::Col(name, lp::Col(prefix)));
-          }
-        } else {
-          // SELECT *
-          columnNames =
-              builder_->findOrAssignOutputNames(/*includeHiddenColumns=*/false);
-
-          for (const auto& name : columnNames) {
-            exprs.push_back(lp::Col(name));
-          }
+        auto selectedColumns = builder_->findOrAssignOutputNames(
+            /*includeHiddenColumns=*/false, prefix);
+        for (const auto& column : selectedColumns) {
+          exprs.push_back(column.toCol());
         }
       } else {
         VELOX_CHECK(item->is(NodeType::kSingleColumn));
@@ -828,9 +819,9 @@ class RelationPlanner : public AstVisitor {
           builder_->numOutput(),
           "ORDER BY position is not in the select list: {}",
           n);
-      const auto name = builder_->findOrAssignOutputNameAt(n - 1);
+      const auto column = builder_->findOrAssignOutputNameAt(n - 1);
 
-      return lp::Col(name);
+      return column.toCol();
     }
 
     return toExpr(expr);
@@ -1548,11 +1539,12 @@ SqlStatementPtr parseShowFunctions(
   return std::make_shared<SelectStatement>(builder.build());
 };
 
-std::vector<lp::ExprApi> toColumnExprs(const std::vector<std::string>& names) {
+std::vector<lp::ExprApi> toColumnExprs(
+    const std::vector<lp::PlanBuilder::OutputColumnName>& columns) {
   std::vector<lp::ExprApi> exprs;
-  exprs.reserve(names.size());
-  for (const auto& name : names) {
-    exprs.emplace_back(lp::Col(name));
+  exprs.reserve(columns.size());
+  for (const auto& column : columns) {
+    exprs.emplace_back(column.toCol());
   }
   return exprs;
 }
@@ -1656,7 +1648,7 @@ SqlStatementPtr parseCreateTableAsSelect(
         connectorTable.table,
         lp::WriteKind::kCreate,
         columnNames,
-        toColumnExprs(columnNames));
+        toColumnExprs(planBuilder.findOrAssignOutputNames()));
   } else {
     VELOX_USER_CHECK_EQ(ctas.columns().size(), numInputColumns);
 

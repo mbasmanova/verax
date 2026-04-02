@@ -52,26 +52,102 @@ class PlanBuilderTest : public testing::Test {
   }
 };
 
-TEST_F(PlanBuilderTest, outputNames) {
+TEST_F(PlanBuilderTest, anonymousOutputNames) {
   auto builder = PlanBuilder()
                      .values(
                          ROW({"a"}, {BIGINT()}),
                          std::vector<Variant>{Variant::row({123LL})})
                      .project({"a + 1", "a + 2 as b"});
 
+  using Name = PlanBuilder::OutputColumnName;
+
   EXPECT_EQ(2, builder.numOutput());
-  EXPECT_EQ("expr", builder.findOrAssignOutputNameAt(0));
-  EXPECT_EQ("b", builder.findOrAssignOutputNameAt(1));
+  EXPECT_EQ((Name{std::nullopt, "expr"}), builder.findOrAssignOutputNameAt(0));
+  EXPECT_EQ((Name{std::nullopt, "b"}), builder.findOrAssignOutputNameAt(1));
 
   builder.with({"b * 2"});
 
   EXPECT_EQ(3, builder.numOutput());
 
-  const auto outputNames = builder.findOrAssignOutputNames();
-  EXPECT_EQ(3, outputNames.size());
-  EXPECT_EQ("expr", outputNames[0]);
-  EXPECT_EQ("b", outputNames[1]);
-  EXPECT_EQ("expr_0", outputNames[2]);
+  EXPECT_THAT(
+      builder.findOrAssignOutputNames(),
+      testing::ElementsAre(
+          Name{std::nullopt, "expr"},
+          Name{std::nullopt, "b"},
+          Name{std::nullopt, "expr_0"}));
+}
+
+// Verifies that findOrAssignOutputNames returns aliases for all ambiguous
+// column names from a join where both sides have the same columns.
+TEST_F(PlanBuilderTest, ambiguousOutputNamesFullOverlap) {
+  PlanBuilder::Context context;
+
+  auto buildValues = [&](const std::string& alias) {
+    return PlanBuilder(
+               context,
+               /*enableCoercions=*/false,
+               /*allowAmbiguousOutputNames=*/true)
+        .values(ROW({"a", "b"}, BIGINT()), ValuesNode::Variants{})
+        .as(alias);
+  };
+
+  auto builder =
+      buildValues("t").join(buildValues("u"), "t.a = u.a", JoinType::kInner);
+
+  using Name = PlanBuilder::OutputColumnName;
+  auto names = builder.findOrAssignOutputNames();
+  EXPECT_THAT(
+      names,
+      testing::ElementsAre(
+          Name{"t", "a"}, Name{"t", "b"}, Name{"u", "a"}, Name{"u", "b"}));
+
+  ASSERT_NO_THROW(builder.project({
+      names[0].toCol(),
+      names[1].toCol(),
+      names[2].toCol(),
+      names[3].toCol(),
+  }));
+}
+
+// Verifies that findOrAssignOutputNames returns aliases only for ambiguous
+// columns when tables partially overlap.
+TEST_F(PlanBuilderTest, ambiguousOutputNamesPartialOverlap) {
+  PlanBuilder::Context context;
+
+  auto buildValues = [&](const std::string& alias) {
+    return PlanBuilder(
+               context,
+               /*enableCoercions=*/false,
+               /*allowAmbiguousOutputNames=*/true)
+        .values(ROW({"a", "b"}, BIGINT()), ValuesNode::Variants{})
+        .as(alias);
+  };
+
+  // Rename "b" to "c" on the left side so only "a" overlaps.
+  auto builder = buildValues("t")
+                     .project({"a", "b as c"})
+                     .as("t")
+                     .join(buildValues("u"), "t.a = u.a", JoinType::kInner);
+
+  auto names = builder.findOrAssignOutputNames();
+
+  using Name = PlanBuilder::OutputColumnName;
+
+  // "a" is ambiguous — both tables have it. "c" and "b" are unique.
+  EXPECT_THAT(
+      names,
+      testing::ElementsAre(
+          Name{"t", "a"},
+          Name{std::nullopt, "c"},
+          Name{"u", "a"},
+          Name{std::nullopt, "b"}));
+
+  ASSERT_NO_THROW(builder.project({
+      names[0].toCol(),
+      names[1].toCol(),
+      names[2].toCol(),
+      names[3].toCol(),
+  }));
 }
 
 TEST_F(PlanBuilderTest, duplicateAliasAllowed) {
@@ -93,8 +169,8 @@ TEST_F(PlanBuilderTest, duplicateAliasAllowed) {
 
     auto names = builder.findOrAssignOutputNames();
     EXPECT_EQ(4, names.size());
-    EXPECT_EQ("x", names[2]);
-    EXPECT_TRUE(names[3].starts_with("x_"));
+    EXPECT_EQ("x", names[2].name);
+    EXPECT_TRUE(names[3].name.starts_with("x_"));
   }
 
   // Lookup on duplicate name fails.
@@ -117,8 +193,8 @@ TEST_F(PlanBuilderTest, duplicateAliasAllowed) {
 
     auto names = builder.findOrAssignOutputNames();
     EXPECT_EQ(3, names.size());
-    EXPECT_TRUE(names[0].starts_with("a"));
-    EXPECT_TRUE(names[2].starts_with("a"));
+    EXPECT_TRUE(names[0].name.starts_with("a"));
+    EXPECT_TRUE(names[2].name.starts_with("a"));
   }
 
   // Unnest: ordinality alias duplicates an unnest alias.
@@ -130,9 +206,9 @@ TEST_F(PlanBuilderTest, duplicateAliasAllowed) {
 
     auto names = builder.findOrAssignOutputNames();
     EXPECT_EQ(3, names.size());
-    EXPECT_TRUE(names[1].starts_with("x"));
-    EXPECT_TRUE(names[2].starts_with("x"));
-    EXPECT_NE(names[1], names[2]);
+    EXPECT_TRUE(names[1].name.starts_with("x"));
+    EXPECT_TRUE(names[2].name.starts_with("x"));
+    EXPECT_NE(names[1].name, names[2].name);
   }
 
   // Aggregate: duplicate aliases get unique physical names.
@@ -144,9 +220,9 @@ TEST_F(PlanBuilderTest, duplicateAliasAllowed) {
 
     auto names = builder.findOrAssignOutputNames();
     EXPECT_EQ(2, names.size());
-    EXPECT_TRUE(names[0].starts_with("x"));
-    EXPECT_TRUE(names[1].starts_with("x"));
-    EXPECT_NE(names[0], names[1]);
+    EXPECT_TRUE(names[0].name.starts_with("x"));
+    EXPECT_TRUE(names[1].name.starts_with("x"));
+    EXPECT_NE(names[0].name, names[1].name);
   }
 }
 

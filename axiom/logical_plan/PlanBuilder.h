@@ -742,19 +742,35 @@ class PlanBuilder {
   /// Returns the types of the output columns. 1:1 with outputNames().
   std::vector<velox::TypePtr> outputTypes() const;
 
-  /// Returns the names of the output columns. If some colums are anonymous,
-  /// assigns them unique names before returning.
-  /// @param includeHiddenColumns Boolean indicating whether to include hidden
-  /// columns.
+  /// Represents a resolvable output column name.
+  struct OutputColumnName {
+    /// Table alias for disambiguation. Nullopt if the column is unambiguously
+    /// resolvable by name alone.
+    std::optional<std::string> alias;
+
+    /// Column name.
+    std::string name;
+
+    /// Returns a column reference expression that resolves unambiguously.
+    ExprApi toCol() const;
+
+    bool operator==(const OutputColumnName&) const = default;
+  };
+
+  /// Returns resolvable names for the output columns. Assigns unique names
+  /// for anonymous columns and uses fully qualified names for ambiguous
+  /// columns (e.g., from joins with overlapping column names).
+  /// @param includeHiddenColumns Whether to include hidden columns.
   /// @param alias Optional alias to filter output columns. If specified,
   /// returns a subset of columns accessible with the specified alias.
-  std::vector<std::string> findOrAssignOutputNames(
+  std::vector<OutputColumnName> findOrAssignOutputNames(
       bool includeHiddenColumns = false,
       const std::optional<std::string>& alias = std::nullopt) const;
 
-  /// Returns the name of the output column at the given index. If the column
-  /// is anonymous, assigns unique name before returning.
-  std::string findOrAssignOutputNameAt(size_t index) const;
+  /// Returns the resolvable name of the output column at the given index.
+  /// If the column is anonymous, assigns a unique name. If ambiguous, includes
+  /// the table alias for disambiguation.
+  OutputColumnName findOrAssignOutputNameAt(size_t index) const;
 
   /// Returns the current plan node as-is.
   LogicalPlanNodePtr planNode() const {

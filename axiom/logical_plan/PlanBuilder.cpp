@@ -1804,13 +1804,20 @@ PlanBuilder& PlanBuilder::tableWrite(
   VELOX_USER_CHECK(defaultConnectorId_.has_value());
   VELOX_USER_CHECK(defaultSchema_.has_value());
 
+  auto outputColumns = findOrAssignOutputNames();
+  std::vector<ExprApi> columnExprs;
+  columnExprs.reserve(outputColumns.size());
+  for (const auto& column : outputColumns) {
+    columnExprs.emplace_back(column.toCol());
+  }
+
   return tableWrite(
       defaultConnectorId_.value(),
       defaultSchema_.value(),
       std::move(tableName),
       kind,
       std::move(columnNames),
-      findOrAssignOutputNames(),
+      columnExprs,
       std::move(options));
 }
 
@@ -1975,25 +1982,30 @@ std::vector<velox::TypePtr> PlanBuilder::outputTypes() const {
   return node_->outputType()->children();
 }
 
-std::vector<std::string> PlanBuilder::findOrAssignOutputNames(
-    bool includeHiddenColumns,
-    const std::optional<std::string>& alias) const {
-  const auto size = numOutput();
-  const auto& inputType = node_->outputType();
+namespace {
 
-  std::vector<std::string> names;
-  names.reserve(size);
+// Iterates visible output columns, applying alias and hidden-column filters.
+// Calls 'func(index)' for each visible column index.
+template <typename F>
+void forEachOutputColumn(
+    const PlanBuilder& builder,
+    const NameMappings& mappings,
+    bool includeHiddenColumns,
+    const std::optional<std::string>& alias,
+    F&& func) {
+  const auto size = builder.numOutput();
+  const auto& inputType = builder.planNode()->outputType();
 
   folly::F14FastSet<std::string> allowedIds;
   if (alias.has_value()) {
-    allowedIds = outputMapping_->idsWithAlias(alias.value());
+    allowedIds = mappings.idsWithAlias(alias.value());
     VELOX_USER_CHECK(!allowedIds.empty(), "Alias not found: {}", alias.value());
   }
 
-  for (auto i = 0; i < size; i++) {
+  for (size_t i = 0; i < size; i++) {
     const auto& id = inputType->nameOf(i);
 
-    if (!includeHiddenColumns && outputMapping_->isHidden(id)) {
+    if (!includeHiddenColumns && mappings.isHidden(id)) {
       continue;
     }
 
@@ -2001,25 +2013,67 @@ std::vector<std::string> PlanBuilder::findOrAssignOutputNames(
       continue;
     }
 
-    names.push_back(findOrAssignOutputNameAt(i));
+    func(i);
   }
-
-  return names;
 }
 
-std::string PlanBuilder::findOrAssignOutputNameAt(size_t index) const {
+} // namespace
+
+ExprApi PlanBuilder::OutputColumnName::toCol() const {
+  if (alias.has_value()) {
+    return Col(name, Col(*alias));
+  }
+  return Col(name);
+}
+
+std::vector<PlanBuilder::OutputColumnName> PlanBuilder::findOrAssignOutputNames(
+    bool includeHiddenColumns,
+    const std::optional<std::string>& alias) const {
+  std::vector<OutputColumnName> result;
+  result.reserve(numOutput());
+
+  forEachOutputColumn(
+      *this, *outputMapping_, includeHiddenColumns, alias, [&](size_t index) {
+        result.push_back(findOrAssignOutputNameAt(index));
+      });
+
+  return result;
+}
+
+PlanBuilder::OutputColumnName PlanBuilder::findOrAssignOutputNameAt(
+    size_t index) const {
   const auto size = numOutput();
   VELOX_CHECK_LT(index, size, "{}", node_->outputType()->toString());
 
   const auto& id = node_->outputType()->nameOf(index);
+  auto names = outputMapping_->reverseLookup(id);
 
-  if (auto name = pickName(outputMapping_->reverseLookup(id))) {
-    return name.value();
+  if (names.empty()) {
+    // Anonymous column — assign the internal ID as a resolvable name.
+    outputMapping_->add(id, id);
+    return OutputColumnName{std::nullopt, id};
   }
 
-  // Assign a name to the output column.
-  outputMapping_->add(id, id);
-  return id;
+  // Extract the user-visible column name (same for all entries) and the
+  // alias if available. reverseLookup returns at most 2 entries with the
+  // same column name: one with alias and one without. There is at most
+  // one entry with an alias.
+  const auto& columnName = names.front().name;
+  std::optional<std::string> columnAlias;
+  for (const auto& name : names) {
+    if (name.alias.has_value()) {
+      columnAlias = name.alias;
+    }
+  }
+
+  // If the name resolves unambiguously, no alias is needed.
+  if (outputMapping_->lookup(columnName) == id) {
+    return OutputColumnName{std::nullopt, columnName};
+  }
+
+  // Name is ambiguous (e.g., same column name from multiple joined tables).
+  // Alias is required for disambiguation.
+  return OutputColumnName{columnAlias, columnName};
 }
 
 LogicalPlanNodePtr PlanBuilder::buildOutputNode() {
@@ -2038,7 +2092,7 @@ LogicalPlanNodePtr PlanBuilder::buildOutputNode() {
     if (auto userName = outputMapping_->userName(id)) {
       name = *userName;
     } else {
-      name = findOrAssignOutputNameAt(i);
+      name = findOrAssignOutputNameAt(i).name;
     }
     entries.emplace_back(
         OutputNode::Entry{static_cast<int32_t>(i), std::move(name)});
