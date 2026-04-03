@@ -141,6 +141,66 @@ lp::ExprApi rewriteWindowExpr(
   return lp::ExprApi(std::move(newExpr), item.name()).over(rewrittenSpec);
 }
 
+// Returns true if the expression is a table-qualified column reference, e.g.
+// FieldAccessExpr("x", FieldAccessExpr("v")) for v.x. Does not match root
+// columns (unqualified) or nested struct access (more than one level deep).
+bool isQualifiedColumnRef(const core::FieldAccessExpr& fieldAccess) {
+  if (fieldAccess.isRootColumn() || fieldAccess.inputs().size() != 1) {
+    return false;
+  }
+  const auto& input = fieldAccess.inputs()[0];
+  return input->is(core::IExpr::Kind::kFieldAccess) &&
+      input->as<core::FieldAccessExpr>()->isRootColumn();
+}
+
+// Maps each original IExpr* to its normalized result. Required for
+// correctness: projections_ and aggregates_ may share the same ExprPtr, and
+// without the cache independent normalization would produce distinct objects,
+// breaking pointer-based lookups in aggregateOptionsMap_.
+using NormalizeCache = std::unordered_map<const core::IExpr*, core::ExprPtr>;
+
+// Replaces qualified column references (e.g. v.x) with the equivalent
+// unqualified reference (e.g. x) when the unqualified name resolves
+// unambiguously in the builder's output mapping.
+//
+// Ensures that structurally different IExpr trees for the same column
+// (FieldAccessExpr("x") vs FieldAccessExpr("x", FieldAccessExpr("v"))) are
+// unified before rewritePostAggregateExprs matches SELECT expressions against
+// grouping keys by IExpr structural equality.
+core::ExprPtr normalizeQualifiedColumns(
+    const core::ExprPtr& expr,
+    const lp::PlanBuilder& builder,
+    NormalizeCache& cache) {
+  auto cacheIt = cache.find(expr.get());
+  if (cacheIt != cache.end()) {
+    return cacheIt->second;
+  }
+
+  if (expr->is(core::IExpr::Kind::kFieldAccess)) {
+    const auto* fieldAccess = expr->as<core::FieldAccessExpr>();
+    if (isQualifiedColumnRef(*fieldAccess) &&
+        builder.hasColumn(fieldAccess->name())) {
+      auto result = std::make_shared<core::FieldAccessExpr>(
+          fieldAccess->name(), fieldAccess->alias());
+      cache.emplace(expr.get(), result);
+      return result;
+    }
+  }
+
+  // Recurse into inputs.
+  std::vector<core::ExprPtr> newInputs;
+  bool changed = false;
+  for (const auto& input : expr->inputs()) {
+    auto newInput = normalizeQualifiedColumns(input, builder, cache);
+    changed |= (newInput.get() != input.get());
+    newInputs.push_back(std::move(newInput));
+  }
+
+  auto result = changed ? expr->replaceInputs(std::move(newInputs)) : expr;
+  cache.emplace(expr.get(), result);
+  return result;
+}
+
 core::ExprPtr replaceInputs(
     const core::ExprPtr& expr,
     const ExprMap<core::ExprPtr>& keyReplacements,
@@ -391,6 +451,9 @@ void GroupByPlanner::plan(
   // Populates: aggregates_, aggregateOptionsMap_, projections_, filter_,
   //   sortingKeyExprs_, outputNames_.
   collectAggregates(selectItems, having, orderBy);
+
+  normalizeQualifiedColumns();
+
   addAggregate(groupingSetsIndices_.size() > 1);
 
   // Rewrite filter_, projections_, and sortingKeyExprs_ to reference the
@@ -627,6 +690,53 @@ void GroupByPlanner::addAggregate(bool useGroupingSets) {
         "Unexpected ambiguous column after aggregate: {}",
         column.name);
     outputNames_.emplace_back(column.name);
+  }
+}
+
+void GroupByPlanner::normalizeQualifiedColumns() {
+  // Shared cache ensures that sub-expressions shared between projections_ and
+  // aggregates_ (which start as the same ExprPtr) produce the same normalized
+  // ExprPtr. Without this, independent normalization creates distinct objects
+  // and aggregateOptionsMap_ (keyed by raw IExpr*) can't find the options for
+  // the projection's copy of an aggregate expression.
+  NormalizeCache cache;
+
+  auto normalize = [&](lp::ExprApi& expr) {
+    auto normalized = axiom::sql::presto::normalizeQualifiedColumns(
+        expr.expr(), *builder_, cache);
+    if (normalized.get() != expr.expr().get()) {
+      expr = lp::ExprApi(std::move(normalized), expr.name());
+    }
+  };
+
+  for (auto& key : groupingKeys_) {
+    normalize(key);
+  }
+  for (auto& projection : projections_) {
+    normalize(projection);
+  }
+  for (auto& [expr, options] : aggregates_) {
+    normalize(expr);
+  }
+  if (filter_.has_value()) {
+    normalize(filter_.value());
+  }
+  for (auto& expr : sortingKeyExprs_) {
+    normalize(expr);
+  }
+
+  // Normalization creates new ExprPtr objects, which invalidates raw IExpr*
+  // keys in aggregateOptionsMap_. Re-register options under the new pointers
+  // so that rewritePostAggregateExprs can look them up. This covers aggregate
+  // sub-expressions in projections_, filter_, and sortingKeyExprs_, which may
+  // hold independently-created ExprPtrs from separate toExpr calls.
+  for (const auto& [oldPtr, newExpr] : cache) {
+    if (oldPtr != newExpr.get()) {
+      auto it = aggregateOptionsMap_.find(oldPtr);
+      if (it != aggregateOptionsMap_.end()) {
+        aggregateOptionsMap_.emplace(newExpr.get(), it->second);
+      }
+    }
   }
 }
 
