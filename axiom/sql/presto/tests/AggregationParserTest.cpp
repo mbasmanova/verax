@@ -714,6 +714,36 @@ TEST_F(AggregationParserTest, groupByWithWindowFunction) {
           .project({"b", "sum(count) OVER ()"})
           .output({"b", "total"}));
 
+  // Window function nested inside arithmetic expression.
+  testSelect(
+      "SELECT b, sum(a) * 1.0 / sum(sum(a)) OVER () FROM t GROUP BY b",
+      matchScan("t")
+          .aggregate({"b"}, {"sum(a)"})
+          .project({"b", "sum", "sum(sum) OVER ()"})
+          .project(
+              {"b", "multiply(cast(sum as double), 1) / cast(expr as double)"})
+          .output());
+
+  // Same as above but with PARTITION BY in the nested window function.
+  testSelect(
+      "SELECT b, sum(a) * 1.0 / sum(sum(a)) OVER (PARTITION BY b) FROM t GROUP BY b",
+      matchScan("t")
+          .aggregate({"b"}, {"sum(a)"})
+          .project({"b", "sum", "sum(sum) OVER (PARTITION BY b)"})
+          .project(
+              {"b", "multiply(cast(sum as double), 1) / cast(expr as double)"})
+          .output());
+
+  // Same as above but with qualified column references.
+  testSelect(
+      "SELECT t.b, sum(t.a) * 1.0 / sum(sum(t.a)) OVER () FROM t GROUP BY t.b",
+      matchScan("t")
+          .aggregate({"b"}, {"sum(a)"})
+          .project({"b", "sum", "sum(sum) OVER ()"})
+          .project(
+              {"b", "multiply(cast(sum as double), 1) / cast(expr as double)"})
+          .output());
+
   // Window function call with the same signature as a plain aggregate.
   testSelect(
       "SELECT sum(a) OVER (ORDER BY b), sum(a) FROM t GROUP BY a, b",

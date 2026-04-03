@@ -30,7 +30,6 @@
 #include "axiom/sql/presto/TableVisitor.h"
 #include "axiom/sql/presto/ast/AstBuilder.h"
 #include "axiom/sql/presto/ast/AstPrinter.h"
-#include "axiom/sql/presto/ast/DefaultTraversalVisitor.h"
 #include "axiom/sql/presto/ast/UpperCaseInputStream.h"
 #include "axiom/sql/presto/grammar/PrestoSqlLexer.h"
 #include "axiom/sql/presto/grammar/PrestoSqlParser.h"
@@ -38,7 +37,6 @@
 #include "velox/exec/WindowFunction.h"
 #include "velox/functions/FunctionRegistry.h"
 #include "velox/functions/prestosql/types/PrestoTypes.h"
-#include "velox/parse/Expressions.h"
 
 namespace axiom::sql::presto {
 namespace {
@@ -175,60 +173,6 @@ lp::ExprPtr resolveJoinColumn(
   // Resolve from the side that has it. Calling leftScope for a name only on
   // the right would throw (unqualified not-found with no outer scope).
   return leftHas ? leftScope(alias, name) : rightScope(alias, name);
-}
-
-// Walks an AST expression and checks whether it contains window function calls
-// nested inside other expressions.
-class WindowFunctionFinder : public DefaultTraversalVisitor {
- public:
-  bool hasWindowFunction() const {
-    return hasWindowFunction_;
-  }
-
- protected:
-  void visitFunctionCall(FunctionCall* node) override {
-    if (node->window() != nullptr) {
-      hasWindowFunction_ = true;
-      return;
-    }
-    DefaultTraversalVisitor::visitFunctionCall(node);
-  }
-
-  void visitSubqueryExpression(SubqueryExpression* node) override {
-    // Window function calls within a subquery do not count.
-  }
-
- private:
-  bool hasWindowFunction_{false};
-};
-
-// Returns true if the expression contains any window function call.
-bool hasWindowFunction(const ExpressionPtr& expr) {
-  WindowFunctionFinder finder;
-  const_cast<Expression*>(expr.get())->accept(&finder);
-  return finder.hasWindowFunction();
-}
-
-// Returns true if any select item has a window function nested inside an
-// expression (e.g., sum(b) OVER (...) * 2). Top-level window functions
-// (e.g., sum(b) OVER (...) AS s) are handled directly by PlanBuilder and
-// don't need special treatment.
-bool hasNestedWindowFunction(const std::vector<SelectItemPtr>& selectItems) {
-  for (const auto& item : selectItems) {
-    if (item->is(NodeType::kSingleColumn)) {
-      auto* singleColumn = item->as<SingleColumn>();
-      const auto& expr = singleColumn->expression();
-      // Skip top-level window functions - they already work.
-      if (expr->is(NodeType::kFunctionCall) &&
-          expr->as<FunctionCall>()->window() != nullptr) {
-        continue;
-      }
-      if (hasWindowFunction(expr)) {
-        return true;
-      }
-    }
-  }
-  return false;
 }
 
 // Finds sub-expressions in an IExpr tree using pointer-identity matching.
@@ -785,7 +729,8 @@ class RelationPlanner : public AstVisitor {
       return std::nullopt;
     }
 
-    const bool hasNestedWindow = hasNestedWindowFunction(selectItems);
+    const bool hasNestedWindow =
+        ExpressionPlanner::hasNestedWindowFunction(selectItems);
 
     // When hasNestedWindow is true, window function calls are collected in
     // windowOptions (keyed by IExpr*) and returned as plain function calls.

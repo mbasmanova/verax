@@ -18,6 +18,7 @@
 #include <folly/String.h>
 #include <algorithm>
 #include <cctype>
+#include "axiom/sql/presto/ast/DefaultTraversalVisitor.h"
 #include "velox/functions/prestosql/types/JsonType.h"
 #include "velox/functions/prestosql/types/TimestampWithTimeZoneType.h"
 #include "velox/parse/Expressions.h"
@@ -200,7 +201,49 @@ lp::ExprApi parseDecimal(std::string_view value) {
       LongDecimalType::kMaxPrecision);
 }
 
+// Walks the AST looking for window function calls.
+class WindowFunctionFinder : public DefaultTraversalVisitor {
+ public:
+  bool hasWindowFunction() const {
+    return hasWindowFunction_;
+  }
+
+ protected:
+  void visitFunctionCall(FunctionCall* node) override {
+    if (node->window() != nullptr) {
+      hasWindowFunction_ = true;
+      return;
+    }
+    DefaultTraversalVisitor::visitFunctionCall(node);
+  }
+
+  void visitSubqueryExpression(SubqueryExpression* node) override {}
+
+ private:
+  bool hasWindowFunction_{false};
+};
+
 } // namespace
+
+bool ExpressionPlanner::hasNestedWindowFunction(
+    const std::vector<SelectItemPtr>& selectItems) {
+  for (const auto& item : selectItems) {
+    if (item->is(NodeType::kSingleColumn)) {
+      auto* singleColumn = item->as<SingleColumn>();
+      const auto& expr = singleColumn->expression();
+      if (expr->is(NodeType::kFunctionCall) &&
+          expr->as<FunctionCall>()->window() != nullptr) {
+        continue;
+      }
+      WindowFunctionFinder finder;
+      const_cast<Expression*>(expr.get())->accept(&finder);
+      if (finder.hasWindowFunction()) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
 
 std::string canonicalizeName(const std::string& name) {
   std::string canonicalName;
