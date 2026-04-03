@@ -263,10 +263,10 @@ TEST_F(ColumnFilteringTest, duplicateColumnNames) {
 
 TEST_F(ColumnFilteringTest, selectColumnsInExpression) {
   // nation has: n_nationkey, n_name, n_regionkey, n_comment
-
-  // Arithmetic over matched columns.
   // COLUMNS in expressions is syntax sugar: output names match what you'd
   // get from writing the expressions manually (auto-generated names).
+
+  // Arithmetic over matched columns.
   testSelect(
       "SELECT COLUMNS('.*key') + 1 FROM nation",
       matchScan("nation")
@@ -291,11 +291,51 @@ TEST_F(ColumnFilteringTest, selectColumnsInExpression) {
   VELOX_ASSERT_THROW(
       parseSelect("SELECT COLUMNS('xyz') + 1 FROM nation"),
       "COLUMNS('xyz') matched no columns");
+}
 
-  // Multiple COLUMNS calls in one expression are not yet supported.
+// Multiple COLUMNS() calls in a single expression are expanded pairwise (zip).
+// Each call must match the same number of columns. The i-th output expression
+// replaces every COLUMNS() call with the i-th match from that call's pattern.
+TEST_F(ColumnFilteringTest, multipleColumnsInExpression) {
+  // Table with columns that let us use two genuinely different patterns, each
+  // matching 3 columns:
+  //   'x_.*' matches: x_a, x_b, x_c
+  //   'y_.*' matches: y_a, y_b, y_c
+  connector_->addTable(
+      "t", ROW({"x_a", "x_b", "x_c", "y_a", "y_b", "y_c"}, BIGINT()));
+
+  // Two different patterns.
+  testSelect(
+      "SELECT COLUMNS('x_.*') + COLUMNS('y_.*') FROM t",
+      matchScan("t").project({"x_a + y_a", "x_b + y_b", "x_c + y_c"}).output());
+
+  // Same pattern twice.
+  testSelect(
+      "SELECT COLUMNS('x_.*') * COLUMNS('x_.*') FROM t",
+      matchScan("t").project({"x_a * x_a", "x_b * x_b", "x_c * x_c"}).output());
+
+  // With explicit alias — applies to all expanded columns.
+  testSelect(
+      "SELECT COLUMNS('x_.*') + COLUMNS('y_.*') AS result FROM t",
+      matchScan("t")
+          .project({"x_a + y_a", "x_b + y_b", "x_c + y_c"})
+          .output({"result", "result", "result"}));
+
+  // Nested inside a function call.
+  testSelect(
+      "SELECT cast(COLUMNS('x_.*') + COLUMNS('y_.*') AS varchar) FROM t",
+      matchScan("t")
+          .project(
+              {"(x_a + y_a)::varchar",
+               "(x_b + y_b)::varchar",
+               "(x_c + y_c)::varchar"})
+          .output());
+
+  // Mismatched column counts: 'x_.*' matches 3 columns, 'y_a' matches 1.
   VELOX_ASSERT_THROW(
-      parseSelect("SELECT COLUMNS('.*key') + COLUMNS('.*key') FROM nation"),
-      "Multiple COLUMNS() calls in a single expression");
+      parseSelect("SELECT COLUMNS('x_.*') + COLUMNS('y_a') FROM t"),
+      "All COLUMNS() calls in a single expression must match the same number "
+      "of columns");
 }
 
 } // namespace

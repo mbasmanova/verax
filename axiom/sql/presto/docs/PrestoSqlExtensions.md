@@ -285,8 +285,21 @@ SELECT COLUMNS('.*key') + 1 AS x FROM nation
 -- Equivalent to: SELECT n_nationkey + 1 AS x, n_regionkey + 1 AS x
 ```
 
-Only one `COLUMNS()` call per expression is supported. Multiple calls (e.g.,
-`COLUMNS('a.*') + COLUMNS('b.*')`) will be added in a follow-up.
+Multiple `COLUMNS()` calls in the same expression are expanded pairwise (zip).
+All calls must match the same number of columns. The i-th output expression
+replaces every `COLUMNS()` call with the i-th matched column from that call's
+pattern.
+
+```sql
+-- Given table t with columns: x_a, x_b, x_c, y_a, y_b, y_c
+-- Equivalent to: SELECT x_a + y_a, x_b + y_b, x_c + y_c
+SELECT COLUMNS('x_.*') + COLUMNS('y_.*') FROM t
+
+-- Equivalent to: SELECT cast(x_a + y_a AS varchar), ...
+SELECT cast(COLUMNS('x_.*') + COLUMNS('y_.*') AS varchar) FROM t
+```
+
+Raises an error if the patterns match different numbers of columns.
 
 ### Column Name Matching
 

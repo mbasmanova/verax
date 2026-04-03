@@ -706,6 +706,12 @@ class RelationPlanner : public AstVisitor {
   // expression. For each matched column, clones the expression tree and
   // replaces COLUMNS(...) with a column reference. If alias is provided,
   // applies it to all expanded columns (sugar for SELECT a AS x, b AS x).
+  //
+  // When multiple COLUMNS() calls appear in the same expression, they are
+  // expanded pairwise (zip): each call must match the same number of
+  // columns, and the i-th output expression replaces every COLUMNS() call
+  // with the i-th matched column from that call's pattern.
+  //
   // Returns true if expansion happened.
   bool tryExpandColumnsInExpression(
       const lp::ExprApi& expr,
@@ -717,18 +723,38 @@ class RelationPlanner : public AstVisitor {
       return false;
     }
 
-    VELOX_USER_CHECK_EQ(
-        columnsCalls.size(),
-        1,
-        "Multiple COLUMNS() calls in a single expression "
-        "are not yet supported");
+    // Resolve matched columns for each COLUMNS() call.
+    std::vector<std::vector<lp::PlanBuilder::OutputColumnName>>
+        matchedColumnsPerCall;
+    matchedColumnsPerCall.reserve(columnsCalls.size());
+    for (const auto& [callNode, pattern] : columnsCalls) {
+      matchedColumnsPerCall.push_back(matchColumnsByRegex(*builder_, pattern));
+    }
 
-    auto& [callNode, pattern] = columnsCalls[0];
-    auto matchedColumns = matchColumnsByRegex(*builder_, pattern);
+    // All COLUMNS() calls must match the same number of columns.
+    const size_t numColumns = matchedColumnsPerCall[0].size();
+    for (size_t i = 1; i < matchedColumnsPerCall.size(); ++i) {
+      VELOX_USER_CHECK_EQ(
+          matchedColumnsPerCall[i].size(),
+          numColumns,
+          "All COLUMNS() calls in a single expression must match "
+          "the same number of columns. COLUMNS('{}') matched {} columns, "
+          "but COLUMNS('{}') matched {} columns",
+          columnsCalls[0].second,
+          numColumns,
+          columnsCalls[i].second,
+          matchedColumnsPerCall[i].size());
+    }
 
-    for (const auto& column : matchedColumns) {
+    // Expand pairwise: for each column index, replace all COLUMNS() calls
+    // simultaneously.
+    for (size_t i = 0; i < numColumns; ++i) {
       std::unordered_map<const core::IExpr*, core::ExprPtr> replacements;
-      replacements.emplace(callNode, column.toCol().expr());
+      for (size_t callIdx = 0; callIdx < columnsCalls.size(); ++callIdx) {
+        replacements.emplace(
+            columnsCalls[callIdx].first,
+            matchedColumnsPerCall[callIdx][i].toCol().expr());
+      }
       auto expandedExpr = replaceInputs(expr.expr(), replacements);
       if (alias.has_value()) {
         exprs.push_back(lp::ExprApi(expandedExpr, alias.value()));
