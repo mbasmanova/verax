@@ -96,6 +96,51 @@ const lp::PlanBuilder::AggregateOptions* findOptions(
 // 'onUnreplacedLeaf' is provided, invokes the callback for any
 // FieldAccessExpr that is not in the replacement map and whose children were
 // not replaced either. Used to detect invalid column references in HAVING.
+// Rewrites a window function expression: replaces column references in the
+// function arguments, PARTITION BY keys, and ORDER BY keys using the provided
+// rewrite function.
+lp::ExprApi rewriteWindowExpr(
+    const lp::ExprApi& item,
+    const std::function<core::ExprPtr(const core::ExprPtr&)>& rewriteIExpr) {
+  const auto windowSpec = item.windowSpec();
+  VELOX_CHECK_NOT_NULL(windowSpec);
+
+  // Rewrite function arguments.
+  std::vector<core::ExprPtr> newInputs;
+  bool changed = false;
+  for (const auto& input : item.expr()->inputs()) {
+    auto newInput = rewriteIExpr(input);
+    changed |= (newInput.get() != input.get());
+    newInputs.push_back(std::move(newInput));
+  }
+
+  auto newExpr =
+      changed ? item.expr()->replaceInputs(std::move(newInputs)) : item.expr();
+
+  // Rewrite PARTITION BY and ORDER BY expressions in the WindowSpec.
+  auto rewrittenSpec = *windowSpec;
+  if (!rewrittenSpec.partitionKeys().empty()) {
+    std::vector<lp::ExprApi> newKeys;
+    for (const auto& key : rewrittenSpec.partitionKeys()) {
+      newKeys.push_back(lp::ExprApi(rewriteIExpr(key.expr())));
+    }
+    rewrittenSpec.partitionBy(std::move(newKeys));
+  }
+
+  if (!rewrittenSpec.orderByKeys().empty()) {
+    std::vector<lp::SortKey> newKeys;
+    for (const auto& key : rewrittenSpec.orderByKeys()) {
+      newKeys.emplace_back(
+          lp::ExprApi(rewriteIExpr(key.expr.expr())),
+          key.ascending,
+          key.nullsFirst);
+    }
+    rewrittenSpec.orderBy(std::move(newKeys));
+  }
+
+  return lp::ExprApi(std::move(newExpr), item.name()).over(rewrittenSpec);
+}
+
 core::ExprPtr replaceInputs(
     const core::ExprPtr& expr,
     const ExprMap<core::ExprPtr>& keyReplacements,
@@ -615,28 +660,21 @@ void GroupByPlanner::rewritePostAggregateExprs() {
         });
   }
 
+  // Rewrites an IExpr to reference post-aggregate columns.
+  auto rewriteIExpr = [&](const core::ExprPtr& expr) {
+    return replaceInputs(
+        expr, keyInputs, aggregateInputs, aggregateOptionsMap_);
+  };
+
   // Rewrites an ExprApi to reference post-aggregate columns. For window
-  // functions, replaces only the arguments of the call (not the call itself),
-  // since a window function like sum(x) OVER (...) may have the same signature
-  // as a plain aggregate sum(x) but is a different operation.
+  // functions, replaces the arguments of the call AND the PARTITION BY /
+  // ORDER BY expressions in the WindowSpec.
   auto rewriteExpr = [&](lp::ExprApi& item) {
     const auto windowSpec = item.windowSpec();
     if (windowSpec) {
-      std::vector<core::ExprPtr> newInputs;
-      bool changed = false;
-      for (const auto& input : item.expr()->inputs()) {
-        auto newInput = replaceInputs(
-            input, keyInputs, aggregateInputs, aggregateOptionsMap_);
-        changed |= (newInput.get() != input.get());
-        newInputs.push_back(std::move(newInput));
-      }
-      auto newExpr = changed ? item.expr()->replaceInputs(std::move(newInputs))
-                             : item.expr();
-      item = lp::ExprApi(std::move(newExpr), item.name()).over(*windowSpec);
+      item = rewriteWindowExpr(item, rewriteIExpr);
     } else {
-      auto newExpr = replaceInputs(
-          item.expr(), keyInputs, aggregateInputs, aggregateOptionsMap_);
-      item = lp::ExprApi(std::move(newExpr), item.name());
+      item = lp::ExprApi(rewriteIExpr(item.expr()), item.name());
     }
   };
 
