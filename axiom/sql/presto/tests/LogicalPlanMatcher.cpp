@@ -228,6 +228,74 @@ class LogicalPlanMatcherImpl : public LogicalPlanMatcher {
   const std::function<void(const LogicalPlanNodePtr&)> onMatch_;
 };
 
+// Matches a JoinNode and captures aliases for all output columns.
+// 'outputAliases' must have one entry per output column. Each alias is mapped
+// to the actual column name at that position, so subsequent matchers can
+// reference these aliases in expressions.
+class JoinMatcher : public LogicalPlanMatcherImpl<JoinNode> {
+ public:
+  JoinMatcher(
+      const std::shared_ptr<LogicalPlanMatcher>& leftMatcher,
+      const std::shared_ptr<LogicalPlanMatcher>& rightMatcher,
+      std::vector<std::string> outputAliases)
+      : LogicalPlanMatcherImpl<JoinNode>({leftMatcher, rightMatcher}, nullptr),
+        outputAliases_{std::move(outputAliases)} {}
+
+ private:
+  MatchResult matchDetails(
+      const JoinNode& plan,
+      const std::unordered_map<std::string, std::string>& symbols)
+      const override {
+    const auto& outputType = plan.outputType();
+
+    EXPECT_EQ(outputAliases_.size(), outputType->size())
+        << "Expected " << outputAliases_.size() << " output columns, but got "
+        << outputType->size();
+    AXIOM_RETURN_IF_FAILURE;
+
+    std::unordered_map<std::string, std::string> newSymbols = symbols;
+    for (size_t i = 0; i < outputAliases_.size(); ++i) {
+      newSymbols[outputAliases_[i]] = outputType->nameOf(i);
+    }
+
+    AXIOM_RETURN_RESULT(newSymbols)
+  }
+
+  const std::vector<std::string> outputAliases_;
+};
+
+// Matches a FilterNode with the specified expression. The expected expression
+// is parsed with DuckDB and printed in a format compatible with
+// lp::ExprPrinter, then compared against the filter expression's toString().
+class FilterMatcher : public LogicalPlanMatcherImpl<FilterNode> {
+ public:
+  FilterMatcher(
+      const std::shared_ptr<LogicalPlanMatcher>& inputMatcher,
+      std::string expression)
+      : LogicalPlanMatcherImpl<FilterNode>(inputMatcher, nullptr),
+        expression_{std::move(expression)} {}
+
+ private:
+  MatchResult matchDetails(
+      const FilterNode& plan,
+      const std::unordered_map<std::string, std::string>& symbols)
+      const override {
+    velox::parse::DuckSqlExpressionsParser parser;
+    auto expected = std::get<velox::core::ExprPtr>(
+        parser.parseScalarOrWindowExpr(expression_));
+
+    if (!symbols.empty()) {
+      expected = rewriteInputNames(expected, symbols);
+    }
+
+    EXPECT_EQ(
+        toExprString(*expected->dropAlias()), plan.predicate()->toString());
+    AXIOM_RETURN_RESULT(symbols)
+  }
+
+  const std::string expression_;
+};
+
 class SetMatcher : public LogicalPlanMatcherImpl<SetNode> {
  public:
   SetMatcher(
@@ -646,6 +714,13 @@ LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::filter(
   return *this;
 }
 
+LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::filter(
+    const std::string& expression) {
+  VELOX_USER_CHECK_NOT_NULL(matcher_);
+  matcher_ = std::make_shared<FilterMatcher>(matcher_, expression);
+  return *this;
+}
+
 LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::project(
     OnMatchCallback onMatch) {
   VELOX_USER_CHECK_NOT_NULL(matcher_);
@@ -705,6 +780,15 @@ LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::join(
   matcher_ = std::make_shared<LogicalPlanMatcherImpl<JoinNode>>(
       std::vector<std::shared_ptr<LogicalPlanMatcher>>{matcher_, rightMatcher},
       std::move(onMatch));
+  return *this;
+}
+
+LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::join(
+    const std::shared_ptr<LogicalPlanMatcher>& rightMatcher,
+    const std::vector<std::string>& outputAliases) {
+  VELOX_USER_CHECK_NOT_NULL(matcher_);
+  matcher_ =
+      std::make_shared<JoinMatcher>(matcher_, rightMatcher, outputAliases);
   return *this;
 }
 
