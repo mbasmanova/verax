@@ -338,5 +338,107 @@ TEST_F(ColumnFilteringTest, multipleColumnsInExpression) {
       "of columns");
 }
 
+TEST_F(ColumnFilteringTest, columnsInGroupBy) {
+  // nation has: n_nationkey, n_name, n_regionkey, n_comment
+
+  // COLUMNS expands to multiple grouping keys.
+  testSelect(
+      "SELECT n_nationkey, n_regionkey, count(*) FROM nation "
+      "GROUP BY COLUMNS('.*key')",
+      matchScan("nation")
+          .aggregate({"n_nationkey", "n_regionkey"}, {"count()"})
+          .output());
+
+  // COLUMNS inside an expression in GROUP BY.
+  testSelect(
+      "SELECT n_nationkey + 1, n_regionkey + 1, count(*) FROM nation "
+      "GROUP BY COLUMNS('.*key') + 1",
+      matchScan("nation")
+          .aggregate(
+              {"plus(n_nationkey, CAST(1 AS BIGINT))",
+               "plus(n_regionkey, CAST(1 AS BIGINT))"},
+              {"count()"})
+          .output());
+
+  // No columns match in GROUP BY.
+  VELOX_ASSERT_THROW(
+      parseSelect("SELECT count(*) FROM nation GROUP BY COLUMNS('xyz')"),
+      "COLUMNS('xyz') matched no columns");
+}
+
+TEST_F(ColumnFilteringTest, columnsInOrderBy) {
+  // nation has: n_nationkey, n_name, n_regionkey, n_comment
+
+  // COLUMNS expands to multiple sort keys.
+  testSelect(
+      "SELECT * FROM nation ORDER BY COLUMNS('.*key')",
+      matchScan("nation")
+          .sort({"n_nationkey ASC NULLS LAST", "n_regionkey ASC NULLS LAST"})
+          .output({"n_nationkey", "n_name", "n_regionkey", "n_comment"}));
+
+  // COLUMNS with DESC ordering.
+  testSelect(
+      "SELECT * FROM nation ORDER BY COLUMNS('.*key') DESC",
+      matchScan("nation")
+          .sort({"n_nationkey DESC NULLS LAST", "n_regionkey DESC NULLS LAST"})
+          .output({"n_nationkey", "n_name", "n_regionkey", "n_comment"}));
+
+  // COLUMNS mixed with a regular sort key.
+  testSelect(
+      "SELECT * FROM nation ORDER BY n_name, COLUMNS('.*key') DESC",
+      matchScan("nation")
+          .sort(
+              {"n_name ASC NULLS LAST",
+               "n_nationkey DESC NULLS LAST",
+               "n_regionkey DESC NULLS LAST"})
+          .output({"n_nationkey", "n_name", "n_regionkey", "n_comment"}));
+
+  // COLUMNS in ORDER BY with projection that doesn't include the sort keys.
+  testSelect(
+      "SELECT n_name FROM nation ORDER BY COLUMNS('.*key')",
+      matchScan("nation")
+          .project()
+          .sort({"n_nationkey ASC NULLS LAST", "n_regionkey ASC NULLS LAST"})
+          .project()
+          .output({"n_name"}));
+
+  // No columns match in ORDER BY.
+  VELOX_ASSERT_THROW(
+      parseSelect("SELECT * FROM nation ORDER BY COLUMNS('xyz')"),
+      "COLUMNS('xyz') matched no columns");
+}
+
+TEST_F(ColumnFilteringTest, columnsInWhere) {
+  // nation has: n_nationkey, n_name, n_regionkey, n_comment
+
+  // COLUMNS in WHERE expands to AND conjunction.
+  testSelect(
+      "SELECT * FROM nation WHERE COLUMNS('.*key') > 0",
+      matchScan("nation")
+          .filter("n_nationkey > 0::bigint AND n_regionkey > 0::bigint")
+          .output({"n_nationkey", "n_name", "n_regionkey", "n_comment"}));
+
+  // Single column match — no AND needed.
+  testSelect(
+      "SELECT * FROM nation WHERE COLUMNS('n_nationkey') > 0",
+      matchScan("nation")
+          .filter("n_nationkey > 0::bigint")
+          .output({"n_nationkey", "n_name", "n_regionkey", "n_comment"}));
+
+  // COLUMNS inside a complex expression in WHERE.
+  testSelect(
+      "SELECT * FROM nation WHERE COLUMNS('.*key') + 1 > 10",
+      matchScan("nation")
+          .filter(
+              "n_nationkey + 1::bigint > 10::bigint AND "
+              "n_regionkey + 1::bigint > 10::bigint")
+          .output({"n_nationkey", "n_name", "n_regionkey", "n_comment"}));
+
+  // No columns match in WHERE.
+  VELOX_ASSERT_THROW(
+      parseSelect("SELECT * FROM nation WHERE COLUMNS('xyz') > 0"),
+      "COLUMNS('xyz') matched no columns");
+}
+
 } // namespace
 } // namespace axiom::sql::presto::test

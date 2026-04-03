@@ -16,6 +16,7 @@
 
 #include "axiom/sql/presto/GroupByPlanner.h"
 #include <set>
+#include "axiom/sql/presto/ColumnsExpansion.h"
 #include "axiom/sql/presto/SortProjection.h"
 #include "axiom/sql/presto/ast/DefaultTraversalVisitor.h"
 #include "folly/container/F14Set.h"
@@ -896,7 +897,18 @@ std::vector<lp::ExprApi> GroupByPlanner::resolveWithCache(
   std::vector<lp::ExprApi> result;
   result.reserve(exprs.size());
   for (const auto& expr : exprs) {
-    result.push_back(resolveWithCache(expr, selectItems));
+    auto resolved = resolveWithCache(expr, selectItems);
+
+    // Expand COLUMNS() calls to multiple grouping keys.
+    auto expanded = ColumnsExpansion::expand(resolved, *builder_);
+    if (!expanded.empty()) {
+      result.insert(
+          result.end(),
+          std::make_move_iterator(expanded.begin()),
+          std::make_move_iterator(expanded.end()));
+    } else {
+      result.push_back(std::move(resolved));
+    }
   }
   return result;
 }
