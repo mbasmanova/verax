@@ -713,5 +713,149 @@ TEST_F(AggregationParserTest, groupByWithWindowFunction) {
           .output({"a", "c", "rnk"}));
 }
 
+// Qualified column references (e.g. v.x) in SELECT must resolve correctly
+// after GROUP BY, even when the name allocator assigns suffixed physical names
+// (which happens when the same column name is used in a prior subquery).
+TEST_F(AggregationParserTest, qualifiedColumnInGroupBy) {
+  // Qualified ref in SELECT matches simple grouping key.
+  testSelect(
+      "SELECT v.x FROM (VALUES (1, 10)) v(x, y) GROUP BY x",
+      matchValues().project().aggregate({"x"}, {}).output({"x"}));
+
+  // Qualified ref as a sub-expression of a projection.
+  testSelect(
+      "SELECT v.x + 1 FROM (VALUES (1, 10)) v(x, y) GROUP BY x "
+      "UNION ALL SELECT 1",
+      matchValues()
+          .project()
+          .aggregate({"x"}, {})
+          .project()
+          .unionAll(matchValues().project().build())
+          .output());
+
+  // Qualified ref in both GROUP BY and SELECT expressions.
+  testSelect(
+      "SELECT v.x + 1 FROM (VALUES (1, 10)) v(x, y) GROUP BY v.x + 1 "
+      "UNION ALL SELECT 1",
+      matchValues()
+          .project()
+          .aggregate()
+          .unionAll(matchValues().project().build())
+          .output());
+
+  // Cross join with prior subquery exhausting the name 'x'. The second
+  // subquery gets suffixed physical names from the shared name allocator.
+  // Qualified refs are normalized before aggregate rewriting.
+  testSelect(
+      "SELECT * FROM "
+      "  (SELECT 1 as x) a, "
+      "  (SELECT v.x FROM (VALUES (1, 10)) v(x, y) GROUP BY x) b",
+      matchValues()
+          .project()
+          .join(matchValues().project().aggregate().build())
+          .output({"x", "x"}));
+
+  // Qualified ref inside expression with GROUP BY on the expression.
+  testSelect(
+      "SELECT * FROM "
+      "  (SELECT 1 as expr) a, "
+      "  (SELECT v.x + 1 FROM (VALUES (1, 10)) v(x, y) GROUP BY x + 1) b",
+      matchValues()
+          .project()
+          .join(matchValues().project().aggregate().build())
+          .output());
+
+  // Qualified ref in GROUP BY, unqualified in SELECT. Normalization must apply
+  // to grouping keys too, not just projections.
+  testSelect(
+      "SELECT * FROM "
+      "  (SELECT 1 as x) a, "
+      "  (SELECT x FROM (VALUES (1, 10)) v(x, y) GROUP BY v.x) b",
+      matchValues()
+          .project()
+          .join(matchValues().project().aggregate().build())
+          .output({"x", "x"}));
+
+  // Qualified ref in HAVING clause.
+  testSelect(
+      "SELECT * FROM "
+      "  (SELECT 1 as x) a, "
+      "  (SELECT v.x FROM (VALUES (1, 10)) v(x, y) "
+      "   GROUP BY x HAVING v.x > 0) b",
+      matchValues()
+          .project()
+          .join(matchValues().project().aggregate().filter().build())
+          .output({"x", "x"}));
+
+  // Qualified ref in aggregate argument.
+  testSelect(
+      "SELECT * FROM "
+      "  (SELECT 1 as x) a, "
+      "  (SELECT sum(v.x) FROM (VALUES (1, 10)) v(x, y) GROUP BY y) b",
+      matchValues()
+          .project()
+          .join(matchValues().project().aggregate().project().build())
+          .output());
+
+  // Qualified ref in ORDER BY.
+  testSelect(
+      "SELECT * FROM "
+      "  (SELECT 1 as x) a, "
+      "  (SELECT v.x FROM (VALUES (1, 10)) v(x, y) "
+      "   GROUP BY x ORDER BY v.x) b",
+      matchValues()
+          .project()
+          .join(matchValues().project().aggregate().sort().build())
+          .output({"x", "x"}));
+
+  // Ambiguous column name: both t and u have column 'n_name'. Qualified refs
+  // must NOT be normalized when the unqualified name is ambiguous.
+  testSelect(
+      "SELECT t.n_name, sum(u.n_regionkey) FROM nation t JOIN nation u "
+      "ON t.n_nationkey = u.n_nationkey GROUP BY t.n_name",
+      matchScan().join(matchScan().build()).aggregate().output());
+
+  // Qualified ref inside DISTINCT aggregate in SELECT. Normalization must
+  // update aggregateOptionsMap_ so that rewritePostAggregateExprs can match
+  // the aggregate expression with its DISTINCT option.
+  testSelect(
+      "SELECT count(DISTINCT b.s_acctbal), a.n_name "
+      "FROM nation a JOIN supplier b ON a.n_nationkey = b.s_nationkey "
+      "GROUP BY a.n_name",
+      matchScan("nation")
+          .join(matchScan("supplier").build())
+          .aggregate({"n_name"}, {"count(DISTINCT s_acctbal)"})
+          .project()
+          .output());
+
+  // Qualified ref inside DISTINCT aggregate in ORDER BY. The ORDER BY
+  // expression comes from a separate toExpr call, producing a different
+  // ExprPtr than the one in aggregates_.
+  testSelect(
+      "SELECT count(DISTINCT b.s_acctbal), a.n_name "
+      "FROM nation a JOIN supplier b ON a.n_nationkey = b.s_nationkey "
+      "GROUP BY a.n_name "
+      "ORDER BY count(DISTINCT b.s_acctbal)",
+      matchScan("nation")
+          .join(matchScan("supplier").build())
+          .aggregate({"n_name"}, {"count(DISTINCT s_acctbal) as cnt"})
+          .project()
+          .sort({"cnt"})
+          .output());
+
+  // Qualified ref inside DISTINCT aggregate in HAVING.
+  testSelect(
+      "SELECT a.n_name "
+      "FROM nation a JOIN supplier b ON a.n_nationkey = b.s_nationkey "
+      "GROUP BY a.n_name "
+      "HAVING count(DISTINCT b.s_acctbal) > 5",
+      matchScan("nation")
+          .join(matchScan("supplier").build())
+          .aggregate({"n_name"}, {"count(DISTINCT s_acctbal) as cnt"})
+          .filter("cnt > 5::bigint")
+          .project()
+          .output());
+}
+
 } // namespace
 } // namespace axiom::sql::presto::test
