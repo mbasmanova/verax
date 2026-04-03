@@ -91,12 +91,31 @@ const lp::PlanBuilder::AggregateOptions* findOptions(
   return it != optionsMap.end() ? &it->second : nullptr;
 }
 
-// Given an expression, and pairs of search-and-replace sub-expressions,
-// produces a new expression with sub-expressions replaced. Uses keyReplacements
-// for grouping keys and aggregateReplacements for aggregates. If
-// 'onUnreplacedLeaf' is provided, invokes the callback for any
-// FieldAccessExpr that is not in the replacement map and whose children were
-// not replaced either. Used to detect invalid column references in HAVING.
+// Rewrites each IExpr in the WindowSpec's PARTITION BY and ORDER BY keys using
+// 'rewrite' and returns the rewritten spec.
+lp::WindowSpec rewriteWindowSpec(
+    const lp::WindowSpec& spec,
+    const std::function<core::ExprPtr(const core::ExprPtr&)>& rewrite) {
+  auto result = spec;
+  if (!result.partitionKeys().empty()) {
+    std::vector<lp::ExprApi> newKeys;
+    for (const auto& key : result.partitionKeys()) {
+      newKeys.push_back(lp::ExprApi(rewrite(key.expr())));
+    }
+    result.partitionBy(std::move(newKeys));
+  }
+
+  if (!result.orderByKeys().empty()) {
+    std::vector<lp::SortKey> newKeys;
+    for (const auto& key : result.orderByKeys()) {
+      newKeys.emplace_back(
+          lp::ExprApi(rewrite(key.expr.expr())), key.ascending, key.nullsFirst);
+    }
+    result.orderBy(std::move(newKeys));
+  }
+  return result;
+}
+
 // Rewrites a window function expression: replaces column references in the
 // function arguments, PARTITION BY keys, and ORDER BY keys using the provided
 // rewrite function.
@@ -118,28 +137,8 @@ lp::ExprApi rewriteWindowExpr(
   auto newExpr =
       changed ? item.expr()->replaceInputs(std::move(newInputs)) : item.expr();
 
-  // Rewrite PARTITION BY and ORDER BY expressions in the WindowSpec.
-  auto rewrittenSpec = *windowSpec;
-  if (!rewrittenSpec.partitionKeys().empty()) {
-    std::vector<lp::ExprApi> newKeys;
-    for (const auto& key : rewrittenSpec.partitionKeys()) {
-      newKeys.push_back(lp::ExprApi(rewriteIExpr(key.expr())));
-    }
-    rewrittenSpec.partitionBy(std::move(newKeys));
-  }
-
-  if (!rewrittenSpec.orderByKeys().empty()) {
-    std::vector<lp::SortKey> newKeys;
-    for (const auto& key : rewrittenSpec.orderByKeys()) {
-      newKeys.emplace_back(
-          lp::ExprApi(rewriteIExpr(key.expr.expr())),
-          key.ascending,
-          key.nullsFirst);
-    }
-    rewrittenSpec.orderBy(std::move(newKeys));
-  }
-
-  return lp::ExprApi(std::move(newExpr), item.name()).over(rewrittenSpec);
+  return lp::ExprApi(std::move(newExpr), item.name())
+      .over(rewriteWindowSpec(*windowSpec, rewriteIExpr));
 }
 
 // Returns true if the expression is a table-qualified column reference, e.g.
@@ -202,6 +201,12 @@ core::ExprPtr normalizeQualifiedColumns(
   return result;
 }
 
+// Given an expression, and pairs of search-and-replace sub-expressions,
+// produces a new expression with sub-expressions replaced. Uses keyReplacements
+// for grouping keys and aggregateReplacements for aggregates. If
+// 'onUnreplacedLeaf' is provided, invokes the callback for any
+// FieldAccessExpr that is not in the replacement map and whose children were
+// not replaced either. Used to detect invalid column references in HAVING.
 core::ExprPtr replaceInputs(
     const core::ExprPtr& expr,
     const ExprMap<core::ExprPtr>& keyReplacements,
@@ -305,6 +310,29 @@ void findAggregates(
       VELOX_UNSUPPORTED(
           "Unsupported expression kind in findAggregates: {}",
           expr->toString());
+  }
+}
+
+// Finds aggregates in an ExprApi. For window functions, the top-level call is
+// a window function (not an aggregate), so recurse into its arguments and
+// WindowSpec keys to find the actual aggregates.
+void findAggregates(
+    const lp::ExprApi& expr,
+    const AggregateOptionsMap& optionsMap,
+    std::vector<AggregateWithOptions>& aggregates,
+    AggregateExprSet& aggregateSet) {
+  if (const auto& windowSpec = expr.windowSpec()) {
+    for (const auto& input : expr.expr()->inputs()) {
+      findAggregates(input, optionsMap, aggregates, aggregateSet);
+    }
+    for (const auto& key : windowSpec->partitionKeys()) {
+      findAggregates(key.expr(), optionsMap, aggregates, aggregateSet);
+    }
+    for (const auto& key : windowSpec->orderByKeys()) {
+      findAggregates(key.expr.expr(), optionsMap, aggregates, aggregateSet);
+    }
+  } else {
+    findAggregates(expr.expr(), optionsMap, aggregates, aggregateSet);
   }
 }
 
@@ -619,8 +647,7 @@ void GroupByPlanner::collectAggregates(
           singleColumn->expression(), &aggregateOptionsMap_);
     }();
 
-    findAggregates(
-        expr.expr(), aggregateOptionsMap_, aggregates_, aggregateSet);
+    findAggregates(expr, aggregateOptionsMap_, aggregates_, aggregateSet);
 
     if (!aggregates_.empty() &&
         aggregates_.back().expr.expr().get() == expr.expr().get()) {
@@ -702,10 +729,17 @@ void GroupByPlanner::normalizeQualifiedColumns() {
   // the projection's copy of an aggregate expression.
   NormalizeCache cache;
 
+  auto normalizeIExpr = [&](const core::ExprPtr& iexpr) {
+    return axiom::sql::presto::normalizeQualifiedColumns(
+        iexpr, *builder_, cache);
+  };
+
   auto normalize = [&](lp::ExprApi& expr) {
-    auto normalized = axiom::sql::presto::normalizeQualifiedColumns(
-        expr.expr(), *builder_, cache);
-    if (normalized.get() != expr.expr().get()) {
+    auto normalized = normalizeIExpr(expr.expr());
+    if (const auto& windowSpec = expr.windowSpec()) {
+      expr = lp::ExprApi(std::move(normalized), expr.name())
+                 .over(rewriteWindowSpec(*windowSpec, normalizeIExpr));
+    } else if (normalized.get() != expr.expr().get()) {
       expr = lp::ExprApi(std::move(normalized), expr.name());
     }
   };
