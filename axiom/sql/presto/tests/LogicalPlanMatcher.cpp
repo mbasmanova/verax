@@ -48,7 +48,13 @@ std::string toExprString(const velox::core::IExpr& expr) {
       return expr.as<velox::core::FieldAccessExpr>()->name();
     case IExpr::Kind::kCall: {
       auto* call = expr.as<velox::core::CallExpr>();
-      std::string result = call->name() + "(";
+      // DuckDB produces lowercase "and"/"or", but ExprResolver converts
+      // these to SpecialFormExprs which print as uppercase "AND"/"OR".
+      auto name = call->name();
+      if (name == "and" || name == "or") {
+        std::transform(name.begin(), name.end(), name.begin(), ::toupper);
+      }
+      std::string result = name + "(";
       for (size_t i = 0; i < call->inputs().size(); ++i) {
         if (i > 0) {
           result += ", ";

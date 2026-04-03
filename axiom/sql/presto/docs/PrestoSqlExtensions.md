@@ -301,6 +301,29 @@ SELECT cast(COLUMNS('x_.*') + COLUMNS('y_.*') AS varchar) FROM t
 
 Raises an error if the patterns match different numbers of columns.
 
+### COLUMNS in GROUP BY, ORDER BY, and WHERE
+
+`COLUMNS('regex')` can appear in GROUP BY, ORDER BY, and WHERE clauses. The
+expansion semantics match the clause:
+
+- **GROUP BY**: each matched column becomes a separate grouping key.
+- **ORDER BY**: each matched column becomes a separate sort key with the same
+  ordering direction.
+- **WHERE**: each matched column produces a copy of the enclosing expression,
+  and the copies are combined with AND.
+
+```sql
+-- Equivalent to: GROUP BY n_nationkey, n_regionkey
+SELECT n_nationkey, n_regionkey, count(*) FROM nation
+GROUP BY COLUMNS('.*key')
+
+-- Equivalent to: ORDER BY n_nationkey DESC, n_regionkey DESC
+SELECT * FROM nation ORDER BY COLUMNS('.*key') DESC
+
+-- Equivalent to: WHERE n_nationkey > 0 AND n_regionkey > 0
+SELECT * FROM nation WHERE COLUMNS('.*key') > 0
+```
+
 ### Column Name Matching
 
 EXCLUDE, REPLACE, and COLUMNS operate on user-defined column names only.

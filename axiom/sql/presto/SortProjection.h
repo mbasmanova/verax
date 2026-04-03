@@ -60,6 +60,16 @@ class SortProjection {
       const std::vector<std::shared_ptr<SortItem>>& sortItems,
       const std::vector<size_t>& sortKeyOrdinals,
       size_t numOutputColumns);
+
+  /// Overload that takes explicit ordering vectors instead of AST sort items.
+  /// Supports COLUMNS expansion where the number of sort keys may differ from
+  /// the number of original sort items.
+  static void sortAndTrim(
+      facebook::axiom::logical_plan::PlanBuilder& builder,
+      const std::vector<size_t>& sortKeyOrdinals,
+      const std::vector<bool>& ascending,
+      const std::vector<bool>& nullsFirst,
+      size_t numOutputColumns);
 };
 
 } // namespace axiom::sql::presto

@@ -16,12 +16,12 @@
 
 #include "axiom/sql/presto/PrestoParser.h"
 #include <folly/ScopeGuard.h>
-#include <re2/re2.h>
 #include <cctype>
 #include <unordered_set>
 #include "axiom/common/CatalogSchemaTableName.h"
 #include "axiom/connectors/ConnectorMetadata.h"
 #include "axiom/logical_plan/PlanBuilder.h"
+#include "axiom/sql/presto/ColumnsExpansion.h"
 #include "axiom/sql/presto/ExpressionPlanner.h"
 #include "axiom/sql/presto/GroupByPlanner.h"
 #include "axiom/sql/presto/PrestoParseError.h"
@@ -251,6 +251,7 @@ void findExprPtrs(
   }
 }
 
+// Recursively replaces expression tree nodes per the replacement map.
 core::ExprPtr replaceInputs(
     const core::ExprPtr& expr,
     const std::unordered_map<const core::IExpr*, core::ExprPtr>& replacements) {
@@ -270,53 +271,6 @@ core::ExprPtr replaceInputs(
   }
 
   return changed ? expr->replaceInputs(std::move(newInputs)) : expr;
-}
-
-// Searches an expression tree for COLUMNS('regex') pseudo-function calls.
-// Appends each found call (node pointer + regex pattern) to 'results'.
-void findColumnsCalls(
-    const core::ExprPtr& expr,
-    std::vector<std::pair<const core::IExpr*, std::string>>& results) {
-  if (expr->is(core::IExpr::Kind::kCall)) {
-    auto* callExpr = expr->as<core::CallExpr>();
-    if (callExpr->name() == "COLUMNS") {
-      // The grammar guarantees COLUMNS takes a single string literal argument.
-      VELOX_CHECK_EQ(callExpr->inputs().size(), 1);
-
-      const auto& arg = callExpr->inputAt(0);
-      VELOX_CHECK(arg->is(core::IExpr::Kind::kConstant));
-
-      auto* constExpr = arg->as<core::ConstantExpr>();
-      VELOX_CHECK_EQ(constExpr->type()->kind(), TypeKind::VARCHAR);
-      VELOX_CHECK(!constExpr->value().isNull());
-
-      results.emplace_back(expr.get(), constExpr->value().value<std::string>());
-      return;
-    }
-  }
-
-  for (const auto& input : expr->inputs()) {
-    findColumnsCalls(input, results);
-  }
-}
-
-// Filters output columns by regex pattern. Returns matching columns.
-std::vector<lp::PlanBuilder::OutputColumnName> matchColumnsByRegex(
-    const lp::PlanBuilder& builder,
-    const std::string& pattern,
-    const std::optional<std::string>& prefix = std::nullopt) {
-  re2::RE2 regex(pattern);
-  VELOX_USER_CHECK(regex.ok(), "Invalid regex pattern: {}", regex.error());
-
-  auto columns =
-      builder.findOrAssignOutputNames(/*includeHiddenColumns=*/false, prefix);
-  std::erase_if(columns, [&](const auto& column) {
-    return !re2::RE2::FullMatch(column.name, regex);
-  });
-  VELOX_USER_CHECK(
-      !columns.empty(), "COLUMNS('{}') matched no columns", pattern);
-
-  return columns;
 }
 
 class RelationPlanner : public AstVisitor {
@@ -358,9 +312,23 @@ class RelationPlanner : public AstVisitor {
 
  private:
   void addFilter(const ExpressionPtr& filter) {
-    if (filter != nullptr) {
-      builder_->filter(toExpr(filter));
+    if (filter == nullptr) {
+      return;
     }
+
+    auto expr = toExpr(filter);
+    auto expanded = ColumnsExpansion::expand(expr, *builder_);
+    if (expanded.empty()) {
+      builder_->filter(expr);
+      return;
+    }
+
+    // Combine expanded expressions with AND.
+    auto combined = expanded[0].expr();
+    for (size_t i = 1; i < expanded.size(); ++i) {
+      combined = lp::And(std::move(combined), expanded[i].expr());
+    }
+    builder_->filter(lp::ExprApi(combined));
   }
 
   static lp::JoinType toJoinType(Join::Type type) {
@@ -703,65 +671,22 @@ class RelationPlanner : public AstVisitor {
   }
 
   // Expands COLUMNS('regex') pseudo-function calls found inside an
-  // expression. For each matched column, clones the expression tree and
-  // replaces COLUMNS(...) with a column reference. If alias is provided,
-  // applies it to all expanded columns (sugar for SELECT a AS x, b AS x).
-  //
-  // When multiple COLUMNS() calls appear in the same expression, they are
-  // expanded pairwise (zip): each call must match the same number of
-  // columns, and the i-th output expression replaces every COLUMNS() call
-  // with the i-th matched column from that call's pattern.
-  //
-  // Returns true if expansion happened.
+  // expression. Delegates to ColumnsExpansion::expand() for the core expansion,
+  // then applies the alias. Returns true if expansion happened.
   bool tryExpandColumnsInExpression(
       const lp::ExprApi& expr,
       const std::optional<std::string>& alias,
       std::vector<lp::ExprApi>& exprs) {
-    std::vector<std::pair<const core::IExpr*, std::string>> columnsCalls;
-    findColumnsCalls(expr.expr(), columnsCalls);
-    if (columnsCalls.empty()) {
+    auto expanded = ColumnsExpansion::expand(expr, *builder_);
+    if (expanded.empty()) {
       return false;
     }
 
-    // Resolve matched columns for each COLUMNS() call.
-    std::vector<std::vector<lp::PlanBuilder::OutputColumnName>>
-        matchedColumnsPerCall;
-    matchedColumnsPerCall.reserve(columnsCalls.size());
-    for (const auto& [callNode, pattern] : columnsCalls) {
-      matchedColumnsPerCall.push_back(matchColumnsByRegex(*builder_, pattern));
-    }
-
-    // All COLUMNS() calls must match the same number of columns.
-    const size_t numColumns = matchedColumnsPerCall[0].size();
-    for (size_t i = 1; i < matchedColumnsPerCall.size(); ++i) {
-      VELOX_USER_CHECK_EQ(
-          matchedColumnsPerCall[i].size(),
-          numColumns,
-          "All COLUMNS() calls in a single expression must match "
-          "the same number of columns. COLUMNS('{}') matched {} columns, "
-          "but COLUMNS('{}') matched {} columns",
-          columnsCalls[0].second,
-          numColumns,
-          columnsCalls[i].second,
-          matchedColumnsPerCall[i].size());
-    }
-
-    // Expand pairwise: for each column index, replace all COLUMNS() calls
-    // simultaneously.
-    for (size_t i = 0; i < numColumns; ++i) {
-      std::unordered_map<const core::IExpr*, core::ExprPtr> replacements;
-      for (size_t callIdx = 0; callIdx < columnsCalls.size(); ++callIdx) {
-        replacements.emplace(
-            columnsCalls[callIdx].first,
-            matchedColumnsPerCall[callIdx][i].toCol().expr());
-      }
-      auto expandedExpr = replaceInputs(expr.expr(), replacements);
+    for (auto& expandedExpr : expanded) {
       if (alias.has_value()) {
-        exprs.push_back(lp::ExprApi(expandedExpr, alias.value()));
+        exprs.push_back(expandedExpr.as(alias.value()));
       } else {
-        // No explicit alias — let the plan builder auto-assign a name,
-        // same as if the user wrote out the expression manually.
-        exprs.push_back(lp::ExprApi(expandedExpr));
+        exprs.push_back(std::move(expandedExpr));
       }
     }
 
@@ -915,8 +840,8 @@ class RelationPlanner : public AstVisitor {
           prefix = canonicalizeName(selectColumns->prefix()->suffix());
         }
 
-        auto selectedColumns =
-            matchColumnsByRegex(*builder_, selectColumns->pattern(), prefix);
+        auto selectedColumns = ColumnsExpansion::matchByRegex(
+            *builder_, selectColumns->pattern(), prefix);
 
         applyExcludeReplaceAndBuild(
             selectedColumns,
@@ -978,15 +903,23 @@ class RelationPlanner : public AstVisitor {
 
   // Build sort key expressions. Ordinals are resolved to the corresponding
   // SELECT projection expression so widenProjectionsForSort can match them
-  // by expression identity.
-  std::pair<std::vector<lp::ExprApi>, std::vector<size_t>> buildSortKeyExprs(
+  // by expression identity. COLUMNS() calls are expanded to multiple sort
+  // keys. Returns the expanded sort key expressions, pre-resolved ordinals,
+  // and sort ordering info (since expansion may produce more keys than
+  // original sort items).
+  struct SortKeyExpansion {
+    std::vector<lp::ExprApi> sortKeyExprs;
+    std::vector<size_t> preResolved;
+    std::vector<bool> ascending;
+    std::vector<bool> nullsFirst;
+  };
+
+  SortKeyExpansion buildSortKeyExprs(
       const OrderByPtr& orderBy,
       const std::vector<lp::ExprApi>& projections) {
     const size_t numSelectItems = projections.size();
-    std::vector<lp::ExprApi> sortKeyExprs;
-    std::vector<size_t> preResolved(orderBy->sortItems().size(), 0);
-    for (size_t i = 0; i < orderBy->sortItems().size(); ++i) {
-      const auto& item = orderBy->sortItems()[i];
+    SortKeyExpansion result;
+    for (const auto& item : orderBy->sortItems()) {
       const auto& sortExpr = item->sortKey();
       if (sortExpr->is(NodeType::kLongLiteral)) {
         const auto n = sortExpr->as<LongLiteral>()->value();
@@ -997,13 +930,29 @@ class RelationPlanner : public AstVisitor {
             numSelectItems,
             "ORDER BY position is not in the select list: {}",
             n);
-        preResolved[i] = n;
-        sortKeyExprs.emplace_back(projections.at(n - 1));
+        result.preResolved.push_back(n);
+        result.sortKeyExprs.emplace_back(projections.at(n - 1));
+        result.ascending.push_back(item->isAscending());
+        result.nullsFirst.push_back(item->isNullsFirst());
       } else {
-        sortKeyExprs.emplace_back(toExpr(sortExpr));
+        auto expr = toExpr(sortExpr);
+        auto expanded = ColumnsExpansion::expand(expr, *builder_);
+        if (!expanded.empty()) {
+          for (auto& expandedExpr : expanded) {
+            result.preResolved.push_back(0);
+            result.sortKeyExprs.push_back(std::move(expandedExpr));
+            result.ascending.push_back(item->isAscending());
+            result.nullsFirst.push_back(item->isNullsFirst());
+          }
+        } else {
+          result.preResolved.push_back(0);
+          result.sortKeyExprs.emplace_back(std::move(expr));
+          result.ascending.push_back(item->isAscending());
+          result.nullsFirst.push_back(item->isNullsFirst());
+        }
       }
     }
-    return {sortKeyExprs, preResolved};
+    return result;
   }
 
   // Adds project and sort nodes. In order to provide sort with schema-level
@@ -1027,14 +976,17 @@ class RelationPlanner : public AstVisitor {
     }
 
     const size_t numSelectItems = projections->size();
-    auto [sortKeyExprs, preResolved] =
-        buildSortKeyExprs(orderBy, projections.value());
+    auto expansion = buildSortKeyExprs(orderBy, projections.value());
 
     auto ordinals = SortProjection::widenProjections(
-        sortKeyExprs, preResolved, projections.value());
+        expansion.sortKeyExprs, expansion.preResolved, projections.value());
     builder_->project(projections.value());
     SortProjection::sortAndTrim(
-        *builder_, orderBy->sortItems(), ordinals, numSelectItems);
+        *builder_,
+        ordinals,
+        expansion.ascending,
+        expansion.nullsFirst,
+        numSelectItems);
   }
 
   lp::ExprApi toSortingKey(const ExpressionPtr& expr) {
@@ -1065,7 +1017,18 @@ class RelationPlanner : public AstVisitor {
     const auto& sortItems = orderBy->sortItems();
     for (const auto& item : sortItems) {
       auto expr = toSortingKey(item->sortKey());
-      keys.emplace_back(expr, item->isAscending(), item->isNullsFirst());
+
+      // Expand COLUMNS() calls to multiple sort keys with the same
+      // ordering direction.
+      auto expanded = ColumnsExpansion::expand(expr, *builder_);
+      if (!expanded.empty()) {
+        for (auto& expandedExpr : expanded) {
+          keys.emplace_back(
+              expandedExpr, item->isAscending(), item->isNullsFirst());
+        }
+      } else {
+        keys.emplace_back(expr, item->isAscending(), item->isNullsFirst());
+      }
     }
 
     builder_->sort(keys);

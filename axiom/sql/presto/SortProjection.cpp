@@ -138,16 +138,38 @@ void SortProjection::sortAndTrim(
     const std::vector<size_t>& sortKeyOrdinals,
     size_t numOutputColumns) {
   VELOX_CHECK(!sortItems.empty());
+  VELOX_CHECK_EQ(sortItems.size(), sortKeyOrdinals.size());
+
+  std::vector<bool> ascending;
+  std::vector<bool> nullsFirst;
+  ascending.reserve(sortItems.size());
+  nullsFirst.reserve(sortItems.size());
+  for (const auto& item : sortItems) {
+    ascending.push_back(item->isAscending());
+    nullsFirst.push_back(item->isNullsFirst());
+  }
+
+  sortAndTrim(
+      builder, sortKeyOrdinals, ascending, nullsFirst, numOutputColumns);
+}
+
+void SortProjection::sortAndTrim(
+    lp::PlanBuilder& builder,
+    const std::vector<size_t>& sortKeyOrdinals,
+    const std::vector<bool>& ascending,
+    const std::vector<bool>& nullsFirst,
+    size_t numOutputColumns) {
+  VELOX_CHECK(!sortKeyOrdinals.empty());
+  VELOX_CHECK_EQ(ascending.size(), sortKeyOrdinals.size());
+  VELOX_CHECK_EQ(nullsFirst.size(), sortKeyOrdinals.size());
 
   // Resolve sort key ordinals to output column names.
   std::vector<lp::SortKey> resolvedKeys;
-  resolvedKeys.reserve(sortItems.size());
-  for (size_t i = 0; i < sortItems.size(); ++i) {
+  resolvedKeys.reserve(sortKeyOrdinals.size());
+  for (size_t i = 0; i < sortKeyOrdinals.size(); ++i) {
     const auto column =
         builder.findOrAssignOutputNameAt(sortKeyOrdinals[i] - 1);
-    const auto& item = sortItems[i];
-    resolvedKeys.emplace_back(
-        column.toCol(), item->isAscending(), item->isNullsFirst());
+    resolvedKeys.emplace_back(column.toCol(), ascending[i], nullsFirst[i]);
   }
 
   builder.sort(resolvedKeys);
