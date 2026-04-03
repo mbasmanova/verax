@@ -346,8 +346,19 @@ TEST_F(PrestoParserTest, selectStar) {
 TEST_F(PrestoParserTest, selectStarDuplicateColumns) {
   auto matchJoin = [&]() {
     return matchScan("nation")
-        .join(matchScan("nation").build())
-        .filter()
+        .join(
+            matchScan("nation").build(),
+            {
+                "a_nk",
+                "a_name",
+                "a_rk",
+                "a_comment",
+                "b_nk",
+                "b_name",
+                "b_rk",
+                "b_comment",
+            })
+        .filter("a_nk = b_nk")
         .project();
   };
 

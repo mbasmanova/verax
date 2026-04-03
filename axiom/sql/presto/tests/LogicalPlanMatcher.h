@@ -136,6 +136,11 @@ class LogicalPlanMatcherBuilder {
   /// Matches a FilterNode.
   LogicalPlanMatcherBuilder& filter(OnMatchCallback onMatch = nullptr);
 
+  /// Matches a FilterNode with the specified expression. The expected
+  /// expression is parsed with DuckDB and compared against the filter
+  /// expression's toString(). Supports symbol rewriting.
+  LogicalPlanMatcherBuilder& filter(const std::string& expression);
+
   /// Matches a ProjectNode.
   LogicalPlanMatcherBuilder& project(OnMatchCallback onMatch = nullptr);
 
@@ -166,6 +171,14 @@ class LogicalPlanMatcherBuilder {
   LogicalPlanMatcherBuilder& join(
       const std::shared_ptr<LogicalPlanMatcher>& rightMatcher,
       OnMatchCallback onMatch = nullptr);
+
+  /// Matches a JoinNode and captures aliases for all output columns.
+  /// 'outputAliases' must have one entry per output column. Each alias is
+  /// mapped to the actual column name at that position, so subsequent matchers
+  /// can reference these aliases in expressions.
+  LogicalPlanMatcherBuilder& join(
+      const std::shared_ptr<LogicalPlanMatcher>& rightMatcher,
+      const std::vector<std::string>& outputAliases);
 
   /// Matches a SetNode with the specified operation and right-side matcher.
   LogicalPlanMatcherBuilder& setOperation(
