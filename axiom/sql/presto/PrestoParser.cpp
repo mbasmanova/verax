@@ -660,9 +660,6 @@ class RelationPlanner : public AstVisitor {
       const std::unordered_map<const core::IExpr*, lp::WindowSpec>&
           windowOptions,
       const std::vector<lp::ExprApi>& exprs) {
-    auto inputColumns =
-        builder_->findOrAssignOutputNames(/*includeHiddenColumns=*/false);
-
     // Collect ExprPtrs for the window calls from the expression trees.
     // 'windowOrder' captures matches in left-to-right traversal order
     // for deterministic plan generation.
@@ -672,32 +669,36 @@ class RelationPlanner : public AstVisitor {
       findExprPtrs(expr.expr(), windowOptions, windowExprPtrs, windowOrder);
     }
 
-    std::vector<lp::ExprApi> windowProjection;
-    windowProjection.reserve(inputColumns.size() + windowOrder.size());
-    for (const auto& column : inputColumns) {
-      windowProjection.push_back(column.toCol());
-    }
-
     // TODO: Deduplicate semantically equivalent window function calls.
     // Currently, each occurrence of the same window expression (e.g.
     // sum(b) OVER (PARTITION BY a)) gets a separate entry in windowOptions
     // and is computed redundantly.
+    std::vector<lp::ExprApi> windowExprs;
+    windowExprs.reserve(windowOrder.size());
     for (const auto* exprPtr : windowOrder) {
-      windowProjection.push_back(
+      windowExprs.push_back(
           lp::ExprApi(windowExprPtrs.at(exprPtr))
               .over(windowOptions.at(exprPtr)));
     }
 
-    builder_->project(windowProjection);
+    // Use with() instead of project() to preserve name mappings (including
+    // table aliases) so that column references built before the window
+    // projection (e.g., from star expansion with qualified names) remain
+    // resolvable.
+    builder_->with(windowExprs);
 
     auto outputNames =
         builder_->findOrAssignOutputNames(/*includeHiddenColumns=*/false);
 
+    // Map window call nodes to their output column references. Window
+    // columns are appended after the input columns.
+    auto numInputColumns = outputNames.size() - windowOrder.size();
     std::unordered_map<const core::IExpr*, core::ExprPtr> replacements;
     for (size_t i = 0; i < windowOrder.size(); ++i) {
-      const auto& column = outputNames.at(inputColumns.size() + i);
+      const auto& column = outputNames.at(numInputColumns + i);
       replacements.emplace(windowOrder[i], column.toCol().expr());
     }
+
     return replacements;
   }
 
