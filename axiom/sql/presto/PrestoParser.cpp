@@ -945,11 +945,10 @@ class RelationPlanner : public AstVisitor {
     }
 
     const size_t numSelectItems = projections->size();
-    auto [sortKeyExprs, preResolved] =
-        buildSortKeyExprs(orderBy, projections.value());
+    auto expansion = buildSortKeyExprs(orderBy, projections.value());
 
     auto ordinals = SortProjection::widenProjections(
-        sortKeyExprs, preResolved, projections.value());
+        expansion.sortKeyExprs, expansion.preResolved, projections.value());
 
     VELOX_USER_CHECK_EQ(
         projections->size(),
@@ -959,7 +958,11 @@ class RelationPlanner : public AstVisitor {
     builder_->project(projections.value());
     builder_->distinct();
     SortProjection::sortAndTrim(
-        *builder_, orderBy->sortItems(), ordinals, numSelectItems);
+        *builder_,
+        ordinals,
+        expansion.ascending,
+        expansion.nullsFirst,
+        numSelectItems);
   }
 
   lp::ExprApi toSortingKey(const ExpressionPtr& expr) {
