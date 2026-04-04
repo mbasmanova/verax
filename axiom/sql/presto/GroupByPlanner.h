@@ -109,6 +109,13 @@ class GroupByPlanner {
   // Must outlive aggregates_ since aggregates_ holds pointers into this map.
   AggregateOptionsMap aggregateOptionsMap_;
 
+  // Maps window function IExpr* to their WindowSpec. Populated by
+  // collectAggregates() when window functions are nested inside scalar
+  // expressions (e.g. sum(a) / sum(sum(a)) OVER ()). Used after aggregate
+  // rewriting to extract window functions into a separate plan node.
+  std::unordered_map<const facebook::velox::core::IExpr*, lp::WindowSpec>
+      windowOptionsMap_;
+
   std::optional<lp::ExprApi> filter_;
   std::vector<lp::ExprApi> sortingKeyExprs_;
   std::vector<std::string> outputNames_;

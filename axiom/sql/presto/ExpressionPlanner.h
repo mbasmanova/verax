@@ -98,6 +98,12 @@ class ExpressionPlanner {
     columnNames_ = nullptr;
   }
 
+  /// Returns true if any select item has a window function nested inside a
+  /// non-window expression (e.g. sum(a) / sum(sum(a)) OVER ()). Top-level
+  /// window functions don't need extraction and are excluded.
+  static bool hasNestedWindowFunction(
+      const std::vector<SelectItemPtr>& selectItems);
+
  private:
   // Converts a Window AST node into a WindowSpec.
   lp::WindowSpec convertWindow(
