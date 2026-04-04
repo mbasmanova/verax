@@ -689,6 +689,31 @@ TEST_F(AggregationParserTest, groupByWithWindowFunction) {
                "row_number() OVER (PARTITION BY b ORDER BY total)"})
           .output());
 
+  // Aggregate in window ORDER BY that is NOT in the SELECT list.
+  testSelect(
+      "SELECT b, row_number() OVER (ORDER BY count(*) DESC) AS rank FROM t GROUP BY b",
+      matchScan("t")
+          .aggregate({"b"}, {"count()"})
+          .project({"b", "row_number() OVER (ORDER BY count DESC)"})
+          .output({"b", "rank"}));
+
+  // Same as above but with PARTITION BY.
+  testSelect(
+      "SELECT b, row_number() OVER (PARTITION BY b ORDER BY count(*) DESC) AS rank FROM t GROUP BY b",
+      matchScan("t")
+          .aggregate({"b"}, {"count()"})
+          .project(
+              {"b", "row_number() OVER (PARTITION BY b ORDER BY count DESC)"})
+          .output({"b", "rank"}));
+
+  // Aggregate inside window function argument, not in SELECT list.
+  testSelect(
+      "SELECT b, sum(count(a)) OVER () AS total FROM t GROUP BY b",
+      matchScan("t")
+          .aggregate({"b"}, {"count(a)"})
+          .project({"b", "sum(count) OVER ()"})
+          .output({"b", "total"}));
+
   // Window function call with the same signature as a plain aggregate.
   testSelect(
       "SELECT sum(a) OVER (ORDER BY b), sum(a) FROM t GROUP BY a, b",
