@@ -928,6 +928,40 @@ TEST_P(SubfieldTest, blackbox) {
   ASSERT_NO_THROW(toSingleNodePlan(logicalPlan));
 }
 
+// A struct column crosses a DT boundary (the inner aggregation triggers
+// finalizeDt). The outer query accesses only subfield .x but the inner
+// DT outputs the full struct — subfield pruning does not propagate
+// across the boundary.
+TEST_P(SubfieldTest, subfieldAcrossDtBoundary) {
+  testConnector_->addTable("t", ROW({"a", "b"}, {BIGINT(), BIGINT()}));
+
+  auto logicalPlan = parseSelect(
+      "WITH s AS ("
+      "  SELECT ROW(a AS x, b AS y) AS a, count(*) AS b"
+      "  FROM t"
+      "  GROUP BY 1"
+      ") "
+      "SELECT a.x, sum(b) FROM s GROUP BY 1",
+      kTestConnectorId);
+
+  auto plan = toSingleNodePlan(logicalPlan);
+  ASSERT_NE(nullptr, plan);
+
+  // The inner aggregation groups by the full struct ROW<x,y>. The outer
+  // aggregation groups by a.x and sums b. Two projects between the
+  // aggregations materialize the full struct and extract .x. With subfield
+  // pruning propagation, only .x would cross the boundary.
+  auto matcher = core::PlanMatcherBuilder()
+                     .tableScan()
+                     .project({"row_constructor(a, b) as r"})
+                     .singleAggregation({"r"}, {"count(*) as cnt"})
+                     .project()
+                     .project()
+                     .singleAggregation()
+                     .build();
+  AXIOM_ASSERT_PLAN(plan, matcher);
+}
+
 VELOX_INSTANTIATE_TEST_SUITE_P(
     SubfieldTests,
     SubfieldTest,
