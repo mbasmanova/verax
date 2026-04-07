@@ -455,21 +455,6 @@ void ToGraph::getExprForField(
     const lp::LogicalPlanNode*& context) {
   VELOX_CHECK_NOT_NULL(context);
 
-  auto lookupName = [&](const std::string& name) -> ExprCP {
-    auto it = renames_.find(name);
-    if (it != renames_.end()) {
-      return it->second;
-    }
-
-    if (allowCorrelations_ && correlations_ != nullptr) {
-      if (auto it = correlations_->find(name); it != correlations_->end()) {
-        return it->second;
-      }
-    }
-
-    return nullptr;
-  };
-
   while (context) {
     const auto& name = field->name();
 
@@ -493,23 +478,6 @@ void ToGraph::getExprForField(
       resultColumn = it->second->as<Column>();
       resultExpr = nullptr;
       return;
-    }
-
-    // This is a band-aid. Revisit the logic in this method.
-    //
-    // The problem with current logic is that translated expression may belong
-    // to a derived table that's not directly referenced from the currentDt_.
-    // When this happens, the downstream processing breaks because the core
-    // invariant is broken: all expressions in a dericed table must reference
-    // relations from DerivedTable::tables.
-    {
-      if (auto expr = lookupName(name)) {
-        if (expr != nullptr && expr->is(PlanType::kColumnExpr)) {
-          resultColumn = expr->as<Column>();
-          resultExpr = nullptr;
-          return;
-        }
-      }
     }
 
     const auto& sources = context->inputs();
@@ -555,6 +523,27 @@ void ToGraph::getExprForField(
   VELOX_FAIL();
 }
 
+namespace {
+
+/// Verify that getExprForField did not cross a DT boundary.
+void checkDtBoundary(
+    ColumnCP column,
+    std::string_view name,
+    const DerivedTable* currentDt) {
+  if (column) {
+    auto* relation = column->relation();
+    VELOX_CHECK(
+        relation == currentDt || currentDt->tableSet.contains(relation),
+        "getExprForField crossed a DT boundary for '{}': relation {} "
+        "is not in currentDt {}",
+        name,
+        relation->toString(),
+        currentDt->toString());
+  }
+}
+
+} // namespace
+
 std::optional<ExprCP> ToGraph::translateSubfield(const lp::ExprPtr& inputExpr) {
   std::vector<Step> steps;
   const lp::LogicalPlanNode* source = nullptr;
@@ -580,20 +569,35 @@ std::optional<ExprCP> ToGraph::translateSubfield(const lp::ExprPtr& inputExpr) {
           column = it->second;
           expr = nullptr;
         } else {
-          if (source == nullptr) {
-            const auto& name = field->name();
-
-            for (const auto* exprSource : exprSources_) {
-              if (exprSource->outputType()->getChildIdxIfExists(name)) {
-                source = exprSource;
-                break;
+          auto* resolved = translateColumn(field->name());
+          if (resolved && resolved->is(PlanType::kColumnExpr)) {
+            column = resolved->as<Column>();
+            expr = nullptr;
+          } else {
+            // nullptr (exploded function like row_constructor or
+            // make_row_from_map) or non-column expression (subfield-
+            // decomposable function like genie). Fall back to
+            // getExprForField to find the defining LP expression for
+            // skyline lookup. This is safe because addDtColumn
+            // dereferences the renames_ entry, so nullptr/non-Column
+            // entries cannot survive finalizeDt — any name that crossed
+            // a DT boundary has a Column in renames_.
+            if (source == nullptr) {
+              for (const auto* exprSource : exprSources_) {
+                if (exprSource->outputType()->getChildIdxIfExists(
+                        field->name())) {
+                  source = exprSource;
+                  break;
+                }
               }
             }
-          }
-          VELOX_CHECK_NOT_NULL(source);
-          getExprForField(field, expr, column, source);
-          if (expr) {
-            continue;
+            VELOX_CHECK_NOT_NULL(source);
+            getExprForField(field, expr, column, source);
+            VELOX_CHECK(column || expr);
+            checkDtBoundary(column, field->name(), currentDt_);
+            if (expr) {
+              continue;
+            }
           }
         }
       }
