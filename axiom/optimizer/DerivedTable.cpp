@@ -1092,10 +1092,21 @@ replaceInputs(AggregationPlanCP aggregation, const T& source, const U& target) {
 void DerivedTable::replaceJoinOutputs(
     const ColumnVector& source,
     const ExprVector& target) {
-  replaceInputs(exprs, source, target);
   replaceInputs(conjuncts, source, target);
-  replaceInputs(orderKeys, source, target);
   aggregation = replaceInputs(aggregation, source, target);
+
+  // Post-aggregation fields (exprs, orderKeys) reference aggregation output
+  // columns, not the join output columns being replaced. When a grouping key
+  // is a simple Column, translateAggregation reuses that Column object as the
+  // aggregation output — so the same object appears in both 'source' (join
+  // output) and aggregation->columns(). Replacing it in post-aggregation
+  // fields would substitute the aggregation output reference with the raw
+  // pre-aggregation expression, which is invalid above the aggregation
+  // boundary.
+  if (!aggregation) {
+    replaceInputs(exprs, source, target);
+    replaceInputs(orderKeys, source, target);
+  }
 }
 
 bool DerivedTable::isWrapOnly() const {
