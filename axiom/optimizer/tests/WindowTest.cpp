@@ -564,5 +564,33 @@ TEST_F(WindowTest, windowOutputAsGroupByKey) {
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
+// Dependent window functions must be split into separate Window nodes.
+// When an outer window function's input expression references an inner window
+// function's output, they cannot share a Window node — the inner output isn't
+// available until its Window runs.
+TEST_F(WindowTest, dependentWindowFunctions) {
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
+
+  auto query =
+      "SELECT sum(n) OVER (ORDER BY a) "
+      "FROM ("
+      "    SELECT a, lag(b) OVER (ORDER BY a) + a AS n FROM t"
+      ")";
+
+  auto plan = toSingleNodePlan(query);
+
+  // Two separate Window nodes: lag(b) must complete before the expression
+  // lag(b) + a can be computed, so they cannot share a Window node with
+  // sum(lag(b) + a).
+  auto matcher = matchScan("t")
+                     .window({"lag(b) OVER (ORDER BY a) as w"})
+                     .project({"a", "w", "a + w as n"})
+                     .window({"sum(n) OVER (ORDER BY a)"})
+                     .project()
+                     .build();
+
+  AXIOM_ASSERT_PLAN(plan, matcher);
+}
+
 } // namespace
 } // namespace facebook::axiom::optimizer

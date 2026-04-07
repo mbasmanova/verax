@@ -1721,16 +1721,27 @@ struct WindowGroup {
   }
 
   // Tries to add a window function to this group. Returns true if the function
-  // has matching specification and was added.
+  // has matching specification, no dependency on existing output columns, and
+  // was added. Window functions whose arguments reference another function's
+  // output cannot share a Window node — the output isn't available until the
+  // Window runs.
   bool tryAdd(WindowFunctionCP windowFunc, ColumnCP outputColumn) {
-    if (sameKeys(partitionKeys, windowFunc->partitionKeys()) &&
-        sameKeys(orderKeys, windowFunc->orderKeys()) &&
-        sameOrderTypes(orderTypes, windowFunc->orderTypes())) {
-      functions.push_back(windowFunc);
-      outputColumns.push_back(outputColumn);
-      return true;
+    if (!sameKeys(partitionKeys, windowFunc->partitionKeys()) ||
+        !sameKeys(orderKeys, windowFunc->orderKeys()) ||
+        !sameOrderTypes(orderTypes, windowFunc->orderTypes())) {
+      return false;
     }
-    return false;
+
+    auto outputColumnSet = PlanObjectSet::fromObjects(outputColumns);
+    for (const auto* arg : windowFunc->args()) {
+      if (arg->columns().hasIntersection(outputColumnSet)) {
+        return false;
+      }
+    }
+
+    functions.push_back(windowFunc);
+    outputColumns.push_back(outputColumn);
+    return true;
   }
 
   void appendAll(const WindowGroup& other) {
