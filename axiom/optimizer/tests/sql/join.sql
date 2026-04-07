@@ -28,3 +28,31 @@ LEFT JOIN (
     CROSS JOIN UNNEST(ARRAY[1]) AS v(x)
 ) AS b ON a.a = b.a
 WHERE b.a > 0
+----
+-- Two aliases of the same source column (v AS x, v AS y) from a LEFT JOIN.
+-- Join output columns must not produce duplicates.
+SELECT x, y
+FROM (SELECT 1 AS k) AS a
+LEFT JOIN (
+    SELECT k, m, v AS x, v AS y
+    FROM (SELECT 1 AS k, 1 AS m, 1 AS v)
+) AS b ON a.k = b.k
+----
+-- Same join, with DISTINCT. The duplicate aliases must not produce duplicate
+-- grouping keys in the aggregation.
+SELECT DISTINCT b.x, b.y
+FROM (SELECT 1 AS k) AS a
+LEFT JOIN (
+    SELECT k, m, v AS x, v AS y
+    FROM (SELECT 1 AS k, 1 AS m, 1 AS v)
+) AS b ON a.k = b.k
+----
+-- Same join, with DISTINCT and WHERE that converts LEFT to INNER. The
+-- aggregation must not have duplicate grouping keys after join replacement.
+SELECT DISTINCT b.x, b.y
+FROM (SELECT 1 AS k) AS a
+LEFT JOIN (
+    SELECT k, m, v AS x, v AS y
+    FROM (SELECT 1 AS k, 1 AS m, 1 AS v)
+) AS b ON a.k = b.k
+WHERE b.m = 1
