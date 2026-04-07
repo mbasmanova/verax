@@ -1711,20 +1711,29 @@ void ToGraph::addJoinColumns(
     ColumnVector& columns,
     ExprVector& exprs) {
   const auto& names = joinSide.outputType()->names();
+  folly::F14FastMap<ExprCP, ColumnCP> seenExprs;
   for (auto channel : usedChannels(joinSide)) {
     const auto& name = names[channel];
     auto* expr = translateColumn(name);
 
-    Name alias = nullptr;
-    if (expr->isColumn()) {
-      alias = expr->as<Column>()->alias();
+    // Check if we already created a column for this expression (e.g., two
+    // aliases of the same source column: v AS x, v AS y).
+    auto [it, inserted] = seenExprs.emplace(expr, nullptr);
+    if (!inserted) {
+      renames_[name] = it->second;
+    } else {
+      Name alias = nullptr;
+      if (expr->isColumn()) {
+        alias = expr->as<Column>()->alias();
+      }
+
+      auto* column =
+          make<Column>(toName(name), currentDt_, expr->value(), alias);
+      it->second = column;
+      renames_[name] = column;
+      columns.push_back(column);
+      exprs.push_back(expr);
     }
-
-    auto* column = make<Column>(toName(name), currentDt_, expr->value(), alias);
-    renames_[name] = column;
-
-    columns.push_back(column);
-    exprs.push_back(expr);
   }
 }
 
@@ -1780,7 +1789,7 @@ lp::ExprPtr combineConjuncts(std::vector<lp::ExprPtr>&& conjuncts) {
     return nullptr;
   }
   if (conjuncts.size() == 1) {
-    return std::move(conjuncts[0]);
+    return conjuncts[0];
   }
   return std::make_shared<lp::SpecialFormExpr>(
       velox::BOOLEAN(), lp::SpecialForm::kAnd, std::move(conjuncts));
