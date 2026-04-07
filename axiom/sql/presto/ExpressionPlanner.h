@@ -58,11 +58,18 @@ class ExpressionPlanner {
   using SortingKeyResolver =
       std::function<lp::ExprApi(const ExpressionPtr& expr)>;
 
+  /// Returns true if the table qualifier should be dropped from a column
+  /// reference (e.g. t.col -> col).
+  using ShouldDropQualifier = std::function<
+      bool(const std::string& qualifier, const std::string& name)>;
+
   ExpressionPlanner(
       SubqueryPlanner subqueryPlanner,
-      SortingKeyResolver sortingKeyResolver)
+      SortingKeyResolver sortingKeyResolver,
+      ShouldDropQualifier shouldDropQualifier = nullptr)
       : subqueryPlanner_(std::move(subqueryPlanner)),
-        sortingKeyResolver_(std::move(sortingKeyResolver)) {}
+        sortingKeyResolver_(std::move(sortingKeyResolver)),
+        shouldDropQualifier_(std::move(shouldDropQualifier)) {}
 
   /// Translates an AST expression into an ExprApi. Optionally collects
   /// sideband data for aggregate and window function calls:
@@ -114,6 +121,7 @@ class ExpressionPlanner {
 
   SubqueryPlanner subqueryPlanner_;
   SortingKeyResolver sortingKeyResolver_;
+  ShouldDropQualifier shouldDropQualifier_;
 
   // Lateral column alias mappings. When non-null, Identifier nodes matching
   // a key are resolved to the corresponding expression, unless the name also

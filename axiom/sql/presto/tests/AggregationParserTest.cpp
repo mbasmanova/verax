@@ -912,5 +912,91 @@ TEST_F(AggregationParserTest, qualifiedColumnInGroupBy) {
           .output());
 }
 
+// Tests that early canonicalization of table-qualified column references
+// produces consistent expression trees across GROUP BY, SELECT, HAVING, and
+// aggregate arguments, so that mixed qualified/unqualified references to the
+// same column match structurally.
+TEST_F(AggregationParserTest, columnCanonicalization) {
+  // Qualified SELECT, unqualified HAVING.
+  testSelect(
+      "SELECT nation.n_regionkey, count(*) FROM nation "
+      "GROUP BY 1 HAVING n_regionkey > 2",
+      matchScan().aggregate({"n_regionkey"}, {"count()"}).filter().output());
+
+  // Unqualified SELECT, qualified HAVING.
+  testSelect(
+      "SELECT n_regionkey, count(*) FROM nation "
+      "GROUP BY 1 HAVING nation.n_regionkey > 2",
+      matchScan().aggregate({"n_regionkey"}, {"count()"}).filter().output());
+
+  // Qualified SELECT with table alias, unqualified HAVING.
+  testSelect(
+      "SELECT n.n_regionkey, count(*) FROM nation n "
+      "GROUP BY 1 HAVING n_regionkey > 2",
+      matchScan().aggregate({"n_regionkey"}, {"count()"}).filter().output());
+
+  // Aggregate with qualified argument in SELECT, unqualified in HAVING.
+  testSelect(
+      "SELECT n_regionkey, sum(nation.n_nationkey) FROM nation "
+      "GROUP BY 1 HAVING sum(n_nationkey) > 10",
+      matchScan()
+          .aggregate({"n_regionkey"}, {"sum(n_nationkey)"})
+          .filter()
+          .output());
+
+  // Struct field dereference must not be confused with a table-qualified
+  // column. s.x is a struct field, x is a top-level column — they differ.
+  {
+    connector_->addTable(
+        "st",
+        ROW({"x", "s"}, {INTEGER(), ROW({"x", "y"}, {VARCHAR(), DOUBLE()})}));
+    VELOX_ASSERT_THROW(
+        parseSql(
+            "SELECT s.x, count(*) FROM st "
+            "GROUP BY 1 HAVING x > 0"),
+        "HAVING clause cannot reference column: x");
+  }
+
+  // JOIN with GROUP BY: ambiguous columns must stay qualified.
+  // t(a, b) and u(a, c) share column 'a'.
+  {
+    connector_->addTable("t", ROW({"a", "b"}, BIGINT()));
+    connector_->addTable("u", ROW({"a", "c"}, BIGINT()));
+    SCOPE_EXIT {
+      connector_->dropTableIfExists("t");
+      connector_->dropTableIfExists("u");
+    };
+
+    testSelect(
+        "SELECT t.a, count(*) FROM t JOIN u ON t.b = u.c "
+        "GROUP BY t.a HAVING t.a > 0",
+        matchScan().join(matchScan().build()).aggregate().filter().output());
+
+    VELOX_ASSERT_THROW(
+        parseSql(
+            "SELECT t.a, count(*) FROM t JOIN u ON t.b = u.c "
+            "GROUP BY t.a HAVING a > 0"),
+        "HAVING clause cannot reference column: a");
+  }
+
+  // Chained LEFT JOINs with same-named columns. After two merges the
+  // unqualified name 'ds' points to c's column, not a's. Canonicalization
+  // must not strip the qualifier from a.ds because hasSameColumn returns
+  // false (qualified a.ds != unqualified ds which is c's).
+  // The grouping key must be 'ds' (a's column), not 'ds_2' (c's column).
+  testSelect(
+      "SELECT a.ds "
+      "FROM (VALUES ('d1'), ('d2')) a(ds) "
+      "LEFT JOIN (VALUES ('d3')) b(ds) ON (a.ds = b.ds) "
+      "LEFT JOIN (SELECT 'x' as ds WHERE false) c ON (a.ds = c.ds) "
+      "GROUP BY 1",
+      matchValues()
+          .project()
+          .join(matchValues().project().build())
+          .join(matchValues().filter().project().build())
+          .aggregate({"ds"}, {})
+          .output({"ds"}));
+}
+
 } // namespace
 } // namespace axiom::sql::presto::test

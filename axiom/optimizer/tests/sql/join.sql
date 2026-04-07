@@ -56,3 +56,11 @@ LEFT JOIN (
     FROM (SELECT 1 AS k, 1 AS m, 1 AS v)
 ) AS b ON a.k = b.k
 WHERE b.m = 1
+----
+-- Chained LEFT JOINs with same-named columns and GROUP BY.
+-- a.ds must group by a's column, not c's.
+SELECT a.ds
+FROM (VALUES ('d1'), ('d2')) a(ds)
+LEFT JOIN (VALUES ('d3')) b(ds) ON (a.ds = b.ds)
+LEFT JOIN (SELECT 'x' as ds WHERE false) c ON (a.ds = c.ds)
+GROUP BY 1

@@ -75,7 +75,6 @@ class GroupByPlanner {
       const ExpressionPtr& having,
       const OrderByPtr& orderBy);
   void addAggregate(bool useGroupingSets);
-  void normalizeQualifiedColumns();
   void rewritePostAggregateExprs();
   std::vector<size_t> resolveSortOrdinals(const OrderByPtr& orderBy);
   bool isIdentityProjection() const;

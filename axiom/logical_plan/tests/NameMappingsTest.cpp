@@ -169,4 +169,37 @@ TEST(NameMappingsTest, enableUnqualifiedAccess) {
   ASSERT_EQ("nationkey1", mappings.lookup("n_nationkey").value());
 }
 
+// Verifies that chained merges don't re-introduce unqualified access to
+// ambiguous names. After merge(a, b) removes unqualified "x" (ambiguous),
+// merge(result, c) must not re-add c's unqualified "x".
+TEST(NameMappingsTest, chainedMerge) {
+  NameMappings a;
+  a.add("x", "x_a");
+  a.setAlias("a");
+
+  NameMappings b;
+  b.add("x", "x_b");
+  b.setAlias("b");
+
+  a.merge(b);
+
+  // After first merge: unqualified "x" removed, qualified a.x and b.x remain.
+  EXPECT_EQ(a.lookup("x"), std::nullopt);
+  EXPECT_EQ(a.lookup("a", "x"), "x_a");
+  EXPECT_EQ(a.lookup("b", "x"), "x_b");
+
+  NameMappings c;
+  c.add("x", "x_c");
+  c.setAlias("c");
+
+  a.merge(c);
+
+  // After second merge: unqualified "x" must still be absent — "x" is
+  // ambiguous across all three tables.
+  EXPECT_EQ(a.lookup("x"), std::nullopt);
+  EXPECT_EQ(a.lookup("a", "x"), "x_a");
+  EXPECT_EQ(a.lookup("b", "x"), "x_b");
+  EXPECT_EQ(a.lookup("c", "x"), "x_c");
+}
+
 } // namespace facebook::axiom::logical_plan
