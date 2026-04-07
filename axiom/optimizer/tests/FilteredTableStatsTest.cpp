@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <folly/ScopeGuard.h>
 #include <gtest/gtest.h>
 #include "axiom/optimizer/Optimization.h"
 #include "axiom/optimizer/Plan.h"
@@ -115,6 +116,27 @@ TEST_F(FilteredTableStatsTest, partitionAndDataFilter) {
     // a > 10 gives selectivity of 14/24, so ~9 * 14/24 = 5.25 rows.
     EXPECT_NEAR(op.resultCardinality(), 9.0 * 14 / 24, kCardinalityTolerance);
   });
+}
+
+// Verifies that a join key column with all NULLs (numDistinct = 0 from
+// connector stats) does not produce non-finite cardinality via division by
+// zero in estimateFanout.
+TEST_F(FilteredTableStatsTest, joinKeyWithZeroDistinctValues) {
+  runCtas(
+      "CREATE TABLE u AS SELECT n_nationkey AS a, CAST(NULL AS INTEGER) AS b FROM nation");
+  SCOPE_EXIT {
+    hiveMetadata().dropTableIfExists("u");
+  };
+
+  verifyPlan(
+      "SELECT u1.a + u2.b FROM u AS u1 LEFT JOIN u AS u2 ON u1.b = u2.b",
+      [](const Plan& plan) {
+        // TODO: Improve estimate for all-NULL join keys. The correct result
+        // is 25 (left join preserves all left-side rows, no matches on NULLs),
+        // but NDV is clamped from 0 to 1, producing fanout = 25 and
+        // resultCardinality = 625.
+        EXPECT_NEAR(plan.op->resultCardinality(), 625, kCardinalityTolerance);
+      });
 }
 
 } // namespace
