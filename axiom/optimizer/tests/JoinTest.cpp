@@ -1252,5 +1252,41 @@ TEST_F(JoinTest, leftJoinNoEqualitiesMultipleTables) {
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
+// LEFT-to-INNER JOIN conversion with aggregation. replaceJoinOutputs must not
+// replace post-aggregation references (exprs) with pre-aggregation expressions.
+TEST_F(JoinTest, leftToInnerWithAggregation) {
+  testConnector_->addTable("t", ROW("a", INTEGER()));
+  testConnector_->addTable("u", ROW({"x", "y"}, {INTEGER(), DOUBLE()}));
+
+  // The WHERE filter on b.x triggers LEFT-to-INNER conversion. The DISTINCT
+  // creates an aggregation whose grouping key is the join output column for
+  // CAST(y AS REAL). replaceJoinOutputs must not replace the post-aggregation
+  // reference in exprs with the raw pre-aggregation expression.
+  auto query =
+      "SELECT DISTINCT b.c "
+      "FROM t "
+      "LEFT JOIN ("
+      "    SELECT x, CAST(y AS REAL) AS c FROM u"
+      "    CROSS JOIN UNNEST(ARRAY[1]) AS v(n)"
+      ") AS b ON t.a = b.x "
+      "WHERE b.x > 0";
+  SCOPED_TRACE(query);
+
+  auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+
+  auto matcher = matchScan("u")
+                     .filter("x > 0")
+                     .project()
+                     .unnest()
+                     .project()
+                     .hashJoin(matchScan("t").build(), core::JoinType::kInner)
+                     .project({"cast(y as REAL) as c"})
+                     .distinct()
+                     .project()
+                     .build();
+
+  AXIOM_ASSERT_PLAN(plan, matcher);
+}
+
 } // namespace
 } // namespace facebook::axiom::optimizer
