@@ -1288,5 +1288,77 @@ TEST_F(JoinTest, leftToInnerWithAggregation) {
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
+// Two aliases of the same source column (b AS x, b AS y) from a LEFT JOIN.
+// addJoinColumns must deduplicate and produce only one join output column.
+TEST_F(JoinTest, duplicateJoinOutputColumns) {
+  testConnector_->addTable("t", ROW("k", INTEGER()));
+  testConnector_->addTable("u", ROW({"k", "a", "b"}, INTEGER()));
+
+  // Bare SELECT: the join outputs a single column for b, a Project above
+  // produces both x and y from it.
+  {
+    auto query =
+        "SELECT x, y "
+        "FROM t "
+        "LEFT JOIN ("
+        "    SELECT k, b AS x, b AS y FROM u"
+        ") AS s ON t.k = s.k";
+    SCOPED_TRACE(query);
+
+    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+
+    auto matcher = matchScan("u")
+                       .hashJoin(matchScan("t").build(), core::JoinType::kRight)
+                       .project({"b as x", "b as y"})
+                       .build();
+
+    AXIOM_ASSERT_PLAN(plan, matcher);
+  }
+
+  // DISTINCT: the aggregation must not have duplicate grouping keys.
+  {
+    auto query =
+        "SELECT DISTINCT s.x, s.y "
+        "FROM t "
+        "LEFT JOIN ("
+        "    SELECT k, b AS x, b AS y FROM u"
+        ") AS s ON t.k = s.k";
+    SCOPED_TRACE(query);
+
+    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+
+    auto matcher = matchScan("u")
+                       .hashJoin(matchScan("t").build(), core::JoinType::kRight)
+                       .distinct()
+                       .project({"b as x", "b as y"})
+                       .build();
+
+    AXIOM_ASSERT_PLAN(plan, matcher);
+  }
+
+  // DISTINCT + WHERE that converts LEFT to INNER.
+  {
+    auto query =
+        "SELECT DISTINCT s.x, s.y "
+        "FROM t "
+        "LEFT JOIN ("
+        "    SELECT k, a, b AS x, b AS y FROM u"
+        ") AS s ON t.k = s.k "
+        "WHERE s.a = 1";
+    SCOPED_TRACE(query);
+
+    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+
+    auto matcher = matchScan("u")
+                       .filter("a = 1")
+                       .hashJoin(matchScan("t").build(), core::JoinType::kInner)
+                       .distinct()
+                       .project({"b as x", "b as y"})
+                       .build();
+
+    AXIOM_ASSERT_PLAN(plan, matcher);
+  }
+}
+
 } // namespace
 } // namespace facebook::axiom::optimizer
