@@ -123,10 +123,25 @@ void NameMappings::setAlias(const std::string& alias) {
 }
 
 void NameMappings::merge(const NameMappings& other) {
+  // Snapshot qualified names from the left side before merging. Used below to
+  // detect names that are ambiguous across previously-joined tables.
+  folly::F14FastSet<std::string> leftQualifiedNames;
+  for (const auto& [key, _] : mappings_) {
+    if (key.alias.has_value()) {
+      leftQualifiedNames.emplace(key.name);
+    }
+  }
+
   for (const auto& [name, id] : other.mappings_) {
     if (mappings_.contains(name)) {
       VELOX_CHECK(!name.alias.has_value());
       mappings_.erase(name);
+    } else if (
+        !name.alias.has_value() && leftQualifiedNames.contains(name.name)) {
+      // Don't add an unqualified name from the right side if the left side
+      // already has a qualified name with the same base. The name is ambiguous
+      // across joined tables even though the left's unqualified entry was
+      // removed by an earlier merge.
     } else {
       mappings_.emplace(name, id);
     }

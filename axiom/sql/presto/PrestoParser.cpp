@@ -1216,6 +1216,12 @@ class RelationPlanner : public AstVisitor {
       },
       [this](const ExpressionPtr& expr) -> lp::ExprApi {
         return toSortingKey(expr);
+      },
+      [this](const std::string& qualifier, const std::string& name) -> bool {
+        // Only canonicalize if the qualifier resolves as a table alias (not a
+        // struct field dereference) and the unqualified name is unambiguous.
+        return builder_->hasQualifiedColumn(qualifier, name) &&
+            builder_->hasColumn(name);
       }};
   std::unordered_map<std::string, std::shared_ptr<WithQuery>> withQueries_;
   ViewMap views_;
