@@ -953,6 +953,10 @@ TEST_F(ExpressionParserTest, lambda) {
 
   ASSERT_NO_THROW(parseExpr(
       "reduce(array[], map(), (s, x) -> map(array[1], array[2]), s -> 123)"));
+
+  // array_sort w/ comparator.
+  ASSERT_NO_THROW(parseExpr(
+      "array_sort(array[3, 1, 2], (x, y) -> IF(x < y, -1, IF(x > y, 1, 0)))"));
 }
 
 } // namespace
