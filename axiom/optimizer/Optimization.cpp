@@ -190,7 +190,9 @@ void Optimization::applyFilteredStats(
     for (size_t i = 0; i < stats->columnStats.size(); ++i) {
       const auto& columnStats = stats->columnStats[i];
       auto& existing = baseTable.columns[columnIndices[i]]->value();
-      Value value(existing.type, columnStats.numDistinct.value_or(1));
+      Value value(
+          existing.type,
+          std::max<float>(1, columnStats.numDistinct.value_or(1)));
       value.min = columnStats.min.has_value()
           ? registerVariant(columnStats.min.value())
           : nullptr;
