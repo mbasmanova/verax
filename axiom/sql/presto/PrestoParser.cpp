@@ -711,10 +711,53 @@ class RelationPlanner : public AstVisitor {
     }
   }
 
-  // Converts SELECT items to ExprApi projections. Exits early by returning
-  // std::nullopt for a single SELECT *.
+  // Like buildSelectProjections, but always returns a result (expands single
+  // SELECT * instead of returning nullopt). Collects window specs into the
+  // caller's map for GroupByPlanner to handle.
+  std::vector<lp::ExprApi> expandSelectExprs(
+      const std::vector<SelectItemPtr>& selectItems,
+      std::unordered_map<const core::IExpr*, lp::WindowSpec>& windowOptions) {
+    auto result = buildSelectProjections(selectItems, windowOptions);
+    if (result.has_value()) {
+      return result.value();
+    }
+    // Single SELECT * — expand to all output columns.
+    std::vector<lp::ExprApi> exprs;
+    for (const auto& column :
+         builder_->findOrAssignOutputNames(/*includeHiddenColumns=*/false)) {
+      exprs.push_back(column.toCol());
+    }
+    return exprs;
+  }
+
+  // Converts SELECT items to ExprApi projections. Expands AllColumns (*),
+  // SelectColumns (COLUMNS(...)), EXCLUDE, and REPLACE. Returns std::nullopt
+  // for a single plain SELECT * (no EXCLUDE/REPLACE).
   std::optional<std::vector<lp::ExprApi>> buildSelectProjections(
       const std::vector<SelectItemPtr>& selectItems) {
+    std::unordered_map<const core::IExpr*, lp::WindowSpec> windowOptions;
+    auto result = buildSelectProjections(selectItems, windowOptions);
+    if (!result.has_value()) {
+      return std::nullopt;
+    }
+
+    if (!windowOptions.empty()) {
+      auto replacements = addWindowProjection(windowOptions, result.value());
+      for (auto& expr : result.value()) {
+        expr =
+            lp::ExprApi(replaceInputs(expr.expr(), replacements), expr.alias());
+      }
+    }
+
+    return result;
+  }
+
+  // Overload that collects window specs into the caller's map instead of
+  // processing them internally. Used by GROUP BY where window function
+  // extraction is handled by GroupByPlanner.
+  std::optional<std::vector<lp::ExprApi>> buildSelectProjections(
+      const std::vector<SelectItemPtr>& selectItems,
+      std::unordered_map<const core::IExpr*, lp::WindowSpec>& windowOptions) {
     // SELECT * FROM ...
     const bool isSingleSelectStar = selectItems.size() == 1 &&
         selectItems.at(0)->is(NodeType::kAllColumns) &&
@@ -727,12 +770,6 @@ class RelationPlanner : public AstVisitor {
 
     const bool hasNestedWindow =
         ExpressionPlanner::hasNestedWindowFunction(selectItems);
-
-    // When hasNestedWindow is true, window function calls are collected in
-    // windowOptions (keyed by IExpr*) and returned as plain function calls.
-    // Post-hoc, we extract them and replace with column references, similar
-    // to how GroupByPlanner handles aggregates in expressions.
-    std::unordered_map<const core::IExpr*, lp::WindowSpec> windowOptions;
 
     // Lateral column alias map: alias name → expression. When friendlySql is
     // enabled, aliases defined in earlier SELECT items can be referenced in
@@ -816,14 +853,6 @@ class RelationPlanner : public AstVisitor {
           }
           exprs.push_back(expr);
         }
-      }
-    }
-
-    if (hasNestedWindow) {
-      auto replacements = addWindowProjection(windowOptions, exprs);
-      for (auto& expr : exprs) {
-        expr =
-            lp::ExprApi(replaceInputs(expr.expr(), replacements), expr.alias());
       }
     }
 
@@ -1077,10 +1106,13 @@ class RelationPlanner : public AstVisitor {
     const bool distinct = node->select()->isDistinct();
 
     if (auto groupBy = node->groupBy()) {
-      GroupByPlanner{builder_, exprPlanner_}.plan(
+      std::unordered_map<const core::IExpr*, lp::WindowSpec> windowOptions;
+      auto selectExprs = expandSelectExprs(selectItems, windowOptions);
+
+      GroupByPlanner{builder_, exprPlanner_, std::move(windowOptions)}.plan(
           groupBy->groupingElements(),
           groupBy->isDistinct(),
-          selectItems,
+          selectExprs,
           node->having(),
           orderBy);
 

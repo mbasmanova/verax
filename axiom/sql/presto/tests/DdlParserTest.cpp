@@ -303,20 +303,22 @@ TEST_F(DdlParserTest, dropTable) {
 }
 
 TEST_F(DdlParserTest, view) {
+  facebook::axiom::SchemaTableName viewName{
+      std::string(kDefaultSchema), "view"};
   connector_->createView(
-      {std::string(kDefaultSchema), "view"},
-      ROW({"n_nationkey", "cnt"}, {BIGINT(), BIGINT()}),
+      viewName,
+      ROW({"n_nationkey", "cnt"}, BIGINT()),
       "SELECT n_regionkey as regionkey, count(*) cnt FROM nation GROUP BY 1");
 
   SCOPE_EXIT {
-    connector_->dropView({std::string(kDefaultSchema), "view"});
+    connector_->dropView(viewName);
   };
 
   auto matcher = matchScan()
-                     .join(matchScan().aggregate().project().build())
+                     .join(matchScan().aggregate().build())
                      .filter()
                      .project()
-                     .output();
+                     .output({"n_name", "n_regionkey", "cnt"});
   testSelect(
       "SELECT n_name, n_regionkey, cnt FROM nation n, view v "
       "WHERE n_nationkey = regionkey",
