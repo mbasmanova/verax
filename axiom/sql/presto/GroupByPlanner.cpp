@@ -35,61 +35,14 @@ template <typename V>
 using ExprMap =
     folly::F14FastMap<core::ExprPtr, V, core::IExprHash, core::IExprEqual>;
 
-// Aggregate expression paired with its options pointer. Used as a key for
-// deduplication of aggregation calls.
-struct AggregateExprWithOptions {
-  /// The aggregation expression.
-  core::ExprPtr expr;
-  /// The execution options of this aggregation. If this aggregation expression
-  /// has the default options, i.e., no distinct, filter, or orderBy, this is
-  /// nullptr.
-  const lp::PlanBuilder::AggregateOptions* options;
-};
+// Set of aggregate expressions for deduplication. Uses IExpr equality which
+// includes AggregateCallExpr options (DISTINCT, FILTER, ORDER BY).
+using AggregateExprSet =
+    folly::F14FastSet<core::ExprPtr, core::IExprHash, core::IExprEqual>;
 
-// Hashes aggregate expression keys.
-struct AggregateExprWithOptionsHash {
-  size_t operator()(const AggregateExprWithOptions& key) const {
-    size_t exprHash = key.expr->hash();
-    size_t optionsHash =
-        key.options ? key.options->hash() : kDefaultOptionsHash;
-    return bits::hashMix(exprHash, optionsHash);
-  }
-
-  // Hash of a default-constructed AggregateOptions.
-  static inline const size_t kDefaultOptionsHash =
-      lp::PlanBuilder::AggregateOptions{}.hash();
-};
-
-// Compares aggregate expression keys for equality.
-struct AggregateExprWithOptionsEqual {
-  bool operator()(
-      const AggregateExprWithOptions& lhs,
-      const AggregateExprWithOptions& rhs) const {
-    if (*lhs.expr != *rhs.expr) {
-      return false;
-    }
-    if (static_cast<bool>(lhs.options) != static_cast<bool>(rhs.options)) {
-      return false;
-    }
-    return (lhs.options == rhs.options) || (*lhs.options == *rhs.options);
-  }
-};
-
-// Maps aggregation expression with options to their output.
-using AggregateExprMap = folly::F14FastMap<
-    AggregateExprWithOptions,
-    core::ExprPtr,
-    AggregateExprWithOptionsHash,
-    AggregateExprWithOptionsEqual>;
-
-// Looks up options for an expression in the options map, returning nullptr if
-// not found.
-const lp::PlanBuilder::AggregateOptions* findOptions(
-    const core::ExprPtr& expr,
-    const AggregateOptionsMap& optionsMap) {
-  auto it = optionsMap.find(expr.get());
-  return it != optionsMap.end() ? &it->second : nullptr;
-}
+// Maps aggregate expressions to their rewritten output columns.
+using AggregateExprMap = folly::
+    F14FastMap<core::ExprPtr, core::ExprPtr, core::IExprHash, core::IExprEqual>;
 
 // Rewrites each IExpr in the WindowSpec's PARTITION BY and ORDER BY keys using
 // 'rewrite' and returns the rewritten spec.
@@ -151,7 +104,6 @@ core::ExprPtr replaceInputs(
     const core::ExprPtr& expr,
     const ExprMap<core::ExprPtr>& keyReplacements,
     const AggregateExprMap& aggregateReplacements,
-    const AggregateOptionsMap& optionsMap,
     const std::function<void(const core::FieldAccessExpr&)>& onUnreplacedLeaf =
         nullptr) {
   // First try grouping keys.
@@ -161,8 +113,7 @@ core::ExprPtr replaceInputs(
   }
 
   // Then try aggregates.
-  AggregateExprWithOptions key{expr, findOptions(expr, optionsMap)};
-  auto aggIt = aggregateReplacements.find(key);
+  auto aggIt = aggregateReplacements.find(expr);
   if (aggIt != aggregateReplacements.end()) {
     return aggIt->second;
   }
@@ -171,11 +122,7 @@ core::ExprPtr replaceInputs(
   bool hasNewInput = false;
   for (const auto& input : expr->inputs()) {
     auto newInput = replaceInputs(
-        input,
-        keyReplacements,
-        aggregateReplacements,
-        optionsMap,
-        onUnreplacedLeaf);
+        input, keyReplacements, aggregateReplacements, onUnreplacedLeaf);
     if (newInput.get() != input.get()) {
       hasNewInput = true;
     }
@@ -194,12 +141,6 @@ core::ExprPtr replaceInputs(
   return expr;
 }
 
-// Set of aggregation expression with options for deduplication.
-using AggregateExprSet = folly::F14FastSet<
-    AggregateExprWithOptions,
-    AggregateExprWithOptionsHash,
-    AggregateExprWithOptionsEqual>;
-
 using WindowOptionsMap = std::unordered_map<const core::IExpr*, lp::WindowSpec>;
 
 // Walks the expression tree looking for aggregate function calls and appending
@@ -209,24 +150,20 @@ using WindowOptionsMap = std::unordered_map<const core::IExpr*, lp::WindowSpec>;
 // searched for real aggregates instead.
 void findAggregates(
     const core::ExprPtr& expr,
-    const AggregateOptionsMap& optionsMap,
-    std::vector<AggregateWithOptions>& aggregates,
+    std::vector<lp::ExprApi>& aggregates,
     AggregateExprSet& aggregateSet,
     const WindowOptionsMap* windowOptions = nullptr) {
   // Check if this expression is a window function (not an aggregate).
   if (windowOptions != nullptr && windowOptions->count(expr.get())) {
     for (const auto& input : expr->inputs()) {
-      findAggregates(
-          input, optionsMap, aggregates, aggregateSet, windowOptions);
+      findAggregates(input, aggregates, aggregateSet, windowOptions);
     }
     const auto& windowSpec = windowOptions->at(expr.get());
     for (const auto& key : windowSpec.partitionKeys()) {
-      findAggregates(
-          key.expr(), optionsMap, aggregates, aggregateSet, windowOptions);
+      findAggregates(key.expr(), aggregates, aggregateSet, windowOptions);
     }
     for (const auto& key : windowSpec.orderByKeys()) {
-      findAggregates(
-          key.expr.expr(), optionsMap, aggregates, aggregateSet, windowOptions);
+      findAggregates(key.expr.expr(), aggregates, aggregateSet, windowOptions);
     }
     return;
   }
@@ -236,17 +173,22 @@ void findAggregates(
       return;
     case core::IExpr::Kind::kFieldAccess:
       return;
+    case core::IExpr::Kind::kAggregate: {
+      if (aggregateSet.emplace(expr).second) {
+        aggregates.emplace_back(expr);
+      }
+      return;
+    }
     case core::IExpr::Kind::kCall: {
+      // Plain CallExpr that is registered as an aggregate (no DISTINCT/FILTER/
+      // ORDER BY). This happens for simple aggregates like count(*).
       if (exec::getAggregateFunctionEntry(expr->as<core::CallExpr>()->name())) {
-        auto* options = findOptions(expr, optionsMap);
-        AggregateExprWithOptions key{expr, options};
-        if (aggregateSet.emplace(key).second) {
-          aggregates.emplace_back(lp::ExprApi(expr), options);
+        if (aggregateSet.emplace(expr).second) {
+          aggregates.emplace_back(expr);
         }
       } else {
         for (const auto& input : expr->inputs()) {
-          findAggregates(
-              input, optionsMap, aggregates, aggregateSet, windowOptions);
+          findAggregates(input, aggregates, aggregateSet, windowOptions);
         }
       }
       return;
@@ -254,7 +196,6 @@ void findAggregates(
     case core::IExpr::Kind::kCast:
       findAggregates(
           expr->as<core::CastExpr>()->input(),
-          optionsMap,
           aggregates,
           aggregateSet,
           windowOptions);
@@ -269,8 +210,7 @@ void findAggregates(
       return;
     case core::IExpr::Kind::kConcat:
       for (const auto& input : expr->inputs()) {
-        findAggregates(
-            input, optionsMap, aggregates, aggregateSet, windowOptions);
+        findAggregates(input, aggregates, aggregateSet, windowOptions);
       }
       return;
     default:
@@ -284,33 +224,25 @@ void findAggregates(
 // recurses into arguments and WindowSpec keys to find real aggregates.
 void findAggregates(
     const lp::ExprApi& expr,
-    const AggregateOptionsMap& optionsMap,
     const WindowOptionsMap& windowOptions,
-    std::vector<AggregateWithOptions>& aggregates,
+    std::vector<lp::ExprApi>& aggregates,
     AggregateExprSet& aggregateSet) {
   const WindowOptionsMap* windowOptionsPtr =
       windowOptions.empty() ? nullptr : &windowOptions;
 
   if (const auto& windowSpec = expr.windowSpec()) {
     for (const auto& input : expr.expr()->inputs()) {
-      findAggregates(
-          input, optionsMap, aggregates, aggregateSet, windowOptionsPtr);
+      findAggregates(input, aggregates, aggregateSet, windowOptionsPtr);
     }
     for (const auto& key : windowSpec->partitionKeys()) {
-      findAggregates(
-          key.expr(), optionsMap, aggregates, aggregateSet, windowOptionsPtr);
+      findAggregates(key.expr(), aggregates, aggregateSet, windowOptionsPtr);
     }
     for (const auto& key : windowSpec->orderByKeys()) {
       findAggregates(
-          key.expr.expr(),
-          optionsMap,
-          aggregates,
-          aggregateSet,
-          windowOptionsPtr);
+          key.expr.expr(), aggregates, aggregateSet, windowOptionsPtr);
     }
   } else {
-    findAggregates(
-        expr.expr(), optionsMap, aggregates, aggregateSet, windowOptionsPtr);
+    findAggregates(expr.expr(), aggregates, aggregateSet, windowOptionsPtr);
   }
 }
 
@@ -518,7 +450,7 @@ void GroupByPlanner::plan(
 
   // Walk SELECT, HAVING, and ORDER BY expressions to collect aggregate
   // function calls, then add the Aggregate plan node.
-  // Populates: aggregates_, aggregateOptionsMap_, projections_, filter_,
+  // Populates: aggregates_, projections_, filter_,
   //   sortingKeyExprs_, outputNames_.
   collectAggregates(selectItems, having, orderBy);
 
@@ -691,22 +623,16 @@ void GroupByPlanner::collectAggregates(
       if (it != exprCache_.end()) {
         return it->second;
       }
-      return exprPlanner_.toExpr(
-          singleColumn->expression(), &aggregateOptionsMap_, windowOptions);
+      return exprPlanner_.toExpr(singleColumn->expression(), windowOptions);
     }();
 
-    findAggregates(
-        expr,
-        aggregateOptionsMap_,
-        windowOptionsMap_,
-        aggregates_,
-        aggregateSet);
+    findAggregates(expr, windowOptionsMap_, aggregates_, aggregateSet);
 
     if (!aggregates_.empty() &&
-        aggregates_.back().expr.expr().get() == expr.expr().get()) {
+        aggregates_.back().expr().get() == expr.expr().get()) {
       // Preserve the alias.
       if (singleColumn->alias() != nullptr) {
-        aggregates_.back().expr = aggregates_.back().expr.as(
+        aggregates_.back() = aggregates_.back().as(
             canonicalizeIdentifier(*singleColumn->alias()));
       }
     }
@@ -719,18 +645,16 @@ void GroupByPlanner::collectAggregates(
   }
 
   if (having != nullptr) {
-    lp::ExprApi expr = exprPlanner_.toExpr(having, &aggregateOptionsMap_);
-    findAggregates(
-        expr.expr(), aggregateOptionsMap_, aggregates_, aggregateSet);
+    lp::ExprApi expr = exprPlanner_.toExpr(having);
+    findAggregates(expr.expr(), aggregates_, aggregateSet);
     filter_ = expr;
   }
 
   if (orderBy != nullptr) {
     const auto& sortItems = orderBy->sortItems();
     for (const auto& item : sortItems) {
-      auto expr = exprPlanner_.toExpr(item->sortKey(), &aggregateOptionsMap_);
-      findAggregates(
-          expr.expr(), aggregateOptionsMap_, aggregates_, aggregateSet);
+      auto expr = exprPlanner_.toExpr(item->sortKey());
+      findAggregates(expr.expr(), aggregates_, aggregateSet);
       sortingKeyExprs_.emplace_back(expr);
     }
   }
@@ -738,17 +662,9 @@ void GroupByPlanner::collectAggregates(
 
 void GroupByPlanner::addAggregate(bool useGroupingSets) {
   std::vector<lp::ExprApi> aggregateExprs;
-  std::vector<lp::PlanBuilder::AggregateOptions> aggregateOptions;
   aggregateExprs.reserve(aggregates_.size());
-  aggregateOptions.reserve(aggregates_.size());
-
-  for (const auto& [expr, options] : aggregates_) {
-    aggregateExprs.push_back(expr);
-    if (options != nullptr) {
-      aggregateOptions.emplace_back(*options);
-    } else {
-      aggregateOptions.emplace_back();
-    }
+  for (const auto& agg : aggregates_) {
+    aggregateExprs.push_back(agg);
   }
 
   if (useGroupingSets) {
@@ -756,10 +672,9 @@ void GroupByPlanner::addAggregate(bool useGroupingSets) {
         groupingKeys_,
         groupingSetsIndices_,
         aggregateExprs,
-        aggregateOptions,
         "$grouping_set_id");
   } else {
-    builder_->aggregate(groupingKeys_, aggregateExprs, aggregateOptions);
+    builder_->aggregate(groupingKeys_, aggregateExprs);
   }
 
   auto outputColumns = builder_->findOrAssignOutputNames();
@@ -785,10 +700,9 @@ void GroupByPlanner::rewritePostAggregateExprs() {
     ++index;
   }
 
-  for (const auto& [expr, options] : aggregates_) {
+  for (const auto& agg : aggregates_) {
     flatInputs_.emplace_back(lp::Col(outputNames_.at(index)));
-    AggregateExprWithOptions key{expr.expr(), options};
-    aggregateInputs.emplace(key, flatInputs_.back().expr());
+    aggregateInputs.emplace(agg.expr(), flatInputs_.back().expr());
     ++index;
   }
 
@@ -797,7 +711,6 @@ void GroupByPlanner::rewritePostAggregateExprs() {
         filter_.value().expr(),
         keyInputs,
         aggregateInputs,
-        aggregateOptionsMap_,
         [](const core::FieldAccessExpr& expr) {
           VELOX_USER_FAIL(
               "HAVING clause cannot reference column: {}", expr.name());
@@ -806,8 +719,7 @@ void GroupByPlanner::rewritePostAggregateExprs() {
 
   // Rewrites an IExpr to reference post-aggregate columns.
   auto rewriteIExpr = [&](const core::ExprPtr& expr) {
-    return replaceInputs(
-        expr, keyInputs, aggregateInputs, aggregateOptionsMap_);
+    return replaceInputs(expr, keyInputs, aggregateInputs);
   };
 
   // Rewrites an ExprApi to reference post-aggregate columns. For window

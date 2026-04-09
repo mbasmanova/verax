@@ -247,11 +247,9 @@ class RelationPlanner : public AstVisitor {
 
   lp::ExprApi toExpr(
       const ExpressionPtr& node,
-      std::unordered_map<const core::IExpr*, lp::PlanBuilder::AggregateOptions>*
-          aggregateOptions = nullptr,
       std::unordered_map<const core::IExpr*, lp::WindowSpec>* windowOptions =
           nullptr) {
-    return exprPlanner_.toExpr(node, aggregateOptions, windowOptions);
+    return exprPlanner_.toExpr(node, windowOptions);
   }
 
  private:
@@ -696,9 +694,7 @@ class RelationPlanner : public AstVisitor {
             name,
             name);
         auto expr = toExpr(
-            replaceItem.expression,
-            /*aggregateOptions=*/nullptr,
-            hasNestedWindow ? &windowOptions : nullptr);
+            replaceItem.expression, hasNestedWindow ? &windowOptions : nullptr);
         replaceMap[name] = expr.expr();
       }
     }
@@ -801,7 +797,6 @@ class RelationPlanner : public AstVisitor {
 
         lp::ExprApi expr = toExpr(
             singleColumn->expression(),
-            /*aggregateOptions=*/nullptr,
             hasNestedWindow ? &windowOptions : nullptr);
 
         std::optional<std::string> alias;
