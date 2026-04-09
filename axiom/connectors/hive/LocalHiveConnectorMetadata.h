@@ -22,7 +22,7 @@
 #include "axiom/connectors/hive/HiveMetadataConfig.h"
 #include "axiom/connectors/hive/LocalTableMetadata.h"
 #include "axiom/connectors/hive/StatisticsBuilder.h"
-#include "folly/experimental/coro/Task.h"
+#include "folly/coro/Task.h"
 #include "velox/common/base/Fs.h"
 #include "velox/common/memory/HashStringAllocator.h"
 #include "velox/connectors/hive/HiveConnector.h"
