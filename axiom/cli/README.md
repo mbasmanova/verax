@@ -158,11 +158,15 @@ via the up/down arrow keys even after restarting the CLI.
 
 ## Interactive Commands
 
+Dot-commands do not require a semicolon terminator.
+
 | Command | Description |
 |---------|-------------|
-| `help;` | Print help text. |
-| `flag <name> = <value>;` | Set a gflag at runtime (e.g., `num_workers`, `num_drivers`, `max_rows`, `optimizer_trace`). |
-| `clear <name>;` | Reset a flag to its default value. |
-| `flags;` | List modified flags. |
-| `session <name> = <value>;` | Set a session config property. |
-| `exit;` or `quit;` | Exit the CLI. |
+| `.help` | Print help text. |
+| `.run <file>` | Execute SQL statements from a file. |
+| `.set <name> <value>` | Set a gflag at runtime (e.g., `num_workers`, `num_drivers`, `max_rows`, `optimizer_trace`). |
+| `.clear <name>` | Reset a flag to its default value. |
+| `.flags` | List modified flags. |
+| `.exit` or `.quit` | Exit the CLI. |
+
+Session config properties can be set using the `SET SESSION` SQL statement.
