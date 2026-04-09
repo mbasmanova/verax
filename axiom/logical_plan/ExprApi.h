@@ -40,6 +40,7 @@ namespace facebook::axiom::logical_plan {
 class LogicalPlanNode;
 using LogicalPlanNodePtr = std::shared_ptr<const LogicalPlanNode>;
 
+struct SortKey;
 class WindowSpec;
 
 } // namespace facebook::axiom::logical_plan
@@ -261,6 +262,16 @@ class ExprApi {
   const std::shared_ptr<const WindowSpec>& windowSpec() const {
     return windowSpec_;
   }
+
+  /// Marks the aggregate function as DISTINCT. Wraps the underlying CallExpr
+  /// in an AggregateCallExpr.
+  ExprApi distinct() const;
+
+  /// Adds a FILTER (WHERE ...) clause to the aggregate function.
+  ExprApi filter(const ExprApi& filterExpr) const;
+
+  /// Adds an ORDER BY clause to the aggregate function (e.g., array_agg).
+  ExprApi sortBy(const std::vector<SortKey>& keys) const;
 
  private:
   velox::core::ExprPtr expr_;

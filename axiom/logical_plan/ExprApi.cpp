@@ -194,8 +194,8 @@ ExprApi ExprApi::unnestAs(std::vector<std::string> aliases) const {
 
 ExprApi ExprApi::over(const WindowSpec& windowSpec) const {
   VELOX_USER_CHECK(
-      expr_->kind() == velox::core::IExpr::Kind::kCall,
-      "OVER can only be applied to a function call: {}",
+      expr_->is(velox::core::IExpr::Kind::kCall),
+      "OVER cannot be combined with DISTINCT, FILTER, or ORDER BY: {}",
       expr_->toString());
   VELOX_USER_CHECK_NULL(
       windowSpec_, "OVER clause already specified: {}", expr_->toString());
@@ -207,6 +207,130 @@ ExprApi ExprApi::over(const WindowSpec& windowSpec) const {
   ExprApi result(expr_, alias_);
   result.windowSpec_ = std::make_shared<const WindowSpec>(windowSpec);
   return result;
+}
+
+namespace {
+
+// Returns the AggregateCallExpr if the expression is one, or nullptr.
+const velox::core::AggregateCallExpr* asAggregate(
+    const velox::core::ExprPtr& expr) {
+  if (expr->is(velox::core::IExpr::Kind::kAggregate)) {
+    return expr->as<velox::core::AggregateCallExpr>();
+  }
+  return nullptr;
+}
+
+} // namespace
+
+ExprApi ExprApi::distinct() const {
+  VELOX_USER_CHECK(
+      expr_->is(velox::core::IExpr::Kind::kCall) ||
+          expr_->is(velox::core::IExpr::Kind::kAggregate),
+      "DISTINCT can only be applied to a function call: {}",
+      expr_->toString());
+  VELOX_USER_CHECK_NULL(
+      windowSpec_,
+      "DISTINCT cannot be combined with OVER: {}",
+      expr_->toString());
+
+  auto* agg = asAggregate(expr_);
+  VELOX_USER_CHECK(
+      !agg || !agg->isDistinct(),
+      "DISTINCT already specified: {}",
+      expr_->toString());
+
+  velox::core::ExprPtr filter;
+  std::vector<velox::core::SortKey> orderBy;
+  if (agg) {
+    filter = agg->filter();
+    orderBy = agg->orderBy();
+  }
+
+  auto* call = expr_->as<velox::core::CallExpr>();
+  return ExprApi(
+      std::make_shared<velox::core::AggregateCallExpr>(
+          call->name(),
+          call->inputs(),
+          /*distinct=*/true,
+          std::move(filter),
+          std::move(orderBy)),
+      alias_);
+}
+
+ExprApi ExprApi::filter(const ExprApi& filterExpr) const {
+  VELOX_USER_CHECK(
+      expr_->is(velox::core::IExpr::Kind::kCall) ||
+          expr_->is(velox::core::IExpr::Kind::kAggregate),
+      "FILTER can only be applied to a function call: {}",
+      expr_->toString());
+  VELOX_USER_CHECK_NULL(
+      windowSpec_,
+      "FILTER cannot be combined with OVER: {}",
+      expr_->toString());
+
+  auto* agg = asAggregate(expr_);
+  VELOX_USER_CHECK(
+      !agg || agg->filter() == nullptr,
+      "FILTER already specified: {}",
+      expr_->toString());
+
+  bool distinct = agg ? agg->isDistinct() : false;
+  std::vector<velox::core::SortKey> orderBy;
+  if (agg) {
+    orderBy = agg->orderBy();
+  }
+
+  auto* call = expr_->as<velox::core::CallExpr>();
+  return ExprApi(
+      std::make_shared<velox::core::AggregateCallExpr>(
+          call->name(),
+          call->inputs(),
+          distinct,
+          filterExpr.expr(),
+          std::move(orderBy)),
+      alias_);
+}
+
+ExprApi ExprApi::sortBy(const std::vector<SortKey>& keys) const {
+  VELOX_USER_CHECK(
+      expr_->is(velox::core::IExpr::Kind::kCall) ||
+          expr_->is(velox::core::IExpr::Kind::kAggregate),
+      "ORDER BY can only be applied to a function call: {}",
+      expr_->toString());
+  VELOX_USER_CHECK_NULL(
+      windowSpec_,
+      "ORDER BY cannot be combined with OVER: {}",
+      expr_->toString());
+
+  auto* agg = asAggregate(expr_);
+  VELOX_USER_CHECK(
+      !agg || agg->orderBy().empty(),
+      "ORDER BY already specified: {}",
+      expr_->toString());
+
+  // Convert SortKey (ExprApi-level) to velox::core::SortKey
+  // (IExpr-level).
+  std::vector<velox::core::SortKey> sortKeys;
+  sortKeys.reserve(keys.size());
+  for (const auto& key : keys) {
+    sortKeys.push_back({key.expr.expr(), key.ascending, key.nullsFirst});
+  }
+
+  bool distinct = agg ? agg->isDistinct() : false;
+  velox::core::ExprPtr filter;
+  if (agg) {
+    filter = agg->filter();
+  }
+
+  auto* call = expr_->as<velox::core::CallExpr>();
+  return ExprApi(
+      std::make_shared<velox::core::AggregateCallExpr>(
+          call->name(),
+          call->inputs(),
+          distinct,
+          std::move(filter),
+          std::move(sortKeys)),
+      alias_);
 }
 
 WindowSpec& WindowSpec::rows(
