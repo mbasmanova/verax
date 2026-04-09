@@ -19,49 +19,9 @@
 #include <vector>
 #include "axiom/connectors/ConnectorMetadata.h"
 #include "axiom/logical_plan/NameMappings.h"
-#include "velox/common/base/BitUtil.h"
 #include "velox/type/TypeCoercer.h"
 
 namespace facebook::axiom::logical_plan {
-
-size_t PlanBuilder::AggregateOptions::hash() const {
-  using facebook::velox::bits::hashMix;
-
-  size_t result = std::hash<bool>{}(distinct);
-  if (filter) {
-    result = hashMix(result, filter->hash());
-  }
-  for (const auto& key : orderBy) {
-    result = hashMix(result, key.expr.expr()->hash());
-    result = hashMix(result, key.ascending);
-    result = hashMix(result, key.nullsFirst);
-  }
-  return result;
-}
-
-bool PlanBuilder::AggregateOptions::operator==(
-    const AggregateOptions& other) const {
-  if (distinct != other.distinct) {
-    return false;
-  }
-  if (static_cast<bool>(filter) != static_cast<bool>(other.filter)) {
-    return false;
-  }
-  if (filter && (*filter != *other.filter)) {
-    return false;
-  }
-  if (orderBy.size() != other.orderBy.size()) {
-    return false;
-  }
-  for (size_t i = 0; i < orderBy.size(); ++i) {
-    if (*orderBy[i].expr.expr() != *other.orderBy[i].expr.expr() ||
-        orderBy[i].ascending != other.orderBy[i].ascending ||
-        orderBy[i].nullsFirst != other.orderBy[i].nullsFirst) {
-      return false;
-    }
-  }
-  return true;
-}
 
 PlanBuilder& PlanBuilder::values(
     const velox::RowTypePtr& rowType,
@@ -830,26 +790,30 @@ namespace {
 void parseAggregates(
     velox::parse::SqlExpressionsParser& parser,
     const std::vector<std::string>& aggregates,
-    std::vector<ExprApi>& parsedAggregates,
-    std::vector<PlanBuilder::AggregateOptions>& options) {
+    std::vector<ExprApi>& parsedAggregates) {
   parsedAggregates.reserve(aggregates.size());
-  options.reserve(aggregates.size());
 
   for (const auto& sql : aggregates) {
     auto parsed = parser.parseAggregateExpr(sql);
+    ExprApi expr(parsed.expr);
 
-    parsedAggregates.emplace_back(parsed.expr);
-
-    std::vector<SortKey> sortingKeys;
-    sortingKeys.reserve(parsed.orderBy.size());
-    for (const auto& orderBy : parsed.orderBy) {
-      sortingKeys.emplace_back(
-          SortKey{
-              ExprApi(orderBy.expr), orderBy.ascending, orderBy.nullsFirst});
+    if (parsed.distinct) {
+      expr = expr.distinct();
+    }
+    if (parsed.filter != nullptr) {
+      expr = expr.filter(ExprApi(parsed.filter));
+    }
+    if (!parsed.orderBy.empty()) {
+      std::vector<SortKey> sortingKeys;
+      sortingKeys.reserve(parsed.orderBy.size());
+      for (const auto& orderBy : parsed.orderBy) {
+        sortingKeys.emplace_back(
+            ExprApi(orderBy.expr), orderBy.ascending, orderBy.nullsFirst);
+      }
+      expr = expr.sortBy(std::move(sortingKeys));
     }
 
-    options.emplace_back(
-        std::move(parsed.filter), std::move(sortingKeys), parsed.distinct);
+    parsedAggregates.emplace_back(std::move(expr));
   }
 }
 
@@ -859,16 +823,14 @@ PlanBuilder& PlanBuilder::aggregate(
     const std::vector<std::string>& groupingKeys,
     const std::vector<std::string>& aggregates) {
   std::vector<ExprApi> parsedAggregates;
-  std::vector<AggregateOptions> options;
-  parseAggregates(*sqlParser_, aggregates, parsedAggregates, options);
+  parseAggregates(*sqlParser_, aggregates, parsedAggregates);
 
-  return aggregate(parse(groupingKeys), parsedAggregates, options);
+  return aggregate(parse(groupingKeys), parsedAggregates);
 }
 
 PlanBuilder& PlanBuilder::aggregate(
     const std::vector<ExprApi>& groupingKeys,
-    const std::vector<ExprApi>& aggregates,
-    const std::vector<AggregateOptions>& options) {
+    const std::vector<ExprApi>& aggregates) {
   VELOX_USER_CHECK_NOT_NULL(node_, "Aggregate node cannot be a leaf node");
 
   std::vector<std::string> outputNames;
@@ -884,7 +846,7 @@ PlanBuilder& PlanBuilder::aggregate(
   std::vector<AggregateExprPtr> exprs;
   exprs.reserve(aggregates.size());
 
-  resolveAggregates(aggregates, options, outputNames, exprs, *newOutputMapping);
+  resolveAggregates(aggregates, outputNames, exprs, *newOutputMapping);
 
   node_ = std::make_shared<AggregateNode>(
       nextId(),
@@ -903,7 +865,6 @@ PlanBuilder& PlanBuilder::aggregate(
 PlanBuilder& PlanBuilder::aggregate(
     const std::vector<std::vector<ExprApi>>& groupingSets,
     const std::vector<ExprApi>& aggregates,
-    const std::vector<AggregateOptions>& options,
     const std::string& groupingSetIndexName) {
   // Extract unique grouping keys from all sets and build index mapping.
   std::vector<ExprApi> groupingKeys;
@@ -931,11 +892,7 @@ PlanBuilder& PlanBuilder::aggregate(
   }
 
   return aggregate(
-      groupingKeys,
-      groupingSetsIndices,
-      aggregates,
-      options,
-      groupingSetIndexName);
+      groupingKeys, groupingSetsIndices, aggregates, groupingSetIndexName);
 }
 
 PlanBuilder& PlanBuilder::aggregate(
@@ -949,24 +906,23 @@ PlanBuilder& PlanBuilder::aggregate(
   }
 
   std::vector<ExprApi> parsedAggregates;
-  std::vector<AggregateOptions> options;
-  parseAggregates(*sqlParser_, aggregates, parsedAggregates, options);
+  parseAggregates(*sqlParser_, aggregates, parsedAggregates);
 
-  return aggregate(
-      exprGroupingSets, parsedAggregates, options, groupingSetIndexName);
+  return aggregate(exprGroupingSets, parsedAggregates, groupingSetIndexName);
 }
 
 PlanBuilder& PlanBuilder::aggregate(
     const std::vector<std::string>& groupingKeys,
     const std::vector<std::vector<int32_t>>& groupingSets,
     const std::vector<std::string>& aggregates,
-    const std::vector<AggregateOptions>& options,
     const std::string& groupingSetIndexName) {
+  std::vector<ExprApi> parsedAggregates;
+  parseAggregates(*sqlParser_, aggregates, parsedAggregates);
+
   return aggregate(
       parse(groupingKeys),
       groupingSets,
-      parse(aggregates),
-      options,
+      parsedAggregates,
       groupingSetIndexName);
 }
 
@@ -974,7 +930,6 @@ PlanBuilder& PlanBuilder::aggregate(
     const std::vector<ExprApi>& groupingKeys,
     const std::vector<std::vector<int32_t>>& groupingSets,
     const std::vector<ExprApi>& aggregates,
-    const std::vector<AggregateOptions>& options,
     const std::string& groupingSetIndexName) {
   VELOX_USER_CHECK_NOT_NULL(node_, "Aggregate node cannot be a leaf node");
 
@@ -1009,7 +964,7 @@ PlanBuilder& PlanBuilder::aggregate(
   std::vector<AggregateExprPtr> exprs;
   exprs.reserve(aggregates.size());
 
-  resolveAggregates(aggregates, options, outputNames, exprs, *newOutputMapping);
+  resolveAggregates(aggregates, outputNames, exprs, *newOutputMapping);
 
   auto gidInternalName = newName(groupingSetIndexName);
   outputNames.push_back(gidInternalName);
@@ -1036,14 +991,9 @@ PlanBuilder& PlanBuilder::aggregate(
 
 void PlanBuilder::resolveAggregates(
     const std::vector<ExprApi>& aggregates,
-    const std::vector<AggregateOptions>& options,
     std::vector<std::string>& outputNames,
     std::vector<AggregateExprPtr>& exprs,
     NameMappings& mappings) {
-  if (!options.empty()) {
-    VELOX_USER_CHECK_EQ(options.size(), aggregates.size());
-  }
-
   NameTracker tracker(allowAmbiguousOutputNames_, mappings);
   tracker.track(aggregates);
 
@@ -1054,10 +1004,13 @@ void PlanBuilder::resolveAggregates(
     std::vector<SortKey> sortKeys;
     bool distinct = false;
 
-    if (!options.empty()) {
-      filter = options[i].filter;
-      sortKeys = options[i].orderBy;
-      distinct = options[i].distinct;
+    if (aggregate.expr()->is(velox::core::IExpr::Kind::kAggregate)) {
+      auto* agg = aggregate.expr()->as<velox::core::AggregateCallExpr>();
+      filter = agg->filter();
+      for (const auto& key : agg->orderBy()) {
+        sortKeys.emplace_back(ExprApi(key.expr), key.ascending, key.nullsFirst);
+      }
+      distinct = agg->isDistinct();
     }
 
     auto expr =
@@ -1078,7 +1031,6 @@ void PlanBuilder::resolveAggregates(
 PlanBuilder& PlanBuilder::rollup(
     const std::vector<ExprApi>& groupingKeys,
     const std::vector<ExprApi>& aggregates,
-    const std::vector<AggregateOptions>& options,
     const std::string& groupingSetIndexName) {
   // ROLLUP(a, b, c) -> [[0,1,2], [0,1], [0], []]
   std::vector<std::vector<int32_t>> groupingSets;
@@ -1092,21 +1044,22 @@ PlanBuilder& PlanBuilder::rollup(
   groupingSets.emplace_back();
 
   return aggregate(
-      groupingKeys, groupingSets, aggregates, options, groupingSetIndexName);
+      groupingKeys, groupingSets, aggregates, groupingSetIndexName);
 }
 
 PlanBuilder& PlanBuilder::rollup(
     const std::vector<std::string>& groupingKeys,
     const std::vector<std::string>& aggregates,
     const std::string& groupingSetIndexName) {
-  return rollup(
-      parse(groupingKeys), parse(aggregates), {}, groupingSetIndexName);
+  std::vector<ExprApi> parsedAggregates;
+  parseAggregates(*sqlParser_, aggregates, parsedAggregates);
+
+  return rollup(parse(groupingKeys), parsedAggregates, groupingSetIndexName);
 }
 
 PlanBuilder& PlanBuilder::cube(
     const std::vector<ExprApi>& groupingKeys,
     const std::vector<ExprApi>& aggregates,
-    const std::vector<AggregateOptions>& options,
     const std::string& groupingSetIndexName) {
   // CUBE(a, b) -> [[0,1], [0], [1], []]
   const size_t n = groupingKeys.size();
@@ -1127,14 +1080,17 @@ PlanBuilder& PlanBuilder::cube(
   }
 
   return aggregate(
-      groupingKeys, groupingSets, aggregates, options, groupingSetIndexName);
+      groupingKeys, groupingSets, aggregates, groupingSetIndexName);
 }
 
 PlanBuilder& PlanBuilder::cube(
     const std::vector<std::string>& groupingKeys,
     const std::vector<std::string>& aggregates,
     const std::string& groupingSetIndexName) {
-  return cube(parse(groupingKeys), parse(aggregates), {}, groupingSetIndexName);
+  std::vector<ExprApi> parsedAggregates;
+  parseAggregates(*sqlParser_, aggregates, parsedAggregates);
+
+  return cube(parse(groupingKeys), parsedAggregates, groupingSetIndexName);
 }
 
 PlanBuilder& PlanBuilder::distinct() {

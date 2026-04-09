@@ -518,7 +518,10 @@ TEST_F(PlanBuilderTest, groupingSetsEmptyAggregatesAndKeys) {
   VELOX_ASSERT_THROW(
       PlanBuilder()
           .values(rowType, data)
-          .aggregate({{}}, {}, "$grouping_set_id")
+          .aggregate(
+              std::vector<std::vector<std::string>>{{}},
+              std::vector<std::string>{},
+              "$grouping_set_id")
           .build(),
       "Aggregation node must specify at least one aggregate or grouping key");
 }
@@ -536,7 +539,6 @@ TEST_F(PlanBuilderTest, groupingSetsOutOfBoundIndices) {
               {"a", "b"},
               {{0, 1}, {0, 2}},
               {"sum(c) as total"},
-              {},
               "$grouping_set_id")
           .build(),
       "Grouping set index 2 is out of bounds");
@@ -552,7 +554,7 @@ TEST_F(PlanBuilderTest, groupingSetsDuplicateKeys) {
       PlanBuilder()
           .values(rowType, data)
           .aggregate(
-              {"a", "a"}, {{0, 1}}, {"sum(c) as total"}, {}, "$grouping_set_id")
+              {"a", "a"}, {{0, 1}}, {"sum(c) as total"}, "$grouping_set_id")
           .build(),
       "Duplicate grouping key");
 }
@@ -569,7 +571,6 @@ TEST_F(PlanBuilderTest, groupingSetsWithIndices) {
                       {"a", "b", "c"},
                       {{0, 1}, {0, 1, 2}},
                       {"sum(d) as total"},
-                      {},
                       "$grouping_set_id")
                   .build();
 

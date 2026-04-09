@@ -71,18 +71,15 @@ class ExpressionPlanner {
         sortingKeyResolver_(std::move(sortingKeyResolver)),
         shouldDropQualifier_(std::move(shouldDropQualifier)) {}
 
-  /// Translates an AST expression into an ExprApi. Optionally collects
-  /// sideband data for aggregate and window function calls:
-  /// - aggregateOptions: collects DISTINCT, FILTER, ORDER BY for aggregates.
-  /// - windowOptions: collects WindowSpec for window function calls. When
-  ///   provided, window function calls are returned as plain function calls
-  ///   (without .over()) and the caller is responsible for extracting them
-  ///   and applying the window spec.
+  /// Translates an AST expression into an ExprApi. Aggregate options
+  /// (DISTINCT, FILTER, ORDER BY) are embedded in the returned ExprApi via
+  /// AggregateCallExpr.
+  ///
+  /// @param windowOptions If non-null, collects WindowSpec for nested window
+  /// function calls. Window calls are returned as plain function calls
+  /// (without .over()) and the caller is responsible for extracting them.
   lp::ExprApi toExpr(
       const ExpressionPtr& node,
-      std::unordered_map<
-          const facebook::velox::core::IExpr*,
-          lp::PlanBuilder::AggregateOptions>* aggregateOptions = nullptr,
       std::unordered_map<const facebook::velox::core::IExpr*, lp::WindowSpec>*
           windowOptions = nullptr);
 
@@ -113,11 +110,14 @@ class ExpressionPlanner {
 
  private:
   // Converts a Window AST node into a WindowSpec.
-  lp::WindowSpec convertWindow(
-      const std::shared_ptr<Window>& window,
-      std::unordered_map<
-          const facebook::velox::core::IExpr*,
-          lp::PlanBuilder::AggregateOptions>* aggregateOptions);
+  lp::WindowSpec convertWindow(const std::shared_ptr<Window>& window);
+
+  // Builds an AggregateCallExpr from a FunctionCall AST node that has
+  // DISTINCT, FILTER, or ORDER BY.
+  lp::ExprApi toAggregateCallExpr(
+      const FunctionCall* call,
+      const std::string& funcName,
+      const std::vector<lp::ExprApi>& args);
 
   SubqueryPlanner subqueryPlanner_;
   SortingKeyResolver sortingKeyResolver_;

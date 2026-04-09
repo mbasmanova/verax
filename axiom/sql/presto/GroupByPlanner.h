@@ -26,20 +26,6 @@ namespace axiom::sql::presto {
 
 namespace lp = facebook::axiom::logical_plan;
 
-using AggregateOptionsMap = std::unordered_map<
-    const facebook::velox::core::IExpr*,
-    lp::PlanBuilder::AggregateOptions>;
-
-/// Aggregate expression paired with its options pointer.
-struct AggregateWithOptions {
-  /// The aggregation expression.
-  lp::ExprApi expr;
-  /// The execution options of the aggregation. If this aggregation expression
-  /// has the default options, i.e., no distinct, filter, or orderBy, this is
-  /// nullptr.
-  const lp::PlanBuilder::AggregateOptions* options;
-};
-
 /// Plans GROUP BY, ROLLUP, CUBE, and GROUPING SETS clauses. Constructed
 /// per-query to hold intermediate state during aggregation planning.
 class GroupByPlanner {
@@ -101,12 +87,9 @@ class GroupByPlanner {
   std::vector<std::vector<int32_t>> groupingSetsIndices_;
   std::vector<lp::ExprApi> projections_;
 
-  // Stores aggregate expressions with their options after deduplication.
-  std::vector<AggregateWithOptions> aggregates_;
-
-  // Maps each Expr* to its aggregate options. Populated by collectAggregates().
-  // Must outlive aggregates_ since aggregates_ holds pointers into this map.
-  AggregateOptionsMap aggregateOptionsMap_;
+  // Deduplicated aggregate expressions. Aggregate options are embedded in
+  // AggregateCallExpr nodes within the IExpr tree.
+  std::vector<lp::ExprApi> aggregates_;
 
   // Maps window function IExpr* to their WindowSpec. Populated by
   // collectAggregates() when window functions are nested inside scalar
