@@ -434,13 +434,13 @@ void deduplicateGroupingSets(
 void GroupByPlanner::plan(
     const std::vector<GroupingElementPtr>& groupingElements,
     bool distinct,
-    const std::vector<SelectItemPtr>& selectItems,
+    const std::vector<lp::ExprApi>& selectExprs,
     const ExpressionPtr& having,
     const OrderByPtr& orderBy) && {
   // Expand ROLLUP, CUBE, GROUPING SETS into a list of grouping sets, then
   // extract deduplicated grouping keys and per-set index vectors.
   // Populates: groupingSets_, groupingKeys_, groupingSetsIndices_.
-  groupingSets_ = expandGroupingSets(groupingElements, selectItems);
+  groupingSets_ = expandGroupingSets(groupingElements, selectExprs);
   deduplicateGroupingKeys();
   // GROUP BY DISTINCT removes duplicate grouping sets after expansion
   // (order-insensitive comparison).
@@ -452,7 +452,7 @@ void GroupByPlanner::plan(
   // function calls, then add the Aggregate plan node.
   // Populates: aggregates_, projections_, filter_,
   //   sortingKeyExprs_, outputNames_.
-  collectAggregates(selectItems, having, orderBy);
+  collectAggregates(selectExprs, having, orderBy);
 
   addAggregate(groupingSetsIndices_.size() > 1);
 
@@ -482,7 +482,7 @@ void GroupByPlanner::plan(
         *builder_,
         orderBy->sortItems(),
         sortingKeyOrdinals,
-        selectItems.size());
+        selectExprs.size());
   }
 }
 
@@ -513,20 +513,35 @@ bool GroupByPlanner::tryPlanGlobalAgg(
     return false;
   }
 
+  // Resolve SELECT items into ExprApi.
+  const bool hasNestedWindow =
+      ExpressionPlanner::hasNestedWindowFunction(selectItems);
+  std::vector<lp::ExprApi> selectExprs;
+  for (const auto& item : selectItems) {
+    auto* singleColumn = item->as<SingleColumn>();
+    auto expr = exprPlanner_.toExpr(
+        singleColumn->expression(),
+        hasNestedWindow ? &windowOptionsMap_ : nullptr);
+    if (singleColumn->alias() != nullptr) {
+      expr = expr.as(canonicalizeIdentifier(*singleColumn->alias()));
+    }
+    selectExprs.push_back(std::move(expr));
+  }
+
   std::move(*this).plan(
-      {}, /*distinct=*/false, selectItems, having, /*orderBy=*/nullptr);
+      {}, /*distinct=*/false, selectExprs, having, /*orderBy=*/nullptr);
   return true;
 }
 
 std::vector<std::vector<lp::ExprApi>> GroupByPlanner::expandGroupingSets(
     const std::vector<GroupingElementPtr>& groupingElements,
-    const std::vector<SelectItemPtr>& selectItems) {
+    const std::vector<lp::ExprApi>& selectExprs) {
   std::vector<std::vector<lp::ExprApi>> groupingSets;
   for (const auto& element : groupingElements) {
     switch (element->type()) {
       case NodeType::kSimpleGroupBy: {
         const auto* simple = element->as<SimpleGroupBy>();
-        auto exprs = resolveWithCache(simple->expressions(), selectItems);
+        auto exprs = resolveWithCache(simple->expressions(), selectExprs);
         groupingSets =
             crossProductGroupingSets(groupingSets, {std::move(exprs)});
         break;
@@ -535,7 +550,7 @@ std::vector<std::vector<lp::ExprApi>> GroupByPlanner::expandGroupingSets(
       case NodeType::kRollup: {
         const auto* rollup = element->as<Rollup>();
         auto rollupSets =
-            expandRollup(resolveWithCache(rollup->expressions(), selectItems));
+            expandRollup(resolveWithCache(rollup->expressions(), selectExprs));
         groupingSets =
             crossProductGroupingSets(groupingSets, std::move(rollupSets));
         break;
@@ -544,7 +559,7 @@ std::vector<std::vector<lp::ExprApi>> GroupByPlanner::expandGroupingSets(
       case NodeType::kCube: {
         const auto* cube = element->as<Cube>();
         auto cubeSets =
-            expandCube(resolveWithCache(cube->expressions(), selectItems));
+            expandCube(resolveWithCache(cube->expressions(), selectExprs));
         groupingSets =
             crossProductGroupingSets(groupingSets, std::move(cubeSets));
         break;
@@ -555,7 +570,7 @@ std::vector<std::vector<lp::ExprApi>> GroupByPlanner::expandGroupingSets(
         std::vector<std::vector<lp::ExprApi>> explicitSets;
         explicitSets.reserve(groupingSetsNode->sets().size());
         for (const auto& set : groupingSetsNode->sets()) {
-          explicitSets.push_back(resolveWithCache(set, selectItems));
+          explicitSets.push_back(resolveWithCache(set, selectExprs));
         }
         groupingSets =
             crossProductGroupingSets(groupingSets, std::move(explicitSets));
@@ -594,7 +609,7 @@ void GroupByPlanner::deduplicateGroupingKeys() {
 }
 
 void GroupByPlanner::collectAggregates(
-    const std::vector<SelectItemPtr>& selectItems,
+    const std::vector<lp::ExprApi>& selectExprs,
     const ExpressionPtr& having,
     const OrderByPtr& orderBy) {
   // Go over SELECT expressions and figure out for each: whether a grouping
@@ -604,44 +619,19 @@ void GroupByPlanner::collectAggregates(
   // Collect all individual aggregates. A single select item 'sum(x) /
   // sum(y)' will produce 2 aggregates: sum(x), sum(y).
 
-  // When window functions are nested inside scalar expressions (e.g.
-  // sum(a) / sum(sum(a)) OVER ()), pass windowOptionsMap_ to toExpr so
-  // window calls are returned as plain function calls and their specs are
-  // stored in the map. This avoids the Call() assertion that rejects
-  // window functions as arguments to scalar functions.
-  const bool hasNestedWindow =
-      ExpressionPlanner::hasNestedWindowFunction(selectItems);
-  auto* windowOptions = hasNestedWindow ? &windowOptionsMap_ : nullptr;
-
   AggregateExprSet aggregateSet;
-  for (const auto& item : selectItems) {
-    VELOX_CHECK(item->is(NodeType::kSingleColumn));
-    auto* singleColumn = item->as<SingleColumn>();
-
-    lp::ExprApi expr = [&]() {
-      auto it = exprCache_.find(singleColumn->expression().get());
-      if (it != exprCache_.end()) {
-        return it->second;
-      }
-      return exprPlanner_.toExpr(singleColumn->expression(), windowOptions);
-    }();
-
-    findAggregates(expr, windowOptionsMap_, aggregates_, aggregateSet);
+  for (const auto& selectExpr : selectExprs) {
+    findAggregates(selectExpr, windowOptionsMap_, aggregates_, aggregateSet);
 
     if (!aggregates_.empty() &&
-        aggregates_.back().expr().get() == expr.expr().get()) {
+        aggregates_.back().expr().get() == selectExpr.expr().get()) {
       // Preserve the alias.
-      if (singleColumn->alias() != nullptr) {
-        aggregates_.back() = aggregates_.back().as(
-            canonicalizeIdentifier(*singleColumn->alias()));
+      if (selectExpr.alias().has_value()) {
+        aggregates_.back() = aggregates_.back().as(selectExpr.alias().value());
       }
     }
 
-    if (singleColumn->alias() != nullptr) {
-      expr = expr.as(canonicalizeIdentifier(*singleColumn->alias()));
-    }
-
-    projections_.emplace_back(expr);
+    projections_.emplace_back(selectExpr);
   }
 
   if (having != nullptr) {
@@ -798,59 +788,40 @@ bool GroupByPlanner::isIdentityProjection() const {
 
 lp::ExprApi GroupByPlanner::resolveGroupingExpression(
     const ExpressionPtr& expr,
-    const std::vector<SelectItemPtr>& selectItems) {
+    const std::vector<lp::ExprApi>& selectExprs) {
   if (expr->is(NodeType::kLongLiteral)) {
     const auto n = expr->as<LongLiteral>()->value();
     VELOX_USER_CHECK_GE(n, 1, "GROUP BY position is not in select list: {}", n);
     VELOX_USER_CHECK_LE(
         n,
-        selectItems.size(),
+        selectExprs.size(),
         "GROUP BY position is not in select list: {}",
         n);
-
-    const auto& item = selectItems.at(n - 1);
-    VELOX_CHECK(item->is(NodeType::kSingleColumn));
-
-    const auto* singleColumn = item->as<SingleColumn>();
-    return exprPlanner_.toExpr(singleColumn->expression());
+    return selectExprs.at(n - 1);
   }
   return exprPlanner_.toExpr(expr);
 }
 
 lp::ExprApi GroupByPlanner::resolveWithCache(
     const ExpressionPtr& expr,
-    const std::vector<SelectItemPtr>& selectItems) {
+    const std::vector<lp::ExprApi>& selectExprs) {
   const Expression* cacheKey = expr.get();
-  if (expr->is(NodeType::kLongLiteral)) {
-    const auto ordinal = expr->as<LongLiteral>()->value();
-    VELOX_USER_CHECK_GE(
-        ordinal, 1, "GROUP BY position is not in select list: {}", ordinal);
-    VELOX_USER_CHECK_LE(
-        ordinal,
-        selectItems.size(),
-        "GROUP BY position is not in select list: {}",
-        ordinal);
-    const auto& selectItem = selectItems.at(ordinal - 1);
-    if (selectItem->is(NodeType::kSingleColumn)) {
-      cacheKey = selectItem->as<SingleColumn>()->expression().get();
-    }
-  }
   auto it = exprCache_.find(cacheKey);
   if (it != exprCache_.end()) {
     return it->second;
   }
-  auto resolved = resolveGroupingExpression(expr, selectItems);
+  auto resolved = resolveGroupingExpression(expr, selectExprs);
   exprCache_.emplace(cacheKey, resolved);
   return resolved;
 }
 
 std::vector<lp::ExprApi> GroupByPlanner::resolveWithCache(
     const std::vector<ExpressionPtr>& exprs,
-    const std::vector<SelectItemPtr>& selectItems) {
+    const std::vector<lp::ExprApi>& selectExprs) {
   std::vector<lp::ExprApi> result;
   result.reserve(exprs.size());
   for (const auto& expr : exprs) {
-    auto resolved = resolveWithCache(expr, selectItems);
+    auto resolved = resolveWithCache(expr, selectExprs);
 
     // Expand COLUMNS() calls to multiple grouping keys.
     auto expanded = ColumnsExpansion::expand(resolved, *builder_);

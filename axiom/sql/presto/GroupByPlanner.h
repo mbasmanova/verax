@@ -32,21 +32,28 @@ class GroupByPlanner {
  public:
   GroupByPlanner(
       std::shared_ptr<lp::PlanBuilder>& builder,
-      ExpressionPlanner& exprPlanner)
-      : builder_(builder), exprPlanner_(exprPlanner) {}
+      ExpressionPlanner& exprPlanner,
+      std::unordered_map<const facebook::velox::core::IExpr*, lp::WindowSpec>
+          windowOptions = {})
+      : builder_(builder),
+        exprPlanner_(exprPlanner),
+        windowOptionsMap_(std::move(windowOptions)) {}
 
   /// Plans a GROUP BY clause with optional HAVING and ORDER BY.
   /// When 'distinct' is true (GROUP BY DISTINCT), duplicate grouping sets
-  /// are removed after expansion.
+  /// are removed after expansion. Accepts a flat list of pre-resolved
+  /// ExprApi items (AllColumns / SelectColumns must be expanded by the
+  /// caller).
   void plan(
       const std::vector<GroupingElementPtr>& groupingElements,
       bool distinct,
-      const std::vector<SelectItemPtr>& selectItems,
+      const std::vector<lp::ExprApi>& selectExprs,
       const ExpressionPtr& having,
       const OrderByPtr& orderBy) &&;
 
   /// Detects implicit global aggregation (e.g. SELECT count(*) FROM t)
-  /// and plans it. Returns true if aggregation was added.
+  /// and plans it. Returns true if aggregation was added. Accepts raw AST
+  /// select items and resolves them internally.
   bool tryPlanGlobalAgg(
       const std::vector<SelectItemPtr>& selectItems,
       const ExpressionPtr& having) &&;
@@ -54,10 +61,10 @@ class GroupByPlanner {
  private:
   std::vector<std::vector<lp::ExprApi>> expandGroupingSets(
       const std::vector<GroupingElementPtr>& groupingElements,
-      const std::vector<SelectItemPtr>& selectItems);
+      const std::vector<lp::ExprApi>& selectExprs);
   void deduplicateGroupingKeys();
   void collectAggregates(
-      const std::vector<SelectItemPtr>& selectItems,
+      const std::vector<lp::ExprApi>& selectExprs,
       const ExpressionPtr& having,
       const OrderByPtr& orderBy);
   void addAggregate(bool useGroupingSets);
@@ -67,13 +74,13 @@ class GroupByPlanner {
 
   lp::ExprApi resolveGroupingExpression(
       const ExpressionPtr& expr,
-      const std::vector<SelectItemPtr>& selectItems);
+      const std::vector<lp::ExprApi>& selectExprs);
   lp::ExprApi resolveWithCache(
       const ExpressionPtr& expr,
-      const std::vector<SelectItemPtr>& selectItems);
+      const std::vector<lp::ExprApi>& selectExprs);
   std::vector<lp::ExprApi> resolveWithCache(
       const std::vector<ExpressionPtr>& exprs,
-      const std::vector<SelectItemPtr>& selectItems);
+      const std::vector<lp::ExprApi>& selectExprs);
 
   // Injected dependencies.
   std::shared_ptr<lp::PlanBuilder>& builder_;
@@ -91,8 +98,8 @@ class GroupByPlanner {
   // AggregateCallExpr nodes within the IExpr tree.
   std::vector<lp::ExprApi> aggregates_;
 
-  // Maps window function IExpr* to their WindowSpec. Populated by
-  // collectAggregates() when window functions are nested inside scalar
+  // Maps window function IExpr* to their WindowSpec. Populated during SELECT
+  // expression resolution when window functions are nested inside scalar
   // expressions (e.g. sum(a) / sum(sum(a)) OVER ()). Used after aggregate
   // rewriting to extract window functions into a separate plan node.
   std::unordered_map<const facebook::velox::core::IExpr*, lp::WindowSpec>

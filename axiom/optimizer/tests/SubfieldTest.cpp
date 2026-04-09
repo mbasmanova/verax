@@ -942,14 +942,13 @@ TEST_P(SubfieldTest, subfieldAcrossDtBoundary) {
   ASSERT_NE(nullptr, plan);
 
   // The inner aggregation groups by the full struct ROW<x,y>. The outer
-  // aggregation groups by a.x and sums b. Two projects between the
-  // aggregations materialize the full struct and extract .x. With subfield
-  // pruning propagation, only .x would cross the boundary.
+  // aggregation groups by a.x and sums b. One project between the
+  // aggregations extracts .x. With subfield pruning propagation, only .x
+  // would cross the boundary.
   auto matcher = core::PlanMatcherBuilder()
                      .tableScan()
                      .project({"row_constructor(a, b) as r"})
                      .singleAggregation({"r"}, {"count(*) as cnt"})
-                     .project()
                      .project()
                      .singleAggregation()
                      .build();

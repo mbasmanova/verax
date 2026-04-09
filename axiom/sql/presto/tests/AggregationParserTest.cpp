@@ -78,6 +78,70 @@ TEST_F(AggregationParserTest, simpleGroupBy) {
       "GROUP BY position is not in select list: 0");
 }
 
+// GROUP BY ordinals with SELECT * and other expanding items.
+TEST_F(AggregationParserTest, groupByOrdinalWithSelectStar) {
+  testSelect(
+      "SELECT * FROM nation GROUP BY 4, 3, 2, 1",
+      matchScan()
+          .aggregate({"n_comment", "n_regionkey", "n_name", "n_nationkey"}, {})
+          .project()
+          .output());
+
+  testSelect(
+      "SELECT n.* FROM nation n GROUP BY 4, 3, 2, 1",
+      matchScan()
+          .aggregate({"n_comment", "n_regionkey", "n_name", "n_nationkey"}, {})
+          .project()
+          .output());
+
+  // Mixed: SELECT expr, *. Ordinals 2..5 map to expanded * columns.
+  // The expression at ordinal 1 is not in GROUP BY and is projected on top.
+  testSelect(
+      "SELECT n_name || '_suffix', * FROM nation GROUP BY 2, 3, 4, 5",
+      matchScan()
+          .aggregate({"n_nationkey", "n_name", "n_regionkey", "n_comment"}, {})
+          .project(
+              {"concat(n_name, _suffix)",
+               "n_nationkey",
+               "n_name",
+               "n_regionkey",
+               "n_comment"})
+          .output());
+
+  // SELECT COLUMNS(...) with ordinals — matches a subset of columns.
+  testSelect(
+      "SELECT COLUMNS('n_.*key') FROM nation GROUP BY 1, 2",
+      matchScan().aggregate({"n_nationkey", "n_regionkey"}, {}).output());
+
+  // GROUP BY ordinal out of range for expanded SELECT *.
+  VELOX_ASSERT_THROW(
+      parseSql("SELECT * FROM nation GROUP BY 1, 2, 3, 4, 5"),
+      "GROUP BY position is not in select list: 5");
+
+  // GROUP BY ordinal out of range for SELECT COLUMNS(...).
+  VELOX_ASSERT_THROW(
+      parseSql("SELECT COLUMNS('n_.*key') FROM nation GROUP BY 1, 2, 3"),
+      "GROUP BY position is not in select list: 3");
+
+  // SELECT * EXCLUDE with ordinals. EXCLUDE removes n_name, leaving 3 columns:
+  // n_nationkey(1), n_regionkey(2), n_comment(3).
+  testSelect(
+      "SELECT * EXCLUDE (n_name) FROM nation GROUP BY 1, 2, 3",
+      matchScan()
+          .aggregate({"n_nationkey", "n_regionkey", "n_comment"}, {})
+          .output());
+
+  // SELECT * REPLACE with ordinals. REPLACE substitutes n_name with
+  // concat(n_name, '_x'). Ordinal 2 maps to the replaced expression.
+  testSelect(
+      "SELECT * REPLACE (n_name || '_x' AS n_name) FROM nation GROUP BY 1, 2, 3, 4",
+      matchScan()
+          .aggregate(
+              {"n_nationkey", "concat(n_name, _x)", "n_regionkey", "n_comment"},
+              {})
+          .output());
+}
+
 TEST_F(AggregationParserTest, groupingSets) {
   lp::AggregateNodePtr agg;
   auto matcher =
