@@ -103,6 +103,20 @@ std::string readCommand(const std::string& prompt, bool& atEnd) {
       continue;
     }
 
+    // Dot-commands don't require a ';' terminator. Return immediately
+    // when the first non-whitespace character is '.'.
+    if (stripLeadingSpaces && line[startPos] == '.') {
+      auto result = line.substr(startPos);
+      // Strip trailing ';' and whitespace if present, for consistency
+      // with how SQL commands are returned.
+      auto end = result.find_last_not_of(" \t;");
+      if (end != std::string::npos) {
+        result = result.substr(0, end + 1);
+      }
+      linenoiseHistoryAdd(line.c_str());
+      return result;
+    }
+
     bool lineEndInComment = updateBlockCommentState(line, inBlockComment);
 
     // Only check for terminal ';' if not inside a block comment.

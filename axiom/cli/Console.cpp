@@ -17,6 +17,7 @@
 #include "axiom/cli/Console.h"
 #include <folly/FileUtil.h>
 #include <unistd.h>
+#include <algorithm>
 #include <iostream>
 #include <optional>
 #include <set>
@@ -59,6 +60,21 @@ DEFINE_bool(debug, false, "Enable debug mode");
 using namespace facebook::velox;
 
 namespace {
+// Extracts a file path argument from a dot-command string like ".run <file>".
+// Returns the trimmed path, or empty string if none.
+std::string parseDotCommandPath(const std::string& command, size_t prefixLen) {
+  if (command.size() <= prefixLen) {
+    return {};
+  }
+  auto filePath = command.substr(prefixLen);
+  auto start = filePath.find_first_not_of(" \t\n\r");
+  auto end = filePath.find_last_not_of(" \t\n\r");
+  if (start == std::string::npos) {
+    return {};
+  }
+  return filePath.substr(start, end - start + 1);
+}
+
 // Returns the path to the persistent history file, or std::nullopt if HOME is
 // unset.
 std::optional<std::string> getHistoryFilePath() {
@@ -109,8 +125,7 @@ void Console::run() {
     const bool interactive = isatty(STDIN_FILENO);
     if (interactive) {
       std::cout << "Axiom SQL. Type statement and end with ;.\n"
-                   "flag name = value; sets a gflag.\n"
-                   "help; prints help text."
+                   "Type .help for available commands."
                 << std::endl;
     }
     readCommands("SQL> ", interactive);
@@ -284,68 +299,119 @@ void Console::readCommands(const std::string& prompt, bool interactive) {
       linenoiseHistorySave(historyFile->c_str());
     }
 
-    if (command.starts_with("exit") || command.starts_with("quit")) {
+    if (command.starts_with(".exit") || command.starts_with(".quit")) {
       break;
     }
 
-    if (command.starts_with("help")) {
+    if (command.starts_with(".help")) {
       static const char* helpText =
           "Axiom Interactive SQL\n\n"
-          "Type SQL and end with ';'.\n"
-          "To set a flag, type 'flag <gflag_name> = <value>;' Leave a space on either side of '='.\n\n"
+          "Type SQL and end with ';'. Dot-commands do not require ';'.\n\n"
+          "Commands:\n\n"
+          "  .help              - Show this help text.\n"
+          "  .run <file>        - Execute SQL statements from a file.\n"
+          "  .set <name> <val>  - Set a gflag at runtime.\n"
+          "  .clear <name>      - Reset a flag to its default value.\n"
+          "  .flags             - Show all modified flags.\n"
+          "  .exit / .quit      - Exit the CLI.\n\n"
           "Useful flags:\n\n"
-          "num_workers - Make a distributed plan for this many workers. Runs it in-process with remote exchanges with serialization and passing data in memory. If num_workers is 1, makes single node plans without remote exchanges.\n\n"
-          "num_drivers - Specifies the parallelism for workers. This many threads per pipeline per worker.\n\n";
+          "  num_workers      - Number of workers for distributed plans (1 = single node).\n"
+          "  num_drivers      - Number of drivers (threads) per pipeline per worker.\n"
+          "  max_rows         - Maximum number of printed result rows.\n"
+          "  optimizer_trace  - Optimizer trace level (0 = off).\n\n";
 
-      std::cout << helpText;
+      std::cout << helpText << std::flush;
       continue;
     }
 
-    char* flag = nullptr;
-    char* value = nullptr;
-    SCOPE_EXIT {
-      if (flag != nullptr) {
-        free(flag);
+    if (command.starts_with(".run")) {
+      auto filePath = parseDotCommandPath(command, 4);
+      if (filePath.empty()) {
+        std::cerr << "Usage: .run <file>" << std::endl;
+        continue;
       }
-      if (value != nullptr) {
-        free(value);
-      }
-    };
 
-    if (sscanf(command.c_str(), "flag %ms = %ms", &flag, &value) == 2) {
+      std::string sql;
+      if (!folly::readFile(filePath.c_str(), sql)) {
+        std::cerr << "Cannot open file: " << filePath << std::endl;
+        continue;
+      }
+      runNoThrow(sql, interactive);
+      continue;
+    }
+
+    if (command.starts_with(".set")) {
+      auto args = parseDotCommandPath(command, 4);
+      char* flag = nullptr;
+      char* value = nullptr;
+      SCOPE_EXIT {
+        if (flag != nullptr) {
+          free(flag);
+        }
+        if (value != nullptr) {
+          free(value);
+        }
+      };
+      if (sscanf(args.c_str(), "%ms %ms", &flag, &value) != 2) {
+        std::cerr << "Usage: .set <flag_name> <value>" << std::endl;
+        continue;
+      }
       auto message = gflags::SetCommandLineOption(flag, value);
       if (!message.empty()) {
-        std::cout << message;
+        std::cout << message << std::flush;
         modifiedFlags.insert(std::string(flag));
       } else {
-        std::cout << "Failed to set flag '" << flag << "' to '" << value << "'"
+        std::cerr << "Failed to set flag '" << flag << "' to '" << value << "'"
                   << std::endl;
       }
       continue;
     }
 
-    if (sscanf(command.c_str(), "clear %ms", &flag) == 1) {
-      gflags::CommandLineFlagInfo info;
-      if (!gflags::GetCommandLineFlagInfo(flag, &info)) {
-        std::cout << "Failed to clear flag '" << flag << "'" << std::endl;
+    if (command.starts_with(".clear")) {
+      auto flagName = parseDotCommandPath(command, 6);
+      if (flagName.empty()) {
+        std::cerr << "Usage: .clear <flag_name>" << std::endl;
         continue;
       }
-      auto message =
-          gflags::SetCommandLineOption(flag, info.default_value.c_str());
+      gflags::CommandLineFlagInfo info;
+      if (!gflags::GetCommandLineFlagInfo(flagName.c_str(), &info)) {
+        std::cerr << "Failed to clear flag '" << flagName << "'" << std::endl;
+        continue;
+      }
+      auto message = gflags::SetCommandLineOption(
+          flagName.c_str(), info.default_value.c_str());
       if (!message.empty()) {
-        std::cout << message;
+        std::cout << message << std::flush;
+        modifiedFlags.erase(flagName);
       }
       continue;
     }
 
-    if (command.starts_with("flags")) {
-      std::cout << "Modified flags (" << modifiedFlags.size() << "):\n";
-      for (const auto& name : modifiedFlags) {
-        std::string flagValue;
-        if (gflags::GetCommandLineOption(name.c_str(), &flagValue)) {
-          std::cout << name << " = " << flagValue << std::endl;
+    if (command.starts_with(".flags")) {
+      // Show CLI-relevant flags with current values and default markers.
+      // Flags that take effect on each query execution.
+      static const std::vector<std::string> kFlagNames = {
+          "num_workers",
+          "num_drivers",
+          "max_rows",
+          "optimizer_trace",
+      };
+      for (const auto& name : kFlagNames) {
+        gflags::CommandLineFlagInfo info;
+        if (gflags::GetCommandLineFlagInfo(name.c_str(), &info)) {
+          std::cout << "  " << name << " = " << info.current_value;
+          if (info.current_value == info.default_value) {
+            std::cout << " (default)";
+          }
+          std::cout << std::endl;
         }
       }
+      continue;
+    }
+
+    if (command.starts_with(".")) {
+      std::cerr << "Unknown command: " << command
+                << ". Type .help for available commands." << std::endl;
       continue;
     }
 
