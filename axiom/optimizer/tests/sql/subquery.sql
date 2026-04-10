@@ -4,6 +4,9 @@ SELECT EXISTS(SELECT 1), EXISTS(SELECT 1), EXISTS(SELECT 3), NOT EXISTS(SELECT 1
 ----
 SELECT (EXISTS(SELECT 1)) = (EXISTS(SELECT 3)) WHERE NOT EXISTS(SELECT 1 WHERE false)
 ----
+-- EXISTS with LIMIT 0 should return false.
+SELECT EXISTS(SELECT 1 LIMIT 0), NOT EXISTS(SELECT 1 LIMIT 0)
+----
 -- IN list with a scalar subquery and a literal.
 -- duckdb: SELECT a, b FROM t WHERE a IN ((SELECT max(a) FROM t), 1)
 SELECT a, b FROM t WHERE a IN ((SELECT max(a) FROM t), 1)
