@@ -17,6 +17,7 @@
 #include "axiom/sql/presto/tests/LogicalPlanMatcher.h"
 #include <gtest/gtest.h>
 #include <set>
+#include "velox/parse/ExprRewriter.h"
 #include "velox/parse/Expressions.h"
 #include "velox/parse/ExpressionsParser.h"
 
@@ -38,6 +39,121 @@ namespace {
   }                                                    \
   return LogicalPlanMatcher::MatchResult::success(symbols);
 
+// Forward declaration for mutual recursion.
+std::string toExprString(const velox::core::IExpr& expr);
+
+// Formats a function call as "name(arg1, arg2, ...)". Shared by kCall,
+// kAggregate, and the function-call part of kWindow.
+std::string callToString(const velox::core::CallExpr& call) {
+  auto name = call.name();
+  if (name == "and" || name == "or") {
+    std::transform(name.begin(), name.end(), name.begin(), ::toupper);
+  }
+  std::string result = name + "(";
+  for (size_t i = 0; i < call.inputs().size(); ++i) {
+    if (i > 0) {
+      result += ", ";
+    }
+    result += toExprString(*call.inputAt(i));
+  }
+  return result + ")";
+}
+
+// Appends ORDER BY keys to a stream.
+void appendOrderBy(
+    const std::vector<velox::core::SortKey>& keys,
+    std::stringstream& out) {
+  out << "ORDER BY ";
+  for (size_t i = 0; i < keys.size(); ++i) {
+    if (i > 0) {
+      out << ", ";
+    }
+    out << toExprString(*keys[i].expr);
+    out << (keys[i].ascending ? " ASC" : " DESC");
+    out << (keys[i].nullsFirst ? " NULLS FIRST" : " NULLS LAST");
+  }
+}
+
+// Appends a frame bound to a stream.
+void appendBound(
+    velox::core::WindowCallExpr::BoundType boundType,
+    const velox::core::ExprPtr& value,
+    std::stringstream& out) {
+  if (value) {
+    out << toExprString(*value) << " ";
+  }
+  out << velox::core::WindowCallExpr::toName(boundType);
+}
+
+// Formats a WindowCallExpr as "func(args) OVER (PARTITION BY ... ORDER BY
+// ... ROWS/RANGE/GROUPS BETWEEN ... AND ...)".
+std::string windowToString(const velox::core::WindowCallExpr& window) {
+  std::stringstream out;
+  out << callToString(window) << " OVER (";
+
+  bool needSeparator = false;
+  if (!window.partitionKeys().empty()) {
+    out << "PARTITION BY ";
+    for (size_t i = 0; i < window.partitionKeys().size(); ++i) {
+      if (i > 0) {
+        out << ", ";
+      }
+      out << toExprString(*window.partitionKeys()[i]);
+    }
+    needSeparator = true;
+  }
+
+  if (!window.orderByKeys().empty()) {
+    if (needSeparator) {
+      out << " ";
+    }
+    appendOrderBy(window.orderByKeys(), out);
+    needSeparator = true;
+  }
+
+  if (window.frame().has_value()) {
+    if (needSeparator) {
+      out << " ";
+    }
+    const auto& frame = window.frame().value();
+    out << velox::core::WindowCallExpr::toName(frame.type) << " BETWEEN ";
+    appendBound(frame.startType, frame.startValue, out);
+    out << " AND ";
+    appendBound(frame.endType, frame.endValue, out);
+  }
+
+  out << ")";
+  if (window.isIgnoreNulls()) {
+    out << " IGNORE NULLS";
+  }
+  return out.str();
+}
+
+// Formats an AggregateCallExpr as "name(DISTINCT args ORDER BY ...) FILTER
+// (WHERE ...)".
+std::string aggregateToString(const velox::core::AggregateCallExpr& agg) {
+  std::stringstream out;
+  out << agg.name() << "(";
+  if (agg.isDistinct()) {
+    out << "DISTINCT ";
+  }
+  for (size_t i = 0; i < agg.inputs().size(); ++i) {
+    if (i > 0) {
+      out << ", ";
+    }
+    out << toExprString(*agg.inputs()[i]);
+  }
+  if (!agg.orderBy().empty()) {
+    out << " ";
+    appendOrderBy(agg.orderBy(), out);
+  }
+  out << ")";
+  if (agg.filter() != nullptr) {
+    out << " FILTER (WHERE " << toExprString(*agg.filter()) << ")";
+  }
+  return out.str();
+}
+
 // Prints a velox::core::IExpr tree in the same format as lp::ExprPrinter.
 // This allows comparing DuckDB-parsed expected expressions against actual
 // lp::Expr::toString() output.
@@ -46,23 +162,12 @@ std::string toExprString(const velox::core::IExpr& expr) {
   switch (expr.kind()) {
     case IExpr::Kind::kFieldAccess:
       return expr.as<velox::core::FieldAccessExpr>()->name();
-    case IExpr::Kind::kCall: {
-      auto* call = expr.as<velox::core::CallExpr>();
-      // DuckDB produces lowercase "and"/"or", but ExprResolver converts
-      // these to SpecialFormExprs which print as uppercase "AND"/"OR".
-      auto name = call->name();
-      if (name == "and" || name == "or") {
-        std::transform(name.begin(), name.end(), name.begin(), ::toupper);
-      }
-      std::string result = name + "(";
-      for (size_t i = 0; i < call->inputs().size(); ++i) {
-        if (i > 0) {
-          result += ", ";
-        }
-        result += toExprString(*call->inputAt(i));
-      }
-      return result + ")";
-    }
+    case IExpr::Kind::kCall:
+      return callToString(*expr.as<velox::core::CallExpr>());
+    case IExpr::Kind::kAggregate:
+      return aggregateToString(*expr.as<velox::core::AggregateCallExpr>());
+    case IExpr::Kind::kWindow:
+      return windowToString(*expr.as<velox::core::WindowCallExpr>());
     case IExpr::Kind::kCast: {
       auto* cast = expr.as<velox::core::CastExpr>();
       return fmt::format(
@@ -83,87 +188,24 @@ std::string toExprString(const velox::core::IExpr& expr) {
   }
 }
 
-// Formats a velox::parse::WindowExpr in the same format as lp::ExprPrinter.
-std::string toWindowExprString(const velox::parse::WindowExpr& window) {
-  std::string result = toExprString(*window.functionCall->dropAlias());
-  result += " OVER (";
-
-  bool needSeparator = false;
-
-  if (!window.partitionBy.empty()) {
-    result += "PARTITION BY ";
-    for (size_t i = 0; i < window.partitionBy.size(); ++i) {
-      if (i > 0) {
-        result += ", ";
-      }
-      result += toExprString(*window.partitionBy[i]);
-    }
-    needSeparator = true;
-  }
-
-  if (!window.orderBy.empty()) {
-    if (needSeparator) {
-      result += " ";
-    }
-    result += "ORDER BY ";
-    for (size_t i = 0; i < window.orderBy.size(); ++i) {
-      if (i > 0) {
-        result += ", ";
-      }
-      result += toExprString(*window.orderBy[i].expr);
-      result += " ";
-      result += window.orderBy[i].ascending ? "ASC" : "DESC";
-      result += " NULLS ";
-      result += window.orderBy[i].nullsFirst ? "FIRST" : "LAST";
-    }
-    needSeparator = true;
-  }
-
-  if (needSeparator) {
-    result += " ";
-  }
-  result += velox::parse::WindowTypeName::toName(window.frame.type);
-  result += " BETWEEN ";
-  if (window.frame.startValue) {
-    result += toExprString(*window.frame.startValue) + " ";
-  }
-  result += velox::parse::BoundTypeName::toName(window.frame.startType);
-  result += " AND ";
-  if (window.frame.endValue) {
-    result += toExprString(*window.frame.endValue) + " ";
-  }
-  result += velox::parse::BoundTypeName::toName(window.frame.endType);
-  result += ")";
-
-  if (window.ignoreNulls) {
-    result += " IGNORE NULLS";
-  }
-  return result;
-}
-
 // Rewrites field access names in an IExpr tree using the given mapping.
 // Used for symbol rewriting: replaces alias names with actual column names.
 velox::core::ExprPtr rewriteInputNames(
     const velox::core::ExprPtr& expr,
     const std::unordered_map<std::string, std::string>& mapping) {
-  using velox::core::IExpr;
-  if (expr->is(IExpr::Kind::kFieldAccess)) {
-    auto* fieldAccess = expr->as<velox::core::FieldAccessExpr>();
-    if (fieldAccess->isRootColumn()) {
-      auto it = mapping.find(fieldAccess->name());
-      if (it == mapping.end()) {
-        return expr;
-      }
-      return std::make_shared<velox::core::FieldAccessExpr>(
-          it->second, fieldAccess->alias());
-    }
-  }
-
-  std::vector<velox::core::ExprPtr> newInputs;
-  for (const auto& input : expr->inputs()) {
-    newInputs.push_back(rewriteInputNames(input, mapping));
-  }
-  return expr->replaceInputs(newInputs);
+  return velox::core::ExprRewriter::rewrite(
+      expr, [&](const velox::core::ExprPtr& e) -> velox::core::ExprPtr {
+        if (auto* field = e->as<velox::core::FieldAccessExpr>()) {
+          if (field->isRootColumn()) {
+            auto it = mapping.find(field->name());
+            if (it != mapping.end()) {
+              return std::make_shared<velox::core::FieldAccessExpr>(
+                  it->second, field->alias());
+            }
+          }
+        }
+        return e;
+      });
 }
 
 template <typename T = LogicalPlanNode>
@@ -287,8 +329,7 @@ class FilterMatcher : public LogicalPlanMatcherImpl<FilterNode> {
       const std::unordered_map<std::string, std::string>& symbols)
       const override {
     velox::parse::DuckSqlExpressionsParser parser;
-    auto expected = std::get<velox::core::ExprPtr>(
-        parser.parseScalarOrWindowExpr(expression_));
+    auto expected = parser.parseScalarOrWindowExpr(expression_);
 
     if (!symbols.empty()) {
       expected = rewriteInputNames(expected, symbols);
@@ -396,65 +437,26 @@ class ProjectMatcher : public LogicalPlanMatcherImpl<ProjectNode> {
     AXIOM_RETURN_IF_FAILURE;
 
     std::unordered_map<std::string, std::string> newSymbols;
-    velox::parse::DuckSqlExpressionsParser parser;
+    velox::parse::ParseOptions parseOptions;
+    parseOptions.correctWindowFrameDefault = true;
+    velox::parse::DuckSqlExpressionsParser parser(parseOptions);
 
     for (auto i = 0; i < expressions_.size(); ++i) {
       const auto& actual = plan.expressionAt(i);
       auto parsed = parser.parseScalarOrWindowExpr(expressions_[i]);
 
-      if (auto* windowExpr = std::get_if<velox::parse::WindowExpr>(&parsed)) {
-        // Capture alias from the window function call.
-        if (windowExpr->functionCall->alias()) {
-          newSymbols[windowExpr->functionCall->alias().value()] =
-              plan.names()[i];
-        }
-
-        // DuckDB defaults end bound to CURRENT ROW when ORDER BY is absent,
-        // but the SQL standard requires UNBOUNDED FOLLOWING. Correct this.
-        if (windowExpr->orderBy.empty() &&
-            windowExpr->frame.endType == velox::parse::BoundType::kCurrentRow) {
-          windowExpr->frame.endType =
-              velox::parse::BoundType::kUnboundedFollowing;
-        }
-
-        // Rewrite symbols in window sub-expressions.
-        if (!symbols.empty()) {
-          windowExpr->functionCall =
-              rewriteInputNames(windowExpr->functionCall, symbols);
-          for (auto& expr : windowExpr->partitionBy) {
-            expr = rewriteInputNames(expr, symbols);
-          }
-          for (auto& entry : windowExpr->orderBy) {
-            entry.expr = rewriteInputNames(entry.expr, symbols);
-          }
-          if (windowExpr->frame.startValue) {
-            windowExpr->frame.startValue =
-                rewriteInputNames(windowExpr->frame.startValue, symbols);
-          }
-          if (windowExpr->frame.endValue) {
-            windowExpr->frame.endValue =
-                rewriteInputNames(windowExpr->frame.endValue, symbols);
-          }
-        }
-
-        EXPECT_EQ(toWindowExprString(*windowExpr), actual->toString())
-            << "at index " << i;
-      } else {
-        auto expectedExpr = std::get<velox::core::ExprPtr>(parsed);
-
-        // Capture alias.
-        if (expectedExpr->alias()) {
-          newSymbols[expectedExpr->alias().value()] = plan.names()[i];
-        }
-
-        // Rewrite symbols in expected expression.
-        if (!symbols.empty()) {
-          expectedExpr = rewriteInputNames(expectedExpr, symbols);
-        }
-
-        EXPECT_EQ(toExprString(*expectedExpr->dropAlias()), actual->toString())
-            << "at index " << i;
+      // Capture alias for symbol propagation.
+      if (parsed->alias()) {
+        newSymbols[parsed->alias().value()] = plan.names()[i];
       }
+
+      auto expectedExpr = parsed;
+      if (!symbols.empty()) {
+        expectedExpr = rewriteInputNames(expectedExpr, symbols);
+      }
+
+      EXPECT_EQ(toExprString(*expectedExpr->dropAlias()), actual->toString())
+          << "at index " << i;
       AXIOM_RETURN_IF_FAILURE;
     }
 
@@ -498,46 +500,22 @@ class AggregateMatcher : public LogicalPlanMatcherImpl<AggregateNode> {
 
     velox::parse::DuckSqlExpressionsParser parser;
     for (auto i = 0; i < aggregates_.size(); ++i) {
-      auto parsed = parser.parseAggregateExpr(aggregates_[i]);
-      auto expected = parsed.expr;
-      if (!symbols.empty()) {
-        expected = rewriteInputNames(expected, symbols);
-      }
+      velox::core::ExprPtr parsed = parser.parseAggregateExpr(aggregates_[i]);
 
       // Capture alias for symbol propagation.
-      if (expected->alias()) {
-        newSymbols[expected->alias().value()] =
+      if (parsed->alias()) {
+        newSymbols[parsed->alias().value()] =
             plan.outputType()->nameOf(numGroupingKeys + i);
       }
 
-      // Compare aggregate function call.
-      const auto& actual = plan.aggregateAt(i);
-      auto expectedCall = std::make_shared<CallExpr>(
-          actual->type(), actual->name(), actual->inputs());
-      EXPECT_EQ(toExprString(*expected->dropAlias()), expectedCall->toString())
-          << "at aggregate index " << i;
-      AXIOM_RETURN_IF_FAILURE;
-
-      // Compare DISTINCT flag.
-      EXPECT_EQ(parsed.distinct, actual->isDistinct())
-          << "at aggregate index " << i;
-      AXIOM_RETURN_IF_FAILURE;
-
-      // Compare FILTER expression.
-      if (parsed.filter != nullptr) {
-        EXPECT_NE(actual->filter(), nullptr) << "at aggregate index " << i;
-        AXIOM_RETURN_IF_FAILURE;
-        auto expectedFilter = parsed.filter;
-        if (!symbols.empty()) {
-          expectedFilter = rewriteInputNames(expectedFilter, symbols);
-        }
-        EXPECT_EQ(toExprString(*expectedFilter), actual->filter()->toString())
-            << "at aggregate index " << i;
-        AXIOM_RETURN_IF_FAILURE;
-      } else {
-        EXPECT_EQ(actual->filter(), nullptr) << "at aggregate index " << i;
-        AXIOM_RETURN_IF_FAILURE;
+      if (!symbols.empty()) {
+        parsed = rewriteInputNames(parsed, symbols);
       }
+
+      const auto& actual = plan.aggregateAt(i);
+      EXPECT_EQ(toExprString(*parsed->dropAlias()), actual->toString())
+          << "at aggregate index " << i;
+      AXIOM_RETURN_IF_FAILURE;
     }
 
     EXPECT_EQ(groupingSets_.size(), plan.groupingSets().size())

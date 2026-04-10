@@ -426,95 +426,12 @@ PlanBuilder& PlanBuilder::filter(const ExprApi& predicate) {
   return *this;
 }
 
-namespace {
-
-velox::core::WindowCallExpr::BoundType toBoundType(
-    velox::parse::BoundType type) {
-  switch (type) {
-    case velox::parse::BoundType::kCurrentRow:
-      return velox::core::WindowCallExpr::BoundType::kCurrentRow;
-    case velox::parse::BoundType::kUnboundedPreceding:
-      return velox::core::WindowCallExpr::BoundType::kUnboundedPreceding;
-    case velox::parse::BoundType::kUnboundedFollowing:
-      return velox::core::WindowCallExpr::BoundType::kUnboundedFollowing;
-    case velox::parse::BoundType::kPreceding:
-      return velox::core::WindowCallExpr::BoundType::kPreceding;
-    case velox::parse::BoundType::kFollowing:
-      return velox::core::WindowCallExpr::BoundType::kFollowing;
-  }
-  VELOX_UNREACHABLE();
-}
-
-WindowSpec toWindowSpec(const velox::parse::WindowExpr& parsed) {
-  WindowSpec spec;
-
-  std::vector<ExprApi> partitionKeys;
-  partitionKeys.reserve(parsed.partitionBy.size());
-  for (const auto& key : parsed.partitionBy) {
-    partitionKeys.emplace_back(key);
-  }
-  if (!partitionKeys.empty()) {
-    spec.partitionBy(std::move(partitionKeys));
-  }
-
-  std::vector<SortKey> orderByKeys;
-  orderByKeys.reserve(parsed.orderBy.size());
-  for (const auto& ob : parsed.orderBy) {
-    orderByKeys.emplace_back(ExprApi(ob.expr), ob.ascending, ob.nullsFirst);
-  }
-  if (!orderByKeys.empty()) {
-    spec.orderBy(std::move(orderByKeys));
-  }
-
-  std::optional<ExprApi> startValue;
-  if (parsed.frame.startValue) {
-    startValue = ExprApi(parsed.frame.startValue);
-  }
-  std::optional<ExprApi> endValue;
-  if (parsed.frame.endValue) {
-    endValue = ExprApi(parsed.frame.endValue);
-  }
-
-  switch (parsed.frame.type) {
-    case velox::parse::WindowType::kRows:
-      spec.rows(
-          toBoundType(parsed.frame.startType),
-          std::move(startValue),
-          toBoundType(parsed.frame.endType),
-          std::move(endValue));
-      break;
-    case velox::parse::WindowType::kRange:
-      spec.range(
-          toBoundType(parsed.frame.startType),
-          std::move(startValue),
-          toBoundType(parsed.frame.endType),
-          std::move(endValue));
-      break;
-  }
-
-  if (parsed.ignoreNulls) {
-    spec.ignoreNulls();
-  }
-
-  return spec;
-}
-
-} // namespace
-
 std::vector<ExprApi> PlanBuilder::parse(const std::vector<std::string>& exprs) {
   std::vector<ExprApi> untypedExprs;
   untypedExprs.reserve(exprs.size());
   for (const auto& sql : exprs) {
-    auto result = sqlParser_->parseScalarOrWindowExpr(sql);
-    if (auto* windowExpr = std::get_if<velox::parse::WindowExpr>(&result)) {
-      auto callExpr = ExprApi(windowExpr->functionCall);
-      auto spec = toWindowSpec(*windowExpr);
-      untypedExprs.push_back(callExpr.over(spec));
-    } else {
-      untypedExprs.emplace_back(std::get<velox::core::ExprPtr>(result));
-    }
+    untypedExprs.emplace_back(sqlParser_->parseScalarOrWindowExpr(sql));
   }
-
   return untypedExprs;
 }
 
@@ -794,28 +711,8 @@ void parseAggregates(
     const std::vector<std::string>& aggregates,
     std::vector<ExprApi>& parsedAggregates) {
   parsedAggregates.reserve(aggregates.size());
-
   for (const auto& sql : aggregates) {
-    auto parsed = parser.parseAggregateExpr(sql);
-    ExprApi expr(parsed.expr);
-
-    if (parsed.distinct) {
-      expr = expr.distinct();
-    }
-    if (parsed.filter != nullptr) {
-      expr = expr.filter(ExprApi(parsed.filter));
-    }
-    if (!parsed.orderBy.empty()) {
-      std::vector<SortKey> sortingKeys;
-      sortingKeys.reserve(parsed.orderBy.size());
-      for (const auto& orderBy : parsed.orderBy) {
-        sortingKeys.emplace_back(
-            ExprApi(orderBy.expr), orderBy.ascending, orderBy.nullsFirst);
-      }
-      expr = expr.sortBy(std::move(sortingKeys));
-    }
-
-    parsedAggregates.emplace_back(std::move(expr));
+    parsedAggregates.emplace_back(parser.parseAggregateExpr(sql));
   }
 }
 

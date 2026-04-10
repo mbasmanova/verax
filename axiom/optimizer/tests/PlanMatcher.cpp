@@ -21,6 +21,7 @@
 #include "velox/connectors/hive/TableHandle.h"
 #include "velox/duckdb/conversion/DuckParser.h"
 #include "velox/exec/HashPartitionFunction.h"
+#include "velox/parse/ExprRewriter.h"
 #include "velox/parse/Expressions.h"
 #include "velox/parse/ExpressionsParser.h"
 
@@ -119,25 +120,19 @@ class PlanMatcherImpl : public PlanMatcher {
 velox::core::ExprPtr rewriteInputNames(
     const velox::core::ExprPtr& expr,
     const std::unordered_map<std::string, std::string>& mapping) {
-  if (expr->is(IExpr::Kind::kFieldAccess)) {
-    auto fieldAccess = expr->as<velox::core::FieldAccessExpr>();
-    if (fieldAccess->isRootColumn()) {
-      auto it = mapping.find(fieldAccess->name());
-      if (it == mapping.end()) {
-        return expr;
-      }
-
-      return std::make_shared<velox::core::FieldAccessExpr>(
-          it->second, fieldAccess->alias());
-    }
-  }
-
-  std::vector<velox::core::ExprPtr> newInputs;
-  for (const auto& input : expr->inputs()) {
-    newInputs.push_back(rewriteInputNames(input, mapping));
-  }
-
-  return expr->replaceInputs(newInputs);
+  return core::ExprRewriter::rewrite(
+      expr, [&](const core::ExprPtr& e) -> core::ExprPtr {
+        if (auto* field = e->as<velox::core::FieldAccessExpr>()) {
+          if (field->isRootColumn()) {
+            auto it = mapping.find(field->name());
+            if (it != mapping.end()) {
+              return std::make_shared<velox::core::FieldAccessExpr>(
+                  it->second, field->alias());
+            }
+          }
+        }
+        return e;
+      });
 }
 
 class TableScanMatcher : public PlanMatcherImpl<TableScanNode> {
@@ -631,18 +626,21 @@ class AggregationMatcher : public PlanMatcherImpl<AggregationNode> {
 
       for (auto i = 0; i < aggregates_.size(); ++i) {
         auto aggregateExpr = duckdb::parseAggregateExpr(aggregates_[i], {});
-        auto expected = rewriteInputNames(aggregateExpr.expr, newSymbols);
+        auto expected = rewriteInputNames(aggregateExpr, newSymbols);
         if (expected->alias()) {
           newSymbols[expected->alias().value()] = plan.aggregateNames()[i];
         }
 
+        // Compare just the function call (name + args), not aggregate options
+        // (FILTER, ORDER BY, DISTINCT) which are verified separately.
+        auto expectedNoAlias = expected->dropAlias();
         EXPECT_EQ(
             plan.aggregates()[i].call->toString(),
-            expected->dropAlias()->toString());
-
+            dynamic_cast<const core::CallExpr&>(*expectedNoAlias)
+                .core::CallExpr::toString());
         AXIOM_TEST_RETURN_IF_FAILURE
 
-        auto expectedMask = aggregateExpr.filter;
+        auto expectedMask = aggregateExpr->filter();
         const auto& mask = plan.aggregates()[i].mask;
         EXPECT_EQ(mask != nullptr, expectedMask != nullptr);
         AXIOM_TEST_RETURN_IF_FAILURE
@@ -656,7 +654,7 @@ class AggregationMatcher : public PlanMatcherImpl<AggregationNode> {
         }
 
         // Verify ORDER BY.
-        const auto& expectedOrderBy = aggregateExpr.orderBy;
+        const auto& expectedOrderBy = aggregateExpr->orderBy();
         const auto& sortingKeys = plan.aggregates()[i].sortingKeys;
         const auto& sortingOrders = plan.aggregates()[i].sortingOrders;
 
@@ -1137,29 +1135,31 @@ class EnforceDistinctMatcher : public PlanMatcherImpl<EnforceDistinctNode> {
 };
 
 // Maps parser BoundType to WindowNode::BoundType.
-WindowNode::BoundType toNodeBoundType(parse::BoundType type) {
+WindowNode::BoundType toNodeBoundType(core::WindowCallExpr::BoundType type) {
   switch (type) {
-    case parse::BoundType::kCurrentRow:
+    case core::WindowCallExpr::BoundType::kCurrentRow:
       return WindowNode::BoundType::kCurrentRow;
-    case parse::BoundType::kUnboundedPreceding:
+    case core::WindowCallExpr::BoundType::kUnboundedPreceding:
       return WindowNode::BoundType::kUnboundedPreceding;
-    case parse::BoundType::kUnboundedFollowing:
+    case core::WindowCallExpr::BoundType::kUnboundedFollowing:
       return WindowNode::BoundType::kUnboundedFollowing;
-    case parse::BoundType::kPreceding:
+    case core::WindowCallExpr::BoundType::kPreceding:
       return WindowNode::BoundType::kPreceding;
-    case parse::BoundType::kFollowing:
+    case core::WindowCallExpr::BoundType::kFollowing:
       return WindowNode::BoundType::kFollowing;
   }
   VELOX_UNREACHABLE();
 }
 
 // Maps parser WindowType to WindowNode::WindowType.
-WindowNode::WindowType toNodeWindowType(parse::WindowType type) {
+WindowNode::WindowType toNodeWindowType(core::WindowCallExpr::WindowType type) {
   switch (type) {
-    case parse::WindowType::kRows:
+    case core::WindowCallExpr::WindowType::kRows:
       return WindowNode::WindowType::kRows;
-    case parse::WindowType::kRange:
+    case core::WindowCallExpr::WindowType::kRange:
       return WindowNode::WindowType::kRange;
+    case core::WindowCallExpr::WindowType::kGroups:
+      return WindowNode::WindowType::kRows;
   }
   VELOX_UNREACHABLE();
 }
@@ -1190,23 +1190,13 @@ class WindowMatcher : public PlanMatcherImpl<WindowNode> {
     AXIOM_TEST_RETURN_IF_FAILURE
 
     // Parse all window expressions to extract expected values.
-    std::vector<parse::WindowExpr> expectedWindows;
+    std::vector<core::WindowCallExprPtr> expectedWindows;
     expectedWindows.reserve(windowExprs_.size());
+    parse::ParseOptions parseOptions;
+    parseOptions.correctWindowFrameDefault = true;
     for (const auto& expr : windowExprs_) {
       expectedWindows.push_back(
-          parse::DuckSqlExpressionsParser().parseWindowExpr(expr));
-
-      // DuckDB's parser defaults the frame end bound to CURRENT ROW even
-      // when ORDER BY is absent, where the SQL standard requires UNBOUNDED
-      // FOLLOWING. Correct this since DuckDB does not distinguish defaulted
-      // from explicit frames.
-      // TODO: Remove after fixing
-      // https://github.com/facebookincubator/velox/issues/16549.
-      auto& window = expectedWindows.back();
-      if (window.orderBy.empty() &&
-          window.frame.endType == parse::BoundType::kCurrentRow) {
-        window.frame.endType = parse::BoundType::kUnboundedFollowing;
-      }
+          parse::DuckSqlExpressionsParser(parseOptions).parseWindowExpr(expr));
     }
 
     // All window functions in a WindowNode share the same partition and order
@@ -1228,14 +1218,14 @@ class WindowMatcher : public PlanMatcherImpl<WindowNode> {
  private:
   void verifyPartitionKeys(
       const WindowNode& plan,
-      const parse::WindowExpr& expected,
+      const core::WindowCallExprPtr& expected,
       const std::unordered_map<std::string, std::string>& symbols) const {
-    EXPECT_EQ(plan.partitionKeys().size(), expected.partitionBy.size())
+    EXPECT_EQ(plan.partitionKeys().size(), expected->partitionKeys().size())
         << "Partition key count mismatch";
     AXIOM_TEST_RETURN_IF_FAILURE_VOID
 
-    for (auto i = 0; i < expected.partitionBy.size(); ++i) {
-      auto expectedKey = expected.partitionBy[i];
+    for (auto i = 0; i < expected->partitionKeys().size(); ++i) {
+      auto expectedKey = expected->partitionKeys()[i];
       if (!symbols.empty()) {
         expectedKey = rewriteInputNames(expectedKey, symbols);
       }
@@ -1246,25 +1236,26 @@ class WindowMatcher : public PlanMatcherImpl<WindowNode> {
 
   void verifyOrderByKeys(
       const WindowNode& plan,
-      const parse::WindowExpr& expected,
+      const core::WindowCallExprPtr& expected,
       const std::unordered_map<std::string, std::string>& symbols) const {
-    EXPECT_EQ(plan.sortingKeys().size(), expected.orderBy.size())
+    EXPECT_EQ(plan.sortingKeys().size(), expected->orderByKeys().size())
         << "Order by key count mismatch";
     AXIOM_TEST_RETURN_IF_FAILURE_VOID
 
-    for (auto i = 0; i < expected.orderBy.size(); ++i) {
-      auto expectedKey = expected.orderBy[i].expr;
+    for (auto i = 0; i < expected->orderByKeys().size(); ++i) {
+      auto expectedKey = expected->orderByKeys()[i].expr;
       if (!symbols.empty()) {
         expectedKey = rewriteInputNames(expectedKey, symbols);
       }
       EXPECT_EQ(plan.sortingKeys()[i]->toString(), expectedKey->toString())
           << "Order by key mismatch at index " << i;
       EXPECT_EQ(
-          plan.sortingOrders()[i].isAscending(), expected.orderBy[i].ascending)
+          plan.sortingOrders()[i].isAscending(),
+          expected->orderByKeys()[i].ascending)
           << "Order by ascending mismatch at index " << i;
       EXPECT_EQ(
           plan.sortingOrders()[i].isNullsFirst(),
-          expected.orderBy[i].nullsFirst)
+          expected->orderByKeys()[i].nullsFirst)
           << "Order by nullsFirst mismatch at index " << i;
     }
   }
@@ -1273,13 +1264,13 @@ class WindowMatcher : public PlanMatcherImpl<WindowNode> {
   // aliases for symbol propagation.
   std::unordered_map<std::string, std::string> verifyWindowFunctions(
       const WindowNode& plan,
-      const std::vector<parse::WindowExpr>& expectedWindows,
+      const std::vector<core::WindowCallExprPtr>& expectedWindows,
       const std::unordered_map<std::string, std::string>& symbols) const {
     std::unordered_map<std::string, std::string> newSymbols;
     for (auto i = 0; i < expectedWindows.size(); ++i) {
       const auto& expectedWindow = expectedWindows[i];
       const auto& actualFunc = plan.windowFunctions()[i];
-      auto expectedCall = expectedWindow.functionCall;
+      core::ExprPtr expectedCall = expectedWindow;
 
       // Capture alias for symbol propagation.
       if (expectedCall->alias()) {
@@ -1290,19 +1281,25 @@ class WindowMatcher : public PlanMatcherImpl<WindowNode> {
         expectedCall = rewriteInputNames(expectedCall, symbols);
       }
 
+      // Compare just the function call (name + args), not the window spec.
+      auto expectedNoAlias = expectedCall->dropAlias();
       EXPECT_EQ(
           actualFunc.functionCall->toString(),
-          expectedCall->dropAlias()->toString())
+          dynamic_cast<const core::CallExpr&>(*expectedNoAlias)
+              .core::CallExpr::toString())
           << "Window function call mismatch at index " << i;
 
-      verifyFrame(actualFunc.frame, expectedWindow.frame, symbols, i);
+      if (expectedWindow->frame()) {
+        verifyFrame(
+            actualFunc.frame, expectedWindow->frame().value(), symbols, i);
+      }
     }
     return newSymbols;
   }
 
   void verifyFrame(
       const WindowNode::Frame& actual,
-      const parse::WindowFrame& expected,
+      const core::WindowCallExpr::Frame& expected,
       const std::unordered_map<std::string, std::string>& symbols,
       size_t index) const {
     EXPECT_EQ(
