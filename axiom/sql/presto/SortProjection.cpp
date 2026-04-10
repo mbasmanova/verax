@@ -118,9 +118,6 @@ std::vector<size_t> SortProjection::widenProjections(
         if (inserted) {
           ordinals.push_back(projections.size() + 1);
           lp::ExprApi newProjection(resolved, sortKeyExprs[i].alias());
-          if (sortKeyExprs[i].windowSpec()) {
-            newProjection = newProjection.over(*sortKeyExprs[i].windowSpec());
-          }
           projections.push_back(std::move(newProjection));
         } else {
           ordinals.push_back(projectionIt->second);

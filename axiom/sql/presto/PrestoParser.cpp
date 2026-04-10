@@ -175,26 +175,6 @@ lp::ExprPtr resolveJoinColumn(
   return leftHas ? leftScope(alias, name) : rightScope(alias, name);
 }
 
-// Finds sub-expressions in an IExpr tree using pointer-identity matching.
-// Walks the expression tree and collects ExprPtrs whose raw pointers are
-// found in 'targets'. Also appends matches to 'order' in traversal order
-// for deterministic plan generation.
-void findExprPtrs(
-    const core::ExprPtr& expr,
-    const std::unordered_map<const core::IExpr*, lp::WindowSpec>& targets,
-    std::unordered_map<const core::IExpr*, core::ExprPtr>& found,
-    std::vector<const core::IExpr*>& order) {
-  if (targets.count(expr.get())) {
-    if (found.emplace(expr.get(), expr).second) {
-      order.push_back(expr.get());
-    }
-    return;
-  }
-  for (const auto& input : expr->inputs()) {
-    findExprPtrs(input, targets, found, order);
-  }
-}
-
 // Recursively replaces expression tree nodes per the replacement map.
 core::ExprPtr replaceInputs(
     const core::ExprPtr& expr,
@@ -245,11 +225,8 @@ class RelationPlanner : public AstVisitor {
     return *builder_;
   }
 
-  lp::ExprApi toExpr(
-      const ExpressionPtr& node,
-      std::unordered_map<const core::IExpr*, lp::WindowSpec>* windowOptions =
-          nullptr) {
-    return exprPlanner_.toExpr(node, windowOptions);
+  lp::ExprApi toExpr(const ExpressionPtr& node) {
+    return exprPlanner_.toExpr(node);
   }
 
  private:
@@ -563,55 +540,6 @@ class RelationPlanner : public AstVisitor {
     }
   }
 
-  // Adds a projection that computes window functions. Returns a map from
-  // window call IExpr* to column reference ExprPtr for replacing window
-  // calls in downstream expressions.
-  std::unordered_map<const core::IExpr*, core::ExprPtr> addWindowProjection(
-      const std::unordered_map<const core::IExpr*, lp::WindowSpec>&
-          windowOptions,
-      const std::vector<lp::ExprApi>& exprs) {
-    // Collect ExprPtrs for the window calls from the expression trees.
-    // 'windowOrder' captures matches in left-to-right traversal order
-    // for deterministic plan generation.
-    std::unordered_map<const core::IExpr*, core::ExprPtr> windowExprPtrs;
-    std::vector<const core::IExpr*> windowOrder;
-    for (const auto& expr : exprs) {
-      findExprPtrs(expr.expr(), windowOptions, windowExprPtrs, windowOrder);
-    }
-
-    // TODO: Deduplicate semantically equivalent window function calls.
-    // Currently, each occurrence of the same window expression (e.g.
-    // sum(b) OVER (PARTITION BY a)) gets a separate entry in windowOptions
-    // and is computed redundantly.
-    std::vector<lp::ExprApi> windowExprs;
-    windowExprs.reserve(windowOrder.size());
-    for (const auto* exprPtr : windowOrder) {
-      windowExprs.push_back(
-          lp::ExprApi(windowExprPtrs.at(exprPtr))
-              .over(windowOptions.at(exprPtr)));
-    }
-
-    // Use with() instead of project() to preserve name mappings (including
-    // table aliases) so that column references built before the window
-    // projection (e.g., from star expansion with qualified names) remain
-    // resolvable.
-    builder_->with(windowExprs);
-
-    auto outputNames =
-        builder_->findOrAssignOutputNames(/*includeHiddenColumns=*/false);
-
-    // Map window call nodes to their output column references. Window
-    // columns are appended after the input columns.
-    auto numInputColumns = outputNames.size() - windowOrder.size();
-    std::unordered_map<const core::IExpr*, core::ExprPtr> replacements;
-    for (size_t i = 0; i < windowOrder.size(); ++i) {
-      const auto& column = outputNames.at(numInputColumns + i);
-      replacements.emplace(windowOrder[i], column.toCol().expr());
-    }
-
-    return replacements;
-  }
-
   // Expands COLUMNS('regex') pseudo-function calls found inside an
   // expression. Delegates to ColumnsExpansion::expand() for the core expansion,
   // then applies the alias. Returns true if expansion happened.
@@ -641,8 +569,6 @@ class RelationPlanner : public AstVisitor {
       std::vector<lp::PlanBuilder::OutputColumnName>& columns,
       const std::vector<std::shared_ptr<Identifier>>& excludeColumns,
       const std::vector<ReplaceItem>& replaceItems,
-      bool hasNestedWindow,
-      std::unordered_map<const core::IExpr*, lp::WindowSpec>& windowOptions,
       std::vector<lp::ExprApi>& exprs) {
     std::unordered_map<std::string, core::ExprPtr> replaceMap;
     if (!excludeColumns.empty() || !replaceItems.empty()) {
@@ -693,8 +619,7 @@ class RelationPlanner : public AstVisitor {
             "Column is ambiguous for REPLACE, use qualified name (e.g., t.{}): {}",
             name,
             name);
-        auto expr = toExpr(
-            replaceItem.expression, hasNestedWindow ? &windowOptions : nullptr);
+        auto expr = toExpr(replaceItem.expression);
         replaceMap[name] = expr.expr();
       }
     }
@@ -711,53 +636,12 @@ class RelationPlanner : public AstVisitor {
     }
   }
 
-  // Like buildSelectProjections, but always returns a result (expands single
-  // SELECT * instead of returning nullopt). Collects window specs into the
-  // caller's map for GroupByPlanner to handle.
-  std::vector<lp::ExprApi> expandSelectExprs(
-      const std::vector<SelectItemPtr>& selectItems,
-      std::unordered_map<const core::IExpr*, lp::WindowSpec>& windowOptions) {
-    auto result = buildSelectProjections(selectItems, windowOptions);
-    if (result.has_value()) {
-      return result.value();
-    }
-    // Single SELECT * — expand to all output columns.
-    std::vector<lp::ExprApi> exprs;
-    for (const auto& column :
-         builder_->findOrAssignOutputNames(/*includeHiddenColumns=*/false)) {
-      exprs.push_back(column.toCol());
-    }
-    return exprs;
-  }
-
   // Converts SELECT items to ExprApi projections. Expands AllColumns (*),
   // SelectColumns (COLUMNS(...)), EXCLUDE, and REPLACE. Returns std::nullopt
-  // for a single plain SELECT * (no EXCLUDE/REPLACE).
+  // for a single plain SELECT * (no EXCLUDE/REPLACE). Window functions are
+  // embedded as WindowCallExpr in the IExpr tree.
   std::optional<std::vector<lp::ExprApi>> buildSelectProjections(
       const std::vector<SelectItemPtr>& selectItems) {
-    std::unordered_map<const core::IExpr*, lp::WindowSpec> windowOptions;
-    auto result = buildSelectProjections(selectItems, windowOptions);
-    if (!result.has_value()) {
-      return std::nullopt;
-    }
-
-    if (!windowOptions.empty()) {
-      auto replacements = addWindowProjection(windowOptions, result.value());
-      for (auto& expr : result.value()) {
-        expr =
-            lp::ExprApi(replaceInputs(expr.expr(), replacements), expr.alias());
-      }
-    }
-
-    return result;
-  }
-
-  // Overload that collects window specs into the caller's map instead of
-  // processing them internally. Used by GROUP BY where window function
-  // extraction is handled by GroupByPlanner.
-  std::optional<std::vector<lp::ExprApi>> buildSelectProjections(
-      const std::vector<SelectItemPtr>& selectItems,
-      std::unordered_map<const core::IExpr*, lp::WindowSpec>& windowOptions) {
     // SELECT * FROM ...
     const bool isSingleSelectStar = selectItems.size() == 1 &&
         selectItems.at(0)->is(NodeType::kAllColumns) &&
@@ -767,9 +651,6 @@ class RelationPlanner : public AstVisitor {
     if (isSingleSelectStar) {
       return std::nullopt;
     }
-
-    const bool hasNestedWindow =
-        ExpressionPlanner::hasNestedWindowFunction(selectItems);
 
     // Lateral column alias map: alias name → expression. When friendlySql is
     // enabled, aliases defined in earlier SELECT items can be referenced in
@@ -807,8 +688,6 @@ class RelationPlanner : public AstVisitor {
             selectedColumns,
             allColumns->excludeColumns(),
             allColumns->replaceItems(),
-            hasNestedWindow,
-            windowOptions,
             exprs);
       } else if (item->is(NodeType::kSelectColumns)) {
         auto* selectColumns = item->as<SelectColumns>();
@@ -825,16 +704,12 @@ class RelationPlanner : public AstVisitor {
             selectedColumns,
             selectColumns->excludeColumns(),
             selectColumns->replaceItems(),
-            hasNestedWindow,
-            windowOptions,
             exprs);
       } else {
         VELOX_CHECK(item->is(NodeType::kSingleColumn));
         auto* singleColumn = item->as<SingleColumn>();
 
-        lp::ExprApi expr = toExpr(
-            singleColumn->expression(),
-            hasNestedWindow ? &windowOptions : nullptr);
+        lp::ExprApi expr = toExpr(singleColumn->expression());
 
         std::optional<std::string> alias;
         if (singleColumn->alias() != nullptr) {
@@ -856,6 +731,63 @@ class RelationPlanner : public AstVisitor {
       }
     }
 
+    return exprs;
+  }
+
+  // Extracts nested window functions from the projections. Called after
+  // buildSelectProjections for non-GROUP BY queries. GROUP BY queries
+  // handle window extraction after aggregate rewriting in GroupByPlanner.
+  // Only extracts windows that are nested inside non-window expressions
+  // (e.g., sum(a) / sum(sum(a)) OVER ()). Top-level window projections
+  // are handled by PlanBuilder::project via resolveWindowTypes.
+  void extractNestedWindows(std::vector<lp::ExprApi>& exprs) {
+    std::unordered_map<const core::IExpr*, core::ExprPtr> windowExprPtrs;
+    std::vector<const core::IExpr*> windowOrder;
+    ExpressionPlanner::findNestedWindowExprs(
+        exprs, windowExprPtrs, windowOrder);
+
+    if (windowOrder.empty()) {
+      return;
+    }
+
+    std::vector<lp::ExprApi> windowExprs;
+    windowExprs.reserve(windowOrder.size());
+    for (const auto* exprPtr : windowOrder) {
+      windowExprs.emplace_back(windowExprPtrs.at(exprPtr));
+    }
+
+    builder_->with(windowExprs);
+
+    auto outputNames =
+        builder_->findOrAssignOutputNames(/*includeHiddenColumns=*/false);
+    auto numInputColumns = outputNames.size() - windowOrder.size();
+
+    std::unordered_map<const core::IExpr*, core::ExprPtr> replacements;
+    for (size_t i = 0; i < windowOrder.size(); ++i) {
+      const auto& column = outputNames.at(numInputColumns + i);
+      replacements.emplace(windowOrder[i], column.toCol().expr());
+    }
+
+    for (auto& expr : exprs) {
+      expr =
+          lp::ExprApi(replaceInputs(expr.expr(), replacements), expr.alias());
+    }
+  }
+
+  // Like buildSelectProjections, but always returns a result (expands single
+  // SELECT * instead of returning nullopt). Does NOT extract nested windows —
+  // the caller is responsible for that.
+  std::vector<lp::ExprApi> expandSelectExprs(
+      const std::vector<SelectItemPtr>& selectItems) {
+    auto result = buildSelectProjections(selectItems);
+    if (result.has_value()) {
+      return result.value();
+    }
+    std::vector<lp::ExprApi> exprs;
+    for (const auto& column :
+         builder_->findOrAssignOutputNames(/*includeHiddenColumns=*/false)) {
+      exprs.push_back(column.toCol());
+    }
     return exprs;
   }
 
@@ -928,6 +860,7 @@ class RelationPlanner : public AstVisitor {
       builder_->dropHiddenColumns();
       return;
     }
+    extractNestedWindows(projections.value());
     if (orderBy == nullptr) {
       builder_->project(projections.value());
       return;
@@ -962,6 +895,7 @@ class RelationPlanner : public AstVisitor {
       addOrderBy(orderBy);
       return;
     }
+    extractNestedWindows(projections.value());
     if (orderBy == nullptr) {
       builder_->project(projections.value());
       builder_->distinct();
@@ -1106,10 +1040,9 @@ class RelationPlanner : public AstVisitor {
     const bool distinct = node->select()->isDistinct();
 
     if (auto groupBy = node->groupBy()) {
-      std::unordered_map<const core::IExpr*, lp::WindowSpec> windowOptions;
-      auto selectExprs = expandSelectExprs(selectItems, windowOptions);
+      auto selectExprs = expandSelectExprs(selectItems);
 
-      GroupByPlanner{builder_, exprPlanner_, std::move(windowOptions)}.plan(
+      GroupByPlanner{builder_, exprPlanner_}.plan(
           groupBy->groupingElements(),
           groupBy->isDistinct(),
           selectExprs,

@@ -87,8 +87,7 @@ class ExprResolver {
   /// ordering, and frame bounds, then looks up the window function signature
   /// and produces a WindowExpr.
   WindowExprPtr resolveWindowTypes(
-      const velox::core::ExprPtr& expr,
-      const WindowSpec& windowSpec,
+      const velox::core::WindowCallExpr& windowCall,
       const InputNameResolver& inputNameResolver) const;
 
  private:

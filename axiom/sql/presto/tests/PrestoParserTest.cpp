@@ -1505,7 +1505,9 @@ TEST_F(PrestoParserTest, nestedWindowFunction) {
           .project({"s + 1::bigint", "c * 2::bigint"})
           .output({"s", "c"}));
 
-  // Mix of top-level and nested window functions preserves aliases.
+  // Mix of top-level and nested window functions. Only the nested window
+  // (inside the multiply) is extracted into its own project. The top-level
+  // window stays in the main project alongside the scalar expression.
   testSelect(
       "SELECT row_number() OVER (ORDER BY a) AS rn, "
       "sum(a) OVER (PARTITION BY b) * 2 AS doubled FROM t",
@@ -1513,10 +1515,12 @@ TEST_F(PrestoParserTest, nestedWindowFunction) {
           .project({
               "a",
               "b",
-              "row_number() OVER (ORDER BY a) AS rn",
               "sum(a) OVER (PARTITION BY b) AS w",
           })
-          .project({"rn", "w * 2::bigint"})
+          .project({
+              "row_number() OVER (ORDER BY a ASC NULLS LAST RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)",
+              "w * 2::bigint",
+          })
           .output({"rn", "doubled"}));
 
   // Window function without alias in expression.

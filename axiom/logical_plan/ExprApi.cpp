@@ -142,10 +142,6 @@ ExprApi Call(std::string name, const std::vector<ExprApi>& args) {
   std::vector<velox::core::ExprPtr> argExpr;
   argExpr.reserve(args.size());
   for (auto& arg : args) {
-    VELOX_CHECK_NULL(
-        arg.windowSpec(),
-        "Window function cannot be an argument to a scalar function: {}",
-        name);
     argExpr.push_back(arg.expr());
   }
   return ExprApi{std::make_shared<const velox::core::CallExpr>(
@@ -185,8 +181,8 @@ ExprApi Ordinality() {
 
 ExprApi ExprApi::unnestAs(std::vector<std::string> aliases) const {
   VELOX_USER_CHECK(!aliases.empty(), "UNNEST aliases must not be empty.");
-  VELOX_USER_CHECK_NULL(
-      windowSpec_,
+  VELOX_USER_CHECK(
+      !expr_->is(velox::core::IExpr::Kind::kWindow),
       "UNNEST cannot be combined with OVER: {}",
       expr_->toString());
   return ExprApi(expr_, alias_, std::move(aliases));
@@ -195,18 +191,32 @@ ExprApi ExprApi::unnestAs(std::vector<std::string> aliases) const {
 ExprApi ExprApi::over(const WindowSpec& windowSpec) const {
   VELOX_USER_CHECK(
       expr_->is(velox::core::IExpr::Kind::kCall),
-      "OVER cannot be combined with DISTINCT, FILTER, or ORDER BY: {}",
-      expr_->toString());
-  VELOX_USER_CHECK_NULL(
-      windowSpec_, "OVER clause already specified: {}", expr_->toString());
-  VELOX_USER_CHECK(
-      unnestedAliases_.empty(),
-      "OVER cannot be combined with UNNEST: {}",
+      "OVER can only be applied to a plain function call: {}",
       expr_->toString());
 
-  ExprApi result(expr_, alias_);
-  result.windowSpec_ = std::make_shared<const WindowSpec>(windowSpec);
-  return result;
+  auto* call = expr_->as<velox::core::CallExpr>();
+
+  std::vector<velox::core::ExprPtr> partitionKeys;
+  partitionKeys.reserve(windowSpec.partitionKeys().size());
+  for (const auto& key : windowSpec.partitionKeys()) {
+    partitionKeys.push_back(key.expr());
+  }
+
+  std::vector<velox::core::SortKey> orderByKeys;
+  orderByKeys.reserve(windowSpec.orderByKeys().size());
+  for (const auto& key : windowSpec.orderByKeys()) {
+    orderByKeys.push_back({key.expr.expr(), key.ascending, key.nullsFirst});
+  }
+
+  return ExprApi(
+      std::make_shared<velox::core::WindowCallExpr>(
+          call->name(),
+          call->inputs(),
+          std::move(partitionKeys),
+          std::move(orderByKeys),
+          windowSpec.frame(),
+          windowSpec.isIgnoreNulls()),
+      alias_);
 }
 
 namespace {
@@ -228,8 +238,8 @@ ExprApi ExprApi::distinct() const {
           expr_->is(velox::core::IExpr::Kind::kAggregate),
       "DISTINCT can only be applied to a function call: {}",
       expr_->toString());
-  VELOX_USER_CHECK_NULL(
-      windowSpec_,
+  VELOX_USER_CHECK(
+      !expr_->is(velox::core::IExpr::Kind::kWindow),
       "DISTINCT cannot be combined with OVER: {}",
       expr_->toString());
 
@@ -263,8 +273,8 @@ ExprApi ExprApi::filter(const ExprApi& filterExpr) const {
           expr_->is(velox::core::IExpr::Kind::kAggregate),
       "FILTER can only be applied to a function call: {}",
       expr_->toString());
-  VELOX_USER_CHECK_NULL(
-      windowSpec_,
+  VELOX_USER_CHECK(
+      !expr_->is(velox::core::IExpr::Kind::kWindow),
       "FILTER cannot be combined with OVER: {}",
       expr_->toString());
 
@@ -297,8 +307,8 @@ ExprApi ExprApi::sortBy(const std::vector<SortKey>& keys) const {
           expr_->is(velox::core::IExpr::Kind::kAggregate),
       "ORDER BY can only be applied to a function call: {}",
       expr_->toString());
-  VELOX_USER_CHECK_NULL(
-      windowSpec_,
+  VELOX_USER_CHECK(
+      !expr_->is(velox::core::IExpr::Kind::kWindow),
       "ORDER BY cannot be combined with OVER: {}",
       expr_->toString());
 
@@ -333,42 +343,64 @@ ExprApi ExprApi::sortBy(const std::vector<SortKey>& keys) const {
       alias_);
 }
 
-WindowSpec& WindowSpec::rows(
-    WindowExpr::BoundType startType,
+namespace {
+
+velox::core::WindowCallExpr::Frame makeFrame(
+    velox::core::WindowCallExpr::WindowType type,
+    velox::core::WindowCallExpr::BoundType startType,
     std::optional<ExprApi> startValue,
-    WindowExpr::BoundType endType,
+    velox::core::WindowCallExpr::BoundType endType,
     std::optional<ExprApi> endValue) {
-  frameType_ = WindowExpr::WindowType::kRows;
-  startType_ = startType;
-  startValue_ = std::move(startValue);
-  endType_ = endType;
-  endValue_ = std::move(endValue);
+  return {
+      type,
+      startType,
+      startValue ? startValue->expr() : nullptr,
+      endType,
+      endValue ? endValue->expr() : nullptr,
+  };
+}
+
+} // namespace
+
+WindowSpec& WindowSpec::rows(
+    velox::core::WindowCallExpr::BoundType startType,
+    std::optional<ExprApi> startValue,
+    velox::core::WindowCallExpr::BoundType endType,
+    std::optional<ExprApi> endValue) {
+  frame_ = makeFrame(
+      velox::core::WindowCallExpr::WindowType::kRows,
+      startType,
+      std::move(startValue),
+      endType,
+      std::move(endValue));
   return *this;
 }
 
 WindowSpec& WindowSpec::range(
-    WindowExpr::BoundType startType,
+    velox::core::WindowCallExpr::BoundType startType,
     std::optional<ExprApi> startValue,
-    WindowExpr::BoundType endType,
+    velox::core::WindowCallExpr::BoundType endType,
     std::optional<ExprApi> endValue) {
-  frameType_ = WindowExpr::WindowType::kRange;
-  startType_ = startType;
-  startValue_ = std::move(startValue);
-  endType_ = endType;
-  endValue_ = std::move(endValue);
+  frame_ = makeFrame(
+      velox::core::WindowCallExpr::WindowType::kRange,
+      startType,
+      std::move(startValue),
+      endType,
+      std::move(endValue));
   return *this;
 }
 
 WindowSpec& WindowSpec::groups(
-    WindowExpr::BoundType startType,
+    velox::core::WindowCallExpr::BoundType startType,
     std::optional<ExprApi> startValue,
-    WindowExpr::BoundType endType,
+    velox::core::WindowCallExpr::BoundType endType,
     std::optional<ExprApi> endValue) {
-  frameType_ = WindowExpr::WindowType::kGroups;
-  startType_ = startType;
-  startValue_ = std::move(startValue);
-  endType_ = endType;
-  endValue_ = std::move(endValue);
+  frame_ = makeFrame(
+      velox::core::WindowCallExpr::WindowType::kGroups,
+      startType,
+      std::move(startValue),
+      endType,
+      std::move(endValue));
   return *this;
 }
 

@@ -940,12 +940,50 @@ AggregateExprPtr ExprResolver::resolveAggregateTypes(
       distinct);
 }
 
+namespace {
+
+// Maps WindowCallExpr::BoundType to WindowExpr::BoundType.
+WindowExpr::BoundType toBoundType(velox::core::WindowCallExpr::BoundType type) {
+  switch (type) {
+    case velox::core::WindowCallExpr::BoundType::kUnboundedPreceding:
+      return WindowExpr::BoundType::kUnboundedPreceding;
+    case velox::core::WindowCallExpr::BoundType::kPreceding:
+      return WindowExpr::BoundType::kPreceding;
+    case velox::core::WindowCallExpr::BoundType::kCurrentRow:
+      return WindowExpr::BoundType::kCurrentRow;
+    case velox::core::WindowCallExpr::BoundType::kFollowing:
+      return WindowExpr::BoundType::kFollowing;
+    case velox::core::WindowCallExpr::BoundType::kUnboundedFollowing:
+      return WindowExpr::BoundType::kUnboundedFollowing;
+  }
+  VELOX_UNREACHABLE();
+}
+
+// Maps WindowCallExpr::WindowType to WindowExpr::WindowType.
+WindowExpr::WindowType toWindowType(
+    velox::core::WindowCallExpr::WindowType type) {
+  switch (type) {
+    case velox::core::WindowCallExpr::WindowType::kRange:
+      return WindowExpr::WindowType::kRange;
+    case velox::core::WindowCallExpr::WindowType::kRows:
+      return WindowExpr::WindowType::kRows;
+    case velox::core::WindowCallExpr::WindowType::kGroups:
+      return WindowExpr::WindowType::kGroups;
+  }
+  VELOX_UNREACHABLE();
+}
+
+} // namespace
+
 WindowExprPtr ExprResolver::resolveWindowTypes(
-    const velox::core::ExprPtr& expr,
-    const WindowSpec& windowSpec,
+    const velox::core::WindowCallExpr& windowCall,
     const InputNameResolver& inputNameResolver) const {
+  // Build a plain CallExpr from the WindowCallExpr for type resolution.
+  auto callExpr = std::make_shared<velox::core::CallExpr>(
+      windowCall.name(), windowCall.inputs(), std::nullopt);
+
   auto resolved = resolveCallTypes(
-      expr,
+      callExpr,
       inputNameResolver,
       *this,
       enableCoercions_,
@@ -955,49 +993,51 @@ WindowExprPtr ExprResolver::resolveWindowTypes(
 
   // Resolve partition keys.
   std::vector<ExprPtr> partitionKeys;
-  partitionKeys.reserve(windowSpec.partitionKeys().size());
-  for (const auto& key : windowSpec.partitionKeys()) {
-    partitionKeys.push_back(resolveScalarTypes(key.expr(), inputNameResolver));
+  partitionKeys.reserve(windowCall.partitionKeys().size());
+  for (const auto& key : windowCall.partitionKeys()) {
+    partitionKeys.push_back(resolveScalarTypes(key, inputNameResolver));
   }
 
   // Resolve ordering.
   std::vector<SortingField> ordering;
-  ordering.reserve(windowSpec.orderByKeys().size());
-  for (const auto& key : windowSpec.orderByKeys()) {
-    auto sortExpr = resolveScalarTypes(key.expr.expr(), inputNameResolver);
+  ordering.reserve(windowCall.orderByKeys().size());
+  for (const auto& key : windowCall.orderByKeys()) {
+    auto sortExpr = resolveScalarTypes(key.expr, inputNameResolver);
     ordering.push_back(
         SortingField{sortExpr, SortOrder(key.ascending, key.nullsFirst)});
   }
 
   // Resolve frame.
-  auto startType = windowSpec.startType();
+  const auto& frame = windowCall.frame();
+  auto startType = frame.has_value()
+      ? toBoundType(frame->startType)
+      : WindowExpr::BoundType::kUnboundedPreceding;
   ExprPtr startValue;
-  if (windowSpec.startValue().has_value()) {
-    startValue =
-        resolveScalarTypes(windowSpec.startValue()->expr(), inputNameResolver);
+  if (frame.has_value() && frame->startValue) {
+    startValue = resolveScalarTypes(frame->startValue, inputNameResolver);
   }
 
-  auto endType = windowSpec.endType();
+  auto endType = frame.has_value() ? toBoundType(frame->endType)
+                                   : WindowExpr::BoundType::kUnboundedFollowing;
   ExprPtr endValue;
-  if (windowSpec.endValue().has_value()) {
-    endValue =
-        resolveScalarTypes(windowSpec.endValue()->expr(), inputNameResolver);
+  if (frame.has_value() && frame->endValue) {
+    endValue = resolveScalarTypes(frame->endValue, inputNameResolver);
   }
 
-  auto windowType = windowSpec.frameType().has_value()
-      ? windowSpec.frameType().value()
-      : WindowExpr::WindowType::kRange;
+  auto windowType = frame.has_value() ? toWindowType(frame->type)
+                                      : WindowExpr::WindowType::kRange;
 
   // SQL standard: when ORDER BY is present and no frame is specified, the
   // default is RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW. When ORDER BY
   // is absent, the default is RANGE BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED
   // FOLLOWING (entire partition).
-  if (!windowSpec.frameType().has_value() && !ordering.empty() &&
+  if (!frame.has_value() && !ordering.empty() &&
       endType == WindowExpr::BoundType::kUnboundedFollowing) {
     endType = WindowExpr::BoundType::kCurrentRow;
   }
 
-  WindowExpr::Frame frame{windowType, startType, startValue, endType, endValue};
+  WindowExpr::Frame resolvedFrame{
+      windowType, startType, startValue, endType, endValue};
 
   return std::make_shared<WindowExpr>(
       resolved.type,
@@ -1005,8 +1045,8 @@ WindowExprPtr ExprResolver::resolveWindowTypes(
       std::move(resolved.inputs),
       std::move(partitionKeys),
       std::move(ordering),
-      std::move(frame),
-      windowSpec.isIgnoreNulls());
+      std::move(resolvedFrame),
+      windowCall.isIgnoreNulls());
 }
 
 } // namespace facebook::axiom::logical_plan

@@ -21,6 +21,7 @@
 #include "axiom/sql/presto/ExpressionPlanner.h"
 #include "axiom/sql/presto/ast/AstNodesAll.h"
 #include "folly/container/F14Map.h"
+#include "velox/parse/IExpr.h"
 
 namespace axiom::sql::presto {
 
@@ -32,12 +33,8 @@ class GroupByPlanner {
  public:
   GroupByPlanner(
       std::shared_ptr<lp::PlanBuilder>& builder,
-      ExpressionPlanner& exprPlanner,
-      std::unordered_map<const facebook::velox::core::IExpr*, lp::WindowSpec>
-          windowOptions = {})
-      : builder_(builder),
-        exprPlanner_(exprPlanner),
-        windowOptionsMap_(std::move(windowOptions)) {}
+      ExpressionPlanner& exprPlanner)
+      : builder_(builder), exprPlanner_(exprPlanner) {}
 
   /// Plans a GROUP BY clause with optional HAVING and ORDER BY.
   /// When 'distinct' is true (GROUP BY DISTINCT), duplicate grouping sets
@@ -69,6 +66,19 @@ class GroupByPlanner {
       const OrderByPtr& orderBy);
   void addAggregate(bool useGroupingSets);
   void rewritePostAggregateExprs();
+
+  // Projects nested window functions (kWindow nodes inside non-window
+  // expressions) into a separate plan node via builder_->with(). Records
+  // replacement mappings in 'keyInputs' for the caller's projection rewrite.
+  void projectNestedWindows(
+      const std::function<facebook::velox::core::ExprPtr(
+          const facebook::velox::core::ExprPtr&)>& rewriteIExpr,
+      folly::F14FastMap<
+          facebook::velox::core::ExprPtr,
+          facebook::velox::core::ExprPtr,
+          facebook::velox::core::IExprHash,
+          facebook::velox::core::IExprEqual>& keyInputs);
+
   std::vector<size_t> resolveSortOrdinals(const OrderByPtr& orderBy);
   bool isIdentityProjection() const;
 
@@ -97,13 +107,6 @@ class GroupByPlanner {
   // Deduplicated aggregate expressions. Aggregate options are embedded in
   // AggregateCallExpr nodes within the IExpr tree.
   std::vector<lp::ExprApi> aggregates_;
-
-  // Maps window function IExpr* to their WindowSpec. Populated during SELECT
-  // expression resolution when window functions are nested inside scalar
-  // expressions (e.g. sum(a) / sum(sum(a)) OVER ()). Used after aggregate
-  // rewriting to extract window functions into a separate plan node.
-  std::unordered_map<const facebook::velox::core::IExpr*, lp::WindowSpec>
-      windowOptionsMap_;
 
   std::optional<lp::ExprApi> filter_;
   std::vector<lp::ExprApi> sortingKeyExprs_;

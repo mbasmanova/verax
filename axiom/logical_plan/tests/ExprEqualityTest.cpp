@@ -209,19 +209,23 @@ TEST_F(ExprEqualityTest, aggregate) {
 }
 
 TEST_F(ExprEqualityTest, window) {
+  using BoundType = velox::core::WindowCallExpr::BoundType;
+
   auto resolveWindow = [this](const ExprApi& expr) {
+    VELOX_CHECK(expr.expr()->is(velox::core::IExpr::Kind::kWindow));
     return ExprResolver(nullptr, false)
         .resolveWindowTypes(
-            expr.expr(), *expr.windowSpec(), inputResolver(schema_));
+            *expr.expr()->as<velox::core::WindowCallExpr>(),
+            inputResolver(schema_));
   };
 
   auto spec = WindowSpec()
                   .partitionBy({Col("x")})
                   .orderBy({SortKey(Col("y"))})
                   .rows(
-                      WindowExpr::BoundType::kUnboundedPreceding,
+                      BoundType::kUnboundedPreceding,
                       std::nullopt,
-                      WindowExpr::BoundType::kCurrentRow,
+                      BoundType::kCurrentRow,
                       std::nullopt);
 
   auto rowNum = resolveWindow(Call("row_number").over(spec));
@@ -235,9 +239,9 @@ TEST_F(ExprEqualityTest, window) {
   auto noPartitionSpec = WindowSpec()
                              .orderBy({SortKey(Col("y"))})
                              .rows(
-                                 WindowExpr::BoundType::kUnboundedPreceding,
+                                 BoundType::kUnboundedPreceding,
                                  std::nullopt,
-                                 WindowExpr::BoundType::kCurrentRow,
+                                 BoundType::kCurrentRow,
                                  std::nullopt);
   EXPECT_NE(*rowNum, *resolveWindow(Call("row_number").over(noPartitionSpec)));
 
@@ -246,9 +250,9 @@ TEST_F(ExprEqualityTest, window) {
                        .partitionBy({Col("x")})
                        .orderBy({SortKey(Col("y"))})
                        .range(
-                           WindowExpr::BoundType::kUnboundedPreceding,
+                           BoundType::kUnboundedPreceding,
                            std::nullopt,
-                           WindowExpr::BoundType::kCurrentRow,
+                           BoundType::kCurrentRow,
                            std::nullopt);
   EXPECT_NE(*rowNum, *resolveWindow(Call("row_number").over(rangeSpec)));
 
@@ -257,9 +261,9 @@ TEST_F(ExprEqualityTest, window) {
                              .partitionBy({Col("x")})
                              .orderBy({SortKey(Col("y"))})
                              .rows(
-                                 WindowExpr::BoundType::kUnboundedPreceding,
+                                 BoundType::kUnboundedPreceding,
                                  std::nullopt,
-                                 WindowExpr::BoundType::kCurrentRow,
+                                 BoundType::kCurrentRow,
                                  std::nullopt)
                              .ignoreNulls();
   EXPECT_NE(*rowNum, *resolveWindow(Call("row_number").over(ignoreNullsSpec)));
