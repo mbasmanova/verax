@@ -428,18 +428,19 @@ PlanBuilder& PlanBuilder::filter(const ExprApi& predicate) {
 
 namespace {
 
-WindowExpr::BoundType toBoundType(velox::parse::BoundType type) {
+velox::core::WindowCallExpr::BoundType toBoundType(
+    velox::parse::BoundType type) {
   switch (type) {
     case velox::parse::BoundType::kCurrentRow:
-      return WindowExpr::BoundType::kCurrentRow;
+      return velox::core::WindowCallExpr::BoundType::kCurrentRow;
     case velox::parse::BoundType::kUnboundedPreceding:
-      return WindowExpr::BoundType::kUnboundedPreceding;
+      return velox::core::WindowCallExpr::BoundType::kUnboundedPreceding;
     case velox::parse::BoundType::kUnboundedFollowing:
-      return WindowExpr::BoundType::kUnboundedFollowing;
+      return velox::core::WindowCallExpr::BoundType::kUnboundedFollowing;
     case velox::parse::BoundType::kPreceding:
-      return WindowExpr::BoundType::kPreceding;
+      return velox::core::WindowCallExpr::BoundType::kPreceding;
     case velox::parse::BoundType::kFollowing:
-      return WindowExpr::BoundType::kFollowing;
+      return velox::core::WindowCallExpr::BoundType::kFollowing;
   }
   VELOX_UNREACHABLE();
 }
@@ -664,8 +665,9 @@ void PlanBuilder::resolveProjections(
 
   for (const auto& projection : projections) {
     ExprPtr expr;
-    if (projection.windowSpec() != nullptr) {
-      expr = resolveWindowTypes(projection.expr(), *projection.windowSpec());
+    if (projection.expr()->is(velox::core::IExpr::Kind::kWindow)) {
+      expr = resolveWindowTypes(
+          *projection.expr()->as<velox::core::WindowCallExpr>());
     } else {
       expr = resolveScalarTypes(projection.expr());
     }
@@ -1893,10 +1895,9 @@ AggregateExprPtr PlanBuilder::resolveAggregateTypes(
 }
 
 WindowExprPtr PlanBuilder::resolveWindowTypes(
-    const velox::core::ExprPtr& expr,
-    const WindowSpec& windowSpec) const {
+    const velox::core::WindowCallExpr& windowCallExpr) const {
   return resolver_.resolveWindowTypes(
-      expr, windowSpec, [&](const auto& alias, const auto& name) {
+      windowCallExpr, [&](const auto& alias, const auto& name) {
         return resolveInputName(alias, name);
       });
 }

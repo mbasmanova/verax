@@ -804,8 +804,7 @@ class PlanBuilder {
       bool distinct) const;
 
   WindowExprPtr resolveWindowTypes(
-      const velox::core::ExprPtr& expr,
-      const WindowSpec& windowSpec) const;
+      const velox::core::WindowCallExpr& windowCallExpr) const;
 
   std::vector<ExprApi> parse(const std::vector<std::string>& exprs);
 

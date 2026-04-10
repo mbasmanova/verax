@@ -71,17 +71,23 @@ class ExpressionPlanner {
         sortingKeyResolver_(std::move(sortingKeyResolver)),
         shouldDropQualifier_(std::move(shouldDropQualifier)) {}
 
+  /// Finds WindowCallExpr nodes nested inside non-window expressions.
+  /// Skips top-level window projections (where the ExprApi itself is a
+  /// WindowCallExpr). Populates 'windowExprs' with pointers to the found
+  /// WindowCallExpr nodes (raw pointer → shared pointer) and
+  /// 'traversalOrder' with raw pointers in left-to-right order for
+  /// deterministic plan generation.
+  static void findNestedWindowExprs(
+      const std::vector<lp::ExprApi>& exprs,
+      std::unordered_map<
+          const facebook::velox::core::IExpr*,
+          facebook::velox::core::ExprPtr>& windowExprs,
+      std::vector<const facebook::velox::core::IExpr*>& traversalOrder);
+
   /// Translates an AST expression into an ExprApi. Aggregate options
   /// (DISTINCT, FILTER, ORDER BY) are embedded in the returned ExprApi via
-  /// AggregateCallExpr.
-  ///
-  /// @param windowOptions If non-null, collects WindowSpec for nested window
-  /// function calls. Window calls are returned as plain function calls
-  /// (without .over()) and the caller is responsible for extracting them.
-  lp::ExprApi toExpr(
-      const ExpressionPtr& node,
-      std::unordered_map<const facebook::velox::core::IExpr*, lp::WindowSpec>*
-          windowOptions = nullptr);
+  /// AggregateCallExpr. Window functions are embedded via WindowCallExpr.
+  lp::ExprApi toExpr(const ExpressionPtr& node);
 
   /// Sets alias-to-expression mappings for lateral column alias resolution.
   /// When set, Identifier nodes matching an alias key are resolved to the
@@ -102,13 +108,16 @@ class ExpressionPlanner {
     columnNames_ = nullptr;
   }
 
-  /// Returns true if any select item has a window function nested inside a
-  /// non-window expression (e.g. sum(a) / sum(sum(a)) OVER ()). Top-level
-  /// window functions don't need extraction and are excluded.
-  static bool hasNestedWindowFunction(
-      const std::vector<SelectItemPtr>& selectItems);
-
  private:
+  // Walks an IExpr tree collecting WindowCallExpr nodes. Stops recursion at
+  // kWindow nodes (does not descend into window function arguments).
+  static void findWindowExprs(
+      const facebook::velox::core::ExprPtr& expr,
+      std::unordered_map<
+          const facebook::velox::core::IExpr*,
+          facebook::velox::core::ExprPtr>& windowExprs,
+      std::vector<const facebook::velox::core::IExpr*>& traversalOrder);
+
   // Converts a Window AST node into a WindowSpec.
   lp::WindowSpec convertWindow(const std::shared_ptr<Window>& window);
 

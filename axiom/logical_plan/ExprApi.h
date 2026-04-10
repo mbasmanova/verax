@@ -17,6 +17,7 @@
 
 #include <optional>
 #include "axiom/logical_plan/Expr.h"
+#include "velox/parse/Expressions.h"
 #include "velox/parse/IExpr.h"
 #include "velox/type/Variant.h"
 
@@ -242,9 +243,7 @@ class ExprApi {
   }
 
   ExprApi as(std::string alias) const {
-    ExprApi result(expr_, std::move(alias));
-    result.windowSpec_ = windowSpec_;
-    return result;
+    return ExprApi(expr_, std::move(alias));
   }
 
   ExprApi unnestAs(std::vector<std::string> aliases) const;
@@ -255,13 +254,8 @@ class ExprApi {
   }
 
   /// Converts a function call into a window function with the given window
-  /// specification.
+  /// specification. Creates a WindowCallExpr from the underlying CallExpr.
   ExprApi over(const WindowSpec& windowSpec) const;
-
-  /// Returns the window specification, if any.
-  const std::shared_ptr<const WindowSpec>& windowSpec() const {
-    return windowSpec_;
-  }
 
   /// Marks the aggregate function as DISTINCT. Wraps the underlying CallExpr
   /// in an AggregateCallExpr.
@@ -277,7 +271,6 @@ class ExprApi {
   velox::core::ExprPtr expr_;
   std::optional<std::string> alias_;
   std::vector<std::string> unnestedAliases_;
-  std::shared_ptr<const WindowSpec> windowSpec_;
 };
 
 ExprApi Lit(velox::Variant&& val);
@@ -367,8 +360,9 @@ struct SortKey {
   bool nullsFirst;
 };
 
-/// Window specification for use with ExprApi::over(). Follows PySpark's
-/// Window.partitionBy().orderBy() pattern.
+/// Window specification for use with ExprApi::over(). Describes partition keys,
+/// ordering, frame, and ignore nulls. Used as a parameter object — not stored
+/// on ExprApi.
 ///
 /// Usage:
 ///
@@ -396,23 +390,23 @@ class WindowSpec {
 
   /// Specifies a ROWS frame.
   WindowSpec& rows(
-      WindowExpr::BoundType startType,
+      velox::core::WindowCallExpr::BoundType startType,
       std::optional<ExprApi> startValue,
-      WindowExpr::BoundType endType,
+      velox::core::WindowCallExpr::BoundType endType,
       std::optional<ExprApi> endValue);
 
   /// Specifies a RANGE frame.
   WindowSpec& range(
-      WindowExpr::BoundType startType,
+      velox::core::WindowCallExpr::BoundType startType,
       std::optional<ExprApi> startValue,
-      WindowExpr::BoundType endType,
+      velox::core::WindowCallExpr::BoundType endType,
       std::optional<ExprApi> endValue);
 
   /// Specifies a GROUPS frame.
   WindowSpec& groups(
-      WindowExpr::BoundType startType,
+      velox::core::WindowCallExpr::BoundType startType,
       std::optional<ExprApi> startValue,
-      WindowExpr::BoundType endType,
+      velox::core::WindowCallExpr::BoundType endType,
       std::optional<ExprApi> endValue);
 
   /// Sets IGNORE NULLS for the window function.
@@ -429,24 +423,8 @@ class WindowSpec {
     return orderByKeys_;
   }
 
-  const std::optional<WindowExpr::WindowType>& frameType() const {
-    return frameType_;
-  }
-
-  WindowExpr::BoundType startType() const {
-    return startType_;
-  }
-
-  const std::optional<ExprApi>& startValue() const {
-    return startValue_;
-  }
-
-  WindowExpr::BoundType endType() const {
-    return endType_;
-  }
-
-  const std::optional<ExprApi>& endValue() const {
-    return endValue_;
+  const std::optional<velox::core::WindowCallExpr::Frame>& frame() const {
+    return frame_;
   }
 
   bool isIgnoreNulls() const {
@@ -456,11 +434,7 @@ class WindowSpec {
  private:
   std::vector<ExprApi> partitionKeys_;
   std::vector<SortKey> orderByKeys_;
-  std::optional<WindowExpr::WindowType> frameType_;
-  WindowExpr::BoundType startType_{WindowExpr::BoundType::kUnboundedPreceding};
-  std::optional<ExprApi> startValue_;
-  WindowExpr::BoundType endType_{WindowExpr::BoundType::kUnboundedFollowing};
-  std::optional<ExprApi> endValue_;
+  std::optional<velox::core::WindowCallExpr::Frame> frame_;
   bool ignoreNulls_{false};
 };
 

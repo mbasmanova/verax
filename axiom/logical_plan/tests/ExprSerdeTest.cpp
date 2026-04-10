@@ -77,11 +77,10 @@ class ExprSerdeTest : public testing::Test {
   // Resolves a window ExprApi expression to an Expr using a schema for column
   // types.
   ExprPtr resolveWindow(const ExprApi& expr, velox::RowTypePtr schema) {
-    VELOX_CHECK_NOT_NULL(expr.windowSpec());
+    VELOX_CHECK(expr.expr()->is(velox::core::IExpr::Kind::kWindow));
     ExprResolver resolver(/*queryCtx=*/nullptr, /*enableCoercions=*/false);
     return resolver.resolveWindowTypes(
-        expr.expr(),
-        *expr.windowSpec(),
+        *expr.expr()->as<velox::core::WindowCallExpr>(),
         [&schema](const std::optional<std::string>&, const std::string& name)
             -> ExprPtr {
           return std::make_shared<InputReferenceExpr>(
@@ -171,6 +170,8 @@ TEST_F(ExprSerdeTest, windowExpr) {
   auto schema =
       velox::ROW({{"x", velox::BIGINT()}, {"category", velox::VARCHAR()}});
 
+  using BoundType = velox::core::WindowCallExpr::BoundType;
+
   // row_number() with ORDER BY.
   testRoundTrip(resolveWindow(
       Call("row_number").over(WindowSpec().orderBy({SortKey(Col("x"), ASC)})),
@@ -193,9 +194,9 @@ TEST_F(ExprSerdeTest, windowExpr) {
                   .partitionBy({Col("category")})
                   .orderBy({SortKey(Col("x"), ASC)})
                   .rows(
-                      WindowExpr::BoundType::kPreceding,
+                      BoundType::kPreceding,
                       Lit(3LL),
-                      WindowExpr::BoundType::kFollowing,
+                      BoundType::kFollowing,
                       Lit(5LL))),
       schema));
 
@@ -207,9 +208,9 @@ TEST_F(ExprSerdeTest, windowExpr) {
                   .partitionBy({Col("category")})
                   .orderBy({SortKey(Col("x"), ASC)})
                   .range(
-                      WindowExpr::BoundType::kUnboundedPreceding,
+                      BoundType::kUnboundedPreceding,
                       {},
-                      WindowExpr::BoundType::kCurrentRow,
+                      BoundType::kCurrentRow,
                       {})),
       schema));
 
@@ -221,9 +222,9 @@ TEST_F(ExprSerdeTest, windowExpr) {
                   .partitionBy({Col("category")})
                   .orderBy({SortKey(Col("x"), ASC)})
                   .groups(
-                      WindowExpr::BoundType::kPreceding,
+                      BoundType::kPreceding,
                       Lit(2LL),
-                      WindowExpr::BoundType::kCurrentRow,
+                      BoundType::kCurrentRow,
                       {})),
       schema));
 }
