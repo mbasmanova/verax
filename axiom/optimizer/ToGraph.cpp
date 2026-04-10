@@ -2989,6 +2989,16 @@ void ToGraph::processExistsSubqueries(const std::vector<lp::ExprPtr>& exists) {
         *existsExpr->inputAt(0)->as<lp::SubqueryExpr>()->subquery(),
         /*finalize=*/false);
 
+    // A subquery that produces zero rows (e.g., LIMIT 0) makes EXISTS false.
+    if (subqueryDt->isZeroRows()) {
+      correlatedConjuncts_.clear();
+      subqueries_.emplace(
+          existsExpr,
+          make<Literal>(
+              toConstantValue(velox::BOOLEAN()), registerVariant(false)));
+      continue;
+    }
+
     // EXISTS (SELECT <expr> WHERE <condition>) with no FROM clause and no
     // LIMIT or aggregation is equivalent to just <condition>. The subquery has
     // a single empty-schema ValuesTable as its source that always produces one

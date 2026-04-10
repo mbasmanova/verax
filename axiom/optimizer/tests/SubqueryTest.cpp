@@ -1873,6 +1873,15 @@ TEST_F(SubqueryTest, existsWithNoFromClause) {
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
+// EXISTS (SELECT ... LIMIT 0) should fold to false because the subquery
+// produces zero rows.
+TEST_F(SubqueryTest, existsWithLimitZero) {
+  auto plan = toSingleNodePlan("SELECT EXISTS (SELECT 1 LIMIT 0)");
+
+  auto matcher = matchValues(ROW({})).project({"false"}).build();
+  AXIOM_ASSERT_PLAN(plan, matcher);
+}
+
 // IN subquery in a projection combined with a correlated NOT EXISTS in the
 // WHERE clause. The IN subquery creates a semi-join inside the join input,
 // which triggers DT wrapping (excludeOuterJoins). The NOT EXISTS subquery
