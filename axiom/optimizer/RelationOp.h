@@ -630,7 +630,7 @@ struct Aggregation : public RelationOp {
 
  private:
   void initConstraints();
-  void setCostWithGroups(int64_t inputBeforePartial);
+  void setCostWithGroups(float inputBeforePartial);
 };
 
 /// Represents an order by. The order is given by the distribution.
