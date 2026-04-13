@@ -1369,7 +1369,7 @@ float sortCost(size_t numKeys, float cardinality) {
 }
 } // namespace
 
-void Aggregation::setCostWithGroups(int64_t inputBeforePartial) {
+void Aggregation::setCostWithGroups(float inputBeforePartial) {
   auto* optimization = queryCtx()->optimization();
   const auto& runnerOptions = optimization->runnerOptions();
 
