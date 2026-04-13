@@ -487,6 +487,10 @@ class JoinEdge {
     /// semantic is EXISTS / NOT EXISTS. Applies to semi and anti joins.
     bool nullAwareIn{false};
 
+    /// When true, join keys use IS NOT DISTINCT FROM semantics where NULL
+    /// equals NULL. Used to implement SQL set operations (EXCEPT, INTERSECT).
+    bool nullAsValue{false};
+
     /// Marker column produced by 'exists' or 'not exists' join. If set, the
     /// 'rightExists' must be true.
     ColumnCP markColumn{nullptr};
@@ -535,6 +539,7 @@ class JoinEdge {
         filter_(std::move(spec.filter)),
         joinType_(spec.joinType),
         nullAwareIn_(spec.nullAwareIn),
+        nullAsValue_(spec.nullAsValue),
         directed_(spec.directed),
         markColumn_(spec.markColumn),
         rowNumberColumn_(spec.rowNumberColumn),
@@ -615,7 +620,8 @@ class JoinEdge {
       ColumnCP markColumn = nullptr,
       ExprVector filter = {},
       bool nullAwareIn = false,
-      bool counting = false) {
+      bool counting = false,
+      bool nullAsValue = false) {
     auto joinType = counting
         ? velox::core::JoinType::kCountingLeftSemiFilter
         : (markColumn ? velox::core::JoinType::kLeftSemiProject
@@ -627,6 +633,7 @@ class JoinEdge {
             .filter = std::move(filter),
             .joinType = joinType,
             .nullAwareIn = nullAwareIn,
+            .nullAsValue = nullAsValue,
             .markColumn = markColumn,
         });
   }
@@ -647,13 +654,15 @@ class JoinEdge {
   static JoinEdge* makeNotExists(
       PlanObjectCP leftTable,
       PlanObjectCP rightTable,
-      bool counting = false) {
+      bool counting = false,
+      bool nullAsValue = false) {
     return make<JoinEdge>(
         leftTable,
         rightTable,
         Spec{
             .joinType = counting ? velox::core::JoinType::kCountingAnti
                                  : velox::core::JoinType::kAnti,
+            .nullAsValue = nullAsValue,
         });
   }
 
@@ -782,6 +791,12 @@ class JoinEdge {
   /// Returns true for IN semantics (nullAware), false for EXISTS semantics.
   bool isNullAwareIn() const {
     return nullAwareIn_;
+  }
+
+  /// Returns true when join keys use IS NOT DISTINCT FROM semantics where
+  /// NULL equals NULL. Used for SQL set operations (EXCEPT, INTERSECT).
+  bool isNullAsValue() const {
+    return nullAsValue_;
   }
 
   /// Returns true for counting join semantics (kCountingAnti for EXCEPT ALL,
@@ -915,6 +930,9 @@ class JoinEdge {
 
   // True for IN semantics (nullAware), false for EXISTS semantics.
   const bool nullAwareIn_;
+
+  // True for IS NOT DISTINCT FROM semantics on join keys (NULL equals NULL).
+  const bool nullAsValue_;
 
   // If directed non-outer edge. For example unnest or inner dependent on
   // optional of outer.
