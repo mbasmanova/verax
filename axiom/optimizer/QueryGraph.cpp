@@ -747,7 +747,13 @@ JoinFanout joinFanout(
 float baseSelectivity(PlanObjectCP object) {
   if (object->is(PlanType::kTableNode)) {
     auto* baseTable = object->as<BaseTable>();
-    return baseTable->filteredCardinality / baseTable->schemaTable->cardinality;
+    const auto baseCardinality = baseTable->schemaTable->cardinality;
+    // filteredCardinality can exceed baseCardinality when the connector
+    // returns inconsistent statistics, e.g. Table::numRows() returns 0
+    // while co_estimateStats returns the real partition row count.
+    if (baseCardinality > baseTable->filteredCardinality) {
+      return baseTable->filteredCardinality / baseCardinality;
+    }
   }
   return 1;
 }
