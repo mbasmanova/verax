@@ -137,3 +137,50 @@ SELECT a as x FROM t WHERE a = 2
 SELECT a + 1 as x FROM t
 INTERSECT ALL
 SELECT a as x FROM t WHERE a = 2
+----
+-- NULL handling: set operations use IS NOT DISTINCT FROM semantics where
+-- NULL = NULL.
+--
+-- EXCEPT with mix of null and non-null rows.
+-- Left: (1, null), (2, 3), (null, null). Right: (1, null), (null, null).
+-- (1, null) and (null, null) cancel out; (2, 3) has no match.
+-- duckdb: VALUES (2, 3)
+SELECT * FROM (VALUES (1, null), (2, 3), (null, null)) t(x, y)
+EXCEPT
+SELECT * FROM (VALUES (1, null), (null, null)) t(x, y)
+----
+-- INTERSECT with mix of null and non-null rows.
+-- Left: (1, null), (2, 3), (null, null). Right: (1, null), (null, null), (4, 5).
+-- (1, null) and (null, null) match; (2, 3) and (4, 5) don't.
+-- duckdb: VALUES (1, null::int), (null::int, null::int)
+SELECT * FROM (VALUES (1, null), (2, 3), (null, null)) t(x, y)
+INTERSECT
+SELECT * FROM (VALUES (1, null), (null, null), (4, 5)) t(x, y)
+----
+-- EXCEPT ALL with nulls: count-based subtraction.
+-- Left: (1, null) x2, (2, 3). Right: (1, null) x1.
+-- (1, null): 2-1=1 remains. (2, 3): no match.
+-- duckdb: VALUES (1, null::int), (2, 3)
+SELECT * FROM (VALUES (1, null), (1, null), (2, 3)) t(x, y)
+EXCEPT ALL
+SELECT * FROM (VALUES (1, null)) t(x, y)
+----
+-- INTERSECT ALL with nulls: count-based intersection.
+-- Left: (1, null) x2, (2, 3). Right: (1, null) x1, (2, 3) x1.
+-- (1, null): min(2,1)=1. (2, 3): min(1,1)=1.
+-- duckdb: VALUES (1, null::int), (2, 3)
+SELECT * FROM (VALUES (1, null), (1, null), (2, 3)) t(x, y)
+INTERSECT ALL
+SELECT * FROM (VALUES (1, null), (2, 3)) t(x, y)
+----
+-- Multi-column: nulls match but non-null column differs — should NOT cancel.
+-- duckdb: VALUES (1, null::int, 'a')
+SELECT * FROM (VALUES (1, null, 'a')) t(x, y, z)
+EXCEPT
+SELECT * FROM (VALUES (1, null, 'b')) t(x, y, z)
+----
+-- Multi-column INTERSECT: nulls match but non-null column differs — no match.
+-- count 0
+SELECT * FROM (VALUES (1, null, 'a')) t(x, y, z)
+INTERSECT
+SELECT * FROM (VALUES (1, null, 'b')) t(x, y, z)

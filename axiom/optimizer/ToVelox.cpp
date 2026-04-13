@@ -1362,7 +1362,9 @@ velox::core::PlanNodePtr ToVelox::makeJoin(
       toAnd(join.filter),
       left,
       right,
-      makeOutputType(join.columns()));
+      makeOutputType(join.columns()),
+      /*useHashTableCache=*/false,
+      /*nullAsValue=*/join.nullAsValue);
 
   makePredictionAndHistory(joinNode->id(), &join);
   return joinNode;

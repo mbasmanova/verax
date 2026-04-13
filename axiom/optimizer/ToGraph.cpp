@@ -3403,8 +3403,9 @@ void ToGraph::translateSetJoin(const lp::SetNode& set) {
     const auto* right = setDt->tables[i]->as<DerivedTable>();
 
     auto* joinEdge = exists
-        ? JoinEdge::makeExists(left, right, nullptr, {}, false, counting)
-        : JoinEdge::makeNotExists(left, right, counting);
+        ? JoinEdge::makeExists(
+              left, right, nullptr, {}, false, counting, /*nullAsValue=*/true)
+        : JoinEdge::makeNotExists(left, right, counting, /*nullAsValue=*/true);
     for (auto i = 0; i < left->columns.size(); ++i) {
       joinEdge->addEquality(left->columns[i], right->columns[i]);
     }

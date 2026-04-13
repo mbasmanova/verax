@@ -492,6 +492,7 @@ struct Join : public RelationOp {
       JoinMethod method,
       velox::core::JoinType joinType,
       bool nullAware,
+      bool nullAsValue,
       RelationOpPtr lhs,
       RelationOpPtr rhs,
       ExprVector lhsKeys,
@@ -514,6 +515,7 @@ struct Join : public RelationOp {
   const JoinMethod method;
   const velox::core::JoinType joinType;
   const bool nullAware;
+  const bool nullAsValue;
   const RelationOpPtr right;
   const ExprVector leftKeys;
   const ExprVector rightKeys;
