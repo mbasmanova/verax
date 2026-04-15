@@ -577,6 +577,13 @@ SqlQueryRunner::SqlResult SqlQueryRunner::runUnchecked(
             fmt::format("Session '{}' set to '{}'", name, setSession->value())};
   }
 
+  if (sqlStatement.isResetSession()) {
+    const auto* resetSession = sqlStatement.as<presto::ResetSessionStatement>();
+    const auto& name = resetSession->name();
+    sessionConfig_->reset(name);
+    return {.message = fmt::format("Session '{}' reset", name)};
+  }
+
   if (sqlStatement.isUse()) {
     const auto* use = sqlStatement.as<presto::UseStatement>();
     const auto& connectorId = use->catalog().has_value()

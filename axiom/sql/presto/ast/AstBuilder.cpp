@@ -1007,7 +1007,8 @@ std::any AstBuilder::visitSetSession(PrestoSqlParser::SetSessionContext* ctx) {
 std::any AstBuilder::visitResetSession(
     PrestoSqlParser::ResetSessionContext* ctx) {
   trace("visitResetSession");
-  return visitChildren("visitResetSession", ctx);
+  return std::static_pointer_cast<Statement>(std::make_shared<ResetSession>(
+      getLocation(ctx), getQualifiedName(ctx->qualifiedName())));
 }
 
 std::any AstBuilder::visitStartTransaction(

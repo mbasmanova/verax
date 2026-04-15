@@ -777,6 +777,10 @@ void SetSession::accept(AstVisitor* visitor) {
   visitor->visitSetSession(this);
 }
 
+void ResetSession::accept(AstVisitor* visitor) {
+  visitor->visitResetSession(this);
+}
+
 void Use::accept(AstVisitor* visitor) {
   visitor->visitUse(this);
 }

@@ -420,6 +420,21 @@ class SetSession : public Statement {
   ExpressionPtr value_;
 };
 
+class ResetSession : public Statement {
+ public:
+  ResetSession(NodeLocation location, std::shared_ptr<QualifiedName> name)
+      : Statement(NodeType::kResetSession, location), name_(std::move(name)) {}
+
+  const std::shared_ptr<QualifiedName>& name() const {
+    return name_;
+  }
+
+  void accept(AstVisitor* visitor) override;
+
+ private:
+  std::shared_ptr<QualifiedName> name_;
+};
+
 class Use : public Statement {
  public:
   Use(NodeLocation location,
