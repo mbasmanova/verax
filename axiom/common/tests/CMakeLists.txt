@@ -12,7 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-add_executable(axiom_common_tests CatalogSchemaTableNameTest.cpp SchemaTableNameTest.cpp)
+add_executable(
+  axiom_common_tests
+  CatalogSchemaTableNameTest.cpp
+  SchemaTableNameTest.cpp
+  SessionConfigTest.cpp
+)
 
 add_test(axiom_common_tests axiom_common_tests)
 
