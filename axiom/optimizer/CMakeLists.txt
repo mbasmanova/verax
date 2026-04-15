@@ -36,6 +36,7 @@ add_library(
   MemoKey.cpp
   Model.cpp
   Optimization.cpp
+  OptimizerOptions.cpp
   ParallelExpr.cpp
   Plan.cpp
   PlanObject.cpp

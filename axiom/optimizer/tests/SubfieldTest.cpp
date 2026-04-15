@@ -120,10 +120,12 @@ class SubfieldTest : public HiveQueriesTestBase,
         optimizerOptions_ = OptimizerOptions();
         break;
       case 2:
-        optimizerOptions_ = OptimizerOptions{.pushdownSubfields = true};
+        optimizerOptions_ = OptimizerOptions{};
+        optimizerOptions_.pushdownSubfields = true;
         break;
       case 3:
-        optimizerOptions_ = OptimizerOptions{.pushdownSubfields = true};
+        optimizerOptions_ = OptimizerOptions{};
+        optimizerOptions_.pushdownSubfields = true;
         optimizerOptions_.mapAsStruct["features"] = {
             "float_features", "id_list_features", "id_score_list_features"};
         break;

@@ -73,7 +73,12 @@ class CardinalityEstimationTest : public test::QueryTestBase {
 
           verifyDtConstraints(*optimization.rootDt(), *plan->op);
         },
-        OptimizerOptions{.sampleJoins = false, .sampleFilters = false});
+        [] {
+          OptimizerOptions options;
+          options.sampleJoins = false;
+          options.sampleFilters = false;
+          return options;
+        }());
   }
 
   // Verifies that the DT's column constraints match the plan's constraints.

@@ -225,7 +225,8 @@ TEST_F(AggregationTest, orderBy) {
           .build();
 
   for (auto i = 0; i < 2; ++i) {
-    OptimizerOptions option{.alwaysPlanPartialAggregation = (i == 0)};
+    OptimizerOptions option;
+    option.alwaysPlanPartialAggregation = (i == 0);
     auto plan = planVelox(
         logicalPlan,
         MultiFragmentPlan::Options{.numWorkers = 4, .numDrivers = 4},
