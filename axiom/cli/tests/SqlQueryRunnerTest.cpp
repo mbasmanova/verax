@@ -84,8 +84,10 @@ class SqlQueryRunnerTest : public ::testing::Test, public test::VectorTestBase {
     return runner_->run(sql, {});
   }
 
-  RowVectorPtr fetchSingleRow(std::string_view sql) {
-    auto result = run(sql);
+  RowVectorPtr fetchSingleRow(
+      std::string_view sql,
+      const SqlQueryRunner::RunOptions& options = {}) {
+    auto result = runner_->run(sql, options);
     VELOX_CHECK(
         !result.message.has_value(), "Query failed: {}", *result.message);
     VELOX_CHECK_EQ(1, result.results.size());
@@ -715,14 +717,13 @@ TEST_F(SqlQueryRunnerTest, createTableInNonExistentSchema) {
 
 // Verifies that current_timestamp returns the session start time.
 TEST_F(SqlQueryRunnerTest, currentTimestamp) {
-  auto row = fetchSingleRow("SELECT current_timestamp");
+  SqlQueryRunner::RunOptions options;
+  options.sessionStartTimeMs = facebook::velox::getCurrentTimeMs();
 
+  auto row = fetchSingleRow("SELECT current_timestamp", options);
   auto packed = row->childAt(0)->as<SimpleVector<int64_t>>()->valueAt(0);
   auto millis = unpackMillisUtc(packed);
-
-  auto expected = facebook::velox::core::QueryConfig{runner_->sessionConfig()}
-                      .sessionStartTimeMs();
-  EXPECT_EQ(millis, expected);
+  EXPECT_EQ(millis, options.sessionStartTimeMs);
 }
 
 TEST_F(SqlQueryRunnerTest, explainFormatGraphviz) {
