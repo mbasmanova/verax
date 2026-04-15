@@ -17,7 +17,7 @@
 #include "axiom/cli/SqlQueryRunner.h"
 #include <folly/system/HardwareConcurrency.h>
 #include <cmath>
-#include <map>
+
 #include "axiom/cli/QueryIdGenerator.h"
 #include "axiom/connectors/ConnectorMetadata.h"
 #include "axiom/connectors/SchemaResolver.h"
@@ -37,6 +37,8 @@
 #include "axiom/sql/presto/ShowStatsBuilder.h"
 #include "velox/common/file/FileSystems.h"
 #include "velox/common/time/Timer.h"
+#include "velox/core/QueryConfig.h"
+#include "velox/core/QueryConfigProvider.h"
 #include "velox/exec/tests/utils/LocalExchangeSource.h"
 #include "velox/expression/Expr.h"
 #include "velox/functions/prestosql/aggregates/RegisterAggregateFunctions.h"
@@ -120,12 +122,6 @@ void SqlQueryRunner::initialize(
   defaultConnectorId_ = std::move(defaultConnectorId);
   defaultSchema_ = std::move(defaultSchema);
 
-  // Set default session properties to match Presto behavior.
-  config_[velox::core::QueryConfig::kSessionTimezone] = getLocalTimezone();
-  config_[velox::core::QueryConfig::kAdjustTimestampToTimezone] = "true";
-  config_[velox::core::QueryConfig::kSessionStartTime] =
-      std::to_string(velox::getCurrentTimeMs());
-
   permissionCheck_ = std::move(permissionCheck);
 
   if (queryIdGenerator) {
@@ -139,10 +135,22 @@ void SqlQueryRunner::initialize(
 
   configRegistry_ = std::make_shared<facebook::axiom::ConfigRegistry>();
   configRegistry_->add(
-      "optimizer",
+      kOptimizerPrefix,
       std::make_shared<facebook::axiom::optimizer::OptimizerOptions>());
+  configRegistry_->add(
+      kExecutionPrefix,
+      std::make_shared<facebook::velox::core::QueryConfigProvider>());
+
   sessionConfig_ =
       std::make_shared<facebook::axiom::SessionConfig>(configRegistry_);
+  sessionConfig_->set(
+      kExecutionPrefix,
+      velox::core::QueryConfig::kSessionTimezone,
+      getLocalTimezone());
+  sessionConfig_->set(
+      kExecutionPrefix,
+      velox::core::QueryConfig::kAdjustTimestampToTimezone,
+      "true");
 }
 
 namespace {
@@ -563,11 +571,7 @@ SqlQueryRunner::SqlResult SqlQueryRunner::runUnchecked(
   if (sqlStatement.isSetSession()) {
     const auto* setSession = sqlStatement.as<presto::SetSessionStatement>();
     const auto& name = setSession->name();
-    if (name.find('.') != std::string::npos) {
-      sessionConfig_->set(name, setSession->value());
-    } else {
-      config_[name] = setSession->value();
-    }
+    sessionConfig_->set(name, setSession->value());
     return {
         .message =
             fmt::format("Session '{}' set to '{}'", name, setSession->value())};
@@ -605,9 +609,17 @@ std::shared_ptr<velox::core::QueryCtx> SqlQueryRunner::newQuery(
   const auto queryId =
       options.queryId.value_or(fmt::format("query_{}", ++queryCounter_));
 
+  // Build Velox QueryConfig from execution session properties.
+  auto executionProps = sessionConfig_->effectiveValues(kExecutionPrefix);
+  std::unordered_map<std::string, std::string> queryConfig(
+      executionProps.begin(), executionProps.end());
+  // Per-query value, not a session property.
+  queryConfig[velox::core::QueryConfig::kSessionStartTime] = std::to_string(
+      options.sessionStartTimeMs.value_or(velox::getCurrentTimeMs()));
+
   return velox::core::QueryCtx::create(
       executor_.get(),
-      velox::core::QueryConfig(config_),
+      velox::core::QueryConfig(std::move(queryConfig)),
       {},
       velox::cache::AsyncDataCache::getInstance(),
       rootPool_->shared_from_this(),
@@ -798,7 +810,7 @@ optimizer::PlanAndStats SqlQueryRunner::optimize(
     schemaResolver = std::make_shared<connector::SchemaResolver>();
   }
 
-  auto optimizerProps = sessionConfig_->effectiveValues("optimizer");
+  auto optimizerProps = sessionConfig_->effectiveValues(kOptimizerPrefix);
   auto optimizerOptions = optimizer::OptimizerOptions::from(optimizerProps);
   optimizerOptions.explain = explain;
 
@@ -847,24 +859,38 @@ SqlQueryRunner::SqlResult SqlQueryRunner::showSession(
     const RunOptions& options,
     QueryTiming& timing,
     std::string& planString) {
-  std::map<std::string, std::string> sorted(config_.begin(), config_.end());
-  // Include registered session properties.
-  for (const auto& entry : sessionConfig_->all()) {
-    auto qualifiedName = entry.prefix + "." + entry.property.name;
-    sorted[qualifiedName] = entry.currentValue.value_or("");
-  }
+  using facebook::velox::config::ConfigPropertyTypeName;
+
+  // Collect and sort entries by qualified name.
+  auto entries = sessionConfig_->all();
+  std::sort(
+      entries.begin(), entries.end(), [](const auto& lhs, const auto& rhs) {
+        return std::tie(lhs.prefix, lhs.property.name) <
+            std::tie(rhs.prefix, rhs.property.name);
+      });
 
   std::vector<velox::Variant> data;
-  data.reserve(sorted.size());
-  for (const auto& [key, value] : sorted) {
-    data.emplace_back(velox::Variant::row({key, value}));
+  data.reserve(entries.size());
+  for (const auto& entry : entries) {
+    auto qualifiedName = entry.prefix + "." + entry.property.name;
+    data.emplace_back(
+        velox::Variant::row({
+            qualifiedName,
+            entry.currentValue.value_or(""),
+            entry.property.defaultValue.value_or(""),
+            std::string(ConfigPropertyTypeName::toName(entry.property.type)),
+            entry.property.description,
+        }));
   }
 
   namespace lp = facebook::axiom::logical_plan;
 
   lp::PlanBuilder::Context context(defaultConnectorId_);
   lp::PlanBuilder builder(context);
-  builder.values(ROW({"Name", "Value"}, velox::VARCHAR()), std::move(data));
+  builder.values(
+      ROW({"Name", "Value", "Default", "Type", "Description"},
+          velox::VARCHAR()),
+      std::move(data));
 
   if (statement.likePattern().has_value()) {
     builder.filter(
