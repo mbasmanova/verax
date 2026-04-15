@@ -16,6 +16,13 @@ if(AXIOM_BUILD_TESTING)
   add_subdirectory(tests)
 endif()
 
-add_library(axiom_common SchemaTableName.cpp CatalogSchemaTableName.cpp Session.cpp)
+add_library(
+  axiom_common
+  CatalogSchemaTableName.cpp
+  ConfigRegistry.cpp
+  SchemaTableName.cpp
+  Session.cpp
+  SessionConfig.cpp
+)
 
-target_link_libraries(axiom_common velox_common_base Folly::folly)
+target_link_libraries(axiom_common velox_common_base velox_config_property Folly::folly)
