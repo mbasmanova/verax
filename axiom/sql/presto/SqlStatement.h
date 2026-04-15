@@ -40,6 +40,7 @@ enum class SqlStatementKind {
   kShowStatsForQuery,
   kShowSession,
   kSetSession,
+  kResetSession,
   kUse,
 };
 
@@ -100,6 +101,10 @@ class SqlStatement {
 
   bool isSetSession() const {
     return kind_ == SqlStatementKind::kSetSession;
+  }
+
+  bool isResetSession() const {
+    return kind_ == SqlStatementKind::kResetSession;
   }
 
   bool isUse() const {
@@ -487,6 +492,19 @@ class SetSessionStatement : public SqlStatement {
  private:
   const std::string name_;
   const std::string value_;
+};
+
+class ResetSessionStatement : public SqlStatement {
+ public:
+  explicit ResetSessionStatement(std::string name)
+      : SqlStatement(SqlStatementKind::kResetSession), name_{std::move(name)} {}
+
+  const std::string& name() const {
+    return name_;
+  }
+
+ private:
+  const std::string name_;
 };
 
 class UseStatement : public SqlStatement {

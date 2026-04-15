@@ -2187,6 +2187,12 @@ SqlStatementPtr PrestoParser::doParse(
     return parseSetSession(query->as<SetSession>());
   }
 
+  if (query->is(NodeType::kResetSession)) {
+    auto* resetSession = query->as<ResetSession>();
+    return std::make_shared<ResetSessionStatement>(
+        resetSession->name()->fullyQualifiedName());
+  }
+
   if (query->is(NodeType::kUse)) {
     auto* use = query->as<Use>();
     std::optional<std::string> catalog;

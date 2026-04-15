@@ -304,6 +304,8 @@ class AstPrinter : public AstVisitor {
 
   void visitSetSession(SetSession* node) override;
 
+  void visitResetSession(ResetSession* node) override;
+
   void visitUse(Use* node) override;
 
  private:

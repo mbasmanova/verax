@@ -722,8 +722,7 @@ TEST_F(SqlQueryRunnerTest, currentTimestamp) {
 
   auto row = fetchSingleRow("SELECT current_timestamp", options);
   auto packed = row->childAt(0)->as<SimpleVector<int64_t>>()->valueAt(0);
-  auto millis = unpackMillisUtc(packed);
-  EXPECT_EQ(millis, options.sessionStartTimeMs);
+  EXPECT_EQ(unpackMillisUtc(packed), options.sessionStartTimeMs);
 }
 
 TEST_F(SqlQueryRunnerTest, explainFormatGraphviz) {
@@ -1067,6 +1066,75 @@ TEST_F(SqlQueryRunnerTest, timingFieldsOnParseError) {
   EXPECT_EQ(captured.timing.execute, 0);
   EXPECT_GT(captured.timing.total, 0);
   EXPECT_GE(captured.timing.total, captured.timing.parse);
+}
+
+TEST_F(SqlQueryRunnerTest, sessionProperties) {
+  auto assertProperty = [&](std::string_view name,
+                            std::string_view expectedValue,
+                            std::string_view expectedDefault) {
+    SCOPED_TRACE(name);
+    auto row = fetchSingleRow(fmt::format("SHOW SESSION LIKE '{}'", name));
+    // SHOW SESSION returns: Name, Value, Default, Type, Description.
+    ASSERT_EQ(row->childrenSize(), 5);
+    auto nameCol = row->childAt(0)->as<SimpleVector<StringView>>();
+    auto valueCol = row->childAt(1)->as<SimpleVector<StringView>>();
+    auto defaultCol = row->childAt(2)->as<SimpleVector<StringView>>();
+    EXPECT_EQ(nameCol->valueAt(0), name);
+    EXPECT_EQ(valueCol->valueAt(0), expectedValue);
+    EXPECT_EQ(defaultCol->valueAt(0), expectedDefault);
+  };
+
+  // Default value.
+  assertProperty("optimizer.sample_joins", "true", "true");
+
+  // SET changes the value.
+  auto result = run("SET SESSION optimizer.sample_joins = false");
+  ASSERT_TRUE(result.message.has_value());
+  EXPECT_EQ(*result.message, "Session 'optimizer.sample_joins' set to 'false'");
+  assertProperty("optimizer.sample_joins", "false", "true");
+
+  // RESET restores the default.
+  result = run("RESET SESSION optimizer.sample_joins");
+  ASSERT_TRUE(result.message.has_value());
+  EXPECT_EQ(*result.message, "Session 'optimizer.sample_joins' reset");
+  assertProperty("optimizer.sample_joins", "true", "true");
+
+  // Invalid value.
+  VELOX_ASSERT_THROW(
+      run("SET SESSION optimizer.sample_joins = 42"), "Expected boolean value");
+
+  // Unknown property.
+  VELOX_ASSERT_THROW(
+      run("SET SESSION optimizer.no_such_property = true"),
+      "Unknown session property");
+}
+
+TEST_F(SqlQueryRunnerTest, showSession) {
+  auto fetchNames = [&](std::string_view query) {
+    auto sqlResult = run(query);
+    VELOX_CHECK(!sqlResult.message.has_value());
+    VELOX_CHECK_EQ(1, sqlResult.results.size());
+
+    auto column =
+        sqlResult.results[0]->childAt(0)->as<SimpleVector<StringView>>();
+
+    std::vector<std::string> names;
+    names.reserve(column->size());
+    for (auto i = 0; i < column->size(); ++i) {
+      names.emplace_back(column->valueAt(i));
+    }
+    return names;
+  };
+
+  // SHOW SESSION returns all properties.
+  EXPECT_THAT(
+      fetchNames("SHOW SESSION"),
+      ::testing::Contains("optimizer.sample_joins"));
+
+  // SHOW SESSION LIKE filters by prefix.
+  auto names = fetchNames("SHOW SESSION LIKE 'optimizer%'");
+  EXPECT_THAT(names, ::testing::Each(::testing::StartsWith("optimizer.")));
+  EXPECT_THAT(names, ::testing::Contains("optimizer.sample_joins"));
 }
 
 } // namespace

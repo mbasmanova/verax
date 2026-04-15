@@ -1277,6 +1277,12 @@ void AstPrinter::visitSetSession(SetSession* node) {
   printChild("Value", node->value());
 }
 
+void AstPrinter::visitResetSession(ResetSession* node) {
+  printHeader("ResetSession", node, [&](std::ostream& out) {
+    out << node->name()->fullyQualifiedName();
+  });
+}
+
 void AstPrinter::visitUse(Use* node) {
   printHeader("Use", node, [&](std::ostream& out) {
     if (node->catalog()) {

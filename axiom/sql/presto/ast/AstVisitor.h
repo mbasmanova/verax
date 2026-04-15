@@ -567,6 +567,10 @@ class AstVisitor {
     defaultVisit(node);
   }
 
+  virtual void visitResetSession(ResetSession* node) {
+    defaultVisit(node);
+  }
+
   virtual void visitUse(Use* node) {
     defaultVisit(node);
   }

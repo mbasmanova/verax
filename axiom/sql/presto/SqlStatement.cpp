@@ -38,6 +38,7 @@ const auto& statementKindNames() {
       {SqlStatementKind::kShowStatsForQuery, "SHOW STATS FOR"},
       {SqlStatementKind::kShowSession, "SHOW SESSION"},
       {SqlStatementKind::kSetSession, "SET SESSION"},
+      {SqlStatementKind::kResetSession, "RESET SESSION"},
       {SqlStatementKind::kUse, "USE"},
   };
 
