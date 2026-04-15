@@ -89,7 +89,8 @@ TEST_F(DistinctAggregationTest, singleDistinctToGroupBy) {
 
   // Builds a logical plan, optimizes it, and asserts it matches the expected
   // distributed plan.
-  OptimizerOptions options{.alwaysPlanPartialAggregation = true};
+  OptimizerOptions options;
+  options.alwaysPlanPartialAggregation = true;
   auto assertPlan =
       [&](const std::vector<std::string>& groupingKeys,
           const std::vector<std::string>& aggregates,

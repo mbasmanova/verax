@@ -97,7 +97,12 @@ class DerivedTablePrinterTest : public ::testing::Test {
         history,
         veloxQueryCtx,
         evaluator,
-        {.sampleJoins = false, .sampleFilters = false},
+        [] {
+          OptimizerOptions options;
+          options.sampleJoins = false;
+          options.sampleFilters = false;
+          return options;
+        }(),
         {.numWorkers = 1, .numDrivers = 1}};
 
     const auto dtString = DerivedTablePrinter::toText(*opt.rootDt());

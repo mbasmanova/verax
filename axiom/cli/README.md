@@ -34,7 +34,6 @@ The examples below use `axiom_sql` for brevity. With Buck, replace
 | `--num_workers` | `4` | Number of in-process workers. |
 | `--num_drivers` | `4` | Number of drivers per worker (parallelism). |
 | `--max_rows` | `100` | Maximum number of printed result rows. |
-| `--optimizer_trace` | `0` | Optimizer trace level. |
 | `--debug` | `false` | Enable debug mode (logging to stderr). |
 
 ## Connectors
@@ -164,7 +163,7 @@ Dot-commands do not require a semicolon terminator.
 |---------|-------------|
 | `.help` | Print help text. |
 | `.run <file>` | Execute SQL statements from a file. |
-| `.set <name> <value>` | Set a gflag at runtime (e.g., `num_workers`, `num_drivers`, `max_rows`, `optimizer_trace`). |
+| `.set <name> <value>` | Set a gflag at runtime (e.g., `num_workers`, `num_drivers`, `max_rows`). |
 | `.clear <name>` | Reset a flag to its default value. |
 | `.flags` | List modified flags. |
 | `.exit` or `.quit` | Exit the CLI. |

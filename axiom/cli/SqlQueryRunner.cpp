@@ -29,6 +29,7 @@
 #include "axiom/optimizer/DerivedTablePrinter.h"
 #include "axiom/optimizer/ExplainIo.h"
 #include "axiom/optimizer/Optimization.h"
+#include "axiom/optimizer/OptimizerOptions.h"
 #include "axiom/optimizer/Plan.h"
 #include "axiom/optimizer/RelationOpPrinter.h"
 #include "axiom/optimizer/VeloxHistory.h"
@@ -135,6 +136,13 @@ void SqlQueryRunner::initialize(
       return generator->createNextQueryId();
     };
   }
+
+  configRegistry_ = std::make_shared<facebook::axiom::ConfigRegistry>();
+  configRegistry_->add(
+      "optimizer",
+      std::make_shared<facebook::axiom::optimizer::OptimizerOptions>());
+  sessionConfig_ =
+      std::make_shared<facebook::axiom::SessionConfig>(configRegistry_);
 }
 
 namespace {
@@ -554,12 +562,15 @@ SqlQueryRunner::SqlResult SqlQueryRunner::runUnchecked(
 
   if (sqlStatement.isSetSession()) {
     const auto* setSession = sqlStatement.as<presto::SetSessionStatement>();
-    config_[setSession->name()] = setSession->value();
+    const auto& name = setSession->name();
+    if (name.find('.') != std::string::npos) {
+      sessionConfig_->set(name, setSession->value());
+    } else {
+      config_[name] = setSession->value();
+    }
     return {
-        .message = fmt::format(
-            "Session '{}' set to '{}'",
-            setSession->name(),
-            setSession->value())};
+        .message =
+            fmt::format("Session '{}' set to '{}'", name, setSession->value())};
   }
 
   if (sqlStatement.isUse()) {
@@ -787,6 +798,10 @@ optimizer::PlanAndStats SqlQueryRunner::optimize(
     schemaResolver = std::make_shared<connector::SchemaResolver>();
   }
 
+  auto optimizerProps = sessionConfig_->effectiveValues("optimizer");
+  auto optimizerOptions = optimizer::OptimizerOptions::from(optimizerProps);
+  optimizerOptions.explain = explain;
+
   optimizer::Optimization optimization(
       session,
       *logicalPlan,
@@ -794,7 +809,7 @@ optimizer::PlanAndStats SqlQueryRunner::optimize(
       *history,
       queryCtx,
       evaluator,
-      {.traceFlags = options.optimizerTraceFlags, .explain = explain},
+      optimizerOptions,
       opts);
 
   if (checkDerivedTable && !checkDerivedTable(*optimization.rootDt())) {
@@ -833,6 +848,11 @@ SqlQueryRunner::SqlResult SqlQueryRunner::showSession(
     QueryTiming& timing,
     std::string& planString) {
   std::map<std::string, std::string> sorted(config_.begin(), config_.end());
+  // Include registered session properties.
+  for (const auto& entry : sessionConfig_->all()) {
+    auto qualifiedName = entry.prefix + "." + entry.property.name;
+    sorted[qualifiedName] = entry.currentValue.value_or("");
+  }
 
   std::vector<velox::Variant> data;
   data.reserve(sorted.size());

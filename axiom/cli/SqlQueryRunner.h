@@ -18,6 +18,8 @@
 #include <folly/executors/CPUThreadPoolExecutor.h>
 #include <chrono>
 #include <functional>
+#include "axiom/common/ConfigRegistry.h"
+#include "axiom/common/SessionConfig.h"
 #include "axiom/optimizer/DerivedTable.h"
 #include "axiom/optimizer/ToVelox.h"
 #include "axiom/runner/LocalRunner.h"
@@ -112,7 +114,6 @@ class SqlQueryRunner {
     int32_t numWorkers{4};
     int32_t numDrivers{4};
     uint64_t splitTargetBytes{16 << 20};
-    uint32_t optimizerTraceFlags{0};
 
     /// Microseconds to wait for query to complete. 0 means check for completion
     /// then timeout immediately if not complete.
@@ -340,6 +341,8 @@ class SqlQueryRunner {
   std::shared_ptr<facebook::velox::memory::MemoryPool> executorPool_;
   std::shared_ptr<folly::CPUThreadPoolExecutor> executor_;
   std::unordered_map<std::string, std::string> config_;
+  std::shared_ptr<facebook::axiom::ConfigRegistry> configRegistry_;
+  std::shared_ptr<facebook::axiom::SessionConfig> sessionConfig_;
   std::string defaultConnectorId_;
   std::string defaultSchema_;
   std::atomic<int32_t> queryCounter_{0};

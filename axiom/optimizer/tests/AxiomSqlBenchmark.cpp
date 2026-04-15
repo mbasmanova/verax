@@ -586,6 +586,9 @@ class VeloxRunner : public velox::QueryBenchmarkBase {
 
     auto session = std::make_shared<Session>(queryCtx->queryId());
 
+    optimizer::OptimizerOptions optimizerOptions;
+    optimizerOptions.traceFlags = FLAGS_optimizer_trace;
+
     optimizer::Optimization optimization(
         session,
         *logicalPlan,
@@ -593,7 +596,7 @@ class VeloxRunner : public velox::QueryBenchmarkBase {
         *history_,
         queryCtx,
         evaluator,
-        {.traceFlags = FLAGS_optimizer_trace},
+        optimizerOptions,
         opts);
 
     if (checkDerivedTable && !checkDerivedTable(*optimization.rootDt())) {

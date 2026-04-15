@@ -38,8 +38,6 @@ DEFINE_uint64(
     16 << 20,
     "Approx bytes covered by one split");
 
-DEFINE_uint32(optimizer_trace, 0, "Optimizer trace level");
-
 DEFINE_int32(max_rows, 100, "Max number of printed result rows");
 
 DEFINE_int32(num_workers, 4, "Number of in-process workers");
@@ -136,7 +134,6 @@ void Console::runNoThrow(std::string_view sql, bool isInteractive) {
         .numWorkers = FLAGS_num_workers,
         .numDrivers = FLAGS_num_drivers,
         .splitTargetBytes = FLAGS_split_target_bytes,
-        .optimizerTraceFlags = FLAGS_optimizer_trace,
         .debugMode = FLAGS_debug,
         .onComplete =
             [&](const QueryCompletionInfo& info) { completionInfo = info; },
@@ -235,8 +232,7 @@ void Console::readCommands(const std::string& prompt, bool interactive) {
           "Useful flags:\n\n"
           "  num_workers      - Number of workers for distributed plans (1 = single node).\n"
           "  num_drivers      - Number of drivers (threads) per pipeline per worker.\n"
-          "  max_rows         - Maximum number of printed result rows.\n"
-          "  optimizer_trace  - Optimizer trace level (0 = off).\n\n";
+          "  max_rows         - Maximum number of printed result rows.\n\n";
 
       std::cout << helpText << std::flush;
       continue;
@@ -312,7 +308,6 @@ void Console::readCommands(const std::string& prompt, bool interactive) {
           "num_workers",
           "num_drivers",
           "max_rows",
-          "optimizer_trace",
       };
       for (const auto& name : kFlagNames) {
         gflags::CommandLineFlagInfo info;

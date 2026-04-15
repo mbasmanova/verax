@@ -65,7 +65,12 @@ class FilteredTableStatsTest : public test::HiveQueriesTestBase {
 
           callback(*plan);
         },
-        OptimizerOptions{.sampleJoins = false, .sampleFilters = false});
+        [] {
+          OptimizerOptions options;
+          options.sampleJoins = false;
+          options.sampleFilters = false;
+          return options;
+        }());
   }
 };
 
