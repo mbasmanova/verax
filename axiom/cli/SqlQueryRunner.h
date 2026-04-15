@@ -99,6 +99,13 @@ using QueryCompletionCallback = std::function<void(const QueryCompletionInfo&)>;
 /// Executes SQL queries.
 class SqlQueryRunner {
  public:
+  /// Prefix for optimizer session properties (e.g., "optimizer.sample_joins").
+  static constexpr const char* kOptimizerPrefix = "optimizer";
+
+  /// Prefix for Velox execution session properties (e.g.,
+  /// "execution.session_timezone").
+  static constexpr const char* kExecutionPrefix = "execution";
+
   virtual ~SqlQueryRunner() = default;
 
   /// Initializes the runner with connectors, an optional permission check, and
@@ -130,6 +137,10 @@ class SqlQueryRunner {
     /// Used by runUnchecked() as-is. Overwritten by run() with the result of
     /// the permission check callback.
     std::shared_ptr<facebook::velox::filesystems::TokenProvider> tokenProvider;
+
+    /// Override for session start time (milliseconds since epoch). If not
+    /// set, uses the current time. Used by tests to verify current_timestamp.
+    std::optional<uint64_t> sessionStartTimeMs;
 
     /// If true, EXPLAIN ANALYZE output includes custom operator stats.
     bool debugMode{false};
@@ -204,8 +215,9 @@ class SqlQueryRunner {
   /// @param sql A single SELECT or EXPLAIN SELECT statement.
   std::string toLogicalPlanDot(std::string_view sql);
 
-  std::unordered_map<std::string, std::string>& sessionConfig() {
-    return config_;
+  /// Returns the session configuration.
+  facebook::axiom::SessionConfig& sessionConfig() {
+    return *sessionConfig_;
   }
 
   facebook::axiom::connector::TablePtr createTable(
@@ -340,7 +352,6 @@ class SqlQueryRunner {
   std::shared_ptr<facebook::velox::memory::MemoryPool> optimizerPool_;
   std::shared_ptr<facebook::velox::memory::MemoryPool> executorPool_;
   std::shared_ptr<folly::CPUThreadPoolExecutor> executor_;
-  std::unordered_map<std::string, std::string> config_;
   std::shared_ptr<facebook::axiom::ConfigRegistry> configRegistry_;
   std::shared_ptr<facebook::axiom::SessionConfig> sessionConfig_;
   std::string defaultConnectorId_;

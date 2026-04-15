@@ -268,13 +268,13 @@ $ $CLI --query "SELECT from_base64('aGVsbG8=') as bin" 2>/dev/null
 ## SET SESSION and SHOW SESSION
 
 ```scrut
-$ $CLI --query "SET SESSION session_timezone = 'UTC'; SHOW SESSION LIKE '%timezone%'" 2>/dev/null
-Session 'session_timezone' set to 'UTC'
-*-+-* (glob)
-Name*| Value (glob)
-*-+-* (glob)
-adjust_timestamp_to_session_timezone | true
-session_timezone                     | UTC
+$ $CLI --query "SET SESSION execution.session_timezone = 'UTC'; SHOW SESSION LIKE '%timezone%'" 2>/dev/null
+Session 'execution.session_timezone' set to 'UTC'
+*-+-*-+-*-+-* (glob)
+Name*| Value*| Default*| Type*| Description (glob)
+*-+-*-+-*-+-* (glob)
+execution.adjust_timestamp_to_session_timezone*| true*| false*| BOOLEAN*| * (glob)
+execution.session_timezone*| UTC*|*| STRING*| * (glob)
 (2 rows in 1 batches)
 
 ```
