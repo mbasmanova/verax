@@ -105,12 +105,13 @@ logical_plan::LogicalPlanNodePtr QueryTestBase::parseSelect(
 }
 
 namespace {
+constexpr int32_t kWaitTimeoutUs = 500'000;
+
 void waitForCompletion(const std::shared_ptr<runner::LocalRunner>& runner) {
   if (runner) {
-    try {
-      runner->waitForCompletion(50000);
-    } catch (const std::exception& /*ignore*/) {
-    }
+    VELOX_CHECK(
+        runner->waitForCompletion(kWaitTimeoutUs),
+        "Timed out waiting for query completion");
   }
 }
 } // namespace

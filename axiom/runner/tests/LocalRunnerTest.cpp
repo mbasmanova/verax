@@ -177,7 +177,7 @@ TEST_F(LocalRunnerTest, count) {
   EXPECT_EQ(kNumRows, extractSingleInt64(results));
   results.clear();
   EXPECT_EQ(Runner::State::kFinished, localRunner->state());
-  localRunner->waitForCompletion(kWaitTimeoutUs);
+  ASSERT_TRUE(localRunner->waitForCompletion(kWaitTimeoutUs));
 }
 
 TEST_F(LocalRunnerTest, error) {
@@ -186,7 +186,7 @@ TEST_F(LocalRunnerTest, error) {
 
   VELOX_ASSERT_THROW(readCursor(localRunner), "division by zero");
   EXPECT_EQ(Runner::State::kError, localRunner->state());
-  localRunner->waitForCompletion(kWaitTimeoutUs);
+  ASSERT_TRUE(localRunner->waitForCompletion(kWaitTimeoutUs));
 }
 
 TEST_F(LocalRunnerTest, scan) {
@@ -222,7 +222,7 @@ TEST_F(LocalRunnerTest, broadcast) {
   EXPECT_EQ(kNumRows, extractSingleInt64(results));
   results.clear();
   EXPECT_EQ(Runner::State::kFinished, localRunner->state());
-  localRunner->waitForCompletion(kWaitTimeoutUs);
+  ASSERT_TRUE(localRunner->waitForCompletion(kWaitTimeoutUs));
 }
 
 TEST_F(LocalRunnerTest, lastStageWithMultipleInputs) {
@@ -256,7 +256,7 @@ TEST_F(LocalRunnerTest, lastStageWithMultipleInputs) {
 
   results.clear();
   EXPECT_EQ(Runner::State::kFinished, localRunner->state());
-  localRunner->waitForCompletion(kWaitTimeoutUs);
+  ASSERT_TRUE(localRunner->waitForCompletion(kWaitTimeoutUs));
 }
 
 } // namespace
