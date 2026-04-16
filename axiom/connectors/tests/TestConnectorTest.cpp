@@ -182,8 +182,28 @@ TEST_F(TestConnectorTest, dataSink) {
   auto table = connector_->addTable("table", schema);
   EXPECT_EQ(table->numRows(), 0);
 
+  auto emptyConfig = std::make_shared<config::ConfigBase>(
+      std::unordered_map<std::string, std::string>{});
+  auto connectorQueryCtx =
+      std::make_unique<velox::connector::ConnectorQueryCtx>(
+          pool_.get(),
+          pool_.get(),
+          emptyConfig.get(),
+          /*spillConfig=*/nullptr,
+          velox::common::PrefixSortConfig{},
+          /*expressionEvaluator=*/nullptr,
+          /*cache=*/nullptr,
+          "test-query",
+          "test-task",
+          "test-plan-node",
+          /*driverId=*/0,
+          /*sessionTimezone=*/"UTC");
+
   auto dataSink = connector_->createDataSink(
-      schema, handle, nullptr, velox::connector::CommitStrategy::kNoCommit);
+      schema,
+      handle,
+      connectorQueryCtx.get(),
+      velox::connector::CommitStrategy::kNoCommit);
   EXPECT_NE(dataSink, nullptr);
 
   auto vector = makeRowVector({makeFlatVector<int>({0, 1, 2})});
