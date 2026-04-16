@@ -15,6 +15,7 @@
  */
 
 #include <folly/coro/BlockingWait.h>
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 #include "axiom/connectors/ConnectorMetadata.h"
@@ -22,6 +23,7 @@
 #include "axiom/connectors/system/SystemConnectorMetadata.h"
 #include "velox/connectors/Connector.h"
 #include "velox/expression/Expr.h"
+#include "velox/vector/tests/utils/VectorTestBase.h"
 
 namespace facebook::axiom::connector::system {
 namespace {
@@ -43,21 +45,35 @@ class MockQueryInfoProvider : public QueryInfoProvider {
   std::vector<QueryInfo> snapshots_;
 };
 
+/// In-memory mock that returns a fixed set of session properties.
+class MockSessionPropertiesProvider : public SessionPropertiesProvider {
+ public:
+  void addProperty(SessionPropertyInfo property) {
+    properties_.push_back(std::move(property));
+  }
+
+  std::vector<SessionPropertyInfo> getSessionProperties() const override {
+    return properties_;
+  }
+
+ private:
+  std::vector<SessionPropertyInfo> properties_;
+};
+
 class SystemConnectorMetadataTest : public ::testing::Test {
  protected:
   void SetUp() override {
     velox::memory::MemoryManager::testingSetInstance({});
 
-    mockProvider_ = std::make_unique<MockQueryInfoProvider>();
+    queryProvider_ = std::make_unique<MockQueryInfoProvider>();
+    sessionProvider_ = std::make_unique<MockSessionPropertiesProvider>();
 
-    // SystemConnector no longer auto-registers metadata.
-    connector_ =
-        std::make_shared<SystemConnector>(kSystemCatalog, mockProvider_.get());
+    connector_ = std::make_shared<SystemConnector>(
+        kSystemCatalog, queryProvider_.get(), sessionProvider_.get());
     velox::connector::registerConnector(connector_);
-    ConnectorMetadata::registerMetadata(kSystemCatalog, connector_->metadata());
 
-    // Create a separate metadata instance for direct testing.
     metadata_ = std::make_shared<SystemConnectorMetadata>(connector_.get());
+    ConnectorMetadata::registerMetadata(kSystemCatalog, metadata_);
 
     pool_ = velox::memory::memoryManager()->addLeafPool();
     queryCtx_ = velox::core::QueryCtx::create();
@@ -70,12 +86,79 @@ class SystemConnectorMetadataTest : public ::testing::Test {
     connector_.reset();
   }
 
-  std::unique_ptr<MockQueryInfoProvider> mockProvider_;
+  // Creates a DataSource for the given schema/table through the connector,
+  // adds a split, and returns the first batch of results.
+  velox::RowVectorPtr readTable(
+      const SchemaTableName& tableName,
+      const velox::RowTypePtr& outputType) {
+    auto table = metadata_->findTable(tableName);
+    VELOX_CHECK_NOT_NULL(table);
+
+    auto session = std::make_shared<ConnectorSession>("test-query");
+    velox::exec::SimpleExpressionEvaluator evaluator(
+        queryCtx_.get(), pool_.get());
+
+    velox::connector::ColumnHandleMap columnHandles;
+    std::vector<velox::connector::ColumnHandlePtr> handleList;
+    for (const auto& name : outputType->names()) {
+      auto handle = table->layouts()[0]->createColumnHandle(session, name);
+      columnHandles[name] = handle;
+      handleList.push_back(handle);
+    }
+
+    std::vector<velox::core::TypedExprPtr> filters;
+    std::vector<velox::core::TypedExprPtr> rejectedFilters;
+    auto tableHandle = table->layouts()[0]->createTableHandle(
+        session,
+        std::move(handleList),
+        evaluator,
+        std::move(filters),
+        rejectedFilters);
+
+    auto emptyConfig = std::make_shared<velox::config::ConfigBase>(
+        std::unordered_map<std::string, std::string>{});
+    auto connectorQueryCtx =
+        std::make_unique<velox::connector::ConnectorQueryCtx>(
+            pool_.get(),
+            pool_.get(),
+            emptyConfig.get(),
+            /*spillConfig=*/nullptr,
+            velox::common::PrefixSortConfig{},
+            /*expressionEvaluator=*/nullptr,
+            /*cache=*/nullptr,
+            "test-query",
+            "test-task",
+            "test-plan-node",
+            /*driverId=*/0,
+            /*sessionTimezone=*/"UTC");
+
+    auto dataSource = connector_->createDataSource(
+        outputType, tableHandle, columnHandles, connectorQueryCtx.get());
+
+    auto split = std::make_shared<SystemSplit>(kSystemCatalog);
+    dataSource->addSplit(split);
+
+    velox::ContinueFuture future;
+    auto result = dataSource->next(1024, future);
+    VELOX_CHECK(result.has_value());
+
+    // Verify the data source is exhausted.
+    auto next = dataSource->next(1024, future);
+    VELOX_CHECK(next.has_value());
+    VELOX_CHECK_NULL(next.value());
+
+    return result.value();
+  }
+
+  std::unique_ptr<MockQueryInfoProvider> queryProvider_;
+  std::unique_ptr<MockSessionPropertiesProvider> sessionProvider_;
   std::shared_ptr<SystemConnector> connector_;
   std::shared_ptr<SystemConnectorMetadata> metadata_;
   std::shared_ptr<velox::memory::MemoryPool> pool_;
   std::shared_ptr<velox::core::QueryCtx> queryCtx_;
 };
+
+// ===================== system.runtime.queries tests =====================
 
 TEST_F(SystemConnectorMetadataTest, findTable) {
   auto table = metadata_->findTable({"runtime", "queries"});
@@ -189,9 +272,6 @@ TEST_F(SystemConnectorMetadataTest, splitSource) {
 }
 
 TEST_F(SystemConnectorMetadataTest, dataSourceAllColumns) {
-  // Set up test data.
-  auto now = std::chrono::system_clock::now();
-
   QueryInfo snapshot;
   snapshot.queryId = "q1";
   snapshot.state = "RUNNING";
@@ -204,82 +284,43 @@ TEST_F(SystemConnectorMetadataTest, dataSourceAllColumns) {
   snapshot.planningTimeMs = 100;
   snapshot.totalSplits = 10;
   snapshot.outputRows = 1000;
-  snapshot.createTime = now;
+  snapshot.createTime = std::chrono::system_clock::now();
 
-  mockProvider_->addQuery(std::move(snapshot));
+  auto expectedSeconds = std::chrono::duration_cast<std::chrono::seconds>(
+                             snapshot.createTime.time_since_epoch())
+                             .count();
+  auto expectedNanos = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                           snapshot.createTime.time_since_epoch())
+                           .count() %
+      1'000'000'000;
 
-  auto fullSchema = queriesTableSchema();
+  queryProvider_->addQuery(std::move(snapshot));
 
-  // Build column handles for all columns.
-  velox::connector::ColumnHandleMap columnHandles;
-  for (const auto& name : fullSchema->names()) {
-    columnHandles[name] = std::make_shared<SystemColumnHandle>(name);
-  }
-
-  auto dataSource = std::make_unique<SystemDataSource>(
-      fullSchema, columnHandles, mockProvider_.get(), pool_.get());
-
-  auto split = std::make_shared<SystemSplit>(kSystemCatalog);
-  dataSource->addSplit(split);
-
-  velox::ContinueFuture future;
-  auto result = dataSource->next(1024, future);
-  ASSERT_TRUE(result.has_value());
-  ASSERT_NE(result.value(), nullptr);
-  auto vector = result.value();
+  auto vector = readTable({"runtime", "queries"}, queriesTableSchema());
+  ASSERT_NE(vector, nullptr);
   ASSERT_EQ(vector->size(), 1);
 
-  // query_id (column 0)
-  auto* queryIdVec = vector->childAt(0)->asFlatVector<velox::StringView>();
-  EXPECT_EQ(queryIdVec->valueAt(0).str(), "q1");
+  auto values = vector->variantAt(0).row();
 
-  // state (column 1)
-  auto* stateVec = vector->childAt(1)->asFlatVector<velox::StringView>();
-  EXPECT_EQ(stateVec->valueAt(0).str(), "RUNNING");
+  // VARCHAR columns.
+  EXPECT_EQ(values[0].value<std::string>(), "q1");
+  EXPECT_EQ(values[1].value<std::string>(), "RUNNING");
+  EXPECT_EQ(values[2].value<std::string>(), "SELECT * FROM t");
+  EXPECT_EQ(values[3].value<std::string>(), "cat");
+  EXPECT_EQ(values[5].value<std::string>(), "testuser");
+  EXPECT_EQ(values[6].value<std::string>(), "testsource");
+  EXPECT_EQ(values[7].value<std::string>(), "SELECT");
 
-  // query (column 2)
-  auto* queryVec = vector->childAt(2)->asFlatVector<velox::StringView>();
-  EXPECT_EQ(queryVec->valueAt(0).str(), "SELECT * FROM t");
+  // BIGINT columns.
+  EXPECT_EQ(values[8].value<int64_t>(), 100); // planning_time_ms
+  EXPECT_EQ(values[15].value<int64_t>(), 10); // total_splits
+  EXPECT_EQ(values[19].value<int64_t>(), 1000); // output_rows
 
-  // catalog (column 3)
-  auto* catalogVec = vector->childAt(3)->asFlatVector<velox::StringView>();
-  EXPECT_EQ(catalogVec->valueAt(0).str(), "cat");
-
-  // user (column 5)
-  auto* userVec = vector->childAt(5)->asFlatVector<velox::StringView>();
-  EXPECT_EQ(userVec->valueAt(0).str(), "testuser");
-
-  // source (column 6) — should not be null
-  EXPECT_FALSE(vector->childAt(6)->isNullAt(0));
-  auto* sourceVec = vector->childAt(6)->asFlatVector<velox::StringView>();
-  EXPECT_EQ(sourceVec->valueAt(0).str(), "testsource");
-
-  // query_type (column 7)
-  auto* qtVec = vector->childAt(7)->asFlatVector<velox::StringView>();
-  EXPECT_EQ(qtVec->valueAt(0).str(), "SELECT");
-
-  // planning_time_ms (column 8)
-  auto* planVec = vector->childAt(8)->asFlatVector<int64_t>();
-  EXPECT_EQ(planVec->valueAt(0), 100);
-
-  // total_splits (column 15)
-  auto* splitVec = vector->childAt(15)->asFlatVector<int64_t>();
-  EXPECT_EQ(splitVec->valueAt(0), 10);
-
-  // output_rows (column 19)
-  auto* outVec = vector->childAt(19)->asFlatVector<int64_t>();
-  EXPECT_EQ(outVec->valueAt(0), 1000);
-
-  // create_time (column 27) — should not be null
-  EXPECT_FALSE(vector->childAt(27)->isNullAt(0));
-
-  // end_time (column 29) — should be null (epoch = not set)
-  EXPECT_TRUE(vector->childAt(29)->isNullAt(0));
-
-  // Second call returns no more data.
-  auto result2 = dataSource->next(1024, future);
-  ASSERT_TRUE(result2.has_value());
-  EXPECT_EQ(result2.value(), nullptr);
+  // TIMESTAMP columns.
+  auto ts = values[27].value<velox::Timestamp>();
+  EXPECT_EQ(ts.getSeconds(), expectedSeconds);
+  EXPECT_EQ(ts.getNanos(), expectedNanos);
+  EXPECT_TRUE(values[29].isNull()); // end_time (epoch = not set)
 }
 
 TEST_F(SystemConnectorMetadataTest, dataSourceColumnPruning) {
@@ -291,26 +332,12 @@ TEST_F(SystemConnectorMetadataTest, dataSourceColumnPruning) {
   snapshot.schema = "s";
   snapshot.user = "u";
 
-  mockProvider_->addQuery(std::move(snapshot));
+  queryProvider_->addQuery(std::move(snapshot));
 
-  // Request only query_id and state.
   auto outputType =
       velox::ROW({{"query_id", velox::VARCHAR()}, {"state", velox::VARCHAR()}});
-  velox::connector::ColumnHandleMap columnHandles;
-  columnHandles["query_id"] = std::make_shared<SystemColumnHandle>("query_id");
-  columnHandles["state"] = std::make_shared<SystemColumnHandle>("state");
-
-  auto dataSource = std::make_unique<SystemDataSource>(
-      outputType, columnHandles, mockProvider_.get(), pool_.get());
-
-  auto split = std::make_shared<SystemSplit>(kSystemCatalog);
-  dataSource->addSplit(split);
-
-  velox::ContinueFuture future;
-  auto result = dataSource->next(1024, future);
-  ASSERT_TRUE(result.has_value());
-  ASSERT_NE(result.value(), nullptr);
-  auto vector = result.value();
+  auto vector = readTable({"runtime", "queries"}, outputType);
+  ASSERT_NE(vector, nullptr);
   ASSERT_EQ(vector->size(), 1);
   ASSERT_EQ(vector->type()->size(), 2);
 
@@ -322,24 +349,9 @@ TEST_F(SystemConnectorMetadataTest, dataSourceColumnPruning) {
 }
 
 TEST_F(SystemConnectorMetadataTest, dataSourceEmpty) {
-  // No queries in the mock.
-  auto fullSchema = queriesTableSchema();
-  velox::connector::ColumnHandleMap columnHandles;
-  for (const auto& name : fullSchema->names()) {
-    columnHandles[name] = std::make_shared<SystemColumnHandle>(name);
-  }
-
-  auto dataSource = std::make_unique<SystemDataSource>(
-      fullSchema, columnHandles, mockProvider_.get(), pool_.get());
-
-  auto split = std::make_shared<SystemSplit>(kSystemCatalog);
-  dataSource->addSplit(split);
-
-  velox::ContinueFuture future;
-  auto result = dataSource->next(1024, future);
-  ASSERT_TRUE(result.has_value());
-  ASSERT_NE(result.value(), nullptr);
-  EXPECT_EQ(result.value()->size(), 0);
+  auto vector = readTable({"runtime", "queries"}, queriesTableSchema());
+  ASSERT_NE(vector, nullptr);
+  EXPECT_EQ(vector->size(), 0);
 }
 
 TEST_F(SystemConnectorMetadataTest, dataSourceNullSource) {
@@ -352,28 +364,67 @@ TEST_F(SystemConnectorMetadataTest, dataSourceNullSource) {
   snapshot.user = "u";
   // source is not set (std::nullopt by default).
 
-  mockProvider_->addQuery(std::move(snapshot));
+  queryProvider_->addQuery(std::move(snapshot));
 
-  // Request only the source column.
   auto outputType = velox::ROW({{"source", velox::VARCHAR()}});
-  velox::connector::ColumnHandleMap columnHandles;
-  columnHandles["source"] = std::make_shared<SystemColumnHandle>("source");
-
-  auto dataSource = std::make_unique<SystemDataSource>(
-      outputType, columnHandles, mockProvider_.get(), pool_.get());
-
-  auto split = std::make_shared<SystemSplit>(kSystemCatalog);
-  dataSource->addSplit(split);
-
-  velox::ContinueFuture future;
-  auto result = dataSource->next(1024, future);
-  ASSERT_TRUE(result.has_value());
-  ASSERT_NE(result.value(), nullptr);
-  auto vector = result.value();
+  auto vector = readTable({"runtime", "queries"}, outputType);
+  ASSERT_NE(vector, nullptr);
   ASSERT_EQ(vector->size(), 1);
 
   // source should be null since snapshot.source is std::nullopt.
   EXPECT_TRUE(vector->childAt(0)->isNullAt(0));
+}
+
+TEST_F(SystemConnectorMetadataTest, findSessionPropertiesTable) {
+  auto table = metadata_->findTable({"metadata", "session_properties"});
+  ASSERT_NE(table, nullptr);
+  EXPECT_EQ(table->name(), (SchemaTableName{"metadata", "session_properties"}));
+}
+
+TEST_F(SystemConnectorMetadataTest, findTableWrongSchema) {
+  EXPECT_EQ(metadata_->findTable({"metadata", "queries"}), nullptr);
+  EXPECT_EQ(metadata_->findTable({"runtime", "session_properties"}), nullptr);
+}
+
+TEST_F(SystemConnectorMetadataTest, sessionPropertiesSchema) {
+  auto table = metadata_->findTable({"metadata", "session_properties"});
+  ASSERT_NE(table, nullptr);
+
+  auto expectedSchema = sessionPropertiesTableSchema();
+  ASSERT_EQ(table->type()->size(), expectedSchema->size());
+  for (size_t i = 0; i < expectedSchema->size(); ++i) {
+    EXPECT_EQ(table->type()->nameOf(i), expectedSchema->nameOf(i));
+    EXPECT_EQ(
+        table->type()->childAt(i)->kind(), expectedSchema->childAt(i)->kind());
+  }
+}
+
+TEST_F(SystemConnectorMetadataTest, schemas) {
+  auto session = std::make_shared<ConnectorSession>("test-query");
+  EXPECT_THAT(
+      metadata_->listSchemaNames(session),
+      testing::UnorderedElementsAre("runtime", "metadata"));
+  EXPECT_TRUE(metadata_->schemaExists(session, "runtime"));
+  EXPECT_TRUE(metadata_->schemaExists(session, "metadata"));
+  EXPECT_FALSE(metadata_->schemaExists(session, "information_schema"));
+}
+
+TEST_F(SystemConnectorMetadataTest, sessionPropertiesAllColumns) {
+  sessionProvider_->addProperty(
+      {"a", "x", "boolean", "true", "false", "First."});
+  sessionProvider_->addProperty({"b", "y", "string", "", "hello", "Second."});
+
+  auto expected = velox::BaseVector::createFromVariants(
+      sessionPropertiesTableSchema(),
+      {
+          velox::Variant::row({"a", "x", "boolean", "true", "false", "First."}),
+          velox::Variant::row({"b", "y", "string", "", "hello", "Second."}),
+      },
+      pool_.get());
+
+  auto actual = readTable(
+      {"metadata", "session_properties"}, sessionPropertiesTableSchema());
+  velox::test::assertEqualVectors(expected, actual);
 }
 
 } // namespace

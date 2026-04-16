@@ -38,7 +38,7 @@ The examples below use `axiom_sql` for brevity. With Buck, replace
 
 ## Connectors
 
-Three connectors are available out of the box. See individual connector READMEs
+Four connectors are available out of the box. See individual connector READMEs
 for detailed documentation.
 
 **[TPC-H](../connectors/tpch/README.md)** (`tpch.tiny`) — Always registered. Read-only. Provides standard TPC-H tables
@@ -66,6 +66,9 @@ default catalog when registered.
 ```
 $ ./axiom_sql --data_path /path/to/data --data_format parquet
 ```
+
+**[System](../connectors/system/README.md)** (`system`) — Always registered. Read-only. Provides metadata tables
+such as session properties (`system.metadata.session_properties`).
 
 **[Test](../connectors/tests/README.md)** (`test.default`) — Always registered. An in-memory connector that supports
 `CREATE TABLE`, `CREATE TABLE AS SELECT`, `INSERT`, and `DROP TABLE`. Tables do

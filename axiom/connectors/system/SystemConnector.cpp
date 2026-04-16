@@ -16,6 +16,8 @@
 
 #include "axiom/connectors/system/SystemConnector.h"
 
+#include <algorithm>
+
 #include "axiom/connectors/system/SystemConnectorMetadata.h"
 #include "velox/common/base/Exceptions.h"
 #include "velox/vector/ComplexVector.h"
@@ -78,6 +80,98 @@ bool isEpoch(std::chrono::system_clock::time_point tp) {
 }
 
 } // namespace
+
+// ===================== Data Sources (internal) =====================
+
+// Reads live query state from a QueryInfoProvider.
+class SystemDataSource : public velox::connector::DataSource {
+ public:
+  SystemDataSource(
+      const velox::RowTypePtr& outputType,
+      const velox::connector::ColumnHandleMap& columnHandles,
+      const QueryInfoProvider* queryInfoProvider,
+      velox::memory::MemoryPool* pool);
+
+  void addSplit(
+      std::shared_ptr<velox::connector::ConnectorSplit> split) override;
+
+  std::optional<velox::RowVectorPtr> next(
+      uint64_t size,
+      velox::ContinueFuture& future) override;
+
+  void addDynamicFilter(
+      velox::column_index_t,
+      const std::shared_ptr<velox::common::Filter>&) override {}
+
+  uint64_t getCompletedBytes() override {
+    return 0;
+  }
+
+  uint64_t getCompletedRows() override {
+    return completedRows_;
+  }
+
+  std::unordered_map<std::string, velox::RuntimeMetric> getRuntimeStats()
+      override {
+    return {};
+  }
+
+ private:
+  velox::RowVectorPtr buildQueryResults();
+
+  const velox::RowTypePtr outputType_;
+  const QueryInfoProvider* queryInfoProvider_;
+  velox::memory::MemoryPool* pool_;
+  std::shared_ptr<SystemSplit> split_;
+  std::vector<velox::column_index_t> outputColumnMappings_;
+  uint64_t completedRows_{0};
+  bool needData_{true};
+};
+
+// Reads session properties from a SessionPropertiesProvider.
+class SessionPropertiesDataSource : public velox::connector::DataSource {
+ public:
+  SessionPropertiesDataSource(
+      const velox::RowTypePtr& outputType,
+      const velox::connector::ColumnHandleMap& columnHandles,
+      const SessionPropertiesProvider* provider,
+      velox::memory::MemoryPool* pool);
+
+  void addSplit(
+      std::shared_ptr<velox::connector::ConnectorSplit> split) override;
+
+  std::optional<velox::RowVectorPtr> next(
+      uint64_t size,
+      velox::ContinueFuture& future) override;
+
+  void addDynamicFilter(
+      velox::column_index_t,
+      const std::shared_ptr<velox::common::Filter>&) override {}
+
+  uint64_t getCompletedBytes() override {
+    return 0;
+  }
+
+  uint64_t getCompletedRows() override {
+    return completedRows_;
+  }
+
+  std::unordered_map<std::string, velox::RuntimeMetric> getRuntimeStats()
+      override {
+    return {};
+  }
+
+ private:
+  velox::RowVectorPtr buildResults();
+
+  const velox::RowTypePtr outputType_;
+  const SessionPropertiesProvider* provider_;
+  velox::memory::MemoryPool* pool_;
+  std::shared_ptr<SystemSplit> split_;
+  std::vector<velox::column_index_t> outputColumnMappings_;
+  uint64_t completedRows_{0};
+  bool needData_{true};
+};
 
 // ===================== SystemTableHandle =====================
 
@@ -507,25 +601,153 @@ velox::RowVectorPtr SystemDataSource::buildQueryResults() {
       pool_, outputType_, nullptr, numRows, std::move(children));
 }
 
+// ===================== SessionPropertiesDataSource =====================
+
+SessionPropertiesDataSource::SessionPropertiesDataSource(
+    const velox::RowTypePtr& outputType,
+    const velox::connector::ColumnHandleMap& columnHandles,
+    const SessionPropertiesProvider* provider,
+    velox::memory::MemoryPool* pool)
+    : outputType_(outputType), provider_(provider), pool_(pool) {
+  auto fullSchema = sessionPropertiesTableSchema();
+  outputColumnMappings_.reserve(outputType_->size());
+  for (const auto& name : outputType_->names()) {
+    VELOX_CHECK(
+        columnHandles.contains(name), "No handle for output column '{}'", name);
+    auto handle = columnHandles.find(name)->second;
+    auto idx = fullSchema->getChildIdxIfExists(handle->name());
+    VELOX_CHECK(
+        idx.has_value(),
+        "Column '{}' not found in system.metadata.session_properties schema",
+        handle->name());
+    outputColumnMappings_.push_back(idx.value());
+  }
+}
+
+void SessionPropertiesDataSource::addSplit(
+    std::shared_ptr<velox::connector::ConnectorSplit> split) {
+  split_ = std::dynamic_pointer_cast<SystemSplit>(split);
+  VELOX_CHECK(split_, "Expected SystemSplit");
+  needData_ = true;
+}
+
+std::optional<velox::RowVectorPtr> SessionPropertiesDataSource::next(
+    uint64_t /*size*/,
+    velox::ContinueFuture& /*future*/) {
+  VELOX_CHECK(split_, "No split added to SessionPropertiesDataSource");
+
+  if (!needData_) {
+    return nullptr;
+  }
+  needData_ = false;
+
+  return buildResults();
+}
+
+velox::RowVectorPtr SessionPropertiesDataSource::buildResults() {
+  if (!provider_) {
+    return velox::RowVector::createEmpty(outputType_, pool_);
+  }
+
+  auto properties = provider_->getSessionProperties();
+  auto numRows = properties.size();
+  completedRows_ += numRows;
+
+  if (numRows == 0) {
+    return velox::RowVector::createEmpty(outputType_, pool_);
+  }
+
+  // All 6 columns are VARCHAR. Build only the requested ones.
+  // Column indices: 0=component, 1=name, 2=type, 3=default_value,
+  // 4=current_value, 5=description.
+  auto fullSchema = sessionPropertiesTableSchema();
+
+  // Accessor for each column by index.
+  auto getValue = [&](size_t row,
+                      velox::column_index_t col) -> const std::string& {
+    switch (col) {
+      case 0:
+        return properties[row].component;
+      case 1:
+        return properties[row].name;
+      case 2:
+        return properties[row].type;
+      case 3:
+        return properties[row].defaultValue;
+      case 4:
+        return properties[row].currentValue;
+      case 5:
+        return properties[row].description;
+      default:
+        VELOX_FAIL("Unknown session_properties column index: {}", col);
+    }
+  };
+
+  std::vector<velox::VectorPtr> children;
+  children.reserve(outputType_->size());
+  for (auto fullIdx : outputColumnMappings_) {
+    auto vec =
+        velox::BaseVector::create(fullSchema->childAt(fullIdx), numRows, pool_);
+    auto* flat = vec->asFlatVector<velox::StringView>();
+    for (size_t row = 0; row < numRows; ++row) {
+      flat->set(row, velox::StringView(getValue(row, fullIdx)));
+    }
+    children.push_back(std::move(vec));
+  }
+
+  return std::make_shared<velox::RowVector>(
+      pool_, outputType_, nullptr, numRows, std::move(children));
+}
+
 // ===================== SystemConnector =====================
 
 SystemConnector::SystemConnector(
     const std::string& id,
-    const QueryInfoProvider* queryInfoProvider)
+    const QueryInfoProvider* queryInfoProvider,
+    const SessionPropertiesProvider* sessionPropertiesProvider)
     : Connector(id),
       queryInfoProvider_(queryInfoProvider),
-      metadata_(std::make_shared<SystemConnectorMetadata>(this)) {}
+      sessionPropertiesProvider_(sessionPropertiesProvider) {}
 
 std::unique_ptr<velox::connector::DataSource> SystemConnector::createDataSource(
     const velox::RowTypePtr& outputType,
-    const velox::connector::ConnectorTableHandlePtr& /*tableHandle*/,
+    const velox::connector::ConnectorTableHandlePtr& tableHandle,
     const velox::connector::ColumnHandleMap& columnHandles,
     velox::connector::ConnectorQueryCtx* connectorQueryCtx) {
-  return std::make_unique<SystemDataSource>(
-      outputType,
-      columnHandles,
-      queryInfoProvider_,
-      connectorQueryCtx->memoryPool());
+  auto* systemHandle =
+      dynamic_cast<const SystemTableHandle*>(tableHandle.get());
+  VELOX_CHECK_NOT_NULL(systemHandle, "Expected SystemTableHandle");
+
+  // Dispatch based on which table is being scanned. Use the handle's name
+  // (always available) rather than layout() which is null after
+  // deserialization.
+  const auto& name = systemHandle->name();
+
+  static const auto kSessionPropertiesName =
+      SchemaTableName{
+          std::string(kMetadataSchema), std::string(kSessionPropertiesTable)}
+          .toString();
+  static const auto kQueriesName =
+      SchemaTableName{std::string(kRuntimeSchema), std::string(kQueriesTable)}
+          .toString();
+
+  if (name == kSessionPropertiesName) {
+    return std::make_unique<SessionPropertiesDataSource>(
+        outputType,
+        columnHandles,
+        sessionPropertiesProvider_,
+        connectorQueryCtx->memoryPool());
+  }
+
+  if (name == kQueriesName) {
+    return std::make_unique<SystemDataSource>(
+        outputType,
+        columnHandles,
+        queryInfoProvider_,
+        connectorQueryCtx->memoryPool());
+  }
+
+  VELOX_FAIL("Unknown system table: {}", name);
 }
 
 } // namespace facebook::axiom::connector::system

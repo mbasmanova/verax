@@ -233,6 +233,7 @@ with Velox. These components are:
   - top-level “connectors” directory
   - [Hive](axiom/connectors/hive/README.md) — Local filesystem connector for Parquet, DWRF, and TEXT (including CSV) files.
   - [TPC-H](axiom/connectors/tpch/README.md) — Read-only, in-memory TPC-H benchmark data.
+  - [System](axiom/connectors/system/README.md) — Read-only metadata tables for session properties and active queries.
   - [Test](axiom/connectors/tests/README.md) — In-memory read-write connector for unit testing.
 - [CLI](axiom/cli/README.md) - Interactive SQL command line for executing
   queries against in-memory TPC-H dataset and local Hive data.
@@ -316,7 +317,7 @@ Axiom integrates Velox as a Git submodule, referencing a specific commit of the
 Velox repository. The Velox badge at the top of this README shows the current
 commit and how far behind it is from Velox main.
 
-[See what changed since the current Velox commit.](https://github.com/facebookincubator/velox/compare/24e6ab97ba8015c3b6fae82e8184047cadf521df...main)
+[See what changed since the current Velox commit.](https://github.com/facebookincubator/velox/compare/09c4fb905f0e02b0f334b0e99ff9e8b0c8a5165b...main)
 <!-- pre-commit check-velox-readme validates the SHA above matches the submodule -->
 
 Advance Velox when your changes depend on code in Velox that
