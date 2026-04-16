@@ -106,6 +106,23 @@ class SqlQueryRunnerTest : public ::testing::Test, public test::VectorTestBase {
         makeRowVector({"Schema"}, {makeFlatVector(expected)}));
   }
 
+  void assertSessionProperty(
+      std::string_view name,
+      std::string_view expectedValue,
+      std::string_view expectedDefault) {
+    SCOPED_TRACE(name);
+    auto row = fetchSingleRow(fmt::format("SHOW SESSION LIKE '{}'", name));
+    ASSERT_EQ(row->childrenSize(), 5);
+    EXPECT_EQ(
+        row->childAt(0)->as<SimpleVector<StringView>>()->valueAt(0), name);
+    EXPECT_EQ(
+        row->childAt(1)->as<SimpleVector<StringView>>()->valueAt(0),
+        expectedValue);
+    EXPECT_EQ(
+        row->childAt(2)->as<SimpleVector<StringView>>()->valueAt(0),
+        expectedDefault);
+  }
+
   std::unique_ptr<SqlQueryRunner> runner_;
   std::shared_ptr<facebook::axiom::connector::TestConnector> testConnector_;
 
@@ -1073,35 +1090,20 @@ TEST_F(SqlQueryRunnerTest, timingFieldsOnParseError) {
 }
 
 TEST_F(SqlQueryRunnerTest, sessionProperties) {
-  auto assertProperty = [&](std::string_view name,
-                            std::string_view expectedValue,
-                            std::string_view expectedDefault) {
-    SCOPED_TRACE(name);
-    auto row = fetchSingleRow(fmt::format("SHOW SESSION LIKE '{}'", name));
-    // SHOW SESSION returns: Name, Value, Default, Type, Description.
-    ASSERT_EQ(row->childrenSize(), 5);
-    auto nameCol = row->childAt(0)->as<SimpleVector<StringView>>();
-    auto valueCol = row->childAt(1)->as<SimpleVector<StringView>>();
-    auto defaultCol = row->childAt(2)->as<SimpleVector<StringView>>();
-    EXPECT_EQ(nameCol->valueAt(0), name);
-    EXPECT_EQ(valueCol->valueAt(0), expectedValue);
-    EXPECT_EQ(defaultCol->valueAt(0), expectedDefault);
-  };
-
   // Default value.
-  assertProperty("optimizer.sample_joins", "true", "true");
+  assertSessionProperty("optimizer.sample_joins", "true", "true");
 
   // SET changes the value.
   auto result = run("SET SESSION optimizer.sample_joins = false");
   ASSERT_TRUE(result.message.has_value());
   EXPECT_EQ(*result.message, "Session 'optimizer.sample_joins' set to 'false'");
-  assertProperty("optimizer.sample_joins", "false", "true");
+  assertSessionProperty("optimizer.sample_joins", "false", "true");
 
   // RESET restores the default.
   result = run("RESET SESSION optimizer.sample_joins");
   ASSERT_TRUE(result.message.has_value());
   EXPECT_EQ(*result.message, "Session 'optimizer.sample_joins' reset");
-  assertProperty("optimizer.sample_joins", "true", "true");
+  assertSessionProperty("optimizer.sample_joins", "true", "true");
 
   // Invalid value.
   VELOX_ASSERT_THROW(
@@ -1131,14 +1133,116 @@ TEST_F(SqlQueryRunnerTest, showSession) {
   };
 
   // SHOW SESSION returns all properties.
-  EXPECT_THAT(
-      fetchNames("SHOW SESSION"),
-      ::testing::Contains("optimizer.sample_joins"));
+  auto allNames = fetchNames("SHOW SESSION");
+  EXPECT_THAT(allNames, ::testing::Contains("optimizer.sample_joins"));
+  EXPECT_THAT(allNames, ::testing::Contains("test.collect_column_statistics"));
 
   // SHOW SESSION LIKE filters by prefix.
-  auto names = fetchNames("SHOW SESSION LIKE 'optimizer%'");
-  EXPECT_THAT(names, ::testing::Each(::testing::StartsWith("optimizer.")));
-  EXPECT_THAT(names, ::testing::Contains("optimizer.sample_joins"));
+  {
+    auto names = fetchNames("SHOW SESSION LIKE 'optimizer%'");
+    EXPECT_THAT(names, ::testing::Each(::testing::StartsWith("optimizer.")));
+    EXPECT_THAT(names, ::testing::Contains("optimizer.sample_joins"));
+  }
+
+  {
+    auto names = fetchNames("SHOW SESSION LIKE 'test%'");
+    EXPECT_THAT(names, ::testing::Each(::testing::StartsWith("test.")));
+    EXPECT_THAT(names, ::testing::Contains("test.collect_column_statistics"));
+  }
+}
+
+TEST_F(SqlQueryRunnerTest, connectorSessionProperties) {
+  // Default value.
+  assertSessionProperty("test.collect_column_statistics", "true", "true");
+
+  // SET changes the value.
+  auto result = run("SET SESSION test.collect_column_statistics = false");
+  ASSERT_TRUE(result.message.has_value());
+  EXPECT_EQ(
+      *result.message,
+      "Session 'test.collect_column_statistics' set to 'false'");
+  assertSessionProperty("test.collect_column_statistics", "false", "true");
+
+  // RESET restores the default.
+  result = run("RESET SESSION test.collect_column_statistics");
+  ASSERT_TRUE(result.message.has_value());
+  EXPECT_EQ(*result.message, "Session 'test.collect_column_statistics' reset");
+  assertSessionProperty("test.collect_column_statistics", "true", "true");
+
+  // Invalid value.
+  VELOX_ASSERT_THROW(
+      run("SET SESSION test.collect_column_statistics = 42"),
+      "Expected boolean value");
+}
+
+// Verifies end-to-end flow: SET SESSION for a connector property reaches the
+// connector and affects query behavior.
+TEST_F(SqlQueryRunnerTest, connectorSessionPropertyEffect) {
+  const Variant null;
+
+  const auto statsType = ROW(
+      {
+          "row_count",
+          "column_name",
+          "nulls_fraction",
+          "distinct_values_count",
+          "avg_length",
+          "low_value",
+          "high_value",
+      },
+      {
+          BIGINT(),
+          VARCHAR(),
+          DOUBLE(),
+          BIGINT(),
+          BIGINT(),
+          VARCHAR(),
+          VARCHAR(),
+      });
+
+  // With stats collection enabled (default), SHOW STATS reports per-column
+  // stats.
+  {
+    run("CREATE TABLE t AS SELECT x FROM unnest(sequence(1, 10)) AS _(x)");
+    SCOPE_EXIT {
+      run("DROP TABLE IF EXISTS t");
+    };
+
+    auto expected = BaseVector::createFromVariants(
+        statsType,
+        {
+            Variant::row({10LL, null, null, null, null, null, null}),
+            Variant::row({null, "x", 0.0, 10LL, null, "1", "10"}),
+        },
+        pool());
+
+    auto result = run("SHOW STATS FOR t");
+    ASSERT_FALSE(result.message.has_value());
+    ASSERT_EQ(1, result.results.size());
+    test::assertEqualVectors(expected, result.results[0]);
+  }
+
+  // With stats collection disabled, per-column stats are null.
+  {
+    run("SET SESSION test.collect_column_statistics = false");
+    run("CREATE TABLE t AS SELECT x FROM unnest(sequence(1, 10)) AS _(x)");
+    SCOPE_EXIT {
+      run("DROP TABLE IF EXISTS t");
+    };
+
+    auto expected = BaseVector::createFromVariants(
+        statsType,
+        {
+            Variant::row({10LL, null, null, null, null, null, null}),
+            Variant::row({null, "x", null, null, null, null, null}),
+        },
+        pool());
+
+    auto result = run("SHOW STATS FOR t");
+    ASSERT_FALSE(result.message.has_value());
+    ASSERT_EQ(1, result.results.size());
+    test::assertEqualVectors(expected, result.results[0]);
+  }
 }
 
 } // namespace
