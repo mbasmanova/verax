@@ -56,6 +56,17 @@ velox::RowTypePtr queriesTableSchema() {
   return schema;
 }
 
+velox::RowTypePtr sessionPropertiesTableSchema() {
+  static auto schema = velox::ROW(
+      {{"component", velox::VARCHAR()},
+       {"name", velox::VARCHAR()},
+       {"type", velox::VARCHAR()},
+       {"default_value", velox::VARCHAR()},
+       {"current_value", velox::VARCHAR()},
+       {"description", velox::VARCHAR()}});
+  return schema;
+}
+
 // ===================== SystemTableLayout =====================
 
 velox::connector::ColumnHandlePtr SystemTableLayout::createColumnHandle(
@@ -86,12 +97,11 @@ velox::connector::ConnectorTableHandlePtr SystemTableLayout::createTableHandle(
 
 // ===================== SystemTable =====================
 
-SystemTable::SystemTable(velox::connector::Connector* connector)
-    : Table(
-          SchemaTableName{
-              std::string(SystemConnectorMetadata::kDefaultSchema),
-              "queries"},
-          makeColumns(queriesTableSchema())) {
+SystemTable::SystemTable(
+    const SchemaTableName& tableName,
+    const velox::RowTypePtr& schema,
+    velox::connector::Connector* connector)
+    : Table(tableName, makeColumns(schema)) {
   layout_ = std::make_unique<SystemTableLayout>(this, connector, allColumns());
   layouts_.push_back(layout_.get());
 }
@@ -130,13 +140,24 @@ std::shared_ptr<SplitSource> SystemSplitManager::getSplitSource(
 // ===================== SystemConnectorMetadata =====================
 
 TablePtr SystemConnectorMetadata::findTable(const SchemaTableName& tableName) {
-  if (tableName.schema != kDefaultSchema || tableName.table != "queries") {
-    return nullptr;
+  if (tableName.schema == kRuntimeSchema && tableName.table == kQueriesTable) {
+    if (!queriesTable_) {
+      queriesTable_ = std::make_shared<SystemTable>(
+          tableName, queriesTableSchema(), connector_);
+    }
+    return queriesTable_;
   }
-  if (!queriesTable_) {
-    queriesTable_ = std::make_shared<SystemTable>(connector_);
+
+  if (tableName.schema == kMetadataSchema &&
+      tableName.table == kSessionPropertiesTable) {
+    if (!sessionPropertiesTable_) {
+      sessionPropertiesTable_ = std::make_shared<SystemTable>(
+          tableName, sessionPropertiesTableSchema(), connector_);
+    }
+    return sessionPropertiesTable_;
   }
-  return queriesTable_;
+
+  return nullptr;
 }
 
 } // namespace facebook::axiom::connector::system

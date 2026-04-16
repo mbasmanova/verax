@@ -17,11 +17,15 @@
 #pragma once
 
 #include "axiom/connectors/ConnectorMetadata.h"
+#include "axiom/connectors/system/SystemConnector.h"
 
 namespace facebook::axiom::connector::system {
 
 /// Returns the schema for the system.runtime.queries table.
 velox::RowTypePtr queriesTableSchema();
+
+/// Returns the schema for the system.metadata.session_properties table.
+velox::RowTypePtr sessionPropertiesTableSchema();
 
 // ===================== Axiom Metadata Layer =====================
 
@@ -67,7 +71,10 @@ class SystemTableLayout : public TableLayout {
 /// Table representing system.runtime.queries.
 class SystemTable : public Table {
  public:
-  explicit SystemTable(velox::connector::Connector* connector);
+  SystemTable(
+      const SchemaTableName& tableName,
+      const velox::RowTypePtr& schema,
+      velox::connector::Connector* connector);
 
   const std::vector<const TableLayout*>& layouts() const override {
     return layouts_;
@@ -112,10 +119,11 @@ class SystemSplitManager : public ConnectorSplitManager {
 };
 
 /// Axiom ConnectorMetadata for the system connector.
-/// Provides the runtime.queries table and split management.
+/// Provides the runtime.queries and metadata.session_properties tables.
 class SystemConnectorMetadata : public ConnectorMetadata {
  public:
-  static constexpr std::string_view kDefaultSchema = "runtime";
+  /// Keep for backward compatibility.
+  static constexpr std::string_view kDefaultSchema = kRuntimeSchema;
 
   explicit SystemConnectorMetadata(velox::connector::Connector* connector)
       : connector_(connector),
@@ -125,13 +133,13 @@ class SystemConnectorMetadata : public ConnectorMetadata {
 
   std::vector<std::string> listSchemaNames(
       const ConnectorSessionPtr& session) override {
-    return {std::string(kDefaultSchema)};
+    return {std::string(kRuntimeSchema), std::string(kMetadataSchema)};
   }
 
   bool schemaExists(
       const ConnectorSessionPtr& session,
       const std::string& schemaName) override {
-    return schemaName == kDefaultSchema;
+    return schemaName == kRuntimeSchema || schemaName == kMetadataSchema;
   }
 
   ConnectorSplitManager* splitManager() override {
@@ -142,6 +150,7 @@ class SystemConnectorMetadata : public ConnectorMetadata {
   velox::connector::Connector* connector_;
   std::unique_ptr<SystemSplitManager> splitManager_;
   std::shared_ptr<SystemTable> queriesTable_;
+  std::shared_ptr<SystemTable> sessionPropertiesTable_;
 };
 
 } // namespace facebook::axiom::connector::system

@@ -20,10 +20,13 @@
 #include <string>
 #include <vector>
 
+#include "axiom/connectors/system/SystemConnector.h"
 #include "folly/executors/IOThreadPoolExecutor.h"
 #include "velox/connectors/Connector.h"
 
 namespace facebook::axiom {
+
+class SessionConfig;
 
 /**
  * Helper class to register connectors for Axiom and Velox.
@@ -72,9 +75,10 @@ class Connectors {
   std::shared_ptr<velox::connector::Connector> registerTestConnector(
       const std::string& connectorId = kTestConnectorId);
 
-  /// Registers the system connector for the runtime.queries table.
-  /// Uses nullptr for QueryInfoProvider since the CLI has no query manager.
+  /// Registers the system connector for the runtime.queries and
+  /// metadata.session_properties tables.
   void registerSystemConnector(
+      const SessionConfig& sessionConfig,
       const std::string& connectorId = kSystemConnectorId);
 
  protected:
@@ -87,12 +91,22 @@ class Connectors {
     return ioExecutor_.get();
   }
 
+  /// Registers a connector in the global registry and tracks it for
+  /// cleanup on destruction.
+  void registerConnector(
+      const std::shared_ptr<velox::connector::Connector>& connector);
+
   // Unregister these on destruction.
   std::vector<std::string> connectorIds_{};
 
  private:
   static std::shared_ptr<folly::IOThreadPoolExecutor> getSharedIoExecutor();
   std::shared_ptr<folly::IOThreadPoolExecutor> ioExecutor_;
+
+  // Adapts SessionConfig to SessionPropertiesProvider. Stored here to
+  // ensure the provider outlives the system connector.
+  std::unique_ptr<connector::system::SessionPropertiesProvider>
+      sessionPropertiesProvider_;
 };
 
 } // namespace facebook::axiom

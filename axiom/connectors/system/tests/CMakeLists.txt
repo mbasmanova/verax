@@ -27,6 +27,8 @@ target_link_libraries(
   velox_connector
   velox_exec
   velox_expression
+  velox_vector_test_lib
+  GTest::gmock
   GTest::gtest
   GTest::gtest_main
 )

@@ -39,7 +39,6 @@ int main(int argc, char** argv) {
     auto defaultSchema = "tiny";
 
     connectors.registerTestConnector();
-    connectors.registerSystemConnector();
 
     if (!FLAGS_data_path.empty()) {
       defaultConnector = connectors.registerLocalHiveConnector(
@@ -60,6 +59,9 @@ int main(int argc, char** argv) {
 
     return std::make_pair(connectorId, schema);
   });
+
+  // Register after initialize() so sessionConfig() is available.
+  connectors.registerSystemConnector(runner.sessionConfig());
 
   axiom::sql::Console console{runner};
   console.initialize();

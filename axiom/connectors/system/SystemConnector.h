@@ -24,6 +24,13 @@
 
 namespace facebook::axiom::connector::system {
 
+/// Schema and table name constants for the system connector.
+static constexpr std::string_view kRuntimeSchema = "runtime";
+static constexpr std::string_view kMetadataSchema = "metadata";
+static constexpr std::string_view kQueriesTable = "queries";
+static constexpr std::string_view kSessionPropertiesTable =
+    "session_properties";
+
 /// Snapshot of a single query's state, used by the system connector to
 /// populate the system.runtime.queries table.
 struct QueryInfo {
@@ -73,7 +80,25 @@ class QueryInfoProvider {
   virtual std::vector<QueryInfo> getQueryInfos() const = 0;
 };
 
-class SystemConnectorMetadata;
+/// Snapshot of a single session property, used by the system connector to
+/// populate the system.metadata.session_properties table.
+struct SessionPropertyInfo {
+  std::string component;
+  std::string name;
+  std::string type;
+  std::string defaultValue;
+  std::string currentValue;
+  std::string description;
+};
+
+/// Provides session property metadata to the system connector.
+class SessionPropertiesProvider {
+ public:
+  virtual ~SessionPropertiesProvider() = default;
+
+  /// Returns all registered session properties with their current values.
+  virtual std::vector<SessionPropertyInfo> getSessionProperties() const = 0;
+};
 
 /// Column handle for the system connector. Wraps a column name.
 class SystemColumnHandle : public velox::connector::ColumnHandle {
@@ -189,68 +214,16 @@ struct SystemSplit : public velox::connector::ConnectorSplit {
   VELOX_DEFINE_CLASS_NAME(SystemSplit)
 };
 
-/// DataSource that reads live query state from a QueryInfoProvider.
-/// On next(), it enumerates all queries and populates a RowVector
-/// with one row per query for the requested columns.
-class SystemDataSource : public velox::connector::DataSource {
- public:
-  SystemDataSource(
-      const velox::RowTypePtr& outputType,
-      const velox::connector::ColumnHandleMap& columnHandles,
-      const QueryInfoProvider* queryInfoProvider,
-      velox::memory::MemoryPool* pool);
-
-  void addSplit(
-      std::shared_ptr<velox::connector::ConnectorSplit> split) override;
-
-  std::optional<velox::RowVectorPtr> next(
-      uint64_t size,
-      velox::ContinueFuture& future) override;
-
-  void addDynamicFilter(
-      velox::column_index_t,
-      const std::shared_ptr<velox::common::Filter>&) override {}
-
-  uint64_t getCompletedBytes() override {
-    return 0;
-  }
-
-  uint64_t getCompletedRows() override {
-    return completedRows_;
-  }
-
-  std::unordered_map<std::string, velox::RuntimeMetric> getRuntimeStats()
-      override {
-    return {};
-  }
-
- private:
-  velox::RowVectorPtr buildQueryResults();
-
-  const velox::RowTypePtr outputType_;
-  const QueryInfoProvider* queryInfoProvider_;
-  velox::memory::MemoryPool* pool_;
-  std::shared_ptr<SystemSplit> split_;
-  // Maps output column index -> index in the full queries schema.
-  std::vector<velox::column_index_t> outputColumnMappings_;
-  uint64_t completedRows_{0};
-  bool needData_{true};
-};
-
-/// Velox connector for the system catalog. Creates SystemDataSource
-/// instances for reading live query metadata.
+/// Velox connector for the system catalog. Creates data source instances
+/// for reading live query metadata and session properties.
 class SystemConnector : public velox::connector::Connector {
  public:
   SystemConnector(
       const std::string& id,
-      const QueryInfoProvider* queryInfoProvider);
+      const QueryInfoProvider* queryInfoProvider,
+      const SessionPropertiesProvider* sessionPropertiesProvider = nullptr);
 
   ~SystemConnector() override = default;
-
-  /// Returns the Axiom ConnectorMetadata for external registration.
-  const std::shared_ptr<SystemConnectorMetadata>& metadata() const {
-    return metadata_;
-  }
 
   std::unique_ptr<velox::connector::DataSource> createDataSource(
       const velox::RowTypePtr& outputType,
@@ -275,7 +248,7 @@ class SystemConnector : public velox::connector::Connector {
 
  private:
   const QueryInfoProvider* queryInfoProvider_;
-  std::shared_ptr<SystemConnectorMetadata> metadata_;
+  const SessionPropertiesProvider* sessionPropertiesProvider_;
 };
 
 } // namespace facebook::axiom::connector::system

@@ -17,6 +17,7 @@
 #include "axiom/cli/Connectors.h"
 
 #include <folly/system/HardwareConcurrency.h>
+#include "axiom/common/SessionConfig.h"
 #include "axiom/connectors/ConnectorMetadata.h"
 #include "axiom/connectors/hive/HiveMetadataConfig.h"
 #include "axiom/connectors/hive/LocalHiveConnectorMetadata.h"
@@ -25,6 +26,7 @@
 #include "axiom/connectors/tests/TestConnector.h"
 #include "axiom/connectors/tpch/TpchConnectorMetadata.h"
 #include "velox/connectors/Connector.h"
+#include "velox/connectors/ConnectorRegistry.h"
 #include "velox/connectors/hive/HiveConnector.h"
 #include "velox/dwio/common/FileSink.h"
 #include "velox/dwio/dwrf/RegisterDwrfReader.h"
@@ -48,6 +50,38 @@ void initializeFileFormats() {
   velox::text::registerTextWriterFactory();
 }
 
+// Adapts SessionConfig to the SessionPropertiesProvider interface for the
+// system connector's metadata.session_properties table.
+class SessionConfigPropertiesProvider
+    : public connector::system::SessionPropertiesProvider {
+ public:
+  explicit SessionConfigPropertiesProvider(const SessionConfig& sessionConfig)
+      : sessionConfig_(sessionConfig) {}
+
+  std::vector<connector::system::SessionPropertyInfo> getSessionProperties()
+      const override {
+    using velox::config::ConfigPropertyTypeName;
+
+    auto entries = sessionConfig_.all();
+    std::vector<connector::system::SessionPropertyInfo> result;
+    result.reserve(entries.size());
+    for (const auto& entry : entries) {
+      result.push_back({
+          entry.prefix,
+          entry.property.name,
+          std::string(ConfigPropertyTypeName::toName(entry.property.type)),
+          entry.property.defaultValue.value_or(""),
+          entry.currentValue.value_or(""),
+          entry.property.description,
+      });
+    }
+    return result;
+  }
+
+ private:
+  const SessionConfig& sessionConfig_;
+};
+
 } // namespace
 
 Connectors::Connectors() {
@@ -58,7 +92,7 @@ Connectors::~Connectors() {
   for (const auto& connectorId : connectorIds_) {
     // Unregister metadata first since it may reference the connector.
     connector::ConnectorMetadata::unregisterMetadata(connectorId);
-    velox::connector::unregisterConnector(connectorId);
+    velox::connector::ConnectorRegistry::global().erase(connectorId);
   }
 }
 
@@ -77,6 +111,13 @@ void Connectors::initialize() {
   ioExecutor_ = getSharedIoExecutor();
 }
 
+void Connectors::registerConnector(
+    const std::shared_ptr<velox::connector::Connector>& connector) {
+  connectorIds_.push_back(connector->connectorId());
+  velox::connector::ConnectorRegistry::global().insert(
+      connector->connectorId(), connector);
+}
+
 std::shared_ptr<velox::connector::Connector> Connectors::registerTpchConnector(
     const std::string& connectorId) {
   auto emptyConfig = std::make_shared<velox::config::ConfigBase>(
@@ -84,8 +125,7 @@ std::shared_ptr<velox::connector::Connector> Connectors::registerTpchConnector(
 
   velox::connector::tpch::TpchConnectorFactory factory;
   auto connector = factory.newConnector(connectorId, emptyConfig);
-  connectorIds_.push_back(connector->connectorId());
-  velox::connector::registerConnector(connector);
+  registerConnector(connector);
 
   auto tpchConnector =
       dynamic_cast<velox::connector::tpch::TpchConnector*>(connector.get());
@@ -112,8 +152,7 @@ Connectors::registerLocalHiveConnector(
 
   velox::connector::hive::HiveConnectorFactory factory;
   auto connector = factory.newConnector(connectorId, config, ioExecutor());
-  connectorIds_.push_back(connector->connectorId());
-  velox::connector::registerConnector(connector);
+  registerConnector(connector);
 
   auto hiveConnector =
       dynamic_cast<velox::connector::hive::HiveConnector*>(connector.get());
@@ -130,18 +169,25 @@ std::shared_ptr<velox::connector::Connector> Connectors::registerTestConnector(
     const std::string& connectorId) {
   connector::TestConnectorFactory factory(connectorId.c_str());
   auto connector = factory.newConnector(connectorId);
-  connectorIds_.push_back(connector->connectorId());
-  velox::connector::registerConnector(connector);
+  registerConnector(connector);
   return connector;
 }
 
-void Connectors::registerSystemConnector(const std::string& connectorId) {
+void Connectors::registerSystemConnector(
+    const SessionConfig& sessionConfig,
+    const std::string& connectorId) {
+  sessionPropertiesProvider_ =
+      std::make_unique<SessionConfigPropertiesProvider>(sessionConfig);
+
   auto connector = std::make_shared<connector::system::SystemConnector>(
-      connectorId, /*queryInfoProvider=*/nullptr);
-  connectorIds_.push_back(connector->connectorId());
-  velox::connector::registerConnector(connector);
+      connectorId,
+      /*queryInfoProvider=*/nullptr,
+      sessionPropertiesProvider_.get());
+  registerConnector(connector);
   connector::ConnectorMetadata::registerMetadata(
-      connector->connectorId(), connector->metadata());
+      connector->connectorId(),
+      std::make_shared<connector::system::SystemConnectorMetadata>(
+          connector.get()));
 }
 
 } // namespace facebook::axiom
