@@ -15,6 +15,7 @@
  */
 
 #include <folly/coro/BlockingWait.h>
+#include <folly/json/json.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
@@ -22,11 +23,82 @@
 #include "axiom/connectors/system/SystemConnector.h"
 #include "axiom/connectors/system/SystemConnectorMetadata.h"
 #include "velox/connectors/Connector.h"
+#include "velox/exec/tests/utils/QueryAssertions.h"
 #include "velox/expression/Expr.h"
+#include "velox/functions/Macros.h"
+#include "velox/functions/Registerer.h"
 #include "velox/vector/tests/utils/VectorTestBase.h"
 
 namespace facebook::axiom::connector::system {
 namespace {
+
+// Test functions for the system.metadata.functions table.
+
+// toss() -> boolean. Non-deterministic coin toss.
+template <typename T>
+struct TossFunction {
+  static constexpr bool is_deterministic = false;
+
+  FOLLY_ALWAYS_INLINE void call(bool& result) {
+    result = folly::Random::rand32(2) == 0;
+  }
+};
+
+// roll() -> integer and roll(integer) -> integer. Non-deterministic dice roll.
+template <typename T>
+struct RollFunction {
+  static constexpr bool is_deterministic = false;
+
+  FOLLY_ALWAYS_INLINE void call(int32_t& result, int32_t faces = 6) {
+    result = folly::Random::rand32(faces);
+  }
+};
+
+// plus(integer, integer, ...) -> integer and plus(real, real, ...) -> real.
+// Variadic addition.
+template <typename TExec>
+struct PlusFunction {
+  VELOX_DEFINE_FUNCTION_TYPES(TExec);
+
+  template <typename T>
+  FOLLY_ALWAYS_INLINE void call(
+      T& result,
+      const T& first,
+      const T& second,
+      const arg_type<velox::Variadic<T>>& remaining) {
+    result = first + second;
+    for (const auto& value : remaining) {
+      if (value.has_value()) {
+        result += value.value();
+      }
+    }
+  }
+};
+
+// Registers the test functions once per process.
+void registerTestFunctions() {
+  static bool kRegistered = false;
+  if (kRegistered) {
+    return;
+  }
+  kRegistered = true;
+
+  velox::registerFunction<TossFunction, bool>({"toss"});
+  velox::registerFunction<RollFunction, int32_t>({"roll"});
+  velox::registerFunction<RollFunction, int32_t, int32_t>({"roll"});
+  velox::registerFunction<
+      PlusFunction,
+      int32_t,
+      int32_t,
+      int32_t,
+      velox::Variadic<int32_t>>({"plus"});
+  velox::registerFunction<
+      PlusFunction,
+      float,
+      float,
+      float,
+      velox::Variadic<float>>({"plus"});
+}
 
 const char* const kSystemCatalog = "test-system";
 
@@ -63,6 +135,7 @@ class MockSessionPropertiesProvider : public SessionPropertiesProvider {
 class SystemConnectorMetadataTest : public ::testing::Test {
  protected:
   void SetUp() override {
+    registerTestFunctions();
     velox::memory::MemoryManager::testingSetInstance({});
 
     queryProvider_ = std::make_unique<MockQueryInfoProvider>();
@@ -161,25 +234,37 @@ class SystemConnectorMetadataTest : public ::testing::Test {
 // ===================== system.runtime.queries tests =====================
 
 TEST_F(SystemConnectorMetadataTest, findTable) {
-  auto table = metadata_->findTable({"runtime", "queries"});
+  auto table = metadata_->findTable(
+      {std::string(kRuntimeSchema), std::string(kQueriesTable)});
   ASSERT_NE(table, nullptr);
-  EXPECT_EQ(table->name(), (SchemaTableName{"runtime", "queries"}));
+  EXPECT_EQ(
+      table->name(),
+      (SchemaTableName{
+          std::string(kRuntimeSchema), std::string(kQueriesTable)}));
 }
 
 TEST_F(SystemConnectorMetadataTest, findTableCaching) {
-  auto table1 = metadata_->findTable({"runtime", "queries"});
-  auto table2 = metadata_->findTable({"runtime", "queries"});
+  auto table1 = metadata_->findTable(
+      {std::string(kRuntimeSchema), std::string(kQueriesTable)});
+  auto table2 = metadata_->findTable(
+      {std::string(kRuntimeSchema), std::string(kQueriesTable)});
   EXPECT_EQ(table1.get(), table2.get());
 }
 
 TEST_F(SystemConnectorMetadataTest, findTableUnknown) {
-  EXPECT_EQ(metadata_->findTable({"runtime", "nonexistent"}), nullptr);
-  EXPECT_EQ(metadata_->findTable({"runtime", "other"}), nullptr);
+  EXPECT_EQ(
+      metadata_->findTable({std::string(kRuntimeSchema), "nonexistent"}),
+      nullptr);
+  EXPECT_EQ(
+      metadata_->findTable(
+          {std::string(kMetadataSchema), std::string(kQueriesTable)}),
+      nullptr);
   EXPECT_EQ(metadata_->findTable({"", ""}), nullptr);
 }
 
 TEST_F(SystemConnectorMetadataTest, schema) {
-  auto table = metadata_->findTable({"runtime", "queries"});
+  auto table = metadata_->findTable(
+      {std::string(kRuntimeSchema), std::string(kQueriesTable)});
   ASSERT_NE(table, nullptr);
 
   auto expectedSchema = queriesTableSchema();
@@ -196,7 +281,8 @@ TEST_F(SystemConnectorMetadataTest, splitManager) {
 }
 
 TEST_F(SystemConnectorMetadataTest, tableLayout) {
-  auto table = metadata_->findTable({"runtime", "queries"});
+  auto table = metadata_->findTable(
+      {std::string(kRuntimeSchema), std::string(kQueriesTable)});
   ASSERT_NE(table, nullptr);
 
   const auto& layouts = table->layouts();
@@ -213,7 +299,8 @@ TEST_F(SystemConnectorMetadataTest, tableLayout) {
 }
 
 TEST_F(SystemConnectorMetadataTest, tableHandle) {
-  auto table = metadata_->findTable({"runtime", "queries"});
+  auto table = metadata_->findTable(
+      {std::string(kRuntimeSchema), std::string(kQueriesTable)});
   ASSERT_NE(table, nullptr);
 
   const auto& layouts = table->layouts();
@@ -235,7 +322,8 @@ TEST_F(SystemConnectorMetadataTest, tableHandle) {
 }
 
 TEST_F(SystemConnectorMetadataTest, splitSource) {
-  auto table = metadata_->findTable({"runtime", "queries"});
+  auto table = metadata_->findTable(
+      {std::string(kRuntimeSchema), std::string(kQueriesTable)});
   ASSERT_NE(table, nullptr);
 
   auto session = std::make_shared<ConnectorSession>("test-query");
@@ -296,7 +384,9 @@ TEST_F(SystemConnectorMetadataTest, dataSourceAllColumns) {
 
   queryProvider_->addQuery(std::move(snapshot));
 
-  auto vector = readTable({"runtime", "queries"}, queriesTableSchema());
+  auto vector = readTable(
+      {std::string(kRuntimeSchema), std::string(kQueriesTable)},
+      queriesTableSchema());
   ASSERT_NE(vector, nullptr);
   ASSERT_EQ(vector->size(), 1);
 
@@ -336,7 +426,8 @@ TEST_F(SystemConnectorMetadataTest, dataSourceColumnPruning) {
 
   auto outputType =
       velox::ROW({{"query_id", velox::VARCHAR()}, {"state", velox::VARCHAR()}});
-  auto vector = readTable({"runtime", "queries"}, outputType);
+  auto vector = readTable(
+      {std::string(kRuntimeSchema), std::string(kQueriesTable)}, outputType);
   ASSERT_NE(vector, nullptr);
   ASSERT_EQ(vector->size(), 1);
   ASSERT_EQ(vector->type()->size(), 2);
@@ -349,7 +440,9 @@ TEST_F(SystemConnectorMetadataTest, dataSourceColumnPruning) {
 }
 
 TEST_F(SystemConnectorMetadataTest, dataSourceEmpty) {
-  auto vector = readTable({"runtime", "queries"}, queriesTableSchema());
+  auto vector = readTable(
+      {std::string(kRuntimeSchema), std::string(kQueriesTable)},
+      queriesTableSchema());
   ASSERT_NE(vector, nullptr);
   EXPECT_EQ(vector->size(), 0);
 }
@@ -367,7 +460,8 @@ TEST_F(SystemConnectorMetadataTest, dataSourceNullSource) {
   queryProvider_->addQuery(std::move(snapshot));
 
   auto outputType = velox::ROW({{"source", velox::VARCHAR()}});
-  auto vector = readTable({"runtime", "queries"}, outputType);
+  auto vector = readTable(
+      {std::string(kRuntimeSchema), std::string(kQueriesTable)}, outputType);
   ASSERT_NE(vector, nullptr);
   ASSERT_EQ(vector->size(), 1);
 
@@ -376,18 +470,23 @@ TEST_F(SystemConnectorMetadataTest, dataSourceNullSource) {
 }
 
 TEST_F(SystemConnectorMetadataTest, findSessionPropertiesTable) {
-  auto table = metadata_->findTable({"metadata", "session_properties"});
-  ASSERT_NE(table, nullptr);
-  EXPECT_EQ(table->name(), (SchemaTableName{"metadata", "session_properties"}));
-}
+  SchemaTableName tableName{
+      std::string(kMetadataSchema), std::string(kSessionPropertiesTable)};
 
-TEST_F(SystemConnectorMetadataTest, findTableWrongSchema) {
-  EXPECT_EQ(metadata_->findTable({"metadata", "queries"}), nullptr);
-  EXPECT_EQ(metadata_->findTable({"runtime", "session_properties"}), nullptr);
+  auto table = metadata_->findTable(tableName);
+  ASSERT_NE(table, nullptr);
+  EXPECT_EQ(table->name(), tableName);
+
+  // Wrong schema.
+  EXPECT_EQ(
+      metadata_->findTable(
+          {std::string(kRuntimeSchema), std::string(kSessionPropertiesTable)}),
+      nullptr);
 }
 
 TEST_F(SystemConnectorMetadataTest, sessionPropertiesSchema) {
-  auto table = metadata_->findTable({"metadata", "session_properties"});
+  auto table = metadata_->findTable(
+      {std::string(kMetadataSchema), std::string(kSessionPropertiesTable)});
   ASSERT_NE(table, nullptr);
 
   auto expectedSchema = sessionPropertiesTableSchema();
@@ -403,9 +502,10 @@ TEST_F(SystemConnectorMetadataTest, schemas) {
   auto session = std::make_shared<ConnectorSession>("test-query");
   EXPECT_THAT(
       metadata_->listSchemaNames(session),
-      testing::UnorderedElementsAre("runtime", "metadata"));
-  EXPECT_TRUE(metadata_->schemaExists(session, "runtime"));
-  EXPECT_TRUE(metadata_->schemaExists(session, "metadata"));
+      testing::UnorderedElementsAre(
+          std::string(kRuntimeSchema), std::string(kMetadataSchema)));
+  EXPECT_TRUE(metadata_->schemaExists(session, std::string(kRuntimeSchema)));
+  EXPECT_TRUE(metadata_->schemaExists(session, std::string(kMetadataSchema)));
   EXPECT_FALSE(metadata_->schemaExists(session, "information_schema"));
 }
 
@@ -423,8 +523,104 @@ TEST_F(SystemConnectorMetadataTest, sessionPropertiesAllColumns) {
       pool_.get());
 
   auto actual = readTable(
-      {"metadata", "session_properties"}, sessionPropertiesTableSchema());
+      {std::string(kMetadataSchema), std::string(kSessionPropertiesTable)},
+      sessionPropertiesTableSchema());
   velox::test::assertEqualVectors(expected, actual);
+}
+
+// ===================== system.metadata.functions tests =====================
+
+TEST_F(SystemConnectorMetadataTest, findFunctionsTable) {
+  SchemaTableName tableName{
+      std::string(kMetadataSchema), std::string(kFunctionsTable)};
+
+  auto table = metadata_->findTable(tableName);
+  ASSERT_NE(table, nullptr);
+  EXPECT_EQ(table->name(), tableName);
+
+  // Wrong schema.
+  EXPECT_EQ(
+      metadata_->findTable(
+          {std::string(kRuntimeSchema), std::string(kFunctionsTable)}),
+      nullptr);
+}
+
+TEST_F(SystemConnectorMetadataTest, functionsDataSource) {
+  SchemaTableName tableName{
+      std::string(kMetadataSchema), std::string(kFunctionsTable)};
+
+  auto actual = readTable(tableName, functionsTableSchema());
+  ASSERT_NE(actual, nullptr);
+
+  folly::json::serialization_opts opts;
+  opts.sort_keys = true;
+  auto kDeterministic = folly::json::serialize(
+      folly::dynamic::object("deterministic", true)(
+          "default_null_behavior", true),
+      opts);
+  auto kNonDeterministic = folly::json::serialize(
+      folly::dynamic::object("deterministic", false)(
+          "default_null_behavior", true),
+      opts);
+
+  auto expected = std::dynamic_pointer_cast<velox::RowVector>(
+      velox::BaseVector::createFromVariants(
+          functionsTableSchema(),
+          {
+              // plus(integer, integer, integer...) -> integer.
+              velox::Variant::row({
+                  "plus",
+                  "scalar",
+                  "integer",
+                  velox::Variant::array({"integer", "integer", "integer"}),
+                  true,
+                  "",
+                  kDeterministic,
+              }),
+              // plus(real, real, real...) -> real.
+              velox::Variant::row({
+                  "plus",
+                  "scalar",
+                  "real",
+                  velox::Variant::array({"real", "real", "real"}),
+                  true,
+                  "",
+                  kDeterministic,
+              }),
+              // roll() -> integer.
+              velox::Variant::row({
+                  "roll",
+                  "scalar",
+                  "integer",
+                  velox::Variant::array({}),
+                  false,
+                  "",
+                  kNonDeterministic,
+              }),
+              // roll(integer) -> integer.
+              velox::Variant::row({
+                  "roll",
+                  "scalar",
+                  "integer",
+                  velox::Variant::array({"integer"}),
+                  false,
+                  "",
+                  kNonDeterministic,
+              }),
+              // toss() -> boolean.
+              velox::Variant::row({
+                  "toss",
+                  "scalar",
+                  "boolean",
+                  velox::Variant::array({}),
+                  false,
+                  "",
+                  kNonDeterministic,
+              }),
+          },
+          pool_.get()));
+
+  velox::exec::test::assertEqualResults({expected}, {actual});
 }
 
 } // namespace

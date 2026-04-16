@@ -21,50 +21,65 @@
 
 namespace facebook::axiom::connector::system {
 
-velox::RowTypePtr queriesTableSchema() {
-  static auto schema = velox::ROW(
-      {{"query_id", velox::VARCHAR()},
-       {"state", velox::VARCHAR()},
-       {"query", velox::VARCHAR()},
-       {"catalog", velox::VARCHAR()},
-       {"schema", velox::VARCHAR()},
-       {"user", velox::VARCHAR()},
-       {"source", velox::VARCHAR()},
-       {"query_type", velox::VARCHAR()},
-       {"planning_time_ms", velox::BIGINT()},
-       {"optimization_time_ms", velox::BIGINT()},
-       {"queue_time_ms", velox::BIGINT()},
-       {"execution_time_ms", velox::BIGINT()},
-       {"elapsed_time_ms", velox::BIGINT()},
-       {"cpu_time_ms", velox::BIGINT()},
-       {"wall_time_ms", velox::BIGINT()},
-       {"total_splits", velox::BIGINT()},
-       {"queued_splits", velox::BIGINT()},
-       {"running_splits", velox::BIGINT()},
-       {"finished_splits", velox::BIGINT()},
-       {"output_rows", velox::BIGINT()},
-       {"output_bytes", velox::BIGINT()},
-       {"processed_rows", velox::BIGINT()},
-       {"processed_bytes", velox::BIGINT()},
-       {"written_rows", velox::BIGINT()},
-       {"written_bytes", velox::BIGINT()},
-       {"peak_memory_bytes", velox::BIGINT()},
-       {"spilled_bytes", velox::BIGINT()},
-       {"create_time", velox::TIMESTAMP()},
-       {"start_time", velox::TIMESTAMP()},
-       {"end_time", velox::TIMESTAMP()}});
-  return schema;
+const velox::RowTypePtr& queriesTableSchema() {
+  static auto kSchema = velox::ROW({
+      {"query_id", velox::VARCHAR()},
+      {"state", velox::VARCHAR()},
+      {"query", velox::VARCHAR()},
+      {"catalog", velox::VARCHAR()},
+      {"schema", velox::VARCHAR()},
+      {"user", velox::VARCHAR()},
+      {"source", velox::VARCHAR()},
+      {"query_type", velox::VARCHAR()},
+      {"planning_time_ms", velox::BIGINT()},
+      {"optimization_time_ms", velox::BIGINT()},
+      {"queue_time_ms", velox::BIGINT()},
+      {"execution_time_ms", velox::BIGINT()},
+      {"elapsed_time_ms", velox::BIGINT()},
+      {"cpu_time_ms", velox::BIGINT()},
+      {"wall_time_ms", velox::BIGINT()},
+      {"total_splits", velox::BIGINT()},
+      {"queued_splits", velox::BIGINT()},
+      {"running_splits", velox::BIGINT()},
+      {"finished_splits", velox::BIGINT()},
+      {"output_rows", velox::BIGINT()},
+      {"output_bytes", velox::BIGINT()},
+      {"processed_rows", velox::BIGINT()},
+      {"processed_bytes", velox::BIGINT()},
+      {"written_rows", velox::BIGINT()},
+      {"written_bytes", velox::BIGINT()},
+      {"peak_memory_bytes", velox::BIGINT()},
+      {"spilled_bytes", velox::BIGINT()},
+      {"create_time", velox::TIMESTAMP()},
+      {"start_time", velox::TIMESTAMP()},
+      {"end_time", velox::TIMESTAMP()},
+  });
+  return kSchema;
 }
 
-velox::RowTypePtr sessionPropertiesTableSchema() {
-  static auto schema = velox::ROW(
-      {{"component", velox::VARCHAR()},
-       {"name", velox::VARCHAR()},
-       {"type", velox::VARCHAR()},
-       {"default_value", velox::VARCHAR()},
-       {"current_value", velox::VARCHAR()},
-       {"description", velox::VARCHAR()}});
-  return schema;
+const velox::RowTypePtr& sessionPropertiesTableSchema() {
+  static auto kSchema = velox::ROW({
+      {"component", velox::VARCHAR()},
+      {"name", velox::VARCHAR()},
+      {"type", velox::VARCHAR()},
+      {"default_value", velox::VARCHAR()},
+      {"current_value", velox::VARCHAR()},
+      {"description", velox::VARCHAR()},
+  });
+  return kSchema;
+}
+
+const velox::RowTypePtr& functionsTableSchema() {
+  static auto kSchema = velox::ROW({
+      {"name", velox::VARCHAR()},
+      {"kind", velox::VARCHAR()},
+      {"return_type", velox::VARCHAR()},
+      {"argument_types", velox::ARRAY(velox::VARCHAR())},
+      {"is_variadic", velox::BOOLEAN()},
+      {"owner", velox::VARCHAR()},
+      {"properties", velox::VARCHAR()},
+  });
+  return kSchema;
 }
 
 // ===================== SystemTableLayout =====================
@@ -155,6 +170,15 @@ TablePtr SystemConnectorMetadata::findTable(const SchemaTableName& tableName) {
           tableName, sessionPropertiesTableSchema(), connector_);
     }
     return sessionPropertiesTable_;
+  }
+
+  if (tableName.schema == kMetadataSchema &&
+      tableName.table == kFunctionsTable) {
+    if (!functionsTable_) {
+      functionsTable_ = std::make_shared<SystemTable>(
+          tableName, functionsTableSchema(), connector_);
+    }
+    return functionsTable_;
   }
 
   return nullptr;

@@ -26,7 +26,9 @@ target_link_libraries(
   axiom_connectors
   velox_connector
   velox_exec
+  velox_exec_test_lib
   velox_expression
+  velox_function_registry
   velox_vector_test_lib
   GTest::gmock
   GTest::gtest
