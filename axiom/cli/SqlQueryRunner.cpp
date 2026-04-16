@@ -37,6 +37,7 @@
 #include "axiom/sql/presto/ShowStatsBuilder.h"
 #include "velox/common/file/FileSystems.h"
 #include "velox/common/time/Timer.h"
+#include "velox/connectors/ConnectorRegistry.h"
 #include "velox/core/QueryConfig.h"
 #include "velox/core/QueryConfigProvider.h"
 #include "velox/exec/tests/utils/LocalExchangeSource.h"
@@ -52,6 +53,28 @@ namespace velox = facebook::velox;
 using namespace facebook::axiom;
 
 namespace {
+
+// Wraps a Velox connector's ConfigProvider pointer into an owned
+// ConfigProvider for use with ConfigRegistry. The underlying connector
+// must outlive this wrapper.
+class ConnectorConfigProvider : public velox::config::ConfigProvider {
+ public:
+  explicit ConnectorConfigProvider(
+      const velox::config::ConfigProvider* provider)
+      : provider_(provider) {}
+
+  std::vector<velox::config::ConfigProperty> properties() const override {
+    return provider_->properties();
+  }
+
+  std::string normalize(std::string_view name, std::string_view value)
+      const override {
+    return provider_->normalize(name, value);
+  }
+
+ private:
+  const velox::config::ConfigProvider* provider_;
+};
 
 // Returns the system's local IANA timezone name. Checks TZ environment variable
 // first, then reads /etc/localtime symlink, falls back to "UTC".
@@ -140,6 +163,15 @@ void SqlQueryRunner::initialize(
   configRegistry_->add(
       kExecutionPrefix,
       std::make_shared<facebook::velox::core::QueryConfigProvider>());
+
+  // Register config providers for connectors that support session properties.
+  for (const auto& [connectorId, connector] :
+       velox::connector::ConnectorRegistry::global().snapshot()) {
+    if (const auto* provider = connector->configProvider()) {
+      configRegistry_->add(
+          connectorId, std::make_shared<ConnectorConfigProvider>(provider));
+    }
+  }
 
   sessionConfig_ =
       std::make_shared<facebook::axiom::SessionConfig>(configRegistry_);
@@ -624,13 +656,29 @@ std::shared_ptr<velox::core::QueryCtx> SqlQueryRunner::newQuery(
   queryConfig[velox::core::QueryConfig::kSessionStartTime] = std::to_string(
       options.sessionStartTimeMs.value_or(velox::getCurrentTimeMs()));
 
+  // Build per-connector session properties.
+  std::unordered_map<std::string, std::shared_ptr<velox::config::ConfigBase>>
+      connectorConfigs;
+  for (const auto& [connectorId, connector] :
+       velox::connector::ConnectorRegistry::global().snapshot()) {
+    if (connector->configProvider()) {
+      auto connectorProps = sessionConfig_->effectiveValues(connectorId);
+      if (!connectorProps.empty()) {
+        connectorConfigs[connectorId] =
+            std::make_shared<velox::config::ConfigBase>(
+                std::unordered_map<std::string, std::string>(
+                    connectorProps.begin(), connectorProps.end()));
+      }
+    }
+  }
+
   return velox::core::QueryCtx::create(
       executor_.get(),
       velox::core::QueryConfig(std::move(queryConfig)),
-      {},
+      std::move(connectorConfigs),
       velox::cache::AsyncDataCache::getInstance(),
       rootPool_->shared_from_this(),
-      nullptr,
+      /*spillExecutor=*/nullptr,
       queryId,
       options.tokenProvider);
 }

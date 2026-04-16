@@ -107,10 +107,12 @@ class TestTable : public Table {
 
   /// Appends a RowVector to the table's data. Each appended vector generates
   /// a separate TestConnectorSplit. Data is copied into the table's internal
-  /// memory pool. Computes per-column statistics incrementally (numDistinct,
-  /// min/max, nullPct, maxLength). Cannot be combined with setStats on the
-  /// same table.
-  void addData(const velox::RowVectorPtr& data);
+  /// memory pool. When 'collectColumnStatistics' is true, computes per-column
+  /// statistics incrementally (numDistinct, min/max, nullPct, maxLength).
+  /// Cannot be combined with setStats on the same table.
+  void addData(
+      const velox::RowVectorPtr& data,
+      bool collectColumnStatistics = true);
 
   TestTableLayout* mutableLayout() {
     return exportedLayout_.get();
@@ -581,6 +583,27 @@ class TestDataSource : public velox::connector::DataSource {
   bool more_{false};
 };
 
+/// ConfigProvider for TestConnector session properties.
+class TestConfigProvider : public velox::config::ConfigProvider {
+ public:
+  static constexpr const char* kCollectColumnStatistics =
+      "collect_column_statistics";
+
+  std::vector<velox::config::ConfigProperty> properties() const override {
+    return {
+        {kCollectColumnStatistics,
+         velox::config::ConfigPropertyType::kBoolean,
+         "true",
+         "Collect per-column statistics when writing data to a table."},
+    };
+  }
+
+  std::string normalize(std::string_view /*name*/, std::string_view value)
+      const override {
+    return std::string(value);
+  }
+};
+
 /// Contains an embedded TestConnectorMetadata to which TestTables are
 /// added at runtime using the addTable API. Data is appended to a
 /// TestTable via the appendData method. createDataSource creates a
@@ -603,6 +626,11 @@ class TestConnector : public velox::connector::Connector {
 
   ~TestConnector() override {
     ConnectorMetadata::unregisterMetadata(connectorId());
+  }
+
+  const velox::config::ConfigProvider* configProvider() const override {
+    static const TestConfigProvider kProvider;
+    return &kProvider;
   }
 
   bool supportsSplitPreload() const override {
@@ -720,7 +748,8 @@ class TestConnectorFactory : public velox::connector::ConnectorFactory {
 /// contained in the corresponding table.
 class TestDataSink : public velox::connector::DataSink {
  public:
-  explicit TestDataSink(std::shared_ptr<Table> table) {
+  TestDataSink(std::shared_ptr<Table> table, bool collectStats)
+      : collectColumnStatistics_(collectStats) {
     table_ = std::dynamic_pointer_cast<TestTable>(table);
     VELOX_CHECK(table_, "table {} not a TestTable", table->name().toString());
   }
@@ -748,6 +777,7 @@ class TestDataSink : public velox::connector::DataSink {
 
  private:
   std::shared_ptr<TestTable> table_;
+  bool collectColumnStatistics_;
 };
 
 } // namespace facebook::axiom::connector

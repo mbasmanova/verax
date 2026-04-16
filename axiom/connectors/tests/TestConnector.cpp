@@ -140,7 +140,9 @@ void TestTable::setStats(
   }
 }
 
-void TestTable::addData(const velox::RowVectorPtr& data) {
+void TestTable::addData(
+    const velox::RowVectorPtr& data,
+    bool collectColumnStatistics) {
   VELOX_CHECK_EQ(
       numRows_,
       0,
@@ -156,6 +158,10 @@ void TestTable::addData(const velox::RowVectorPtr& data) {
       velox::BaseVector::copy(*data, pool_.get()));
   data_.push_back(copy);
   dataRows_ += data->size();
+
+  if (!collectColumnStatistics) {
+    return;
+  }
 
   // Compute per-column statistics incrementally.
   const auto& rowType = type();
@@ -651,7 +657,7 @@ std::unique_ptr<velox::connector::DataSource> TestConnector::createDataSource(
 std::unique_ptr<velox::connector::DataSink> TestConnector::createDataSink(
     velox::RowTypePtr,
     velox::connector::ConnectorInsertTableHandlePtr tableHandle,
-    velox::connector::ConnectorQueryCtx*,
+    velox::connector::ConnectorQueryCtx* connectorQueryCtx,
     velox::connector::CommitStrategy) {
   VELOX_CHECK(tableHandle, "table handle must be non-null");
   auto* testHandle =
@@ -662,7 +668,10 @@ std::unique_ptr<velox::connector::DataSink> TestConnector::createDataSink(
       table,
       "cannot create data sink for nonexistent table {}",
       testHandle->tableName().toString());
-  return std::make_unique<TestDataSink>(table);
+  auto collectColumnStatistics =
+      connectorQueryCtx->sessionProperties()->get<bool>(
+          TestConfigProvider::kCollectColumnStatistics, true);
+  return std::make_unique<TestDataSink>(table, collectColumnStatistics);
 }
 
 std::shared_ptr<TestTable> TestConnector::addTable(
@@ -736,7 +745,7 @@ std::shared_ptr<velox::connector::Connector> TestConnectorFactory::newConnector(
 
 void TestDataSink::appendData(velox::RowVectorPtr vector) {
   if (vector) {
-    table_->addData(vector);
+    table_->addData(vector, collectColumnStatistics_);
   }
 }
 
