@@ -22,14 +22,17 @@
 namespace facebook::axiom::connector::system {
 
 /// Returns the schema for the system.runtime.queries table.
-velox::RowTypePtr queriesTableSchema();
+const velox::RowTypePtr& queriesTableSchema();
 
 /// Returns the schema for the system.metadata.session_properties table.
-velox::RowTypePtr sessionPropertiesTableSchema();
+const velox::RowTypePtr& sessionPropertiesTableSchema();
+
+/// Returns the schema for the system.metadata.functions table.
+const velox::RowTypePtr& functionsTableSchema();
 
 // ===================== Axiom Metadata Layer =====================
 
-/// Table layout for the system.runtime.queries table.
+/// Table layout for system connector tables.
 class SystemTableLayout : public TableLayout {
  public:
   SystemTableLayout(
@@ -68,7 +71,8 @@ class SystemTableLayout : public TableLayout {
       std::optional<LookupKeys> lookupKeys) const override;
 };
 
-/// Table representing system.runtime.queries.
+/// Table representing a system connector table (e.g., queries,
+/// session_properties, functions).
 class SystemTable : public Table {
  public:
   SystemTable(
@@ -151,6 +155,7 @@ class SystemConnectorMetadata : public ConnectorMetadata {
   std::unique_ptr<SystemSplitManager> splitManager_;
   std::shared_ptr<SystemTable> queriesTable_;
   std::shared_ptr<SystemTable> sessionPropertiesTable_;
+  std::shared_ptr<SystemTable> functionsTable_;
 };
 
 } // namespace facebook::axiom::connector::system

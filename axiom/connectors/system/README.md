@@ -11,11 +11,13 @@ uses `system`).
 
 ### system.metadata
 
-Configuration metadata, including session-scoped properties.
+Configuration metadata, including session-scoped properties and function
+signatures.
 
 | Table | Description |
 |-------|-------------|
 | `session_properties` | All registered session properties with current values, defaults, and descriptions. |
+| `functions` | All registered function signatures with types, arguments, and metadata. |
 
 ### system.runtime
 
@@ -38,6 +40,14 @@ SELECT component, name, current_value, default_value
 FROM system.metadata.session_properties
 WHERE current_value <> default_value;
 
+-- Distinct function names by kind.
+SELECT DISTINCT name FROM system.metadata.functions
+WHERE kind = 'aggregate' ORDER BY 1;
+
+-- Find functions that accept a variable number of arguments.
+SELECT DISTINCT name FROM system.metadata.functions
+WHERE is_variadic ORDER BY 1;
+
 -- List all active queries.
 SELECT query_id, state, query, elapsed_time_ms
 FROM system.runtime.queries;
@@ -55,6 +65,20 @@ FROM system.runtime.queries;
 | `default_value` | VARCHAR | Default value (empty string if none). |
 | `current_value` | VARCHAR | Current session value (reflects SET SESSION overrides). |
 | `description` | VARCHAR | Human-readable description. |
+
+### system.metadata.functions
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `name` | VARCHAR | Function name. |
+| `kind` | VARCHAR | `scalar`, `aggregate`, or `window`. |
+| `return_type` | VARCHAR | Return type signature (e.g. `bigint`, `array(T)`). |
+| `argument_types` | ARRAY(VARCHAR) | Argument type signatures. |
+| `is_variadic` | BOOLEAN | Whether the function accepts a variable number of arguments. |
+| `owner` | VARCHAR | Responsible team (empty if not set). |
+| `properties` | VARCHAR | Type-specific metadata as JSON (e.g. `{"deterministic": true}`). |
+
+One row per function signature (overload).
 
 <details>
 <summary>system.runtime.queries (30 columns)</summary>
@@ -108,8 +132,9 @@ The system connector has two layers:
 
 Each system table has a corresponding data source class that knows how
 to populate its columns. The data source reads from a **provider
-interface** — `QueryInfoProvider` for the queries table and
-`SessionPropertiesProvider` for session properties. These interfaces
+interface** — `QueryInfoProvider` for the queries table,
+`SessionPropertiesProvider` for session properties, and
+`FunctionsProvider` for function metadata. These interfaces
 decouple the connector from the rest of the system: the connector
 defines what data it needs, and the application supplies it.
 

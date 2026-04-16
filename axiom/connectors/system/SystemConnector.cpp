@@ -18,8 +18,15 @@
 
 #include <algorithm>
 
+#include <folly/json/json.h>
+
 #include "axiom/connectors/system/SystemConnectorMetadata.h"
 #include "velox/common/base/Exceptions.h"
+#include "velox/exec/Aggregate.h"
+#include "velox/exec/WindowFunction.h"
+#include "velox/expression/SimpleFunctionRegistry.h"
+#include "velox/expression/VectorFunction.h"
+#include "velox/functions/FunctionRegistry.h"
 #include "velox/vector/ComplexVector.h"
 #include "velox/vector/FlatVector.h"
 
@@ -27,8 +34,8 @@ namespace facebook::axiom::connector::system {
 
 namespace {
 
-/// Indices into the full queries table schema, matching the column order
-/// returned by queriesTableSchema().
+// Indices into the full queries table schema, matching the column order
+// returned by queriesTableSchema().
 enum class QueryColumn : int32_t {
   kQueryId = 0,
   kState,
@@ -63,6 +70,29 @@ enum class QueryColumn : int32_t {
   kNumColumns
 };
 
+// Indices into the session properties table schema, matching the column order
+// returned by sessionPropertiesTableSchema().
+enum class SessionPropertyColumn : int32_t {
+  kComponent = 0,
+  kName,
+  kType,
+  kDefaultValue,
+  kCurrentValue,
+  kDescription,
+};
+
+// Indices into the full functions table schema, matching the column order
+// returned by functionsTableSchema().
+enum class FunctionColumn : int32_t {
+  kName = 0,
+  kKind,
+  kReturnType,
+  kArgumentTypes,
+  kIsVariadic,
+  kOwner,
+  kProperties,
+};
+
 // Converts a system_clock time_point to a Velox Timestamp.
 // Returns a null Timestamp (0, 0) for the epoch (default-constructed
 // time_point), which we treat as "not set".
@@ -79,99 +109,152 @@ bool isEpoch(std::chrono::system_clock::time_point tp) {
   return tp == std::chrono::system_clock::time_point{};
 }
 
-} // namespace
-
 // ===================== Data Sources (internal) =====================
 
+// Base class for system connector data sources. Handles split management
+// and the single-batch read pattern. Subclasses implement buildResults().
+class SystemDataSourceBase : public velox::connector::DataSource {
+ public:
+  SystemDataSourceBase(
+      const velox::RowTypePtr& outputType,
+      const velox::RowTypePtr& fullSchema,
+      const velox::connector::ColumnHandleMap& columnHandles,
+      velox::memory::MemoryPool* pool)
+      : outputType_(outputType), pool_(pool) {
+    outputColumnMappings_.reserve(outputType_->size());
+    for (const auto& name : outputType_->names()) {
+      VELOX_CHECK(
+          columnHandles.contains(name),
+          "No handle for output column '{}'",
+          name);
+      auto handle = columnHandles.find(name)->second;
+      auto idx = fullSchema->getChildIdxIfExists(handle->name());
+      VELOX_CHECK(idx.has_value(), "Column not found: {}", handle->name());
+      outputColumnMappings_.push_back(idx.value());
+    }
+  }
+
+  void addSplit(
+      std::shared_ptr<velox::connector::ConnectorSplit> split) override {
+    split_ = std::dynamic_pointer_cast<SystemSplit>(split);
+    VELOX_CHECK(split_, "Expected SystemSplit");
+    needData_ = true;
+  }
+
+  std::optional<velox::RowVectorPtr> next(
+      uint64_t /*size*/,
+      velox::ContinueFuture& /*future*/) override {
+    VELOX_CHECK(split_, "No split added");
+    if (!needData_) {
+      return nullptr;
+    }
+    needData_ = false;
+    auto result = buildResults();
+    if (result) {
+      completedRows_ += result->size();
+    }
+    return result;
+  }
+
+  void addDynamicFilter(
+      velox::column_index_t,
+      const std::shared_ptr<velox::common::Filter>&) override {}
+
+  uint64_t getCompletedBytes() override {
+    return 0;
+  }
+
+  uint64_t getCompletedRows() override {
+    return completedRows_;
+  }
+
+  std::unordered_map<std::string, velox::RuntimeMetric> getRuntimeStats()
+      override {
+    return {};
+  }
+
+ protected:
+  virtual velox::RowVectorPtr buildResults() = 0;
+
+  template <typename T>
+  velox::FlatVectorPtr<T> createFlat(
+      const velox::TypePtr& type,
+      velox::vector_size_t size) {
+    return velox::BaseVector::create<velox::FlatVector<T>>(type, size, pool_);
+  }
+
+  const velox::RowTypePtr outputType_;
+  velox::memory::MemoryPool* pool_;
+  std::vector<velox::column_index_t> outputColumnMappings_;
+  uint64_t completedRows_{0};
+
+ private:
+  std::shared_ptr<SystemSplit> split_;
+  bool needData_{true};
+};
+
 // Reads live query state from a QueryInfoProvider.
-class SystemDataSource : public velox::connector::DataSource {
+class SystemDataSource : public SystemDataSourceBase {
  public:
   SystemDataSource(
       const velox::RowTypePtr& outputType,
       const velox::connector::ColumnHandleMap& columnHandles,
       const QueryInfoProvider* queryInfoProvider,
-      velox::memory::MemoryPool* pool);
+      velox::memory::MemoryPool* pool)
+      : SystemDataSourceBase(
+            outputType,
+            queriesTableSchema(),
+            columnHandles,
+            pool),
+        queryInfoProvider_(queryInfoProvider) {}
 
-  void addSplit(
-      std::shared_ptr<velox::connector::ConnectorSplit> split) override;
-
-  std::optional<velox::RowVectorPtr> next(
-      uint64_t size,
-      velox::ContinueFuture& future) override;
-
-  void addDynamicFilter(
-      velox::column_index_t,
-      const std::shared_ptr<velox::common::Filter>&) override {}
-
-  uint64_t getCompletedBytes() override {
-    return 0;
-  }
-
-  uint64_t getCompletedRows() override {
-    return completedRows_;
-  }
-
-  std::unordered_map<std::string, velox::RuntimeMetric> getRuntimeStats()
-      override {
-    return {};
-  }
+ protected:
+  velox::RowVectorPtr buildResults() override;
 
  private:
-  velox::RowVectorPtr buildQueryResults();
-
-  const velox::RowTypePtr outputType_;
   const QueryInfoProvider* queryInfoProvider_;
-  velox::memory::MemoryPool* pool_;
-  std::shared_ptr<SystemSplit> split_;
-  std::vector<velox::column_index_t> outputColumnMappings_;
-  uint64_t completedRows_{0};
-  bool needData_{true};
 };
 
 // Reads session properties from a SessionPropertiesProvider.
-class SessionPropertiesDataSource : public velox::connector::DataSource {
+class SessionPropertiesDataSource : public SystemDataSourceBase {
  public:
   SessionPropertiesDataSource(
       const velox::RowTypePtr& outputType,
       const velox::connector::ColumnHandleMap& columnHandles,
       const SessionPropertiesProvider* provider,
-      velox::memory::MemoryPool* pool);
+      velox::memory::MemoryPool* pool)
+      : SystemDataSourceBase(
+            outputType,
+            sessionPropertiesTableSchema(),
+            columnHandles,
+            pool),
+        provider_(provider) {}
 
-  void addSplit(
-      std::shared_ptr<velox::connector::ConnectorSplit> split) override;
-
-  std::optional<velox::RowVectorPtr> next(
-      uint64_t size,
-      velox::ContinueFuture& future) override;
-
-  void addDynamicFilter(
-      velox::column_index_t,
-      const std::shared_ptr<velox::common::Filter>&) override {}
-
-  uint64_t getCompletedBytes() override {
-    return 0;
-  }
-
-  uint64_t getCompletedRows() override {
-    return completedRows_;
-  }
-
-  std::unordered_map<std::string, velox::RuntimeMetric> getRuntimeStats()
-      override {
-    return {};
-  }
+ protected:
+  velox::RowVectorPtr buildResults() override;
 
  private:
-  velox::RowVectorPtr buildResults();
-
-  const velox::RowTypePtr outputType_;
   const SessionPropertiesProvider* provider_;
-  velox::memory::MemoryPool* pool_;
-  std::shared_ptr<SystemSplit> split_;
-  std::vector<velox::column_index_t> outputColumnMappings_;
-  uint64_t completedRows_{0};
-  bool needData_{true};
 };
+
+// Reads function metadata directly from Velox's global function registries.
+class FunctionsDataSource : public SystemDataSourceBase {
+ public:
+  FunctionsDataSource(
+      const velox::RowTypePtr& outputType,
+      const velox::connector::ColumnHandleMap& columnHandles,
+      velox::memory::MemoryPool* pool)
+      : SystemDataSourceBase(
+            outputType,
+            functionsTableSchema(),
+            columnHandles,
+            pool) {}
+
+ protected:
+  velox::RowVectorPtr buildResults() override;
+};
+
+} // namespace
 
 // ===================== SystemTableHandle =====================
 
@@ -209,50 +292,7 @@ velox::connector::ConnectorTableHandlePtr SystemTableHandle::create(
 
 // ===================== SystemDataSource =====================
 
-SystemDataSource::SystemDataSource(
-    const velox::RowTypePtr& outputType,
-    const velox::connector::ColumnHandleMap& columnHandles,
-    const QueryInfoProvider* queryInfoProvider,
-    velox::memory::MemoryPool* pool)
-    : outputType_(outputType),
-      queryInfoProvider_(queryInfoProvider),
-      pool_(pool) {
-  auto fullSchema = queriesTableSchema();
-  outputColumnMappings_.reserve(outputType_->size());
-  for (const auto& name : outputType_->names()) {
-    VELOX_CHECK(
-        columnHandles.contains(name), "No handle for output column '{}'", name);
-    auto handle = columnHandles.find(name)->second;
-    auto idx = fullSchema->getChildIdxIfExists(handle->name());
-    VELOX_CHECK(
-        idx.has_value(),
-        "Column '{}' not found in system.runtime.queries schema",
-        handle->name());
-    outputColumnMappings_.push_back(idx.value());
-  }
-}
-
-void SystemDataSource::addSplit(
-    std::shared_ptr<velox::connector::ConnectorSplit> split) {
-  split_ = std::dynamic_pointer_cast<SystemSplit>(split);
-  VELOX_CHECK(split_, "Expected SystemSplit");
-  needData_ = true;
-}
-
-std::optional<velox::RowVectorPtr> SystemDataSource::next(
-    uint64_t /*size*/,
-    velox::ContinueFuture& /*future*/) {
-  VELOX_CHECK(split_, "No split added to SystemDataSource");
-
-  if (!needData_) {
-    return nullptr;
-  }
-  needData_ = false;
-
-  return buildQueryResults();
-}
-
-velox::RowVectorPtr SystemDataSource::buildQueryResults() {
+velox::RowVectorPtr SystemDataSource::buildResults() {
   // If no query info provider is available (e.g. CLI mode), return empty
   // results.
   if (!queryInfoProvider_) {
@@ -260,328 +300,287 @@ velox::RowVectorPtr SystemDataSource::buildQueryResults() {
   }
 
   auto queries = queryInfoProvider_->getQueryInfos();
-
   auto numRows = queries.size();
-  completedRows_ += numRows;
 
   if (numRows == 0) {
     return velox::RowVector::createEmpty(outputType_, pool_);
   }
 
-  auto fullSchema = queriesTableSchema();
-  auto numFullColumns = static_cast<int32_t>(QueryColumn::kNumColumns);
+  const auto& fullSchema = queriesTableSchema();
 
-  // Build all columns of the full schema.
-  std::vector<velox::VectorPtr> allColumns(numFullColumns);
+  std::vector<velox::VectorPtr> children;
+  children.reserve(outputType_->size());
+  for (auto fullIdx : outputColumnMappings_) {
+    const auto column = static_cast<QueryColumn>(fullIdx);
+    const auto& type = fullSchema->childAt(fullIdx);
 
-  for (size_t outIdx = 0; outIdx < outputColumnMappings_.size(); ++outIdx) {
-    auto fullIdx = outputColumnMappings_[outIdx];
-
-    // Skip if already built (possible but unlikely with column pruning).
-    if (allColumns[fullIdx]) {
-      continue;
-    }
-
-    auto col = static_cast<QueryColumn>(fullIdx);
-    auto type = fullSchema->childAt(fullIdx);
-
-    switch (col) {
+    switch (column) {
       // VARCHAR columns
       case QueryColumn::kQueryId: {
-        auto vec = velox::BaseVector::create(type, numRows, pool_);
-        auto* flat = vec->asFlatVector<velox::StringView>();
-        for (size_t r = 0; r < numRows; ++r) {
-          flat->set(r, velox::StringView(queries[r].queryId));
+        auto flat = createFlat<velox::StringView>(type, numRows);
+        for (size_t i = 0; i < numRows; ++i) {
+          flat->set(i, velox::StringView(queries[i].queryId));
         }
-        allColumns[fullIdx] = std::move(vec);
+        children.push_back(std::move(flat));
         break;
       }
       case QueryColumn::kState: {
-        auto vec = velox::BaseVector::create(type, numRows, pool_);
-        auto* flat = vec->asFlatVector<velox::StringView>();
-        for (size_t r = 0; r < numRows; ++r) {
-          flat->set(r, velox::StringView(queries[r].state));
+        auto flat = createFlat<velox::StringView>(type, numRows);
+        for (size_t i = 0; i < numRows; ++i) {
+          flat->set(i, velox::StringView(queries[i].state));
         }
-        allColumns[fullIdx] = std::move(vec);
+        children.push_back(std::move(flat));
         break;
       }
       case QueryColumn::kQuery: {
-        auto vec = velox::BaseVector::create(type, numRows, pool_);
-        auto* flat = vec->asFlatVector<velox::StringView>();
-        for (size_t r = 0; r < numRows; ++r) {
-          flat->set(r, velox::StringView(queries[r].query));
+        auto flat = createFlat<velox::StringView>(type, numRows);
+        for (size_t i = 0; i < numRows; ++i) {
+          flat->set(i, velox::StringView(queries[i].query));
         }
-        allColumns[fullIdx] = std::move(vec);
+        children.push_back(std::move(flat));
         break;
       }
       case QueryColumn::kCatalog: {
-        auto vec = velox::BaseVector::create(type, numRows, pool_);
-        auto* flat = vec->asFlatVector<velox::StringView>();
-        for (size_t r = 0; r < numRows; ++r) {
-          flat->set(r, velox::StringView(queries[r].catalog));
+        auto flat = createFlat<velox::StringView>(type, numRows);
+        for (size_t i = 0; i < numRows; ++i) {
+          flat->set(i, velox::StringView(queries[i].catalog));
         }
-        allColumns[fullIdx] = std::move(vec);
+        children.push_back(std::move(flat));
         break;
       }
       case QueryColumn::kSchema: {
-        auto vec = velox::BaseVector::create(type, numRows, pool_);
-        auto* flat = vec->asFlatVector<velox::StringView>();
-        for (size_t r = 0; r < numRows; ++r) {
-          flat->set(r, velox::StringView(queries[r].schema));
+        auto flat = createFlat<velox::StringView>(type, numRows);
+        for (size_t i = 0; i < numRows; ++i) {
+          flat->set(i, velox::StringView(queries[i].schema));
         }
-        allColumns[fullIdx] = std::move(vec);
+        children.push_back(std::move(flat));
         break;
       }
       case QueryColumn::kUser: {
-        auto vec = velox::BaseVector::create(type, numRows, pool_);
-        auto* flat = vec->asFlatVector<velox::StringView>();
-        for (size_t r = 0; r < numRows; ++r) {
-          flat->set(r, velox::StringView(queries[r].user));
+        auto flat = createFlat<velox::StringView>(type, numRows);
+        for (size_t i = 0; i < numRows; ++i) {
+          flat->set(i, velox::StringView(queries[i].user));
         }
-        allColumns[fullIdx] = std::move(vec);
+        children.push_back(std::move(flat));
         break;
       }
       case QueryColumn::kSource: {
-        auto vec = velox::BaseVector::create(type, numRows, pool_);
-        auto* flat = vec->asFlatVector<velox::StringView>();
-        for (size_t r = 0; r < numRows; ++r) {
-          if (queries[r].source.has_value()) {
-            flat->set(r, velox::StringView(queries[r].source.value()));
+        auto flat = createFlat<velox::StringView>(type, numRows);
+        for (size_t i = 0; i < numRows; ++i) {
+          if (queries[i].source.has_value()) {
+            flat->set(i, velox::StringView(queries[i].source.value()));
           } else {
-            vec->setNull(r, true);
+            flat->setNull(i, true);
           }
         }
-        allColumns[fullIdx] = std::move(vec);
+        children.push_back(std::move(flat));
         break;
       }
       case QueryColumn::kQueryType: {
-        auto vec = velox::BaseVector::create(type, numRows, pool_);
-        auto* flat = vec->asFlatVector<velox::StringView>();
-        for (size_t r = 0; r < numRows; ++r) {
-          flat->set(r, velox::StringView(queries[r].queryType));
+        auto flat = createFlat<velox::StringView>(type, numRows);
+        for (size_t i = 0; i < numRows; ++i) {
+          flat->set(i, velox::StringView(queries[i].queryType));
         }
-        allColumns[fullIdx] = std::move(vec);
+        children.push_back(std::move(flat));
         break;
       }
 
       // BIGINT columns (time in ms)
       case QueryColumn::kPlanningTimeMs: {
-        auto vec = velox::BaseVector::create(type, numRows, pool_);
-        auto* flat = vec->asFlatVector<int64_t>();
-        for (size_t r = 0; r < numRows; ++r) {
-          flat->set(r, queries[r].planningTimeMs);
+        auto flat = createFlat<int64_t>(type, numRows);
+        for (size_t i = 0; i < numRows; ++i) {
+          flat->set(i, queries[i].planningTimeMs);
         }
-        allColumns[fullIdx] = std::move(vec);
+        children.push_back(std::move(flat));
         break;
       }
       case QueryColumn::kOptimizationTimeMs: {
-        auto vec = velox::BaseVector::create(type, numRows, pool_);
-        auto* flat = vec->asFlatVector<int64_t>();
-        for (size_t r = 0; r < numRows; ++r) {
-          flat->set(r, queries[r].optimizationTimeMs);
+        auto flat = createFlat<int64_t>(type, numRows);
+        for (size_t i = 0; i < numRows; ++i) {
+          flat->set(i, queries[i].optimizationTimeMs);
         }
-        allColumns[fullIdx] = std::move(vec);
+        children.push_back(std::move(flat));
         break;
       }
       case QueryColumn::kQueueTimeMs: {
-        auto vec = velox::BaseVector::create(type, numRows, pool_);
-        auto* flat = vec->asFlatVector<int64_t>();
-        for (size_t r = 0; r < numRows; ++r) {
-          flat->set(r, queries[r].queueTimeMs);
+        auto flat = createFlat<int64_t>(type, numRows);
+        for (size_t i = 0; i < numRows; ++i) {
+          flat->set(i, queries[i].queueTimeMs);
         }
-        allColumns[fullIdx] = std::move(vec);
+        children.push_back(std::move(flat));
         break;
       }
       case QueryColumn::kExecutionTimeMs: {
-        auto vec = velox::BaseVector::create(type, numRows, pool_);
-        auto* flat = vec->asFlatVector<int64_t>();
-        for (size_t r = 0; r < numRows; ++r) {
-          flat->set(r, queries[r].executionTimeMs);
+        auto flat = createFlat<int64_t>(type, numRows);
+        for (size_t i = 0; i < numRows; ++i) {
+          flat->set(i, queries[i].executionTimeMs);
         }
-        allColumns[fullIdx] = std::move(vec);
+        children.push_back(std::move(flat));
         break;
       }
       case QueryColumn::kElapsedTimeMs: {
-        auto vec = velox::BaseVector::create(type, numRows, pool_);
-        auto* flat = vec->asFlatVector<int64_t>();
-        for (size_t r = 0; r < numRows; ++r) {
-          flat->set(r, queries[r].elapsedTimeMs);
+        auto flat = createFlat<int64_t>(type, numRows);
+        for (size_t i = 0; i < numRows; ++i) {
+          flat->set(i, queries[i].elapsedTimeMs);
         }
-        allColumns[fullIdx] = std::move(vec);
+        children.push_back(std::move(flat));
         break;
       }
       case QueryColumn::kCpuTimeMs: {
-        auto vec = velox::BaseVector::create(type, numRows, pool_);
-        auto* flat = vec->asFlatVector<int64_t>();
-        for (size_t r = 0; r < numRows; ++r) {
-          flat->set(r, queries[r].cpuTimeMs);
+        auto flat = createFlat<int64_t>(type, numRows);
+        for (size_t i = 0; i < numRows; ++i) {
+          flat->set(i, queries[i].cpuTimeMs);
         }
-        allColumns[fullIdx] = std::move(vec);
+        children.push_back(std::move(flat));
         break;
       }
       case QueryColumn::kWallTimeMs: {
-        auto vec = velox::BaseVector::create(type, numRows, pool_);
-        auto* flat = vec->asFlatVector<int64_t>();
-        for (size_t r = 0; r < numRows; ++r) {
-          flat->set(r, queries[r].wallTimeMs);
+        auto flat = createFlat<int64_t>(type, numRows);
+        for (size_t i = 0; i < numRows; ++i) {
+          flat->set(i, queries[i].wallTimeMs);
         }
-        allColumns[fullIdx] = std::move(vec);
+        children.push_back(std::move(flat));
         break;
       }
 
       // BIGINT columns (split counts)
       case QueryColumn::kTotalSplits: {
-        auto vec = velox::BaseVector::create(type, numRows, pool_);
-        auto* flat = vec->asFlatVector<int64_t>();
-        for (size_t r = 0; r < numRows; ++r) {
-          flat->set(r, queries[r].totalSplits);
+        auto flat = createFlat<int64_t>(type, numRows);
+        for (size_t i = 0; i < numRows; ++i) {
+          flat->set(i, queries[i].totalSplits);
         }
-        allColumns[fullIdx] = std::move(vec);
+        children.push_back(std::move(flat));
         break;
       }
       case QueryColumn::kQueuedSplits: {
-        auto vec = velox::BaseVector::create(type, numRows, pool_);
-        auto* flat = vec->asFlatVector<int64_t>();
-        for (size_t r = 0; r < numRows; ++r) {
-          flat->set(r, queries[r].queuedSplits);
+        auto flat = createFlat<int64_t>(type, numRows);
+        for (size_t i = 0; i < numRows; ++i) {
+          flat->set(i, queries[i].queuedSplits);
         }
-        allColumns[fullIdx] = std::move(vec);
+        children.push_back(std::move(flat));
         break;
       }
       case QueryColumn::kRunningSplits: {
-        auto vec = velox::BaseVector::create(type, numRows, pool_);
-        auto* flat = vec->asFlatVector<int64_t>();
-        for (size_t r = 0; r < numRows; ++r) {
-          flat->set(r, queries[r].runningSplits);
+        auto flat = createFlat<int64_t>(type, numRows);
+        for (size_t i = 0; i < numRows; ++i) {
+          flat->set(i, queries[i].runningSplits);
         }
-        allColumns[fullIdx] = std::move(vec);
+        children.push_back(std::move(flat));
         break;
       }
       case QueryColumn::kFinishedSplits: {
-        auto vec = velox::BaseVector::create(type, numRows, pool_);
-        auto* flat = vec->asFlatVector<int64_t>();
-        for (size_t r = 0; r < numRows; ++r) {
-          flat->set(r, queries[r].finishedSplits);
+        auto flat = createFlat<int64_t>(type, numRows);
+        for (size_t i = 0; i < numRows; ++i) {
+          flat->set(i, queries[i].finishedSplits);
         }
-        allColumns[fullIdx] = std::move(vec);
+        children.push_back(std::move(flat));
         break;
       }
 
       // BIGINT columns (data volumes)
       case QueryColumn::kOutputRows: {
-        auto vec = velox::BaseVector::create(type, numRows, pool_);
-        auto* flat = vec->asFlatVector<int64_t>();
-        for (size_t r = 0; r < numRows; ++r) {
-          flat->set(r, queries[r].outputRows);
+        auto flat = createFlat<int64_t>(type, numRows);
+        for (size_t i = 0; i < numRows; ++i) {
+          flat->set(i, queries[i].outputRows);
         }
-        allColumns[fullIdx] = std::move(vec);
+        children.push_back(std::move(flat));
         break;
       }
       case QueryColumn::kOutputBytes: {
-        auto vec = velox::BaseVector::create(type, numRows, pool_);
-        auto* flat = vec->asFlatVector<int64_t>();
-        for (size_t r = 0; r < numRows; ++r) {
-          flat->set(r, queries[r].outputBytes);
+        auto flat = createFlat<int64_t>(type, numRows);
+        for (size_t i = 0; i < numRows; ++i) {
+          flat->set(i, queries[i].outputBytes);
         }
-        allColumns[fullIdx] = std::move(vec);
+        children.push_back(std::move(flat));
         break;
       }
       case QueryColumn::kProcessedRows: {
-        auto vec = velox::BaseVector::create(type, numRows, pool_);
-        auto* flat = vec->asFlatVector<int64_t>();
-        for (size_t r = 0; r < numRows; ++r) {
-          flat->set(r, queries[r].processedRows);
+        auto flat = createFlat<int64_t>(type, numRows);
+        for (size_t i = 0; i < numRows; ++i) {
+          flat->set(i, queries[i].processedRows);
         }
-        allColumns[fullIdx] = std::move(vec);
+        children.push_back(std::move(flat));
         break;
       }
       case QueryColumn::kProcessedBytes: {
-        auto vec = velox::BaseVector::create(type, numRows, pool_);
-        auto* flat = vec->asFlatVector<int64_t>();
-        for (size_t r = 0; r < numRows; ++r) {
-          flat->set(r, queries[r].processedBytes);
+        auto flat = createFlat<int64_t>(type, numRows);
+        for (size_t i = 0; i < numRows; ++i) {
+          flat->set(i, queries[i].processedBytes);
         }
-        allColumns[fullIdx] = std::move(vec);
+        children.push_back(std::move(flat));
         break;
       }
       case QueryColumn::kWrittenRows: {
-        auto vec = velox::BaseVector::create(type, numRows, pool_);
-        auto* flat = vec->asFlatVector<int64_t>();
-        for (size_t r = 0; r < numRows; ++r) {
-          flat->set(r, queries[r].writtenRows);
+        auto flat = createFlat<int64_t>(type, numRows);
+        for (size_t i = 0; i < numRows; ++i) {
+          flat->set(i, queries[i].writtenRows);
         }
-        allColumns[fullIdx] = std::move(vec);
+        children.push_back(std::move(flat));
         break;
       }
       case QueryColumn::kWrittenBytes: {
-        auto vec = velox::BaseVector::create(type, numRows, pool_);
-        auto* flat = vec->asFlatVector<int64_t>();
-        for (size_t r = 0; r < numRows; ++r) {
-          flat->set(r, queries[r].writtenBytes);
+        auto flat = createFlat<int64_t>(type, numRows);
+        for (size_t i = 0; i < numRows; ++i) {
+          flat->set(i, queries[i].writtenBytes);
         }
-        allColumns[fullIdx] = std::move(vec);
+        children.push_back(std::move(flat));
         break;
       }
       case QueryColumn::kPeakMemoryBytes: {
-        auto vec = velox::BaseVector::create(type, numRows, pool_);
-        auto* flat = vec->asFlatVector<int64_t>();
-        for (size_t r = 0; r < numRows; ++r) {
-          flat->set(r, queries[r].peakMemoryBytes);
+        auto flat = createFlat<int64_t>(type, numRows);
+        for (size_t i = 0; i < numRows; ++i) {
+          flat->set(i, queries[i].peakMemoryBytes);
         }
-        allColumns[fullIdx] = std::move(vec);
+        children.push_back(std::move(flat));
         break;
       }
       case QueryColumn::kSpilledBytes: {
-        auto vec = velox::BaseVector::create(type, numRows, pool_);
-        auto* flat = vec->asFlatVector<int64_t>();
-        for (size_t r = 0; r < numRows; ++r) {
-          flat->set(r, queries[r].spilledBytes);
+        auto flat = createFlat<int64_t>(type, numRows);
+        for (size_t i = 0; i < numRows; ++i) {
+          flat->set(i, queries[i].spilledBytes);
         }
-        allColumns[fullIdx] = std::move(vec);
+        children.push_back(std::move(flat));
         break;
       }
 
       // TIMESTAMP columns
       case QueryColumn::kCreateTime: {
-        auto vec = velox::BaseVector::create(type, numRows, pool_);
-        auto* flat = vec->asFlatVector<velox::Timestamp>();
-        for (size_t r = 0; r < numRows; ++r) {
-          auto tp = queries[r].createTime;
+        auto flat = createFlat<velox::Timestamp>(type, numRows);
+        for (size_t i = 0; i < numRows; ++i) {
+          auto tp = queries[i].createTime;
           if (!isEpoch(tp)) {
-            flat->set(r, toTimestamp(tp));
+            flat->set(i, toTimestamp(tp));
           } else {
-            vec->setNull(r, true);
+            flat->setNull(i, true);
           }
         }
-        allColumns[fullIdx] = std::move(vec);
+        children.push_back(std::move(flat));
         break;
       }
       case QueryColumn::kStartTime: {
-        auto vec = velox::BaseVector::create(type, numRows, pool_);
-        auto* flat = vec->asFlatVector<velox::Timestamp>();
-        for (size_t r = 0; r < numRows; ++r) {
-          auto tp = queries[r].startTime;
+        auto flat = createFlat<velox::Timestamp>(type, numRows);
+        for (size_t i = 0; i < numRows; ++i) {
+          auto tp = queries[i].startTime;
           if (!isEpoch(tp)) {
-            flat->set(r, toTimestamp(tp));
+            flat->set(i, toTimestamp(tp));
           } else {
-            vec->setNull(r, true);
+            flat->setNull(i, true);
           }
         }
-        allColumns[fullIdx] = std::move(vec);
+        children.push_back(std::move(flat));
         break;
       }
       case QueryColumn::kEndTime: {
-        auto vec = velox::BaseVector::create(type, numRows, pool_);
-        auto* flat = vec->asFlatVector<velox::Timestamp>();
-        for (size_t r = 0; r < numRows; ++r) {
-          auto tp = queries[r].endTime;
+        auto flat = createFlat<velox::Timestamp>(type, numRows);
+        for (size_t i = 0; i < numRows; ++i) {
+          auto tp = queries[i].endTime;
           if (!isEpoch(tp)) {
-            flat->set(r, toTimestamp(tp));
+            flat->set(i, toTimestamp(tp));
           } else {
-            vec->setNull(r, true);
+            flat->setNull(i, true);
           }
         }
-        allColumns[fullIdx] = std::move(vec);
+        children.push_back(std::move(flat));
         break;
       }
 
@@ -590,59 +589,11 @@ velox::RowVectorPtr SystemDataSource::buildQueryResults() {
     }
   }
 
-  // Build output vector with only the requested columns.
-  std::vector<velox::VectorPtr> children;
-  children.reserve(outputType_->size());
-  for (size_t i = 0; i < outputColumnMappings_.size(); ++i) {
-    children.push_back(allColumns[outputColumnMappings_[i]]);
-  }
-
   return std::make_shared<velox::RowVector>(
       pool_, outputType_, nullptr, numRows, std::move(children));
 }
 
 // ===================== SessionPropertiesDataSource =====================
-
-SessionPropertiesDataSource::SessionPropertiesDataSource(
-    const velox::RowTypePtr& outputType,
-    const velox::connector::ColumnHandleMap& columnHandles,
-    const SessionPropertiesProvider* provider,
-    velox::memory::MemoryPool* pool)
-    : outputType_(outputType), provider_(provider), pool_(pool) {
-  auto fullSchema = sessionPropertiesTableSchema();
-  outputColumnMappings_.reserve(outputType_->size());
-  for (const auto& name : outputType_->names()) {
-    VELOX_CHECK(
-        columnHandles.contains(name), "No handle for output column '{}'", name);
-    auto handle = columnHandles.find(name)->second;
-    auto idx = fullSchema->getChildIdxIfExists(handle->name());
-    VELOX_CHECK(
-        idx.has_value(),
-        "Column '{}' not found in system.metadata.session_properties schema",
-        handle->name());
-    outputColumnMappings_.push_back(idx.value());
-  }
-}
-
-void SessionPropertiesDataSource::addSplit(
-    std::shared_ptr<velox::connector::ConnectorSplit> split) {
-  split_ = std::dynamic_pointer_cast<SystemSplit>(split);
-  VELOX_CHECK(split_, "Expected SystemSplit");
-  needData_ = true;
-}
-
-std::optional<velox::RowVectorPtr> SessionPropertiesDataSource::next(
-    uint64_t /*size*/,
-    velox::ContinueFuture& /*future*/) {
-  VELOX_CHECK(split_, "No split added to SessionPropertiesDataSource");
-
-  if (!needData_) {
-    return nullptr;
-  }
-  needData_ = false;
-
-  return buildResults();
-}
 
 velox::RowVectorPtr SessionPropertiesDataSource::buildResults() {
   if (!provider_) {
@@ -651,48 +602,257 @@ velox::RowVectorPtr SessionPropertiesDataSource::buildResults() {
 
   auto properties = provider_->getSessionProperties();
   auto numRows = properties.size();
-  completedRows_ += numRows;
 
   if (numRows == 0) {
     return velox::RowVector::createEmpty(outputType_, pool_);
   }
 
-  // All 6 columns are VARCHAR. Build only the requested ones.
-  // Column indices: 0=component, 1=name, 2=type, 3=default_value,
-  // 4=current_value, 5=description.
-  auto fullSchema = sessionPropertiesTableSchema();
+  const auto& fullSchema = sessionPropertiesTableSchema();
 
-  // Accessor for each column by index.
   auto getValue = [&](size_t row,
-                      velox::column_index_t col) -> const std::string& {
-    switch (col) {
-      case 0:
+                      SessionPropertyColumn column) -> const std::string& {
+    switch (column) {
+      case SessionPropertyColumn::kComponent:
         return properties[row].component;
-      case 1:
+      case SessionPropertyColumn::kName:
         return properties[row].name;
-      case 2:
+      case SessionPropertyColumn::kType:
         return properties[row].type;
-      case 3:
+      case SessionPropertyColumn::kDefaultValue:
         return properties[row].defaultValue;
-      case 4:
+      case SessionPropertyColumn::kCurrentValue:
         return properties[row].currentValue;
-      case 5:
+      case SessionPropertyColumn::kDescription:
         return properties[row].description;
-      default:
-        VELOX_FAIL("Unknown session_properties column index: {}", col);
     }
+    VELOX_UNREACHABLE();
   };
 
   std::vector<velox::VectorPtr> children;
   children.reserve(outputType_->size());
   for (auto fullIdx : outputColumnMappings_) {
-    auto vec =
-        velox::BaseVector::create(fullSchema->childAt(fullIdx), numRows, pool_);
-    auto* flat = vec->asFlatVector<velox::StringView>();
+    auto column = static_cast<SessionPropertyColumn>(fullIdx);
+    auto vector =
+        createFlat<velox::StringView>(fullSchema->childAt(fullIdx), numRows);
     for (size_t row = 0; row < numRows; ++row) {
-      flat->set(row, velox::StringView(getValue(row, fullIdx)));
+      vector->set(row, velox::StringView(getValue(row, column)));
     }
-    children.push_back(std::move(vec));
+    children.push_back(std::move(vector));
+  }
+
+  return std::make_shared<velox::RowVector>(
+      pool_, outputType_, nullptr, numRows, std::move(children));
+}
+
+// ===================== FunctionsDataSource =====================
+
+namespace {
+
+// Snapshot of a single function signature for building result vectors.
+struct FunctionEntry {
+  std::string name;
+  std::string kind;
+  std::string returnType;
+  std::vector<std::string> argumentTypes;
+  bool isVariadic;
+  std::string owner;
+  std::string properties;
+};
+
+// Serializes a folly::dynamic object to JSON with sorted keys for
+// deterministic output.
+std::string toSortedJson(const folly::dynamic& obj) {
+  folly::json::serialization_opts opts;
+  opts.sort_keys = true;
+  return folly::json::serialize(obj, opts);
+}
+
+// Builds a FunctionEntry from a name, kind, signature, and properties JSON.
+FunctionEntry makeFunctionEntry(
+    const std::string& name,
+    const std::string& kind,
+    const velox::exec::FunctionSignature& signature,
+    std::string owner,
+    std::string properties) {
+  std::vector<std::string> argumentTypes;
+  argumentTypes.reserve(signature.argumentTypes().size());
+  for (const auto& argType : signature.argumentTypes()) {
+    argumentTypes.push_back(argType.toString());
+  }
+  return {
+      name,
+      kind,
+      signature.returnType().toString(),
+      std::move(argumentTypes),
+      signature.variableArity(),
+      std::move(owner),
+      std::move(properties),
+  };
+}
+
+// Reads all function signatures from Velox's global registries. Cached
+// after first call since function registrations are immutable after startup.
+const std::vector<FunctionEntry>& getAllFunctions() {
+  static const auto kFunctions = [] {
+    std::vector<FunctionEntry> result;
+
+    // Vector functions — one metadata per registration, multiple signatures.
+    velox::exec::vectorFunctionFactories().withRLock(
+        [&](const auto& factories) {
+          for (const auto& [name, entry] : factories) {
+            const auto& metadata = entry.metadata;
+            auto properties = toSortedJson(
+                folly::dynamic::object("deterministic", metadata.deterministic)(
+                    "default_null_behavior", metadata.defaultNullBehavior));
+            auto owner = std::string(metadata.owner);
+            for (const auto& signature : entry.signatures) {
+              result.push_back(makeFunctionEntry(
+                  name, "scalar", *signature, owner, properties));
+            }
+          }
+        });
+
+    // Simple functions — per-signature metadata.
+    const auto& simpleRegistry = velox::exec::simpleFunctions();
+    for (const auto& name : simpleRegistry.getFunctionNames()) {
+      for (const auto& [metadata, signature] :
+           simpleRegistry.getFunctionSignaturesAndMetadata(name)) {
+        auto properties = toSortedJson(
+            folly::dynamic::object("deterministic", metadata.deterministic)(
+                "default_null_behavior", metadata.defaultNullBehavior));
+        result.push_back(makeFunctionEntry(
+            name,
+            "scalar",
+            *signature,
+            std::string(metadata.owner),
+            properties));
+      }
+    }
+
+    // Aggregate functions.
+    auto allAggregates = velox::exec::getAggregateFunctionSignatures();
+    for (const auto& [name, signatures] : allAggregates) {
+      auto metadata = velox::exec::getAggregateFunctionMetadata(name);
+      auto properties = toSortedJson(
+          folly::dynamic::object("order_sensitive", metadata.orderSensitive)(
+              "ignore_duplicates", metadata.ignoreDuplicates));
+      for (const auto& signature : signatures) {
+        result.push_back(
+            makeFunctionEntry(name, "aggregate", *signature, "", properties));
+      }
+    }
+
+    // Window functions (excluding those already counted as aggregates).
+    for (const auto& [name, windowEntry] : velox::exec::windowFunctions()) {
+      if (allAggregates.contains(name)) {
+        continue;
+      }
+      for (const auto& signature : windowEntry.signatures) {
+        result.push_back(
+            makeFunctionEntry(name, "window", *signature, "", "{}"));
+      }
+    }
+
+    return result;
+  }();
+
+  return kFunctions;
+}
+
+} // namespace
+
+velox::RowVectorPtr FunctionsDataSource::buildResults() {
+  const auto& functions = getAllFunctions();
+  auto numRows = functions.size();
+
+  if (numRows == 0) {
+    return velox::RowVector::createEmpty(outputType_, pool_);
+  }
+
+  const auto& fullSchema = functionsTableSchema();
+
+  std::vector<velox::VectorPtr> children;
+  children.reserve(outputType_->size());
+  for (auto fullIdx : outputColumnMappings_) {
+    const auto column = static_cast<FunctionColumn>(fullIdx);
+    const auto& type = fullSchema->childAt(fullIdx);
+
+    switch (column) {
+      case FunctionColumn::kName:
+      case FunctionColumn::kKind:
+      case FunctionColumn::kReturnType:
+      case FunctionColumn::kOwner:
+      case FunctionColumn::kProperties: {
+        auto vector = createFlat<velox::StringView>(type, numRows);
+        for (size_t row = 0; row < numRows; ++row) {
+          const std::string* value;
+          switch (column) {
+            case FunctionColumn::kName:
+              value = &functions[row].name;
+              break;
+            case FunctionColumn::kKind:
+              value = &functions[row].kind;
+              break;
+            case FunctionColumn::kReturnType:
+              value = &functions[row].returnType;
+              break;
+            case FunctionColumn::kOwner:
+              value = &functions[row].owner;
+              break;
+            case FunctionColumn::kProperties:
+              value = &functions[row].properties;
+              break;
+            default:
+              VELOX_UNREACHABLE();
+          }
+          vector->set(row, velox::StringView(*value));
+        }
+        children.push_back(std::move(vector));
+        break;
+      }
+      case FunctionColumn::kArgumentTypes: {
+        auto offsets = velox::allocateOffsets(numRows, pool_);
+        auto sizes = velox::allocateSizes(numRows, pool_);
+        auto* rawOffsets = offsets->asMutable<velox::vector_size_t>();
+        auto* rawSizes = sizes->asMutable<velox::vector_size_t>();
+
+        velox::vector_size_t totalElements = 0;
+        for (size_t row = 0; row < numRows; ++row) {
+          totalElements += functions[row].argumentTypes.size();
+        }
+
+        auto elements =
+            createFlat<velox::StringView>(velox::VARCHAR(), totalElements);
+
+        velox::vector_size_t offset = 0;
+        for (size_t row = 0; row < numRows; ++row) {
+          rawOffsets[row] = offset;
+          rawSizes[row] = functions[row].argumentTypes.size();
+          for (const auto& argType : functions[row].argumentTypes) {
+            elements->set(offset++, velox::StringView(argType));
+          }
+        }
+
+        children.push_back(
+            std::make_shared<velox::ArrayVector>(
+                pool_,
+                type,
+                nullptr,
+                numRows,
+                std::move(offsets),
+                std::move(sizes),
+                std::move(elements)));
+        break;
+      }
+      case FunctionColumn::kIsVariadic: {
+        auto vector = createFlat<bool>(type, numRows);
+        for (size_t row = 0; row < numRows; ++row) {
+          vector->set(row, functions[row].isVariadic);
+        }
+        children.push_back(std::move(vector));
+        break;
+      }
+    }
   }
 
   return std::make_shared<velox::RowVector>(
@@ -727,6 +887,10 @@ std::unique_ptr<velox::connector::DataSource> SystemConnector::createDataSource(
       SchemaTableName{
           std::string(kMetadataSchema), std::string(kSessionPropertiesTable)}
           .toString();
+  static const auto kFunctionsName =
+      SchemaTableName{
+          std::string(kMetadataSchema), std::string(kFunctionsTable)}
+          .toString();
   static const auto kQueriesName =
       SchemaTableName{std::string(kRuntimeSchema), std::string(kQueriesTable)}
           .toString();
@@ -737,6 +901,11 @@ std::unique_ptr<velox::connector::DataSource> SystemConnector::createDataSource(
         columnHandles,
         sessionPropertiesProvider_,
         connectorQueryCtx->memoryPool());
+  }
+
+  if (name == kFunctionsName) {
+    return std::make_unique<FunctionsDataSource>(
+        outputType, columnHandles, connectorQueryCtx->memoryPool());
   }
 
   if (name == kQueriesName) {

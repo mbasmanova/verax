@@ -30,6 +30,7 @@ static constexpr std::string_view kMetadataSchema = "metadata";
 static constexpr std::string_view kQueriesTable = "queries";
 static constexpr std::string_view kSessionPropertiesTable =
     "session_properties";
+static constexpr std::string_view kFunctionsTable = "functions";
 
 /// Snapshot of a single query's state, used by the system connector to
 /// populate the system.runtime.queries table.
