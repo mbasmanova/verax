@@ -85,3 +85,8 @@ SELECT * FROM (VALUES ROW(MAP(ARRAY[1], ARRAY[1.0])), ROW(MAP(ARRAY[CAST(2 AS bi
 ----
 -- error: Grouping sets are not supported yet
 SELECT count(*) FROM t GROUP BY GROUPING SETS ((a), ())
+----
+-- NULLIF with non-deterministic expression. Result must contain only NULL and
+-- false, never true.
+-- duckdb: VALUES (null::boolean), (false)
+SELECT DISTINCT nullif(rand() < 0.5, true) FROM unnest(sequence(1, 1000))

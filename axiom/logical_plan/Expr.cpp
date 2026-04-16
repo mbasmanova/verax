@@ -480,6 +480,7 @@ const auto& specialFormNames() {
       {SpecialForm::kStar, "STAR"},
       {SpecialForm::kIn, "IN"},
       {SpecialForm::kExists, "EXISTS"},
+      {SpecialForm::kNullIf, "NULLIF"},
   };
   return kNames;
 }
@@ -701,6 +702,10 @@ SpecialFormExpr::SpecialFormExpr(
       VELOX_USER_CHECK(
           inputs_[0]->isSubquery(),
           "EXISTS input must be a subquery expression");
+      break;
+    case SpecialForm::kNullIf:
+      VELOX_USER_CHECK_EQ(
+          inputs_.size(), 3, "NULLIF must have exactly 3 inputs");
       break;
   }
 }

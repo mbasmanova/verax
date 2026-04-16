@@ -351,6 +351,30 @@ ExprPtr tryResolveSpecialForm(
         velox::BOOLEAN(), SpecialForm::kExists, resolvedInputs);
   }
 
+  if (name == "nullif") {
+    VELOX_USER_CHECK_EQ(
+        resolvedInputs.size(), 2, "NULLIF requires exactly 2 arguments");
+
+    const auto& valueType = resolvedInputs[0]->type();
+    const auto& comparandType = resolvedInputs[1]->type();
+
+    auto commonType =
+        velox::TypeCoercer::leastCommonSuperType(valueType, comparandType);
+    VELOX_USER_CHECK_NOT_NULL(
+        commonType,
+        "Cannot find common type for NULLIF arguments: {} vs {}",
+        valueType->toString(),
+        comparandType->toString());
+
+    // Append a null literal of the common type to carry the type information.
+    resolvedInputs.push_back(
+        std::make_shared<ConstantExpr>(
+            commonType, std::make_shared<velox::Variant>(commonType->kind())));
+
+    return std::make_shared<SpecialFormExpr>(
+        valueType, SpecialForm::kNullIf, resolvedInputs);
+  }
+
   return nullptr;
 }
 } // namespace

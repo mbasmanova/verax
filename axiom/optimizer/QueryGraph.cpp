@@ -43,6 +43,8 @@ const char* SpecialFormCallNames::kIf = "__if";
 const char* SpecialFormCallNames::kSwitch = "__switch";
 // static
 const char* SpecialFormCallNames::kIn = "__in";
+// static
+const char* SpecialFormCallNames::kNullIf = "__nullif";
 
 void Column::equals(ColumnCP other) const {
   if (!equivalence_ && !other->equivalence_) {

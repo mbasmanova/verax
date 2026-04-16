@@ -331,6 +331,7 @@ struct SpecialFormCallNames {
   static const char* kIf;
   static const char* kSwitch;
   static const char* kIn;
+  static const char* kNullIf;
 
   static const char* toCallName(const logical_plan::SpecialForm& form) {
     switch (form) {
@@ -352,6 +353,8 @@ struct SpecialFormCallNames {
         return SpecialFormCallNames::kSwitch;
       case logical_plan::SpecialForm::kIn:
         return SpecialFormCallNames::kIn;
+      case logical_plan::SpecialForm::kNullIf:
+        return SpecialFormCallNames::kNullIf;
       default:
         VELOX_FAIL(
             "No function call name for special form: {}",
@@ -387,6 +390,9 @@ struct SpecialFormCallNames {
     }
     if (name == kIn) {
       return logical_plan::SpecialForm::kIn;
+    }
+    if (name == kNullIf) {
+      return logical_plan::SpecialForm::kNullIf;
     }
 
     return std::nullopt;

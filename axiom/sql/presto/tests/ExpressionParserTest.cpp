@@ -531,16 +531,48 @@ TEST_F(ExpressionParserTest, specialDateTimeFunctions) {
 }
 
 TEST_F(ExpressionParserTest, nullif) {
-  // NULLIF(a, b) translates to IF(eq(a, b), null, a).
-  EXPECT_EQ(
-      "IF(eq(1, 2), CAST(null AS INTEGER), 1)",
-      parseExpr("NULLIF(1, 2)")->toString());
-  EXPECT_EQ(
-      "IF(eq(1, 1), CAST(null AS INTEGER), 1)",
-      parseExpr("nullif(1, 1)")->toString());
-  EXPECT_EQ(
-      "IF(eq(foo, bar), CAST(null AS VARCHAR), foo)",
-      parseExpr("NULLIF('foo', 'bar')")->toString());
+  auto verifyNullIf = [&](const std::string& sql,
+                          const TypePtr& expectedType,
+                          const TypePtr& expectedCommonType) {
+    auto expr = parseExpr(sql);
+    ASSERT_TRUE(expr->isSpecialForm());
+
+    auto* nullIf = expr->as<lp::SpecialFormExpr>();
+    ASSERT_EQ(nullIf->form(), lp::SpecialForm::kNullIf);
+    ASSERT_EQ(nullIf->inputs().size(), 3);
+
+    VELOX_ASSERT_EQ_TYPES(expr->type(), expectedType);
+    VELOX_EXPECT_EQ_TYPES(nullIf->inputAt(2)->type(), expectedCommonType);
+  };
+
+  // Same types.
+  verifyNullIf("NULLIF(1, 2)", INTEGER(), INTEGER());
+  verifyNullIf("nullif(1, 1)", INTEGER(), INTEGER());
+  verifyNullIf("NULLIF('foo', 'bar')", VARCHAR(), VARCHAR());
+
+  // Different types: return type is first arg's type, common type is the
+  // least common supertype.
+  verifyNullIf("NULLIF(TINYINT '1', 2)", TINYINT(), INTEGER());
+  verifyNullIf("NULLIF(SMALLINT '1', BIGINT '2')", SMALLINT(), BIGINT());
+
+  // Complex type: ARRAY(TINYINT) vs ARRAY(BIGINT) → common type is
+  // ARRAY(BIGINT).
+  verifyNullIf(
+      "NULLIF(ARRAY[TINYINT '1'], ARRAY[BIGINT '2'])",
+      ARRAY(TINYINT()),
+      ARRAY(BIGINT()));
+
+  // ROW with fields coerced in opposite directions. Neither ROW is coercible
+  // to the other, but leastCommonSuperType produces ROW(BIGINT, BIGINT).
+  verifyNullIf(
+      "NULLIF(ROW(TINYINT '1', BIGINT '2'), ROW(BIGINT '1', TINYINT '2'))",
+      ROW({TINYINT(), BIGINT()}),
+      ROW({BIGINT(), BIGINT()}));
+
+  // No common type.
+  VELOX_ASSERT_THROW(
+      parseExpr("NULLIF(1, 'a')"),
+      "Cannot find common type for NULLIF arguments");
 }
 
 TEST_F(ExpressionParserTest, null) {
