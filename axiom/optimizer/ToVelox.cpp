@@ -665,6 +665,14 @@ velox::core::TypedExprPtr ToVelox::toTypedExpr(ExprCP expr) {
               toTypePtr(expr->value().type), std::move(inputs), true);
         }
 
+        if (form == lp::SpecialForm::kNullIf) {
+          // Third input is a null literal carrying the common type.
+          VELOX_CHECK_EQ(inputs.size(), 3);
+          const auto& commonType = inputs[2]->type();
+          return std::make_shared<velox::core::NullIfTypedExpr>(
+              std::move(inputs[0]), std::move(inputs[1]), commonType);
+        }
+
         return std::make_shared<velox::core::CallTypedExpr>(
             toTypePtr(expr->value().type),
             std::move(inputs),

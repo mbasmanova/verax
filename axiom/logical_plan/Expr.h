@@ -461,6 +461,17 @@ enum class SpecialForm {
   /// Example:
   ///   EXISTS (SELECT * FROM table WHERE condition)
   kExists = 11,
+
+  /// NULLIF(value, comparand). Returns NULL if value equals comparand,
+  /// otherwise returns value.
+  ///
+  /// Takes exactly 3 inputs: value, comparand, and a null literal whose type
+  /// is the common supertype used for comparison. The return type is the type
+  /// of value.
+  ///
+  /// Example:
+  ///   NULLIF(x, 0) => NULL if x = 0, else x
+  kNullIf = 12,
 };
 
 AXIOM_DECLARE_ENUM_NAME(SpecialForm)

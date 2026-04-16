@@ -748,8 +748,6 @@ lp::ExprApi ExpressionPlanner::toExpr(const ExpressionPtr& node) {
       const auto& funcName = call->name()->suffix();
       const auto lowerFuncName = canonicalizeName(funcName);
 
-      // TODO: Verify that NULLIF is semantically equivalent with IF(a = b,
-      // null, a). https://github.com/prestodb/presto/issues/27024
       if (lowerFuncName == "nullif") {
         AXIOM_PRESTO_SEMANTIC_CHECK(
             args.size() == 2,
@@ -757,11 +755,7 @@ lp::ExprApi ExpressionPlanner::toExpr(const ExpressionPtr& node) {
             lowerFuncName,
             "NULLIF requires exactly 2 arguments, got {}",
             args.size());
-        return lp::Call(
-            "if",
-            lp::Call("eq", args[0], args[1]),
-            lp::Lit(Variant::null(TypeKind::UNKNOWN)),
-            args[0]);
+        return lp::Call("nullif", args[0], args[1]);
       }
 
       if (call->isDistinct() || call->filter() || call->orderBy()) {

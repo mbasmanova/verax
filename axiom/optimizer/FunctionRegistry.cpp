@@ -427,6 +427,8 @@ void FunctionRegistry::registerPrestoFunctions(std::string_view prefix) {
   registry->registerSpecialForm(
       lp::SpecialForm::kSwitch, velox::expression::kSwitch);
   registry->registerSpecialForm(lp::SpecialForm::kIn, "in");
+  registry->registerSpecialForm(
+      lp::SpecialForm::kNullIf, velox::expression::kNullIf);
 }
 
 } // namespace facebook::axiom::optimizer
