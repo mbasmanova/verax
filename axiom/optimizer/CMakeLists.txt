@@ -26,6 +26,7 @@ add_library(
   ConstantExprEvaluator.cpp
   Cost.cpp
   DerivedTable.cpp
+  DerivedTableFlattener.cpp
   DerivedTableDotPrinter.cpp
   DerivedTablePrinter.cpp
   Domain.cpp

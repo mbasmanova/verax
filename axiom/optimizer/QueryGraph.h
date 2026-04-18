@@ -824,6 +824,11 @@ class JoinEdge {
     return originalJoinType_;
   }
 
+  /// Returns the join type (inner, left, right, full, semi, anti, etc.).
+  velox::core::JoinType joinType() const {
+    return joinType_;
+  }
+
   /// True if all tables referenced from 'leftKeys' must be placed before
   /// placing this.
   bool isNonCommutative() const {
