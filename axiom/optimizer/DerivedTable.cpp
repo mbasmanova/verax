@@ -535,17 +535,15 @@ void DerivedTable::checkConsistency() const {
   checkAvailable(having, "having");
 
   // Layer 6: Window inputs must reference only available columns.
-  // Window outputs become available. Process one function at a time so
-  // that dependent windows (function B referencing function A's output)
-  // see A's column as available.
+  // Window functions within a single DT must be independent — none may
+  // reference another's output.
   if (windowPlan) {
-    for (size_t i = 0; i < windowPlan->functions().size(); ++i) {
-      auto* func = windowPlan->functions()[i];
+    for (const auto* func : windowPlan->functions()) {
       checkAvailable(func->partitionKeys(), "window partition key");
       checkAvailable(func->orderKeys(), "window order key");
       checkAvailable(func->args(), "window function arg");
-      availableColumns.add(windowPlan->columns()[i]);
     }
+    availableColumns.unionObjects(windowPlan->columns());
   }
 
   // Layer 7: Exprs and orderKeys must reference only available columns.

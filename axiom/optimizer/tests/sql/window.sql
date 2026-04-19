@@ -142,3 +142,12 @@ FROM (
     SELECT a, b, a + lag(b) OVER (ORDER BY a, b) AS n
     FROM t
 )
+----
+-- Dependent window via scalar expression over multiple window outputs.
+SELECT lag(pct) OVER (PARTITION BY a ORDER BY b)
+FROM (
+    SELECT a, b,
+        floor(sum(b) OVER (PARTITION BY a ORDER BY b) * 100.0
+            / sum(b) OVER (PARTITION BY a)) AS pct
+    FROM t
+)
