@@ -84,6 +84,35 @@ bool SpecialFormExpr::equalTo(const Expr& other) const {
   return form_ == other.as<SpecialFormExpr>()->form_;
 }
 
+namespace {
+bool hasCaptures(const Expr& expr, const velox::RowType& signature) {
+  if (expr.isInputReference()) {
+    return !signature.containsChild(expr.as<InputReferenceExpr>()->name());
+  }
+  if (expr.isLambda()) {
+    return false;
+  }
+  for (const auto& input : expr.inputs()) {
+    if (hasCaptures(*input, signature)) {
+      return true;
+    }
+  }
+  return false;
+}
+} // namespace
+
+void AggregateExpr::rejectLambdaCaptures() const {
+  for (const auto& input : inputs_) {
+    if (input->isLambda()) {
+      const auto* lambda = input->as<LambdaExpr>();
+      VELOX_USER_CHECK(
+          !hasCaptures(*lambda->body(), *lambda->signature()),
+          "Lambda captures are not supported in aggregate functions: {}",
+          name_);
+    }
+  }
+}
+
 bool AggregateExpr::equalTo(const Expr& other) const {
   const auto* rhs = other.as<AggregateExpr>();
   return name_ == rhs->name_ && distinct_ == rhs->distinct_ &&

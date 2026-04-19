@@ -48,10 +48,11 @@ struct PlanSubfields {
 
 /// Struct for resolving which logical PlanNode or Lambda defines which
 /// field for column and subfield tracking.
-/// Only one of planNode or call + lambdaOrdinal is set.
+/// Only one of planNode or callName + callExpr + lambdaOrdinal is set.
 struct LogicalContextSource {
   const logical_plan::LogicalPlanNode* planNode{nullptr};
-  const logical_plan::CallExpr* call{nullptr};
+  std::string_view callName;
+  const logical_plan::Expr* callExpr{nullptr};
   int32_t lambdaOrdinal{-1};
 };
 
