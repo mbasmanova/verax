@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 #include "axiom/optimizer/DerivedTable.h"
+#include "axiom/optimizer/DerivedTableFlattener.h"
 #include "axiom/optimizer/DerivedTablePrinter.h"
 #include "axiom/optimizer/Optimization.h"
 #include "axiom/optimizer/Plan.h"
@@ -186,28 +187,66 @@ void DerivedTable::checkSetOpConsistency() const {
 
   // Union DT cannot have post-processing.
   VELOX_CHECK_NULL(
-      aggregation, "union DT must not have aggregation: {}", cname);
-  VELOX_CHECK_NULL(windowPlan, "union DT must not have windowPlan: {}", cname);
-  VELOX_CHECK(having.empty(), "union DT must not have having: {}", cname);
-  VELOX_CHECK(conjuncts.empty(), "union DT must not have conjuncts: {}", cname);
-  VELOX_CHECK(joins.empty(), "union DT must not have joins: {}", cname);
+      aggregation, "Union DT must not have aggregation: {}", cname);
+  VELOX_CHECK_NULL(windowPlan, "Union DT must not have windowPlan: {}", cname);
+  VELOX_CHECK(having.empty(), "Union DT must not have having: {}", cname);
+  VELOX_CHECK(conjuncts.empty(), "Union DT must not have conjuncts: {}", cname);
+  VELOX_CHECK(joins.empty(), "Union DT must not have joins: {}", cname);
   VELOX_CHECK(
-      startTables.empty(), "union DT must not have startTables: {}", cname);
+      startTables.empty(), "Union DT must not have startTables: {}", cname);
   VELOX_CHECK(
-      singleRowDts.empty(), "union DT must not have singleRowDts: {}", cname);
+      singleRowDts.empty(), "Union DT must not have singleRowDts: {}", cname);
   VELOX_CHECK(
       importedExistences.empty(),
-      "union DT must not have importedExistences: {}",
+      "Union DT must not have importedExistences: {}",
       cname);
 
   // Union DT: outputColumns must equal columns (no intermediate columns).
   VELOX_CHECK(
-      outputColumns.has_value(), "union DT outputColumns not set: {}", cname);
+      outputColumns.has_value(), "Union DT outputColumns not set: {}", cname);
   VELOX_CHECK_EQ(
       outputColumns->size(),
       columns.size(),
-      "union DT outputColumns must match columns: {}",
+      "Union DT outputColumns must match columns: {}",
       cname);
+
+  // Each child's columns must contain the parent's columns (shared Column
+  // objects) and have 1:1 exprs. Exprs must reference only the child's own
+  // tables or the child itself.
+  for (const auto* child : children) {
+    VELOX_CHECK_GE(
+        child->columns.size(),
+        columns.size(),
+        "Union child has fewer columns than parent: {}, child {}",
+        cname,
+        child->cname);
+    auto childColumnSet = PlanObjectSet::fromObjects(child->columns);
+    for (const auto* column : columns) {
+      VELOX_CHECK(
+          childColumnSet.contains(column),
+          "Union child missing parent column: {}, child {}, {}",
+          cname,
+          child->cname,
+          column->toString());
+    }
+    VELOX_CHECK_EQ(
+        child->exprs.size(),
+        child->columns.size(),
+        "Union child exprs/columns size mismatch: {}, child {}",
+        cname,
+        child->cname);
+    for (auto* expr : child->exprs) {
+      expr->allTables().forEach([&](PlanObjectCP table) {
+        VELOX_CHECK(
+            child->tableSet.contains(table) || table == child,
+            "Union child expr references table not in child's tableSet: "
+            "{}, child {}, {}",
+            cname,
+            child->cname,
+            expr->toString());
+      });
+    }
+  }
 }
 
 void DerivedTable::checkConsistency() const {
@@ -423,6 +462,98 @@ void DerivedTable::checkConsistency() const {
   VELOX_CHECK_GE(limit, -1, "limit must be >= -1: {}", cname);
   VELOX_CHECK_NE(limit, 0, "limit must not be 0: {}", cname);
   VELOX_CHECK_GE(offset, 0, "offset must be >= 0: {}", cname);
+
+  // Verify layer dependency direction: each layer's expressions must
+  // reference only columns available from lower layers.
+  PlanObjectSet availableColumns;
+
+  // Layer 1: Base table columns are available.
+  for (auto* table : tables) {
+    if (table->is(PlanType::kDerivedTableNode)) {
+      availableColumns.unionObjects(table->as<DerivedTable>()->columns);
+    } else if (table->is(PlanType::kTableNode)) {
+      availableColumns.unionObjects(table->as<BaseTable>()->columns);
+    } else if (table->is(PlanType::kValuesTableNode)) {
+      availableColumns.unionObjects(table->as<ValuesTable>()->columns);
+    } else if (table->is(PlanType::kUnnestTableNode)) {
+      auto* unnest = table->as<UnnestTable>();
+      availableColumns.unionObjects(unnest->columns);
+      if (unnest->ordinalityColumn) {
+        availableColumns.add(unnest->ordinalityColumn);
+      }
+    }
+  }
+
+  auto checkExprAvailable = [&](ExprCP expr, const char* layerName) {
+    expr->columns().forEach([&](PlanObjectCP column) {
+      VELOX_CHECK(
+          availableColumns.contains(column),
+          "{} references column not available at this layer: {}, {}",
+          layerName,
+          cname,
+          column->toString());
+    });
+  };
+
+  auto checkAvailable = [&](const ExprVector& expressions,
+                            const char* layerName) {
+    for (auto* expr : expressions) {
+      checkExprAvailable(expr, layerName);
+    }
+  };
+
+  // Layer 2: Join columns become available.
+  for (auto* join : joins) {
+    availableColumns.unionObjects(join->leftColumns());
+    availableColumns.unionObjects(join->rightColumns());
+    if (join->markColumn()) {
+      availableColumns.add(join->markColumn());
+    }
+    if (join->rowNumberColumn()) {
+      availableColumns.add(join->rowNumberColumn());
+    }
+  }
+
+  // Layer 3: Conjuncts must reference only available columns.
+  checkAvailable(conjuncts, "conjunct");
+
+  // Layer 4: Aggregation inputs must reference only available columns.
+  // Aggregation outputs become available.
+  if (aggregation) {
+    checkAvailable(aggregation->groupingKeys(), "grouping key");
+    for (auto* aggregate : aggregation->aggregates()) {
+      checkAvailable(aggregate->args(), "aggregate input");
+      checkAvailable(aggregate->orderKeys(), "aggregate order key");
+      if (aggregate->condition()) {
+        checkExprAvailable(aggregate->condition(), "aggregate condition");
+      }
+    }
+    availableColumns = PlanObjectSet::fromObjects(aggregation->columns());
+  }
+
+  // Layer 5: Having must reference only available columns.
+  checkAvailable(having, "having");
+
+  // Layer 6: Window inputs must reference only available columns.
+  // Window outputs become available. Process one function at a time so
+  // that dependent windows (function B referencing function A's output)
+  // see A's column as available.
+  if (windowPlan) {
+    for (size_t i = 0; i < windowPlan->functions().size(); ++i) {
+      auto* func = windowPlan->functions()[i];
+      checkAvailable(func->partitionKeys(), "window partition key");
+      checkAvailable(func->orderKeys(), "window order key");
+      checkAvailable(func->args(), "window function arg");
+      availableColumns.add(windowPlan->columns()[i]);
+    }
+  }
+
+  // Layer 7: Exprs and orderKeys must reference only available columns.
+  // The DT's own columns (relation_ == this) are also available — exprs
+  // can cross-reference other output columns (e.g., SELECT a, a + 1).
+  availableColumns.unionObjects(columns);
+  checkAvailable(exprs, "expr");
+  checkAvailable(orderKeys, "orderKey");
 }
 
 MemoKey DerivedTable::memoKey() const {
@@ -913,187 +1044,38 @@ void joinChain(
   joinChain(next, joins, std::move(visited), path);
 }
 
-// Unions function flags from children into 'functions'.
-void unionChildFunctions(FunctionSet& functions, const ExprVector& children) {
-  for (const auto& child : children) {
-    if (child->isFunction()) {
-      functions = functions | child->as<Call>()->functions();
-    }
-  }
-}
-
-// Returns the function flags for a scalar Call with the given name and new
-// children. Recomputes the call's own flags using functionBits and combines
-// with flags accumulated from new children.
-FunctionSet computeCallFunctions(CallCP call, const ExprVector& newChildren) {
-  FunctionSet functions = functionBits(
-      call->name(), SpecialFormCallNames::isSpecialForm(call->name()));
-  unionChildFunctions(functions, newChildren);
-  return functions;
-}
-
-// Returns the function flags for an Aggregate with new children.
-// Aggregate-specific flags (kIgnoreDuplicatesAggregate,
-// kOrderSensitiveAggregate) are determined by the aggregate name and don't
-// come from children, so they are preserved from the original aggregate.
-// kAggregate is added by the Aggregate constructor automatically.
-FunctionSet computeAggregateFunctions(
-    const Aggregate* aggregate,
-    const ExprVector& newChildren) {
-  FunctionSet functions;
-  if (aggregate->functions().contains(
-          FunctionSet::kIgnoreDuplicatesAggregate)) {
-    functions = functions | FunctionSet::kIgnoreDuplicatesAggregate;
-  }
-  if (aggregate->functions().contains(FunctionSet::kOrderSensitiveAggregate)) {
-    functions = functions | FunctionSet::kOrderSensitiveAggregate;
-  }
-  unionChildFunctions(functions, newChildren);
-  return functions;
-}
-
-// Returns a copy of 'expr', replacing instances of columns in 'source' with
-// the corresponding expression from 'target'
-// @tparam T ColumnVector or ExprVector
-// @tparam U ColumnVector or ExprVector
-// @param source Columns to replace. 1:1 with 'target.
-// @param target Replacements.
-template <typename T, typename U>
-ExprCP replaceInputs(ExprCP expr, const T& source, const U& target) {
-  if (!expr) {
-    return nullptr;
-  }
-
-  switch (expr->type()) {
-    case PlanType::kColumnExpr:
-      for (auto i = 0; i < source.size(); ++i) {
-        if (source[i] == expr) {
-          return target[i];
-        }
-      }
-      return expr;
-    case PlanType::kLiteralExpr:
-      return expr;
-    case PlanType::kCallExpr:
-    case PlanType::kAggregateExpr: {
-      auto children = expr->children();
-      ExprVector newChildren(children.size());
-      bool anyChange = false;
-      for (auto i = 0; i < children.size(); ++i) {
-        newChildren[i] = replaceInputs(children[i]->as<Expr>(), source, target);
-        anyChange |= newChildren[i] != children[i];
-      }
-
-      if (expr->type() == PlanType::kAggregateExpr) {
-        const auto* aggregate = expr->as<Aggregate>();
-        auto* newCondition =
-            replaceInputs(aggregate->condition(), source, target);
-
-        ExprVector newOrderKeys;
-        newOrderKeys.reserve(aggregate->orderKeys().size());
-        for (const auto* orderKey : aggregate->orderKeys()) {
-          newOrderKeys.push_back(replaceInputs(orderKey, source, target));
-        }
-
-        anyChange |= newCondition != aggregate->condition();
-        anyChange |= newOrderKeys != aggregate->orderKeys();
-
-        if (!anyChange) {
-          return expr;
-        }
-
-        auto functions = computeAggregateFunctions(aggregate, newChildren);
-        return make<Aggregate>(
-            aggregate->name(),
-            aggregate->value(),
-            std::move(newChildren),
-            std::move(functions),
-            aggregate->isDistinct(),
-            newCondition,
-            aggregate->intermediateType(),
-            std::move(newOrderKeys),
-            aggregate->orderTypes());
-      }
-
-      if (!anyChange) {
-        return expr;
-      }
-
-      const auto* call = expr->as<Call>();
-      auto functions = computeCallFunctions(call, newChildren);
-      return make<Call>(
-          call->name(),
-          call->value(),
-          std::move(newChildren),
-          std::move(functions));
-    }
-    case PlanType::kFieldExpr: {
-      auto* field = expr->as<Field>();
-      auto* newBase = replaceInputs(field->base(), source, target);
-      if (newBase != field->base()) {
-        return make<Field>(field->value().type, newBase, field->field());
-      }
-
-      return expr;
-    }
-    case PlanType::kLambdaExpr: {
-      auto* lambda = expr->as<Lambda>();
-      auto* body = lambda->body();
-      auto* newBody = replaceInputs(body, source, target);
-      if (body == newBody) {
-        return expr;
-      }
-
-      return make<Lambda>(lambda->args(), lambda->value().type, newBody);
-    }
-    default:
-      VELOX_UNREACHABLE(
-          "Unexpected expression: {} - {}", expr->typeName(), expr->toString());
-  }
-}
-
-template <typename T, typename U>
-void replaceInputs(ExprVector& exprs, const T& source, const U& target) {
-  for (auto i = 0; i < exprs.size(); ++i) {
-    exprs[i] = replaceInputs(exprs[i], source, target);
-  }
-}
-
-template <typename T, typename U>
-AggregationPlanCP
-replaceInputs(AggregationPlanCP aggregation, const T& source, const U& target) {
-  if (!aggregation) {
-    return nullptr;
-  }
-
-  ExprVector newGroupingKeys = aggregation->groupingKeys();
-  replaceInputs(newGroupingKeys, source, target);
-
-  AggregateVector newAggregates;
-  newAggregates.reserve(aggregation->aggregates().size());
-  for (const auto* aggregate : aggregation->aggregates()) {
-    newAggregates.push_back(
-        replaceInputs(aggregate, source, target)->template as<Aggregate>());
-  }
-
-  if (newGroupingKeys == aggregation->groupingKeys() &&
-      newAggregates == aggregation->aggregates()) {
-    return aggregation;
-  }
-
-  return make<AggregationPlan>(
-      std::move(newGroupingKeys),
-      std::move(newAggregates),
-      aggregation->columns(),
-      aggregation->intermediateColumns());
-}
 } // namespace
 
 void DerivedTable::replaceJoinOutputs(
     const ColumnVector& source,
     const ExprVector& target) {
-  replaceInputs(conjuncts, source, target);
-  aggregation = replaceInputs(aggregation, source, target);
+  for (auto& conjunct : conjuncts) {
+    conjunct = DerivedTableFlattener::replaceInputs(conjunct, source, target);
+  }
+
+  if (aggregation) {
+    ExprVector newGroupingKeys = aggregation->groupingKeys();
+    for (auto& key : newGroupingKeys) {
+      key = DerivedTableFlattener::replaceInputs(key, source, target);
+    }
+
+    AggregateVector newAggregates;
+    newAggregates.reserve(aggregation->aggregates().size());
+    for (const auto* aggregate : aggregation->aggregates()) {
+      newAggregates.push_back(
+          DerivedTableFlattener::replaceInputs(aggregate, source, target)
+              ->as<Aggregate>());
+    }
+
+    if (newGroupingKeys != aggregation->groupingKeys() ||
+        newAggregates != aggregation->aggregates()) {
+      aggregation = make<AggregationPlan>(
+          std::move(newGroupingKeys),
+          std::move(newAggregates),
+          aggregation->columns(),
+          aggregation->intermediateColumns());
+    }
+  }
 
   // Post-aggregation fields (exprs, orderKeys) reference aggregation output
   // columns, not the join output columns being replaced. When a grouping key
@@ -1104,8 +1086,12 @@ void DerivedTable::replaceJoinOutputs(
   // pre-aggregation expression, which is invalid above the aggregation
   // boundary.
   if (!aggregation) {
-    replaceInputs(exprs, source, target);
-    replaceInputs(orderKeys, source, target);
+    for (auto& expr : exprs) {
+      expr = DerivedTableFlattener::replaceInputs(expr, source, target);
+    }
+    for (auto& key : orderKeys) {
+      key = DerivedTableFlattener::replaceInputs(key, source, target);
+    }
   }
 }
 
@@ -1220,7 +1206,7 @@ ExprCP DerivedTable::exportExpr(ExprCP expr) {
     }
   });
 
-  return replaceInputs(expr, exprs, columns);
+  return DerivedTableFlattener::replaceInputs(expr, exprs, columns);
 }
 
 void DerivedTable::exportExprs(ExprVector& exprs) {
@@ -1230,7 +1216,7 @@ void DerivedTable::exportExprs(ExprVector& exprs) {
 }
 
 ExprCP DerivedTable::importExpr(ExprCP expr) const {
-  return replaceInputs(expr, columns, exprs);
+  return DerivedTableFlattener::replaceInputs(expr, columns, exprs);
 }
 
 void DerivedTable::removeTables(
@@ -1320,8 +1306,9 @@ bool DerivedTable::validatePushdown(
     ExprVector resolvedKeys;
     PlanObjectCP resolvedTable{nullptr};
     for (size_t keyIdx = 0; keyIdx < side.keys.size(); ++keyIdx) {
-      auto key = replaceInputs(side.keys[keyIdx], columns, exprs);
-      auto innerKey = replaceInputs(key, outer, inner);
+      auto key = DerivedTableFlattener::replaceInputs(
+          side.keys[keyIdx], columns, exprs);
+      auto innerKey = DerivedTableFlattener::replaceInputs(key, outer, inner);
       VELOX_DCHECK(innerKey);
 
       if (innerKey->is(PlanType::kColumnExpr) &&
@@ -1368,6 +1355,7 @@ void DerivedTable::pushExistencesIntoSubquery(const DerivedTable& subquery) {
 
   auto initialTables = tables;
   auto* newFirst = make<DerivedTable>(subquery);
+  DerivedTableFlattener::reconstructColumns(newFirst, &subquery);
 
   auto* optimization = queryCtx()->optimization();
   const size_t previousNumJoins = newFirst->joins.size();
@@ -1462,6 +1450,8 @@ void DerivedTable::flattenDt(const DerivedTable* dt) {
   having = dt->having;
   limit = dt->limit;
   offset = dt->offset;
+
+  DerivedTableFlattener::reconstructColumns(this, dt);
 }
 
 namespace {
@@ -2074,8 +2064,11 @@ void DerivedTable::distributeConjuncts() {
       // names. Pre/post agg names may differ for dts in set
       // operations. If already in pre-agg names, no-op.
       if (having[i]->columns().isSubset(grouping)) {
-        conjuncts.push_back(replaceInputs(
-            having[i], aggregation->columns(), aggregation->groupingKeys()));
+        conjuncts.push_back(
+            DerivedTableFlattener::replaceInputs(
+                having[i],
+                aggregation->columns(),
+                aggregation->groupingKeys()));
         having.erase(having.begin() + i);
         --i;
       }

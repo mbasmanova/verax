@@ -372,6 +372,7 @@ TEST_F(SetTest, intersect) {
                            core::JoinType::kRightSemiFilter)
                        .singleAggregation()
                        .project()
+                       .project()
                        .build();
 
     AXIOM_ASSERT_PLAN(plan, matcher);

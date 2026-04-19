@@ -61,11 +61,14 @@ using WindowPlanCP = const WindowPlan*;
 ///   2. WHERE (filters)
 ///   3. GROUP BY (aggregation)
 ///   4. HAVING (more filters)
-///   5. SELECT (projections)
-///   6. ORDER BY (sort)
-///   7. OFFSET and LIMIT (limit)
-///   8. WRITE (create/insert/delete/update)
+///   5. Window functions
+///   6. SELECT (projections)
+///   7. ORDER BY (sort)
+///   8. OFFSET and LIMIT (limit)
+///   9. WRITE (create/insert/delete/update)
 ///
+/// See docs/DerivedTableLayers.md for the layered column ownership model
+/// and dependency rules validated by checkConsistency.
 struct DerivedTable : public PlanObject {
   DerivedTable() : PlanObject(PlanType::kDerivedTableNode) {}
 
@@ -112,7 +115,31 @@ struct DerivedTable : public PlanObject {
   PlanObjectSet tableSet;
 
   /// Set if this is a union or unionAll. If set, 'children' has at least 2
-  /// operands.
+  /// operands. When setOp is set, 'tables' and 'joins' are empty and 'exprs'
+  /// is empty. The children hold the per-leg expressions.
+  // TODO: Rename setOp -> unionOp. Only UNION and UNION ALL use this
+  // structure. INTERSECT and EXCEPT are translated to joins.
+  ///
+  /// A UNION ALL produces a single result set — each leg contributes rows
+  /// to the same output columns. The output schema is defined once on the
+  /// parent, and all children feed into it. No child "owns" the output
+  /// columns; the parent does. Each child's 'exprs' describes how that
+  /// child populates the shared output columns.
+  ///
+  /// Column structure:
+  ///
+  ///   setDt (parent):
+  ///     columns = [col_a, col_b, ...]  (relation_ == setDt)
+  ///     exprs = {}                     (empty — setOp DTs have no exprs)
+  ///     outputColumns = columns
+  ///
+  ///   child DTs:
+  ///     columns contains setDt->columns (shared Column objects from parent,
+  ///             plus possibly the child's own columns from makeQueryGraph)
+  ///     exprs = [expr_a, expr_b, ...]  (1:1 with columns, reference child's
+  ///                                     internal tables or child's own
+  ///                                     aggregation/window output columns)
+  ///     outputColumns = setDt->columns
   std::optional<logical_plan::SetOperation> setOp;
 
   /// Operands if 'this' is a union or unionAll. Has at least 2 entries when
@@ -442,7 +469,10 @@ struct DerivedTable : public PlanObject {
       const PlanObjectSet& superTables,
       PlanObjectCP primaryTable);
 
-  // Sets 'dt' to be the complete contents of 'this'.
+  // Replaces 'this' with the contents of 'dt', effectively removing one
+  // level of DT nesting. Reconstructs columns that have relation_ == dt
+  // (aggregation, window, outer join outputs) so they reference 'this'
+  // instead, since 'dt' will no longer be in tableSet after flattening.
   void flattenDt(const DerivedTable* dt);
 
   // Attempts to convert outer joins to less restrictive join types based on
