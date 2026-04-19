@@ -48,3 +48,26 @@ SELECT a, b, a + b AS d FROM (SELECT a, b FROM t GROUP BY a, b) GROUP BY 1, 2, 3
 ----
 -- Nested aggregation: partition keys not subset (extra shuffle needed).
 SELECT a, b FROM (SELECT a, b, c FROM t GROUP BY a, b, c) GROUP BY a, b
+----
+-- Lambda aggregate function.
+-- duckdb: SELECT sum(a) FROM t
+SELECT reduce_agg(a, 0, (s, x) -> s + x, (s1, s2) -> s1 + s2) FROM t
+----
+-- duckdb: SELECT b, sum(a) FROM t GROUP BY 1
+SELECT b, reduce_agg(a, 0, (s, x) -> s + x, (s1, s2) -> s1 + s2) FROM t GROUP BY 1
+----
+-- Lambda aggregate with FILTER.
+-- duckdb: SELECT sum(a) FROM t WHERE b > 50
+SELECT reduce_agg(a, 0, (s, x) -> s + x, (s1, s2) -> s1 + s2) FILTER (WHERE b > 50) FROM t
+----
+-- Lambda aggregate with GROUP BY on VALUES (single step).
+-- duckdb: VALUES (3), (7)
+SELECT reduce_agg(a, 0, (s, x) -> s + x, (s1, s2) -> s1 + s2) FROM (VALUES (1, 'x'), (2, 'x'), (3, 'y'), (4, 'y')) AS t(a, k) GROUP BY k
+----
+-- Multiple lambda aggregates in same query.
+-- duckdb: VALUES (10, 24)
+SELECT reduce_agg(a, 0, (s, x) -> s + x, (s1, s2) -> s1 + s2), reduce_agg(a, 1, (s, x) -> s * x, (s1, s2) -> s1 * s2) FROM (VALUES (1), (2), (3), (4)) AS t(a)
+----
+-- Lambda aggregate functions with lambda captures are not supported.
+-- error: Lambda captures are not supported in aggregate functions
+SELECT reduce_agg(a, 0, (s, x) -> s + x, (s1, s2) -> s1 + s2 + b) FROM t GROUP BY b

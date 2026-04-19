@@ -600,6 +600,8 @@ class AggregateExpr : public Expr {
         distinct_{distinct} {
     VELOX_USER_CHECK(!name_.empty());
 
+    rejectLambdaCaptures();
+
     if (filter_ != nullptr) {
       VELOX_USER_CHECK_EQ(filter_->typeKind(), velox::TypeKind::BOOLEAN);
     }
@@ -648,6 +650,8 @@ class AggregateExpr : public Expr {
 
  private:
   bool equalTo(const Expr& other) const override;
+
+  void rejectLambdaCaptures() const;
 
   const std::string name_;
   const ExprPtr filter_;

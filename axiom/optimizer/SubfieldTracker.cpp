@@ -160,6 +160,29 @@ void SubfieldTracker::markFieldAccessed(
   }
 }
 
+namespace {
+MarkFieldsAccessedContextVector makeContextForLambdaArg(
+    const lp::LambdaExpr& lambda,
+    const LogicalContextSource& source,
+    const MarkFieldsAccessedContext& context) {
+  const auto& argType = lambda.signature();
+
+  std::vector<const velox::RowType*> newRowTypes;
+  newRowTypes.reserve(context.rowTypes.size() + 1);
+  newRowTypes.push_back(argType.get());
+  newRowTypes.insert(
+      newRowTypes.end(), context.rowTypes.begin(), context.rowTypes.end());
+
+  std::vector<LogicalContextSource> newSources;
+  newSources.reserve(context.sources.size() + 1);
+  newSources.push_back(source);
+  newSources.insert(
+      newSources.end(), context.sources.begin(), context.sources.end());
+
+  return {newRowTypes, newSources};
+}
+} // namespace
+
 void SubfieldTracker::markFieldAccessed(
     const lp::AggregateNode& agg,
     int32_t ordinal,
@@ -180,7 +203,23 @@ void SubfieldTracker::markFieldAccessed(
   }
 
   const auto& aggregate = agg.aggregateAt(ordinal - keys.size());
-  for (const auto& aggregateInput : aggregate->inputs()) {
+  for (auto i = 0; i < aggregate->inputs().size(); ++i) {
+    const auto& aggregateInput = aggregate->inputAt(i);
+    if (aggregateInput->isLambda()) {
+      const auto* lambda = aggregateInput->as<lp::LambdaExpr>();
+      auto lambdaContext = makeContextForLambdaArg(
+          *lambda,
+          {.callName = aggregate->name(),
+           .callExpr = aggregate.get(),
+           .lambdaOrdinal = static_cast<int32_t>(i)},
+          ctx.toCtx());
+
+      std::vector<Step> lambdaSteps;
+      markSubfields(
+          lambda->body(), lambdaSteps, isControl, lambdaContext.toCtx());
+      VELOX_DCHECK(lambdaSteps.empty());
+      continue;
+    }
     mark(aggregateInput);
   }
 
@@ -213,13 +252,13 @@ void SubfieldTracker::markFieldAccessed(
   if (!source.planNode) {
     // The source is a lambda arg. We apply the path to the corresponding
     // container arg of the 2nd order function call that has the lambda.
-    const auto* metadata = functionMetadata(toName(source.call->name()));
+    const auto* metadata = functionMetadata(toName(source.callName));
     if (metadata != nullptr) {
       const auto* lambdaInfo = metadata->lambdaInfo(source.lambdaOrdinal);
       const auto nth = lambdaInfo->argOrdinal[ordinal];
 
       markSubfields(
-          source.call->inputAt(nth),
+          source.callExpr->inputAt(nth),
           steps,
           isControl,
           {context.rowTypes.subspan(1), context.sources.subspan(1)});
@@ -302,29 +341,6 @@ std::optional<int32_t> SubfieldTracker::stepToArg(
   return std::nullopt;
 }
 
-namespace {
-MarkFieldsAccessedContextVector makeContextForLambdaArg(
-    const lp::LambdaExpr* lambda,
-    const LogicalContextSource& source,
-    const MarkFieldsAccessedContext& context) {
-  const auto& argType = lambda->signature();
-
-  std::vector<const velox::RowType*> newRowTypes;
-  newRowTypes.reserve(context.rowTypes.size() + 1);
-  newRowTypes.push_back(argType.get());
-  newRowTypes.insert(
-      newRowTypes.end(), context.rowTypes.begin(), context.rowTypes.end());
-
-  std::vector<LogicalContextSource> newSources;
-  newSources.reserve(context.sources.size() + 1);
-  newSources.push_back(source);
-  newSources.insert(
-      newSources.end(), context.sources.begin(), context.sources.end());
-
-  return {newRowTypes, newSources};
-}
-} // namespace
-
 void SubfieldTracker::markSubfields(
     const lp::ExprPtr& expr,
     std::vector<Step>& steps,
@@ -398,7 +414,9 @@ void SubfieldTracker::markSubfields(
         if (input->isLambda()) {
           const auto* lambda = input->as<lp::LambdaExpr>();
           auto lambdaContext = makeContextForLambdaArg(
-              lambda, {.call = call, .lambdaOrdinal = i}, context);
+              *lambda,
+              {.callName = call->name(), .callExpr = call, .lambdaOrdinal = i},
+              context);
 
           std::vector<Step> lambdaSteps;
           markSubfields(
@@ -467,7 +485,9 @@ void SubfieldTracker::markSubfields(
       if (metadata->lambdaInfo(i)) {
         const auto* lambda = expr->inputAt(i)->as<lp::LambdaExpr>();
         auto lambdaContext = makeContextForLambdaArg(
-            lambda, {.call = call, .lambdaOrdinal = i}, context);
+            *lambda,
+            {.callName = call->name(), .callExpr = call, .lambdaOrdinal = i},
+            context);
 
         std::vector<Step> lambdaSteps;
         markSubfields(

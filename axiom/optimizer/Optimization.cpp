@@ -1236,8 +1236,15 @@ AggregateVector flattenAggregates(
     if (agg->condition()) {
       condition = precompute.toColumn(agg->condition());
     }
-    auto args = precompute.toColumns(
-        agg->args(), /*aliases=*/nullptr, /*preserveLiterals=*/true);
+    ExprVector args;
+    args.reserve(agg->args().size());
+    for (const auto& arg : agg->args()) {
+      if (arg->is(PlanType::kLambdaExpr)) {
+        args.push_back(arg);
+      } else {
+        args.push_back(precompute.toColumn(arg, nullptr, true));
+      }
+    }
     auto orderKeys = precompute.toColumns(agg->orderKeys());
     flatAggregates.emplace_back(
         make<Aggregate>(

@@ -1448,11 +1448,17 @@ velox::core::PlanNodePtr ToVelox::makeAggregation(
           .distinct = aggregate->isDistinct(),
       });
     } else {
-      auto call = std::make_shared<velox::core::CallTypedExpr>(
-          type,
-          aggregate->name(),
+      std::vector<velox::core::TypedExprPtr> inputs;
+      inputs.push_back(
           std::make_shared<velox::core::FieldAccessTypedExpr>(
               toTypePtr(aggregate->intermediateType()), aggregateNames.back()));
+      for (const auto& arg : aggregate->args()) {
+        if (arg->is(PlanType::kLambdaExpr)) {
+          inputs.push_back(toTypedExpr(arg));
+        }
+      }
+      auto call = std::make_shared<velox::core::CallTypedExpr>(
+          type, std::move(inputs), aggregate->name());
       aggregates.push_back({.call = call, .rawInputTypes = rawInputTypes});
     }
   }
