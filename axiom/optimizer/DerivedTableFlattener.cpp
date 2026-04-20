@@ -424,23 +424,22 @@ void DerivedTableFlattener::reconstructColumns(
   }
 
   // Layer 6: Window — recreate output columns with relation_ == oldDt,
-  // rewrite window function expressions. Process one function at a time so
-  // that if function B references function A's output column, the mapping
-  // from A is available when B is rewritten.
+  // rewrite window function expressions. Window functions within a DT are
+  // independent (no cross-references).
   if (dt->windowPlan) {
     const auto numMappingsBefore = mapping.size();
 
     WindowFunctionVector newFunctions;
     newFunctions.reserve(dt->windowPlan->functions().size());
+    for (const auto* func : dt->windowPlan->functions()) {
+      newFunctions.push_back(
+          replaceInputs(func, mapping)->as<WindowFunction>());
+    }
+
     ColumnVector newWindowColumns;
     newWindowColumns.reserve(dt->windowPlan->columns().size());
 
-    for (size_t i = 0; i < dt->windowPlan->functions().size(); ++i) {
-      newFunctions.push_back(
-          replaceInputs(dt->windowPlan->functions()[i], mapping)
-              ->as<WindowFunction>());
-
-      auto* column = dt->windowPlan->columns()[i];
+    for (const auto* column : dt->windowPlan->columns()) {
       if (column->relation() == oldDt) {
         newWindowColumns.push_back(recreateColumn(column));
       } else {

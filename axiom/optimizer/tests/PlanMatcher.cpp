@@ -1334,12 +1334,13 @@ class WindowMatcher : public PlanMatcherImpl<WindowNode> {
   }
 
   // Verifies each window function call expression and frame. Returns captured
-  // aliases for symbol propagation.
+  // aliases for symbol propagation. Starts with existing symbols since
+  // WindowNode passes through all input columns.
   std::unordered_map<std::string, std::string> verifyWindowFunctions(
       const WindowNode& plan,
       const std::vector<core::WindowCallExprPtr>& expectedWindows,
       const std::unordered_map<std::string, std::string>& symbols) const {
-    std::unordered_map<std::string, std::string> newSymbols;
+    std::unordered_map<std::string, std::string> newSymbols(symbols);
     for (auto i = 0; i < expectedWindows.size(); ++i) {
       const auto& expectedWindow = expectedWindows[i];
       const auto& actualFunc = plan.windowFunctions()[i];

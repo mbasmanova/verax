@@ -3180,7 +3180,7 @@ bool referencesWindowOutput(
     if (it == renames.end() || it->second == nullptr) {
       return false;
     }
-    return windowColumnSet.contains(it->second);
+    return it->second->columns().hasIntersection(windowColumnSet);
   }
   return std::ranges::any_of(expr->inputs(), [&](const auto& input) {
     return referencesWindowOutput(input, renames, windowColumnSet);
@@ -3637,8 +3637,6 @@ void ToGraph::makeProjectQueryGraph(
 
   makeQueryGraph(
       *project.onlyInput(), allowedInDt, excludeOuterJoins, excludeWindows);
-
-  // TODO Handle windows wrapped in scalar expressions.
 
   // Check if this project contains window expressions and apply DT
   // boundary rules.
