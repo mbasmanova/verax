@@ -976,5 +976,83 @@ TEST_F(ExistencePushdownTest, windowNonPartitionKey) {
   AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, distributedMatcher);
 }
 
+TEST_F(ExistencePushdownTest, functionOfGroupingKey) {
+  // Column grouping key (GROUP BY x): pushdown fires.
+  {
+    auto plan = toSingleNodePlan(
+        "SELECT 1 "
+        "FROM t "
+        "LEFT JOIN ("
+        "  SELECT DISTINCT x, y FROM u"
+        ") dt ON abs(dt.x) = abs(t.a)");
+
+    // Semi-join pushdown fires — abs(dt.x) resolves to abs(u.x) which
+    // references a valid pushdown column (grouping key x).
+    auto matcher = matchScan("t")
+                       .project({"abs(a)"})
+                       .hashJoin(
+                           matchScan("u")
+                               .project()
+                               .hashJoin(
+                                   matchScan("t").project().build(),
+                                   core::JoinType::kLeftSemiFilter)
+                               .singleAggregation({"x", "y"}, {})
+                               .project()
+                               .project()
+                               .build(),
+                           core::JoinType::kLeft)
+                       .project()
+                       .build();
+    AXIOM_ASSERT_PLAN(plan, matcher);
+  }
+
+  // Expression grouping key (GROUP BY abs(x)): pushdown skipped.
+  {
+    auto plan = toSingleNodePlan(
+        "SELECT 1 "
+        "FROM t "
+        "LEFT JOIN ("
+        "  SELECT DISTINCT x + 2 AS x, y FROM u"
+        ") dt ON abs(dt.x) = abs(t.a)");
+
+    // No semi-join — reversed LEFT JOIN (RIGHT JOIN with u as probe).
+    auto matcher = matchScan("u")
+                       .project({"x + 2 as p", "y"})
+                       .singleAggregation({"p", "y"}, {})
+                       .project()
+                       .project()
+                       .hashJoin(
+                           matchScan("t").project({"abs(a)"}).build(),
+                           core::JoinType::kRight)
+                       .project()
+                       .build();
+    AXIOM_ASSERT_PLAN(plan, matcher);
+  }
+}
+
+// Join key is a function of a non-grouping key (aggregate output). The
+// existence pushdown must not push a semi-join below the aggregation on
+// a non-grouping column — the aggregation changes the row set, so filtering
+// by an aggregate output before aggregation is invalid.
+TEST_F(ExistencePushdownTest, functionOfAggregate) {
+  auto plan = toSingleNodePlan(
+      "SELECT 1 "
+      "FROM t "
+      "LEFT JOIN ("
+      "  SELECT x, COUNT(*) AS cnt FROM u GROUP BY x"
+      ") dt ON abs(dt.cnt) = abs(t.a)");
+
+  // No semi-join pushdown — reversed LEFT JOIN (RIGHT JOIN with u as probe).
+  auto matcher =
+      matchScan("u")
+          .singleAggregation({"x"}, {"count(*) as cnt"})
+          .project()
+          .project()
+          .hashJoin(matchScan("t").project().build(), core::JoinType::kRight)
+          .project()
+          .build();
+  AXIOM_ASSERT_PLAN(plan, matcher);
+}
+
 } // namespace
 } // namespace facebook::axiom::optimizer
