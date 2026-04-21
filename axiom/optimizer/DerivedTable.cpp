@@ -1309,11 +1309,17 @@ bool DerivedTable::validatePushdown(
       auto innerKey = DerivedTableFlattener::replaceInputs(key, outer, inner);
       VELOX_DCHECK(innerKey);
 
-      if (innerKey->is(PlanType::kColumnExpr) &&
-          innerKey->as<Column>()->relation() == &subquery) {
-        if (!validPushdownColumns.contains(innerKey)) {
-          return false;
+      // All columns in innerKey that reference the subquery must be valid
+      // pushdown columns.
+      bool keyValid = true;
+      innerKey->columns().forEach<Column>([&](ColumnCP column) {
+        if (column->relation() == &subquery &&
+            !validPushdownColumns.contains(column)) {
+          keyValid = false;
         }
+      });
+      if (!keyValid) {
+        return false;
       }
 
       auto innerTable = innerKey->singleTable();
@@ -1433,6 +1439,12 @@ void DerivedTable::pushExistencesIntoSubquery(const DerivedTable& subquery) {
 }
 
 void DerivedTable::flattenDt(const DerivedTable* dt) {
+  VELOX_DCHECK(
+      columns.empty() || columns == dt->columns,
+      "flattenDt overwrites columns; caller must have empty columns or "
+      "columns shared with the inner DT: {}",
+      cname);
+
   tables = dt->tables;
   cname = dt->cname;
   tableSet = dt->tableSet;
