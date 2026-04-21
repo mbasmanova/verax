@@ -565,31 +565,104 @@ TEST_F(WindowTest, windowOutputAsGroupByKey) {
 }
 
 // Dependent window functions must be split into separate Window nodes.
-// When an outer window function's input expression references an inner window
-// function's output, they cannot share a Window node — the inner output isn't
-// available until its Window runs.
+// When a window function's input expression references another window
+// function's output, they cannot share a Window node — the referenced
+// output isn't available until its Window runs.
 TEST_F(WindowTest, dependentWindowFunctions) {
   testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
 
-  auto query =
-      "SELECT sum(n) OVER (ORDER BY a) "
-      "FROM ("
-      "    SELECT a, lag(b) OVER (ORDER BY a) + a AS n FROM t"
-      ")";
+  {
+    auto query =
+        "SELECT sum(n) OVER (ORDER BY a) "
+        "FROM ("
+        "    SELECT a, lag(b) OVER (ORDER BY a) + a AS n FROM t"
+        ")";
 
-  auto plan = toSingleNodePlan(query);
+    auto plan = toSingleNodePlan(query);
 
-  // Two separate Window nodes: lag(b) must complete before the expression
-  // lag(b) + a can be computed, so they cannot share a Window node with
-  // sum(lag(b) + a).
-  auto matcher = matchScan("t")
-                     .window({"lag(b) OVER (ORDER BY a) as w"})
-                     .project({"a", "w", "a + w as n"})
-                     .window({"sum(n) OVER (ORDER BY a)"})
-                     .project()
-                     .build();
+    auto matcher = matchScan("t")
+                       .window({"lag(b) OVER (ORDER BY a) as w"})
+                       .project({"a", "a + w as n"})
+                       .window({"sum(n) OVER (ORDER BY a)"})
+                       .project()
+                       .build();
 
-  AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN(plan, matcher);
+
+    // No partition keys — all windows gather to a single node.
+    auto distributedPlan = toDistributedPlan(query);
+
+    auto distributedMatcher = matchScan("t")
+                                  .gather()
+                                  .localGather()
+                                  .window({"lag(b) OVER (ORDER BY a) as w"})
+                                  .project({"a", "a + w as n"})
+                                  // TODO: Eliminate redundant local gather.
+                                  .localGather()
+                                  .window({"sum(n) OVER (ORDER BY a)"})
+                                  .project()
+                                  .build();
+
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan, distributedMatcher);
+  }
+
+  {
+    // lag(pct) references pct, which is a scalar expression over two window
+    // outputs with different specs (one with ORDER BY, one without). The
+    // outer lag shares partition/order keys with the first sum, so without
+    // a DT boundary it would be grouped before the second sum runs.
+    auto query =
+        "SELECT lag(pct) OVER (PARTITION BY a ORDER BY b) "
+        "FROM ("
+        "  SELECT a, b,"
+        "    floor(sum(b) OVER (PARTITION BY a ORDER BY b) * 100.0"
+        "      / sum(b) OVER (PARTITION BY a)) AS pct"
+        "  FROM t"
+        ")";
+
+    auto plan = toSingleNodePlan(query);
+
+    auto matcher =
+        matchScan("t")
+            .window({"sum(b) OVER (PARTITION BY a ORDER BY b) as cum_sum"})
+            .window({"sum(b) OVER (PARTITION BY a) as total_sum"})
+            .project(
+                {"a",
+                 "b",
+                 "floor(cast(cum_sum as double) * 100 / cast(total_sum as double)) as pct"})
+            .window({"lag(pct) OVER (PARTITION BY a ORDER BY b) as lag_pct"})
+            .project({"lag_pct"})
+            .build();
+
+    AXIOM_ASSERT_PLAN(plan, matcher);
+
+    // Distributed plan: single shuffle before the first window (all three
+    // windows share the same partition key). The second and third local
+    // partitions are redundant — data is already partitioned by 'a' from
+    // the first local partition.
+    auto distributedPlan = toDistributedPlan(query);
+
+    auto distributedMatcher =
+        matchScan("t")
+            .shuffle({"a"})
+            .localPartition({"a"})
+            .window({"sum(b) OVER (PARTITION BY a ORDER BY b) as cum_sum"})
+            // TODO: Eliminate redundant local partition.
+            .localPartition({"a"})
+            .window({"sum(b) OVER (PARTITION BY a) as total_sum"})
+            .project(
+                {"a",
+                 "b",
+                 "floor(cast(cum_sum as double) * 100 / cast(total_sum as double)) as pct"})
+            // TODO: Eliminate redundant local partition.
+            .localPartition({"a"})
+            .window({"lag(pct) OVER (PARTITION BY a ORDER BY b) as lag_pct"})
+            .project({"lag_pct"})
+            .gather()
+            .build();
+
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan, distributedMatcher);
+  }
 }
 
 } // namespace
