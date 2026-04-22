@@ -57,6 +57,21 @@ LEFT JOIN (
 ) AS b ON a.k = b.k
 WHERE b.m = 1
 ----
+-- CROSS JOIN UNNEST with two JOINs that have constant equality filters.
+-- The reducing-join optimization must not prune columns needed by the output.
+-- duckdb: VALUES (1, 2)
+SELECT t.a, t.b
+FROM (
+    SELECT a, b, items
+    FROM (VALUES
+        (1, 2, ARRAY[ROW(10 AS k)]),
+        (3, 4, ARRAY[ROW(20 AS k)])
+    ) _(a, b, items)
+) t
+CROSS JOIN UNNEST(t.items) _(r)
+JOIN (VALUES (1, 10), (1, 20)) u(c, k) ON u.k = r.k AND u.c = 1
+JOIN (VALUES (1, 10)) v(c, k) ON v.k = u.k AND v.c = 1
+----
 -- Chained LEFT JOINs with same-named columns and GROUP BY.
 -- a.ds must group by a's column, not c's.
 SELECT a.ds

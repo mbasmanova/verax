@@ -3724,15 +3724,13 @@ PlanP Optimization::makeDtPlan(
     tmpDt->cname = newCName("tmp_dt");
     tmpDt->import(dt, key.tables, key.firstTable, key.existences, existsFanout);
 
-    // For subquery DTs, set outputColumns from key.columns rather than
-    // inheriting from the source DT. The temporary DT's output is determined
-    // by the consumer (key.columns), not by the original subquery's output.
-    if (key.firstTable->is(PlanType::kDerivedTableNode)) {
-      pruneOutputColumns(tmpDt, key.columns);
-    }
-
     PlanState inner(*this, tmpDt);
-    if (key.firstTable->is(PlanType::kDerivedTableNode)) {
+    if (key.firstTable->is(PlanType::kDerivedTableNode) &&
+        !tmpDt->columns.empty()) {
+      // tmpDt wraps a subquery DT and has output columns from flattening.
+      // Prune output columns and translate target expressions through the
+      // tmpDt's column-to-expression mapping.
+      pruneOutputColumns(tmpDt, key.columns);
       inner.setTargetExprsForDt(key.columns);
     } else {
       inner.targetExprs = key.columns;
