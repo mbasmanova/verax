@@ -53,20 +53,24 @@ class SqlTest : public SqlTestBase {
   }
 
   void TestBody() override {
-    switch (entry_.type) {
-      case QueryEntry::Type::kResults:
-        assertResults(entry_.sql, entry_.checkColumnNames, entry_.duckDbSql);
-        break;
-      case QueryEntry::Type::kOrdered:
-        assertOrderedResults(
-            entry_.sql, entry_.checkColumnNames, entry_.duckDbSql);
-        break;
-      case QueryEntry::Type::kCount:
-        assertResultCount(entry_.sql, entry_.expectedCount);
-        break;
-      case QueryEntry::Type::kError:
-        assertFailure(entry_.sql, entry_.expectedError);
-        break;
+    try {
+      switch (entry_.type) {
+        case QueryEntry::Type::kResults:
+          assertResults(entry_.sql, entry_.checkColumnNames, entry_.duckDbSql);
+          break;
+        case QueryEntry::Type::kOrdered:
+          assertOrderedResults(
+              entry_.sql, entry_.checkColumnNames, entry_.duckDbSql);
+          break;
+        case QueryEntry::Type::kCount:
+          assertResultCount(entry_.sql, entry_.expectedCount);
+          break;
+        case QueryEntry::Type::kError:
+          assertFailure(entry_.sql, entry_.expectedError);
+          break;
+      }
+    } catch (const std::exception& e) {
+      FAIL() << "Unexpected exception: " << e.what();
     }
   }
 
