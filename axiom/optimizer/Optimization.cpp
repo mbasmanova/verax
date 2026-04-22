@@ -301,11 +301,8 @@ void Optimization::trace(
 }
 
 PlanP Optimization::bestPlan() {
-  PlanObjectSet targetColumns;
-  targetColumns.unionObjects(root_->columns);
-
   topState_.dt = root_;
-  topState_.setTargetExprsForDt(targetColumns);
+  topState_.targetExprs = PlanObjectSet::fromObjects(root_->exprs);
 
   makeJoins(topState_);
 
@@ -3650,7 +3647,11 @@ PlanP Optimization::makeUnionPlan(
         pruneOutputColumns(tmpDt, inputKey.columns);
 
         PlanState inner(*this, tmpDt);
-        inner.setTargetExprsForDt(inputKey.columns);
+        for (size_t i = 0; i < tmpDt->columns.size(); ++i) {
+          if (inputKey.columns.contains(tmpDt->columns[i])) {
+            inner.targetExprs.add(tmpDt->exprs[i]);
+          }
+        }
 
         makeJoins(inner);
         memo_.insert(inputKey, std::move(inner.plans));
@@ -3724,14 +3725,11 @@ PlanP Optimization::makeDtPlan(
     tmpDt->cname = newCName("tmp_dt");
     tmpDt->import(dt, key.tables, key.firstTable, key.existences, existsFanout);
 
+    pruneOutputColumns(tmpDt, key.columns);
+
     PlanState inner(*this, tmpDt);
-    if (key.firstTable->is(PlanType::kDerivedTableNode) &&
-        !tmpDt->columns.empty()) {
-      // tmpDt wraps a subquery DT and has output columns from flattening.
-      // Prune output columns and translate target expressions through the
-      // tmpDt's column-to-expression mapping.
-      pruneOutputColumns(tmpDt, key.columns);
-      inner.setTargetExprsForDt(key.columns);
+    if (!tmpDt->columns.empty()) {
+      inner.targetExprs = PlanObjectSet::fromObjects(tmpDt->exprs);
     } else {
       inner.targetExprs = key.columns;
     }

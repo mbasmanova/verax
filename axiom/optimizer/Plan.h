@@ -238,10 +238,6 @@ struct PlanState {
     cost.add(op);
   }
 
-  /// Specifies that the plan-to-make only produces 'target' expressions and.
-  /// These refer to 'exprs' of 'dt'.
-  void setTargetExprsForDt(const PlanObjectSet& target);
-
   /// Returns the set of columns referenced in unplaced joins/filters union
   /// targetColumns. Gets smaller as more tables are placed.
   const PlanObjectSet& downstreamColumns() const;

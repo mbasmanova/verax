@@ -209,14 +209,6 @@ void PlanState::addNextJoin(
   }
 }
 
-void PlanState::setTargetExprsForDt(const PlanObjectSet& target) {
-  for (auto i = 0; i < dt->columns.size(); ++i) {
-    if (target.contains(dt->columns[i])) {
-      targetExprs.add(dt->exprs[i]);
-    }
-  }
-}
-
 ExprCP PlanState::isDownstreamFilterOnly(ColumnCP column) const {
   ExprCP result = nullptr;
 
