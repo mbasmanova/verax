@@ -289,7 +289,11 @@ velox::TypePtr jsonToVeloxType(const folly::dynamic& obj) {
 } // namespace
 
 velox::TypePtr jsonToVeloxType(std::string_view jsonInput) {
-  return jsonToVeloxType(folly::parseJson(jsonInput));
+  try {
+    return jsonToVeloxType(folly::parseJson(jsonInput));
+  } catch (const folly::json::parse_error& e) {
+    VELOX_FAIL("Failed to parse Spark type JSON: {}", e.what());
+  }
 }
 
 } // namespace axiom::collagen
