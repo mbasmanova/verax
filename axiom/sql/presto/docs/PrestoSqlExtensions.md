@@ -16,7 +16,7 @@ Friendly SQL features:
 | Feature | Example |
 |---------|---------|
 | Named ROW constructor | `ROW(1 AS id, 'Alice' AS name)` |
-| Trailing commas in SELECT | `SELECT a, b, FROM t` |
+| Trailing commas in SELECT, WITH, VALUES | `SELECT a, b, FROM t` |
 | FROM-first syntax | `FROM t WHERE x = 1` |
 | Digit separators | `SELECT 1_000_000` |
 | Method-call syntax | `'hello'.upper().substr(1, 3)` |
@@ -61,10 +61,10 @@ SELECT ROW(count(*) AS total, max(price) AS max_price)
 FROM orders
 ```
 
-## Trailing Commas in SELECT
+## Trailing Commas
 
 
-Allows a trailing comma after the last item in a SELECT list.
+Allows a trailing comma after the last item in SELECT, WITH, and VALUES lists.
 
 ```sql
 SELECT
@@ -72,6 +72,13 @@ SELECT
     n_name,
     n_regionkey,
 FROM nation
+
+WITH
+    a AS (SELECT 1),
+    b AS (SELECT 2),
+SELECT * FROM a, b
+
+VALUES 1, 2, 3,
 ```
 
 ## FROM-First Syntax

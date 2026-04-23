@@ -172,7 +172,7 @@ query
     ;
 
 with
-    : WITH RECURSIVE? namedQuery (',' namedQuery)*
+    : WITH RECURSIVE? namedQuery (',' namedQuery)* ','?
     ;
 
 tableElement
@@ -266,7 +266,7 @@ queryTerm
 queryPrimary
     : querySpecification                   #queryPrimaryDefault
     | TABLE qualifiedName                  #table
-    | VALUES expression (',' expression)*  #inlineTable
+    | VALUES expression (',' expression)* ','?  #inlineTable
     | '(' queryNoWith  ')'                 #subquery
     ;
 

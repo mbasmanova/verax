@@ -1524,19 +1524,54 @@ TEST_F(PrestoParserTest, nestedWindowFunction) {
           .output());
 }
 
-TEST_F(PrestoParserTest, friendlySqlTrailingComma) {
-  // Trailing comma in SELECT list works with Friendly SQL (default).
+TEST_F(PrestoParserTest, friendlySqlTrailingCommaSelect) {
   auto statement = makeParser().parse("SELECT 1, 2, FROM nation");
   ASSERT_TRUE(statement->isSelect());
 
-  // Rejected when Friendly SQL is disabled.
-  auto strictParser = makeStrictParser();
   AXIOM_EXPECT_PRESTO_SYNTAX_ERROR(
-      strictParser.parse("SELECT 1, 2, FROM nation"),
+      makeStrictParser().parse("SELECT 1, 2, FROM nation"),
       "Trailing commas in SELECT list require Friendly SQL mode");
 
-  // No trailing comma — works in both modes.
-  statement = strictParser.parse("SELECT 1, 2 FROM nation");
+  // No trailing comma works in both modes.
+  statement = makeStrictParser().parse("SELECT 1, 2 FROM nation");
+  ASSERT_TRUE(statement->isSelect());
+}
+
+TEST_F(PrestoParserTest, friendlySqlTrailingCommaWith) {
+  auto statement = makeParser().parse(
+      "WITH a AS (SELECT 1), b AS (SELECT 2), SELECT * FROM a, b");
+  ASSERT_TRUE(statement->isSelect());
+
+  AXIOM_EXPECT_PRESTO_SYNTAX_ERROR(
+      makeStrictParser().parse(
+          "WITH a AS (SELECT 1), b AS (SELECT 2), SELECT * FROM a, b"),
+      "Trailing commas in WITH clause require Friendly SQL mode");
+
+  // No trailing comma works in both modes.
+  statement = makeStrictParser().parse(
+      "WITH a AS (SELECT 1), b AS (SELECT 2) SELECT * FROM a, b");
+  ASSERT_TRUE(statement->isSelect());
+
+  // Commas inside subqueries don't count as trailing commas.
+  statement =
+      makeStrictParser().parse("WITH a AS (SELECT 1, 2, 3) SELECT * FROM a");
+  ASSERT_TRUE(statement->isSelect());
+}
+
+TEST_F(PrestoParserTest, friendlySqlTrailingCommaValues) {
+  auto statement = makeParser().parse("VALUES 1, 2, 3,");
+  ASSERT_TRUE(statement->isSelect());
+
+  AXIOM_EXPECT_PRESTO_SYNTAX_ERROR(
+      makeStrictParser().parse("VALUES 1, 2, 3,"),
+      "Trailing commas in VALUES clause require Friendly SQL mode");
+
+  // No trailing comma works in both modes.
+  statement = makeStrictParser().parse("VALUES 1, 2, 3");
+  ASSERT_TRUE(statement->isSelect());
+
+  // Commas inside ROW expressions don't count as trailing commas.
+  statement = makeStrictParser().parse("VALUES ROW(1, 2), ROW(3, 4)");
   ASSERT_TRUE(statement->isSelect());
 }
 
