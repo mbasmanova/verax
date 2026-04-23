@@ -320,26 +320,40 @@ std::any AstBuilder::visitSelectSingle(
 }
 
 namespace {
-// Returns true if the SELECT list has a trailing comma. Counts comma tokens
-// that are direct children of the context before the FROM keyword. With N
-// selectItems, there are normally N-1 commas; a trailing comma makes it N.
+// Returns true if the list has a trailing comma. Counts comma tokens that are
+// direct children of the context. With N items, there are normally N-1 commas;
+// a trailing comma makes it N.
+bool hasTrailingComma(antlr4::ParserRuleContext* ctx, size_t numItems) {
+  size_t numCommas = 0;
+  for (auto* child : ctx->children) {
+    auto* terminal = dynamic_cast<antlr4::tree::TerminalNode*>(child);
+    if (terminal != nullptr && terminal->getText() == ",") {
+      ++numCommas;
+    }
+  }
+  return numCommas >= numItems;
+}
+
+// Overload that stops counting before 'stopToken'. Used for SELECT where
+// commas after FROM separate relations, not select items.
 bool hasTrailingComma(
-    PrestoSqlParser::QuerySpecificationContext* ctx,
-    size_t numSelectItems) {
+    antlr4::ParserRuleContext* ctx,
+    size_t numItems,
+    size_t stopToken) {
   size_t numCommas = 0;
   for (auto* child : ctx->children) {
     auto* terminal = dynamic_cast<antlr4::tree::TerminalNode*>(child);
     if (terminal == nullptr) {
       continue;
     }
-    if (terminal->getSymbol()->getType() == PrestoSqlParser::FROM) {
+    if (terminal->getSymbol()->getType() == stopToken) {
       break;
     }
     if (terminal->getText() == ",") {
       ++numCommas;
     }
   }
-  return numCommas >= numSelectItems;
+  return numCommas >= numItems;
 }
 } // namespace
 
@@ -369,7 +383,8 @@ std::any AstBuilder::visitQuerySpecification(
     selectItems = visitTyped<SelectItem>(ctx->selectItem());
 
     AXIOM_PRESTO_SYNTAX_CHECK(
-        options_.friendlySql || !hasTrailingComma(ctx, selectItems.size()),
+        options_.friendlySql ||
+            !hasTrailingComma(ctx, selectItems.size(), PrestoSqlParser::FROM),
         getLocation(ctx),
         ",",
         "Trailing commas in SELECT list require Friendly SQL mode.");
@@ -1096,10 +1111,16 @@ std::any AstBuilder::visitUpdate(PrestoSqlParser::UpdateContext* ctx) {
 
 std::any AstBuilder::visitWith(PrestoSqlParser::WithContext* ctx) {
   trace("visitWith");
-  return std::make_shared<With>(
+  auto namedQueries = visitTyped<WithQuery>(ctx->namedQuery());
+
+  AXIOM_PRESTO_SYNTAX_CHECK(
+      options_.friendlySql || !hasTrailingComma(ctx, namedQueries.size()),
       getLocation(ctx),
-      ctx->RECURSIVE() != nullptr,
-      visitTyped<WithQuery>(ctx->namedQuery()));
+      ",",
+      "Trailing commas in WITH clause require Friendly SQL mode.");
+
+  return std::make_shared<With>(
+      getLocation(ctx), ctx->RECURSIVE() != nullptr, std::move(namedQueries));
 }
 
 std::any AstBuilder::visitTableElement(
@@ -1418,8 +1439,16 @@ std::any AstBuilder::visitTable(PrestoSqlParser::TableContext* ctx) {
 std::any AstBuilder::visitInlineTable(
     PrestoSqlParser::InlineTableContext* ctx) {
   trace("visitInlineTable");
-  return std::static_pointer_cast<QueryBody>(std::make_shared<Values>(
-      getLocation(ctx), visitTyped<Expression>(ctx->expression())));
+  auto expressions = visitTyped<Expression>(ctx->expression());
+
+  AXIOM_PRESTO_SYNTAX_CHECK(
+      options_.friendlySql || !hasTrailingComma(ctx, expressions.size()),
+      getLocation(ctx),
+      ",",
+      "Trailing commas in VALUES clause require Friendly SQL mode.");
+
+  return std::static_pointer_cast<QueryBody>(
+      std::make_shared<Values>(getLocation(ctx), std::move(expressions)));
 }
 
 std::any AstBuilder::visitSubquery(PrestoSqlParser::SubqueryContext* ctx) {
