@@ -48,7 +48,7 @@ target_link_libraries(
   gtest_main
 )
 
-add_library(axiom_optimizer_tests_plan_matcher PlanMatcher.cpp)
+add_library(axiom_optimizer_tests_plan_matcher ExprMatcher.cpp PlanMatcher.cpp)
 
 target_link_libraries(
   axiom_optimizer_tests_plan_matcher
@@ -106,6 +106,7 @@ add_executable(
   CsvReadWriteTest.cpp
   DerivedTablePrinterTest.cpp
   DomainTest.cpp
+  ExprMatcherTest.cpp
   ExistencePushdownTest.cpp
   FilterPushdownTest.cpp
   FiltersTest.cpp

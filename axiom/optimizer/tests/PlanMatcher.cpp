@@ -18,6 +18,7 @@
 #include <gtest/gtest.h>
 #include <unordered_set>
 #include "axiom/optimizer/MultiFragmentPlan.h"
+#include "axiom/optimizer/tests/ExprMatcher.h"
 #include "velox/connectors/hive/TableHandle.h"
 #include "velox/duckdb/conversion/DuckParser.h"
 #include "velox/exec/HashPartitionFunction.h"
@@ -133,79 +134,6 @@ velox::core::ExprPtr rewriteInputNames(
         }
         return e;
       });
-}
-
-// Normalizes toStrings to match Velox exprs to DuckDB. Velox uses bracket
-// notation for dereferences while DuckDB uses special forms names explicitly.
-// In addition, Velox constant folds rows into a constant typed expr with curly
-// bracket notation while DuckDB uses "row_constructor".
-std::string toExprString(const TypedExprPtr& expr) {
-  if (auto* deref = dynamic_cast<const DereferenceTypedExpr*>(expr.get())) {
-    return fmt::format(
-        "subscript({},{})",
-        toExprString(expr->inputs()[0]),
-        deref->index() + 1);
-  }
-
-  if (auto* field = dynamic_cast<const FieldAccessTypedExpr*>(expr.get())) {
-    if (!field->inputs().empty() && !field->inputs()[0]->isInputKind()) {
-      return fmt::format(
-          "dot({},\"{}\")", toExprString(field->inputs()[0]), field->name());
-    }
-  }
-
-  if (auto* call = dynamic_cast<const CallTypedExpr*>(expr.get())) {
-    std::string result = call->name() + "(";
-    for (size_t i = 0; i < expr->inputs().size(); ++i) {
-      if (i > 0) {
-        result += ",";
-      }
-      result += toExprString(expr->inputs()[i]);
-    }
-    result += ")";
-    return result;
-  }
-
-  if (auto* cast = dynamic_cast<const CastTypedExpr*>(expr.get())) {
-    return fmt::format(
-        "{}({} as {})",
-        cast->isTryCast() ? "try_cast" : "cast",
-        toExprString(expr->inputs()[0]),
-        cast->type()->toString());
-  }
-
-  if (auto* constant = dynamic_cast<const ConstantTypedExpr*>(expr.get())) {
-    if (constant->type()->isRow()) {
-      std::string result = "row_constructor(";
-      if (constant->hasValueVector()) {
-        const auto& vec = constant->valueVector();
-        const auto* row = vec->wrappedVector()->as<RowVector>();
-        auto idx = vec->wrappedIndex(0);
-        for (vector_size_t i = 0; i < row->childrenSize(); ++i) {
-          if (i > 0) {
-            result += ",";
-          }
-          if (row->childAt(i)->isNullAt(idx)) {
-            result += "null";
-          } else {
-            result += row->childAt(i)->toString(idx);
-          }
-        }
-      } else {
-        const auto& rowValues = constant->value().row();
-        for (size_t i = 0; i < rowValues.size(); ++i) {
-          if (i > 0) {
-            result += ",";
-          }
-          result += rowValues[i].toStringAsVector(constant->type()->childAt(i));
-        }
-      }
-      result += ")";
-      return result;
-    }
-  }
-
-  return expr->toString();
 }
 
 class TableScanMatcher : public PlanMatcherImpl<TableScanNode> {
@@ -368,7 +296,7 @@ class FilterMatcher : public PlanMatcherImpl<FilterNode> {
       if (!symbols.empty()) {
         expected = rewriteInputNames(expected, symbols);
       }
-      EXPECT_EQ(toExprString(plan.filter()), expected->toString());
+      ExprMatcher::match(plan.filter(), expected->dropAlias());
     }
 
     AXIOM_TEST_RETURN
@@ -411,11 +339,9 @@ class ProjectMatcher : public PlanMatcherImpl<ProjectNode> {
           expected = rewriteInputNames(expected, symbols);
         }
 
-        EXPECT_EQ(
-            toExprString(plan.projections()[i]),
-            expected->dropAlias()->toString());
+        ExprMatcher::match(plan.projections()[i], expected->dropAlias());
+        AXIOM_TEST_RETURN_IF_FAILURE
       }
-      AXIOM_TEST_RETURN_IF_FAILURE
     } else {
       // No expressions to verify. Remap symbols through the project's
       // column mapping. For identity projections (field access), update
@@ -464,9 +390,9 @@ class ParallelProjectMatcher : public PlanMatcherImpl<ParallelProjectNode> {
       for (auto i = 0; i < expressions_.size(); ++i) {
         auto expected =
             parse::DuckSqlExpressionsParser().parseExpr(expressions_[i]);
-        EXPECT_EQ(plan.projections()[i]->toString(), expected->toString());
+        ExprMatcher::match(plan.projections()[i], expected->dropAlias());
+        AXIOM_TEST_RETURN_IF_FAILURE
       }
-      AXIOM_TEST_RETURN_IF_FAILURE
     }
 
     return MatchResult::success();
@@ -1265,6 +1191,7 @@ class WindowMatcher : public PlanMatcherImpl<WindowNode> {
     // Parse all window expressions to extract expected values.
     std::vector<core::WindowCallExprPtr> expectedWindows;
     expectedWindows.reserve(windowExprs_.size());
+
     parse::ParseOptions parseOptions;
     parseOptions.correctWindowFrameDefault = true;
     for (const auto& expr : windowExprs_) {

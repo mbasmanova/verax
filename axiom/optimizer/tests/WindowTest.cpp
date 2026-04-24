@@ -629,7 +629,7 @@ TEST_F(WindowTest, dependentWindowFunctions) {
             .project(
                 {"a",
                  "b",
-                 "floor(cast(cum_sum as double) * 100 / cast(total_sum as double)) as pct"})
+                 "floor(cast(cum_sum as double) * 100.0 / cast(total_sum as double)) as pct"})
             .window({"lag(pct) OVER (PARTITION BY a ORDER BY b) as lag_pct"})
             .project({"lag_pct"})
             .build();
@@ -653,7 +653,7 @@ TEST_F(WindowTest, dependentWindowFunctions) {
             .project(
                 {"a",
                  "b",
-                 "floor(cast(cum_sum as double) * 100 / cast(total_sum as double)) as pct"})
+                 "floor(cast(cum_sum as double) * 100.0 / cast(total_sum as double)) as pct"})
             // TODO: Eliminate redundant local partition.
             .localPartition({"a"})
             .window({"lag(pct) OVER (PARTITION BY a ORDER BY b) as lag_pct"})
