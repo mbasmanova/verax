@@ -16,9 +16,8 @@
 
 #include "axiom/sql/presto/tests/LogicalPlanMatcher.h"
 #include <gtest/gtest.h>
-#include <algorithm>
 #include <set>
-#include <unordered_set>
+#include "axiom/sql/presto/tests/ExprMatcher.h"
 #include "velox/parse/ExprRewriter.h"
 #include "velox/parse/Expressions.h"
 #include "velox/parse/ExpressionsParser.h"
@@ -40,170 +39,6 @@ namespace {
     return LogicalPlanMatcher::MatchResult::failure(); \
   }                                                    \
   return LogicalPlanMatcher::MatchResult::success(symbols);
-
-// Forward declaration for mutual recursion.
-std::string toExprString(const velox::core::IExpr& expr);
-
-// Formats a function call as "name(arg1, arg2, ...)". Shared by kCall,
-// kAggregate, and the function-call part of kWindow.
-std::string callToString(const velox::core::CallExpr& call) {
-  auto name = call.name();
-  // DuckDB and ExprApi produce lowercase special form names, but
-  // ExprResolver converts these to SpecialFormExprs which print as
-  // uppercase. "if" is not included because ExprResolver resolves it to
-  // "SWITCH".
-  static const std::unordered_set<std::string> kSpecialForms = {
-      "and",
-      "or",
-      "switch",
-      "coalesce",
-      "cast",
-      "try_cast",
-      "try",
-      "dereference",
-      "in",
-      "exists"};
-  if (kSpecialForms.contains(name)) {
-    std::transform(name.begin(), name.end(), name.begin(), ::toupper);
-  }
-  std::string result = name + "(";
-  for (size_t i = 0; i < call.inputs().size(); ++i) {
-    if (i > 0) {
-      result += ", ";
-    }
-    result += toExprString(*call.inputAt(i));
-  }
-  return result + ")";
-}
-
-// Appends ORDER BY keys to a stream.
-void appendOrderBy(
-    const std::vector<velox::core::SortKey>& keys,
-    std::stringstream& out) {
-  out << "ORDER BY ";
-  for (size_t i = 0; i < keys.size(); ++i) {
-    if (i > 0) {
-      out << ", ";
-    }
-    out << toExprString(*keys[i].expr);
-    out << (keys[i].ascending ? " ASC" : " DESC");
-    out << (keys[i].nullsFirst ? " NULLS FIRST" : " NULLS LAST");
-  }
-}
-
-// Appends a frame bound to a stream.
-void appendBound(
-    velox::core::WindowCallExpr::BoundType boundType,
-    const velox::core::ExprPtr& value,
-    std::stringstream& out) {
-  if (value) {
-    out << toExprString(*value) << " ";
-  }
-  out << velox::core::WindowCallExpr::toName(boundType);
-}
-
-// Formats a WindowCallExpr as "func(args) OVER (PARTITION BY ... ORDER BY
-// ... ROWS/RANGE/GROUPS BETWEEN ... AND ...)".
-std::string windowToString(const velox::core::WindowCallExpr& window) {
-  std::stringstream out;
-  out << callToString(window) << " OVER (";
-
-  bool needSeparator = false;
-  if (!window.partitionKeys().empty()) {
-    out << "PARTITION BY ";
-    for (size_t i = 0; i < window.partitionKeys().size(); ++i) {
-      if (i > 0) {
-        out << ", ";
-      }
-      out << toExprString(*window.partitionKeys()[i]);
-    }
-    needSeparator = true;
-  }
-
-  if (!window.orderByKeys().empty()) {
-    if (needSeparator) {
-      out << " ";
-    }
-    appendOrderBy(window.orderByKeys(), out);
-    needSeparator = true;
-  }
-
-  if (window.frame().has_value()) {
-    if (needSeparator) {
-      out << " ";
-    }
-    const auto& frame = window.frame().value();
-    out << velox::core::WindowCallExpr::toName(frame.type) << " BETWEEN ";
-    appendBound(frame.startType, frame.startValue, out);
-    out << " AND ";
-    appendBound(frame.endType, frame.endValue, out);
-  }
-
-  out << ")";
-  if (window.isIgnoreNulls()) {
-    out << " IGNORE NULLS";
-  }
-  return out.str();
-}
-
-// Formats an AggregateCallExpr as "name(DISTINCT args ORDER BY ...) FILTER
-// (WHERE ...)".
-std::string aggregateToString(const velox::core::AggregateCallExpr& agg) {
-  std::stringstream out;
-  out << agg.name() << "(";
-  if (agg.isDistinct()) {
-    out << "DISTINCT ";
-  }
-  for (size_t i = 0; i < agg.inputs().size(); ++i) {
-    if (i > 0) {
-      out << ", ";
-    }
-    out << toExprString(*agg.inputs()[i]);
-  }
-  if (!agg.orderBy().empty()) {
-    out << " ";
-    appendOrderBy(agg.orderBy(), out);
-  }
-  out << ")";
-  if (agg.filter() != nullptr) {
-    out << " FILTER (WHERE " << toExprString(*agg.filter()) << ")";
-  }
-  return out.str();
-}
-
-// Prints a velox::core::IExpr tree in the same format as lp::ExprPrinter.
-// This allows comparing DuckDB-parsed expected expressions against actual
-// lp::Expr::toString() output.
-std::string toExprString(const velox::core::IExpr& expr) {
-  using velox::core::IExpr;
-  switch (expr.kind()) {
-    case IExpr::Kind::kFieldAccess:
-      return expr.as<velox::core::FieldAccessExpr>()->name();
-    case IExpr::Kind::kCall:
-      return callToString(*expr.as<velox::core::CallExpr>());
-    case IExpr::Kind::kAggregate:
-      return aggregateToString(*expr.as<velox::core::AggregateCallExpr>());
-    case IExpr::Kind::kWindow:
-      return windowToString(*expr.as<velox::core::WindowCallExpr>());
-    case IExpr::Kind::kCast: {
-      auto* cast = expr.as<velox::core::CastExpr>();
-      return fmt::format(
-          "{}({} AS {})",
-          cast->isTryCast() ? "TRY_CAST" : "CAST",
-          toExprString(*cast->input()),
-          cast->type()->toString());
-    }
-    case IExpr::Kind::kConstant: {
-      auto* constant = expr.as<velox::core::ConstantExpr>();
-      return constant->value().toStringAsVector(constant->type());
-    }
-    case IExpr::Kind::kInput:
-      return "ROW";
-    default:
-      VELOX_UNREACHABLE(
-          "Unsupported IExpr kind in toExprString: {}", expr.toString());
-  }
-}
 
 // Corrects DuckDB's wrong default window frame end bound. DuckDB always
 // defaults to CURRENT_ROW, but the SQL standard specifies UNBOUNDED_FOLLOWING
@@ -404,8 +239,7 @@ class FilterMatcher : public LogicalPlanMatcherImpl<FilterNode> {
       expected = rewriteInputNames(expected, symbols);
     }
 
-    EXPECT_EQ(
-        toExprString(*expected->dropAlias()), plan.predicate()->toString());
+    ExprMatcher::match(plan.predicate(), expected->dropAlias());
     AXIOM_RETURN_RESULT(symbols)
   }
 
@@ -544,8 +378,8 @@ class ProjectMatcher : public LogicalPlanMatcherImpl<ProjectNode> {
         expectedExpr = rewriteInputNames(expectedExpr, symbols);
       }
 
-      EXPECT_EQ(toExprString(*expectedExpr->dropAlias()), actual->toString())
-          << "at index " << i;
+      SCOPED_TRACE("project expression at index " + std::to_string(i));
+      ExprMatcher::match(actual, expectedExpr->dropAlias());
       AXIOM_RETURN_IF_FAILURE;
     }
 
@@ -603,8 +437,8 @@ class AggregateMatcher : public LogicalPlanMatcherImpl<AggregateNode> {
       }
 
       const auto& actual = plan.aggregateAt(i);
-      EXPECT_EQ(toExprString(*parsed->dropAlias()), actual->toString())
-          << "at aggregate index " << i;
+      SCOPED_TRACE("aggregate at index " + std::to_string(i));
+      ExprMatcher::match(actual, parsed->dropAlias());
       AXIOM_RETURN_IF_FAILURE;
     }
 
@@ -713,10 +547,9 @@ class SortMatcher : public LogicalPlanMatcherImpl<SortNode> {
         expectedExpr = rewriteInputNames(expectedExpr, symbols);
       }
 
-      EXPECT_EQ(
-          toExprString(*expectedExpr->dropAlias()),
-          actualOrdering[i].expression->toString())
-          << "at ordering index " << i;
+      SCOPED_TRACE("ordering at index " + std::to_string(i));
+      ExprMatcher::match(
+          actualOrdering[i].expression, expectedExpr->dropAlias());
       AXIOM_RETURN_IF_FAILURE;
 
       EXPECT_EQ(expected.ascending, actualOrdering[i].order.isAscending())

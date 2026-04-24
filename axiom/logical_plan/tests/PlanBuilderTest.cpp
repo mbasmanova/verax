@@ -729,7 +729,7 @@ TEST_F(PlanBuilderTest, valuesTypeCoercionErrors) {
       buildValues(
           {"x"}, {{"ARRAY[CAST(1 AS integer)]"}, {"MAP(ARRAY[1], ARRAY[2])"}}),
       "Incompatible types in VALUES row 2, column 1: "
-      "expected ARRAY<INTEGER>, got MAP<INTEGER,INTEGER>");
+      "expected ARRAY<INTEGER>, got MAP<BIGINT,BIGINT>");
 
   // Coercions disabled.
   VELOX_ASSERT_THROW(
