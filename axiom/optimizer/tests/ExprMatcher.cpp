@@ -59,7 +59,9 @@ void matchConstant(
     return;
   }
 
-  // DuckDB parses integer literals as BIGINT, but the plan may use INTEGER.
+  // Band-aid: some tests specify expected SQL with bare integer literals
+  // parsed as BIGINT (per parseIntegerAsBigint option), while the plan uses
+  // INTEGER. Many existing tests rely on this tolerance.
   if (actual.type()->isInteger() && expected.type()->isBigint()) {
     EXPECT_EQ(
         static_cast<int64_t>(actual.value().value<int32_t>()),

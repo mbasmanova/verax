@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-add_library(axiom_logical_plan_matcher LogicalPlanMatcher.cpp)
+add_library(axiom_logical_plan_matcher ExprMatcher.cpp LogicalPlanMatcher.cpp)
 
 target_link_libraries(axiom_logical_plan_matcher axiom_logical_plan GTest::gtest)
 
@@ -21,6 +21,7 @@ add_executable(
   AggregationParserTest.cpp
   ColumnFilteringTest.cpp
   DdlParserTest.cpp
+  ExprMatcherTest.cpp
   ExpressionParserTest.cpp
   PrestoSqlErrorTest.cpp
   PrestoParserTest.cpp

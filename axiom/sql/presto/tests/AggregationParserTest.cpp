@@ -101,7 +101,7 @@ TEST_F(AggregationParserTest, groupByOrdinalWithSelectStar) {
       matchScan()
           .aggregate({"n_nationkey", "n_name", "n_regionkey", "n_comment"}, {})
           .project(
-              {"concat(n_name, _suffix)",
+              {"concat(n_name, '_suffix')",
                "n_nationkey",
                "n_name",
                "n_regionkey",
@@ -786,7 +786,8 @@ TEST_F(AggregationParserTest, groupByWithWindowFunction) {
           .aggregate({"b"}, {"sum(a)"})
           .project({"b", "sum", "sum(sum) OVER ()"})
           .project(
-              {"b", "multiply(cast(sum as double), 1) / cast(expr as double)"})
+              {"b",
+               "multiply(cast(sum as double), 1.0) / cast(expr as double)"})
           .output());
 
   // Same as above but with PARTITION BY in the nested window function.
@@ -796,7 +797,8 @@ TEST_F(AggregationParserTest, groupByWithWindowFunction) {
           .aggregate({"b"}, {"sum(a)"})
           .project({"b", "sum", "sum(sum) OVER (PARTITION BY b)"})
           .project(
-              {"b", "multiply(cast(sum as double), 1) / cast(expr as double)"})
+              {"b",
+               "multiply(cast(sum as double), 1.0) / cast(expr as double)"})
           .output());
 
   // Same as above but with qualified column references.
@@ -806,7 +808,8 @@ TEST_F(AggregationParserTest, groupByWithWindowFunction) {
           .aggregate({"b"}, {"sum(a)"})
           .project({"b", "sum", "sum(sum) OVER ()"})
           .project(
-              {"b", "multiply(cast(sum as double), 1) / cast(expr as double)"})
+              {"b",
+               "multiply(cast(sum as double), 1.0) / cast(expr as double)"})
           .output());
 
   // Window function call with the same signature as a plain aggregate.
