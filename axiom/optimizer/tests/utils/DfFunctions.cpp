@@ -55,8 +55,8 @@ std::pair<std::vector<Step>, int32_t> makeRowFromMapSubfield(
       break;
     }
   }
-  VELOX_CHECK(
-      found != -1, "Subfield not found in make_row_from_map: {}", field);
+  VELOX_CHECK_NE(
+      found, -1, "Subfield not found in make_row_from_map: {}", field);
 
   std::vector<Step> newFields(steps.begin(), steps.end());
   newFields.pop_back();
@@ -67,7 +67,7 @@ std::pair<std::vector<Step>, int32_t> makeRowFromMapSubfield(
                     ->as<lp::ConstantExpr>()
                     ->value()
                     ->value<TypeKind::ARRAY>()[found]
-                    .value<int32_t>()});
+                    .value<int64_t>()});
   return std::make_pair(std::move(newFields), 0);
 }
 

@@ -143,7 +143,7 @@ TEST_F(PlanTest, rejectedFilters) {
     auto plan = toSingleNodePlan(logicalPlan.build());
 
     auto matcher = matchScan("t", ROW({"a", "b"}, {BIGINT(), DOUBLE()}))
-                       .filter("b > 10")
+                       .filter("b > 10.0")
                        .project()
                        .build();
 
@@ -187,7 +187,7 @@ TEST_F(PlanTest, rejectedFilters) {
     auto plan = toSingleNodePlan(logicalPlan);
 
     auto matcher = matchScan("t", ROW("c", mapType))
-                       .filter("c[1] > 10")
+                       .filter("c[1] > 10.0")
                        .project({"1"})
                        .build();
 
@@ -208,7 +208,7 @@ TEST_F(PlanTest, rejectedFilters) {
     auto plan = toSingleNodePlan(logicalPlan);
 
     auto matcher = matchScan("t", ROW("c", mapType))
-                       .filter("c[1] > 10")
+                       .filter("c[1] > 10.0")
                        .project() // project top-level column c.y
                        .project() // project c.y + 1
                        .build();
