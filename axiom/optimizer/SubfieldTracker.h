@@ -103,25 +103,29 @@ class SubfieldTracker {
       const logical_plan::ProjectNode& project,
       int32_t ordinal,
       std::vector<Step>& steps,
-      bool isControl);
+      bool isControl,
+      const MarkFieldsAccessedContext& context);
 
   void markFieldAccessed(
       const logical_plan::UnnestNode& unnest,
       int32_t ordinal,
       std::vector<Step>& steps,
-      bool isControl);
+      bool isControl,
+      const MarkFieldsAccessedContext& context);
 
   void markFieldAccessed(
       const logical_plan::AggregateNode& agg,
       int32_t ordinal,
       std::vector<Step>& steps,
-      bool isControl);
+      bool isControl,
+      const MarkFieldsAccessedContext& context);
 
   void markFieldAccessed(
       const logical_plan::SetNode& set,
       int32_t ordinal,
       std::vector<Step>& steps,
-      bool isControl);
+      bool isControl,
+      const MarkFieldsAccessedContext& context);
 
   void markFieldAccessed(
       const LogicalContextSource& source,
