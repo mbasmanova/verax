@@ -35,3 +35,21 @@ SELECT T.* FROM (VALUES (1)) t(a) JOIN (VALUES (2)) u(b) ON true
 -- null-aware semi-project join with extra filter; the optimizer must not flip
 -- this to a right semi-project join that is unsupported in Velox.
 SELECT CASE WHEN a.x IN (SELECT t.a FROM t WHERE t.b < a.y) THEN 'p' ELSE 'f' END FROM ( VALUES ( 1, 100 ) ) a ( x, y )
+----
+-- Correlated scalar subquery referencing a CTE that contains a NOT IN
+-- subquery.
+WITH u AS (
+  SELECT a FROM t WHERE a NOT IN (SELECT 5)
+)
+SELECT (SELECT count(*) FROM u WHERE a > v.a) FROM (SELECT 1 AS a) v
+----
+-- 3 levels with cross-level references and name shadowing.
+-- Level 0 (v): x=20, y=30. Level 1 (u): x=10 (shadows v.x), a=5.
+-- Level 2 references u.a (level 1), v.y (level 0), u.x (level 1 shadow).
+SELECT
+  (SELECT
+    (SELECT count(*)
+     FROM (VALUES (5), (15), (25)) t(b)
+     WHERE b > u.a AND b > u.x AND b < v.y)
+   FROM (SELECT 5 AS a, 10 AS x) u)
+FROM (SELECT 20 AS x, 30 AS y) v

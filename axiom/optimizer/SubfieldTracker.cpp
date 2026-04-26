@@ -142,9 +142,10 @@ void SubfieldTracker::markFieldAccessed(
     const lp::ProjectNode& project,
     int32_t ordinal,
     std::vector<Step>& steps,
-    bool isControl) {
+    bool isControl,
+    const MarkFieldsAccessedContext& context) {
   const auto& input = project.onlyInput();
-  const auto ctx = fromNode(input);
+  const auto ctx = fromNode(input).append(context);
   markSubfields(project.expressionAt(ordinal), steps, isControl, ctx.toCtx());
 }
 
@@ -152,10 +153,11 @@ void SubfieldTracker::markFieldAccessed(
     const lp::UnnestNode& unnest,
     int32_t ordinal,
     std::vector<Step>& steps,
-    bool isControl) {
+    bool isControl,
+    const MarkFieldsAccessedContext& context) {
   const auto& input = unnest.onlyInput();
   if (ordinal < input->outputType()->size()) {
-    const auto ctx = fromNode(input);
+    const auto ctx = fromNode(input).append(context);
     markFieldAccessed(ctx.sources[0], ordinal, steps, isControl, ctx.toCtx());
   }
 }
@@ -187,11 +189,12 @@ void SubfieldTracker::markFieldAccessed(
     const lp::AggregateNode& agg,
     int32_t ordinal,
     std::vector<Step>& steps,
-    bool isControl) {
+    bool isControl,
+    const MarkFieldsAccessedContext& context) {
   const auto& input = agg.onlyInput();
 
   std::vector<Step> subSteps;
-  const auto ctx = fromNode(input);
+  const auto ctx = fromNode(input).append(context);
   auto mark = [&](const lp::ExprPtr& expr) {
     markSubfields(expr, subSteps, isControl, ctx.toCtx());
   };
@@ -236,9 +239,10 @@ void SubfieldTracker::markFieldAccessed(
     const lp::SetNode& set,
     int32_t ordinal,
     std::vector<Step>& steps,
-    bool isControl) {
+    bool isControl,
+    const MarkFieldsAccessedContext& context) {
   for (const auto& input : set.inputs()) {
-    const auto ctx = fromNode(input);
+    const auto ctx = fromNode(input).append(context);
     markFieldAccessed(ctx.sources[0], ordinal, steps, isControl, ctx.toCtx());
   }
 }
@@ -279,13 +283,13 @@ void SubfieldTracker::markFieldAccessed(
   const auto kind = source.planNode->kind();
   if (kind == lp::NodeKind::kProject) {
     const auto* project = source.planNode->as<lp::ProjectNode>();
-    markFieldAccessed(*project, ordinal, steps, isControl);
+    markFieldAccessed(*project, ordinal, steps, isControl, context);
     return;
   }
 
   if (kind == lp::NodeKind::kUnnest) {
     const auto* unnest = source.planNode->as<lp::UnnestNode>();
-    markFieldAccessed(*unnest, ordinal, steps, isControl);
+    markFieldAccessed(*unnest, ordinal, steps, isControl, context);
     return;
   }
 
@@ -296,13 +300,13 @@ void SubfieldTracker::markFieldAccessed(
 
   if (kind == lp::NodeKind::kAggregate) {
     const auto* agg = source.planNode->as<lp::AggregateNode>();
-    markFieldAccessed(*agg, ordinal, steps, isControl);
+    markFieldAccessed(*agg, ordinal, steps, isControl, context);
     return;
   }
 
   if (kind == lp::NodeKind::kSet) {
     const auto* set = source.planNode->as<lp::SetNode>();
-    markFieldAccessed(*set, ordinal, steps, isControl);
+    markFieldAccessed(*set, ordinal, steps, isControl, context);
     return;
   }
 

@@ -2426,9 +2426,16 @@ DerivedTableP ToGraph::translateSubquery(
   auto originalRenames = std::move(renames_);
   renames_.clear();
 
-  correlations_ = &originalRenames;
+  auto mergedCorrelations = originalRenames;
+  if (correlations_ != nullptr) {
+    for (const auto& [name, expr] : *correlations_) {
+      mergedCorrelations.emplace(name, expr);
+    }
+  }
+  auto* savedCorrelations = correlations_;
+  correlations_ = &mergedCorrelations;
   SCOPE_EXIT {
-    correlations_ = nullptr;
+    correlations_ = savedCorrelations;
   };
 
   VELOX_CHECK(correlatedConjuncts_.empty());
