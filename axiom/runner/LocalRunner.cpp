@@ -172,15 +172,14 @@ std::vector<optimizer::ExecutableFragment> topologicalSort(
     }
   }
 
-  auto size = indices.size();
-  VELOX_CHECK_EQ(size, fragments.size());
-  std::vector<optimizer::ExecutableFragment> result(size);
-  auto i = size - 1;
+  VELOX_CHECK_EQ(indices.size(), fragments.size());
+  std::vector<optimizer::ExecutableFragment> result;
+  result.reserve(indices.size());
   while (!indices.empty()) {
-    result[i--] = fragments[indices.top()];
+    result.push_back(fragments[indices.top()]);
     indices.pop();
   }
-  VELOX_CHECK_EQ(result.size(), fragments.size());
+  std::reverse(result.begin(), result.end());
   return result;
 }
 } // namespace
@@ -283,7 +282,10 @@ void LocalRunner::start() {
   params_.planNode = fragments_.back().fragment.planNode;
   params_.serialExecution = !params_.queryCtx->isExecutorSupplied();
 
-  VELOX_CHECK_LE(fragments_.back().width, 1);
+  VELOX_CHECK_LE(
+      fragments_.back().width.value_or(1),
+      1,
+      "Last fragment must be single-task");
 
   auto cursor = velox::exec::TaskCursor::create(params_);
   makeStages(cursor->task());
@@ -429,7 +431,11 @@ void LocalRunner::makeStages(
         stages_.size(), isBroadcast(fragment.fragment)};
     stages_.emplace_back();
 
-    for (auto i = 0; i < fragment.width; ++i) {
+    auto numTasks = fragment.width.value_or(
+        fragment.type == optimizer::FragmentType::kSource
+            ? plan_->options().numWorkers
+            : 1);
+    for (auto i = 0; i < numTasks; ++i) {
       auto taskId = fmt::format(
           "local://{}/{}.{}",
           params_.queryCtx->queryId(),
@@ -481,7 +487,7 @@ void LocalRunner::makeStages(
           sourceSplits.push_back(remoteSplit(task->taskId()));
 
           if (broadcast) {
-            task->updateOutputBuffers(fragment.width, true);
+            task->updateOutputBuffers(static_cast<int>(stage.size()), true);
           }
         }
 

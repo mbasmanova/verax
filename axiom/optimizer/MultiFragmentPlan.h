@@ -114,6 +114,20 @@ class FinishWrite {
   WriteStatsMapping statsMapping_;
 };
 
+/// Describes how a fragment's tasks are scheduled.
+enum class FragmentType {
+  /// Parallelism determined by the data source (number of splits).
+  kSource,
+  /// Exactly `width` tasks.
+  kFixed,
+  /// Exactly 1 task, any worker.
+  kSingle,
+  /// Exactly 1 task, on coordinator.
+  kCoordinator,
+};
+
+AXIOM_DECLARE_ENUM_NAME(FragmentType);
+
 /// Describes a fragment of a distributed plan. This allows a run
 /// time to distribute fragments across workers and to set up
 /// exchanges. A complete plan is a vector of these with the last
@@ -123,14 +137,14 @@ class FinishWrite {
 /// parallel execution. Decisions on number of workers, location
 /// of workers and mode of exchange are up to the runtime.
 struct ExecutableFragment {
-  ExecutableFragment() = default;
-
-  explicit ExecutableFragment(std::string taskPrefix)
-      : taskPrefix{std::move(taskPrefix)} {}
-
   std::string taskPrefix;
 
-  int32_t width{0};
+  /// Scheduling type for this fragment.
+  FragmentType type;
+
+  /// Number of tasks. Required for kFixed. std::nullopt for kSource (runtime
+  /// decides actual count), kSingle, and kCoordinator.
+  std::optional<int32_t> width;
 
   velox::core::PlanFragment fragment;
 

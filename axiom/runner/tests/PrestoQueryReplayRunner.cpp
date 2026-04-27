@@ -164,12 +164,6 @@ std::vector<optimizer::ExecutableFragment> createExecutableFragments(
     const folly::F14FastMap<std::string, PlanFragmentInfo>& planFragments) {
   std::vector<optimizer::ExecutableFragment> executableFragments;
   for (const auto& [taskPrefix, planFragmentInfo] : planFragments) {
-    optimizer::ExecutableFragment executableFragment{taskPrefix};
-    executableFragment.width =
-        (planFragmentInfo.numWorkers > 0) ? planFragmentInfo.numWorkers : 1;
-    executableFragment.fragment =
-        velox::core::PlanFragment{planFragmentInfo.plan};
-
     std::vector<optimizer::InputStage> inputStages;
     const auto& remoteTaskIdMap = planFragmentInfo.remoteTaskIdMap;
     for (const auto& [planNodeId, remoteTaskPrefixes] : remoteTaskIdMap) {
@@ -178,8 +172,24 @@ std::vector<optimizer::ExecutableFragment> createExecutableFragments(
             optimizer::InputStage{planNodeId, remoteTaskPrefix});
       }
     }
-    executableFragment.inputStages = std::move(inputStages);
-    executableFragments.push_back(std::move(executableFragment));
+    if (planFragmentInfo.numWorkers > 1) {
+      executableFragments.push_back(
+          optimizer::ExecutableFragment{
+              .taskPrefix = taskPrefix,
+              .type = optimizer::FragmentType::kFixed,
+              .width = planFragmentInfo.numWorkers,
+              .fragment = velox::core::PlanFragment{planFragmentInfo.plan},
+              .inputStages = std::move(inputStages),
+          });
+    } else {
+      executableFragments.push_back(
+          optimizer::ExecutableFragment{
+              .taskPrefix = taskPrefix,
+              .type = optimizer::FragmentType::kSingle,
+              .fragment = velox::core::PlanFragment{planFragmentInfo.plan},
+              .inputStages = std::move(inputStages),
+          });
+    }
   }
   return executableFragments;
 }
