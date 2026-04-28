@@ -204,9 +204,14 @@ void checkStageWidths(const std::vector<ExecutableFragment>& stages) {
       if (partitionedOutput->isBroadcast()) {
         continue;
       }
+      // Skip width check for kSource consumers (task count determined at
+      // runtime by splits).
+      if (consumer.type == FragmentType::kSource) {
+        continue;
+      }
       VELOX_CHECK_EQ(
           partitionedOutput->numPartitions(),
-          consumer.width,
+          consumer.width.value_or(1),
           "Partition count mismatch between producer and consumer stage");
     }
   }
@@ -725,11 +730,10 @@ velox::core::TypedExprPtr ToVelox::toTypedExpr(ExprCP expr) {
 }
 
 ExecutableFragment ToVelox::newFragment() {
-  ExecutableFragment fragment;
-  fragment.width = options_.numWorkers;
-  fragment.taskPrefix = fmt::format("stage{}", ++stageCounter_);
-
-  return fragment;
+  return ExecutableFragment{
+      .taskPrefix = fmt::format("stage{}", ++stageCounter_),
+      .type = FragmentType::kSource,
+  };
 }
 
 namespace {
@@ -910,7 +914,7 @@ velox::core::PlanNodePtr ToVelox::makeOrderBy(
   auto merge = std::make_shared<velox::core::MergeExchangeNode>(
       nextId(), node->outputType(), keys, sortOrder, exchangeSerdeKind_);
 
-  fragment.width = 1;
+  fragment.type = FragmentType::kSingle;
   fragment.inputStages.emplace_back(merge->id(), source.taskPrefix);
   stages.push_back(std::move(source));
 
@@ -940,7 +944,7 @@ velox::core::PlanNodePtr ToVelox::makeOffset(
 
   auto limitNode = addFinalLimit(nextId(), op.offset, op.limit, exchange);
 
-  fragment.width = 1;
+  fragment.type = FragmentType::kSingle;
   fragment.inputStages.emplace_back(exchange->id(), source.taskPrefix);
   stages.push_back(std::move(source));
 
@@ -988,7 +992,7 @@ velox::core::PlanNodePtr ToVelox::makeLimit(
 
   auto finalLimitNode = addFinalLimit(nextId(), op.offset, op.limit, exchange);
 
-  fragment.width = 1;
+  fragment.type = FragmentType::kSingle;
   fragment.inputStages.emplace_back(exchange->id(), source.taskPrefix);
   stages.push_back(std::move(source));
 
@@ -1469,7 +1473,7 @@ velox::core::PlanNodePtr ToVelox::makeAggregation(
        op.step == velox::core::AggregationNode::Step::kSingle)) {
     input = addLocalPartition(nextId(), input, keys);
     if (keys.empty()) {
-      fragment.width = 1;
+      fragment.type = FragmentType::kSingle;
     }
   }
 
@@ -1660,7 +1664,7 @@ velox::core::PlanNodePtr ToVelox::makeRepartition(
         nextId(), 1, outputType, exchangeSerdeKind_, sourcePlan);
   } else if (distribution.isGather()) {
     VELOX_CHECK_EQ(0, keys.size());
-    fragment.width = 1;
+    fragment.type = FragmentType::kSingle;
     source.fragment.planNode = velox::core::PartitionedOutputNode::single(
         nextId(), outputType, exchangeSerdeKind_, sourcePlan);
   } else {
@@ -1673,7 +1677,7 @@ velox::core::PlanNodePtr ToVelox::makeRepartition(
             nextId(),
             velox::core::PartitionedOutputNode::Kind::kPartitioned,
             keys,
-            fragment.width,
+            options_.numWorkers,
             distribution.isReplicateNullsAndAny(),
             std::move(partitionFunctionFactory),
             outputType,
@@ -1744,7 +1748,7 @@ velox::core::PlanNodePtr ToVelox::makeUnionAll(
 velox::core::PlanNodePtr ToVelox::makeValues(
     const Values& values,
     ExecutableFragment& fragment) {
-  fragment.width = 1;
+  fragment.type = FragmentType::kSingle;
   const auto& newColumns = values.columns();
   const auto newType = makeOutputType(newColumns);
   VELOX_DCHECK_EQ(newColumns.size(), newType->size());
@@ -1902,13 +1906,17 @@ velox::core::PlanNodePtr ToVelox::makeWrite(
   auto inputType = ROW(inputNames, inputTypes);
 
   auto numDrivers = options_.numDrivers;
-  if (fragment.width == 1 && numDrivers > 1 &&
-      isSingleThreadedPipeline(input)) {
+  if ((fragment.type == FragmentType::kSingle ||
+       fragment.type == FragmentType::kCoordinator) &&
+      numDrivers > 1 && isSingleThreadedPipeline(input)) {
     numDrivers = 1;
   }
 
+  auto numTasks = fragment.width.value_or(
+      fragment.type == FragmentType::kSource ? options_.numWorkers : 1);
+
   WriteStatsBuilder statsBuilder(
-      table, inputType, *handle, numDrivers, fragment.width);
+      table, inputType, *handle, numDrivers, numTasks);
 
   std::optional<velox::core::ColumnStatsSpec> writeStatsSpec;
   if (statsBuilder.hasStats()) {

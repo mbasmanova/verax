@@ -304,6 +304,22 @@ const auto& columnStatFieldNames() {
 
 AXIOM_DEFINE_ENUM_NAME(ColumnStatField, columnStatFieldNames);
 
+namespace {
+
+const auto& fragmentTypeNames() {
+  static const folly::F14FastMap<FragmentType, std::string_view> kNames = {
+      {FragmentType::kSource, "SOURCE"},
+      {FragmentType::kFixed, "FIXED"},
+      {FragmentType::kSingle, "SINGLE"},
+      {FragmentType::kCoordinator, "COORDINATOR"},
+  };
+  return kNames;
+}
+
+} // namespace
+
+AXIOM_DEFINE_ENUM_NAME(FragmentType, fragmentTypeNames);
+
 FinishWrite::FinishWrite(
     std::shared_ptr<connector::ConnectorMetadata> metadata,
     connector::ConnectorSessionPtr session,
@@ -359,6 +375,22 @@ velox::ContinueFuture FinishWrite::abort() && noexcept {
   return metadata_->abortWrite(session_, handle_);
 }
 
+namespace {
+// Formats the header line for a fragment in toString/toSummaryString.
+std::string formatFragmentHeader(
+    int32_t index,
+    const ExecutableFragment& fragment) {
+  return fmt::format(
+      "Fragment {}: {} {}{}:",
+      index,
+      fragment.taskPrefix,
+      FragmentTypeName::toName(fragment.type),
+      fragment.width.has_value()
+          ? fmt::format(" numWorkers={}", fragment.width.value())
+          : "");
+}
+} // namespace
+
 std::string MultiFragmentPlan::toString(
     bool detailed,
     const std::function<void(
@@ -384,12 +416,7 @@ std::string MultiFragmentPlan::toString(
   std::stringstream out;
   for (auto i = 0; i < fragments_.size(); ++i) {
     const auto& fragment = fragments_[i];
-    out << fmt::format(
-               "Fragment {}: {} numWorkers={}:",
-               i,
-               fragment.taskPrefix,
-               fragment.width)
-        << std::endl;
+    out << formatFragmentHeader(i, fragment) << std::endl;
 
     out << fragment.fragment.planNode->toString(
                detailed,
@@ -421,12 +448,7 @@ std::string MultiFragmentPlan::toSummaryString(
   std::stringstream out;
   for (auto i = 0; i < fragments_.size(); ++i) {
     const auto& fragment = fragments_[i];
-    out << fmt::format(
-               "Fragment {}: {} numWorkers={}:",
-               i,
-               fragment.taskPrefix,
-               fragment.width)
-        << std::endl;
+    out << formatFragmentHeader(i, fragment) << std::endl;
     out << fragment.fragment.planNode->toSummaryString(options) << std::endl;
     if (!fragment.inputStages.empty()) {
       out << "Inputs: ";

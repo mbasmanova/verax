@@ -50,15 +50,34 @@ optimizer::MultiFragmentPlanPtr DistributedPlanBuilder::build() {
   return std::make_shared<optimizer::MultiFragmentPlan>(fragments(), options_);
 }
 
-void DistributedPlanBuilder::newFragment(int32_t width) {
+void DistributedPlanBuilder::newFragment(std::optional<int32_t> width) {
   if (current_) {
     current_->fragment = velox::core::PlanFragment(std::move(planNode_));
     fragments_.push_back(std::move(*current_));
   }
 
-  current_ = std::make_unique<optimizer::ExecutableFragment>(
-      fmt::format("{}.{}", options_.queryId, root_->fragmentCounter_++));
-  current_->width = width;
+  auto taskPrefix =
+      fmt::format("{}.{}", options_.queryId, root_->fragmentCounter_++);
+  if (width.has_value() && width.value() > 1) {
+    current_ = std::make_unique<optimizer::ExecutableFragment>(
+        optimizer::ExecutableFragment{
+            .taskPrefix = std::move(taskPrefix),
+            .type = optimizer::FragmentType::kFixed,
+            .width = width,
+        });
+  } else if (width.has_value()) {
+    current_ = std::make_unique<optimizer::ExecutableFragment>(
+        optimizer::ExecutableFragment{
+            .taskPrefix = std::move(taskPrefix),
+            .type = optimizer::FragmentType::kSingle,
+        });
+  } else {
+    current_ = std::make_unique<optimizer::ExecutableFragment>(
+        optimizer::ExecutableFragment{
+            .taskPrefix = std::move(taskPrefix),
+            .type = optimizer::FragmentType::kSource,
+        });
+  }
 
   planNode_ = nullptr;
 }
@@ -128,13 +147,18 @@ velox::core::PlanNodePtr DistributedPlanBuilder::shufflePartitionedResult(
   root_->stack_.pop_back(); // Remove self.
 
   auto* consumer = root_->stack_.back();
-  if (consumer->current_->width != 0) {
+  if (consumer->current_->width.has_value()) {
     VELOX_CHECK_EQ(
         numPartitions,
-        consumer->current_->width,
+        consumer->current_->width.value(),
         "The consumer width should match the producer fanout");
   } else {
-    consumer->current_->width = numPartitions;
+    consumer->current_->type = numPartitions > 1
+        ? optimizer::FragmentType::kFixed
+        : optimizer::FragmentType::kSingle;
+    consumer->current_->width = numPartitions > 1
+        ? std::optional<int32_t>{numPartitions}
+        : std::nullopt;
   }
 
   root_->appendFragments(std::move(fragments_));
@@ -155,7 +179,10 @@ velox::core::PlanNodePtr DistributedPlanBuilder::shuffleBroadcastResult() {
   root_->stack_.pop_back(); // Remove self.
   auto* consumer = root_->stack_.back();
 
-  VELOX_CHECK_GE(consumer->current_->width, 1);
+  VELOX_CHECK(
+      consumer->current_->width.has_value() ||
+      consumer->current_->type == optimizer::FragmentType::kSingle ||
+      consumer->current_->type == optimizer::FragmentType::kCoordinator);
 
   root_->appendFragments(std::move(fragments_));
 
