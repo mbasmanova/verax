@@ -136,19 +136,20 @@ TestResult QueryTestBase::runVelox(const core::PlanNodePtr& plan) {
 
 TestResult QueryTestBase::runFragmentedPlan(
     optimizer::PlanAndStats& planAndStats) {
-  TestResult result;
-
-  SCOPE_EXIT {
-    waitForCompletion(result.runner);
-    queryCtx_.reset();
-  };
-
-  result.runner = std::make_shared<runner::LocalRunner>(
+  auto runner = std::make_shared<runner::LocalRunner>(
       planAndStats.plan,
       std::move(planAndStats.finishWrite),
       getQueryCtx(),
       std::make_shared<runner::ConnectorSplitSourceFactory>(),
       optimizerPool_);
+
+  SCOPE_EXIT {
+    waitForCompletion(runner);
+    queryCtx_.reset();
+  };
+
+  TestResult result;
+  result.runner = runner;
   result.results = readCursor(result.runner);
   result.stats = result.runner->stats();
   history_->recordVeloxExecution(planAndStats, result.stats);
