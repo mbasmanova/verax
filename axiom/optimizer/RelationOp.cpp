@@ -252,6 +252,15 @@ void RelationOp::checkInputCardinality() const {
   }
 }
 
+void RelationOp::checkDistribution() const {
+  if (distribution_.isBroadcast()) {
+    VELOX_CHECK_EQ(
+        relType_,
+        RelType::kRepartition,
+        "Broadcast distribution is only valid on Repartition");
+  }
+}
+
 std::string RelationOp::toString() const {
   return RelationOpPrinter::toText(*this);
 }

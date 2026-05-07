@@ -373,8 +373,11 @@ bool Distribution::isSameOrder(const Distribution& other) const {
 Distribution Distribution::rename(
     const ExprVector& exprs,
     const ColumnVector& names) const {
+  // Broadcast describes the kind of exchange a Repartition emits and is not
+  // inherited by downstream operators (rename produces a Distribution for a
+  // non-Repartition consumer).
   if (isBroadcast()) {
-    return *this;
+    return Distribution{};
   }
 
   // Partitioning survives projection if all partitioning columns are projected
