@@ -946,15 +946,9 @@ void alignJoinSides(
 
   auto part = joinKeyPartition(input, keys);
   if (part.empty()) {
-    Distribution distribution{/*partitionType=*/nullptr,
-                              keys,
-                              /*orderKeys=*/{},
-                              /*orderTypes=*/{},
-                              /*numKeysUnique=*/0,
-                              /*clusterKeys=*/{},
-                              replicateNullsAndAny};
-    auto* repartition =
-        make<Repartition>(input, std::move(distribution), input->columns());
+    Distribution distribution{/*partitionType=*/nullptr, keys};
+    auto* repartition = make<Repartition>(
+        input, std::move(distribution), input->columns(), replicateNullsAndAny);
     state.addCost(*repartition);
     input = repartition;
   }
@@ -2059,15 +2053,12 @@ void Optimization::joinByHash(
           }
         }
         Distribution distribution{
-            plan->distribution().partitionType(),
-            copartition,
-            /*orderKeys=*/{},
-            /*orderTypes=*/{},
-            /*numKeysUnique=*/0,
-            /*clusterKeys=*/{},
-            replicateNullsAndAny};
+            plan->distribution().partitionType(), copartition};
         auto* repartition = make<Repartition>(
-            buildInput, std::move(distribution), buildInput->columns());
+            buildInput,
+            std::move(distribution),
+            buildInput->columns(),
+            replicateNullsAndAny);
         buildState.addCost(*repartition);
         buildInput = repartition;
       }

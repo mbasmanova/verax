@@ -419,11 +419,22 @@ class Repartition : public RelationOp {
   Repartition(
       RelationOpPtr input,
       Distribution distribution,
-      ColumnVector columns);
+      ColumnVector columns,
+      bool replicateNullsAndAny = false);
+
+  /// True if rows with NULLs in partition keys are replicated to all
+  /// partitions and one arbitrary non-null row is also replicated. Required
+  /// for correct distributed execution of null-aware anti joins (NOT IN).
+  bool isReplicateNullsAndAny() const {
+    return replicateNullsAndAny_;
+  }
 
   void accept(
       const RelationOpVisitor& visitor,
       RelationOpVisitorContext& context) const override;
+
+ private:
+  const bool replicateNullsAndAny_;
 };
 
 using RepartitionCP = const Repartition*;

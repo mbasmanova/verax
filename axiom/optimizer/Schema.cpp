@@ -423,8 +423,6 @@ Distribution Distribution::rename(
     }
   }
 
-  // rename() produces a Distribution for a non-Repartition consumer (Project),
-  // so replicateNullsAndAny does not apply.
   return Distribution(
       kind_,
       partitionType_,
@@ -432,8 +430,7 @@ Distribution Distribution::rename(
       std::move(orderKeys),
       std::move(orderTypes),
       numKeysUnique_,
-      std::move(clusterKeys),
-      /*replicateNullsAndAny=*/false);
+      std::move(clusterKeys));
 }
 
 namespace {
