@@ -1002,7 +1002,24 @@ PlanMatcher::MatchResult ShuffleBoundaryMatcher::match(
     }
   }
 
-  // Verify partition keys if specified.
+  // Verify replicateNullsAndAny if specified.
+  if (replicateNullsAndAny_.has_value()) {
+    EXPECT_EQ(
+        partitionedOutput->isReplicateNullsAndAny(),
+        replicateNullsAndAny_.value());
+    AXIOM_TEST_RETURN_IF_FAILURE
+  }
+
+  // Match the producer first so its symbols are available for the partition
+  // key lookup below (keys reference producer-fragment column names).
+  DistributedMatchContext producerContext{
+      context->fragments, producerFragment, context->taskPrefixToFragmentIndex};
+  auto producerResult = producerMatcher_->match(
+      partitionedOutput->sources()[0], symbols, &producerContext);
+  if (!producerResult.match) {
+    return MatchResult::failure();
+  }
+
   if (!keys_.empty()) {
     const auto& actualKeys = partitionedOutput->keys();
     EXPECT_EQ(actualKeys.size(), keys_.size())
@@ -1011,14 +1028,12 @@ PlanMatcher::MatchResult ShuffleBoundaryMatcher::match(
     AXIOM_TEST_RETURN_IF_FAILURE
 
     for (size_t i = 0; i < keys_.size(); ++i) {
-      // Apply symbol rewriting to expected key name.
       auto expectedKey = keys_[i];
-      auto it = symbols.find(expectedKey);
-      if (it != symbols.end()) {
+      auto it = producerResult.symbols.find(expectedKey);
+      if (it != producerResult.symbols.end()) {
         expectedKey = it->second;
       }
 
-      // Extract name from FieldAccessTypedExpr.
       auto fieldAccess =
           std::dynamic_pointer_cast<const FieldAccessTypedExpr>(actualKeys[i]);
       EXPECT_TRUE(fieldAccess != nullptr)
@@ -1031,23 +1046,7 @@ PlanMatcher::MatchResult ShuffleBoundaryMatcher::match(
     AXIOM_TEST_RETURN_IF_FAILURE
   }
 
-  // Verify replicateNullsAndAny if specified.
-  if (replicateNullsAndAny_.has_value()) {
-    EXPECT_EQ(
-        partitionedOutput->isReplicateNullsAndAny(),
-        replicateNullsAndAny_.value())
-        << "replicateNullsAndAny mismatch: expected "
-        << replicateNullsAndAny_.value() << ", got "
-        << partitionedOutput->isReplicateNullsAndAny();
-    AXIOM_TEST_RETURN_IF_FAILURE
-  }
-
-  // Update context for producer fragment matching.
-  DistributedMatchContext producerContext{
-      context->fragments, producerFragment, context->taskPrefixToFragmentIndex};
-
-  return producerMatcher_->match(
-      partitionedOutput->sources()[0], symbols, &producerContext);
+  return producerResult;
 }
 
 class PartitionedOutputMatcher : public PlanMatcherImpl<PartitionedOutputNode> {
@@ -1988,14 +1987,14 @@ PlanMatcherBuilder& PlanMatcherBuilder::distributedMarkDistinct(
   return shuffle().localPartition(keys).markDistinct(keys, markerAlias);
 }
 
-PlanMatcherBuilder& PlanMatcherBuilder::splitAggregation(
+PlanMatcherBuilder& PlanMatcherBuilder::distributedAggregation(
     const std::vector<std::string>& groupingKeys,
     const std::vector<std::string>& aggregates) {
-  partialAggregation(groupingKeys, aggregates).shuffle();
+  partialAggregation(groupingKeys, aggregates);
   if (groupingKeys.empty()) {
-    localGather();
+    gather().localGather();
   } else {
-    localPartition(groupingKeys);
+    shuffle(groupingKeys).localPartition(groupingKeys);
   }
   return finalAggregation();
 }
@@ -2003,11 +2002,10 @@ PlanMatcherBuilder& PlanMatcherBuilder::splitAggregation(
 PlanMatcherBuilder& PlanMatcherBuilder::distributedSingleAggregation(
     const std::vector<std::string>& groupingKeys,
     const std::vector<std::string>& aggregates) {
-  shuffle();
   if (groupingKeys.empty()) {
-    localGather();
+    gather().localGather();
   } else {
-    localPartition(groupingKeys);
+    shuffle(groupingKeys).localPartition(groupingKeys);
   }
   return singleAggregation(groupingKeys, aggregates);
 }
