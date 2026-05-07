@@ -465,11 +465,11 @@ class PlanMatcherBuilder {
       const std::vector<std::string>& keys,
       const std::string& markerAlias);
 
-  /// Matches the split aggregation pattern:
+  /// Matches the distributed (split) aggregation pattern:
   /// partialAggregation(groupingKeys, aggregates) → shuffle →
   /// localPartition(groupingKeys) → finalAggregation.
   /// For empty groupingKeys, uses localGather instead of localPartition.
-  PlanMatcherBuilder& splitAggregation(
+  PlanMatcherBuilder& distributedAggregation(
       const std::vector<std::string>& groupingKeys,
       const std::vector<std::string>& aggregates);
 

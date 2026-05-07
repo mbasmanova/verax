@@ -67,8 +67,8 @@ TEST_F(DistinctAggregationTest, singleDistinctToGroupBy) {
     AXIOM_ASSERT_DISTRIBUTED_PLAN(
         plan.plan,
         matchScan("t")
-            .splitAggregation({"b"}, {})
-            .splitAggregation({}, {"count(b)", "covar_pop(b, b)"})
+            .distributedAggregation({"b"}, {})
+            .distributedAggregation({}, {"count(b)", "covar_pop(b, b)"})
             .build());
     AXIOM_ASSERT_PLAN(
         toSingleNodePlan(logicalPlan),
@@ -88,8 +88,8 @@ TEST_F(DistinctAggregationTest, singleDistinctToGroupBy) {
     AXIOM_ASSERT_DISTRIBUTED_PLAN(
         plan.plan,
         matchScan("t")
-            .splitAggregation({"a", "b"}, {})
-            .splitAggregation({"a"}, {"count(b)"})
+            .distributedAggregation({"a", "b"}, {})
+            .distributedAggregation({"a"}, {"count(b)"})
             .shuffle()
             .build());
     AXIOM_ASSERT_PLAN(
@@ -108,8 +108,8 @@ TEST_F(DistinctAggregationTest, singleDistinctToGroupBy) {
     AXIOM_ASSERT_DISTRIBUTED_PLAN(
         plan.plan,
         matchScan("t")
-            .splitAggregation({"a", "b"}, {})
-            .splitAggregation({"a"}, {"count(b)", "covar_pop(b, b)"})
+            .distributedAggregation({"a", "b"}, {})
+            .distributedAggregation({"a"}, {"count(b)", "covar_pop(b, b)"})
             .shuffle()
             .build());
     AXIOM_ASSERT_PLAN(
@@ -141,8 +141,8 @@ TEST_F(DistinctAggregationTest, singleDistinctToGroupByWithExpressionInputs) {
         plan.plan,
         matchScan("t")
             .project({"a + 1 as p0", "b + c as p1"})
-            .splitAggregation({"p0", "p1"}, {})
-            .splitAggregation({"p0"}, {"count(p1)", "sum(p1)"})
+            .distributedAggregation({"p0", "p1"}, {})
+            .distributedAggregation({"p0"}, {"count(p1)", "sum(p1)"})
             .shuffle()
             .build());
     AXIOM_ASSERT_PLAN(
@@ -168,8 +168,9 @@ TEST_F(DistinctAggregationTest, singleDistinctToGroupByWithExpressionInputs) {
     AXIOM_ASSERT_DISTRIBUTED_PLAN(
         plan.plan,
         matchScan("t")
-            .splitAggregation({"a", "b", "c"}, {})
-            .splitAggregation({"a"}, {"covar_pop(b, c)", "covar_samp(c, b)"})
+            .distributedAggregation({"a", "b", "c"}, {})
+            .distributedAggregation(
+                {"a"}, {"covar_pop(b, c)", "covar_samp(c, b)"})
             .shuffle()
             .build());
     AXIOM_ASSERT_PLAN(
@@ -191,8 +192,8 @@ TEST_F(DistinctAggregationTest, singleDistinctToGroupByWithExpressionInputs) {
     AXIOM_ASSERT_DISTRIBUTED_PLAN(
         plan.plan,
         matchScan("t")
-            .splitAggregation({"b", "c"}, {})
-            .splitAggregation({"b"}, {"covar_pop(b, c)"})
+            .distributedAggregation({"b", "c"}, {})
+            .distributedAggregation({"b"}, {"covar_pop(b, c)"})
             .shuffle()
             .build());
     AXIOM_ASSERT_PLAN(
@@ -224,7 +225,7 @@ TEST_F(DistinctAggregationTest, singleDistinctToGroupByWithOrderBy) {
     AXIOM_ASSERT_DISTRIBUTED_PLAN(
         plan.plan,
         matchScan("t")
-            .splitAggregation({"c", "a", "b"}, {})
+            .distributedAggregation({"c", "a", "b"}, {})
             .distributedSingleAggregation(
                 {"c"}, {"max_by(a, b ORDER BY a)", "min_by(a, b ORDER BY b)"})
             .shuffle()
@@ -252,7 +253,7 @@ TEST_F(DistinctAggregationTest, singleDistinctToGroupByWithOrderBy) {
     AXIOM_ASSERT_DISTRIBUTED_PLAN(
         plan.plan,
         matchScan("t")
-            .splitAggregation({"a", "b"}, {})
+            .distributedAggregation({"a", "b"}, {})
             .distributedSingleAggregation(
                 {"a"}, {"max_by(b, 1 ORDER BY b)", "min_by(b, 2 ORDER BY b)"})
             .shuffle()
@@ -287,8 +288,8 @@ TEST_F(DistinctAggregationTest, singleDistinctToGroupByWithLiterals) {
     AXIOM_ASSERT_DISTRIBUTED_PLAN(
         plan.plan,
         matchScan("t")
-            .splitAggregation({"a", "b"}, {})
-            .splitAggregation({"a"}, {"max_by(b, 1)", "min_by(b, 2)"})
+            .distributedAggregation({"a", "b"}, {})
+            .distributedAggregation({"a"}, {"max_by(b, 1)", "min_by(b, 2)"})
             .shuffle()
             .build());
     AXIOM_ASSERT_PLAN(
@@ -313,7 +314,7 @@ TEST_F(DistinctAggregationTest, singleDistinctToGroupByWithLiterals) {
     AXIOM_ASSERT_DISTRIBUTED_PLAN(
         plan.plan,
         matchScan("t")
-            .splitAggregation({"a"}, {})
+            .distributedAggregation({"a"}, {})
             .partialAggregation({"a"}, {"count(1)", "count(2)"})
             .localPartition({"a"})
             .finalAggregation()
@@ -347,7 +348,7 @@ TEST_F(DistinctAggregationTest, markDistinctDifferentArgSets) {
           .project({"a", "b as p0", "d % 5 as p1"})
           .distributedMarkDistinct({"a", "p0"}, "m0")
           .distributedMarkDistinct({"a", "p1"}, "m1")
-          .splitAggregation(
+          .distributedAggregation(
               {"a"},
               {"count(p0) filter (where m0)", "sum(p1) filter (where m1)"})
           .shuffle()
@@ -413,7 +414,7 @@ TEST_F(DistinctAggregationTest, markDistinctMixedDistinctAndNonDistinct) {
           .project({"a", "b as p0", "d % 5 as p1"})
           .distributedMarkDistinct({"a", "p0"}, "m0")
           .distributedMarkDistinct({"a", "p1"}, "m1")
-          .splitAggregation(
+          .distributedAggregation(
               {"a"},
               {"count(p0) filter (where m0)",
                "sum(p1) filter (where m1)",
@@ -447,7 +448,7 @@ TEST_F(DistinctAggregationTest, markDistinctMultiArgAggregates) {
       matchScan("t")
           .distributedMarkDistinct({"a", "b", "c"}, "m0")
           .distributedMarkDistinct({"a", "d"}, "m1")
-          .splitAggregation(
+          .distributedAggregation(
               {"a"},
               {"covar_pop(b, c) filter (where m0)",
                "count(d) filter (where m1)"})
@@ -483,7 +484,7 @@ TEST_F(DistinctAggregationTest, markDistinctSharedMarkers) {
         plan.plan,
         matchScan("t")
             .distributedMarkDistinct({"b", "c"}, "m0")
-            .splitAggregation(
+            .distributedAggregation(
                 {"b"},
                 {"count(c) filter (where m0)",
                  "covar_pop(b, c) filter (where m0)",
@@ -624,7 +625,7 @@ TEST_F(DistinctAggregationTest, markDistinctLiterals) {
         matchScan("t")
             .distributedMarkDistinct({"a", "b"}, "m0")
             .distributedMarkDistinct({"a", "d"}, "m1")
-            .splitAggregation(
+            .distributedAggregation(
                 {"a"},
                 {"count(b) filter (where m0)",
                  "max_by(d, 1) filter (where m1)"})
@@ -709,7 +710,7 @@ TEST_F(DistinctAggregationTest, multipleMarkDistinctWithNoShuffleInBetween) {
           .localPartition({"a", "b"})
           .markDistinct({"a", "b"}, "m0")
           .markDistinct({"a", "b", "c"}, "m1")
-          .splitAggregation(
+          .distributedAggregation(
               {"a"},
               {"count(b) filter (where m0)",
                "covar_pop(b, c) filter (where m1)"})
