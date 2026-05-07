@@ -150,15 +150,13 @@ struct Distribution {
       ExprVector orderKeys = {},
       OrderTypeVector orderTypes = {},
       int32_t numKeysUnique = 0,
-      ExprVector clusterKeys = {},
-      bool replicateNullsAndAny = false)
+      ExprVector clusterKeys = {})
       : kind_{kind},
         partitionType_{partitionType},
         partitionKeys_{std::move(partitionKeys)},
         orderKeys_{std::move(orderKeys)},
         orderTypes_{std::move(orderTypes)},
         numKeysUnique_{numKeysUnique},
-        replicateNullsAndAny_{replicateNullsAndAny},
         clusterKeys_{std::move(clusterKeys)} {
     VELOX_CHECK_EQ(orderKeys_.size(), orderTypes_.size());
     if (kind_ == Kind::kGather) {
@@ -173,8 +171,7 @@ struct Distribution {
       ExprVector orderKeys = {},
       OrderTypeVector orderTypes = {},
       int32_t numKeysUnique = 0,
-      ExprVector clusterKeys = {},
-      bool replicateNullsAndAny = false)
+      ExprVector clusterKeys = {})
       : Distribution{
             Kind::kPartitioned,
             partitionType,
@@ -182,8 +179,7 @@ struct Distribution {
             std::move(orderKeys),
             std::move(orderTypes),
             numKeysUnique,
-            std::move(clusterKeys),
-            replicateNullsAndAny} {}
+            std::move(clusterKeys)} {}
 
   /// Returns a Distribution for use in a broadcast shuffle.
   static Distribution broadcast() {
@@ -269,10 +265,6 @@ struct Distribution {
     return clusterKeys_;
   }
 
-  bool isReplicateNullsAndAny() const {
-    return replicateNullsAndAny_;
-  }
-
   Distribution rename(const ExprVector& exprs, const ColumnVector& names) const;
 
   std::string toString() const;
@@ -301,12 +293,6 @@ struct Distribution {
   // row. 0 if there is no uniqueness. This can be non-0 also if data is not
   // sorted. This indicates a uniqueness for joining.
   int32_t numKeysUnique_{0};
-
-  // When true, rows with NULLs in partition keys are replicated to all
-  // partitions and one arbitrary non-null row is also replicated. Required
-  // for correct distributed execution of null-aware anti joins (NOT IN). Only
-  // meaningful when this Distribution is used on a Repartition.
-  bool replicateNullsAndAny_{false};
 
   // Clustering columns. Rows with the same values in these columns are
   // contiguous but not necessarily ordered. Enables streaming group by

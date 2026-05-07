@@ -270,12 +270,6 @@ void RelationOp::checkDistribution() const {
         "Distribution kind {} is only valid on Repartition, got {}",
         kind,
         relTypeName());
-    // replicateNullsAndAny describes a hash exchange's NULL handling and is
-    // only meaningful on a Repartition.
-    VELOX_CHECK(
-        !distribution_.isReplicateNullsAndAny(),
-        "replicateNullsAndAny is only valid on Repartition, got {}",
-        relTypeName());
   }
 }
 
@@ -1028,12 +1022,14 @@ void Join::accept(
 Repartition::Repartition(
     RelationOpPtr input,
     Distribution distribution,
-    ColumnVector columns)
+    ColumnVector columns,
+    bool replicateNullsAndAny)
     : RelationOp(
           RelType::kRepartition,
           std::move(input),
           std::move(distribution),
-          std::move(columns)) {
+          std::move(columns)),
+      replicateNullsAndAny_{replicateNullsAndAny} {
   cost_.inputCardinality = inputCardinality();
   cost_.fanout = 1;
 
