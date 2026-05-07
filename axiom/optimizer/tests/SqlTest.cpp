@@ -130,6 +130,7 @@ int main(int argc, char** argv) {
   facebook::axiom::optimizer::test::registerQueryFile("coercion.sql");
   facebook::axiom::optimizer::test::registerQueryFile(
       "distinctAggregation.sql");
+  facebook::axiom::optimizer::test::registerQueryFile("unionAll.sql");
   facebook::axiom::optimizer::test::registerQueryFile("unionAllFlatten.sql");
 
   return RUN_ALL_TESTS();

@@ -352,6 +352,10 @@ class PlanMatcherBuilder {
   /// Verifies that PartitionedOutputNode::isBroadcast() is true.
   PlanMatcherBuilder& broadcast();
 
+  /// Matches an arbitrary (round-robin) shuffle boundary in a distributed plan.
+  /// Verifies that PartitionedOutputNode::isArbitrary() is true.
+  PlanMatcherBuilder& arbitrary();
+
   /// Matches a gather shuffle boundary in a distributed plan.
   /// Verifies that PartitionedOutputNode::numPartitions() == 1.
   PlanMatcherBuilder& gather();

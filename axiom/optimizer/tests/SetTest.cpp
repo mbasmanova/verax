@@ -704,19 +704,26 @@ TEST_F(SetTest, filterOnDuplicateColumnInUnionAll) {
 
   // Filter is pushed into the HiveScan as a subfield filter on x.
   // The Values child's constant filter (2 > 0) is folded and eliminated.
-  auto buildMatcher = [&] {
-    return core::PlanMatcherBuilder()
-        .hiveScan("t", test::gt("x", int64_t{0}))
-        .project()
-        .localPartition(matchValues().project().build());
-  };
+  {
+    auto matcher = core::PlanMatcherBuilder()
+                       .hiveScan("t", test::gt("x", int64_t{0}))
+                       .project()
+                       .localPartition(matchValues().project().build())
+                       .build();
+    AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
+  }
 
-  auto plan = toSingleNodePlan(logicalPlan);
-  AXIOM_ASSERT_PLAN(plan, buildMatcher().build());
-
-  auto distributedPlan = planVelox(logicalPlan);
-  AXIOM_ASSERT_DISTRIBUTED_PLAN(
-      distributedPlan.plan, buildMatcher().gather().build());
+  {
+    // Values is isolated behind an arbitrary exchange.
+    auto matcher =
+        core::PlanMatcherBuilder()
+            .hiveScan("t", test::gt("x", int64_t{0}))
+            .project()
+            .localPartition(matchValues().project().arbitrary().build())
+            .gather()
+            .build();
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(planVelox(logicalPlan).plan, matcher);
+  }
 }
 
 // Same as above but with a non-trivial expression referenced twice
@@ -736,23 +743,32 @@ TEST_F(SetTest, filterOnDuplicateExpressionInUnionAll) {
 
   // Filter 'a > 0' becomes remaining filters 'x + 1 > 0' and 'x + 2 > 0'
   // on the respective scan branches.
-  auto buildMatcher = [&] {
-    return core::PlanMatcherBuilder()
-        .hiveScan("t", {}, "x + 1 > 0")
-        .project()
-        .localPartition(
-            core::PlanMatcherBuilder()
-                .hiveScan("t", {}, "x + 2 > 0")
-                .project()
-                .build());
-  };
+  {
+    auto matcher = core::PlanMatcherBuilder()
+                       .hiveScan("t", {}, "x + 1 > 0")
+                       .project()
+                       .localPartition(
+                           core::PlanMatcherBuilder()
+                               .hiveScan("t", {}, "x + 2 > 0")
+                               .project()
+                               .build())
+                       .build();
+    AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
+  }
 
-  auto plan = toSingleNodePlan(logicalPlan);
-  AXIOM_ASSERT_PLAN(plan, buildMatcher().build());
-
-  auto distributedPlan = planVelox(logicalPlan);
-  AXIOM_ASSERT_DISTRIBUTED_PLAN(
-      distributedPlan.plan, buildMatcher().gather().build());
+  {
+    auto matcher = core::PlanMatcherBuilder()
+                       .hiveScan("t", {}, "x + 1 > 0")
+                       .project()
+                       .localPartition(
+                           core::PlanMatcherBuilder()
+                               .hiveScan("t", {}, "x + 2 > 0")
+                               .project()
+                               .build())
+                       .gather()
+                       .build();
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(planVelox(logicalPlan).plan, matcher);
+  }
 }
 
 // Verifies that filtering a UNION ALL on a column not included in the outer
@@ -769,22 +785,30 @@ TEST_F(SetTest, filterColumnPruningInUnionAll) {
 
   auto logicalPlan = parseSelect(sql);
 
-  auto buildMatcher = [&] {
-    return core::PlanMatcherBuilder()
-        .hiveScan("t", test::gt("x", int64_t{0}))
-        .localPartition(
-            core::PlanMatcherBuilder()
-                .hiveScan("t", test::gt("x", int64_t{0}))
-                .project()
-                .build());
-  };
+  {
+    auto matcher = core::PlanMatcherBuilder()
+                       .hiveScan("t", test::gt("x", int64_t{0}))
+                       .localPartition(
+                           core::PlanMatcherBuilder()
+                               .hiveScan("t", test::gt("x", int64_t{0}))
+                               .project()
+                               .build())
+                       .build();
+    AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
+  }
 
-  auto plan = toSingleNodePlan(logicalPlan);
-  AXIOM_ASSERT_PLAN(plan, buildMatcher().build());
-
-  auto distributedPlan = planVelox(logicalPlan);
-  AXIOM_ASSERT_DISTRIBUTED_PLAN(
-      distributedPlan.plan, buildMatcher().gather().build());
+  {
+    auto matcher = core::PlanMatcherBuilder()
+                       .hiveScan("t", test::gt("x", int64_t{0}))
+                       .localPartition(
+                           core::PlanMatcherBuilder()
+                               .hiveScan("t", test::gt("x", int64_t{0}))
+                               .project()
+                               .build())
+                       .gather()
+                       .build();
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(planVelox(logicalPlan).plan, matcher);
+  }
 }
 
 // Constant-false filters on UNION ALL branches cause them to be replaced with
@@ -1092,25 +1116,6 @@ TEST_F(SetTest, rowSubfieldAccessInUnionAll) {
             .project({"x[1]"})
             .localPartition(matchValues(ROW({})).project({"5 as y"}).build())
             .build());
-  }
-}
-
-TEST_F(SetTest, unionAllWithDistinctWidthMismatch) {
-  std::vector<std::string> widthConstrainingInputs = {
-      "SELECT 1",
-      "SELECT COUNT(*) as n_regionkey FROM nation",
-      "SELECT n_regionkey FROM (SELECT n_regionkey FROM nation LIMIT 3)",
-  };
-  for (const auto& input : widthConstrainingInputs) {
-    auto plan = parseSelect(
-        fmt::format(
-            "SELECT COUNT(*) FROM ("
-            "  SELECT DISTINCT n_regionkey FROM nation"
-            "  UNION ALL"
-            "  {}"
-            ")",
-            input));
-    VELOX_ASSERT_THROW(planVelox(plan), "Partition count mismatch");
   }
 }
 

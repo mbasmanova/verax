@@ -1722,8 +1722,30 @@ void Limit::accept(
   visitor.visit(*this, context);
 }
 
+namespace {
+
+// Returns the first input's distribution if every input has the same
+// distribution per Distribution::isSamePartition. Otherwise returns an empty
+// Distribution.
+Distribution commonInputDistribution(const RelationOpPtrVector& inputs) {
+  VELOX_CHECK_GE(inputs.size(), 2, "UnionAll requires at least 2 inputs");
+  const auto& first = inputs[0]->distribution();
+  for (size_t i = 1; i < inputs.size(); ++i) {
+    if (!first.isSamePartition(inputs[i]->distribution())) {
+      return Distribution{};
+    }
+  }
+  return first;
+}
+
+} // namespace
+
 UnionAll::UnionAll(RelationOpPtrVector inputsVector)
-    : RelationOp{RelType::kUnionAll, nullptr, Distribution{}, inputsVector[0]->columns()},
+    : RelationOp{
+          RelType::kUnionAll,
+          /*input=*/nullptr,
+          commonInputDistribution(inputsVector),
+          inputsVector[0]->columns()},
       inputs{std::move(inputsVector)} {
   cost_.inputCardinality = 0;
   for (auto& input : inputs) {

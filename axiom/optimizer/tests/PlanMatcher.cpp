@@ -873,6 +873,7 @@ enum class ShuffleType {
   kPartitioned, // Partitioned shuffle (hash/range partitioning)
   kBroadcast, // Broadcast (isBroadcast() == true)
   kGather, // Gather to single partition (numPartitions() == 1)
+  kArbitrary, // Arbitrary (round-robin, isArbitrary() == true)
 };
 
 // Marks a shuffle boundary between fragments in a distributed plan.
@@ -998,6 +999,10 @@ PlanMatcher::MatchResult ShuffleBoundaryMatcher::match(
         break;
       case ShuffleType::kOrdered:
         // Already verified above with MergeExchange check.
+        break;
+      case ShuffleType::kArbitrary:
+        EXPECT_TRUE(partitionedOutput->isArbitrary());
+        AXIOM_TEST_RETURN_IF_FAILURE
         break;
     }
   }
@@ -1821,6 +1826,13 @@ PlanMatcherBuilder& PlanMatcherBuilder::broadcast() {
   VELOX_USER_CHECK_NOT_NULL(matcher_);
   matcher_ = std::make_shared<ShuffleBoundaryMatcher>(
       matcher_, ShuffleType::kBroadcast);
+  return *this;
+}
+
+PlanMatcherBuilder& PlanMatcherBuilder::arbitrary() {
+  VELOX_USER_CHECK_NOT_NULL(matcher_);
+  matcher_ = std::make_shared<ShuffleBoundaryMatcher>(
+      matcher_, ShuffleType::kArbitrary);
   return *this;
 }
 

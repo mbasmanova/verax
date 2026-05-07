@@ -236,3 +236,5 @@ class MultiFragmentPlan {
 using MultiFragmentPlanPtr = std::shared_ptr<const MultiFragmentPlan>;
 
 } // namespace facebook::axiom::optimizer
+
+AXIOM_ENUM_FORMATTER(facebook::axiom::optimizer::FragmentType);

@@ -129,6 +129,7 @@ add_executable(
   Genies.cpp
   TestConnectorQueryTest.cpp
   TpchConnectorQueryTest.cpp
+  UnionAllTest.cpp
   UnnestTest.cpp
   ValuesTest.cpp
   WriteTest.cpp

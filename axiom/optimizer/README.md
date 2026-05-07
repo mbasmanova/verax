@@ -10,6 +10,7 @@ See also:
 - [Existence Pushdown](docs/ExistencePushdown.md) - Pushing semi-joins into subquery aggregations to reduce data before GROUP BY
 - [Testing](docs/Testing.md) - PlanMatcher for plan shape, SqlTest for correctness, test coverage guidelines
 - [DerivedTable Layers](docs/DerivedTableLayers.md) - Layered column ownership model and dependency rules
+- [UNION ALL Planning](docs/UnionAllPlanning.md) - Per-leg-class fragment placement model for UNION ALL in distributed plans
 - [Debugging Tips](docs/DebuggingTips.md) - Using the CLI, generating TPC-H data, speeding up test runs, adding debug logging
 
 The optimizer's input is Logical Plan. This is a tree of relational plan nodes defined using a hierarchy of logical_plan::LogicalPlanNode and logical_plan::Expr classes. Operations represented by the Logical Plan are fully typed and resolved. All names have been bound to schema objects and each operation has defined input and output types.

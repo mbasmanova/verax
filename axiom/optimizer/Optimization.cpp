@@ -3193,7 +3193,27 @@ PlanP Optimization::makeUnionPlan(
     return unionPlan(inputStates, result, distinct);
   }
 
-  if (!distribution.has_value()) {
+  // Treat the parent's desired distribution as a hint, not a requirement.
+  // UNION ALL has finer-grained knowledge than the parent: the parent can
+  // only add a single shuffle above the union (which would re-shuffle
+  // naturally-matching inputs unnecessarily); UNION ALL can shuffle only
+  // the inputs that need it. So if at least one input already produces the
+  // desired distribution natively, honor the request and shuffle only the
+  // inputs that don't. Otherwise drop the request — the parent's blanket
+  // shuffle is no worse than per-input shuffles in that case.
+  //
+  // Wrinkle: this assumes the parent commits to the desired distribution it
+  // requested. A parent that later switches strategy (e.g., a hash join that
+  // requests hash(K) for the build, then chooses to broadcast it instead)
+  // leaves the per-input shuffles in place even though they're now wasted.
+  // Such mis-specification is the parent's bug to fix, not UNION ALL's.
+  std::optional<DesiredDistribution> effectiveDistribution = distribution;
+  if (!isDistinct && effectiveDistribution.has_value() &&
+      std::ranges::all_of(inputNeedsShuffle, std::identity{})) {
+    effectiveDistribution.reset();
+  }
+
+  if (!effectiveDistribution.has_value()) {
     if (isDistinct) {
       // Pick some partitioning key and shuffle on that and make distinct.
       Distribution someDistribution = somePartition(inputs);
@@ -3211,10 +3231,61 @@ PlanP Optimization::makeUnionPlan(
         inputs[i] = make<Repartition>(
             inputs[i],
             Distribution{
-                distribution->partitionType, distribution->partitionKeys},
+                effectiveDistribution->partitionType,
+                effectiveDistribution->partitionKeys},
             inputs[i]->columns());
         inputStates[i].addCost(*inputs[i]);
       }
+    }
+  }
+
+  // For plain UNION ALL with multiple inputs, kSingle (gather-distributed)
+  // inputs cannot co-locate with parallel inputs in the consumer fragment —
+  // they would be multiplied across the parallel tasks. Group all kSingle
+  // inputs into one sub-union and wrap in arbitrary so they feed the parallel
+  // consumer fragment via a single exchange. Compatible parallel inputs
+  // (kSource and kFixed N) co-locate without wrapping.
+  if (!isDistinct && !effectiveDistribution.has_value() && inputs.size() > 1) {
+    RelationOpPtrVector singleInputs;
+    bool hasParallel = false;
+    for (const auto& input : inputs) {
+      if (input->distribution().isGather()) {
+        singleInputs.push_back(input);
+      } else {
+        hasParallel = true;
+      }
+    }
+
+    if (hasParallel && !singleInputs.empty()) {
+      RelationOpPtr singleSubUnion = singleInputs.size() == 1
+          ? singleInputs[0]
+          : make<UnionAll>(singleInputs);
+      auto* wrapped = make<Repartition>(
+          singleSubUnion, Distribution::arbitrary(), singleSubUnion->columns());
+
+      // Rebuild inputs: keep parallel inputs in place, replace the first
+      // kSingle input with the wrapped sub-union, drop the rest. inputStates
+      // is not 1:1 with inputs (unionPlan only sums costs across states),
+      // so we add the wrap's cost to one of the kSingle states and leave
+      // the state vector size unchanged.
+      RelationOpPtrVector newInputs;
+      newInputs.reserve(inputs.size());
+      bool wrapEmitted = false;
+      size_t firstSingleIndex = 0;
+      for (size_t i = 0; i < inputs.size(); ++i) {
+        if (!inputs[i]->distribution().isGather()) {
+          newInputs.emplace_back(inputs[i]);
+          continue;
+        }
+        if (wrapEmitted) {
+          continue;
+        }
+        wrapEmitted = true;
+        firstSingleIndex = i;
+        newInputs.emplace_back(wrapped);
+      }
+      inputs = std::move(newInputs);
+      inputStates[firstSingleIndex].addCost(*wrapped);
     }
   }
 
