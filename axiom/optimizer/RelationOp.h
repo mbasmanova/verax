@@ -130,6 +130,12 @@ enum class RelType {
 
 AXIOM_DECLARE_ENUM_NAME(RelType)
 
+} // namespace facebook::axiom::optimizer
+
+AXIOM_ENUM_FORMATTER(facebook::axiom::optimizer::RelType);
+
+namespace facebook::axiom::optimizer {
+
 /// Physical relational operator. This is the common base class of all
 /// elements of plan candidates. The immutable Exprs, Columns and
 /// BaseTables in the query graph are referenced from
@@ -155,6 +161,7 @@ class RelationOp {
         columns_(std::move(columns)),
         input_(std::move(input)) {
     checkInputCardinality();
+    checkDistribution();
   }
 
   /// Convenience constructor for operators that project all input columns as
@@ -207,6 +214,14 @@ class RelationOp {
     return RelTypeName::toName(relType_);
   }
 
+  /// Distribution of the data produced by this operator. For all operators
+  /// except Repartition, this describes how the data is laid out across tasks —
+  /// hash-partitioned on K, gathered to one task, or unpartitioned. For
+  /// Repartition, it describes the exchange between the Repartition's producer
+  /// fragment and its consumer fragment: hash-partitioned, gather, arbitrary,
+  /// or broadcast (every consumer task receives a full copy). Broadcast is only
+  /// valid on a Repartition; no other operator type can have broadcast
+  /// distribution.
   const Distribution& distribution() const {
     return distribution_;
   }
@@ -304,6 +319,8 @@ class RelationOp {
  private:
   void checkInputCardinality() const;
 
+  void checkDistribution() const;
+
   // thread local reference count. PlanObjects are freed when the
   // QueryGraphContext arena is freed, candidate plans are freed when no longer
   // referenced.
@@ -393,8 +410,9 @@ struct Values : RelationOp {
   const ValuesTable& valuesTable;
 };
 
-/// Represents a repartition, i.e. query fragment boundary. The distribution of
-/// the output is '_distribution'.
+/// Represents a repartition, i.e., a query fragment boundary. The
+/// `distribution()` describes the kind of exchange (broadcast, arbitrary,
+/// gather, or hash-partitioned) and its output partitioning.
 class Repartition : public RelationOp {
  public:
   Repartition(
