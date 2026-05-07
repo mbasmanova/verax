@@ -808,8 +808,8 @@ bool isIndexColocated(
 
   // True if 'input' is partitioned so that each partitioning key is joined to
   // the corresponding partition key in 'info'.
-  if (input->distribution().distributionType() !=
-      distribution.distributionType()) {
+  if (input->distribution().kind() != distribution.kind() ||
+      input->distribution().partitionType() != distribution.partitionType()) {
     return false;
   }
 
@@ -871,7 +871,7 @@ RelationOpPtr repartitionForIndex(
 
   auto* repartition = make<Repartition>(
       plan,
-      Distribution{distribution.distributionType(), std::move(keyExprs)},
+      Distribution{distribution.partitionType(), std::move(keyExprs)},
       plan->columns());
   state.addCost(*repartition);
   return repartition;
@@ -946,14 +946,13 @@ void alignJoinSides(
 
   auto part = joinKeyPartition(input, keys);
   if (part.empty()) {
-    Distribution distribution{
-        DistributionType{},
-        keys,
-        /*orderKeys=*/{},
-        /*orderTypes=*/{},
-        /*numKeysUnique=*/0,
-        /*clusterKeys=*/{},
-        replicateNullsAndAny};
+    Distribution distribution{/*partitionType=*/nullptr,
+                              keys,
+                              /*orderKeys=*/{},
+                              /*orderTypes=*/{},
+                              /*numKeysUnique=*/0,
+                              /*clusterKeys=*/{},
+                              replicateNullsAndAny};
     auto* repartition =
         make<Repartition>(input, std::move(distribution), input->columns());
     state.addCost(*repartition);
@@ -972,7 +971,7 @@ void alignJoinSides(
   }
 
   Distribution distribution{
-      input->distribution().distributionType(), std::move(distColumns)};
+      input->distribution().partitionType(), std::move(distColumns)};
   auto* repartition = make<Repartition>(
       otherInput, std::move(distribution), otherInput->columns());
   otherState.addCost(*repartition);
@@ -1042,8 +1041,7 @@ RelationOpPtr repartitionForWrite(const RelationOpPtr& plan, PlanState& state) {
     keyValues.emplace_back(write->columnExprs().at(index));
   }
 
-  const auto* planPartitionType =
-      plan->distribution().distributionType().partitionType();
+  const auto* planPartitionType = plan->distribution().partitionType();
 
   auto copartition =
       copartitionType(planPartitionType, layout->partitionType());
@@ -1992,9 +1990,7 @@ void Optimization::joinByHash(
     for (auto i : partKeys) {
       buildPartKeys.push_back(build.keys[i]);
     }
-    forBuild = {
-        plan->distribution().distributionType().partitionType(),
-        std::move(buildPartKeys)};
+    forBuild = {plan->distribution().partitionType(), std::move(buildPartKeys)};
   }
 
   bool needsShuffle = false;
@@ -2063,7 +2059,7 @@ void Optimization::joinByHash(
           }
         }
         Distribution distribution{
-            plan->distribution().distributionType(),
+            plan->distribution().partitionType(),
             copartition,
             /*orderKeys=*/{},
             /*orderTypes=*/{},
@@ -2898,7 +2894,7 @@ Distribution somePartition(const RelationOpPtrVector& inputs) {
     }
   }
 
-  return {DistributionType{}, std::move(columns)};
+  return {/*partitionType=*/nullptr, std::move(columns)};
 }
 
 // Adds the costs in the input states to the first state and if 'distinct' is
@@ -3224,8 +3220,7 @@ PlanP Optimization::makeUnionPlan(
         inputs[i] = make<Repartition>(
             inputs[i],
             Distribution{
-                DistributionType(distribution->partitionType),
-                distribution->partitionKeys},
+                distribution->partitionType, distribution->partitionKeys},
             inputs[i]->columns());
         inputStates[i].addCost(*inputs[i]);
       }

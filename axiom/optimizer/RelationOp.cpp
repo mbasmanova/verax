@@ -217,7 +217,7 @@ Distribution TableScan::outputDistribution(
     replace(orderKeys, schemaColumns, columns.data());
   }
   return Distribution(
-      distribution.distributionType(),
+      distribution.partitionType(),
       std::move(partitionKeys),
       std::move(orderKeys),
       std::move(orderTypes),
@@ -253,11 +253,29 @@ void RelationOp::checkInputCardinality() const {
 }
 
 void RelationOp::checkDistribution() const {
-  if (distribution_.isBroadcast()) {
-    VELOX_CHECK_EQ(
-        relType_,
-        RelType::kRepartition,
-        "Broadcast distribution is only valid on Repartition");
+  const auto kind = distribution_.kind();
+  if (relType_ == RelType::kRepartition) {
+    // A Repartition must specify what kind of exchange it emits.
+    VELOX_CHECK_NE(
+        kind,
+        Distribution::Kind::kUnspecified,
+        "Repartition requires a specific distribution kind");
+  } else {
+    // Broadcast and arbitrary describe consumer-side exchange semantics; they
+    // only exist on a Repartition. Distribution::rename drops them when
+    // producing a Distribution for a non-Repartition consumer.
+    VELOX_CHECK(
+        kind != Distribution::Kind::kBroadcast &&
+            kind != Distribution::Kind::kArbitrary,
+        "Distribution kind {} is only valid on Repartition, got {}",
+        kind,
+        relTypeName());
+    // replicateNullsAndAny describes a hash exchange's NULL handling and is
+    // only meaningful on a Repartition.
+    VELOX_CHECK(
+        !distribution_.isReplicateNullsAndAny(),
+        "replicateNullsAndAny is only valid on Repartition, got {}",
+        relTypeName());
   }
 }
 
@@ -1890,7 +1908,8 @@ AssignUniqueId::AssignUniqueId(RelationOpPtr input, ColumnCP uniqueIdColumn)
           RelType::kAssignUniqueId,
           input,
           Distribution(
-              input->distribution().distributionType(),
+              input->distribution().kind(),
+              input->distribution().partitionType(),
               input->distribution().partitionKeys(),
               input->distribution().orderKeys(),
               input->distribution().orderTypes(),

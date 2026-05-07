@@ -293,7 +293,7 @@ std::pair<RelationOpPtr, PlanCost> maybeRepartition(
 
   if (shuffle) {
     Distribution distribution{
-        plan->distribution().distributionType(), std::move(desiredKeys)};
+        plan->distribution().partitionType(), std::move(desiredKeys)};
     auto* repartition =
         make<Repartition>(plan, std::move(distribution), plan->columns());
     cost.add(*repartition);
