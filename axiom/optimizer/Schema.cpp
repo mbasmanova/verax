@@ -25,6 +25,22 @@
 namespace facebook::axiom::optimizer {
 
 namespace {
+const auto& distributionKindNames() {
+  static const folly::F14FastMap<Distribution::Kind, std::string_view> kNames =
+      {
+          {Distribution::Kind::kUnspecified, "UNSPECIFIED"},
+          {Distribution::Kind::kPartitioned, "PARTITIONED"},
+          {Distribution::Kind::kGather, "GATHER"},
+          {Distribution::Kind::kBroadcast, "BROADCAST"},
+          {Distribution::Kind::kArbitrary, "ARBITRARY"},
+      };
+  return kNames;
+}
+} // namespace
+
+AXIOM_DEFINE_EMBEDDED_ENUM_NAME(Distribution, Kind, distributionKindNames);
+
+namespace {
 const auto& orderTypeNames() {
   static const folly::F14FastMap<OrderType, std::string_view> kNames = {
       {OrderType::kAscNullsFirst, "ASC NULLS FIRST"},
@@ -204,7 +220,7 @@ SchemaTableCP Schema::findTable(
     VELOX_CHECK_EQ(orderKeys.size(), orderTypes.size());
 
     Distribution distribution(
-        DistributionType(layout->partitionType()),
+        layout->partitionType(),
         std::move(partition),
         std::move(orderKeys),
         std::move(orderTypes));
@@ -317,7 +333,7 @@ ColumnCP IndexInfo::schemaColumn(ColumnCP keyValue) const {
 }
 
 bool Distribution::isSamePartition(const DesiredDistribution& other) const {
-  if (distributionType().partitionType() != other.partitionType) {
+  if (partitionType() != other.partitionType) {
     return false;
   }
 
@@ -335,10 +351,10 @@ bool Distribution::isSamePartition(const DesiredDistribution& other) const {
 }
 
 bool Distribution::isSamePartition(const Distribution& other) const {
-  if (distributionType() != other.distributionType()) {
+  if (kind() != other.kind() || partitionType() != other.partitionType()) {
     return false;
   }
-  if (isBroadcast() || other.isBroadcast()) {
+  if (isBroadcast()) {
     return true;
   }
   if (partitionKeys().size() != other.partitionKeys().size()) {
@@ -373,10 +389,10 @@ bool Distribution::isSameOrder(const Distribution& other) const {
 Distribution Distribution::rename(
     const ExprVector& exprs,
     const ColumnVector& names) const {
-  // Broadcast describes the kind of exchange a Repartition emits and is not
-  // inherited by downstream operators (rename produces a Distribution for a
-  // non-Repartition consumer).
-  if (isBroadcast()) {
+  // Broadcast and arbitrary describe the kind of exchange a Repartition emits
+  // and are not inherited by downstream operators (rename produces a
+  // Distribution for a non-Repartition consumer).
+  if (isBroadcast() || isArbitrary()) {
     return Distribution{};
   }
 
@@ -407,14 +423,17 @@ Distribution Distribution::rename(
     }
   }
 
+  // rename() produces a Distribution for a non-Repartition consumer (Project),
+  // so replicateNullsAndAny does not apply.
   return Distribution(
-      distributionType_,
+      kind_,
+      partitionType_,
       std::move(partitionKeys),
       std::move(orderKeys),
       std::move(orderTypes),
       numKeysUnique_,
       std::move(clusterKeys),
-      replicateNullsAndAny_);
+      /*replicateNullsAndAny=*/false);
 }
 
 namespace {
@@ -443,8 +462,8 @@ std::string Distribution::toString() const {
   if (!partitionKeys().empty()) {
     out << "P ";
     exprsToString(partitionKeys(), out);
-    if (distributionType().partitionType() != nullptr) {
-      out << " " << distributionType().partitionType()->toString();
+    if (partitionType() != nullptr) {
+      out << " " << partitionType()->toString();
     } else {
       out << " Velox hash";
     }

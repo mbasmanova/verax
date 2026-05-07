@@ -215,13 +215,14 @@ class RelationOp {
   }
 
   /// Distribution of the data produced by this operator. For all operators
-  /// except Repartition, this describes how the data is laid out across tasks —
-  /// hash-partitioned on K, gathered to one task, or unpartitioned. For
+  /// except Repartition, this describes how the data is laid out across tasks
+  /// — partitioned on K, gathered to one task, or unpartitioned. For
   /// Repartition, it describes the exchange between the Repartition's producer
-  /// fragment and its consumer fragment: hash-partitioned, gather, arbitrary,
-  /// or broadcast (every consumer task receives a full copy). Broadcast is only
-  /// valid on a Repartition; no other operator type can have broadcast
-  /// distribution.
+  /// fragment and its consumer fragment: partitioned, gather, arbitrary, or
+  /// broadcast (every consumer task receives a full copy). Broadcast and
+  /// arbitrary are produced only by a Repartition, but operators downstream of
+  /// a Repartition inherit that distribution since they operate on the
+  /// post-exchange data shape.
   const Distribution& distribution() const {
     return distribution_;
   }

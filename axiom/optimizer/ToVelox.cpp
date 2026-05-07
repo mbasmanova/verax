@@ -993,8 +993,7 @@ velox::core::PartitionFunctionSpecPtr createPartitionFunctionSpec(
             ->name()));
   }
 
-  if (const auto* partitionType =
-          distribution.distributionType().partitionType()) {
+  if (const auto* partitionType = distribution.partitionType()) {
     return partitionType->makeSpec(
         keyIndices, /*constants=*/{}, /*isLocal=*/false);
   }

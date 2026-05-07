@@ -116,86 +116,100 @@ struct DesiredDistribution {
   ExprVector partitionKeys;
 };
 
-/// Distribution of data. Describes a possible partition function that assigns a
-/// row of data to a partition based on some combination of partition keys. For
-/// a join to be copartitioned, both sides must have compatible partition
-/// functions and the join keys must include the partition keys.
-class DistributionType {
- public:
-  DistributionType(bool isGather = false)
-      : isGather_{isGather}, partitionType_{nullptr} {}
-
-  DistributionType(const connector::PartitionType* partitionType)
-      : isGather_{false}, partitionType_{partitionType} {}
-
-  bool operator==(const DistributionType& other) const = default;
-
-  static DistributionType gather() {
-    static const DistributionType kGather(true);
-    return kGather;
-  }
-
-  bool isGather() const {
-    return isGather_;
-  }
-
-  const connector::PartitionType* partitionType() const {
-    return partitionType_;
-  }
-
- private:
-  bool isGather_;
-
-  /// Partition function. nullptr is not partitioned.
-  const connector::PartitionType* partitionType_;
-};
-
-/// Describes output of relational operator. If this is partitioned on
-/// some keys, distributionType gives the partition function and
-/// 'partition' gives the input for the partition function.
+/// Describes output of relational operator. For most operators this reflects
+/// how the data is laid out across tasks. For Repartition, it describes the
+/// kind of exchange the Repartition emits. See RelationOp::distribution() for
+/// the full semantics.
 struct Distribution {
-  // TODO Distribution(/*broadcast=*/false) is used to specify *any*
-  // distribution. Provide a better way.
-  explicit Distribution(bool broadcast = false)
-      : numKeysUnique_{0}, isBroadcast_{broadcast} {}
+  /// Kind of distribution. Represents both the data layout for non-Repartition
+  /// operators and the exchange kind for Repartition.
+  enum class Kind {
+    /// No specific distribution is guaranteed. Not valid on Repartition.
+    kUnspecified,
+    /// Partitioned on `partitionKeys` using `partitionType` (connector-
+    /// specific) or standard Velox hash when `partitionType` is nullptr.
+    kPartitioned,
+    /// All rows on one task / one partition.
+    kGather,
+    /// Broadcast (every consumer task receives a full copy). Only valid on
+    /// Repartition.
+    kBroadcast,
+    /// Arbitrary / round-robin (any consumer task count, on-demand pull).
+    /// Only valid on Repartition.
+    kArbitrary,
+  };
+
+  AXIOM_DECLARE_EMBEDDED_ENUM_NAME(Kind);
+
+  Distribution() = default;
 
   Distribution(
-      DistributionType distributionType,
+      Kind kind,
+      const connector::PartitionType* partitionType,
       ExprVector partitionKeys,
       ExprVector orderKeys = {},
       OrderTypeVector orderTypes = {},
       int32_t numKeysUnique = 0,
       ExprVector clusterKeys = {},
       bool replicateNullsAndAny = false)
-      : distributionType_{distributionType},
+      : kind_{kind},
+        partitionType_{partitionType},
         partitionKeys_{std::move(partitionKeys)},
         orderKeys_{std::move(orderKeys)},
         orderTypes_{std::move(orderTypes)},
         numKeysUnique_{numKeysUnique},
-        isBroadcast_{false},
         replicateNullsAndAny_{replicateNullsAndAny},
         clusterKeys_{std::move(clusterKeys)} {
     VELOX_CHECK_EQ(orderKeys_.size(), orderTypes_.size());
-    if (isGather()) {
+    if (kind_ == Kind::kGather) {
       VELOX_CHECK_EQ(partitionKeys_.size(), 0);
     }
   }
 
+  /// Convenience constructor for hash partitioning.
+  Distribution(
+      const connector::PartitionType* partitionType,
+      ExprVector partitionKeys,
+      ExprVector orderKeys = {},
+      OrderTypeVector orderTypes = {},
+      int32_t numKeysUnique = 0,
+      ExprVector clusterKeys = {},
+      bool replicateNullsAndAny = false)
+      : Distribution{
+            Kind::kPartitioned,
+            partitionType,
+            std::move(partitionKeys),
+            std::move(orderKeys),
+            std::move(orderTypes),
+            numKeysUnique,
+            std::move(clusterKeys),
+            replicateNullsAndAny} {}
+
   /// Returns a Distribution for use in a broadcast shuffle.
   static Distribution broadcast() {
-    return Distribution{/*broadcast=*/true};
+    return {Kind::kBroadcast, /*partitionType=*/nullptr, /*partitionKeys=*/{}};
   }
 
-  /// Returns a distribution for an end of query gather from last stage
-  /// fragments. Specifying order will create a merging exchange when the
-  /// Distribution occurs in a Repartition.
-  static Distribution gather(
-      ExprVector orderKeys = {},
-      OrderTypeVector orderTypes = {}) {
-    static const DistributionType kGather(/*isGather=*/true);
+  /// Returns a Distribution for use in an arbitrary (round-robin) shuffle.
+  static Distribution arbitrary() {
+    return {Kind::kArbitrary, /*partitionType=*/nullptr, /*partitionKeys=*/{}};
+  }
+
+  /// Returns a distribution that gathers all rows to a single task. Used
+  /// wherever an operator requires a single task (e.g., final query gather,
+  /// LIMIT or ORDER BY in a subquery, global aggregation).
+  static Distribution gather() {
+    return {Kind::kGather, /*partitionType=*/nullptr, /*partitionKeys=*/{}};
+  }
+
+  /// Returns a distribution for an ordered gather. Creates a merging exchange
+  /// when the Distribution occurs in a Repartition.
+  static Distribution gather(ExprVector orderKeys, OrderTypeVector orderTypes) {
+    VELOX_CHECK_EQ(orderKeys.size(), orderTypes.size());
     return {
-        kGather,
-        {},
+        Kind::kGather,
+        /*partitionType=*/nullptr,
+        /*partitionKeys=*/{},
         std::move(orderKeys),
         std::move(orderTypes),
     };
@@ -213,16 +227,26 @@ struct Distribution {
   /// True if 'other' has the same ordering columns and order type.
   bool isSameOrder(const Distribution& other) const;
 
+  Kind kind() const {
+    return kind_;
+  }
+
   bool isGather() const {
-    return distributionType_.isGather();
+    return kind_ == Kind::kGather;
   }
 
   bool isBroadcast() const {
-    return isBroadcast_;
+    return kind_ == Kind::kBroadcast;
   }
 
-  const DistributionType& distributionType() const {
-    return distributionType_;
+  bool isArbitrary() const {
+    return kind_ == Kind::kArbitrary;
+  }
+
+  /// Connector-specific partitioning function, or nullptr if standard Velox
+  /// hash partitioning (or no partitioning).
+  const connector::PartitionType* partitionType() const {
+    return partitionType_;
   }
 
   const ExprVector& partitionKeys() const {
@@ -254,36 +278,39 @@ struct Distribution {
   std::string toString() const;
 
  private:
-  DistributionType distributionType_;
+  Kind kind_{Kind::kUnspecified};
 
-  /// Partitioning columns. The values of these columns determine which of
-  /// partition contains any given row. Should be used together with
-  /// DistributionType::partitionType.
+  // Connector-specific partition function. nullptr means standard Velox hash
+  // (when kind_ is kPartitioned) or no partitioning otherwise.
+  const connector::PartitionType* partitionType_{nullptr};
+
+  // Partitioning columns. The values of these columns determine which
+  // partition contains any given row. Used with `partitionType_` when
+  // `kind_ == kPartitioned`.
   ExprVector partitionKeys_;
 
-  /// Ordering columns. Each partition is ordered by these. Specifies that
-  /// streaming group by or merge join are possible.
+  // Ordering columns. Each partition is ordered by these. Specifies that
+  // streaming group by or merge join are possible.
   ExprVector orderKeys_;
 
-  /// Corresponds 1:1 to 'order'. The size of this gives the number of leading
-  /// columns of 'order' on which the data is sorted.
+  // Corresponds 1:1 to 'order'. The size of this gives the number of leading
+  // columns of 'order' on which the data is sorted.
   OrderTypeVector orderTypes_;
 
-  /// Number of leading elements of 'order' such that these uniquely identify a
-  /// row. 0 if there is no uniqueness. This can be non-0 also if data is not
-  /// sorted. This indicates a uniqueness for joining.
-  int32_t numKeysUnique_;
+  // Number of leading elements of 'order' such that these uniquely identify a
+  // row. 0 if there is no uniqueness. This can be non-0 also if data is not
+  // sorted. This indicates a uniqueness for joining.
+  int32_t numKeysUnique_{0};
 
-  bool isBroadcast_;
-
-  /// When true, rows with NULLs in partition keys are replicated to all
-  /// partitions and one arbitrary non-null row is also replicated. Required
-  /// for correct distributed execution of null-aware anti joins (NOT IN).
+  // When true, rows with NULLs in partition keys are replicated to all
+  // partitions and one arbitrary non-null row is also replicated. Required
+  // for correct distributed execution of null-aware anti joins (NOT IN). Only
+  // meaningful when this Distribution is used on a Repartition.
   bool replicateNullsAndAny_{false};
 
-  /// Clustering columns. Rows with the same values in these columns are
-  /// contiguous but not necessarily ordered. Enables streaming group by
-  /// when clustering keys are a subset of grouping keys.
+  // Clustering columns. Rows with the same values in these columns are
+  // contiguous but not necessarily ordered. Enables streaming group by
+  // when clustering keys are a subset of grouping keys.
   ExprVector clusterKeys_;
 };
 
@@ -435,3 +462,5 @@ class Schema {
 };
 
 } // namespace facebook::axiom::optimizer
+
+AXIOM_EMBEDDED_ENUM_FORMATTER(facebook::axiom::optimizer::Distribution, Kind);
