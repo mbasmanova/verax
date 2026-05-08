@@ -681,11 +681,10 @@ TEST_F(SetTest, filterOnDuplicateConstantInUnionAll) {
   auto plan = toSingleNodePlan(logicalPlan);
   AXIOM_ASSERT_PLAN(plan, buildMatcher().build());
 
-  // TODO: The distributed plan has a redundant gather since there are no
-  // table scans. Check isSingleThreadedPipeline in ToVelox.
+  // All-gather UnionAll output stays gather; no extra gather Repartition
+  // needed.
   auto distributedPlan = planVelox(logicalPlan);
-  AXIOM_ASSERT_DISTRIBUTED_PLAN(
-      distributedPlan.plan, buildMatcher().gather().build());
+  AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, buildMatcher().build());
 }
 
 // Same as above but with a table column referenced twice (SELECT x as a, x as
