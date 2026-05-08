@@ -354,7 +354,9 @@ bool Distribution::isSamePartition(const Distribution& other) const {
   if (kind() != other.kind() || partitionType() != other.partitionType()) {
     return false;
   }
-  if (isBroadcast()) {
+  if (isBroadcast() || isGather()) {
+    // Broadcast: every task gets all rows. Gather: one task gets all rows.
+    // Both are trivially co-partitioned with themselves.
     return true;
   }
   if (partitionKeys().size() != other.partitionKeys().size()) {

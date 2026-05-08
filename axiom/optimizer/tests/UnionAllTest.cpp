@@ -115,10 +115,10 @@ TEST_F(UnionAllTest, twoValues) {
   }
 
   {
-    auto matcher = matchValues()
-                       .localPartition(matchValues().project().build())
-                       .gather()
-                       .build();
+    // All-gather UnionAll output stays gather; no extra gather Repartition
+    // needed.
+    auto matcher =
+        matchValues().localPartition(matchValues().project().build()).build();
     AXIOM_ASSERT_DISTRIBUTED_PLAN(planVelox(logicalPlan).plan, matcher);
   }
 }
@@ -355,13 +355,16 @@ TEST_F(UnionAllTest, groupByOverTwoValues) {
   }
 
   {
-    // Even though the union is kSingle, the GROUP BY adds a hash shuffle
-    // to a separate kFixed N fragment for the FINAL agg.
+    // The union is kSingle (all-gather inputs); the GROUP BY's
+    // repartitionForAgg recognizes the gather distribution and skips the
+    // remote hash shuffle. Aggregation runs locally in the same fragment;
+    // an in-fragment LocalPartition[HASH] is added by ToVelox for
+    // multi-driver execution.
     auto matcher = matchValues()
                        .localPartition(matchValues().project().build())
-                       .distributedSingleAggregation({"c0"}, {"count(*)"})
+                       .localPartition({"c0"})
+                       .singleAggregation({"c0"}, {"count(*)"})
                        .project()
-                       .gather()
                        .build();
     AXIOM_ASSERT_DISTRIBUTED_PLAN(planVelox(logicalPlan).plan, matcher);
   }
