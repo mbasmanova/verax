@@ -3471,20 +3471,19 @@ void translateSetOperationInput(
 
 void ToGraph::translateUnion(const lp::SetNode& set) {
   auto* setDt = currentDt_;
-  setDt->setOp = set.operation();
+  const auto parentOperation = set.operation();
 
   auto shouldFlatten = [&](const lp::LogicalPlanNode& input) {
     if (input.kind() != lp::NodeKind::kSet) {
       return false;
     }
-    const auto inputSetOp = input.as<lp::SetNode>()->operation();
-    const auto parentSetOp = setDt->setOp;
-    if (inputSetOp == parentSetOp) {
+    const auto inputOperation = input.as<lp::SetNode>()->operation();
+    if (inputOperation == parentOperation) {
       // Same set operation can be flattened.
       return true;
     }
-    if (inputSetOp == lp::SetOperation::kUnionAll &&
-        parentSetOp == lp::SetOperation::kUnion) {
+    if (inputOperation == lp::SetOperation::kUnionAll &&
+        parentOperation == lp::SetOperation::kUnion) {
       // UNION ALL can be flattened into UNION.
       return true;
     }
@@ -3529,14 +3528,31 @@ void ToGraph::translateUnion(const lp::SetNode& set) {
       newDt->columns = setDt->columns;
     }
 
-    setDt->children.push_back(newDt);
+    setDt->unionInputs.push_back(newDt);
   };
 
   translateSetOperationInput(set, shouldFlatten, translateUnionInput);
 
   setDt->outputColumns = setDt->columns;
-  for (auto* child : setDt->children) {
+  for (auto* child : setDt->unionInputs) {
     child->outputColumns = setDt->columns;
+  }
+
+  // Lower UNION DISTINCT to UNION ALL + GROUP BY (group on every output
+  // column, no aggregates). The flattening above used the original
+  // operation, so nested UNION DISTINCTs collapsed to one setDt with
+  // children flattened as needed; only the outer dedup remains.
+  if (parentOperation == lp::SetOperation::kUnion) {
+    ExprVector groupingKeys;
+    groupingKeys.reserve(setDt->columns.size());
+    for (auto* column : setDt->columns) {
+      groupingKeys.push_back(column);
+    }
+    setDt->aggregation = make<AggregationPlan>(
+        std::move(groupingKeys),
+        AggregateVector{},
+        setDt->columns,
+        setDt->columns);
   }
 
   renames_ = std::move(renames);

@@ -33,10 +33,12 @@ class SetTest : public test::HiveQueriesTestBase {
  protected:
   static void SetUpTestCase() {
     test::HiveQueriesTestBase::SetUpTestCase();
-    createTpchTables(
-        {velox::tpch::Table::TBL_NATION,
-         velox::tpch::Table::TBL_PART,
-         velox::tpch::Table::TBL_PARTSUPP});
+    createTpchTables({
+        velox::tpch::Table::TBL_REGION,
+        velox::tpch::Table::TBL_NATION,
+        velox::tpch::Table::TBL_PART,
+        velox::tpch::Table::TBL_PARTSUPP,
+    });
   }
 };
 
@@ -685,6 +687,97 @@ TEST_F(SetTest, filterOnDuplicateConstantInUnionAll) {
   // needed.
   auto distributedPlan = planVelox(logicalPlan);
   AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, buildMatcher().build());
+}
+
+// UNION DISTINCT over all-gather inputs (e.g., constant Values) plans as a
+// single fragment with no remote shuffles. The dedup runs locally because
+// all data is already on a single task.
+TEST_F(SetTest, unionDistinctOverGatherInputs) {
+  auto logicalPlan = parseSelect("SELECT 1 AS k UNION SELECT 2");
+
+  AXIOM_ASSERT_PLAN(
+      toSingleNodePlan(logicalPlan),
+      matchValues()
+          .project()
+          .localPartition(matchValues().project().build())
+          .singleAggregation({"k"}, {})
+          .build());
+
+  // TODO: The inner localPartition({"k"}) is a redundant hash repartition
+  // immediately after the round-robin local merge from UnionAll. ToVelox's
+  // makeAggregation adds it for multi-driver hash co-location even though
+  // the round-robin just spread the data. Folding the two would let
+  // makeAggregation skip this step.
+  AXIOM_ASSERT_DISTRIBUTED_PLAN(
+      planVelox(logicalPlan).plan,
+      matchValues()
+          .project()
+          .localPartition(matchValues().project().build())
+          .localPartition({"k"})
+          .singleAggregation({"k"}, {})
+          .build());
+}
+
+// A nondeterministic filter pushes below UNION ALL (no dedup → safe) but
+// must stay above UNION DISTINCT's dedup — pushing it into the legs would
+// let each duplicate row evaluate the predicate independently before dedup,
+// changing query semantics.
+//
+// The filter references a column (`k > rand()` rather than
+// `rand() < 0.5`) so that distributeConjuncts considers it for pushdown
+// (the pushdown path requires the conjunct to reference a single table).
+TEST_F(SetTest, nondeterministicFilterAboveUnion) {
+  // UNION ALL: filter pushes into both scan legs (no dedup → safe). The
+  // pushed predicate becomes a TableScan column filter; an extra Filter
+  // node above the union no longer exists.
+  {
+    auto logicalPlan = parseSelect(
+        "SELECT k FROM (SELECT n_nationkey AS k FROM nation "
+        "UNION ALL SELECT r_regionkey AS k FROM region) WHERE k > rand()");
+
+    auto buildMatcher = [&] {
+      return core::PlanMatcherBuilder()
+          .hiveScan("nation", {}, "cast(n_nationkey as double) > rand()")
+          .project()
+          .localPartition(
+              core::PlanMatcherBuilder()
+                  .hiveScan(
+                      "region", {}, "cast(r_regionkey as double) > rand()")
+                  .project()
+                  .build());
+    };
+
+    AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), buildMatcher().build());
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(
+        planVelox(logicalPlan).plan, buildMatcher().gather().build());
+  }
+
+  // UNION DISTINCT: filter stays above the aggregation (dedup), not pushed
+  // into the scan legs.
+  {
+    auto logicalPlan = parseSelect(
+        "SELECT k FROM (SELECT n_nationkey AS k FROM nation "
+        "UNION SELECT r_regionkey AS k FROM region) WHERE k > rand()");
+
+    AXIOM_ASSERT_PLAN(
+        toSingleNodePlan(logicalPlan),
+        matchHiveScan("nation")
+            .project()
+            .localPartition(matchHiveScan("region").project().build())
+            .singleAggregation({"k"}, {})
+            .filter("cast(k as double) > rand()")
+            .build());
+
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(
+        planVelox(logicalPlan).plan,
+        matchHiveScan("nation")
+            .project()
+            .localPartition(matchHiveScan("region").project().build())
+            .distributedAggregation({"k"}, {})
+            .filter("cast(k as double) > rand()")
+            .gather()
+            .build());
+  }
 }
 
 // Same as above but with a table column referenced twice (SELECT x as a, x as
