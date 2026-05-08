@@ -399,15 +399,18 @@ bool LocalRunner::waitForCompletion(int32_t maxWaitMicros) {
 }
 
 namespace {
-bool isBroadcast(const velox::core::PlanFragment& fragment) {
-  if (auto partitionedOutputNode =
-          std::dynamic_pointer_cast<const velox::core::PartitionedOutputNode>(
-              fragment.planNode)) {
-    return partitionedOutputNode->kind() ==
-        velox::core::PartitionedOutputNode::Kind::kBroadcast;
+// Returns true if the producer needs updateOutputBuffers to be called with the
+// number of consumer tasks. Broadcast and arbitrary outputs need this because
+// the producer doesn't know the consumer count from the plan alone.
+bool needsOutputBufferUpdate(const velox::core::PlanFragment& fragment) {
+  auto partitionedOutputNode =
+      std::dynamic_pointer_cast<const velox::core::PartitionedOutputNode>(
+          fragment.planNode);
+  if (!partitionedOutputNode) {
+    return false;
   }
-
-  return false;
+  return partitionedOutputNode->isBroadcast() ||
+      partitionedOutputNode->isArbitrary();
 }
 
 void gatherScans(
@@ -454,7 +457,7 @@ void LocalRunner::makeStages(
        ++fragmentIndex) {
     const auto& fragment = fragments_[fragmentIndex];
     stageMap[fragment.taskPrefix] = {
-        stages_.size(), isBroadcast(fragment.fragment)};
+        stages_.size(), needsOutputBufferUpdate(fragment.fragment)};
     stages_.emplace_back();
 
     auto numTasks = fragment.width.value_or(
@@ -504,7 +507,7 @@ void LocalRunner::makeStages(
       }
 
       for (const auto& input : fragment.inputStages) {
-        const auto [sourceStage, broadcast] =
+        const auto [sourceStage, needsUpdate] =
             stageMap[input.producerTaskPrefix];
 
         std::vector<std::shared_ptr<velox::exec::RemoteConnectorSplit>>
@@ -512,7 +515,7 @@ void LocalRunner::makeStages(
         for (const auto& task : stages_[sourceStage]) {
           sourceSplits.push_back(remoteSplit(task->taskId()));
 
-          if (broadcast) {
+          if (needsUpdate) {
             task->updateOutputBuffers(static_cast<int>(stage.size()), true);
           }
         }

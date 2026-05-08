@@ -575,7 +575,8 @@ void checkProducerConsumerLinkage(
           "Expected PartitionedOutputNode at root of producer fragment: {}",
           producer.taskPrefix);
 
-      if (partitionedOutput->isBroadcast()) {
+      if (partitionedOutput->isBroadcast() ||
+          partitionedOutput->isArbitrary()) {
         continue;
       }
 

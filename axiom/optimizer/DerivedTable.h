@@ -119,6 +119,17 @@ struct DerivedTable : public PlanObject {
   /// is empty. The children hold the per-leg expressions.
   // TODO: Rename setOp -> unionOp. Only UNION and UNION ALL use this
   // structure. INTERSECT and EXCEPT are translated to joins.
+  //
+  // TODO: Drop UNION (DISTINCT) from this representation entirely — it is
+  // conceptually UNION ALL followed by Aggregation(grouping = all output
+  // columns, no aggregates) and should be lowered that way in
+  // makeQueryGraph. This eliminates the special UNION DISTINCT path in
+  // makeUnionPlan (inline makeDistinct + somePartition force-shuffle), which
+  // exists today only because the inline single-step Aggregation isn't
+  // routed through aggregationPlanner_ and so doesn't get partial+final
+  // splits or distribution-aware planning. After lowering, UNION DISTINCT
+  // plans identically to "UNION ALL ... GROUP BY all_cols" and the
+  // hint-vs-requirement rule for desired distribution applies uniformly.
   ///
   /// A UNION ALL produces a single result set — each leg contributes rows
   /// to the same output columns. The output schema is defined once on the
