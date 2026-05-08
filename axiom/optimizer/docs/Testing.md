@@ -273,6 +273,22 @@ SELECT element_at(filter(ARRAY[1, 2, 3], x -> x > 5), 1)
 SELECT *, sum(b) OVER (PARTITION BY a) AS total_b FROM t
 ```
 
+**`-- duckdb:` is for syntax/semantic differences only.** If the same SQL text would parse and produce the right answer in DuckDB, omit the annotation — duplicating the query is noise. Legitimate uses:
+
+- DuckDB doesn't support a Presto construct.
+- DuckDB has different semantics than Presto for the same syntax (e.g., DuckDB silently ignores the ALL keyword in `EXCEPT ALL` / `INTERSECT ALL` and returns DISTINCT results — see `set.sql`).
+- Express the expected result via a simpler reference query that's easier to reason about than the query under test.
+
+```sql
+-- ❌ Avoid — `-- duckdb:` text is identical to the query.
+-- duckdb: SELECT a, b FROM t WHERE a > 1
+SELECT a, b FROM t WHERE a > 1
+
+-- ✅ Use when DuckDB's semantics differ; hardcode the expected result.
+-- duckdb: VALUES (1), (1), (1), (2), (2), (2), (2), (2)
+SELECT a FROM t WHERE a < 3 EXCEPT ALL ...
+```
+
 Each query in a `.sql` file becomes a separate gtest (e.g., `SqlTest.basic_l22` for the query at line 22 of `basic.sql`). Run them with:
 ```bash
 buck test fbcode//axiom/optimizer/tests:sql
