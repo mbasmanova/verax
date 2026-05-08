@@ -53,6 +53,28 @@ auto detailed = PlanMatcherBuilder()
 
 Node-only matching (no arguments) should be reserved for local development and debugging. Checked-in tests should verify the details relevant to the optimization being tested.
 
+#### Test comments
+
+Test comments should describe **what behavior the test verifies**, not the history that led to writing it or how the optimizer happens to implement it today.
+
+```cpp
+// ❌ Avoid — historical / implementation detail.
+// Regression: outer filter pushed into a UNION DISTINCT leg that becomes
+// zero-rows previously failed in checkConsistency with "Size mismatch
+// between joinOrder and tables" (clearState reset tables but not
+// joinOrder, leaving stale entries when the leg DT was reused).
+TEST_F(SetTest, ...) { ... }
+
+// ✅ Prefer — describe the behavior under test.
+// UNION DISTINCT with an outer filter that pushes into the legs and
+// reduces one to zero rows: dedup still applies to the surviving leg.
+TEST_F(SetTest, ...) { ... }
+```
+
+The bug story rots: original failure modes change, internal class names get renamed, line numbers shift. The behavior the test verifies stays stable — that's what future readers (and you, six months later) need to understand the test.
+
+The bug story belongs in the commit message and the diff/PR description, where readers know to look for historical context. Don't duplicate it into the test code.
+
 #### Alias propagation
 
 The optimizer generates internal column names (e.g., `dt3.__p12`) that are implementation details subject to change without notice. PlanMatcher handles this via **alias capture and propagation**: you assign test-defined aliases in aggregations and projects, then reference them in subsequent matchers. The test fully controls these names, making them independent of optimizer internals. The framework rewrites your aliases to actual column names during matching.
