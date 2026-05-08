@@ -168,26 +168,26 @@ float compositeNdv(PlanObjectCP table, const ExprVector& keys) {
 
 } // namespace
 
-void DerivedTable::checkSetOpConsistency() const {
+void DerivedTable::checkUnionConsistency() const {
   VELOX_CHECK(
-      setOp.value() == logical_plan::SetOperation::kUnion ||
-          setOp.value() == logical_plan::SetOperation::kUnionAll,
-      "setOp must be union or unionAll: {}, {}",
-      cname,
-      logical_plan::SetOperationName::toName(setOp.value()));
-  VELOX_CHECK_EQ(
-      tables.size(), 0, "tables must be empty for set operation: {}", cname);
-  VELOX_CHECK(
-      exprs.empty(), "exprs must be empty for set operation: {}", cname);
+      isUnion(), "checkUnionConsistency called on non-union DT: {}", cname);
+  VELOX_CHECK_EQ(tables.size(), 0, "tables must be empty for union: {}", cname);
+  VELOX_CHECK(exprs.empty(), "exprs must be empty for union: {}", cname);
   VELOX_CHECK_GE(
-      children.size(),
+      unionInputs.size(),
       2,
-      "set operation must have at least 2 children: {}",
+      "set operation must have at least 2 unionInputs: {}",
       cname);
 
-  // Union DT cannot have post-processing.
-  VELOX_CHECK_NULL(
-      aggregation, "Union DT must not have aggregation: {}", cname);
+  // The only aggregation allowed is UNION DISTINCT's dedup: GROUP BY all
+  // output columns, no aggregates.
+  if (aggregation != nullptr) {
+    VELOX_CHECK(
+        aggregation->aggregates().empty(),
+        "Union DT aggregation must have no aggregates (only grouping keys "
+        "for UNION DISTINCT dedup): {}",
+        cname);
+  }
   VELOX_CHECK_NULL(windowPlan, "Union DT must not have windowPlan: {}", cname);
   VELOX_CHECK(having.empty(), "Union DT must not have having: {}", cname);
   VELOX_CHECK(conjuncts.empty(), "Union DT must not have conjuncts: {}", cname);
@@ -213,7 +213,7 @@ void DerivedTable::checkSetOpConsistency() const {
   // Each child's columns must contain the parent's columns (shared Column
   // objects) and have 1:1 exprs. Exprs must reference only the child's own
   // tables or the child itself.
-  for (const auto* child : children) {
+  for (const auto* child : unionInputs) {
     VELOX_CHECK_GE(
         child->columns.size(),
         columns.size(),
@@ -252,8 +252,8 @@ void DerivedTable::checkSetOpConsistency() const {
 void DerivedTable::checkConsistency() const {
   VELOX_CHECK_NOT_NULL(cname);
 
-  if (setOp.has_value()) {
-    checkSetOpConsistency();
+  if (isUnion()) {
+    checkUnionConsistency();
     return;
   }
 
@@ -317,9 +317,9 @@ void DerivedTable::checkConsistency() const {
   }
 
   VELOX_CHECK_EQ(
-      children.size(),
+      unionInputs.size(),
       0,
-      "children must be empty for non-set-operation: {}",
+      "unionInputs must be empty for non-set-operation: {}",
       cname);
   VELOX_CHECK_GT(
       tables.size(),
@@ -574,7 +574,7 @@ void DerivedTable::initializePlans() {
 void DerivedTable::distributeAllConjuncts() {
   distributeConjuncts();
 
-  if (!setOp.has_value()) {
+  if (!isUnion()) {
     for (auto* table : tables) {
       if (table->is(PlanType::kDerivedTableNode)) {
         const_cast<PlanObject*>(table)
@@ -583,16 +583,16 @@ void DerivedTable::distributeAllConjuncts() {
       }
     }
   } else {
-    for (auto* child : children) {
+    for (auto* child : unionInputs) {
       child->distributeAllConjuncts();
     }
   }
 }
 
 void DerivedTable::finalizeJoinsAndMakePlans() {
-  if (!setOp.has_value()) {
+  if (!isUnion()) {
     VELOX_CHECK(!tables.empty());
-    VELOX_CHECK(children.empty());
+    VELOX_CHECK(unionInputs.empty());
 
     for (auto* table : tables) {
       if (table->is(PlanType::kDerivedTableNode)) {
@@ -603,16 +603,16 @@ void DerivedTable::finalizeJoinsAndMakePlans() {
     }
   } else {
     VELOX_CHECK(tables.empty());
-    VELOX_CHECK(!children.empty());
+    VELOX_CHECK(!unionInputs.empty());
 
-    for (auto* child : children) {
+    for (auto* child : unionInputs) {
       child->finalizeJoinsAndMakePlans();
     }
 
-    // Set initial cardinality as the sum of children's cardinalities so that
+    // Set initial cardinality as the sum of unionInputs's cardinalities so that
     // makeInitialPlan can use it when estimating groups for makeDistinct.
     cardinality = 0;
-    for (const auto* child : children) {
+    for (const auto* child : unionInputs) {
       cardinality += child->cardinality;
     }
   }
@@ -964,7 +964,7 @@ void DerivedTable::import(
   VELOX_DCHECK(joins.empty());
   VELOX_DCHECK(!superTables.empty());
   VELOX_DCHECK(superTables.contains(primaryTable));
-  VELOX_DCHECK(!super.setOp.has_value(), "Cannot import from a union DT");
+  VELOX_DCHECK(!super.isUnion(), "Cannot import from a union DT");
 
   copySubset(super, superTables);
 
@@ -1489,11 +1489,11 @@ findJoin(DerivedTableP dt, std::vector<PlanObjectP>& tables, bool create) {
   return nullptr;
 }
 
-// Check if a non-UNION DT has a limit or one of the children of a UNION DT
+// Check if a non-UNION DT has a limit or one of the unionInputs of a UNION DT
 // has a limit.
 bool dtHasLimit(const DerivedTable& dt) {
-  if (dt.setOp.has_value()) {
-    for (const auto& child : dt.children) {
+  if (dt.isUnion()) {
+    for (const auto& child : dt.unionInputs) {
       if (child->is(PlanType::kDerivedTableNode) &&
           child->as<DerivedTable>()->hasLimit()) {
         return true;
@@ -1895,8 +1895,7 @@ void DerivedTable::clearState() {
   having.clear();
   aggregation = nullptr;
   windowPlan = nullptr;
-  children.clear();
-  setOp = std::nullopt;
+  unionInputs.clear();
   orderKeys.clear();
   orderTypes.clear();
   limit = -1;
@@ -1944,7 +1943,7 @@ DerivedTable* DerivedTable::wrapChildWithFilter(
   auto* wrapper = make<DerivedTable>();
   wrapper->cname = queryCtx()->optimization()->newCName("wdt");
 
-  // In a set operation, all children share Column objects whose relation_
+  // In a set operation, all unionInputs share Column objects whose relation_
   // points to the parent set DT. Create new intermediate columns with relation_
   // = child so that the wrapper's importExpr translates the conjunct into
   // child-column space. Without this, the conjunct would reference the set DT
@@ -1976,26 +1975,24 @@ bool DerivedTable::addFilter(ExprCP conjunct) {
     return false;
   }
 
-  if (setOp.has_value()) {
-    for (auto i = 0; i < children.size(); ++i) {
-      if (!children[i]->addFilter(conjunct)) {
+  if (isUnion()) {
+    for (auto i = 0; i < unionInputs.size(); ++i) {
+      if (!unionInputs[i]->addFilter(conjunct)) {
         // The child cannot accept the filter (e.g. it has a window or limit).
         // Wrap the child in a new DT that holds the filter above it.
-        children[i] = wrapChildWithFilter(children[i], conjunct);
+        unionInputs[i] = wrapChildWithFilter(unionInputs[i], conjunct);
       }
     }
 
-    if (setOp.value() == logical_plan::SetOperation::kUnionAll) {
-      // Drop children that became zero-rows after filter pushdown.
+    if (isUnionAll()) {
       std::erase_if(
-          children, [](const auto* child) { return child->isZeroRows(); });
+          unionInputs, [](const auto* child) { return child->isZeroRows(); });
 
-      if (children.size() == 1) {
-        auto* only = children[0];
-        children.clear();
-        setOp = std::nullopt;
+      if (unionInputs.size() == 1) {
+        auto* only = unionInputs[0];
+        unionInputs.clear();
         flattenDt(only);
-      } else if (children.empty()) {
+      } else if (unionInputs.empty()) {
         makeEmpty();
       }
     }
@@ -2088,14 +2085,13 @@ void DerivedTable::distributeConjuncts() {
   expandConjuncts(conjuncts);
 
   // A nondeterminstic filter can be pushed down past a cardinality
-  // neutral border. This is either a single leaf table or a union all
-  // of dts.
+  // neutral border. This is either a single leaf table or a pure UNION
+  // ALL of dts (no dedup aggregation — pushing below dedup would let each
+  // duplicate row evaluate the predicate independently).
   const bool allowNondeterministic = tables.size() == 1 &&
       (tables[0]->is(PlanType::kTableNode) ||
        (tables[0]->is(PlanType::kDerivedTableNode) &&
-        tables[0]->as<DerivedTable>()->setOp.has_value() &&
-        tables[0]->as<DerivedTable>()->setOp.value() ==
-            logical_plan::SetOperation::kUnionAll));
+        tables[0]->as<DerivedTable>()->isUnionAll()));
 
   tryConvertOuterJoins(allowNondeterministic);
 
@@ -2258,8 +2254,8 @@ bool DerivedTable::tryPushdownConjunct(
       return false;
     }
 
-    if (innerDt->setOp.has_value()) {
-      for (auto* child : innerDt->children) {
+    if (innerDt->isUnion()) {
+      for (auto* child : innerDt->unionInputs) {
         pushBackUnique(changedDts, child);
       }
     } else {

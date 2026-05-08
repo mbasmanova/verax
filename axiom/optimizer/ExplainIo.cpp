@@ -110,7 +110,7 @@ void collectBaseTables(
       collectBaseTables(table->as<DerivedTable>(), baseTables);
     }
   }
-  for (auto* child : dt->children) {
+  for (auto* child : dt->unionInputs) {
     collectBaseTables(child, baseTables);
   }
 }

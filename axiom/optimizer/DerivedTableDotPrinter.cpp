@@ -249,7 +249,7 @@ void printJoinEdges(const DerivedTable& dt, std::ostream& out) {
     out << " dt" << dt.id() << "_" << cname(table) << ";";
   }
 
-  for (auto* table : dt.children) {
+  for (auto* table : dt.unionInputs) {
     out << " dt" << dt.id() << "_" << cname(table) << ";";
   }
   out << "}\n\n";
@@ -269,7 +269,7 @@ void printJoinEdges(const DerivedTable& dt, std::ostream& out) {
         << "\"];\n";
   }
 
-  for (auto* table : dt.children) {
+  for (auto* table : dt.unionInputs) {
     out << "    dt" << dt.id() << "_" << cname(table) << " [label=\""
         << cname(table) << "\", ";
     // Rounded square for derived tables.
@@ -286,9 +286,10 @@ void printJoinEdges(const DerivedTable& dt, std::ostream& out) {
         << cname(dt.tables[dt.tables.size() / 2]) << " [style=invis];\n\n";
   }
 
-  if (!dt.children.empty()) {
+  if (!dt.unionInputs.empty()) {
     out << "    dt" << dt.id() << "_header -> dt" << dt.id() << "_"
-        << cname(dt.children[dt.children.size() / 2]) << " [style=invis];\n\n";
+        << cname(dt.unionInputs[dt.unionInputs.size() / 2])
+        << " [style=invis];\n\n";
   }
 
   int joinNum = 1;
@@ -339,13 +340,13 @@ void printDerivedTableCluster(
          "CELLPADDING=\"4\">\n";
   out << "        <TR><TD BGCOLOR=\"" << kPalette.header << "\" WIDTH=\""
       << headerWidth << "\"><B>" << escapeHtml(dt.cname);
-  if (dt.setOp.has_value()) {
-    out << " " << logical_plan::SetOperationName::toName(dt.setOp.value());
+  if (dt.isUnion()) {
+    out << " UNION ALL";
   }
   out << "</B></TD></TR>\n";
 
   // Output columns.
-  if (dt.setOp.has_value()) {
+  if (dt.isUnion()) {
     for (auto* col : dt.columns) {
       printRow(out, escapeHtml(col->name()));
     }
@@ -500,12 +501,12 @@ void printDerivedTableWithChildren(
     printAllTables(table, out);
   }
 
-  for (const auto* child : dt.children) {
+  for (const auto* child : dt.unionInputs) {
     printAllTables(child, out);
   }
 
   auto children = dt.tables;
-  for (const auto* child : dt.children) {
+  for (const auto* child : dt.unionInputs) {
     children.push_back(child);
   }
 

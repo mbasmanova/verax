@@ -185,13 +185,13 @@ std::string visitDerivedTable(const DerivedTable& dt) {
   std::stringstream out;
   out << headerLine(dt.cname, dt.cardinality, dt.columns);
 
-  if (dt.setOp.has_value()) {
+  if (dt.isUnion()) {
     VELOX_CHECK_EQ(0, dt.exprs.size());
   } else {
     VELOX_CHECK_EQ(dt.columns.size(), dt.exprs.size());
   }
 
-  if (!dt.setOp.has_value()) {
+  if (!dt.isUnion()) {
     out << "  output:" << std::endl;
     for (auto i = 0; i < dt.columns.size(); ++i) {
       out << "    " << dt.columns.at(i)->name()
@@ -299,11 +299,10 @@ std::string visitDerivedTable(const DerivedTable& dt) {
     }
   }
 
-  if (dt.setOp.has_value()) {
-    out << "  " << logical_plan::SetOperationName::toName(dt.setOp.value())
-        << ": ";
+  if (dt.isUnion()) {
+    out << "  UNION ALL: ";
     int32_t i = 0;
-    for (const auto* child : dt.children) {
+    for (const auto* child : dt.unionInputs) {
       if (i > 0) {
         out << ", ";
       }
@@ -312,7 +311,7 @@ std::string visitDerivedTable(const DerivedTable& dt) {
     }
     out << std::endl;
 
-    for (const auto* child : dt.children) {
+    for (const auto* child : dt.unionInputs) {
       out << std::endl;
       out << visitDerivedTable(*child);
     }

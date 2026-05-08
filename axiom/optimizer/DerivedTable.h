@@ -85,8 +85,8 @@ struct DerivedTable : public PlanObject {
   /// HAVING, ORDER BY, etc.
   ColumnVector columns;
 
-  /// Exprs projected out. 1:1 to 'columns' or empty if 'this' represents a set
-  /// operation (setOp is set).
+  /// Exprs projected out. 1:1 to 'columns' or empty if 'this' is a UNION
+  /// ALL (isUnion is true).
   ExprVector exprs;
 
   /// Ordered list of columns this DT produces as output. Subset of 'columns'.
@@ -114,48 +114,46 @@ struct DerivedTable : public PlanObject {
   /// 'tableSet' are not considered.
   PlanObjectSet tableSet;
 
-  /// Set if this is a union or unionAll. If set, 'children' has at least 2
-  /// operands. When setOp is set, 'tables' and 'joins' are empty and 'exprs'
-  /// is empty. The children hold the per-leg expressions.
-  // TODO: Rename setOp -> unionOp. Only UNION and UNION ALL use this
-  // structure. INTERSECT and EXCEPT are translated to joins.
-  //
-  // TODO: Drop UNION (DISTINCT) from this representation entirely — it is
-  // conceptually UNION ALL followed by Aggregation(grouping = all output
-  // columns, no aggregates) and should be lowered that way in
-  // makeQueryGraph. This eliminates the special UNION DISTINCT path in
-  // makeUnionPlan (inline makeDistinct + somePartition force-shuffle), which
-  // exists today only because the inline single-step Aggregation isn't
-  // routed through aggregationPlanner_ and so doesn't get partial+final
-  // splits or distribution-aware planning. After lowering, UNION DISTINCT
-  // plans identically to "UNION ALL ... GROUP BY all_cols" and the
-  // hint-vs-requirement rule for desired distribution applies uniformly.
+  /// Per-leg DTs of a UNION ALL. Has at least 2 entries for a union DT and
+  /// is empty for a non-union DT. When non-empty, 'tables', 'joins', and
+  /// 'exprs' are empty; the per-leg DTs hold the per-leg expressions.
+  /// ToGraph translates INTERSECT and EXCEPT to joins, and lowers UNION
+  /// DISTINCT to UNION ALL + GROUP BY all columns (the dedup lives on this
+  /// DT's `aggregation`).
   ///
   /// A UNION ALL produces a single result set — each leg contributes rows
   /// to the same output columns. The output schema is defined once on the
-  /// parent, and all children feed into it. No child "owns" the output
-  /// columns; the parent does. Each child's 'exprs' describes how that
-  /// child populates the shared output columns.
+  /// parent, and all legs feed into it. No leg "owns" the output columns;
+  /// the parent does. Each leg's 'exprs' describes how that leg populates
+  /// the shared output columns.
   ///
   /// Column structure:
   ///
   ///   setDt (parent):
   ///     columns = [col_a, col_b, ...]  (relation_ == setDt)
-  ///     exprs = {}                     (empty — setOp DTs have no exprs)
+  ///     exprs = {}                     (empty — union DTs have no exprs)
   ///     outputColumns = columns
   ///
-  ///   child DTs:
+  ///   leg DTs:
   ///     columns contains setDt->columns (shared Column objects from parent,
-  ///             plus possibly the child's own columns from makeQueryGraph)
-  ///     exprs = [expr_a, expr_b, ...]  (1:1 with columns, reference child's
-  ///                                     internal tables or child's own
+  ///             plus possibly the leg's own columns from makeQueryGraph)
+  ///     exprs = [expr_a, expr_b, ...]  (1:1 with columns, reference the
+  ///                                     leg's internal tables or its own
   ///                                     aggregation/window output columns)
   ///     outputColumns = setDt->columns
-  std::optional<logical_plan::SetOperation> setOp;
+  QGVector<DerivedTable*> unionInputs;
 
-  /// Operands if 'this' is a union or unionAll. Has at least 2 entries when
-  /// 'setOp' is set.
-  QGVector<DerivedTable*> children;
+  /// True if this DT is a UNION or UNION ALL.
+  bool isUnion() const {
+    return !unionInputs.empty();
+  }
+
+  /// True if this DT is a UNION ALL without a dedup aggregation. UNION
+  /// DISTINCT is lowered in ToGraph to UNION ALL + an aggregation grouping
+  /// on all output columns; isUnionAll() returns false in that case.
+  bool isUnionAll() const {
+    return isUnion() && aggregation == nullptr;
+  }
 
   /// Single row tables from non-correlated scalar subqueries.
   PlanObjectSet singleRowDts;
@@ -422,7 +420,7 @@ struct DerivedTable : public PlanObject {
   void finalizeJoinsAndMakePlans();
 
   // Asserts invariants specific to union / unionAll DerivedTables.
-  void checkSetOpConsistency() const;
+  void checkUnionConsistency() const;
 
   // Updates cardinality and column constraints from the plan.
   void updateConstraints(const RelationOp& plan);

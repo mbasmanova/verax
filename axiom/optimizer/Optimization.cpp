@@ -84,8 +84,8 @@ void Optimization::estimateLeafSelectivity(BaseTable& baseTable) {
 
 namespace {
 void collectBaseTables(DerivedTable* dt, std::vector<BaseTable*>& baseTables) {
-  if (dt->setOp.has_value()) {
-    for (auto* child : dt->children) {
+  if (dt->isUnion()) {
+    for (auto* child : dt->unionInputs) {
       collectBaseTables(child, baseTables);
     }
   } else {
@@ -2845,55 +2845,8 @@ ColumnVector indexColumns(
   return result;
 }
 
-RelationOpPtr makeDistinct(const RelationOpPtr& input) {
-  ExprVector groupingKeys;
-  for (const auto& column : input->columns()) {
-    groupingKeys.push_back(column);
-  }
-
-  return make<Aggregation>(
-      input,
-      groupingKeys,
-      /*preGroupedKeys*/ ExprVector{},
-      AggregateVector{},
-      velox::core::AggregationNode::Step::kSingle,
-      input->columns());
-}
-
-Distribution somePartition(const RelationOpPtrVector& inputs) {
-  float card = 1;
-
-  // A simple type and many values is a good partitioning key.
-  auto score = [&](ColumnCP column) {
-    const auto& value = column->value();
-    const auto card = value.cardinality;
-    return value.type->kind() >= velox::TypeKind::ARRAY ? card / 10000 : card;
-  };
-
-  const auto& firstInput = inputs[0];
-  auto inputColumns = firstInput->columns();
-  std::ranges::sort(inputColumns, [&](ColumnCP left, ColumnCP right) {
-    return score(left) > score(right);
-  });
-
-  ExprVector columns;
-  for (const auto* column : inputColumns) {
-    card *= column->value().cardinality;
-    columns.push_back(column);
-    if (card > 100'000) {
-      break;
-    }
-  }
-
-  return {/*partitionType=*/nullptr, std::move(columns)};
-}
-
-// Adds the costs in the input states to the first state and if 'distinct' is
-// not null adds the cost of that to the first state.
-PlanP unionPlan(
-    std::vector<PlanState>& states,
-    const RelationOpPtr& result,
-    Aggregation* distinct) {
+// Adds the costs in the input states to the first state.
+PlanP unionPlan(std::vector<PlanState>& states, const RelationOpPtr& result) {
   auto& firstState = states[0];
 
   for (auto i = 1; i < states.size(); ++i) {
@@ -2901,9 +2854,6 @@ PlanP unionPlan(
 
     firstState.cost.cost += otherCost.cost;
     firstState.cost.cardinality += otherCost.cardinality;
-  }
-  if (distinct) {
-    firstState.addCost(*distinct);
   }
   return make<Plan>(result, states[0]);
 }
@@ -3079,10 +3029,10 @@ RelationOpPtr Optimization::makeInitialPlan(const DerivedTable& dt) {
   PlanState state(*this, &dt);
   RelationOpPtr result;
 
-  if (dt.setOp.has_value()) {
+  if (dt.isUnion()) {
     // Union: assemble from already-planned children.
     RelationOpPtrVector childOps;
-    for (auto* childDt : dt.children) {
+    for (auto* childDt : dt.unionInputs) {
       auto* plans = memo_.find(childDt->memoKey());
       VELOX_CHECK(
           plans != nullptr, "Expecting to find a plan for union branch");
@@ -3090,8 +3040,8 @@ RelationOpPtr Optimization::makeInitialPlan(const DerivedTable& dt) {
     }
 
     result = make<UnionAll>(std::move(childOps));
-    if (dt.setOp.value() == logical_plan::SetOperation::kUnion) {
-      result = makeDistinct(result);
+    if (dt.aggregation) {
+      addAggregation(&dt, result, state);
     }
 
     state.plans.addPlan(result, state);
@@ -3114,7 +3064,7 @@ PlanP Optimization::makePlan(
     bool& needsShuffle) {
   needsShuffle = false;
   if (key.firstTable->is(PlanType::kDerivedTableNode) &&
-      key.firstTable->as<DerivedTable>()->setOp.has_value()) {
+      key.firstTable->as<DerivedTable>()->isUnion()) {
     return makeUnionPlan(key, distribution);
   }
   return makeDtPlan(dt, key, distribution, existsFanout, needsShuffle);
@@ -3130,18 +3080,18 @@ PlanP Optimization::makeUnionPlan(
   std::vector<PlanState> inputStates;
   std::vector<bool> inputNeedsShuffle;
 
-  // For UNION DISTINCT, the deduplication (GROUP BY) requires all the UNION's
-  // output columns. Ensure the needed columns include at least these, even if
-  // the consumer doesn't reference them (e.g., COUNT(*) needs no specific
-  // columns). Without this, pruneOutputColumns can prune children
+  // When the union has an aggregation (e.g., UNION DISTINCT lowered to
+  // UNION ALL + GROUP BY all columns), the dedup requires all the UNION's
+  // output columns. Ensure the needed columns include at least these, even
+  // if the consumer doesn't reference them (e.g., COUNT(*) needs no
+  // specific columns). Without this, pruneOutputColumns can prune children
   // inconsistently, causing UnionAll::initConstraints to crash.
-  const bool isDistinct = *setDt->setOp == lp::SetOperation::kUnion;
   PlanObjectSet childColumns{key.columns};
-  if (isDistinct) {
+  if (setDt->aggregation) {
     childColumns.unionObjects(setDt->columns);
   }
 
-  for (auto* inputDt : setDt->children) {
+  for (auto* inputDt : setDt->unionInputs) {
     // Only include the child DT in the input tables. Extra tables from
     // the parent key (e.g., reducing bushy join tables) reference joins
     // against the UNION ALL DT which don't exist for individual children.
@@ -3150,7 +3100,7 @@ PlanP Optimization::makeUnionPlan(
 
     PlanP inputPlan;
     bool inputShuffle = false;
-    if (inputDt->setOp.has_value()) {
+    if (inputDt->isUnion()) {
       // Nested union (e.g., UNION ALL of UNION ALL).
       // TODO: Flatten nested unions in ToGraph.
       inputPlan = makeUnionPlan(inputKey, distribution);
@@ -3183,14 +3133,16 @@ PlanP Optimization::makeUnionPlan(
     inputNeedsShuffle.push_back(inputShuffle);
   }
 
-  if (isSingleWorker_) {
-    RelationOpPtr result = make<UnionAll>(inputs);
-    Aggregation* distinct = nullptr;
-    if (isDistinct) {
-      result = makeDistinct(result);
-      distinct = result->as<Aggregation>();
+  auto finishUnionPlan = [&](RelationOpPtrVector finalInputs) {
+    RelationOpPtr result = make<UnionAll>(std::move(finalInputs));
+    if (setDt->aggregation) {
+      addAggregation(setDt, result, inputStates[0]);
     }
-    return unionPlan(inputStates, result, distinct);
+    return unionPlan(inputStates, result);
+  };
+
+  if (isSingleWorker_) {
+    return finishUnionPlan(std::move(inputs));
   }
 
   // Treat the parent's desired distribution as a hint, not a requirement.
@@ -3208,24 +3160,14 @@ PlanP Optimization::makeUnionPlan(
   // leaves the per-input shuffles in place even though they're now wasted.
   // Such mis-specification is the parent's bug to fix, not UNION ALL's.
   std::optional<DesiredDistribution> effectiveDistribution = distribution;
-  if (!isDistinct && effectiveDistribution.has_value() &&
+  if (effectiveDistribution.has_value() &&
       std::ranges::all_of(inputNeedsShuffle, std::identity{})) {
     effectiveDistribution.reset();
   }
 
-  if (!effectiveDistribution.has_value()) {
-    if (isDistinct) {
-      // Pick some partitioning key and shuffle on that and make distinct.
-      Distribution someDistribution = somePartition(inputs);
-      for (auto i = 0; i < inputs.size(); ++i) {
-        inputs[i] = make<Repartition>(
-            inputs[i], someDistribution, inputs[i]->columns());
-        inputStates[i].addCost(*inputs[i]);
-      }
-    }
-  } else {
-    // Some need a shuffle. Add the shuffles, add an optional distinct and
-    // return with no shuffle needed.
+  if (effectiveDistribution.has_value()) {
+    // Some inputs need a shuffle to reach the parent's desired distribution;
+    // wrap those.
     for (auto i = 0; i < inputs.size(); ++i) {
       if (inputNeedsShuffle[i]) {
         inputs[i] = make<Repartition>(
@@ -3237,15 +3179,13 @@ PlanP Optimization::makeUnionPlan(
         inputStates[i].addCost(*inputs[i]);
       }
     }
-  }
-
-  // For plain UNION ALL with multiple inputs, kSingle (gather-distributed)
-  // inputs cannot co-locate with parallel inputs in the consumer fragment —
-  // they would be multiplied across the parallel tasks. Group all kSingle
-  // inputs into one sub-union and wrap in arbitrary so they feed the parallel
-  // consumer fragment via a single exchange. Compatible parallel inputs
-  // (kSource and kFixed N) co-locate without wrapping.
-  if (!isDistinct && !effectiveDistribution.has_value() && inputs.size() > 1) {
+  } else {
+    // No parent distribution requirement. kSingle (gather-distributed)
+    // inputs cannot co-locate with parallel inputs in the consumer fragment
+    // — they would be multiplied across the parallel tasks. Group all
+    // kSingle inputs into one sub-union and wrap in arbitrary so they feed
+    // the parallel consumer fragment via a single exchange. Compatible
+    // parallel inputs (kSource and kFixed N) co-locate without wrapping.
     RelationOpPtrVector singleInputs;
     bool hasParallel = false;
     for (const auto& input : inputs) {
@@ -3289,13 +3229,7 @@ PlanP Optimization::makeUnionPlan(
     }
   }
 
-  RelationOpPtr result = make<UnionAll>(inputs);
-  Aggregation* distinct = nullptr;
-  if (isDistinct) {
-    result = makeDistinct(result);
-    distinct = result->as<Aggregation>();
-  }
-  return unionPlan(inputStates, result, distinct);
+  return finishUnionPlan(std::move(inputs));
 }
 
 PlanP Optimization::makeDtPlan(
