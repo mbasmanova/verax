@@ -6,5 +6,4 @@
 SELECT DISTINCT nullif(rand() < 0.5, true) FROM unnest(sequence(1, 1000))
 ----
 -- NULLIF with scalar subquery.
--- duckdb: SELECT nullif((SELECT count(*) FROM t), 10)
 SELECT nullif((SELECT count(*) FROM t), 10)
