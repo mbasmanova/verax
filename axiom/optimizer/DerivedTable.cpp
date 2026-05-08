@@ -1220,11 +1220,15 @@ ExprCP DerivedTable::importExpr(ExprCP expr) const {
 void DerivedTable::removeTables(
     PlanObjectCP table,
     const std::vector<PlanObjectCP>& chain) {
-  eraseFirst(tables, table);
-  tableSet.erase(table);
+  auto removeOne = [&](PlanObjectCP t) {
+    eraseFirst(tables, t);
+    tableSet.erase(t);
+    eraseFirst(joinOrder, t->id());
+  };
+
+  removeOne(table);
   for (auto& chainTable : chain) {
-    eraseFirst(tables, chainTable);
-    tableSet.erase(chainTable);
+    removeOne(chainTable);
   }
 }
 
@@ -1890,6 +1894,7 @@ void DerivedTable::clearState() {
   outputColumns.reset();
   tables.clear();
   tableSet = PlanObjectSet{};
+  joinOrder.clear();
   joins.clear();
   conjuncts.clear();
   having.clear();
