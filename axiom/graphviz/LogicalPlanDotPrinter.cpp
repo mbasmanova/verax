@@ -14,55 +14,19 @@
  * limitations under the License.
  */
 
-#include "axiom/logical_plan/LogicalPlanDotPrinter.h"
+#include "axiom/graphviz/LogicalPlanDotPrinter.h"
 
+#include "axiom/graphviz/Html.h"
+#include "axiom/graphviz/Palette.h"
 #include "axiom/logical_plan/ExprPrinter.h"
 #include "axiom/logical_plan/ExprVisitor.h"
 #include "axiom/logical_plan/PlanNodeVisitor.h"
 
-namespace facebook::axiom::logical_plan {
+namespace facebook::axiom::graphviz {
+
+using namespace logical_plan; // NOLINT(google-build-using-namespace)
 
 namespace {
-
-// Color palette for the visualization.
-struct ColorPalette {
-  // Text and borders.
-  std::string_view text = "#1c2915"; // Dark green
-  // Edges between nodes.
-  std::string_view lines = "#727a6b"; // Gray-green
-  // Node headers.
-  std::string_view header = "#ccd5c4"; // Light sage
-  // Node details.
-  std::string_view highlight = "#ede3d9"; // Cream
-  // Subquery edges.
-  std::string_view subqueryEdge = "#8b4513"; // Saddle brown
-};
-
-const ColorPalette kPalette;
-
-std::string escapeHtml(const std::string& s) {
-  std::string result;
-  result.reserve(s.size());
-  for (char c : s) {
-    switch (c) {
-      case '<':
-        result += "&lt;";
-        break;
-      case '>':
-        result += "&gt;";
-        break;
-      case '&':
-        result += "&amp;";
-        break;
-      case '"':
-        result += "&quot;";
-        break;
-      default:
-        result += c;
-    }
-  }
-  return result;
-}
 
 constexpr size_t kMaxExprLength = 60;
 
@@ -534,4 +498,4 @@ void LogicalPlanDotPrinter::print(
   out << "}\n";
 }
 
-} // namespace facebook::axiom::logical_plan
+} // namespace facebook::axiom::graphviz

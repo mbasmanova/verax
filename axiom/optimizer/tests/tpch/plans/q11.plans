@@ -3,17 +3,17 @@ numDrivers: 1
 
 Query Graph:
 
-dt5: 99.10 rows, ps_partkey, value
+dt5: 99.24 rows, ps_partkey, value
   output:
-    ps_partkey := dt1.ps_partkey BIGINT (cardinality=78.14 min=1 max=20000)
+    ps_partkey := dt1.ps_partkey BIGINT (cardinality=78.25 min=1 max=20000)
     value := dt1.value DOUBLE (cardinality=1.00)
   tables: dt1, dt6
   filter: gt(dt1.value, dt6.expr)
   orderBy: dt1.value DESC NULLS LAST
 
-dt1: 198.21 rows, ps_partkey, value
+dt1: 198.48 rows, ps_partkey, value
   output:
-    ps_partkey := t2.ps_partkey BIGINT (cardinality=198.21 min=1 max=20000)
+    ps_partkey := t2.ps_partkey BIGINT (cardinality=198.48 min=1 max=20000)
     value := dt1.value DOUBLE (cardinality=1.00)
   tables: t2, t3, t4
   joins:
@@ -75,17 +75,17 @@ Optimized plan (oneline):
 
 Optimized plan:
 
-Project [99.10 rows] -> dt5.ps_partkey, dt5.value
+Project [99.24 rows] -> dt5.ps_partkey, dt5.value
     dt5.ps_partkey := dt1.ps_partkey
     dt5.value := dt1.value
-  OrderBy [99.10 rows] -> dt1.ps_partkey, dt1.value, dt6.expr
-    Filter [99.10 rows] -> dt1.ps_partkey, dt1.value, dt6.expr
+  OrderBy [99.24 rows] -> dt1.ps_partkey, dt1.value, dt6.expr
+    Filter [99.24 rows] -> dt1.ps_partkey, dt1.value, dt6.expr
         gt(dt1.value, dt6.expr)
-      Join INNER Cross [198.21 rows] -> dt1.ps_partkey, dt1.value, dt6.expr
-        Project (redundant) [198.21 rows] -> dt1.ps_partkey, dt1.value
+      Join INNER Cross [198.48 rows] -> dt1.ps_partkey, dt1.value, dt6.expr
+        Project (redundant) [198.48 rows] -> dt1.ps_partkey, dt1.value
             dt1.ps_partkey := t2.ps_partkey
             dt1.value := dt1.value
-          Aggregation (t2.ps_partkey) [198.21 rows] -> t2.ps_partkey, dt1.value
+          Aggregation (t2.ps_partkey) [198.48 rows] -> t2.ps_partkey, dt1.value
               dt1.value := sum(dt1.__p39)
             Project [314.74 rows] -> t2.ps_partkey, dt1.__p39
                 t2.ps_partkey := t2.ps_partkey
@@ -126,7 +126,7 @@ Project [99.10 rows] -> dt5.ps_partkey, dt5.value
 
 Executable Velox plan:
 
-Fragment 0: stage1 numWorkers=1:
+Fragment 0: fragment1 SINGLE:
 -- Project[18][expressions: (ps_partkey:BIGINT, "ps_partkey"), (value:DOUBLE, "value")] -> ps_partkey:BIGINT, value:DOUBLE
   -- OrderBy[17][value DESC NULLS LAST] -> ps_partkey:BIGINT, value:DOUBLE, expr:DOUBLE
     -- Filter[0][expression: gt("value","expr")] -> ps_partkey:BIGINT, value:DOUBLE, expr:DOUBLE

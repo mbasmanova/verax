@@ -130,7 +130,7 @@ Project [1.00 rows] -> dt1.o_year, dt1.mkt_share
 
 Executable Velox plan:
 
-Fragment 0: stage3 numWorkers=1:
+Fragment 0: fragment3 SINGLE:
 -- Project[24][expressions: (o_year:BIGINT, "o_year"), (mkt_share:DOUBLE, divide("sum","sum_18"))] -> o_year:BIGINT, mkt_share:DOUBLE
   -- OrderBy[23][o_year ASC NULLS LAST] -> o_year:BIGINT, sum:DOUBLE, sum_18:DOUBLE
     -- Aggregation[22][SINGLE [o_year] sum := sum("dt1.__p130"), sum_18 := sum("dt1.__p125")] -> o_year:BIGINT, sum:DOUBLE, sum_18:DOUBLE

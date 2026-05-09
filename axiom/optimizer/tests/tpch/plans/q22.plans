@@ -67,8 +67,10 @@ Project (redundant) [1.00 rows] -> dt1.cntrycode, dt1.numcust, dt1.totacctbal
             not(dt1.__mark7)
           Join RIGHT SEMI (PROJECT) Hash [3.38 rows] -> t2.c_phone, t2.c_acctbal, dt1.__mark7
               dt5.o_custkey = t2.c_custkey
-            TableScan [150000.00 rows] -> t6.o_custkey
-              table: "default"."orders"
+            Project (redundant) [150000.00 rows] -> dt5.o_custkey
+                dt5.o_custkey := t6.o_custkey
+              TableScan [150000.00 rows] -> t6.o_custkey
+                table: "default"."orders"
             HashBuild [3.38 rows] -> t2.c_custkey, t2.c_phone, t2.c_acctbal, dt3.avg
               Filter [3.38 rows] -> t2.c_custkey, t2.c_phone, t2.c_acctbal, dt3.avg
                   gt(t2.c_acctbal, dt3.avg)
@@ -87,7 +89,7 @@ Project (redundant) [1.00 rows] -> dt1.cntrycode, dt1.numcust, dt1.totacctbal
 
 Executable Velox plan:
 
-Fragment 0: stage1 numWorkers=1:
+Fragment 0: fragment1 SINGLE:
 -- OrderBy[10][cntrycode ASC NULLS LAST] -> cntrycode:VARCHAR, numcust:BIGINT, totacctbal:DOUBLE
   -- Aggregation[9][SINGLE [cntrycode] numcust := count(), totacctbal := sum("c_acctbal")] -> cntrycode:VARCHAR, numcust:BIGINT, totacctbal:DOUBLE
     -- Project[8][expressions: (cntrycode:VARCHAR, substr("c_phone",1,2)), (c_acctbal:DOUBLE, "c_acctbal")] -> cntrycode:VARCHAR, c_acctbal:DOUBLE

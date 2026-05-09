@@ -74,7 +74,7 @@ Project (redundant) [6.00 rows] -> dt1.l_returnflag, dt1.l_linestatus, dt1.sum_q
 
 Executable Velox plan:
 
-Fragment 0: stage1 numWorkers=1:
+Fragment 0: fragment1 SINGLE:
 -- OrderBy[3][l_returnflag ASC NULLS LAST, l_linestatus ASC NULLS LAST] -> l_returnflag:VARCHAR, l_linestatus:VARCHAR, sum_qty:DOUBLE, sum_base_price:DOUBLE, sum_disc_price:DOUBLE, sum_charge:DOUBLE, avg_qty:DOUBLE, avg_price:DOUBLE, avg_disc:DOUBLE, count_order:BIGINT
   -- Aggregation[2][SINGLE [l_returnflag, l_linestatus] sum_qty := sum("l_quantity"), sum_base_price := sum("l_extendedprice"), sum_disc_price := sum("dt1.__p43"), sum_charge := sum("dt1.__p52"), avg_qty := avg("l_quantity"), avg_price := avg("l_extendedprice"), avg_disc := avg("l_discount"), count_order := count()] -> l_returnflag:VARCHAR, l_linestatus:VARCHAR, sum_qty:DOUBLE, sum_base_price:DOUBLE, sum_disc_price:DOUBLE, sum_charge:DOUBLE, avg_qty:DOUBLE, avg_price:DOUBLE, avg_disc:DOUBLE, count_order:BIGINT
     -- Project[1][expressions: (l_returnflag:VARCHAR, "l_returnflag"), (l_linestatus:VARCHAR, "l_linestatus"), (l_quantity:DOUBLE, "l_quantity"), (l_extendedprice:DOUBLE, "l_extendedprice"), (dt1.__p43:DOUBLE, multiply("l_extendedprice",minus(1,"l_discount"))), (dt1.__p52:DOUBLE, multiply(multiply("l_extendedprice",minus(1,"l_discount")),plus("l_tax",1))), (l_discount:DOUBLE, "l_discount")] -> l_returnflag:VARCHAR, l_linestatus:VARCHAR, l_quantity:DOUBLE, l_extendedprice:DOUBLE, "dt1.__p43":DOUBLE, "dt1.__p52":DOUBLE, l_discount:DOUBLE

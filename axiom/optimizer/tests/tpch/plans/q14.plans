@@ -52,7 +52,7 @@ Project [1.00 rows] -> dt1.promo_revenue
 
 Executable Velox plan:
 
-Fragment 0: stage1 numWorkers=1:
+Fragment 0: fragment1 SINGLE:
 -- Project[5][expressions: (promo_revenue:DOUBLE, divide(multiply("sum",100),"sum_2"))] -> promo_revenue:DOUBLE
   -- Aggregation[4][SINGLE sum := sum("dt1.__p60"), sum_2 := sum("dt1.__p58")] -> sum:DOUBLE, sum_2:DOUBLE
     -- Project[3][expressions: (dt1.__p60:DOUBLE, switch(like("p_type",PROMO%),multiply("l_extendedprice",minus(1,"l_discount")),0)), (dt1.__p58:DOUBLE, multiply("l_extendedprice",minus(1,"l_discount")))] -> "dt1.__p60":DOUBLE, "dt1.__p58":DOUBLE

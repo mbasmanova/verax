@@ -65,7 +65,7 @@ Project (redundant) [1.00 rows] -> dt4.c_count, dt4.custdist
 
 Executable Velox plan:
 
-Fragment 0: stage1 numWorkers=1:
+Fragment 0: fragment1 SINGLE:
 -- OrderBy[6][custdist DESC NULLS LAST, c_count DESC NULLS LAST] -> c_count:BIGINT, custdist:BIGINT
   -- Aggregation[5][SINGLE [c_count] custdist := count()] -> c_count:BIGINT, custdist:BIGINT
     -- Project[4][expressions: (c_count:BIGINT, "count")] -> c_count:BIGINT

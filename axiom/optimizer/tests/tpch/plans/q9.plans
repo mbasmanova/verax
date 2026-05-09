@@ -109,7 +109,7 @@ Project [624.67 rows] -> dt1.nation, dt1.o_year, dt1.sum_profit
 
 Executable Velox plan:
 
-Fragment 0: stage7 numWorkers=1:
+Fragment 0: fragment7 SINGLE:
 -- Project[32][expressions: (nation:VARCHAR, "n_name"), (o_year:BIGINT, "o_year"), (sum_profit:DOUBLE, "sum_profit")] -> nation:VARCHAR, o_year:BIGINT, sum_profit:DOUBLE
   -- OrderBy[31][n_name ASC NULLS LAST, o_year DESC NULLS LAST] -> n_name:VARCHAR, o_year:BIGINT, sum_profit:DOUBLE
     -- Aggregation[30][SINGLE [n_name, o_year] sum_profit := sum("dt1.__p102")] -> n_name:VARCHAR, o_year:BIGINT, sum_profit:DOUBLE

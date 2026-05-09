@@ -71,7 +71,7 @@ Project [20.00 rows] -> dt1.c_custkey, dt1.c_name, dt1.revenue, dt1.c_acctbal, d
     dt1.c_phone := t2.c_phone
     dt1.c_comment := t2.c_comment
   OrderBy [20.00 rows] -> t2.c_custkey, t2.c_name, t2.c_acctbal, t2.c_phone, t5.n_name, t2.c_address, t2.c_comment, dt1.revenue
-    Aggregation (t2.c_custkey, t2.c_name, t2.c_acctbal, t2.c_phone, t5.n_name, t2.c_address, t2.c_comment) [753.71 rows] -> t2.c_custkey, t2.c_name, t2.c_acctbal, t2.c_phone, t5.n_name, t2.c_address, t2.c_comment, dt1.revenue
+    Aggregation (t2.c_custkey, t2.c_name, t2.c_acctbal, t2.c_phone, t5.n_name, t2.c_address, t2.c_comment) [754.45 rows] -> t2.c_custkey, t2.c_name, t2.c_acctbal, t2.c_phone, t5.n_name, t2.c_address, t2.c_comment, dt1.revenue
         dt1.revenue := sum(dt1.__p88)
       Project [755.75 rows] -> t2.c_custkey, t2.c_name, t2.c_acctbal, t2.c_phone, t5.n_name, t2.c_address, t2.c_comment, dt1.__p88
           t2.c_custkey := t2.c_custkey
@@ -105,7 +105,7 @@ Project [20.00 rows] -> dt1.c_custkey, dt1.c_name, dt1.revenue, dt1.c_acctbal, d
 
 Executable Velox plan:
 
-Fragment 0: stage1 numWorkers=1:
+Fragment 0: fragment1 SINGLE:
 -- Project[10][expressions: (c_custkey:BIGINT, "c_custkey"), (c_name:VARCHAR, "c_name"), (revenue:DOUBLE, "revenue"), (c_acctbal:DOUBLE, "c_acctbal"), (n_name:VARCHAR, "n_name"), (c_address:VARCHAR, "c_address"), (c_phone:VARCHAR, "c_phone"), (c_comment:VARCHAR, "c_comment")] -> c_custkey:BIGINT, c_name:VARCHAR, revenue:DOUBLE, c_acctbal:DOUBLE, n_name:VARCHAR, c_address:VARCHAR, c_phone:VARCHAR, c_comment:VARCHAR
   -- TopN[9][20 revenue DESC NULLS LAST] -> c_custkey:BIGINT, c_name:VARCHAR, c_acctbal:DOUBLE, c_phone:VARCHAR, n_name:VARCHAR, c_address:VARCHAR, c_comment:VARCHAR, revenue:DOUBLE
     -- Aggregation[8][SINGLE [c_custkey, c_name, c_acctbal, c_phone, n_name, c_address, c_comment] revenue := sum("dt1.__p88")] -> c_custkey:BIGINT, c_name:VARCHAR, c_acctbal:DOUBLE, c_phone:VARCHAR, n_name:VARCHAR, c_address:VARCHAR, c_comment:VARCHAR, revenue:DOUBLE

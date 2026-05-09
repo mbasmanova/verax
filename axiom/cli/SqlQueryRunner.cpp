@@ -22,11 +22,12 @@
 #include "axiom/connectors/ConnectorMetadata.h"
 #include "axiom/connectors/ConnectorMetadataRegistry.h"
 #include "axiom/connectors/SchemaResolver.h"
-#include "axiom/logical_plan/LogicalPlanDotPrinter.h"
+#include "axiom/graphviz/DerivedTableDotPrinter.h"
+#include "axiom/graphviz/LogicalPlanDotPrinter.h"
+#include "axiom/graphviz/MultiFragmentPlanDotPrinter.h"
 #include "axiom/logical_plan/PlanBuilder.h"
 #include "axiom/logical_plan/PlanPrinter.h"
 #include "axiom/optimizer/ConstantExprEvaluator.h"
-#include "axiom/optimizer/DerivedTableDotPrinter.h"
 #include "axiom/optimizer/DerivedTablePrinter.h"
 #include "axiom/optimizer/ExplainIo.h"
 #include "axiom/optimizer/Optimization.h"
@@ -401,7 +402,7 @@ std::string SqlQueryRunner::toQueryGraphDot(std::string_view sql) {
   RunOptions options;
   optimize(logicalPlan, newQuery(options), options, [&](const auto& dt) {
     std::ostringstream out;
-    optimizer::DerivedTableDotPrinter::print(dt, out);
+    graphviz::DerivedTableDotPrinter::print(dt, out);
     dotOutput = out.str();
     return false; // Stop optimization.
   });
@@ -412,7 +413,26 @@ std::string SqlQueryRunner::toLogicalPlanDot(std::string_view sql) {
   const auto logicalPlan = toLogicalPlan(sql);
 
   std::ostringstream out;
-  logical_plan::LogicalPlanDotPrinter::print(*logicalPlan, out);
+  graphviz::LogicalPlanDotPrinter::print(*logicalPlan, out);
+  return out.str();
+}
+
+std::string SqlQueryRunner::toMultiFragmentPlanDot(
+    std::string_view sql,
+    int32_t numWorkers,
+    int32_t numDrivers) {
+  const auto logicalPlan = toLogicalPlan(sql);
+
+  RunOptions options;
+  options.numWorkers = numWorkers;
+  options.numDrivers = numDrivers;
+  auto queryCtx = newQuery(options);
+  auto planAndStats = optimize(logicalPlan, queryCtx, options);
+  VELOX_CHECK_NOT_NULL(planAndStats.plan);
+
+  std::ostringstream out;
+  graphviz::MultiFragmentPlanDotPrinter::print(
+      *planAndStats.plan, planAndStats.prediction, out);
   return out.str();
 }
 
@@ -737,7 +757,7 @@ std::string SqlQueryRunner::runExplain(
     case presto::ExplainStatement::Type::kLogical:
       if (format == presto::ExplainStatement::Format::kGraphviz) {
         std::ostringstream out;
-        logical_plan::LogicalPlanDotPrinter::print(*logicalPlan, out);
+        graphviz::LogicalPlanDotPrinter::print(*logicalPlan, out);
         return out.str();
       }
       return logical_plan::PlanPrinter::toText(*logicalPlan);
@@ -751,7 +771,7 @@ std::string SqlQueryRunner::runExplain(
           [&](const auto& dt) {
             if (format == presto::ExplainStatement::Format::kGraphviz) {
               std::ostringstream out;
-              optimizer::DerivedTableDotPrinter::print(dt, out);
+              graphviz::DerivedTableDotPrinter::print(dt, out);
               text = out.str();
             } else {
               text = optimizer::DerivedTablePrinter::toText(dt);

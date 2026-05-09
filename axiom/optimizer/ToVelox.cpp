@@ -814,7 +814,7 @@ velox::core::TypedExprPtr ToVelox::toTypedExpr(ExprCP expr) {
 
 ExecutableFragment ToVelox::newFragment() {
   return ExecutableFragment{
-      .taskPrefix = fmt::format("stage{}", ++stageCounter_),
+      .taskPrefix = fmt::format("fragment{}", ++stageCounter_),
       .type = FragmentType::kSource,
   };
 }
@@ -994,6 +994,7 @@ velox::core::PlanNodePtr ToVelox::makeOrderBy(
 
   source.fragment.planNode = velox::core::PartitionedOutputNode::single(
       nextId(), node->outputType(), exchangeSerdeKind_, node);
+  makePredictionAndHistory(source.fragment.planNode->id(), &op);
 
   auto merge = std::make_shared<velox::core::MergeExchangeNode>(
       nextId(), node->outputType(), keys, sortOrder, exchangeSerdeKind_);
@@ -1022,6 +1023,7 @@ velox::core::PlanNodePtr ToVelox::makeOffset(
 
   source.fragment.planNode = velox::core::PartitionedOutputNode::single(
       nextId(), input->outputType(), exchangeSerdeKind_, input);
+  makePredictionAndHistory(source.fragment.planNode->id(), &op);
 
   auto exchange = std::make_shared<velox::core::ExchangeNode>(
       nextId(), input->outputType(), exchangeSerdeKind_);
@@ -1070,6 +1072,7 @@ velox::core::PlanNodePtr ToVelox::makeLimit(
 
   source.fragment.planNode = velox::core::PartitionedOutputNode::single(
       nextId(), node->outputType(), exchangeSerdeKind_, node);
+  makePredictionAndHistory(source.fragment.planNode->id(), &op);
 
   auto exchange = std::make_shared<velox::core::ExchangeNode>(
       nextId(), node->outputType(), exchangeSerdeKind_);
@@ -1769,6 +1772,7 @@ velox::core::PlanNodePtr ToVelox::makeRepartition(
             exchangeSerdeKind_,
             sourcePlan);
   }
+  makePredictionAndHistory(source.fragment.planNode->id(), &repartition);
 
   if (exchange == nullptr) {
     exchange = std::make_shared<velox::core::ExchangeNode>(
@@ -2143,55 +2147,82 @@ velox::core::PlanNodePtr ToVelox::makeFragment(
     const RelationOpPtr& op,
     ExecutableFragment& fragment,
     std::vector<ExecutableFragment>& stages) {
+  velox::core::PlanNodePtr result;
   switch (op->relType()) {
     case RelType::kProject:
-      return makeProject(*op->as<Project>(), fragment, stages);
+      result = makeProject(*op->as<Project>(), fragment, stages);
+      break;
     case RelType::kFilter:
-      return makeFilter(*op->as<Filter>(), fragment, stages);
+      result = makeFilter(*op->as<Filter>(), fragment, stages);
+      break;
     case RelType::kAggregation:
-      return makeAggregation(*op->as<Aggregation>(), fragment, stages);
+      result = makeAggregation(*op->as<Aggregation>(), fragment, stages);
+      break;
     case RelType::kOrderBy:
-      return makeOrderBy(*op->as<OrderBy>(), fragment, stages);
+      result = makeOrderBy(*op->as<OrderBy>(), fragment, stages);
+      break;
     case RelType::kLimit:
-      return makeLimit(*op->as<Limit>(), fragment, stages);
+      result = makeLimit(*op->as<Limit>(), fragment, stages);
+      break;
     case RelType::kRepartition: {
       std::shared_ptr<velox::core::ExchangeNode> ignore;
-      return makeRepartition(*op->as<Repartition>(), fragment, stages, ignore);
+      result =
+          makeRepartition(*op->as<Repartition>(), fragment, stages, ignore);
+      break;
     }
     case RelType::kTableScan:
-      return makeScan(*op->as<TableScan>(), fragment, stages);
+      result = makeScan(*op->as<TableScan>(), fragment, stages);
+      break;
     case RelType::kJoin:
-      return makeJoin(*op->as<Join>(), fragment, stages);
+      result = makeJoin(*op->as<Join>(), fragment, stages);
+      break;
     case RelType::kHashBuild:
+      // Pure passthrough: no Velox node is created for this op, so skip the
+      // shared prediction stamp below to avoid overwriting the inner stamp.
       return makeFragment(op->input(), fragment, stages);
     case RelType::kUnionAll:
-      return makeUnionAll(*op->as<UnionAll>(), fragment, stages);
+      result = makeUnionAll(*op->as<UnionAll>(), fragment, stages);
+      break;
     case RelType::kValues:
-      return makeValues(*op->as<Values>(), fragment);
+      result = makeValues(*op->as<Values>(), fragment);
+      break;
     case RelType::kUnnest:
-      return makeUnnest(*op->as<Unnest>(), fragment, stages);
+      result = makeUnnest(*op->as<Unnest>(), fragment, stages);
+      break;
     case RelType::kTableWrite:
-      return makeWrite(*op->as<TableWrite>(), fragment, stages);
+      result = makeWrite(*op->as<TableWrite>(), fragment, stages);
+      break;
     case RelType::kEnforceSingleRow:
-      return makeEnforceSingleRow(
-          *op->as<EnforceSingleRow>(), fragment, stages);
+      result =
+          makeEnforceSingleRow(*op->as<EnforceSingleRow>(), fragment, stages);
+      break;
     case RelType::kAssignUniqueId:
-      return makeAssignUniqueId(*op->as<AssignUniqueId>(), fragment, stages);
+      result = makeAssignUniqueId(*op->as<AssignUniqueId>(), fragment, stages);
+      break;
     case RelType::kEnforceDistinct:
-      return makeEnforceDistinct(*op->as<EnforceDistinct>(), fragment, stages);
+      result =
+          makeEnforceDistinct(*op->as<EnforceDistinct>(), fragment, stages);
+      break;
     case RelType::kWindow:
-      return makeWindow(*op->as<Window>(), fragment, stages);
+      result = makeWindow(*op->as<Window>(), fragment, stages);
+      break;
     case RelType::kRowNumber:
-      return makeRowNumber(*op->as<RowNumber>(), fragment, stages);
+      result = makeRowNumber(*op->as<RowNumber>(), fragment, stages);
+      break;
     case RelType::kTopNRowNumber:
-      return makeTopNRowNumber(*op->as<TopNRowNumber>(), fragment, stages);
+      result = makeTopNRowNumber(*op->as<TopNRowNumber>(), fragment, stages);
+      break;
     case RelType::kMarkDistinct:
-      return makeMarkDistinct(*op->as<MarkDistinct>(), fragment, stages);
+      result = makeMarkDistinct(*op->as<MarkDistinct>(), fragment, stages);
+      break;
     default:
       VELOX_FAIL(
           "Unsupported RelationOp {}", static_cast<int32_t>(op->relType()));
   }
-  return nullptr;
+  // Ensure every Velox node returned by a make* helper has a prediction
+  // entry. Idempotent for node types whose helper already records one.
+  makePredictionAndHistory(result->id(), op.get());
+  return result;
 }
 
 // Debug helper functions. Must be extern to be callable from debugger.

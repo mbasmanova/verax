@@ -54,7 +54,7 @@ Project [10.00 rows] -> dt1.l_orderkey, dt1.revenue, dt1.o_orderdate, dt1.o_ship
     dt1.o_orderdate := t3.o_orderdate
     dt1.o_shippriority := t3.o_shippriority
   OrderBy [10.00 rows] -> t4.l_orderkey, t3.o_orderdate, t3.o_shippriority, dt1.revenue
-    Aggregation (t4.l_orderkey, t3.o_orderdate, t3.o_shippriority) [3095.93 rows] -> t4.l_orderkey, t3.o_orderdate, t3.o_shippriority, dt1.revenue
+    Aggregation (t4.l_orderkey, t3.o_orderdate, t3.o_shippriority) [3096.45 rows] -> t4.l_orderkey, t3.o_orderdate, t3.o_shippriority, dt1.revenue
         dt1.revenue := sum(dt1.__p70)
       Project [3096.52 rows] -> t4.l_orderkey, t3.o_orderdate, t3.o_shippriority, dt1.__p70
           t4.l_orderkey := t4.l_orderkey
@@ -80,7 +80,7 @@ Project [10.00 rows] -> dt1.l_orderkey, dt1.revenue, dt1.o_orderdate, dt1.o_ship
 
 Executable Velox plan:
 
-Fragment 0: stage5 numWorkers=1:
+Fragment 0: fragment5 SINGLE:
 -- Project[20][expressions: (l_orderkey:BIGINT, "l_orderkey"), (revenue:DOUBLE, "revenue"), (o_orderdate:DATE, "o_orderdate"), (o_shippriority:INTEGER, "o_shippriority")] -> l_orderkey:BIGINT, revenue:DOUBLE, o_orderdate:DATE, o_shippriority:INTEGER
   -- TopN[19][10 revenue DESC NULLS LAST, o_orderdate ASC NULLS LAST] -> l_orderkey:BIGINT, o_orderdate:DATE, o_shippriority:INTEGER, revenue:DOUBLE
     -- Aggregation[18][SINGLE [l_orderkey, o_orderdate, o_shippriority] revenue := sum("dt1.__p70")] -> l_orderkey:BIGINT, o_orderdate:DATE, o_shippriority:INTEGER, revenue:DOUBLE

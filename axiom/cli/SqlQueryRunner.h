@@ -231,6 +231,17 @@ class SqlQueryRunner {
   /// @param sql A single SELECT or EXPLAIN SELECT statement.
   std::string toLogicalPlanDot(std::string_view sql);
 
+  /// Generates DOT representation of the multi-fragment plan for a single
+  /// SELECT statement. The output can be rendered using Graphviz:
+  ///   dot -Tsvg output.dot -o output.svg
+  /// @param sql A single SELECT or EXPLAIN SELECT statement.
+  /// @param numWorkers Number of workers for distributed planning.
+  /// @param numDrivers Number of drivers per worker.
+  std::string toMultiFragmentPlanDot(
+      std::string_view sql,
+      int32_t numWorkers,
+      int32_t numDrivers);
+
   /// Returns the session configuration.
   facebook::axiom::SessionConfig& sessionConfig() {
     return *sessionConfig_;
