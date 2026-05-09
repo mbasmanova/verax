@@ -120,7 +120,7 @@ Project (redundant) [4.62 rows] -> dt1.n_name, dt1.revenue
 
 Executable Velox plan:
 
-Fragment 0: stage1 numWorkers=1:
+Fragment 0: fragment1 SINGLE:
 -- OrderBy[18][revenue DESC NULLS LAST] -> n_name:VARCHAR, revenue:DOUBLE
   -- Aggregation[17][SINGLE [n_name] revenue := sum("dt1.__p107")] -> n_name:VARCHAR, revenue:DOUBLE
     -- Project[16][expressions: (n_name:VARCHAR, "n_name"), (dt1.__p107:DOUBLE, multiply("l_extendedprice",minus(1,"l_discount")))] -> n_name:VARCHAR, "dt1.__p107":DOUBLE

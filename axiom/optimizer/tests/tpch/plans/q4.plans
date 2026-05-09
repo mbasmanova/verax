@@ -50,9 +50,11 @@ Project (redundant) [5.00 rows] -> dt1.o_orderpriority, dt1.order_count
         dt1.order_count := count()
       Join RIGHT SEMI (FILTER) Hash [5735.66 rows] -> t2.o_orderpriority
           dt3.l_orderkey = t2.o_orderkey
-        TableScan [303820.16 rows] -> t4.l_orderkey
-          table: "default"."lineitem"
-          multi-column filters: lt(t4.l_commitdate, t4.l_receiptdate)
+        Project (redundant) [303820.16 rows] -> dt3.l_orderkey
+            dt3.l_orderkey := t4.l_orderkey
+          TableScan [303820.16 rows] -> t4.l_orderkey
+            table: "default"."lineitem"
+            multi-column filters: lt(t4.l_commitdate, t4.l_receiptdate)
         HashBuild [5735.66 rows] -> t2.o_orderkey, t2.o_orderpriority
           TableScan [5735.66 rows] -> t2.o_orderkey, t2.o_orderpriority
             table: "default"."orders"
@@ -61,7 +63,7 @@ Project (redundant) [5.00 rows] -> dt1.o_orderpriority, dt1.order_count
 
 Executable Velox plan:
 
-Fragment 0: stage1 numWorkers=1:
+Fragment 0: fragment1 SINGLE:
 -- OrderBy[4][o_orderpriority ASC NULLS LAST] -> o_orderpriority:VARCHAR, order_count:BIGINT
   -- Aggregation[3][SINGLE [o_orderpriority] order_count := count()] -> o_orderpriority:VARCHAR, order_count:BIGINT
     -- HashJoin[2][RIGHT SEMI (FILTER) l_orderkey=o_orderkey] -> o_orderpriority:VARCHAR

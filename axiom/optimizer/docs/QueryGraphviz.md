@@ -1,17 +1,21 @@
-# Query Graphviz CLI
+# Visualization CLI
 
-A command-line tool to generate visual diagrams of query graphs and logical plans
-from SQL queries using [Graphviz](https://graphviz.org/).
+A command-line tool to generate visual diagrams of query graphs, logical plans,
+and multi-fragment plans from SQL queries using
+[Graphviz](https://graphviz.org/).
 
 ## Overview
 
 The `axiom/cli:graphviz` CLI parses a SQL query and produces a
-[DOT](https://graphviz.org/doc/info/lang.html) representation of either:
+[DOT](https://graphviz.org/doc/info/lang.html) representation of one of:
 
-- **Query graph** (default) — the parsed query structure showing tables, joins,
-  filters, and aggregations (the output of `ToGraph`).
-- **Logical plan** (`--logical_plan`) — the optimized logical plan tree (the
-  output of `Optimization::bestPlan`).
+- **Query graph** (`--mode=graph`, default) — the parsed query structure
+  showing tables, joins, filters, and aggregations (the output of `ToGraph`).
+- **Logical plan** (`--mode=logical`) — the optimized logical plan tree
+  (the output of `Optimization::bestPlan`).
+- **Distributed plan** (`--mode=distributed`) — the multi-fragment
+  execution plan as a graph of fragments connected by exchanges (the output
+  of `ToVelox`).
 
 When the output file has an `.svg` extension, the tool automatically invokes the
 `dot` command to render SVG.  Otherwise it writes the raw DOT file.
@@ -45,7 +49,9 @@ echo "SELECT ..." | buck run axiom/cli:graphviz -- --query "" --output <file>
 |------|---------|-------------|
 | `--query` | (stdin) | SQL query. If empty, reads from stdin |
 | `--output` | (required) | Output file path. Use `.svg` extension to generate SVG; otherwise generates a DOT file |
-| `--logical_plan` | `false` | Generate logical plan visualization instead of query graph |
+| `--mode` | `graph` | Visualization mode: `graph`, `logical`, or `distributed` |
+| `--num_workers` | `4` | Number of workers (only used by `--mode=distributed`) |
+| `--num_drivers` | `4` | Number of drivers per worker (only used by `--mode=distributed`) |
 | `--data_path` | (empty) | Path to directory with local tables. If empty, uses TPC-H tables |
 | `--data_format` | `parquet` | Format of local tables: `parquet`, `dwrf`, or `text` |
 
@@ -65,12 +71,23 @@ buck run axiom/cli:graphviz -- \
 
 ```bash
 buck run axiom/cli:graphviz -- \
-  --logical_plan \
+  --mode=logical \
   --query "SELECT r_name, count(*) FROM region, nation WHERE r_regionkey = n_regionkey GROUP BY 1" \
   --output plan.svg
 ```
 
 <img src="images/example_logical_plan.svg" width="300" alt="example logical plan">
+
+### Generate distributed plan as SVG
+
+```bash
+buck run axiom/cli:graphviz -- \
+  --mode=distributed \
+  --query "SELECT r_name, count(*) FROM region, nation WHERE r_regionkey = n_regionkey GROUP BY 1" \
+  --output plan.svg
+```
+
+<img src="images/example_distributed_plan.svg" width="120" alt="example distributed plan">
 
 ### Generate DOT file (no rendering)
 
@@ -97,6 +114,8 @@ buck run axiom/cli:graphviz -- \
 
 **TPC-H q5** — 6-way join with filters, aggregation, and ordering.
 
+<img src="../tests/tpch/viz/graph/q5.svg" width="500" alt="TPC-H q5 query graph">
+
 ### Use local tables
 
 By default, the tool resolves table names against built-in TPC-H tables.
@@ -120,6 +139,9 @@ buck run axiom/cli:graphviz -- \
   --query "SELECT count(*) FROM orders" \
   --output orders.svg
 ```
+
+> See [`axiom/cli/README.md`](../../cli/README.md) for the full set of CLI
+> flags and the catalog of available connectors.
 
 ## Query Graph Visualization
 
@@ -160,7 +182,63 @@ Join edges connect table ID nodes within each DT cluster:
 Table boxes are arranged in a 2-column grid below each DT cluster, with
 invisible edges controlling positioning.
 
+## Distributed Plan Visualization
+
+The multi-fragment plan diagram shows the distributed execution plan as a
+graph of fragment boxes connected by exchange edges. See
+[Distributed Execution](DistributedExecution.md) for the underlying model.
+
+### Fragment Box
+
+Each fragment is rendered as a box containing three parts, top to bottom:
+
+- **`out:` row** — the fragment's output distribution (read from the root
+  `PartitionedOutputNode`) and the estimated row count, e.g.
+  `out: hash[k]   ~60,000 rows`. Omitted when the fragment delivers results
+  in-process (final fragment with no `PartitionedOutputNode`).
+- **Header row** — `taskPrefix — FragmentType` (and `× width` when the
+  fragment has a fixed task count, i.e. `kFixed`).
+- **Body** — the Velox plan tree, indented to preserve structure, with node
+  type names only. The root `PartitionedOutputNode` and any `ProjectNode`
+  are skipped as structural noise. Selected node types include a short
+  detail suffix:
+  - `Exchange: stageN, kind` and `MergeExchange: stageN, kind` — producer
+    task prefix and the producer fragment's distribution kind.
+  - `TableScan: name` — the table name from the connector handle.
+  - `Limit: N` (or `Limit: N (offset M)` when offset is set).
+  - `TopN: N`.
+
+### Output Distribution
+
+The `out:` row shows how the fragment's output is partitioned for downstream
+consumption:
+
+- `hash[...]` — hash-partitioned on the listed keys.
+- `broadcast` — each producer task replicates its output to every consumer.
+- `gather` — all producers send to a single consumer task.
+- `arbitrary` — each row goes to an arbitrary consumer task.
+
+### Fragment Type
+
+The `FragmentType` in the header indicates how the fragment's tasks are
+scheduled:
+
+- `kSource` — parallelism determined by the data source (number of splits).
+- `kFixed` — exactly `width` tasks.
+- `kSingle` — exactly 1 task, any worker.
+- `kCoordinator` — exactly 1 task, on coordinator.
+
+### Edges
+
+A directed edge from fragment A to fragment B indicates that A produces input
+for B. The receiving `Exchange` (or `MergeExchange`) row in B's body is
+annotated with the producing task prefix and distribution kind, e.g.
+`Exchange: fragment17, hash`, so each incoming edge can be matched to a
+specific consumer node.
+
 ## Pre-generated TPC-H Query Graphs
 
-Pre-generated query graph SVGs for all 22 TPC-H queries are available in
-`axiom/optimizer/tests/tpch/graphs/`.
+Pre-generated SVGs for all 22 TPC-H queries are available in:
+
+- [`axiom/optimizer/tests/tpch/viz/graph/`](../tests/tpch/viz/graph/) — query graphs
+- [`axiom/optimizer/tests/tpch/viz/distributed/`](../tests/tpch/viz/distributed/) — distributed plans

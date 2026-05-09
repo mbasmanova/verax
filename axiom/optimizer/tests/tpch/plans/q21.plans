@@ -88,17 +88,23 @@ Project (redundant) [3.79 rows] -> dt1.s_name, dt1.numwait
       Join RIGHT SEMI (FILTER) Hash [79.69 rows] -> t2.s_name
           dt6.l_orderkey = t3.l_orderkey
           neq(dt6.l_suppkey, t3.l_suppkey)
-        TableScan [600572.00 rows] -> t7.l_orderkey, t7.l_suppkey
-          table: "default"."lineitem"
+        Project (redundant) [600572.00 rows] -> dt6.l_orderkey, dt6.l_suppkey
+            dt6.l_orderkey := t7.l_orderkey
+            dt6.l_suppkey := t7.l_suppkey
+          TableScan [600572.00 rows] -> t7.l_orderkey, t7.l_suppkey
+            table: "default"."lineitem"
         HashBuild [79.69 rows] -> t2.s_name, t3.l_orderkey, t3.l_suppkey, dt1.__mark11
           Filter [79.69 rows] -> t2.s_name, t3.l_orderkey, t3.l_suppkey, dt1.__mark11
               not(dt1.__mark11)
             Join RIGHT SEMI (PROJECT) Hash [398.44 rows] -> t2.s_name, t3.l_orderkey, t3.l_suppkey, dt1.__mark11
                 dt9.l_orderkey = t3.l_orderkey
                 neq(dt9.l_suppkey, t3.l_suppkey)
-              TableScan [303820.16 rows] -> t10.l_orderkey, t10.l_suppkey
-                table: "default"."lineitem"
-                multi-column filters: lt(t10.l_commitdate, t10.l_receiptdate)
+              Project (redundant) [303820.16 rows] -> dt9.l_orderkey, dt9.l_suppkey
+                  dt9.l_orderkey := t10.l_orderkey
+                  dt9.l_suppkey := t10.l_suppkey
+                TableScan [303820.16 rows] -> t10.l_orderkey, t10.l_suppkey
+                  table: "default"."lineitem"
+                  multi-column filters: lt(t10.l_commitdate, t10.l_receiptdate)
               HashBuild [398.44 rows] -> t2.s_name, t3.l_orderkey, t3.l_suppkey
                 Join INNER Hash [398.44 rows] -> t2.s_name, t3.l_orderkey, t3.l_suppkey
                     t3.l_orderkey = t4.o_orderkey
@@ -124,7 +130,7 @@ Project (redundant) [3.79 rows] -> dt1.s_name, dt1.numwait
 
 Executable Velox plan:
 
-Fragment 0: stage1 numWorkers=1:
+Fragment 0: fragment1 SINGLE:
 -- TopN[13][100 numwait DESC NULLS LAST, s_name ASC NULLS LAST] -> s_name:VARCHAR, numwait:BIGINT
   -- Aggregation[12][SINGLE [s_name] numwait := count()] -> s_name:VARCHAR, numwait:BIGINT
     -- HashJoin[11][RIGHT SEMI (FILTER) l_orderkey_6=l_orderkey, filter: neq("l_suppkey_8","l_suppkey")] -> s_name:VARCHAR

@@ -14,16 +14,21 @@
  * limitations under the License.
  */
 
-/// A command line tool to generate query graph or logical plan visualization
-/// from a SQL query. Supports TPC-H tables by default, or local tables in
-/// Parquet/DWRF/text format when --data_path is specified.
+/// A command line tool to generate query graph, logical plan, or
+/// distributed plan visualization from a SQL query. Supports TPC-H tables
+/// by default, or local tables in Parquet/DWRF/text format when --data_path
+/// is specified.
 ///
 /// Generate query graph (default):
 ///   buck2 run //axiom/cli:graphviz -- --query "SELECT * FROM customer" \
 ///       --output query.svg
 ///
 /// Generate logical plan:
-///   buck2 run //axiom/cli:graphviz -- --logical_plan \
+///   buck2 run //axiom/cli:graphviz -- --mode=logical \
+///       --query "SELECT * FROM customer" --output plan.svg
+///
+/// Generate distributed plan:
+///   buck2 run //axiom/cli:graphviz -- --mode=distributed \
 ///       --query "SELECT * FROM customer" --output plan.svg
 ///
 /// Use local tables instead of TPC-H:
@@ -57,10 +62,10 @@ DEFINE_string(
     output,
     "",
     "Output file path. Use .svg extension to generate SVG.");
-DEFINE_bool(
-    logical_plan,
-    false,
-    "Generate logical plan visualization instead of query graph.");
+DEFINE_string(
+    mode,
+    "graph",
+    "Visualization mode: graph, logical, or distributed.");
 DEFINE_string(
     data_path,
     "",
@@ -69,11 +74,19 @@ DEFINE_string(
     data_format,
     "parquet",
     "Format of local tables: parquet, dwrf, or text.");
+DEFINE_int32(
+    num_workers,
+    4,
+    "Number of workers (only used by --mode=distributed).");
+DEFINE_int32(
+    num_drivers,
+    4,
+    "Number of drivers per worker (only used by --mode=distributed).");
 
 namespace facebook::axiom {
 namespace {
 
-/// Returns the path to the 'dot' executable.
+// Returns the path to the 'dot' executable.
 std::string findDotExecutable() {
   static const std::vector<std::string> kDotPaths = {
       "/usr/bin/dot",
@@ -90,8 +103,7 @@ std::string findDotExecutable() {
   return "dot";
 }
 
-/// Converts DOT to SVG using the 'dot' command.
-/// Returns true on success.
+// Converts DOT to SVG using the 'dot' command. Returns true on success.
 bool dotToSvg(const std::string& dot, const std::string& outputPath) {
   try {
     std::vector<std::string> args = {
@@ -132,13 +144,13 @@ int main(int argc, char** argv) {
     std::cerr << "   or: echo \"SELECT ...\" | " << argv[0]
               << " --query \"\" --output <file.svg>" << std::endl;
     std::cerr << std::endl;
-    std::cerr << "Generates query graph or logical plan visualization."
-              << std::endl;
+    std::cerr
+        << "Generates query graph, logical plan, or distributed plan visualization."
+        << std::endl;
     std::cerr << std::endl;
     std::cerr << "Options:" << std::endl;
-    std::cerr
-        << "  --logical_plan  Generate logical plan instead of query graph"
-        << std::endl;
+    std::cerr << "  --mode          graph (default), logical, or distributed"
+              << std::endl;
     std::cerr << "  --data_path     Path to local tables (default: TPC-H)"
               << std::endl;
     std::cerr
@@ -179,8 +191,19 @@ int main(int argc, char** argv) {
     return std::make_pair(defaultConnector->connectorId(), defaultSchema);
   });
 
-  const auto dot = FLAGS_logical_plan ? runner.toLogicalPlanDot(query)
-                                      : runner.toQueryGraphDot(query);
+  std::string dot;
+  if (FLAGS_mode == "graph") {
+    dot = runner.toQueryGraphDot(query);
+  } else if (FLAGS_mode == "logical") {
+    dot = runner.toLogicalPlanDot(query);
+  } else if (FLAGS_mode == "distributed") {
+    dot = runner.toMultiFragmentPlanDot(
+        query, FLAGS_num_workers, FLAGS_num_drivers);
+  } else {
+    std::cerr << "Unknown --mode: " << FLAGS_mode
+              << ". Expected graph, logical, or distributed." << std::endl;
+    return 1;
+  }
 
   if (FLAGS_output.ends_with(".svg")) {
     if (!facebook::axiom::dotToSvg(dot, FLAGS_output)) {

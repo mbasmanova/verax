@@ -14,56 +14,18 @@
  * limitations under the License.
  */
 
-#include "axiom/optimizer/DerivedTableDotPrinter.h"
+#include "axiom/graphviz/DerivedTableDotPrinter.h"
 
-#include "axiom/optimizer/DerivedTable.h"
+#include "axiom/graphviz/Html.h"
+#include "axiom/graphviz/Palette.h"
 #include "axiom/optimizer/QueryGraph.h"
 #include "axiom/optimizer/Schema.h"
 
-namespace facebook::axiom::optimizer {
+namespace facebook::axiom::graphviz {
+
+using namespace optimizer; // NOLINT(google-build-using-namespace)
 
 namespace {
-
-// Color palette for the visualization.
-struct ColorPalette {
-  // Text and borders.
-  std::string_view text = "#1c2915"; // Dark green
-  // Join edges.
-  std::string_view lines = "#727a6b"; // Gray-green
-  // Table nodes.
-  std::string_view circles = "#af9d89"; // Tan
-  // Table headers.
-  std::string_view header = "#ccd5c4"; // Light sage
-  // Table details.
-  std::string_view highlight = "#ede3d9"; // Cream
-};
-
-const ColorPalette kPalette;
-
-// Escapes HTML special characters: <, >, &, ".
-std::string escapeHtml(const std::string& s) {
-  std::string result;
-  result.reserve(s.size());
-  for (char c : s) {
-    switch (c) {
-      case '<':
-        result += "&lt;";
-        break;
-      case '>':
-        result += "&gt;";
-        break;
-      case '&':
-        result += "&amp;";
-        break;
-      case '"':
-        result += "&quot;";
-        break;
-      default:
-        result += c;
-    }
-  }
-  return result;
-}
 
 // Maximum length for filter expressions in the visualization.
 // Longer expressions are truncated with "...".
@@ -557,4 +519,4 @@ void DerivedTableDotPrinter::print(
   out << "}\n";
 }
 
-} // namespace facebook::axiom::optimizer
+} // namespace facebook::axiom::graphviz

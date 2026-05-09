@@ -63,13 +63,13 @@ Project [1.00 rows] -> dt1.avg_yearly
             TableScan [20.00 rows] -> t3.p_partkey
               table: "default"."part"
               single-column filters: eq(t3.p_brand, "Brand#23") and eq(t3.p_container, "MED BOX")
-        HashBuild [59.91 rows] -> dt4.__gk6, dt4.expr
-          Project [59.91 rows] -> dt4.__gk6, dt4.expr
+        HashBuild [63.62 rows] -> dt4.__gk6, dt4.expr
+          Project [63.62 rows] -> dt4.__gk6, dt4.expr
               dt4.__gk6 := t5.l_partkey
               dt4.expr := multiply(dt4.avg, 0.2)
-            Aggregation (t5.l_partkey) [59.91 rows] -> t5.l_partkey, dt4.avg
+            Aggregation (t5.l_partkey) [63.62 rows] -> t5.l_partkey, dt4.avg
                 dt4.avg := avg(t5.l_quantity)
-              Join LEFT SEMI (FILTER) Hash [60.99 rows] -> t5.l_partkey, t5.l_quantity
+              Join LEFT SEMI (FILTER) Hash [63.73 rows] -> t5.l_partkey, t5.l_quantity
                   t5.l_partkey = t3.p_partkey
                 TableScan [600572.00 rows] -> t5.l_partkey, t5.l_quantity
                   table: "default"."lineitem"
@@ -81,7 +81,7 @@ Project [1.00 rows] -> dt1.avg_yearly
 
 Executable Velox plan:
 
-Fragment 0: stage1 numWorkers=1:
+Fragment 0: fragment1 SINGLE:
 -- Project[11][expressions: (avg_yearly:DOUBLE, divide("sum",7))] -> avg_yearly:DOUBLE
   -- Aggregation[10][SINGLE sum := sum("l_extendedprice")] -> sum:DOUBLE
     -- Filter[0][expression: lt("l_quantity","expr")] -> l_quantity:DOUBLE, l_extendedprice:DOUBLE, expr:DOUBLE

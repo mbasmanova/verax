@@ -63,7 +63,7 @@ Project (redundant) [2.00 rows] -> dt1.l_shipmode, dt1.high_line_count, dt1.low_
 
 Executable Velox plan:
 
-Fragment 0: stage1 numWorkers=1:
+Fragment 0: fragment1 SINGLE:
 -- OrderBy[5][l_shipmode ASC NULLS LAST] -> l_shipmode:VARCHAR, high_line_count:BIGINT, low_line_count:BIGINT
   -- Aggregation[4][SINGLE [l_shipmode] high_line_count := sum("dt1.__p64"), low_line_count := sum("dt1.__p71")] -> l_shipmode:VARCHAR, high_line_count:BIGINT, low_line_count:BIGINT
     -- Project[3][expressions: (l_shipmode:VARCHAR, "l_shipmode"), (dt1.__p64:INTEGER, switch(or(eq("o_orderpriority",1-URGENT),eq("o_orderpriority",2-HIGH)),1,0)), (dt1.__p71:INTEGER, switch(and(neq("o_orderpriority",1-URGENT),neq("o_orderpriority",2-HIGH)),1,0))] -> l_shipmode:VARCHAR, "dt1.__p64":INTEGER, "dt1.__p71":INTEGER

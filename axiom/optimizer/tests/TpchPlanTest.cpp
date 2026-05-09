@@ -97,10 +97,13 @@ TEST_F(TpchPlanTest, stats) {
 
     auto planAndStats = planVelox(logicalPlan);
     auto stats = planAndStats.prediction;
-    ASSERT_EQ(stats.size(), 1);
+    ASSERT_FALSE(stats.empty());
 
-    ASSERT_EQ(stats.begin()->first, logicalPlan->id());
-    ASSERT_EQ(stats.begin()->second.cardinality, cardinality);
+    // Every node in a bare-scan plan reports the table cardinality since no
+    // intermediate operator changes the row count.
+    for (const auto& [nodeId, prediction] : stats) {
+      EXPECT_EQ(prediction.cardinality, cardinality);
+    }
   };
 
   verifyStats("region", 5);

@@ -37,7 +37,7 @@ Project (redundant) [1.00 rows] -> dt1.revenue
 
 Executable Velox plan:
 
-Fragment 0: stage1 numWorkers=1:
+Fragment 0: fragment1 SINGLE:
 -- Aggregation[2][SINGLE revenue := sum("dt1.__p57")] -> revenue:DOUBLE
   -- Project[1][expressions: (dt1.__p57:DOUBLE, multiply("l_extendedprice","l_discount"))] -> "dt1.__p57":DOUBLE
     -- TableScan[0][table: lineitem, range filters: [(l_discount, DoubleRange: [0.050000, 0.070000] no nulls), (l_quantity, DoubleRange: (-inf, 24.000000) no nulls), (l_shipdate, BigintRange: [8766, 9130] no nulls)], data columns: ROW<l_orderkey:BIGINT,l_partkey:BIGINT,l_suppkey:BIGINT,l_linenumber:INTEGER,l_quantity:DOUBLE,l_extendedprice:DOUBLE,l_discount:DOUBLE,l_tax:DOUBLE,l_returnflag:VARCHAR,l_linestatus:VARCHAR,l_shipdate:DATE,l_commitdate:DATE,l_receiptdate:DATE,l_shipinstruct:VARCHAR,l_shipmode:VARCHAR,l_comment:VARCHAR>, filter column handles: [HiveColumnHandle [name: l_quantity, columnType: Regular, dataType: DOUBLE, requiredSubfields: [ ]], HiveColumnHandle [name: l_discount, columnType: Regular, dataType: DOUBLE, requiredSubfields: [ ]], HiveColumnHandle [name: l_shipdate, columnType: Regular, dataType: DATE, requiredSubfields: [ ]]]] -> l_extendedprice:DOUBLE, l_discount:DOUBLE

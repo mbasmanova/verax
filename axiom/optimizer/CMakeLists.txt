@@ -28,7 +28,6 @@ add_library(
   Cost.cpp
   DerivedTable.cpp
   DerivedTableFlattener.cpp
-  DerivedTableDotPrinter.cpp
   DerivedTablePrinter.cpp
   Domain.cpp
   ExplainIo.cpp

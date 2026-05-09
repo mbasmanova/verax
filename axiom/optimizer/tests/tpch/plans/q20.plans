@@ -44,9 +44,9 @@ t5: 80000.00 rows, ps_partkey, ps_suppkey, ps_availqty
     ps_suppkey BIGINT (cardinality=10167.00 min=1 max=10000)
     ps_availqty INTEGER (cardinality=10121.00 min=1 max=9999)
 
-dt6: 80828.19 rows, __gk8, __gk9, expr
+dt6: 80828.50 rows, __gk8, __gk9, expr
   output:
-    __gk8 := t7.l_partkey BIGINT (cardinality=80828.19 min=1 max=200000)
+    __gk8 := t7.l_partkey BIGINT (cardinality=80828.50 min=1 max=200000)
     __gk9 := t7.l_suppkey BIGINT (cardinality=10167.00 min=1 max=10000)
     expr := multiply(dt6.sum, 0.5) DOUBLE (cardinality=1.00)
   tables: t7
@@ -85,32 +85,32 @@ Project (redundant) [40.00 rows] -> dt1.s_name, dt1.s_address
   OrderBy [40.00 rows] -> t2.s_name, t2.s_address
     Join RIGHT SEMI (FILTER) Hash [40.00 rows] -> t2.s_name, t2.s_address
         dt4.ps_suppkey = t2.s_suppkey
-      Project [127.98 rows] -> dt4.ps_suppkey
+      Project [125.51 rows] -> dt4.ps_suppkey
           dt4.ps_suppkey := t5.ps_suppkey
-        Filter [127.98 rows] -> t5.ps_suppkey, t5.ps_availqty, dt6.expr
+        Filter [125.51 rows] -> t5.ps_suppkey, t5.ps_availqty, dt6.expr
             lt(dt6.expr, __cast(t5.ps_availqty as DOUBLE))
-          Join RIGHT Hash [255.95 rows] -> t5.ps_suppkey, t5.ps_availqty, dt6.expr
+          Join RIGHT Hash [251.03 rows] -> t5.ps_suppkey, t5.ps_availqty, dt6.expr
               dt6.__gk8 = t5.ps_partkey
               dt6.__gk9 = t5.ps_suppkey
-            Project [80828.19 rows] -> dt6.__gk8, dt6.__gk9, dt6.expr
+            Project [80828.50 rows] -> dt6.__gk8, dt6.__gk9, dt6.expr
                 dt6.__gk8 := t7.l_partkey
                 dt6.__gk9 := t7.l_suppkey
                 dt6.expr := multiply(dt6.sum, 0.5)
-              Aggregation (t7.l_partkey, t7.l_suppkey) [80828.19 rows] -> t7.l_partkey, t7.l_suppkey, dt6.sum
+              Aggregation (t7.l_partkey, t7.l_suppkey) [80828.50 rows] -> t7.l_partkey, t7.l_suppkey, dt6.sum
                   dt6.sum := sum(t7.l_quantity)
                 TableScan [86815.36 rows] -> t7.l_partkey, t7.l_suppkey, t7.l_quantity
                   table: "default"."lineitem"
                   single-column filters: gte(t7.l_shipdate, "1994-01-01") and lt(t7.l_shipdate, "1995-01-01")
-            HashBuild [255.95 rows] -> t5.ps_partkey, t5.ps_suppkey, t5.ps_availqty
-              Join RIGHT SEMI (FILTER) Hash [255.95 rows] -> t5.ps_partkey, t5.ps_suppkey, t5.ps_availqty
+            HashBuild [251.03 rows] -> t5.ps_partkey, t5.ps_suppkey, t5.ps_availqty
+              Join RIGHT SEMI (FILTER) Hash [251.03 rows] -> t5.ps_partkey, t5.ps_suppkey, t5.ps_availqty
                   dt10.p_partkey = t5.ps_partkey
                 Project (redundant) [16000.00 rows] -> dt10.p_partkey
                     dt10.p_partkey := t11.p_partkey
                   TableScan [16000.00 rows] -> t11.p_partkey
                     table: "default"."part"
                     single-column filters: like(t11.p_name, "forest%")
-                HashBuild [314.74 rows] -> t5.ps_partkey, t5.ps_suppkey, t5.ps_availqty
-                  Join LEFT SEMI (FILTER) Hash [314.74 rows] -> t5.ps_partkey, t5.ps_suppkey, t5.ps_availqty
+                HashBuild [308.68 rows] -> t5.ps_partkey, t5.ps_suppkey, t5.ps_availqty
+                  Join LEFT SEMI (FILTER) Hash [308.68 rows] -> t5.ps_partkey, t5.ps_suppkey, t5.ps_availqty
                       t5.ps_suppkey = edt16.edt16.t2.s_suppkey
                     TableScan [80000.00 rows] -> t5.ps_partkey, t5.ps_suppkey, t5.ps_availqty
                       table: "default"."partsupp"
@@ -138,7 +138,7 @@ Project (redundant) [40.00 rows] -> dt1.s_name, dt1.s_address
 
 Executable Velox plan:
 
-Fragment 0: stage1 numWorkers=1:
+Fragment 0: fragment1 SINGLE:
 -- OrderBy[18][s_name ASC NULLS LAST] -> s_name:VARCHAR, s_address:VARCHAR
   -- HashJoin[17][RIGHT SEMI (FILTER) ps_suppkey=s_suppkey] -> s_name:VARCHAR, s_address:VARCHAR
     -- Project[13][expressions: (ps_suppkey:BIGINT, "ps_suppkey")] -> ps_suppkey:BIGINT

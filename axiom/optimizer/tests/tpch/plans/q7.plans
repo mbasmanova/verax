@@ -65,13 +65,13 @@ agg((("default"."lineitem" INNER ("default"."supplier" INNER "default"."nation")
 
 Optimized plan:
 
-Project [8.74 rows] -> dt1.supp_nation, dt1.cust_nation, dt1.l_year, dt1.revenue
+Project [8.75 rows] -> dt1.supp_nation, dt1.cust_nation, dt1.l_year, dt1.revenue
     dt1.supp_nation := t6.n_name
     dt1.cust_nation := t7.n_name
     dt1.l_year := dt1.l_year
     dt1.revenue := dt1.revenue
-  OrderBy [8.74 rows] -> t6.n_name, t7.n_name, dt1.l_year, dt1.revenue
-    Aggregation (t6.n_name, t7.n_name, dt1.__p99) [8.74 rows] -> t6.n_name, t7.n_name, dt1.l_year, dt1.revenue
+  OrderBy [8.75 rows] -> t6.n_name, t7.n_name, dt1.l_year, dt1.revenue
+    Aggregation (t6.n_name, t7.n_name, dt1.__p99) [8.75 rows] -> t6.n_name, t7.n_name, dt1.l_year, dt1.revenue
         dt1.revenue := sum(dt1.__p105)
       Project [13.03 rows] -> t6.n_name, t7.n_name, dt1.__p99, dt1.__p105
           t6.n_name := t6.n_name
@@ -114,7 +114,7 @@ Project [8.74 rows] -> dt1.supp_nation, dt1.cust_nation, dt1.l_year, dt1.revenue
 
 Executable Velox plan:
 
-Fragment 0: stage1 numWorkers=1:
+Fragment 0: fragment1 SINGLE:
 -- Project[15][expressions: (supp_nation:VARCHAR, "n_name"), (cust_nation:VARCHAR, "n_name_9"), (l_year:BIGINT, "l_year"), (revenue:DOUBLE, "revenue")] -> supp_nation:VARCHAR, cust_nation:VARCHAR, l_year:BIGINT, revenue:DOUBLE
   -- OrderBy[14][n_name ASC NULLS LAST, n_name_9 ASC NULLS LAST, l_year ASC NULLS LAST] -> n_name:VARCHAR, n_name_9:VARCHAR, l_year:BIGINT, revenue:DOUBLE
     -- Aggregation[13][SINGLE [n_name, n_name_9, l_year] revenue := sum("dt1.__p105")] -> n_name:VARCHAR, n_name_9:VARCHAR, l_year:BIGINT, revenue:DOUBLE

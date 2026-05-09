@@ -16,22 +16,20 @@
 #pragma once
 
 #include <ostream>
+#include "axiom/logical_plan/LogicalPlanNode.h"
 
-namespace facebook::axiom::optimizer {
+namespace facebook::axiom::graphviz {
 
-struct DerivedTable;
-
-/// Generates a DOT language representation of a DerivedTable query graph for
-/// visualization with Graphviz.
-///
-/// Usage:
-///   std::ofstream file("query_graph.dot");
-///   DerivedTableDotPrinter::print(dt, file);
-///
-/// Then render with: dot -Tsvg query_graph.dot -o query_graph.svg
-class DerivedTableDotPrinter {
+/// Generates DOT (Graphviz) representation of a logical plan tree.
+/// The output can be rendered to SVG using the 'dot' command:
+///   dot -Tsvg output.dot -o output.svg
+class LogicalPlanDotPrinter {
  public:
-  static void print(const DerivedTable& root, std::ostream& out);
+  /// Prints the logical plan tree rooted at 'root' in DOT format.
+  /// The tree flows top-down with the root at the top.
+  static void print(
+      const logical_plan::LogicalPlanNode& root,
+      std::ostream& out);
 };
 
-} // namespace facebook::axiom::optimizer
+} // namespace facebook::axiom::graphviz
