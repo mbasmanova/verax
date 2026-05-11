@@ -24,6 +24,7 @@
 #include "axiom/sql/presto/PrestoParser.h"
 #include "axiom/sql/presto/SqlStatement.h"
 #include "velox/common/base/tests/GTestUtils.h"
+#include "velox/connectors/ConnectorRegistry.h"
 #include "velox/exec/tests/utils/LocalExchangeSource.h"
 #include "velox/expression/Expr.h"
 #include "velox/functions/prestosql/aggregates/RegisterAggregateFunctions.h"
@@ -54,8 +55,11 @@ void SqlTestBase::SetUp() {
   velox::exec::ExchangeSource::registerFactory(
       velox::exec::test::createLocalExchangeSource);
 
-  connector_ = std::make_shared<connector::TestConnector>(kTestConnectorId);
-  velox::connector::registerConnector(connector_);
+  if (createsConnectorPerTest()) {
+    connector_ = std::make_shared<connector::TestConnector>(kTestConnectorId);
+    velox::connector::ConnectorRegistry::global().insert(
+        kTestConnectorId, connector_);
+  }
 
   optimizerPool_ = rootPool_->addLeafChild("optimizer");
   executor_ = std::make_shared<folly::CPUThreadPoolExecutor>(4);
@@ -63,8 +67,10 @@ void SqlTestBase::SetUp() {
 
 void SqlTestBase::TearDown() {
   optimizerPool_.reset();
-  velox::connector::unregisterConnector(kTestConnectorId);
-  connector_.reset();
+  if (createsConnectorPerTest()) {
+    velox::connector::ConnectorRegistry::global().erase(kTestConnectorId);
+    connector_.reset();
+  }
   velox::exec::ExchangeSource::factories().clear();
   executor_.reset();
 
@@ -81,82 +87,27 @@ void SqlTestBase::createTable(
     connector_->appendData(name, vector);
   }
 
-  duckDbQueryRunner_.createTable(name, data);
+  duckDbRunner().createTable(name, data);
 }
 
-void SqlTestBase::runSetupStatement(const std::string& sql) {
-  // Mirror the statement in DuckDB. DuckDB and Presto agree on the simple
-  // CREATE TABLE / INSERT INTO syntax this helper supports.
-  duckDbQueryRunner_.execute(sql);
-
-  // Parse via Axiom's PrestoParser and dispatch on statement kind.
-  ::axiom::sql::presto::PrestoParser parser(
-      kTestConnectorId, std::string(connector::TestConnector::kDefaultSchema));
-  auto stmt = parser.parse(sql, /*enableTracing=*/true);
-
-  if (stmt->isCreateTable()) {
-    // CREATE TABLE has no plan to execute; register the empty table
-    // directly with the connector.
-    const auto& create =
-        *stmt->as<::axiom::sql::presto::CreateTableStatement>();
-    connector_->addTable(create.tableName().table, create.tableSchema());
-    return;
-  }
-
-  logical_plan::LogicalPlanNodePtr plan;
-  if (stmt->isInsert()) {
-    plan = stmt->as<::axiom::sql::presto::InsertStatement>()->plan();
-  } else if (stmt->isCreateTableAsSelect()) {
-    // CREATE TABLE AS SELECT: register the empty table first, then run the
-    // wrapping plan (which inserts the SELECT results).
-    const auto& ctas =
-        *stmt->as<::axiom::sql::presto::CreateTableAsSelectStatement>();
-    connector_->addTable(ctas.tableName().table, ctas.tableSchema());
-    plan = ctas.plan();
-  } else {
-    VELOX_USER_FAIL(
-        "Unsupported setup statement (only CREATE TABLE, INSERT INTO, "
-        "and CREATE TABLE AS SELECT are supported): {}",
-        sql);
-  }
-
-  // Build a LocalRunner for the plan and drain it. The TableWrite operator
-  // at the root pushes rows into TestConnector::createDataSink, which calls
-  // appendData under the hood.
-  auto runner = makeRunner(plan);
-  while (auto batch = runner->next()) {
-  }
-  runner->waitForCompletion(kMaxWaitMicros);
-}
-
-std::shared_ptr<runner::LocalRunner> SqlTestBase::makeRunner(
-    std::string_view sql) {
-  // Parse SQL to logical plan.
-  ::axiom::sql::presto::PrestoParser parser(
-      kTestConnectorId, std::string(connector::TestConnector::kDefaultSchema));
-  auto statement = parser.parse(sql, true);
-
-  VELOX_CHECK(
-      statement->isSelect(), "Only SELECT statements are supported: {}", sql);
-
-  return makeRunner(
-      statement->as<::axiom::sql::presto::SelectStatement>()->plan());
-}
-
-std::shared_ptr<runner::LocalRunner> SqlTestBase::makeRunner(
-    const logical_plan::LogicalPlanNodePtr& logicalPlan) {
-  // Create query context.
+std::shared_ptr<runner::LocalRunner> SqlTestBase::makeLocalRunner(
+    const logical_plan::LogicalPlanNodePtr& logicalPlan,
+    folly::Executor* executor,
+    cache::AsyncDataCache* asyncDataCache,
+    const std::shared_ptr<memory::MemoryPool>& rootPool,
+    const std::shared_ptr<memory::MemoryPool>& optimizerPool,
+    int32_t numWorkers,
+    int32_t numDrivers) {
   static std::atomic<int32_t> queryCounter{0};
   auto queryId = fmt::format("sql_test_{}", ++queryCounter);
   auto queryCtx = core::QueryCtx::create(
-      executor_.get(),
+      executor,
       core::QueryConfig{{}},
       {},
-      cache::AsyncDataCache::getInstance(),
-      rootPool_->addAggregateChild(queryId));
+      asyncDataCache,
+      rootPool->addAggregateChild(queryId));
 
-  // Optimize: logical plan -> Velox multi-fragment plan.
-  auto allocator = std::make_unique<HashStringAllocator>(optimizerPool_.get());
+  auto allocator = std::make_unique<HashStringAllocator>(optimizerPool.get());
   auto graphContext =
       std::make_unique<optimizer::QueryGraphContext>(*allocator);
   optimizer::queryCtx() = graphContext.get();
@@ -165,15 +116,15 @@ std::shared_ptr<runner::LocalRunner> SqlTestBase::makeRunner(
   };
 
   exec::SimpleExpressionEvaluator evaluator(
-      queryCtx.get(), optimizerPool_.get());
+      queryCtx.get(), optimizerPool.get());
 
   auto session = std::make_shared<Session>(queryId);
   connector::SchemaResolver schemaResolver;
   VeloxHistory history;
 
   MultiFragmentPlan::Options options;
-  options.numWorkers = numWorkers_;
-  options.numDrivers = numDrivers_;
+  options.numWorkers = numWorkers;
+  options.numDrivers = numDrivers;
   options.queryId = queryId;
 
   Optimization optimization(
@@ -194,7 +145,83 @@ std::shared_ptr<runner::LocalRunner> SqlTestBase::makeRunner(
       std::move(planAndStats.finishWrite),
       queryCtx,
       std::make_shared<runner::ConnectorSplitSourceFactory>(),
-      optimizerPool_);
+      optimizerPool);
+}
+
+void SqlTestBase::runSetupStatement(
+    const std::string& sql,
+    connector::TestConnector& connector,
+    velox::exec::test::DuckDbQueryRunner& duckDb,
+    const std::function<std::shared_ptr<runner::LocalRunner>(
+        const logical_plan::LogicalPlanNodePtr&)>& runnerFactory) {
+  duckDb.execute(sql);
+
+  ::axiom::sql::presto::PrestoParser parser(
+      kTestConnectorId, std::string(connector::TestConnector::kDefaultSchema));
+  auto stmt = parser.parse(sql, /*enableTracing=*/true);
+
+  if (stmt->isCreateTable()) {
+    const auto& create =
+        *stmt->as<::axiom::sql::presto::CreateTableStatement>();
+    connector.addTable(create.tableName().table, create.tableSchema());
+    return;
+  }
+
+  logical_plan::LogicalPlanNodePtr plan;
+  if (stmt->isInsert()) {
+    plan = stmt->as<::axiom::sql::presto::InsertStatement>()->plan();
+  } else if (stmt->isCreateTableAsSelect()) {
+    const auto& ctas =
+        *stmt->as<::axiom::sql::presto::CreateTableAsSelectStatement>();
+    connector.addTable(ctas.tableName().table, ctas.tableSchema());
+    plan = ctas.plan();
+  } else {
+    VELOX_USER_FAIL(
+        "Unsupported setup statement (only CREATE TABLE, INSERT INTO, "
+        "and CREATE TABLE AS SELECT are supported): {}",
+        sql);
+  }
+
+  auto runner = runnerFactory(plan);
+  while (auto batch = runner->next()) {
+  }
+  runner->waitForCompletion(kMaxWaitMicros);
+}
+
+void SqlTestBase::runSetupStatement(const std::string& sql) {
+  runSetupStatement(
+      sql,
+      *connector_,
+      duckDbRunner(),
+      [this](const logical_plan::LogicalPlanNodePtr& plan) {
+        return makeRunner(plan);
+      });
+}
+
+std::shared_ptr<runner::LocalRunner> SqlTestBase::makeRunner(
+    std::string_view sql) {
+  // Parse SQL to logical plan.
+  ::axiom::sql::presto::PrestoParser parser(
+      kTestConnectorId, std::string(connector::TestConnector::kDefaultSchema));
+  auto statement = parser.parse(sql, true);
+
+  VELOX_CHECK(
+      statement->isSelect(), "Only SELECT statements are supported: {}", sql);
+
+  return makeRunner(
+      statement->as<::axiom::sql::presto::SelectStatement>()->plan());
+}
+
+std::shared_ptr<runner::LocalRunner> SqlTestBase::makeRunner(
+    const logical_plan::LogicalPlanNodePtr& logicalPlan) {
+  return makeLocalRunner(
+      logicalPlan,
+      executor_.get(),
+      cache::AsyncDataCache::getInstance(),
+      rootPool_,
+      optimizerPool_,
+      numWorkers_,
+      numDrivers_);
 }
 
 std::vector<RowVectorPtr> SqlTestBase::runAndCollect(std::string_view sql) {
@@ -224,10 +251,10 @@ void SqlTestBase::assertResults(
   auto resultType = axiomResults[0]->rowType();
 
   velox::exec::test::assertResults(
-      axiomResults, resultType, referenceSql, duckDbQueryRunner_);
+      axiomResults, resultType, referenceSql, duckDbRunner());
 
   if (checkColumnNames) {
-    auto duckDbResult = duckDbQueryRunner_.execute(referenceSql);
+    auto duckDbResult = duckDbRunner().execute(referenceSql);
     ASSERT_EQ(resultType->size(), duckDbResult->names.size())
         << "Column count mismatch";
     for (size_t i = 0; i < resultType->size(); ++i) {
@@ -250,8 +277,7 @@ void SqlTestBase::assertOrderedResults(
   auto referenceSql = duckDbSql.value_or(std::string(sql));
   auto resultType = axiomResults[0]->rowType();
 
-  auto expectedRows =
-      duckDbQueryRunner_.executeOrdered(referenceSql, resultType);
+  auto expectedRows = duckDbRunner().executeOrdered(referenceSql, resultType);
 
   // Materialize Axiom results into an ordered list of rows.
   std::vector<velox::exec::test::MaterializedRow> actualRows;
@@ -267,7 +293,7 @@ void SqlTestBase::assertOrderedResults(
   }
 
   if (checkColumnNames) {
-    auto duckDbResult = duckDbQueryRunner_.execute(referenceSql);
+    auto duckDbResult = duckDbRunner().execute(referenceSql);
     ASSERT_EQ(resultType->size(), duckDbResult->names.size())
         << "Column count mismatch";
     for (size_t i = 0; i < resultType->size(); ++i) {
