@@ -1,3 +1,5 @@
+-- setup_file: common_setup.sql
+
 -- Table t(a BIGINT, b BIGINT, c DOUBLE) with 15 rows across 3 splits:
 --   a |   b |    c
 --  ---+-----+------

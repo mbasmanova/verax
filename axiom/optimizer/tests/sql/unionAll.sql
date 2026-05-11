@@ -1,3 +1,5 @@
+-- setup_file: common_setup.sql
+
 -- UNION ALL queries. Uses table t(a BIGINT, b BIGINT, c DOUBLE) with 15
 -- rows across 3 splits (a in {1,2,3}). See sql/set.sql for the full data.
 --

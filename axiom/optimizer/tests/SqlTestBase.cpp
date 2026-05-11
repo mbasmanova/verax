@@ -34,6 +34,10 @@ namespace facebook::axiom::optimizer::test {
 
 using namespace facebook::velox;
 
+namespace {
+constexpr uint64_t kMaxWaitMicros{50'000};
+} // namespace
+
 void SqlTestBase::SetUpTestCase() {
   OperatorTestBase::SetUpTestCase();
 
@@ -80,6 +84,51 @@ void SqlTestBase::createTable(
   duckDbQueryRunner_.createTable(name, data);
 }
 
+void SqlTestBase::runSetupStatement(const std::string& sql) {
+  // Mirror the statement in DuckDB. DuckDB and Presto agree on the simple
+  // CREATE TABLE / INSERT INTO syntax this helper supports.
+  duckDbQueryRunner_.execute(sql);
+
+  // Parse via Axiom's PrestoParser and dispatch on statement kind.
+  ::axiom::sql::presto::PrestoParser parser(
+      kTestConnectorId, std::string(connector::TestConnector::kDefaultSchema));
+  auto stmt = parser.parse(sql, /*enableTracing=*/true);
+
+  if (stmt->isCreateTable()) {
+    // CREATE TABLE has no plan to execute; register the empty table
+    // directly with the connector.
+    const auto& create =
+        *stmt->as<::axiom::sql::presto::CreateTableStatement>();
+    connector_->addTable(create.tableName().table, create.tableSchema());
+    return;
+  }
+
+  logical_plan::LogicalPlanNodePtr plan;
+  if (stmt->isInsert()) {
+    plan = stmt->as<::axiom::sql::presto::InsertStatement>()->plan();
+  } else if (stmt->isCreateTableAsSelect()) {
+    // CREATE TABLE AS SELECT: register the empty table first, then run the
+    // wrapping plan (which inserts the SELECT results).
+    const auto& ctas =
+        *stmt->as<::axiom::sql::presto::CreateTableAsSelectStatement>();
+    connector_->addTable(ctas.tableName().table, ctas.tableSchema());
+    plan = ctas.plan();
+  } else {
+    VELOX_USER_FAIL(
+        "Unsupported setup statement (only CREATE TABLE, INSERT INTO, "
+        "and CREATE TABLE AS SELECT are supported): {}",
+        sql);
+  }
+
+  // Build a LocalRunner for the plan and drain it. The TableWrite operator
+  // at the root pushes rows into TestConnector::createDataSink, which calls
+  // appendData under the hood.
+  auto runner = makeRunner(plan);
+  while (auto batch = runner->next()) {
+  }
+  runner->waitForCompletion(kMaxWaitMicros);
+}
+
 std::shared_ptr<runner::LocalRunner> SqlTestBase::makeRunner(
     std::string_view sql) {
   // Parse SQL to logical plan.
@@ -90,9 +139,12 @@ std::shared_ptr<runner::LocalRunner> SqlTestBase::makeRunner(
   VELOX_CHECK(
       statement->isSelect(), "Only SELECT statements are supported: {}", sql);
 
-  auto logicalPlan =
-      statement->as<::axiom::sql::presto::SelectStatement>()->plan();
+  return makeRunner(
+      statement->as<::axiom::sql::presto::SelectStatement>()->plan());
+}
 
+std::shared_ptr<runner::LocalRunner> SqlTestBase::makeRunner(
+    const logical_plan::LogicalPlanNodePtr& logicalPlan) {
   // Create query context.
   static std::atomic<int32_t> queryCounter{0};
   auto queryId = fmt::format("sql_test_{}", ++queryCounter);
@@ -144,10 +196,6 @@ std::shared_ptr<runner::LocalRunner> SqlTestBase::makeRunner(
       std::make_shared<runner::ConnectorSplitSourceFactory>(),
       optimizerPool_);
 }
-
-namespace {
-constexpr uint64_t kMaxWaitMicros{50'000};
-} // namespace
 
 std::vector<RowVectorPtr> SqlTestBase::runAndCollect(std::string_view sql) {
   auto runner = makeRunner(sql);

@@ -1,3 +1,5 @@
+-- setup_file: common_setup.sql
+
 SELECT CAST(c AS DECIMAL(4,1)) * CAST(b AS DOUBLE) FROM t
 ----
 SELECT CAST(c AS DECIMAL(4,1)) + CAST(b AS DOUBLE) FROM t

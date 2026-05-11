@@ -1,3 +1,5 @@
+-- setup_file: common_setup.sql
+
 -- NULLIF tests.
 
 -- NULLIF with non-deterministic expression. Result must contain only NULL and
