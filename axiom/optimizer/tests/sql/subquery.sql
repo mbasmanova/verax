@@ -1,3 +1,5 @@
+-- setup_file: common_setup.sql
+
 -- Subquery tests.
 
 SELECT EXISTS(SELECT 1), EXISTS(SELECT 1), EXISTS(SELECT 3), NOT EXISTS(SELECT 1), NOT EXISTS(SELECT 1 WHERE false)

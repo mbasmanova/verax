@@ -1,3 +1,9 @@
+-- setup_file: common_setup.sql
+
+-- Scratch file for local development and quick experiments. Add new
+-- checked-in tests to a topic-specific file (join.sql, subquery.sql,
+-- window.sql, ...), not here.
+
 -- Table t(a BIGINT, b BIGINT, c DOUBLE) with 15 rows across 3 splits:
 --   a |   b |    c
 --  ---+-----+------

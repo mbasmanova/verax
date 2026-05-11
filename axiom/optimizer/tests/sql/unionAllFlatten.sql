@@ -1,3 +1,5 @@
+-- setup_file: common_setup.sql
+
 -- Tests for UNION ALL single-child collapse (flattenDt).
 -- Each test uses a CTE with a specific layer, wraps it in UNION ALL with a
 -- constant boolean column, and applies an outer WHERE that eliminates one leg.

@@ -289,18 +289,57 @@ SELECT a, b FROM t WHERE a > 1
 SELECT a FROM t WHERE a < 3 EXCEPT ALL ...
 ```
 
+**Test data setup:**
+
+Test tables are declared at the top of the `.sql` file via setup directives. Statements within a setup block (or referenced setup file) are separated by `----`, the same separator used between queries.
+
+| Directive | Behavior |
+|---|---|
+| `-- setup_file: relative.sql` | Splice in the contents of another `.sql` file as setup statements. Path is relative to the directory of the file containing the directive. |
+| `-- setup` … `-- end_setup` | Inline block of setup statements. |
+
+Both forms can appear any number of times, in any order, before the first query. Setup directives appearing after a query has started are rejected — install all tables first, then write queries.
+
+Setup statements run via Axiom's PrestoParser:
+
+- `CREATE TABLE name(col TYPE, ...)` registers an empty table.
+- `INSERT INTO name VALUES (...), ...`, `INSERT INTO name SELECT ...`, and `CREATE TABLE name AS SELECT ...` install rows. Each `INSERT` produces one TestConnector split — use multiple `INSERT`s when you want a multi-split table.
+- All statements are also mirrored into DuckDB so result comparison works against the same data. There is no `-- duckdb:` override for setup statements; setup SQL must be valid in both Presto and DuckDB. Stick to portable types (`BIGINT`, `DOUBLE`, `VARCHAR`, `BOOLEAN`, `DATE`, …) and literal `VALUES`.
+
+Most files share the standard table `t` via the project-wide setup file:
+
+```sql
+-- setup_file: common_setup.sql
+
+SELECT * FROM t WHERE a > 1
+```
+
+Files that need additional tables can declare them inline alongside the include:
+
+```sql
+-- setup_file: common_setup.sql
+-- setup
+CREATE TABLE u(a BIGINT)
+----
+INSERT INTO u VALUES (1), (2), (3)
+-- end_setup
+
+SELECT * FROM t JOIN u ON t.a = u.a
+```
+
 Each query in a `.sql` file becomes a separate gtest (e.g., `SqlTest.basic_l22` for the query at line 22 of `basic.sql`). Run them with:
 ```bash
 buck test fbcode//axiom/optimizer/tests:sql
 buck test fbcode//axiom/optimizer/tests:sql -- basic_l28
 ```
 
-To add a new correctness test, append a query to the appropriate `.sql` file in `axiom/optimizer/tests/sql/`. No C++ changes needed. Existing files:
+To add a new correctness test, append a query to the appropriate `.sql` file in `axiom/optimizer/tests/sql/`. No C++ changes needed. A few of the files:
 
 - `basic.sql` — scratch file for local development and quick experiments. Not a dumping ground for checked-in tests.
 - `join.sql` — joins.
 - `subquery.sql` — EXISTS and other subquery patterns.
 - `window.sql` — window functions (row_number, rank, frames, etc.).
+- ... and others; see `tests/sql/` for the full list.
 
 Choose the file that best matches the SQL feature being tested. If your tests don't fit any existing file, create a new `.sql` file and register it with a `registerQueryFile` call in `SqlTest.cpp`.
 

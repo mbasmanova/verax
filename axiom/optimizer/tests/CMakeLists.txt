@@ -160,17 +160,17 @@ target_link_libraries(
   GTest::gtest_main
 )
 
-add_library(axiom_optimizer_tests_sql_query_entry SqlQueryEntry.cpp)
+add_library(axiom_optimizer_tests_sql_file SqlFile.cpp)
 
-target_link_libraries(axiom_optimizer_tests_sql_query_entry velox_exception)
+target_link_libraries(axiom_optimizer_tests_sql_file velox_exception)
 
-add_executable(axiom_optimizer_sql_query_entry_test SqlQueryEntryTest.cpp)
+add_executable(axiom_optimizer_sql_file_test SqlFileTest.cpp)
 
-add_test(NAME axiom_optimizer_sql_query_entry_test COMMAND axiom_optimizer_sql_query_entry_test)
+add_test(NAME axiom_optimizer_sql_file_test COMMAND axiom_optimizer_sql_file_test)
 
 target_link_libraries(
-  axiom_optimizer_sql_query_entry_test
-  axiom_optimizer_tests_sql_query_entry
+  axiom_optimizer_sql_file_test
+  axiom_optimizer_tests_sql_file
   GTest::gmock
   GTest::gtest
   GTest::gtest_main
@@ -203,7 +203,7 @@ add_test(
 target_link_libraries(
   axiom_optimizer_sql_test
   axiom_optimizer_tests_sql_test_base
-  axiom_optimizer_tests_sql_query_entry
+  axiom_optimizer_tests_sql_file
   velox_dwio_common_test_utils
   GTest::gtest
 )
