@@ -97,7 +97,13 @@ TestTable::TestTable(
   exportedLayout_ =
       std::make_unique<TestTableLayout>(label, this, connector_, allColumns());
   layouts_.push_back(exportedLayout_.get());
-  pool_ = velox::memory::memoryManager()->addLeafPool(label + "_table");
+  // Use the connector's parent pool if one was supplied (suite-scoped
+  // fixtures with a standalone MemoryManager); otherwise fall back to the
+  // global singleton.
+  auto* tableRootPool = connector->tableRootPool();
+  pool_ = tableRootPool != nullptr
+      ? tableRootPool->addLeafChild(label + "_table")
+      : velox::memory::memoryManager()->addLeafPool(label + "_table");
   columnTrackers_.resize(schema->size());
 }
 

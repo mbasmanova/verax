@@ -185,6 +185,7 @@ target_link_libraries(
   axiom_runner_local_runner
   axiom_sql_presto_parser
   axiom_test_connector
+  velox_connector_registry
   velox_exec_test_lib
   velox_expression
   velox_functions_prestosql
@@ -204,6 +205,7 @@ target_link_libraries(
   axiom_optimizer_sql_test
   axiom_optimizer_tests_sql_test_base
   axiom_optimizer_tests_sql_file
+  velox_connector_registry
   velox_dwio_common_test_utils
   GTest::gtest
 )

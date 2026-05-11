@@ -617,8 +617,10 @@ class TestConnector : public velox::connector::Connector {
 
   explicit TestConnector(
       const std::string& id,
-      std::shared_ptr<const velox::config::ConfigBase> config = nullptr)
+      std::shared_ptr<const velox::config::ConfigBase> config = nullptr,
+      std::shared_ptr<velox::memory::MemoryPool> rootPool = nullptr)
       : Connector(id, std::move(config)),
+        rootPool_{std::move(rootPool)},
         metadata_{std::make_shared<TestConnectorMetadata>(this)} {
     registerSerDe();
     ConnectorMetadataRegistry::global().insert(id, metadata_);
@@ -626,6 +628,15 @@ class TestConnector : public velox::connector::Connector {
 
   ~TestConnector() override {
     ConnectorMetadataRegistry::global().erase(connectorId());
+  }
+
+  /// Returns the parent pool to use for TestTable allocations, or nullptr
+  /// to fall back to the global singleton MemoryManager. Set via the
+  /// constructor's 'rootPool' parameter; suite-scoped fixtures pass a pool
+  /// from a standalone MemoryManager so the table data is not bound to
+  /// the singleton (which OperatorTestBase resets per test).
+  velox::memory::MemoryPool* tableRootPool() const {
+    return rootPool_.get();
   }
 
   const velox::config::ConfigProvider* configProvider() const override {
@@ -727,6 +738,7 @@ class TestConnector : public velox::connector::Connector {
   bool dropView(const SchemaTableName& viewName);
 
  private:
+  const std::shared_ptr<velox::memory::MemoryPool> rootPool_;
   const std::shared_ptr<TestConnectorMetadata> metadata_;
 };
 

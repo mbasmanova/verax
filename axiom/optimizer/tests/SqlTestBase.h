@@ -17,9 +17,14 @@
 #pragma once
 
 #include <folly/executors/CPUThreadPoolExecutor.h>
+#include <functional>
 #include <optional>
 #include "axiom/connectors/tests/TestConnector.h"
 #include "velox/exec/tests/utils/OperatorTestBase.h"
+
+namespace facebook::velox::cache {
+class AsyncDataCache;
+} // namespace facebook::velox::cache
 
 namespace facebook::axiom::logical_plan {
 class LogicalPlanNode;
@@ -78,6 +83,31 @@ class SqlTestBase : public velox::exec::test::OperatorTestBase {
   /// the multi-RowVector createTable shape.
   void runSetupStatement(const std::string& sql);
 
+  /// Static variant of runSetupStatement. The caller supplies the
+  /// connector, the DuckDB runner, and a factory that builds a LocalRunner
+  /// for an INSERT / CTAS plan. Suite-scoped fixtures use this in
+  /// SetUpTestSuite to install reference tables once into a standalone
+  /// connector backed by their own MemoryManager / executor / cache.
+  static void runSetupStatement(
+      const std::string& sql,
+      connector::TestConnector& connector,
+      velox::exec::test::DuckDbQueryRunner& duckDb,
+      const std::function<std::shared_ptr<runner::LocalRunner>(
+          const logical_plan::LogicalPlanNodePtr&)>& runnerFactory);
+
+  /// Builds a LocalRunner for 'logicalPlan' using caller-supplied
+  /// infrastructure. Suite-scoped fixtures use this to bind their static
+  /// MemoryManager / executor / AsyncDataCache into a runnerFactory for
+  /// runSetupStatement.
+  static std::shared_ptr<runner::LocalRunner> makeLocalRunner(
+      const logical_plan::LogicalPlanNodePtr& logicalPlan,
+      folly::Executor* executor,
+      velox::cache::AsyncDataCache* asyncDataCache,
+      const std::shared_ptr<velox::memory::MemoryPool>& rootPool,
+      const std::shared_ptr<velox::memory::MemoryPool>& optimizerPool,
+      int32_t numWorkers = 4,
+      int32_t numDrivers = 4);
+
   /// Runs SQL through Axiom and DuckDB, asserts unordered results match.
   /// @param sql SQL query to run through both engines.
   /// @param checkColumnNames If true, also asserts output column names match.
@@ -107,6 +137,23 @@ class SqlTestBase : public velox::exec::test::OperatorTestBase {
   int32_t numWorkers_{4};
   int32_t numDrivers_{4};
 
+  // Override to false in subclasses that manage the TestConnector lifecycle
+  // at suite scope (i.e., create and register the connector once per
+  // fixture class in SetUpTestSuite, not once per test in SetUp).
+  virtual bool createsConnectorPerTest() const {
+    return true;
+  }
+
+  // Returns the DuckDbQueryRunner used for table installation and result
+  // comparison. The default returns 'duckDbQueryRunner_' (per-test,
+  // inherited from OperatorTestBase). Subclasses that want suite-scoped
+  // DuckDB state override to return their own static runner.
+  virtual velox::exec::test::DuckDbQueryRunner& duckDbRunner() {
+    return duckDbQueryRunner_;
+  }
+
+  std::shared_ptr<connector::TestConnector> connector_;
+
  private:
   // Runs SQL through Axiom's full pipeline without storing results. Returns
   // the total number of rows.
@@ -125,7 +172,6 @@ class SqlTestBase : public velox::exec::test::OperatorTestBase {
   std::shared_ptr<runner::LocalRunner> makeRunner(
       const logical_plan::LogicalPlanNodePtr& logicalPlan);
 
-  std::shared_ptr<connector::TestConnector> connector_;
   std::shared_ptr<velox::memory::MemoryPool> optimizerPool_;
   std::shared_ptr<folly::CPUThreadPoolExecutor> executor_;
 };
