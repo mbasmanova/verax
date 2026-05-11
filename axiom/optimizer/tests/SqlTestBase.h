@@ -21,6 +21,11 @@
 #include "axiom/connectors/tests/TestConnector.h"
 #include "velox/exec/tests/utils/OperatorTestBase.h"
 
+namespace facebook::axiom::logical_plan {
+class LogicalPlanNode;
+using LogicalPlanNodePtr = std::shared_ptr<const LogicalPlanNode>;
+} // namespace facebook::axiom::logical_plan
+
 namespace facebook::axiom::runner {
 class LocalRunner;
 } // namespace facebook::axiom::runner
@@ -63,6 +68,16 @@ class SqlTestBase : public velox::exec::test::OperatorTestBase {
       const std::string& name,
       const std::vector<velox::RowVectorPtr>& data);
 
+  /// Executes a single setup DDL statement against the Axiom TestConnector
+  /// and DuckDB. Supports:
+  ///   - CREATE TABLE name (col TYPE, ...) — registers an empty table.
+  ///   - INSERT INTO name VALUES (..., ...), (..., ...), ... — appends one
+  ///     RowVector (one TestConnector split) and runs the same statement
+  ///     in DuckDB.
+  /// Each INSERT to the same table produces a separate split, mirroring
+  /// the multi-RowVector createTable shape.
+  void runSetupStatement(const std::string& sql);
+
   /// Runs SQL through Axiom and DuckDB, asserts unordered results match.
   /// @param sql SQL query to run through both engines.
   /// @param checkColumnNames If true, also asserts output column names match.
@@ -103,6 +118,12 @@ class SqlTestBase : public velox::exec::test::OperatorTestBase {
   // Runs SQL through Axiom's full pipeline (parse, optimize, execute) and
   // returns a LocalRunner to iterate over.
   std::shared_ptr<runner::LocalRunner> makeRunner(std::string_view sql);
+
+  // Builds a LocalRunner directly from a logical plan. Used by
+  // runSetupStatement to execute INSERT / CREATE TABLE AS SELECT plans
+  // without re-parsing.
+  std::shared_ptr<runner::LocalRunner> makeRunner(
+      const logical_plan::LogicalPlanNodePtr& logicalPlan);
 
   std::shared_ptr<connector::TestConnector> connector_;
   std::shared_ptr<velox::memory::MemoryPool> optimizerPool_;

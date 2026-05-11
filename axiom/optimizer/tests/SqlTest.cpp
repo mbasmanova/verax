@@ -17,39 +17,29 @@
 #include <folly/FileUtil.h>
 #include <folly/init/Init.h>
 #include <gtest/gtest.h>
-#include "axiom/optimizer/tests/SqlQueryEntry.h"
+#include <filesystem>
+#include "axiom/optimizer/tests/SqlFile.h"
 #include "axiom/optimizer/tests/SqlTestBase.h"
 #include "axiom/optimizer/tests/TestDataPath.h"
 
 namespace facebook::axiom::optimizer::test {
 namespace {
 
-// Test fixture that runs a single QueryEntry through SqlTestBase.
+// Test fixture that runs a single QueryEntry through SqlTestBase. Setup
+// statements come from the .sql file's setup_file: / setup directives
+// and are run against the per-test connector before TestBody.
 class SqlTest : public SqlTestBase {
  public:
-  explicit SqlTest(QueryEntry entry) : entry_(std::move(entry)) {}
+  SqlTest(QueryEntry entry, std::vector<std::string> setupStatements)
+      : entry_(std::move(entry)),
+        setupStatements_(std::move(setupStatements)) {}
 
  protected:
   void SetUp() override {
     SqlTestBase::SetUp();
-
-    createTable(
-        "t",
-        {makeRowVector(
-             {"a", "b", "c"},
-             {makeFlatVector<int64_t>({1, 2, 3, 1, 2}),
-              makeFlatVector<int64_t>({10, 20, 30, 40, 50}),
-              makeFlatVector<double>({1.5, 2.5, 3.5, 4.5, 5.5})}),
-         makeRowVector(
-             {"a", "b", "c"},
-             {makeFlatVector<int64_t>({3, 1, 2, 3, 1}),
-              makeFlatVector<int64_t>({60, 70, 80, 90, 100}),
-              makeFlatVector<double>({6.5, 7.5, 8.5, 9.5, 10.5})}),
-         makeRowVector(
-             {"a", "b", "c"},
-             {makeFlatVector<int64_t>({2, 3, 1, 2, 3}),
-              makeFlatVector<int64_t>({110, 120, 130, 140, 150}),
-              makeFlatVector<double>({11.5, 12.5, 13.5, 14.5, 15.5})})});
+    for (const auto& statement : setupStatements_) {
+      runSetupStatement(statement);
+    }
   }
 
   void TestBody() override {
@@ -76,28 +66,29 @@ class SqlTest : public SqlTestBase {
 
  private:
   QueryEntry entry_;
+  std::vector<std::string> setupStatements_;
 };
 
-// Reads the entire contents of a file.
-std::string readFile(const std::string& path) {
-  std::string content;
-  auto success = folly::readFile(path.c_str(), content);
-  VELOX_CHECK(success, "Failed to read file: {}", path);
-  return content;
-}
-
-// Registers all queries from a .sql file as individual gtest tests.
+// Registers all queries from a .sql file as individual gtest tests under
+// fixture 'SqlTest'. Each registered test instance receives both its own
+// query entry and the file's setup statements.
 void registerQueryFile(const std::string& fileName) {
   auto path = getTestFilePath(fmt::format("sql/{}", fileName));
-  auto content = readFile(path);
-  auto entries = QueryEntry::parse(content);
+
+  std::string content;
+  VELOX_CHECK(
+      folly::readFile(path.c_str(), content), "Failed to read: {}", path);
+
+  auto baseDir = std::filesystem::path(path).parent_path().string();
+  auto file = SqlFile::parse(content, baseDir);
 
   // Strip the .sql extension to use as a test name prefix.
   auto baseName = fileName.substr(0, fileName.rfind('.'));
 
-  for (const auto& entry : entries) {
+  for (const auto& entry : file.entries) {
     auto testName = fmt::format("{}_l{}", baseName, entry.lineNumber);
     auto capturedEntry = entry;
+    auto capturedSetup = file.setupStatements;
     testing::RegisterTest(
         "SqlTest",
         testName.c_str(),
@@ -105,8 +96,9 @@ void registerQueryFile(const std::string& fileName) {
         /*value_param=*/nullptr,
         path.c_str(),
         entry.lineNumber,
-        [capturedEntry = std::move(capturedEntry)]() -> SqlTest* {
-          return new SqlTest(capturedEntry);
+        [capturedEntry = std::move(capturedEntry),
+         capturedSetup = std::move(capturedSetup)]() -> SqlTest* {
+          return new SqlTest(capturedEntry, capturedSetup);
         });
   }
 }
@@ -118,20 +110,21 @@ int main(int argc, char** argv) {
   testing::InitGoogleTest(&argc, argv);
   folly::Init init(&argc, &argv, false);
 
-  facebook::axiom::optimizer::test::registerQueryFile("basic.sql");
-  facebook::axiom::optimizer::test::registerQueryFile("join.sql");
-  facebook::axiom::optimizer::test::registerQueryFile("subquery.sql");
-  facebook::axiom::optimizer::test::registerQueryFile("window.sql");
-  facebook::axiom::optimizer::test::registerQueryFile("set.sql");
-  facebook::axiom::optimizer::test::registerQueryFile("limit.sql");
-  facebook::axiom::optimizer::test::registerQueryFile("aggregation.sql");
-  facebook::axiom::optimizer::test::registerQueryFile("subfield.sql");
-  facebook::axiom::optimizer::test::registerQueryFile("nullif.sql");
-  facebook::axiom::optimizer::test::registerQueryFile("coercion.sql");
-  facebook::axiom::optimizer::test::registerQueryFile(
-      "distinctAggregation.sql");
-  facebook::axiom::optimizer::test::registerQueryFile("unionAll.sql");
-  facebook::axiom::optimizer::test::registerQueryFile("unionAllFlatten.sql");
+  using namespace facebook::axiom::optimizer::test;
+
+  registerQueryFile("basic.sql");
+  registerQueryFile("join.sql");
+  registerQueryFile("subquery.sql");
+  registerQueryFile("window.sql");
+  registerQueryFile("set.sql");
+  registerQueryFile("limit.sql");
+  registerQueryFile("aggregation.sql");
+  registerQueryFile("subfield.sql");
+  registerQueryFile("nullif.sql");
+  registerQueryFile("coercion.sql");
+  registerQueryFile("distinctAggregation.sql");
+  registerQueryFile("unionAll.sql");
+  registerQueryFile("unionAllFlatten.sql");
 
   return RUN_ALL_TESTS();
 }
