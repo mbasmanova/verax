@@ -425,6 +425,35 @@ class ToGraph {
   std::pair<ExprVector, OrderTypeVector> dedupOrdering(
       const std::vector<logical_plan::SortingField>& ordering);
 
+  // State threaded between consecutive subqueries (scalar, IN, EXISTS)
+  // within a single project / aggregate / filter scope (set up by
+  // addProjection, addAggregation, or addFilter). Only the heavy-path
+  // non-equi correlated-with-aggregation scalar subquery installs the
+  // aggregation that motivates the chain; once that has happened, every
+  // subsequent subquery in the scope must wrap currentDt_ before adding
+  // its own joins (joins cannot follow aggregation). The wrap site re-
+  // exports this state so the new outer DT can keep using it — reusing
+  // the row identity as the next aggregation's grouping key (skipping a
+  // redundant AssignUniqueId) and carrying prior subquery results forward
+  // via arbitrary() aggregates.
+  struct SubqueryChain {
+    // Per-outer-row identity column to use as the next aggregation's
+    // grouping key. The heavy path sets this when it creates a fresh
+    // column; the wrap site rewrites it to the column's re-exported form
+    // each time the chain crosses a wrap. A non-null value signals an
+    // in-progress chain that requires the next subquery iteration to wrap.
+    ColumnCP rowNumberColumn{nullptr};
+
+    // Subquery keys whose result must survive subsequent wraps and
+    // aggregations. Each entry's current expression lives in subqueries_:
+    // the wrap site rewrites that expression to the re-exported form on
+    // each wrap, and the next heavy path wraps it in arbitrary() so it
+    // survives the new aggregation. Every subquery type appends in
+    // encounter order; the vector is never cleared within a chain's
+    // lifetime.
+    std::vector<logical_plan::ExprPtr> carryForwards;
+  };
+
   // Process subqueries used in filter's predicate or projection expressions
   // and populate subqueries_ map. For each IN <subquery> expression, create a
   // separate DT for the subquery and add a semi-join edge. Replace the whole IN
@@ -438,16 +467,37 @@ class ToGraph {
   // non-inner joins, aggregation, or unnest tables, wraps the DT before
   // processing subqueries. Set to false after finalization or after processing
   // subqueries to prevent subsequent calls from finalizing the DT again.
+  // @param chain In/out state for chaining subqueries within a logical
+  // scope (see SubqueryChain). Callers that may invoke processSubqueries
+  // multiple times for the same scope (e.g. multiple project expressions)
+  // pass a single chain across all calls; single-call sites pass a
+  // temporary.
   void processSubqueries(
       const logical_plan::LogicalPlanNode& input,
       const logical_plan::ExprPtr& expr,
-      bool& mayFinalize);
+      bool& mayFinalize,
+      SubqueryChain& chain);
 
   // Processes scalar subqueries, creating DTs and joins for each.
   // Populates subqueries_ with mappings from subquery expressions to columns.
   void processScalarSubqueries(
       const logical_plan::LogicalPlanNode& input,
-      const std::vector<logical_plan::SubqueryExprPtr>& scalars);
+      const std::vector<logical_plan::SubqueryExprPtr>& scalars,
+      SubqueryChain& chain);
+
+  // If 'chain' has pending state from a prior heavy-path scalar
+  // subquery, wraps currentDt_ inside a new outer DT and re-exports the
+  // chain so the new outer DT can reference the prior heavy-path's row-
+  // identity column (as the next aggregation's grouping key) and the
+  // prior subqueries' results (via the entries in subqueries_). No-op
+  // otherwise. Called at the top of each subquery iteration (scalar, IN,
+  // EXISTS) before any work that adds joins to currentDt_: joins cannot
+  // be added to a DT after its aggregation, and outer-column renames now
+  // point to columns owned by currentDt_, which would yield self-
+  // referencing JoinEdges.
+  void maybeWrapForChainedSubquery(
+      const logical_plan::LogicalPlanNode& input,
+      SubqueryChain& chain);
 
   // Processes an uncorrelated scalar subquery. Attempts constant folding,
   // otherwise ensures single row. Returns the expression to map to the
@@ -456,15 +506,25 @@ class ToGraph {
 
   // Processes a correlated scalar subquery. Creates LEFT join with
   // decorrelation, handling both equi-only and non-equi correlation.
-  // Returns the expression to map to the subquery.
+  // Returns the expression to map to the subquery. 'chain' carries state
+  // between consecutive heavy-path subqueries in the caller's loop; the
+  // heavy path reads it on entry and updates it on exit. The caller is
+  // responsible for appending the produced expression to chain.carryForwards
+  // so subsequent wraps and aggregations preserve the result.
   ExprCP processCorrelatedScalarSubquery(
       const logical_plan::LogicalPlanNode& input,
-      DerivedTableP subqueryDt);
+      DerivedTableP subqueryDt,
+      SubqueryChain& chain);
 
   // Processes IN <subquery> predicates, creating semi-joins with mark columns.
   // Populates subqueries_ with mappings from IN predicates to mark columns.
+  // 'chain' carries the same wrap/carry-forward state used by scalar
+  // subquery processing; an in-progress chain is wrapped before each new
+  // join is added, and the resulting mark column is appended to the chain.
   void processInPredicates(
-      const std::vector<logical_plan::ExprPtr>& inPredicates);
+      const logical_plan::LogicalPlanNode& input,
+      const std::vector<logical_plan::ExprPtr>& inPredicates,
+      SubqueryChain& chain);
 
   // Processes an uncorrelated IN <subquery> predicate.
   // Returns the mark column to map to the predicate.
@@ -484,9 +544,12 @@ class ToGraph {
 
   // Processes EXISTS subqueries, creating mark joins or cross joins.
   // Populates subqueries_ with mappings from EXISTS expressions to mark columns
-  // or NOT(COUNT(*) = 0) expressions.
+  // or NOT(COUNT(*) = 0) expressions. 'chain' carries the same
+  // wrap/carry-forward state used by scalar subquery processing.
   void processExistsSubqueries(
-      const std::vector<logical_plan::ExprPtr>& exists);
+      const logical_plan::LogicalPlanNode& input,
+      const std::vector<logical_plan::ExprPtr>& exists,
+      SubqueryChain& chain);
 
   // Processes an uncorrelated EXISTS subquery. Uses COUNT(*) wrapper
   // with cross join and NOT(count == 0) expression.
@@ -520,6 +583,15 @@ class ToGraph {
   // column names to the new aggregate output columns.
   void appendArbitraryAggregates(
       const logical_plan::LogicalPlanNode& input,
+      AggregateVector& aggregates,
+      ColumnVector& columns);
+
+  // Appends a single 'arbitrary(expr)' aggregate to 'aggregates' and a
+  // corresponding output column owned by currentDt_ to 'columns'. Returns
+  // the new column. Used to carry a value through an aggregation when
+  // decorrelating correlated subqueries.
+  ColumnCP appendArbitraryAggregate(
+      ExprCP expr,
       AggregateVector& aggregates,
       ColumnVector& columns);
 

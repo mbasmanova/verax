@@ -1268,6 +1268,241 @@ TEST_F(SubqueryTest, nonEquiCorrelatedProject) {
   }
 }
 
+// Multiple correlated scalar count(*) subqueries with non-equi predicates
+// in the same SELECT list. Each subquery becomes a LeftJoin + streaming
+// aggregation on top of the previous one. A single AssignUniqueId at the
+// base feeds every aggregation as its grouping key; each aggregation
+// carries forward the prior subqueries' results via arbitrary().
+TEST_F(SubqueryTest, multipleNonEquiCorrelatedScalars) {
+  // Two subqueries against distinct inner tables.
+  {
+    auto query =
+        "SELECT "
+        "  (SELECT count(*) FROM nation WHERE n_regionkey < r_regionkey) AS x, "
+        "  (SELECT count(*) FROM supplier WHERE s_suppkey < r_regionkey) AS y "
+        "FROM region";
+    SCOPED_TRACE(query);
+
+    auto matcher = matchHiveScan("region")
+                       .assignUniqueId("unique_id")
+                       .nestedLoopJoin(
+                           matchHiveScan("nation")
+                               .project({"true as marker1", "n_regionkey"})
+                               .build(),
+                           velox::core::JoinType::kLeft)
+                       .streamingAggregation(
+                           {"unique_id"},
+                           {
+                               "count(*) filter (where marker1) as cnt1",
+                               "arbitrary(r_regionkey) as r_regionkey",
+                           })
+                       .project()
+                       .nestedLoopJoin(
+                           matchHiveScan("supplier")
+                               .project({"true as marker2", "s_suppkey"})
+                               .build(),
+                           velox::core::JoinType::kLeft)
+                       .streamingAggregation(
+                           {"unique_id"},
+                           {
+                               "count(*) filter (where marker2) as cnt2",
+                               "arbitrary(r_regionkey)",
+                               "arbitrary(cnt1) as cnt1",
+                           })
+                       .project({"cnt1 as x", "cnt2 as y"})
+                       .build();
+
+    auto plan = toSingleNodePlan(query);
+    AXIOM_ASSERT_PLAN(plan, matcher);
+  }
+
+  // Three subqueries against distinct inner tables: each successive
+  // aggregation carries forward all prior subquery results.
+  {
+    auto query =
+        "SELECT "
+        "  (SELECT count(*) FROM nation WHERE n_regionkey < r_regionkey) AS x, "
+        "  (SELECT count(*) FROM supplier WHERE s_suppkey < r_regionkey) AS y, "
+        "  (SELECT count(*) FROM customer WHERE c_custkey > r_regionkey) AS z "
+        "FROM region";
+    SCOPED_TRACE(query);
+
+    auto matcher = matchHiveScan("region")
+                       .assignUniqueId("unique_id")
+                       .nestedLoopJoin(
+                           matchHiveScan("nation")
+                               .project({"true as marker1", "n_regionkey"})
+                               .build(),
+                           velox::core::JoinType::kLeft)
+                       .streamingAggregation(
+                           {"unique_id"},
+                           {
+                               "count(*) filter (where marker1) as cnt1",
+                               "arbitrary(r_regionkey) as r_regionkey",
+                           })
+                       .project()
+                       .nestedLoopJoin(
+                           matchHiveScan("supplier")
+                               .project({"true as marker2", "s_suppkey"})
+                               .build(),
+                           velox::core::JoinType::kLeft)
+                       .streamingAggregation(
+                           {"unique_id"},
+                           {
+                               "count(*) filter (where marker2) as cnt2",
+                               "arbitrary(r_regionkey) as r_regionkey",
+                               "arbitrary(cnt1) as cnt1",
+                           })
+                       .project()
+                       .nestedLoopJoin(
+                           matchHiveScan("customer")
+                               .project({"true as marker3", "c_custkey"})
+                               .build(),
+                           velox::core::JoinType::kLeft)
+                       .streamingAggregation(
+                           {"unique_id"},
+                           {
+                               "count(*) filter (where marker3) as cnt3",
+                               "arbitrary(r_regionkey)",
+                               "arbitrary(cnt1) as cnt1",
+                               "arbitrary(cnt2) as cnt2",
+                           })
+                       .project({"cnt1 as x", "cnt2 as y", "cnt3 as z"})
+                       .build();
+
+    auto plan = toSingleNodePlan(query);
+    AXIOM_ASSERT_PLAN(plan, matcher);
+  }
+}
+
+// Uncorrelated scalar (max) followed by a non-equi correlated scalar
+// (count(*)) in the same SELECT.
+TEST_F(SubqueryTest, uncorrelatedThenNonEquiCorrelatedScalar) {
+  auto query =
+      "SELECT "
+      "  (SELECT max(s_suppkey) FROM supplier) AS x, "
+      "  (SELECT count(*) FROM nation WHERE n_regionkey > r_regionkey) AS y "
+      "FROM region";
+  SCOPED_TRACE(query);
+
+  auto matcher = matchHiveScan("region")
+                     .assignUniqueId("unique_id")
+                     .nestedLoopJoin(
+                         matchHiveScan("nation")
+                             .project({"true as marker", "n_regionkey"})
+                             .build(),
+                         velox::core::JoinType::kLeft)
+                     .nestedLoopJoin(matchHiveScan("supplier")
+                                         .singleAggregation(
+                                             {}, {"max(s_suppkey) as max_key"})
+                                         .build())
+                     .streamingAggregation(
+                         {"unique_id"},
+                         {
+                             "count(*) filter (where marker) as cnt",
+                             "arbitrary(r_regionkey) as r_regionkey",
+                             "arbitrary(max_key) as max_key",
+                         })
+                     .project({"max_key as x", "cnt as y"})
+                     .build();
+
+  auto plan = toSingleNodePlan(query);
+  AXIOM_ASSERT_PLAN(plan, matcher);
+}
+
+// Non-equi correlated scalar (count(*)) followed by a correlated EXISTS
+// in the same SELECT.
+TEST_F(SubqueryTest, nonEquiCorrelatedScalarThenCorrelatedExists) {
+  auto query =
+      "SELECT "
+      "  (SELECT count(*) FROM nation WHERE n_regionkey > r_regionkey) AS x, "
+      "  EXISTS (SELECT 1 FROM supplier WHERE s_suppkey > r_regionkey) AS y "
+      "FROM region";
+  SCOPED_TRACE(query);
+
+  auto matcher = matchHiveScan("region")
+                     .assignUniqueId("unique_id")
+                     .nestedLoopJoin(
+                         matchHiveScan("nation")
+                             .project({"true as marker", "n_regionkey"})
+                             .build(),
+                         velox::core::JoinType::kLeft)
+                     .streamingAggregation(
+                         {"unique_id"},
+                         {
+                             "count(*) filter (where marker) as cnt",
+                             "arbitrary(r_regionkey) as r_regionkey",
+                         })
+                     .project()
+                     .nestedLoopJoin(
+                         matchHiveScan("supplier").build(),
+                         velox::core::JoinType::kLeftSemiProject)
+                     .project()
+                     .build();
+
+  auto plan = toSingleNodePlan(query);
+  AXIOM_ASSERT_PLAN(plan, matcher);
+}
+
+// Non-equi correlated scalar (count(*)) followed by an uncorrelated
+// scalar (max) in the same SELECT.
+TEST_F(SubqueryTest, nonEquiCorrelatedThenUncorrelatedScalar) {
+  auto query =
+      "SELECT "
+      "  (SELECT count(*) FROM nation WHERE n_regionkey > r_regionkey) AS x, "
+      "  (SELECT max(s_suppkey) FROM supplier) AS y "
+      "FROM region";
+  SCOPED_TRACE(query);
+
+  auto matcher = matchHiveScan("region")
+                     .assignUniqueId("unique_id")
+                     .nestedLoopJoin(
+                         matchHiveScan("nation")
+                             .project({"true as marker", "n_regionkey"})
+                             .build(),
+                         velox::core::JoinType::kLeft)
+                     .streamingAggregation(
+                         {"unique_id"},
+                         {
+                             "count(*) filter (where marker) as cnt",
+                             "arbitrary(r_regionkey) as r_regionkey",
+                         })
+                     .project()
+                     .nestedLoopJoin(matchHiveScan("supplier")
+                                         .singleAggregation(
+                                             {}, {"max(s_suppkey) as max_key"})
+                                         .build())
+                     .project({"cnt as x", "max_key as y"})
+                     .build();
+
+  auto plan = toSingleNodePlan(query);
+  AXIOM_ASSERT_PLAN(plan, matcher);
+}
+
+// Correlated EXISTS combined with an uncorrelated IN in the same SELECT.
+TEST_F(SubqueryTest, correlatedExistsThenUncorrelatedIn) {
+  auto query =
+      "SELECT "
+      "  EXISTS (SELECT 1 FROM nation WHERE n_regionkey > r_regionkey) AS x, "
+      "  r_regionkey IN (SELECT s_suppkey FROM supplier) AS y "
+      "FROM region";
+  SCOPED_TRACE(query);
+
+  auto matcher = matchHiveScan("supplier")
+                     .hashJoin(
+                         matchHiveScan("region").build(),
+                         velox::core::JoinType::kRightSemiProject,
+                         /*nullAware=*/true)
+                     .nestedLoopJoin(
+                         matchHiveScan("nation").build(),
+                         velox::core::JoinType::kLeftSemiProject)
+                     .project()
+                     .build();
+
+  auto plan = toSingleNodePlan(query);
+  AXIOM_ASSERT_PLAN(plan, matcher);
+}
+
 // Correlated scalar subqueries without aggregation.
 // These require EnforceDistinct to validate single-row semantics.
 TEST_F(SubqueryTest, correlatedScalarWithoutAggregation) {

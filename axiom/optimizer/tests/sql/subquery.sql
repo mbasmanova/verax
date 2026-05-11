@@ -1,4 +1,9 @@
 -- setup_file: common_setup.sql
+-- setup
+CREATE TABLE u AS FROM (VALUES (1), (2), (3), (4), (5)) AS _(a)
+----
+CREATE TABLE v AS FROM (VALUES (2), (4), (6), (8), (10)) AS _(a)
+-- end_setup
 
 -- Subquery tests.
 
@@ -50,3 +55,190 @@ SELECT
      WHERE b > u.a AND b > u.x AND b < v.y)
    FROM (SELECT 5 AS a, 10 AS x) u)
 FROM (SELECT 20 AS x, 30 AS y) v
+----
+-- Multiple correlated scalar count(*) subqueries with non-equi predicates
+-- in the same SELECT list, each correlating on a different outer column.
+SELECT
+    (SELECT count(*) FROM u WHERE u.a > t.a) AS x,
+    (SELECT count(*) FROM v WHERE v.a > t.b) AS y
+FROM t
+----
+SELECT
+    (SELECT count(*) FROM u WHERE u.a > t.a) AS x,
+    (SELECT count(*) FROM v WHERE v.a > t.b) AS y,
+    (SELECT count(*) FROM u WHERE u.a < t.c) AS z
+FROM t
+----
+-- Multiple subqueries in a SELECT list — pairwise shape coverage. Shapes:
+-- U   = uncorrelated scalar
+-- CE  = correlated equality, returns a value (no aggregation)
+-- CEA = correlated equality, with aggregation
+-- CN  = correlated non-equality, returns a value (no aggregation)
+-- CNA = correlated non-equality, with aggregation
+--
+-- Blocks below cover combinations of these shapes:
+--   Block A: pairs of scalar subqueries (and one triple).
+--   Block B: scalar + boolean predicate (EXISTS / IN).
+--   Block C: pairs of boolean predicates.
+--   Block D: structural / layout variants for the heavy CNA case.
+--
+-- Block A.1: U + U
+SELECT
+    (SELECT max(u.a) FROM u) AS x,
+    (SELECT min(v.a) FROM v) AS y
+FROM t
+----
+-- Block A.2: U + CEA
+SELECT
+    (SELECT max(u.a) FROM u) AS x,
+    (SELECT count(*) FROM u WHERE u.a = t.a) AS y
+FROM t
+----
+-- Block A.3: U + CNA
+SELECT
+    (SELECT max(u.a) FROM u) AS x,
+    (SELECT count(*) FROM v WHERE v.a > t.a) AS y
+FROM t
+----
+-- Block A.4: CE + CE
+SELECT
+    (SELECT u.a FROM u WHERE u.a = t.a) AS x,
+    (SELECT v.a FROM v WHERE v.a = t.b) AS y
+FROM t
+----
+-- Block A.5: CE + CEA
+SELECT
+    (SELECT u.a FROM u WHERE u.a = t.a) AS x,
+    (SELECT count(*) FROM v WHERE v.a = t.b) AS y
+FROM t
+----
+-- Block A.6: CEA + CNA
+SELECT
+    (SELECT count(*) FROM u WHERE u.a = t.a) AS x,
+    (SELECT count(*) FROM v WHERE v.a > t.b) AS y
+FROM t
+----
+-- Block A.7: CN + CN
+SELECT
+    (SELECT u.a FROM u WHERE u.a > t.a AND u.a <= t.a + 1) AS x,
+    (SELECT v.a FROM v WHERE v.a > t.b AND v.a <= t.b + 2) AS y
+FROM t
+----
+-- Block A.8: CN + CNA
+SELECT
+    (SELECT u.a FROM u WHERE u.a > t.a AND u.a <= t.a + 1) AS x,
+    (SELECT count(*) FROM v WHERE v.a > t.b) AS y
+FROM t
+----
+-- Block A.9: CNA + CNA on the same outer column
+SELECT
+    (SELECT count(*) FROM u WHERE u.a > t.a) AS x,
+    (SELECT count(*) FROM v WHERE v.a > t.a) AS y
+FROM t
+----
+-- Block A.10: CNA + CNA on a compound outer reference
+SELECT
+    (SELECT count(*) FROM u WHERE u.a > t.a + t.b) AS x,
+    (SELECT count(*) FROM v WHERE v.a > t.b - t.a) AS y
+FROM t
+----
+-- Block B: scalar + boolean predicate (EXISTS / IN) in the same SELECT list.
+--
+-- Block B.1: CNA scalar + correlated EXISTS
+SELECT
+    (SELECT count(*) FROM u WHERE u.a > t.a) AS x,
+    EXISTS (SELECT 1 FROM v WHERE v.a > t.b) AS y
+FROM t
+----
+-- Block B.2: CNA scalar + correlated NOT EXISTS
+SELECT
+    (SELECT count(*) FROM u WHERE u.a > t.a) AS x,
+    NOT EXISTS (SELECT 1 FROM v WHERE v.a > t.b) AS y
+FROM t
+----
+-- Block B.3: CNA scalar + correlated IN
+SELECT
+    (SELECT count(*) FROM u WHERE u.a > t.a) AS x,
+    t.a IN (SELECT v.a FROM v WHERE v.a > t.b) AS y
+FROM t
+----
+-- Block B.4: CNA scalar + correlated NOT IN
+SELECT
+    (SELECT count(*) FROM u WHERE u.a > t.a) AS x,
+    t.a NOT IN (SELECT v.a FROM v WHERE v.a > t.b) AS y
+FROM t
+----
+-- Block B.5: CEA scalar + correlated EXISTS
+SELECT
+    (SELECT count(*) FROM u WHERE u.a = t.a) AS x,
+    EXISTS (SELECT 1 FROM v WHERE v.a = t.b) AS y
+FROM t
+----
+-- Block B.6: CN scalar + correlated EXISTS
+SELECT
+    (SELECT u.a FROM u WHERE u.a > t.a AND u.a <= t.a + 1) AS x,
+    EXISTS (SELECT 1 FROM v WHERE v.a > t.b) AS y
+FROM t
+----
+-- Block C: multiple boolean predicates in the SELECT list.
+--
+-- Block C.1: two correlated EXISTS
+SELECT
+    EXISTS (SELECT 1 FROM u WHERE u.a > t.a) AS x,
+    EXISTS (SELECT 1 FROM v WHERE v.a > t.b) AS y
+FROM t
+----
+-- Block C.2: two correlated IN
+SELECT
+    t.a IN (SELECT u.a FROM u WHERE u.a > 0) AS x,
+    t.b IN (SELECT v.a FROM v WHERE v.a > 0) AS y
+FROM t
+----
+-- Block C.3: EXISTS + IN mixed
+SELECT
+    EXISTS (SELECT 1 FROM u WHERE u.a > t.a) AS x,
+    t.b IN (SELECT v.a FROM v WHERE v.a > 0) AS y
+FROM t
+----
+-- Block C.4: two NOT EXISTS
+SELECT
+    NOT EXISTS (SELECT 1 FROM u WHERE u.a > t.a) AS x,
+    NOT EXISTS (SELECT 1 FROM v WHERE v.a > t.b) AS y
+FROM t
+----
+-- Block D: layout / structural variants for the heavy CNA case.
+--
+-- Block D.1: two CNA inside a single CASE expression
+SELECT
+    CASE
+        WHEN (SELECT count(*) FROM u WHERE u.a > t.a) <= 5
+         AND (SELECT count(*) FROM v WHERE v.a > t.b) <= 5
+        THEN 'pass' ELSE 'fail'
+    END AS r
+FROM t
+----
+-- Block D.2: three CNA inside a single CASE expression
+SELECT
+    CASE
+        WHEN (SELECT count(*) FROM u WHERE u.a > t.a) <= 5
+         AND (SELECT count(*) FROM v WHERE v.a > t.b) <= 5
+         AND (SELECT count(*) FROM u WHERE u.a > t.b) <= 5
+        THEN 'pass' ELSE 'fail'
+    END AS r
+FROM t
+----
+-- Block D.3: two CNA on a compound outer reference
+SELECT
+    (SELECT count(*) FROM u WHERE u.a > (t.a + t.b)) AS x,
+    (SELECT count(*) FROM v WHERE v.a > (t.a + t.b)) AS y
+FROM t
+----
+-- Block D.4: mixed layout — two CNA inside a CASE plus a CNA in a separate column
+SELECT
+    CASE
+        WHEN (SELECT count(*) FROM u WHERE u.a > t.a) <= 5
+         AND (SELECT count(*) FROM v WHERE v.a > t.b) <= 5
+        THEN 'pass' ELSE 'fail'
+    END AS r,
+    (SELECT count(*) FROM u WHERE u.a < t.c) AS z
+FROM t

@@ -465,6 +465,81 @@ Filter: max_y IS NULL
 execution engine — the ability to execute a subquery parameterized by values
 from the outer side.
 
+#### Multiple Subqueries in One Scope
+
+The single-subquery techniques above each mutate `currentDt_` in place:
+they add joins, install a per-subquery aggregation, or both. When a single
+project / filter / aggregate scope contains more than one subquery
+(scalar, IN, or EXISTS), naively repeating the per-subquery transform
+produces an inconsistent graph — the second subquery would try to add a
+join to a DT that has already been collapsed into an aggregation, and
+its outer-column references would resolve to the aggregation's outputs,
+yielding self-referencing join edges.
+
+Axiom handles this by processing subqueries one at a time and stacking
+their decorrelations. After each non-equi correlated scalar's transform
+installs an aggregation on `currentDt_`, the next subquery in the same
+scope wraps the current DT inside a fresh outer DT before adding any
+work of its own — so its joins land on top of the wrap rather than on
+top of the aggregation.
+
+The mechanism is centred on `SubqueryChain` (see Correlation State above):
+
+- The non-equi-with-aggregation scalar path sets
+  `chain.rowNumberColumn` to the `AssignUniqueId` column it produces.
+  A non-null value is the signal that a wrap is needed before the next
+  subquery.
+- Every subquery iteration (scalar, IN, EXISTS) calls
+  `maybeWrapForChainedSubquery()` at the top of its loop body. If the
+  chain has pending state, the helper wraps `currentDt_` and re-exports
+  the row-number column and every prior subquery result through the new
+  outer DT.
+- After producing its own result column, every iteration also appends
+  to `chain.carryForwards`. A subsequent heavy scalar's aggregation
+  then preserves those columns as `arbitrary()` aggregates so they
+  remain accessible at the top of the stack.
+- A single `AssignUniqueId` at the base feeds every level's grouping
+  key — there are no redundant per-level `AssignUniqueId` operators.
+
+```sql
+-- Two non-equi correlated scalars in the same SELECT
+SELECT
+  (SELECT count(*) FROM u WHERE u.a > t.a) AS x,
+  (SELECT count(*) FROM v WHERE v.a > t.b) AS y
+FROM t
+```
+
+```
+Project: cnt1 AS x, cnt2 AS y
+  └─ Aggregation(groupBy=[uniq]): count(*) FILTER (m2) AS cnt2,
+                                  arbitrary(t.b),
+                                  arbitrary(cnt1)
+       └─ LeftJoin on v.a > t.b
+            ├─ Project (wrap)
+            │    └─ Aggregation(groupBy=[uniq]): count(*) FILTER (m1) AS cnt1,
+            │                                    arbitrary(t.a),
+            │                                    arbitrary(t.b)
+            │         └─ LeftJoin on u.a > t.a
+            │              ├─ AssignUniqueId → uniq
+            │              │    └─ Scan(t)
+            │              └─ Project: TRUE AS m1, u.a
+            │                   └─ Scan(u)
+            └─ Project: TRUE AS m2, v.a
+                 └─ Scan(v)
+```
+
+The same wrap applies when a non-equi correlated scalar is followed by
+an EXISTS or IN: the boolean-predicate iteration also calls
+`maybeWrapForChainedSubquery()` before adding its semi-join, so the
+EXISTS / IN join lands above the wrap rather than above the
+aggregation.
+
+When multiple subqueries each produce a mark column that the downstream
+needs (e.g. EXISTS + IN in a SELECT list), the cross-join semi-project
+path keeps its own mark as the rightmost column of the join's output —
+`NestedLoopJoinNode` interprets the rightmost output column as the
+existence flag, so any other mark must precede it.
+
 ## Supported Subquery Shapes in Axiom
 
 The Axiom optimizer supports three types of subqueries—scalar, IN, and
@@ -998,7 +1073,7 @@ struct Subqueries {
 };
 ```
 
-### Correlation State (ToGraph.h, lines 428-440)
+### Correlation State
 
 The `ToGraph` class maintains state for handling correlated subqueries:
 
@@ -1018,14 +1093,34 @@ ExprVector correlatedConjuncts_;
 folly::F14FastMap<logical_plan::ExprPtr, ExprCP> subqueries_;
 ```
 
-### Mark Columns
-
-Semi-joins use boolean "mark" columns to track row membership:
+In addition, `processSubqueries()` and its callees thread a
+`SubqueryChain` value (defined as a nested struct in `ToGraph`) that
+carries per-scope state across multiple subqueries in the same project,
+aggregate, or filter scope:
 
 ```cpp
-auto* mark = toName(fmt::format("__mark{}", markCounter_++));
-auto* markColumn = make<Column>(mark, currentDt_, Value{toType(velox::BOOLEAN()), 2});
+struct SubqueryChain {
+  // Per-outer-row identity column to use as the next aggregation's
+  // grouping key. A non-null value signals an in-progress chain that
+  // requires the next subquery iteration to wrap currentDt_.
+  ColumnCP rowNumberColumn{nullptr};
+
+  // Subquery keys whose result must survive subsequent wraps and
+  // aggregations. Carried through wraps via DerivedTable::exportExpr
+  // and through the next heavy aggregation via arbitrary().
+  std::vector<logical_plan::ExprPtr> carryForwards;
+};
 ```
+
+See the "Multiple Subqueries in One Scope" section for how the chain is
+produced and consumed.
+
+### Mark Columns
+
+Semi-joins use boolean "mark" columns to track row membership. They are
+created via `ToGraph::addMarkColumn()`, which allocates a fresh column
+with a unique `__markN` name (`newCName("__mark")`) owned by `currentDt_`
+and registers it in `renames_`.
 
 ### DecorrelatedJoin Struct
 

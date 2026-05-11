@@ -318,6 +318,16 @@ utilities, do **not** silently work around it. Stop, report the finding, and
 discuss whether to fix the root cause or work around it. Workarounds accumulate
 into technical debt and mask real problems.
 
+### Leaving incremental scaffolding in the final code
+
+Before declaring a multi-step change done, re-read the modified files as a
+fresh reader and remove scaffolding from the editing process: dead
+variables/helpers/fields, stale comments describing an earlier version of
+the code, defensive checks that no longer guard anything, organization
+reflecting edit order, and naming inherited from prior iterations. Refactor
+as if you were writing the final form from scratch — the reader has only
+the code, not your editing history.
+
 ### Verify causation before asserting it
 
 When investigating a test failure or regression, do not attribute it to a
