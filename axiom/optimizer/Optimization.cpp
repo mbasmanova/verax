@@ -2445,7 +2445,8 @@ void Optimization::crossJoin(
 
     downstreamColumns.forEach<Column>([&](auto column) {
       if (column == mark) {
-        projectionBuilder.add(mark, mark);
+        // Defer mark to the end. NestedLoopJoinNode requires the existence
+        // flag to be the rightmost output column for left semi project.
         return;
       }
 
@@ -2462,6 +2463,10 @@ void Optimization::crossJoin(
 
       projectionBuilder.add(column, column);
     });
+
+    if (mark) {
+      projectionBuilder.add(mark, mark);
+    }
 
     // Add the row-number column for EnforceDistinct. It is not part of
     // downstreamColumns, so we need to add it explicitly.

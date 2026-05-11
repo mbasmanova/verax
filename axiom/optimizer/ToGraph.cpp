@@ -1467,8 +1467,12 @@ AggregationPlanCP ToGraph::translateAggregation(const lp::AggregateNode& agg) {
   const auto channels = usedChannels(agg);
   {
     bool mayFinalize = true;
+    // Single chain spans all grouping-key and aggregate-input/filter
+    // expressions so heavy-path correlated scalar subqueries across them
+    // share the wrap-and-export state.
+    SubqueryChain chain;
     for (const auto& key : agg.groupingKeys()) {
-      processSubqueries(input, key, mayFinalize);
+      processSubqueries(input, key, mayFinalize, chain);
     }
 
     for (auto channel : channels) {
@@ -1479,10 +1483,10 @@ AggregationPlanCP ToGraph::translateAggregation(const lp::AggregateNode& agg) {
       const auto& aggregate = agg.aggregates()[channel - numGroupingKeys];
 
       for (const auto& expr : aggregate->inputs()) {
-        processSubqueries(input, expr, mayFinalize);
+        processSubqueries(input, expr, mayFinalize, chain);
       }
       if (aggregate->filter()) {
-        processSubqueries(input, aggregate->filter(), mayFinalize);
+        processSubqueries(input, aggregate->filter(), mayFinalize, chain);
       }
     }
   }
@@ -2312,8 +2316,12 @@ void ToGraph::addProjection(const lp::ProjectNode& project) {
   });
 
   bool mayFinalize = true;
+  // Single chain spans all project expressions so that heavy-path
+  // correlated scalar subqueries across separate exprs share the
+  // wrap-and-export state.
+  SubqueryChain chain;
   for (auto i : channels) {
-    processSubqueries(input, exprs[i], mayFinalize);
+    processSubqueries(input, exprs[i], mayFinalize, chain);
   }
 
   QGVector<WindowFunctionCP> windowFunctions;
@@ -2561,37 +2569,41 @@ CorrelationKeys extractCorrelationKeys(
 
 } // namespace
 
-void ToGraph::appendArbitraryAggregates(
-    const lp::LogicalPlanNode& input,
+ColumnCP ToGraph::appendArbitraryAggregate(
+    ExprCP expr,
     AggregateVector& aggregates,
     ColumnVector& columns) {
   VELOX_CHECK_NOT_NULL(
       functionNames_.arbitrary, "Arbitrary aggregate function not registered");
+  auto intermediateType = toType(
+      velox::exec::resolveIntermediateType(
+          std::string{functionNames_.arbitrary},
+          {toTypePtr(expr->value().type)}));
+  auto* arbitraryAgg = make<Aggregate>(
+      functionNames_.arbitrary,
+      expr->value(),
+      ExprVector{expr},
+      FunctionSet(),
+      /*isDistinct=*/false,
+      /*condition=*/nullptr,
+      intermediateType,
+      ExprVector{},
+      OrderTypeVector{});
+  aggregates.push_back(arbitraryAgg);
 
+  auto* column = make<Column>(newCName("__agg"), currentDt_, expr->value());
+  columns.push_back(column);
+  return column;
+}
+
+void ToGraph::appendArbitraryAggregates(
+    const lp::LogicalPlanNode& input,
+    AggregateVector& aggregates,
+    ColumnVector& columns) {
   for (auto channel : usedChannels(input)) {
     const auto& name = input.outputType()->nameOf(channel);
     auto expr = renames_.at(name);
-
-    auto intermediateType = toType(
-        velox::exec::resolveIntermediateType(
-            std::string{functionNames_.arbitrary},
-            {toTypePtr(expr->value().type)}));
-    auto* arbitraryAgg = make<Aggregate>(
-        functionNames_.arbitrary,
-        expr->value(),
-        ExprVector{expr},
-        FunctionSet(),
-        /*isDistinct=*/false,
-        /*condition=*/nullptr,
-        intermediateType,
-        ExprVector{},
-        OrderTypeVector{});
-    aggregates.push_back(arbitraryAgg);
-
-    auto* column = make<Column>(newCName("__agg"), currentDt_, expr->value());
-    columns.push_back(column);
-
-    renames_[name] = column;
+    renames_[name] = appendArbitraryAggregate(expr, aggregates, columns);
   }
 }
 
@@ -2683,7 +2695,8 @@ AggregationPlanCP ToGraph::processCorrelatedAggregation(AggregationPlanCP agg) {
 void ToGraph::processSubqueries(
     const lp::LogicalPlanNode& input,
     const lp::ExprPtr& expr,
-    bool& mayFinalize) {
+    bool& mayFinalize,
+    SubqueryChain& chain) {
   Subqueries subqueries;
   extractSubqueries(expr, subqueries);
 
@@ -2714,24 +2727,57 @@ void ToGraph::processSubqueries(
     }
   }
 
-  processScalarSubqueries(input, subqueries.scalars);
-  processInPredicates(subqueries.inPredicates);
-  processExistsSubqueries(subqueries.exists);
+  processScalarSubqueries(input, subqueries.scalars, chain);
+  processInPredicates(input, subqueries.inPredicates, chain);
+  processExistsSubqueries(input, subqueries.exists, chain);
 }
 
 void ToGraph::processScalarSubqueries(
     const lp::LogicalPlanNode& input,
-    const std::vector<lp::SubqueryExprPtr>& scalars) {
+    const std::vector<lp::SubqueryExprPtr>& scalars,
+    SubqueryChain& chain) {
   for (const auto& subquery : scalars) {
+    maybeWrapForChainedSubquery(input, chain);
+
     auto subqueryDt = translateSubquery(*subquery->subquery());
 
     ExprCP column;
     if (correlatedConjuncts_.empty()) {
       column = processUncorrelatedScalarSubquery(subqueryDt);
     } else {
-      column = processCorrelatedScalarSubquery(input, subqueryDt);
+      column = processCorrelatedScalarSubquery(input, subqueryDt, chain);
     }
     subqueries_.emplace(subquery, column);
+
+    // Track every subquery's result so any later heavy-path subquery in
+    // the same scope re-exports it through the wrap and carries it forward
+    // through the new aggregation as arbitrary(). Pure literals (e.g. from
+    // constant-folded uncorrelated subqueries) need no carry-forward.
+    if (!column->columns().empty()) {
+      chain.carryForwards.push_back(subquery);
+    }
+  }
+}
+
+void ToGraph::maybeWrapForChainedSubquery(
+    const lp::LogicalPlanNode& input,
+    SubqueryChain& chain) {
+  if (chain.rowNumberColumn == nullptr) {
+    return;
+  }
+
+  auto* wrappedDt = currentDt_;
+  finalizeDt(input);
+
+  // Re-export every value carried by 'chain' through the wrap so it remains
+  // accessible from the new outer DT. exportExpr returns the form owned by
+  // 'wrappedDt' (an inner table of the new outer DT).
+  chain.rowNumberColumn =
+      wrappedDt->exportExpr(chain.rowNumberColumn)->as<Column>();
+
+  for (const auto& subqueryKey : chain.carryForwards) {
+    auto& expression = subqueries_.at(subqueryKey);
+    expression = wrappedDt->exportExpr(expression);
   }
 }
 
@@ -2776,7 +2822,8 @@ Literal* tryMakeLiteralForEmptyInput(AggregateCP agg) {
 
 ExprCP ToGraph::processCorrelatedScalarSubquery(
     const lp::LogicalPlanNode& input,
-    DerivedTableP subqueryDt) {
+    DerivedTableP subqueryDt,
+    SubqueryChain& chain) {
   auto correlation =
       extractCorrelationKeys(functionNames_, correlatedConjuncts_, subqueryDt);
 
@@ -2826,12 +2873,16 @@ ExprCP ToGraph::processCorrelatedScalarSubquery(
     return aggregateResult;
   }
 
+  auto makeRowNumberColumn = [&]() {
+    return makeColumn(
+        "__rownum",
+        toValue(velox::BIGINT(), std::numeric_limits<int64_t>::max()));
+  };
+
   if (!hasAggregation) {
     // Correlation without aggregation: use AssignUniqueId + LEFT JOIN +
     // EnforceDistinct to validate single-row semantics.
-    auto* rowNumberColumn = makeColumn(
-        "__rownum",
-        toValue(velox::BIGINT(), std::numeric_limits<int64_t>::max()));
+    auto* rowNumberColumn = makeRowNumberColumn();
 
     ExprVector exportedFilter;
     for (auto* conjunct : correlation.nonEquiConjuncts) {
@@ -2863,17 +2914,23 @@ ExprCP ToGraph::processCorrelatedScalarSubquery(
     return subqueryDt->columns.front();
   }
 
-  // Non-equi correlation with aggregation: use AssignUniqueId + LEFT JOIN +
-  // Aggregation.
+  // Non-equi correlation with aggregation: AssignUniqueId + LEFT JOIN +
+  // outer Aggregation. When extending an in-progress chain (a prior
+  // heavy-path subquery in this loop), reuse its row-identity column as the
+  // new aggregation's grouping key and skip emitting another AssignUniqueId.
   auto exportedAgg = subqueryDt->exportSingleAggregate(newCName("__mark"));
-
-  auto* rowNumberColumn = makeColumn(
-      "__rownum",
-      toValue(velox::BIGINT(), std::numeric_limits<int64_t>::max()));
 
   ExprVector exportedFilter;
   for (auto* conjunct : correlation.nonEquiConjuncts) {
     exportedFilter.push_back(subqueryDt->exportExpr(conjunct));
+  }
+
+  // 'joinRowNumberColumn' is non-null only when a fresh AssignUniqueId is
+  // needed; the JoinEdge::Spec field controls the AssignUniqueId emission.
+  ColumnCP joinRowNumberColumn = nullptr;
+  if (chain.rowNumberColumn == nullptr) {
+    chain.rowNumberColumn = makeRowNumberColumn();
+    joinRowNumberColumn = chain.rowNumberColumn;
   }
 
   auto* join = make<JoinEdge>(
@@ -2882,10 +2939,8 @@ ExprCP ToGraph::processCorrelatedScalarSubquery(
       JoinEdge::Spec{
           .filter = exportedFilter,
           .joinType = velox::core::JoinType::kLeft,
-          .rowNumberColumn = rowNumberColumn,
+          .rowNumberColumn = joinRowNumberColumn,
       });
-
-  // Add any equi-join keys.
   for (auto i = 0; i < correlation.leftKeys.size(); ++i) {
     join->addEquality(
         subqueryDt->exportExpr(correlation.leftKeys[i]),
@@ -2893,26 +2948,41 @@ ExprCP ToGraph::processCorrelatedScalarSubquery(
   }
   currentDt_->joins.push_back(join);
 
+  // Build the outer aggregation: this subquery's count(...) plus
+  // arbitrary(...) carry-forwards for outer columns and for prior
+  // chain-mate subquery results.
   auto* aggResultColumn = makeColumn("__agg", exportedAgg->value());
-
   AggregateVector allAggregates{exportedAgg};
-  ColumnVector allColumns{rowNumberColumn, aggResultColumn};
+  ColumnVector allColumns{chain.rowNumberColumn, aggResultColumn};
   appendArbitraryAggregates(input, allAggregates, allColumns);
+  for (const auto& priorKey : chain.carryForwards) {
+    auto& expression = subqueries_.at(priorKey);
+    expression =
+        appendArbitraryAggregate(expression, allAggregates, allColumns);
+  }
 
+  // The caller wraps currentDt_ before each subsequent heavy-path subquery,
+  // so the aggregation slot must be fresh here.
+  VELOX_CHECK_NULL(currentDt_->aggregation);
   currentDt_->aggregation = make<AggregationPlan>(
-      ExprVector{rowNumberColumn}, allAggregates, allColumns, allColumns);
+      ExprVector{chain.rowNumberColumn}, allAggregates, allColumns, allColumns);
 
   return aggResultColumn;
 }
 
 void ToGraph::processInPredicates(
-    const std::vector<lp::ExprPtr>& inPredicates) {
+    const lp::LogicalPlanNode& input,
+    const std::vector<lp::ExprPtr>& inPredicates,
+    SubqueryChain& chain) {
   for (const auto& predicate : inPredicates) {
+    maybeWrapForChainedSubquery(input, chain);
+
     auto subqueryDt = translateSubquery(
         *predicate->inputAt(1)->as<lp::SubqueryExpr>()->subquery());
     VELOX_CHECK_EQ(1, subqueryDt->columns.size());
 
-    // Add a join edge and replace 'expr' with 'mark' column in the join output.
+    // Add a join edge and replace 'expr' with 'mark' column in the join
+    // output.
     const auto* markColumn = addMarkColumn();
 
     auto leftKey = translateExpr(predicate->inputAt(0));
@@ -2931,6 +3001,11 @@ void ToGraph::processInPredicates(
           subqueryDt, markColumn, leftKey, leftTable);
     }
     subqueries_.emplace(predicate, column);
+
+    // Carry the mark column forward so any later heavy-path scalar in the
+    // same scope re-exports it through the wrap and preserves it through
+    // the new aggregation as arbitrary().
+    chain.carryForwards.push_back(predicate);
   }
 }
 
@@ -2994,8 +3069,13 @@ ExprCP ToGraph::processCorrelatedInPredicate(
   return markColumn;
 }
 
-void ToGraph::processExistsSubqueries(const std::vector<lp::ExprPtr>& exists) {
+void ToGraph::processExistsSubqueries(
+    const lp::LogicalPlanNode& input,
+    const std::vector<lp::ExprPtr>& exists,
+    SubqueryChain& chain) {
   for (const auto& existsExpr : exists) {
+    maybeWrapForChainedSubquery(input, chain);
+
     auto subqueryDt = translateSubquery(
         *existsExpr->inputAt(0)->as<lp::SubqueryExpr>()->subquery(),
         /*finalize=*/false);
@@ -3011,12 +3091,13 @@ void ToGraph::processExistsSubqueries(const std::vector<lp::ExprPtr>& exists) {
     }
 
     // EXISTS (SELECT <expr> WHERE <condition>) with no FROM clause and no
-    // LIMIT or aggregation is equivalent to just <condition>. The subquery has
-    // a single empty-schema ValuesTable as its source that always produces one
-    // row. Since the ValuesTable has no columns, any uncorrelated conjuncts
-    // must be constants. ORDER BY does not affect the number of rows, so it
-    // can be ignored. Replace the EXISTS with the conjunction of all conjuncts
-    // (correlated and uncorrelated), or TRUE if there are none.
+    // LIMIT or aggregation is equivalent to just <condition>. The subquery
+    // has a single empty-schema ValuesTable as its source that always
+    // produces one row. Since the ValuesTable has no columns, any
+    // uncorrelated conjuncts must be constants. ORDER BY does not affect the
+    // number of rows, so it can be ignored. Replace the EXISTS with the
+    // conjunction of all conjuncts (correlated and uncorrelated), or TRUE if
+    // there are none.
     if (subqueryDt->tables.size() == 1 &&
         subqueryDt->tables[0]->is(PlanType::kValuesTableNode) &&
         subqueryDt->tables[0]->as<ValuesTable>()->columns.empty() &&
@@ -3042,6 +3123,9 @@ void ToGraph::processExistsSubqueries(const std::vector<lp::ExprPtr>& exists) {
             FunctionSet());
       }
       subqueries_.emplace(existsExpr, result);
+      if (!result->columns().empty()) {
+        chain.carryForwards.push_back(existsExpr);
+      }
       continue;
     }
 
@@ -3052,6 +3136,13 @@ void ToGraph::processExistsSubqueries(const std::vector<lp::ExprPtr>& exists) {
       column = processCorrelatedExists(subqueryDt);
     }
     subqueries_.emplace(existsExpr, column);
+
+    // Carry the EXISTS result forward so any later heavy-path scalar in the
+    // same scope re-exports it through the wrap and preserves it through
+    // the new aggregation as arbitrary().
+    if (!column->columns().empty()) {
+      chain.carryForwards.push_back(existsExpr);
+    }
   }
 }
 
@@ -3187,8 +3278,8 @@ bool referencesWindowOutput(
     const auto& name = expr->as<lp::InputReferenceExpr>()->name();
     auto it = renames.find(name);
     // The name may not be in renames for columns from outer scopes in
-    // correlated subqueries. The value may be null when a subfield path is not
-    // materialized (see intersectWithSkyline).
+    // correlated subqueries. The value may be null when a subfield path is
+    // not materialized (see intersectWithSkyline).
     if (it == renames.end() || it->second == nullptr) {
       return false;
     }
@@ -3258,7 +3349,8 @@ void ToGraph::addFilter(
   }
 
   bool mayFinalize = true;
-  processSubqueries(input, predicate, mayFinalize);
+  SubqueryChain chain;
+  processSubqueries(input, predicate, mayFinalize, chain);
 
   ExprVector flat;
   {
@@ -3435,8 +3527,9 @@ void ToGraph::translateSetJoin(const lp::SetNode& set) {
     renames_[type->nameOf(i)] = columns.back();
   }
 
-  // ALL variants project probe columns to the output schema. DISTINCT variants
-  // add GROUP BY to deduplicate; the aggregation produces the output columns.
+  // ALL variants project probe columns to the output schema. DISTINCT
+  // variants add GROUP BY to deduplicate; the aggregation produces the output
+  // columns.
   if (counting) {
     for (auto& expr : exprs) {
       setDt->exprs.push_back(expr);
