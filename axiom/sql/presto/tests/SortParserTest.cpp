@@ -312,6 +312,39 @@ TEST_F(SortParserTest, distinct) {
       "Cannot resolve column: a not in [expr -> expr]");
 }
 
+// SELECT DISTINCT combined with GROUP BY and ORDER BY. The Sort node must
+// land ABOVE the DISTINCT aggregate, and ORDER BY may reference only
+// SELECT-list columns.
+TEST_F(SortParserTest, distinctWithGroupBy) {
+  connector_->addTable("t", ROW({"a", "b"}, INTEGER()));
+
+  // ORDER BY a SELECT-list column.
+  {
+    auto matcher = matchScan("t")
+                       .aggregate({"a"}, {"count(1)"})
+                       .aggregate({"a", "count"}, {})
+                       .sort({"a"})
+                       .output({"a", "count"});
+
+    testSelect(
+        "SELECT DISTINCT a, COUNT(1) FROM t GROUP BY a ORDER BY a", matcher);
+    testSelect(
+        "SELECT DISTINCT a, COUNT(1) FROM t GROUP BY a ORDER BY 1", matcher);
+  }
+
+  // ORDER BY a column that is in GROUP BY but not in the SELECT list — must
+  // fail because SELECT DISTINCT requires ORDER BY to reference SELECT-list
+  // columns only.
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      parseSql("SELECT DISTINCT a FROM t GROUP BY a, b ORDER BY b"),
+      "ORDER BY expressions must be output expressions");
+
+  // ORDER BY ordinal beyond the SELECT list.
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      parseSql("SELECT DISTINCT a FROM t GROUP BY a, b ORDER BY 2"),
+      "ORDER BY position is not in the select list: 2");
+}
+
 TEST_F(SortParserTest, distinctOrderByOriginalName) {
   connector_->addTable("t", ROW({"a", "b"}, INTEGER()));
 

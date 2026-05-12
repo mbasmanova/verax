@@ -26,6 +26,27 @@ namespace lp = facebook::axiom::logical_plan;
 namespace {
 namespace core = facebook::velox::core;
 
+// Indexes the SELECT-list projections by expression and by alias for
+// matching ORDER BY sort keys. An alias whose ordinal is 0 is ambiguous
+// (defined by more than one projection) and may only be used unambiguously.
+struct ProjectionIndex {
+  core::ExprMap<size_t> byExpr;
+  folly::F14FastMap<std::string, size_t> byAlias;
+
+  explicit ProjectionIndex(const std::vector<lp::ExprApi>& projections) {
+    for (size_t i = 0; i < projections.size(); ++i) {
+      byExpr.emplace(projections[i].expr(), i + 1);
+      if (projections[i].alias().has_value()) {
+        auto [iter, inserted] =
+            byAlias.emplace(projections[i].alias().value(), i + 1);
+        if (!inserted) {
+          iter->second = 0;
+        }
+      }
+    }
+  }
+};
+
 // Recursively replaces root FieldAccessExpr nodes that match an output alias
 // with the alias's underlying expression. Throws if the alias is ambiguous.
 core::ExprPtr replaceAliases(
@@ -62,6 +83,30 @@ core::ExprPtr replaceAliases(
 
   return changed ? expr->replaceInputs(std::move(newInputs)) : expr;
 }
+
+// Looks up a single sort key in 'index'. Returns the matching 1-based
+// ordinal, or 0 if not present (caller decides whether to widen or fail).
+// 'preResolvedOrdinal' short-circuits the lookup when the sort key was
+// already resolved (e.g., from a positional ORDER BY ordinal).
+size_t lookupSortKey(
+    const lp::ExprApi& sortKey,
+    size_t preResolvedOrdinal,
+    const std::vector<lp::ExprApi>& projections,
+    const ProjectionIndex& index) {
+  if (preResolvedOrdinal != 0) {
+    return preResolvedOrdinal;
+  }
+  if (sortKey.alias().has_value()) {
+    auto it = index.byAlias.find(sortKey.alias().value());
+    if (it != index.byAlias.end()) {
+      VELOX_USER_CHECK_NE(it->second, 0, "Column is ambiguous: {}", it->first);
+      return it->second;
+    }
+  }
+  auto resolved = replaceAliases(sortKey.expr(), index.byAlias, projections);
+  auto it = index.byExpr.find(resolved);
+  return it != index.byExpr.end() ? it->second : 0;
+}
 } // namespace
 
 std::vector<size_t> SortProjection::widenProjections(
@@ -72,58 +117,52 @@ std::vector<size_t> SortProjection::widenProjections(
       preResolvedOrdinals.size(),
       sortKeyExprs.size(),
       "Must be the same size as sortKeyExprs.");
+
+  ProjectionIndex index{projections};
   std::vector<size_t> ordinals;
   ordinals.reserve(sortKeyExprs.size());
 
-  facebook::velox::core::ExprMap<size_t> projectionMap;
-  folly::F14FastMap<std::string, size_t> aliasMap;
-  // Iterate through projections matching ordinals to projections and aliases.
-  for (size_t i = 0; i < projections.size(); ++i) {
-    projectionMap.emplace(projections[i].expr(), i + 1);
-    if (projections[i].alias().has_value()) {
-      auto [alias, inserted] =
-          aliasMap.emplace(projections[i].alias().value(), i + 1);
-      // We throw for ambiguous aliases only if they are referenced by a
-      // sorting key. Let's mark it as ambiguous here for now denoted by the
-      // '0' ordinal and throw later when we process the sorting keys.
-      if (!inserted) {
-        alias->second = 0;
-      }
+  for (size_t i = 0; i < sortKeyExprs.size(); ++i) {
+    auto ordinal = lookupSortKey(
+        sortKeyExprs[i], preResolvedOrdinals[i], projections, index);
+    if (ordinal != 0) {
+      ordinals.push_back(ordinal);
+      continue;
     }
+    // Sort key not present in the SELECT list; widen the projection.
+    auto resolved =
+        replaceAliases(sortKeyExprs[i].expr(), index.byAlias, projections);
+    ordinal = projections.size() + 1;
+    index.byExpr.emplace(resolved, ordinal);
+    projections.emplace_back(std::move(resolved), sortKeyExprs[i].alias());
+    ordinals.push_back(ordinal);
   }
 
-  // Iterate through sort keys matching them to ordinals.
+  return ordinals;
+}
+
+std::vector<size_t> SortProjection::resolveSortKeys(
+    const std::vector<lp::ExprApi>& sortKeyExprs,
+    const std::vector<size_t>& preResolvedOrdinals,
+    const std::vector<lp::ExprApi>& projections,
+    const std::function<void(size_t)>& onUnresolved) {
+  VELOX_CHECK_EQ(
+      preResolvedOrdinals.size(),
+      sortKeyExprs.size(),
+      "Must be the same size as sortKeyExprs.");
+
+  ProjectionIndex index{projections};
+  std::vector<size_t> ordinals;
+  ordinals.reserve(sortKeyExprs.size());
+
   for (size_t i = 0; i < sortKeyExprs.size(); ++i) {
-    // Use pre-resolved ordinal if available.
-    if (preResolvedOrdinals[i] != 0) {
-      ordinals.push_back(preResolvedOrdinals[i]);
-    } else {
-      // Match alias if one is used.
-      const auto aliasMapValue = sortKeyExprs[i].alias().has_value()
-          ? aliasMap.find(sortKeyExprs[i].alias().value())
-          : aliasMap.end();
-      if (aliasMapValue != aliasMap.end()) {
-        auto ordinal = aliasMapValue->second;
-        VELOX_USER_CHECK_NE(
-            ordinal, 0, "Column is ambiguous: {}", aliasMapValue->first);
-        ordinals.push_back(ordinal);
-      }
-      // Match expression directly if no alias is used, expanding out
-      // projections list if sorts keys don't match our SELECT list.
-      else {
-        auto resolved =
-            replaceAliases(sortKeyExprs[i].expr(), aliasMap, projections);
-        auto [projectionIt, inserted] =
-            projectionMap.emplace(resolved, projections.size() + 1);
-        if (inserted) {
-          ordinals.push_back(projections.size() + 1);
-          lp::ExprApi newProjection(resolved, sortKeyExprs[i].alias());
-          projections.push_back(std::move(newProjection));
-        } else {
-          ordinals.push_back(projectionIt->second);
-        }
-      }
+    auto ordinal = lookupSortKey(
+        sortKeyExprs[i], preResolvedOrdinals[i], projections, index);
+    if (ordinal == 0) {
+      onUnresolved(i);
+      VELOX_FAIL("onUnresolved callback must throw");
     }
+    ordinals.push_back(ordinal);
   }
 
   return ordinals;

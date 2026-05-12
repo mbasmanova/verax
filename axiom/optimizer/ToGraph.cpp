@@ -1823,7 +1823,7 @@ lp::ExprPtr ToGraph::processLeftJoinSubqueries(
   VELOX_CHECK(!subqueryConjuncts.empty());
 
   auto* outerDt = std::exchange(currentDt_, newDt());
-  makeQueryGraph(right, kAllAllowedInDt);
+  makeQueryGraph(right, kAllAllowedInDt, /*orderObservedAbove=*/false);
   addFilter(right, combineConjuncts(std::move(subqueryConjuncts)));
 
   if (!correlatedConjuncts_.empty()) {
@@ -2016,9 +2016,11 @@ DerivedTableP ToGraph::newDt() {
   return dt;
 }
 
-void ToGraph::wrapInDt(const lp::LogicalPlanNode& node) {
+void ToGraph::wrapInDt(
+    const lp::LogicalPlanNode& node,
+    bool orderObservedAbove) {
   auto* outerDt = std::exchange(currentDt_, newDt());
-  makeQueryGraph(node, kAllAllowedInDt);
+  makeQueryGraph(node, kAllAllowedInDt, orderObservedAbove);
   finalizeDt(node, outerDt);
 }
 
@@ -2454,7 +2456,7 @@ DerivedTableP ToGraph::translateSubquery(
   VELOX_CHECK(correlatedConjuncts_.empty());
 
   auto* outerDt = std::exchange(currentDt_, newDt());
-  makeQueryGraph(node, kAllAllowedInDt);
+  makeQueryGraph(node, kAllAllowedInDt, /*orderObservedAbove=*/false);
   auto* subqueryDt = currentDt_;
 
   setDtUsedOutput(subqueryDt, node);
@@ -3215,7 +3217,8 @@ ExprCP ToGraph::processCorrelatedExists(DerivedTableP subqueryDt) {
 
 void ToGraph::applySampling(
     const lp::SampleNode& sample,
-    uint64_t allowedInDt) {
+    uint64_t allowedInDt,
+    bool orderObservedAbove) {
   auto constantPercentageExpr = tryFoldConstant(sample.percentage());
   VELOX_USER_CHECK_NOT_NULL(
       constantPercentageExpr,
@@ -3236,7 +3239,7 @@ void ToGraph::applySampling(
   VELOX_USER_CHECK_LE(percentage, 100, "Sampling percentage must be <= 100");
 
   if (percentage == 100) {
-    makeQueryGraph(*sample.onlyInput(), allowedInDt);
+    makeQueryGraph(*sample.onlyInput(), allowedInDt, orderObservedAbove);
     return;
   }
 
@@ -3259,7 +3262,7 @@ void ToGraph::applySampling(
 
       const auto& input = *sample.onlyInput();
       auto* outerDt = std::exchange(currentDt_, newDt());
-      makeQueryGraph(input, kAllAllowedInDt);
+      makeQueryGraph(input, kAllAllowedInDt, orderObservedAbove);
       addFilter(input, predicate);
       finalizeDt(sample, outerDt);
       break;
@@ -3484,7 +3487,7 @@ bool hasNondeterministic(const lp::ExprPtr& expr) {
 void ToGraph::translateSetJoin(const lp::SetNode& set) {
   auto* setDt = currentDt_;
   for (auto& input : set.inputs()) {
-    wrapInDt(*input);
+    wrapInDt(*input, /*orderObservedAbove=*/false);
   }
 
   const bool exists = set.operation() == lp::SetOperation::kIntersect ||
@@ -3589,7 +3592,7 @@ void ToGraph::translateUnion(const lp::SetNode& set) {
   auto translateUnionInput = [&](const lp::LogicalPlanNode& input) {
     renames_ = renames;
     currentDt_ = newDt();
-    makeQueryGraph(input, kAllAllowedInDt);
+    makeQueryGraph(input, kAllAllowedInDt, /*orderObservedAbove=*/false);
     auto* newDt = std::exchange(currentDt_, setDt);
 
     const auto& type = input.outputType();
@@ -3684,7 +3687,7 @@ DerivedTableP ToGraph::makeQueryGraph(const lp::LogicalPlanNode& logicalPlan) {
         return tryFoldConstant(expr);
       }).markAll(logicalPlan);
   currentDt_ = newDt();
-  makeQueryGraph(logicalPlan, kAllAllowedInDt);
+  makeQueryGraph(logicalPlan, kAllAllowedInDt, /*orderObservedAbove=*/true);
   setDtUsedOutput(currentDt_, logicalPlan);
 
   // TODO Try constant fold the dt.
@@ -3695,19 +3698,26 @@ DerivedTableP ToGraph::makeQueryGraph(const lp::LogicalPlanNode& logicalPlan) {
 void ToGraph::makeFilterQueryGraph(
     const lp::FilterNode& filter,
     uint64_t allowedInDt,
+    bool orderObservedAbove,
     bool excludeOuterJoins,
     bool excludeWindows) {
   const auto& input = *filter.onlyInput();
 
   if (hasNondeterministic(filter.predicate())) {
     auto* outerDt = std::exchange(currentDt_, newDt());
-    makeQueryGraph(input, kAllAllowedInDt, excludeOuterJoins);
+    makeQueryGraph(
+        input, kAllAllowedInDt, orderObservedAbove, excludeOuterJoins);
     addFilter(input, filter.predicate());
     finalizeDt(filter, outerDt);
     return;
   }
 
-  makeQueryGraph(input, allowedInDt, excludeOuterJoins, excludeWindows);
+  makeQueryGraph(
+      input,
+      allowedInDt,
+      orderObservedAbove,
+      excludeOuterJoins,
+      excludeWindows);
 
   // If the current DT has any window function outputs, finalize the DT
   // so that filters are evaluated in the outer DT after the window.
@@ -3731,6 +3741,7 @@ void ToGraph::makeFilterQueryGraph(
 void ToGraph::makeProjectQueryGraph(
     const lp::ProjectNode& project,
     uint64_t allowedInDt,
+    bool orderObservedAbove,
     bool excludeOuterJoins,
     bool excludeWindows) {
   // Window functions cannot appear below a join — filtering rows before
@@ -3739,7 +3750,7 @@ void ToGraph::makeProjectQueryGraph(
   const bool hasWindow =
       std::ranges::any_of(project.expressions(), optimizer::hasWindow);
   if (hasWindow && excludeWindows) {
-    wrapInDt(project);
+    wrapInDt(project, /*orderObservedAbove=*/false);
     return;
   }
 
@@ -3752,30 +3763,20 @@ void ToGraph::makeProjectQueryGraph(
   // "correlated" conjunct. Wrap the project upfront to isolate its tables.
   if (excludeOuterJoins && !currentDt_->tables.empty() &&
       std::ranges::any_of(project.expressions(), optimizer::hasSubquery)) {
-    wrapInDt(project);
+    wrapInDt(project, /*orderObservedAbove=*/false);
     return;
   }
 
   makeQueryGraph(
-      *project.onlyInput(), allowedInDt, excludeOuterJoins, excludeWindows);
-
-  // Check if this project contains window expressions and apply DT
-  // boundary rules.
-  bool windowHasPartitionOrOrderKeys = false;
-  for (const auto& expr : project.expressions()) {
-    if (expr->isWindow()) {
-      const auto* window = expr->as<lp::WindowExpr>();
-      if (!window->partitionKeys().empty() || !window->ordering().empty()) {
-        windowHasPartitionOrOrderKeys = true;
-      }
-    }
-  }
+      *project.onlyInput(),
+      allowedInDt,
+      hasWindow ? false : orderObservedAbove,
+      excludeOuterJoins,
+      excludeWindows);
 
   if (hasWindow) {
     if (currentDt_->hasLimit() || windowReferencesWindow(project)) {
       finalizeDt(*project.onlyInput());
-    } else if (currentDt_->hasOrderBy() && windowHasPartitionOrOrderKeys) {
-      currentDt_->dropOrderBy();
     }
   }
 
@@ -3793,16 +3794,17 @@ void ToGraph::makeProjectQueryGraph(
 void ToGraph::makeQueryGraph(
     const lp::LogicalPlanNode& node,
     uint64_t allowedInDt,
+    bool orderObservedAbove,
     bool excludeOuterJoins,
     bool excludeWindows) {
   if (!contains(allowedInDt, node.kind())) {
-    wrapInDt(node);
+    wrapInDt(node, orderObservedAbove);
     return;
   }
 
   if (excludeOuterJoins && node.is(lp::NodeKind::kJoin) &&
       node.as<lp::JoinNode>()->joinType() != lp::JoinType::kInner) {
-    wrapInDt(node);
+    wrapInDt(node, /*orderObservedAbove=*/false);
     return;
   }
 
@@ -3816,12 +3818,14 @@ void ToGraph::makeQueryGraph(
       makeBaseTable(*node.as<lp::TableScanNode>());
       break;
     case lp::NodeKind::kSample:
-      applySampling(*node.as<lp::SampleNode>(), allowedInDt);
+      applySampling(
+          *node.as<lp::SampleNode>(), allowedInDt, orderObservedAbove);
       break;
     case lp::NodeKind::kFilter:
       makeFilterQueryGraph(
           *node.as<lp::FilterNode>(),
           allowedInDt,
+          orderObservedAbove,
           excludeOuterJoins,
           excludeWindows);
       break;
@@ -3829,17 +3833,17 @@ void ToGraph::makeQueryGraph(
       makeProjectQueryGraph(
           *node.as<lp::ProjectNode>(),
           allowedInDt,
+          orderObservedAbove,
           excludeOuterJoins,
           excludeWindows);
       break;
     case lp::NodeKind::kAggregate: {
       const auto& input = *node.onlyInput();
-      makeQueryGraph(input, allowedInDt, excludeOuterJoins);
+      makeQueryGraph(
+          input, allowedInDt, /*orderObservedAbove=*/false, excludeOuterJoins);
       if (currentDt_->hasAggregation() || currentDt_->hasLimit() ||
           currentDt_->windowPlan) {
         finalizeDtWithCorrelatedConjuncts(input);
-      } else if (currentDt_->hasOrderBy()) {
-        currentDt_->dropOrderBy();
       }
 
       auto* agg = translateAggregation(*node.as<lp::AggregateNode>());
@@ -3869,6 +3873,7 @@ void ToGraph::makeQueryGraph(
       makeQueryGraph(
           *left,
           allowedInDt,
+          /*orderObservedAbove=*/false,
           /*excludeOuterJoins=*/true,
           /*excludeWindows=*/true);
 
@@ -3886,6 +3891,7 @@ void ToGraph::makeQueryGraph(
         makeQueryGraph(
             *right,
             allowedInDt,
+            /*orderObservedAbove=*/false,
             /*excludeOuterJoins=*/true,
             /*excludeWindows=*/true);
       }
@@ -3894,11 +3900,13 @@ void ToGraph::makeQueryGraph(
     } break;
     case lp::NodeKind::kSort: {
       const auto& input = *node.onlyInput();
-      makeQueryGraph(input, allowedInDt);
-      if (currentDt_->hasLimit()) {
-        finalizeDt(input);
+      makeQueryGraph(input, allowedInDt, /*orderObservedAbove=*/false);
+      if (orderObservedAbove) {
+        if (currentDt_->hasLimit()) {
+          finalizeDt(input);
+        }
+        addOrderBy(*node.as<lp::SortNode>());
       }
-      addOrderBy(*node.as<lp::SortNode>());
     } break;
     case lp::NodeKind::kLimit: {
       const auto& limit = *node.as<lp::LimitNode>();
@@ -3906,7 +3914,8 @@ void ToGraph::makeQueryGraph(
         makeEmptyValuesTable(limit);
         break;
       }
-      makeQueryGraph(*node.onlyInput(), allowedInDt);
+      makeQueryGraph(
+          *node.onlyInput(), allowedInDt, /*orderObservedAbove=*/true);
       addLimit(limit);
       // After combining limits, if the result is 0 rows, replace with empty
       // values. This handles cases like OFFSET >= inner LIMIT.
@@ -3929,12 +3938,15 @@ void ToGraph::makeQueryGraph(
     } break;
     case lp::NodeKind::kUnnest: {
       makeQueryGraph(
-          *node.onlyInput(), allowedInDt, /*excludeOuterJoins=*/true);
+          *node.onlyInput(),
+          allowedInDt,
+          orderObservedAbove,
+          /*excludeOuterJoins=*/true);
       addUnnest(*node.as<lp::UnnestNode>());
     } break;
     case lp::NodeKind::kTableWrite: {
       VELOX_DCHECK_EQ(allowedInDt, kAllAllowedInDt);
-      wrapInDt(*node.onlyInput());
+      wrapInDt(*node.onlyInput(), /*orderObservedAbove=*/false);
       addWrite(*node.as<lp::TableWriteNode>());
     } break;
     default:
