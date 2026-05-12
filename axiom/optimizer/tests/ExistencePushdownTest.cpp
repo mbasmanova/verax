@@ -720,42 +720,45 @@ TEST_F(ExistencePushdownTest, orderByOnFirstDt) {
       "WHERE t.b < 100",
       kTestConnectorId);
 
+  // The subquery's ORDER BY is dropped by the dead-sort optimization (the
+  // outer join discards order), which unblocks existence pushdown.
+
   // Single-node plan.
   auto plan = toSingleNodePlan(logicalPlan);
 
-  // No pushdown: ORDER BY blocks it.
-  //
-  // TODO: ORDER BY inside a FROM-clause subquery without LIMIT is semantically
-  // meaningless — the parent join discards the order. Eliminating it early
-  // (e.g., via dropOrderBy() in ToGraph) would unblock existence pushdown here
-  // and simplify the distributed plan (removing shuffleMerge). The check is in
-  // DerivedTable::validatePushdown (DerivedTable.cpp), which rejects subqueries
-  // with hasOrderBy().
-  auto matcher =
-      matchScan("u")
-          .singleAggregation({"x"}, {"count(*) as cnt"})
-          .orderBy({"cnt"})
-          .project()
-          .hashJoin(
-              matchScan("t").filter("b < 100").build(), core::JoinType::kInner)
-          .build();
+  auto matcher = matchScan("t")
+                     .filter("b < 100")
+                     .hashJoin(
+                         matchScan("u")
+                             .hashJoin(
+                                 matchScan("t").filter("b < 100").build(),
+                                 core::JoinType::kLeftSemiFilter)
+                             .singleAggregation({"x"}, {"count(*) as cnt"})
+                             .project()
+                             .build(),
+                         core::JoinType::kInner)
+                     .build();
   AXIOM_ASSERT_PLAN(plan, matcher);
 
   // Distributed plan.
   auto distributedPlan = planVelox(logicalPlan);
 
   auto distributedMatcher =
-      matchScan("u")
-          .shuffle({"x"})
-          .localPartition({"x"})
-          .singleAggregation({"x"}, {"count(*) as cnt"})
-          .orderBy({"cnt"})
-          .localMerge()
-          .shuffleMerge()
-          .project()
+      matchScan("t")
+          .filter("b < 100")
           .hashJoin(
-              matchScan("t").filter("b < 100").broadcast().build(),
+              matchScan("u")
+                  .hashJoin(
+                      matchScan("t").filter("b < 100").broadcast().build(),
+                      core::JoinType::kLeftSemiFilter)
+                  .shuffle({"x"})
+                  .localPartition({"x"})
+                  .singleAggregation({"x"}, {"count(*) as cnt"})
+                  .project()
+                  .broadcast()
+                  .build(),
               core::JoinType::kInner)
+          .gather()
           .build();
   AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, distributedMatcher);
 }

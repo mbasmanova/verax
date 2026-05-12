@@ -963,11 +963,7 @@ class RelationPlanner : public AstVisitor {
         numSelectItems);
   }
 
-  // Adds project, distinct, and sort nodes. Uses
-  // SortProjection::widenProjections to resolve ORDER BY expressions against
-  // SELECT-list expressions by expression identity, then validates that no
-  // widening occurred since DISTINCT requires ORDER BY to reference only
-  // SELECT-list columns.
+  // Adds project, distinct, and sort nodes for a no-GROUP-BY SELECT DISTINCT.
   void addDistinctAndOrderBy(
       const std::vector<SelectItemPtr>& selectItems,
       const OrderByPtr& orderBy) {
@@ -979,33 +975,41 @@ class RelationPlanner : public AstVisitor {
       return;
     }
     extractNestedWindows(projections.value());
+    builder_->project(projections.value());
+    addDistinctAndOrderByOnProjection(projections.value(), orderBy);
+  }
+
+  // Adds DISTINCT and (optional) ORDER BY assuming the SELECT list has
+  // already been projected. 'projectedExprs' are the SELECT-list expressions
+  // currently produced by the builder. Validates that every ORDER BY key
+  // matches a SELECT-list expression (SELECT DISTINCT semantics).
+  void addDistinctAndOrderByOnProjection(
+      const std::vector<lp::ExprApi>& projectedExprs,
+      const OrderByPtr& orderBy) {
     if (orderBy == nullptr) {
-      builder_->project(projections.value());
       builder_->distinct();
       return;
     }
 
-    const size_t numSelectItems = projections->size();
-    auto expansion = buildSortKeyExprs(orderBy, projections.value());
+    auto expansion = buildSortKeyExprs(orderBy, projectedExprs);
+    auto ordinals = SortProjection::resolveSortKeys(
+        expansion.sortKeyExprs,
+        expansion.preResolved,
+        projectedExprs,
+        [&](size_t /*index*/) {
+          AXIOM_PRESTO_SEMANTIC_FAIL(
+              orderBy->location(),
+              "ORDER BY",
+              "For SELECT DISTINCT, ORDER BY expressions must be output expressions");
+        });
 
-    auto ordinals = SortProjection::widenProjections(
-        expansion.sortKeyExprs, expansion.preResolved, projections.value());
-
-    AXIOM_PRESTO_SEMANTIC_CHECK_EQ(
-        projections->size(),
-        numSelectItems,
-        orderBy->location(),
-        "ORDER BY",
-        "For SELECT DISTINCT, ORDER BY expressions must be output expressions");
-
-    builder_->project(projections.value());
     builder_->distinct();
     SortProjection::sortAndTrim(
         *builder_,
         ordinals,
         expansion.ascending,
         expansion.nullsFirst,
-        numSelectItems);
+        projectedExprs.size());
   }
 
   lp::ExprApi toSortingKey(const ExpressionPtr& expr) {
@@ -1137,15 +1141,18 @@ class RelationPlanner : public AstVisitor {
     if (auto groupBy = node->groupBy()) {
       auto selectExprs = expandSelectExprs(selectItems);
 
+      // When DISTINCT is also present, skip ORDER BY in the GROUP BY
+      // planner so the Sort lands ABOVE the DISTINCT aggregate.
+      const OrderByPtr noOrderBy;
       GroupByPlanner{builder_, exprPlanner_}.plan(
           groupBy->groupingElements(),
           groupBy->isDistinct(),
           selectExprs,
           node->having(),
-          orderBy);
+          distinct ? noOrderBy : orderBy);
 
       if (distinct) {
-        builder_->distinct();
+        addDistinctAndOrderByOnProjection(selectExprs, orderBy);
       }
     } else {
       if (GroupByPlanner{builder_, exprPlanner_}.tryPlanGlobalAgg(

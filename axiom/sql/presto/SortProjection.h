@@ -15,6 +15,8 @@
  */
 #pragma once
 
+#include <functional>
+
 #include "axiom/logical_plan/ExprApi.h"
 #include "axiom/logical_plan/PlanBuilder.h"
 #include "axiom/sql/presto/ast/AstSupport.h"
@@ -42,6 +44,18 @@ class SortProjection {
       const std::vector<facebook::axiom::logical_plan::ExprApi>& sortKeyExprs,
       const std::vector<size_t>& preResolvedOrdinals,
       std::vector<facebook::axiom::logical_plan::ExprApi>& projections);
+
+  /// Resolves sort keys against `projections` without widening. Returns
+  /// 1-based ordinals for every key. Invokes `onUnresolved` with the index
+  /// of the first sort key not present in `projections`; the callback is
+  /// expected to throw (e.g., a Presto semantic error). Use this when
+  /// every ORDER BY key must match a SELECT-list expression (e.g., SELECT
+  /// DISTINCT).
+  static std::vector<size_t> resolveSortKeys(
+      const std::vector<facebook::axiom::logical_plan::ExprApi>& sortKeyExprs,
+      const std::vector<size_t>& preResolvedOrdinals,
+      const std::vector<facebook::axiom::logical_plan::ExprApi>& projections,
+      const std::function<void(size_t index)>& onUnresolved);
 
   /// Adds a SortNode using sort keys resolved by ordinals, then drops any extra
   /// columns that were added for sorting.

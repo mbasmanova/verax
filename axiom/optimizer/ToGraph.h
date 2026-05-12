@@ -168,9 +168,14 @@ class ToGraph {
   // Converts 'plan' to PlanObjects and records join edges into
   // 'currentDt_'. Wraps 'node' in a new Derived table f 'node' does not match
   // allowedInDt or 'node' is an outer join and 'excludeOuterJoins' is true.
+  //
+  // 'orderObservedAbove' is true when some consumer above this node would
+  // observe an order produced here. A Sort encountered with this bit false
+  // is skipped — its order is dead.
   void makeQueryGraph(
       const logical_plan::LogicalPlanNode& node,
       uint64_t allowedInDt,
+      bool orderObservedAbove,
       bool excludeOuterJoins = false,
       bool excludeWindows = false);
 
@@ -179,6 +184,7 @@ class ToGraph {
   void makeFilterQueryGraph(
       const logical_plan::FilterNode& filter,
       uint64_t allowedInDt,
+      bool orderObservedAbove,
       bool excludeOuterJoins,
       bool excludeWindows);
 
@@ -187,6 +193,7 @@ class ToGraph {
   void makeProjectQueryGraph(
       const logical_plan::ProjectNode& project,
       uint64_t allowedInDt,
+      bool orderObservedAbove,
       bool excludeOuterJoins,
       bool excludeWindows);
 
@@ -329,7 +336,8 @@ class ToGraph {
 
   void applySampling(
       const logical_plan::SampleNode& sample,
-      uint64_t allowedInDt);
+      uint64_t allowedInDt,
+      bool orderObservedAbove);
 
   bool isSubfield(
       const logical_plan::ExprPtr& expr,
@@ -386,7 +394,12 @@ class ToGraph {
   // DerivedTable. Done for joins to the right of non-inner joins,
   // group bys as non-top operators, whenever descendents of 'node'
   // are not freely reorderable with its parents' descendents.
-  void wrapInDt(const logical_plan::LogicalPlanNode& node);
+  // Wraps 'node' in a fresh inner DT and attaches it to the current outer
+  // DT. 'orderObservedAbove' is forwarded to the inner traversal — set per
+  // the caller's consumer semantics.
+  void wrapInDt(
+      const logical_plan::LogicalPlanNode& node,
+      bool orderObservedAbove);
 
   // Finalizes 'currentDt_' by setting its output columns based on 'node',
   // then nests it inside 'outerDt' (or a new DT if 'outerDt' is nullptr).

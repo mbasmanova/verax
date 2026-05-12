@@ -840,13 +840,9 @@ TEST_F(UnionAllTest, shuffledJoinBuildOverUnion) {
 // GROUP BY on a key that each leg of the UNION ALL is independently sorted
 // on. The aggregation must be hash-based, not streaming: even though each
 // leg is sorted on the grouping key, the UNION ALL output is not, so
-// streaming aggregation would emit one group per leg per key.
-//
-// TODO: The per-leg OrderBy nodes are dead work — the hash aggregation
-// above the union doesn't need sorted input, and SQL does not require
-// subquery ORDER BY (without LIMIT) to be observed by the outer query.
-// When the optimizer learns to drop these, this matcher will need to
-// drop the .orderBy({...}) nodes.
+// streaming aggregation would emit one group per leg per key. The per-leg
+// ORDER BYs are dropped by the dead-sort optimization (their order is
+// unobservable past the order-destroying UNION ALL).
 TEST_F(UnionAllTest, groupByOverUnionAllWithOrderedLegs) {
   auto logicalPlan = parseSelect(
       "SELECT a, count(*) FROM ("
@@ -857,29 +853,18 @@ TEST_F(UnionAllTest, groupByOverUnionAllWithOrderedLegs) {
       kTestConnectorId);
 
   {
-    auto matcher =
-        matchScan("t")
-            .orderBy({"a"})
-            .localPartition(matchScan("u").orderBy({"b"}).project().build())
-            .singleAggregation({"a"}, {"count(*)"})
-            .build();
+    auto matcher = matchScan("t")
+                       .localPartition(matchScan("u").project().build())
+                       .singleAggregation({"a"}, {"count(*)"})
+                       .build();
     AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
   }
 
   {
     auto matcher = matchScan("t")
-                       .orderBy({"a"})
-                       .localMerge()
-                       .shuffleMerge()
-                       .localPartition(matchScan("u")
-                                           .orderBy({"b"})
-                                           .localMerge()
-                                           .shuffleMerge()
-                                           .project()
-                                           .build())
-                       .partialAggregation({"a"}, {"count(*)"})
-                       .localPartition({"a"})
-                       .finalAggregation()
+                       .localPartition(matchScan("u").project().build())
+                       .distributedAggregation({"a"}, {"count(*)"})
+                       .gather()
                        .build();
     AXIOM_ASSERT_DISTRIBUTED_PLAN(planVelox(logicalPlan).plan, matcher);
   }
