@@ -830,5 +830,60 @@ TEST_F(UnionAllTest, shuffledJoinBuildOverUnion) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Distribution-metadata propagation through UNION ALL. UNION ALL preserves
+// only how rows map to partitions (kind, partition type, partition keys);
+// per-input ordering, uniqueness, and clustering do not survive because
+// rows from different legs interleave arbitrarily.
+// ---------------------------------------------------------------------------
+
+// GROUP BY on a key that each leg of the UNION ALL is independently sorted
+// on. The aggregation must be hash-based, not streaming: even though each
+// leg is sorted on the grouping key, the UNION ALL output is not, so
+// streaming aggregation would emit one group per leg per key.
+//
+// TODO: The per-leg OrderBy nodes are dead work — the hash aggregation
+// above the union doesn't need sorted input, and SQL does not require
+// subquery ORDER BY (without LIMIT) to be observed by the outer query.
+// When the optimizer learns to drop these, this matcher will need to
+// drop the .orderBy({...}) nodes.
+TEST_F(UnionAllTest, groupByOverUnionAllWithOrderedLegs) {
+  auto logicalPlan = parseSelect(
+      "SELECT a, count(*) FROM ("
+      "  (SELECT a FROM t ORDER BY a)"
+      "  UNION ALL"
+      "  (SELECT b FROM u ORDER BY b)"
+      ") GROUP BY a",
+      kTestConnectorId);
+
+  {
+    auto matcher =
+        matchScan("t")
+            .orderBy({"a"})
+            .localPartition(matchScan("u").orderBy({"b"}).project().build())
+            .singleAggregation({"a"}, {"count(*)"})
+            .build();
+    AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
+  }
+
+  {
+    auto matcher = matchScan("t")
+                       .orderBy({"a"})
+                       .localMerge()
+                       .shuffleMerge()
+                       .localPartition(matchScan("u")
+                                           .orderBy({"b"})
+                                           .localMerge()
+                                           .shuffleMerge()
+                                           .project()
+                                           .build())
+                       .partialAggregation({"a"}, {"count(*)"})
+                       .localPartition({"a"})
+                       .finalAggregation()
+                       .build();
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(planVelox(logicalPlan).plan, matcher);
+  }
+}
+
 } // namespace
 } // namespace facebook::axiom::optimizer
