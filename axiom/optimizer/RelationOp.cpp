@@ -1724,9 +1724,12 @@ void Limit::accept(
 
 namespace {
 
-// Returns the first input's distribution if every input has the same
-// distribution per Distribution::isSamePartition. Otherwise returns an empty
-// Distribution.
+// Returns a Distribution describing the partitioning shared by every input
+// when their partitions match per Distribution::isSamePartition; otherwise
+// returns an empty Distribution. Only partition-related fields (kind,
+// partition type, partition keys) are propagated — UNION ALL preserves how
+// rows map to partitions but does not preserve per-input ordering,
+// uniqueness, or clustering.
 Distribution commonInputDistribution(const RelationOpPtrVector& inputs) {
   VELOX_CHECK_GE(inputs.size(), 2, "UnionAll requires at least 2 inputs");
   const auto& first = inputs[0]->distribution();
@@ -1735,7 +1738,11 @@ Distribution commonInputDistribution(const RelationOpPtrVector& inputs) {
       return Distribution{};
     }
   }
-  return first;
+  return Distribution{
+      first.kind(),
+      first.partitionType(),
+      first.partitionKeys(),
+  };
 }
 
 } // namespace

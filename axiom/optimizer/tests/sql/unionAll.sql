@@ -60,3 +60,11 @@ SELECT * FROM (
   SELECT a FROM t
   UNION ALL SELECT 42
 ) ORDER BY 1
+----
+-- GROUP BY over UNION ALL where both legs are independently sorted on the
+-- grouping key.
+SELECT a, count(*) c FROM (
+  (SELECT a FROM t ORDER BY a)
+  UNION ALL
+  (SELECT a FROM t ORDER BY a)
+) GROUP BY a

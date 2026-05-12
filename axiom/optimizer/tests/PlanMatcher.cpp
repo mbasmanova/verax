@@ -583,10 +583,32 @@ class AggregationMatcher : public PlanMatcherImpl<AggregationNode> {
   AggregationMatcher(
       const std::shared_ptr<PlanMatcher>& matcher,
       AggregationNode::Step step,
-      const std::vector<std::string>& groupingKeys,
-      const std::vector<std::string>& aggregates)
+      std::optional<bool> expectPreGrouped)
       : PlanMatcherImpl<AggregationNode>({matcher}),
         step_{step},
+        expectPreGrouped_{expectPreGrouped} {}
+
+  AggregationMatcher(
+      const std::shared_ptr<PlanMatcher>& matcher,
+      AggregationNode::Step step,
+      const std::vector<std::string>& groupingKeys,
+      const std::vector<std::string>& aggregates)
+      : AggregationMatcher(
+            matcher,
+            step,
+            groupingKeys,
+            aggregates,
+            /*expectPreGrouped=*/std::nullopt) {}
+
+  AggregationMatcher(
+      const std::shared_ptr<PlanMatcher>& matcher,
+      AggregationNode::Step step,
+      const std::vector<std::string>& groupingKeys,
+      const std::vector<std::string>& aggregates,
+      std::optional<bool> expectPreGrouped)
+      : PlanMatcherImpl<AggregationNode>({matcher}),
+        step_{step},
+        expectPreGrouped_{expectPreGrouped},
         groupingKeys_{groupingKeys},
         aggregates_{aggregates} {
     VELOX_CHECK(!groupingKeys_.empty() || !aggregates_.empty());
@@ -600,6 +622,11 @@ class AggregationMatcher : public PlanMatcherImpl<AggregationNode> {
 
     if (step_.has_value()) {
       EXPECT_EQ(plan.step(), step_.value());
+      AXIOM_TEST_RETURN_IF_FAILURE
+    }
+
+    if (expectPreGrouped_.has_value()) {
+      EXPECT_EQ(plan.isPreGrouped(), expectPreGrouped_.value());
       AXIOM_TEST_RETURN_IF_FAILURE
     }
 
@@ -687,6 +714,7 @@ class AggregationMatcher : public PlanMatcherImpl<AggregationNode> {
 
  private:
   const std::optional<AggregationNode::Step> step_;
+  const std::optional<bool> expectPreGrouped_;
   const std::vector<std::string> groupingKeys_;
   const std::vector<std::string> aggregates_;
 };
@@ -725,36 +753,6 @@ class DistinctMatcher : public PlanMatcherImpl<AggregationNode> {
     }
 
     return MatchResult::success();
-  }
-};
-
-class StreamingAggregationMatcher : public AggregationMatcher {
- public:
-  explicit StreamingAggregationMatcher(
-      const std::shared_ptr<PlanMatcher>& matcher)
-      : AggregationMatcher(matcher, AggregationNode::Step::kSingle) {}
-
-  StreamingAggregationMatcher(
-      const std::shared_ptr<PlanMatcher>& matcher,
-      const std::vector<std::string>& groupingKeys,
-      const std::vector<std::string>& aggregates)
-      : AggregationMatcher(
-            matcher,
-            AggregationNode::Step::kSingle,
-            groupingKeys,
-            aggregates) {}
-
-  MatchResult matchDetails(
-      const AggregationNode& plan,
-      const std::unordered_map<std::string, std::string>& symbols)
-      const override {
-    SCOPED_TRACE(plan.toString(true, false));
-
-    EXPECT_TRUE(plan.isPreGrouped())
-        << "Expected streaming aggregation (pre-grouped input)";
-    AXIOM_TEST_RETURN_IF_FAILURE
-
-    return AggregationMatcher::matchDetails(plan, symbols);
   }
 };
 
@@ -1654,7 +1652,9 @@ PlanMatcherBuilder& PlanMatcherBuilder::aggregation() {
 PlanMatcherBuilder& PlanMatcherBuilder::singleAggregation() {
   VELOX_USER_CHECK_NOT_NULL(matcher_);
   matcher_ = std::make_shared<AggregationMatcher>(
-      matcher_, AggregationNode::Step::kSingle);
+      matcher_,
+      AggregationNode::Step::kSingle,
+      /*expectPreGrouped=*/false);
   return *this;
 }
 
@@ -1663,7 +1663,11 @@ PlanMatcherBuilder& PlanMatcherBuilder::singleAggregation(
     const std::vector<std::string>& aggregates) {
   VELOX_USER_CHECK_NOT_NULL(matcher_);
   matcher_ = std::make_shared<AggregationMatcher>(
-      matcher_, AggregationNode::Step::kSingle, groupingKeys, aggregates);
+      matcher_,
+      AggregationNode::Step::kSingle,
+      groupingKeys,
+      aggregates,
+      /*expectPreGrouped=*/false);
   return *this;
 }
 
@@ -1701,7 +1705,10 @@ PlanMatcherBuilder& PlanMatcherBuilder::finalAggregation(
 
 PlanMatcherBuilder& PlanMatcherBuilder::streamingAggregation() {
   VELOX_USER_CHECK_NOT_NULL(matcher_);
-  matcher_ = std::make_shared<StreamingAggregationMatcher>(matcher_);
+  matcher_ = std::make_shared<AggregationMatcher>(
+      matcher_,
+      AggregationNode::Step::kSingle,
+      /*expectPreGrouped=*/true);
   return *this;
 }
 
@@ -1709,8 +1716,12 @@ PlanMatcherBuilder& PlanMatcherBuilder::streamingAggregation(
     const std::vector<std::string>& groupingKeys,
     const std::vector<std::string>& aggregates) {
   VELOX_USER_CHECK_NOT_NULL(matcher_);
-  matcher_ = std::make_shared<StreamingAggregationMatcher>(
-      matcher_, groupingKeys, aggregates);
+  matcher_ = std::make_shared<AggregationMatcher>(
+      matcher_,
+      AggregationNode::Step::kSingle,
+      groupingKeys,
+      aggregates,
+      /*expectPreGrouped=*/true);
   return *this;
 }
 
