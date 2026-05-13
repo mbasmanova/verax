@@ -1335,12 +1335,12 @@ TEST_F(UnnestTest, leftJoinFilterOnSingleRowSubquery) {
 
   auto logicalPlan = parseSelect(query, kTestConnectorId);
   auto plan = toSingleNodePlan(logicalPlan);
-  // TODO: Optimizer should place the single-row side of the NLJ on the
-  // build (right) side, not the probe (left) side.
   auto matcher =
-      matchScan("u")
-          .singleAggregation({}, {"count(*) as count"})
-          .nestedLoopJoin(matchScan("t").unnest({"a"}, {"b"}).build())
+      matchScan("t")
+          .unnest({"a"}, {"b"})
+          .nestedLoopJoin(matchScan("u")
+                              .singleAggregation({}, {"count(*) as count"})
+                              .build())
           .hashJoin(matchScan("v").build(), core::JoinType::kLeft)
           .build();
   AXIOM_ASSERT_PLAN(plan, matcher);
