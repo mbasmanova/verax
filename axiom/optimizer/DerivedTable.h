@@ -72,6 +72,11 @@ using WindowPlanCP = const WindowPlan*;
 struct DerivedTable : public PlanObject {
   DerivedTable() : PlanObject(PlanType::kDerivedTableNode) {}
 
+  /// True if this DT is guaranteed to produce exactly one row: a global
+  /// aggregation (no grouping keys) with no HAVING clause and a non-zero
+  /// limit.
+  bool isSingleRow() const;
+
   /// Estimated number of rows produced by this DerivedTable. Set during
   /// planning by initializePlans() or makeInitialPlan(). For non-union DTs,
   /// computed as resultCardinality() of the initial physical plan. For union
@@ -155,7 +160,12 @@ struct DerivedTable : public PlanObject {
     return isUnion() && aggregation == nullptr;
   }
 
-  /// Single row tables from non-correlated scalar subqueries.
+  /// Single-row DTs (see isSingleRow()) that have no join dependencies in
+  /// this DT — not referenced by any join's keys, sides, or filter.
+  /// These can be appended at the end of the plan via cross-join, or
+  /// skipped entirely if no downstream column needs them. Single-row DTs
+  /// referenced by a join — including by a non-inner join's filter — are
+  /// not in this set; they're placed at the join site that needs them.
   PlanObjectSet singleRowDts;
 
   /// Tables that are not to the right sides of non-commutative joins.
