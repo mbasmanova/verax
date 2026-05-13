@@ -2683,6 +2683,12 @@ RelationOpPtr Optimization::placeSingleRowDt(
       resultColumns.end(),
       rightOp->columns().begin(),
       rightOp->columns().end());
+
+  // The cross join exposes the right side's columns to downstream
+  // operators; register them with PlanState so state.columns() reflects
+  // what is now available.
+  state.placeColumns(rightOp->columns());
+
   auto* join = Join::makeCrossJoin(
       std::move(plan),
       std::move(rightOp),
