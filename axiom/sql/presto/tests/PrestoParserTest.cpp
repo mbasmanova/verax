@@ -1348,6 +1348,23 @@ TEST_F(PrestoParserTest, qualifiedStarWithAmbiguousColumnAfterJoin) {
           .output({"n_nationkey", "n_name", "n_regionkey", "n_comment"}));
 }
 
+// A SELECT projection alias that collides with a table alias must not be
+// substituted for the table alias when used as a dereference qualifier
+// later in the same SELECT. The qualifier in a dereference is a scope
+// reference, not a value, so lateral column alias substitution must not
+// apply to it. The JOIN with same-named columns keeps the qualifier from
+// being dropped before reaching the resolution path under test.
+TEST_F(PrestoParserTest, lateralAliasCollidingWithTableAlias) {
+  testSelect(
+      "SELECT a.x + 1 AS a, a.x + 2 "
+      "FROM (VALUES (1)) t(x) JOIN (VALUES (1)) a(x) ON t.x = a.x",
+      matchValues()
+          .project()
+          .join(matchValues().project().build(), {"t_x", "a_x"})
+          .project({"a_x + 1", "a_x + 2"})
+          .output());
+}
+
 // FETCH FIRST n ROWS ONLY is equivalent to LIMIT n. Each LIMIT query below is
 // paired with a FETCH FIRST query to verify they produce the same plan.
 TEST_F(PrestoParserTest, limit) {

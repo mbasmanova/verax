@@ -362,15 +362,23 @@ lp::ExprApi ExpressionPlanner::toExpr(const ExpressionPtr& node) {
     case NodeType::kDereferenceExpression: {
       auto* dereference = node->as<DereferenceExpression>();
       auto field = canonicalizeIdentifier(*dereference->field());
-      // Strip table qualifier when safe (not a struct field, name is
-      // unambiguous).
-      if (shouldDropQualifier_ &&
-          dereference->base()->is(NodeType::kIdentifier)) {
+      // The base of a dereference is a scope qualifier (table alias or
+      // struct-typed column), not a value-producing expression. Lateral
+      // column alias substitution must not apply to it; bypass toExpr to
+      // build the qualifier directly when the base is a bare identifier.
+      //
+      // TODO: extend the resolver so lateral aliases are a third fallback
+      // scope after table.column and struct dereference. Requires moving
+      // lateral substitution from here into PlanBuilder::resolveInputName.
+      if (dereference->base()->is(NodeType::kIdentifier)) {
         auto qualifier =
             canonicalizeIdentifier(*dereference->base()->as<Identifier>());
-        if (shouldDropQualifier_(qualifier, field)) {
+        // Strip table qualifier when safe (not a struct field, name is
+        // unambiguous).
+        if (shouldDropQualifier_ && shouldDropQualifier_(qualifier, field)) {
           return lp::Col(field);
         }
+        return lp::Col(field, lp::Col(qualifier));
       }
       return lp::Col(field, toExpr(dereference->base()));
     }
