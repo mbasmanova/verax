@@ -704,19 +704,12 @@ void DerivedTable::addImpliedJoins() {
   }
 }
 
-namespace {
-
-bool isSingleRowDt(PlanObjectCP object) {
-  if (object->is(PlanType::kDerivedTableNode)) {
-    auto dt = object->as<DerivedTable>();
-    // A global aggregation (no grouping keys) always returns exactly one row,
-    // but only if there's no HAVING clause that could filter it out.
-    return (
-        dt->aggregation && dt->aggregation->groupingKeys().empty() &&
-        dt->having.empty() && dt->limit != 0 && dt->offset == 0);
-  }
-  return false;
+bool DerivedTable::isSingleRow() const {
+  return aggregation && aggregation->groupingKeys().empty() && having.empty() &&
+      limit != 0 && offset == 0;
 }
+
+namespace {
 
 // @return a subset of 'tables' that contain single row tables from
 // non-correlated scalar subqueries.
@@ -743,7 +736,8 @@ PlanObjectSet findSingleRowDts(
 
   PlanObjectSet singleRowDts;
   tablesCopy.forEach([&](PlanObjectCP object) {
-    if (isSingleRowDt(object)) {
+    if (object->is(PlanType::kDerivedTableNode) &&
+        object->as<DerivedTable>()->isSingleRow()) {
       ++numSingle;
       singleRowDts.add(object);
     }

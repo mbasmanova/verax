@@ -1317,5 +1317,69 @@ TEST_F(UnnestTest, crossJoinSingleRowAggregateAndUnnest) {
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
+// A LEFT JOIN whose ON clause references a single-row subquery's column via
+// a non-equi predicate must place the subquery's cross-join on the
+// preserved side before the LEFT join.
+TEST_F(UnnestTest, leftJoinFilterOnSingleRowSubquery) {
+  testConnector_->addTable("t", ROW({"a", "b"}, {INTEGER(), ARRAY(INTEGER())}));
+  testConnector_->addTable("u", ROW("x", INTEGER()));
+  testConnector_->addTable("v", ROW("x", INTEGER()));
+
+  auto query =
+      "SELECT sub.a "
+      "FROM ( "
+      "  SELECT a, x + (SELECT count(*) FROM u) AS y "
+      "  FROM t CROSS JOIN UNNEST(b) AS _(x) "
+      ") sub "
+      "LEFT JOIN v ON sub.a = v.x AND sub.y IS NOT NULL";
+
+  auto logicalPlan = parseSelect(query, kTestConnectorId);
+  auto plan = toSingleNodePlan(logicalPlan);
+  // TODO: Optimizer should place the single-row side of the NLJ on the
+  // build (right) side, not the probe (left) side.
+  auto matcher =
+      matchScan("u")
+          .singleAggregation({}, {"count(*) as count"})
+          .nestedLoopJoin(matchScan("t").unnest({"a"}, {"b"}).build())
+          .hashJoin(matchScan("v").build(), core::JoinType::kLeft)
+          .build();
+  AXIOM_ASSERT_PLAN(plan, matcher);
+}
+
+// Same shape as leftJoinFilterOnSingleRowSubquery but with a small preserved
+// (left) side and a large optional (right) side, so the cost-based hash-right
+// variant wins.
+TEST_F(UnnestTest, leftJoinFilterOnSingleRowSubquerySmallPreservedSide) {
+  testConnector_->addTable("t", ROW({"a", "b"}, {INTEGER(), ARRAY(INTEGER())}))
+      ->setStats(1, {{"a", {.numDistinct = 1}}});
+  testConnector_->addTable("u", ROW("x", INTEGER()))
+      ->setStats(1, {{"x", {.numDistinct = 1}}});
+  testConnector_->addTable("v", ROW("x", INTEGER()))
+      ->setStats(100'000, {{"x", {.numDistinct = 100'000}}});
+
+  auto query =
+      "SELECT sub.a "
+      "FROM ( "
+      "  SELECT a, x + (SELECT count(*) FROM u) AS y "
+      "  FROM t CROSS JOIN UNNEST(b) AS _(x) "
+      ") sub "
+      "LEFT JOIN v ON sub.a = v.x AND sub.y IS NOT NULL";
+
+  auto logicalPlan = parseSelect(query, kTestConnectorId);
+  auto plan = toSingleNodePlan(logicalPlan);
+  auto matcher = matchScan("v")
+                     .hashJoin(
+                         matchScan("t")
+                             .unnest({"a"}, {"b"})
+                             .nestedLoopJoin(matchScan("u")
+                                                 .singleAggregation(
+                                                     {}, {"count(*) as count"})
+                                                 .build())
+                             .build(),
+                         core::JoinType::kRight)
+                     .build();
+  AXIOM_ASSERT_PLAN(plan, matcher);
+}
+
 } // namespace
 } // namespace facebook::axiom::optimizer

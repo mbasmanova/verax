@@ -1945,7 +1945,9 @@ void Optimization::joinByHash(
 
   PlanStateSaver save(state, candidate);
 
-  auto probeColumns = PlanObjectSet::fromObjects(plan->columns());
+  auto extendedPlan = placeSingleRowDtsForJoinFilter(plan, candidate, state);
+
+  auto probeColumns = PlanObjectSet::fromObjects(extendedPlan->columns());
 
   auto [probeFilterColumns, buildFilterColumns] = computeJoinFilterColumns(
       candidate.join->filter(),
@@ -2000,7 +2002,7 @@ void Optimization::joinByHash(
         buildColumns, build, downstreamColumns, buildFilterColumns);
 
     return precomputeJoinInputs(
-        plan,
+        extendedPlan,
         buildPlan->op,
         probe,
         build,
@@ -2177,6 +2179,8 @@ void Optimization::joinByHashRight(
 
   PlanStateSaver save(state, candidate);
 
+  auto extendedPlan = placeSingleRowDtsForJoinFilter(plan, candidate, state);
+
   PlanObjectSet probeTables;
   PlanObjectSet probeColumns;
   for (auto probeTable : candidate.tables) {
@@ -2184,7 +2188,7 @@ void Optimization::joinByHashRight(
     probeTables.add(probeTable);
   }
 
-  auto buildColumns = PlanObjectSet::fromObjects(plan->columns());
+  auto buildColumns = PlanObjectSet::fromObjects(extendedPlan->columns());
 
   auto [probeFilterColumns, buildFilterColumns] = computeJoinFilterColumns(
       candidate.join->filter(), probeColumns, buildColumns);
@@ -2217,7 +2221,7 @@ void Optimization::joinByHashRight(
 
     return precomputeJoinInputs(
         probePlan->op,
-        plan,
+        extendedPlan,
         probe,
         build,
         state.dt,
@@ -2357,8 +2361,12 @@ void Optimization::crossJoin(
 
   const auto downstreamColumns = state.downstreamColumns();
 
+  RelationOpPtr extendedPlan = candidate.join
+      ? placeSingleRowDtsForJoinFilter(plan, candidate, state)
+      : plan;
+
   auto buildColumns = availableColumns(table);
-  auto probeColumns = PlanObjectSet::fromObjects(plan->columns());
+  auto probeColumns = PlanObjectSet::fromObjects(extendedPlan->columns());
 
   // Columns from the filter that belong to each side.
   PlanObjectSet probeFilterColumns;
@@ -2412,7 +2420,7 @@ void Optimization::crossJoin(
           buildColumns, build, downstreamColumns, buildFilterColumns);
 
       return precomputeJoinInputs(
-          plan,
+          extendedPlan,
           buildInput,
           probe,
           build,
@@ -2513,12 +2521,12 @@ void Optimization::crossJoin(
   } else {
     // No join edge - simple cross join.
     PlanObjectSet resultColumns;
-    resultColumns.unionObjects(plan->columns());
+    resultColumns.unionObjects(extendedPlan->columns());
     resultColumns.unionObjects(buildInput->columns());
     resultColumns.intersect(downstreamColumns);
 
     RelationOp* join = Join::makeCrossJoin(
-        plan,
+        extendedPlan,
         buildInput,
         velox::core::JoinType::kInner,
         {},
@@ -2699,6 +2707,46 @@ RelationOpPtr Optimization::placeSingleRowDt(
   state.place(subquery);
   state.addCost(*join);
   return join;
+}
+
+RelationOpPtr Optimization::placeSingleRowDtsForJoinFilter(
+    RelationOpPtr plan,
+    const JoinCandidate& candidate,
+    PlanState& state) {
+  const auto& join = *candidate.join;
+  if (join.filter().empty()) {
+    return plan;
+  }
+
+  PlanObjectSet referencedTables;
+  for (auto* conjunct : join.filter()) {
+    referencedTables.unionSet(conjunct->allTables());
+  }
+  referencedTables.except(PlanObjectSet::fromObjects(candidate.tables));
+  referencedTables.erase(state.dt);
+
+  // Place any unplaced single-row DT via cross join into 'plan' so its
+  // column is in scope when the join evaluates. Tables that the join
+  // itself will place (candidate.tables) and the enclosing DT were
+  // already excluded above. Any other unplaced non-single-row table
+  // indicates a graph that violates the DT composition rules, in which
+  // case VELOX_FAIL surfaces it loudly.
+  referencedTables.forEach([&](PlanObjectCP table) {
+    if (state.isPlaced(table)) {
+      return;
+    }
+    if (table->is(PlanType::kDerivedTableNode)) {
+      auto* subquery = table->as<DerivedTable>();
+      if (subquery->isSingleRow()) {
+        plan = placeSingleRowDt(plan, subquery, state);
+        return;
+      }
+    }
+    VELOX_FAIL(
+        "Join filter references column from unplaced non-single-row table: {}",
+        cname(table));
+  });
+  return plan;
 }
 
 void Optimization::placeDerivedTable(DerivedTableCP from, PlanState& state) {

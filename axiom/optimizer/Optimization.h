@@ -278,6 +278,18 @@ class Optimization {
       DerivedTableCP subquery,
       PlanState& state);
 
+  // For a non-inner join whose filter references columns from non-correlated
+  // single-row subqueries that are not yet placed, cross-joins the required
+  // subqueries into 'plan' (the probe/preserved side) so the filter's
+  // columns are in scope when the join evaluates. Returns the extended
+  // plan. Tables that the join itself will place (candidate.tables) are
+  // skipped. Mirrors the pattern in placeConjuncts that pulls single-row
+  // DTs in for plain Filter conjuncts.
+  RelationOpPtr placeSingleRowDtsForJoinFilter(
+      RelationOpPtr plan,
+      const JoinCandidate& candidate,
+      PlanState& state);
+
   // Adds the join represented by 'candidate' on top of 'plan'. Tries index and
   // hash based methods and adds the index and hash based plans to 'result'. If
   // one of these is clearly superior, only adds the better one.
