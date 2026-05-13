@@ -1290,5 +1290,32 @@ TEST_F(UnnestTest, unnestWithJoinAndFilter) {
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
+// A column added by a CROSS JOIN with a single-row aggregate subquery
+// must remain in scope when followed by an UNNEST and both the SELECT
+// list and a WHERE filter reference that column.
+TEST_F(UnnestTest, crossJoinSingleRowAggregateAndUnnest) {
+  testConnector_->addTable(
+      "t", ROW({"a", "ids"}, {INTEGER(), ARRAY(INTEGER())}));
+  testConnector_->addTable("u", ROW("x", INTEGER()));
+
+  auto query =
+      "SELECT n, c FROM t "
+      " CROSS JOIN (SELECT count(*) c FROM u) "
+      " CROSS JOIN UNNEST(ids) AS _(n) "
+      "WHERE a < c";
+
+  auto logicalPlan = parseSelect(query, kTestConnectorId);
+  auto plan = toSingleNodePlan(logicalPlan);
+  auto matcher =
+      matchScan("t")
+          .nestedLoopJoin(
+              matchScan("u").singleAggregation({}, {"count(*) as c"}).build())
+          .filter("c > a::BIGINT")
+          .unnest({"c"}, {"ids"})
+          .project({"n", "c"})
+          .build();
+  AXIOM_ASSERT_PLAN(plan, matcher);
+}
+
 } // namespace
 } // namespace facebook::axiom::optimizer
