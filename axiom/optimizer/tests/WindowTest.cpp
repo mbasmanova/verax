@@ -665,5 +665,25 @@ TEST_F(WindowTest, dependentWindowFunctions) {
   }
 }
 
+// Window ORDER BY references a column from the right side of a LEFT JOIN
+// whose WHERE further filters the right side.
+TEST_F(WindowTest, leftJoinWithWindowOrderingByRightSideColumn) {
+  testConnector_->addTable("t", ROW("x", BIGINT()));
+  testConnector_->addTable("u", ROW({"x", "y"}, BIGINT()));
+
+  auto plan = toSingleNodePlan(
+      "SELECT ROW_NUMBER() OVER (ORDER BY u.y) AS rn "
+      "FROM t "
+      "LEFT JOIN u ON u.x = t.x "
+      "WHERE t.x = u.x");
+
+  auto matcher = matchScan("u")
+                     .hashJoin(matchScan("t").build(), core::JoinType::kInner)
+                     .window({"row_number() OVER (ORDER BY y)"})
+                     .project()
+                     .build();
+  AXIOM_ASSERT_PLAN(plan, matcher);
+}
+
 } // namespace
 } // namespace facebook::axiom::optimizer

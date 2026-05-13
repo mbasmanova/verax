@@ -1069,15 +1069,32 @@ void DerivedTable::replaceJoinOutputs(
     }
   }
 
-  // Post-aggregation fields (exprs, orderKeys) reference aggregation output
-  // columns, not the join output columns being replaced. When a grouping key
-  // is a simple Column, translateAggregation reuses that Column object as the
-  // aggregation output — so the same object appears in both 'source' (join
-  // output) and aggregation->columns(). Replacing it in post-aggregation
-  // fields would substitute the aggregation output reference with the raw
-  // pre-aggregation expression, which is invalid above the aggregation
-  // boundary.
+  // Post-aggregation fields (window functions, exprs, orderKeys) reference
+  // aggregation output columns, not the join output columns being replaced.
+  // When a grouping key is a simple Column, translateAggregation reuses that
+  // Column object as the aggregation output — so the same object appears in
+  // both 'source' (join output) and aggregation->columns(). Replacing it in
+  // post-aggregation fields would substitute the aggregation output reference
+  // with the raw pre-aggregation expression, which is invalid above the
+  // aggregation boundary.
   if (!aggregation) {
+    if (windowPlan) {
+      WindowFunctionVector newFunctions;
+      newFunctions.reserve(windowPlan->functions().size());
+      bool anyChange{false};
+      for (const auto* func : windowPlan->functions()) {
+        const auto* newFunc =
+            DerivedTableFlattener::replaceInputs(func, source, target);
+        anyChange |= newFunc != func;
+        newFunctions.push_back(newFunc->as<WindowFunction>());
+      }
+      if (anyChange) {
+        windowPlan = make<WindowPlan>(
+            std::move(newFunctions),
+            windowPlan->columns(),
+            windowPlan->rankingLimit());
+      }
+    }
     for (auto& expr : exprs) {
       expr = DerivedTableFlattener::replaceInputs(expr, source, target);
     }
