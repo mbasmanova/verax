@@ -934,14 +934,20 @@ void Join::initCost(float fanout, float rlFanout, float filterSelectivity) {
 
   const float buildSize = right->resultCardinality();
   const auto numKeys = leftKeys.size();
-  const auto probeCost = Costs::hashTableCost(buildSize) +
-      // Multiply by min(fanout, 1) because most misses will not compare and
-      // if fanout > 1, there is still only one compare.
-      (Costs::kKeyCompareCost * numKeys * std::min<float>(1, cost_.fanout)) +
-      numKeys * Costs::kHashColumnCost;
-
   const auto rowBytes = byteSize(right->columns());
   const auto rowCost = Costs::hashRowCost(buildSize, rowBytes);
+
+  // For NLJ (kCross), there's no hash table to probe, so the
+  // hashTableCost term — which models per-left-row bucket lookup — must
+  // not be charged.
+  const float probeCost = method == JoinMethod::kCross
+      ? 0.0f
+      : Costs::hashTableCost(buildSize) +
+          // Multiply by min(fanout, 1) because most misses will not compare and
+          // if fanout > 1, there is still only one compare.
+          (Costs::kKeyCompareCost * numKeys *
+           std::min<float>(1, cost_.fanout)) +
+          numKeys * Costs::kHashColumnCost;
 
   cost_.unitCost = probeCost + cost_.fanout * rowCost;
 }

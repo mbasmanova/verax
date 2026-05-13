@@ -2399,9 +2399,8 @@ void Optimization::crossJoin(
   if (!isSingleWorker_) {
     buildInput = make<Repartition>(
         buildInput, Distribution::broadcast(), buildInput->columns());
+    buildState.addCost(*buildInput);
   }
-
-  buildState.addCost(*buildInput);
 
   state.cost.cost += buildState.cost.cost;
 
@@ -2679,12 +2678,17 @@ RelationOpPtr Optimization::placeSingleRowDt(
   bool needsShuffle = false;
   auto rightPlan = makePlan(*state.dt, memoKey, std::nullopt, 1, needsShuffle);
 
+  PlanState rightState(state.optimization, state.dt, rightPlan);
+
   auto rightOp = rightPlan->op;
 
   if (!isSingleWorker_) {
     rightOp = make<Repartition>(
         rightOp, Distribution::broadcast(), rightOp->columns());
+    rightState.addCost(*rightOp);
   }
+
+  state.cost.cost += rightState.cost.cost;
 
   auto resultColumns = plan->columns();
   resultColumns.insert(
