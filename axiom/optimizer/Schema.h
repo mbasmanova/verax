@@ -68,6 +68,9 @@ struct Value {
 
   /// Minimum and maximum values. Applies to orderable types (integers, floats,
   /// dates, timestamps). Not set for booleans, strings, or complex types.
+  /// nullptr means no bound known. Otherwise points to a Variant with an
+  /// actual value — never a null-valued Variant, since NULL is not a value
+  /// that bounds a range.
   VariantCP min{nullptr};
   VariantCP max{nullptr};
 
