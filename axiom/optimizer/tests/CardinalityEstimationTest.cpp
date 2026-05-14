@@ -1263,6 +1263,33 @@ TEST_F(CardinalityEstimationTest, unionAll) {
       });
 }
 
+// UNION ALL with one leg projecting a NULL literal column. The literal's
+// Value must contribute no min/max bound (NULL is not a value).
+TEST_F(CardinalityEstimationTest, unionAllWithNullLiteral) {
+  testConnector_->addTable("t", ROW({"a"}, BIGINT()))
+      ->setStats(
+          1'000,
+          {{"a",
+            {.nullPct = 10, .min = 1LL, .max = 500LL, .numDistinct = 100}}});
+
+  verifyPlan(
+      "SELECT a FROM t UNION ALL SELECT NULL FROM t", [](const Plan& plan) {
+        const auto& op = *plan.op;
+        ASSERT_EQ(op.columns().size(), 1);
+        EXPECT_NEAR(op.resultCardinality(), 2'000, kCardinalityTolerance);
+
+        auto a = findConstraint(op, 0);
+        ASSERT_TRUE(a.has_value());
+        // (1000 * 0.1 + 1000 * 1.0) / 2000 = 0.55.
+        EXPECT_NEAR(a->nullFraction, 0.55, kTolerance);
+        // Either leg can produce NULLs.
+        EXPECT_TRUE(a->nullable);
+        // NULL-literal leg contributes only NULLs and so does not affect
+        // the range. Bounds come from the t.a leg alone.
+        AXIOM_ASSERT_RANGE(*a, 1, 500);
+      });
+}
+
 // Verifies that UNION produces deduplicated cardinality.
 TEST_F(CardinalityEstimationTest, unionDistinct) {
   testConnector_->addTable("t", ROW({"a"}, BIGINT()))

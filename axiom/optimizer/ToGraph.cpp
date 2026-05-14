@@ -942,11 +942,15 @@ ExprCP ToGraph::makeConstant(const lp::ConstantExpr& constant) {
   }
 
   Value value(temp.type, 1);
-  // For scalar types, set min and max to the literal value
-  if (temp.type->isPrimitiveType()) {
-    // Scalar/primitive type - set min and max to the variant
-    value.min = temp.value.get();
-    value.max = temp.value.get();
+  if (temp.value->isNull()) {
+    value.nullFraction = 1.0;
+  } else {
+    value.nullFraction = 0.0;
+    value.nullable = false;
+    if (temp.type->isPrimitiveType()) {
+      value.min = temp.value.get();
+      value.max = temp.value.get();
+    }
   }
 
   auto* literal = make<Literal>(value, temp.value.get());

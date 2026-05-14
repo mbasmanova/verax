@@ -1820,7 +1820,33 @@ void UnionAll::initConstraints() {
         : 0;
     bool anyUnknownTrueFraction = combined.trueFraction == Value::kUnknown;
 
-    // Combine constraints from remaining inputs.
+    // Derive min and max across all legs. All-NULL legs contribute no
+    // bound. A leg with unknown bound wipes the combined bound — no later
+    // leg can recover it.
+    auto deriveBound = [&](VariantCP Value::* bound,
+                           const auto& compare) -> VariantCP {
+      VariantCP result = nullptr;
+      for (size_t j = 0; j < inputs.size(); ++j) {
+        const Value& inputValue = inputConstraint(j);
+        if (inputValue.nullFraction == 1.0) {
+          continue;
+        }
+        VariantCP candidate = inputValue.*bound;
+        if (candidate == nullptr) {
+          return nullptr;
+        }
+        if (result == nullptr || compare(*candidate, *result)) {
+          result = candidate;
+        }
+      }
+      return result;
+    };
+    combined.min = deriveBound(
+        &Value::min, [](const auto& a, const auto& b) { return a < b; });
+    combined.max = deriveBound(
+        &Value::max, [](const auto& a, const auto& b) { return b < a; });
+
+    // Combine remaining fields from inputs beyond the first.
     for (size_t j = 1; j < inputs.size(); ++j) {
       const Value& inputValue = inputConstraint(j);
       float inputRows = inputs[j]->resultCardinality();
@@ -1835,23 +1861,6 @@ void UnionAll::initConstraints() {
         weightedTrueFraction += inputValue.trueFraction * inputRows;
       }
       combined.nullable = combined.nullable || inputValue.nullable;
-
-      // Combine min/max (use nullptr if any is unknown).
-      if (combined.min != nullptr && inputValue.min != nullptr) {
-        if (*inputValue.min < *combined.min) {
-          combined.min = inputValue.min;
-        }
-      } else {
-        combined.min = nullptr;
-      }
-
-      if (combined.max != nullptr && inputValue.max != nullptr) {
-        if (*combined.max < *inputValue.max) {
-          combined.max = inputValue.max;
-        }
-      } else {
-        combined.max = nullptr;
-      }
     }
 
     combined.nullFraction =
