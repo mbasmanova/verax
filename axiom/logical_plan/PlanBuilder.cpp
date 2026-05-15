@@ -273,7 +273,9 @@ PlanBuilder& PlanBuilder::tableScan(
 
     originalNames.push_back(name);
     outputNames.push_back(newName(name));
-    outputMapping_->add(name, outputNames.back());
+    outputMapping_->add(
+        identifierCanonicalizer_ ? identifierCanonicalizer_(name) : name,
+        outputNames.back());
   };
 
   for (auto i = 0; i < schema->size(); ++i) {

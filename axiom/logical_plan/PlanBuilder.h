@@ -147,6 +147,14 @@ class PlanBuilder {
     /// override this with their dialect's coercer.
     const velox::TypeCoercer* coercer{nullptr};
 
+    /// Optional transform applied to user-facing column names introduced by
+    /// 'tableScan' before they are stored in the name lookup map. SQL
+    /// dialects with case-insensitive identifiers set this to a lowercasing
+    /// function so that case-insensitive references in the query body
+    /// resolve against connector-supplied column names. Defaults to
+    /// identity, leaving names as-is.
+    std::function<std::string(const std::string&)> identifierCanonicalizer;
+
     explicit Context(
         const std::optional<std::string>& defaultConnectorId = std::nullopt,
         const std::optional<std::string>& defaultSchema = std::nullopt,
@@ -209,6 +217,7 @@ class PlanBuilder {
         sqlParser_{context.sqlParser},
         allowAmbiguousOutputNames_{allowAmbiguousOutputNames},
         coercer_{context.coercer},
+        identifierCanonicalizer_{context.identifierCanonicalizer},
         resolver_{
             context.queryCtx,
             context.coercer,
@@ -856,6 +865,10 @@ class PlanBuilder {
   // in practice it's a static singleton (TypeCoercer::defaults() or a
   // dialect's coercer).
   const velox::TypeCoercer* coercer_;
+
+  // Optional transform applied to user-facing column names. See
+  // Context::identifierCanonicalizer.
+  std::function<std::string(const std::string&)> identifierCanonicalizer_;
 
   // Root of the plan tree built so far. Null before the first leaf node
   // (values or tableScan) is added.
