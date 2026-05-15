@@ -67,6 +67,25 @@ TEST_F(ExprTest, looksConstant) {
   testLooksConstant(Cast(DOUBLE(), Col("a")), false);
 }
 
+TEST_F(ExprTest, conjunctAcceptsUnknownInput) {
+  // Mirror Velox's ConjunctExpr::resolveType, which accepts BOOLEAN or UNKNOWN.
+  auto schema = ROW({"p", "a"}, {BOOLEAN(), BIGINT()});
+  auto resolve = [&](const ExprApi& expr) {
+    return ExprResolver(nullptr, nullptr)
+        .resolveScalarTypes(expr.expr(), inputResolver(schema));
+  };
+
+  auto nullLiteral = Lit(Variant::null(TypeKind::UNKNOWN), UNKNOWN());
+
+  EXPECT_EQ(*resolve(Col("p") && nullLiteral)->type(), *BOOLEAN());
+  EXPECT_EQ(*resolve(nullLiteral || Col("p"))->type(), *BOOLEAN());
+
+  // Non-boolean, non-unknown inputs remain rejected.
+  VELOX_ASSERT_THROW(
+      resolve(Col("p") && Col("a")),
+      "All inputs to AND and OR must be boolean");
+}
+
 TEST_F(ExprTest, aggregateExprDistinctOrderBy) {
   auto makeAggregate =
       [this](const ExprApi& expr, const std::vector<SortKey>& ordering = {}) {

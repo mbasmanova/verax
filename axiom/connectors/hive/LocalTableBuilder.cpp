@@ -281,10 +281,11 @@ void LocalTableBuilder::build(const std::string& tablePath) {
   folly::F14FastMap<std::string, ColumnStatistics> aggregatedStats;
 
   for (auto& info : files) {
-    velox::io::IoStatistics dataIoStats;
-    velox::io::IoStatistics metadataIoStats;
-    velox::dwio::common::ReaderOptions readerOptions{
-        pool_, &dataIoStats, &metadataIoStats};
+    auto dataIoStats = std::make_shared<velox::io::IoStatistics>();
+    auto metadataIoStats = std::make_shared<velox::io::IoStatistics>();
+    velox::dwio::common::ReaderOptions readerOptions{pool_};
+    readerOptions.setDataIoStats(dataIoStats);
+    readerOptions.setMetadataIoStats(metadataIoStats);
     readerOptions.setFileFormat(fileFormat_);
 
     if (fileFormat_ == velox::dwio::common::FileFormat::TEXT && tableType) {
