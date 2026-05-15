@@ -799,5 +799,45 @@ TEST_F(RankingTest, partitionKeyFilterPartialMatch) {
   AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan, distributedMatcher);
 }
 
+TEST_F(RankingTest, denseRankWithRedundantOrderBy) {
+  // dense_rank()/rank() OVER (PARTITION BY a, b ORDER BY a) -- the ORDER BY
+  // column is also in PARTITION BY, so within a partition all rows tie at
+  // rank 1. The 'rk = 1' predicate matches every row and is dropped; only
+  // the Window remains (no Filter, no TopNRowNumber).
+  constexpr auto sql =
+      "SELECT n_name FROM ("
+      "  SELECT n_name, dense_rank() "
+      "    OVER (PARTITION BY n_regionkey, n_name ORDER BY n_regionkey) AS rk "
+      "  FROM nation"
+      ") WHERE rk = 1";
+
+  auto plan = toSingleNodePlan(sql);
+  auto matcher =
+      matchScan("nation")
+          .window({"dense_rank() OVER (PARTITION BY n_regionkey, n_name)"})
+          .project({"n_name"})
+          .build();
+  AXIOM_ASSERT_PLAN(plan, matcher);
+}
+
+TEST_F(RankingTest, projectOnlyRankColumn) {
+  // SELECT projects only the ranking column. Verify the final Project
+  // narrows the TopNRowNumber output to a single column instead of leaking
+  // the partition/order keys.
+  constexpr auto sql =
+      "SELECT rn FROM ("
+      "  SELECT row_number() "
+      "    OVER (PARTITION BY n_regionkey ORDER BY n_name) AS rn "
+      "  FROM nation"
+      ") WHERE rn = 1";
+
+  auto plan = toSingleNodePlan(sql);
+  auto matcher = matchScan("nation")
+                     .topNRowNumber({"n_regionkey"}, {"n_name"}, 1)
+                     .project({"rn"})
+                     .build();
+  AXIOM_ASSERT_PLAN(plan, matcher);
+}
+
 } // namespace
 } // namespace facebook::axiom::optimizer

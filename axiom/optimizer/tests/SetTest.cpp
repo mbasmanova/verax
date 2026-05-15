@@ -1026,16 +1026,17 @@ TEST_F(SetTest, exceptUnionAll) {
       ")";
 
   // Each EXCEPT becomes anti-join + aggregation (distinct). The UNION ALL
-  // combines the two branches via LocalPartition. The second branch gets a
-  // rename project to align column names with the first branch.
+  // combines the two branches via LocalPartition. Both branches get a
+  // rename project to align column names through LocalPartition.
   auto matchExcept = [](const std::string& left, const std::string& right) {
     return matchScan(left)
         .hashJoin(matchScan(right).build(), core::JoinType::kAnti)
-        .singleAggregation();
+        .singleAggregation()
+        .project();
   };
 
   auto matcher = matchExcept("t", "u")
-                     .localPartition(matchExcept("u", "t").project().build())
+                     .localPartition(matchExcept("u", "t").build())
                      .singleAggregation()
                      .build();
 
