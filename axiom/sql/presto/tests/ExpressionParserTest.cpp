@@ -1034,5 +1034,18 @@ TEST_F(ExpressionParserTest, bigintToRealCoercion) {
   EXPECT_EQ(*REAL(), *parseExpr("real '1' / bigint '2'")->type());
 }
 
+// SQL identifiers are case-insensitive: a column declared with mixed case
+// in the table schema must resolve when referenced with any case.
+TEST_F(ExpressionParserTest, mixedCaseColumnName) {
+  connector_->addTable("mixedCase", ROW({"orderingId"}, {BIGINT()}));
+
+  ASSERT_NO_THROW(testSelect(
+      "SELECT orderingId FROM mixedCase", matchScan().project().output()));
+  ASSERT_NO_THROW(testSelect(
+      "SELECT orderingid FROM mixedCase", matchScan().project().output()));
+  ASSERT_NO_THROW(testSelect(
+      "SELECT ORDERINGID FROM mixedCase", matchScan().project().output()));
+}
+
 } // namespace
 } // namespace axiom::sql::presto::test
