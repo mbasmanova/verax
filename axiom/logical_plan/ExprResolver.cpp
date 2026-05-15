@@ -92,11 +92,11 @@ void applyCoercions(
 velox::TypePtr resolveScalarFunction(
     const std::string& name,
     const std::vector<velox::TypePtr>& argTypes,
-    bool allowCoercions,
-    std::vector<velox::TypePtr>& coercions) {
-  if (allowCoercions) {
+    std::vector<velox::TypePtr>& coercions,
+    const velox::TypeCoercer* coercer) {
+  if (coercer != nullptr) {
     if (auto type = velox::resolveFunctionOrCallableSpecialFormWithCoercions(
-            name, argTypes, coercions)) {
+            name, argTypes, coercions, *coercer)) {
       return type;
     }
   } else {
@@ -120,9 +120,9 @@ std::vector<velox::TypePtr> toTypes(const std::vector<ExprPtr>& exprs) {
 }
 
 // Resolves a scalar function with the given name and arguments. Applies
-// coercions if 'allowCoercions' is true.
+// coercions if 'coercer' is non-null.
 //
-// If 'name' is a lambda function and 'allowCoercions' is true, the lambda may
+// If 'name' is a lambda function and 'coercer' is non-null, the lambda may
 // need to be resolved again after applying coercions to non-lambda arguments.
 // If that's the case, this function applies coercion to non-lambda arguments
 // and returns nullptr. The caller is expected to resolve lambda arguments again
@@ -130,12 +130,11 @@ std::vector<velox::TypePtr> toTypes(const std::vector<ExprPtr>& exprs) {
 velox::TypePtr resolveScalarFunction(
     const std::string& name,
     std::vector<ExprPtr>& args,
-    bool allowCoercions) {
+    const velox::TypeCoercer* coercer) {
   const auto argTypes = toTypes(args);
 
   std::vector<velox::TypePtr> coercions;
-  auto returnType =
-      resolveScalarFunction(name, argTypes, allowCoercions, coercions);
+  auto returnType = resolveScalarFunction(name, argTypes, coercions, coercer);
 
   bool hasFunctionCoercion = false;
   bool hasNonFunctionCoercion = false;
@@ -168,10 +167,11 @@ velox::TypePtr resolveScalarFunction(
 ExprPtr resolveSpecialFormWithCoercions(
     SpecialForm form,
     const std::string& name,
-    std::vector<ExprPtr>& inputs) {
+    std::vector<ExprPtr>& inputs,
+    const velox::TypeCoercer& coercer) {
   std::vector<velox::TypePtr> coercions;
-  auto returnType =
-      resolveCallableSpecialFormWithCoercions(name, toTypes(inputs), coercions);
+  auto returnType = resolveCallableSpecialFormWithCoercions(
+      name, toTypes(inputs), coercions, coercer);
   VELOX_CHECK_NOT_NULL(returnType);
 
   applyCoercions(inputs, coercions);
@@ -234,9 +234,9 @@ int64_t toIntegerValue(const ConstantExpr& expr) {
 ExprPtr tryResolveSpecialForm(
     const std::string& name,
     std::vector<ExprPtr>& resolvedInputs,
-    bool allowCoercions,
     const std::shared_ptr<velox::core::PlanNodeIdGenerator>&
-        planNodeIdGenerator) {
+        planNodeIdGenerator,
+    const velox::TypeCoercer* coercer) {
   if (name == "and") {
     return std::make_shared<SpecialFormExpr>(
         velox::BOOLEAN(), SpecialForm::kAnd, resolvedInputs);
@@ -253,9 +253,12 @@ ExprPtr tryResolveSpecialForm(
   }
 
   if (name == "coalesce") {
-    if (allowCoercions) {
+    if (coercer != nullptr) {
       return resolveSpecialFormWithCoercions(
-          SpecialForm::kCoalesce, velox::expression::kCoalesce, resolvedInputs);
+          SpecialForm::kCoalesce,
+          velox::expression::kCoalesce,
+          resolvedInputs,
+          *coercer);
     }
 
     return std::make_shared<SpecialFormExpr>(
@@ -271,9 +274,9 @@ ExprPtr tryResolveSpecialForm(
               type, std::make_shared<velox::Variant>(type->kind())));
     }
 
-    if (allowCoercions) {
+    if (coercer != nullptr) {
       return resolveSpecialFormWithCoercions(
-          SpecialForm::kIf, velox::expression::kIf, resolvedInputs);
+          SpecialForm::kIf, velox::expression::kIf, resolvedInputs, *coercer);
     }
 
     return std::make_shared<SpecialFormExpr>(
@@ -281,9 +284,12 @@ ExprPtr tryResolveSpecialForm(
   }
 
   if (name == "switch") {
-    if (allowCoercions) {
+    if (coercer != nullptr) {
       return resolveSpecialFormWithCoercions(
-          SpecialForm::kSwitch, velox::expression::kSwitch, resolvedInputs);
+          SpecialForm::kSwitch,
+          velox::expression::kSwitch,
+          resolvedInputs,
+          *coercer);
     }
     return std::make_shared<SpecialFormExpr>(
         resolvedInputs.at(1)->type(), SpecialForm::kSwitch, resolvedInputs);
@@ -314,7 +320,7 @@ ExprPtr tryResolveSpecialForm(
   }
 
   if (name == "in") {
-    if (allowCoercions) {
+    if (coercer != nullptr) {
       VELOX_USER_CHECK_GE(
           resolvedInputs.size(), 2, "IN must have at least two inputs");
 
@@ -325,13 +331,13 @@ ExprPtr tryResolveSpecialForm(
           continue;
         }
 
-        if (velox::TypeCoercer::coercible(newType, type)) {
+        if (coercer->coercible(newType, type)) {
           resolvedInputs[i] =
               applyCoercion(resolvedInputs[i], type, planNodeIdGenerator);
           continue;
         }
 
-        if (velox::TypeCoercer::coercible(type, newType)) {
+        if (coercer->coercible(type, newType)) {
           type = newType;
 
           for (auto j = 0; j < i; ++j) {
@@ -358,13 +364,22 @@ ExprPtr tryResolveSpecialForm(
     const auto& valueType = resolvedInputs[0]->type();
     const auto& comparandType = resolvedInputs[1]->type();
 
-    auto commonType =
-        velox::TypeCoercer::leastCommonSuperType(valueType, comparandType);
-    VELOX_USER_CHECK_NOT_NULL(
-        commonType,
-        "Cannot find common type for NULLIF arguments: {} vs {}",
-        valueType->toString(),
-        comparandType->toString());
+    velox::TypePtr commonType;
+    if (valueType->equivalent(*comparandType)) {
+      commonType = valueType;
+    } else {
+      VELOX_USER_CHECK_NOT_NULL(
+          coercer,
+          "NULLIF arguments have different types and implicit coercions are disabled: {} vs {}",
+          valueType->toString(),
+          comparandType->toString());
+      commonType = coercer->leastCommonSuperType(valueType, comparandType);
+      VELOX_USER_CHECK_NOT_NULL(
+          commonType,
+          "Cannot find common type for NULLIF arguments: {} vs {}",
+          valueType->toString(),
+          comparandType->toString());
+    }
 
     // Append a null literal of the common type to carry the type information.
     resolvedInputs.push_back(
@@ -526,7 +541,8 @@ bool ExprResolver::resolveLambdaArguments(
     }
   }
 
-  velox::exec::SignatureBinder binder(signature, argTypes);
+  velox::exec::SignatureBinder binder(
+      signature, argTypes, velox::TypeCoercer::defaults());
   binder.tryBind();
   for (auto i = 0; i < numArgs; ++i) {
     auto argSignature = signature.argumentTypes()[i];
@@ -585,16 +601,15 @@ ExprPtr ExprResolver::tryResolveCallWithLambdas(
 
   const auto name = velox::exec::sanitizeName(callExpr->name());
 
-  auto returnType = resolveScalarFunction(name, children, enableCoercions_);
+  auto returnType = resolveScalarFunction(name, children, coercer_);
   if (returnType == nullptr) {
-    VELOX_CHECK(enableCoercions_);
+    VELOX_CHECK_NOT_NULL(coercer_);
     if (!resolveLambdaArguments(
             callExpr->inputs(), *signature, children, inputNameResolver)) {
       return nullptr;
     }
 
-    returnType =
-        resolveScalarFunction(name, children, /*allowCoercions=*/false);
+    returnType = resolveScalarFunction(name, children, /*coercer=*/nullptr);
     VELOX_CHECK_NOT_NULL(returnType);
   }
 
@@ -819,14 +834,14 @@ ExprPtr ExprResolver::resolveScalarTypes(
     }
 
     if (auto specialForm = tryResolveSpecialForm(
-            name, inputs, enableCoercions_, planNodeIdGenerator_)) {
+            name, inputs, planNodeIdGenerator_, coercer_)) {
       if (auto folded = tryFoldSpecialForm(name, inputs)) {
         return folded;
       }
       return specialForm;
     }
 
-    auto type = resolveScalarFunction(name, inputs, enableCoercions_);
+    auto type = resolveScalarFunction(name, inputs, coercer_);
     VELOX_CHECK_NOT_NULL(type);
 
     auto folded = tryFoldCall(type, name, inputs);
@@ -924,7 +939,7 @@ ExprResolver::ResolvedCall ExprResolver::resolveCallTypes(
   }
 
   // Resolve return type.
-  if (!enableCoercions_) {
+  if (coercer_ == nullptr) {
     auto returnType = resolveFunc(name, toTypes(inputs));
     return {std::move(name), std::move(inputs), returnType};
   }
@@ -932,7 +947,8 @@ ExprResolver::ResolvedCall ExprResolver::resolveCallTypes(
   // coercions (lambdas can't be cast) and re-resolve lambdas if non-lambda
   // inputs were coerced.
   std::vector<velox::TypePtr> coercions;
-  auto returnType = resolveWithCoercionsFunc(name, toTypes(inputs), coercions);
+  auto returnType =
+      resolveWithCoercionsFunc(name, toTypes(inputs), coercions, *coercer_);
   bool reResolveLambdas = false;
   if (lambdaSignature != nullptr && !coercions.empty()) {
     for (size_t i = 0; i < numArgs; ++i) {

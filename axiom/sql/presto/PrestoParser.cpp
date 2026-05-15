@@ -36,6 +36,7 @@
 #include "velox/exec/Aggregate.h"
 #include "velox/exec/WindowFunction.h"
 #include "velox/functions/FunctionRegistry.h"
+#include "velox/functions/prestosql/coercion/PrestoCoercions.h"
 #include "velox/functions/prestosql/types/PrestoTypes.h"
 
 namespace axiom::sql::presto {
@@ -244,9 +245,13 @@ class RelationPlanner : public AstVisitor {
       const std::function<std::shared_ptr<axiom::sql::presto::Statement>(
           std::string_view /*sql*/)>& parseSql,
       bool friendlySql = true)
-      : context_{defaultConnectorId, defaultSchema,
-        /*queryCtxPtr=*/nullptr,
-        /*hook=*/nullptr, std::make_shared<lp::ThrowingSqlExpressionsParser>()},
+      : context_{
+          defaultConnectorId,
+          defaultSchema,
+          /*queryCtxPtr=*/nullptr,
+          /*hook=*/nullptr,
+          std::make_shared<lp::ThrowingSqlExpressionsParser>(),
+          &::facebook::velox::functions::prestosql::typeCoercer()},
         defaultSchema_{defaultSchema},
         parseSql_{parseSql},
         builder_(newBuilder()),
@@ -1250,7 +1255,6 @@ class RelationPlanner : public AstVisitor {
       const lp::PlanBuilder::Scope& outerScope = nullptr) {
     return std::make_shared<lp::PlanBuilder>(
         context_,
-        /*enableCoercions=*/true,
         /*allowAmbiguousOutputNames=*/true,
         outerScope);
   }

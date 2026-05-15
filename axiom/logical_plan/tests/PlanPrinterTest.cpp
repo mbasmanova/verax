@@ -784,7 +784,9 @@ TEST_F(PlanPrinterTest, unnest) {
   }
 
   {
-    auto plan = PlanBuilder(/* enableCorsions */ true)
+    PlanBuilder::Context context;
+    context.coercer = &velox::TypeCoercer::defaults();
+    auto plan = PlanBuilder(context)
                     .unnest({Sql("map(array[1, 2, 3], array[10, 20, 30])")
                                  .unnestAs("x", "y")})
                     .project({"x + y"})
@@ -804,8 +806,9 @@ TEST_F(PlanPrinterTest, unnest) {
   }
 
   {
+    context_.coercer = &velox::TypeCoercer::defaults();
     auto plan =
-        PlanBuilder(context_, /* enableCoercions */ true)
+        PlanBuilder(context_)
             .tableScan("test", {"a", "d", "e"})
             .unnest({Col("d").unnestAs("x"), Col("e").unnestAs("y", "z")})
             .project({"a + x", "x + y", "z"})
@@ -942,7 +945,8 @@ TEST_F(PlanPrinterTest, subquery) {
           .with({
               Col("a") + 1,
               Subquery(
-                  PlanBuilder(context, false, false, scope)
+                  PlanBuilder(
+                      context, /*allowAmbiguousOutputNames=*/false, scope)
                       .values(ROW({"a", "b"}, {INTEGER(), INTEGER()}), lookup)
                       .as("r")
                       .filter("l.a = r.a")
@@ -1003,7 +1007,8 @@ TEST_F(PlanPrinterTest, subquery) {
           .filter(
               Col("a") >
               Subquery(
-                  PlanBuilder(context, false, false, scope)
+                  PlanBuilder(
+                      context, /*allowAmbiguousOutputNames=*/false, scope)
                       .values(ROW({"a", "b"}, {INTEGER(), INTEGER()}), lookup)
                       .as("r")
                       .filter("l.a = r.a")
@@ -1069,7 +1074,8 @@ TEST_F(PlanPrinterTest, inSubquery) {
           .filter(In(
               Col("a"),
               Subquery(
-                  PlanBuilder(context, false, false, scope)
+                  PlanBuilder(
+                      context, /*allowAmbiguousOutputNames=*/false, scope)
                       .values(ROW({"a", "b"}, {INTEGER(), INTEGER()}), lookup)
                       .as("r")
                       .filter("l.a = r.a")
@@ -1133,7 +1139,7 @@ TEST_F(PlanPrinterTest, existsSubquery) {
           .as("l")
           .captureScope(scope)
           .filter(Exists(Subquery(
-              PlanBuilder(context, false, false, scope)
+              PlanBuilder(context, /*allowAmbiguousOutputNames=*/false, scope)
                   .values(ROW({"a", "b"}, {INTEGER(), INTEGER()}), lookup)
                   .as("r")
                   .filter("l.a = r.a")
@@ -1489,7 +1495,9 @@ TEST_F(PlanPrinterTest, coercions) {
       Variant::row({2, 20LL}),
   };
 
-  auto plan = PlanBuilder(/* enableCoersions */ true)
+  PlanBuilder::Context context;
+  context.coercer = &velox::TypeCoercer::defaults();
+  auto plan = PlanBuilder(context)
                   .values(rowType, data)
                   .map({"a * 0.5", "a + b"})
                   .build();

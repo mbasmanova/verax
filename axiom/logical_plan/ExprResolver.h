@@ -22,6 +22,7 @@
 #include "velox/expression/FunctionSignature.h"
 #include "velox/parse/Expressions.h"
 #include "velox/parse/PlanNodeIdGenerator.h"
+#include "velox/type/TypeCoercer.h"
 
 namespace facebook::axiom::logical_plan {
 
@@ -47,21 +48,21 @@ class ExprResolver {
       ExprPtr(const std::string& name, const std::vector<ExprPtr>& args)>;
 
   /// @param queryCtx Query context for constant folding.
-  /// @param enableCoercions Whether to apply implicit type coercions when
-  /// resolving function signatures.
+  /// @param coercer Coercion rule set used for implicit type conversions,
+  /// or nullptr to disable implicit coercions.
   /// @param hook Optional rewrite hook for special functions.
   /// @param pool Memory pool for constant folding evaluation.
   /// @param planNodeIdGenerator Plan node ID generator for subquery
   /// expressions.
   ExprResolver(
       std::shared_ptr<velox::core::QueryCtx> queryCtx,
-      bool enableCoercions,
+      const velox::TypeCoercer* coercer,
       FunctionRewriteHook hook = nullptr,
       std::shared_ptr<velox::memory::MemoryPool> pool = nullptr,
       std::shared_ptr<velox::core::PlanNodeIdGenerator> planNodeIdGenerator =
           nullptr)
       : queryCtx_(std::move(queryCtx)),
-        enableCoercions_{enableCoercions},
+        coercer_{coercer},
         hook_(std::move(hook)),
         pool_(std::move(pool)),
         planNodeIdGenerator_{std::move(planNodeIdGenerator)} {}
@@ -98,7 +99,8 @@ class ExprResolver {
   using ResolveWithCoercionsFunc = velox::TypePtr (*)(
       const std::string&,
       const std::vector<velox::TypePtr>&,
-      std::vector<velox::TypePtr>&);
+      std::vector<velox::TypePtr>&,
+      const velox::TypeCoercer&);
 
   struct ResolvedCall {
     std::string name;
@@ -159,7 +161,8 @@ class ExprResolver {
       const std::vector<ExprPtr>& inputs) const;
 
   std::shared_ptr<velox::core::QueryCtx> queryCtx_;
-  const bool enableCoercions_;
+  // Nullable: nullptr means implicit coercions are disabled.
+  const velox::TypeCoercer* coercer_;
   FunctionRewriteHook hook_;
   std::shared_ptr<velox::memory::MemoryPool> pool_;
   std::shared_ptr<velox::core::PlanNodeIdGenerator> planNodeIdGenerator_;

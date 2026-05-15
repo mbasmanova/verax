@@ -83,7 +83,9 @@ class PrecomputeProjectionTest : public ::testing::Test {
 };
 
 TEST_F(PrecomputeProjectionTest, basic) {
-  auto logicalPlan = lp::PlanBuilder{/*enableCoercions=*/true}
+  lp::PlanBuilder::Context context;
+  context.coercer = &velox::TypeCoercer::defaults();
+  auto logicalPlan = lp::PlanBuilder{context}
                          .values(
                              ROW({"a", "b", "c"}, INTEGER()),
                              {

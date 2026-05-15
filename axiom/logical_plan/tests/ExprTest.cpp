@@ -47,7 +47,7 @@ class ExprTest : public testing::Test {
 
   void testLooksConstant(const ExprApi& expr, bool expected) {
     auto resolved =
-        ExprResolver(nullptr, false)
+        ExprResolver(nullptr, nullptr)
             .resolveScalarTypes(expr.expr(), inputResolver(schema_));
     EXPECT_EQ(resolved->looksConstant(), expected);
   }
@@ -70,14 +70,14 @@ TEST_F(ExprTest, looksConstant) {
 TEST_F(ExprTest, aggregateExprDistinctOrderBy) {
   auto makeAggregate =
       [this](const ExprApi& expr, const std::vector<SortKey>& ordering = {}) {
-        return ExprResolver(nullptr, false)
+        return ExprResolver(nullptr, nullptr)
             .resolveAggregateTypes(
                 expr.expr(), inputResolver(schema_), nullptr, ordering, false);
       };
 
   auto makeDistinctAggregate =
       [this](const ExprApi& expr, const std::vector<SortKey>& ordering = {}) {
-        return ExprResolver(nullptr, false)
+        return ExprResolver(nullptr, nullptr)
             .resolveAggregateTypes(
                 expr.expr(), inputResolver(schema_), nullptr, ordering, true);
       };
@@ -128,7 +128,7 @@ TEST_F(ExprTest, aggregateExprDistinctOrderBy) {
 
 TEST_F(ExprTest, aggregateWithLambda) {
   auto makeAggregate = [this](const ExprApi& expr) {
-    return ExprResolver(nullptr, false)
+    return ExprResolver(nullptr, nullptr)
         .resolveAggregateTypes(
             expr.expr(), inputResolver(schema_), nullptr, {}, false);
   };
@@ -149,7 +149,7 @@ TEST_F(ExprTest, aggregateWithLambda) {
 
 TEST_F(ExprTest, aggregateWithLambdaEquality) {
   auto makeAggregate = [this](const ExprApi& expr) {
-    return ExprResolver(nullptr, false)
+    return ExprResolver(nullptr, nullptr)
         .resolveAggregateTypes(
             expr.expr(), inputResolver(schema_), nullptr, {}, false);
   };
@@ -185,7 +185,7 @@ TEST_F(ExprTest, aggregateWithLambdaCoercion) {
   auto schema = ROW({"a", "b"}, {BIGINT(), SMALLINT()});
 
   auto makeAggregate = [&](const ExprApi& expr) {
-    return ExprResolver(nullptr, true)
+    return ExprResolver(nullptr, &velox::TypeCoercer::defaults())
         .resolveAggregateTypes(
             expr.expr(), inputResolver(schema), nullptr, {}, false);
   };
@@ -211,7 +211,7 @@ TEST_F(ExprTest, aggregateWithLambdaCoercion) {
 
 TEST_F(ExprTest, aggregateWithLambdaUnknownFunction) {
   auto makeAggregate = [this](const ExprApi& expr) {
-    return ExprResolver(nullptr, false)
+    return ExprResolver(nullptr, nullptr)
         .resolveAggregateTypes(
             expr.expr(), inputResolver(schema_), nullptr, {}, false);
   };

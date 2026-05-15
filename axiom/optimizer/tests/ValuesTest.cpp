@@ -81,7 +81,9 @@ TEST_F(ValuesTest, complexTypes) {
 }
 
 TEST_F(ValuesTest, expressions) {
-  auto logicalPlan = lp::PlanBuilder(/*enableCoercions=*/true)
+  lp::PlanBuilder::Context context;
+  context.coercer = &velox::TypeCoercer::defaults();
+  auto logicalPlan = lp::PlanBuilder(context)
                          .values(
                              {"a", "b", "c"},
                              {

@@ -52,7 +52,7 @@ class ExprEqualityTest : public testing::Test {
   }
 
   ExprPtr resolve(const ExprApi& expr, const RowTypePtr& schema) {
-    return ExprResolver(nullptr, false)
+    return ExprResolver(nullptr, nullptr)
         .resolveScalarTypes(expr.expr(), inputResolver(schema));
   }
 
@@ -129,7 +129,7 @@ TEST_F(ExprEqualityTest, aggregate) {
                               const velox::core::ExprPtr& filter,
                               std::vector<SortKey> ordering,
                               bool distinct) {
-    return ExprResolver(nullptr, false)
+    return ExprResolver(nullptr, nullptr)
         .resolveAggregateTypes(
             expr.expr(), inputResolver(schema_), filter, ordering, distinct);
   };
@@ -213,7 +213,7 @@ TEST_F(ExprEqualityTest, window) {
 
   auto resolveWindow = [this](const ExprApi& expr) {
     VELOX_CHECK(expr.expr()->is(velox::core::IExpr::Kind::kWindow));
-    return ExprResolver(nullptr, false)
+    return ExprResolver(nullptr, nullptr)
         .resolveWindowTypes(
             *expr.expr()->as<velox::core::WindowCallExpr>(),
             inputResolver(schema_));

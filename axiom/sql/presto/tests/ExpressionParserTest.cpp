@@ -1000,11 +1000,13 @@ TEST_F(ExpressionParserTest, windowFunction) {
       "ntile(1) OVER (ORDER BY n_nationkey)",
       "ntile(CAST(1 AS BIGINT)) OVER (ORDER BY n_nationkey ASC NULLS LAST RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)");
 
-  // Aggregate as window function with coercion: corr expects (DOUBLE, DOUBLE),
-  // columns are BIGINT.
+  // Aggregate as window function with coercion: corr is registered for both
+  // (real, real) and (double, double); columns are BIGINT. Presto's coercer
+  // makes BIGINT -> REAL cheaper than BIGINT -> DOUBLE, so corr(real, real)
+  // wins.
   testNationExpr(
       "corr(n_nationkey, n_regionkey) OVER (ORDER BY n_nationkey)",
-      "corr(CAST(n_nationkey AS DOUBLE), CAST(n_regionkey AS DOUBLE)) OVER (ORDER BY n_nationkey ASC NULLS LAST RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)");
+      "corr(CAST(n_nationkey AS REAL), CAST(n_regionkey AS REAL)) OVER (ORDER BY n_nationkey ASC NULLS LAST RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)");
 }
 
 TEST_F(ExpressionParserTest, lambda) {
@@ -1021,6 +1023,11 @@ TEST_F(ExpressionParserTest, lambda) {
   // array_sort w/ comparator.
   ASSERT_NO_THROW(parseExpr(
       "array_sort(array[3, 1, 2], (x, y) -> IF(x < y, -1, IF(x > y, 1, 0)))"));
+}
+
+// Presto allows BIGINT -> REAL coercion: real / bigint returns REAL.
+TEST_F(ExpressionParserTest, bigintToRealCoercion) {
+  EXPECT_EQ(*REAL(), *parseExpr("real '1' / bigint '2'")->type());
 }
 
 } // namespace

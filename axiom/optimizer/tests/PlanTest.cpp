@@ -46,6 +46,12 @@ class PlanTest : public test::HiveQueriesTestBase {
   lp::PlanBuilder::Context makeContext() const {
     return lp::PlanBuilder::Context{kTestConnectorId, kDefaultSchema};
   }
+
+  lp::PlanBuilder::Context makeCoercingContext() const {
+    auto ctx = makeContext();
+    ctx.coercer = &velox::TypeCoercer::defaults();
+    return ctx;
+  }
 };
 
 TEST_F(PlanTest, dedupEmptyArrays) {
@@ -122,7 +128,8 @@ TEST_F(PlanTest, rejectedFilters) {
         kDefaultSchema,
         getQueryCtx(),
         test::resolveDfFunction);
-    return lp::PlanBuilder(ctx, /* enableCoersions */ true).tableScan("t");
+    ctx.coercer = &velox::TypeCoercer::defaults();
+    return lp::PlanBuilder(ctx).tableScan("t");
   };
 
   // SELECT a + 2 FROM t WHERE a > 10.
@@ -333,7 +340,7 @@ TEST_F(PlanTest, nullPropagation) {
 
   for (const auto& [expr, expected] : testCases) {
     SCOPED_TRACE("Expression: " + expr);
-    auto logicalPlan = lp::PlanBuilder(makeContext(), /*enableCoercions=*/true)
+    auto logicalPlan = lp::PlanBuilder(makeCoercingContext())
                            .tableScan("t")
                            .project({expr, "a", "b"})
                            .build();
@@ -973,7 +980,7 @@ TEST_F(PlanTest, parallelCse) {
 
   {
     auto logicalPlan =
-        lp::PlanBuilder(makeContext(), /* enableCoercions */ true)
+        lp::PlanBuilder(makeCoercingContext())
             .tableScan("t", {"a", "b", "c"})
             .map({"a + b + c as x"})
             .map({
@@ -995,7 +1002,7 @@ TEST_F(PlanTest, parallelCse) {
 
   {
     auto logicalPlan =
-        lp::PlanBuilder(makeContext(), /* enableCoercions */ true)
+        lp::PlanBuilder(makeCoercingContext())
             .tableScan("t", {"a", "b", "c"})
             .with({"a + b as ab"})
             .with({"ab + c as x"})

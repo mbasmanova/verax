@@ -64,7 +64,7 @@ class ExprSerdeTest : public testing::Test {
 
   // Resolves an ExprApi expression to an Expr using a schema for column types.
   ExprPtr resolve(const ExprApi& expr, velox::RowTypePtr schema) {
-    ExprResolver resolver(/*queryCtx=*/nullptr, /*enableCoercions=*/false);
+    ExprResolver resolver(/*queryCtx=*/nullptr, /*coercer=*/nullptr);
     return resolver.resolveScalarTypes(
         expr.expr(),
         [&schema](const std::optional<std::string>&, const std::string& name)
@@ -78,7 +78,7 @@ class ExprSerdeTest : public testing::Test {
   // types.
   ExprPtr resolveWindow(const ExprApi& expr, velox::RowTypePtr schema) {
     VELOX_CHECK(expr.expr()->is(velox::core::IExpr::Kind::kWindow));
-    ExprResolver resolver(/*queryCtx=*/nullptr, /*enableCoercions=*/false);
+    ExprResolver resolver(/*queryCtx=*/nullptr, /*coercer=*/nullptr);
     return resolver.resolveWindowTypes(
         *expr.expr()->as<velox::core::WindowCallExpr>(),
         [&schema](const std::optional<std::string>&, const std::string& name)

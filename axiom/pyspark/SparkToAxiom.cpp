@@ -112,7 +112,10 @@ velox::TypePtr resolveFunction(
     const std::vector<velox::TypePtr>& paramTypes,
     std::vector<velox::TypePtr>& coercions) {
   if (auto returnType = velox::resolveFunctionWithCoercions(
-          functionName, paramTypes, coercions)) {
+          functionName,
+          paramTypes,
+          coercions,
+          velox::TypeCoercer::defaults())) {
     return returnType;
   }
 

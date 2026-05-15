@@ -83,10 +83,7 @@ TEST_F(PlanBuilderTest, ambiguousOutputNamesFullOverlap) {
   PlanBuilder::Context context;
 
   auto buildValues = [&](const std::string& alias) {
-    return PlanBuilder(
-               context,
-               /*enableCoercions=*/false,
-               /*allowAmbiguousOutputNames=*/true)
+    return PlanBuilder(context, /*allowAmbiguousOutputNames=*/true)
         .values(ROW({"a", "b"}, BIGINT()), ValuesNode::Variants{})
         .as(alias);
   };
@@ -115,10 +112,7 @@ TEST_F(PlanBuilderTest, ambiguousOutputNamesPartialOverlap) {
   PlanBuilder::Context context;
 
   auto buildValues = [&](const std::string& alias) {
-    return PlanBuilder(
-               context,
-               /*enableCoercions=*/false,
-               /*allowAmbiguousOutputNames=*/true)
+    return PlanBuilder(context, /*allowAmbiguousOutputNames=*/true)
         .values(ROW({"a", "b"}, BIGINT()), ValuesNode::Variants{})
         .as(alias);
   };
@@ -154,10 +148,7 @@ TEST_F(PlanBuilderTest, duplicateAliasAllowed) {
   PlanBuilder::Context context;
 
   auto makeBuilder = [&context]() {
-    return PlanBuilder(
-        context,
-        /*enableCoercions=*/false,
-        /*allowAmbiguousOutputNames=*/true);
+    return PlanBuilder(context, /*allowAmbiguousOutputNames=*/true);
   };
 
   // Project: duplicate aliases get unique physical names.
@@ -230,10 +221,7 @@ TEST_F(PlanBuilderTest, emptyAliasAllowed) {
   PlanBuilder::Context context;
 
   auto makeValues = [&context](const RowTypePtr& rowType) {
-    return PlanBuilder(
-               context,
-               /*enableCoercions=*/false,
-               /*allowAmbiguousOutputNames=*/true)
+    return PlanBuilder(context, /*allowAmbiguousOutputNames=*/true)
         .values(rowType, ValuesNode::Variants{});
   };
 
@@ -301,7 +289,8 @@ TEST_F(PlanBuilderTest, setOperationTypeCoercion) {
   // (INTEGER, REAL) + (BIGINT, DOUBLE) -> (BIGINT, DOUBLE)
   {
     PlanBuilder::Context context;
-    auto plan = PlanBuilder(context, /*enableCoercions=*/true)
+    context.coercer = &velox::TypeCoercer::defaults();
+    auto plan = PlanBuilder(context)
                     .setOperation(
                         SetOperation::kUnionAll,
                         {
@@ -323,7 +312,8 @@ TEST_F(PlanBuilderTest, setOperationTypeCoercion) {
   // Same types stay the same. No project nodes needed.
   {
     PlanBuilder::Context context;
-    auto plan = PlanBuilder(context, /*enableCoercions=*/true)
+    context.coercer = &velox::TypeCoercer::defaults();
+    auto plan = PlanBuilder(context)
                     .setOperation(
                         SetOperation::kUnionAll,
                         {
@@ -344,8 +334,9 @@ TEST_F(PlanBuilderTest, setOperationTypeCoercion) {
   // Incompatible types fail.
   {
     PlanBuilder::Context context;
+    context.coercer = &velox::TypeCoercer::defaults();
     VELOX_ASSERT_THROW(
-        PlanBuilder(context, /*enableCoercions=*/true)
+        PlanBuilder(context)
             .setOperation(
                 SetOperation::kUnionAll,
                 {
@@ -360,7 +351,7 @@ TEST_F(PlanBuilderTest, setOperationTypeCoercion) {
   {
     PlanBuilder::Context context;
     VELOX_ASSERT_THROW(
-        PlanBuilder(context, /*enableCoercions=*/false)
+        PlanBuilder(context)
             .setOperation(
                 SetOperation::kUnionAll,
                 {
@@ -379,8 +370,10 @@ TEST_F(PlanBuilderTest, joinUsingTypeCoercion) {
                          const velox::RowTypePtr& leftType,
                          const velox::RowTypePtr& rightType,
                          bool enableCoercions = true) {
-    auto left = PlanBuilder(context, enableCoercions)
-                    .values(leftType, ValuesNode::Variants{});
+    if (enableCoercions) {
+      context.coercer = &velox::TypeCoercer::defaults();
+    }
+    auto left = PlanBuilder(context).values(leftType, ValuesNode::Variants{});
     auto right = PlanBuilder(context).values(rightType, ValuesNode::Variants{});
     return std::make_pair(std::move(left), std::move(right));
   };
@@ -675,7 +668,10 @@ LogicalPlanNodePtr buildValues(
     const std::vector<std::vector<std::string>>& rows,
     bool enableCoercions = true) {
   PlanBuilder::Context context;
-  return PlanBuilder(context, enableCoercions).values(columns, rows).build();
+  if (enableCoercions) {
+    context.coercer = &velox::TypeCoercer::defaults();
+  }
+  return PlanBuilder(context).values(columns, rows).build();
 }
 } // namespace
 

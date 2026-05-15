@@ -169,7 +169,7 @@ PlanBuilder& PlanBuilder::values(
     }
   }
 
-  if (enableCoercions_) {
+  if (coercer_ != nullptr) {
     for (auto i = 1; i < numRows; ++i) {
       for (auto j = 0; j < numColumns; ++j) {
         const auto& colType = exprs[i][j]->type();
@@ -177,8 +177,7 @@ PlanBuilder& PlanBuilder::values(
           continue;
         }
 
-        auto common =
-            velox::TypeCoercer::leastCommonSuperType(types[j], colType);
+        auto common = coercer_->leastCommonSuperType(types[j], colType);
         VELOX_USER_CHECK_NOT_NULL(
             common,
             "Incompatible types in VALUES row {}, column {}: expected {}, got {}",
@@ -1296,7 +1295,7 @@ std::vector<velox::TypePtr> PlanBuilder::computeCommonTypes(
       continue;
     }
 
-    if (!enableCoercions_) {
+    if (coercer_ == nullptr) {
       VELOX_USER_FAIL(
           "USING column has different types on left and right sides of the join: ({} vs {}) for {}",
           leftColumnType->toString(),
@@ -1304,8 +1303,8 @@ std::vector<velox::TypePtr> PlanBuilder::computeCommonTypes(
           column.name);
     }
 
-    auto commonType = velox::TypeCoercer::leastCommonSuperType(
-        leftColumnType, rightColumnType);
+    auto commonType =
+        coercer_->leastCommonSuperType(leftColumnType, rightColumnType);
     VELOX_USER_CHECK_NOT_NULL(
         commonType,
         "USING column has incompatible types on left and right sides of the join: ({} vs {}) for {}",
@@ -1468,7 +1467,7 @@ PlanBuilder& PlanBuilder::setOperation(
 void PlanBuilder::setOperationImpl(
     SetOperation op,
     std::vector<LogicalPlanNodePtr> nodes) {
-  if (enableCoercions_) {
+  if (coercer_ != nullptr) {
     // Apply type coercion: find common supertype for each column.
     const auto firstRowType = nodes[0]->outputType();
     auto targetTypes = firstRowType->children();
@@ -1489,8 +1488,7 @@ void PlanBuilder::setOperationImpl(
           continue;
         }
 
-        auto commonType =
-            velox::TypeCoercer::leastCommonSuperType(currentType, nextType);
+        auto commonType = coercer_->leastCommonSuperType(currentType, nextType);
         VELOX_USER_CHECK_NOT_NULL(
             commonType,
             "Output schemas of all inputs to a Set operation must match: {} vs. {} at {}.{}",
@@ -1633,8 +1631,7 @@ PlanBuilder& PlanBuilder::tableWrite(
       const auto& schemaType = schema->childAt(index.value());
 
       if (!schemaType->equivalent(*inputType)) {
-        if (enableCoercions_ &&
-            velox::TypeCoercer::coercible(inputType, schemaType)) {
+        if (coercer_ != nullptr && coercer_->coercible(inputType, schemaType)) {
           columnExpressions[i] =
               applyCoercion(columnExpressions[i], schemaType);
         } else {
@@ -1713,8 +1710,8 @@ PlanBuilder& PlanBuilder::sample(
   auto expr = resolveScalarTypes(percentage.expr());
 
   if (!expr->type()->isDouble()) {
-    if (enableCoercions_) {
-      if (velox::TypeCoercer::coercible(expr->type(), velox::DOUBLE())) {
+    if (coercer_ != nullptr) {
+      if (coercer_->coercible(expr->type(), velox::DOUBLE())) {
         expr = applyCoercion(expr, velox::DOUBLE());
       } else {
         VELOX_USER_FAIL(

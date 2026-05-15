@@ -102,10 +102,12 @@ class ThrowingSqlExpressionsParser : public velox::parse::SqlExpressionsParser {
 ///           JoinType::kInner)
 ///     .build();
 ///
-/// Set 'enableCoercions' to true to automatically insert implicit CASTs when
-/// expression types don't match (e.g. INTEGER + BIGINT). Set Context.queryCtx
-/// to enable constant folding, i.e. evaluating constant expressions at
-/// plan-build time (e.g. 1 + 2 becomes 3).
+/// Set Context.coercer to a non-null TypeCoercer (e.g.
+/// velox::TypeCoercer::defaults() or a dialect coercer) to automatically
+/// insert implicit CASTs when expression types don't match
+/// (e.g. INTEGER + BIGINT). Set Context.queryCtx to enable constant folding,
+/// i.e. evaluating constant expressions at plan-build time
+/// (e.g. 1 + 2 becomes 3).
 class PlanBuilder {
  public:
   /// Shared state across PlanBuilder instances. Pass the same Context to
@@ -139,6 +141,12 @@ class PlanBuilder {
     /// Automatically derived from queryCtx.
     std::shared_ptr<velox::memory::MemoryPool> pool;
 
+    /// Coercion rule set used during planning to resolve function overloads
+    /// and special-form result types when argument types don't match
+    /// exactly, or nullptr to disable implicit coercions. SQL parsers
+    /// override this with their dialect's coercer.
+    const velox::TypeCoercer* coercer{nullptr};
+
     explicit Context(
         const std::optional<std::string>& defaultConnectorId = std::nullopt,
         const std::optional<std::string>& defaultSchema = std::nullopt,
@@ -146,7 +154,8 @@ class PlanBuilder {
         ExprResolver::FunctionRewriteHook hook = nullptr,
         std::shared_ptr<velox::parse::SqlExpressionsParser> sqlParser =
             std::make_shared<velox::parse::DuckSqlExpressionsParser>(
-                velox::parse::ParseOptions{.parseInListAsArray = false}))
+                velox::parse::ParseOptions{.parseInListAsArray = false}),
+        const velox::TypeCoercer* coercer = nullptr)
         : defaultConnectorId{defaultConnectorId},
           defaultSchema{defaultSchema},
           sqlParser{std::move(sqlParser)},
@@ -158,7 +167,8 @@ class PlanBuilder {
           pool{
               queryCtx && queryCtx->pool()
                   ? queryCtx->pool()->addLeafChild("literals")
-                  : nullptr} {}
+                  : nullptr},
+          coercer{coercer} {}
   };
 
   /// Resolves a column reference from an outer query scope. Used to support
@@ -168,16 +178,15 @@ class PlanBuilder {
       const std::optional<std::string>& alias,
       const std::string& name)>;
 
-  explicit PlanBuilder(bool enableCoercions = false, Scope outerScope = nullptr)
+  explicit PlanBuilder(Scope outerScope = nullptr)
       : PlanBuilder{
             Context{},
-            enableCoercions,
             /*allowAmbiguousOutputNames=*/false,
             std::move(outerScope)} {}
 
-  /// @param context Shared state for plan-node IDs and column names.
-  /// @param enableCoercions When true, inserts implicit CASTs for mismatched
-  ///     types.
+  /// @param context Shared state for plan-node IDs and column names. Set
+  ///     context.coercer to a non-null TypeCoercer to enable implicit
+  ///     CASTs for mismatched types.
   /// @param allowAmbiguousOutputNames When true, allows duplicate and empty
   ///     column names within a single operation (project, aggregate, unnest)
   ///     and creates an OutputNode in build() that preserves these ambiguous
@@ -190,7 +199,6 @@ class PlanBuilder {
   ///     correlated subqueries.
   explicit PlanBuilder(
       const Context& context,
-      bool enableCoercions = false,
       bool allowAmbiguousOutputNames = false,
       Scope outerScope = nullptr)
       : defaultConnectorId_{context.defaultConnectorId},
@@ -199,11 +207,11 @@ class PlanBuilder {
         nameAllocator_{context.nameAllocator},
         outerScope_{std::move(outerScope)},
         sqlParser_{context.sqlParser},
-        enableCoercions_{enableCoercions},
         allowAmbiguousOutputNames_{allowAmbiguousOutputNames},
+        coercer_{context.coercer},
         resolver_{
             context.queryCtx,
-            enableCoercions,
+            context.coercer,
             context.hook,
             context.pool,
             context.planNodeIdGenerator} {
@@ -841,9 +849,13 @@ class PlanBuilder {
   // Parses SQL expression strings into Velox expression trees.
   const std::shared_ptr<velox::parse::SqlExpressionsParser> sqlParser_;
 
-  // When true, inserts implicit CAST nodes to coerce mismatched types.
-  const bool enableCoercions_;
   const bool allowAmbiguousOutputNames_;
+
+  // Coercion rule set used during planning, or nullptr to disable implicit
+  // coercions. The referenced TypeCoercer must outlive this PlanBuilder;
+  // in practice it's a static singleton (TypeCoercer::defaults() or a
+  // dialect's coercer).
+  const velox::TypeCoercer* coercer_;
 
   // Root of the plan tree built so far. Null before the first leaf node
   // (values or tableScan) is added.
