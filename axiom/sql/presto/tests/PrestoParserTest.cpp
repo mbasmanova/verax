@@ -465,6 +465,18 @@ TEST_F(PrestoParserTest, withMultipleCtes) {
       matchScan().project().output({"n_nationkey", "n_name"}));
 }
 
+TEST_F(PrestoParserTest, withColumnAliases) {
+  auto matcher =
+      lp::test::LogicalPlanMatcherBuilder().values().project().project().output(
+          {"a", "b"});
+  testSelect("WITH t(a, b) AS (VALUES (1, 'x')) SELECT a, b FROM t", matcher);
+
+  // Mismatched alias-list size is rejected.
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      parseSql("WITH t(a, b) AS (VALUES (1)) SELECT * FROM t"),
+      "Column alias list size does not match the number of output columns");
+}
+
 TEST_F(PrestoParserTest, withReferencedMultipleTimes) {
   // Same CTE referenced twice in a JOIN.
   auto matcher = matchScan()
