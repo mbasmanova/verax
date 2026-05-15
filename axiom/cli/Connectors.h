@@ -18,7 +18,10 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
+
+#include <folly/container/F14Map.h>
 
 #include "axiom/connectors/system/SystemConnector.h"
 #include "folly/executors/IOThreadPoolExecutor.h"
@@ -71,6 +74,23 @@ class Connectors {
       const std::string& dataFormat,
       const std::string& connectorId = kLocalHiveConnectorId);
 
+  /// Registers a connector from configuration properties.
+  ///
+  /// Delegates to specific registration helpers for each supported connector
+  /// implementation. For example:
+  /// - `tpch` uses registerTpchConnector
+  /// - `hive` uses registerLocalHiveConnector
+  /// - `test` uses registerTestConnector
+  ///
+  /// The `connectorConfig` provides connector-specific properties; for Hive,
+  /// this typically includes hive_local_data_path and optionally
+  /// hive_local_file_format. The `connectorId` is the catalog name used to
+  /// reference this connector in queries.
+  std::shared_ptr<velox::connector::Connector> registerConnector(
+      std::string_view connectorName,
+      const folly::F14FastMap<std::string, std::string>& connectorConfig,
+      const std::string& connectorId);
+
   /// Registers an in-memory test connector under `connectorId`.
   std::shared_ptr<velox::connector::Connector> registerTestConnector(
       const std::string& connectorId = kTestConnectorId);
@@ -97,7 +117,7 @@ class Connectors {
       const std::shared_ptr<velox::connector::Connector>& connector);
 
   // Unregister these on destruction.
-  std::vector<std::string> connectorIds_{};
+  std::vector<std::string> connectorIds_;
 
  private:
   static std::shared_ptr<folly::IOThreadPoolExecutor> getSharedIoExecutor();
