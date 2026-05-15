@@ -789,7 +789,7 @@ lp::ExprApi ExpressionPlanner::toExpr(const ExpressionPtr& node) {
       std::vector<std::string> names;
       names.reserve(lambda->arguments().size());
       for (const auto& arg : lambda->arguments()) {
-        names.emplace_back(arg->name()->value());
+        names.emplace_back(canonicalizeName(arg->name()->value()));
       }
 
       return lp::Lambda(names, toExpr(lambda->body()));
