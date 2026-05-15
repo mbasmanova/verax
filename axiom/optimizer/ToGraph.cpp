@@ -1140,6 +1140,15 @@ ExprCP ToGraph::translateWindowExpr(const lp::WindowExpr& window) {
   frame.endType = lpFrame.endType;
   frame.endValue = lpFrame.endValue ? translateExpr(lpFrame.endValue) : nullptr;
 
+  // If ORDER BY was fully pruned (all keys overlapped with PARTITION BY),
+  // a frame end of CURRENT ROW (the default with ORDER BY) is meaningless --
+  // there is no ordering to define "current". Normalize to the no-ORDER-BY
+  // default of UNBOUNDED FOLLOWING (entire partition).
+  if (filteredOrderKeys.empty() && !orderKeys.empty() &&
+      frame.endType == lp::WindowExpr::BoundType::kCurrentRow) {
+    frame.endType = lp::WindowExpr::BoundType::kUnboundedFollowing;
+  }
+
   auto callName = toName(window.name());
   // Window functions are non-deterministic and have non-default null behavior.
   funcs = funcs | FunctionSet::kNonDeterministic |

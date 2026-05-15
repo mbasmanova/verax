@@ -73,11 +73,22 @@ SELECT a, sum(b) FROM t GROUP BY a ORDER BY row_number() OVER (ORDER BY a)
 -- Subquery with window function and outer filter.
 SELECT * FROM (SELECT a, b, row_number() OVER (PARTITION BY a ORDER BY b) AS rn FROM t) WHERE rn = 1
 ----
+-- Outer SELECT projects only the ranking column.
+SELECT rn FROM (SELECT a, b, row_number() OVER (PARTITION BY a ORDER BY b) AS rn FROM t) WHERE rn = 1
+----
 -- Filter on ranking function output (rn <= N).
 SELECT * FROM (SELECT a, b, row_number() OVER (PARTITION BY a ORDER BY b) AS rn FROM t) WHERE rn <= 1
 ----
 -- Filter on ranking function output (rn > N).
 SELECT a, b FROM (SELECT a, b, row_number() OVER (PARTITION BY a ORDER BY b) AS rn FROM t) WHERE rn > 1
+----
+-- dense_rank with ORDER BY column also in PARTITION BY + ranking filter. The
+-- ORDER BY is redundant (constant within partition), so dense_rank is always
+-- 1 and 'dr = 1' matches every row.
+SELECT a, b FROM (SELECT a, b, dense_rank() OVER (PARTITION BY a, b ORDER BY a) AS dr FROM t) WHERE dr = 1
+----
+-- Same as above but with rank().
+SELECT a, b FROM (SELECT a, b, rank() OVER (PARTITION BY a, b ORDER BY a) AS r FROM t) WHERE r = 1
 ----
 -- Window function combined with ORDER BY and LIMIT.
 -- ordered
