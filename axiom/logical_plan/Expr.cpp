@@ -676,10 +676,11 @@ SpecialFormExpr::SpecialFormExpr(
           SpecialFormName::toName(form));
 
       for (const auto& input : inputs_) {
-        VELOX_USER_CHECK_EQ(
-            input->type()->kind(),
-            velox::TypeKind::BOOLEAN,
-            "All inputs to AND and OR must be boolean");
+        VELOX_USER_CHECK(
+            input->type()->kind() == velox::TypeKind::BOOLEAN ||
+                input->type()->kind() == velox::TypeKind::UNKNOWN,
+            "All inputs to AND and OR must be boolean, but got {}",
+            input->type()->toString());
       }
       break;
     case SpecialForm::kCast:
