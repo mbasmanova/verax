@@ -245,17 +245,25 @@ class RelationPlanner : public AstVisitor {
       const std::function<std::shared_ptr<axiom::sql::presto::Statement>(
           std::string_view /*sql*/)>& parseSql,
       bool friendlySql = true)
-      : context_{
-          defaultConnectorId,
-          defaultSchema,
-          /*queryCtxPtr=*/nullptr,
-          /*hook=*/nullptr,
-          std::make_shared<lp::ThrowingSqlExpressionsParser>(),
-          &::facebook::velox::functions::prestosql::typeCoercer()},
+      : context_{makePrestoContext(defaultConnectorId, defaultSchema)},
         defaultSchema_{defaultSchema},
         parseSql_{parseSql},
         builder_(newBuilder()),
         friendlySql_{friendlySql} {}
+
+  static lp::PlanBuilder::Context makePrestoContext(
+      const std::string& defaultConnectorId,
+      const std::string& defaultSchema) {
+    lp::PlanBuilder::Context ctx{
+        defaultConnectorId,
+        defaultSchema,
+        /*queryCtxPtr=*/nullptr,
+        /*hook=*/nullptr,
+        std::make_shared<lp::ThrowingSqlExpressionsParser>(),
+        &::facebook::velox::functions::prestosql::typeCoercer()};
+    ctx.identifierCanonicalizer = &canonicalizeName;
+    return ctx;
+  }
 
   lp::LogicalPlanNodePtr plan() {
     return builder_->build();
