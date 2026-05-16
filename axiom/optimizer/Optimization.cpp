@@ -1144,11 +1144,12 @@ void Optimization::addPostprocess(
       VELOX_CHECK(found, "outputColumn not in columns: {}", column->toString());
     }
 
+    auto& projectInput = maybeDropProject(plan);
     plan = make<Project>(
-        maybeDropProject(plan),
+        projectInput,
         outputExprs,
         *dt->outputColumns,
-        Project::isRedundant(plan, outputExprs, *dt->outputColumns));
+        Project::isRedundant(projectInput, outputExprs, *dt->outputColumns));
   }
 
   if (!limitConsumedByWindow && !dt->hasOrderBy() &&

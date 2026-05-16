@@ -1925,56 +1925,81 @@ bool isRankingFunction(Name name, const FunctionNames& names) {
       name == names.denseRank;
 }
 
-// Extracts the ranking limit from a predicate of the form column <= N,
-// column < N, or column = 1, where 'windowColumn' is the output of
-// 'windowFunction' which must be a ranking function (row_number, rank, or
-// dense_rank). Returns std::nullopt if the predicate does not match.
-std::optional<int32_t> extractRankingLimit(
+// Result of analyzing a predicate against a ranking window function output.
+struct RankingPredicate {
+  enum class Kind {
+    // Predicate does not match a ranking upper-bound shape.
+    kNotRanking,
+    // Predicate is a ranking upper bound; absorb as TopN limit.
+    kAbsorbAsLimit,
+    // Predicate is a ranking upper bound on rank()/dense_rank() with no
+    // effective ORDER BY -- rank is always 1 and the predicate is
+    // tautological. Drop the predicate.
+    kTautological,
+  };
+
+  Kind kind{Kind::kNotRanking};
+  int32_t limit{0}; // Only valid for kAbsorbAsLimit.
+};
+
+// Analyzes a predicate of the form column <= N, column < N, or column = 1,
+// where 'windowColumn' is the output of 'windowFunction' which must be a
+// ranking function (row_number, rank, or dense_rank).
+RankingPredicate analyzeRankingPredicate(
     ExprCP expr,
     const FunctionNames& names,
     ColumnCP windowColumn,
     WindowFunctionCP windowFunction) {
   if (!expr->is(PlanType::kCallExpr)) {
-    return std::nullopt;
+    return {};
   }
 
   const auto* call = expr->as<Call>();
   const auto& args = call->args();
   if (args.size() != 2 || args[0] != windowColumn ||
       !args[1]->is(PlanType::kLiteralExpr)) {
-    return std::nullopt;
+    return {};
   }
 
   if (!isRankingFunction(windowFunction->name(), names)) {
-    return std::nullopt;
+    return {};
   }
 
   const auto& literal = args[1];
   const auto& literalType = literal->value().type;
   if (!literalType->isTinyint() && !literalType->isSmallint() &&
       !literalType->isInteger() && !literalType->isBigint()) {
-    return std::nullopt;
+    return {};
   }
 
   auto value = integerValue(&literal->as<Literal>()->literal());
   auto callName = call->name();
+  std::optional<int32_t> limit;
   // ranking_func() <= N → limit = N. Valid when N > 0.
   if (callName == names.lte && value > 0) {
-    return static_cast<int32_t>(value);
+    limit = static_cast<int32_t>(value);
+  } else if (callName == names.lt && value > 1) {
+    // ranking_func() < N → limit = N - 1. Valid when N > 1.
+    limit = static_cast<int32_t>(value - 1);
+  } else if (callName == names.equality && value == 1) {
+    // ranking_func() = 1 → limit = 1. TopNRowNumber returns rows 1..limit,
+    // so = N for N > 1 cannot be converted to a limit.
+    limit = 1;
   }
 
-  // ranking_func() < N → limit = N - 1. Valid when N > 1.
-  if (callName == names.lt && value > 1) {
-    return static_cast<int32_t>(value - 1);
+  if (!limit.has_value()) {
+    return {};
   }
 
-  // ranking_func() = 1 → limit = 1. TopNRowNumber returns rows 1..limit,
-  // so = N for N > 1 cannot be converted to a limit.
-  if (callName == names.equality && value == 1) {
-    return 1;
+  // For rank() / dense_rank(), if the effective ORDER BY is empty (all rows
+  // in a partition tie), the rank is always 1 and the upper-bound predicate
+  // matches every row. Drop it as tautological.
+  if (windowFunction->orderKeys().empty() &&
+      windowFunction->name() != names.rowNumber) {
+    return {RankingPredicate::Kind::kTautological, 0};
   }
 
-  return std::nullopt;
+  return {RankingPredicate::Kind::kAbsorbAsLimit, *limit};
 }
 
 } // namespace
@@ -2134,13 +2159,20 @@ bool DerivedTable::addFilter(ExprCP conjunct) {
       if (windowPlan->functions().size() == 1 &&
           imported->columns().size() == 1 &&
           imported->columns().contains(windowPlan->columns()[0])) {
-        if (auto rankingLimit = extractRankingLimit(
-                imported,
-                queryCtx()->functionNames(),
-                windowPlan->columns()[0],
-                windowPlan->functions()[0])) {
-          windowPlan = windowPlan->withRankingLimit(*rankingLimit);
-          return true;
+        auto result = analyzeRankingPredicate(
+            imported,
+            queryCtx()->functionNames(),
+            windowPlan->columns()[0],
+            windowPlan->functions()[0]);
+        switch (result.kind) {
+          case RankingPredicate::Kind::kAbsorbAsLimit:
+            windowPlan = windowPlan->withRankingLimit(result.limit);
+            return true;
+          case RankingPredicate::Kind::kTautological:
+            // Predicate is true for every row; drop it.
+            return true;
+          case RankingPredicate::Kind::kNotRanking:
+            break;
         }
       }
       return false;
