@@ -1029,6 +1029,19 @@ TEST_F(ExpressionParserTest, lambda) {
       parseExpr("reduce(array[1,2,3], 0, (x, fooBar) -> x + fooBar, s -> s)"));
 }
 
+// A lambda parameter named like an outer table alias shadows the alias
+// inside the lambda body: 'x.a' resolves to the field 'a' of the lambda
+// parameter 'x' (a ROW), not to the outer table's column 'a'.
+TEST_F(ExpressionParserTest, lambdaParameterShadowsTableAlias) {
+  connector_->addTable(
+      "t",
+      ROW({"a", "b"}, {ARRAY(BIGINT()), ARRAY(ROW("a", ARRAY(BIGINT())))}));
+
+  testSelect(
+      "SELECT FILTER(x.b, x -> x.a IS NOT NULL) FROM t x GROUP BY x.b",
+      matchScan().aggregate().project().output());
+}
+
 // Presto allows BIGINT -> REAL coercion: real / bigint returns REAL.
 TEST_F(ExpressionParserTest, bigintToRealCoercion) {
   EXPECT_EQ(*REAL(), *parseExpr("real '1' / bigint '2'")->type());
