@@ -277,7 +277,12 @@ TypePtr parseType(const TypeSignaturePtr& type) {
   }
 
   std::vector<TypeParameter> parameters;
-  if (!type->parameters().empty()) {
+  if (baseName == "DECIMAL" && type->parameters().empty()) {
+    // DECIMAL without explicit precision/scale defaults to DECIMAL(38, 0),
+    // matching Presto's behavior.
+    parameters.emplace_back(static_cast<int32_t>(38));
+    parameters.emplace_back(static_cast<int32_t>(0));
+  } else if (!type->parameters().empty()) {
     const auto numParams = type->parameters().size();
     parameters.reserve(numParams);
 
