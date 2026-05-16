@@ -161,10 +161,7 @@ TEST_F(SortParserTest, nonSelectedColumn) {
     projections.insert(
         projections.end(), extraColumns.begin(), extraColumns.end());
 
-    auto builder = lp::test::LogicalPlanMatcherBuilder()
-                       .tableScan()
-                       .project(projections)
-                       .sort(sortKeys);
+    auto builder = matchScan().project(projections).sort(sortKeys);
 
     if (!extraColumns.empty()) {
       builder.project({"b", "a", "product", "x"});
@@ -194,8 +191,7 @@ TEST_F(SortParserTest, ambiguousAlias) {
 
   testSelect(
       "SELECT a as b, b FROM t ORDER BY c",
-      lp::test::LogicalPlanMatcherBuilder()
-          .tableScan()
+      matchScan()
           .project({"a as first_b", "b as second_b", "c"})
           .sort({"c"})
           .project({"first_b", "second_b"})
@@ -203,27 +199,45 @@ TEST_F(SortParserTest, ambiguousAlias) {
 
   testSelect(
       "SELECT a as b, b FROM t ORDER BY 1",
-      lp::test::LogicalPlanMatcherBuilder()
-          .tableScan()
+      matchScan()
           .project({"a as first_b", "b as second_b"})
           .sort({"first_b"})
           .output({"b", "b"}));
 
   testSelect(
       "SELECT a as b, b FROM t ORDER BY 2",
-      lp::test::LogicalPlanMatcherBuilder()
-          .tableScan()
+      matchScan()
           .project({"a as first_b", "b as second_b"})
           .sort({"second_b"})
           .output({"b", "b"}));
 
   testSelect(
       "SELECT a as b FROM t ORDER BY b",
-      lp::test::LogicalPlanMatcherBuilder()
-          .tableScan()
-          .project({"a as b"})
-          .sort({"b"})
-          .output({"b"}));
+      matchScan().project({"a as b"}).sort({"b"}).output({"b"}));
+
+  // SELECT entries that share an output name but project the same
+  // expression are not ambiguous: ORDER BY on the shared name resolves to
+  // the common expression. Works with a bare column, with a qualified
+  // column, with an expression, and with duplicates mixed with unique
+  // columns.
+  testSelect(
+      "SELECT a, a FROM t ORDER BY a",
+      matchScan().project({"a", "a as a_0"}).sort({"a"}).output({"a", "a"}));
+
+  testSelect(
+      "SELECT t.a, t.a FROM t ORDER BY t.a",
+      matchScan().project({"a", "a as a_0"}).sort({"a"}).output({"a", "a"}));
+
+  testSelect(
+      "SELECT a + 1, a + 1 FROM t ORDER BY a + 1",
+      matchScan().project().sort().output());
+
+  testSelect(
+      "SELECT a, b, a FROM t ORDER BY a",
+      matchScan()
+          .project({"a", "b", "a as a_0"})
+          .sort({"a"})
+          .output({"a", "b", "a"}));
 }
 
 TEST_F(SortParserTest, star) {
@@ -231,8 +245,7 @@ TEST_F(SortParserTest, star) {
 
   testSelect(
       "SELECT * FROM t ORDER BY 1, 3, e, f, a + c",
-      lp::test::LogicalPlanMatcherBuilder()
-          .tableScan()
+      matchScan()
           .sort({"a", "c", "e", "f", "a + c"})
           .output({"a", "b", "c", "d", "e", "f"}));
 }
@@ -244,8 +257,7 @@ TEST_F(SortParserTest, starWithHiddenColumn) {
   lp::LogicalPlanNodePtr outputNode;
   testSelect(
       "SELECT * FROM t ORDER BY \"$path\"",
-      lp::test::LogicalPlanMatcherBuilder()
-          .tableScan()
+      matchScan()
           .sort({"\"$path\""})
           .project([&](const auto& node) { outputNode = node; })
           .output({"a", "b"}));
@@ -260,9 +272,8 @@ TEST_F(SortParserTest, joinedTable) {
       "FROM nation, region "
       "WHERE n_regionkey = r_regionkey "
       "ORDER BY r_name",
-      lp::test::LogicalPlanMatcherBuilder()
-          .tableScan()
-          .join(lp::test::LogicalPlanMatcherBuilder().tableScan().build())
+      matchScan()
+          .join(matchScan().build())
           .filter()
           .project({"n_name", "r_name"})
           .sort({"r_name"})
@@ -272,12 +283,8 @@ TEST_F(SortParserTest, joinedTable) {
 
 TEST_F(SortParserTest, distinct) {
   connector_->addTable("t", ROW({"a", "b"}, INTEGER()));
-  auto matcher = lp::test::LogicalPlanMatcherBuilder()
-                     .tableScan()
-                     .project({"a"})
-                     .aggregate({"a"}, {})
-                     .sort({"a"})
-                     .output({"a"});
+  auto matcher =
+      matchScan().project({"a"}).aggregate({"a"}, {}).sort({"a"}).output({"a"});
 
   testSelect("SELECT DISTINCT a FROM t ORDER BY a", matcher);
   testSelect("SELECT DISTINCT a FROM t ORDER BY 1", matcher);
@@ -392,8 +399,7 @@ TEST_F(SortParserTest, differentExpressions) {
 
   testSelect(
       "SELECT a + b AS ab_sum FROM t ORDER BY a + c",
-      lp::test::LogicalPlanMatcherBuilder()
-          .tableScan()
+      matchScan()
           .project({"a + b as ab_sum", "a + c as ac_sum"})
           .sort({"ac_sum"})
           .project({"ab_sum"})
@@ -406,8 +412,7 @@ TEST_F(SortParserTest, outputAliasInExpression) {
 
   testSelect(
       "SELECT a * 2 AS b FROM t ORDER BY b * -1",
-      lp::test::LogicalPlanMatcherBuilder()
-          .tableScan()
+      matchScan()
           .project({"a * 2 as b", "a * 2 * -1 as sortFun"})
           .sort({"sortFun"})
           .project({"b"})
@@ -415,16 +420,11 @@ TEST_F(SortParserTest, outputAliasInExpression) {
 
   testSelect(
       "SELECT a * 2 AS b FROM t ORDER BY b",
-      lp::test::LogicalPlanMatcherBuilder()
-          .tableScan()
-          .project({"a * 2 as b"})
-          .sort({"b"})
-          .output({"b"}));
+      matchScan().project({"a * 2 as b"}).sort({"b"}).output({"b"}));
 
   testSelect(
       "SELECT a * -2 AS a FROM t ORDER BY a * -1",
-      lp::test::LogicalPlanMatcherBuilder()
-          .tableScan()
+      matchScan()
           .project({"a * -2 as selectFun", "a * -2 * -1 as sortFun"})
           .sort({"sortFun"})
           .project({"selectFun"})
@@ -432,8 +432,7 @@ TEST_F(SortParserTest, outputAliasInExpression) {
 
   testSelect(
       "SELECT a AS b, a * -2 AS c FROM t ORDER BY b + c",
-      lp::test::LogicalPlanMatcherBuilder()
-          .tableScan()
+      matchScan()
           .project({"a as b", "a * -2 as c", "a + a * -2 as sortFun"})
           .sort({"sortFun"})
           .project({"b", "c"})
@@ -441,8 +440,7 @@ TEST_F(SortParserTest, outputAliasInExpression) {
 
   testSelect(
       "SELECT 1 AS x FROM t ORDER BY x + 1",
-      lp::test::LogicalPlanMatcherBuilder()
-          .tableScan()
+      matchScan()
           .project({"1 as x", "1 + 1 as sortFun"})
           .sort({"sortFun"})
           .project({"x"})
@@ -454,8 +452,7 @@ TEST_F(SortParserTest, outputAliasInExpression) {
 
   testSelect(
       "SELECT 1 AS a, a FROM t2 ORDER BY b + 1",
-      lp::test::LogicalPlanMatcherBuilder()
-          .tableScan()
+      matchScan()
           .project({"1 as alias", "a as col", "b + 1 as sortFun"})
           .sort({"sortFun"})
           .project({"alias", "col"})

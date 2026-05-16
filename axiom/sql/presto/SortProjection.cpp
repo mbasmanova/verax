@@ -26,21 +26,32 @@ namespace lp = facebook::axiom::logical_plan;
 namespace {
 namespace core = facebook::velox::core;
 
-// Indexes the SELECT-list projections by expression and by alias for
-// matching ORDER BY sort keys. An alias whose ordinal is 0 is ambiguous
-// (defined by more than one projection) and may only be used unambiguously.
+// Indexes the SELECT-list projections by expression and by output name for
+// matching ORDER BY sort keys. A name whose ordinal is 0 is ambiguous —
+// two or more projections share the name but produce different expressions
+// — and using it as a sort key fails. Two projections that share a name
+// but produce equal expressions (e.g. `SELECT t.a, t.a`) do not collide.
 struct ProjectionIndex {
   core::ExprMap<size_t> byExpr;
   folly::F14FastMap<std::string, size_t> byAlias;
 
   explicit ProjectionIndex(const std::vector<lp::ExprApi>& projections) {
+    core::IExprEqual exprEqual;
     for (size_t i = 0; i < projections.size(); ++i) {
       byExpr.emplace(projections[i].expr(), i + 1);
       if (projections[i].alias().has_value()) {
         auto [iter, inserted] =
             byAlias.emplace(projections[i].alias().value(), i + 1);
-        if (!inserted) {
-          iter->second = 0;
+        if (!inserted && iter->second != 0) {
+          // Two projections share the same output name. This is only
+          // ambiguous if they project different expressions; if both
+          // resolve to the same expression (e.g. `SELECT t.a, t.a`),
+          // either ordinal works for ORDER BY.
+          if (!exprEqual(
+                  projections[iter->second - 1].expr(),
+                  projections[i].expr())) {
+            iter->second = 0;
+          }
         }
       }
     }
