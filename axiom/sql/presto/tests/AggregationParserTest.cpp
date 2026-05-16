@@ -69,6 +69,15 @@ TEST_F(AggregationParserTest, simpleGroupBy) {
       parseSql("SELECT n_name AS x FROM nation GROUP BY x"),
       "Cannot resolve column: x");
 
+  // Field access on an aggregate result: 'max(x).y' projects the field 'y'
+  // of the per-group max ROW.
+  {
+    connector_->addTable("t", ROW({"k", "x"}, {BIGINT(), ROW("y", BIGINT())}));
+    testSelect(
+        "SELECT MAX(x).y FROM t GROUP BY k",
+        matchScan().aggregate().project().output());
+  }
+
   // GROUP BY ordinal out of range.
   AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
       parseSql("SELECT 1 GROUP BY 1, 2"),
