@@ -143,6 +143,11 @@ void findAggregates(
     case core::IExpr::Kind::kInput:
       return;
     case core::IExpr::Kind::kFieldAccess:
+      // Field access can wrap any expression (e.g. 'max(x).y'), so recurse
+      // into children to find aggregates nested under a dereference.
+      for (const auto& input : expr->inputs()) {
+        findAggregates(input, aggregates, aggregateSet);
+      }
       return;
     case core::IExpr::Kind::kAggregate: {
       if (aggregateSet.emplace(expr).second) {
