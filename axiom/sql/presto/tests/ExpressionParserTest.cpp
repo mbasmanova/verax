@@ -1023,6 +1023,10 @@ TEST_F(ExpressionParserTest, lambda) {
   // array_sort w/ comparator.
   ASSERT_NO_THROW(parseExpr(
       "array_sort(array[3, 1, 2], (x, y) -> IF(x < y, -1, IF(x > y, 1, 0)))"));
+
+  // Mixed-case lambda parameter names.
+  ASSERT_NO_THROW(
+      parseExpr("reduce(array[1,2,3], 0, (x, fooBar) -> x + fooBar, s -> s)"));
 }
 
 // Presto allows BIGINT -> REAL coercion: real / bigint returns REAL.
