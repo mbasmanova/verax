@@ -104,6 +104,10 @@ TEST_F(ExpressionParserTest, types) {
   test("null as timestamp", TIMESTAMP());
   test("null as decimal(3, 2)", DECIMAL(3, 2));
   test("null as decimal(33, 10)", DECIMAL(33, 10));
+  // DECIMAL without parameters defaults to DECIMAL(38, 0), matching Presto.
+  test("null as decimal", DECIMAL(38, 0));
+  test("12 as decimal", DECIMAL(38, 0));
+  test("12.45 as decimal", DECIMAL(38, 0));
 
   facebook::velox::registerTDigestType();
   facebook::velox::registerQDigestType();
