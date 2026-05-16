@@ -138,6 +138,14 @@ class ExpressionPlanner {
   const std::unordered_map<std::string, facebook::velox::core::ExprPtr>*
       aliasExprs_{nullptr};
   const std::unordered_set<std::string>* columnNames_{nullptr};
+
+  // Lambda parameters currently in scope. Entries are appended on entering a
+  // lambda body and dropped on exit, so the vector grows from outermost
+  // (front) to innermost (back); lookups search back-to-front to match SQL
+  // lexical scoping. Used to prevent 'shouldDropQualifier_' from stripping
+  // the qualifier of 'x.field' when 'x' names a lambda parameter rather than
+  // an outer table alias.
+  std::vector<std::string> lambdaParamScope_;
 };
 
 } // namespace axiom::sql::presto

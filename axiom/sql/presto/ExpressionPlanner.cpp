@@ -15,6 +15,7 @@
  */
 
 #include "axiom/sql/presto/ExpressionPlanner.h"
+#include <folly/ScopeGuard.h>
 #include <folly/String.h>
 #include <algorithm>
 #include <cctype>
@@ -373,9 +374,18 @@ lp::ExprApi ExpressionPlanner::toExpr(const ExpressionPtr& node) {
       if (dereference->base()->is(NodeType::kIdentifier)) {
         auto qualifier =
             canonicalizeIdentifier(*dereference->base()->as<Identifier>());
+        // A lambda parameter shadows any outer alias of the same name, so
+        // the qualifier must be preserved for ExprResolver to dereference it
+        // as a struct field of the parameter. Search innermost-first to
+        // match SQL lexical scoping.
+        const bool isLambdaParam = std::find(
+                                       lambdaParamScope_.rbegin(),
+                                       lambdaParamScope_.rend(),
+                                       qualifier) != lambdaParamScope_.rend();
         // Strip table qualifier when safe (not a struct field, name is
         // unambiguous).
-        if (shouldDropQualifier_ && shouldDropQualifier_(qualifier, field)) {
+        if (!isLambdaParam && shouldDropQualifier_ &&
+            shouldDropQualifier_(qualifier, field)) {
           return lp::Col(field);
         }
         return lp::Col(field, lp::Col(qualifier));
@@ -791,6 +801,13 @@ lp::ExprApi ExpressionPlanner::toExpr(const ExpressionPtr& node) {
       for (const auto& arg : lambda->arguments()) {
         names.emplace_back(canonicalizeName(arg->name()->value()));
       }
+
+      const auto scopeBegin = lambdaParamScope_.size();
+      lambdaParamScope_.insert(
+          lambdaParamScope_.end(), names.begin(), names.end());
+      SCOPE_EXIT {
+        lambdaParamScope_.resize(scopeBegin);
+      };
 
       return lp::Lambda(names, toExpr(lambda->body()));
     }
