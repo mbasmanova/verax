@@ -70,6 +70,54 @@ TEST_F(PrestoParserTest, parseMultipleWithComments) {
   ASSERT_TRUE(statements[1]->isSelect());
 }
 
+TEST_F(PrestoParserTest, parseMultipleWithMultiByteUtf8Char) {
+  // Multi-byte UTF-8 characters anywhere in the input must not cause the
+  // lexer to lose subsequent tokens. ANTLR token positions are codepoint
+  // indices, but splitStatements slices the original UTF-8 string and so
+  // must convert codepoint offsets to byte offsets.
+  auto parser = makeParser();
+
+  // 2-byte UTF-8 (U+00F1) in a leading comment.
+  {
+    auto statements = parser.parseMultiple("-- ñ\nSELECT 1");
+    ASSERT_EQ(1, statements.size());
+    ASSERT_TRUE(statements[0]->isSelect());
+  }
+
+  // 2-byte UTF-8 in a string literal.
+  {
+    auto statements = parser.parseMultiple("SELECT 'ñ'; SELECT 1");
+    ASSERT_EQ(2, statements.size());
+    ASSERT_TRUE(statements[0]->isSelect());
+    ASSERT_TRUE(statements[1]->isSelect());
+  }
+
+  // 3-byte UTF-8 (U+20AC '€') in a comment between statements.
+  {
+    auto statements = parser.parseMultiple("SELECT 1; -- €\nSELECT 2");
+    ASSERT_EQ(2, statements.size());
+    ASSERT_TRUE(statements[0]->isSelect());
+    ASSERT_TRUE(statements[1]->isSelect());
+  }
+
+  // Multiple multi-byte chars to exercise cumulative offset shift.
+  {
+    auto statements =
+        parser.parseMultiple("-- ñ ñ ñ\nSELECT 'ä' AS x; SELECT 'ö' AS y");
+    ASSERT_EQ(2, statements.size());
+    ASSERT_TRUE(statements[0]->isSelect());
+    ASSERT_TRUE(statements[1]->isSelect());
+  }
+
+  // 4-byte UTF-8 (U+1F389 '🎉') in a comment between statements.
+  {
+    auto statements = parser.parseMultiple("SELECT 1; -- 🎉\nSELECT 2");
+    ASSERT_EQ(2, statements.size());
+    ASSERT_TRUE(statements[0]->isSelect());
+    ASSERT_TRUE(statements[1]->isSelect());
+  }
+}
+
 TEST_F(PrestoParserTest, parseMultipleWithBlockComments) {
   auto parser = makeParser();
 

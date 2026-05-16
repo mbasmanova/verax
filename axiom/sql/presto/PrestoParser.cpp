@@ -1364,6 +1364,34 @@ std::vector<SqlStatementPtr> PrestoParser::parseMultiple(
   return results;
 }
 
+// Returns the byte offset in 'utf8' that corresponds to the given UTF-32
+// codepoint index. ANTLR's getStartIndex/getStopIndex return codepoint
+// offsets, but std::string_view::substr operates on bytes, so they must be
+// converted before slicing.
+size_t codepointToByteOffset(std::string_view utf8, size_t codepointIndex) {
+  size_t byteOffset = 0;
+  size_t cp = 0;
+  while (cp < codepointIndex && byteOffset < utf8.size()) {
+    auto c = static_cast<unsigned char>(utf8[byteOffset]);
+    size_t step;
+    if (c < 0x80) {
+      step = 1;
+    } else if ((c & 0xe0) == 0xc0) {
+      step = 2;
+    } else if ((c & 0xf0) == 0xe0) {
+      step = 3;
+    } else if ((c & 0xf8) == 0xf0) {
+      step = 4;
+    } else {
+      VELOX_USER_FAIL(
+          "Invalid UTF-8 start byte at offset {}: {:#x}", byteOffset, c);
+    }
+    byteOffset += step;
+    ++cp;
+  }
+  return byteOffset;
+}
+
 std::vector<std::string_view> PrestoParser::splitStatements(
     std::string_view sql) {
   std::vector<std::string_view> statements;
@@ -1386,10 +1414,12 @@ std::vector<std::string_view> PrestoParser::splitStatements(
     if (token->getText() == ";") {
       // Find the last token before the semicolon (on default channel)
       if (i > statementStart) {
-        size_t startIndex = tokenStream.get(statementStart)->getStartIndex();
-        size_t endIndex = tokenStream.get(i - 1)->getStopIndex();
+        size_t startIndex = codepointToByteOffset(
+            sql, tokenStream.get(statementStart)->getStartIndex());
+        size_t endIndex = codepointToByteOffset(
+            sql, tokenStream.get(i - 1)->getStopIndex() + 1);
 
-        auto stmt = sql.substr(startIndex, endIndex - startIndex + 1);
+        auto stmt = sql.substr(startIndex, endIndex - startIndex);
 
         while (!stmt.empty() && std::isspace(stmt.front())) {
           stmt.remove_prefix(1);
@@ -1416,10 +1446,12 @@ std::vector<std::string_view> PrestoParser::splitStatements(
     }
 
     if (lastTokenIdx >= statementStart) {
-      size_t startIndex = tokenStream.get(statementStart)->getStartIndex();
-      size_t endIndex = tokenStream.get(lastTokenIdx)->getStopIndex();
+      size_t startIndex = codepointToByteOffset(
+          sql, tokenStream.get(statementStart)->getStartIndex());
+      size_t endIndex = codepointToByteOffset(
+          sql, tokenStream.get(lastTokenIdx)->getStopIndex() + 1);
 
-      auto stmt = sql.substr(startIndex, endIndex - startIndex + 1);
+      auto stmt = sql.substr(startIndex, endIndex - startIndex);
 
       while (!stmt.empty() && std::isspace(stmt.front())) {
         stmt.remove_prefix(1);
