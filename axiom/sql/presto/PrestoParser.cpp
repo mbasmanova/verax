@@ -431,6 +431,12 @@ class RelationPlanner : public AstVisitor {
       };
       // TODO: Change WithQuery to store Query and not Statement.
       processQuery(dynamic_cast<Query*>(withEntry->query().get()));
+
+      // Apply CTE column-alias list, e.g. 'WITH t(a, b) AS (...)' renames
+      // the underlying SELECT/VALUES output columns to a, b.
+      if (const auto& columnAliases = withEntry->columnNames()) {
+        applyColumnAliases(*columnAliases, withEntry->location(), tableName);
+      }
     } else {
       const auto [connectorId, connectorTable] = toConnectorTable(
           *table.name(), context_.defaultConnectorId.value(), defaultSchema_);
@@ -494,6 +500,30 @@ class RelationPlanner : public AstVisitor {
     builder_->sample(percentage.expr(), sampleMethod);
   }
 
+  // Renames the current builder output columns to match a user-supplied
+  // column-alias list (from 'WITH cte(c1, c2) AS (...)' or
+  // '(SELECT ...) AS r(c1, c2)'). Adds a Project node.
+  void applyColumnAliases(
+      const std::vector<std::shared_ptr<Identifier>>& columnAliases,
+      const NodeLocation& location,
+      const std::string& token) {
+    const auto outputNames = builder_->findOrAssignOutputNames();
+    AXIOM_PRESTO_SEMANTIC_CHECK_EQ(
+        columnAliases.size(),
+        outputNames.size(),
+        location,
+        token,
+        "Column alias list size does not match the number of output columns");
+
+    std::vector<lp::ExprApi> renames;
+    renames.reserve(outputNames.size());
+    for (auto i = 0; i < outputNames.size(); ++i) {
+      auto name = canonicalizeIdentifier(*columnAliases.at(i));
+      renames.push_back(outputNames[i].toCol().as(name));
+    }
+    builder_->project(renames);
+  }
+
   void processAliasedRelation(const AliasedRelation& aliasedRelation) {
     processFrom(aliasedRelation.relation());
 
@@ -501,27 +531,7 @@ class RelationPlanner : public AstVisitor {
 
     const auto& columnAliases = aliasedRelation.columnNames();
     if (!columnAliases.empty()) {
-      const size_t numOutput = builder_->numOutput();
-      AXIOM_PRESTO_SEMANTIC_CHECK_EQ(
-          columnAliases.size(),
-          numOutput,
-          aliasedRelation.location(),
-          alias,
-          "Column alias list size does not match the number of columns available for '{}'",
-          alias);
-
-      // Add projection to rename columns. Column aliases override output
-      // names from the inner subquery.
-      std::vector<lp::ExprApi> renames;
-      renames.reserve(numOutput);
-
-      for (auto i = 0; i < numOutput; ++i) {
-        auto name = canonicalizeIdentifier(*columnAliases.at(i));
-        auto outputColumn = builder_->findOrAssignOutputNameAt(i);
-        renames.push_back(outputColumn.toCol().as(name));
-      }
-
-      builder_->project(renames);
+      applyColumnAliases(columnAliases, aliasedRelation.location(), alias);
     }
 
     builder_->findOrAssignOutputNames(/*includeHiddenColumns=*/false);
