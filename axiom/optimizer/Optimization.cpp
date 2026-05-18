@@ -3343,12 +3343,10 @@ ExprCP Optimization::combineLeftDeep(Name func, const ExprVector& exprs) {
     return left->id() < right->id();
   });
   ExprCP result = copy[0];
+  const bool specialForm = SpecialFormCallNames::isSpecialForm(func);
   for (auto i = 1; i < copy.size(); ++i) {
     result = toGraph_.deduppedCall(
-        func,
-        result->value(),
-        ExprVector{result, copy[i]},
-        result->functions() | copy[i]->functions());
+        func, result->value(), ExprVector{result, copy[i]}, specialForm);
   }
   return result;
 }
