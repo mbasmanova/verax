@@ -999,6 +999,38 @@ ExprCP ToGraph::makeEquality(ExprCP left, ExprCP right) {
       ExprVector{left, right});
 }
 
+ExprCP ToGraph::makeAnd(ExprVector args) {
+  VELOX_CHECK(!args.empty());
+  if (args.size() == 1) {
+    return args.front();
+  }
+  return deduppedSpecialForm(
+      SpecialFormCallNames::kAnd,
+      toValue(velox::BOOLEAN(), 2),
+      std::move(args));
+}
+
+ExprCP ToGraph::wrapScalarInGuards(ExprVector guards, ExprCP expr) {
+  if (guards.empty()) {
+    return expr;
+  }
+  return deduppedSpecialForm(
+      SpecialFormCallNames::kIf,
+      expr->value(),
+      ExprVector{makeAnd(std::move(guards)), expr});
+}
+
+ExprCP ToGraph::wrapMarkInGuards(ExprVector guards, ExprCP expr) {
+  if (guards.empty()) {
+    return expr;
+  }
+  ExprVector args;
+  args.reserve(guards.size() + 1);
+  args.push_back(expr);
+  args.insert(args.end(), guards.begin(), guards.end());
+  return makeAnd(std::move(args));
+}
+
 namespace {
 
 bool isJoinEquality(
@@ -3050,16 +3082,25 @@ ExprCP ToGraph::attachScalarSubqueryToOuter(
     DerivedTableP subqueryDt,
     SubqueryChain& chain,
     ApplyContext::Lifted* outerLifted) {
+  ExprCP result;
   if (!applyContext_.lifted.projections.empty()) {
-    return processProjectionCorrelatedScalarSubquery(
+    result = processProjectionCorrelatedScalarSubquery(
         input, subqueryDt, chain, outerLifted);
-  }
-  if (!applyContext_.lifted.predicates.empty() ||
+  } else if (
+      !applyContext_.lifted.predicates.empty() ||
       applyContext_.lifted.aggregation != nullptr) {
-    return processCorrelatedScalarSubquery(
-        input, subqueryDt, chain, outerLifted);
+    result =
+        processCorrelatedScalarSubquery(input, subqueryDt, chain, outerLifted);
+  } else {
+    result = processUncorrelatedScalarSubquery(subqueryDt);
   }
-  return processUncorrelatedScalarSubquery(subqueryDt);
+
+  // Wrap with pure-outer guards (e.g., from constant-folded correlation
+  // conjuncts): the outer row sees NULL when the gating condition
+  // fails, else the inner result.
+  auto guards = std::move(applyContext_.lifted.outerGuards);
+  applyContext_.lifted.outerGuards.clear();
+  return wrapScalarInGuards(std::move(guards), result);
 }
 
 void ToGraph::maybeWrapForChainedSubquery(
@@ -3409,20 +3450,10 @@ ExprCP ToGraph::processProjectionCorrelatedScalarSubquery(
     if (!applyContext_.lifted.predicates.empty()) {
       // The body has no FROM, so the WHERE filters the single empty-tuple
       // row. Per outer row the scalar subquery returns 'column' if all
-      // predicates pass, NULL otherwise. Rewrite as 'IF(AND(predicates),
-      // column)'.
-      ExprVector conjuncts = std::move(applyContext_.lifted.predicates);
+      // predicates pass, NULL otherwise.
+      auto conjuncts = std::move(applyContext_.lifted.predicates);
       applyContext_.lifted.predicates.clear();
-      ExprCP condition = conjuncts.size() == 1
-          ? conjuncts.front()
-          : deduppedSpecialForm(
-                SpecialFormCallNames::kAnd,
-                toValue(velox::BOOLEAN(), 2),
-                std::move(conjuncts));
-      column = deduppedSpecialForm(
-          SpecialFormCallNames::kIf,
-          column->value(),
-          ExprVector{condition, column});
+      column = wrapScalarInGuards(std::move(conjuncts), column);
     }
     if (applyContext_.lifted.aggregation != nullptr) {
       VELOX_NYI(
@@ -3545,6 +3576,9 @@ void ToGraph::processInPredicates(
           inRightKey,
           inRightHasOuter);
     }
+    auto guards = std::move(applyContext_.lifted.outerGuards);
+    applyContext_.lifted.outerGuards.clear();
+    column = wrapMarkInGuards(std::move(guards), column);
     subqueries_.emplace(predicate, column);
 
     // Carry the mark column forward so any later heavy-path scalar in the
@@ -3657,6 +3691,9 @@ void ToGraph::processExistsSubqueries(
           "Outer-column reference in the aggregate body of an EXISTS subquery is not supported yet");
     }
 
+    auto outerGuards = std::move(applyContext_.lifted.outerGuards);
+    applyContext_.lifted.outerGuards.clear();
+
     // A subquery that produces zero rows (e.g., LIMIT 0) makes EXISTS false.
     if (subqueryDt->isZeroRows()) {
       applyContext_.lifted.predicates.clear();
@@ -3673,8 +3710,8 @@ void ToGraph::processExistsSubqueries(
     // produces one row. Since the ValuesTable has no columns, any
     // uncorrelated conjuncts must be constants. ORDER BY does not affect the
     // number of rows, so it can be ignored. Replace the EXISTS with the
-    // conjunction of all conjuncts (correlated and uncorrelated), or TRUE if
-    // there are none.
+    // conjunction of all conjuncts (correlated, uncorrelated, and outer
+    // guards), or TRUE if there are none.
     if (subqueryDt->isSingleRowNoColumnsValues() && !subqueryDt->hasLimit() &&
         !subqueryDt->hasOffset() && !subqueryDt->hasAggregation()) {
       ExprVector allConjuncts = std::move(subqueryDt->conjuncts);
@@ -3682,19 +3719,16 @@ void ToGraph::processExistsSubqueries(
           allConjuncts.end(),
           applyContext_.lifted.predicates.begin(),
           applyContext_.lifted.predicates.end());
+      allConjuncts.insert(
+          allConjuncts.end(), outerGuards.begin(), outerGuards.end());
       applyContext_.lifted.predicates.clear();
 
       ExprCP result;
       if (allConjuncts.empty()) {
         result = make<Literal>(
             toConstantValue(velox::BOOLEAN()), registerVariant(true));
-      } else if (allConjuncts.size() == 1) {
-        result = allConjuncts[0];
       } else {
-        result = deduppedSpecialForm(
-            SpecialFormCallNames::kAnd,
-            toValue(velox::BOOLEAN(), 2),
-            std::move(allConjuncts));
+        result = makeAnd(std::move(allConjuncts));
       }
       subqueries_.emplace(existsExpr, result);
       if (!result->columns().empty()) {
@@ -3709,6 +3743,7 @@ void ToGraph::processExistsSubqueries(
     } else {
       column = processCorrelatedExists(subqueryDt);
     }
+    column = wrapMarkInGuards(std::move(outerGuards), column);
     subqueries_.emplace(existsExpr, column);
 
     // Carry the EXISTS result forward so any later heavy-path scalar in the
@@ -3939,11 +3974,25 @@ void ToGraph::addFilter(
   {
     PlanObjectSet tables = currentDt_->tableSet;
     tables.add(currentDt_);
-    std::erase_if(flat, [&](const auto* conjunct) {
+    std::erase_if(flat, [&](ExprCP conjunct) {
       if (conjunct->allTables().isSubset(tables)) {
         return false;
       }
-      applyContext_.lifted.predicates.push_back(conjunct);
+      // A conjunct with no inner-DT references (e.g. after constant
+      // folding collapses one side of an equality) is a pure-outer
+      // guard, not a correlation key. Route it to 'outerGuards' so
+      // 'attachScalarSubqueryToOuter' wraps the scalar result in an IF.
+      bool hasInner = false;
+      conjunct->columns().template forEach<Column>([&](ColumnCP col) {
+        if (tables.contains(col->relation())) {
+          hasInner = true;
+        }
+      });
+      if (hasInner) {
+        applyContext_.lifted.predicates.push_back(conjunct);
+      } else {
+        applyContext_.lifted.outerGuards.push_back(conjunct);
+      }
       return true;
     });
   }
