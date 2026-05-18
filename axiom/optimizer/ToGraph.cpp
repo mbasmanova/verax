@@ -225,7 +225,10 @@ ExprCP ToGraph::splitCorrelatedProjection(ExprCP expr, DerivedTableP dt) {
       newArgs.push_back(splitCorrelatedProjection(arg, dt));
     }
     return deduppedCall(
-        call->name(), call->value(), std::move(newArgs), call->functions());
+        call->name(),
+        call->value(),
+        std::move(newArgs),
+        SpecialFormCallNames::isSpecialForm(call->name()));
   }
 
   // Invariant: a mixed-scope expression at this point is a Call.
@@ -970,13 +973,17 @@ ExprCP ToGraph::deduppedCall(
     Name name,
     Value value,
     ExprVector args,
-    FunctionSet flags) {
+    bool specialForm) {
   canonicalizeCall(name, args);
   ExprDedupKey key = {name, args, value.type};
 
   auto [it, emplaced] = functionDedup_.try_emplace(key);
   if (it->second) {
     return it->second;
+  }
+  FunctionSet flags = functionBits(name, specialForm);
+  for (auto* arg : args) {
+    flags = flags | arg->functions();
   }
   auto* call = make<Call>(name, value, std::move(args), flags);
   if (emplaced && !call->containsNonDeterministic()) {
@@ -1144,7 +1151,6 @@ ExprCP ToGraph::translateExpr(const lp::ExprPtr& expr) {
       expr->isSpecialForm() ? expr->as<lp::SpecialFormExpr>() : nullptr;
 
   if (call || specialForm) {
-    FunctionSet funcs;
     const auto& inputs = expr->inputs();
     ExprVector args;
     args.reserve(inputs.size());
@@ -1154,9 +1160,6 @@ ExprCP ToGraph::translateExpr(const lp::ExprPtr& expr) {
       auto arg = translateExpr(input);
       args.emplace_back(arg);
       allConstant &= arg->is(PlanType::kLiteralExpr);
-      if (arg->is(PlanType::kCallExpr)) {
-        funcs = funcs | arg->as<Call>()->functions();
-      }
     }
 
     auto cardinality = estimateCallCardinality(args);
@@ -1169,11 +1172,10 @@ ExprCP ToGraph::translateExpr(const lp::ExprPtr& expr) {
       }
     }
 
-    auto callFuncs = functionBits(name, specialForm != nullptr);
-
     // Propagate null for default-null-behavior functions: if any argument is a
     // null literal, the result is null.
-    if (!callFuncs.contains(FunctionSet::kNonDefaultNullBehavior) &&
+    if (!functionBits(name, specialForm != nullptr)
+             .contains(FunctionSet::kNonDefaultNullBehavior) &&
         hasNullLiteral(args)) {
       return makeNullConstant(expr->type());
     }
@@ -1188,10 +1190,11 @@ ExprCP ToGraph::translateExpr(const lp::ExprPtr& expr) {
       }
     }
 
-    funcs = funcs | callFuncs;
-    auto* callExpr = deduppedCall(
-        name, Value(exprType, cardinality), std::move(args), funcs);
-    return callExpr;
+    return deduppedCall(
+        name,
+        Value(exprType, cardinality),
+        std::move(args),
+        specialForm != nullptr);
   }
 
   if (expr->isWindow()) {
@@ -3140,11 +3143,10 @@ ExprCP ToGraph::processCorrelatedScalarSubquery(
       // Wrap with COALESCE for aggregates that return non-NULL for empty input.
       // LEFT JOIN returns NULL for outer rows with no matches, but count-like
       // aggregates should return 0 (or similar default) instead.
-      return make<Call>(
+      return deduppedSpecialForm(
           SpecialFormCallNames::kCoalesce,
           aggregateResult->value(),
-          ExprVector{aggregateResult, literal},
-          FunctionSet());
+          ExprVector{aggregateResult, literal});
     }
 
     return aggregateResult;
@@ -3371,8 +3373,22 @@ ExprCP ToGraph::processProjectionCorrelatedScalarSubquery(
 
   if (subqueryDt->isSingleRowNoColumnsValues()) {
     if (!applyContext_.lifted.predicates.empty()) {
-      VELOX_NYI(
-          "Correlated WHERE in a no-FROM subquery body is not supported yet");
+      // The body has no FROM, so the WHERE filters the single empty-tuple
+      // row. Per outer row the scalar subquery returns 'column' if all
+      // predicates pass, NULL otherwise. Rewrite as 'IF(AND(predicates),
+      // column)'.
+      ExprVector conjuncts = std::move(applyContext_.lifted.predicates);
+      applyContext_.lifted.predicates.clear();
+      ExprCP condition = conjuncts.size() == 1
+          ? conjuncts.front()
+          : deduppedSpecialForm(
+                SpecialFormCallNames::kAnd,
+                toValue(velox::BOOLEAN(), 2),
+                std::move(conjuncts));
+      column = deduppedSpecialForm(
+          SpecialFormCallNames::kIf,
+          column->value(),
+          ExprVector{condition, column});
     }
     if (applyContext_.lifted.aggregation != nullptr) {
       VELOX_NYI(
@@ -3614,11 +3630,10 @@ void ToGraph::processExistsSubqueries(
       } else if (allConjuncts.size() == 1) {
         result = allConjuncts[0];
       } else {
-        result = deduppedCall(
-            toName(SpecialFormCallNames::kAnd),
+        result = deduppedSpecialForm(
+            SpecialFormCallNames::kAnd,
             toValue(velox::BOOLEAN(), 2),
-            std::move(allConjuncts),
-            FunctionSet());
+            std::move(allConjuncts));
       }
       subqueries_.emplace(existsExpr, result);
       if (!result->columns().empty()) {

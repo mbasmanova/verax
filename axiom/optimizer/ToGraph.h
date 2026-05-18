@@ -124,9 +124,21 @@ class ToGraph {
   }
 
   /// Creates or returns pre-existing function call with name+args. If
-  /// deterministic, a new ExprCP is remembered for reuse.
-  ExprCP
-  deduppedCall(Name name, Value value, ExprVector args, FunctionSet flags);
+  /// deterministic, a new ExprCP is remembered for reuse. 'functions'
+  /// on the resulting Call is computed as 'functionBits(name,
+  /// specialForm) | <each arg's functions()>'.
+  ExprCP deduppedCall(
+      Name name,
+      Value value,
+      ExprVector args,
+      bool specialForm = false);
+
+  /// Shorthand for 'deduppedCall(name, value, args, /*specialForm=*/
+  /// true)' — use at sites that construct a named special form (kIf,
+  /// kAnd, kCoalesce, ...).
+  ExprCP deduppedSpecialForm(Name name, Value value, ExprVector args) {
+    return deduppedCall(name, value, std::move(args), /*specialForm=*/true);
+  }
 
   /// True if 'expr' is of the form a = b where a depends on leftTable and b on
   /// rightTable or vice versa. If true, returns the side depending on

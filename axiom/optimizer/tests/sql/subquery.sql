@@ -315,9 +315,12 @@ SELECT (SELECT t.a + max(u.a) FROM u) FROM t
 -- the top scope's t.
 SELECT (SELECT (SELECT max(v.a) FROM v WHERE v.a > u.a) FROM u WHERE u.a = t.a) FROM t
 ----
--- NYI: no-FROM subquery body with a correlated WHERE.
--- error: Correlated WHERE in a no-FROM subquery body is not supported yet
+-- No-FROM subquery body with a correlated WHERE. Per outer row the
+-- WHERE filters whether the single empty-tuple row passes; the scalar
+-- subquery returns the SELECT expression or NULL.
 SELECT (SELECT t.a WHERE t.a = 1) FROM t
+----
+SELECT (SELECT t.b + 100 WHERE t.a > 1) FROM t
 ----
 -- NYI: no-FROM subquery body with an aggregate whose body references an
 -- outer column.
