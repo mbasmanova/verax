@@ -272,3 +272,7 @@ SELECT t.a IN (SELECT t2.a FROM t t2 WHERE t.b = t2.b) FROM t
 ----
 -- Correlated NOT IN subquery with reversed operand order in correlation.
 SELECT t.a NOT IN (SELECT t2.a FROM t t2 WHERE t.b = t2.b) FROM t
+----
+-- Uncorrelated scalar subquery whose source needs runtime single-row
+-- enforcement. Returns one row per outer row.
+SELECT (SELECT u.a FROM u WHERE u.a = 1) FROM t
