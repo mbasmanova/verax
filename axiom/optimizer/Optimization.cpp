@@ -1160,6 +1160,12 @@ void Optimization::addPostprocess(
   }
 
   if (dt->enforceSingleRow) {
+    // EnforceSingleRow requires gather input. Single-worker plans
+    // satisfy this by construction; no Repartition needed there.
+    if (!isSingleWorker_ && !plan->distribution().isGather()) {
+      plan = make<Repartition>(plan, Distribution::gather(), plan->columns());
+      state.addCost(*plan);
+    }
     auto enforceSingleRow = make<EnforceSingleRow>(plan);
     state.addCost(*enforceSingleRow);
     plan = enforceSingleRow;
