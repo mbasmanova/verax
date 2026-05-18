@@ -145,6 +145,22 @@ class ToGraph {
   /// deduplicated.
   ExprCP makeEquality(ExprCP left, ExprCP right);
 
+  /// Combines 'args' with AND. Returns 'args.front()' when there's one,
+  /// builds 'AND(args...)' otherwise. 'args' must be non-empty.
+  ExprCP makeAnd(ExprVector args);
+
+  /// Wraps a scalar subquery's result in 'IF(AND(guards), expr, NULL)'.
+  /// Returns 'expr' unchanged when 'guards' is empty. Semantics: when
+  /// the gating condition fails, the scalar subquery returns NULL,
+  /// matching the empty-inner aggregate semantics.
+  ExprCP wrapScalarInGuards(ExprVector guards, ExprCP expr);
+
+  /// Wraps an IN or EXISTS mark column in 'AND(expr, guards...)'.
+  /// Returns 'expr' unchanged when 'guards' is empty. Semantics: when
+  /// the gating condition fails, the mark is false (the gate is part
+  /// of the inner WHERE; no inner row would match).
+  ExprCP wrapMarkInGuards(ExprVector guards, ExprCP expr);
+
   /// True if 'expr' is of the form a = b where a depends on leftTable and b on
   /// rightTable or vice versa. If true, returns the side depending on
   /// 'leftTable' in 'left' and the other in 'right'.
@@ -210,10 +226,17 @@ class ToGraph {
       // above the decorrelating LEFT JOIN.
       AggregationPlanCP aggregation{nullptr};
 
-      // True if all three accumulators are empty/null.
+      // Filter conjuncts that reference only outer-scope columns (e.g.,
+      // an equality whose inner side constant-folded away). These are
+      // not correlation keys; they gate whether the subquery's result
+      // is observed by the outer row. Every subquery consumer must
+      // drain this field.
+      ExprVector outerGuards;
+
+      // True if all accumulators are empty/null.
       bool empty() const {
         return predicates.empty() && projections.empty() &&
-            aggregation == nullptr;
+            outerGuards.empty() && aggregation == nullptr;
       }
     };
     Lifted lifted;

@@ -310,6 +310,20 @@ SELECT (SELECT max(u.a + t.b) + t.c FROM u) FROM t
 -- an inner global aggregate.
 SELECT (SELECT t.a + max(u.a) FROM u) FROM t
 ----
+-- Correlated WHERE where the inner side of the equality is a constant
+-- projection. Constant folding collapses one side, leaving a pure-outer
+-- gating condition: per outer row, the scalar returns the aggregate
+-- when the condition holds, else NULL.
+SELECT (SELECT max(o.b) FROM (SELECT 1 AS a, 42 AS b) o WHERE o.a = t.a) FROM t
+----
+-- Same shape inside an IN subquery: gate fails ⇒ no inner row matches
+-- ⇒ IN returns false.
+SELECT t.a IN (SELECT o.a FROM (SELECT 1 AS a) o WHERE o.a = t.a) FROM t
+----
+-- Same shape inside an EXISTS subquery: gate fails ⇒ no inner row ⇒
+-- EXISTS returns false.
+SELECT EXISTS (SELECT 1 FROM (SELECT 1 AS a) o WHERE o.a = t.a) FROM t
+----
 -- Two-level nested correlated scalar subqueries: the innermost body
 -- correlates on the middle scope's u, and the middle body correlates on
 -- the top scope's t.
