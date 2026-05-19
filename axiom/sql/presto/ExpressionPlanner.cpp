@@ -591,8 +591,15 @@ lp::ExprApi ExpressionPlanner::toExpr(const ExpressionPtr& node) {
         if (auto it = subqueryCache_.find(query); it != subqueryCache_.end()) {
           return it->second;
         }
-        auto expr = lp::Subquery(subqueryPlanner_(query->as<Query>()));
-        subqueryCache_.emplace(query, expr);
+        auto result = subqueryPlanner_(query->as<Query>());
+        auto expr = lp::Subquery(result.plan);
+        // Correlated subqueries bake in physical column names from the outer
+        // scope they were planned in; caching would let a second outer
+        // context reuse a plan whose references point at the first context's
+        // (now stale) names.
+        if (!result.touchedOuterScope) {
+          subqueryCache_.emplace(query, expr);
+        }
         return expr;
       }
 

@@ -49,11 +49,26 @@ facebook::velox::TypePtr parseType(const TypeSignaturePtr& type);
 /// provided to handle subqueries and ordinal sort keys in aggregates.
 class ExpressionPlanner {
  public:
+  /// Carries a planned subquery's logical plan together with a flag marking
+  /// whether the subquery is correlated. Correlated subqueries must not be
+  /// cached because their planned output binds physical column names from a
+  /// specific outer scope; reusing the plan under a different outer scope
+  /// would leave dangling input references.
+  struct SubqueryPlanResult {
+    /// Built logical plan for the subquery.
+    lp::LogicalPlanNodePtr plan;
+
+    /// True if planning resolved at least one column reference against the
+    /// outer scope (the subquery is correlated).
+    bool touchedOuterScope{false};
+  };
+
   /// Callback to plan a subquery. Takes the Query AST node, returns the built
-  /// logical plan. Required when the expression may contain subquery
-  /// expressions (e.g. IN (SELECT ...), scalar subqueries). Can be nullptr
-  /// if subqueries are not expected.
-  using SubqueryPlanner = std::function<lp::LogicalPlanNodePtr(Query* query)>;
+  /// logical plan and a flag indicating whether the subquery is correlated.
+  /// Required when the expression may contain subquery expressions (e.g. IN
+  /// (SELECT ...), scalar subqueries). Can be nullptr if subqueries are not
+  /// expected.
+  using SubqueryPlanner = std::function<SubqueryPlanResult(Query* query)>;
 
   /// Callback to resolve ordinal sort keys (e.g. ORDER BY 1 inside aggregate
   /// functions). Required when the expression may contain aggregate function

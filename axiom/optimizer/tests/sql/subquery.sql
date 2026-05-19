@@ -55,6 +55,19 @@ WITH u AS (
 )
 SELECT (SELECT count(*) FROM u WHERE a > v.a) FROM (SELECT 1 AS a) v
 ----
+-- A CTE that contains a correlated scalar subquery, referenced multiple
+-- times from outer scalar subqueries. Each outer reference reparses the
+-- CTE body with freshly uniquified column names; the inner correlated
+-- reference must resolve to each expansion's own outer column, not stay
+-- bound to the first expansion's name.
+WITH u AS (
+  SELECT (SELECT count(*) FROM (VALUES (1)) t(a) WHERE a > u.k) AS c
+  FROM (VALUES (1)) u(k)
+)
+SELECT
+  (SELECT count(*) FROM u WHERE c > 0),
+  (SELECT count(*) FROM u WHERE c = 0)
+----
 -- 3 levels with cross-level references and name shadowing.
 -- Level 0 (v): x=20, y=30. Level 1 (u): x=10 (shadows v.x), a=5.
 -- Level 2 references u.a (level 1), v.y (level 0), u.x (level 1 shadow).
