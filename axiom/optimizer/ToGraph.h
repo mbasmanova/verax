@@ -251,6 +251,22 @@ class ToGraph {
         return predicates.empty() && projections.empty() &&
             outerGuards.empty() && aggregation == nullptr;
       }
+
+      // Applies 'rewriter' to each pending Expr (predicates, projections,
+      // outerGuards). Does not visit 'aggregation'; callers that need to
+      // rewrite aggregation must do so explicitly.
+      template <typename Rewriter>
+      void rewriteExprs(Rewriter&& rewriter) {
+        for (auto& predicate : predicates) {
+          rewriter(predicate);
+        }
+        for (auto& projection : projections) {
+          rewriter(projection);
+        }
+        for (auto& guard : outerGuards) {
+          rewriter(guard);
+        }
+      }
     };
     Lifted lifted;
 
@@ -423,12 +439,17 @@ class ToGraph {
   // @param condition Join condition. Can be nullptr for a cross join.
   // @param originalJoinType The original join type from the logical plan
   // (before normalization).
+  // @param joinNode The source JoinNode. Used for INNER joins to expose
+  // both sides' columns to the carry-forward path when 'addFilter'
+  // processes the ON clause; correlated scalar subqueries decorrelated
+  // inside the ON clause depend on 'usedChannels' seeing both sides.
   void translateJoin(
       const logical_plan::LogicalPlanNodePtr& left,
       const logical_plan::LogicalPlanNodePtr& right,
       logical_plan::JoinType joinType,
       const logical_plan::ExprPtr& condition,
-      logical_plan::JoinType originalJoinType);
+      logical_plan::JoinType originalJoinType,
+      const logical_plan::LogicalPlanNode* joinNode);
 
   // Eliminates join when the ON clause contains a constant false condition.
   // Returns true if the join was eliminated.
@@ -691,6 +712,20 @@ class ToGraph {
   void maybeWrapForChainedSubquery(
       const logical_plan::LogicalPlanNode& input,
       SubqueryChain& chain);
+
+  // Wraps the current DT under a fresh outer DT so a subsequent SEMI/EXISTS
+  // join has a single-table left side. Rewrites in-flight state ('renames_',
+  // 'applyContext_.lifted.{predicates,projections,outerGuards}', and
+  // 'subqueries_' values) that references inner tables to use the wrapper's
+  // exposed columns. Caller-held expressions must be re-exported via the
+  // returned DT.
+  DerivedTableP wrapForSubqueryCorrelation();
+
+  // Convenience wrapper around 'wrapForSubqueryCorrelation' for the
+  // subquery handlers: detaches 'subqueryDt' (just attached by
+  // translateSubquery), wraps the rest of currentDt_, and re-attaches
+  // 'subqueryDt' at the outer level so the SEMI joins wrapper × subqueryDt.
+  DerivedTableP wrapAroundSubquery(DerivedTableP subqueryDt);
 
   // Attaches a scalar subquery's translated body ('subqueryDt') to the
   // outer scope, picking the decorrelation shape from 'applyContext_':

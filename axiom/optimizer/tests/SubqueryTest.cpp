@@ -719,6 +719,27 @@ TEST_F(SubqueryTest, correlatedInWithRedundantCorrelationFilter) {
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
+// IN subquery whose correlation predicate references a sibling of the IN's
+// outer table: t and u join into a single source feeding the SEMI on v.
+TEST_F(SubqueryTest, correlatedInOnSibling) {
+  testConnector_->addTable("t", ROW("a", BIGINT()));
+  testConnector_->addTable("u", ROW("k", BIGINT()));
+  testConnector_->addTable("v", ROW({"k", "b"}, BIGINT()));
+
+  auto query =
+      "SELECT * FROM t, u "
+      "WHERE t.a IN (SELECT v.b FROM v WHERE v.k = u.k)";
+
+  auto matcher =
+      matchScan("t")
+          .nestedLoopJoin(matchScan("u").build(), core::JoinType::kInner)
+          .hashJoin(
+              matchScan("v").project().build(), core::JoinType::kLeftSemiFilter)
+          .build();
+  auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+  AXIOM_ASSERT_PLAN(plan, matcher);
+}
+
 // IN subquery where the left-side expression references multiple tables.
 TEST_F(SubqueryTest, multiTableInSubquery) {
   testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));

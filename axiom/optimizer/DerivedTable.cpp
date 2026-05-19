@@ -1426,14 +1426,10 @@ bool DerivedTable::validatePushdown(
 
       // All columns in innerKey that reference the subquery must be valid
       // pushdown columns.
-      bool keyValid = true;
-      innerKey->columns().forEach<Column>([&](ColumnCP column) {
-        if (column->relation() == &subquery &&
-            !validPushdownColumns.contains(column)) {
-          keyValid = false;
-        }
-      });
-      if (!keyValid) {
+      if (innerKey->columns().anyOf<Column>([&](ColumnCP column) {
+            return column->relation() == &subquery &&
+                !validPushdownColumns.contains(column);
+          })) {
         return false;
       }
 
