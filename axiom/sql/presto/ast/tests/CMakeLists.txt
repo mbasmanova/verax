@@ -12,15 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-add_library(axiom_sql_presto_ast AstBuilder.cpp AstNodesAll.cpp AstPrinter.cpp)
+add_executable(axiom_sql_presto_ast_equality_test AstEqualityTest.cpp)
+
+add_test(axiom_sql_presto_ast_equality_test axiom_sql_presto_ast_equality_test)
 
 target_link_libraries(
+  axiom_sql_presto_ast_equality_test
   axiom_sql_presto_ast
-  axiom_sql_presto_grammar
-  axiom_sql_presto_error
-  velox_exception
+  GTest::gtest
+  GTest::gtest_main
 )
-
-if(AXIOM_BUILD_TESTING)
-  add_subdirectory(tests)
-endif()

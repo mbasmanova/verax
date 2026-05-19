@@ -15,15 +15,16 @@
  */
 #pragma once
 
+#include <folly/hash/Hash.h>
 #include <optional>
 #include <vector>
+#include "axiom/sql/presto/ast/AstExpressions.h"
 #include "axiom/sql/presto/ast/AstNode.h"
+#include "velox/common/base/Exceptions.h"
 
 namespace axiom::sql::presto {
 
 // Forward declarations
-class Identifier;
-class QualifiedName;
 class OrderBy;
 
 // Support Classes
@@ -75,6 +76,22 @@ class TypeSignature : public Node {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        std::hash<std::string>{}(baseName_),
+        Node::deepHashAll(parameters_),
+        rowFieldName_.has_value() ? std::hash<std::string>{}(*rowFieldName_)
+                                  : 0);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<TypeSignature>();
+    return baseName_ == o.baseName_ &&
+        Node::deepEqualAll(parameters_, o.parameters_) &&
+        rowFieldName_ == o.rowFieldName_;
+  }
+
  private:
   const std::string baseName_;
   const std::vector<TypeSignaturePtr> parameters_;
@@ -101,6 +118,15 @@ class Property : public Node {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    VELOX_NYI("Property::hash not implemented");
+  }
+
+ protected:
+  bool equals(const Node&) const override {
+    VELOX_NYI("Property::equals not implemented");
+  }
+
  private:
   std::shared_ptr<Identifier> name_;
   ExpressionPtr value_;
@@ -123,6 +149,17 @@ class CallArgument : public Node {
   }
 
   void accept(AstVisitor* visitor) override;
+
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        Node::deepHash(name_), Node::deepHash(value_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<CallArgument>();
+    return Node::deepEqual(name_, o.name_) && Node::deepEqual(value_, o.value_);
+  }
 
  private:
   std::shared_ptr<Identifier> name_;
@@ -158,6 +195,20 @@ class FrameBound : public Node {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        std::hash<Type>{}(boundType_),
+        value_.has_value() ? Node::deepHash(*value_) : 0);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<FrameBound>();
+    return boundType_ == o.boundType_ &&
+        value_.has_value() == o.value_.has_value() &&
+        (!value_.has_value() || Node::deepEqual(*value_, *o.value_));
+  }
+
  private:
   Type boundType_;
   std::optional<ExpressionPtr> value_;
@@ -191,6 +242,20 @@ class WindowFrame : public Node {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        std::hash<Type>{}(frameType_),
+        Node::deepHash(start_),
+        Node::deepHash(end_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<WindowFrame>();
+    return frameType_ == o.frameType_ && Node::deepEqual(start_, o.start_) &&
+        Node::deepEqual(end_, o.end_);
+  }
+
  private:
   Type frameType_;
   std::shared_ptr<FrameBound> start_;
@@ -222,6 +287,21 @@ class Window : public Node {
   }
 
   void accept(AstVisitor* visitor) override;
+
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        Node::deepHashAll(partitionBy_),
+        Node::deepHash(orderBy_),
+        Node::deepHash(frame_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<Window>();
+    return Node::deepEqualAll(partitionBy_, o.partitionBy_) &&
+        Node::deepEqual(orderBy_, o.orderBy_) &&
+        Node::deepEqual(frame_, o.frame_);
+  }
 
  private:
   std::vector<ExpressionPtr> partitionBy_;
@@ -267,6 +347,20 @@ class SortItem : public Node {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        Node::deepHash(sortKey_),
+        std::hash<Ordering>{}(ordering_),
+        std::hash<NullOrdering>{}(nullOrdering_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<SortItem>();
+    return Node::deepEqual(sortKey_, o.sortKey_) && ordering_ == o.ordering_ &&
+        nullOrdering_ == o.nullOrdering_;
+  }
+
  private:
   ExpressionPtr sortKey_;
   Ordering ordering_;
@@ -285,6 +379,15 @@ class OrderBy : public Node {
   }
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return Node::deepHashAll(sortItems_);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    return Node::deepEqualAll(sortItems_, other.as<OrderBy>()->sortItems_);
+  }
+
  private:
   std::vector<std::shared_ptr<SortItem>> sortItems_;
 };
@@ -300,6 +403,15 @@ class Offset : public Node {
     return offset_;
   }
   void accept(AstVisitor* visitor) override;
+
+  size_t hash() const override {
+    return std::hash<std::string>{}(offset_);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    return offset_ == other.as<Offset>()->offset_;
+  }
 
  private:
   std::string offset_;
@@ -329,6 +441,16 @@ class SimpleGroupBy : public GroupingElement {
   }
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return Node::deepHashAll(expressions_);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    return Node::deepEqualAll(
+        expressions_, other.as<SimpleGroupBy>()->expressions_);
+  }
+
  private:
   std::vector<ExpressionPtr> expressions_;
 };
@@ -344,6 +466,28 @@ class GroupingSets : public GroupingElement {
     return sets_;
   }
   void accept(AstVisitor* visitor) override;
+
+  size_t hash() const override {
+    size_t h = sets_.size();
+    for (const auto& set : sets_) {
+      h = folly::hash::hash_combine(h, Node::deepHashAll(set));
+    }
+    return h;
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& otherSets = other.as<GroupingSets>()->sets_;
+    if (sets_.size() != otherSets.size()) {
+      return false;
+    }
+    for (size_t i = 0; i < sets_.size(); ++i) {
+      if (!Node::deepEqualAll(sets_[i], otherSets[i])) {
+        return false;
+      }
+    }
+    return true;
+  }
 
  private:
   std::vector<std::vector<ExpressionPtr>> sets_;
@@ -361,6 +505,15 @@ class Cube : public GroupingElement {
   }
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return Node::deepHashAll(expressions_);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    return Node::deepEqualAll(expressions_, other.as<Cube>()->expressions_);
+  }
+
  private:
   std::vector<ExpressionPtr> expressions_;
 };
@@ -377,6 +530,15 @@ class Rollup : public GroupingElement {
     return expressions_;
   }
   void accept(AstVisitor* visitor) override;
+
+  size_t hash() const override {
+    return Node::deepHashAll(expressions_);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    return Node::deepEqualAll(expressions_, other.as<Rollup>()->expressions_);
+  }
 
  private:
   std::vector<ExpressionPtr> expressions_;
@@ -400,6 +562,18 @@ class GroupBy : public Node {
   }
 
   void accept(AstVisitor* visitor) override;
+
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        std::hash<bool>{}(distinct_), Node::deepHashAll(groupingElements_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<GroupBy>();
+    return distinct_ == o.distinct_ &&
+        Node::deepEqualAll(groupingElements_, o.groupingElements_);
+  }
 
  private:
   bool distinct_;
@@ -437,6 +611,27 @@ class WithQuery : public Node {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        Node::deepHash(name_),
+        Node::deepHash(query_),
+        columnNames_.has_value() ? Node::deepHashAll(*columnNames_) : 0);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<WithQuery>();
+    if (!(Node::deepEqual(name_, o.name_) &&
+          Node::deepEqual(query_, o.query_))) {
+      return false;
+    }
+    if (columnNames_.has_value() != o.columnNames_.has_value()) {
+      return false;
+    }
+    return !columnNames_.has_value() ||
+        Node::deepEqualAll(*columnNames_, *o.columnNames_);
+  }
+
  private:
   std::shared_ptr<Identifier> name_;
   StatementPtr query_;
@@ -462,6 +657,18 @@ class With : public Node {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        std::hash<bool>{}(recursive_), Node::deepHashAll(queries_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<With>();
+    return recursive_ == o.recursive_ &&
+        Node::deepEqualAll(queries_, o.queries_);
+  }
+
  private:
   bool recursive_;
   std::vector<std::shared_ptr<WithQuery>> queries_;
@@ -472,6 +679,15 @@ class TableElement : public Node {
  public:
   explicit TableElement(NodeType type, NodeLocation location)
       : Node(type, location) {}
+
+  size_t hash() const override {
+    VELOX_NYI("TableElement::hash not implemented");
+  }
+
+ protected:
+  bool equals(const Node&) const override {
+    VELOX_NYI("TableElement::equals not implemented");
+  }
 };
 
 using TableElementPtr = std::shared_ptr<TableElement>;
@@ -681,6 +897,15 @@ class TransactionMode : public Node {
  public:
   explicit TransactionMode(NodeType type, NodeLocation location)
       : Node(type, location) {}
+
+  size_t hash() const override {
+    VELOX_NYI("TransactionMode::hash not implemented");
+  }
+
+ protected:
+  bool equals(const Node&) const override {
+    VELOX_NYI("TransactionMode::equals not implemented");
+  }
 };
 
 using TransactionModePtr = std::shared_ptr<TransactionMode>;
@@ -743,6 +968,15 @@ class RoutineBody : public Node {
  public:
   explicit RoutineBody(NodeType type, NodeLocation location)
       : Node(type, location) {}
+
+  size_t hash() const override {
+    VELOX_NYI("RoutineBody::hash not implemented");
+  }
+
+ protected:
+  bool equals(const Node&) const override {
+    VELOX_NYI("RoutineBody::equals not implemented");
+  }
 };
 
 using RoutineBodyPtr = std::shared_ptr<RoutineBody>;
@@ -783,6 +1017,15 @@ class ExplainOption : public Node {
  public:
   explicit ExplainOption(NodeType type, NodeLocation location)
       : Node(type, location) {}
+
+  size_t hash() const override {
+    VELOX_NYI("ExplainOption::hash not implemented");
+  }
+
+ protected:
+  bool equals(const Node&) const override {
+    VELOX_NYI("ExplainOption::equals not implemented");
+  }
 };
 
 using ExplainOptionPtr = std::shared_ptr<ExplainOption>;

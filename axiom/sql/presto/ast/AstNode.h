@@ -15,8 +15,11 @@
  */
 #pragma once
 
+#include <folly/hash/Hash.h>
 #include <memory>
+#include <vector>
 #include "axiom/common/Enums.h"
+#include "velox/common/base/Exceptions.h"
 
 namespace axiom::sql::presto {
 
@@ -281,6 +284,74 @@ class Node {
     return dynamic_cast<const T*>(this);
   }
 
+  /// Deep structural hash matching equals().
+  virtual size_t hash() const = 0;
+
+  bool operator==(const Node& other) const {
+    return type_ == other.type_ && equals(other);
+  }
+
+  bool operator!=(const Node& other) const {
+    return !(*this == other);
+  }
+
+  /// Null-safe deep equality on two Node trees. Returns true if both
+  /// are null, false if exactly one is null, otherwise `*a == *b`.
+  /// 'T' must be Node or a subclass.
+  template <typename T>
+  static bool deepEqual(
+      const std::shared_ptr<T>& a,
+      const std::shared_ptr<T>& b) {
+    if (a == b) {
+      return true;
+    }
+    if (!a || !b) {
+      return false;
+    }
+    return *a == *b;
+  }
+
+  /// Null-safe deep hash. Returns 0 for null.
+  /// 'T' must be Node or a subclass.
+  template <typename T>
+  static size_t deepHash(const std::shared_ptr<T>& a) {
+    return a ? a->hash() : 0;
+  }
+
+  /// Deep element-wise equality for two vectors of Node pointers.
+  /// 'T' must be Node or a subclass.
+  template <typename T>
+  static bool deepEqualAll(
+      const std::vector<std::shared_ptr<T>>& a,
+      const std::vector<std::shared_ptr<T>>& b) {
+    if (a.size() != b.size()) {
+      return false;
+    }
+    for (size_t i = 0; i < a.size(); ++i) {
+      if (!deepEqual(a[i], b[i])) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /// Combined hash for a vector of Node pointers, matching deepEqualAll.
+  template <typename T>
+  static size_t deepHashAll(const std::vector<std::shared_ptr<T>>& a) {
+    size_t h = a.size();
+    for (const auto& item : a) {
+      h = folly::hash::hash_combine(h, deepHash(item));
+    }
+    return h;
+  }
+
+ protected:
+  /// Deep structural equality on the AST. Ignores NodeLocation. Called by
+  /// operator== after the node types have been confirmed to match, so
+  /// overrides may assume 'other' has the same dynamic type as 'this' and
+  /// use 'other.as<Subclass>()' without a null check.
+  virtual bool equals(const Node& other) const = 0;
+
  private:
   const NodeType type_;
   const NodeLocation location_;
@@ -299,6 +370,15 @@ using ExpressionPtr = std::shared_ptr<Expression>;
 class Statement : public Node {
  public:
   Statement(NodeType type, NodeLocation location) : Node(type, location) {}
+
+  size_t hash() const override {
+    VELOX_NYI("Statement::hash not implemented");
+  }
+
+ protected:
+  bool equals(const Node&) const override {
+    VELOX_NYI("Statement::equals not implemented");
+  }
 };
 
 using StatementPtr = std::shared_ptr<Statement>;

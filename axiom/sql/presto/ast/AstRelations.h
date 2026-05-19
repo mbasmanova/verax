@@ -15,11 +15,14 @@
  */
 #pragma once
 
+#include <folly/hash/Hash.h>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
+#include "axiom/sql/presto/ast/AstExpressions.h"
 #include "axiom/sql/presto/ast/AstNode.h"
+#include "axiom/sql/presto/ast/AstSupport.h"
 
 namespace axiom::sql::presto {
 
@@ -87,6 +90,24 @@ class Query : public Statement {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        Node::deepHash(with_),
+        Node::deepHash(queryBody_),
+        Node::deepHash(orderBy_),
+        Node::deepHash(offset_),
+        limit_.has_value() ? std::hash<std::string>{}(*limit_) : 0);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<Query>();
+    return Node::deepEqual(with_, o.with_) &&
+        Node::deepEqual(queryBody_, o.queryBody_) &&
+        Node::deepEqual(orderBy_, o.orderBy_) &&
+        Node::deepEqual(offset_, o.offset_) && limit_ == o.limit_;
+  }
+
  private:
   std::shared_ptr<With> with_;
   QueryBodyPtr queryBody_;
@@ -151,6 +172,29 @@ class QuerySpecification : public QueryBody {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        Node::deepHash(select_),
+        Node::deepHash(from_),
+        Node::deepHash(where_),
+        Node::deepHash(groupBy_),
+        Node::deepHash(having_),
+        Node::deepHash(orderBy_),
+        Node::deepHash(offset_),
+        limit_.has_value() ? std::hash<std::string>{}(*limit_) : 0);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<QuerySpecification>();
+    return Node::deepEqual(select_, o.select_) &&
+        Node::deepEqual(from_, o.from_) && Node::deepEqual(where_, o.where_) &&
+        Node::deepEqual(groupBy_, o.groupBy_) &&
+        Node::deepEqual(having_, o.having_) &&
+        Node::deepEqual(orderBy_, o.orderBy_) &&
+        Node::deepEqual(offset_, o.offset_) && limit_ == o.limit_;
+  }
+
  private:
   std::shared_ptr<Select> select_;
   RelationPtr from_;
@@ -191,6 +235,18 @@ class SingleColumn : public SelectItem {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        Node::deepHash(expression_), Node::deepHash(alias_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<SingleColumn>();
+    return Node::deepEqual(expression_, o.expression_) &&
+        Node::deepEqual(alias_, o.alias_);
+  }
+
  private:
   ExpressionPtr expression_;
   std::shared_ptr<Identifier> alias_;
@@ -202,6 +258,16 @@ struct ReplaceItem {
   ExpressionPtr expression;
   /// Column being replaced.
   std::shared_ptr<Identifier> column;
+
+  bool operator==(const ReplaceItem& other) const {
+    return Node::deepEqual(expression, other.expression) &&
+        Node::deepEqual(column, other.column);
+  }
+
+  size_t hash() const {
+    return folly::hash::hash_combine(
+        Node::deepHash(expression), Node::deepHash(column));
+  }
 };
 
 /// Represents SELECT * or t.* with optional EXCLUDE and REPLACE modifiers.
@@ -233,6 +299,25 @@ class AllColumns : public SelectItem {
   }
 
   void accept(AstVisitor* visitor) override;
+
+  size_t hash() const override {
+    size_t replaceHash = replaceItems_.size();
+    for (const auto& item : replaceItems_) {
+      replaceHash = folly::hash::hash_combine(replaceHash, item.hash());
+    }
+    return folly::hash::hash_combine(
+        Node::deepHash(prefix_),
+        Node::deepHashAll(excludeColumns_),
+        replaceHash);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<AllColumns>();
+    return Node::deepEqual(prefix_, o.prefix_) &&
+        Node::deepEqualAll(excludeColumns_, o.excludeColumns_) &&
+        replaceItems_ == o.replaceItems_;
+  }
 
  private:
   std::shared_ptr<QualifiedName> prefix_;
@@ -277,6 +362,26 @@ class SelectColumns : public SelectItem {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    size_t replaceHash = replaceItems_.size();
+    for (const auto& item : replaceItems_) {
+      replaceHash = folly::hash::hash_combine(replaceHash, item.hash());
+    }
+    return folly::hash::hash_combine(
+        std::hash<std::string>{}(pattern_),
+        Node::deepHash(prefix_),
+        Node::deepHashAll(excludeColumns_),
+        replaceHash);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<SelectColumns>();
+    return pattern_ == o.pattern_ && Node::deepEqual(prefix_, o.prefix_) &&
+        Node::deepEqualAll(excludeColumns_, o.excludeColumns_) &&
+        replaceItems_ == o.replaceItems_;
+  }
+
  private:
   std::string pattern_;
   std::shared_ptr<QualifiedName> prefix_;
@@ -304,6 +409,18 @@ class Select : public Node {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        std::hash<bool>{}(distinct_), Node::deepHashAll(selectItems_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<Select>();
+    return distinct_ == o.distinct_ &&
+        Node::deepEqualAll(selectItems_, o.selectItems_);
+  }
+
  private:
   bool distinct_;
   std::vector<SelectItemPtr> selectItems_;
@@ -327,6 +444,18 @@ class Table : public QueryBody {
   }
 
   void accept(AstVisitor* visitor) override;
+
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        Node::deepHash(name_), Node::deepHash(version_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<Table>();
+    return Node::deepEqual(name_, o.name_) &&
+        Node::deepEqual(version_, o.version_);
+  }
 
  private:
   std::shared_ptr<QualifiedName> name_;
@@ -358,6 +487,21 @@ class AliasedRelation : public Relation {
   }
 
   void accept(AstVisitor* visitor) override;
+
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        Node::deepHash(relation_),
+        Node::deepHash(alias_),
+        Node::deepHashAll(columnNames_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<AliasedRelation>();
+    return Node::deepEqual(relation_, o.relation_) &&
+        Node::deepEqual(alias_, o.alias_) &&
+        Node::deepEqualAll(columnNames_, o.columnNames_);
+  }
 
  private:
   RelationPtr relation_;
@@ -393,6 +537,21 @@ class SampledRelation : public Relation {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        Node::deepHash(relation_),
+        std::hash<Type>{}(sampleType_),
+        Node::deepHash(samplePercentage_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<SampledRelation>();
+    return Node::deepEqual(relation_, o.relation_) &&
+        sampleType_ == o.sampleType_ &&
+        Node::deepEqual(samplePercentage_, o.samplePercentage_);
+  }
+
  private:
   RelationPtr relation_;
   Type sampleType_;
@@ -409,6 +568,15 @@ class TableSubquery : public QueryBody {
   }
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return Node::deepHash(query_);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    return Node::deepEqual(query_, other.as<TableSubquery>()->query_);
+  }
+
  private:
   StatementPtr query_;
 };
@@ -422,6 +590,15 @@ class Lateral : public Relation {
     return query_;
   }
   void accept(AstVisitor* visitor) override;
+
+  size_t hash() const override {
+    return Node::deepHash(query_);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    return Node::deepEqual(query_, other.as<Lateral>()->query_);
+  }
 
  private:
   RelationPtr query_;
@@ -447,6 +624,18 @@ class Unnest : public Relation {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        Node::deepHashAll(expressions_), std::hash<bool>{}(withOrdinality_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<Unnest>();
+    return Node::deepEqualAll(expressions_, o.expressions_) &&
+        withOrdinality_ == o.withOrdinality_;
+  }
+
  private:
   std::vector<ExpressionPtr> expressions_;
   bool withOrdinality_;
@@ -461,6 +650,15 @@ class Values : public QueryBody {
     return rows_;
   }
   void accept(AstVisitor* visitor) override;
+
+  size_t hash() const override {
+    return Node::deepHashAll(rows_);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    return Node::deepEqualAll(rows_, other.as<Values>()->rows_);
+  }
 
  private:
   std::vector<ExpressionPtr> rows_;
@@ -485,6 +683,15 @@ class JoinOn : public JoinCriteria {
   }
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return Node::deepHash(expression_);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    return Node::deepEqual(expression_, other.as<JoinOn>()->expression_);
+  }
+
  private:
   ExpressionPtr expression_;
 };
@@ -500,6 +707,15 @@ class JoinUsing : public JoinCriteria {
     return columns_;
   }
   void accept(AstVisitor* visitor) override;
+
+  size_t hash() const override {
+    return Node::deepHashAll(columns_);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    return Node::deepEqualAll(columns_, other.as<JoinUsing>()->columns_);
+  }
 
  private:
   std::vector<std::shared_ptr<Identifier>> columns_;
@@ -539,6 +755,22 @@ class Join : public Relation {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        std::hash<Type>{}(joinType_),
+        Node::deepHash(left_),
+        Node::deepHash(right_),
+        Node::deepHash(criteria_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<Join>();
+    return joinType_ == o.joinType_ && Node::deepEqual(left_, o.left_) &&
+        Node::deepEqual(right_, o.right_) &&
+        Node::deepEqual(criteria_, o.criteria_);
+  }
+
  private:
   Type joinType_;
   RelationPtr left_;
@@ -571,6 +803,20 @@ class NaturalJoin : public Relation {
   }
 
   void accept(AstVisitor* visitor) override;
+
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        std::hash<Join::Type>{}(joinType_),
+        Node::deepHash(left_),
+        Node::deepHash(right_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<NaturalJoin>();
+    return joinType_ == o.joinType_ && Node::deepEqual(left_, o.left_) &&
+        Node::deepEqual(right_, o.right_);
+  }
 
  private:
   Join::Type joinType_;
@@ -620,6 +866,20 @@ class Union : public SetOperation {
       : SetOperation(NodeType::kUnion, location, left, right, distinct) {}
 
   void accept(AstVisitor* visitor) override;
+
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        Node::deepHash(left_),
+        Node::deepHash(right_),
+        std::hash<bool>{}(distinct_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<Union>();
+    return Node::deepEqual(left_, o.left_) &&
+        Node::deepEqual(right_, o.right_) && distinct_ == o.distinct_;
+  }
 };
 
 class Intersect : public SetOperation {
@@ -632,6 +892,20 @@ class Intersect : public SetOperation {
       : SetOperation(NodeType::kIntersect, location, left, right, distinct) {}
 
   void accept(AstVisitor* visitor) override;
+
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        Node::deepHash(left_),
+        Node::deepHash(right_),
+        std::hash<bool>{}(distinct_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<Intersect>();
+    return Node::deepEqual(left_, o.left_) &&
+        Node::deepEqual(right_, o.right_) && distinct_ == o.distinct_;
+  }
 };
 
 class Except : public SetOperation {
@@ -644,6 +918,20 @@ class Except : public SetOperation {
       : SetOperation(NodeType::kExcept, location, left, right, distinct) {}
 
   void accept(AstVisitor* visitor) override;
+
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        Node::deepHash(left_),
+        Node::deepHash(right_),
+        std::hash<bool>{}(distinct_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<Except>();
+    return Node::deepEqual(left_, o.left_) &&
+        Node::deepEqual(right_, o.right_) && distinct_ == o.distinct_;
+  }
 };
 
 } // namespace axiom::sql::presto
