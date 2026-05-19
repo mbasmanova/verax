@@ -1058,20 +1058,20 @@ TEST_F(SetTest, unionDistinctWithUnnestMultipleReferences) {
 
   auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
 
-  auto matchUnion = [&] {
-    return matchScan("t")
-        .unnest()
-        .project()
-        .localPartition(matchScan("t").project().build())
-        .distinct()
-        .singleAggregation({}, {"count(*)"});
-  };
-
-  // TODO: Deduplicate identical scalar subqueries.
-  auto matcher = matchValues()
-                     .nestedLoopJoin(matchUnion().build())
-                     .nestedLoopJoin(matchUnion().build())
-                     .build();
+  // The two SELECT items reference the same scalar subquery, which is
+  // planned once and joined once; the outer Project emits the join's
+  // single output column twice (one per SELECT item).
+  auto matcher =
+      matchValues()
+          .nestedLoopJoin(matchScan("t")
+                              .unnest()
+                              .project()
+                              .localPartition(matchScan("t").project().build())
+                              .distinct()
+                              .singleAggregation({}, {"count(*) as cnt"})
+                              .build())
+          .project({"cnt", "cnt"})
+          .build();
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 

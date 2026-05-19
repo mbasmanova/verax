@@ -580,7 +580,15 @@ lp::ExprApi ExpressionPlanner::toExpr(const ExpressionPtr& node) {
       if (query->is(NodeType::kQuery)) {
         VELOX_CHECK_NOT_NULL(
             subqueryPlanner_, "Subquery expressions require a SubqueryPlanner");
-        return lp::Subquery(subqueryPlanner_(query->as<Query>()));
+        // Look up first; if not cached, plan and insert. Do not hold an
+        // iterator across subqueryPlanner_ because it may recursively plan
+        // a subquery that mutates the cache and invalidates iterators.
+        if (auto it = subqueryCache_.find(query); it != subqueryCache_.end()) {
+          return it->second;
+        }
+        auto expr = lp::Subquery(subqueryPlanner_(query->as<Query>()));
+        subqueryCache_.emplace(query, expr);
+        return expr;
       }
 
       AXIOM_PRESTO_SYNTAX_FAIL(
