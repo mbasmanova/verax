@@ -86,6 +86,16 @@ class BitSet {
     velox::bits::forEachSetBit(bits_.data(), 0, bits_.size() * 64, f);
   }
 
+  /// True if 'predicate' returns true for any set bit. Short-circuits at the
+  /// first match. 'predicate' takes a zero-based bit index.
+  template <typename Predicate>
+  bool anyOf(Predicate predicate) const {
+    return !velox::bits::testSetBits(
+        bits_.data(), 0, static_cast<int32_t>(bits_.size() * 64), [&](auto id) {
+          return !predicate(id);
+        });
+  }
+
  protected:
   void ensureSize(size_t id) {
     ensureWords(velox::bits::nwords(id + 1));

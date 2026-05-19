@@ -248,6 +248,21 @@ class PlanObjectSet : public BitSet {
     });
   }
 
+  /// True if 'predicate' returns true for any object in 'this'. Short-
+  /// circuits at the first match.
+  template <typename Predicate>
+  bool anyOf(Predicate predicate) const {
+    return anyOf<PlanObject>(predicate);
+  }
+
+  template <typename T, typename Predicate>
+  bool anyOf(Predicate predicate) const {
+    auto ctx = queryCtx();
+    return BitSet::anyOf([&](auto id) {
+      return predicate(ctx->objectAt(id)->template as<T>());
+    });
+  }
+
   /// Prnts the contents with ids and the string representation of the objects
   /// if 'names' is true.
   std::string toString(bool names) const;

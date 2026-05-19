@@ -613,6 +613,11 @@ PlanObjectSet Expr::allTables() const {
   return set;
 }
 
+bool Expr::hasAnyTableIn(const PlanObjectSet& tables) const {
+  return columns_.anyOf<Column>(
+      [&](auto column) { return tables.contains(column->relation()); });
+}
+
 Column::Column(
     Name name,
     PlanObjectCP relation,

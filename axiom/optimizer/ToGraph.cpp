@@ -205,13 +205,8 @@ bool isOutsideDt(PlanObjectCP table, DerivedTableCP dt) {
 
 // True if 'tables' contains any object outside of 'dt'.
 bool anyOutsideDt(const PlanObjectSet& tables, DerivedTableCP dt) {
-  bool outside = false;
-  tables.forEach([&](PlanObjectCP table) {
-    if (isOutsideDt(table, dt)) {
-      outside = true;
-    }
-  });
-  return outside;
+  return tables.anyOf(
+      [&](PlanObjectCP table) { return isOutsideDt(table, dt); });
 }
 
 DerivedTableScopeUse classifyScope(ExprCP expr, DerivedTableP dt) {
@@ -2131,18 +2126,23 @@ void ToGraph::translateJoin(
     const lp::LogicalPlanNodePtr& right,
     lp::JoinType joinType,
     const lp::ExprPtr& condition,
-    lp::JoinType originalJoinType) {
+    lp::JoinType originalJoinType,
+    const lp::LogicalPlanNode* joinNode) {
   if (joinType == lp::JoinType::kInner) {
     // Inner join is a cross join with a filter. Both sides are already in the
     // DT. Process the condition as a filter. This handles subqueries using the
-    // same infrastructure as WHERE clause predicates.
+    // same infrastructure as WHERE clause predicates. 'joinNode' (when
+    // provided by the caller) exposes both sides via its outputType, so
+    // 'usedChannels(input)' downstream of 'addFilter' sees columns from both
+    // sides — required for the carry-forward path in correlated scalar
+    // subqueries whose decorrelation injects an outer aggregation.
     if (condition) {
       exprSources_.push_back(right.get());
       SCOPE_EXIT {
         exprSources_.pop_back();
       };
 
-      addFilter(*left, condition);
+      addFilter(joinNode != nullptr ? *joinNode : *left, condition);
     }
     return;
   }
@@ -2339,7 +2339,7 @@ void ToGraph::finalizeDt(
   // new outer scope. Keeping them wastes lookup time and inflates later
   // walks that visit 'renames_' to rewrite expressions through a wrap.
   for (auto it = renames_.begin(); it != renames_.end();) {
-    if (it->second->allTables().hasIntersection(dt->tableSet)) {
+    if (it->second->hasAnyTableIn(dt->tableSet)) {
       it = renames_.erase(it);
     } else {
       ++it;
@@ -2374,12 +2374,8 @@ void ToGraph::finalizeDtPreservingCorrelations(
   finalizeDt(node);
   applyContext_.lifted = std::move(saved);
 
-  for (auto& conjunct : applyContext_.lifted.predicates) {
-    conjunct = dt->exportExpr(conjunct);
-  }
-  for (auto& projection : applyContext_.lifted.projections) {
-    projection = dt->exportExpr(projection);
-  }
+  applyContext_.lifted.rewriteExprs(
+      [&](ExprCP& expr) { expr = dt->exportExpr(expr); });
 }
 
 ColumnCP ToGraph::makeCountStarWrapper(DerivedTableP inputDt) {
@@ -3222,6 +3218,55 @@ void ToGraph::maybeWrapForChainedSubquery(
   }
 }
 
+DerivedTableP ToGraph::wrapForSubqueryCorrelation() {
+  auto* wrappedDt = currentDt_;
+  auto* outerDt = newDt();
+  outerDt->addTable(wrappedDt);
+  currentDt_ = outerDt;
+
+  // exportExpr only updates outputColumns when it has been initialized.
+  if (!wrappedDt->outputColumns.has_value()) {
+    wrappedDt->outputColumns.emplace();
+  }
+
+  auto rewrite = [&](ExprCP& expr) {
+    if (expr->hasAnyTableIn(wrappedDt->tableSet)) {
+      expr = wrappedDt->exportExpr(expr);
+    }
+  };
+
+  // Iterate 'renames_' in sorted order so the wrapper's 'outputColumns'
+  // (populated by 'exportExpr' in first-seen order) is deterministic.
+  // F14FastMap uses a randomized hash seed, so raw iteration order varies
+  // across process runs and surfaces as plan-shape flakiness downstream.
+  // Collect string_views to avoid copying the keys; the views remain
+  // valid because renames_ is not modified structurally below (only its
+  // mapped values are reassigned).
+  std::vector<std::string_view> renameKeys;
+  renameKeys.reserve(renames_.size());
+  for (const auto& [name, _] : renames_) {
+    renameKeys.emplace_back(name);
+  }
+  std::sort(renameKeys.begin(), renameKeys.end());
+  for (auto name : renameKeys) {
+    rewrite(renames_.at(name));
+  }
+  for (auto& [key, value] : subqueries_) {
+    rewrite(value);
+  }
+  applyContext_.lifted.rewriteExprs(rewrite);
+
+  return wrappedDt;
+}
+
+DerivedTableP ToGraph::wrapAroundSubquery(DerivedTableP subqueryDt) {
+  // Precondition: 'subqueryDt' is the last table added (by translateSubquery).
+  currentDt_->removeLastTable(subqueryDt);
+  auto* wrappedDt = wrapForSubqueryCorrelation();
+  currentDt_->addTable(subqueryDt);
+  return wrappedDt;
+}
+
 ExprCP ToGraph::processUncorrelatedScalarSubquery(DerivedTableP subqueryDt) {
   VELOX_CHECK_EQ(1, subqueryDt->columns.size());
 
@@ -3259,6 +3304,64 @@ Literal* tryMakeLiteralForEmptyInput(AggregateCP agg) {
   }
   return make<Literal>(Value(agg->value().type, 1), registerVariant(result));
 }
+
+// Tables that 'expr' references in the current scope outside 'subqueryDt'
+// (i.e., outer-scope correlation sources).
+PlanObjectSet outerTablesOf(ExprCP expr, DerivedTableP subqueryDt) {
+  PlanObjectSet outer;
+  expr->allTables().forEach([&](PlanObjectCP table) {
+    if (isOutsideDt(table, subqueryDt)) {
+      outer.add(table);
+    }
+  });
+  return outer;
+}
+
+// Outer tables reached by correlation conjuncts, split by whether each
+// conjunct is an equi-correlation (single-outer / single-inner equality
+// that 'extractDecorrelatedJoin' will turn into a SEMI join key). Non-equi
+// conjuncts land in the SEMI's filter, where references to sibling tables
+// of the outer table are unplaceable.
+struct CorrelationOuterTables {
+  PlanObjectSet equi;
+  PlanObjectSet nonEqui;
+
+  // Number of unique outer tables across both equi and nonEqui.
+  size_t numOuterTables() const {
+    PlanObjectSet all = equi;
+    all.unionSet(nonEqui);
+    return all.size();
+  }
+};
+
+CorrelationOuterTables classifyCorrelation(
+    const ExprVector& conjuncts,
+    DerivedTableP subqueryDt,
+    const ToGraph& toGraph) {
+  CorrelationOuterTables result;
+  for (const auto* conjunct : conjuncts) {
+    PlanObjectSet outer;
+    PlanObjectSet inner;
+    conjunct->allTables().forEach([&](PlanObjectCP table) {
+      if (table == subqueryDt) {
+        return;
+      }
+      (subqueryDt->tableSet.contains(table) ? inner : outer).add(table);
+    });
+    ExprCP ignoredLeft = nullptr;
+    ExprCP ignoredRight = nullptr;
+    const bool isEqui = outer.size() == 1 && inner.size() == 1 &&
+        toGraph.isJoinEquality(
+            conjunct,
+            outer.onlyObject(),
+            inner.onlyObject(),
+            ignoredLeft,
+            ignoredRight);
+    auto& bucket = isEqui ? result.equi : result.nonEqui;
+    outer.forEach([&](PlanObjectCP table) { bucket.add(table); });
+  }
+  return result;
+}
 } // namespace
 
 ExprCP ToGraph::processCorrelatedScalarSubquery(
@@ -3266,6 +3369,17 @@ ExprCP ToGraph::processCorrelatedScalarSubquery(
     DerivedTableP subqueryDt,
     SubqueryChain& chain,
     ApplyContext::Lifted* outerLifted) {
+  // Non-equi correlation conjuncts land in the decorrelating LEFT JOIN's
+  // filter. A filter reference to a sibling of the join's left side is
+  // unplaceable. Wrap when there is at least one non-equi conjunct AND the
+  // outer surface spans more than one table, so the wrapper becomes the
+  // join's single left side.
+  const auto outer =
+      classifyCorrelation(applyContext_.lifted.predicates, subqueryDt, *this);
+  if (!outer.nonEqui.empty() && outer.numOuterTables() > 1) {
+    wrapAroundSubquery(subqueryDt);
+  }
+
   auto correlation = extractCorrelationKeys(
       functionNames_, applyContext_.lifted.predicates, subqueryDt);
 
@@ -3646,19 +3760,50 @@ void ToGraph::processInPredicates(
       inRightKey = subqueryDt->columns.front();
     }
 
+    auto leftKey = translateExpr(predicate->inputAt(0));
+
+    const bool inRightHasOuter =
+        anyOutsideDt(inRightKey->allTables(), subqueryDt);
+    const bool isCorrelated =
+        !applyContext_.lifted.predicates.empty() || inRightHasOuter;
+
+    // Velox HashJoin cannot represent a multi-key null-aware join, so the
+    // SEMI's left side must be a single table. If correlation reaches more
+    // than one outer table (via leftKey, inRightKey, or correlation
+    // conjuncts), wrap them into a sub-DT. 'inRightKey' must be folded
+    // into the decision because the lifted projection — already drained
+    // from applyContext_ above — is not visible to
+    // 'wrapForSubqueryCorrelation's own renames_/lifted rewrite, and an
+    // outer-table reference there can be the sole multi-table signal.
+    if (isCorrelated) {
+      auto outer = outerTablesOf(leftKey, subqueryDt);
+      if (inRightHasOuter) {
+        outer.unionSet(outerTablesOf(inRightKey, subqueryDt));
+      }
+      for (const auto* conjunct : applyContext_.lifted.predicates) {
+        outer.unionSet(outerTablesOf(conjunct, subqueryDt));
+      }
+      if (outer.size() > 1) {
+        auto* wrappedDt = wrapAroundSubquery(subqueryDt);
+        leftKey = wrappedDt->exportExpr(leftKey);
+        // The lifted projection was already moved into 'inRightKey'; re-
+        // export it manually so any reference into the wrapped DT becomes
+        // a wrapper-exported column rather than a stale inner reference.
+        if (inRightHasOuter) {
+          inRightKey = wrappedDt->exportExpr(inRightKey);
+        }
+      }
+    }
+
     // Add a join edge and replace 'expr' with 'mark' column in the join
     // output.
     const auto* markColumn = addMarkColumn();
 
-    auto leftKey = translateExpr(predicate->inputAt(0));
     // May be nullptr when the left expression references multiple tables
     // (e.g., ROW(t.a, u.b) IN (SELECT ...)). The downstream IN-subquery
     // processors handle nullptr by creating a join edge without a specific
     // left table; the optimizer resolves it from the equality keys.
     auto* leftTable = leftKey->singleTable();
-
-    const bool inRightHasOuter =
-        anyOutsideDt(inRightKey->allTables(), subqueryDt);
 
     ExprCP column;
     if (applyContext_.lifted.predicates.empty() && !inRightHasOuter) {
@@ -3893,6 +4038,18 @@ ExprCP ToGraph::processCorrelatedExists(DerivedTableP subqueryDt) {
   // Finalize the subqueryDt (add to currentDt_).
   currentDt_->addTable(subqueryDt);
 
+  // Non-equi correlation conjuncts land in the SEMI's filter; a filter
+  // reference to a sibling of the SEMI's left side is unplaceable. When
+  // equi is non-empty, equi outers become the SEMI's left; when equi is
+  // empty, a single nonEqui outer becomes the left. Either way, the wrap
+  // is required exactly when there is at least one non-equi conjunct AND
+  // the outer surface spans more than one table.
+  const auto outer =
+      classifyCorrelation(applyContext_.lifted.predicates, subqueryDt, *this);
+  if (!outer.nonEqui.empty() && outer.numOuterTables() > 1) {
+    wrapAroundSubquery(subqueryDt);
+  }
+
   auto decorrelated = extractDecorrelatedJoin(
       functionNames_, applyContext_.lifted.predicates, subqueryDt);
   if (decorrelated.leftKeys.empty()) {
@@ -4079,13 +4236,8 @@ void ToGraph::addFilter(
       // folding collapses one side of an equality) is a pure-outer
       // guard, not a correlation key. Route it to 'outerGuards' so
       // 'attachScalarSubqueryToOuter' wraps the scalar result in an IF.
-      bool hasInner = false;
-      conjunct->columns().template forEach<Column>([&](ColumnCP col) {
-        if (tables.contains(col->relation())) {
-          hasInner = true;
-        }
-      });
-      if (hasInner) {
+      if (conjunct->columns().anyOf<Column>(
+              [&](ColumnCP col) { return tables.contains(col->relation()); })) {
         applyContext_.lifted.predicates.push_back(conjunct);
       } else {
         applyContext_.lifted.outerGuards.push_back(conjunct);
@@ -4630,7 +4782,8 @@ void ToGraph::makeQueryGraph(
             /*excludeWindows=*/true);
       }
 
-      translateJoin(left, right, joinType, remainingCondition, join.joinType());
+      translateJoin(
+          left, right, joinType, remainingCondition, join.joinType(), &join);
     } break;
     case lp::NodeKind::kSort: {
       const auto& input = *node.onlyInput();

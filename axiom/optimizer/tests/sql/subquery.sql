@@ -421,3 +421,63 @@ SELECT (SELECT max(u.a + t.b) + sum(u.a) FROM u WHERE u.a > 0) FROM t
 -- Scalar subquery whose SELECT references the same inner column more
 -- than once alongside an outer column.
 SELECT (SELECT u.a + t.a + u.a + 1 FROM u WHERE u.a = t.a) FROM t
+----
+-- IN subquery in a JOIN ON clause whose correlation references a sibling
+-- of the IN's outer table.
+SELECT *
+FROM (VALUES ('a')) AS t(a)
+INNER JOIN (VALUES ('a')) AS u(k)
+  ON t.a IN (
+      SELECT v.b
+      FROM (VALUES ('a', 'a')) AS v(k, b)
+      WHERE v.k = u.k
+  )
+----
+-- IN subquery whose SELECT references a sibling outer table ('u.b') not
+-- touched by the IN's left key ('t.a') or the correlation conjunct
+-- ('v.k = t.a'). For (t.a=1, u.b=1) the inner row passes 'v.k = 1' and
+-- yields 1, so 't.a = 1' matches.
+SELECT *
+FROM (VALUES (1)) AS t(a), (VALUES (1)) AS u(b)
+WHERE t.a IN (
+    SELECT u.b
+    FROM (VALUES (1)) AS v(k)
+    WHERE v.k = t.a
+)
+----
+-- EXISTS subquery in a JOIN ON clause whose non-equi correlation
+-- references a sibling of the EXISTS's outer table.
+SELECT *
+FROM (VALUES (1)) AS t(a)
+INNER JOIN (VALUES (1)) AS u(k)
+  ON EXISTS (
+      SELECT 1
+      FROM (VALUES (1, 1)) AS v(b, k)
+      WHERE v.k = t.a AND v.b >= u.k
+  )
+----
+-- Scalar subquery in a JOIN ON clause whose non-equi correlation
+-- references a sibling of the subquery's outer table. For (t.a=1, u.k=1)
+-- the inner aggregate over 'v.k=1 AND v.b>1' is empty, so 'max(v.b)' is
+-- NULL and 't.a = NULL' is unknown — no rows match.
+-- count 0
+SELECT *
+FROM (VALUES (1)) AS t(a)
+INNER JOIN (VALUES (1)) AS u(k)
+  ON t.a = (
+      SELECT max(v.b)
+      FROM (VALUES (1, 1)) AS v(b, k)
+      WHERE v.k = t.a AND v.b > u.k
+  )
+----
+-- Same shape as above, but the inner aggregate matches: for (t.a=2, u.k=1)
+-- 'v.b > 1 AND v.k = 2' selects (2, 2), so 'max(v.b)' is 2 and 't.a = 2'
+-- holds. Sibling outer column 'u.k' must appear in the output row.
+SELECT *
+FROM (VALUES (2)) AS t(a)
+INNER JOIN (VALUES (1)) AS u(k)
+  ON t.a = (
+      SELECT max(v.b)
+      FROM (VALUES (1, 2), (2, 2)) AS v(b, k)
+      WHERE v.k = t.a AND v.b > u.k
+  )

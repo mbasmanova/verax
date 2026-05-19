@@ -49,6 +49,12 @@ class Expr : public PlanObject {
   /// Returns all tables 'this' depends on.
   PlanObjectSet allTables() const;
 
+  /// True if 'this' depends on any table whose id is in 'tables'.
+  /// Equivalent to 'allTables().hasIntersection(tables)' but avoids
+  /// materializing the intermediate set and short-circuits at the first
+  /// match.
+  bool hasAnyTableIn(const PlanObjectSet& tables) const;
+
   /// True if '&other == this' or is recursively equal with column
   /// leaves either same or in same equivalence.
   bool sameOrEqual(const Expr& other) const;
