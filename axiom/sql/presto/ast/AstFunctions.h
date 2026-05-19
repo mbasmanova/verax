@@ -15,9 +15,12 @@
  */
 #pragma once
 
+#include <folly/hash/Hash.h>
 #include <optional>
 #include <vector>
+#include "axiom/sql/presto/ast/AstExpressions.h"
 #include "axiom/sql/presto/ast/AstNode.h"
+#include "axiom/sql/presto/ast/AstSupport.h"
 
 namespace axiom::sql::presto {
 
@@ -57,6 +60,21 @@ class IfExpression : public Expression {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        Node::deepHash(condition_),
+        Node::deepHash(trueValue_),
+        Node::deepHash(falseValue_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<IfExpression>();
+    return Node::deepEqual(condition_, o.condition_) &&
+        Node::deepEqual(trueValue_, o.trueValue_) &&
+        Node::deepEqual(falseValue_, o.falseValue_);
+  }
+
  private:
   ExpressionPtr condition_;
   ExpressionPtr trueValue_;
@@ -75,6 +93,16 @@ class CoalesceExpression : public Expression {
     return operands_;
   }
   void accept(AstVisitor* visitor) override;
+
+  size_t hash() const override {
+    return Node::deepHashAll(operands_);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    return Node::deepEqualAll(
+        operands_, other.as<CoalesceExpression>()->operands_);
+  }
 
  private:
   std::vector<ExpressionPtr> operands_;
@@ -99,6 +127,18 @@ class NullIfExpression : public Expression {
   }
 
   void accept(AstVisitor* visitor) override;
+
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        Node::deepHash(first_), Node::deepHash(second_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<NullIfExpression>();
+    return Node::deepEqual(first_, o.first_) &&
+        Node::deepEqual(second_, o.second_);
+  }
 
  private:
   ExpressionPtr first_;
@@ -125,6 +165,18 @@ class WhenClause : public Node {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        Node::deepHash(operand_), Node::deepHash(result_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<WhenClause>();
+    return Node::deepEqual(operand_, o.operand_) &&
+        Node::deepEqual(result_, o.result_);
+  }
+
  private:
   ExpressionPtr operand_;
   ExpressionPtr result_;
@@ -149,6 +201,18 @@ class SearchedCaseExpression : public Expression {
   }
 
   void accept(AstVisitor* visitor) override;
+
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        Node::deepHashAll(whenClauses_), Node::deepHash(defaultValue_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<SearchedCaseExpression>();
+    return Node::deepEqualAll(whenClauses_, o.whenClauses_) &&
+        Node::deepEqual(defaultValue_, o.defaultValue_);
+  }
 
  private:
   std::vector<std::shared_ptr<WhenClause>> whenClauses_;
@@ -181,6 +245,21 @@ class SimpleCaseExpression : public Expression {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        Node::deepHash(operand_),
+        Node::deepHashAll(whenClauses_),
+        Node::deepHash(defaultValue_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<SimpleCaseExpression>();
+    return Node::deepEqual(operand_, o.operand_) &&
+        Node::deepEqualAll(whenClauses_, o.whenClauses_) &&
+        Node::deepEqual(defaultValue_, o.defaultValue_);
+  }
+
  private:
   ExpressionPtr operand_;
   std::vector<std::shared_ptr<WhenClause>> whenClauses_;
@@ -199,6 +278,16 @@ class TryExpression : public Expression {
     return innerExpression_;
   }
   void accept(AstVisitor* visitor) override;
+
+  size_t hash() const override {
+    return Node::deepHash(innerExpression_);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    return Node::deepEqual(
+        innerExpression_, other.as<TryExpression>()->innerExpression_);
+  }
 
  private:
   ExpressionPtr innerExpression_;
@@ -263,6 +352,28 @@ class FunctionCall : public Expression {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        Node::deepHash(name_),
+        Node::deepHash(window_),
+        Node::deepHash(filter_),
+        Node::deepHash(orderBy_),
+        std::hash<bool>{}(distinct_),
+        std::hash<bool>{}(ignoreNulls_),
+        Node::deepHashAll(arguments_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<FunctionCall>();
+    return Node::deepEqual(name_, o.name_) &&
+        Node::deepEqual(window_, o.window_) &&
+        Node::deepEqual(filter_, o.filter_) &&
+        Node::deepEqual(orderBy_, o.orderBy_) && distinct_ == o.distinct_ &&
+        ignoreNulls_ == o.ignoreNulls_ &&
+        Node::deepEqualAll(arguments_, o.arguments_);
+  }
+
  private:
   std::shared_ptr<QualifiedName> name_;
   std::shared_ptr<Window> window_;
@@ -298,6 +409,20 @@ class Cast : public Expression {
   }
 
   void accept(AstVisitor* visitor) override;
+
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        Node::deepHash(expression_),
+        Node::deepHash(toType_),
+        std::hash<bool>{}(safe_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<Cast>();
+    return Node::deepEqual(expression_, o.expression_) &&
+        Node::deepEqual(toType_, o.toType_) && safe_ == o.safe_;
+  }
 
  private:
   ExpressionPtr expression_;
@@ -342,6 +467,17 @@ class Extract : public Expression {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        Node::deepHash(expression_), std::hash<Field>{}(field_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<Extract>();
+    return Node::deepEqual(expression_, o.expression_) && field_ == o.field_;
+  }
+
  private:
   ExpressionPtr expression_;
   Field field_;
@@ -369,6 +505,18 @@ class CurrentTime : public Expression {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        std::hash<Function>{}(function_),
+        precision_.has_value() ? std::hash<int>{}(*precision_) : 0);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<CurrentTime>();
+    return function_ == o.function_ && precision_ == o.precision_;
+  }
+
  private:
   Function function_;
   std::optional<int> precision_;
@@ -379,6 +527,15 @@ class CurrentUser : public Expression {
   explicit CurrentUser(NodeLocation location)
       : Expression(NodeType::kCurrentUser, location) {}
   void accept(AstVisitor* visitor) override;
+
+  size_t hash() const override {
+    return 0;
+  }
+
+ protected:
+  bool equals(const Node& /*other*/) const override {
+    return true;
+  }
 };
 
 class AtTimeZone : public Expression {
@@ -401,6 +558,18 @@ class AtTimeZone : public Expression {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        Node::deepHash(value_), Node::deepHash(timeZone_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<AtTimeZone>();
+    return Node::deepEqual(value_, o.value_) &&
+        Node::deepEqual(timeZone_, o.timeZone_);
+  }
+
  private:
   ExpressionPtr value_;
   ExpressionPtr timeZone_;
@@ -418,6 +587,15 @@ class SubqueryExpression : public Expression {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return Node::deepHash(query_);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    return Node::deepEqual(query_, other.as<SubqueryExpression>()->query_);
+  }
+
  private:
   StatementPtr query_;
 };
@@ -434,6 +612,15 @@ class ArrayConstructor : public Expression {
   }
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return Node::deepHashAll(values_);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    return Node::deepEqualAll(values_, other.as<ArrayConstructor>()->values_);
+  }
+
  private:
   std::vector<ExpressionPtr> values_;
 };
@@ -447,6 +634,15 @@ class Row : public Expression {
     return items_;
   }
   void accept(AstVisitor* visitor) override;
+
+  size_t hash() const override {
+    return Node::deepHashAll(items_);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    return Node::deepEqualAll(items_, other.as<Row>()->items_);
+  }
 
  private:
   std::vector<ExpressionPtr> items_;
@@ -473,6 +669,21 @@ class NamedRow : public Expression {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    size_t namesHash = fieldNames_.size();
+    for (const auto& name : fieldNames_) {
+      namesHash =
+          folly::hash::hash_combine(namesHash, std::hash<std::string>{}(name));
+    }
+    return folly::hash::hash_combine(Node::deepHashAll(items_), namesHash);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<NamedRow>();
+    return Node::deepEqualAll(items_, o.items_) && fieldNames_ == o.fieldNames_;
+  }
+
  private:
   std::vector<ExpressionPtr> items_;
   std::vector<std::string> fieldNames_;
@@ -498,6 +709,17 @@ class SubscriptExpression : public Expression {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        Node::deepHash(base_), Node::deepHash(index_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<SubscriptExpression>();
+    return Node::deepEqual(base_, o.base_) && Node::deepEqual(index_, o.index_);
+  }
+
  private:
   ExpressionPtr base_;
   ExpressionPtr index_;
@@ -514,6 +736,15 @@ class LambdaArgumentDeclaration : public Node {
     return name_;
   }
   void accept(AstVisitor* visitor) override;
+
+  size_t hash() const override {
+    return Node::deepHash(name_);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    return Node::deepEqual(name_, other.as<LambdaArgumentDeclaration>()->name_);
+  }
 
  private:
   std::shared_ptr<Identifier> name_;
@@ -540,6 +771,18 @@ class LambdaExpression : public Expression {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        Node::deepHashAll(arguments_), Node::deepHash(body_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<LambdaExpression>();
+    return Node::deepEqualAll(arguments_, o.arguments_) &&
+        Node::deepEqual(body_, o.body_);
+  }
+
  private:
   std::vector<std::shared_ptr<LambdaArgumentDeclaration>> arguments_;
   ExpressionPtr body_;
@@ -565,6 +808,18 @@ class BindExpression : public Expression {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        Node::deepHashAll(values_), Node::deepHash(function_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<BindExpression>();
+    return Node::deepEqualAll(values_, o.values_) &&
+        Node::deepEqual(function_, o.function_);
+  }
+
  private:
   std::vector<ExpressionPtr> values_;
   ExpressionPtr function_;
@@ -582,6 +837,16 @@ class GroupingOperation : public Expression {
     return groupingColumns_;
   }
   void accept(AstVisitor* visitor) override;
+
+  size_t hash() const override {
+    return Node::deepHashAll(groupingColumns_);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    return Node::deepEqualAll(
+        groupingColumns_, other.as<GroupingOperation>()->groupingColumns_);
+  }
 
  private:
   std::vector<std::shared_ptr<QualifiedName>> groupingColumns_;
@@ -608,6 +873,17 @@ class TableVersionExpression : public Expression {
   }
 
   void accept(AstVisitor* visitor) override;
+
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        std::hash<TableVersionType>{}(type_), Node::deepHash(expression_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<TableVersionExpression>();
+    return type_ == o.type_ && Node::deepEqual(expression_, o.expression_);
+  }
 
  private:
   TableVersionType type_;

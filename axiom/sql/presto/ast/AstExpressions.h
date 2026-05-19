@@ -15,6 +15,7 @@
  */
 #pragma once
 
+#include <folly/hash/Hash.h>
 #include <vector>
 #include "axiom/sql/presto/ast/AstNode.h"
 
@@ -44,6 +45,17 @@ class Identifier : public Expression {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        std::hash<std::string>{}(value_), std::hash<bool>{}(delimited_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<Identifier>();
+    return value_ == o.value_ && delimited_ == o.delimited_;
+  }
+
  private:
   std::string value_;
   bool delimited_;
@@ -72,6 +84,19 @@ class QualifiedName : public Expression {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    size_t h = parts_.size();
+    for (const auto& part : parts_) {
+      h = folly::hash::hash_combine(h, std::hash<std::string>{}(part));
+    }
+    return h;
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    return parts_ == other.as<QualifiedName>()->parts_;
+  }
+
  private:
   std::vector<std::string> parts_;
 };
@@ -98,6 +123,17 @@ class DereferenceExpression : public Expression {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        Node::deepHash(base_), Node::deepHash(field_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<DereferenceExpression>();
+    return Node::deepEqual(base_, o.base_) && Node::deepEqual(field_, o.field_);
+  }
+
  private:
   ExpressionPtr base_;
   std::shared_ptr<Identifier> field_;
@@ -115,6 +151,15 @@ class FieldReference : public Expression {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return std::hash<int>{}(fieldIndex_);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    return fieldIndex_ == other.as<FieldReference>()->fieldIndex_;
+  }
+
  private:
   int fieldIndex_;
 };
@@ -130,6 +175,15 @@ class SymbolReference : public Expression {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return std::hash<std::string>{}(name_);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    return name_ == other.as<SymbolReference>()->name_;
+  }
+
  private:
   std::string name_;
 };
@@ -144,6 +198,15 @@ class Parameter : public Expression {
   }
 
   void accept(AstVisitor* visitor) override;
+
+  size_t hash() const override {
+    return std::hash<int>{}(position_);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    return position_ == other.as<Parameter>()->position_;
+  }
 
  private:
   int position_;
@@ -178,6 +241,20 @@ class ArithmeticBinaryExpression : public Expression {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        std::hash<Operator>{}(operator_),
+        Node::deepHash(left_),
+        Node::deepHash(right_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<ArithmeticBinaryExpression>();
+    return operator_ == o.operator_ && Node::deepEqual(left_, o.left_) &&
+        Node::deepEqual(right_, o.right_);
+  }
+
  private:
   Operator operator_;
   ExpressionPtr left_;
@@ -205,6 +282,17 @@ class ArithmeticUnaryExpression : public Expression {
   }
 
   void accept(AstVisitor* visitor) override;
+
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        std::hash<Sign>{}(sign_), Node::deepHash(value_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<ArithmeticUnaryExpression>();
+    return sign_ == o.sign_ && Node::deepEqual(value_, o.value_);
+  }
 
  private:
   Sign sign_;
@@ -248,6 +336,20 @@ class ComparisonExpression : public Expression {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        std::hash<Operator>{}(operator_),
+        Node::deepHash(left_),
+        Node::deepHash(right_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<ComparisonExpression>();
+    return operator_ == o.operator_ && Node::deepEqual(left_, o.left_) &&
+        Node::deepEqual(right_, o.right_);
+  }
+
  private:
   Operator operator_;
   ExpressionPtr left_;
@@ -280,6 +382,18 @@ class BetweenPredicate : public Expression {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        Node::deepHash(value_), Node::deepHash(min_), Node::deepHash(max_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<BetweenPredicate>();
+    return Node::deepEqual(value_, o.value_) && Node::deepEqual(min_, o.min_) &&
+        Node::deepEqual(max_, o.max_);
+  }
+
  private:
   ExpressionPtr value_;
   ExpressionPtr min_;
@@ -306,6 +420,18 @@ class InPredicate : public Expression {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        Node::deepHash(value_), Node::deepHash(valueList_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<InPredicate>();
+    return Node::deepEqual(value_, o.value_) &&
+        Node::deepEqual(valueList_, o.valueList_);
+  }
+
  private:
   ExpressionPtr value_;
   ExpressionPtr valueList_;
@@ -324,6 +450,15 @@ class InListExpression : public Expression {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return Node::deepHashAll(values_);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    return Node::deepEqualAll(values_, other.as<InListExpression>()->values_);
+  }
+
  private:
   std::vector<ExpressionPtr> values_;
 };
@@ -339,6 +474,15 @@ class IsNullPredicate : public Expression {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return Node::deepHash(value_);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    return Node::deepEqual(value_, other.as<IsNullPredicate>()->value_);
+  }
+
  private:
   ExpressionPtr value_;
 };
@@ -353,6 +497,15 @@ class IsNotNullPredicate : public Expression {
   }
 
   void accept(AstVisitor* visitor) override;
+
+  size_t hash() const override {
+    return Node::deepHash(value_);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    return Node::deepEqual(value_, other.as<IsNotNullPredicate>()->value_);
+  }
 
  private:
   ExpressionPtr value_;
@@ -384,6 +537,21 @@ class LikePredicate : public Expression {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        Node::deepHash(value_),
+        Node::deepHash(pattern_),
+        Node::deepHash(escape_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<LikePredicate>();
+    return Node::deepEqual(value_, o.value_) &&
+        Node::deepEqual(pattern_, o.pattern_) &&
+        Node::deepEqual(escape_, o.escape_);
+  }
+
  private:
   ExpressionPtr value_;
   ExpressionPtr pattern_;
@@ -400,6 +568,15 @@ class ExistsPredicate : public Expression {
   }
 
   void accept(AstVisitor* visitor) override;
+
+  size_t hash() const override {
+    return Node::deepHash(subquery_);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    return Node::deepEqual(subquery_, other.as<ExistsPredicate>()->subquery_);
+  }
 
  private:
   ExpressionPtr subquery_;
@@ -439,6 +616,22 @@ class QuantifiedComparisonExpression : public Expression {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        std::hash<ComparisonExpression::Operator>{}(operator_),
+        std::hash<Quantifier>{}(quantifier_),
+        Node::deepHash(value_),
+        Node::deepHash(subquery_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<QuantifiedComparisonExpression>();
+    return operator_ == o.operator_ && quantifier_ == o.quantifier_ &&
+        Node::deepEqual(value_, o.value_) &&
+        Node::deepEqual(subquery_, o.subquery_);
+  }
+
  private:
   ComparisonExpression::Operator operator_;
   Quantifier quantifier_;
@@ -475,6 +668,20 @@ class LogicalBinaryExpression : public Expression {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        std::hash<Operator>{}(operator_),
+        Node::deepHash(left_),
+        Node::deepHash(right_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<LogicalBinaryExpression>();
+    return operator_ == o.operator_ && Node::deepEqual(left_, o.left_) &&
+        Node::deepEqual(right_, o.right_);
+  }
+
  private:
   Operator operator_;
   ExpressionPtr left_;
@@ -491,6 +698,15 @@ class NotExpression : public Expression {
   }
 
   void accept(AstVisitor* visitor) override;
+
+  size_t hash() const override {
+    return Node::deepHash(value_);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    return Node::deepEqual(value_, other.as<NotExpression>()->value_);
+  }
 
  private:
   ExpressionPtr value_;
