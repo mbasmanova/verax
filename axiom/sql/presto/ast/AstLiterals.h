@@ -15,6 +15,7 @@
  */
 #pragma once
 
+#include <folly/hash/Hash.h>
 #include <optional>
 #include <string>
 #include "axiom/sql/presto/ast/AstNode.h"
@@ -43,6 +44,15 @@ class BooleanLiteral : public Literal {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return std::hash<bool>{}(value_);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    return value_ == other.as<BooleanLiteral>()->value_;
+  }
+
  private:
   bool value_;
 };
@@ -57,6 +67,15 @@ class StringLiteral : public Literal {
   }
 
   void accept(AstVisitor* visitor) override;
+
+  size_t hash() const override {
+    return std::hash<std::string>{}(value_);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    return value_ == other.as<StringLiteral>()->value_;
+  }
 
  private:
   std::string value_;
@@ -73,6 +92,15 @@ class BinaryLiteral : public Literal {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return std::hash<std::string>{}(value_);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    return value_ == other.as<BinaryLiteral>()->value_;
+  }
+
  private:
   std::string value_;
 };
@@ -87,6 +115,15 @@ class CharLiteral : public Literal {
   }
 
   void accept(AstVisitor* visitor) override;
+
+  size_t hash() const override {
+    return std::hash<std::string>{}(value_);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    return value_ == other.as<CharLiteral>()->value_;
+  }
 
  private:
   std::string value_;
@@ -103,6 +140,15 @@ class LongLiteral : public Literal {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return std::hash<int64_t>{}(value_);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    return value_ == other.as<LongLiteral>()->value_;
+  }
+
  private:
   int64_t value_;
 };
@@ -118,6 +164,15 @@ class DoubleLiteral : public Literal {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return std::hash<double>{}(value_);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    return value_ == other.as<DoubleLiteral>()->value_;
+  }
+
  private:
   double value_;
 };
@@ -132,6 +187,15 @@ class DecimalLiteral : public Literal {
   }
 
   void accept(AstVisitor* visitor) override;
+
+  size_t hash() const override {
+    return std::hash<std::string>{}(value_);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    return value_ == other.as<DecimalLiteral>()->value_;
+  }
 
  private:
   std::string value_;
@@ -157,6 +221,17 @@ class GenericLiteral : public Literal {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        Node::deepHash(valueType_), std::hash<std::string>{}(value_));
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<GenericLiteral>();
+    return Node::deepEqual(valueType_, o.valueType_) && value_ == o.value_;
+  }
+
  private:
   TypeSignaturePtr valueType_;
   std::string value_;
@@ -167,6 +242,17 @@ class NullLiteral : public Literal {
   explicit NullLiteral(NodeLocation location)
       : Literal(NodeType::kNullLiteral, location) {}
   void accept(AstVisitor* visitor) override;
+
+  size_t hash() const override {
+    return 0;
+  }
+
+ protected:
+  /// All NullLiteral instances compare equal — the node has no semantic fields
+  /// beyond its type tag.
+  bool equals(const Node& /*other*/) const override {
+    return true;
+  }
 };
 
 class TimeLiteral : public Literal {
@@ -179,6 +265,15 @@ class TimeLiteral : public Literal {
   }
 
   void accept(AstVisitor* visitor) override;
+
+  size_t hash() const override {
+    return std::hash<std::string>{}(value_);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    return value_ == other.as<TimeLiteral>()->value_;
+  }
 
  private:
   std::string value_;
@@ -194,6 +289,15 @@ class TimestampLiteral : public Literal {
   }
 
   void accept(AstVisitor* visitor) override;
+
+  size_t hash() const override {
+    return std::hash<std::string>{}(value_);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    return value_ == other.as<TimestampLiteral>()->value_;
+  }
 
  private:
   std::string value_;
@@ -239,6 +343,21 @@ class IntervalLiteral : public Literal {
 
   void accept(AstVisitor* visitor) override;
 
+  size_t hash() const override {
+    return folly::hash::hash_combine(
+        std::hash<std::string>{}(value_),
+        std::hash<Sign>{}(sign_),
+        std::hash<IntervalField>{}(startField_),
+        endField_.has_value() ? std::hash<IntervalField>{}(*endField_) : 0);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    const auto& o = *other.as<IntervalLiteral>();
+    return value_ == o.value_ && sign_ == o.sign_ &&
+        startField_ == o.startField_ && endField_ == o.endField_;
+  }
+
  private:
   std::string value_;
   Sign sign_;
@@ -256,6 +375,15 @@ class EnumLiteral : public Literal {
   }
 
   void accept(AstVisitor* visitor) override;
+
+  size_t hash() const override {
+    return std::hash<std::string>{}(value_);
+  }
+
+ protected:
+  bool equals(const Node& other) const override {
+    return value_ == other.as<EnumLiteral>()->value_;
+  }
 
  private:
   std::string value_;
