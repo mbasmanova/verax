@@ -15,6 +15,7 @@
  */
 #pragma once
 
+#include <folly/container/F14Map.h>
 #include <functional>
 #include <unordered_map>
 #include <unordered_set>
@@ -144,6 +145,26 @@ class ExpressionPlanner {
   // connector-based resolution for dotted names (e.g., "catalog.schema.Type").
   facebook::velox::TypePtr resolveType(const TypeSignaturePtr& type);
 
+  // Dedups subquery expressions across textually-identical scalar subquery
+  // occurrences (e.g. same subquery in SELECT and GROUP BY of the same
+  // query). Keyed by AST structural equality on the inner Query, so two
+  // distinct AST nodes with equal Query bodies share one ExprApi (and
+  // therefore one inner LogicalPlanNode). Downstream ToGraph dedups
+  // subqueries by inner-plan pointer, so sharing the plan collapses them
+  // to a single result column. Holding StatementPtr (not a raw pointer)
+  // keeps the cached AST alive for the cache's lifetime.
+  struct SubqueryAstHash {
+    size_t operator()(const StatementPtr& query) const {
+      return query->hash();
+    }
+  };
+
+  struct SubqueryAstEqual {
+    bool operator()(const StatementPtr& lhs, const StatementPtr& rhs) const {
+      return *lhs == *rhs;
+    }
+  };
+
   SubqueryPlanner subqueryPlanner_;
   SortingKeyResolver sortingKeyResolver_;
   ShouldDropQualifier shouldDropQualifier_;
@@ -152,6 +173,10 @@ class ExpressionPlanner {
   // Per-query cache for user-defined type lookups. Entries with nullptr values
   // represent negatively cached (not-found) types.
   folly::F14FastMap<std::string, facebook::velox::TypePtr> typeCache_;
+
+  folly::
+      F14FastMap<StatementPtr, lp::ExprApi, SubqueryAstHash, SubqueryAstEqual>
+          subqueryCache_;
 
   // Lateral column alias mappings. When non-null, Identifier nodes matching
   // a key are resolved to the corresponding expression, unless the name also

@@ -39,6 +39,49 @@ namespace lp = facebook::axiom::logical_plan;
 namespace facebook::axiom::optimizer {
 namespace {
 
+// Structural identity for 'subqueries_' map keys. 'plan' is the inner
+// LogicalPlanNode that determines the subquery's result column; nullptr if
+// 'expr' is not a subquery-bearing pattern. 'kind' distinguishes scalar
+// vs. EXISTS vs. IN — they produce different result columns over the same
+// plan (scalar value vs. boolean mark) and must not collapse. 'inLhs' is
+// non-null only for IN, where different left-hand sides produce different
+// mark columns.
+enum class SubqueryKind { kScalar, kExists, kIn };
+
+struct SubqueryKey {
+  SubqueryKind kind{SubqueryKind::kScalar};
+  const lp::LogicalPlanNode* plan{nullptr};
+  // For kIn only: the IN predicate's left-hand side. Different LHS values
+  // produce different mark columns over the same subquery and must not
+  // collapse.
+  const lp::Expr* lhs{nullptr};
+};
+
+SubqueryKey subqueryKeyOf(const lp::ExprPtr& expr) {
+  if (expr->isSubquery()) {
+    return {
+        SubqueryKind::kScalar,
+        expr->as<lp::SubqueryExpr>()->subquery().get(),
+        nullptr};
+  }
+  if (expr->isSpecialForm()) {
+    const auto* specialForm = expr->as<lp::SpecialFormExpr>();
+    const auto form = specialForm->form();
+    if (form == lp::SpecialForm::kExists) {
+      const auto* inner = specialForm->inputAt(0)->as<lp::SubqueryExpr>();
+      return {SubqueryKind::kExists, inner->subquery().get(), nullptr};
+    }
+    if (form == lp::SpecialForm::kIn && specialForm->inputAt(1)->isSubquery()) {
+      const auto* inner = specialForm->inputAt(1)->as<lp::SubqueryExpr>();
+      return {
+          SubqueryKind::kIn,
+          inner->subquery().get(),
+          specialForm->inputAt(0).get()};
+    }
+  }
+  return {};
+}
+
 Value toValue(const velox::TypePtr& type, float cardinality) {
   return clampCardinality(Value{toType(type), cardinality});
 }
@@ -89,6 +132,35 @@ velox::ExceptionContext makeExceptionContext(ToGraphContext* ctx) {
   return e;
 }
 } // namespace
+
+size_t SubqueryExprHash::operator()(const lp::ExprPtr& expr) const {
+  const auto key = subqueryKeyOf(expr);
+  // translateExpr() looks up subqueries_ with arbitrary expressions; for
+  // non-subquery keys, fall back to pointer hash so the lookup misses
+  // cleanly. Only emplace is restricted to subquery-bearing patterns.
+  if (key.plan == nullptr) {
+    return std::hash<const lp::Expr*>{}(expr.get());
+  }
+  return folly::hash::hash_combine(
+      static_cast<size_t>(key.kind),
+      std::hash<const lp::LogicalPlanNode*>{}(key.plan),
+      std::hash<const lp::Expr*>{}(key.lhs));
+}
+
+bool SubqueryExprEqual::operator()(
+    const lp::ExprPtr& lhs,
+    const lp::ExprPtr& rhs) const {
+  if (lhs.get() == rhs.get()) {
+    return true;
+  }
+  const auto lhsKey = subqueryKeyOf(lhs);
+  const auto rhsKey = subqueryKeyOf(rhs);
+  if (lhsKey.plan == nullptr || rhsKey.plan == nullptr) {
+    return false;
+  }
+  return lhsKey.kind == rhsKey.kind && lhsKey.plan == rhsKey.plan &&
+      lhsKey.lhs == rhsKey.lhs;
+}
 
 ToGraph::ToGraph(
     const connector::SchemaResolver& schema,
@@ -3061,6 +3133,12 @@ void ToGraph::processScalarSubqueries(
     const std::vector<lp::SubqueryExprPtr>& scalars,
     SubqueryChain& chain) {
   for (const auto& subquery : scalars) {
+    // Skip if a structurally-equal subquery was already planned (e.g. the
+    // same subquery appears in both SELECT and GROUP BY).
+    if (subqueries_.contains(subquery)) {
+      continue;
+    }
+
     maybeWrapForChainedSubquery(input, chain);
 
     auto savedLifted = applyContext_.saveAndClearLifted();

@@ -509,6 +509,20 @@ TEST_F(AggregationParserTest, groupingKeyExpr) {
   }
 }
 
+// A scalar subquery appearing in both the SELECT list and the GROUP BY clause
+// must plan successfully when the SELECT expression matches the grouping key.
+TEST_F(AggregationParserTest, scalarSubqueryRepeatedInSelectAndGroupBy) {
+  connector_->addTable("t", ROW("a", INTEGER()));
+  connector_->addTable("u", ROW("b", INTEGER()));
+
+  auto matcher = matchScan().aggregate().output();
+  testSelect(
+      "SELECT COALESCE(t.a, (SELECT b FROM u)) "
+      "FROM t "
+      "GROUP BY COALESCE(t.a, (SELECT b FROM u))",
+      matcher);
+}
+
 TEST_F(AggregationParserTest, having) {
   auto matcher = matchScan().aggregate().filter().project().output();
 

@@ -101,6 +101,19 @@ struct SubfieldProjections {
   folly::F14FastMap<PathCP, ExprCP> pathToExpr;
 };
 
+// Hash and equality for ToGraph::subqueries_. Dedups the three subquery-
+// bearing expression patterns by the identity that determines their result
+// column. Other expression kinds fall back to pointer identity.
+struct SubqueryExprHash {
+  size_t operator()(const logical_plan::ExprPtr& expr) const;
+};
+
+struct SubqueryExprEqual {
+  bool operator()(
+      const logical_plan::ExprPtr& lhs,
+      const logical_plan::ExprPtr& rhs) const;
+};
+
 class ToGraph {
  public:
   ToGraph(
@@ -884,7 +897,22 @@ class ToGraph {
 
   // Maps an expression that contains a subquery to a column or constant that
   // should be used instead. Populated in 'processSubqueries()'.
-  folly::F14FastMap<logical_plan::ExprPtr, ExprCP> subqueries_;
+  //
+  // Uses structural equality on the subquery-bearing patterns so that two
+  // textually-identical occurrences share one result column:
+  //   - SubqueryExpr: keyed by inner LogicalPlanNode*.
+  //   - SpecialFormExpr(kExists): same.
+  //   - SpecialFormExpr(kIn): keyed by (LHS ExprPtr, inner LogicalPlanNode*),
+  //     since different left-hand sides produce different mark columns.
+  // The parser's AST-equality dedup ensures two textually-equal subqueries
+  // share one LogicalPlanNode, so pointer equality on the inner plan is the
+  // right structural identity here.
+  folly::F14FastMap<
+      logical_plan::ExprPtr,
+      ExprCP,
+      SubqueryExprHash,
+      SubqueryExprEqual>
+      subqueries_;
 
   folly::
       F14FastMap<TypedVariant, ExprCP, TypedVariantHasher, TypedVariantComparer>

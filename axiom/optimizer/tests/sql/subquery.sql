@@ -20,6 +20,16 @@ SELECT a, b FROM t WHERE a IN ((SELECT max(a) FROM t), 1)
 -- IN list with two scalar subqueries.
 SELECT a, b FROM t WHERE a IN ((SELECT max(a) FROM t), (SELECT min(a) FROM t))
 ----
+-- Same scalar subquery in both SELECT and GROUP BY must resolve as a single
+-- grouping key.
+SELECT COALESCE(t.a, (SELECT max(a) FROM u))
+FROM t
+GROUP BY COALESCE(t.a, (SELECT max(a) FROM u))
+----
+-- Scalar subquery and EXISTS over the same inner subquery must produce
+-- distinct columns (a scalar value vs a boolean).
+SELECT (SELECT max(a) FROM u), EXISTS (SELECT max(a) FROM u) FROM t
+----
 -- Case-insensitive CTE alias resolution.
 WITH a AS (SELECT * FROM (VALUES (1)) t(a)) SELECT A.a FROM A
 ----
