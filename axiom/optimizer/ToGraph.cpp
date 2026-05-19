@@ -2331,6 +2331,20 @@ void ToGraph::finalizeDt(
 
   currentDt_ = outerDt;
   currentDt_->addTable(dt);
+
+  // Prune 'renames_' entries that point inside the just-wrapped 'dt'.
+  // 'setDtUsedOutput' above re-mapped renames for every name in
+  // 'usedChannels(node)' to 'dt'-owned columns; remaining entries still
+  // reference 'dt's inner tables, which are unreachable by name from the
+  // new outer scope. Keeping them wastes lookup time and inflates later
+  // walks that visit 'renames_' to rewrite expressions through a wrap.
+  for (auto it = renames_.begin(); it != renames_.end();) {
+    if (it->second->allTables().hasIntersection(dt->tableSet)) {
+      it = renames_.erase(it);
+    } else {
+      ++it;
+    }
+  }
 }
 
 void ToGraph::finalizeDtPreservingCorrelations(
