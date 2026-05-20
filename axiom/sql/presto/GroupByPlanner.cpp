@@ -551,11 +551,45 @@ void GroupByPlanner::collectAggregates(
   }
 }
 
+namespace {
+
+// Returns the unqualified output names that 'projections' would install in
+// a mapping: explicit aliases, or input column names for identity
+// projections of root columns. Computed projections without an alias have
+// no predictable output name and are omitted.
+folly::F14FastSet<std::string> outputNamesOf(
+    const std::vector<lp::ExprApi>& projections) {
+  folly::F14FastSet<std::string> names;
+  for (const auto& projection : projections) {
+    if (projection.name().has_value()) {
+      names.insert(projection.name().value());
+    } else if (const auto* field = dynamic_cast<const core::FieldAccessExpr*>(
+                   projection.expr().get());
+               field != nullptr && field->isRootColumn()) {
+      names.insert(field->name());
+    }
+  }
+  return names;
+}
+
+} // namespace
+
 void GroupByPlanner::addAggregate(bool useGroupingSets) {
+  const auto groupingKeyNames = outputNamesOf(groupingKeys_);
+
+  // SQL lets an aggregate's SELECT alias shadow a grouping-key name with
+  // the same text. PlanBuilder rejects this collision when binding the
+  // aggregate, so strip the colliding alias here; the subsequent project
+  // step reapplies the alias on top of the aggregate, realizing the shadow.
   std::vector<lp::ExprApi> aggregateExprs;
   aggregateExprs.reserve(aggregates_.size());
   for (const auto& agg : aggregates_) {
-    aggregateExprs.push_back(agg);
+    if (agg.name().has_value() &&
+        groupingKeyNames.contains(agg.name().value())) {
+      aggregateExprs.emplace_back(agg.expr());
+    } else {
+      aggregateExprs.push_back(agg);
+    }
   }
 
   if (useGroupingSets) {
