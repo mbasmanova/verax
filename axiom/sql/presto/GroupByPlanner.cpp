@@ -563,9 +563,9 @@ folly::F14FastSet<std::string> outputNamesOf(
   for (const auto& projection : projections) {
     if (projection.name().has_value()) {
       names.insert(projection.name().value());
-    } else if (const auto* field = dynamic_cast<const core::FieldAccessExpr*>(
-                   projection.expr().get());
-               field != nullptr && field->isRootColumn()) {
+    } else if (
+        const auto* field =
+            core::FieldAccessExpr::tryAsRootColumn(projection.expr())) {
       names.insert(field->name());
     }
   }

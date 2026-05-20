@@ -701,17 +701,6 @@ ExprPtr ExprResolver::tryFoldCast(
 }
 
 namespace {
-std::optional<std::string> tryGetRootName(const velox::core::ExprPtr& expr) {
-  if (const auto* fieldAccess =
-          dynamic_cast<const velox::core::FieldAccessExpr*>(expr.get())) {
-    if (fieldAccess->isRootColumn()) {
-      return fieldAccess->name();
-    }
-  }
-
-  return std::nullopt;
-}
-
 int32_t parseLegacyRowFieldOrdinal(
     const std::string& name,
     const velox::RowType& rowType) {
@@ -758,8 +747,9 @@ ExprPtr ExprResolver::resolveScalarTypes(
       return inputNameResolver(std::nullopt, name);
     }
 
-    if (auto rootName = tryGetRootName(fieldAccess->input())) {
-      if (auto resolved = inputNameResolver(rootName, name)) {
+    if (const auto* root = velox::core::FieldAccessExpr::tryAsRootColumn(
+            fieldAccess->input())) {
+      if (auto resolved = inputNameResolver(root->name(), name)) {
         return resolved;
       }
     }
