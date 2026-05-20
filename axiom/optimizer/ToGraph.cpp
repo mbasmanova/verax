@@ -2322,6 +2322,37 @@ void ToGraph::wrapInDt(
   finalizeDt(node, outerDt);
 }
 
+namespace {
+
+// Erases entries the outer scope cannot reach after wrapping 'dt':
+//   1. Value references an inner table of 'dt'.
+//   2. Value is a Column on 'dt' that is not in 'dt->columns'. Used
+//      channels of a non-inner join side that serve as control (e.g.,
+//      join keys) but are not exported downstream land here.
+void pruneUnreachableRenames(
+    folly::F14FastMap<std::string, ExprCP>& renames,
+    DerivedTableCP dt) {
+  const auto isUnexportedDtColumn = [dt](ExprCP value) {
+    if (!value->isColumn()) {
+      return false;
+    }
+    const auto* column = value->as<Column>();
+    return column->relation() == dt &&
+        std::find(dt->columns.begin(), dt->columns.end(), column) ==
+        dt->columns.end();
+  };
+  for (auto it = renames.begin(); it != renames.end();) {
+    if (it->second->hasAnyTableIn(dt->tableSet) ||
+        isUnexportedDtColumn(it->second)) {
+      it = renames.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
+} // namespace
+
 void ToGraph::finalizeDt(
     const lp::LogicalPlanNode& node,
     DerivedTableP outerDt) {
@@ -2339,19 +2370,7 @@ void ToGraph::finalizeDt(
   currentDt_ = outerDt;
   currentDt_->addTable(dt);
 
-  // Prune 'renames_' entries that point inside the just-wrapped 'dt'.
-  // 'setDtUsedOutput' above re-mapped renames for every name in
-  // 'usedChannels(node)' to 'dt'-owned columns; remaining entries still
-  // reference 'dt's inner tables, which are unreachable by name from the
-  // new outer scope. Keeping them wastes lookup time and inflates later
-  // walks that visit 'renames_' to rewrite expressions through a wrap.
-  for (auto it = renames_.begin(); it != renames_.end();) {
-    if (it->second->hasAnyTableIn(dt->tableSet)) {
-      it = renames_.erase(it);
-    } else {
-      ++it;
-    }
-  }
+  pruneUnreachableRenames(renames_, dt);
 }
 
 void ToGraph::finalizeDtPreservingCorrelations(

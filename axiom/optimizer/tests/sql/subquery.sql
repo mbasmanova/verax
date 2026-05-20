@@ -500,3 +500,11 @@ INNER JOIN (VALUES (1)) AS u(k)
 SELECT *
 FROM (SELECT a FROM t WHERE a = (SELECT max(a) FROM t)) AS u,
      (SELECT a FROM t WHERE a = (SELECT max(a) FROM t)) AS v
+----
+-- Correlated IN-subquery in a JOIN's ON clause whose left key is a
+-- payload column from a prior LEFT JOIN's right side.
+SELECT u.b
+FROM (VALUES (1)) AS t(a)
+LEFT JOIN (VALUES (1, 'x')) AS u(k, b) ON t.a = u.k
+INNER JOIN (VALUES (1)) AS v(c)
+  ON u.b IN (SELECT 'x' FROM (VALUES (1)) AS w(d) WHERE d = v.c)
