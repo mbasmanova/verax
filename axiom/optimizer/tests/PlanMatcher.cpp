@@ -135,13 +135,12 @@ velox::core::ExprPtr rewriteInputNames(
     const std::unordered_map<std::string, std::string>& mapping) {
   return core::ExprRewriter::rewrite(
       expr, [&](const core::ExprPtr& e) -> core::ExprPtr {
-        if (auto* field = e->as<velox::core::FieldAccessExpr>()) {
-          if (field->isRootColumn()) {
-            auto it = mapping.find(field->name());
-            if (it != mapping.end()) {
-              return std::make_shared<velox::core::FieldAccessExpr>(
-                  it->second, field->alias());
-            }
+        if (const auto* field =
+                velox::core::FieldAccessExpr::tryAsRootColumn(e)) {
+          auto it = mapping.find(field->name());
+          if (it != mapping.end()) {
+            return std::make_shared<velox::core::FieldAccessExpr>(
+                it->second, field->alias());
           }
         }
         return e;
