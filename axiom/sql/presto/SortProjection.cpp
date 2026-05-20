@@ -64,17 +64,14 @@ core::ExprPtr replaceAliases(
     const core::ExprPtr& expr,
     const folly::F14FastMap<std::string, size_t>& aliasMap,
     const std::vector<lp::ExprApi>& projections) {
-  if (expr->is(core::IExpr::Kind::kFieldAccess)) {
-    auto* field = expr->as<core::FieldAccessExpr>();
-    if (field->isRootColumn()) {
-      auto alias = aliasMap.find(field->name());
-      if (alias != aliasMap.end()) {
-        VELOX_USER_CHECK_NE(
-            alias->second, 0, "Column is ambiguous: {}", field->name());
-        return projections[alias->second - 1].expr();
-      }
-      return expr;
+  if (const auto* field = core::FieldAccessExpr::tryAsRootColumn(expr)) {
+    auto alias = aliasMap.find(field->name());
+    if (alias != aliasMap.end()) {
+      VELOX_USER_CHECK_NE(
+          alias->second, 0, "Column is ambiguous: {}", field->name());
+      return projections[alias->second - 1].expr();
     }
+    return expr;
   }
 
   const auto& inputs = expr->inputs();
