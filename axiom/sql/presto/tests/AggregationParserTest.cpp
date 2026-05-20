@@ -85,6 +85,14 @@ TEST_F(AggregationParserTest, simpleGroupBy) {
   AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
       parseSql("SELECT 1 GROUP BY 0"),
       "GROUP BY position is not in select list: 0");
+
+  // Aggregate alias may shadow a GROUP BY key name.
+  testSelect(
+      "SELECT MAX(n_nationkey) AS n_nationkey FROM nation GROUP BY n_nationkey",
+      matchScan()
+          .aggregate({"n_nationkey"}, {"max(n_nationkey) AS m"})
+          .project({"m AS n_nationkey"})
+          .output());
 }
 
 // GROUP BY ordinals with SELECT * and other expanding items.
