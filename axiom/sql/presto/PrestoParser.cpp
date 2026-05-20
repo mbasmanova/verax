@@ -1284,7 +1284,7 @@ class RelationPlanner : public AstVisitor {
       parseSql_;
   std::shared_ptr<lp::PlanBuilder> builder_;
   ExpressionPlanner exprPlanner_{
-      [this](Query* query) -> lp::LogicalPlanNodePtr {
+      [this](Query* query) -> ExpressionPlanner::SubqueryPlanResult {
         // Save and restore builder. Correlated subqueries run on the same
         // RelationPlanner and must not overwrite the outer scope's state.
         // userOutputNames_ lives inside the builder, so it is saved and
@@ -1294,9 +1294,21 @@ class RelationPlanner : public AstVisitor {
           builder_ = std::move(builder);
         };
 
-        builder_ = newBuilder(builder->scope());
+        // Wrap the outer scope so that any invocation flips a local flag.
+        // A subquery that resolves a name against the outer scope is
+        // correlated; its planned output binds physical column names from
+        // this outer context and must not be cached for reuse under a
+        // different outer.
+        bool touchedOuterScope = false;
+        builder_ =
+            newBuilder([&touchedOuterScope, outerScope = builder->scope()](
+                           const std::optional<std::string>& alias,
+                           const std::string& name) {
+              touchedOuterScope = true;
+              return outerScope(alias, name);
+            });
         processQuery(query);
-        return builder_->planNode();
+        return {builder_->planNode(), touchedOuterScope};
       },
       [this](const ExpressionPtr& expr) -> lp::ExprApi {
         return toSortingKey(expr);
