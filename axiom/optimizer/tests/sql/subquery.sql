@@ -494,3 +494,9 @@ INNER JOIN (VALUES (1)) AS u(k)
       FROM (VALUES (1, 2), (2, 2)) AS v(b, k)
       WHERE v.k = t.a AND v.b > u.k
   )
+----
+-- Two sibling cross-joined subqueries, each containing the same scalar
+-- uncorrelated subquery in WHERE.
+SELECT *
+FROM (SELECT a FROM t WHERE a = (SELECT max(a) FROM t)) AS u,
+     (SELECT a FROM t WHERE a = (SELECT max(a) FROM t)) AS v

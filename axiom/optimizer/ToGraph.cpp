@@ -2311,6 +2311,13 @@ void ToGraph::wrapInDt(
     const lp::LogicalPlanNode& node,
     bool orderObservedAbove) {
   auto* outerDt = std::exchange(currentDt_, newDt());
+  // Scope 'subqueries_' to this wrap: cached columns belong to the DT
+  // created here and are not reachable from sibling scopes.
+  auto savedSubqueries = std::move(subqueries_);
+  subqueries_.clear();
+  SCOPE_EXIT {
+    subqueries_ = std::move(savedSubqueries);
+  };
   makeQueryGraph(node, kAllAllowedInDt, orderObservedAbove);
   finalizeDt(node, outerDt);
 }
