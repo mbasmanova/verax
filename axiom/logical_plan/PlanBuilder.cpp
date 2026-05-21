@@ -1948,9 +1948,41 @@ PlanBuilder::OutputColumnName PlanBuilder::findOrAssignOutputNameAt(
   return OutputColumnName{columnAlias, columnName};
 }
 
-LogicalPlanNodePtr PlanBuilder::buildOutputNode() {
+namespace {
+
+// CHECKs that hidden columns (per 'mappings') appear after all visible
+// columns in 'inputType'. Callers that index into the input column vector
+// by visible-output position rely on this layout.
+void checkHiddenColumnsTrailing(
+    const velox::RowType& inputType,
+    const NameMappings& mappings) {
+  bool sawHidden = false;
+  for (uint32_t i = 0; i < inputType.size(); ++i) {
+    if (mappings.isHidden(inputType.nameOf(i))) {
+      sawHidden = true;
+    } else {
+      VELOX_CHECK(
+          !sawHidden,
+          "Hidden columns must follow all visible columns in input type");
+    }
+  }
+}
+
+} // namespace
+
+LogicalPlanNodePtr PlanBuilder::buildOutputNode(
+    const std::vector<std::optional<std::string>>& displayNames) {
   const auto& inputType = node_->outputType();
   const auto numColumns = inputType->size();
+
+  VELOX_USER_CHECK_LE(
+      displayNames.size(),
+      numColumns,
+      "displayNames has more entries than output columns");
+
+  // 'displayNames[i]' is indexed by input position; valid because hidden
+  // columns are trailing.
+  checkHiddenColumnsTrailing(*inputType, *outputMapping_);
 
   std::vector<OutputNode::Entry> entries;
   entries.reserve(numColumns);
@@ -1961,7 +1993,9 @@ LogicalPlanNodePtr PlanBuilder::buildOutputNode() {
       continue;
     }
     std::string name;
-    if (auto userName = outputMapping_->userName(id)) {
+    if (i < displayNames.size() && displayNames[i].has_value()) {
+      name = displayNames[i].value();
+    } else if (auto userName = outputMapping_->userName(id)) {
       name = *userName;
     } else {
       name = findOrAssignOutputNameAt(i).name;
@@ -2011,14 +2045,18 @@ LogicalPlanNodePtr PlanBuilder::buildRenameProject() {
   return node_;
 }
 
-LogicalPlanNodePtr PlanBuilder::build() {
+LogicalPlanNodePtr PlanBuilder::build(
+    const std::vector<std::optional<std::string>>& displayNames) {
   VELOX_USER_CHECK_NOT_NULL(node_);
   VELOX_CHECK_NOT_NULL(outputMapping_);
 
   if (allowAmbiguousOutputNames_ && !node_->is(NodeKind::kTableWrite)) {
-    return buildOutputNode();
+    return buildOutputNode(displayNames);
   }
 
+  VELOX_USER_CHECK(
+      displayNames.empty(),
+      "displayNames is only supported when the build produces an OutputNode");
   return buildRenameProject();
 }
 

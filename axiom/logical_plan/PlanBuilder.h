@@ -754,11 +754,18 @@ class PlanBuilder {
   /// When allowAmbiguousOutputNames is true, creates an OutputNode at the root
   /// that supports duplicate and empty names. Otherwise, creates a ProjectNode
   /// for renaming (or returns the plan as-is if no renaming is needed).
-  LogicalPlanNodePtr build();
+  ///
+  /// 'displayNames[i]', when set, overrides the default name of the i-th
+  /// output column in the root OutputNode. 'std::nullopt' entries and entries
+  /// past the end of the vector fall back to the default naming. Only
+  /// permitted when build produces an OutputNode.
+  LogicalPlanNodePtr build(
+      const std::vector<std::optional<std::string>>& displayNames = {});
 
  private:
   // Builds an OutputNode that preserves duplicate and empty output names.
-  LogicalPlanNodePtr buildOutputNode();
+  LogicalPlanNodePtr buildOutputNode(
+      const std::vector<std::optional<std::string>>& displayNames);
 
   // Builds a ProjectNode to rename output columns to user-specified names.
   // Returns the plan as-is if no renaming is needed.

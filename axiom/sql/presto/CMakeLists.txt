@@ -23,6 +23,7 @@ add_subdirectory(example)
 add_library(
   axiom_sql_presto_parser
   ColumnsExpansion.cpp
+  DisplayNames.cpp
   ExpressionPlanner.cpp
   GroupByPlanner.cpp
   SortProjection.cpp
