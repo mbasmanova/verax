@@ -21,6 +21,7 @@
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/functions/prestosql/aggregates/RegisterAggregateFunctions.h"
 #include "velox/functions/prestosql/registration/RegistrationFunctions.h"
+#include "velox/functions/prestosql/window/WindowFunctionsRegistration.h"
 #include "velox/type/Type.h"
 
 using namespace facebook::velox;
@@ -33,6 +34,7 @@ class ExprTest : public testing::Test {
   static void SetUpTestSuite() {
     velox::functions::prestosql::registerAllScalarFunctions();
     velox::aggregate::prestosql::registerAllAggregateFunctions();
+    velox::window::prestosql::registerAllWindowFunctions();
   }
 
   static ExprResolver::InputNameResolver inputResolver(
@@ -241,6 +243,77 @@ TEST_F(ExprTest, aggregateWithLambdaUnknownFunction) {
           Col("x"),
           Lambda({"s", "x"}, Call("plus", Col("s"), Col("x"))))),
       "Cannot resolve Aggregate with lambda arguments: nonexistent_agg");
+}
+
+TEST_F(ExprTest, windowFrameValidation) {
+  using BoundType = velox::core::WindowCallExpr::BoundType;
+
+  auto resolveWindow = [this](const ExprApi& expr, const RowTypePtr& schema) {
+    return ExprResolver(nullptr, nullptr)
+        .resolveWindowTypes(
+            *expr.expr()->as<velox::core::WindowCallExpr>(),
+            inputResolver(schema));
+  };
+
+  // Non-offset bound (CURRENT ROW) must have a null bound value.
+  VELOX_ASSERT_THROW(
+      resolveWindow(
+          Call("row_number")
+              .over(
+                  WindowSpec()
+                      .orderBy({SortKey(Col("a"))})
+                      .rows(
+                          BoundType::kCurrentRow,
+                          Lit(1LL),
+                          BoundType::kUnboundedFollowing,
+                          std::nullopt)),
+          schema_),
+      "Window frame bound value must be null for bound type: CURRENT ROW");
+
+  // Offset bound (PRECEDING) requires a non-null bound value.
+  VELOX_ASSERT_THROW(
+      resolveWindow(
+          Call("row_number")
+              .over(
+                  WindowSpec()
+                      .orderBy({SortKey(Col("a"))})
+                      .rows(
+                          BoundType::kPreceding,
+                          std::nullopt,
+                          BoundType::kCurrentRow,
+                          std::nullopt)),
+          schema_),
+      "Window frame bound value is required for bound type: PRECEDING");
+
+  // RANGE + offset bound requires exactly one ORDER BY key.
+  VELOX_ASSERT_THROW(
+      resolveWindow(
+          Call("row_number")
+              .over(
+                  WindowSpec()
+                      .orderBy({SortKey(Col("a")), SortKey(Col("x"))})
+                      .range(
+                          BoundType::kPreceding,
+                          Col("a"),
+                          BoundType::kCurrentRow,
+                          std::nullopt)),
+          schema_),
+      "Window RANGE frame with offset bound requires exactly one ORDER BY key");
+
+  // RANGE + offset bound value type must match the ORDER BY key type.
+  VELOX_ASSERT_THROW(
+      resolveWindow(
+          Call("row_number")
+              .over(
+                  WindowSpec()
+                      .orderBy({SortKey(Col("r"))})
+                      .range(
+                          BoundType::kPreceding,
+                          Lit(1LL),
+                          BoundType::kCurrentRow,
+                          std::nullopt)),
+          ROW("r", REAL())),
+      "Window RANGE frame bound must evaluate to the ORDER BY type");
 }
 
 } // namespace
