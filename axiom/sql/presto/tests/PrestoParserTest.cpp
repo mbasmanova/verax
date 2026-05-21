@@ -1752,6 +1752,59 @@ TEST_F(PrestoParserTest, nestedWindowFunction) {
           .output());
 }
 
+TEST_F(PrestoParserTest, rangeWindowFrame) {
+  connector_->addTable("t", ROW({"a", "b"}, INTEGER()));
+
+  // RANGE BETWEEN n PRECEDING AND n FOLLOWING over ASC ordering rewrites each
+  // bound as a materialized boundary value of the ORDER BY type: 'a - n' for
+  // PRECEDING, 'a + n' for FOLLOWING.
+  testSelect(
+      "SELECT a, sum(b) OVER (ORDER BY a RANGE BETWEEN 1 PRECEDING AND 2 FOLLOWING) FROM t",
+      matchScan("t")
+          .project({
+              "a",
+              "sum(b) OVER (ORDER BY a ASC NULLS LAST RANGE BETWEEN minus(a, 1) PRECEDING AND plus(a, 2) FOLLOWING)",
+          })
+          .output());
+
+  // DESC ordering flips the operator selection: PRECEDING uses plus, FOLLOWING
+  // uses minus.
+  testSelect(
+      "SELECT a, sum(b) OVER (ORDER BY a DESC RANGE BETWEEN 1 PRECEDING AND 2 FOLLOWING) FROM t",
+      matchScan("t")
+          .project({
+              "a",
+              "sum(b) OVER (ORDER BY a DESC NULLS LAST RANGE BETWEEN plus(a, 1) PRECEDING AND minus(a, 2) FOLLOWING)",
+          })
+          .output());
+
+  // RANGE without offset bounds is left unchanged.
+  testSelect(
+      "SELECT a, sum(b) OVER (ORDER BY a RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM t",
+      matchScan("t")
+          .project({
+              "a",
+              "sum(b) OVER (ORDER BY a ASC NULLS LAST RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)",
+          })
+          .output());
+
+  // ROWS frames are not rewritten; the integer bound passes through.
+  testSelect(
+      "SELECT a, sum(b) OVER (ORDER BY a ROWS BETWEEN 1 PRECEDING AND 2 FOLLOWING) FROM t",
+      matchScan("t")
+          .project({
+              "a",
+              "sum(b) OVER (ORDER BY a ASC NULLS LAST ROWS BETWEEN 1 PRECEDING AND 2 FOLLOWING)",
+          })
+          .output());
+
+  // RANGE + offset bound requires exactly one ORDER BY key.
+  VELOX_ASSERT_THROW(
+      parseSql(
+          "SELECT a, sum(b) OVER (ORDER BY a, b RANGE BETWEEN 1 PRECEDING AND 2 FOLLOWING) FROM t"),
+      "RANGE frame with offset bound requires exactly one ORDER BY key");
+}
+
 TEST_F(PrestoParserTest, friendlySqlTrailingCommaSelect) {
   auto statement = makeParser().parse("SELECT 1, 2, FROM nation");
   ASSERT_TRUE(statement->isSelect());

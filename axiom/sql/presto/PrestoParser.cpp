@@ -1195,9 +1195,8 @@ class RelationPlanner : public AstVisitor {
       displayNames_.accumulatedNames = std::move(savedAccumulatedNames);
     };
 
-    // A new query scope starts fresh. Any 'lastNames' from a sibling
-    // relation (e.g., the left side of a JOIN) must not leak into this
-    // query's accumulate() at processTableSubquery.
+    // lastNames is scoped per query; reset so names from a sibling relation
+    // in the enclosing scope cannot leak in.
     displayNames_.lastNames.clear();
 
     if (const auto& with = query->with()) {

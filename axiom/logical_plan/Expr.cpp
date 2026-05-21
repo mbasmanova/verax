@@ -125,6 +125,71 @@ bool WindowExpr::Frame::operator==(const Frame& other) const {
       endType == other.endType && equalNullableExprs(endValue, other.endValue);
 }
 
+namespace {
+
+bool isOffsetBound(WindowExpr::BoundType type) {
+  return type == WindowExpr::BoundType::kPreceding ||
+      type == WindowExpr::BoundType::kFollowing;
+}
+
+void validateFrameBound(
+    WindowExpr::WindowType windowType,
+    WindowExpr::BoundType boundType,
+    const ExprPtr& value,
+    const std::vector<SortingField>& ordering) {
+  if (!isOffsetBound(boundType)) {
+    VELOX_USER_CHECK_NULL(
+        value,
+        "Window frame bound value must be null for bound type: {}",
+        WindowExpr::toName(boundType));
+    return;
+  }
+  VELOX_USER_CHECK_NOT_NULL(
+      value,
+      "Window frame bound value is required for bound type: {}",
+      WindowExpr::toName(boundType));
+
+  if (windowType == WindowExpr::WindowType::kRange) {
+    VELOX_USER_CHECK_EQ(
+        ordering.size(),
+        1,
+        "Window RANGE frame with offset bound requires exactly one ORDER BY key: {}",
+        ordering.size());
+    const auto& orderKeyType = ordering[0].expression->type();
+    VELOX_USER_CHECK(
+        *value->type() == *orderKeyType,
+        "Window RANGE frame bound must evaluate to the ORDER BY type: bound={}, order by={}",
+        value->type()->toString(),
+        orderKeyType->toString());
+  }
+}
+
+void validateFrame(
+    const WindowExpr::Frame& frame,
+    const std::vector<SortingField>& ordering) {
+  validateFrameBound(frame.type, frame.startType, frame.startValue, ordering);
+  validateFrameBound(frame.type, frame.endType, frame.endValue, ordering);
+}
+
+} // namespace
+
+WindowExpr::WindowExpr(
+    velox::TypePtr type,
+    std::string name,
+    std::vector<ExprPtr> inputs,
+    std::vector<ExprPtr> partitionKeys,
+    std::vector<SortingField> ordering,
+    Frame frame,
+    bool ignoreNulls)
+    : Expr{ExprKind::kWindow, std::move(type), std::move(inputs)},
+      name_{std::move(name)},
+      partitionKeys_{std::move(partitionKeys)},
+      ordering_{std::move(ordering)},
+      frame_{std::move(frame)},
+      ignoreNulls_{ignoreNulls} {
+  validateFrame(frame_, ordering_);
+}
+
 bool SortingField::operator==(const SortingField& other) const {
   VELOX_CHECK_NOT_NULL(expression);
   VELOX_CHECK_NOT_NULL(other.expression);

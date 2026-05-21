@@ -661,30 +661,61 @@ class AggregateExpr : public Expr {
 
 using AggregateExprPtr = std::shared_ptr<const AggregateExpr>;
 
-// Represents a window function call. Can be used in ProjectNode.
-// TODO Adapt documentation from
-// https://prestodb.io/docs/current/functions/window.html
+/// Represents a window function call. Can be used in ProjectNode.
+/// See https://prestodb.io/docs/current/functions/window.html for SQL-level
+/// semantics.
 class WindowExpr : public Expr {
  public:
+  /// Selects how the frame's boundaries are interpreted relative to the
+  /// current row.
   enum class WindowType {
+    /// Boundaries are values of the ORDER BY column. A row R belongs to the
+    /// frame of the current row C if R's ORDER BY value lies between the
+    /// boundary values derived from C. Requires exactly one ORDER BY key
+    /// when the frame has a PRECEDING or FOLLOWING offset.
     kRange,
+    /// Boundaries are integer row counts relative to the current row.
     kRows,
+    /// Boundaries count peer groups (sets of rows tied on the ORDER BY key).
+    /// Not yet supported.
     kGroups,
   };
   AXIOM_DECLARE_EMBEDDED_ENUM_NAME(WindowType)
 
+  /// Identifies a frame endpoint relative to the current row.
   enum class BoundType {
+    /// Frame extends to the first row of the partition. No bound value.
     kUnboundedPreceding,
+    /// Frame endpoint is an offset before the current row. The bound value
+    /// expression carries that offset (kRows) or the materialized boundary
+    /// value (kRange); see Frame::startValue.
     kPreceding,
+    /// Frame endpoint is the current row. No bound value.
     kCurrentRow,
+    /// Frame endpoint is an offset after the current row. The bound value
+    /// expression carries that offset (kRows) or the materialized boundary
+    /// value (kRange); see Frame::endValue.
     kFollowing,
+    /// Frame extends to the last row of the partition. No bound value.
     kUnboundedFollowing,
   };
   AXIOM_DECLARE_EMBEDDED_ENUM_NAME(BoundType)
 
   /// A sliding window of rows to be processed by the function for a given
-  /// input row. A frame can be ROWS type, RANGE type or GROUPS type, and it
-  /// runs from start to end.
+  /// input row. A frame has a WindowType (ROWS, RANGE, or GROUPS) and runs
+  /// from start to end.
+  ///
+  /// Invariants on startValue / endValue, by (type, BoundType):
+  ///   - kUnboundedPreceding, kCurrentRow, kUnboundedFollowing: value is null.
+  ///   - kRows + kPreceding/kFollowing: value is an integer-typed expression
+  ///     giving the row offset.
+  ///   - kRange + kPreceding/kFollowing: value is an expression of the ORDER
+  ///     BY column's type and evaluates to the materialized boundary value
+  ///     (e.g. for `RANGE BETWEEN n PRECEDING` over `ORDER BY x`, the bound
+  ///     expression evaluates to `x - n`, not to `n`). This requires the
+  ///     window to have exactly one ORDER BY key. The execution engine
+  ///     compares the bound expression directly against the ORDER BY column,
+  ///     not against an offset.
   struct Frame {
     WindowType type;
     BoundType startType;
@@ -715,13 +746,7 @@ class WindowExpr : public Expr {
       std::vector<ExprPtr> partitionKeys,
       std::vector<SortingField> ordering,
       Frame frame,
-      bool ignoreNulls)
-      : Expr{ExprKind::kWindow, std::move(type), std::move(inputs)},
-        name_{std::move(name)},
-        partitionKeys_{std::move(partitionKeys)},
-        ordering_{std::move(ordering)},
-        frame_{std::move(frame)},
-        ignoreNulls_{ignoreNulls} {}
+      bool ignoreNulls);
 
   const std::string& name() const {
     return name_;

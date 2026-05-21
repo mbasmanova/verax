@@ -1133,15 +1133,15 @@ lp::WindowSpec ExpressionPlanner::convertWindow(
     spec.partitionBy(std::move(partitionKeys));
   }
 
+  std::vector<lp::SortKey> orderByKeys;
   if (window->orderBy() != nullptr) {
-    std::vector<lp::SortKey> orderByKeys;
     const auto& sortItems = window->orderBy()->sortItems();
     orderByKeys.reserve(sortItems.size());
     for (const auto& item : sortItems) {
       orderByKeys.emplace_back(
           toExpr(item->sortKey()), item->isAscending(), item->isNullsFirst());
     }
-    spec.orderBy(std::move(orderByKeys));
+    spec.orderBy(orderByKeys);
   }
 
   if (window->frame() != nullptr) {
@@ -1159,6 +1159,38 @@ lp::WindowSpec ExpressionPlanner::convertWindow(
     std::optional<lp::ExprApi> endValue;
     if (frame->end() != nullptr && frame->end()->value().has_value()) {
       endValue = toExpr(frame->end()->value().value());
+    }
+
+    // For RANGE n PRECEDING / n FOLLOWING the execution engine compares the
+    // frame bound directly against the ORDER BY column, so the bound must
+    // evaluate to a value of the ORDER BY type. Rewrite each offset bound as
+    // <order_by> +/- <offset>: SUBTRACT when bound direction agrees with sort
+    // direction (PRECEDING + ASC or FOLLOWING + DESC), ADD otherwise.
+    if (frame->frameType() == WindowFrame::Type::kRange &&
+        (startValue.has_value() || endValue.has_value())) {
+      VELOX_USER_CHECK_EQ(
+          orderByKeys.size(),
+          1,
+          "RANGE frame with offset bound requires exactly one ORDER BY key");
+      const auto& orderKey = orderByKeys[0].expr;
+      const bool ascending = orderByKeys[0].ascending;
+
+      auto rewriteBound = [&](std::optional<lp::ExprApi>& bound,
+                              core::WindowCallExpr::BoundType boundType) {
+        if (!bound.has_value() ||
+            (boundType != core::WindowCallExpr::BoundType::kPreceding &&
+             boundType != core::WindowCallExpr::BoundType::kFollowing)) {
+          return;
+        }
+        const bool isPreceding =
+            boundType == core::WindowCallExpr::BoundType::kPreceding;
+        const std::string functionName =
+            (isPreceding == ascending) ? "minus" : "plus";
+        bound = lp::Call(functionName, lp::ExprApi(orderKey), bound.value());
+      };
+
+      rewriteBound(startValue, startType);
+      rewriteBound(endValue, endType);
     }
 
     switch (frame->frameType()) {
