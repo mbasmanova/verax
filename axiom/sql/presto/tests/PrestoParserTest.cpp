@@ -268,15 +268,15 @@ TEST_F(PrestoParserTest, unnest) {
 TEST_F(PrestoParserTest, qualifiedColumnAccess) {
   {
     connector_->addTable("t", ROW({"x"}, {INTEGER()}));
-    auto matcher = matchScan().project().output({"x"});
 
     // Qualified and unqualified column access.
-    testSelect("SELECT t.x FROM t", matcher);
-    testSelect("SELECT x FROM t", matcher);
+    testSelect("SELECT t.x FROM t", matchScan().project().output({"x"}));
+    testSelect("SELECT x FROM t", matchScan().project().output({"x"}));
 
-    // Case insensitive column and table alias.
-    testSelect("SELECT t.X FROM t", matcher);
-    testSelect("SELECT T.X FROM t", matcher);
+    // Case insensitive column and table alias; output preserves the
+    // user-written case.
+    testSelect("SELECT t.X FROM t", matchScan().project().output({"X"}));
+    testSelect("SELECT T.X FROM t", matchScan().project().output({"X"}));
   }
 
   // Table alias takes priority over struct column name. Table 'u' has a
@@ -446,16 +446,15 @@ TEST_F(PrestoParserTest, hiddenColumns) {
 }
 
 TEST_F(PrestoParserTest, mixedCaseColumnNames) {
-  {
-    auto matcher = matchScan().project().output({"n_name", "n_regionkey"});
-    testSelect("SELECT N_NAME, n_ReGiOnKeY FROM nation", matcher);
-  }
-  {
-    auto matcher = matchScan().project().output({"n_name"});
-    testSelect("SELECT nation.n_name FROM nation", matcher);
-    testSelect("SELECT NATION.n_name FROM nation", matcher);
-    testSelect("SELECT \"NATION\".n_name FROM nation", matcher);
-  }
+  // Output schema preserves the user-written case of column references.
+  testSelect(
+      "SELECT N_NAME, n_ReGiOnKeY FROM nation",
+      matchScan().project().output({"N_NAME", "n_ReGiOnKeY"}));
+
+  auto matcher = matchScan().project().output({"n_name"});
+  testSelect("SELECT nation.n_name FROM nation", matcher);
+  testSelect("SELECT NATION.n_name FROM nation", matcher);
+  testSelect("SELECT \"NATION\".n_name FROM nation", matcher);
 }
 
 TEST_F(PrestoParserTest, withBasic) {
@@ -1391,6 +1390,112 @@ TEST_F(PrestoParserTest, outputNames) {
   // Duplicate output column names are preserved as-is (not deduplicated to
   // x, x_0).
   test("SELECT a as x, b as x FROM (VALUES (1, 2)) AS t(a, b)", {"x", "x"});
+}
+
+// Explicit SELECT aliases preserve the user's original case in the output
+// schema, even though identifier matching is case-insensitive.
+TEST_F(PrestoParserTest, outputNamesPreserveAliasCase) {
+  auto outputNames = [&](const std::string& sql) {
+    SCOPED_TRACE(sql);
+    return parseSelect(sql)->outputType()->names();
+  };
+
+  EXPECT_THAT(
+      outputNames("SELECT 1 AS FooBar, 2 AS MyCol"),
+      testing::ElementsAre("FooBar", "MyCol"));
+
+  EXPECT_THAT(
+      outputNames(R"(SELECT 1 AS "FooBar", 2 AS "MyCol")"),
+      testing::ElementsAre("FooBar", "MyCol"));
+
+  // Two aliases with the same canonical form are kept as distinct output
+  // columns, each with its user-written case.
+  EXPECT_THAT(
+      outputNames(R"(SELECT 1 AS "ABC", 2 AS "abc")"),
+      testing::ElementsAre("ABC", "abc"));
+
+  EXPECT_THAT(outputNames("SELECT 1 AS foo"), testing::ElementsAre("foo"));
+
+  // Column reference: output name follows the reference's written case,
+  // not the source's.
+  EXPECT_THAT(
+      outputNames("SELECT FooBar FROM (SELECT 1 AS FooBar) s"),
+      testing::ElementsAre("FooBar"));
+
+  EXPECT_THAT(
+      outputNames("SELECT FOOBAR FROM (SELECT 1 AS FooBar) s"),
+      testing::ElementsAre("FOOBAR"));
+
+  EXPECT_THAT(
+      outputNames(R"(SELECT "FooBar" FROM (SELECT 1 AS FooBar) s)"),
+      testing::ElementsAre("FooBar"));
+
+  // Global aggregation over a multi-column subquery parses and yields a
+  // single output column.
+  EXPECT_NO_THROW(parseSelect("SELECT sum(z) FROM (SELECT 1 AS x, 2 AS z) s"));
+
+  // Global aggregation preserves the user-written alias case.
+  EXPECT_THAT(
+      outputNames("SELECT sum(z) AS Total FROM (SELECT 1 AS z) s"),
+      testing::ElementsAre("Total"));
+
+  // An IN/scalar subquery in WHERE does not affect the outer SELECT's
+  // output names.
+  EXPECT_THAT(
+      outputNames("SELECT 1 AS OuterCol WHERE 1 IN (SELECT 1 AS InnerCol)"),
+      testing::ElementsAre("OuterCol"));
+
+  // Set-operation output names come from the left input.
+  EXPECT_THAT(
+      outputNames("SELECT 1 AS FooBar UNION ALL SELECT 2 AS Bar"),
+      testing::ElementsAre("FooBar"));
+  EXPECT_THAT(
+      outputNames("SELECT 1 AS FooBar INTERSECT SELECT 2 AS Bar"),
+      testing::ElementsAre("FooBar"));
+  EXPECT_THAT(
+      outputNames("SELECT 1 AS FooBar EXCEPT SELECT 2 AS Bar"),
+      testing::ElementsAre("FooBar"));
+
+  // Qualified column reference: output name follows the rightmost field's
+  // written case.
+  EXPECT_THAT(
+      outputNames("SELECT s.FooBar FROM (SELECT 1 AS FooBar) s"),
+      testing::ElementsAre("FooBar"));
+
+  // Star expansion propagates the source relation's per-column case.
+  EXPECT_THAT(
+      outputNames("SELECT * FROM (SELECT 1 AS FooBar) s"),
+      testing::ElementsAre("FooBar"));
+
+  EXPECT_THAT(
+      outputNames("SELECT s.* FROM (SELECT 1 AS FooBar) s"),
+      testing::ElementsAre("FooBar"));
+
+  // CTE star expansion propagates the inner SELECT's case.
+  EXPECT_THAT(
+      outputNames("WITH cte AS (SELECT 1 AS FooBar) SELECT * FROM cte"),
+      testing::ElementsAre("FooBar"));
+  EXPECT_THAT(
+      outputNames("WITH cte AS (SELECT 1 AS FooBar) SELECT cte.* FROM cte"),
+      testing::ElementsAre("FooBar"));
+
+  // CTE with an explicit column-alias list uses the alias-list case.
+  EXPECT_THAT(
+      outputNames("WITH cte(Bar) AS (SELECT 1 AS FooBar) SELECT * FROM cte"),
+      testing::ElementsAre("Bar"));
+
+  // Aliased subquery with an explicit column-alias list uses the
+  // alias-list case.
+  EXPECT_THAT(
+      outputNames("SELECT * FROM (SELECT 1) s(Bar)"),
+      testing::ElementsAre("Bar"));
+
+  // Star over a set operation propagates the left side's case (set-op
+  // output columns come from the left).
+  EXPECT_THAT(
+      outputNames(
+          "SELECT * FROM ((SELECT 1 AS FooBar) UNION ALL (SELECT 2 AS Bar)) u"),
+      testing::ElementsAre("FooBar"));
 }
 
 TEST_F(PrestoParserTest, qualifiedStarInUnionAfterJoin) {

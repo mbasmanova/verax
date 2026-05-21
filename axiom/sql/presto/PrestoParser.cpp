@@ -16,6 +16,8 @@
 
 #include "axiom/sql/presto/PrestoParser.h"
 #include <folly/ScopeGuard.h>
+#include <folly/container/F14Map.h>
+#include <folly/hash/Hash.h>
 #include <cctype>
 #include <unordered_set>
 #include "axiom/common/CatalogSchemaTableName.h"
@@ -23,6 +25,7 @@
 #include "axiom/connectors/ConnectorMetadataRegistry.h"
 #include "axiom/logical_plan/PlanBuilder.h"
 #include "axiom/sql/presto/ColumnsExpansion.h"
+#include "axiom/sql/presto/DisplayNames.h"
 #include "axiom/sql/presto/ExpressionPlanner.h"
 #include "axiom/sql/presto/GroupByPlanner.h"
 #include "axiom/sql/presto/PrestoSqlError.h"
@@ -266,7 +269,15 @@ class RelationPlanner : public AstVisitor {
   }
 
   lp::LogicalPlanNodePtr plan() {
-    return builder_->build();
+    return builder_->build(displayNames_.lastNames);
+  }
+
+  // Clears 'displayNames_.lastNames'; a TableWrite root has no OutputNode to
+  // receive them.
+  template <typename... Args>
+  void tableWrite(Args&&... args) {
+    displayNames_.lastNames.clear();
+    builder_->tableWrite(std::forward<Args>(args)...);
   }
 
   const ViewMap& views() const {
@@ -435,8 +446,10 @@ class RelationPlanner : public AstVisitor {
       // Apply CTE column-alias list, e.g. 'WITH t(a, b) AS (...)' renames
       // the underlying SELECT/VALUES output columns to a, b.
       if (const auto& columnAliases = withEntry->columnNames()) {
+        displayNames_.captureLastNames(*columnAliases);
         applyColumnAliases(*columnAliases, withEntry->location(), tableName);
       }
+      displayNames_.accumulate(*builder_, tableName);
     } else {
       const auto [connectorId, connectorTable] = toConnectorTable(
           *table.name(), context_.defaultConnectorId.value(), defaultSchema_);
@@ -446,6 +459,9 @@ class RelationPlanner : public AstVisitor {
               connectorId);
 
       if (metadata->findTable(connectorTable) != nullptr) {
+        // Drop display names captured from a sibling FROM relation so
+        // this table's columns aren't tagged with them.
+        displayNames_.lastNames.clear();
         inputTables_.insert(
             facebook::axiom::CatalogSchemaTableName{
                 connectorId, connectorTable});
@@ -531,9 +547,12 @@ class RelationPlanner : public AstVisitor {
 
     const auto& columnAliases = aliasedRelation.columnNames();
     if (!columnAliases.empty()) {
+      // Column-alias list shadows any case captured from the inner SELECT.
+      displayNames_.captureLastNames(columnAliases);
       applyColumnAliases(columnAliases, aliasedRelation.location(), alias);
     }
 
+    displayNames_.accumulate(*builder_, alias);
     builder_->findOrAssignOutputNames(/*includeHiddenColumns=*/false);
     builder_->as(alias);
   }
@@ -543,6 +562,7 @@ class RelationPlanner : public AstVisitor {
 
     if (query->is(NodeType::kQuery)) {
       processQuery(query->as<Query>());
+      displayNames_.accumulate(*builder_, /*relationAlias=*/std::nullopt);
       return;
     }
 
@@ -738,6 +758,9 @@ class RelationPlanner : public AstVisitor {
   // embedded as WindowCallExpr in the IExpr tree.
   std::optional<std::vector<lp::ExprApi>> buildSelectProjections(
       const std::vector<SelectItemPtr>& selectItems) {
+    // Previous SELECT's display names must not leak into this scope.
+    displayNames_.lastNames.clear();
+
     // SELECT * FROM ...
     const bool isSingleSelectStar = selectItems.size() == 1 &&
         selectItems.at(0)->is(NodeType::kAllColumns) &&
@@ -745,6 +768,7 @@ class RelationPlanner : public AstVisitor {
         selectItems.at(0)->as<AllColumns>()->excludeColumns().empty() &&
         selectItems.at(0)->as<AllColumns>()->replaceItems().empty();
     if (isSingleSelectStar) {
+      displayNames_.captureLastNames(*builder_);
       return std::nullopt;
     }
 
@@ -768,6 +792,23 @@ class RelationPlanner : public AstVisitor {
     };
 
     std::vector<lp::ExprApi> exprs;
+    // Parallel to 'exprs'. Star and COLUMNS(...) expansions emit nullopt
+    // unless the source relation captured a display-case override.
+    std::vector<std::optional<std::string>> displayNames;
+    const auto recordDisplayUpTo = [&]() {
+      while (displayNames.size() < exprs.size()) {
+        displayNames.emplace_back(std::nullopt);
+      }
+    };
+    // Appends per-column display-name overrides for star/regex expansions.
+    const auto recordDisplayForExpansion =
+        [&](const std::vector<lp::PlanBuilder::OutputColumnName>& columns,
+            const std::optional<std::string>& prefix) {
+          for (const auto& column : columns) {
+            displayNames.push_back(
+                displayNames_.displayName(prefix, column.name));
+          }
+        };
     for (const auto& item : selectItems) {
       if (item->is(NodeType::kAllColumns)) {
         auto* allColumns = item->as<AllColumns>();
@@ -785,6 +826,7 @@ class RelationPlanner : public AstVisitor {
             allColumns->excludeColumns(),
             allColumns->replaceItems(),
             exprs);
+        recordDisplayForExpansion(selectedColumns, prefix);
       } else if (item->is(NodeType::kSelectColumns)) {
         auto* selectColumns = item->as<SelectColumns>();
 
@@ -804,6 +846,7 @@ class RelationPlanner : public AstVisitor {
             selectColumns->excludeColumns(),
             selectColumns->replaceItems(),
             exprs);
+        recordDisplayForExpansion(selectedColumns, prefix);
       } else {
         VELOX_CHECK(item->is(NodeType::kSingleColumn));
         auto* singleColumn = item->as<SingleColumn>();
@@ -814,10 +857,11 @@ class RelationPlanner : public AstVisitor {
         if (singleColumn->alias() != nullptr) {
           alias = canonicalizeIdentifier(*singleColumn->alias());
         }
+        auto display = DisplayNames::displayName(*singleColumn);
 
         if (tryExpandColumnsInExpression(
                 expr, alias, exprs, singleColumn->expression()->location())) {
-          // COLUMNS('regex') was found and expanded.
+          recordDisplayUpTo();
         } else {
           // Normal SingleColumn handling.
           if (alias.has_value()) {
@@ -827,10 +871,12 @@ class RelationPlanner : public AstVisitor {
             expr = expr.as(*alias);
           }
           exprs.push_back(expr);
+          displayNames.push_back(std::move(display));
         }
       }
     }
 
+    displayNames_.lastNames = std::move(displayNames);
     return exprs;
   }
 
@@ -1058,6 +1104,35 @@ class RelationPlanner : public AstVisitor {
     return toExpr(expr);
   }
 
+  // Plans 'query' as a subquery in a fresh builder, reporting whether it
+  // referenced the outer scope.
+  ExpressionPlanner::SubqueryPlanResult planSubquery(Query* query) {
+    // Save and restore the outer builder and 'displayNames_.lastNames'.
+    // Correlated subqueries run on the same RelationPlanner and must not
+    // leak their planning into the outer scope.
+    auto builder = std::move(builder_);
+    auto savedDisplayNames = std::move(displayNames_.lastNames);
+    SCOPE_EXIT {
+      builder_ = std::move(builder);
+      displayNames_.lastNames = std::move(savedDisplayNames);
+    };
+
+    // Wrap the outer scope so that any invocation flips a local flag.
+    // A subquery that resolves a name against the outer scope is
+    // correlated; its planned output binds physical column names from
+    // this outer context and must not be cached for reuse under a
+    // different outer.
+    bool touchedOuterScope = false;
+    builder_ = newBuilder(
+        [&touchedOuterScope, outerScope = builder->scope()](
+            const std::optional<std::string>& alias, const std::string& name) {
+          touchedOuterScope = true;
+          return outerScope(alias, name);
+        });
+    processQuery(query);
+    return {builder_->planNode(), touchedOuterScope};
+  }
+
   void addOrderBy(const OrderByPtr& orderBy) {
     if (orderBy == nullptr) {
       return;
@@ -1114,9 +1189,16 @@ class RelationPlanner : public AstVisitor {
 
   void processQuery(Query* query) {
     auto savedWithQueries = withQueries_;
+    auto savedAccumulatedNames = displayNames_.accumulatedNames;
     SCOPE_EXIT {
       withQueries_ = std::move(savedWithQueries);
+      displayNames_.accumulatedNames = std::move(savedAccumulatedNames);
     };
+
+    // A new query scope starts fresh. Any 'lastNames' from a sibling
+    // relation (e.g., the left side of a JOIN) must not leak into this
+    // query's accumulate() at processTableSubquery.
+    displayNames_.lastNames.clear();
 
     if (const auto& with = query->with()) {
       AXIOM_PRESTO_SYNTAX_CHECK(
@@ -1161,6 +1243,10 @@ class RelationPlanner : public AstVisitor {
     // FROM t -> builder.tableScan(t)
     processFrom(node->from());
 
+    // Subqueries inside FROM may have set 'displayNames_.lastNames'. Discard
+    // them so only this scope's SELECT-item-derived names reach plan().
+    displayNames_.lastNames.clear();
+
     // WHERE a > 1 -> builder.filter("a > 1")
     addFilter(node->where());
 
@@ -1186,6 +1272,9 @@ class RelationPlanner : public AstVisitor {
     } else {
       if (GroupByPlanner{builder_, exprPlanner_}.tryPlanGlobalAgg(
               selectItems, node->having())) {
+        // GroupByPlanner does not go through buildSelectProjections, so
+        // stage display names from the SELECT items directly.
+        displayNames_.captureLastNames(selectItems);
         // Nothing else to do. For aggregation, ORDER BY can only reference
         // SELECT list (aggregates). DISTINCT will be a no-op since global
         // aggregations without a group by are 1 row output.
@@ -1266,6 +1355,8 @@ class RelationPlanner : public AstVisitor {
     left->accept(this);
 
     auto leftBuilder = builder_;
+    // SQL set-operation output names come from the left input.
+    auto leftDisplayNames = std::move(displayNames_.lastNames);
 
     builder_ = newBuilder(leftBuilder->scope());
     right->accept(this);
@@ -1273,6 +1364,7 @@ class RelationPlanner : public AstVisitor {
 
     builder_ = leftBuilder;
     builder_->setOperation(op, *rightBuilder);
+    displayNames_.lastNames = std::move(leftDisplayNames);
   }
 
   std::shared_ptr<lp::PlanBuilder> newBuilder(
@@ -1290,42 +1382,15 @@ class RelationPlanner : public AstVisitor {
       parseSql_;
   std::shared_ptr<lp::PlanBuilder> builder_;
   ExpressionPlanner exprPlanner_{
-      [this](Query* query) -> ExpressionPlanner::SubqueryPlanResult {
-        // Save and restore builder. Correlated subqueries run on the same
-        // RelationPlanner and must not overwrite the outer scope's state.
-        // userOutputNames_ lives inside the builder, so it is saved and
-        // restored automatically.
-        auto builder = std::move(builder_);
-        SCOPE_EXIT {
-          builder_ = std::move(builder);
-        };
-
-        // Wrap the outer scope so that any invocation flips a local flag.
-        // A subquery that resolves a name against the outer scope is
-        // correlated; its planned output binds physical column names from
-        // this outer context and must not be cached for reuse under a
-        // different outer.
-        bool touchedOuterScope = false;
-        builder_ =
-            newBuilder([&touchedOuterScope, outerScope = builder->scope()](
-                           const std::optional<std::string>& alias,
-                           const std::string& name) {
-              touchedOuterScope = true;
-              return outerScope(alias, name);
-            });
-        processQuery(query);
-        return {builder_->planNode(), touchedOuterScope};
-      },
-      [this](const ExpressionPtr& expr) -> lp::ExprApi {
-        return toSortingKey(expr);
-      },
-      [this](const std::string& qualifier, const std::string& name) -> bool {
+      [this](Query* query) { return planSubquery(query); },
+      [this](const ExpressionPtr& expr) { return toSortingKey(expr); },
+      [this](const std::string& qualifier, const std::string& name) {
         // Only canonicalize if the qualifier resolves as a table alias (not a
         // struct field dereference) and the unqualified name is unambiguous.
         return builder_->hasQualifiedColumn(qualifier, name) &&
             builder_->hasColumn(name);
       },
-      [this](const std::string& first, const std::string& second) -> bool {
+      [this](const std::string& first, const std::string& second) {
         return builder_->hasColumn(first) ||
             builder_->hasQualifiedColumn(first, second);
       }};
@@ -1333,6 +1398,8 @@ class RelationPlanner : public AstVisitor {
   ViewMap views_;
   std::unordered_set<facebook::axiom::CatalogSchemaTableName> inputTables_;
   bool friendlySql_;
+
+  DisplayNames displayNames_;
 };
 
 } // namespace
@@ -1974,7 +2041,7 @@ SqlStatementPtr parseInsert(
   auto inputColumns = planner.builder().findOrAssignOutputNames();
   VELOX_CHECK_EQ(inputColumns.size(), columnNames.size());
 
-  planner.builder().tableWrite(
+  planner.tableWrite(
       connectorId,
       connectorTable.schema,
       connectorTable.table,
@@ -2044,7 +2111,7 @@ SqlStatementPtr parseCreateTableAsSelect(
       columnNames.emplace_back(name.value());
     }
 
-    planBuilder.tableWrite(
+    planner.tableWrite(
         connectorId,
         connectorTable.schema,
         connectorTable.table,
@@ -2064,7 +2131,7 @@ SqlStatementPtr parseCreateTableAsSelect(
       columnNames.emplace_back(column->value());
     }
 
-    planBuilder.tableWrite(
+    planner.tableWrite(
         connectorId,
         connectorTable.schema,
         connectorTable.table,

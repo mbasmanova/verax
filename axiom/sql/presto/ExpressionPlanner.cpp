@@ -482,7 +482,9 @@ std::string canonicalizeName(const std::string& name) {
 }
 
 std::string canonicalizeIdentifier(const Identifier& identifier) {
-  // TODO: Figure out whether 'delimited' identifiers should be kept as is.
+  // Presto matches identifiers case-insensitively regardless of quoting.
+  // Quoting only affects which characters are permitted and which case is
+  // preserved in the output schema; it does NOT alter matching semantics.
   return canonicalizeName(identifier.value());
 }
 
