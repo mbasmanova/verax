@@ -27,6 +27,11 @@ a local directory.
   evaluates them during scan. This includes partition pruning (skipping
   entire files based on partition key values) and within-file filtering.
 - Table and column statistics for the optimizer (see [Statistics](#statistics)).
+- Discrete predicate (partition value) listing: the optimizer lists partition
+  key values to constant-fold aggregations over partition columns (e.g.
+  `SELECT max(ds) FROM t`) without scanning data. Filters on partition columns
+  narrow the listing. The `hive_max_partitions_per_discrete_predicates` session
+  property caps how many partitions a single listing may return.
 
 **Writes:**
 - `CREATE TABLE` with partitioning, bucketing, sort order, file format, and
@@ -40,10 +45,6 @@ a local directory.
 **Not supported:**
 - Transactions. Writes go directly into the table directory.
 - `ALTER TABLE`, `RENAME TABLE`.
-- Discrete predicate values. The optimizer uses these to constant-fold
-  aggregations over partition key columns (e.g. `SELECT max(ds) FROM t`
-  without scanning data). TODO: Implement `discretePredicateColumns` and
-  `discretePredicates` APIs to report partition key values.
 
 ## Usage
 
@@ -105,7 +106,9 @@ axiom_sql --data_path /tmp/tpch/sf0.1
 Each subdirectory under the data path is interpreted as a table. For
 unpartitioned tables, data files are placed directly in the table directory.
 For partitioned tables, data files are organized into subdirectories named
-`<partition_column>=<value>` (e.g. `ds=2024-01-01/`):
+`<partition_column>=<value>` (e.g. `ds=2024-01-01/`), nesting one directory
+level per partition column in the order declared in `.schema` (e.g.
+`ds=2024-01-01/hour=00/` for a table partitioned by `(ds, hour)`):
 
 ```
 /data/
@@ -133,6 +136,12 @@ partition and bucketing information, and file format. A `.stats` file with
 row counts and per-column statistics is also required. Both files are produced
 automatically by the write pipeline (`CREATE TABLE`, `INSERT INTO`) or by
 `LocalTableBuilder::build()` for externally created data.
+
+The `.schema` is the source of truth for partitioning. At load time the
+connector descends exactly one directory level per declared partition column,
+in declared order, and reads the leaf `.stats` file for each partition. A
+directory whose name does not match the expected partition column, or a leaf
+partition missing its `.stats` file, fails the load.
 
 ## .schema File Format
 

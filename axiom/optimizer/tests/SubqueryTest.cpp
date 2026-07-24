@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+#include <folly/ScopeGuard.h>
+#include "axiom/connectors/hive/HiveMetadataConfig.h"
 #include "axiom/optimizer/tests/HiveQueriesTestBase.h"
 #include "axiom/optimizer/tests/PlanMatcher.h"
 #include "axiom/optimizer/tests/QueryTestBase.h"
@@ -288,6 +290,100 @@ TEST_F(SubqueryTest, foldable) {
     auto matcher = makeMatcher("ds in ('2025-11-03', '2025-10-29')");
 
     AXIOM_ASSERT_PLAN(plan, matcher);
+  }
+
+  // A filter on the non-discrete column 'a' prevents the fold: the subquery is
+  // evaluated normally rather than by listing discrete values.
+  {
+    auto logicalPlan = parseSql(
+        "SELECT * FROM t WHERE ds = (SELECT max(ds) FROM t WHERE a > 5)");
+    auto plan = toSingleNodePlan(logicalPlan);
+    auto matcher = matchScan("t")
+                       .hashJoinInner(matchScan("t")
+                                          .aliases({"ds", "a"})
+                                          .filter("a > 5")
+                                          .aggregation()
+                                          .build())
+                       .build();
+    AXIOM_ASSERT_PLAN(plan, matcher);
+  }
+}
+
+// Folds a scalar max() over Hive partition metadata: narrowing by a filter on
+// the aggregated partition key or on another partition key, declining when a
+// non-partition column is filtered, and enforcing the max-partitions session
+// property.
+TEST_F(SubqueryTest, foldableHivePartitions) {
+  // Partition keys 'ds' and 'k' (ds='1' maps to k=1, other ds to k=0) and data
+  // column 'x'. Three partitions: (ds='0',k=0), (ds='1',k=1), (ds='2',k=0).
+  runCtas(
+      "CREATE TABLE pt WITH (partitioned_by = ARRAY['ds', 'k']) AS "
+      "SELECT "
+      "     n_nationkey AS x, "
+      "     CAST(n_nationkey % 3 AS VARCHAR) AS ds, "
+      "     CAST(IF(n_nationkey % 3 = 1, 1, 0) AS INTEGER) AS k "
+      "FROM nation");
+  SCOPE_EXIT {
+    hiveMetadata().dropTableIfExists("pt");
+  };
+
+  // max(ds) folds to the greatest partition value.
+  {
+    auto plan = toSingleNodePlan(
+        "SELECT x FROM pt WHERE ds = (SELECT max(ds) FROM pt)");
+    AXIOM_ASSERT_PLAN(plan, matchHiveScan("pt", test::eq("ds", "2")).build());
+  }
+
+  // A filter on the aggregated partition key narrows the listing.
+  {
+    auto plan = toSingleNodePlan(
+        "SELECT x FROM pt WHERE ds = (SELECT max(ds) FROM pt WHERE ds < '2')");
+    AXIOM_ASSERT_PLAN(plan, matchHiveScan("pt", test::eq("ds", "1")).build());
+  }
+
+  // A filter on a different partition key narrows the listing: only ds='1' has
+  // k > 0, so max(ds) folds to '1'.
+  {
+    auto plan = toSingleNodePlan(
+        "SELECT x FROM pt WHERE ds = (SELECT max(ds) FROM pt WHERE k > 0)");
+    AXIOM_ASSERT_PLAN(plan, matchHiveScan("pt", test::eq("ds", "1")).build());
+  }
+
+  // A filter on the non-partition column 'x' prevents the fold: the subquery is
+  // evaluated normally rather than by listing partitions.
+  {
+    auto plan = toSingleNodePlan(
+        "SELECT x FROM pt WHERE ds = (SELECT max(ds) FROM pt WHERE x > 0)");
+    auto matcher =
+        matchHiveScan("pt")
+            .hashJoinInner(matchHiveScan("pt", test::gt("x", int64_t{0}))
+                               .aggregation()
+                               .build())
+            .build();
+    AXIOM_ASSERT_PLAN(plan, matcher);
+  }
+
+  // The max-partitions session property bounds the listing: the un-narrowed
+  // listing (3 partitions) exceeds a limit of 2 and fails, while a partition
+  // filter narrows it under the limit and still folds.
+  {
+    setHiveConnectorSession(
+        connector::hive::HiveMetadataConfig::
+            kMaxPartitionsPerDiscretePredicates,
+        "2");
+    SCOPE_EXIT {
+      clearConnectorSession();
+    };
+
+    VELOX_ASSERT_THROW(
+        toSingleNodePlan(
+            "SELECT x FROM pt WHERE ds = (SELECT max(ds) FROM pt)"),
+        "(3 vs. 2) Discrete-predicate listing exceeds the max-partitions "
+        "limit");
+
+    auto plan = toSingleNodePlan(
+        "SELECT x FROM pt WHERE ds = (SELECT max(ds) FROM pt WHERE ds < '2')");
+    AXIOM_ASSERT_PLAN(plan, matchHiveScan("pt", test::eq("ds", "1")).build());
   }
 }
 
