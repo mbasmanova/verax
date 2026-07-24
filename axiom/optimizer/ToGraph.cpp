@@ -22,6 +22,7 @@
 #include "axiom/logical_plan/ExprPrinter.h"
 #include "axiom/logical_plan/PlanPrinter.h"
 #include "axiom/optimizer/AggregationPlanner.h"
+#include "axiom/optimizer/ConstantFold.h"
 #include "axiom/optimizer/DerivedTableFlattener.h"
 #include "axiom/optimizer/Filters.h"
 #include "axiom/optimizer/FunctionRegistry.h"
@@ -368,90 +369,6 @@ ExprCP ToGraph::splitCorrelatedProjection(ExprCP expr, DerivedTableP dt) {
 
 namespace {
 
-std::shared_ptr<velox::core::QueryCtx> constantQueryCtx(
-    const velox::core::QueryCtx& original) {
-  static std::atomic<int64_t> kQueryCounter{0};
-
-  std::unordered_map<std::string, std::string> empty;
-  return velox::core::QueryCtx::create(
-      original.executor(),
-      velox::core::QueryConfig(std::move(empty)),
-      original.connectorSessionProperties(),
-      original.cache(),
-      original.pool()->shared_from_this(),
-      nullptr,
-      fmt::format("constant_fold:{}", ++kQueryCounter));
-}
-
-std::vector<velox::RowVectorPtr> runConstantPlan(
-    PlanAndStats& veloxPlan,
-    velox::memory::MemoryPool* pool) {
-  QueryRuntimeStats noopStats;
-  auto runner = std::make_shared<runner::LocalRunner>(
-      queryCtx()->optimization()->runnerSession(),
-      veloxPlan.plan,
-      std::move(veloxPlan.finishWrite),
-      constantQueryCtx(*queryCtx()->optimization()->veloxQueryCtx()),
-      std::make_shared<runner::ConnectorSplitSourceFactory>(noopStats),
-      /*outputPool=*/nullptr,
-      /*baseSpillDirectory=*/"",
-      noopStats);
-
-  std::vector<velox::RowVectorPtr> results;
-  runner->drain([&](velox::RowVectorPtr batch) {
-    VELOX_CHECK_GT(batch->size(), 0);
-    // Copy out of the runner's QueryCtx pool: that pool is released when the
-    // runner is closed (drain() reaps before returning).
-    results.push_back(
-        std::dynamic_pointer_cast<velox::RowVector>(
-            velox::BaseVector::copy(*batch, pool)));
-  });
-  return results;
-}
-
-// A table layout whose discrete-predicate columns cover 'columns', paired with
-// the matching connector columns. 'layout' is nullptr if no layout qualifies.
-struct DiscreteLayout {
-  const connector::TableLayout* layout{nullptr};
-  std::vector<const connector::Column*> connectorColumns;
-};
-
-// Finds the first layout of 'baseTable' whose discrete-predicate columns cover
-// every base-table column.
-DiscreteLayout findDiscreteLayout(const BaseTable& baseTable) {
-  const auto& columns = baseTable.columns;
-  for (auto* layout : baseTable.schemaTable->connectorTable->layouts()) {
-    const auto& discreteColumns = layout->discretePredicateColumns();
-    if (discreteColumns.empty()) {
-      continue;
-    }
-
-    folly::F14FastMap<std::string_view, const connector::Column*>
-        discreteColumnMap;
-    for (const auto* column : discreteColumns) {
-      discreteColumnMap.emplace(column->name(), column);
-    }
-
-    std::vector<const connector::Column*> connectorColumns;
-    connectorColumns.reserve(columns.size());
-    bool covered{true};
-    for (auto* column : columns) {
-      auto it = discreteColumnMap.find(column->schemaColumn()->name());
-      if (it == discreteColumnMap.end()) {
-        covered = false;
-        break;
-      }
-      connectorColumns.emplace_back(it->second);
-    }
-
-    if (covered) {
-      return {layout, std::move(connectorColumns)};
-    }
-  }
-
-  return {};
-}
-
 velox::RowTypePtr toRowType(const ColumnVector& columns) {
   std::vector<std::string> names;
   std::vector<velox::TypePtr> types;
@@ -465,32 +382,12 @@ velox::RowTypePtr toRowType(const ColumnVector& columns) {
   return ROW(std::move(names), std::move(types));
 }
 
-std::vector<velox::Variant> toValues(
-    connector::DiscretePredicates& discretePredicates) {
-  std::vector<velox::Variant> valueRows;
-  for (;;) {
-    auto rows = discretePredicates.next();
-    if (rows.empty()) {
-      break;
-    }
-
-    valueRows.reserve(valueRows.size() + rows.size());
-
-    for (auto& row : rows) {
-      valueRows.emplace_back(std::move(row));
-    }
-  }
-
-  return valueRows;
-}
-
 // Constant folds a derived table that represents global aggregation over a base
 // table and uses only discrete-predicate columns. In addition, aggregate
 // functions must ignore duplicate inputs or aggregation must be over distinct
-// inputs (e.g. max(x) or agg(distinct x)).
-lp::ValuesNodePtr tryFoldConstantDt(
-    DerivedTableP dt,
-    velox::memory::MemoryPool* pool) {
+// inputs (e.g. max(x) or agg(distinct x)). Returns the folded constant as a
+// Literal, or nullptr if the derived table does not have that shape.
+Literal* tryFoldConstantDt(DerivedTableP dt) {
   if (dt->tables.size() > 1 || !dt->tables[0]->is(PlanType::kTableNode)) {
     return nullptr;
   }
@@ -514,7 +411,7 @@ lp::ValuesNodePtr tryFoldConstantDt(
   // (e.g. partition) column. The listing enumerates those columns, so the
   // table's filters reference only them and can be pushed into the listing.
   auto* baseTable = dt->tables[0]->as<BaseTable>();
-  auto discreteLayout = findDiscreteLayout(*baseTable);
+  auto discreteLayout = findDiscreteLayout(baseTable->columns, *baseTable);
   if (discreteLayout.layout == nullptr) {
     return nullptr;
   }
@@ -587,16 +484,13 @@ lp::ValuesNodePtr tryFoldConstantDt(
 
   auto veloxPlan = toVelox.toVeloxPlan(
       plan, MultiFragmentPlan::Options::singleNode(), {}, {});
-  auto results = runConstantPlan(veloxPlan, pool);
-  if (results.empty()) {
-    VELOX_CHECK_EQ(1, veloxPlan.plan->fragments().size());
-    const auto& rowType =
-        veloxPlan.plan->fragments().front().fragment.planNode->outputType();
-    return std::make_shared<lp::ValuesNode>(
-        dt->cname, rowType, std::vector<velox::Variant>{});
-  }
-
-  return std::make_shared<lp::ValuesNode>(dt->cname, std::move(results));
+  VELOX_CHECK_EQ(1, veloxPlan.plan->fragments().size());
+  const auto& fragment = veloxPlan.plan->fragments().front().fragment;
+  ConstantPlanRunner constantPlanRunner{optimization->veloxQueryCtx()};
+  auto value = constantPlanRunner.run(fragment);
+  return make<Literal>(
+      toConstantValue(fragment.planNode->outputType()->childAt(0)),
+      registerVariant(std::move(value)));
 }
 
 } // namespace
@@ -3517,25 +3411,10 @@ ExprCP ToGraph::processUncorrelatedScalarSubquery(DerivedTableP subqueryDt) {
   VELOX_CHECK_EQ(
       1, subqueryDt->columns.size(), "Scalar subquery must produce one column");
 
-  if (auto valuesNode = tryFoldConstantDt(subqueryDt, evaluator_.pool())) {
-    VELOX_CHECK_EQ(
-        1,
-        valuesNode->outputType()->size(),
-        "Folded scalar subquery must produce one column");
-    if (valuesNode->cardinality() == 1) {
-      // Replace subquery with a constant value.
-      const auto value =
-          std::get<std::vector<velox::RowVectorPtr>>(valuesNode->data())
-              .front()
-              ->childAt(0)
-              ->variantAt(0);
-      const auto* literal = make<Literal>(
-          toConstantValue(valuesNode->outputType()->childAt(0)),
-          registerVariant(value));
-
-      currentDt_->removeLastTable(subqueryDt);
-      return literal;
-    }
+  if (auto* literal = tryFoldConstantDt(subqueryDt)) {
+    // Replace the subquery with the folded constant.
+    currentDt_->removeLastTable(subqueryDt);
+    return literal;
   }
 
   subqueryDt->ensureSingleRow();

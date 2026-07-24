@@ -16,6 +16,7 @@
 
 #include "axiom/optimizer/v2/ExprSimplifier.h"
 
+#include "axiom/optimizer/FunctionRegistry.h"
 #include "axiom/optimizer/QueryGraph.h"
 #include "axiom/optimizer/v2/AppendAll.h"
 #include "axiom/optimizer/v2/ExprEmitter.h"
@@ -155,6 +156,22 @@ bool ExprSimplifier::simplifyFilter(ExprCP predicate, ExprVector& into) {
 ExprCP ExprSimplifier::tryFoldConstant(ExprCP expr) {
   if (expr->is(PlanType::kLiteralExpr)) {
     return expr;
+  }
+
+  // A call with default null behavior (result is null whenever any argument is
+  // null) folds to null if any argument is the constant null -- even when its
+  // other arguments reference columns. Special forms (and/or/if/coalesce/try)
+  // carry kNonDefaultNullBehavior, so they are excluded.
+  if (expr->is(PlanType::kCallExpr)) {
+    const auto* call = expr->as<Call>();
+    if (!call->functions().contains(FunctionSet::kNonDefaultNullBehavior)) {
+      for (ExprCP arg : call->args()) {
+        if (arg->is(PlanType::kLiteralExpr) &&
+            arg->as<Literal>()->literal().isNull()) {
+          return builder_.makeNull(call->value().type);
+        }
+      }
+    }
   }
 
   if (!expr->columns().empty()) {

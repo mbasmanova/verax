@@ -26,6 +26,7 @@ add_library(
   BitSet.cpp
   ConnectorPushdownPass.cpp
   ConstantExprEvaluator.cpp
+  ConstantFold.cpp
   Cost.cpp
   DerivedTable.cpp
   DerivedTableFlattener.cpp
