@@ -409,33 +409,47 @@ std::vector<velox::RowVectorPtr> runConstantPlan(
   return results;
 }
 
-std::unique_ptr<connector::DiscretePredicates> allDiscreteColumns(
-    const ColumnVector& columns,
-    const connector::TableLayout& layout) {
-  const auto& discreteColumns = layout.discretePredicateColumns();
-  if (discreteColumns.empty()) {
-    return {nullptr, {}};
-  }
-
-  folly::F14FastMap<std::string_view, const connector::Column*>
-      discreteColumnMap;
-  for (const auto* column : discreteColumns) {
-    discreteColumnMap.emplace(column->name(), column);
-  }
-
+// A table layout whose discrete-predicate columns cover 'columns', paired with
+// the matching connector columns. 'layout' is nullptr if no layout qualifies.
+struct DiscreteLayout {
+  const connector::TableLayout* layout{nullptr};
   std::vector<const connector::Column*> connectorColumns;
-  connectorColumns.reserve(columns.size());
+};
 
-  for (auto* column : columns) {
-    auto it = discreteColumnMap.find(column->schemaColumn()->name());
-    if (it == discreteColumnMap.end()) {
-      return {nullptr, {}};
+// Finds the first layout of 'baseTable' whose discrete-predicate columns cover
+// every base-table column.
+DiscreteLayout findDiscreteLayout(const BaseTable& baseTable) {
+  const auto& columns = baseTable.columns;
+  for (auto* layout : baseTable.schemaTable->connectorTable->layouts()) {
+    const auto& discreteColumns = layout->discretePredicateColumns();
+    if (discreteColumns.empty()) {
+      continue;
     }
 
-    connectorColumns.emplace_back(it->second);
+    folly::F14FastMap<std::string_view, const connector::Column*>
+        discreteColumnMap;
+    for (const auto* column : discreteColumns) {
+      discreteColumnMap.emplace(column->name(), column);
+    }
+
+    std::vector<const connector::Column*> connectorColumns;
+    connectorColumns.reserve(columns.size());
+    bool covered{true};
+    for (auto* column : columns) {
+      auto it = discreteColumnMap.find(column->schemaColumn()->name());
+      if (it == discreteColumnMap.end()) {
+        covered = false;
+        break;
+      }
+      connectorColumns.emplace_back(it->second);
+    }
+
+    if (covered) {
+      return {layout, std::move(connectorColumns)};
+    }
   }
 
-  return layout.discretePredicates(connectorColumns);
+  return {};
 }
 
 velox::RowTypePtr toRowType(const ColumnVector& columns) {
@@ -496,19 +510,12 @@ lp::ValuesNodePtr tryFoldConstantDt(
     }
   }
 
-  // Check if aggregation uses only 'discretePredicate' columns.
+  // The fold works only when every base-table column is a discrete-predicate
+  // (e.g. partition) column. The listing enumerates those columns, so the
+  // table's filters reference only them and can be pushed into the listing.
   auto* baseTable = dt->tables[0]->as<BaseTable>();
-
-  std::unique_ptr<connector::DiscretePredicates> discretePredicates;
-
-  for (auto* layout : baseTable->schemaTable->connectorTable->layouts()) {
-    if (auto predicates = allDiscreteColumns(baseTable->columns, *layout)) {
-      discretePredicates = std::move(predicates);
-      break;
-    }
-  }
-
-  if (discretePredicates == nullptr) {
+  auto discreteLayout = findDiscreteLayout(*baseTable);
+  if (discreteLayout.layout == nullptr) {
     return nullptr;
   }
 
@@ -528,6 +535,22 @@ lp::ValuesNodePtr tryFoldConstantDt(
     return nullptr;
   }
 
+  // Refresh the table handle so it reflects the conjuncts distributed above;
+  // its pushed filters restrict the listing to matching rows.
+  auto* optimization = queryCtx()->optimization();
+  auto& toVelox = optimization->toVelox();
+  toVelox.filterUpdated(baseTable);
+  const ToVelox::LeafTableData* leaf = toVelox.leafData(baseTable->id());
+  VELOX_CHECK_NOT_NULL(leaf);
+
+  auto session = optimization->optimizerSession()->toConnectorSession(
+      discreteLayout.layout->connectorId());
+  auto discretePredicates = discreteLayout.layout->discretePredicates(
+      session, discreteLayout.connectorColumns, leaf->handle);
+  if (discretePredicates == nullptr) {
+    return nullptr;
+  }
+
   // Create and run Velox plan.
   const auto values = toValues(*discretePredicates);
   auto* valuesTable =
@@ -537,16 +560,14 @@ lp::ValuesNodePtr tryFoldConstantDt(
 
   RelationOpPtr plan = make<Values>(*valuesTable, valuesTable->columns);
 
+  // Re-apply the table's filters: the connector may not have pushed every
+  // conjunct into the listing.
   if (!baseTable->columnFilters.empty() || !baseTable->filter.empty()) {
-    auto combinedFilters = baseTable->columnFilters;
-    if (!baseTable->filter.empty()) {
-      combinedFilters.reserve(
-          baseTable->columnFilters.size() + baseTable->filter.size());
-      combinedFilters.insert(
-          combinedFilters.end(),
-          baseTable->filter.begin(),
-          baseTable->filter.end());
-    }
+    ExprVector combinedFilters = baseTable->columnFilters;
+    combinedFilters.insert(
+        combinedFilters.end(),
+        baseTable->filter.begin(),
+        baseTable->filter.end());
     plan = make<Filter>(plan, combinedFilters);
   }
 
@@ -564,8 +585,7 @@ lp::ValuesNodePtr tryFoldConstantDt(
         /*redundantProject=*/false);
   }
 
-  auto& optimization = queryCtx()->optimization();
-  auto veloxPlan = optimization->toVelox().toVeloxPlan(
+  auto veloxPlan = toVelox.toVeloxPlan(
       plan, MultiFragmentPlan::Options::singleNode(), {}, {});
   auto results = runConstantPlan(veloxPlan, pool);
   if (results.empty()) {

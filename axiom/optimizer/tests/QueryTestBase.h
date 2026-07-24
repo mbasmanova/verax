@@ -276,6 +276,24 @@ class QueryTestBase : public velox::exec::test::HiveConnectorTestBase {
 
   OptimizerOptions optimizerOptions_;
 
+  /// Sets connector session property 'key'='value' for 'connectorId', applied
+  /// to the OptimizerSession of subsequently planned queries.
+  void setConnectorSession(
+      const std::string& connectorId,
+      const std::string& key,
+      std::string value) {
+    connectorSessionProperties_[connectorId][key] = std::move(value);
+  }
+
+  /// Clears all connector session properties set via setConnectorSession.
+  void clearConnectorSession() {
+    connectorSessionProperties_.clear();
+  }
+
+  // Per-connector session properties passed to the OptimizerSession. Tests set
+  // entries via setConnectorSession; empty by default.
+  connector::ConnectorProperties connectorSessionProperties_;
+
   // When true, `optimize()` routes through the v2 optimizer pipeline instead of
   // v1. Lets one fixture run the same tests through either optimizer (e.g. set
   // from a TEST_P parameter). Default false = v1.

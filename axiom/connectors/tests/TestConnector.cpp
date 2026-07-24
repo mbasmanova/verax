@@ -719,13 +719,17 @@ std::span<const Column* const> TestTableLayout::discretePredicateColumns()
 }
 
 std::unique_ptr<DiscretePredicates> TestTableLayout::discretePredicates(
-    [[maybe_unused]] const std::vector<const Column*>& columns) const {
+    [[maybe_unused]] const ConnectorSessionPtr& session,
+    [[maybe_unused]] const std::vector<const Column*>& columns,
+    [[maybe_unused]] velox::connector::ConnectorTableHandlePtr tableHandle)
+    const {
   if (discreteValueColumns_.empty()) {
     return nullptr;
   }
 
-  // TODO Add logic to prune 'discreteValues_' based on 'columns'.
-
+  // TODO: Prune 'discreteValues_' by 'columns' and by the filters in
+  // 'tableHandle'. For now, list all recorded values; the caller re-applies its
+  // filters over them.
   return std::make_unique<TestDiscretePredicates>(
       discreteValueColumns_, discreteValues_);
 }

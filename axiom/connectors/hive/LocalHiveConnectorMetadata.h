@@ -184,6 +184,16 @@ class LocalHiveTableLayout : public HiveTableLayout {
       std::vector<std::string> columns,
       std::vector<velox::core::TypedExprPtr> filterConjuncts) const override;
 
+  std::span<const Column* const> discretePredicateColumns() const override;
+
+  /// Enumerates the partition-key tuples of 'columns' from persisted partition
+  /// metadata, keeping partitions that match the filters pushed into
+  /// 'tableHandle'.
+  std::unique_ptr<DiscretePredicates> discretePredicates(
+      const ConnectorSessionPtr& session,
+      const std::vector<const Column*>& columns,
+      velox::connector::ConnectorTableHandlePtr tableHandle) const override;
+
  private:
   // Configuration for local Hive metadata.
   std::shared_ptr<HiveMetadataConfig> hiveMetadataConfig_;

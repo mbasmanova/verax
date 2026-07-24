@@ -36,6 +36,12 @@ class HiveMetadataConfig {
   /// not specified.
   static constexpr const char* kLocalFileFormat = "hive_local_file_format";
 
+  /// Session property: the maximum number of partitions a discrete-predicate
+  /// listing (see TableLayout::discretePredicates) may return before the
+  /// connector fails the query. Unset means unlimited.
+  static constexpr const char* kMaxPartitionsPerDiscretePredicates =
+      "hive_max_partitions_per_discrete_predicates";
+
   std::string localDataPath() const;
 
   std::string localFileFormat() const;

@@ -488,16 +488,29 @@ class TableLayout {
     return {};
   }
 
-  /// Returns an iterator into the list of discrete values of the specified
-  /// columns. The union of these values covers all rows of the table. Each
-  /// value corresponds to at least one row in the table. If 'columns' doesn't
-  /// contain all 'discretePredicateColumns', the results may contains duplicate
-  /// values.
+  /// Returns an iterator over the discrete values of the specified columns. The
+  /// union of these values covers all rows the listing produces; each value
+  /// corresponds to at least one row. If 'columns' doesn't contain all
+  /// 'discretePredicateColumns', the results may contain duplicate values.
   ///
+  /// The listing is restricted to the filters pushed into 'tableHandle', which
+  /// must constrain only 'discretePredicateColumns' -- the listing produces
+  /// only those columns, so a filter on any other column is meaningless here
+  /// and is rejected. Filters the connector could not push (e.g. those
+  /// createTableHandle reports as rejected) are the caller's responsibility to
+  /// apply over the returned values.
+  ///
+  /// @param session Connector session for the current query.
   /// @param columns A subset of 'discretePredicateColumns'. Must not be empty.
   /// Must not contain duplicates.
+  /// @param tableHandle Handle for the table, carrying the pushed filters that
+  /// restrict the listing (built via createTableHandle). Its filters must
+  /// reference only 'discretePredicateColumns'.
   virtual std::unique_ptr<DiscretePredicates> discretePredicates(
-      [[maybe_unused]] const std::vector<const Column*>& columns) const {
+      [[maybe_unused]] const ConnectorSessionPtr& session,
+      [[maybe_unused]] const std::vector<const Column*>& columns,
+      [[maybe_unused]] velox::connector::ConnectorTableHandlePtr tableHandle)
+      const {
     return nullptr;
   }
 

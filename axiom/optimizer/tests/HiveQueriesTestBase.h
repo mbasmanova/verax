@@ -126,9 +126,29 @@ class HiveQueriesTestBase : public QueryTestBase {
   /// populates it with data. Drops the table first if it already exists.
   void runCtas(const std::string& sql);
 
+  /// Matches a TableScan of 'tableName' without asserting anything about the
+  /// scan's filters.
   static velox::core::PlanMatcherBuilder matchHiveScan(
       const std::string& tableName) {
     return velox::core::PlanMatcherBuilder().tableScan(tableName);
+  }
+
+  /// Matches a Hive TableScan of 'tableName' that has exactly 'subfieldFilters'
+  /// pushed down and exactly 'remainingFilter' as its non-pushed filter -- an
+  /// empty 'remainingFilter' asserts the scan has no remaining filter. Use the
+  /// single-argument overload to match a scan regardless of its filters.
+  static velox::core::PlanMatcherBuilder matchHiveScan(
+      const std::string& tableName,
+      velox::common::SubfieldFilters subfieldFilters,
+      const std::string& remainingFilter = "") {
+    return velox::core::PlanMatcherBuilder().hiveScan(
+        tableName, std::move(subfieldFilters), remainingFilter);
+  }
+
+  /// Sets a Hive connector session property for subsequently planned queries.
+  void setHiveConnectorSession(const std::string& key, std::string value) {
+    setConnectorSession(
+        velox::exec::test::kHiveConnectorId, key, std::move(value));
   }
 
  private:

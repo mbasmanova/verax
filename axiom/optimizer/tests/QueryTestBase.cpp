@@ -127,9 +127,10 @@ logical_plan::LogicalPlanNodePtr QueryTestBase::parseSelect(
 namespace {
 OptimizerSessionPtr makeOptimizerSession(
     const std::string& queryId,
-    OptimizerOptions options) {
+    OptimizerOptions options,
+    connector::ConnectorProperties connectorProperties) {
   return std::make_shared<OptimizerSession>(
-      queryId, "test", std::move(options), connector::ConnectorProperties{});
+      queryId, "test", std::move(options), std::move(connectorProperties));
 }
 
 runner::RunnerSessionPtr makeRunnerSession(const std::string& queryId) {
@@ -215,7 +216,9 @@ PlanCost QueryTestBase::optimizationCost(
       connector::ConnectorMetadataRegistry::global()};
   Optimization opt(
       makeOptimizerSession(
-          queryCtx->queryId(), optimizerOptions.value_or(optimizerOptions_)),
+          queryCtx->queryId(),
+          optimizerOptions.value_or(optimizerOptions_),
+          connectorSessionProperties_),
       makeRunnerSession(queryCtx->queryId()),
       *logicalPlan,
       schemaResolver,
@@ -249,7 +252,8 @@ void QueryTestBase::verifyOptimization(
   Optimization optimization(
       makeOptimizerSession(
           veloxQueryCtx->queryId(),
-          optimizerOptions.value_or(optimizerOptions_)),
+          optimizerOptions.value_or(optimizerOptions_),
+          connectorSessionProperties_),
       makeRunnerSession(veloxQueryCtx->queryId()),
       logicalPlan,
       schemaResolver,
@@ -317,7 +321,9 @@ optimizer::PlanAndStats QueryTestBase::planVelox(
   };
 
   auto session = makeOptimizerSession(
-      queryCtx->queryId(), optimizerOptions.value_or(optimizerOptions_));
+      queryCtx->queryId(),
+      optimizerOptions.value_or(optimizerOptions_),
+      connectorSessionProperties_);
 
   optimizer::PlanAndStats planAndStats;
   if (useV2_) {

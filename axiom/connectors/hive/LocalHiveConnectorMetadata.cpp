@@ -314,6 +314,27 @@ FilteredTableStats estimateStatsFromPartitionStats(
       totalRows, std::move(columnStats), std::move(rejectedFilterIndices)};
 }
 
+// Iterates over a precomputed set of partition-key tuples.
+class HiveDiscretePredicates : public DiscretePredicates {
+ public:
+  HiveDiscretePredicates(
+      std::vector<const Column*> columns,
+      std::vector<velox::Variant> values)
+      : DiscretePredicates(std::move(columns)), values_{std::move(values)} {}
+
+  std::vector<velox::Variant> next() override {
+    if (atEnd_) {
+      return {};
+    }
+    atEnd_ = true;
+    return std::move(values_);
+  }
+
+ private:
+  bool atEnd_{false};
+  std::vector<velox::Variant> values_;
+};
+
 } // namespace
 
 std::shared_ptr<SplitSource> LocalHiveSplitManager::getSplitSource(
@@ -732,8 +753,8 @@ LocalHiveTableLayout::co_metadataCounts(
     for (const auto* column : groupingKeyColumns) {
       auto it = partition.partitionKeys.find(column->name());
       if (it == partition.partitionKeys.end()) {
-        // The value is not available (e.g. a partition column beyond the first
-        // level, which is not parsed today).
+        // The grouping column is not a partition key, so the count cannot be
+        // answered from partition metadata.
         co_return std::nullopt;
       }
       groupKey += it->second;
@@ -770,6 +791,90 @@ LocalHiveTableLayout::co_metadataCounts(
   }
 
   co_return groups;
+}
+
+std::span<const Column* const> LocalHiveTableLayout::discretePredicateColumns()
+    const {
+  return hivePartitionColumns();
+}
+
+std::unique_ptr<DiscretePredicates> LocalHiveTableLayout::discretePredicates(
+    const ConnectorSessionPtr& session,
+    const std::vector<const Column*>& columns,
+    velox::connector::ConnectorTableHandlePtr tableHandle) const {
+  if (hivePartitionColumns().empty()) {
+    return nullptr;
+  }
+
+  std::optional<int64_t> maxPartitions;
+  if (session != nullptr) {
+    if (auto value = session->property(
+            HiveMetadataConfig::kMaxPartitionsPerDiscretePredicates)) {
+      maxPartitions = folly::to<int64_t>(*value);
+    }
+  }
+
+  auto hiveHandle =
+      std::dynamic_pointer_cast<const velox::connector::hive::HiveTableHandle>(
+          tableHandle);
+  VELOX_CHECK_NOT_NULL(hiveHandle);
+  const auto& subfieldFilters = hiveHandle->subfieldFilters();
+
+  folly::F14FastMap<std::string_view, const Column*> partitionColumnsByName;
+  for (const auto* column : hivePartitionColumns()) {
+    partitionColumnsByName.emplace(column->name(), column);
+  }
+
+  std::vector<velox::Variant> rows;
+  for (const auto& partition : partitionStats_) {
+    bool matched{true};
+    for (const auto& [subfield, filter] : subfieldFilters) {
+      auto columnIt = partitionColumnsByName.find(subfield.baseName());
+      // The listing enumerates only partition columns, so every pushed filter
+      // must be on one (guaranteed by the caller's discrete-column
+      // precondition).
+      VELOX_CHECK(
+          columnIt != partitionColumnsByName.end(),
+          "discretePredicates got a filter on non-partition column '{}'",
+          subfield.baseName());
+      auto valueIt = partition.partitionKeys.find(subfield.baseName());
+      VELOX_CHECK(
+          valueIt != partition.partitionKeys.end(),
+          "Partition is missing a value for partition column '{}'",
+          subfield.baseName());
+      if (!testPartitionValue(
+              *filter, valueIt->second, *columnIt->second->type())) {
+        matched = false;
+        break;
+      }
+    }
+    if (!matched) {
+      continue;
+    }
+
+    std::vector<velox::Variant> values;
+    values.reserve(columns.size());
+    for (const auto* column : columns) {
+      auto valueIt = partition.partitionKeys.find(column->name());
+      VELOX_CHECK(
+          valueIt != partition.partitionKeys.end(),
+          "Partition is missing a value for partition column '{}'",
+          column->name());
+      values.push_back(
+          HiveTableLayout::partitionValueToVariant(
+              valueIt->second, *column->type()));
+    }
+    rows.push_back(velox::Variant::row(std::move(values)));
+
+    if (maxPartitions.has_value()) {
+      VELOX_USER_CHECK_LE(
+          static_cast<int64_t>(rows.size()),
+          *maxPartitions,
+          "Discrete-predicate listing exceeds the max-partitions limit");
+    }
+  }
+
+  return std::make_unique<HiveDiscretePredicates>(columns, std::move(rows));
 }
 
 LocalHiveTableLayout* LocalTable::makeDefaultLayout(
@@ -1221,6 +1326,64 @@ std::shared_ptr<LocalTable> createTableFromSchema(
       name, schema, options, connector, std::move(hiveMetadataConfig));
 }
 
+// Parses a Hive partition directory named '<expectedColumn>=<value>'. Returns
+// the value.
+std::string parsePartitionValue(
+    const fs::path& dir,
+    std::string_view expectedColumn) {
+  const auto dirName = dir.filename().string();
+  const auto prefix = std::string(expectedColumn) + "=";
+  VELOX_USER_CHECK(
+      dirName.starts_with(prefix),
+      "Expected a '{}=<value>' partition directory, found: {}",
+      expectedColumn,
+      dirName);
+  return dirName.substr(prefix.size());
+}
+
+// Descends the partition directory tree one level per declared partition
+// column, reading the per-partition '.stats' file at each leaf into
+// 'allPartitionStats'. See loadTableWithWriteTimeStats for the layout contract.
+void collectPartitionStats(
+    const std::vector<std::string_view>& partitionColumnNames,
+    LocalTable& table,
+    std::vector<PartitionStats>& allPartitionStats,
+    const fs::path& dir,
+    size_t level,
+    folly::F14FastMap<std::string, std::string> partitionKeys) {
+  if (level == partitionColumnNames.size()) {
+    auto persisted = PersistedStats::read(dir.string());
+    VELOX_USER_CHECK(
+        persisted.has_value(),
+        "Partition directory is missing a .stats file: {}",
+        dir.string());
+    table.incrementNumRows(persisted->numRows);
+    allPartitionStats.push_back(
+        PartitionStats{
+            .partitionKeys = std::move(partitionKeys),
+            .numRows = persisted->numRows,
+            .columnStats = std::move(persisted->columns)});
+    return;
+  }
+
+  const auto& expectedColumn = partitionColumnNames[level];
+  for (const auto& entry : fs::directory_iterator(dir)) {
+    if (!entry.is_directory()) {
+      continue;
+    }
+    auto childKeys = partitionKeys;
+    childKeys.emplace(
+        expectedColumn, parsePartitionValue(entry.path(), expectedColumn));
+    collectPartitionStats(
+        partitionColumnNames,
+        table,
+        allPartitionStats,
+        entry.path(),
+        level + 1,
+        std::move(childKeys));
+  }
+}
+
 } // namespace
 
 // Loads persisted write-time stats from .stats files and stores them in the
@@ -1250,33 +1413,28 @@ void LocalHiveConnectorMetadata::loadTableWithWriteTimeStats(
     }
 
     allPartitionStats.push_back(std::move(partitionEntry));
-  } else {
-    // Partitioned table: read per-partition .stats files.
-    for (const auto& entry : std::filesystem::directory_iterator(tablePath)) {
-      if (!entry.is_directory()) {
-        continue;
-      }
-      auto persisted = PersistedStats::read(entry.path().string());
-      if (!persisted.has_value()) {
-        continue;
-      }
-
-      PartitionStats partitionEntry;
-      partitionEntry.numRows = persisted->numRows;
-      partitionEntry.columnStats = std::move(persisted->columns);
-
-      table->incrementNumRows(partitionEntry.numRows);
-
-      // Parse partition key=value pairs from directory name.
-      const auto dirName = entry.path().filename().string();
-      auto equalsPos = dirName.find('=');
-      if (equalsPos != std::string::npos) {
-        partitionEntry.partitionKeys[dirName.substr(0, equalsPos)] =
-            dirName.substr(equalsPos + 1);
-      }
-      allPartitionStats.push_back(std::move(partitionEntry));
+  } else if (!layout->hivePartitionColumns().empty()) {
+    // Partitioned table: the '.schema' declares the partition columns, and the
+    // data is laid out as one directory level per column, in declared order
+    // (e.g. ds=.../k=...). Descend exactly that many levels, validating each
+    // directory against the expected column, and read the per-partition
+    // '.stats' file at the leaf. Driving the depth from the schema guarantees
+    // every partition entry carries a value for every partition key.
+    std::vector<std::string_view> partitionColumnNames;
+    partitionColumnNames.reserve(layout->hivePartitionColumns().size());
+    for (const auto* column : layout->hivePartitionColumns()) {
+      partitionColumnNames.push_back(column->name());
     }
+    collectPartitionStats(
+        partitionColumnNames,
+        *table,
+        allPartitionStats,
+        tablePath,
+        /*level=*/0,
+        /*partitionKeys=*/{});
   }
+  // Otherwise the table is unpartitioned and has no persisted stats yet (e.g.
+  // right after a schema change); there is nothing to load.
 
   layout->setPartitionStats(std::move(allPartitionStats));
 }
