@@ -16,17 +16,16 @@
 
 #include "axiom/optimizer/v2/Optimize.h"
 
+#include "axiom/optimizer/ConstantFold.h"
 #include "axiom/optimizer/ExplainIo.h"
 #include "axiom/optimizer/v2/Builder.h"
 #include "axiom/optimizer/v2/DecorrelatePass.h"
 #include "axiom/optimizer/v2/EmitPass.h"
 #include "axiom/optimizer/v2/EstimateLeafStatsPass.h"
 #include "axiom/optimizer/v2/EstimateProvider.h"
-#include "axiom/optimizer/v2/ExpandAggregatePass.h"
 #include "axiom/optimizer/v2/FoldMetadataAggregatePass.h"
 #include "axiom/optimizer/v2/LimitAndOrderPass.h"
-#include "axiom/optimizer/v2/PlanPhysicalPass.h"
-#include "axiom/optimizer/v2/PrecomputeProjectionsPass.h"
+#include "axiom/optimizer/v2/PhysicalPlanAndEmit.h"
 #include "axiom/optimizer/v2/PushdownAndPrunePass.h"
 #include "axiom/optimizer/v2/ScanHandle.h"
 #include "axiom/optimizer/v2/TranslatePass.h"
@@ -48,8 +47,12 @@ FrontendResult translateAndPushdown(
     const logical_plan::LogicalPlanNode& plan,
     Schema& schema,
     velox::core::ExpressionEvaluator& evaluator,
-    Builder& builder) {
-  auto translated = TranslatePass::run(plan, schema, evaluator, builder);
+    Builder& builder,
+    const OptimizerSession& session,
+    const std::shared_ptr<velox::core::QueryCtx>& queryCtx) {
+  ConstantPlanRunner constantPlanRunner{queryCtx};
+  auto translated = TranslatePass::run(
+      plan, schema, evaluator, builder, session, constantPlanRunner);
   NodeCP decorrelated = DecorrelatePass::run(translated.root, builder);
   NodeCP limited = LimitAndOrderPass::run(decorrelated, builder);
   NodeCP pushed = PushdownAndPrunePass::run(limited, builder, evaluator);
@@ -84,27 +87,18 @@ PlanAndStats Optimizer::optimize(const MultiFragmentPlan::Options& options) {
   ScanHandleCache scanHandles;
 
   Builder builder;
-  auto frontend = translateAndPushdown(plan_, schema, evaluator_, builder);
+  auto frontend = translateAndPushdown(
+      plan_, schema, evaluator_, builder, session_, queryCtx_);
   NodeCP folded = FoldMetadataAggregatePass::run(
       frontend.pushed, builder, session_, evaluator_, scanHandles);
   if (session_.options().useFilteredTableStats) {
     EstimateLeafStatsPass::run(folded, session_, evaluator_, scanHandles);
   }
-  NodeCP physicalPlanned = PlanPhysicalPass::run(
+  EmitPass::Result emitted = physicalPlanAndEmit(
       folded,
-      builder,
-      session_.options(),
-      options.numWorkers,
-      options.numDrivers);
-  NodeCP precomputed = PrecomputeProjectionsPass::run(physicalPlanned, builder);
-  // Distinct aggregates lower to MarkDistinct here, after physical planning
-  // (grouping sets were already lowered to GroupId in translate).
-  NodeCP root = ExpandAggregatePass::run(precomputed, builder);
-
-  EmitPass::Result emitted = EmitPass::run(
-      root,
       frontend.translated.outputColumns,
       frontend.translated.outputNames,
+      builder,
       session_,
       evaluator_,
       scanHandles,
@@ -141,7 +135,8 @@ std::string Optimizer::explainIo(
   // Run only the passes that push predicates into scans; join ordering and Emit
   // are not needed to report IO.
   Builder builder;
-  auto frontend = translateAndPushdown(plan_, schema, evaluator_, builder);
+  auto frontend = translateAndPushdown(
+      plan_, schema, evaluator_, builder, session_, queryCtx_);
 
   std::vector<std::pair<BaseTableCP, ExprVector>> tableFilters;
   collectScans(frontend.pushed, tableFilters);
@@ -155,7 +150,8 @@ QueryStats Optimizer::estimateQueryStats() {
   ScanHandleCache scanHandles;
   Builder builder;
 
-  auto frontend = translateAndPushdown(plan_, schema, evaluator_, builder);
+  auto frontend = translateAndPushdown(
+      plan_, schema, evaluator_, builder, session_, queryCtx_);
   if (session_.options().useFilteredTableStats) {
     EstimateLeafStatsPass::run(
         frontend.pushed, session_, evaluator_, scanHandles);

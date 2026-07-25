@@ -22,6 +22,11 @@
 #include "axiom/optimizer/v2/Node.h"
 #include "velox/core/Expressions.h"
 
+namespace facebook::axiom::optimizer {
+class OptimizerSession;
+class ConstantPlanRunner;
+} // namespace facebook::axiom::optimizer
+
 namespace facebook::axiom::optimizer::v2 {
 
 /// Translates a logical plan into the tree-IR.
@@ -53,11 +58,18 @@ class TranslatePass {
   /// and any Velox plan derived from it. Compilation of foldable expressions
   /// can allocate vectors on the evaluator's pool that are then referenced
   /// from downstream `emit` outputs.
+  ///
+  /// 'session' and 'constantPlanRunner' enable folding an uncorrelated scalar
+  /// subquery over a table's discrete-predicate (e.g. partition) columns to a
+  /// constant: the subquery's filters build a narrowed listing, which is
+  /// aggregated by running a small Velox plan via 'constantPlanRunner'.
   static Result run(
       const logical_plan::LogicalPlanNode& plan,
       optimizer::Schema& schema,
       velox::core::ExpressionEvaluator& evaluator,
-      Builder& builder);
+      Builder& builder,
+      const OptimizerSession& session,
+      const ConstantPlanRunner& constantPlanRunner);
 };
 
 } // namespace facebook::axiom::optimizer::v2

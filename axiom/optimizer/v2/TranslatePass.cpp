@@ -17,17 +17,23 @@
 #include "axiom/optimizer/v2/TranslatePass.h"
 
 #include <folly/container/F14Map.h>
+#include "axiom/optimizer/ConstantFold.h"
 #include "axiom/optimizer/EstimateMath.h"
 #include "axiom/optimizer/Filters.h"
 #include "axiom/optimizer/FunctionRegistry.h"
+#include "axiom/optimizer/MultiFragmentPlan.h"
+#include "axiom/optimizer/OptimizerSession.h"
 #include "axiom/optimizer/PlanUtils.h"
 #include "axiom/optimizer/QueryGraph.h"
 #include "axiom/optimizer/Schema.h"
 #include "axiom/optimizer/v2/AppendAll.h"
 #include "axiom/optimizer/v2/Builder.h"
+#include "axiom/optimizer/v2/EmitPass.h"
 #include "axiom/optimizer/v2/ExprFactory.h"
 #include "axiom/optimizer/v2/ExprSimplifier.h"
 #include "axiom/optimizer/v2/JoinCondition.h"
+#include "axiom/optimizer/v2/PhysicalPlanAndEmit.h"
+#include "axiom/optimizer/v2/ScanHandle.h"
 #include "velox/exec/Aggregate.h"
 #include "velox/exec/AggregateFunctionRegistry.h"
 
@@ -342,11 +348,16 @@ class Translator {
   Translator(
       optimizer::Schema& schema,
       velox::core::ExpressionEvaluator& evaluator,
-      Builder& builder)
+      Builder& builder,
+      const OptimizerSession& session,
+      const ConstantPlanRunner& constantPlanRunner)
       : schema_(schema),
         builder_(builder),
         exprFactory_(builder),
-        simplifier_(builder, evaluator) {}
+        simplifier_(builder, evaluator),
+        evaluator_(evaluator),
+        session_(session),
+        constantPlanRunner_(constantPlanRunner) {}
 
   TranslatePass::Result run(const lp::LogicalPlanNode& plan) {
     // The query output is a list of (sourceName, outputName) pairs, one per
@@ -550,19 +561,28 @@ class Translator {
   // Translates a subquery body, captures correlations, and lifts an
   // `Apply` above `*applyTarget`. Updates `*applyTarget` to point to
   // the new Apply (with an `EnforceSingleRow` wrap for uncorrelated
-  // scalar). Returns Apply's result column.
+  // scalar). Returns Apply's result column, or, for an uncorrelated scalar
+  // subquery that folds to a constant, a `Literal` (leaving `*applyTarget`
+  // unchanged).
   //
   // `kind` is the `Apply.kind` to emit. `inLhs` is the IN expression's
   // left-hand side, non-null only when shaping an IN-form Apply
   // (`liftSubquery` stores it together with the body's single output
   // column as `Apply.inLhs` / `Apply.inBodyKey`). Throws if
   // `applyTarget` is null.
-  ColumnCP liftSubquery(
+  ExprCP liftSubquery(
       const lp::SubqueryExpr& subqueryExpr,
       velox::core::JoinType kind,
       ExprCP inLhs,
       const Scope& outerScope,
       NodeCP* applyTarget);
+
+  // Attempts to constant-fold an uncorrelated scalar subquery whose body is a
+  // global aggregation over a table's discrete-predicate (e.g. partition)
+  // columns. Lists the matching partition values via the connector, aggregates
+  // them by running a small Velox plan, and returns a `Literal`. Returns
+  // nullptr when the body does not have that shape or the connector declines.
+  ExprCP tryFoldConstantScalar(NodeCP body);
 
   // Translates each lp expression in 'expressions' against 'scope'.
   ExprVector translateAll(
@@ -594,16 +614,19 @@ class Translator {
   Builder& builder_;
   ExprFactory exprFactory_;
   ExprSimplifier simplifier_;
+  velox::core::ExpressionEvaluator& evaluator_;
+  const OptimizerSession& session_;
+  const ConstantPlanRunner& constantPlanRunner_;
   int32_t baseTableCounter_{0};
 
-  // Result column of each scalar subquery already lifted, keyed by its inner
-  // plan. Identical subqueries share one inner plan (hash-consed), so a
-  // repeated reference reuses the lifted column instead of lifting it again
-  // (which would place the same column on both sides of the lift's join). A
-  // cached column is only reused while it is still in the current lift
-  // target's output, so a reference in an unrelated scope re-lifts.
-  folly::F14FastMap<const lp::LogicalPlanNode*, ColumnCP>
-      scalarSubqueryColumns_;
+  // Result of each scalar subquery already lifted, keyed by its inner plan.
+  // Identical subqueries share one inner plan (hash-consed), so a repeated
+  // reference reuses the lifted result instead of lifting it again (which would
+  // place the same column on both sides of the lift's join, or re-run a fold).
+  // A cached column is only reused while it is still in the current lift
+  // target's output, so a reference in an unrelated scope re-lifts; a folded
+  // constant (Literal) is always in scope and always reused.
+  folly::F14FastMap<const lp::LogicalPlanNode*, ExprCP> scalarSubqueryColumns_;
 };
 
 Translated Translator::translateTableWrite(
@@ -2165,20 +2188,21 @@ ExprCP Translator::translateExpr(
       if (applyTarget != nullptr) {
         auto it = scalarSubqueryColumns_.find(innerPlan);
         if (it != scalarSubqueryColumns_.end() &&
-            outputContains(*applyTarget, it->second)) {
+            (!it->second->isColumn() ||
+             outputContains(*applyTarget, it->second->as<Column>()))) {
           return it->second;
         }
       }
-      ColumnCP column = liftSubquery(
+      ExprCP result = liftSubquery(
           subquery,
           velox::core::JoinType::kLeft,
           /*inLhs=*/nullptr,
           scope,
           applyTarget);
       if (applyTarget != nullptr) {
-        scalarSubqueryColumns_[innerPlan] = column;
+        scalarSubqueryColumns_[innerPlan] = result;
       }
-      return column;
+      return result;
     }
     default:
       VELOX_NYI(
@@ -2471,7 +2495,7 @@ bool producesExactlyOneRow(NodeCP node) {
   }
 }
 
-ColumnCP Translator::liftSubquery(
+ExprCP Translator::liftSubquery(
     const lp::SubqueryExpr& subqueryExpr,
     velox::core::JoinType kind,
     ExprCP inLhs,
@@ -2517,6 +2541,17 @@ ColumnCP Translator::liftSubquery(
     VELOX_USER_CHECK_EQ(
         bodyOut.size(), 1, "Scalar subquery must produce exactly one column");
     returnedColumn = bodyOut[0];
+
+    // Fold an uncorrelated scalar subquery over partition columns to a constant
+    // (e.g. `max(ds)` from partition metadata) rather than executing it. The
+    // constant then flows into the outer predicate, where pushdown can prune
+    // the outer scan.
+    if (correlationColumns.empty()) {
+      if (ExprCP folded = tryFoldConstantScalar(body)) {
+        return folded;
+      }
+    }
+
     // Shape C fix: if body's
     // single output column collides by name with any column in
     // applyTarget's outputColumns (e.g., `SELECT (SELECT a) FROM t`
@@ -2630,14 +2665,124 @@ ColumnCP Translator::liftSubquery(
   return returnedColumn;
 }
 
+ExprCP Translator::tryFoldConstantScalar(NodeCP body) {
+  if (!body->is(NodeType::kAggregate)) {
+    return nullptr;
+  }
+
+  const auto* aggregate = body->as<Aggregate>();
+  if (!aggregate->groupingKeys().empty()) {
+    return nullptr;
+  }
+
+  // The fold aggregates a per-partition value list, so each aggregate must
+  // ignore duplicate inputs (e.g. max/min) or be over distinct inputs.
+  for (const optimizer::Aggregate* call : aggregate->aggregates()) {
+    if (!call->functions().contains(FunctionSet::kIgnoreDuplicatesAggregate) &&
+        !call->isDistinct()) {
+      return nullptr;
+    }
+  }
+
+  NodeCP input = aggregate->input();
+  const Filter* filter = nullptr;
+  if (input->is(NodeType::kFilter)) {
+    filter = input->as<Filter>();
+    input = filter->input();
+  }
+  if (!input->is(NodeType::kScan)) {
+    return nullptr;
+  }
+  const auto* scan = input->as<Scan>();
+
+  // The fold works only when every scanned column is a discrete-predicate
+  // column; then the subquery's filters reference only those and can narrow the
+  // listing.
+  auto discreteLayout =
+      findDiscreteLayout(scan->outputColumns(), *scan->baseTable());
+  if (discreteLayout.layout == nullptr) {
+    return nullptr;
+  }
+
+  // Build a table handle carrying the subquery's filters so the connector
+  // narrows the listing. Translate has not pushed the filters into the Scan
+  // yet, so synthesize a Scan that carries them.
+  const ExprVector& filters =
+      filter != nullptr ? filter->predicates() : ExprVector{};
+  const Scan* scanWithFilters = builder_.make<Scan>(
+      Scan::Key{scan->baseTable(), scan->outputColumns(), filters});
+  ScanHandle handle = ScanHandle::build(*scanWithFilters, session_, evaluator_);
+
+  auto connectorSession =
+      session_.toConnectorSession(discreteLayout.layout->connectorId());
+  auto discretePredicates = discreteLayout.layout->discretePredicates(
+      connectorSession, discreteLayout.connectorColumns, handle.tableHandle);
+  if (discretePredicates == nullptr) {
+    return nullptr;
+  }
+
+  // Build a small plan that aggregates the listed partition values:
+  // Values(tuples) -> [Filter] -> Aggregate, reusing the subquery's own Filter
+  // and Aggregate specs. The Filter re-applies conjuncts the connector could
+  // not push.
+  auto values = toValues(*discretePredicates);
+  const Values* valuesNode = builder_.makeValues(
+      /*source=*/nullptr,
+      queryCtx()->registerVariant(
+          std::make_unique<velox::Variant>(
+              velox::Variant::array(std::move(values)))),
+      scan->outputColumns());
+
+  NodeCP foldInput = valuesNode;
+  if (filter != nullptr) {
+    foldInput =
+        builder_.make<Filter>(Filter::Key{valuesNode, filter->predicates()});
+  }
+  const Aggregate* foldAggregate = builder_.make<Aggregate>(Aggregate::Key{
+      .input = foldInput,
+      .groupingKeys = aggregate->groupingKeys(),
+      .aggregates = aggregate->aggregates(),
+      .outputColumns = aggregate->outputColumns(),
+      .step = aggregate->step(),
+      .groupId = aggregate->groupId(),
+      .globalGroupingSets = aggregate->globalGroupingSets()});
+
+  // A scalar subquery produces exactly one column.
+  const ColumnVector& outputColumns = foldAggregate->outputColumns();
+  std::vector<std::string> outputNames{std::string(outputColumns[0]->name())};
+
+  // Lower the mini-plan through the shared physical-planning and emit passes,
+  // then run it. It has a Values source and no Scan, so an empty handle cache
+  // and single-node options suffice.
+  ScanHandleCache scanHandles;
+  EmitPass::Result emitted = physicalPlanAndEmit(
+      foldAggregate,
+      outputColumns,
+      outputNames,
+      builder_,
+      session_,
+      evaluator_,
+      scanHandles,
+      MultiFragmentPlan::Options::singleNode());
+  VELOX_CHECK_EQ(
+      emitted.fragments.size(), 1, "Constant fold must produce one fragment");
+
+  return builder_.makeLiteral(
+      constantPlanRunner_.run(emitted.fragments.front().fragment),
+      outputColumns[0]->value().type);
+}
+
 } // namespace
 
 TranslatePass::Result TranslatePass::run(
     const lp::LogicalPlanNode& plan,
     optimizer::Schema& schema,
     velox::core::ExpressionEvaluator& evaluator,
-    Builder& builder) {
-  Translator translator(schema, evaluator, builder);
+    Builder& builder,
+    const OptimizerSession& session,
+    const ConstantPlanRunner& constantPlanRunner) {
+  Translator translator(
+      schema, evaluator, builder, session, constantPlanRunner);
   return translator.run(plan);
 }
 

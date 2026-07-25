@@ -134,6 +134,7 @@ add_executable(
   SetTest.cpp
   SubfieldTest.cpp
   SubqueryTest.cpp
+  SubqueryFoldTest.cpp
   SyntacticJoinOrderTest.cpp
   TableSampleTest.cpp
   FeatureGen.cpp

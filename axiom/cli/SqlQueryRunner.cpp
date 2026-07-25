@@ -874,9 +874,10 @@ SqlQueryRunner::SqlResult SqlQueryRunner::runUnchecked(
             collectConnectorProperties(*sessionConfig_),
             /*explain=*/true);
         return {
-            .message = optimizer::v2::Optimizer(
-                           *logicalPlan, *resolver, *session, evaluator)
-                           .explainIo(std::move(outputTable))};
+            .message =
+                optimizer::v2::Optimizer(
+                    *logicalPlan, *resolver, *session, evaluator, queryCtx)
+                    .explainIo(std::move(outputTable))};
       } else {
         std::string text;
         optimize(
@@ -1373,7 +1374,11 @@ optimizer::PlanAndStats SqlQueryRunner::optimize(
     // the overall `kOptimizeWallNanos` / `kOptimizeCpuNanos` are recorded,
     // from the caller-side `PhaseTimer`.
     return optimizer::v2::Optimizer(
-               *logicalPlan, *schemaResolver, *optimizerSession, evaluator)
+               *logicalPlan,
+               *schemaResolver,
+               *optimizerSession,
+               evaluator,
+               queryCtx)
         .optimize(opts);
   }
 
@@ -1614,7 +1619,8 @@ std::vector<velox::RowVectorPtr> SqlQueryRunner::runShowStatsForQuery(
         /*explain=*/false);
 
     const auto stats =
-        optimizer::v2::Optimizer(*logicalPlan, *resolver, *session, evaluator)
+        optimizer::v2::Optimizer(
+            *logicalPlan, *resolver, *session, evaluator, queryCtx)
             .estimateQueryStats();
 
     presto::ShowStatsBuilder builder(roundCardinality(stats.cardinality));

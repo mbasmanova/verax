@@ -42,6 +42,7 @@ add_library(
   Node.cpp
   NodePrinter.cpp
   Optimize.cpp
+  PhysicalPlanAndEmit.cpp
   PhysicalProperties.cpp
   PlanPhysicalPass.cpp
   PlanSet.cpp
