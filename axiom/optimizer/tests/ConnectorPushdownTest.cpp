@@ -30,10 +30,9 @@ using namespace facebook::velox;
 namespace lp = facebook::axiom::logical_plan;
 
 // Verifies the canonical form of the filter expressions the optimizer hands to
-// a connector for pushdown. This shape is the contract documented on
-// ConnectorMetadata::createTableHandle and co_estimateStats; connector authors
-// rely on it. Each scenario asserts both APIs receive the same form so the
-// single contract cannot be silently broken for one of them.
+// a connector's createTableHandle for pushdown. This shape is the contract
+// documented on ConnectorMetadata::createTableHandle; connector authors rely on
+// it.
 class ConnectorPushdownTest : public QueryTestBase {
  protected:
   void SetUp() override {
@@ -43,23 +42,16 @@ class ConnectorPushdownTest : public QueryTestBase {
         ROW({"a", "b", "c", "s"}, {BIGINT(), BIGINT(), BIGINT(), VARCHAR()}));
   }
 
-  // Optimizes 'scan t where <filter>' and returns the pushed conjuncts captured
-  // separately from createTableHandle and from co_estimateStats.
-  std::pair<std::vector<core::TypedExprPtr>, std::vector<core::TypedExprPtr>>
-  pushedFilters(const std::string& filter) {
+  // Optimizes 'scan t where <filter>' and returns the conjuncts
+  // createTableHandle received.
+  std::vector<core::TypedExprPtr> pushedFilters(const std::string& filter) {
     std::vector<core::TypedExprPtr> createHandle;
-    std::vector<core::TypedExprPtr> estimateStats;
     testConnector_->setOnCreateTableHandle(
         [&](const std::vector<core::TypedExprPtr>& filters) {
           createHandle = filters;
         });
-    testConnector_->setOnEstimateStats(
-        [&](const std::vector<core::TypedExprPtr>& filters) {
-          estimateStats = filters;
-        });
     SCOPE_EXIT {
       testConnector_->setOnCreateTableHandle(nullptr);
-      testConnector_->setOnEstimateStats(nullptr);
     };
 
     lp::PlanBuilder::Context context(kTestConnectorId, kDefaultSchema);
@@ -67,19 +59,16 @@ class ConnectorPushdownTest : public QueryTestBase {
         lp::PlanBuilder(context).tableScan("t").filter(filter).build();
     toSingleNodePlan(logicalPlan);
 
-    return {std::move(createHandle), std::move(estimateStats)};
+    return createHandle;
   }
 
   // Asserts the pushed conjuncts structurally match 'expected' (each an
-  // expression in SQL syntax), and that createTableHandle and co_estimateStats
-  // agree.
+  // expression in SQL syntax).
   void expectPushed(
       const std::string& filter,
       const std::vector<std::string>& expected) {
     SCOPED_TRACE("filter: " + filter);
-    auto [createHandle, estimateStats] = pushedFilters(filter);
-    matchAll(createHandle, expected);
-    matchAll(estimateStats, expected);
+    matchAll(pushedFilters(filter), expected);
   }
 
   void matchAll(

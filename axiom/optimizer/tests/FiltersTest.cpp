@@ -22,6 +22,7 @@
 #include "axiom/connectors/tests/TestConnector.h"
 #include "axiom/optimizer/Optimization.h"
 #include "axiom/optimizer/QueryGraph.h"
+#include "axiom/optimizer/StatsFilterSelectivityEstimator.h"
 #include "axiom/optimizer/tests/HiveQueriesTestBase.h"
 #include "velox/exec/tests/utils/HiveConnectorTestBase.h"
 
@@ -155,15 +156,89 @@ class FiltersTest : public test::HiveQueriesTestBase {
     return constraints;
   }
 
+  // Converts an optimizer Value to the connector::ColumnStatistics the
+  // TypedExpr estimator consumes, preserving min/max/NDV/nullFraction so both
+  // paths see the same statistics.
+  static connector::ColumnStatistics toColumnStatistics(const Value& value) {
+    connector::ColumnStatistics stats;
+    if (value.cardinality.has_value()) {
+      stats.numDistinct = static_cast<int64_t>(*value.cardinality);
+    }
+    stats.nullPct = value.nullFraction.value_or(0) * 100.0f;
+    stats.nonNull = !value.nullable;
+    if (value.min != nullptr) {
+      stats.min = *value.min;
+    }
+    if (value.max != nullptr) {
+      stats.max = *value.max;
+    }
+    return stats;
+  }
+
+  // Differential check: lowers the same filters to velox TypedExpr, estimates
+  // via the connector-facing StatsFilterSelectivityEstimator over
+  // ColumnStatistics derived from the same schema statistics the ExprCP path
+  // used, and asserts both the row-count selectivity and the refined per-column
+  // statistics agree with 'expectedSelectivity'/'refinedConstraints' from the
+  // ExprCP SelectivityEngine. Exercises the second Policy instantiation and the
+  // velox->canonical name mapping.
+  void verifyEstimatorAgrees(
+      Optimization& optimization,
+      const ExprVector& filters,
+      const Selectivity& expectedSelectivity,
+      const ConstraintMap& refinedConstraints) {
+    std::vector<velox::core::TypedExprPtr> typedFilters;
+    folly::F14FastMap<std::string, connector::ColumnStatistics> columnStats;
+    folly::F14FastMap<std::string, int32_t> columnIdByName;
+    for (auto* filter : filters) {
+      typedFilters.push_back(optimization.toTypedExpr(filter));
+      filter->columns().forEach<Column>([&](auto* column) {
+        if (auto* schemaColumn = column->schemaColumn()) {
+          columnStats.insert_or_assign(
+              column->outputName(), toColumnStatistics(schemaColumn->value()));
+          columnIdByName.insert_or_assign(column->outputName(), column->id());
+        }
+      });
+    }
+
+    StatsFilterSelectivityEstimator estimator;
+    auto estimate = estimator.estimate(typedFilters, columnStats);
+
+    EXPECT_NEAR(
+        estimate.selectivity, expectedSelectivity.trueFraction, kTolerance);
+
+    // Refined per-column statistics must match the ExprCP constraints.
+    for (const auto& [name, stats] : estimate.columnStats) {
+      auto idIt = columnIdByName.find(name);
+      ASSERT_NE(idIt, columnIdByName.end());
+      auto constraintIt = refinedConstraints.find(idIt->second);
+      ASSERT_NE(constraintIt, refinedConstraints.end());
+      auto expected = toColumnStatistics(constraintIt->second);
+
+      EXPECT_EQ(stats.numDistinct, expected.numDistinct);
+      EXPECT_EQ(stats.min.has_value(), expected.min.has_value());
+      if (stats.min.has_value() && expected.min.has_value()) {
+        EXPECT_TRUE(stats.min->equals(*expected.min));
+      }
+      EXPECT_EQ(stats.max.has_value(), expected.max.has_value());
+      if (stats.max.has_value() && expected.max.has_value()) {
+        EXPECT_TRUE(stats.max->equals(*expected.max));
+      }
+      EXPECT_NEAR(stats.nullPct, expected.nullPct, 0.1);
+    }
+  }
+
   // Parses SQL, extracts filters for 'tableName', computes selectivity with
   // constraint updates, and invokes 'verify' with the selectivity and updated
-  // constraint for the filtered column (left side of the first filter).
+  // constraint for the filtered column (left side of the first filter). Also
+  // runs the TypedExpr estimator differential check on the same filters.
   void verifyFilter(
       std::string_view sql,
       std::string_view tableName,
       const std::function<void(const Selectivity&, const Value&)>& verify) {
-    verifyQueryGraph(sql, [&](DerivedTableCP rootDt) {
-      auto allFilters = getAllFilters(rootDt, tableName);
+    auto logicalPlan = parseSelect(sql, exec::test::kHiveConnectorId);
+    verifyOptimization(*logicalPlan, [&](Optimization& optimization) {
+      auto allFilters = getAllFilters(optimization.rootDt(), tableName);
       ASSERT_FALSE(allFilters.empty());
 
       auto constraints = makeSchemaConstraints(allFilters);
@@ -176,6 +251,9 @@ class FiltersTest : public test::HiveQueriesTestBase {
       auto it = constraints.find(columnId);
       ASSERT_NE(it, constraints.end());
       verify(*selectivity, it->second);
+
+      verifyEstimatorAgrees(
+          optimization, allFilters, *selectivity, constraints);
     });
   }
 

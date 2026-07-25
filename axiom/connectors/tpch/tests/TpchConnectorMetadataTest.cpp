@@ -148,10 +148,15 @@ TEST_F(TpchConnectorMetadataTest, createTableHandle) {
 
   std::vector<velox::connector::ColumnHandlePtr> columnHandles;
   std::vector<velox::core::TypedExprPtr> empty;
+  std::vector<int32_t> rejectedFilterIndices;
   auto evaluator = std::make_unique<velox::exec::SimpleExpressionEvaluator>(
       nullptr, nullptr);
   auto tableHandle = layouts[0]->createTableHandle(
-      /*session=*/nullptr, columnHandles, *evaluator, empty, empty);
+      /*session=*/nullptr,
+      columnHandles,
+      *evaluator,
+      empty,
+      rejectedFilterIndices);
   ASSERT_NE(tableHandle, nullptr);
 
   auto* tpchTableHandle =
@@ -207,10 +212,15 @@ CO_TEST_F(TpchConnectorMetadataTest, splitGeneration) {
 
   std::vector<velox::connector::ColumnHandlePtr> columnHandles;
   std::vector<velox::core::TypedExprPtr> empty;
+  std::vector<int32_t> rejectedFilterIndices;
   auto evaluator = std::make_unique<velox::exec::SimpleExpressionEvaluator>(
       nullptr, nullptr);
   auto tableHandle = layouts[0]->createTableHandle(
-      /*session=*/nullptr, columnHandles, *evaluator, empty, empty);
+      /*session=*/nullptr,
+      columnHandles,
+      *evaluator,
+      empty,
+      rejectedFilterIndices);
   CO_ASSERT_NE(tableHandle, nullptr);
 
   auto partitions = co_await splitManager->co_listPartitions(

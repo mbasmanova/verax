@@ -136,14 +136,21 @@ class Folder : public NodeRewriter<NoContext> {
 
     const ScanHandle& handle =
         scanHandles_.getOrBuild(*scan, session_, evaluator_);
+
+    // co_metadataCounts accounts only for the filters the connector accepted
+    // into the handle. If any filter was rejected, its effect is not reflected
+    // in the counts, so folding would overcount; bail to a live scan.
+    if (!handle.rejectedExprs.empty()) {
+      return nullptr;
+    }
+
     auto connectorSession =
         session_.toConnectorSession(layout->connector()->connectorId());
     auto result = folly::coro::blockingWait(layout->co_metadataCounts(
         std::move(connectorSession),
         handle.tableHandle,
         std::move(groupingColumns),
-        std::move(nullCountColumns),
-        handle.filterConjuncts));
+        std::move(nullCountColumns)));
     if (!result.has_value()) {
       return nullptr;
     }

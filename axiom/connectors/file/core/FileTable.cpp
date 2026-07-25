@@ -16,6 +16,8 @@
 
 #include "axiom/connectors/file/core/FileTable.h"
 
+#include <numeric>
+
 #include "velox/common/base/Exceptions.h"
 
 namespace facebook::axiom::connector::file {
@@ -75,10 +77,11 @@ velox::connector::ConnectorTableHandlePtr FileTableLayout::createTableHandle(
     std::vector<velox::connector::ColumnHandlePtr> columnHandles,
     core::ExpressionEvaluator& /*evaluator*/,
     std::vector<core::TypedExprPtr> filters,
-    std::vector<core::TypedExprPtr>& rejectedFilters,
+    std::vector<int32_t>& rejectedFilterIndices,
     RowTypePtr /*dataColumns*/,
     std::optional<LookupKeys> /*lookupKeys*/) const {
-  rejectedFilters = std::move(filters);
+  rejectedFilterIndices.resize(filters.size());
+  std::iota(rejectedFilterIndices.begin(), rejectedFilterIndices.end(), 0);
   return std::make_shared<FileTableHandle>(
       connectorId(),
       table().name(),

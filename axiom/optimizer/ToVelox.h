@@ -90,10 +90,10 @@ class ToVelox {
     /// Filters rejected by createTableHandle, to be evaluated post-scan.
     std::vector<velox::core::TypedExprPtr> extraFilters;
 
-    /// All filter conjuncts (columnFilters followed by filter) converted to
-    /// TypedExprPtr. Used by co_estimateStats so the connector can report
-    /// rejected indices.
-    std::vector<velox::core::TypedExprPtr> filterConjuncts;
+    /// The createTableHandle-rejected filters as ExprCP. The connector accounts
+    /// for the accepted filters in its estimate; the optimizer post-applies
+    /// selectivity for these.
+    ExprVector rejectedExprs;
   };
 
   /// Builds the connector table handle for 'baseTable' from its current
@@ -149,11 +149,11 @@ class ToVelox {
 
   void setLeafData(
       int32_t id,
-      std::vector<velox::core::TypedExprPtr> filterConjuncts,
       velox::connector::ConnectorTableHandlePtr handle,
-      std::vector<velox::core::TypedExprPtr> extraFilters) {
+      std::vector<velox::core::TypedExprPtr> extraFilters,
+      ExprVector rejectedExprs) {
     leafData_[id] = {
-        std::move(handle), std::move(extraFilters), std::move(filterConjuncts)};
+        std::move(handle), std::move(extraFilters), std::move(rejectedExprs)};
   }
 
   /// True if a scan should expose 'column' of 'table' as a struct only

@@ -190,11 +190,23 @@ class HiveTableLayout : public TableLayout {
       std::vector<velox::connector::ColumnHandlePtr> columnHandles,
       velox::core::ExpressionEvaluator& evaluator,
       std::vector<velox::core::TypedExprPtr> filters,
-      std::vector<velox::core::TypedExprPtr>& rejectedFilters,
+      std::vector<int32_t>& rejectedFilterIndices,
       velox::RowTypePtr dataColumns,
       std::optional<LookupKeys> lookupKeys) const override;
 
  protected:
+  // Folds, into 'stats', the selectivity and refined column statistics of the
+  // accepted filters not already reflected in partition-level statistics: the
+  // single-column subfield filters on non-partition columns and the TypedExpr
+  // remaining filter, both read from 'handle'. Uses 'estimator' over the base
+  // column statistics already in 'stats'; a no-op when 'stats' has no column
+  // statistics. Shared by connectors that derive a base estimate from partition
+  // metadata (e.g. LocalHive, Prism) and own the remaining filters.
+  void foldNonPartitionFilterStats(
+      const velox::connector::hive::HiveTableHandle& handle,
+      const FilterSelectivityEstimator& estimator,
+      FilteredTableStats& stats) const;
+
   const velox::dwio::common::FileFormat fileFormat_;
   const std::vector<const Column*> hivePartitionColumns_;
   const std::optional<int32_t> numBuckets_;

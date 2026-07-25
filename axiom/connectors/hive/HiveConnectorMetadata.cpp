@@ -305,7 +305,7 @@ velox::connector::ConnectorTableHandlePtr HiveTableLayout::createTableHandle(
     std::vector<velox::connector::ColumnHandlePtr> /*columnHandles*/,
     velox::core::ExpressionEvaluator& evaluator,
     std::vector<velox::core::TypedExprPtr> filters,
-    std::vector<velox::core::TypedExprPtr>& /*rejectedFilters*/,
+    std::vector<int32_t>& /*rejectedFilterIndices*/,
     velox::RowTypePtr dataColumns,
     std::optional<LookupKeys> lookupKeys) const {
   VELOX_CHECK(!lookupKeys.has_value(), "Hive does not support lookup keys");
@@ -356,6 +356,29 @@ velox::connector::ConnectorTableHandlePtr HiveTableLayout::createTableHandle(
       filterColumnHandles,
       sampleRate,
       tableName.schema);
+}
+
+void HiveTableLayout::foldNonPartitionFilterStats(
+    const velox::connector::hive::HiveTableHandle& handle,
+    const FilterSelectivityEstimator& estimator,
+    FilteredTableStats& stats) const {
+  folly::F14FastSet<std::string> partitionColumnNames;
+  for (const auto* column : hivePartitionColumns_) {
+    partitionColumnNames.insert(column->name());
+  }
+
+  // Partition-key subfield filters are already reflected in 'stats' (from
+  // partition metadata); only the remaining single-column filters need
+  // estimating.
+  folly::F14FastMap<std::string, const velox::common::Filter*> dataFilters;
+  for (const auto& [subfield, filter] : handle.subfieldFilters()) {
+    const auto& name = subfield.baseName();
+    if (!partitionColumnNames.contains(name)) {
+      dataFilters.emplace(name, filter.get());
+    }
+  }
+
+  applyFilterEstimates(dataFilters, handle.remainingFilter(), estimator, stats);
 }
 
 namespace {

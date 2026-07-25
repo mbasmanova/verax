@@ -188,13 +188,13 @@ class SystemConnectorMetadataTest : public ::testing::Test {
     }
 
     std::vector<velox::core::TypedExprPtr> filters;
-    std::vector<velox::core::TypedExprPtr> rejectedFilters;
+    std::vector<int32_t> rejectedFilterIndices;
     auto tableHandle = table->layouts()[0]->createTableHandle(
         session,
         std::move(handleList),
         evaluator,
         std::move(filters),
-        rejectedFilters);
+        rejectedFilterIndices);
 
     auto emptyConfig = std::make_shared<velox::config::ConfigBase>(
         std::unordered_map<std::string, std::string>{});
@@ -311,9 +311,13 @@ TEST_F(SystemConnectorMetadataTest, tableHandle) {
       queryCtx_.get(), pool_.get());
 
   std::vector<velox::core::TypedExprPtr> filters;
-  std::vector<velox::core::TypedExprPtr> rejectedFilters;
+  std::vector<int32_t> rejectedFilterIndices;
   auto tableHandle = layouts[0]->createTableHandle(
-      session, {columnHandle}, evaluator, std::move(filters), rejectedFilters);
+      session,
+      {columnHandle},
+      evaluator,
+      std::move(filters),
+      rejectedFilterIndices);
   ASSERT_NE(tableHandle, nullptr);
   EXPECT_EQ(tableHandle->connectorId(), kSystemCatalog);
   EXPECT_EQ(tableHandle->name(), "runtime.queries");
@@ -329,9 +333,9 @@ TEST_F(SystemConnectorMetadataTest, splitSource) {
       queryCtx_.get(), pool_.get());
 
   std::vector<velox::core::TypedExprPtr> filters;
-  std::vector<velox::core::TypedExprPtr> rejectedFilters;
+  std::vector<int32_t> rejectedFilterIndices;
   auto tableHandle = table->layouts()[0]->createTableHandle(
-      session, {}, evaluator, std::move(filters), rejectedFilters);
+      session, {}, evaluator, std::move(filters), rejectedFilterIndices);
 
   auto* splitManager = metadata_->splitManager();
   auto partitions = folly::coro::blockingWait(

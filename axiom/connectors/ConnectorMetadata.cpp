@@ -16,9 +16,59 @@
 
 #include "axiom/connectors/ConnectorMetadata.h"
 
+#include <cmath>
+
 #include "axiom/connectors/ConnectorMetadataRegistry.h"
 
 namespace facebook::axiom::connector {
+
+void applyFilterEstimates(
+    const folly::F14FastMap<std::string, const velox::common::Filter*>&
+        commonFilters,
+    const velox::core::TypedExprPtr& remainingFilter,
+    const FilterSelectivityEstimator& estimator,
+    FilteredTableStats& stats) {
+  if (stats.columnStats.empty()) {
+    return;
+  }
+
+  folly::F14FastMap<std::string, ColumnStatistics> columnStatsByName;
+  folly::F14FastMap<std::string, size_t> indexByName;
+  for (size_t i = 0; i < stats.columnStats.size(); ++i) {
+    columnStatsByName.emplace(stats.columnStats[i].name, stats.columnStats[i]);
+    indexByName[stats.columnStats[i].name] = i;
+  }
+
+  double selectivity = 1.0;
+  const auto fold = [&](const FilterEstimate& estimate) {
+    selectivity *= estimate.selectivity;
+    for (const auto& [name, refined] : estimate.columnStats) {
+      auto it = indexByName.find(name);
+      if (it == indexByName.end()) {
+        continue;
+      }
+      // Overwrite the refined fields, preserving name/numValues/etc.
+      auto& existing = stats.columnStats[it->second];
+      existing.numDistinct = refined.numDistinct;
+      existing.min = refined.min;
+      existing.max = refined.max;
+      existing.nullPct = refined.nullPct;
+      existing.nonNull = refined.nonNull;
+    }
+  };
+
+  if (!commonFilters.empty()) {
+    fold(estimator.estimate(commonFilters, columnStatsByName));
+  }
+  if (remainingFilter != nullptr) {
+    std::vector<velox::core::TypedExprPtr> remaining{remainingFilter};
+    fold(estimator.estimate(remaining, columnStatsByName));
+  }
+
+  stats.numRows =
+      static_cast<uint64_t>(std::llround(stats.numRows * selectivity));
+}
+
 namespace {
 
 const auto& writeKindNames() {

@@ -16,6 +16,8 @@
 
 #include "axiom/connectors/system/SystemConnectorMetadata.h"
 
+#include <numeric>
+
 #include "axiom/connectors/system/SystemConnector.h"
 #include "velox/common/base/Exceptions.h"
 
@@ -101,11 +103,12 @@ velox::connector::ConnectorTableHandlePtr SystemTableLayout::createTableHandle(
     std::vector<velox::connector::ColumnHandlePtr> columnHandles,
     velox::core::ExpressionEvaluator& /*evaluator*/,
     std::vector<velox::core::TypedExprPtr> filters,
-    std::vector<velox::core::TypedExprPtr>& rejectedFilters,
+    std::vector<int32_t>& rejectedFilterIndices,
     velox::RowTypePtr /*dataColumns*/,
     std::optional<LookupKeys> /*lookupKeys*/) const {
   // System connector does not support filter pushdown.
-  rejectedFilters = std::move(filters);
+  rejectedFilterIndices.resize(filters.size());
+  std::iota(rejectedFilterIndices.begin(), rejectedFilterIndices.end(), 0);
   return std::make_shared<SystemTableHandle>(
       connectorId(), table().name(), std::move(columnHandles));
 }

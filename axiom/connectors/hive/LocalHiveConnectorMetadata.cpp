@@ -175,101 +175,35 @@ bool testPartitionValue(
   }
 }
 
-// Represents a filter extracted from a filter conjunct that can be evaluated
-// from file metadata (partition keys, $path, $bucket).
-struct MetadataFilter {
+// A single-column filter over a partition key, read from the table handle.
+struct PartitionFilter {
   std::string columnName;
-  std::shared_ptr<velox::common::Filter> filter;
-
-  // Partition column for partition key filters. Null for $path and $bucket.
-  const Column* column{nullptr};
+  const velox::common::Filter* filter;
+  const Column* column;
 };
 
-// Classifies filter conjuncts by converting each to subfieldFilters. Conjuncts
-// fully converted to subfieldFilters on accepted columns are collected in
-// 'metadataFilters'. All others are reported in 'rejectedFilterIndices'. When
-// 'allowPathAndBucket' is true, $path and $bucket filters are accepted in
-// addition to partition column filters.
-void classifyFilterConjuncts(
-    const std::vector<velox::core::TypedExprPtr>& filterConjuncts,
-    velox::core::ExpressionEvaluator& evaluator,
-    const folly::F14FastMap<std::string, const Column*>& partitionColumnsByName,
-    bool allowPathAndBucket,
-    std::vector<MetadataFilter>& metadataFilters,
-    std::vector<int32_t>& rejectedFilterIndices) {
-  for (int32_t i = 0; i < filterConjuncts.size(); ++i) {
-    velox::common::SubfieldFilters subfieldFilters;
-    double sampleRate = 1.0;
-    auto remaining = velox::connector::hive::extractFiltersFromRemainingFilter(
-        filterConjuncts[i], &evaluator, subfieldFilters, sampleRate);
-
-    if (remaining != nullptr) {
-      rejectedFilterIndices.push_back(i);
-      continue;
-    }
-
-    bool allAccepted = true;
-    for (const auto& [subfield, filter] : subfieldFilters) {
-      const auto& name = subfield.baseName();
-      if (!partitionColumnsByName.count(name) &&
-          !(allowPathAndBucket &&
-            (name == HiveTable::kPath || name == HiveTable::kBucket))) {
-        allAccepted = false;
-        break;
-      }
-    }
-
-    if (!allAccepted) {
-      rejectedFilterIndices.push_back(i);
-      continue;
-    }
-
-    for (auto& [subfield, filter] : subfieldFilters) {
-      const auto& name = subfield.baseName();
-      auto it = partitionColumnsByName.find(name);
-      metadataFilters.emplace_back(
-          MetadataFilter{
-              name,
-              std::move(filter),
-              it != partitionColumnsByName.end() ? it->second : nullptr});
-    }
-  }
-}
-
-// Estimates table stats from persisted partition-level stats. Applies partition
-// filters, merges matching partitions' column stats, and filters to requested
-// columns.
+// Estimates table stats from persisted partition-level stats. Matches
+// partitions against the partition-key filters, merges matching partitions'
+// column stats, and returns them aligned 1:1 with 'requestedColumns'.
 FilteredTableStats estimateStatsFromPartitionStats(
     const std::vector<PartitionStats>& partitionStats,
-    const std::vector<velox::core::TypedExprPtr>& filterConjuncts,
-    velox::core::ExpressionEvaluator& evaluator,
-    const folly::F14FastMap<std::string, const Column*>& partitionColumnsByName,
+    const std::vector<PartitionFilter>& partitionFilters,
     const std::vector<const Column*>& requestedColumns) {
-  std::vector<MetadataFilter> metadataFilters;
-  std::vector<int32_t> rejectedFilterIndices;
-  classifyFilterConjuncts(
-      filterConjuncts,
-      evaluator,
-      partitionColumnsByName,
-      /*allowPathAndBucket=*/false,
-      metadataFilters,
-      rejectedFilterIndices);
-
   uint64_t totalRows{0};
   std::vector<ColumnStatistics> mergedColumnStats;
   for (const auto& partition : partitionStats) {
     bool matched = true;
-    for (const auto& metadataFilter : metadataFilters) {
-      VELOX_CHECK_NOT_NULL(metadataFilter.column);
-      auto it = partition.partitionKeys.find(metadataFilter.columnName);
+    for (const auto& partitionFilter : partitionFilters) {
+      VELOX_CHECK_NOT_NULL(partitionFilter.column);
+      auto it = partition.partitionKeys.find(partitionFilter.columnName);
       if (it == partition.partitionKeys.end()) {
         matched = false;
         break;
       }
       if (!testPartitionValue(
-              *metadataFilter.filter,
+              *partitionFilter.filter,
               it->second,
-              *metadataFilter.column->type())) {
+              *partitionFilter.column->type())) {
         matched = false;
         break;
       }
@@ -310,8 +244,7 @@ FilteredTableStats estimateStatsFromPartitionStats(
     }
   }
 
-  return FilteredTableStats{
-      totalRows, std::move(columnStats), std::move(rejectedFilterIndices)};
+  return FilteredTableStats{totalRows, std::move(columnStats)};
 }
 
 // Iterates over a precomputed set of partition-key tuples.
@@ -627,22 +560,18 @@ std::pair<int64_t, int64_t> LocalHiveTableLayout::sample(
 folly::coro::Task<std::optional<FilteredTableStats>>
 LocalHiveTableLayout::co_estimateStats(
     ConnectorSessionPtr /*session*/,
-    velox::connector::ConnectorTableHandlePtr /*tableHandle*/,
+    velox::connector::ConnectorTableHandlePtr tableHandle,
     std::vector<std::string> columns,
-    std::vector<velox::core::TypedExprPtr> filterConjuncts) const {
+    const FilterSelectivityEstimator& estimator) const {
+  auto hiveHandle =
+      std::dynamic_pointer_cast<const velox::connector::hive::HiveTableHandle>(
+          tableHandle);
+  VELOX_CHECK_NOT_NULL(hiveHandle, "Expected HiveTableHandle");
+
   folly::F14FastMap<std::string, const Column*> partitionColumnsByName;
   for (const auto* column : hivePartitionColumns()) {
     partitionColumnsByName[column->name()] = column;
   }
-
-  auto connectorMetadata =
-      ConnectorMetadataRegistry::get(connector()->connectorId());
-  auto* localHiveMetadata =
-      dynamic_cast<const LocalHiveConnectorMetadata*>(connectorMetadata.get());
-  VELOX_CHECK_NOT_NULL(
-      localHiveMetadata, "Expected LocalHiveConnectorMetadata for connector");
-  auto& evaluator =
-      *localHiveMetadata->connectorQueryCtx()->expressionEvaluator();
 
   std::vector<const Column*> requestedColumns;
   requestedColumns.reserve(columns.size());
@@ -652,21 +581,35 @@ LocalHiveTableLayout::co_estimateStats(
     requestedColumns.push_back(column);
   }
 
-  co_return estimateStatsFromPartitionStats(
-      partitionStats_,
-      filterConjuncts,
-      evaluator,
-      partitionColumnsByName,
-      requestedColumns);
+  // Partition-key subfield filters drive the base estimate from partition
+  // metadata; the remaining accepted filters are folded in by the shared
+  // HiveTableLayout helper below.
+  std::vector<PartitionFilter> partitionFilters;
+  for (const auto& [subfield, filter] : hiveHandle->subfieldFilters()) {
+    auto it = partitionColumnsByName.find(subfield.baseName());
+    if (it != partitionColumnsByName.end()) {
+      partitionFilters.push_back(
+          PartitionFilter{subfield.baseName(), filter.get(), it->second});
+    }
+  }
+
+  auto stats = estimateStatsFromPartitionStats(
+      partitionStats_, partitionFilters, requestedColumns);
+  foldNonPartitionFilterStats(*hiveHandle, estimator, stats);
+  co_return stats;
 }
 
 folly::coro::Task<std::optional<std::vector<MetadataCountGroup>>>
 LocalHiveTableLayout::co_metadataCounts(
     ConnectorSessionPtr /*session*/,
-    velox::connector::ConnectorTableHandlePtr /*tableHandle*/,
+    velox::connector::ConnectorTableHandlePtr tableHandle,
     std::vector<std::string> groupingColumns,
-    std::vector<std::string> columns,
-    std::vector<velox::core::TypedExprPtr> filterConjuncts) const {
+    std::vector<std::string> columns) const {
+  auto hiveHandle =
+      std::dynamic_pointer_cast<const velox::connector::hive::HiveTableHandle>(
+          tableHandle);
+  VELOX_CHECK_NOT_NULL(hiveHandle, "Expected HiveTableHandle");
+
   folly::F14FastMap<std::string, const Column*> partitionColumnsByName;
   for (const auto* column : hivePartitionColumns()) {
     partitionColumnsByName[column->name()] = column;
@@ -683,28 +626,21 @@ LocalHiveTableLayout::co_metadataCounts(
     groupingKeyColumns.push_back(it->second);
   }
 
-  auto connectorMetadata =
-      ConnectorMetadataRegistry::get(connector()->connectorId());
-  auto* localHiveMetadata =
-      dynamic_cast<const LocalHiveConnectorMetadata*>(connectorMetadata.get());
-  VELOX_CHECK_NOT_NULL(
-      localHiveMetadata, "Expected LocalHiveConnectorMetadata for connector");
-  auto& evaluator =
-      *localHiveMetadata->connectorQueryCtx()->expressionEvaluator();
-
-  // The counts are exact, so every conjunct must be resolvable from partition
-  // metadata; decline if any is not.
-  std::vector<MetadataFilter> metadataFilters;
-  std::vector<int32_t> rejectedFilterIndices;
-  classifyFilterConjuncts(
-      filterConjuncts,
-      evaluator,
-      partitionColumnsByName,
-      /*allowPathAndBucket=*/false,
-      metadataFilters,
-      rejectedFilterIndices);
-  if (!rejectedFilterIndices.empty()) {
+  // The counts are exact, so every filter pushed into the handle must be
+  // resolvable from partition metadata; decline otherwise. A remaining filter,
+  // or a subfield filter on a non-partition column (including $path/$bucket),
+  // cannot be evaluated from partition metadata alone.
+  if (hiveHandle->remainingFilter() != nullptr) {
     co_return std::nullopt;
+  }
+  std::vector<PartitionFilter> partitionFilters;
+  for (const auto& [subfield, filter] : hiveHandle->subfieldFilters()) {
+    auto it = partitionColumnsByName.find(subfield.baseName());
+    if (it == partitionColumnsByName.end()) {
+      co_return std::nullopt;
+    }
+    partitionFilters.push_back(
+        PartitionFilter{subfield.baseName(), filter.get(), it->second});
   }
 
   std::vector<const Column*> nullCountColumns;
@@ -729,13 +665,13 @@ LocalHiveTableLayout::co_metadataCounts(
   folly::F14FastMap<std::string, size_t> groupIndex;
   for (const auto& partition : partitionStats_) {
     bool matched = true;
-    for (const auto& metadataFilter : metadataFilters) {
-      auto it = partition.partitionKeys.find(metadataFilter.columnName);
+    for (const auto& partitionFilter : partitionFilters) {
+      auto it = partition.partitionKeys.find(partitionFilter.columnName);
       if (it == partition.partitionKeys.end() ||
           !testPartitionValue(
-              *metadataFilter.filter,
+              *partitionFilter.filter,
               it->second,
-              *metadataFilter.column->type())) {
+              *partitionFilter.column->type())) {
         matched = false;
         break;
       }

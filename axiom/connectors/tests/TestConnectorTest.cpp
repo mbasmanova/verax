@@ -158,8 +158,9 @@ CO_TEST_F(TestConnectorTest, splitManager) {
   std::vector<velox::connector::ColumnHandlePtr> columns;
   columns.push_back(layout.createColumnHandle(nullptr, "a"));
   std::vector<core::TypedExprPtr> empty;
+  std::vector<int32_t> rejectedFilterIndices;
   auto tableHandle = layout.createTableHandle(
-      nullptr, std::move(columns), *evaluator, empty, empty);
+      nullptr, std::move(columns), *evaluator, empty, rejectedFilterIndices);
 
   auto session = makeSession();
   auto partitions =
@@ -257,13 +258,14 @@ TEST_F(TestConnectorTest, dataSource) {
   auto evaluator =
       std::make_unique<exec::SimpleExpressionEvaluator>(nullptr, nullptr);
   std::vector<core::TypedExprPtr> empty;
+  std::vector<int32_t> rejectedFilterIndices;
   auto tableHandle = layout.createTableHandle(
       /*session=*/nullptr,
 
       std::move(columns),
       *evaluator,
       empty,
-      empty);
+      rejectedFilterIndices);
 
   auto vector1 = makeRowVector(
       {makeFlatVector<int>({0, 1}), makeFlatVector<StringView>({"a", "b"})});
@@ -597,8 +599,9 @@ velox::connector::ConnectorTableHandlePtr makeScanHandle(
     columns.push_back(layout.createColumnHandle(nullptr, name));
   }
   std::vector<core::TypedExprPtr> empty;
+  std::vector<int32_t> rejectedFilterIndices;
   return layout.createTableHandle(
-      nullptr, std::move(columns), *evaluator, empty, empty);
+      nullptr, std::move(columns), *evaluator, empty, rejectedFilterIndices);
 }
 
 } // namespace

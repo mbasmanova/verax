@@ -51,10 +51,10 @@ struct ScanHandle {
   /// `TableScan` at emit time.
   std::vector<velox::core::TypedExprPtr> rejectedFilters;
 
-  /// All scan filters as `TypedExpr` (schema-named), in the order passed to
-  /// `createTableHandle`. Passed to `co_estimateStats` so the connector can
-  /// report which conjuncts it could not account for.
-  std::vector<velox::core::TypedExprPtr> filterConjuncts;
+  /// The createTableHandle-rejected filters as ExprCP. The connector accounts
+  /// for the accepted filters in co_estimateStats; the optimizer post-applies
+  /// selectivity for these.
+  ExprVector rejectedExprs;
 };
 
 /// Caches one `ScanHandle` per base table, keyed by base-table id. `getOrBuild`

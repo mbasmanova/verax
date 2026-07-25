@@ -51,6 +51,8 @@ add_library(
   RelationOp.cpp
   RelationOpPrinter.cpp
   Schema.cpp
+  SelectivityEngine.cpp
+  StatsFilterSelectivityEstimator.cpp
   SubfieldTracker.cpp
   ToGraph.cpp
   ToVelox.cpp
