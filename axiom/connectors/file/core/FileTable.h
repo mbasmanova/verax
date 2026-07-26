@@ -148,7 +148,7 @@ class FileTableLayout : public TableLayout {
       std::vector<velox::connector::ColumnHandlePtr> columnHandles,
       velox::core::ExpressionEvaluator& evaluator,
       std::vector<velox::core::TypedExprPtr> filters,
-      std::vector<velox::core::TypedExprPtr>& rejectedFilters,
+      std::vector<int32_t>& rejectedFilterIndices,
       velox::RowTypePtr dataColumns,
       std::optional<LookupKeys> lookupKeys) const override;
 

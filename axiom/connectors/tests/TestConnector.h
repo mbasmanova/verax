@@ -153,17 +153,9 @@ class TestTableLayout : public TableLayout {
       std::vector<velox::connector::ColumnHandlePtr> columnHandles,
       velox::core::ExpressionEvaluator& evaluator,
       std::vector<velox::core::TypedExprPtr> filters,
-      std::vector<velox::core::TypedExprPtr>& rejectedFilters,
+      std::vector<int32_t>& rejectedFilterIndices,
       velox::RowTypePtr dataColumns,
       std::optional<LookupKeys> lookupKeys) const override;
-
-  // Forwards the received conjuncts to the installed estimate-stats inspector,
-  // then returns std::nullopt (no stats), as the base does.
-  folly::coro::Task<std::optional<FilteredTableStats>> co_estimateStats(
-      ConnectorSessionPtr session,
-      velox::connector::ConnectorTableHandlePtr tableHandle,
-      std::vector<std::string> columns,
-      std::vector<velox::core::TypedExprPtr> filterConjuncts) const override;
 
  private:
   std::vector<const Column*> discreteValueColumns_;
@@ -932,19 +924,9 @@ class TestConnector : public velox::connector::Connector {
     onCreateTableHandle_ = std::move(inspector);
   }
 
-  /// Installs a callback invoked with the 'filterConjuncts' argument of every
-  /// TestTableLayout::co_estimateStats call.
-  void setOnEstimateStats(FilterInspector inspector) {
-    onEstimateStats_ = std::move(inspector);
-  }
-
   // Returns the installed inspector, or an empty std::function if none was set.
   const FilterInspector& onCreateTableHandle() const {
     return onCreateTableHandle_;
-  }
-
-  const FilterInspector& onEstimateStats() const {
-    return onEstimateStats_;
   }
 
   /// Register a view with the given name, output schema, and SQL text.
@@ -960,7 +942,6 @@ class TestConnector : public velox::connector::Connector {
   const std::shared_ptr<velox::memory::MemoryPool> rootPool_;
   const std::shared_ptr<TestConnectorMetadata> metadata_;
   FilterInspector onCreateTableHandle_;
-  FilterInspector onEstimateStats_;
 };
 
 /// The ConnectorFactory for the TestConnector can be configured with

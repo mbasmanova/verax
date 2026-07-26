@@ -18,6 +18,21 @@ For connectors with access to partition-level metadata (e.g., Hive Metastore),
 there is a better option: resolve which partitions match a filter and aggregate
 their stats -- without touching any data.
 
+## Contract: one accept/reject point
+
+`createTableHandle` is the single point at which a connector decides which
+filters it takes over. Whatever it accepts is encoded in the returned table
+handle (in whatever representation the connector chooses -- Hive uses
+`common::Filter` subfield filters plus a `TypedExpr` remaining filter); whatever
+it rejects is reported by index into the input `filters` (in
+`rejectedFilterIndices`) for the optimizer to apply.
+
+From that point the connector owns its accepted filters end-to-end: it applies
+them at scan time and estimates their effect in `co_estimateStats`. The
+optimizer estimates only the filters `createTableHandle` rejected. There is no
+separate filter argument to `co_estimateStats` and no notion of rejected filters
+in its result.
+
 ## Connector API: `TableLayout::co_estimateStats`
 
 Defined in `ConnectorMetadata.h`:
@@ -26,35 +41,57 @@ Defined in `ConnectorMetadata.h`:
 struct FilteredTableStats {
   uint64_t numRows{0};
   std::vector<ColumnStatistics> columnStats;
-  std::vector<int32_t> rejectedFilterIndices;
 };
 
 virtual folly::coro::Task<std::optional<FilteredTableStats>> co_estimateStats(
     ConnectorSessionPtr session,
     velox::connector::ConnectorTableHandlePtr tableHandle,
     std::vector<std::string> columns,
-    std::vector<velox::core::TypedExprPtr> filterConjuncts) const;
+    const FilterSelectivityEstimator& estimator) const;
 ```
 
 The default implementation returns `std::nullopt`, meaning the connector does
 not support stats estimation. Connectors opt in by overriding.
 
 **Parameters:**
+- `tableHandle` -- the connector reads its accepted filters from it, in whatever
+  representation it stored them.
 - `columns` -- names of table columns the optimizer is interested in. If the
   connector provides per-column statistics, it must return them for all
   requested columns in the same order (1:1), or return an empty `columnStats`
   vector if per-column stats are unavailable.
-- `filterConjuncts` -- filter conjuncts applied to the table. The connector
-  reports indices of conjuncts it could not account for via
-  `rejectedFilterIndices`.
+- `estimator` -- an optional shared helper (see below) for estimating filter
+  selectivity and refined column statistics from column statistics. The
+  connector may use it or estimate with its own logic.
 
 **Return value:**
 - `std::nullopt` -- connector does not support stats estimation; optimizer
   falls back to column-stats-based estimation and optional sampling.
 - `FilteredTableStats` -- `numRows` is the estimated row count after applying
-  filters the connector can evaluate. `columnStats` maps 1:1 to `columns`
-  (or is empty). `rejectedFilterIndices` lists conjuncts the connector could
-  not account for.
+  the filters the connector accepted into the handle. `columnStats` maps 1:1 to
+  `columns` (or is empty).
+
+## `FilterSelectivityEstimator`
+
+An optional helper offered to `co_estimateStats`, analogous to the
+`ExpressionEvaluator` offered to a `DataSource`, so a connector need not
+reimplement selectivity math. It has two entry points, keyed by column name:
+
+- `estimate(std::vector<TypedExprPtr> filters, columnStats)` -- for filters the
+  connector kept as `TypedExpr` (e.g. Hive's remaining filter).
+- `estimate(F14FastMap<std::string, const common::Filter*> filters, columnStats)`
+  -- for single-column filters the connector kept as `common::Filter` (e.g.
+  Hive subfield filters).
+
+Both return a `FilterEstimate { selectivity, columnStats }`: the fraction of
+rows passing the filters and the refined per-column statistics of the surviving
+rows. The default implementation, `StatsFilterSelectivityEstimator`, runs both
+over the shared `SelectivityEngine` formula layer (range/IN/null selectivity and
+constraint refinement in `SelectivityEngine.h`'s `detail` namespace), so the
+two entry points and the optimizer's own `ExprCP` path share one implementation.
+The estimator captures the optimizer's `QueryGraphContext` at construction and
+restores it inside `estimate()` (under a lock) so a connector may call it from
+another thread, e.g. its executor.
 
 ## Optimizer Integration
 
@@ -75,20 +112,12 @@ initializePlans():
   finalizeJoinsAndMakePlans()
 ```
 
-**Pass 1** walks the DT tree top-down, calling `distributeConjuncts()` on each
-DT. No stats dependency.
-
 **Pass 2** (`Optimization::estimateAllBaseTableSelectivity`) collects all base
-tables from the DT tree, prepares table handles, launches all
-`co_estimateStats` coroutines concurrently via
-`folly::coro::collectAllRange`, waits once, then applies results. Gated by the
-`useFilteredTableStats` optimizer option (default: true).
-
-**Pass 3** walks bottom-up, calling `finalizeJoins()` and `makeInitialPlan()`
-on each DT. `estimateLeafSelectivity()` is still called in this pass for base
-tables in existence-pushdown DTs created by `finalizeJoins` ->
-`pushExistencesIntoSubquery`. A dedup guard in `estimateLeafSelectivity`
-prevents double-processing.
+tables, prepares table handles via `ToVelox::filterUpdated`, constructs one
+`StatsFilterSelectivityEstimator`, and launches all `co_estimateStats`
+coroutines concurrently via `folly::coro::collectAllRange`, passing the
+estimator. Gated by the `useFilteredTableStats` optimizer option
+(default: true).
 
 ### Applying Connector Stats
 
@@ -98,72 +127,53 @@ prevents double-processing.
    (column-stats-based estimation + optional sampling).
 2. If column stats are present, applies them positionally to the base table's
    columns (NDV, min, max, null fraction).
-3. If `rejectedFilterIndices` is empty, sets `filteredCardinality = numRows`.
-4. Otherwise, maps rejected indices back to the original filter conjuncts,
-   calls `conjunctsSelectivity` to estimate selectivity for the rejected
-   subset, and sets `filteredCardinality = numRows * selectivity`. Column
-   constraints from the rejected filters are also applied.
+3. Post-applies selectivity for the filters `createTableHandle` rejected, held
+   as `ExprCP` in `LeafTableData::rejectedExprs`: when empty (the common Hive
+   case, where the connector accepts everything), `filteredCardinality =
+   numRows`; otherwise `conjunctsSelectivity` estimates the rejected subset and
+   `filteredCardinality = numRows * selectivity`, plus the rejected filters'
+   column constraints.
 
-### Filter Conjunct Indexing
+The v2 path (`EstimateLeafStatsPass` + `ScanHandle`) mirrors this.
 
-`filterConjuncts` passed to `co_estimateStats` are built from the base table's
-`columnFilters` followed by `filter`, in that order. The same ordering is used
-when mapping `rejectedFilterIndices` back to `ExprCP` objects.
+### `ToVelox::LeafTableData` / `ScanHandle`
 
-### `ToVelox::LeafTableData`
-
-`ToVelox` stores per-leaf-table data in `LeafTableData`:
+Per-leaf-table data stores:
 - `handle` -- table handle with filters pushed into the connector.
 - `extraFilters` -- filters rejected by `createTableHandle`, evaluated
-  post-scan.
-- `filterConjuncts` -- all filter conjuncts (columnFilters + filter) as
-  `TypedExprPtr`, used by `co_estimateStats` so the connector can report
-  rejected indices.
+  post-scan (execution).
+- `rejectedExprs` -- the same `createTableHandle`-rejected filters as `ExprCP`,
+  for the optimizer to post-apply selectivity. Built by mapping each rejected
+  index back to the aligned `ExprCP` conjunct.
 
-## LocalHive Implementation
+## Hive-family Implementation
 
-`LocalHiveTableLayout::co_estimateStats` in `LocalHiveConnectorMetadata.cpp`
-implements the API for the local Hive connector:
+`LocalHiveTableLayout::co_estimateStats` (and `PrismTableLayout`, which also
+extends `HiveTableLayout`) reads the accepted filters from the `HiveTableHandle`
+and estimates in two parts:
 
-1. **Classify filter conjuncts** (`classifyFilterConjuncts`): converts each
-   conjunct to `subfieldFilters` via `extractFiltersFromRemainingFilter`. If
-   all subfields reference metadata-evaluable columns (partition keys, `$path`,
-   `$bucket`) and no remainder expression is left, the conjunct is classified
-   as a metadata filter. Otherwise, its index goes into
-   `rejectedFilterIndices`.
+1. **Partition-key subfield filters** drive the base estimate. LocalHive matches
+   them against per-partition metadata (row counts and column stats); Prism
+   fetches matching-partition stats from the Metastore.
+2. **The remaining accepted filters** -- non-partition single-column
+   `common::Filter`s and the `TypedExpr` remaining filter -- are folded into the
+   base estimate by the shared `HiveTableLayout::foldNonPartitionFilterStats`,
+   which delegates to `connector::applyFilterEstimates`. That helper runs the
+   provided `estimator` over the base column statistics, multiplies the
+   selectivity into `numRows`, and overwrites the refined per-column fields.
 
-2. **Filter files** by metadata: iterates over all files, testing each against
-   all metadata filters. `testPartitionValue` handles type-specific conversion
-   (BOOLEAN, TINYINT/SMALLINT/INTEGER/BIGINT, VARCHAR) and null testing.
-   `testFileMetadata` handles `$path` and `$bucket` filters.
-
-3. **Aggregate row counts**: sums `file->numRows` across selected files.
-
-4. **Aggregate column stats** (`aggregateColumnStats`): for each requested
-   column, computes min (minimum of per-file mins), max (maximum of per-file
-   maxes), numValues (sum), nullPct, and estimated NDV. NDV estimation uses
-   the coupon collector formula: `ndv * (1 - (1 - 1/ndv)^sampleRows)`.
-   Skipped for Parquet format because `Reader::columnStatistics()` returns
-   nullptr.
-
-### Per-File Stats Collection
-
-During `loadTable()`, per-file stats are populated from file header metadata:
-- `FileInfo::numRows` from `reader->numberOfRows()`.
-- `FileInfo::columnStats` maps column name to `ColumnStatistics` with
-  `numValues`, `min`, `max` extracted via `reader->columnStatistics(nodeId)`.
-  Node ID 0 is the root RowType; top-level columns use `i + 1`.
-  Typed stats are extracted by dynamic_casting to
-  `IntegerColumnStatistics`, `DoubleColumnStatistics`, or
-  `StringColumnStatistics`.
+`connector::applyFilterEstimates` is connector-agnostic (it takes column-name
+-keyed filters plus an optional remaining `TypedExpr`), so a non-Hive connector
+such as Impulse -- which has no partitions and reads its filters from an
+`ImpulseTableHandle` -- reuses the same fold.
 
 ## Testing
 
-- **`FilteredTableStatsTest`** (`axiom/optimizer/tests/FilteredTableStatsTest.cpp`):
-  end-to-end tests using DWRF format with `sampleFilters=false` to force the
-  `co_estimateStats` path.
-  - `noFilter` -- verifies base cardinality for an unpartitioned table.
-  - `dataFilter` -- verifies range selectivity from per-file min/max.
-  - `partitionFilter` -- verifies partition pruning (equality and IN list).
-  - `partitionAndDataFilter` -- verifies combined partition pruning + data
-    filter selectivity.
+- **`FiltersTest`** (`axiom/optimizer/tests/FiltersTest.cpp`): each filter case
+  additionally lowers the same filters to `TypedExpr`, runs
+  `StatsFilterSelectivityEstimator`, and asserts it agrees with the `ExprCP`
+  `SelectivityEngine` on both selectivity and refined per-column statistics.
+- **`FilteredTableStatsTest`**
+  (`axiom/optimizer/tests/FilteredTableStatsTest.cpp`): end-to-end tests forcing
+  the `co_estimateStats` path (`noFilter`, `dataFilter`, `partitionFilter`,
+  `partitionAndDataFilter`).

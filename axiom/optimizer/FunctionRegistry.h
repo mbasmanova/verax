@@ -262,6 +262,14 @@ class FunctionRegistry {
     return it->second;
   }
 
+  /// All registered special forms, keyed by SpecialForm with the velox function
+  /// name as value. Lets callers build a reverse (velox name -> special form)
+  /// lookup covering every special form.
+  const folly::F14FastMap<logical_plan::SpecialForm, std::string>&
+  specialForms() const {
+    return specialForms_;
+  }
+
   /// @return a mapping of reversible functions.
   const folly::F14FastMap<std::string, std::string>& reversibleFunctions()
       const {

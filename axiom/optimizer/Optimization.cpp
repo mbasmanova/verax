@@ -26,6 +26,7 @@
 #include "axiom/optimizer/Plan.h"
 #include "axiom/optimizer/PlanUtils.h"
 #include "axiom/optimizer/PrecomputeProjection.h"
+#include "axiom/optimizer/StatsFilterSelectivityEstimator.h"
 #include "axiom/optimizer/VeloxHistory.h"
 #include "folly/coro/BlockingWait.h"
 #include "folly/coro/Collect.h"
@@ -164,6 +165,10 @@ void Optimization::estimateAllBaseTableSelectivity(DerivedTable& dt) {
   std::vector<folly::coro::Task<std::optional<connector::FilteredTableStats>>>
       tasks;
 
+  // Shared helper offered to each connector's co_estimateStats. Outlives the
+  // coroutines below, which run under blockingWaitOn before this returns.
+  StatsFilterSelectivityEstimator estimator;
+
   for (auto* baseTable : baseTables) {
     if (estimatedBaseTables_.contains(baseTable->id())) {
       continue;
@@ -191,7 +196,7 @@ void Optimization::estimateAllBaseTableSelectivity(DerivedTable& dt) {
         std::move(connectorSession),
         data->handle,
         std::move(columnNames),
-        data->filterConjuncts));
+        estimator));
   }
 
   if (tasks.empty()) {
@@ -289,27 +294,14 @@ void Optimization::applyFilteredStats(
     }
   }
 
-  if (stats->rejectedFilterIndices.empty()) {
-    // Connector estimated all filters.
+  // The connector accounted for the filters it accepted into the handle in
+  // numRows. Post-apply selectivity for the filters createTableHandle rejected
+  // (kept as ExprCP), which the optimizer owns.
+  const auto& rejectedFilters =
+      toVelox_.leafData(baseTable.id())->rejectedExprs;
+  if (rejectedFilters.empty()) {
     baseTable.filteredCardinality = stats->numRows;
     return;
-  }
-
-  // Collect the ExprCP filters the connector could not estimate.
-  // Indices refer to columnFilters followed by filter.
-  ExprVector rejectedFilters;
-  rejectedFilters.reserve(stats->rejectedFilterIndices.size());
-  const auto numColumnFilters = baseTable.columnFilters.size();
-  const auto totalFilters = numColumnFilters + baseTable.filter.size();
-  for (auto idx : stats->rejectedFilterIndices) {
-    VELOX_CHECK_LT(
-        idx,
-        totalFilters,
-        "rejectedFilterIndices out of range for BaseTable: {}",
-        baseTable.cname);
-    rejectedFilters.push_back(
-        idx < numColumnFilters ? baseTable.columnFilters[idx]
-                               : baseTable.filter[idx - numColumnFilters]);
   }
 
   // Compute selectivity for the rejected filters and apply constraints.

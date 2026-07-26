@@ -162,27 +162,27 @@ class LocalHiveTableLayout : public HiveTableLayout {
       velox::HashStringAllocator* allocator,
       std::vector<std::unique_ptr<StatisticsBuilder>>* statsBuilders) const;
 
-  /// Returns estimated statistics by pruning files using partition key and
-  /// hidden column filters from 'filterConjuncts', then aggregating per-file
+  /// Returns estimated statistics by pruning files using the partition key and
+  /// hidden column filters pushed into 'tableHandle', then aggregating per-file
   /// stats.
   folly::coro::Task<std::optional<FilteredTableStats>> co_estimateStats(
       ConnectorSessionPtr session,
       velox::connector::ConnectorTableHandlePtr tableHandle,
       std::vector<std::string> columns,
-      std::vector<velox::core::TypedExprPtr> filterConjuncts) const override;
+      const FilterSelectivityEstimator& estimator) const override;
 
   /// Returns exact per-group row counts and per-column null counts from
   /// persisted partition stats, one group per distinct tuple of
   /// 'groupingColumns' values. Declines (nullopt) if a grouping column is not a
-  /// partition column, if any conjunct is not partition-only, or if a grouping
-  /// column's value is not available in the partition metadata.
+  /// partition column, if any filter pushed into 'tableHandle' is not
+  /// partition-only, or if a grouping column's value is not available in the
+  /// partition metadata.
   folly::coro::Task<std::optional<std::vector<MetadataCountGroup>>>
   co_metadataCounts(
       ConnectorSessionPtr session,
       velox::connector::ConnectorTableHandlePtr tableHandle,
       std::vector<std::string> groupingColumns,
-      std::vector<std::string> columns,
-      std::vector<velox::core::TypedExprPtr> filterConjuncts) const override;
+      std::vector<std::string> columns) const override;
 
   std::span<const Column* const> discretePredicateColumns() const override;
 

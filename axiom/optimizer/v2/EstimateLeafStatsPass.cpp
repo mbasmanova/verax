@@ -24,6 +24,7 @@
 #include "axiom/optimizer/QueryGraph.h"
 #include "axiom/optimizer/QueryGraphContext.h"
 #include "axiom/optimizer/Schema.h"
+#include "axiom/optimizer/StatsFilterSelectivityEstimator.h"
 
 namespace facebook::axiom::optimizer::v2 {
 
@@ -71,7 +72,8 @@ void applyColumnStats(
 void applyFilteredStats(
     const Scan& scan,
     const std::vector<ColumnCP>& statColumns,
-    const std::optional<connector::FilteredTableStats>& stats) {
+    const std::optional<connector::FilteredTableStats>& stats,
+    const ExprVector& rejectedFilters) {
   if (!stats.has_value()) {
     return;
   }
@@ -85,16 +87,11 @@ void applyFilteredStats(
     }
   }
 
-  if (stats->rejectedFilterIndices.empty()) {
+  // The connector accounted for its accepted filters in numRows. Post-apply
+  // selectivity for the filters createTableHandle rejected (kept as ExprCP).
+  if (rejectedFilters.empty()) {
     baseTable->filteredCardinality = std::max<float>(1, stats->numRows);
     return;
-  }
-
-  ExprVector rejectedFilters;
-  rejectedFilters.reserve(stats->rejectedFilterIndices.size());
-  for (int32_t index : stats->rejectedFilterIndices) {
-    VELOX_CHECK_LT(index, scan.filters().size());
-    rejectedFilters.push_back(scan.filters()[index]);
   }
 
   ConstraintMap constraints;
@@ -127,11 +124,18 @@ void EstimateLeafStatsPass::run(
   struct TableTask {
     ScanCP scan;
     std::vector<ColumnCP> statColumns;
+    // Copied from the cached ScanHandle: a reference would dangle when a later
+    // getOrBuild rehashes the ScanHandleCache and moves the ScanHandle.
+    ExprVector rejectedExprs;
   };
   std::vector<TableTask> tasks;
   std::vector<folly::coro::Task<std::optional<connector::FilteredTableStats>>>
       requests;
   folly::F14FastSet<int32_t> seen;
+
+  // Shared helper offered to each connector's co_estimateStats. Outlives the
+  // coroutines below, which run under blockingWait before this returns.
+  StatsFilterSelectivityEstimator estimator;
 
   for (ScanCP scan : scans) {
     const auto* baseTable = scan->baseTable();
@@ -162,12 +166,13 @@ void EstimateLeafStatsPass::run(
       addColumn(column);
     }
 
-    tasks.push_back(TableTask{scan, std::move(statColumns)});
+    tasks.push_back(
+        TableTask{scan, std::move(statColumns), handle.rejectedExprs});
     requests.push_back(layout->co_estimateStats(
         std::move(connectorSession),
         handle.tableHandle,
         std::move(columnNames),
-        handle.filterConjuncts));
+        estimator));
   }
 
   if (requests.empty()) {
@@ -181,7 +186,11 @@ void EstimateLeafStatsPass::run(
       folly::coro::collectAllRange(std::move(requests)));
 
   for (size_t i = 0; i < tasks.size(); ++i) {
-    applyFilteredStats(*tasks[i].scan, tasks[i].statColumns, results[i]);
+    applyFilteredStats(
+        *tasks[i].scan,
+        tasks[i].statColumns,
+        results[i],
+        tasks[i].rejectedExprs);
   }
 }
 

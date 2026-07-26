@@ -58,30 +58,53 @@ ScanHandle ScanHandle::build(
         connectorSession, column->name(), /*subfields=*/{}));
   }
 
+  // Build the filters as TypedExpr, keeping an aligned ExprCP list.
+  // createTableHandle reports the rejected filters by index into this list, so
+  // each can be mapped back to its ExprCP for the optimizer to post-apply its
+  // selectivity.
   ExprEmitter exprEmitter{evaluator.pool()};
+  ExprVector conjunctExprs;
   std::vector<velox::core::TypedExprPtr> filters;
   filters.reserve(scan.filters().size());
   for (ExprCP filter : scan.filters()) {
+    conjunctExprs.push_back(filter);
     filters.push_back(
         exprEmitter.toTypedExpr(filter, ColumnNaming::kSchemaName));
   }
-  std::vector<velox::core::TypedExprPtr> filterConjuncts = filters;
+  std::vector<velox::core::TypedExprPtr> allConjuncts = filters;
 
-  std::vector<velox::core::TypedExprPtr> rejectedFilters;
+  std::vector<int32_t> rejectedFilterIndices;
   velox::connector::ConnectorTableHandlePtr tableHandle =
       layout->createTableHandle(
           connectorSession,
           columnHandles,
           evaluator,
           std::move(filters),
-          rejectedFilters);
+          rejectedFilterIndices);
+
+  // Each rejected index selects a conjunct to apply as a Filter above the scan
+  // (as TypedExpr) and to post-apply selectivity for (as ExprCP).
+  std::vector<velox::core::TypedExprPtr> rejectedFilters;
+  ExprVector rejectedExprs;
+  for (int32_t index : rejectedFilterIndices) {
+    VELOX_CHECK_GE(
+        index,
+        0,
+        "createTableHandle returned a negative rejected filter index");
+    VELOX_CHECK_LT(
+        index,
+        static_cast<int32_t>(conjunctExprs.size()),
+        "createTableHandle returned an out-of-range rejected filter index");
+    rejectedFilters.push_back(allConjuncts[index]);
+    rejectedExprs.push_back(conjunctExprs[index]);
+  }
 
   return ScanHandle{
       .tableHandle = std::move(tableHandle),
       .columnHandles = std::move(columnHandles),
       .filterOnlyColumns = std::move(filterOnlyColumns),
       .rejectedFilters = std::move(rejectedFilters),
-      .filterConjuncts = std::move(filterConjuncts),
+      .rejectedExprs = std::move(rejectedExprs),
   };
 }
 

@@ -205,11 +205,18 @@ void ToVelox::filterUpdated(BaseTableCP table) {
   velox::ScopedVarSetter noAlias(&makeVeloxExprWithNoAlias_, true);
   velox::ScopedVarSetter getters(&getterForPushdownSubfield_, true);
 
+  // Build the filter conjuncts as TypedExpr, keeping an aligned ExprCP list.
+  // createTableHandle reports the rejected conjuncts by index into this list,
+  // so each can be mapped back to its ExprCP for the optimizer to post-apply
+  // its selectivity.
+  ExprVector conjunctExprs;
   std::vector<velox::core::TypedExprPtr> filterConjuncts;
   for (auto filter : table->columnFilters) {
+    conjunctExprs.push_back(filter);
     filterConjuncts.push_back(toTypedExpr(filter));
   }
   for (auto expr : table->filter) {
+    conjunctExprs.push_back(expr);
     filterConjuncts.push_back(toTypedExpr(expr));
   }
 
@@ -232,20 +239,37 @@ void ToVelox::filterUpdated(BaseTableCP table) {
     }
   }
 
-  std::vector<velox::core::TypedExprPtr> rejectedFilters;
+  std::vector<int32_t> rejectedFilterIndices;
   auto allConjuncts = filterConjuncts;
   auto handle = layout->createTableHandle(
       connectorSession,
       std::move(columns),
       *evaluator,
       std::move(filterConjuncts),
-      rejectedFilters);
+      rejectedFilterIndices);
+
+  // Each rejected index selects a conjunct to evaluate post-scan (as TypedExpr)
+  // and to post-apply selectivity for (as ExprCP).
+  std::vector<velox::core::TypedExprPtr> extraFilters;
+  ExprVector rejectedExprs;
+  for (int32_t index : rejectedFilterIndices) {
+    VELOX_CHECK_GE(
+        index,
+        0,
+        "createTableHandle returned a negative rejected filter index");
+    VELOX_CHECK_LT(
+        index,
+        static_cast<int32_t>(conjunctExprs.size()),
+        "createTableHandle returned an out-of-range rejected filter index");
+    extraFilters.push_back(allConjuncts[index]);
+    rejectedExprs.push_back(conjunctExprs[index]);
+  }
 
   setLeafData(
       table->id(),
-      std::move(allConjuncts),
       std::move(handle),
-      std::move(rejectedFilters));
+      std::move(extraFilters),
+      std::move(rejectedExprs));
 }
 
 velox::core::PlanNodePtr ToVelox::addOutputRenames(

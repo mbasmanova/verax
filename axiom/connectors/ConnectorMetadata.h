@@ -43,6 +43,10 @@ using PartitionFunctionSpecPtr =
     std::shared_ptr<const core::PartitionFunctionSpec>;
 } // namespace facebook::velox::core
 
+namespace facebook::velox::common {
+class Filter;
+} // namespace facebook::velox::common
+
 /// Base classes for schema elements used in execution. A ConnectorMetadata
 /// provides access to table information. A Table has a TableLayout for each of
 /// its physical organizations, e.g. base table, index, column group, sorted
@@ -102,6 +106,51 @@ struct ColumnStatistics {
   /// map, may have one element for each key. In all cases, stats may be
   /// missing.
   std::vector<ColumnStatistics> children;
+};
+
+/// Result of estimating a conjunction of filters against column statistics.
+struct FilterEstimate {
+  /// Estimated fraction of rows in [0, 1] that pass all filters.
+  double selectivity{1.0};
+
+  /// Refined statistics for columns constrained by the filters, keyed by column
+  /// name. A column absent from the map is not constrained by the filters, so
+  /// its input statistics still apply. Present entries reflect the narrowed
+  /// value range, distinct count and null fraction of rows that pass the
+  /// filters.
+  folly::F14FastMap<std::string, ColumnStatistics> columnStats;
+};
+
+/// Optional shared helper for estimating the selectivity and refined per-column
+/// statistics of a conjunction of filters from column statistics. Offered to
+/// TableLayout::co_estimateStats -- analogous to the ExpressionEvaluator
+/// offered to a DataSource -- so a connector need not reimplement selectivity
+/// math. A connector may use it, use part of it, or estimate with its own logic
+/// instead; it is a convenience, not a required dependency.
+class FilterSelectivityEstimator {
+ public:
+  virtual ~FilterSelectivityEstimator() = default;
+
+  /// Estimates the fraction of rows that pass all 'filters' (a conjunction) and
+  /// the refined per-column statistics of the surviving rows, given
+  /// 'columnStats' keyed by column name. Filters or columns the estimator
+  /// cannot analyze fall back to a default estimate, so the selectivity is
+  /// always a usable fraction.
+  virtual FilterEstimate estimate(
+      const std::vector<velox::core::TypedExprPtr>& filters,
+      const folly::F14FastMap<std::string, ColumnStatistics>& columnStats)
+      const = 0;
+
+  /// Overload for connectors whose accepted filters are single-column
+  /// common::Filters (e.g. Hive subfield filters), keyed by column name. Each
+  /// column has at most one filter (a conjunction of same-column predicates is
+  /// a single Filter). Shares the selectivity and refinement math with the
+  /// TypedExpr overload.
+  virtual FilterEstimate estimate(
+      const folly::F14FastMap<std::string, const velox::common::Filter*>&
+          filters,
+      const folly::F14FastMap<std::string, ColumnStatistics>& columnStats)
+      const = 0;
 };
 
 /// Base class for column. The column's name and type are immutable but the
@@ -370,21 +419,29 @@ struct SampleResult {
 
 /// Result of estimating filtered table statistics from the connector.
 struct FilteredTableStats {
-  /// Estimated row count after applying filters.
+  /// Estimated row count after applying the filters the connector accepted into
+  /// the table handle.
   uint64_t numRows{0};
 
   /// Per-column statistics corresponding 1:1 to the 'columns' parameter of
   /// co_estimateStats. Either empty (no column stats available) or has the
   /// same size as 'columns', in the same order.
   std::vector<ColumnStatistics> columnStats;
-
-  /// Indices into the 'filterConjuncts' parameter of co_estimateStats
-  /// identifying conjuncts the connector could not account for when
-  /// estimating numRows. The optimizer applies its own selectivity estimation
-  /// for these on top of numRows and column constraints. Empty means all
-  /// conjuncts were accounted for.
-  std::vector<int32_t> rejectedFilterIndices;
 };
+
+/// Folds, into 'stats', the selectivity and refined column statistics of
+/// 'commonFilters' (single-column filters keyed by column name) and
+/// 'remainingFilter' (a TypedExpr conjunction, may be null), as estimated by
+/// 'estimator' over the base column statistics already in 'stats'. A no-op when
+/// 'stats' has no column statistics. Shared by connectors that own their pushed
+/// filters and derive a base estimate (row count + column stats) some other way
+/// (e.g. partition metadata).
+void applyFilterEstimates(
+    const folly::F14FastMap<std::string, const velox::common::Filter*>&
+        commonFilters,
+    const velox::core::TypedExprPtr& remainingFilter,
+    const FilterSelectivityEstimator& estimator,
+    FilteredTableStats& stats);
 
 /// One group of a metadata-derived count produced by co_metadataCounts. One
 /// entry per distinct tuple of the grouping columns; a single entry with empty
@@ -553,23 +610,29 @@ class TableLayout {
     VELOX_UNSUPPORTED("Sampling is not supported for this layout");
   }
 
-  /// Returns estimated statistics for a table scan with the given filters.
-  /// Connectors that have access to partition-level metadata (e.g., Hive
-  /// Metastore) can resolve matching partitions and aggregate their stats
-  /// without reading data.
+  /// Returns estimated statistics for a table scan whose accepted filters are
+  /// carried in 'tableHandle'. Connectors that have access to partition-level
+  /// metadata (e.g., Hive Metastore) can resolve matching partitions and
+  /// aggregate their stats without reading data.
+  ///
+  /// The connector estimates the effect of exactly the filters it accepted into
+  /// the handle (createTableHandle is the single accept/reject point); the
+  /// optimizer applies its own selectivity for the filters createTableHandle
+  /// rejected. There is therefore no separate filter argument and no notion of
+  /// rejected filters in the result.
   ///
   /// @param session Connector session for the current query.
-  /// @param tableHandle Table handle for the table.
+  /// @param tableHandle Table handle for the table; the connector reads its
+  /// accepted filters from it in whatever representation it stored them.
   /// @param columns Names of table columns the optimizer is interested in.
   /// Column names correspond to actual table columns (not synthetic subfield
   /// projections). If the connector provides per-column statistics, it must
   /// return them for all requested columns in the same order (1:1), or
   /// return an empty columnStats vector if per-column stats are unavailable.
-  /// @param filterConjuncts Filter conjuncts applied to the table. This may
-  /// be a superset of filters encoded in the table handle. The connector
-  /// should report indices of conjuncts it could not account for via
-  /// rejectedFilterIndices. The conjuncts are in the same canonical form as
-  /// the 'filters' argument of createTableHandle.
+  /// @param estimator Optional shared helper for estimating filter selectivity
+  /// and refined column statistics from column statistics. The connector may
+  /// use it (via its TypedExpr or common::Filter entry point) or estimate with
+  /// its own logic.
   ///
   /// The default implementation returns std::nullopt, meaning the connector
   /// does not support stats estimation. Connectors opt in by overriding.
@@ -577,7 +640,7 @@ class TableLayout {
       ConnectorSessionPtr /*session*/,
       velox::connector::ConnectorTableHandlePtr /*tableHandle*/,
       std::vector<std::string> /*columns*/,
-      std::vector<velox::core::TypedExprPtr> /*filterConjuncts*/) const {
+      const FilterSelectivityEstimator& /*estimator*/) const {
     co_return std::nullopt;
   }
 
@@ -586,24 +649,24 @@ class TableLayout {
   /// result is a metadata-derived count rather than a live scan (see
   /// SpecialAggregateKind).
   ///
-  /// The connector is free to return an estimate rather than exact counts --
-  /// for example, derived from a sampled subset of partitions and rescaled --
-  /// so the caller must treat the result as approximate. Filter and grouping
-  /// accounting remain all-or-nothing: a connector that cannot resolve every
-  /// conjunct, or group by the requested columns, from metadata declines by
-  /// returning std::nullopt. There is no rejectedFilterIndices equivalent.
+  /// The connector is responsible for producing a reasonable estimate that
+  /// accounts for every filter pushed into 'tableHandle' and groups by the
+  /// requested columns. Accounting is all-or-nothing: a connector that cannot
+  /// account for all pushed filters, or group by the requested columns, from
+  /// metadata declines by returning std::nullopt. The counts themselves may be
+  /// estimates rather than exact -- e.g. derived from a sampled subset of
+  /// partitions and rescaled -- so the caller must treat the result as
+  /// approximate.
   ///
   /// @param session Connector session for the current query.
-  /// @param tableHandle Table handle for the table.
+  /// @param tableHandle Table handle carrying the filters pushed via
+  /// createTableHandle.
   /// @param groupingColumns Names of columns to group the counts by, in
   /// output-key order. Empty requests a single global count. The connector
   /// returns std::nullopt if it cannot group by these columns from metadata
   /// (e.g. a grouping column is not a partition column).
   /// @param columns Names of columns for which per-group null counts are
   /// requested. Empty when only a row count is needed.
-  /// @param filterConjuncts Filter conjuncts applied to the table, in the same
-  /// canonical form as the 'filters' argument of createTableHandle. The
-  /// connector must account for every conjunct or return std::nullopt.
   ///
   /// @return One MetadataCountGroup per group, or std::nullopt if the connector
   /// cannot answer from metadata. The default implementation returns
@@ -613,8 +676,7 @@ class TableLayout {
       ConnectorSessionPtr /*session*/,
       velox::connector::ConnectorTableHandlePtr /*tableHandle*/,
       std::vector<std::string> /*groupingColumns*/,
-      std::vector<std::string> /*columns*/,
-      std::vector<velox::core::TypedExprPtr> /*filterConjuncts*/) const {
+      std::vector<std::string> /*columns*/) const {
     co_return std::nullopt;
   }
 
@@ -641,14 +703,16 @@ class TableLayout {
 
   /// Returns a ConnectorTableHandle for use in createDataSource. 'filters' are
   /// pushed down into the DataSource. 'filters' are expressions involving
-  /// literals and columns of 'layout'. The filters not supported by the target
-  /// system are returned in 'rejectedFilters'. 'rejectedFilters' will
-  /// have to be applied to the data returned by the DataSource.
-  /// 'rejectedFilters' may or may not be a subset of 'filters' or
-  /// subexpressions thereof. If 'lookupKeys' is present, these must match the
-  /// lookupKeys() in 'layout'. If 'dataColumns' is given, it must have all the
-  /// existing columns and may additionally specify casting from maps to structs
-  /// by giving a struct in the place of a map.
+  /// literals and columns of 'layout'. The indices (into 'filters') of the
+  /// filters not supported by the target system are returned in
+  /// 'rejectedFilterIndices'; the caller must apply filters[i] for each
+  /// returned index i to the data returned by the DataSource. A rejected filter
+  /// is thus always one of the input 'filters' verbatim, which lets the caller
+  /// map it back to its own representation by position. If 'lookupKeys' is
+  /// present, these must match the lookupKeys() in 'layout'. If 'dataColumns'
+  /// is given, it must have all the existing columns and may additionally
+  /// specify casting from maps to structs by giving a struct in the place of a
+  /// map.
   ///
   /// The optimizer normalizes 'filters' into a canonical form a connector may
   /// rely on:
@@ -678,7 +742,7 @@ class TableLayout {
       std::vector<velox::connector::ColumnHandlePtr> columnHandles,
       velox::core::ExpressionEvaluator& evaluator,
       std::vector<velox::core::TypedExprPtr> filters,
-      std::vector<velox::core::TypedExprPtr>& rejectedFilters,
+      std::vector<int32_t>& rejectedFilterIndices,
       velox::RowTypePtr dataColumns = nullptr,
       std::optional<LookupKeys> lookupKeys = std::nullopt) const = 0;
 

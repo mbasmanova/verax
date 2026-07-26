@@ -236,7 +236,7 @@ TEST_F(LocalHiveConnectorMetadataTest, basic) {
   auto columnHandle = layout->createColumnHandle(/*session=*/nullptr, "c0");
   std::vector<velox::connector::ColumnHandlePtr> columns = {columnHandle};
   std::vector<core::TypedExprPtr> filters;
-  std::vector<core::TypedExprPtr> rejectedFilters;
+  std::vector<int32_t> rejectedFilterIndices;
   auto ctx = metadata_->connectorQueryCtx();
 
   auto tableHandle = layout->createTableHandle(
@@ -244,10 +244,10 @@ TEST_F(LocalHiveConnectorMetadataTest, basic) {
       columns,
       *ctx->expressionEvaluator(),
       filters,
-      rejectedFilters,
+      rejectedFilterIndices,
       /*dataColumns=*/nullptr,
       /*lookupKeys=*/{});
-  EXPECT_TRUE(rejectedFilters.empty());
+  EXPECT_TRUE(rejectedFilterIndices.empty());
   std::vector<common::Subfield> fields;
   auto c0 = common::Subfield::create("c0");
   fields.push_back(std::move(*c0));
@@ -281,7 +281,7 @@ TEST_F(LocalHiveConnectorMetadataTest, sampleWithPathFilter) {
       fmt::format("\"{}\" = '{}'", HiveTable::kPath, targetFilePath),
       filterRowType);
   std::vector<core::TypedExprPtr> filters = {pathFilterExpr};
-  std::vector<core::TypedExprPtr> rejectedFilters;
+  std::vector<int32_t> rejectedFilterIndices;
   auto ctx = metadata_->connectorQueryCtx();
 
   auto tableHandle = layout->createTableHandle(
@@ -289,10 +289,10 @@ TEST_F(LocalHiveConnectorMetadataTest, sampleWithPathFilter) {
       columns,
       *ctx->expressionEvaluator(),
       filters,
-      rejectedFilters,
+      rejectedFilterIndices,
       /*dataColumns=*/nullptr,
       /*lookupKeys=*/{});
-  EXPECT_TRUE(rejectedFilters.empty());
+  EXPECT_TRUE(rejectedFilterIndices.empty());
 
   std::vector<common::Subfield> fields;
   auto c0 = common::Subfield::create("c0");
