@@ -1014,11 +1014,13 @@ class ShuffleBoundaryMatcher : public PlanMatcher {
       std::shared_ptr<PlanMatcher> producerMatcher,
       std::optional<ShuffleType> type = std::nullopt,
       std::vector<std::string> keys = {},
-      std::optional<bool> replicateNullsAndAny = std::nullopt)
+      std::optional<bool> replicateNullsAndAny = std::nullopt,
+      std::optional<axiom::optimizer::FragmentType> producerType = std::nullopt)
       : producerMatcher_(std::move(producerMatcher)),
         type_(type),
         keys_(std::move(keys)),
-        replicateNullsAndAny_(replicateNullsAndAny) {
+        replicateNullsAndAny_(replicateNullsAndAny),
+        producerType_(producerType) {
     VELOX_CHECK(
         keys_.empty() || type == ShuffleType::kPartitioned ||
             type == ShuffleType::kOrdered,
@@ -1047,6 +1049,8 @@ class ShuffleBoundaryMatcher : public PlanMatcher {
   const std::vector<std::string> keys_;
   // Set only for kPartitioned (enforced by the constructor).
   const std::optional<bool> replicateNullsAndAny_;
+  // When set, the expected type of the producer fragment this boundary closes.
+  const std::optional<axiom::optimizer::FragmentType> producerType_;
 };
 
 // Returns the producer fragment for the given Exchange node, or nullptr if not
@@ -1195,6 +1199,14 @@ PlanMatcher::MatchResult ShuffleBoundaryMatcher::match(
   EXPECT_TRUE(producerFragment != nullptr)
       << "Could not find producer fragment for Exchange " << plan->id();
   AXIOM_TEST_RETURN_IF_FAILURE
+
+  if (producerType_.has_value()) {
+    EXPECT_EQ(producerFragment->type, *producerType_)
+        << "Producer fragment type mismatch: expected "
+        << fmt::format("{}", *producerType_) << ", got "
+        << fmt::format("{}", producerFragment->type);
+    AXIOM_TEST_RETURN_IF_FAILURE
+  }
 
   const auto& fragmentPlan = producerFragment->fragment.planNode;
   const auto* partitionedOutput = fragmentPlan->as<PartitionedOutputNode>();
@@ -2184,10 +2196,31 @@ PlanMatcherBuilder& PlanMatcherBuilder::shuffle(
   return *this;
 }
 
+PlanMatcherBuilder& PlanMatcherBuilder::shuffle(
+    const std::vector<std::string>& keys,
+    axiom::optimizer::FragmentType producer) {
+  VELOX_USER_CHECK_NOT_NULL(matcher_);
+  matcher_ = std::make_shared<ShuffleBoundaryMatcher>(
+      matcher_, ShuffleType::kPartitioned, keys, std::nullopt, producer);
+  return *this;
+}
+
 PlanMatcherBuilder& PlanMatcherBuilder::shuffleMerge() {
   VELOX_USER_CHECK_NOT_NULL(matcher_);
   matcher_ =
       std::make_shared<ShuffleBoundaryMatcher>(matcher_, ShuffleType::kOrdered);
+  return *this;
+}
+
+PlanMatcherBuilder& PlanMatcherBuilder::shuffleMerge(
+    axiom::optimizer::FragmentType producer) {
+  VELOX_USER_CHECK_NOT_NULL(matcher_);
+  matcher_ = std::make_shared<ShuffleBoundaryMatcher>(
+      matcher_,
+      ShuffleType::kOrdered,
+      std::vector<std::string>{},
+      std::nullopt,
+      producer);
   return *this;
 }
 
@@ -2199,24 +2232,44 @@ PlanMatcherBuilder& PlanMatcherBuilder::shuffleMerge(
   return *this;
 }
 
-PlanMatcherBuilder& PlanMatcherBuilder::broadcast() {
+PlanMatcherBuilder& PlanMatcherBuilder::broadcast(
+    std::optional<axiom::optimizer::FragmentType> producer) {
   VELOX_USER_CHECK_NOT_NULL(matcher_);
   matcher_ = std::make_shared<ShuffleBoundaryMatcher>(
-      matcher_, ShuffleType::kBroadcast);
+      matcher_,
+      ShuffleType::kBroadcast,
+      std::vector<std::string>{},
+      std::nullopt,
+      producer);
   return *this;
 }
 
-PlanMatcherBuilder& PlanMatcherBuilder::arbitrary() {
+PlanMatcherBuilder& PlanMatcherBuilder::arbitrary(
+    std::optional<axiom::optimizer::FragmentType> producer) {
   VELOX_USER_CHECK_NOT_NULL(matcher_);
   matcher_ = std::make_shared<ShuffleBoundaryMatcher>(
-      matcher_, ShuffleType::kArbitrary);
+      matcher_,
+      ShuffleType::kArbitrary,
+      std::vector<std::string>{},
+      std::nullopt,
+      producer);
   return *this;
 }
 
-PlanMatcherBuilder& PlanMatcherBuilder::gather() {
+PlanMatcherBuilder& PlanMatcherBuilder::gather(
+    std::optional<axiom::optimizer::FragmentType> producer) {
   VELOX_USER_CHECK_NOT_NULL(matcher_);
-  matcher_ =
-      std::make_shared<ShuffleBoundaryMatcher>(matcher_, ShuffleType::kGather);
+  VELOX_USER_CHECK(
+      producer != axiom::optimizer::FragmentType::kSingle &&
+          producer != axiom::optimizer::FragmentType::kCoordinator,
+      "A gather collapses multiple producer tasks to one; a single-task "
+      "producer (kSingle / kCoordinator) indicates a redundant funnel");
+  matcher_ = std::make_shared<ShuffleBoundaryMatcher>(
+      matcher_,
+      ShuffleType::kGather,
+      std::vector<std::string>{},
+      std::nullopt,
+      producer);
   return *this;
 }
 
@@ -2541,14 +2594,15 @@ PlanMatcherBuilder& PlanMatcherBuilder::fragmentWidth(int32_t width) {
   return *this;
 }
 
-PlanMatcherBuilder& PlanMatcherBuilder::fragmentType(
+PlanMatcherBuilder& PlanMatcherBuilder::output(
     axiom::optimizer::FragmentType type) {
   VELOX_USER_CHECK_NOT_NULL(matcher_);
   matcher_ = std::make_shared<BucketedAssertionMatcher>(
       matcher_, [type](const axiom::optimizer::ExecutableFragment& fragment) {
         EXPECT_EQ(fragment.type, type)
-            << "Expected fragment.type == " << static_cast<int32_t>(type)
-            << " but got " << static_cast<int32_t>(fragment.type);
+            << "Output fragment type mismatch: expected "
+            << fmt::format("{}", type) << ", got "
+            << fmt::format("{}", fragment.type);
       });
   return *this;
 }

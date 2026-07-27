@@ -1791,10 +1791,31 @@ Translated Translator::buildUnionAll(
     const std::vector<lp::LogicalPlanNodePtr>& inputs,
     const velox::RowTypePtr& outputType,
     const LpNameSet& required) {
+  // Flatten nested UNION ALL into one N-way union: a leg that is itself a UNION
+  // ALL contributes its own legs directly. Legs align positionally with the
+  // union's outputType at every level, so a flattened leg maps to the same kept
+  // positions as a direct one.
+  std::vector<lp::LogicalPlanNodePtr> flatInputs;
+  std::function<void(const lp::LogicalPlanNodePtr&)> collect =
+      [&](const lp::LogicalPlanNodePtr& node) {
+        if (node->kind() == lp::NodeKind::kSet &&
+            node->as<lp::SetNode>()->operation() ==
+                lp::SetOperation::kUnionAll) {
+          for (const auto& child : node->inputs()) {
+            collect(child);
+          }
+        } else {
+          flatInputs.push_back(node);
+        }
+      };
+  for (const auto& in : inputs) {
+    collect(in);
+  }
+
   NodeVector inputNodes;
-  inputNodes.reserve(inputs.size());
+  inputNodes.reserve(flatInputs.size());
   QGVector<ColumnVector> legColumns;
-  legColumns.reserve(inputs.size());
+  legColumns.reserve(flatInputs.size());
   // Union output positions parent doesn't require are dropped from the union
   // node entirely. Build a list of kept positions once and reuse it for every
   // leg's column mapping.
@@ -1805,7 +1826,7 @@ Translated Translator::buildUnionAll(
       keptPositions.push_back(j);
     }
   }
-  for (const auto& in : inputs) {
+  for (const auto& in : flatInputs) {
     // Each leg's required-set is the kept union output names, mapped to that
     // leg's positional outputType names (legs align 1:1 with the union's
     // outputType by SQL semantics).
@@ -1835,8 +1856,21 @@ Translated Translator::buildUnionAll(
   Scope scope;
   ColumnVector outputColumns;
   outputColumns.reserve(keptPositions.size());
-  for (size_t j : keptPositions) {
-    Value value(toType(outputType->childAt(j)));
+  for (size_t k = 0; k < keptPositions.size(); ++k) {
+    const size_t j = keptPositions[k];
+    // The union output NDV is the max of the legs' NDVs: a lower bound on the
+    // true union NDV (which can be up to their sum), order-independent, and
+    // known as long as any leg has an NDV. A known NDV lets the cost model rank
+    // a join on a union key instead of dropping it as uncostable.
+    std::optional<float> cardinality;
+    for (const auto& legCols : legColumns) {
+      const auto legNdv = legCols[k]->value().cardinality;
+      if (legNdv.has_value()) {
+        cardinality =
+            cardinality.has_value() ? std::max(*cardinality, *legNdv) : *legNdv;
+      }
+    }
+    Value value(toType(outputType->childAt(j)), cardinality);
     auto* column =
         Column::createForSymbol(toName(outputType->nameOf(j)), value);
     outputColumns.push_back(column);

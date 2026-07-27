@@ -95,6 +95,16 @@ std::vector<velox::core::FieldAccessTypedExprPtr> toFieldAccessList(
   return out;
 }
 
+// Output names of 'columns', in order.
+std::vector<std::string> namesOf(const ColumnVector& columns) {
+  std::vector<std::string> names;
+  names.reserve(columns.size());
+  for (ColumnCP column : columns) {
+    names.push_back(column->outputName());
+  }
+  return names;
+}
+
 std::vector<velox::core::FieldAccessTypedExprPtr> toFieldAccessList(
     const ExprVector& exprs,
     std::string_view role) {
@@ -535,16 +545,10 @@ class Emitter {
 velox::core::PlanNodePtr Emitter::projectToColumns(
     const ColumnVector& keepColumns,
     velox::core::PlanNodePtr input) {
-  std::vector<std::string> names;
-  std::vector<velox::core::TypedExprPtr> exprs;
-  names.reserve(keepColumns.size());
-  exprs.reserve(keepColumns.size());
-  for (ColumnCP column : keepColumns) {
-    names.emplace_back(column->outputName());
-    exprs.push_back(toFieldAccess(column));
-  }
-  return std::make_shared<velox::core::ProjectNode>(
-      nextId(), std::move(names), std::move(exprs), std::move(input));
+  // Select `keepColumns` under their own output names: a rename projection onto
+  // themselves.
+  return wrapWithRenameProject(
+      std::move(input), keepColumns, namesOf(keepColumns));
 }
 
 velox::RowTypePtr Emitter::makeRowType(const ColumnVector& columns) const {
@@ -717,15 +721,12 @@ velox::core::PlanNodePtr Emitter::emitFilter(const Filter& filter) {
 
 velox::core::PlanNodePtr Emitter::emitProject(const Project& project) {
   velox::core::PlanNodePtr input = emit(project.input());
-  const auto& columns = project.outputColumns();
-  std::vector<std::string> names;
-  names.reserve(columns.size());
-  for (ColumnCP column : columns) {
-    names.push_back(column->outputName());
-  }
   auto typedExprs = exprEmitter_.toTypedExprs(project.exprs());
   return std::make_shared<velox::core::ProjectNode>(
-      nextId(), std::move(names), std::move(typedExprs), std::move(input));
+      nextId(),
+      namesOf(project.outputColumns()),
+      std::move(typedExprs),
+      std::move(input));
 }
 
 velox::core::PlanNodePtr Emitter::emitRootProjectOver(
@@ -1173,11 +1174,7 @@ velox::core::PlanNodePtr Emitter::emitMarkDistinct(
     const MarkDistinct& markDistinct) {
   velox::core::PlanNodePtr input = emit(markDistinct.input());
 
-  std::vector<std::string> markerNames;
-  markerNames.reserve(markDistinct.markers().size());
-  for (ColumnCP marker : markDistinct.markers()) {
-    markerNames.emplace_back(marker->outputName());
-  }
+  auto markerNames = namesOf(markDistinct.markers());
 
   std::vector<velox::core::FieldAccessTypedExprPtr> distinctKeys =
       toFieldAccessList(markDistinct.distinctKeys(), "MarkDistinct key");
@@ -1575,34 +1572,20 @@ velox::core::PlanNodePtr Emitter::emitUnnest(const Unnest& unnest) {
 }
 
 velox::core::PlanNodePtr Emitter::emitUnionAll(const UnionAll& unionNode) {
-  // `LocalPartitionNode` requires every source to share an identical output
-  // type. Each leg's IR `outputColumns` may be narrower than the union's
-  // width (legs collapse dup outputs independently), so always wrap each leg
-  // in a per-leg ProjectNode that selects via `legColumns[i][j]` (a Column*
-  // in the leg's outputColumns) and renames to the union's output names.
-  const auto& outputColumns = unionNode.outputColumns();
-  const auto& legColumns = unionNode.legColumns();
-  const auto numOutputs = outputColumns.size();
+  // PrecomputeProjectionsPass has aligned every leg to the union's output
+  // columns (Velox's LocalPartition requires all sources to share one output
+  // type), so this is a plain gather over the emitted legs.
   std::vector<velox::core::PlanNodePtr> sources;
   sources.reserve(unionNode.inputs().size());
-  for (size_t legIdx = 0; legIdx < unionNode.inputs().size(); ++legIdx) {
-    NodeCP input = unionNode.inputs()[legIdx];
-    velox::core::PlanNodePtr emittedInput = emit(input);
-    const auto& legCols = legColumns[legIdx];
-    std::vector<std::string> names;
-    std::vector<velox::core::TypedExprPtr> exprs;
-    names.reserve(numOutputs);
-    exprs.reserve(numOutputs);
-    for (size_t j = 0; j < numOutputs; ++j) {
-      names.push_back(outputColumns[j]->outputName());
-      exprs.push_back(toFieldAccess(legCols[j]));
+  for (NodeCP input : unionNode.inputs()) {
+    velox::core::PlanNodePtr emitted = emit(input);
+    // A leg whose scan carries a rejected filter emits the filter-only columns
+    // for the FilterNode (see emitScan); trim them so every source shares the
+    // union's output type, as emitRoot does for the query output.
+    if (emitted->outputType()->size() > input->outputColumns().size()) {
+      emitted = projectToColumns(input->outputColumns(), std::move(emitted));
     }
-    sources.push_back(
-        std::make_shared<velox::core::ProjectNode>(
-            nextId(),
-            std::move(names),
-            std::move(exprs),
-            std::move(emittedInput)));
+    sources.push_back(std::move(emitted));
   }
   return velox::core::LocalPartitionNode::gather(nextId(), std::move(sources));
 }

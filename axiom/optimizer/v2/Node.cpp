@@ -1210,13 +1210,17 @@ Partitioning unionGlobalPartition(const UnionAll::Key& key) {
     return Partitioning::globalGather();
   }
 
+  // A partitionType of nullptr is standard hash partitioning; a non-null one is
+  // a connector's bucketing. Two legs co-partition on the mapped output keys
+  // when both are standard hash (same hash, so a given key value lands on the
+  // same partition in every leg) or both are copartitionable connector types.
+  // The two kinds never co-partition with each other.
   const connector::PartitionType* representative = nullptr;
   ExprVector outputKeys;
   for (size_t leg = 0; leg < key.inputs.size(); ++leg) {
     const Partitioning& part =
         key.inputs[leg]->physicalProperties().globalPartition;
-    if (part.kind != PartitionKind::kPartitioned ||
-        part.partitionType == nullptr) {
+    if (part.kind != PartitionKind::kPartitioned) {
       return {};
     }
     // Map each leg partition key to the union output column at the same index.
@@ -1250,20 +1254,28 @@ Partitioning unionGlobalPartition(const UnionAll::Key& key) {
         return {};
       }
     }
-    // copartition is only a feasibility check; the output reuses the
-    // min-partition-count leg's layout-owned type, whose count equals
-    // copartition's (a fresh shared_ptr we can't retain as a raw pointer).
-    const auto compatible = representative->copartition(*part.partitionType);
-    if (compatible == nullptr) {
-      return {};
+    if (representative == nullptr || part.partitionType == nullptr) {
+      // Standard hash is compatible only with standard hash.
+      if (representative != part.partitionType) {
+        return {};
+      }
+    } else {
+      // copartition is only a feasibility check; the output reuses the
+      // min-partition-count leg's layout-owned type, whose count equals
+      // copartition's (a fresh shared_ptr we can't retain as a raw pointer).
+      const auto compatible = representative->copartition(*part.partitionType);
+      if (compatible == nullptr) {
+        return {};
+      }
+      if (part.partitionType->numPartitions() <
+          representative->numPartitions()) {
+        representative = part.partitionType;
+      }
+      VELOX_DCHECK_EQ(
+          representative->numPartitions(),
+          compatible->numPartitions(),
+          "Co-bucketed union output must reuse a layout type matching copartition's count");
     }
-    if (part.partitionType->numPartitions() < representative->numPartitions()) {
-      representative = part.partitionType;
-    }
-    VELOX_DCHECK_EQ(
-        representative->numPartitions(),
-        compatible->numPartitions(),
-        "Co-bucketed union output must reuse a layout type matching copartition's count");
   }
   return Partitioning{
       .kind = PartitionKind::kPartitioned,

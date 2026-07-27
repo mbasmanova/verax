@@ -25,6 +25,32 @@
 namespace facebook::axiom::optimizer::v2 {
 namespace {
 
+// Builds `Project(exprs -> outColumns)` over `input`, folding into `input` when
+// it is a deterministic Project (substituting the expressions through the
+// child's output->expression map) rather than stacking a second Project. A
+// non-deterministic child is left alone, since a fold could evaluate one of its
+// outputs more than once.
+//
+// TODO: still inline the deterministic outputs when only some are
+// non-deterministic — isolate the non-deterministic ones in a separate Project
+// below and fold the rest.
+NodeCP makeProject(
+    NodeCP input,
+    ExprVector exprs,
+    ColumnVector outColumns,
+    Builder& builder) {
+  if (input->is(NodeType::kProject)) {
+    const auto* child = input->as<Project>();
+    if (child->isDeterministic()) {
+      exprs = ExprFactory(builder).substitute(
+          exprs, child->outputColumns(), child->exprs());
+      input = child->input();
+    }
+  }
+  return builder.make<Project>(
+      {input, std::move(exprs), std::move(outColumns)});
+}
+
 // Per-consumer builder that lifts compound sub-expressions into a Project
 // inserted between the consumer and its existing input.
 class PrecomputeProjections {
@@ -136,25 +162,8 @@ NodeCP PrecomputeProjections::node() && {
   if (!needsProject_) {
     return input_;
   }
-
-  // Fold into a child Project rather than stacking a second one: substitute
-  // this project's expressions through the child's output->expression map.
-  // Skipped when the child has a non-deterministic expression, since a fold
-  // could evaluate such an output more than once.
-  //
-  // TODO: still inline the deterministic outputs when only some are
-  // non-deterministic — isolate the non-deterministic ones in a separate
-  // Project below and fold the rest.
-  if (input_->is(NodeType::kProject)) {
-    const auto* childProject = input_->as<Project>();
-    if (childProject->isDeterministic()) {
-      outExprs_ = ExprFactory(builder_).substitute(
-          outExprs_, childProject->outputColumns(), childProject->exprs());
-      input_ = childProject->input();
-    }
-  }
-  return builder_.make<Project>(
-      {input_, std::move(outExprs_), std::move(outColumns_)});
+  return makeProject(
+      input_, std::move(outExprs_), std::move(outColumns_), builder_);
 }
 
 void PrecomputeProjections::addToProject(ExprCP expr, ColumnCP column) {
@@ -196,6 +205,7 @@ class Rewriter : public NodeRewriter<> {
   NodeCP rewriteUnnest(const Unnest* unnest, NoContext& context) override;
   NodeCP rewriteJoin(const Join* join, NoContext& context) override;
   NodeCP rewriteExchange(const Exchange* exchange, NoContext& context) override;
+  NodeCP rewriteUnionAll(const UnionAll* unionAll, NoContext& context) override;
   NodeCP rewriteApply(const Apply* /*apply*/, NoContext& /*context*/) override {
     VELOX_UNREACHABLE(
         "Apply must be removed by decorrelate before PrecomputeProjections");
@@ -445,6 +455,60 @@ NodeCP Rewriter::rewriteUnnest(const Unnest* unnest, NoContext& context) {
        unnest->unnestColumns(),
        unnest->ordinalityColumn(),
        unnest->outputColumns()});
+}
+
+NodeCP Rewriter::rewriteUnionAll(const UnionAll* unionAll, NoContext& context) {
+  // Velox's LocalPartition requires every source to share one output RowType,
+  // so each leg must produce the union's output columns (same names, same
+  // order). Emit that aligning projection here -- like the pre-projections for
+  // aggregates/joins -- rather than at emit, folding it into a deterministic
+  // child Project so a coercion leg (e.g. VALUES needing a cast) does not stack
+  // two Projects. For a leg already isolated behind a remote exchange, the
+  // rename lands on the exchange's consumer side; moving it below the exchange
+  // is future work.
+  const ColumnVector& outputColumns = unionAll->outputColumns();
+  NodeVector newInputs;
+  newInputs.reserve(unionAll->inputs().size());
+  QGVector<ColumnVector> newLegColumns;
+  newLegColumns.reserve(unionAll->inputs().size());
+  bool changed = false;
+  for (size_t i = 0; i < unionAll->inputs().size(); ++i) {
+    NodeCP input = rewrite(unionAll->inputs()[i], context);
+    const ColumnVector& legCols = unionAll->legColumns()[i];
+
+    // Already aligned: the leg produces exactly legCols in order and each
+    // carries the union's output name (so its type matches too).
+    bool aligned = input->outputColumns().size() == legCols.size();
+    for (size_t k = 0; aligned && k < legCols.size(); ++k) {
+      aligned = input->outputColumns()[k] == legCols[k] &&
+          legCols[k]->outputName() == outputColumns[k]->outputName();
+    }
+    if (aligned) {
+      changed |= input != unionAll->inputs()[i];
+      newInputs.push_back(input);
+      newLegColumns.push_back(legCols);
+      continue;
+    }
+
+    // Rename legCols to fresh columns carrying the union's output names.
+    ExprVector exprs(legCols.begin(), legCols.end());
+    ColumnVector projectColumns;
+    projectColumns.reserve(outputColumns.size());
+    for (ColumnCP column : outputColumns) {
+      projectColumns.push_back(
+          Column::createForSymbol(
+              toName(column->outputName()), column->value()));
+    }
+    newInputs.push_back(
+        makeProject(input, std::move(exprs), projectColumns, builder()));
+    newLegColumns.push_back(std::move(projectColumns));
+    changed = true;
+  }
+  if (!changed) {
+    return unionAll;
+  }
+  return builder().make<UnionAll>(
+      {std::move(newInputs), std::move(newLegColumns), outputColumns});
 }
 
 } // namespace

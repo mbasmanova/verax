@@ -4707,6 +4707,8 @@ void ToGraph::translateUnion(const lp::SetNode& set) {
 
   auto renames = std::move(renames_);
   bool isFirstInput = true;
+  // Output column names, taken from the first leg; every leg aligns 1:1.
+  std::vector<Name> outputNames;
 
   auto translateUnionInput = [&](const lp::LogicalPlanNode& input) {
     renames_ = renames;
@@ -4728,41 +4730,41 @@ void ToGraph::translateUnion(const lp::SetNode& set) {
     auto* newDt = std::exchange(currentDt_, setDt);
 
     const auto& type = input.outputType();
-
-    if (isFirstInput) {
-      // This is the first input of a union tree.
-      for (auto i : usedChannels(input)) {
-        const auto& name = type->nameOf(i);
-
-        ExprCP inner = translateColumn(name);
-        newDt->exprs.push_back(inner);
-
-        // The top dt has the same columns as all the unioned dts.
-        const auto* columnName = toName(name);
-        auto* outer =
-            make<Column>(columnName, setDt, inner->value(), columnName);
-        setDt->columns.push_back(outer);
-        newDt->columns.push_back(outer);
+    for (auto i : usedChannels(input)) {
+      newDt->exprs.push_back(translateColumn(type->nameOf(i)));
+      if (isFirstInput) {
+        outputNames.push_back(toName(type->nameOf(i)));
       }
-
-      isFirstInput = false;
-    } else {
-      for (auto i : usedChannels(input)) {
-        ExprCP inner = translateColumn(type->nameOf(i));
-        newDt->exprs.push_back(inner);
-      }
-
-      // Same outward facing columns as the top dt of union.
-      newDt->columns = setDt->columns;
     }
-
+    isFirstInput = false;
     setDt->unionInputs.push_back(newDt);
   };
 
   translateSetOperationInput(set, shouldFlatten, translateUnionInput);
 
+  // Build the union's output columns after all legs are translated so each
+  // column's NDV is the max of the legs' NDVs: a lower bound on the true union
+  // NDV, order-independent, and known as long as any leg has one. Type and
+  // bounds come from the first leg, which every leg matches by position.
+  for (size_t i = 0; i < outputNames.size(); ++i) {
+    std::optional<float> cardinality;
+    for (const auto* child : setDt->unionInputs) {
+      const auto legNdv = child->exprs[i]->value().cardinality;
+      if (legNdv.has_value()) {
+        cardinality =
+            cardinality.has_value() ? std::max(*cardinality, *legNdv) : *legNdv;
+      }
+    }
+    Value value = setDt->unionInputs[0]->exprs[i]->value();
+    value.cardinality = cardinality;
+    setDt->columns.push_back(
+        make<Column>(outputNames[i], setDt, value, outputNames[i]));
+  }
+
+  // The top dt and every unioned dt expose the same outward-facing columns.
   setDt->outputColumns = setDt->columns;
   for (auto* child : setDt->unionInputs) {
+    child->columns = setDt->columns;
     child->outputColumns = setDt->columns;
   }
 
