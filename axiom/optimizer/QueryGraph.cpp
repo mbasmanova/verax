@@ -556,6 +556,15 @@ PathSet BaseTable::columnSubfields(int32_t id) const {
   return subfields;
 }
 
+const connector::TableLayout* BaseTable::layout() const {
+  VELOX_CHECK_NOT_NULL(schemaTable);
+  VELOX_CHECK(!schemaTable->columnGroups.empty());
+
+  const auto* layout = schemaTable->columnGroups[0]->layout;
+  VELOX_CHECK_NOT_NULL(layout);
+  return layout;
+}
+
 std::string BaseTable::toString() const {
   std::stringstream out;
   out << "{" << PlanObject::toString();
