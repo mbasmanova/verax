@@ -35,7 +35,7 @@ namespace {
 
 // Test functions for the system.metadata.functions table.
 
-// toss() -> boolean. Non-deterministic coin toss.
+// __toss() -> boolean. Non-deterministic coin toss.
 template <typename T>
 struct TossFunction {
   static constexpr bool is_deterministic = false;
@@ -45,7 +45,8 @@ struct TossFunction {
   }
 };
 
-// roll() -> integer and roll(integer) -> integer. Non-deterministic dice roll.
+// __roll() -> integer and __roll(integer) -> integer. Non-deterministic dice
+// roll.
 template <typename T>
 struct RollFunction {
   static constexpr bool is_deterministic = false;
@@ -55,7 +56,7 @@ struct RollFunction {
   }
 };
 
-// plus(integer, integer, ...) -> integer and plus(real, real, ...) -> real.
+// __plus(integer, integer, ...) -> integer and __plus(real, real, ...) -> real.
 // Variadic addition.
 template <typename TExec>
 struct PlusFunction {
@@ -84,21 +85,21 @@ void registerTestFunctions() {
   }
   kRegistered = true;
 
-  velox::registerFunction<TossFunction, bool>({"toss"});
-  velox::registerFunction<RollFunction, int32_t>({"roll"});
-  velox::registerFunction<RollFunction, int32_t, int32_t>({"roll"});
+  velox::registerFunction<TossFunction, bool>({"__toss"});
+  velox::registerFunction<RollFunction, int32_t>({"__roll"});
+  velox::registerFunction<RollFunction, int32_t, int32_t>({"__roll"});
   velox::registerFunction<
       PlusFunction,
       int32_t,
       int32_t,
       int32_t,
-      velox::Variadic<int32_t>>({"plus"});
+      velox::Variadic<int32_t>>({"__plus"});
   velox::registerFunction<
       PlusFunction,
       float,
       float,
       float,
-      velox::Variadic<float>>({"plus"});
+      velox::Variadic<float>>({"__plus"});
 }
 
 const char* const kSystemCatalog = "test-system";
@@ -555,6 +556,34 @@ TEST_F(SystemConnectorMetadataTest, functionsDataSource) {
   auto actual = readTable(kFunctionsTable, functionsTableSchema());
   ASSERT_NE(actual, nullptr);
 
+  // The functions table lists every registered function; keep only the ones
+  // this test registered so the assertion does not depend on the global
+  // registry (the test binary may link many other functions).
+  const auto& nameColumn = actual->childAt(0);
+  velox::BufferPtr indices =
+      velox::allocateIndices(actual->size(), pool_.get());
+  auto* rawIndices = indices->asMutable<velox::vector_size_t>();
+  velox::vector_size_t numMatched = 0;
+  for (velox::vector_size_t i = 0; i < actual->size(); ++i) {
+    const auto name = nameColumn->variantAt(i).value<std::string>();
+    if (name == "__plus" || name == "__roll" || name == "__toss") {
+      rawIndices[numMatched++] = i;
+    }
+  }
+  std::vector<velox::VectorPtr> matchedChildren;
+  matchedChildren.reserve(actual->childrenSize());
+  for (const auto& child : actual->children()) {
+    matchedChildren.push_back(
+        velox::BaseVector::wrapInDictionary(
+            /*nulls=*/nullptr, indices, numMatched, child));
+  }
+  actual = std::make_shared<velox::RowVector>(
+      pool_.get(),
+      actual->type(),
+      /*nulls=*/nullptr,
+      numMatched,
+      std::move(matchedChildren));
+
   folly::json::serialization_opts opts;
   opts.sort_keys = true;
   auto kDeterministic = folly::json::serialize(
@@ -570,9 +599,9 @@ TEST_F(SystemConnectorMetadataTest, functionsDataSource) {
       velox::BaseVector::createFromVariants(
           functionsTableSchema(),
           {
-              // plus(integer, integer, integer...) -> integer.
+              // __plus(integer, integer, integer...) -> integer.
               velox::Variant::row({
-                  "plus",
+                  "__plus",
                   "scalar",
                   "integer",
                   velox::Variant::array({"integer", "integer", "integer"}),
@@ -580,9 +609,9 @@ TEST_F(SystemConnectorMetadataTest, functionsDataSource) {
                   "",
                   kDeterministic,
               }),
-              // plus(real, real, real...) -> real.
+              // __plus(real, real, real...) -> real.
               velox::Variant::row({
-                  "plus",
+                  "__plus",
                   "scalar",
                   "real",
                   velox::Variant::array({"real", "real", "real"}),
@@ -590,9 +619,9 @@ TEST_F(SystemConnectorMetadataTest, functionsDataSource) {
                   "",
                   kDeterministic,
               }),
-              // roll() -> integer.
+              // __roll() -> integer.
               velox::Variant::row({
-                  "roll",
+                  "__roll",
                   "scalar",
                   "integer",
                   velox::Variant::array({}),
@@ -600,9 +629,9 @@ TEST_F(SystemConnectorMetadataTest, functionsDataSource) {
                   "",
                   kNonDeterministic,
               }),
-              // roll(integer) -> integer.
+              // __roll(integer) -> integer.
               velox::Variant::row({
-                  "roll",
+                  "__roll",
                   "scalar",
                   "integer",
                   velox::Variant::array({"integer"}),
@@ -610,9 +639,9 @@ TEST_F(SystemConnectorMetadataTest, functionsDataSource) {
                   "",
                   kNonDeterministic,
               }),
-              // toss() -> boolean.
+              // __toss() -> boolean.
               velox::Variant::row({
-                  "toss",
+                  "__toss",
                   "scalar",
                   "boolean",
                   velox::Variant::array({}),

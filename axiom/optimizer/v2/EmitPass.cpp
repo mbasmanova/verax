@@ -602,19 +602,6 @@ void collectInputColumnNames(
   collectInputColumnNamesImpl(expr, names, /*boundNames=*/{});
 }
 
-// The connector partitioning of a scan's table, or null when the table is not
-// bucketed. A property of the table layout, independent of which columns the
-// scan projects: a bucketed table runs grouped even when its bucket column is
-// pruned from the output.
-const connector::PartitionType* tablePartitionType(const Scan& scan) {
-  const auto* schemaTable = scan.baseTable()->schemaTable;
-  if (schemaTable == nullptr || schemaTable->columnGroups.empty()) {
-    return nullptr;
-  }
-  const connector::TableLayout* layout = schemaTable->columnGroups[0]->layout;
-  return layout != nullptr ? layout->partitionType().get() : nullptr;
-}
-
 velox::core::PlanNodePtr Emitter::emitScan(const Scan& scan) {
   // The read schema is the consumer output columns followed by the filter-only
   // columns, with columnHandles aligned to that order. Consumer columns keep
@@ -673,8 +660,10 @@ velox::core::PlanNodePtr Emitter::emitScan(const Scan& scan) {
       std::move(assignments));
 
   // A scan of a bucketed table is a grouped leaf: it runs per bucket-group
-  // under grouped execution, tagging the fragment as bucketed.
-  if (const auto* partitionType = tablePartitionType(scan)) {
+  // under grouped execution, tagging the fragment as bucketed. The layout's
+  // partition type is null when the table is not bucketed.
+  if (const auto* partitionType =
+          scan.baseTable()->layout()->partitionType().get()) {
     groupedLeaves_.push_back({scanNode->id(), partitionType});
   }
 
@@ -1635,8 +1624,11 @@ velox::core::PlanNodePtr Emitter::emitEnforceDistinct(
 }
 
 // Merges two fragment-type contributions: a kSource and a kFixed coexist as
-// kFixed (split-driven scans feeding a fixed-width stage); equal types merge to
-// themselves; nullopt is "no constraint".
+// kFixed (split-driven scans feeding a fixed-width stage); a kCoordinator
+// pooled with single-task work stays kCoordinator (coordinator dominates
+// single); equal types merge to themselves; nullopt is "no constraint". A
+// kCoordinator with a parallel source (kSource/kFixed) is an invariant
+// violation.
 std::optional<FragmentType> mergeFragmentTypes(
     std::optional<FragmentType> lhs,
     std::optional<FragmentType> rhs) {
@@ -1653,6 +1645,10 @@ std::optional<FragmentType> mergeFragmentTypes(
       (*lhs == FragmentType::kFixed && *rhs == FragmentType::kSource)) {
     return FragmentType::kFixed;
   }
+  if ((*lhs == FragmentType::kCoordinator && *rhs == FragmentType::kSingle) ||
+      (*lhs == FragmentType::kSingle && *rhs == FragmentType::kCoordinator)) {
+    return FragmentType::kCoordinator;
+  }
   VELOX_FAIL(
       "Incompatible fragment-type contributions in one fragment: {} + {}",
       *lhs,
@@ -1662,7 +1658,8 @@ std::optional<FragmentType> mergeFragmentTypes(
 // The fragment type the subtree at 'node' contributes, walking down to (not
 // across) inner exchanges. An exchange yields its consumer-side type
 // (partitioned → kFixed, gather → kSingle, broadcast/arbitrary → no
-// constraint); a scan yields kSource.
+// constraint); a scan yields kSource, or kCoordinator when it reads a
+// coordinator-only layout.
 std::optional<FragmentType> fragmentTypeContribution(NodeCP node) {
   if (node->is(NodeType::kExchange)) {
     switch (node->as<Exchange>()->partitioning().kind) {
@@ -1678,7 +1675,9 @@ std::optional<FragmentType> fragmentTypeContribution(NodeCP node) {
   }
   switch (node->nodeType()) {
     case NodeType::kScan:
-      return FragmentType::kSource;
+      return node->as<Scan>()->baseTable()->layout()->runsOnCoordinator()
+          ? FragmentType::kCoordinator
+          : FragmentType::kSource;
     case NodeType::kValues:
       return FragmentType::kSingle;
     default: {
@@ -1691,24 +1690,35 @@ std::optional<FragmentType> fragmentTypeContribution(NodeCP node) {
   }
 }
 
-// Sets 'fragment.type' (and 'width' for kFixed) from the contents at 'node'. At
-// numWorkers == 1 all parallelism collapses to one task. A fragment with no
-// split source (no scan; only exchanges and/or values below) is single-task
-// regardless of its output partitioning: kSource requires connector splits to
-// drive its task count, so the fallback is kSingle, not kSource.
+// Sets 'fragment.type' (and 'width' for kFixed) from an already-computed root
+// 'contribution'. At numWorkers == 1 all parallelism collapses to one task. A
+// nullopt contribution (no split source below -- no scan, only exchanges and/or
+// values) is single-task regardless of output partitioning: kSource requires
+// connector splits to drive its task count, so the fallback is kSingle.
 void decideFragmentType(
-    NodeCP node,
+    std::optional<FragmentType> contribution,
     int32_t numWorkers,
     ExecutableFragment& fragment) {
   if (numWorkers == 1) {
     fragment.type = FragmentType::kSingle;
     return;
   }
-  fragment.type =
-      fragmentTypeContribution(node).value_or(FragmentType::kSingle);
+  fragment.type = contribution.value_or(FragmentType::kSingle);
   if (fragment.type == FragmentType::kFixed) {
     fragment.width = numWorkers;
   }
+}
+
+// Computes 'node's contribution with fragmentTypeContribution -- walking down
+// to, not across, inner exchanges -- and sets the fragment type from it.
+void decideFragmentType(
+    NodeCP node,
+    int32_t numWorkers,
+    ExecutableFragment& fragment) {
+  decideFragmentType(
+      numWorkers == 1 ? std::nullopt : fragmentTypeContribution(node),
+      numWorkers,
+      fragment);
 }
 
 void Emitter::finalizeGroupedLeaves(ExecutableFragment& fragment) {
@@ -2094,20 +2104,28 @@ std::vector<ExecutableFragment> Emitter::emitFragments(
       top.fragment.planNode = writePlan;
     }
   } else {
-    // A root whose subtree already runs on one task (e.g. below a global ORDER
-    // BY or aggregate) needs no output gather and is emitted directly, like the
-    // single-node case. Only a multi-task root is gathered to a single task for
-    // the query output.
+    // A root whose subtree already runs on one task needs no output gather and
+    // is emitted directly, like the single-node case: below a global ORDER BY
+    // or aggregate (kSingle), or a coordinator-only scan (kCoordinator). Only a
+    // multi-task root is gathered to a single task for the query output.
+    // The root's fragment-type contribution drives both the output-gather
+    // decision and the root fragment's type; compute it once and reuse it.
+    std::optional<FragmentType> rootType;
+    if (options_.numWorkers > 1) {
+      rootType = fragmentTypeContribution(root);
+    }
     const bool gatherForOutput = options_.numWorkers > 1 &&
-        fragmentTypeContribution(root) != FragmentType::kSingle;
+        rootType != FragmentType::kSingle &&
+        rootType != FragmentType::kCoordinator;
 
     if (options_.remoteOutput) {
       // Results stay distributed: emit the root as a single fragment capped by
       // a PartitionedOutput for remote consumption, with no gather consumer
       // fragment. The fragment type follows the root's contents (kFixed for a
-      // multi-worker source, kSingle at numWorkers == 1).
+      // multi-worker source, kCoordinator for a coordinator-only scan, kSingle
+      // at numWorkers == 1 or when there is no split source below).
       currentFragment_ = &top;
-      decideFragmentType(root, options_.numWorkers, top);
+      decideFragmentType(rootType, options_.numWorkers, top);
       outputProjection = emitRoot(root, outputColumns, outputNames);
       top.fragment.planNode =
           makeSingleOutput(outputProjection->outputType(), outputProjection);
@@ -2115,6 +2133,7 @@ std::vector<ExecutableFragment> Emitter::emitFragments(
       emitGatheredOutput(root, outputColumns, outputNames, top);
     } else {
       currentFragment_ = &top;
+      decideFragmentType(rootType, options_.numWorkers, top);
       top.fragment.planNode = emitRoot(root, outputColumns, outputNames);
     }
   }

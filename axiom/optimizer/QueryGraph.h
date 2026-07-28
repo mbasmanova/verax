@@ -1183,6 +1183,11 @@ struct BaseTable : public TableObject {
     return {schemaTable->columnGroups[0]};
   }
 
+  /// The connector table layout backing this scan. A BaseTable always has
+  /// backing, so the schema table, its first column group, and the layout are
+  /// all present.
+  const connector::TableLayout* layout() const;
+
   std::string toString() const override;
 };
 

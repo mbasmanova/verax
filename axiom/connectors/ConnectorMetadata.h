@@ -593,6 +593,15 @@ class TableLayout {
     return false;
   }
 
+  /// True if a scan of this layout must run as a single task on the coordinator
+  /// node, because the layout's data exists only there -- e.g. process-local
+  /// system tables (active queries, session properties) or metadata tables read
+  /// from a coordinator-only source. Default false: an ordinary layout scans in
+  /// parallel on any worker.
+  virtual bool runsOnCoordinator() const {
+    return false;
+  }
+
   /// The columns and their names as a RowType.
   const velox::RowTypePtr& rowType() const {
     return rowType_;

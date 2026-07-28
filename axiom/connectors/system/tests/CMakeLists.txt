@@ -14,6 +14,7 @@
 
 add_executable(
   axiom_system_connector_test
+  CoordinatorSchedulingTest.cpp
   SystemConnectorMetadataTest.cpp
   SystemConnectorSerDeTest.cpp
 )
@@ -24,9 +25,13 @@ target_link_libraries(
   axiom_system_connector_test
   axiom_system_connector
   axiom_connectors
+  axiom_optimizer_tests_query_test_base
+  axiom_optimizer_tests_plan_matcher
+  axiom_runner_tests_utils
   velox_connector
   velox_exec
   velox_exec_test_lib
+  velox_dwio_common_test_utils
   velox_expression
   velox_function_registry
   velox_vector_test_lib

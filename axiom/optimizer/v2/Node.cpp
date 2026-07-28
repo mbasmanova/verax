@@ -441,13 +441,13 @@ Partitioning aggregateGlobalPartition(
 // a partition column is not in the scan's output (so the partitioning can't be
 // expressed over the output).
 Partitioning scanGlobalPartition(const Scan::Key& key) {
-  const auto* schemaTable = key.baseTable->schemaTable;
-  if (schemaTable == nullptr || schemaTable->columnGroups.empty()) {
-    return {};
-  }
-  const connector::TableLayout* layout = schemaTable->columnGroups[0]->layout;
-  if (layout == nullptr) {
-    return {};
+  const connector::TableLayout* layout = key.baseTable->layout();
+  // A coordinator-only layout's data lives solely on the coordinator, so its
+  // scan produces a single partition there. Model that as a gather (single
+  // partition, like Values); the coordinator placement itself is a separate
+  // leaf fact read at fragment-typing time.
+  if (layout->runsOnCoordinator()) {
+    return Partitioning::globalGather();
   }
   const auto partitionType = layout->partitionType();
   const auto& partitionColumns = layout->partitionColumns();

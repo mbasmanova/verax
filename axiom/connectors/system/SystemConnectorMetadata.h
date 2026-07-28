@@ -54,6 +54,10 @@ class SystemTableLayout : public TableLayout {
     return false;
   }
 
+  bool runsOnCoordinator() const override {
+    return true;
+  }
+
   velox::connector::ColumnHandlePtr createColumnHandle(
       const ConnectorSessionPtr& session,
       const std::string& columnName,
