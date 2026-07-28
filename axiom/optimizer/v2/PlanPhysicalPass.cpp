@@ -718,12 +718,15 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
          node->count()});
   }
 
-  // Distributes a UNION ALL: at numWorkers>1 isolate each leg behind a remote
-  // exchange so a single-task leg (global aggregate, order/limit, Values) does
-  // not pin the union to one task and never shares a fragment with a parallel
-  // leg. Arbitrary partitioning
-  // suffices — the union only concatenates; a downstream operator that needs a
-  // partitioning establishes it on the union's output itself.
+  // Distributes a UNION ALL: at numWorkers>1 isolate each single-task leg
+  // (global aggregate, order/limit, Values) behind a remote exchange, so it
+  // does not share a fragment with a parallel leg -- which would replicate it
+  // across that fragment's tasks. Parallel legs (scans, distincts) stay
+  // un-isolated and co-locate in the union fragment, keeping the union parallel
+  // rather than funneling every row through one task. Arbitrary partitioning
+  // suffices for the isolated legs -- the union only concatenates; a downstream
+  // operator that needs a partitioning establishes it on the union's output
+  // itself.
   NodeCP rewriteUnionAll(const UnionAll* node, NoContext& context) override {
     NodeVector newInputs;
     newInputs.reserve(node->inputs().size());
@@ -751,10 +754,51 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
           partition.is(PartitionKind::kGather)) {
         return coalesced;
       }
-      for (NodeCP& newInput : newInputs) {
-        newInput = arbitrary(newInput);
+
+      // Mixed legs. Parallel legs (scans, distincts) co-locate in the union
+      // fragment and run in parallel. The single-task (gathered) legs (Values,
+      // global aggregate, order/limit) are grouped into one sub-union and
+      // isolated behind a single arbitrary exchange, so they run once and feed
+      // the parallel union -- rather than sharing the parallel fragment (which
+      // would replicate them across its tasks) or each spawning its own
+      // fragment.
+      NodeVector parallelLegs;
+      QGVector<ColumnVector> parallelLegColumns;
+      NodeVector singleTaskLegs;
+      QGVector<ColumnVector> singleTaskLegColumns;
+      for (size_t i = 0; i < newInputs.size(); ++i) {
+        if (newInputs[i]->physicalProperties().globalPartition.is(
+                PartitionKind::kGather)) {
+          singleTaskLegs.push_back(newInputs[i]);
+          singleTaskLegColumns.push_back(node->legColumns()[i]);
+        } else {
+          parallelLegs.push_back(newInputs[i]);
+          parallelLegColumns.push_back(node->legColumns()[i]);
+        }
       }
-      changed = true;
+
+      NodeVector unionInputs = std::move(parallelLegs);
+      QGVector<ColumnVector> unionLegColumns = std::move(parallelLegColumns);
+      if (!singleTaskLegs.empty()) {
+        NodeCP grouped;
+        ColumnVector groupedColumns;
+        if (singleTaskLegs.size() == 1) {
+          grouped = singleTaskLegs.front();
+          groupedColumns = singleTaskLegColumns.front();
+        } else {
+          groupedColumns = node->outputColumns();
+          grouped = builder().make<UnionAll>(
+              {std::move(singleTaskLegs),
+               std::move(singleTaskLegColumns),
+               node->outputColumns()});
+        }
+        unionInputs.push_back(arbitrary(grouped));
+        unionLegColumns.push_back(std::move(groupedColumns));
+      }
+      return builder().make<UnionAll>(
+          {std::move(unionInputs),
+           std::move(unionLegColumns),
+           node->outputColumns()});
     }
 
     if (!changed) {

@@ -173,7 +173,6 @@ TEST_F(MetadataCountsTest, unionAll) {
       toSingleNodePlan(
           "SELECT approx_count_star() as x FROM t UNION ALL SELECT sum(a) FROM t"),
       matchValues(makeRowVector({makeFlatVector<int64_t>({25})}))
-          .project()
           .localPartition({
               matchHiveScan("t")
                   .aliases({"a"})
