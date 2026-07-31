@@ -141,15 +141,6 @@ ColumnCP SchemaTable::findColumn(Name name) const {
 
 namespace {
 
-// Returns nullptr if the optional has no value, otherwise returns a pointer
-// to a registered copy that lives for the duration of QueryGraphContext.
-const velox::Variant* registerOptionalVariant(
-    const std::optional<velox::Variant>& opt) {
-  if (!opt.has_value()) {
-    return nullptr;
-  }
-  return registerVariant(opt.value());
-}
 // Clamps a known row count to >= 1 so cost math never divides by zero;
 // propagates `nullopt` unchanged.
 std::optional<float> connectorCardinality(
@@ -161,6 +152,35 @@ std::optional<float> connectorCardinality(
   return std::max<float>(1, static_cast<float>(*numRows));
 }
 } // namespace
+
+Value Value::fromColumnStatistics(
+    TypeCP type,
+    const connector::ColumnStatistics& stats) {
+  Value value(type);
+  if (stats.numDistinct.has_value()) {
+    value.cardinality = std::max<float>(1, stats.numDistinct.value());
+  }
+  value.min =
+      stats.min.has_value() ? registerVariant(stats.min.value()) : nullptr;
+  value.max =
+      stats.max.has_value() ? registerVariant(stats.max.value()) : nullptr;
+  value.nullFraction = stats.nullPct / 100.0f;
+  value.nullable = !stats.nonNull;
+  // The connector must report bounds whose kind matches the column type.
+  if (value.min != nullptr) {
+    VELOX_CHECK_EQ(
+        value.min->kind(),
+        type->kind(),
+        "Column statistics min kind must match the column type");
+  }
+  if (value.max != nullptr) {
+    VELOX_CHECK_EQ(
+        value.max->kind(),
+        type->kind(),
+        "Column statistics max kind must match the column type");
+  }
+  return clampCardinality(value);
+}
 
 SchemaTable::SchemaTable(const connector::Table& connectorTable)
     : connectorTable{&connectorTable},
@@ -177,18 +197,12 @@ SchemaTableCP Schema::buildSchemaTable(
     // Cardinality and null fraction are unknown when the connector
     // has no corresponding statistic; downstream cost-based decisions
     // fall back to safe defaults.
-    Value value(toType(tableColumn->type()));
-    if (auto* stats = tableColumn->stats()) {
-      if (stats->numDistinct.has_value()) {
-        value.cardinality = std::max<float>(1, stats->numDistinct.value());
-      }
-      value.min = registerOptionalVariant(stats->min);
-      value.max = registerOptionalVariant(stats->max);
-      value.nullFraction = stats->nullPct / 100.0f;
-    }
+    auto* type = toType(tableColumn->type());
+    auto* stats = tableColumn->stats();
+    Value value =
+        stats ? Value::fromColumnStatistics(type, *stats) : Value(type);
 
-    auto* column =
-        make<Column>(toName(columnName), nullptr, clampCardinality(value));
+    auto* column = make<Column>(toName(columnName), nullptr, value);
     schemaColumns[column->name()] = column;
   }
 

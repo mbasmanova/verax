@@ -26,17 +26,31 @@ void applyFilterEstimates(
     const folly::F14FastMap<std::string, const velox::common::Filter*>&
         commonFilters,
     const velox::core::TypedExprPtr& remainingFilter,
+    const std::vector<const Column*>& columns,
     const FilterSelectivityEstimator& estimator,
     FilteredTableStats& stats) {
   if (stats.columnStats.empty()) {
     return;
   }
 
-  folly::F14FastMap<std::string, ColumnStatistics> columnStatsByName;
+  folly::F14FastMap<std::string, const velox::Type*> typeByName;
+  typeByName.reserve(columns.size());
+  for (const auto* column : columns) {
+    typeByName.emplace(column->name(), column->type().get());
+  }
+
+  folly::F14FastMap<std::string, TypedColumnStatistics> columnStatsByName;
   folly::F14FastMap<std::string, size_t> indexByName;
   for (size_t i = 0; i < stats.columnStats.size(); ++i) {
-    columnStatsByName.emplace(stats.columnStats[i].name, stats.columnStats[i]);
-    indexByName[stats.columnStats[i].name] = i;
+    const auto& columnStats = stats.columnStats[i];
+    auto typeIt = typeByName.find(columnStats.name);
+    VELOX_CHECK(
+        typeIt != typeByName.end(),
+        "Missing type for statistics column {}",
+        columnStats.name);
+    columnStatsByName.emplace(
+        columnStats.name, TypedColumnStatistics{typeIt->second, columnStats});
+    indexByName[columnStats.name] = i;
   }
 
   double selectivity = 1.0;

@@ -163,9 +163,11 @@ and estimates in two parts:
    selectivity into `numRows`, and overwrites the refined per-column fields.
 
 `connector::applyFilterEstimates` is connector-agnostic (it takes column-name
--keyed filters plus an optional remaining `TypedExpr`), so a non-Hive connector
-such as Impulse -- which has no partitions and reads its filters from an
-`ImpulseTableHandle` -- reuses the same fold.
+-keyed filters, an optional remaining `TypedExpr`, and the table's `Column`s,
+whose authoritative types let the estimator interpret bounds and filter values
+as the right type), so a non-Hive connector such as Impulse -- which has no
+partitions and reads its filters from an `ImpulseTableHandle` -- reuses the same
+fold.
 
 ## Testing
 

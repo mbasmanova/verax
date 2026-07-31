@@ -378,7 +378,8 @@ void HiveTableLayout::foldNonPartitionFilterStats(
     }
   }
 
-  applyFilterEstimates(dataFilters, handle.remainingFilter(), estimator, stats);
+  applyFilterEstimates(
+      dataFilters, handle.remainingFilter(), columns(), estimator, stats);
 }
 
 namespace {

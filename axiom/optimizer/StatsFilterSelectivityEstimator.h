@@ -45,13 +45,13 @@ class StatsFilterSelectivityEstimator
 
   connector::FilterEstimate estimate(
       const std::vector<velox::core::TypedExprPtr>& filters,
-      const folly::F14FastMap<std::string, connector::ColumnStatistics>&
+      const folly::F14FastMap<std::string, connector::TypedColumnStatistics>&
           columnStats) const override;
 
   connector::FilterEstimate estimate(
       const folly::F14FastMap<std::string, const velox::common::Filter*>&
           filters,
-      const folly::F14FastMap<std::string, connector::ColumnStatistics>&
+      const folly::F14FastMap<std::string, connector::TypedColumnStatistics>&
           columnStats) const override;
 
  private:
