@@ -62,6 +62,15 @@ struct Value {
   /// Assignment operator that checks type equality and assigns other members.
   Value& operator=(const Value& other);
 
+  /// Builds a Value from a connector column's statistics for a column of
+  /// 'type'. Interns the min/max bounds into the query context and clamps the
+  /// distinct count to the type's domain. The connector must supply min/max
+  /// whose Variant kind matches 'type'; a mismatch is a contract violation and
+  /// fails loudly.
+  static Value fromColumnStatistics(
+      TypeCP type,
+      const connector::ColumnStatistics& stats);
+
   /// Returns the average byte size of a value when it occurs as an intermediate
   /// result without dictionary or other encoding.
   float byteSize() const;
