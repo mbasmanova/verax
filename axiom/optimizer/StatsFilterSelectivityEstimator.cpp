@@ -30,33 +30,14 @@ namespace {
 
 using connector::ColumnStatistics;
 using connector::FilterEstimate;
+using connector::TypedColumnStatistics;
 using velox::core::CallTypedExpr;
 using velox::core::ConstantTypedExpr;
 using velox::core::FieldAccessTypedExpr;
 using velox::core::TypedExprPtr;
 
-// Value <-> ColumnStatistics bridge, shared by both estimate() entry points.
-
-// Builds a Value from column statistics, clamping the distinct count to type
-// limits (mirroring the optimizer's ExprCP path). min/max point into 'stats',
-// which the caller owns for the duration of the estimate.
-Value columnValue(TypeCP type, const ColumnStatistics& stats) {
-  std::optional<float> cardinality;
-  if (stats.numDistinct.has_value()) {
-    cardinality = static_cast<float>(*stats.numDistinct);
-  }
-  Value value(type, cardinality);
-  value.nullFraction = stats.nullPct / 100.0f;
-  value.nullable = !stats.nonNull;
-  if (stats.min.has_value()) {
-    value.min = &stats.min.value();
-  }
-  if (stats.max.has_value()) {
-    value.max = &stats.max.value();
-  }
-  return clampCardinality(value);
-}
-
+// Converts a refined optimizer Value to connector ColumnStatistics for the
+// FilterEstimate result.
 ColumnStatistics toColumnStatistics(const Value& value) {
   ColumnStatistics stats;
   if (value.cardinality.has_value()) {
@@ -73,21 +54,6 @@ ColumnStatistics toColumnStatistics(const Value& value) {
   return stats;
 }
 
-// Builds a Value for the common::Filter path, which has no expression to read a
-// type from: the column type comes from a min/max bound if present, else falls
-// back to BIGINT (used only for bound-free estimates like IN count / NULL).
-Value valueFromStats(const ColumnStatistics& stats) {
-  velox::TypePtr type;
-  if (stats.min.has_value() && !stats.min->isNull()) {
-    type = stats.min->inferType();
-  } else if (stats.max.has_value() && !stats.max->isNull()) {
-    type = stats.max->inferType();
-  } else {
-    type = velox::BIGINT();
-  }
-  return columnValue(type.get(), stats);
-}
-
 // SelectivityEngine policy over velox TypedExpr filters pushed into a
 // connector. Reads statistics from a per-column ColumnStatistics map and writes
 // back refined per-column Values (kUpdatesConstraints == true) so the connector
@@ -100,7 +66,7 @@ class TypedExprPolicy {
   static constexpr bool kUpdatesConstraints = true;
 
   explicit TypedExprPolicy(
-      const folly::F14FastMap<std::string, ColumnStatistics>& columnStats)
+      const folly::F14FastMap<std::string, TypedColumnStatistics>& columnStats)
       : columnStats_{columnStats} {
     // Pushed-down filters carry velox operator names. Comparisons and
     // is_null/not already match queryCtx()->functionNames() verbatim, but
@@ -127,7 +93,7 @@ class TypedExprPolicy {
       }
       auto it = columnStats_.find(columnName);
       if (it != columnStats_.end()) {
-        return columnValue(type, it->second);
+        return Value::fromColumnStatistics(type, it->second.stats);
       }
       return Value(type);
     }
@@ -214,7 +180,7 @@ class TypedExprPolicy {
   }
 
  private:
-  const folly::F14FastMap<std::string, ColumnStatistics>& columnStats_;
+  const folly::F14FastMap<std::string, TypedColumnStatistics>& columnStats_;
   // velox special-form name -> optimizer sentinel Name, built once at
   // construction (see the constructor).
   folly::F14FastMap<std::string, Name> specialFormNames_;
@@ -234,7 +200,7 @@ StatsFilterSelectivityEstimator::StatsFilterSelectivityEstimator()
 
 connector::FilterEstimate StatsFilterSelectivityEstimator::estimate(
     const std::vector<velox::core::TypedExprPtr>& filters,
-    const folly::F14FastMap<std::string, connector::ColumnStatistics>&
+    const folly::F14FastMap<std::string, connector::TypedColumnStatistics>&
         columnStats) const {
   std::lock_guard<std::mutex> lock(mutex_);
   velox::ScopedVarSetter contextSetter(&queryCtx(), context_);
@@ -254,7 +220,7 @@ connector::FilterEstimate StatsFilterSelectivityEstimator::estimate(
 
 connector::FilterEstimate StatsFilterSelectivityEstimator::estimate(
     const folly::F14FastMap<std::string, const velox::common::Filter*>& filters,
-    const folly::F14FastMap<std::string, connector::ColumnStatistics>&
+    const folly::F14FastMap<std::string, connector::TypedColumnStatistics>&
         columnStats) const {
   std::lock_guard<std::mutex> lock(mutex_);
   velox::ScopedVarSetter contextSetter(&queryCtx(), context_);
@@ -268,7 +234,8 @@ connector::FilterEstimate StatsFilterSelectivityEstimator::estimate(
       continue;
     }
 
-    Value value = valueFromStats(it->second);
+    Value value =
+        Value::fromColumnStatistics(it->second.type, it->second.stats);
     Value refined = value;
     auto columnSelectivity = commonFilterSelectivity(*filter, value, refined);
     selectivity *= columnSelectivity.has_value()

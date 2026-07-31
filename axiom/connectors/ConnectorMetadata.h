@@ -121,6 +121,16 @@ struct FilterEstimate {
   folly::F14FastMap<std::string, ColumnStatistics> columnStats;
 };
 
+/// A column's statistics paired with its type, keyed by column name and passed
+/// to FilterSelectivityEstimator::estimate. 'type' is authoritative (from the
+/// table schema), not inferred from the statistics: the estimator interprets
+/// min/max bounds and filter values as this type. Non-owning -- 'type' must
+/// outlive the estimate() call, which it does, as the caller holds the schema.
+struct TypedColumnStatistics {
+  const velox::Type* type;
+  ColumnStatistics stats;
+};
+
 /// Optional shared helper for estimating the selectivity and refined per-column
 /// statistics of a conjunction of filters from column statistics. Offered to
 /// TableLayout::co_estimateStats -- analogous to the ExpressionEvaluator
@@ -138,7 +148,7 @@ class FilterSelectivityEstimator {
   /// always a usable fraction.
   virtual FilterEstimate estimate(
       const std::vector<velox::core::TypedExprPtr>& filters,
-      const folly::F14FastMap<std::string, ColumnStatistics>& columnStats)
+      const folly::F14FastMap<std::string, TypedColumnStatistics>& columnStats)
       const = 0;
 
   /// Overload for connectors whose accepted filters are single-column
@@ -149,7 +159,7 @@ class FilterSelectivityEstimator {
   virtual FilterEstimate estimate(
       const folly::F14FastMap<std::string, const velox::common::Filter*>&
           filters,
-      const folly::F14FastMap<std::string, ColumnStatistics>& columnStats)
+      const folly::F14FastMap<std::string, TypedColumnStatistics>& columnStats)
       const = 0;
 };
 
@@ -435,11 +445,14 @@ struct FilteredTableStats {
 /// 'estimator' over the base column statistics already in 'stats'. A no-op when
 /// 'stats' has no column statistics. Shared by connectors that own their pushed
 /// filters and derive a base estimate (row count + column stats) some other way
-/// (e.g. partition metadata).
+/// (e.g. partition metadata). 'columns' are the table's columns; their types
+/// are authoritative (from the schema), so the estimator interprets each
+/// statistics column's bounds and filter values as the right type.
 void applyFilterEstimates(
     const folly::F14FastMap<std::string, const velox::common::Filter*>&
         commonFilters,
     const velox::core::TypedExprPtr& remainingFilter,
+    const std::vector<const Column*>& columns,
     const FilterSelectivityEstimator& estimator,
     FilteredTableStats& stats);
 

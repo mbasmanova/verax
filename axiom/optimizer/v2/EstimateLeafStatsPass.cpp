@@ -47,19 +47,8 @@ void applyColumnStats(
     ColumnCP column,
     const connector::ColumnStatistics& stats) {
   const auto& existing = column->value();
-  // Propagate an absent NDV as unknown (nullopt) rather than fabricating 1;
-  // downstream fanout estimation treats unknown NDV as unknown selectivity.
-  const std::optional<float> numDistinct = stats.numDistinct.has_value()
-      ? std::optional<float>{std::max<float>(1, *stats.numDistinct)}
-      : std::nullopt;
-  Value value(existing.type, numDistinct);
-  value.min =
-      stats.min.has_value() ? registerVariant(stats.min.value()) : nullptr;
-  value.max =
-      stats.max.has_value() ? registerVariant(stats.max.value()) : nullptr;
-  value.nullFraction = stats.nullPct / 100.0f;
-  value.nullable = !stats.nonNull;
-  const_cast<Value&>(existing) = value;
+  const_cast<Value&>(existing) =
+      Value::fromColumnStatistics(existing.type, stats);
 }
 
 // Applies one base table's connector stats result. Sets filteredCardinality to

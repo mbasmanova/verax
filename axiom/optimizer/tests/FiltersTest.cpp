@@ -24,7 +24,10 @@
 #include "axiom/optimizer/QueryGraph.h"
 #include "axiom/optimizer/StatsFilterSelectivityEstimator.h"
 #include "axiom/optimizer/tests/HiveQueriesTestBase.h"
+#include "velox/common/base/tests/GTestUtils.h"
 #include "velox/exec/tests/utils/HiveConnectorTestBase.h"
+#include "velox/expression/ExprToSubfieldFilter.h"
+#include "velox/type/Filter.h"
 
 using namespace facebook::velox;
 
@@ -188,14 +191,18 @@ class FiltersTest : public test::HiveQueriesTestBase {
       const Selectivity& expectedSelectivity,
       const ConstraintMap& refinedConstraints) {
     std::vector<velox::core::TypedExprPtr> typedFilters;
-    folly::F14FastMap<std::string, connector::ColumnStatistics> columnStats;
+    folly::F14FastMap<std::string, connector::TypedColumnStatistics>
+        columnStats;
     folly::F14FastMap<std::string, int32_t> columnIdByName;
     for (auto* filter : filters) {
       typedFilters.push_back(optimization.toTypedExpr(filter));
       filter->columns().forEach<Column>([&](auto* column) {
         if (auto* schemaColumn = column->schemaColumn()) {
+          const auto& value = schemaColumn->value();
           columnStats.insert_or_assign(
-              column->outputName(), toColumnStatistics(schemaColumn->value()));
+              column->outputName(),
+              connector::TypedColumnStatistics{
+                  value.type, toColumnStatistics(value)});
           columnIdByName.insert_or_assign(column->outputName(), column->id());
         }
       });
@@ -655,6 +662,46 @@ TEST_F(FiltersTest, rangeCardinalityMaxMin) {
         EXPECT_NEAR(selectivity->trueFraction, 0.5, 0.1);
       },
       kTestConnectorId);
+}
+
+// A stats bound whose kind disagrees with the column type is a connector
+// contract violation; ingestion rejects it loudly rather than build a Value
+// that would be read as the wrong kind.
+TEST_F(FiltersTest, statsBoundKindMismatchRejected) {
+  withContext([&]() {
+    connector::ColumnStatistics stats;
+    stats.nonNull = true;
+    stats.numDistinct = 1'000;
+    stats.min = velox::Variant::create<int64_t>(0);
+    // max's kind disagrees with the BIGINT column type.
+    stats.max = velox::Variant::create<std::string>("Z");
+
+    VELOX_ASSERT_THROW(
+        Value::fromColumnStatistics(toType(BIGINT()), stats),
+        "max kind must match the column type");
+  });
+}
+
+// A VARCHAR column with no min/max statistics and a range filter estimates a
+// selectivity in [0, 1] rather than failing.
+TEST_F(FiltersTest, commonFilterVarcharColumnWithoutBounds) {
+  withContext([&]() {
+    connector::ColumnStatistics stats;
+    stats.nonNull = true;
+    stats.numDistinct = 100;
+
+    auto filter = velox::exec::between("a", "z");
+
+    folly::F14FastMap<std::string, const velox::common::Filter*> filters{
+        {"c", filter.get()}};
+    folly::F14FastMap<std::string, connector::TypedColumnStatistics>
+        columnStats{{"c", {toType(VARCHAR()), stats}}};
+
+    StatsFilterSelectivityEstimator estimator;
+    auto estimate = estimator.estimate(filters, columnStats);
+    EXPECT_GE(estimate.selectivity, 0.0);
+    EXPECT_LE(estimate.selectivity, 1.0);
+  });
 }
 
 TEST_F(FiltersTest, strictInequalityIntegerBounds) {

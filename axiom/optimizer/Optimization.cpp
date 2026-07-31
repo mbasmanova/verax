@@ -277,20 +277,8 @@ void Optimization::applyFilteredStats(
     for (size_t i = 0; i < stats->columnStats.size(); ++i) {
       const auto& columnStats = stats->columnStats[i];
       auto& existing = baseTable.columns[columnIndices[i]]->value();
-      // The column cardinality is unknown when the connector reports no NDV.
-      Value value(existing.type);
-      if (columnStats.numDistinct.has_value()) {
-        value.cardinality = std::max<float>(1, columnStats.numDistinct.value());
-      }
-      value.min = columnStats.min.has_value()
-          ? registerVariant(columnStats.min.value())
-          : nullptr;
-      value.max = columnStats.max.has_value()
-          ? registerVariant(columnStats.max.value())
-          : nullptr;
-      value.nullFraction = columnStats.nullPct / 100.0f;
-      value.nullable = !columnStats.nonNull;
-      const_cast<Value&>(existing) = value;
+      const_cast<Value&>(existing) =
+          Value::fromColumnStatistics(existing.type, columnStats);
     }
   }
 
