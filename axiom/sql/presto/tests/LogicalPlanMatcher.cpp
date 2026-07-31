@@ -349,7 +349,9 @@ class ProjectMatcher : public LogicalPlanMatcherImpl<ProjectNode> {
     EXPECT_EQ(numExprs, plan.expressions().size());
     AXIOM_RETURN_IF_FAILURE;
 
-    std::unordered_map<std::string, std::string> newSymbols;
+    // Inherit aliases captured below so a name bound at a descendant (e.g. an
+    // aggregate output) stays resolvable above this projection.
+    std::unordered_map<std::string, std::string> newSymbols = symbols;
     velox::parse::ParseOptions parseOptions;
     parseOptions.correctWindowFrameDefault = true;
     velox::parse::DuckSqlExpressionsParser parser(parseOptions);

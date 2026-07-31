@@ -1172,6 +1172,31 @@ TEST_F(AggregationParserTest, groupByWithWindowFunction) {
           .project({"b", "sum::double * 1.0 / expr::double"})
           .output());
 
+  // Window nested inside an arithmetic expression in ORDER BY over a GROUP BY,
+  // where the expression is not in the SELECT list.
+  testSelect(
+      "SELECT a, sum(b) FROM t GROUP BY a "
+      "ORDER BY sum(b) * 1.0 / sum(sum(b)) OVER () DESC",
+      matchScan("t")
+          .aggregate({"a"}, {"sum(b) as total"})
+          .project({"a", "total", "sum(total) OVER () as win"})
+          .project({"a", "total", "total::double * 1.0 / win::double"})
+          .sort()
+          .project({"a", "total"})
+          .output());
+
+  // The same nested window appears in both the SELECT list and the ORDER BY
+  // expression. It is projected as a single window column shared by both.
+  testSelect(
+      "SELECT a, sum(b) * 1.0 / sum(sum(b)) OVER () AS share FROM t GROUP BY a "
+      "ORDER BY sum(b) * 1.0 / sum(sum(b)) OVER () DESC",
+      matchScan("t")
+          .aggregate({"a"}, {"sum(b) as total"})
+          .project({"a", "total", "sum(total) OVER () as win"})
+          .project({"a", "total::double * 1.0 / win::double as share"})
+          .sort()
+          .output({"a", "share"}));
+
   // Same as above but with PARTITION BY in the nested window function.
   testSelect(
       "SELECT b, sum(a) * 1.0 / sum(sum(a)) OVER (PARTITION BY b) FROM t GROUP BY b",
