@@ -878,6 +878,14 @@ ExprPtr ExprResolver::resolveSqlFunction(
 ExprPtr ExprResolver::resolveScalarTypes(
     const velox::core::ExprPtr& expr,
     const InputNameResolver& inputNameResolver) const {
+  // An aggregate reaching scalar resolution is misplaced (e.g. in a WHERE
+  // predicate).
+  if (expr->is(velox::core::IExpr::Kind::kAggregate)) {
+    VELOX_USER_FAIL(
+        "Aggregate function is not allowed here: {}",
+        expr->as<velox::core::AggregateCallExpr>()->name());
+  }
+
   if (const auto* fieldAccess =
           dynamic_cast<const velox::core::FieldAccessExpr*>(expr.get())) {
     const auto& name = fieldAccess->name();
