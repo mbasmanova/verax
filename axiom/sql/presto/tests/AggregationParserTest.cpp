@@ -195,6 +195,15 @@ TEST_F(AggregationParserTest, unsupportedOuterScopeAggregateRejected) {
       "Outer-scope aggregate could not be lifted.");
 }
 
+// An aggregate in a WHERE predicate is rejected: an aggregate cannot appear in
+// a filter.
+TEST_F(AggregationParserTest, outerScopeAggregateInFilterRejected) {
+  VELOX_ASSERT_THROW(
+      parseSql(
+          "SELECT * FROM nation WHERE n_nationkey = (SELECT max(n_nationkey))"),
+      "Aggregate function is not allowed here");
+}
+
 TEST_F(AggregationParserTest, aggregateCoercions) {
   auto matcher = matchScan().aggregate().output();
 
