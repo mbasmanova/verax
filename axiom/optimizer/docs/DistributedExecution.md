@@ -9,7 +9,7 @@ The optimizer's role is to decide where exchanges go, what partitioning each exc
 **Implementation status.** Sections 1 and 2 describe the fragment and exchange model that is in place today, with two exceptions called out where they appear:
 
 - **`kCoordinator` fragments and SystemConnector isolation** are not yet implemented. Section 1 (UNION ALL with single-task inputs) and Section 2 (`FragmentType::kCoordinator`) describe the intended behavior.
-- **Grouped execution** (Section 3) — including the `PartitionType` API, `groupedNodes` / `groupedExecution` fields on `ExecutableFragment`, `GroupedSplitSource`, and split-level `groupId` tagging — is a design proposal, not yet implemented.
+- **Grouped execution** (Section 3) is partially implemented. The shuffle-avoidance path is in place: the `PartitionType` API, the `groupedNodes` field on `ExecutableFragment`, split-level `groupId` tagging, and `scaleDown` to a `kFixed` fragment whose tasks are routed by `groupId`. The full per-group-processing path — `GroupedSplitSource` (complete groups in order) and the `groupedExecution` flag that clears hash tables between groups — is not yet implemented.
 
 ### 1. Fragment Structure and Scheduling Constraints
 
@@ -325,11 +325,14 @@ The FINAL aggregation lives in the same fragment as the UNION ALL because A6 (kS
 
 ### 3. Grouped Execution (Bucketed Tables)
 
-> **Status: design proposal — not yet implemented.** This section
-> describes the intended model. The `PartitionType` API,
-> `groupedNodes` / `groupedExecution` fields on `ExecutableFragment`,
-> `GroupedSplitSource`, and split-level `groupId` tagging do not
-> exist in the codebase today (2026-05-08).
+> **Status (2026-07-31): partially implemented.** The shuffle-avoidance
+> path is in place — the `PartitionType` API, the `groupedNodes` field on
+> `ExecutableFragment`, split-level `groupId` tagging, and `scaleDown` to a
+> `kFixed` fragment routed by `groupId` (see "Shuffle avoidance without
+> per-group processing" below). The full per-group-processing path described
+> in this section — `GroupedSplitSource` / `co_getGroups` and the
+> `groupedExecution` flag that clears hash tables between groups — is not yet
+> implemented.
 
 Bucketed tables (e.g., Hive tables with `bucketed_by`) store data
 pre-partitioned by key into a fixed number of **buckets**. The
