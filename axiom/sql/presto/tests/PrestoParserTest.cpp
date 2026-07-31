@@ -1350,6 +1350,25 @@ TEST_F(PrestoParserTest, duplicateAliases) {
       parseSql(
           "SELECT x FROM (SELECT a as x, b as x FROM (VALUES (1, 2)) AS t(a, b))"),
       "Cannot resolve column: x");
+
+  // Two CROSS JOIN UNNEST relations may reuse a relation alias and a column
+  // name (both `t` with column `u` here). The shared name `t.u` is ambiguous,
+  // so the unambiguous columns still plan.
+  {
+    auto matcher =
+        matchValues().unnest().project().unnest().project().output({"a", "b"});
+    testSelect(
+        "SELECT a, b FROM UNNEST(ARRAY[1], ARRAY[2]) AS t(a, u) "
+        "CROSS JOIN UNNEST(ARRAY[3], ARRAY[4]) AS t(b, u)",
+        matcher);
+  }
+
+  // Referencing the ambiguous shared column fails.
+  VELOX_ASSERT_THROW(
+      parseSql(
+          "SELECT u FROM UNNEST(ARRAY[1], ARRAY[2]) AS t(a, u) "
+          "CROSS JOIN UNNEST(ARRAY[3], ARRAY[4]) AS t(b, u)"),
+      "Cannot resolve column: u");
 }
 
 TEST_F(PrestoParserTest, outputNames) {
