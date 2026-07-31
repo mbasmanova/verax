@@ -201,6 +201,19 @@ SELECT a, c FROM t ORDER BY c / sum(c) OVER () DESC
 -- ordered
 SELECT DISTINCT c / sum(c) OVER () AS s FROM t ORDER BY c / sum(c) OVER ()
 ----
+-- ORDER BY a window nested in an expression over a GROUP BY, where the
+-- expression is not in the SELECT list.
+-- ordered
+SELECT a, sum(b) FROM t GROUP BY a ORDER BY sum(b) * 1.0 / sum(sum(b)) OVER () DESC
+----
+-- Same nested window over a GROUP BY, but the ORDER BY expression also appears
+-- in the SELECT list.
+-- ordered
+SELECT a, sum(b) * 1.0 / sum(sum(b)) OVER () AS share
+FROM t
+GROUP BY a
+ORDER BY sum(b) * 1.0 / sum(sum(b)) OVER () DESC
+----
 -- A window whose ORDER BY key is an aggregate and whose frame is a RANGE
 -- offset, over a GROUP BY.
 -- ordered

@@ -759,18 +759,30 @@ void GroupByPlanner::projectNestedWindows(
   std::vector<const core::IExpr*> windowOrder;
   ExpressionPlanner::findNestedWindowExprs(
       projections_, windowExprPtrs, windowOrder);
+  ExpressionPlanner::findNestedWindowExprs(
+      sortingKeyExprs_, windowExprPtrs, windowOrder);
 
   if (windowOrder.empty()) {
     return;
   }
 
+  // Deduplicate structurally-identical windows so a window that appears in both
+  // a SELECT item and an ORDER BY expression is computed once.
+  ExprMap<size_t> columnByWindow;
   std::vector<lp::ExprApi> windowExprs;
-  windowExprs.reserve(windowOrder.size());
+  std::vector<size_t> columnOfWindow;
+  columnOfWindow.reserve(windowOrder.size());
   for (const auto* exprPtr : windowOrder) {
-    // Rewrite aggregate references in function arguments, partition keys,
-    // and order by keys.
-    windowExprs.push_back(rewriteWindowExpr(
-        lp::ExprApi(windowExprPtrs.at(exprPtr)), rewriteIExpr));
+    const auto& windowExpr = windowExprPtrs.at(exprPtr);
+    auto [it, inserted] =
+        columnByWindow.emplace(windowExpr, windowExprs.size());
+    if (inserted) {
+      // Rewrite aggregate references in function arguments, partition keys,
+      // and order by keys.
+      windowExprs.push_back(
+          rewriteWindowExpr(lp::ExprApi(windowExpr), rewriteIExpr));
+    }
+    columnOfWindow.push_back(it->second);
   }
 
   builder_->with(windowExprs);
@@ -778,9 +790,9 @@ void GroupByPlanner::projectNestedWindows(
   auto outputColumns =
       builder_->findOrAssignOutputNames(/*includeHiddenColumns=*/false);
 
-  auto numInputColumns = outputColumns.size() - windowOrder.size();
+  auto numInputColumns = outputColumns.size() - windowExprs.size();
   for (size_t i = 0; i < windowOrder.size(); ++i) {
-    const auto& column = outputColumns.at(numInputColumns + i);
+    const auto& column = outputColumns.at(numInputColumns + columnOfWindow[i]);
     keyInputs.emplace(windowExprPtrs.at(windowOrder[i]), column.toCol().expr());
   }
 }
