@@ -143,6 +143,7 @@ folly::coro::Task<void> co_generateAndDistributeSplits(
     std::shared_ptr<connector::SplitSource> source,
     velox::core::PlanNodeId scanId,
     std::vector<std::shared_ptr<velox::exec::Task>> tasks,
+    bool grouped,
     std::function<void(std::exception_ptr)> onError,
     QueryRuntimeStats& runtimeStats) {
   std::exception_ptr ex;
@@ -167,11 +168,20 @@ folly::coro::Task<void> co_generateAndDistributeSplits(
       auto batch = co_await source->co_getSplits(1);
       for (auto& split : batch.splits) {
         size_t targetTask;
-        if (split.groupId.has_value()) {
-          // The connector guarantees groupId is in [0, tasks.size()).
+        if (grouped) {
+          // Grouped execution routes each split to the task owning its group.
+          // The connector tags grouped splits with a groupId in
+          // [0, tasks.size()); same-group splits must share a task.
+          VELOX_CHECK(
+              split.groupId.has_value(),
+              "Grouped scan produced a split without a groupId: {}",
+              scanId);
           VELOX_CHECK_LT(static_cast<size_t>(*split.groupId), tasks.size());
           targetTask = static_cast<size_t>(*split.groupId);
         } else {
+          // Not grouped: round-robin. Any groupId a connector stamped is
+          // ignored here rather than used as a task index that could be out of
+          // range.
           targetTask = taskIdx;
           taskIdx = (taskIdx + 1) % tasks.size();
         }
@@ -803,7 +813,12 @@ void LocalRunner::makeStages(
             folly::coro::co_withExecutor(
                 params_.queryCtx->executor(),
                 co_generateAndDistributeSplits(
-                    source, scan->id(), stage, onError, runtimeStats_)));
+                    source,
+                    scan->id(),
+                    stage,
+                    /*grouped=*/partitionType != nullptr,
+                    onError,
+                    runtimeStats_)));
       }
 
       for (const auto& input : fragment.inputStages) {
