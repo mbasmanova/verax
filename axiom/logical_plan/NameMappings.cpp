@@ -141,7 +141,11 @@ void NameMappings::merge(const NameMappings& other) {
 
   for (const auto& [name, id] : other.mappings_) {
     if (auto existing = mappings_.find(name); existing != mappings_.end()) {
-      VELOX_CHECK(!name.alias.has_value());
+      // The same name exists on both sides, so it is ambiguous across the
+      // merged relations: drop it. A qualified name collides here only when
+      // both sides reuse a relation alias. Referencing a dropped name later
+      // fails as unresolved, matching Presto's report-at-reference-time
+      // behavior.
       const auto& existingId = existing->second;
       if (auto entry = reverseIndex_.find(existingId);
           entry != reverseIndex_.end()) {
