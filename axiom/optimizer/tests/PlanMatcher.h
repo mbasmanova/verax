@@ -454,9 +454,12 @@ class PlanMatcherBuilder {
   /// join type.
   /// @param rightMatcher Matcher for the right side of the join.
   /// @param joinType Type of join (defaults to kInner).
+  /// @param joinCondition When set, asserts the join condition (e.g., "a > b").
+  /// Empty string asserts no join condition, i.e. a plain cross join.
   PlanMatcherBuilder& nestedLoopJoin(
       const std::shared_ptr<PlanMatcher>& rightMatcher,
-      JoinType joinType = JoinType::kInner);
+      JoinType joinType = JoinType::kInner,
+      std::optional<std::string> joinCondition = std::nullopt);
 
   /// Matches any LocalPartition node.
   PlanMatcherBuilder& localPartition();

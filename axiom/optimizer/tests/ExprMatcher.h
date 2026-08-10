@@ -33,6 +33,14 @@ class ExprMatcher {
   /// Returns true if the trees match. On mismatch, sets gtest failures
   /// with SCOPED_TRACE context showing the path through the tree.
   static bool match(const TypedExprPtr& actual, const core::ExprPtr& expected);
+
+  /// Returns 'expr' with every root column reference named in 'mapping'
+  /// replaced by the name it maps to. Used to bind the names a test writes to
+  /// the names the optimizer generated, so expected expressions never spell
+  /// out an internal name.
+  static core::ExprPtr rewriteInputNames(
+      const core::ExprPtr& expr,
+      const std::unordered_map<std::string, std::string>& mapping);
 };
 
 } // namespace facebook::velox::core

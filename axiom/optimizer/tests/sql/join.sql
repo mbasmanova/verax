@@ -170,3 +170,10 @@ JOIN (VALUES (1, 2)) AS b (k, v) ON s.k = b.k
 -- Cross join where one relation has no equi-predicate and is connected
 -- only by an inequality: the theta predicate must still be applied.
 SELECT t1.a, t2.a FROM t t1, t t2, t t3 WHERE t1.a = t3.a AND t1.b < t2.b
+----
+-- A join filter discards an error raised by one conjunct for a row that
+-- another conjunct evaluates to false. v2 computes 1000 / (150 - t1.b) in the
+-- input instead, where nothing masks it, so the row with t1.b = 150 fails --
+-- even though no pair containing it satisfies t1.b < t2.b.
+-- error_v2: division by zero
+SELECT t1.a, t2.a FROM t t1, t t2 WHERE t1.b < t2.b AND 1000 / (150 - t1.b) > t2.a

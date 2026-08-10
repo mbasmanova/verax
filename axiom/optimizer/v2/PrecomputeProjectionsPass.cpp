@@ -118,6 +118,7 @@ ExprCP PrecomputeProjections::toColumn(
   if (allowConstant && expr->is(PlanType::kLiteralExpr)) {
     return expr;
   }
+
   if (expr->is(PlanType::kColumnExpr)) {
     // In narrowing mode the project is not seeded with the input columns, so a
     // referenced passthrough column must be added explicitly. This is not a
@@ -127,19 +128,23 @@ ExprCP PrecomputeProjections::toColumn(
     }
     return expr;
   }
+
   // Lambdas are consumed by their parent higher-order function directly
   // and cannot be evaluated by a Project node.
   if (expr->is(PlanType::kLambdaExpr)) {
     return expr;
   }
+
   if (auto it = seen_.find(expr); it != seen_.end()) {
     return it->second;
   }
+
   if (alias != nullptr) {
     addToProject(expr, alias);
     needsProject_ = true;
     return alias;
   }
+
   // A compound expression materializes into a column named after its id, so the
   // same expression always lifts to the same name. If a column of that name is
   // already in the input — e.g. an exchange below this consumer lifted the same
@@ -152,6 +157,7 @@ ExprCP PrecomputeProjections::toColumn(
       return column;
     }
   }
+
   ColumnCP column = make<Column>(name, nullptr, expr->value());
   addToProject(expr, column);
   needsProject_ = true;
@@ -171,6 +177,151 @@ void PrecomputeProjections::addToProject(ExprCP expr, ColumnCP column) {
   seen_.emplace(expr, column);
   outColumns_.emplace_back(column);
   outExprs_.emplace_back(expr);
+}
+
+// Moves the single-side parts of a join filter into the inputs. See
+// PrecomputeProjectionsPass for why and for the effect on error masking.
+//
+// A subexpression moves when it reads at least one column, reads no column from
+// the other side, and is deterministic. The walk moves the highest such node
+// and does not descend into it, so a subexpression moves as a whole rather than
+// piecewise.
+class JoinFilterRewriter {
+ public:
+  JoinFilterRewriter(
+      PrecomputeProjections& leftPrecompute,
+      PrecomputeProjections& rightPrecompute,
+      const PlanObjectSet& leftColumns,
+      const PlanObjectSet& rightColumns,
+      Builder& builder)
+      : leftPrecompute_{leftPrecompute},
+        rightPrecompute_{rightPrecompute},
+        leftColumns_{leftColumns},
+        rightColumns_{rightColumns},
+        builder_{builder} {}
+
+  // Returns 'filter' with each maximal single-side subexpression replaced by
+  // the column it was moved to. Every column the result still reads is added to
+  // its side's projection, so the caller need not keep filter columns alive
+  // separately.
+  ExprVector rewrite(const ExprVector& filter);
+
+ private:
+  ExprCP rewrite(ExprCP expr);
+  ExprCP rewriteCall(const Call* call);
+  ExprCP rewriteField(const Field* field);
+
+  // Computes 'expr' in the input that supplies all of its columns and returns
+  // the column it became there. Returns nullptr, leaving 'expr' in the filter,
+  // when no single input supplies its columns or 'expr' is non-deterministic.
+  ExprCP tryPrecompute(ExprCP expr);
+
+  // Adds 'column' to the projection of the input that produces it.
+  void keep(ColumnCP column);
+
+  PrecomputeProjections& leftPrecompute_;
+  PrecomputeProjections& rightPrecompute_;
+  const PlanObjectSet& leftColumns_;
+  const PlanObjectSet& rightColumns_;
+  Builder& builder_;
+};
+
+ExprVector JoinFilterRewriter::rewrite(const ExprVector& filter) {
+  ExprVector result;
+  result.reserve(filter.size());
+  for (ExprCP conjunct : filter) {
+    result.push_back(rewrite(conjunct));
+  }
+  return result;
+}
+
+ExprCP JoinFilterRewriter::rewrite(ExprCP expr) {
+  switch (expr->type()) {
+    case PlanType::kCallExpr:
+      return rewriteCall(expr->as<Call>());
+    case PlanType::kFieldExpr:
+      return rewriteField(expr->as<Field>());
+    case PlanType::kColumnExpr:
+      keep(expr->as<Column>());
+      return expr;
+    case PlanType::kLiteralExpr:
+      // No columns to keep and nothing to compute.
+      return expr;
+    default:
+      VELOX_UNREACHABLE(
+          "Unexpected expression in a join filter: {}", expr->toString());
+  }
+}
+
+ExprCP JoinFilterRewriter::rewriteCall(const Call* call) {
+  if (ExprCP column = tryPrecompute(call)) {
+    return column;
+  }
+
+  ExprVector newArgs;
+  newArgs.reserve(call->args().size());
+  bool changed = false;
+  for (ExprCP arg : call->args()) {
+    if (arg->is(PlanType::kLambdaExpr)) {
+      // A Project cannot evaluate a Lambda on its own, so it stays with the
+      // call that binds its arguments. Its columns are the outer ones the body
+      // reads -- `Lambda` excludes the bound arguments from that set -- and
+      // those still have to reach the join.
+      arg->columns().forEach<Column>([&](ColumnCP column) { keep(column); });
+      newArgs.push_back(arg);
+      continue;
+    }
+    ExprCP newArg = rewrite(arg);
+    changed |= newArg != arg;
+    newArgs.push_back(newArg);
+  }
+  if (!changed) {
+    return call;
+  }
+  return ExprFactory(builder_).rebuildCall(call, std::move(newArgs));
+}
+
+ExprCP JoinFilterRewriter::rewriteField(const Field* field) {
+  if (ExprCP column = tryPrecompute(field)) {
+    return column;
+  }
+  ExprCP newBase = rewrite(field->base());
+  if (newBase == field->base()) {
+    return field;
+  }
+  return ExprFactory(builder_).rebuildField(field, newBase);
+}
+
+ExprCP JoinFilterRewriter::tryPrecompute(ExprCP expr) {
+  // A non-deterministic expression has to produce a new value per pair.
+  if (expr->containsNonDeterministic()) {
+    return nullptr;
+  }
+  // A constant is the same for every row; projecting it would only add a
+  // column.
+  if (expr->columns().empty()) {
+    return nullptr;
+  }
+  if (leftColumns_.containsColumns(expr)) {
+    return leftPrecompute_.toColumn(expr);
+  }
+  if (rightColumns_.containsColumns(expr)) {
+    return rightPrecompute_.toColumn(expr);
+  }
+  // 'expr' reads both inputs.
+  return nullptr;
+}
+
+void JoinFilterRewriter::keep(ColumnCP column) {
+  if (leftColumns_.contains(column)) {
+    leftPrecompute_.toColumn(column);
+  } else {
+    VELOX_CHECK(
+        rightColumns_.contains(column),
+        "Join filter reads a column neither input produces: {}",
+        column->toString());
+    rightPrecompute_.toColumn(column);
+  }
 }
 
 // Returns a new ColumnVector with the first `oldPrefixLength` elements
@@ -397,8 +548,8 @@ NodeCP Rewriter::rewriteJoin(const Join* join, NoContext& context) {
   }
 
   // Keep each side's passthrough columns: those it contributes to the join
-  // output or references in the join filter. A column produced by the join
-  // itself (e.g. a semijoin mark) belongs to neither input and is skipped.
+  // output. A column produced by the join itself (e.g. a semijoin mark) belongs
+  // to neither input and is skipped.
   const auto leftColumns = PlanObjectSet::fromObjects(newLeft->outputColumns());
   const auto rightColumns =
       PlanObjectSet::fromObjects(newRight->outputColumns());
@@ -412,8 +563,17 @@ NodeCP Rewriter::rewriteJoin(const Join* join, NoContext& context) {
   for (ColumnCP column : join->outputColumns()) {
     keepPassthrough(column);
   }
-  for (ExprCP conjunct : join->filter()) {
-    conjunct->columns().forEach<Column>(keepPassthrough);
+
+  ExprVector newFilter;
+  if (newLeftKeys.empty()) {
+    JoinFilterRewriter rewriter{
+        leftPrecompute, rightPrecompute, leftColumns, rightColumns, builder()};
+    newFilter = rewriter.rewrite(join->filter());
+  } else {
+    newFilter = join->filter();
+    for (ExprCP conjunct : newFilter) {
+      conjunct->columns().forEach<Column>(keepPassthrough);
+    }
   }
 
   return builder().make<Join>(
@@ -422,7 +582,7 @@ NodeCP Rewriter::rewriteJoin(const Join* join, NoContext& context) {
        join->joinType(),
        std::move(newLeftKeys),
        std::move(newRightKeys),
-       join->filter(),
+       std::move(newFilter),
        join->nullAware(),
        join->nullAsValue(),
        join->outputColumns()});

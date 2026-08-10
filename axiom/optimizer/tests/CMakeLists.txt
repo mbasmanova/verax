@@ -122,6 +122,7 @@ add_executable(
   HiveAggregationQueriesTest.cpp
   HiveLimitQueriesTest.cpp
   HiveQueriesTest.cpp
+  JoinFilterProjectionTest.cpp
   JoinTest.cpp
   MetadataCountsTest.cpp
   MultiFragmentPlanTest.cpp

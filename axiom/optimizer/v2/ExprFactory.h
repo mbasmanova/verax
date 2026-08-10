@@ -116,6 +116,17 @@ class ExprFactory {
       const ColumnVector& sources,
       const ExprVector& targets);
 
+  /// Returns `call` with its arguments replaced by 'args', preserving
+  /// the name, value and special-form-ness and recomputing the
+  /// `FunctionSet` from the new arguments. Goes through
+  /// `Builder::makeCall` so hash-consing stays canonical.
+  ExprCP rebuildCall(const Call* call, ExprVector args);
+
+  /// Returns `field` with its base replaced by 'base', preserving whether
+  /// the field is named or positional. `Field` is arena-allocated rather
+  /// than hash-consed, so this goes through `make`.
+  ExprCP rebuildField(const Field* field, ExprCP base);
+
   /// Left-folds a non-empty sequence of boolean predicates with
   /// `makeAnd`: `[p1, p2, p3]` → `AND(AND(p1, p2), p3)`. Single-element
   /// input returns the predicate unchanged. The empty case is a

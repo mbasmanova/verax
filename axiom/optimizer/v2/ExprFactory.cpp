@@ -156,11 +156,9 @@ ExprCP ExprFactory::makeIf(ExprCP condition, ExprCP thenExpr, ExprCP elseExpr) {
 namespace {
 
 // Rebuilds `call` with each argument substituted, sharing the original
-// when no argument changed. Substituted calls go through `Builder::makeCall`
-// so hash-consing stays canonical.
+// when no argument changed.
 ExprCP substituteCall(
     ExprFactory& factory,
-    Builder& builder,
     const Call* call,
     const ColumnVector& sources,
     const ExprVector& targets) {
@@ -178,16 +176,11 @@ ExprCP substituteCall(
     return call;
   }
 
-  const bool specialForm = SpecialFormCallNames::isSpecialForm(call->name());
-  const FunctionSet functions =
-      Call::unionArgFunctions(functionBits(call->name(), specialForm), newArgs);
-  return builder.makeCall(
-      call->name(), call->value(), std::move(newArgs), functions);
+  return factory.rebuildCall(call, std::move(newArgs));
 }
 
-// Rebuilds `field` with its base substituted. Field is arena-allocated
-// (not hash-consed in Builder), so it goes through `make`,
-// which is safe in v2-only contexts.
+// Rebuilds `field` with its base substituted, sharing the original when the
+// base did not change.
 ExprCP substituteField(
     ExprFactory& factory,
     const Field* field,
@@ -197,10 +190,7 @@ ExprCP substituteField(
   if (newBase == field->base()) {
     return field;
   }
-  if (field->field() != nullptr) {
-    return make<Field>(field->value().type, newBase, field->field());
-  }
-  return make<Field>(field->value().type, newBase, field->index());
+  return factory.rebuildField(field, newBase);
 }
 
 // Rebuilds `lambda` with its body substituted. The lambda's bound args
@@ -259,8 +249,7 @@ ExprCP ExprFactory::substitute(
     case PlanType::kLiteralExpr:
       return expr;
     case PlanType::kCallExpr:
-      return substituteCall(
-          *this, builder_, expr->as<Call>(), sources, targets);
+      return substituteCall(*this, expr->as<Call>(), sources, targets);
     case PlanType::kFieldExpr:
       return substituteField(*this, expr->as<Field>(), sources, targets);
     case PlanType::kLambdaExpr:
@@ -282,6 +271,21 @@ ExprVector ExprFactory::substitute(
     substituted.push_back(substitute(expr, sources, targets));
   }
   return substituted;
+}
+
+ExprCP ExprFactory::rebuildField(const Field* field, ExprCP base) {
+  if (field->field() != nullptr) {
+    return make<Field>(field->value().type, base, field->field());
+  }
+  return make<Field>(field->value().type, base, field->index());
+}
+
+ExprCP ExprFactory::rebuildCall(const Call* call, ExprVector args) {
+  const bool specialForm = SpecialFormCallNames::isSpecialForm(call->name());
+  const FunctionSet functions =
+      Call::unionArgFunctions(functionBits(call->name(), specialForm), args);
+  return builder_.makeCall(
+      call->name(), call->value(), std::move(args), functions);
 }
 
 } // namespace facebook::axiom::optimizer::v2

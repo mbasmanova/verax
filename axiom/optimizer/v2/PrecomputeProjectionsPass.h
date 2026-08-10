@@ -21,21 +21,47 @@
 
 namespace facebook::axiom::optimizer::v2 {
 
-/// Lifts compound expressions into `Project`s wherever Velox requires a column
-/// or literal.
+/// Moves expressions a consumer references into a `Project` over its input.
 class PrecomputeProjectionsPass {
  public:
-  /// Returns the tree rooted at 'node' rewritten so every position where Velox
-  /// demands a `FieldAccessTypedExpr` (or, where allowed, a constant) carries a
-  /// `Column` (or `Literal`) instead of a compound expression. Such compound
-  /// expressions are lifted into a `Project` inserted between the consumer and
-  /// its input, and the consumer is rebuilt to reference the projected column.
-  /// Affected consumer kinds and positions:
+  /// Returns the tree rooted at 'node' rewritten so the expressions listed
+  /// below are computed by a `Project` inserted between the consumer and its
+  /// input, with the consumer rebuilt to reference the projected column.
+  ///
+  /// Most positions are moved because Velox demands a `FieldAccessTypedExpr`
+  /// (or, where allowed, a constant) there:
   ///   - Aggregate: grouping keys, aggregate args, FILTER mask, ORDER BY keys
   ///   - Window:    partition keys, order keys, function args
   ///   - Sort:      order keys
   ///   - Unnest:    unnest expressions
-  /// Returns the original tree unchanged when no lifting is required.
+  ///   - Join:      join keys
+  ///   - Exchange:  hash partitioning keys
+  ///
+  /// A join filter is the one exception: Velox accepts any expression there,
+  /// so the move is an optimization rather than a requirement.
+  ///
+  /// A join with no equi keys evaluates its filter once for every pair of
+  /// input rows. A subexpression of the filter that reads only one side has
+  /// the same value for every pair built from a given row of that side, so
+  /// computing it in that side's input costs one evaluation per row instead of
+  /// one per pair. Each maximal such subexpression is moved. A
+  /// non-deterministic one is not: it has to produce a new value per pair.
+  ///
+  /// A join with equi keys is left alone, because its filter runs only on the
+  /// pairs that match on the keys, and there can be far fewer of those than
+  /// either input has rows.
+  ///
+  /// TODO: Decide from the estimated number of pairs reaching the filter
+  /// rather than from the absence of equi keys.
+  ///
+  /// Moving a subexpression out of a filter takes it out of the filter's error
+  /// masking, where an error from one conjunct is discarded for a row that
+  /// another conjunct evaluates to false. `a <> 0 AND 1000 / a > x` does not
+  /// fail as a filter, but does once `1000 / a` is computed by a `Project`.
+  /// SQL does not define an evaluation order, so that masking is not a
+  /// property the optimizer preserves.
+  ///
+  /// Returns the original tree unchanged when nothing needs to move.
   static NodeCP run(NodeCP node, Builder& builder);
 };
 
