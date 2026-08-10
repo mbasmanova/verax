@@ -172,23 +172,6 @@ std::pair<std::string, std::string> parseEqualityColumnPair(
   return {lhs->name(), rhs->name()};
 }
 
-velox::core::ExprPtr rewriteInputNames(
-    const velox::core::ExprPtr& expr,
-    const std::unordered_map<std::string, std::string>& mapping) {
-  return core::ExprRewriter::rewrite(
-      expr, [&](const core::ExprPtr& e) -> core::ExprPtr {
-        if (const auto* field =
-                velox::core::FieldAccessExpr::tryAsRootColumn(e)) {
-          auto it = mapping.find(field->name());
-          if (it != mapping.end()) {
-            return std::make_shared<velox::core::FieldAccessExpr>(
-                it->second, field->alias());
-          }
-        }
-        return e;
-      });
-}
-
 class TableScanMatcher : public PlanMatcherImpl<TableScanNode> {
  public:
   explicit TableScanMatcher() : PlanMatcherImpl<TableScanNode>() {}
@@ -354,7 +337,7 @@ class FilterMatcher : public PlanMatcherImpl<FilterNode> {
     if (predicate_.has_value()) {
       auto expected = parseExpr(predicate_.value());
       if (!symbols.empty()) {
-        expected = rewriteInputNames(expected, symbols);
+        expected = ExprMatcher::rewriteInputNames(expected, symbols);
       }
       ExprMatcher::match(plan.filter(), expected->dropAlias());
     }
@@ -403,7 +386,7 @@ class ProjectMatcher : public PlanMatcherImpl<ProjectNode> {
         }
 
         if (!symbols.empty()) {
-          expected = rewriteInputNames(expected, symbols);
+          expected = ExprMatcher::rewriteInputNames(expected, symbols);
         }
 
         ExprMatcher::match(plan.projections()[i], expected->dropAlias());
@@ -494,7 +477,7 @@ class UnnestMatcher : public PlanMatcherImpl<UnnestNode> {
       for (auto i = 0; i < replicateExprs_->size(); ++i) {
         auto expected = parseExpr((*replicateExprs_)[i]);
         if (!symbols.empty()) {
-          expected = rewriteInputNames(expected, symbols);
+          expected = ExprMatcher::rewriteInputNames(expected, symbols);
         }
 
         EXPECT_EQ(
@@ -510,7 +493,7 @@ class UnnestMatcher : public PlanMatcherImpl<UnnestNode> {
       for (auto i = 0; i < unnestExprs_->size(); ++i) {
         auto expected = parseExpr((*unnestExprs_)[i]);
         if (!symbols.empty()) {
-          expected = rewriteInputNames(expected, symbols);
+          expected = ExprMatcher::rewriteInputNames(expected, symbols);
         }
 
         EXPECT_EQ(plan.unnestVariables()[i]->toString(), expected->toString());
@@ -625,7 +608,7 @@ class OrderByMatcher : public PlanMatcherImpl<OrderByNode> {
             parse::DuckSqlExpressionsParser().parseOrderByExpr(ordering_[i]);
         auto expectedExpr = expected.expr;
         if (!symbols.empty()) {
-          expectedExpr = rewriteInputNames(expectedExpr, symbols);
+          expectedExpr = ExprMatcher::rewriteInputNames(expectedExpr, symbols);
         }
 
         EXPECT_EQ(plan.sortingKeys()[i]->toString(), expectedExpr->toString());
@@ -712,7 +695,7 @@ class AggregationMatcher : public PlanMatcherImpl<AggregationNode> {
       for (auto i = 0; i < groupingKeys_.size(); ++i) {
         auto expected = parseExpr(groupingKeys_[i]);
         if (!symbols.empty()) {
-          expected = rewriteInputNames(expected, symbols);
+          expected = ExprMatcher::rewriteInputNames(expected, symbols);
         }
         EXPECT_EQ(plan.groupingKeys()[i]->toString(), expected->toString());
       }
@@ -724,7 +707,8 @@ class AggregationMatcher : public PlanMatcherImpl<AggregationNode> {
 
       for (auto i = 0; i < aggregates_.size(); ++i) {
         auto aggregateExpr = duckdb::parseAggregateExpr(aggregates_[i], {});
-        auto expected = rewriteInputNames(aggregateExpr, newSymbols);
+        auto expected =
+            ExprMatcher::rewriteInputNames(aggregateExpr, newSymbols);
         if (expected->alias()) {
           newSymbols[expected->alias().value()] = plan.aggregateNames()[i];
         }
@@ -749,7 +733,8 @@ class AggregationMatcher : public PlanMatcherImpl<AggregationNode> {
 
         if (expectedMask) {
           if (!symbols.empty()) {
-            expectedMask = rewriteInputNames(expectedMask, symbols);
+            expectedMask =
+                ExprMatcher::rewriteInputNames(expectedMask, symbols);
           }
           EXPECT_EQ(mask->toString(), expectedMask->toString())
               << "Mask mismatch for aggregate " << i;
@@ -767,7 +752,7 @@ class AggregationMatcher : public PlanMatcherImpl<AggregationNode> {
         for (auto j = 0; j < expectedOrderBy.size(); ++j) {
           auto expectedKey = expectedOrderBy[j].expr;
           if (!symbols.empty()) {
-            expectedKey = rewriteInputNames(expectedKey, symbols);
+            expectedKey = ExprMatcher::rewriteInputNames(expectedKey, symbols);
           }
 
           EXPECT_EQ(sortingKeys[j]->toString(), expectedKey->toString())
@@ -915,7 +900,7 @@ class HashJoinMatcher : public PlanMatcherImpl<HashJoinNode> {
 
         auto expected = parseExpr(filter_.value());
         if (!symbols.empty()) {
-          expected = rewriteInputNames(expected, symbols);
+          expected = ExprMatcher::rewriteInputNames(expected, symbols);
         }
         ExprMatcher::match(plan.filter(), expected->dropAlias());
       }
@@ -964,9 +949,11 @@ class NestedLoopJoinMatcher : public PlanMatcherImpl<NestedLoopJoinNode> {
   NestedLoopJoinMatcher(
       const std::shared_ptr<PlanMatcher>& left,
       const std::shared_ptr<PlanMatcher>& right,
-      JoinType joinType)
+      JoinType joinType,
+      std::optional<std::string> joinCondition)
       : PlanMatcherImpl<NestedLoopJoinNode>({left, right}),
-        joinType_{joinType} {}
+        joinType_{joinType},
+        joinCondition_{std::move(joinCondition)} {}
 
   MatchResult matchDetails(
       const NestedLoopJoinNode& plan,
@@ -982,12 +969,29 @@ class NestedLoopJoinMatcher : public PlanMatcherImpl<NestedLoopJoinNode> {
 
     AXIOM_TEST_RETURN_IF_FAILURE
 
+    if (joinCondition_.has_value()) {
+      if (joinCondition_->empty()) {
+        EXPECT_EQ(plan.joinCondition(), nullptr);
+      } else {
+        EXPECT_NE(plan.joinCondition(), nullptr);
+        AXIOM_TEST_RETURN_IF_FAILURE
+
+        auto expected = parseExpr(joinCondition_.value());
+        if (!symbols.empty()) {
+          expected = ExprMatcher::rewriteInputNames(expected, symbols);
+        }
+        ExprMatcher::match(plan.joinCondition(), expected->dropAlias());
+      }
+      AXIOM_TEST_RETURN_IF_FAILURE
+    }
+
     // Propagate existing aliases from source matchers.
     return MatchResult::success(symbols);
   }
 
  private:
   const std::optional<JoinType> joinType_;
+  const std::optional<std::string> joinCondition_;
 };
 
 // Type of shuffle boundary for matching.
@@ -1143,7 +1147,7 @@ void verifyMergeOrdering(
         parse::DuckSqlExpressionsParser().parseOrderByExpr(ordering[i]);
     auto expectedExpr = expected.expr;
     if (!symbols.empty()) {
-      expectedExpr = rewriteInputNames(expectedExpr, symbols);
+      expectedExpr = ExprMatcher::rewriteInputNames(expectedExpr, symbols);
     }
     EXPECT_EQ(merge.sortingKeys()[i]->toString(), expectedExpr->toString());
     EXPECT_EQ(merge.sortingOrders()[i].isAscending(), expected.ascending);
@@ -1352,7 +1356,7 @@ class EnforceDistinctMatcher : public PlanMatcherImpl<EnforceDistinctNode> {
       for (auto i = 0; i < distinctKeys_.size(); ++i) {
         auto expected = parseExpr(distinctKeys_[i]);
         if (!symbols.empty()) {
-          expected = rewriteInputNames(expected, symbols);
+          expected = ExprMatcher::rewriteInputNames(expected, symbols);
         }
         EXPECT_EQ(plan.distinctKeys()[i]->toString(), expected->toString());
       }
@@ -1460,7 +1464,7 @@ class WindowMatcher : public PlanMatcherImpl<WindowNode> {
     for (auto i = 0; i < expected->partitionKeys().size(); ++i) {
       auto expectedKey = expected->partitionKeys()[i];
       if (!symbols.empty()) {
-        expectedKey = rewriteInputNames(expectedKey, symbols);
+        expectedKey = ExprMatcher::rewriteInputNames(expectedKey, symbols);
       }
       EXPECT_EQ(plan.partitionKeys()[i]->toString(), expectedKey->toString())
           << "Partition key mismatch at index " << i;
@@ -1478,7 +1482,7 @@ class WindowMatcher : public PlanMatcherImpl<WindowNode> {
     for (auto i = 0; i < expected->orderByKeys().size(); ++i) {
       auto expectedKey = expected->orderByKeys()[i].expr;
       if (!symbols.empty()) {
-        expectedKey = rewriteInputNames(expectedKey, symbols);
+        expectedKey = ExprMatcher::rewriteInputNames(expectedKey, symbols);
       }
       EXPECT_EQ(plan.sortingKeys()[i]->toString(), expectedKey->toString())
           << "Order by key mismatch at index " << i;
@@ -1512,7 +1516,7 @@ class WindowMatcher : public PlanMatcherImpl<WindowNode> {
       }
 
       if (!symbols.empty()) {
-        expectedCall = rewriteInputNames(expectedCall, symbols);
+        expectedCall = ExprMatcher::rewriteInputNames(expectedCall, symbols);
       }
 
       // Compare just the function call (name + args), not the window spec.
@@ -1553,7 +1557,8 @@ class WindowMatcher : public PlanMatcherImpl<WindowNode> {
 
       auto expectedStartValue = expected.startValue;
       if (!symbols.empty()) {
-        expectedStartValue = rewriteInputNames(expectedStartValue, symbols);
+        expectedStartValue =
+            ExprMatcher::rewriteInputNames(expectedStartValue, symbols);
       }
       EXPECT_EQ(actual.startValue->toString(), expectedStartValue->toString())
           << "Frame start value mismatch at index " << index;
@@ -1571,7 +1576,8 @@ class WindowMatcher : public PlanMatcherImpl<WindowNode> {
 
       auto expectedEndValue = expected.endValue;
       if (!symbols.empty()) {
-        expectedEndValue = rewriteInputNames(expectedEndValue, symbols);
+        expectedEndValue =
+            ExprMatcher::rewriteInputNames(expectedEndValue, symbols);
       }
       EXPECT_EQ(actual.endValue->toString(), expectedEndValue->toString())
           << "Frame end value mismatch at index " << index;
@@ -1859,7 +1865,7 @@ class GroupIdMatcher : public PlanMatcherImpl<GroupIdNode> {
       for (auto i = 0; i < aggregationInputs_->size(); ++i) {
         auto expected = parseExpr((*aggregationInputs_)[i]);
         if (!symbols.empty()) {
-          expected = rewriteInputNames(expected, symbols);
+          expected = ExprMatcher::rewriteInputNames(expected, symbols);
         }
         EXPECT_EQ(
             plan.aggregationInputs()[i]->toString(), expected->toString());
@@ -2124,10 +2130,11 @@ PlanMatcherBuilder& PlanMatcherBuilder::hashJoin(
 
 PlanMatcherBuilder& PlanMatcherBuilder::nestedLoopJoin(
     const std::shared_ptr<PlanMatcher>& rightMatcher,
-    JoinType joinType) {
+    JoinType joinType,
+    std::optional<std::string> joinCondition) {
   VELOX_USER_CHECK_NOT_NULL(matcher_);
-  matcher_ =
-      std::make_shared<NestedLoopJoinMatcher>(matcher_, rightMatcher, joinType);
+  matcher_ = std::make_shared<NestedLoopJoinMatcher>(
+      matcher_, rightMatcher, joinType, std::move(joinCondition));
   return *this;
 }
 

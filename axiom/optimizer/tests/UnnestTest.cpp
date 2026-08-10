@@ -1263,10 +1263,12 @@ TEST_P(UnnestTest, crossJoinSingleRowAggregateAndUnnest) {
   auto logicalPlan = parseSelect(query, kTestConnectorId);
   auto plan = toSingleNodePlan(logicalPlan);
 
-  // v2 fuses the filter into the join; v1 keeps it separate.
+  // v2 fuses the filter into the join and computes the join condition's
+  // single-side cast in the input; v1 keeps the filter separate.
   AXIOM_ASSERT_PLAN(
       plan,
       matchScan("t")
+          .projectIf(useV2_, {"a", "ids", "a::BIGINT"})
           .nestedLoopJoin(
               matchScan("u").singleAggregation({}, {"count(*) as c"}).build())
           .filterIf(!useV2_, "c > a::BIGINT")

@@ -17,6 +17,7 @@
 #include "axiom/optimizer/tests/ExprMatcher.h"
 #include <gtest/gtest.h>
 #include "velox/core/Expressions.h"
+#include "velox/parse/ExprRewriter.h"
 #include "velox/parse/Expressions.h"
 
 namespace facebook::velox::core {
@@ -304,13 +305,16 @@ bool matchImpl(const TypedExprPtr& actual, const ExprPtr& expected) {
     EXPECT_EQ(actualNames.size(), expectedNames.size());
     AXIOM_RETURN_FALSE_IF_FAILURE
 
+    // Parameter names are generated, so bind the expected ones to the actual
+    // ones by position and compare the bodies through that binding.
+    std::unordered_map<std::string, std::string> parameters;
     for (size_t i = 0; i < actualNames.size(); ++i) {
-      EXPECT_EQ(actualNames[i], expectedNames[i])
-          << "Lambda parameter mismatch at index " << i << ".";
-      AXIOM_RETURN_FALSE_IF_FAILURE
+      parameters.emplace(expectedNames[i], actualNames[i]);
     }
 
-    matchImpl(lambda->body(), expectedLambda->body());
+    matchImpl(
+        lambda->body(),
+        ExprMatcher::rewriteInputNames(expectedLambda->body(), parameters));
     return !::testing::Test::HasNonfatalFailure();
   }
 
@@ -336,6 +340,22 @@ bool matchImpl(const TypedExprPtr& actual, const ExprPtr& expected) {
 #undef AXIOM_RETURN_FALSE_IF_FAILURE
 
 } // namespace
+
+core::ExprPtr ExprMatcher::rewriteInputNames(
+    const core::ExprPtr& expr,
+    const std::unordered_map<std::string, std::string>& mapping) {
+  return core::ExprRewriter::rewrite(
+      expr, [&](const core::ExprPtr& e) -> core::ExprPtr {
+        if (const auto* field = core::FieldAccessExpr::tryAsRootColumn(e)) {
+          auto it = mapping.find(field->name());
+          if (it != mapping.end()) {
+            return std::make_shared<core::FieldAccessExpr>(
+                it->second, field->alias());
+          }
+        }
+        return e;
+      });
+}
 
 bool ExprMatcher::match(const TypedExprPtr& actual, const ExprPtr& expected) {
   return matchImpl(actual, expected);
