@@ -155,19 +155,18 @@ ExprCP ExprFactory::makeIf(ExprCP condition, ExprCP thenExpr, ExprCP elseExpr) {
 
 namespace {
 
-// Rebuilds `call` with each argument substituted, sharing the original
+// Rebuilds `call` with each argument replaced, sharing the original
 // when no argument changed.
-ExprCP substituteCall(
+ExprCP replaceInCall(
     ExprFactory& factory,
     const Call* call,
-    const ColumnVector& sources,
-    const ExprVector& targets) {
+    const ExprFactory::ExprSubstitution& mapping) {
   ExprVector newArgs;
   newArgs.reserve(call->args().size());
 
   bool anyChange = false;
   for (ExprCP arg : call->args()) {
-    ExprCP newArg = factory.substitute(arg, sources, targets);
+    ExprCP newArg = factory.replace(arg, mapping);
     anyChange |= newArg != arg;
     newArgs.push_back(newArg);
   }
@@ -179,98 +178,109 @@ ExprCP substituteCall(
   return factory.rebuildCall(call, std::move(newArgs));
 }
 
-// Rebuilds `field` with its base substituted, sharing the original when the
+// Rebuilds `field` with its base replaced, sharing the original when the
 // base did not change.
-ExprCP substituteField(
+ExprCP replaceInField(
     ExprFactory& factory,
     const Field* field,
-    const ColumnVector& sources,
-    const ExprVector& targets) {
-  ExprCP newBase = factory.substitute(field->base(), sources, targets);
+    const ExprFactory::ExprSubstitution& mapping) {
+  ExprCP newBase = factory.replace(field->base(), mapping);
   if (newBase == field->base()) {
     return field;
   }
   return factory.rebuildField(field, newBase);
 }
 
-// Rebuilds `lambda` with its body substituted. The lambda's bound args
-// shadow any same-named outer column, so they are removed from the
-// source mapping before recursing — a caller's substitution set can't
-// rebind them.
-ExprCP substituteLambda(
+// Rebuilds `lambda` with its body replaced. The lambda's bound args shadow
+// anything outside, so they are dropped from the mapping before recursing.
+ExprCP replaceInLambda(
     ExprFactory& factory,
     const Lambda* lambda,
-    const ColumnVector& sources,
-    const ExprVector& targets) {
-  ColumnVector filteredSources;
-  ExprVector filteredTargets;
-  filteredSources.reserve(sources.size());
-  filteredTargets.reserve(targets.size());
-  const auto& boundArgs = lambda->args();
-  for (size_t i = 0; i < sources.size(); ++i) {
+    const ExprFactory::ExprSubstitution& mapping) {
+  ExprFactory::ExprSubstitution visible;
+  visible.reserve(mapping.size());
+  for (const auto& [source, target] : mapping) {
     bool isBound = false;
-    for (ColumnCP boundArg : boundArgs) {
-      if (boundArg == sources[i]) {
+    for (ColumnCP boundArg : lambda->args()) {
+      if (boundArg == source) {
         isBound = true;
         break;
       }
     }
     if (!isBound) {
-      filteredSources.push_back(sources[i]);
-      filteredTargets.push_back(targets[i]);
+      visible.emplace(source, target);
     }
   }
-  ExprCP newBody =
-      factory.substitute(lambda->body(), filteredSources, filteredTargets);
+  ExprCP newBody = factory.replace(lambda->body(), visible);
   if (newBody == lambda->body()) {
     return lambda;
   }
   return make<Lambda>(lambda->args(), lambda->value().type, newBody);
 }
 
+ExprFactory::ExprSubstitution toSubstitution(
+    const ColumnVector& sources,
+    const ExprVector& targets) {
+  VELOX_CHECK_EQ(sources.size(), targets.size());
+  ExprFactory::ExprSubstitution mapping;
+  mapping.reserve(sources.size());
+  for (size_t i = 0; i < sources.size(); ++i) {
+    const bool inserted = mapping.emplace(sources[i], targets[i]).second;
+    VELOX_CHECK(
+        inserted, "Duplicate substitution source: {}", sources[i]->toString());
+  }
+  return mapping;
+}
+
 } // namespace
+
+ExprCP ExprFactory::replace(ExprCP expr, const ExprSubstitution& mapping) {
+  if (expr == nullptr) {
+    return nullptr;
+  }
+  if (auto it = mapping.find(expr); it != mapping.end()) {
+    return it->second;
+  }
+  switch (expr->type()) {
+    case PlanType::kColumnExpr:
+    case PlanType::kLiteralExpr:
+      return expr;
+    case PlanType::kCallExpr:
+      return replaceInCall(*this, expr->as<Call>(), mapping);
+    case PlanType::kFieldExpr:
+      return replaceInField(*this, expr->as<Field>(), mapping);
+    case PlanType::kLambdaExpr:
+      return replaceInLambda(*this, expr->as<Lambda>(), mapping);
+    default:
+      VELOX_NYI(
+          "ExprFactory::replace: unsupported expression type {}",
+          expr->typeName());
+  }
+}
+
+ExprVector ExprFactory::replace(
+    const ExprVector& exprs,
+    const ExprSubstitution& mapping) {
+  ExprVector result;
+  result.reserve(exprs.size());
+  for (ExprCP expr : exprs) {
+    result.push_back(replace(expr, mapping));
+  }
+  return result;
+}
 
 ExprCP ExprFactory::substitute(
     ExprCP expr,
     const ColumnVector& sources,
     const ExprVector& targets) {
-  if (expr == nullptr) {
-    return nullptr;
-  }
-  switch (expr->type()) {
-    case PlanType::kColumnExpr: {
-      for (size_t i = 0; i < sources.size(); ++i) {
-        if (sources[i] == expr) {
-          return targets[i];
-        }
-      }
-      return expr;
-    }
-    case PlanType::kLiteralExpr:
-      return expr;
-    case PlanType::kCallExpr:
-      return substituteCall(*this, expr->as<Call>(), sources, targets);
-    case PlanType::kFieldExpr:
-      return substituteField(*this, expr->as<Field>(), sources, targets);
-    case PlanType::kLambdaExpr:
-      return substituteLambda(*this, expr->as<Lambda>(), sources, targets);
-    default:
-      VELOX_NYI(
-          "ExprFactory::substitute: unsupported expression type {}",
-          expr->typeName());
-  }
+  return replace(expr, toSubstitution(sources, targets));
 }
 
 ExprVector ExprFactory::substitute(
     const ExprVector& exprs,
     const ColumnVector& sources,
     const ExprVector& targets) {
-  ExprVector substituted;
-  substituted.reserve(exprs.size());
-  for (ExprCP expr : exprs) {
-    substituted.push_back(substitute(expr, sources, targets));
-  }
-  return substituted;
+  return replace(exprs, toSubstitution(sources, targets));
 }
 
 ExprCP ExprFactory::rebuildField(const Field* field, ExprCP base) {

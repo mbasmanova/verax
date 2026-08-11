@@ -144,6 +144,17 @@ class Builder {
     return functionNames_;
   }
 
+  /// Computes any key in 'keys' that is not already a column, returning
+  /// 'input' wrapped in a `Project` that adds those columns alongside its own,
+  /// and 'keys' with each such key replaced by its column. An `Exchange`
+  /// requires column keys; materializing before the shuffle is placed lets the
+  /// consumer above read the same column instead of computing the value a
+  /// second time. Returns 'input' and 'keys' unchanged when every key is
+  /// already a column.
+  std::pair<NodeCP, ExprVector> materializeKeys(
+      NodeCP input,
+      const ExprVector& keys);
+
  private:
   // For a binary `Call` whose 'name' is in `reversibleFunctions_`,
   // swaps 'args' (and renames to the reverse) when `args[0]` should

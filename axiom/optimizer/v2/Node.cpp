@@ -1533,6 +1533,9 @@ TopNRowNumber::TopNRowNumber(Key key)
       rankColumn_(key.rankColumn) {
   VELOX_CHECK_NOT_NULL(input_);
   VELOX_CHECK(!orderKeys_.empty(), "TopNRowNumber must have order keys");
+  VELOX_CHECK_EQ(
+      this->outputColumns().size(),
+      input_->outputColumns().size() + (rankColumn_ != nullptr ? 1 : 0));
   VELOX_CHECK_EQ(orderKeys_.size(), orderTypes_.size());
   VELOX_CHECK_GT(limit_, 0);
   VELOX_CHECK_EQ(
@@ -1923,6 +1926,16 @@ Exchange::Exchange(Key key)
       input_(key.input),
       partitioning_(std::move(key.partitioning)) {
   VELOX_CHECK_NOT_NULL(input_);
+
+  // A partition key must be a column the input produces: whoever places the
+  // shuffle materializes an expression key first, so the value is computed
+  // once and the consumer above reads that same column.
+  for (ExprCP partitionKey : partitioning_.keys) {
+    VELOX_CHECK(
+        partitionKey->is(PlanType::kColumnExpr),
+        "Exchange partitioning key must be a column: {}",
+        partitionKey->toString());
+  }
 }
 
 size_t Exchange::KeyHash::operator()(const Exchange* node) const {

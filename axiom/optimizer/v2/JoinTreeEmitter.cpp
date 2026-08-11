@@ -34,7 +34,8 @@ namespace {
 // equi-group to one representative — exactly the set the cost model charges
 // for, so the executed plan matches its estimated width. Left-then-right order
 // is preserved. A column produced by no relation in `cover` (e.g. a semijoin
-// mark synthesized below) is outside the demand universe and is always kept.
+// mark synthesized below, or a key a shuffle materialized) is outside the
+// demand universe and is always kept.
 ColumnVector coverNarrowedColumns(
     const JoinHypergraph& graph,
     const RelationSet& cover,
@@ -74,19 +75,34 @@ ExprVector takeReadyConjuncts(
 }
 
 struct EmitState {
+  EmitState(const JoinHypergraph& graph, Builder& builder)
+      : graph{graph},
+        builder{builder},
+        exprs{builder},
+        fired(graph.filterConjuncts().size(), false) {}
+
   const JoinHypergraph& graph;
   Builder& builder;
   ExprFactory exprs;
   std::vector<bool> fired;
 };
 
-NodeCP emitOp(MemoOpCP op, EmitState& state);
+// A subtree's root node together with the key expressions its shuffles
+// materialized into columns. A consumer rewrites its own keys and filter
+// through `materialized`, so it reads the column the shuffle already computed
+// instead of evaluating the same expression a second time. An entry is carried
+// upward only while its column stays in the emitting node's output.
+struct Emitted {
+  NodeCP node;
+  ExprFactory::ExprSubstitution materialized;
+};
+
+Emitted emitOp(MemoOpCP op, EmitState& state);
 
 // A join's children each emit one representative per equivalence group, so a
 // column equated and collapsed in a child is gone from that child's output.
 // `mergedChildReps` maps every such column to the surviving representative
-// across both child covers; `remapToReps` rewrites key/filter expressions to
-// reference the survivor, keeping the emitted node's column references valid.
+// across both child covers.
 folly::F14FastMap<ColumnCP, ColumnCP> mergedChildReps(
     const JoinOp* join,
     EmitState& state) {
@@ -96,22 +112,98 @@ folly::F14FastMap<ColumnCP, ColumnCP> mergedChildReps(
   return reps;
 }
 
-ExprVector remapToReps(
-    const ExprVector& exprs,
-    const folly::F14FastMap<ColumnCP, ColumnCP>& reps,
-    EmitState& state) {
-  ColumnVector sources;
-  ExprVector targets;
+// The collapsed entries of `reps` as a substitution, so an expression
+// referencing a collapsed column is rewritten to the survivor present in the
+// child's output.
+ExprFactory::ExprSubstitution collapsedColumns(
+    const folly::F14FastMap<ColumnCP, ColumnCP>& reps) {
+  ExprFactory::ExprSubstitution substitution;
   for (const auto& [column, rep] : reps) {
     if (rep != column) {
-      sources.push_back(column);
-      targets.push_back(rep);
+      substitution.emplace(column, rep);
     }
   }
-  if (sources.empty()) {
+  return substitution;
+}
+
+// Returns the union of two substitutions. A key expression reads columns of one
+// cover only and sibling covers are disjoint, so the same `ExprCP` cannot be
+// materialized on two sides.
+ExprFactory::ExprSubstitution merge(
+    ExprFactory::ExprSubstitution into,
+    const ExprFactory::ExprSubstitution& from) {
+  for (const auto& [expr, column] : from) {
+    const bool inserted = into.emplace(expr, column).second;
+    VELOX_CHECK(
+        inserted, "Two inputs materialized the same key: {}", expr->toString());
+  }
+  return into;
+}
+
+ExprVector rewrite(
+    const ExprVector& exprs,
+    const ExprFactory::ExprSubstitution& substitution,
+    EmitState& state) {
+  if (substitution.empty()) {
     return exprs;
   }
-  return state.exprs.substitute(exprs, sources, targets);
+  return state.exprs.replace(exprs, substitution);
+}
+
+// Drops entries whose column `node` does not emit: a semi/anti join keeps only
+// one side's columns, so a key the other side materialized is unreadable above.
+void retainVisible(ExprFactory::ExprSubstitution& substitution, NodeCP node) {
+  if (substitution.empty()) {
+    return;
+  }
+  folly::F14FastSet<ExprCP> visible;
+  visible.reserve(node->outputColumns().size());
+  for (ColumnCP column : node->outputColumns()) {
+    visible.insert(column);
+  }
+  for (auto it = substitution.begin(); it != substitution.end();) {
+    it = visible.contains(it->second) ? std::next(it) : substitution.erase(it);
+  }
+}
+
+// True when an equivalence collapse replaced one of `targets` by a
+// representative, so the emitting node cannot carry the target name itself.
+bool hasCollapsedTarget(
+    const folly::F14FastMap<ColumnCP, ColumnCP>& reps,
+    const ColumnVector& targets) {
+  for (ColumnCP target : targets) {
+    const auto it = reps.find(target);
+    if (it != reps.end() && it->second != target) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Wraps `node` in a Project that re-materializes each target name from its
+// representative, restoring the demanded output schema and order.
+NodeCP restoreTargets(
+    NodeCP node,
+    const folly::F14FastMap<ColumnCP, ColumnCP>& reps,
+    const ColumnVector& targets,
+    EmitState& state) {
+  ExprVector exprs;
+  exprs.reserve(targets.size());
+  for (ColumnCP target : targets) {
+    const auto it = reps.find(target);
+    exprs.push_back(it != reps.end() ? it->second : target);
+  }
+  return state.builder.make<Project>(
+      Project::Key{node, std::move(exprs), ColumnVector{targets}});
+}
+
+void checkAllConjunctsPlaced(const EmitState& state) {
+  const size_t unplaced =
+      std::count(state.fired.begin(), state.fired.end(), false);
+  VELOX_CHECK_EQ(
+      unplaced,
+      0,
+      "Filter conjuncts were not all placed; required relations exceed the emitted cover");
 }
 
 NodeCP emitLeaf(const LeafOp* leaf, EmitState& state) {
@@ -125,13 +217,13 @@ NodeCP emitLeaf(const LeafOp* leaf, EmitState& state) {
 // `ordinalityColumn` come from the original Unnest IR node stored on
 // the Unnest relation. `replicatedColumns` conservatively forwards
 // every input column.
-NodeCP buildUnnest(const JoinOp* join, NodeCP leftNode, EmitState& state) {
+Emitted buildUnnest(const JoinOp* join, Emitted input, EmitState& state) {
   const auto& edge = state.graph.edges()[join->edgeIndex];
   const int8_t unnestRelId = edge.right().min();
   const auto* origUnnest =
       state.graph.relation(unnestRelId).node()->as<Unnest>();
 
-  ColumnVector replicatedColumns{leftNode->outputColumns()};
+  ColumnVector replicatedColumns{input.node->outputColumns()};
 
   ColumnVector outputColumns{replicatedColumns};
   for (const auto& perExpr : origUnnest->unnestColumns()) {
@@ -143,20 +235,21 @@ NodeCP buildUnnest(const JoinOp* join, NodeCP leftNode, EmitState& state) {
     outputColumns.push_back(origUnnest->ordinalityColumn());
   }
 
-  // A column collapsed in the input is gone from `leftNode`'s output; point the
-  // unnest arguments at its surviving representative.
-  ExprVector unnestExpressions = remapToReps(
-      origUnnest->unnestExpressions(),
-      state.graph.coverColumnReps(join->left->cover()),
-      state);
+  const auto substitution = merge(
+      collapsedColumns(state.graph.coverColumnReps(join->left->cover())),
+      input.materialized);
+  ExprVector unnestExpressions =
+      rewrite(origUnnest->unnestExpressions(), substitution, state);
 
-  return state.builder.make<Unnest>(Unnest::Key{
-      leftNode,
+  NodeCP node = state.builder.make<Unnest>(Unnest::Key{
+      input.node,
       std::move(unnestExpressions),
       std::move(replicatedColumns),
       origUnnest->unnestColumns(),
       origUnnest->ordinalityColumn(),
       std::move(outputColumns)});
+  retainVisible(input.materialized, node);
+  return {node, std::move(input.materialized)};
 }
 
 // Narrows `outputColumns` for semi/anti joins, which emit only the semi'd
@@ -197,17 +290,17 @@ std::optional<ColumnVector> narrowSemiAntiOutput(
   }
 }
 
-NodeCP buildJoin(
+Emitted buildJoin(
     const JoinOp* join,
-    NodeCP leftNode,
-    NodeCP rightNode,
+    const Emitted& left,
+    const Emitted& right,
     ColumnVector outputColumns,
     EmitState& state) {
   const auto& edge = state.graph.edges()[join->edgeIndex];
   const bool isInner = edge.joinType() == velox::core::JoinType::kInner;
 
   if (auto narrowed = narrowSemiAntiOutput(
-          join->joinType, leftNode, rightNode, edge.markColumn())) {
+          join->joinType, left.node, right.node, edge.markColumn())) {
     outputColumns = std::move(*narrowed);
   }
 
@@ -241,16 +334,16 @@ NodeCP buildJoin(
     filter = ExprVector{edge.filter()};
   }
 
-  // A key/filter may reference a column a child collapsed into its
-  // representative; rewrite it to the survivor present in the child's output.
-  const auto reps = mergedChildReps(join, state);
-  leftKeys = remapToReps(leftKeys, reps, state);
-  rightKeys = remapToReps(rightKeys, reps, state);
-  filter = remapToReps(filter, reps, state);
+  auto materialized = merge(left.materialized, right.materialized);
+  const auto substitution =
+      merge(collapsedColumns(mergedChildReps(join, state)), materialized);
+  leftKeys = rewrite(leftKeys, substitution, state);
+  rightKeys = rewrite(rightKeys, substitution, state);
+  filter = rewrite(filter, substitution, state);
 
-  return state.builder.make<Join>(Join::Key{
-      leftNode,
-      rightNode,
+  NodeCP node = state.builder.make<Join>(Join::Key{
+      left.node,
+      right.node,
       join->joinType,
       std::move(leftKeys),
       std::move(rightKeys),
@@ -258,49 +351,51 @@ NodeCP buildJoin(
       edge.nullAware(),
       edge.nullAsValue(),
       std::move(outputColumns)});
+  retainVisible(materialized, node);
+  return {node, std::move(materialized)};
 }
 
 // Lowers an antijoin played in its reversed (build-on-the-preserved-side)
 // orientation. There is no `kAnti` build-side flip in Velox, so synthesize
-// it: a kRightSemiProject (probe = `probeNode`, the edge's right side; build
-// = `buildNode`, the preserved left side) emits each build row plus a mark
-// for a probe match; `Filter(not mark)` keeps the unmatched rows (the
-// antijoin result); a Project drops the mark, restoring the antijoin schema.
-// The mark is fresh and never escapes this subtree.
+// it: a kRightSemiProject (probe = `probe`, the edge's right side; build =
+// `build`, the preserved left side) emits each build row plus a mark for a
+// probe match; `Filter(not mark)` keeps the unmatched rows (the antijoin
+// result); a Project drops the mark, restoring the antijoin schema. The mark is
+// fresh and never escapes this subtree.
 //
 // TODO: Replace this synthesis (and the reversedAnti orientation marker)
 // with a plain kRightAnti relabel once Velox adds that join type:
 // https://github.com/facebookincubator/velox/issues/17815.
-NodeCP buildReversedAnti(
+Emitted buildReversedAnti(
     const JoinOp* join,
-    NodeCP probeNode,
-    NodeCP buildNode,
+    const Emitted& probe,
+    const Emitted& build,
     EmitState& state) {
   const auto& edge = state.graph.edges()[join->edgeIndex];
 
-  const ColumnVector antiOutput{buildNode->outputColumns()};
+  const ColumnVector antiOutput{build.node->outputColumns()};
   ColumnCP mark = Column::createBoolean("mark");
   ColumnVector joinOutput{antiOutput};
   joinOutput.push_back(mark);
 
   // edge.leftKeys reference the preserved (build) side, rightKeys the probe
-  // side. The IR Join's leftKeys must reference its left (probe) input. A key
-  // referencing a column collapsed in a child is rewritten to the survivor.
-  const auto reps = mergedChildReps(join, state);
+  // side. The IR Join's leftKeys must reference its left (probe) input.
+  auto materialized = merge(probe.materialized, build.materialized);
+  const auto substitution =
+      merge(collapsedColumns(mergedChildReps(join, state)), materialized);
   NodeCP rightSemiProject = state.builder.make<Join>(Join::Key{
-      probeNode,
-      buildNode,
+      probe.node,
+      build.node,
       velox::core::JoinType::kRightSemiProject,
-      remapToReps(ExprVector{edge.rightKeys()}, reps, state),
-      remapToReps(ExprVector{edge.leftKeys()}, reps, state),
-      remapToReps(ExprVector{edge.filter()}, reps, state),
+      rewrite(ExprVector{edge.rightKeys()}, substitution, state),
+      rewrite(ExprVector{edge.leftKeys()}, substitution, state),
+      rewrite(ExprVector{edge.filter()}, substitution, state),
       edge.nullAware(),
       edge.nullAsValue(),
       std::move(joinOutput)});
 
-  ExprFactory exprFactory{state.builder};
   NodeCP filtered = state.builder.make<Filter>(
-      Filter::Key{rightSemiProject, ExprVector{exprFactory.makeNot(mark)}});
+      Filter::Key{rightSemiProject, ExprVector{state.exprs.makeNot(mark)}});
 
   // Project away the mark, restoring the antijoin's output schema. Every
   // entry is a pass-through of the preserved-side column.
@@ -309,80 +404,92 @@ NodeCP buildReversedAnti(
   for (ColumnCP column : antiOutput) {
     projectExprs.push_back(column);
   }
-  return state.builder.make<Project>(
+  NodeCP node = state.builder.make<Project>(
       Project::Key{filtered, std::move(projectExprs), antiOutput});
+  retainVisible(materialized, node);
+  return {node, std::move(materialized)};
 }
 
-NodeCP emitOp(MemoOpCP op, EmitState& state) {
+// Emits a join op and everything below it. `rootOutputColumns` is non-null only
+// for the cluster root, whose output must be exactly those columns; an
+// equivalence collapse that dropped a target in favor of its representative is
+// undone by a Project on top.
+Emitted emitJoin(
+    const JoinOp* join,
+    EmitState& state,
+    const ColumnVector* rootOutputColumns) {
+  const auto& edge = state.graph.edges()[join->edgeIndex];
+  Emitted left = emitOp(join->left, state);
+  if (edge.isUnnest()) {
+    return buildUnnest(join, std::move(left), state);
+  }
+  Emitted right = emitOp(join->right, state);
+  if (join->reversedAnti) {
+    return buildReversedAnti(join, left, right, state);
+  }
+
+  if (rootOutputColumns == nullptr) {
+    return buildJoin(
+        join,
+        left,
+        right,
+        coverNarrowedColumns(state.graph, join->cover(), left.node, right.node),
+        state);
+  }
+
+  const auto rootReps = state.graph.coverColumnReps(join->cover());
+  if (!hasCollapsedTarget(rootReps, *rootOutputColumns)) {
+    return buildJoin(
+        join, left, right, ColumnVector{*rootOutputColumns}, state);
+  }
+
+  Emitted result = buildJoin(
+      join,
+      left,
+      right,
+      coverNarrowedColumns(state.graph, join->cover(), left.node, right.node),
+      state);
+  result.node =
+      restoreTargets(result.node, rootReps, *rootOutputColumns, state);
+  retainVisible(result.materialized, result.node);
+  return result;
+}
+
+// A shuffle partitions on columns of the row it shuffles, so an expression key
+// is computed on the producer side and recorded, letting the consumer above
+// read that column instead of evaluating the expression again.
+Emitted emitExchange(const ExchangeOp* exchange, EmitState& state) {
+  Emitted input = emitOp(exchange->input, state);
+  Partitioning partitioning = exchange->outputPartitioning();
+  auto [keyed, columnKeys] =
+      state.builder.materializeKeys(input.node, partitioning.keys);
+  for (size_t i = 0; i < partitioning.keys.size(); ++i) {
+    if (columnKeys[i] == partitioning.keys[i]) {
+      continue;
+    }
+    const bool inserted =
+        input.materialized.emplace(partitioning.keys[i], columnKeys[i]).second;
+    VELOX_CHECK(
+        inserted,
+        "Key already materialized below: {}",
+        partitioning.keys[i]->toString());
+  }
+  partitioning.keys = std::move(columnKeys);
+  NodeCP node = state.builder.make<Exchange>(
+      Exchange::Key{keyed, std::move(partitioning)});
+  return {node, std::move(input.materialized)};
+}
+
+Emitted emitOp(MemoOpCP op, EmitState& state) {
   switch (op->kind()) {
     case MemoOpKind::kLeaf:
-      return emitLeaf(op->as<LeafOp>(), state);
-    case MemoOpKind::kJoin: {
-      const auto* join = op->as<JoinOp>();
-      const auto& edge = state.graph.edges()[join->edgeIndex];
-      NodeCP leftNode = emitOp(join->left, state);
-      if (edge.isUnnest()) {
-        return buildUnnest(join, leftNode, state);
-      }
-      NodeCP rightNode = emitOp(join->right, state);
-      if (join->reversedAnti) {
-        return buildReversedAnti(join, leftNode, rightNode, state);
-      }
-      return buildJoin(
-          join,
-          leftNode,
-          rightNode,
-          coverNarrowedColumns(state.graph, join->cover(), leftNode, rightNode),
-          state);
-    }
-    case MemoOpKind::kExchange: {
-      const auto* exchange = op->as<ExchangeOp>();
-      NodeCP inputNode = emitOp(exchange->input, state);
-      return state.builder.make<Exchange>(
-          Exchange::Key{inputNode, exchange->outputPartitioning()});
-    }
+      return {emitLeaf(op->as<LeafOp>(), state), {}};
+    case MemoOpKind::kJoin:
+      return emitJoin(op->as<JoinOp>(), state, /*rootOutputColumns=*/nullptr);
+    case MemoOpKind::kExchange:
+      return emitExchange(op->as<ExchangeOp>(), state);
   }
   VELOX_UNREACHABLE();
-}
-
-// Emits the cluster root. The root join carries exactly `rootOutputColumns`
-// unless an equivalence collapse dropped a target column in favor of its
-// representative; then the join emits representatives and a Project
-// re-materializes each target name (and restores output order).
-NodeCP buildRoot(
-    const JoinOp* join,
-    NodeCP leftNode,
-    NodeCP rightNode,
-    const ColumnVector& rootOutputColumns,
-    EmitState& state) {
-  const auto rootReps = state.graph.coverColumnReps(join->cover());
-  bool collapsed = false;
-  for (ColumnCP target : rootOutputColumns) {
-    const auto it = rootReps.find(target);
-    if (it != rootReps.end() && it->second != target) {
-      collapsed = true;
-      break;
-    }
-  }
-  if (!collapsed) {
-    return buildJoin(
-        join, leftNode, rightNode, ColumnVector{rootOutputColumns}, state);
-  }
-
-  NodeCP joinNode = buildJoin(
-      join,
-      leftNode,
-      rightNode,
-      coverNarrowedColumns(state.graph, join->cover(), leftNode, rightNode),
-      state);
-  ExprVector exprs;
-  exprs.reserve(rootOutputColumns.size());
-  for (ColumnCP target : rootOutputColumns) {
-    const auto it = rootReps.find(target);
-    exprs.push_back(it != rootReps.end() ? it->second : target);
-  }
-  return state.builder.make<Project>(Project::Key{
-      joinNode, std::move(exprs), ColumnVector{rootOutputColumns}});
 }
 
 } // namespace
@@ -393,45 +500,22 @@ NodeCP JoinTreeEmitter::emit(
     const ColumnVector& rootOutputColumns,
     Builder& builder) {
   VELOX_CHECK_NOT_NULL(root);
-  EmitState state{
-      graph,
-      builder,
-      ExprFactory{builder},
-      std::vector<bool>(graph.filterConjuncts().size(), false)};
+  EmitState state{graph, builder};
   NodeCP result{nullptr};
   switch (root->kind()) {
     case MemoOpKind::kLeaf:
       result = emitLeaf(root->as<LeafOp>(), state);
       break;
-    case MemoOpKind::kJoin: {
-      const auto* join = root->as<JoinOp>();
-      const auto& edge = state.graph.edges()[join->edgeIndex];
-      NodeCP leftNode = emitOp(join->left, state);
-      if (edge.isUnnest()) {
-        result = buildUnnest(join, leftNode, state);
-      } else {
-        NodeCP rightNode = emitOp(join->right, state);
-        if (join->reversedAnti) {
-          result = buildReversedAnti(join, leftNode, rightNode, state);
-        } else {
-          result =
-              buildRoot(join, leftNode, rightNode, rootOutputColumns, state);
-        }
-      }
+    case MemoOpKind::kJoin:
+      result = emitJoin(root->as<JoinOp>(), state, &rootOutputColumns).node;
       break;
-    }
     case MemoOpKind::kExchange:
       // The chosen join-tree root is never an exchange: a final gather is added
       // by the fragment splitter, not enumerated into the memo.
       VELOX_UNREACHABLE("Join-tree root cannot be an exchange");
   }
   VELOX_CHECK_NOT_NULL(result);
-  const size_t unplaced =
-      std::count(state.fired.begin(), state.fired.end(), false);
-  VELOX_CHECK_EQ(
-      unplaced,
-      0,
-      "Filter conjuncts were not all placed; required relations exceed the root cover");
+  checkAllConjunctsPlaced(state);
   return result;
 }
 
@@ -445,18 +529,14 @@ NodeCP JoinTreeEmitter::emitComponents(
       componentRoots.size(),
       2,
       "emitComponents requires at least two components");
-  EmitState state{
-      graph,
-      builder,
-      ExprFactory{builder},
-      std::vector<bool>(graph.filterConjuncts().size(), false)};
+  EmitState state{graph, builder};
 
   // Emit each component subtree first, sharing one `fired` vector so a
   // cross-component conjunct is placed once, at a fold below.
-  std::vector<NodeCP> nodes;
-  nodes.reserve(componentRoots.size());
+  std::vector<Emitted> emitted;
+  emitted.reserve(componentRoots.size());
   for (MemoOpCP root : componentRoots) {
-    nodes.push_back(emitOp(root, state));
+    emitted.push_back(emitOp(root, state));
   }
 
   // Largest component drives as the bottom-left probe; the rest join as
@@ -490,19 +570,17 @@ NodeCP JoinTreeEmitter::emitComponents(
     fullCover.unionSet(root->cover());
   }
   const auto rootReps = graph.coverColumnReps(fullCover);
-  bool collapsed = false;
-  for (ColumnCP target : rootOutputColumns) {
-    const auto it = rootReps.find(target);
-    if (it != rootReps.end() && it->second != target) {
-      collapsed = true;
-      break;
-    }
-  }
+  const bool collapsed = hasCollapsedTarget(rootReps, rootOutputColumns);
 
-  NodeCP result = nodes[order[0]];
+  NodeCP result = emitted[order[0]].node;
   RelationSet cover{componentRoots[order[0]]->cover()};
+  // Grows with the fold, so a conjunct is rewritten only through what is
+  // already below it.
+  auto materialized = emitted[order[0]].materialized;
   for (size_t i = 1; i < order.size(); ++i) {
-    NodeCP build = nodes[order[i]];
+    NodeCP build = emitted[order[i]].node;
+    materialized =
+        merge(std::move(materialized), emitted[order[i]].materialized);
     // A cross product is keyless: broadcast the build so the probe keeps its
     // partitioning and a single-task (Values / global-aggregate) or scan build
     // is isolated in its own fragment instead of co-locating with the probe.
@@ -515,37 +593,28 @@ NodeCP JoinTreeEmitter::emitComponents(
     ColumnVector columns = (isLast && !collapsed)
         ? ColumnVector{rootOutputColumns}
         : coverNarrowedColumns(state.graph, cover, result, build);
-    const auto reps = graph.coverColumnReps(cover);
+    const auto substitution =
+        merge(collapsedColumns(graph.coverColumnReps(cover)), materialized);
     result = builder.make<Join>(Join::Key{
         result,
         build,
         velox::core::JoinType::kInner,
         /*leftKeys=*/ExprVector{},
         /*rightKeys=*/ExprVector{},
-        remapToReps(
-            takeReadyConjuncts(state.graph, cover, state.fired), reps, state),
+        rewrite(
+            takeReadyConjuncts(state.graph, cover, state.fired),
+            substitution,
+            state),
         /*nullAware=*/false,
         /*nullAsValue=*/false,
         std::move(columns)});
   }
 
   if (collapsed) {
-    ExprVector projectExprs;
-    projectExprs.reserve(rootOutputColumns.size());
-    for (ColumnCP target : rootOutputColumns) {
-      const auto it = rootReps.find(target);
-      projectExprs.push_back(it != rootReps.end() ? it->second : target);
-    }
-    result = builder.make<Project>(Project::Key{
-        result, std::move(projectExprs), ColumnVector{rootOutputColumns}});
+    result = restoreTargets(result, rootReps, rootOutputColumns, state);
   }
 
-  const size_t unplaced =
-      std::count(state.fired.begin(), state.fired.end(), false);
-  VELOX_CHECK_EQ(
-      unplaced,
-      0,
-      "Filter conjuncts were not all placed across cross-product components");
+  checkAllConjunctsPlaced(state);
   return result;
 }
 

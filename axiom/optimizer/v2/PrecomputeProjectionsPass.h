@@ -35,7 +35,6 @@ class PrecomputeProjectionsPass {
   ///   - Sort:      order keys
   ///   - Unnest:    unnest expressions
   ///   - Join:      join keys
-  ///   - Exchange:  hash partitioning keys
   ///
   /// A join filter is the one exception: Velox accepts any expression there,
   /// so the move is an optimization rather than a requirement.

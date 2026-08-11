@@ -91,6 +91,20 @@ class ExprFactory {
   /// does not verify.
   ExprCP makeIf(ExprCP condition, ExprCP thenExpr, ExprCP elseExpr);
 
+  /// Maps a subexpression to what it should be replaced by.
+  using ExprSubstitution = folly::F14FastMap<ExprCP, ExprCP>;
+
+  /// Returns `expr` with every subexpression that is a key of `mapping`
+  /// replaced by the mapped value. Matching is by pointer identity, exact
+  /// because expressions are hash-consed. A replaced subexpression is not
+  /// descended into. A lambda's bound arguments are dropped from the mapping
+  /// before its body is visited, since they shadow anything outside.
+  ExprCP replace(ExprCP expr, const ExprSubstitution& mapping);
+
+  /// Applies `replace` to each element of `exprs`, returning the rewritten
+  /// vector in the same order.
+  ExprVector replace(const ExprVector& exprs, const ExprSubstitution& mapping);
+
   /// Substitutes the i-th source `Column*` with the i-th `target`
   /// Expr in `expr`, returning a rewritten Expr. Handles
   /// Column/Literal/Call/Field/Lambda. Columns not in `sources` pass
