@@ -264,7 +264,12 @@ Estimate EstimateProvider::compute(NodeCP node) {
           join->rightKeys(),
           result.constraints);
       const std::optional<float> cardinality = JoinFanout::outputCardinality(
-          join->joinType(), left.cardinality, right.cardinality, matched);
+          join->joinType(),
+          left.cardinality,
+          right.cardinality,
+          matched,
+          join->filter(),
+          result.constraints);
       result.cardinality = maxOf(1.0f, cardinality);
       return result;
     }

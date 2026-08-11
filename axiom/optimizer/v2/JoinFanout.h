@@ -42,21 +42,27 @@ class JoinFanout {
       const ExprVector& rightKeys,
       const ConstraintMap& constraints);
 
-  /// Shapes an inner-join match count 'matched' into a join's output
-  /// cardinality according to 'joinType'. 'leftCardinality' /
-  /// 'rightCardinality' are the join's left / right operand cardinalities.
+  /// Output cardinality of a join that admits 'matched' row pairs before
+  /// 'filter' is applied. The filter is part of the match condition, so
+  /// it reduces the matches for every join type; the type then decides the
+  /// output:
   ///   - inner: matched.
-  ///   - left / right: at least every preserved-side row (max with matched).
+  ///   - left / right: matched, and at least one row per left / right row.
   ///   - full: both sides minus the matched overlap.
-  ///   - left/right semi filter: preserved side bounded by matched.
-  ///   - left/right semi project: every preserved-side row (a mark is added).
-  ///   - anti: preserved-side rows with no match.
-  /// Unknown inputs propagate to nullopt.
+  ///   - left/right semi filter: left / right rows that matched.
+  ///   - left/right semi project: every left / right row (a mark is added).
+  ///   - anti: left rows with no match.
+  ///
+  /// 'leftCardinality' and 'rightCardinality' are the join's operands in the
+  /// order 'joinType' names them. 'constraints' is refined by the filter, as
+  /// for a `Filter` node. Unknown inputs propagate to nullopt.
   static std::optional<float> outputCardinality(
       velox::core::JoinType joinType,
       std::optional<float> leftCardinality,
       std::optional<float> rightCardinality,
-      std::optional<float> matched);
+      std::optional<float> matched,
+      const ExprVector& filter,
+      ConstraintMap& constraints);
 };
 
 } // namespace facebook::axiom::optimizer::v2
