@@ -51,6 +51,24 @@ NodeCP makeProject(
       {input, std::move(exprs), std::move(outColumns)});
 }
 
+// Returns a new ColumnVector with the first `oldPrefixLength` elements
+// of `oldOutputColumns` replaced by `newPrefix`.
+ColumnVector replacePrefix(
+    const ColumnVector& oldOutputColumns,
+    size_t oldPrefixLength,
+    const ColumnVector& newPrefix) {
+  VELOX_DCHECK_LE(oldPrefixLength, oldOutputColumns.size());
+  ColumnVector result;
+  result.reserve(newPrefix.size() + oldOutputColumns.size() - oldPrefixLength);
+  for (ColumnCP column : newPrefix) {
+    result.push_back(column);
+  }
+  for (size_t i = oldPrefixLength; i < oldOutputColumns.size(); ++i) {
+    result.push_back(oldOutputColumns[i]);
+  }
+  return result;
+}
+
 // Per-consumer builder that lifts compound sub-expressions into a Project
 // inserted between the consumer and its existing input.
 class PrecomputeProjections {
@@ -145,20 +163,7 @@ ExprCP PrecomputeProjections::toColumn(
     return alias;
   }
 
-  // A compound expression materializes into a column named after its id, so the
-  // same expression always lifts to the same name. If a column of that name is
-  // already in the input — e.g. an exchange below this consumer lifted the same
-  // join/grouping key — reuse it instead of projecting a second column with the
-  // same name (which would be a duplicate output column).
-  const auto name = toName(fmt::format("__p{}", expr->id()));
-  for (ColumnCP column : input_->outputColumns()) {
-    if (column->name() == name) {
-      seen_.emplace(expr, column);
-      return column;
-    }
-  }
-
-  ColumnCP column = make<Column>(name, nullptr, expr->value());
+  ColumnCP column = Column::create("__p", expr->value());
   addToProject(expr, column);
   needsProject_ = true;
   return column;
@@ -324,24 +329,6 @@ void JoinFilterRewriter::keep(ColumnCP column) {
   }
 }
 
-// Returns a new ColumnVector with the first `oldPrefixLength` elements
-// of `oldOutputColumns` replaced by `newPrefix`.
-ColumnVector replacePrefix(
-    const ColumnVector& oldOutputColumns,
-    size_t oldPrefixLength,
-    const ColumnVector& newPrefix) {
-  VELOX_DCHECK_LE(oldPrefixLength, oldOutputColumns.size());
-  ColumnVector result;
-  result.reserve(newPrefix.size() + oldOutputColumns.size() - oldPrefixLength);
-  for (ColumnCP column : newPrefix) {
-    result.push_back(column);
-  }
-  for (size_t i = oldPrefixLength; i < oldOutputColumns.size(); ++i) {
-    result.push_back(oldOutputColumns[i]);
-  }
-  return result;
-}
-
 // Lifts compound expressions at restricted positions of Aggregate /
 // Window / Sort / Unnest into a Project below the consumer.
 class Rewriter : public NodeRewriter<> {
@@ -355,7 +342,6 @@ class Rewriter : public NodeRewriter<> {
   NodeCP rewriteSort(const Sort* sort, NoContext& context) override;
   NodeCP rewriteUnnest(const Unnest* unnest, NoContext& context) override;
   NodeCP rewriteJoin(const Join* join, NoContext& context) override;
-  NodeCP rewriteExchange(const Exchange* exchange, NoContext& context) override;
   NodeCP rewriteUnionAll(const UnionAll* unionAll, NoContext& context) override;
   NodeCP rewriteApply(const Apply* /*apply*/, NoContext& /*context*/) override {
     VELOX_UNREACHABLE(
@@ -475,6 +461,8 @@ NodeCP Rewriter::rewriteWindow(const Window* window, NoContext& context) {
     newFunctions.push_back({newCall, newFrame, windowFunction.ignoreNulls});
   }
 
+  // A Window emits its input's columns followed by its function results, so
+  // materializing a frame bound or an order key extends its output too.
   const size_t oldPrefixLength = window->input()->outputColumns().size();
   newInput = std::move(precompute).node();
   ColumnVector newOutputColumns = replacePrefix(
@@ -502,29 +490,6 @@ NodeCP Rewriter::rewriteSort(const Sort* sort, NoContext& context) {
        sort->orderTypes()});
 }
 
-NodeCP Rewriter::rewriteExchange(const Exchange* exchange, NoContext& context) {
-  NodeCP newInput = rewrite(exchange->input(), context);
-  const Partitioning& partitioning = exchange->partitioning();
-  // Only hash partitioning carries keys, and emit requires them to be column
-  // references; lift any compound key expression into a projected column.
-  if (partitioning.kind != PartitionKind::kPartitioned) {
-    if (newInput == exchange->input()) {
-      return exchange;
-    }
-    return builder().make<Exchange>({newInput, partitioning});
-  }
-  PrecomputeProjections precompute{newInput, builder()};
-  ExprVector newKeys;
-  newKeys.reserve(partitioning.keys.size());
-  for (ExprCP key : partitioning.keys) {
-    newKeys.push_back(precompute.toColumn(key));
-  }
-  Partitioning newPartitioning = partitioning;
-  newPartitioning.keys = std::move(newKeys);
-  return builder().make<Exchange>(
-      {std::move(precompute).node(), std::move(newPartitioning)});
-}
-
 NodeCP Rewriter::rewriteJoin(const Join* join, NoContext& context) {
   NodeCP newLeft = rewrite(join->left(), context);
   NodeCP newRight = rewrite(join->right(), context);
@@ -545,6 +510,26 @@ NodeCP Rewriter::rewriteJoin(const Join* join, NoContext& context) {
   newRightKeys.reserve(join->rightKeys().size());
   for (ExprCP key : join->rightKeys()) {
     newRightKeys.push_back(rightPrecompute.toColumn(key));
+  }
+
+  // A key that was lifted is now computed by the input, so the filter must
+  // read that column rather than compute the same expression per pair.
+  ExprFactory::ExprSubstitution lifted;
+  const auto recordLifted = [&](const ExprVector& keys,
+                                const ExprVector& newKeys) {
+    for (size_t i = 0; i < keys.size(); ++i) {
+      if (newKeys[i] != keys[i]) {
+        lifted.emplace(keys[i], newKeys[i]);
+      }
+    }
+  };
+  recordLifted(join->leftKeys(), newLeftKeys);
+  recordLifted(join->rightKeys(), newRightKeys);
+  ExprFactory factory{builder()};
+  ExprVector joinFilter;
+  joinFilter.reserve(join->filter().size());
+  for (ExprCP conjunct : join->filter()) {
+    joinFilter.push_back(factory.replace(conjunct, lifted));
   }
 
   // Keep each side's passthrough columns: those it contributes to the join
@@ -568,9 +553,9 @@ NodeCP Rewriter::rewriteJoin(const Join* join, NoContext& context) {
   if (newLeftKeys.empty()) {
     JoinFilterRewriter rewriter{
         leftPrecompute, rightPrecompute, leftColumns, rightColumns, builder()};
-    newFilter = rewriter.rewrite(join->filter());
+    newFilter = rewriter.rewrite(joinFilter);
   } else {
-    newFilter = join->filter();
+    newFilter = joinFilter;
     for (ExprCP conjunct : newFilter) {
       conjunct->columns().forEach<Column>(keepPassthrough);
     }

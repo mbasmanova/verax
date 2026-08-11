@@ -24,6 +24,7 @@
 #include "axiom/optimizer/v2/CostModel.h"
 #include "axiom/optimizer/v2/DPhyp.h"
 #include "axiom/optimizer/v2/EstimateProvider.h"
+#include "axiom/optimizer/v2/ExprFactory.h"
 #include "axiom/optimizer/v2/HypergraphBuilder.h"
 #include "axiom/optimizer/v2/JoinCluster.h"
 #include "axiom/optimizer/v2/JoinTreeEmitter.h"
@@ -129,7 +130,8 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
       : NodeRewriter(builder),
         options_{options},
         numWorkers_{numWorkers},
-        numDrivers_{numDrivers} {}
+        numDrivers_{numDrivers},
+        exprFactory_{builder} {}
 
  protected:
   // Rebuilds a join that DPhyp does not plan (non-clusterable cross / theta /
@@ -144,6 +146,8 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
   NodeCP rewriteUnclusteredJoin(const Join* node, NoContext& context) {
     NodeCP newLeft = rewrite(node->left(), context);
     NodeCP newRight = rewrite(node->right(), context);
+    ExprVector leftKeys{node->leftKeys()};
+    ExprVector rightKeys{node->rightKeys()};
     if (numWorkers_ > 1) {
       if (!node->leftKeys().empty()) {
         // A null-aware anti/semi join (NOT IN / IN) needs the existence side's
@@ -155,12 +159,13 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
         // null-aware anti/semi: a bucketed existence side confines a null key
         // to one bucket, so it must shuffle-replicate.
         if (nullAware ||
-            !coBucketJoinSides(
-                newLeft, newRight, node->leftKeys(), node->rightKeys())) {
-          newLeft =
-              partition(newLeft, node->leftKeys(), nullAware && !rightIsBuild);
-          newRight =
-              partition(newRight, node->rightKeys(), nullAware && rightIsBuild);
+            !coBucketJoinSides(newLeft, newRight, leftKeys, rightKeys)) {
+          std::tie(newLeft, leftKeys) =
+              builder().materializeKeys(newLeft, leftKeys);
+          std::tie(newRight, rightKeys) =
+              builder().materializeKeys(newRight, rightKeys);
+          newLeft = partition(newLeft, leftKeys, nullAware && !rightIsBuild);
+          newRight = partition(newRight, rightKeys, nullAware && rightIsBuild);
         }
       } else if (canBroadcastBuild(node->joinType())) {
         newRight = broadcast(newRight);
@@ -176,8 +181,8 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
         .left = newLeft,
         .right = newRight,
         .joinType = node->joinType(),
-        .leftKeys = node->leftKeys(),
-        .rightKeys = node->rightKeys(),
+        .leftKeys = leftKeys,
+        .rightKeys = rightKeys,
         .filter = node->filter(),
         .nullAware = node->nullAware(),
         .nullAsValue = node->nullAsValue(),
@@ -332,11 +337,14 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
   // true and updates 'left'/'right' when co-location applies; false when
   // neither side is bucketed, or both are bucketed but not copartitionable — in
   // either case the caller falls back to the standard shuffle.
+  // Updates 'leftKeys' / 'rightKeys' when a side is repartitioned to the
+  // other's bucketing: the shuffle needs column keys, so an expression key is
+  // computed first and the join reads that column.
   bool coBucketJoinSides(
       NodeCP& left,
       NodeCP& right,
-      const ExprVector& leftKeys,
-      const ExprVector& rightKeys) {
+      ExprVector& leftKeys,
+      ExprVector& rightKeys) {
     const auto& leftPart = left->physicalProperties().globalPartition;
     const auto& rightPart = right->physicalProperties().globalPartition;
     const bool leftBucketed = leftPart.isBucketedOn(leftKeys);
@@ -346,10 +354,12 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
           nullptr;
     }
     if (leftBucketed) {
+      std::tie(right, rightKeys) = builder().materializeKeys(right, rightKeys);
       right = partitionTo(right, rightKeys, leftPart.partitionType);
       return true;
     }
     if (rightBucketed) {
+      std::tie(left, leftKeys) = builder().materializeKeys(left, leftKeys);
       left = partitionTo(left, leftKeys, rightPart.partitionType);
       return true;
     }
@@ -364,17 +374,6 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
   static bool isGathered(NodeCP input) {
     return input->physicalProperties().globalPartition.is(
         PartitionKind::kGather);
-  }
-
-  // True when every expression in 'sub' is also in 'super'.
-  static bool isSubset(const ExprVector& sub, const ExprVector& super) {
-    const auto superSet = PlanObjectSet::fromObjects(super);
-    for (ExprCP expr : sub) {
-      if (!superSet.contains(expr)) {
-        return false;
-      }
-    }
-    return true;
   }
 
   // Ensures all rows reach one task: reuse when 'input' is already gathered,
@@ -392,20 +391,40 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
   // reuse when 'input' is already gathered (one task co-locates any keys) or
   // already co-located on 'keys', else a remote hash exchange. Empty 'keys' is
   // one global group, satisfied by a gather. A no-op at a single worker.
-  NodeCP ensureCoLocated(NodeCP input, const ExprVector& keys) {
+  // Returns the co-located input and the keys it is co-located on: a shuffle
+  // needs column keys, so an expression key is computed into one here, and the
+  // consumer reads that column rather than computing the value again.
+  std::pair<NodeCP, ExprVector> ensureCoLocated(
+      NodeCP input,
+      const ExprVector& keys) {
     if (numWorkers_ == 1 || isGathered(input)) {
-      return input;
+      return {input, keys};
     }
 
     if (keys.empty()) {
-      return gather(input);
+      return {gather(input), keys};
     }
 
     if (input->physicalProperties().globalPartition.coLocates(keys)) {
-      return input;
+      return {input, keys};
     }
 
-    return partition(input, keys);
+    auto [keyed, columnKeys] = builder().materializeKeys(input, keys);
+    return {partition(keyed, columnKeys), columnKeys};
+  }
+
+  // Returns 'node's output columns with the leading input-column prefix
+  // replaced by 'newInput's columns, for a node whose output is its input's
+  // columns followed by what it appends (Window, TopNRowNumber).
+  ColumnVector outputFollowingInput(const Node* node, NodeCP newInput) {
+    ColumnVector result{newInput->outputColumns()};
+    const auto& oldOutput = node->outputColumns();
+    for (size_t i = node->inputs()[0]->outputColumns().size();
+         i < oldOutput.size();
+         ++i) {
+      result.push_back(oldOutput[i]);
+    }
+    return result;
   }
 
   NodeCP rewriteAggregate(const Aggregate* node, NoContext& context) override {
@@ -426,7 +445,34 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
         return rewriteAggregateSplit(node, input, /*remoteExchange=*/false);
       }
     }
-    return rewriteAggregateCoLocated(node, input, /*requiredCoLocation=*/{});
+    // A global () grouping set emits a default row over empty input; a
+    // single-stage aggregate must gather (empty keys) so that row is produced
+    // once, not once per worker.
+    const ExprVector keys = node->globalGroupingSets().empty()
+        ? node->groupingKeys()
+        : ExprVector{};
+    auto [coLocatedInput, coLocatedKeys] = ensureCoLocated(input, keys);
+    if (coLocatedInput == node->input()) {
+      return node;
+    }
+    ExprFactory::ExprSubstitution materialized;
+    for (size_t i = 0; i < keys.size(); ++i) {
+      if (coLocatedKeys[i] != keys[i]) {
+        materialized.emplace(keys[i], coLocatedKeys[i]);
+      }
+    }
+    ExprVector groupingKeys{node->groupingKeys()};
+    if (!materialized.empty()) {
+      groupingKeys = exprFactory_.replace(groupingKeys, materialized);
+    }
+    return builder().make<Aggregate>(Aggregate::Key{
+        .input = coLocatedInput,
+        .groupingKeys = groupingKeys,
+        .aggregates = node->aggregates(),
+        .outputColumns = node->outputColumns(),
+        .step = node->step(),
+        .groupId = node->groupId(),
+        .globalGroupingSets = node->globalGroupingSets()});
   }
 
   // True when 'node' can two-stage into partial + final, independent of whether
@@ -534,45 +580,12 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
         .globalGroupingSets = node->globalGroupingSets()});
   }
 
-  // Rewrites an aggregate, co-locating its input on 'requiredCoLocation' when
-  // that is a non-empty subset of the grouping keys: such a subset still lands
-  // every group on one task, and choosing it lets a consumer that needs the
-  // coarser partition reuse it without a reshuffle. Otherwise co-locates on the
-  // grouping keys (empty for a global aggregate, which gathers).
-  NodeCP rewriteAggregateCoLocated(
-      const Aggregate* node,
-      NodeCP newInput,
-      const ExprVector& requiredCoLocation) {
-    ExprVector keys;
-    // A global () grouping set emits a default row over empty input; a
-    // single-stage aggregate must gather (empty keys) so that row is produced
-    // once, not once per worker.
-    if (node->globalGroupingSets().empty()) {
-      keys = !requiredCoLocation.empty() &&
-              isSubset(requiredCoLocation, node->groupingKeys())
-          ? requiredCoLocation
-          : node->groupingKeys();
-    }
-    NodeCP input = ensureCoLocated(newInput, keys);
-    if (input == node->input()) {
-      return node;
-    }
-    return builder().make<Aggregate>(Aggregate::Key{
-        .input = input,
-        .groupingKeys = node->groupingKeys(),
-        .aggregates = node->aggregates(),
-        .outputColumns = node->outputColumns(),
-        .step = node->step(),
-        .groupId = node->groupId(),
-        .globalGroupingSets = node->globalGroupingSets()});
-  }
-
   // Distributes a window: its input must be partitioned on the PARTITION BY
   // keys so each partition is computed on one task (an unpartitioned window
   // gathers to one task). Runs bottom-up, so the input is already physically
   // planned.
   NodeCP rewriteWindow(const Window* node, NoContext& context) override {
-    NodeCP input =
+    auto [input, partitionKeys] =
         ensureCoLocated(rewrite(node->input(), context), node->partitionKeys());
     if (input == node->input()) {
       return node;
@@ -580,17 +593,17 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
     return builder().make<Window>(
         {input,
          node->functions(),
-         node->partitionKeys(),
+         partitionKeys,
          node->orderKeys(),
          node->orderTypes(),
-         node->outputColumns()});
+         outputFollowingInput(node, input)});
   }
 
   // Distributes a per-partition top-n (row_number / rank): like a window, its
   // input must be partitioned on the PARTITION BY keys (gather when none).
   NodeCP rewriteTopNRowNumber(const TopNRowNumber* node, NoContext& context)
       override {
-    NodeCP input =
+    auto [input, partitionKeys] =
         ensureCoLocated(rewrite(node->input(), context), node->partitionKeys());
     if (input == node->input()) {
       return node;
@@ -598,12 +611,12 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
     return builder().make<TopNRowNumber>(
         {input,
          node->rankFunction(),
-         node->partitionKeys(),
+         partitionKeys,
          node->orderKeys(),
          node->orderTypes(),
          node->limit(),
          node->rankColumn(),
-         node->outputColumns()});
+         outputFollowingInput(node, input)});
   }
 
   // Distributes a global ORDER BY (Sort). At numWorkers>1 each task sorts its
@@ -638,35 +651,18 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
     return builder().make<EnforceSingleRow>({input});
   }
 
-  // Rewrites 'node' so its output is co-located on 'keys', pushing the
-  // requirement into a producer that can satisfy it by its own partition choice
-  // — an aggregate co-locating on a subset of its grouping keys — so no
-  // reshuffle is added above it. Other producers fall back to a co-locating
-  // exchange.
-  NodeCP
-  rewriteCoLocatedOn(NodeCP node, const ExprVector& keys, NoContext& context) {
-    if (numWorkers_ > 1 && node->is(NodeType::kAggregate)) {
-      const auto* aggregate = node->as<Aggregate>();
-      return ensureCoLocated(
-          rewriteAggregateCoLocated(
-              aggregate, rewrite(aggregate->input(), context), keys),
-          keys);
-    }
-    return ensureCoLocated(rewrite(node, context), keys);
-  }
-
   // EnforceDistinct asserts at most one row per distinct key across all input.
   // A per-task check only sees duplicates that share a task, so the input must
   // be co-located on the distinct keys.
   NodeCP rewriteEnforceDistinct(const EnforceDistinct* node, NoContext& context)
       override {
-    NodeCP input =
-        rewriteCoLocatedOn(node->input(), node->distinctKeys(), context);
+    auto [input, distinctKeys] =
+        ensureCoLocated(rewrite(node->input(), context), node->distinctKeys());
     if (input == node->input()) {
       return node;
     }
     return builder().make<EnforceDistinct>(
-        {input, node->distinctKeys(), node->errorMessage()});
+        {input, distinctKeys, node->errorMessage()});
   }
 
   // Distributes a LIMIT: at numWorkers>1 a per-task partial keeps the first
@@ -817,6 +813,9 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
   NodeCP rewriteTableWrite(const TableWrite* node, NoContext& context)
       override {
     NodeCP newInput = rewrite(node->input(), context);
+    // A partition key computed for the shuffle is written from that column
+    // rather than evaluated a second time.
+    ExprFactory::ExprSubstitution materialized;
     if (numWorkers_ > 1) {
       const auto* layout = node->table()->layouts().front();
       const auto& partitionColumns = layout->partitionColumns();
@@ -831,15 +830,25 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
         }
         const auto& partition = newInput->physicalProperties().globalPartition;
         if (!partition.isBucketedCompatibleWith(keys, *targetType)) {
-          newInput = partitionTo(newInput, keys, targetType);
+          auto [keyed, columnKeys] = builder().materializeKeys(newInput, keys);
+          newInput = partitionTo(keyed, columnKeys, targetType);
+          for (size_t i = 0; i < keys.size(); ++i) {
+            if (columnKeys[i] != keys[i]) {
+              materialized.emplace(keys[i], columnKeys[i]);
+            }
+          }
         }
       }
     }
     if (newInput == node->input()) {
       return node;
     }
+    ExprVector columnExprs{node->columnExprs()};
+    if (!materialized.empty()) {
+      columnExprs = exprFactory_.replace(columnExprs, materialized);
+    }
     return builder().make<TableWrite>(
-        {newInput, node->table(), node->kind(), node->columnExprs()});
+        {newInput, node->table(), node->kind(), std::move(columnExprs)});
   }
 
  private:
@@ -848,6 +857,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
   // separately.
   const int32_t numWorkers_;
   const int32_t numDrivers_;
+  ExprFactory exprFactory_;
 
   // Shared across all clusters of this query so a leaf (or hash-consed
   // duplicate) subtree is estimated once.
