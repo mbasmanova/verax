@@ -813,9 +813,11 @@ class SummarizeToTextVisitor : public PlanNodeVisitor {
                     << std::endl;
       myContext.out << indent << "connector: " << node.connectorId()
                     << std::endl;
-      myContext.out << indent << "columns: " << node.columnNames().size()
-                    << std::endl;
-      appendExpressions(node.columnExpressions(), myContext);
+      if (!node.columnNames().empty()) {
+        myContext.out << indent << "columns: " << node.columnNames().size()
+                      << std::endl;
+        appendExpressions(node.columnExpressions(), myContext);
+      }
     }
 
     appendInputs(node, myContext);

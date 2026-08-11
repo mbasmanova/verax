@@ -1692,8 +1692,12 @@ PlanBuilder& PlanBuilder::tableWrite(
     const std::vector<ExprApi>& columnExprs,
     folly::F14FastMap<std::string, std::string> options) {
   VELOX_USER_CHECK_NOT_NULL(node_, "Table write node cannot be a leaf node");
-  VELOX_USER_CHECK_GT(columnNames.size(), 0);
   VELOX_USER_CHECK_EQ(columnNames.size(), columnExprs.size());
+  if (kind == WriteKind::kDelete) {
+    VELOX_USER_CHECK_EQ(columnNames.size(), 0, "Delete writes no columns");
+  } else {
+    VELOX_USER_CHECK_GT(columnNames.size(), 0);
+  }
 
   SchemaTableName schemaTableName{std::move(schemaName), std::move(tableName)};
 
@@ -1703,37 +1707,40 @@ PlanBuilder& PlanBuilder::tableWrite(
     columnExpressions.push_back(resolveScalarTypes(expr.expr()));
   }
 
-  if (kind == WriteKind::kInsert) {
-    // Check input types.
+  if (kind == WriteKind::kInsert || kind == WriteKind::kDelete) {
     auto metadata = ConnectorMetadataRegistry::get(connectorId);
     auto table = metadata->findTable(schemaTableName);
     VELOX_USER_CHECK_NOT_NULL(
         table, "Table not found: {}", schemaTableName.toString());
-    const auto& schema = table->type();
 
-    for (auto i = 0; i < columnNames.size(); i++) {
-      const auto& name = columnNames[i];
-      const auto index = schema->getChildIdxIfExists(name);
-      VELOX_USER_CHECK(
-          index.has_value(),
-          "Column not found: '{}' in table {}",
-          name,
-          schemaTableName.toString());
+    if (kind == WriteKind::kInsert) {
+      // Check input types.
+      const auto& schema = table->type();
 
-      const auto& inputType = columnExpressions[i]->type();
-      const auto& schemaType = schema->childAt(index.value());
+      for (auto i = 0; i < columnNames.size(); i++) {
+        const auto& name = columnNames[i];
+        const auto index = schema->getChildIdxIfExists(name);
+        VELOX_USER_CHECK(
+            index.has_value(),
+            "Column not found: '{}' in table {}",
+            name,
+            schemaTableName.toString());
 
-      if (!schemaType->equivalent(*inputType)) {
-        if (coercer_ != nullptr && coercer_->coerce(inputType, schemaType)) {
-          columnExpressions[i] =
-              applyCoercion(columnExpressions[i], schemaType);
-        } else {
-          VELOX_USER_FAIL(
-              "Wrong column type: {} vs. {}, column '{}' in table {}",
-              inputType->toString(),
-              schemaType->toString(),
-              name,
-              schemaTableName.toString());
+        const auto& inputType = columnExpressions[i]->type();
+        const auto& schemaType = schema->childAt(index.value());
+
+        if (!schemaType->equivalent(*inputType)) {
+          if (coercer_ != nullptr && coercer_->coerce(inputType, schemaType)) {
+            columnExpressions[i] =
+                applyCoercion(columnExpressions[i], schemaType);
+          } else {
+            VELOX_USER_FAIL(
+                "Wrong column type: {} vs. {}, column '{}' in table {}",
+                inputType->toString(),
+                schemaType->toString(),
+                name,
+                schemaTableName.toString());
+          }
         }
       }
     }
@@ -1776,6 +1783,28 @@ PlanBuilder& PlanBuilder::tableWrite(
       std::move(columnNames),
       columnExprs,
       std::move(options));
+}
+
+PlanBuilder& PlanBuilder::tableDelete(
+    std::string connectorId,
+    std::string schemaName,
+    std::string tableName) {
+  return tableWrite(
+      std::move(connectorId),
+      std::move(schemaName),
+      std::move(tableName),
+      WriteKind::kDelete,
+      /*columnNames=*/{},
+      /*columnExprs=*/std::vector<ExprApi>{});
+}
+
+PlanBuilder& PlanBuilder::tableDelete(std::string tableName) {
+  VELOX_USER_CHECK(defaultConnectorId_.has_value());
+  VELOX_USER_CHECK(defaultSchema_.has_value());
+  return tableDelete(
+      defaultConnectorId_.value(),
+      defaultSchema_.value(),
+      std::move(tableName));
 }
 
 PlanBuilder& PlanBuilder::sample(

@@ -1518,7 +1518,6 @@ TEST_F(PlanPrinterTest, tableWrite) {
   for (const auto& [expectedKind, actualKind] : {
            std::pair{"CREATE", WriteKind::kCreate},
            {"INSERT", WriteKind::kInsert},
-           {"DELETE", WriteKind::kDelete},
            {"UPDATE", WriteKind::kUpdate},
        }) {
     SCOPED_TRACE(
@@ -1586,6 +1585,54 @@ TEST_F(PlanPrinterTest, tableWrite) {
             testing::Eq("        connector: test"),
             testing::Eq("")));
   }
+}
+
+TEST_F(PlanPrinterTest, tableWriteDelete) {
+  connector_->addTable("events", ROW({"a", "ds"}, {BIGINT(), VARCHAR()}));
+
+  SCOPE_EXIT {
+    connector_->dropTableIfExists({std::string(kDefaultSchema), "events"});
+  };
+
+  auto plan = PlanBuilder(context_)
+                  .tableScan("events", {"a", "ds"})
+                  .filter("ds = '2026-01-01'")
+                  .tableDelete("events")
+                  .build();
+
+  EXPECT_THAT(
+      toLines(plan),
+      testing::ElementsAre(
+          testing::StartsWith("- TableWrite DELETE"),
+          testing::StartsWith("  - Filter: eq(ds, 2026-01-01)"),
+          testing::StartsWith("    - TableScan"),
+          testing::Eq("")));
+
+  EXPECT_THAT(
+      toSummaryLines(plan),
+      testing::ElementsAre(
+          testing::Eq("- TABLE_WRITE DELETE [2]: 1 fields: rows BIGINT"),
+          testing::Eq("      table: \"default\".\"events\""),
+          testing::Eq("      connector: test"),
+          testing::Eq("  - FILTER [1]: 2 fields: a BIGINT, ds VARCHAR"),
+          testing::Eq("        predicate: eq(ds, 2026-01-01)"),
+          testing::Eq("        expressions: call: 1, constant: 1, field: 1"),
+          testing::Eq("        functions: eq: 1"),
+          testing::Eq("        constants: VARCHAR: 1"),
+          testing::Eq("    - TABLE_SCAN [0]: 2 fields: a BIGINT, ds VARCHAR"),
+          testing::Eq("          table: \"default\".\"events\""),
+          testing::Eq("          connector: test"),
+          testing::Eq("")));
+
+  EXPECT_THAT(
+      toSkeletonLines(plan),
+      testing::ElementsAre(
+          testing::Eq("- TABLE_WRITE DELETE [2]: 1 fields"),
+          testing::Eq("  - FILTER [1]: 2 fields"),
+          testing::Eq("    - TABLE_SCAN [0]: 2 fields"),
+          testing::Eq("          table: \"default\".\"events\""),
+          testing::Eq("          connector: test"),
+          testing::Eq("")));
 }
 
 TEST_F(PlanPrinterTest, fixedPointCounter) {

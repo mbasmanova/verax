@@ -15,6 +15,7 @@
  */
 
 #include "axiom/sql/presto/tests/PrestoParserTestBase.h"
+#include <gmock/gmock.h>
 #include "axiom/connectors/ConnectorMetadataRegistry.h"
 #include "axiom/logical_plan/ExprPrinter.h"
 #include "velox/common/base/tests/GTestUtils.h"
@@ -145,6 +146,26 @@ void PrestoParserTestBase::testInsert(
 
   auto logicalPlan = insertStatement->plan();
   ASSERT_TRUE(matcher.build()->match(logicalPlan)) << logicalPlan->toString();
+}
+
+void PrestoParserTestBase::testDelete(
+    std::string_view sql,
+    lp::test::LogicalPlanMatcherBuilder& matcher) {
+  SCOPED_TRACE(sql);
+  auto parser = makeParser();
+
+  auto statement = parser.parse(sql);
+  ASSERT_TRUE(statement->isDelete());
+
+  auto deleteStatement = statement->as<DeleteStatement>();
+
+  auto logicalPlan = deleteStatement->plan();
+  ASSERT_TRUE(matcher.build()->match(logicalPlan)) << logicalPlan->toString();
+
+  const auto* write = logicalPlan->as<lp::TableWriteNode>();
+  EXPECT_EQ(lp::WriteKind::kDelete, write->writeKind());
+  EXPECT_THAT(write->columnNames(), testing::IsEmpty());
+  EXPECT_THAT(write->columnExpressions(), testing::IsEmpty());
 }
 
 void PrestoParserTestBase::testCtas(

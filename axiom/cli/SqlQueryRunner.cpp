@@ -1166,6 +1166,10 @@ SqlQueryRunner::co_runUnchecked(
     co_return;
   }
 
+  if (sqlStatement.isDelete()) {
+    VELOX_NYI("DELETE is not supported yet");
+  }
+
   VELOX_CHECK(sqlStatement.isSelect());
   auto generator = co_runPlanStatement(
       sqlStatement, queryId, options, timing, planString, runtimeStats);

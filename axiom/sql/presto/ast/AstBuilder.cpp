@@ -788,7 +788,11 @@ std::any AstBuilder::visitInsertInto(PrestoSqlParser::InsertIntoContext* ctx) {
 
 std::any AstBuilder::visitDelete(PrestoSqlParser::DeleteContext* ctx) {
   trace("visitDelete");
-  return visitChildren("visitDelete", ctx);
+
+  return std::static_pointer_cast<Statement>(std::make_shared<Delete>(
+      getLocation(ctx),
+      getQualifiedName(ctx->qualifiedName()),
+      visitExpression(ctx->booleanExpression())));
 }
 
 std::any AstBuilder::visitTruncateTable(

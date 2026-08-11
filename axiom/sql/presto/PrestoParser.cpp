@@ -341,6 +341,17 @@ class RelationPlanner : public AstVisitor {
     builder_->tableWrite(std::forward<Args>(args)...);
   }
 
+  void planDelete(
+      const Delete& node,
+      const std::string& connectorId,
+      const facebook::axiom::SchemaTableName& table) {
+    processTable(node.location(), *node.table());
+    addFilter(node.where());
+
+    displayNames_.lastNames.clear();
+    builder_->tableDelete(connectorId, table.schema, table.table);
+  }
+
   const ViewMap& views() const {
     return views_;
   }
@@ -607,19 +618,22 @@ class RelationPlanner : public AstVisitor {
   }
 
   void processTable(const Table& table) {
-    const auto tableName = canonicalizeName(table.name()->suffix());
+    processTable(table.location(), *table.name());
+  }
+
+  void processTable(const NodeLocation& location, const QualifiedName& name) {
+    const auto tableName = canonicalizeName(name.suffix());
 
     // Only an unqualified single-part name can name a CTE; a qualified
     // catalog.schema.table reference is always a base table or view, even if
     // its last component matches a CTE name.
-    if (table.name()->parts().size() == 1 &&
-        tryProcessCteReference(tableName)) {
+    if (name.parts().size() == 1 && tryProcessCteReference(tableName)) {
       return;
     }
 
     // Regular base-table reference.
     const auto [connectorId, connectorTable] = toConnectorTable(
-        *table.name(), context_.defaultConnectorId.value(), defaultSchema_);
+        name, context_.defaultConnectorId.value(), defaultSchema_);
 
     auto metadata =
         facebook::axiom::connector::ConnectorMetadataRegistry::get(connectorId);
@@ -646,12 +660,12 @@ class RelationPlanner : public AstVisitor {
       processQuery(dynamic_cast<Query*>(query.get()));
     } else {
       AXIOM_PRESTO_SEMANTIC_FAIL(
-          table.location(),
+          location,
           // Use suffix (unqualified name) as token — the user rarely writes
           // the fully qualified form.
-          table.name()->suffix(),
+          name.suffix(),
           "Table not found: {}",
-          table.name()->fullyQualifiedName());
+          name.fullyQualifiedName());
     }
 
     builder_->findOrAssignOutputNames(/*includeHiddenColumns=*/false);
@@ -2559,6 +2573,32 @@ SqlStatementPtr parseInsert(
       });
 }
 
+SqlStatementPtr parseDelete(
+    const std::string& user,
+    const Delete& deleteNode,
+    const std::string& defaultConnectorId,
+    const std::string& defaultSchema,
+    const std::function<std::shared_ptr<axiom::sql::presto::Statement>(
+        std::string_view /*sql*/)>& parseSql) {
+  const auto [connectorId, connectorTable] =
+      toConnectorTable(*deleteNode.table(), defaultConnectorId, defaultSchema);
+
+  // Reject a missing target before planning the scan, which would otherwise
+  // resolve a view of that name and write to a table that does not exist.
+  findTable(*deleteNode.table(), connectorId, connectorTable);
+
+  RelationPlanner planner(user, defaultConnectorId, defaultSchema, parseSql);
+  planner.planDelete(deleteNode, connectorId, connectorTable);
+
+  return std::make_shared<DeleteStatement>(
+      planner.plan(),
+      planner.views(),
+      ReferencedTables{
+          planner.inputTables(),
+          facebook::axiom::CatalogSchemaTableName{connectorId, connectorTable},
+      });
+}
+
 std::unordered_map<std::string, lp::ExprPtr> parseTableProperties(
     const std::string& user,
     const std::vector<std::shared_ptr<Property>>& props) {
@@ -3127,6 +3167,15 @@ SqlStatementPtr doPlan(
     return parseInsert(
         user,
         *query->as<Insert>(),
+        defaultConnectorId,
+        defaultSchema,
+        parseSql);
+  }
+
+  if (query->is(NodeType::kDelete)) {
+    return parseDelete(
+        user,
+        *query->as<Delete>(),
         defaultConnectorId,
         defaultSchema,
         parseSql);

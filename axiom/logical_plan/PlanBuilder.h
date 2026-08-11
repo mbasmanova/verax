@@ -668,6 +668,16 @@ class PlanBuilder {
       std::vector<std::string> columnNames,
       folly::F14FastMap<std::string, std::string> options = {});
 
+  /// Adds a TableWrite node that deletes the rows produced by the input from
+  /// 'tableName'.
+  PlanBuilder& tableDelete(
+      std::string connectorId,
+      std::string schemaName,
+      std::string tableName);
+
+  /// @overload Uses the default connector ID and schema.
+  PlanBuilder& tableDelete(std::string tableName);
+
   /// Adds a Sample node that passes each row with the given probability.
   PlanBuilder& sample(double percentage, SampleNode::SampleMethod sampleMethod);
 

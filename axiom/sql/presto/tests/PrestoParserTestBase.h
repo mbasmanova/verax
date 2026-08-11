@@ -80,6 +80,12 @@ class PrestoParserTestBase : public testing::Test {
       std::string_view sql,
       facebook::axiom::logical_plan::test::LogicalPlanMatcherBuilder& matcher);
 
+  /// Parses a DELETE statement and verifies the logical plan matches, and
+  /// that its root is a kDelete write carrying no columns.
+  void testDelete(
+      std::string_view sql,
+      facebook::axiom::logical_plan::test::LogicalPlanMatcherBuilder& matcher);
+
   /// Parses a CREATE TABLE AS SELECT statement and verifies the table name,
   /// schema, logical plan, and optional table properties.
   void testCtas(

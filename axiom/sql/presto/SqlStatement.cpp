@@ -31,6 +31,7 @@ const auto& statementKindNames() {
       {SqlStatementKind::kCreateTable, "CREATE TABLE"},
       {SqlStatementKind::kCreateTableAsSelect, "CREATE TABLE AS SELECT"},
       {SqlStatementKind::kInsert, "INSERT"},
+      {SqlStatementKind::kDelete, "DELETE"},
       {SqlStatementKind::kDropTable, "DROP TABLE"},
       {SqlStatementKind::kCreateSchema, "CREATE SCHEMA"},
       {SqlStatementKind::kDropSchema, "DROP SCHEMA"},
