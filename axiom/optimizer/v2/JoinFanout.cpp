@@ -61,7 +61,10 @@ std::optional<float> JoinFanout::estimateJoinCardinality(
       std::max(jointNdvLeft, jointNdvRight);
 }
 
-std::optional<float> JoinFanout::outputCardinality(
+namespace {
+
+// The per-join-type shaping `JoinFanout::outputCardinality` documents.
+std::optional<float> shapeByJoinType(
     velox::core::JoinType joinType,
     std::optional<float> leftCardinality,
     std::optional<float> rightCardinality,
@@ -88,6 +91,26 @@ std::optional<float> JoinFanout::outputCardinality(
     default:
       return matched;
   }
+}
+
+} // namespace
+
+std::optional<float> JoinFanout::outputCardinality(
+    velox::core::JoinType joinType,
+    std::optional<float> leftCardinality,
+    std::optional<float> rightCardinality,
+    std::optional<float> matched,
+    const ExprVector& filter,
+    ConstraintMap& constraints) {
+  if (!filter.empty()) {
+    const auto selectivity = conjunctsSelectivity(
+        constraints,
+        std::span<const ExprCP>{filter.data(), filter.size()},
+        /*updateConstraints=*/true);
+    matched = selectivity.has_value() ? mul(matched, selectivity->trueFraction)
+                                      : std::nullopt;
+  }
+  return shapeByJoinType(joinType, leftCardinality, rightCardinality, matched);
 }
 
 } // namespace facebook::axiom::optimizer::v2

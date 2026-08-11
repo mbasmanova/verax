@@ -77,6 +77,11 @@ std::optional<float> sideRowCount(
 // derived NDV of an aggregate output) with the column's base `value()` as
 // fallback. An unknown key NDV makes it unknown; a zero-NDV key makes it 0
 // (empty join).
+//
+// `JoinFanout::estimateJoinCardinality` answers the same question for a join
+// that is already built, from one joint NDV over all keys capped by the operand
+// cardinalities. That form depends on how the cover was split, so it cannot be
+// used here.
 std::optional<float> innerEdgeSelectivity(
     const JoinEdge& edge,
     const JoinHypergraph& graph,
@@ -106,6 +111,27 @@ std::optional<float> innerEdgeSelectivity(
     jointNdvRight = std::min(jointNdvRight, *rightRows);
   }
   return 1.0f / std::max(jointNdvLeft, jointNdvRight);
+}
+
+// The conjuncts this join evaluates: for an inner join those the emitter places
+// here — within this cover but within neither child's, so no child has applied
+// them — and for any other type the edge's own filter. Assigning a conjunct to
+// the lowest cover containing it keeps a cover's estimate independent of how
+// the cover was split, as the edge selectivities are.
+ExprVector appliedConjuncts(const JoinOp& join, const JoinHypergraph& graph) {
+  const auto& edge = graph.edges()[join.edgeIndex];
+  if (edge.joinType() != velox::core::JoinType::kInner) {
+    return ExprVector{edge.filter()};
+  }
+  ExprVector result;
+  for (const auto& conjunct : graph.filterConjuncts()) {
+    if (conjunct.relations.isSubset(join.cover()) &&
+        !conjunct.relations.isSubset(join.left->cover()) &&
+        !conjunct.relations.isSubset(join.right->cover())) {
+      result.push_back(conjunct.expr);
+    }
+  }
+  return result;
 }
 
 // Product of the operand cardinalities and the selectivities of the edges
@@ -242,19 +268,18 @@ joinEstimate(const JoinOp& join, const JoinHypergraph& graph, BySetMap& bySet) {
 
   const std::optional<float> matched = innerMatchCardinality(
       join, graph, result.constraints, left.cardinality, right.cardinality);
-  if (edge.joinType() == velox::core::JoinType::kInner) {
-    result.cardinality = maxOf(1.0f, matched);
-  } else {
-    const bool edgeLeftIsPhysicalLeft =
-        edge.left().isSubset(join.left->cover());
-    result.cardinality = maxOf(
-        1.0f,
-        JoinFanout::outputCardinality(
-            edge.joinType(),
-            edgeLeftIsPhysicalLeft ? left.cardinality : right.cardinality,
-            edgeLeftIsPhysicalLeft ? right.cardinality : left.cardinality,
-            matched));
-  }
+  // Operands are passed in the edge's orientation, which `outputCardinality`
+  // requires for kAnti: a reversed antijoin swaps them but has no flipped type.
+  const bool edgeLeftIsPhysicalLeft = edge.left().isSubset(join.left->cover());
+  result.cardinality = maxOf(
+      1.0f,
+      JoinFanout::outputCardinality(
+          edge.joinType(),
+          edgeLeftIsPhysicalLeft ? left.cardinality : right.cardinality,
+          edgeLeftIsPhysicalLeft ? right.cardinality : left.cardinality,
+          matched,
+          appliedConjuncts(join, graph),
+          result.constraints));
   return bySet.emplace(cover, std::move(result)).first->second;
 }
 
