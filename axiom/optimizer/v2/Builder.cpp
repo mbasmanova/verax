@@ -160,4 +160,36 @@ void Builder::addEquivalences(const Join::Key& key) {
   }
 }
 
+std::pair<NodeCP, ExprVector> Builder::materializeKeys(
+    NodeCP input,
+    const ExprVector& keys) {
+  if (std::all_of(keys.begin(), keys.end(), [](ExprCP key) {
+        return key->is(PlanType::kColumnExpr);
+      })) {
+    return {input, keys};
+  }
+
+  ExprVector exprs;
+  ColumnVector columns;
+  for (ColumnCP column : input->outputColumns()) {
+    exprs.push_back(column);
+    columns.push_back(column);
+  }
+  ExprVector newKeys;
+  newKeys.reserve(keys.size());
+  for (ExprCP key : keys) {
+    if (key->is(PlanType::kColumnExpr)) {
+      newKeys.push_back(key);
+      continue;
+    }
+    ColumnCP column = Column::create("__p", key->value());
+    exprs.push_back(key);
+    columns.push_back(column);
+    newKeys.push_back(column);
+  }
+  return {
+      make<Project>({input, std::move(exprs), std::move(columns)}),
+      std::move(newKeys)};
+}
+
 } // namespace facebook::axiom::optimizer::v2
