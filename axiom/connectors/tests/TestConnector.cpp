@@ -844,6 +844,7 @@ ConnectorWriteHandlePtr TestConnectorMetadata::beginWrite(
     const ConnectorSessionPtr& /*session*/,
     const TablePtr& table,
     WriteKind /*kind*/,
+    const velox::connector::ConnectorTableHandlePtr& /*scanHandle*/,
     bool /*explain*/) {
   auto insertHandle = std::make_shared<TestInsertTableHandle>(table->name());
   return std::make_shared<ConnectorWriteHandle>(
@@ -873,7 +874,7 @@ RowsFuture TestConnectorMetadata::finishWrite(
       }
     }
   }
-  return folly::makeFuture(rows);
+  return folly::makeSemiFuture(std::optional<int64_t>{rows});
 }
 
 bool TestConnectorMetadata::dropTable(

@@ -1277,28 +1277,24 @@ std::string parsePartitionValue(
   return dirName.substr(prefix.size());
 }
 
-// Descends the partition directory tree one level per declared partition
-// column, reading the per-partition '.stats' file at each leaf into
-// 'allPartitionStats'. See loadTableWithWriteTimeStats for the layout contract.
-void collectPartitionStats(
+// Partition key values of one partition, keyed by column name.
+using PartitionKeys = folly::F14FastMap<std::string, std::string>;
+
+// Visits the leaves of the partition directory tree rooted at 'dir', which
+// nests one level per entry in 'partitionColumnNames'. Descends into a
+// directory only if 'accept' passes its level and value, and calls 'onLeaf'
+// with each leaf and the key values along the way. See
+// loadTableWithWriteTimeStats for the layout contract.
+void visitPartitions(
     const std::vector<std::string_view>& partitionColumnNames,
-    LocalTable& table,
-    std::vector<PartitionStats>& allPartitionStats,
     const fs::path& dir,
     size_t level,
-    folly::F14FastMap<std::string, std::string> partitionKeys) {
+    PartitionKeys partitionKeys,
+    const std::function<bool(size_t level, const std::string& value)>& accept,
+    const std::function<void(const fs::path& leaf, PartitionKeys keys)>&
+        onLeaf) {
   if (level == partitionColumnNames.size()) {
-    auto persisted = PersistedStats::read(dir.string());
-    VELOX_USER_CHECK(
-        persisted.has_value(),
-        "Partition directory is missing a .stats file: {}",
-        dir.string());
-    table.incrementNumRows(persisted->numRows);
-    allPartitionStats.push_back(
-        PartitionStats{
-            .partitionKeys = std::move(partitionKeys),
-            .numRows = persisted->numRows,
-            .columnStats = std::move(persisted->columns)});
+    onLeaf(dir, std::move(partitionKeys));
     return;
   }
 
@@ -1307,17 +1303,41 @@ void collectPartitionStats(
     if (!entry.is_directory()) {
       continue;
     }
+    auto value = parsePartitionValue(entry.path(), expectedColumn);
+    if (!accept(level, value)) {
+      continue;
+    }
     auto childKeys = partitionKeys;
-    childKeys.emplace(
-        expectedColumn, parsePartitionValue(entry.path(), expectedColumn));
-    collectPartitionStats(
+    childKeys.emplace(expectedColumn, std::move(value));
+    visitPartitions(
         partitionColumnNames,
-        table,
-        allPartitionStats,
         entry.path(),
         level + 1,
-        std::move(childKeys));
+        std::move(childKeys),
+        accept,
+        onLeaf);
   }
+}
+
+// Reads the '.stats' file every partition directory is required to have.
+PersistedStats readPartitionStats(const fs::path& dir) {
+  auto persisted = PersistedStats::read(dir.string());
+  VELOX_USER_CHECK(
+      persisted.has_value(),
+      "Partition directory is missing a .stats file: {}",
+      dir.string());
+  return std::move(persisted.value());
+}
+
+// Names of the partition columns, outermost directory level first.
+std::vector<std::string_view> partitionColumnNames(
+    const HiveTableLayout& layout) {
+  std::vector<std::string_view> names;
+  names.reserve(layout.hivePartitionColumns().size());
+  for (const auto* column : layout.hivePartitionColumns()) {
+    names.push_back(column->name());
+  }
+  return names;
 }
 
 } // namespace
@@ -1356,18 +1376,21 @@ void LocalHiveConnectorMetadata::loadTableWithWriteTimeStats(
     // directory against the expected column, and read the per-partition
     // '.stats' file at the leaf. Driving the depth from the schema guarantees
     // every partition entry carries a value for every partition key.
-    std::vector<std::string_view> partitionColumnNames;
-    partitionColumnNames.reserve(layout->hivePartitionColumns().size());
-    for (const auto* column : layout->hivePartitionColumns()) {
-      partitionColumnNames.push_back(column->name());
-    }
-    collectPartitionStats(
-        partitionColumnNames,
-        *table,
-        allPartitionStats,
+    visitPartitions(
+        partitionColumnNames(*layout),
         tablePath,
         /*level=*/0,
-        /*partitionKeys=*/{});
+        /*partitionKeys=*/{},
+        [](size_t /*level*/, const std::string& /*value*/) { return true; },
+        [&](const fs::path& leaf, PartitionKeys keys) {
+          auto persisted = readPartitionStats(leaf);
+          table->incrementNumRows(persisted.numRows);
+          allPartitionStats.push_back(
+              PartitionStats{
+                  .partitionKeys = std::move(keys),
+                  .numRows = persisted.numRows,
+                  .columnStats = std::move(persisted.columns)});
+        });
   }
   // Otherwise the table is unpartitioned and has no persisted stats yet (e.g.
   // right after a schema change); there is nothing to load.
@@ -1632,12 +1655,116 @@ TablePtr LocalHiveConnectorMetadata::createTable(
   return table;
 }
 
+namespace {
+
+// Removes the directories between 'dir' and 'root' that removing 'dir' left
+// empty. A partition column the delete did not constrain keeps its directory
+// until the last partition under it is gone.
+void removeEmptyParents(const fs::path& dir, const fs::path& root) {
+  // The loop deletes directories and stops at 'root', so 'dir' must be under
+  // 'root'.
+  const auto relative = dir.lexically_relative(root);
+  VELOX_CHECK(
+      !relative.empty() && *relative.begin() != "..",
+      "Partition directory is outside the table: {}",
+      dir.string());
+  for (auto parent = dir.parent_path(); parent != root;
+       parent = parent.parent_path()) {
+    if (!fs::is_empty(parent)) {
+      return;
+    }
+    fs::remove(parent);
+  }
+}
+
+} // namespace
+
+std::optional<int64_t> LocalHiveConnectorMetadata::removePartitions(
+    const HiveDeleteWriteHandle& handle) {
+  // Held across the removal and the reload, as the other mutating paths do, so
+  // no reader sees the table between the two.
+  std::lock_guard<std::mutex> l(mutex_);
+  const auto& table = *handle.table();
+  const auto* layout =
+      dynamic_cast<const HiveTableLayout*>(table.layouts().at(0));
+  VELOX_CHECK_NOT_NULL(layout);
+  const fs::path path = tablePath(table.name());
+
+  const auto& partitionColumns = layout->hivePartitionColumns();
+  if (partitionColumns.empty()) {
+    // Nothing to filter on, so the delete removes every row. The table
+    // directory and its '.schema' stay; the data files and stats go.
+    auto persisted = PersistedStats::read(path.string());
+
+    // Collected before removing any: removing an entry invalidates an open
+    // directory iterator.
+    const auto schemaFile = schemaPath(path.string());
+    std::vector<fs::path> entries;
+    for (const auto& entry : fs::directory_iterator(path)) {
+      if (entry.path().string() != schemaFile) {
+        entries.push_back(entry.path());
+      }
+    }
+    for (const auto& entry : entries) {
+      fs::remove_all(entry);
+    }
+
+    loadTable(table.name().table, path);
+    // Without stats the removed rows cannot be counted.
+    return persisted.has_value() ? std::optional<int64_t>{persisted->numRows}
+                                 : std::nullopt;
+  }
+
+  // One filter per partition column, in the order the directories nest.
+  // Unconstrained columns keep a null entry, matching every value.
+  std::vector<const velox::common::Filter*> filters(
+      partitionColumns.size(), nullptr);
+  for (const auto& [subfield, filter] : handle.filters()) {
+    for (size_t i = 0; i < partitionColumns.size(); ++i) {
+      if (partitionColumns[i]->name() == subfield.baseName()) {
+        filters[i] = filter.get();
+        break;
+      }
+    }
+  }
+
+  std::vector<fs::path> matchedPartitions;
+  int64_t rows{0};
+  visitPartitions(
+      partitionColumnNames(*layout),
+      path,
+      /*level=*/0,
+      /*partitionKeys=*/{},
+      [&](size_t level, const std::string& value) {
+        const auto* filter = filters[level];
+        return filter == nullptr ||
+            testPartitionValue(
+                   *filter, value, *partitionColumns[level]->type());
+      },
+      [&](const fs::path& leaf, const PartitionKeys& /*keys*/) {
+        rows += readPartitionStats(leaf).numRows;
+        matchedPartitions.push_back(leaf);
+      });
+
+  for (const auto& partition : matchedPartitions) {
+    deleteDirectoryRecursive(partition.string());
+    removeEmptyParents(partition, path);
+  }
+
+  loadTable(table.name().table, path);
+  return rows;
+}
+
 RowsFuture LocalHiveConnectorMetadata::finishWrite(
     const ConnectorSessionPtr& /*session*/,
     const ConnectorWriteHandlePtr& handle,
     const std::vector<velox::RowVectorPtr>& writeResults,
     velox::RowVectorPtr groupingKeys,
     std::vector<std::vector<ColumnStatistics>> groupStats) {
+  if (const auto* deleteHandle = handle->as<HiveDeleteWriteHandle>()) {
+    return removePartitions(*deleteHandle);
+  }
+
   uint64_t rows = 0;
   velox::DecodedVector decoded;
   for (const auto& result : writeResults) {
@@ -1715,6 +1842,12 @@ void LocalHiveConnectorMetadata::reloadTableFromPath(
 velox::ContinueFuture LocalHiveConnectorMetadata::abortWrite(
     const ConnectorSessionPtr& /*session*/,
     const ConnectorWriteHandlePtr& handle) noexcept try {
+  if (handle->as<HiveDeleteWriteHandle>() != nullptr) {
+    // Partitions are removed in finishWrite, so an aborted delete leaves
+    // nothing behind.
+    return {};
+  }
+
   std::lock_guard<std::mutex> l(mutex_);
   auto hiveHandle =
       std::dynamic_pointer_cast<const HiveConnectorWriteHandle>(handle);

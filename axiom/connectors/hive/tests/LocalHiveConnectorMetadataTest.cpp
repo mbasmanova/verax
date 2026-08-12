@@ -134,8 +134,12 @@ class LocalHiveConnectorMetadataTest
       dwio::common::FileFormat format) {
     std::string outputPath = metadata_->tablePath(table->name());
     auto session = makeSession();
-    auto handle =
-        metadata_->beginWrite(session, table, kind, /*explain=*/false);
+    auto handle = metadata_->beginWrite(
+        session,
+        table,
+        kind,
+        /*scanHandle=*/nullptr,
+        /*explain=*/false);
 
     auto builder = exec::test::PlanBuilder().values({values});
     auto insertHandle = std::make_shared<core::InsertTableHandle>(
@@ -672,7 +676,11 @@ TEST_F(LocalHiveConnectorMetadataTest, createThenInsert) {
       /*ifNotExists=*/false,
       /*explain=*/false);
   auto handle = metadata_->beginWrite(
-      session, staged, WriteKind::kCreate, /*explain=*/false);
+      session,
+      staged,
+      WriteKind::kCreate,
+      /*scanHandle=*/nullptr,
+      /*explain=*/false);
   metadata_->finishWrite(session, handle, /*writeResults=*/{}, nullptr, {})
       .get();
 
@@ -701,12 +709,20 @@ TEST_F(LocalHiveConnectorMetadataTest, createThenInsert) {
 
   VELOX_ASSERT_THROW(
       metadata_->beginWrite(
-          session, created, WriteKind::kUpdate, /*explain=*/false),
-      "Only CREATE/INSERT supported, not UPDATE");
+          session,
+          created,
+          WriteKind::kUpdate,
+          /*scanHandle=*/nullptr,
+          /*explain=*/false),
+      "Only CREATE/INSERT/DELETE supported, not UPDATE");
   VELOX_ASSERT_THROW(
       metadata_->beginWrite(
-          session, created, WriteKind::kDelete, /*explain=*/false),
-      "Only CREATE/INSERT supported, not DELETE");
+          session,
+          created,
+          WriteKind::kDelete,
+          /*scanHandle=*/nullptr,
+          /*explain=*/false),
+      "DELETE requires a scan of the table");
 }
 
 TEST_F(LocalHiveConnectorMetadataTest, abortCreateWithRetry) {
@@ -723,7 +739,11 @@ TEST_F(LocalHiveConnectorMetadataTest, abortCreateWithRetry) {
       /*ifNotExists=*/false,
       /*explain=*/false);
   auto handle = metadata_->beginWrite(
-      session, table, WriteKind::kCreate, /*explain=*/false);
+      session,
+      table,
+      WriteKind::kCreate,
+      /*scanHandle=*/nullptr,
+      /*explain=*/false);
   EXPECT_TRUE(std::filesystem::exists(tablePath));
 
   VELOX_ASSERT_THROW(
@@ -746,7 +766,11 @@ TEST_F(LocalHiveConnectorMetadataTest, abortCreateWithRetry) {
       /*ifNotExists=*/false,
       /*explain=*/false);
   handle = metadata_->beginWrite(
-      session, table, WriteKind::kCreate, /*explain=*/false);
+      session,
+      table,
+      WriteKind::kCreate,
+      /*scanHandle=*/nullptr,
+      /*explain=*/false);
   metadata_->finishWrite(session, handle, /*writeResults=*/{}, nullptr, {})
       .get();
   EXPECT_TRUE(std::filesystem::exists(tablePath));

@@ -288,6 +288,31 @@ class HiveWriteOptions {
   static constexpr auto kSerializationNullFormat = "serialization.null.format";
 };
 
+/// Write handle for a delete the connector carries out against partition
+/// metadata, with no writer and no plan. Holds the filters that select the
+/// partitions to remove, all of them on partition columns. The filters are
+/// resolved to a partition list at commit, which can be long and so is not
+/// materialized here.
+class HiveDeleteWriteHandle : public ConnectorWriteHandle {
+ public:
+  HiveDeleteWriteHandle(TablePtr table, velox::common::SubfieldFilters filters)
+      : table_{std::move(table)}, filters_{std::move(filters)} {}
+
+  const TablePtr& table() const {
+    return table_;
+  }
+
+  const velox::common::SubfieldFilters& filters() const {
+    return filters_;
+  }
+
+  std::string toString() const override;
+
+ private:
+  const TablePtr table_;
+  const velox::common::SubfieldFilters filters_;
+};
+
 class HiveConnectorMetadata : public ConnectorMetadata {
  public:
   /// @param includeHiddenColumns is an indicator to include hidden columns in
@@ -304,9 +329,17 @@ class HiveConnectorMetadata : public ConnectorMetadata {
       const ConnectorSessionPtr& session,
       const TablePtr& table,
       WriteKind kind,
+      const velox::connector::ConnectorTableHandlePtr& scanHandle,
       bool explain) override;
 
  protected:
+  // Returns the handle for a delete of the rows 'filters' select, all of them
+  // on partition columns. A connector overrides this to carry its own
+  // description of the delete.
+  virtual ConnectorWriteHandlePtr makeDeleteWriteHandle(
+      const TablePtr& table,
+      velox::common::SubfieldFilters filters) const;
+
   virtual void ensureInitialized() const {}
 
   virtual void validateOptions(

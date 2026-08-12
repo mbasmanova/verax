@@ -354,6 +354,12 @@ class Emitter {
       const ColumnVector& outputColumns,
       const std::vector<std::string>& outputNames);
 
+  // Returns 'scan's cached handle, building it into 'storage' if there is none.
+  // The reference is valid for as long as 'storage'. Emitting must not write to
+  // the cache: it is keyed by base table, so caching this scan's handle would
+  // hand it to a later scan of the same table with different filters.
+  const ScanHandle& scanHandle(const Scan& scan, ScanHandle& storage);
+
   velox::core::PlanNodePtr emitScan(const Scan& scan);
   velox::core::PlanNodePtr emitFilter(const Filter& filter);
   velox::core::PlanNodePtr emitProject(const Project& project);
@@ -407,6 +413,11 @@ class Emitter {
   // current fragment, wiring the `InputStage` between them.
   velox::core::PlanNodePtr emitExchange(const Exchange& exchange);
   velox::core::PlanNodePtr emitTableWrite(const TableWrite& tableWrite);
+
+  // Returns the handle of the scan whose rows 'tableWrite' deletes. Fails if
+  // that scan's handle does not describe exactly the rows to remove.
+  velox::connector::ConnectorTableHandlePtr deletedRowsHandle(
+      const TableWrite& tableWrite);
 
   // Builds the producer-side `PartitionedOutput` capping 'sourcePlan' for
   // 'partitioning'. A connector-bucketed partitioning that scales to a single
@@ -602,18 +613,22 @@ void collectInputColumnNames(
   collectInputColumnNamesImpl(expr, names, /*boundNames=*/{});
 }
 
+const ScanHandle& Emitter::scanHandle(const Scan& scan, ScanHandle& storage) {
+  if (const ScanHandle* cached = scanHandles_.find(scan)) {
+    return *cached;
+  }
+  storage = ScanHandle::build(scan, session_, evaluator_);
+  return storage;
+}
+
 velox::core::PlanNodePtr Emitter::emitScan(const Scan& scan) {
   // The read schema is the consumer output columns followed by the filter-only
   // columns, with columnHandles aligned to that order. Consumer columns keep
   // their `outputName` (alias) in the scan's row type; the rename happens
   // inside the scan via `assignments[outputName] = handle`. Filter-only
   // columns keep their schema name.
-  const ScanHandle* cached = scanHandles_.find(scan);
   ScanHandle built;
-  if (cached == nullptr) {
-    built = ScanHandle::build(scan, session_, evaluator_);
-  }
-  const ScanHandle& handle = cached != nullptr ? *cached : built;
+  const ScanHandle& handle = scanHandle(scan, built);
   const ColumnVector& consumerColumns = scan.outputColumns();
   const ColumnVector& filterOnlyColumns = handle.filterOnlyColumns;
   const auto& columnHandles = handle.columnHandles;
@@ -1907,17 +1922,62 @@ velox::core::PlanNodePtr Emitter::emitExchange(const Exchange& exchange) {
   return consumer;
 }
 
+velox::connector::ConnectorTableHandlePtr Emitter::deletedRowsHandle(
+    const TableWrite& tableWrite) {
+  // The scan handle is the only description of the rows to remove, so the
+  // write must sit directly on a scan whose filters the connector took in
+  // full.
+  NodeCP input = tableWrite.input();
+  VELOX_USER_CHECK(
+      input->is(NodeType::kScan),
+      "DELETE requires a scan with an optional filter");
+
+  const auto& scan = *input->as<Scan>();
+  // The connector reads the filters as constraints on the table it is about to
+  // change, so the two must be the same table.
+  VELOX_USER_CHECK(
+      scan.baseTable()->schemaTable->connectorTable == tableWrite.table(),
+      "DELETE scans the wrong table: deletes {}, scans {}",
+      tableWrite.table()->name().toString(),
+      scan.baseTable()->schemaTable->connectorTable->name().toString());
+
+  ScanHandle built;
+  const ScanHandle& handle = scanHandle(scan, built);
+  const auto& rejectedFilters = handle.rejectedFilters;
+  VELOX_USER_CHECK(
+      rejectedFilters.empty(),
+      "Connector cannot apply this WHERE clause for DELETE: {}",
+      rejectedFilters.front()->toString());
+
+  return handle.tableHandle;
+}
+
 velox::core::PlanNodePtr Emitter::emitTableWrite(const TableWrite& tableWrite) {
   const auto& table = *tableWrite.table();
   auto* layout = table.layouts().front();
   const auto& connectorId = layout->connector()->connectorId();
   auto metadata = connector::ConnectorMetadataRegistry::get(connectorId);
   auto connectorSession = session_.toConnectorSession(connectorId);
+
+  const bool isDelete = tableWrite.kind() == connector::WriteKind::kDelete;
   auto handle = metadata->beginWrite(
       connectorSession,
       table.shared_from_this(),
       tableWrite.kind(),
+      isDelete ? deletedRowsHandle(tableWrite) : nullptr,
       session_.options().explain);
+
+  if (isDelete) {
+    if (handle->veloxHandle() != nullptr) {
+      VELOX_NYI(
+          "Row-level delete is not supported: {}", table.name().toString());
+    }
+
+    VELOX_CHECK(!finishWrite_, "Only one TableWrite per query is supported");
+    finishWrite_ = FinishWrite{
+        metadata, connectorId, std::move(connectorSession), std::move(handle)};
+    return nullptr;
+  }
 
   // Parallelize writers only when the input is already distributed; gathering
   // an already-single-task input would add a redundant exchange.
@@ -2011,6 +2071,7 @@ velox::core::PlanNodePtr Emitter::emitTableWrite(const TableWrite& tableWrite) {
           connectorId, handle->veloxHandle());
   finishWrite_ = FinishWrite{
       metadata,
+      connectorId,
       std::move(connectorSession),
       std::move(handle),
       statsBuilder.statsMapping()};
@@ -2096,6 +2157,12 @@ std::vector<ExecutableFragment> Emitter::emitFragments(
     // every other fragment; otherwise emit the write directly.
     currentFragment_ = &top;
     velox::core::PlanNodePtr writePlan = emit(root);
+    if (writePlan == nullptr) {
+      // The connector carries out the write itself, so there is nothing to
+      // execute.
+      currentFragment_ = nullptr;
+      return std::move(stages_);
+    }
     if (options_.remoteOutput) {
       outputProjection = writePlan;
       top.fragment.planNode =

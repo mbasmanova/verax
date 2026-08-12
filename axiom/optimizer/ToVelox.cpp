@@ -33,6 +33,12 @@ namespace lp = facebook::axiom::logical_plan;
 namespace facebook::axiom::optimizer {
 
 std::string PlanAndStats::toString() const {
+  if (plan->fragments().empty()) {
+    // The connector carries out the write itself, so the handle's description
+    // is all there is to show.
+    return finishWrite.toString();
+  }
+
   return plan->toString(
       true,
       [&](const velox::core::PlanNodeId& planNodeId,
@@ -2247,6 +2253,7 @@ velox::core::PlanNodePtr ToVelox::makeWrite(
       session,
       table.shared_from_this(),
       write.kind(),
+      /*scanHandle=*/nullptr,
       optimizerSession_->options().explain);
 
   auto inputType = ROW(inputNames, inputTypes);
@@ -2282,6 +2289,7 @@ velox::core::PlanNodePtr ToVelox::makeWrite(
           connectorId, handle->veloxHandle());
   finishWrite_ = {
       metadata,
+      connectorId,
       std::move(session),
       std::move(handle),
       statsBuilder.statsMapping()};

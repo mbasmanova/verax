@@ -1774,8 +1774,8 @@ class TableWrite : public Node {
     const connector::Table* table;
     /// Write form (INSERT / CTAS / ...).
     connector::WriteKind kind;
-    /// Per-target-column values, non-empty and 1:1 with the table schema
-    /// (`table->type()`).
+    /// Per-target-column values, 1:1 with the table schema (`table->type()`).
+    /// Empty for a delete, which writes no columns.
     ExprVector columnExprs;
   };
 

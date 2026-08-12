@@ -1988,9 +1988,13 @@ TableWrite::TableWrite(Key key)
       columnExprs_(std::move(key.columnExprs)) {
   VELOX_CHECK_NOT_NULL(input_);
   VELOX_CHECK_NOT_NULL(table_);
-  VELOX_CHECK(
-      !columnExprs_.empty(), "TableWrite must write at least one column");
-  VELOX_CHECK_EQ(columnExprs_.size(), table_->type()->size());
+  if (kind_ == connector::WriteKind::kDelete) {
+    VELOX_CHECK(columnExprs_.empty(), "Delete writes no columns");
+  } else {
+    VELOX_CHECK(
+        !columnExprs_.empty(), "TableWrite must write at least one column");
+    VELOX_CHECK_EQ(columnExprs_.size(), table_->type()->size());
+  }
 }
 
 size_t TableWrite::KeyHash::operator()(const TableWrite* node) const {

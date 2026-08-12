@@ -209,7 +209,11 @@ void HiveQueriesTestBase::createEmptyTable(
       /*explain=*/false);
   VELOX_CHECK_NOT_NULL(table);
   auto handle = hiveMetadata().beginWrite(
-      session, table, connector::WriteKind::kCreate, /*explain=*/false);
+      session,
+      table,
+      connector::WriteKind::kCreate,
+      /*scanHandle=*/nullptr,
+      /*explain=*/false);
   hiveMetadata().finishWrite(session, handle, {}, nullptr, {}).get();
 }
 
