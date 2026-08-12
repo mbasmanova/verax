@@ -26,6 +26,18 @@
 namespace facebook::axiom::optimizer::v2 {
 namespace {
 
+// True when 'node' computes a single `row_number` with no ORDER BY, so each
+// row's value is its arbitrary arrival position rather than a function of the
+// other rows in its partition.
+bool isUnorderedRowNumber(const Window* node, const FunctionNames& names) {
+  if (!node->orderKeys().empty() || node->functions().size() != 1) {
+    return false;
+  }
+  const ExprCP call = node->functions()[0].call;
+  return call->is(PlanType::kCallExpr) &&
+      call->as<Call>()->name() == names.rowNumber;
+}
+
 // A count of this value means "no row bound" (a pure OFFSET).
 constexpr int64_t kNoCount = std::numeric_limits<int64_t>::max();
 
@@ -216,13 +228,35 @@ class LimitAndOrderRewriter : public NodeRewriter<LimitContext> {
   // its input's order through: a Sort below it stays observable.
   LIMIT_BARRIER(Unnest, rewriteUnnest, true)
   LIMIT_BARRIER(Join, rewriteJoin, false)
-  LIMIT_BARRIER(Window, rewriteWindow, false)
   LIMIT_BARRIER(Apply, rewriteApply, false)
   LIMIT_BARRIER(EnforceDistinct, rewriteEnforceDistinct, false)
   LIMIT_BARRIER(TopNRowNumber, rewriteTopNRowNumber, false)
   LIMIT_BARRIER(Exchange, rewriteExchange, false)
 
 #undef LIMIT_BARRIER
+
+  // Window: a bound above it counts the rows it emits, which is its input's
+  // rows, but the values its functions compute read the whole partition — so a
+  // bound below would change them. The exception is an unordered `row_number`,
+  // whose value is the arbitrary arrival position: numbering only the rows the
+  // bound keeps is as valid an answer as numbering all of them.
+  NodeCP rewriteWindow(const Window* node, LimitContext& context) override {
+    context.orderPreserved = false;
+    if (isUnorderedRowNumber(node, builder().functionNames())) {
+      return NodeRewriter::rewriteWindow(node, context);
+    }
+    const auto pending = std::exchange(context.pending, std::nullopt);
+    return materialize(pending, NodeRewriter::rewriteWindow(node, context));
+  }
+
+  NodeCP rewriteRowNumber(const RowNumber* /*node*/, LimitContext& /*context*/)
+      override {
+    // Pushdown and prune specializes a Window into a RowNumber, and runs after
+    // this pass. Should that order change, handle a RowNumber the way
+    // `rewriteWindow` handles an unordered row_number: a bound may move below
+    // one that has no limit of its own.
+    VELOX_UNREACHABLE("A RowNumber cannot reach this pass");
+  }
 
   // Project, AssignUniqueId, and MarkDistinct are row-preserving (1:1), so the
   // base rewrites — which thread the pending bound into the input — push the

@@ -70,6 +70,8 @@ class NodeRewriter {
         return rewriteJoin(node->as<Join>(), context);
       case NodeType::kWindow:
         return rewriteWindow(node->as<Window>(), context);
+      case NodeType::kRowNumber:
+        return rewriteRowNumber(node->as<RowNumber>(), context);
       case NodeType::kTopNRowNumber:
         return rewriteTopNRowNumber(node->as<TopNRowNumber>(), context);
       case NodeType::kApply:
@@ -261,6 +263,19 @@ class NodeRewriter {
          node->partitionKeys(),
          node->orderKeys(),
          node->orderTypes(),
+         node->outputColumns()});
+  }
+
+  virtual NodeCP rewriteRowNumber(const RowNumber* node, TContext& context) {
+    NodeCP newInput = rewrite(node->input(), context);
+    if (newInput == node->input()) {
+      return node;
+    }
+    return builder_.template make<RowNumber>(
+        {newInput,
+         node->partitionKeys(),
+         node->limit(),
+         node->rankColumn(),
          node->outputColumns()});
   }
 

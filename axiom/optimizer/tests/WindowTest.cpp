@@ -459,7 +459,8 @@ TEST_F(WindowTest, nonRedundantOrderByWithDifferentKeys) {
                      .build();
   AXIOM_ASSERT_PLAN(plan, matcher);
 
-  // No partition keys — gather, then Window + TopN + merge + limit + project.
+  // No partition keys — gather, then Window + TopN + project, all on the one
+  // task the gather already produced.
   auto distributedPlan = toDistributedPlan(sql);
   auto distributedMatcher =
       matchScan("nation")
@@ -468,7 +469,6 @@ TEST_F(WindowTest, nonRedundantOrderByWithDifferentKeys) {
           .window({"sum(n_regionkey) OVER (ORDER BY n_name)"})
           .topN(10)
           .localMerge()
-          .shuffleMerge()
           .finalLimit(0, 10)
           .project()
           .build();
@@ -527,8 +527,8 @@ TEST_F(WindowTest, nonRedundantOrderByMultipleWindowsDifferentOrderBy) {
                      .build();
   AXIOM_ASSERT_PLAN(plan, matcher);
 
-  // No partition keys — gather, then two Windows + TopN + merge + limit +
-  // project.
+  // No partition keys — gather, then two Windows + TopN + project, all on the
+  // one task the gather already produced.
   auto distributedPlan = toDistributedPlan(sql);
   auto distributedMatcher =
       matchScan("nation")
@@ -540,7 +540,6 @@ TEST_F(WindowTest, nonRedundantOrderByMultipleWindowsDifferentOrderBy) {
           .window({"avg(n_nationkey) OVER (ORDER BY n_nationkey)"})
           .topN(10)
           .localMerge()
-          .shuffleMerge()
           .finalLimit(0, 10)
           .project()
           .build();

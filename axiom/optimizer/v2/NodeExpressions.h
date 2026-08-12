@@ -143,6 +143,12 @@ void forEachExpressionInNode(NodeCP node, Visit&& visit) {
       }
       break;
     }
+    case NodeType::kRowNumber: {
+      for (ExprCP key : node->as<RowNumber>()->partitionKeys()) {
+        visit(key);
+      }
+      break;
+    }
     case NodeType::kTopNRowNumber: {
       const TopNRowNumber* topN = node->as<TopNRowNumber>();
       for (ExprCP key : topN->partitionKeys()) {

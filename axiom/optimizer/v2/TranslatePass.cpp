@@ -1209,6 +1209,17 @@ NodeCP Translator::maybeWrapInWindow(
       auto* call = builder_.makeCall(
           windowName, value, std::move(windowArgs), windowFuncs);
       Frame frame = toFrame(windowExpr->frame(), inputScope);
+      // With no ordering every row of a partition is a peer, so a RANGE bound
+      // at CURRENT ROW reaches the end of the partition in either direction.
+      if (spec.orderKeys.empty() &&
+          frame.type == lp::WindowExpr::WindowType::kRange) {
+        if (frame.startType == lp::WindowExpr::BoundType::kCurrentRow) {
+          frame.startType = lp::WindowExpr::BoundType::kUnboundedPreceding;
+        }
+        if (frame.endType == lp::WindowExpr::BoundType::kCurrentRow) {
+          frame.endType = lp::WindowExpr::BoundType::kUnboundedFollowing;
+        }
+      }
       functions.push_back(
           WindowFunction{call, frame, windowExpr->ignoreNulls()});
 

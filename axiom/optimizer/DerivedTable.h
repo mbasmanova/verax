@@ -204,6 +204,12 @@ struct DerivedTable : public TableObject {
   ExprVector orderKeys;
   OrderTypeVector orderTypes;
 
+  /// True when an ORDER BY was dropped from 'orderKeys' because a Window over
+  /// one partition already emits its rows in that order. A ranking node in that
+  /// Window's place emits each partition greatest-rank first, so whoever puts
+  /// one there has to sort again.
+  bool windowOrderDropped{false};
+
   /// Limit and offset.
   int64_t limit{-1};
   int64_t offset{0};

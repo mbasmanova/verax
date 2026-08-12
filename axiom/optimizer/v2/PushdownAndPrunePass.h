@@ -47,9 +47,12 @@ namespace facebook::axiom::optimizer::v2 {
 ///    `kLeftSemiProject` join.
 ///  - Window pushes conjuncts that reference only partition keys below the
 ///    window (the rest stay above), prunes window functions no consumer reads,
-///    and fuses a `rankColumn <op> n` bound over a single ranking function
-///    (row_number / rank / dense_rank) into a `TopNRowNumber`, consuming that
-///    predicate.
+///    and specializes a single ranking function (row_number / rank /
+///    dense_rank) into the cheapest node that computes it: an unordered
+///    `row_number` becomes a `RowNumber`, and an ordered ranking becomes a
+///    `TopNRowNumber` when a bound caps each partition. That bound comes from a
+///    `rankColumn <op> n` predicate, which is consumed, or from a `Limit` /
+///    `TopN` above the window, which stays.
 ///  - `Apply` must already be gone: decorrelate removes every `Apply` before
 ///    this pass, so encountering one is a logic error.
 ///

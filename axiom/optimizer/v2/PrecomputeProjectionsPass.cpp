@@ -339,6 +339,10 @@ class Rewriter : public NodeRewriter<> {
   NodeCP rewriteAggregate(const Aggregate* aggregate, NoContext& context)
       override;
   NodeCP rewriteWindow(const Window* window, NoContext& context) override;
+  NodeCP rewriteRowNumber(const RowNumber* rowNumber, NoContext& context)
+      override;
+  NodeCP rewriteTopNRowNumber(const TopNRowNumber* topN, NoContext& context)
+      override;
   NodeCP rewriteSort(const Sort* sort, NoContext& context) override;
   NodeCP rewriteUnnest(const Unnest* unnest, NoContext& context) override;
   NodeCP rewriteJoin(const Join* join, NoContext& context) override;
@@ -473,6 +477,64 @@ NodeCP Rewriter::rewriteWindow(const Window* window, NoContext& context) {
        std::move(newPartitionKeys),
        std::move(newOrderKeys),
        window->orderTypes(),
+       std::move(newOutputColumns)});
+}
+
+NodeCP Rewriter::rewriteRowNumber(
+    const RowNumber* rowNumber,
+    NoContext& context) {
+  NodeCP newInput = rewrite(rowNumber->input(), context);
+  PrecomputeProjections precompute{newInput, builder()};
+
+  ExprVector newPartitionKeys;
+  newPartitionKeys.reserve(rowNumber->partitionKeys().size());
+  for (ExprCP key : rowNumber->partitionKeys()) {
+    newPartitionKeys.push_back(precompute.toColumn(key));
+  }
+
+  // A RowNumber emits its input's columns followed by the row number, so
+  // materializing a key extends its output too.
+  const size_t oldPrefixLength = rowNumber->input()->outputColumns().size();
+  newInput = std::move(precompute).node();
+  ColumnVector newOutputColumns = replacePrefix(
+      rowNumber->outputColumns(), oldPrefixLength, newInput->outputColumns());
+  return builder().make<RowNumber>(
+      {newInput,
+       std::move(newPartitionKeys),
+       rowNumber->limit(),
+       rowNumber->rankColumn(),
+       std::move(newOutputColumns)});
+}
+
+NodeCP Rewriter::rewriteTopNRowNumber(
+    const TopNRowNumber* topN,
+    NoContext& context) {
+  NodeCP newInput = rewrite(topN->input(), context);
+  PrecomputeProjections precompute{newInput, builder()};
+
+  ExprVector newPartitionKeys;
+  newPartitionKeys.reserve(topN->partitionKeys().size());
+  for (ExprCP key : topN->partitionKeys()) {
+    newPartitionKeys.push_back(precompute.toColumn(key));
+  }
+  ExprVector newOrderKeys;
+  newOrderKeys.reserve(topN->orderKeys().size());
+  for (ExprCP key : topN->orderKeys()) {
+    newOrderKeys.push_back(precompute.toColumn(key));
+  }
+
+  const size_t oldPrefixLength = topN->input()->outputColumns().size();
+  newInput = std::move(precompute).node();
+  ColumnVector newOutputColumns = replacePrefix(
+      topN->outputColumns(), oldPrefixLength, newInput->outputColumns());
+  return builder().make<TopNRowNumber>(
+      {newInput,
+       topN->rankFunction(),
+       std::move(newPartitionKeys),
+       std::move(newOrderKeys),
+       topN->orderTypes(),
+       topN->limit(),
+       topN->rankColumn(),
        std::move(newOutputColumns)});
 }
 

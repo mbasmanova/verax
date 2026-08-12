@@ -1964,6 +1964,7 @@ void ToGraph::addOrderBy(const lp::SortNode& order) {
   }
 
   if (allWindowsMatch.value_or(false)) {
+    currentDt_->windowOrderDropped = true;
     return;
   }
 

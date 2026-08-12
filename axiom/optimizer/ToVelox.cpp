@@ -1124,7 +1124,10 @@ velox::core::PlanNodePtr ToVelox::makeOrderBy(
   // An unbounded sort (ORDER BY with no LIMIT) is a full sort; a trailing Limit
   // applies any offset (its no-limit count keeps every remaining row). A
   // bounded sort is a TopN over offset + count.
-  if (isSingle_) {
+  //
+  // An input already gathered onto one task sorts in place; no second fragment
+  // is needed.
+  if (isSingle_ || op.input()->distribution().isGather()) {
     auto input = makeFragment(op.input(), fragment, stages);
 
     if (options_.numDrivers == 1) {

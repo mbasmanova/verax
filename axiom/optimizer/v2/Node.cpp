@@ -41,6 +41,7 @@ const auto& nodeTypeNames() {
       {NodeType::kUnionAll, "UnionAll"},
       {NodeType::kJoin, "Join"},
       {NodeType::kWindow, "Window"},
+      {NodeType::kRowNumber, "RowNumber"},
       {NodeType::kTopNRowNumber, "TopNRowNumber"},
       {NodeType::kApply, "Apply"},
       {NodeType::kEnforceSingleRow, "EnforceSingleRow"},
@@ -254,6 +255,16 @@ PhysicalProperties passThroughProperties(NodeCP input) {
   return PhysicalProperties{
       .globalPartition = props.globalPartition.dropOrder(),
       .local = props.local,
+      .unique = props.unique};
+}
+
+// Properties of a ranking node: it keeps every surviving row on the task it
+// arrived on and only drops rows, so the input's distribution and uniqueness
+// survive. Its local order does not.
+PhysicalProperties rankedProperties(NodeCP input) {
+  const PhysicalProperties& props = input->physicalProperties();
+  return PhysicalProperties{
+      .globalPartition = props.globalPartition.dropOrder(),
       .unique = props.unique};
 }
 
@@ -1522,8 +1533,67 @@ bool Window::KeyEq::operator()(const Window* node, const Key& key) const {
   return (*this)(key, node);
 }
 
+RowNumber::RowNumber(Key key)
+    : Node(
+          NodeType::kRowNumber,
+          ColumnVector{key.outputColumns},
+          rankedProperties(key.input)),
+      input_(key.input),
+      partitionKeys_(std::move(key.partitionKeys)),
+      limit_(key.limit),
+      rankColumn_(key.rankColumn) {
+  VELOX_CHECK_NOT_NULL(input_);
+  if (limit_.has_value()) {
+    VELOX_CHECK_GT(limit_.value(), 0, "RowNumber limit must be positive");
+  }
+  VELOX_CHECK_EQ(
+      this->outputColumns().size(),
+      input_->outputColumns().size() + (rankColumn_ != nullptr ? 1 : 0));
+}
+
+size_t RowNumber::KeyHash::operator()(const RowNumber* node) const {
+  return hashOf(
+      node->input(),
+      node->partitionKeys(),
+      node->limit(),
+      node->rankColumn(),
+      node->outputColumns());
+}
+
+size_t RowNumber::KeyHash::operator()(const Key& key) const {
+  return hashOf(
+      key.input,
+      key.partitionKeys,
+      key.limit,
+      key.rankColumn,
+      key.outputColumns);
+}
+
+bool RowNumber::KeyEq::operator()(const RowNumber* left, const RowNumber* right)
+    const {
+  return left->input() == right->input() &&
+      left->partitionKeys() == right->partitionKeys() &&
+      left->limit() == right->limit() &&
+      left->rankColumn() == right->rankColumn() &&
+      left->outputColumns() == right->outputColumns();
+}
+
+bool RowNumber::KeyEq::operator()(const Key& key, const RowNumber* node) const {
+  return key.input == node->input() &&
+      key.partitionKeys == node->partitionKeys() &&
+      key.limit == node->limit() && key.rankColumn == node->rankColumn() &&
+      key.outputColumns == node->outputColumns();
+}
+
+bool RowNumber::KeyEq::operator()(const RowNumber* node, const Key& key) const {
+  return (*this)(key, node);
+}
+
 TopNRowNumber::TopNRowNumber(Key key)
-    : Node(NodeType::kTopNRowNumber, ColumnVector{key.outputColumns}, {}),
+    : Node(
+          NodeType::kTopNRowNumber,
+          ColumnVector{key.outputColumns},
+          rankedProperties(key.input)),
       input_(key.input),
       rankFunction_(key.rankFunction),
       partitionKeys_(std::move(key.partitionKeys)),
@@ -2049,6 +2119,7 @@ V2_DEFINE_ACCEPT(Unnest)
 V2_DEFINE_ACCEPT(UnionAll)
 V2_DEFINE_ACCEPT(Join)
 V2_DEFINE_ACCEPT(Window)
+V2_DEFINE_ACCEPT(RowNumber)
 V2_DEFINE_ACCEPT(TopNRowNumber)
 V2_DEFINE_ACCEPT(Apply)
 V2_DEFINE_ACCEPT(EnforceSingleRow)

@@ -52,6 +52,12 @@ struct PushdownContext {
   // not refine it, which only blocks (never wrongly enables) fusion.
   PlanObjectSet requiredAbove;
 
+  // Per-partition row cap implied by a `Limit` or `TopN` directly above a
+  // ranking `Window`: it keeps at most `offset + count` rows overall, so no
+  // partition can contribute more than that many. Set only for that immediate
+  // parent-child pair.
+  std::optional<int32_t> rankLimit;
+
   // `Column*`s whose values are guaranteed non-NULL in the current
   // subtree (derived from default-null-behavior equi-keys of an
   // ancestor inner join). Never inserted into the plan.
@@ -444,25 +450,29 @@ FilterTarget joinFilterTarget(
   VELOX_UNREACHABLE();
 }
 
-// A recognized `Filter(rankColumn <op> n)` over a single-ranking-function
-// `Window`, to be fused into a `TopNRowNumber`.
+// A single-ranking-function `Window` that a specialized ranking node can
+// replace, with the per-partition row cap that applies to it.
 struct RankFusion {
-  // The consumed predicate conjunct.
+  // The `rankColumn <op> n` conjunct consumed as the cap, or null when the cap
+  // came from a bound above the Window or there is no cap.
   ExprCP predicate;
   // The window function's output column (the rank value).
   ColumnCP rankColumn;
   velox::core::TopNRowNumberNode::RankFunction rankFunction;
-  int32_t limit;
+  // Per-partition row cap; absent only for an unordered row_number with no
+  // bound.
+  std::optional<int32_t> limit;
 };
 
-// Detects a single ranking function (row_number / rank / dense_rank) bounded by
-// a per-partition row limit, returning the fusion when one of the 'pending'
-// conjuncts bounds the rank column.
+// Returns the specialization for a single ranking function (row_number / rank /
+// dense_rank), taking its cap from a 'pending' conjunct on the rank column or
+// from 'rankLimit'.
 std::optional<RankFusion> detectRankFusion(
     const Window* node,
     const ExprVector& pending,
+    std::optional<int32_t> rankLimit,
     const FunctionNames& names) {
-  if (node->functions().size() != 1 || node->orderKeys().empty()) {
+  if (node->functions().size() != 1) {
     return std::nullopt;
   }
   const ExprCP call = node->functions()[0].call;
@@ -483,6 +493,15 @@ std::optional<RankFusion> detectRankFusion(
 
   const size_t numInputColumns = node->input()->outputColumns().size();
   const ColumnCP rankColumn = node->outputColumns()[numInputColumns];
+
+  // An unordered rank / dense_rank ties every row of a partition at rank 1,
+  // which no specialized node computes.
+  const bool ordered = !node->orderKeys().empty();
+  if (!ordered &&
+      rankFunction !=
+          velox::core::TopNRowNumberNode::RankFunction::kRowNumber) {
+    return std::nullopt;
+  }
 
   for (ExprCP conjunct : pending) {
     if (!conjunct->is(PlanType::kCallExpr)) {
@@ -512,7 +531,75 @@ std::optional<RankFusion> detectRankFusion(
     return RankFusion{
         conjunct, rankColumn, rankFunction, static_cast<int32_t>(limit)};
   }
-  return std::nullopt;
+
+  if (ordered) {
+    // A `Limit` above bounds every partition just as a rank predicate would.
+    if (rankLimit.has_value()) {
+      return RankFusion{
+          /*predicate=*/nullptr, rankColumn, rankFunction, rankLimit};
+    }
+    // An unbounded ordered ranking still has to sort each partition.
+    return std::nullopt;
+  }
+  // An unordered row_number numbers rows as they arrive, so it specializes with
+  // or without a bound.
+  return RankFusion{
+      /*predicate=*/nullptr, rankColumn, rankFunction, /*limit=*/std::nullopt};
+}
+
+// With no ORDER BY every row of a partition ties, so `rank` and `dense_rank`
+// are 1 for every row. Returns that column when 'node' computes such a
+// constant ranking, else null.
+ColumnCP constantRankColumn(const Window* node, const FunctionNames& names) {
+  if (!node->orderKeys().empty() || node->functions().size() != 1) {
+    return nullptr;
+  }
+  const ExprCP call = node->functions()[0].call;
+  if (!call->is(PlanType::kCallExpr)) {
+    return nullptr;
+  }
+  const Name name = call->as<Call>()->name();
+  if (name != names.rank && name != names.denseRank) {
+    return nullptr;
+  }
+  return node->outputColumns()[node->input()->outputColumns().size()];
+}
+
+// True when 'conjunct' compares 'rankColumn' with a literal and holds for a
+// rank of 1 — with the rank constant, the predicate selects every row. Only
+// (column, literal) order is matched: `Builder` canonicalizes a reversible
+// comparison to put the literal second.
+bool holdsAtRankOne(
+    ExprCP conjunct,
+    ColumnCP rankColumn,
+    const FunctionNames& names) {
+  if (!conjunct->is(PlanType::kCallExpr)) {
+    return false;
+  }
+  const Call* comparison = conjunct->as<Call>();
+  if (comparison->args().size() != 2 || comparison->args()[0] != rankColumn ||
+      !comparison->args()[1]->is(PlanType::kLiteralExpr)) {
+    return false;
+  }
+  const int64_t bound =
+      integerValue(&comparison->args()[1]->as<Literal>()->literal());
+  const Name name = comparison->name();
+  if (name == names.equality) {
+    return bound == 1;
+  }
+  if (name == names.lt) {
+    return 1 < bound;
+  }
+  if (name == names.lte) {
+    return 1 <= bound;
+  }
+  if (name == names.gt) {
+    return 1 > bound;
+  }
+  if (name == names.gte) {
+    return 1 >= bound;
+  }
+  return false;
 }
 
 // Top-down filter pushdown visitor. Every node kind is overridden
@@ -1001,8 +1088,30 @@ class Pushdown : public NodeRewriter<PushdownContext> {
 
   // Internal nodes — recurse with empty pending via `blockAt`:
   NodeCP rewriteLimit(const Limit* node, PushdownContext& context) override {
-    return blockAt(context, [&](PushdownContext& empty) {
-      return NodeRewriter::rewriteLimit(node, empty);
+    return blockAt(context, [&](PushdownContext& empty) -> NodeCP {
+      const int64_t cap = node->offsetPlusCount();
+      if (node->input()->is(NodeType::kWindow) &&
+          cap <= std::numeric_limits<int32_t>::max()) {
+        empty.rankLimit = static_cast<int32_t>(cap);
+      }
+      NodeCP newInput = rewrite(node->input(), empty);
+
+      // A row_number over one partition, capped at the same count, already
+      // emits exactly the rows this limit would keep.
+      if (node->offset() == 0 && newInput->is(NodeType::kTopNRowNumber)) {
+        const auto* ranking = newInput->as<TopNRowNumber>();
+        if (ranking->partitionKeys().empty() &&
+            ranking->limit() == node->count() &&
+            ranking->rankFunction() ==
+                velox::core::TopNRowNumberNode::RankFunction::kRowNumber) {
+          return newInput;
+        }
+      }
+
+      if (newInput == node->input()) {
+        return static_cast<NodeCP>(node);
+      }
+      return builder().make<Limit>({newInput, node->offset(), node->count()});
     });
   }
 
@@ -1022,10 +1131,38 @@ class Pushdown : public NodeRewriter<PushdownContext> {
   // TopN: a filter barrier like Limit (its bound depends on the row set), and
   // its order keys must survive in the child like Sort.
   NodeCP rewriteTopN(const TopN* node, PushdownContext& context) override {
-    return blockAt(context, [&](PushdownContext& empty) {
+    return blockAt(context, [&](PushdownContext& empty) -> NodeCP {
       empty.required.unionColumns(node->orderKeys());
       empty.requiredAbove.unionColumns(node->orderKeys());
-      return NodeRewriter::rewriteTopN(node, empty);
+
+      // Sorting by what the window below ranks on means a row past rank
+      // 'offset + count' in its partition has that many rows before it here
+      // too, so it cannot survive this TopN: the window can cap partitions
+      // there.
+      const int64_t cap = node->offsetPlusCount();
+      const bool ordersAgree = node->input()->is(NodeType::kWindow) &&
+          node->orderKeys() == node->input()->as<Window>()->orderKeys() &&
+          node->orderTypes() == node->input()->as<Window>()->orderTypes();
+      if (ordersAgree && cap <= std::numeric_limits<int32_t>::max()) {
+        empty.rankLimit = static_cast<int32_t>(cap);
+      }
+
+      NodeCP newInput = rewrite(node->input(), empty);
+
+      // The cap only reduces the rows the TopN sees; the TopN itself stays,
+      // because a ranking node emits each partition greatest-rank first rather
+      // than in order-key order. It can go once
+      // https://github.com/facebookincubator/velox/issues/18494 makes a ranking
+      // node's output order match a Window's.
+      if (newInput == node->input()) {
+        return static_cast<NodeCP>(node);
+      }
+      return builder().make<TopN>(
+          {newInput,
+           node->orderKeys(),
+           node->orderTypes(),
+           node->offset(),
+           node->count()});
     });
   }
 
@@ -1209,12 +1346,12 @@ class Pushdown : public NodeRewriter<PushdownContext> {
   // Window: conjuncts whose columns are all direct partition-key
   // columns push below — within a partition those values are
   // constant, so pre/post-filter are equivalent. All others stay
-  // above.
+  // above. A single ranking function then specializes into the cheapest node
+  // that computes it; anything else stays a Window with unread functions
+  // pruned.
   NodeCP rewriteWindow(const Window* node, PushdownContext& context) override {
-    // A `rankColumn <op> n` predicate over a single ranking function fuses the
-    // Window into a TopNRowNumber, consuming that predicate.
-    const std::optional<RankFusion> fusion =
-        detectRankFusion(node, context.pending, builder().functionNames());
+    const std::optional<RankFusion> fusion = detectRankFusion(
+        node, context.pending, context.rankLimit, builder().functionNames());
 
     PlanObjectSet partitionKeyColumns;
     for (ExprCP key : node->partitionKeys()) {
@@ -1224,11 +1361,18 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     }
 
     // Conjuncts referencing only partition keys push below; the rest stay above
-    // (or, for the fused ranking predicate, are consumed).
+    // (or, for a bound the ranking node absorbs, are consumed).
+    const ColumnCP constantRank =
+        constantRankColumn(node, builder().functionNames());
     ExprVector pushable;
     ExprVector blocked;
     for (ExprCP conjunct : context.pending) {
       if (fusion && conjunct == fusion->predicate) {
+        continue;
+      }
+      // A predicate that every row satisfies selects nothing away.
+      if (constantRank != nullptr &&
+          holdsAtRankOne(conjunct, constantRank, builder().functionNames())) {
         continue;
       }
       const auto& columns = conjunct->columns();
@@ -1243,48 +1387,89 @@ class Pushdown : public NodeRewriter<PushdownContext> {
 
     PlanObjectSet outputsKept = context.required;
     outputsKept.unionColumns(blocked);
-    const size_t numInputCols = node->input()->outputColumns().size();
 
     PushdownContext childContext;
     childContext.pending = std::move(pushable);
     childContext.required = context.required;
     childContext.required.unionColumns(node->partitionKeys());
     childContext.required.unionColumns(node->orderKeys());
-    // Window/TopNRowNumber emit every input column; the child must keep
-    // producing them all.
+    // Every ranking node emits all of its input's columns, so the child must
+    // keep producing them.
     childContext.required.unionObjects(node->input()->outputColumns());
     childContext.required.unionColumns(blocked);
     childContext.nonNullColumns = context.nonNullColumns;
 
     if (fusion) {
-      childContext.required.unionColumns(childContext.pending);
-      childContext.requiredAbove = childContext.required;
-      NodeCP newInput = rewrite(node->input(), childContext);
-      // Emit the rank column only when a consumer above still needs it.
-      const ColumnCP rankColumn = outputsKept.contains(fusion->rankColumn)
-          ? fusion->rankColumn
-          : nullptr;
-      ColumnVector newOutputColumns;
-      appendAll(newOutputColumns, newInput->outputColumns());
-      if (rankColumn != nullptr) {
-        newOutputColumns.push_back(rankColumn);
-      }
-      NodeCP topN = builder().make<TopNRowNumber>(
+      return specializeRanking(
+          node, *fusion, childContext, outputsKept, std::move(blocked));
+    }
+    return pruneWindowFunctions(
+        node, childContext, outputsKept, std::move(blocked));
+  }
+
+  // Replaces a single-ranking-function Window with the node that computes it
+  // most cheaply: RowNumber when the rows need no ordering, TopNRowNumber when
+  // an ordered ranking is bounded by a per-partition limit.
+  NodeCP specializeRanking(
+      const Window* node,
+      const RankFusion& fusion,
+      PushdownContext& childContext,
+      const PlanObjectSet& outputsKept,
+      ExprVector blocked) {
+    childContext.required.unionColumns(childContext.pending);
+    childContext.requiredAbove = childContext.required;
+    NodeCP newInput = rewrite(node->input(), childContext);
+
+    // Emit the rank column only when a consumer above still needs it.
+    const ColumnCP rankColumn =
+        outputsKept.contains(fusion.rankColumn) ? fusion.rankColumn : nullptr;
+    ColumnVector newOutputColumns;
+    appendAll(newOutputColumns, newInput->outputColumns());
+    if (rankColumn != nullptr) {
+      newOutputColumns.push_back(rankColumn);
+    }
+
+    // With no rank column to emit and no limit, the node would pass its input
+    // through unchanged.
+    if (node->orderKeys().empty() && rankColumn == nullptr &&
+        !fusion.limit.has_value()) {
+      return maybeWrapFilter(newInput, std::move(blocked));
+    }
+
+    NodeCP ranking;
+    if (node->orderKeys().empty()) {
+      ranking = builder().make<RowNumber>(
           {newInput,
-           fusion->rankFunction,
+           node->partitionKeys(),
+           fusion.limit,
+           rankColumn,
+           std::move(newOutputColumns)});
+    } else {
+      ranking = builder().make<TopNRowNumber>(
+          {newInput,
+           fusion.rankFunction,
            node->partitionKeys(),
            node->orderKeys(),
            node->orderTypes(),
-           fusion->limit,
+           fusion.limit.value(),
            rankColumn,
            std::move(newOutputColumns)});
-      return maybeWrapFilter(topN, std::move(blocked));
     }
+    return maybeWrapFilter(ranking, std::move(blocked));
+  }
+
+  // Keeps the Window, dropping the functions no consumer reads.
+  NodeCP pruneWindowFunctions(
+      const Window* node,
+      PushdownContext& childContext,
+      const PlanObjectSet& outputsKept,
+      ExprVector blocked) {
+    const size_t numInputColumns = node->input()->outputColumns().size();
 
     WindowFunctions survivingFunctions;
     ColumnVector survivingFunctionOutputs;
     for (size_t i = 0; i < node->functions().size(); ++i) {
-      const ColumnCP funcOutput = node->outputColumns()[numInputCols + i];
+      const ColumnCP funcOutput = node->outputColumns()[numInputColumns + i];
       if (outputsKept.contains(funcOutput)) {
         survivingFunctions.push_back(node->functions()[i]);
         survivingFunctionOutputs.push_back(funcOutput);
@@ -1297,8 +1482,14 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     childContext.requiredAbove = childContext.required;
     NodeCP newInput = rewrite(node->input(), childContext);
 
+    // With every function pruned the node computes nothing and emits its
+    // input's columns.
+    if (survivingFunctions.empty()) {
+      return maybeWrapFilter(newInput, std::move(blocked));
+    }
+
     ColumnVector newOutputColumns;
-    newOutputColumns.reserve(numInputCols + survivingFunctions.size());
+    newOutputColumns.reserve(numInputColumns + survivingFunctions.size());
     appendAll(newOutputColumns, newInput->outputColumns());
     appendAll(newOutputColumns, survivingFunctionOutputs);
 

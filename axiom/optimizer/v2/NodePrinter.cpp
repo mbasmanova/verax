@@ -249,6 +249,21 @@ class Printer : public NodeVisitor {
     visitInputs(node, ctx);
   }
 
+  void visit(const RowNumber& node, NodeVisitorContext& context)
+      const override {
+    auto& ctx = static_cast<Context&>(context);
+    header(
+        ctx,
+        node,
+        node.limit().has_value() ? fmt::format("[limit {}]", *node.limit())
+                                 : "");
+    if (!node.partitionKeys().empty()) {
+      ctx.out << spaces(ctx.indent + 2)
+              << "partitionKeys: " << formatExprs(node.partitionKeys()) << '\n';
+    }
+    visitInputs(node, ctx);
+  }
+
   void visit(const TopNRowNumber& node, NodeVisitorContext& context)
       const override {
     auto& ctx = static_cast<Context&>(context);

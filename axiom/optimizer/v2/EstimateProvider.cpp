@@ -281,11 +281,55 @@ Estimate EstimateProvider::compute(NodeCP node) {
       return result;
     }
 
+    // A `row_number` ranking keeps at most `limit` rows per partition, so its
+    // output is capped at limit * the number of partitions. `rank` and
+    // `dense_rank` keep every row tied at a rank within the limit, which that
+    // product does not bound.
+    case NodeType::kRowNumber:
+    case NodeType::kTopNRowNumber: {
+      ExprVector partitionKeys;
+      std::optional<int32_t> limit;
+      bool capsPartition = true;
+      if (node->is(NodeType::kRowNumber)) {
+        const auto* rowNumber = node->as<RowNumber>();
+        partitionKeys = rowNumber->partitionKeys();
+        limit = rowNumber->limit();
+      } else {
+        const auto* topN = node->as<TopNRowNumber>();
+        partitionKeys = topN->partitionKeys();
+        limit = topN->limit();
+        capsPartition = topN->rankFunction() ==
+            velox::core::TopNRowNumberNode::RankFunction::kRowNumber;
+      }
+
+      const auto& input = estimate(node->inputs()[0]);
+      Estimate result;
+      result.constraints = input.constraints;
+      result.cardinality = input.cardinality;
+      if (!limit.has_value() || !capsPartition) {
+        return result;
+      }
+
+      std::optional<float> numPartitions{1.0f};
+      for (ExprCP key : partitionKeys) {
+        numPartitions =
+            mul(numPartitions, value(input.constraints, key).cardinality);
+      }
+      // An unknown partition count leaves the input's cardinality as the bound.
+      if (numPartitions.has_value()) {
+        result.cardinality = maxOf(
+            1.0f,
+            minOf(
+                input.cardinality,
+                mul(numPartitions, static_cast<float>(limit.value()))));
+      }
+      return result;
+    }
+
     // Cardinality-neutral operators: pass the input's estimate through.
     case NodeType::kProject:
     case NodeType::kSort:
     case NodeType::kWindow:
-    case NodeType::kTopNRowNumber:
     case NodeType::kGroupId:
     case NodeType::kMarkDistinct:
     case NodeType::kEnforceSingleRow:
