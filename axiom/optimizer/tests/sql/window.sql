@@ -90,6 +90,51 @@ SELECT a, b FROM (SELECT a, b, dense_rank() OVER (PARTITION BY a, b ORDER BY a) 
 -- Same as above but with rank().
 SELECT a, b FROM (SELECT a, b, rank() OVER (PARTITION BY a, b ORDER BY a) AS r FROM t) WHERE r = 1
 ----
+-- row_number without ORDER BY: which rows get which numbers is arbitrary, so
+-- the query checks how many rows each partition keeps, not their numbers.
+SELECT a, count(*) AS kept FROM (SELECT a, row_number() OVER (PARTITION BY a) AS rn FROM t) WHERE rn <= 2 GROUP BY a
+----
+-- row_number without PARTITION BY or ORDER BY, bounded by a filter.
+-- count 4
+SELECT rn FROM (SELECT row_number() OVER () AS rn FROM t) WHERE rn <= 4
+----
+-- Computed PARTITION BY: rows are numbered within the value of the expression.
+SELECT a, b FROM (SELECT a, b, row_number() OVER (PARTITION BY a % 2 ORDER BY b) AS rn FROM t) WHERE rn = 1
+----
+-- RANGE frame with a CURRENT ROW bound and no ORDER BY.
+SELECT a, b, sum(b) OVER (PARTITION BY a RANGE BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) AS s FROM t
+----
+SELECT a, b, sum(b) OVER (PARTITION BY a RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS s FROM t
+----
+-- Window function with OFFSET and no LIMIT: nothing bounds the partitions, so
+-- every row is numbered and the offset drops an arbitrary 5 of them.
+-- count 10
+SELECT a, b, rn FROM (SELECT a, b, row_number() OVER (PARTITION BY a ORDER BY b) AS rn FROM t) OFFSET 5
+----
+-- The window and the query both order by an expression: the rows come back in
+-- that order.
+-- ordered
+SELECT a, b, row_number() OVER (ORDER BY a + b) AS rn FROM t ORDER BY a + b LIMIT 3
+----
+-- rank() with a query ORDER BY matching the window's: ties may exceed the
+-- limit, so the rows kept must still be the first ones in that order.
+-- ordered
+SELECT b, rank() OVER (ORDER BY b) AS r FROM t ORDER BY b LIMIT 3
+----
+-- OFFSET with LIMIT over a ranking: the ranking must keep enough rows per
+-- partition for the offset to skip.
+-- ordered
+SELECT b, row_number() OVER (ORDER BY b) AS rn FROM t ORDER BY b OFFSET 5 LIMIT 4
+----
+-- Query ORDER BY matches the window's ORDER BY over a single partition: the
+-- rows must still come back in that order.
+-- ordered
+SELECT b, row_number() OVER (ORDER BY b) AS rn FROM t ORDER BY b LIMIT 3
+----
+-- rank() with no ORDER BY: every row of a partition ties at rank 1, so the
+-- filter keeps every row.
+SELECT a, b FROM (SELECT a, b, rank() OVER (PARTITION BY a) AS rk FROM t) WHERE rk = 1
+----
 -- Window function combined with ORDER BY and LIMIT.
 -- ordered
 SELECT a, b, row_number() OVER (PARTITION BY a ORDER BY b) AS rn FROM t ORDER BY a, b LIMIT 3

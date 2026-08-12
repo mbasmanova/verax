@@ -46,6 +46,7 @@ enum class NodeType : uint8_t {
   kUnionAll,
   kJoin,
   kWindow,
+  kRowNumber,
   kTopNRowNumber,
   kApply,
   kEnforceSingleRow,
@@ -468,7 +469,9 @@ class TopN : public Node {
     OrderTypeVector orderTypes;
     /// Number of leading rows to skip; >= 0.
     int64_t offset;
-    /// Maximum number of rows to return; >= 0.
+    /// Maximum number of rows to return; >= 0. A real bound: an `ORDER BY`
+    /// with no `LIMIT` is a `Sort`, so `Limit`'s no-limit sentinel never
+    /// reaches here and `offsetPlusCount()` saturates only on overflow.
     int64_t count;
   };
 
@@ -507,6 +510,14 @@ class TopN : public Node {
 
   int64_t count() const {
     return count_;
+  }
+
+  /// Returns offset + count, saturated at INT64_MAX so a no-limit count does
+  /// not overflow.
+  int64_t offsetPlusCount() const {
+    return count_ >= std::numeric_limits<int64_t>::max() - offset_
+        ? std::numeric_limits<int64_t>::max()
+        : offset_ + count_;
   }
 
   std::span<const NodeCP> inputs() const override {
@@ -1274,6 +1285,74 @@ class Window : public Node {
 };
 
 using WindowCP = const Window*;
+
+/// Numbers the rows of each partition in arrival order, optionally keeping only
+/// the first 'limit' of them. Needs no ordering, so it streams: one counter per
+/// partition key, no per-partition buffer. Computes `row_number` only.
+class RowNumber : public Node {
+ public:
+  struct Key {
+    /// Input node.
+    NodeCP input;
+    /// Partition-by keys; empty for a single global partition.
+    ExprVector partitionKeys;
+    /// Per-partition row cap; > 0 when set, absent for no cap.
+    std::optional<int32_t> limit;
+    /// Column carrying the row number in the output, or null to omit it (the
+    /// output is then just the input columns).
+    ColumnCP rankColumn;
+    /// Output columns: `input`'s columns, plus `rankColumn` when set.
+    ColumnVector outputColumns;
+  };
+
+  /// Transparent hasher for interning `RowNumber`s by identity.
+  struct KeyHash {
+    using is_transparent = void;
+    size_t operator()(const RowNumber* node) const;
+    size_t operator()(const Key& key) const;
+  };
+
+  /// Transparent equality for interning `RowNumber`s by identity.
+  struct KeyEq {
+    using is_transparent = void;
+    bool operator()(const RowNumber* left, const RowNumber* right) const;
+    bool operator()(const Key& key, const RowNumber* node) const;
+    bool operator()(const RowNumber* node, const Key& key) const;
+  };
+
+  explicit RowNumber(Key key);
+
+  NodeCP input() const {
+    return input_;
+  }
+
+  const ExprVector& partitionKeys() const {
+    return partitionKeys_;
+  }
+
+  std::optional<int32_t> limit() const {
+    return limit_;
+  }
+
+  ColumnCP rankColumn() const {
+    return rankColumn_;
+  }
+
+  std::span<const NodeCP> inputs() const override {
+    return {&input_, 1};
+  }
+
+  void accept(const NodeVisitor& visitor, NodeVisitorContext& context)
+      const override;
+
+ private:
+  const NodeCP input_;
+  const ExprVector partitionKeys_;
+  const std::optional<int32_t> limit_;
+  const ColumnCP rankColumn_;
+};
+
+using RowNumberCP = const RowNumber*;
 
 /// Per-partition top-`limit` rows ranked by a ranking function (row_number /
 /// rank / dense_rank). Produced by fusing

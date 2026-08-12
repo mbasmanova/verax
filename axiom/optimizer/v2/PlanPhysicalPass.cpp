@@ -599,6 +599,23 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
          outputFollowingInput(node, input)});
   }
 
+  // Distributes a row numbering: like a window, its input must be partitioned
+  // on the PARTITION BY keys (gather when none) so each partition is numbered
+  // on one task.
+  NodeCP rewriteRowNumber(const RowNumber* node, NoContext& context) override {
+    auto [input, partitionKeys] =
+        ensureCoLocated(rewrite(node->input(), context), node->partitionKeys());
+    if (input == node->input()) {
+      return node;
+    }
+    return builder().make<RowNumber>(
+        {input,
+         partitionKeys,
+         node->limit(),
+         node->rankColumn(),
+         outputFollowingInput(node, input)});
+  }
+
   // Distributes a per-partition top-n (row_number / rank): like a window, its
   // input must be partitioned on the PARTITION BY keys (gather when none).
   NodeCP rewriteTopNRowNumber(const TopNRowNumber* node, NoContext& context)
@@ -677,6 +694,13 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
       return builder().make<Limit>({newInput, node->offset(), node->count()});
     }
 
+    // A partial keeps the first offset + count rows of each task; with no
+    // count that is every row, so there is nothing to reduce before the gather.
+    if (node->offsetPlusCount() == std::numeric_limits<int64_t>::max()) {
+      return builder().make<Limit>(
+          {gather(newInput), node->offset(), node->count()});
+    }
+
     NodeCP partial = builder().make<Limit>(
         {newInput, /*offset=*/0, node->offsetPlusCount()});
     return builder().make<Limit>(
@@ -684,8 +708,9 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
   }
 
   // Distributes a bounded ORDER BY (TopN, an ORDER BY + LIMIT): at numWorkers>1
-  // a per-task partial keeps its own top offset+count rows, the gather brings
-  // them to one task, and the full TopN produces the global top there.
+  // a per-task partial keeps its own top offset+count rows, and an
+  // order-preserving merge gather combines those sorted streams, so the one
+  // task only has to drop rows outside offset/count rather than sort again.
   NodeCP rewriteTopN(const TopN* node, NoContext& context) override {
     NodeCP newInput = rewrite(node->input(), context);
     if (numWorkers_ == 1 || isGathered(newInput)) {
@@ -705,11 +730,9 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
          node->orderKeys(),
          node->orderTypes(),
          /*offset=*/0,
-         node->offset() + node->count()});
-    return builder().make<TopN>(
-        {gather(partial),
-         node->orderKeys(),
-         node->orderTypes(),
+         node->offsetPlusCount()});
+    return builder().make<Limit>(
+        {gatherMerge(partial, node->orderKeys(), node->orderTypes()),
          node->offset(),
          node->count()});
   }

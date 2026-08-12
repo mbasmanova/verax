@@ -593,9 +593,6 @@ TEST_P(UnionAllTest, orderByOverTwoScans) {
 // the ORDER BY should run in the same kSingle fragment with no remote
 // exchange.
 //
-// TODO: The optimizer always emits a separate kSingle final fragment, even
-// when the union is already kSingle. The OrderBy is split into PARTIAL +
-// LocalMerge + MergeExchange + (no extra OrderBy) — one unnecessary gather.
 TEST_P(UnionAllTest, orderByOverTwoValues) {
   auto logicalPlan = parseSelect(
       "SELECT * FROM (VALUES 1 UNION ALL VALUES 2) ORDER BY 1",
@@ -610,20 +607,13 @@ TEST_P(UnionAllTest, orderByOverTwoValues) {
   }
 
   {
-    // The union is kSingle, so v2 sorts entirely in that fragment. v1 always
-    // splits into a partial sort + merge exchange to a separate kSingle final
-    // fragment -- a known v1 suboptimality (an unnecessary gather) that v2
-    // avoids.
-    auto builder = matchValues()
+    // The union is kSingle, so the sort runs in that fragment: no gather.
+    auto matcher = matchValues()
                        .localPartition(matchValues().project().build())
                        .orderBy({"c0 ASC NULLS LAST"})
-                       .localMerge();
-    if (useV2_) {
-      builder.output(FragmentType::kSingle);
-    } else {
-      builder.shuffleMerge();
-    }
-    auto matcher = builder.build();
+                       .localMerge()
+                       .output(FragmentType::kSingle)
+                       .build();
     AXIOM_ASSERT_DISTRIBUTED_PLAN(planVelox(logicalPlan).plan, matcher);
   }
 }

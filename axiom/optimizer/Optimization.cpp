@@ -17,6 +17,7 @@
 #include "axiom/optimizer/Optimization.h"
 #include <algorithm>
 #include <iostream>
+#include <limits>
 #include <utility>
 #include "axiom/connectors/ConnectorMetadataRegistry.h"
 #include "axiom/optimizer/AggregationPlanner.h"
@@ -1702,12 +1703,19 @@ RelationOpPtr makeWindowOp(
           std::move(columns));
     }
 
-    // Use the minimum of DT limit and ranking filter limit.
+    // Use the minimum of DT limit and ranking filter limit. The query returns
+    // rows offset..offset + limit, so a partition must supply that many before
+    // the offset drops any. INT64_MAX is `OFFSET n` with no `LIMIT`, which
+    // bounds no partition.
     auto topNLimit = rankingFilterLimit;
-    if (dt->hasLimit() && !dt->hasOrderBy()) {
+    const int64_t rowsBeforeOffset = dt->limit >= INT64_MAX - dt->offset
+        ? INT64_MAX
+        : dt->limit + dt->offset;
+    if (dt->hasLimit() && !dt->hasOrderBy() &&
+        rowsBeforeOffset <= std::numeric_limits<int32_t>::max()) {
       topNLimit = topNLimit.has_value()
-          ? std::min(*topNLimit, static_cast<int32_t>(dt->limit))
-          : std::optional<int32_t>(dt->limit);
+          ? std::min(*topNLimit, static_cast<int32_t>(rowsBeforeOffset))
+          : std::optional<int32_t>(rowsBeforeOffset);
     }
     if (rankFunction.has_value() && !group.orderKeys.empty() &&
         topNLimit.has_value()) {
@@ -1831,10 +1839,17 @@ bool Optimization::addWindow(
       // needed. row_number never produces ties, so the limit is fully
       // absorbed. rank() and dense_rank() may produce ties, so a Limit is
       // added after TopNRowNumber.
+      // The ranking caps each partition at offset + count, so the offset and
+      // the final count still apply above it. Only a row_number with no offset
+      // needs nothing: its cap is exactly the rows the query keeps.
       limitConsumed = true;
-      addLimitAfterTopN = !isRowNumber(functionName);
+      addLimitAfterTopN = !isRowNumber(functionName) || dt->offset > 0;
     }
   }
+
+  // Order keys of the last group emitted, as columns of its input.
+  ExprVector resortKeys;
+  OrderTypeVector resortTypes;
 
   // Emit Window operators.
   for (size_t groupIndex = 0; groupIndex < groups.size(); ++groupIndex) {
@@ -1858,6 +1873,9 @@ bool Optimization::addWindow(
 
     auto partitionKeys = precompute.toColumns(group.partitionKeys);
     auto orderKeys = precompute.toColumns(group.orderKeys);
+    // A sort restored below reads the same columns this group orders by.
+    resortKeys = orderKeys;
+    resortTypes = group.orderTypes;
     auto planBeforeProject = plan;
     plan = std::move(precompute).maybeProject();
 
@@ -1898,11 +1916,6 @@ bool Optimization::addWindow(
         dt->windowPlan->rankingLimit());
     state.addCost(*plan);
 
-    if (addLimitAfterTopN) {
-      plan = make<Limit>(plan, dt->limit, dt->offset);
-      state.addCost(*plan);
-    }
-
     // Map original window function expressions to their output columns and
     // mark them as placed so that downstreamColumns() is recomputed for the
     // next group.
@@ -1910,6 +1923,29 @@ bool Optimization::addWindow(
       state.addExprToColumn(group.functions[i], group.outputColumns[i]);
       state.place(group.functions[i]);
     }
+  }
+
+  // Only the last group's output reaches the consumer, so these apply once, to
+  // the node the loop ended on.
+  //
+  // An ORDER BY dropped as redundant relied on the group being a Window. A
+  // ranking node in its place emits each partition greatest-rank first, so sort
+  // again — and let that sort apply the limit, since picking rows before
+  // sorting would keep an arbitrary set of any tied ones. Drop the sort if
+  // https://github.com/facebookincubator/velox/issues/18494 makes the two
+  // operators agree on output order.
+  if (dt->windowOrderDropped && plan->is(RelType::kTopNRowNumber)) {
+    plan = make<OrderBy>(
+        plan,
+        std::move(resortKeys),
+        std::move(resortTypes),
+        dt->hasLimit() ? dt->limit : std::numeric_limits<int64_t>::max(),
+        dt->offset);
+    state.addCost(*plan);
+    limitConsumed = dt->hasLimit();
+  } else if (addLimitAfterTopN) {
+    plan = make<Limit>(plan, dt->limit, dt->offset);
+    state.addCost(*plan);
   }
 
   return limitConsumed;

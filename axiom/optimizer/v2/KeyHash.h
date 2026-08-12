@@ -16,6 +16,8 @@
 
 #pragma once
 
+#include <optional>
+
 #include <type_traits>
 
 #include "axiom/optimizer/QueryGraph.h"
@@ -33,6 +35,12 @@ size_t hashOne(const T& value);
 // non-template overload during phase-1 name lookup; otherwise the generic
 // `hashOne<Frame>` template hits the catch-all static_assert.
 size_t hashOne(const Frame& frame);
+
+template <typename T>
+inline constexpr bool isOptional = false;
+
+template <typename T>
+inline constexpr bool isOptional<std::optional<T>> = true;
 
 /// Hashes a list of fields by combining `hashOne` of each via `hashMix`.
 template <typename... Args>
@@ -59,6 +67,10 @@ size_t hashOne(const T& value) {
     return static_cast<size_t>(value);
   } else if constexpr (std::is_integral_v<T>) {
     return static_cast<size_t>(value);
+  } else if constexpr (isOptional<T>) {
+    // An absent optional must not collide with any present value, so mix in
+    // whether it is set.
+    return value.has_value() ? velox::bits::hashMix(1, hashOne(*value)) : 0;
   } else if constexpr (requires {
                          value.begin();
                          value.end();

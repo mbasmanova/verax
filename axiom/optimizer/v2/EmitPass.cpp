@@ -265,6 +265,8 @@ class Emitter {
         return emitValues(*node->as<Values>());
       case NodeType::kWindow:
         return emitWindow(*node->as<Window>());
+      case NodeType::kRowNumber:
+        return emitRowNumber(*node->as<RowNumber>());
       case NodeType::kTopNRowNumber:
         return emitTopNRowNumber(*node->as<TopNRowNumber>());
       case NodeType::kUnnest:
@@ -385,6 +387,7 @@ class Emitter {
   velox::core::PlanNodePtr emitLimit(const Limit& limit);
   velox::core::PlanNodePtr emitValues(const Values& values);
   velox::core::PlanNodePtr emitWindow(const Window& window);
+  velox::core::PlanNodePtr emitRowNumber(const RowNumber& node);
   velox::core::PlanNodePtr emitTopNRowNumber(const TopNRowNumber& node);
   velox::core::PlanNodePtr emitUnnest(const Unnest& unnest);
   velox::core::PlanNodePtr emitUnionAll(const UnionAll& unionNode);
@@ -1330,19 +1333,33 @@ velox::core::PlanNodePtr Emitter::emitTopN(const TopN& topN) {
       topNCount,
       std::numeric_limits<int32_t>::max(),
       "TopN offset + count exceeds the Velox TopNNode count limit");
-  // At numDrivers > 1 each driver keeps its own top rows (a partial top-n); a
-  // gather to one driver then re-applies the top-n across the merged outputs.
+  // At numDrivers > 1 each driver keeps its own top rows (a partial top-n).
+  // Those outputs are already sorted, so an order-preserving merge combines
+  // them and a Limit takes the window — cheaper than sorting them again.
+  //
+  // TODO: skip the split when the input already feeds one driver. Knowing that
+  // takes the emitted plan's local exchanges; the distribution properties here
+  // describe tasks, not drivers.
   if (options_.numDrivers > 1) {
-    input = std::make_shared<velox::core::TopNNode>(
+    velox::core::PlanNodePtr partial = std::make_shared<velox::core::TopNNode>(
         nextId(),
         sortingKeys,
         sortingOrders,
         static_cast<int32_t>(topNCount),
         /*isPartial=*/true,
         std::move(input));
-    input =
-        velox::core::LocalPartitionNode::gather(nextId(), {std::move(input)});
+    return std::make_shared<velox::core::LimitNode>(
+        nextId(),
+        topN.offset(),
+        topN.count(),
+        /*isPartial=*/false,
+        std::make_shared<velox::core::LocalMergeNode>(
+            nextId(),
+            sortingKeys,
+            sortingOrders,
+            std::vector<velox::core::PlanNodePtr>{std::move(partial)}));
   }
+
   velox::core::PlanNodePtr result = std::make_shared<velox::core::TopNNode>(
       nextId(),
       sortingKeys,
@@ -1365,8 +1382,18 @@ velox::core::PlanNodePtr Emitter::emitLimit(const Limit& limit) {
   velox::core::PlanNodePtr input = emit(limit.input());
   // At numDrivers > 1 each driver keeps its own top offset+count rows (a
   // partial limit); a gather to one driver then applies the final offset/count
-  // so the limit is enforced across the task, not per driver.
-  if (options_.numDrivers > 1) {
+  // so the limit is enforced across the task, not per driver. Velox runs an
+  // exact limit single-threaded either way, so the split is worth it only when
+  // it keeps work below the limit parallel — above a gather exchange the limit
+  // is the whole pipeline.
+  const bool readsGatherExchange = limit.input()->is(NodeType::kExchange) &&
+      limit.input()->physicalProperties().globalPartition.is(
+          PartitionKind::kGather);
+  // A per-driver partial that keeps offset + count rows keeps every row when
+  // there is no count, so it would filter nothing.
+  const bool partialReduces =
+      limit.offsetPlusCount() != std::numeric_limits<int64_t>::max();
+  if (options_.numDrivers > 1 && !readsGatherExchange && partialReduces) {
     input = std::make_shared<velox::core::LimitNode>(
         nextId(),
         /*offset=*/0,
@@ -1515,6 +1542,27 @@ velox::core::PlanNodePtr Emitter::emitWindow(const Window& window) {
       std::move(windowColumnNames),
       std::move(windowFunctions),
       /*inputsSorted=*/false,
+      std::move(input));
+}
+
+velox::core::PlanNodePtr Emitter::emitRowNumber(const RowNumber& node) {
+  velox::core::PlanNodePtr input = emit(node.input());
+  auto partitionKeys =
+      toFieldAccessList(node.partitionKeys(), "RowNumber partition key");
+  // At numDrivers > 1 each partition must be complete in one driver:
+  // repartition on the partition keys, or gather when there are none.
+  if (options_.numDrivers > 1) {
+    input = addLocalPartition(std::move(input), partitionKeys);
+  }
+  std::optional<std::string> rowNumberColumnName;
+  if (node.rankColumn() != nullptr) {
+    rowNumberColumnName = node.rankColumn()->outputName();
+  }
+  return std::make_shared<velox::core::RowNumberNode>(
+      nextId(),
+      std::move(partitionKeys),
+      rowNumberColumnName,
+      node.limit(),
       std::move(input));
 }
 

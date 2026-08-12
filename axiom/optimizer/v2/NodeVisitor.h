@@ -50,6 +50,8 @@ class NodeVisitor {
       const = 0;
   virtual void visit(const Join& node, NodeVisitorContext& context) const = 0;
   virtual void visit(const Window& node, NodeVisitorContext& context) const = 0;
+  virtual void visit(const RowNumber& node, NodeVisitorContext& context)
+      const = 0;
   virtual void visit(const TopNRowNumber& node, NodeVisitorContext& context)
       const = 0;
   virtual void visit(const Apply& node, NodeVisitorContext& context) const = 0;
