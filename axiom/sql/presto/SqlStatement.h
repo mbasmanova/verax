@@ -38,6 +38,7 @@ enum class SqlStatementKind {
   kCreateTable,
   kCreateTableAsSelect,
   kInsert,
+  kDelete,
   kDropTable,
   kCreateSchema,
   kDropSchema,
@@ -95,6 +96,10 @@ class SqlStatement {
 
   bool isInsert() const {
     return kind_ == SqlStatementKind::kInsert;
+  }
+
+  bool isDelete() const {
+    return kind_ == SqlStatementKind::kDelete;
   }
 
   bool isDropTable() const {
@@ -209,6 +214,28 @@ class InsertStatement : public SqlStatement {
       ReferencedTables referencedTables)
       : SqlStatement(
             SqlStatementKind::kInsert,
+            std::move(views),
+            std::move(referencedTables)),
+        plan_{std::move(plan)} {}
+
+  const facebook::axiom::logical_plan::LogicalPlanNodePtr& plan() const {
+    return plan_;
+  }
+
+ private:
+  const facebook::axiom::logical_plan::LogicalPlanNodePtr plan_;
+};
+
+/// DELETE statement. 'plan' is a TableWriteNode with WriteKind::kDelete over
+/// the filtered scan of the target table.
+class DeleteStatement : public SqlStatement {
+ public:
+  DeleteStatement(
+      facebook::axiom::logical_plan::LogicalPlanNodePtr plan,
+      ViewMap views,
+      ReferencedTables referencedTables)
+      : SqlStatement(
+            SqlStatementKind::kDelete,
             std::move(views),
             std::move(referencedTables)),
         plan_{std::move(plan)} {}

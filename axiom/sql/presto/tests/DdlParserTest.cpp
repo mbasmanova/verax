@@ -61,6 +61,21 @@ TEST_F(DdlParserTest, insertIntoTable) {
       "Column not found: 'no_such_col' in table \"default\".\"nation\"");
 }
 
+TEST_F(DdlParserTest, deleteFromTable) {
+  {
+    auto matcher = matchScan("nation").tableWrite();
+    testDelete("DELETE FROM nation", matcher);
+  }
+
+  {
+    auto matcher = matchScan("nation").filter().tableWrite();
+    testDelete("DELETE FROM nation WHERE n_regionkey = 1", matcher);
+  }
+
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      parseSql("DELETE FROM no_such_table"), "Table not found: no_such_table");
+}
+
 TEST_F(DdlParserTest, createTableAsSelect) {
   {
     auto ctasMetadata =

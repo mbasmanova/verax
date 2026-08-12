@@ -1103,6 +1103,9 @@ TableWriteNode::TableWriteNode(
       writeKind_ == WriteKind::kCreate || writeKind == WriteKind::kInsert ||
           options_.empty(),
       "Options are supported only for create or insert");
+  VELOX_USER_CHECK(
+      writeKind_ != WriteKind::kDelete || columnNames_.empty(),
+      "Delete writes no columns");
 }
 
 void TableWriteNode::accept(

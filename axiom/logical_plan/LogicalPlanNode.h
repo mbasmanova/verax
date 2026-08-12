@@ -863,8 +863,9 @@ enum class WriteKind {
   // whole rows.
   kInsert = 2,
 
-  // Individual rows are deleted. Only row ids as per
-  // Table::rowIdHandles() are passed to the TableWriter.
+  // Individual rows are deleted. Carries no column names or expressions in the
+  // logical plan: how a row is identified is a physical property of the target
+  // connector, resolved during optimization.
   kDelete = 3,
 
   // Column values in individual rows are changed. The TableWriter
@@ -891,7 +892,7 @@ class TableWriteNode : public LogicalPlanNode {
   /// Correspond 1:1 to 'columnExpressions'. 'columnNames' must refer to columns
   /// in the table but their number or order does not have to correspond to the
   /// table. Missing columns get their default from the table schema. Column
-  /// names must be unique.
+  /// names must be unique. Must be empty for 'kDelete'.
   /// @param columnExpressions Expressions producing the values to write.
   /// Correspond 1:1 to 'columnNames'.
   /// @param options Writer dependent options. May specify compression or
