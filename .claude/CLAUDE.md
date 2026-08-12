@@ -165,6 +165,15 @@ would-I-say-this-aloud test to each):
 - Use trailing commas in multi-line initializer lists and enum definitions.
   This produces cleaner diffs when items are added or reordered.
 
+### Types
+
+- Use the short `ROW` forms rather than spelling out parallel vectors:
+  - One field: `ROW("a", BIGINT())`, not `ROW({"a"}, {BIGINT()})`.
+  - Fields sharing a type: `ROW({"a", "b"}, BIGINT())`, not
+    `ROW({"a", "b"}, {BIGINT(), BIGINT()})`.
+  - Mixed types keep the two-vector form: `ROW({"a", "b"}, {BIGINT(),
+    VARCHAR()})`.
+
 ### API Design
 
 - Keep the public API surface small.
