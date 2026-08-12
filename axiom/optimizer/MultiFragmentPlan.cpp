@@ -327,16 +327,28 @@ AXIOM_DEFINE_ENUM_NAME(FragmentType, fragmentTypeNames);
 
 FinishWrite::FinishWrite(
     std::shared_ptr<connector::ConnectorMetadata> metadata,
+    std::string connectorId,
     connector::ConnectorSessionPtr session,
     connector::ConnectorWriteHandlePtr handle,
     WriteStatsMapping statsMapping)
     : metadata_{std::move(metadata)},
+      connectorId_{std::move(connectorId)},
       session_{std::move(session)},
       handle_{std::move(handle)},
       statsMapping_{std::move(statsMapping)} {
   VELOX_CHECK_NOT_NULL(metadata_);
   VELOX_CHECK_NOT_NULL(session_);
   VELOX_CHECK_NOT_NULL(handle_);
+}
+
+std::string FinishWrite::toString() const {
+  if (handle_ == nullptr) {
+    return "";
+  }
+  return fmt::format(
+      "Metadata write via connector '{}': {}",
+      connectorId_,
+      handle_->toString());
 }
 
 FinishWrite::~FinishWrite() {

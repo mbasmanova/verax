@@ -107,7 +107,11 @@ class WriteTest : public test::HiveQueriesTestBase,
         /*explain=*/false);
     VELOX_CHECK_NOT_NULL(table);
     auto handle = metadata.beginWrite(
-        session, table, connector::WriteKind::kCreate, /*explain=*/false);
+        session,
+        table,
+        connector::WriteKind::kCreate,
+        /*scanHandle=*/nullptr,
+        /*explain=*/false);
     metadata.finishWrite(session, handle, {}, nullptr, {}).get();
     return table;
   }

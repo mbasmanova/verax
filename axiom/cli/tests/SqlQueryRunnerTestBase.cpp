@@ -46,22 +46,30 @@ std::unique_ptr<SqlQueryRunner> SqlQueryRunnerTestBase::makeRunner(
     const std::string& connectorId,
     std::function<std::string()> queryIdGenerator,
     PermissionCheck permissionCheck) {
+  return makeRunner(
+      [&]() {
+        testConnector_ =
+            std::make_shared<facebook::axiom::connector::TestConnector>(
+                connectorId);
+        connector::ConnectorRegistry::global().insert(
+            testConnector_->connectorId(), testConnector_);
+        facebook::axiom::connector::ConnectorMetadataRegistry::global().insert(
+            testConnector_->connectorId(), testConnector_->metadata());
+
+        connectorIds_.emplace_back(testConnector_->connectorId());
+
+        return std::make_pair(testConnector_->connectorId(), kDefaultSchema);
+      },
+      std::move(queryIdGenerator),
+      std::move(permissionCheck));
+}
+
+std::unique_ptr<SqlQueryRunner> SqlQueryRunnerTestBase::makeRunner(
+    const std::function<std::pair<std::string, std::string>()>& initConnectors,
+    std::function<std::string()> queryIdGenerator,
+    PermissionCheck permissionCheck) {
   auto runner = std::make_unique<SqlQueryRunner>(
       "test_user", &progressScheduler_, useV2_);
-
-  auto initConnectors = [&]() {
-    testConnector_ =
-        std::make_shared<facebook::axiom::connector::TestConnector>(
-            connectorId);
-    connector::ConnectorRegistry::global().insert(
-        testConnector_->connectorId(), testConnector_);
-    facebook::axiom::connector::ConnectorMetadataRegistry::global().insert(
-        testConnector_->connectorId(), testConnector_->metadata());
-
-    connectorIds_.emplace_back(testConnector_->connectorId());
-
-    return std::make_pair(testConnector_->connectorId(), kDefaultSchema);
-  };
 
   runner->initialize(
       initConnectors, std::move(permissionCheck), std::move(queryIdGenerator));

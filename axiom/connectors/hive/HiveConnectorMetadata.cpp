@@ -16,6 +16,7 @@
 
 #include "axiom/connectors/hive/HiveConnectorMetadata.h"
 
+#include <fmt/ranges.h>
 #include <folly/Conv.h>
 #include <algorithm>
 #include <utility>
@@ -382,6 +383,37 @@ void HiveTableLayout::foldNonPartitionFilterStats(
       dataFilters, handle.remainingFilter(), columns(), estimator, stats);
 }
 
+std::string HiveDeleteWriteHandle::toString() const {
+  if (filters_.empty()) {
+    return fmt::format("drop all rows of {}", table_->name().toString());
+  }
+
+  // SubfieldFilters is unordered; sort by column so the description is stable.
+  std::vector<std::pair<std::string_view, const velox::common::Filter*>>
+      byColumn;
+  byColumn.reserve(filters_.size());
+  for (const auto& [subfield, filter] : filters_) {
+    byColumn.emplace_back(subfield.baseName(), filter.get());
+  }
+  std::sort(
+      byColumn.begin(),
+      byColumn.end(),
+      [](const auto& left, const auto& right) {
+        return left.first < right.first;
+      });
+
+  std::vector<std::string> predicates;
+  predicates.reserve(byColumn.size());
+  for (const auto& [column, filter] : byColumn) {
+    predicates.push_back(fmt::format("{} {}", column, filter->toString()));
+  }
+
+  return fmt::format(
+      "drop partitions of {} matching {}",
+      table_->name().toString(),
+      fmt::join(predicates, " AND "));
+}
+
 namespace {
 std::shared_ptr<velox::connector::hive::LocationHandle> makeLocationHandle(
     const std::string& targetDirectory,
@@ -391,21 +423,69 @@ std::shared_ptr<velox::connector::hive::LocationHandle> makeLocationHandle(
       writeDirectory.value_or(targetDirectory),
       velox::connector::hive::LocationHandle::TableType::kNew);
 }
+
+// Returns a handle for removing whole partitions. The partitions are resolved
+// at commit by matching the scan's range filters against partition values, so
+// every pushed-down filter must be a range filter on a partition column.
+// TODO: Support a remaining filter over partition columns alone, which also
+// selects whole partitions but cannot be matched this way.
+velox::common::SubfieldFilters deleteFilters(
+    const HiveTableLayout& layout,
+    const velox::connector::ConnectorTableHandlePtr& scanHandle) {
+  auto hiveScan =
+      std::dynamic_pointer_cast<const velox::connector::hive::HiveTableHandle>(
+          scanHandle);
+  VELOX_USER_CHECK_NOT_NULL(hiveScan, "DELETE requires a scan of the table");
+
+  VELOX_USER_CHECK_NULL(
+      hiveScan->remainingFilter(),
+      "DELETE supports only range filters on partition columns: {}",
+      hiveScan->remainingFilter()->toString());
+
+  folly::F14FastSet<std::string_view> partitionColumns;
+  for (const auto* column : layout.hivePartitionColumns()) {
+    partitionColumns.insert(column->name());
+  }
+
+  velox::common::SubfieldFilters filters;
+  for (const auto& [subfield, filter] : hiveScan->subfieldFilters()) {
+    VELOX_USER_CHECK(
+        partitionColumns.contains(subfield.baseName()),
+        "DELETE supports only filters on partition columns: {}",
+        subfield.baseName());
+    filters.emplace(subfield.clone(), filter->clone());
+  }
+
+  return filters;
+}
+
 } // namespace
+
+ConnectorWriteHandlePtr HiveConnectorMetadata::makeDeleteWriteHandle(
+    const TablePtr& table,
+    velox::common::SubfieldFilters filters) const {
+  return std::make_shared<HiveDeleteWriteHandle>(table, std::move(filters));
+}
 
 ConnectorWriteHandlePtr HiveConnectorMetadata::beginWrite(
     const ConnectorSessionPtr& session,
     const TablePtr& table,
     WriteKind kind,
+    const velox::connector::ConnectorTableHandlePtr& scanHandle,
     bool explain) {
   ensureInitialized();
   VELOX_CHECK(
-      kind == WriteKind::kCreate || kind == WriteKind::kInsert,
-      "Only CREATE/INSERT supported, not {}",
+      kind == WriteKind::kCreate || kind == WriteKind::kInsert ||
+          kind == WriteKind::kDelete,
+      "Only CREATE/INSERT/DELETE supported, not {}",
       WriteKindName::toName(kind));
 
   auto* hiveLayout = dynamic_cast<const HiveTableLayout*>(table->layouts()[0]);
   VELOX_CHECK_NOT_NULL(hiveLayout);
+
+  if (kind == WriteKind::kDelete) {
+    return makeDeleteWriteHandle(table, deleteFilters(*hiveLayout, scanHandle));
+  }
   auto storageFormat = hiveLayout->fileFormat();
 
   const auto& serdeParameters = hiveLayout->serdeParameters();

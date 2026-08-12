@@ -633,10 +633,11 @@ Translated Translator::translateTableWrite(
     const lp::TableWriteNode& tableWrite,
     const LpNameSet& /*required*/) {
   const auto kind = static_cast<connector::WriteKind>(tableWrite.writeKind());
-  if (kind != connector::WriteKind::kInsert &&
-      kind != connector::WriteKind::kCreate) {
+  if (kind != connector::WriteKind::kCreate &&
+      kind != connector::WriteKind::kInsert &&
+      kind != connector::WriteKind::kDelete) {
     VELOX_NYI(
-        "TableWrite supports only INSERT and CREATE, got {}",
+        "TableWrite does not support {}",
         connector::WriteKindName::toName(kind));
   }
 
@@ -663,8 +664,10 @@ Translated Translator::translateTableWrite(
   // expression where the column is written, else the column's schema default.
   const auto& writtenNames = tableWrite.columnNames();
   ExprVector columnExprs;
-  columnExprs.reserve(tableSchema.size());
-  for (uint32_t i = 0; i < tableSchema.size(); ++i) {
+  const uint32_t numColumns =
+      kind == connector::WriteKind::kDelete ? 0 : tableSchema.size();
+  columnExprs.reserve(numColumns);
+  for (uint32_t i = 0; i < numColumns; ++i) {
     const auto& columnName = tableSchema.nameOf(i);
     auto it = std::find(writtenNames.begin(), writtenNames.end(), columnName);
     if (it != writtenNames.end()) {

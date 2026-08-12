@@ -396,18 +396,22 @@ folly::coro::AsyncGenerator<velox::RowVectorPtr> LocalRunner::execute() {
   }
 }
 
-folly::coro::Task<int64_t> LocalRunner::co_runWrite() {
+folly::coro::Task<std::optional<int64_t>> LocalRunner::co_runWrite() {
   std::vector<velox::RowVectorPtr> result;
   auto finishWrite = std::move(finishWrite_);
   std::exception_ptr drainError;
-  try {
-    while (auto rows = co_await co_pull()) {
-      result.push_back(std::move(rows));
+  // A write the connector carries out itself has no fragments, so there is
+  // nothing to drain and the commit below is the whole operation.
+  if (!fragments_.empty()) {
+    try {
+      while (auto rows = co_await co_pull()) {
+        result.push_back(std::move(rows));
+      }
+    } catch (const std::exception&) {
+      // Capture and handle after the handler: co_await is illegal inside a
+      // catch handler, and the reap below must be awaited.
+      drainError = std::current_exception();
     }
-  } catch (const std::exception&) {
-    // Capture and handle after the handler: co_await is illegal inside a catch
-    // handler, and the reap below must be awaited.
-    drainError = std::current_exception();
   }
   if (drainError) {
     // The drain failed: cancelTasks() (cancellation) or the task onError
@@ -431,7 +435,7 @@ folly::coro::Task<int64_t> LocalRunner::co_runWrite() {
     std::rethrow_exception(drainError);
   }
 
-  int64_t rows{0};
+  std::optional<int64_t> rows;
   try {
     rows = std::move(finishWrite).commit(result).get();
   } catch (const std::exception&) {
@@ -455,10 +459,14 @@ folly::coro::Task<int64_t> LocalRunner::co_runWrite() {
   co_return rows;
 }
 
-velox::RowVectorPtr LocalRunner::makeWriteResult(int64_t rows) {
+velox::RowVectorPtr LocalRunner::makeWriteResult(std::optional<int64_t> rows) {
   auto child = velox::BaseVector::create<velox::FlatVector<int64_t>>(
       velox::BIGINT(), /*size=*/1, params_.outputPool.get());
-  child->set(0, rows);
+  if (rows.has_value()) {
+    child->set(0, rows.value());
+  } else {
+    child->setNull(0, true);
+  }
 
   return std::make_shared<velox::RowVector>(
       params_.outputPool.get(),

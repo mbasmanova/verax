@@ -29,9 +29,10 @@
 
 namespace axiom::sql {
 
-// Shared fixture for tests that drive queries through a SqlQueryRunner backed
-// by a TestConnector. makeRunner() selects the optimizer, so a derived fixture
-// can parameterize over v1/v2.
+// Shared fixture for tests that drive queries through a SqlQueryRunner. It
+// backs the runner with a TestConnector by default; a derived fixture can pass
+// its own connectors to makeRunner(). makeRunner() selects the optimizer, so a
+// derived fixture can parameterize over v1/v2.
 class SqlQueryRunnerTestBase : public ::testing::Test,
                                public facebook::velox::test::VectorTestBase {
  protected:
@@ -42,7 +43,9 @@ class SqlQueryRunnerTestBase : public ::testing::Test,
   // fixture selects v2 by setting useV2_ before calling this.
   void SetUp() override;
 
-  // Destroys runner_ and unregisters every connector makeRunner() created.
+  // Destroys runner_ and unregisters the connectors makeRunner() registered
+  // itself. Connectors registered by a caller-supplied callback are the
+  // caller's to unregister.
   void TearDown() override;
 
   // Builds a SqlQueryRunner over a freshly created TestConnector registered
@@ -51,6 +54,15 @@ class SqlQueryRunnerTestBase : public ::testing::Test,
   // parameterized fixture sets before calling.
   std::unique_ptr<SqlQueryRunner> makeRunner(
       const std::string& connectorId = "test",
+      std::function<std::string()> queryIdGenerator = {},
+      PermissionCheck permissionCheck = {});
+
+  // Builds a SqlQueryRunner over the connectors 'initConnectors' registers; it
+  // returns the connector id and schema to use by default. The caller
+  // unregisters them. Selects the optimizer per 'useV2_'.
+  std::unique_ptr<SqlQueryRunner> makeRunner(
+      const std::function<std::pair<std::string, std::string>()>&
+          initConnectors,
       std::function<std::string()> queryIdGenerator = {},
       PermissionCheck permissionCheck = {});
 

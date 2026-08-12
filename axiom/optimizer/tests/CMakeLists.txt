@@ -112,6 +112,7 @@ add_executable(
   ConnectorSubtreePushdownTest.cpp
   ConnectorPushdownPassTest.cpp
   CsvReadWriteTest.cpp
+  DeleteTest.cpp
   DerivedTablePrinterTest.cpp
   DomainTest.cpp
   ExprMatcherTest.cpp

@@ -578,6 +578,7 @@ class TestConnectorMetadata : public ConnectorMetadata {
       const ConnectorSessionPtr& session,
       const TablePtr& table,
       WriteKind kind,
+      const velox::connector::ConnectorTableHandlePtr& scanHandle,
       bool explain) override;
 
   RowsFuture finishWrite(

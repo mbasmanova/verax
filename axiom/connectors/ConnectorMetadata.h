@@ -808,7 +808,9 @@ enum class WriteKind {
 
 AXIOM_DECLARE_ENUM_NAME(WriteKind);
 
-using RowsFuture = folly::SemiFuture<int64_t>;
+/// Number of rows a write added or removed. Empty when the connector cannot
+/// count them, e.g. a delete it carries out by dropping partitions.
+using RowsFuture = folly::SemiFuture<std::optional<int64_t>>;
 
 /// Base class for table. This is used for name resolution. A TableLayout is
 /// used for accessing physical organization like partitioning and sort order.
@@ -962,10 +964,13 @@ class ConnectorWriteHandle {
 
   virtual ~ConnectorWriteHandle() = default;
 
+  /// Returns null if the connector carries out the write itself in finishWrite,
+  /// in which case there is no writer and no plan.
   const velox::connector::ConnectorInsertTableHandlePtr& veloxHandle() const {
     return veloxHandle_;
   }
 
+  /// Null whenever 'veloxHandle' is null.
   const velox::RowTypePtr& resultType() const {
     return resultType_;
   }
@@ -979,10 +984,24 @@ class ConnectorWriteHandle {
     return kEmpty;
   }
 
+  /// Returns what the connector will do, for EXPLAIN. A handle with no
+  /// 'veloxHandle' must override this: such a write has no plan, so this is
+  /// the only detail EXPLAIN can show for it.
+  virtual std::string toString() const {
+    VELOX_CHECK_NOT_NULL(
+        veloxHandle_, "A write with no plan must describe itself for EXPLAIN");
+    return "carried out by the Velox writer";
+  }
+
   template <typename T>
   const T* as() const {
     return dynamic_cast<const T*>(this);
   }
+
+ protected:
+  // Creates a handle with no 'veloxHandle', for a write the connector carries
+  // out itself. The derived class must carry the description of the write.
+  ConnectorWriteHandle() = default;
 
  private:
   const velox::connector::ConnectorInsertTableHandlePtr veloxHandle_;
@@ -1242,10 +1261,16 @@ class ConnectorMetadata {
   /// When 'explain' is true, the connector must build and return a valid
   /// ConnectorWriteHandle for plan display, but must not allocate staging
   /// directories or acquire resources that need cleanup.
+  /// @param scanHandle For a delete, the handle of the scan the rows come
+  /// from, carrying the filters the connector absorbed. nullptr for other
+  /// write kinds. Fails if the connector cannot delete the rows the handle
+  /// selects; a returned handle with a null 'veloxHandle' means the connector
+  /// removes them in finishWrite, with nothing to execute.
   virtual ConnectorWriteHandlePtr beginWrite(
       const ConnectorSessionPtr& /*session*/,
       const TablePtr& /*table*/,
       WriteKind /*kind*/,
+      const velox::connector::ConnectorTableHandlePtr& /*scanHandle*/,
       bool /*explain*/) {
     VELOX_UNSUPPORTED();
   }

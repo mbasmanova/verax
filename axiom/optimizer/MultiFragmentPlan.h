@@ -89,6 +89,7 @@ class FinishWrite {
 
   FinishWrite(
       std::shared_ptr<connector::ConnectorMetadata> metadata,
+      std::string connectorId,
       connector::ConnectorSessionPtr session,
       connector::ConnectorWriteHandlePtr handle,
       WriteStatsMapping statsMapping = {});
@@ -108,8 +109,13 @@ class FinishWrite {
   /// Aborts the write. Must be called if commit is not called.
   [[nodiscard]] velox::ContinueFuture abort() && noexcept;
 
+  /// Returns a description of the write for EXPLAIN, naming the connector and
+  /// leaving the detail to the handle. Empty if there is no write.
+  std::string toString() const;
+
  private:
   std::shared_ptr<connector::ConnectorMetadata> metadata_;
+  std::string connectorId_;
   connector::ConnectorSessionPtr session_;
   connector::ConnectorWriteHandlePtr handle_;
   WriteStatsMapping statsMapping_;

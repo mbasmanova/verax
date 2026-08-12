@@ -388,7 +388,11 @@ connector::TablePtr SqlQueryRunner::createTable(
   // finishWrite. Run an empty create-write so the table is persisted.
   if (table != nullptr && !explain) {
     auto handle = metadata->beginWrite(
-        session, table, connector::WriteKind::kCreate, /*explain=*/false);
+        session,
+        table,
+        connector::WriteKind::kCreate,
+        /*scanHandle=*/nullptr,
+        /*explain=*/false);
     // TODO: Make the commit timeout configurable (e.g. via a DdlOptions).
     constexpr std::chrono::seconds kCommitTimeout{60};
     try {
@@ -876,6 +880,8 @@ SqlQueryRunner::co_runExplainStatement(
     logicalPlan = statement->as<presto::SelectStatement>()->plan();
   } else if (statement->isInsert()) {
     logicalPlan = statement->as<presto::InsertStatement>()->plan();
+  } else if (statement->isDelete()) {
+    logicalPlan = statement->as<presto::DeleteStatement>()->plan();
   } else if (statement->isCreateTableAsSelect()) {
     const auto* ctas = statement->as<presto::CreateTableAsSelectStatement>();
     logicalPlan = ctas->plan();
@@ -997,6 +1003,8 @@ SqlQueryRunner::co_runPlanStatement(
     logicalPlan = ctas->plan();
   } else if (sqlStatement.isInsert()) {
     logicalPlan = sqlStatement.as<presto::InsertStatement>()->plan();
+  } else if (sqlStatement.isDelete()) {
+    logicalPlan = sqlStatement.as<presto::DeleteStatement>()->plan();
   } else if (sqlStatement.isSelect()) {
     logicalPlan = sqlStatement.as<presto::SelectStatement>()->plan();
   } else {
@@ -1126,7 +1134,8 @@ SqlQueryRunner::co_runUnchecked(
     co_return;
   }
 
-  if (sqlStatement.isCreateTableAsSelect() || sqlStatement.isInsert()) {
+  if (sqlStatement.isCreateTableAsSelect() || sqlStatement.isInsert() ||
+      sqlStatement.isDelete()) {
     auto generator = co_runPlanStatement(
         sqlStatement, queryId, options, timing, planString, runtimeStats);
     while (auto chunk = co_await generator.next()) {
@@ -1164,10 +1173,6 @@ SqlQueryRunner::co_runUnchecked(
       co_yield std::move(*chunk);
     }
     co_return;
-  }
-
-  if (sqlStatement.isDelete()) {
-    VELOX_NYI("DELETE is not supported yet");
   }
 
   VELOX_CHECK(sqlStatement.isSelect());

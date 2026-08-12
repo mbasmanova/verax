@@ -192,10 +192,10 @@ class LocalRunner : public Runner,
   // written. Drives the cancelable pull, so it honors the awaiting scope's
   // cancellation during the produce/drain phase (the commit itself is a
   // point of no return and runs to completion).
-  [[nodiscard]] folly::coro::Task<int64_t> co_runWrite();
+  [[nodiscard]] folly::coro::Task<std::optional<int64_t>> co_runWrite();
 
   // Builds a single-row vector with 'rows' in a "rows" BIGINT column.
-  velox::RowVectorPtr makeWriteResult(int64_t rows);
+  velox::RowVectorPtr makeWriteResult(std::optional<int64_t> rows);
 
   void start();
 

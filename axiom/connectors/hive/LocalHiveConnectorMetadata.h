@@ -395,6 +395,11 @@ class LocalHiveConnectorMetadata : public HiveConnectorMetadata {
 
   std::shared_ptr<LocalTable> findTableLocked(std::string_view name) const;
 
+  // Removes the partitions selected by 'handle's filters and returns the
+  // number of rows they held. Every filter is on a partition column, so either
+  // all rows of a partition match or none do.
+  std::optional<int64_t> removePartitions(const HiveDeleteWriteHandle& handle);
+
   mutable std::mutex mutex_;
   mutable bool initialized_{false};
   std::shared_ptr<velox::memory::MemoryPool> rootPool_;
