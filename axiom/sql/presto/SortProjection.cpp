@@ -104,13 +104,19 @@ size_t lookupSortKey(
   if (preResolvedOrdinal != 0) {
     return preResolvedOrdinal;
   }
-  if (sortKey.alias().has_value()) {
+
+  // Only an unqualified name can match a SELECT output name. A qualified key
+  // (`t.a`) names a column of an input relation, so it resolves by expression
+  // below even when two inputs put that name in the output.
+  if (sortKey.alias().has_value() &&
+      core::FieldAccessExpr::tryAsRootColumn(sortKey.expr()) != nullptr) {
     auto it = index.byAlias.find(sortKey.alias().value());
     if (it != index.byAlias.end()) {
       VELOX_USER_CHECK_NE(it->second, 0, "Column is ambiguous: {}", it->first);
       return it->second;
     }
   }
+
   auto resolved = replaceAliases(sortKey.expr(), index.byAlias, projections);
   auto it = index.byExpr.find(resolved);
   return it != index.byExpr.end() ? it->second : 0;
