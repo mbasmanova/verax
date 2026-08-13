@@ -21,8 +21,14 @@ namespace {
 
 using namespace velox;
 
-class WindowTest : public test::QueryTestBase {
+class WindowTest : public test::QueryTestBase,
+                   public ::testing::WithParamInterface<bool> {
  protected:
+  void SetUp() override {
+    useV2_ = GetParam();
+    test::QueryTestBase::SetUp();
+  }
+
   velox::core::PlanNodePtr toSingleNodePlan(
       std::string_view sql,
       int32_t numDrivers = 1) {
@@ -36,7 +42,7 @@ class WindowTest : public test::QueryTestBase {
   }
 };
 
-TEST_F(WindowTest, singleFunction) {
+TEST_P(WindowTest, singleFunction) {
   // No extra columns to drop, so no final project.
   auto plan = toSingleNodePlan(
       "SELECT n_name, row_number() OVER (ORDER BY n_name) as rn "
@@ -48,7 +54,7 @@ TEST_F(WindowTest, singleFunction) {
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
-TEST_F(WindowTest, partitionBy) {
+TEST_P(WindowTest, partitionBy) {
   // Project drops unused columns (n_nationkey).
   auto plan = toSingleNodePlan(
       "SELECT n_name, n_regionkey, "
@@ -64,7 +70,7 @@ TEST_F(WindowTest, partitionBy) {
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
-TEST_F(WindowTest, multipleFunctionsSameSpec) {
+TEST_P(WindowTest, multipleFunctionsSameSpec) {
   // Multiple window functions with the same partition/order spec should be
   // grouped into a single Window operator.
   auto plan = toSingleNodePlan(
@@ -83,7 +89,7 @@ TEST_F(WindowTest, multipleFunctionsSameSpec) {
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
-TEST_F(WindowTest, stackedWindows) {
+TEST_P(WindowTest, stackedWindows) {
   // Window functions from stacked projects (inner subquery + outer window)
   // merge into the same DT when the outer window doesn't reference the inner
   // window's output. The two windows have different specs (ORDER BY vs none),
@@ -104,7 +110,7 @@ TEST_F(WindowTest, stackedWindows) {
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
-TEST_F(WindowTest, stackedWindowsSameSpec) {
+TEST_P(WindowTest, stackedWindowsSameSpec) {
   // Window functions from stacked projects with the same spec are combined
   // into a single Window operator.
   auto plan = toSingleNodePlan(
@@ -124,7 +130,7 @@ TEST_F(WindowTest, stackedWindowsSameSpec) {
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
-TEST_F(WindowTest, differentPartitionKeys) {
+TEST_P(WindowTest, differentPartitionKeys) {
   // Window functions with different partition keys produce separate Window
   // operators.
   auto plan = toSingleNodePlan(
@@ -146,7 +152,7 @@ TEST_F(WindowTest, differentPartitionKeys) {
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
-TEST_F(WindowTest, differentOrderTypes) {
+TEST_P(WindowTest, differentOrderTypes) {
   // Window functions with same order keys but different sort orders (ASC vs
   // DESC) must produce separate Window operators.
   auto plan = toSingleNodePlan(
@@ -166,8 +172,9 @@ TEST_F(WindowTest, differentOrderTypes) {
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
-TEST_F(WindowTest, frameBounds) {
-  // Precompute projection materializes frame bound constant.
+TEST_P(WindowTest, frameBounds) {
+  // A constant frame bound stays a literal in the frame; nothing precomputes
+  // it into a column.
   auto plan = toSingleNodePlan(
       "SELECT n_name, "
       "sum(n_nationkey) OVER ("
@@ -176,25 +183,17 @@ TEST_F(WindowTest, frameBounds) {
       ") as s "
       "FROM nation");
 
-  // Precompute project materializes the constant frame bounds. Use aliases to
-  // capture the auto-generated column names for symbol propagation.
   auto matcher =
       matchScan("nation")
-          .project({
-              "n_nationkey",
-              "n_name",
-              "n_regionkey",
-              "1 as one",
-          })
           .window(
               {"sum(n_nationkey) OVER (PARTITION BY n_regionkey ORDER BY n_name "
-               "ROWS BETWEEN one PRECEDING AND one FOLLOWING)"})
+               "ROWS BETWEEN 1 PRECEDING AND 1 FOLLOWING)"})
           .project()
           .build();
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
-TEST_F(WindowTest, expressionFrameBounds) {
+TEST_P(WindowTest, expressionFrameBounds) {
   // Precompute projection materializes expression frame bounds.
   auto plan = toSingleNodePlan(
       "SELECT n_name, "
@@ -222,7 +221,7 @@ TEST_F(WindowTest, expressionFrameBounds) {
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
-TEST_F(WindowTest, expressionInputs) {
+TEST_P(WindowTest, expressionInputs) {
   // All inputs to window function are expressions: function args, partition
   // keys, sorting keys, frame start and end. Partition key and frame end share
   // the expression n_regionkey + 1 which is computed once.
@@ -237,16 +236,27 @@ TEST_F(WindowTest, expressionInputs) {
   // Precompute project has 6 outputs: 3 pass-through + 3 computed. The
   // expression n_regionkey + 1 appears once (shared by partition key and frame
   // end). Use aliases to capture auto-generated names for symbol propagation.
+  // The two optimizers materialize the window's inputs in different order.
+  const std::vector<std::string> precomputed = useV2_
+      ? std::vector<std::string>{
+            "n_nationkey",
+            "n_name",
+            "n_regionkey",
+            "n_regionkey + 1 as partKey",
+            "upper(n_name) as orderKey",
+            "n_nationkey * 2 as sumArg",
+        }
+      : std::vector<std::string>{
+            "n_nationkey",
+            "n_name",
+            "n_regionkey",
+            "n_nationkey * 2 as sumArg",
+            "n_regionkey + 1 as partKey",
+            "upper(n_name) as orderKey",
+        };
   auto matcher =
       matchScan("nation")
-          .project({
-              "n_nationkey",
-              "n_name",
-              "n_regionkey",
-              "n_nationkey * 2 as sumArg",
-              "n_regionkey + 1 as partKey",
-              "upper(n_name) as orderKey",
-          })
+          .project(precomputed)
           .window({"sum(sumArg) OVER (PARTITION BY partKey ORDER BY orderKey "
                    "ROWS BETWEEN n_regionkey PRECEDING AND partKey FOLLOWING)"})
           .project()
@@ -254,7 +264,7 @@ TEST_F(WindowTest, expressionInputs) {
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
-TEST_F(WindowTest, windowAfterFilter) {
+TEST_P(WindowTest, windowAfterFilter) {
   auto plan = toSingleNodePlan(
       "SELECT n_name, "
       "row_number() OVER (ORDER BY n_name) as rn "
@@ -269,7 +279,7 @@ TEST_F(WindowTest, windowAfterFilter) {
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
-TEST_F(WindowTest, filterOnWindowOutput) {
+TEST_P(WindowTest, filterOnWindowOutput) {
   // Filter on a non-ranking window function output forces a DT boundary.
   // The filter stays because sum() is not a ranking function.
   auto plan = toSingleNodePlan(
@@ -278,15 +288,18 @@ TEST_F(WindowTest, filterOnWindowOutput) {
       "  FROM nation"
       ") WHERE s > 10");
 
-  auto matcher = matchScan("nation")
-                     .window({"sum(n_regionkey) OVER (ORDER BY n_name) as s"})
-                     .project({"n_name", "s"})
-                     .filter("s > 10")
-                     .build();
+  // v1 prunes columns before the filter, v2 after.
+  auto window = [] {
+    return matchScan("nation").window(
+        {"sum(n_regionkey) OVER (ORDER BY n_name) as s"});
+  };
+  auto matcher = useV2_
+      ? window().filter("s > 10").project({"n_name", "s"}).build()
+      : window().project({"n_name", "s"}).filter("s > 10").build();
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
-TEST_F(WindowTest, windowOnWindowInArgs) {
+TEST_P(WindowTest, windowOnWindowInArgs) {
   // Window function that references another window function's output in its
   // args forces a DT boundary.
   auto plan = toSingleNodePlan(
@@ -309,7 +322,7 @@ TEST_F(WindowTest, windowOnWindowInArgs) {
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
-TEST_F(WindowTest, windowOnWindowInFrameBounds) {
+TEST_P(WindowTest, windowOnWindowInFrameBounds) {
   // Window function that references another window function's output in its
   // frame bounds forces a DT boundary.
   auto plan = toSingleNodePlan(
@@ -341,7 +354,7 @@ TEST_F(WindowTest, windowOnWindowInFrameBounds) {
 // Window subquery as a join input must be wrapped in a nested DT.
 // Without wrapping, the join and window end up in the same DT, and the
 // window computes over the joined result instead of the subquery's rows.
-TEST_F(WindowTest, underJoin) {
+TEST_P(WindowTest, underJoin) {
   auto plan = toSingleNodePlan(
       "SELECT n_name, dt.s "
       "FROM nation "
@@ -359,7 +372,7 @@ TEST_F(WindowTest, underJoin) {
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
-TEST_F(WindowTest, distributed) {
+TEST_P(WindowTest, distributed) {
   // Distributed plan should have repartitioning for window.
   auto logicalPlan = parseSelect(
       "SELECT n_name, "
@@ -384,7 +397,7 @@ TEST_F(WindowTest, distributed) {
   AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, matcher);
 }
 
-TEST_F(WindowTest, distributedMultipleShuffles) {
+TEST_P(WindowTest, distributedMultipleShuffles) {
   // Window functions with different partition keys require separate shuffles.
   auto logicalPlan = parseSelect(
       "SELECT n_name, "
@@ -411,7 +424,7 @@ TEST_F(WindowTest, distributedMultipleShuffles) {
   AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, matcher);
 }
 
-TEST_F(WindowTest, nonRedundantOrderByWithPartitionKeys) {
+TEST_P(WindowTest, nonRedundantOrderByWithPartitionKeys) {
   // With partition keys, ORDER BY is NOT redundant because the window only
   // sorts within each partition, not globally.
   constexpr auto sql =
@@ -419,63 +432,82 @@ TEST_F(WindowTest, nonRedundantOrderByWithPartitionKeys) {
       "sum(n_regionkey) OVER (PARTITION BY n_regionkey ORDER BY n_name) as s "
       "FROM nation ORDER BY n_name LIMIT 10";
 
+  // v2 prunes columns before the TopN, v1 after.
   auto plan = toSingleNodePlan(sql);
-  auto matcher =
-      matchScan("nation")
-          .window(
-              {"sum(n_regionkey) OVER (PARTITION BY n_regionkey ORDER BY n_name)"})
-          .topN(10)
-          .project({"n_name", "s"})
-          .build();
+  auto window = [] {
+    return matchScan("nation").window(
+        {"sum(n_regionkey) OVER (PARTITION BY n_regionkey ORDER BY n_name)"});
+  };
+  auto matcher = useV2_ ? window().project({"n_name", "s"}).topN(10).build()
+                        : window().topN(10).project({"n_name", "s"}).build();
   AXIOM_ASSERT_PLAN(plan, matcher);
 
   auto distributedPlan = toDistributedPlan(sql);
-  auto distributedMatcher =
-      matchScan("nation")
-          .shuffle({"n_regionkey"})
-          .localPartition({"n_regionkey"})
-          .window(
-              {"sum(n_regionkey) OVER (PARTITION BY n_regionkey ORDER BY n_name)"})
-          .topN(10)
-          .localMerge()
-          .shuffleMerge()
-          .finalLimit(0, 10)
-          .project({"n_name", "s"})
-          .build();
+  // v2 also limits per worker before the merge exchange.
+  auto distributedWindow = [] {
+    return matchScan("nation")
+        .shuffle({"n_regionkey"})
+        .localPartition({"n_regionkey"})
+        .window(
+            {"sum(n_regionkey) OVER (PARTITION BY n_regionkey ORDER BY n_name)"});
+  };
+  auto distributedMatcher = useV2_ ? distributedWindow()
+                                         .project({"n_name", "s"})
+                                         .topN(10)
+                                         .localMerge()
+                                         .finalLimit(0, 10)
+                                         .shuffleMerge()
+                                         .finalLimit(0, 10)
+                                         .build()
+                                   : distributedWindow()
+                                         .topN(10)
+                                         .localMerge()
+                                         .shuffleMerge()
+                                         .finalLimit(0, 10)
+                                         .project({"n_name", "s"})
+                                         .build();
   AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan, distributedMatcher);
 }
 
-TEST_F(WindowTest, nonRedundantOrderByWithDifferentKeys) {
+TEST_P(WindowTest, nonRedundantOrderByWithDifferentKeys) {
   // Query ORDER BY does not match window ORDER BY — ORDER BY is preserved.
   constexpr auto sql =
       "SELECT n_name, n_nationkey, sum(n_regionkey) OVER (ORDER BY n_name) "
       "FROM nation ORDER BY n_nationkey LIMIT 10";
 
+  // v2 prunes columns before the TopN, v1 after.
   auto plan = toSingleNodePlan(sql);
-  auto matcher = matchScan("nation")
-                     .window({"sum(n_regionkey) OVER (ORDER BY n_name)"})
-                     .topN(10)
-                     .project()
-                     .build();
+  auto window = [] {
+    return matchScan("nation").window(
+        {"sum(n_regionkey) OVER (ORDER BY n_name)"});
+  };
+  auto matcher = useV2_ ? window().project().topN(10).build()
+                        : window().topN(10).project().build();
   AXIOM_ASSERT_PLAN(plan, matcher);
 
   // No partition keys — gather, then Window + TopN + project, all on the one
   // task the gather already produced.
   auto distributedPlan = toDistributedPlan(sql);
-  auto distributedMatcher =
-      matchScan("nation")
-          .gather()
-          .localGather()
-          .window({"sum(n_regionkey) OVER (ORDER BY n_name)"})
-          .topN(10)
-          .localMerge()
-          .finalLimit(0, 10)
-          .project()
-          .build();
+  auto distributedWindow = [] {
+    return matchScan("nation").gather().localGather().window(
+        {"sum(n_regionkey) OVER (ORDER BY n_name)"});
+  };
+  auto distributedMatcher = useV2_ ? distributedWindow()
+                                         .project()
+                                         .topN(10)
+                                         .localMerge()
+                                         .finalLimit(0, 10)
+                                         .build()
+                                   : distributedWindow()
+                                         .topN(10)
+                                         .localMerge()
+                                         .finalLimit(0, 10)
+                                         .project()
+                                         .build();
   AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan, distributedMatcher);
 }
 
-TEST_F(WindowTest, redundantOrderByMultipleWindowsSameOrderBy) {
+TEST_P(WindowTest, redundantOrderByMultipleWindowsSameOrderBy) {
   // Multiple window functions with the same ORDER BY and no partition keys —
   // query ORDER BY is redundant.
   constexpr auto sql =
@@ -484,31 +516,32 @@ TEST_F(WindowTest, redundantOrderByMultipleWindowsSameOrderBy) {
       "avg(n_nationkey) OVER (ORDER BY n_name) as a "
       "FROM nation ORDER BY n_name LIMIT 10";
 
+  // The window already emits rows in n_name order, so the query ORDER BY needs
+  // no sort. v2 prunes columns before the limit, v1 after.
   auto plan = toSingleNodePlan(sql);
-  auto matcher = matchScan("nation")
-                     .window(
-                         {"sum(n_regionkey) OVER (ORDER BY n_name)",
-                          "avg(n_nationkey) OVER (ORDER BY n_name)"})
-                     .finalLimit(0, 10)
-                     .project()
-                     .build();
+  auto windows = [] {
+    return matchScan("nation").window(
+        {"sum(n_regionkey) OVER (ORDER BY n_name)",
+         "avg(n_nationkey) OVER (ORDER BY n_name)"});
+  };
+  auto matcher = useV2_ ? windows().project().finalLimit(0, 10).build()
+                        : windows().finalLimit(0, 10).project().build();
   AXIOM_ASSERT_PLAN(plan, matcher);
 
   // No partition keys — gather, then Window + limit + project.
   auto distributedPlan = toDistributedPlan(sql);
-  auto distributedMatcher = matchScan("nation")
-                                .gather()
-                                .localGather()
-                                .window(
-                                    {"sum(n_regionkey) OVER (ORDER BY n_name)",
-                                     "avg(n_nationkey) OVER (ORDER BY n_name)"})
-                                .localLimit(0, 10)
-                                .project()
-                                .build();
+  auto distributedWindows = [] {
+    return matchScan("nation").gather().localGather().window(
+        {"sum(n_regionkey) OVER (ORDER BY n_name)",
+         "avg(n_nationkey) OVER (ORDER BY n_name)"});
+  };
+  auto distributedMatcher = useV2_
+      ? distributedWindows().project().localLimit(0, 10).build()
+      : distributedWindows().localLimit(0, 10).project().build();
   AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan, distributedMatcher);
 }
 
-TEST_F(WindowTest, nonRedundantOrderByMultipleWindowsDifferentOrderBy) {
+TEST_P(WindowTest, nonRedundantOrderByMultipleWindowsDifferentOrderBy) {
   // Multiple window functions with different ORDER BY — query ORDER BY is NOT
   // redundant.
   constexpr auto sql =
@@ -517,36 +550,46 @@ TEST_F(WindowTest, nonRedundantOrderByMultipleWindowsDifferentOrderBy) {
       "avg(n_nationkey) OVER (ORDER BY n_nationkey) as a "
       "FROM nation ORDER BY n_name LIMIT 10";
 
+  // v2 prunes columns before the TopN, v1 after.
   auto plan = toSingleNodePlan(sql);
-  auto matcher = matchScan("nation")
-                     .window({"sum(n_regionkey) OVER (ORDER BY n_name)"})
-                     .project()
-                     .window({"avg(n_nationkey) OVER (ORDER BY n_nationkey)"})
-                     .topN(10)
-                     .project()
-                     .build();
+  auto windows = [] {
+    return matchScan("nation")
+        .window({"sum(n_regionkey) OVER (ORDER BY n_name)"})
+        .project()
+        .window({"avg(n_nationkey) OVER (ORDER BY n_nationkey)"});
+  };
+  auto matcher = useV2_ ? windows().project().topN(10).build()
+                        : windows().topN(10).project().build();
   AXIOM_ASSERT_PLAN(plan, matcher);
 
   // No partition keys — gather, then two Windows + TopN + project, all on the
   // one task the gather already produced.
   auto distributedPlan = toDistributedPlan(sql);
-  auto distributedMatcher =
-      matchScan("nation")
-          .gather()
-          .localGather()
-          .window({"sum(n_regionkey) OVER (ORDER BY n_name)"})
-          .project()
-          .localGather()
-          .window({"avg(n_nationkey) OVER (ORDER BY n_nationkey)"})
-          .topN(10)
-          .localMerge()
-          .finalLimit(0, 10)
-          .project()
-          .build();
+  auto distributedWindows = [] {
+    return matchScan("nation")
+        .gather()
+        .localGather()
+        .window({"sum(n_regionkey) OVER (ORDER BY n_name)"})
+        .project()
+        .localGather()
+        .window({"avg(n_nationkey) OVER (ORDER BY n_nationkey)"});
+  };
+  auto distributedMatcher = useV2_ ? distributedWindows()
+                                         .project()
+                                         .topN(10)
+                                         .localMerge()
+                                         .finalLimit(0, 10)
+                                         .build()
+                                   : distributedWindows()
+                                         .topN(10)
+                                         .localMerge()
+                                         .finalLimit(0, 10)
+                                         .project()
+                                         .build();
   AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan, distributedMatcher);
 }
 
-TEST_F(WindowTest, windowOutputAsGroupByKey) {
+TEST_P(WindowTest, windowOutputAsGroupByKey) {
   // Window function output used as GROUP BY key in outer query. The window
   // must be computed before the aggregation.
   auto plan = toSingleNodePlan(
@@ -567,7 +610,7 @@ TEST_F(WindowTest, windowOutputAsGroupByKey) {
 // When a window function's input expression references another window
 // function's output, they cannot share a Window node — the referenced
 // output isn't available until its Window runs.
-TEST_F(WindowTest, dependentWindowFunctions) {
+TEST_P(WindowTest, dependentWindowFunctions) {
   testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
 
   {
@@ -666,7 +709,7 @@ TEST_F(WindowTest, dependentWindowFunctions) {
 
 // Window ORDER BY references a column from the right side of a LEFT JOIN
 // whose WHERE further filters the right side.
-TEST_F(WindowTest, leftJoinWithWindowOrderingByRightSideColumn) {
+TEST_P(WindowTest, leftJoinWithWindowOrderingByRightSideColumn) {
   testConnector_->addTable("t", ROW("x", BIGINT()));
   testConnector_->addTable("u", ROW({"x", "y"}, BIGINT()));
 
@@ -683,6 +726,8 @@ TEST_F(WindowTest, leftJoinWithWindowOrderingByRightSideColumn) {
                      .build();
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
+
+AXIOM_INSTANTIATE_V1_V2(WindowTest);
 
 } // namespace
 } // namespace facebook::axiom::optimizer

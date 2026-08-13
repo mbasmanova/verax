@@ -67,8 +67,12 @@ class PushdownAndPrunePass {
   /// Returns `root` rewritten as described in the class doc. `evaluator` backs
   /// the expression simplifier used to fold conjuncts after substitution (and
   /// to detect ones that reduce to constant `false`).
+  /// @param outputColumns The user-visible output layout. `root` may produce
+  /// more columns than this -- Emit trims them -- and pruning uses this, not
+  /// `root`'s schema, to decide what the query actually needs.
   static NodeCP run(
       NodeCP root,
+      const ColumnVector& outputColumns,
       Builder& builder,
       velox::core::ExpressionEvaluator& evaluator);
 };

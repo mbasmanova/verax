@@ -141,13 +141,11 @@ TEST_P(SubqueryFoldTest, foldable) {
         "SELECT * FROM t WHERE ds = (SELECT max(ds) FROM t WHERE a > 5)");
     auto plan = toSingleNodePlan(logicalPlan);
 
-    // v2 adds a top projection to drop the join's extra aggregate column.
     auto matcher = matchScan("t")
                        .hashJoinInner(matchScan("t")
                                           .aliases({"ds", "a"})
                                           .filter("a > 5")
                                           .aggregation())
-                       .projectIf(useV2_)
                        .build();
     AXIOM_ASSERT_PLAN(plan, matcher);
   }

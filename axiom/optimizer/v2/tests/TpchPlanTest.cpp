@@ -430,7 +430,6 @@ TEST_F(TpchPlanTest, q11) {
                   .singleAggregation({}, {"sum(s) as totalSum"})
                   .project({"totalSum * 0.0001 as expr"}))
           .orderBy({"value DESC"})
-          .project()
           .build();
   AXIOM_ASSERT_PLAN(planTpch(11), matcher);
 
