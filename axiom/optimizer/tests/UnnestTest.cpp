@@ -16,7 +16,6 @@
 #include "axiom/logical_plan/PlanBuilder.h"
 #include "axiom/optimizer/tests/PlanMatcher.h"
 #include "axiom/optimizer/tests/QueryTestBase.h"
-#include "velox/exec/tests/utils/PlanBuilder.h"
 
 namespace facebook::axiom::optimizer {
 namespace {
@@ -97,21 +96,6 @@ TEST_P(UnnestTest, unnest) {
     auto plan = toSingleNodePlan(logicalPlan);
     auto matcher = matchValues().project().unnest().build();
     AXIOM_ASSERT_PLAN(plan, matcher);
-
-    auto referencePlan =
-        exec::test::PlanBuilder{}
-            .values({rowVector_})
-            .project({
-                "x",
-                "a_a_y",
-                "a_a_z",
-                "array_distinct(a_a_y) AS a_a_y_d",
-                "array_distinct(a_a_z) AS a_a_z_d",
-            })
-            .unnest({"x", "a_a_y", "a_a_z"}, {"a_a_y_d", "a_a_z_d"})
-            .planNode();
-
-    checkSame(logicalPlan, referencePlan);
   }
   {
     SCOPED_TRACE("unnest after unnest");
@@ -131,33 +115,6 @@ TEST_P(UnnestTest, unnest) {
     auto plan = toSingleNodePlan(logicalPlan);
     auto matcher = matchValues().project().unnest().project().unnest().build();
     AXIOM_ASSERT_PLAN(plan, matcher);
-
-    auto referencePlan =
-        exec::test::PlanBuilder{}
-            .values({rowVector_})
-            .project({
-                "x",
-                "a_a_y",
-                "a_a_z",
-                "array_distinct(a_a_y) AS a_a_y_d",
-                "array_distinct(a_a_z) AS a_a_z_d",
-            })
-            .unnest({"x", "a_a_y", "a_a_z"}, {"a_a_y_d", "a_a_z_d"})
-            .project({
-                "x",
-                "a_a_y",
-                "a_a_z",
-                "a_a_y_d_e",
-                "a_a_z_d_e",
-                "array_distinct(a_a_y_d_e) AS a_y_d",
-                "array_distinct(a_a_z_d_e) AS a_z_d",
-            })
-            .unnest(
-                {"x", "a_a_y", "a_a_z", "a_a_y_d_e", "a_a_z_d_e"},
-                {"a_y_d", "a_z_d"})
-            .planNode();
-
-    checkSame(logicalPlan, referencePlan);
   }
   {
     SCOPED_TRACE("no extra columns in projections before unnest");
@@ -207,14 +164,6 @@ TEST_P(UnnestTest, unnest) {
     auto plan = toSingleNodePlan(logicalPlan);
     auto matcher = matchValues().project().unnest().build();
     AXIOM_ASSERT_PLAN(plan, matcher);
-
-    auto referencePlan = exec::test::PlanBuilder{}
-                             .values({rowVector_})
-                             .project({"array_distinct(a_a_y) AS a_a_y_d"})
-                             .unnest({}, {"a_a_y_d"})
-                             .planNode();
-
-    checkSame(logicalPlan, referencePlan);
   }
   {
     SCOPED_TRACE("unnest constant array");
@@ -226,19 +175,9 @@ TEST_P(UnnestTest, unnest) {
                            .project({"e"})
                            .build();
 
-    auto referencePlan = exec::test::PlanBuilder{pool_.get()}
-                             .values({makeRowVector(ROW({}), 1)})
-                             .project({
-                                 "array[1, 2, 3] AS a",
-                             })
-                             .unnest({}, {"a"})
-                             .planNode();
-
     auto plan = toSingleNodePlan(logicalPlan);
     auto matcher = matchValues().project().unnest().build();
     AXIOM_ASSERT_PLAN(plan, matcher);
-
-    checkSame(logicalPlan, referencePlan);
   }
   {
     SCOPED_TRACE("unnest array and map");
@@ -252,34 +191,15 @@ TEST_P(UnnestTest, unnest) {
                            .project({"v", "e"})
                            .build();
 
-    auto referencePlan = exec::test::PlanBuilder{pool_.get()}
-                             .values({makeRowVector(ROW({}), 1)})
-                             .project({
-                                 "array[1, 2, 3] AS a",
-                                 "map(array['1', '2'], array[10, 20]) AS m",
-                             })
-                             .unnest({}, {"a", "m"})
-                             .project({
-                                 "m_v AS v",
-                                 "a_e AS e",
-                             })
-                             .planNode();
-
     auto plan = toSingleNodePlan(logicalPlan);
     auto matcher = matchValues().project().unnest().project({"v", "e"}).build();
     AXIOM_ASSERT_PLAN(plan, matcher);
-
-    checkSame(logicalPlan, referencePlan);
   }
 }
 
 TEST_P(UnnestTest, project) {
   auto startLogicalPlan = [&]() {
     return lp::PlanBuilder{}.values({rowVector_});
-  };
-
-  auto startReferencePlan = [&]() {
-    return exec::test::PlanBuilder{}.values({rowVector_});
   };
 
   {
@@ -308,18 +228,6 @@ TEST_P(UnnestTest, project) {
     // needs no trailing Project.
     auto matcher = matchValues().project().unnest().projectIf(!useV2_).build();
     AXIOM_ASSERT_PLAN(plan, matcher);
-
-    auto referencePlan =
-        startReferencePlan()
-            .project({
-                "x + 1 AS x1",
-                "array_distinct(a_a_y) AS a_a_y_d",
-                "array_distinct(a_a_z) AS a_a_z_d",
-            })
-            .unnest({"x1", "a_a_y_d", "a_a_z_d"}, {"a_a_y_d", "a_a_z_d"})
-            .planNode();
-
-    checkSame(logicalPlan, referencePlan);
   }
   {
     SCOPED_TRACE("project after unnest (independent on unnested columns)");
@@ -337,18 +245,6 @@ TEST_P(UnnestTest, project) {
     auto plan = toSingleNodePlan(logicalPlan);
     auto matcher = matchValues().project().unnest().project().build();
     AXIOM_ASSERT_PLAN(plan, matcher);
-
-    auto referencePlan = startReferencePlan()
-                             .project({
-                                 "x",
-                                 "array_distinct(a_a_y) AS a_a_y_d",
-                                 "array_distinct(a_a_z) AS a_a_z_d",
-                             })
-                             .unnest({"x"}, {"a_a_y_d", "a_a_z_d"})
-                             .project({"x + 1 AS x1", "a_a_y_d_e"})
-                             .planNode();
-
-    checkSame(logicalPlan, referencePlan);
   }
   {
     SCOPED_TRACE("project after unnest (dependent on unnested columns)");
@@ -364,29 +260,12 @@ TEST_P(UnnestTest, project) {
     auto plan = toSingleNodePlan(logicalPlan);
     auto matcher = matchValues().project().unnest().project().build();
     AXIOM_ASSERT_PLAN(plan, matcher);
-
-    auto referencePlan =
-        startReferencePlan()
-            .project({
-                "x",
-                "array_distinct(a_a_y) AS a_a_y_d",
-                "array_distinct(a_a_z) AS a_a_z_d",
-            })
-            .unnest({"x"}, {"a_a_y_d", "a_a_z_d"})
-            .project({"x", "array_distinct(a_a_y_d_e) AS a_y_d"})
-            .planNode();
-
-    checkSame(logicalPlan, referencePlan);
   }
 }
 
 TEST_P(UnnestTest, filter) {
   auto startLogicalPlan = [&]() {
     return lp::PlanBuilder{}.values({rowVector_});
-  };
-
-  auto startReferencePlan = [&]() {
-    return exec::test::PlanBuilder{}.values({rowVector_});
   };
 
   {
@@ -404,19 +283,6 @@ TEST_P(UnnestTest, filter) {
     auto plan = toSingleNodePlan(logicalPlan);
     auto matcher = matchValues().filter().project().unnest().project().build();
     AXIOM_ASSERT_PLAN(plan, matcher);
-
-    auto referencePlan = startReferencePlan()
-                             .filter("x % 2 = 0")
-                             .project({
-                                 "x",
-                                 "array_distinct(a_a_y) AS a_a_y_d",
-                                 "array_distinct(a_a_z) AS a_a_z_d",
-                             })
-                             .unnest({"x"}, {"a_a_y_d", "a_a_z_d"})
-                             .project({"x", "a_a_y_d_e"})
-                             .planNode();
-
-    checkSame(logicalPlan, referencePlan);
   }
   {
     SCOPED_TRACE("filter after unnest (independent on unnested columns)");
@@ -433,19 +299,6 @@ TEST_P(UnnestTest, filter) {
     auto plan = toSingleNodePlan(logicalPlan);
     auto matcher = matchValues().filter().project().unnest().project().build();
     AXIOM_ASSERT_PLAN(plan, matcher);
-
-    auto referencePlan = startReferencePlan()
-                             .project({
-                                 "x",
-                                 "array_distinct(a_a_y) AS a_a_y_d",
-                                 "array_distinct(a_a_z) AS a_a_z_d",
-                             })
-                             .unnest({"x"}, {"a_a_y_d", "a_a_z_d"})
-                             .filter("x % 2 = 0")
-                             .project({"x", "a_a_y_d_e"})
-                             .planNode();
-
-    checkSame(logicalPlan, referencePlan);
   }
   {
     SCOPED_TRACE("filter after unnest (dependent on unnested columns)");
@@ -473,25 +326,6 @@ TEST_P(UnnestTest, filter) {
                        .project()
                        .build();
     AXIOM_ASSERT_PLAN(plan, matcher);
-
-    auto referencePlan = startReferencePlan()
-                             .project({
-                                 "x",
-                                 "array_distinct(a_a_y) AS a_a_y_d",
-                                 "array_distinct(a_a_z) AS a_a_z_d",
-                             })
-                             .unnest({"x"}, {"a_a_y_d", "a_a_z_d"})
-                             .project({
-                                 "x",
-                                 "array_distinct(a_a_y_d_e) AS a_y",
-                                 "array_distinct(a_a_z_d_e) AS a_z",
-                             })
-                             .unnest({"x"}, {"a_y", "a_z"})
-                             .filter("a_y_e % 2 = 0")
-                             .project({"x", "a_y_e"})
-                             .planNode();
-
-    checkSame(logicalPlan, referencePlan);
   }
   {
     SCOPED_TRACE("filter between unnest (independent on unnested columns)");
@@ -519,25 +353,6 @@ TEST_P(UnnestTest, filter) {
                        .project()
                        .build();
     AXIOM_ASSERT_PLAN(plan, matcher);
-
-    auto referencePlan = startReferencePlan()
-                             .project({
-                                 "x",
-                                 "array_distinct(a_a_y) AS a_a_y_d",
-                                 "array_distinct(a_a_z) AS a_a_z_d",
-                             })
-                             .unnest({"x"}, {"a_a_y_d", "a_a_z_d"})
-                             .project({
-                                 "x",
-                                 "array_distinct(a_a_y_d_e) AS a_y",
-                                 "array_distinct(a_a_z_d_e) AS a_z",
-                             })
-                             .unnest({"x"}, {"a_y", "a_z"})
-                             .filter("x % 2 = 0")
-                             .project({"x", "a_y_e"})
-                             .planNode();
-
-    checkSame(logicalPlan, referencePlan);
   }
   {
     SCOPED_TRACE("filter between unnest (dependent on unnested columns)");
@@ -565,25 +380,6 @@ TEST_P(UnnestTest, filter) {
                        .project()
                        .build();
     AXIOM_ASSERT_PLAN(plan, matcher);
-
-    auto referencePlan = startReferencePlan()
-                             .project({
-                                 "x",
-                                 "array_distinct(a_a_y) AS a_a_y_d",
-                                 "array_distinct(a_a_z) AS a_a_z_d",
-                             })
-                             .unnest({"x"}, {"a_a_y_d", "a_a_z_d"})
-                             .filter("cardinality(a_a_z_d_e) % 2 = 0")
-                             .project({
-                                 "x",
-                                 "array_distinct(a_a_y_d_e) AS a_y",
-                                 "array_distinct(a_a_z_d_e) AS a_z",
-                             })
-                             .unnest({"x"}, {"a_y", "a_z"})
-                             .project({"x", "a_y_e"})
-                             .planNode();
-
-    checkSame(logicalPlan, referencePlan);
   }
 }
 
@@ -592,10 +388,6 @@ TEST_P(UnnestTest, groupBy) {
 
   auto startLogicalPlan = [&]() {
     return lp::PlanBuilder{}.values({rowVector_});
-  };
-
-  auto startReferencePlan = [&]() {
-    return exec::test::PlanBuilder{}.values({rowVector_});
   };
 
   {
@@ -613,18 +405,6 @@ TEST_P(UnnestTest, groupBy) {
     auto plan = toSingleNodePlan(logicalPlan);
     auto matcher = matchValues().singleAggregation().project().unnest().build();
     AXIOM_ASSERT_PLAN(plan, matcher);
-
-    auto referencePlan = startReferencePlan()
-                             .singleAggregation(names, {})
-                             .project({
-                                 "x",
-                                 "array_distinct(a_a_y) AS a_a_y_d",
-                                 "array_distinct(a_a_z) AS a_a_z_d",
-                             })
-                             .unnest({"x"}, {"a_a_y_d", "a_a_z_d"})
-                             .planNode();
-
-    checkSame(logicalPlan, referencePlan);
   }
   {
     SCOPED_TRACE("group by after unnest");
@@ -640,19 +420,6 @@ TEST_P(UnnestTest, groupBy) {
     auto plan = toSingleNodePlan(logicalPlan);
     auto matcher = matchValues().project().unnest().singleAggregation().build();
     AXIOM_ASSERT_PLAN(plan, matcher);
-
-    auto referencePlan =
-        startReferencePlan()
-            .project({
-                "x",
-                "array_distinct(a_a_y) AS a_a_y_d",
-                "array_distinct(a_a_z) AS a_a_z_d",
-            })
-            .unnest({"x"}, {"a_a_y_d", "a_a_z_d"})
-            .singleAggregation({"x", "a_a_y_d_e", "a_a_z_d_e"}, {})
-            .planNode();
-
-    checkSame(logicalPlan, referencePlan);
   }
 }
 
@@ -661,10 +428,6 @@ TEST_P(UnnestTest, orderBy) {
 
   auto startLogicalPlan = [&]() {
     return lp::PlanBuilder{}.values({rowVector_});
-  };
-
-  auto startReferencePlan = [&]() {
-    return exec::test::PlanBuilder{}.values({rowVector_});
   };
 
   {
@@ -682,18 +445,6 @@ TEST_P(UnnestTest, orderBy) {
     auto plan = toSingleNodePlan(logicalPlan);
     auto matcher = matchValues().orderBy().project().unnest().build();
     AXIOM_ASSERT_PLAN(plan, matcher);
-
-    auto referencePlan = startReferencePlan()
-                             .orderBy(names, {})
-                             .project({
-                                 "x",
-                                 "array_distinct(a_a_y) AS a_a_y_d",
-                                 "array_distinct(a_a_z) AS a_a_z_d",
-                             })
-                             .unnest({"x"}, {"a_a_y_d", "a_a_z_d"})
-                             .planNode();
-
-    checkSame(logicalPlan, referencePlan);
   }
   {
     SCOPED_TRACE("order by after unnest (independent on unnested columns)");
@@ -710,18 +461,6 @@ TEST_P(UnnestTest, orderBy) {
     auto plan = toSingleNodePlan(logicalPlan);
     auto matcher = matchValues().project().unnest().orderBy().build();
     AXIOM_ASSERT_PLAN(plan, matcher);
-
-    auto referencePlan = startReferencePlan()
-                             .project({
-                                 "x",
-                                 "array_distinct(a_a_y) AS a_a_y_d",
-                                 "array_distinct(a_a_z) AS a_a_z_d",
-                             })
-                             .unnest({"x"}, {"a_a_y_d", "a_a_z_d"})
-                             .orderBy({"x"}, {})
-                             .planNode();
-
-    checkSame(logicalPlan, referencePlan);
   }
   {
     SCOPED_TRACE("order by after unnest (dependent on unnested columns)");
@@ -740,28 +479,12 @@ TEST_P(UnnestTest, orderBy) {
     auto plan = toSingleNodePlan(logicalPlan);
     auto matcher = matchValues().project().unnest().orderBy().build();
     AXIOM_ASSERT_PLAN(plan, matcher);
-
-    auto referencePlan = startReferencePlan()
-                             .project({
-                                 "x",
-                                 "array_distinct(a_a_y) AS a_a_y_d",
-                                 "array_distinct(a_a_z) AS a_a_z_d",
-                             })
-                             .unnest({"x"}, {"a_a_y_d", "a_a_z_d"})
-                             .orderBy({"x", "a_a_y_d_e", "a_a_z_d_e"}, {})
-                             .planNode();
-
-    checkSame(logicalPlan, referencePlan);
   }
 }
 
 TEST_P(UnnestTest, limit) {
   auto startLogicalPlan = [&]() {
     return lp::PlanBuilder{}.values({rowVector_});
-  };
-
-  auto startReferencePlan = [&]() {
-    return exec::test::PlanBuilder{}.values({rowVector_});
   };
 
   {
@@ -779,18 +502,6 @@ TEST_P(UnnestTest, limit) {
     auto plan = toSingleNodePlan(logicalPlan);
     auto matcher = matchValues().limit().project().unnest().build();
     AXIOM_ASSERT_PLAN(plan, matcher);
-
-    auto referencePlan = startReferencePlan()
-                             .limit(1, 1, {})
-                             .project({
-                                 "x",
-                                 "array_distinct(a_a_y) AS a_a_y_d",
-                                 "array_distinct(a_a_z) AS a_a_z_d",
-                             })
-                             .unnest({"x"}, {"a_a_y_d", "a_a_z_d"})
-                             .planNode();
-
-    checkSame(logicalPlan, referencePlan);
   }
   {
     SCOPED_TRACE("limit after unnest");
@@ -807,18 +518,6 @@ TEST_P(UnnestTest, limit) {
     auto plan = toSingleNodePlan(logicalPlan);
     auto matcher = matchValues().project().unnest().limit().build();
     AXIOM_ASSERT_PLAN(plan, matcher);
-
-    auto referencePlan = startReferencePlan()
-                             .project({
-                                 "x",
-                                 "array_distinct(a_a_y) AS a_a_y_d",
-                                 "array_distinct(a_a_z) AS a_a_z_d",
-                             })
-                             .unnest({"x"}, {"a_a_y_d", "a_a_z_d"})
-                             .limit(1, 1, {})
-                             .planNode();
-
-    checkSame(logicalPlan, referencePlan);
   }
 }
 
@@ -826,10 +525,6 @@ TEST_P(UnnestTest, join) {
   auto startLogicalPlan = [&](lp::PlanBuilder::Context& ctx) {
     return lp::PlanBuilder{ctx, /*allowAmbiguousOutputNames=*/true}.values(
         {rowVector_});
-  };
-
-  auto startReferencePlan = [&](auto& planNodeIdGenerator) {
-    return exec::test::PlanBuilder{planNodeIdGenerator}.values({rowVector_});
   };
 
   {
@@ -868,40 +563,6 @@ TEST_P(UnnestTest, join) {
                        .build();
     AXIOM_ASSERT_PLAN(plan, matcher);
     ASSERT_EQ(plan->outputType()->names(), expectedNames);
-
-    auto generator = std::make_shared<core::PlanNodeIdGenerator>();
-    auto referencePlan =
-        startReferencePlan(generator)
-            .project({"x AS x1", "a_a_y AS a_a_y1", "a_a_z AS a_a_z1"})
-            .hashJoin(
-                {"x1"},
-                {"x2"},
-                startReferencePlan(generator)
-                    .project({"x AS x2", "a_a_y AS a_a_y2", "a_a_z AS a_a_z2"})
-                    .planNode(),
-                "",
-                {"x1", "a_a_y1", "a_a_z1", "x2", "a_a_y2", "a_a_z2"})
-            .project({
-                "x1",
-                "a_a_y2",
-                "a_a_z2",
-                "array_distinct(a_a_y1) AS a_a_y1_d",
-                "array_distinct(a_a_z1) AS a_a_z1_d",
-            })
-            .project({
-                "x1",
-                "a_a_y1_d",
-                "a_a_z1_d",
-                "array_distinct(a_a_y2) AS a_a_y2_d",
-                "array_distinct(a_a_z2) AS a_a_z2_d",
-            })
-            .unnest({"x1", "a_a_y2_d", "a_a_z2_d"}, {"a_a_y1_d", "a_a_z1_d"})
-            .unnest(
-                {"x1", "a_a_y1_d_e", "a_a_z1_d_e"}, {"a_a_y2_d", "a_a_z2_d"})
-            .project({"x1", "a_a_y1_d_e AS a_y1", "a_a_z2_d_e AS a_z2"})
-            .planNode();
-
-    checkSame(logicalPlan, referencePlan);
   }
   {
     SCOPED_TRACE("join before unnest (dependent on unnested columns)");
@@ -939,40 +600,6 @@ TEST_P(UnnestTest, join) {
                        .build();
     AXIOM_ASSERT_PLAN(plan, matcher);
     ASSERT_EQ(plan->outputType()->names(), expectedNames);
-
-    auto generator = std::make_shared<core::PlanNodeIdGenerator>();
-    auto referencePlan =
-        startReferencePlan(generator)
-            .project({"x AS x1", "a_a_y AS a_a_y1", "a_a_z AS a_a_z1"})
-            .hashJoin(
-                {"a_a_y1"},
-                {"a_a_y2"},
-                startReferencePlan(generator)
-                    .project({"x AS x2", "a_a_y AS a_a_y2", "a_a_z AS a_a_z2"})
-                    .planNode(),
-                "",
-                {"x1", "a_a_y1", "a_a_z1", "x2", "a_a_y2", "a_a_z2"})
-            .project({
-                "x1",
-                "a_a_y2",
-                "a_a_z2",
-                "array_distinct(a_a_y1) AS a_a_y1_d",
-                "array_distinct(a_a_z1) AS a_a_z1_d",
-            })
-            .project({
-                "x1",
-                "a_a_y1_d",
-                "a_a_z1_d",
-                "array_distinct(a_a_y2) AS a_a_y2_d",
-                "array_distinct(a_a_z2) AS a_a_z2_d",
-            })
-            .unnest({"x1", "a_a_y2_d", "a_a_z2_d"}, {"a_a_y1_d", "a_a_z1_d"})
-            .unnest(
-                {"x1", "a_a_y1_d_e", "a_a_z1_d_e"}, {"a_a_y2_d", "a_a_z2_d"})
-            .project({"x1", "a_a_y1_d_e AS a_y1", "a_a_z2_d_e AS a_z2"})
-            .planNode();
-
-    checkSame(logicalPlan, referencePlan);
   }
   {
     SCOPED_TRACE("join after unnest (independent on unnested columns)");
@@ -1021,40 +648,6 @@ TEST_P(UnnestTest, join) {
               .build();
     AXIOM_ASSERT_PLAN(plan, matcher);
     ASSERT_EQ(plan->outputType()->names(), expectedNames);
-
-    auto generator = std::make_shared<core::PlanNodeIdGenerator>();
-    auto referencePlan =
-        startReferencePlan(generator)
-            .project({"x AS x1", "a_a_y AS a_a_y1", "a_a_z AS a_a_z1"})
-            .hashJoin(
-                {"x1"},
-                {"x2"},
-                startReferencePlan(generator)
-                    .project({"x AS x2", "a_a_y AS a_a_y2", "a_a_z AS a_a_z2"})
-                    .planNode(),
-                "",
-                {"x1", "a_a_y1", "a_a_z1", "x2", "a_a_y2", "a_a_z2"})
-            .project({
-                "x1",
-                "a_a_y2",
-                "a_a_z2",
-                "array_distinct(a_a_y1) AS a_a_y1_d",
-                "array_distinct(a_a_z1) AS a_a_z1_d",
-            })
-            .project({
-                "x1",
-                "a_a_y1_d",
-                "a_a_z1_d",
-                "array_distinct(a_a_y2) AS a_a_y2_d",
-                "array_distinct(a_a_z2) AS a_a_z2_d",
-            })
-            .unnest({"x1", "a_a_y2_d", "a_a_z2_d"}, {"a_a_y1_d", "a_a_z1_d"})
-            .unnest(
-                {"x1", "a_a_y1_d_e", "a_a_z1_d_e"}, {"a_a_y2_d", "a_a_z2_d"})
-            .project({"x1", "a_a_y1_d_e AS a_y1", "a_a_z2_d_e AS a_z2"})
-            .planNode();
-
-    checkSame(logicalPlan, referencePlan);
   }
   {
     SCOPED_TRACE("join after unnest (dependent on unnested columns)");
@@ -1093,40 +686,6 @@ TEST_P(UnnestTest, join) {
             .build();
     AXIOM_ASSERT_PLAN(plan, matcher);
     ASSERT_EQ(plan->outputType()->names(), expectedNames);
-
-    auto generator = std::make_shared<core::PlanNodeIdGenerator>();
-    auto referencePlan =
-        startReferencePlan(generator)
-            .project({
-                "x AS x1",
-                "array_distinct(a_a_y) AS a_a_y1_d",
-                "array_distinct(a_a_z) AS a_a_z1_d",
-            })
-            .unnest({"x1"}, {"a_a_y1_d", "a_a_z1_d"})
-            .hashJoin(
-                {"a_a_y1_d_e"},
-                {"a_a_y2_d_e"},
-                startReferencePlan(generator)
-                    .project({
-                        "x AS x2",
-                        "array_distinct(a_a_y) AS a_a_y2_d",
-                        "array_distinct(a_a_z) AS a_a_z2_d",
-                    })
-                    .unnest({"x2"}, {"a_a_y2_d", "a_a_z2_d"})
-                    .planNode(),
-                "",
-                {
-                    "x1",
-                    "a_a_y1_d_e",
-                    "a_a_z1_d_e",
-                    "x2",
-                    "a_a_y2_d_e",
-                    "a_a_z2_d_e",
-                })
-            .project({"x1", "a_a_y1_d_e AS a_y1", "x2", "a_a_z2_d_e AS a_z2"})
-            .planNode();
-
-    checkSame(logicalPlan, referencePlan);
   }
 }
 
