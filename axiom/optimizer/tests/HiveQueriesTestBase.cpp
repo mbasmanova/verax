@@ -168,24 +168,6 @@ void HiveQueriesTestBase::checkResults(
   checkSame(logicalPlan, referencePlan);
 }
 
-void HiveQueriesTestBase::checkResults(
-    PlanAndStats& plan,
-    const test::TestResult& expected) {
-  auto results = runFragmentedPlan(plan);
-  exec::test::assertEqualResults(expected.results, results.results);
-}
-
-void HiveQueriesTestBase::checkSingleNodePlan(
-    const PlanAndStats& plan,
-    const std::shared_ptr<core::PlanMatcher>& matcher) {
-  SCOPED_TRACE(plan.plan->toString());
-
-  const auto& fragments = plan.plan->fragments();
-  ASSERT_EQ(1, fragments.size());
-
-  ASSERT_TRUE(matcher->match(fragments.at(0).fragment.planNode));
-}
-
 lp::LogicalPlanNodePtr HiveQueriesTestBase::parseInsert(std::string_view sql) {
   auto statement = prestoParser_->parse(sql);
 
