@@ -489,6 +489,7 @@ int main(int argc, char** argv) {
   registerQueryFile<"subquery">();
   registerQueryFile<"unionAll">();
   registerQueryFile<"unionAllFlatten">();
+  registerQueryFile<"unnest">();
   registerQueryFile<"window">();
 
   return RUN_ALL_TESTS();
