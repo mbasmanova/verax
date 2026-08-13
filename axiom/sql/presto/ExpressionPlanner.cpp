@@ -779,6 +779,36 @@ TypePtr ExpressionPlanner::resolveType(const TypeSignaturePtr& type) {
   return veloxType;
 }
 
+namespace {
+
+// `= ANY` and `= SOME` mean IN, and `<> ALL` means NOT IN, with the same null
+// and empty-subquery semantics. Fails for the other combinations.
+bool lowersToNotIn(const QuantifiedComparisonExpression& comparison) {
+  using Operator = ComparisonExpression::Operator;
+  using Quantifier = QuantifiedComparisonExpression::Quantifier;
+
+  const auto op = comparison.op();
+  const auto quantifier = comparison.quantifier();
+
+  if (op == Operator::kEqual &&
+      (quantifier == Quantifier::kAny || quantifier == Quantifier::kSome)) {
+    return false;
+  }
+
+  if (op == Operator::kNotEqual && quantifier == Quantifier::kAll) {
+    return true;
+  }
+
+  AXIOM_PRESTO_SYNTAX_FAIL(
+      comparison.location(),
+      std::string{toSqlString(quantifier)},
+      "Quantified comparison is not supported: {} {}",
+      toSqlString(op),
+      toSqlString(quantifier));
+}
+
+} // namespace
+
 lp::ExprApi ExpressionPlanner::toExpr(
     const ExpressionPtr& node,
     ExprOptions options) {
@@ -952,6 +982,16 @@ lp::ExprApi ExpressionPlanner::toExpr(
       auto* exists = node->as<ExistsPredicate>();
       return lp::Exists(planSubquery(
           exists->subquery()->as<SubqueryExpression>(), /*scalar=*/false));
+    }
+
+    case NodeType::kQuantifiedComparisonExpression: {
+      auto* comparison = node->as<QuantifiedComparisonExpression>();
+      const bool negated = lowersToNotIn(*comparison);
+      auto in = lp::Call(
+          "in",
+          toExpr(comparison->value(), options),
+          toExpr(comparison->subquery(), options));
+      return negated ? lp::Call("not", in) : in;
     }
 
     case NodeType::kCast: {

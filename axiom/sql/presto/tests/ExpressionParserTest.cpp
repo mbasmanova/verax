@@ -712,36 +712,45 @@ TEST_F(ExpressionParserTest, in) {
       "n_nationkey in (1, 2, 3)",
       "IN(n_nationkey, CAST(1 AS BIGINT), CAST(2 AS BIGINT), CAST(3 AS BIGINT))");
 
-  auto assertInSubquery = [](const lp::ExprPtr& expr) {
-    ASSERT_EQ(lp::ExprKind::kSpecialForm, expr->kind());
-    auto& in = *expr->as<lp::SpecialFormExpr>();
-    ASSERT_EQ(in.form(), lp::SpecialForm::kIn);
-    ASSERT_EQ(in.inputs().size(), 2);
-    ASSERT_EQ(lp::ExprKind::kInputReference, in.inputAt(0)->kind());
-    ASSERT_EQ(lp::ExprKind::kSubquery, in.inputAt(1)->kind());
-  };
-
   // Subquery IN in WHERE clause produces a filter with IN(column, subquery).
   testSelect(
       "SELECT * FROM nation WHERE n_regionkey IN (SELECT r_regionkey FROM region WHERE r_name like 'A%')",
-      matchScan()
-          .filter([&](const auto& node) {
-            auto filter = std::dynamic_pointer_cast<const lp::FilterNode>(node);
-            assertInSubquery(filter->predicate());
-          })
-          .output());
+      matchScan().filter(R"("in"(n_regionkey, any_subquery()))").output());
 
   // Subquery IN in SELECT clause produces a project with IN(column, subquery).
   testSelect(
       "SELECT n_regionkey IN (SELECT r_regionkey FROM region WHERE r_name like 'A%') FROM nation",
-      matchScan()
-          .project([&](const auto& node) {
-            auto project =
-                std::dynamic_pointer_cast<const lp::ProjectNode>(node);
-            ASSERT_EQ(project->expressions().size(), 1);
-            assertInSubquery(project->expressionAt(0));
-          })
-          .output());
+      matchScan().project({R"("in"(n_regionkey, any_subquery()))"}).output());
+}
+
+TEST_F(ExpressionParserTest, quantifiedComparison) {
+  // '= ANY' and '= SOME' mean IN; '<> ALL' means NOT IN.
+  testSelect(
+      "SELECT * FROM nation WHERE n_regionkey = ANY (SELECT r_regionkey FROM region)",
+      matchScan().filter(R"("in"(n_regionkey, any_subquery()))").output());
+  testSelect(
+      "SELECT * FROM nation WHERE n_regionkey = SOME (SELECT r_regionkey FROM region)",
+      matchScan().filter(R"("in"(n_regionkey, any_subquery()))").output());
+  testSelect(
+      "SELECT * FROM nation WHERE n_regionkey <> ALL (SELECT r_regionkey FROM region)",
+      matchScan().filter(R"(not("in"(n_regionkey, any_subquery())))").output());
+
+  // The remaining operator and quantifier combinations have no lowering.
+  AXIOM_EXPECT_PRESTO_SYNTAX_ERROR(
+      parseSelect(
+          "SELECT * FROM nation "
+          "WHERE n_regionkey > ALL (SELECT r_regionkey FROM region)"),
+      "Quantified comparison is not supported: > ALL");
+  AXIOM_EXPECT_PRESTO_SYNTAX_ERROR(
+      parseSelect(
+          "SELECT * FROM nation "
+          "WHERE n_regionkey <= ANY (SELECT r_regionkey FROM region)"),
+      "Quantified comparison is not supported: <= ANY");
+  AXIOM_EXPECT_PRESTO_SYNTAX_ERROR(
+      parseSelect(
+          "SELECT * FROM nation "
+          "WHERE n_regionkey = ALL (SELECT r_regionkey FROM region)"),
+      "Quantified comparison is not supported: = ALL");
 }
 
 TEST_F(ExpressionParserTest, notLike) {

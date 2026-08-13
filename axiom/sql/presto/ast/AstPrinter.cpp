@@ -98,27 +98,6 @@ std::string toString(ArithmeticBinaryExpression::Operator op) {
   VELOX_FAIL("Unsupported arithmetic operator");
 }
 
-std::string toString(ComparisonExpression::Operator op) {
-  switch (op) {
-    case ComparisonExpression::Operator::kEqual:
-      return "=";
-    case ComparisonExpression::Operator::kNotEqual:
-      return "!=";
-    case ComparisonExpression::Operator::kLessThan:
-      return "<";
-    case ComparisonExpression::Operator::kLessThanOrEqual:
-      return "<=";
-    case ComparisonExpression::Operator::kGreaterThan:
-      return ">";
-    case ComparisonExpression::Operator::kGreaterThanOrEqual:
-      return ">=";
-    case ComparisonExpression::Operator::kIsDistinctFrom:
-      return "IS DISTINCT FROM";
-    default:
-      VELOX_FAIL("Unsupported comparison operator");
-  }
-}
-
 std::string toString(SortItem::Ordering ordering) {
   switch (ordering) {
     case SortItem::Ordering::kAscending:
@@ -414,7 +393,7 @@ void AstPrinter::visitJoinOn(JoinOn* node) {
 
 void AstPrinter::visitComparisonExpression(ComparisonExpression* node) {
   printHeader("Comparison", node, [&](std::ostream& out) {
-    out << toString(node->op());
+    out << toSqlString(node->op());
   });
 
   indent_++;
@@ -595,7 +574,9 @@ void AstPrinter::visitExistsPredicate(ExistsPredicate* node) {
 
 void AstPrinter::visitQuantifiedComparisonExpression(
     QuantifiedComparisonExpression* node) {
-  printHeader("QuantifiedComparison", node);
+  printHeader("QuantifiedComparison", node, [&](std::ostream& out) {
+    out << toSqlString(node->op()) << " " << toSqlString(node->quantifier());
+  });
 
   indent_++;
   printChild("Value", node->value());
