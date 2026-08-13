@@ -109,6 +109,24 @@ LocalPropertyVector retainedLocal(NodeCP input, const ColumnVector& columns) {
       input->physicalProperties().local, PlanObjectSet::fromObjects(columns));
 }
 
+// Keeps an input's partitioning when a node emits only a subset of its input:
+// the rows stay on the task they arrived on, so the distribution survives as
+// long as every partition key does. A dropped key leaves the output with no
+// expressible partitioning.
+Partitioning retainedGlobalPartition(
+    NodeCP input,
+    const ColumnVector& columns) {
+  Partitioning partition =
+      input->physicalProperties().globalPartition.dropOrder();
+  const auto columnSet = PlanObjectSet::fromObjects(columns);
+  for (ExprCP key : partition.keys) {
+    if (!key->columns().isSubset(columnSet)) {
+      return Partitioning{};
+    }
+  }
+  return partition;
+}
+
 // Keeps an input's unique key-sets whose columns all survive in `columns`, for
 // a node that emits only a subset of its input. A key-set with a dropped member
 // is no longer a key of the output, so it is removed whole.
@@ -1067,6 +1085,8 @@ Unnest::Unnest(Key key)
           NodeType::kUnnest,
           ColumnVector{key.outputColumns},
           PhysicalProperties{
+              .globalPartition =
+                  retainedGlobalPartition(key.input, key.replicatedColumns),
               .local = retainedLocal(key.input, key.replicatedColumns)}),
       input_(key.input),
       unnestExpressions_(std::move(key.unnestExpressions)),
@@ -1862,6 +1882,8 @@ AssignUniqueId::AssignUniqueId(Key key)
           NodeType::kAssignUniqueId,
           withIdColumn(key.input->outputColumns(), key.idColumn),
           PhysicalProperties{
+              .globalPartition =
+                  key.input->physicalProperties().globalPartition.dropOrder(),
               .local = groupedLocal(key.idColumn),
               .unique = globalUniqueKey(key.idColumn)}),
       input_(key.input),
