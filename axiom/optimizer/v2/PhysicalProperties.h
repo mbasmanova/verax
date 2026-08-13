@@ -82,8 +82,12 @@ AXIOM_DECLARE_ENUM_NAME(PartitionKind);
 ///   - `orderKeys` / `orderTypes` are non-empty only for an order-preserving
 ///     `kGather` (see `globalGatherMerge`).
 ///   - `partitionType` is null for standard Velox hash partitioning.
-///   - `keys` are expressions (not just columns) to match the partition
-///     function's input.
+///   - As a requirement a consumer states, `keys` and `orderKeys` may be any
+///     expression. On the `Partitioning` an `Exchange` carries they must be
+///     columns the exchange's input produces: whoever places the shuffle
+///     materializes an expression key first, so the value is computed once
+///     below the shuffle and read as a column above it (see
+///     `Builder::materializeKeys`).
 struct Partitioning {
   PartitionKind kind{PartitionKind::kUnspecified};
 

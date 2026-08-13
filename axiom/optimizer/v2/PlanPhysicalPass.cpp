@@ -651,9 +651,11 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
       return builder().make<Sort>(
           {input, node->orderKeys(), node->orderTypes()});
     }
+    auto [sortInput, orderKeys] =
+        builder().materializeKeys(input, node->orderKeys());
     NodeCP partialSort =
-        builder().make<Sort>({input, node->orderKeys(), node->orderTypes()});
-    return gatherMerge(partialSort, node->orderKeys(), node->orderTypes());
+        builder().make<Sort>({sortInput, orderKeys, node->orderTypes()});
+    return gatherMerge(partialSort, orderKeys, node->orderTypes());
   }
 
   // Distributes an EnforceSingleRow (scalar-subquery single-row assertion): it
@@ -725,14 +727,16 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
            node->count()});
     }
 
+    auto [topNInput, orderKeys] =
+        builder().materializeKeys(newInput, node->orderKeys());
     NodeCP partial = builder().make<TopN>(
-        {newInput,
-         node->orderKeys(),
+        {topNInput,
+         orderKeys,
          node->orderTypes(),
          /*offset=*/0,
          node->offsetPlusCount()});
     return builder().make<Limit>(
-        {gatherMerge(partial, node->orderKeys(), node->orderTypes()),
+        {gatherMerge(partial, orderKeys, node->orderTypes()),
          node->offset(),
          node->count()});
   }

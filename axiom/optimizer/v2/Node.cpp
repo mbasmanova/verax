@@ -1997,15 +1997,20 @@ Exchange::Exchange(Key key)
       partitioning_(std::move(key.partitioning)) {
   VELOX_CHECK_NOT_NULL(input_);
 
-  // A partition key must be a column the input produces: whoever places the
-  // shuffle materializes an expression key first, so the value is computed
-  // once and the consumer above reads that same column.
-  for (ExprCP partitionKey : partitioning_.keys) {
-    VELOX_CHECK(
-        partitionKey->is(PlanType::kColumnExpr),
-        "Exchange partitioning key must be a column: {}",
-        partitionKey->toString());
-  }
+  // A partition or merge-order key must be a column the input produces:
+  // whoever places the shuffle materializes an expression key first, so the
+  // value is computed once and the consumer above reads that same column.
+  const auto checkColumns = [](const ExprVector& keys, std::string_view role) {
+    for (ExprCP key : keys) {
+      VELOX_CHECK(
+          key->is(PlanType::kColumnExpr),
+          "Exchange {} must be a column: {}",
+          role,
+          key->toString());
+    }
+  };
+  checkColumns(partitioning_.keys, "partitioning key");
+  checkColumns(partitioning_.orderKeys, "merge order key");
 }
 
 size_t Exchange::KeyHash::operator()(const Exchange* node) const {

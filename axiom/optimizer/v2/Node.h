@@ -1792,6 +1792,11 @@ using EnforceDistinctCP = const EnforceDistinct*;
 /// partitioning via a shuffle, whereas other nodes derive theirs from their
 /// input. The distributed memo places it when a consumer needs a partitioning
 /// the input lacks.
+///
+/// Invariants:
+///   - `input` is non-null.
+///   - Every key in `partitioning.keys` is a `Column`.
+///   - Every key in `partitioning.orderKeys` is a `Column`.
 class Exchange : public Node {
  public:
   struct Key {
