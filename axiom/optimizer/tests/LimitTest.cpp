@@ -18,12 +18,14 @@
 
 #include <limits>
 
+#include "axiom/logical_plan/PlanBuilder.h"
 #include "axiom/optimizer/tests/QueryTestBase.h"
 
 namespace facebook::axiom::optimizer {
 namespace {
 
 using namespace velox;
+namespace lp = facebook::axiom::logical_plan;
 
 // A Limit's count when the query has OFFSET but no LIMIT.
 constexpr int64_t kNoLimit = std::numeric_limits<int64_t>::max();
@@ -36,6 +38,8 @@ class LimitTest : public test::QueryTestBase,
     test::QueryTestBase::SetUp();
   }
 
+  using QueryTestBase::toSingleNodePlan;
+
   core::PlanNodePtr toSingleNodePlan(
       std::string_view sql,
       int32_t numDrivers = 1) {
@@ -47,7 +51,29 @@ class LimitTest : public test::QueryTestBase,
     auto logicalPlan = parseSelect(sql, kTestConnectorId);
     return planVelox(logicalPlan).plan;
   }
+
+  lp::PlanBuilder scan(const std::string& tableName) {
+    lp::PlanBuilder::Context context{kTestConnectorId, kDefaultSchema};
+    return lp::PlanBuilder(context).tableScan(tableName);
+  }
 };
+
+// Adjacent limits are expressed with PlanBuilder rather than nested
+// subqueries, so the test does not depend on the parser preserving both.
+TEST_P(LimitTest, adjacentLimits) {
+  AXIOM_ASSERT_PLAN(
+      toSingleNodePlan(scan("nation").limit(10).limit(5).build()),
+      matchScan("nation").finalLimit(0, 5).build());
+
+  AXIOM_ASSERT_PLAN(
+      toSingleNodePlan(scan("nation").limit(10).limit(15).build()),
+      matchScan("nation").finalLimit(0, 10).build());
+
+  // The outer offset skips rows the inner limit kept, leaving 3 of them.
+  AXIOM_ASSERT_PLAN(
+      toSingleNodePlan(scan("nation").limit(10).offset(7).limit(5).build()),
+      matchScan("nation").finalLimit(7, 3).build());
+}
 
 TEST_P(LimitTest, limit) {
   constexpr auto sql = "SELECT * FROM nation LIMIT 10";
@@ -153,6 +179,47 @@ TEST_P(LimitTest, orderByOffsetAndLimit) {
           .finalLimitIf(useV2_, 0, 15)
           .shuffleMerge()
           .finalLimit(5, 10)
+          .build());
+}
+
+TEST_P(LimitTest, orderByDirectlyBelowLimitBecomesTopN) {
+  // Only the ORDER BY directly below a limit folds into a TopN. The trailing
+  // ORDER BY has no limit and stays a full sort.
+  auto plan = scan("nation")
+                  .limit(20)
+                  .orderBy({"n_nationkey"})
+                  .limit(10)
+                  .orderBy({"n_name desc"});
+
+  AXIOM_ASSERT_PLAN(
+      toSingleNodePlan(plan.build()),
+      matchScan("nation")
+          .finalLimit(0, 20)
+          .topN(10)
+          .orderBy({"n_name DESC NULLS LAST"})
+          .build());
+}
+
+TEST_P(LimitTest, filtersDoNotCrossLimit) {
+  // Moving a filter across a limit would change which rows the limit keeps.
+  // Filters on the same side of a limit are combined.
+  auto plan = scan("nation")
+                  .filter("n_nationkey > 2")
+                  .limit(10)
+                  .filter("n_nationkey < 100")
+                  .filter("n_regionkey > 10")
+                  .limit(5)
+                  .filter("n_nationkey > 70")
+                  .filter("n_regionkey < 7");
+
+  AXIOM_ASSERT_PLAN(
+      toSingleNodePlan(plan.build()),
+      matchScan("nation")
+          .filter("n_nationkey > 2")
+          .finalLimit(0, 10)
+          .filter("n_nationkey < 100 AND n_regionkey > 10")
+          .finalLimit(0, 5)
+          .filter("n_nationkey > 70 AND n_regionkey < 7")
           .build());
 }
 

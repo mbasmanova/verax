@@ -186,3 +186,7 @@ SELECT t1.a, t2.a FROM t t1, t t2, t t3 WHERE t1.a = t3.a AND t1.b < t2.b
 -- even though no pair containing it satisfies t1.b < t2.b.
 -- error_v2: division by zero
 SELECT t1.a, t2.a FROM t t1, t t2 WHERE t1.b < t2.b AND 1000 / (150 - t1.b) > t2.a
+----
+-- JOIN of two ORDER BY ... LIMIT subqueries.
+SELECT l.a, l.b, r.b
+FROM (SELECT * FROM t ORDER BY b LIMIT 5) l JOIN (SELECT * FROM t ORDER BY b DESC LIMIT 5) r ON l.a = r.a
