@@ -116,6 +116,33 @@ TEST_F(ExprMatcherTest, nestedFunctionCall) {
   ExprMatcher::match(expr, parseExpr("(a + 1) % 3"));
 }
 
+TEST_F(ExprMatcherTest, conjunctsInAnyOrder) {
+  // The optimizers are free to order AND operands, so a test may spell them
+  // out in either order.
+  auto expr = call(
+      BOOLEAN(),
+      "and",
+      call(BOOLEAN(), "gt", field(BIGINT(), "b"), constant(BIGINT(), 10LL)),
+      call(BOOLEAN(), "lt", field(BIGINT(), "a"), constant(BIGINT(), 100LL)));
+
+  ExprMatcher::match(expr, parseExpr("b > 10 AND a < 100"));
+  ExprMatcher::match(expr, parseExpr("a < 100 AND b > 10"));
+}
+
+TEST_F(ExprMatcherTest, conjunctMismatchReportsPositionally) {
+  // An operand that matches nothing leaves the operands paired in order, so
+  // the failure names the operands that differ.
+  auto expr = call(
+      BOOLEAN(),
+      "and",
+      call(BOOLEAN(), "gt", field(BIGINT(), "b"), constant(BIGINT(), 10LL)),
+      call(BOOLEAN(), "lt", field(BIGINT(), "a"), constant(BIGINT(), 100LL)));
+
+  EXPECT_NONFATAL_FAILURE(
+      ExprMatcher::match(expr, parseExpr("b > 10 AND a < 500")),
+      R"(actual: 'lt("a",100)', expected: 'lt("a",500)')");
+}
+
 TEST_F(ExprMatcherTest, functionNameMismatch) {
   EXPECT_NONFATAL_FAILURE(
       ExprMatcher::match(

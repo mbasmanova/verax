@@ -15,7 +15,10 @@
  */
 
 #include "axiom/optimizer/tests/ExprMatcher.h"
+#include <gtest/gtest-spi.h>
 #include <gtest/gtest.h>
+#include <algorithm>
+#include <numeric>
 #include "velox/core/Expressions.h"
 #include "velox/parse/ExprRewriter.h"
 #include "velox/parse/Expressions.h"
@@ -23,14 +26,26 @@
 namespace facebook::velox::core {
 namespace {
 
-#define AXIOM_RETURN_IF_FAILURE                \
-  if (::testing::Test::HasNonfatalFailure()) { \
-    return;                                    \
+// A trial match runs with gtest reporting intercepted, so failures land in
+// 'gTrialFailures' instead of failing the test. Everything that consults the
+// failure state must go through hasFailure() to see them.
+thread_local ::testing::TestPartResultArray* gTrialFailures = nullptr;
+
+bool hasFailure() {
+  if (gTrialFailures != nullptr) {
+    return gTrialFailures->size() > 0;
+  }
+  return ::testing::Test::HasNonfatalFailure();
+}
+
+#define AXIOM_RETURN_IF_FAILURE \
+  if (hasFailure()) {           \
+    return;                     \
   }
 
-#define AXIOM_RETURN_FALSE_IF_FAILURE          \
-  if (::testing::Test::HasNonfatalFailure()) { \
-    return false;                              \
+#define AXIOM_RETURN_FALSE_IF_FAILURE \
+  if (hasFailure()) {                 \
+    return false;                     \
   }
 
 bool isNullConstant(const TypedExprPtr& expr) {
@@ -44,6 +59,12 @@ bool isWildcard(const ExprPtr& expr) {
   }
   const auto* call = expr->as<CallExpr>();
   return call->name() == ExprMatcher::kWildcard && call->inputs().empty();
+}
+
+// AND and OR are the calls whose operand order the optimizers are free to
+// choose, so tests must not depend on it.
+bool isCommutative(std::string_view name) {
+  return name == "and" || name == "or";
 }
 
 void matchConstant(
@@ -98,6 +119,59 @@ void matchChildren(
     matchImpl(actualInputs[i], expectedInputs[i]);
     AXIOM_RETURN_IF_FAILURE
   }
+}
+
+// Matches without failing the test, so that the caller can try an operand
+// order and discard it. Uses the same matching rules, and therefore the same
+// tolerances, as a reported match.
+bool matchChildrenQuietly(
+    const std::vector<TypedExprPtr>& actualInputs,
+    const std::vector<ExprPtr>& expectedInputs) {
+  ::testing::TestPartResultArray failures;
+  ::testing::ScopedFakeTestPartResultReporter reporter(
+      ::testing::ScopedFakeTestPartResultReporter::
+          INTERCEPT_ONLY_CURRENT_THREAD,
+      &failures);
+
+  auto* previous = gTrialFailures;
+  gTrialFailures = &failures;
+  matchChildren(actualInputs, expectedInputs);
+  gTrialFailures = previous;
+
+  return failures.size() == 0;
+}
+
+// Operand counts above this are matched in the order the plan has them, since
+// the search is factorial.
+constexpr size_t kMaxOperandsToReorder = 3;
+
+// Matches 'actualInputs' against 'expectedInputs' in any order. Returns false
+// when no order matches, leaving the caller to match positionally and report
+// the differences.
+bool matchInAnyOrder(
+    const std::vector<TypedExprPtr>& actualInputs,
+    const std::vector<ExprPtr>& expectedInputs) {
+  const auto numInputs = actualInputs.size();
+  if (numInputs != expectedInputs.size() || numInputs > kMaxOperandsToReorder) {
+    return false;
+  }
+
+  std::vector<size_t> order(numInputs);
+  std::iota(order.begin(), order.end(), 0);
+
+  do {
+    std::vector<TypedExprPtr> candidate;
+    candidate.reserve(order.size());
+    for (auto index : order) {
+      candidate.push_back(actualInputs[index]);
+    }
+
+    if (matchChildrenQuietly(candidate, expectedInputs)) {
+      return true;
+    }
+  } while (std::next_permutation(order.begin(), order.end()));
+
+  return false;
 }
 
 void matchFieldAccess(
@@ -157,7 +231,7 @@ bool matchImpl(const TypedExprPtr& actual, const ExprPtr& expected) {
   // InputTypedExpr.
   if (actual->isInputKind()) {
     EXPECT_TRUE(expected->is(IExpr::Kind::kInput)) << "Expected InputExpr.";
-    return !::testing::Test::HasNonfatalFailure();
+    return !hasFailure();
   }
 
   // FieldAccessTypedExpr.
@@ -174,7 +248,7 @@ bool matchImpl(const TypedExprPtr& actual, const ExprPtr& expected) {
       AXIOM_RETURN_FALSE_IF_FAILURE
 
       EXPECT_EQ(field->name(), expectedField->name());
-      return !::testing::Test::HasNonfatalFailure();
+      return !hasFailure();
     }
 
     // Struct field access by name.
@@ -185,7 +259,7 @@ bool matchImpl(const TypedExprPtr& actual, const ExprPtr& expected) {
     VELOX_CHECK_EQ(field->inputs().size(), 1);
     matchFieldAccess(
         field->name(), field->inputs()[0], *expected->as<FieldAccessExpr>());
-    return !::testing::Test::HasNonfatalFailure();
+    return !hasFailure();
   }
 
   // DereferenceTypedExpr.
@@ -196,14 +270,14 @@ bool matchImpl(const TypedExprPtr& actual, const ExprPtr& expected) {
     if (expected->is(IExpr::Kind::kFieldAccess)) {
       matchFieldAccess(
           deref->name(), deref->inputs()[0], *expected->as<FieldAccessExpr>());
-      return !::testing::Test::HasNonfatalFailure();
+      return !hasFailure();
     }
 
     if (expected->is(IExpr::Kind::kCall)) {
       const auto* expectedCall = expected->as<CallExpr>();
       if (expectedCall->name() == "subscript") {
         matchSubscript(*deref, *expectedCall);
-        return !::testing::Test::HasNonfatalFailure();
+        return !hasFailure();
       }
     }
 
@@ -238,11 +312,16 @@ bool matchImpl(const TypedExprPtr& actual, const ExprPtr& expected) {
         isNullConstant(call->inputs()[2])) {
       matchChildren(
           {call->inputs()[0], call->inputs()[1]}, expectedCall->inputs());
-      return !::testing::Test::HasNonfatalFailure();
+      return !hasFailure();
+    }
+
+    if (isCommutative(call->name()) &&
+        matchInAnyOrder(call->inputs(), expectedCall->inputs())) {
+      return true;
     }
 
     matchChildren(call->inputs(), expectedCall->inputs());
-    return !::testing::Test::HasNonfatalFailure();
+    return !hasFailure();
   }
 
   // ConstantTypedExpr.
@@ -254,7 +333,7 @@ bool matchImpl(const TypedExprPtr& actual, const ExprPtr& expected) {
     matchConstant(
         *actual->asUnchecked<ConstantTypedExpr>(),
         *expected->as<ConstantExpr>());
-    return !::testing::Test::HasNonfatalFailure();
+    return !hasFailure();
   }
 
   // CastTypedExpr.
@@ -275,7 +354,7 @@ bool matchImpl(const TypedExprPtr& actual, const ExprPtr& expected) {
 
     VELOX_CHECK_EQ(cast->inputs().size(), 1);
     matchImpl(cast->inputs()[0], expectedCast->input());
-    return !::testing::Test::HasNonfatalFailure();
+    return !hasFailure();
   }
 
   // ConcatTypedExpr.
@@ -289,7 +368,7 @@ bool matchImpl(const TypedExprPtr& actual, const ExprPtr& expected) {
     AXIOM_RETURN_FALSE_IF_FAILURE
 
     matchChildren(actual->inputs(), expectedCall->inputs());
-    return !::testing::Test::HasNonfatalFailure();
+    return !hasFailure();
   }
 
   // LambdaTypedExpr.
@@ -315,7 +394,7 @@ bool matchImpl(const TypedExprPtr& actual, const ExprPtr& expected) {
     matchImpl(
         lambda->body(),
         ExprMatcher::rewriteInputNames(expectedLambda->body(), parameters));
-    return !::testing::Test::HasNonfatalFailure();
+    return !hasFailure();
   }
 
   // NullIfTypedExpr.
@@ -329,7 +408,7 @@ bool matchImpl(const TypedExprPtr& actual, const ExprPtr& expected) {
     AXIOM_RETURN_FALSE_IF_FAILURE
 
     matchChildren(actual->inputs(), expectedCall->inputs());
-    return !::testing::Test::HasNonfatalFailure();
+    return !hasFailure();
   }
 
   ADD_FAILURE() << "Unsupported typed expression kind.";

@@ -139,13 +139,39 @@ TEST_F(JoinTest, joinWithFilterOverLimit) {
     auto plan = toSingleNodePlan(logicalPlan);
     auto matcher =
         matchScan("t")
-            .limit()
+            .finalLimit(0, 100)
             .filter("b > 50")
-            .hashJoin(matchScan("u").limit().filter("y < 100").build())
+            .hashJoin(
+                matchScan("u").finalLimit(0, 50).filter("y < 100").build())
             .build();
 
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
+}
+
+TEST_F(JoinTest, joinWithTopNOnBothSides) {
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
+  testConnector_->addTable("u", ROW({"x", "y"}, BIGINT()));
+
+  auto ctx = makeContext();
+  auto logicalPlan =
+      lp::PlanBuilder(ctx)
+          .tableScan("t")
+          .orderBy({"b"})
+          .limit(10)
+          .join(
+              lp::PlanBuilder(ctx).tableScan("u").orderBy({"y"}).limit(5),
+              "a = x",
+              lp::JoinType::kInner)
+          .build();
+
+  auto matcher =
+      matchScan("t")
+          .topN(10)
+          .hashJoin(matchScan("u").topN(5).build(), core::JoinType::kInner)
+          .build();
+
+  AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
 }
 
 TEST_F(JoinTest, outerJoinWithInnerJoin) {
