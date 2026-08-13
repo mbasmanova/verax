@@ -123,7 +123,6 @@ add_executable(
   FilteredTableStatsTest.cpp
   FiltersTest.cpp
   FixedPointTest.cpp
-  HiveAggregationQueriesTest.cpp
   JoinFilterProjectionTest.cpp
   JoinTest.cpp
   LimitTest.cpp

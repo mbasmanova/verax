@@ -137,3 +137,12 @@ SELECT a, array_agg(DISTINCT b ORDER BY b) FROM t GROUP BY ROLLUP(a)
 ----
 -- DISTINCT: ORDER BY with a global grouping set over empty input.
 SELECT a, array_agg(DISTINCT b ORDER BY b) FROM t WHERE a > 1000 GROUP BY ROLLUP(a)
+----
+-- DISTINCT: aggregates that ignore duplicates, requested both with and
+-- without DISTINCT and with a mask.
+SELECT
+  bool_and(DISTINCT a % 2 = 0),
+  bool_or(DISTINCT a % 2 = 0),
+  bool_and(a % 2 = 0),
+  bool_and(DISTINCT a % 2 = 0) FILTER (WHERE b > 50)
+FROM t
