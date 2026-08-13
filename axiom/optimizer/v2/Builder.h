@@ -51,8 +51,17 @@ class Builder {
   /// (transparent, no allocation on a hit); on a miss, moves the key into the
   /// newly constructed node. `Expr` leaves use `makeLiteral` / `makeCall` /
   /// `makeAggregate`.
+  ///
+  /// A `Join` key is normalized first: a repeated equi-key pair is dropped, so
+  /// the node's keys can be fewer than 'key' holds and joins differing only in
+  /// a repeated equality are one node.
   template <typename T>
   const T* make(typename T::Key key) {
+    if constexpr (std::is_same_v<T, Join>) {
+      // Before the lookup: a join that repeats an equality is the same join
+      // as one that states it once.
+      dropRepeatedKeyPairs(key);
+    }
     auto& dedup = setFor<T>();
     if (auto it = dedup.find(key); it != dedup.end()) {
       return *it;
@@ -168,6 +177,10 @@ class Builder {
   // No-op for non-inner joins (an outer join's build key may be null-padded, so
   // its columns are not equal on every row) and for non-column keys.
   static void addEquivalences(const Join::Key& key);
+
+  // Drops key pairs equal to an earlier pair. `a = b AND a = b` is one
+  // equality.
+  static void dropRepeatedKeyPairs(Join::Key& key);
 
   template <typename T>
   auto& setFor() {

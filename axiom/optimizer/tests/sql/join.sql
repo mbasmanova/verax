@@ -82,6 +82,12 @@ LEFT JOIN (VALUES ('d3')) b(ds) ON (a.ds = b.ds)
 LEFT JOIN (SELECT 'x' as ds WHERE false) c ON (a.ds = c.ds)
 GROUP BY 1
 ----
+-- A repeated equi-condition joins on that pair once.
+SELECT * FROM (VALUES (1)) t(a) JOIN (VALUES (1)) u(b) ON t.a = u.b AND t.a = u.b
+----
+-- Same, with the repeat written in the opposite orientation.
+SELECT * FROM (VALUES (1)) t(a) JOIN (VALUES (1)) u(b) ON t.a = u.b AND u.b = t.a
+----
 -- Same-table equality from equivalence class: a = b is inferred and pushed
 -- as a filter on the left side. Only rows where a = b survive, projecting
 -- (a, b): (1, 1), (3, 3), (5, 5).
