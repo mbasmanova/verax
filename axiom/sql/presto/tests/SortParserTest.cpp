@@ -295,6 +295,21 @@ TEST_F(SortParserTest, starWithHiddenColumn) {
       ::testing::Pointwise(::testing::Eq(), {"a", "b"}));
 }
 
+// A qualified sort key names one side of a join, so it resolves even when both
+// sides contribute an output column of that name.
+TEST_F(SortParserTest, qualifiedSortKeyWithDuplicateOutputNames) {
+  connector_->addTable("t", ROW({"k", "v"}, INTEGER()));
+
+  testSelect(
+      "SELECT x.*, y.* FROM t x JOIN t y ON x.k = y.k "
+      "ORDER BY x.v DESC",
+      matchScan()
+          .join(matchScan().build(), {"left_k", "left_v", "right_k", "right_v"})
+          .project({"left_k", "left_v", "right_k", "right_v"})
+          .sort({"left_v desc"})
+          .output({"k", "v", "k", "v"}));
+}
+
 TEST_F(SortParserTest, joinedTable) {
   testSelect(
       "SELECT n_name "
