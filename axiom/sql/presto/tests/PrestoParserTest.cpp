@@ -95,6 +95,15 @@ TEST_F(PrestoParserTest, unnest) {
         "WITH a AS (SELECT array[1,2,3] as x) SELECT t.x + 1 FROM a, unnest(A.x) as T(X)",
         matcher);
   }
+
+  // A relation alias with no column list still names the unnested relation, so
+  // `alias.*` expands to the unnested column.
+  {
+    auto plan = parseSelect(
+        "SELECT u.* FROM (VALUES (1, ARRAY[10, 20])) AS t(a, b) "
+        "CROSS JOIN UNNEST(b) AS u");
+    EXPECT_EQ(1, plan->outputType()->size());
+  }
 }
 
 TEST_F(PrestoParserTest, lateralJoin) {
