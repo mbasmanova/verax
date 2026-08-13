@@ -28,3 +28,11 @@ SELECT * FROM t ORDER BY b + c DESC
 -- ORDER BY an expression, descending on one key and ascending on another.
 -- ordered
 SELECT * FROM t ORDER BY a * -1 DESC, b + c ASC
+----
+-- ORDER BY a qualified key naming one side of a join, where both sides
+-- contribute a column of that name.
+-- ordered
+SELECT y.v AS v
+FROM (VALUES (1, 10), (2, 5)) x(k, v)
+JOIN (VALUES (1, 200), (2, 300)) y(k, v) ON x.k = y.k
+ORDER BY x.v DESC
