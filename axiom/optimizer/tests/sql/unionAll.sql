@@ -105,3 +105,10 @@ SELECT * FROM (
 )
 UNION ALL
 SELECT a, b, a AS r FROM t WHERE a = 999
+----
+-- A UNION ALL of a joined leg and a leg that unnests an array.
+SELECT u.a
+FROM (VALUES (1)) u(a)
+JOIN (VALUES (1)) v(b) ON u.a = v.b
+UNION ALL
+SELECT w.x FROM (VALUES (ARRAY[1])) v(arr) CROSS JOIN UNNEST(arr) AS w(x)
