@@ -78,43 +78,6 @@ TEST_F(PlanTest, dedupEmptyArrays) {
   checkSameSingleNode(logicalPlan, referencePlan);
 }
 
-TEST_F(PlanTest, agg) {
-  testConnector_->addTable(
-      "numbers", ROW({"a", "b", "c"}, {DOUBLE(), DOUBLE(), VARCHAR()}));
-
-  optimizerOptions_.alwaysPlanPartialAggregation = true;
-
-  auto logicalPlan = lp::PlanBuilder(makeContext())
-                         .tableScan("numbers", {"a", "b"})
-                         .aggregate({"a"}, {"sum(a + b)"})
-                         .build();
-
-  {
-    auto plan = toSingleNodePlan(logicalPlan);
-
-    auto matcher = core::PlanMatcherBuilder()
-                       .tableScan()
-                       .project({"a", "a + b"})
-                       .singleAggregation()
-                       .build();
-
-    AXIOM_ASSERT_PLAN(plan, matcher);
-  }
-  {
-    auto plan = toSingleNodePlan(logicalPlan, 2);
-
-    auto matcher = core::PlanMatcherBuilder()
-                       .tableScan()
-                       .project({"a", "a + b"})
-                       .partialAggregation()
-                       .localPartition()
-                       .finalAggregation()
-                       .build();
-
-    AXIOM_ASSERT_PLAN(plan, matcher);
-  }
-}
-
 // Verify that optimizer can handle connectors that do not support filter
 // pushdown.
 TEST_F(PlanTest, rejectedFilters) {

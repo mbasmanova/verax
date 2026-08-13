@@ -46,19 +46,18 @@ TEST_F(AggregationTest, dedupGroupingKeysAndAggregates) {
 
     auto plan = toSingleNodePlan(logicalPlan);
 
-    auto matcher = core::PlanMatcherBuilder()
-                       .tableScan()
+    auto matcher = matchScan("numbers")
                        .project({"a + b"})
                        .singleAggregation({"x"}, {"count(1)"})
                        .project({"x", "x", "count", "count"})
                        .build();
 
-    ASSERT_TRUE(matcher->match(plan));
+    AXIOM_ASSERT_PLAN(plan, matcher);
   }
 }
 
 TEST_F(AggregationTest, duplicatesBetweenGroupAndAggregate) {
-  testConnector_->addTable("t", ROW({"a", "b"}, {BIGINT(), BIGINT()}));
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
 
   auto logicalPlan = lp::PlanBuilder(makeContext())
                          .tableScan("t")
@@ -69,14 +68,13 @@ TEST_F(AggregationTest, duplicatesBetweenGroupAndAggregate) {
 
   auto plan = toSingleNodePlan(logicalPlan);
 
-  auto matcher = core::PlanMatcherBuilder()
-                     .tableScan()
+  auto matcher = matchScan("t")
                      .project({"plus(a, b)"})
                      .singleAggregation({"ab1"}, {"count(ab1)"})
                      .project({"ab1", "ab1", "c1"})
                      .build();
 
-  ASSERT_TRUE(matcher->match(plan));
+  AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
 TEST_F(AggregationTest, dedupMask) {
@@ -93,8 +91,7 @@ TEST_F(AggregationTest, dedupMask) {
 
   auto plan = toSingleNodePlan(logicalPlan);
 
-  auto matcher = core::PlanMatcherBuilder()
-                     .tableScan()
+  auto matcher = matchScan("t")
                      .project({"b > 0 as m1", "a", "b < 0 as m2"})
                      .singleAggregation(
                          {},
@@ -105,7 +102,7 @@ TEST_F(AggregationTest, dedupMask) {
                      .project({"s1", "s2", "s1"})
                      .build();
 
-  ASSERT_TRUE(matcher->match(plan));
+  AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
 TEST_F(AggregationTest, dedupOrderBy) {
@@ -123,8 +120,7 @@ TEST_F(AggregationTest, dedupOrderBy) {
 
   auto plan = toSingleNodePlan(logicalPlan);
 
-  auto matcher = core::PlanMatcherBuilder()
-                     .tableScan()
+  auto matcher = matchScan("t")
                      .project({"a", "b", "a + b as p0", "c", "b * 2 as p1"})
                      .singleAggregation(
                          {},
@@ -134,7 +130,7 @@ TEST_F(AggregationTest, dedupOrderBy) {
                           "array_agg(c ORDER BY p1)"})
                      .build();
 
-  ASSERT_TRUE(matcher->match(plan));
+  AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
 TEST_F(AggregationTest, dedupSameOptions) {
@@ -160,8 +156,7 @@ TEST_F(AggregationTest, dedupSameOptions) {
   auto plan = toSingleNodePlan(logicalPlan);
 
   auto matcher =
-      core::PlanMatcherBuilder()
-          .tableScan()
+      matchScan("t")
           .project({"a", "b > 0 as m1", "b < 0 as m2"})
           .singleAggregation(
               {},
@@ -184,7 +179,7 @@ TEST_F(AggregationTest, dedupSameOptions) {
                "combo1"})
           .build();
 
-  ASSERT_TRUE(matcher->match(plan));
+  AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
 // Verifies that aggregation with ORDER BY keys always uses single-step
@@ -215,8 +210,7 @@ TEST_F(AggregationTest, orderBy) {
           .tableScan("t")
           .aggregate({"k"}, {"array_agg(v1 ORDER BY v2)", "sum(v1)"})
           .build();
-  auto matcher = core::PlanMatcherBuilder()
-                     .tableScan()
+  auto matcher = matchScan("t")
                      .distributedSingleAggregation(
                          {"k"}, {"array_agg(v1 ORDER BY v2)", "sum(v1)"})
                      .shuffle()
@@ -239,8 +233,7 @@ TEST_F(AggregationTest, orderBy) {
                     .build();
   auto plan = planVelox(logicalPlan);
 
-  matcher = core::PlanMatcherBuilder()
-                .tableScan()
+  matcher = matchScan("t")
                 .partialAggregation({"k"}, {"sum(v1)"})
                 .shuffle()
                 .localPartition()
@@ -293,8 +286,7 @@ TEST_F(AggregationTest, fanoutPrecisionRegression) {
                   options)
                   .plan;
 
-  auto matcher = core::PlanMatcherBuilder()
-                     .tableScan()
+  auto matcher = matchScan("t")
                      .filter(fmt::format("{} > 99999999990", keys[0]))
                      .partialAggregation(keys, {"count(1)"})
                      .shuffle()
@@ -345,8 +337,7 @@ TEST_F(AggregationTest, repartitionForAggPartitionSubset) {
     // There should be only ONE shuffle (for the first
     // aggregation). The second aggregation should NOT require a shuffle
     // because partitionKeys [a, b] ⊆ groupingKeys [a, b, d].
-    auto matcher = core::PlanMatcherBuilder()
-                       .tableScan()
+    auto matcher = matchScan("t")
                        .distributedSingleAggregation({"a", "b"}, {})
                        .project()
                        // No shuffle here - partitionKeys ⊆ groupingKeys
@@ -370,8 +361,7 @@ TEST_F(AggregationTest, repartitionForAggPartitionSubset) {
     // There should be TWO shuffles. The second aggregation
     // MUST be after a shuffle because partitionKeys [a, b, c] ⊄ groupingKeys
     // [a, b].
-    auto matcher = core::PlanMatcherBuilder()
-                       .tableScan()
+    auto matcher = matchScan("t")
                        .distributedSingleAggregation({"a", "b", "c"}, {})
                        .project()
                        .distributedSingleAggregation({"a", "b"}, {})
@@ -407,8 +397,7 @@ TEST_F(AggregationTest, bucketedAggregation) {
   {
     SCOPED_TRACE("multiple drivers: partial reduces before the local exchange");
     auto plan = planVelox(logicalPlan, {.numWorkers = 4, .numDrivers = 4});
-    auto matcher = core::PlanMatcherBuilder()
-                       .tableScan()
+    auto matcher = matchScan("t")
                        .partialAggregation({"k", "g"}, {"sum(v) as s"})
                        .localPartition({"k", "g"})
                        .finalAggregation({"k", "g"}, {"sum(s) as s"})
@@ -422,9 +411,8 @@ TEST_F(AggregationTest, bucketedAggregation) {
   {
     SCOPED_TRACE("single driver: no local exchange, single-step aggregation");
     auto plan = planVelox(logicalPlan, {.numWorkers = 4, .numDrivers = 1});
-    auto matcher = core::PlanMatcherBuilder()
+    auto matcher = matchScan("t")
                        .multiThreaded(false)
-                       .tableScan()
                        .singleAggregation({"k", "g"}, {"sum(v)"})
                        .bucketed()
                        .fragmentWidth(4)
@@ -455,8 +443,7 @@ TEST_F(AggregationTest, groupingSets) {
     // ROLLUP(a, b) expands to grouping sets: {a, b}, {a}, {}.
     // Grouping keys get auto-generated output names in GroupId.
     auto matcher =
-        core::PlanMatcherBuilder()
-            .tableScan()
+        matchScan("t")
             .groupId({{"a", "b"}, {"a"}, {}}, {"c"}, "gid")
             .singleAggregation({"a", "b", "gid"}, {"sum(c) as total"})
             .project({"a", "b", "total", "gid"})
@@ -469,8 +456,7 @@ TEST_F(AggregationTest, groupingSets) {
     auto plan = planVelox(logicalPlan);
 
     auto matcher =
-        core::PlanMatcherBuilder()
-            .tableScan()
+        matchScan("t")
             .groupId({{"a", "b"}, {"a"}, {}}, {"c"}, "gid")
             .distributedAggregation({"a", "b", "gid"}, {"sum(c) as total"})
             .project({"a", "b", "total", "gid"})
@@ -493,8 +479,7 @@ TEST_F(AggregationTest, groupingSetsKeyIsAggInput) {
 
   auto plan = toSingleNodePlan(logicalPlan);
 
-  auto matcher = core::PlanMatcherBuilder()
-                     .tableScan()
+  auto matcher = matchScan("t")
                      .groupId({{"a"}, {}}, {"a"}, "gid", {{"a", "key_a"}})
                      .singleAggregation({"key_a", "gid"}, {"sum(a) as total"})
                      .project({"key_a as a", "total", "gid"})
@@ -519,8 +504,7 @@ TEST_F(AggregationTest, groupingSetsCrossSetOptimization) {
 
   auto plan = toSingleNodePlan(logicalPlan);
 
-  auto matcher = core::PlanMatcherBuilder()
-                     .tableScan()
+  auto matcher = matchScan("t")
                      .groupId({{"a", "b"}, {"b", "a"}, {"a", "b"}}, {}, "gid")
                      .singleAggregation({"a", "b", "gid"}, {"count(1) as c"})
                      .project({"a", "b", "c", "gid"})
@@ -544,8 +528,7 @@ TEST_F(AggregationTest, groupingSetsNoGlobalSet) {
   {
     auto plan = toSingleNodePlan(logicalPlan);
 
-    auto matcher = core::PlanMatcherBuilder()
-                       .tableScan()
+    auto matcher = matchScan("t")
                        .groupId({{"a"}, {"b"}}, {}, "gid")
                        .singleAggregation({"a", "b", "gid"}, {"count(1) as c"})
                        .project({"a", "b", "c", "gid"})
@@ -558,8 +541,7 @@ TEST_F(AggregationTest, groupingSetsNoGlobalSet) {
   {
     auto plan = planVelox(logicalPlan);
 
-    auto matcher = core::PlanMatcherBuilder()
-                       .tableScan()
+    auto matcher = matchScan("t")
                        .groupId({{"a"}, {"b"}}, {}, "gid")
                        .partialAggregation({"a", "b", "gid"}, {"count(1) as c"})
                        .shuffle()
@@ -575,7 +557,7 @@ TEST_F(AggregationTest, groupingSetsNoGlobalSet) {
 // Verifies a per-aggregate ORDER BY with a global grouping set plans
 // single-step.
 TEST_F(AggregationTest, groupingSetsOrderByWithGlobalSet) {
-  testConnector_->addTable("t", ROW({"a", "b"}, {BIGINT(), BIGINT()}));
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
   SCOPE_EXIT {
     testConnector_->dropTableIfExists("t");
   };
@@ -591,8 +573,7 @@ TEST_F(AggregationTest, groupingSetsOrderByWithGlobalSet) {
     auto plan = toSingleNodePlan(logicalPlan);
 
     auto matcher =
-        core::PlanMatcherBuilder()
-            .tableScan()
+        matchScan("t")
             .groupId({{"a"}, {}}, {"b"}, "gid")
             .singleAggregation({"a", "gid"}, {"array_agg(b ORDER BY b) as arr"})
             .project({"a", "arr", "gid"})
@@ -607,8 +588,7 @@ TEST_F(AggregationTest, groupingSetsOrderByWithGlobalSet) {
         MultiFragmentPlan::Options{.numWorkers = 4, .numDrivers = 4});
 
     auto matcher =
-        core::PlanMatcherBuilder()
-            .tableScan()
+        matchScan("t")
             .groupId({{"a"}, {}}, {"b"}, "gid")
             .gather()
             .localPartition({"a", "gid"})
@@ -622,7 +602,7 @@ TEST_F(AggregationTest, groupingSetsOrderByWithGlobalSet) {
 // Literal-only aggregate args (count(1)) — aggregation inputs list passed to
 // GroupId should be empty since literals are not column references.
 TEST_F(AggregationTest, groupingSetsLiteralArgs) {
-  testConnector_->addTable("t", ROW({"a", "b"}, {BIGINT(), BIGINT()}));
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
 
   auto logicalPlan = lp::PlanBuilder(makeContext())
                          .tableScan("t")
@@ -633,8 +613,7 @@ TEST_F(AggregationTest, groupingSetsLiteralArgs) {
   {
     auto plan = toSingleNodePlan(logicalPlan);
 
-    auto matcher = core::PlanMatcherBuilder()
-                       .tableScan()
+    auto matcher = matchScan("t")
                        .groupId({{"a"}, {}}, {}, "gid")
                        .singleAggregation({"a", "gid"}, {"count(1) as c"})
                        .project({"a", "c", "gid"})
@@ -646,8 +625,7 @@ TEST_F(AggregationTest, groupingSetsLiteralArgs) {
   {
     auto plan = planVelox(logicalPlan);
 
-    auto matcher = core::PlanMatcherBuilder()
-                       .tableScan()
+    auto matcher = matchScan("t")
                        .groupId({{"a"}, {}}, {}, "gid")
                        .partialAggregation({"a", "gid"}, {"count(1) as c"})
                        .shuffle()
@@ -658,6 +636,322 @@ TEST_F(AggregationTest, groupingSetsLiteralArgs) {
                        .build();
     AXIOM_ASSERT_DISTRIBUTED_PLAN(plan.plan, matcher);
   }
+}
+
+TEST_F(AggregationTest, mask) {
+  auto logicalPlan =
+      lp::PlanBuilder(makeContext())
+          .tableScan("nation")
+          .aggregate(
+              {},
+              {"sum(n_nationkey) FILTER (WHERE n_nationkey > 10)",
+               "avg(n_regionkey)"})
+          .build();
+
+  auto matcher =
+      matchScan("nation")
+          .project({"n_nationkey > 10 as mask", "n_nationkey", "n_regionkey"})
+          .singleAggregation(
+              {}, {"sum(n_nationkey) FILTER (mask)", "avg(n_regionkey)"})
+          .build();
+  AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
+
+  // The mask applies to the partial aggregation only; the final aggregation
+  // combines already-masked values.
+  auto distributedMatcher =
+      matchScan("nation")
+          .project({"n_nationkey > 10 as mask", "n_nationkey", "n_regionkey"})
+          .partialAggregation(
+              {}, {"sum(n_nationkey) FILTER (mask)", "avg(n_regionkey)"})
+          .shuffle()
+          .localPartition()
+          .finalAggregation({}, {"sum(sum)", "avg(avg)"})
+          .build();
+  AXIOM_ASSERT_DISTRIBUTED_PLAN(
+      planVelox(logicalPlan, {.numWorkers = 4, .numDrivers = 4}).plan,
+      distributedMatcher);
+}
+
+TEST_F(AggregationTest, distinctAggregate) {
+  auto logicalPlan = lp::PlanBuilder(makeContext())
+                         .tableScan("nation")
+                         .aggregate({}, {"count(distinct n_regionkey)"})
+                         .build();
+
+  auto matcher = matchScan("nation")
+                     .singleAggregation({}, {"count(distinct n_regionkey)"})
+                     .build();
+  AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
+
+  // Distributed, the distinct values are deduplicated by an aggregation over
+  // the distinct key before being counted.
+  auto distributedMatcher = matchScan("nation")
+                                .partialAggregation({"n_regionkey"}, {})
+                                .shuffle()
+                                .localPartition()
+                                .finalAggregation({"n_regionkey"}, {})
+                                .partialAggregation({}, {"count(n_regionkey)"})
+                                .shuffle()
+                                .localPartition()
+                                .finalAggregation({}, {"count(count)"})
+                                .build();
+  AXIOM_ASSERT_DISTRIBUTED_PLAN(
+      planVelox(logicalPlan).plan, distributedMatcher);
+}
+
+TEST_F(AggregationTest, orderedAggregate) {
+  auto logicalPlan =
+      lp::PlanBuilder(makeContext())
+          .tableScan("nation")
+          .aggregate(
+              {"n_regionkey"},
+              {"array_agg(n_nationkey ORDER BY n_nationkey DESC)",
+               "array_agg(n_name ORDER BY n_nationkey)"})
+          .build();
+
+  auto matcher = matchScan("nation")
+                     .singleAggregation(
+                         {"n_regionkey"},
+                         {"array_agg(n_nationkey ORDER BY n_nationkey DESC)",
+                          "array_agg(n_name ORDER BY n_nationkey)"})
+                     .build();
+  AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
+
+  // An ordered aggregate cannot be split into partial and final steps.
+  auto distributedMatcher =
+      matchScan("nation")
+          .distributedSingleAggregation(
+              {"n_regionkey"},
+              {"array_agg(n_nationkey ORDER BY n_nationkey DESC)",
+               "array_agg(n_name ORDER BY n_nationkey)"})
+          .shuffle()
+          .build();
+  AXIOM_ASSERT_DISTRIBUTED_PLAN(
+      planVelox(logicalPlan).plan, distributedMatcher);
+}
+
+TEST_F(AggregationTest, maskWithOrderedAggregate) {
+  auto logicalPlan =
+      lp::PlanBuilder(makeContext())
+          .tableScan("nation")
+          .aggregate(
+              {"n_regionkey"},
+              {"array_agg(n_name ORDER BY n_nationkey) FILTER (WHERE n_nationkey < 20)"})
+          .build();
+
+  auto matcher =
+      matchScan("nation")
+          .project(
+              {"n_regionkey",
+               "n_nationkey < 20 as mask",
+               "n_name",
+               "n_nationkey"})
+          .singleAggregation(
+              {"n_regionkey"},
+              {"array_agg(n_name ORDER BY n_nationkey) FILTER (mask)"})
+          .build();
+  AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
+
+  auto distributedMatcher =
+      matchScan("nation")
+          .project(
+              {"n_regionkey",
+               "n_nationkey < 20 as mask",
+               "n_name",
+               "n_nationkey"})
+          .shuffle()
+          .localPartition()
+          .singleAggregation(
+              {"n_regionkey"},
+              {"array_agg(n_name ORDER BY n_nationkey) FILTER (mask)"})
+          .shuffle()
+          .build();
+  AXIOM_ASSERT_DISTRIBUTED_PLAN(
+      planVelox(logicalPlan).plan, distributedMatcher);
+}
+
+TEST_F(AggregationTest, dedupDistinctAggregates) {
+  // DISTINCT is dropped from aggregates that ignore duplicates, which makes
+  // several of these the same aggregate; the trailing project restores the
+  // requested output order.
+  auto logicalPlan =
+      lp::PlanBuilder(makeContext())
+          .tableScan("nation")
+          .aggregate(
+              {},
+              {"bool_and(DISTINCT n_nationkey % 2 = 0)",
+               "bool_or(DISTINCT n_regionkey % 2 = 0)",
+               "bool_and(n_nationkey % 2 = 0)",
+               "bool_or(DISTINCT n_nationkey % 2 = 0)",
+               "bool_and(DISTINCT n_nationkey % 2 = 0) FILTER (WHERE n_nationkey > 10)",
+               "bool_or(DISTINCT n_nationkey % 2 = 0) FILTER (WHERE n_nationkey < 20)"})
+          .build();
+
+  auto matcher = matchScan("nation")
+                     .project(
+                         {"n_nationkey % 2 = 0 as m1",
+                          "n_regionkey % 2 = 0 as m2",
+                          "n_nationkey > 10 as m3",
+                          "n_nationkey < 20 as m4"})
+                     .singleAggregation(
+                         {},
+                         {"bool_and(m1) as agg1",
+                          "bool_or(m2) as agg2",
+                          "bool_or(m1) as agg3",
+                          "bool_and(m1) FILTER (WHERE m3) as agg4",
+                          "bool_or(m1) FILTER (WHERE m4) as agg5"})
+                     .project({"agg1", "agg2", "agg1", "agg3", "agg4", "agg5"})
+                     .build();
+  AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
+
+  auto distributedMatcher = matchScan("nation")
+                                .project(
+                                    {"n_nationkey % 2 = 0 as m1",
+                                     "n_regionkey % 2 = 0 as m2",
+                                     "n_nationkey > 10 as m3",
+                                     "n_nationkey < 20 as m4"})
+                                .partialAggregation(
+                                    {},
+                                    {"bool_and(m1)",
+                                     "bool_or(m2)",
+                                     "bool_or(m1)",
+                                     "bool_and(m1) FILTER (WHERE m3)",
+                                     "bool_or(m1) FILTER (WHERE m4)"})
+                                .shuffle()
+                                .localPartition()
+                                .finalAggregation()
+                                .project()
+                                .build();
+  AXIOM_ASSERT_DISTRIBUTED_PLAN(
+      planVelox(logicalPlan).plan, distributedMatcher);
+}
+
+TEST_F(AggregationTest, dropOrderByFromOrderInsensitiveAggregates) {
+  // sum and count do not depend on input order, so their ORDER BY is dropped,
+  // which makes the first two the same aggregate.
+  auto logicalPlan =
+      lp::PlanBuilder(makeContext())
+          .tableScan("nation")
+          .aggregate(
+              {},
+              {"sum(n_nationkey ORDER BY n_regionkey)",
+               "sum(n_nationkey ORDER BY n_nationkey DESC, n_regionkey)",
+               "count(n_regionkey ORDER BY n_nationkey)",
+               "sum(n_nationkey ORDER BY n_regionkey) FILTER (WHERE n_nationkey > 10)",
+               "count(n_regionkey ORDER BY n_nationkey) FILTER (WHERE n_nationkey < 20)"})
+          .build();
+
+  auto matcher = matchScan("nation")
+                     .project(
+                         {"n_nationkey",
+                          "n_regionkey",
+                          "n_nationkey > 10 as m1",
+                          "n_nationkey < 20 as m2"})
+                     .singleAggregation(
+                         {},
+                         {"sum(n_nationkey) as agg1",
+                          "count(n_regionkey) as agg2",
+                          "sum(n_nationkey) FILTER (WHERE m1) as agg3",
+                          "count(n_regionkey) FILTER (WHERE m2) as agg4"})
+                     .project({"agg1", "agg1", "agg2", "agg3", "agg4"})
+                     .build();
+  AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
+
+  auto distributedMatcher = matchScan("nation")
+                                .project(
+                                    {"n_nationkey",
+                                     "n_regionkey",
+                                     "n_nationkey > 10 as m1",
+                                     "n_nationkey < 20 as m2"})
+                                .partialAggregation(
+                                    {},
+                                    {"sum(n_nationkey)",
+                                     "count(n_regionkey)",
+                                     "sum(n_nationkey) FILTER (WHERE m1)",
+                                     "count(n_regionkey) FILTER (WHERE m2)"})
+                                .shuffle()
+                                .localPartition()
+                                .finalAggregation()
+                                .project()
+                                .build();
+  AXIOM_ASSERT_DISTRIBUTED_PLAN(
+      planVelox(logicalPlan, {.numWorkers = 4, .numDrivers = 4}).plan,
+      distributedMatcher);
+}
+
+TEST_F(AggregationTest, dedupDistinctAndOrderedAggregates) {
+  // Both DISTINCT and ORDER BY are dropped from aggregates that ignore them,
+  // leaving three distinct aggregates for four requested ones.
+  auto logicalPlan =
+      lp::PlanBuilder(makeContext())
+          .tableScan("nation")
+          .aggregate(
+              {},
+              {
+                  "bool_and(DISTINCT n_nationkey % 2 = 0 ORDER BY n_nationkey % 2 = 0)",
+                  "bool_or(DISTINCT n_nationkey % 2 = 0 ORDER BY n_nationkey % 2 = 0 DESC)",
+                  "bool_and(n_nationkey % 2 = 0 ORDER BY n_nationkey % 2 = 0)",
+                  "bool_and(DISTINCT n_nationkey % 2 = 0 ORDER BY n_nationkey % 2 = 0) FILTER (WHERE n_nationkey > 10)",
+              })
+          .build();
+
+  auto matcher =
+      matchScan("nation")
+          .project({"n_nationkey % 2 = 0 as m1", "n_nationkey > 10 as m2"})
+          .singleAggregation(
+              {},
+              {"bool_and(m1) as agg1",
+               "bool_or(m1) as agg2",
+               "bool_and(m1) FILTER (WHERE m2) as agg3"})
+          .project({"agg1", "agg2", "agg1", "agg3"})
+          .build();
+  AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
+
+  auto distributedMatcher =
+      matchScan("nation")
+          .project({"n_nationkey % 2 = 0 as m1", "n_nationkey > 10 as m2"})
+          .partialAggregation(
+              {},
+              {
+                  "bool_and(m1)",
+                  "bool_or(m1)",
+                  "bool_and(m1) FILTER (WHERE m2)",
+              })
+          .shuffle()
+          .localPartition()
+          .finalAggregation()
+          .project()
+          .build();
+  AXIOM_ASSERT_DISTRIBUTED_PLAN(
+      planVelox(logicalPlan).plan, distributedMatcher);
+}
+
+TEST_F(AggregationTest, alwaysPlanPartialAggregation) {
+  testConnector_->addTable(
+      "numbers", ROW({"a", "b", "c"}, {DOUBLE(), DOUBLE(), VARCHAR()}));
+
+  optimizerOptions_.alwaysPlanPartialAggregation = true;
+
+  auto logicalPlan = lp::PlanBuilder(makeContext())
+                         .tableScan("numbers", {"a", "b"})
+                         .aggregate({"a"}, {"sum(a + b)"})
+                         .build();
+
+  // A single driver has nothing to combine, so the aggregation stays whole.
+  auto matcher = matchScan("numbers")
+                     .project({"a", "a + b as ab"})
+                     .singleAggregation({"a"}, {"sum(ab)"})
+                     .build();
+  AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
+
+  auto multiDriverMatcher = matchScan("numbers")
+                                .project({"a", "a + b as ab"})
+                                .partialAggregation({"a"}, {"sum(ab)"})
+                                .localPartition()
+                                .finalAggregation()
+                                .build();
+  AXIOM_ASSERT_PLAN(
+      toSingleNodePlan(logicalPlan, /*numDrivers=*/2), multiDriverMatcher);
 }
 
 } // namespace

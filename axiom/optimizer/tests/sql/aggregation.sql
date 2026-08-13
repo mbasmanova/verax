@@ -121,3 +121,15 @@ SELECT 1 AS x FROM t ORDER BY sum(a)
 -- HAVING with no aggregate filters rows like WHERE; DuckDB rejects it.
 -- duckdb: SELECT a FROM t WHERE b > 140
 SELECT a FROM t HAVING b > 140
+----
+-- FILTER masks one aggregate but not the other.
+SELECT sum(b) FILTER (WHERE b > 50), avg(a) FROM t
+----
+-- An aggregate with ORDER BY over its input.
+SELECT a, array_agg(b ORDER BY b DESC) FROM t GROUP BY a
+----
+-- FILTER and ORDER BY on the same aggregate.
+SELECT a, array_agg(b ORDER BY b) FILTER (WHERE b < 100) FROM t GROUP BY a
+----
+-- sum and count do not depend on input order, so the ORDER BY has no effect.
+SELECT sum(b ORDER BY a), count(c ORDER BY b) FROM t
