@@ -23,9 +23,16 @@ namespace {
 using namespace velox;
 namespace lp = facebook::axiom::logical_plan;
 
-class ValuesTest : public test::QueryTestBase {};
+class ValuesTest : public test::QueryTestBase,
+                   public ::testing::WithParamInterface<bool> {
+ protected:
+  void SetUp() override {
+    useV2_ = GetParam();
+    test::QueryTestBase::SetUp();
+  }
+};
 
-TEST_F(ValuesTest, columnPruning) {
+TEST_P(ValuesTest, columnPruning) {
   auto rowVector = makeRowVector(
       {"a", "b", "c"},
       {
@@ -57,7 +64,7 @@ TEST_F(ValuesTest, columnPruning) {
 }
 
 // Tests that value nodes can have complex literal types.
-TEST_F(ValuesTest, complexTypes) {
+TEST_P(ValuesTest, complexTypes) {
   auto rowVector = makeRowVector({
       makeArrayVector<std::string>({{"nation1.0", "nation1.1"}, {"nation2"}}),
       makeMapVectorFromJson<int32_t, int64_t>({"{1: 10, 2: 20}", "{3: 30}"}),
@@ -80,7 +87,7 @@ TEST_F(ValuesTest, complexTypes) {
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
-TEST_F(ValuesTest, expressions) {
+TEST_P(ValuesTest, expressions) {
   lp::PlanBuilder::Context context;
   context.coercer = &velox::TypeCoercer::defaults();
   auto logicalPlan = lp::PlanBuilder(context)
@@ -93,19 +100,12 @@ TEST_F(ValuesTest, expressions) {
                          .build();
   auto plan = toSingleNodePlan(logicalPlan);
 
-  auto expected = makeRowVector(
-      {"a", "b", "c"},
-      {
-          makeFlatVector<int64_t>({3, 30}),
-          makeFlatVector<float>({0.1, 0.2}),
-          makeNullableFlatVector<std::string>({"foo", std::nullopt}),
-      });
-
-  auto matcher = matchValues(expected->rowType()).build();
+  auto matcher =
+      matchValues(ROW({"a", "b", "c"}, {BIGINT(), REAL(), VARCHAR()})).build();
   AXIOM_ASSERT_PLAN(plan, matcher);
-
-  checkSame(logicalPlan, {expected});
 }
+
+AXIOM_INSTANTIATE_V1_V2(ValuesTest);
 
 } // namespace
 } // namespace facebook::axiom::optimizer

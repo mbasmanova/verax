@@ -22,3 +22,7 @@ SELECT SIN(CAST(c AS DECIMAL(4,1))) FROM t
 SELECT cardinality(
     CAST(ARRAY[CAST('2803:6082:f836::/48' AS ipprefix), CAST('2803:6082:f837::/48' AS ipprefix)]
             AS array(varchar)))
+----
+-- Expressions in a VALUES list are evaluated, and a NULL takes its type from
+-- the other rows.
+SELECT * FROM (VALUES (1 + 2, CAST(0.1 AS REAL), 'foo'), (10 + 20, CAST(0.2 AS REAL), NULL)) AS t(a, b, c)
