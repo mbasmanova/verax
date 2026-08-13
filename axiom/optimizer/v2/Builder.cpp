@@ -147,6 +147,44 @@ const optimizer::Aggregate* Builder::makeAggregate(
   return aggregate;
 }
 
+void Builder::dropRepeatedKeyPairs(Join::Key& key) {
+  const size_t numKeys = key.leftKeys.size();
+
+  // Interned expressions compare by pointer. A pair repeating one that was
+  // itself dropped also repeats the pair that one was dropped for, so
+  // comparing against all earlier positions needs no separate kept set.
+  const auto repeatsEarlier = [&](size_t index) {
+    for (size_t earlier = 0; earlier < index; ++earlier) {
+      if (key.leftKeys[earlier] == key.leftKeys[index] &&
+          key.rightKeys[earlier] == key.rightKeys[index]) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  size_t firstRepeat = 0;
+  while (firstRepeat < numKeys && !repeatsEarlier(firstRepeat)) {
+    ++firstRepeat;
+  }
+  if (firstRepeat == numKeys) {
+    return;
+  }
+
+  ExprVector leftKeys{key.leftKeys.begin(), key.leftKeys.begin() + firstRepeat};
+  ExprVector rightKeys{
+      key.rightKeys.begin(), key.rightKeys.begin() + firstRepeat};
+  for (size_t i = firstRepeat + 1; i < numKeys; ++i) {
+    if (!repeatsEarlier(i)) {
+      leftKeys.push_back(key.leftKeys[i]);
+      rightKeys.push_back(key.rightKeys[i]);
+    }
+  }
+
+  key.leftKeys = std::move(leftKeys);
+  key.rightKeys = std::move(rightKeys);
+}
+
 void Builder::addEquivalences(const Join::Key& key) {
   if (key.joinType != velox::core::JoinType::kInner) {
     return;
