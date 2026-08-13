@@ -592,6 +592,13 @@ class PlanMatcherBuilder {
   /// @param count Maximum number of rows to return.
   PlanMatcherBuilder& finalLimit(int64_t offset, int64_t count);
 
+  /// Adds a final Limit matcher (see finalLimit()) only when 'condition' is
+  /// true; otherwise a no-op.
+  PlanMatcherBuilder&
+  finalLimitIf(bool condition, int64_t offset, int64_t count) {
+    return condition ? finalLimit(offset, count) : *this;
+  }
+
   /// Matches the local limit pattern: partialLimit(0, offset + count) →
   /// localPartition → finalLimit(offset, count). Used when data is already on a
   /// single node and no gather is needed.

@@ -121,10 +121,10 @@ add_executable(
   FiltersTest.cpp
   FixedPointTest.cpp
   HiveAggregationQueriesTest.cpp
-  HiveLimitQueriesTest.cpp
   HiveQueriesTest.cpp
   JoinFilterProjectionTest.cpp
   JoinTest.cpp
+  LimitTest.cpp
   MetadataCountsTest.cpp
   MultiFragmentPlanTest.cpp
   NonDeterministicFlagTest.cpp

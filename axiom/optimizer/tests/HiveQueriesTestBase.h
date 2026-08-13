@@ -79,12 +79,6 @@ class HiveQueriesTestBase : public QueryTestBase {
       std::string_view sql,
       const velox::core::PlanNodePtr& referencePlan);
 
-  void checkResults(PlanAndStats& plan, const test::TestResult& expected);
-
-  void checkSingleNodePlan(
-      const PlanAndStats& plan,
-      const std::shared_ptr<velox::core::PlanMatcher>& matcher);
-
   ::axiom::sql::presto::PrestoParser& prestoParser() {
     return *prestoParser_;
   }
