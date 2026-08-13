@@ -356,6 +356,9 @@ class ComparisonExpression : public Expression {
   ExpressionPtr right_;
 };
 
+/// Returns the SQL spelling of 'op', e.g. "<=".
+std::string_view toSqlString(ComparisonExpression::Operator op);
+
 class BetweenPredicate : public Expression {
  public:
   BetweenPredicate(
@@ -638,6 +641,10 @@ class QuantifiedComparisonExpression : public Expression {
   ExpressionPtr value_;
   ExpressionPtr subquery_;
 };
+
+/// Returns the SQL spelling of 'quantifier', e.g. "ANY".
+std::string_view toSqlString(
+    QuantifiedComparisonExpression::Quantifier quantifier);
 
 // Logical Expressions
 

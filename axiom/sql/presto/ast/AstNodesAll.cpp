@@ -248,6 +248,39 @@ const auto& nodeTypeNames() {
 
 AXIOM_DEFINE_ENUM_NAME(NodeType, nodeTypeNames);
 
+std::string_view toSqlString(ComparisonExpression::Operator op) {
+  switch (op) {
+    case ComparisonExpression::Operator::kEqual:
+      return "=";
+    case ComparisonExpression::Operator::kNotEqual:
+      return "!=";
+    case ComparisonExpression::Operator::kLessThan:
+      return "<";
+    case ComparisonExpression::Operator::kLessThanOrEqual:
+      return "<=";
+    case ComparisonExpression::Operator::kGreaterThan:
+      return ">";
+    case ComparisonExpression::Operator::kGreaterThanOrEqual:
+      return ">=";
+    case ComparisonExpression::Operator::kIsDistinctFrom:
+      return "IS DISTINCT FROM";
+  }
+  VELOX_UNREACHABLE("Unsupported comparison operator");
+}
+
+std::string_view toSqlString(
+    QuantifiedComparisonExpression::Quantifier quantifier) {
+  switch (quantifier) {
+    case QuantifiedComparisonExpression::Quantifier::kAll:
+      return "ALL";
+    case QuantifiedComparisonExpression::Quantifier::kAny:
+      return "ANY";
+    case QuantifiedComparisonExpression::Quantifier::kSome:
+      return "SOME";
+  }
+  VELOX_UNREACHABLE("Unsupported comparison quantifier");
+}
+
 // Literal implementations
 void BooleanLiteral::accept(AstVisitor* visitor) {
   visitor->visitBooleanLiteral(this);

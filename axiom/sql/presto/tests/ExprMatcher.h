@@ -36,6 +36,11 @@ class ExprMatcher {
   /// cannot be spelled in expected strings.
   static constexpr std::string_view kExistsWildcard = "any_exists";
 
+  /// Matches any actual subquery, for the same reason as `kExistsWildcard`.
+  /// Lets an expected string spell the shape around one, e.g.
+  /// `"in"(x, any_subquery())`.
+  static constexpr std::string_view kSubqueryWildcard = "any_subquery";
+
   /// Returns true if the trees match. On mismatch, sets gtest failures
   /// with SCOPED_TRACE context showing the path through the tree.
   static bool match(

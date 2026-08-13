@@ -215,9 +215,6 @@ class JoinMatcher : public LogicalPlanMatcherImpl<JoinNode> {
   const std::vector<std::string> outputAliases_;
 };
 
-// Matches a FilterNode with the specified expression. The expected expression
-// is parsed with DuckDB and printed in a format compatible with
-// lp::ExprPrinter, then compared against the filter expression's toString().
 class FilterMatcher : public LogicalPlanMatcherImpl<FilterNode> {
  public:
   FilterMatcher(
@@ -323,7 +320,6 @@ class LimitMatcher : public LogicalPlanMatcherImpl<LimitNode> {
 // - String constructor: parses with DuckDB, corrects window frame defaults.
 // - ExprApi constructor: uses the expression directly, applies SQL standard
 //   default frame when none is specified.
-// Both paths compare against expressionAt(i)->toString().
 class ProjectMatcher : public LogicalPlanMatcherImpl<ProjectNode> {
  public:
   ProjectMatcher(
