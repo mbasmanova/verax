@@ -484,6 +484,7 @@ int main(int argc, char** argv) {
   registerQueryFile<"nondeterministic">();
   registerQueryFile<"nullif">();
   registerQueryFile<"set">();
+  registerQueryFile<"sort">();
   registerQueryFile<"subfield">();
   registerQueryFile<"subquery">();
   registerQueryFile<"unionAll">();

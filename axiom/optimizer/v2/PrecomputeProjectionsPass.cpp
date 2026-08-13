@@ -74,7 +74,7 @@ ColumnVector replacePrefix(
 class PrecomputeProjections {
  public:
   // When `projectAllInputs` is true (the default, for pass-through consumers
-  // like Window/Sort/Exchange), the project preserves every input column
+  // like Window/Sort/TopN), the project preserves every input column
   // alongside the lifted ones. When false (for narrowing consumers like
   // Aggregate/Unnest/Join), the project outputs only the columns passed to
   // `toColumn` — so an input column kept solely to feed a lifted expression is
@@ -329,8 +329,8 @@ void JoinFilterRewriter::keep(ColumnCP column) {
   }
 }
 
-// Lifts compound expressions at restricted positions of Aggregate /
-// Window / Sort / Unnest into a Project below the consumer.
+// Lifts compound expressions at restricted operator positions into a Project
+// below the consumer.
 class Rewriter : public NodeRewriter<> {
  public:
   using NodeRewriter::NodeRewriter;
@@ -344,6 +344,7 @@ class Rewriter : public NodeRewriter<> {
   NodeCP rewriteTopNRowNumber(const TopNRowNumber* topN, NoContext& context)
       override;
   NodeCP rewriteSort(const Sort* sort, NoContext& context) override;
+  NodeCP rewriteTopN(const TopN* topN, NoContext& context) override;
   NodeCP rewriteUnnest(const Unnest* unnest, NoContext& context) override;
   NodeCP rewriteJoin(const Join* join, NoContext& context) override;
   NodeCP rewriteUnionAll(const UnionAll* unionAll, NoContext& context) override;
@@ -550,6 +551,22 @@ NodeCP Rewriter::rewriteSort(const Sort* sort, NoContext& context) {
       {std::move(precompute).node(),
        std::move(newOrderKeys),
        sort->orderTypes()});
+}
+
+NodeCP Rewriter::rewriteTopN(const TopN* topN, NoContext& context) {
+  NodeCP newInput = rewrite(topN->input(), context);
+  PrecomputeProjections precompute{newInput, builder()};
+  ExprVector newOrderKeys;
+  newOrderKeys.reserve(topN->orderKeys().size());
+  for (ExprCP key : topN->orderKeys()) {
+    newOrderKeys.push_back(precompute.toColumn(key));
+  }
+  return builder().make<TopN>(
+      {std::move(precompute).node(),
+       std::move(newOrderKeys),
+       topN->orderTypes(),
+       topN->offset(),
+       topN->count()});
 }
 
 NodeCP Rewriter::rewriteJoin(const Join* join, NoContext& context) {
