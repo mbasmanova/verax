@@ -1064,6 +1064,17 @@ PlanBuilder& PlanBuilder::unnest(
   std::vector<ExprPtr> exprs;
   std::vector<std::vector<std::string>> outputNames;
 
+  // A column the query did not name. The relation alias still names it, so
+  // `alias.*` finds it; it has no name of its own to reference it by.
+  auto addUnnamedUnnestOutput = [&](const std::string& hint) {
+    outputNames.back().emplace_back(newName(hint));
+    if (alias.has_value()) {
+      unnestMapping.add(
+          NameMappings::QualifiedName{alias, outputNames.back().back()},
+          outputNames.back().back());
+    }
+  };
+
   auto addUnnestOutput = [&](const std::string& name, const std::string& hint) {
     if (name.empty()) {
       VELOX_USER_CHECK(
@@ -1096,7 +1107,7 @@ PlanBuilder& PlanBuilder::unnest(
           VELOX_USER_CHECK_LT(index, unnestAliases.size());
           addUnnestOutput(unnestAliases[index], kElementHint);
         } else {
-          outputNames.back().emplace_back(newName(kElementHint));
+          addUnnamedUnnestOutput(kElementHint);
         }
         break;
 
@@ -1110,8 +1121,8 @@ PlanBuilder& PlanBuilder::unnest(
           addUnnestOutput(unnestAliases[index], kKeyHint);
           addUnnestOutput(unnestAliases[index], kValueHint);
         } else {
-          outputNames.back().emplace_back(newName(kKeyHint));
-          outputNames.back().emplace_back(newName(kValueHint));
+          addUnnamedUnnestOutput(kKeyHint);
+          addUnnamedUnnestOutput(kValueHint);
         }
         break;
 
@@ -1134,6 +1145,11 @@ PlanBuilder& PlanBuilder::unnest(
       unnestMapping.addUserName(*ordinalityName, "");
     } else {
       ordinalityName = newName("ordinality");
+      if (alias.has_value()) {
+        unnestMapping.add(
+            NameMappings::QualifiedName{alias, *ordinalityName},
+            *ordinalityName);
+      }
     }
   }
 
