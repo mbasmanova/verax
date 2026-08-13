@@ -70,6 +70,27 @@ TEST_F(FilterPushdownTest, throughAggregation) {
           .planNode();
 
   checkSame(logicalPlan, referencePlan);
+
+  // The same split happens when the predicates arrive as separate filters:
+  // the one over grouping keys moves down, and the rest are combined above.
+  {
+    auto separateFilters = lp::PlanBuilder(makeContext())
+                               .tableScan("nation")
+                               .aggregate({"n_name"}, {"count(1) as cnt"})
+                               .filter("n_name > 'a'")
+                               .filter("cnt > 10")
+                               .filter("length(n_name) < cnt")
+                               .build();
+
+    auto plan = toSingleNodePlan(separateFilters);
+    auto matcher = core::PlanMatcherBuilder()
+                       .hiveScan("nation", test::gt("n_name", std::string("a")))
+                       .singleAggregation({"n_name"}, {"count(1) as cnt"})
+                       .filter("cnt > 10 and cnt > length(n_name)")
+                       .build();
+
+    AXIOM_ASSERT_PLAN(plan, matcher);
+  }
 }
 
 TEST_F(FilterPushdownTest, redundantCast) {
