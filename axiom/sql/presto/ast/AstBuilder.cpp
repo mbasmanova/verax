@@ -1869,6 +1869,13 @@ std::any AstBuilder::visitLogicalBinary(
 
 namespace {
 
+// Returns the token type of a single-terminal rule context's only child.
+size_t terminalTokenType(antlr4::tree::ParseTree* node) {
+  return dynamic_cast<antlr4::tree::TerminalNode*>(node)
+      ->getSymbol()
+      ->getType();
+}
+
 ComparisonExpression::Operator toComparisonOperator(size_t tokenType) {
   switch (tokenType) {
     case PrestoSqlParser::EQ:
@@ -1896,19 +1903,49 @@ std::any AstBuilder::visitComparison(PrestoSqlParser::ComparisonContext* ctx) {
   auto leftExpr = visitExpression(ctx->value);
   auto rightExpr = visitExpression(ctx->right);
 
-  auto operatorToken = ctx->comparisonOperator()->children[0];
-  auto terminalNode = dynamic_cast<antlr4::tree::TerminalNode*>(operatorToken);
-  auto op = toComparisonOperator(terminalNode->getSymbol()->getType());
+  auto op = toComparisonOperator(
+      terminalTokenType(ctx->comparisonOperator()->children[0]));
 
   return std::static_pointer_cast<Expression>(
       std::make_shared<ComparisonExpression>(
           getLocation(ctx), op, leftExpr, rightExpr));
 }
 
+namespace {
+
+QuantifiedComparisonExpression::Quantifier toQuantifier(size_t tokenType) {
+  switch (tokenType) {
+    case PrestoSqlParser::ALL:
+      return QuantifiedComparisonExpression::Quantifier::kAll;
+    case PrestoSqlParser::ANY:
+      return QuantifiedComparisonExpression::Quantifier::kAny;
+    case PrestoSqlParser::SOME:
+      return QuantifiedComparisonExpression::Quantifier::kSome;
+    default:
+      VELOX_UNREACHABLE(
+          "Unexpected comparison quantifier token: {}", tokenType);
+  }
+}
+
+} // namespace
+
 std::any AstBuilder::visitQuantifiedComparison(
     PrestoSqlParser::QuantifiedComparisonContext* ctx) {
   trace("visitQuantifiedComparison");
-  return visitChildren("visitQuantifiedComparison", ctx);
+
+  auto op = toComparisonOperator(
+      terminalTokenType(ctx->comparisonOperator()->children[0]));
+  auto quantifier =
+      toQuantifier(terminalTokenType(ctx->comparisonQuantifier()->children[0]));
+
+  return std::static_pointer_cast<Expression>(
+      std::make_shared<QuantifiedComparisonExpression>(
+          getLocation(ctx),
+          op,
+          quantifier,
+          visitExpression(ctx->value),
+          std::make_shared<SubqueryExpression>(
+              getLocation(ctx), visitTyped<Statement>(ctx->query()))));
 }
 
 namespace {

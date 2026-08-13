@@ -286,6 +286,15 @@ SELECT t.a NOT IN (SELECT t2.a FROM t t2 WHERE t2.b = t.b AND t2.c = t.c) FROM t
 -- Correlated IN subquery with mixed equality and non-equality correlation.
 SELECT t.a IN (SELECT t2.a FROM t t2 WHERE t2.b = t.b AND t2.c < t.c) FROM t
 ----
+-- '= ANY' means IN.
+SELECT t.a = ANY (SELECT t2.a FROM t t2 WHERE t2.b = t.b) FROM t
+----
+-- '= SOME' means IN.
+SELECT t.a = SOME (SELECT t2.a FROM t t2 WHERE t2.b = t.b) FROM t
+----
+-- '<> ALL' means NOT IN.
+SELECT t.a <> ALL (SELECT t2.a FROM t t2 WHERE t2.b = t.b) FROM t
+----
 -- Correlated NOT IN subquery with mixed equality and non-equality correlation.
 SELECT t.a NOT IN (SELECT t2.a FROM t t2 WHERE t2.b = t.b AND t2.c < t.c) FROM t
 ----

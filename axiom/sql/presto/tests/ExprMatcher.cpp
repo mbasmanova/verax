@@ -33,20 +33,12 @@ namespace {
     return false;                              \
   }
 
-bool isWildcard(const velox::core::ExprPtr& expr) {
+bool isWildcard(const velox::core::ExprPtr& expr, std::string_view name) {
   if (!expr->is(velox::core::IExpr::Kind::kCall)) {
     return false;
   }
   const auto* call = expr->as<velox::core::CallExpr>();
-  return call->name() == ExprMatcher::kWildcard && call->inputs().empty();
-}
-
-bool isExistsWildcard(const velox::core::ExprPtr& expr) {
-  if (!expr->is(velox::core::IExpr::Kind::kCall)) {
-    return false;
-  }
-  const auto* call = expr->as<velox::core::CallExpr>();
-  return call->name() == ExprMatcher::kExistsWildcard && call->inputs().empty();
+  return call->name() == name && call->inputs().empty();
 }
 
 // Forward declaration for mutual recursion.
@@ -407,11 +399,11 @@ bool matchImpl(const ExprPtr& actual, const velox::core::ExprPtr& expected) {
   VELOX_CHECK_NOT_NULL(actual);
   VELOX_CHECK_NOT_NULL(expected);
 
-  if (isWildcard(expected)) {
+  if (isWildcard(expected, ExprMatcher::kWildcard)) {
     return true;
   }
 
-  if (isExistsWildcard(expected)) {
+  if (isWildcard(expected, ExprMatcher::kExistsWildcard)) {
     if (actual->kind() != ExprKind::kSpecialForm) {
       ADD_FAILURE() << "Expected EXISTS (any_exists() wildcard), got "
                     << actual->kindName() << ".";
@@ -421,6 +413,15 @@ bool matchImpl(const ExprPtr& actual, const velox::core::ExprPtr& expected) {
     if (form != SpecialForm::kExists) {
       ADD_FAILURE() << "Expected EXISTS special form, got "
                     << SpecialFormName::toName(form) << ".";
+      return false;
+    }
+    return true;
+  }
+
+  if (isWildcard(expected, ExprMatcher::kSubqueryWildcard)) {
+    if (actual->kind() != ExprKind::kSubquery) {
+      ADD_FAILURE() << "Expected a subquery (any_subquery() wildcard), got "
+                    << actual->kindName() << ".";
       return false;
     }
     return true;

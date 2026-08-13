@@ -138,16 +138,17 @@ class LogicalPlanMatcherBuilder {
   LogicalPlanMatcherBuilder& filter(OnMatchCallback onMatch = nullptr);
 
   /// Matches a FilterNode with the specified expression. The expected
-  /// expression is parsed with DuckDB and compared against the filter
-  /// expression's toString(). Supports symbol rewriting.
+  /// expression is parsed with DuckDB and matched structurally against the
+  /// filter expression, so `ExprMatcher` wildcards apply. Supports symbol
+  /// rewriting.
   LogicalPlanMatcherBuilder& filter(const std::string& expression);
 
   /// Matches a ProjectNode.
   LogicalPlanMatcherBuilder& project(OnMatchCallback onMatch = nullptr);
 
   /// Matches a ProjectNode with the specified expressions. Each expected
-  /// expression is parsed with DuckDB and printed in a format compatible with
-  /// lp::ExprPrinter, then compared against expressionAt(i)->toString().
+  /// expression is parsed with DuckDB and matched structurally against
+  /// expressionAt(i), so `ExprMatcher` wildcards apply.
   LogicalPlanMatcherBuilder& project(
       const std::vector<std::string>& expressions);
 

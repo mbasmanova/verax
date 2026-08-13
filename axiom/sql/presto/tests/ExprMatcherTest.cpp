@@ -73,13 +73,23 @@ velox::core::ExprPtr existsWildcard() {
       std::nullopt);
 }
 
-ExprPtr exists() {
+velox::core::ExprPtr subqueryWildcard() {
+  return std::make_shared<velox::core::CallExpr>(
+      std::string{ExprMatcher::kSubqueryWildcard},
+      std::vector<velox::core::ExprPtr>{},
+      std::nullopt);
+}
+
+ExprPtr subquery() {
   auto subqueryPlan = std::make_shared<ValuesNode>(
       "values_0",
       ROW({"x"}, {BIGINT()}),
       ValuesNode::Variants{Variant::row({42LL})});
-  auto subquery = std::make_shared<SubqueryExpr>(subqueryPlan);
-  return specialForm(BOOLEAN(), SpecialForm::kExists, {subquery});
+  return std::make_shared<SubqueryExpr>(subqueryPlan);
+}
+
+ExprPtr exists() {
+  return specialForm(BOOLEAN(), SpecialForm::kExists, {subquery()});
 }
 
 class ExprMatcherTest : public testing::Test {
@@ -365,6 +375,27 @@ TEST_F(ExprMatcherTest, existsWildcardRejectsNonExists) {
   EXPECT_NONFATAL_FAILURE(
       ExprMatcher::match(coalesce, existsWildcard()),
       "Expected EXISTS special form, got COALESCE.");
+}
+
+TEST_F(ExprMatcherTest, subqueryWildcardMatchesSubquery) {
+  ExprMatcher::match(subquery(), subqueryWildcard());
+}
+
+TEST_F(ExprMatcherTest, subqueryWildcardMatchesNestedSubquery) {
+  auto in = specialForm(
+      BOOLEAN(), SpecialForm::kIn, {field(BIGINT(), "a"), subquery()});
+  ExprMatcher::match(
+      in,
+      std::make_shared<velox::core::CallExpr>(
+          "in",
+          std::vector<velox::core::ExprPtr>{parseExpr("a"), subqueryWildcard()},
+          std::nullopt));
+}
+
+TEST_F(ExprMatcherTest, subqueryWildcardRejectsNonSubquery) {
+  EXPECT_NONFATAL_FAILURE(
+      ExprMatcher::match(field(BOOLEAN(), "a"), subqueryWildcard()),
+      "Expected a subquery (any_subquery() wildcard)");
 }
 
 } // namespace
