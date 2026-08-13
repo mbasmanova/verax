@@ -54,3 +54,13 @@ SELECT a, b FROM t OFFSET 0 LIMIT 0
 ----
 -- count 13
 SELECT a, b FROM t OFFSET 2
+----
+-- ordered
+SELECT a, b FROM t ORDER BY b DESC OFFSET 5 LIMIT 3
+----
+-- ordered
+SELECT a, b FROM t ORDER BY b DESC OFFSET 12
+----
+-- An offset whose sum with the limit exceeds the maximum int64.
+-- count 0
+SELECT a, b FROM t OFFSET 9223372036854775802 LIMIT 100
