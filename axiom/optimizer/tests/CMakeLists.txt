@@ -106,11 +106,13 @@ target_link_libraries(
 add_executable(
   axiom_optimizer_tests
   AggregationTest.cpp
+  BitSetTest.cpp
   DistinctAggregationTest.cpp
   OutputNodeTest.cpp
   CardinalityEstimationTest.cpp
   ConnectorSubtreePushdownTest.cpp
   ConnectorPushdownPassTest.cpp
+  ConnectorPushdownTest.cpp
   CsvReadWriteTest.cpp
   DeleteTest.cpp
   DerivedTablePrinterTest.cpp
@@ -118,6 +120,7 @@ add_executable(
   ExprMatcherTest.cpp
   ExistencePushdownTest.cpp
   FilterPushdownTest.cpp
+  FilteredTableStatsTest.cpp
   FiltersTest.cpp
   FixedPointTest.cpp
   HiveAggregationQueriesTest.cpp
@@ -127,12 +130,14 @@ add_executable(
   MetadataCountsTest.cpp
   MultiFragmentPlanTest.cpp
   NonDeterministicFlagTest.cpp
+  OptimizerOptionsTest.cpp
   OrderByTest.cpp
   TpchDataGenerator.cpp
   PrecomputeProjectionTest.cpp
   PlanTest.cpp
   RemoteOutputTest.cpp
   QueryGraphContextTest.cpp
+  RankingTest.cpp
   RelationOpPrinterTest.cpp
   SetTest.cpp
   SubfieldTest.cpp
@@ -148,7 +153,9 @@ add_executable(
   TpchConnectorQueryTest.cpp
   UnionAllTest.cpp
   UnnestTest.cpp
+  UnknownStatsJoinTest.cpp
   ValuesTest.cpp
+  WindowTest.cpp
   WriteTest.cpp
 )
 
