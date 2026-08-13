@@ -22,6 +22,14 @@
 -- ordered
 SELECT a, b FROM t ORDER BY b LIMIT 3
 ----
+-- ORDER BY an expression that is not in the select list, with LIMIT.
+-- ordered
+SELECT * FROM t ORDER BY b + c DESC LIMIT 3
+----
+-- Same, over an input that is already on one task.
+-- ordered
+SELECT * FROM (VALUES (1, 2), (3, 1), (2, 5)) t(a, b) ORDER BY a + b DESC LIMIT 2
+----
 -- count 0
 SELECT a, b FROM t LIMIT 0
 ----

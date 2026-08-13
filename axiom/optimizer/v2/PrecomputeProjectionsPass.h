@@ -31,13 +31,17 @@ class PrecomputeProjectionsPass {
   /// Most positions are moved because Velox demands a `FieldAccessTypedExpr`
   /// (or, where allowed, a constant) there:
   ///   - Aggregate: grouping keys, aggregate args, FILTER mask, ORDER BY keys
-  ///   - Window:    partition keys, order keys, function args
-  ///   - Sort:      order keys
-  ///   - Unnest:    unnest expressions
-  ///   - Join:      join keys
+  ///   - Window: partition keys, order keys, function args, frame bounds
+  ///   - Sort, TopN: order keys
+  ///   - RowNumber: partition keys
+  ///   - TopNRowNumber: partition keys, order keys
+  ///   - Unnest: unnest expressions
+  ///   - Join: join keys
   ///
-  /// A join filter is the one exception: Velox accepts any expression there,
-  /// so the move is an optimization rather than a requirement.
+  /// A join filter is one exception: Velox accepts any expression there, so
+  /// the move is an optimization rather than a requirement. A `UnionAll` is
+  /// another: its legs are aligned to the union's output columns because
+  /// Velox's `LocalPartition` requires one shared output `RowType`.
   ///
   /// A join with no equi keys evaluates its filter once for every pair of
   /// input rows. A subexpression of the filter that reads only one side has
