@@ -74,6 +74,9 @@ CROSS JOIN UNNEST(t.items) _(r)
 JOIN (VALUES (1, 10), (1, 20)) u(c, k) ON u.k = r.k AND u.c = 1
 JOIN (VALUES (1, 10)) v(c, k) ON v.k = u.k AND v.c = 1
 ----
+-- `alias.*` on an UNNEST relation whose alias carries no column list.
+SELECT u.* FROM (VALUES (1, ARRAY[10, 20])) AS s(a, b) CROSS JOIN UNNEST(b) AS u
+----
 -- Chained LEFT JOINs with same-named columns and GROUP BY.
 -- a.ds must group by a's column, not c's.
 SELECT a.ds
