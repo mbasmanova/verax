@@ -822,6 +822,16 @@ class RelationPlanner : public AstVisitor {
     processFrom(join.left());
 
     if (auto unnest = tryGetUnnest(join.right())) {
+      // The unnest is applied to every row of the left side, which is what a
+      // CROSS or comma join means; there is no join node to carry an ON
+      // condition. Presto rejects every other join type here, whatever the
+      // condition says.
+      AXIOM_PRESTO_SEMANTIC_CHECK(
+          join.joinType() == Join::Type::kCross ||
+              join.joinType() == Join::Type::kImplicit,
+          join.location(),
+          "UNNEST",
+          "UNNEST on other than the right side of CROSS JOIN is not supported");
       addCrossJoinUnnest(*unnest->first, unnest->second);
       return;
     }

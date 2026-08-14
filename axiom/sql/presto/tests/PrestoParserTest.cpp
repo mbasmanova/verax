@@ -1414,6 +1414,29 @@ TEST_F(PrestoParserTest, duplicateAliases) {
       "Cannot resolve column: u");
 }
 
+// An UNNEST is applied to every row of the other side, which only a CROSS or
+// comma join expresses. Any other join type is rejected whatever its ON clause
+// says, matching Presto.
+TEST_F(PrestoParserTest, unnestJoin) {
+  testSelect(
+      "SELECT a FROM (VALUES 1) AS t(a), UNNEST(ARRAY[1, 2]) AS u(s) "
+      "WHERE a = s",
+      matchValues().project().unnest().filter("a = s").project().output({"a"}));
+
+  for (
+      const auto* query : {
+          "SELECT a FROM (VALUES 1) AS t(a) JOIN UNNEST(ARRAY[1, 2]) AS u(s) ON a = s",
+          "SELECT a FROM (VALUES 1) AS t(a) JOIN UNNEST(ARRAY[1, 2]) AS u(s) ON TRUE",
+          "SELECT a FROM (VALUES 1) AS t(a) LEFT JOIN UNNEST(ARRAY[1, 2]) AS u(s) ON TRUE",
+          "SELECT a FROM (VALUES 1) AS t(a) FULL JOIN UNNEST(ARRAY[1, 2]) AS u(s) ON TRUE",
+      }) {
+    SCOPED_TRACE(query);
+    AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+        parseSql(query),
+        "UNNEST on other than the right side of CROSS JOIN is not supported");
+  }
+}
+
 TEST_F(PrestoParserTest, outputNames) {
   auto test = [&](const std::string& sql,
                   const std::vector<std::string>& expectedNames) {
