@@ -193,6 +193,40 @@ TEST_F(PrestoParserTest, qualifiedColumnAccess) {
   }
 }
 
+TEST_F(PrestoParserTest, schemaQualifiedColumnAccess) {
+  // A column reference may carry any suffix of the relation's qualified name.
+  auto matcher = matchScan().project().output({"n_name"});
+  testSelect("SELECT default.nation.n_name FROM nation", matcher);
+  testSelect("SELECT test.default.nation.n_name FROM nation", matcher);
+  testSelect("SELECT default.nation.n_name FROM default.nation", matcher);
+
+  // A qualifier that names no relation in scope resolves nothing.
+  VELOX_ASSERT_THROW(
+      parseSql("SELECT bogus.nation.n_name FROM nation"),
+      "Cannot resolve column");
+
+  // An alias replaces the relation's name, so the schema no longer qualifies
+  // it.
+  VELOX_ASSERT_THROW(
+      parseSql("SELECT default.nation.n_name FROM nation AS n"),
+      "Cannot resolve column");
+
+  // A CTE name is query-local, so no schema qualifies it.
+  VELOX_ASSERT_THROW(
+      parseSql("WITH c AS (SELECT 1 AS a) SELECT default.c.a FROM c"),
+      "Cannot resolve column");
+
+  // A view's name qualifies its columns the same way a table's does.
+  connector_->createView(
+      facebook::axiom::SchemaTableName{"default", "nation_view"},
+      ROW("n_name", VARCHAR()),
+      "SELECT n_name FROM nation");
+  testSelect(
+      "SELECT default.nation_view.n_name FROM nation_view",
+      matchScan().project().project().output({"n_name"}),
+      {"nation_view"});
+}
+
 TEST_F(PrestoParserTest, tableShorthand) {
   // `TABLE t` is shorthand for `SELECT * FROM t`.
   auto matcher =

@@ -20,6 +20,7 @@
 #include <folly/container/small_vector.h>
 #include <folly/hash/Hash.h>
 #include <cctype>
+#include <span>
 #include <unordered_set>
 #include "axiom/common/CatalogSchemaTableName.h"
 #include "axiom/connectors/ConnectorMetadata.h"
@@ -581,6 +582,32 @@ class RelationPlanner : public AstVisitor {
     }
   }
 
+  // Returns the scope qualifier of the relation that 'parts' names, when
+  // 'parts' is a suffix of its qualified name. Only `schema.table` and
+  // `catalog.schema.table` can match: a single part is already a scope
+  // qualifier, and nothing in scope has a longer name. Anything else,
+  // including a qualifier that names no relation, returns nullopt, which makes
+  // a wrong qualifier an error rather than a silently dropped prefix.
+  std::optional<std::string> resolveRelationQualifier(
+      std::span<const std::string> parts) const {
+    if (parts.empty() || ambiguousScopeRelations_.contains(parts.back())) {
+      return std::nullopt;
+    }
+
+    const auto it = scopeRelations_.find(parts.back());
+    if (it == scopeRelations_.end()) {
+      return std::nullopt;
+    }
+
+    const auto& name = it->second;
+    const bool matches = parts.size() == 2
+        ? canonicalizeName(name.schemaTableName.schema) == parts[0]
+        : parts.size() == 3 &&
+            canonicalizeName(name.schemaTableName.schema) == parts[1] &&
+            canonicalizeName(name.catalogName) == parts[0];
+    return matches ? std::optional<std::string>(parts.back()) : std::nullopt;
+  }
+
   // Resolves 'name' as a CTE reference, returning true if handled.
   bool tryProcessCteReference(const std::string& name) {
     // A recursive binding re-translates its body at each reference site so
@@ -670,6 +697,17 @@ class RelationPlanner : public AstVisitor {
 
     builder_->findOrAssignOutputNames(/*includeHiddenColumns=*/false);
     builder_->as(tableName);
+
+    const auto [it, inserted] = scopeRelations_.emplace(
+        tableName,
+        facebook::axiom::CatalogSchemaTableName{connectorId, connectorTable});
+    if (!inserted) {
+      // A second relation answers to this qualifier, so it names neither, and
+      // that holds whether or not they are the same table: the column scope
+      // drops their columns as ambiguous when the join merges them, so no
+      // qualified form may appear to resolve.
+      ambiguousScopeRelations_.insert(tableName);
+    }
   }
 
   void processSampledRelation(const SampledRelation& sampledRelation) {
@@ -728,6 +766,14 @@ class RelationPlanner : public AstVisitor {
   }
 
   void processAliasedRelation(const AliasedRelation& aliasedRelation) {
+    // The alias replaces the relation's name, so its qualified name no longer
+    // resolves: `nation AS n` makes `default.nation.x` an error.
+    auto savedScopeRelations = scopeRelations_;
+    auto savedAmbiguousRelations = ambiguousScopeRelations_;
+    SCOPE_EXIT {
+      scopeRelations_ = std::move(savedScopeRelations);
+      ambiguousScopeRelations_ = std::move(savedAmbiguousRelations);
+    };
     processFrom(aliasedRelation.relation());
 
     auto alias = canonicalizeIdentifier(*aliasedRelation.alias());
@@ -1448,6 +1494,16 @@ class RelationPlanner : public AstVisitor {
       displayNames_.accumulatedNames = std::move(savedAccumulatedNames);
     };
 
+    // The relations this query puts in scope leave with it. Entries from
+    // enclosing queries stay visible, so a correlated subquery can still name
+    // an outer relation.
+    auto savedScopeRelations = scopeRelations_;
+    auto savedAmbiguousRelations = ambiguousScopeRelations_;
+    SCOPE_EXIT {
+      scopeRelations_ = std::move(savedScopeRelations);
+      ambiguousScopeRelations_ = std::move(savedAmbiguousRelations);
+    };
+
     // lastNames is scoped per query; reset so names from a sibling relation
     // in the enclosing scope cannot leak in.
     displayNames_.lastNames.clear();
@@ -1691,7 +1747,22 @@ class RelationPlanner : public AstVisitor {
       [this](const std::string& first, const std::string& second) {
         return builder_->hasColumn(first) ||
             builder_->hasQualifiedColumn(first, second);
+      },
+      [this](std::span<const std::string> parts) {
+        return resolveRelationQualifier(parts);
       }};
+  // Qualified names of the base tables in scope, keyed by the qualifier they
+  // answer to -- their table name, until an alias replaces it. A column
+  // reference may name a relation by any suffix of its qualified name, so
+  // resolving `schema.table.column` needs the schema, which the plan builder's
+  // scope does not carry.
+  folly::F14FastMap<std::string, facebook::axiom::CatalogSchemaTableName>
+      scopeRelations_;
+
+  // Qualifiers that name more than one relation in scope. Their columns are
+  // unreachable by any name, so no qualified form resolves through them.
+  folly::F14FastSet<std::string> ambiguousScopeRelations_;
+
   CteScope ctes_;
   ViewMap views_;
   std::unordered_set<facebook::axiom::CatalogSchemaTableName> inputTables_;

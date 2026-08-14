@@ -15,6 +15,8 @@
  */
 #pragma once
 
+#include <span>
+
 #include <folly/container/F14Map.h>
 #include <functional>
 #include <unordered_map>
@@ -103,18 +105,28 @@ class ExpressionPlanner {
   using ColumnResolver =
       std::function<bool(const std::string& first, const std::string& second)>;
 
+  /// Returns the qualifier a column reference should use when 'parts' names a
+  /// relation in scope by a suffix of its qualified name (`schema.table` or
+  /// `catalog.schema.table`); nullopt when none matches. Lets
+  /// `schema.table.column` resolve without accepting a qualifier that names no
+  /// relation. Can be nullptr when no relation scope is available.
+  using RelationQualifierResolver = std::function<std::optional<std::string>(
+      std::span<const std::string> parts)>;
+
   ExpressionPlanner(
       std::string user,
       SubqueryPlanner subqueryPlanner,
       SortingKeyResolver sortingKeyResolver,
       const ParserOptions& options,
       ShouldDropQualifier shouldDropQualifier = nullptr,
-      ColumnResolver columnResolver = nullptr)
+      ColumnResolver columnResolver = nullptr,
+      RelationQualifierResolver relationQualifierResolver = nullptr)
       : user_{std::move(user)},
         subqueryPlanner_(std::move(subqueryPlanner)),
         sortingKeyResolver_(std::move(sortingKeyResolver)),
         shouldDropQualifier_(std::move(shouldDropQualifier)),
         columnResolver_(std::move(columnResolver)),
+        relationQualifierResolver_(std::move(relationQualifierResolver)),
         options_{options} {}
 
   /// Finds WindowCallExpr nodes nested inside non-window expressions.
@@ -244,6 +256,7 @@ class ExpressionPlanner {
   SortingKeyResolver sortingKeyResolver_;
   ShouldDropQualifier shouldDropQualifier_;
   ColumnResolver columnResolver_;
+  RelationQualifierResolver relationQualifierResolver_;
 
   ParserOptions options_;
 
