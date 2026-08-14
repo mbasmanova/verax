@@ -93,6 +93,11 @@ void JoinHypergraph::checkConsistency() const {
   // Every Unnest relation must be reachable through its cross-join-unnest
   // edge; otherwise the directed-edge connectivity was never built.
   unnestRelationIds_.forEach([&](int32_t id) {
+    // An Unnest of a constant has no input in the cluster and so no edge; the
+    // connectivity check above covers it.
+    if (relation(id).node()->onlyInput()->outputColumns().empty()) {
+      return;
+    }
     bool found = false;
     for (const auto& edge : edges_) {
       if (edge.isUnnest() && edge.right().contains(id)) {

@@ -82,7 +82,12 @@ RelationSet populateJoinLeaves(
     return RelationSet::singleton(it->second);
   }
   if (node->is(NodeType::kUnnest)) {
-    return populateJoinLeaves(node->as<Unnest>()->input(), leafIds, leaves);
+    // The cluster does not contain the input of an Unnest of a constant.
+    NodeCP input = node->onlyInput();
+    if (input->outputColumns().empty()) {
+      return RelationSet{};
+    }
+    return populateJoinLeaves(input, leafIds, leaves);
   }
   const auto* join = node->as<Join>();
   const RelationSet leftLeaves =
@@ -139,13 +144,13 @@ RelationSet tesExpansion(
     return RelationSet{};
   }
   if (node->is(NodeType::kUnnest)) {
+    // The cluster does not contain the input of an Unnest of a constant.
+    NodeCP input = node->onlyInput();
+    if (input->outputColumns().empty()) {
+      return RelationSet{};
+    }
     return tesExpansion(
-        node->as<Unnest>()->input(),
-        parentType,
-        parentSes,
-        leftSide,
-        leafIds,
-        leaves);
+        input, parentType, parentSes, leftSide, leafIds, leaves);
   }
 
   const auto* childJoin = node->as<Join>();
@@ -383,10 +388,10 @@ JoinHypergraph HypergraphBuilder::build(
     }
   }
 
-  // Build the directed cross-join-unnest edge for each Unnest, and record
-  // its input relations (the relation ids its input subtree contributes,
-  // resolved via the now-complete columnToLeaf) for the outer-join barrier
-  // applied in the cluster-join loop.
+  // Build the directed cross-join-unnest edge for each Unnest that depends on
+  // a relation of the cluster, and record every Unnest's input relations (the
+  // relation ids its input subtree contributes, resolved via the now-complete
+  // columnToLeaf) for the outer-join barrier applied in the cluster-join loop.
   folly::F14FastMap<int8_t, RelationSet> unnestInputRelations;
   for (UnnestCP unnest : cluster.unnests) {
     const int8_t id = unnestIds.at(unnest);
@@ -397,10 +402,17 @@ JoinHypergraph HypergraphBuilder::build(
         inputRelations.add(it->second);
       }
     }
+    unnestInputRelations.emplace(id, inputRelations);
+
+    // Nothing of the cluster precedes an Unnest of a constant, so it has no
+    // edge; the cluster's own joins connect it.
+    if (unnest->input()->outputColumns().empty()) {
+      continue;
+    }
+
     VELOX_CHECK(
         !inputRelations.empty(),
         "Unnest input subtree must contribute at least one cluster relation");
-    unnestInputRelations.emplace(id, inputRelations);
 
     RelationSet tes{inputRelations};
     tes.add(id);

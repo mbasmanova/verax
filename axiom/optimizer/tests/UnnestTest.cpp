@@ -936,6 +936,55 @@ TEST_P(UnnestTest, manyUnnestsCardinalityOverflow) {
   ASSERT_NO_THROW(toSingleNodePlan(logicalPlan));
 }
 
+// A join whose other side unnests a constant array, which reads no columns of
+// the query. The unnest stays on its own side of the join.
+TEST_P(UnnestTest, joinWithConstantUnnest) {
+  const parse::ParseOptions options = {.parseIntegerAsBigint = false};
+
+  auto query =
+      "SELECT a FROM (VALUES 1, 2) AS t(a) "
+      "JOIN (SELECT s FROM UNNEST(ARRAY[1, 2]) AS u(s)) ON a = s";
+  SCOPED_TRACE(query);
+
+  auto logicalPlan = parseSelect(query, kTestConnectorId);
+
+  AXIOM_ASSERT_PLAN(
+      toSingleNodePlan(logicalPlan),
+      matchValues()
+          .project({"array[1, 2] as arr"}, options)
+          .unnest({}, {"arr"}, std::nullopt)
+          .aliases({"e"})
+          .hashJoinInner(matchValues().aliases({"k"}), {.keys = {{"e = k"}}})
+          .project({"k as a"})
+          .build());
+}
+
+// A join between two constant unnests, where no table or values relation takes
+// part.
+TEST_P(UnnestTest, joinOfConstantUnnests) {
+  const parse::ParseOptions options = {.parseIntegerAsBigint = false};
+
+  auto query =
+      "SELECT e FROM (SELECT s AS e FROM UNNEST(ARRAY[1, 2]) AS u(s)) "
+      "JOIN (SELECT s AS f FROM UNNEST(ARRAY[2, 3]) AS v(s)) ON e = f";
+  SCOPED_TRACE(query);
+
+  auto logicalPlan = parseSelect(query, kTestConnectorId);
+
+  AXIOM_ASSERT_PLAN(
+      toSingleNodePlan(logicalPlan),
+      matchValues()
+          .project({"array[1, 2] as arr"}, options)
+          .unnest({}, {"arr"}, std::nullopt)
+          .hashJoinInner(
+              matchValues()
+                  .project({"array[2, 3] as arr2"}, options)
+                  .unnest({}, {"arr2"}, std::nullopt)
+                  .aliases({"f"}),
+              {.keys = {{"e = f"}}})
+          .build());
+}
+
 AXIOM_INSTANTIATE_V1_V2(UnnestTest);
 
 } // namespace

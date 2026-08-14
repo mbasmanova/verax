@@ -128,6 +128,13 @@ class Node : public PlanObject {
   /// lifetime.
   virtual std::span<const NodeCP> inputs() const = 0;
 
+  /// Returns the only input. Throws if there is not exactly one.
+  NodeCP onlyInput() const {
+    const auto nodeInputs = inputs();
+    VELOX_CHECK_EQ(1, nodeInputs.size());
+    return nodeInputs[0];
+  }
+
   /// Double-dispatch hook for `NodeVisitor`.
   virtual void accept(const NodeVisitor& visitor, NodeVisitorContext& context)
       const = 0;
