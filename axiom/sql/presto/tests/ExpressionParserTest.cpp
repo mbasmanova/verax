@@ -141,7 +141,7 @@ TEST_F(ExpressionParserTest, types) {
 }
 
 TEST_F(ExpressionParserTest, intervalDayTime) {
-  auto test = [&](std::string_view sql, int64_t expectedSeconds) {
+  auto test = [&](std::string_view sql, int64_t expectedMillis) {
     SCOPED_TRACE(sql);
     auto expr = parseExpr(sql);
 
@@ -150,21 +150,92 @@ TEST_F(ExpressionParserTest, intervalDayTime) {
 
     auto value = expr->as<lp::ConstantExpr>()->value();
     ASSERT_FALSE(value->isNull());
-    ASSERT_EQ(value->value<int64_t>(), expectedSeconds * 1'000);
+    ASSERT_EQ(value->value<int64_t>(), expectedMillis);
   };
 
-  test("INTERVAL '2' DAY", 2 * 24 * 60 * 60);
-  test("INTERVAL '3' HOUR", 3 * 60 * 60);
-  test("INTERVAL '4' MINUTE", 4 * 60);
-  test("INTERVAL '5' SECOND", 5);
+  constexpr int64_t kSecond = 1'000;
+  constexpr int64_t kMinute = 60 * kSecond;
+  constexpr int64_t kHour = 60 * kMinute;
+  constexpr int64_t kDay = 24 * kHour;
+
+  test("INTERVAL '2' DAY", 2 * kDay);
+  test("INTERVAL '3' HOUR", 3 * kHour);
+  test("INTERVAL '4' MINUTE", 4 * kMinute);
+  test("INTERVAL '5' SECOND", 5 * kSecond);
 
   test("INTERVAL '' DAY", 0);
   test("INTERVAL '0' HOUR", 0);
 
-  test("INTERVAL '-2' DAY", -2 * 24 * 60 * 60);
-  test("INTERVAL '-3' HOUR", -3 * 60 * 60);
-  test("INTERVAL '-4' MINUTE", -4 * 60);
-  test("INTERVAL '-5' SECOND", -5);
+  test("INTERVAL '-2' DAY", -2 * kDay);
+  test("INTERVAL '-3' HOUR", -3 * kHour);
+  test("INTERVAL '-4' MINUTE", -4 * kMinute);
+  test("INTERVAL '-5' SECOND", -5 * kSecond);
+
+  // A fraction of a second keeps its milliseconds.
+  test("INTERVAL '1.5' SECOND", kSecond + 500);
+  test("INTERVAL '0.001' SECOND", 1);
+  test("INTERVAL '0.00049' SECOND", 0);
+
+  // Every field between the two in the qualifier is spelled in the value.
+  test("INTERVAL '0 00:01:30' DAY TO SECOND", 90 * kSecond);
+  test(
+      "INTERVAL '1 02:03:04.5' DAY TO SECOND",
+      kDay + 2 * kHour + 3 * kMinute + 4 * kSecond + 500);
+  test("INTERVAL '1 02:03' DAY TO MINUTE", kDay + 2 * kHour + 3 * kMinute);
+  test("INTERVAL '1 02' DAY TO HOUR", kDay + 2 * kHour);
+  test(
+      "INTERVAL '02:03:04' HOUR TO SECOND",
+      2 * kHour + 3 * kMinute + 4 * kSecond);
+  test("INTERVAL '02:03' HOUR TO MINUTE", 2 * kHour + 3 * kMinute);
+  test("INTERVAL '03:04' MINUTE TO SECOND", 3 * kMinute + 4 * kSecond);
+  test(
+      "INTERVAL '-1 02:03:04' DAY TO SECOND",
+      -(kDay + 2 * kHour + 3 * kMinute + 4 * kSecond));
+
+  // The sign in the qualifier applies to the whole value.
+  test("INTERVAL -'1 00:00:01' DAY TO SECOND", -(kDay + kSecond));
+
+  // A value that does not spell every field of its qualifier, or spells more.
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      parseExpr("INTERVAL '1 02' DAY TO SECOND"),
+      "Interval value is too short");
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      parseExpr("INTERVAL '1:02:03' DAY TO SECOND"),
+      "Interval value has the wrong separator");
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      parseExpr("INTERVAL '1 02:03:04' SECOND"),
+      "Interval value has trailing characters");
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      parseExpr("INTERVAL 'abc' SECOND"), "Interval value expects a number");
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      parseExpr("INTERVAL '1.' SECOND"), "Interval value expects a number");
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      parseExpr("INTERVAL '1' SECOND TO DAY"),
+      "Interval qualifier is out of order");
+
+  // Only the leading field is unbounded.
+  test("INTERVAL '100' HOUR", 100 * kHour);
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      parseExpr("INTERVAL '1 24:00:00' DAY TO SECOND"),
+      "Interval field is out of range");
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      parseExpr("INTERVAL '1 00:60:00' DAY TO SECOND"),
+      "Interval field is out of range");
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      parseExpr("INTERVAL '1 00:00:60' DAY TO SECOND"),
+      "Interval field is out of range");
+
+  // An empty value is zero only when the qualifier names one field.
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      parseExpr("INTERVAL '' DAY TO SECOND"),
+      "Interval value expects a number");
+
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      parseExpr("INTERVAL '99999999999999999999' SECOND"),
+      "Interval value is out of range");
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      parseExpr("INTERVAL '999999999999999999' DAY"),
+      "Interval value is out of range");
 }
 
 TEST_F(ExpressionParserTest, decimal) {
@@ -239,6 +310,28 @@ TEST_F(ExpressionParserTest, intervalYearMonth) {
 
   test("INTERVAL '2' YEAR", 2 * 12);
   test("INTERVAL '3' MONTH", 3);
+
+  // YEAR TO MONTH spells both fields.
+  test("INTERVAL '1-6' YEAR TO MONTH", 12 + 6);
+  test("INTERVAL '0-11' YEAR TO MONTH", 11);
+  test("INTERVAL '-1-6' YEAR TO MONTH", -(12 + 6));
+
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      parseExpr("INTERVAL '1-6' MONTH TO YEAR"),
+      "Interval qualifier is out of order");
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      parseExpr("INTERVAL '1' YEAR TO MONTH"), "Interval value is too short");
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      parseExpr("INTERVAL '1-6-9' YEAR TO MONTH"),
+      "Interval value has trailing characters");
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      parseExpr("INTERVAL '1-12' YEAR TO MONTH"),
+      "Interval field is out of range");
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      parseExpr("INTERVAL '' YEAR TO MONTH"),
+      "Interval value expects a number");
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      parseExpr("INTERVAL '999999999' YEAR"), "Interval value is out of range");
 
   test("INTERVAL '' YEAR", 0);
   test("INTERVAL '0' MONTH", 0);
