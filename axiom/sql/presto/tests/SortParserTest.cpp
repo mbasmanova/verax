@@ -310,6 +310,22 @@ TEST_F(SortParserTest, qualifiedSortKeyWithDuplicateOutputNames) {
           .output({"k", "v", "k", "v"}));
 }
 
+// Under SELECT DISTINCT a qualified sort key picks the side of the join it
+// names, even though both sides contribute an output column of that name.
+TEST_F(SortParserTest, distinctQualifiedSortKeyOnJoin) {
+  connector_->addTable("t", ROW({"k", "v"}, INTEGER()));
+
+  testSelect(
+      "SELECT DISTINCT x.v AS xv, y.v AS yv FROM t x JOIN t y ON x.k = y.k "
+      "ORDER BY y.v DESC",
+      matchScan()
+          .join(matchScan().build(), {"left_k", "left_v", "right_k", "right_v"})
+          .project({"left_v as xv", "right_v as yv"})
+          .aggregate({"xv", "yv"}, {})
+          .sort({"yv desc"})
+          .output({"xv", "yv"}));
+}
+
 TEST_F(SortParserTest, joinedTable) {
   testSelect(
       "SELECT n_name "
@@ -332,6 +348,16 @@ TEST_F(SortParserTest, distinct) {
 
   testSelect("SELECT DISTINCT a FROM t ORDER BY a", matcher);
   testSelect("SELECT DISTINCT a FROM t ORDER BY 1", matcher);
+
+  // A qualified sort key names a column of the relation the SELECT list reads
+  // from, and matches the SELECT item whichever way that item is written.
+  testSelect("SELECT DISTINCT t.a FROM t ORDER BY t.a", matcher);
+  testSelect("SELECT DISTINCT a FROM t ORDER BY t.a", matcher);
+  testSelect("SELECT DISTINCT t.a FROM t ORDER BY a", matcher);
+  testSelect(
+      "SELECT DISTINCT t.a AS z FROM t ORDER BY t.a",
+      matchScan().project({"a"}).aggregate({"z"}, {}).sort({"z"}).output(
+          {"z"}));
 
   AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
       parseSql(
@@ -381,6 +407,9 @@ TEST_F(SortParserTest, distinctWithGroupBy) {
         "SELECT DISTINCT a, COUNT(1) FROM t GROUP BY a ORDER BY a", matcher);
     testSelect(
         "SELECT DISTINCT a, COUNT(1) FROM t GROUP BY a ORDER BY 1", matcher);
+    testSelect(
+        "SELECT DISTINCT t.a, COUNT(1) FROM t GROUP BY t.a ORDER BY t.a",
+        matcher);
   }
 
   // ORDER BY a column that is in GROUP BY but not in the SELECT list — must
