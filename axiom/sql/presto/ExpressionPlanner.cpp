@@ -842,12 +842,28 @@ lp::ExprApi ExpressionPlanner::toExpr(
     case NodeType::kDereferenceExpression: {
       auto* dereference = node->as<DereferenceExpression>();
 
+      std::vector<std::string> parts;
+      const bool isDottedName = extractQualifiedParts(node, parts);
+
+      // A reference may qualify a column by a suffix of its relation's
+      // qualified name, e.g. `schema.table.column`. Rewrite it to the
+      // `table.column` form the column scope holds. Runs before the enum
+      // literal attempt below, which fails hard on a 4-part name that names
+      // no type. 'extractQualifiedParts' canonicalizes each part.
+      if (isDottedName && parts.size() >= 3 &&
+          relationQualifierResolver_ != nullptr) {
+        const std::span<const std::string> qualifierParts{
+            parts.data(), parts.size() - 1};
+        if (auto qualifier = relationQualifierResolver_(qualifierParts)) {
+          return lp::Col(parts.back(), lp::Col(*qualifier));
+        }
+      }
+
       // Try to resolve as an enum literal (e.g., catalog.schema.Type.VALUE).
       // When columnResolver_ is nullptr (e.g., resolveSqlExpression for CREATE
       // TABLE property values), there is no column scope to compete with — a
       // 4-part dotted name can only be an enum literal.
-      std::vector<std::string> parts;
-      if (extractQualifiedParts(node, parts) && parts.size() >= 4) {
+      if (isDottedName && parts.size() >= 4) {
         bool isColumn =
             columnResolver_ != nullptr && columnResolver_(parts[0], parts[1]);
 
