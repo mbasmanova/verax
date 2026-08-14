@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <limits>
 
 #include "axiom/common/SchemaTypeName.h"
 #include "axiom/connectors/ConnectorMetadataRegistry.h"
@@ -322,62 +323,235 @@ std::string toFunctionName(ArithmeticBinaryExpression::Operator op) {
   folly::assume_unreachable();
 }
 
-int32_t parseYearMonthInterval(
-    const std::string& value,
-    IntervalLiteral::IntervalField start,
-    std::optional<IntervalLiteral::IntervalField> end,
-    NodeLocation location) {
-  AXIOM_PRESTO_SEMANTIC_CHECK(
-      !end.has_value() || start == end.value(),
-      location,
-      value,
-      "Multi-part intervals are not supported yet");
+// Day-time fields in qualifier order, largest unit first.
+enum DayTimeField : int32_t {
+  kDayField = 0,
+  kHourField = 1,
+  kMinuteField = 2,
+  kSecondField = 3,
+};
 
-  if (value.empty()) {
-    return 0;
-  }
-
-  const auto n = atoi(value.c_str());
-
-  switch (start) {
-    case IntervalLiteral::IntervalField::kYear:
-      return n * 12;
-    case IntervalLiteral::IntervalField::kMonth:
-      return n;
+DayTimeField dayTimeField(IntervalLiteral::IntervalField field) {
+  switch (field) {
+    case IntervalLiteral::IntervalField::kDay:
+      return kDayField;
+    case IntervalLiteral::IntervalField::kHour:
+      return kHourField;
+    case IntervalLiteral::IntervalField::kMinute:
+      return kMinuteField;
+    case IntervalLiteral::IntervalField::kSecond:
+      return kSecondField;
     default:
       VELOX_UNREACHABLE();
   }
 }
 
+// Reads the digits at 'pos' as a non-negative number, advancing 'pos'.
+int64_t
+readNumber(const std::string& value, size_t& pos, NodeLocation location) {
+  const size_t start = pos;
+  while (pos < value.size() &&
+         std::isdigit(static_cast<unsigned char>(value[pos]))) {
+    ++pos;
+  }
+  AXIOM_PRESTO_SEMANTIC_CHECK_LT(
+      start, pos, location, value, "Interval value expects a number");
+  // Bound the digits so folly::to cannot overflow: 18 digits always fit.
+  AXIOM_PRESTO_SEMANTIC_CHECK_LE(
+      pos - start, 18UL, location, value, "Interval value is out of range");
+  return folly::to<int64_t>(value.substr(start, pos - start));
+}
+
+// Reads the fractional part of a seconds field as milliseconds, truncating
+// beyond three digits. Returns 0 when no fraction follows.
+int64_t
+readMillis(const std::string& value, size_t& pos, NodeLocation location) {
+  if (pos >= value.size() || value[pos] != '.') {
+    return 0;
+  }
+  ++pos;
+  const size_t firstDigit = pos;
+  int64_t millis = 0;
+  int32_t digits = 0;
+  while (pos < value.size() &&
+         std::isdigit(static_cast<unsigned char>(value[pos]))) {
+    if (digits < 3) {
+      millis = millis * 10 + (value[pos] - '0');
+      ++digits;
+    }
+    ++pos;
+  }
+  AXIOM_PRESTO_SEMANTIC_CHECK_LT(
+      firstDigit, pos, location, value, "Interval value expects a number");
+  while (digits < 3) {
+    millis *= 10;
+    ++digits;
+  }
+  return millis;
+}
+
+// Milliseconds one unit of 'field' contributes.
+int64_t dayTimeFieldMillis(DayTimeField field) {
+  static constexpr int64_t kMillis[] = {
+      24 * 60 * 60 * 1'000, 60 * 60 * 1'000, 60 * 1'000, 1'000};
+  return kMillis[field];
+}
+
+// Parses a day-time interval value as milliseconds. A single field is a plain
+// number; 'start TO end' spells every field in between, separated by a space
+// after the day and a colon elsewhere, as in '0 00:01:30' for DAY TO SECOND.
+// Seconds may carry a fraction.
 int64_t parseDayTimeInterval(
     const std::string& value,
     IntervalLiteral::IntervalField start,
     std::optional<IntervalLiteral::IntervalField> end,
     NodeLocation location) {
-  AXIOM_PRESTO_SEMANTIC_CHECK(
-      !end.has_value() || start == end.value(),
+  const DayTimeField first = dayTimeField(start);
+  const DayTimeField last = dayTimeField(end.value_or(start));
+  AXIOM_PRESTO_SEMANTIC_CHECK_LE(
+      static_cast<int32_t>(first),
+      static_cast<int32_t>(last),
       location,
       value,
-      "Multi-part intervals are not supported yet");
+      "Interval qualifier is out of order");
 
-  if (value.empty()) {
+  // An empty value is zero, as it has always been for a single field. A
+  // multi-field qualifier still has to spell every one of them.
+  if (value.empty() && first == last) {
     return 0;
   }
 
-  auto n = atol(value.c_str());
-
-  switch (start) {
-    case IntervalLiteral::IntervalField::kDay:
-      return n * 24 * 60 * 60;
-    case IntervalLiteral::IntervalField::kHour:
-      return n * 60 * 60;
-    case IntervalLiteral::IntervalField::kMinute:
-      return n * 60;
-    case IntervalLiteral::IntervalField::kSecond:
-      return n;
-    default:
-      VELOX_UNREACHABLE();
+  size_t pos = 0;
+  int64_t sign = 1;
+  if (value[pos] == '-' || value[pos] == '+') {
+    sign = value[pos] == '-' ? -1 : 1;
+    ++pos;
   }
+
+  int64_t millis = 0;
+  for (int32_t index = first; index <= last; ++index) {
+    const auto field = static_cast<DayTimeField>(index);
+    if (field > first) {
+      // A day is followed by a space, the smaller fields by a colon.
+      const char separator = field == kHourField ? ' ' : ':';
+      AXIOM_PRESTO_SEMANTIC_CHECK_LT(
+          pos, value.size(), location, value, "Interval value is too short");
+      AXIOM_PRESTO_SEMANTIC_CHECK_EQ(
+          value[pos],
+          separator,
+          location,
+          value,
+          "Interval value has the wrong separator");
+      ++pos;
+    }
+    const int64_t fieldValue = readNumber(value, pos, location);
+    if (field > first) {
+      // Only the leading field is unbounded: '100' HOUR is 100 hours, but
+      // '1 100:00:00' DAY TO SECOND names an hour that does not exist.
+      static constexpr int64_t kFieldLimit[] = {0, 24, 60, 60};
+      AXIOM_PRESTO_SEMANTIC_CHECK_LT(
+          fieldValue,
+          kFieldLimit[field],
+          location,
+          value,
+          "Interval field is out of range");
+    }
+    const int64_t unitMillis = dayTimeFieldMillis(field);
+    constexpr int64_t kMaxMillis = std::numeric_limits<int64_t>::max();
+    AXIOM_PRESTO_SEMANTIC_CHECK_LE(
+        fieldValue,
+        kMaxMillis / unitMillis,
+        location,
+        value,
+        "Interval value is out of range");
+    const int64_t fieldMillis = fieldValue * unitMillis;
+    AXIOM_PRESTO_SEMANTIC_CHECK_LE(
+        fieldMillis,
+        kMaxMillis - millis,
+        location,
+        value,
+        "Interval value is out of range");
+    millis += fieldMillis;
+  }
+
+  if (last == kSecondField) {
+    millis += readMillis(value, pos, location);
+  }
+
+  AXIOM_PRESTO_SEMANTIC_CHECK_EQ(
+      pos,
+      value.size(),
+      location,
+      value,
+      "Interval value has trailing characters");
+  return sign * millis;
+}
+
+// Parses a year-month interval value as months. A single field is a plain
+// number; YEAR TO MONTH spells both, as in '1-6'.
+int32_t parseYearMonthInterval(
+    const std::string& value,
+    IntervalLiteral::IntervalField start,
+    std::optional<IntervalLiteral::IntervalField> end,
+    NodeLocation location) {
+  const bool yearToMonth = end.has_value() && start != end.value();
+  AXIOM_PRESTO_SEMANTIC_CHECK(
+      !yearToMonth || start == IntervalLiteral::IntervalField::kYear,
+      location,
+      value,
+      "Interval qualifier is out of order");
+
+  // An empty value is zero, as it has always been for a single field. YEAR TO
+  // MONTH still has to spell both.
+  if (value.empty() && !yearToMonth) {
+    return 0;
+  }
+
+  size_t pos = 0;
+  int32_t sign = 1;
+  if (value[pos] == '-' || value[pos] == '+') {
+    sign = value[pos] == '-' ? -1 : 1;
+    ++pos;
+  }
+
+  constexpr int64_t kMaxMonths = std::numeric_limits<int32_t>::max();
+  int64_t months = readNumber(value, pos, location);
+  if (start == IntervalLiteral::IntervalField::kYear) {
+    AXIOM_PRESTO_SEMANTIC_CHECK_LE(
+        months,
+        kMaxMonths / 12,
+        location,
+        value,
+        "Interval value is out of range");
+    months *= 12;
+  }
+
+  if (yearToMonth) {
+    AXIOM_PRESTO_SEMANTIC_CHECK_LT(
+        pos, value.size(), location, value, "Interval value is too short");
+    AXIOM_PRESTO_SEMANTIC_CHECK_EQ(
+        value[pos],
+        '-',
+        location,
+        value,
+        "Interval value has the wrong separator");
+    ++pos;
+    const int64_t monthsOfYear = readNumber(value, pos, location);
+    AXIOM_PRESTO_SEMANTIC_CHECK_LT(
+        monthsOfYear, 12, location, value, "Interval field is out of range");
+    months += monthsOfYear;
+  }
+
+  AXIOM_PRESTO_SEMANTIC_CHECK_LE(
+      months, kMaxMonths, location, value, "Interval value is out of range");
+
+  AXIOM_PRESTO_SEMANTIC_CHECK_EQ(
+      pos,
+      value.size(),
+      location,
+      value,
+      "Interval value has trailing characters");
+  return static_cast<int32_t>(sign * months);
 }
 
 lp::ExprApi parseDecimal(std::string_view value, NodeLocation location) {
@@ -1181,12 +1355,12 @@ lp::ExprApi ExpressionPlanner::toExpr(
             interval->location());
         return lp::Lit(multiplier * months, INTERVAL_YEAR_MONTH());
       } else {
-        const auto seconds = parseDayTimeInterval(
+        const auto millis = parseDayTimeInterval(
             interval->value(),
             interval->startField(),
             interval->endField(),
             interval->location());
-        return lp::Lit(multiplier * seconds * 1'000, INTERVAL_DAY_TIME());
+        return lp::Lit(multiplier * millis, INTERVAL_DAY_TIME());
       }
     }
 
