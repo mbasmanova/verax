@@ -1128,6 +1128,38 @@ class Pushdown : public NodeRewriter<PushdownContext> {
         {newInput, node->orderKeys(), node->orderTypes()});
   }
 
+  // Returns true when 'node' already emits rows in the order 'keys' / 'types'
+  // ask for. A Window over a single partition sorts its output, and a
+  // pass-through Project above it keeps that order. Pass a rewritten node: a
+  // Window specialized into a ranking node does not order its output.
+  bool emitsInOrder(
+      NodeCP node,
+      const ExprVector& keys,
+      const OrderTypeVector& types) {
+    ExprVector mapped(keys);
+    while (node->is(NodeType::kProject)) {
+      const auto* project = node->as<Project>();
+      const auto& outputs = project->outputColumns();
+      for (ExprCP& key : mapped) {
+        const auto it = std::find(outputs.begin(), outputs.end(), key);
+        if (it == outputs.end()) {
+          return false;
+        }
+        key = project->exprs()[it - outputs.begin()];
+      }
+      node = project->input();
+    }
+
+    if (!node->is(NodeType::kWindow)) {
+      return false;
+    }
+    const auto* window = node->as<Window>();
+    return window->partitionKeys().empty() &&
+        window->orderKeys().size() >= mapped.size() &&
+        std::equal(mapped.begin(), mapped.end(), window->orderKeys().begin()) &&
+        std::equal(types.begin(), types.end(), window->orderTypes().begin());
+  }
+
   // TopN: a filter barrier like Limit (its bound depends on the row set), and
   // its order keys must survive in the child like Sort.
   NodeCP rewriteTopN(const TopN* node, PushdownContext& context) override {
@@ -1148,6 +1180,12 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       }
 
       NodeCP newInput = rewrite(node->input(), empty);
+
+      // A Window over a single partition emits its rows in order-key order, so
+      // a TopN asking for that same order only has to count rows.
+      if (emitsInOrder(newInput, node->orderKeys(), node->orderTypes())) {
+        return builder().make<Limit>({newInput, node->offset(), node->count()});
+      }
 
       // The cap only reduces the rows the TopN sees; the TopN itself stays,
       // because a ranking node emits each partition greatest-rank first rather
@@ -1393,9 +1431,6 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     childContext.required = context.required;
     childContext.required.unionColumns(node->partitionKeys());
     childContext.required.unionColumns(node->orderKeys());
-    // Every ranking node emits all of its input's columns, so the child must
-    // keep producing them.
-    childContext.required.unionObjects(node->input()->outputColumns());
     childContext.required.unionColumns(blocked);
     childContext.nonNullColumns = context.nonNullColumns;
 
@@ -1418,7 +1453,8 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       ExprVector blocked) {
     childContext.required.unionColumns(childContext.pending);
     childContext.requiredAbove = childContext.required;
-    NodeCP newInput = rewrite(node->input(), childContext);
+    NodeCP newInput = dropColumnsForWindow(
+        rewrite(node->input(), childContext), childContext.required);
 
     // Emit the rank column only when a consumer above still needs it.
     const ColumnCP rankColumn =
@@ -1458,6 +1494,27 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     return maybeWrapFilter(ranking, std::move(blocked));
   }
 
+  // Velox's window operators pass every input column through, so a column
+  // that only an operator below the window reads would ride through it. Adds
+  // a Project that keeps just 'required' when the input has more.
+  NodeCP dropColumnsForWindow(NodeCP input, const PlanObjectSet& required) {
+    ExprVector exprs;
+    ColumnVector columns;
+    for (ColumnCP column : input->outputColumns()) {
+      if (required.contains(column)) {
+        exprs.push_back(column);
+        columns.push_back(column);
+      }
+    }
+
+    if (columns.size() == input->outputColumns().size()) {
+      return input;
+    }
+
+    return builder().make<Project>(
+        {input, std::move(exprs), std::move(columns)});
+  }
+
   // Keeps the Window, dropping the functions no consumer reads.
   NodeCP pruneWindowFunctions(
       const Window* node,
@@ -1477,10 +1534,17 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     }
     for (const auto& function : survivingFunctions) {
       childContext.required.unionColumns(function.call);
+      if (function.frame.startValue != nullptr) {
+        childContext.required.unionColumns(function.frame.startValue);
+      }
+      if (function.frame.endValue != nullptr) {
+        childContext.required.unionColumns(function.frame.endValue);
+      }
     }
     childContext.required.unionColumns(childContext.pending);
     childContext.requiredAbove = childContext.required;
-    NodeCP newInput = rewrite(node->input(), childContext);
+    NodeCP newInput = dropColumnsForWindow(
+        rewrite(node->input(), childContext), childContext.required);
 
     // With every function pruned the node computes nothing and emits its
     // input's columns.
@@ -1649,6 +1713,19 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     return builder().makeEmptyValues(node->outputColumns());
   }
 
+  // Substituting a cross-side equality by the join's own equi-pair maps both
+  // of its arguments to the same expression, e.g. `t.x = u.x` becomes
+  // `t.x = t.x`. That says only that the key is not null, which an equi-join
+  // already guarantees, so it adds nothing.
+  bool isSelfEquality(ExprCP expr) {
+    if (!expr->is(PlanType::kCallExpr)) {
+      return false;
+    }
+    const auto* call = expr->as<Call>();
+    return call->name() == builder().functionNames().equality &&
+        call->args().size() == 2 && call->args()[0] == call->args()[1];
+  }
+
   // Derives new pending conjuncts via each cross-side
   // `Column == Column` equi-pair: a conjunct that references one side
   // gets duplicated with that side's column substituted for the other
@@ -1673,13 +1750,13 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     for (ExprCP conjunct : pending) {
       ExprCP leftSubstituted =
           exprs_.substitute(conjunct, rightKeys, leftAsExprs);
-      if (leftSubstituted != conjunct &&
+      if (leftSubstituted != conjunct && !isSelfEquality(leftSubstituted) &&
           simplifier_.simplifyFilter(leftSubstituted, derived)) {
         return true;
       }
       ExprCP rightSubstituted =
           exprs_.substitute(conjunct, leftKeys, rightAsExprs);
-      if (rightSubstituted != conjunct &&
+      if (rightSubstituted != conjunct && !isSelfEquality(rightSubstituted) &&
           simplifier_.simplifyFilter(rightSubstituted, derived)) {
         return true;
       }
@@ -1696,11 +1773,12 @@ class Pushdown : public NodeRewriter<PushdownContext> {
 
 NodeCP PushdownAndPrunePass::run(
     NodeCP root,
+    const ColumnVector& outputColumns,
     Builder& builder,
     velox::core::ExpressionEvaluator& evaluator) {
   Pushdown pass{builder, evaluator};
   PushdownContext context;
-  context.required = PlanObjectSet::fromObjects(root->outputColumns());
+  context.required = PlanObjectSet::fromObjects(outputColumns);
   context.requiredAbove = context.required;
   return pass.rewrite(root, context);
 }

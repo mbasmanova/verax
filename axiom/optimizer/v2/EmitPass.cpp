@@ -404,6 +404,12 @@ class Emitter {
       velox::core::PlanNodePtr right,
       velox::core::TypedExprPtr filter);
 
+  // Drops columns the emitted plan carries beyond what 'node' outputs. See
+  // the definition for why they can appear.
+  velox::core::PlanNodePtr trimToNodeColumns(
+      NodeCP node,
+      velox::core::PlanNodePtr input);
+
   // Wraps 'input' in a `ProjectNode` that keeps only 'keepColumns'.
   velox::core::PlanNodePtr projectToColumns(
       const ColumnVector& keepColumns,
@@ -555,6 +561,19 @@ class Emitter {
     return std::move(prediction_);
   }
 };
+
+// A scan whose filter the connector rejected emits the filter's columns, so
+// the emitted plan can be wider than 'node' says. A Velox window operator
+// passes its input through, so those columns would ride through it and be
+// dropped only at the root. Trims them off first.
+velox::core::PlanNodePtr Emitter::trimToNodeColumns(
+    NodeCP node,
+    velox::core::PlanNodePtr input) {
+  if (input->outputType()->size() <= node->outputColumns().size()) {
+    return input;
+  }
+  return projectToColumns(node->outputColumns(), std::move(input));
+}
 
 velox::core::PlanNodePtr Emitter::projectToColumns(
     const ColumnVector& keepColumns,
@@ -1481,7 +1500,8 @@ velox::core::PlanNodePtr Emitter::emitValues(const Values& values) {
 }
 
 velox::core::PlanNodePtr Emitter::emitWindow(const Window& window) {
-  velox::core::PlanNodePtr input = emit(window.input());
+  velox::core::PlanNodePtr input =
+      trimToNodeColumns(window.input(), emit(window.input()));
 
   auto partitionKeys =
       toFieldAccessList(window.partitionKeys(), "Window partition key");
@@ -1546,7 +1566,8 @@ velox::core::PlanNodePtr Emitter::emitWindow(const Window& window) {
 }
 
 velox::core::PlanNodePtr Emitter::emitRowNumber(const RowNumber& node) {
-  velox::core::PlanNodePtr input = emit(node.input());
+  velox::core::PlanNodePtr input =
+      trimToNodeColumns(node.input(), emit(node.input()));
   auto partitionKeys =
       toFieldAccessList(node.partitionKeys(), "RowNumber partition key");
   // At numDrivers > 1 each partition must be complete in one driver:
@@ -1567,7 +1588,8 @@ velox::core::PlanNodePtr Emitter::emitRowNumber(const RowNumber& node) {
 }
 
 velox::core::PlanNodePtr Emitter::emitTopNRowNumber(const TopNRowNumber& node) {
-  velox::core::PlanNodePtr input = emit(node.input());
+  velox::core::PlanNodePtr input =
+      trimToNodeColumns(node.input(), emit(node.input()));
   auto partitionKeys =
       toFieldAccessList(node.partitionKeys(), "TopNRowNumber partition key");
   // At numDrivers > 1 each partition must be complete in one driver:

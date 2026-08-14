@@ -1775,10 +1775,12 @@ WindowFunctionVector flattenWindowFunctions(
         func->args(), /*aliases=*/nullptr, /*preserveLiterals=*/true);
     Frame frame = func->frame();
     if (frame.startValue) {
-      frame.startValue = precompute.toColumn(frame.startValue);
+      frame.startValue = precompute.toColumn(
+          frame.startValue, /*alias=*/nullptr, /*preserveLiterals=*/true);
     }
     if (frame.endValue) {
-      frame.endValue = precompute.toColumn(frame.endValue);
+      frame.endValue = precompute.toColumn(
+          frame.endValue, /*alias=*/nullptr, /*preserveLiterals=*/true);
     }
     result.emplace_back(
         make<WindowFunction>(
