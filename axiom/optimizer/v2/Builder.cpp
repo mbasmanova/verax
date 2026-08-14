@@ -200,7 +200,11 @@ void Builder::addEquivalences(const Join::Key& key) {
 
 std::pair<NodeCP, ExprVector> Builder::materializeKeys(
     NodeCP input,
-    const ExprVector& keys) {
+    const ExprVector& keys,
+    const ColumnVector& aliases) {
+  if (!aliases.empty()) {
+    VELOX_CHECK_EQ(aliases.size(), keys.size());
+  }
   if (std::all_of(keys.begin(), keys.end(), [](ExprCP key) {
         return key->is(PlanType::kColumnExpr);
       })) {
@@ -215,12 +219,15 @@ std::pair<NodeCP, ExprVector> Builder::materializeKeys(
   }
   ExprVector newKeys;
   newKeys.reserve(keys.size());
-  for (ExprCP key : keys) {
+  for (size_t i = 0; i < keys.size(); ++i) {
+    ExprCP key = keys[i];
     if (key->is(PlanType::kColumnExpr)) {
       newKeys.push_back(key);
       continue;
     }
-    ColumnCP column = Column::create("__p", key->value());
+    ColumnCP alias = aliases.empty() ? nullptr : aliases[i];
+    ColumnCP column =
+        alias != nullptr ? alias : Column::create("__p", key->value());
     exprs.push_back(key);
     columns.push_back(column);
     newKeys.push_back(column);

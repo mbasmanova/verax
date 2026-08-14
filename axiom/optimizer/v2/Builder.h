@@ -160,9 +160,16 @@ class Builder {
   /// consumer above read the same column instead of computing the value a
   /// second time. Returns 'input' and 'keys' unchanged when every key is
   /// already a column.
+  ///
+  /// 'aliases' names the materialized columns positionally; a null entry, or an
+  /// empty vector, mints a fresh name. A caller whose node already publishes
+  /// the key under a column of its own — an `Aggregate` grouping key, which its
+  /// `outputColumns` names — must pass that column, since consumers reference
+  /// the key by it.
   std::pair<NodeCP, ExprVector> materializeKeys(
       NodeCP input,
-      const ExprVector& keys);
+      const ExprVector& keys,
+      const ColumnVector& aliases = {});
 
  private:
   // For a binary `Call` whose 'name' is in `reversibleFunctions_`,
