@@ -1184,6 +1184,26 @@ NodeCP Translator::maybeWrapInWindow(
     }
   }
 
+  // Evaluate groups sharing a partition adjacently so the physical plan
+  // shuffles once for them, longer ORDER BY first so a later group's sort is a
+  // prefix of an earlier one, and unpartitioned groups last so the gather they
+  // force happens after the partitioned groups have run distributed. Reordering
+  // is safe because the groups here come from one projection, where no window's
+  // input can be another's output -- that needs a nested query, hence a
+  // separate Window chain.
+  std::sort(
+      groups.begin(), groups.end(), [&](const auto& lhs, const auto& rhs) {
+        const Spec& lhsSpec = specs[lhs.front()];
+        const Spec& rhsSpec = specs[rhs.front()];
+        if (lhsSpec.partitionKeys.empty() != rhsSpec.partitionKeys.empty()) {
+          return !lhsSpec.partitionKeys.empty();
+        }
+        if (lhsSpec.partitionKeys != rhsSpec.partitionKeys) {
+          return lhsSpec.partitionKeys < rhsSpec.partitionKeys;
+        }
+        return lhsSpec.orderKeys.size() > rhsSpec.orderKeys.size();
+      });
+
   NodeCP current = input;
   for (const auto& group : groups) {
     const Spec& spec = specs[group.front()];

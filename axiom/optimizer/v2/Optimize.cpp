@@ -55,7 +55,8 @@ FrontendResult translateAndPushdown(
       plan, schema, evaluator, builder, session, constantPlanRunner);
   NodeCP decorrelated = DecorrelatePass::run(translated.root, builder);
   NodeCP limited = LimitAndOrderPass::run(decorrelated, builder);
-  NodeCP pushed = PushdownAndPrunePass::run(limited, builder, evaluator);
+  NodeCP pushed = PushdownAndPrunePass::run(
+      limited, translated.outputColumns, builder, evaluator);
   return {std::move(translated), pushed};
 }
 
