@@ -1318,30 +1318,41 @@ class RelationPlanner : public AstVisitor {
       addOrderBy(orderBy);
       return;
     }
+
     // Match ORDER BY against the SELECT list before extractNestedWindows
     // rewrites nested windows to column references; otherwise a sort key that
     // repeats a SELECT window (e.g. `x / sum(x) OVER ()`) would not match its
     // SELECT item. The matched ordinals index the projected output
     // positionally.
     auto selectExprs = projections.value();
-    extractNestedWindows(projections.value());
-    builder_->project(projections.value());
-    addDistinctAndOrderByOnProjection(selectExprs, orderBy);
-  }
 
-  // Adds DISTINCT and (optional) ORDER BY assuming the SELECT list has
-  // already been projected. 'projectedExprs' are the SELECT-list expressions
-  // currently produced by the builder. Validates that every ORDER BY key
-  // matches a SELECT-list expression (SELECT DISTINCT semantics).
-  void addDistinctAndOrderByOnProjection(
-      const std::vector<lp::ExprApi>& projectedExprs,
-      const OrderByPtr& orderBy) {
-    if (orderBy == nullptr) {
-      builder_->distinct();
-      return;
+    std::optional<SortKeyExpansion> sortKeys;
+    if (orderBy != nullptr) {
+      sortKeys = buildSortKeyExprs(orderBy, selectExprs);
     }
 
-    auto expansion = buildSortKeyExprs(orderBy, projectedExprs);
+    extractNestedWindows(projections.value());
+    builder_->project(projections.value());
+
+    if (sortKeys.has_value()) {
+      addDistinctAndSortOnProjection(
+          selectExprs, orderBy, std::move(sortKeys.value()));
+    } else {
+      builder_->distinct();
+    }
+  }
+
+  // Adds DISTINCT and ORDER BY assuming the SELECT list has already been
+  // projected. 'projectedExprs' are the SELECT-list expressions currently
+  // produced by the builder and 'expansion' the sort keys built from them.
+  // Sort keys must be built before the projection: a qualified key like `t.a`
+  // names a column of the relation the SELECT list reads from, which the
+  // projection replaces. Validates that every ORDER BY key matches a
+  // SELECT-list expression (SELECT DISTINCT semantics).
+  void addDistinctAndSortOnProjection(
+      const std::vector<lp::ExprApi>& projectedExprs,
+      const OrderByPtr& orderBy,
+      SortKeyExpansion expansion) {
     auto ordinals = SortProjection::resolveSortKeys(
         expansion.sortKeyExprs,
         expansion.preResolved,
@@ -1597,6 +1608,14 @@ class RelationPlanner : public AstVisitor {
       auto selectExprs =
           expandSelectExprs(selectItems, {.allowGrouping = true});
 
+      // Sort keys of a DISTINCT are built here, before GroupByPlanner
+      // projects and aggregates: a qualified key like `t.a` names a column of
+      // the relation the SELECT list reads from.
+      std::optional<SortKeyExpansion> sortKeys;
+      if (distinct && orderBy != nullptr) {
+        sortKeys = buildSortKeyExprs(orderBy, selectExprs);
+      }
+
       // When DISTINCT is also present, skip ORDER BY in the GROUP BY
       // planner so the Sort lands ABOVE the DISTINCT aggregate.
       const OrderByPtr noOrderBy;
@@ -1608,7 +1627,12 @@ class RelationPlanner : public AstVisitor {
           distinct ? noOrderBy : orderBy);
 
       if (distinct) {
-        addDistinctAndOrderByOnProjection(selectExprs, orderBy);
+        if (sortKeys.has_value()) {
+          addDistinctAndSortOnProjection(
+              selectExprs, orderBy, std::move(sortKeys.value()));
+        } else {
+          builder_->distinct();
+        }
       }
     } else {
       if (GroupByPlanner{builder_, exprPlanner_}.tryPlanGlobalAgg(

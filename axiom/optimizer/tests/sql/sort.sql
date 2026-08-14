@@ -36,3 +36,19 @@ SELECT y.v AS v
 FROM (VALUES (1, 10), (2, 5)) x(k, v)
 JOIN (VALUES (1, 200), (2, 300)) y(k, v) ON x.k = y.k
 ORDER BY x.v DESC
+----
+-- SELECT DISTINCT ordered by a qualified key.
+-- ordered
+SELECT DISTINCT t.a FROM t ORDER BY t.a DESC
+----
+-- SELECT DISTINCT ordered by a qualified key naming one side of a join, where
+-- both sides contribute a column of that name.
+-- ordered
+SELECT DISTINCT x.v AS xv, y.v AS yv
+FROM (VALUES (1, 10), (2, 5), (1, 10)) x(k, v)
+JOIN (VALUES (1, 200), (2, 300)) y(k, v) ON x.k = y.k
+ORDER BY y.v DESC
+----
+-- SELECT DISTINCT with GROUP BY, ordered by a qualified key.
+-- ordered
+SELECT DISTINCT t.a, count(1) FROM t GROUP BY t.a ORDER BY t.a DESC
