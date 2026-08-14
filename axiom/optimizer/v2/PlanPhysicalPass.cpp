@@ -97,7 +97,13 @@ void collectCluster(
   if (node->is(NodeType::kUnnest)) {
     const auto* unnest = node->as<Unnest>();
     cluster.unnests.push_back(unnest);
-    collectCluster(unnest->input(), cluster, dissolveCrossJoins);
+    // An Unnest of a constant, as in UNNEST(ARRAY[1, 2]), reads a subtree that
+    // produces no columns. No predicate can reference it, so it is not a
+    // relation of the cluster; the Unnest emits it as its own input.
+    NodeCP input = unnest->input();
+    if (!input->outputColumns().empty()) {
+      collectCluster(input, cluster, dissolveCrossJoins);
+    }
     return;
   }
   cluster.leaves.push_back(node);

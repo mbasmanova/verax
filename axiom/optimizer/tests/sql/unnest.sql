@@ -65,3 +65,13 @@ JOIN (VALUES (10), (40)) AS u(k) ON u.k = y
 ----
 -- `alias.*` on an UNNEST relation whose alias carries no column list.
 SELECT u.* FROM (VALUES (1, ARRAY[10, 20])) AS s(a, b) CROSS JOIN UNNEST(b) AS u
+----
+-- Join whose other side unnests a constant array.
+SELECT a.x, s
+FROM arrays a
+JOIN (SELECT s FROM UNNEST(ARRAY[7, 8]) AS u(s)) ON a.x = s
+----
+-- The same, with the unnest on the null-padded side of an outer join.
+SELECT a.x, s
+FROM arrays a
+LEFT JOIN (SELECT s FROM UNNEST(ARRAY[7, 8]) AS u(s)) ON a.x = s
