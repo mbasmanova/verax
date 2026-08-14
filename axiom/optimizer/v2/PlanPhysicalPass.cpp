@@ -400,9 +400,12 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
   // Returns the co-located input and the keys it is co-located on: a shuffle
   // needs column keys, so an expression key is computed into one here, and the
   // consumer reads that column rather than computing the value again.
+  // 'keyAliases', when set, names any key this materializes; see
+  // Builder::materializeKeys.
   std::pair<NodeCP, ExprVector> ensureCoLocated(
       NodeCP input,
-      const ExprVector& keys) {
+      const ExprVector& keys,
+      const ColumnVector& keyAliases = {}) {
     if (numWorkers_ == 1 || isGathered(input)) {
       return {input, keys};
     }
@@ -415,7 +418,8 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
       return {input, keys};
     }
 
-    auto [keyed, columnKeys] = builder().materializeKeys(input, keys);
+    auto [keyed, columnKeys] =
+        builder().materializeKeys(input, keys, keyAliases);
     return {partition(keyed, columnKeys), columnKeys};
   }
 
@@ -457,7 +461,14 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
     const ExprVector keys = node->globalGroupingSets().empty()
         ? node->groupingKeys()
         : ExprVector{};
-    auto [coLocatedInput, coLocatedKeys] = ensureCoLocated(input, keys);
+    // A grouping key is published under `outputColumns`, positionally, and
+    // consumers read it by that column. Materializing it under a fresh name
+    // would leave them referencing a column the aggregate no longer outputs.
+    const ColumnVector keyAliases{
+        node->outputColumns().begin(),
+        node->outputColumns().begin() + keys.size()};
+    auto [coLocatedInput, coLocatedKeys] =
+        ensureCoLocated(input, keys, keyAliases);
     if (coLocatedInput == node->input()) {
       return node;
     }

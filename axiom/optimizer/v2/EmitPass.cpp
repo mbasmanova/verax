@@ -1035,6 +1035,16 @@ velox::core::PlanNodePtr Emitter::makeAggregationNode(
     std::vector<std::string> names,
     std::vector<velox::core::AggregationNode::Aggregate> aggregates,
     velox::core::PlanNodePtr input) {
+  // A Velox AggregationNode names its output after its grouping-key fields, so
+  // a key must be published under the column the Aggregate outputs for it. A
+  // pass that materializes a key under a fresh name has to reuse that column;
+  // otherwise consumers read a column the node does not output.
+  for (size_t i = 0; i < groupingKeys.size(); ++i) {
+    VELOX_CHECK_EQ(
+        groupingKeys[i]->name(),
+        aggregate.outputColumns()[i]->outputName(),
+        "Grouping key must be published under the aggregate's output column");
+  }
   std::vector<velox::vector_size_t> globalGroupingSets(
       aggregate.globalGroupingSets().begin(),
       aggregate.globalGroupingSets().end());

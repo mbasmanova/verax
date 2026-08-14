@@ -146,3 +146,13 @@ SELECT
   bool_and(a % 2 = 0),
   bool_and(DISTINCT a % 2 = 0) FILTER (WHERE b > 50)
 FROM t
+----
+-- DISTINCT: grouped by an expression that the SELECT list repeats.
+SELECT a % 2, count(DISTINCT c) FROM t GROUP BY a % 2
+----
+-- DISTINCT: the same, with a second aggregate and a wider expression.
+SELECT CAST(a AS VARCHAR), count(*), count(DISTINCT c) FROM t GROUP BY CAST(a AS VARCHAR)
+----
+-- DISTINCT: an expression grouping key with two distinct argument sets, which
+-- dedups through MarkDistinct rather than a native distinct aggregation.
+SELECT a % 2, count(DISTINCT c), count(DISTINCT b) FROM t GROUP BY a % 2
