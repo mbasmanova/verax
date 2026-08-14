@@ -32,9 +32,11 @@
 #include "velox/exec/Aggregate.h"
 #include "velox/functions/prestosql/types/BigintEnumType.h"
 #include "velox/functions/prestosql/types/JsonType.h"
+#include "velox/functions/prestosql/types/TimeWithTimezoneType.h"
 #include "velox/functions/prestosql/types/TimestampWithTimeZoneType.h"
 #include "velox/functions/prestosql/types/VarcharEnumType.h"
 #include "velox/parse/Expressions.h"
+#include "velox/type/Time.h"
 
 namespace axiom::sql::presto {
 
@@ -1374,6 +1376,31 @@ lp::ExprApi ExpressionPlanner::toExpr(
         return lp::Call("json_parse", lp::Lit(literal->value()));
       }
       return lp::Cast(type, lp::Lit(literal->value()));
+    }
+
+    case NodeType::kTimeLiteral: {
+      auto literal = node->as<TimeLiteral>();
+      const auto& value = literal->value();
+
+      // A fixed offset makes the literal TIME WITH TIME ZONE. A named zone,
+      // as in TIME '01:02:03 UTC', is not supported, matching Presto C++.
+      if (!util::fromTimeWithTimezoneString(value.data(), value.size())
+               .hasError()) {
+        return lp::Cast(TIME_WITH_TIME_ZONE(), lp::Lit(value));
+      }
+
+      // Without an offset the literal is a plain time. Parsing it here reports
+      // a malformed literal with its location.
+      const auto time = util::fromTimeString(value.data(), value.size());
+
+      AXIOM_PRESTO_SEMANTIC_CHECK(
+          !time.hasError(),
+          literal->location(),
+          value,
+          "Not a valid time literal: {}",
+          time.error().message());
+
+      return lp::Cast(TIME(), lp::Lit(value));
     }
 
     case NodeType::kTimestampLiteral: {

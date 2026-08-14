@@ -23,6 +23,7 @@
 #include "velox/functions/prestosql/types/QDigestType.h"
 #include "velox/functions/prestosql/types/TDigestRegistration.h"
 #include "velox/functions/prestosql/types/TDigestType.h"
+#include "velox/functions/prestosql/types/TimeWithTimezoneType.h"
 #include "velox/functions/prestosql/types/TimestampWithTimeZoneType.h"
 #include "velox/parse/ExpressionsParser.h"
 
@@ -580,6 +581,45 @@ TEST_F(ExpressionParserTest, timestampLiteral) {
 
   AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
       parseExpr("TIMESTAMP 'foo'"), "Not a valid timestamp literal");
+}
+
+TEST_F(ExpressionParserTest, timeLiteral) {
+  auto test = [&](std::string_view sql) {
+    SCOPED_TRACE(sql);
+    VELOX_ASSERT_EQ_TYPES(parseExpr(sql)->type(), TIME());
+  };
+
+  test("TIME '00:00:00'");
+  test("TIME '23:59:59'");
+  test("TIME '01:02:03.456'");
+
+  // A fixed offset makes it TIME WITH TIME ZONE, written with or without a
+  // space. A named zone is not supported, as in Presto C++.
+  VELOX_ASSERT_EQ_TYPES(
+      parseExpr("TIME '01:02:03+00:00'")->type(), TIME_WITH_TIME_ZONE());
+  VELOX_ASSERT_EQ_TYPES(
+      parseExpr("TIME '01:02:03-07:00'")->type(), TIME_WITH_TIME_ZONE());
+  VELOX_ASSERT_EQ_TYPES(
+      parseExpr("TIME '01:02:03 +05:30'")->type(), TIME_WITH_TIME_ZONE());
+
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      parseExpr("TIME '01:02:03 UTC'"),
+      "Not a valid time literal: Invalid time format: unexpected trailing "
+      "characters");
+
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      parseExpr("TIME 'foo'"),
+      "Not a valid time literal: Invalid time format: failed to parse hour");
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      parseExpr("TIME '24:00:00'"),
+      "Not a valid time literal: Invalid hour value: 24");
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      parseExpr("TIME '01:02:60'"),
+      "Not a valid time literal: Invalid second value: 60");
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      parseExpr("TIME '01:02:03+99:00'"),
+      "Not a valid time literal: Invalid time format: unexpected trailing "
+      "characters");
 }
 
 // JSON literals (json '...') should be translated as json_parse('...'),
