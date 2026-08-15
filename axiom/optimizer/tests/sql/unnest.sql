@@ -75,3 +75,10 @@ JOIN (SELECT s FROM UNNEST(ARRAY[7, 8]) AS u(s)) ON a.x = s
 SELECT a.x, s
 FROM arrays a
 LEFT JOIN (SELECT s FROM UNNEST(ARRAY[7, 8]) AS u(s)) ON a.x = s
+----
+-- A join on both a replicated column and an unnested one, projecting a column
+-- from each side.
+SELECT a.x, y, u.k
+FROM arrays a
+CROSS JOIN UNNEST(a.ys) AS _(y)
+JOIN (VALUES (7, 10), (8, 30)) AS u(k, m) ON u.k = a.x AND u.m = y

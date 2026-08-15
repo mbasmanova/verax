@@ -50,6 +50,15 @@ DPhyp::DPhyp(
 
 namespace {
 
+// True for the join types whose output keeps both sides' columns, so an inner
+// equality applied above the join can still read them. Semi and anti keep only
+// one side, so a co-crossing inner edge has nowhere to go.
+bool isOuterJoin(velox::core::JoinType joinType) {
+  return joinType == velox::core::JoinType::kLeft ||
+      joinType == velox::core::JoinType::kRight ||
+      joinType == velox::core::JoinType::kFull;
+}
+
 // Vertices reachable from `set` via one hyperedge whose "other" side
 // is fully outside `set`. Excludes any vertex in `forbidden`.
 RelationSet neighborhood(
@@ -367,15 +376,57 @@ class Enumerator {
       return;
     }
 
+    // At most one crossing edge can be other than a plain inner edge. An
+    // Unnest expands the rows and an outer join null-pads them; either way the
+    // remaining edges can only constrain what it produced, so they filter its
+    // output rather than joining its condition — which would null-pad the rows
+    // they reject instead of dropping them, and is what applying an inner join
+    // above means. Two such edges have no single well-defined step and fall
+    // through to the check below.
+    std::optional<size_t> specialPosition;
+    for (size_t i = 0; i < crossing.size(); ++i) {
+      const auto& edge = graph_.edges()[crossing[i].first];
+      if (!edge.isUnnest() &&
+          edge.joinType() == velox::core::JoinType::kInner) {
+        continue;
+      }
+      if (specialPosition.has_value()) {
+        specialPosition.reset();
+        break;
+      }
+      specialPosition = i;
+    }
+
+    if (specialPosition.has_value()) {
+      const size_t specialEdge = crossing[*specialPosition].first;
+      std::vector<size_t> residual;
+      residual.reserve(crossing.size() - 1);
+      for (size_t i = 0; i < crossing.size(); ++i) {
+        if (i != *specialPosition) {
+          residual.push_back(crossing[i].first);
+        }
+      }
+      emitSingleEdge(
+          specialEdge,
+          crossing[*specialPosition].second,
+          leftPlan,
+          rightPlan,
+          combined,
+          std::move(residual));
+      return;
+    }
+
     // Several inner edges cross: apply them as one inner join over all their
-    // keys. A non-inner edge co-crossing has no single well-defined join
-    // type here and is not supported; fail rather than drop a predicate.
+    // keys. Reaching here with an Unnest or a non-inner edge means two or more
+    // of them cross, which has no single well-defined step; fail rather than
+    // drop a predicate.
     for (const auto& [edgeIndex, forward] : crossing) {
       const auto& edge = graph_.edges()[edgeIndex];
       VELOX_CHECK(
           edge.joinType() == velox::core::JoinType::kInner && !edge.isUnnest(),
-          "Multiple edges cross one join partition with a non-inner edge: {}",
-          velox::core::JoinTypeName::toName(edge.joinType()));
+          "Two or more edges crossing one join partition are not plain inner joins: {}, unnest: {}",
+          edge.joinTypeName(),
+          edge.isUnnest());
     }
     std::sort(
         crossing.begin(), crossing.end(), [](const auto& lhs, const auto& rhs) {
@@ -447,14 +498,23 @@ class Enumerator {
 
   // Emits join candidates for a single edge crossing the partition,
   // preserving orientation rules (native-only for unnest / anti /
-  // null-aware semi-project; both orientations otherwise).
+  // null-aware semi-project; both orientations otherwise). `extraEdges` are
+  // co-crossing inner edges the emitter applies as a filter above the join.
   void emitSingleEdge(
       size_t edgeIndex,
       bool forward,
       MemoOpCP leftPlan,
       MemoOpCP rightPlan,
-      RelationSet combined) {
+      RelationSet combined,
+      std::vector<size_t> extraEdges = {}) {
     const auto& edge = graph_.edges()[edgeIndex];
+    // Extra edges reach the emitter as a filter above the join, which only an
+    // Unnest or an outer join can carry: both keep every column the equalities
+    // read. Semi and anti keep one side only.
+    VELOX_CHECK(
+        extraEdges.empty() || edge.isUnnest() || isOuterJoin(edge.joinType()),
+        "An edge crossing a join partition alongside a {} edge is not supported",
+        edge.joinTypeName());
     // `probeOnLeft` plays the edge's left operand; `probeOnRight` its right.
     MemoOpCP probeOnLeft = forward ? leftPlan : rightPlan;
     MemoOpCP probeOnRight = forward ? rightPlan : leftPlan;
@@ -465,7 +525,13 @@ class Enumerator {
          !hasRightProjectVariant(edge));
     if (nativeOnly) {
       considerCandidate(
-          probeOnLeft, probeOnRight, edgeIndex, edge.joinType(), combined);
+          probeOnLeft,
+          probeOnRight,
+          edgeIndex,
+          edge.joinType(),
+          combined,
+          /*reversedAnti=*/false,
+          std::move(extraEdges));
       // Antijoin can additionally build on the preserved (left) side by
       // probing with the right input (the reversed orientation).
       if (edge.joinType() == velox::core::JoinType::kAnti &&
@@ -481,17 +547,27 @@ class Enumerator {
       return;
     }
 
-    // Flip the joinType when the subgraph plays the edge's right operand.
+    // Flip the joinType when the subgraph plays the edge's right operand. The
+    // extra edges are equalities filtering the output, so they are carried
+    // unchanged into either orientation.
     const auto leftTypeForSubgraph =
         forward ? edge.joinType() : flipJoinType(edge.joinType());
     considerCandidate(
-        leftPlan, rightPlan, edgeIndex, leftTypeForSubgraph, combined);
+        leftPlan,
+        rightPlan,
+        edgeIndex,
+        leftTypeForSubgraph,
+        combined,
+        /*reversedAnti=*/false,
+        extraEdges);
     considerCandidate(
         rightPlan,
         leftPlan,
         edgeIndex,
         flipJoinType(leftTypeForSubgraph),
-        combined);
+        combined,
+        /*reversedAnti=*/false,
+        std::move(extraEdges));
   }
 
   // Records an enforcement exchange and returns a stable pointer to it.

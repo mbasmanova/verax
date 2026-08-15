@@ -985,6 +985,43 @@ TEST_P(UnnestTest, joinOfConstantUnnests) {
           .build());
 }
 
+// A join whose condition reads both a column replicated by the unnest and an
+// unnested one. Only the replicated equality can be a hash join key, so the
+// two optimizers place the unnest on opposite sides of the join.
+TEST_P(UnnestTest, joinEdgeCrossingWithUnnest) {
+  const parse::ParseOptions options = {.parseIntegerAsBigint = false};
+
+  auto query =
+      "SELECT t.a, e, u.k FROM (VALUES (1, ARRAY[10, 20])) AS t(a, arr) "
+      "CROSS JOIN UNNEST(arr) AS w(e) "
+      "JOIN (VALUES (1, 10)) AS u(k, m) ON u.k = t.a AND u.m = e";
+  SCOPED_TRACE(query);
+
+  auto logicalPlan = parseSelect(query, kTestConnectorId);
+
+  auto matcher = useV2_
+      ? matchValues()
+            .aliases({"a", "arr"})
+            .hashJoinInner(
+                matchValues().aliases({"k", "m"}), {.keys = {{"a = k"}}})
+            .unnest({"a", "m"}, {"arr"})
+            .aliases({"a", "m", "e"})
+            .filter("eq(e, m)")
+            .project()
+            .build()
+      : matchValues()
+            .aliases({"a", "arr"})
+            .unnest({"a"}, {"arr"})
+            .aliases({"a", "e"})
+            .hashJoinInner(
+                matchValues().aliases({"k", "m"}),
+                {.keys = {{"a = k", "e = m"}}})
+            .project()
+            .build();
+
+  AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
+}
+
 AXIOM_INSTANTIATE_V1_V2(UnnestTest);
 
 } // namespace
