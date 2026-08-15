@@ -29,13 +29,31 @@ namespace facebook::axiom::optimizer::v2 {
 
 namespace {
 
+// Appends the columns of `side` that a node over `cover` emits: those `needed`
+// demands, plus any column produced by no relation in `cover` (e.g. a semijoin
+// mark synthesized below, or a key a shuffle materialized), which is outside
+// the demand universe and is always kept.
+void appendNarrowed(
+    ColumnVector& columns,
+    NodeCP side,
+    const PlanObjectSet& needed,
+    const PlanObjectSet& coverColumns) {
+  for (ColumnCP column : side->outputColumns()) {
+    if (!coverColumns.contains(column) || needed.contains(column)) {
+      columns.push_back(column);
+    }
+  }
+}
+
 // An intermediate join emits the columns a consumer above `cover` demands —
 // `graph.coverOutputColumns(cover)`, which collapses each within-cover
 // equi-group to one representative — exactly the set the cost model charges
-// for, so the executed plan matches its estimated width. Left-then-right order
-// is preserved. A column produced by no relation in `cover` (e.g. a semijoin
-// mark synthesized below, or a key a shuffle materialized) is outside the
-// demand universe and is always kept.
+// for, so the executed plan matches its estimated width. The one exception is
+// an outer join carrying extra edges, which keeps both columns of each so the
+// filter above it can read them. Left-then-right order is preserved. A column
+// produced by no relation in `cover` (e.g. a semijoin mark synthesized below,
+// or a key a shuffle materialized) is outside the demand universe and is always
+// kept.
 ColumnVector coverNarrowedColumns(
     const JoinHypergraph& graph,
     const RelationSet& cover,
@@ -44,13 +62,8 @@ ColumnVector coverNarrowedColumns(
   const PlanObjectSet needed = graph.coverOutputColumns(cover);
   const PlanObjectSet coverColumns = graph.coverColumns(cover);
   ColumnVector columns;
-  for (NodeCP side : {left, right}) {
-    for (ColumnCP column : side->outputColumns()) {
-      if (!coverColumns.contains(column) || needed.contains(column)) {
-        columns.push_back(column);
-      }
-    }
-  }
+  appendNarrowed(columns, left, needed, coverColumns);
+  appendNarrowed(columns, right, needed, coverColumns);
   return columns;
 }
 
@@ -197,6 +210,28 @@ NodeCP restoreTargets(
       Project::Key{node, std::move(exprs), ColumnVector{targets}});
 }
 
+// The equalities of the inner edges applied above `join` — the ones that
+// crossed the same partition as an Unnest or an outer join, which cannot take
+// them as keys. Equality is symmetric, so the edges' orientation does not
+// matter here. Inner edges carry no filter (`JoinEdge` enforces that), so the
+// keys are the whole predicate.
+ExprVector extraEdgeEqualities(
+    const JoinOp* join,
+    const ExprFactory::ExprSubstitution& substitution,
+    EmitState& state) {
+  ExprVector predicates;
+  for (size_t extraIndex : join->extraEdges) {
+    const auto& extra = state.graph.edges()[extraIndex];
+    const auto& leftKeys = extra.leftKeys();
+    const auto& rightKeys = extra.rightKeys();
+    VELOX_CHECK_EQ(leftKeys.size(), rightKeys.size());
+    for (size_t i = 0; i < leftKeys.size(); ++i) {
+      predicates.push_back(state.exprs.makeEq(leftKeys[i], rightKeys[i]));
+    }
+  }
+  return rewrite(predicates, substitution, state);
+}
+
 void checkAllConjunctsPlaced(const EmitState& state) {
   const size_t unplaced =
       std::count(state.fired.begin(), state.fired.end(), false);
@@ -215,15 +250,42 @@ NodeCP emitLeaf(const LeafOp* leaf, EmitState& state) {
 // `join->left` is the input-side plan and `join->right` is the
 // singleton Unnest leaf. `unnestExpressions`, `unnestColumns`, and
 // `ordinalityColumn` come from the original Unnest IR node stored on
-// the Unnest relation. `replicatedColumns` conservatively forwards
-// every input column.
+// the Unnest relation.
 Emitted buildUnnest(const JoinOp* join, Emitted input, EmitState& state) {
   const auto& edge = state.graph.edges()[join->edgeIndex];
   const int8_t unnestRelId = edge.right().min();
   const auto* origUnnest =
       state.graph.relation(unnestRelId).node()->as<Unnest>();
 
-  ColumnVector replicatedColumns{input.node->outputColumns()};
+  const auto substitution = merge(
+      collapsedColumns(state.graph.coverColumnReps(join->left->cover())),
+      input.materialized);
+  ExprVector unnestExpressions =
+      rewrite(origUnnest->unnestExpressions(), substitution, state);
+
+  // Inner edges that crossed alongside the Unnest constrain what it produced,
+  // so they filter its output: both sides of each equality are columns of this
+  // node. Conjuncts from the filter pool that this cover makes ready are
+  // applied here too — after the expansion, since one may read an unnested
+  // column.
+  ExprVector predicates = rewrite(
+      takeReadyConjuncts(state.graph, join->cover(), state.fired),
+      substitution,
+      state);
+  appendAll(predicates, extraEdgeEqualities(join, substitution, state));
+
+  // The expansion replicates the columns a consumer above the cover demands,
+  // plus those the predicates above read: the Filter sits on this node's
+  // output, so its inputs have to survive the expansion even when nothing
+  // above wants them.
+  PlanObjectSet needed = state.graph.coverOutputColumns(join->cover());
+  needed.unionColumns(predicates);
+  ColumnVector replicatedColumns;
+  appendNarrowed(
+      replicatedColumns,
+      input.node,
+      needed,
+      state.graph.coverColumns(join->cover()));
 
   ColumnVector outputColumns{replicatedColumns};
   for (const auto& perExpr : origUnnest->unnestColumns()) {
@@ -235,12 +297,6 @@ Emitted buildUnnest(const JoinOp* join, Emitted input, EmitState& state) {
     outputColumns.push_back(origUnnest->ordinalityColumn());
   }
 
-  const auto substitution = merge(
-      collapsedColumns(state.graph.coverColumnReps(join->left->cover())),
-      input.materialized);
-  ExprVector unnestExpressions =
-      rewrite(origUnnest->unnestExpressions(), substitution, state);
-
   NodeCP node = state.builder.make<Unnest>(Unnest::Key{
       input.node,
       std::move(unnestExpressions),
@@ -248,6 +304,11 @@ Emitted buildUnnest(const JoinOp* join, Emitted input, EmitState& state) {
       origUnnest->unnestColumns(),
       origUnnest->ordinalityColumn(),
       std::move(outputColumns)});
+
+  if (!predicates.empty()) {
+    node = state.builder.make<Filter>(Filter::Key{node, std::move(predicates)});
+  }
+
   retainVisible(input.materialized, node);
   return {node, std::move(input.materialized)};
 }
@@ -312,19 +373,24 @@ Emitted buildJoin(
     std::swap(leftKeys, rightKeys);
   }
 
-  // Conjoin the keys of any additional inner edges this join applies (a
-  // cyclic join graph can have several edges crossing one partition). Each
-  // is orientation-corrected independently. Inner edges carry no filter
-  // (their non-equi conjuncts live in the hypergraph's filter pool).
-  for (size_t extraIndex : join->extraEdges) {
-    const auto& extra = state.graph.edges()[extraIndex];
-    ExprVector extraLeftKeys{extra.leftKeys()};
-    ExprVector extraRightKeys{extra.rightKeys()};
-    if (extra.left().isSubset(join->right->cover())) {
-      std::swap(extraLeftKeys, extraRightKeys);
+  // Additional inner edges this join applies (a cyclic join graph can have
+  // several edges crossing one partition), each orientation-corrected
+  // independently. Under an inner join they conjoin into its keys. Under an
+  // outer join they cannot: a condition null-pads the rows it rejects, while
+  // these must drop them, so they filter the join's output instead — which is
+  // what applying the inner join above the outer one means. Inner edges carry
+  // no filter (their non-equi conjuncts live in the hypergraph's filter pool).
+  if (isInner) {
+    for (size_t extraIndex : join->extraEdges) {
+      const auto& extra = state.graph.edges()[extraIndex];
+      ExprVector extraLeftKeys{extra.leftKeys()};
+      ExprVector extraRightKeys{extra.rightKeys()};
+      if (extra.left().isSubset(join->right->cover())) {
+        std::swap(extraLeftKeys, extraRightKeys);
+      }
+      appendAll(leftKeys, extraLeftKeys);
+      appendAll(rightKeys, extraRightKeys);
     }
-    appendAll(leftKeys, extraLeftKeys);
-    appendAll(rightKeys, extraRightKeys);
   }
 
   ExprVector filter;
@@ -340,6 +406,42 @@ Emitted buildJoin(
   leftKeys = rewrite(leftKeys, substitution, state);
   rightKeys = rewrite(rightKeys, substitution, state);
   filter = rewrite(filter, substitution, state);
+  // A non-inner join applies its own condition — the edge's filter, above —
+  // and everything else this cover makes ready goes above it: the extra edges'
+  // equalities, and the pool conjuncts no child could apply. Neither can join
+  // the condition, which would null-pad the rows they reject instead of
+  // dropping them.
+  ExprVector aboveJoin;
+  if (!isInner) {
+    aboveJoin = extraEdgeEqualities(join, substitution, state);
+    appendAll(
+        aboveJoin,
+        rewrite(
+            takeReadyConjuncts(state.graph, join->cover(), state.fired),
+            substitution,
+            state));
+  }
+
+  // The cover collapses the equated columns of an extra edge to one
+  // representative, so the narrowed output carries only that one. The filter
+  // reads both, and both are emitted by the children — the collapse spans the
+  // two child covers, so neither child applied it — so keep them here.
+  if (!aboveJoin.empty()) {
+    PlanObjectSet extraColumns;
+    extraColumns.unionColumns(aboveJoin);
+    PlanObjectSet present;
+    for (ColumnCP column : outputColumns) {
+      present.add(column);
+    }
+    for (NodeCP side : {left.node, right.node}) {
+      for (ColumnCP column : side->outputColumns()) {
+        if (extraColumns.contains(column) && !present.contains(column)) {
+          outputColumns.push_back(column);
+          present.add(column);
+        }
+      }
+    }
+  }
 
   NodeCP node = state.builder.make<Join>(Join::Key{
       left.node,
@@ -351,6 +453,9 @@ Emitted buildJoin(
       edge.nullAware(),
       edge.nullAsValue(),
       std::move(outputColumns)});
+  if (!aboveJoin.empty()) {
+    node = state.builder.make<Filter>(Filter::Key{node, std::move(aboveJoin)});
+  }
   retainVisible(materialized, node);
   return {node, std::move(materialized)};
 }
@@ -421,7 +526,17 @@ Emitted emitJoin(
   const auto& edge = state.graph.edges()[join->edgeIndex];
   Emitted left = emitOp(join->left, state);
   if (edge.isUnnest()) {
-    return buildUnnest(join, std::move(left), state);
+    Emitted result = buildUnnest(join, std::move(left), state);
+    if (rootOutputColumns == nullptr) {
+      return result;
+    }
+    const auto rootReps = state.graph.coverColumnReps(join->cover());
+    if (hasCollapsedTarget(rootReps, *rootOutputColumns)) {
+      result.node =
+          restoreTargets(result.node, rootReps, *rootOutputColumns, state);
+      retainVisible(result.materialized, result.node);
+    }
+    return result;
   }
   Emitted right = emitOp(join->right, state);
   if (join->reversedAnti) {

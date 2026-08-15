@@ -187,3 +187,22 @@ SELECT t1.a, t2.a FROM t t1, t t2 WHERE t1.b < t2.b AND 1000 / (150 - t1.b) > t2
 -- JOIN of two ORDER BY ... LIMIT subqueries.
 SELECT l.a, l.b, r.b
 FROM (SELECT * FROM t ORDER BY b LIMIT 5) l JOIN (SELECT * FROM t ORDER BY b DESC LIMIT 5) r ON l.a = r.a
+----
+-- An inner join above a left join, on a column of the null-padded side wrapped
+-- in COALESCE. The COALESCE does not reject nulls, so a row with no match on
+-- the left join can still satisfy the inner join and reach the output with
+-- NULLs for that side.
+SELECT l.a, c.m, e.d
+FROM (VALUES (1, 'x'), (2, 'y')) AS l(k, a)
+LEFT JOIN (VALUES (1, 10)) AS c(k, m) ON c.k = l.k
+JOIN (VALUES (1, 10, 'p'), (2, 0, 'q')) AS e(k, m, d)
+  ON e.k = l.k AND e.m = coalesce(c.m, 0)
+----
+-- The same, with a WHERE predicate that reads both sides of the left join and
+-- so can only be evaluated once both are joined.
+SELECT l.a, c.m, e.d
+FROM (VALUES (1, 'x'), (2, 'y')) AS l(k, a)
+LEFT JOIN (VALUES (1, 10)) AS c(k, m) ON c.k = l.k
+JOIN (VALUES (1, 10, 5), (2, 0, 7)) AS e(k, m, d)
+  ON e.k = l.k AND e.m = coalesce(c.m, 0)
+WHERE e.d < coalesce(c.m, 99)

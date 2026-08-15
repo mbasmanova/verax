@@ -156,6 +156,10 @@ class JoinEdge {
     return joinType_;
   }
 
+  std::string_view joinTypeName() const {
+    return velox::core::JoinTypeName::toName(joinType_);
+  }
+
   bool nullAware() const {
     return nullAware_;
   }

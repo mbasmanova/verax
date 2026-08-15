@@ -20,6 +20,7 @@
 
 #include "axiom/optimizer/Cost.h"
 #include "axiom/optimizer/EstimateMath.h"
+#include "axiom/optimizer/Filters.h"
 #include "axiom/optimizer/Schema.h"
 #include "axiom/optimizer/v2/JoinFanout.h"
 #include "velox/common/base/Exceptions.h"
@@ -113,6 +114,26 @@ std::optional<float> innerEdgeSelectivity(
   return 1.0f / std::max(jointNdvLeft, jointNdvRight);
 }
 
+// Applies the selectivities of the extra edges that filter `join`'s output —
+// the inner edges that crossed alongside an Unnest or an outer join, which the
+// emitter puts in a Filter above it. An edge whose selectivity is unknown is
+// left out rather than making the cover uncostable: a filter can only reduce,
+// so the unfiltered count stays a valid upper bound, whereas an unknown would
+// drop every candidate for the cover and leave the join graph unplannable.
+std::optional<float> applyExtraEdges(
+    std::optional<float> cardinality,
+    const JoinOp& join,
+    const JoinHypergraph& graph,
+    const ConstraintMap& constraints) {
+  for (size_t extraIndex : join.extraEdges) {
+    if (const auto selectivity = innerEdgeSelectivity(
+            graph.edges()[extraIndex], graph, constraints)) {
+      cardinality = mul(cardinality, *selectivity);
+    }
+  }
+  return cardinality;
+}
+
 // The conjuncts this join evaluates: for an inner join those the emitter places
 // here — within this cover but within neither child's, so no child has applied
 // them — and for any other type the edge's own filter. Assigning a conjunct to
@@ -135,19 +156,23 @@ ExprVector appliedConjuncts(const JoinOp& join, const JoinHypergraph& graph) {
 }
 
 // Product of the operand cardinalities and the selectivities of the edges
-// crossing the join (its primary edge plus any inner extra edges of a cyclic
-// cover). This is the inner-join match count, and — for an all-inner cover —
-// the cover's output cardinality.
+// crossing the join: its primary edge, plus the extra edges of a cyclic cover
+// when the primary is inner and they join it as keys. This is the inner-join
+// match count, and — for an all-inner cover — the cover's output cardinality.
+// Under a non-inner primary the extra edges filter the shaped output instead,
+// so they are applied by the caller after the join type has been accounted for.
 std::optional<float> innerMatchCardinality(
     const JoinOp& join,
     const JoinHypergraph& graph,
     const ConstraintMap& constraints,
     std::optional<float> leftCardinality,
     std::optional<float> rightCardinality) {
+  const auto& edge = graph.edges()[join.edgeIndex];
   std::optional<float> matched = mul(leftCardinality, rightCardinality);
-  matched = mul(
-      matched,
-      innerEdgeSelectivity(graph.edges()[join.edgeIndex], graph, constraints));
+  matched = mul(matched, innerEdgeSelectivity(edge, graph, constraints));
+  if (edge.joinType() != velox::core::JoinType::kInner) {
+    return matched;
+  }
   for (size_t extraIndex : join.extraEdges) {
     matched = mul(
         matched,
@@ -200,8 +225,15 @@ Cost leafCost(
 
 // Records the estimate for a cross-join-unnest cover: the input cover's
 // constraints pass through (the unnest adds columns but does not change the
-// input columns' NDVs) and its cardinality scales by the unnest fanout.
-const Estimate& unnestEstimate(const JoinOp& join, BySetMap& bySet) {
+// input columns' NDVs) and its cardinality scales by the unnest fanout, then by
+// the filters the emitter applies on the expansion: the edges that crossed
+// alongside the unnest (see `applyExtraEdges`) and the pool conjuncts this
+// cover makes ready that the input cover did not already apply. A conjunct of
+// unknown selectivity is skipped for the same reason an edge is.
+const Estimate& unnestEstimate(
+    const JoinOp& join,
+    const JoinHypergraph& graph,
+    BySetMap& bySet) {
   const RelationSet cover = join.cover();
   const auto it = bySet.find(cover);
   if (it != bySet.end()) {
@@ -210,8 +242,27 @@ const Estimate& unnestEstimate(const JoinOp& join, BySetMap& bySet) {
   const Estimate& input = coverEstimate(join.left->cover(), bySet);
   Estimate result;
   mergeConstraints(input.constraints, result.constraints);
-  result.cardinality =
-      maxOf(1.0f, mul(input.cardinality, kDefaultUnnestFanout));
+  std::optional<float> cardinality = applyExtraEdges(
+      mul(input.cardinality, kDefaultUnnestFanout),
+      join,
+      graph,
+      result.constraints);
+  ExprVector conjuncts;
+  for (const auto& conjunct : graph.filterConjuncts()) {
+    if (conjunct.relations.isSubset(cover) &&
+        !conjunct.relations.isSubset(join.left->cover())) {
+      conjuncts.push_back(conjunct.expr);
+    }
+  }
+  if (!conjuncts.empty()) {
+    if (const auto selectivity = optimizer::conjunctsSelectivity(
+            result.constraints,
+            std::span<const ExprCP>{conjuncts.data(), conjuncts.size()},
+            /*updateConstraints=*/true)) {
+      cardinality = mul(cardinality, selectivity->trueFraction);
+    }
+  }
+  result.cardinality = maxOf(1.0f, cardinality);
   return bySet.emplace(cover, std::move(result)).first->second;
 }
 
@@ -226,7 +277,7 @@ Cost unnestJoinCost(
   const std::optional<float> inputCardinality = join.left->cost.cardinality;
   const float rowBytes = coveredRowBytes(join.cover(), graph);
   Cost out;
-  out.cardinality = unnestEstimate(join, bySet).cardinality;
+  out.cardinality = unnestEstimate(join, graph, bySet).cardinality;
   // The per-row cost depends on the output cardinality; when that is unknown
   // the whole cost is unknown (propagated, not fabricated).
   const std::optional<float> perRowCost = out.cardinality.has_value()
@@ -271,15 +322,20 @@ joinEstimate(const JoinOp& join, const JoinHypergraph& graph, BySetMap& bySet) {
   // Operands are passed in the edge's orientation, which `outputCardinality`
   // requires for kAnti: a reversed antijoin swaps them but has no flipped type.
   const bool edgeLeftIsPhysicalLeft = edge.left().isSubset(join.left->cover());
-  result.cardinality = maxOf(
-      1.0f,
-      JoinFanout::outputCardinality(
-          edge.joinType(),
-          edgeLeftIsPhysicalLeft ? left.cardinality : right.cardinality,
-          edgeLeftIsPhysicalLeft ? right.cardinality : left.cardinality,
-          matched,
-          appliedConjuncts(join, graph),
-          result.constraints));
+  std::optional<float> cardinality = JoinFanout::outputCardinality(
+      edge.joinType(),
+      edgeLeftIsPhysicalLeft ? left.cardinality : right.cardinality,
+      edgeLeftIsPhysicalLeft ? right.cardinality : left.cardinality,
+      matched,
+      appliedConjuncts(join, graph),
+      result.constraints);
+  // Extra edges under a non-inner primary are a filter above the join, so they
+  // reduce what the join type shaped — including the null-padded rows, which
+  // fail an equality on the padded side.
+  if (edge.joinType() != velox::core::JoinType::kInner) {
+    cardinality = applyExtraEdges(cardinality, join, graph, result.constraints);
+  }
+  result.cardinality = maxOf(1.0f, cardinality);
   return bySet.emplace(cover, std::move(result)).first->second;
 }
 
