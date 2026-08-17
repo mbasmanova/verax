@@ -436,10 +436,13 @@ NodeCP Rewriter::rewriteWindow(const Window* window, NoContext& context) {
     newOrderKeys.push_back(precompute.toColumn(key));
   }
 
-  // Frame bounds must be FieldAccess or Constant in Velox.
-  auto liftBound = [&](ExprCP value) -> ExprCP {
+  // A ROWS bound is an offset in rows, which Velox reads as a constant. A
+  // RANGE bound is the boundary value for each row, which Velox reads from a
+  // column, so it stays a column even when it folds to a literal — as it does
+  // when the ORDER BY key is constant.
+  auto liftBound = [&](ExprCP value, bool allowConstant) -> ExprCP {
     return value != nullptr
-        ? precompute.toColumn(value, /*alias=*/nullptr, /*allowConstant=*/true)
+        ? precompute.toColumn(value, /*alias=*/nullptr, allowConstant)
         : nullptr;
   };
 
@@ -456,12 +459,14 @@ NodeCP Rewriter::rewriteWindow(const Window* window, NoContext& context) {
     auto* newCall = builder().makeCall(
         call->name(), call->value(), std::move(newArgs), call->functions());
     const Frame& frame = windowFunction.frame;
+    const bool allowConstant =
+        frame.type == logical_plan::WindowExpr::WindowType::kRows;
     Frame newFrame{
         frame.type,
         frame.startType,
-        liftBound(frame.startValue),
+        liftBound(frame.startValue, allowConstant),
         frame.endType,
-        liftBound(frame.endValue),
+        liftBound(frame.endValue, allowConstant),
     };
     newFunctions.push_back({newCall, newFrame, windowFunction.ignoreNulls});
   }
