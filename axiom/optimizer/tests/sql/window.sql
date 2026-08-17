@@ -265,3 +265,12 @@ ORDER BY sum(b) * 1.0 / sum(sum(b)) OVER () DESC
 SELECT count(*) OVER (ORDER BY max(d) RANGE BETWEEN INTERVAL '1' DAY PRECEDING AND CURRENT ROW) AS c
 FROM (VALUES (DATE '2025-01-01', 1), (DATE '2025-01-02', 2), (DATE '2025-01-03', 3)) AS t(d, n)
 GROUP BY d
+----
+-- A RANGE offset frame whose ORDER BY key is a constant. Every row is a peer,
+-- so the frame covers the whole partition.
+SELECT array_agg(a) OVER (ORDER BY a RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING)
+FROM (SELECT 1 AS a FROM (VALUES (1), (2), (3)) AS t(x)) AS u(a)
+----
+-- The same, with the constant written in the ORDER BY itself.
+SELECT array_agg(x) OVER (ORDER BY (1 + 1) RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING)
+FROM (VALUES (1), (2)) AS t(x)

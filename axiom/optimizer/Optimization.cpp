@@ -1774,13 +1774,19 @@ WindowFunctionVector flattenWindowFunctions(
     auto args = precompute.toColumns(
         func->args(), /*aliases=*/nullptr, /*preserveLiterals=*/true);
     Frame frame = func->frame();
+    // A ROWS bound is an offset in rows, which Velox reads as a constant. A
+    // RANGE bound is the boundary value for each row, which Velox reads from a
+    // column, so it stays a column even when it folds to a literal — as it
+    // does when the ORDER BY key is constant.
+    const bool preserveLiterals =
+        frame.type == logical_plan::WindowExpr::WindowType::kRows;
     if (frame.startValue) {
       frame.startValue = precompute.toColumn(
-          frame.startValue, /*alias=*/nullptr, /*preserveLiterals=*/true);
+          frame.startValue, /*alias=*/nullptr, preserveLiterals);
     }
     if (frame.endValue) {
       frame.endValue = precompute.toColumn(
-          frame.endValue, /*alias=*/nullptr, /*preserveLiterals=*/true);
+          frame.endValue, /*alias=*/nullptr, preserveLiterals);
     }
     result.emplace_back(
         make<WindowFunction>(
