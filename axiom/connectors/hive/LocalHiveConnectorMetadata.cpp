@@ -244,7 +244,8 @@ FilteredTableStats estimateStatsFromPartitionStats(
     }
   }
 
-  return FilteredTableStats{totalRows, std::move(columnStats)};
+  return FilteredTableStats{
+      .numRows = totalRows, .columnStats = std::move(columnStats)};
 }
 
 // Iterates over a precomputed set of partition-key tuples.
@@ -595,6 +596,11 @@ LocalHiveTableLayout::co_estimateStats(
 
   auto stats = estimateStatsFromPartitionStats(
       partitionStats_, partitionFilters, requestedColumns);
+  if (!partitionStats_.empty()) {
+    // A table with no partition statistics estimates zero rows; reporting that
+    // as the rows read would understate the scan rather than leave it unknown.
+    stats.numRawInputRows = stats.numRows;
+  }
   foldNonPartitionFilterStats(*hiveHandle, estimator, stats);
   co_return stats;
 }

@@ -69,6 +69,8 @@ void applyFilteredStats(
 
   auto* baseTable = const_cast<BaseTable*>(scan.baseTable());
 
+  baseTable->numRawInputRows = stats->numRawInputRows;
+
   if (!stats->columnStats.empty()) {
     VELOX_CHECK_EQ(stats->columnStats.size(), statColumns.size());
     for (size_t i = 0; i < stats->columnStats.size(); ++i) {

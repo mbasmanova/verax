@@ -1438,9 +1438,8 @@ std::string printPlanWithStats(
           std::ostream& out) {
         auto it = estimates.find(nodeId);
         if (it != estimates.end()) {
-          out << indentation << "Estimate: " << it->second.cardinality
-              << " rows, " << velox::succinctBytes(it->second.peakMemory)
-              << " peak memory" << std::endl;
+          out << indentation << "Estimate: " << it->second.toString()
+              << std::endl;
         }
       });
 }

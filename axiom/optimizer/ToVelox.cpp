@@ -46,11 +46,8 @@ std::string PlanAndStats::toString() const {
           std::ostream& out) {
         auto it = prediction.find(planNodeId);
         if (it != prediction.end()) {
-          out << indentation << "Estimate: " << it->second.cardinality
-              << " rows, "
-              << velox::succinctBytes(
-                     static_cast<uint64_t>(it->second.peakMemory))
-              << " peak memory" << std::endl;
+          out << indentation << "Estimate: " << it->second.toString()
+              << std::endl;
         }
       });
 }

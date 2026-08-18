@@ -378,7 +378,7 @@ class ToVelox {
   // history recording.
   NodeHistoryMap nodeHistory_;
 
-  // Predicted cardinality and memory for nodes to record in history.
+  // Predicted cardinality for nodes to record in history.
   NodePredictionMap prediction_;
 
   // On when producing a remaining filter for table scan, where columns must

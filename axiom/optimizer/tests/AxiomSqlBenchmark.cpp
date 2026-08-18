@@ -651,9 +651,8 @@ class VeloxRunner : public velox::QueryBenchmarkBase {
             std::ostream& out) {
           auto it = estimates.find(nodeId);
           if (it != estimates.end()) {
-            out << indentation << "Estimate: " << it->second.cardinality
-                << " rows, " << succinctBytes(it->second.peakMemory)
-                << " peak memory" << std::endl;
+            out << indentation << "Estimate: " << it->second.toString()
+                << std::endl;
           }
         });
   }

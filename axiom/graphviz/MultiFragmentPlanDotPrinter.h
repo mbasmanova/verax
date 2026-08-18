@@ -44,7 +44,7 @@ namespace facebook::axiom::graphviz {
 /// Then render with: dot -Tsvg plan.dot -o plan.svg
 class MultiFragmentPlanDotPrinter {
  public:
-  /// @param prediction Per-node cardinality / memory estimates. When a
+  /// @param prediction Per-node cardinality estimates. When a
   /// fragment's root has an entry, the estimated row count is appended to
   /// the fragment's "out:" row.
   static void print(

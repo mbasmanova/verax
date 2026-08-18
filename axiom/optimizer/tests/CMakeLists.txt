@@ -136,6 +136,7 @@ add_executable(
   PlanTest.cpp
   RemoteOutputTest.cpp
   QueryGraphContextTest.cpp
+  QueryWidthTest.cpp
   RankingTest.cpp
   RelationOpPrinterTest.cpp
   SetTest.cpp
