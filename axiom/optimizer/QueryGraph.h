@@ -1157,6 +1157,13 @@ struct BaseTable : public TableObject {
   /// the cardinality is unknown.
   std::optional<float> filteredCardinality{0};
 
+  /// Estimated rows the scan of this table reads, as reported by the
+  /// connector: filters it resolves from metadata without reading are already
+  /// reflected, filters it evaluates on rows it has read are not. See
+  /// `connector::FilteredTableStats::numRawInputRows` for the full definition.
+  /// nullopt when the connector does not report it.
+  std::optional<uint64_t> numRawInputRows;
+
   SubfieldSet controlSubfields;
 
   SubfieldSet payloadSubfields;

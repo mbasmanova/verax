@@ -53,10 +53,16 @@ struct OptimizerOptions : public velox::config::ConfigProvider {
       "broadcast_size_limit";
   static constexpr std::string_view kDphypEnumerationBudget =
       "dphyp_enumeration_budget";
+  static constexpr std::string_view kSmallQueryMaxScanRows =
+      "small_query_max_scan_rows";
+  static constexpr std::string_view kSmallQueryNumWorkers =
+      "small_query_num_workers";
   static constexpr std::string_view kTraceFlags = "trace_flags";
 
   // Default values — single source of truth for field initializers
   // and properties().
+  static constexpr int64_t kSmallQueryMaxScanRowsDefault = 0;
+  static constexpr int32_t kSmallQueryNumWorkersDefault = 1;
   static constexpr int32_t kParallelProjectWidthDefault = 1;
   static constexpr int32_t kGreedyJoinThresholdDefault = 5;
   // 100 MB. The string form is the user-facing default and accepts capacity
@@ -98,6 +104,16 @@ struct OptimizerOptions : public velox::config::ConfigProvider {
   /// Map from table name to list of map columns to be read as structs unless
   /// the whole map is accessed as a map.
   folly::F14FastMap<std::string, std::vector<std::string>> mapAsStruct;
+
+  /// A query whose scans are estimated to read at most this many rows in total
+  /// is small. A query that reads more, or whose scans report no estimate,
+  /// keeps the worker count the caller supplied. 0, the default, disables the
+  /// decision.
+  int64_t smallQueryMaxScanRows{kSmallQueryMaxScanRowsDefault};
+
+  /// The worker count a small query runs on, capped by the count the caller
+  /// supplied.
+  int32_t smallQueryNumWorkers{kSmallQueryNumWorkersDefault};
 
   /// Enable join order sampling during optimization.
   bool sampleJoins{kSampleJoinsDefault};

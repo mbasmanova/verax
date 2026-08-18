@@ -73,6 +73,48 @@ void collectScans(
   }
 }
 
+// Sums the rows the scans under 'node' are estimated to read. One unknown
+// makes the total unknown: summing the rest would under-size the query by
+// however much the unknown table reads. Each use of a table in a query has its
+// own BaseTable, so no scan is counted twice.
+std::optional<uint64_t> totalRawInputRows(NodeCP node) {
+  if (node->is(NodeType::kScan)) {
+    return node->as<Scan>()->baseTable()->numRawInputRows;
+  }
+
+  uint64_t total{0};
+  for (NodeCP input : node->inputs()) {
+    const auto rows = totalRawInputRows(input);
+    if (!rows.has_value()) {
+      return std::nullopt;
+    }
+    total += *rows;
+  }
+
+  return total;
+}
+
+// Returns the workers to run the query rooted at 'node' on:
+// 'smallQueryNumWorkers' when its scans are estimated to read at most
+// 'smallQueryMaxScanRows', and 'maxWorkers' otherwise. Never returns more than
+// 'maxWorkers'.
+int32_t chooseNumWorkers(
+    NodeCP node,
+    const OptimizerOptions& options,
+    int32_t maxWorkers) {
+  if (options.smallQueryMaxScanRows <= 0) {
+    return maxWorkers;
+  }
+
+  const auto numRawInputRows = totalRawInputRows(node);
+  if (!numRawInputRows.has_value() ||
+      *numRawInputRows > static_cast<uint64_t>(options.smallQueryMaxScanRows)) {
+    return maxWorkers;
+  }
+
+  return std::min(options.smallQueryNumWorkers, maxWorkers);
+}
+
 } // namespace
 
 PlanAndStats Optimizer::optimize(const MultiFragmentPlan::Options& options) {
@@ -95,6 +137,13 @@ PlanAndStats Optimizer::optimize(const MultiFragmentPlan::Options& options) {
   if (session_.options().useFilteredTableStats) {
     EstimateLeafStatsPass::run(folded, session_, evaluator_, scanHandles);
   }
+
+  // Decide the width before physical planning, which reads numWorkers to shape
+  // exchanges and to cost broadcasts.
+  MultiFragmentPlan::Options planOptions = options;
+  planOptions.numWorkers =
+      chooseNumWorkers(folded, session_.options(), options.numWorkers);
+
   EmitPass::Result emitted = physicalPlanAndEmit(
       folded,
       frontend.translated.outputColumns,
@@ -103,11 +152,11 @@ PlanAndStats Optimizer::optimize(const MultiFragmentPlan::Options& options) {
       session_,
       evaluator_,
       scanHandles,
-      options);
+      planOptions);
 
   PlanAndStats result;
   result.plan = std::make_shared<MultiFragmentPlan>(
-      std::move(emitted.fragments), options);
+      std::move(emitted.fragments), planOptions);
   result.finishWrite = std::move(emitted.finishWrite);
   result.prediction = std::move(emitted.prediction);
 

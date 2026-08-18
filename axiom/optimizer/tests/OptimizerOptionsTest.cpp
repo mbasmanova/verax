@@ -48,6 +48,8 @@ TEST(OptimizerOptionsTest, codeDefaults) {
   EXPECT_EQ(
       getDefault(props, OptimizerOptions::kUseFilteredTableStats), "true");
   EXPECT_EQ(getDefault(props, OptimizerOptions::kBroadcastSizeLimit), "100MB");
+  EXPECT_EQ(getDefault(props, OptimizerOptions::kSmallQueryMaxScanRows), "0");
+  EXPECT_EQ(getDefault(props, OptimizerOptions::kSmallQueryNumWorkers), "1");
 }
 
 TEST(OptimizerOptionsTest, configOverrides) {
@@ -67,11 +69,16 @@ TEST(OptimizerOptionsTest, from) {
       {std::string(OptimizerOptions::kParallelProjectWidth), "8"},
       {std::string(OptimizerOptions::kTraceFlags), "5"},
       {std::string(OptimizerOptions::kBroadcastSizeLimit), "5GB"},
+      // Above int32, since row counts on real tables exceed it.
+      {std::string(OptimizerOptions::kSmallQueryMaxScanRows), "5000000000"},
+      {std::string(OptimizerOptions::kSmallQueryNumWorkers), "2"},
   };
   auto options = OptimizerOptions::from(props);
 
   EXPECT_TRUE(options.sampleJoins);
   EXPECT_EQ(options.parallelProjectWidth, 8);
+  EXPECT_EQ(options.smallQueryMaxScanRows, 5'000'000'000);
+  EXPECT_EQ(options.smallQueryNumWorkers, 2);
   EXPECT_EQ(options.traceFlags, 5);
   EXPECT_EQ(options.broadcastSizeLimit, 5LL << 30);
   EXPECT_FALSE(options.syntacticJoinOrder);
@@ -96,6 +103,12 @@ TEST(OptimizerOptionsTest, normalizeRejectsInvalidValues) {
   VELOX_ASSERT_THROW(
       options.normalize(OptimizerOptions::kBroadcastSizeLimit, "100"),
       "Invalid capacity string");
+  VELOX_ASSERT_THROW(
+      options.normalize(OptimizerOptions::kSmallQueryMaxScanRows, "-1"),
+      "small_query_max_scan_rows must be >= 0");
+  VELOX_ASSERT_THROW(
+      options.normalize(OptimizerOptions::kSmallQueryNumWorkers, "0"),
+      "small_query_num_workers must be >= 1");
 }
 
 } // namespace facebook::axiom::optimizer

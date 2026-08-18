@@ -56,6 +56,14 @@ std::optional<float> History::findSampledLeafSelectivity(
   return std::nullopt;
 }
 
+std::string NodePrediction::toString() const {
+  std::string result = fmt::format("{:g} rows", cardinality);
+  if (numRawInputRows.has_value()) {
+    result += fmt::format(", {} raw input rows", *numRawInputRows);
+  }
+  return result;
+}
+
 float shuffleCost(const ColumnVector& columns) {
   return byteSize(columns) * Costs::kByteShuffleCost;
 }

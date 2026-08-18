@@ -24,12 +24,19 @@ namespace facebook::axiom::optimizer {
 
 /// Record the history data for a tracked PlanNode.
 struct NodePrediction {
-  /// Result cardinality for the top node of the recorded plan.
-  float cardinality;
-  ///  Peak total memory for the top node.
-  float peakMemory{0};
-  /// CPU estimate in optimizer internal units.
-  float cpu{0};
+  /// Estimated result cardinality. An optimizer operator may lower to several
+  /// Velox nodes; the entry is keyed by the outermost one, whose output is the
+  /// operator's result.
+  float cardinality{0};
+
+  /// For a table scan, the estimated rows it reads, as reported by the
+  /// connector; see `connector::FilteredTableStats::numRawInputRows`. Unset for
+  /// every other node, and for a connector that does not report it.
+  std::optional<uint64_t> numRawInputRows;
+
+  /// Returns a human-readable summary of the estimate for annotating plan
+  /// output.
+  std::string toString() const;
 };
 
 /// Interface to historical query cost and cardinality

@@ -35,8 +35,8 @@ class EmitPass {
     std::vector<ExecutableFragment> fragments;
     /// Set when the plan writes a table; empty otherwise.
     FinishWrite finishWrite;
-    /// Per-node estimated cardinality, keyed by emitted `PlanNodeId`, for
-    /// EXPLAIN. Empty when estimates are unavailable.
+    /// Per-node estimates, keyed by emitted `PlanNodeId`, for EXPLAIN. Empty
+    /// when estimates are unavailable.
     NodePredictionMap prediction;
   };
 

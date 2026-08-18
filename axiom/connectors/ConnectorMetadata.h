@@ -433,6 +433,22 @@ struct FilteredTableStats {
   /// the table handle.
   uint64_t numRows{0};
 
+  /// Estimated rows the scan reads in order to produce 'numRows'. A connector
+  /// may eliminate rows two ways: without reading them, by resolving part of
+  /// the accepted filters from metadata, and by evaluating the remaining
+  /// filters on rows it has read. This is the count after the first and before
+  /// the second, so it is at least 'numRows'. The two are equal when the
+  /// connector discards nothing after reading: every row it reads is returned.
+  /// A scan's work tracks the rows it reads rather than the rows it returns,
+  /// which is what makes this the measure of how large a query is -- one
+  /// returning a handful of rows may still read a great many. std::nullopt when
+  /// the connector does not distinguish the two.
+  ///
+  /// For example, a Hive-style connector skips files whose path values fail the
+  /// filter, then applies what remains to the rows it reads; 'numRawInputRows'
+  /// is what those files hold.
+  std::optional<uint64_t> numRawInputRows;
+
   /// Per-column statistics corresponding 1:1 to the 'columns' parameter of
   /// co_estimateStats. Either empty (no column stats available) or has the
   /// same size as 'columns', in the same order.

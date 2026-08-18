@@ -68,11 +68,11 @@ TEST_P(ExplainTest, showsCardinalityEstimate) {
       ::testing::ElementsAre(
           Eq("Fragment 0: fragment1 SINGLE:"),
           StartsWith("-- Aggregation[3][SINGLE [l_orderkey] sum := sum("),
-          StartsWith("   Estimate: 249.75 rows, "),
+          Eq("   Estimate: 249.75 rows"),
           StartsWith("  -- Project[2][expressions: (l_orderkey:BIGINT, "),
-          StartsWith("     Estimate: 999.202 rows, "),
+          Eq("     Estimate: 999.202 rows"),
           StartsWith("    -- Filter[1][expression: lt(\"l_orderkey\",1000)]"),
-          StartsWith("       Estimate: 999.202 rows, "),
+          Eq("       Estimate: 999.202 rows"),
           StartsWith("      -- TableScan[0][\"default\".\"lineitem\"]"),
           Eq(""),
           Eq("")));

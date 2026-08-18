@@ -81,6 +81,21 @@ std::vector<ConfigProperty> buildProperties(
           "Enable reducing semi joins.",
       },
       {
+          std::string(OptimizerOptions::kSmallQueryMaxScanRows),
+          ConfigPropertyType::kInteger,
+          std::to_string(OptimizerOptions::kSmallQueryMaxScanRowsDefault),
+          "A query whose scans are estimated to read at most this many rows in "
+          "total is small and runs on 'small_query_num_workers' workers. A "
+          "query that reads more, or whose scans report no estimate, runs on "
+          "all available workers. 0 disables.",
+      },
+      {
+          std::string(OptimizerOptions::kSmallQueryNumWorkers),
+          ConfigPropertyType::kInteger,
+          std::to_string(OptimizerOptions::kSmallQueryNumWorkersDefault),
+          "Workers a small query runs on, capped by the number available.",
+      },
+      {
           std::string(OptimizerOptions::kParallelProjectWidth),
           ConfigPropertyType::kInteger,
           std::to_string(OptimizerOptions::kParallelProjectWidthDefault),
@@ -150,7 +165,15 @@ OptimizerOptions::OptimizerOptions(
 std::string OptimizerOptions::normalize(
     std::string_view name,
     std::string_view value) const {
-  if (name == kParallelProjectWidth) {
+  if (name == kSmallQueryMaxScanRows) {
+    auto rows = std::stoll(std::string(value));
+    VELOX_USER_CHECK_GE(
+        rows, 0, "small_query_max_scan_rows must be >= 0: {}", value);
+  } else if (name == kSmallQueryNumWorkers) {
+    auto workers = std::stoi(std::string(value));
+    VELOX_USER_CHECK_GE(
+        workers, 1, "small_query_num_workers must be >= 1: {}", value);
+  } else if (name == kParallelProjectWidth) {
     auto width = std::stoi(std::string(value));
     VELOX_USER_CHECK_GE(
         width, 1, "parallel_project_width must be >= 1: {}", value);
@@ -182,6 +205,13 @@ OptimizerOptions OptimizerOptions::from(
     }
   };
 
+  auto setLong = [&](std::string_view key, int64_t& field) {
+    auto it = properties.find(key);
+    if (it != properties.end()) {
+      field = std::stoll(it->second);
+    }
+  };
+
   auto setCapacity = [&](std::string_view key, int64_t& field) {
     auto it = properties.find(key);
     if (it != properties.end()) {
@@ -199,6 +229,8 @@ OptimizerOptions OptimizerOptions::from(
   setBool(kSyntacticJoinOrder, options.syntacticJoinOrder);
   setBool(kAlwaysPlanPartialAggregation, options.alwaysPlanPartialAggregation);
   setBool(kEnableReducingExistences, options.enableReducingExistences);
+  setLong(kSmallQueryMaxScanRows, options.smallQueryMaxScanRows);
+  setInt(kSmallQueryNumWorkers, options.smallQueryNumWorkers);
   setInt(kParallelProjectWidth, options.parallelProjectWidth);
   setInt(kGreedyJoinThreshold, options.greedyJoinThreshold);
   setCapacity(kBroadcastSizeLimit, options.broadcastSizeLimit);

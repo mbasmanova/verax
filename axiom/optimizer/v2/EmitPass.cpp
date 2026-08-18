@@ -300,10 +300,18 @@ class Emitter {
       return;
     }
     const auto& estimate = estimateProvider_.estimate(node);
-    if (estimate.cardinality.has_value()) {
-      prediction_[plan->id()] =
-          NodePrediction{.cardinality = *estimate.cardinality};
+    if (!estimate.cardinality.has_value()) {
+      return;
     }
+
+    std::optional<uint64_t> numRawInputRows;
+    if (node->is(NodeType::kScan)) {
+      numRawInputRows = node->as<Scan>()->baseTable()->numRawInputRows;
+    }
+
+    prediction_[plan->id()] = NodePrediction{
+        .cardinality = *estimate.cardinality,
+        .numRawInputRows = numRawInputRows};
   }
 
   // Local exchange inserted below a final/single aggregation at numDrivers > 1
