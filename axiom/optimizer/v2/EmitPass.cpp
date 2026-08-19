@@ -524,7 +524,7 @@ class Emitter {
 
   // A grouped leaf of the fragment currently being built: a source that runs
   // per bucket-group under grouped execution. `partitionType` is the
-  // connector's (unscaled) partitioning for a bucketed scan, or null for a
+  // partitioning planning chose for a bucketed scan, or null for a
   // hash-partitioned consumer exchange that must route by group. Saved and
   // restored around each child-fragment build so leaves don't leak across
   // fragments.
@@ -704,11 +704,8 @@ velox::core::PlanNodePtr Emitter::emitScan(const Scan& scan) {
       tableHandle,
       std::move(assignments));
 
-  // A scan of a bucketed table is a grouped leaf: it runs per bucket-group
-  // under grouped execution, tagging the fragment as bucketed. The layout's
-  // partition type is null when the table is not bucketed.
-  if (const auto* partitionType =
-          scan.baseTable()->layout()->partitionType().get()) {
+  // A grouped scan makes its fragment bucketed.
+  if (const auto* partitionType = scan.groupedPartitionType()) {
     groupedLeaves_.push_back({scanNode->id(), partitionType});
   }
 
@@ -1825,39 +1822,42 @@ void decideFragmentType(
 }
 
 void Emitter::finalizeGroupedLeaves(ExecutableFragment& fragment) {
-  // Fold the bucketed scans' partitionings into one compatible type. `folded`
-  // owns the running copartition result so `base`, which points into it (or the
-  // first scan's layout-owned type before any fold), never dangles.
-  const connector::PartitionType* base = nullptr;
-  std::shared_ptr<connector::PartitionType> folded;
+  // Fold the grouped scans' partitionings into the one every task reads by.
+  // Planning already coarsened each to the worker count and only groups scans
+  // it checked copartition, so the fold must succeed and its count is the
+  // fragment's width.
+  const connector::PartitionType* folded = nullptr;
   for (const auto& leaf : groupedLeaves_) {
     if (leaf.partitionType == nullptr) {
       continue;
     }
-    if (base == nullptr) {
-      base = leaf.partitionType;
+    if (folded == nullptr) {
+      folded = leaf.partitionType;
       continue;
     }
-    // Scans share a fragment without an intervening exchange only because the
-    // memo found them co-partitionable, so `copartition` must succeed.
-    folded = base->copartition(*leaf.partitionType);
+    auto next = folded->copartition(*leaf.partitionType);
     VELOX_CHECK_NOT_NULL(
-        folded, "Co-fragmented bucketed scans must be copartitionable");
-    base = folded.get();
+        next, "Co-fragmented bucketed scans must be copartitionable");
+    folded = queryCtx()->registerPartitionType(std::move(next));
   }
 
-  if (base == nullptr) {
+  if (folded == nullptr) {
     return;
   }
 
-  std::shared_ptr<connector::PartitionType> scaled =
-      base->scaleDown(options_.numWorkers);
+  // The plan outlives this optimization, so it takes the owning pointer.
+  auto owned = queryCtx()->sharedPartitionType(folded);
+  VELOX_CHECK_NOT_NULL(
+      owned, "A grouped leaf's PartitionType must be owned by the context");
   for (const auto& leaf : groupedLeaves_) {
     fragment.groupedNodes.emplace(
-        leaf.nodeId, leaf.partitionType != nullptr ? scaled : nullptr);
+        leaf.nodeId,
+        leaf.partitionType != nullptr
+            ? std::const_pointer_cast<connector::PartitionType>(owned)
+            : nullptr);
   }
   fragment.type = FragmentType::kFixed;
-  fragment.width = scaled->numPartitions();
+  fragment.width = folded->numPartitions();
 }
 
 velox::core::PlanNodePtr Emitter::emitChildFragment(
@@ -1925,18 +1925,19 @@ velox::core::PlanNodePtr Emitter::makeExchangeProducer(
           toFieldAccessList(partitioning.keys, "Exchange partition key");
 
       // A partitionType aligns this shuffle to a bucketed side: use the
-      // connector's partition function (scaled to the worker count) so rows
-      // land in the same groups as the bucketed scan, matching the grouped
-      // fragment's width. Otherwise standard Velox hash over numWorkers
-      // partitions.
+      // connector's partition function so rows land in the same groups as that
+      // side. Planning coarsened it to the worker count, so its partition count
+      // is the consumer fragment's width. Otherwise standard Velox hash over
+      // numWorkers partitions.
       int32_t numPartitions = options_.numWorkers;
       velox::core::PartitionFunctionSpecPtr spec;
       if (partitioning.partitionType != nullptr) {
-        auto scaled =
-            partitioning.partitionType->scaleDown(options_.numWorkers);
-        numPartitions = scaled->numPartitions();
+        numPartitions = partitioning.partitionType->numPartitions();
         spec = connectorPartitionSpec(
-            *scaled, outputType, fields, /*isLocal=*/false);
+            *partitioning.partitionType,
+            outputType,
+            fields,
+            /*isLocal=*/false);
       } else {
         spec = makeHashPartitionSpec(outputType, fields);
       }
@@ -1998,10 +1999,9 @@ velox::core::PlanNodePtr Emitter::emitExchange(const Exchange& exchange) {
 
   // A partitioned exchange feeding the outer fragment is a group-routed leaf
   // there: if that fragment turns out bucketed, the exchange delivers per
-  // group. Recorded as a null-typed leaf (the fragment's bucketed scan, if any,
-  // anchors the width); `finalizeGroupedLeaves` drops it when the fragment has
-  // none. A bucketed write, whose fragment has no scan, anchors this leaf
-  // explicitly — see emitTableWrite.
+  // group. Recorded as a null-typed leaf, since the fragment's bucketed scans
+  // are what fix its width; `finalizeGroupedLeaves` drops it when there are
+  // none.
   if (partitioning.kind == PartitionKind::kPartitioned) {
     groupedLeaves_.push_back({consumer->id(), nullptr});
   }
@@ -2085,18 +2085,18 @@ velox::core::PlanNodePtr Emitter::emitTableWrite(const TableWrite& tableWrite) {
 
   velox::core::PlanNodePtr input = emit(tableWrite.input());
 
-  // A bucketed write's input is the remote bucket exchange (physical planning
-  // inserts it unless the source is already co-bucketed). The writer fragment
-  // has no bucketed scan to anchor grouped execution, so anchor it on that
-  // exchange: each of its bucket partitions becomes one writer group producing
-  // one bucket file, matching the exchange's partition count.
+  // A bucketed write reads a bucket exchange (physical planning inserts one
+  // unless the source is already co-bucketed), and its writer task count must
+  // equal that exchange's partition count: one task per bucket group, each
+  // producing one bucket file. The fragment runs no grouped scan, so this is a
+  // task count, not grouped execution.
   if (distributed && !layout->partitionColumns().empty() &&
       tableWrite.input()->is(NodeType::kExchange)) {
-    for (auto& leaf : groupedLeaves_) {
-      if (leaf.nodeId == input->id()) {
-        leaf.partitionType = layout->partitionType().get();
-        break;
-      }
+    const auto& exchangeType =
+        tableWrite.input()->physicalProperties().globalPartition.partitionType;
+    if (exchangeType != nullptr) {
+      writerFragment.type = FragmentType::kFixed;
+      writerFragment.width = exchangeType->numPartitions();
     }
   }
 

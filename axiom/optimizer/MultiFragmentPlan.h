@@ -159,10 +159,13 @@ struct ExecutableFragment {
   /// for 'this'.
   std::vector<InputStage> inputStages;
 
-  /// PartitionType per scan node for grouped leaf nodes. The connector tags
-  /// each emitted Split with a groupId; the runtime routes by groupId. All
-  /// entries share numPartitions(). Empty when no scan in this fragment is
-  /// bucketed.
+  /// The leaf nodes of a fragment that runs one bucket group at a time. A scan
+  /// read that way maps to the partitioning it is read by, already coarsened to
+  /// the worker count, and the connector tags each emitted Split with a groupId
+  /// the runtime routes by. An exchange feeding the same fragment maps to null:
+  /// its partitions line up with those groups by construction. All non-null
+  /// entries share numPartitions(), which is the fragment's width. Empty when
+  /// the fragment does not run grouped.
   folly::F14FastMap<
       velox::core::PlanNodeId,
       std::shared_ptr<connector::PartitionType>>
@@ -249,7 +252,9 @@ class MultiFragmentPlan {
 
   /// Validates structural consistency of the plan. Checks fragment types,
   /// widths, producer-consumer linkage, and partition count alignment.
-  void checkConsistency() const;
+  /// 'mayBeEmpty' allows a plan with no fragments, which is what a write the
+  /// connector performs through metadata alone produces.
+  void checkConsistency(bool mayBeEmpty) const;
 
  private:
   const std::vector<ExecutableFragment> fragments_;

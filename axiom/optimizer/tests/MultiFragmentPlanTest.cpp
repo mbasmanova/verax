@@ -94,7 +94,7 @@ TEST_F(MultiFragmentPlanTest, validSingleFragment) {
       FragmentType::kSource,
       std::nullopt,
       MultiFragmentPlan::Options::singleNode());
-  EXPECT_NO_THROW(plan.checkConsistency());
+  EXPECT_NO_THROW(plan.checkConsistency(/*mayBeEmpty=*/false));
 }
 
 TEST_F(MultiFragmentPlanTest, validDistributedPlan) {
@@ -115,40 +115,46 @@ TEST_F(MultiFragmentPlanTest, validDistributedPlan) {
 
   auto plan =
       MultiFragmentPlan({std::move(producer), std::move(consumer)}, options);
-  EXPECT_NO_THROW(plan.checkConsistency());
+  EXPECT_NO_THROW(plan.checkConsistency(/*mayBeEmpty=*/false));
 }
 
 TEST_F(MultiFragmentPlanTest, emptyFragments) {
   VELOX_ASSERT_THROW(
-      MultiFragmentPlan({}, defaultOptions()).checkConsistency(),
+      MultiFragmentPlan({}, defaultOptions())
+          .checkConsistency(/*mayBeEmpty=*/false),
       "Plan must have at least one fragment");
 }
 
 TEST_F(MultiFragmentPlanTest, fixedWithoutWidth) {
   VELOX_ASSERT_THROW(
-      makeSingleFragmentPlan(FragmentType::kFixed).checkConsistency(),
+      makeSingleFragmentPlan(FragmentType::kFixed)
+          .checkConsistency(/*mayBeEmpty=*/false),
       "kFixed fragment must have width set");
 }
 
 TEST_F(MultiFragmentPlanTest, singleWithWidth) {
   VELOX_ASSERT_THROW(
-      makeSingleFragmentPlan(FragmentType::kSingle, 1).checkConsistency(),
+      makeSingleFragmentPlan(FragmentType::kSingle, 1)
+          .checkConsistency(/*mayBeEmpty=*/false),
       "fragment must not have width set");
 }
 
 TEST_F(MultiFragmentPlanTest, coordinatorWithWidth) {
   VELOX_ASSERT_THROW(
-      makeSingleFragmentPlan(FragmentType::kCoordinator, 1).checkConsistency(),
+      makeSingleFragmentPlan(FragmentType::kCoordinator, 1)
+          .checkConsistency(/*mayBeEmpty=*/false),
       "fragment must not have width set");
 }
 
 TEST_F(MultiFragmentPlanTest, invalidWidth) {
   VELOX_ASSERT_THROW(
-      makeSingleFragmentPlan(FragmentType::kFixed, 0).checkConsistency(),
+      makeSingleFragmentPlan(FragmentType::kFixed, 0)
+          .checkConsistency(/*mayBeEmpty=*/false),
       "Fragment width must be positive");
 
   VELOX_ASSERT_THROW(
-      makeSingleFragmentPlan(FragmentType::kFixed, 20).checkConsistency(),
+      makeSingleFragmentPlan(FragmentType::kFixed, 20)
+          .checkConsistency(/*mayBeEmpty=*/false),
       "Fragment width exceeds numWorkers");
 }
 
@@ -156,7 +162,7 @@ TEST_F(MultiFragmentPlanTest, sourceWithWidthHint) {
   auto options = defaultOptions();
   options.remoteOutput = true;
   auto plan = makeSingleFragmentPlan(FragmentType::kSource, 5, options);
-  EXPECT_NO_THROW(plan.checkConsistency());
+  EXPECT_NO_THROW(plan.checkConsistency(/*mayBeEmpty=*/false));
 }
 
 TEST_F(MultiFragmentPlanTest, missingProducer) {
@@ -169,7 +175,7 @@ TEST_F(MultiFragmentPlanTest, missingProducer) {
 
   auto plan = MultiFragmentPlan({std::move(fragment)}, defaultOptions());
   VELOX_ASSERT_THROW(
-      plan.checkConsistency(),
+      plan.checkConsistency(/*mayBeEmpty=*/false),
       "Producer fragment not found: nonexistent, consumer: stage0");
 }
 
@@ -187,7 +193,9 @@ TEST_F(MultiFragmentPlanTest, producerNotPartitionedOutput) {
 
   auto plan = MultiFragmentPlan(
       {std::move(producer), std::move(consumer)}, defaultOptions());
-  VELOX_ASSERT_THROW(plan.checkConsistency(), "Expected PartitionedOutputNode");
+  VELOX_ASSERT_THROW(
+      plan.checkConsistency(/*mayBeEmpty=*/false),
+      "Expected PartitionedOutputNode");
 }
 
 TEST_F(MultiFragmentPlanTest, lastFragmentIsProducer) {
@@ -210,12 +218,13 @@ TEST_F(MultiFragmentPlanTest, lastFragmentIsProducer) {
   {
     auto plan = MultiFragmentPlan({consumer, producer}, options);
     VELOX_ASSERT_THROW(
-        plan.checkConsistency(), "Last fragment cannot be a producer");
+        plan.checkConsistency(/*mayBeEmpty=*/false),
+        "Last fragment cannot be a producer");
   }
 
   {
     auto plan = MultiFragmentPlan({producer, consumer}, options);
-    ASSERT_NO_THROW(plan.checkConsistency());
+    ASSERT_NO_THROW(plan.checkConsistency(/*mayBeEmpty=*/false));
   }
 }
 
@@ -237,7 +246,8 @@ TEST_F(MultiFragmentPlanTest, partitionCountMismatch) {
 
   auto plan =
       MultiFragmentPlan({std::move(producer), std::move(consumer)}, options);
-  VELOX_ASSERT_THROW(plan.checkConsistency(), "Partition count mismatch");
+  VELOX_ASSERT_THROW(
+      plan.checkConsistency(/*mayBeEmpty=*/false), "Partition count mismatch");
 }
 
 TEST_F(MultiFragmentPlanTest, broadcastSkipsWidthCheck) {
@@ -254,7 +264,7 @@ TEST_F(MultiFragmentPlanTest, broadcastSkipsWidthCheck) {
 
   auto plan = MultiFragmentPlan(
       {std::move(producer), std::move(consumer)}, defaultOptions());
-  EXPECT_NO_THROW(plan.checkConsistency());
+  EXPECT_NO_THROW(plan.checkConsistency(/*mayBeEmpty=*/false));
 }
 
 TEST_F(MultiFragmentPlanTest, lastFragmentType) {
@@ -263,12 +273,12 @@ TEST_F(MultiFragmentPlanTest, lastFragmentType) {
 
   VELOX_ASSERT_THROW(
       makeSingleFragmentPlan(FragmentType::kFixed, 4, options)
-          .checkConsistency(),
+          .checkConsistency(/*mayBeEmpty=*/false),
       "Last fragment must be kSingle or kCoordinator");
 
   VELOX_ASSERT_THROW(
       makeSingleFragmentPlan(FragmentType::kSource, std::nullopt, options)
-          .checkConsistency(),
+          .checkConsistency(/*mayBeEmpty=*/false),
       "Last fragment must be kSingle or kCoordinator");
 
   // kSource is allowed as last fragment with numWorkers == 1.
@@ -276,12 +286,12 @@ TEST_F(MultiFragmentPlanTest, lastFragmentType) {
                       FragmentType::kSource,
                       std::nullopt,
                       MultiFragmentPlan::Options::singleNode())
-                      .checkConsistency());
+                      .checkConsistency(/*mayBeEmpty=*/false));
 
   // kFixed is allowed as last fragment with remoteOutput.
   options.remoteOutput = true;
   EXPECT_NO_THROW(makeSingleFragmentPlan(FragmentType::kFixed, 4, options)
-                      .checkConsistency());
+                      .checkConsistency(/*mayBeEmpty=*/false));
 }
 
 TEST_F(MultiFragmentPlanTest, orphanFragment) {
@@ -302,7 +312,7 @@ TEST_F(MultiFragmentPlanTest, orphanFragment) {
   auto plan =
       MultiFragmentPlan({std::move(orphan), std::move(output)}, options);
   VELOX_ASSERT_THROW(
-      plan.checkConsistency(),
+      plan.checkConsistency(/*mayBeEmpty=*/false),
       "Non-last fragment must be referenced by exactly one consumer: stage0");
 }
 
@@ -335,7 +345,7 @@ TEST_F(MultiFragmentPlanTest, producerReferencedByMultipleConsumers) {
       {std::move(producer), std::move(consumerA), std::move(consumerB)},
       options);
   VELOX_ASSERT_THROW(
-      plan.checkConsistency(),
+      plan.checkConsistency(/*mayBeEmpty=*/false),
       "Producer fragment referenced by multiple consumers: stage0");
 }
 

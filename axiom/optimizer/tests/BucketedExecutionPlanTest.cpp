@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <fmt/format.h>
 #include <gtest/gtest.h>
 #include "axiom/connectors/tests/TestConnector.h"
 #include "axiom/logical_plan/PlanBuilder.h"
@@ -119,15 +120,32 @@ TEST_P(BucketedExecutionTest, join) {
         "SELECT * FROM j_orders JOIN j_customers "
         "ON j_orders.customer_id = j_customers.id",
         kTestConnectorId));
-    expectBucketedFragmentWithWidth(*plan.plan, 4);
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(
+        plan.plan,
+        matchScan("j_customers")
+            .hashJoinInner(matchScan("j_orders"))
+            .projectIf(useV2_)
+            .fragment({.width = 4, .bucketedScans = 2})
+            .gather()
+            .build());
   }
 
+  // Each outer join keeps both sides co-bucketed in one fragment. The plan
+  // reads j_customers as the probe, which turns the query's RIGHT into a LEFT
+  // and its LEFT into a RIGHT.
   {
     auto plan = planDistributed(parseSelect(
         "SELECT * FROM j_orders RIGHT JOIN j_customers "
         "ON j_orders.customer_id = j_customers.id",
         kTestConnectorId));
-    expectBucketedFragmentWithWidth(*plan.plan, 4);
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(
+        plan.plan,
+        matchScan("j_customers")
+            .hashJoinLeft(matchScan("j_orders"))
+            .projectIf(!useV2_)
+            .fragment({.width = 4, .bucketedScans = 2})
+            .gather()
+            .build());
   }
 
   {
@@ -135,16 +153,34 @@ TEST_P(BucketedExecutionTest, join) {
         "SELECT * FROM j_orders FULL OUTER JOIN j_customers "
         "ON j_orders.customer_id = j_customers.id",
         kTestConnectorId));
-    expectBucketedFragmentWithWidth(*plan.plan, 4);
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(
+        plan.plan,
+        matchScan("j_customers")
+            .hashJoinFull(matchScan("j_orders"))
+            .fragment({.width = 4, .bucketedScans = 2})
+            .gather()
+            .build());
   }
 
-  // LEFT join: bucketed fragment preserved on one side.
   {
     auto plan = planDistributed(parseSelect(
         "SELECT * FROM j_orders LEFT JOIN j_customers "
         "ON j_orders.customer_id = j_customers.id",
         kTestConnectorId));
-    expectBucketedFragmentWithWidth(*plan.plan, 4);
+    if (useV2_) {
+      AXIOM_ASSERT_DISTRIBUTED_PLAN(
+          plan.plan,
+          matchScan("j_customers")
+              .hashJoinRight(matchScan("j_orders"))
+              .fragment({.width = 4, .bucketedScans = 2})
+              .gather()
+              .build());
+    } else {
+      // Wrong plan: v1 reads j_orders by its buckets and then shuffles it
+      // into the join. A grouped read that is shuffled away caps the
+      // fragment's width for no benefit; the pairing it was read for is lost.
+      expectBucketedFragmentWithWidth(*plan.plan, 4);
+    }
   }
 
   testConnector_->addTable(
@@ -155,11 +191,17 @@ TEST_P(BucketedExecutionTest, join) {
       "SELECT * FROM j_orders JOIN j_unbucketed "
       "ON j_orders.customer_id = j_unbucketed.id",
       kTestConnectorId));
-  expectBucketedFragmentWithWidth(
-      *plan.plan,
-      /*expectedWidth=*/4,
-      /*expectedBucketedScans=*/1,
-      /*expectedHashExchanges=*/1);
+  // The unbucketed side is shuffled into the bucketed fragment by the bucket
+  // function, so it joins the grouped scan without moving it.
+  AXIOM_ASSERT_DISTRIBUTED_PLAN(
+      plan.plan,
+      matchScan("j_orders")
+          .hashJoinInner(
+              matchScan("j_unbucketed").aliases({"jid"}).shuffle({"jid"}))
+          .projectIf(useV2_)
+          .fragment({.width = 4, .bucketedScans = 1, .bucketedExchanges = 1})
+          .gather()
+          .build());
 }
 
 TEST_P(BucketedExecutionTest, semijoin) {
@@ -241,16 +283,45 @@ TEST_P(BucketedExecutionTest, aggregation) {
             .tableScan("a_orders")
             .aggregate({"customer_id"}, {"sum(amount)"})
             .build());
-    expectBucketedFragmentWithWidth(*plan.plan, 4);
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(
+        plan.plan,
+        matchScan("a_orders")
+            .partialAggregation()
+            .localPartition({"customer_id"})
+            .finalAggregation()
+            .fragment({.width = 4, .bucketedScans = 1})
+            .gather()
+            .build());
   }
 
+  // The bucket key is a prefix of the grouping keys, so each group still lands
+  // whole on one task.
   {
     auto plan = planDistributed(
         lp::PlanBuilder(makeContext())
             .tableScan("a_orders")
             .aggregate({"customer_id", "order_date"}, {"sum(amount)"})
             .build());
-    expectBucketedFragmentWithWidth(*plan.plan, 4);
+    if (useV2_) {
+      AXIOM_ASSERT_DISTRIBUTED_PLAN(
+          plan.plan,
+          matchScan("a_orders")
+              .partialAggregation()
+              .localPartition({"customer_id", "order_date"})
+              .finalAggregation()
+              .fragment({.width = 4, .bucketedScans = 1})
+              .gather()
+              .build());
+    } else {
+      AXIOM_ASSERT_DISTRIBUTED_PLAN(
+          plan.plan,
+          matchScan("a_orders")
+              .localPartition({"customer_id", "order_date"})
+              .singleAggregation()
+              .fragment({.width = 4, .bucketedScans = 1})
+              .gather()
+              .build());
+    }
   }
 
   {
@@ -261,7 +332,15 @@ TEST_P(BucketedExecutionTest, aggregation) {
                 {"customer_id"},
                 {"sum(amount)", "count(*)", "min(amount)", "max(amount)"})
             .build());
-    expectBucketedFragmentWithWidth(*plan.plan, 4);
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(
+        plan.plan,
+        matchScan("a_orders")
+            .partialAggregation()
+            .localPartition({"customer_id"})
+            .finalAggregation()
+            .fragment({.width = 4, .bucketedScans = 1})
+            .gather()
+            .build());
   }
 
   {
@@ -270,7 +349,29 @@ TEST_P(BucketedExecutionTest, aggregation) {
             .tableScan("a_orders")
             .aggregate({"customer_id"}, {"count(distinct amount)"})
             .build());
-    expectBucketedFragmentWithWidth(*plan.plan, 4);
+    if (useV2_) {
+      AXIOM_ASSERT_DISTRIBUTED_PLAN(
+          plan.plan,
+          matchScan("a_orders")
+              .localPartition({"customer_id"})
+              .singleAggregation()
+              .fragment({.width = 4, .bucketedScans = 1})
+              .gather()
+              .build());
+    } else {
+      // v1 makes the values distinct first, then counts them.
+      AXIOM_ASSERT_DISTRIBUTED_PLAN(
+          plan.plan,
+          matchScan("a_orders")
+              .localPartition({"customer_id", "amount"})
+              .singleAggregation()
+              .partialAggregation()
+              .localPartition({"customer_id"})
+              .finalAggregation()
+              .fragment({.width = 4, .bucketedScans = 1})
+              .gather()
+              .build());
+    }
   }
 
   {
@@ -278,7 +379,16 @@ TEST_P(BucketedExecutionTest, aggregation) {
         "SELECT customer_id, sum(amount) AS total FROM a_orders "
         "GROUP BY customer_id HAVING sum(amount) > 1000",
         kTestConnectorId));
-    expectBucketedFragmentWithWidth(*plan.plan, 4);
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(
+        plan.plan,
+        matchScan("a_orders")
+            .partialAggregation()
+            .localPartition({"customer_id"})
+            .finalAggregation()
+            .filter()
+            .fragment({.width = 4, .bucketedScans = 1})
+            .gather()
+            .build());
   }
 
   {
@@ -288,7 +398,14 @@ TEST_P(BucketedExecutionTest, aggregation) {
             .aggregate(
                 {"customer_id"}, {"array_agg(amount ORDER BY order_date)"})
             .build());
-    expectBucketedFragmentWithWidth(*plan.plan, 4);
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(
+        plan.plan,
+        matchScan("a_orders")
+            .localPartition({"customer_id"})
+            .singleAggregation()
+            .fragment({.width = 4, .bucketedScans = 1})
+            .gather()
+            .build());
   }
 
   // LIMIT atop a bucketed aggregation keeps the bucketed annotation on
@@ -300,17 +417,46 @@ TEST_P(BucketedExecutionTest, aggregation) {
             .aggregate({"customer_id"}, {"sum(amount)"})
             .limit(0, 100)
             .build());
-    expectBucketedFragmentWithWidth(*plan.plan, 4);
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(
+        plan.plan,
+        matchScan("a_orders")
+            .partialAggregation()
+            .localPartition({"customer_id"})
+            .finalAggregation()
+            .localLimit(0, 100)
+            .fragment({.width = 4, .bucketedScans = 1})
+            .gather()
+            .finalLimit(0, 100)
+            .build());
   }
 
-  // Non-bucket grouping key falls through to partial+final.
+  // Grouping by a non-bucket key falls through to partial+final. The table's
+  // bucketing on customer_id does not co-locate order_date groups, so the plan
+  // does not read it grouped.
   {
     auto plan = planDistributed(
         lp::PlanBuilder(makeContext())
             .tableScan("a_orders")
             .aggregate({"order_date"}, {"sum(amount)"})
             .build());
-    expectBucketedFragmentWithWidth(*plan.plan, 4);
+    if (useV2_) {
+      AXIOM_ASSERT_DISTRIBUTED_PLAN(
+          plan.plan,
+          matchScan("a_orders")
+              .partialAggregation()
+              .notBucketed()
+              .shuffle({"order_date"})
+              .localPartition({"order_date"})
+              .finalAggregation()
+              .gather()
+              .build());
+    } else {
+      // Wrong plan: v1 runs the scan grouped even though the aggregation
+      // groups on a non-bucket key, then shuffles the partials anyway. The
+      // grouping constrains the fragment's width and buys nothing, so only
+      // its width is checked here.
+      expectBucketedFragmentWithWidth(*plan.plan, 4);
+    }
   }
 }
 
@@ -322,7 +468,16 @@ TEST_P(BucketedExecutionTest, select) {
             .tableScan("s_one")
             .aggregate({"customer_id"}, {"sum(amount)"})
             .build());
-    expectBucketedFragmentWithWidth(*plan.plan, 1);
+    // One bucket caps the fragment at one task.
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(
+        plan.plan,
+        matchScan("s_one")
+            .partialAggregation()
+            .localPartition({"customer_id"})
+            .finalAggregation()
+            .fragment({.width = 1, .bucketedScans = 1})
+            .gather()
+            .build());
   }
 
   // gcd(128, 64) = 64.
@@ -338,34 +493,14 @@ TEST_P(BucketedExecutionTest, select) {
         "SELECT * FROM s_down_a JOIN s_down_b "
         "ON s_down_a.customer_id = s_down_b.customer_id",
         kTestConnectorId));
-    expectBucketedFragmentWithWidth(*plan.plan, 4);
-  }
-
-  // gcd(16, 9) = 1; copartition rejects. The two sides cannot co-fragment as
-  // a bucketed pair, but each side may independently remain bucketed in its
-  // own fragment.
-  {
-    addBucketedTable("s_incompat_a", {"customer_id"}, 16);
-    addBucketedTable(
-        "s_incompat_b",
-        {"id"},
-        9,
-        ROW({"id", "name"}, {BIGINT(), VARCHAR()}),
-        100'000);
-    auto plan = planDistributed(parseSelect(
-        "SELECT * FROM s_incompat_a JOIN s_incompat_b "
-        "ON s_incompat_a.customer_id = s_incompat_b.id",
-        kTestConnectorId));
-    for (const auto& fragment : plan.plan->fragments()) {
-      int32_t bucketedScans = 0;
-      for (const auto& [_, partitionType] : fragment.groupedNodes) {
-        if (partitionType != nullptr) {
-          ++bucketedScans;
-        }
-      }
-      EXPECT_LE(bucketedScans, 1)
-          << "Incompatible bucket counts (16/9) should not pair-bucket";
-    }
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(
+        plan.plan,
+        matchScan("s_down_a")
+            .hashJoinInner(matchScan("s_down_b"))
+            .fragment({.width = 4, .bucketedScans = 2})
+            .gather()
+            .project()
+            .build());
   }
 
   testConnector_->addTable(
@@ -385,20 +520,54 @@ TEST_P(BucketedExecutionTest, select) {
             .tableScan("s_composite")
             .aggregate({"region", "customer_id"}, {"sum(amount)"})
             .build());
-    expectBucketedFragmentWithWidth(*plan.plan, 4);
+    if (useV2_) {
+      AXIOM_ASSERT_DISTRIBUTED_PLAN(
+          plan.plan,
+          matchScan("s_composite")
+              .partialAggregation()
+              .localPartition({"region", "customer_id"})
+              .finalAggregation()
+              .fragment({.width = 4, .bucketedScans = 1})
+              .gather()
+              .build());
+    } else {
+      AXIOM_ASSERT_DISTRIBUTED_PLAN(
+          plan.plan,
+          matchScan("s_composite")
+              .localPartition({"region", "customer_id"})
+              .singleAggregation()
+              .fragment({.width = 4, .bucketedScans = 1})
+              .gather()
+              .build());
+    }
   }
 
-  // Strict subset of bucket keys: bucketing on (region, customer_id) doesn't
-  // satisfy aggregation grouped only by region, so it falls through to
-  // partial+shuffle+final. Source fragment may still be bucketed for the
-  // partial aggregation.
+  // Strict subset of bucket keys: bucketing on (region, customer_id) does not
+  // co-locate groups of region alone, so the aggregation falls through to
+  // partial+shuffle+final and nothing reads the table grouped.
   {
     auto plan = planDistributed(
         lp::PlanBuilder(makeContext())
             .tableScan("s_composite")
             .aggregate({"region"}, {"sum(amount)"})
             .build());
-    expectBucketedFragmentWithWidth(*plan.plan, 4);
+    if (useV2_) {
+      AXIOM_ASSERT_DISTRIBUTED_PLAN(
+          plan.plan,
+          matchScan("s_composite")
+              .partialAggregation()
+              .notBucketed()
+              .shuffle({"region"})
+              .localPartition({"region"})
+              .finalAggregation()
+              .gather()
+              .build());
+    } else {
+      // Wrong plan: region alone is not a bucket key of (region,
+      // customer_id), so v1's grouped read cannot co-locate the groups and it
+      // shuffles regardless.
+      expectBucketedFragmentWithWidth(*plan.plan, 4);
+    }
   }
 }
 
@@ -419,24 +588,25 @@ TEST_P(BucketedExecutionTest, unionall) {
         "  SELECT customer_id, amount FROM u_b"
         ") GROUP BY customer_id",
         kTestConnectorId));
-    // 2-table union with gcd=4: both scans share the same bucketed fragment.
-    int32_t bucketedFragments = 0;
-    for (const auto& fragment : plan.plan->fragments()) {
-      if (!fragment.groupedNodes.empty()) {
-        ++bucketedFragments;
-        EXPECT_EQ(fragment.type, FragmentType::kFixed);
-        ASSERT_TRUE(fragment.width.has_value());
-        EXPECT_EQ(*fragment.width, 4);
-        int32_t bucketedScans = 0;
-        for (const auto& [_, partitionType] : fragment.groupedNodes) {
-          if (partitionType != nullptr) {
-            ++bucketedScans;
-          }
-        }
-        EXPECT_EQ(bucketedScans, 2);
-      }
+    // gcd(128, 4) = 4, so both legs are read by the same 4 bucket groups and
+    // the union needs no shuffle.
+    if (useV2_) {
+      AXIOM_ASSERT_DISTRIBUTED_PLAN(
+          plan.plan,
+          matchScan("u_a")
+              .localPartition(matchScan("u_b").project())
+              .partialAggregation()
+              .localPartition({"customer_id"})
+              .finalAggregation()
+              .fragment({.width = 4, .bucketedScans = 2})
+              .gather()
+              .build());
+    } else {
+      // Wrong plan: v1 reads both legs by their buckets, which already
+      // co-locates every group, and then shuffles the partial aggregate
+      // anyway.
+      expectBucketedFragmentWithWidth(*plan.plan, 4);
     }
-    EXPECT_GE(bucketedFragments, 1);
   }
 
   // Different bucket keys (same type, same count) — TestConnector treats these
@@ -458,7 +628,23 @@ TEST_P(BucketedExecutionTest, unionall) {
         "  SELECT account_id AS customer_id, amount FROM u_diff_acct"
         ") GROUP BY customer_id",
         kTestConnectorId));
-    expectBucketedFragmentWithWidth(*plan.plan, 4);
+    if (useV2_) {
+      AXIOM_ASSERT_DISTRIBUTED_PLAN(
+          plan.plan,
+          matchScan("u_diff_cust")
+              .localPartition(matchScan("u_diff_acct").project())
+              .partialAggregation()
+              .localPartition({"customer_id"})
+              .finalAggregation()
+              .fragment({.width = 4, .bucketedScans = 2})
+              .gather()
+              .build());
+    } else {
+      // Wrong plan: v1 reads both legs by their buckets, which already
+      // co-locates every group, and then shuffles the partial aggregate
+      // anyway.
+      expectBucketedFragmentWithWidth(*plan.plan, 4);
+    }
   }
 }
 
@@ -492,24 +678,15 @@ TEST_P(BucketedExecutionTest, mixedJoinOneBucketed) {
       "SELECT * FROM m_orders JOIN m_extras "
       "ON m_orders.customer_id = m_extras.customer_id",
       kTestConnectorId));
-  bool foundMixed = false;
-  for (const auto& fragment : plan.plan->fragments()) {
-    int32_t bucketedScans = 0;
-    int32_t hashExchanges = 0;
-    for (const auto& [_, partitionType] : fragment.groupedNodes) {
-      if (partitionType == nullptr) {
-        ++hashExchanges;
-      } else {
-        ++bucketedScans;
-      }
-    }
-    if (bucketedScans == 1 && hashExchanges == 1) {
-      foundMixed = true;
-      EXPECT_TRUE(fragment.width.has_value());
-      EXPECT_EQ(*fragment.width, 4);
-    }
-  }
-  EXPECT_TRUE(foundMixed);
+  AXIOM_ASSERT_DISTRIBUTED_PLAN(
+      plan.plan,
+      matchScan("m_orders")
+          .hashJoinInner(
+              matchScan("m_extras").aliases({"mcid"}).shuffle({"mcid"}))
+          .fragment({.width = 4, .bucketedScans = 1, .bucketedExchanges = 1})
+          .gather()
+          .project()
+          .build());
 }
 
 TEST_P(BucketedExecutionTest, mixedJoinTwoBucketedOneNot) {
@@ -523,24 +700,16 @@ TEST_P(BucketedExecutionTest, mixedJoinTwoBucketedOneNot) {
       "JOIN m2_customers ON m2_orders.customer_id = m2_customers.id "
       "JOIN m2_extras ON m2_orders.customer_id = m2_extras.customer_id",
       kTestConnectorId));
-  bool foundMixed = false;
-  for (const auto& fragment : plan.plan->fragments()) {
-    int32_t bucketedScans = 0;
-    int32_t hashExchanges = 0;
-    for (const auto& [_, partitionType] : fragment.groupedNodes) {
-      if (partitionType == nullptr) {
-        ++hashExchanges;
-      } else {
-        ++bucketedScans;
-      }
-    }
-    if (bucketedScans == 2 && hashExchanges == 1) {
-      foundMixed = true;
-      EXPECT_TRUE(fragment.width.has_value());
-      EXPECT_EQ(*fragment.width, 4);
-    }
-  }
-  EXPECT_TRUE(foundMixed);
+  AXIOM_ASSERT_DISTRIBUTED_PLAN(
+      plan.plan,
+      matchScan("m2_customers")
+          .hashJoinInner(matchScan("m2_orders"))
+          .hashJoinInner(
+              matchScan("m2_extras").aliases({"m2cid"}).shuffle({"m2cid"}))
+          .fragment({.width = 4, .bucketedScans = 2, .bucketedExchanges = 1})
+          .gather()
+          .project()
+          .build());
 }
 
 TEST_P(BucketedExecutionTest, mixedJoinOneBucketedTwoNot) {
@@ -553,24 +722,17 @@ TEST_P(BucketedExecutionTest, mixedJoinOneBucketedTwoNot) {
       "JOIN m3_extras1 ON m3_orders.customer_id = m3_extras1.customer_id "
       "JOIN m3_extras2 ON m3_orders.customer_id = m3_extras2.customer_id",
       kTestConnectorId));
-  bool foundMixed = false;
-  for (const auto& fragment : plan.plan->fragments()) {
-    int32_t bucketedScans = 0;
-    int32_t hashExchanges = 0;
-    for (const auto& [_, partitionType] : fragment.groupedNodes) {
-      if (partitionType == nullptr) {
-        ++hashExchanges;
-      } else {
-        ++bucketedScans;
-      }
-    }
-    if (bucketedScans == 1 && hashExchanges == 2) {
-      foundMixed = true;
-      EXPECT_TRUE(fragment.width.has_value());
-      EXPECT_EQ(*fragment.width, 4);
-    }
-  }
-  EXPECT_TRUE(foundMixed);
+  AXIOM_ASSERT_DISTRIBUTED_PLAN(
+      plan.plan,
+      matchScan("m3_orders")
+          .hashJoinInner(
+              matchScan("m3_extras1").aliases({"e1cid"}).shuffle({"e1cid"}))
+          .hashJoinInner(
+              matchScan("m3_extras2").aliases({"e2cid"}).shuffle({"e2cid"}))
+          .fragment({.width = 4, .bucketedScans = 1, .bucketedExchanges = 2})
+          .gather()
+          .project()
+          .build());
 }
 
 TEST_P(BucketedExecutionTest, windowOnBucketKey) {
@@ -580,16 +742,16 @@ TEST_P(BucketedExecutionTest, windowOnBucketKey) {
       "row_number() OVER (PARTITION BY customer_id ORDER BY amount) AS rn "
       "FROM w_orders",
       kTestConnectorId));
-  bool foundBucketed = false;
-  for (const auto& fragment : plan.plan->fragments()) {
-    if (!fragment.groupedNodes.empty()) {
-      EXPECT_EQ(fragment.type, FragmentType::kFixed);
-      EXPECT_TRUE(fragment.width.has_value());
-      EXPECT_EQ(*fragment.width, 4);
-      foundBucketed = true;
-    }
-  }
-  EXPECT_TRUE(foundBucketed);
+  // The window partitions by the bucket key, so each partition is already
+  // whole on one task.
+  AXIOM_ASSERT_DISTRIBUTED_PLAN(
+      plan.plan,
+      matchScan("w_orders")
+          .localPartition({"customer_id"})
+          .window()
+          .fragment({.width = 4, .bucketedScans = 1})
+          .gather()
+          .build());
 }
 
 TEST_P(BucketedExecutionTest, threeWayCoBucketed) {
@@ -601,25 +763,17 @@ TEST_P(BucketedExecutionTest, threeWayCoBucketed) {
       "JOIN tw_b ON tw_a.customer_id = tw_b.customer_id "
       "JOIN tw_c ON tw_a.customer_id = tw_c.customer_id",
       kTestConnectorId));
-  bool found = false;
-  for (const auto& fragment : plan.plan->fragments()) {
-    int32_t bucketedScans = 0;
-    int32_t hashExchanges = 0;
-    for (const auto& [_, partitionType] : fragment.groupedNodes) {
-      if (partitionType == nullptr) {
-        ++hashExchanges;
-      } else {
-        ++bucketedScans;
-      }
-    }
-    if (bucketedScans == 3 && hashExchanges == 0) {
-      EXPECT_EQ(fragment.type, FragmentType::kFixed);
-      EXPECT_TRUE(fragment.width.has_value());
-      EXPECT_EQ(*fragment.width, 4);
-      found = true;
-    }
-  }
-  EXPECT_TRUE(found);
+  // Bucket counts 16, 8 and 4 all divide down to a common 4, so all three
+  // scans share one fragment with no shuffle.
+  AXIOM_ASSERT_DISTRIBUTED_PLAN(
+      plan.plan,
+      matchScan("tw_a")
+          .hashJoinInner(matchScan("tw_b"))
+          .hashJoinInner(matchScan("tw_c"))
+          .fragment({.width = 4, .bucketedScans = 3, .bucketedExchanges = 0})
+          .gather()
+          .project()
+          .build());
 }
 
 // A chain of inner joins on a shared bucket key fuses into one bucketed
@@ -646,9 +800,7 @@ TEST_P(BucketedExecutionTest, innerJoinChainFuses) {
           .hashJoin(
               matchScan("u").hashJoin(matchScan("v"), core::JoinType::kInner),
               core::JoinType::kInner)
-          .bucketed()
-          .bucketedScans(3)
-          .fragmentWidth(4)
+          .fragment({.width = 4, .bucketedScans = 3})
           .gather()
           .build());
 
@@ -663,9 +815,7 @@ TEST_P(BucketedExecutionTest, innerJoinChainFuses) {
         matchScan("u")
             .hashJoin(matchScan("v"), core::JoinType::kInner)
             .hashJoin(matchScan("t"), core::JoinType::kInner)
-            .bucketed()
-            .bucketedScans(3)
-            .fragmentWidth(4)
+            .fragment({.width = 4, .bucketedScans = 3})
             .gather()
             .build());
   } else {
@@ -674,9 +824,7 @@ TEST_P(BucketedExecutionTest, innerJoinChainFuses) {
         matchScan("t")
             .hashJoin(matchScan("u"), core::JoinType::kInner)
             .hashJoin(matchScan("v"), core::JoinType::kInner)
-            .bucketed()
-            .bucketedScans(3)
-            .fragmentWidth(4)
+            .fragment({.width = 4, .bucketedScans = 3})
             .gather()
             .build());
   }
@@ -721,9 +869,7 @@ TEST_P(BucketedExecutionTest, leftJoinChainDoesNotFuse) {
             .hashJoin(
                 matchScan("u").hashJoin(matchScan("v"), core::JoinType::kInner),
                 core::JoinType::kInner)
-            .bucketed()
-            .bucketedScans(3)
-            .fragmentWidth(4)
+            .fragment({.width = 4, .bucketedScans = 3})
             .gather()
             .build());
   }
@@ -746,9 +892,7 @@ TEST_P(BucketedExecutionTest, leftJoinChainDoesNotFuse) {
         matchScan("t")
             .hashJoin(matchScan("u"), core::JoinType::kInner)
             .hashJoin(matchScan("v"), core::JoinType::kInner)
-            .bucketed()
-            .bucketedScans(3)
-            .fragmentWidth(4)
+            .fragment({.width = 4, .bucketedScans = 3})
             .gather()
             .build());
   }
@@ -764,24 +908,19 @@ TEST_P(BucketedExecutionTest, bucketedAggThenBucketedJoin) {
       "  GROUP BY customer_id"
       ") x JOIN ab_customers ON x.customer_id = ab_customers.id",
       kTestConnectorId));
-  bool found = false;
-  for (const auto& fragment : plan.plan->fragments()) {
-    int32_t bucketedScans = 0;
-    int32_t hashExchanges = 0;
-    for (const auto& [_, partitionType] : fragment.groupedNodes) {
-      if (partitionType == nullptr) {
-        ++hashExchanges;
-      } else {
-        ++bucketedScans;
-      }
-    }
-    if (bucketedScans == 2 && hashExchanges == 0) {
-      EXPECT_TRUE(fragment.width.has_value());
-      EXPECT_EQ(*fragment.width, 4);
-      found = true;
-    }
-  }
-  EXPECT_TRUE(found);
+  // The aggregation keeps its input's bucketing, so the join above it pairs
+  // with the other bucketed table without a shuffle.
+  AXIOM_ASSERT_DISTRIBUTED_PLAN(
+      plan.plan,
+      matchScan("ab_customers")
+          .hashJoinInner(matchScan("ab_orders")
+                             .partialAggregation()
+                             .localPartition({"customer_id"})
+                             .finalAggregation())
+          .projectIf(!useV2_)
+          .fragment({.width = 4, .bucketedScans = 2, .bucketedExchanges = 0})
+          .gather()
+          .build());
 }
 
 TEST_P(BucketedExecutionTest, bucketedAggThenBroadcastJoin) {
@@ -796,15 +935,24 @@ TEST_P(BucketedExecutionTest, bucketedAggThenBroadcastJoin) {
       "  GROUP BY customer_id"
       ") x JOIN bc_dim ON x.customer_id = bc_dim.customer_id",
       kTestConnectorId));
-  bool foundBucketedScan = false;
-  for (const auto& fragment : plan.plan->fragments()) {
-    for (const auto& [_, partitionType] : fragment.groupedNodes) {
-      if (partitionType != nullptr) {
-        foundBucketedScan = true;
-      }
-    }
+  if (useV2_) {
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(
+        plan.plan,
+        matchScan("bc_orders")
+            .partialAggregation()
+            .localPartition({"customer_id"})
+            .finalAggregation()
+            .hashJoinInner(
+                matchScan("bc_dim").aliases({"bcid"}).shuffle({"bcid"}))
+            .fragment({.width = 4, .bucketedScans = 1, .bucketedExchanges = 1})
+            .gather()
+            .build());
+  } else {
+    // Wrong plan: v1 scans bc_dim twice — once to semi-join filter the
+    // aggregation's input, once to join it — and broadcasts the aggregate
+    // between them.
+    expectBucketedFragmentWithWidth(*plan.plan, 4);
   }
-  EXPECT_TRUE(foundBucketedScan);
 }
 
 TEST_P(BucketedExecutionTest, broadcastJoinThenBucketedAgg) {
@@ -818,15 +966,31 @@ TEST_P(BucketedExecutionTest, broadcastJoinThenBucketedAgg) {
       "FROM bj_orders JOIN bj_dim ON bj_orders.amount = bj_dim.amount "
       "GROUP BY bj_orders.customer_id",
       kTestConnectorId));
-  bool foundBucketedScan = false;
-  for (const auto& fragment : plan.plan->fragments()) {
-    for (const auto& [_, partitionType] : fragment.groupedNodes) {
-      if (partitionType != nullptr) {
-        foundBucketedScan = true;
-      }
-    }
+  // The join is on a non-bucket key but its build side is broadcast, so the
+  // probe's rows stay put and the aggregation above still reads bj_orders by
+  // its buckets.
+  if (useV2_) {
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(
+        plan.plan,
+        matchScan("bj_orders")
+            .hashJoinInner(matchScan("bj_dim").broadcast())
+            .partialAggregation()
+            .localPartition({"customer_id"})
+            .finalAggregation()
+            .fragment({.width = 4, .bucketedScans = 1})
+            .gather()
+            .build());
+  } else {
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(
+        plan.plan,
+        matchScan("bj_orders")
+            .hashJoinInner(matchScan("bj_dim").broadcast())
+            .localPartition({"customer_id"})
+            .singleAggregation()
+            .fragment({.width = 4, .bucketedScans = 1})
+            .gather()
+            .build());
   }
-  EXPECT_TRUE(foundBucketedScan);
 }
 
 TEST_P(BucketedExecutionTest, greedyBucketed) {
@@ -840,7 +1004,14 @@ TEST_P(BucketedExecutionTest, greedyBucketed) {
       "SELECT * FROM g_orders JOIN g_customers "
       "ON g_orders.customer_id = g_customers.id",
       kTestConnectorId));
-  expectBucketedFragmentWithWidth(*plan.plan, 4);
+  AXIOM_ASSERT_DISTRIBUTED_PLAN(
+      plan.plan,
+      matchScan("g_customers")
+          .hashJoinInner(matchScan("g_orders"))
+          .projectIf(useV2_)
+          .fragment({.width = 4, .bucketedScans = 2})
+          .gather()
+          .build());
 }
 
 TEST_P(BucketedExecutionTest, greedyBucketedWithDimensions) {
@@ -874,6 +1045,173 @@ TEST_P(BucketedExecutionTest, greedyBucketedWithDimensions) {
 
   auto plan = planDistributed(parseSelect(sql, kTestConnectorId));
   expectBucketedFragmentWithWidth(*plan.plan, 4);
+}
+
+// Bucketings that cannot be copartitioned (gcd(16, 9) = 1) leave the join with
+// no bucketed pairing to exploit.
+TEST_P(BucketedExecutionTest, incompatibleBucketingOnManyWorkers) {
+  addBucketedTable("s_incompat_a", {"customer_id"}, 16);
+  addBucketedTable(
+      "s_incompat_b",
+      {"id"},
+      9,
+      ROW({"id", "name"}, {BIGINT(), VARCHAR()}),
+      100'000);
+
+  auto plan = planDistributed(parseSelect(
+      "SELECT * FROM s_incompat_a JOIN s_incompat_b "
+      "ON s_incompat_a.customer_id = s_incompat_b.id",
+      kTestConnectorId));
+
+  if (useV2_) {
+    // No pairing is possible, and the smaller side is cheap to replicate, so
+    // the join broadcasts it and neither table is read grouped.
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(
+        plan.plan,
+        matchScan("s_incompat_a")
+            .hashJoinInner(matchScan("s_incompat_b").broadcast())
+            .project()
+            .notBucketed()
+            .gather()
+            .build());
+  }
+  // v1 plan shape is not verified: v1 produces wrong plan which reads the
+  // smaller side by its 9 buckets, which caps that fragment at width 3, and
+  // then shuffles it anyway — grouping that buys nothing.
+}
+
+// Joining tables whose bucketings cannot be copartitioned plans on a single
+// worker, as one ungrouped fragment.
+TEST_P(BucketedExecutionTest, incompatibleBucketingOnOneWorker) {
+  addBucketedTable("w1_t", {"customer_id"}, 16);
+  addBucketedTable(
+      "w1_u", {"id"}, 9, ROW({"id", "name"}, {BIGINT(), VARCHAR()}), 100'000);
+
+  auto plan = planVelox(
+      parseSelect(
+          "SELECT * FROM w1_t JOIN w1_u "
+          "ON w1_t.customer_id = w1_u.id",
+          kTestConnectorId),
+      {.numWorkers = 1, .numDrivers = 4},
+      optimizerOptions_);
+
+  AXIOM_ASSERT_DISTRIBUTED_PLAN(
+      plan.plan,
+      matchScan("w1_t")
+          .hashJoinInner(matchScan("w1_u"))
+          .projectIf(useV2_)
+          .notBucketed()
+          .output(FragmentType::kSingle)
+          .build());
+}
+
+// Two tables bucketed on different members of a two-key join must not be
+// treated as a co-bucketed pair: their buckets align on different columns, so
+// co-locating them would put matching rows on different tasks.
+TEST_P(BucketedExecutionTest, joinKeysMustCorrespondToBucketing) {
+  const auto schema = ROW({"k", "j", "v"}, {BIGINT(), BIGINT(), DOUBLE()});
+  addBucketedTable("jk_t", {"k"}, 8, schema);
+  addBucketedTable("jk_u", {"j"}, 8, schema);
+
+  optimizerOptions_.syntacticJoinOrder = true;
+  SCOPE_EXIT {
+    optimizerOptions_.syntacticJoinOrder = false;
+  };
+  auto plan = planDistributed(parseSelect(
+      "SELECT a.v, b.v FROM jk_t a JOIN jk_u b ON a.k = b.k AND a.j = b.j",
+      kTestConnectorId));
+  if (useV2_) {
+    // Neither side's bucketing covers both keys, so both shuffle.
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(
+        plan.plan,
+        matchScan("jk_t")
+            .shuffle({"k", "j"})
+            // The right side's columns are renamed by the join, so only the
+            // boundary is asserted there.
+            .hashJoinInner(matchScan("jk_u").shuffle())
+            .notBucketed()
+            .gather()
+            .project()
+            .build());
+  }
+}
+
+// A join's keys are written in the query's order, its tables' bucketing in
+// theirs. Two tables bucketed alike pair either way round.
+TEST_P(BucketedExecutionTest, joinPairsWhateverOrderTheKeysAreWritten) {
+  const auto schema = ROW({"k", "j", "v"}, {BIGINT(), BIGINT(), DOUBLE()});
+  addBucketedTable("ko_t", {"k", "j"}, 8, schema);
+  addBucketedTable("ko_u", {"k", "j"}, 8, schema);
+
+  optimizerOptions_.syntacticJoinOrder = true;
+  SCOPE_EXIT {
+    optimizerOptions_.syntacticJoinOrder = false;
+  };
+  auto plan = planDistributed(parseSelect(
+      "SELECT a.v, b.v FROM ko_t a JOIN ko_u b ON a.j = b.j AND a.k = b.k",
+      kTestConnectorId));
+  if (useV2_) {
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(
+        plan.plan,
+        matchScan("ko_t")
+            .hashJoinInner(matchScan("ko_u"))
+            .bucketed()
+            .fragmentWidth(4)
+            .gather()
+            .project()
+            .build());
+  }
+}
+
+// An aggregation above a broadcast join reaches through the join to read its
+// probe grouped: the build is replicated, so probe rows stay where their
+// buckets put them.
+TEST_P(BucketedExecutionTest, aggregationOverBroadcastJoinOnProbe) {
+  const auto schema = ROW({"k", "j", "v"}, {BIGINT(), BIGINT(), DOUBLE()});
+  addBucketedTable("ap_t", {"k"}, 8, schema, 1'000'000);
+  addBucketedTable("ap_u", {"j"}, 2, schema, 1'000);
+
+  auto plan = planDistributed(parseSelect(
+      "SELECT a.k, count(*) FROM ap_t a JOIN ap_u b ON a.j = b.j GROUP BY a.k",
+      kTestConnectorId));
+  if (useV2_) {
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(
+        plan.plan,
+        matchScan("ap_t")
+            // The build is replicated, so reading it by its buckets would cap
+            // its width for nothing.
+            .hashJoinInner(matchScan("ap_u").notBucketed().broadcast())
+            .partialAggregation()
+            .localPartition({"k"})
+            .finalAggregation()
+            .bucketed()
+            .fragmentWidth(4)
+            .gather()
+            .build());
+  }
+}
+
+// Renaming the bucket column does not cost the bucketing.
+TEST_P(BucketedExecutionTest, bucketColumnRenamedByProjection) {
+  const auto schema = ROW({"k", "j", "v"}, {BIGINT(), BIGINT(), DOUBLE()});
+  addBucketedTable("rn_t", {"k"}, 8, schema);
+
+  auto plan = planDistributed(parseSelect(
+      "SELECT nk, count(*) FROM (SELECT k AS nk, v FROM rn_t) GROUP BY nk",
+      kTestConnectorId));
+  if (useV2_) {
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(
+        plan.plan,
+        matchScan("rn_t")
+            .partialAggregation()
+            .localPartition({"k"})
+            .finalAggregation()
+            .project()
+            .bucketed()
+            .fragmentWidth(4)
+            .gather()
+            .build());
+  }
 }
 
 AXIOM_INSTANTIATE_V1_V2(BucketedExecutionTest);

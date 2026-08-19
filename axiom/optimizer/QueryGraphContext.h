@@ -19,7 +19,9 @@
 #include <fmt/format.h>
 #include <folly/container/F14Map.h>
 #include <folly/container/F14Set.h>
+#include <folly/hash/Hash.h>
 #include "axiom/common/Enums.h"
+#include "axiom/connectors/ConnectorMetadata.h"
 #include "axiom/optimizer/ArenaCache.h"
 #include "velox/common/memory/HashStringAllocator.h"
 #include "velox/type/Variant.h"
@@ -461,6 +463,33 @@ class QueryGraphContext {
     return allVariants_.back().get();
   }
 
+  /// Returns 'type' coarsened to at most 'numWorkers' groups and owned for the
+  /// duration, so a plan can hold it as a plain pointer. Memoized on the pair,
+  /// so scaling one type the same way twice yields one object and the nodes
+  /// and partitionings holding it stay pointer-equal.
+  const connector::PartitionType* scaledPartitionType(
+      const connector::PartitionType* type,
+      int32_t numWorkers);
+
+  /// The partitioning two connector-bucketed sides agree on, or null when they
+  /// do not copartition. Owned for the duration and memoized on the pair, so
+  /// the same fold always yields the same object.
+  const connector::PartitionType* copartitionedType(
+      const connector::PartitionType* left,
+      const connector::PartitionType* right);
+
+  /// Takes ownership of a PartitionType derived during planning (a
+  /// `copartition` result) and returns a plain pointer to it. Idempotent: the
+  /// same object registered twice is stored once.
+  const connector::PartitionType* registerPartitionType(
+      std::shared_ptr<const connector::PartitionType> type);
+
+  /// The owning pointer for a type handed out by the two calls above. Used
+  /// when emitting a plan that outlives this context. Null if 'type' was never
+  /// registered here.
+  std::shared_ptr<const connector::PartitionType> sharedPartitionType(
+      const connector::PartitionType* type) const;
+
   /// Returns a globally unique interned name `{prefix}{N}` within this query
   /// context. Example: `newName("a_")` returns `"a_47"`.
   Name newName(std::string_view prefix) {
@@ -502,6 +531,26 @@ class QueryGraphContext {
   FunctionNames functionNames_;
 
   std::vector<std::unique_ptr<velox::Variant>> allVariants_;
+
+  // PartitionTypes derived during planning, owned for the duration. Keyed by
+  // the object so a plain pointer can be traded back for its owner, and by
+  // (type, worker count) so scaling is done once.
+  folly::F14FastMap<
+      const connector::PartitionType*,
+      std::shared_ptr<const connector::PartitionType>>
+      partitionTypes_;
+  folly::F14FastMap<
+      std::pair<const connector::PartitionType*, int32_t>,
+      const connector::PartitionType*,
+      folly::Hash>
+      scaledPartitionTypes_;
+  folly::F14FastMap<
+      std::pair<
+          const connector::PartitionType*,
+          const connector::PartitionType*>,
+      const connector::PartitionType*,
+      folly::Hash>
+      copartitionedTypes_;
 
   uint32_t nameCounter_{0};
 };

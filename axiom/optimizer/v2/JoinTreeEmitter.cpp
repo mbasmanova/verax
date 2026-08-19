@@ -242,7 +242,22 @@ void checkAllConjunctsPlaced(const EmitState& state) {
 }
 
 NodeCP emitLeaf(const LeafOp* leaf, EmitState& state) {
-  return state.graph.relation(leaf->relationId).node();
+  NodeCP node = state.graph.relation(leaf->relationId).node();
+  // The relation's node reads the table ungrouped. When the plan that won reads
+  // it one bucket-group at a time, that is a different read, so it is a
+  // different scan.
+  const auto* partitionType = leaf->outputPartitioning().partitionType;
+  if (partitionType != nullptr && node->is(NodeType::kScan)) {
+    const auto* scan = node->as<Scan>();
+    if (scan->groupedPartitionType() != partitionType) {
+      return state.builder.make<Scan>(Scan::Key{
+          .baseTable = scan->baseTable(),
+          .outputColumns = scan->outputColumns(),
+          .filters = scan->filters(),
+          .groupedPartitionType = partitionType});
+    }
+  }
+  return node;
 }
 
 // Builds a new `Unnest` IR node from a JoinOp wrapping a directed

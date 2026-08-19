@@ -2540,7 +2540,7 @@ PlanMatcherBuilder& PlanMatcherBuilder::bucketed() {
   matcher_ = std::make_shared<BucketedAssertionMatcher>(
       matcher_, [](const axiom::optimizer::ExecutableFragment& fragment) {
         EXPECT_FALSE(fragment.groupedNodes.empty())
-            << "Expected bucketed fragment but groupedNodes is empty";
+            << "fragment does not run grouped";
       });
   return *this;
 }
@@ -2550,55 +2550,59 @@ PlanMatcherBuilder& PlanMatcherBuilder::notBucketed() {
   matcher_ = std::make_shared<BucketedAssertionMatcher>(
       matcher_, [](const axiom::optimizer::ExecutableFragment& fragment) {
         EXPECT_TRUE(fragment.groupedNodes.empty())
-            << "Expected non-bucketed fragment but groupedNodes has "
-            << fragment.groupedNodes.size() << " entries";
+            << "fragment runs grouped over " << fragment.groupedNodes.size()
+            << " nodes";
       });
   return *this;
 }
 
-PlanMatcherBuilder& PlanMatcherBuilder::bucketedScans(int32_t count) {
+PlanMatcherBuilder& PlanMatcherBuilder::fragment(FragmentDetails details) {
   VELOX_USER_CHECK_NOT_NULL(matcher_);
+  // Zero holds for every non-bucketed plan, so it asserts nothing.
+  if (details.bucketedScans.has_value()) {
+    VELOX_USER_CHECK_GT(details.bucketedScans.value(), 0);
+  }
   matcher_ = std::make_shared<BucketedAssertionMatcher>(
-      matcher_, [count](const axiom::optimizer::ExecutableFragment& fragment) {
-        int32_t observed = 0;
-        for (const auto& [_, partitionType] : fragment.groupedNodes) {
+      matcher_,
+      [details](const axiom::optimizer::ExecutableFragment& fragment) {
+        if (details.width.has_value()) {
+          ASSERT_TRUE(fragment.width.has_value())
+              << "fragment width is not set";
+          EXPECT_EQ(*fragment.width, details.width.value()) << "fragment width";
+        }
+        if (!details.bucketedScans.has_value() &&
+            !details.bucketedExchanges.has_value()) {
+          return;
+        }
+        int32_t scans = 0;
+        int32_t exchanges = 0;
+        for (const auto& [nodeId, partitionType] : fragment.groupedNodes) {
+          const auto* node = velox::core::PlanNode::findNodeById(
+              fragment.fragment.planNode.get(), nodeId);
+          ASSERT_TRUE(node != nullptr)
+              << "grouped leaf " << nodeId << " is not in this fragment";
           if (partitionType != nullptr) {
-            ++observed;
+            ++scans;
+            EXPECT_TRUE(
+                dynamic_cast<const velox::core::TableScanNode*>(node) !=
+                nullptr)
+                << "grouped leaf " << nodeId << " is a " << node->name()
+                << ", not a scan";
+          } else {
+            ++exchanges;
+            EXPECT_TRUE(
+                dynamic_cast<const velox::core::ExchangeNode*>(node) != nullptr)
+                << "grouped leaf " << nodeId << " is a " << node->name()
+                << ", not an exchange";
           }
         }
-        EXPECT_EQ(observed, count)
-            << "Expected " << count << " bucketed scans but found " << observed;
-      });
-  return *this;
-}
-
-PlanMatcherBuilder& PlanMatcherBuilder::hashExchanges(int32_t count) {
-  VELOX_USER_CHECK_NOT_NULL(matcher_);
-  matcher_ = std::make_shared<BucketedAssertionMatcher>(
-      matcher_, [count](const axiom::optimizer::ExecutableFragment& fragment) {
-        int32_t observed = 0;
-        for (const auto& [_, partitionType] : fragment.groupedNodes) {
-          if (partitionType == nullptr) {
-            ++observed;
-          }
+        if (details.bucketedScans.has_value()) {
+          EXPECT_EQ(scans, details.bucketedScans.value()) << "bucketed scans";
         }
-        EXPECT_EQ(observed, count)
-            << "Expected " << count << " consumer-side hash exchanges but "
-            << "found " << observed;
-      });
-  return *this;
-}
-
-PlanMatcherBuilder& PlanMatcherBuilder::fragmentWidth(int32_t width) {
-  VELOX_USER_CHECK_NOT_NULL(matcher_);
-  matcher_ = std::make_shared<BucketedAssertionMatcher>(
-      matcher_, [width](const axiom::optimizer::ExecutableFragment& fragment) {
-        ASSERT_TRUE(fragment.width.has_value())
-            << "Expected fragment.width == " << width
-            << " but width is not set";
-        EXPECT_EQ(*fragment.width, width)
-            << "Expected fragment.width == " << width << " but got "
-            << *fragment.width;
+        if (details.bucketedExchanges.has_value()) {
+          EXPECT_EQ(exchanges, details.bucketedExchanges.value())
+              << "bucketed exchanges";
+        }
       });
   return *this;
 }
@@ -2608,10 +2612,7 @@ PlanMatcherBuilder& PlanMatcherBuilder::output(
   VELOX_USER_CHECK_NOT_NULL(matcher_);
   matcher_ = std::make_shared<BucketedAssertionMatcher>(
       matcher_, [type](const axiom::optimizer::ExecutableFragment& fragment) {
-        EXPECT_EQ(fragment.type, type)
-            << "Output fragment type mismatch: expected "
-            << fmt::format("{}", type) << ", got "
-            << fmt::format("{}", fragment.type);
+        EXPECT_EQ(fragment.type, type) << "output fragment type";
       });
   return *this;
 }

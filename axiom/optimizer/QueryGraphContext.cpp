@@ -402,4 +402,46 @@ void QueryGraphContext::populateFunctionNames() {
   }
 }
 
+const connector::PartitionType* QueryGraphContext::scaledPartitionType(
+    const connector::PartitionType* type,
+    int32_t numWorkers) {
+  VELOX_CHECK_NOT_NULL(type);
+  auto [it, inserted] =
+      scaledPartitionTypes_.emplace(std::pair{type, numWorkers}, nullptr);
+  if (inserted) {
+    it->second = registerPartitionType(type->scaleDown(numWorkers));
+  }
+  return it->second;
+}
+
+const connector::PartitionType* QueryGraphContext::copartitionedType(
+    const connector::PartitionType* left,
+    const connector::PartitionType* right) {
+  VELOX_CHECK_NOT_NULL(left);
+  VELOX_CHECK_NOT_NULL(right);
+  auto [it, inserted] =
+      copartitionedTypes_.emplace(std::pair{left, right}, nullptr);
+  if (inserted) {
+    auto folded = left->copartition(*right);
+    it->second =
+        folded == nullptr ? nullptr : registerPartitionType(std::move(folded));
+  }
+  return it->second;
+}
+
+const connector::PartitionType* QueryGraphContext::registerPartitionType(
+    std::shared_ptr<const connector::PartitionType> type) {
+  VELOX_CHECK_NOT_NULL(type);
+  const auto* raw = type.get();
+  partitionTypes_.emplace(raw, std::move(type));
+  return raw;
+}
+
+std::shared_ptr<const connector::PartitionType>
+QueryGraphContext::sharedPartitionType(
+    const connector::PartitionType* type) const {
+  const auto it = partitionTypes_.find(type);
+  return it == partitionTypes_.end() ? nullptr : it->second;
+}
+
 } // namespace facebook::axiom::optimizer

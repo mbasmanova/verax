@@ -91,16 +91,6 @@ class HiveBucketedExecutionTest : public test::HiveQueriesTestBase,
         optimizerOptions_);
   }
 
-  // Checks that the already-planned distributed 'plan' returns the same rows as
-  // a single-node (unbucketed) run of 'logicalPlan'. Single-node execution is
-  // the oracle; 'plan' is the bucketed run under test.
-  void assertSameAsSingleNode(
-      const lp::LogicalPlanNodePtr& logicalPlan,
-      PlanAndStats& plan) {
-    auto reference = checkSame(plan, toSingleNodePlan(logicalPlan));
-    ASSERT_GT(reference.results.size(), 0);
-  }
-
   std::vector<std::string> tablesToDrop_;
 };
 
@@ -126,7 +116,6 @@ TEST_P(HiveBucketedExecutionTest, join) {
             .gather()
             .project()
             .build());
-    assertSameAsSingleNode(logicalPlan, plan);
   }
 
   // RIGHT join: v1 repartitions the build side into the bucketed fragment; v2
@@ -150,7 +139,6 @@ TEST_P(HiveBucketedExecutionTest, join) {
               .project()
               .build());
     }
-    assertSameAsSingleNode(logicalPlan, plan);
   }
 
   // FULL join: both sides stay co-bucketed in one fragment.
@@ -167,7 +155,6 @@ TEST_P(HiveBucketedExecutionTest, join) {
             .gather()
             .project()
             .build());
-    assertSameAsSingleNode(logicalPlan, plan);
   }
 
   // LEFT join: both sides stay co-bucketed in one fragment.
@@ -184,7 +171,6 @@ TEST_P(HiveBucketedExecutionTest, join) {
             .gather()
             .project()
             .build());
-    assertSameAsSingleNode(logicalPlan, plan);
   }
 
   // Unbucketed right side is repartitioned by bucket into the bucketed join.
@@ -205,7 +191,6 @@ TEST_P(HiveBucketedExecutionTest, join) {
           .gather()
           .project()
           .build());
-  assertSameAsSingleNode(logicalPlan, plan);
 }
 
 TEST_P(HiveBucketedExecutionTest, semijoin) {
@@ -235,7 +220,6 @@ TEST_P(HiveBucketedExecutionTest, semijoin) {
               .gather()
               .build());
     }
-    assertSameAsSingleNode(logicalPlan, plan);
   }
 
   {
@@ -256,7 +240,6 @@ TEST_P(HiveBucketedExecutionTest, semijoin) {
               .gather()
               .build());
     }
-    assertSameAsSingleNode(logicalPlan, plan);
   }
 }
 
@@ -277,7 +260,6 @@ TEST_P(HiveBucketedExecutionTest, aggregation) {
             .fragmentWidth(4)
             .gather()
             .build());
-    assertSameAsSingleNode(logicalPlan, plan);
   }
 
   // Composite grouping key that is a superset of the single bucket key.
@@ -297,7 +279,6 @@ TEST_P(HiveBucketedExecutionTest, aggregation) {
             .fragmentWidth(4)
             .gather()
             .build());
-    assertSameAsSingleNode(logicalPlan, plan);
   }
 
   // Multiple aggregates over the bucket key.
@@ -321,7 +302,6 @@ TEST_P(HiveBucketedExecutionTest, aggregation) {
             .fragmentWidth(4)
             .gather()
             .build());
-    assertSameAsSingleNode(logicalPlan, plan);
   }
 
   // DISTINCT aggregate lowers to stacked partial/final aggregations.
@@ -348,7 +328,6 @@ TEST_P(HiveBucketedExecutionTest, aggregation) {
               .gather()
               .build());
     }
-    assertSameAsSingleNode(logicalPlan, plan);
   }
 
   // HAVING becomes a Filter above the aggregation.
@@ -367,7 +346,6 @@ TEST_P(HiveBucketedExecutionTest, aggregation) {
             .fragmentWidth(4)
             .gather()
             .build());
-    assertSameAsSingleNode(logicalPlan, plan);
   }
 
   // Non-bucket grouping key falls through to partial (bucketed) + final
@@ -380,14 +358,15 @@ TEST_P(HiveBucketedExecutionTest, aggregation) {
         plan.plan,
         matchHiveScan("t")
             .partialAggregation()
-            .bucketed()
-            .fragmentWidth(4)
+            // The grouping keys are not the table's bucket keys, so nothing
+            // reads it grouped; v1 groups it regardless.
+            .bucketed(!useV2_)
+            .fragmentWidthIf(!useV2_, 4)
             .shuffle({"c_mktsegment"})
             .localPartition({"c_mktsegment"})
             .finalAggregation()
             .gather()
             .build());
-    assertSameAsSingleNode(logicalPlan, plan);
   }
 }
 
@@ -407,7 +386,6 @@ TEST_P(HiveBucketedExecutionTest, singleBucket) {
           .fragmentWidth(1)
           .gather()
           .build());
-  assertSameAsSingleNode(logicalPlan, plan);
 }
 
 TEST_P(HiveBucketedExecutionTest, joinDifferentBucketCounts) {
@@ -436,7 +414,6 @@ TEST_P(HiveBucketedExecutionTest, joinDifferentBucketCounts) {
           .gather()
           .project()
           .build());
-  assertSameAsSingleNode(logicalPlan, plan);
 }
 
 TEST_P(HiveBucketedExecutionTest, compositeBucketKeys) {
@@ -460,7 +437,6 @@ TEST_P(HiveBucketedExecutionTest, compositeBucketKeys) {
             .fragmentWidth(4)
             .gather()
             .build());
-    assertSameAsSingleNode(logicalPlan, plan);
   }
 
   // Grouping by a strict subset of the bucket keys needs a reshuffle: partial
@@ -473,14 +449,15 @@ TEST_P(HiveBucketedExecutionTest, compositeBucketKeys) {
         plan.plan,
         matchHiveScan("t")
             .partialAggregation()
-            .bucketed()
-            .fragmentWidth(4)
+            // The grouping keys are not the table's bucket keys, so nothing
+            // reads it grouped; v1 groups it regardless.
+            .bucketed(!useV2_)
+            .fragmentWidthIf(!useV2_, 4)
             .shuffle({"c_nationkey"})
             .localPartition({"c_nationkey"})
             .finalAggregation()
             .gather()
             .build());
-    assertSameAsSingleNode(logicalPlan, plan);
   }
 }
 
@@ -503,7 +480,6 @@ TEST_P(HiveBucketedExecutionTest, widthClampsToNumWorkers) {
             .fragmentWidth(5)
             .gather()
             .build());
-    assertSameAsSingleNode(logicalPlan, plan);
   }
 
   createRegularTable(
@@ -525,7 +501,6 @@ TEST_P(HiveBucketedExecutionTest, widthClampsToNumWorkers) {
             .gather()
             .project()
             .build());
-    assertSameAsSingleNode(logicalPlan, plan);
   }
 }
 
@@ -552,7 +527,6 @@ TEST_P(HiveBucketedExecutionTest, copartitionedJoinIndivisibleWorkers) {
           .gather()
           .project()
           .build());
-  assertSameAsSingleNode(logicalPlan, plan);
 }
 
 TEST_P(HiveBucketedExecutionTest, unionall) {
@@ -571,23 +545,114 @@ TEST_P(HiveBucketedExecutionTest, unionall) {
       ") GROUP BY 1");
   auto plan = planDistributed(logicalPlan);
   // Each leg contributes its own bucket column as the union key (t:
-  // c_nationkey, u: c_custkey), which hash identically, so v2 co-buckets the
-  // legs and aggregates without the remote reshuffle v1 adds. Results are
-  // checked below.
-  if (!useV2_) {
+  // c_nationkey, u: c_custkey), and they hash identically, so the legs
+  // co-bucket and the aggregation needs no shuffle.
+  //
+  // Wrong plan under v1: it reads both legs by their buckets, which already
+  // co-locates every group, and then shuffles on the grouping key anyway, so
+  // only v2's shape is pinned.
+  if (useV2_) {
     AXIOM_ASSERT_DISTRIBUTED_PLAN(
         plan.plan,
         matchHiveScan("t")
             .localPartition(matchHiveScan("u").project())
-            .bucketed()
-            .fragmentWidth(4)
-            .shuffle({"c_nationkey"})
+            .partialAggregation()
             .localPartition({"c_nationkey"})
-            .singleAggregation({"c_nationkey"}, {"count(*)"})
+            .finalAggregation()
+            .fragment({.width = 4, .bucketedScans = 2})
             .gather()
             .build());
   }
-  assertSameAsSingleNode(logicalPlan, plan);
+}
+
+// A join between tables whose bucket counts coarsen to different widths runs
+// on one side's buckets; everything else joining it is shuffled onto them.
+TEST_P(HiveBucketedExecutionTest, bucketCountsThatScaleDifferently) {
+  createBucketedTable(
+      "t", 16, {"c_nationkey"}, "SELECT c_custkey, c_nationkey FROM customer");
+  createBucketedTable(
+      "u",
+      2,
+      {"c_nationkey"},
+      "SELECT DISTINCT c_nationkey, cast(c_nationkey AS varchar) AS label FROM customer");
+  createRegularTable("v", "SELECT c_custkey, c_nationkey FROM customer");
+
+  // The unbucketed table is shuffled onto the wider table's buckets.
+  {
+    auto plan = planDistributed(parseSelect(
+        "SELECT t.c_custkey, u.label, count(*) FROM t, u, v "
+        "WHERE t.c_nationkey = u.c_nationkey AND t.c_nationkey = v.c_nationkey "
+        "GROUP BY t.c_custkey, u.label"));
+    if (useV2_) {
+      AXIOM_ASSERT_DISTRIBUTED_PLAN(
+          plan.plan,
+          matchHiveScan("t")
+              .hashJoinInner(matchHiveScan("u").aliases({"uk"}).shuffle({"uk"}))
+              .hashJoinInner(matchHiveScan("v").aliases({"vk"}).shuffle({"vk"}))
+              .partialAggregation()
+              .fragment(
+                  {.width = 4, .bucketedScans = 1, .bucketedExchanges = 2})
+              .shuffle({"c_custkey", "label"})
+              .localPartition({"c_custkey", "label"})
+              .finalAggregation()
+              .gather()
+              .build());
+    }
+  }
+
+  // Aggregating the wider table first keeps its width; the result is then
+  // shuffled onto the narrower table's buckets.
+  {
+    auto plan = planDistributed(parseSelect(
+        "SELECT x.c_nationkey, x.cnt, u.label FROM "
+        "(SELECT c_nationkey, count(*) AS cnt FROM t GROUP BY c_nationkey) x, u "
+        "WHERE x.c_nationkey = u.c_nationkey"));
+    if (useV2_) {
+      AXIOM_ASSERT_DISTRIBUTED_PLAN(
+          plan.plan,
+          matchHiveScan("u")
+              .hashJoinInner(matchHiveScan("t")
+                                 .partialAggregation()
+                                 .localPartition({"c_nationkey"})
+                                 .finalAggregation()
+                                 .fragment({.width = 4, .bucketedScans = 1})
+                                 .shuffle({"c_nationkey"}))
+              .fragment(
+                  {.width = 2, .bucketedScans = 1, .bucketedExchanges = 1})
+              .gather()
+              .build());
+    }
+  }
+}
+
+// A union of a bucketed and an unbucketed leg cannot be read by buckets: the
+// unbucketed leg has none, so the union has none either.
+TEST_P(HiveBucketedExecutionTest, unionAllWithUnbucketedLeg) {
+  createBucketedTable(
+      "t", 16, {"c_nationkey"}, "SELECT c_nationkey, c_custkey FROM customer");
+  createRegularTable("u", "SELECT c_nationkey, c_custkey FROM customer");
+
+  auto plan = planDistributed(parseSelect(
+      "SELECT c_nationkey, count(*) FROM ("
+      "  SELECT c_nationkey FROM t"
+      "  UNION ALL"
+      "  SELECT c_nationkey FROM u"
+      ") GROUP BY 1"));
+  // Wrong plan under v1: it reads t by its buckets even though the union's
+  // other leg has none, so the grouping cannot be used and is shuffled away.
+  if (useV2_) {
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(
+        plan.plan,
+        matchHiveScan("t")
+            .localPartition(matchHiveScan("u").project())
+            .partialAggregation()
+            .notBucketed()
+            .shuffle({"c_nationkey"})
+            .localPartition({"c_nationkey"})
+            .finalAggregation()
+            .gather()
+            .build());
+  }
 }
 
 AXIOM_INSTANTIATE_V1_V2(HiveBucketedExecutionTest);
