@@ -457,6 +457,20 @@ class Translator {
   Translated translateAggregate(
       const lp::AggregateNode& aggregate,
       const LpNameSet& required);
+
+  // Translates 'aggregate''s grouping keys into 'keys' and the columns they are
+  // published under into 'columns', binding every grouping-key name in 'scope'.
+  // Keys that translate to one expression are kept once and the other names
+  // read the surviving column; grouping sets keep every key, since the set
+  // indices are positional.
+  void translateGroupingKeys(
+      const lp::AggregateNode& aggregate,
+      const Scope& inputScope,
+      NodeCP& currentInput,
+      ExprVector& keys,
+      ColumnVector& columns,
+      Scope& scope);
+
   // Lowers GROUPING SETS / ROLLUP / CUBE to a GroupId plus a plain aggregate
   // keyed on an explicit group-id column. Returns the aggregation node.
   NodeCP lowerGroupingSets(
@@ -466,9 +480,11 @@ class Translator {
       const ColumnVector& outputColumns,
       NodeCP currentInput,
       Scope& newScope);
+
   // The result of an aggregate over the empty set (constant false/null FILTER):
   // the aggregate's empty-input value from the function registry.
   ExprCP emptySetResult(const optimizer::Aggregate* call);
+
   // Wraps 'node' in a Project appending 'columns' (each defined by the matching
   // expr) to its outputs. Returns 'node' unchanged when 'columns' is empty.
   NodeCP appendConstantColumns(
@@ -1417,6 +1433,55 @@ NodeCP Translator::appendConstantColumns(
       {node, std::move(projectExprs), std::move(projectColumns)});
 }
 
+void Translator::translateGroupingKeys(
+    const lp::AggregateNode& aggregate,
+    const Scope& inputScope,
+    NodeCP& currentInput,
+    ExprVector& keys,
+    ColumnVector& columns,
+    Scope& scope) {
+  const auto& names = aggregate.outputNames();
+  const auto& keyExpressions = aggregate.groupingKeys();
+  const bool hasGroupingSets = !aggregate.groupingSets().empty();
+
+  folly::F14FastMap<ExprCP, ColumnCP> keyToOutput;
+  if (!hasGroupingSets) {
+    keyToOutput.reserve(keyExpressions.size());
+  }
+
+  for (size_t i = 0; i < keyExpressions.size(); ++i) {
+    ExprCP keyExpr =
+        translateExpr(*keyExpressions[i], inputScope, &currentInput);
+    if (!hasGroupingSets) {
+      const auto it = keyToOutput.find(keyExpr);
+      if (it != keyToOutput.end()) {
+        scope[names[i]] = it->second;
+        continue;
+      }
+    }
+    // Reuse the input column when the grouping key is a column reference:
+    // Velox `AggregationNode` emits grouping-key output under the input
+    // field-access name. For grouping sets, `GroupIdNode` requires output
+    // names distinct from the input columns for the NULL-padded copies, so
+    // mint a fresh column rather than reusing the (possibly colliding) LP
+    // symbol.
+    ColumnCP column;
+    if (hasGroupingSets) {
+      column = Column::create(toName(names[i]), keyExpr->value());
+    } else if (keyExpr->is(PlanType::kColumnExpr)) {
+      column = keyExpr->as<Column>();
+    } else {
+      column = Column::createForSymbol(toName(names[i]), keyExpr->value());
+    }
+    if (!hasGroupingSets) {
+      keyToOutput.emplace(keyExpr, column);
+    }
+    scope[names[i]] = column;
+    keys.push_back(keyExpr);
+    columns.push_back(column);
+  }
+}
+
 Translated Translator::translateAggregate(
     const lp::AggregateNode& aggregate,
     const LpNameSet& required) {
@@ -1455,39 +1520,15 @@ Translated Translator::translateAggregate(
   outputColumns.reserve(
       numGroupingKeys + keptAggregateIndices.size() + groupIdSlots);
   Scope newScope;
-  // Grouping-sets case keeps positional alignment between groupingKeys and
-  // the set indices; only the simple GROUP BY case can dedup safely here.
-  const bool canDedupGroupingKeys = groupingSets.empty();
-  folly::F14FastSet<ColumnCP> seenGroupingOutputs;
-  if (canDedupGroupingKeys) {
-    seenGroupingOutputs.reserve(numGroupingKeys);
-  }
 
   NodeCP currentInput = input.node;
-  for (size_t i = 0; i < numGroupingKeys; ++i) {
-    ExprCP keyExpr =
-        translateExpr(*groupingKeyExpressions[i], input.scope, &currentInput);
-    // Reuse the input column when the grouping key is a column reference:
-    // Velox `AggregationNode` emits grouping-key output under the input
-    // field-access name. For grouping sets, `GroupIdNode` requires output
-    // names distinct from the input columns for the NULL-padded copies, so
-    // mint a fresh column rather than reusing the (possibly colliding) LP
-    // symbol.
-    ColumnCP column;
-    if (groupingSets.empty() && keyExpr->is(PlanType::kColumnExpr)) {
-      column = keyExpr->as<Column>();
-    } else if (groupingSets.empty()) {
-      column = Column::createForSymbol(toName(names[i]), keyExpr->value());
-    } else {
-      column = Column::create(toName(names[i]), keyExpr->value());
-    }
-    newScope[names[i]] = column;
-    if (canDedupGroupingKeys && !seenGroupingOutputs.insert(column).second) {
-      continue;
-    }
-    groupingKeys.push_back(keyExpr);
-    outputColumns.push_back(column);
-  }
+  translateGroupingKeys(
+      aggregate,
+      input.scope,
+      currentInput,
+      groupingKeys,
+      outputColumns,
+      newScope);
 
   // Aggregates whose FILTER folded to constant false/null see the empty set;
   // their output is the aggregate's empty-input value, materialized by a

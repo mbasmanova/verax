@@ -24,6 +24,10 @@
 -- Dedup: duplicate grouping key expressions and aggregate calls.
 SELECT a + b AS x, a + b AS y, count(1) AS c1, count(1) AS c2 FROM t GROUP BY 1, 2
 ----
+-- Dedup: grouping keys that differ only in operand order group as one key, so
+-- p equals q on every row and there is one row per distinct a.
+SELECT a + 1 AS p, 1 + a AS q FROM t GROUP BY 1, 2
+----
 -- Dedup: column used in both GROUP BY and aggregate.
 SELECT a + b AS x, a + b AS y, count(a + b) AS z FROM t GROUP BY 1, 2
 ----
