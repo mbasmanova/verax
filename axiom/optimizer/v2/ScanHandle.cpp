@@ -23,69 +23,76 @@
 namespace facebook::axiom::optimizer::v2 {
 
 ScanHandle ScanHandle::build(
-    const Scan& scan,
+    const BaseTable& baseTable,
+    const ColumnVector& outputColumns,
+    const ExprVector& filters,
     const OptimizerSession& session,
-    velox::core::ExpressionEvaluator& evaluator) {
-  const auto* baseTable = scan.baseTable();
-  const auto* layout = baseTable->schemaTable->columnGroups[0]->layout;
+    velox::core::ExpressionEvaluator& evaluator,
+    ExprVector& rejected) {
+  const auto* layout = baseTable.schemaTable->columnGroups[0]->layout;
   auto connectorSession =
       session.toConnectorSession(layout->connector()->connectorId());
 
   // Read schema is the consumer output columns plus the columns referenced
-  // only by filters; the latter keep their schema names.
+  // only by filters.
   folly::F14FastSet<Name> seenSchemaNames;
-  const ColumnVector& consumerColumns = scan.outputColumns();
-  for (ColumnCP column : consumerColumns) {
+  for (ColumnCP column : outputColumns) {
     seenSchemaNames.insert(column->name());
   }
   ColumnVector filterOnlyColumns;
   PlanObjectSet filterColumns;
-  filterColumns.unionColumns(scan.filters());
+  filterColumns.unionColumns(filters);
   filterColumns.forEach<Column>([&](ColumnCP column) {
     if (seenSchemaNames.insert(column->name()).second) {
       filterOnlyColumns.push_back(column);
     }
   });
 
-  std::vector<velox::connector::ColumnHandlePtr> columnHandles;
-  columnHandles.reserve(consumerColumns.size() + filterOnlyColumns.size());
-  for (ColumnCP column : consumerColumns) {
-    columnHandles.push_back(layout->createColumnHandle(
-        connectorSession, column->name(), /*subfields=*/{}));
+  const size_t numColumns = outputColumns.size() + filterOnlyColumns.size();
+  std::vector<velox::connector::ColumnHandlePtr> readSchema;
+  readSchema.reserve(numColumns);
+  const auto addHandle = [&](ColumnCP column) {
+    auto handle = layout->createColumnHandle(
+        connectorSession, column->name(), /*subfields=*/{});
+    readSchema.push_back(handle);
+    return handle;
+  };
+
+  folly::F14FastMap<ColumnCP, velox::connector::ColumnHandlePtr> columnHandles;
+  columnHandles.reserve(outputColumns.size());
+  for (ColumnCP column : outputColumns) {
+    columnHandles.emplace(column, addHandle(column));
   }
+  // Kept aside: a filter-only column belongs in the returned map only if the
+  // connector rejects the conjunct that reads it, which puts the column in the
+  // scan's output. That is not known until the handle is built.
+  std::vector<std::pair<ColumnCP, velox::connector::ColumnHandlePtr>>
+      filterOnlyHandles;
+  filterOnlyHandles.reserve(filterOnlyColumns.size());
   for (ColumnCP column : filterOnlyColumns) {
-    columnHandles.push_back(layout->createColumnHandle(
-        connectorSession, column->name(), /*subfields=*/{}));
+    filterOnlyHandles.emplace_back(column, addHandle(column));
   }
 
-  // Build the filters as TypedExpr, keeping an aligned ExprCP list.
-  // createTableHandle reports the rejected filters by index into this list, so
-  // each can be mapped back to its ExprCP for the optimizer to post-apply its
-  // selectivity.
+  // createTableHandle reports the rejected filters by index into the vector it
+  // is given, so the TypedExprs stay aligned with 'filters'.
   ExprEmitter exprEmitter{evaluator.pool()};
-  ExprVector conjunctExprs;
-  std::vector<velox::core::TypedExprPtr> filters;
-  filters.reserve(scan.filters().size());
-  for (ExprCP filter : scan.filters()) {
-    conjunctExprs.push_back(filter);
-    filters.push_back(
+  std::vector<velox::core::TypedExprPtr> typedFilters;
+  typedFilters.reserve(filters.size());
+  for (ExprCP filter : filters) {
+    typedFilters.push_back(
         exprEmitter.toTypedExpr(filter, ColumnNaming::kSchemaName));
   }
-  std::vector<velox::core::TypedExprPtr> allConjuncts = filters;
-
   std::vector<int32_t> rejectedFilterIndices;
   velox::connector::ConnectorTableHandlePtr tableHandle =
       layout->createTableHandle(
           connectorSession,
-          columnHandles,
+          std::move(readSchema),
           evaluator,
-          std::move(filters),
+          std::move(typedFilters),
           rejectedFilterIndices);
 
-  // Each rejected index selects a conjunct to apply as a Filter above the scan
-  // (as TypedExpr) and to post-apply selectivity for (as ExprCP).
-  std::vector<velox::core::TypedExprPtr> rejectedFilters;
-  ExprVector rejectedExprs;
+  // Each rejected index selects a conjunct the caller must apply above the
+  // scan; the rest are the connector's responsibility, inside 'tableHandle'.
   for (int32_t index : rejectedFilterIndices) {
     VELOX_CHECK_GE(
         index,
@@ -93,37 +100,23 @@ ScanHandle ScanHandle::build(
         "createTableHandle returned a negative rejected filter index");
     VELOX_CHECK_LT(
         index,
-        static_cast<int32_t>(conjunctExprs.size()),
+        static_cast<int32_t>(filters.size()),
         "createTableHandle returned an out-of-range rejected filter index");
-    rejectedFilters.push_back(allConjuncts[index]);
-    rejectedExprs.push_back(conjunctExprs[index]);
+    rejected.push_back(filters[index]);
+  }
+
+  PlanObjectSet rejectedColumns;
+  rejectedColumns.unionColumns(rejected);
+  for (auto& [column, handle] : filterOnlyHandles) {
+    if (rejectedColumns.contains(column)) {
+      columnHandles.emplace(column, std::move(handle));
+    }
   }
 
   return ScanHandle{
       .tableHandle = std::move(tableHandle),
       .columnHandles = std::move(columnHandles),
-      .filterOnlyColumns = std::move(filterOnlyColumns),
-      .rejectedFilters = std::move(rejectedFilters),
-      .rejectedExprs = std::move(rejectedExprs),
   };
-}
-
-const ScanHandle& ScanHandleCache::getOrBuild(
-    const Scan& scan,
-    const OptimizerSession& session,
-    velox::core::ExpressionEvaluator& evaluator) {
-  const int32_t id = scan.baseTable()->id();
-  auto it = byBaseTableId_.find(id);
-  if (it != byBaseTableId_.end()) {
-    return it->second;
-  }
-  return byBaseTableId_.emplace(id, ScanHandle::build(scan, session, evaluator))
-      .first->second;
-}
-
-const ScanHandle* ScanHandleCache::find(const Scan& scan) const {
-  auto it = byBaseTableId_.find(scan.baseTable()->id());
-  return it != byBaseTableId_.end() ? &it->second : nullptr;
 }
 
 } // namespace facebook::axiom::optimizer::v2

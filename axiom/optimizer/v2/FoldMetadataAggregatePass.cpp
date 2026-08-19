@@ -34,15 +34,8 @@ using logical_plan::SpecialAggregateKind;
 
 class Folder : public NodeRewriter<NoContext> {
  public:
-  Folder(
-      Builder& builder,
-      const OptimizerSession& session,
-      velox::core::ExpressionEvaluator& evaluator,
-      ScanHandleCache& scanHandles)
-      : NodeRewriter(builder),
-        session_(session),
-        evaluator_(evaluator),
-        scanHandles_(scanHandles) {}
+  Folder(Builder& builder, const OptimizerSession& session)
+      : NodeRewriter(builder), session_(session) {}
 
  protected:
   NodeCP rewriteAggregate(AggregateCP node, NoContext& context) override {
@@ -134,15 +127,9 @@ class Folder : public NodeRewriter<NoContext> {
       nullCountIndex.push_back(it->second);
     }
 
-    const ScanHandle& handle =
-        scanHandles_.getOrBuild(*scan, session_, evaluator_);
-
-    // co_metadataCounts accounts only for the filters the connector accepted
-    // into the handle. If any filter was rejected, its effect is not reflected
-    // in the counts, so folding would overcount; bail to a live scan.
-    if (!handle.rejectedExprs.empty()) {
-      return nullptr;
-    }
+    VELOX_CHECK_NOT_NULL(
+        scan->scanHandle(), "Metadata counts need the connector's read handle");
+    const ScanHandle& handle = *scan->scanHandle();
 
     auto connectorSession =
         session_.toConnectorSession(layout->connector()->connectorId());
@@ -246,8 +233,6 @@ class Folder : public NodeRewriter<NoContext> {
   }
 
   const OptimizerSession& session_;
-  velox::core::ExpressionEvaluator& evaluator_;
-  ScanHandleCache& scanHandles_;
 };
 
 } // namespace
@@ -255,10 +240,8 @@ class Folder : public NodeRewriter<NoContext> {
 NodeCP FoldMetadataAggregatePass::run(
     NodeCP root,
     Builder& builder,
-    const OptimizerSession& session,
-    velox::core::ExpressionEvaluator& evaluator,
-    ScanHandleCache& scanHandles) {
-  Folder folder(builder, session, evaluator, scanHandles);
+    const OptimizerSession& session) {
+  Folder folder(builder, session);
   return folder.rewrite(root);
 }
 

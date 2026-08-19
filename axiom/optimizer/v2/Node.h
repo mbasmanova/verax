@@ -30,6 +30,8 @@
 /// shared `QueryGraphContext`.
 namespace facebook::axiom::optimizer::v2 {
 
+struct ScanHandle;
+
 /// Discriminator for Node subtypes.
 enum class NodeType : uint8_t {
   kScan,
@@ -169,15 +171,18 @@ class Scan : public Node {
     /// Strict consumer-required output columns; may be empty (e.g.
     /// `SELECT count(1) FROM t` needs no column values from the table).
     /// Distinct by pointer; both `outputName()` and the underlying `name()`
-    /// are unique within the vector. `filters` may reference columns that are
-    /// NOT in this set; the connector-side read schema is computed as
-    /// `outputColumns ∪ refs(filters)` when building the final Velox plan.
+    /// are unique within the vector. A column read only by a predicate the
+    /// connector evaluates is not here: the connector reads it without
+    /// projecting it.
     ColumnVector outputColumns;
 
-    /// Filters on the scanned rows, as conjuncts joined with AND; may be empty.
-    /// At Emit the connector evaluates those it can; the rest are re-applied as
-    /// a `Filter` node above the `TableScan` in the final Velox plan.
-    ExprVector filters;
+    /// How the connector reads this table: the table and column handles, and
+    /// with them the predicates the connector took responsibility for. One
+    /// handle per base table, made by the pushdown pass. Null before that pass,
+    /// and after it only when the pass ran with `ConnectorPushdown::kSkip`,
+    /// whose result describes IO and cannot be emitted. Part of the scan's
+    /// identity.
+    const ScanHandle* scanHandle{nullptr};
 
     /// The partitioning this scan is read with, when physical planning chose to
     /// read the table one bucket-group at a time, already coarsened to the
@@ -209,8 +214,10 @@ class Scan : public Node {
     return baseTable_;
   }
 
-  const ExprVector& filters() const {
-    return filters_;
+  /// The connector's read specification for this scan, including the filters
+  /// it evaluates. Null as described on `Key::scanHandle`.
+  const ScanHandle* scanHandle() const {
+    return scanHandle_;
   }
 
   /// The partitioning this scan is read with; null for an ordinary read.
@@ -234,7 +241,7 @@ class Scan : public Node {
 
  private:
   const BaseTableCP baseTable_;
-  const ExprVector filters_;
+  const ScanHandle* const scanHandle_;
   const connector::PartitionType* const groupedPartitionType_;
 };
 

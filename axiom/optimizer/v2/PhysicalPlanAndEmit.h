@@ -32,7 +32,6 @@ EmitPass::Result physicalPlanAndEmit(
     Builder& builder,
     const OptimizerSession& session,
     velox::core::ExpressionEvaluator& evaluator,
-    ScanHandleCache& scanHandles,
     const MultiFragmentPlan::Options& options);
 
 } // namespace facebook::axiom::optimizer::v2

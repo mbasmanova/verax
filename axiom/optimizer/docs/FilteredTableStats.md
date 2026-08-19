@@ -134,17 +134,26 @@ estimator. Gated by the `useFilteredTableStats` optimizer option
    `filteredCardinality = numRows * selectivity`, plus the rejected filters'
    column constraints.
 
-The v2 path (`EstimateLeafStatsPass` + `ScanHandle`) mirrors this.
+The v2 path differs in step 3. `PushdownAndPrunePass` negotiates with the
+connector as the conjuncts reach the scan and turns the rejected ones into a
+`Filter` above it, so there is nothing to post-apply: `filteredCardinality =
+numRows` always, and the rejected conjuncts are estimated at that `Filter` like
+any other. The conjuncts the connector accepted are inside its table handle and
+are not visible to the optimizer.
 
-### `ToVelox::LeafTableData` / `ScanHandle`
+### `ToVelox::LeafTableData` (v1) / `ScanHandle` (v2)
 
-Per-leaf-table data stores:
+v1's per-leaf-table data stores:
 - `handle` -- table handle with filters pushed into the connector.
 - `extraFilters` -- filters rejected by `createTableHandle`, evaluated
   post-scan (execution).
 - `rejectedExprs` -- the same `createTableHandle`-rejected filters as `ExprCP`,
   for the optimizer to post-apply selectivity. Built by mapping each rejected
   index back to the aligned `ExprCP` conjunct.
+
+v2's `ScanHandle` stores only `tableHandle` and a per-column `columnHandles`
+map. It has no rejected-filter fields: `ScanHandle::build` hands the rejected
+conjuncts back to the pushdown pass, which puts them in the plan.
 
 ## Hive-family Implementation
 

@@ -15,6 +15,7 @@
  */
 
 #include "axiom/optimizer/v2/EmitPass.h"
+#include "axiom/optimizer/v2/ScanHandle.h"
 
 #include <folly/ScopeGuard.h>
 #include <folly/container/F14Set.h>
@@ -225,12 +226,10 @@ class Emitter {
   Emitter(
       const OptimizerSession& session,
       velox::core::ExpressionEvaluator& evaluator,
-      ScanHandleCache& scanHandles,
       const MultiFragmentPlan::Options& options)
       : session_{session},
         evaluator_{evaluator},
         exprEmitter_{evaluator.pool()},
-        scanHandles_{scanHandles},
         options_{options} {}
 
   velox::core::PlanNodePtr emit(NodeCP node) {
@@ -364,12 +363,6 @@ class Emitter {
       const ColumnVector& outputColumns,
       const std::vector<std::string>& outputNames);
 
-  // Returns 'scan's cached handle, building it into 'storage' if there is none.
-  // The reference is valid for as long as 'storage'. Emitting must not write to
-  // the cache: it is keyed by base table, so caching this scan's handle would
-  // hand it to a later scan of the same table with different filters.
-  const ScanHandle& scanHandle(const Scan& scan, ScanHandle& storage);
-
   velox::core::PlanNodePtr emitScan(const Scan& scan);
   velox::core::PlanNodePtr emitFilter(const Filter& filter);
   velox::core::PlanNodePtr emitProject(const Project& project);
@@ -411,12 +404,6 @@ class Emitter {
       velox::core::PlanNodePtr left,
       velox::core::PlanNodePtr right,
       velox::core::TypedExprPtr filter);
-
-  // Drops columns the emitted plan carries beyond what 'node' outputs. See
-  // the definition for why they can appear.
-  velox::core::PlanNodePtr trimToNodeColumns(
-      NodeCP node,
-      velox::core::PlanNodePtr input);
 
   // Wraps 'input' in a `ProjectNode` that keeps only 'keepColumns'.
   velox::core::PlanNodePtr projectToColumns(
@@ -505,7 +492,6 @@ class Emitter {
   const OptimizerSession& session_;
   velox::core::ExpressionEvaluator& evaluator_;
   ExprEmitter exprEmitter_;
-  ScanHandleCache& scanHandles_;
   const MultiFragmentPlan::Options& options_;
   int32_t nextNodeId_{0};
 
@@ -570,19 +556,6 @@ class Emitter {
   }
 };
 
-// A scan whose filter the connector rejected emits the filter's columns, so
-// the emitted plan can be wider than 'node' says. A Velox window operator
-// passes its input through, so those columns would ride through it and be
-// dropped only at the root. Trims them off first.
-velox::core::PlanNodePtr Emitter::trimToNodeColumns(
-    NodeCP node,
-    velox::core::PlanNodePtr input) {
-  if (input->outputType()->size() <= node->outputColumns().size()) {
-    return input;
-  }
-  return projectToColumns(node->outputColumns(), std::move(input));
-}
-
 velox::core::PlanNodePtr Emitter::projectToColumns(
     const ColumnVector& keepColumns,
     velox::core::PlanNodePtr input) {
@@ -604,98 +577,32 @@ velox::RowTypePtr Emitter::makeRowType(const ColumnVector& columns) const {
   return velox::ROW(std::move(names), std::move(types));
 }
 
-// Collects names of every input-column `FieldAccessTypedExpr` reachable
-// from `expr`, excluding references bound by an enclosing lambda. Used
-// to compute the columns a rejected filter reads, so the scan's
-// projected schema can include them.
-//
-// `LambdaTypedExpr` stores its body outside `inputs()`; descend into it
-// explicitly so outer-column captures inside higher-order filters
-// (`array_filter`, `any_match`, ...) are picked up. The lambda's
-// signature parameters are removed before recursing so a field access
-// to a bound name (e.g. `x` in `array_filter(arr, x -> x > 0)`) isn't
-// mistaken for a scan-column reference.
-void collectInputColumnNamesImpl(
-    const velox::core::TypedExprPtr& expr,
-    folly::F14FastSet<std::string>& names,
-    const folly::F14FastSet<std::string>& boundNames) {
-  if (expr->isFieldAccessKind()) {
-    const auto* field = expr->asUnchecked<velox::core::FieldAccessTypedExpr>();
-    if (field->isInputColumn() && !boundNames.contains(field->name())) {
-      names.insert(field->name());
-    }
-  } else if (expr->isLambdaKind()) {
-    const auto* lambda = expr->asUnchecked<velox::core::LambdaTypedExpr>();
-    folly::F14FastSet<std::string> childBound = boundNames;
-    for (const auto& paramName : lambda->signature()->names()) {
-      childBound.insert(paramName);
-    }
-    collectInputColumnNamesImpl(lambda->body(), names, childBound);
-  }
-  for (const auto& input : expr->inputs()) {
-    collectInputColumnNamesImpl(input, names, boundNames);
-  }
-}
-
-void collectInputColumnNames(
-    const velox::core::TypedExprPtr& expr,
-    folly::F14FastSet<std::string>& names) {
-  collectInputColumnNamesImpl(expr, names, /*boundNames=*/{});
-}
-
-const ScanHandle& Emitter::scanHandle(const Scan& scan, ScanHandle& storage) {
-  if (const ScanHandle* cached = scanHandles_.find(scan)) {
-    return *cached;
-  }
-  storage = ScanHandle::build(scan, session_, evaluator_);
-  return storage;
-}
-
 velox::core::PlanNodePtr Emitter::emitScan(const Scan& scan) {
-  // The read schema is the consumer output columns followed by the filter-only
-  // columns, with columnHandles aligned to that order. Consumer columns keep
-  // their `outputName` (alias) in the scan's row type; the rename happens
-  // inside the scan via `assignments[outputName] = handle`. Filter-only
-  // columns keep their schema name.
-  ScanHandle built;
-  const ScanHandle& handle = scanHandle(scan, built);
+  VELOX_CHECK_NOT_NULL(
+      scan.scanHandle(), "Scan reaches emit without a connector handle");
+  const ScanHandle& handle = *scan.scanHandle();
   const ColumnVector& consumerColumns = scan.outputColumns();
-  const ColumnVector& filterOnlyColumns = handle.filterOnlyColumns;
   const auto& columnHandles = handle.columnHandles;
   const auto& tableHandle = handle.tableHandle;
-  std::vector<velox::core::TypedExprPtr> rejectedFilters =
-      handle.rejectedFilters;
 
-  // Scan row type keeps consumer columns (named by outputName) plus
-  // any filter-only column actually referenced by a rejected filter.
-  // Columns referenced only by accepted filters were read by the
-  // connector but stay off the projected row.
-  folly::F14FastSet<std::string> rejectedFilterRefs;
-  for (const auto& rejected : rejectedFilters) {
-    collectInputColumnNames(rejected, rejectedFilterRefs);
-  }
-
+  // Scan row type is the consumer columns, named by outputName. A column read
+  // only by an accepted filter reaches the connector through the table handle,
+  // so it is neither projected nor assigned here.
   std::vector<std::string> scanOutputNames;
   std::vector<velox::TypePtr> scanOutputTypes;
   velox::connector::ColumnHandleMap assignments;
-  scanOutputNames.reserve(consumerColumns.size() + filterOnlyColumns.size());
-  scanOutputTypes.reserve(consumerColumns.size() + filterOnlyColumns.size());
-  for (size_t i = 0; i < consumerColumns.size(); ++i) {
-    ColumnCP column = consumerColumns[i];
+  scanOutputNames.reserve(consumerColumns.size());
+  scanOutputTypes.reserve(consumerColumns.size());
+  for (ColumnCP column : consumerColumns) {
     std::string outputName{column->outputName()};
     scanOutputTypes.push_back(toTypePtr(column->value().type));
-    assignments[outputName] = columnHandles[i];
+    const auto handleIt = columnHandles.find(column);
+    VELOX_CHECK(
+        handleIt != columnHandles.end(),
+        "Scan reads a column the connector handle was not built for: {}",
+        column->name());
+    assignments[outputName] = handleIt->second;
     scanOutputNames.push_back(std::move(outputName));
-  }
-  for (size_t i = 0; i < filterOnlyColumns.size(); ++i) {
-    ColumnCP column = filterOnlyColumns[i];
-    std::string schemaName{column->name()};
-    if (!rejectedFilterRefs.contains(schemaName)) {
-      continue;
-    }
-    scanOutputTypes.push_back(toTypePtr(column->value().type));
-    assignments[schemaName] = columnHandles[consumerColumns.size() + i];
-    scanOutputNames.push_back(std::move(schemaName));
   }
 
   auto scanNode = std::make_shared<velox::core::TableScanNode>(
@@ -717,29 +624,6 @@ velox::core::PlanNodePtr Emitter::emitScan(const Scan& scan) {
   }
 
   velox::core::PlanNodePtr result = std::move(scanNode);
-
-  if (!rejectedFilters.empty()) {
-    velox::core::TypedExprPtr predicate = rejectedFilters.size() == 1
-        ? rejectedFilters.front()
-        : std::make_shared<velox::core::CallTypedExpr>(
-              velox::BOOLEAN(),
-              std::move(rejectedFilters),
-              velox::expression::kAnd);
-
-    std::unordered_map<std::string, velox::core::TypedExprPtr> rejectedRename;
-    for (ColumnCP column : consumerColumns) {
-      if (column->name() != column->outputName()) {
-        rejectedRename.emplace(
-            std::string{column->name()}, toFieldAccess(column));
-      }
-    }
-
-    if (!rejectedRename.empty()) {
-      predicate = predicate->rewriteInputNames(rejectedRename);
-    }
-    result = std::make_shared<velox::core::FilterNode>(
-        nextId(), std::move(predicate), std::move(result));
-  }
 
   return result;
 }
@@ -1515,8 +1399,7 @@ velox::core::PlanNodePtr Emitter::emitValues(const Values& values) {
 }
 
 velox::core::PlanNodePtr Emitter::emitWindow(const Window& window) {
-  velox::core::PlanNodePtr input =
-      trimToNodeColumns(window.input(), emit(window.input()));
+  velox::core::PlanNodePtr input = emit(window.input());
 
   auto partitionKeys =
       toFieldAccessList(window.partitionKeys(), "Window partition key");
@@ -1581,8 +1464,7 @@ velox::core::PlanNodePtr Emitter::emitWindow(const Window& window) {
 }
 
 velox::core::PlanNodePtr Emitter::emitRowNumber(const RowNumber& node) {
-  velox::core::PlanNodePtr input =
-      trimToNodeColumns(node.input(), emit(node.input()));
+  velox::core::PlanNodePtr input = emit(node.input());
   auto partitionKeys =
       toFieldAccessList(node.partitionKeys(), "RowNumber partition key");
   // At numDrivers > 1 each partition must be complete in one driver:
@@ -1603,8 +1485,7 @@ velox::core::PlanNodePtr Emitter::emitRowNumber(const RowNumber& node) {
 }
 
 velox::core::PlanNodePtr Emitter::emitTopNRowNumber(const TopNRowNumber& node) {
-  velox::core::PlanNodePtr input =
-      trimToNodeColumns(node.input(), emit(node.input()));
+  velox::core::PlanNodePtr input = emit(node.input());
   auto partitionKeys =
       toFieldAccessList(node.partitionKeys(), "TopNRowNumber partition key");
   // At numDrivers > 1 each partition must be complete in one driver:
@@ -2012,10 +1893,15 @@ velox::core::PlanNodePtr Emitter::emitExchange(const Exchange& exchange) {
 
 velox::connector::ConnectorTableHandlePtr Emitter::deletedRowsHandle(
     const TableWrite& tableWrite) {
-  // The scan handle is the only description of the rows to remove, so the
-  // write must sit directly on a scan whose filters the connector took in
-  // full.
+  // The scan handle is the only description of the rows to remove, so the rows
+  // reaching the write must be the rows the scan reads.
   NodeCP input = tableWrite.input();
+  if (input->is(NodeType::kFilter) &&
+      input->as<Filter>()->input()->is(NodeType::kScan)) {
+    VELOX_USER_FAIL(
+        "Connector cannot apply this WHERE clause for DELETE: {}",
+        input->as<Filter>()->predicates().front()->toString());
+  }
   VELOX_USER_CHECK(
       input->is(NodeType::kScan),
       "DELETE requires a scan with an optional filter");
@@ -2029,15 +1915,9 @@ velox::connector::ConnectorTableHandlePtr Emitter::deletedRowsHandle(
       tableWrite.table()->name().toString(),
       scan.baseTable()->schemaTable->connectorTable->name().toString());
 
-  ScanHandle built;
-  const ScanHandle& handle = scanHandle(scan, built);
-  const auto& rejectedFilters = handle.rejectedFilters;
-  VELOX_USER_CHECK(
-      rejectedFilters.empty(),
-      "Connector cannot apply this WHERE clause for DELETE: {}",
-      rejectedFilters.front()->toString());
-
-  return handle.tableHandle;
+  VELOX_CHECK_NOT_NULL(
+      scan.scanHandle(), "Scan reaches emit without a connector handle");
+  return scan.scanHandle()->tableHandle;
 }
 
 velox::core::PlanNodePtr Emitter::emitTableWrite(const TableWrite& tableWrite) {
@@ -2320,10 +2200,9 @@ EmitPass::Result EmitPass::run(
     const std::vector<std::string>& outputNames,
     const OptimizerSession& session,
     velox::core::ExpressionEvaluator& evaluator,
-    ScanHandleCache& scanHandles,
     const MultiFragmentPlan::Options& options) {
   VELOX_CHECK_EQ(outputColumns.size(), outputNames.size());
-  Emitter emitter(session, evaluator, scanHandles, options);
+  Emitter emitter(session, evaluator, options);
   auto fragments = emitter.emitFragments(root, outputColumns, outputNames);
   return Result{
       std::move(fragments),

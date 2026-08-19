@@ -238,7 +238,7 @@ class GroupedScanRewriter : public NodeRewriter<> {
     NodeCP grouped = builder().make<Scan>(Scan::Key{
         .baseTable = node->baseTable(),
         .outputColumns = node->outputColumns(),
-        .filters = node->filters(),
+        .scanHandle = node->scanHandle(),
         .groupedPartitionType = queryCtx()->scaledPartitionType(
             available.partitionType, numWorkers_)});
     // A scan already read this way interns back to itself, and then this

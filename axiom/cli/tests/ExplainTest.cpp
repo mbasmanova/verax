@@ -42,9 +42,10 @@ class ExplainTest : public SqlQueryRunnerTestBase,
 // estimate, drawn from the registered TPC-H statistics and the WHERE
 // selectivity: the filter and project carry the post-filter row count, the
 // aggregation the distinct l_orderkey count within that range. A single-worker,
-// single-driver plan collapses to one Aggregation with no repartition, so v1
-// and v2 emit the same shape; StartsWith covers the Aggregation and Project
-// lines, whose optimizer-internal column names differ between v1 and v2.
+// single-driver plan collapses to one Aggregation with no repartition; the two
+// optimizers differ only in whether the scan carries an estimate of its own.
+// StartsWith covers the Aggregation and Project lines, whose
+// optimizer-internal column names differ between v1 and v2.
 TEST_P(ExplainTest, showsCardinalityEstimate) {
   testConnector_->addTpchTables(1);
 
@@ -63,19 +64,25 @@ TEST_P(ExplainTest, showsCardinalityEstimate) {
   using ::testing::Eq;
   using ::testing::StartsWith;
 
-  EXPECT_THAT(
-      lines,
-      ::testing::ElementsAre(
-          Eq("Fragment 0: fragment1 SINGLE:"),
-          StartsWith("-- Aggregation[3][SINGLE [l_orderkey] sum := sum("),
-          Eq("   Estimate: 249.75 rows"),
-          StartsWith("  -- Project[2][expressions: (l_orderkey:BIGINT, "),
-          Eq("     Estimate: 999.202 rows"),
-          StartsWith("    -- Filter[1][expression: lt(\"l_orderkey\",1000)]"),
-          Eq("       Estimate: 999.202 rows"),
-          StartsWith("      -- TableScan[0][\"default\".\"lineitem\"]"),
-          Eq(""),
-          Eq("")));
+  std::vector<::testing::Matcher<std::string>> expected{
+      Eq("Fragment 0: fragment1 SINGLE:"),
+      StartsWith("-- Aggregation[3][SINGLE [l_orderkey] sum := sum("),
+      Eq("   Estimate: 249.75 rows"),
+      StartsWith("  -- Project[2][expressions: (l_orderkey:BIGINT, "),
+      Eq("     Estimate: 999.202 rows"),
+      StartsWith("    -- Filter[1][expression: lt(\"l_orderkey\",1000)]"),
+      Eq("       Estimate: 999.202 rows"),
+      StartsWith("      -- TableScan[0][\"default\".\"lineitem\"]"),
+  };
+  if (useV2_) {
+    // v2 reports the rows the scan reads before the filter; v1 prints no
+    // estimate for the scan. Both report the rows that pass the filter.
+    expected.push_back(Eq("         Estimate: 6.00122e+06 rows"));
+  }
+  expected.push_back(Eq(""));
+  expected.push_back(Eq(""));
+
+  EXPECT_THAT(lines, ::testing::ElementsAreArray(expected));
 }
 
 TEST_P(ExplainTest, explainCreateTable) {

@@ -253,7 +253,7 @@ NodeCP emitLeaf(const LeafOp* leaf, EmitState& state) {
       return state.builder.make<Scan>(Scan::Key{
           .baseTable = scan->baseTable(),
           .outputColumns = scan->outputColumns(),
-          .filters = scan->filters(),
+          .scanHandle = scan->scanHandle(),
           .groupedPartitionType = partitionType});
     }
   }

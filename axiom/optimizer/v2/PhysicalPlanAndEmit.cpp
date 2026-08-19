@@ -29,7 +29,6 @@ EmitPass::Result physicalPlanAndEmit(
     Builder& builder,
     const OptimizerSession& session,
     velox::core::ExpressionEvaluator& evaluator,
-    ScanHandleCache& scanHandles,
     const MultiFragmentPlan::Options& options) {
   NodeCP physicalPlanned = PlanPhysicalPass::run(
       root, builder, session.options(), options.numWorkers, options.numDrivers);
@@ -38,13 +37,7 @@ EmitPass::Result physicalPlanAndEmit(
   // (grouping sets were already lowered to GroupId in translate).
   NodeCP expanded = ExpandAggregatePass::run(precomputed, builder);
   return EmitPass::run(
-      expanded,
-      outputColumns,
-      outputNames,
-      session,
-      evaluator,
-      scanHandles,
-      options);
+      expanded, outputColumns, outputNames, session, evaluator, options);
 }
 
 } // namespace facebook::axiom::optimizer::v2

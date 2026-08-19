@@ -15,12 +15,12 @@
  */
 
 #include "axiom/optimizer/v2/EstimateLeafStatsPass.h"
+#include "axiom/optimizer/v2/ScanHandle.h"
 
 #include "folly/coro/BlockingWait.h"
 #include "folly/coro/Collect.h"
 
 #include "axiom/connectors/ConnectorMetadata.h"
-#include "axiom/optimizer/Filters.h"
 #include "axiom/optimizer/QueryGraph.h"
 #include "axiom/optimizer/QueryGraphContext.h"
 #include "axiom/optimizer/Schema.h"
@@ -52,17 +52,13 @@ void applyColumnStats(
 }
 
 // Applies one base table's connector stats result. Sets filteredCardinality to
-// the connector's post-filter row count, scaled by the optimizer's own
-// selectivity for any filters the connector rejected. A nullopt result (the
-// connector does not support stats) leaves filteredCardinality at 0 so
-// downstream estimation falls back to constraint-based selectivity. Rejected
-// filters scale only the row count; per-column constraints are re-derived
-// downstream.
+// the connector's post-filter row count. A nullopt result (the connector does
+// not support stats) leaves filteredCardinality at 0 so downstream estimation
+// falls back to constraint-based selectivity.
 void applyFilteredStats(
     const Scan& scan,
     const std::vector<ColumnCP>& statColumns,
-    const std::optional<connector::FilteredTableStats>& stats,
-    const ExprVector& rejectedFilters) {
+    const std::optional<connector::FilteredTableStats>& stats) {
   if (!stats.has_value()) {
     return;
   }
@@ -78,36 +74,14 @@ void applyFilteredStats(
     }
   }
 
-  // The connector accounted for its accepted filters in numRows. Post-apply
-  // selectivity for the filters createTableHandle rejected (kept as ExprCP).
-  if (rejectedFilters.empty()) {
-    baseTable->filteredCardinality = std::max<float>(1, stats->numRows);
-    return;
-  }
-
-  ConstraintMap constraints;
-  const auto selectivity = conjunctsSelectivity(
-      constraints,
-      {rejectedFilters.data(), rejectedFilters.size()},
-      /*updateConstraints=*/false);
-  // When the rejected filters' selectivity is unknown, the post-filter row
-  // count is unknown too: leave `filteredCardinality` unset so downstream
-  // estimation propagates the unknown rather than fabricating a fraction.
-  if (!selectivity.has_value()) {
-    baseTable->filteredCardinality = std::nullopt;
-    return;
-  }
-  baseTable->filteredCardinality =
-      std::max<float>(1, stats->numRows * selectivity->trueFraction);
+  // numRows is post-filter for the filters the connector took; the refused
+  // ones are estimated at the Filter above the scan.
+  baseTable->filteredCardinality = std::max<float>(1, stats->numRows);
 }
 
 } // namespace
 
-void EstimateLeafStatsPass::run(
-    NodeCP root,
-    const OptimizerSession& session,
-    velox::core::ExpressionEvaluator& evaluator,
-    ScanHandleCache& scanHandles) {
+void EstimateLeafStatsPass::run(NodeCP root, const OptimizerSession& session) {
   std::vector<ScanCP> scans;
   collectScans(root, scans);
 
@@ -115,9 +89,6 @@ void EstimateLeafStatsPass::run(
   struct TableTask {
     ScanCP scan;
     std::vector<ColumnCP> statColumns;
-    // Copied from the cached ScanHandle: a reference would dangle when a later
-    // getOrBuild rehashes the ScanHandleCache and moves the ScanHandle.
-    ExprVector rejectedExprs;
   };
   std::vector<TableTask> tasks;
   std::vector<folly::coro::Task<std::optional<connector::FilteredTableStats>>>
@@ -133,35 +104,28 @@ void EstimateLeafStatsPass::run(
     if (!seen.insert(baseTable->id()).second) {
       continue;
     }
-    const ScanHandle& handle =
-        scanHandles.getOrBuild(*scan, session, evaluator);
+    const ScanHandle* handle = scan->scanHandle();
+    VELOX_CHECK_NOT_NULL(
+        handle, "Filtered-table stats need the connector's read handle");
 
     const auto* layout = baseTable->schemaTable->columnGroups[0]->layout;
     auto connectorSession =
         session.toConnectorSession(layout->connector()->connectorId());
 
-    // Request stats for the top-level columns of the read schema. Subfield
-    // columns have no connector-level statistics.
+    // Subfield columns have no connector-level statistics.
     std::vector<ColumnCP> statColumns;
     std::vector<std::string> columnNames;
-    const auto addColumn = [&](ColumnCP column) {
+    for (ColumnCP column : scan->outputColumns()) {
       if (column->topColumn() == nullptr) {
         statColumns.push_back(column);
         columnNames.emplace_back(column->name());
       }
-    };
-    for (ColumnCP column : scan->outputColumns()) {
-      addColumn(column);
-    }
-    for (ColumnCP column : handle.filterOnlyColumns) {
-      addColumn(column);
     }
 
-    tasks.push_back(
-        TableTask{scan, std::move(statColumns), handle.rejectedExprs});
+    tasks.push_back(TableTask{scan, std::move(statColumns)});
     requests.push_back(layout->co_estimateStats(
         std::move(connectorSession),
-        handle.tableHandle,
+        handle->tableHandle,
         std::move(columnNames),
         estimator));
   }
@@ -177,11 +141,7 @@ void EstimateLeafStatsPass::run(
       folly::coro::collectAllRange(std::move(requests)));
 
   for (size_t i = 0; i < tasks.size(); ++i) {
-    applyFilteredStats(
-        *tasks[i].scan,
-        tasks[i].statColumns,
-        results[i],
-        tasks[i].rejectedExprs);
+    applyFilteredStats(*tasks[i].scan, tasks[i].statColumns, results[i]);
   }
 }
 

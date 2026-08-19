@@ -156,6 +156,9 @@ FROM (VALUES (1, 10), (2, 20)) t(a, b)
 FULL JOIN (VALUES (1, 1), (3, 3)) u(x, y) ON a = x
 WHERE coalesce(y, 1) > 0
 ----
+-- The projected b is the left side's, not the right side's filtered b.
+SELECT t_left.b FROM t t_left JOIN t t_right ON t_left.a = t_right.a WHERE t_right.b = 10
+----
 -- 8-way self-join hitting the greedy join-enumeration cutoff.
 SELECT count(*)
 FROM t t1
