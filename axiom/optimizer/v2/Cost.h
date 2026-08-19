@@ -22,8 +22,8 @@ namespace facebook::axiom::optimizer::v2 {
 
 /// Default per-input-row fanout assumed for an UNNEST when per-array
 /// size statistics are unavailable. The cardinality of an Unnest
-/// relation and the cost of its cross-join-unnest edge must use the
-/// same value so the two estimates agree.
+/// relation and the cost of expanding a plan by it must use the same
+/// value so the two estimates agree.
 constexpr float kDefaultUnnestFanout = 10;
 
 /// Cost of a candidate physical plan or subplan, used to score memo

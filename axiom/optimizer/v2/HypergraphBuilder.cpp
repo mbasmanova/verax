@@ -388,10 +388,10 @@ JoinHypergraph HypergraphBuilder::build(
     }
   }
 
-  // Build the directed cross-join-unnest edge for each Unnest that depends on
-  // a relation of the cluster, and record every Unnest's input relations (the
-  // relation ids its input subtree contributes, resolved via the now-complete
-  // columnToLeaf) for the outer-join barrier applied in the cluster-join loop.
+  // Build the unnest edge for each Unnest that depends on a relation
+  // of the cluster, and record every Unnest's input relations (the relation ids
+  // its input subtree contributes, resolved via the now-complete columnToLeaf)
+  // for the outer-join barrier applied in the cluster-join loop.
   folly::F14FastMap<int8_t, RelationSet> unnestInputRelations;
   for (UnnestCP unnest : cluster.unnests) {
     const int8_t id = unnestIds.at(unnest);
@@ -417,11 +417,7 @@ JoinHypergraph HypergraphBuilder::build(
     RelationSet tes{inputRelations};
     tes.add(id);
     graph.addEdge(
-        JoinEdge{
-            inputRelations,
-            RelationSet::singleton(id),
-            unnest->unnestExpressions()},
-        tes);
+        JoinEdge::unnest(inputRelations, RelationSet::singleton(id)), tes);
   }
 
   folly::F14FastMap<JoinCP, JoinLeaves> joinLeaves;
@@ -474,16 +470,6 @@ JoinHypergraph HypergraphBuilder::build(
             /*leftSide=*/false,
             leafIds,
             joinLeaves));
-
-        // Consumer edges that reference an Unnest produced column must
-        // wait until the Unnest's input relations are in cover, so the
-        // cross-join-unnest fires before any consumer joins Unnest with
-        // its other side.
-        for (const auto& [unnestId, inputRelations] : unnestInputRelations) {
-          if (ses.contains(unnestId)) {
-            tes.unionSet(inputRelations);
-          }
-        }
 
         graph.addEdge(
             JoinEdge{
@@ -541,19 +527,17 @@ JoinHypergraph HypergraphBuilder::build(
           leafIds,
           joinLeaves));
 
-      // Unnest barrier: if an Unnest's input subtree contributes a
-      // relation on this outer join's null-padded side, the
-      // cross-join-unnest must fire before the outer join. Otherwise
-      // null-padding flows into UNNEST and rows drop. Expand TES to
-      // include the Unnest relation id so DPhyp pins the order.
+      // Outer-join barrier: if an Unnest's input subtree contributes a relation
+      // on this outer join's null-padded side, the unnest edge must fire before
+      // the outer join. Otherwise null-padding flows into UNNEST and rows drop.
+      // Expand TES to include the Unnest relation id so DPhyp pins the order.
       RelationSet joinRelations{leaves.left};
       joinRelations.unionSet(leaves.right);
       for (const auto& [unnestId, inputRelations] : unnestInputRelations) {
-        // An outer join inside the Unnest's input subtree is already
-        // ordered before the Unnest by the directed cross-join-unnest
-        // edge. The barrier would demand the reverse order, which no
-        // plan can satisfy when this join is the only edge co-locating
-        // the input relations.
+        // An outer join inside the Unnest's input subtree is already ordered
+        // before the Unnest by the unnest edge. The barrier would demand the
+        // reverse order, which no plan can satisfy when this join is the only
+        // edge co-locating the input relations.
         if (joinRelations.isSubset(inputRelations)) {
           continue;
         }

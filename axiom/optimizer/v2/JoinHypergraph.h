@@ -78,9 +78,13 @@ class JoinHypergraph {
       std::optional<float> cardinality,
       PlanObjectSet columns);
 
-  /// Relation ids registered via `addUnnestRelation`.
-  const RelationSet& unnestRelationIds() const {
-    return unnestRelationIds_;
+  /// Relations an unnest edge expands. These produce rows only for the
+  /// relations they expand, so they have no plan of their own and enumeration
+  /// reaches them only by applying the edge. An Unnest of a constant expands
+  /// nothing, carries no edge, and is an ordinary source rather than one of
+  /// these.
+  const RelationSet& expandedRelationIds() const {
+    return expandedRelationIds_;
   }
 
   /// Appends an edge with its TES. `tes` must be a superset of
@@ -177,6 +181,8 @@ class JoinHypergraph {
   RelationSet relationIds_;
   // Bitset of relations registered via `addUnnestRelation`.
   RelationSet unnestRelationIds_;
+  // Unnest relations an unnest edge expands; see `expandedRelationIds()`.
+  RelationSet expandedRelationIds_;
   // Columns the cluster's plan must output. See setTargetColumns().
   PlanObjectSet targetColumns_;
 

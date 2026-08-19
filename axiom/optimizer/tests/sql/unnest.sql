@@ -57,6 +57,13 @@ FROM arrays a
 JOIN (VALUES (7), (8)) AS u(k) ON u.k = a.x
 CROSS JOIN UNNEST(a.ys) AS _(y)
 ----
+-- The same rows with the unnest written below the join, where the join reads
+-- no unnested column.
+SELECT a.x, u.k, y
+FROM arrays a
+CROSS JOIN UNNEST(a.ys) AS _(y)
+JOIN (VALUES (7), (8)) AS u(k) ON u.k = a.x
+----
 -- Join on an unnested column.
 SELECT a.x, y
 FROM arrays a
@@ -82,3 +89,18 @@ SELECT a.x, y, u.k
 FROM arrays a
 CROSS JOIN UNNEST(a.ys) AS _(y)
 JOIN (VALUES (7, 10), (8, 30)) AS u(k, m) ON u.k = a.x AND u.m = y
+----
+-- An IN subquery whose source unnests a column of another relation.
+SELECT a
+FROM (VALUES ('x')) AS s(a)
+WHERE a IN (
+  SELECT e FROM (VALUES (ARRAY['x'])) AS m(data) CROSS JOIN UNNEST(data) AS t(e))
+----
+-- An EXISTS subquery whose source unnests a column, correlated only by a
+-- comparison on the unnested column.
+SELECT x
+FROM arrays a
+WHERE EXISTS (
+  SELECT 1
+  FROM (VALUES (ARRAY[8, 5])) AS m(data) CROSS JOIN UNNEST(data) AS t(e)
+  WHERE e > a.x)

@@ -1022,6 +1022,81 @@ TEST_P(UnnestTest, joinEdgeCrossingWithUnnest) {
   AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
 }
 
+// An IN subquery whose source unnests a column of another relation. The IN
+// test is applied above the unnest, and the outer column reaches the output.
+TEST_P(UnnestTest, inSubqueryOverUnnest) {
+  auto query =
+      "SELECT a FROM (VALUES ('x')) AS s(a) "
+      "WHERE a IN ("
+      "  SELECT e FROM (VALUES (ARRAY['x'])) AS m(data) "
+      "  CROSS JOIN UNNEST(data) AS t(e))";
+  SCOPED_TRACE(query);
+
+  auto logicalPlan = parseSelect(query, kTestConnectorId);
+
+  auto matcher = matchValues()
+                     .aliases({"data"})
+                     .unnest({}, {"data"})
+                     .aliases({"e"})
+                     .hashJoinRightSemiFilter(
+                         matchValues().aliases({"a"}), {.keys = {{"e = a"}}})
+                     .project({"a"})
+                     .build();
+
+  AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
+
+  // Two single-row inputs stay on one task, so distributing changes nothing.
+  auto distributed = planVelox(logicalPlan, {.numWorkers = 4, .numDrivers = 4});
+  AXIOM_ASSERT_DISTRIBUTED_PLAN(distributed.plan, matcher);
+}
+
+// An expansion goes above a join that does not read what it produces, so the
+// join runs on the rows before they multiply.
+TEST_P(UnnestTest, unnestPlacedAboveJoin) {
+  auto query =
+      "SELECT s.a, e "
+      "FROM (VALUES (1, ARRAY[10, 20])) AS m(k, data) "
+      "CROSS JOIN UNNEST(m.data) AS t(e) "
+      "JOIN (VALUES (1)) AS s(a) ON s.a = m.k";
+  SCOPED_TRACE(query);
+
+  auto logicalPlan = parseSelect(query, kTestConnectorId);
+
+  // v1 expands before the join, so the join reads the multiplied rows. That
+  // plan is the worse one and is not checked.
+  if (!useV2_) {
+    ASSERT_NO_THROW(toSingleNodePlan(logicalPlan));
+    return;
+  }
+
+  auto matcher =
+      matchValues()
+          .aliases({"k", "data"})
+          .hashJoinInner(matchValues().aliases({"a"}), {.keys = {{"k = a"}}})
+          .unnest({"a"}, {"data"})
+          .project()
+          .build();
+
+  {
+    SCOPED_TRACE("cost-based enumeration");
+    AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
+
+    auto distributed =
+        planVelox(logicalPlan, {.numWorkers = 4, .numDrivers = 4});
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(distributed.plan, matcher);
+  }
+
+  {
+    SCOPED_TRACE("greedy fallback");
+    optimizerOptions_.dphypEnumerationBudget = 1;
+    AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
+
+    auto distributed =
+        planVelox(logicalPlan, {.numWorkers = 4, .numDrivers = 4});
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(distributed.plan, matcher);
+  }
+}
+
 AXIOM_INSTANTIATE_V1_V2(UnnestTest);
 
 } // namespace
