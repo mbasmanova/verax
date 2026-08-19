@@ -125,30 +125,35 @@ TEST_F(TpchPlanTest, q02) {
   //
   // region appears on both the outer and subquery sides, so bind its r_name to
   // a stable alias rather than the per-side disambiguated name.
-  auto supplierInEurope = [](const std::string& regionName) {
+  auto supplierInEurope = [](const std::string& regionName,
+                             const std::string& regionKeyName) {
     return matchScan("supplier")
         .hashJoinInner(matchScan("nation").hashJoinInner(
             matchScan("region")
-                .aliases({std::nullopt, regionName})
-                .filter(regionName + " = 'EUROPE'")));
+                .aliases({regionKeyName, regionName})
+                .filter(regionName + " = 'EUROPE'")
+                .project({regionKeyName})));
   };
 
   // The outer query's table tree: partsupp joined to the filtered part and to
   // supplier in Europe.
-  auto outerTables = matchScan("partsupp")
-                         .hashJoinInner(matchScan("part").filter(
-                             "p_size = 15 and p_type like '%BRASS'"))
-                         .hashJoinInner(supplierInEurope("r_name_outer"));
+  auto outerTables =
+      matchScan("partsupp")
+          .hashJoinInner(matchScan("part")
+                             .filter("p_size = 15 and p_type like '%BRASS'")
+                             .project({"p_partkey", "p_mfgr"}))
+          .hashJoinInner(supplierInEurope("r_name_outer", "r_regionkey_outer"));
 
   // The aggregated subquery min(ps_supplycost) per ps_partkey, joined back to
   // the outer table tree.
-  auto matcher = matchScan("partsupp")
-                     .hashJoinInner(supplierInEurope("r_name_sub"))
-                     .aggregation()
-                     .hashJoinInner(outerTables)
-                     .project()
-                     .topN()
-                     .build();
+  auto matcher =
+      matchScan("partsupp")
+          .hashJoinInner(supplierInEurope("r_name_sub", "r_regionkey_sub"))
+          .aggregation()
+          .hashJoinInner(outerTables)
+          .project()
+          .topN()
+          .build();
   AXIOM_ASSERT_PLAN(planTpch(2), matcher);
 
   ASSERT_NO_THROW(planTpchMultiNode({.query = 2, .numDrivers = 1}));
@@ -159,11 +164,13 @@ TEST_F(TpchPlanTest, q03) {
   auto matcher =
       matchScan("lineitem")
           .filter("l_shipdate > date '1995-03-15'")
+          .project({"l_orderkey", "l_extendedprice", "l_discount"})
           .hashJoinInner(
               matchScan("orders")
                   .filter("o_orderdate < date '1995-03-15'")
                   .hashJoinInner(matchScan("customer")
-                                     .filter("c_mktsegment = 'BUILDING'")))
+                                     .filter("c_mktsegment = 'BUILDING'")
+                                     .project({"c_custkey"})))
           .project()
           .aggregation()
           .project()
@@ -179,8 +186,12 @@ TEST_F(TpchPlanTest, q04) {
   auto matcher =
       matchScan("lineitem")
           .filter("l_commitdate < l_receiptdate")
-          .hashJoinRightSemiFilter(matchScan("orders").filter(
-              "o_orderdate >= date '1993-07-01' and o_orderdate < date '1993-10-01'"))
+          .project({"l_orderkey"})
+          .hashJoinRightSemiFilter(
+              matchScan("orders")
+                  .filter(
+                      "o_orderdate >= date '1993-07-01' and o_orderdate < date '1993-10-01'")
+                  .project({"o_orderkey", "o_orderpriority"}))
           .aggregation()
           .orderBy()
           .build();
@@ -203,10 +214,13 @@ TEST_F(TpchPlanTest, q05) {
                   .filter(
                       "o_orderdate >= date '1994-01-01' "
                       "and o_orderdate < date '1995-01-01'")
+                  .project({"o_orderkey", "o_custkey"})
                   .hashJoinInner(
                       matchScan("customer")
                           .hashJoinInner(matchScan("nation").hashJoinInner(
-                              matchScan("region").filter("r_name = 'ASIA'")))))
+                              matchScan("region")
+                                  .filter("r_name = 'ASIA'")
+                                  .project({"r_regionkey"})))))
           .hashJoinInner(matchScan("supplier"))
           .project()
           .aggregation()
@@ -299,14 +313,18 @@ TEST_F(TpchPlanTest, q08) {
               matchScan("orders")
                   .filter(
                       "o_orderdate between date '1995-01-01' and date '1996-12-31'")
-                  .hashJoinInner(matchScan("lineitem")
-                                     .hashJoinInner(matchScan("part").filter(
-                                         "p_type = 'ECONOMY ANODIZED STEEL'")))
+                  .hashJoinInner(
+                      matchScan("lineitem")
+                          .hashJoinInner(
+                              matchScan("part")
+                                  .filter("p_type = 'ECONOMY ANODIZED STEEL'")
+                                  .project({"p_partkey"})))
                   .hashJoinInner(
                       matchScan("customer")
                           .hashJoinInner(matchScan("nation").hashJoinInner(
-                              matchScan("region").filter(
-                                  "r_name = 'AMERICA'")))))
+                              matchScan("region")
+                                  .filter("r_name = 'AMERICA'")
+                                  .project({"r_regionkey"})))))
           .hashJoinInner(matchScan("nation"))
           .project()
           .aggregation()
@@ -340,9 +358,11 @@ TEST_F(TpchPlanTest, q09Alt) {
       matchScan("orders")
           .hashJoinInner(
               matchScan("lineitem")
-                  .hashJoinInner(matchScan("partsupp")
-                                     .hashJoinInner(matchScan("part").filter(
-                                         "p_size <= 3"))))
+                  .hashJoinInner(
+                      matchScan("partsupp")
+                          .hashJoinInner(matchScan("part")
+                                             .filter("p_size <= 3")
+                                             .project({"p_partkey"}))))
           .hashJoinInner(
               matchScan("supplier").hashJoinInner(matchScan("nation")))
           .project()
@@ -364,11 +384,15 @@ TEST_F(TpchPlanTest, q10) {
   // joins last.
   auto matcher =
       matchScan("customer")
-          .hashJoinInner(matchScan("lineitem")
-                             .filter("l_returnflag = 'R'")
-                             .hashJoinInner(matchScan("orders").filter(
-                                 "o_orderdate >= date '1993-10-01' "
-                                 "and o_orderdate < date '1994-01-01'")))
+          .hashJoinInner(
+              matchScan("lineitem")
+                  .filter("l_returnflag = 'R'")
+                  .project({"l_orderkey", "l_extendedprice", "l_discount"})
+                  .hashJoinInner(matchScan("orders")
+                                     .filter(
+                                         "o_orderdate >= date '1993-10-01' "
+                                         "and o_orderdate < date '1994-01-01'")
+                                     .project({"o_orderkey", "o_custkey"})))
           .hashJoinInner(matchScan("nation"))
           .project(
               {"c_custkey",
@@ -414,8 +438,9 @@ TEST_F(TpchPlanTest, q11) {
         return partsupp.hashJoinInner(
             matchScan("supplier")
                 .hashJoinInner(matchScan("nation")
-                                   .aliases({std::nullopt, nationName})
-                                   .filter(nationName + " = 'GERMANY'")));
+                                   .aliases({"n_nationkey", nationName})
+                                   .filter(nationName + " = 'GERMANY'")
+                                   .project({"n_nationkey"})));
       };
 
   auto matcher =
@@ -444,7 +469,9 @@ TEST_F(TpchPlanTest, q12) {
       "         l_receiptdate < date '1995-01-01')";
 
   auto matcher = matchScan("orders")
-                     .hashJoinInner(matchScan("lineitem").filter(filter))
+                     .hashJoinInner(matchScan("lineitem")
+                                        .filter(filter)
+                                        .project({"l_orderkey", "l_shipmode"}))
                      .project()
                      .aggregation()
                      .orderBy()
@@ -454,7 +481,10 @@ TEST_F(TpchPlanTest, q12) {
   auto distributed = [&](bool isMultiThreaded) {
     return matchScan("orders")
         .multiThreaded(isMultiThreaded)
-        .hashJoinInner(matchScan("lineitem").filter(filter).broadcast())
+        .hashJoinInner(matchScan("lineitem")
+                           .filter(filter)
+                           .project({"l_orderkey", "l_shipmode"})
+                           .broadcast())
         .project({
             "l_shipmode",
             "if(o_orderpriority = '1-URGENT' or o_orderpriority = '2-HIGH', 1, 0) as high_line_count",
@@ -487,6 +517,7 @@ TEST_F(TpchPlanTest, q13) {
   auto matcher =
       matchScan("orders")
           .filter("o_comment not like '%special%requests%'")
+          .project({"o_orderkey", "o_custkey"})
           .hashJoinRight(matchScan("customer"))
           .singleAggregation({"c_custkey"}, {"count(o_orderkey) as cnt"})
           .project()
@@ -503,18 +534,26 @@ TEST_F(TpchPlanTest, q13) {
 TEST_F(TpchPlanTest, q14) {
   const auto filter =
       "l_shipdate >= date '1995-09-01' and l_shipdate < date '1995-10-01'";
-  auto matcher = matchScan("part")
-                     .hashJoinInner(matchScan("lineitem").filter(filter))
-                     .project()
-                     .aggregation()
-                     .project()
-                     .build();
+  auto matcher =
+      matchScan("part")
+          .hashJoinInner(
+              matchScan("lineitem")
+                  .filter(filter)
+                  .project({"l_partkey", "l_extendedprice", "l_discount"}))
+          .project()
+          .aggregation()
+          .project()
+          .build();
   AXIOM_ASSERT_PLAN(planTpch(14), matcher);
 
   auto distributed = [&](bool isMultiThreaded) {
     return matchScan("part")
         .multiThreaded(isMultiThreaded)
-        .hashJoinInner(matchScan("lineitem").filter(filter).broadcast())
+        .hashJoinInner(
+            matchScan("lineitem")
+                .filter(filter)
+                .project({"l_partkey", "l_extendedprice", "l_discount"})
+                .broadcast())
         .project({
             "if(p_type like 'PROMO%', l_extendedprice * (1.0 - l_discount), 0.0) as promo",
             "l_extendedprice * (1.0 - l_discount) as disc_price",
@@ -556,7 +595,7 @@ TEST_F(TpchPlanTest, q15) {
                   revenueAgg({"l_suppkey",
                               "l_extendedprice",
                               "l_discount",
-                              std::nullopt})
+                              "l_shipdate"})
                       .project()
                       .singleAggregation({}, {"max(total_revenue) as maxRev"})))
           .orderBy({"s_suppkey"})
@@ -576,7 +615,8 @@ TEST_F(TpchPlanTest, q16) {
                      .hashJoinInner(matchScan("part").filter(partFilter))
                      .hashJoinAnti(
                          matchScan("supplier")
-                             .filter("s_comment like '%Customer%Complaints%'"),
+                             .filter("s_comment like '%Customer%Complaints%'")
+                             .project({"s_suppkey"}),
                          {.nullAware = true})
                      .singleAggregation(
                          {"p_brand", "p_type", "p_size"},
@@ -593,6 +633,7 @@ TEST_F(TpchPlanTest, q16) {
             .hashJoinAnti(
                 matchScan("supplier")
                     .filter("s_comment like '%Customer%Complaints%'")
+                    .project({"s_suppkey"})
                     .broadcast(),
                 {.nullAware = true})
             .shuffle({"p_brand", "p_type", "p_size"});
@@ -624,8 +665,11 @@ TEST_F(TpchPlanTest, q17) {
           .hashJoinInner(
               matchScan("lineitem")
                   .aggregation()
-                  .hashJoinRight(matchScan("part").filter(
-                      "p_brand = 'Brand#23' and p_container = 'MED BOX'")))
+                  .hashJoinRight(
+                      matchScan("part")
+                          .filter(
+                              "p_brand = 'Brand#23' and p_container = 'MED BOX'")
+                          .project({"p_partkey"})))
           .filter()
           .project()
           .aggregation()
@@ -678,6 +722,7 @@ TEST_F(TpchPlanTest, q19) {
               "(l_quantity >= 1.0 and l_quantity <= 11.0) or "
               "(l_quantity >= 10.0 and l_quantity <= 20.0) or "
               "(l_quantity >= 20.0 and l_quantity <= 30.0))")
+          .project({"l_partkey", "l_quantity", "l_extendedprice", "l_discount"})
           .hashJoinInner(matchScan("part").filter(
               "(p_brand = 'Brand#12' and p_container in ('SM CASE', "
               "'SM BOX', 'SM PACK', 'SM PKG') and p_size between 1 and 5) or "
@@ -705,18 +750,22 @@ TEST_F(TpchPlanTest, q20) {
       matchScan("lineitem")
           .filter(
               "l_shipdate >= date '1994-01-01' and l_shipdate < date '1995-01-01'")
+          .project({"l_partkey", "l_suppkey", "l_quantity"})
           .aggregation()
           .hashJoinRight(matchScan("partsupp")
-                             .hashJoinLeftSemiProject(matchScan("part").filter(
-                                 "like(p_name, 'forest%')"))
+                             .hashJoinLeftSemiProject(
+                                 matchScan("part")
+                                     .filter("like(p_name, 'forest%')")
+                                     .project({"p_partkey"}))
                              .filter("mark1"))
           // TODO Optimize if(true, sum * 0.5, null) to sum * 0.5.
           .filter("cast(ps_availqty as double) > if(true, sum * 0.5, null)")
           .project()
           .hashJoinRightSemiFilter(
               matchScan("supplier")
-                  .hashJoinInner(
-                      matchScan("nation").filter("n_name = 'CANADA'")))
+                  .hashJoinInner(matchScan("nation")
+                                     .filter("n_name = 'CANADA'")
+                                     .project({"n_nationkey"})))
           .orderBy()
           .project()
           .build();
@@ -736,22 +785,27 @@ TEST_F(TpchPlanTest, q21) {
           .hashJoinRightSemiFilter(
               matchScan("lineitem")
                   .aliases(
-                      {std::nullopt,
-                       std::nullopt,
+                      {"l_orderkey",
+                       "l_suppkey",
                        "l_commitdate",
                        "l_receiptdate"})
                   .filter("l_commitdate < l_receiptdate")
+                  .project({"l_orderkey", "l_suppkey"})
                   .hashJoinRightSemiProject(
                       matchScan("orders")
                           .filter("o_orderstatus = 'F'")
+                          .project({"o_orderkey"})
                           .hashJoinInner(
                               matchScan("lineitem")
                                   .filter("l_commitdate < l_receiptdate")
+                                  .project({"l_orderkey", "l_suppkey"})
                                   .hashJoinInner(
                                       matchScan("supplier")
                                           .hashJoinInner(
-                                              matchScan("nation").filter(
-                                                  "n_name = 'SAUDI ARABIA'")))))
+                                              matchScan("nation")
+                                                  .filter(
+                                                      "n_name = 'SAUDI ARABIA'")
+                                                  .project({"n_nationkey"})))))
                   // Bind the semijoin's trailing mark column by position rather
                   // than its internal name.
                   .aliases({std::nullopt, std::nullopt, std::nullopt, "mark"})
@@ -780,8 +834,9 @@ TEST_F(TpchPlanTest, q22) {
                   .filter(countryFilter)
                   .nestedLoopJoin(
                       matchScan("customer")
-                          .aliases({"c_acctbal", std::nullopt})
+                          .aliases({"c_acctbal", "c_phone"})
                           .filter("c_acctbal > 0.0 and " + countryFilter)
+                          .project({"c_acctbal"})
                           .aggregation()))
           .aliases({std::nullopt, std::nullopt, std::nullopt, "mark"})
           .filter("not(mark)")

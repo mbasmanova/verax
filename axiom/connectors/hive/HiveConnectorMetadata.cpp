@@ -366,6 +366,52 @@ velox::connector::ConnectorTableHandlePtr HiveTableLayout::createTableHandle(
       tableName.schema);
 }
 
+std::vector<const Column*> HiveTableLayout::nonPartitionFilterColumns(
+    const velox::connector::hive::HiveTableHandle& handle) const {
+  std::unordered_set<std::string> filterColumnNames;
+  for (const auto& [subfield, filter] : handle.subfieldFilters()) {
+    filterColumnNames.emplace(subfield.baseName());
+  }
+  if (handle.remainingFilter() != nullptr) {
+    extractInputFields(handle.remainingFilter(), filterColumnNames);
+  }
+
+  folly::F14FastSet<std::string> partitionColumnNames;
+  for (const auto* column : hivePartitionColumns_) {
+    partitionColumnNames.insert(column->name());
+  }
+
+  std::vector<const Column*> filterColumns;
+  for (const auto* column : columns()) {
+    if (filterColumnNames.contains(column->name()) &&
+        !partitionColumnNames.contains(column->name())) {
+      filterColumns.push_back(column);
+    }
+  }
+  return filterColumns;
+}
+
+std::vector<std::string> HiveTableLayout::withFilterColumns(
+    const velox::connector::hive::HiveTableHandle& handle,
+    const std::vector<std::string>& requested,
+    const std::function<bool(const std::string&)>& hasStats) const {
+  std::vector<std::string> columnNames = requested;
+  std::unordered_set<std::string> seen{requested.begin(), requested.end()};
+  for (const auto* column : nonPartitionFilterColumns(handle)) {
+    if (seen.insert(column->name()).second && hasStats(column->name())) {
+      columnNames.emplace_back(column->name());
+    }
+  }
+  return columnNames;
+}
+
+void trimColumnStats(FilteredTableStats& stats, size_t numColumns) {
+  if (stats.columnStats.size() > numColumns) {
+    stats.columnStats.erase(
+        stats.columnStats.begin() + numColumns, stats.columnStats.end());
+  }
+}
+
 void HiveTableLayout::foldNonPartitionFilterStats(
     const velox::connector::hive::HiveTableHandle& handle,
     const FilterSelectivityEstimator& estimator,

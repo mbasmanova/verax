@@ -16,8 +16,8 @@
 
 #pragma once
 
+#include "axiom/optimizer/OptimizerSession.h"
 #include "axiom/optimizer/v2/Builder.h"
-#include "axiom/optimizer/v2/ScanHandle.h"
 
 namespace facebook::axiom::optimizer::v2 {
 
@@ -37,12 +37,8 @@ namespace facebook::axiom::optimizer::v2 {
 /// none reaches emit, where the kind name is not a Velox aggregate.
 class FoldMetadataAggregatePass {
  public:
-  static NodeCP run(
-      NodeCP root,
-      Builder& builder,
-      const OptimizerSession& session,
-      velox::core::ExpressionEvaluator& evaluator,
-      ScanHandleCache& scanHandles);
+  static NodeCP
+  run(NodeCP root, Builder& builder, const OptimizerSession& session);
 };
 
 } // namespace facebook::axiom::optimizer::v2

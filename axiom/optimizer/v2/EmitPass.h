@@ -20,7 +20,6 @@
 #include "axiom/optimizer/OptimizerSession.h"
 #include "axiom/optimizer/ToVelox.h"
 #include "axiom/optimizer/v2/Node.h"
-#include "axiom/optimizer/v2/ScanHandle.h"
 #include "velox/core/Expressions.h"
 #include "velox/core/PlanNode.h"
 
@@ -46,17 +45,16 @@ class EmitPass {
   /// fragment ending in `PartitionedOutput`, a consumer `Exchange`). For
   /// `options.numWorkers > 1` a final gather collects the distributed output
   /// into a single root fragment; for `numWorkers == 1` the result is one
-  /// fragment. 'session' supplies the connector session for Scan handles;
-  /// 'evaluator' folds filter constants; 'scanHandles' carries handles built by
-  /// `EstimateLeafStatsPass`. Throws VELOX_NYI for unsupported node or
-  /// expression types.
+  /// fragment. 'session' supplies the connector
+  /// session for table writes; 'evaluator' folds filter constants. A `Scan`
+  /// carries the connector handle it is read with. Throws VELOX_NYI for
+  /// unsupported node or expression types.
   static Result run(
       NodeCP root,
       const ColumnVector& outputColumns,
       const std::vector<std::string>& outputNames,
       const OptimizerSession& session,
       velox::core::ExpressionEvaluator& evaluator,
-      ScanHandleCache& scanHandles,
       const MultiFragmentPlan::Options& options);
 };
 

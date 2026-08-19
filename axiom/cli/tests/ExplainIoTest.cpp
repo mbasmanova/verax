@@ -207,6 +207,25 @@ TEST_P(ExplainIoTest, columnConstraints) {
             ]
           })")));
 
+  // The filtered column need not be selected.
+  ASSERT_EQ(
+      getJson(
+          "EXPLAIN (TYPE IO) "
+          "SELECT x FROM t "
+          "   WHERE ds = '2026-03-17'"),
+      makeTable(makeConstraint(
+          "ds",
+          "VARCHAR",
+          R"({
+            "nullsAllowed": false,
+            "ranges": [
+              {
+                "low": {"value": "2026-03-17", "bound": "EXACTLY"},
+                "high": {"value": "2026-03-17", "bound": "EXACTLY"}
+              }
+            ]
+          })")));
+
   // Equality on a boolean explain_io column yields a single-value domain.
   ASSERT_EQ(
       getJson(

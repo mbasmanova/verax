@@ -207,11 +207,32 @@ class HiveTableLayout : public TableLayout {
       const FilterSelectivityEstimator& estimator,
       FilteredTableStats& stats) const;
 
+  // Returns the non-partition columns the filters in 'handle' read. Their
+  // statistics are what estimating those filters needs, even when the
+  // optimizer did not request the columns. A column read only inside a lambda
+  // body is not reported; the estimate then falls back to a default for that
+  // filter.
+  std::vector<const Column*> nonPartitionFilterColumns(
+      const velox::connector::hive::HiveTableHandle& handle) const;
+
+  // Returns the names in 'requested' followed by the columns from
+  // `nonPartitionFilterColumns` that are not already there and that 'hasStats'
+  // reports statistics for. Statistics for a column without any would be
+  // synthesized, which reads as a filter that passes nothing.
+  std::vector<std::string> withFilterColumns(
+      const velox::connector::hive::HiveTableHandle& handle,
+      const std::vector<std::string>& requested,
+      const std::function<bool(const std::string&)>& hasStats) const;
+
   const velox::dwio::common::FileFormat fileFormat_;
   const std::vector<const Column*> hivePartitionColumns_;
   const std::optional<int32_t> numBuckets_;
   const std::shared_ptr<const HivePartitionType> partitionType_;
 };
+
+/// Drops the per-column statistics past the first 'numColumns', which a
+/// connector added only to estimate the filters in its own table handle.
+void trimColumnStats(FilteredTableStats& stats, size_t numColumns);
 
 class HiveConnectorWriteHandle : public ConnectorWriteHandle {
  public:

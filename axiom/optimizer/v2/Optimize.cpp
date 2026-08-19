@@ -27,7 +27,6 @@
 #include "axiom/optimizer/v2/LimitAndOrderPass.h"
 #include "axiom/optimizer/v2/PhysicalPlanAndEmit.h"
 #include "axiom/optimizer/v2/PushdownAndPrunePass.h"
-#include "axiom/optimizer/v2/ScanHandle.h"
 #include "axiom/optimizer/v2/TranslatePass.h"
 
 namespace facebook::axiom::optimizer::v2 {
@@ -49,25 +48,43 @@ FrontendResult translateAndPushdown(
     velox::core::ExpressionEvaluator& evaluator,
     Builder& builder,
     const OptimizerSession& session,
-    const std::shared_ptr<velox::core::QueryCtx>& queryCtx) {
+    const std::shared_ptr<velox::core::QueryCtx>& queryCtx,
+    PushdownAndPrunePass::ConnectorPushdown connectorPushdown) {
   ConstantPlanRunner constantPlanRunner{queryCtx};
   auto translated = TranslatePass::run(
       plan, schema, evaluator, builder, session, constantPlanRunner);
   NodeCP decorrelated = DecorrelatePass::run(translated.root, builder);
   NodeCP limited = LimitAndOrderPass::run(decorrelated, builder);
   NodeCP pushed = PushdownAndPrunePass::run(
-      limited, translated.outputColumns, builder, evaluator);
+      limited,
+      translated.outputColumns,
+      builder,
+      evaluator,
+      session,
+      connectorPushdown);
   return {std::move(translated), pushed};
 }
 
-// Collects each Scan's base table and its pushed-down filter conjuncts.
+// Collects each Scan's base table and the conjuncts that reach it. Reads them
+// off the `Filter` above the `Scan`, so the caller must have run the pushdown
+// pass with `ConnectorPushdown::kSkip`, which leaves every conjunct there.
 void collectScans(
     NodeCP node,
     std::vector<std::pair<BaseTableCP, ExprVector>>& tableFilters) {
   if (node->is(NodeType::kScan)) {
-    const auto* scan = node->as<Scan>();
-    tableFilters.emplace_back(scan->baseTable(), scan->filters());
+    tableFilters.emplace_back(node->as<Scan>()->baseTable(), ExprVector{});
+    return;
   }
+
+  if (node->is(NodeType::kFilter)) {
+    const auto* filter = node->as<Filter>();
+    if (filter->input()->is(NodeType::kScan)) {
+      tableFilters.emplace_back(
+          filter->input()->as<Scan>()->baseTable(), filter->predicates());
+      return;
+    }
+  }
+
   for (auto* input : node->inputs()) {
     collectScans(input, tableFilters);
   }
@@ -126,16 +143,19 @@ PlanAndStats Optimizer::optimize(const MultiFragmentPlan::Options& options) {
   // stay alive through translate, precompute, and emit.
   Schema schema(schemaResolver_);
 
-  // Connector table handles are built once here and reused at emit.
-  ScanHandleCache scanHandles;
-
   Builder builder;
   auto frontend = translateAndPushdown(
-      plan_, schema, evaluator_, builder, session_, queryCtx_);
-  NodeCP folded = FoldMetadataAggregatePass::run(
-      frontend.pushed, builder, session_, evaluator_, scanHandles);
+      plan_,
+      schema,
+      evaluator_,
+      builder,
+      session_,
+      queryCtx_,
+      PushdownAndPrunePass::ConnectorPushdown::kOffer);
+  NodeCP folded =
+      FoldMetadataAggregatePass::run(frontend.pushed, builder, session_);
   if (session_.options().useFilteredTableStats) {
-    EstimateLeafStatsPass::run(folded, session_, evaluator_, scanHandles);
+    EstimateLeafStatsPass::run(folded, session_);
   }
 
   // Decide the width before physical planning, which reads numWorkers to shape
@@ -151,7 +171,6 @@ PlanAndStats Optimizer::optimize(const MultiFragmentPlan::Options& options) {
       builder,
       session_,
       evaluator_,
-      scanHandles,
       planOptions);
 
   PlanAndStats result;
@@ -184,11 +203,19 @@ std::string Optimizer::explainIo(
   // the IR's `BaseTable` nodes hold into them — stay alive for the duration.
   Schema schema(schemaResolver_);
 
-  // Run only the passes that push predicates into scans; join ordering and Emit
-  // are not needed to report IO.
+  // Run only the passes that move predicates down to the scans; join ordering
+  // and Emit are not needed to report IO. The pushdown pass does not offer
+  // them to the connector: the report is what the query applies to each table,
+  // not how some connector would read it.
   Builder builder;
   auto frontend = translateAndPushdown(
-      plan_, schema, evaluator_, builder, session_, queryCtx_);
+      plan_,
+      schema,
+      evaluator_,
+      builder,
+      session_,
+      queryCtx_,
+      PushdownAndPrunePass::ConnectorPushdown::kSkip);
 
   std::vector<std::pair<BaseTableCP, ExprVector>> tableFilters;
   collectScans(frontend.pushed, tableFilters);
@@ -199,14 +226,18 @@ QueryStats Optimizer::estimateQueryStats() {
   // Schema is owned here so its tables — and the raw pointers the IR's
   // BaseTable nodes hold into them — stay alive while the estimate is read.
   Schema schema(schemaResolver_);
-  ScanHandleCache scanHandles;
   Builder builder;
 
   auto frontend = translateAndPushdown(
-      plan_, schema, evaluator_, builder, session_, queryCtx_);
+      plan_,
+      schema,
+      evaluator_,
+      builder,
+      session_,
+      queryCtx_,
+      PushdownAndPrunePass::ConnectorPushdown::kOffer);
   if (session_.options().useFilteredTableStats) {
-    EstimateLeafStatsPass::run(
-        frontend.pushed, session_, evaluator_, scanHandles);
+    EstimateLeafStatsPass::run(frontend.pushed, session_);
   }
 
   EstimateProvider estimateProvider;

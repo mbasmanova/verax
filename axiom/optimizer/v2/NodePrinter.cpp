@@ -15,6 +15,7 @@
  */
 
 #include "axiom/optimizer/v2/NodePrinter.h"
+#include "axiom/optimizer/v2/ScanHandle.h"
 
 #include <fmt/format.h>
 #include <fmt/ranges.h>
@@ -82,8 +83,8 @@ class Printer : public NodeVisitor {
     header(
         ctx, node, fmt::format("[{}]", node.baseTable()->schemaTable->name()));
     const auto pad = spaces(ctx.indent + 2);
-    for (ExprCP filter : node.filters()) {
-      ctx.out << pad << "filter: " << formatExpr(filter) << '\n';
+    if (const ScanHandle* handle = node.scanHandle(); handle != nullptr) {
+      ctx.out << pad << "handle: " << handle->tableHandle->toString() << '\n';
     }
     visitInputs(node, ctx);
   }

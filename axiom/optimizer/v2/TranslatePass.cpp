@@ -794,8 +794,7 @@ Translated Translator::translateScan(
     outputColumns.push_back(column);
     scope[outName] = column;
   }
-  ScanCP scanNode = builder_.make<Scan>(
-      {baseTable, std::move(outputColumns), /*filters=*/{}});
+  ScanCP scanNode = builder_.make<Scan>({baseTable, std::move(outputColumns)});
   return {scanNode, std::move(scope)};
 }
 
@@ -2813,14 +2812,19 @@ ExprCP Translator::tryFoldConstantScalar(NodeCP body) {
     return nullptr;
   }
 
-  // Build a table handle carrying the subquery's filters so the connector
-  // narrows the listing. Translate has not pushed the filters into the Scan
-  // yet, so synthesize a Scan that carries them.
+  // Offer the subquery's filters to the connector so it narrows the listing.
+  // Which of them it takes does not matter: the Filter below re-applies all of
+  // them, so 'rejected' is not read.
   const ExprVector& filters =
       filter != nullptr ? filter->predicates() : ExprVector{};
-  const Scan* scanWithFilters = builder_.make<Scan>(
-      Scan::Key{scan->baseTable(), scan->outputColumns(), filters});
-  ScanHandle handle = ScanHandle::build(*scanWithFilters, session_, evaluator_);
+  ExprVector rejected;
+  ScanHandle handle = ScanHandle::build(
+      *scan->baseTable(),
+      scan->outputColumns(),
+      filters,
+      session_,
+      evaluator_,
+      rejected);
 
   auto connectorSession =
       session_.toConnectorSession(discreteLayout.layout->connectorId());
@@ -2832,8 +2836,8 @@ ExprCP Translator::tryFoldConstantScalar(NodeCP body) {
 
   // Build a small plan that aggregates the listed partition values:
   // Values(tuples) -> [Filter] -> Aggregate, reusing the subquery's own Filter
-  // and Aggregate specs. The Filter re-applies conjuncts the connector could
-  // not push.
+  // and Aggregate specs. The Filter re-applies every conjunct; one the listing
+  // already reflects removes nothing the second time.
   auto values = toValues(*discretePredicates);
   const Values* valuesNode = builder_.makeValues(
       /*source=*/nullptr,
@@ -2861,9 +2865,8 @@ ExprCP Translator::tryFoldConstantScalar(NodeCP body) {
   std::vector<std::string> outputNames{std::string(outputColumns[0]->name())};
 
   // Lower the mini-plan through the shared physical-planning and emit passes,
-  // then run it. It has a Values source and no Scan, so an empty handle cache
-  // and single-node options suffice.
-  ScanHandleCache scanHandles;
+  // then run it. It has a Values source and no Scan, so single-node options
+  // suffice.
   EmitPass::Result emitted = physicalPlanAndEmit(
       foldAggregate,
       outputColumns,
@@ -2871,7 +2874,6 @@ ExprCP Translator::tryFoldConstantScalar(NodeCP body) {
       builder_,
       session_,
       evaluator_,
-      scanHandles,
       MultiFragmentPlan::Options::singleNode());
   VELOX_CHECK_EQ(
       emitted.fragments.size(), 1, "Constant fold must produce one fragment");

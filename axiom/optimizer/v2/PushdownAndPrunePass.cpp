@@ -16,6 +16,8 @@
 
 #include "axiom/optimizer/v2/PushdownAndPrunePass.h"
 
+#include "axiom/optimizer/v2/ScanHandle.h"
+
 #include <limits>
 #include <optional>
 
@@ -57,6 +59,11 @@ struct PushdownContext {
   // partition can contribute more than that many. Set only for that immediate
   // parent-child pair.
   std::optional<int32_t> rankLimit;
+
+  // Set when the consumer lists its own output columns, so a `Scan` below may
+  // leave the columns only a refused conjunct reads in its output rather than
+  // adding a `Project` to drop them.
+  bool consumerDropsExtraColumns{false};
 
   // `Column*`s whose values are guaranteed non-NULL in the current
   // subtree (derived from default-null-behavior equi-keys of an
@@ -611,9 +618,16 @@ bool holdsAtRankOne(
 // conjuncts.
 class Pushdown : public NodeRewriter<PushdownContext> {
  public:
-  Pushdown(Builder& builder, velox::core::ExpressionEvaluator& evaluator)
+  Pushdown(
+      Builder& builder,
+      velox::core::ExpressionEvaluator& evaluator,
+      const OptimizerSession& session,
+      PushdownAndPrunePass::ConnectorPushdown connectorPushdown)
       : NodeRewriter(builder),
         exprs_(builder),
+        evaluator_(evaluator),
+        session_(session),
+        connectorPushdown_(connectorPushdown),
         simplifier_(builder, evaluator) {}
 
  protected:
@@ -623,6 +637,8 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     for (ExprCP predicate : node->predicates()) {
       ExprFactory::flattenAnd(predicate, context.pending);
     }
+    // Forwards 'context' unchanged: this Filter dissolves into 'pending', so
+    // whatever consumes the result is the consumer this node had.
     return rewrite(node->input(), context);
   }
 
@@ -671,6 +687,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     childContext.requiredAbove = childContext.required;
     childContext.required.unionColumns(childContext.pending);
     childContext.nonNullColumns = context.nonNullColumns;
+    childContext.consumerDropsExtraColumns = true;
     NodeCP newInput = rewrite(node->input(), childContext);
 
     // Inline a child Project: a Project directly over another Project collapses
@@ -1033,13 +1050,11 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     return maybeWrapFilter(newJoin, std::move(above));
   }
 
-  // Scan: append pending conjuncts to `Scan.filters`; Emit decides
-  // what the connector absorbs. `outputColumns` is the strict consumer-
-  // required set; Emit folds in any columns referenced by retained
-  // filters and projects them away above the scan.
+  // Scan: pending conjuncts reach the table, and the connector decides which
+  // of them it will evaluate. The ones it rejects become a Filter over the
+  // Scan, and the columns they read join the Scan's output.
   NodeCP rewriteScan(const Scan* node, PushdownContext& context) override {
-    ExprVector mergedFilters = node->filters();
-    appendAll(mergedFilters, context.pending);
+    ExprVector filters = std::move(context.pending);
     context.pending.clear();
 
     ColumnVector survivingOutputs;
@@ -1050,15 +1065,97 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       }
     }
 
-    const bool unchanged = mergedFilters.size() == node->filters().size() &&
-        survivingOutputs.size() == node->outputColumns().size();
-    if (unchanged) {
-      return node;
+    ExprVector rejected;
+    const ScanHandle* handle =
+        negotiate(*node->baseTable(), survivingOutputs, filters, rejected);
+    if (rejected.empty()) {
+      return builder().make<Scan>(
+          {node->baseTable(), std::move(survivingOutputs), handle});
     }
-    return builder().make<Scan>(
-        {node->baseTable(),
-         std::move(survivingOutputs),
-         std::move(mergedFilters)});
+
+    // The rejected conjuncts are evaluated above the scan, so the scan must
+    // read what they reference.
+    PlanObjectSet rejectedColumns;
+    rejectedColumns.unionColumns(rejected);
+    ColumnVector scanOutputs = survivingOutputs;
+    for (ColumnCP column : node->baseTable()->columns) {
+      if (rejectedColumns.contains(column) &&
+          std::find(scanOutputs.begin(), scanOutputs.end(), column) ==
+              scanOutputs.end()) {
+        scanOutputs.push_back(column);
+      }
+    }
+    // The Filter this rewrite puts above the scan reads only columns the scan
+    // produces.
+    const PlanObjectSet scanOutputSet = PlanObjectSet::fromObjects(scanOutputs);
+    rejectedColumns.forEach<Column>([&](ColumnCP column) {
+      VELOX_CHECK(
+          scanOutputSet.contains(column),
+          "A rejected filter reads a column the scan does not produce: {}",
+          column->name());
+    });
+
+    const bool readsExtraColumns = scanOutputs.size() > survivingOutputs.size();
+    NodeCP scan = builder().make<Scan>(
+        {node->baseTable(), std::move(scanOutputs), handle});
+    NodeCP filter = builder().make<Filter>({scan, std::move(rejected)});
+    if (!readsExtraColumns || context.consumerDropsExtraColumns) {
+      return filter;
+    }
+    // The columns only the rejected conjuncts read stop here: nothing above
+    // asked for them, and carrying them would widen every operator between
+    // this scan and the query's output.
+    ExprVector passThrough(survivingOutputs.begin(), survivingOutputs.end());
+    return builder().make<Project>(
+        {filter, std::move(passThrough), std::move(survivingOutputs)});
+  }
+
+  // Offers 'filters' to the connector for 'baseTable' read as 'outputColumns'
+  // and returns the resulting handle, appending the conjuncts the connector
+  // rejected to 'rejected'. Returns null, rejecting everything, when the
+  // caller asked for no connector pushdown.
+  const ScanHandle* negotiate(
+      const BaseTable& baseTable,
+      const ColumnVector& outputColumns,
+      const ExprVector& filters,
+      ExprVector& rejected) {
+    if (connectorPushdown_ == PushdownAndPrunePass::ConnectorPushdown::kSkip) {
+      appendAll(rejected, filters);
+      return nullptr;
+    }
+    const auto it = negotiatedByBaseTableId_.find(baseTable.id());
+    if (it != negotiatedByBaseTableId_.end()) {
+      // A rewrite that duplicated a subtree can present one Scan twice. The
+      // connector is asked once, so the second visit must be offering the same
+      // predicates and reading no more columns; otherwise its predicates would
+      // be silently dropped, or it would read a column with no handle.
+      VELOX_CHECK(
+          it->second.filters == filters,
+          "Two reads of one table offer the connector different filters: {}",
+          baseTable.schemaTable->name());
+      for (ColumnCP column : outputColumns) {
+        VELOX_CHECK(
+            it->second.handle->columnHandles.contains(column),
+            "Two reads of one table read different columns: {}.{}",
+            baseTable.schemaTable->name(),
+            column->name());
+      }
+      appendAll(rejected, it->second.rejected);
+      return it->second.handle;
+    }
+    ExprVector rejectedHere;
+    const ScanHandle* handle = builder().takeScanHandle(
+        ScanHandle::build(
+            baseTable,
+            outputColumns,
+            filters,
+            session_,
+            evaluator_,
+            rejectedHere));
+    appendAll(rejected, rejectedHere);
+    negotiatedByBaseTableId_.emplace(
+        baseTable.id(), Negotiated{handle, filters, std::move(rejectedHere)});
+    return handle;
   }
 
   NodeCP rewriteValues(const Values* node, PushdownContext& context) override {
@@ -1124,6 +1221,9 @@ class Pushdown : public NodeRewriter<PushdownContext> {
   NodeCP rewriteSort(const Sort* node, PushdownContext& context) override {
     context.required.unionColumns(node->orderKeys());
     context.requiredAbove.unionColumns(node->orderKeys());
+    // A Sort outputs its input's columns, so it is not the consumer the flag
+    // describes.
+    context.consumerDropsExtraColumns = false;
     NodeCP newInput = rewrite(node->input(), context);
     if (newInput == node->input()) {
       return node;
@@ -1642,6 +1742,11 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     child.required.unionColumns(node->columnExprs());
     child.requiredAbove = child.required;
     child.nonNullColumns = context.nonNullColumns;
+    // A delete reads no column values: the connector's handle says which rows
+    // go. An insert writes its input columns, so only a delete can take a
+    // wider input.
+    child.consumerDropsExtraColumns =
+        node->kind() == connector::WriteKind::kDelete;
     return NodeRewriter::rewriteTableWrite(node, child);
   }
 
@@ -1770,7 +1875,22 @@ class Pushdown : public NodeRewriter<PushdownContext> {
   }
 
   ExprFactory exprs_;
+  velox::core::ExpressionEvaluator& evaluator_;
+  const OptimizerSession& session_;
+  const PushdownAndPrunePass::ConnectorPushdown connectorPushdown_;
   ExprSimplifier simplifier_;
+
+  // Outcome of one negotiation with the connector.
+  struct Negotiated {
+    const ScanHandle* handle;
+    // The conjuncts offered, and of those the ones the connector rejected,
+    // which the plan applies itself.
+    ExprVector filters;
+    ExprVector rejected;
+  };
+
+  // One negotiation per base table, by base-table id.
+  folly::F14FastMap<int32_t, Negotiated> negotiatedByBaseTableId_;
 };
 
 } // namespace
@@ -1779,8 +1899,10 @@ NodeCP PushdownAndPrunePass::run(
     NodeCP root,
     const ColumnVector& outputColumns,
     Builder& builder,
-    velox::core::ExpressionEvaluator& evaluator) {
-  Pushdown pass{builder, evaluator};
+    velox::core::ExpressionEvaluator& evaluator,
+    const OptimizerSession& session,
+    ConnectorPushdown connectorPushdown) {
+  Pushdown pass{builder, evaluator, session, connectorPushdown};
   PushdownContext context;
   context.required = PlanObjectSet::fromObjects(outputColumns);
   context.requiredAbove = context.required;

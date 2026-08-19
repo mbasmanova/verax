@@ -182,6 +182,20 @@ struct PartitionFilter {
   const Column* column;
 };
 
+// True if any partition carries statistics for 'columnName'.
+bool hasPartitionStats(
+    const std::vector<PartitionStats>& partitionStats,
+    const std::string& columnName) {
+  for (const auto& partition : partitionStats) {
+    for (const auto& columnStats : partition.columnStats) {
+      if (columnStats.name == columnName) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 // Estimates table stats from persisted partition-level stats. Matches
 // partitions against the partition-key filters, merges matching partitions'
 // column stats, and returns them aligned 1:1 with 'requestedColumns'.
@@ -574,12 +588,20 @@ LocalHiveTableLayout::co_estimateStats(
     partitionColumnsByName[column->name()] = column;
   }
 
-  std::vector<const Column*> requestedColumns;
-  requestedColumns.reserve(columns.size());
-  for (const auto& columnName : columns) {
+  // Estimating the accepted filters needs statistics for the columns they
+  // read, which the optimizer has no reason to request: a column only a filter
+  // reads is not one the scan produces.
+  const auto statsColumnNames =
+      withFilterColumns(*hiveHandle, columns, [&](const std::string& name) {
+        return hasPartitionStats(partitionStats_, name);
+      });
+
+  std::vector<const Column*> statsColumns;
+  statsColumns.reserve(statsColumnNames.size());
+  for (const auto& columnName : statsColumnNames) {
     const auto* column = table().findColumn(columnName);
     VELOX_CHECK_NOT_NULL(column, "Column not found: {}", columnName);
-    requestedColumns.push_back(column);
+    statsColumns.push_back(column);
   }
 
   // Partition-key subfield filters drive the base estimate from partition
@@ -595,13 +617,14 @@ LocalHiveTableLayout::co_estimateStats(
   }
 
   auto stats = estimateStatsFromPartitionStats(
-      partitionStats_, partitionFilters, requestedColumns);
+      partitionStats_, partitionFilters, statsColumns);
   if (!partitionStats_.empty()) {
     // A table with no partition statistics estimates zero rows; reporting that
     // as the rows read would understate the scan rather than leave it unknown.
     stats.numRawInputRows = stats.numRows;
   }
   foldNonPartitionFilterStats(*hiveHandle, estimator, stats);
+  trimColumnStats(stats, columns.size());
   co_return stats;
 }
 

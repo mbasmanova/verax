@@ -145,6 +145,7 @@ TEST_P(SubqueryFoldTest, foldable) {
                        .hashJoinInner(matchScan("t")
                                           .aliases({"ds", "a"})
                                           .filter("a > 5")
+                                          .projectIf(useV2_, {"ds"})
                                           .aggregation())
                        .build();
     AXIOM_ASSERT_PLAN(plan, matcher);

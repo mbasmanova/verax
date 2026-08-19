@@ -18,10 +18,12 @@
 
 #include <folly/container/F14Map.h>
 #include <folly/container/F14Set.h>
+#include <deque>
 #include <numeric>
 #include "axiom/optimizer/QueryGraph.h"
 #include "axiom/optimizer/QueryGraphContext.h"
 #include "axiom/optimizer/v2/Node.h"
+#include "axiom/optimizer/v2/ScanHandle.h"
 
 namespace facebook::axiom::optimizer::v2 {
 
@@ -171,6 +173,13 @@ class Builder {
       const ExprVector& keys,
       const ColumnVector& aliases = {});
 
+  /// Takes ownership of 'handle' and returns a stable pointer to it, for a
+  /// `Scan` to point at. Handles are not interned: each one is a separate
+  /// negotiation with the connector.
+  const ScanHandle* takeScanHandle(ScanHandle handle) {
+    return &scanHandles_.emplace_back(std::move(handle));
+  }
+
  private:
   // For a binary `Call` whose 'name' is in `reversibleFunctions_`,
   // swaps 'args' (and renames to the reverse) when `args[0]` should
@@ -280,6 +289,10 @@ class Builder {
   DedupSet<Literal> literals_;
   DedupSet<Call> calls_;
   DedupSet<optimizer::Aggregate> aggregateCalls_;
+
+  // Owns the connector handles the IR's `Scan`s point at. A deque so the
+  // pointers stay valid as more are added.
+  std::deque<ScanHandle> scanHandles_;
 };
 
 } // namespace facebook::axiom::optimizer::v2

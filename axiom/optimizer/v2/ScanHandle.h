@@ -16,69 +16,38 @@
 
 #pragma once
 
+#include <folly/container/F14Map.h>
+
 #include "axiom/optimizer/OptimizerSession.h"
-#include "axiom/optimizer/v2/Node.h"
+#include "axiom/optimizer/QueryGraph.h"
 #include "velox/connectors/Connector.h"
 #include "velox/core/Expressions.h"
 
 namespace facebook::axiom::optimizer::v2 {
 
-/// Connector access for a scanned leaf table, built once from a `Scan` and
-/// reused by both the filtered-stats pass (`estimateLeafStats`) and `emit`.
-/// Building the handle calls into the connector to push filters down, so it
-/// must not be repeated per consumer.
+/// Connector access for a scanned leaf table: the result of negotiating filter
+/// pushdown with the connector. Made once, by the pushdown pass, and pointed
+/// at by the `Scan` from there on.
 struct ScanHandle {
-  /// Builds the connector handle for `scan`'s base table. Calls into the
-  /// connector to push filters down.
+  /// Offers 'filters' to the connector for reading 'outputColumns' of
+  /// 'baseTable' and returns the handle it builds. Calls into the connector.
+  /// Appends to 'rejected' the conjuncts the connector rejected, which the
+  /// caller must apply itself.
   static ScanHandle build(
-      const Scan& scan,
+      const BaseTable& baseTable,
+      const ColumnVector& outputColumns,
+      const ExprVector& filters,
       const OptimizerSession& session,
-      velox::core::ExpressionEvaluator& evaluator);
+      velox::core::ExpressionEvaluator& evaluator,
+      ExprVector& rejected);
 
   /// Table handle with the accepted filters pushed into the connector.
   velox::connector::ConnectorTableHandlePtr tableHandle;
 
-  /// Column handles for the connector read schema: the scan's consumer output
-  /// columns first (in `scan->outputColumns()` order), then `filterOnlyColumns`
-  /// (aligned with the tail).
-  std::vector<velox::connector::ColumnHandlePtr> columnHandles;
-
-  /// Columns referenced only by filters and not in the scan output. Read by the
-  /// connector but, unless referenced by a rejected filter, projected away.
-  ColumnVector filterOnlyColumns;
-
-  /// Filters the connector could not push down; applied as a `Filter` above the
-  /// `TableScan` at emit time.
-  std::vector<velox::core::TypedExprPtr> rejectedFilters;
-
-  /// The createTableHandle-rejected filters as ExprCP. The connector accounts
-  /// for the accepted filters in co_estimateStats; the optimizer post-applies
-  /// selectivity for these.
-  ExprVector rejectedExprs;
-};
-
-/// Caches one `ScanHandle` per base table, keyed by base-table id. `getOrBuild`
-/// is the writing path; `find` is read-only.
-///
-///   ScanHandleCache cache;
-///   const ScanHandle& handle = cache.getOrBuild(scan, session, evaluator);
-///   ...
-///   const ScanHandle* cached = cache.find(scan);
-class ScanHandleCache {
- public:
-  /// Returns the cached `ScanHandle` for `scan`'s base table, building and
-  /// caching it on first access.
-  const ScanHandle& getOrBuild(
-      const Scan& scan,
-      const OptimizerSession& session,
-      velox::core::ExpressionEvaluator& evaluator);
-
-  /// Returns the cached handle for `scan`'s base table, or nullptr if none was
-  /// built.
-  const ScanHandle* find(const Scan& scan) const;
-
- private:
-  folly::F14FastMap<int32_t, ScanHandle> byBaseTableId_;
+  /// Column handle per column of the connector read schema: every column the
+  /// `Scan` outputs, plus the ones only the connector's own filters read,
+  /// which it reads without projecting.
+  folly::F14FastMap<ColumnCP, velox::connector::ColumnHandlePtr> columnHandles;
 };
 
 } // namespace facebook::axiom::optimizer::v2

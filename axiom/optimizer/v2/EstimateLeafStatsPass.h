@@ -16,29 +16,25 @@
 
 #pragma once
 
-#include "axiom/optimizer/v2/ScanHandle.h"
+#include "axiom/optimizer/OptimizerSession.h"
+#include "axiom/optimizer/v2/Node.h"
 
 namespace facebook::axiom::optimizer::v2 {
 
 /// Annotates base tables with connector filtered-table statistics.
 class EstimateLeafStatsPass {
  public:
-  /// For each base table reachable from 'root', builds (and caches in
-  /// 'scanHandles') the connector handle, calls
-  /// `TableLayout::co_estimateStats`, and writes the post-filter row count into
-  /// `BaseTable::filteredCardinality` and the per-column min/max/ndv into each
-  /// `Column::value()`, in place; join-order planning then reads these via
-  /// `EstimateProvider`. Runs after filter pushdown and before join-order
-  /// planning. The caller gates this on the `useFilteredTableStats` option;
-  /// when it does not run, or a connector returns no stats for a table, that
-  /// table's `filteredCardinality` stays 0 and `EstimateProvider` falls back to
-  /// constraint-based selectivity. 'session' supplies connector sessions;
-  /// 'evaluator' constant-folds filters during handle construction.
-  static void run(
-      NodeCP root,
-      const OptimizerSession& session,
-      velox::core::ExpressionEvaluator& evaluator,
-      ScanHandleCache& scanHandles);
+  /// For each base table reachable from 'root', calls
+  /// `TableLayout::co_estimateStats` with the handle its `Scan` points at, and
+  /// writes the post-filter row count into `BaseTable::filteredCardinality` and
+  /// the per-column min/max/ndv into each `Column::value()`, in place;
+  /// join-order planning then reads these via `EstimateProvider`. Runs after
+  /// filter pushdown and before join-order planning. The caller gates this on
+  /// the `useFilteredTableStats` option; when it does not run, or a connector
+  /// returns no stats for a table, that table's `filteredCardinality` stays 0
+  /// and `EstimateProvider` falls back to constraint-based selectivity.
+  /// 'session' supplies connector sessions.
+  static void run(NodeCP root, const OptimizerSession& session);
 };
 
 } // namespace facebook::axiom::optimizer::v2

@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include "axiom/optimizer/OptimizerSession.h"
 #include "axiom/optimizer/v2/Builder.h"
 #include "axiom/optimizer/v2/Node.h"
 #include "velox/core/ExpressionEvaluator.h"
@@ -56,14 +57,26 @@ namespace facebook::axiom::optimizer::v2 {
 ///  - `Apply` must already be gone: decorrelate removes every `Apply` before
 ///    this pass, so encountering one is a logic error.
 ///
-/// Post-condition: no `Filter` node sits directly above a `Scan`. Every
-/// conjunct that reaches a `Scan` is absorbed into `Scan.filters`; which of
-/// those the connector can actually evaluate is decided later (at Emit), and
-/// connector-rejected filters reappear as a `Filter` above the `TableScan` only
-/// in the final Velox plan. A rewrite running after this pass can therefore
-/// treat a `Scan` as carrying all of its predicates.
+/// Post-condition: every conjunct that reaches a `Scan` is offered to the
+/// connector. The ones it takes go into the `ScanHandle` the `Scan` points at.
+/// The ones it rejects stay in a single `Filter` directly above the `Scan`,
+/// which then also outputs the columns they read, narrowed by a `Project` when
+/// nothing above wants them and the consumer is not itself a `Project`. A
+/// rewrite running after this pass sees the nodes the query will run.
 class PushdownAndPrunePass {
  public:
+  /// Whether the conjuncts that reach a `Scan` are offered to the connector.
+  enum class ConnectorPushdown {
+    /// Offer them; the `Scan` comes out pointing at the resulting handle.
+    kOffer,
+    /// Do not call the connector. Every conjunct stays in a `Filter` over the
+    /// `Scan` and the `Scan` has no handle, so the result says which
+    /// predicates the query applies to each table without committing to a way
+    /// of reading it. This is what EXPLAIN (TYPE IO) reports, and a plan
+    /// produced this way cannot be emitted.
+    kSkip,
+  };
+
   /// Returns `root` rewritten as described in the class doc. `evaluator` backs
   /// the expression simplifier used to fold conjuncts after substitution (and
   /// to detect ones that reduce to constant `false`).
@@ -74,7 +87,9 @@ class PushdownAndPrunePass {
       NodeCP root,
       const ColumnVector& outputColumns,
       Builder& builder,
-      velox::core::ExpressionEvaluator& evaluator);
+      velox::core::ExpressionEvaluator& evaluator,
+      const OptimizerSession& session,
+      ConnectorPushdown connectorPushdown);
 };
 
 } // namespace facebook::axiom::optimizer::v2

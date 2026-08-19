@@ -538,7 +538,7 @@ Scan::Scan(Key key)
           ColumnVector{key.outputColumns},
           PhysicalProperties{.globalPartition = scanGlobalPartition(key)}),
       baseTable_(key.baseTable),
-      filters_(std::move(key.filters)),
+      scanHandle_(key.scanHandle),
       groupedPartitionType_(key.groupedPartitionType) {
   VELOX_CHECK_NOT_NULL(baseTable_);
   folly::F14FastSet<std::string_view> schemaNames;
@@ -561,7 +561,7 @@ size_t Scan::KeyHash::operator()(const Scan* node) const {
   return hashOf(
       node->baseTable(),
       node->outputColumns(),
-      node->filters(),
+      node->scanHandle(),
       node->groupedPartitionType());
 }
 
@@ -573,20 +573,23 @@ Partitioning Scan::storageBucketing() const {
 
 size_t Scan::KeyHash::operator()(const Key& key) const {
   return hashOf(
-      key.baseTable, key.outputColumns, key.filters, key.groupedPartitionType);
+      key.baseTable,
+      key.outputColumns,
+      key.scanHandle,
+      key.groupedPartitionType);
 }
 
 bool Scan::KeyEq::operator()(const Scan* left, const Scan* right) const {
   return left->baseTable() == right->baseTable() &&
       left->outputColumns() == right->outputColumns() &&
-      left->filters() == right->filters() &&
+      left->scanHandle() == right->scanHandle() &&
       left->groupedPartitionType() == right->groupedPartitionType();
 }
 
 bool Scan::KeyEq::operator()(const Key& key, const Scan* node) const {
   return key.baseTable == node->baseTable() &&
       key.outputColumns == node->outputColumns() &&
-      key.filters == node->filters() &&
+      key.scanHandle == node->scanHandle() &&
       key.groupedPartitionType == node->groupedPartitionType();
 }
 

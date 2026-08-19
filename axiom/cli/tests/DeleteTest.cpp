@@ -19,6 +19,7 @@
 
 #include "axiom/cli/Connectors.h"
 #include "axiom/cli/tests/SqlQueryRunnerTestBase.h"
+#include "velox/common/base/tests/GTestUtils.h"
 #include "velox/dwio/common/Options.h"
 #include "velox/exec/tests/utils/TempDirectoryPath.h"
 
@@ -165,6 +166,16 @@ TEST_F(DeleteTest, partitionPredicate) {
 
   EXPECT_EQ(4, fetchSingleValue<int64_t>("DELETE FROM test"));
   EXPECT_EQ(0, runCount("FROM test"));
+}
+
+// A delete drops whole partitions, so a predicate on a data column is refused.
+TEST_F(DeleteTest, unsupportedPredicate) {
+  run("CREATE TABLE t WITH (partitioned_by = ARRAY['pk']) AS "
+      "SELECT x, x % 3 AS pk FROM unnest(array[1, 2, 3, 4, 5, 6]) AS t(x)");
+
+  VELOX_ASSERT_THROW(
+      run("DELETE FROM t WHERE x = 1"),
+      "DELETE supports only filters on partition columns: x");
 }
 
 } // namespace

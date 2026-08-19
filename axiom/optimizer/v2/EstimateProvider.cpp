@@ -101,33 +101,19 @@ Estimate EstimateProvider::compute(NodeCP node) {
       const auto* scan = node->as<Scan>();
       const auto* baseTable = scan->baseTable();
       Estimate result;
-      // Narrow per-column constraints from the scan filters; join propagation
-      // reads these regardless of the cardinality source. The filter
-      // selectivity is unknown when `conjunctsSelectivity` cannot estimate it;
-      // an unknown selectivity makes the constraint-derived cardinality
-      // unknown (no fabricated 1.0 fallback).
-      std::optional<float> selectivity{1.0f};
-      if (!scan->filters().empty()) {
-        const auto sel = conjunctsSelectivity(
-            result.constraints,
-            toSpan(scan->filters()),
-            /*updateConstraints=*/true);
-        selectivity = sel.has_value() ? std::optional<float>{sel->trueFraction}
-                                      : std::nullopt;
-      }
+      // A connector that takes a filter reports the statistics of the rows it
+      // will return, so the scan's own estimate needs no selectivity of its
+      // own.
       if (!baseTable->filteredCardinality.has_value()) {
-        // Filtered-stats pass ran but could not estimate the post-filter row
-        // count (a rejected filter's selectivity was unknown); propagate the
-        // unknown rather than falling back to a fabricated estimate.
+        // The post-filter row count is not known; propagate the unknown rather
+        // than falling back to a fabricated estimate.
         result.cardinality = std::nullopt;
       } else if (*baseTable->filteredCardinality > 0) {
         // Connector filtered-stats pass populated the post-filter row count.
         result.cardinality = std::max(1.0f, *baseTable->filteredCardinality);
       } else if (baseTable->schemaTable != nullptr) {
-        // filteredCardinality == 0: no connector stats; fall back to base-table
-        // cardinality scaled by the optimizer's own selectivity.
-        result.cardinality =
-            maxOf(1.0f, mul(baseTable->schemaTable->cardinality, selectivity));
+        // filteredCardinality == 0: no connector stats.
+        result.cardinality = maxOf(1.0f, baseTable->schemaTable->cardinality);
       } else {
         // No base-table statistics: cardinality is unknown.
         result.cardinality = std::nullopt;
