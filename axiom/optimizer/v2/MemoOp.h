@@ -30,6 +30,7 @@ namespace facebook::axiom::optimizer::v2 {
 enum class MemoOpKind : uint8_t {
   kLeaf,
   kJoin,
+  kUnnest,
   kExchange,
 };
 
@@ -135,6 +136,37 @@ class JoinOp : public MemoOp {
       bool reversedAnti = false,
       std::vector<size_t> extraEdges = {},
       Partitioning outputPartitioning = {});
+
+  RelationSet cover() const override {
+    return cover_;
+  }
+
+ private:
+  const RelationSet cover_;
+};
+
+/// Unnest entry: expands `input` by the Unnest relation at
+/// `graph.edges()[edgeIndex].right()`, adding that relation to the cover. Unary
+/// because an Unnest has no plan of its own — it produces rows only for the
+/// input it expands — so a relation set containing the Unnest relation is
+/// reachable only through this op, applied once the input relations are
+/// covered. Which input it is applied to is the placement DPhyp costs.
+class UnnestOp : public MemoOp {
+ public:
+  MemoOpCP const input;
+  const size_t edgeIndex;
+
+  /// Inner equi-join edges that also cross the partition this Unnest was
+  /// applied at, and are applied as a filter above it. See
+  /// `JoinOp::extraEdges`.
+  const std::vector<size_t> extraEdges;
+
+  UnnestOp(
+      Cost cost,
+      MemoOpCP inputChild,
+      size_t edge,
+      RelationSet unnestRelation,
+      std::vector<size_t> extraEdges);
 
   RelationSet cover() const override {
     return cover_;

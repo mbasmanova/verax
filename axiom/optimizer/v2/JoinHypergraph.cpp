@@ -90,8 +90,8 @@ void JoinHypergraph::checkConsistency() const {
   VELOX_CHECK_EQ(
       reached.size(), relations_.size(), "Hypergraph is not connected");
 
-  // Every Unnest relation must be reachable through its cross-join-unnest
-  // edge; otherwise the directed-edge connectivity was never built.
+  // Every Unnest relation must be reachable through its unnest edge;
+  // otherwise the directed-edge connectivity was never built.
   unnestRelationIds_.forEach([&](int32_t id) {
     // An Unnest of a constant has no input in the cluster and so no edge; the
     // connectivity check above covers it.
@@ -105,7 +105,7 @@ void JoinHypergraph::checkConsistency() const {
         break;
       }
     }
-    VELOX_CHECK(found, "Unnest relation has no cross-join-unnest edge: {}", id);
+    VELOX_CHECK(found, "Unnest relation has no unnest edge: {}", id);
   });
 }
 
@@ -217,7 +217,13 @@ PlanObjectSet JoinHypergraph::coverOutputColumns(
       neededAbove.unionColumns(edge.leftKeys());
       neededAbove.unionColumns(edge.rightKeys());
       neededAbove.unionColumns(edge.filter());
-      neededAbove.unionColumns(edge.unnestExprs());
+      if (edge.isUnnest()) {
+        // An Unnest not yet applied reads what it expands from below.
+        neededAbove.unionColumns(relation(edge.right().min())
+                                     .node()
+                                     ->as<Unnest>()
+                                     ->unnestExpressions());
+      }
     }
   }
   for (const auto& conjunct : filterConjuncts_) {
@@ -247,6 +253,14 @@ void JoinHypergraph::addEdge(JoinEdge edge, RelationSet tes) {
   VELOX_CHECK(
       tes.isSubset(relationIds_),
       "TES must reference only relations already added");
+  if (edge.isUnnest()) {
+    // Relations are registered before the Unnests over them. Enumeration
+    // relies on this: a set holding an expanded relation always holds a
+    // smaller id, so such a set is never enumerated from the expanded
+    // relation as its seed.
+    VELOX_CHECK_LT(edge.left().min(), edge.right().min());
+    expandedRelationIds_.unionSet(edge.right());
+  }
   edges_.push_back(std::move(edge));
   tes_.push_back(tes);
   invalidateCoverCaches();

@@ -210,17 +210,17 @@ NodeCP restoreTargets(
       Project::Key{node, std::move(exprs), ColumnVector{targets}});
 }
 
-// The equalities of the inner edges applied above `join` — the ones that
-// crossed the same partition as an Unnest or an outer join, which cannot take
-// them as keys. Equality is symmetric, so the edges' orientation does not
-// matter here. Inner edges carry no filter (`JoinEdge` enforces that), so the
-// keys are the whole predicate.
+// The equalities of `extraEdges` — the inner edges that crossed the same
+// partition as an Unnest or an outer join, which cannot take them as keys.
+// Equality is symmetric, so the edges' orientation does not matter here. Inner
+// edges carry no filter (`JoinEdge` enforces that), so the keys are the whole
+// predicate.
 ExprVector extraEdgeEqualities(
-    const JoinOp* join,
+    const std::vector<size_t>& extraEdges,
     const ExprFactory::ExprSubstitution& substitution,
     EmitState& state) {
   ExprVector predicates;
-  for (size_t extraIndex : join->extraEdges) {
+  for (size_t extraIndex : extraEdges) {
     const auto& extra = state.graph.edges()[extraIndex];
     const auto& leftKeys = extra.leftKeys();
     const auto& rightKeys = extra.rightKeys();
@@ -260,20 +260,17 @@ NodeCP emitLeaf(const LeafOp* leaf, EmitState& state) {
   return node;
 }
 
-// Builds a new `Unnest` IR node from a JoinOp wrapping a directed
-// cross-join-unnest edge. DPhyp's orientation enforcement guarantees
-// `join->left` is the input-side plan and `join->right` is the
-// singleton Unnest leaf. `unnestExpressions`, `unnestColumns`, and
-// `ordinalityColumn` come from the original Unnest IR node stored on
-// the Unnest relation.
-Emitted buildUnnest(const JoinOp* join, Emitted input, EmitState& state) {
-  const auto& edge = state.graph.edges()[join->edgeIndex];
+// Builds a new `Unnest` IR node over the plan `unnest` expands.
+// `unnestExpressions`, `unnestColumns`, and `ordinalityColumn` come from the
+// original Unnest IR node stored on the Unnest relation.
+Emitted buildUnnest(const UnnestOp* unnest, Emitted input, EmitState& state) {
+  const auto& edge = state.graph.edges()[unnest->edgeIndex];
   const int8_t unnestRelId = edge.right().min();
   const auto* origUnnest =
       state.graph.relation(unnestRelId).node()->as<Unnest>();
 
   const auto substitution = merge(
-      collapsedColumns(state.graph.coverColumnReps(join->left->cover())),
+      collapsedColumns(state.graph.coverColumnReps(unnest->input->cover())),
       input.materialized);
   ExprVector unnestExpressions =
       rewrite(origUnnest->unnestExpressions(), substitution, state);
@@ -284,23 +281,24 @@ Emitted buildUnnest(const JoinOp* join, Emitted input, EmitState& state) {
   // applied here too — after the expansion, since one may read an unnested
   // column.
   ExprVector predicates = rewrite(
-      takeReadyConjuncts(state.graph, join->cover(), state.fired),
+      takeReadyConjuncts(state.graph, unnest->cover(), state.fired),
       substitution,
       state);
-  appendAll(predicates, extraEdgeEqualities(join, substitution, state));
+  appendAll(
+      predicates, extraEdgeEqualities(unnest->extraEdges, substitution, state));
 
   // The expansion replicates the columns a consumer above the cover demands,
   // plus those the predicates above read: the Filter sits on this node's
   // output, so its inputs have to survive the expansion even when nothing
   // above wants them.
-  PlanObjectSet needed = state.graph.coverOutputColumns(join->cover());
+  PlanObjectSet needed = state.graph.coverOutputColumns(unnest->cover());
   needed.unionColumns(predicates);
   ColumnVector replicatedColumns;
   appendNarrowed(
       replicatedColumns,
       input.node,
       needed,
-      state.graph.coverColumns(join->cover()));
+      state.graph.coverColumns(unnest->cover()));
 
   ColumnVector outputColumns{replicatedColumns};
   for (const auto& perExpr : origUnnest->unnestColumns()) {
@@ -428,7 +426,7 @@ Emitted buildJoin(
   // dropping them.
   ExprVector aboveJoin;
   if (!isInner) {
-    aboveJoin = extraEdgeEqualities(join, substitution, state);
+    aboveJoin = extraEdgeEqualities(join->extraEdges, substitution, state);
     appendAll(
         aboveJoin,
         rewrite(
@@ -530,6 +528,19 @@ Emitted buildReversedAnti(
   return {node, std::move(materialized)};
 }
 
+// Re-materializes the demanded names on a cluster root whose equivalence
+// collapse replaced some of them by a representative. Callers test
+// `hasCollapsedTarget` first.
+Emitted restoreRootTargets(
+    Emitted result,
+    const folly::F14FastMap<ColumnCP, ColumnCP>& rootReps,
+    const ColumnVector& rootOutputColumns,
+    EmitState& state) {
+  result.node = restoreTargets(result.node, rootReps, rootOutputColumns, state);
+  retainVisible(result.materialized, result.node);
+  return result;
+}
+
 // Emits a join op and everything below it. `rootOutputColumns` is non-null only
 // for the cluster root, whose output must be exactly those columns; an
 // equivalence collapse that dropped a target in favor of its representative is
@@ -538,21 +549,7 @@ Emitted emitJoin(
     const JoinOp* join,
     EmitState& state,
     const ColumnVector* rootOutputColumns) {
-  const auto& edge = state.graph.edges()[join->edgeIndex];
   Emitted left = emitOp(join->left, state);
-  if (edge.isUnnest()) {
-    Emitted result = buildUnnest(join, std::move(left), state);
-    if (rootOutputColumns == nullptr) {
-      return result;
-    }
-    const auto rootReps = state.graph.coverColumnReps(join->cover());
-    if (hasCollapsedTarget(rootReps, *rootOutputColumns)) {
-      result.node =
-          restoreTargets(result.node, rootReps, *rootOutputColumns, state);
-      retainVisible(result.materialized, result.node);
-    }
-    return result;
-  }
   Emitted right = emitOp(join->right, state);
   if (join->reversedAnti) {
     return buildReversedAnti(join, left, right, state);
@@ -573,16 +570,35 @@ Emitted emitJoin(
         join, left, right, ColumnVector{*rootOutputColumns}, state);
   }
 
-  Emitted result = buildJoin(
-      join,
-      left,
-      right,
-      coverNarrowedColumns(state.graph, join->cover(), left.node, right.node),
+  return restoreRootTargets(
+      buildJoin(
+          join,
+          left,
+          right,
+          coverNarrowedColumns(
+              state.graph, join->cover(), left.node, right.node),
+          state),
+      rootReps,
+      *rootOutputColumns,
       state);
-  result.node =
-      restoreTargets(result.node, rootReps, *rootOutputColumns, state);
-  retainVisible(result.materialized, result.node);
-  return result;
+}
+
+// Emits an Unnest op and everything below it. `rootOutputColumns` as in
+// `emitJoin`.
+Emitted emitUnnest(
+    const UnnestOp* unnest,
+    EmitState& state,
+    const ColumnVector* rootOutputColumns) {
+  Emitted result = buildUnnest(unnest, emitOp(unnest->input, state), state);
+  if (rootOutputColumns == nullptr) {
+    return result;
+  }
+  const auto rootReps = state.graph.coverColumnReps(unnest->cover());
+  if (!hasCollapsedTarget(rootReps, *rootOutputColumns)) {
+    return result;
+  }
+  return restoreRootTargets(
+      std::move(result), rootReps, *rootOutputColumns, state);
 }
 
 // A shuffle partitions on columns of the row it shuffles, so an expression key
@@ -616,6 +632,9 @@ Emitted emitOp(MemoOpCP op, EmitState& state) {
       return {emitLeaf(op->as<LeafOp>(), state), {}};
     case MemoOpKind::kJoin:
       return emitJoin(op->as<JoinOp>(), state, /*rootOutputColumns=*/nullptr);
+    case MemoOpKind::kUnnest:
+      return emitUnnest(
+          op->as<UnnestOp>(), state, /*rootOutputColumns=*/nullptr);
     case MemoOpKind::kExchange:
       return emitExchange(op->as<ExchangeOp>(), state);
   }
@@ -638,6 +657,9 @@ NodeCP JoinTreeEmitter::emit(
       break;
     case MemoOpKind::kJoin:
       result = emitJoin(root->as<JoinOp>(), state, &rootOutputColumns).node;
+      break;
+    case MemoOpKind::kUnnest:
+      result = emitUnnest(root->as<UnnestOp>(), state, &rootOutputColumns).node;
       break;
     case MemoOpKind::kExchange:
       // The chosen join-tree root is never an exchange: a final gather is added

@@ -114,18 +114,18 @@ std::optional<float> innerEdgeSelectivity(
   return 1.0f / std::max(jointNdvLeft, jointNdvRight);
 }
 
-// Applies the selectivities of the extra edges that filter `join`'s output —
-// the inner edges that crossed alongside an Unnest or an outer join, which the
-// emitter puts in a Filter above it. An edge whose selectivity is unknown is
-// left out rather than making the cover uncostable: a filter can only reduce,
-// so the unfiltered count stays a valid upper bound, whereas an unknown would
-// drop every candidate for the cover and leave the join graph unplannable.
+// Applies the selectivities of `extraEdges` — the inner edges that crossed
+// alongside an Unnest or an outer join, which the emitter puts in a Filter
+// above it. An edge whose selectivity is unknown is left out rather than making
+// the cover uncostable: a filter can only reduce, so the unfiltered count stays
+// a valid upper bound, whereas an unknown would drop every candidate for the
+// cover and leave the join graph unplannable.
 std::optional<float> applyExtraEdges(
     std::optional<float> cardinality,
-    const JoinOp& join,
+    const std::vector<size_t>& extraEdges,
     const JoinHypergraph& graph,
     const ConstraintMap& constraints) {
-  for (size_t extraIndex : join.extraEdges) {
+  for (size_t extraIndex : extraEdges) {
     if (const auto selectivity = innerEdgeSelectivity(
             graph.edges()[extraIndex], graph, constraints)) {
       cardinality = mul(cardinality, *selectivity);
@@ -223,34 +223,34 @@ Cost leafCost(
   return out;
 }
 
-// Records the estimate for a cross-join-unnest cover: the input cover's
-// constraints pass through (the unnest adds columns but does not change the
+// Records the estimate for an unnest cover: the input cover's constraints
+// pass through (the unnest adds columns but does not change the
 // input columns' NDVs) and its cardinality scales by the unnest fanout, then by
 // the filters the emitter applies on the expansion: the edges that crossed
 // alongside the unnest (see `applyExtraEdges`) and the pool conjuncts this
 // cover makes ready that the input cover did not already apply. A conjunct of
 // unknown selectivity is skipped for the same reason an edge is.
 const Estimate& unnestEstimate(
-    const JoinOp& join,
+    const UnnestOp& unnest,
     const JoinHypergraph& graph,
     BySetMap& bySet) {
-  const RelationSet cover = join.cover();
+  const RelationSet cover = unnest.cover();
   const auto it = bySet.find(cover);
   if (it != bySet.end()) {
     return it->second;
   }
-  const Estimate& input = coverEstimate(join.left->cover(), bySet);
+  const Estimate& input = coverEstimate(unnest.input->cover(), bySet);
   Estimate result;
   mergeConstraints(input.constraints, result.constraints);
   std::optional<float> cardinality = applyExtraEdges(
       mul(input.cardinality, kDefaultUnnestFanout),
-      join,
+      unnest.extraEdges,
       graph,
       result.constraints);
   ExprVector conjuncts;
   for (const auto& conjunct : graph.filterConjuncts()) {
     if (conjunct.relations.isSubset(cover) &&
-        !conjunct.relations.isSubset(join.left->cover())) {
+        !conjunct.relations.isSubset(unnest.input->cover())) {
       conjuncts.push_back(conjunct.expr);
     }
   }
@@ -266,25 +266,24 @@ const Estimate& unnestEstimate(
   return bySet.emplace(cover, std::move(result)).first->second;
 }
 
-// Cost for a JoinOp wrapping a directed cross-join-unnest edge.
-// `join->left` is the input-side plan (the orientation enforcement in
-// DPhyp guarantees this); cardinality scales by the unnest fanout.
-Cost unnestJoinCost(
-    const JoinOp& join,
+// Cost for expanding a plan by an Unnest relation; cardinality scales by the
+// unnest fanout.
+Cost unnestCost(
+    const UnnestOp& unnest,
     const JoinHypergraph& graph,
     BySetMap& bySet) {
   using optimizer::Costs;
-  const std::optional<float> inputCardinality = join.left->cost.cardinality;
-  const float rowBytes = coveredRowBytes(join.cover(), graph);
+  const std::optional<float> inputCardinality = unnest.input->cost.cardinality;
+  const float rowBytes = coveredRowBytes(unnest.cover(), graph);
   Cost out;
-  out.cardinality = unnestEstimate(join, graph, bySet).cardinality;
+  out.cardinality = unnestEstimate(unnest, graph, bySet).cardinality;
   // The per-row cost depends on the output cardinality; when that is unknown
   // the whole cost is unknown (propagated, not fabricated).
   const std::optional<float> perRowCost = out.cardinality.has_value()
       ? std::optional<float>{Costs::hashRowCost(*out.cardinality, rowBytes)}
       : std::nullopt;
   out.cost =
-      add(add(join.left->cost.cost, mul(inputCardinality, perRowCost)),
+      add(add(unnest.input->cost.cost, mul(inputCardinality, perRowCost)),
           mul(out.cardinality, perRowCost));
   return out;
 }
@@ -333,7 +332,8 @@ joinEstimate(const JoinOp& join, const JoinHypergraph& graph, BySetMap& bySet) {
   // reduce what the join type shaped — including the null-padded rows, which
   // fail an equality on the padded side.
   if (edge.joinType() != velox::core::JoinType::kInner) {
-    cardinality = applyExtraEdges(cardinality, join, graph, result.constraints);
+    cardinality = applyExtraEdges(
+        cardinality, join.extraEdges, graph, result.constraints);
   }
   result.cardinality = maxOf(1.0f, cardinality);
   return bySet.emplace(cover, std::move(result)).first->second;
@@ -446,14 +446,10 @@ Cost DefaultCostModel::cost(MemoOpCP op, const JoinHypergraph& graph) const {
   switch (op->kind()) {
     case MemoOpKind::kLeaf:
       return leafCost(*op->as<LeafOp>(), graph, estimateProvider_, bySet_);
-    case MemoOpKind::kJoin: {
-      const auto* join = op->as<JoinOp>();
-      const auto& edge = graph.edges()[join->edgeIndex];
-      if (edge.isUnnest()) {
-        return unnestJoinCost(*join, graph, bySet_);
-      }
-      return hashJoinCost(*join, graph, bySet_);
-    }
+    case MemoOpKind::kJoin:
+      return hashJoinCost(*op->as<JoinOp>(), graph, bySet_);
+    case MemoOpKind::kUnnest:
+      return unnestCost(*op->as<UnnestOp>(), graph, bySet_);
     case MemoOpKind::kExchange:
       VELOX_UNREACHABLE("ExchangeOp cost is set at construction");
   }

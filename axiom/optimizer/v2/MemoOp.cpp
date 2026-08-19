@@ -26,6 +26,7 @@ const folly::F14FastMap<MemoOpKind, std::string_view>& memoOpKindNames() {
   static const folly::F14FastMap<MemoOpKind, std::string_view> kNames = {
       {MemoOpKind::kLeaf, "Leaf"},
       {MemoOpKind::kJoin, "Join"},
+      {MemoOpKind::kUnnest, "Unnest"},
       {MemoOpKind::kExchange, "Exchange"},
   };
   return kNames;
@@ -34,6 +35,12 @@ const folly::F14FastMap<MemoOpKind, std::string_view>& memoOpKindNames() {
 RelationSet combinedCover(MemoOpCP left, MemoOpCP right) {
   RelationSet result{left->cover()};
   result.unionSet(right->cover());
+  return result;
+}
+
+RelationSet expandedCover(MemoOpCP input, RelationSet unnestRelation) {
+  RelationSet result{input->cover()};
+  result.unionSet(unnestRelation);
   return result;
 }
 
@@ -58,5 +65,18 @@ JoinOp::JoinOp(
       reversedAnti{reversedAnti},
       extraEdges{std::move(extraEdges)},
       cover_{combinedCover(leftChild, rightChild)} {}
+
+UnnestOp::UnnestOp(
+    Cost cost,
+    MemoOpCP inputChild,
+    size_t edge,
+    RelationSet unnestRelation,
+    std::vector<size_t> extraEdges)
+    // Unnest expands rows within a task, so the input's partitioning survives.
+    : MemoOp{cost, MemoOpKind::kUnnest, inputChild->outputPartitioning()},
+      input{inputChild},
+      edgeIndex{edge},
+      extraEdges{std::move(extraEdges)},
+      cover_{expandedCover(inputChild, unnestRelation)} {}
 
 } // namespace facebook::axiom::optimizer::v2

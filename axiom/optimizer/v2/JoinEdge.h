@@ -52,18 +52,23 @@ inline bool canBroadcastBuild(velox::core::JoinType joinType) {
 ///     above would let null-padded rows pass through, changing
 ///     semantics. `nullAware` and `nullAsValue` carry Velox null
 ///     semantics.
-///   - Directed cross-join-unnest. Built by the unnest constructor
-///     overload. `left` covers the relations whose subtree feeds the
-///     Unnest; `right` is the single Unnest relation. `unnestExprs`
-///     carries the ARRAY/MAP expressions to unnest. No equi-keys, no
-///     filter. `isUnnest()` discriminates.
+///   - Unnest. Built by `JoinEdge::unnest`. `left` covers the
+///     relations whose subtree feeds the Unnest; `right` is the
+///     single Unnest relation. No equi-keys, no filter;
+///     `isUnnest()` discriminates. Unlike the other flavors this
+///     edge never becomes a join: an Unnest expands the rows of the
+///     relations on `left` rather than pairing two inputs, so DPhyp
+///     lowers it to a unary `UnnestOp` over whichever plan covers
+///     `left`. The edge states connectivity and ordering — the
+///     Unnest relation is reachable only through it, so no plan
+///     holds that relation without the relations it expands.
 ///
 /// Invariants:
 ///   - `left` and `right` are non-empty and disjoint.
 ///   - Equi-join flavors: `leftKeys.size() == rightKeys.size()` and
 ///     is non-empty.
-///   - Unnest flavor: `unnestExprs` non-empty; `leftKeys` /
-///     `rightKeys` / `filter` empty; `joinType == kInner`.
+///   - Unnest flavor: `leftKeys` / `rightKeys` / `filter` empty;
+///     `joinType == kInner`.
 class JoinEdge {
  public:
   JoinEdge(
@@ -102,21 +107,12 @@ class JoinEdge {
         velox::core::JoinTypeName::toName(joinType_));
   }
 
-  /// Constructs a directed cross-join-unnest edge: input relations on
-  /// `left`, the Unnest relation on `right`, the ARRAY/MAP expressions
-  /// to unnest in `unnestExprs`. Equi-key invariants don't apply; see
-  /// the class doc.
-  JoinEdge(RelationSet left, RelationSet right, ExprVector unnestExprs)
-      : left_{std::move(left)},
-        right_{std::move(right)},
-        joinType_{velox::core::JoinType::kInner},
-        unnestExprs_{std::move(unnestExprs)} {
-    VELOX_CHECK(!left_.empty());
-    VELOX_CHECK(!right_.empty());
-    VELOX_CHECK(!left_.hasIntersection(right_));
-    VELOX_CHECK(
-        !unnestExprs_.empty(),
-        "Cross-join-unnest edge must carry at least one unnest expression");
+  /// Constructs an unnest edge: the relations whose subtree feeds the
+  /// Unnest on `left`, the Unnest relation on `right`. The expressions to
+  /// unnest live on that relation's IR node; the edge only states where the
+  /// expansion happens. Equi-key invariants don't apply; see the class doc.
+  static JoinEdge unnest(RelationSet left, RelationSet right) {
+    return JoinEdge{std::move(left), std::move(right)};
   }
 
   const RelationSet& left() const {
@@ -141,15 +137,9 @@ class JoinEdge {
     return filter_;
   }
 
-  /// ARRAY/MAP expressions to unnest. Non-empty iff this is a
-  /// cross-join-unnest edge.
-  const ExprVector& unnestExprs() const {
-    return unnestExprs_;
-  }
-
-  /// True iff this is a directed cross-join-unnest edge.
+  /// True iff this is an unnest edge.
   bool isUnnest() const {
-    return !unnestExprs_.empty();
+    return isUnnest_;
   }
 
   velox::core::JoinType joinType() const {
@@ -176,6 +166,17 @@ class JoinEdge {
   }
 
  private:
+  // Builds an unnest edge; see the `unnest` factory.
+  JoinEdge(RelationSet left, RelationSet right)
+      : left_{std::move(left)},
+        right_{std::move(right)},
+        joinType_{velox::core::JoinType::kInner},
+        isUnnest_{true} {
+    VELOX_CHECK(!left_.empty());
+    VELOX_CHECK(!right_.empty());
+    VELOX_CHECK(!left_.hasIntersection(right_));
+  }
+
   RelationSet left_;
   RelationSet right_;
   ExprVector leftKeys_;
@@ -187,7 +188,7 @@ class JoinEdge {
   // The mark/exists column produced by a kLeftSemiProject join;
   // nullptr otherwise. Populated in Phase 2.
   ColumnCP markColumn_{nullptr};
-  ExprVector unnestExprs_;
+  bool isUnnest_{false};
 };
 
 } // namespace facebook::axiom::optimizer::v2

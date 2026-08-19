@@ -33,9 +33,9 @@ namespace facebook::axiom::optimizer::v2 {
 /// Kinds of nodes:
 ///   - Scan, Values: leaf nodes with no inputs.
 ///   - Unnest: a deferred operator registered as its own relation;
-///     the cross-join-unnest edge built by `HypergraphBuilder`
-///     supplies connectivity to the relations whose subtree feeds
-///     the Unnest's input.
+///     the unnest edge built by `HypergraphBuilder` supplies
+///     connectivity to the relations whose subtree feeds the
+///     Unnest's input.
 ///   - Root of an already-planned subtree past a barrier (Sort,
 ///     Limit, Window, ...).
 ///
