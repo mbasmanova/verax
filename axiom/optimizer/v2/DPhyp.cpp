@@ -202,6 +202,12 @@ class Enumerator {
     component.forEach([&](int32_t id) { ids.push_back(id); });
     // Descending id: each (subgraph, complement) pair is emitted once.
     for (auto it = ids.rbegin(); it != ids.rend(); ++it) {
+      // A relation an Unnest expands is never the smallest of a set that has a
+      // plan, so seeding from it would enumerate only unbuildable sets — and
+      // spend enumeration budget doing it.
+      if (graph_.expandedRelationIds().contains(*it)) {
+        continue;
+      }
       const RelationSet subgraph = RelationSet::singleton(*it);
       emitCsg(subgraph);
       enumerateCsgRec(subgraph, RelationSet::prefixThrough(*it));
@@ -234,6 +240,9 @@ class Enumerator {
     // before doing merge work; the caller falls back to syntactic order.
     bool allCardinalitiesKnown = true;
     component.forEach([&](int32_t id) {
+      if (graph_.expandedRelationIds().contains(id)) {
+        return;
+      }
       const auto it = memo_.find(RelationSet::singleton(id));
       if (it == memo_.end() || !it->second.cardinality().has_value()) {
         allCardinalitiesKnown = false;
@@ -242,9 +251,14 @@ class Enumerator {
     if (!allCardinalitiesKnown) {
       return nullptr;
     }
+    // An expanded relation is never a fragment of its own: it is applied to
+    // the fragment whose rows it expands.
     std::vector<RelationSet> fragments;
-    component.forEach(
-        [&](int32_t id) { fragments.push_back(RelationSet::singleton(id)); });
+    component.forEach([&](int32_t id) {
+      if (!graph_.expandedRelationIds().contains(id)) {
+        fragments.push_back(RelationSet::singleton(id));
+      }
+    });
     while (fragments.size() > 1) {
       std::optional<float> bestCardinality;
       size_t bestLeft = 0;
@@ -273,6 +287,11 @@ class Enumerator {
         }
       }
       if (!bestCardinality.has_value()) {
+        // An edge may read columns an Unnest has yet to produce, and until it
+        // does nothing connects across it. Expand one fragment and retry.
+        if (expandOneFragment(fragments)) {
+          continue;
+        }
         // No remaining fragment pair can be costed into a single join. In a
         // connected component connectivity is never the blocker — contracting
         // merged fragments keeps the graph connected, so an edge-joined pair
@@ -285,14 +304,110 @@ class Enumerator {
       fragments[bestLeft] = bestCombined;
       fragments.erase(fragments.begin() + bestRight);
     }
+    // Apply any Unnest no join step consumed on top of the finished tree. An
+    // Unnest chain roots at a relation nothing expands, so a fragment remains.
+    VELOX_DCHECK_EQ(fragments.size(), 1);
+    expandThroughUnnests(fragments.front());
     const auto it = memo_.find(component);
     return it == memo_.end() ? nullptr : it->second.cheapest();
   }
 
  private:
-  // Adds a LeafOp for every relation in `relations` not already in the memo.
+  // Relations `set` would gain by applying every Unnest whose input it covers,
+  // transitively. Answers what an expansion would produce without recording
+  // one.
+  RelationSet expandableRelations(RelationSet set) const {
+    RelationSet gained;
+    bool grown{true};
+    while (grown) {
+      grown = false;
+      for (const auto& edge : graph_.edges()) {
+        RelationSet reached{set};
+        reached.unionSet(gained);
+        if (!edge.isUnnest() || !edge.left().isSubset(reached) ||
+            edge.right().isSubset(reached)) {
+          continue;
+        }
+        gained.unionSet(edge.right());
+        grown = true;
+      }
+    }
+    return gained;
+  }
+
+  // Expands the fragment an edge is waiting on: one whose expansion produces
+  // relations some edge reads to reach beyond that fragment. Nothing else is
+  // expanded, so the rows an expansion multiplies pass through as few joins as
+  // possible. Returns true only when a fragment grew, so the caller's retry
+  // always follows progress; false says no expansion would connect anything, or
+  // none could be costed. Fragments are visited in index order, so the choice
+  // is deterministic.
+  bool expandOneFragment(std::vector<RelationSet>& fragments) {
+    for (auto& fragment : fragments) {
+      const RelationSet gained = expandableRelations(fragment);
+      if (gained.empty()) {
+        continue;
+      }
+      RelationSet reached{fragment};
+      reached.unionSet(gained);
+      for (const auto& edge : graph_.edges()) {
+        if (edge.isUnnest()) {
+          continue;
+        }
+        RelationSet endpoints{edge.left()};
+        endpoints.unionSet(edge.right());
+        // An edge wholly inside the expanded fragment joins nothing new; only
+        // one reaching outside can merge this fragment with another.
+        if (!endpoints.hasIntersection(gained) || endpoints.isSubset(reached)) {
+          continue;
+        }
+        const RelationSet before = fragment;
+        expandThroughUnnests(fragment);
+        if (fragment != before) {
+          return true;
+        }
+        // The expansion has no costable plan. Leave this fragment alone and
+        // look for another; expanding it again would not get any further.
+        break;
+      }
+    }
+    return false;
+  }
+
+  // Applies every Unnest whose input `set` covers, repeatedly, since one
+  // expansion can make another's input ready. Grows `set` by the relations
+  // expanded and records a plan for each step.
+  void expandThroughUnnests(RelationSet& set) {
+    bool grown{true};
+    while (grown) {
+      grown = false;
+      for (size_t edgeIndex{0}; edgeIndex < graph_.edges().size();
+           ++edgeIndex) {
+        const auto& edge = graph_.edges()[edgeIndex];
+        if (!edge.isUnnest() || !edge.left().isSubset(set) ||
+            edge.right().isSubset(set)) {
+          continue;
+        }
+        RelationSet expanded{set};
+        expanded.unionSet(edge.right());
+        emitUnnest(set, edgeIndex, expanded, {});
+        if (cheapestPlan(expanded) == nullptr) {
+          continue;
+        }
+        set = expanded;
+        grown = true;
+      }
+    }
+  }
+
+  // Adds a LeafOp for every relation in `relations` not already in the memo. A
+  // relation an Unnest edge expands gets none: it enters a plan only as the
+  // expansion of the rows it multiplies.
   void initLeaves(RelationSet relations) {
     relations.forEach([&](int32_t id) {
+      if (graph_.expandedRelationIds().contains(id)) {
+        return;
+      }
       const RelationSet singleton = RelationSet::singleton(id);
       if (memo_.contains(singleton)) {
         return;
@@ -334,16 +449,18 @@ class Enumerator {
     }
   }
 
+  // Cheapest plan for `set`, or null when it has none: a set holding an Unnest
+  // relation without the relations it expands is never built, and enumeration
+  // walks such sets.
+  MemoOpCP cheapestPlan(RelationSet set) const {
+    const auto it = memo_.find(set);
+    return it == memo_.end() ? nullptr : it->second.cheapest();
+  }
+
   void emitCsgCmp(RelationSet subgraph, RelationSet complement) {
     if (budget_.consume()) {
       return;
     }
-    const auto itLeft = memo_.find(subgraph);
-    const auto itRight = memo_.find(complement);
-    VELOX_DCHECK(itLeft != memo_.end(), "subgraph not memoized");
-    VELOX_DCHECK(itRight != memo_.end(), "complement not memoized");
-    MemoOpCP leftPlan = itLeft->second.cheapest();
-    MemoOpCP rightPlan = itRight->second.cheapest();
     RelationSet combined{subgraph};
     combined.unionSet(complement);
 
@@ -371,8 +488,13 @@ class Enumerator {
       return;
     }
     if (crossing.size() == 1) {
-      emitSingleEdge(
-          crossing[0].first, crossing[0].second, leftPlan, rightPlan, combined);
+      applyCrossingEdge(
+          crossing[0].first,
+          crossing[0].second,
+          subgraph,
+          complement,
+          combined,
+          {});
       return;
     }
 
@@ -406,11 +528,11 @@ class Enumerator {
           residual.push_back(crossing[i].first);
         }
       }
-      emitSingleEdge(
+      applyCrossingEdge(
           specialEdge,
           crossing[*specialPosition].second,
-          leftPlan,
-          rightPlan,
+          subgraph,
+          complement,
           combined,
           std::move(residual));
       return;
@@ -465,6 +587,12 @@ class Enumerator {
       }
     };
 
+    MemoOpCP leftPlan = cheapestPlan(subgraph);
+    MemoOpCP rightPlan = cheapestPlan(complement);
+    if (leftPlan == nullptr || rightPlan == nullptr) {
+      return;
+    }
+
     const size_t primary{crossing.front().first};
     markClasses(graph_.edges()[primary]);
     std::vector<size_t> extras;
@@ -496,9 +624,76 @@ class Enumerator {
         extras);
   }
 
+  // Applies the edge crossing this partition: an Unnest expands the side
+  // holding its input, anything else joins the two sides' plans. `forward` is
+  // true when the edge's left operand is `subgraph`.
+  void applyCrossingEdge(
+      size_t edgeIndex,
+      bool forward,
+      RelationSet subgraph,
+      RelationSet complement,
+      RelationSet combined,
+      std::vector<size_t> extraEdges) {
+    const auto& edge = graph_.edges()[edgeIndex];
+    if (edge.isUnnest()) {
+      // Enumeration never seeds a subgraph from the Unnest relation and grows
+      // subgraphs from their seed, so the relation reaches a partition only as
+      // the complement, alone. A complement holding anything else is a set the
+      // enumeration cannot build; expanding it would record a plan under a
+      // cover it never assembled.
+      if (complement != edge.right()) {
+        return;
+      }
+      emitUnnest(subgraph, edgeIndex, combined, std::move(extraEdges));
+      return;
+    }
+
+    MemoOpCP leftPlan = cheapestPlan(subgraph);
+    MemoOpCP rightPlan = cheapestPlan(complement);
+    if (leftPlan == nullptr || rightPlan == nullptr) {
+      return;
+    }
+    emitSingleEdge(
+        edgeIndex,
+        forward,
+        leftPlan,
+        rightPlan,
+        combined,
+        std::move(extraEdges));
+  }
+
+  // Adds the candidate that expands `inputSet`'s plan by the Unnest relation
+  // of `edgeIndex`. Offered for every input the expansion may sit on, so cost
+  // decides where it goes.
+  void emitUnnest(
+      RelationSet inputSet,
+      size_t edgeIndex,
+      RelationSet combined,
+      std::vector<size_t> extraEdges) {
+    MemoOpCP input = cheapestPlan(inputSet);
+    if (input == nullptr) {
+      return;
+    }
+    budget_.consume();
+    auto candidate = std::make_unique<UnnestOp>(
+        Cost{},
+        input,
+        edgeIndex,
+        graph_.edges()[edgeIndex].right(),
+        std::move(extraEdges));
+    // The memo is keyed by cover, so a candidate filed under a set it does not
+    // cover would claim relations no operator below it reads.
+    VELOX_DCHECK_EQ(candidate->cover().bits(), combined.bits());
+    candidate->cost = costModel_.cost(candidate.get(), graph_);
+    if (!candidate->cost.cost.has_value()) {
+      return;
+    }
+    memo_[combined].addPlan(std::move(candidate), graph_, costModel_);
+  }
+
   // Emits join candidates for a single edge crossing the partition,
-  // preserving orientation rules (native-only for unnest / anti /
-  // null-aware semi-project; both orientations otherwise). `extraEdges` are
+  // preserving orientation rules (native-only for anti / null-aware
+  // semi-project; both orientations otherwise). `extraEdges` are
   // co-crossing inner edges the emitter applies as a filter above the join.
   void emitSingleEdge(
       size_t edgeIndex,
@@ -506,21 +701,20 @@ class Enumerator {
       MemoOpCP leftPlan,
       MemoOpCP rightPlan,
       RelationSet combined,
-      std::vector<size_t> extraEdges = {}) {
+      std::vector<size_t> extraEdges) {
     const auto& edge = graph_.edges()[edgeIndex];
     // Extra edges reach the emitter as a filter above the join, which only an
-    // Unnest or an outer join can carry: both keep every column the equalities
-    // read. Semi and anti keep one side only.
+    // outer join can carry: it keeps every column the equalities read. Semi and
+    // anti keep one side only.
     VELOX_CHECK(
-        extraEdges.empty() || edge.isUnnest() || isOuterJoin(edge.joinType()),
+        extraEdges.empty() || isOuterJoin(edge.joinType()),
         "An edge crossing a join partition alongside a {} edge is not supported",
         edge.joinTypeName());
     // `probeOnLeft` plays the edge's left operand; `probeOnRight` its right.
     MemoOpCP probeOnLeft = forward ? leftPlan : rightPlan;
     MemoOpCP probeOnRight = forward ? rightPlan : leftPlan;
 
-    const bool nativeOnly = edge.isUnnest() ||
-        edge.joinType() == velox::core::JoinType::kAnti ||
+    const bool nativeOnly = edge.joinType() == velox::core::JoinType::kAnti ||
         (edge.joinType() == velox::core::JoinType::kLeftSemiProject &&
          !hasRightProjectVariant(edge));
     if (nativeOnly) {
@@ -860,9 +1054,11 @@ class Enumerator {
       return;
     }
 
-    // Unnest expands rows worker-locally, so it needs no exchange and keeps the
-    // probe (left) partitioning.
-    if (graph_.edges()[edgeIndex].isUnnest()) {
+    // Both inputs already sit on one task, so joining them moves no rows and
+    // the result stays there. Offered next to the partitioned strategies below,
+    // which would shuffle two single-task inputs apart; cost decides.
+    if (left->outputPartitioning().is(PartitionKind::kGather) &&
+        right->outputPartitioning().is(PartitionKind::kGather)) {
       addJoinCandidate(
           left,
           right,
@@ -870,9 +1066,8 @@ class Enumerator {
           joinType,
           combined,
           reversedAnti,
-          std::move(extraEdges),
-          left->outputPartitioning());
-      return;
+          extraEdges,
+          Partitioning::globalGather());
     }
 
     const auto [leftKeys, rightKeys] =

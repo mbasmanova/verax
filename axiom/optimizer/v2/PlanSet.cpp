@@ -27,7 +27,8 @@ namespace {
 
 // Total order over plans so dominance and selection are independent of memo
 // insertion order. Plans in one set cover the same relation set; the tuple
-// distinguishes a join, an exchange wrapping a plan, or a lone leaf.
+// distinguishes a join, an unnest of a plan, an exchange wrapping a plan, or a
+// lone leaf.
 using TieKey = std::tuple<uint64_t, uint64_t, size_t, int, int>;
 TieKey tieKey(MemoOpCP op) {
   if (op->is(MemoOpKind::kJoin)) {
@@ -38,6 +39,10 @@ TieKey tieKey(MemoOpCP op) {
         join->edgeIndex,
         static_cast<int>(join->joinType),
         static_cast<int>(join->reversedAnti)};
+  }
+  if (op->is(MemoOpKind::kUnnest)) {
+    const auto* unnest = op->as<UnnestOp>();
+    return {unnest->input->cover().bits(), 0, unnest->edgeIndex, 0, 2};
   }
   if (op->is(MemoOpKind::kExchange)) {
     const auto* exchange = op->as<ExchangeOp>();

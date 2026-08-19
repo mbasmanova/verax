@@ -33,9 +33,9 @@ namespace facebook::axiom::optimizer::v2 {
 /// `unnests` records Unnest IR nodes the cluster collection
 /// descended through. Each becomes its own relation in the
 /// hypergraph, connected to the leaves contributed by its input
-/// subtree via a directed cross-join-unnest edge. Order is descent
-/// order (innermost first) so dependent chains (`UNNEST(u1.x) u2`)
-/// have `u1`'s cardinality computed before `u2`'s.
+/// subtree via an unnest edge. Order is descent order (innermost
+/// first) so dependent chains (`UNNEST(u1.x) u2`) have `u1`'s
+/// cardinality computed before `u2`'s.
 struct JoinCluster {
   JoinCP root;
   std::vector<NodeCP> leaves;
