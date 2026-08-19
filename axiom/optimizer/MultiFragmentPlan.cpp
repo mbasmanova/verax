@@ -680,8 +680,11 @@ void checkLastFragment(const ExecutableFragment& last, int32_t numWorkers) {
 
 } // namespace
 
-void MultiFragmentPlan::checkConsistency() const {
-  VELOX_CHECK(!fragments_.empty(), "Plan must have at least one fragment");
+void MultiFragmentPlan::checkConsistency(bool mayBeEmpty) const {
+  if (fragments_.empty()) {
+    VELOX_CHECK(mayBeEmpty, "Plan must have at least one fragment");
+    return;
+  }
 
   checkFragmentTypes(fragments_, options_.numWorkers);
 

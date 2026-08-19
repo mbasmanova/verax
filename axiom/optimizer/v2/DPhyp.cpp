@@ -630,7 +630,42 @@ class Enumerator {
     if (it == memo_.end()) {
       return nullptr;
     }
-    return it->second.bestBucketed(keysInCoverSchema(keys, cover));
+    const ExprVector coverKeys = keysInCoverSchema(keys, cover);
+    if (MemoOpCP bucketed = it->second.bestBucketed(coverKeys)) {
+      return bucketed;
+    }
+
+    // Nothing in the memo is bucketed on these keys, but a single relation
+    // whose storage is bucketed on them can be read that way. Reading it so
+    // costs no more and saves the shuffle, so it is preferred rather than
+    // offered for costing. A grouped read only pays off against a shuffle, and
+    // considerCandidate takes the single-fragment path before it asks for a
+    // bucketed side, so this is never reached with one worker.
+    VELOX_DCHECK_GT(numWorkers_, 1);
+    if (cover.size() != 1) {
+      return nullptr;
+    }
+    const int32_t relationId = cover.min();
+    const NodeCP node = graph_.relation(relationId).node();
+    if (!node->is(NodeType::kScan)) {
+      return nullptr;
+    }
+    Partitioning storageBucketing = node->as<Scan>()->storageBucketing();
+    if (!storageBucketing.isBucketedOn(coverKeys)) {
+      return nullptr;
+    }
+    // Coarsened to the worker count, like every other grouped read: the memo
+    // costs and compares the read the plan will actually run.
+    storageBucketing.partitionType = queryCtx()->scaledPartitionType(
+        storageBucketing.partitionType, numWorkers_);
+
+    auto grouped = std::make_unique<LeafOp>(
+        Cost{}, static_cast<int8_t>(relationId), std::move(storageBucketing));
+    grouped->cost = costModel_.cost(grouped.get(), graph_);
+    it->second.addPlan(std::move(grouped), graph_, costModel_);
+    // Read back rather than keeping the pointer: addPlan drops a plan an
+    // existing one dominates, and enumeration asks for this cover repeatedly.
+    return it->second.bestBucketed(coverKeys);
   }
 
   // Cheapest plan for `cover` broadcast to all tasks. Null when `cover` has no
@@ -767,39 +802,33 @@ class Enumerator {
     };
 
     if (leftBucketed != nullptr && rightBucketed != nullptr) {
-      const connector::PartitionType* leftType =
-          leftBucketed->outputPartitioning().partitionType;
-      const connector::PartitionType* rightType =
-          rightBucketed->outputPartitioning().partitionType;
-      // copartition is only a feasibility check; the output reuses the
-      // min-partition-count input's layout-owned type, whose count equals
-      // copartition's (a fresh shared_ptr we can't retain as a raw pointer).
-      if (const auto compatible = leftType->copartition(*rightType)) {
-        const connector::PartitionType* outputType =
-            leftType->numPartitions() <= rightType->numPartitions() ? leftType
-                                                                    : rightType;
-        VELOX_DCHECK_EQ(
-            outputType->numPartitions(),
-            compatible->numPartitions(),
-            "Co-bucketed output must reuse a layout type matching copartition's count");
-        add(leftBucketed, rightBucketed, outputType);
+      const auto* leftType = leftBucketed->outputPartitioning().partitionType;
+      const auto* rightType = rightBucketed->outputPartitioning().partitionType;
+      const auto* folded = queryCtx()->copartitionedType(leftType, rightType);
+      if (folded == nullptr) {
+        return;
       }
-      return;
+      // Both sides are kept only when the partitioning they agree on runs at
+      // the width they already run at. Otherwise one side is repartitioned
+      // onto the other's grid below, which rebuilds it at that width.
+      if (folded->numPartitions() == leftType->numPartitions() &&
+          folded->numPartitions() == rightType->numPartitions()) {
+        add(leftBucketed, rightBucketed, folded);
+        return;
+      }
     }
 
     if (leftBucketed != nullptr) {
-      const connector::PartitionType* leftType =
-          leftBucketed->outputPartitioning().partitionType;
+      const auto* leftType = leftBucketed->outputPartitioning().partitionType;
       MemoOpCP rightAligned =
           repartitionedTo(right->cover(), rightKeys, leftType);
       if (rightAligned != nullptr) {
         add(leftBucketed, rightAligned, leftType);
       }
-    } else {
-      // Only the right side is bucketed here (the both-null case returned
-      // early).
-      const connector::PartitionType* rightType =
-          rightBucketed->outputPartitioning().partitionType;
+    }
+
+    if (rightBucketed != nullptr) {
+      const auto* rightType = rightBucketed->outputPartitioning().partitionType;
       MemoOpCP leftAligned =
           repartitionedTo(left->cover(), leftKeys, rightType);
       if (leftAligned != nullptr) {

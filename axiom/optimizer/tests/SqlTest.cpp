@@ -36,6 +36,8 @@
 #include "velox/dwio/dwrf/RegisterDwrfReader.h"
 #include "velox/dwio/dwrf/RegisterDwrfWriter.h"
 #include "velox/exec/tests/utils/HiveConnectorTestBase.h"
+#include "velox/exec/tests/utils/LocalExchangeSource.h"
+#include "velox/serializers/PrestoSerializer.h"
 
 namespace facebook::axiom::optimizer::test {
 namespace {
@@ -50,6 +52,11 @@ class SqlTestEnvironment : public testing::Environment {
  public:
   void SetUp() override {
     SqlTestBase::SetUpTestCase();
+    // Any plan that spans fragments needs these, including a single-node one.
+    // Registered here because setup statements run before any test's SetUp.
+    velox::serializer::presto::PrestoVectorSerde::tryRegisterNamedVectorSerde();
+    velox::exec::ExchangeSource::registerFactory(
+        velox::exec::test::createLocalExchangeSource);
   }
 
   void TearDown() override {
@@ -200,6 +207,8 @@ class SqlTest : public SqlTestBase {
     suiteOptimizerPool_ = suiteRootPool_->addLeafChild("optimizer");
     suiteDuckDbRunner_ = std::make_unique<exec::test::DuckDbQueryRunner>();
 
+    // Setup statements install tables; a file's queries are what it tests.
+    // Running them single-node keeps a CTAS off the remote-exchange path.
     auto runnerFactory = [](const logical_plan::LogicalPlanNodePtr& plan) {
       const auto buildRunner = UseV2 ? makeLocalRunnerV2 : makeLocalRunner;
       return buildRunner(
@@ -208,8 +217,8 @@ class SqlTest : public SqlTestBase {
           /*asyncDataCache=*/nullptr,
           suiteRootPool_,
           suiteOptimizerPool_,
-          /*numWorkers=*/4,
-          /*numDrivers=*/4,
+          /*numWorkers=*/1,
+          /*numDrivers=*/1,
           /*syntacticJoinOrder=*/false);
     };
 
@@ -472,6 +481,7 @@ int main(int argc, char** argv) {
 
   registerQueryFile<"aggregation">();
   registerQueryFile<"basic">();
+  registerQueryFile<"bucketedExecution">();
   registerQueryFile<"coercion">();
   registerQueryFile<"cte">();
   registerQueryFile<"datetime">();

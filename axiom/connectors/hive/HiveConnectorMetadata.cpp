@@ -58,11 +58,18 @@ std::shared_ptr<PartitionType> HivePartitionType::copartition(
     }
   }
   const int32_t otherNumBuckets = otherPartitionType->numBuckets_;
+  // Both sides route a bucket to bucket % numPartitions, so the coarser of the
+  // two counts is what they agree on; keeping the finer would send a key to
+  // different tasks on each side.
+  const int32_t numPartitions =
+      std::min(numPartitions_, otherPartitionType->numPartitions_);
   if (otherNumBuckets % numBuckets_ == 0) {
-    return std::make_shared<HivePartitionType>(numBuckets_, thisTypes);
+    return std::make_shared<HivePartitionType>(
+        numBuckets_, numPartitions, thisTypes);
   }
   if (numBuckets_ % otherNumBuckets == 0) {
-    return std::make_shared<HivePartitionType>(otherNumBuckets, otherTypes);
+    return std::make_shared<HivePartitionType>(
+        otherNumBuckets, numPartitions, otherTypes);
   }
   return nullptr;
 }

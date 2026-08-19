@@ -101,7 +101,11 @@ std::shared_ptr<runner::LocalRunner> makeLocalRunnerImpl(
       core::QueryConfig{{}},
       {},
       asyncDataCache,
-      rootPool->addAggregateChild(queryId));
+      rootPool->addAggregateChild(queryId),
+      /*spillExecutor=*/nullptr,
+      // Task ids are built from this, and exchanges find their source by task
+      // id.
+      queryId);
 
   auto allocator = std::make_unique<HashStringAllocator>(optimizerPool.get());
   auto graphContext =

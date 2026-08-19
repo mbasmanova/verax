@@ -157,6 +157,8 @@ PlanAndStats Optimizer::optimize(const MultiFragmentPlan::Options& options) {
   PlanAndStats result;
   result.plan = std::make_shared<MultiFragmentPlan>(
       std::move(emitted.fragments), planOptions);
+  result.plan->checkConsistency(
+      /*mayBeEmpty=*/plan_.is(logical_plan::NodeKind::kTableWrite));
   result.finishWrite = std::move(emitted.finishWrite);
   result.prediction = std::move(emitted.prediction);
 

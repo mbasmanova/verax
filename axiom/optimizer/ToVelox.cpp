@@ -635,7 +635,7 @@ PlanAndStats ToVelox::toVeloxPlan(
 
   auto multiFragmentPlan =
       std::make_shared<MultiFragmentPlan>(std::move(stages), options);
-  multiFragmentPlan->checkConsistency();
+  multiFragmentPlan->checkConsistency(/*mayBeEmpty=*/false);
 
   return PlanAndStats{
       std::move(multiFragmentPlan),
@@ -1276,11 +1276,16 @@ velox::core::PlanNodePtr ToVelox::makeLimit(
 
 namespace {
 
+// A connector partitioning is coarsened to 'numDestinations', the number of
+// consumers the rows are split into, so the function partitions into exactly
+// those. Pass nullopt where the count is not known here. The spec copies what
+// it needs, so the coarsened type need not outlive this call.
 template <typename ExprType>
 velox::core::PartitionFunctionSpecPtr createPartitionFunctionSpec(
     const velox::RowTypePtr& inputType,
     const std::vector<ExprType>& keys,
-    const Distribution& distribution) {
+    const Distribution& distribution,
+    std::optional<int32_t> numDestinations = std::nullopt) {
   if (distribution.isBroadcast() || keys.empty()) {
     return std::make_shared<velox::core::GatherPartitionFunctionSpec>();
   }
@@ -1298,8 +1303,13 @@ velox::core::PartitionFunctionSpecPtr createPartitionFunctionSpec(
   }
 
   if (const auto* partitionType = distribution.partitionType()) {
-    return partitionType->makeSpec(
-        keyIndices, /*constants=*/{}, /*isLocal=*/false);
+    if (!numDestinations.has_value() ||
+        partitionType->numPartitions() == numDestinations.value()) {
+      return partitionType->makeSpec(
+          keyIndices, /*constants=*/{}, /*isLocal=*/false);
+    }
+    return partitionType->scaleDown(numDestinations.value())
+        ->makeSpec(keyIndices, /*constants=*/{}, /*isLocal=*/false);
   }
 
   return std::make_shared<velox::exec::HashPartitionFunctionSpec>(
@@ -1999,7 +2009,7 @@ velox::core::PlanNodePtr ToVelox::makeRepartition(
           nextId(), outputType, exchangeSerdeKind_, sourcePlan);
     } else {
       auto partitionFunctionFactory = createPartitionFunctionSpec(
-          sourcePlan->outputType(), keys, distribution);
+          sourcePlan->outputType(), keys, distribution, numPartitions);
       source.fragment.planNode =
           std::make_shared<velox::core::PartitionedOutputNode>(
               nextId(),

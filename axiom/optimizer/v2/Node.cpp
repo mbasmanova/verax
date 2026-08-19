@@ -375,15 +375,31 @@ ExprCP survivingEquiKey(ExprCP key, const PlanObjectSet& outputColumns) {
 Partitioning joinGlobalPartition(
     velox::core::JoinType joinType,
     NodeCP left,
+    NodeCP right,
     const ColumnVector& outputColumns) {
   if (joinType != velox::core::JoinType::kInner &&
       joinType != velox::core::JoinType::kLeft) {
     return {};
   }
 
-  const Partitioning& probe = left->physicalProperties().globalPartition;
+  Partitioning probe = left->physicalProperties().globalPartition;
   if (probe.kind != PartitionKind::kPartitioned) {
     return probe.dropOrder();
+  }
+
+  // Both sides connector-bucketed: the join runs on the partitioning the two
+  // agree on, which can be coarser than the probe's. Reporting the probe's
+  // would let a consumer align a shuffle to more partitions than the join's
+  // fragment has tasks.
+  const auto* buildType =
+      right->physicalProperties().globalPartition.partitionType;
+  if (probe.partitionType != nullptr && buildType != nullptr) {
+    const auto* folded =
+        queryCtx()->copartitionedType(probe.partitionType, buildType);
+    if (folded == nullptr) {
+      return {};
+    }
+    probe.partitionType = folded;
   }
 
   const auto outputSet = PlanObjectSet::fromObjects(outputColumns);
@@ -464,21 +480,14 @@ Partitioning aggregateGlobalPartition(
   return aggregateInputPartition(input, groupingKeys, groupingColumns);
 }
 
-// Output partitioning of a scan of a bucketed (connector-partitioned) table:
-// the connector's partition function on the output columns matching the
-// layout's partition columns. Unspecified when the table is not partitioned or
-// a partition column is not in the scan's output (so the partitioning can't be
-// expressed over the output).
-Partitioning scanGlobalPartition(const Scan::Key& key) {
-  const connector::TableLayout* layout = key.baseTable->layout();
-  // A coordinator-only layout's data lives solely on the coordinator, so its
-  // scan produces a single partition there. Model that as a gather (single
-  // partition, like Values); the coordinator placement itself is a separate
-  // leaf fact read at fragment-typing time.
-  if (layout->runsOnCoordinator()) {
-    return Partitioning::globalGather();
-  }
-  const auto partitionType = layout->partitionType();
+// Partitioning of 'partitionType' expressed over 'outputColumns': the
+// connector's partition function on the columns matching 'layout's partition
+// columns. Unspecified when a partition column is not among 'outputColumns',
+// so the partitioning cannot be stated over them.
+Partitioning bucketPartition(
+    const connector::TableLayout* layout,
+    const ColumnVector& outputColumns,
+    const connector::PartitionType* partitionType) {
   const auto& partitionColumns = layout->partitionColumns();
   if (partitionType == nullptr || partitionColumns.empty()) {
     return {};
@@ -488,7 +497,7 @@ Partitioning scanGlobalPartition(const Scan::Key& key) {
   keys.reserve(partitionColumns.size());
   for (const auto* partitionColumn : partitionColumns) {
     ColumnCP match = nullptr;
-    for (ColumnCP column : key.outputColumns) {
+    for (ColumnCP column : outputColumns) {
       if (column->name() == partitionColumn->name()) {
         match = column;
         break;
@@ -501,9 +510,24 @@ Partitioning scanGlobalPartition(const Scan::Key& key) {
   }
   return Partitioning{
       .kind = PartitionKind::kPartitioned,
-      .partitionType = partitionType.get(),
+      .partitionType = partitionType,
       .keys = std::move(keys),
       .scope = PropertyScope::kGlobal};
+}
+
+// Output partitioning of a scan: what the plan chose to read it by, not what
+// its table affords. Unspecified for an ordinary read, so nothing downstream
+// inherits a partitioning the plan does not rely on.
+Partitioning scanGlobalPartition(const Scan::Key& key) {
+  const connector::TableLayout* layout = key.baseTable->layout();
+  // A coordinator-only layout's data lives solely on the coordinator, so its
+  // scan produces a single partition there. Model that as a gather (single
+  // partition, like Values); the coordinator placement itself is a separate
+  // leaf fact read at fragment-typing time.
+  if (layout->runsOnCoordinator()) {
+    return Partitioning::globalGather();
+  }
+  return bucketPartition(layout, key.outputColumns, key.groupedPartitionType);
 }
 
 } // namespace
@@ -514,7 +538,8 @@ Scan::Scan(Key key)
           ColumnVector{key.outputColumns},
           PhysicalProperties{.globalPartition = scanGlobalPartition(key)}),
       baseTable_(key.baseTable),
-      filters_(std::move(key.filters)) {
+      filters_(std::move(key.filters)),
+      groupedPartitionType_(key.groupedPartitionType) {
   VELOX_CHECK_NOT_NULL(baseTable_);
   folly::F14FastSet<std::string_view> schemaNames;
   folly::F14FastSet<std::string> outputNames;
@@ -533,23 +558,36 @@ Scan::Scan(Key key)
 }
 
 size_t Scan::KeyHash::operator()(const Scan* node) const {
-  return hashOf(node->baseTable(), node->outputColumns(), node->filters());
+  return hashOf(
+      node->baseTable(),
+      node->outputColumns(),
+      node->filters(),
+      node->groupedPartitionType());
+}
+
+Partitioning Scan::storageBucketing() const {
+  const connector::TableLayout* layout = baseTable_->layout();
+  return bucketPartition(
+      layout, outputColumns(), layout->partitionType().get());
 }
 
 size_t Scan::KeyHash::operator()(const Key& key) const {
-  return hashOf(key.baseTable, key.outputColumns, key.filters);
+  return hashOf(
+      key.baseTable, key.outputColumns, key.filters, key.groupedPartitionType);
 }
 
 bool Scan::KeyEq::operator()(const Scan* left, const Scan* right) const {
   return left->baseTable() == right->baseTable() &&
       left->outputColumns() == right->outputColumns() &&
-      left->filters() == right->filters();
+      left->filters() == right->filters() &&
+      left->groupedPartitionType() == right->groupedPartitionType();
 }
 
 bool Scan::KeyEq::operator()(const Key& key, const Scan* node) const {
   return key.baseTable == node->baseTable() &&
       key.outputColumns == node->outputColumns() &&
-      key.filters == node->filters();
+      key.filters == node->filters() &&
+      key.groupedPartitionType == node->groupedPartitionType();
 }
 
 bool Scan::KeyEq::operator()(const Scan* node, const Key& key) const {
@@ -1291,21 +1329,11 @@ Partitioning unionGlobalPartition(const UnionAll::Key& key) {
         return {};
       }
     } else {
-      // copartition is only a feasibility check; the output reuses the
-      // min-partition-count leg's layout-owned type, whose count equals
-      // copartition's (a fresh shared_ptr we can't retain as a raw pointer).
-      const auto compatible = representative->copartition(*part.partitionType);
+      auto compatible = representative->copartition(*part.partitionType);
       if (compatible == nullptr) {
         return {};
       }
-      if (part.partitionType->numPartitions() <
-          representative->numPartitions()) {
-        representative = part.partitionType;
-      }
-      VELOX_DCHECK_EQ(
-          representative->numPartitions(),
-          compatible->numPartitions(),
-          "Co-bucketed union output must reuse a layout type matching copartition's count");
+      representative = queryCtx()->registerPartitionType(std::move(compatible));
     }
   }
   return Partitioning{
@@ -1404,6 +1432,7 @@ Join::Join(Key key)
               .globalPartition = joinGlobalPartition(
                   key.joinType,
                   key.left,
+                  key.right,
                   key.outputColumns),
               .local = joinLocal(key.joinType, key.left, key.outputColumns)}),
       inputs_{key.left, key.right},

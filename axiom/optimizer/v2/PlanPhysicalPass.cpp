@@ -16,6 +16,7 @@
 
 #include "axiom/optimizer/v2/PlanPhysicalPass.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <numeric>
 #include <vector>
@@ -125,6 +126,133 @@ bool hasEndpointStrandedRelation(const JoinHypergraph& graph) {
   tesUnion.except(endpoints);
   return !tesUnion.empty();
 }
+
+// What a consumer needs of an input's partitioning.
+enum class Alignment {
+  // Rows that agree on the keys share a partition. The partitioning may be on
+  // any subset of them, in any order. Enough for an aggregation: every group
+  // lands whole on one task.
+  kCoLocated,
+
+  // Partitioned on exactly these keys, in this order. A join and a write need
+  // this: each compares its keys against another side's, so key i of one must
+  // be hashed the same as key i of the other, which a subset does not give.
+  kExactKeys,
+};
+
+// True when 'partitioning' meets 'alignment' on 'keys'.
+bool satisfies(
+    const Partitioning& partitioning,
+    const ExprVector& keys,
+    Alignment alignment) {
+  switch (alignment) {
+    case Alignment::kCoLocated:
+      return partitioning.coLocates(keys);
+    case Alignment::kExactKeys:
+      return partitioning.isBucketedOn(keys);
+  }
+  VELOX_UNREACHABLE();
+}
+
+// True when regrouping the scans under 'node' can make it bucketed. Mirrors
+// GroupedScanRewriter's two stopping rules -- only a scan of a bucketed table
+// contributes, and nothing past an exchange does -- but reads the tree instead
+// of rebuilding it, so asking costs no allocation.
+bool hasRegroupableScan(NodeCP node, folly::F14FastMap<NodeCP, bool>& answers) {
+  if (node->is(NodeType::kExchange)) {
+    return false;
+  }
+  const auto it = answers.find(node);
+  if (it != answers.end()) {
+    return it->second;
+  }
+  bool answer;
+  if (node->is(NodeType::kScan)) {
+    answer = node->as<Scan>()->storageBucketing().partitionType != nullptr;
+  } else if (node->is(NodeType::kUnionAll)) {
+    // A union is bucketed only when every leg is.
+    answer = std::ranges::all_of(node->inputs(), [&](NodeCP leg) {
+      return hasRegroupableScan(leg, answers);
+    });
+  } else {
+    answer = std::ranges::any_of(node->inputs(), [&](NodeCP input) {
+      return hasRegroupableScan(input, answers);
+    });
+  }
+  answers.emplace(node, answer);
+  return answer;
+}
+
+// Nodes are interned, so one subtree can hang off several parents -- and the
+// same node can be two legs of one union. Answers are remembered per node so a
+// diamond is walked once and a repeated leg reports what it is.
+bool hasRegroupableScan(NodeCP node) {
+  folly::F14FastMap<NodeCP, bool> answers;
+  return hasRegroupableScan(node, answers);
+}
+
+// Rewrites a subtree so every scan of a bucketed table is read one bucket-group
+// at a time. Nodes above are rebuilt by the base rewriter, which re-derives
+// their partitioning from the new inputs.
+class GroupedScanRewriter : public NodeRewriter<> {
+ public:
+  GroupedScanRewriter(Builder& builder, int32_t numWorkers)
+      : NodeRewriter<>(builder), numWorkers_{numWorkers} {}
+
+  // True when at least one scan was read grouped.
+  bool regrouped() const {
+    return regrouped_;
+  }
+
+ protected:
+  // Past an exchange the rows are redistributed, so how the source was read
+  // cannot help this consumer; leave that subtree alone.
+  NodeCP rewriteExchange(const Exchange* node, NoContext& /*context*/)
+      override {
+    return node;
+  }
+
+  // A union is bucketed only when every leg is, so one ungroupable leg forfeits
+  // it for all of them. Checking that first keeps the groupable legs from being
+  // rebuilt only to be thrown away.
+  NodeCP rewriteUnionAll(const UnionAll* node, NoContext& context) override {
+    for (NodeCP leg : node->inputs()) {
+      if (!hasRegroupableScan(leg)) {
+        return node;
+      }
+    }
+    return NodeRewriter<>::rewriteUnionAll(node, context);
+  }
+
+  NodeCP rewriteScan(const Scan* node, NoContext& /*context*/) override {
+    // Whether this bucketing is any use to the consumer is not decided here —
+    // the keys it asked for may belong to another leg or another side of a
+    // join. A table with no bucketing at all is left alone, so a subtree that
+    // could never be grouped rebuilds to itself and allocates nothing.
+    const Partitioning available = node->storageBucketing();
+    if (available.partitionType == nullptr) {
+      return node;
+    }
+    // Coarsened to the worker count here so the plan carries the group count
+    // it will run with, and two scans that scale alike stay one node.
+    NodeCP grouped = builder().make<Scan>(Scan::Key{
+        .baseTable = node->baseTable(),
+        .outputColumns = node->outputColumns(),
+        .filters = node->filters(),
+        .groupedPartitionType = queryCtx()->scaledPartitionType(
+            available.partitionType, numWorkers_)});
+    // A scan already read this way interns back to itself, and then this
+    // rewrite changed nothing.
+    if (grouped != node) {
+      regrouped_ = true;
+    }
+    return grouped;
+  }
+
+ private:
+  const int32_t numWorkers_;
+  bool regrouped_{false};
+};
 
 class PhysicalPlanRewriter : public NodeRewriter<> {
  public:
@@ -337,36 +465,144 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
     return builder().make<Exchange>({input, std::move(partitioning)});
   }
 
-  // Co-locates a keyed join without shuffling the bucketed side(s): keeps both
-  // when both are already bucketed on the keys and copartitionable, else aligns
-  // the unbucketed side to the bucketed one's connector partitioning. Returns
-  // true and updates 'left'/'right' when co-location applies; false when
-  // neither side is bucketed, or both are bucketed but not copartitionable — in
-  // either case the caller falls back to the standard shuffle.
-  // Updates 'leftKeys' / 'rightKeys' when a side is repartitioned to the
-  // other's bucketing: the shuffle needs column keys, so an expression key is
-  // computed first and the join reads that column.
+  // Follows single-input nodes down to a scan and returns the bucketing its
+  // table affords, or null if the chain forks or ends elsewhere. A rough
+  // answer on purpose: it does not check that those nodes preserve
+  // partitioning, so it can name a bucketing `groupedRead` would decline to
+  // build. Used only to skip building a subtree that could not pair anyway —
+  // a wrong yes costs a build that is discarded, a wrong no costs a grouped
+  // read, and neither changes results.
+  static const connector::PartitionType* leafStorageBucketing(NodeCP node) {
+    while (!node->is(NodeType::kScan)) {
+      if (node->inputs().size() != 1) {
+        return nullptr;
+      }
+      node = node->inputs()[0];
+    }
+    return node->as<Scan>()->storageBucketing().partitionType;
+  }
+
+  // Where 'node's bucket columns sit in 'keys', or nullopt when it is not
+  // bucketed or a bucket column is not among them. A join pairs leftKeys[i]
+  // with rightKeys[i], so equal positions on both sides mean their bucketings
+  // line up column for column, whatever order the query wrote the keys in.
+  //
+  // A key repeated in 'keys' reports its first position. Since a pair is taken
+  // only when both sides report the same positions, and the join equates the
+  // keys at those positions, the two bucketings still agree value for value;
+  // picking the first of several equal keys can only cost a pairing, never
+  // make a wrong one.
+  static std::optional<std::vector<size_t>> bucketKeyPositions(
+      NodeCP node,
+      const ExprVector& keys) {
+    if (node == nullptr) {
+      return std::nullopt;
+    }
+    const auto& partition = node->physicalProperties().globalPartition;
+    if (partition.partitionType == nullptr || partition.keys.empty()) {
+      return std::nullopt;
+    }
+    std::vector<size_t> positions;
+    positions.reserve(partition.keys.size());
+    for (ExprCP partitionKey : partition.keys) {
+      const auto it = std::find_if(keys.begin(), keys.end(), [&](ExprCP key) {
+        return key->sameOrEqual(*partitionKey);
+      });
+      if (it == keys.end()) {
+        return std::nullopt;
+      }
+      positions.push_back(it - keys.begin());
+    }
+    return positions;
+  }
+
+  // The connector bucketing 'node' produces, or null when it has none. A null
+  // 'node' is the ordinary case of a side with no grouped read to offer.
+  static const connector::PartitionType* bucketingAt(NodeCP node) {
+    return node == nullptr
+        ? nullptr
+        : node->physicalProperties().globalPartition.partitionType;
+  }
+
+  // Co-locates a keyed join on the sides' bucketing instead of shuffling both.
+  // A side qualifies when it is already bucketed on its keys or its table can
+  // be read grouped by them. Both qualify and copartition: keep both. One
+  // qualifies: align the other to its connector partitioning. Neither, or two
+  // that do not copartition: returns false and the caller shuffles.
+  // Updates 'left'/'right' and, where a side is repartitioned to the other's
+  // bucketing, 'leftKeys'/'rightKeys': that shuffle needs column keys, so an
+  // expression key is computed first and the join reads that column.
   bool coBucketJoinSides(
       NodeCP& left,
       NodeCP& right,
       ExprVector& leftKeys,
       ExprVector& rightKeys) {
-    const auto& leftPart = left->physicalProperties().globalPartition;
-    const auto& rightPart = right->physicalProperties().globalPartition;
-    const bool leftBucketed = leftPart.isBucketedOn(leftKeys);
-    const bool rightBucketed = rightPart.isBucketedOn(rightKeys);
-    if (leftBucketed && rightBucketed) {
-      return leftPart.partitionType->copartition(*rightPart.partitionType) !=
-          nullptr;
-    }
-    if (leftBucketed) {
-      std::tie(right, rightKeys) = builder().materializeKeys(right, rightKeys);
-      right = partitionTo(right, rightKeys, leftPart.partitionType);
+    // What a side can offer: itself when already bucketed on keys the join
+    // uses, else a grouped read of its table by them, else nothing. Which of
+    // the join's keys, and in what order, is settled below — a side's bucketing
+    // follows its table, not the order the query wrote the join in.
+    const auto offer = [&](NodeCP side, const ExprVector& keys) -> NodeCP {
+      return side->physicalProperties().globalPartition.coLocates(keys)
+          ? side
+          : groupedRead(side, keys, Alignment::kCoLocated);
+    };
+
+    const NodeCP leftOffer = offer(left, leftKeys);
+    const auto leftAt = bucketKeyPositions(leftOffer, leftKeys);
+
+    // Building the right side's offer is wasted when its table's bucketing
+    // could not meet the left's anyway.
+    const auto* leftType = bucketingAt(leftOffer);
+    const auto* rightStorage = leafStorageBucketing(right);
+    // Skip only when the right side's table is known not to meet the left's.
+    // A null answer means unknown — its subtree is not a single table — and
+    // then it must be built and judged on its own partitioning.
+    const bool worthBuilding = leftType == nullptr || rightStorage == nullptr ||
+        leftType->copartition(*rightStorage) != nullptr;
+    const NodeCP rightOffer = worthBuilding ? offer(right, rightKeys) : nullptr;
+    const auto rightAt = bucketKeyPositions(rightOffer, rightKeys);
+    const auto* rightType = bucketingAt(rightOffer);
+
+    // Repartitions the side that has nothing to offer onto the other's
+    // bucketing, on the keys that correspond to the other's bucket columns.
+    // That shuffle needs column keys, so an expression key is computed first
+    // and the join then reads that column.
+    const auto alignTo = [&](NodeCP& side,
+                             ExprVector& keys,
+                             const std::vector<size_t>& at,
+                             const connector::PartitionType* target) {
+      ExprVector shuffleKeys;
+      shuffleKeys.reserve(at.size());
+      for (const size_t position : at) {
+        shuffleKeys.push_back(keys[position]);
+      }
+      auto [keyed, columnKeys] = builder().materializeKeys(side, shuffleKeys);
+      side = partitionTo(keyed, columnKeys, target);
+    };
+
+    if (leftAt.has_value() && rightAt.has_value()) {
+      // Equal positions mean bucket column i of one side joins bucket column i
+      // of the other; unequal ones would send matching rows to different tasks.
+      // Both sides are kept only when the partitioning they agree on runs at
+      // the width they already run at; otherwise the caller shuffles.
+      const auto* folded = queryCtx()->copartitionedType(leftType, rightType);
+      if (*leftAt != *rightAt || folded == nullptr ||
+          folded->numPartitions() != leftType->numPartitions() ||
+          folded->numPartitions() != rightType->numPartitions()) {
+        return false;
+      }
+      left = leftOffer;
+      right = rightOffer;
       return true;
     }
-    if (rightBucketed) {
-      std::tie(left, leftKeys) = builder().materializeKeys(left, leftKeys);
-      left = partitionTo(left, leftKeys, rightPart.partitionType);
+    if (leftAt.has_value()) {
+      left = leftOffer;
+      alignTo(right, rightKeys, *leftAt, leftType);
+      return true;
+    }
+    if (rightAt.has_value()) {
+      right = rightOffer;
+      alignTo(left, leftKeys, *rightAt, rightType);
       return true;
     }
     return false;
@@ -418,6 +654,12 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
       return {input, keys};
     }
 
+    // Reading the input by its storage bucketing co-locates the keys without
+    // moving a row, so it beats a shuffle whenever it is available.
+    if (NodeCP grouped = groupedRead(input, keys, Alignment::kCoLocated)) {
+      return {grouped, keys};
+    }
+
     auto [keyed, columnKeys] =
         builder().materializeKeys(input, keys, keyAliases);
     return {partition(keyed, columnKeys), columnKeys};
@@ -443,7 +685,13 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
       // Remote two-stage: the input must shuffle across workers to co-locate
       // its groups, so the partial reduces rows before that remote exchange.
       if (numWorkers_ > 1 && needsShuffle(input, node->groupingKeys())) {
-        return rewriteAggregateSplit(node, input, /*remoteExchange=*/true);
+        // Reading the input grouped co-locates the groups without a shuffle.
+        if (NodeCP grouped = groupedRead(
+                input, node->groupingKeys(), Alignment::kCoLocated)) {
+          input = grouped;
+        } else {
+          return rewriteAggregateSplit(node, input, /*remoteExchange=*/true);
+        }
       }
       // Local two-stage: the input is already co-located (e.g. a bucketed
       // scan's grouped fragment), but at numDrivers > 1 a local exchange still
@@ -508,11 +756,40 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
     return true;
   }
 
-  // True when co-locating 'input's groups on 'keys' requires a shuffle — i.e.
-  // when the single-stage path's `ensureCoLocated` would add one. Mirrors its
-  // conditions: a gathered input already co-locates any keys; a global
-  // aggregate (no keys) needs a gather unless already gathered; otherwise a
-  // shuffle is needed unless the input is already partitioned on the keys.
+  // Returns 'input' with every scan under it read one bucket-group at a time,
+  // when that makes the result meet 'alignment' on 'keys'; null otherwise.
+  //
+  // Which operators carry a scan's bucketing upward is not decided here: the
+  // subtree is rebuilt and each node derives its own partitioning, so a join
+  // keeps its probe's, a union keeps what its legs agree on, and anything that
+  // redistributes keeps nothing. The answer is then read off the rebuilt root.
+  //
+  // Nodes are interned, so rebuilding one over unchanged inputs returns the
+  // node itself; only a scan that is actually regrouped, and its ancestors,
+  // are new.
+  NodeCP
+  groupedRead(NodeCP input, const ExprVector& keys, Alignment alignment) {
+    if (numWorkers_ == 1 || keys.empty()) {
+      return nullptr;
+    }
+
+    GroupedScanRewriter rewriter{builder(), numWorkers_};
+    NoContext context;
+    NodeCP grouped = rewriter.rewrite(input, context);
+    if (!rewriter.regrouped()) {
+      return nullptr;
+    }
+    return satisfies(
+               grouped->physicalProperties().globalPartition, keys, alignment)
+        ? grouped
+        : nullptr;
+  }
+
+  // True when 'input' is not already arranged so that rows agreeing on 'keys'
+  // share a task: a gathered input co-locates any keys; a global aggregate (no
+  // keys) needs a gather unless already gathered; otherwise the input must be
+  // partitioned on the keys. Callers that can avoid the shuffle by reading the
+  // source grouped ask `groupedRead` after this returns true.
   bool needsShuffle(NodeCP input, const ExprVector& keys) const {
     if (isGathered(input)) {
       return false;
@@ -864,7 +1141,10 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
       const auto* layout = node->table()->layouts().front();
       const auto& partitionColumns = layout->partitionColumns();
       if (!partitionColumns.empty()) {
-        const auto* targetType = layout->partitionType().get();
+        // Coarsened here, not at emit: the exchange's partition count and the
+        // writer fragment's task count are the same decision.
+        const auto* targetType = queryCtx()->scaledPartitionType(
+            layout->partitionType().get(), numWorkers_);
         const auto& schema = node->table()->type();
         ExprVector keys;
         keys.reserve(partitionColumns.size());
@@ -872,8 +1152,21 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
           keys.push_back(node->columnExprs().at(
               schema->getChildIdx(partitionColumn->name())));
         }
-        const auto& partition = newInput->physicalProperties().globalPartition;
-        if (!partition.isBucketedCompatibleWith(keys, *targetType)) {
+        // Reading the source by its own bucketing can deliver rows already
+        // grouped the way the target is written, which saves the shuffle.
+        if (!newInput->physicalProperties()
+                 .globalPartition.isBucketedCompatibleWith(keys, *targetType)) {
+          if (NodeCP grouped =
+                  groupedRead(newInput, keys, Alignment::kExactKeys)) {
+            if (grouped->physicalProperties()
+                    .globalPartition.isBucketedCompatibleWith(
+                        keys, *targetType)) {
+              newInput = grouped;
+            }
+          }
+        }
+        if (!newInput->physicalProperties()
+                 .globalPartition.isBucketedCompatibleWith(keys, *targetType)) {
           auto [keyed, columnKeys] = builder().materializeKeys(newInput, keys);
           newInput = partitionTo(keyed, columnKeys, targetType);
           for (size_t i = 0; i < keys.size(); ++i) {

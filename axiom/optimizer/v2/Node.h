@@ -165,6 +165,7 @@ class Scan : public Node {
  public:
   struct Key {
     BaseTableCP baseTable;
+
     /// Strict consumer-required output columns; may be empty (e.g.
     /// `SELECT count(1) FROM t` needs no column values from the table).
     /// Distinct by pointer; both `outputName()` and the underlying `name()`
@@ -172,10 +173,19 @@ class Scan : public Node {
     /// NOT in this set; the connector-side read schema is computed as
     /// `outputColumns ∪ refs(filters)` when building the final Velox plan.
     ColumnVector outputColumns;
+
     /// Filters on the scanned rows, as conjuncts joined with AND; may be empty.
     /// At Emit the connector evaluates those it can; the rest are re-applied as
     /// a `Filter` node above the `TableScan` in the final Velox plan.
     ExprVector filters;
+
+    /// The partitioning this scan is read with, when physical planning chose to
+    /// read the table one bucket-group at a time, already coarsened to the
+    /// worker count. Null for an ordinary read, which produces no partitioning
+    /// the plan can rely on. Part of the scan's identity: a grouped and an
+    /// ungrouped read of the same table are different plans with different
+    /// execution properties.
+    const connector::PartitionType* groupedPartitionType{nullptr};
   };
 
   /// Transparent hasher for interning `Scan`s by identity.
@@ -203,6 +213,18 @@ class Scan : public Node {
     return filters_;
   }
 
+  /// The partitioning this scan is read with; null for an ordinary read.
+  const connector::PartitionType* groupedPartitionType() const {
+    return groupedPartitionType_;
+  }
+
+  /// The bucketing this scan's table storage affords, expressed over the
+  /// columns this scan outputs. Empty when the table is not bucketed, or when
+  /// a bucketing column is not in the output and the partitioning therefore
+  /// cannot be stated over it. This is what is possible; `groupedPartitionType`
+  /// is what the plan chose.
+  Partitioning storageBucketing() const;
+
   std::span<const NodeCP> inputs() const override {
     return {};
   }
@@ -213,6 +235,7 @@ class Scan : public Node {
  private:
   const BaseTableCP baseTable_;
   const ExprVector filters_;
+  const connector::PartitionType* const groupedPartitionType_;
 };
 
 using ScanCP = const Scan*;

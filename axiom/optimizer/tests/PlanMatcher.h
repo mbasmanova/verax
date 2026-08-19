@@ -794,16 +794,39 @@ class PlanMatcherBuilder {
   /// scheduling).
   PlanMatcherBuilder& notBucketed();
 
-  /// Asserts the current fragment has exactly 'count' entries in groupedNodes
-  /// with a non-null PartitionType (bucketed scans).
-  PlanMatcherBuilder& bucketedScans(int32_t count);
+  /// Asserts the current fragment is bucketed when 'expected', and is not when
+  /// it is false. For a suite where the two optimizers differ.
+  PlanMatcherBuilder& bucketed(bool expected) {
+    return expected ? bucketed() : notBucketed();
+  }
 
-  /// Asserts the current fragment has exactly 'count' entries in groupedNodes
-  /// with a null PartitionType (consumer-side hash exchanges).
-  PlanMatcherBuilder& hashExchanges(int32_t count);
+  /// What the fragment holding the current node must look like. An unset field
+  /// is not checked.
+  struct FragmentDetails {
+    /// Number of tasks the fragment runs as.
+    std::optional<int32_t> width;
 
-  /// Asserts the current fragment has fragment.width == 'width'.
-  PlanMatcherBuilder& fragmentWidth(int32_t width);
+    /// Scans read one bucket group at a time. Each must be a TableScan.
+    std::optional<int32_t> bucketedScans;
+
+    /// Exchanges delivering bucket-aligned partitions to those same groups.
+    /// Each must be an Exchange.
+    std::optional<int32_t> bucketedExchanges;
+  };
+
+  /// Asserts 'details' about the fragment holding the current node.
+  PlanMatcherBuilder& fragment(FragmentDetails details);
+
+  /// Asserts the fragment holding the current node runs as 'width' tasks.
+  PlanMatcherBuilder& fragmentWidth(int32_t width) {
+    return fragment({.width = width});
+  }
+
+  /// Adds a width assertion (see `fragmentWidth()`) only when 'condition' is
+  /// true; otherwise a no-op.
+  PlanMatcherBuilder& fragmentWidthIf(bool condition, int32_t width) {
+    return condition ? fragmentWidth(width) : *this;
+  }
 
   /// Asserts the type of the root (output) fragment. Use as the final call in
   /// the chain: it binds to the plan's output fragment, which has no closing

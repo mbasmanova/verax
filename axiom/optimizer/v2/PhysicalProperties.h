@@ -92,6 +92,9 @@ struct Partitioning {
   PartitionKind kind{PartitionKind::kUnspecified};
 
   /// Connector-specific partition function, or null for standard Velox hash.
+  /// Lifetime is managed externally: a layout-owned type lives for the
+  /// connector's lifetime, one derived during planning (scaleDown, copartition)
+  /// is owned by `QueryGraphContext`.
   const connector::PartitionType* partitionType{nullptr};
 
   /// Partition keys; empty unless `kind == kPartitioned`.
