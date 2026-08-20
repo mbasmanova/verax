@@ -17,11 +17,13 @@
 
 #include <folly/ScopeGuard.h>
 #include <folly/container/F14Map.h>
+#include <folly/container/F14Set.h>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "axiom/common/CatalogSchemaTableName.h"
 #include "axiom/logical_plan/PlanBuilder.h"
 #include "axiom/sql/presto/ast/AstNodesAll.h"
 
@@ -45,17 +47,37 @@ namespace lp = facebook::axiom::logical_plan;
 ///
 /// Usage:
 ///   auto scope = ctes.enterScope();   // once per query body
-///   ctes.bind(name, {withQuery, isRecursive});
+///   ctes.bind(name, {withQuery, isRecursive, definingScope});
 ///   if (auto hidden = ctes.hide(name)) { translate hidden.entry()'s body }
 ///
 /// Invariant: a name is a key iff it has a binding in scope.
 class CteScope {
  public:
+  /// What a CTE body resolves names against beyond its own FROM: the scope
+  /// where the WITH is written, captured before the defining query's FROM is
+  /// processed. A body is translated at each reference site, where the
+  /// referencing query's relations are in scope, and those must not resolve
+  /// inside the body.
+  struct DefiningScope {
+    /// Columns of the enclosing queries, for a correlated reference.
+    lp::PlanBuilder::Scope columns;
+
+    /// Base tables reachable by a suffix of their qualified name.
+    folly::F14FastMap<std::string, facebook::axiom::CatalogSchemaTableName>
+        relations;
+
+    /// Qualifiers naming more than one relation, which resolve nothing.
+    folly::F14FastSet<std::string> ambiguousRelations;
+  };
+
   /// One CTE binding. 'isRecursive' is true when the body refers to itself.
   /// A recursive body is re-translated at each reference site.
   struct Entry {
     std::shared_ptr<WithQuery> withQuery;
     bool isRecursive{false};
+
+    /// Never null. Shared by every reference to this CTE.
+    std::shared_ptr<const DefiningScope> definingScope;
   };
 
   /// Hides a name's in-scope binding for the guard's lifetime, so the
