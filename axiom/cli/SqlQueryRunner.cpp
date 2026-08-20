@@ -873,6 +873,19 @@ SqlQueryRunner::co_runExplainStatement(
     std::shared_ptr<QueryRuntimeStats> runtimeStats) {
   const auto& statement = explain.statement();
 
+  if (explain.type() == presto::ExplainStatement::Type::kValidate) {
+    // An invalid query has already failed: parsing resolved it and the caller
+    // checked permissions. Presto reports the outcome the same way for every
+    // statement kind, and does not resolve a DDL target.
+    auto result = std::dynamic_pointer_cast<velox::RowVector>(
+        velox::BaseVector::createFromVariants(
+            velox::ROW("result", velox::BOOLEAN()),
+            {velox::Variant::row({velox::Variant(true)})},
+            optimizerPool_.get()));
+    co_yield SqlResultChunk{std::move(result)};
+    co_return;
+  }
+
   logical_plan::LogicalPlanNodePtr logicalPlan;
   std::shared_ptr<connector::SchemaResolver> schemaResolver;
 
@@ -1400,7 +1413,9 @@ std::string SqlQueryRunner::runExplain(
     }
 
     case presto::ExplainStatement::Type::kIo:
-      // Handled in run() before calling runExplain().
+      [[fallthrough]];
+    case presto::ExplainStatement::Type::kValidate:
+      // Answered in co_runExplainStatement(), which never calls this.
       VELOX_UNREACHABLE();
   }
   VELOX_UNREACHABLE();

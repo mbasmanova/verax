@@ -90,6 +90,7 @@ const auto& explainTypeNames() {
           {ExplainStatement::Type::kOptimized, "OPTIMIZED"},
           {ExplainStatement::Type::kExecutable, "EXECUTABLE"},
           {ExplainStatement::Type::kIo, "IO"},
+          {ExplainStatement::Type::kValidate, "VALIDATE"},
       };
   return kNames;
 }

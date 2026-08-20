@@ -85,6 +85,48 @@ TEST_P(ExplainTest, showsCardinalityEstimate) {
   EXPECT_THAT(lines, ::testing::ElementsAreArray(expected));
 }
 
+// Presto answers EXPLAIN (TYPE VALIDATE) with one row, column 'result', value
+// true, and reports an invalid query as an error rather than false. The format
+// option does not change that.
+TEST_P(ExplainTest, explainValidate) {
+  testConnector_->addTpchTables(1);
+
+  auto expectValid = [&](const std::string& sql) {
+    SCOPED_TRACE(sql);
+    auto row = fetchSingleRow(sql);
+    EXPECT_EQ(*row->type(), *ROW("result", BOOLEAN()));
+    EXPECT_TRUE(row->childAt(0)->variantAt(0).value<bool>());
+  };
+
+  for (const auto& statement :
+       {"SELECT l_orderkey FROM lineitem",
+        "CREATE TABLE t AS SELECT l_orderkey FROM lineitem",
+        "CREATE TABLE t(x BIGINT)",
+        "DROP TABLE IF EXISTS t",
+        // A DDL target is not resolved, so a missing table still validates.
+        "DROP TABLE nosuchtable",
+        // A statement kind EXPLAIN cannot render a plan for is still valid.
+        "SHOW TABLES",
+        "CREATE SCHEMA s"}) {
+    expectValid(fmt::format("EXPLAIN (TYPE VALIDATE) {}", statement));
+  }
+
+  for (const auto& format : {"TEXT", "JSON", "GRAPHVIZ"}) {
+    expectValid(
+        fmt::format(
+            "EXPLAIN (TYPE VALIDATE, FORMAT {}) SELECT l_orderkey FROM lineitem",
+            format));
+  }
+
+  VELOX_ASSERT_THROW(
+      run("EXPLAIN (TYPE VALIDATE) SELECT nosuchcolumn FROM lineitem"),
+      "Cannot resolve column: nosuchcolumn");
+
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      run("EXPLAIN (TYPE VALIDATE) SELECT * FROM nosuchtable"),
+      "Table not found: nosuchtable");
+}
+
 TEST_P(ExplainTest, explainCreateTable) {
   auto result = run("EXPLAIN CREATE TABLE t(x int)");
   EXPECT_EQ(result.message, R"(CREATE TABLE test."default"."t")");
