@@ -28,6 +28,38 @@ namespace {
 
 class WithRecursiveTest : public PrestoParserTestBase {};
 
+TEST_F(WithRecursiveTest, anchorResolvesInDefiningScope) {
+  // The anchor resolves in the scope where the WITH is written: 'u' there is
+  // the struct column of 's', not the same-named table the query referencing
+  // the CTE reads.
+  connector_->addTable("s", ROW("u", ROW("k", BIGINT())));
+  connector_->addTable("u", ROW({"k", "b"}, {BIGINT(), VARCHAR()}));
+
+  auto step = lp::test::LogicalPlanMatcherBuilder()
+                  .recursiveRef("c")
+                  .filter()
+                  .project()
+                  .build();
+  testSelect(
+      R"(
+        WITH RECURSIVE c(k) AS (
+          SELECT s.u.k FROM s
+          UNION ALL
+          SELECT k + 1 FROM c WHERE k < 2
+        )
+        SELECT u.b FROM u LEFT JOIN c ON u.k = c.k
+      )",
+      matchScan()
+          .join(
+              matchScan()
+                  .project({"u.k"})
+                  .project()
+                  .fixedPoint(step, {"k"})
+                  .build())
+          .project({"b"})
+          .output({"b"}));
+}
+
 TEST_F(WithRecursiveTest, simpleCounter) {
   // Self-contained recursion — no base table needed.
   auto step = lp::test::LogicalPlanMatcherBuilder()

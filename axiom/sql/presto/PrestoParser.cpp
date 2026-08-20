@@ -506,13 +506,34 @@ class RelationPlanner : public AstVisitor {
     return guard;
   }
 
+  // Restores the relations in scope when the guard dies. 'from' replaces them
+  // for the guard's lifetime; without it they only need restoring, which is
+  // what a nested query that adds its own relations wants.
+  [[nodiscard]] auto scopedRelations(
+      const CteScope::DefiningScope* from = nullptr) {
+    auto guard =
+        folly::makeGuard([this,
+                          savedRelations = scopeRelations_,
+                          savedAmbiguous = ambiguousScopeRelations_]() mutable {
+          scopeRelations_ = std::move(savedRelations);
+          ambiguousScopeRelations_ = std::move(savedAmbiguous);
+        });
+    if (from != nullptr) {
+      scopeRelations_ = from->relations;
+      ambiguousScopeRelations_ = from->ambiguousRelations;
+    }
+    return guard;
+  }
+
   // Translates a recursive CTE into a fresh FixedPointNode subtree rooted
-  // in the caller's builder_. Anchor sees 'outerScope' (LATERAL resolves);
-  // step does not (correlated refs across the boundary fail). Each outer
-  // reference run this to produce new FixedPointNodes.
+  // in the caller's builder_. The anchor sees the scope where the WITH is
+  // written; the step sees no outer scope, so a correlated reference across
+  // the boundary fails. Each outer reference runs this to produce new
+  // FixedPointNodes.
   void translateRecursiveCteReference(
       const WithQuery& withEntry,
-      const std::string& cteName) {
+      const std::string& cteName,
+      const CteScope::DefiningScope& definingScope) {
     AXIOM_PRESTO_SYNTAX_CHECK(
         !ctes_.hasAnchors(),
         withEntry.location(),
@@ -522,10 +543,7 @@ class RelationPlanner : public AstVisitor {
         presto::RecursiveCteValidator::extractAndValidateRecursiveUnion(
             withEntry, cteName);
 
-    // Translate the anchor on a fresh builder inheriting the outer scope
-    // (LATERAL refs resolve through it).
-    auto outerScope = builder_->scope();
-    builder_ = newBuilder(outerScope);
+    builder_ = newBuilder(definingScope.columns);
     {
       auto guard = scopedResetLastNames();
       processQueryBody(unionExpr->left());
@@ -625,9 +643,18 @@ class RelationPlanner : public AstVisitor {
 
     if (auto hidden = ctes_.hide(name)) {
       const auto& entry = hidden.entry();
+      VELOX_CHECK_NOT_NULL(entry.definingScope);
+      const auto& definingScope = *entry.definingScope;
+      auto relationsGuard = scopedRelations(&definingScope);
+      // The body resolves in the scope where the WITH is written. The relation
+      // it yields belongs to the referencing query, which resolves the rest of
+      // its own names, correlated ones included, in its own scope.
+      auto referencingScope = builder_->outerScope();
+
       if (entry.isRecursive) {
-        translateRecursiveCteReference(*entry.withQuery, name);
+        translateRecursiveCteReference(*entry.withQuery, name, definingScope);
       } else {
+        builder_ = newBuilder(definingScope.columns);
         processQuery(entry.withQuery->query().get());
 
         // Apply CTE column-alias list, e.g. 'WITH t(a, b) AS (...)' renames
@@ -637,6 +664,7 @@ class RelationPlanner : public AstVisitor {
           applyColumnAliases(*columnAliases, entry.withQuery->location(), name);
         }
       }
+      builder_->switchOuterScope(std::move(referencingScope));
       finalizeCteReference(name);
       return true;
     }
@@ -768,12 +796,7 @@ class RelationPlanner : public AstVisitor {
   void processAliasedRelation(const AliasedRelation& aliasedRelation) {
     // The alias replaces the relation's name, so its qualified name no longer
     // resolves: `nation AS n` makes `default.nation.x` an error.
-    auto savedScopeRelations = scopeRelations_;
-    auto savedAmbiguousRelations = ambiguousScopeRelations_;
-    SCOPE_EXIT {
-      scopeRelations_ = std::move(savedScopeRelations);
-      ambiguousScopeRelations_ = std::move(savedAmbiguousRelations);
-    };
+    auto relationsGuard = scopedRelations();
     processFrom(aliasedRelation.relation());
 
     auto alias = canonicalizeIdentifier(*aliasedRelation.alias());
@@ -1518,18 +1541,16 @@ class RelationPlanner : public AstVisitor {
     // The relations this query puts in scope leave with it. Entries from
     // enclosing queries stay visible, so a correlated subquery can still name
     // an outer relation.
-    auto savedScopeRelations = scopeRelations_;
-    auto savedAmbiguousRelations = ambiguousScopeRelations_;
-    SCOPE_EXIT {
-      scopeRelations_ = std::move(savedScopeRelations);
-      ambiguousScopeRelations_ = std::move(savedAmbiguousRelations);
-    };
+    auto relationsGuard = scopedRelations();
 
     // lastNames is scoped per query; reset so names from a sibling relation
     // in the enclosing scope cannot leak in.
     displayNames_.lastNames.clear();
 
     if (const auto& with = query->with()) {
+      auto definingScope = std::make_shared<const CteScope::DefiningScope>(
+          builder_->outerScope(), scopeRelations_, ambiguousScopeRelations_);
+
       // Names must be unique within a single WITH list. A nested WITH may
       // still reuse an enclosing name -- that is shadowing, handled below.
       std::unordered_set<std::string> namesInList;
@@ -1548,7 +1569,9 @@ class RelationPlanner : public AstVisitor {
           selfReferential = presto::RecursiveCteValidator::referencesCte(
               *withQuery->query(), cteName);
         }
-        ctes_.bind(cteName, CteScope::Entry{withQuery, selfReferential});
+        ctes_.bind(
+            cteName,
+            CteScope::Entry{withQuery, selfReferential, definingScope});
       }
     }
 
