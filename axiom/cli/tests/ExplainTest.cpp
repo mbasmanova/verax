@@ -127,6 +127,70 @@ TEST_P(ExplainTest, explainValidate) {
       "Table not found: nosuchtable");
 }
 
+// USE only changes the session, so EXPLAIN reports the statement itself and
+// resolves nothing: neither form names a catalog or schema that exists here.
+TEST_P(ExplainTest, explainUse) {
+  EXPECT_EQ(run("EXPLAIN USE other").message, "USE other");
+  EXPECT_EQ(run("EXPLAIN USE test.other").message, "USE test.other");
+  EXPECT_EQ(run("EXPLAIN USE nosuchcatalog.s").message, "USE nosuchcatalog.s");
+
+  // EXPLAIN left the session where it was.
+  EXPECT_EQ(runner_->defaultConnectorId(), "test");
+  EXPECT_EQ(runner_->defaultSchema(), "default");
+}
+
+TEST_P(ExplainTest, explainSessionStatements) {
+  // SHOW SESSION reads the properties as rows, so it explains like any query,
+  // with the LIKE pattern as a filter over them.
+  auto explainLines = [&](const std::string& sql) {
+    auto result = run(sql);
+    EXPECT_TRUE(result.message.has_value());
+    std::vector<std::string> lines;
+    folly::split('\n', result.message.value_or(""), lines);
+    return lines;
+  };
+
+  EXPECT_THAT(
+      explainLines("EXPLAIN (TYPE LOGICAL) SHOW SESSION"),
+      ::testing::ElementsAre(
+          ::testing::StartsWith("- Values: "), ::testing::Eq("")));
+
+  EXPECT_THAT(
+      explainLines("EXPLAIN (TYPE LOGICAL) SHOW SESSION LIKE 'optimizer.%'"),
+      ::testing::ElementsAre(
+          ::testing::StartsWith("- Filter: like(Name, optimizer.%) -> ROW<"),
+          ::testing::StartsWith("  - Values: "),
+          ::testing::Eq("")));
+
+  // A statement that only changes the session has no plan; EXPLAIN reports the
+  // statement itself, as written, and leaves the session alone.
+  auto result = run("EXPLAIN SET SESSION optimizer.sample_joins = true");
+  EXPECT_EQ(result.message, "SET SESSION optimizer.sample_joins = true");
+
+  // The value reads back as a SQL literal: a string keeps its quotes,
+  // doubling any it contains, and a number takes its shortest spelling.
+  result = run("EXPLAIN SET SESSION optimizer.sample_joins = 'a''b'");
+  EXPECT_EQ(result.message, "SET SESSION optimizer.sample_joins = 'a''b'");
+
+  result = run("EXPLAIN SET SESSION optimizer.sample_joins = 1.5");
+  EXPECT_EQ(result.message, "SET SESSION optimizer.sample_joins = 1.5");
+
+  result = run("EXPLAIN RESET SESSION optimizer.sample_joins");
+  EXPECT_EQ(result.message, "RESET SESSION optimizer.sample_joins");
+
+  // Neither the property nor the catalog is resolved, as in Presto.
+  result = run("EXPLAIN SET SESSION no.such_property = 1");
+  EXPECT_EQ(result.message, "SET SESSION no.such_property = 1");
+
+  // None of the EXPLAINs above took effect: the property the SET statements
+  // name still holds its default, and the USE statements moved nothing.
+  EXPECT_EQ(
+      runner_->sessionConfig().effectiveValue("optimizer.sample_joins"),
+      "false");
+  EXPECT_EQ(runner_->defaultSchema(), "default");
+  EXPECT_EQ(runner_->defaultConnectorId(), "test");
+}
+
 TEST_P(ExplainTest, explainCreateTable) {
   auto result = run("EXPLAIN CREATE TABLE t(x int)");
   EXPECT_EQ(result.message, R"(CREATE TABLE test."default"."t")");

@@ -678,22 +678,31 @@ class ShowSessionStatement : public SqlStatement {
 
 class SetSessionStatement : public SqlStatement {
  public:
-  SetSessionStatement(std::string name, std::string value)
+  SetSessionStatement(std::string name, std::string value, std::string valueSql)
       : SqlStatement(SqlStatementKind::kSetSession),
         name_{std::move(name)},
-        value_{std::move(value)} {}
+        value_{std::move(value)},
+        valueSql_{std::move(valueSql)} {}
 
   const std::string& name() const {
     return name_;
   }
 
+  /// The value to store, with a string literal's quotes stripped.
   const std::string& value() const {
     return value_;
+  }
+
+  /// The value rendered as a SQL literal: a string keeps its quotes, a
+  /// number the shortest spelling that reads back the same.
+  const std::string& valueSql() const {
+    return valueSql_;
   }
 
  private:
   const std::string name_;
   const std::string value_;
+  const std::string valueSql_;
 };
 
 class ResetSessionStatement : public SqlStatement {
@@ -731,5 +740,6 @@ class UseStatement : public SqlStatement {
 
 } // namespace axiom::sql::presto
 
+AXIOM_ENUM_FORMATTER(axiom::sql::presto::SqlStatementKind);
 AXIOM_EMBEDDED_ENUM_FORMATTER(axiom::sql::presto::ExplainStatement, Type);
 AXIOM_EMBEDDED_ENUM_FORMATTER(axiom::sql::presto::ExplainStatement, Format);
