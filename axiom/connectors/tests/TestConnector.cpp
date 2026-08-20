@@ -134,6 +134,13 @@ std::vector<std::unique_ptr<const Column>> makeTestTableColumns(
       makeColumnsWithExplainIo(schema, extractExplainIoColumns(options)),
       hiddenColumns);
 }
+
+bool extractCollectStatistics(
+    const folly::F14FastMap<std::string, velox::Variant>& options) {
+  const auto it =
+      options.find(std::string{TestConnectorMetadata::kCollectStatistics});
+  return it == options.end() ? true : it->second.value<bool>();
+}
 } // namespace
 
 TestTable::TestTable(
@@ -148,6 +155,7 @@ TestTable::TestTable(
           makeTestTableColumns(schema, hiddenColumns, options),
           options),
       connector_(connector),
+      collectStatistics_(extractCollectStatistics(options)),
       bucketSpec_(std::move(bucketSpec)) {
   const auto& label = this->name().table;
   if (bucketSpec_.has_value()) {
@@ -199,6 +207,10 @@ void TestTable::setStats(
       0,
       "Cannot use both setStats and addData on table '{}'.",
       name());
+  VELOX_CHECK(
+      collectStatistics_,
+      "Cannot use setStats on a table that reports no statistics: {}",
+      name().table);
   numRows_ = numRows;
 
   // Set or clear stats for all columns.
@@ -313,7 +325,7 @@ void TestTable::addData(
   }
   dataRows_ += data->size();
 
-  if (!collectColumnStatistics) {
+  if (!collectColumnStatistics || !collectStatistics_) {
     return;
   }
 
@@ -805,7 +817,7 @@ TablePtr TestConnectorMetadata::createTable(
 
   for (const auto& [key, value] : options) {
     VELOX_USER_CHECK(
-        key == kHidden || key == kExplainIo,
+        key == kHidden || key == kExplainIo || key == kCollectStatistics,
         "TestConnector does not support CREATE TABLE property: {}",
         key);
   }
@@ -1093,7 +1105,7 @@ std::unique_ptr<velox::connector::DataSink> TestConnector::createDataSink(
       table,
       "cannot create data sink for nonexistent table {}",
       testHandle->tableName().toString());
-  auto collectColumnStatistics =
+  const auto collectColumnStatistics =
       connectorQueryCtx->sessionProperties()->get<bool>(
           TestConfigProvider::kCollectColumnStatistics, true);
   return std::make_unique<TestDataSink>(table, collectColumnStatistics);

@@ -168,6 +168,10 @@ class TestTableLayout : public TableLayout {
 /// data is copied inside an internal memory pool associated with
 /// the table. Row count is determined dynamically using a summation
 /// of row counts for RowVectors currently stored within the table.
+///
+/// A table created with `collect_statistics = false` is the exception: it
+/// holds its data but reports no row count and no column statistics, modeling
+/// a table the metastore has no statistics for. setStats() is then rejected.
 class TestTable : public Table {
  public:
   TestTable(
@@ -183,6 +187,9 @@ class TestTable : public Table {
   }
 
   std::optional<uint64_t> numRows() const override {
+    if (!collectStatistics_) {
+      return std::nullopt;
+    }
     return data_.empty() ? numRows_ : dataRows_;
   }
 
@@ -202,9 +209,11 @@ class TestTable : public Table {
   /// Appends a RowVector to the table's data. Each appended vector generates
   /// a separate TestConnectorSplit. Data is copied into the table's internal
   /// memory pool. When 'collectColumnStatistics' is true, computes per-column
-  /// statistics incrementally (numDistinct, min/max, nullPct, maxLength).
-  /// Cannot be combined with setStats on the same table. For bucketed tables,
-  /// each non-empty bucket of the input becomes one entry in 'data'.
+  /// statistics incrementally (numDistinct, min/max, nullPct, maxLength);
+  /// `collect_statistics = false` on the table overrides the argument and
+  /// collects none. Cannot be combined with setStats on the same table. For
+  /// bucketed tables, each non-empty bucket of the input becomes one entry in
+  /// 'data'.
   void addData(
       const velox::RowVectorPtr& data,
       bool collectColumnStatistics = true);
@@ -247,6 +256,7 @@ class TestTable : public Table {
   std::vector<int32_t> dataBucketIds_;
   uint64_t numRows_{0};
   uint64_t dataRows_{0};
+  bool collectStatistics_{true};
   std::vector<ColumnTracker> columnTrackers_;
 
   std::optional<TestBucketSpec> bucketSpec_;
@@ -509,6 +519,12 @@ class TestConnectorMetadata : public ConnectorMetadata {
   /// CREATE TABLE property to mark columns for EXPLAIN IO output.
   /// Example: WITH (explain_io = ARRAY['ds']).
   static constexpr std::string_view kExplainIo = "explain_io";
+
+  /// CREATE TABLE property. When false, the table reports no row count and no
+  /// column statistics regardless of the data it holds, modeling a table the
+  /// metastore has no statistics for. Defaults to true.
+  /// Example: WITH (collect_statistics = false).
+  static constexpr std::string_view kCollectStatistics = "collect_statistics";
 
   explicit TestConnectorMetadata(TestConnector* connector)
       : connector_(connector),

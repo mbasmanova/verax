@@ -21,6 +21,8 @@
 #include <numeric>
 #include <vector>
 
+#include <folly/container/F14Map.h>
+
 #include "axiom/connectors/ConnectorMetadata.h"
 #include "axiom/optimizer/v2/CostModel.h"
 #include "axiom/optimizer/v2/DPhyp.h"
@@ -266,6 +268,21 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
         numWorkers_{numWorkers},
         numDrivers_{numDrivers},
         exprFactory_{builder} {}
+
+  // Re-exposes the rewrite(NodeCP) overload hidden by the override below.
+  using NodeRewriter<>::rewrite;
+
+  // Rewriting a node is a pure function of the node, so descend each node
+  // once.
+  NodeCP rewrite(NodeCP node, NoContext& context) override {
+    const auto it = rewrittenNodes_.find(node);
+    if (it != rewrittenNodes_.end()) {
+      return it->second;
+    }
+    NodeCP rewritten = NodeRewriter<>::rewrite(node, context);
+    rewrittenNodes_.emplace(node, rewritten);
+    return rewritten;
+  }
 
  protected:
   // Rebuilds a join that DPhyp does not plan (non-clusterable cross / theta /
@@ -1199,6 +1216,9 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
   // Shared across all clusters of this query so a leaf (or hash-consed
   // duplicate) subtree is estimated once.
   EstimateProvider estimateProvider_;
+
+  // Keys stay valid for the query: Builder owns interned nodes.
+  folly::F14FastMap<NodeCP, NodeCP> rewrittenNodes_;
 };
 
 } // namespace
