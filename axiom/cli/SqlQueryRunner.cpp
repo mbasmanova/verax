@@ -633,6 +633,54 @@ class QueryFinalizer {
   QueryCompletionInfo& completionInfo_;
 };
 
+// Returns the plan SHOW SESSION runs: the session properties as literal rows,
+// filtered by the statement's LIKE pattern.
+logical_plan::LogicalPlanNodePtr showSessionPlan(
+    const SessionConfig& sessionConfig,
+    const std::string& defaultConnectorId,
+    const presto::ShowSessionStatement& statement) {
+  using facebook::velox::config::ConfigPropertyTypeName;
+
+  // Collect and sort entries by qualified name.
+  auto entries = sessionConfig.all();
+  std::sort(
+      entries.begin(), entries.end(), [](const auto& lhs, const auto& rhs) {
+        return std::tie(lhs.prefix, lhs.property.name) <
+            std::tie(rhs.prefix, rhs.property.name);
+      });
+
+  std::vector<velox::Variant> data;
+  data.reserve(entries.size());
+  for (const auto& entry : entries) {
+    auto qualifiedName = entry.prefix + "." + entry.property.name;
+    data.emplace_back(
+        velox::Variant::row({
+            qualifiedName,
+            entry.currentValue.value_or(""),
+            entry.property.defaultValue.value_or(""),
+            std::string(ConfigPropertyTypeName::toName(entry.property.type)),
+            entry.property.description,
+        }));
+  }
+
+  namespace lp = facebook::axiom::logical_plan;
+
+  lp::PlanBuilder::Context context(defaultConnectorId);
+  lp::PlanBuilder builder(context);
+  builder.values(
+      ROW({"Name", "Value", "Default", "Type", "Description"},
+          velox::VARCHAR()),
+      std::move(data));
+
+  if (statement.likePattern().has_value()) {
+    builder.filter(
+        lp::Call(
+            "like", lp::Col("Name"), lp::Lit(statement.likePattern().value())));
+  }
+
+  return builder.build();
+}
+
 } // namespace
 
 SqlQueryRunner::SqlResult SqlQueryRunner::run(
@@ -942,6 +990,38 @@ SqlQueryRunner::co_runExplainStatement(
         add->ifNotExists() ? "IF NOT EXISTS " : "",
         add->columnName(),
         add->columnType()->toString())};
+    co_return;
+  } else if (statement->isShowSession()) {
+    logicalPlan = showSessionPlan(
+        *sessionConfig_,
+        defaultConnectorId_,
+        *statement->as<presto::ShowSessionStatement>());
+  } else if (
+      statement->isSetSession() || statement->isResetSession() ||
+      statement->isUse()) {
+    // These change the session and have no plan: echo the statement without
+    // applying it, and without resolving the property or catalog it names.
+    //
+    // Each message is built before its co_yield. A temporary that a
+    // conditional expression materializes in the yielded expression has to
+    // outlive the suspension, and GCC does not keep it alive.
+    if (statement->isSetSession()) {
+      const auto* setSession = statement->as<presto::SetSessionStatement>();
+      auto message = fmt::format(
+          "SET SESSION {} = {}", setSession->name(), setSession->valueSql());
+      co_yield SqlResultChunk{std::move(message)};
+    } else if (statement->isResetSession()) {
+      const auto* resetSession = statement->as<presto::ResetSessionStatement>();
+      auto message = fmt::format("RESET SESSION {}", resetSession->name());
+      co_yield SqlResultChunk{std::move(message)};
+    } else {
+      VELOX_CHECK_EQ(statement->kind(), presto::SqlStatementKind::kUse);
+      const auto* use = statement->as<presto::UseStatement>();
+      auto message = use->catalog().has_value()
+          ? fmt::format("USE {}.{}", use->catalog().value(), use->schema())
+          : fmt::format("USE {}", use->schema());
+      co_yield SqlResultChunk{std::move(message)};
+    }
     co_return;
   } else if (statement->isCall()) {
     // EXPLAIN must be side-effect-free: echo the resolved call without
@@ -1831,50 +1911,10 @@ folly::coro::AsyncGenerator<velox::RowVectorPtr> SqlQueryRunner::co_showSession(
     const RunOptions& options,
     QueryTiming& timing,
     std::string& planString) {
-  using facebook::velox::config::ConfigPropertyTypeName;
-
-  // Collect and sort entries by qualified name.
-  auto entries = sessionConfig_->all();
-  std::sort(
-      entries.begin(), entries.end(), [](const auto& lhs, const auto& rhs) {
-        return std::tie(lhs.prefix, lhs.property.name) <
-            std::tie(rhs.prefix, rhs.property.name);
-      });
-
-  std::vector<velox::Variant> data;
-  data.reserve(entries.size());
-  for (const auto& entry : entries) {
-    auto qualifiedName = entry.prefix + "." + entry.property.name;
-    data.emplace_back(
-        velox::Variant::row({
-            qualifiedName,
-            entry.currentValue.value_or(""),
-            entry.property.defaultValue.value_or(""),
-            std::string(ConfigPropertyTypeName::toName(entry.property.type)),
-            entry.property.description,
-        }));
-  }
-
-  namespace lp = facebook::axiom::logical_plan;
-
-  lp::PlanBuilder::Context context(defaultConnectorId_);
-  lp::PlanBuilder builder(context);
-  builder.values(
-      ROW({"Name", "Value", "Default", "Type", "Description"},
-          velox::VARCHAR()),
-      std::move(data));
-
-  if (statement.likePattern().has_value()) {
-    builder.filter(
-        lp::Call(
-            "like", lp::Col("Name"), lp::Lit(statement.likePattern().value())));
-  }
-
-  // Materialize the built plan into a local before the await: `build()` returns
-  // by value, and binding that temporary to co_runLogicalPlan's `const&`
-  // parameter would leave it dangling once GCC destroys co_await-operand
-  // temporaries at the suspension point.
-  auto plan = builder.build();
+  // Materialize the plan into a local before the await: co_runLogicalPlan
+  // takes it by const reference, and a temporary would dangle once GCC
+  // destroys co_await-operand temporaries at the suspension point.
+  auto plan = showSessionPlan(*sessionConfig_, defaultConnectorId_, statement);
   auto generator = co_runLogicalPlan(plan, options, timing, planString);
   while (auto batch = co_await generator.next()) {
     co_yield std::move(*batch);

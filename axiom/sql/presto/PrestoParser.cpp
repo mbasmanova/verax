@@ -3119,21 +3119,41 @@ SqlStatementPtr parseSetSession(const SetSession* setSession) {
 
   auto* value = setSession->value().get();
   std::string valueString;
+  std::string valueSql;
   if (value->is(NodeType::kStringLiteral)) {
     valueString = value->as<StringLiteral>()->value();
+    std::string escaped;
+    escaped.reserve(valueString.size());
+    for (const char character : valueString) {
+      // SQL writes a quote inside a string literal as two.
+      if (character == '\'') {
+        escaped.push_back(character);
+      }
+      escaped.push_back(character);
+    }
+    valueSql = fmt::format("'{}'", escaped);
   } else if (value->is(NodeType::kLongLiteral)) {
     valueString = std::to_string(value->as<LongLiteral>()->value());
+    valueSql = valueString;
   } else if (value->is(NodeType::kBooleanLiteral)) {
     valueString = value->as<BooleanLiteral>()->value() ? "true" : "false";
+    valueSql = valueString;
   } else if (value->is(NodeType::kDoubleLiteral)) {
-    valueString = std::to_string(value->as<DoubleLiteral>()->value());
+    // Shortest round-trip form: 1.5, not 1.500000.
+    valueString = fmt::format("{}", value->as<DoubleLiteral>()->value());
+    valueSql = valueString;
+  } else if (value->is(NodeType::kDecimalLiteral)) {
+    // A decimal reaches here only when the parser is configured to keep
+    // decimals exact rather than read them as doubles.
+    valueString = value->as<DecimalLiteral>()->value();
+    valueSql = valueString;
   } else {
     AXIOM_PRESTO_SEMANTIC_FAIL(
         value->location(), name, "SET SESSION value must be a literal");
   }
 
   return std::make_shared<SetSessionStatement>(
-      std::move(name), std::move(valueString));
+      std::move(name), std::move(valueString), std::move(valueSql));
 }
 
 // Resolves a procedure's qualified name into a connector id and
@@ -3313,6 +3333,32 @@ SqlStatementPtr doPlan(
     const ParserSessionPtr& parserSession) {
   const auto& user = parserSession->user();
 
+  // Statements that don't reference tables and don't need planning.
+  if (query->is(NodeType::kShowSession)) {
+    auto* showSession = query->as<ShowSession>();
+    return std::make_shared<ShowSessionStatement>(showSession->likePattern());
+  }
+
+  if (query->is(NodeType::kSetSession)) {
+    return parseSetSession(query->as<SetSession>());
+  }
+
+  if (query->is(NodeType::kResetSession)) {
+    auto* resetSession = query->as<ResetSession>();
+    return std::make_shared<ResetSessionStatement>(
+        resetSession->name()->fullyQualifiedName());
+  }
+
+  if (query->is(NodeType::kUse)) {
+    auto* use = query->as<Use>();
+    std::optional<std::string> catalog;
+    if (use->catalog()) {
+      catalog = use->catalog()->value();
+    }
+    return std::make_shared<UseStatement>(
+        std::move(catalog), use->schema()->value());
+  }
+
   if (query->is(NodeType::kInsert)) {
     return parseInsert(
         user,
@@ -3466,32 +3512,6 @@ SqlStatementPtr PrestoParser::doParse(
   };
 
   auto query = parseSql(sql);
-
-  // Statements that don't reference tables and don't need planning.
-  if (query->is(NodeType::kShowSession)) {
-    auto* showSession = query->as<ShowSession>();
-    return std::make_shared<ShowSessionStatement>(showSession->likePattern());
-  }
-
-  if (query->is(NodeType::kSetSession)) {
-    return parseSetSession(query->as<SetSession>());
-  }
-
-  if (query->is(NodeType::kResetSession)) {
-    auto* resetSession = query->as<ResetSession>();
-    return std::make_shared<ResetSessionStatement>(
-        resetSession->name()->fullyQualifiedName());
-  }
-
-  if (query->is(NodeType::kUse)) {
-    auto* use = query->as<Use>();
-    std::optional<std::string> catalog;
-    if (use->catalog()) {
-      catalog = use->catalog()->value();
-    }
-    return std::make_shared<UseStatement>(
-        std::move(catalog), use->schema()->value());
-  }
 
   if (query->is(NodeType::kExplain)) {
     auto* explain = query->as<Explain>();
