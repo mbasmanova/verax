@@ -33,14 +33,25 @@ struct NoContext {};
 /// Stateless passes inherit `NodeRewriter<>`. State-bearing passes
 /// parameterize on a `TContext` that is threaded by reference through
 /// dispatch.
+///
+/// Nodes are interned, so one subtree can hang off several parents and a
+/// hook can be called on the same node more than once. A hook must not
+/// depend on how many times, or in what position, it is reached. A hook
+/// that updates rewriter state on every visit is not safe under an override
+/// of rewrite() that caches, unless that update is idempotent.
 template <typename TContext = NoContext>
 class NodeRewriter {
  public:
   explicit NodeRewriter(Builder& builder) : builder_(builder) {}
   virtual ~NodeRewriter() = default;
 
-  /// Dispatches by `node->nodeType()` to the matching `rewriteX` hook.
-  NodeCP rewrite(NodeCP node, TContext& context) {
+  /// Dispatches by `node->nodeType()` to the matching `rewriteX` hook. The
+  /// hooks recurse through this, so an override wraps the entire descent —
+  /// for example to memoize per node. An override must be deterministic per
+  /// node, and must not skip a hook whose effect depends on running at every
+  /// occurrence. An override hides the single-argument `rewrite(NodeCP)`;
+  /// re-expose it with `using NodeRewriter::rewrite;`.
+  virtual NodeCP rewrite(NodeCP node, TContext& context) {
     switch (node->nodeType()) {
       case NodeType::kScan:
         return rewriteScan(node->as<Scan>(), context);

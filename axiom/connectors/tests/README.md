@@ -38,6 +38,9 @@ The Test connector is designed for three use cases:
 - User-specified statistics: row counts and per-column stats can be set
   explicitly without adding actual data, enabling optimizer testing with
   controlled cost estimates (see [Setting Statistics Without Data](#setting-statistics-without-data)).
+- Suppressed statistics: a table can be created to report none at all, so the
+  optimizer sees a table it cannot cost (see
+  [Tables Without Statistics](#tables-without-statistics)).
 
 **Supported:**
 - Hash bucketing. Tables can be created bucketed via the C++ API
@@ -140,6 +143,20 @@ When all columns share the same type, use `ROW(names, type)` instead of
 `ROW(names, {type, type, ...})`.
 
 `setStats()` and `addData()` cannot be combined on the same table.
+
+### Tables Without Statistics
+
+A table created with `collect_statistics = false` reports no statistics at all:
+no row count and no per-column statistics, however much data it holds. Use it
+to test what the optimizer does with a table the metastore knows nothing
+about, such as falling back to the written join order because no join over it
+can be costed.
+
+```sql
+CREATE TABLE events (a BIGINT, b BIGINT) WITH (collect_statistics = false);
+```
+
+The data is still there and still queried; only the statistics are withheld.
 
 ### Bucketed Tables
 

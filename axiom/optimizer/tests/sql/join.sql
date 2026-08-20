@@ -194,6 +194,35 @@ JOIN t t18 ON t17.b = t18.b
 JOIN t t19 ON t18.b = t19.b
 JOIN t t20 ON t19.b = t20.b
 ----
+-- 20-way FULL JOIN of an aggregate over a table with no statistics, on a key
+-- USING coalesces. Verifies the chain plans and returns the matched rows.
+WITH base AS (
+  SELECT a, b, count(*) AS n
+  FROM t_no_stats
+  GROUP BY 1, 2
+)
+SELECT b, t1.n AS n1, t2.n AS n2, t3.n AS n3, t4.n AS n4, t5.n AS n5, t6.n AS n6, t7.n AS n7, t8.n AS n8, t9.n AS n9, t10.n AS n10, t11.n AS n11, t12.n AS n12, t13.n AS n13, t14.n AS n14, t15.n AS n15, t16.n AS n16, t17.n AS n17, t18.n AS n18, t19.n AS n19, t20.n AS n20
+FROM base t1
+FULL JOIN base t2 USING (b)
+FULL JOIN base t3 USING (b)
+FULL JOIN base t4 USING (b)
+FULL JOIN base t5 USING (b)
+FULL JOIN base t6 USING (b)
+FULL JOIN base t7 USING (b)
+FULL JOIN base t8 USING (b)
+FULL JOIN base t9 USING (b)
+FULL JOIN base t10 USING (b)
+FULL JOIN base t11 USING (b)
+FULL JOIN base t12 USING (b)
+FULL JOIN base t13 USING (b)
+FULL JOIN base t14 USING (b)
+FULL JOIN base t15 USING (b)
+FULL JOIN base t16 USING (b)
+FULL JOIN base t17 USING (b)
+FULL JOIN base t18 USING (b)
+FULL JOIN base t19 USING (b)
+FULL JOIN base t20 USING (b)
+----
 -- Greedy join enumeration (>= 5 tables) driven by a UNION ALL subquery.
 SELECT b.v, s.k
 FROM (SELECT k FROM (VALUES (1)) AS t (k) UNION ALL SELECT k FROM (VALUES (1)) AS t (k)) AS s
