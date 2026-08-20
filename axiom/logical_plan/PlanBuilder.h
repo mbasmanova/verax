@@ -730,6 +730,13 @@ class PlanBuilder {
     return outerScope_;
   }
 
+  /// Replaces the enclosing scope. The plan a builder holds outlives the scope
+  /// it was built in when a relation defined in one query, such as a CTE body,
+  /// becomes part of another that resolves the remaining names.
+  void switchOuterScope(Scope scope) {
+    outerScope_ = std::move(scope);
+  }
+
   /// Returns true if the given unqualified name resolves to a column in this
   /// builder's output without chaining to outer scopes.
   bool hasColumn(const std::string& name) const;
@@ -941,7 +948,7 @@ class PlanBuilder {
 
   // Resolves column references from the enclosing query for correlated
   // subqueries. Null for top-level queries.
-  const Scope outerScope_;
+  Scope outerScope_;
 
   // Parses SQL expression strings into Velox expression trees.
   const std::shared_ptr<velox::parse::SqlExpressionsParser> sqlParser_;

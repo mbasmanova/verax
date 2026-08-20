@@ -519,6 +519,40 @@ TEST_F(PrestoParserTest, withNoLeaking) {
       "Table not found: t");
 }
 
+TEST_F(PrestoParserTest, withBodyResolvesInDefiningScope) {
+  // A CTE body names only what its own FROM and the WITH's scope offer. The
+  // referencing query reads a table 'u', which must not answer the qualifier
+  // 'u' inside the body: there 'u' is the struct column of 's', so 's.u.k' is
+  // a field access.
+  connector_->addTable("s", ROW("u", ROW("k", BIGINT())));
+  connector_->addTable("u", ROW({"k", "b"}, {BIGINT(), VARCHAR()}));
+
+  testSelect(
+      "WITH c AS (SELECT s.u.k AS k FROM s) "
+      "SELECT u.b FROM u LEFT JOIN c ON u.k = c.k",
+      matchScan()
+          .join(matchScan().project({"u.k"}).build())
+          .project({"b"})
+          .output({"b"}));
+
+  // Neither a relation nor a column of the body's own FROM answers 'u', even
+  // though the referencing query reads a table by that name.
+  VELOX_ASSERT_THROW(
+      parseSql(
+          "WITH c AS (SELECT u.b AS b FROM nation) "
+          "SELECT u.b FROM u LEFT JOIN c ON u.k = 1"),
+      "Cannot resolve column: u");
+
+  // A schema-qualified name reaches the tables in scope, which are the body's
+  // own. 'default.u' names the referencing query's table, so it resolves
+  // nothing here even though the body has a column 'u'.
+  VELOX_ASSERT_THROW(
+      parseSql(
+          "WITH c AS (SELECT default.u.k AS k FROM s) "
+          "SELECT u.b FROM u LEFT JOIN c ON u.k = c.k"),
+      "Cannot resolve column");
+}
+
 TEST_F(PrestoParserTest, withShadowingBaseTable) {
   // CTE with the same name as a base table it references. The inner reference
   // to 'nation' inside the CTE body must resolve to the base table, not recurse
