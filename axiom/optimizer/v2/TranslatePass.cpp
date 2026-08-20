@@ -1144,11 +1144,11 @@ NodeCP Translator::maybeWrapInWindow(
   }
 
   // Pre-translate each lp WindowExpr into its effective spec (partition
-  // keys, order keys). Drop sort keys that duplicate a partition key (every
-  // row in a partition shares that value) or repeat an earlier sort key —
-  // both are redundant. Grouping below compares the effective specs, so two
-  // windows that differ only in a dropped order key — or only in frame, which
-  // is per-function — still share a single `Window` node.
+  // keys, order keys). Drop repeated partition keys, and sort keys that
+  // duplicate a partition key (every row in a partition shares that value) or
+  // repeat an earlier sort key — all are redundant. Grouping below compares
+  // the effective specs, so two windows that differ only in a dropped key — or
+  // only in frame, which is per-function — still share a single `Window` node.
   struct Spec {
     ExprVector partitionKeys;
     ExprVector orderKeys;
@@ -1161,14 +1161,19 @@ NodeCP Translator::maybeWrapInWindow(
     const auto* windowExpr =
         projectExprs[windowIndices[i]]->as<lp::WindowExpr>();
     Spec& spec = specs[i];
+    folly::F14FastSet<ExprCP> seenKeys;
+    spec.partitionKeys.reserve(windowExpr->partitionKeys().size());
     // Subqueries in window partition / order keys / frame bounds would
     // need lifting above the Window's input — left as nullptr until
     // that wiring lands. lp's surface allows them; rare in practice.
-    spec.partitionKeys = translateAll(
-        windowExpr->partitionKeys(), inputScope, /*applyTarget=*/nullptr);
+    for (const auto& partitionKey : windowExpr->partitionKeys()) {
+      ExprCP key =
+          translateExpr(*partitionKey, inputScope, /*applyTarget=*/nullptr);
+      if (seenKeys.insert(key).second) {
+        spec.partitionKeys.push_back(key);
+      }
+    }
 
-    folly::F14FastSet<ExprCP> seenKeys(
-        spec.partitionKeys.begin(), spec.partitionKeys.end());
     spec.orderKeys.reserve(windowExpr->ordering().size());
     spec.orderTypes.reserve(windowExpr->ordering().size());
     for (const auto& field : windowExpr->ordering()) {

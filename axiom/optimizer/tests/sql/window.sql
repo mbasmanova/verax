@@ -274,3 +274,8 @@ FROM (SELECT 1 AS a FROM (VALUES (1), (2), (3)) AS t(x)) AS u(a)
 -- The same, with the constant written in the ORDER BY itself.
 SELECT array_agg(x) OVER (ORDER BY (1 + 1) RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING)
 FROM (VALUES (1), (2)) AS t(x)
+----
+-- Repeated partition keys: a literally duplicated column and two distinct
+-- columns holding the same constant.
+SELECT sum(x) OVER (PARTITION BY x, x, a, b ORDER BY x)
+FROM (SELECT y AS x, 'All' AS a, 'All' AS b FROM (VALUES (1), (2), (2)) AS t(y)) AS u
