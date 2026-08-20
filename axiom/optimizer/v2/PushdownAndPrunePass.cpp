@@ -257,22 +257,32 @@ bool canPushLeft(velox::core::JoinType joinType, bool leftOnly) {
 
 // Returns the cross-side `Column == Column` equi-pairs reachable on
 // `node` — either explicitly via `leftKeys`/`rightKeys` or as
-// `eq(Column, Column)` conjuncts in the join's filter. The returned
-// pair has equal-length `first` (left columns) and `second` (right
-// columns) vectors.
+// `eq(Column, Column)` conjuncts in the join's filter. Pairs are distinct;
+// the same equality may be written more than once. The returned pair has
+// equal-length `first` (left columns) and `second` (right columns) vectors.
 std::pair<ColumnVector, ColumnVector> collectEquiColumnPairs(
     JoinCP node,
     const PlanObjectSet& leftColumns,
     const PlanObjectSet& rightColumns) {
   ColumnVector leftKeys;
   ColumnVector rightKeys;
+
+  auto addPair = [&](ColumnCP left, ColumnCP right) {
+    for (size_t i = 0; i < leftKeys.size(); ++i) {
+      if (leftKeys[i] == left && rightKeys[i] == right) {
+        return;
+      }
+    }
+    leftKeys.push_back(left);
+    rightKeys.push_back(right);
+  };
+
   for (size_t i = 0; i < node->leftKeys().size(); ++i) {
     ExprCP leftKey = node->leftKeys()[i];
     ExprCP rightKey = node->rightKeys()[i];
     if (leftKey->is(PlanType::kColumnExpr) &&
         rightKey->is(PlanType::kColumnExpr)) {
-      leftKeys.push_back(leftKey->as<Column>());
-      rightKeys.push_back(rightKey->as<Column>());
+      addPair(leftKey->as<Column>(), rightKey->as<Column>());
     }
   }
   if (node->filter().empty()) {
@@ -298,13 +308,11 @@ std::pair<ColumnVector, ColumnVector> collectEquiColumnPairs(
     ColumnCP secondColumn = second->as<Column>();
     if (leftColumns.contains(firstColumn) &&
         rightColumns.contains(secondColumn)) {
-      leftKeys.push_back(firstColumn);
-      rightKeys.push_back(secondColumn);
+      addPair(firstColumn, secondColumn);
     } else if (
         leftColumns.contains(secondColumn) &&
         rightColumns.contains(firstColumn)) {
-      leftKeys.push_back(secondColumn);
-      rightKeys.push_back(firstColumn);
+      addPair(secondColumn, firstColumn);
     }
   }
   return {std::move(leftKeys), std::move(rightKeys)};
@@ -1852,22 +1860,43 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       return false;
     }
 
-    const ExprVector leftAsExprs(leftKeys.begin(), leftKeys.end());
-    const ExprVector rightAsExprs(rightKeys.begin(), rightKeys.end());
+    // A column can be equated to several columns on the other side, as in
+    // `v.b = u.b AND v.b = t.b`, which gives `v.b` two key pairs. A
+    // substitution maps each source once, so a source's n-th pair goes into
+    // the n-th substitution and a conjunct is derived once per substitution,
+    // reaching every equated column.
+    const auto substitutions = [](const ColumnVector& sources,
+                                  const ColumnVector& targets) {
+      std::vector<ExprFactory::ExprSubstitution> result;
+      folly::F14FastMap<ColumnCP, size_t> nth;
+      for (size_t i = 0; i < sources.size(); ++i) {
+        const size_t index = nth[sources[i]]++;
+        if (index == result.size()) {
+          result.emplace_back();
+        }
+        result[index].emplace(sources[i], targets[i]);
+      }
+      return result;
+    };
+
+    const auto toLeft = substitutions(rightKeys, leftKeys);
+    const auto toRight = substitutions(leftKeys, rightKeys);
 
     ExprVector derived;
     for (ExprCP conjunct : pending) {
-      ExprCP leftSubstituted =
-          exprs_.substitute(conjunct, rightKeys, leftAsExprs);
-      if (leftSubstituted != conjunct && !isSelfEquality(leftSubstituted) &&
-          simplifier_.simplifyFilter(leftSubstituted, derived)) {
-        return true;
+      for (const auto& mapping : toLeft) {
+        ExprCP substituted = exprs_.replace(conjunct, mapping);
+        if (substituted != conjunct && !isSelfEquality(substituted) &&
+            simplifier_.simplifyFilter(substituted, derived)) {
+          return true;
+        }
       }
-      ExprCP rightSubstituted =
-          exprs_.substitute(conjunct, leftKeys, rightAsExprs);
-      if (rightSubstituted != conjunct && !isSelfEquality(rightSubstituted) &&
-          simplifier_.simplifyFilter(rightSubstituted, derived)) {
-        return true;
+      for (const auto& mapping : toRight) {
+        ExprCP substituted = exprs_.replace(conjunct, mapping);
+        if (substituted != conjunct && !isSelfEquality(substituted) &&
+            simplifier_.simplifyFilter(substituted, derived)) {
+          return true;
+        }
       }
     }
     appendAll(pending, derived);

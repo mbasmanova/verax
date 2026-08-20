@@ -235,3 +235,11 @@ LEFT JOIN (VALUES (1, 10)) AS c(k, m) ON c.k = l.k
 JOIN (VALUES (1, 10, 5), (2, 0, 7)) AS e(k, m, d)
   ON e.k = l.k AND e.m = coalesce(c.m, 0)
 WHERE e.d < coalesce(c.m, 99)
+----
+-- One column equated to a column of each of two other tables. A filter on the
+-- shared column must reach every leg and select the same rows either way.
+SELECT t.a, t.b
+FROM t
+JOIN t u ON u.a = t.a
+JOIN t v ON v.b = u.b AND v.b = t.b
+WHERE t.b > 100
