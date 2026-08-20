@@ -421,7 +421,7 @@ TEST_F(PrestoParserTest, subqueryDepthCapped) {
     options.maxSubqueryDepth = maxSubqueryDepth;
     PrestoParser parser(
         kConnectorId, "default", makeParserSession(std::move(options)));
-    return parser.parse(sql, true);
+    return parser.parse(sql);
   };
   AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
       parseWithDepth(kChainedCtes, 2),
@@ -446,7 +446,7 @@ TEST_F(PrestoParserTest, parseDepthCapped) {
     options.maxExpressionDepth = maxExpressionDepth;
     PrestoParser parser(
         kConnectorId, "default", makeParserSession(std::move(options)));
-    return parser.parse(sql, true);
+    return parser.parse(sql);
   };
   AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
       parseWithDepth(10), "Expression exceeds maximum nesting depth");
@@ -1120,9 +1120,8 @@ TEST_F(PrestoParserTest, explainSelect) {
     testExplain("EXPLAIN SELECT * FROM nation", matcher);
   }
 
-  auto parser = makeParser();
   {
-    auto statement = parser.parse("EXPLAIN ANALYZE SELECT * FROM nation");
+    auto statement = parseSql("EXPLAIN ANALYZE SELECT * FROM nation");
     ASSERT_TRUE(statement->isExplain());
 
     auto explainStatement = statement->as<ExplainStatement>();
@@ -1130,8 +1129,7 @@ TEST_F(PrestoParserTest, explainSelect) {
   }
 
   {
-    auto statement =
-        parser.parse("EXPLAIN (TYPE LOGICAL) SELECT * FROM nation", true);
+    auto statement = parseSql("EXPLAIN (TYPE LOGICAL) SELECT * FROM nation");
     ASSERT_TRUE(statement->isExplain());
 
     auto explainStatement = statement->as<ExplainStatement>();
@@ -1140,8 +1138,7 @@ TEST_F(PrestoParserTest, explainSelect) {
   }
 
   {
-    auto statement =
-        parser.parse("EXPLAIN (TYPE GRAPH) SELECT * FROM nation", true);
+    auto statement = parseSql("EXPLAIN (TYPE GRAPH) SELECT * FROM nation");
     ASSERT_TRUE(statement->isExplain());
 
     auto explainStatement = statement->as<ExplainStatement>();
@@ -1150,8 +1147,7 @@ TEST_F(PrestoParserTest, explainSelect) {
   }
 
   {
-    auto statement =
-        parser.parse("EXPLAIN (TYPE OPTIMIZED) SELECT * FROM nation");
+    auto statement = parseSql("EXPLAIN (TYPE OPTIMIZED) SELECT * FROM nation");
     ASSERT_TRUE(statement->isExplain());
 
     auto explainStatement = statement->as<ExplainStatement>();
@@ -1160,8 +1156,7 @@ TEST_F(PrestoParserTest, explainSelect) {
   }
 
   {
-    auto statement =
-        parser.parse("EXPLAIN (TYPE EXECUTABLE) SELECT * FROM nation");
+    auto statement = parseSql("EXPLAIN (TYPE EXECUTABLE) SELECT * FROM nation");
     ASSERT_TRUE(statement->isExplain());
 
     auto explainStatement = statement->as<ExplainStatement>();
@@ -1172,7 +1167,7 @@ TEST_F(PrestoParserTest, explainSelect) {
 
   {
     auto statement =
-        parser.parse("EXPLAIN (TYPE DISTRIBUTED) SELECT * FROM nation");
+        parseSql("EXPLAIN (TYPE DISTRIBUTED) SELECT * FROM nation");
     ASSERT_TRUE(statement->isExplain());
 
     auto explainStatement = statement->as<ExplainStatement>();
@@ -1182,18 +1177,25 @@ TEST_F(PrestoParserTest, explainSelect) {
   }
 
   {
-    auto statement = parser.parse("EXPLAIN (TYPE IO) SELECT * FROM nation");
+    auto statement = parseSql("EXPLAIN (TYPE IO) SELECT * FROM nation");
     ASSERT_TRUE(statement->isExplain());
 
     auto explainStatement = statement->as<ExplainStatement>();
     ASSERT_FALSE(explainStatement->isAnalyze());
     ASSERT_EQ(explainStatement->type(), ExplainStatement::Type::kIo);
   }
+
+  {
+    auto statement = parseSql("EXPLAIN (TYPE VALIDATE) SELECT * FROM nation");
+    ASSERT_TRUE(statement->isExplain());
+
+    auto explainStatement = statement->as<ExplainStatement>();
+    ASSERT_FALSE(explainStatement->isAnalyze());
+    ASSERT_EQ(explainStatement->type(), ExplainStatement::Type::kValidate);
+  }
 }
 
 TEST_F(PrestoParserTest, explainFormat) {
-  auto parser = makeParser();
-
   std::vector<std::pair<std::string, ExplainStatement::Format>> formats = {
       {"TEXT", ExplainStatement::Format::kText},
       {"GRAPHVIZ", ExplainStatement::Format::kGraphviz},
@@ -1202,11 +1204,10 @@ TEST_F(PrestoParserTest, explainFormat) {
 
   for (const auto& [formatName, expectedFormat] : formats) {
     SCOPED_TRACE(formatName);
-    auto statement = parser.parse(
+    auto statement = parseSql(
         fmt::format(
             "EXPLAIN (TYPE LOGICAL, FORMAT {}) SELECT * FROM nation",
-            formatName),
-        true);
+            formatName));
     ASSERT_TRUE(statement->isExplain());
 
     auto explainStatement = statement->as<ExplainStatement>();
@@ -1216,10 +1217,59 @@ TEST_F(PrestoParserTest, explainFormat) {
 
   // Default format is TEXT.
   {
-    auto statement =
-        parser.parse("EXPLAIN (TYPE LOGICAL) SELECT * FROM nation", true);
+    auto statement = parseSql("EXPLAIN (TYPE LOGICAL) SELECT * FROM nation");
     auto explainStatement = statement->as<ExplainStatement>();
     ASSERT_EQ(explainStatement->format(), ExplainStatement::Format::kText);
+  }
+}
+
+TEST_F(PrestoParserTest, explainOptionPrecedence) {
+  // The first type and the first format win.
+  {
+    auto statement =
+        parseSql("EXPLAIN (TYPE LOGICAL, TYPE IO) SELECT * FROM nation");
+    ASSERT_TRUE(statement->isExplain());
+    EXPECT_EQ(
+        statement->as<ExplainStatement>()->type(),
+        ExplainStatement::Type::kLogical);
+  }
+
+  {
+    auto statement = parseSql(
+        "EXPLAIN (TYPE LOGICAL, FORMAT JSON, FORMAT TEXT) SELECT * FROM nation");
+    ASSERT_TRUE(statement->isExplain());
+    EXPECT_EQ(
+        statement->as<ExplainStatement>()->format(),
+        ExplainStatement::Format::kJson);
+  }
+
+  // VALIDATE wins from any position, over ANALYZE, and over a format.
+  for (const auto& sql :
+       {"EXPLAIN (TYPE VALIDATE, TYPE IO) SELECT * FROM nation",
+        "EXPLAIN (TYPE IO, TYPE VALIDATE) SELECT * FROM nation",
+        "EXPLAIN (TYPE VALIDATE, FORMAT JSON) SELECT * FROM nation",
+        "EXPLAIN ANALYZE (TYPE VALIDATE) SELECT * FROM nation"}) {
+    SCOPED_TRACE(sql);
+    auto statement = parseSql(sql);
+    ASSERT_TRUE(statement->isExplain());
+
+    auto* explain = statement->as<ExplainStatement>();
+    EXPECT_EQ(explain->type(), ExplainStatement::Type::kValidate);
+    EXPECT_EQ(explain->format(), ExplainStatement::Format::kText);
+    EXPECT_FALSE(explain->isAnalyze());
+  }
+
+  // ANALYZE reports the plan it ran, so it ignores the type and format asked
+  // for.
+  {
+    auto statement = parseSql(
+        "EXPLAIN ANALYZE (TYPE LOGICAL, FORMAT JSON) SELECT * FROM nation");
+    ASSERT_TRUE(statement->isExplain());
+
+    auto* explain = statement->as<ExplainStatement>();
+    EXPECT_TRUE(explain->isAnalyze());
+    EXPECT_EQ(explain->type(), ExplainStatement::Type::kExecutable);
+    EXPECT_EQ(explain->format(), ExplainStatement::Format::kText);
   }
 }
 
@@ -2081,12 +2131,11 @@ TEST_F(PrestoParserTest, friendlySqlTrailingCommaValues) {
 
 TEST_F(PrestoParserTest, friendlySqlFromFirst) {
   // FROM-first syntax works with Friendly SQL (default).
-  auto parser = makeParser();
-  auto statement = parser.parse("FROM nation");
+  auto statement = parseSql("FROM nation");
   ASSERT_TRUE(statement->isSelect());
 
   // With WHERE clause.
-  statement = parser.parse("FROM nation WHERE n_regionkey = 1");
+  statement = parseSql("FROM nation WHERE n_regionkey = 1");
   ASSERT_TRUE(statement->isSelect());
 
   // Rejected when Friendly SQL is disabled.

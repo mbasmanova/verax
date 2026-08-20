@@ -2165,65 +2165,87 @@ lp::ExprPtr resolveSqlExpression(
   return project->expressionAt(0);
 }
 
+// Resolves the EXPLAIN options and builds the statement, mirroring Presto: a
+// VALIDATE type wins from any position and over ANALYZE; otherwise the first
+// TYPE and the first FORMAT win; ANALYZE reports the plan it ran and ignores
+// both.
 SqlStatementPtr parseExplain(
     const Explain& explain,
     const SqlStatementPtr& sqlStatement) {
-  ExplainStatement::Type type = ExplainStatement::Type::kExecutable;
-  ExplainStatement::Format format = ExplainStatement::Format::kText;
+  std::optional<ExplainType::Type> explainType;
+  std::optional<ExplainFormat::Type> explainFormat;
+
+  for (const auto& option : explain.options()) {
+    if (option->is(NodeType::kExplainType)) {
+      const auto optionType = option->as<ExplainType>()->explainType();
+      if (optionType == ExplainType::Type::kValidate) {
+        return std::make_shared<ExplainStatement>(
+            sqlStatement,
+            /*analyze=*/false,
+            ExplainStatement::Type::kValidate,
+            ExplainStatement::Format::kText);
+      }
+      if (!explainType.has_value()) {
+        explainType = optionType;
+      }
+    } else if (option->is(NodeType::kExplainFormat)) {
+      if (!explainFormat.has_value()) {
+        explainFormat = option->as<ExplainFormat>()->formatType();
+      }
+    }
+  }
 
   if (explain.isAnalyze()) {
     return std::make_shared<ExplainStatement>(
         sqlStatement,
         /*analyze=*/true,
-        type,
-        format);
+        ExplainStatement::Type::kExecutable,
+        ExplainStatement::Format::kText);
   }
 
-  for (const auto& option : explain.options()) {
-    if (option->is(NodeType::kExplainType)) {
-      const auto explainType = option->as<ExplainType>()->explainType();
-      switch (explainType) {
-        case ExplainType::Type::kLogical:
-          type = ExplainStatement::Type::kLogical;
-          break;
-        case ExplainType::Type::kGraph:
-          type = ExplainStatement::Type::kGraph;
-          break;
-        case ExplainType::Type::kOptimized:
-          type = ExplainStatement::Type::kOptimized;
-          break;
-        case ExplainType::Type::kExecutable:
-          [[fallthrough]];
-        case ExplainType::Type::kDistributed:
-          type = ExplainStatement::Type::kExecutable;
-          break;
-        case ExplainType::Type::kIo:
-          type = ExplainStatement::Type::kIo;
-          break;
-        default:
-          VELOX_USER_FAIL("Unsupported EXPLAIN type");
-      }
-    } else if (option->is(NodeType::kExplainFormat)) {
-      const auto explainFormat = option->as<ExplainFormat>()->formatType();
-      switch (explainFormat) {
-        case ExplainFormat::Type::kText:
-          format = ExplainStatement::Format::kText;
-          break;
-        case ExplainFormat::Type::kGraphviz:
-          format = ExplainStatement::Format::kGraphviz;
-          break;
-        case ExplainFormat::Type::kJson:
-          format = ExplainStatement::Format::kJson;
-          break;
-      }
+  ExplainStatement::Type type{ExplainStatement::Type::kExecutable};
+  if (explainType.has_value()) {
+    switch (explainType.value()) {
+      case ExplainType::Type::kLogical:
+        type = ExplainStatement::Type::kLogical;
+        break;
+      case ExplainType::Type::kGraph:
+        type = ExplainStatement::Type::kGraph;
+        break;
+      case ExplainType::Type::kOptimized:
+        type = ExplainStatement::Type::kOptimized;
+        break;
+      case ExplainType::Type::kExecutable:
+        [[fallthrough]];
+      case ExplainType::Type::kDistributed:
+        type = ExplainStatement::Type::kExecutable;
+        break;
+      case ExplainType::Type::kIo:
+        type = ExplainStatement::Type::kIo;
+        break;
+      case ExplainType::Type::kValidate:
+        // Returned from the loop above.
+        VELOX_UNREACHABLE();
+    }
+  }
+
+  ExplainStatement::Format format{ExplainStatement::Format::kText};
+  if (explainFormat.has_value()) {
+    switch (explainFormat.value()) {
+      case ExplainFormat::Type::kText:
+        format = ExplainStatement::Format::kText;
+        break;
+      case ExplainFormat::Type::kGraphviz:
+        format = ExplainStatement::Format::kGraphviz;
+        break;
+      case ExplainFormat::Type::kJson:
+        format = ExplainStatement::Format::kJson;
+        break;
     }
   }
 
   return std::make_shared<ExplainStatement>(
-      sqlStatement,
-      /*analyze=*/false,
-      type,
-      format);
+      sqlStatement, /*analyze=*/false, type, format);
 }
 
 static facebook::axiom::connector::TablePtr findTable(

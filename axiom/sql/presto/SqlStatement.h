@@ -588,6 +588,10 @@ class ExplainStatement : public SqlStatement {
 
     /// IO plan: input/output tables and partition column constraints.
     kIo,
+
+    /// Parse and analyze only, reporting whether the query is valid. Produces
+    /// no plan.
+    kValidate,
   };
 
   AXIOM_DECLARE_EMBEDDED_ENUM_NAME(Type);
