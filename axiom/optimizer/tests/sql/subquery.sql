@@ -271,6 +271,51 @@ SELECT
     (SELECT count(*) FROM u WHERE u.a < t.c) AS z
 FROM t
 ----
+
+-- A correlated subquery whose body filters on an IN subquery.
+SELECT t.a, (SELECT count(*) FROM u WHERE u.a = t.a AND u.a IN (SELECT v.a FROM v)) AS n
+FROM t
+----
+-- An outer whose body rows are all rejected by the IN still produces a row.
+SELECT t.a, (SELECT count(*) FROM u WHERE u.a = t.a AND u.a IN (SELECT v.a FROM v WHERE v.a > 100)) AS n
+FROM t
+----
+-- An IN predicate in the subquery's SELECT list rather than its WHERE.
+SELECT t.a, (SELECT max(CAST(u.a IN (SELECT v.a FROM v) AS INTEGER)) FROM u WHERE u.a = t.a) AS m
+FROM t
+----
+-- The same for EXISTS, where no body row belongs to the outer.
+SELECT t.a, (SELECT max(CAST(EXISTS (SELECT 1 FROM v WHERE v.a = u.a) AS INTEGER)) FROM u WHERE u.a = t.a + 1000) AS m
+FROM t
+----
+-- NOT IN over a list holding NULL is never true, so no body row survives.
+SELECT t.a, (SELECT count(*) FROM u WHERE u.a = t.a AND u.a NOT IN (SELECT w.a FROM (VALUES (1), (CAST(NULL AS BIGINT))) AS w(a))) AS n
+FROM t
+----
+-- EXISTS in the body of a correlated subquery.
+SELECT t.a, (SELECT count(*) FROM u WHERE u.a = t.a AND EXISTS (SELECT 1 FROM v WHERE v.a = u.a)) AS n
+FROM t
+----
+-- A body predicate beyond the correlation equality and the IN.
+SELECT t.a, (SELECT count(*) FROM u WHERE u.a = t.a AND u.a > 1 AND u.a IN (SELECT v.a FROM v)) AS n
+FROM t
+----
+-- A subquery returning a value rather than an aggregate: an outer whose body
+-- rows are all rejected by the IN reads NULL.
+SELECT t.a, (SELECT u.a FROM u WHERE u.a = t.a AND u.a IN (SELECT v.a FROM v WHERE v.a > 100)) AS b
+FROM t
+----
+-- More than one body row survives the IN, which a single-value subquery
+-- rejects at runtime.
+-- error: Scalar sub-query has returned multiple rows
+SELECT t.a, (SELECT u.a FROM u WHERE u.a > t.a AND u.a IN (SELECT v.a FROM v)) AS b
+FROM t
+----
+-- An IN whose subquery reads an outer column.
+-- error_v1: Join filter references column from unplaced non-single-row table
+SELECT t.a, (SELECT count(*) FROM u WHERE u.a = t.a AND u.a IN (SELECT v.a + t.a FROM v)) AS n
+FROM t
+----
 -- Correlated IN subquery with single correlation equality.
 SELECT t.a IN (SELECT t2.a FROM t t2 WHERE t2.b = t.b) FROM t
 ----
