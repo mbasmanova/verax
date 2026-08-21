@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <folly/init/Init.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
@@ -111,3 +112,11 @@ TEST_F(InformationSchemaTest, viewColumns) {
 
 } // namespace
 } // namespace facebook::axiom::connector::system
+
+// Queries run here, and Velox execution reaches folly singletons that a
+// gtest-provided main leaves uninitialized.
+int main(int argc, char** argv) {
+  testing::InitGoogleTest(&argc, argv);
+  folly::Init init(&argc, &argv, false);
+  return RUN_ALL_TESTS();
+}
