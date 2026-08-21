@@ -737,5 +737,60 @@ TEST_F(PlanBuilderTest, valuesTypeCoercionErrors) {
       "All values should have equivalent types: BIGINT vs. ROW<x:BOOLEAN>");
 }
 
+namespace {
+// Values with an INTEGER column 'a' and a null literal column, which types as
+// UNKNOWN.
+PlanBuilder makeValuesWithNull(bool enableCoercions = true) {
+  PlanBuilder::Context context;
+  if (enableCoercions) {
+    context.coercer = &velox::TypeCoercer::defaults();
+  }
+  const std::vector<std::vector<std::string>> rows{
+      {"CAST(1 AS integer)", "null"}};
+  return PlanBuilder(context).values({"a", "n"}, rows);
+}
+
+PlanBuilder makeBooleanValues() {
+  PlanBuilder::Context context;
+  context.coercer = &velox::TypeCoercer::defaults();
+  const std::vector<std::vector<std::string>> rows{{"true"}};
+  return PlanBuilder(context).values({"m"}, rows);
+}
+} // namespace
+
+TEST_F(PlanBuilderTest, predicateTypeCoercion) {
+  auto plan = makeValuesWithNull().filter("n").build();
+  EXPECT_EQ(*plan->as<FilterNode>()->predicate()->type(), *BOOLEAN());
+
+  auto joinPlan = makeValuesWithNull()
+                      .join(makeBooleanValues(), "n", JoinType::kLeft)
+                      .build();
+  EXPECT_EQ(*joinPlan->as<JoinNode>()->condition()->type(), *BOOLEAN());
+
+  auto lateralPlan = makeValuesWithNull()
+                         .lateralJoin(makeBooleanValues(), "n", JoinType::kLeft)
+                         .build();
+  EXPECT_EQ(
+      *lateralPlan->as<LateralJoinNode>()->condition()->type(), *BOOLEAN());
+
+  VELOX_ASSERT_THROW(
+      makeValuesWithNull().filter("a"),
+      "Filter predicate must be coercible to boolean: INTEGER");
+
+  VELOX_ASSERT_THROW(
+      makeValuesWithNull(/*enableCoercions=*/false).filter("n"),
+      "Filter predicate must be boolean: UNKNOWN");
+}
+
+TEST_F(PlanBuilderTest, conjunctTypeCoercion) {
+  auto plan = makeValuesWithNull().filter("n AND a = 1").build();
+
+  const auto& predicate = plan->as<FilterNode>()->predicate();
+  ASSERT_EQ(predicate->as<SpecialFormExpr>()->form(), SpecialForm::kAnd);
+  for (const auto& input : predicate->inputs()) {
+    EXPECT_EQ(*input->type(), *BOOLEAN()) << input->toString();
+  }
+}
+
 } // namespace
 } // namespace facebook::axiom::logical_plan

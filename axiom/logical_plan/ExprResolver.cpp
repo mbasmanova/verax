@@ -241,14 +241,20 @@ ExprPtr tryResolveSpecialForm(
     const std::shared_ptr<velox::core::PlanNodeIdGenerator>&
         planNodeIdGenerator,
     const velox::TypeCoercer* coercer) {
-  if (name == "and") {
-    return std::make_shared<SpecialFormExpr>(
-        velox::BOOLEAN(), SpecialForm::kAnd, resolvedInputs);
-  }
+  if (name == "and" || name == "or") {
+    const bool isAnd = (name == "and");
+    const auto form = isAnd ? SpecialForm::kAnd : SpecialForm::kOr;
 
-  if (name == "or") {
+    if (coercer != nullptr) {
+      return resolveSpecialFormWithCoercions(
+          form,
+          isAnd ? velox::expression::kAnd : velox::expression::kOr,
+          resolvedInputs,
+          *coercer);
+    }
+
     return std::make_shared<SpecialFormExpr>(
-        velox::BOOLEAN(), SpecialForm::kOr, resolvedInputs);
+        velox::BOOLEAN(), form, resolvedInputs);
   }
 
   if (name == "try") {
@@ -328,26 +334,24 @@ ExprPtr tryResolveSpecialForm(
       VELOX_USER_CHECK_GE(
           resolvedInputs.size(), 2, "IN must have at least two inputs");
 
-      auto type = resolvedInputs.at(0)->type();
+      // The left operand and every value in the list share one type: the
+      // least common super type of all of them.
+      velox::TypePtr type = resolvedInputs.at(0)->type();
       for (auto i = 1; i < resolvedInputs.size(); ++i) {
         const auto& newType = resolvedInputs.at(i)->type();
-        if (type->equivalent(*newType)) {
-          continue;
-        }
+        velox::TypePtr commonType =
+            coercer->leastCommonSuperType(type, newType);
+        VELOX_USER_CHECK_NOT_NULL(
+            commonType,
+            "All inputs to IN must be coercible to a single type: {} vs. {}",
+            type->toString(),
+            newType->toString());
+        type = std::move(commonType);
+      }
 
-        if (coercer->coerce(newType, type)) {
-          resolvedInputs[i] =
-              applyCoercion(resolvedInputs[i], type, planNodeIdGenerator);
-          continue;
-        }
-
-        if (coercer->coerce(type, newType)) {
-          type = newType;
-
-          for (auto j = 0; j < i; ++j) {
-            resolvedInputs[j] =
-                applyCoercion(resolvedInputs[j], type, planNodeIdGenerator);
-          }
+      for (auto& input : resolvedInputs) {
+        if (!input->type()->equivalent(*type)) {
+          input = applyCoercion(input, type, planNodeIdGenerator);
         }
       }
     }

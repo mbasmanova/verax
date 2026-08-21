@@ -108,6 +108,10 @@ class ThrowingSqlExpressionsParser : public velox::parse::SqlExpressionsParser {
 /// (e.g. INTEGER + BIGINT). Set Context.queryCtx to enable constant folding,
 /// i.e. evaluating constant expressions at plan-build time
 /// (e.g. 1 + 2 becomes 3).
+///
+/// Filter predicates and join conditions must be boolean. Without a coercer,
+/// any other type is an error. With one, a type that coerces to boolean, i.e.
+/// the UNKNOWN type of a NULL literal, is cast.
 class PlanBuilder {
  public:
   /// Shared state across PlanBuilder instances. Pass the same Context to
