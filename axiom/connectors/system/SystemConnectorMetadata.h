@@ -16,6 +16,9 @@
 
 #pragma once
 
+#include <folly/Synchronized.h>
+#include <folly/container/F14Map.h>
+
 #include "axiom/connectors/ConnectorMetadata.h"
 #include "axiom/connectors/system/SystemConnector.h"
 
@@ -139,16 +142,14 @@ class SystemConnectorMetadata : public ConnectorMetadata {
 
   TablePtr findTable(const SchemaTableName& tableName) override;
 
+  /// Returns the connector's own schemas plus one information_schema name per
+  /// registered catalog.
   std::vector<std::string> listSchemaNames(
-      const ConnectorSessionPtr& session) override {
-    return {std::string(kRuntimeSchema), std::string(kMetadataSchema)};
-  }
+      const ConnectorSessionPtr& session) override;
 
   bool schemaExists(
       const ConnectorSessionPtr& session,
-      const std::string& schemaName) override {
-    return schemaName == kRuntimeSchema || schemaName == kMetadataSchema;
-  }
+      const std::string& schemaName) override;
 
   std::vector<std::string> listTableNames(
       const ConnectorSessionPtr& session,
@@ -161,6 +162,10 @@ class SystemConnectorMetadata : public ConnectorMetadata {
  private:
   velox::connector::Connector* connector_;
   std::unique_ptr<SystemSplitManager> splitManager_;
+  // One table object per information_schema relation of a catalog, so a
+  // second lookup of the same name returns the same columns.
+  folly::Synchronized<folly::F14FastMap<SchemaTableName, TablePtr>>
+      informationSchemaTables_;
   std::shared_ptr<SystemTable> queriesTable_;
   std::shared_ptr<SystemTable> sessionPropertiesTable_;
   std::shared_ptr<SystemTable> functionsTable_;

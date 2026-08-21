@@ -106,6 +106,10 @@ std::string HivePartitionType::toString() const {
 
 namespace {
 
+// What a Hive-family connector says about a column the table is partitioned
+// by.
+constexpr std::string_view kPartitionKey = "partition key";
+
 std::vector<std::unique_ptr<const connector::Column>> makeColumns(
     const velox::RowTypePtr& type,
     bool bucketed,
@@ -118,12 +122,16 @@ std::vector<std::unique_ptr<const connector::Column>> makeColumns(
   columns.reserve(type->size() + 2 + (bucketed ? 1 : 0));
 
   for (auto i = 0; i < type->size(); i++) {
+    const bool isPartitionColumn = partitionColumns.contains(type->nameOf(i));
     columns.emplace_back(
         std::make_unique<connector::Column>(
             type->nameOf(i),
             type->childAt(i),
             /*hidden=*/false,
-            /*includeInExplainIo=*/partitionColumns.contains(type->nameOf(i))));
+            /*includeInExplainIo=*/isPartitionColumn,
+            /*extraInfo=*/
+            isPartitionColumn ? std::optional<std::string>(kPartitionKey)
+                              : std::nullopt));
   }
 
   if (includeHiddenColumns) {

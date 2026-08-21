@@ -21,6 +21,7 @@
 
 #include "axiom/connectors/ConnectorMetadata.h"
 #include "axiom/connectors/ConnectorMetadataRegistry.h"
+#include "axiom/connectors/system/InformationSchema.h"
 #include "axiom/connectors/system/SystemConnector.h"
 #include "axiom/connectors/system/SystemConnectorMetadata.h"
 #include "velox/connectors/Connector.h"
@@ -499,13 +500,57 @@ TEST_F(SystemConnectorMetadataTest, sessionPropertiesSchema) {
 
 TEST_F(SystemConnectorMetadataTest, schemas) {
   auto session = makeSession();
+  // Every registered catalog also has its information_schema relations here.
   EXPECT_THAT(
       metadata_->listSchemaNames(session),
       testing::UnorderedElementsAre(
-          kQueriesTable.schema, kSessionPropertiesTable.schema));
+          kQueriesTable.schema,
+          kSessionPropertiesTable.schema,
+          InformationSchema::schemaName(kSystemCatalog)));
   EXPECT_TRUE(metadata_->schemaExists(session, kQueriesTable.schema));
   EXPECT_TRUE(metadata_->schemaExists(session, kSessionPropertiesTable.schema));
   EXPECT_FALSE(metadata_->schemaExists(session, "information_schema"));
+}
+
+TEST_F(SystemConnectorMetadataTest, informationSchema) {
+  auto session = makeSession();
+  const auto schema = InformationSchema::schemaName(kSystemCatalog);
+
+  // A catalog's relations resolve under its information_schema name.
+  EXPECT_THAT(
+      metadata_->listTableNames(session, schema),
+      testing::UnorderedElementsAre("columns", "tables", "views"));
+
+  const auto table =
+      metadata_->findTable(SchemaTableName{schema, std::string("columns")});
+  ASSERT_NE(table, nullptr);
+  EXPECT_THAT(
+      table->type()->names(),
+      testing::ElementsAre(
+          "table_catalog",
+          "table_schema",
+          "table_name",
+          "column_name",
+          "ordinal_position",
+          "column_default",
+          "is_nullable",
+          "data_type",
+          "comment",
+          "extra_info",
+          "precision",
+          "scale",
+          "length"));
+
+  // The rows come from catalog metadata, which only the coordinator reads.
+  EXPECT_TRUE(table->layouts().at(0)->runsOnCoordinator());
+
+  // A name that is not a relation is not a table.
+  EXPECT_EQ(
+      metadata_->findTable(SchemaTableName{schema, std::string("schemata")}),
+      nullptr);
+  EXPECT_EQ(
+      metadata_->findTable(SchemaTableName{"information_schema", "columns"}),
+      nullptr);
 }
 
 TEST_F(SystemConnectorMetadataTest, listTableNames) {

@@ -60,6 +60,12 @@ std::vector<ConfigProperty> buildProperties(
           "a stack overflow.",
       },
       {
+          std::string(ParserOptions::kInformationSchemaConnectorId),
+          ConfigPropertyType::kString,
+          std::string(ParserOptions::kInformationSchemaConnectorIdDefault),
+          "Connector serving the information_schema relations.",
+      },
+      {
           std::string(ParserOptions::kMaxExpressionWidth),
           ConfigPropertyType::kInteger,
           fmt::to_string(ParserOptions::kMaxExpressionWidthDefault),
@@ -110,6 +116,13 @@ ParserOptions ParserOptions::from(
       field = it->second == "true";
     }
   };
+  auto setString = [&](std::string_view key, std::string& field) {
+    auto it = properties.find(key);
+    if (it != properties.end()) {
+      VELOX_USER_CHECK(!it->second.empty(), "{} cannot be empty", key);
+      field = it->second;
+    }
+  };
   auto setUint32 = [&](std::string_view key, uint32_t& field) {
     auto it = properties.find(key);
     if (it != properties.end()) {
@@ -123,6 +136,9 @@ ParserOptions ParserOptions::from(
   setUint32(kMaxExpressionDepth, options.maxExpressionDepth);
   setUint32(kMaxSubqueryDepth, options.maxSubqueryDepth);
   setUint32(kMaxExpressionWidth, options.maxExpressionWidth);
+
+  setString(
+      kInformationSchemaConnectorId, options.informationSchemaConnectorId);
   return options;
 }
 

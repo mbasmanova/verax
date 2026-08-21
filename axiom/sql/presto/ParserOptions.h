@@ -37,12 +37,16 @@ struct ParserOptions : public facebook::velox::config::ConfigProvider {
   static constexpr std::string_view kMaxExpressionWidth =
       "max_expression_width";
   static constexpr std::string_view kMaxSubqueryDepth = "max_subquery_depth";
+  static constexpr std::string_view kInformationSchemaConnectorId =
+      "information_schema_connector_id";
 
   static constexpr bool kFriendlySqlDefault = true;
   static constexpr bool kParseDecimalLiteralAsDoubleDefault = true;
   static constexpr uint32_t kMaxExpressionDepthDefault = 1024;
   static constexpr uint32_t kMaxExpressionWidthDefault = 100'000;
   static constexpr uint32_t kMaxSubqueryDepthDefault = 1024;
+  static constexpr std::string_view kInformationSchemaConnectorIdDefault =
+      "system";
 
   ParserOptions();
 
@@ -80,6 +84,12 @@ struct ParserOptions : public facebook::velox::config::ConfigProvider {
   /// Maximum subquery nesting depth; deeper nesting is rejected to avoid a
   /// stack overflow.
   uint32_t maxSubqueryDepth{kMaxSubqueryDepthDefault};
+
+  /// Connector serving the information_schema relations. A name like
+  /// 'hive.information_schema.columns' resolves to this connector, with the
+  /// catalog it describes carried in the schema.
+  std::string informationSchemaConnectorId{
+      kInformationSchemaConnectorIdDefault};
 
   /// Constructs options from session property name-value pairs.
   /// Keys are unqualified property names (e.g., "friendly_sql").

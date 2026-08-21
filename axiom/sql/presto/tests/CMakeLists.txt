@@ -42,6 +42,7 @@ target_link_libraries(
   axiom_logical_plan_matcher
   axiom_logical_plan_builder
   axiom_sql_presto_parser
+  axiom_system_connector
   axiom_test_connector
   GTest::gmock
   glog::glog

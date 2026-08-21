@@ -21,6 +21,7 @@
 #include <filesystem>
 #include "axiom/connectors/ConnectorMetadataRegistry.h"
 #include "axiom/connectors/hive/LocalHiveConnectorMetadata.h"
+#include "axiom/connectors/system/SystemConnectorMetadata.h"
 #include "axiom/optimizer/ConstantExprEvaluator.h"
 #include "axiom/optimizer/tests/SqlFile.h"
 #include "axiom/optimizer/tests/SqlTestBase.h"
@@ -41,6 +42,9 @@
 
 namespace facebook::axiom::optimizer::test {
 namespace {
+
+// Connector that serves information_schema for the catalogs under test.
+constexpr std::string_view kSystemConnectorId = "system";
 
 using namespace facebook::velox;
 
@@ -236,6 +240,19 @@ class SqlTest : public SqlTestBase {
       metadata = suiteConnector_->metadata().get();
     }
 
+    // The system connector serves information_schema for every catalog.
+    suiteSystemConnector_ =
+        std::make_shared<connector::system::SystemConnector>(
+            std::string(kSystemConnectorId),
+            /*queryInfoProvider=*/nullptr,
+            /*sessionPropertiesProvider=*/nullptr);
+    velox::connector::ConnectorRegistry::global().insert(
+        std::string(kSystemConnectorId), suiteSystemConnector_);
+    connector::ConnectorMetadataRegistry::global().insert(
+        std::string(kSystemConnectorId),
+        std::make_shared<connector::system::SystemConnectorMetadata>(
+            suiteSystemConnector_.get()));
+
     for (const auto& statement : setupStatements) {
       suiteDuckDbRunner_->execute(stripTablePropertiesForDuckDb(statement));
       runSetupStatement(
@@ -306,6 +323,14 @@ class SqlTest : public SqlTestBase {
       velox::connector::ConnectorRegistry::global().erase(kTestConnectorId);
       suiteConnector_.reset();
     }
+    if (suiteSystemConnector_ != nullptr) {
+      connector::ConnectorMetadataRegistry::global().erase(
+          std::string(kSystemConnectorId));
+      velox::connector::ConnectorRegistry::global().erase(
+          std::string(kSystemConnectorId));
+      suiteSystemConnector_.reset();
+    }
+
     suiteOptimizerPool_.reset();
     suiteRootPool_.reset();
     suiteExecutor_.reset();
@@ -369,6 +394,8 @@ class SqlTest : public SqlTestBase {
   static std::shared_ptr<memory::MemoryPool> suiteRootPool_;
   static std::shared_ptr<memory::MemoryPool> suiteOptimizerPool_;
   static std::shared_ptr<connector::TestConnector> suiteConnector_;
+  static std::shared_ptr<connector::system::SystemConnector>
+      suiteSystemConnector_;
   static std::unique_ptr<exec::test::DuckDbQueryRunner> suiteDuckDbRunner_;
   static std::shared_ptr<velox::common::testutil::TempDirectoryPath>
       suiteHiveDir_;
@@ -392,6 +419,10 @@ std::shared_ptr<memory::MemoryPool> SqlTest<Name, UseV2>::suiteOptimizerPool_;
 
 template <FileName Name, bool UseV2>
 std::shared_ptr<connector::TestConnector> SqlTest<Name, UseV2>::suiteConnector_;
+
+template <FileName Name, bool UseV2>
+std::shared_ptr<connector::system::SystemConnector>
+    SqlTest<Name, UseV2>::suiteSystemConnector_;
 
 template <FileName Name, bool UseV2>
 std::unique_ptr<exec::test::DuckDbQueryRunner>
@@ -488,6 +519,7 @@ int main(int argc, char** argv) {
   registerQueryFile<"distinctAggregation">();
   registerQueryFile<"filterPushdown">();
   registerQueryFile<"groupingsets">();
+  registerQueryFile<"informationSchema">(/*v2Only=*/true);
   registerQueryFile<"join">();
   registerQueryFile<"limit">();
   registerQueryFile<"metadataAggregate">(/*v2Only=*/true);

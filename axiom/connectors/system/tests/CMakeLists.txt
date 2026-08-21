@@ -15,6 +15,7 @@
 add_executable(
   axiom_system_connector_test
   CoordinatorSchedulingTest.cpp
+  InformationSchemaTest.cpp
   SystemConnectorMetadataTest.cpp
   SystemConnectorSerDeTest.cpp
 )

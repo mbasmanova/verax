@@ -18,6 +18,8 @@
 
 #include <numeric>
 
+#include "axiom/connectors/ConnectorMetadataRegistry.h"
+#include "axiom/connectors/system/InformationSchema.h"
 #include "axiom/connectors/system/SystemConnector.h"
 #include "velox/common/base/Exceptions.h"
 
@@ -187,7 +189,44 @@ TablePtr SystemConnectorMetadata::findTable(const SchemaTableName& tableName) {
     return functionsTable_;
   }
 
+  if (InformationSchema::catalog(tableName.schema).has_value()) {
+    return informationSchemaTables_.withWLock([&](auto& tables) -> TablePtr {
+      const auto it = tables.find(tableName);
+      if (it != tables.end()) {
+        return it->second;
+      }
+
+      auto table = InformationSchema::findTable(tableName, connector_);
+      if (table != nullptr) {
+        tables.emplace(tableName, table);
+      }
+      return table;
+    });
+  }
+
   return nullptr;
+}
+
+std::vector<std::string> SystemConnectorMetadata::listSchemaNames(
+    const ConnectorSessionPtr& /*session*/) {
+  std::vector<std::string> names{
+      std::string(kRuntimeSchema), std::string(kMetadataSchema)};
+  for (const auto& catalog : ConnectorMetadataRegistry::allMetadataIds()) {
+    names.push_back(InformationSchema::schemaName(catalog));
+  }
+  return names;
+}
+
+bool SystemConnectorMetadata::schemaExists(
+    const ConnectorSessionPtr& /*session*/,
+    const std::string& schemaName) {
+  if (schemaName == kRuntimeSchema || schemaName == kMetadataSchema) {
+    return true;
+  }
+  auto catalog = InformationSchema::catalog(schemaName);
+  return catalog.has_value() &&
+      ConnectorMetadataRegistry::tryGet(std::string{catalog.value()}) !=
+      nullptr;
 }
 
 std::vector<std::string> SystemConnectorMetadata::listTableNames(
@@ -201,6 +240,9 @@ std::vector<std::string> SystemConnectorMetadata::listTableNames(
         std::string(kSessionPropertiesTable.table),
         std::string(kFunctionsTable.table),
     };
+  }
+  if (InformationSchema::catalog(schemaName).has_value()) {
+    return InformationSchema::tableNames();
   }
   return {};
 }

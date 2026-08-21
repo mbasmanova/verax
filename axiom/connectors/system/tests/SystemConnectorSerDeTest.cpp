@@ -16,6 +16,7 @@
 
 #include <gtest/gtest.h>
 #include "axiom/common/SchemaTableName.h"
+#include "axiom/connectors/system/InformationSchema.h"
 #include "axiom/connectors/system/SystemConnector.h"
 
 namespace facebook::axiom::connector::system {
@@ -57,6 +58,19 @@ class SystemConnectorSerDeTest : public testing::Test {
     }
   }
 
+  static void testSerde(const InformationSchemaTableHandle& handle) {
+    auto obj = handle.serialize();
+    auto clone =
+        velox::ISerializable::deserialize<InformationSchemaTableHandle>(
+            obj, nullptr);
+    ASSERT_EQ(handle.connectorId(), clone->connectorId());
+    ASSERT_EQ(handle.name(), clone->name());
+    ASSERT_EQ(handle.catalog(), clone->catalog());
+    ASSERT_EQ(handle.relation(), clone->relation());
+    ASSERT_EQ(handle.schemas(), clone->schemas());
+    ASSERT_EQ(handle.tables(), clone->tables());
+  }
+
   static void testSerde(const SystemSplit& split) {
     auto obj = split.serialize();
     auto clone = velox::ISerializable::deserialize<SystemSplit>(obj);
@@ -89,6 +103,20 @@ TEST_F(SystemConnectorSerDeTest, tableHandle) {
       SchemaTableName{"metadata", "session_properties"},
       std::move(columns));
   testSerde(handle2);
+}
+
+TEST_F(SystemConnectorSerDeTest, informationSchemaTableHandle) {
+  const std::string connectorId{"system"};
+  const SchemaTableName name{
+      InformationSchema::schemaName("cat"), std::string("columns")};
+
+  testSerde(InformationSchemaTableHandle(connectorId, name, {"s"}, {"t"}));
+
+  testSerde(InformationSchemaTableHandle(
+      connectorId, name, {"s1", "s2"}, {"t1", "t2"}));
+
+  // A filter no value passes names nothing to describe.
+  testSerde(InformationSchemaTableHandle(connectorId, name, {"s"}, {}));
 }
 
 TEST_F(SystemConnectorSerDeTest, connectorSplit) {

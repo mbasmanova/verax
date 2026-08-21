@@ -12,7 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-add_library(axiom_system_connector SystemConnector.cpp SystemConnectorMetadata.cpp)
+add_library(
+  axiom_system_connector
+  InformationSchema.cpp
+  SystemConnector.cpp
+  SystemConnectorMetadata.cpp
+)
 
 target_link_libraries(
   axiom_system_connector
