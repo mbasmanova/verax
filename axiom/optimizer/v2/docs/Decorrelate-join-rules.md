@@ -68,7 +68,7 @@ whether `applyB` pads on no-match (kLeft pad) or projects a mark
 
 | `joinKind` | `kindForB` | Outer envelope addition |
 |---|---|---|
-| `kInner` | `kLeft` | per-rn pad-collapse: drop `applyB` pad rows, keeping exactly one pad per outer with no match — see §"INNER pad-row drop" |
+| `kInner` | `kLeft`, or `kLeftSemiProject` under an outer `kLeftSemiProject` | per-rn pad-collapse: drop `applyB` pad rows, keeping exactly one pad per outer with no match — see §"INNER pad-row drop" |
 | `kLeft` | `kLeft` | none — `kLeft` pad maps to `A LEFT JOIN B`'s pad |
 | `kRight` | swap to `kLeft` with sides reversed (`applyA=B, applyB=A`) | none — symmetry |
 | `kFull` | NYI | needs both sides' unmatched rows; tree-only can't express without re-evaluating one side. Loud NYI. |
@@ -153,11 +153,17 @@ produces ≥1 row.
 - Mark composition: chain's `applyB` is kLeftSemiProject → emits its
   own mark per outer. Outer `markColumn` then equals the chained mark
   (possibly composed with applyA's mark if both contribute).
-- For body kInner+kSemi: mark = `applyA.mark AND applyB.mark`
-  (∃ a ∧ ∃ matching b).
-- For body kLeft: mark = `applyA.mark` (B doesn't gate existence —
-  unmatched B still emits via pad).
-- For body kSemi (in body) / kAnti: mark composes per kind.
+- For an unpredicated kInner body: mark = `applyA.mark AND applyB.mark`
+  (∃a ∧ ∃b), since with no predicate the two existences are independent.
+- For a kInner body carrying a predicate, that formula is wrong: existence
+  is a property of the (a, b) pair. `AssignUniqueId` tags each outer,
+  `applyA` is kLeft over A (so an outer with no a row still reaches the
+  window), `applyB` is kLeftSemiProject over B carrying the predicate and
+  the accumulated filter, and a `bool_or(applyA.mark AND applyB.mark)`
+  window over the outer's id answers the mark. One row per outer survives,
+  chosen by `padOrdinal = 1`; that is legal because `bool_or` reads the
+  whole partition and every remaining output column is an outer column.
+- Body kLeft, kLeftSemiFilter, kLeftSemiProject and kAnti: NYI loud.
 
 ### outerKind = `kLeftSemiProject` IN (inLhs != nullptr, inBodyKey set)
 
@@ -255,7 +261,8 @@ Combinations across (outerKind, joinKind):
 | kLeft (ESR=false) | kFull | NYI loud |
 | kLeft (ESR=false) | kLeftSemiProject | **in scope** |
 | kLeft (ESR=false) | kLeftSemiFilter / kAnti | NYI loud |
-| kLeftSemiProject EXISTS | any non-kFull | **in scope** (mark composes per §"outerKind = kLeftSemiProject EXISTS") |
+| kLeftSemiProject EXISTS | kInner, with or without predicate | **in scope** (mark composes per §"outerKind = kLeftSemiProject EXISTS") |
+| kLeftSemiProject EXISTS | kLeft / kLeftSemi* / kAnti | NYI loud |
 | kLeftSemiProject IN | any non-kFull | **in scope** (IN equi routed per `inBodyKey` reference site) |
 | any | kFull | NYI loud — needs DAG / re-evaluation of one side |
 

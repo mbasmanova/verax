@@ -311,6 +311,39 @@ FROM t
 SELECT t.a, (SELECT u.a FROM u WHERE u.a > t.a AND u.a IN (SELECT v.a FROM v)) AS b
 FROM t
 ----
+-- EXISTS whose body joins a correlated relation to another under an ON
+-- predicate: existence is a property of the pair, not of either side.
+-- error_v1: Nested correlation across subquery boundaries is not supported yet
+SELECT t.a, EXISTS (SELECT 1 FROM (SELECT u.a FROM u WHERE u.a = t.a) q JOIN v ON q.a = v.a) AS e
+FROM t
+----
+-- The same where several pairs match.
+-- error_v1: Nested correlation across subquery boundaries is not supported yet
+SELECT t.a, EXISTS (SELECT 1 FROM (SELECT u.a FROM u WHERE u.a <= t.a) q JOIN v ON q.a <= v.a) AS e
+FROM t
+----
+-- A predicate above the join inside the subquery narrows which pairs count.
+-- error_v1: Nested correlation across subquery boundaries is not supported yet
+SELECT t.a, EXISTS (SELECT 1 FROM (SELECT u.a FROM u WHERE u.a <= t.a) q JOIN v ON q.a <= v.a WHERE v.a > 4) AS e
+FROM t
+----
+-- A NULL join key never matches, so the outer holding it reads false.
+-- error_v1: Nested correlation across subquery boundaries is not supported yet
+SELECT t.a,
+  EXISTS (SELECT 1 FROM (SELECT u.a FROM u WHERE u.a = t.a) q
+          JOIN (VALUES (2), (CAST(NULL AS BIGINT))) AS n(a) ON q.a = n.a) AS e
+FROM t
+----
+-- No row of the join's correlated side belongs to the outer at all.
+-- error_v1: Nested correlation across subquery boundaries is not supported yet
+SELECT t.a, EXISTS (SELECT 1 FROM (SELECT u.a FROM u WHERE u.a = t.a + 100) q JOIN v ON q.a = v.a) AS e
+FROM t
+----
+-- NOT EXISTS over the same body.
+-- error_v1: Nested correlation across subquery boundaries is not supported yet
+SELECT t.a, NOT EXISTS (SELECT 1 FROM (SELECT u.a FROM u WHERE u.a = t.a) q JOIN v ON q.a = v.a) AS e
+FROM t
+----
 -- An IN whose subquery reads an outer column.
 -- error_v1: Join filter references column from unplaced non-single-row table
 SELECT t.a, (SELECT count(*) FROM u WHERE u.a = t.a AND u.a IN (SELECT v.a + t.a FROM v)) AS n
