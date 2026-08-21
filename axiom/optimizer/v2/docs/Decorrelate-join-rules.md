@@ -73,7 +73,7 @@ whether `applyB` pads on no-match (kLeft pad) or projects a mark
 | `kRight` | swap to `kLeft` with sides reversed (`applyA=B, applyB=A`) | none — symmetry |
 | `kFull` | NYI | needs both sides' unmatched rows; tree-only can't express without re-evaluating one side. Loud NYI. |
 | `kLeftSemiFilter` | `kLeftSemiProject` (apply emits per-A mark) | `Filter(mark)` then drop mark; equivalent to A-rows-with-any-matching-B |
-| `kLeftSemiProject` (in body) | `kLeftSemiProject` | mark propagates as a new column; outer's body-cols accordingly |
+| `kLeftSemiProject` (in body) | `kLeftSemiProject` | mark propagates as a new column; a filter reading that mark gates inclusion and triggers the per-rn pad-collapse — see §"outerKind = kLeft (scalar context)" |
 | `kAnti` | `kLeftSemiProject` | `Filter(NOT mark OR mark IS NULL)` |
 
 (Filter expressions in the envelope use `Builder::makeBoolean` /
@@ -113,9 +113,23 @@ semantics). Body's Join output becomes that row's value(s). Outer's
   - Body kLeft: `applyA.includeMarker` alone — the inner LEFT JOIN's
     right-side pad rows ARE real body rows (left preserved with
     NULL right cols), so applyB's marker must not gate inclusion.
-  - Body kSemi*: chain's `applyB.includeMarker` maps to outer's
-    `includeMarker` via the same aliasing the Limit peel uses (see
-    `Decorrelate-limit-rules.md` §"kLeft + count >= 1").
+  - Body kLeftSemiProject: `applyB` is itself kLeftSemiProject and has
+    no `includeMarker`; it writes the body's mark for every row `applyA`
+    produced. With no filter on that mark, `applyA.includeMarker` alone
+    gates inclusion. A filter on the mark (`WHERE x IN (...)` inside the
+    subquery) selects among body rows, so inclusion becomes
+    `COALESCE(applyA.includeMarker AND markFilter, false)` and the chain
+    runs the per-rn pad-collapse of §"INNER pad-row drop" to keep one
+    pad row for an outer whose body rows the filter all rejected.
+    `accumulatedFilter` splits by whether a conjunct reads the mark: the
+    rest reference only A and outer columns and ride on `applyA.filter`.
+  - A null-aware body (`IN` / `NOT IN`) carries the IN equality as its
+    single equi-pair, which must be re-hosted as `applyB`'s
+    `inLhs` / `inBodyKey` — `Apply.nullAware()` is defined as
+    `inLhs != nullptr`, so folding the pair into `applyB.filter` would
+    silently drop null-awareness. A body whose IN key reads outer
+    columns has its equality demoted into the Join filter by
+    `terminusSemi` and so carries no equi-pair; that shape is NYI loud.
 - ESR=true (`enforceSingleRow`) handling depends on body Join kind:
   - Body kLeft: leg-wise ESR on `applyA` (`|A| ≤ 1`) and `applyB`
     (per-A `|B| ≤ 1`) enforces the scalar bound; their conjunction is
@@ -126,6 +140,10 @@ semantics). Body's Join output becomes that row's value(s). Outer's
     the other side's rows. Run the per-rn pad-collapse first, then
     `EnforceDistinct(rn)` over the collapsed stream; see §"INNER
     pad-row drop."
+  - Body kLeftSemiProject: with no mark filter, `applyA` carries the ESR
+    (`|A| ≤ 1`), since semi projection is one row in, one row out. With
+    a mark filter, the legs carry none and `EnforceDistinct(rn)` runs
+    over the collapsed stream, as for kInner.
 
 ### outerKind = `kLeftSemiProject` EXISTS (inLhs == nullptr)
 
@@ -229,12 +247,14 @@ Combinations across (outerKind, joinKind):
 | kLeft (ESR=true) | kLeft | **in scope** |
 | kLeft (ESR=true) | kRight | **in scope** (via swap) |
 | kLeft (ESR=true) | kFull | NYI loud |
-| kLeft (ESR=true) | kLeftSemiFilter / kLeftSemiProject / kAnti | **in scope** |
+| kLeft (ESR=true) | kLeftSemiProject | **in scope** |
+| kLeft (ESR=true) | kLeftSemiFilter / kAnti | NYI loud |
 | kLeft (ESR=false) | kInner cross-join | **in scope** (per-rn pad-collapse; see §"INNER pad-row drop") |
 | kLeft (ESR=false) | kInner with predicate | designed (per-rn pad-collapse; see §"INNER pad-row drop"); **NYI loud** in code |
 | kLeft (ESR=false) | kLeft / kRight | **in scope** |
 | kLeft (ESR=false) | kFull | NYI loud |
-| kLeft (ESR=false) | kLeftSemi* / kAnti | **in scope** |
+| kLeft (ESR=false) | kLeftSemiProject | **in scope** |
+| kLeft (ESR=false) | kLeftSemiFilter / kAnti | NYI loud |
 | kLeftSemiProject EXISTS | any non-kFull | **in scope** (mark composes per §"outerKind = kLeftSemiProject EXISTS") |
 | kLeftSemiProject IN | any non-kFull | **in scope** (IN equi routed per `inBodyKey` reference site) |
 | any | kFull | NYI loud — needs DAG / re-evaluation of one side |
