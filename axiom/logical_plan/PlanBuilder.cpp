@@ -432,8 +432,35 @@ PlanBuilder& PlanBuilder::filter(const std::string& predicate) {
   return filter(untypedExpr);
 }
 
+namespace {
+// Returns 'predicate' if it is boolean, otherwise coerces it. 'errorLabel'
+// names the predicate in error messages.
+ExprPtr coerceToBoolean(
+    const ExprPtr& predicate,
+    const velox::TypeCoercer* coercer,
+    std::string_view errorLabel) {
+  if (predicate->type()->isBoolean()) {
+    return predicate;
+  }
+
+  VELOX_USER_CHECK_NOT_NULL(
+      coercer,
+      "{} must be boolean: {}",
+      errorLabel,
+      predicate->type()->toString());
+  VELOX_USER_CHECK(
+      coercer->coerce(predicate->type(), velox::BOOLEAN()).has_value(),
+      "{} must be coercible to boolean: {}",
+      errorLabel,
+      predicate->type()->toString());
+
+  return applyCoercion(predicate, velox::BOOLEAN());
+}
+} // namespace
+
 PlanBuilder& PlanBuilder::filter(const ExprApi& predicate) {
-  auto expr = resolveScalarTypes(predicate.expr());
+  auto expr = coerceToBoolean(
+      resolveScalarTypes(predicate.expr()), coercer_, "Filter predicate");
 
   node_ = std::make_shared<FilterNode>(nextId(), node_, std::move(expr));
 
@@ -1232,11 +1259,15 @@ PlanBuilder& PlanBuilder::join(
 
   ExprPtr expr;
   if (condition.has_value()) {
-    expr = resolver_.resolveScalarTypes(
-        condition->expr(), [&](const auto& alias, const auto& name) {
-          return resolveJoinInputName(
-              alias, name, *outputMapping_, inputRowType, outerScope_);
-        });
+    expr = coerceToBoolean(
+        resolver_.resolveScalarTypes(
+            condition->expr(),
+            [&](const auto& alias, const auto& name) {
+              return resolveJoinInputName(
+                  alias, name, *outputMapping_, inputRowType, outerScope_);
+            }),
+        coercer_,
+        "Join condition");
   }
 
   node_ = std::make_shared<JoinNode>(
@@ -1270,11 +1301,15 @@ PlanBuilder& PlanBuilder::lateralJoin(
 
   ExprPtr expr;
   if (condition.has_value()) {
-    expr = resolver_.resolveScalarTypes(
-        condition->expr(), [&](const auto& alias, const auto& name) {
-          return resolveJoinInputName(
-              alias, name, *outputMapping_, inputRowType, outerScope_);
-        });
+    expr = coerceToBoolean(
+        resolver_.resolveScalarTypes(
+            condition->expr(),
+            [&](const auto& alias, const auto& name) {
+              return resolveJoinInputName(
+                  alias, name, *outputMapping_, inputRowType, outerScope_);
+            }),
+        coercer_,
+        "Join condition");
   }
 
   node_ = std::make_shared<LateralJoinNode>(

@@ -84,22 +84,35 @@ TEST_F(ExprTest, looksConstant) {
   testLooksConstant(Cast(DOUBLE(), Col("a")), false);
 }
 
-TEST_F(ExprTest, conjunctAcceptsUnknownInput) {
-  // Mirror Velox's ConjunctExpr::resolveType, which accepts BOOLEAN or UNKNOWN.
+TEST_F(ExprTest, conjunctInputTypes) {
   auto schema = ROW({"p", "a"}, {BOOLEAN(), BIGINT()});
-  auto resolve = [&](const ExprApi& expr) {
-    return ExprResolver(nullptr, nullptr)
+  auto resolve = [&](const ExprApi& expr, const velox::TypeCoercer* coercer) {
+    return ExprResolver(nullptr, coercer)
         .resolveScalarTypes(expr.expr(), inputResolver(schema));
   };
 
   auto nullLiteral = Lit(Variant::null(TypeKind::UNKNOWN), UNKNOWN());
+  const auto* coercer = &velox::TypeCoercer::defaults();
 
-  EXPECT_EQ(*resolve(Col("p") && nullLiteral)->type(), *BOOLEAN());
-  EXPECT_EQ(*resolve(nullLiteral || Col("p"))->type(), *BOOLEAN());
+  // A null literal input types as UNKNOWN and coerces to boolean.
+  auto expr = resolve(Col("p") && nullLiteral, coercer);
+  EXPECT_EQ(*expr->type(), *BOOLEAN());
+  EXPECT_EQ(*expr->inputAt(1)->type(), *BOOLEAN());
 
-  // Non-boolean, non-unknown inputs remain rejected.
+  EXPECT_EQ(*resolve(nullLiteral || Col("p"), coercer)->type(), *BOOLEAN());
+
+  // Without a coercer, an UNKNOWN input is kept as is. Velox evaluates the
+  // conjunct only if it doesn't short-circuit first.
+  EXPECT_EQ(
+      *resolve(Col("p") && nullLiteral, nullptr)->inputAt(1)->type(),
+      *UNKNOWN());
+
+  // An input of a type that doesn't coerce to boolean is always rejected.
   VELOX_ASSERT_THROW(
-      resolve(Col("p") && Col("a")),
+      resolve(Col("p") && Col("a"), coercer),
+      "Conjunct expression argument is not coercible to BOOLEAN");
+  VELOX_ASSERT_THROW(
+      resolve(Col("p") && Col("a"), nullptr),
       "All inputs to AND and OR must be boolean");
 }
 

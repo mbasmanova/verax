@@ -1258,6 +1258,24 @@ TEST_F(ExpressionParserTest, lambdaParameterShadowsTableAlias) {
       matchScan().aggregate().project().output());
 }
 
+// The left operand and every row in an IN list are coerced to one common row
+// type, even when a different side of the comparison widens per field.
+TEST_F(ExpressionParserTest, rowInListCoercion) {
+  auto expr = parseExpr(
+      "(integer '1', integer '2') IN ((bigint '3', tinyint '4'), (1, 2))");
+
+  ASSERT_EQ(expr->as<lp::SpecialFormExpr>()->form(), lp::SpecialForm::kIn);
+
+  const auto expectedType = ROW({BIGINT(), INTEGER()});
+  for (const auto& input : expr->inputs()) {
+    EXPECT_EQ(*input->type(), *expectedType) << input->toString();
+  }
+
+  VELOX_ASSERT_THROW(
+      parseExpr("(integer '1', integer '2') IN ((varchar 'x', 2))"),
+      "All inputs to IN must be coercible to a single type");
+}
+
 // Presto allows BIGINT -> REAL coercion: real / bigint returns REAL.
 TEST_F(ExpressionParserTest, bigintToRealCoercion) {
   EXPECT_EQ(*REAL(), *parseExpr("real '1' / bigint '2'")->type());
