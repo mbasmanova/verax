@@ -15,6 +15,7 @@
  */
 
 #include "axiom/connectors/system/SystemConnector.h"
+#include "axiom/connectors/system/InformationSchema.h"
 
 #include <algorithm>
 
@@ -865,11 +866,28 @@ SystemConnector::SystemConnector(
       queryInfoProvider_(queryInfoProvider),
       sessionPropertiesProvider_(sessionPropertiesProvider) {}
 
+void SystemConnector::registerSerDe() {
+  SystemTableHandle::registerSerDe();
+  InformationSchemaTableHandle::registerSerDe();
+  SystemColumnHandle::registerSerDe();
+  SystemSplit::registerSerDe();
+}
+
 std::unique_ptr<velox::connector::DataSource> SystemConnector::createDataSource(
     const velox::RowTypePtr& outputType,
     const velox::connector::ConnectorTableHandlePtr& tableHandle,
     const velox::connector::ColumnHandleMap& columnHandles,
     velox::connector::ConnectorQueryCtx* connectorQueryCtx) {
+  if (auto infoSchemaHandle =
+          std::dynamic_pointer_cast<const InformationSchemaTableHandle>(
+              tableHandle)) {
+    return InformationSchema::makeDataSource(
+        infoSchemaHandle,
+        outputType,
+        columnHandles,
+        connectorQueryCtx->memoryPool());
+  }
+
   auto* systemHandle =
       dynamic_cast<const SystemTableHandle*>(tableHandle.get());
   VELOX_CHECK_NOT_NULL(systemHandle, "Expected SystemTableHandle");

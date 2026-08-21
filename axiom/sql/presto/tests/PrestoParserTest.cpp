@@ -14,6 +14,10 @@
  * limitations under the License.
  */
 
+#include <folly/ScopeGuard.h>
+#include "axiom/connectors/ConnectorMetadataRegistry.h"
+#include "axiom/connectors/system/InformationSchema.h"
+#include "axiom/connectors/system/SystemConnectorMetadata.h"
 #include "axiom/sql/presto/PrestoSqlError.h"
 #include "axiom/sql/presto/tests/ExpectPrestoSqlError.h"
 #include "axiom/sql/presto/tests/PrestoParserTestBase.h"
@@ -26,7 +30,38 @@ namespace lp = facebook::axiom::logical_plan;
 
 namespace {
 
-class PrestoParserTest : public PrestoParserTestBase {};
+namespace connector = facebook::axiom::connector;
+using lp::test::LogicalPlanMatcherBuilder;
+
+class PrestoParserTest : public PrestoParserTestBase {
+ protected:
+  // information_schema names resolve to the system connector, so it must be
+  // registered for them to parse.
+  void SetUp() override {
+    PrestoParserTestBase::SetUp();
+
+    systemConnector_ = std::make_shared<connector::system::SystemConnector>(
+        kSystemConnectorId,
+        /*queryInfoProvider=*/nullptr,
+        /*sessionPropertiesProvider=*/nullptr);
+    connector::ConnectorMetadataRegistry::global().insert(
+        kSystemConnectorId,
+        std::make_shared<connector::system::SystemConnectorMetadata>(
+            systemConnector_.get()));
+  }
+
+  void TearDown() override {
+    connector::ConnectorMetadataRegistry::global().erase(kSystemConnectorId);
+    systemConnector_.reset();
+
+    PrestoParserTestBase::TearDown();
+  }
+
+  const std::string kSystemConnectorId{
+      ParserOptions::kInformationSchemaConnectorIdDefault};
+
+  std::shared_ptr<connector::system::SystemConnector> systemConnector_;
+};
 
 TEST_F(PrestoParserTest, unnest) {
   {
@@ -2199,6 +2234,38 @@ TEST_F(PrestoParserTest, semanticErrorHasMessageTemplate) {
         << "Semantic errors must have a messageTemplate for Scuba grouping";
     EXPECT_EQ(std::string(e.messageTemplate()), "Table not found: {}");
   }
+}
+
+// A catalog's information_schema relations are served by the system connector,
+// so the name resolves there with the catalog carried in the schema.
+TEST_F(PrestoParserTest, informationSchemaRoutesToSystemConnector) {
+  // The schema names the catalog the relations describe.
+  const auto matchInformationSchema = [&](const lp::LogicalPlanNodePtr& node) {
+    const auto* scan = node->as<lp::TableScanNode>();
+    EXPECT_EQ(scan->connectorId(), "system");
+    EXPECT_EQ(scan->tableName().schema, "$info_schema@test");
+    EXPECT_EQ(scan->tableName().table, "columns");
+  };
+
+  auto matcher = LogicalPlanMatcherBuilder()
+                     .tableScan(matchInformationSchema)
+                     .filter()
+                     .project()
+                     .output();
+
+  // The catalog defaults to the session's when the name does not give one.
+  testSelect(
+      "SELECT column_name FROM information_schema.columns "
+      "WHERE table_schema = 's' AND table_name = 't'",
+      matcher);
+
+  // A name that gives the catalog resolves the same way, in any case.
+  testSelect(
+      fmt::format(
+          "SELECT column_name FROM {}.INFORMATION_SCHEMA.columns "
+          "WHERE table_schema = 's' AND table_name = 't'",
+          kConnectorId),
+      matcher);
 }
 
 } // namespace

@@ -7,6 +7,10 @@ active queries, session properties, and other operational state. The
 application registers it under a catalog name of its choice (the CLI
 uses `system`).
 
+It also serves the `information_schema` relations of every other
+catalog, since those describe schemas, tables and columns rather than
+belonging to any one connector.
+
 ## Schemas and Tables
 
 ### system.metadata
@@ -18,6 +22,82 @@ signatures.
 |-------|-------------|
 | `session_properties` | All registered session properties with current values, defaults, and descriptions. |
 | `functions` | All registered function signatures with types, arguments, and metadata. |
+
+### <catalog>.information_schema
+
+What a catalog contains: its tables, its views, and their columns. A
+query names these per catalog, as `hive.information_schema.columns`.
+The parser resolves that to this connector, carrying the catalog in the
+schema: `system."$info_schema@hive".columns`. Nobody types the resolved
+name; `$info_schema@` is reserved so a catalog name cannot collide with
+`runtime` or `metadata`.
+
+| Table | Description |
+|-------|-------------|
+| `tables` | One row per table or view, with its type. |
+| `views` | One row per view, with the text it was defined with. |
+| `columns` | One row per column of a table or view. |
+
+#### What a query may ask
+
+**A query must name the tables to describe.** Its filters have to pin
+`table_schema` and `table_name`, and only these forms name them:
+
+| Form | Example |
+|------|---------|
+| Equality | `table_name = 'orders'` |
+| `IN` list | `table_name IN ('orders', 'lineitem')` |
+
+Anything else leaves the query unbounded and fails at planning, with a
+message naming the filter to add:
+
+```
+Querying information_schema.columns requires a filter naming table_name,
+e.g. table_name = 't'
+```
+
+Unbounded forms include a pattern (`table_name LIKE 'o%'`), a range
+(`table_name > 'o'`), a name that reaches the scan through an `OR` or a
+subquery, and naming only one of the two columns. Naming neither fails
+on `table_schema` first.
+
+Filters on any other column — `data_type`, `table_catalog`, `is_nullable`
+— narrow the result but name nothing, so they are applied above the scan
+and never make a query servable on their own.
+
+A named table the catalog does not have, or a named schema it does not
+have, contributes no rows rather than failing. So does a filter no value
+passes, such as `table_name IN ()`.
+
+This is a deliberate divergence from Presto, which answers an unfiltered
+query by listing every table in a schema and reading each one's
+metadata. That does not hold up on a large catalog, so Axiom asks the
+catalog only about names a query gives it.
+
+#### Other restrictions
+
+- Served for the v2 optimizer. The v1 optimizer offers a connector one
+  filter at a time, so a query never names both the schema and the
+  table, and it fails as unbounded.
+- `DESCRIBE`, `SHOW COLUMNS` and `SHOW TABLES` resolve these relations
+  like any other table, so `SHOW TABLES FROM hive.information_schema`
+  lists them.
+- `data_type` is spelled the way the type system spells it, lower-cased.
+  A decimal reads as `decimal(10,2)`; complex types do not match
+  Presto's spelling.
+- `view_owner`, `column_default`, `comment` and `length` are always
+  null: ownership, defaults, comments and declared widths are not
+  tracked.
+- A query reports the relation it scanned as a table of this connector,
+  e.g. `system."$info_schema@hive".columns`, not as a table of the
+  catalog it describes. Anything reading a query's referenced tables,
+  such as an access check, sees that name.
+- The rows are read through the catalog's globally registered metadata,
+  with a session of this connector rather than of the catalog being
+  described.
+
+The rows come from catalog metadata, which only the coordinator can
+read, so these scans are placed there.
 
 ### system.runtime
 
@@ -51,6 +131,22 @@ WHERE is_variadic ORDER BY 1;
 -- List all active queries.
 SELECT query_id, state, query, elapsed_time_ms
 FROM system.runtime.queries;
+
+-- Columns of one table, as a client introspecting a schema asks for them.
+SELECT column_name, data_type, ordinal_position
+FROM information_schema.columns
+WHERE table_schema = 'sales' AND table_name = 'orders'
+ORDER BY ordinal_position;
+
+-- Whether a name is a table or a view.
+SELECT table_name, table_type
+FROM hive.information_schema.tables
+WHERE table_schema = 'sales' AND table_name IN ('orders', 'daily_orders');
+
+-- The text a view was defined with.
+SELECT view_definition
+FROM information_schema.views
+WHERE table_schema = 'sales' AND table_name = 'daily_orders';
 ```
 
 ## Table Schemas
@@ -118,6 +214,43 @@ One row per function signature (overload).
 
 </details>
 
+### <catalog>.information_schema.tables
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `table_catalog` | VARCHAR | Catalog the table belongs to. |
+| `table_schema` | VARCHAR | Schema the table belongs to. |
+| `table_name` | VARCHAR | Name of the table. |
+| `table_type` | VARCHAR | `BASE TABLE` or `VIEW`. |
+
+### <catalog>.information_schema.views
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `table_catalog` | VARCHAR | Catalog the view belongs to. |
+| `table_schema` | VARCHAR | Schema the view belongs to. |
+| `table_name` | VARCHAR | Name of the view. |
+| `view_owner` | VARCHAR | Always null; ownership is not tracked. |
+| `view_definition` | VARCHAR | The text the view was defined with. |
+
+### <catalog>.information_schema.columns
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `table_catalog` | VARCHAR | Catalog the column's table belongs to. |
+| `table_schema` | VARCHAR | Schema the column's table belongs to. |
+| `table_name` | VARCHAR | Table the column belongs to. |
+| `column_name` | VARCHAR | Name of the column. |
+| `ordinal_position` | BIGINT | Position of the column, counting from one. |
+| `column_default` | VARCHAR | Always null; defaults apply to writes. |
+| `is_nullable` | VARCHAR | Always `YES`; nullability is not tracked. |
+| `data_type` | VARCHAR | Type of the column, in lower case. |
+| `comment` | VARCHAR | Always null; comments are not tracked. |
+| `extra_info` | VARCHAR | What the connector says about the column's role, e.g. `partition key`. |
+| `precision` | BIGINT | Digits an integer or decimal type holds, mantissa bits for a floating-point one; null for other types. |
+| `scale` | BIGINT | Scale of a decimal; null for other types. |
+| `length` | BIGINT | Always null; types carry no declared width. |
+
 ## Architecture
 
 The system connector has two layers:
@@ -158,4 +291,19 @@ Query time:
     → connector dispatches to SessionPropertiesDataSource
     → data source calls SessionPropertiesProvider::getSessionProperties()
     → returns rows
+```
+
+The information_schema relations take the same path but read another
+catalog rather than a provider:
+
+```
+Query time:
+  SQL "SELECT ... FROM hive.information_schema.columns WHERE ..."
+    → parser resolves it to system."$info_schema@hive".columns
+    → optimizer offers the filters to createTableHandle(), which takes the
+      ones naming schemas and tables and rejects the rest, failing the
+      query if what it took does not name the tables to describe
+    → runner calls SystemConnector::createDataSource()
+    → data source looks up each named table in the hive catalog's ConnectorMetadata
+      and describes it, a batch of rows at a time
 ```

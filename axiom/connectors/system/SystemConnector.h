@@ -241,11 +241,7 @@ class SystemConnector : public velox::connector::Connector {
   }
 
   /// Registers deserialization functions for all system connector types.
-  static void registerSerDe() {
-    SystemTableHandle::registerSerDe();
-    SystemColumnHandle::registerSerDe();
-    SystemSplit::registerSerDe();
-  }
+  static void registerSerDe();
 
  private:
   const QueryInfoProvider* queryInfoProvider_;

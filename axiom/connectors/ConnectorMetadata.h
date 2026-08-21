@@ -175,15 +175,20 @@ class Column {
   /// @param hidden If true, the column doesn't appear in the output of SELECT *
   /// FROM t query. Still, the column can be accessed by name: SELECT ...,
   /// foo,... FROM t.
+  /// @param extraInfo What the connector says about the column's role beyond
+  /// its name and type, in its own words, e.g. 'partition key'. Reported to a
+  /// client as given.
   Column(
       std::string name,
       velox::TypePtr type,
       bool hidden,
-      bool includeInExplainIo = false)
+      bool includeInExplainIo = false,
+      std::optional<std::string> extraInfo = std::nullopt)
       : name_{std::move(name)},
         type_{std::move(type)},
         hidden_{hidden},
         includeInExplainIo_{includeInExplainIo},
+        extraInfo_{std::move(extraInfo)},
         defaultValue_{velox::Variant::null(type_->kind())} {
     VELOX_CHECK_NOT_NULL(type_);
     VELOX_CHECK(!name_.empty());
@@ -195,11 +200,13 @@ class Column {
       velox::TypePtr type,
       bool hidden,
       velox::Variant defaultValue,
-      bool includeInExplainIo = false)
+      bool includeInExplainIo = false,
+      std::optional<std::string> extraInfo = std::nullopt)
       : name_{std::move(name)},
         type_{std::move(type)},
         hidden_{hidden},
         includeInExplainIo_{includeInExplainIo},
+        extraInfo_{std::move(extraInfo)},
         defaultValue_{std::move(defaultValue)} {
     VELOX_CHECK_NOT_NULL(type_);
     VELOX_CHECK(!name_.empty());
@@ -242,6 +249,13 @@ class Column {
     return defaultValue_;
   }
 
+  /// What the connector says about the column's role beyond its name and
+  /// type, in its own words, e.g. 'partition key'. std::nullopt when it says
+  /// nothing.
+  const std::optional<std::string>& extraInfo() const {
+    return extraInfo_;
+  }
+
   /// Returns true if this column should appear in EXPLAIN IO output.
   /// Set by connectors for columns relevant to IO (e.g., partition columns).
   /// Only VARCHAR and integer types (TINYINT, SMALLINT, INTEGER, BIGINT) are
@@ -265,6 +279,7 @@ class Column {
   const velox::TypePtr type_;
   const bool hidden_;
   const bool includeInExplainIo_;
+  const std::optional<std::string> extraInfo_;
   const velox::Variant defaultValue_;
 
   // The latest element added to 'allStats_'.

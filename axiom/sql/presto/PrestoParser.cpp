@@ -15,6 +15,8 @@
  */
 
 #include "axiom/sql/presto/PrestoParser.h"
+
+#include <boost/algorithm/string/predicate.hpp>
 #include <folly/ScopeGuard.h>
 #include <folly/container/F14Map.h>
 #include <folly/container/small_vector.h>
@@ -25,6 +27,7 @@
 #include "axiom/common/CatalogSchemaTableName.h"
 #include "axiom/connectors/ConnectorMetadata.h"
 #include "axiom/connectors/ConnectorMetadataRegistry.h"
+#include "axiom/connectors/system/InformationSchema.h"
 #include "axiom/logical_plan/PlanBuilder.h"
 #include "axiom/sql/presto/ColumnsExpansion.h"
 #include "axiom/sql/presto/CteScope.h"
@@ -207,7 +210,15 @@ class ParserHelper {
   DepthLimitListener depthListener_;
 };
 
-std::pair<std::string, facebook::axiom::SchemaTableName> toConnectorTable(
+// A catalog's information_schema relations are served by another connector,
+// so a name whose schema is information_schema resolves there.
+bool isInformationSchema(std::string_view schema) {
+  static constexpr std::string_view kInformationSchema = "information_schema";
+  return boost::iequals(schema, kInformationSchema);
+}
+
+std::pair<std::string, facebook::axiom::SchemaTableName>
+toConnectorTableInCatalog(
     const QualifiedName& name,
     const std::string& defaultConnectorId,
     const std::string& defaultSchema) {
@@ -227,6 +238,44 @@ std::pair<std::string, facebook::axiom::SchemaTableName> toConnectorTable(
   // connector.schema.name
   VELOX_CHECK_EQ(3, parts.size());
   return {parts[0], {parts[1], parts[2]}};
+}
+
+// The information_schema relations describe a catalog but are served by one
+// connector, so '<catalog>.information_schema.<relation>' resolves to
+// '<that connector>."$info_schema@<catalog>".<relation>'. The catalog travels
+// in the schema, which is where the relation reads its metadata from.
+std::pair<std::string, facebook::axiom::SchemaTableName> toConnectorTable(
+    const QualifiedName& name,
+    const std::string& defaultConnectorId,
+    const std::string& defaultSchema,
+    std::string_view informationSchemaConnectorId) {
+  auto [connectorId, table] =
+      toConnectorTableInCatalog(name, defaultConnectorId, defaultSchema);
+
+  if (!isInformationSchema(table.schema)) {
+    return {std::move(connectorId), std::move(table)};
+  }
+
+  return {
+      std::string(informationSchemaConnectorId),
+      {facebook::axiom::connector::system::InformationSchema::schemaName(
+           connectorId),
+       std::move(table.table)}};
+}
+
+// Statement paths that do not carry the session's options resolve
+// information_schema through the connector it names by default. The id is a
+// deployment-wide setting, so a session that overrides it changes where a
+// SELECT resolves, not where DESCRIBE does.
+std::pair<std::string, facebook::axiom::SchemaTableName> toConnectorTable(
+    const QualifiedName& name,
+    const std::string& defaultConnectorId,
+    const std::string& defaultSchema) {
+  return toConnectorTable(
+      name,
+      defaultConnectorId,
+      defaultSchema,
+      ParserOptions::kInformationSchemaConnectorIdDefault);
 }
 
 // Resolves a column reference against both sides of a JOIN. Raises an error
@@ -688,7 +737,10 @@ class RelationPlanner : public AstVisitor {
 
     // Regular base-table reference.
     const auto [connectorId, connectorTable] = toConnectorTable(
-        name, context_.defaultConnectorId.value(), defaultSchema_);
+        name,
+        context_.defaultConnectorId.value(),
+        defaultSchema_,
+        options_.informationSchemaConnectorId);
 
     auto metadata =
         facebook::axiom::connector::ConnectorMetadataRegistry::get(connectorId);
@@ -3075,6 +3127,15 @@ SqlStatementPtr parseShowTables(
       connectorId = parts[0];
       schema = parts[1];
     }
+  }
+
+  // A catalog's information_schema is served by another connector, with the
+  // catalog carried in the schema.
+  if (isInformationSchema(schema)) {
+    schema = facebook::axiom::connector::system::InformationSchema::schemaName(
+        connectorId);
+    connectorId =
+        std::string(ParserOptions::kInformationSchemaConnectorIdDefault);
   }
 
   auto metadata =

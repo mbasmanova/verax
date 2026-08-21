@@ -40,6 +40,7 @@ target_link_libraries(
   axiom_logical_plan_builder
   axiom_sql_presto_ast
   axiom_sql_presto_error
+  axiom_system_connector
   velox_common_base
   velox_common_config
   velox_presto_types
