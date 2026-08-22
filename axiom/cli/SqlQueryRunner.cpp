@@ -875,7 +875,7 @@ std::vector<presto::SqlStatementPtr> SqlQueryRunner::parseMultiple(
       collectConnectorProperties(*sessionConfig_));
   auto prestoParser = std::make_unique<presto::PrestoParser>(
       defaultConnectorId, defaultSchema, std::move(parserSession));
-  return prestoParser->parseMultiple(sql, /*enableTracing=*/options.debugMode);
+  return prestoParser->parseMultiple(sql, /*enableTracing=*/false);
 }
 
 presto::SqlStatementPtr SqlQueryRunner::parseSingle(
