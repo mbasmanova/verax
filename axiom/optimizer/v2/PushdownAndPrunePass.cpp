@@ -187,11 +187,8 @@ std::optional<MarkFusion> fuseMarkFilter(
   if (node->joinType() != velox::core::JoinType::kLeftSemiProject) {
     return std::nullopt;
   }
-  // The mark is the last output column of a kLeftSemiProject join.
-  VELOX_CHECK(
-      !node->outputColumns().empty(),
-      "kLeftSemiProject join must produce a mark column");
-  ColumnCP mark = node->outputColumns().back();
+  ColumnCP mark = node->markColumn();
+  VELOX_CHECK_NOT_NULL(mark);
 
   // A consumer strictly above keeps the mark live; fusion drops it.
   if (requiredAbove.contains(mark)) {
@@ -865,7 +862,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     if (auto fusion =
             fuseMarkFilter(node, context.pending, context.requiredAbove)) {
       newKind = fusion->joinType;
-      fusedMark = node->outputColumns().back();
+      fusedMark = node->markColumn();
       fusedNullAware =
           newKind == velox::core::JoinType::kAnti && node->nullAware();
       ExprVector remaining;

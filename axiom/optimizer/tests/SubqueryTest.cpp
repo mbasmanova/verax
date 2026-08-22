@@ -27,8 +27,14 @@ namespace {
 using namespace velox;
 namespace lp = facebook::axiom::logical_plan;
 
-class SubqueryTest : public test::HiveQueriesTestBase {
+class SubqueryTest : public test::HiveQueriesTestBase,
+                     public ::testing::WithParamInterface<bool> {
  protected:
+  void SetUp() override {
+    useV2_ = GetParam();
+    test::HiveQueriesTestBase::SetUp();
+  }
+
   static void SetUpTestCase() {
     test::HiveQueriesTestBase::SetUpTestCase();
     createTpchTables(
@@ -40,7 +46,7 @@ class SubqueryTest : public test::HiveQueriesTestBase {
   }
 };
 
-TEST_F(SubqueryTest, uncorrelatedScalar) {
+TEST_P(SubqueryTest, uncorrelatedScalar) {
   // = <subquery>
   {
     auto query =
@@ -120,7 +126,7 @@ TEST_F(SubqueryTest, uncorrelatedScalar) {
 }
 
 // IN list mixing subqueries with non-subquery expressions.
-TEST_F(SubqueryTest, inListWithMixedSubqueries) {
+TEST_P(SubqueryTest, inListWithMixedSubqueries) {
   // IN list with a scalar subquery and a literal. The scalar subquery is
   // extracted, cross-joined, and the IN becomes in(n_regionkey, max, 2).
   {
@@ -138,7 +144,7 @@ TEST_F(SubqueryTest, inListWithMixedSubqueries) {
             .project()
             .build();
 
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
   // IN list with two scalar subqueries. Both are extracted, cross-joined, and
@@ -161,14 +167,14 @@ TEST_F(SubqueryTest, inListWithMixedSubqueries) {
             .project()
             .build();
 
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 }
 
 // IN with a constant (table-less) left side over a real source. With no table
 // to anchor the constant on, the optimizer materializes it as a one-row Values
 // relation and runs the IN as a null-aware semi-join against the source.
-TEST_F(SubqueryTest, uncorrelatedInConstantLeftSide) {
+TEST_P(SubqueryTest, uncorrelatedInConstantLeftSide) {
   auto query = "SELECT 1 IN (SELECT r_regionkey FROM region)";
   SCOPED_TRACE(query);
 
@@ -181,10 +187,10 @@ TEST_F(SubqueryTest, uncorrelatedInConstantLeftSide) {
                      .build();
 
   auto plan = toSingleNodePlan(query);
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V1(plan, matcher);
 }
 
-TEST_F(SubqueryTest, correlatedExists) {
+TEST_P(SubqueryTest, correlatedExists) {
   {
     auto query =
         "SELECT * FROM nation WHERE "
@@ -199,7 +205,7 @@ TEST_F(SubqueryTest, correlatedExists) {
     {
       SCOPED_TRACE(query);
       auto plan = toSingleNodePlan(query);
-      AXIOM_ASSERT_PLAN(plan, matcher);
+      AXIOM_ASSERT_PLAN_V1(plan, matcher);
     }
 
     query =
@@ -209,7 +215,7 @@ TEST_F(SubqueryTest, correlatedExists) {
     {
       SCOPED_TRACE(query);
       auto plan = toSingleNodePlan(query);
-      AXIOM_ASSERT_PLAN(plan, matcher);
+      AXIOM_ASSERT_PLAN_V1(plan, matcher);
     }
 
     // EXISTS with DISTINCT. DISTINCT is semantically unnecessary for EXISTS
@@ -222,7 +228,7 @@ TEST_F(SubqueryTest, correlatedExists) {
     {
       SCOPED_TRACE(query);
       auto plan = toSingleNodePlan(query);
-      AXIOM_ASSERT_PLAN(plan, matcher);
+      AXIOM_ASSERT_PLAN_V1(plan, matcher);
     }
   }
 
@@ -241,7 +247,7 @@ TEST_F(SubqueryTest, correlatedExists) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
   {
@@ -258,7 +264,7 @@ TEST_F(SubqueryTest, correlatedExists) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
   // Correlated conjuncts referencing multiple tables.
@@ -278,11 +284,11 @@ TEST_F(SubqueryTest, correlatedExists) {
     {
       SCOPED_TRACE(query);
       auto plan = toSingleNodePlan(query);
-      AXIOM_ASSERT_PLAN(plan, matcher);
+      AXIOM_ASSERT_PLAN_V1(plan, matcher);
     }
   }
 }
-TEST_F(SubqueryTest, uncorrelatedProject) {
+TEST_P(SubqueryTest, uncorrelatedProject) {
   // Uncorrelated scalar subquery in projection.
   {
     auto query =
@@ -301,7 +307,7 @@ TEST_F(SubqueryTest, uncorrelatedProject) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
   // Uncorrelated scalar subquery in projection with global aggregation in the
@@ -324,7 +330,7 @@ TEST_F(SubqueryTest, uncorrelatedProject) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
   // Uncorrelated scalar subquery in projection with GROUP BY aggregation in the
@@ -348,7 +354,7 @@ TEST_F(SubqueryTest, uncorrelatedProject) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
   // IN <subquery> in projection.
@@ -371,7 +377,7 @@ TEST_F(SubqueryTest, uncorrelatedProject) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
   // NOT IN <subquery> in projection.
@@ -394,7 +400,7 @@ TEST_F(SubqueryTest, uncorrelatedProject) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
   // Uncorrelated EXISTS in projection.
@@ -414,7 +420,7 @@ TEST_F(SubqueryTest, uncorrelatedProject) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
   // Uncorrelated NOT EXISTS in projection.
@@ -435,11 +441,11 @@ TEST_F(SubqueryTest, uncorrelatedProject) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 }
 
-TEST_F(SubqueryTest, correlatedIn) {
+TEST_P(SubqueryTest, correlatedIn) {
   // Find customers with at least one order.
   {
     auto query =
@@ -458,7 +464,7 @@ TEST_F(SubqueryTest, correlatedIn) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
   // Find customers with no orders.
@@ -482,7 +488,7 @@ TEST_F(SubqueryTest, correlatedIn) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
   // Correlated IN subquery with non-equality filter in the SELECT list produces
@@ -514,13 +520,13 @@ TEST_F(SubqueryTest, correlatedIn) {
                        .build();
 
     auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 }
 
 // Correlated IN subquery where the correlation predicate is an equality
 // on different columns than the IN equality.
-TEST_F(SubqueryTest, correlatedInWithCorrelationFilter) {
+TEST_P(SubqueryTest, correlatedInWithCorrelationFilter) {
   testConnector_->addTable("t", ROW({"a", "b", "c"}, BIGINT()));
   testConnector_->addTable("u", ROW({"x", "y", "z"}, BIGINT()));
 
@@ -541,7 +547,7 @@ TEST_F(SubqueryTest, correlatedInWithCorrelationFilter) {
             .project()
             .build();
     auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
   // Two correlation equalities.
@@ -562,13 +568,13 @@ TEST_F(SubqueryTest, correlatedInWithCorrelationFilter) {
                        .project()
                        .build();
     auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 }
 
 // Correlated IN subquery with both equality and non-equality correlation
 // predicates.
-TEST_F(SubqueryTest, correlatedInWithMixedCorrelationFilter) {
+TEST_P(SubqueryTest, correlatedInWithMixedCorrelationFilter) {
   testConnector_->addTable("t", ROW({"a", "b", "c"}, BIGINT()));
   testConnector_->addTable("u", ROW({"x", "y", "z"}, BIGINT()));
 
@@ -588,11 +594,11 @@ TEST_F(SubqueryTest, correlatedInWithMixedCorrelationFilter) {
                      .project()
                      .build();
   auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V1(plan, matcher);
 }
 
 // Correlated IN subquery where the correlation equality duplicates the IN key.
-TEST_F(SubqueryTest, correlatedInWithRedundantCorrelationFilter) {
+TEST_P(SubqueryTest, correlatedInWithRedundantCorrelationFilter) {
   testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
   testConnector_->addTable("u", ROW({"x", "y"}, BIGINT()));
 
@@ -610,12 +616,12 @@ TEST_F(SubqueryTest, correlatedInWithRedundantCorrelationFilter) {
                      .project()
                      .build();
   auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V1(plan, matcher);
 }
 
 // IN subquery whose correlation predicate references a sibling of the IN's
 // outer table: t and u join into a single source feeding the SEMI on v.
-TEST_F(SubqueryTest, correlatedInOnSibling) {
+TEST_P(SubqueryTest, correlatedInOnSibling) {
   testConnector_->addTable("t", ROW("a", BIGINT()));
   testConnector_->addTable("u", ROW("k", BIGINT()));
   testConnector_->addTable("v", ROW({"k", "b"}, BIGINT()));
@@ -630,11 +636,11 @@ TEST_F(SubqueryTest, correlatedInOnSibling) {
           .hashJoin(matchScan("v").project(), core::JoinType::kLeftSemiFilter)
           .build();
   auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V1(plan, matcher);
 }
 
 // IN subquery where the left-side expression references multiple tables.
-TEST_F(SubqueryTest, multiTableInSubquery) {
+TEST_P(SubqueryTest, multiTableInSubquery) {
   testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
   testConnector_->addTable("u", ROW({"c", "d"}, BIGINT()));
   testConnector_->addTable("v", ROW({"e", "f"}, BIGINT()));
@@ -654,10 +660,10 @@ TEST_F(SubqueryTest, multiTableInSubquery) {
           .build();
 
   auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V1(plan, matcher);
 }
 
-TEST_F(SubqueryTest, correlatedScalar) {
+TEST_P(SubqueryTest, correlatedScalar) {
   // Correlated scalar subquery with aggregation in filter.
   {
     auto query =
@@ -679,7 +685,7 @@ TEST_F(SubqueryTest, correlatedScalar) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
   {
@@ -703,7 +709,7 @@ TEST_F(SubqueryTest, correlatedScalar) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
   {
@@ -724,11 +730,11 @@ TEST_F(SubqueryTest, correlatedScalar) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 }
 
-TEST_F(SubqueryTest, correlatedProject) {
+TEST_P(SubqueryTest, correlatedProject) {
   auto matchAggNation = [&]() {
     return matchHiveScan("nation").singleAggregation().project();
   };
@@ -749,7 +755,7 @@ TEST_F(SubqueryTest, correlatedProject) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
   // Correlated scalar subquery in projection with SUM aggregation.
@@ -766,7 +772,7 @@ TEST_F(SubqueryTest, correlatedProject) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
   // Multiple scalar subqueries in projection.
@@ -787,7 +793,7 @@ TEST_F(SubqueryTest, correlatedProject) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
   // EXISTS <subquery> in projection.
@@ -809,7 +815,7 @@ TEST_F(SubqueryTest, correlatedProject) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
   // Correlated IN <subquery> in projection.
@@ -831,7 +837,7 @@ TEST_F(SubqueryTest, correlatedProject) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
   // Correlated NOT IN <subquery> in projection.
@@ -853,11 +859,11 @@ TEST_F(SubqueryTest, correlatedProject) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 }
 
-TEST_F(SubqueryTest, uncorrelatedExists) {
+TEST_P(SubqueryTest, uncorrelatedExists) {
   // Uncorrelated EXISTS: returns all rows if subquery has rows.
   {
     auto query = "SELECT * FROM region WHERE EXISTS (SELECT 1 FROM nation)";
@@ -874,7 +880,7 @@ TEST_F(SubqueryTest, uncorrelatedExists) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
   // Uncorrelated NOT EXISTS: returns all rows if subquery has no rows.
@@ -893,11 +899,11 @@ TEST_F(SubqueryTest, uncorrelatedExists) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 }
 
-TEST_F(SubqueryTest, correlatedNotExists) {
+TEST_P(SubqueryTest, correlatedNotExists) {
   // NOT EXISTS with equality correlation in filter.
   {
     auto query =
@@ -913,7 +919,7 @@ TEST_F(SubqueryTest, correlatedNotExists) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
   // NOT EXISTS with non-equality correlation in filter.
@@ -934,7 +940,7 @@ TEST_F(SubqueryTest, correlatedNotExists) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
   // NOT EXISTS in projection.
@@ -956,11 +962,11 @@ TEST_F(SubqueryTest, correlatedNotExists) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 }
 
-TEST_F(SubqueryTest, unnest) {
+TEST_P(SubqueryTest, unnest) {
   testConnector_->addTable("t", ROW({"a"}, ARRAY(BIGINT())));
   testConnector_->addTable("u", ROW({"x", "y"}, BIGINT()));
   testConnector_->addTable("v", ROW({"n", "m"}, BIGINT()));
@@ -973,7 +979,7 @@ TEST_F(SubqueryTest, unnest) {
     auto matcher = matchScan("t").unnest().hashJoin(matchScan("u")).build();
 
     auto plan = toSingleNodePlan(logicalPlan);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
   {
@@ -984,7 +990,7 @@ TEST_F(SubqueryTest, unnest) {
     auto matcher = matchScan("t").unnest().hashJoin(matchScan("u")).build();
 
     auto plan = toSingleNodePlan(logicalPlan);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
   {
@@ -1000,11 +1006,11 @@ TEST_F(SubqueryTest, unnest) {
             .build();
 
     auto plan = toSingleNodePlan(logicalPlan);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 }
 
-TEST_F(SubqueryTest, enforceSingleRow) {
+TEST_P(SubqueryTest, enforceSingleRow) {
   auto query =
       "SELECT * FROM region "
       "WHERE r_regionkey > (SELECT n_regionkey FROM nation)";
@@ -1019,7 +1025,7 @@ TEST_F(SubqueryTest, enforceSingleRow) {
             .build();
 
     auto plan = toSingleNodePlan(logicalPlan);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
 
     VELOX_ASSERT_THROW(runVelox(plan), "Expected single row of input.");
   }
@@ -1035,11 +1041,11 @@ TEST_F(SubqueryTest, enforceSingleRow) {
             .build();
 
     auto distributedPlan = planVelox(logicalPlan);
-    AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, matcher);
+    AXIOM_ASSERT_DISTRIBUTED_PLAN_V1(distributedPlan.plan, matcher);
   }
 }
 
-TEST_F(SubqueryTest, enforceSingleRowInProjection) {
+TEST_P(SubqueryTest, enforceSingleRowInProjection) {
   auto query =
       "SELECT (SELECT r_regionkey FROM region WHERE r_name = 'AFRICA') "
       "FROM nation";
@@ -1053,7 +1059,7 @@ TEST_F(SubqueryTest, enforceSingleRowInProjection) {
                        .build();
 
     auto plan = toSingleNodePlan(logicalPlan);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
   {
@@ -1071,11 +1077,11 @@ TEST_F(SubqueryTest, enforceSingleRowInProjection) {
             .build();
 
     auto distributedPlan = planVelox(logicalPlan);
-    AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, matcher);
+    AXIOM_ASSERT_DISTRIBUTED_PLAN_V1(distributedPlan.plan, matcher);
   }
 }
 
-TEST_F(SubqueryTest, uncorrelatedGroupingKey) {
+TEST_P(SubqueryTest, uncorrelatedGroupingKey) {
   auto query =
       "SELECT r_name, (SELECT count(*) FROM nation) FROM region GROUP BY 1, 2";
   SCOPED_TRACE(query);
@@ -1086,10 +1092,10 @@ TEST_F(SubqueryTest, uncorrelatedGroupingKey) {
                      .build();
 
   auto plan = toSingleNodePlan(query);
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V1(plan, matcher);
 }
 
-TEST_F(SubqueryTest, correlatedGroupingKey) {
+TEST_P(SubqueryTest, correlatedGroupingKey) {
   auto query =
       "SELECT r_name, (SELECT count(*) FROM nation WHERE n_regionkey = r_regionkey) + 1 "
       "FROM region GROUP BY 1, 2";
@@ -1104,10 +1110,10 @@ TEST_F(SubqueryTest, correlatedGroupingKey) {
                      .build();
 
   auto plan = toSingleNodePlan(query);
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V1(plan, matcher);
 }
 
-TEST_F(SubqueryTest, nonEquiCorrelatedScalar) {
+TEST_P(SubqueryTest, nonEquiCorrelatedScalar) {
   // Correlated scalar subquery with non-equi correlation condition.
   {
     auto query =
@@ -1137,7 +1143,7 @@ TEST_F(SubqueryTest, nonEquiCorrelatedScalar) {
                          .build();
 
       auto plan = toSingleNodePlan(logicalPlan);
-      AXIOM_ASSERT_PLAN(plan, matcher);
+      AXIOM_ASSERT_PLAN_V1(plan, matcher);
     }
 
     {
@@ -1162,7 +1168,7 @@ TEST_F(SubqueryTest, nonEquiCorrelatedScalar) {
                          .build();
 
       auto distributedPlan = planVelox(logicalPlan);
-      AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, matcher);
+      AXIOM_ASSERT_DISTRIBUTED_PLAN_V1(distributedPlan.plan, matcher);
     }
   }
 
@@ -1196,7 +1202,7 @@ TEST_F(SubqueryTest, nonEquiCorrelatedScalar) {
                          .build();
 
       auto plan = toSingleNodePlan(logicalPlan);
-      AXIOM_ASSERT_PLAN(plan, matcher);
+      AXIOM_ASSERT_PLAN_V1(plan, matcher);
     }
   }
 }
@@ -1205,7 +1211,7 @@ TEST_F(SubqueryTest, nonEquiCorrelatedScalar) {
 // CTE with GROUP BY). The subquery's own aggregation (COUNT(*)) is stacked on
 // top of the inner aggregation, producing two AggregateNode levels. The
 // correlation predicates include a non-equi condition (BETWEEN).
-TEST_F(SubqueryTest, nonEquiCorrelatedScalarWithNestedAggregation) {
+TEST_P(SubqueryTest, nonEquiCorrelatedScalarWithNestedAggregation) {
   testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
   testConnector_->addTable("u", ROW({"c", "d"}, BIGINT()));
 
@@ -1239,10 +1245,10 @@ TEST_F(SubqueryTest, nonEquiCorrelatedScalarWithNestedAggregation) {
           .build();
 
   auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V1(plan, matcher);
 }
 
-TEST_F(SubqueryTest, nonEquiCorrelatedProject) {
+TEST_P(SubqueryTest, nonEquiCorrelatedProject) {
   // Correlated scalar subquery with non-equi correlation condition.
   {
     auto query =
@@ -1270,7 +1276,7 @@ TEST_F(SubqueryTest, nonEquiCorrelatedProject) {
                          .build();
 
       auto plan = toSingleNodePlan(logicalPlan);
-      AXIOM_ASSERT_PLAN(plan, matcher);
+      AXIOM_ASSERT_PLAN_V1(plan, matcher);
     }
 
     {
@@ -1294,7 +1300,7 @@ TEST_F(SubqueryTest, nonEquiCorrelatedProject) {
                          .build();
 
       auto distributedPlan = planVelox(logicalPlan);
-      AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, matcher);
+      AXIOM_ASSERT_DISTRIBUTED_PLAN_V1(distributedPlan.plan, matcher);
     }
   }
 }
@@ -1304,7 +1310,7 @@ TEST_F(SubqueryTest, nonEquiCorrelatedProject) {
 // aggregation on top of the previous one. A single AssignUniqueId at the
 // base feeds every aggregation as its grouping key; each aggregation
 // carries forward the prior subqueries' results via arbitrary().
-TEST_F(SubqueryTest, multipleNonEquiCorrelatedScalars) {
+TEST_P(SubqueryTest, multipleNonEquiCorrelatedScalars) {
   // Two subqueries against distinct inner tables.
   {
     auto query =
@@ -1342,7 +1348,7 @@ TEST_F(SubqueryTest, multipleNonEquiCorrelatedScalars) {
                        .build();
 
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
   // Three subqueries against distinct inner tables: each successive
@@ -1397,13 +1403,13 @@ TEST_F(SubqueryTest, multipleNonEquiCorrelatedScalars) {
                        .build();
 
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 }
 
 // Uncorrelated scalar (max) followed by a non-equi correlated scalar
 // (count(*)) in the same SELECT.
-TEST_F(SubqueryTest, uncorrelatedThenNonEquiCorrelatedScalar) {
+TEST_P(SubqueryTest, uncorrelatedThenNonEquiCorrelatedScalar) {
   auto query =
       "SELECT "
       "  (SELECT max(s_suppkey) FROM supplier) AS x, "
@@ -1431,12 +1437,12 @@ TEST_F(SubqueryTest, uncorrelatedThenNonEquiCorrelatedScalar) {
                      .build();
 
   auto plan = toSingleNodePlan(query);
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V1(plan, matcher);
 }
 
 // Non-equi correlated scalar (count(*)) followed by a correlated EXISTS
 // in the same SELECT.
-TEST_F(SubqueryTest, nonEquiCorrelatedScalarThenCorrelatedExists) {
+TEST_P(SubqueryTest, nonEquiCorrelatedScalarThenCorrelatedExists) {
   auto query =
       "SELECT "
       "  (SELECT count(*) FROM nation WHERE n_regionkey > r_regionkey) AS x, "
@@ -1464,12 +1470,12 @@ TEST_F(SubqueryTest, nonEquiCorrelatedScalarThenCorrelatedExists) {
                      .build();
 
   auto plan = toSingleNodePlan(query);
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V1(plan, matcher);
 }
 
 // Non-equi correlated scalar (count(*)) followed by an uncorrelated
 // scalar (max) in the same SELECT.
-TEST_F(SubqueryTest, nonEquiCorrelatedThenUncorrelatedScalar) {
+TEST_P(SubqueryTest, nonEquiCorrelatedThenUncorrelatedScalar) {
   auto query =
       "SELECT "
       "  (SELECT count(*) FROM nation WHERE n_regionkey > r_regionkey) AS x, "
@@ -1497,11 +1503,11 @@ TEST_F(SubqueryTest, nonEquiCorrelatedThenUncorrelatedScalar) {
                      .build();
 
   auto plan = toSingleNodePlan(query);
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V1(plan, matcher);
 }
 
 // Correlated EXISTS combined with an uncorrelated IN in the same SELECT.
-TEST_F(SubqueryTest, correlatedExistsThenUncorrelatedIn) {
+TEST_P(SubqueryTest, correlatedExistsThenUncorrelatedIn) {
   auto query =
       "SELECT "
       "  EXISTS (SELECT 1 FROM nation WHERE n_regionkey > r_regionkey) AS x, "
@@ -1521,12 +1527,12 @@ TEST_F(SubqueryTest, correlatedExistsThenUncorrelatedIn) {
           .build();
 
   auto plan = toSingleNodePlan(query);
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V1(plan, matcher);
 }
 
 // Correlated scalar subqueries without aggregation.
 // These require EnforceDistinct to validate single-row semantics.
-TEST_F(SubqueryTest, correlatedScalarWithoutAggregation) {
+TEST_P(SubqueryTest, correlatedScalarWithoutAggregation) {
   testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
   testConnector_->addTable("u", ROW({"c", "d"}, BIGINT()));
 
@@ -1544,7 +1550,7 @@ TEST_F(SubqueryTest, correlatedScalarWithoutAggregation) {
                        .build();
 
     auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
   {
@@ -1559,7 +1565,7 @@ TEST_F(SubqueryTest, correlatedScalarWithoutAggregation) {
                        .build();
 
     auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
   // Non-equi correlation: d < b.
@@ -1578,7 +1584,7 @@ TEST_F(SubqueryTest, correlatedScalarWithoutAggregation) {
                        .build();
 
     auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
   {
@@ -1595,11 +1601,11 @@ TEST_F(SubqueryTest, correlatedScalarWithoutAggregation) {
                        .build();
 
     auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 }
 
-TEST_F(SubqueryTest, innerJoinOnSubquery) {
+TEST_P(SubqueryTest, innerJoinOnSubquery) {
   // Subqueries in inner join ON clauses are processed as cross join + filter,
   // reusing the WHERE clause subquery infrastructure.
   const std::string baseJoin =
@@ -1621,7 +1627,7 @@ TEST_F(SubqueryTest, innerJoinOnSubquery) {
             .build();
 
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
   // IN subquery in ON clause.
@@ -1639,7 +1645,7 @@ TEST_F(SubqueryTest, innerJoinOnSubquery) {
             .build();
 
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
   // NOT IN subquery in ON clause.
@@ -1659,7 +1665,7 @@ TEST_F(SubqueryTest, innerJoinOnSubquery) {
             .build();
 
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
   // EXISTS subquery in ON clause.
@@ -1678,7 +1684,7 @@ TEST_F(SubqueryTest, innerJoinOnSubquery) {
             .build();
 
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
   // NOT EXISTS subquery in ON clause.
@@ -1699,7 +1705,7 @@ TEST_F(SubqueryTest, innerJoinOnSubquery) {
             .build();
 
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
   // Correlated scalar
@@ -1721,7 +1727,7 @@ TEST_F(SubqueryTest, innerJoinOnSubquery) {
             .build();
 
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
   // Uncorrelated scalar subquery referencing both sides of the join.
@@ -1743,11 +1749,11 @@ TEST_F(SubqueryTest, innerJoinOnSubquery) {
             .build();
 
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 }
 
-TEST_F(SubqueryTest, leftJoinOnSubquery) {
+TEST_P(SubqueryTest, leftJoinOnSubquery) {
   // Subqueries in LEFT JOIN ON clauses are supported when they reference only
   // the right (null-supplying) side. See Subqueries.md.
   const std::string baseJoin =
@@ -1767,8 +1773,7 @@ TEST_F(SubqueryTest, leftJoinOnSubquery) {
                            core::JoinType::kLeft)
                        .build();
 
-    auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(toSingleNodePlan(query), matcher);
   }
 
   // Uncorrelated scalar subquery in LEFT JOIN ON clause.
@@ -1791,7 +1796,7 @@ TEST_F(SubqueryTest, leftJoinOnSubquery) {
             .build();
 
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
   // NOT IN subquery in LEFT JOIN ON clause.
@@ -1814,8 +1819,7 @@ TEST_F(SubqueryTest, leftJoinOnSubquery) {
                            core::JoinType::kLeft)
                        .build();
 
-    auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(toSingleNodePlan(query), matcher);
   }
 
   // All conjuncts contain subqueries (no non-subquery condition remains).
@@ -1834,8 +1838,7 @@ TEST_F(SubqueryTest, leftJoinOnSubquery) {
                            core::JoinType::kLeft)
                        .build();
 
-    auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(toSingleNodePlan(query), matcher);
   }
 
   // Correlated EXISTS referencing the right (null-supplying) side.
@@ -1854,8 +1857,7 @@ TEST_F(SubqueryTest, leftJoinOnSubquery) {
                            core::JoinType::kLeft)
                        .build();
 
-    auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(toSingleNodePlan(query), matcher);
   }
 
   // Correlated NOT EXISTS referencing the right (null-supplying) side.
@@ -1877,8 +1879,7 @@ TEST_F(SubqueryTest, leftJoinOnSubquery) {
                            core::JoinType::kLeft)
                        .build();
 
-    auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(toSingleNodePlan(query), matcher);
   }
 
   // Correlated scalar subquery referencing the right (null-supplying) side.
@@ -1908,14 +1909,13 @@ TEST_F(SubqueryTest, leftJoinOnSubquery) {
                 core::JoinType::kLeft)
             .build();
 
-    auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(toSingleNodePlan(query), matcher);
   }
 }
 
 // Non-equi LEFT JOIN where the left side contains a scalar subquery. The
 // scalar subquery cross-join adds an extra table to the left side's DT.
-TEST_F(SubqueryTest, nonEquiLeftJoinWithScalarSubquery) {
+TEST_P(SubqueryTest, nonEquiLeftJoinWithScalarSubquery) {
   testConnector_->addTable("t", ROW({"a", "b"}, {BIGINT(), BIGINT()}));
   testConnector_->addTable("u", ROW({"c", "d"}, {BIGINT(), BIGINT()}));
   testConnector_->addTable("v", ROW({"e"}, {BIGINT()}));
@@ -1939,12 +1939,12 @@ TEST_F(SubqueryTest, nonEquiLeftJoinWithScalarSubquery) {
           .project()
           .build();
 
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V1(plan, matcher);
 }
 
 // LEFT JOIN with a post-join WHERE equality referencing both sides, where one
 // operand is not default-null propagating.
-TEST_F(SubqueryTest, leftJoinFilterWithNonDefaultNullEquality) {
+TEST_P(SubqueryTest, leftJoinFilterWithNonDefaultNullEquality) {
   auto query =
       "SELECT a.x FROM (VALUES 1) a(x) "
       "LEFT JOIN (VALUES 1) b(y) ON a.x = b.y "
@@ -1964,10 +1964,10 @@ TEST_F(SubqueryTest, leftJoinFilterWithNonDefaultNullEquality) {
                      .build();
 
   auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V1(plan, matcher);
 }
 
-TEST_F(SubqueryTest, rightJoinOnSubquery) {
+TEST_P(SubqueryTest, rightJoinOnSubquery) {
   // RIGHT JOIN is normalized to LEFT JOIN. Subqueries referencing the
   // null-supplying side (left in SQL, right after normalization) are supported.
   // A final Project reorders columns to match the original SQL column order.
@@ -1990,7 +1990,7 @@ TEST_F(SubqueryTest, rightJoinOnSubquery) {
                        .build();
 
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
   // Correlated EXISTS referencing the null-supplying side.
@@ -2011,37 +2011,94 @@ TEST_F(SubqueryTest, rightJoinOnSubquery) {
                        .build();
 
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 }
 
-TEST_F(SubqueryTest, unsupportedSubqueryInJoin) {
+TEST_P(SubqueryTest, subqueryInOuterJoinOn) {
   // Left-side subquery in LEFT JOIN ON clause.
-  VELOX_ASSERT_THROW(
-      toSingleNodePlan(
-          "SELECT * FROM nation n LEFT JOIN region r "
-          "ON r.r_regionkey = n.n_regionkey "
-          "AND n.n_regionkey > (SELECT min(s_nationkey) FROM supplier)"),
-      "Unsupported subqueries in the ON clause of a LEFT or RIGHT join");
+  {
+    auto query =
+        "SELECT * FROM nation n LEFT JOIN region r "
+        "ON r.r_regionkey = n.n_regionkey "
+        "AND n.n_regionkey > (SELECT min(s_nationkey) FROM supplier)";
+    SCOPED_TRACE(query);
+
+    if (useV2_) {
+      // The uncorrelated aggregate joins the preserved side first, so the ON
+      // condition reads it as an ordinary column.
+      auto matcher =
+          matchHiveScan("nation")
+              .nestedLoopJoin(matchHiveScan("supplier").aggregation())
+              .hashJoinLeft(
+                  matchHiveScan("region"),
+                  {.keys = {{"n_regionkey = r_regionkey"}},
+                   .filter = "n_regionkey > min"})
+              .build();
+      AXIOM_ASSERT_PLAN(toSingleNodePlan(query), matcher);
+    } else {
+      VELOX_ASSERT_THROW(
+          toSingleNodePlan(query),
+          "Unsupported subqueries in the ON clause of a LEFT or RIGHT join");
+    }
+  }
 
   // Right-side (preserved) subquery in RIGHT JOIN ON clause.
-  VELOX_ASSERT_THROW(
-      toSingleNodePlan(
-          "SELECT * FROM region r RIGHT JOIN nation n "
-          "ON r.r_regionkey = n.n_regionkey "
-          "AND n.n_regionkey > (SELECT min(s_nationkey) FROM supplier)"),
-      "Unsupported subqueries in the ON clause of a LEFT or RIGHT join");
+  {
+    auto query =
+        "SELECT * FROM region r RIGHT JOIN nation n "
+        "ON r.r_regionkey = n.n_regionkey "
+        "AND n.n_regionkey > (SELECT min(s_nationkey) FROM supplier)";
+    SCOPED_TRACE(query);
+
+    if (useV2_) {
+      // RIGHT JOIN becomes a LEFT JOIN with the sides swapped, and the
+      // subquery still joins the input whose column the ON condition reads.
+      auto matcher =
+          matchHiveScan("nation")
+              .nestedLoopJoin(matchHiveScan("supplier").aggregation())
+              .hashJoinLeft(
+                  matchHiveScan("region"),
+                  {.keys = {{"n_regionkey = r_regionkey"}},
+                   .filter = "n_regionkey > min"})
+              .build();
+      AXIOM_ASSERT_PLAN(toSingleNodePlan(query), matcher);
+    } else {
+      VELOX_ASSERT_THROW(
+          toSingleNodePlan(query),
+          "Unsupported subqueries in the ON clause of a LEFT or RIGHT join");
+    }
+  }
 
   // Subquery in FULL JOIN ON clause.
-  VELOX_ASSERT_THROW(
-      toSingleNodePlan(
-          "SELECT * FROM nation n FULL JOIN region r "
-          "ON r.r_regionkey = n.n_regionkey "
-          "AND r.r_name IN (SELECT s_name FROM supplier)"),
-      "Unexpected expression: Subquery");
+  {
+    auto query =
+        "SELECT * FROM nation n FULL JOIN region r "
+        "ON r.r_regionkey = n.n_regionkey "
+        "AND r.r_name IN (SELECT s_name FROM supplier)";
+    SCOPED_TRACE(query);
+
+    if (useV2_) {
+      // The mark reads only the null-supplying side, so it is computed
+      // there and the FULL join's ON condition consumes it.
+      auto matcher =
+          matchHiveScan("nation")
+              .hashJoinFull(
+                  matchHiveScan("supplier")
+                      .hashJoinRightSemiProject(
+                          matchHiveScan("region"),
+                          {.nullAware = true, .keys = {{"s_name = r_name"}}}),
+                  {.keys = {{"n_regionkey = r_regionkey"}}})
+              .build();
+      AXIOM_ASSERT_PLAN(toSingleNodePlan(query), matcher);
+    } else {
+      VELOX_ASSERT_THROW(
+          toSingleNodePlan(query), "Unexpected expression: Subquery");
+    }
+  }
 }
 
-TEST_F(SubqueryTest, inSubqueryInsideAggregate) {
+TEST_P(SubqueryTest, inSubqueryInsideAggregate) {
   auto matchJoin = [&]() {
     return matchHiveScan("nation").hashJoin(
         matchHiveScan("region"),
@@ -2059,7 +2116,7 @@ TEST_F(SubqueryTest, inSubqueryInsideAggregate) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
   // IN <subquery> inside an aggregate FILTER clause.
@@ -2072,11 +2129,11 @@ TEST_F(SubqueryTest, inSubqueryInsideAggregate) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 }
 
-TEST_F(SubqueryTest, nestedInSubqueries) {
+TEST_P(SubqueryTest, nestedInSubqueries) {
   // IN subquery on a column derived from another IN subquery. The inner IN
   // produces a mark column used to compute 'flag'. The outer IN uses 'flag'
   // as its left key. The optimizer wraps the inner semi-join in a child DT
@@ -2103,13 +2160,13 @@ TEST_F(SubqueryTest, nestedInSubqueries) {
 
   SCOPED_TRACE(query);
   auto plan = toSingleNodePlan(query);
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V1(plan, matcher);
 }
 
 // EXISTS (SELECT 1 WHERE <condition>) with no FROM clause is equivalent to
 // just <condition>. The optimizer should simplify this and not attempt
 // subquery decorrelation.
-TEST_F(SubqueryTest, existsWithNoFromClause) {
+TEST_P(SubqueryTest, existsWithNoFromClause) {
   testConnector_->addTable("t", ROW("a", BIGINT()));
   testConnector_->addTable("u", ROW("x", BIGINT()));
 
@@ -2128,23 +2185,23 @@ TEST_F(SubqueryTest, existsWithNoFromClause) {
           .build();
 
   auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V1(plan, matcher);
 }
 
 // EXISTS (SELECT ... LIMIT 0) should fold to false because the subquery
 // produces zero rows.
-TEST_F(SubqueryTest, existsWithLimitZero) {
+TEST_P(SubqueryTest, existsWithLimitZero) {
   auto plan = toSingleNodePlan("SELECT EXISTS (SELECT 1 LIMIT 0)");
 
   auto matcher = matchValues(ROW({})).project({"false"}).build();
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V1(plan, matcher);
 }
 
 // IN subquery in a projection combined with a correlated NOT EXISTS in the
 // WHERE clause. The IN subquery creates a semi-join inside the join input,
 // which triggers DT wrapping (excludeOuterJoins). The NOT EXISTS subquery
 // must still be processed correctly.
-TEST_F(SubqueryTest, inSubqueryWithCorrelatedNotExists) {
+TEST_P(SubqueryTest, inSubqueryWithCorrelatedNotExists) {
   testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
   testConnector_->addTable("u", ROW("x", BIGINT()));
   testConnector_->addTable("v", ROW("y", BIGINT()));
@@ -2174,7 +2231,7 @@ TEST_F(SubqueryTest, inSubqueryWithCorrelatedNotExists) {
           .build();
 
   auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V1(plan, matcher);
 }
 
 // Verifies that the distributed plan for IN / NOT IN subqueries sets
@@ -2183,7 +2240,7 @@ TEST_F(SubqueryTest, inSubqueryWithCorrelatedNotExists) {
 // one worker, producing wrong results:
 //   NOT IN: workers missing the NULL incorrectly return rows.
 //   IN: workers missing the NULL produce false instead of NULL for the mark.
-TEST_F(SubqueryTest, inReplicateNullsAndAny) {
+TEST_P(SubqueryTest, inReplicateNullsAndAny) {
   // replicateNullsAndAny only appears on a hash-partitioned build. Cap the
   // broadcast size limit low so the build is hash partitioned regardless of its
   // size.
@@ -2216,7 +2273,7 @@ TEST_F(SubqueryTest, inReplicateNullsAndAny) {
             .build();
 
     auto distributedPlan = planVelox(parseSelect(query, kTestConnectorId));
-    AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, matcher);
+    AXIOM_ASSERT_DISTRIBUTED_PLAN_V1(distributedPlan.plan, matcher);
   }
 
   // IN in projection: stays as kLeftSemiProject with null-aware. The build
@@ -2238,7 +2295,7 @@ TEST_F(SubqueryTest, inReplicateNullsAndAny) {
             .build();
 
     auto distributedPlan = planVelox(parseSelect(query, kTestConnectorId));
-    AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, matcher);
+    AXIOM_ASSERT_DISTRIBUTED_PLAN_V1(distributedPlan.plan, matcher);
   }
 
   // IN in projection with reversed table sizes — exercises joinByHashRight.
@@ -2257,11 +2314,11 @@ TEST_F(SubqueryTest, inReplicateNullsAndAny) {
                        .build();
 
     auto distributedPlan = planVelox(parseSelect(query, kTestConnectorId));
-    AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, matcher);
+    AXIOM_ASSERT_DISTRIBUTED_PLAN_V1(distributedPlan.plan, matcher);
   }
 }
 
-TEST_F(SubqueryTest, constantFoldingWithoutExecutor) {
+TEST_P(SubqueryTest, constantFoldingWithoutExecutor) {
   auto& ctx = getQueryCtx();
   ctx = velox::core::QueryCtx::create(nullptr, velox::core::QueryConfig{{}});
 
@@ -2271,6 +2328,8 @@ TEST_F(SubqueryTest, constantFoldingWithoutExecutor) {
   auto plan = planVelox(logicalPlan, {.numWorkers = 4, .numDrivers = 4});
   EXPECT_EQ(3, plan.plan->fragments().size());
 }
+
+AXIOM_INSTANTIATE_V1_V2(SubqueryTest);
 
 } // namespace
 } // namespace facebook::axiom::optimizer

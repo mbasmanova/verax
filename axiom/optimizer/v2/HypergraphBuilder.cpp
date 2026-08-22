@@ -558,13 +558,10 @@ JoinHypergraph HypergraphBuilder::build(
       // column. Emit reads it back via JoinEdge::markColumn to thread the
       // mark through reordering. The filtering forms (kLeftSemiFilter /
       // kAnti) carry no mark.
-      ColumnCP markColumn = nullptr;
-      if (leaves.joinType == velox::core::JoinType::kLeftSemiProject) {
-        VELOX_CHECK(
-            !join->outputColumns().empty(),
-            "kLeftSemiProject join must output its mark column");
-        markColumn = join->outputColumns().back();
-      }
+      ColumnCP markColumn =
+          leaves.joinType == velox::core::JoinType::kLeftSemiProject
+          ? join->markColumn()
+          : nullptr;
 
       graph.addEdge(
           JoinEdge{

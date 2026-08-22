@@ -728,16 +728,8 @@ class Decorrelator : public NodeRewriter<> {
       ExprVector accumulatedFilter) {
     NodeCP leftSide = joinBody->left();
     NodeCP rightSide = joinBody->right();
-    // A kLeftSemiProject Join projects its mark as the last output column;
-    // every other output comes from the preserved side. Reading a data column
-    // as the mark would misroute the filter split below.
-    VELOX_CHECK(
-        !joinBody->outputColumns().empty(),
-        "kLeftSemiProject Join must project a mark");
-    ColumnCP mark = joinBody->outputColumns().back();
-    VELOX_CHECK(
-        !PlanObjectSet::fromObjects(leftSide->outputColumns()).contains(mark),
-        "kLeftSemiProject Join must project its mark last");
+    ColumnCP mark = joinBody->markColumn();
+    VELOX_CHECK_NOT_NULL(mark);
 
     ExprVector markFilter;
     ExprVector rowFilter;
@@ -1169,7 +1161,7 @@ class Decorrelator : public NodeRewriter<> {
       NodeCP input,
       JoinCP joinBody,
       ExprVector joinPredicate,
-      ExprVector accumulatedFilter) {
+      const ExprVector& accumulatedFilter) {
     NodeCP leftSide = joinBody->left();
     NodeCP rightSide = joinBody->right();
 

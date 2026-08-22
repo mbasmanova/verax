@@ -2075,17 +2075,44 @@ velox::core::JoinType toVeloxJoinType(lp::JoinType type) {
   VELOX_UNREACHABLE();
 }
 
-// True if a subquery lifted onto the left input correlates to a column of
-// 'right'. Such a correlation can't be satisfied by an Apply on the left input.
-bool correlatesToRight(NodeCP lifted, NodeCP leftBeforeLift, NodeCP right) {
-  const PlanObjectSet rightColumns =
-      PlanObjectSet::fromObjects(right->outputColumns());
-  for (NodeCP node = lifted; node != leftBeforeLift; node = node->inputs()[0]) {
+// True when every conjunct of 'condition' that carries a subquery reads
+// columns of the right input and none of the left, which makes the right the
+// only input the subquery can be lifted onto.
+bool subqueryReadsOnlyRight(
+    const logical_plan::Expr& condition,
+    const velox::RowType& leftType,
+    const velox::RowType& rightType) {
+  std::vector<const logical_plan::Expr*> conjuncts;
+  flattenAndConjuncts(condition, conjuncts);
+
+  LpNameSet names;
+  for (const auto* conjunct : conjuncts) {
+    if (containsSubquery(*conjunct)) {
+      collectUsedNames(*conjunct, names);
+    }
+  }
+
+  bool readsRight = false;
+  for (const auto& name : names) {
+    if (leftType.containsChild(name)) {
+      return false;
+    }
+    readsRight |= rightType.containsChild(name);
+  }
+  return readsRight;
+}
+
+// True when the Apply chain 'lifted' added on top of 'beforeLift' correlates
+// to 'otherSide', whose columns it cannot read from where it now sits.
+bool correlatesToOtherSide(NodeCP lifted, NodeCP beforeLift, NodeCP otherSide) {
+  const PlanObjectSet otherSideColumns =
+      PlanObjectSet::fromObjects(otherSide->outputColumns());
+  for (NodeCP node = lifted; node != beforeLift; node = node->inputs()[0]) {
     if (node->nodeType() != NodeType::kApply) {
       continue;
     }
     for (ColumnCP column : node->as<Apply>()->correlationColumns()) {
-      if (rightColumns.contains(column)) {
+      if (otherSideColumns.contains(column)) {
         return true;
       }
     }
@@ -2182,17 +2209,24 @@ Translated Translator::translateJoin(
 
   JoinCondition::Split split;
   if (join.condition() != nullptr) {
-    // Lift a subquery in the condition onto the left input; the condition then
-    // references the lifted result column.
-    NodeCP leftBeforeLift = left.node;
+    // Lift a subquery in the condition onto one input; the condition then
+    // references the lifted result column. It goes on the side whose columns
+    // the subquery reads -- `r.name IN (...)` reads the right input, and an
+    // Apply on the left could not key on `r.name`.
+    const bool liftOntoRight = conditionHasSubquery &&
+        subqueryReadsOnlyRight(*join.condition(), leftType, rightType);
+    NodeCP& liftTarget = liftOntoRight ? right.node : left.node;
+    NodeCP otherSide = liftOntoRight ? left.node : right.node;
+
+    NodeCP beforeLift = liftTarget;
     ExprCP condition =
-        translateExpr(*join.condition(), merged, /*applyTarget=*/&left.node);
-    // A subquery correlated to the right input, lifted onto the left,
-    // references a column the left can't provide.
-    if (correlatesToRight(left.node, leftBeforeLift, right.node)) {
+        translateExpr(*join.condition(), merged, /*applyTarget=*/&liftTarget);
+    // A subquery correlated to the input it was not lifted onto references a
+    // column that input cannot provide.
+    if (correlatesToOtherSide(liftTarget, beforeLift, otherSide)) {
       VELOX_NYI(
-          "Correlated subquery referencing the right side of an outer join's "
-          "ON clause is not supported");
+          "Subquery in an outer join's ON clause referencing both inputs is "
+          "not supported");
     }
 
     split = JoinCondition::splitEquiKeys(
