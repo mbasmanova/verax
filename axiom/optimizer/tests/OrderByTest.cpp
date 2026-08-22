@@ -62,6 +62,20 @@ TEST_P(OrderByTest, aggregationDropsPrecedingOrderBy) {
           .build());
 }
 
+TEST_P(OrderByTest, orderByOfUnreadRowsDrops) {
+  // Nothing reads a column of the ordered rows, so their order cannot be
+  // observed: `SELECT 1 FROM t ORDER BY x` is `SELECT 1 FROM t`. v1 keeps the
+  // ORDER BY.
+  auto plan = scan("nation").orderBy({"n_nationkey"}).project({"1 as one"});
+
+  AXIOM_ASSERT_PLAN(
+      toSingleNodePlan(plan.build()),
+      matchScan("nation")
+          .orderByIf(!useV2_, {"n_nationkey ASC NULLS LAST"})
+          .project({"1 as one"})
+          .build());
+}
+
 AXIOM_INSTANTIATE_V1_V2(OrderByTest);
 
 } // namespace
