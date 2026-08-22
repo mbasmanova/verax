@@ -736,6 +736,20 @@ SELECT x FROM (SELECT x, sum(x) AS sx FROM s GROUP BY x) WHERE sx > 0
 -- IN with a constant left-hand side over a no-FROM subquery.
 SELECT 1 WHERE 1 IN (SELECT 1)
 ----
+-- The same read as a value rather than a filter, over a matching list, a
+-- non-matching one, and one holding only NULL.
+SELECT 1 IN (SELECT 1) AS a, 1 IN (SELECT 2) AS b,
+       1 IN (SELECT CAST(NULL AS INTEGER)) AS c
+----
+-- A constant left-hand side alongside a relation the subquery does not name.
+SELECT x FROM UNNEST(ARRAY[1, 2]) AS t(x)
+WHERE 1 IN (SELECT c FROM (VALUES (1), (2)) AS s(c))
+----
+-- The negated form keeps no row.
+-- count 0
+SELECT x FROM UNNEST(ARRAY[1, 2]) AS t(x)
+WHERE 1 NOT IN (SELECT c FROM (VALUES (1), (2)) AS s(c))
+----
 -- Scalar subquery in aggregate ORDER BY expression.
 SELECT array_agg(a ORDER BY a + (SELECT 1)) AS vals FROM t
 ----

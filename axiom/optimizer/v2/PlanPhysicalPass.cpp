@@ -37,32 +37,12 @@ namespace facebook::axiom::optimizer::v2 {
 
 namespace {
 
-// True if every expression in 'keys' references at least one column.
-bool allKeysReferenceColumns(const ExprVector& keys) {
-  for (ExprCP key : keys) {
-    if (key->columns().empty()) {
-      return false;
-    }
-  }
-  return true;
-}
-
 // Reorder limit: inner / LEFT / RIGHT / FULL equi-joins,
 // plus filtering semijoin (kLeftSemiFilter), antijoin (kAnti), and
 // mark-preserving semijoin (kLeftSemiProject).
 bool isClusterable(const Join* join) {
   using velox::core::JoinType;
   if (join->leftKeys().empty()) {
-    return false;
-  }
-  // A hyperedge needs a non-empty relation set on both sides: the edge's
-  // left/right relation sets are the cluster leaves referenced by the
-  // left/right keys (HypergraphBuilder::unionExpressionRelations). A
-  // degenerate equi-key that references no column (e.g. the `1 = 1` a
-  // `1 IN (SELECT 1)` decorrelates to) would yield an empty side and trip
-  // the JoinEdge invariant, so such a join stays an opaque cluster leaf.
-  if (!allKeysReferenceColumns(join->leftKeys()) ||
-      !allKeysReferenceColumns(join->rightKeys())) {
     return false;
   }
   const auto kind = join->joinType();

@@ -128,27 +128,31 @@ TEST_P(SubqueryTest, uncorrelatedScalar) {
 // IN list mixing subqueries with non-subquery expressions.
 TEST_P(SubqueryTest, inListWithMixedSubqueries) {
   // IN list with a scalar subquery and a literal. The scalar subquery is
-  // extracted, cross-joined, and the IN becomes in(n_regionkey, max, 2).
+  // extracted and cross-joined, and the IN reads its result as a column: v2
+  // evaluates it as the cross join's condition, v1 as a filter above it.
   {
     auto query =
         "SELECT * FROM nation WHERE n_regionkey IN "
         "((SELECT max(r_regionkey) FROM region), 2)";
     SCOPED_TRACE(query);
 
+    const std::string inPredicate = "\"in\"(n_regionkey, max_key, 2)";
     auto plan = toSingleNodePlan(query);
-    auto matcher =
-        matchHiveScan("nation")
-            .nestedLoopJoin(matchHiveScan("region").singleAggregation(
-                {}, {"max(r_regionkey) as max_key"}))
-            .filter("\"in\"(n_regionkey, max_key, 2)")
-            .project()
-            .build();
+    auto matcher = matchHiveScan("nation")
+                       .nestedLoopJoin(
+                           matchHiveScan("region").singleAggregation(
+                               {}, {"max(r_regionkey) as max_key"}),
+                           core::JoinType::kInner,
+                           useV2_ ? inPredicate : "")
+                       .filterIf(!useV2_, inPredicate)
+                       .projectIf(!useV2_)
+                       .build();
 
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
-  // IN list with two scalar subqueries. Both are extracted, cross-joined, and
-  // the IN becomes in(n_regionkey, max_key, min_key).
+  // IN list with two scalar subqueries. Both are extracted and cross-joined,
+  // and the IN reads both results as columns.
   {
     auto query =
         "SELECT * FROM nation WHERE n_regionkey IN "
@@ -156,38 +160,62 @@ TEST_P(SubqueryTest, inListWithMixedSubqueries) {
         "(SELECT min(r_regionkey) FROM region))";
     SCOPED_TRACE(query);
 
+    const std::string inPredicate = "\"in\"(n_regionkey, max_key, min_key)";
     auto plan = toSingleNodePlan(query);
     auto matcher =
         matchHiveScan("nation")
             .nestedLoopJoin(matchHiveScan("region").singleAggregation(
                 {}, {"max(r_regionkey) as max_key"}))
-            .nestedLoopJoin(matchHiveScan("region").singleAggregation(
-                {}, {"min(r_regionkey_2) as min_key"}))
-            .filter("\"in\"(n_regionkey, max_key, min_key)")
-            .project()
+            .nestedLoopJoin(
+                matchHiveScan("region").singleAggregation(
+                    {}, {"min(r_regionkey_2) as min_key"}),
+                core::JoinType::kInner,
+                useV2_ ? inPredicate : "")
+            .filterIf(!useV2_, inPredicate)
+            .projectIf(!useV2_)
             .build();
 
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN(plan, matcher);
   }
 }
 
-// IN with a constant (table-less) left side over a real source. With no table
-// to anchor the constant on, the optimizer materializes it as a one-row Values
-// relation and runs the IN as a null-aware semi-join against the source.
 TEST_P(SubqueryTest, uncorrelatedInConstantLeftSide) {
   auto query = "SELECT 1 IN (SELECT r_regionkey FROM region)";
   SCOPED_TRACE(query);
 
+  // v1 makes the one-row build side by cross-joining two one-row relations,
+  // which is wasted work this pins only because v1 still emits it.
+  auto constantSide = useV2_ ? matchValues().project({"1"})
+                             : matchValues().nestedLoopJoin(matchValues());
   auto matcher = matchHiveScan("region")
                      .hashJoin(
-                         matchValues().nestedLoopJoin(matchValues()),
+                         constantSide,
                          velox::core::JoinType::kRightSemiProject,
                          {.nullAware = true})
                      .project()
                      .build();
 
   auto plan = toSingleNodePlan(query);
-  AXIOM_ASSERT_PLAN_V1(plan, matcher);
+  AXIOM_ASSERT_PLAN(plan, matcher);
+
+  // The join preserves its build side, so that side is partitioned rather
+  // than replicated to every worker.
+  auto distributedConstantSide = useV2_
+      ? matchValues().project({"1"}).shuffle()
+      : matchValues().nestedLoopJoin(matchValues().broadcast()).shuffle();
+  auto distributedMatcher =
+      matchHiveScan("region")
+          .shuffle({"r_regionkey"}, /*replicateNullsAndAny=*/true)
+          .hashJoin(
+              distributedConstantSide,
+              velox::core::JoinType::kRightSemiProject,
+              {.nullAware = true})
+          .project()
+          .gather()
+          .build();
+
+  auto distributedPlan = planVelox(parseSelect(query));
+  AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, distributedMatcher);
 }
 
 TEST_P(SubqueryTest, correlatedExists) {
@@ -205,7 +233,7 @@ TEST_P(SubqueryTest, correlatedExists) {
     {
       SCOPED_TRACE(query);
       auto plan = toSingleNodePlan(query);
-      AXIOM_ASSERT_PLAN_V1(plan, matcher);
+      AXIOM_ASSERT_PLAN(plan, matcher);
     }
 
     query =
@@ -215,7 +243,7 @@ TEST_P(SubqueryTest, correlatedExists) {
     {
       SCOPED_TRACE(query);
       auto plan = toSingleNodePlan(query);
-      AXIOM_ASSERT_PLAN_V1(plan, matcher);
+      AXIOM_ASSERT_PLAN(plan, matcher);
     }
 
     // EXISTS with DISTINCT. DISTINCT is semantically unnecessary for EXISTS
@@ -228,7 +256,7 @@ TEST_P(SubqueryTest, correlatedExists) {
     {
       SCOPED_TRACE(query);
       auto plan = toSingleNodePlan(query);
-      AXIOM_ASSERT_PLAN_V1(plan, matcher);
+      AXIOM_ASSERT_PLAN(plan, matcher);
     }
   }
 
@@ -247,7 +275,7 @@ TEST_P(SubqueryTest, correlatedExists) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
   {
@@ -264,7 +292,7 @@ TEST_P(SubqueryTest, correlatedExists) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
   // Correlated conjuncts referencing multiple tables.
@@ -284,7 +312,7 @@ TEST_P(SubqueryTest, correlatedExists) {
     {
       SCOPED_TRACE(query);
       auto plan = toSingleNodePlan(query);
-      AXIOM_ASSERT_PLAN_V1(plan, matcher);
+      AXIOM_ASSERT_PLAN(plan, matcher);
     }
   }
 }
