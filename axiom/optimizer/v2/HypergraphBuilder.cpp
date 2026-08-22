@@ -59,6 +59,27 @@ RelationSet unionExpressionRelations(
   return result;
 }
 
+// The relations an edge's side reads: those its 'keys' name, or 'operand' --
+// the whole side -- when a key names none, as the constant side of
+// `1 IN (SELECT ...)` does. The operand is a superset of what any key of that
+// side can read, and a larger edge side only forbids reorderings, so
+// substituting it cannot admit a wrong one. It does cost plan space: the join
+// is then pinned above everything its operand covers.
+RelationSet keyRelationsOrOperand(
+    const ExprVector& keys,
+    const folly::F14FastMap<ColumnCP, int8_t>& columnToLeaf,
+    const RelationSet& operand) {
+  RelationSet fromKeys = unionExpressionRelations(keys, columnToLeaf);
+  if (!fromKeys.empty()) {
+    return fromKeys;
+  }
+  VELOX_CHECK(
+      !operand.empty(),
+      "A join edge side must read some relation, but neither its keys nor its "
+      "operand do");
+  return operand;
+}
+
 // Per-Join leaf covers of left and right operands, with the
 // kRight-to-kLeft normalization baked in: for an IR `kRight`
 // join, `left`/`right` are swapped and `joinType` is `kLeft`.
@@ -76,24 +97,27 @@ struct JoinLeaves {
 RelationSet populateJoinLeaves(
     NodeCP node,
     const folly::F14FastMap<NodeCP, int8_t>& leafIds,
+    const folly::F14FastMap<UnnestCP, int8_t>& unnestIds,
     folly::F14FastMap<JoinCP, JoinLeaves>& leaves) {
   const auto it = leafIds.find(node);
   if (it != leafIds.end()) {
     return RelationSet::singleton(it->second);
   }
   if (node->is(NodeType::kUnnest)) {
-    // The cluster does not contain the input of an Unnest of a constant.
-    NodeCP input = node->onlyInput();
+    // The cluster does not contain the input of an Unnest of a constant, so
+    // the Unnest's own relation is all its subtree contributes.
+    const auto* unnest = node->as<Unnest>();
+    NodeCP input = unnest->input();
     if (input->outputColumns().empty()) {
-      return RelationSet{};
+      return RelationSet::singleton(unnestIds.at(unnest));
     }
-    return populateJoinLeaves(input, leafIds, leaves);
+    return populateJoinLeaves(input, leafIds, unnestIds, leaves);
   }
   const auto* join = node->as<Join>();
   const RelationSet leftLeaves =
-      populateJoinLeaves(join->left(), leafIds, leaves);
+      populateJoinLeaves(join->left(), leafIds, unnestIds, leaves);
   const RelationSet rightLeaves =
-      populateJoinLeaves(join->right(), leafIds, leaves);
+      populateJoinLeaves(join->right(), leafIds, unnestIds, leaves);
   // Normalize right-form joins to their left form by swapping operands.
   // kRight, kRightSemiFilter and kRightSemiProject each map to the
   // matching left-form type; the rest of the pipeline never sees a
@@ -420,7 +444,7 @@ JoinHypergraph HypergraphBuilder::build(
   }
 
   folly::F14FastMap<JoinCP, JoinLeaves> joinLeaves;
-  populateJoinLeaves(cluster.root, leafIds, joinLeaves);
+  populateJoinLeaves(cluster.root, leafIds, unnestIds, joinLeaves);
 
   for (JoinCP join : cluster.joins) {
     const auto& leaves = joinLeaves.at(join);
@@ -449,9 +473,9 @@ JoinHypergraph HypergraphBuilder::build(
           rightKeys.push_back(join->rightKeys()[i]);
         }
         const RelationSet leftSet{
-            unionExpressionRelations(leftKeys, columnToLeaf)};
+            keyRelationsOrOperand(leftKeys, columnToLeaf, leaves.left)};
         const RelationSet rightSet{
-            unionExpressionRelations(rightKeys, columnToLeaf)};
+            keyRelationsOrOperand(rightKeys, columnToLeaf, leaves.right)};
         RelationSet ses{leftSet};
         ses.unionSet(rightSet);
         RelationSet tes{ses};
@@ -502,9 +526,9 @@ JoinHypergraph HypergraphBuilder::build(
       NodeCP normalizedRightChild = flip ? join->left() : join->right();
 
       const RelationSet leftSet{
-          unionExpressionRelations(edgeLeftKeys, columnToLeaf)};
+          keyRelationsOrOperand(edgeLeftKeys, columnToLeaf, leaves.left)};
       const RelationSet rightSet{
-          unionExpressionRelations(edgeRightKeys, columnToLeaf)};
+          keyRelationsOrOperand(edgeRightKeys, columnToLeaf, leaves.right)};
       RelationSet ses{leftSet};
       ses.unionSet(rightSet);
       for (ExprCP conjunct : join->filter()) {
