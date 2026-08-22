@@ -335,7 +335,7 @@ TEST_P(SubqueryTest, uncorrelatedProject) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
   // Uncorrelated scalar subquery in projection with global aggregation in the
@@ -358,7 +358,7 @@ TEST_P(SubqueryTest, uncorrelatedProject) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
   // Uncorrelated scalar subquery in projection with GROUP BY aggregation in the
@@ -382,7 +382,7 @@ TEST_P(SubqueryTest, uncorrelatedProject) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
   // IN <subquery> in projection.
@@ -405,7 +405,7 @@ TEST_P(SubqueryTest, uncorrelatedProject) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
   // NOT IN <subquery> in projection.
@@ -428,7 +428,7 @@ TEST_P(SubqueryTest, uncorrelatedProject) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
   // Uncorrelated EXISTS in projection.
@@ -438,17 +438,22 @@ TEST_P(SubqueryTest, uncorrelatedProject) {
         "   EXISTS (SELECT 1 FROM nation) AS has_nations "
         "FROM region";
 
-    // Uncorrelated EXISTS in projection uses cross join with count check.
-    auto matcher = matchHiveScan("region")
-                       .nestedLoopJoin(
-                           matchHiveScan("nation").limit().singleAggregation(),
-                           velox::core::JoinType::kInner)
-                       .project()
-                       .build();
+    // One subquery row settles existence, so both optimizers cap the subquery
+    // at one row. The projection reading that answer is spelled with a
+    // generated name under either, so it stays unasserted.
+    auto matcher =
+        matchHiveScan("region")
+            .nestedLoopJoin(
+                matchHiveScan("nation").finalLimit(0, 1).singleAggregationIf(
+                    !useV2_),
+                useV2_ ? velox::core::JoinType::kLeftSemiProject
+                       : velox::core::JoinType::kInner)
+            .project()
+            .build();
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
   // Uncorrelated NOT EXISTS in projection.
@@ -458,18 +463,21 @@ TEST_P(SubqueryTest, uncorrelatedProject) {
         "   NOT EXISTS (SELECT 1 FROM nation) AS no_nations "
         "FROM region";
 
-    // Uncorrelated NOT EXISTS in projection uses cross join with count = 0
-    // check.
-    auto matcher = matchHiveScan("region")
-                       .nestedLoopJoin(
-                           matchHiveScan("nation").limit().singleAggregation(),
-                           velox::core::JoinType::kInner)
-                       .project()
-                       .build();
+    // One row of the subquery settles existence, which the limit reads. v1
+    // then counts that row; v2 marks each outer row against it.
+    auto matcher =
+        matchHiveScan("region")
+            .nestedLoopJoin(
+                matchHiveScan("nation").finalLimit(0, 1).singleAggregationIf(
+                    !useV2_),
+                useV2_ ? velox::core::JoinType::kLeftSemiProject
+                       : velox::core::JoinType::kInner)
+            .project()
+            .build();
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN(plan, matcher);
   }
 }
 
@@ -575,7 +583,7 @@ TEST_P(SubqueryTest, correlatedInWithCorrelationFilter) {
             .project()
             .build();
     auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
   // Two correlation equalities.
@@ -596,7 +604,7 @@ TEST_P(SubqueryTest, correlatedInWithCorrelationFilter) {
                        .project()
                        .build();
     auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN(plan, matcher);
   }
 }
 
@@ -622,7 +630,7 @@ TEST_P(SubqueryTest, correlatedInWithMixedCorrelationFilter) {
                      .project()
                      .build();
   auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
-  AXIOM_ASSERT_PLAN_V1(plan, matcher);
+  AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
 // Correlated IN subquery where the correlation equality duplicates the IN key.
@@ -688,7 +696,7 @@ TEST_P(SubqueryTest, multiTableInSubquery) {
           .build();
 
   auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
-  AXIOM_ASSERT_PLAN_V1(plan, matcher);
+  AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
 TEST_P(SubqueryTest, correlatedScalar) {
@@ -896,38 +904,48 @@ TEST_P(SubqueryTest, uncorrelatedExists) {
   {
     auto query = "SELECT * FROM region WHERE EXISTS (SELECT 1 FROM nation)";
 
-    // EXISTS uses NOT(count = 0) to check if any rows exist.
-    auto matcher = matchHiveScan("region")
-                       .nestedLoopJoin(
-                           matchHiveScan("nation")
-                               .finalLimit(0, 1)
-                               .singleAggregation({}, {"count(*) as c"})
-                               .filter("not(eq(c, 0))"),
-                           velox::core::JoinType::kInner)
-                       .build();
+    // One subquery row settles existence, so the subquery is capped at one
+    // row. v1 then counts that row and tests the count below the join; v2
+    // marks the outer row and filters on the mark above it, under a name it
+    // generates.
+    auto matcher =
+        matchHiveScan("region")
+            .nestedLoopJoin(
+                matchHiveScan("nation")
+                    .finalLimit(0, 1)
+                    .singleAggregationIf(!useV2_, {}, {"count(*) as c"})
+                    .filterIf(!useV2_, "not(eq(c, 0))"),
+                useV2_ ? velox::core::JoinType::kLeftSemiProject
+                       : velox::core::JoinType::kInner)
+            .filterIf(useV2_)
+            .projectIf(useV2_)
+            .build();
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
   // Uncorrelated NOT EXISTS: returns all rows if subquery has no rows.
   {
     auto query = "SELECT * FROM region WHERE NOT EXISTS (SELECT 1 FROM nation)";
 
-    // NOT EXISTS uses NOT(NOT(count = 0)) to check if no rows exist.
-    auto matcher = matchHiveScan("region")
-                       .nestedLoopJoin(
-                           matchHiveScan("nation")
-                               .finalLimit(0, 1)
-                               .singleAggregation({}, {"count(*) as c"})
-                               .filter("not(not(eq(c, 0)))"),
-                           velox::core::JoinType::kInner)
-                       .build();
+    auto matcher =
+        matchHiveScan("region")
+            .nestedLoopJoin(
+                matchHiveScan("nation")
+                    .finalLimit(0, 1)
+                    .singleAggregationIf(!useV2_, {}, {"count(*) as c"})
+                    .filterIf(!useV2_, "not(not(eq(c, 0)))"),
+                useV2_ ? velox::core::JoinType::kLeftSemiProject
+                       : velox::core::JoinType::kInner)
+            .filterIf(useV2_)
+            .projectIf(useV2_)
+            .build();
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN(plan, matcher);
   }
 }
 
@@ -947,7 +965,7 @@ TEST_P(SubqueryTest, correlatedNotExists) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
   // NOT EXISTS with non-equality correlation in filter.
@@ -968,7 +986,7 @@ TEST_P(SubqueryTest, correlatedNotExists) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
   // NOT EXISTS in projection.
@@ -990,7 +1008,7 @@ TEST_P(SubqueryTest, correlatedNotExists) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN(plan, matcher);
   }
 }
 
@@ -1120,7 +1138,7 @@ TEST_P(SubqueryTest, uncorrelatedGroupingKey) {
                      .build();
 
   auto plan = toSingleNodePlan(query);
-  AXIOM_ASSERT_PLAN_V1(plan, matcher);
+  AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
 TEST_P(SubqueryTest, correlatedGroupingKey) {
@@ -1992,7 +2010,7 @@ TEST_P(SubqueryTest, leftJoinFilterWithNonDefaultNullEquality) {
                      .build();
 
   auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
-  AXIOM_ASSERT_PLAN_V1(plan, matcher);
+  AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
 TEST_P(SubqueryTest, rightJoinOnSubquery) {
@@ -2144,7 +2162,7 @@ TEST_P(SubqueryTest, inSubqueryInsideAggregate) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
   // IN <subquery> inside an aggregate FILTER clause.
@@ -2157,7 +2175,7 @@ TEST_P(SubqueryTest, inSubqueryInsideAggregate) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN(plan, matcher);
   }
 }
 
@@ -2188,7 +2206,7 @@ TEST_P(SubqueryTest, nestedInSubqueries) {
 
   SCOPED_TRACE(query);
   auto plan = toSingleNodePlan(query);
-  AXIOM_ASSERT_PLAN_V1(plan, matcher);
+  AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
 // EXISTS (SELECT 1 WHERE <condition>) with no FROM clause is equivalent to
@@ -2301,7 +2319,7 @@ TEST_P(SubqueryTest, inReplicateNullsAndAny) {
             .build();
 
     auto distributedPlan = planVelox(parseSelect(query, kTestConnectorId));
-    AXIOM_ASSERT_DISTRIBUTED_PLAN_V1(distributedPlan.plan, matcher);
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, matcher);
   }
 
   // IN in projection: stays as kLeftSemiProject with null-aware. The build
@@ -2323,7 +2341,7 @@ TEST_P(SubqueryTest, inReplicateNullsAndAny) {
             .build();
 
     auto distributedPlan = planVelox(parseSelect(query, kTestConnectorId));
-    AXIOM_ASSERT_DISTRIBUTED_PLAN_V1(distributedPlan.plan, matcher);
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, matcher);
   }
 
   // IN in projection with reversed table sizes — exercises joinByHashRight.
@@ -2342,7 +2360,7 @@ TEST_P(SubqueryTest, inReplicateNullsAndAny) {
                        .build();
 
     auto distributedPlan = planVelox(parseSelect(query, kTestConnectorId));
-    AXIOM_ASSERT_DISTRIBUTED_PLAN_V1(distributedPlan.plan, matcher);
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, matcher);
   }
 }
 
