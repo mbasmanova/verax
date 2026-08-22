@@ -2596,12 +2596,13 @@ class Decorrelator : public NodeRewriter<> {
   terminusSemi(ApplyCP apply, NodeCP input, NodeCP body, ExprVector filter) {
     ExprVector leftKeys;
     ExprVector rightKeys;
+    bool bodyKeyHasOuter = false;
     if (apply->inLhs() != nullptr) {
       // Equi-keys must each resolve on a single join side. When the
       // body key references outer columns, demote the IN equality
       // into the join filter; `nullAware=true` preserves null-aware
       // semi-project semantics.
-      const bool bodyKeyHasOuter =
+      bodyKeyHasOuter =
           apply->inBodyKey()->columns().containsAny(input->outputColumns());
       if (bodyKeyHasOuter) {
         filter.push_back(
@@ -2618,8 +2619,18 @@ class Decorrelator : public NodeRewriter<> {
     // Null-aware semantics apply only to the IN equality. Keep
     // correlation equi-conditions in the residual so they execute
     // under standard `=`.
+    //
+    // A correlation repeating the IN equality makes the IN an EXISTS: the body
+    // holds only rows equal to the left side, so neither the repeated
+    // predicate nor a null-aware key is needed.
+    bool repeatsInEquality = false;
     if (apply->nullAware()) {
       for (size_t i = 0; i < split.leftKeys.size(); ++i) {
+        if (!bodyKeyHasOuter && split.leftKeys[i] == apply->inLhs() &&
+            split.rightKeys[i] == apply->inBodyKey()) {
+          repeatsInEquality = true;
+          continue;
+        }
         split.residual.push_back(
             exprFactory_.makeEq(split.leftKeys[i], split.rightKeys[i]));
       }
@@ -2634,7 +2645,7 @@ class Decorrelator : public NodeRewriter<> {
         std::move(leftKeys),
         std::move(rightKeys),
         std::move(split.residual),
-        apply->nullAware(),
+        apply->nullAware() && !repeatsInEquality,
         /*nullAsValue=*/false,
         apply->outputColumns(),
     });

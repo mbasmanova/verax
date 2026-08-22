@@ -417,11 +417,20 @@ SELECT t.a <> ALL (SELECT t2.a FROM t t2 WHERE t2.b = t.b) FROM t
 -- Correlated NOT IN subquery with mixed equality and non-equality correlation.
 SELECT t.a NOT IN (SELECT t2.a FROM t t2 WHERE t2.b = t.b AND t2.c < t.c) FROM t
 ----
--- Correlated IN subquery where correlation equality is redundant with IN key.
+-- Correlated IN subquery whose correlation repeats the IN equality.
 SELECT t.a IN (SELECT t2.a FROM t t2 WHERE t2.a = t.a) FROM t
 ----
--- Correlated NOT IN subquery where correlation equality is redundant with IN key.
+-- Correlated NOT IN subquery whose correlation repeats the IN equality.
 SELECT t.a NOT IN (SELECT t2.a FROM t t2 WHERE t2.a = t.a) FROM t
+----
+-- The same over a source holding NULLs, which is what tells the answer apart
+-- from an unknown one: a row whose subquery is empty is not in it.
+WITH n(a) AS (VALUES (1), (2), (CAST(NULL AS INTEGER))),
+     m(x) AS (VALUES (2), (CAST(NULL AS INTEGER)))
+SELECT n.a,
+       n.a IN (SELECT m.x FROM m WHERE m.x = n.a) AS present,
+       n.a NOT IN (SELECT m.x FROM m WHERE m.x = n.a) AS absent
+FROM n
 ----
 -- Correlated IN subquery with reversed operand order in correlation.
 SELECT t.a IN (SELECT t2.a FROM t t2 WHERE t.b = t2.b) FROM t
