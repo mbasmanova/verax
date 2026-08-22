@@ -4088,11 +4088,16 @@ ExprCP ToGraph::processCorrelatedInPredicate(
 
   // Only the IN equality should be a null-aware join key. Correlation
   // equalities are standard WHERE clause predicates with different null
-  // semantics, so they belong in the filter. Correlation equalities that match
-  // the IN key are redundant and dropped.
+  // semantics, so they belong in the filter.
+  //
+  // A correlation repeating the IN equality makes the IN an EXISTS: the
+  // subquery holds only rows equal to the left side, so neither the repeated
+  // predicate nor a null-aware key is needed.
+  bool repeatsInEquality = false;
   for (auto i = 0; i < decorrelated.leftKeys.size(); ++i) {
     if (!inRightHasOuter && decorrelated.leftKeys[i] == leftKey &&
         decorrelated.rightKeys[i] == inRightKey) {
+      repeatsInEquality = true;
       continue;
     }
     decorrelated.filter.push_back(
@@ -4108,7 +4113,7 @@ ExprCP ToGraph::processCorrelatedInPredicate(
       subqueryDt,
       markColumn,
       std::move(decorrelated.filter),
-      /*nullAwareIn=*/true);
+      /*nullAwareIn=*/!repeatsInEquality);
   currentDt_->joins.push_back(edge);
 
   if (!inRightHasOuter) {
