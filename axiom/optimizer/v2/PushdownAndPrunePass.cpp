@@ -1224,6 +1224,12 @@ class Pushdown : public NodeRewriter<PushdownContext> {
   // Sort: pending passes through unchanged — order has no row-set
   // effect. The sort keys must survive in the child's outputs.
   NodeCP rewriteSort(const Sort* node, PushdownContext& context) override {
+    // With no column of this node read above, its rows are indistinguishable
+    // and their order cannot be observed: `SELECT 1 FROM t ORDER BY x` is
+    // `SELECT 1 FROM t`. Dropping the Sort also frees its keys to be pruned.
+    if (!context.requiredAbove.containsAny(node->outputColumns())) {
+      return rewrite(node->input(), context);
+    }
     context.required.unionColumns(node->orderKeys());
     context.requiredAbove.unionColumns(node->orderKeys());
     // A Sort outputs its input's columns, so it is not the consumer the flag
@@ -1272,7 +1278,15 @@ class Pushdown : public NodeRewriter<PushdownContext> {
   // TopN: a filter barrier like Limit (its bound depends on the row set), and
   // its order keys must survive in the child like Sort.
   NodeCP rewriteTopN(const TopN* node, PushdownContext& context) override {
+    // As in rewriteSort, with no column read above only the row count the
+    // TopN keeps is observable, which a Limit keeps as well.
+    const bool rowsUnread =
+        !context.requiredAbove.containsAny(node->outputColumns());
     return blockAt(context, [&](PushdownContext& empty) -> NodeCP {
+      if (rowsUnread) {
+        return builder().make<Limit>(
+            {rewrite(node->input(), empty), node->offset(), node->count()});
+      }
       empty.required.unionColumns(node->orderKeys());
       empty.requiredAbove.unionColumns(node->orderKeys());
 

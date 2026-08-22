@@ -66,6 +66,20 @@ LimitBound collapse(const LimitBound& outer, const LimitBound& inner) {
   return {offset, count};
 }
 
+// True when the join's only question of its right side is whether it has a
+// row: a semi or anti join with nothing to match on. A key or a filter would
+// make the surviving row matter, so only an unconditional one qualifies.
+// Null-aware semantics are defined over equi-keys, so a null-aware join never
+// reaches this shape; the term states that rather than relying on it.
+bool readsRightForExistenceOnly(const Join* join) {
+  using velox::core::JoinType;
+  const auto joinType = join->joinType();
+  const bool existenceSideIsRight = joinType == JoinType::kLeftSemiFilter ||
+      joinType == JoinType::kLeftSemiProject || joinType == JoinType::kAnti;
+  return existenceSideIsRight && join->leftKeys().empty() &&
+      join->filter().empty() && !join->nullAware();
+}
+
 // State threaded top-down.
 struct LimitContext {
   // The row bound the consumer imposes on the current node's output, placed as
@@ -205,7 +219,7 @@ class LimitAndOrderRewriter : public NodeRewriter<LimitContext> {
   // rewrite the inputs with no pending bound. 'preservesOrder' says whether the
   // node passes its input's order through (drives the bare-Sort drop below).
   //
-  // The multi-input barriers (Join, Apply) delegate to the base rewriter, which
+  // The multi-input barrier (Apply) delegates to the base rewriter, which
   // rewrites all inputs with this one shared context. That is safe because the
   // macro clears `pending` (via the std::exchange below) and sets
   // `orderPreserved` false *before* delegating, so no input is rewritten with
@@ -227,13 +241,44 @@ class LimitAndOrderRewriter : public NodeRewriter<LimitContext> {
   // Unnest emits each input row's unnested rows in input order, so it passes
   // its input's order through: a Sort below it stays observable.
   LIMIT_BARRIER(Unnest, rewriteUnnest, true)
-  LIMIT_BARRIER(Join, rewriteJoin, false)
   LIMIT_BARRIER(Apply, rewriteApply, false)
   LIMIT_BARRIER(EnforceDistinct, rewriteEnforceDistinct, false)
   LIMIT_BARRIER(TopNRowNumber, rewriteTopNRowNumber, false)
   LIMIT_BARRIER(Exchange, rewriteExchange, false)
 
 #undef LIMIT_BARRIER
+
+  // A Join is a barrier like the nodes above, with one addition: when it asks
+  // only whether its right side has any row — a semi or anti join with no keys
+  // and no filter — one row answers that, so the right side is rewritten under
+  // a bound of one.
+  NodeCP rewriteJoin(const Join* node, LimitContext& context) override {
+    const auto pending = std::exchange(context.pending, std::nullopt);
+    context.orderPreserved = false;
+
+    NodeCP newLeft = rewrite(node->left(), context);
+
+    LimitContext rightContext;
+    rightContext.orderPreserved = false;
+    if (readsRightForExistenceOnly(node)) {
+      rightContext.pending = LimitBound{/*offset=*/0, /*count=*/1};
+    }
+    NodeCP newRight = rewrite(node->right(), rightContext);
+
+    NodeCP newJoin = newLeft == node->left() && newRight == node->right()
+        ? node
+        : builder().make<Join>(
+              {newLeft,
+               newRight,
+               node->joinType(),
+               node->leftKeys(),
+               node->rightKeys(),
+               node->filter(),
+               node->nullAware(),
+               node->nullAsValue(),
+               node->outputColumns()});
+    return materialize(pending, newJoin);
+  }
 
   // Window: a bound above it counts the rows it emits, which is its input's
   // rows, but the values its functions compute read the whole partition — so a
