@@ -511,13 +511,13 @@ TEST_P(SubqueryTest, correlatedIn) {
         "  SELECT o.o_custkey FROM orders AS o "
         "  WHERE o.o_custkey = c.c_custkey)";
 
-    // Correlated NOT IN subquery creates a RIGHT SEMI PROJECT join with
-    // mark column, then filters and projects.
+    // The correlation repeats the IN equality, so membership is existence:
+    // the join carries a mark but needs no null-aware key.
     auto matcher = matchHiveScan("orders")
                        .hashJoin(
                            matchHiveScan("customer"),
                            core::JoinType::kRightSemiProject,
-                           {.nullAware = true})
+                           {.nullAware = false})
                        .filter()
                        .project()
                        .build();
@@ -633,26 +633,29 @@ TEST_P(SubqueryTest, correlatedInWithMixedCorrelationFilter) {
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
-// Correlated IN subquery where the correlation equality duplicates the IN key.
-TEST_P(SubqueryTest, correlatedInWithRedundantCorrelationFilter) {
+TEST_P(SubqueryTest, correlatedInWithCorrelationOnInKey) {
   testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
   testConnector_->addTable("u", ROW({"x", "y"}, BIGINT()));
 
+  // The correlation holds the subquery to rows equal to the left side, so the
+  // IN asks only whether the subquery has a row: no repeated predicate and no
+  // null-aware key.
   auto query =
       "SELECT t.a IN ("
       "  SELECT u.x FROM u "
       "  WHERE u.x = t.a"
       ") FROM t";
 
-  auto matcher = matchScan("t")
-                     .hashJoin(
-                         matchScan("u"),
-                         core::JoinType::kLeftSemiProject,
-                         {.nullAware = true, .keys = {{"a = x"}}, .filter = ""})
-                     .project()
-                     .build();
+  auto matcher =
+      matchScan("t")
+          .hashJoin(
+              matchScan("u"),
+              core::JoinType::kLeftSemiProject,
+              {.nullAware = false, .keys = {{"a = x"}}, .filter = ""})
+          .project()
+          .build();
   auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
-  AXIOM_ASSERT_PLAN_V1(plan, matcher);
+  AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
 // IN subquery whose correlation predicate references a sibling of the IN's
@@ -861,13 +864,13 @@ TEST_P(SubqueryTest, correlatedProject) {
         "   n_regionkey IN (SELECT r_regionkey FROM region WHERE r_regionkey = n_regionkey) AS in_region "
         "FROM nation";
 
-    // Correlated IN subquery in projection is transformed into a LEFT SEMI
-    // PROJECT join with a mark column.
+    // The correlation repeats the IN equality, so membership is existence and
+    // the key is not null-aware, as for the EXISTS above.
     auto matcher = matchHiveScan("nation")
                        .hashJoin(
                            core::PlanMatcherBuilder().hiveScan("region", {}),
                            velox::core::JoinType::kLeftSemiProject,
-                           {.nullAware = true})
+                           {.nullAware = false})
                        .project()
                        .build();
 
@@ -889,7 +892,7 @@ TEST_P(SubqueryTest, correlatedProject) {
                        .hashJoin(
                            core::PlanMatcherBuilder().hiveScan("region", {}),
                            velox::core::JoinType::kLeftSemiProject,
-                           {.nullAware = true})
+                           {.nullAware = false})
                        .project()
                        .build();
 
