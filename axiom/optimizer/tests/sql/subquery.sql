@@ -349,6 +349,47 @@ FROM t
 SELECT t.a, (SELECT count(*) FROM u WHERE u.a = t.a AND u.a IN (SELECT v.a + t.a FROM v)) AS n
 FROM t
 ----
+-- An IN subquery in a LEFT JOIN's ON clause reading the null-supplying side:
+-- a row whose only match the IN rejects is kept, NULL-padded.
+WITH n(a) AS (VALUES (1), (2), (3)),
+     m(a) AS (VALUES (1), (2), (3)),
+     w(a) AS (VALUES (2), (4))
+SELECT n.a, m.a FROM n LEFT JOIN m ON m.a = n.a AND m.a IN (SELECT a FROM w)
+----
+-- The same for a correlated EXISTS.
+WITH n(a) AS (VALUES (1), (2), (3)),
+     m(a) AS (VALUES (1), (2), (3)),
+     w(a) AS (VALUES (2), (4))
+SELECT n.a, m.a
+FROM n LEFT JOIN m ON m.a = n.a AND EXISTS (SELECT 1 FROM w WHERE w.a = m.a)
+----
+-- A RIGHT JOIN whose ON clause reads its preserved side: a preserved row the
+-- IN rejects matches nothing. DuckDB rejects a subquery in a non-inner
+-- join's ON clause, so the result is spelled out.
+-- error_v1: Failed to place a table
+-- duckdb: VALUES (1, NULL), (2, 2), (3, NULL)
+WITH n(a) AS (VALUES (1), (2), (3)),
+     m(a) AS (VALUES (1), (2), (3)),
+     w(a) AS (VALUES (2), (4))
+SELECT n.a, m.a FROM m RIGHT JOIN n ON m.a = n.a AND n.a IN (SELECT a FROM w)
+----
+-- A FULL JOIN keeps the unmatched rows of both sides.
+-- error_v1: Unexpected expression: Subquery
+-- duckdb: VALUES (1, NULL), (2, 2), (3, NULL), (NULL, 1), (NULL, 3)
+WITH n(a) AS (VALUES (1), (2), (3)),
+     m(a) AS (VALUES (1), (2), (3)),
+     w(a) AS (VALUES (2), (4))
+SELECT n.a, m.a FROM n FULL JOIN m ON m.a = n.a AND m.a IN (SELECT a FROM w)
+----
+-- A NULL in the IN list makes the mark NULL, which is not a match, so only
+-- the value the list names can match.
+-- error_v1: Unexpected expression: Subquery
+-- duckdb: VALUES (1, NULL), (2, 2), (3, NULL), (NULL, 1), (NULL, 3)
+WITH n(a) AS (VALUES (1), (2), (3)), m(a) AS (VALUES (1), (2), (3))
+SELECT n.a, m.a
+FROM n FULL JOIN m
+  ON m.a = n.a AND m.a IN (SELECT w.a FROM (VALUES (2), (CAST(NULL AS INTEGER))) AS w(a))
+----
 -- Correlated IN subquery with single correlation equality.
 SELECT t.a IN (SELECT t2.a FROM t t2 WHERE t2.b = t.b) FROM t
 ----
@@ -1085,10 +1126,10 @@ SELECT l.a, r.a FROM (VALUES 1, 2) l(a)
 LEFT JOIN (VALUES 10, 15, 20) r(a)
   ON r.a = (SELECT max(x) FROM (VALUES 10, 15) s(x) WHERE x > l.a)
 ----
--- Scalar subquery in an outer join's ON condition correlated to the right input
--- is unsupported.
+-- Scalar subquery in an outer join's ON condition reading both inputs is
+-- unsupported: it cannot be lifted onto either one.
 -- error_v1: Unsupported subqueries in the ON clause of a LEFT or RIGHT join
--- error_v2: Correlated subquery referencing the right side of an outer join's ON clause is not supported
+-- error_v2: Subquery in an outer join's ON clause referencing both inputs
 SELECT l.a, r.a FROM (VALUES 1, 2) l(a)
 LEFT JOIN (VALUES 10, 15, 20) r(a)
   ON l.a = (SELECT max(x) FROM (VALUES 10, 15) s(x) WHERE x > r.a)

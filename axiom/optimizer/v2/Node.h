@@ -1191,6 +1191,15 @@ class Join : public Node {
     return joinType_ == velox::core::JoinType::kFull;
   }
 
+  bool isLeftSemiProject() const {
+    return joinType_ == velox::core::JoinType::kLeftSemiProject;
+  }
+
+  /// Returns the BOOLEAN mark this semi-project join adds to the preserved
+  /// side's columns, which is its last output column. Only semi-project joins
+  /// project one.
+  ColumnCP markColumn() const;
+
   const ExprVector& leftKeys() const {
     return leftKeys_;
   }

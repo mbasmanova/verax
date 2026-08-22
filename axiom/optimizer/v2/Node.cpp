@@ -1427,6 +1427,15 @@ bool UnionAll::KeyEq::operator()(const UnionAll* node, const Key& key) const {
   return (*this)(key, node);
 }
 
+namespace {
+// Semi-project joins pass the preserved side through and add a mark saying
+// whether the other side had a match.
+bool projectsMark(velox::core::JoinType joinType) {
+  return joinType == velox::core::JoinType::kLeftSemiProject ||
+      joinType == velox::core::JoinType::kRightSemiProject;
+}
+} // namespace
+
 Join::Join(Key key)
     : Node(
           NodeType::kJoin,
@@ -1466,6 +1475,26 @@ Join::Join(Key key)
   VELOX_CHECK(
       !(nullAware_ && nullAsValue_),
       "nullAware and nullAsValue are mutually exclusive");
+
+  if (projectsMark(joinType_)) {
+    VELOX_CHECK(
+        !outputColumns().empty(),
+        "A semi-project join must output its mark: {}",
+        joinTypeName());
+    VELOX_CHECK_EQ(
+        outputColumns().back()->value().type->kind(),
+        velox::TypeKind::BOOLEAN,
+        "A semi-project join must output its mark last: {}",
+        joinTypeName());
+  }
+}
+
+ColumnCP Join::markColumn() const {
+  VELOX_CHECK(
+      projectsMark(joinType_),
+      "Only a semi-project join projects a mark: {}",
+      joinTypeName());
+  return outputColumns().back();
 }
 
 size_t Join::KeyHash::operator()(const Join* node) const {
