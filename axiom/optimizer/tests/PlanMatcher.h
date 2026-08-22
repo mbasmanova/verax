@@ -337,6 +337,12 @@ class PlanMatcherBuilder {
   /// Matches any single (non-distributed) Aggregation node.
   PlanMatcherBuilder& singleAggregation();
 
+  /// Adds a single Aggregation matcher (see singleAggregation()) only when
+  /// 'condition' is true; otherwise a no-op.
+  PlanMatcherBuilder& singleAggregationIf(bool condition) {
+    return condition ? singleAggregation() : *this;
+  }
+
   /// Matches a single (non-distributed) Aggregation node with the specified
   /// grouping keys and aggregate expressions.
   /// @param groupingKeys Columns to group by.
@@ -345,6 +351,15 @@ class PlanMatcherBuilder {
   PlanMatcherBuilder& singleAggregation(
       const std::vector<std::string>& groupingKeys,
       const std::vector<std::string>& aggregates);
+
+  /// Adds a single Aggregation matcher (see singleAggregation()) only when
+  /// 'condition' is true; otherwise a no-op.
+  PlanMatcherBuilder& singleAggregationIf(
+      bool condition,
+      const std::vector<std::string>& groupingKeys,
+      const std::vector<std::string>& aggregates) {
+    return condition ? singleAggregation(groupingKeys, aggregates) : *this;
+  }
 
   /// Matches any partial Aggregation node.
   PlanMatcherBuilder& partialAggregation();
@@ -630,6 +645,14 @@ class PlanMatcherBuilder {
   /// omitted null ordering to `NULLS LAST`. So "c" means "c ASC NULLS LAST" and
   /// "c DESC" means "c DESC NULLS LAST".
   PlanMatcherBuilder& orderBy(const std::vector<std::string>& ordering);
+
+  /// Adds an OrderBy matcher (see orderBy()) only when 'condition' is true;
+  /// otherwise a no-op.
+  PlanMatcherBuilder& orderByIf(
+      bool condition,
+      const std::vector<std::string>& ordering) {
+    return condition ? orderBy(ordering) : *this;
+  }
 
   /// Matches any TableWrite node.
   PlanMatcherBuilder& tableWrite();
