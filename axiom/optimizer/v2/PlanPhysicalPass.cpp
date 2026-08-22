@@ -75,13 +75,14 @@ bool isClusterable(const Join* join) {
 void collectCluster(
     NodeCP node,
     JoinCluster& cluster,
-    bool dissolveCrossJoins) {
+    bool dissolveCrossJoins,
+    const folly::F14FastSet<const Join*>& opaqueJoins = {}) {
   if (node->is(NodeType::kJoin)) {
     const auto* join = node->as<Join>();
-    if (isClusterable(join)) {
+    if (isClusterable(join) && !opaqueJoins.contains(join)) {
       cluster.joins.push_back(join);
-      collectCluster(join->left(), cluster, dissolveCrossJoins);
-      collectCluster(join->right(), cluster, dissolveCrossJoins);
+      collectCluster(join->left(), cluster, dissolveCrossJoins, opaqueJoins);
+      collectCluster(join->right(), cluster, dissolveCrossJoins, opaqueJoins);
       return;
     }
     // A bare keyless inner join (no keys, no filter) is a comma-join cross
@@ -92,8 +93,8 @@ void collectCluster(
     // join; leave it an opaque leaf so its semantics are preserved.
     if (dissolveCrossJoins && join->isInner() && join->leftKeys().empty() &&
         join->filter().empty()) {
-      collectCluster(join->left(), cluster, dissolveCrossJoins);
-      collectCluster(join->right(), cluster, dissolveCrossJoins);
+      collectCluster(join->left(), cluster, dissolveCrossJoins, opaqueJoins);
+      collectCluster(join->right(), cluster, dissolveCrossJoins, opaqueJoins);
       return;
     }
   }
@@ -104,13 +105,41 @@ void collectCluster(
     // relation of the cluster; the Unnest emits it as its own input.
     NodeCP input = unnest->input();
     if (!input->outputColumns().empty()) {
-      collectCluster(input, cluster, dissolveCrossJoins);
+      collectCluster(input, cluster, dissolveCrossJoins, opaqueJoins);
     }
     // Preserve JoinCluster's post-order invariant.
     cluster.unnests.push_back(unnest);
     return;
   }
   cluster.leaves.push_back(node);
+}
+
+// A kLeftSemiProject join projects a mark, which is a column of no cluster
+// leaf. Another join in the cluster whose predicate reads that mark has no
+// relation set to resolve it against, so the producing join stays an opaque
+// leaf and the mark becomes one of that leaf's columns.
+folly::F14FastSet<const Join*> markProducersReadInCluster(
+    const JoinCluster& cluster) {
+  PlanObjectSet predicateColumns;
+  for (JoinCP join : cluster.joins) {
+    auto add = [&](const ExprVector& exprs) {
+      for (ExprCP expr : exprs) {
+        predicateColumns.unionSet(expr->columns());
+      }
+    };
+    add(join->leftKeys());
+    add(join->rightKeys());
+    add(join->filter());
+  }
+
+  folly::F14FastSet<const Join*> opaqueJoins;
+  for (JoinCP join : cluster.joins) {
+    if (join->isLeftSemiProject() &&
+        predicateColumns.contains(join->markColumn())) {
+      opaqueJoins.insert(join);
+    }
+  }
+  return opaqueJoins;
 }
 
 // True if some relation appears in an edge's TES but in no edge's left/right
@@ -355,6 +384,14 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
       return rewriteUnclusteredJoin(node, context);
     }
 
+    const folly::F14FastSet<const Join*> opaqueJoins =
+        markProducersReadInCluster(cluster);
+    if (!opaqueJoins.empty()) {
+      cluster = JoinCluster{};
+      cluster.root = node;
+      collectCluster(node, cluster, /*dissolveCrossJoins=*/true, opaqueJoins);
+    }
+
     std::vector<NodeCP> rewrittenLeaves;
     auto buildGraph = [&]() {
       rewrittenLeaves.clear();
@@ -376,7 +413,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
     if (hasEndpointStrandedRelation(graph)) {
       cluster = JoinCluster{};
       cluster.root = node;
-      collectCluster(node, cluster, /*dissolveCrossJoins=*/false);
+      collectCluster(node, cluster, /*dissolveCrossJoins=*/false, opaqueJoins);
       graph = buildGraph();
     }
 
