@@ -222,6 +222,7 @@ class NodeRewriter {
          node->replicatedColumns(),
          node->unnestColumns(),
          node->ordinalityColumn(),
+         node->markerColumn(),
          node->outputColumns()});
   }
 

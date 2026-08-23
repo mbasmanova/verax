@@ -141,6 +141,17 @@ bool isNullOnPadRows(ExprCP expr, const PlanObjectSet& bodyColumns) {
       !expr->containsFunction(FunctionSet::kNonDefaultNullBehavior);
 }
 
+// True if `node` is a `Values` with one row and no columns — what the FROM of
+// a subquery that selects only from an UNNEST lowers to. Joining with it
+// neither adds columns nor changes cardinality.
+bool isSingleEmptyRowValues(NodeCP node) {
+  if (!node->is(NodeType::kValues)) {
+    return false;
+  }
+  const Values* values = node->as<Values>();
+  return values->outputColumns().empty() && values->cardinality() == 1;
+}
+
 // Decorrelate pass implementation. The per-Apply loop:
 // recompute `correlationColumns` from body; if empty, hit terminus;
 // otherwise dispatch a peel rule by body's outermost operator and
@@ -203,6 +214,10 @@ class Decorrelator : public NodeRewriter<> {
 
       if (body->is(NodeType::kAssignUniqueId)) {
         return assignUniqueIdPeel(node, input, body, accumulatedFilter);
+      }
+
+      if (body->is(NodeType::kUnnest)) {
+        return unnestPeel(node, input, body, accumulatedFilter);
       }
 
       VELOX_NYI(
@@ -556,6 +571,25 @@ class Decorrelator : public NodeRewriter<> {
         FunctionSet{} | FunctionSet::kNonDeterministic |
             FunctionSet::kNonDefaultNullBehavior);
     return WindowFunction{call, Frame::toCurrentRow(), /*ignoreNulls=*/false};
+  }
+
+  // `bool_or(source)` over the whole partition, reading true when any row of
+  // the partition has it.
+  WindowFunction boolOrWindowFunction(ColumnCP source) {
+    const auto& boolOrName = FunctionRegistry::instance()->boolOr();
+    VELOX_USER_CHECK(
+        boolOrName.has_value(),
+        "Decorrelate requires bool_or registered via "
+        "FunctionRegistry::registerBoolOr");
+
+    // bool_or yields a BOOLEAN (two distinct values).
+    ExprCP call = builder().makeCall(
+        toName(*boolOrName),
+        Value(toType(velox::BOOLEAN()), /*cardinality=*/2),
+        ExprVector{source},
+        source->functions() | FunctionSet::kNonDeterministic |
+            FunctionSet::kNonDefaultNullBehavior);
+    return WindowFunction{call, Frame::wholePartition(), /*ignoreNulls=*/false};
   }
 
   // Wraps 'input' in a Window that emits `row_number() OVER
@@ -1031,20 +1065,28 @@ class Decorrelator : public NodeRewriter<> {
   }
 
   // Returns a Project that passes `input`'s columns through unchanged
-  // and appends `column` computed as `expr`.
-  NodeCP appendColumn(NodeCP input, ColumnCP column, ExprCP expr) {
+  // and appends `columns`, computed as the matching entry of `newExprs`.
+  NodeCP appendColumns(
+      NodeCP input,
+      const ColumnVector& columns,
+      const ExprVector& newExprs) {
+    VELOX_CHECK_EQ(columns.size(), newExprs.size());
     const auto& inputColumns = input->outputColumns();
 
     ExprVector exprs;
     ColumnVector outputs;
-    exprs.reserve(inputColumns.size() + 1);
-    outputs.reserve(inputColumns.size() + 1);
+    exprs.reserve(inputColumns.size() + columns.size());
+    outputs.reserve(inputColumns.size() + columns.size());
     appendAll(exprs, inputColumns);
     appendAll(outputs, inputColumns);
-    exprs.push_back(expr);
-    outputs.push_back(column);
+    appendAll(exprs, newExprs);
+    appendAll(outputs, columns);
     return builder().make<Project>(
         Project::Key{input, std::move(exprs), std::move(outputs)});
+  }
+
+  NodeCP appendColumn(NodeCP input, ColumnCP column, ExprCP expr) {
+    return appendColumns(input, ColumnVector{column}, ExprVector{expr});
   }
 
   // Window over PARTITION BY `partition` computing `anyMatch =
@@ -1056,24 +1098,8 @@ class Decorrelator : public NodeRewriter<> {
       ColumnCP marker,
       ColumnCP anyMatch,
       ColumnCP padOrdinal) {
-    const auto& boolOrName = FunctionRegistry::instance()->boolOr();
-    VELOX_USER_CHECK(
-        boolOrName.has_value(),
-        "Decorrelate kInner cross-join recovery requires bool_or "
-        "registered via FunctionRegistry::registerBoolOr");
-
-    // bool_or yields a BOOLEAN (two distinct values).
-    ExprCP boolOrCall = builder().makeCall(
-        toName(*boolOrName),
-        Value(toType(velox::BOOLEAN()), /*cardinality=*/2),
-        ExprVector{marker},
-        marker->functions() | FunctionSet::kNonDeterministic |
-            FunctionSet::kNonDefaultNullBehavior);
-
     WindowFunctions functions;
-    functions.push_back(
-        WindowFunction{
-            boolOrCall, Frame::wholePartition(), /*ignoreNulls=*/false});
+    functions.push_back(boolOrWindowFunction(marker));
     functions.push_back(rowNumberWindowFunction(padOrdinal));
 
     ColumnVector outputs;
@@ -1232,6 +1258,239 @@ class Decorrelator : public NodeRewriter<> {
     }
     return builder().make<Project>(Project::Key{
         filtered,
+        std::move(finalExprs),
+        node->outputColumns(),
+    });
+  }
+
+  // Rebuilds `unnestBody` over `input`, replicating every column `input`
+  // produces. A non-null `marker` makes it an outer Unnest, which keeps an
+  // input row whose unnested value is empty.
+  NodeCP
+  liftUnnestOver(const Unnest* unnestBody, NodeCP input, ColumnCP marker) {
+    ColumnVector replicated = input->outputColumns();
+    ColumnVector outputs = replicated;
+    for (const auto& columns : unnestBody->unnestColumns()) {
+      appendAll(outputs, columns);
+    }
+    if (unnestBody->withOrdinality()) {
+      outputs.push_back(unnestBody->ordinalityColumn());
+    }
+    if (marker != nullptr) {
+      outputs.push_back(marker);
+    }
+
+    return builder().make<Unnest>(Unnest::Key{
+        input,
+        unnestBody->unnestExpressions(),
+        std::move(replicated),
+        unnestBody->unnestColumns(),
+        unnestBody->ordinalityColumn(),
+        marker,
+        std::move(outputs),
+    });
+  }
+
+  // Unnest peel. An Unnest whose expressions read outer columns produces
+  // rows per outer row, which is what an Apply already means, so the Unnest
+  // lifts above the Apply and replicates the outer columns. Conjuncts
+  // reading a column the Unnest produces cannot go below the lift and stay
+  // above it.
+  //
+  // Only kInner lifts this way, since a plain Unnest drops an outer whose
+  // array is empty. kLeftSemiProject keeps such an outer with an outer Unnest
+  // and reduces per outer; see `unnestPeelSemi`. kLeft is not implemented.
+  NodeCP unnestPeel(
+      ApplyCP node,
+      NodeCP input,
+      NodeCP body,
+      ExprVector accumulatedFilter) {
+    if (node->isLeftSemiProject()) {
+      return unnestPeelSemi(node, input, body, accumulatedFilter);
+    }
+    if (!node->isInner()) {
+      VELOX_NYI(
+          "Decorrelate unnestPeel: a {} Apply over an Unnest body is not yet "
+          "implemented",
+          node->isLeft() ? "kLeft" : "semi-filter or anti");
+    }
+    const Unnest* unnestBody = body->as<Unnest>();
+    NodeCP newBody = unnestBody->input();
+
+    PlanObjectSet unnestedColumns;
+    for (const auto& columns : unnestBody->unnestColumns()) {
+      unnestedColumns.unionObjects(columns);
+    }
+    if (unnestBody->withOrdinality()) {
+      unnestedColumns.add(unnestBody->ordinalityColumn());
+    }
+
+    ExprVector innerFilter;
+    ExprVector liftedFilter;
+    for (ExprCP conjunct : accumulatedFilter) {
+      if (conjunct->columns().hasIntersection(unnestedColumns)) {
+        liftedFilter.push_back(conjunct);
+      } else {
+        innerFilter.push_back(conjunct);
+      }
+    }
+
+    ColumnVector innerOutputColumns;
+    innerOutputColumns.reserve(
+        input->outputColumns().size() + newBody->outputColumns().size());
+    appendAll(innerOutputColumns, input->outputColumns());
+    appendUnique(innerOutputColumns, newBody->outputColumns());
+
+    NodeCP innerApply = builder().make<Apply>(Apply::Key{
+        input,
+        newBody,
+        recomputeCorrelations(newBody, input->outputColumns()),
+        node->kind(),
+        std::move(innerFilter),
+        node->enforceSingleRow(),
+        node->markColumn(),
+        node->inLhs(),
+        node->inBodyKey(),
+        node->includeMarker(),
+        std::move(innerOutputColumns),
+    });
+
+    NodeCP decorrelatedInner = rewrite(innerApply);
+
+    NodeCP lifted = liftUnnestOver(
+        unnestBody, decorrelatedInner, unnestBody->markerColumn());
+    const ColumnVector unnestOutputs = lifted->outputColumns();
+
+    if (!liftedFilter.empty()) {
+      lifted =
+          builder().make<Filter>(Filter::Key{lifted, std::move(liftedFilter)});
+    }
+
+    // The lift carries every column the inner Apply produced, in its own
+    // order; the Apply's schema may differ in either.
+    if (unnestOutputs == node->outputColumns()) {
+      return lifted;
+    }
+    ExprVector finalExprs;
+    appendAll(finalExprs, node->outputColumns());
+    return builder().make<Project>(Project::Key{
+        lifted,
+        std::move(finalExprs),
+        node->outputColumns(),
+    });
+  }
+
+  // Unnest peel for kLeftSemiProject: `EXISTS (SELECT ... FROM UNNEST(a) ...)`
+  // asks whether any element of the outer row's array passes the filter.
+  //
+  // The lift is an outer Unnest, which keeps an outer whose array is empty and
+  // says so in its marker, so every outer reaches the answer. A row counts
+  // when it came from a real element and the filter accepts it; `bool_or` over
+  // an outer's rows turns that into the mark, and one row per outer survives.
+  NodeCP unnestPeelSemi(
+      ApplyCP node,
+      NodeCP input,
+      NodeCP body,
+      const ExprVector& accumulatedFilter) {
+    VELOX_CHECK(
+        !node->enforceSingleRow(),
+        "A kLeftSemiProject Apply does not assert a single row");
+
+    const Unnest* unnestBody = body->as<Unnest>();
+    if (!isSingleEmptyRowValues(unnestBody->input())) {
+      VELOX_NYI(
+          "Decorrelate unnestPeel: EXISTS over an Unnest of a relation is not "
+          "yet implemented; only over the subquery's own row is");
+    }
+
+    ColumnCP rowId = makeIdColumn();
+    NodeCP tagged = tagOuterRows(input, rowId);
+
+    ColumnCP marker = makeIncludeColumn();
+    NodeCP expanded = liftUnnestOver(unnestBody, tagged, marker);
+
+    // A row of `expanded` is an element of this outer's array when the marker
+    // says it came from a value and the subquery's own predicates accept it.
+    ExprCP qualifies = marker;
+    for (ExprCP conjunct : accumulatedFilter) {
+      qualifies = exprFactory_.makeAnd(qualifies, conjunct);
+    }
+
+    if (!node->nullAware()) {
+      PerOuterMatch perOuter = markPerOuter(expanded, rowId, qualifies);
+      return markOnePerOuter(
+          node, perOuter.node, perOuter.padOrdinal, perOuter.anyMatch);
+    }
+
+    // IN is null-aware: true when an element equals the left side, false when
+    // no element does and no comparison was unknown, and unknown otherwise —
+    // a NULL element or a NULL left side could be hiding a match. An empty
+    // array has no comparison at all, so it reads false.
+    ExprCP equality = exprFactory_.makeEq(node->inLhs(), node->inBodyKey());
+    const Literal* falseLiteral = builder().makeBoolean(false);
+    ColumnCP matchRow = Column::createBoolean("__in_match");
+    ColumnCP unknownRow = Column::createBoolean("__in_unknown");
+    NodeCP compared = appendColumns(
+        expanded,
+        ColumnVector{matchRow, unknownRow},
+        ExprVector{
+            exprFactory_.makeCoalesce(
+                exprFactory_.makeAnd(qualifies, equality), falseLiteral),
+            exprFactory_.makeCoalesce(
+                exprFactory_.makeAnd(
+                    qualifies, exprFactory_.makeIsNull(equality)),
+                falseLiteral)});
+
+    ColumnCP anyMatch = Column::createBoolean("__any_match");
+    ColumnCP anyUnknown = Column::createBoolean("__any_unknown");
+    ColumnCP padOrdinal = makeIdColumn("__pad_rn");
+
+    WindowFunctions functions;
+    functions.push_back(boolOrWindowFunction(matchRow));
+    functions.push_back(boolOrWindowFunction(unknownRow));
+    functions.push_back(rowNumberWindowFunction(padOrdinal));
+
+    ColumnVector windowOutputs;
+    windowOutputs.reserve(compared->outputColumns().size() + 3);
+    appendAll(windowOutputs, compared->outputColumns());
+    windowOutputs.push_back(anyMatch);
+    windowOutputs.push_back(anyUnknown);
+    windowOutputs.push_back(padOrdinal);
+
+    NodeCP windowed = builder().make<Window>(Window::Key{
+        compared,
+        std::move(functions),
+        ExprVector{rowId},
+        /*orderKeys=*/{},
+        /*orderTypes=*/{},
+        std::move(windowOutputs),
+    });
+
+    ExprCP mark = exprFactory_.makeSwitch(
+        {{anyMatch, builder().makeBoolean(true)},
+         {anyUnknown, builder().makeNull(toType(velox::BOOLEAN()))}},
+        falseLiteral);
+    return markOnePerOuter(node, windowed, padOrdinal, mark);
+  }
+
+  // Keeps one row per outer and projects the Apply's schema, reading `mark`
+  // for its mark column.
+  NodeCP markOnePerOuter(
+      ApplyCP node,
+      NodeCP input,
+      ColumnCP padOrdinal,
+      ExprCP mark) {
+    NodeCP oneRowPerOuter = builder().make<Filter>(
+        Filter::Key{input, ExprVector{isFirstRowOfOuter(padOrdinal)}});
+
+    ExprVector finalExprs;
+    finalExprs.reserve(node->outputColumns().size());
+    for (ColumnCP outputColumn : node->outputColumns()) {
+      finalExprs.push_back(
+          outputColumn == node->markColumn() ? mark : outputColumn);
+    }
+    return builder().make<Project>(Project::Key{
+        oneRowPerOuter,
         std::move(finalExprs),
         node->outputColumns(),
     });
@@ -2012,8 +2271,17 @@ class Decorrelator : public NodeRewriter<> {
     });
   }
 
-  NodeCP
-  terminusInner(ApplyCP apply, NodeCP input, NodeCP body, ExprVector filter) {
+  NodeCP terminusInner(
+      ApplyCP apply,
+      NodeCP input,
+      NodeCP body,
+      const ExprVector& filter) {
+    // A body that is one empty row contributes nothing to join, so the
+    // Apply is its input.
+    if (filter.empty() && isSingleEmptyRowValues(body)) {
+      return input;
+    }
+
     // Plain INNER JOIN: no cardinality assertion, no include marker. Body and
     // input columns are disjoint (correlation columns live on the Apply, not
     // in body output), so the output is input ++ body with no collision.

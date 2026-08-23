@@ -1862,6 +1862,7 @@ Translated Translator::translateUnnest(
        std::move(replicatedColumns),
        std::move(unnestColumns),
        ordinalityColumn,
+       /*markerColumn=*/nullptr,
        std::move(outputColumns)});
   return {unnestNode, std::move(newScope)};
 }

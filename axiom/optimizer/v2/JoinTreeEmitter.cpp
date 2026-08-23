@@ -309,6 +309,9 @@ Emitted buildUnnest(const UnnestOp* unnest, Emitted input, EmitState& state) {
   if (origUnnest->ordinalityColumn() != nullptr) {
     outputColumns.push_back(origUnnest->ordinalityColumn());
   }
+  if (origUnnest->isOuter()) {
+    outputColumns.push_back(origUnnest->markerColumn());
+  }
 
   NodeCP node = state.builder.make<Unnest>(Unnest::Key{
       input.node,
@@ -316,6 +319,7 @@ Emitted buildUnnest(const UnnestOp* unnest, Emitted input, EmitState& state) {
       std::move(replicatedColumns),
       origUnnest->unnestColumns(),
       origUnnest->ordinalityColumn(),
+      origUnnest->markerColumn(),
       std::move(outputColumns)});
 
   if (!predicates.empty()) {

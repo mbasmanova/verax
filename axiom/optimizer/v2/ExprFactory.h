@@ -92,6 +92,14 @@ class ExprFactory {
   /// does not verify.
   ExprCP makeIf(ExprCP condition, ExprCP thenExpr, ExprCP elseExpr);
 
+  /// Builds `switch(when[0].first, when[0].second, ..., elseExpr)`, reading
+  /// the result of the first `when` whose condition holds. Every result and
+  /// `elseExpr` must be the same type per Velox's SWITCH rules; the factory
+  /// does not verify. `when` must be non-empty.
+  ExprCP makeSwitch(
+      const std::vector<std::pair<ExprCP, ExprCP>>& when,
+      ExprCP elseExpr);
+
   /// Maps a subexpression to what it should be replaced by.
   using ExprSubstitution = folly::F14FastMap<ExprCP, ExprCP>;
 
