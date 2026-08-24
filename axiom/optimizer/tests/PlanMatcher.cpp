@@ -505,7 +505,20 @@ class UnnestMatcher : public PlanMatcherImpl<UnnestNode> {
 
     AXIOM_TEST_RETURN_IF_FAILURE
 
-    return MatchResult::success();
+    // Only a replicated column keeps its identity across the unnest. An
+    // unnested one names the array below and its element above, so a symbol
+    // bound to it means something else here.
+    std::unordered_set<std::string> replicated;
+    for (const auto& variable : plan.replicateVariables()) {
+      replicated.insert(variable->name());
+    }
+    std::unordered_map<std::string, std::string> passedThrough;
+    for (const auto& [alias, name] : symbols) {
+      if (replicated.contains(name)) {
+        passedThrough.emplace(alias, name);
+      }
+    }
+    return MatchResult::success(std::move(passedThrough));
   }
 
  private:
@@ -1540,10 +1553,17 @@ class WindowMatcher : public PlanMatcherImpl<WindowNode> {
       const core::WindowCallExpr::Frame& expected,
       const std::unordered_map<std::string, std::string>& symbols,
       size_t index) const {
-    EXPECT_EQ(
-        WindowNode::toName(actual.type),
-        WindowNode::toName(toNodeWindowType(expected.type)))
-        << "Frame type mismatch at index " << index;
+    // ROWS and RANGE cover the same rows between unbounded bounds, so SQL
+    // spells such a frame either way and DuckDB keeps neither keyword.
+    const bool betweenUnboundedBounds =
+        actual.startType == WindowNode::BoundType::kUnboundedPreceding &&
+        actual.endType == WindowNode::BoundType::kUnboundedFollowing;
+    if (!betweenUnboundedBounds) {
+      EXPECT_EQ(
+          WindowNode::toName(actual.type),
+          WindowNode::toName(toNodeWindowType(expected.type)))
+          << "Frame type mismatch at index " << index;
+    }
 
     // Verify frame start bound.
     EXPECT_EQ(

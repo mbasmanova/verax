@@ -1531,13 +1531,18 @@ velox::core::PlanNodePtr Emitter::emitUnnest(const Unnest& unnest) {
     ordinalityName = unnest.ordinalityColumn()->outputName();
   }
 
+  std::optional<std::string> markerName;
+  if (unnest.isOuter()) {
+    markerName = unnest.markerColumn()->outputName();
+  }
+
   return std::make_shared<velox::core::UnnestNode>(
       nextId(),
       std::move(replicateVariables),
       std::move(unnestVariables),
       std::move(unnestNames),
       ordinalityName,
-      /*markerName=*/std::nullopt,
+      markerName,
       std::move(input));
 }
 

@@ -1394,12 +1394,20 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     if (node->ordinalityColumn() != nullptr) {
       outputOnlyColumns.add(node->ordinalityColumn());
     }
+    if (node->isOuter()) {
+      outputOnlyColumns.add(node->markerColumn());
+    }
     auto [pushable, blocked] = partition(context.pending, outputOnlyColumns);
 
     // Columns this Unnest must still produce: those the consumer requires plus
-    // the columns read by conjuncts that stay above.
+    // the columns read by conjuncts that stay above. The marker keeps the rows
+    // of an empty unnested value rather than carrying a value of its own, so
+    // dropping it would drop those rows; keep it whether or not it is read.
     PlanObjectSet outputsKept = context.required;
     outputsKept.unionColumns(blocked);
+    if (node->isOuter()) {
+      outputsKept.add(node->markerColumn());
+    }
 
     // Drop the replicated (pass-through) columns and ordinality column the
     // consumer no longer needs. These must leave the replicated/ordinality
@@ -1417,6 +1425,8 @@ class Pushdown : public NodeRewriter<PushdownContext> {
             outputsKept.contains(node->ordinalityColumn())
         ? node->ordinalityColumn()
         : nullptr;
+
+    ColumnCP survivingMarker = node->markerColumn();
 
     PushdownContext childContext =
         makeChildContext(std::move(pushable), context);
@@ -1445,6 +1455,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
                                       std::move(survivingReplicated),
                                       node->unnestColumns(),
                                       survivingOrdinality,
+                                      survivingMarker,
                                       std::move(survivingOutputs)});
     return maybeWrapFilter(newNode, std::move(blocked));
   }

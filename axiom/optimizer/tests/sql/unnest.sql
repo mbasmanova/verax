@@ -111,3 +111,78 @@ FROM arrays AS t
 CROSS JOIN UNNEST(t.nested) AS n(b)
 CROSS JOIN UNNEST(n.b) AS m(c)
 JOIN (VALUES (1)) AS u(x) ON c = u.x
+----
+-- EXISTS over an UNNEST of the outer row's own array asks whether any element
+-- matches. An outer row whose array has no matching element answers false.
+-- error_v1: Cannot resolve column name: ys
+SELECT x, EXISTS (SELECT 1 FROM UNNEST(ys) AS _(y) WHERE y > 25) FROM arrays
+----
+-- The same over an array that is empty or NULL for some rows: those answer
+-- false rather than dropping out. DuckDB spells the empty array literal
+-- differently, so state the rows directly.
+-- error_v1: Cannot resolve column name: a
+-- duckdb: VALUES (1, true), (2, false), (3, false), (4, false)
+SELECT k, EXISTS (SELECT 1 FROM UNNEST(a) AS _(e) WHERE e > 15)
+FROM (VALUES
+  (1, ARRAY[10, 20]),
+  (2, ARRAY[10]),
+  (3, CAST(ARRAY[] AS ARRAY(INTEGER))),
+  (4, CAST(NULL AS ARRAY(INTEGER)))
+) AS s(k, a)
+----
+-- NOT EXISTS over the outer row's array. Only the row whose array holds a
+-- larger element is excluded.
+-- error_v1: Cannot resolve column name: ys
+SELECT x FROM arrays WHERE NOT EXISTS (SELECT 1 FROM UNNEST(ys) AS _(y) WHERE y > 35)
+----
+-- A LATERAL subquery unnesting the outer row's array, filtered on the
+-- unnested column.
+-- error_v1: Unsupported PlanNode LATERAL_JOIN
+SELECT x, y FROM arrays, LATERAL (SELECT e AS y FROM UNNEST(ys) AS _(e) WHERE e > 25) AS l
+----
+-- IN over the outer row's array is null-aware: true when an element equals
+-- the left side, unknown when a NULL element or a NULL left side could be
+-- hiding a match, and false when the array holds nothing at all.
+-- error_v1: Cannot resolve column name: a
+-- duckdb: VALUES (1, false), (2, true), (3, false), (4, NULL), (5, true), (6, NULL), (7, false)
+SELECT k, v IN (SELECT e FROM UNNEST(a) AS _(e))
+FROM (VALUES
+  (1, 99, ARRAY[10, 20]),
+  (2, 20, ARRAY[10, 20]),
+  (3, 5, CAST(ARRAY[] AS ARRAY(INTEGER))),
+  (4, 99, ARRAY[10, NULL]),
+  (5, 20, ARRAY[NULL, 20]),
+  (6, CAST(NULL AS INTEGER), ARRAY[10]),
+  (7, CAST(NULL AS INTEGER), CAST(ARRAY[] AS ARRAY(INTEGER)))
+) AS s(k, v, a)
+----
+-- IN over the outer row's array whose subquery predicate is unknown for some
+-- elements. An element the predicate neither accepts nor rejects is not in the
+-- subquery's result, so it cannot hide a match: the answer is unknown only when
+-- an element the predicate accepts is NULL, or the left side is NULL and the
+-- result holds anything at all. DuckDB unnests a single list only, so state the
+-- rows directly.
+-- error_v1: Cannot resolve column name: a
+-- duckdb: VALUES (1, true), (2, false), (3, NULL), (4, NULL), (5, false)
+SELECT k, v IN (SELECT e FROM UNNEST(a, b) AS _(e, f) WHERE f > 0)
+FROM (VALUES
+  (1, 20, ARRAY[20], ARRAY[1]),
+  (2, 20, ARRAY[20], CAST(ARRAY[NULL] AS ARRAY(INTEGER))),
+  (3, 99, CAST(ARRAY[NULL] AS ARRAY(INTEGER)), ARRAY[1]),
+  (4, CAST(NULL AS INTEGER), ARRAY[10], ARRAY[1]),
+  (5, CAST(NULL AS INTEGER), ARRAY[10], CAST(ARRAY[NULL] AS ARRAY(INTEGER)))
+) AS s(k, v, a, b)
+----
+-- The subquery's predicate reads the ordinality of the unnested element.
+-- DuckDB does not implement WITH ORDINALITY, so state the rows directly.
+-- error_v1: Cannot resolve column name: a
+-- duckdb: VALUES (1, true), (2, false)
+SELECT k, EXISTS (SELECT 1 FROM UNNEST(a) WITH ORDINALITY AS _(e, o) WHERE o = 2)
+FROM (VALUES (1, ARRAY[10, 20]), (2, ARRAY[30])) AS s(k, a)
+----
+-- Two arrays unnested together inside the subquery are zipped. DuckDB unnests
+-- a single list only, so state the rows directly.
+-- error_v1: Cannot resolve column name: a
+-- duckdb: VALUES (1, true), (2, false)
+SELECT k, EXISTS (SELECT 1 FROM UNNEST(a, b) AS _(e, f) WHERE e > f)
+FROM (VALUES (1, ARRAY[10, 20], ARRAY[5, 50]), (2, ARRAY[1], ARRAY[9])) AS s(k, a, b)

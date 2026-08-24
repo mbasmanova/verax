@@ -16,6 +16,7 @@
 #include "axiom/logical_plan/PlanBuilder.h"
 #include "axiom/optimizer/tests/PlanMatcher.h"
 #include "axiom/optimizer/tests/QueryTestBase.h"
+#include "velox/common/base/tests/GTestUtils.h"
 
 namespace facebook::axiom::optimizer {
 namespace {
@@ -1095,6 +1096,154 @@ TEST_P(UnnestTest, unnestPlacedAboveJoin) {
         planVelox(logicalPlan, {.numWorkers = 4, .numDrivers = 4});
     AXIOM_ASSERT_DISTRIBUTED_PLAN(distributed.plan, matcher);
   }
+}
+
+// An UNNEST of the outer row's own array inside a correlated subquery. v1
+// cannot resolve the outer column there.
+TEST_P(UnnestTest, correlatedExists) {
+  testConnector_->addTable("t", ROW({"k", "a"}, {BIGINT(), ARRAY(BIGINT())}));
+
+  auto query =
+      "SELECT k, EXISTS (SELECT 1 FROM UNNEST(a) AS u(e) WHERE e > 15) AS m "
+      "FROM t";
+  auto logicalPlan = parseSelect(query, kTestConnectorId);
+
+  if (!useV2_) {
+    VELOX_ASSERT_THROW(
+        toSingleNodePlan(logicalPlan), "Cannot resolve column name: a");
+    return;
+  }
+
+  auto matcher =
+      matchScan("t")
+          .assignUniqueId("row_id")
+          .unnest({"k", "row_id"}, {"a"})
+          .aliases({"k", "row_id", "e", "marker"})
+          .project(
+              {"k", "row_id", "coalesce(marker and e > 15, false) as matched"})
+          .window(
+              {"bool_or(matched) OVER (PARTITION BY row_id) as any_match",
+               "row_number() OVER (PARTITION BY row_id ROWS BETWEEN "
+               "    UNBOUNDED PRECEDING AND CURRENT ROW) as ordinal"})
+          .filter("ordinal = 1")
+          .project({"k", "any_match"})
+          .build();
+
+  AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
+}
+
+// A LATERAL subquery unnesting the outer row's array. The subquery's FROM is
+// one empty row, which contributes no join.
+TEST_P(UnnestTest, lateralUnnest) {
+  testConnector_->addTable("t", ROW({"k", "a"}, {BIGINT(), ARRAY(BIGINT())}));
+
+  auto query =
+      "SELECT k, l.e FROM t, LATERAL (SELECT e FROM UNNEST(a) AS u(e) "
+      "WHERE e > 15) AS l";
+  auto logicalPlan = parseSelect(query, kTestConnectorId);
+
+  if (!useV2_) {
+    VELOX_ASSERT_THROW(
+        toSingleNodePlan(logicalPlan), "Unsupported PlanNode LATERAL_JOIN");
+    return;
+  }
+
+  auto matcher = matchScan("t").unnest({"k"}, {"a"}).filter("e > 15").build();
+
+  AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
+}
+
+// An IN whose subquery unnests the outer row's array is null-aware: an
+// element equal to the left side answers true, and a NULL that could hide a
+// match answers unknown.
+TEST_P(UnnestTest, inOverCorrelatedUnnest) {
+  testConnector_->addTable(
+      "t", ROW({"k", "v", "a"}, {BIGINT(), BIGINT(), ARRAY(BIGINT())}));
+
+  auto query = "SELECT k, v IN (SELECT e FROM UNNEST(a) AS u(e)) AS m FROM t";
+  auto logicalPlan = parseSelect(query, kTestConnectorId);
+
+  if (!useV2_) {
+    VELOX_ASSERT_THROW(
+        toSingleNodePlan(logicalPlan), "Cannot resolve column name: a");
+    return;
+  }
+
+  auto matcher =
+      matchScan("t")
+          .assignUniqueId("row_id")
+          .unnest({"k", "v", "row_id"}, {"a"})
+          .aliases({"k", "v", "row_id", "e", "marker"})
+          .project(
+              {"k",
+               "row_id",
+               "coalesce(marker and v = e, false) as matched",
+               "coalesce(marker and (v = e) is null, false) "
+               "as unknown"})
+          .window(
+              {"bool_or(matched) OVER (PARTITION BY row_id) as any_match",
+               "bool_or(unknown) OVER (PARTITION BY row_id) as any_unknown",
+               "row_number() OVER (PARTITION BY row_id ROWS BETWEEN "
+               "    UNBOUNDED PRECEDING AND CURRENT ROW) as ordinal"})
+          .filter("ordinal = 1")
+          .project(
+              {"k",
+               "case when any_match then true when any_unknown then null else false end"})
+          .build();
+
+  AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
+}
+
+// A LATERAL that selects only the unnested column. The outer columns reach no
+// consumer, so none is replicated.
+TEST_P(UnnestTest, lateralUnnestNarrowerOutput) {
+  testConnector_->addTable("t", ROW({"k", "a"}, {BIGINT(), ARRAY(BIGINT())}));
+
+  auto query =
+      "SELECT l.e FROM t, LATERAL (SELECT e FROM UNNEST(a) AS u(e)) AS l";
+  auto logicalPlan = parseSelect(query, kTestConnectorId);
+
+  if (!useV2_) {
+    VELOX_ASSERT_THROW(
+        toSingleNodePlan(logicalPlan), "Unsupported PlanNode LATERAL_JOIN");
+    return;
+  }
+
+  auto matcher = matchScan("t").unnest({}, {"a"}).build();
+
+  AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
+}
+
+// The subquery unnests the outer row's array alongside a relation, so its rows
+// are not one per element of that array. The peel drops the unnest's own
+// input, so it takes only a body that contributes no rows and no columns.
+TEST_P(UnnestTest, existsOverUnnestOfRelationNotSupported) {
+  testConnector_->addTable("t", ROW({"k", "a"}, {BIGINT(), ARRAY(BIGINT())}));
+  testConnector_->addTable("u", ROW("x", BIGINT()));
+
+  auto query =
+      "SELECT k, EXISTS (SELECT 1 FROM u, UNNEST(a) AS w(e) WHERE e > u.x) "
+      "FROM t";
+
+  VELOX_ASSERT_THROW(
+      toSingleNodePlan(parseSelect(query, kTestConnectorId)),
+      useV2_ ? "EXISTS over an Unnest of a relation is not yet implemented"
+             : "Cannot resolve column name: a");
+}
+
+// A LEFT JOIN LATERAL must keep an outer whose array is empty, which the
+// unnest lift does not do.
+TEST_P(UnnestTest, leftJoinLateralUnnestNotSupported) {
+  testConnector_->addTable("t", ROW({"k", "a"}, {BIGINT(), ARRAY(BIGINT())}));
+
+  auto query =
+      "SELECT k, l.e FROM t LEFT JOIN LATERAL "
+      "(SELECT e FROM UNNEST(a) AS u(e)) AS l ON true";
+
+  VELOX_ASSERT_THROW(
+      toSingleNodePlan(parseSelect(query, kTestConnectorId)),
+      useV2_ ? "a kLeft Apply over an Unnest body is not yet implemented"
+             : "Unsupported PlanNode LATERAL_JOIN");
 }
 
 AXIOM_INSTANTIATE_V1_V2(UnnestTest);

@@ -926,6 +926,10 @@ class Values : public Node {
     return channels_;
   }
 
+  /// Number of rows this produces, whether they are held as folded row
+  /// `Variant`s or by the logical node.
+  size_t cardinality() const;
+
   std::span<const NodeCP> inputs() const override {
     return {};
   }
@@ -941,12 +945,14 @@ class Values : public Node {
 
 using ValuesCP = const Values*;
 
-/// Expands array / map expressions row-wise. The output has three disjoint
+/// Expands array / map expressions row-wise. The output has four disjoint
 /// kinds of columns, exposed as separate accessors so consumers never need
 /// positional decoding: `replicatedColumns` (pass-through input columns),
-/// `unnestColumns[i]` (per-expression result columns), and the optional
-/// `ordinalityColumn`. `outputColumns()` returns the concatenation in that
-/// order, for downstream consumers that need a single vector view.
+/// `unnestColumns[i]` (per-expression result columns), the optional
+/// `ordinalityColumn`, and the optional `markerColumn`, which keeps an input
+/// row whose unnested value is empty. `outputColumns()` returns the
+/// concatenation in that order, for downstream consumers that need a single
+/// vector view.
 class Unnest : public Node {
  public:
   struct Key {
@@ -962,10 +968,17 @@ class Unnest : public Node {
     /// Optional ordinality column; null when this node does not produce
     /// ordinality.
     ColumnCP ordinalityColumn;
+    /// Optional BOOLEAN marker column. When set, an input row whose unnested
+    /// value is empty or NULL still produces one output row, with the marker
+    /// false and every unnest result column NULL; the marker is true on rows
+    /// that came from a value. When null, such an input row produces no
+    /// output row.
+    ColumnCP markerColumn;
     /// Visible schema. Every `Column*` here is a `replicatedColumns` column, a
-    /// column in some `unnestColumns[i]`, or `ordinalityColumn`. All
-    /// `replicatedColumns` and `ordinalityColumn` must appear; only
-    /// per-expression `unnestColumns` may be pruned out.
+    /// column in some `unnestColumns[i]`, `ordinalityColumn`, or
+    /// `markerColumn`. All `replicatedColumns`, `ordinalityColumn` and
+    /// `markerColumn` must appear; only per-expression `unnestColumns` may be
+    /// pruned out.
     ColumnVector outputColumns;
   };
 
@@ -1010,6 +1023,16 @@ class Unnest : public Node {
     return ordinalityColumn_ != nullptr;
   }
 
+  ColumnCP markerColumn() const {
+    return markerColumn_;
+  }
+
+  /// True if an input row with an empty or NULL unnested value still
+  /// produces an output row. See `Key::markerColumn`.
+  bool isOuter() const {
+    return markerColumn_ != nullptr;
+  }
+
   std::span<const NodeCP> inputs() const override {
     return {&input_, 1};
   }
@@ -1023,6 +1046,7 @@ class Unnest : public Node {
   const ColumnVector replicatedColumns_;
   const QGVector<ColumnVector> unnestColumns_;
   const ColumnCP ordinalityColumn_;
+  const ColumnCP markerColumn_;
 };
 
 using UnnestCP = const Unnest*;

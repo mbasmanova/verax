@@ -1096,6 +1096,13 @@ Values::Values(Key key)
   }
 }
 
+size_t Values::cardinality() const {
+  if (rows_ != nullptr) {
+    return rows_->array().size();
+  }
+  return source_ != nullptr ? source_->cardinality() : 0;
+}
+
 size_t Values::KeyHash::operator()(const Values* node) const {
   return hashOf(
       node->source(), node->rows(), node->outputColumns(), node->channels());
@@ -1133,7 +1140,8 @@ Unnest::Unnest(Key key)
       unnestExpressions_(std::move(key.unnestExpressions)),
       replicatedColumns_(std::move(key.replicatedColumns)),
       unnestColumns_(std::move(key.unnestColumns)),
-      ordinalityColumn_(key.ordinalityColumn) {
+      ordinalityColumn_(key.ordinalityColumn),
+      markerColumn_(key.markerColumn) {
   VELOX_CHECK_NOT_NULL(input_);
   VELOX_CHECK(
       !unnestExpressions_.empty(), "Unnest must have at least one expression");
@@ -1177,6 +1185,13 @@ Unnest::Unnest(Key key)
   if (ordinalityColumn_ != nullptr) {
     produced.add(ordinalityColumn_);
   }
+  if (markerColumn_ != nullptr) {
+    VELOX_CHECK_EQ(
+        markerColumn_->value().type->kind(),
+        velox::TypeKind::BOOLEAN,
+        "Unnest markerColumn must be BOOLEAN");
+    produced.add(markerColumn_);
+  }
 
   for (ColumnCP column : this->outputColumns()) {
     VELOX_CHECK(
@@ -1193,6 +1208,9 @@ Unnest::Unnest(Key key)
   VELOX_CHECK(
       ordinalityColumn_ == nullptr || outputSet.contains(ordinalityColumn_),
       "Unnest ordinalityColumn must appear in outputColumns");
+  VELOX_CHECK(
+      markerColumn_ == nullptr || outputSet.contains(markerColumn_),
+      "Unnest markerColumn must appear in outputColumns");
 }
 
 size_t Unnest::KeyHash::operator()(const Unnest* node) const {
@@ -1201,7 +1219,8 @@ size_t Unnest::KeyHash::operator()(const Unnest* node) const {
       node->unnestExpressions(),
       node->outputColumns(),
       node->replicatedColumns(),
-      node->ordinalityColumn());
+      node->ordinalityColumn(),
+      node->markerColumn());
   const auto& unnestColumns = node->unnestColumns();
   for (size_t idx = 0; idx < unnestColumns.size(); ++idx) {
     // Mix idx and inner size to break symmetry across index permutations
@@ -1221,7 +1240,8 @@ size_t Unnest::KeyHash::operator()(const Key& key) const {
       key.unnestExpressions,
       key.outputColumns,
       key.replicatedColumns,
-      key.ordinalityColumn);
+      key.ordinalityColumn,
+      key.markerColumn);
   const auto& unnestColumns = key.unnestColumns;
   for (size_t idx = 0; idx < unnestColumns.size(); ++idx) {
     // Mix idx and inner size to break symmetry across index permutations
@@ -1241,6 +1261,7 @@ bool Unnest::KeyEq::operator()(const Unnest* left, const Unnest* right) const {
       left->replicatedColumns() == right->replicatedColumns() &&
       left->unnestColumns() == right->unnestColumns() &&
       left->ordinalityColumn() == right->ordinalityColumn() &&
+      left->markerColumn() == right->markerColumn() &&
       left->outputColumns() == right->outputColumns();
 }
 
@@ -1250,6 +1271,7 @@ bool Unnest::KeyEq::operator()(const Key& key, const Unnest* node) const {
       key.replicatedColumns == node->replicatedColumns() &&
       key.unnestColumns == node->unnestColumns() &&
       key.ordinalityColumn == node->ordinalityColumn() &&
+      key.markerColumn == node->markerColumn() &&
       key.outputColumns == node->outputColumns();
 }
 

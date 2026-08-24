@@ -675,14 +675,16 @@ NodeCP Rewriter::rewriteUnnest(const Unnest* unnest, NoContext& context) {
     newUnnestExprs.push_back(precompute.toColumn(expr));
   }
   newInput = std::move(precompute).node();
-  // Structured fields (replicatedColumns / unnestColumns / ordinalityColumn)
-  // are by Column*; precompute preserves Column identity so they stay valid.
+  // Structured fields (replicatedColumns / unnestColumns / ordinalityColumn /
+  // markerColumn) are by Column*; precompute preserves Column identity so they
+  // stay valid.
   return builder().make<Unnest>(
       {newInput,
        std::move(newUnnestExprs),
        unnest->replicatedColumns(),
        unnest->unnestColumns(),
        unnest->ordinalityColumn(),
+       unnest->markerColumn(),
        unnest->outputColumns()});
 }
 

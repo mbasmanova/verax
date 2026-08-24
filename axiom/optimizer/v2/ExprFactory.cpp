@@ -156,6 +156,27 @@ ExprCP ExprFactory::makeIf(ExprCP condition, ExprCP thenExpr, ExprCP elseExpr) {
       ifName, resultValue, std::move(arguments), functions);
 }
 
+ExprCP ExprFactory::makeSwitch(
+    const std::vector<std::pair<ExprCP, ExprCP>>& when,
+    ExprCP elseExpr) {
+  VELOX_CHECK(!when.empty(), "makeSwitch requires at least one condition");
+
+  ExprVector arguments;
+  arguments.reserve(when.size() * 2 + 1);
+  for (const auto& [condition, result] : when) {
+    arguments.push_back(condition);
+    arguments.push_back(result);
+  }
+  arguments.push_back(elseExpr);
+
+  const Name switchName = SpecialFormCallNames::kSwitch;
+  const Value resultValue = when.front().second->value();
+  const FunctionSet functions = Call::unionArgFunctions(
+      functionBits(switchName, /*specialForm=*/true), arguments);
+  return builder_.makeCall(
+      switchName, resultValue, std::move(arguments), functions);
+}
+
 namespace {
 
 // Rebuilds `call` with each argument replaced, sharing the original
