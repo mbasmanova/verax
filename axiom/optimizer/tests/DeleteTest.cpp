@@ -114,6 +114,22 @@ TEST_F(DeleteTest, partitionPredicates) {
   EXPECT_EQ(0, runCount("FROM test"));
 }
 
+// Deleting one partition of a bucketed table removes that partition's rows and
+// leaves the rest.
+TEST_F(DeleteTest, bucketedTable) {
+  SCOPE_EXIT {
+    hiveMetadata().dropTableIfExists("test");
+  };
+
+  runCtas(
+      "CREATE TABLE test WITH (bucket_count = 8, "
+      "bucketed_by = ARRAY['n_nationkey'], partitioned_by = ARRAY['pk']) AS "
+      "SELECT n_nationkey, n_nationkey % 3 AS pk FROM nation");
+
+  EXPECT_EQ(9, runDelete("DELETE FROM test WHERE pk = 0"));
+  EXPECT_EQ(16, runCount("FROM test"));
+}
+
 // An unpartitioned table has no partitions to drop, so a delete removes the
 // data files and leaves an empty table rather than dropping it.
 TEST_F(DeleteTest, unpartitionedTable) {
