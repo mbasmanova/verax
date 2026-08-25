@@ -151,31 +151,28 @@ TEST_P(SubqueryTest, inListWithMixedSubqueries) {
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
-  // IN list with two scalar subqueries. Both are extracted and cross-joined,
-  // and the IN reads both results as columns.
+  // IN list with two scalar subqueries. Both are extracted and the IN reads
+  // their results as columns. The two single-row subqueries are joined to
+  // each other, and the pair is joined onto the outer input once.
   {
     auto query =
         "SELECT * FROM nation WHERE n_regionkey IN "
         "((SELECT max(r_regionkey) FROM region), "
-        "(SELECT min(r_regionkey) FROM region))";
+        " (SELECT min(r_regionkey) FROM region))";
     SCOPED_TRACE(query);
 
-    const std::string inPredicate = "\"in\"(n_regionkey, max_key, min_key)";
     auto plan = toSingleNodePlan(query);
-    auto matcher =
+    AXIOM_ASSERT_PLAN_V2(
+        plan,
         matchHiveScan("nation")
-            .nestedLoopJoin(matchHiveScan("region").singleAggregation(
-                {}, {"max(r_regionkey) as max_key"}))
             .nestedLoopJoin(
-                matchHiveScan("region").singleAggregation(
-                    {}, {"min(r_regionkey_2) as min_key"}),
+                matchHiveScan("region")
+                    .singleAggregation({}, {"max(r_regionkey) as max_key"})
+                    .nestedLoopJoin(matchHiveScan("region").singleAggregation(
+                        {}, {"min(r_regionkey_2) as min_key"})),
                 core::JoinType::kInner,
-                useV2_ ? inPredicate : "")
-            .filterIf(!useV2_, inPredicate)
-            .projectIf(!useV2_)
-            .build();
-
-    AXIOM_ASSERT_PLAN(plan, matcher);
+                "\"in\"(n_regionkey, max_key, min_key)")
+            .build());
   }
 }
 
@@ -479,6 +476,66 @@ TEST_P(SubqueryTest, uncorrelatedProject) {
     auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
+}
+
+TEST_P(SubqueryTest, repeatedUncorrelatedScalar) {
+  // Repeated references to one uncorrelated scalar subquery, including a
+  // reference nested inside another subquery's body, are evaluated once and
+  // joined onto the outer input once.
+  auto query =
+      "SELECT "
+      "  IF(n_regionkey > (SELECT max(r_regionkey) FROM region), "
+      "     (SELECT s_suppkey FROM supplier "
+      "      WHERE s_suppkey = (SELECT max(r_regionkey) FROM region)), "
+      "     -1) AS a, "
+      "  (SELECT max(r_regionkey) FROM region) AS b "
+      "FROM nation";
+  SCOPED_TRACE(query);
+
+  auto plan = toSingleNodePlan(query);
+  AXIOM_ASSERT_PLAN_V2(
+      plan,
+      matchHiveScan("nation")
+          .nestedLoopJoin(
+              matchHiveScan("supplier")
+                  .hashJoinRight(matchHiveScan("region").singleAggregation(
+                      {}, {"max(r_regionkey) as max_key"}))
+                  .enforceSingleRow())
+          .project(
+              {"if(gt(n_regionkey, max_key), s_suppkey, -1) as a",
+               "max_key as b"})
+          .build());
+}
+
+TEST_P(SubqueryTest, uncorrelatedScalarPerUnionBranch) {
+  // Two UNION branches read the same uncorrelated scalar subquery, one of
+  // them from inside another subquery's body. A branch can only read a value
+  // its own input produces, so each branch evaluates the subquery itself.
+  auto query =
+      "SELECT (SELECT max(r_regionkey) FROM region) AS a FROM nation "
+      "UNION ALL "
+      "SELECT (SELECT s_suppkey FROM supplier "
+      "        WHERE s_suppkey = (SELECT max(r_regionkey) FROM region)) AS a "
+      "FROM customer";
+  SCOPED_TRACE(query);
+
+  auto matchMax = []() {
+    return matchHiveScan("region").singleAggregation(
+        {}, {"max(r_regionkey) as max_key"});
+  };
+
+  auto plan = toSingleNodePlan(query);
+  AXIOM_ASSERT_PLAN_V2(
+      plan,
+      matchHiveScan("nation")
+          .nestedLoopJoin(matchMax())
+          .project({"max_key as a"})
+          .localPartition(matchHiveScan("customer")
+                              .nestedLoopJoin(matchHiveScan("supplier")
+                                                  .hashJoinInner(matchMax())
+                                                  .enforceSingleRow())
+                              .project({"s_suppkey as a"}))
+          .build());
 }
 
 TEST_P(SubqueryTest, correlatedIn) {

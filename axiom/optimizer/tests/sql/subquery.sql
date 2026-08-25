@@ -1160,3 +1160,72 @@ LEFT JOIN (VALUES 10, 15, 20) r(a)
 SELECT l.a, r.a FROM (VALUES 1, 2) l(a)
 LEFT JOIN (VALUES 10, 15, 20) r(a)
   ON l.a = (SELECT max(x) FROM (VALUES 10, 15) s(x) WHERE x > r.a)
+----
+-- Two references to one uncorrelated aggregate subquery in the same scope
+-- read the same value.
+SELECT
+  (SELECT max(x) FROM (VALUES (1), (7)) s(x)) AS a,
+  (SELECT max(x) FROM (VALUES (1), (7)) s(x)) + 1 AS b
+FROM (VALUES (10)) r(p)
+----
+-- Three references to one uncorrelated aggregate subquery -- in a conditional,
+-- inside another subquery's body, and in a top-level projection -- all read
+-- the same value.
+SELECT
+  IF(
+    p > (SELECT max(x) FROM (VALUES (1), (7)) s(x)),
+    (
+      SELECT x FROM (VALUES (1), (7)) s(x)
+      WHERE x = (SELECT max(x) FROM (VALUES (1), (7)) s(x))
+    ),
+    2
+  ) AS a,
+  (SELECT max(x) FROM (VALUES (1), (7)) s(x)) AS b
+FROM (VALUES (10)) r(p)
+----
+-- One branch of a UNION reads an uncorrelated aggregate subquery that the
+-- other branch also reads from inside a subquery body, which derives a
+-- different value from it.
+SELECT (SELECT max(x) FROM (VALUES (1), (7)) s(x)) AS a
+FROM (VALUES (1)) t1(p)
+UNION ALL
+SELECT (
+  SELECT y - 6 FROM (VALUES (1), (7)) w(y)
+  WHERE y = (SELECT max(x) FROM (VALUES (1), (7)) s(x))
+) AS a
+FROM (VALUES (2)) t2(q)
+----
+-- An uncorrelated aggregate subquery read both inside a LATERAL body and
+-- outside it yields the same value in both places.
+-- error_v1: Unsupported PlanNode LATERAL_JOIN
+SELECT a, m, (SELECT max(x) FROM (VALUES (2), (5)) s(x)) AS o
+FROM (VALUES (1)) t(a),
+     LATERAL (SELECT (SELECT max(x) FROM (VALUES (2), (5)) s(x)) - 3 AS m) g
+----
+-- An uncorrelated aggregate subquery and an uncorrelated IN subquery in the
+-- same scope. The IN reads nothing from the aggregate, so it filters the
+-- outer rows rather than the aggregate's single row.
+SELECT a
+FROM (VALUES (1), (2), (3)) r(a)
+WHERE a > (SELECT max(x) FROM (VALUES (0), (1)) s(x))
+  AND a IN (SELECT y FROM (VALUES (2), (3)) w(y))
+----
+-- An IN subquery whose body reads the same uncorrelated aggregate as the
+-- enclosing filter. The IN still tests the outer rows.
+SELECT a
+FROM (VALUES (1), (2), (3)) r(a)
+WHERE a > (SELECT max(x) FROM (VALUES (0), (1)) s(x))
+  AND a IN (
+    SELECT y FROM (VALUES (2), (3)) w(y)
+    WHERE y > (SELECT max(x) FROM (VALUES (0), (1)) s(x))
+  )
+----
+-- An EXISTS subquery whose body reads the same uncorrelated aggregate as the
+-- enclosing filter. Its result is the same for every outer row.
+SELECT a
+FROM (VALUES (1), (2), (3)) r(a)
+WHERE a > (SELECT max(x) FROM (VALUES (0), (1)) s(x))
+  AND EXISTS (
+    SELECT 1 FROM (VALUES (2), (3)) w(y)
+    WHERE y > (SELECT max(x) FROM (VALUES (0), (1)) s(x))
+  )

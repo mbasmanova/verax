@@ -35,6 +35,7 @@
 #include "axiom/optimizer/v2/ExprFactory.h"
 #include "axiom/optimizer/v2/ExprSimplifier.h"
 #include "axiom/optimizer/v2/JoinCondition.h"
+#include "axiom/optimizer/v2/NodeExpressions.h"
 #include "axiom/optimizer/v2/PhysicalPlanAndEmit.h"
 #include "axiom/optimizer/v2/ScanHandle.h"
 #include "velox/exec/Aggregate.h"
@@ -209,7 +210,7 @@ void appendUnique(ColumnVector& base, const ColumnVector& extra) {
 // recursion only follows `Expr::inputs()`, so a subquery buried inside
 // `filter(arr, x -> x = (SELECT ...))` (or similar HOF) is missed. A
 // miss is safe — control falls through to the non-split path with
-// `applyTarget=nullptr` and `liftSubquery` throws NYI rather than
+// `liftTarget=nullptr` and `liftSubquery` throws NYI rather than
 // silently miscompiling — but coverage is incomplete.
 bool containsSubquery(const logical_plan::Expr& expr) {
   if (expr.kind() == logical_plan::ExprKind::kSubquery) {
@@ -232,6 +233,40 @@ bool outputContains(NodeCP node, ColumnCP column) {
   }
   return false;
 }
+
+// Node that lifted subqueries attach to, plus the lifts not yet joined onto
+// it. Attaching is deferred so that a reference from a subquery body can join
+// the same pending lifts, which are then evaluated once and attached once.
+//
+// Created by 'Translator::withLiftTarget', which attaches the pending lifts
+// once translation is done and returns the result. Code outside the lift
+// machinery reads 'node' from there, never from here, since it is not a
+// usable plan while lifts are pending.
+struct LiftTarget {
+  NodeCP node{nullptr};
+
+  // Lifted subqueries not yet joined onto 'node', joined to each other.
+  // Every member produces a single row, and the group reads nothing from
+  // 'node' — which is what lets it attach with a cross join. Members are
+  // uncorrelated scalar lifts, plus bodies correlated only to columns
+  // already in here, which join them and so keep both properties.
+  NodeCP pendingLifts{nullptr};
+
+  // True if 'column' is readable by an expression lifting onto this target.
+  bool outputs(ColumnCP column) const {
+    return outputContains(node, column) ||
+        (pendingLifts != nullptr && outputContains(pendingLifts, column));
+  }
+
+  // Columns readable by an expression lifting onto this target.
+  ColumnVector columns() const {
+    ColumnVector all = node->outputColumns();
+    if (pendingLifts != nullptr) {
+      appendUnique(all, pendingLifts->outputColumns());
+    }
+    return all;
+  }
+};
 
 // Walks 'expr' as a top-level AND chain and appends each non-AND leaf
 // to 'out'.
@@ -284,7 +319,7 @@ ColumnVector makeOutputColumns(
 }
 
 struct Translated {
-  NodeCP node;
+  NodeCP node{nullptr};
   Scope scope;
 };
 
@@ -292,44 +327,76 @@ struct Translated {
 // per-nesting-level set of correlated columns referenced so far.
 // `liftSubquery` consumes the captured correlations as `Apply.correlations`.
 //
-// Invariant: `outerScopes_.size() == correlationsStack_.size()`.
+// Invariant: `outerScopes_`, `liftTargets_` and `correlationsStack_` all
+// have one entry per body in flight.
 class SubqueryContext {
  public:
-  // Resolves 'name' against enclosing scopes, innermost-first. Returns
-  // nullptr if not found at any level. Records the hit as a correlation
-  // for the innermost in-flight subquery.
-  ColumnCP resolveOuter(std::string_view name);
+  // Resolves 'name' against enclosing scopes, innermost-first, and records
+  // the hit as a correlation. Returns nullptr if not found at any level.
+  ColumnCP correlateOuter(std::string_view name);
 
-  // Enters/leaves the body of a subquery. `pop()` returns the correlated
-  // columns collected during that body, deduplicated.
-  void push(const Scope& outerScope);
+  // Records 'column', produced by an enclosing scope's lift, as a correlation
+  // of every body in flight below the scope that outputs it. Returns false
+  // when no enclosing scope outputs it, meaning the body in flight cannot
+  // read it.
+  bool correlateLifted(ColumnCP column);
+
+  // Enters/leaves the body of a subquery. 'liftTarget' is the node the
+  // body will be lifted onto, i.e. the plan of the scope enclosing it.
+  // `pop()` returns the correlated columns collected during that body,
+  // deduplicated.
+  void push(const Scope& outerScope, LiftTarget* liftTarget);
   ColumnVector pop();
 
  private:
+  // Records 'column', held by the scope at 'level', as a correlation of every
+  // body in flight below it.
+  void recordCorrelation(ColumnCP column, size_t level);
+
   std::vector<const Scope*> outerScopes_;
+  // Lift target of the scope enclosing each in-flight body. Held by pointer
+  // and read on use because a target is replaced as lifts are added to it;
+  // the pointee belongs to the caller that pushed and outlives the body.
+  std::vector<LiftTarget*> liftTargets_;
   std::vector<ColumnVector> correlationsStack_;
 };
 
-ColumnCP SubqueryContext::resolveOuter(std::string_view name) {
+void SubqueryContext::recordCorrelation(ColumnCP column, size_t level) {
+  VELOX_CHECK_LT(level, correlationsStack_.size());
+  // Every body in flight between the scope holding the column and the
+  // innermost carries it, so each intermediate Apply passes it inwards.
+  for (size_t i = level; i < correlationsStack_.size(); ++i) {
+    correlationsStack_[i].push_back(column);
+  }
+}
+
+ColumnCP SubqueryContext::correlateOuter(std::string_view name) {
   for (size_t i = outerScopes_.size(); i > 0; --i) {
     const Scope& scope = *outerScopes_[i - 1];
     auto found = scope.find(name);
     if (found == scope.end()) {
       continue;
     }
-    VELOX_CHECK_GE(correlationsStack_.size(), i);
-    // Record on every in-flight subquery between the matching outer scope
-    // and the innermost so each intermediate Apply carries the column.
-    for (size_t j = i - 1; j < correlationsStack_.size(); ++j) {
-      correlationsStack_[j].push_back(found->second);
-    }
+    recordCorrelation(found->second, i - 1);
     return found->second;
   }
   return nullptr;
 }
 
-void SubqueryContext::push(const Scope& outerScope) {
+bool SubqueryContext::correlateLifted(ColumnCP column) {
+  for (size_t i = liftTargets_.size(); i > 0; --i) {
+    if (!liftTargets_[i - 1]->outputs(column)) {
+      continue;
+    }
+    recordCorrelation(column, i - 1);
+    return true;
+  }
+  return false;
+}
+
+void SubqueryContext::push(const Scope& outerScope, LiftTarget* liftTarget) {
   outerScopes_.push_back(&outerScope);
+  liftTargets_.push_back(liftTarget);
   correlationsStack_.emplace_back();
 }
 
@@ -343,6 +410,7 @@ ColumnVector SubqueryContext::pop() {
   }
   correlationsStack_.pop_back();
   outerScopes_.pop_back();
+  liftTargets_.pop_back();
   return deduped;
 }
 
@@ -425,6 +493,13 @@ class Translator {
   Translated translateNode(
       const lp::LogicalPlanNode& node,
       const LpNameSet& required);
+
+  // Translates 'node' keeping every column it outputs, for consumers that
+  // read all of them.
+  Translated translateNode(const lp::LogicalPlanNode& node) {
+    return translateNode(node, allNames(*node.outputType()));
+  }
+
   Translated translateScan(
       const lp::TableScanNode& scan,
       const LpNameSet& required);
@@ -445,7 +520,7 @@ class Translator {
   std::pair<ExprVector, OrderTypeVector> dedupOrdering(
       const std::vector<lp::SortingField>& ordering,
       const Scope& scope,
-      NodeCP* applyTarget);
+      LiftTarget* liftTarget);
 
   Translated translateSample(
       const lp::SampleNode& sample,
@@ -540,17 +615,19 @@ class Translator {
 
   // Translates an lp expression against 'scope'. If the expression
   // contains an `lp::SubqueryExpr` (bare, or wrapped in
-  // `kExists`/`kIn`/`kNot`), the subquery is materialized as an `Apply`
-  // node lifted above `*applyTarget`, and `*applyTarget` is updated to
-  // point to the new Apply. The returned `ExprCP` references the Apply's
-  // mark / value column at the subquery site.
+  // `kExists`/`kIn`/`kNot`), the subquery is lifted onto 'liftTarget' —
+  // either deferred into its pending lifts or attached as an `Apply` — and
+  // the returned `ExprCP` references the column it produces at the subquery
+  // site.
   //
-  // `applyTarget` must be non-null at any expression position that may
+  // `liftTarget` must be non-null at any expression position that may
   // contain a subquery. Passing `nullptr` declares "no lift possible
   // here" and the lift path throws if a subquery is encountered
   // (e.g., row-literal expressions in `VALUES`).
-  ExprCP
-  translateExpr(const lp::Expr& expr, const Scope& scope, NodeCP* applyTarget);
+  ExprCP translateExpr(
+      const lp::Expr& expr,
+      const Scope& scope,
+      LiftTarget* liftTarget);
   ExprCP translateInputReference(
       const lp::InputReferenceExpr& expr,
       const Scope& scope);
@@ -558,11 +635,11 @@ class Translator {
   ExprCP translateCall(
       const lp::CallExpr& expr,
       const Scope& scope,
-      NodeCP* applyTarget);
+      LiftTarget* liftTarget);
   ExprCP translateSpecialForm(
       const lp::SpecialFormExpr& expr,
       const Scope& scope,
-      NodeCP* applyTarget);
+      LiftTarget* liftTarget);
 
   // Translates an EXISTS special form by lifting an `Apply(kLeftSemiProject)`,
   // with a fast path that folds EXISTS over a scalar Aggregate to constant
@@ -570,7 +647,7 @@ class Translator {
   ExprCP translateExists(
       const lp::SpecialFormExpr& expr,
       const Scope& scope,
-      NodeCP* applyTarget);
+      LiftTarget* liftTarget);
 
   // Normalizes an IN list. Folds a single-element IN to equality (`a IN (b)` ->
   // `a = b`, `a IN (NULL)` -> null boolean literal). For a multi-element
@@ -588,24 +665,74 @@ class Translator {
 
   ExprCP translateLambda(const lp::LambdaExpr& expr, const Scope& scope);
 
-  // Translates a subquery body, captures correlations, and lifts an
-  // `Apply` above `*applyTarget`. Updates `*applyTarget` to point to
-  // the new Apply (with an `EnforceSingleRow` wrap for uncorrelated
-  // scalar). Returns Apply's result column, or, for an uncorrelated scalar
-  // subquery that folds to a constant, a `Literal` (leaving `*applyTarget`
-  // unchanged).
+  // Joins 'body' into 'target's pending lifts with the body's own top-level
+  // filter as the join condition, and replaces them with the result under an
+  // EnforceSingleRow. Returns false, changing nothing, when the body's shape
+  // keeps the filter from moving onto the join, leaving the caller to build
+  // an Apply. The caller establishes that the body reads pending-lift columns
+  // and nothing else from outside.
+  bool tryJoinIntoPendingLifts(NodeCP body, LiftTarget& target);
+
+  // Renames a lifted body's single output column when the target already
+  // outputs one of that name, wrapping 'body' in an aliasing Project.
+  // Returns the column the parent expression reads.
+  ColumnCP aliasIfNameCollides(
+      NodeCP& body,
+      ColumnCP returnedColumn,
+      const LiftTarget& target);
+
+  // Joins 'right' onto 'left', emitting both sides' columns.
+  NodeCP crossJoin(NodeCP left, NodeCP right);
+
+  // Invokes 'translate' with a lift target over 'input', so subqueries in the
+  // expressions it translates lift onto that target, and returns 'input' with
+  // those lifts joined on.
+  //
+  // 'translate' is called as `translate(LiftTarget&)`, exactly once, so a
+  // result it reports through a capture is always assigned. It passes the
+  // target to the translate* methods.
+  template <typename Translate>
+  NodeCP withLiftTarget(NodeCP input, Translate&& translate) {
+    LiftTarget target{input};
+    translate(target);
+    flushLifts(target);
+    return target.node;
+  }
+
+  // Joins any pending lifts onto 'target.node'. Called by 'withLiftTarget'
+  // when translation finishes, and by a lift that has to build over the node
+  // itself. Reading 'target.node' before this runs gives a plan with the
+  // pending lifts missing.
+  void flushLifts(LiftTarget& target);
+
+  // Returns an earlier lift of 'plan' that a reference lifting onto
+  // 'liftTarget' can read: one already in that target's output, or one on an
+  // enclosing scope's plan, which this records as a correlation so the Applies
+  // in between carry it inwards. Returns nullptr when no lift is reachable and
+  // 'plan' has to be lifted again.
+  ExprCP reuseScalarSubquery(
+      const lp::LogicalPlanNode* plan,
+      const LiftTarget& liftTarget);
+
+  // Translates a subquery body, captures correlations, and lifts it onto
+  // 'liftTarget'. An uncorrelated scalar body joins the target's pending
+  // lifts, under an `EnforceSingleRow` wrap unless it provably yields one
+  // row; everything else becomes an `Apply`, over the pending lifts when the
+  // body reads only those and over the node otherwise. Returns the column
+  // the lift produces, or a `Literal` for an uncorrelated scalar body that
+  // folds to a constant, which lifts nothing.
   //
   // `kind` is the `Apply.kind` to emit. `inLhs` is the IN expression's
   // left-hand side, non-null only when shaping an IN-form Apply
   // (`liftSubquery` stores it together with the body's single output
   // column as `Apply.inLhs` / `Apply.inBodyKey`). Throws if
-  // `applyTarget` is null.
+  // `liftTarget` is null.
   ExprCP liftSubquery(
       const lp::SubqueryExpr& subqueryExpr,
       velox::core::JoinType kind,
       ExprCP inLhs,
       const Scope& outerScope,
-      NodeCP* applyTarget);
+      LiftTarget* liftTarget);
 
   // Attempts to constant-fold an uncorrelated scalar subquery whose body is a
   // global aggregation over a table's discrete-predicate (e.g. partition)
@@ -618,19 +745,19 @@ class Translator {
   ExprVector translateAll(
       const std::vector<lp::ExprPtr>& expressions,
       const Scope& scope,
-      NodeCP* applyTarget);
+      LiftTarget* liftTarget);
 
   // Translates an lp window frame against 'scope'.
   Frame toFrame(const lp::WindowExpr::Frame& frame, const Scope& scope);
 
   // Translates an lp aggregate expression into a QueryGraph `Aggregate`
   // call. Resolves args / FILTER mask / ORDER BY keys against 'scope'.
-  // `applyTarget` (if non-null) lifts Apply nodes for any subquery in
+  // `liftTarget` (if non-null) lifts Apply nodes for any subquery in
   // args / FILTER / ORDER BY above the Aggregate's input.
   const optimizer::Aggregate* toAggregateCall(
       const lp::AggregateExpr& aggregateExpr,
       const Scope& scope,
-      NodeCP* applyTarget);
+      LiftTarget* liftTarget);
 
   // Evaluates each expression in 'exprRows' to its value and returns the
   // row-wise `Variant`s. `VALUES` expressions cannot reference input columns,
@@ -649,14 +776,16 @@ class Translator {
   const ConstantPlanRunner& constantPlanRunner_;
   int32_t baseTableCounter_{0};
 
-  // Result of each scalar subquery already lifted, keyed by its inner plan.
+  // Lifted results of each scalar subquery, keyed by its inner plan.
   // Identical subqueries share one inner plan (hash-consed), so a repeated
-  // reference reuses the lifted result instead of lifting it again (which would
-  // place the same column on both sides of the lift's join, or re-run a fold).
-  // A cached column is only reused while it is still in the current lift
-  // target's output, so a reference in an unrelated scope re-lifts; a folded
-  // constant (Literal) is always in scope and always reused.
-  folly::F14FastMap<const lp::LogicalPlanNode*, ExprCP> scalarSubqueryColumns_;
+  // reference reuses a lift instead of lifting again. A lift is reusable
+  // only where its column can be read: from the lift target it landed on,
+  // or from a body it can be correlated into. Lifts on unrelated plans are
+  // not interchangeable, so every lift is kept and the usable one is chosen
+  // per reference. A folded constant (Literal) is on no plan and always
+  // reusable.
+  folly::F14FastMap<const lp::LogicalPlanNode*, std::vector<ExprCP>>
+      scalarSubqueryColumns_;
 
   struct ActiveFixedPoint {
     Name stateName;
@@ -709,8 +838,10 @@ Translated Translator::translateTableWrite(
     auto it = std::find(writtenNames.begin(), writtenNames.end(), columnName);
     if (it != writtenNames.end()) {
       const auto nth = it - writtenNames.begin();
-      columnExprs.push_back(translateExpr(
-          *tableWrite.columnExpressions()[nth], input.scope, &currentInput));
+      currentInput = withLiftTarget(currentInput, [&](LiftTarget& target) {
+        columnExprs.push_back(translateExpr(
+            *tableWrite.columnExpressions()[nth], input.scope, &target));
+      });
     } else {
       const auto* tableColumn = connectorTable->findColumn(columnName);
       VELOX_CHECK_NOT_NULL(tableColumn);
@@ -1011,11 +1142,11 @@ Translated Translator::translateFilter(
   // Returns nullopt if any conjunct simplifies to constant false.
   auto translateConjuncts =
       [&](const std::vector<const lp::Expr*>& conjuncts,
-          NodeCP* applyTarget) -> std::optional<ExprVector> {
+          LiftTarget* liftTarget) -> std::optional<ExprVector> {
     ExprVector result;
     result.reserve(conjuncts.size());
     for (const auto* conjunct : conjuncts) {
-      ExprCP translated = translateExpr(*conjunct, input.scope, applyTarget);
+      ExprCP translated = translateExpr(*conjunct, input.scope, liftTarget);
       if (simplifier_.simplifyFilter(translated, result)) {
         return std::nullopt;
       }
@@ -1023,7 +1154,7 @@ Translated Translator::translateFilter(
     return result;
   };
 
-  auto innerConjuncts = translateConjuncts(noSubquery, /*applyTarget=*/nullptr);
+  auto innerConjuncts = translateConjuncts(noSubquery, /*liftTarget=*/nullptr);
   if (!innerConjuncts.has_value()) {
     return {
         builder_.makeEmptyValues(input.node->outputColumns()),
@@ -1033,7 +1164,10 @@ Translated Translator::translateFilter(
       ? input.node
       : builder_.make<Filter>({input.node, std::move(*innerConjuncts)});
 
-  auto outerConjuncts = translateConjuncts(withSubquery, &inner);
+  std::optional<ExprVector> outerConjuncts;
+  inner = withLiftTarget(inner, [&](LiftTarget& target) {
+    outerConjuncts = translateConjuncts(withSubquery, &target);
+  });
   if (!outerConjuncts.has_value()) {
     return {
         builder_.makeEmptyValues(inner->outputColumns()),
@@ -1051,7 +1185,10 @@ Translated Translator::maybeWrapInFilter(
     NodeCP input,
     const lp::Expr& predicateExpr,
     Scope scope) {
-  ExprCP predicate = translateExpr(predicateExpr, scope, &input);
+  ExprCP predicate{nullptr};
+  input = withLiftTarget(input, [&](LiftTarget& target) {
+    predicate = translateExpr(predicateExpr, scope, &target);
+  });
 
   ExprVector conjuncts;
   if (simplifier_.simplifyFilter(predicate, conjuncts)) {
@@ -1118,7 +1255,9 @@ Translated Translator::translateProject(
       VELOX_CHECK(it != windowScope.end());
       translatedExpr = it->second;
     } else {
-      translatedExpr = translateExpr(*exprs[idx], input.scope, &currentInput);
+      currentInput = withLiftTarget(currentInput, [&](LiftTarget& target) {
+        translatedExpr = translateExpr(*exprs[idx], input.scope, &target);
+      });
     }
     if (auto seenIt = exprToOutput.find(translatedExpr);
         seenIt != exprToOutput.end()) {
@@ -1186,11 +1325,11 @@ std::optional<float> maxCardinality(const ExprVector& exprs) {
 ExprVector Translator::translateAll(
     const std::vector<lp::ExprPtr>& expressions,
     const Scope& scope,
-    NodeCP* applyTarget) {
+    LiftTarget* liftTarget) {
   ExprVector result;
   result.reserve(expressions.size());
   for (const auto& expression : expressions) {
-    result.push_back(translateExpr(*expression, scope, applyTarget));
+    result.push_back(translateExpr(*expression, scope, liftTarget));
   }
   return result;
 }
@@ -1213,9 +1352,9 @@ Frame Translator::toFrame(
 const optimizer::Aggregate* Translator::toAggregateCall(
     const lp::AggregateExpr& aggregateExpr,
     const Scope& scope,
-    NodeCP* applyTarget) {
+    LiftTarget* liftTarget) {
   ExprVector arguments =
-      translateAll(aggregateExpr.inputs(), scope, applyTarget);
+      translateAll(aggregateExpr.inputs(), scope, liftTarget);
 
   if (aggregateExpr.isSpecialFormAgg()) {
     const auto& special = *aggregateExpr.as<lp::SpecialFormAggExpr>();
@@ -1233,7 +1372,7 @@ const optimizer::Aggregate* Translator::toAggregateCall(
     // lookup and carry the kind and translated fallback for the fold pass.
     // Result and intermediate types are BIGINT.
     const optimizer::Aggregate* fallback = special.fallback() != nullptr
-        ? toAggregateCall(*special.fallback(), scope, applyTarget)
+        ? toAggregateCall(*special.fallback(), scope, liftTarget)
         : nullptr;
     FunctionSet funcs = Call::unionArgFunctions(FunctionSet{}, arguments);
     return builder_.makeAggregate(
@@ -1260,7 +1399,7 @@ const optimizer::Aggregate* Translator::toAggregateCall(
       velox::exec::resolveIntermediateType(aggregateExpr.name(), argTypes));
 
   ExprCP condition = aggregateExpr.filter() != nullptr
-      ? translateExpr(*aggregateExpr.filter(), scope, applyTarget)
+      ? translateExpr(*aggregateExpr.filter(), scope, liftTarget)
       : nullptr;
   // Drop a constant-true FILTER (it masks nothing). A false or null mask stays
   // as a literal condition, folded to the empty-set result during assembly.
@@ -1269,7 +1408,7 @@ const optimizer::Aggregate* Translator::toAggregateCall(
   }
 
   auto [orderKeys, orderTypes] =
-      dedupOrdering(aggregateExpr.ordering(), scope, applyTarget);
+      dedupOrdering(aggregateExpr.ordering(), scope, liftTarget);
   Value value(toType(aggregateExpr.type()));
 
   Name aggName = toName(aggregateExpr.name());
@@ -1346,7 +1485,7 @@ NodeCP Translator::maybeWrapInWindow(
     // that wiring lands. lp's surface allows them; rare in practice.
     for (const auto& partitionKey : windowExpr->partitionKeys()) {
       ExprCP key =
-          translateExpr(*partitionKey, inputScope, /*applyTarget=*/nullptr);
+          translateExpr(*partitionKey, inputScope, /*liftTarget=*/nullptr);
       if (seenKeys.insert(key).second) {
         spec.partitionKeys.push_back(key);
       }
@@ -1356,7 +1495,7 @@ NodeCP Translator::maybeWrapInWindow(
     spec.orderTypes.reserve(windowExpr->ordering().size());
     for (const auto& field : windowExpr->ordering()) {
       ExprCP key =
-          translateExpr(*field.expression, inputScope, /*applyTarget=*/nullptr);
+          translateExpr(*field.expression, inputScope, /*liftTarget=*/nullptr);
       if (!seenKeys.insert(key).second) {
         continue;
       }
@@ -1419,7 +1558,7 @@ NodeCP Translator::maybeWrapInWindow(
       Value value(toType(windowExpr->type()));
       Name windowName = toName(windowExpr->name());
       ExprVector windowArgs = translateAll(
-          windowExpr->inputs(), inputScope, /*applyTarget=*/nullptr);
+          windowExpr->inputs(), inputScope, /*liftTarget=*/nullptr);
       // Window functions are non-deterministic with non-default null behavior.
       FunctionSet windowFuncs =
           Call::unionArgFunctions(FunctionSet{}, windowArgs) |
@@ -1476,14 +1615,14 @@ Translated Translator::translateLimit(
 std::pair<ExprVector, OrderTypeVector> Translator::dedupOrdering(
     const std::vector<lp::SortingField>& ordering,
     const Scope& scope,
-    NodeCP* applyTarget) {
+    LiftTarget* liftTarget) {
   ExprVector orderKeys;
   OrderTypeVector orderTypes;
   orderKeys.reserve(ordering.size());
   orderTypes.reserve(ordering.size());
   folly::F14FastSet<ExprCP> seen;
   for (const auto& field : ordering) {
-    ExprCP key = translateExpr(*field.expression, scope, applyTarget);
+    ExprCP key = translateExpr(*field.expression, scope, liftTarget);
     if (!seen.insert(key).second) {
       continue;
     }
@@ -1505,8 +1644,12 @@ Translated Translator::translateSort(
   Translated input = translateNode(*sort.onlyInput(), childRequired);
 
   NodeCP currentInput = input.node;
-  auto [orderKeys, orderTypes] =
-      dedupOrdering(sort.ordering(), input.scope, &currentInput);
+  ExprVector orderKeys;
+  OrderTypeVector orderTypes;
+  currentInput = withLiftTarget(currentInput, [&](LiftTarget& target) {
+    std::tie(orderKeys, orderTypes) =
+        dedupOrdering(sort.ordering(), input.scope, &target);
+  });
 
   SortCP sortNode = builder_.make<Sort>(
       {currentInput, std::move(orderKeys), std::move(orderTypes)});
@@ -1632,8 +1775,10 @@ void Translator::translateGroupingKeys(
   }
 
   for (size_t i = 0; i < keyExpressions.size(); ++i) {
-    ExprCP keyExpr =
-        translateExpr(*keyExpressions[i], inputScope, &currentInput);
+    ExprCP keyExpr{nullptr};
+    currentInput = withLiftTarget(currentInput, [&](LiftTarget& target) {
+      keyExpr = translateExpr(*keyExpressions[i], inputScope, &target);
+    });
     if (!hasGroupingSets) {
       const auto it = keyToOutput.find(keyExpr);
       if (it != keyToOutput.end()) {
@@ -1723,8 +1868,11 @@ Translated Translator::translateAggregate(
   folly::F14FastMap<const optimizer::Aggregate*, ColumnCP> aggregateToOutput;
   aggregateToOutput.reserve(keptAggregateIndices.size());
   for (size_t idx : keptAggregateIndices) {
-    const auto* aggregateCall =
-        toAggregateCall(*aggregateExpressions[idx], input.scope, &currentInput);
+    const optimizer::Aggregate* aggregateCall{nullptr};
+    currentInput = withLiftTarget(currentInput, [&](LiftTarget& target) {
+      aggregateCall =
+          toAggregateCall(*aggregateExpressions[idx], input.scope, &target);
+    });
     const auto& aggregateName = names[numGroupingKeys + idx];
     // A remaining literal condition can only be false or null: fold to the
     // empty-set result.
@@ -1923,7 +2071,7 @@ std::vector<velox::Variant> Translator::evaluateExprRowsToVariants(
     rowValues.reserve(exprRow.size());
     for (const auto& expr : exprRow) {
       rowValues.emplace_back(simplifier_.evaluate(
-          translateExpr(*expr, emptyScope, /*applyTarget=*/nullptr)));
+          translateExpr(*expr, emptyScope, /*liftTarget=*/nullptr)));
     }
     rows.emplace_back(velox::Variant::row(std::move(rowValues)));
   }
@@ -1972,8 +2120,11 @@ Translated Translator::translateUnnest(
   Translated input = translateNode(*unnest.onlyInput(), childRequired);
 
   NodeCP currentInput = input.node;
-  ExprVector unnestExprs =
-      translateAll(unnest.unnestExpressions(), input.scope, &currentInput);
+  ExprVector unnestExprs;
+  currentInput = withLiftTarget(currentInput, [&](LiftTarget& target) {
+    unnestExprs =
+        translateAll(unnest.unnestExpressions(), input.scope, &target);
+  });
 
   // TODO: Cardinality of unnested columns also should be multiplied by the
   // average expected number of elements per unnested row. Other Value
@@ -2177,14 +2328,10 @@ Translated Translator::translateSet(
 
       // Set-op via Join: each leg's columns become join keys, so all of each
       // leg's outputType is consumed.
-      Translated first = translateNode(
-          *set.inputs().front(), allNames(*set.inputs().front()->outputType()));
+      Translated first = translateNode(*set.inputs().front());
       NodeCP node = first.node;
       for (size_t i = 1; i < set.inputs().size(); ++i) {
-        NodeCP other =
-            translateNode(
-                *set.inputs()[i], allNames(*set.inputs()[i]->outputType()))
-                .node;
+        NodeCP other = translateNode(*set.inputs()[i]).node;
         const auto& leftColumns = node->outputColumns();
         const auto& rightColumns = other->outputColumns();
         VELOX_CHECK_EQ(leftColumns.size(), rightColumns.size());
@@ -2398,8 +2545,11 @@ Translated Translator::translateJoin(
     NodeCP otherSide = liftOntoRight ? left.node : right.node;
 
     NodeCP beforeLift = liftTarget;
-    ExprCP condition =
-        translateExpr(*join.condition(), merged, /*applyTarget=*/&liftTarget);
+    ExprCP condition{nullptr};
+    liftTarget = withLiftTarget(liftTarget, [&](LiftTarget& target) {
+      condition =
+          translateExpr(*join.condition(), merged, /*liftTarget=*/&target);
+    });
     // A subquery correlated to the input it was not lifted onto references a
     // column that input cannot provide.
     if (correlatesToOtherSide(liftTarget, beforeLift, otherSide)) {
@@ -2433,15 +2583,17 @@ Translated Translator::translateLateralJoin(
   // Keep all columns of both sides: the body may correlate on any left
   // column, and the Apply output is input.columns ++ body.columns. Unused
   // columns are pruned in a later pass.
-  Translated left =
-      translateNode(*join.left(), allNames(*join.left()->outputType()));
+  Translated left = translateNode(*join.left());
 
   // With the left scope pushed, the body's references to left columns are
   // captured as the Apply's correlation.
-  subqueries_.push(left.scope);
-  Translated right =
-      translateNode(*join.right(), allNames(*join.right()->outputType()));
-  ColumnVector correlationColumns = subqueries_.pop();
+  Translated right;
+  ColumnVector correlationColumns;
+  left.node = withLiftTarget(left.node, [&](LiftTarget& target) {
+    subqueries_.push(left.scope, &target);
+    right = translateNode(*join.right());
+    correlationColumns = subqueries_.pop();
+  });
 
   // The ON condition may read either side.
   Scope merged = left.scope;
@@ -2455,7 +2607,7 @@ Translated Translator::translateLateralJoin(
       VELOX_NYI("Subquery in a LATERAL join ON condition is not supported");
     }
     ExprCP condition =
-        translateExpr(*join.condition(), merged, /*applyTarget=*/nullptr);
+        translateExpr(*join.condition(), merged, /*liftTarget=*/nullptr);
     filter = ExprFactory::flattenAnd(condition);
   }
 
@@ -2488,20 +2640,221 @@ Translated Translator::translateLateralJoin(
   return {apply, std::move(merged)};
 }
 
+// Returns true if 'node' provably produces exactly one row. An EnforceSingleRow
+// over such a node is a no-op: the >1-row assertion can never fire, and the
+// empty-input null row it would synthesize can never be produced. Conservative
+// — returns false when it cannot prove exactly one row.
+bool producesExactlyOneRow(NodeCP node) {
+  switch (node->nodeType()) {
+    case NodeType::kAggregate: {
+      // A global (ungrouped) aggregate emits exactly one row, even over empty
+      // input. A grouping-set aggregate keys on the group-id column, so its
+      // grouping keys are non-empty and it is excluded here.
+      const auto* aggregate = node->as<Aggregate>();
+      return aggregate->groupingKeys().empty();
+    }
+    case NodeType::kEnforceSingleRow:
+      return true;
+    case NodeType::kProject:
+      return producesExactlyOneRow(node->as<Project>()->input());
+    default:
+      return false;
+  }
+}
+
+// True if 'node' or any node below it reads a column in 'columns'.
+bool readsAny(NodeCP node, const PlanObjectSet& columns) {
+  bool found = false;
+  auto walk = [&](auto& self, NodeCP current) -> void {
+    if (found) {
+      return;
+    }
+    forEachExpressionInNode(current, [&](ExprCP expr) {
+      found = found || columns.hasIntersection(expr->columns());
+    });
+    if (found) {
+      return;
+    }
+    for (NodeCP child : current->inputs()) {
+      self(self, child);
+    }
+  };
+  walk(walk, node);
+  return found;
+}
+
+// True if a body with these correlations can be lifted onto the target's
+// pending lifts: it reads them and reads nothing else from outside. An IN is
+// excluded because its 'inLhs' is read from the lift target and this does not
+// check it against the pending lifts.
+bool readsOnlyPendingLifts(
+    const LiftTarget& target,
+    const ColumnVector& correlationColumns,
+    bool isIn) {
+  // A body reading nothing from outside has no reason to join the lifts.
+  if (target.pendingLifts == nullptr || correlationColumns.empty()) {
+    return false;
+  }
+  if (isIn) {
+    return false;
+  }
+  return std::all_of(
+      correlationColumns.begin(),
+      correlationColumns.end(),
+      [&](ColumnCP column) {
+        return outputContains(target.pendingLifts, column);
+      });
+}
+
+// Checks that 'applyInput' produces the IN left-hand side of an Apply built
+// over it. 'inLhs' is translated in the scope being lifted from, so this input
+// has to supply it.
+//
+// Correlations are not checked: a body deeper than one level records them on
+// every body in flight, so an inner Apply's correlations include columns an
+// enclosing Apply supplies rather than this input.
+void checkApplyInput(NodeCP applyInput, ExprCP inLhs) {
+  if (inLhs == nullptr) {
+    return;
+  }
+  const auto inputColumns =
+      PlanObjectSet::fromObjects(applyInput->outputColumns());
+  VELOX_CHECK(
+      inputColumns.containsColumns(inLhs),
+      "Apply input does not produce the IN left-hand side: {}",
+      inLhs->toString());
+}
+
+bool Translator::tryJoinIntoPendingLifts(NodeCP body, LiftTarget& target) {
+  if (!body->is(NodeType::kFilter)) {
+    return false;
+  }
+
+  const Filter* filter = body->as<Filter>();
+  NodeCP child = filter->input();
+
+  const auto pendingLiftColumns =
+      PlanObjectSet::fromObjects(target.pendingLifts->outputColumns());
+  // A pending-lift column read below the filter cannot be supplied by the
+  // join.
+  if (readsAny(child, pendingLiftColumns)) {
+    return false;
+  }
+
+  auto split = JoinCondition::splitEquiKeys(
+      filter->predicates(),
+      pendingLiftColumns,
+      PlanObjectSet::fromObjects(child->outputColumns()));
+
+  ColumnVector joinOutput = target.pendingLifts->outputColumns();
+  appendUnique(joinOutput, child->outputColumns());
+  // kLeft because the pending lifts carry values other references read. An
+  // inner join would drop their row when the body has no match, and the
+  // EnforceSingleRow above would then null every column, not just the body's.
+  NodeCP join = builder_.make<Join>(Join::Key{
+      target.pendingLifts,
+      child,
+      velox::core::JoinType::kLeft,
+      std::move(split.leftKeys),
+      std::move(split.rightKeys),
+      std::move(split.residual),
+      /*nullAware=*/false,
+      /*nullAsValue=*/false,
+      std::move(joinOutput),
+  });
+  target.pendingLifts =
+      builder_.make<EnforceSingleRow>(EnforceSingleRow::Key{join});
+  return true;
+}
+
+ColumnCP Translator::aliasIfNameCollides(
+    NodeCP& body,
+    ColumnCP returnedColumn,
+    const LiftTarget& target) {
+  // The body may project an outer column unchanged, as in
+  // `SELECT (SELECT a) FROM t`, so its output keeps the name the outer
+  // relation already uses.
+  const ColumnVector targetColumns = target.columns();
+  for (ColumnCP column : targetColumns) {
+    if (column->name() != returnedColumn->name()) {
+      continue;
+    }
+    ColumnCP alias = Column::create(
+        std::string(returnedColumn->name()) + "__lift",
+        returnedColumn->value());
+    body = builder_.make<Project>(Project::Key{
+        body,
+        ExprVector{returnedColumn},
+        ColumnVector{alias},
+    });
+    return alias;
+  }
+  return returnedColumn;
+}
+
+NodeCP Translator::crossJoin(NodeCP left, NodeCP right) {
+  ColumnVector output = left->outputColumns();
+  appendUnique(output, right->outputColumns());
+  return builder_.make<Join>(Join::Key{
+      left,
+      right,
+      velox::core::JoinType::kInner,
+      /*leftKeys=*/{},
+      /*rightKeys=*/{},
+      /*filter=*/ExprVector{},
+      /*nullAware=*/false,
+      /*nullAsValue=*/false,
+      std::move(output),
+  });
+}
+
+void Translator::flushLifts(LiftTarget& target) {
+  if (target.pendingLifts == nullptr) {
+    return;
+  }
+  // A cross join is only equivalent to the lift because the pending lifts
+  // yield one row; more would multiply the node's rows.
+  target.node = crossJoin(target.node, target.pendingLifts);
+  target.pendingLifts = nullptr;
+}
+
+ExprCP Translator::reuseScalarSubquery(
+    const lp::LogicalPlanNode* plan,
+    const LiftTarget& liftTarget) {
+  auto it = scalarSubqueryColumns_.find(plan);
+  if (it == scalarSubqueryColumns_.end()) {
+    return nullptr;
+  }
+  // A lift this target already outputs is read as is. Taken before the
+  // correlated ones so that entry order does not decide between a plain
+  // column read and a correlation.
+  for (ExprCP lifted : it->second) {
+    if (!lifted->isColumn() || liftTarget.outputs(lifted->as<Column>())) {
+      return lifted;
+    }
+  }
+  for (ExprCP lifted : it->second) {
+    if (subqueries_.correlateLifted(lifted->as<Column>())) {
+      return lifted;
+    }
+  }
+  return nullptr;
+}
+
 ExprCP Translator::translateExpr(
     const lp::Expr& expr,
     const Scope& scope,
-    NodeCP* applyTarget) {
+    LiftTarget* liftTarget) {
   switch (expr.kind()) {
     case lp::ExprKind::kInputReference:
       return translateInputReference(*expr.as<lp::InputReferenceExpr>(), scope);
     case lp::ExprKind::kConstant:
       return translateConstant(*expr.as<lp::ConstantExpr>());
     case lp::ExprKind::kCall:
-      return translateCall(*expr.as<lp::CallExpr>(), scope, applyTarget);
+      return translateCall(*expr.as<lp::CallExpr>(), scope, liftTarget);
     case lp::ExprKind::kSpecialForm:
       return translateSpecialForm(
-          *expr.as<lp::SpecialFormExpr>(), scope, applyTarget);
+          *expr.as<lp::SpecialFormExpr>(), scope, liftTarget);
     case lp::ExprKind::kLambda:
       return translateLambda(*expr.as<lp::LambdaExpr>(), scope);
     case lp::ExprKind::kSubquery: {
@@ -2511,12 +2864,9 @@ ExprCP Translator::translateExpr(
       // by a null `inLhs` (no IN equi to build).
       const auto& subquery = *expr.as<lp::SubqueryExpr>();
       const auto* innerPlan = subquery.subquery().get();
-      if (applyTarget != nullptr) {
-        auto it = scalarSubqueryColumns_.find(innerPlan);
-        if (it != scalarSubqueryColumns_.end() &&
-            (!it->second->isColumn() ||
-             outputContains(*applyTarget, it->second->as<Column>()))) {
-          return it->second;
+      if (liftTarget != nullptr) {
+        if (ExprCP reused = reuseScalarSubquery(innerPlan, *liftTarget)) {
+          return reused;
         }
       }
       ExprCP result = liftSubquery(
@@ -2524,9 +2874,9 @@ ExprCP Translator::translateExpr(
           velox::core::JoinType::kLeft,
           /*inLhs=*/nullptr,
           scope,
-          applyTarget);
-      if (applyTarget != nullptr) {
-        scalarSubqueryColumns_[innerPlan] = result;
+          liftTarget);
+      if (liftTarget != nullptr) {
+        scalarSubqueryColumns_[innerPlan].push_back(result);
       }
       return result;
     }
@@ -2544,7 +2894,7 @@ ExprCP Translator::translateInputReference(
   if (it != scope.end()) {
     return it->second;
   }
-  if (ColumnCP outer = subqueries_.resolveOuter(name)) {
+  if (ColumnCP outer = subqueries_.correlateOuter(name)) {
     return outer;
   }
   VELOX_FAIL("Column not found in scope or outer scopes: {}", name);
@@ -2560,8 +2910,8 @@ ExprCP Translator::translateConstant(const lp::ConstantExpr& expr) {
 ExprCP Translator::translateCall(
     const lp::CallExpr& expr,
     const Scope& scope,
-    NodeCP* applyTarget) {
-  ExprVector args = translateAll(expr.inputs(), scope, applyTarget);
+    LiftTarget* liftTarget) {
+  ExprVector args = translateAll(expr.inputs(), scope, liftTarget);
   Value value =
       clampCardinality(Value{toType(expr.type()), maxCardinality(args)});
   Name name = toName(expr.name());
@@ -2586,9 +2936,9 @@ bool isInSubqueryForm(const lp::Expr& expr) {
 ExprCP Translator::translateSpecialForm(
     const lp::SpecialFormExpr& expr,
     const Scope& scope,
-    NodeCP* applyTarget) {
+    LiftTarget* liftTarget) {
   if (expr.form() == lp::SpecialForm::kExists) {
-    return translateExists(expr, scope, applyTarget);
+    return translateExists(expr, scope, liftTarget);
   }
 
   // IN (subquery): translate the lhs, then lift
@@ -2598,14 +2948,14 @@ ExprCP Translator::translateSpecialForm(
   // their presence. Plain `IN (literals...)` flows through the
   // generic path below.
   if (isInSubqueryForm(expr)) {
-    ExprCP lhs = translateExpr(*expr.inputAt(0), scope, applyTarget);
+    ExprCP lhs = translateExpr(*expr.inputAt(0), scope, liftTarget);
     const auto& subquery = *expr.inputAt(1)->as<lp::SubqueryExpr>();
     return liftSubquery(
         subquery,
         velox::core::JoinType::kLeftSemiProject,
         /*inLhs=*/lhs,
         scope,
-        applyTarget);
+        liftTarget);
   }
 
   // NOT EXISTS / NOT IN come through as `lp::Call("not", [kExists|kIn])`,
@@ -2615,7 +2965,7 @@ ExprCP Translator::translateSpecialForm(
   // shape is identical for IN vs NOT IN — null-aware semi-project both
   // ways; the surrounding NOT inverts the mark.
 
-  ExprVector args = translateAll(expr.inputs(), scope, applyTarget);
+  ExprVector args = translateAll(expr.inputs(), scope, liftTarget);
   Value value =
       clampCardinality(Value{toType(expr.type()), maxCardinality(args)});
 
@@ -2657,7 +3007,7 @@ ExprCP Translator::translateSpecialForm(
 ExprCP Translator::translateExists(
     const lp::SpecialFormExpr& expr,
     const Scope& scope,
-    NodeCP* applyTarget) {
+    LiftTarget* liftTarget) {
   VELOX_CHECK_EQ(expr.inputs().size(), 1);
   const auto& subquery = *expr.inputs()[0]->as<lp::SubqueryExpr>();
 
@@ -2690,7 +3040,7 @@ ExprCP Translator::translateExists(
       velox::core::JoinType::kLeftSemiProject,
       /*inLhs=*/nullptr,
       scope,
-      applyTarget);
+      liftTarget);
 }
 
 ExprCP Translator::normalizeInList(ExprVector& args) {
@@ -2795,30 +3145,8 @@ ExprCP Translator::translateLambda(
   // Lambdas appear inside higher-order functions; subqueries inside a
   // lambda body would need lifting above the surrounding higher-order
   // call's relational input — uncommon and not threaded today.
-  ExprCP body = translateExpr(*expr.body(), bodyScope, /*applyTarget=*/nullptr);
+  ExprCP body = translateExpr(*expr.body(), bodyScope, /*liftTarget=*/nullptr);
   return make<Lambda>(std::move(args), toType(expr.type()), body);
-}
-
-// Returns true if 'node' provably produces exactly one row. An EnforceSingleRow
-// over such a node is a no-op: the >1-row assertion can never fire, and the
-// empty-input null row it would synthesize can never be produced. Conservative
-// — returns false when it cannot prove exactly one row.
-bool producesExactlyOneRow(NodeCP node) {
-  switch (node->nodeType()) {
-    case NodeType::kAggregate: {
-      // A global (ungrouped) aggregate emits exactly one row, even over empty
-      // input. A grouping-set aggregate keys on the group-id column, so its
-      // grouping keys are non-empty and it is excluded here.
-      const auto* aggregate = node->as<Aggregate>();
-      return aggregate->groupingKeys().empty();
-    }
-    case NodeType::kEnforceSingleRow:
-      return true;
-    case NodeType::kProject:
-      return producesExactlyOneRow(node->as<Project>()->input());
-    default:
-      return false;
-  }
 }
 
 ExprCP Translator::liftSubquery(
@@ -2826,9 +3154,9 @@ ExprCP Translator::liftSubquery(
     velox::core::JoinType kind,
     ExprCP inLhs,
     const Scope& outerScope,
-    NodeCP* applyTarget) {
+    LiftTarget* liftTarget) {
   VELOX_USER_CHECK_NOT_NULL(
-      applyTarget,
+      liftTarget,
       "Subquery encountered in an expression position with no relational "
       "input above which to lift Apply");
 
@@ -2844,7 +3172,7 @@ ExprCP Translator::liftSubquery(
   const LpNameSet required =
       isExists ? LpNameSet{} : allNames(*subqueryExpr.subquery()->outputType());
 
-  subqueries_.push(outerScope);
+  subqueries_.push(outerScope, liftTarget);
   Translated inner = translateNode(*subqueryExpr.subquery(), required);
   ColumnVector correlationColumns = subqueries_.pop();
 
@@ -2878,44 +3206,7 @@ ExprCP Translator::liftSubquery(
       }
     }
 
-    // Shape C fix: if body's
-    // single output column collides by name with any column in
-    // applyTarget's outputColumns (e.g., `SELECT (SELECT a) FROM t`
-    // where body's output and outer t.a are both named "a"), wrap
-    // body in an aliasing Project with a fresh name. The alias becomes
-    // returnedColumn.
-    //
-    // KNOWN LIMITATION: this fix is design-correct at Translate level,
-    // but Decorrelate's Project peel currently exposes the original
-    // body (under the alias wrap) when peeling, and the resulting
-    // inner Apply's outputColumns = input.cols ++ originalBody.cols
-    // brings the duplicate back. Full Shape C handling requires
-    // Decorrelate's Project peel to apply the same aliasing trick to
-    // body cols that collide with input cols. Currently NYI in
-    // Decorrelate; tests like `SELECT (SELECT a) FROM t` still fail
-    // with "Duplicate output column" at PlanConsistencyChecker.
-    {
-      const auto& targetCols = (*applyTarget)->outputColumns();
-      auto hasNameCollision = [&](std::string_view name) {
-        for (ColumnCP c : targetCols) {
-          if (c->name() == name) {
-            return true;
-          }
-        }
-        return false;
-      };
-      if (hasNameCollision(returnedColumn->name())) {
-        ColumnCP alias = Column::create(
-            std::string(returnedColumn->name()) + "__lift",
-            returnedColumn->value());
-        body = builder_.make<Project>(Project::Key{
-            body,
-            ExprVector{returnedColumn},
-            ColumnVector{alias},
-        });
-        returnedColumn = alias;
-      }
-    }
+    returnedColumn = aliasIfNameCollides(body, returnedColumn, *liftTarget);
 
     if (correlationColumns.empty()) {
       // Uncorrelated scalar: cross-join with the body, which must yield a
@@ -2925,20 +3216,9 @@ ExprCP Translator::liftSubquery(
           ? body
           : builder_.make<EnforceSingleRow>(EnforceSingleRow::Key{body});
 
-      ColumnVector joinOutput = (*applyTarget)->outputColumns();
-      appendUnique(joinOutput, wrapped->outputColumns());
-
-      *applyTarget = builder_.make<Join>(Join::Key{
-          *applyTarget,
-          wrapped,
-          velox::core::JoinType::kInner,
-          /*leftKeys=*/{},
-          /*rightKeys=*/{},
-          /*filter=*/ExprVector{},
-          /*nullAware=*/false,
-          /*nullAsValue=*/false,
-          std::move(joinOutput),
-      });
+      liftTarget->pendingLifts = liftTarget->pendingLifts == nullptr
+          ? wrapped
+          : crossJoin(liftTarget->pendingLifts, wrapped);
       return returnedColumn;
     }
 
@@ -2959,16 +3239,35 @@ ExprCP Translator::liftSubquery(
     inBodyKey = bodyOut[0];
   }
 
+  const bool ontoPendingLifts =
+      readsOnlyPendingLifts(*liftTarget, correlationColumns, isIn);
+  // The body reads only single-row pending-lift values, so when its filter can
+  // carry them onto a join there is nothing per-row left to apply.
+  if (ontoPendingLifts && enforceSingleRow &&
+      tryJoinIntoPendingLifts(body, *liftTarget)) {
+    return returnedColumn;
+  }
+
+  if (!ontoPendingLifts) {
+    flushLifts(*liftTarget);
+  }
+
+  // The Apply replaces whichever of the two it is built over.
+  NodeCP& applyInput =
+      ontoPendingLifts ? liftTarget->pendingLifts : liftTarget->node;
+  checkApplyInput(applyInput, inLhs);
+
   // Apply.outputColumns per kind:
   //   kLeft            : input.outputColumns
   //                      ++ unique(body.outputColumns) ++ includeMarker
   //   kLeftSemiProject : input.outputColumns ++ markColumn
-  ColumnVector outputColumns = (*applyTarget)->outputColumns();
+  ColumnVector outputColumns = applyInput->outputColumns();
   if (isSemi) {
     outputColumns.push_back(markColumn);
   } else {
     appendUnique(outputColumns, body->outputColumns());
   }
+
   ColumnCP includeMarker = nullptr;
   if (kind == velox::core::JoinType::kLeft) {
     includeMarker = Column::createBoolean("_include");
@@ -2976,7 +3275,7 @@ ExprCP Translator::liftSubquery(
   }
 
   auto* apply = builder_.make<Apply>(
-      {*applyTarget,
+      {applyInput,
        body,
        std::move(correlationColumns),
        kind,
@@ -2987,7 +3286,7 @@ ExprCP Translator::liftSubquery(
        inBodyKey,
        includeMarker,
        std::move(outputColumns)});
-  *applyTarget = apply;
+  applyInput = apply;
   return returnedColumn;
 }
 
