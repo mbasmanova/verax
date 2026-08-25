@@ -18,9 +18,15 @@ These goals map to two different testing frameworks:
 
 **Guideline:** Plan optimality tests go into unit tests using PlanMatcher. Correctness verification goes into `.sql` files run by SqlTest.
 
-Why separate optimality and correctness tests? PlanMatcher tests are precise and tell you exactly which optimization broke. But they don't tell you whether the plan produces the right answer. `.sql` tests verify end-to-end correctness by comparing Axiom's results against DuckDB, but they don't tell you what the plan looks like. You need both.
+Why separate optimality and correctness tests? PlanMatcher tests are precise and tell you exactly which optimization broke. But they don't tell you whether the plan produces the right answer. `.sql` tests verify end-to-end correctness by comparing Axiom's results against DuckDB, but they don't tell you what the plan looks like.
 
-**Guideline:** Test both single-node and distributed plans. The optimizer may produce different plans depending on the number of workers (e.g., single-node plans skip shuffles, distributed plans split aggregations into partial/final). When relevant, also test single-node multi-threaded plans, as local parallelism introduces local partitioning that can expose different issues.
+**Guideline:** Every behavior change needs a `.sql` case. Add a PlanMatcher test when the shape is what you are asserting.
+
+Two kinds of change need the shape. One is a change that improves plan quality: the `.sql` case returns the same rows before and after, so only the shape shows the improvement. The other is a property the result cannot show — a subquery evaluated once rather than twice, or two subqueries kept separate per UNION branch. A result can sometimes reveal such a property, but only through the literals the case happens to use, and a later edit to those literals removes the coverage without any sign.
+
+A fix that makes a query plan at all is the case that does not need one. There is no intended shape to state, so the matcher records whatever the optimizer produces today and asserts no decision — a later mismatch tells the reader nothing about whether a regression occurred.
+
+**Guideline:** Assert the distributed plan when distribution is what you are asserting — shuffles, partitioning, fragment boundaries. Otherwise the single-node plan carries the property. The optimizer may produce different plans depending on the number of workers (e.g., single-node plans skip shuffles, distributed plans split aggregations into partial/final). When relevant, also test single-node multi-threaded plans, as local parallelism introduces local partitioning that can expose different issues.
 
 ---
 
@@ -179,9 +185,22 @@ auto matcher = matchScan("large_table")
 - `.localGather()` — collects data from multiple local pipelines into one.
 - `.localMerge()` — merges sorted data from multiple local pipelines preserving order.
 
+#### Running suites that use TPC-H data
+
+Suites built on `HiveQueriesTestBase` regenerate their TPC-H tables into a temporary directory on every run. Generate them once and point the suites at that copy:
+
+```bash
+buck run fbcode//axiom/cli:tpchgen -- --data_path /home/$USER/tpch/sf0.1 --sf 0.1
+AXIOM_TPCH_DATA_PATH=/home/$USER/tpch/sf0.1 buck test fbcode//axiom/optimizer/tests:subquery
+```
+
+`--tpch_data_path` does the same thing. Either one makes the suite skip generation, so the directory has to hold the tables already — an empty or wrong path gives missing-table failures rather than regenerating.
+
 #### Reading matcher failures
 
-When a matcher fails, the output includes the specific mismatch, a scoped trace showing which node failed, and a full dump of the actual plan. Here are two examples.
+When a matcher fails, the output includes the specific mismatch, a scoped trace showing which node failed, and a full dump of the actual plan. Do not add printing to see the plan — write the matcher you expect and read the dump from the failure.
+
+Here are two examples.
 
 **Example 1: Wrong plan structure.** The test expects a Filter node above a TableScan, but the optimizer pushed the filter into the scan, so the root is a TableScan, not a Filter:
 
@@ -235,6 +254,8 @@ How to read:
 ### SqlTest: Verifying Correctness
 
 SqlTest runs SQL queries through the full Axiom pipeline (parse → optimize → execute) and compares results against DuckDB. Each query runs under both the v1 and v2 optimizers, so one `.sql` file exercises both.
+
+**Guideline:** Confirm a new case fails without the change. A query can be simplified before it reaches the code under test — an uncorrelated scalar subquery folds to a constant, a predicate drops out — and the `.sql` file gives no sign of it, so the case passes whether or not it exercised anything. Revert the change and watch the case fail, or read the plan and check that the construct is there. A case never seen to fail documents intent; it does not test it.
 
 Tests are written as plain `.sql` files. Queries are separated by `----`. Comment lines (`-- ...`) before the SQL can contain annotations that control how the query is verified. Unrecognized comments are ignored. Comments after the SQL starts are treated as part of the SQL body.
 
@@ -381,5 +402,6 @@ Claude will analyze the tests and flag missing edge cases, tests that verify the
 
 - **Plan shape → unit test + PlanMatcher**: Precise, tells you what broke.
 - **Correctness → .sql + SqlTest**: End-to-end, compares against DuckDB, easy to write.
-- **Use both**: New optimizations should have PlanMatcher tests for plan shape AND `.sql` tests for correctness.
+- **Use both** when the shape is what you are asserting: an optimization needs a PlanMatcher test for the shape AND a `.sql` test for correctness. A fix that makes a query plan at all needs only the `.sql` test.
+- **Watch a new `.sql` case fail** without the change — otherwise you cannot tell whether it exercised anything.
 - **Use Claude** to sanity-check your expected plans and review test coverage.
