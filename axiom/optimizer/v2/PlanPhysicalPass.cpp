@@ -1192,15 +1192,15 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
   // single worker, else workers race to create the same bucket file.
   // Repartition the input on the target's partition columns using the target's
   // connector partitioning, unless the input is already compatibly bucketed (a
-  // collocated write) or the query runs on one worker. The within-worker split
-  // is added at emit.
+  // collocated write), the query runs on one worker, or the write is a delete,
+  // which writes no columns and so has no key to shuffle on.
   NodeCP rewriteTableWrite(const TableWrite* node, NoContext& context)
       override {
     NodeCP newInput = rewrite(node->input(), context);
     // A partition key computed for the shuffle is written from that column
     // rather than evaluated a second time.
     ExprFactory::ExprSubstitution materialized;
-    if (numWorkers_ > 1) {
+    if (numWorkers_ > 1 && node->kind() != connector::WriteKind::kDelete) {
       const auto* layout = node->table()->layouts().front();
       const auto& partitionColumns = layout->partitionColumns();
       if (!partitionColumns.empty()) {
