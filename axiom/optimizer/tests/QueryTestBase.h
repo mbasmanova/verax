@@ -418,6 +418,19 @@ inline auto in(
     }                                                   \
   }
 
+// Asserts the plan shape under v2 only. Use this in new tests: v1 is on its
+// way out, so v2 is the shape worth pinning. Under v1 the query still has to
+// plan, which the call producing `plan` verifies, but its shape is not
+// compared. Reads `useV2_` from the fixture.
+#define AXIOM_ASSERT_PLAN_V2(plan, matcher)       \
+  {                                               \
+    auto _axiom_plan_ = (plan);                   \
+    if (useV2_) {                                 \
+      ASSERT_TRUE((matcher)->match(_axiom_plan_)) \
+          << _axiom_plan_->toString(true, true);  \
+    }                                             \
+  }
+
 // Instantiates a value-parameterized (`TEST_P`) suite for both optimizers,
 // producing `V1/<suite>.<case>/_` and `V2/<suite>.<case>/_`. The fixture must
 // derive from `WithParamInterface<bool>` and set `useV2_ = GetParam()` in
