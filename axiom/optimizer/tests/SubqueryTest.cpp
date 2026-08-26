@@ -1885,19 +1885,15 @@ TEST_P(SubqueryTest, leftJoinOnSubquery) {
 
     auto matcher =
         matchHiveScan("nation")
-            .hashJoin(
-                matchHiveScan("region")
-                    .nestedLoopJoin(
-                        matchHiveScan("supplier")
-                            .singleAggregation({}, {"min(s_nationkey) as m"}),
-                        core::JoinType::kInner)
-                    .filter("r_regionkey > m")
-                    .project(),
-                core::JoinType::kLeft)
+            .hashJoinLeft(matchHiveScan("region").nestedLoopJoin(
+                matchHiveScan("supplier")
+                    .singleAggregation({}, {"min(s_nationkey) as m"}),
+                core::JoinType::kInner,
+                "r_regionkey > m"))
             .build();
 
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN_V2(plan, matcher);
   }
 
   // NOT IN subquery in LEFT JOIN ON clause.
@@ -2080,18 +2076,14 @@ TEST_P(SubqueryTest, rightJoinOnSubquery) {
     auto query = baseJoin + " AND r.r_name IN (SELECT s_name FROM supplier)";
     SCOPED_TRACE(query);
 
-    auto matcher = matchHiveScan("nation")
-                       .hashJoin(
-                           matchHiveScan("supplier")
-                               .hashJoin(
-                                   matchHiveScan("region"),
-                                   core::JoinType::kRightSemiFilter),
-                           core::JoinType::kLeft)
-                       .project()
-                       .build();
+    auto matcher =
+        matchHiveScan("nation")
+            .hashJoinLeft(matchHiveScan("supplier")
+                              .hashJoinRightSemiFilter(matchHiveScan("region")))
+            .build();
 
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN_V2(plan, matcher);
   }
 
   // Correlated EXISTS referencing the null-supplying side.
@@ -2101,18 +2093,14 @@ TEST_P(SubqueryTest, rightJoinOnSubquery) {
         " WHERE s.s_nationkey = r.r_regionkey)";
     SCOPED_TRACE(query);
 
-    auto matcher = matchHiveScan("nation")
-                       .hashJoin(
-                           matchHiveScan("supplier")
-                               .hashJoin(
-                                   matchHiveScan("region"),
-                                   core::JoinType::kRightSemiFilter),
-                           core::JoinType::kLeft)
-                       .project()
-                       .build();
+    auto matcher =
+        matchHiveScan("nation")
+            .hashJoinLeft(matchHiveScan("supplier")
+                              .hashJoinRightSemiFilter(matchHiveScan("region")))
+            .build();
 
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN_V2(plan, matcher);
   }
 }
 
