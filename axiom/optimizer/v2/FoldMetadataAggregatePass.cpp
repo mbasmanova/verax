@@ -222,14 +222,14 @@ class Folder : public NodeRewriter<NoContext> {
       aggregates.push_back(aggregate->fallback());
     }
 
-    return builder().make<Aggregate>(Aggregate::Key{
-        .input = newInput,
-        .groupingKeys = node->groupingKeys(),
-        .aggregates = std::move(aggregates),
-        .outputColumns = node->outputColumns(),
-        .step = node->step(),
-        .groupId = node->groupId(),
-        .globalGroupingSets = node->globalGroupingSets()});
+    return builder().make<Aggregate>(
+        {.input = newInput,
+         .groupingKeys = node->groupingKeys(),
+         .aggregates = std::move(aggregates),
+         .outputColumns = node->outputColumns(),
+         .step = node->step(),
+         .groupId = node->groupId(),
+         .globalGroupingSets = node->globalGroupingSets()});
   }
 
   const OptimizerSession& session_;

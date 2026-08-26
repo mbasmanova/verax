@@ -175,14 +175,14 @@ class NodeRewriter {
     if (newInput == node->input()) {
       return node;
     }
-    return builder_.template make<Aggregate>(Aggregate::Key{
-        .input = newInput,
-        .groupingKeys = node->groupingKeys(),
-        .aggregates = node->aggregates(),
-        .outputColumns = node->outputColumns(),
-        .step = node->step(),
-        .groupId = node->groupId(),
-        .globalGroupingSets = node->globalGroupingSets()});
+    return builder_.template make<Aggregate>(
+        {.input = newInput,
+         .groupingKeys = node->groupingKeys(),
+         .aggregates = node->aggregates(),
+         .outputColumns = node->outputColumns(),
+         .step = node->step(),
+         .groupId = node->groupId(),
+         .globalGroupingSets = node->globalGroupingSets()});
   }
 
   virtual NodeCP rewriteGroupId(const GroupId* node, TContext& context) {
@@ -395,7 +395,7 @@ class NodeRewriter {
         newConvergence == node->convergence()) {
       return node;
     }
-    return builder_.template make<FixedPoint>(FixedPoint::Key{
+    return builder_.template make<FixedPoint>({
         .anchor = newAnchor,
         .step = newStep,
         .convergence = newConvergence,

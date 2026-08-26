@@ -275,7 +275,7 @@ class Decorrelator : public NodeRewriter<> {
     ColumnVector innerCorrelations =
         recomputeCorrelations(newBody, input->outputColumns());
 
-    NodeCP innerApply = builder().make<Apply>(Apply::Key{
+    NodeCP innerApply = builder().make<Apply>({
         input,
         newBody,
         std::move(innerCorrelations),
@@ -329,7 +329,7 @@ class Decorrelator : public NodeRewriter<> {
       liftedExprs.push_back(node->includeMarker());
     }
 
-    return builder().make<Project>(Project::Key{
+    return builder().make<Project>({
         decorrelatedInner,
         std::move(liftedExprs),
         node->outputColumns(),
@@ -372,7 +372,7 @@ class Decorrelator : public NodeRewriter<> {
     appendAll(innerOutputColumns, input->outputColumns());
     innerOutputColumns.push_back(node->markColumn());
 
-    NodeCP innerApply = builder().make<Apply>(Apply::Key{
+    NodeCP innerApply = builder().make<Apply>({
         input,
         newBody,
         std::move(innerCorrelations),
@@ -444,7 +444,7 @@ class Decorrelator : public NodeRewriter<> {
     innerOutputColumns.push_back(node->markColumn());
     ColumnVector innerCorrelations =
         recomputeCorrelations(newBody, input->outputColumns());
-    NodeCP innerApply = builder().make<Apply>(Apply::Key{
+    NodeCP innerApply = builder().make<Apply>({
         input,
         newBody,
         std::move(innerCorrelations),
@@ -476,8 +476,8 @@ class Decorrelator : public NodeRewriter<> {
       int64_t count,
       ExprVector accumulatedFilter) {
     ColumnCP rowNumberPartition = makeIdColumn();
-    NodeCP taggedInput = builder().make<AssignUniqueId>(
-        AssignUniqueId::Key{input, rowNumberPartition});
+    NodeCP taggedInput =
+        builder().make<AssignUniqueId>({input, rowNumberPartition});
 
     NodeCP newBody = limitBody->input();
     ExprVector windowOrderKeys;
@@ -501,7 +501,7 @@ class Decorrelator : public NodeRewriter<> {
     ColumnVector innerCorrelations =
         recomputeCorrelations(newBody, taggedInput->outputColumns());
 
-    NodeCP innerApply = builder().make<Apply>(Apply::Key{
+    NodeCP innerApply = builder().make<Apply>({
         taggedInput,
         newBody,
         std::move(innerCorrelations),
@@ -526,7 +526,7 @@ class Decorrelator : public NodeRewriter<> {
 
     const Literal* countLiteral =
         builder().makeLiteral(velox::Variant(count), toType(velox::BIGINT()));
-    NodeCP filtered = builder().make<Filter>(Filter::Key{
+    NodeCP filtered = builder().make<Filter>({
         windowed,
         ExprVector{
             exprFactory_.makeLessThanOrEqual(rowNumberColumn, countLiteral)},
@@ -549,7 +549,7 @@ class Decorrelator : public NodeRewriter<> {
         finalExprs.push_back(outputColumn);
       }
     }
-    return builder().make<Project>(Project::Key{
+    return builder().make<Project>({
         enforced,
         std::move(finalExprs),
         node->outputColumns(),
@@ -610,7 +610,7 @@ class Decorrelator : public NodeRewriter<> {
     appendAll(outputs, input->outputColumns());
     outputs.push_back(rowNumberColumn);
 
-    return builder().make<Window>(Window::Key{
+    return builder().make<Window>({
         input,
         std::move(functions),
         ExprVector{partition},
@@ -756,7 +756,7 @@ class Decorrelator : public NodeRewriter<> {
         finalExprs.push_back(outputColumn);
       }
     }
-    return builder().make<Project>(Project::Key{
+    return builder().make<Project>({
         decorrelatedChain,
         std::move(finalExprs),
         node->outputColumns(),
@@ -843,7 +843,7 @@ class Decorrelator : public NodeRewriter<> {
             outputColumn == node->includeMarker() ? applyAIncludeMarker
                                                   : outputColumn);
       }
-      return builder().make<Project>(Project::Key{
+      return builder().make<Project>({
           chain,
           std::move(finalExprs),
           node->outputColumns(),
@@ -920,8 +920,7 @@ class Decorrelator : public NodeRewriter<> {
         exprFactory_.makeAnd(
             exprFactory_.makeNot(perOuter.anyMatch),
             isFirstRowOfOuter(perOuter.padOrdinal)));
-    NodeCP filtered =
-        builder().make<Filter>(Filter::Key{perOuter.node, ExprVector{keep}});
+    NodeCP filtered = builder().make<Filter>({perOuter.node, ExprVector{keep}});
 
     NodeCP enforced = node->enforceSingleRow()
         ? enforceScalarSingleRow(filtered, rowId)
@@ -948,7 +947,7 @@ class Decorrelator : public NodeRewriter<> {
             builder().makeNull(outputColumn->value().type)));
       }
     }
-    return builder().make<Project>(Project::Key{
+    return builder().make<Project>({
         enforced,
         std::move(finalExprs),
         node->outputColumns(),
@@ -958,7 +957,7 @@ class Decorrelator : public NodeRewriter<> {
   // Tags each 'input' row with a fresh id, so a later window can group a
   // chain's rows by the outer they came from.
   NodeCP tagOuterRows(NodeCP input, ColumnCP rowId) {
-    return builder().make<AssignUniqueId>(AssignUniqueId::Key{input, rowId});
+    return builder().make<AssignUniqueId>({input, rowId});
   }
 
   // A fresh BOOLEAN column for a kLeftSemiProject leg's mark. Each leg of a
@@ -982,7 +981,7 @@ class Decorrelator : public NodeRewriter<> {
     appendUnique(outputs, body->outputColumns());
     outputs.push_back(marker);
 
-    return builder().make<Apply>(Apply::Key{
+    return builder().make<Apply>({
         input,
         body,
         recomputeCorrelations(body, input->outputColumns()),
@@ -1012,7 +1011,7 @@ class Decorrelator : public NodeRewriter<> {
     appendAll(outputs, input->outputColumns());
     outputs.push_back(mark);
 
-    return builder().make<Apply>(Apply::Key{
+    return builder().make<Apply>({
         input,
         body,
         recomputeCorrelations(body, input->outputColumns()),
@@ -1082,7 +1081,7 @@ class Decorrelator : public NodeRewriter<> {
     appendAll(exprs, newExprs);
     appendAll(outputs, columns);
     return builder().make<Project>(
-        Project::Key{input, std::move(exprs), std::move(outputs)});
+        {input, std::move(exprs), std::move(outputs)});
   }
 
   NodeCP appendColumn(NodeCP input, ColumnCP column, ExprCP expr) {
@@ -1108,7 +1107,7 @@ class Decorrelator : public NodeRewriter<> {
     outputs.push_back(anyMatch);
     outputs.push_back(padOrdinal);
 
-    return builder().make<Window>(Window::Key{
+    return builder().make<Window>({
         input,
         std::move(functions),
         ExprVector{partition},
@@ -1185,7 +1184,7 @@ class Decorrelator : public NodeRewriter<> {
         finalExprs.push_back(outputColumn);
       }
     }
-    return builder().make<Project>(Project::Key{
+    return builder().make<Project>({
         decorrelatedChain,
         std::move(finalExprs),
         node->outputColumns(),
@@ -1239,8 +1238,8 @@ class Decorrelator : public NodeRewriter<> {
 
     // Any row of an outer serves: `anyMatch` reads the whole partition, and
     // the rest of the output is outer columns, which the partition shares.
-    NodeCP filtered = builder().make<Filter>(Filter::Key{
-        perOuter.node, ExprVector{isFirstRowOfOuter(perOuter.padOrdinal)}});
+    NodeCP filtered = builder().make<Filter>(
+        {perOuter.node, ExprVector{isFirstRowOfOuter(perOuter.padOrdinal)}});
 
     PlanObjectSet outerColumns =
         PlanObjectSet::fromObjects(input->outputColumns());
@@ -1256,7 +1255,7 @@ class Decorrelator : public NodeRewriter<> {
           "kLeftSemiProject Apply must output only outer columns and its mark");
       finalExprs.push_back(outputColumn);
     }
-    return builder().make<Project>(Project::Key{
+    return builder().make<Project>({
         filtered,
         std::move(finalExprs),
         node->outputColumns(),
@@ -1280,7 +1279,7 @@ class Decorrelator : public NodeRewriter<> {
       outputs.push_back(marker);
     }
 
-    return builder().make<Unnest>(Unnest::Key{
+    return builder().make<Unnest>({
         input,
         unnestBody->unnestExpressions(),
         std::move(replicated),
@@ -1341,7 +1340,7 @@ class Decorrelator : public NodeRewriter<> {
     appendAll(innerOutputColumns, input->outputColumns());
     appendUnique(innerOutputColumns, newBody->outputColumns());
 
-    NodeCP innerApply = builder().make<Apply>(Apply::Key{
+    NodeCP innerApply = builder().make<Apply>({
         input,
         newBody,
         recomputeCorrelations(newBody, input->outputColumns()),
@@ -1362,8 +1361,7 @@ class Decorrelator : public NodeRewriter<> {
     const ColumnVector unnestOutputs = lifted->outputColumns();
 
     if (!liftedFilter.empty()) {
-      lifted =
-          builder().make<Filter>(Filter::Key{lifted, std::move(liftedFilter)});
+      lifted = builder().make<Filter>({lifted, std::move(liftedFilter)});
     }
 
     // The lift carries every column the inner Apply produced, in its own
@@ -1373,7 +1371,7 @@ class Decorrelator : public NodeRewriter<> {
     }
     ExprVector finalExprs;
     appendAll(finalExprs, node->outputColumns());
-    return builder().make<Project>(Project::Key{
+    return builder().make<Project>({
         lifted,
         std::move(finalExprs),
         node->outputColumns(),
@@ -1457,7 +1455,7 @@ class Decorrelator : public NodeRewriter<> {
     windowOutputs.push_back(anyUnknown);
     windowOutputs.push_back(padOrdinal);
 
-    NodeCP windowed = builder().make<Window>(Window::Key{
+    NodeCP windowed = builder().make<Window>({
         compared,
         std::move(functions),
         ExprVector{rowId},
@@ -1481,7 +1479,7 @@ class Decorrelator : public NodeRewriter<> {
       ColumnCP padOrdinal,
       ExprCP mark) {
     NodeCP oneRowPerOuter = builder().make<Filter>(
-        Filter::Key{input, ExprVector{isFirstRowOfOuter(padOrdinal)}});
+        {input, ExprVector{isFirstRowOfOuter(padOrdinal)}});
 
     ExprVector finalExprs;
     finalExprs.reserve(node->outputColumns().size());
@@ -1489,7 +1487,7 @@ class Decorrelator : public NodeRewriter<> {
       finalExprs.push_back(
           outputColumn == node->markColumn() ? mark : outputColumn);
     }
-    return builder().make<Project>(Project::Key{
+    return builder().make<Project>({
         oneRowPerOuter,
         std::move(finalExprs),
         node->outputColumns(),
@@ -1543,7 +1541,7 @@ class Decorrelator : public NodeRewriter<> {
     ColumnVector innerCorrelations =
         recomputeCorrelations(newBody, input->outputColumns());
 
-    NodeCP innerApply = builder().make<Apply>(Apply::Key{
+    NodeCP innerApply = builder().make<Apply>({
         input,
         newBody,
         std::move(innerCorrelations),
@@ -1558,8 +1556,8 @@ class Decorrelator : public NodeRewriter<> {
     });
     NodeCP decorrelatedInner = rewrite(innerApply);
 
-    NodeCP withId = builder().make<AssignUniqueId>(
-        AssignUniqueId::Key{decorrelatedInner, idColumn});
+    NodeCP withId =
+        builder().make<AssignUniqueId>({decorrelatedInner, idColumn});
 
     // Final Project reorders `withId`'s cols to match
     // `node->outputColumns()` and aliases the inner includeMarker to
@@ -1573,7 +1571,7 @@ class Decorrelator : public NodeRewriter<> {
         finalExprs.push_back(outputColumn);
       }
     }
-    return builder().make<Project>(Project::Key{
+    return builder().make<Project>({
         withId,
         std::move(finalExprs),
         node->outputColumns(),
@@ -1783,7 +1781,7 @@ class Decorrelator : public NodeRewriter<> {
 
     NodeCP cleanBody = localPredicates.empty()
         ? base
-        : builder().make<Filter>(Filter::Key{base, std::move(localPredicates)});
+        : builder().make<Filter>({base, std::move(localPredicates)});
     return EquiCorrelation{
         cleanBody, std::move(split.leftKeys), std::move(split.rightKeys)};
   }
@@ -1824,7 +1822,7 @@ class Decorrelator : public NodeRewriter<> {
     }
 
     AggregateCallVector aggregates = aggregate->aggregates();
-    NodeCP groupedBody = builder().make<Aggregate>(Aggregate::Key{
+    NodeCP groupedBody = builder().make<Aggregate>({
         correlation.cleanBody,
         std::move(correlation.rightKeys),
         std::move(aggregates),
@@ -1844,7 +1842,7 @@ class Decorrelator : public NodeRewriter<> {
     ExprVector rightKeyExprs;
     appendAll(rightKeyExprs, rightKeyColumns);
 
-    NodeCP join = builder().make<Join>(Join::Key{
+    NodeCP join = builder().make<Join>({
         input,
         groupedBody,
         velox::core::JoinType::kLeft,
@@ -1980,8 +1978,7 @@ class Decorrelator : public NodeRewriter<> {
       AggregateCP aggregate,
       ExprVector filterPre) {
     ColumnCP rowIdColumn = makeIdColumn();
-    NodeCP taggedInput =
-        builder().make<AssignUniqueId>(AssignUniqueId::Key{input, rowIdColumn});
+    NodeCP taggedInput = builder().make<AssignUniqueId>({input, rowIdColumn});
 
     NodeCP body = aggregate->input();
 
@@ -2005,7 +2002,7 @@ class Decorrelator : public NodeRewriter<> {
     ColumnVector innerCorrelations =
         recomputeCorrelations(body, taggedInput->outputColumns());
 
-    NodeCP applyNode = builder().make<Apply>(Apply::Key{
+    NodeCP applyNode = builder().make<Apply>({
         taggedInput,
         body,
         std::move(innerCorrelations),
@@ -2073,7 +2070,7 @@ class Decorrelator : public NodeRewriter<> {
     }
     appendAll(liftedOutputColumns, input->outputColumns());
 
-    return builder().make<Aggregate>(Aggregate::Key{
+    return builder().make<Aggregate>({
         decorrelatedInner,
         std::move(groupingKeys),
         std::move(liftedAggregates),
@@ -2147,7 +2144,7 @@ class Decorrelator : public NodeRewriter<> {
     // row per outer (grouped by the per-outer id, or one match per outer
     // from the join-back), so there are no pad rows to exclude.
     finalExpressions.push_back(builder().makeBoolean(true));
-    return builder().make<Project>(Project::Key{
+    return builder().make<Project>({
         child,
         std::move(finalExpressions),
         node->outputColumns(),
@@ -2193,7 +2190,7 @@ class Decorrelator : public NodeRewriter<> {
     outputColumns.push_back(includeMarker);
 
     return builder().make<Project>(
-        Project::Key{body, std::move(exprs), std::move(outputColumns)});
+        {body, std::move(exprs), std::move(outputColumns)});
   }
 
   NodeCP
@@ -2207,7 +2204,7 @@ class Decorrelator : public NodeRewriter<> {
           filter,
           PlanObjectSet::fromObjects(input->outputColumns()),
           PlanObjectSet::fromObjects(markedBody->outputColumns()));
-      return builder().make<Join>(Join::Key{
+      return builder().make<Join>({
           input,
           markedBody,
           velox::core::JoinType::kLeft,
@@ -2227,8 +2224,7 @@ class Decorrelator : public NodeRewriter<> {
 
     // Tag input rows with a fresh BIGINT id column.
     ColumnCP idColumn = makeIdColumn();
-    NodeCP taggedInput =
-        builder().make<AssignUniqueId>(AssignUniqueId::Key{input, idColumn});
+    NodeCP taggedInput = builder().make<AssignUniqueId>({input, idColumn});
 
     // Build LEFT JOIN; output carries taggedInput.cols ++ markedBody.cols
     // (i.e., input.cols + idColumn + body.cols + includeMarker).
@@ -2243,7 +2239,7 @@ class Decorrelator : public NodeRewriter<> {
         filter,
         PlanObjectSet::fromObjects(taggedInput->outputColumns()),
         PlanObjectSet::fromObjects(markedBody->outputColumns()));
-    NodeCP join = builder().make<Join>(Join::Key{
+    NodeCP join = builder().make<Join>({
         taggedInput,
         markedBody,
         velox::core::JoinType::kLeft,
@@ -2264,7 +2260,7 @@ class Decorrelator : public NodeRewriter<> {
     ExprVector finalExprs;
     finalExprs.reserve(apply->outputColumns().size());
     appendAll(finalExprs, apply->outputColumns());
-    return builder().make<Project>(Project::Key{
+    return builder().make<Project>({
         enforced,
         std::move(finalExprs),
         apply->outputColumns(),
@@ -2289,7 +2285,7 @@ class Decorrelator : public NodeRewriter<> {
         filter,
         PlanObjectSet::fromObjects(input->outputColumns()),
         PlanObjectSet::fromObjects(body->outputColumns()));
-    return builder().make<Join>(Join::Key{
+    return builder().make<Join>({
         input,
         body,
         velox::core::JoinType::kInner,
@@ -2358,7 +2354,7 @@ class Decorrelator : public NodeRewriter<> {
     appendAll(innerOutputColumns, input->outputColumns());
     innerOutputColumns.push_back(node->markColumn());
 
-    NodeCP newApply = builder().make<Apply>(Apply::Key{
+    NodeCP newApply = builder().make<Apply>({
         input,
         newBody,
         std::move(innerCorrelations),
@@ -2423,7 +2419,7 @@ class Decorrelator : public NodeRewriter<> {
       finalExprs.reserve(input->outputColumns().size() + 1);
       appendAll(finalExprs, input->outputColumns());
       finalExprs.push_back(builder().makeBoolean(true));
-      return builder().make<Project>(Project::Key{
+      return builder().make<Project>({
           input,
           std::move(finalExprs),
           node->outputColumns(),
@@ -2456,7 +2452,7 @@ class Decorrelator : public NodeRewriter<> {
       outputs.push_back(rawMark);
       appendAll(outputs, input->outputColumns());
 
-      NodeCP agg = builder().make<Aggregate>(Aggregate::Key{
+      NodeCP agg = builder().make<Aggregate>({
           decorrelatedInner,
           ExprVector{innerApply.rowIdColumn},
           std::move(aggregates),
@@ -2470,7 +2466,7 @@ class Decorrelator : public NodeRewriter<> {
       finalExprs.reserve(input->outputColumns().size() + 1);
       appendAll(finalExprs, input->outputColumns());
       finalExprs.push_back(markExpr);
-      return builder().make<Project>(Project::Key{
+      return builder().make<Project>({
           agg,
           std::move(finalExprs),
           node->outputColumns(),
@@ -2521,7 +2517,7 @@ class Decorrelator : public NodeRewriter<> {
       stage1OutputColumns.push_back(padPresentColumn);
     }
 
-    NodeCP stage1 = builder().make<Aggregate>(Aggregate::Key{
+    NodeCP stage1 = builder().make<Aggregate>({
         decorrelatedInner,
         std::move(stage1GroupingKeys),
         std::move(stage1Aggregates),
@@ -2575,7 +2571,7 @@ class Decorrelator : public NodeRewriter<> {
       stage15Expressions.push_back(combinedExpr);
       stage15Outputs.push_back(combinedColumn);
 
-      NodeCP stage15 = builder().make<Project>(Project::Key{
+      NodeCP stage15 = builder().make<Project>({
           stage1,
           std::move(stage15Expressions),
           std::move(stage15Outputs),
@@ -2601,7 +2597,7 @@ class Decorrelator : public NodeRewriter<> {
       stage2Outputs.push_back(hasTrueColumn);
       appendAll(stage2Outputs, input->outputColumns());
 
-      NodeCP stage2 = builder().make<Aggregate>(Aggregate::Key{
+      NodeCP stage2 = builder().make<Aggregate>({
           stage15,
           ExprVector{innerApply.rowIdColumn},
           std::move(stage2Aggregates),
@@ -2617,7 +2613,7 @@ class Decorrelator : public NodeRewriter<> {
     appendAll(finalExpressions, input->outputColumns());
     finalExpressions.push_back(markExpr);
 
-    return builder().make<Project>(Project::Key{
+    return builder().make<Project>({
         finalInput,
         std::move(finalExpressions),
         node->outputColumns(),
@@ -2723,7 +2719,7 @@ class Decorrelator : public NodeRewriter<> {
       stage1OutputColumns.push_back(padPresentColumn);
     }
 
-    NodeCP stage1 = builder().make<Aggregate>(Aggregate::Key{
+    NodeCP stage1 = builder().make<Aggregate>({
         decorrelatedInner,
         std::move(stage1GroupingKeys),
         std::move(stage1Aggregates),
@@ -2801,7 +2797,7 @@ class Decorrelator : public NodeRewriter<> {
       stage15Expressions.push_back(combinedExpr);
       stage15Outputs.push_back(combinedColumn);
 
-      NodeCP stage15 = builder().make<Project>(Project::Key{
+      NodeCP stage15 = builder().make<Project>({
           stage1,
           std::move(stage15Expressions),
           std::move(stage15Outputs),
@@ -2833,7 +2829,7 @@ class Decorrelator : public NodeRewriter<> {
       stage2Outputs.push_back(hasNullColumn);
       appendAll(stage2Outputs, input->outputColumns());
 
-      NodeCP stage2 = builder().make<Aggregate>(Aggregate::Key{
+      NodeCP stage2 = builder().make<Aggregate>({
           stage15,
           ExprVector{innerApply.rowIdColumn},
           std::move(stage2Aggregates),
@@ -2862,7 +2858,7 @@ class Decorrelator : public NodeRewriter<> {
     appendAll(finalExpressions, input->outputColumns());
     finalExpressions.push_back(markExpr);
 
-    return builder().make<Project>(Project::Key{
+    return builder().make<Project>({
         finalInput,
         std::move(finalExpressions),
         node->outputColumns(),
@@ -2921,7 +2917,7 @@ class Decorrelator : public NodeRewriter<> {
       appendAll(leftKeys, split.leftKeys);
       appendAll(rightKeys, split.rightKeys);
     }
-    return builder().make<Join>(Join::Key{
+    return builder().make<Join>({
         input,
         body,
         velox::core::JoinType::kLeftSemiProject,
@@ -2953,7 +2949,7 @@ class Decorrelator : public NodeRewriter<> {
   // per `perOuterId`, raising SQL's "scalar subquery returned multiple
   // rows" error otherwise.
   NodeCP enforceScalarSingleRow(NodeCP input, ColumnCP perOuterId) {
-    return builder().make<EnforceDistinct>(EnforceDistinct::Key{
+    return builder().make<EnforceDistinct>({
         input,
         ExprVector{perOuterId},
         toName("Scalar sub-query has returned multiple rows"),
