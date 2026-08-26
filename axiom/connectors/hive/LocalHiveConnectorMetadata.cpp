@@ -882,7 +882,7 @@ struct CreateTableOptions {
 
   std::optional<int32_t> numBuckets;
   std::vector<std::string> bucketedByColumns;
-  std::vector<std::string> sortedByColumns;
+  std::vector<SortKey> sortKeys;
 
   // SerDe options. Primarily used for TEXT format files, but may evolve
   // to support other formats in the future.
@@ -974,10 +974,14 @@ CreateTableOptions parseCreateTableOptions(
 
     result.numBuckets = numBuckets;
 
-    it = options.find("sorted_by");
+    it = options.find(HiveWriteOptions::kSortedBy);
     if (it != options.end()) {
-      result.sortedByColumns = it->second.array<std::string>();
+      result.sortKeys = SortKey::parse(it->second.array<std::string>());
     }
+  } else {
+    VELOX_USER_CHECK(
+        options.find(HiveWriteOptions::kSortedBy) == options.end(),
+        "sorted_by requires bucketed_by");
   }
 
   // Parse SerDe options
@@ -1071,9 +1075,11 @@ CreateTableOptions parseCreateTableOptions(
       options.bucketedByColumns.push_back(bucketCol.asString());
     }
 
+    std::vector<std::string> sortedBy;
     for (const auto& sortCol : bucketObj["sortedBy"]) {
-      options.sortedByColumns.push_back(sortCol.asString());
+      sortedBy.push_back(sortCol.asString());
     }
+    options.sortKeys = SortKey::parse(sortedBy);
   }
 
   return options;
@@ -1116,7 +1122,7 @@ folly::dynamic toSchemaJson(
     buckets["bucketCount"] = fmt::format("{}", options.numBuckets.value());
 
     buckets["bucketedBy"] = toJsonArray(options.bucketedByColumns);
-    buckets["sortedBy"] = toJsonArray(options.sortedByColumns);
+    buckets["sortedBy"] = toJsonArray(SortKey::toEntries(options.sortKeys));
     schema["bucketProperty"] = buckets;
   }
 
@@ -1197,9 +1203,9 @@ std::shared_ptr<LocalTable> createLocalTable(
         velox::Variant(createTableOptions.numBuckets.value());
   }
 
-  if (!createTableOptions.sortedByColumns.empty()) {
+  if (!createTableOptions.sortKeys.empty()) {
     options[HiveWriteOptions::kSortedBy] =
-        toVariantArray(createTableOptions.sortedByColumns);
+        toVariantArray(SortKey::toEntries(createTableOptions.sortKeys));
   }
 
   const std::optional<int32_t> numBuckets = createTableOptions.numBuckets;
@@ -1232,12 +1238,12 @@ std::shared_ptr<LocalTable> createLocalTable(
       bucketedBy.push_back(column);
     }
 
-    for (const auto& columnName : createTableOptions.sortedByColumns) {
-      auto column = table->findColumn(columnName);
+    for (const auto& sortKey : createTableOptions.sortKeys) {
+      auto column = table->findColumn(sortKey.column);
       VELOX_CHECK_NOT_NULL(
-          column, "Sorted-by column not found: {}", columnName);
+          column, "Sorted-by column not found: {}", sortKey.column);
       sortedBy.push_back(column);
-      sortOrders.push_back(SortOrder{true, true}); // ASC NULLS FIRST.
+      sortOrders.push_back(sortKey.order);
     }
   }
 
