@@ -1127,7 +1127,7 @@ TEST_P(SubqueryTest, enforceSingleRow) {
                        .nestedLoopJoin(
                            matchHiveScan("nation").enforceSingleRow(),
                            core::JoinType::kInner,
-                           "gt(r_regionkey, n_regionkey)")
+                           "r_regionkey > n_regionkey")
                        .build();
 
     auto plan = toSingleNodePlan(logicalPlan);
@@ -1145,7 +1145,7 @@ TEST_P(SubqueryTest, enforceSingleRow) {
                                .enforceSingleRow()
                                .broadcast(),
                            core::JoinType::kInner,
-                           "gt(r_regionkey, n_regionkey)")
+                           "r_regionkey > n_regionkey")
                        .gather()
                        .build();
 
@@ -1239,8 +1239,9 @@ TEST_P(SubqueryTest, nonEquiCorrelatedScalar) {
                          .assignUniqueId("unique_id")
                          .nestedLoopJoin(
                              matchHiveScan("nation").project(
-                                 {"true as marker", "n_regionkey"}),
-                             velox::core::JoinType::kLeft)
+                                 {"n_regionkey", "true as marker"}),
+                             velox::core::JoinType::kLeft,
+                             "r_regionkey > n_regionkey")
                          .streamingAggregation(
                              {"unique_id"},
                              {
@@ -1254,7 +1255,7 @@ TEST_P(SubqueryTest, nonEquiCorrelatedScalar) {
                          .build();
 
       auto plan = toSingleNodePlan(logicalPlan);
-      AXIOM_ASSERT_PLAN_V1(plan, matcher);
+      AXIOM_ASSERT_PLAN_V2(plan, matcher);
     }
 
     {
@@ -1342,7 +1343,7 @@ TEST_P(SubqueryTest, nonEquiCorrelatedScalarWithNestedAggregation) {
           .hashJoin(
               matchScan("u")
                   .singleAggregation({"c"}, {"count(*) as inner_cnt"})
-                  .project({"true as marker", "inner_cnt", "c"}),
+                  .project({"c", "inner_cnt", "true as marker"}),
               velox::core::JoinType::kLeft)
           .streamingAggregation(
               {"unique_id"},
@@ -1356,7 +1357,7 @@ TEST_P(SubqueryTest, nonEquiCorrelatedScalarWithNestedAggregation) {
           .build();
 
   auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
-  AXIOM_ASSERT_PLAN_V1(plan, matcher);
+  AXIOM_ASSERT_PLAN_V2(plan, matcher);
 }
 
 TEST_P(SubqueryTest, nonEquiCorrelatedProject) {
@@ -1373,21 +1374,20 @@ TEST_P(SubqueryTest, nonEquiCorrelatedProject) {
                          .assignUniqueId("unique_id")
                          .nestedLoopJoin(
                              matchHiveScan("nation").project(
-                                 {"true as marker", "n_regionkey"}),
-                             velox::core::JoinType::kLeft)
+                                 {"n_regionkey", "true as marker"}),
+                             velox::core::JoinType::kLeft,
+                             "r_regionkey > n_regionkey")
                          .streamingAggregation(
                              {"unique_id"},
                              {
                                  "count(*) filter (where marker) as cnt",
-                                 "arbitrary(r_regionkey)",
                                  "arbitrary(r_name) as r_name",
                              })
                          .project({"length(r_name)", "cnt"})
-                         .project()
                          .build();
 
       auto plan = toSingleNodePlan(logicalPlan);
-      AXIOM_ASSERT_PLAN_V1(plan, matcher);
+      AXIOM_ASSERT_PLAN_V2(plan, matcher);
     }
 
     {
@@ -1565,7 +1565,7 @@ TEST_P(SubqueryTest, nonEquiCorrelatedScalarThenCorrelatedExists) {
                      .assignUniqueId("unique_id")
                      .nestedLoopJoin(
                          matchHiveScan("nation").project(
-                             {"true as marker", "n_regionkey"}),
+                             {"n_regionkey", "true as marker"}),
                          velox::core::JoinType::kLeft)
                      .streamingAggregation(
                          {"unique_id"},
@@ -1581,7 +1581,7 @@ TEST_P(SubqueryTest, nonEquiCorrelatedScalarThenCorrelatedExists) {
                      .build();
 
   auto plan = toSingleNodePlan(query);
-  AXIOM_ASSERT_PLAN_V1(plan, matcher);
+  AXIOM_ASSERT_PLAN_V2(plan, matcher);
 }
 
 // Non-equi correlated scalar (count(*)) followed by an uncorrelated
@@ -1594,27 +1594,25 @@ TEST_P(SubqueryTest, nonEquiCorrelatedThenUncorrelatedScalar) {
       "FROM region";
   SCOPED_TRACE(query);
 
-  auto matcher = matchHiveScan("region")
-                     .assignUniqueId("unique_id")
-                     .nestedLoopJoin(
-                         matchHiveScan("nation").project(
-                             {"true as marker", "n_regionkey"}),
-                         velox::core::JoinType::kLeft)
-                     .streamingAggregation(
-                         {"unique_id"},
-                         {
-                             "count(*) filter (where marker) as cnt",
-                             "arbitrary(r_regionkey) as r_regionkey",
-                         })
-                     .project()
-                     .nestedLoopJoin(matchHiveScan("supplier")
-                                         .singleAggregation(
-                                             {}, {"max(s_suppkey) as max_key"}))
-                     .project({"cnt as x", "max_key as y"})
-                     .build();
+  auto matcher =
+      matchHiveScan("region")
+          .assignUniqueId("unique_id")
+          .nestedLoopJoin(
+              matchHiveScan("nation").project(
+                  {"n_regionkey", "true as marker"}),
+              velox::core::JoinType::kLeft,
+              "r_regionkey < n_regionkey")
+          .streamingAggregation(
+              {"unique_id"}, {"count(*) filter (where marker) as cnt"})
+          .project()
+          .nestedLoopJoin(
+              matchHiveScan("supplier")
+                  .singleAggregation({}, {"max(s_suppkey) as max_key"}))
+          .project({"cnt as x", "max_key as y"})
+          .build();
 
   auto plan = toSingleNodePlan(query);
-  AXIOM_ASSERT_PLAN_V1(plan, matcher);
+  AXIOM_ASSERT_PLAN_V2(plan, matcher);
 }
 
 // Correlated EXISTS combined with an uncorrelated IN in the same SELECT.
@@ -2045,12 +2043,12 @@ TEST_P(SubqueryTest, nonEquiLeftJoinWithScalarSubquery) {
   // nested-loop join.
   auto matcher =
       matchScan("t")
-          .nestedLoopJoin(matchScan("u"), velox::core::JoinType::kLeft)
           .nestedLoopJoin(matchScan("v").enforceSingleRow())
+          .nestedLoopJoin(matchScan("u"), velox::core::JoinType::kLeft, "b < c")
           .project()
           .build();
 
-  AXIOM_ASSERT_PLAN_V1(plan, matcher);
+  AXIOM_ASSERT_PLAN_V2(plan, matcher);
 }
 
 // LEFT JOIN with a post-join WHERE equality referencing both sides, where one
