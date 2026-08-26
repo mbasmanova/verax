@@ -257,7 +257,7 @@ supported:
 | `bucketed_by` | Array of bucketing column names, e.g. `ARRAY['key']`. Requires `bucket_count`. |
 | `bucket_count` | Number of buckets (must be a power of 2). Requires `bucketed_by`. |
 | `sorted_by` | Array of sort column names (within each bucket), e.g. `ARRAY['key']`. Only supported for bucketed tables. |
-| `file_format` | Storage format: `PARQUET`, `DWRF`, `TEXT`. Defaults to `--data_format`. |
+| `format` | Storage format: `PARQUET`, `DWRF`, `TEXT`. Defaults to `--data_format`. |
 | `compression_kind` | Compression: `NONE`, `ZSTD` (default), `SNAPPY`, `GZIP`, `LZ4`, `ZLIB`, `LZO`. |
 
 ### CREATE TABLE
@@ -298,7 +298,7 @@ WITH (
     bucketed_by = ARRAY['orderkey'],
     bucket_count = 16,
     sorted_by = ARRAY['orderkey'],
-    file_format = 'DWRF',
+    format = 'DWRF',
     compression_kind = 'SNAPPY'
 );
 ```
@@ -311,7 +311,7 @@ CREATE TABLE t AS SELECT * FROM tpch.tiny.lineitem;
 
 -- With table properties.
 CREATE TABLE t
-WITH (partitioned_by = ARRAY['ds'], file_format = 'DWRF')
+WITH (partitioned_by = ARRAY['ds'], format = 'DWRF')
 AS SELECT orderkey, totalprice, ds FROM orders;
 ```
 

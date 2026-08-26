@@ -64,7 +64,7 @@ TEST_P(CsvReadWriteTest, createTextTable) {
 
   runCtas(
       "CREATE TABLE text_test(id, name) "
-      "WITH (file_format = 'TEXT', compression_kind = 'NONE') "
+      "WITH (format = 'TEXT', compression_kind = 'NONE') "
       "AS SELECT 1, 'Alice'");
 
   EXPECT_EQ(
@@ -75,7 +75,7 @@ TEST_P(CsvReadWriteTest, createTextTable) {
       ")\n"
       "WITH (\n"
       "   compression_kind = 'none',\n"
-      "   file_format = 'text'\n"
+      "   format = 'text'\n"
       ")");
 }
 
@@ -88,7 +88,7 @@ TEST_P(CsvReadWriteTest, createCsvTable) {
 
   runCtas(
       "CREATE TABLE csv_test(id, name) "
-      "WITH (file_format = 'TEXT', \"field.delim\" = ',', "
+      "WITH (format = 'TEXT', \"field.delim\" = ',', "
       "\"serialization.null.format\" = '\\N') "
       "AS SELECT 1, 'Alice'");
 
@@ -100,7 +100,7 @@ TEST_P(CsvReadWriteTest, createCsvTable) {
       ")\n"
       "WITH (\n"
       "   field.delim = ',',\n"
-      "   file_format = 'text',\n"
+      "   format = 'text',\n"
       "   serialization.null.format = '\\N'\n"
       ")");
 }
@@ -119,7 +119,7 @@ TEST_P(CsvReadWriteTest, validateSchemaFileProperties) {
   });
 
   folly::F14FastMap<std::string, velox::Variant> options = {
-      {"file_format", "text"},
+      {"format", "text"},
       {"field.delim", "|"},
       {"serialization.null.format", ""},
   };
@@ -136,8 +136,8 @@ TEST_P(CsvReadWriteTest, validateSchemaFileProperties) {
 
   const auto& tableOptions = table->options();
 
-  ASSERT_TRUE(tableOptions.count("file_format"));
-  EXPECT_EQ(tableOptions.at("file_format").value<std::string>(), "text");
+  ASSERT_TRUE(tableOptions.count("format"));
+  EXPECT_EQ(tableOptions.at("format").value<std::string>(), "text");
 
   ASSERT_TRUE(tableOptions.count("field.delim"));
   EXPECT_EQ(tableOptions.at("field.delim").value<std::string>(), "|");
@@ -162,7 +162,7 @@ TEST_P(CsvReadWriteTest, readCustomDelimiterWithVariousTypes) {
   });
 
   folly::F14FastMap<std::string, velox::Variant> options = {
-      {"file_format", "text"},
+      {"format", "text"},
       {"field.delim", "|"},
       {"serialization.null.format", ""},
   };
@@ -199,7 +199,7 @@ TEST_P(CsvReadWriteTest, writeWithInsertStatement) {
   });
 
   folly::F14FastMap<std::string, velox::Variant> options = {
-      {"file_format", "text"},
+      {"format", "text"},
       {"field.delim", "\1"},
       {"serialization.null.format", "\\N"},
   };

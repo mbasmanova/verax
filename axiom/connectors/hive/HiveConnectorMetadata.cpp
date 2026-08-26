@@ -628,7 +628,7 @@ void HiveConnectorMetadata::validateOptions(
       HiveWriteOptions::kBucketCount,
       HiveWriteOptions::kPartitionedBy,
       HiveWriteOptions::kSortedBy,
-      HiveWriteOptions::kFileFormat,
+      HiveWriteOptions::kFormat,
       HiveWriteOptions::kCompressionKind,
       HiveWriteOptions::kFieldDelim,
       HiveWriteOptions::kSerializationNullFormat,
