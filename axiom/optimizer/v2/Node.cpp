@@ -386,26 +386,36 @@ ExprCP survivingEquiKey(ExprCP key, const PlanObjectSet& outputColumns) {
   return nullptr;
 }
 
-// Output global partitioning of a join. Only an inner or left join keeps the
-// probe (left) rows in their partitions, so only those preserve a probe
-// partition; other join types drop it. If every probe key is still an output
-// column, the output is partitioned exactly as the probe was. Otherwise an
-// inner join recovers each remaining key: it keeps a key whose columns all
-// survive (a join projects columns unchanged, so a surviving column is
-// identity-projected, and an expression over surviving columns still partitions
-// the output), else substitutes an equal output column from the key's
-// inner-join equivalence class. A left join can't recover a key from its
-// null-padded build, so a dropped key makes its partition unspecified. A
-// non-hash distribution (gather / broadcast / arbitrary) carries no keys and is
-// inherited by kind, minus any merge order (see `Partitioning::dropOrder`).
+// Output global partitioning of a join. A join keeps the probe's (left's)
+// partitioning when every output row is a probe row carrying its probe column
+// values unchanged, which holds for inner, left, and the left semi and anti
+// joins. Right and full joins emit build rows, so they drop it.
+//
+// If every probe key is still an output column, the output is partitioned
+// exactly as the probe was. Otherwise only an inner join recovers a dropped
+// key: it keeps a key whose columns all survive (a join projects columns
+// unchanged, so a surviving column is identity-projected, and an expression
+// over surviving columns still partitions the output), else substitutes an
+// equal output column from the key's equivalence class. Only inner joins
+// register those equivalences, so recovery is inner-only and every other type
+// reports an unspecified partitioning once a key is dropped.
+//
+// A non-hash distribution (gather / broadcast / arbitrary) carries no keys and
+// is inherited by kind, minus any merge order (see `Partitioning::dropOrder`).
 Partitioning joinGlobalPartition(
     velox::core::JoinType joinType,
     NodeCP left,
     NodeCP right,
     const ColumnVector& outputColumns) {
-  if (joinType != velox::core::JoinType::kInner &&
-      joinType != velox::core::JoinType::kLeft) {
-    return {};
+  switch (joinType) {
+    case velox::core::JoinType::kInner:
+    case velox::core::JoinType::kLeft:
+    case velox::core::JoinType::kLeftSemiFilter:
+    case velox::core::JoinType::kLeftSemiProject:
+    case velox::core::JoinType::kAnti:
+      break;
+    default:
+      return {};
   }
 
   Partitioning probe = left->physicalProperties().globalPartition;

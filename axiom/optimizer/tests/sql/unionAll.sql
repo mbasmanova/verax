@@ -112,3 +112,16 @@ FROM (VALUES (1)) u(a)
 JOIN (VALUES (1)) v(b) ON u.a = v.b
 UNION ALL
 SELECT w.x FROM (VALUES (ARRAY[1])) v(arr) CROSS JOIN UNNEST(arr) AS w(x)
+----
+-- UNION ALL of a grouped leg and a single-task leg whose EXISTS subquery
+-- reads the table. The subquery matches, so the leg emits its row alongside
+-- the grouped rows.
+SELECT a FROM t GROUP BY a
+UNION ALL
+SELECT 42 WHERE EXISTS (SELECT 1 FROM t)
+----
+-- The same with NOT EXISTS. Its subquery matches nothing, so that leg also
+-- emits its row.
+SELECT a FROM t GROUP BY a
+UNION ALL
+SELECT 42 WHERE NOT EXISTS (SELECT 1 FROM t WHERE a > 100)
