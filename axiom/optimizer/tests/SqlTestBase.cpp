@@ -241,7 +241,7 @@ std::shared_ptr<runner::LocalRunner> SqlTestBase::makeRunner(
           /*user=*/"test",
           ::axiom::sql::presto::ParserOptions{},
           connector::ConnectorProperties{}));
-  auto statement = parser.parse(sql, true);
+  auto statement = parser.parse(sql);
 
   VELOX_CHECK(
       statement->isSelect(), "Only SELECT statements are supported: {}", sql);

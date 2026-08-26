@@ -526,12 +526,9 @@ class FunctionRegistry {
       const std::vector<std::string>& names,
       AggregateEmptyResultResolver resolver);
 
-  /// Returns the result of an aggregate function over empty input.
-  /// If registerCount() was called, returns 0 (as BIGINT) for 'count' function.
-  /// Otherwise, uses the resolver registered via
-  /// Returns the result of an aggregate function over empty input. Uses
-  /// 'count' registered via registerCount() or a resolver registered via
-  /// registerAggregateEmptyResultResolver().
+  /// Returns the result of an aggregate function over empty input. Returns 0
+  /// as BIGINT for the 'count' registered via registerCount(); otherwise uses
+  /// a resolver registered via registerAggregateEmptyResultResolver().
   /// @param name The aggregate function name.
   /// @param argTypes The argument types of the aggregate function.
   /// @return Non-null Variant with the result for empty input, or null Variant
