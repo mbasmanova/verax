@@ -1683,7 +1683,8 @@ class Decorrelator : public NodeRewriter<> {
         input, aggregate, std::move(filterPreConjuncts));
     NodeCP decorrelatedInner = rewrite(innerApply.apply);
 
-    auto wraps = buildAggregateWraps(aggregate, numGroupingKeys);
+    auto wraps = buildAggregateWraps(
+        aggregate, numGroupingKeys, /*everyOuterRowHasGroup=*/true);
     NodeCP liftedAggregate = buildLiftedAggregate(
         input,
         aggregate,
@@ -1798,8 +1799,8 @@ class Decorrelator : public NodeRewriter<> {
       AggregateCP aggregate,
       EquiCorrelation correlation,
       const ExprVector& filterPostConjuncts) {
-    std::vector<AggregateWrap> wraps =
-        buildAggregateWraps(aggregate, /*numGroupingKeys=*/0);
+    std::vector<AggregateWrap> wraps = buildAggregateWraps(
+        aggregate, /*numGroupingKeys=*/0, /*everyOuterRowHasGroup=*/false);
 
     // The correlation keys become the new Aggregate's grouping keys and the
     // join-back's right keys: reuse the body column for a plain column, mint
@@ -1874,6 +1875,13 @@ class Decorrelator : public NodeRewriter<> {
   // FunctionRegistry: aggregates whose empty value is non-NULL (count,
   // count_if, etc.) need COALESCE; others pass through.
   //
+  // 'everyOuterRowHasGroup' is true when the lifted Aggregate groups by the
+  // outer row id above a kLeft join. An outer row with no matches still forms
+  // a group there, and a masked aggregate over that empty group already
+  // returns its empty-input value, so no COALESCE is needed. Only the
+  // join-back shape, where such an outer row has no group at all and the join
+  // pads it with NULL, needs one.
+  //
   // Slot-identity invariant: a Column* must carry the same value
   // across all output positions. For COALESCE-needing aggregates,
   // the lifted Aggregate's raw output
@@ -1893,7 +1901,8 @@ class Decorrelator : public NodeRewriter<> {
 
   std::vector<AggregateWrap> buildAggregateWraps(
       AggregateCP aggregate,
-      size_t numGroupingKeys) {
+      size_t numGroupingKeys,
+      bool everyOuterRowHasGroup) {
     std::vector<AggregateWrap> wraps;
     wraps.reserve(aggregate->aggregates().size());
     const auto* registry = FunctionRegistry::instance();
@@ -1910,7 +1919,7 @@ class Decorrelator : public NodeRewriter<> {
       velox::Variant emptyValue = registry->aggregateResultForEmptyInput(
           aggregateCall->name(), argumentTypes);
 
-      if (emptyValue.isNull()) {
+      if (everyOuterRowHasGroup || emptyValue.isNull()) {
         wraps.push_back({originalOutput, originalOutput});
       } else {
         ColumnCP rawOutput =
@@ -2480,7 +2489,8 @@ class Decorrelator : public NodeRewriter<> {
     AggregateRecovery::validateAggregateArgs(
         aggregate->aggregates(), node->correlationColumns());
 
-    auto wraps = buildAggregateWraps(aggregate, numGroupingKeys);
+    auto wraps = buildAggregateWraps(
+        aggregate, numGroupingKeys, /*everyOuterRowHasGroup=*/true);
 
     AggregateCallVector stage1Aggregates = recovery.rewriteCountStar(
         aggregate->aggregates(), innerApply.includeMarker);
@@ -2668,7 +2678,8 @@ class Decorrelator : public NodeRewriter<> {
     AggregateRecovery::validateAggregateArgs(
         aggregate->aggregates(), node->correlationColumns());
 
-    auto wraps = buildAggregateWraps(aggregate, numGroupingKeys);
+    auto wraps = buildAggregateWraps(
+        aggregate, numGroupingKeys, /*everyOuterRowHasGroup=*/true);
 
     AggregateRecovery recovery(builder(), exprFactory_);
     auto innerApply = buildAggregateInnerApply(

@@ -88,6 +88,11 @@ FROM (SELECT 20 AS x, 30 AS y) v
 -- constant, for an outer row the subquery has no row for.
 SELECT a, (SELECT 1 FROM v WHERE v.a = t.a) AS one FROM t
 ----
+-- A correlated count(*) reads 0, not NULL, for an outer row the subquery
+-- has no row for, so a HAVING on that count still sees 0.
+-- error_v1: (0 vs. 1)
+SELECT a, (SELECT count(*) FROM u WHERE u.a > t.a HAVING count(*) = 0) AS c FROM t
+----
 -- Multiple correlated scalar count(*) subqueries with non-equi predicates
 -- in the same SELECT list, each correlating on a different outer column.
 SELECT
