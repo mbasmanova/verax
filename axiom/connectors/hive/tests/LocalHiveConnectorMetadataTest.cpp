@@ -332,7 +332,7 @@ TEST_F(LocalHiveConnectorMetadataTest, createTable) {
       {HiveWriteOptions::kBucketCount, 4LL},
       {HiveWriteOptions::kSortedBy, velox::Variant::array({"key1", "key2"})},
       {HiveWriteOptions::kPartitionedBy, velox::Variant::array({"ds"})},
-      {HiveWriteOptions::kFileFormat, "parquet"},
+      {HiveWriteOptions::kFormat, "parquet"},
       {HiveWriteOptions::kCompressionKind, "zstd"}};
 
   auto session = makeSession();
@@ -423,7 +423,7 @@ TEST_F(LocalHiveConnectorMetadataTest, addColumn) {
 
   folly::F14FastMap<std::string, velox::Variant> options = {
       {HiveWriteOptions::kPartitionedBy, velox::Variant::array({"ds"})},
-      {HiveWriteOptions::kFileFormat, "parquet"}};
+      {HiveWriteOptions::kFormat, "parquet"}};
 
   auto session = makeSession();
   auto table = metadata_->createTable(
@@ -541,7 +541,7 @@ TEST_F(LocalHiveConnectorMetadataTest, addColumnExplain) {
   auto tableType = ROW({{"id", BIGINT()}, {"name", VARCHAR()}});
 
   folly::F14FastMap<std::string, velox::Variant> options = {
-      {HiveWriteOptions::kFileFormat, "parquet"}};
+      {HiveWriteOptions::kFormat, "parquet"}};
 
   auto session = makeSession();
   metadata_->createTable(

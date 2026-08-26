@@ -416,7 +416,7 @@ TEST_P(WriteTest, basic) {
   });
 
   folly::F14FastMap<std::string, velox::Variant> options = {
-      {"file_format", "parquet"},
+      {"format", "parquet"},
       {"compression_kind", "snappy"},
   };
 

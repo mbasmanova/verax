@@ -53,7 +53,7 @@ void TpchDataGenerator::createTables(
     }
 
     auto sql = fmt::format(
-        "CREATE TABLE {} WITH (file_format = '{}') AS SELECT * FROM tpch.\"{}\".{}",
+        "CREATE TABLE {} WITH (format = '{}') AS SELECT * FROM tpch.\"{}\".{}",
         tableName,
         velox::dwio::common::FileFormatName::toName(format),
         fmt::format("sf{}", scaleFactor),
