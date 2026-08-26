@@ -1123,31 +1123,34 @@ TEST_P(SubqueryTest, enforceSingleRow) {
   auto logicalPlan = parseSelect(query);
 
   {
-    auto matcher =
-        matchHiveScan("region")
-            .nestedLoopJoin(matchHiveScan("nation").enforceSingleRow())
-            .filter()
-            .project()
-            .build();
+    auto matcher = matchHiveScan("region")
+                       .nestedLoopJoin(
+                           matchHiveScan("nation").enforceSingleRow(),
+                           core::JoinType::kInner,
+                           "gt(r_regionkey, n_regionkey)")
+                       .build();
 
     auto plan = toSingleNodePlan(logicalPlan);
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN_V2(plan, matcher);
 
     VELOX_ASSERT_THROW(runVelox(plan), "Expected single row of input.");
   }
 
   {
-    auto matcher =
-        matchHiveScan("region")
-            .nestedLoopJoin(
-                matchHiveScan("nation").gather().enforceSingleRow().broadcast())
-            .filter()
-            .project()
-            .gather()
-            .build();
+    auto matcher = matchHiveScan("region")
+                       .nestedLoopJoin(
+                           matchHiveScan("nation")
+                               .gather()
+                               .localPartition()
+                               .enforceSingleRow()
+                               .broadcast(),
+                           core::JoinType::kInner,
+                           "gt(r_regionkey, n_regionkey)")
+                       .gather()
+                       .build();
 
     auto distributedPlan = planVelox(logicalPlan);
-    AXIOM_ASSERT_DISTRIBUTED_PLAN_V1(distributedPlan.plan, matcher);
+    AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(distributedPlan.plan, matcher);
   }
 }
 
@@ -1158,14 +1161,14 @@ TEST_P(SubqueryTest, enforceSingleRowInProjection) {
   auto logicalPlan = parseSelect(query);
 
   {
-    auto matcher = core::PlanMatcherBuilder()
-                       .hiveScan("region", test::eq("r_name", "AFRICA"))
-                       .enforceSingleRow()
-                       .nestedLoopJoin(matchHiveScan("nation"))
+    auto matcher = matchHiveScan("nation")
+                       .nestedLoopJoin(
+                           matchHiveScan("region", test::eq("r_name", "AFRICA"))
+                               .enforceSingleRow())
                        .build();
 
     auto plan = toSingleNodePlan(logicalPlan);
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN_V2(plan, matcher);
   }
 
   {
@@ -1173,17 +1176,18 @@ TEST_P(SubqueryTest, enforceSingleRowInProjection) {
     // broadcast-then-EnforceSingleRow shape would collapse the gather
     // + broadcast pair into a single broadcast with EnforceSingleRow
     // running on each consumer.
-    auto matcher =
-        core::PlanMatcherBuilder()
-            .hiveScan("region", test::eq("r_name", "AFRICA"))
-            .gather()
-            .enforceSingleRow()
-            .nestedLoopJoin(
-                core::PlanMatcherBuilder().tableScan("nation").broadcast())
-            .build();
+    auto matcher = matchHiveScan("nation")
+                       .nestedLoopJoin(
+                           matchHiveScan("region", test::eq("r_name", "AFRICA"))
+                               .gather()
+                               .localPartition()
+                               .enforceSingleRow()
+                               .broadcast())
+                       .gather()
+                       .build();
 
     auto distributedPlan = planVelox(logicalPlan);
-    AXIOM_ASSERT_DISTRIBUTED_PLAN_V1(distributedPlan.plan, matcher);
+    AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(distributedPlan.plan, matcher);
   }
 }
 
