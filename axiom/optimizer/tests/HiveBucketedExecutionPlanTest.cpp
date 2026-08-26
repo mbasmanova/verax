@@ -376,14 +376,18 @@ TEST_P(HiveBucketedExecutionTest, singleBucket) {
   auto logicalPlan =
       parseSelect("SELECT c_nationkey, count(*) FROM t GROUP BY 1");
   auto plan = planDistributed(logicalPlan);
-  AXIOM_ASSERT_DISTRIBUTED_PLAN(
+  // One bucket holds every row, so pairing rows by it co-locates nothing. The
+  // table is read plainly and the aggregation shuffles, spreading it over the
+  // workers rather than running it on one task.
+  AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
       plan.plan,
       matchHiveScan("t")
           .partialAggregation({"c_nationkey"}, {"count(*) as cnt"})
+          .notBucketed()
+          .shuffle({"c_nationkey"})
           .localPartition({"c_nationkey"})
           .finalAggregation({"c_nationkey"}, {"count(cnt) as cnt"})
-          .bucketed()
-          .fragmentWidth(1)
+          .fragmentWidth(4)
           .gather()
           .build());
 }

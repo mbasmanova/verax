@@ -468,14 +468,17 @@ TEST_P(BucketedExecutionTest, select) {
             .tableScan("s_one")
             .aggregate({"customer_id"}, {"sum(amount)"})
             .build());
-    // One bucket caps the fragment at one task.
-    AXIOM_ASSERT_DISTRIBUTED_PLAN(
+    // One bucket holds every row, so pairing rows by it co-locates nothing.
+    // The table is read plainly and the aggregation shuffles, spreading it
+    // over the workers rather than running it on one task.
+    AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
         plan.plan,
         matchScan("s_one")
             .partialAggregation()
+            .shuffle({"customer_id"})
             .localPartition({"customer_id"})
             .finalAggregation()
-            .fragment({.width = 1, .bucketedScans = 1})
+            .fragment({.width = 4})
             .gather()
             .build());
   }
