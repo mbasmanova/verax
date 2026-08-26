@@ -773,14 +773,14 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       NodeCP newInput = rewrite(node->input(), childContext);
       NodeCP newAggregate = (newInput == node->input())
           ? static_cast<NodeCP>(node)
-          : builder().make<Aggregate>(Aggregate::Key{
-                .input = newInput,
-                .groupingKeys = node->groupingKeys(),
-                .aggregates = node->aggregates(),
-                .outputColumns = node->outputColumns(),
-                .step = node->step(),
-                .groupId = node->groupId(),
-                .globalGroupingSets = node->globalGroupingSets()});
+          : builder().make<Aggregate>(
+                {.input = newInput,
+                 .groupingKeys = node->groupingKeys(),
+                 .aggregates = node->aggregates(),
+                 .outputColumns = node->outputColumns(),
+                 .step = node->step(),
+                 .groupId = node->groupId(),
+                 .globalGroupingSets = node->globalGroupingSets()});
       return maybeWrapFilter(newAggregate, std::move(context.pending));
     }
 
@@ -833,14 +833,14 @@ class Pushdown : public NodeRewriter<PushdownContext> {
         survivingAggregates.size() == node->aggregates().size();
     NodeCP newAggregate = unchanged
         ? static_cast<NodeCP>(node)
-        : builder().make<Aggregate>(Aggregate::Key{
-              .input = newInput,
-              .groupingKeys = node->groupingKeys(),
-              .aggregates = std::move(survivingAggregates),
-              .outputColumns = std::move(survivingOutputs),
-              .step = node->step(),
-              .groupId = node->groupId(),
-              .globalGroupingSets = node->globalGroupingSets()});
+        : builder().make<Aggregate>(
+              {.input = newInput,
+               .groupingKeys = node->groupingKeys(),
+               .aggregates = std::move(survivingAggregates),
+               .outputColumns = std::move(survivingOutputs),
+               .step = node->step(),
+               .groupId = node->groupId(),
+               .globalGroupingSets = node->globalGroupingSets()});
     return maybeWrapFilter(newAggregate, std::move(blocked));
   }
 
@@ -1815,7 +1815,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     NodeCP fixedPoint = node;
     if (newAnchor != node->anchor() || newStep != node->step() ||
         newConvergence != node->convergence()) {
-      fixedPoint = builder().make<FixedPoint>(FixedPoint::Key{
+      fixedPoint = builder().make<FixedPoint>({
           .anchor = newAnchor,
           .step = newStep,
           .convergence = newConvergence,

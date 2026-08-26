@@ -207,7 +207,7 @@ NodeCP restoreTargets(
     exprs.push_back(it != reps.end() ? it->second : target);
   }
   return state.builder.make<Project>(
-      Project::Key{node, std::move(exprs), ColumnVector{targets}});
+      {node, std::move(exprs), ColumnVector{targets}});
 }
 
 // The equalities of `extraEdges` — the inner edges that crossed the same
@@ -250,11 +250,11 @@ NodeCP emitLeaf(const LeafOp* leaf, EmitState& state) {
   if (partitionType != nullptr && node->is(NodeType::kScan)) {
     const auto* scan = node->as<Scan>();
     if (scan->groupedPartitionType() != partitionType) {
-      return state.builder.make<Scan>(Scan::Key{
-          .baseTable = scan->baseTable(),
-          .outputColumns = scan->outputColumns(),
-          .scanHandle = scan->scanHandle(),
-          .groupedPartitionType = partitionType});
+      return state.builder.make<Scan>(
+          {.baseTable = scan->baseTable(),
+           .outputColumns = scan->outputColumns(),
+           .scanHandle = scan->scanHandle(),
+           .groupedPartitionType = partitionType});
     }
   }
   return node;
@@ -313,17 +313,17 @@ Emitted buildUnnest(const UnnestOp* unnest, Emitted input, EmitState& state) {
     outputColumns.push_back(origUnnest->markerColumn());
   }
 
-  NodeCP node = state.builder.make<Unnest>(Unnest::Key{
-      input.node,
-      std::move(unnestExpressions),
-      std::move(replicatedColumns),
-      origUnnest->unnestColumns(),
-      origUnnest->ordinalityColumn(),
-      origUnnest->markerColumn(),
-      std::move(outputColumns)});
+  NodeCP node = state.builder.make<Unnest>(
+      {input.node,
+       std::move(unnestExpressions),
+       std::move(replicatedColumns),
+       origUnnest->unnestColumns(),
+       origUnnest->ordinalityColumn(),
+       origUnnest->markerColumn(),
+       std::move(outputColumns)});
 
   if (!predicates.empty()) {
-    node = state.builder.make<Filter>(Filter::Key{node, std::move(predicates)});
+    node = state.builder.make<Filter>({node, std::move(predicates)});
   }
 
   retainVisible(input.materialized, node);
@@ -460,18 +460,18 @@ Emitted buildJoin(
     }
   }
 
-  NodeCP node = state.builder.make<Join>(Join::Key{
-      left.node,
-      right.node,
-      join->joinType,
-      std::move(leftKeys),
-      std::move(rightKeys),
-      std::move(filter),
-      edge.nullAware(),
-      edge.nullAsValue(),
-      std::move(outputColumns)});
+  NodeCP node = state.builder.make<Join>(
+      {left.node,
+       right.node,
+       join->joinType,
+       std::move(leftKeys),
+       std::move(rightKeys),
+       std::move(filter),
+       edge.nullAware(),
+       edge.nullAsValue(),
+       std::move(outputColumns)});
   if (!aboveJoin.empty()) {
-    node = state.builder.make<Filter>(Filter::Key{node, std::move(aboveJoin)});
+    node = state.builder.make<Filter>({node, std::move(aboveJoin)});
   }
   retainVisible(materialized, node);
   return {node, std::move(materialized)};
@@ -505,19 +505,19 @@ Emitted buildReversedAnti(
   auto materialized = merge(probe.materialized, build.materialized);
   const auto substitution =
       merge(collapsedColumns(mergedChildReps(join, state)), materialized);
-  NodeCP rightSemiProject = state.builder.make<Join>(Join::Key{
-      probe.node,
-      build.node,
-      velox::core::JoinType::kRightSemiProject,
-      rewrite(ExprVector{edge.rightKeys()}, substitution, state),
-      rewrite(ExprVector{edge.leftKeys()}, substitution, state),
-      rewrite(ExprVector{edge.filter()}, substitution, state),
-      edge.nullAware(),
-      edge.nullAsValue(),
-      std::move(joinOutput)});
+  NodeCP rightSemiProject = state.builder.make<Join>(
+      {probe.node,
+       build.node,
+       velox::core::JoinType::kRightSemiProject,
+       rewrite(ExprVector{edge.rightKeys()}, substitution, state),
+       rewrite(ExprVector{edge.leftKeys()}, substitution, state),
+       rewrite(ExprVector{edge.filter()}, substitution, state),
+       edge.nullAware(),
+       edge.nullAsValue(),
+       std::move(joinOutput)});
 
   NodeCP filtered = state.builder.make<Filter>(
-      Filter::Key{rightSemiProject, ExprVector{state.exprs.makeNot(mark)}});
+      {rightSemiProject, ExprVector{state.exprs.makeNot(mark)}});
 
   // Project away the mark, restoring the antijoin's output schema. Every
   // entry is a pass-through of the preserved-side column.
@@ -527,7 +527,7 @@ Emitted buildReversedAnti(
     projectExprs.push_back(column);
   }
   NodeCP node = state.builder.make<Project>(
-      Project::Key{filtered, std::move(projectExprs), antiOutput});
+      {filtered, std::move(projectExprs), antiOutput});
   retainVisible(materialized, node);
   return {node, std::move(materialized)};
 }
@@ -625,8 +625,7 @@ Emitted emitExchange(const ExchangeOp* exchange, EmitState& state) {
         partitioning.keys[i]->toString());
   }
   partitioning.keys = std::move(columnKeys);
-  NodeCP node = state.builder.make<Exchange>(
-      Exchange::Key{keyed, std::move(partitioning)});
+  NodeCP node = state.builder.make<Exchange>({keyed, std::move(partitioning)});
   return {node, std::move(input.materialized)};
 }
 
@@ -741,8 +740,7 @@ NodeCP JoinTreeEmitter::emitComponents(
     // partitioning and a single-task (Values / global-aggregate) or scan build
     // is isolated in its own fragment instead of co-locating with the probe.
     if (numWorkers > 1) {
-      build = builder.make<Exchange>(
-          Exchange::Key{build, Partitioning::globalBroadcast()});
+      build = builder.make<Exchange>({build, Partitioning::globalBroadcast()});
     }
     cover.unionSet(componentRoots[order[i]]->cover());
     const bool isLast = (i + 1 == order.size());
@@ -751,19 +749,19 @@ NodeCP JoinTreeEmitter::emitComponents(
         : coverNarrowedColumns(state.graph, cover, result, build);
     const auto substitution =
         merge(collapsedColumns(graph.coverColumnReps(cover)), materialized);
-    result = builder.make<Join>(Join::Key{
-        result,
-        build,
-        velox::core::JoinType::kInner,
-        /*leftKeys=*/ExprVector{},
-        /*rightKeys=*/ExprVector{},
-        rewrite(
-            takeReadyConjuncts(state.graph, cover, state.fired),
-            substitution,
-            state),
-        /*nullAware=*/false,
-        /*nullAsValue=*/false,
-        std::move(columns)});
+    result = builder.make<Join>(
+        {result,
+         build,
+         velox::core::JoinType::kInner,
+         /*leftKeys=*/ExprVector{},
+         /*rightKeys=*/ExprVector{},
+         rewrite(
+             takeReadyConjuncts(state.graph, cover, state.fired),
+             substitution,
+             state),
+         /*nullAware=*/false,
+         /*nullAsValue=*/false,
+         std::move(columns)});
   }
 
   if (collapsed) {

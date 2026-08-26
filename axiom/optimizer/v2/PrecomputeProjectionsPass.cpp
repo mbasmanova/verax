@@ -413,14 +413,14 @@ NodeCP Rewriter::rewriteAggregate(
     }
   }
 
-  return builder().make<Aggregate>(Aggregate::Key{
-      .input = std::move(precompute).node(),
-      .groupingKeys = std::move(newGroupingKeys),
-      .aggregates = std::move(newAggregates),
-      .outputColumns = aggregate->outputColumns(),
-      .step = aggregate->step(),
-      .groupId = aggregate->groupId(),
-      .globalGroupingSets = aggregate->globalGroupingSets()});
+  return builder().make<Aggregate>(
+      {.input = std::move(precompute).node(),
+       .groupingKeys = std::move(newGroupingKeys),
+       .aggregates = std::move(newAggregates),
+       .outputColumns = aggregate->outputColumns(),
+       .step = aggregate->step(),
+       .groupId = aggregate->groupId(),
+       .globalGroupingSets = aggregate->globalGroupingSets()});
 }
 
 NodeCP Rewriter::rewriteWindow(const Window* window, NoContext& context) {
@@ -713,7 +713,7 @@ NodeCP Rewriter::rewriteFixedPoint(
       convergence == fixedPoint->convergence()) {
     return fixedPoint;
   }
-  return builder().make<FixedPoint>(FixedPoint::Key{
+  return builder().make<FixedPoint>({
       .anchor = anchor,
       .step = step,
       .convergence = convergence,

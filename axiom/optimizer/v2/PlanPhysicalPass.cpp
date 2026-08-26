@@ -247,12 +247,12 @@ class GroupedScanRewriter : public NodeRewriter<> {
     }
     // Coarsened to the worker count here so the plan carries the group count
     // it will run with, and two scans that scale alike stay one node.
-    NodeCP grouped = builder().make<Scan>(Scan::Key{
-        .baseTable = node->baseTable(),
-        .outputColumns = node->outputColumns(),
-        .scanHandle = node->scanHandle(),
-        .groupedPartitionType = queryCtx()->scaledPartitionType(
-            available.partitionType, numWorkers_)});
+    NodeCP grouped = builder().make<Scan>(
+        {.baseTable = node->baseTable(),
+         .outputColumns = node->outputColumns(),
+         .scanHandle = node->scanHandle(),
+         .groupedPartitionType = queryCtx()->scaledPartitionType(
+             available.partitionType, numWorkers_)});
     // A scan already read this way interns back to itself, and then this
     // rewrite changed nothing.
     if (grouped != node) {
@@ -312,7 +312,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
         node->recursiveNumDrivers() == kRecursiveNumDrivers) {
       return node;
     }
-    return builder().make<FixedPoint>(FixedPoint::Key{
+    return builder().make<FixedPoint>({
         .anchor = anchor,
         .step = step,
         .convergence = convergence,
@@ -366,16 +366,16 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
     if (newLeft == node->left() && newRight == node->right()) {
       return node;
     }
-    return builder().make<Join>(Join::Key{
-        .left = newLeft,
-        .right = newRight,
-        .joinType = node->joinType(),
-        .leftKeys = leftKeys,
-        .rightKeys = rightKeys,
-        .filter = node->filter(),
-        .nullAware = node->nullAware(),
-        .nullAsValue = node->nullAsValue(),
-        .outputColumns = node->outputColumns()});
+    return builder().make<Join>(
+        {.left = newLeft,
+         .right = newRight,
+         .joinType = node->joinType(),
+         .leftKeys = leftKeys,
+         .rightKeys = rightKeys,
+         .filter = node->filter(),
+         .nullAware = node->nullAware(),
+         .nullAsValue = node->nullAsValue(),
+         .outputColumns = node->outputColumns()});
   }
 
   NodeCP rewriteJoin(const Join* node, NoContext& context) override {
@@ -793,14 +793,14 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
     if (!materialized.empty()) {
       groupingKeys = exprFactory_.replace(groupingKeys, materialized);
     }
-    return builder().make<Aggregate>(Aggregate::Key{
-        .input = coLocatedInput,
-        .groupingKeys = groupingKeys,
-        .aggregates = node->aggregates(),
-        .outputColumns = node->outputColumns(),
-        .step = node->step(),
-        .groupId = node->groupId(),
-        .globalGroupingSets = node->globalGroupingSets()});
+    return builder().make<Aggregate>(
+        {.input = coLocatedInput,
+         .groupingKeys = groupingKeys,
+         .aggregates = node->aggregates(),
+         .outputColumns = node->outputColumns(),
+         .step = node->step(),
+         .groupId = node->groupId(),
+         .globalGroupingSets = node->globalGroupingSets()});
   }
 
   // True when 'node' can two-stage into partial + final, independent of whether
@@ -901,14 +901,14 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
                   finalColumn->value().cardinality}));
     }
 
-    NodeCP partial = builder().make<Aggregate>(Aggregate::Key{
-        .input = input,
-        .groupingKeys = node->groupingKeys(),
-        .aggregates = node->aggregates(),
-        .outputColumns = std::move(partialColumns),
-        .step = AggregateStep::kPartial,
-        .groupId = node->groupId(),
-        .globalGroupingSets = node->globalGroupingSets()});
+    NodeCP partial = builder().make<Aggregate>(
+        {.input = input,
+         .groupingKeys = node->groupingKeys(),
+         .aggregates = node->aggregates(),
+         .outputColumns = std::move(partialColumns),
+         .step = AggregateStep::kPartial,
+         .groupId = node->groupId(),
+         .globalGroupingSets = node->globalGroupingSets()});
 
     // The final groups the exchanged partials by their output grouping-key
     // columns (the partial already evaluated any compound grouping
@@ -927,14 +927,14 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
         : finalKeys.empty()             ? gather(partial)
                                         : partition(partial, finalKeys);
 
-    return builder().make<Aggregate>(Aggregate::Key{
-        .input = finalInput,
-        .groupingKeys = finalKeys,
-        .aggregates = node->aggregates(),
-        .outputColumns = finalColumns,
-        .step = AggregateStep::kFinal,
-        .groupId = node->groupId(),
-        .globalGroupingSets = node->globalGroupingSets()});
+    return builder().make<Aggregate>(
+        {.input = finalInput,
+         .groupingKeys = finalKeys,
+         .aggregates = node->aggregates(),
+         .outputColumns = finalColumns,
+         .step = AggregateStep::kFinal,
+         .groupId = node->groupId(),
+         .globalGroupingSets = node->globalGroupingSets()});
   }
 
   // Distributes a window: its input must be partitioned on the PARTITION BY
