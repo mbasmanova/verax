@@ -283,6 +283,17 @@ int64_t parseIntegerLiteral(
   return result.value();
 }
 
+// Out-of-range magnitudes are not errors: they saturate to infinity or to a
+// subnormal, as in Presto.
+double parseDoubleLiteral(std::string_view text, const NodeLocation& location) {
+  auto result = folly::tryTo<double>(text);
+  if (result.hasError()) {
+    AXIOM_PRESTO_SEMANTIC_FAIL(
+        location, std::string(text), "Cannot parse double literal: {}", text);
+  }
+  return result.value();
+}
+
 } // namespace
 
 void AstBuilder::trace(std::string_view name) const {
@@ -3105,8 +3116,9 @@ std::any AstBuilder::visitDecimalLiteral(
 
   auto text = stripDigitSeparators(ctx->getText(), options_.friendlySql);
   if (options_.parseDecimalLiteralAsDouble) {
-    return std::static_pointer_cast<Expression>(
-        std::make_shared<DoubleLiteral>(getLocation(ctx), std::stod(text)));
+    const auto location = getLocation(ctx);
+    return std::static_pointer_cast<Expression>(std::make_shared<DoubleLiteral>(
+        location, parseDoubleLiteral(text, location)));
   }
   return std::static_pointer_cast<Expression>(
       std::make_shared<DecimalLiteral>(getLocation(ctx), text));
@@ -3116,8 +3128,9 @@ std::any AstBuilder::visitDoubleLiteral(
     PrestoSqlParser::DoubleLiteralContext* ctx) {
   trace("visitDoubleLiteral");
   auto text = stripDigitSeparators(ctx->getText(), options_.friendlySql);
-  return std::static_pointer_cast<Expression>(
-      std::make_shared<DoubleLiteral>(getLocation(ctx), std::stod(text)));
+  const auto location = getLocation(ctx);
+  return std::static_pointer_cast<Expression>(std::make_shared<DoubleLiteral>(
+      location, parseDoubleLiteral(text, location)));
 }
 
 std::any AstBuilder::visitIntegerLiteral(

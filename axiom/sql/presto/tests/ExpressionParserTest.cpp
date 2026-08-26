@@ -359,6 +359,13 @@ TEST_F(ExpressionParserTest, doubleLiteral) {
   test("1.23E-5", 1.23e-5);
   test(".5E2", 0.5e2);
   test("1E+5", 1e5);
+
+  // Magnitudes below DBL_MIN parse to their exact subnormal value.
+  test("1.02537302548306E-309", 1.02537302548306e-309);
+  test("5E-324", 5e-324);
+
+  // Without an exponent the literal is a decimal, parsed as DOUBLE by default.
+  test("0." + std::string(308, '0') + "1", 1e-309);
 }
 
 TEST_F(ExpressionParserTest, decimalLiteralAsDecimal) {
