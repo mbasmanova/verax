@@ -265,11 +265,13 @@ class Scan : public Node {
     return groupedPartitionType_;
   }
 
-  /// The bucketing this scan's table storage affords, expressed over the
-  /// columns this scan outputs. Empty when the table is not bucketed, or when
-  /// a bucketing column is not in the output and the partitioning therefore
-  /// cannot be stated over it. This is what is possible; `groupedPartitionType`
-  /// is what the plan chose.
+  /// The bucketing of this scan's table that a plan can exploit, expressed over
+  /// the columns this scan outputs. Returns an unspecified partitioning when
+  /// the table carries no bucketing, when a bucketing column is not among the
+  /// outputs and the partitioning therefore cannot be stated over them, or when
+  /// the table has a single bucket, which holds every row and so co-locates
+  /// nothing an ordinary read would not. Of what this offers,
+  /// `groupedPartitionType` is the one the plan chose.
   Partitioning storageBucketing() const;
 
   std::span<const NodeCP> inputs() const override {
