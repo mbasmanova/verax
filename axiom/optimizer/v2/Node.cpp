@@ -529,6 +529,12 @@ Partitioning bucketPartition(
     return {};
   }
 
+  // A partitioning into one partition puts every row in the same partition, so
+  // it tells a consumer nothing about where a row is: no partitioning at all.
+  if (partitionType->numPartitions() == 1) {
+    return {};
+  }
+
   ExprVector keys;
   keys.reserve(partitionColumns.size());
   for (const auto* partitionColumn : partitionColumns) {
