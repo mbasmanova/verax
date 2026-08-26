@@ -823,8 +823,8 @@ std::vector<size_t> GroupByPlanner::resolveSortOrdinals(
   std::vector<size_t> preResolved(sortingKeyExprs_.size(), 0);
   for (size_t i = 0; i < sortingKeyExprs_.size(); ++i) {
     const auto& sortKey = orderBy->sortItems().at(i)->sortKey();
-    if (sortKey->is(NodeType::kLongLiteral)) {
-      preResolved.at(i) = sortKey->as<LongLiteral>()->value();
+    if (const auto position = LongLiteral::asSelectPosition(*sortKey)) {
+      preResolved.at(i) = position.value();
     }
   }
 
@@ -854,8 +854,8 @@ bool GroupByPlanner::isIdentityProjection() const {
 lp::ExprApi GroupByPlanner::resolveGroupingExpression(
     const ExpressionPtr& expr,
     const std::vector<lp::ExprApi>& selectExprs) {
-  if (expr->is(NodeType::kLongLiteral)) {
-    const auto n = expr->as<LongLiteral>()->value();
+  if (const auto position = LongLiteral::asSelectPosition(*expr)) {
+    const auto n = position.value();
     AXIOM_PRESTO_SEMANTIC_CHECK_GE(
         n,
         static_cast<int64_t>(1),

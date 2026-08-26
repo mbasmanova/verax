@@ -302,6 +302,17 @@ void LongLiteral::accept(AstVisitor* visitor) {
   visitor->visitLongLiteral(this);
 }
 
+std::optional<int64_t> LongLiteral::asSelectPosition(const Expression& expr) {
+  if (!expr.is(NodeType::kLongLiteral)) {
+    return std::nullopt;
+  }
+  const auto value = expr.as<LongLiteral>()->value();
+  if (value < 0) {
+    return std::nullopt;
+  }
+  return value;
+}
+
 void DoubleLiteral::accept(AstVisitor* visitor) {
   visitor->visitDoubleLiteral(this);
 }
