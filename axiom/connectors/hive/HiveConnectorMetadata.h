@@ -270,6 +270,22 @@ class HiveConnectorWriteHandle : public ConnectorWriteHandle {
   std::vector<std::string> statsGroupingKeys_;
 };
 
+/// A key the rows of a bucket are sorted by. A `sorted_by` entry names the
+/// key's column and, optionally, a direction, as in 'ds DESC'; ascending is
+/// the default. Nulls go where the direction puts them: first ascending and
+/// last descending, the only pairings Hive can state.
+struct SortKey {
+  std::string column;
+  SortOrder order;
+
+  /// Parses the entries of a `sorted_by` option. Fails on an entry that is not
+  /// a column name followed by an optional ASC or DESC.
+  static std::vector<SortKey> parse(const std::vector<std::string>& entries);
+
+  /// Renders 'keys' back as `sorted_by` entries.
+  static std::vector<std::string> toEntries(const std::vector<SortKey>& keys);
+};
+
 /// The full list of options accepted for createTable.
 /// Any specified options not listed below will trigger
 /// a validation error during table create.

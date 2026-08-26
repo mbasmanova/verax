@@ -16,8 +16,10 @@
 
 #include "axiom/connectors/hive/HiveConnectorMetadata.h"
 
+#include <boost/algorithm/string/predicate.hpp>
 #include <fmt/ranges.h>
 #include <folly/Conv.h>
+#include <folly/String.h>
 #include <algorithm>
 #include <utility>
 #include "velox/connectors/hive/HiveConnector.h"
@@ -619,6 +621,46 @@ ConnectorWriteHandlePtr HiveConnectorMetadata::beginWrite(
       velox::exec::TableWriteTraits::outputType(std::nullopt),
       table,
       kind);
+}
+
+std::vector<SortKey> SortKey::parse(const std::vector<std::string>& entries) {
+  std::vector<SortKey> keys;
+  keys.reserve(entries.size());
+  for (const auto& entry : entries) {
+    std::vector<std::string> parts;
+    folly::split(' ', entry, parts, /*ignoreEmpty=*/true);
+    VELOX_USER_CHECK(
+        parts.size() == 1 || parts.size() == 2,
+        "Invalid sorted_by entry: {}",
+        entry);
+
+    bool ascending = true;
+    if (parts.size() == 2) {
+      ascending = boost::iequals(parts[1], "ASC");
+      VELOX_USER_CHECK(
+          ascending || boost::iequals(parts[1], "DESC"),
+          "Invalid sort direction: {}",
+          parts[1]);
+    }
+
+    keys.push_back(
+        SortKey{
+            .column = parts[0],
+            .order = SortOrder{
+                .isAscending = ascending, .isNullsFirst = ascending}});
+  }
+  return keys;
+}
+
+std::vector<std::string> SortKey::toEntries(const std::vector<SortKey>& keys) {
+  std::vector<std::string> entries;
+  entries.reserve(keys.size());
+  for (const auto& key : keys) {
+    entries.push_back(
+        key.order.isAscending ? key.column
+                              : fmt::format("{} DESC", key.column));
+  }
+  return entries;
 }
 
 void HiveConnectorMetadata::validateOptions(

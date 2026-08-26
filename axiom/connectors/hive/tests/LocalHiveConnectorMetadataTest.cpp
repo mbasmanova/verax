@@ -330,7 +330,8 @@ TEST_F(LocalHiveConnectorMetadataTest, createTable) {
   folly::F14FastMap<std::string, velox::Variant> options = {
       {HiveWriteOptions::kBucketedBy, velox::Variant::array({"key1"})},
       {HiveWriteOptions::kBucketCount, 4LL},
-      {HiveWriteOptions::kSortedBy, velox::Variant::array({"key1", "key2"})},
+      {HiveWriteOptions::kSortedBy,
+       velox::Variant::array({"key1", "key2 DESC"})},
       {HiveWriteOptions::kPartitionedBy, velox::Variant::array({"ds"})},
       {HiveWriteOptions::kFormat, "parquet"},
       {HiveWriteOptions::kCompressionKind, "zstd"}};
@@ -367,6 +368,11 @@ TEST_F(LocalHiveConnectorMetadataTest, createTable) {
   EXPECT_EQ(expected->orderColumns().size(), 2);
   EXPECT_EQ(expected->orderColumns()[0], expected->columns()[0]);
   EXPECT_EQ(expected->orderColumns()[1], expected->columns()[1]);
+  ASSERT_EQ(expected->sortOrder().size(), 2);
+  EXPECT_TRUE(expected->sortOrder()[0].isAscending);
+  EXPECT_TRUE(expected->sortOrder()[0].isNullsFirst);
+  EXPECT_FALSE(expected->sortOrder()[1].isAscending);
+  EXPECT_FALSE(expected->sortOrder()[1].isNullsFirst);
   EXPECT_EQ(expected->hivePartitionColumns().size(), 1);
   EXPECT_EQ(expected->hivePartitionColumns()[0], expected->columns()[3]);
   EXPECT_TRUE(expected->hivePartitionColumns()[0]->includeInExplainIo());
@@ -415,6 +421,33 @@ TEST_F(LocalHiveConnectorMetadataTest, createTable) {
   compareTableLayout(table, metadata_->findTable({kDefaultSchema, "test"}));
   compareTableData(
       "test", data, {{"ds", partition}}, dwio::common::FileFormat::PARQUET);
+}
+
+TEST_F(LocalHiveConnectorMetadataTest, invalidSortedBy) {
+  auto tableType = ROW({{"key1", BIGINT()}, {"data", BIGINT()}});
+
+  auto create =
+      [&](const folly::F14FastMap<std::string, velox::Variant>& options) {
+        metadata_->createTable(
+            makeSession(),
+            {kDefaultSchema, "test"},
+            tableType,
+            options,
+            /*ifNotExists=*/false,
+            /*explain=*/false);
+      };
+
+  VELOX_ASSERT_USER_THROW(
+      create({{HiveWriteOptions::kSortedBy, velox::Variant::array({"key1"})}}),
+      "sorted_by requires bucketed_by");
+
+  VELOX_ASSERT_USER_THROW(
+      create(
+          {{HiveWriteOptions::kBucketedBy, velox::Variant::array({"key1"})},
+           {HiveWriteOptions::kBucketCount, 4LL},
+           {HiveWriteOptions::kSortedBy,
+            velox::Variant::array({"key1 BACKWARDS"})}}),
+      "Invalid sort direction: BACKWARDS");
 }
 
 TEST_F(LocalHiveConnectorMetadataTest, addColumn) {
