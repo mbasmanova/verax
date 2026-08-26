@@ -557,7 +557,7 @@ TEST_P(SubqueryTest, correlatedIn) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
   // Find customers with no orders.
@@ -581,7 +581,7 @@ TEST_P(SubqueryTest, correlatedIn) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
   // Correlated IN subquery with non-equality filter in the SELECT list produces
@@ -851,7 +851,7 @@ TEST_P(SubqueryTest, correlatedProject) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
   // Correlated scalar subquery in projection with SUM aggregation.
@@ -868,7 +868,7 @@ TEST_P(SubqueryTest, correlatedProject) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
   // Multiple scalar subqueries in projection.
@@ -911,7 +911,7 @@ TEST_P(SubqueryTest, correlatedProject) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
   // Correlated IN <subquery> in projection.
@@ -933,7 +933,7 @@ TEST_P(SubqueryTest, correlatedProject) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
   // Correlated NOT IN <subquery> in projection.
@@ -955,7 +955,7 @@ TEST_P(SubqueryTest, correlatedProject) {
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN(plan, matcher);
   }
 }
 
@@ -1657,7 +1657,7 @@ TEST_P(SubqueryTest, correlatedScalarWithoutAggregation) {
                        .build();
 
     auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
   {
@@ -1672,7 +1672,7 @@ TEST_P(SubqueryTest, correlatedScalarWithoutAggregation) {
                        .build();
 
     auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
   // Non-equi correlation: d < b.
@@ -1880,7 +1880,7 @@ TEST_P(SubqueryTest, leftJoinOnSubquery) {
                            core::JoinType::kLeft)
                        .build();
 
-    AXIOM_ASSERT_PLAN_V1(toSingleNodePlan(query), matcher);
+    AXIOM_ASSERT_PLAN(toSingleNodePlan(query), matcher);
   }
 
   // Uncorrelated scalar subquery in LEFT JOIN ON clause.
@@ -1926,7 +1926,7 @@ TEST_P(SubqueryTest, leftJoinOnSubquery) {
                            core::JoinType::kLeft)
                        .build();
 
-    AXIOM_ASSERT_PLAN_V1(toSingleNodePlan(query), matcher);
+    AXIOM_ASSERT_PLAN(toSingleNodePlan(query), matcher);
   }
 
   // All conjuncts contain subqueries (no non-subquery condition remains).
@@ -1945,7 +1945,7 @@ TEST_P(SubqueryTest, leftJoinOnSubquery) {
                            core::JoinType::kLeft)
                        .build();
 
-    AXIOM_ASSERT_PLAN_V1(toSingleNodePlan(query), matcher);
+    AXIOM_ASSERT_PLAN(toSingleNodePlan(query), matcher);
   }
 
   // Correlated EXISTS referencing the right (null-supplying) side.
@@ -1964,7 +1964,7 @@ TEST_P(SubqueryTest, leftJoinOnSubquery) {
                            core::JoinType::kLeft)
                        .build();
 
-    AXIOM_ASSERT_PLAN_V1(toSingleNodePlan(query), matcher);
+    AXIOM_ASSERT_PLAN(toSingleNodePlan(query), matcher);
   }
 
   // Correlated NOT EXISTS referencing the right (null-supplying) side.
@@ -1986,7 +1986,7 @@ TEST_P(SubqueryTest, leftJoinOnSubquery) {
                            core::JoinType::kLeft)
                        .build();
 
-    AXIOM_ASSERT_PLAN_V1(toSingleNodePlan(query), matcher);
+    AXIOM_ASSERT_PLAN(toSingleNodePlan(query), matcher);
   }
 
   // Correlated scalar subquery referencing the right (null-supplying) side.
