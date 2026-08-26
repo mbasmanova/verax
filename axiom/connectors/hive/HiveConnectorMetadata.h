@@ -296,7 +296,7 @@ class HiveWriteOptions {
 
   /// The table storage format. See velox::dwio::common::FileFormat.
   /// The default is DWRF format.
-  static constexpr auto kFileFormat = "file_format";
+  static constexpr auto kFormat = "format";
 
   /// The table compression kind. See velox::common::CompressionKind.
   /// The default is ZSTD compression.

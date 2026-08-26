@@ -934,7 +934,7 @@ CreateTableOptions parseCreateTableOptions(
         toLower(it->second.value<std::string>()));
   }
 
-  it = options.find(HiveWriteOptions::kFileFormat);
+  it = options.find(HiveWriteOptions::kFormat);
   if (it != options.end()) {
     result.fileFormat = velox::dwio::common::toFileFormat(
         toLower(it->second.value<std::string>()));
@@ -1160,7 +1160,7 @@ std::shared_ptr<LocalTable> createLocalTable(
   }
 
   if (createTableOptions.fileFormat.has_value()) {
-    options[HiveWriteOptions::kFileFormat] = std::string(
+    options[HiveWriteOptions::kFormat] = std::string(
         velox::dwio::common::FileFormatName::toName(
             createTableOptions.fileFormat.value()));
   }

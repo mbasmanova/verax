@@ -182,7 +182,7 @@ For CSV files, create the table with schema first, then copy the files in.
 mkdir -p /tmp/my_data
 _build/debug/axiom/cli/axiom_sql --data_path /tmp/my_data --data_format text \
   --query "CREATE TABLE sales (id INTEGER, name VARCHAR, amount DOUBLE)
-           WITH (file_format = 'text', \"field.delim\" = ',')"
+           WITH (format = 'text', \"field.delim\" = ',')"
 ```
 
 **2. Copy CSV files into the table directory:**
