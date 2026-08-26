@@ -874,7 +874,7 @@ NodeCP Translator::makeWorkingTable() {
       activeFixedPoint_.has_value(),
       "WorkingTable requires an enclosing FixedPoint");
   const auto& enclosing = *activeFixedPoint_;
-  return builder_.make<WorkingTable>(WorkingTable::Key{
+  return builder_.make<WorkingTable>({
       .name = enclosing.stateName,
       .outputColumns = enclosing.stateColumns,
       .readMode = WorkingTableReadMode::kLatestDelta,
@@ -895,7 +895,7 @@ NodeCP Translator::makeEmptyDeltaConvergence() {
       {});
   ColumnCP countColumn =
       Column::create("__converged_count", Value(toType(velox::BIGINT())));
-  NodeCP aggregation = builder_.make<Aggregate>(Aggregate::Key{
+  NodeCP aggregation = builder_.make<Aggregate>({
       .input = workingTable,
       .groupingKeys = {},
       .aggregates = {count},
@@ -907,7 +907,7 @@ NodeCP Translator::makeEmptyDeltaConvergence() {
   ExprCP convergedExpr = exprFactory_.makeEq(countColumn, zero);
   ColumnCP convergedColumn =
       Column::create("converged", Value(toType(velox::BOOLEAN())));
-  return builder_.make<Project>(Project::Key{
+  return builder_.make<Project>({
       .input = aggregation,
       .exprs = {convergedExpr},
       .outputColumns = {convergedColumn},
@@ -970,7 +970,7 @@ Translated Translator::translateFixedPoint(
   NodeCP convergence = makeEmptyDeltaConvergence();
 
   return {
-      builder_.make<FixedPoint>(FixedPoint::Key{
+      builder_.make<FixedPoint>({
           .anchor = anchor.node,
           .step = step.node,
           .convergence = convergence,
@@ -1899,11 +1899,11 @@ Translated Translator::translateAggregate(
   }
 
   if (groupingSets.empty()) {
-    AggregateCP aggNode = builder_.make<Aggregate>(Aggregate::Key{
-        .input = currentInput,
-        .groupingKeys = std::move(groupingKeys),
-        .aggregates = std::move(aggregates),
-        .outputColumns = std::move(outputColumns)});
+    AggregateCP aggNode = builder_.make<Aggregate>(
+        {.input = currentInput,
+         .groupingKeys = std::move(groupingKeys),
+         .aggregates = std::move(aggregates),
+         .outputColumns = std::move(outputColumns)});
     return {
         appendConstantColumns(aggNode, foldedColumns, foldedExprs),
         std::move(newScope)};
@@ -2018,14 +2018,14 @@ NodeCP Translator::lowerGroupingSets(
     setsCopy.emplace_back(set.begin(), set.end());
   }
 
-  NodeCP groupIdNode = builder_.make<GroupId>(GroupId::Key{
-      groupIdInput,
-      groupIdInputKeys,
-      aggregationInputs,
-      setsCopy,
-      keyOutputColumns,
-      groupIdColumn,
-      groupIdOutputs});
+  NodeCP groupIdNode = builder_.make<GroupId>(
+      {groupIdInput,
+       groupIdInputKeys,
+       aggregationInputs,
+       setsCopy,
+       keyOutputColumns,
+       groupIdColumn,
+       groupIdOutputs});
 
   // Aggregate keys: the GroupId key output columns plus the group-id column.
   ExprVector aggGroupingKeys;
@@ -2050,14 +2050,14 @@ NodeCP Translator::lowerGroupingSets(
   aggOutputColumns.push_back(groupIdColumn);
   appendAll(aggOutputColumns, aggResultColumns);
 
-  AggregateCP aggNode = builder_.make<Aggregate>(Aggregate::Key{
-      .input = groupIdNode,
-      .groupingKeys = std::move(aggGroupingKeys),
-      .aggregates = std::move(aggregates),
-      .outputColumns = std::move(aggOutputColumns),
-      .step = AggregateStep::kSingle,
-      .groupId = aggGroupId,
-      .globalGroupingSets = std::move(globalGroupingSets)});
+  AggregateCP aggNode = builder_.make<Aggregate>(
+      {.input = groupIdNode,
+       .groupingKeys = std::move(aggGroupingKeys),
+       .aggregates = std::move(aggregates),
+       .outputColumns = std::move(aggOutputColumns),
+       .step = AggregateStep::kSingle,
+       .groupId = aggGroupId,
+       .globalGroupingSets = std::move(globalGroupingSets)});
   return aggNode;
 }
 
@@ -2751,7 +2751,7 @@ bool Translator::tryJoinIntoPendingLifts(NodeCP body, LiftTarget& target) {
   // kLeft because the pending lifts carry values other references read. An
   // inner join would drop their row when the body has no match, and the
   // EnforceSingleRow above would then null every column, not just the body's.
-  NodeCP join = builder_.make<Join>(Join::Key{
+  NodeCP join = builder_.make<Join>({
       target.pendingLifts,
       child,
       velox::core::JoinType::kLeft,
@@ -2762,8 +2762,7 @@ bool Translator::tryJoinIntoPendingLifts(NodeCP body, LiftTarget& target) {
       /*nullAsValue=*/false,
       std::move(joinOutput),
   });
-  target.pendingLifts =
-      builder_.make<EnforceSingleRow>(EnforceSingleRow::Key{join});
+  target.pendingLifts = builder_.make<EnforceSingleRow>({join});
   return true;
 }
 
@@ -2782,7 +2781,7 @@ ColumnCP Translator::aliasIfNameCollides(
     ColumnCP alias = Column::create(
         std::string(returnedColumn->name()) + "__lift",
         returnedColumn->value());
-    body = builder_.make<Project>(Project::Key{
+    body = builder_.make<Project>({
         body,
         ExprVector{returnedColumn},
         ColumnVector{alias},
@@ -2795,7 +2794,7 @@ ColumnCP Translator::aliasIfNameCollides(
 NodeCP Translator::crossJoin(NodeCP left, NodeCP right) {
   ColumnVector output = left->outputColumns();
   appendUnique(output, right->outputColumns());
-  return builder_.make<Join>(Join::Key{
+  return builder_.make<Join>({
       left,
       right,
       velox::core::JoinType::kInner,
@@ -3214,7 +3213,7 @@ ExprCP Translator::liftSubquery(
       // produces exactly one row, in which case the guard is a no-op.
       NodeCP wrapped = producesExactlyOneRow(body)
           ? body
-          : builder_.make<EnforceSingleRow>(EnforceSingleRow::Key{body});
+          : builder_.make<EnforceSingleRow>({body});
 
       liftTarget->pendingLifts = liftTarget->pendingLifts == nullptr
           ? wrapped
@@ -3365,17 +3364,16 @@ ExprCP Translator::tryFoldConstantScalar(NodeCP body) {
 
   NodeCP foldInput = valuesNode;
   if (filter != nullptr) {
-    foldInput =
-        builder_.make<Filter>(Filter::Key{valuesNode, filter->predicates()});
+    foldInput = builder_.make<Filter>({valuesNode, filter->predicates()});
   }
-  const Aggregate* foldAggregate = builder_.make<Aggregate>(Aggregate::Key{
-      .input = foldInput,
-      .groupingKeys = aggregate->groupingKeys(),
-      .aggregates = aggregate->aggregates(),
-      .outputColumns = aggregate->outputColumns(),
-      .step = aggregate->step(),
-      .groupId = aggregate->groupId(),
-      .globalGroupingSets = aggregate->globalGroupingSets()});
+  const Aggregate* foldAggregate = builder_.make<Aggregate>(
+      {.input = foldInput,
+       .groupingKeys = aggregate->groupingKeys(),
+       .aggregates = aggregate->aggregates(),
+       .outputColumns = aggregate->outputColumns(),
+       .step = aggregate->step(),
+       .groupId = aggregate->groupId(),
+       .globalGroupingSets = aggregate->globalGroupingSets()});
 
   // A scalar subquery produces exactly one column.
   const ColumnVector& outputColumns = foldAggregate->outputColumns();

@@ -114,14 +114,14 @@ class AggregateExpander : public NodeRewriter<> {
     if (newInput == node->input() && aggregates == node->aggregates()) {
       return node;
     }
-    return builder().make<Aggregate>(Aggregate::Key{
-        .input = newInput,
-        .groupingKeys = node->groupingKeys(),
-        .aggregates = std::move(aggregates),
-        .outputColumns = node->outputColumns(),
-        .step = node->step(),
-        .groupId = node->groupId(),
-        .globalGroupingSets = node->globalGroupingSets()});
+    return builder().make<Aggregate>(
+        {.input = newInput,
+         .groupingKeys = node->groupingKeys(),
+         .aggregates = std::move(aggregates),
+         .outputColumns = node->outputColumns(),
+         .step = node->step(),
+         .groupId = node->groupId(),
+         .globalGroupingSets = node->globalGroupingSets()});
   }
 
  private:
@@ -197,7 +197,7 @@ class AggregateExpander : public NodeRewriter<> {
       appendAll(outputColumns, currentInput->outputColumns());
       appendAll(outputColumns, group.markers);
 
-      currentInput = builder().make<MarkDistinct>(MarkDistinct::Key{
+      currentInput = builder().make<MarkDistinct>({
           currentInput,
           group.markers,
           group.keys,
