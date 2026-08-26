@@ -380,6 +380,12 @@ TEST_F(SortParserTest, distinct) {
           "ORDER BY 2 DESC"),
       "ORDER BY position is not in the select list: 2");
 
+  // A negative value is a constant expression to sort by, not a position.
+  parseSql(
+      "SELECT a, b "
+      "FROM (VALUES (1, 2), (3, 4)) AS t(a, b) "
+      "ORDER BY -1");
+
   VELOX_ASSERT_THROW(
       parseSql(
           "SELECT a + b "

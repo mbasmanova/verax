@@ -255,6 +255,16 @@ TEST_F(AggregationParserTest, simpleGroupBy) {
           .output());
 }
 
+// A negative value is a constant expression to group by, not a position.
+TEST_F(AggregationParserTest, groupByNegativeConstant) {
+  testSelect(
+      "SELECT n_nationkey, COUNT(*) FROM nation GROUP BY n_nationkey, -1",
+      matchScan()
+          .aggregate({"n_nationkey", "-1"}, {"count(*) AS count"})
+          .project()
+          .output());
+}
+
 // GROUP BY ordinals with SELECT * and other expanding items.
 TEST_F(AggregationParserTest, groupByOrdinalWithSelectStar) {
   testSelect(

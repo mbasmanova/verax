@@ -138,6 +138,14 @@ class LongLiteral : public Literal {
     return value_;
   }
 
+  /// Returns the value of 'expr' if it can name a select-list position, as in
+  /// GROUP BY 1 or ORDER BY 2. Zero and values past the select list are
+  /// positions too, and are reported as out of range by the caller. A negative
+  /// value is not a position: the lexer emits no negative integer token, so a
+  /// negative literal is the folded form of unary minus, which is an ordinary
+  /// constant expression.
+  static std::optional<int64_t> asSelectPosition(const Expression& expr);
+
   void accept(AstVisitor* visitor) override;
 
   size_t hash() const override {

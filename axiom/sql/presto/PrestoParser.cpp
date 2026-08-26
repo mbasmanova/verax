@@ -1310,8 +1310,8 @@ class RelationPlanner : public AstVisitor {
     SortKeyExpansion result;
     for (const auto& item : orderBy->sortItems()) {
       const auto& sortExpr = item->sortKey();
-      if (sortExpr->is(NodeType::kLongLiteral)) {
-        const auto n = sortExpr->as<LongLiteral>()->value();
+      if (const auto position = LongLiteral::asSelectPosition(*sortExpr)) {
+        const auto n = position.value();
         AXIOM_PRESTO_SEMANTIC_CHECK_GE(
             n,
             static_cast<int64_t>(1),
@@ -1459,8 +1459,8 @@ class RelationPlanner : public AstVisitor {
   }
 
   lp::ExprApi toSortingKey(const ExpressionPtr& expr, ExprOptions options) {
-    if (expr->is(NodeType::kLongLiteral)) {
-      const auto n = expr->as<LongLiteral>()->value();
+    if (const auto position = LongLiteral::asSelectPosition(*expr)) {
+      const auto n = position.value();
       AXIOM_PRESTO_SEMANTIC_CHECK_GE(
           n,
           static_cast<int64_t>(1),
