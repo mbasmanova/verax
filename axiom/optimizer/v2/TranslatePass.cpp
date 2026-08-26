@@ -2196,6 +2196,14 @@ Translated Translator::translateUnnest(
   return {unnestNode, std::move(newScope)};
 }
 
+// The Column a leg's scope binds 'name' to. A leg's scope covers every name of
+// its LP outputType, so a miss is a translation bug.
+ColumnCP columnInScope(const Scope& scope, const std::string& name) {
+  auto it = scope.find(name);
+  VELOX_CHECK(it != scope.end(), "Leg scope missing column: {}", name);
+  return it->second;
+}
+
 Translated Translator::buildUnionAll(
     const std::vector<lp::LogicalPlanNodePtr>& inputs,
     const velox::RowTypePtr& outputType,
@@ -2251,13 +2259,8 @@ Translated Translator::buildUnionAll(
       // Resolve LP-name → IR Column* via the leg's scope; the leg's IR
       // `outputColumns` may be narrower than its LP outputType after
       // dup-collapse, but the same Column may legitimately repeat.
-      const auto& legName = in->outputType()->nameOf(j);
-      auto it = translated.scope.find(legName);
-      VELOX_CHECK(
-          it != translated.scope.end(),
-          "UnionAll leg scope missing column: {}",
-          legName);
-      cols.push_back(it->second);
+      cols.push_back(
+          columnInScope(translated.scope, in->outputType()->nameOf(j)));
     }
     legColumns.push_back(std::move(cols));
     inputNodes.push_back(translated.node);
@@ -2327,27 +2330,33 @@ Translated Translator::translateSet(
                         : velox::core::JoinType::kCountingLeftSemiFilter);
 
       // Set-op via Join: each leg's columns become join keys, so all of each
-      // leg's outputType is consumed.
+      // leg's outputType is consumed. Resolve each position by name through
+      // the leg's scope: a leg that projects one expression under two names
+      // holds one Column for both (see translateProject), so its IR
+      // `outputColumns` can be narrower than its LP outputType, and the same
+      // Column can legitimately be a key twice.
       Translated first = translateNode(*set.inputs().front());
       NodeCP node = first.node;
+      const auto& firstType = *set.inputs().front()->outputType();
       for (size_t i = 1; i < set.inputs().size(); ++i) {
-        NodeCP other = translateNode(*set.inputs()[i]).node;
-        const auto& leftColumns = node->outputColumns();
-        const auto& rightColumns = other->outputColumns();
-        VELOX_CHECK_EQ(leftColumns.size(), rightColumns.size());
+        Translated other = translateNode(*set.inputs()[i]);
+        const auto& otherType = *set.inputs()[i]->outputType();
+        VELOX_CHECK_EQ(firstType.size(), otherType.size());
         ExprVector leftKeys;
         ExprVector rightKeys;
-        leftKeys.reserve(leftColumns.size());
-        rightKeys.reserve(leftColumns.size());
-        for (size_t columnIndex = 0; columnIndex < leftColumns.size();
+        leftKeys.reserve(firstType.size());
+        rightKeys.reserve(firstType.size());
+        for (size_t columnIndex = 0; columnIndex < firstType.size();
              ++columnIndex) {
-          leftKeys.push_back(leftColumns[columnIndex]);
-          rightKeys.push_back(rightColumns[columnIndex]);
+          leftKeys.push_back(
+              columnInScope(first.scope, firstType.nameOf(columnIndex)));
+          rightKeys.push_back(
+              columnInScope(other.scope, otherType.nameOf(columnIndex)));
         }
-        ColumnVector outputColumns{leftColumns};
+        ColumnVector outputColumns{node->outputColumns()};
         node = builder_.make<Join>(
             {node,
-             other,
+             other.node,
              joinType,
              std::move(leftKeys),
              std::move(rightKeys),
@@ -2362,14 +2371,9 @@ Translated Translator::translateSet(
       // positions the leg collapsed to one Column (see translateProject) map
       // both symbols to that shared Column.
       Scope scope;
-      const auto& firstType = *set.inputs().front()->outputType();
-      for (size_t j = 0; j < set.outputType()->size(); ++j) {
-        auto it = first.scope.find(firstType.nameOf(j));
-        VELOX_CHECK(
-            it != first.scope.end(),
-            "Set-op leg scope missing column: {}",
-            firstType.nameOf(j));
-        scope[set.outputType()->nameOf(j)] = it->second;
+      for (size_t i = 0; i < set.outputType()->size(); ++i) {
+        scope[set.outputType()->nameOf(i)] =
+            columnInScope(first.scope, firstType.nameOf(i));
       }
 
       if (isDistinct) {

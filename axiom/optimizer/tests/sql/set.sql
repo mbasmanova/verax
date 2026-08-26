@@ -196,3 +196,13 @@ SELECT k FROM (SELECT 1 AS k UNION SELECT a AS k FROM t) WHERE k > 1
 SELECT a FROM t WHERE b > 50
 UNION ALL
 SELECT a FROM t WHERE b > 100
+----
+-- A leg that selects one column under two names.
+SELECT a AS x, a AS y FROM t WHERE a = 1 AND b = 10
+EXCEPT
+SELECT a, b FROM t WHERE a = 1 AND b = 40
+----
+-- The same, where the other leg holds the same pair of values.
+SELECT a AS x, a AS y FROM t WHERE a = 1 AND b = 10
+INTERSECT
+SELECT a, a FROM t WHERE a = 1 AND b = 40
