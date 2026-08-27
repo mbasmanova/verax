@@ -88,6 +88,12 @@ std::optional<float> shapeByJoinType(
     case velox::core::JoinType::kAnti:
       return maxOf(
           0.0f, subtract(leftCardinality, minOf(leftCardinality, matched)));
+    case velox::core::JoinType::kCountingLeftSemiFilter:
+      // Multiset intersection emits min(count) per key, so the result cannot
+      // exceed either input, nor the match count. This is a bound rather
+      // than an estimate: with disjoint inputs it still reports the smaller
+      // input's size.
+      return minOf(minOf(leftCardinality, rightCardinality), matched);
     default:
       return matched;
   }

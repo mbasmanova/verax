@@ -34,6 +34,10 @@ namespace facebook::axiom::optimizer::v2 {
 /// every task. The right side is preserved by RIGHT / FULL outer joins and by
 /// right semi joins; for those the build cannot be broadcast, and the mirror
 /// orientation broadcasts the other side instead.
+///
+/// A counting join is excluded because its result depends on a per-key count
+/// over the whole build input: a broadcast copy would give every task the full
+/// count, so a key could be emitted once per task.
 inline bool canBroadcastBuild(velox::core::JoinType joinType) {
   using velox::core::JoinType;
   return joinType == JoinType::kInner || joinType == JoinType::kLeft ||
