@@ -294,12 +294,10 @@ class SubfieldTest : public HiveQueriesTestBase,
         plan, {{"float_features", {subfield("10010"), subfield("10020")}}});
 
     auto matcher =
-        core::PlanMatcherBuilder()
-            .hiveScan("features", {}, "float_features[10010] + 1 < 10000")
+        matchHiveScan("features", {}, "float_features[10010] + 1 < 10000")
             .localPartition(
-                core::PlanMatcherBuilder()
-                    .hiveScan(
-                        "features", {}, "float_features[10010] + 1 < 10000")
+                matchHiveScan(
+                    "features", {}, "float_features[10010] + 1 < 10000")
                     .project())
             .project()
             .build();
@@ -873,8 +871,7 @@ TEST_P(SubfieldTest, subquery) {
 
     auto plan = toSingleNodePlan(logicalPlan);
 
-    auto matcher = core::PlanMatcherBuilder()
-                       .tableScan("t_subquery")
+    auto matcher = matchHiveScan("t_subquery")
                        .project()
                        .hashJoin(matchValues().project())
                        .project()

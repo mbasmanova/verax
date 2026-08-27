@@ -411,12 +411,10 @@ TEST_F(PlanTest, filterToJoinEdge) {
 
   {
     auto plan = toSingleNodePlan(logicalPlan);
-    auto matcher =
-        core::PlanMatcherBuilder()
-            .tableScan("nation")
-            .project()
-            .hashJoin(core::PlanMatcherBuilder().tableScan("region").project())
-            .build();
+    auto matcher = matchHiveScan("nation")
+                       .project()
+                       .hashJoin(matchHiveScan("region").project())
+                       .build();
 
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
@@ -450,19 +448,15 @@ TEST_F(PlanTest, filterToJoinEdge) {
 
   {
     auto plan = toSingleNodePlan(logicalPlan);
-    auto matcher = core::PlanMatcherBuilder()
-                       .tableScan("nation")
-                       // TODO Why is this filter not pushed down into scan?
-                       .filter("rand() < 2.0")
-                       .project()
-                       .hashJoin(
-                           core::PlanMatcherBuilder()
-                               .tableScan("region")
-                               .filter("rand() < 3.0")
-                               .project())
-                       .filter("rand() < 4.0")
-                       .project()
-                       .build();
+    auto matcher =
+        matchHiveScan("nation")
+            // TODO Why is this filter not pushed down into scan?
+            .filter("rand() < 2.0")
+            .project()
+            .hashJoin(matchHiveScan("region").filter("rand() < 3.0").project())
+            .filter("rand() < 4.0")
+            .project()
+            .build();
 
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
@@ -525,15 +519,13 @@ TEST_F(PlanTest, filterBreakup) {
 
     auto plan = toSingleNodePlan(logicalPlan);
     auto matcher =
-        core::PlanMatcherBuilder()
-            .hiveScan("lineitem", std::move(lineitemFilters))
-            .hashJoin(
-                core::PlanMatcherBuilder().hiveScan(
-                    "part",
-                    {},
-                    "\"or\"(\"and\"(p_size between 1 and 15, (p_brand = 'Brand#34' AND p_container LIKE 'LG%')), "
-                    "   \"or\"(\"and\"(p_size between 1 and 5, (p_brand = 'Brand#12' AND p_container LIKE 'SM%')), "
-                    "          \"and\"(p_size between 1 and 10, (p_brand = 'Brand#23' AND p_container LIKE 'MED%'))))"))
+        matchHiveScan("lineitem", std::move(lineitemFilters))
+            .hashJoin(matchHiveScan(
+                "part",
+                {},
+                "\"or\"(\"and\"(p_size between 1 and 15, (p_brand = 'Brand#34' AND p_container LIKE 'LG%')), "
+                "   \"or\"(\"and\"(p_size between 1 and 5, (p_brand = 'Brand#12' AND p_container LIKE 'SM%')), "
+                "          \"and\"(p_size between 1 and 10, (p_brand = 'Brand#23' AND p_container LIKE 'MED%'))))"))
             .filter()
             .project()
             .singleAggregation()

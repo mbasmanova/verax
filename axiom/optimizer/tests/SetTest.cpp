@@ -222,11 +222,9 @@ TEST_P(SetTest, unionFlatten) {
     // Each leg now carries a separate Filter node above its TableScan. The
     // first child of a LocalPartition has no rename Project; non-first children
     // do.
-    auto nonFirstChildMatcher =
-        core::PlanMatcherBuilder().tableScan().filter().project();
+    auto nonFirstChildMatcher = matchScan("nation").filter().project();
     if (rootType == lp::SetOperation::kUnion) {
-      auto matcher = core::PlanMatcherBuilder()
-                         .tableScan()
+      auto matcher = matchScan("nation")
                          .filter()
                          .localPartition({
                              nonFirstChildMatcher,
@@ -240,8 +238,7 @@ TEST_P(SetTest, unionFlatten) {
     } else if (
         leftType == lp::SetOperation::kUnionAll &&
         rightType == lp::SetOperation::kUnionAll) {
-      auto matcher = core::PlanMatcherBuilder()
-                         .tableScan()
+      auto matcher = matchScan("nation")
                          .filter()
                          .localPartition({
                              nonFirstChildMatcher,
@@ -254,19 +251,17 @@ TEST_P(SetTest, unionFlatten) {
       continue;
     } else {
       // We cannot flatten UNION inside UNION ALL.
-      auto matcher = core::PlanMatcherBuilder()
-                         .tableScan()
-                         .filter()
-                         .localPartition(nonFirstChildMatcher)
-                         .aggregation()
-                         .localPartition(
-                             core::PlanMatcherBuilder()
-                                 .tableScan()
-                                 .filter()
-                                 .localPartition(nonFirstChildMatcher)
-                                 .aggregation()
-                                 .project())
-                         .build();
+      auto matcher =
+          matchScan("nation")
+              .filter()
+              .localPartition(nonFirstChildMatcher)
+              .aggregation()
+              .localPartition(matchScan("nation")
+                                  .filter()
+                                  .localPartition(nonFirstChildMatcher)
+                                  .aggregation()
+                                  .project())
+              .build();
 
       AXIOM_ASSERT_PLAN(plan, matcher);
     }
@@ -976,7 +971,7 @@ TEST_P(SetTest, unionAllWithDistinctAndCountStar) {
         matchScan("t")
             .singleAggregation({"a"}, {})
             .project({})
-            .localPartition(core::PlanMatcherBuilder().values(ROW({})))
+            .localPartition(matchValues(ROW({})))
             .singleAggregation({}, {"count(*) as c"})
             .build());
   }
@@ -996,9 +991,7 @@ TEST_P(SetTest, unionAllWithDistinctAndCountStar) {
         matchScan("t")
             .singleAggregation({"a"}, {})
             .project({})
-            .localPartition(
-                {core::PlanMatcherBuilder().values(ROW({})),
-                 core::PlanMatcherBuilder().values(ROW({}))})
+            .localPartition({matchValues(ROW({})), matchValues(ROW({}))})
             .singleAggregation({}, {"count(*) as c"})
             .build());
   }
@@ -1018,7 +1011,7 @@ TEST_P(SetTest, unionAllWithDistinctAndCountStar) {
         matchScan("t")
             .singleAggregation({"a"}, {})
             .project({})
-            .localPartition(core::PlanMatcherBuilder().values(ROW({})))
+            .localPartition(matchValues(ROW({})))
             .singleAggregation({}, {"count(*) as cnt"})
             .filter("cnt > 0")
             .build());
