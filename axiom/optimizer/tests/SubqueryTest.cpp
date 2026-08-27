@@ -57,8 +57,7 @@ TEST_P(SubqueryTest, uncorrelatedScalar) {
     auto plan = toSingleNodePlan(query);
     auto matcher = matchHiveScan("nation")
                        .hashJoin(
-                           core::PlanMatcherBuilder()
-                               .hiveScan("region", {}, "r_name like 'AF%'")
+                           matchHiveScan("region", {}, "r_name like 'AF%'")
                                .enforceSingleRow(),
                            velox::core::JoinType::kInner)
                        .build();
@@ -76,8 +75,7 @@ TEST_P(SubqueryTest, uncorrelatedScalar) {
     auto plan = toSingleNodePlan(query);
     auto matcher = matchHiveScan("nation")
                        .hashJoin(
-                           core::PlanMatcherBuilder().hiveScan(
-                               "region", test::gt("r_name", "ASIA")),
+                           matchHiveScan("region", test::gt("r_name", "ASIA")),
                            velox::core::JoinType::kLeftSemiFilter)
                        .build();
 
@@ -96,8 +94,7 @@ TEST_P(SubqueryTest, uncorrelatedScalar) {
     auto matcher =
         matchHiveScan("nation")
             .hashJoin(
-                core::PlanMatcherBuilder()
-                    .hiveScan("region", test::gt("r_name", "ASIA"))
+                matchHiveScan("region", test::gt("r_name", "ASIA"))
                     .project({"cast(cast(r_regionkey as tinyint) as bigint)"}),
                 velox::core::JoinType::kLeftSemiFilter)
             .build();
@@ -115,8 +112,7 @@ TEST_P(SubqueryTest, uncorrelatedScalar) {
     auto plan = toSingleNodePlan(query);
     auto matcher = matchHiveScan("nation")
                        .hashJoin(
-                           core::PlanMatcherBuilder().hiveScan(
-                               "region", test::gt("r_name", "ASIA")),
+                           matchHiveScan("region", test::gt("r_name", "ASIA")),
                            velox::core::JoinType::kAnti,
                            {.nullAware = true})
                        .build();
@@ -223,7 +219,7 @@ TEST_P(SubqueryTest, correlatedExists) {
 
     auto matcher = matchHiveScan("nation")
                        .hashJoin(
-                           core::PlanMatcherBuilder().hiveScan("region", {}),
+                           matchHiveScan("region", {}),
                            velox::core::JoinType::kLeftSemiFilter)
                        .build();
 
@@ -393,8 +389,7 @@ TEST_P(SubqueryTest, uncorrelatedProject) {
     // with a mark column. nullAware is true for IN semantics.
     auto matcher = matchHiveScan("nation")
                        .hashJoin(
-                           core::PlanMatcherBuilder().hiveScan(
-                               "region", test::gt("r_name", "ASIA")),
+                           matchHiveScan("region", test::gt("r_name", "ASIA")),
                            velox::core::JoinType::kLeftSemiProject,
                            {.nullAware = true})
                        .project()
@@ -416,8 +411,7 @@ TEST_P(SubqueryTest, uncorrelatedProject) {
     // join with a mark column and NOT applied to the result. nullAware is true.
     auto matcher = matchHiveScan("nation")
                        .hashJoin(
-                           core::PlanMatcherBuilder().hiveScan(
-                               "region", test::gt("r_name", "ASIA")),
+                           matchHiveScan("region", test::gt("r_name", "ASIA")),
                            velox::core::JoinType::kLeftSemiProject,
                            {.nullAware = true})
                        .project()
@@ -903,7 +897,7 @@ TEST_P(SubqueryTest, correlatedProject) {
     // join with a mark column. nullAware is false for EXISTS semantics.
     auto matcher = matchHiveScan("nation")
                        .hashJoin(
-                           core::PlanMatcherBuilder().hiveScan("region", {}),
+                           matchHiveScan("region", {}),
                            velox::core::JoinType::kLeftSemiProject,
                            {.nullAware = false})
                        .project()
@@ -925,7 +919,7 @@ TEST_P(SubqueryTest, correlatedProject) {
     // the key is not null-aware, as for the EXISTS above.
     auto matcher = matchHiveScan("nation")
                        .hashJoin(
-                           core::PlanMatcherBuilder().hiveScan("region", {}),
+                           matchHiveScan("region", {}),
                            velox::core::JoinType::kLeftSemiProject,
                            {.nullAware = false})
                        .project()
@@ -947,7 +941,7 @@ TEST_P(SubqueryTest, correlatedProject) {
     // PROJECT join with a mark column and NOT applied.
     auto matcher = matchHiveScan("nation")
                        .hashJoin(
-                           core::PlanMatcherBuilder().hiveScan("region", {}),
+                           matchHiveScan("region", {}),
                            velox::core::JoinType::kLeftSemiProject,
                            {.nullAware = false})
                        .project()
@@ -1018,7 +1012,7 @@ TEST_P(SubqueryTest, correlatedNotExists) {
 
     auto matcher = matchHiveScan("nation")
                        .hashJoin(
-                           core::PlanMatcherBuilder().hiveScan("region", {}),
+                           matchHiveScan("region", {}),
                            velox::core::JoinType::kAnti,
                            {.nullAware = false})
                        .build();
@@ -1060,7 +1054,7 @@ TEST_P(SubqueryTest, correlatedNotExists) {
     // join with a mark column and NOT applied.
     auto matcher = matchHiveScan("nation")
                        .hashJoin(
-                           core::PlanMatcherBuilder().hiveScan("region", {}),
+                           matchHiveScan("region", {}),
                            velox::core::JoinType::kLeftSemiProject,
                            {.nullAware = false})
                        .project()
