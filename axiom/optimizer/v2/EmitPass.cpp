@@ -318,9 +318,46 @@ class Emitter {
         .numRawInputRows = numRawInputRows};
   }
 
-  // Local exchange inserted below a final/single aggregation at numDrivers > 1
-  // so every row of a group is processed by one driver: a repartition on the
-  // grouping keys, or a gather to one driver when there are none.
+  // Whether every key of `inner` is also a key of `outer`.
+  bool keysContainAll(
+      const std::vector<velox::core::FieldAccessTypedExprPtr>& outer,
+      const std::vector<velox::core::FieldAccessTypedExprPtr>& inner) {
+    folly::F14FastSet<std::string_view> names;
+    for (const auto& key : outer) {
+      names.insert(key->name());
+    }
+    for (const auto& key : inner) {
+      if (!names.contains(key->name())) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // A counting join needs each key on one driver: its per-key build counters
+  // are per-driver. Returns `probe` wrapped in a local partition on `keys`,
+  // unless each key already reaches one driver: with a single driver, or with
+  // a probe that is itself a counting join partitioned on a subset of these
+  // keys, since rows agreeing on these keys agree on those.
+  velox::core::PlanNodePtr addLocalPartitionForCountingJoin(
+      velox::core::PlanNodePtr probe,
+      const std::vector<velox::core::FieldAccessTypedExprPtr>& keys) {
+    if (options_.numDrivers <= 1) {
+      return probe;
+    }
+
+    const auto* probeJoin = probe->as<velox::core::HashJoinNode>();
+    if (probeJoin != nullptr &&
+        velox::core::isCountingJoin(probeJoin->joinType()) &&
+        keysContainAll(keys, probeJoin->leftKeys())) {
+      return probe;
+    }
+    return addLocalPartition(std::move(probe), keys);
+  }
+
+  // Returns `input` wrapped in a local exchange that brings all rows agreeing
+  // on `keys` to one driver: a hash repartition on `keys`, or a gather to a
+  // single driver when there are none.
   velox::core::PlanNodePtr addLocalPartition(
       velox::core::PlanNodePtr input,
       const std::vector<velox::core::FieldAccessTypedExprPtr>& keys) {
@@ -1142,6 +1179,10 @@ velox::core::PlanNodePtr Emitter::emitJoin(const Join& join) {
   if (!join.leftKeys().empty()) {
     auto leftKeys = toFieldAccessList(join.leftKeys(), "Join leftKey");
     auto rightKeys = toFieldAccessList(join.rightKeys(), "Join rightKey");
+
+    if (velox::core::isCountingJoin(join.joinType())) {
+      left = addLocalPartitionForCountingJoin(std::move(left), leftKeys);
+    }
 
     return std::make_shared<velox::core::HashJoinNode>(
         nextId(),
