@@ -328,7 +328,7 @@ TEST_P(PlanTest, nullPropagation) {
     auto matcher = matchScan("t").project({expected, "a", "b"}).build();
 
     auto plan = toSingleNodePlan(logicalPlan);
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN(plan, matcher);
   }
 }
 
