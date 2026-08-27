@@ -309,19 +309,18 @@ TEST_P(SetTest, intersect) {
           .filter(filter);
     };
     auto matcher =
-        matchLeg("nationkey > 12")
+        matchLeg("nationkey > 11")
             .hashJoin(
-                matchLeg("nationkey > 11")
+                matchLeg("nationkey > 12")
                     .hashJoin(
                         matchLeg("nationkey < 21 and (regionkey + 1) % 3 = 1"),
                         core::JoinType::kRightSemiFilter),
                 core::JoinType::kRightSemiFilter)
             .singleAggregation()
-            .project()
-            .project()
+            .project({"n_regionkey + 1 as rk"})
             .build();
 
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN_V2(plan, matcher);
   }
 }
 
@@ -674,9 +673,6 @@ TEST_P(SetTest, nondeterministicFilterAboveUnion) {
             .filter("k::double > rand()")
             .build());
 
-    // Asserted for v1 only: v2 gathers the union legs into one driver instead
-    // of spreading them round-robin, leaving the partial aggregation above it
-    // single-threaded.
     AXIOM_ASSERT_DISTRIBUTED_PLAN_V1(
         planVelox(logicalPlan).plan,
         matchScan("nation")
@@ -783,18 +779,18 @@ TEST_P(SetTest, filterColumnPruningInUnionAll) {
   // 'x' is filtered but not in the output, so it is pruned from each leg. The
   // alias binds the (disambiguated on the second leg) filter column.
   auto matchLeg = [](const std::string& filter) {
-    return matchScan("t").aliases({std::nullopt, "x"}).filter(filter).project();
+    return matchScan("t").aliases({"x", std::nullopt}).filter(filter).project();
   };
 
   {
     auto matcher = matchLeg("x > 0").localPartition(matchLeg("x > 0")).build();
-    AXIOM_ASSERT_PLAN_V1(toSingleNodePlan(logicalPlan), matcher);
+    AXIOM_ASSERT_PLAN_V2(toSingleNodePlan(logicalPlan), matcher);
   }
 
   {
     auto matcher =
         matchLeg("x > 0").localPartition(matchLeg("x > 0")).gather().build();
-    AXIOM_ASSERT_DISTRIBUTED_PLAN_V1(planVelox(logicalPlan).plan, matcher);
+    AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(planVelox(logicalPlan).plan, matcher);
   }
 }
 
