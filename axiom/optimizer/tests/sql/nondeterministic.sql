@@ -103,3 +103,8 @@ FROM (SELECT s[1] AS x FROM (SELECT shuffle(sequence(1, 5)) AS s FROM t))
 -- A deterministic complex value reused via subfield.
 -- duckdb: SELECT 1, 1 FROM t
 SELECT s[1] AS x, s[1] AS y FROM (SELECT sequence(1, 5) AS s FROM t)
+----
+-- A non-deterministic predicate on a join key. `a` is at least 1 and
+-- `-1 * random()` is at most 0, so every row passes and the answer is the plain
+-- self-join count, which makes the query comparable despite `random()`.
+SELECT count(*) FROM t t1 JOIN t t2 ON t1.a = t2.a WHERE t1.a > -1 * random()

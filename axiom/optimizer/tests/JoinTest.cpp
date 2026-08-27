@@ -31,6 +31,12 @@ class JoinTest : public test::QueryTestBase,
     return lp::PlanBuilder::Context{kTestConnectorId, kDefaultSchema};
   }
 
+  using test::QueryTestBase::toSingleNodePlan;
+
+  velox::core::PlanNodePtr toSingleNodePlan(std::string_view sql) {
+    return QueryTestBase::toSingleNodePlan(parseSelect(sql, kTestConnectorId));
+  }
+
   void SetUp() override {
     test::QueryTestBase::SetUp();
     useV2_ = GetParam();
@@ -394,8 +400,7 @@ TEST_P(JoinTest, nestedOuterJoins) {
       "   RIGHT OUTER JOIN region r2 ON n.n_regionkey = r2.r_regionkey "
       "GROUP BY 1";
 
-  auto logicalPlan = parseSelect(sql, kTestConnectorId);
-  auto plan = toSingleNodePlan(logicalPlan);
+  auto plan = toSingleNodePlan(sql);
 
   auto matcher = matchScan("nation")
                      .hashJoin(matchScan("region"), core::JoinType::kFull)
@@ -611,10 +616,9 @@ TEST_P(JoinTest, unusedSingleRowAggregateCrossJoin) {
 
   auto logicalPlan = parseSelect(
       "SELECT a FROM t, (SELECT count(*) FROM u)", kTestConnectorId);
-  auto matcher = matchScan("t").build();
 
   auto plan = toSingleNodePlan(logicalPlan);
-  AXIOM_ASSERT_PLAN_V1(plan, matcher);
+  AXIOM_ASSERT_PLAN_V1(plan, matchScan("t").build());
 
   ASSERT_NO_THROW(planVelox(logicalPlan));
 }
@@ -750,7 +754,7 @@ TEST_P(JoinTest, crossThenLeft) {
             .aggregation()
             .build();
 
-  auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+  auto plan = toSingleNodePlan(query);
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
@@ -770,7 +774,7 @@ TEST_P(JoinTest, joinWithComputedAndProjectedKeys) {
           .projectIf(!useV2_, {"u0", "u1", "v0"})
           .build();
 
-  auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+  auto plan = toSingleNodePlan(query);
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
@@ -803,7 +807,7 @@ TEST_P(JoinTest, filterPushdownThroughCrossJoinUnnest) {
 
     auto matcher = matchScan("t").filter().unnest().build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
@@ -814,7 +818,7 @@ TEST_P(JoinTest, filterPushdownThroughCrossJoinUnnest) {
 
     auto matcher = matchValues().filter().project().unnest().project().build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
 }
@@ -830,7 +834,7 @@ TEST_P(JoinTest, joinOnClause) {
     auto matcher =
         matchScan("t").project().hashJoin(matchScan("u").project()).build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
@@ -845,7 +849,7 @@ TEST_P(JoinTest, joinOnClause) {
                        .projectIf(!useV2_, {"t0", "1", "u0"})
                        .build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
 }
@@ -897,7 +901,7 @@ TEST_P(JoinTest, leftThenFilter) {
                        .projectIf(!useV2_, {"a", "b", "c", "x", "z"})
                        .build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
@@ -919,7 +923,7 @@ TEST_P(JoinTest, leftThenFilter) {
                        .projectIf(!useV2_, {"a", "b", "c", "x", "y + 1 as z"})
                        .build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
@@ -941,7 +945,7 @@ TEST_P(JoinTest, leftThenFilter) {
                        .projectIf(!useV2_, {"a", "b", "c", "x", "y + 1 as z"})
                        .build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
@@ -971,7 +975,7 @@ TEST_P(JoinTest, leftThenFilter) {
                        .project({useV2_ ? "z * 2" : "(y + 1) * 2"})
                        .build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
@@ -994,7 +998,7 @@ TEST_P(JoinTest, leftThenFilter) {
                        .aggregation()
                        .build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
@@ -1019,7 +1023,7 @@ TEST_P(JoinTest, leftThenFilter) {
                        .projectIf(!useV2_, {"a", "b", "c", "x", "z"})
                        .build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
@@ -1047,7 +1051,7 @@ TEST_P(JoinTest, leftThenFilter) {
               .filter("a > y")
               .build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
@@ -1071,7 +1075,7 @@ TEST_P(JoinTest, leftThenFilter) {
                        .filter("cardinality(coalesce(y, b)) > 0")
                        .build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
@@ -1096,7 +1100,7 @@ TEST_P(JoinTest, leftThenFilter) {
                        .project()
                        .build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
 }
@@ -1122,7 +1126,7 @@ TEST_P(JoinTest, fullThenFilter) {
                        .projectIf(!useV2_)
                        .build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
@@ -1146,7 +1150,7 @@ TEST_P(JoinTest, fullThenFilter) {
                        .projectIf(!useV2_)
                        .build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
@@ -1166,7 +1170,7 @@ TEST_P(JoinTest, fullThenFilter) {
                        .projectIf(!useV2_)
                        .build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
@@ -1191,7 +1195,7 @@ TEST_P(JoinTest, fullThenFilter) {
             .projectIf(!useV2_)
             .build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
@@ -1218,7 +1222,7 @@ TEST_P(JoinTest, fullThenFilter) {
               .filter("a > y")
               .build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
 }
@@ -1239,7 +1243,7 @@ TEST_P(JoinTest, leftJoinOnClausePushdown) {
             .hashJoin(matchScan("u").filter("y > 0"), core::JoinType::kLeft)
             .build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
@@ -1252,7 +1256,7 @@ TEST_P(JoinTest, leftJoinOnClausePushdown) {
     auto matcher =
         matchScan("t").hashJoin(matchScan("u"), core::JoinType::kLeft).build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
@@ -1264,7 +1268,7 @@ TEST_P(JoinTest, leftJoinOnClausePushdown) {
     auto matcher =
         matchScan("t").hashJoin(matchScan("u"), core::JoinType::kLeft).build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
@@ -1287,7 +1291,7 @@ TEST_P(JoinTest, leftJoinOnClausePushdown) {
                        .projectIf(!useV2_)
                        .build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
@@ -1306,7 +1310,7 @@ TEST_P(JoinTest, leftJoinOnClausePushdown) {
                            core::JoinType::kLeft)
                        .build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
@@ -1324,7 +1328,7 @@ TEST_P(JoinTest, leftJoinOnClausePushdown) {
                            core::JoinType::kLeft)
                        .build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
@@ -1345,7 +1349,7 @@ TEST_P(JoinTest, leftJoinOnClausePushdown) {
                            core::JoinType::kLeft)
                        .build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
 }
@@ -1366,7 +1370,7 @@ TEST_P(JoinTest, constantFalseOuterJoinElimination) {
     auto matcher =
         matchScan("t").project({"a", "b", "c", "null", "null"}).build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
@@ -1380,7 +1384,7 @@ TEST_P(JoinTest, constantFalseOuterJoinElimination) {
     auto matcher =
         matchScan("u").project({"null", "null", "null", "x", "y"}).build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 }
@@ -1419,7 +1423,7 @@ TEST_P(JoinTest, impliedJoins) {
               .aggregation()
               .build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
@@ -1441,7 +1445,7 @@ TEST_P(JoinTest, impliedJoins) {
             .aggregation()
             .build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
@@ -1455,7 +1459,7 @@ TEST_P(JoinTest, impliedJoins) {
                        .aggregation()
                        .build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
@@ -1470,7 +1474,7 @@ TEST_P(JoinTest, impliedJoins) {
                        .aggregation()
                        .build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
@@ -1498,7 +1502,7 @@ TEST_P(JoinTest, impliedJoins) {
               .hashJoin(matchScan("v"), core::JoinType::kLeftSemiFilter)
               .build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
 }
@@ -1535,7 +1539,7 @@ TEST_P(JoinTest, impliedSameInputJoinFilters) {
             .aggregation()
             .build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
@@ -1550,7 +1554,7 @@ TEST_P(JoinTest, impliedSameInputJoinFilters) {
             .aggregation()
             .build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
@@ -1572,7 +1576,7 @@ TEST_P(JoinTest, impliedSameInputJoinFilters) {
             .aggregation()
             .build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
 }
@@ -1604,7 +1608,7 @@ TEST_P(JoinTest, impliedSemiJoinPropagation) {
                      .hashJoin(matchScan("u"), core::JoinType::kInner)
                      .build();
 
-  auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+  auto plan = toSingleNodePlan(query);
   AXIOM_ASSERT_PLAN_V1(plan, matcher);
 }
 
@@ -1677,7 +1681,7 @@ TEST_P(JoinTest, impliedFilters) {
             .hashJoin(matchScan("t").filter("a = 5"), core::JoinType::kInner)
             .build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
@@ -1692,7 +1696,7 @@ TEST_P(JoinTest, impliedFilters) {
             .hashJoin(matchScan("u").filter("x > 100"), core::JoinType::kInner)
             .build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
@@ -1708,7 +1712,7 @@ TEST_P(JoinTest, impliedFilters) {
                 matchScan("t").filter("a IN (1, 2, 3)"), core::JoinType::kInner)
             .build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
@@ -1727,7 +1731,7 @@ TEST_P(JoinTest, impliedFilters) {
                 matchScan("u").filter("x IS NULL"), core::JoinType::kInner)
             .build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
@@ -1743,7 +1747,7 @@ TEST_P(JoinTest, impliedFilters) {
                 matchScan("u").filter("x IS NOT NULL"), core::JoinType::kInner)
             .build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
@@ -1762,13 +1766,11 @@ TEST_P(JoinTest, impliedFilters) {
             .hashJoin(matchScan("v").filter("k = 5"), core::JoinType::kInner)
             .build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 }
 
-// TODO: Assert the V2 plan after it keeps non-deterministic predicates above
-// joins.
 // Pushing `random()` below a join that can duplicate rows changes how often it
 // is evaluated and can change query results.
 TEST_P(JoinTest, impliedFilterNonPropagation) {
@@ -1778,18 +1780,72 @@ TEST_P(JoinTest, impliedFilterNonPropagation) {
       ->setStats(1'000, {{"x", {.numDistinct = 100}}});
 
   // Non-deterministic predicates do not propagate.
-  auto query =
-      "SELECT * FROM t, u "
-      "WHERE t.a = u.x AND t.a = cast(random() * 100 as bigint)";
-  SCOPED_TRACE(query);
+  {
+    auto query =
+        "SELECT * FROM t, u "
+        "WHERE t.a = u.x AND t.a = cast(random() * 100 as bigint)";
+    SCOPED_TRACE(query);
 
-  auto matcher = matchScan("t")
-                     .hashJoin(matchScan("u"), core::JoinType::kInner)
-                     .filter("a = cast(random() * 100.0 as bigint)")
-                     .build();
+    // TODO: Place the key-reconstruction Project after the filter, so it runs
+    // on the surviving rows only.
+    auto matcher = matchScan("t")
+                       .hashJoinInner(matchScan("u"))
+                       .projectIf(useV2_, {"a", "b", "a as x", "y"})
+                       .filter("a = cast(random() * 100.0 as bigint)")
+                       .build();
 
-  auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
-  AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    auto plan = toSingleNodePlan(query);
+    AXIOM_ASSERT_PLAN(plan, matcher);
+  }
+
+  // The predicate is not propagated even when neither join key is in the
+  // output.
+  {
+    auto query =
+        "SELECT count(*) FROM t JOIN u ON t.a = u.x "
+        "WHERE t.a > 10000 * random()";
+    SCOPED_TRACE(query);
+
+    auto matcher = matchScan("t")
+                       .hashJoin(matchScan("u"), core::JoinType::kInner)
+                       .filter("a::double > 10000.0 * random()")
+                       .singleAggregation({}, {"count(*)"})
+                       .build();
+
+    AXIOM_ASSERT_PLAN_V2(toSingleNodePlan(query), matcher);
+  }
+
+  // A predicate written in the ON clause is not pushed into an input either.
+  {
+    auto query = "SELECT count(*) FROM t JOIN u ON t.a = u.x AND t.a > rand()";
+    SCOPED_TRACE(query);
+
+    auto matcher =
+        matchScan("t")
+            .hashJoinInner(matchScan("u"), {.filter = "a::double > rand()"})
+            .singleAggregation({}, {"count(*)"})
+            .build();
+
+    AXIOM_ASSERT_PLAN_V2(toSingleNodePlan(query), matcher);
+  }
+
+  // A non-deterministic equality is a join condition, not a join key: a key
+  // would be evaluated once per row of its input rather than once per pair.
+  {
+    auto query = "SELECT count(*) FROM t JOIN u ON t.a + rand() = u.x";
+    SCOPED_TRACE(query);
+
+    auto matcher = matchScan("t")
+                       .project({"a::double as ta"})
+                       .nestedLoopJoin(
+                           matchScan("u").project({"x::double as ux"}),
+                           core::JoinType::kInner,
+                           "ta + rand() = ux")
+                       .singleAggregation({}, {"count(*)"})
+                       .build();
+
+    AXIOM_ASSERT_PLAN_V2(toSingleNodePlan(query), matcher);
+  }
 }
 
 TEST_P(JoinTest, impliedFilterDedup) {
@@ -1813,7 +1869,7 @@ TEST_P(JoinTest, impliedFilterDedup) {
             .hashJoin(matchScan("t").filter("a = 5"), core::JoinType::kInner)
             .build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 }
@@ -1838,7 +1894,7 @@ TEST_P(JoinTest, impliedSameTableEquality) {
                        .aggregation()
                        .build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 }
@@ -1867,7 +1923,7 @@ TEST_P(JoinTest, impliedSameTableEqualityBothSides) {
             .aggregation()
             .build();
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 }
@@ -1893,7 +1949,7 @@ TEST_P(JoinTest, impliedSameTableEqualityBelowAggregation) {
                      .aggregation()
                      .build();
 
-  auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+  auto plan = toSingleNodePlan(query);
   AXIOM_ASSERT_PLAN_V1(plan, matcher);
 }
 
@@ -1923,7 +1979,7 @@ TEST_P(JoinTest, impliedSameTableEqualityInHaving) {
                      .aggregation()
                      .build();
 
-  auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+  auto plan = toSingleNodePlan(query);
   AXIOM_ASSERT_PLAN_V1(plan, matcher);
 }
 
@@ -1947,7 +2003,7 @@ TEST_P(JoinTest, impliedSameTableEqualityBlockedByLimit) {
                      .aggregation()
                      .build();
 
-  auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+  auto plan = toSingleNodePlan(query);
   AXIOM_ASSERT_PLAN_V1(plan, matcher);
 }
 
@@ -1976,7 +2032,7 @@ TEST_P(JoinTest, impliedSameTableEqualityBlockedByLimitDedup) {
                      .aggregation()
                      .build();
 
-  auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+  auto plan = toSingleNodePlan(query);
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
@@ -2004,7 +2060,7 @@ TEST_P(JoinTest, impliedSameTableEqualityOuterJoin) {
           .aggregation()
           .build();
 
-  auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+  auto plan = toSingleNodePlan(query);
   AXIOM_ASSERT_PLAN_V1(plan, matcher);
 }
 
@@ -2031,7 +2087,7 @@ TEST_P(JoinTest, impliedSameTableEqualitySemiJoin) {
           .aggregation()
           .build();
 
-  auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+  auto plan = toSingleNodePlan(query);
   AXIOM_ASSERT_PLAN_V1(plan, matcher);
 }
 
@@ -2055,7 +2111,7 @@ TEST_P(JoinTest, impliedSameTableEqualityRightJoinNormalized) {
           .aggregation()
           .build();
 
-  auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+  auto plan = toSingleNodePlan(query);
   AXIOM_ASSERT_PLAN_V1(plan, matcher);
 }
 
@@ -2078,7 +2134,7 @@ TEST_P(JoinTest, impliedSameTableEqualityFullOuterJoinSkipped) {
                      .aggregation()
                      .build();
 
-  auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+  auto plan = toSingleNodePlan(query);
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
@@ -2101,7 +2157,7 @@ TEST_P(JoinTest, impliedSameTableEqualityMismatchedLeftKeys) {
                      .aggregation()
                      .build();
 
-  auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+  auto plan = toSingleNodePlan(query);
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
@@ -2123,7 +2179,7 @@ TEST_P(JoinTest, impliedSameTableEqualityPreservedSide) {
                      .aggregation()
                      .build();
 
-  auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+  auto plan = toSingleNodePlan(query);
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
@@ -2164,7 +2220,7 @@ TEST_P(JoinTest, leftJoinNoEqualitiesMultipleTables) {
                          "n_nationkey < s_nationkey")
                      .build();
 
-  auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+  auto plan = toSingleNodePlan(query);
   AXIOM_ASSERT_PLAN_V1(plan, matcher);
 }
 
@@ -2188,7 +2244,7 @@ TEST_P(JoinTest, leftToInnerWithAggregation) {
       "WHERE b.x > 0";
   SCOPED_TRACE(query);
 
-  auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+  auto plan = toSingleNodePlan(query);
 
   // V2 is better: it derives `a > 0` on t, materializes the cast once before
   // DISTINCT, and eliminates the V1 output-reconstruction Projects.
@@ -2227,7 +2283,7 @@ TEST_P(JoinTest, duplicateJoinOutputColumns) {
         ") AS s ON t.k = s.k";
     SCOPED_TRACE(query);
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
 
     auto matcher = matchScan("t")
                        .hashJoin(matchScan("u"), core::JoinType::kLeft)
@@ -2247,7 +2303,7 @@ TEST_P(JoinTest, duplicateJoinOutputColumns) {
         ") AS s ON t.k = s.k";
     SCOPED_TRACE(query);
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
 
     auto matcher = matchScan("t")
                        .hashJoin(matchScan("u"), core::JoinType::kLeft)
@@ -2269,7 +2325,7 @@ TEST_P(JoinTest, duplicateJoinOutputColumns) {
         "WHERE s.a = 1";
     SCOPED_TRACE(query);
 
-    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    auto plan = toSingleNodePlan(query);
 
     // V2 is better: it drops the filter-only `a` column before the join.
     auto matcher = matchScan("t")

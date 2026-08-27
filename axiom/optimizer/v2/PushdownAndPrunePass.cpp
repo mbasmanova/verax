@@ -391,6 +391,20 @@ std::pair<ExprVector, ExprVector> partition(
   return {std::move(noOverlap), std::move(overlap)};
 }
 
+// A nondeterministic conjunct may not cross a node whose output row count
+// differs from its input's: one evaluation on either side of the node stands
+// in for a different number of evaluations on the other, which admits a
+// different set of rows.
+void blockNondeterministic(ExprVector& pushable, ExprVector& blocked) {
+  std::erase_if(pushable, [&](ExprCP conjunct) {
+    if (!conjunct->containsNonDeterministic()) {
+      return false;
+    }
+    blocked.push_back(conjunct);
+    return true;
+  });
+}
+
 // Mirror of canPushLeft for the right input (from-above conjuncts).
 bool canPushRight(velox::core::JoinType joinType, bool rightOnly) {
   if (!rightOnly) {
@@ -746,7 +760,8 @@ class Pushdown : public NodeRewriter<PushdownContext> {
 
   // Aggregate: conjuncts referencing only grouping-key outputs push below
   // (substituted to the grouping-key expressions); conjuncts referencing
-  // any aggregate output stay above as a HAVING-equivalent Filter.
+  // any aggregate output stay above as a HAVING-equivalent Filter, as do
+  // nondeterministic conjuncts, since a group collapses rows.
   //
   // An aggregate that emits a row on empty input — a global aggregate (no
   // grouping keys), or one with a global (empty) grouping set — blocks
@@ -794,6 +809,8 @@ class Pushdown : public NodeRewriter<PushdownContext> {
 
     auto [substitutable, blocked] =
         partition(context.pending, aggregateOutputs);
+    blockNondeterministic(substitutable, blocked);
+
     ExprVector pushable;
     pushable.reserve(substitutable.size());
     for (ExprCP conjunct : substitutable) {
@@ -846,7 +863,9 @@ class Pushdown : public NodeRewriter<PushdownContext> {
 
   // Join: demote outer to inner when possible, then route each pending
   // conjunct to one of: left input, right input, join filter, or
-  // stay-above.
+  // stay-above. The join's own filter conjuncts are redistributed by the same
+  // rules. Neither moves a nondeterministic conjunct into an input, which
+  // would evaluate it once for rows the join then multiplies.
   NodeCP rewriteJoin(const Join* node, PushdownContext& context) override {
     PlanObjectSet leftColumns =
         PlanObjectSet::fromObjects(node->left()->outputColumns());
@@ -904,7 +923,11 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       const bool leftOnly = !columns.empty() && columns.isSubset(leftColumns);
       const bool rightOnly = !columns.empty() && columns.isSubset(rightColumns);
 
-      if (canPushLeft(newKind, leftOnly)) {
+      // A nondeterministic conjunct must not move into an input: one evaluation
+      // per input row would then decide every output row that row produces.
+      if (conjunct->containsNonDeterministic() && (leftOnly || rightOnly)) {
+        above.push_back(conjunct);
+      } else if (canPushLeft(newKind, leftOnly)) {
         leftPending.push_back(conjunct);
       } else if (canPushRight(newKind, rightOnly)) {
         rightPending.push_back(conjunct);
@@ -922,6 +945,12 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     ExprVector keptFilter;
     keptFilter.reserve(node->filter().size());
     for (ExprCP conjunct : node->filter()) {
+      // Staying on the join is where a filter conjunct already is, so unlike
+      // the loop above this needs no test for which inputs it references.
+      if (conjunct->containsNonDeterministic()) {
+        keptFilter.push_back(conjunct);
+        continue;
+      }
       const auto& columns = conjunct->columns();
       const bool leftOnly = !columns.empty() && columns.isSubset(leftColumns);
       const bool rightOnly = !columns.empty() && columns.isSubset(rightColumns);
@@ -1385,7 +1414,8 @@ class Pushdown : public NodeRewriter<PushdownContext> {
 
   // Unnest: conjuncts referencing only replicated (pre-unnest) columns
   // push below. Conjuncts that touch any unnest-produced column or the
-  // ordinality column stay above — those don't exist on the input.
+  // ordinality column stay above — those don't exist on the input. So do
+  // nondeterministic conjuncts, since one input row yields many output rows.
   NodeCP rewriteUnnest(const Unnest* node, PushdownContext& context) override {
     PlanObjectSet outputOnlyColumns;
     for (const ColumnVector& perExpression : node->unnestColumns()) {
@@ -1398,6 +1428,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       outputOnlyColumns.add(node->markerColumn());
     }
     auto [pushable, blocked] = partition(context.pending, outputOnlyColumns);
+    blockNondeterministic(pushable, blocked);
 
     // Columns this Unnest must still produce: those the consumer requires plus
     // the columns read by conjuncts that stay above. The marker keeps the rows
@@ -1517,8 +1548,10 @@ class Pushdown : public NodeRewriter<PushdownContext> {
 
   // Window: conjuncts whose columns are all direct partition-key
   // columns push below — within a partition those values are
-  // constant, so pre/post-filter are equivalent. All others stay
-  // above. A single ranking function then specializes into the cheapest node
+  // constant, so a deterministic conjunct keeps or drops the partition whole.
+  // All others stay above, as do nondeterministic conjuncts, which would
+  // instead thin a partition and change what the window functions read.
+  // A single ranking function then specializes into the cheapest node
   // that computes it; anything else stays a Window with unread functions
   // pruned.
   NodeCP rewriteWindow(const Window* node, PushdownContext& context) override {
@@ -1556,6 +1589,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
         blocked.push_back(conjunct);
       }
     }
+    blockNondeterministic(pushable, blocked);
 
     PlanObjectSet outputsKept = context.required;
     outputsKept.unionColumns(blocked);
@@ -1959,6 +1993,11 @@ class Pushdown : public NodeRewriter<PushdownContext> {
 
     ExprVector derived;
     for (ExprCP conjunct : pending) {
+      // A derived twin is a second, independent restriction, so deriving one
+      // from a nondeterministic conjunct rejects rows the query keeps.
+      if (conjunct->containsNonDeterministic()) {
+        continue;
+      }
       for (const auto& mapping : toLeft) {
         ExprCP substituted = exprs_.replace(conjunct, mapping);
         if (substituted != conjunct && !isSelfEquality(substituted) &&

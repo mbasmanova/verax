@@ -36,6 +36,13 @@ JoinCondition::Split JoinCondition::splitEquiKeys(
       result.residual.push_back(conjunct);
       continue;
     }
+    // A key is evaluated once per row of its own input and reused for every
+    // pair that row takes part in, so a nondeterministic equality stays a
+    // condition, which is evaluated per pair.
+    if (conjunct->containsNonDeterministic()) {
+      result.residual.push_back(conjunct);
+      continue;
+    }
     ExprCP lhs = call->args()[0];
     ExprCP rhs = call->args()[1];
     const auto& lhsCols = lhs->columns();

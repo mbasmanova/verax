@@ -727,6 +727,27 @@ TEST_P(WindowTest, leftJoinWithWindowOrderingByRightSideColumn) {
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
+// A deterministic predicate on a partition key keeps or drops a partition
+// whole, so it may push below the window. A nondeterministic one instead thins
+// the partition, changing what the window function reads, so it stays above.
+// Asserted for v2 only: v1 still pushes the predicate below the window and
+// computes the aggregate over the thinned partition.
+TEST_P(WindowTest, nondeterministicFilterOnPartitionKey) {
+  auto plan = toSingleNodePlan(
+      "SELECT n_regionkey, s FROM ("
+      "  SELECT n_regionkey, sum(n_nationkey) OVER (PARTITION BY n_regionkey) "
+      "  AS s FROM nation"
+      ") WHERE n_regionkey > rand()");
+
+  auto matcher =
+      matchScan("nation")
+          .window({"sum(n_nationkey) OVER (PARTITION BY n_regionkey) as s"})
+          .filter("n_regionkey::double > rand()")
+          .project({"n_regionkey", "s"})
+          .build();
+  AXIOM_ASSERT_PLAN_V2(plan, matcher);
+}
+
 AXIOM_INSTANTIATE_V1_V2(WindowTest);
 
 } // namespace
