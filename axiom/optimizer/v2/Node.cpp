@@ -388,8 +388,9 @@ ExprCP survivingEquiKey(ExprCP key, const PlanObjectSet& outputColumns) {
 
 // Output global partitioning of a join. A join keeps the probe's (left's)
 // partitioning when every output row is a probe row carrying its probe column
-// values unchanged, which holds for inner, left, and the left semi and anti
-// joins. Right and full joins emit build rows, so they drop it.
+// values unchanged, which holds for inner, left, the left semi and anti
+// joins, and the counting semijoin. Right and full joins emit build rows, so
+// they drop it.
 //
 // If every probe key is still an output column, the output is partitioned
 // exactly as the probe was. Otherwise only an inner join recovers a dropped
@@ -413,6 +414,7 @@ Partitioning joinGlobalPartition(
     case velox::core::JoinType::kLeftSemiFilter:
     case velox::core::JoinType::kLeftSemiProject:
     case velox::core::JoinType::kAnti:
+    case velox::core::JoinType::kCountingLeftSemiFilter:
       break;
     default:
       return {};

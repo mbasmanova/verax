@@ -535,15 +535,16 @@ TEST_P(SetTest, intersectAllSideSwap) {
   {
     auto logicalPlan =
         parseSelect("SELECT x FROM small INTERSECT ALL SELECT a FROM big");
-    AXIOM_ASSERT_PLAN_V1(
-        toSingleNodePlan(logicalPlan), startMatcher().project().build());
+    AXIOM_ASSERT_PLAN(
+        toSingleNodePlan(logicalPlan),
+        startMatcher().project({"a as x"}).build());
 
     // Output rename project: join outputs 'a' (probe) but query expects
     // 'x' (the original left side column name).
     auto distributedPlan = planVelox(logicalPlan);
     AXIOM_ASSERT_DISTRIBUTED_PLAN_V1(
         distributedPlan.plan,
-        startDistributedMatcher().project().gather().build());
+        startDistributedMatcher().project({"a as x"}).gather().build());
   }
 }
 

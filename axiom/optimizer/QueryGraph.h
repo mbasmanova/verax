@@ -207,10 +207,15 @@ class Column : public Expr {
     return alias_ != nullptr ? alias_ : toString();
   }
 
-  /// Asserts that 'this' and 'other' are joined on equality under inner-join
-  /// semantics (NULLs do not match). The relation is transitive, so if a and
-  /// b are previously asserted equal and c is asserted equal to b, a and c
-  /// are also equal.
+  /// Asserts that 'this' and 'other' hold the same value on every row the
+  /// plan produces, so either may stand for the other. The relation is
+  /// transitive, so if a and b are previously asserted equal and c is asserted
+  /// equal to b, a and c are also equal.
+  ///
+  /// Only inner joins assert this. An outer join null-pads its non-preserved
+  /// side, so its key columns are not equal in its output. A join that emits
+  /// one side only proves the equality but cannot supply both columns, so it
+  /// registers its class per cover instead of here.
   void equals(ColumnCP other) const;
 
   std::string toString() const override;

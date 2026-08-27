@@ -118,6 +118,22 @@ void JoinHypergraph::addFilterConjunct(FilterConjunct conjunct) {
   invalidateCoverCaches();
 }
 
+namespace {
+
+// Whether a join of `joinType` proves its equi-key columns hold equal values
+// on every row it emits, so downstream may substitute either for the other.
+//
+// Only a join that emits matched rows alone proves it, since an unmatched or
+// null-padded row has unequal keys. Emitting one side is enough: the equal
+// column it does not emit is recovered by renaming above it.
+bool provesKeyEquality(velox::core::JoinType joinType) {
+  using velox::core::JoinType;
+  return joinType == JoinType::kInner ||
+      joinType == JoinType::kCountingLeftSemiFilter;
+}
+
+} // namespace
+
 PlanObjectSet JoinHypergraph::coverColumns(const RelationSet& cover) const {
   PlanObjectSet columns;
   cover.forEach([&](int32_t id) { columns.unionSet(relation(id).columns()); });
@@ -163,10 +179,10 @@ folly::F14FastMap<ColumnCP, ColumnCP> JoinHypergraph::coverColumnReps(
   };
 
   for (const auto& edge : edges_) {
-    // Only an inner join makes its key columns equal in the output: across an
-    // outer join the null-padded side's key is NULL, not equal to the
-    // preserved side, so those columns must not be collapsed.
-    if (edge.joinType() != velox::core::JoinType::kInner) {
+    // Only a join that proves its keys equal on every emitted row lets the two
+    // columns collapse. Where the join emits one side only, the representative
+    // may be the column it does not produce; the emitter projects it back.
+    if (!provesKeyEquality(edge.joinType())) {
       continue;
     }
     RelationSet endpoints{edge.left()};

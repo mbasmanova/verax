@@ -43,9 +43,11 @@ struct AlgebraicProperties {
   /// `kLeftSemiFilter`/`kLeftSemiProject` (semijoin ⋉, identical
   /// reorderability), and `kAnti` (antijoin ▷, sharing ⋉'s rows).
   /// Callers normalize `kRight`/`kRightSemi*` to their left forms
-  /// (operand swap) before lookup. Throws for other types via
-  /// `VELOX_NYI`, including the counting variants
-  /// (`kCountingLeftSemiFilter`/`kCountingAnti`), which stay opaque.
+  /// (operand swap) before lookup. `kCountingLeftSemiFilter` has a row and
+  /// column of all-false entries: multiset intersection is associative, but the
+  /// enumerator claims only operand exchange for it, and a false entry widens
+  /// the TES, which is what holds a chain in place. Throws for other types via
+  /// `VELOX_NYI`, including `kCountingAnti`, which stays opaque.
   ///
   /// Conditional entries (those the paper marks "+ if predicate
   /// rejects nulls") are collapsed to false. The precondition that

@@ -37,15 +37,37 @@ namespace facebook::axiom::optimizer::v2 {
 
 namespace {
 
+// A counting semi join is its own mirror, so a cluster may put either operand
+// on the build side. That rests on the shape INTERSECT ALL lowering gives it:
+// the keys cover both inputs' columns, so the exchanged orientation emits the
+// same values.
+void checkCountingSemiJoinExchangeable(const Join* join) {
+  VELOX_CHECK(
+      PlanObjectSet::fromObjects(join->leftKeys())
+          .containsAll(join->left()->outputColumns()),
+      "A counting semi join's keys must cover its probe columns: {}",
+      join->left()->toString());
+  VELOX_CHECK(
+      PlanObjectSet::fromObjects(join->rightKeys())
+          .containsAll(join->right()->outputColumns()),
+      "A counting semi join's keys must cover its build columns: {}",
+      join->right()->toString());
+}
+
 // Reorder limit: inner / LEFT / RIGHT / FULL equi-joins,
-// plus filtering semijoin (kLeftSemiFilter), antijoin (kAnti), and
-// mark-preserving semijoin (kLeftSemiProject).
+// plus filtering semijoin (kLeftSemiFilter), antijoin (kAnti),
+// mark-preserving semijoin (kLeftSemiProject), and counting semijoin
+// (kCountingLeftSemiFilter).
 bool isClusterable(const Join* join) {
   using velox::core::JoinType;
   if (join->leftKeys().empty()) {
     return false;
   }
   const auto kind = join->joinType();
+  if (kind == JoinType::kCountingLeftSemiFilter) {
+    checkCountingSemiJoinExchangeable(join);
+    return true;
+  }
   return kind == JoinType::kInner || kind == JoinType::kLeft ||
       kind == JoinType::kRight || kind == JoinType::kFull ||
       kind == JoinType::kLeftSemiFilter || kind == JoinType::kAnti ||

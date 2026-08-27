@@ -24,12 +24,12 @@ namespace {
 
 using JoinType = velox::core::JoinType;
 
-constexpr int kKindCount = 5;
+constexpr int kKindCount = 6;
 
 // Compact ordinal for indexing the algebraic-properties table.
 // kInner = 0, kLeft = 1, kFull = 2, semijoin (⋉) = 3, antijoin (▷)
-// = 4. The paper's LOP is left-oriented; callers normalize kRight
-// and kRightSemi* by swapping operands and looking up the left
+// = 4, counting semijoin (⋉c) = 5. The paper's LOP is left-oriented; callers
+// normalize kRight and kRightSemi* by swapping operands and looking up the left
 // form. kLeftSemiFilter and kLeftSemiProject share the ⋉ row
 // (identical reorderability); kAnti maps to ▷.
 int kindIndex(JoinType type) {
@@ -45,6 +45,8 @@ int kindIndex(JoinType type) {
       return 3;
     case JoinType::kAnti:
       return 4;
+    case JoinType::kCountingLeftSemiFilter:
+      return 5;
     default:
       VELOX_NYI(
           "Algebraic properties not defined for join type: {}; "
@@ -69,6 +71,8 @@ constexpr AlgebraicProperties kTable[kKindCount][kKindCount] = {
         {.associative = true, .leftAsscom = true, .rightAsscom = false},
         // parent = ▷
         {.associative = true, .leftAsscom = true, .rightAsscom = false},
+        // parent = ⋉c
+        {.associative = false, .leftAsscom = false, .rightAsscom = false},
     },
     // child = kLeft
     {
@@ -82,6 +86,8 @@ constexpr AlgebraicProperties kTable[kKindCount][kKindCount] = {
         {.associative = false, .leftAsscom = true, .rightAsscom = false},
         // parent = ▷
         {.associative = false, .leftAsscom = true, .rightAsscom = false},
+        // parent = ⋉c
+        {.associative = false, .leftAsscom = false, .rightAsscom = false},
     },
     // child = kFull
     {
@@ -94,6 +100,8 @@ constexpr AlgebraicProperties kTable[kKindCount][kKindCount] = {
         // parent = ⋉
         {.associative = false, .leftAsscom = false, .rightAsscom = false},
         // parent = ▷
+        {.associative = false, .leftAsscom = false, .rightAsscom = false},
+        // parent = ⋉c
         {.associative = false, .leftAsscom = false, .rightAsscom = false},
     },
     // child = ⋉
@@ -108,6 +116,8 @@ constexpr AlgebraicProperties kTable[kKindCount][kKindCount] = {
         {.associative = false, .leftAsscom = true, .rightAsscom = false},
         // parent = ▷
         {.associative = false, .leftAsscom = true, .rightAsscom = false},
+        // parent = ⋉c
+        {.associative = false, .leftAsscom = false, .rightAsscom = false},
     },
     // child = ▷
     {
@@ -121,9 +131,25 @@ constexpr AlgebraicProperties kTable[kKindCount][kKindCount] = {
         {.associative = false, .leftAsscom = true, .rightAsscom = false},
         // parent = ▷
         {.associative = false, .leftAsscom = true, .rightAsscom = false},
+        // parent = ⋉c
+        {.associative = false, .leftAsscom = false, .rightAsscom = false},
+    },
+    // child = ⋉c
+    {
+        // parent = kInner
+        {.associative = false, .leftAsscom = false, .rightAsscom = false},
+        // parent = kLeft
+        {.associative = false, .leftAsscom = false, .rightAsscom = false},
+        // parent = kFull
+        {.associative = false, .leftAsscom = false, .rightAsscom = false},
+        // parent = ⋉
+        {.associative = false, .leftAsscom = false, .rightAsscom = false},
+        // parent = ▷
+        {.associative = false, .leftAsscom = false, .rightAsscom = false},
+        // parent = ⋉c
+        {.associative = false, .leftAsscom = false, .rightAsscom = false},
     },
 };
-
 } // namespace
 
 AlgebraicProperties AlgebraicProperties::derive(

@@ -206,3 +206,17 @@ SELECT a, b FROM t WHERE a = 1 AND b = 40
 SELECT a AS x, a AS y FROM t WHERE a = 1 AND b = 10
 INTERSECT
 SELECT a, a FROM t WHERE a = 1 AND b = 40
+----
+-- Multi-column INTERSECT ALL with NULLs on both sides.
+SELECT p, q FROM (VALUES (1, null), (1, null), (1, 10)) AS v(p, q)
+INTERSECT ALL
+SELECT r, s FROM (VALUES (1, null), (1, 10), (1, 10), (2, 2), (3, 3), (4, 4))
+  AS w(r, s)
+----
+-- Multi-column INTERSECT ALL as an input to a join, projecting both
+-- intersected columns and one from the joined table.
+SELECT i.a, i.b, t.c FROM (
+  SELECT a, b FROM t WHERE a < 3
+  INTERSECT ALL
+  SELECT a, b FROM t WHERE b <= 50
+) i JOIN t ON t.b = i.b WHERE i.a = 1
