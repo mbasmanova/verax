@@ -600,10 +600,13 @@ class Translator {
       const std::vector<lp::ExprPtr>& projectExprs,
       const std::vector<std::string>& projectNames,
       Scope& windowScope);
+  // `dedupAbove` says the caller dedups the result, which subsumes a nested
+  // UNION's own dedup and so allows flattening such a leg.
   Translated buildUnionAll(
       const std::vector<lp::LogicalPlanNodePtr>& inputs,
       const velox::RowTypePtr& outputType,
-      const LpNameSet& required);
+      const LpNameSet& required,
+      bool dedupAbove);
 
   // Translates `predicateExpr` against `scope` (lifting any subqueries
   // above `input` via Apply) and lowers it onto `input`. Returns an
@@ -2207,23 +2210,24 @@ ColumnCP columnInScope(const Scope& scope, const std::string& name) {
 Translated Translator::buildUnionAll(
     const std::vector<lp::LogicalPlanNodePtr>& inputs,
     const velox::RowTypePtr& outputType,
-    const LpNameSet& required) {
-  // Flatten nested UNION ALL into one N-way union: a leg that is itself a UNION
-  // ALL contributes its own legs directly. Legs align positionally with the
-  // union's outputType at every level, so a flattened leg maps to the same kept
-  // positions as a direct one.
+    const LpNameSet& required,
+    bool dedupAbove) {
+  // Legs align positionally with the union's outputType at every level, so a
+  // flattened leg maps to the same kept positions as a direct one.
   std::vector<lp::LogicalPlanNodePtr> flatInputs;
   std::function<void(const lp::LogicalPlanNodePtr&)> collect =
       [&](const lp::LogicalPlanNodePtr& node) {
-        if (node->kind() == lp::NodeKind::kSet &&
-            node->as<lp::SetNode>()->operation() ==
-                lp::SetOperation::kUnionAll) {
-          for (const auto& child : node->inputs()) {
-            collect(child);
+        if (node->kind() == lp::NodeKind::kSet) {
+          const auto operation = node->as<lp::SetNode>()->operation();
+          if (operation == lp::SetOperation::kUnionAll ||
+              (dedupAbove && operation == lp::SetOperation::kUnion)) {
+            for (const auto& child : node->inputs()) {
+              collect(child);
+            }
+            return;
           }
-        } else {
-          flatInputs.push_back(node);
         }
+        flatInputs.push_back(node);
       };
   for (const auto& in : inputs) {
     collect(in);
@@ -2301,10 +2305,14 @@ Translated Translator::translateSet(
     const LpNameSet& required) {
   switch (set.operation()) {
     case lp::SetOperation::kUnionAll:
-      return buildUnionAll(set.inputs(), set.outputType(), required);
+      return buildUnionAll(
+          set.inputs(), set.outputType(), required, /*dedupAbove=*/false);
     case lp::SetOperation::kUnion: {
       Translated all = buildUnionAll(
-          set.inputs(), set.outputType(), allNames(*set.outputType()));
+          set.inputs(),
+          set.outputType(),
+          allNames(*set.outputType()),
+          /*dedupAbove=*/true);
       const ColumnVector& cols = all.node->outputColumns();
       Scope newScope;
       populateScope(*set.outputType(), cols, newScope);

@@ -234,7 +234,7 @@ TEST_P(SetTest, unionFlatten) {
                          .aggregation()
                          .build();
 
-      AXIOM_ASSERT_PLAN_V1(plan, matcher);
+      AXIOM_ASSERT_PLAN(plan, matcher);
     } else if (
         leftType == lp::SetOperation::kUnionAll &&
         rightType == lp::SetOperation::kUnionAll) {
