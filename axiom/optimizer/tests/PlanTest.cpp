@@ -202,6 +202,9 @@ TEST_P(PlanTest, specialFormConstantFold) {
     std::optional<std::string> expectedExpression;
   };
 
+  const std::string kFalse{"false"};
+  const std::string kNull{"null"};
+
   std::vector<TestCase> filterTestCases = {
       {"1 in (1, 2, 3)", std::nullopt},
       {"if(2 > 1, true, false)", std::nullopt},
@@ -211,15 +214,15 @@ TEST_P(PlanTest, specialFormConstantFold) {
       {"coalesce(cast(null as boolean), true)", std::nullopt},
       {"case when 2 > 1 then true else false end", std::nullopt},
       {"if(1 > 2, 3 + 4, 4 + 5) > 8", std::nullopt},
-      {"1 in (2, 3)", "false"},
-      {"if(2 < 1, true, false)", "false"},
-      {"1 > 2 or false", "false"},
-      {"cast(0 as BOOLEAN)", "false"},
-      {"try_cast(1 as BIGINT) > 4", "false"},
+      {"1 in (2, 3)", kFalse},
+      {"if(2 < 1, true, false)", kFalse},
+      {"1 > 2 or false", kFalse},
+      {"cast(0 as BOOLEAN)", kFalse},
+      {"try_cast(1 as BIGINT) > 4", kFalse},
       {"try(10 / 1) > 4", std::nullopt},
-      {"coalesce(cast(null as boolean), false)", "false"},
-      {"case when 1 > 2 then true else false end", "false"},
-      {"try_cast('a' as BIGINT) > 4", "null"},
+      {"coalesce(cast(null as boolean), false)", kFalse},
+      {"case when 1 > 2 then true else false end", kFalse},
+      {"try_cast('a' as BIGINT) > 4", kNull},
       {"if(a > b, 1 + 2, c) > b + 3", "if(a > b, 3, c) > b + 3"},
       {"if(a > b, 1 + 2, 3 + 4) > b + 3", "if(a > b, 3, 7) > b + 3"},
   };
@@ -235,12 +238,17 @@ TEST_P(PlanTest, specialFormConstantFold) {
     std::shared_ptr<velox::core::PlanMatcher> matcher;
     if (!expected.has_value()) {
       matcher = matchScan("numbers").project().build();
+    } else if (
+        useV2_ && (expected.value() == kFalse || expected.value() == kNull)) {
+      // A filter that folds to a constant admitting no rows leaves nothing to
+      // read, so the scan is replaced with an empty Values.
+      matcher = matchValues().project().build();
     } else {
       matcher = matchScan("numbers").filter(expected.value()).project().build();
     }
 
     auto plan = toSingleNodePlan(logicalPlan);
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
   std::vector<TestCase> projectTestCases = {
@@ -347,10 +355,10 @@ TEST_P(PlanTest, inList) {
   {
     auto logicalPlan = scan().filter("4 in (1, 2, 3)").map({"a + 2"}).build();
 
-    auto matcher = scanMatcher().filter("false").project().build();
+    auto matcher = matchValues().project().build();
 
     auto plan = toSingleNodePlan(logicalPlan);
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN_V2(plan, matcher);
   }
   {
     auto logicalPlan =
@@ -529,15 +537,14 @@ TEST_P(PlanTest, filterBreakup) {
             .hashJoin(matchHiveScan(
                 "part",
                 {},
-                "\"or\"(\"and\"(p_size between 1 and 15, (p_brand = 'Brand#34' AND p_container LIKE 'LG%')), "
-                "   \"or\"(\"and\"(p_size between 1 and 5, (p_brand = 'Brand#12' AND p_container LIKE 'SM%')), "
-                "          \"and\"(p_size between 1 and 10, (p_brand = 'Brand#23' AND p_container LIKE 'MED%'))))"))
-            .filter()
+                "\"or\"(\"or\"(\"and\"((p_brand = 'Brand#12' AND p_container LIKE 'SM%'), p_size between 1 and 5), "
+                "           \"and\"((p_brand = 'Brand#23' AND p_container LIKE 'MED%'), p_size between 1 and 10)), "
+                "      \"and\"((p_brand = 'Brand#34' AND p_container LIKE 'LG%'), p_size between 1 and 15))"))
             .project()
             .singleAggregation()
             .build();
 
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN_V2(plan, matcher);
   }
 
   auto referenceBuilder =
