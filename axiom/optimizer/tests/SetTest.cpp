@@ -529,7 +529,7 @@ TEST_P(SetTest, intersectAllSideSwap) {
   {
     auto logicalPlan =
         parseSelect("SELECT a FROM big INTERSECT ALL SELECT x FROM small");
-    AXIOM_ASSERT_PLAN_V1(toSingleNodePlan(logicalPlan), startMatcher().build());
+    AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), startMatcher().build());
 
     auto distributedPlan = planVelox(logicalPlan);
     AXIOM_ASSERT_DISTRIBUTED_PLAN_V1(
