@@ -24,10 +24,12 @@ using namespace velox;
 
 // Tests for the existence pushdown optimization described in
 // docs/ExistencePushdown.md.
-class ExistencePushdownTest : public test::QueryTestBase {
+class ExistencePushdownTest : public test::QueryTestBase,
+                              public ::testing::WithParamInterface<bool> {
  protected:
   void SetUp() override {
     test::QueryTestBase::SetUp();
+    useV2_ = GetParam();
 
     // Small table — the pushed table.
     testConnector_->addTable("t", ROW({"a", "b", "c"}, BIGINT()))
@@ -78,7 +80,7 @@ class ExistencePushdownTest : public test::QueryTestBase {
 // ensures the optimizer only pushes when it's beneficial.
 
 // Row 1, 4, 8, 13.
-TEST_F(ExistencePushdownTest, innerJoinGroupBy) {
+TEST_P(ExistencePushdownTest, innerJoinGroupBy) {
   auto logicalPlan = parseSelect(
       "SELECT t.a, dt.x, dt.cnt "
       "FROM t "
@@ -97,7 +99,7 @@ TEST_F(ExistencePushdownTest, innerJoinGroupBy) {
           .hashJoin(matchScan("t").filter("b < 100"), core::JoinType::kInner)
           .project()
           .build();
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V1(plan, matcher);
 
   // Distributed plan.
   //
@@ -119,11 +121,11 @@ TEST_F(ExistencePushdownTest, innerJoinGroupBy) {
           .project()
           .gather()
           .build();
-  AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, distributedMatcher);
+  AXIOM_ASSERT_DISTRIBUTED_PLAN_V1(distributedPlan.plan, distributedMatcher);
 }
 
 // Row 5.
-TEST_F(ExistencePushdownTest, semiJoin) {
+TEST_P(ExistencePushdownTest, semiJoin) {
   auto logicalPlan = parseSelect(
       "SELECT * FROM t "
       "WHERE t.b < 100 "
@@ -145,7 +147,7 @@ TEST_F(ExistencePushdownTest, semiJoin) {
                              .project(),
                          core::JoinType::kLeftSemiFilter)
                      .build();
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V1(plan, matcher);
 
   // Distributed plan.
   //
@@ -173,11 +175,11 @@ TEST_F(ExistencePushdownTest, semiJoin) {
               core::JoinType::kLeftSemiFilter)
           .gather()
           .build();
-  AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, distributedMatcher);
+  AXIOM_ASSERT_DISTRIBUTED_PLAN_V1(distributedPlan.plan, distributedMatcher);
 }
 
 // Row 6.
-TEST_F(ExistencePushdownTest, leftJoinDtIsOptional) {
+TEST_P(ExistencePushdownTest, leftJoinDtIsOptional) {
   auto logicalPlan = parseSelect(
       "SELECT t.a, dt.x, dt.cnt "
       "FROM t "
@@ -196,7 +198,7 @@ TEST_F(ExistencePushdownTest, leftJoinDtIsOptional) {
           .singleAggregation({"x"}, {"count(*) as cnt"})
           .hashJoin(matchScan("t").filter("b < 100"), core::JoinType::kRight)
           .build();
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V1(plan, matcher);
 
   // Distributed plan.
   auto distributedPlan = planVelox(logicalPlan);
@@ -214,13 +216,13 @@ TEST_F(ExistencePushdownTest, leftJoinDtIsOptional) {
               core::JoinType::kRight)
           .gather()
           .build();
-  AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, distributedMatcher);
+  AXIOM_ASSERT_DISTRIBUTED_PLAN_V1(distributedPlan.plan, distributedMatcher);
 }
 
 // Row 9: pushed table is a DerivedTable (subquery).
 // TODO: A more optimal plan would push dt2 as existence inside dt1's
 // aggregation, filtering u before GROUP BY.
-TEST_F(ExistencePushdownTest, otherIsDerivedTable) {
+TEST_P(ExistencePushdownTest, otherIsDerivedTable) {
   auto logicalPlan = parseSelect(
       "SELECT dt1.x, dt1.cnt, dt2.a "
       "FROM (SELECT x, COUNT(*) AS cnt FROM u GROUP BY x) dt1 "
@@ -239,7 +241,7 @@ TEST_F(ExistencePushdownTest, otherIsDerivedTable) {
               core::JoinType::kInner)
           .project()
           .build();
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V1(plan, matcher);
 
   // Distributed plan.
   auto distributedPlan = planVelox(logicalPlan);
@@ -259,11 +261,11 @@ TEST_F(ExistencePushdownTest, otherIsDerivedTable) {
                                 .project()
                                 .gather()
                                 .build();
-  AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, distributedMatcher);
+  AXIOM_ASSERT_DISTRIBUTED_PLAN_V1(distributedPlan.plan, distributedMatcher);
 }
 
 // Row 10.
-TEST_F(ExistencePushdownTest, chainJoin) {
+TEST_P(ExistencePushdownTest, chainJoin) {
   auto logicalPlan = parseSelect(
       "SELECT dt.cnt "
       "FROM (SELECT x, COUNT(*) AS cnt FROM u GROUP BY x) dt "
@@ -291,7 +293,7 @@ TEST_F(ExistencePushdownTest, chainJoin) {
               matchScan("s").aliases({"s_a"}).filter("s_a < 100"),
               core::JoinType::kInner)
           .build();
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V1(plan, matcher);
 
   // Distributed plan.
   auto distributedPlan = planVelox(logicalPlan);
@@ -321,11 +323,11 @@ TEST_F(ExistencePushdownTest, chainJoin) {
               core::JoinType::kInner)
           .gather()
           .build();
-  AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, distributedMatcher);
+  AXIOM_ASSERT_DISTRIBUTED_PLAN_V1(distributedPlan.plan, distributedMatcher);
 }
 
 // Row 11: r and s pushed independently on different grouping keys.
-TEST_F(ExistencePushdownTest, multipleTables) {
+TEST_P(ExistencePushdownTest, multipleTables) {
   auto logicalPlan = parseSelect(
       "SELECT r.a, s.a, dt.x, dt.y "
       "FROM r "
@@ -351,7 +353,7 @@ TEST_F(ExistencePushdownTest, multipleTables) {
           .hashJoin(matchScan("r").filter("b < 100"), core::JoinType::kInner)
           .project()
           .build();
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V1(plan, matcher);
 
   // Distributed plan.
   auto distributedPlan = planVelox(logicalPlan);
@@ -380,11 +382,11 @@ TEST_F(ExistencePushdownTest, multipleTables) {
           .gather()
           .project()
           .build();
-  AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, distributedMatcher);
+  AXIOM_ASSERT_DISTRIBUTED_PLAN_V1(distributedPlan.plan, distributedMatcher);
 }
 
 // Row 12.
-TEST_F(ExistencePushdownTest, partialPush) {
+TEST_P(ExistencePushdownTest, partialPush) {
   auto logicalPlan = parseSelect(
       "SELECT t.a, r.a, dt.x, dt.cnt "
       "FROM t "
@@ -405,7 +407,7 @@ TEST_F(ExistencePushdownTest, partialPush) {
           .hashJoin(matchScan("r"), core::JoinType::kInner)
           .project()
           .build();
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V1(plan, matcher);
 
   // Distributed plan.
   auto distributedPlan = planVelox(logicalPlan);
@@ -423,11 +425,11 @@ TEST_F(ExistencePushdownTest, partialPush) {
           .gather()
           .project()
           .build();
-  AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, distributedMatcher);
+  AXIOM_ASSERT_DISTRIBUTED_PLAN_V1(distributedPlan.plan, distributedMatcher);
 }
 
 // Row 14.
-TEST_F(ExistencePushdownTest, distinctSubquery) {
+TEST_P(ExistencePushdownTest, distinctSubquery) {
   auto logicalPlan = parseSelect(
       "SELECT t.a, dt.x "
       "FROM t "
@@ -445,7 +447,7 @@ TEST_F(ExistencePushdownTest, distinctSubquery) {
           .singleAggregation({"x"}, {})
           .hashJoin(matchScan("t").filter("b < 100"), core::JoinType::kInner)
           .build();
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V1(plan, matcher);
 
   // Distributed plan.
   //
@@ -466,11 +468,11 @@ TEST_F(ExistencePushdownTest, distinctSubquery) {
               core::JoinType::kInner)
           .gather()
           .build();
-  AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, distributedMatcher);
+  AXIOM_ASSERT_DISTRIBUTED_PLAN_V1(distributedPlan.plan, distributedMatcher);
 }
 
 // Row 2.
-TEST_F(ExistencePushdownTest, multiKeyJoin) {
+TEST_P(ExistencePushdownTest, multiKeyJoin) {
   auto logicalPlan = parseSelect(
       "SELECT t.a, t.b, dt.x, dt.y, dt.cnt "
       "FROM t "
@@ -490,7 +492,7 @@ TEST_F(ExistencePushdownTest, multiKeyJoin) {
           .hashJoin(matchScan("t").filter("c < 100"), core::JoinType::kInner)
           .project()
           .build();
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V1(plan, matcher);
 
   // Distributed plan.
   auto distributedPlan = planVelox(logicalPlan);
@@ -509,12 +511,12 @@ TEST_F(ExistencePushdownTest, multiKeyJoin) {
           .project()
           .gather()
           .build();
-  AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, distributedMatcher);
+  AXIOM_ASSERT_DISTRIBUTED_PLAN_V1(distributedPlan.plan, distributedMatcher);
 }
 
 // Row 3: pushdown fires even with non-equality filter — equality part is
 // pushed, filter stays outside.
-TEST_F(ExistencePushdownTest, joinWithFilter) {
+TEST_P(ExistencePushdownTest, joinWithFilter) {
   auto logicalPlan = parseSelect(
       "SELECT t.a, dt.x, dt.cnt "
       "FROM t "
@@ -535,7 +537,7 @@ TEST_F(ExistencePushdownTest, joinWithFilter) {
           .filter("b < x")
           .project()
           .build();
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V1(plan, matcher);
 
   // Distributed plan.
   auto distributedPlan = planVelox(logicalPlan);
@@ -555,11 +557,11 @@ TEST_F(ExistencePushdownTest, joinWithFilter) {
           .project()
           .gather()
           .build();
-  AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, distributedMatcher);
+  AXIOM_ASSERT_DISTRIBUTED_PLAN_V1(distributedPlan.plan, distributedMatcher);
 }
 
 // Row 7: no pushdown — DT is the preserved side of LEFT JOIN.
-TEST_F(ExistencePushdownTest, leftJoinDtIsPreserved) {
+TEST_P(ExistencePushdownTest, leftJoinDtIsPreserved) {
   auto logicalPlan = parseSelect(
       "SELECT dt.x, dt.cnt, t.a "
       "FROM (SELECT x, COUNT(*) AS cnt FROM u GROUP BY x) dt "
@@ -574,7 +576,7 @@ TEST_F(ExistencePushdownTest, leftJoinDtIsPreserved) {
                      .hashJoin(matchScan("t"), core::JoinType::kLeft)
                      .project()
                      .build();
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V1(plan, matcher);
 
   // Distributed plan.
   auto distributedPlan = planVelox(logicalPlan);
@@ -588,12 +590,12 @@ TEST_F(ExistencePushdownTest, leftJoinDtIsPreserved) {
           .project()
           .gather()
           .build();
-  AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, distributedMatcher);
+  AXIOM_ASSERT_DISTRIBUTED_PLAN_V1(distributedPlan.plan, distributedMatcher);
 }
 
 // Row 16: join key matches window PARTITION BY — pushdown is valid.
 // Correct plan has semijoin below the window, original join above.
-TEST_F(ExistencePushdownTest, windowSubquery) {
+TEST_P(ExistencePushdownTest, windowSubquery) {
   auto logicalPlan = parseSelect(
       "SELECT t.a, dt.x, dt.rn "
       "FROM t "
@@ -615,7 +617,7 @@ TEST_F(ExistencePushdownTest, windowSubquery) {
           .hashJoin(matchScan("t").filter("b < 100"), core::JoinType::kInner)
           .project()
           .build();
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V1(plan, matcher);
 
   // Distributed plan.
   auto distributedPlan = planVelox(logicalPlan);
@@ -635,11 +637,11 @@ TEST_F(ExistencePushdownTest, windowSubquery) {
           .project()
           .gather()
           .build();
-  AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, distributedMatcher);
+  AXIOM_ASSERT_DISTRIBUTED_PLAN_V1(distributedPlan.plan, distributedMatcher);
 }
 
 // No pushdown: LIMIT blocks it.
-TEST_F(ExistencePushdownTest, limitOnFirstDt) {
+TEST_P(ExistencePushdownTest, limitOnFirstDt) {
   auto logicalPlan = parseSelect(
       "SELECT t.a, dt.x "
       "FROM t "
@@ -658,7 +660,7 @@ TEST_F(ExistencePushdownTest, limitOnFirstDt) {
               matchScan("u").singleAggregation({"x"}, {}).finalLimit(0, 10),
               core::JoinType::kInner)
           .build();
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V1(plan, matcher);
 
   // Distributed plan.
   auto distributedPlan = planVelox(logicalPlan);
@@ -675,10 +677,10 @@ TEST_F(ExistencePushdownTest, limitOnFirstDt) {
                                     core::JoinType::kInner)
                                 .gather()
                                 .build();
-  AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, distributedMatcher);
+  AXIOM_ASSERT_DISTRIBUTED_PLAN_V1(distributedPlan.plan, distributedMatcher);
 }
 
-TEST_F(ExistencePushdownTest, orderByOnFirstDt) {
+TEST_P(ExistencePushdownTest, orderByOnFirstDt) {
   auto logicalPlan = parseSelect(
       "SELECT t.a, dt.x "
       "FROM t "
@@ -701,7 +703,7 @@ TEST_F(ExistencePushdownTest, orderByOnFirstDt) {
           .project()
           .hashJoin(matchScan("t").filter("b < 100"), core::JoinType::kInner)
           .build();
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V1(plan, matcher);
 
   // Distributed plan.
   auto distributedPlan = planVelox(logicalPlan);
@@ -720,10 +722,10 @@ TEST_F(ExistencePushdownTest, orderByOnFirstDt) {
               core::JoinType::kInner)
           .gather()
           .build();
-  AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, distributedMatcher);
+  AXIOM_ASSERT_DISTRIBUTED_PLAN_V1(distributedPlan.plan, distributedMatcher);
 }
 
-TEST_F(ExistencePushdownTest, aggregateKey) {
+TEST_P(ExistencePushdownTest, aggregateKey) {
   auto logicalPlan = parseSelect(
       "SELECT t.a, dt.cnt "
       "FROM t "
@@ -741,7 +743,7 @@ TEST_F(ExistencePushdownTest, aggregateKey) {
           .project()
           .hashJoin(matchScan("t").filter("b < 100"), core::JoinType::kInner)
           .build();
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V1(plan, matcher);
 
   // Distributed plan.
   auto distributedPlan = planVelox(logicalPlan);
@@ -757,14 +759,14 @@ TEST_F(ExistencePushdownTest, aggregateKey) {
               core::JoinType::kInner)
           .gather()
           .build();
-  AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, distributedMatcher);
+  AXIOM_ASSERT_DISTRIBUTED_PLAN_V1(distributedPlan.plan, distributedMatcher);
 }
 
 // Pushed table is a DT with unnest. The join key on firstDt's side is a
 // grouping key (valid). The unnest is inside the pushed table, not firstDt.
 // TODO: A more optimal plan would push w as existence inside dt's
 // aggregation, filtering u before GROUP BY.
-TEST_F(ExistencePushdownTest, otherIsUnnestDerivedTable) {
+TEST_P(ExistencePushdownTest, otherIsUnnestDerivedTable) {
   auto logicalPlan = parseSelect(
       "SELECT dt.x, dt.cnt, w.n "
       "FROM (SELECT x, COUNT(*) AS cnt FROM u GROUP BY x) dt "
@@ -786,7 +788,7 @@ TEST_F(ExistencePushdownTest, otherIsUnnestDerivedTable) {
                          core::JoinType::kInner)
                      .project()
                      .build();
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V1(plan, matcher);
 
   // Distributed plan.
   auto distributedPlan = planVelox(logicalPlan);
@@ -807,14 +809,14 @@ TEST_F(ExistencePushdownTest, otherIsUnnestDerivedTable) {
                                 .project()
                                 .gather()
                                 .build();
-  AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, distributedMatcher);
+  AXIOM_ASSERT_DISTRIBUTED_PLAN_V1(distributedPlan.plan, distributedMatcher);
 }
 
 // Pushdown into a DT where the grouping key comes from unnest. The semijoin
 // should filter the unnest output, not the unnest table itself.
 // TODO: A more optimal plan would push r as existence below the aggregation,
 // filtering unnested rows before GROUP BY.
-TEST_F(ExistencePushdownTest, unnestGroupBy) {
+TEST_P(ExistencePushdownTest, unnestGroupBy) {
   auto logicalPlan = parseSelect(
       "SELECT r.a, dt.n, dt.cnt "
       "FROM r "
@@ -837,7 +839,7 @@ TEST_F(ExistencePushdownTest, unnestGroupBy) {
                          core::JoinType::kInner)
                      .project()
                      .build();
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V1(plan, matcher);
 
   // Distributed plan.
   auto distributedPlan = planVelox(logicalPlan);
@@ -858,10 +860,10 @@ TEST_F(ExistencePushdownTest, unnestGroupBy) {
           .project()
           .gather()
           .build();
-  AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, distributedMatcher);
+  AXIOM_ASSERT_DISTRIBUTED_PLAN_V1(distributedPlan.plan, distributedMatcher);
 }
 
-TEST_F(ExistencePushdownTest, unnestKey) {
+TEST_P(ExistencePushdownTest, unnestKey) {
   // Use a table with no stats to trigger the code path where
   // findReducingBushyJoins pushes the base table into the subquery DT.
   testConnector_->addTable("t_no_stats", ROW("a", INTEGER()));
@@ -882,11 +884,11 @@ TEST_F(ExistencePushdownTest, unnestKey) {
                          core::JoinType::kLeftSemiFilter)
                      .project()
                      .build();
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V1(plan, matcher);
 }
 
 // No PARTITION BY — pushdown below window is invalid. Join must stay above.
-TEST_F(ExistencePushdownTest, windowNonPartitionKey) {
+TEST_P(ExistencePushdownTest, windowNonPartitionKey) {
   auto logicalPlan = parseSelect(
       "SELECT t.a, dt.x, dt.rn "
       "FROM t "
@@ -907,7 +909,7 @@ TEST_F(ExistencePushdownTest, windowNonPartitionKey) {
           .hashJoin(matchScan("t").filter("b < 100"), core::JoinType::kInner)
           .project()
           .build();
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V1(plan, matcher);
 
   // Distributed plan.
   //
@@ -926,10 +928,10 @@ TEST_F(ExistencePushdownTest, windowNonPartitionKey) {
               core::JoinType::kInner)
           .project()
           .build();
-  AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, distributedMatcher);
+  AXIOM_ASSERT_DISTRIBUTED_PLAN_V1(distributedPlan.plan, distributedMatcher);
 }
 
-TEST_F(ExistencePushdownTest, functionOfGroupingKey) {
+TEST_P(ExistencePushdownTest, functionOfGroupingKey) {
   // Column grouping key (GROUP BY x): pushdown fires.
   {
     auto plan = toSingleNodePlan(
@@ -955,7 +957,7 @@ TEST_F(ExistencePushdownTest, functionOfGroupingKey) {
                            core::JoinType::kLeft)
                        .project()
                        .build();
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 
   // Expression grouping key (GROUP BY abs(x)): pushdown skipped.
@@ -978,7 +980,7 @@ TEST_F(ExistencePushdownTest, functionOfGroupingKey) {
                 matchScan("t").project({"abs(a)"}), core::JoinType::kRight)
             .project()
             .build();
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V1(plan, matcher);
   }
 }
 
@@ -986,7 +988,7 @@ TEST_F(ExistencePushdownTest, functionOfGroupingKey) {
 // existence pushdown must not push a semi-join below the aggregation on
 // a non-grouping column — the aggregation changes the row set, so filtering
 // by an aggregate output before aggregation is invalid.
-TEST_F(ExistencePushdownTest, functionOfAggregate) {
+TEST_P(ExistencePushdownTest, functionOfAggregate) {
   auto plan = toSingleNodePlan(
       "SELECT 1 "
       "FROM t "
@@ -1002,8 +1004,10 @@ TEST_F(ExistencePushdownTest, functionOfAggregate) {
                      .hashJoin(matchScan("t").project(), core::JoinType::kRight)
                      .project()
                      .build();
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V1(plan, matcher);
 }
+
+AXIOM_INSTANTIATE_V1_V2(ExistencePushdownTest);
 
 } // namespace
 } // namespace facebook::axiom::optimizer
