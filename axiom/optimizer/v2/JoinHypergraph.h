@@ -124,9 +124,11 @@ class JoinHypergraph {
   /// make the choice non-reproducible across runs and query forms. The order is
   /// total, so `best(A∪B) = best(best A, best B)`: a join's representative is
   /// always one of its children's representatives, hence present in a child's
-  /// output, independent of join order. Used to collapse provably-equal columns
-  /// to one, consistently for costing (row width) and emission (output columns
-  /// and key/filter references).
+  /// output, independent of join order. Where a child emits one side only, the
+  /// representative is made present by the projection the emitter places above
+  /// it.
+  /// Used to collapse provably-equal columns to one, consistently for costing
+  /// (row width) and emission (output columns and key/filter references).
   folly::F14FastMap<ColumnCP, ColumnCP> coverColumnReps(
       const RelationSet& cover) const;
 

@@ -94,6 +94,18 @@ TEST(AlgebraicPropertiesTest, table) {
 
   // kLeftSemiProject reorders like kLeftSemiFilter.
   expect(JoinType::kLeftSemiProject, JoinType::kInner, false, true, false);
+
+  // A counting semijoin does not reorder in either role.
+  expect(
+      JoinType::kCountingLeftSemiFilter, JoinType::kInner, false, false, false);
+  expect(
+      JoinType::kInner, JoinType::kCountingLeftSemiFilter, false, false, false);
+  expect(
+      JoinType::kCountingLeftSemiFilter,
+      JoinType::kCountingLeftSemiFilter,
+      false,
+      false,
+      false);
 }
 
 // For a commutative child, associativity implies left-asscom (and
@@ -140,7 +152,7 @@ TEST(AlgebraicPropertiesTest, unsupportedJoinTypeThrows) {
   VELOX_ASSERT_THROW(
       AlgebraicProperties::derive(JoinType::kRightSemiFilter, JoinType::kInner),
       "callers must normalize");
-  // Counting variants stay opaque leaves and are not reorderable.
+  // kCountingAnti has no defined properties; it stays an opaque leaf.
   VELOX_ASSERT_THROW(
       AlgebraicProperties::derive(JoinType::kCountingAnti, JoinType::kInner),
       "Algebraic properties not defined for join type");

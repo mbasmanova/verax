@@ -87,6 +87,8 @@ velox::core::JoinType flipJoinType(velox::core::JoinType kind) {
   switch (kind) {
     case velox::core::JoinType::kInner:
     case velox::core::JoinType::kFull:
+    // Multiset intersection: exchanging the operands yields the same operation.
+    case velox::core::JoinType::kCountingLeftSemiFilter:
       return kind;
     case velox::core::JoinType::kLeft:
       return velox::core::JoinType::kRight;

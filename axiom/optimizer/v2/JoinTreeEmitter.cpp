@@ -344,6 +344,9 @@ std::optional<ColumnVector> narrowSemiAntiOutput(
   switch (joinType) {
     case JoinType::kLeftSemiFilter:
     case JoinType::kAnti:
+    // A counting semi join is its own mirror, so the semi'd side is the probe
+    // in either orientation.
+    case JoinType::kCountingLeftSemiFilter:
       // Semi'd side is the probe (left) input.
       return ColumnVector{leftNode->outputColumns()};
     case JoinType::kRightSemiFilter:
@@ -368,6 +371,52 @@ std::optional<ColumnVector> narrowSemiAntiOutput(
   }
 }
 
+// Produces the demanded columns above a node that emitted the other member of
+// an equated pair, binding each absent column to the equal one that is
+// present. The keys are oriented: `leftKeys` is the emitted (probe) side.
+NodeCP projectDemanded(
+    NodeCP node,
+    const ColumnVector& demanded,
+    const ExprVector& leftKeys,
+    const ExprVector& rightKeys,
+    EmitState& state) {
+  const auto emitted = PlanObjectSet::fromObjects(node->outputColumns());
+  if (emitted.containsAll(demanded)) {
+    return node;
+  }
+  VELOX_CHECK_EQ(leftKeys.size(), rightKeys.size());
+
+  ExprVector exprs;
+  exprs.reserve(demanded.size());
+  for (ColumnCP column : demanded) {
+    ExprCP replacement = column;
+    if (!emitted.contains(column)) {
+      for (size_t i = 0; i < rightKeys.size(); ++i) {
+        if (rightKeys[i] == column) {
+          replacement = leftKeys[i];
+          break;
+        }
+      }
+      VELOX_CHECK(
+          replacement != column,
+          "Demanded column is absent from the join output and is not equated "
+          "to one that is present: {}",
+          column->toString());
+      VELOX_CHECK(
+          replacement->isColumn(),
+          "Replacement for a demanded column is not a column: {}",
+          column->toString());
+      VELOX_CHECK(
+          emitted.contains(replacement->as<Column>()),
+          "Replacement for a demanded column is not emitted by the join: {}",
+          column->toString());
+    }
+    exprs.push_back(replacement);
+  }
+  return state.builder.make<Project>(
+      {node, std::move(exprs), ColumnVector{demanded}});
+}
+
 Emitted buildJoin(
     const JoinOp* join,
     const Emitted& left,
@@ -377,6 +426,14 @@ Emitted buildJoin(
   const auto& edge = state.graph.edges()[join->edgeIndex];
   const bool isInner = edge.joinType() == velox::core::JoinType::kInner;
 
+  // True when the cover may have collapsed a demanded column onto the build
+  // side, leaving the probe-only output short of it.
+  const bool mayNeedProject =
+      join->joinType == velox::core::JoinType::kCountingLeftSemiFilter;
+  ColumnVector demanded;
+  if (mayNeedProject) {
+    demanded = outputColumns;
+  }
   if (auto narrowed = narrowSemiAntiOutput(
           join->joinType, left.node, right.node, edge.markColumn())) {
     outputColumns = std::move(*narrowed);
@@ -464,14 +521,21 @@ Emitted buildJoin(
       {left.node,
        right.node,
        join->joinType,
-       std::move(leftKeys),
-       std::move(rightKeys),
+       // The projection below reads these, so they outlive the Join.
+       leftKeys,
+       rightKeys,
        std::move(filter),
        edge.nullAware(),
        edge.nullAsValue(),
        std::move(outputColumns)});
   if (!aboveJoin.empty()) {
     node = state.builder.make<Filter>({node, std::move(aboveJoin)});
+  }
+  // A probe-only join emits its probe side, so a demanded column that the
+  // equated class placed on the other side is absent. Both hold the same value
+  // on every emitted row, so bind it to its partner through the keys.
+  if (mayNeedProject) {
+    node = projectDemanded(node, demanded, leftKeys, rightKeys, state);
   }
   retainVisible(materialized, node);
   return {node, std::move(materialized)};
