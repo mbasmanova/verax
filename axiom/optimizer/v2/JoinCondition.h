@@ -21,13 +21,13 @@
 namespace facebook::axiom::optimizer::v2 {
 
 /// Normalizes raw join-condition conjuncts into the Join IR's split
-/// form. The invariant `Join` callers rely on: any `eq(leftExpr,
-/// rightExpr)` conjunct whose sides partition cleanly into one side
-/// each lives in `leftKeys` / `rightKeys`, never in `filter`.
+/// form. The invariant `Join` callers rely on: any deterministic
+/// `eq(leftExpr, rightExpr)` conjunct whose sides partition cleanly into one
+/// side each lives in `leftKeys` / `rightKeys`, never in `filter`.
 class JoinCondition {
  public:
   /// Output of `splitEquiKeys`: paired equi-keys plus the residual
-  /// non-equi conjuncts.
+  /// conjuncts that cannot be keys.
   struct Split {
     ExprVector leftKeys;
     ExprVector rightKeys;
@@ -38,8 +38,9 @@ class JoinCondition {
   /// condition). For each `eq(lhs, rhs)` whose `lhs` references only
   /// `leftColumns` and `rhs` only `rightColumns` (or vice versa, with
   /// the pair swapped to canonical left/right order), records it as a
-  /// `(leftKey, rightKey)` pair. Anything not matching that pattern
-  /// stays in `residual`.
+  /// `(leftKey, rightKey)` pair. Anything not matching that pattern stays in
+  /// `residual`, as does a nondeterministic equality: a key is evaluated once
+  /// per row of its own input, a condition once per candidate pair.
   static Split splitEquiKeys(
       const ExprVector& conjuncts,
       const PlanObjectSet& leftColumns,

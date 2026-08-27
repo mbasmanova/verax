@@ -1246,6 +1246,24 @@ TEST_P(UnnestTest, leftJoinLateralUnnestNotSupported) {
              : "Unsupported PlanNode LATERAL_JOIN");
 }
 
+// An unnest turns one input row into many, so a nondeterministic filter on a
+// replicated column must stay above it. Pushed below, one evaluation would
+// decide every row unnested from that input row.
+TEST_P(UnnestTest, nondeterministicFilterAboveUnnest) {
+  testConnector_->addTable("t", ROW({"a", "b"}, {ARRAY(BIGINT()), BIGINT()}));
+
+  auto query = "SELECT n FROM t, UNNEST(a) AS _(n) WHERE b > rand()";
+  auto logicalPlan = parseSelect(query, kTestConnectorId);
+
+  auto matcher = matchScan("t")
+                     .unnest({"b"}, {"a"})
+                     .filter("b::double > rand()")
+                     .project({"n"})
+                     .build();
+
+  AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
+}
+
 AXIOM_INSTANTIATE_V1_V2(UnnestTest);
 
 } // namespace

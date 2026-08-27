@@ -637,13 +637,8 @@ TEST_P(SetTest, unionDistinctOverGatherInputs) {
 // must stay above UNION DISTINCT's dedup — pushing it into the legs would
 // let each duplicate row evaluate the predicate independently before dedup,
 // changing query semantics.
-//
-// The filter references a column (`k > rand()` rather than
-// `rand() < 0.5`) so that distributeConjuncts considers it for pushdown
-// (the pushdown path requires the conjunct to reference a single table).
 TEST_P(SetTest, nondeterministicFilterAboveUnion) {
-  // UNION ALL: filter pushes into both scan legs (no dedup → safe). The
-  // pushed predicate becomes a Filter node above each scan leg.
+  // UNION ALL: filter pushes into both scan legs (no dedup → safe).
   {
     auto logicalPlan = parseSelect(
         "SELECT k FROM (SELECT n_nationkey AS k FROM nation "
@@ -651,15 +646,15 @@ TEST_P(SetTest, nondeterministicFilterAboveUnion) {
 
     auto buildMatcher = [&] {
       return matchScan("nation")
-          .filter("rand() < cast(n_nationkey as double)")
-          .project()
+          .filter("n_nationkey::double > rand()")
+          .project({"n_nationkey as k"})
           .localPartition(matchScan("region")
-                              .filter("rand() < cast(r_regionkey as double)")
-                              .project());
+                              .filter("r_regionkey::double > rand()")
+                              .project({"r_regionkey as k"}));
     };
 
-    AXIOM_ASSERT_PLAN_V1(toSingleNodePlan(logicalPlan), buildMatcher().build());
-    AXIOM_ASSERT_DISTRIBUTED_PLAN_V1(
+    AXIOM_ASSERT_PLAN_V2(toSingleNodePlan(logicalPlan), buildMatcher().build());
+    AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
         planVelox(logicalPlan).plan, buildMatcher().gather().build());
   }
 
@@ -670,22 +665,25 @@ TEST_P(SetTest, nondeterministicFilterAboveUnion) {
         "SELECT k FROM (SELECT n_nationkey AS k FROM nation "
         "UNION SELECT r_regionkey AS k FROM region) WHERE k > rand()");
 
-    AXIOM_ASSERT_PLAN_V1(
+    AXIOM_ASSERT_PLAN(
         toSingleNodePlan(logicalPlan),
         matchScan("nation")
-            .project()
-            .localPartition(matchScan("region").project())
+            .project({"n_nationkey as k"})
+            .localPartition(matchScan("region").project({"r_regionkey as k"}))
             .singleAggregation({"k"}, {})
-            .filter("cast(k as double) > rand()")
+            .filter("k::double > rand()")
             .build());
 
+    // Asserted for v1 only: v2 gathers the union legs into one driver instead
+    // of spreading them round-robin, leaving the partial aggregation above it
+    // single-threaded.
     AXIOM_ASSERT_DISTRIBUTED_PLAN_V1(
         planVelox(logicalPlan).plan,
         matchScan("nation")
-            .project()
-            .localPartition(matchScan("region").project())
+            .project({"n_nationkey as k"})
+            .localPartition(matchScan("region").project({"r_regionkey as k"}))
             .distributedSingleAggregation({"k"}, {})
-            .filter("cast(k as double) > rand()")
+            .filter("k::double > rand()")
             .gather()
             .build());
   }
