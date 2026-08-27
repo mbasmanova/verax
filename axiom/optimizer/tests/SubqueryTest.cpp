@@ -726,13 +726,12 @@ TEST_P(SubqueryTest, correlatedInOnSibling) {
       "SELECT * FROM t, u "
       "WHERE t.a IN (SELECT v.b FROM v WHERE v.k = u.k)";
 
-  auto matcher =
-      matchScan("t")
-          .nestedLoopJoin(matchScan("u"), core::JoinType::kInner)
-          .hashJoin(matchScan("v").project(), core::JoinType::kLeftSemiFilter)
-          .build();
+  auto matcher = matchScan("t")
+                     .nestedLoopJoin(matchScan("u"), core::JoinType::kInner)
+                     .hashJoinLeftSemiFilter(matchScan("v"))
+                     .build();
   auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
-  AXIOM_ASSERT_PLAN_V1(plan, matcher);
+  AXIOM_ASSERT_PLAN_V2(plan, matcher);
 }
 
 // IN subquery where the left-side expression references multiple tables.
@@ -882,14 +881,15 @@ TEST_P(SubqueryTest, correlatedProject) {
     // Each subquery produces a separate LEFT JOIN.
     auto matcher = matchHiveScan("region")
                        // TODO Optimize to combine the two LEFT JOINs into one.
-                       .hashJoin(matchAggNation(), velox::core::JoinType::kLeft)
-                       .hashJoin(matchAggNation(), velox::core::JoinType::kLeft)
+                       .hashJoinLeft(matchAggNation())
+                       .project()
+                       .hashJoinLeft(matchAggNation())
                        .project()
                        .build();
 
     SCOPED_TRACE(query);
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN_V2(plan, matcher);
   }
 
   // EXISTS <subquery> in projection.
@@ -1529,26 +1529,26 @@ TEST_P(SubqueryTest, uncorrelatedThenNonEquiCorrelatedScalar) {
   SCOPED_TRACE(query);
 
   auto matcher = matchHiveScan("region")
-                     .assignUniqueId("unique_id")
-                     .nestedLoopJoin(
-                         matchHiveScan("nation").project(
-                             {"true as marker", "n_regionkey"}),
-                         velox::core::JoinType::kLeft)
                      .nestedLoopJoin(matchHiveScan("supplier")
                                          .singleAggregation(
                                              {}, {"max(s_suppkey) as max_key"}))
+                     .assignUniqueId("unique_id")
+                     .nestedLoopJoin(
+                         matchHiveScan("nation").project(
+                             {"n_regionkey", "true as marker"}),
+                         velox::core::JoinType::kLeft,
+                         "r_regionkey < n_regionkey")
                      .streamingAggregation(
                          {"unique_id"},
                          {
                              "count(*) filter (where marker) as cnt",
-                             "arbitrary(r_regionkey) as r_regionkey",
                              "arbitrary(max_key) as max_key",
                          })
                      .project({"max_key as x", "cnt as y"})
                      .build();
 
   auto plan = toSingleNodePlan(query);
-  AXIOM_ASSERT_PLAN_V1(plan, matcher);
+  AXIOM_ASSERT_PLAN_V2(plan, matcher);
 }
 
 // Non-equi correlated scalar (count(*)) followed by a correlated EXISTS
@@ -1624,19 +1624,18 @@ TEST_P(SubqueryTest, correlatedExistsThenUncorrelatedIn) {
       "FROM region";
   SCOPED_TRACE(query);
 
-  auto matcher =
-      matchHiveScan("supplier")
-          .hashJoin(
-              matchHiveScan("region"),
-              velox::core::JoinType::kRightSemiProject,
-              {.nullAware = true})
-          .nestedLoopJoin(
-              matchHiveScan("nation"), velox::core::JoinType::kLeftSemiProject)
-          .project()
-          .build();
+  auto matcher = matchHiveScan("supplier")
+                     .hashJoinRightSemiProject(
+                         matchHiveScan("region").nestedLoopJoin(
+                             matchHiveScan("nation"),
+                             velox::core::JoinType::kLeftSemiProject,
+                             "r_regionkey < n_regionkey"),
+                         {.nullAware = true})
+                     .project()
+                     .build();
 
   auto plan = toSingleNodePlan(query);
-  AXIOM_ASSERT_PLAN_V1(plan, matcher);
+  AXIOM_ASSERT_PLAN_V2(plan, matcher);
 }
 
 // Correlated scalar subqueries without aggregation.
@@ -2303,24 +2302,15 @@ TEST_P(SubqueryTest, inSubqueryWithCorrelatedNotExists) {
       ") sub ON t.a = sub.x "
       "WHERE NOT EXISTS (SELECT 1 FROM v WHERE v.y = t.a)";
 
-  // The IN subquery becomes a LEFT SEMI PROJECT (mark) join with v, wrapped
-  // in its own DT. The inner join combines u's projection with t. The NOT
-  // EXISTS becomes an anti-join with v.
-  auto matcher =
-      matchScan("t")
-          .hashJoin(
-              matchScan("u")
-                  .hashJoin(
-                      matchScan("v"),
-                      core::JoinType::kLeftSemiProject,
-                      {.nullAware = true})
-                  .project(),
-              core::JoinType::kInner)
-          .hashJoin(matchScan("v"), core::JoinType::kAnti, {.nullAware = false})
-          .build();
+  auto matcher = matchScan("t")
+                     .hashJoinInner(matchScan("u").hashJoinLeftSemiProject(
+                         matchScan("v"), {.nullAware = true}))
+                     .hashJoinAnti(matchScan("v"), {.nullAware = false})
+                     .project()
+                     .build();
 
   auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
-  AXIOM_ASSERT_PLAN_V1(plan, matcher);
+  AXIOM_ASSERT_PLAN_V2(plan, matcher);
 }
 
 // Verifies that the distributed plan for IN / NOT IN subqueries sets
