@@ -476,7 +476,7 @@ TEST_P(SetTest, intersectAll) {
             .hashJoin(matchBuild("t2"), core::JoinType::kCountingLeftSemiFilter)
             .hashJoin(matchBuild("t3"), core::JoinType::kCountingLeftSemiFilter)
             .build();
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
   auto matchPartitionedBuild = [](const std::string& table) {
