@@ -216,7 +216,15 @@ class Column : public Expr {
   /// side, so its key columns are not equal in its output. A join that emits
   /// one side only proves the equality but cannot supply both columns, so it
   /// registers its class per cover instead of here.
-  void equals(ColumnCP other) const;
+  ///
+  /// The relation is recorded on the columns themselves, so it carries no
+  /// notion of where it starts holding: below the join that proves it the
+  /// columns are unrelated. A consumer must therefore never use it to remove
+  /// the join key or filter that enforces it.
+  ///
+  /// Returns true when this call merged two classes that were separate, so a
+  /// caller can act on a newly proved equality exactly once.
+  bool equals(ColumnCP other) const;
 
   std::string toString() const override;
 

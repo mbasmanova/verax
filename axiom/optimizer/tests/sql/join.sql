@@ -297,3 +297,50 @@ FROM t
 JOIN t u ON u.a = t.a
 JOIN t v ON v.b = u.b AND v.b = t.b
 WHERE t.b > 100
+----
+-- Two columns of one relation equated to columns of two different relations.
+-- Neither equality implies the other, so both must be applied.
+SELECT count(*)
+FROM (VALUES (1), (2)) AS t(x)
+JOIN (VALUES (1), (1), (2)) AS u(z) ON t.x = u.z
+JOIN (VALUES (1, 1), (1, 2), (2, 2)) AS v(p, q) ON v.p = t.x AND v.q = u.z
+----
+-- The same, returning the equated columns rather than a count.
+SELECT t.x, u.z, v.p, v.q
+FROM (VALUES (1), (2)) AS t(x)
+JOIN (VALUES (1), (1), (2)) AS u(z) ON t.x = u.z
+JOIN (VALUES (1, 1), (1, 2), (2, 2)) AS v(p, q) ON v.p = t.x AND v.q = u.z
+----
+-- Two columns of one relation equated to the same column of another.
+SELECT count(*) FROM t JOIN t u ON t.a = u.a AND t.b = u.a
+----
+-- Set operations match NULL to NULL, so a leg holding NULLs in both of the
+-- columns another leg equates must still be matched.
+SELECT x, x FROM (VALUES (null), (1)) AS t(x)
+INTERSECT
+SELECT p, q FROM (VALUES (null, null), (1, 1), (2, 3)) AS u(p, q)
+----
+-- The same for EXCEPT.
+SELECT x, x FROM (VALUES (null), (1), (2)) AS t(x)
+EXCEPT
+SELECT p, q FROM (VALUES (null, null), (1, 1)) AS u(p, q)
+----
+-- Both of u's columns are equated to the same column of t, so a u row only
+-- joins when they agree. Rows of t that join nothing are still returned.
+SELECT t.a, u.x
+FROM (VALUES (1), (2), (3)) AS t(a)
+LEFT JOIN (VALUES (1, 1), (null, 1), (1, null), (2, 2)) AS u(x, y)
+  ON u.x = t.a AND u.y = t.a
+----
+-- The same condition under EXISTS.
+SELECT a FROM (VALUES (1), (2), (3)) AS t(a)
+WHERE EXISTS (
+  SELECT 1 FROM (VALUES (1, 1), (null, 1), (1, null), (2, 2)) AS u(x, y)
+  WHERE u.x = t.a AND u.y = t.a)
+----
+-- The same condition under NOT EXISTS, where a row of t is returned only
+-- when no row of u joins it.
+SELECT a FROM (VALUES (1), (2), (3)) AS t(a)
+WHERE NOT EXISTS (
+  SELECT 1 FROM (VALUES (1, 1), (null, 1), (1, null), (2, 2)) AS u(x, y)
+  WHERE u.x = t.a AND u.y = t.a)

@@ -77,32 +77,32 @@ ColumnCP Column::create(std::string_view prefix, const Value& value) {
   return make<Column>(queryCtx()->newName(prefix), /*relation=*/nullptr, value);
 }
 
-void Column::equals(ColumnCP other) const {
+bool Column::equals(ColumnCP other) const {
   if (!equivalence_ && !other->equivalence_) {
     auto* equiv = make<Equivalence>();
     equiv->columns.push_back(this);
     equiv->columns.push_back(other);
     equivalence_ = equiv;
     other->equivalence_ = equiv;
-    return;
+    return true;
   }
   if (!other->equivalence_) {
     other->equivalence_ = equivalence_;
     equivalence_->columns.push_back(other);
-    return;
+    return true;
   }
   if (!equivalence_) {
-    other->equals(this);
-    return;
+    return other->equals(this);
   }
   // Already in one class: merging would iterate and grow the same vector.
   if (equivalence_ == other->equivalence_) {
-    return;
+    return false;
   }
   for (auto& column : other->equivalence_->columns) {
     equivalence_->columns.push_back(column);
     column->equivalence_ = equivalence_;
   }
+  return true;
 }
 
 Name cname(PlanObjectCP relation) {

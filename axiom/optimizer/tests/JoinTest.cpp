@@ -1875,8 +1875,6 @@ TEST_P(JoinTest, impliedFilterDedup) {
 }
 
 // Three or more columns from the same table in one equivalence class.
-// TODO: Assert the V2 plan after it applies implied same-input filters inferred
-// from join conditions.
 TEST_P(JoinTest, impliedSameTableEquality) {
   testConnector_->addTable("t", ROW({"a", "b", "c"}, BIGINT()));
   testConnector_->addTable("u", ROW({"x"}, BIGINT()));
@@ -1890,18 +1888,18 @@ TEST_P(JoinTest, impliedSameTableEquality) {
 
     auto matcher = matchScan("t")
                        .filter("a = b AND a = c")
-                       .hashJoin(matchScan("u"), core::JoinType::kInner)
+                       // Only the column the join still keys on reaches it.
+                       .projectIf(useV2_, {"a"})
+                       .hashJoinInner(matchScan("u"), {.keys = {{"a = x"}}})
                        .aggregation()
                        .build();
 
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN(plan, matcher);
   }
 }
 
 // Equivalence class with same-table columns on both sides of the join.
-// TODO: Assert the V2 plan after it applies implied same-input filters to both
-// join inputs.
 TEST_P(JoinTest, impliedSameTableEqualityBothSides) {
   testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()))
       ->setStats(10'000, {{"a", {.numDistinct = 10'000}}});
@@ -1919,19 +1917,20 @@ TEST_P(JoinTest, impliedSameTableEqualityBothSides) {
     auto matcher =
         matchScan("t")
             .filter("a = b")
-            .hashJoin(matchScan("u").filter("x = y"), core::JoinType::kInner)
+            .projectIf(useV2_, {"a"})
+            .hashJoinInner(
+                matchScan("u").filter("x = y").projectIf(useV2_, {"x"}),
+                {.keys = {{"a = x"}}})
             .aggregation()
             .build();
 
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN(plan, matcher);
   }
 }
 
 // With GROUP BY a, b, the synthesized a = b references only grouping keys
 // and is pushed below the aggregation onto t's scan.
-// TODO: Assert the V2 plan after it applies the implied same-input filter below
-// the aggregation.
 TEST_P(JoinTest, impliedSameTableEqualityBelowAggregation) {
   testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
   testConnector_->addTable("u", ROW({"x"}, BIGINT()));
@@ -1944,20 +1943,20 @@ TEST_P(JoinTest, impliedSameTableEqualityBelowAggregation) {
   auto matcher = matchScan("t")
                      .filter("a = b")
                      .singleAggregation({"a", "b"}, {})
-                     .project()
+                     // v1 narrows the aggregation to the surviving key with a
+                     // projection; v2 reads only that key without one.
+                     .projectIf(!useV2_, {"a"})
                      .hashJoin(matchScan("u"), core::JoinType::kInner)
                      .aggregation()
                      .build();
 
   auto plan = toSingleNodePlan(query);
-  AXIOM_ASSERT_PLAN_V1(plan, matcher);
+  AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
 // Synthesis into HAVING: when an equivalence class member is an aggregate
 // output, the implied equality can't push below the aggregation and stays
 // as a post-aggregation Filter (HAVING).
-// TODO: Assert the V2 plan after it applies the implied same-input filter above
-// the aggregation.
 TEST_P(JoinTest, impliedSameTableEqualityInHaving) {
   testConnector_->addTable("t", ROW({"k"}, BIGINT()))
       ->setStats(10'000, {{"k", {.numDistinct = 10'000}}});
@@ -1974,19 +1973,20 @@ TEST_P(JoinTest, impliedSameTableEqualityInHaving) {
                          matchScan("t")
                              .singleAggregation({"k"}, {"count(*) as c"})
                              .filter("k = c")
-                             .project(),
+                             // v1 narrows the aggregation to the surviving key
+                             // with a projection; v2 reads only that key
+                             // without one.
+                             .projectIf(!useV2_, {"k"}),
                          core::JoinType::kInner)
                      .aggregation()
                      .build();
 
   auto plan = toSingleNodePlan(query);
-  AXIOM_ASSERT_PLAN_V1(plan, matcher);
+  AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
 // With a LIMIT in the way, the synthesized equality lands as a Filter
 // above the Limit. The redundant join key is still dropped.
-// TODO: Assert the V2 plan after it applies the implied same-input filter above
-// the limit.
 TEST_P(JoinTest, impliedSameTableEqualityBlockedByLimit) {
   testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
   testConnector_->addTable("u", ROW({"x"}, BIGINT()));
@@ -1999,23 +1999,17 @@ TEST_P(JoinTest, impliedSameTableEqualityBlockedByLimit) {
   auto matcher = matchScan("t")
                      .limit()
                      .filter("a = b")
-                     .hashJoin(matchScan("u"), core::JoinType::kInner)
+                     .hashJoinInner(matchScan("u"), {.keys = {{"a = x"}}})
                      .aggregation()
                      .build();
 
   auto plan = toSingleNodePlan(query);
-  AXIOM_ASSERT_PLAN_V1(plan, matcher);
+  AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
 // Explicit WHERE and synthesized equality converge on the same LIMIT DT
 // target. The filter appears exactly once above the Limit.
-// TODO: Run with V2 after legal many-to-one join keys no longer fail with
-// duplicate substitution sources.
 TEST_P(JoinTest, impliedSameTableEqualityBlockedByLimitDedup) {
-  if (useV2_) {
-    GTEST_SKIP() << "Not supported by the V2 optimizer";
-  }
-
   testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
   testConnector_->addTable("u", ROW({"x"}, BIGINT()));
 
@@ -2025,12 +2019,19 @@ TEST_P(JoinTest, impliedSameTableEqualityBlockedByLimitDedup) {
       "WHERE lim.a = lim.b";
   SCOPED_TRACE(query);
 
-  auto matcher = matchScan("t")
-                     .limit()
-                     .filter("a = b")
-                     .hashJoin(matchScan("u"), core::JoinType::kInner)
-                     .aggregation()
-                     .build();
+  auto matcher =
+      matchScan("t")
+          .limit()
+          .filter("a = b")
+          // TODO: v2 keeps the second key. It drops one only where
+          // it derived the filter itself, and here the query
+          // already stated it.
+          .hashJoinInner(
+              matchScan("u"),
+              {.keys = useV2_ ? std::vector<std::string>{"a = x", "b = x"}
+                              : std::vector<std::string>{"a = x"}})
+          .aggregation()
+          .build();
 
   auto plan = toSingleNodePlan(query);
   AXIOM_ASSERT_PLAN(plan, matcher);
@@ -2041,8 +2042,6 @@ TEST_P(JoinTest, impliedSameTableEqualityBlockedByLimitDedup) {
 // columns with the same left-side column. For t LEFT JOIN u ON u.x = t.a
 // AND u.y = t.a, any u row in the output must satisfy both conditions, so
 // u.x = u.y holds.
-// TODO: Assert the V2 plan after it applies the implied same-input filter to
-// the null-supplying join input.
 TEST_P(JoinTest, impliedSameTableEqualityOuterJoin) {
   testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()))
       ->setStats(10'000, {{"a", {.numDistinct = 10'000}}});
@@ -2056,19 +2055,19 @@ TEST_P(JoinTest, impliedSameTableEqualityOuterJoin) {
 
   auto matcher =
       matchScan("t")
-          .hashJoin(matchScan("u").filter("x = y"), core::JoinType::kLeft)
+          .hashJoin(
+              matchScan("u").filter("x = y").projectIf(useV2_, {"x"}),
+              core::JoinType::kLeft)
           .aggregation()
           .build();
 
   auto plan = toSingleNodePlan(query);
-  AXIOM_ASSERT_PLAN_V1(plan, matcher);
+  AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
 // SEMI join (EXISTS) gets slot-pattern same-table eq synthesis on its
 // subquery side: surviving left rows require a matching right row, so the
 // same-table eq on the right side is sound.
-// TODO: Assert the V2 plan after it applies the implied same-input filter to
-// the existence input.
 TEST_P(JoinTest, impliedSameTableEqualitySemiJoin) {
   testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()))
       ->setStats(10'000, {{"a", {.numDistinct = 10'000}}});
@@ -2083,18 +2082,17 @@ TEST_P(JoinTest, impliedSameTableEqualitySemiJoin) {
   auto matcher =
       matchScan("t")
           .hashJoin(
-              matchScan("u").filter("x = y"), core::JoinType::kLeftSemiFilter)
+              matchScan("u").filter("x = y").projectIf(useV2_, {"x"}),
+              core::JoinType::kLeftSemiFilter)
           .aggregation()
           .build();
 
   auto plan = toSingleNodePlan(query);
-  AXIOM_ASSERT_PLAN_V1(plan, matcher);
+  AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
 // RIGHT JOIN is normalized to LEFT JOIN; same-table synthesis fires on
 // the (now-right) u side, producing u.x = u.y.
-// TODO: Assert the V2 plan after it applies the implied same-input filter
-// following right-to-left join normalization.
 TEST_P(JoinTest, impliedSameTableEqualityRightJoinNormalized) {
   testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()))
       ->setStats(10'000, {{"a", {.numDistinct = 10'000}}});
@@ -2107,12 +2105,17 @@ TEST_P(JoinTest, impliedSameTableEqualityRightJoinNormalized) {
 
   auto matcher =
       matchScan("t")
-          .hashJoin(matchScan("u").filter("x = y"), core::JoinType::kLeft)
+          // v2 also drops the key the filter makes redundant, so it reads only
+          // the surviving one.
+          .hashJoinLeft(
+              matchScan("u").filter("x = y").projectIf(useV2_, {"x"}),
+              {.keys = useV2_ ? std::vector<std::string>{"a = x"}
+                              : std::vector<std::string>{"a = x", "a = y"}})
           .aggregation()
           .build();
 
   auto plan = toSingleNodePlan(query);
-  AXIOM_ASSERT_PLAN_V1(plan, matcher);
+  AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
 // FULL OUTER slot synthesis is unsound on either side (unmatched rows on
