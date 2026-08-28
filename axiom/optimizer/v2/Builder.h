@@ -54,23 +54,18 @@ class Builder {
   /// newly constructed node. `Expr` leaves use `makeLiteral` / `makeCall` /
   /// `makeAggregate`.
   ///
-  /// A `Join` key is normalized first: a repeated equi-key pair is dropped, so
-  /// the node's keys can be fewer than 'key' holds and joins differing only in
-  /// a repeated equality are one node.
+  /// A `Join` or `Filter` key is normalized first. A join drops repeated and
+  /// implied equi-key pairs and may gain a filter on an input, so the node's
+  /// keys can be fewer than 'key' holds and joins differing only in a repeated
+  /// equality are one node. A filter drops repeated predicates.
   template <typename T>
   const T* make(typename T::Key key) {
-    if constexpr (std::is_same_v<T, Join>) {
-      // Before the lookup: a join that repeats an equality is the same join
-      // as one that states it once.
-      dropRepeatedKeyPairs(key);
+    if constexpr (std::is_same_v<T, Join> || std::is_same_v<T, Filter>) {
+      normalizeKey(key);
     }
     auto& dedup = setFor<T>();
     if (auto it = dedup.find(key); it != dedup.end()) {
       return *it;
-    }
-    if constexpr (std::is_same_v<T, Join>) {
-      // Before construction: the Join ctor caches partitioning from these.
-      addEquivalences(key);
     }
     const T* node = optimizer::make<T>(std::move(key));
     // After construction, so `inputs()` is available and the set allocates in
@@ -190,16 +185,12 @@ class Builder {
   // expr on left when neither is a literal. No-op otherwise.
   void canonicalizeCall(Name& name, ExprVector& args) const;
 
-  // Adds an inner join's equi-key columns to one equivalence class (see
-  // `Column::equals`): equated columns hold the same value on every output row,
-  // so any surviving member partitions the output as the dropped key did.
-  // No-op for non-inner joins (an outer join's build key may be null-padded, so
-  // its columns are not equal on every row) and for non-column keys.
-  static void addEquivalences(const Join::Key& key);
-
-  // Drops key pairs equal to an earlier pair. `a = b AND a = b` is one
-  // equality.
-  static void dropRepeatedKeyPairs(Join::Key& key);
+  // Rewrites 'key' to the canonical form of the node it describes, so two keys
+  // that describe one node reach one entry in the dedup set. Runs before the
+  // lookup, and for a join before construction too, since the `Join` ctor
+  // reads the equivalence classes this records.
+  void normalizeKey(Join::Key& key);
+  void normalizeKey(Filter::Key& key);
 
   template <typename T>
   auto& setFor() {

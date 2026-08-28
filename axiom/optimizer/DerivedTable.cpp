@@ -799,15 +799,10 @@ void collectImpliedSameTableEqualities(
   };
 
   for (auto* table : tables) {
-    const ColumnVector* columns = nullptr;
-    if (table->is(PlanType::kTableNode)) {
-      columns = &table->as<BaseTable>()->columns;
-    } else if (table->is(PlanType::kDerivedTableNode)) {
-      columns = &table->as<DerivedTable>()->columns;
-    } else {
+    if (!table->isTable()) {
       continue;
     }
-    for (auto* column : *columns) {
+    for (auto* column : table->as<TableObject>()->columns) {
       if (auto* equivalence = column->equivalence()) {
         processEquivalence(equivalence);
       }
