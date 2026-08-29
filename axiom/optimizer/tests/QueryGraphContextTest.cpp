@@ -18,6 +18,9 @@
 #include <folly/init/Init.h>
 #include <gtest/gtest.h>
 #include <algorithm>
+#include "axiom/optimizer/OptimizerOptions.h"
+#include "axiom/optimizer/QueryGraph.h"
+#include "velox/common/base/tests/GTestUtils.h"
 #include "velox/common/memory/Memory.h"
 #include "velox/type/Type.h"
 
@@ -35,7 +38,8 @@ class QueryGraphContextTest : public ::testing::Test {
   void SetUp() override {
     pool_ = velox::memory::memoryManager()->addLeafPool();
     allocator_ = std::make_unique<velox::HashStringAllocator>(pool_.get());
-    ctx_ = std::make_unique<QueryGraphContext>(*allocator_);
+    ctx_ = std::make_unique<QueryGraphContext>(
+        *allocator_, OptimizerOptions::kMaxPlanObjectsDefault);
     queryCtx() = ctx_.get();
   }
 
@@ -288,6 +292,30 @@ TEST_F(QueryGraphContextTest, pathOrdering) {
     EXPECT_FALSE(pathValues[i] < pathValues[i - 1])
         << "Sort result not ordered at index " << i;
   }
+}
+
+TEST_F(QueryGraphContextTest, planObjectLimit) {
+  // Creating more plan objects than the limit fails the query. Uses its own
+  // context so the limit is reached in a few objects.
+  constexpr int32_t kLimit = 8;
+  velox::HashStringAllocator allocator(pool_.get());
+  auto context = std::make_unique<QueryGraphContext>(allocator, kLimit);
+  queryCtx() = context.get();
+  SCOPE_EXIT {
+    queryCtx() = ctx_.get();
+  };
+
+  const Value value(toType(velox::BIGINT()), 1);
+  const auto* literal =
+      queryCtx()->registerVariant(std::make_unique<velox::Variant>(1LL));
+
+  for (auto i = 0; i < kLimit; ++i) {
+    make<Literal>(value, literal);
+  }
+
+  VELOX_ASSERT_THROW(
+      make<Literal>(value, literal),
+      "Query is too complex to plan: it exceeds the plan object limit");
 }
 
 } // namespace

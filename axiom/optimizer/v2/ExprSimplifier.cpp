@@ -182,6 +182,8 @@ ExprCP ExprSimplifier::tryFoldConstant(ExprCP expr) {
     return expr;
   }
 
+  velox::Variant variant;
+  velox::TypePtr type;
   try {
     auto typedExpr = ExprEmitter{evaluator_.pool()}.toTypedExpr(expr);
     auto exprSet = evaluator_.compile(typedExpr);
@@ -191,17 +193,16 @@ ExprCP ExprSimplifier::tryFoldConstant(ExprCP expr) {
     }
     const auto& constantExpr =
         static_cast<const velox::exec::ConstantExpr&>(first);
-    auto variant = constantExpr.value()->variantAt(0);
-    Value value(toType(constantExpr.type()), 1);
-    auto* registered = queryCtx()->registerVariant(
-        std::make_unique<velox::Variant>(std::move(variant)));
-    return builder_.makeLiteral(value, registered);
+    variant = constantExpr.value()->variantAt(0);
+    type = constantExpr.type();
   } catch (const velox::VeloxException&) {
     // Data-dependent evaluation failure on constant args (e.g.
     // division-by-zero, invalid cast). Leave the call unchanged so the
     // error surfaces at execution.
     return expr;
   }
+
+  return builder_.makeLiteral(std::move(variant), toType(type));
 }
 
 velox::Variant ExprSimplifier::evaluate(ExprCP expr) {

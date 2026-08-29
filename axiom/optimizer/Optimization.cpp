@@ -24,6 +24,7 @@
 #include "axiom/optimizer/ConnectorPushdownPass.h"
 #include "axiom/optimizer/Filters.h"
 #include "axiom/optimizer/FunctionRegistry.h"
+#include "axiom/optimizer/OptimizerOptions.h"
 #include "axiom/optimizer/Plan.h"
 #include "axiom/optimizer/PlanUtils.h"
 #include "axiom/optimizer/PrecomputeProjection.h"
@@ -497,7 +498,8 @@ PlanAndStats Optimization::toVeloxPlan(
     velox::memory::MemoryPool& pool,
     MultiFragmentPlan::Options runnerOptions) {
   auto allocator = std::make_unique<velox::HashStringAllocator>(&pool);
-  auto context = std::make_unique<QueryGraphContext>(*allocator);
+  auto context = std::make_unique<QueryGraphContext>(
+      *allocator, optimizerSession->options().maxPlanObjects);
   queryCtx() = context.get();
   SCOPE_EXIT {
     queryCtx() = nullptr;
@@ -3897,6 +3899,8 @@ ExprCP Optimization::tryFoldConstant(ExprCP expr) {
     return nullptr;
   }
 
+  velox::Variant variant;
+  velox::TypePtr type;
   try {
     auto typedExpr = toTypedExpr(expr);
     auto exprSet = evaluator()->compile(typedExpr);
@@ -3906,17 +3910,19 @@ ExprCP Optimization::tryFoldConstant(ExprCP expr) {
     }
     const auto& constantExpr =
         static_cast<const velox::exec::ConstantExpr&>(first);
-    auto variant = constantExpr.value()->variantAt(0);
-    Value value(toType(constantExpr.type()), 1);
-    auto* registered = registerVariant(std::move(variant));
-    if (constantExpr.type()->isPrimitiveType()) {
-      value.min = registered;
-      value.max = registered;
-    }
-    return make<Literal>(value, registered);
+    variant = constantExpr.value()->variantAt(0);
+    type = constantExpr.type();
   } catch (const std::exception&) {
     return nullptr;
   }
+
+  Value value(toType(type), 1);
+  auto* registered = registerVariant(std::move(variant));
+  if (type->isPrimitiveType()) {
+    value.min = registered;
+    value.max = registered;
+  }
+  return make<Literal>(value, registered);
 }
 
 velox::Variant Optimization::evaluate(ExprCP expr) {

@@ -29,16 +29,15 @@ using velox::config::ConfigPropertyType;
 
 namespace {
 
-int32_t parseRecursionLimit(std::string_view value) {
-  int32_t iterations;
+int32_t parsePositiveInt(std::string_view name, std::string_view value) {
+  int32_t result;
   try {
-    iterations = folly::to<int32_t>(value);
+    result = folly::to<int32_t>(value);
   } catch (const folly::ConversionError&) {
-    VELOX_USER_FAIL(
-        "recursion_limit must be a valid 32-bit integer: {}", value);
+    VELOX_USER_FAIL("{} must be a valid 32-bit integer: {}", name, value);
   }
-  VELOX_USER_CHECK_GE(iterations, 1, "recursion_limit must be >= 1: {}", value);
-  return iterations;
+  VELOX_USER_CHECK_GE(result, 1, "{} must be >= 1: {}", name, value);
+  return result;
 }
 
 std::vector<ConfigProperty> buildProperties(
@@ -145,6 +144,15 @@ std::vector<ConfigProperty> buildProperties(
           "Maximum iterations for a recursion that has no bound of its own. Must be >= 1.",
       },
       {
+          std::string(OptimizerOptions::kMaxPlanObjects),
+          ConfigPropertyType::kInteger,
+          std::to_string(OptimizerOptions::kMaxPlanObjectsDefault),
+          "Fails a query that creates more than this many plan objects. "
+          "Bounds planning memory, which grows with the square of this count. "
+          "A query that exceeds it is expanding rather than merely large, "
+          "typically a CTE re-planned at each reference. Must be >= 1.",
+      },
+      {
           std::string(OptimizerOptions::kTraceFlags),
           ConfigPropertyType::kInteger,
           std::to_string(OptimizerOptions::kTraceFlagsDefault),
@@ -204,8 +212,8 @@ std::string OptimizerOptions::normalize(
     // Throws if 'value' is not a valid capacity string (e.g. "100MB").
     velox::config::toCapacity(
         std::string(value), velox::config::CapacityUnit::BYTE);
-  } else if (name == kRecursionLimit) {
-    parseRecursionLimit(value);
+  } else if (name == kRecursionLimit || name == kMaxPlanObjects) {
+    parsePositiveInt(name, value);
   }
   return std::string(value);
 }
@@ -223,6 +231,13 @@ OptimizerOptions OptimizerOptions::from(
     auto it = properties.find(key);
     if (it != properties.end()) {
       field = std::stoi(it->second);
+    }
+  };
+
+  auto setPositiveInt = [&](std::string_view key, int32_t& field) {
+    auto it = properties.find(key);
+    if (it != properties.end()) {
+      field = parsePositiveInt(key, it->second);
     }
   };
 
@@ -253,12 +268,11 @@ OptimizerOptions OptimizerOptions::from(
   setLong(kSmallQueryMaxScanRows, options.smallQueryMaxScanRows);
   setInt(kSmallQueryNumWorkers, options.smallQueryNumWorkers);
   setInt(kParallelProjectWidth, options.parallelProjectWidth);
+  setPositiveInt(kMaxPlanObjects, options.maxPlanObjects);
   setInt(kGreedyJoinThreshold, options.greedyJoinThreshold);
   setCapacity(kBroadcastSizeLimit, options.broadcastSizeLimit);
   setInt(kDphypEnumerationBudget, options.dphypEnumerationBudget);
-  if (auto it = properties.find(kRecursionLimit); it != properties.end()) {
-    options.recursionLimit = parseRecursionLimit(it->second);
-  }
+  setPositiveInt(kRecursionLimit, options.recursionLimit);
 
   auto setUint = [&](std::string_view key, uint32_t& field) {
     auto it = properties.find(key);

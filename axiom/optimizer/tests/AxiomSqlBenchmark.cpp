@@ -31,6 +31,7 @@
 #include "axiom/optimizer/ConstantExprEvaluator.h"
 #include "axiom/optimizer/DerivedTablePrinter.h"
 #include "axiom/optimizer/Optimization.h"
+#include "axiom/optimizer/OptimizerOptions.h"
 #include "axiom/optimizer/Plan.h"
 #include "axiom/optimizer/VeloxHistory.h"
 #include "axiom/runner/LocalRunner.h"
@@ -585,7 +586,8 @@ class VeloxRunner : public velox::QueryBenchmarkBase {
     opts.numDrivers = FLAGS_num_drivers;
     auto allocator =
         std::make_unique<HashStringAllocator>(optimizerPool_.get());
-    auto context = std::make_unique<optimizer::QueryGraphContext>(*allocator);
+    auto context = std::make_unique<optimizer::QueryGraphContext>(
+        *allocator, optimizer::OptimizerOptions::kMaxPlanObjectsDefault);
 
     optimizer::queryCtx() = context.get();
     SCOPE_EXIT {

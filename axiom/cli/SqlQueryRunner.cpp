@@ -177,9 +177,12 @@ std::string getLocalTimezone() {
 // thread-local queryCtx(), clearing it on destruction.
 class OptimizerContext {
  public:
-  explicit OptimizerContext(velox::memory::MemoryPool* pool)
+  OptimizerContext(velox::memory::MemoryPool* pool, int32_t maxPlanObjects)
       : allocator_(std::make_unique<velox::HashStringAllocator>(pool)),
-        context_(std::make_unique<optimizer::QueryGraphContext>(*allocator_)) {
+        context_(
+            std::make_unique<optimizer::QueryGraphContext>(
+                *allocator_,
+                maxPlanObjects)) {
     optimizer::queryCtx() = context_.get();
   }
 
@@ -1400,13 +1403,14 @@ std::string SqlQueryRunner::runExplainIo(
 
   if (useOptimizerV2_) {
     auto resolver = orDefaultSchemaResolver(schemaResolver);
-    OptimizerContext optimizerContext(optimizerPool_.get());
-    velox::exec::SimpleExpressionEvaluator evaluator(
-        queryCtx.get(), optimizerPool_.get());
     auto session = makeOptimizerSession(
         queryCtx->queryId(),
         collectConnectorProperties(*sessionConfig_),
         /*explain=*/true);
+    OptimizerContext optimizerContext(
+        optimizerPool_.get(), session->options().maxPlanObjects);
+    velox::exec::SimpleExpressionEvaluator evaluator(
+        queryCtx.get(), optimizerPool_.get());
     optimizer::v2::Optimizer optimizer(
         *logicalPlan, *resolver, *session, evaluator, queryCtx);
     return optimizer.explainIo(std::move(outputTable));
@@ -1855,17 +1859,18 @@ optimizer::PlanAndStats SqlQueryRunner::optimize(
   optimizer::MultiFragmentPlan::Options opts;
   opts.numWorkers = options.numWorkers;
   opts.numDrivers = options.numDrivers;
-  OptimizerContext optimizerContext(optimizerPool_.get());
+  auto connectorProperties = collectConnectorProperties(*sessionConfig_);
+  auto optimizerSession =
+      makeOptimizerSession(queryCtx->queryId(), connectorProperties, explain);
+
+  OptimizerContext optimizerContext(
+      optimizerPool_.get(), optimizerSession->options().maxPlanObjects);
 
   velox::exec::SimpleExpressionEvaluator evaluator(
       queryCtx.get(), optimizerPool_.get());
 
   auto history = std::make_unique<optimizer::VeloxHistory>();
   schemaResolver = orDefaultSchemaResolver(std::move(schemaResolver));
-
-  auto connectorProperties = collectConnectorProperties(*sessionConfig_);
-  auto optimizerSession =
-      makeOptimizerSession(queryCtx->queryId(), connectorProperties, explain);
   auto runnerSession = std::make_shared<runner::RunnerSession>(
       queryCtx->queryId(),
       user_,
@@ -2086,14 +2091,15 @@ std::vector<velox::RowVectorPtr> SqlQueryRunner::runShowStatsForQuery(
 
   if (useOptimizerV2_) {
     auto queryCtx = newQuery(options);
-    OptimizerContext optimizerContext(optimizerPool_.get());
-    velox::exec::SimpleExpressionEvaluator evaluator(
-        queryCtx.get(), optimizerPool_.get());
-    auto resolver = orDefaultSchemaResolver(nullptr);
     auto session = makeOptimizerSession(
         queryCtx->queryId(),
         collectConnectorProperties(*sessionConfig_),
         /*explain=*/false);
+    OptimizerContext optimizerContext(
+        optimizerPool_.get(), session->options().maxPlanObjects);
+    velox::exec::SimpleExpressionEvaluator evaluator(
+        queryCtx.get(), optimizerPool_.get());
+    auto resolver = orDefaultSchemaResolver(nullptr);
 
     const auto stats =
         optimizer::v2::Optimizer(

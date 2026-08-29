@@ -362,12 +362,23 @@ class QueryGraphContext {
  public:
   static constexpr int32_t kArenaAlignment = 8;
 
-  explicit QueryGraphContext(velox::HashStringAllocator& allocator);
+  /// 'maxPlanObjects' caps how many plan objects this query may create; a
+  /// query that exceeds it fails rather than planning. The sets kept per
+  /// object are indexed by object id, so planning memory grows with the
+  /// square of this count, and an unbounded plan exhausts memory instead of
+  /// erroring. See OptimizerOptions::kMaxPlanObjectsDefault.
+  QueryGraphContext(
+      velox::HashStringAllocator& allocator,
+      int32_t maxPlanObjects);
 
   /// Returns a new unique id to use for 'object' and associates 'object' to
   /// this id. Tagging objects with integers ids is useful for efficiently
   /// representing sets of objects as bitmaps.
   int32_t newId(PlanObject* object) {
+    VELOX_USER_CHECK_LT(
+        objects_.size(),
+        maxPlanObjects_,
+        "Query is too complex to plan: it exceeds the plan object limit");
     objects_.push_back(object);
     return static_cast<int32_t>(objects_.size() - 1);
   }
@@ -512,6 +523,10 @@ class QueryGraphContext {
 
   // PlanObjects are stored at the index given by their id.
   std::vector<PlanObjectP> objects_;
+
+  // See the constructor. Always >= 1, so the comparison in newId() is
+  // meaningful; size_t to compare against objects_.size() without a cast.
+  const size_t maxPlanObjects_;
 
   // Set of interned copies of identifiers. insert() into this returns the
   // canonical interned copy of any string. Lifetime is limited to 'allocator_'.

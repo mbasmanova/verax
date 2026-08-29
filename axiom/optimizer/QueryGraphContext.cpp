@@ -36,8 +36,14 @@ const auto& stepKindNames() {
 
 AXIOM_DEFINE_ENUM_NAME(StepKind, stepKindNames);
 
-QueryGraphContext::QueryGraphContext(velox::HashStringAllocator& allocator)
-    : allocator_(allocator), cache_(allocator_) {
+QueryGraphContext::QueryGraphContext(
+    velox::HashStringAllocator& allocator,
+    int32_t maxPlanObjects)
+    : allocator_(allocator),
+      cache_(allocator_),
+      maxPlanObjects_(maxPlanObjects) {
+  VELOX_USER_CHECK_GE(maxPlanObjects, 1, "max_plan_objects must be >= 1");
+
   auto addName = [&](const char* name) {
     names_.emplace(std::string_view(name, strlen(name)));
   };

@@ -133,4 +133,36 @@ TEST(OptimizerOptionsTest, recursionLimit) {
       "recursion_limit must be >= 1");
 }
 
+TEST(OptimizerOptionsTest, maxPlanObjects) {
+  OptimizerOptions options;
+  EXPECT_EQ(options.normalize(OptimizerOptions::kMaxPlanObjects, "17"), "17");
+  EXPECT_EQ(
+      OptimizerOptions::from(
+          {{std::string(OptimizerOptions::kMaxPlanObjects), "17"}})
+          .maxPlanObjects,
+      17);
+  VELOX_ASSERT_THROW(
+      options.normalize(OptimizerOptions::kMaxPlanObjects, "invalid"),
+      "max_plan_objects must be a valid 32-bit integer");
+  VELOX_ASSERT_THROW(
+      options.normalize(OptimizerOptions::kMaxPlanObjects, "0"),
+      "max_plan_objects must be >= 1");
+}
+
+// A property map that never went through normalize() is validated by from().
+TEST(OptimizerOptionsTest, fromValidates) {
+  VELOX_ASSERT_THROW(
+      OptimizerOptions::from(
+          {{std::string(OptimizerOptions::kMaxPlanObjects), "100000abc"}}),
+      "max_plan_objects must be a valid 32-bit integer");
+  VELOX_ASSERT_THROW(
+      OptimizerOptions::from(
+          {{std::string(OptimizerOptions::kMaxPlanObjects), "0"}}),
+      "max_plan_objects must be >= 1");
+  VELOX_ASSERT_THROW(
+      OptimizerOptions::from(
+          {{std::string(OptimizerOptions::kRecursionLimit), "0"}}),
+      "recursion_limit must be >= 1");
+}
+
 } // namespace facebook::axiom::optimizer
