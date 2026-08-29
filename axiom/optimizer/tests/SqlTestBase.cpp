@@ -20,6 +20,7 @@
 #include "axiom/connectors/SchemaResolver.h"
 #include "axiom/optimizer/FunctionRegistry.h"
 #include "axiom/optimizer/Optimization.h"
+#include "axiom/optimizer/OptimizerOptions.h"
 #include "axiom/optimizer/VeloxHistory.h"
 #include "axiom/optimizer/v2/Optimize.h"
 #include "axiom/runner/LocalRunner.h"
@@ -108,8 +109,8 @@ std::shared_ptr<runner::LocalRunner> makeLocalRunnerImpl(
       queryId);
 
   auto allocator = std::make_unique<HashStringAllocator>(optimizerPool.get());
-  auto graphContext =
-      std::make_unique<optimizer::QueryGraphContext>(*allocator);
+  auto graphContext = std::make_unique<optimizer::QueryGraphContext>(
+      *allocator, OptimizerOptions::kMaxPlanObjectsDefault);
   optimizer::queryCtx() = graphContext.get();
   SCOPE_EXIT {
     optimizer::queryCtx() = nullptr;

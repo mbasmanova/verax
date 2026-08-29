@@ -21,6 +21,7 @@
 #include "axiom/connectors/ConnectorMetadataRegistry.h"
 #include "axiom/connectors/tests/TestConnector.h"
 #include "axiom/optimizer/Optimization.h"
+#include "axiom/optimizer/OptimizerOptions.h"
 #include "axiom/optimizer/QueryGraph.h"
 #include "axiom/optimizer/StatsFilterSelectivityEstimator.h"
 #include "axiom/optimizer/tests/HiveQueriesTestBase.h"
@@ -96,7 +97,8 @@ class FiltersTest : public test::HiveQueriesTestBase {
   // Runs the callback with a QueryGraphContext set up.
   void withContext(const std::function<void()>& callback) {
     HashStringAllocator allocator(&optimizerPool());
-    auto context = std::make_unique<optimizer::QueryGraphContext>(allocator);
+    auto context = std::make_unique<optimizer::QueryGraphContext>(
+        allocator, OptimizerOptions::kMaxPlanObjectsDefault);
     optimizer::queryCtx() = context.get();
 
     SCOPE_EXIT {

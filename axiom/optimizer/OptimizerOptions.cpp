@@ -41,6 +41,19 @@ int32_t parseRecursionLimit(std::string_view value) {
   return iterations;
 }
 
+int32_t parseMaxPlanObjects(std::string_view value) {
+  int32_t maxPlanObjects;
+  try {
+    maxPlanObjects = folly::to<int32_t>(value);
+  } catch (const folly::ConversionError&) {
+    VELOX_USER_FAIL(
+        "max_plan_objects must be a valid 32-bit integer: {}", value);
+  }
+  VELOX_USER_CHECK_GE(
+      maxPlanObjects, 1, "max_plan_objects must be >= 1: {}", value);
+  return maxPlanObjects;
+}
+
 std::vector<ConfigProperty> buildProperties(
     const std::unordered_map<std::string, std::string>& configOverrides) {
   std::vector<ConfigProperty> props = {
@@ -145,6 +158,15 @@ std::vector<ConfigProperty> buildProperties(
           "Maximum iterations for a recursion that has no bound of its own. Must be >= 1.",
       },
       {
+          std::string(OptimizerOptions::kMaxPlanObjects),
+          ConfigPropertyType::kInteger,
+          std::to_string(OptimizerOptions::kMaxPlanObjectsDefault),
+          "Fails a query that creates more than this many plan objects. "
+          "Bounds planning memory, which grows with the square of this count. "
+          "A query that exceeds it is expanding rather than merely large, "
+          "typically a CTE re-planned at each reference. Must be >= 1.",
+      },
+      {
           std::string(OptimizerOptions::kTraceFlags),
           ConfigPropertyType::kInteger,
           std::to_string(OptimizerOptions::kTraceFlagsDefault),
@@ -206,6 +228,8 @@ std::string OptimizerOptions::normalize(
         std::string(value), velox::config::CapacityUnit::BYTE);
   } else if (name == kRecursionLimit) {
     parseRecursionLimit(value);
+  } else if (name == kMaxPlanObjects) {
+    parseMaxPlanObjects(value);
   }
   return std::string(value);
 }
@@ -253,6 +277,7 @@ OptimizerOptions OptimizerOptions::from(
   setLong(kSmallQueryMaxScanRows, options.smallQueryMaxScanRows);
   setInt(kSmallQueryNumWorkers, options.smallQueryNumWorkers);
   setInt(kParallelProjectWidth, options.parallelProjectWidth);
+  setInt(kMaxPlanObjects, options.maxPlanObjects);
   setInt(kGreedyJoinThreshold, options.greedyJoinThreshold);
   setCapacity(kBroadcastSizeLimit, options.broadcastSizeLimit);
   setInt(kDphypEnumerationBudget, options.dphypEnumerationBudget);

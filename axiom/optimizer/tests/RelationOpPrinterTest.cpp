@@ -20,6 +20,7 @@
 #include "axiom/connectors/tests/TestConnector.h"
 #include "axiom/logical_plan/PlanBuilder.h"
 #include "axiom/optimizer/Optimization.h"
+#include "axiom/optimizer/OptimizerOptions.h"
 #include "axiom/optimizer/VeloxHistory.h"
 #include "axiom/sql/presto/PrestoParser.h"
 #include "velox/expression/Expr.h"
@@ -137,7 +138,8 @@ class RelationOpPrinterTest : public ::testing::Test {
       int32_t numDrivers = 1) {
     auto allocator =
         std::make_unique<velox::HashStringAllocator>(optimizerPool_.get());
-    auto context = std::make_unique<QueryGraphContext>(*allocator);
+    auto context = std::make_unique<QueryGraphContext>(
+        *allocator, OptimizerOptions::kMaxPlanObjectsDefault);
     queryCtx() = context.get();
     SCOPE_EXIT {
       queryCtx() = nullptr;

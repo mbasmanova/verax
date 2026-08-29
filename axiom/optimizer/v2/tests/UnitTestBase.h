@@ -20,6 +20,7 @@
 #include <memory>
 #include <string_view>
 
+#include "axiom/optimizer/OptimizerOptions.h"
 #include "axiom/optimizer/PlanObject.h"
 #include "axiom/optimizer/QueryGraphContext.h"
 #include "axiom/optimizer/v2/Builder.h"
@@ -45,7 +46,8 @@ class UnitTestBase : public ::testing::Test {
     pool_ = velox::memory::memoryManager()->addLeafPool(
         ::testing::UnitTest::GetInstance()->current_test_info()->name());
     allocator_ = std::make_unique<velox::HashStringAllocator>(pool_.get());
-    context_ = std::make_unique<optimizer::QueryGraphContext>(*allocator_);
+    context_ = std::make_unique<optimizer::QueryGraphContext>(
+        *allocator_, OptimizerOptions::kMaxPlanObjectsDefault);
     optimizer::queryCtx() = context_.get();
     builder_ = std::make_unique<Builder>();
   }

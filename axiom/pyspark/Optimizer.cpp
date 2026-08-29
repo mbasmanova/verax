@@ -15,7 +15,9 @@
  */
 
 #include "axiom/pyspark/Optimizer.h"
+#include "axiom/optimizer/OptimizerOptions.h"
 
+#include <folly/ScopeGuard.h>
 #include <glog/logging.h>
 #include "axiom/connectors/ConnectorMetadata.h"
 #include "axiom/connectors/ConnectorMetadataRegistry.h"
@@ -101,12 +103,18 @@ facebook::axiom::optimizer::PlanAndStats optimize(
     const facebook::axiom::logical_plan::LogicalPlanNodePtr& logicalPlan,
     const std::string& connectorId,
     velox::memory::MemoryPool* pool) {
+  facebook::axiom::optimizer::OptimizerOptions optimizerOptions;
+  optimizerOptions.sampleJoins = false;
+
   // Set up thread local structures.
   auto allocator = std::make_unique<velox::HashStringAllocator>(pool);
   auto context =
       std::make_unique<facebook::axiom::optimizer::QueryGraphContext>(
-          *allocator);
+          *allocator, optimizerOptions.maxPlanObjects);
   facebook::axiom::optimizer::queryCtx() = context.get();
+  SCOPE_EXIT {
+    facebook::axiom::optimizer::queryCtx() = nullptr;
+  };
 
   // Fetch connector and set up schema resolver.
   auto connector = velox::connector::getConnector(connectorId);
@@ -122,8 +130,6 @@ facebook::axiom::optimizer::PlanAndStats optimize(
   }
 
   auto history = std::make_unique<facebook::axiom::optimizer::VeloxHistory>();
-  facebook::axiom::optimizer::OptimizerOptions optimizerOptions;
-  optimizerOptions.sampleJoins = false;
 
   facebook::axiom::optimizer::MultiFragmentPlan::Options runnerOpts{
       .numWorkers = 1,

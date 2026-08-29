@@ -58,6 +58,7 @@ struct OptimizerOptions : public velox::config::ConfigProvider {
   static constexpr std::string_view kSmallQueryNumWorkers =
       "small_query_num_workers";
   static constexpr std::string_view kRecursionLimit = "recursion_limit";
+  static constexpr std::string_view kMaxPlanObjects = "max_plan_objects";
   static constexpr std::string_view kTraceFlags = "trace_flags";
 
   // Default values — single source of truth for field initializers
@@ -72,6 +73,10 @@ struct OptimizerOptions : public velox::config::ConfigProvider {
   static constexpr int64_t kBroadcastSizeLimitDefaultBytes = 100LL << 20;
   static constexpr int32_t kDphypEnumerationBudgetDefault = 100'000;
   static constexpr int32_t kRecursionLimitDefault = 1'000;
+  // Bounds planning memory, which grows with the square of this count, so a
+  // higher limit costs quadratically more. Set well above the plan size of an
+  // ordinary query: a plan that reaches it is expanding, not merely large.
+  static constexpr int32_t kMaxPlanObjectsDefault = 100'000;
   static constexpr bool kPushdownSubfieldsDefault = false;
   static constexpr bool kAllMapsAsStructDefault = false;
   static constexpr bool kSampleJoinsDefault = false;
@@ -90,6 +95,11 @@ struct OptimizerOptions : public velox::config::ConfigProvider {
   /// cascade: code default -> config file -> session override.
   explicit OptimizerOptions(
       std::unordered_map<std::string, std::string> configOverrides);
+
+  /// Fails a query that creates more than this many plan objects. Planning
+  /// memory grows with the square of this count, so raising it is expensive:
+  /// 5x the limit is ~25x the memory.
+  int32_t maxPlanObjects{kMaxPlanObjectsDefault};
 
   /// Parallelizes independent projections over this many threads. 1 means no
   /// parallel projection.

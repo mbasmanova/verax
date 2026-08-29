@@ -19,6 +19,7 @@
 #include "axiom/connectors/ConnectorMetadataRegistry.h"
 #include "axiom/logical_plan/PlanBuilder.h"
 #include "axiom/optimizer/Optimization.h"
+#include "axiom/optimizer/OptimizerOptions.h"
 #include "axiom/optimizer/VeloxHistory.h"
 #include "velox/expression/Expr.h"
 #include "velox/functions/prestosql/aggregates/RegisterAggregateFunctions.h"
@@ -50,7 +51,8 @@ class PrecomputeProjectionTest : public ::testing::Test {
       const std::function<void(DerivedTableCP dt)>& testRoutine) {
     auto allocator =
         std::make_unique<velox::HashStringAllocator>(optimizerPool_.get());
-    auto context = std::make_unique<QueryGraphContext>(*allocator);
+    auto context = std::make_unique<QueryGraphContext>(
+        *allocator, OptimizerOptions::kMaxPlanObjectsDefault);
     queryCtx() = context.get();
     SCOPE_EXIT {
       queryCtx() = nullptr;

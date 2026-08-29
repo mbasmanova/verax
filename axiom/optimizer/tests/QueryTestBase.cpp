@@ -15,6 +15,7 @@
  */
 
 #include "axiom/optimizer/tests/QueryTestBase.h"
+#include "axiom/optimizer/OptimizerOptions.h"
 
 #include <ctime>
 
@@ -205,7 +206,8 @@ PlanCost QueryTestBase::optimizationCost(
     const std::optional<OptimizerOptions>& optimizerOptions) {
   auto& queryCtx = getQueryCtx();
   auto allocator = std::make_unique<HashStringAllocator>(optimizerPool_.get());
-  auto context = std::make_unique<optimizer::QueryGraphContext>(*allocator);
+  auto context = std::make_unique<optimizer::QueryGraphContext>(
+      *allocator, OptimizerOptions::kMaxPlanObjectsDefault);
   optimizer::queryCtx() = context.get();
   SCOPE_EXIT {
     optimizer::queryCtx() = nullptr;
@@ -236,7 +238,8 @@ void QueryTestBase::verifyOptimization(
   auto& veloxQueryCtx = getQueryCtx();
 
   HashStringAllocator allocator(optimizerPool_.get());
-  auto context = std::make_unique<optimizer::QueryGraphContext>(allocator);
+  auto context = std::make_unique<optimizer::QueryGraphContext>(
+      allocator, OptimizerOptions::kMaxPlanObjectsDefault);
   optimizer::queryCtx() = context.get();
   SCOPE_EXIT {
     optimizer::queryCtx() = nullptr;
@@ -296,7 +299,8 @@ optimizer::PlanAndStats QueryTestBase::planVelox(
   auto& queryCtx = getQueryCtx();
 
   auto allocator = std::make_unique<HashStringAllocator>(optimizerPool_.get());
-  auto context = std::make_unique<optimizer::QueryGraphContext>(*allocator);
+  auto context = std::make_unique<optimizer::QueryGraphContext>(
+      *allocator, OptimizerOptions::kMaxPlanObjectsDefault);
   optimizer::queryCtx() = context.get();
   SCOPE_EXIT {
     optimizer::queryCtx() = nullptr;

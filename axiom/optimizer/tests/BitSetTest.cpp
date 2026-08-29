@@ -16,6 +16,7 @@
 
 #include "axiom/optimizer/BitSet.h"
 #include <gtest/gtest.h>
+#include "axiom/optimizer/OptimizerOptions.h"
 #include "velox/common/memory/Memory.h"
 
 namespace facebook::axiom::optimizer {
@@ -30,7 +31,8 @@ class BitSetTest : public ::testing::Test {
   void SetUp() override {
     pool_ = velox::memory::memoryManager()->addLeafPool();
     allocator_ = std::make_unique<velox::HashStringAllocator>(pool_.get());
-    ctx_ = std::make_unique<QueryGraphContext>(*allocator_);
+    ctx_ = std::make_unique<QueryGraphContext>(
+        *allocator_, OptimizerOptions::kMaxPlanObjectsDefault);
     queryCtx() = ctx_.get();
   }
 
