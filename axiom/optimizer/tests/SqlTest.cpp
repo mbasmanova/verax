@@ -525,6 +525,7 @@ int main(int argc, char** argv) {
   registerQueryFile<"metadataAggregate">(/*v2Only=*/true);
   registerQueryFile<"nondeterministic">();
   registerQueryFile<"nullif">();
+  registerQueryFile<"partitionFold">();
   registerQueryFile<"set">();
   registerQueryFile<"sort">();
   registerQueryFile<"subfield">();

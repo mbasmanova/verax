@@ -17,6 +17,7 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "axiom/connectors/ConnectorMetadata.h"
@@ -58,10 +59,16 @@ class ConstantPlanRunner {
       : queryCtx_{std::move(queryCtx)} {}
 
   /// Runs 'fragment' serially in the caller's thread (velox Task in kSerial
-  /// mode) and returns the single value of its result. 'fragment' must have no
-  /// split-driven sources and must produce a single column and at most one row;
-  /// no row yields a null of the column's type (a scalar over empty input).
-  velox::Variant run(const velox::core::PlanFragment& fragment) const;
+  /// mode) and returns its single result row, one Variant per output column,
+  /// or nullopt when it produced no row. 'fragment' must have no split-driven
+  /// sources and must produce at most one row.
+  std::optional<std::vector<velox::Variant>> run(
+      const velox::core::PlanFragment& fragment) const;
+
+  /// run() for a 'fragment' of one column, returning that column's value, or
+  /// nullopt when it produced no row. Fails if 'fragment' has another shape.
+  std::optional<velox::Variant> runScalar(
+      const velox::core::PlanFragment& fragment) const;
 
  private:
   const std::shared_ptr<velox::core::QueryCtx> queryCtx_;

@@ -341,6 +341,11 @@ class SubqueryContext {
   // read it.
   bool correlateLifted(ColumnCP column);
 
+  // True if the body in flight has referenced an enclosing scope. A
+  // correlation recorded at an outer level is recorded at every level below
+  // it, so the innermost entry is the whole set the body can see.
+  bool hasCorrelations() const;
+
   // Enters/leaves the body of a subquery. 'liftTarget' is the node the
   // body will be lifted onto, i.e. the plan of the scope enclosing it.
   // `pop()` returns the correlated columns collected during that body,
@@ -368,6 +373,10 @@ void SubqueryContext::recordCorrelation(ColumnCP column, size_t level) {
   for (size_t i = level; i < correlationsStack_.size(); ++i) {
     correlationsStack_[i].push_back(column);
   }
+}
+
+bool SubqueryContext::hasCorrelations() const {
+  return !correlationsStack_.empty() && !correlationsStack_.back().empty();
 }
 
 ColumnCP SubqueryContext::correlateOuter(std::string_view name) {
@@ -737,12 +746,19 @@ class Translator {
       const Scope& outerScope,
       LiftTarget* liftTarget);
 
-  // Attempts to constant-fold an uncorrelated scalar subquery whose body is a
-  // global aggregation over a table's discrete-predicate (e.g. partition)
-  // columns. Lists the matching partition values via the connector, aggregates
-  // them by running a small Velox plan, and returns a `Literal`. Returns
-  // nullptr when the body does not have that shape or the connector declines.
-  ExprCP tryFoldConstantScalar(NodeCP body);
+  // Returns the value a scalar subquery over 'body' produces, when 'body' is a
+  // constant `Values`: its single row's value, or NULL if it has no rows.
+  // Returns nullptr when 'body' is anything else. Fails if 'body' has more than
+  // one row, which no scalar subquery may.
+  ExprCP tryScalarFromValues(NodeCP body);
+
+  // Evaluates 'aggregate' from the listed discrete-predicate (e.g. partition)
+  // values, returning one Variant per output column, or nullopt when it is not
+  // foldable: it must be a global aggregation whose aggregates all ignore
+  // duplicate inputs, over an optional Filter over a Scan of only
+  // discrete-predicate columns, on a connector that can list them.
+  std::optional<std::vector<velox::Variant>> tryEvaluateOverDiscreteValues(
+      const Aggregate* aggregate);
 
   // Translates each lp expression in 'expressions' against 'scope'.
   ExprVector translateAll(
@@ -1907,8 +1923,19 @@ Translated Translator::translateAggregate(
          .groupingKeys = std::move(groupingKeys),
          .aggregates = std::move(aggregates),
          .outputColumns = std::move(outputColumns)});
+    NodeCP node = aggNode;
+    if (auto row = tryEvaluateOverDiscreteValues(aggNode)) {
+      std::vector<velox::Variant> rows;
+      rows.push_back(velox::Variant::row(std::move(*row)));
+      node = builder_.makeValues(
+          /*source=*/nullptr,
+          queryCtx()->registerVariant(
+              std::make_unique<velox::Variant>(
+                  velox::Variant::array(std::move(rows)))),
+          aggNode->outputColumns());
+    }
     return {
-        appendConstantColumns(aggNode, foldedColumns, foldedExprs),
+        appendConstantColumns(node, foldedColumns, foldedExprs),
         std::move(newScope)};
   }
 
@@ -3207,12 +3234,12 @@ ExprCP Translator::liftSubquery(
         bodyOut.size(), 1, "Scalar subquery must produce exactly one column");
     returnedColumn = bodyOut[0];
 
-    // Fold an uncorrelated scalar subquery over partition columns to a constant
-    // (e.g. `max(ds)` from partition metadata) rather than executing it. The
-    // constant then flows into the outer predicate, where pushdown can prune
-    // the outer scan.
+    // A scalar subquery over a constant body is that constant; translating the
+    // body already reduced a foldable aggregation (e.g. `max(ds)` over
+    // partition metadata) to a one-row Values. The constant then flows into the
+    // outer predicate, where pushdown can prune the outer scan.
     if (correlationColumns.empty()) {
-      if (ExprCP folded = tryFoldConstantScalar(body)) {
+      if (ExprCP folded = tryScalarFromValues(body)) {
         return folded;
       }
     }
@@ -3301,14 +3328,44 @@ ExprCP Translator::liftSubquery(
   return returnedColumn;
 }
 
-ExprCP Translator::tryFoldConstantScalar(NodeCP body) {
-  if (!body->is(NodeType::kAggregate)) {
+ExprCP Translator::tryScalarFromValues(NodeCP body) {
+  if (!body->is(NodeType::kValues)) {
     return nullptr;
   }
 
-  const auto* aggregate = body->as<Aggregate>();
-  if (!aggregate->groupingKeys().empty()) {
+  VELOX_CHECK_EQ(body->outputColumns().size(), 1);
+
+  const auto* values = body->as<Values>();
+  const TypeCP type = body->outputColumns()[0]->value().type;
+
+  const size_t numRows = values->cardinality();
+  if (numRows == 0) {
+    // A scalar subquery over no rows is SQL NULL.
+    return builder_.makeNull(type);
+  }
+
+  VELOX_USER_CHECK_EQ(numRows, 1, "Scalar subquery produced more than one row");
+
+  // TODO: Read the value from a pass-through `lp::ValuesNode` too; only
+  // translate-time folded rows are handled here.
+  if (values->rows() == nullptr) {
     return nullptr;
+  }
+
+  const auto& row = values->rows()->array()[0].row();
+  return builder_.makeLiteral(velox::Variant(row[values->channels()[0]]), type);
+}
+
+std::optional<std::vector<velox::Variant>>
+Translator::tryEvaluateOverDiscreteValues(const Aggregate* aggregate) {
+  // A correlated body reads columns of an enclosing scope, which the listing
+  // does not produce.
+  if (subqueries_.hasCorrelations()) {
+    return std::nullopt;
+  }
+
+  if (!aggregate->groupingKeys().empty()) {
+    return std::nullopt;
   }
 
   // The fold aggregates a per-partition value list, so each aggregate must
@@ -3316,7 +3373,7 @@ ExprCP Translator::tryFoldConstantScalar(NodeCP body) {
   for (const optimizer::Aggregate* call : aggregate->aggregates()) {
     if (!call->functions().contains(FunctionSet::kIgnoreDuplicatesAggregate) &&
         !call->isDistinct()) {
-      return nullptr;
+      return std::nullopt;
     }
   }
 
@@ -3327,7 +3384,7 @@ ExprCP Translator::tryFoldConstantScalar(NodeCP body) {
     input = filter->input();
   }
   if (!input->is(NodeType::kScan)) {
-    return nullptr;
+    return std::nullopt;
   }
   const auto* scan = input->as<Scan>();
 
@@ -3337,12 +3394,12 @@ ExprCP Translator::tryFoldConstantScalar(NodeCP body) {
   auto discreteLayout =
       findDiscreteLayout(scan->outputColumns(), *scan->baseTable());
   if (discreteLayout.layout == nullptr) {
-    return nullptr;
+    return std::nullopt;
   }
 
-  // Offer the subquery's filters to the connector so it narrows the listing.
-  // Which of them it takes does not matter: the Filter below re-applies all of
-  // them, so 'rejected' is not read.
+  // Offer the filters to the connector so it narrows the listing. Which of
+  // them it takes does not matter: the Filter over the listed values re-applies
+  // all of them, so 'rejected' is not read.
   const ExprVector& filters =
       filter != nullptr ? filter->predicates() : ExprVector{};
   ExprVector rejected;
@@ -3359,7 +3416,7 @@ ExprCP Translator::tryFoldConstantScalar(NodeCP body) {
   auto discretePredicates = discreteLayout.layout->discretePredicates(
       connectorSession, discreteLayout.connectorColumns, handle.tableHandle);
   if (discretePredicates == nullptr) {
-    return nullptr;
+    return std::nullopt;
   }
 
   // Build a small plan that aggregates the listed partition values:
@@ -3387,9 +3444,12 @@ ExprCP Translator::tryFoldConstantScalar(NodeCP body) {
        .groupId = aggregate->groupId(),
        .globalGroupingSets = aggregate->globalGroupingSets()});
 
-  // A scalar subquery produces exactly one column.
   const ColumnVector& outputColumns = foldAggregate->outputColumns();
-  std::vector<std::string> outputNames{std::string(outputColumns[0]->name())};
+  std::vector<std::string> outputNames;
+  outputNames.reserve(outputColumns.size());
+  for (ColumnCP column : outputColumns) {
+    outputNames.emplace_back(column->name());
+  }
 
   // Lower the mini-plan through the shared physical-planning and emit passes,
   // then run it. It has a Values source and no Scan, so single-node options
@@ -3405,9 +3465,11 @@ ExprCP Translator::tryFoldConstantScalar(NodeCP body) {
   VELOX_CHECK_EQ(
       emitted.fragments.size(), 1, "Constant fold must produce one fragment");
 
-  return builder_.makeLiteral(
-      constantPlanRunner_.run(emitted.fragments.front().fragment),
-      outputColumns[0]->value().type);
+  auto row = constantPlanRunner_.run(emitted.fragments.front().fragment);
+  // The plan aggregates a Values with no grouping keys, so it emits one row
+  // even when the filter below leaves nothing.
+  VELOX_CHECK(row.has_value(), "Constant-fold plan produced no row");
+  return row;
 }
 
 } // namespace

@@ -27,9 +27,10 @@ namespace {
 using namespace velox;
 namespace lp = facebook::axiom::logical_plan;
 
-// Runs the scalar-subquery constant-fold cases under both the v1 and v2
-// optimizers. The fold lists a table's discrete-predicate (e.g. partition)
-// values and aggregates them instead of executing the subquery.
+// Runs the constant-fold cases under both the v1 and v2 optimizers. The fold
+// lists a table's discrete-predicate (e.g. partition) values and aggregates
+// them instead of reading the table, whether the aggregation is the body of a
+// scalar subquery or stands on its own.
 class SubqueryFoldTest : public test::HiveQueriesTestBase,
                          public testing::WithParamInterface<bool> {
  protected:
@@ -134,6 +135,23 @@ TEST_P(SubqueryFoldTest, foldable) {
     AXIOM_ASSERT_PLAN(plan, matchFilter("ds in ('2025-11-03', '2025-10-29')"));
   }
 
+  // A subquery over a one-row VALUES is that row's value.
+  {
+    auto logicalPlan = parseSql(
+        "SELECT * FROM t WHERE a = (SELECT y FROM (VALUES 1) AS v(y))");
+    auto plan = toSingleNodePlan(logicalPlan);
+    AXIOM_ASSERT_PLAN_V2(plan, matchFilter("a = 1"));
+  }
+
+  // A subquery over a multi-row VALUES cannot be a scalar and is rejected.
+  if (useV2_) {
+    auto logicalPlan = parseSql(
+        "SELECT * FROM t WHERE a = (SELECT y FROM (VALUES 1, 2, 3) AS v(y))");
+    VELOX_ASSERT_THROW(
+        toSingleNodePlan(logicalPlan),
+        "Scalar subquery produced more than one row");
+  }
+
   // A filter on the non-discrete column 'a' prevents the fold: the subquery is
   // evaluated normally rather than by listing discrete values.
   {
@@ -226,6 +244,72 @@ TEST_P(SubqueryFoldTest, foldableHivePartitions) {
     auto plan = toSingleNodePlan(
         "SELECT x FROM pt WHERE ds = (SELECT max(ds) FROM pt WHERE ds < '2')");
     AXIOM_ASSERT_PLAN(plan, matchHiveScan("pt", test::eq("ds", "1")).build());
+  }
+}
+
+// A global aggregation reading only partition columns is answered from the
+// partition listing, with no scan. Aggregates that are sensitive to duplicate
+// inputs, and columns that are not partition keys, are not.
+TEST_P(SubqueryFoldTest, foldableAggregationOverPartitions) {
+  // Partition keys 'ds' and 'k', data column 'x'. Three partitions:
+  // (ds='0',k=0), (ds='1',k=1), (ds='2',k=0).
+  runCtas(
+      "CREATE TABLE pt WITH (partitioned_by = ARRAY['ds', 'k']) AS "
+      "SELECT "
+      "     n_nationkey AS x, "
+      "     CAST(n_nationkey % 3 AS VARCHAR) AS ds, "
+      "     CAST(IF(n_nationkey % 3 = 1, 1, 0) AS INTEGER) AS k "
+      "FROM nation");
+  SCOPE_EXIT {
+    hiveMetadata().dropTableIfExists("pt");
+  };
+
+  {
+    auto plan = toSingleNodePlan("SELECT max(ds) FROM pt");
+    AXIOM_ASSERT_PLAN_V2(
+        plan,
+        matchValues(makeRowVector({makeFlatVector<std::string>({"2"})}))
+            .build());
+  }
+
+  // Every aggregate is answered from the one listing.
+  {
+    auto plan = toSingleNodePlan("SELECT max(ds), min(ds) FROM pt");
+    AXIOM_ASSERT_PLAN_V2(
+        plan,
+        matchValues(makeRowVector(
+                        {makeFlatVector<std::string>({"2"}),
+                         makeFlatVector<std::string>({"0"})}))
+            .build());
+  }
+
+  // Each UNION ALL branch folds on its own.
+  {
+    auto plan = toSingleNodePlan(
+        "SELECT max(ds) AS m FROM pt UNION ALL SELECT max(ds) AS m FROM pt");
+
+    auto foldedValue = makeRowVector({makeFlatVector<std::string>({"2"})});
+    AXIOM_ASSERT_PLAN_V2(
+        plan,
+        matchValues(foldedValue)
+            .localPartition({matchValues(foldedValue).project()})
+            .build());
+  }
+
+  // count() counts rows, not partitions, so the listing cannot answer it.
+  {
+    auto plan = toSingleNodePlan("SELECT count(*) FROM pt");
+    AXIOM_ASSERT_PLAN_V2(
+        plan,
+        matchHiveScan("pt").singleAggregation({}, {"count(*) as c"}).build());
+  }
+
+  // 'x' is not a partition key, so the listing does not hold its values.
+  {
+    auto plan = toSingleNodePlan("SELECT max(x) FROM pt");
+    AXIOM_ASSERT_PLAN_V2(
+        plan,
+        matchHiveScan("pt").singleAggregation({}, {"max(x) as m"}).build());
   }
 }
 
