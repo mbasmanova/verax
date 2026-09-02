@@ -487,10 +487,14 @@ Literal* tryFoldConstantDt(DerivedTableP dt) {
   VELOX_CHECK_EQ(1, veloxPlan.plan->fragments().size());
   const auto& fragment = veloxPlan.plan->fragments().front().fragment;
   ConstantPlanRunner constantPlanRunner{optimization->veloxQueryCtx()};
-  auto value = constantPlanRunner.run(fragment);
+  const auto& type = fragment.planNode->outputType()->childAt(0);
+  auto value = constantPlanRunner.runScalar(fragment);
   return make<Literal>(
-      toConstantValue(fragment.planNode->outputType()->childAt(0)),
-      registerVariant(std::move(value)));
+      toConstantValue(type),
+      registerVariant(
+          // A scalar subquery over no rows is NULL.
+          value.has_value() ? std::move(*value)
+                            : velox::Variant::null(type->kind())));
 }
 
 } // namespace

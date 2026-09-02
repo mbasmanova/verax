@@ -89,7 +89,20 @@ int64_t nextConstantFoldId() {
 
 } // namespace
 
-velox::Variant ConstantPlanRunner::run(
+std::optional<velox::Variant> ConstantPlanRunner::runScalar(
+    const velox::core::PlanFragment& fragment) const {
+  VELOX_CHECK_EQ(
+      fragment.planNode->outputType()->size(),
+      1,
+      "runScalar needs a fragment of one column");
+  auto row = run(fragment);
+  if (!row.has_value()) {
+    return std::nullopt;
+  }
+  return std::move((*row)[0]);
+}
+
+std::optional<std::vector<velox::Variant>> ConstantPlanRunner::run(
     const velox::core::PlanFragment& fragment) const {
   // Serial mode runs in the caller's thread, so the query's own QueryCtx works
   // directly -- no executor, cache, or config of its own is needed.
@@ -100,9 +113,9 @@ velox::Variant ConstantPlanRunner::run(
       queryCtx_,
       velox::exec::Task::ExecutionMode::kSerial);
 
-  // Serial mode runs the whole pipeline in this thread. The plan has a Values
-  // source (no splits) and computes a single value, so next() yields exactly
-  // one non-empty single-row batch.
+  // Serial mode runs the whole pipeline in this thread. 'fragment' has no
+  // split-driven source and at most one row, so next() yields at most one
+  // non-empty single-row batch.
   velox::RowVectorPtr result;
   while (auto batch = task->next()) {
     if (batch->size() == 0) {
@@ -114,12 +127,10 @@ velox::Variant ConstantPlanRunner::run(
     result = batch;
   }
 
-  // At most one row: no row means a scalar over empty input, i.e. SQL NULL.
   if (result == nullptr) {
-    return velox::Variant::null(
-        fragment.planNode->outputType()->childAt(0)->kind());
+    return std::nullopt;
   }
-  return result->childAt(0)->variantAt(0);
+  return result->variantAt(0).row();
 }
 
 } // namespace facebook::axiom::optimizer
