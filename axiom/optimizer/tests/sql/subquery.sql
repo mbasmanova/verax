@@ -353,6 +353,21 @@ FROM t
 SELECT t.a, NOT EXISTS (SELECT 1 FROM (SELECT u.a FROM u WHERE u.a = t.a) q JOIN v ON q.a = v.a) AS e
 FROM t
 ----
+-- A correlated EXISTS whose body also reads a scalar subquery: true exactly
+-- for the outer rows whose `a` equals `min(v.a)`.
+SELECT t.a, EXISTS (SELECT 1 FROM u WHERE u.a = t.a AND u.a = (SELECT min(a) FROM v)) AS e
+FROM t
+----
+-- The same with a comparison instead: true exactly for the outer rows whose
+-- `a` exceeds `min(v.a)`, and no `u` row qualifies for the rest.
+SELECT t.a, EXISTS (SELECT 1 FROM u WHERE u.a = t.a AND u.a > (SELECT min(a) FROM v)) AS e
+FROM t
+----
+-- The negation: true exactly for the outer rows whose `a` differs from
+-- `min(v.a)`, and never NULL.
+SELECT t.a, NOT EXISTS (SELECT 1 FROM u WHERE u.a = t.a AND u.a = (SELECT min(a) FROM v)) AS e
+FROM t
+----
 -- An IN whose subquery reads an outer column.
 -- error_v1: Join filter references column from unplaced non-single-row table
 SELECT t.a, (SELECT count(*) FROM u WHERE u.a = t.a AND u.a IN (SELECT v.a + t.a FROM v)) AS n
