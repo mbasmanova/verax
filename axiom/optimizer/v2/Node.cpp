@@ -1140,6 +1140,11 @@ Values::Values(Key key)
   }
 }
 
+const velox::Variant& Values::valueAt(size_t row, size_t column) const {
+  VELOX_CHECK_NOT_NULL(rows_);
+  return rows_->array()[row].row()[channels_[column]];
+}
+
 size_t Values::cardinality() const {
   if (rows_ != nullptr) {
     return rows_->array().size();

@@ -955,6 +955,7 @@ TEST_P(UnnestTest, joinWithConstantUnnest) {
           .project({"array[1, 2] as arr"}, options)
           .unnest({}, {"arr"}, std::nullopt)
           .aliases({"e"})
+          .filterIf(useV2_, "e in (1, 2)")
           .hashJoinInner(matchValues().aliases({"k"}), {.keys = {{"e = k"}}})
           .project({"k as a"})
           .build());
@@ -992,10 +993,13 @@ TEST_P(UnnestTest, joinOfConstantUnnests) {
 TEST_P(UnnestTest, joinEdgeCrossingWithUnnest) {
   const parse::ParseOptions options = {.parseIntegerAsBigint = false};
 
+  testConnector_->addTable("u", ROW({"k", "m"}, INTEGER()))
+      ->setStats(1, {{"k", {.numDistinct = 1}}, {"m", {.numDistinct = 1}}});
+
   auto query =
       "SELECT t.a, e, u.k FROM (VALUES (1, ARRAY[10, 20])) AS t(a, arr) "
       "CROSS JOIN UNNEST(arr) AS w(e) "
-      "JOIN (VALUES (1, 10)) AS u(k, m) ON u.k = t.a AND u.m = e";
+      "JOIN u ON u.k = t.a AND u.m = e";
   SCOPED_TRACE(query);
 
   auto logicalPlan = parseSelect(query, kTestConnectorId);
@@ -1004,7 +1008,7 @@ TEST_P(UnnestTest, joinEdgeCrossingWithUnnest) {
       ? matchValues()
             .aliases({"a", "arr"})
             .hashJoinInner(
-                matchValues().aliases({"k", "m"}), {.keys = {{"a = k"}}})
+                matchScan("u").aliases({"k", "m"}), {.keys = {{"a = k"}}})
             .unnest({"a", "m"}, {"arr"})
             .aliases({"a", "m", "e"})
             .filter("eq(e, m)")
@@ -1015,7 +1019,7 @@ TEST_P(UnnestTest, joinEdgeCrossingWithUnnest) {
             .unnest({"a"}, {"arr"})
             .aliases({"a", "e"})
             .hashJoinInner(
-                matchValues().aliases({"k", "m"}),
+                matchScan("u").aliases({"k", "m"}),
                 {.keys = {{"a = k", "e = m"}}})
             .project()
             .build();
@@ -1054,11 +1058,14 @@ TEST_P(UnnestTest, inSubqueryOverUnnest) {
 // An expansion goes above a join that does not read what it produces, so the
 // join runs on the rows before they multiply.
 TEST_P(UnnestTest, unnestPlacedAboveJoin) {
+  testConnector_->addTable("s", ROW("a", INTEGER()))
+      ->setStats(1, {{"a", {.numDistinct = 1}}});
+
   auto query =
       "SELECT s.a, e "
       "FROM (VALUES (1, ARRAY[10, 20])) AS m(k, data) "
       "CROSS JOIN UNNEST(m.data) AS t(e) "
-      "JOIN (VALUES (1)) AS s(a) ON s.a = m.k";
+      "JOIN s ON s.a = m.k";
   SCOPED_TRACE(query);
 
   auto logicalPlan = parseSelect(query, kTestConnectorId);
@@ -1070,31 +1077,34 @@ TEST_P(UnnestTest, unnestPlacedAboveJoin) {
     return;
   }
 
-  auto matcher =
-      matchValues()
-          .aliases({"k", "data"})
-          .hashJoinInner(matchValues().aliases({"a"}), {.keys = {{"k = a"}}})
-          .unnest({"a"}, {"data"})
-          .project()
-          .build();
+  auto makeMatcher = [](bool distributed) {
+    return matchValues()
+        .aliases({"k", "data"})
+        .hashJoinInner(
+            matchScan("s").aliases({"a"}).broadcastIf(distributed),
+            {.keys = {{"k = a"}}})
+        .unnest({"a"}, {"data"})
+        .project()
+        .build();
+  };
 
   {
     SCOPED_TRACE("cost-based enumeration");
-    AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
+    AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), makeMatcher(false));
 
     auto distributed =
         planVelox(logicalPlan, {.numWorkers = 4, .numDrivers = 4});
-    AXIOM_ASSERT_DISTRIBUTED_PLAN(distributed.plan, matcher);
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(distributed.plan, makeMatcher(true));
   }
 
   {
     SCOPED_TRACE("greedy fallback");
     optimizerOptions_.dphypEnumerationBudget = 1;
-    AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
+    AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), makeMatcher(false));
 
     auto distributed =
         planVelox(logicalPlan, {.numWorkers = 4, .numDrivers = 4});
-    AXIOM_ASSERT_DISTRIBUTED_PLAN(distributed.plan, matcher);
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(distributed.plan, makeMatcher(true));
   }
 }
 

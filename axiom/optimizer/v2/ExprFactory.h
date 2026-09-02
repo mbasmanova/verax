@@ -71,6 +71,9 @@ class ExprFactory {
   /// Builds `lhs = rhs`.
   ExprCP makeEq(ExprCP lhs, ExprCP rhs);
 
+  /// Builds `value IN (list...)`. 'list' must not be empty.
+  ExprCP makeIn(ExprCP value, ExprVector list);
+
   /// Builds `lhs <= rhs`.
   ExprCP makeLessThanOrEqual(ExprCP lhs, ExprCP rhs);
 
