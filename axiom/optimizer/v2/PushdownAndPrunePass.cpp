@@ -254,13 +254,17 @@ bool canPushLeft(velox::core::JoinType joinType, bool leftOnly) {
 
 // Returns the cross-side `Column == Column` equi-pairs reachable on
 // `node` — either explicitly via `leftKeys`/`rightKeys` or as
-// `eq(Column, Column)` conjuncts in the join's filter. Pairs are distinct;
+// `eq(Column, Column)` conjuncts in the join's filter or in
+// `extraConjuncts`, which a caller uses to include the pending conjuncts: a
+// `WHERE` equality reaches this pass as a pending conjunct and only becomes
+// the join's condition once the pass routes it there. Pairs are distinct;
 // the same equality may be written more than once. The returned pair has
 // equal-length `first` (left columns) and `second` (right columns) vectors.
 std::pair<ColumnVector, ColumnVector> collectEquiColumnPairs(
     JoinCP node,
     const PlanObjectSet& leftColumns,
-    const PlanObjectSet& rightColumns) {
+    const PlanObjectSet& rightColumns,
+    const ExprVector& extraConjuncts = {}) {
   ColumnVector leftKeys;
   ColumnVector rightKeys;
 
@@ -282,24 +286,21 @@ std::pair<ColumnVector, ColumnVector> collectEquiColumnPairs(
       addPair(leftKey->as<Column>(), rightKey->as<Column>());
     }
   }
-  if (node->filter().empty()) {
-    return {std::move(leftKeys), std::move(rightKeys)};
-  }
 
   const Name equalityName = toName(FunctionRegistry::instance()->equality());
-  for (ExprCP conjunct : node->filter()) {
+  const auto addEqualityPair = [&](ExprCP conjunct) {
     if (!conjunct->is(PlanType::kCallExpr)) {
-      continue;
+      return;
     }
     const Call* call = conjunct->as<Call>();
     if (call->name() != equalityName) {
-      continue;
+      return;
     }
     ExprCP first = call->args()[0];
     ExprCP second = call->args()[1];
     if (!first->is(PlanType::kColumnExpr) ||
         !second->is(PlanType::kColumnExpr)) {
-      continue;
+      return;
     }
     ColumnCP firstColumn = first->as<Column>();
     ColumnCP secondColumn = second->as<Column>();
@@ -311,6 +312,13 @@ std::pair<ColumnVector, ColumnVector> collectEquiColumnPairs(
         rightColumns.contains(firstColumn)) {
       addPair(secondColumn, firstColumn);
     }
+  };
+
+  for (ExprCP conjunct : node->filter()) {
+    addEqualityPair(conjunct);
+  }
+  for (ExprCP conjunct : extraConjuncts) {
+    addEqualityPair(conjunct);
   }
   return {std::move(leftKeys), std::move(rightKeys)};
 }
@@ -901,19 +909,29 @@ class Pushdown : public NodeRewriter<PushdownContext> {
           rightColumns);
     }
 
-    // Inner-join equi-key pairs let pending conjuncts cross to the
-    // other side. If derivation produces a literal-false conjunct, the
-    // join can't yield any rows.
+    ExprVector leftPending;
+    ExprVector rightPending;
+    ExprVector inFilter;
+    ExprVector above;
+
     if (newKind == velox::core::JoinType::kInner) {
+      if (NodeCP replacement = rewriteConstantInputJoin(
+              node,
+              leftColumns,
+              rightColumns,
+              context,
+              leftPending,
+              rightPending)) {
+        return replacement;
+      }
+      // Inner-join equi-key pairs let pending conjuncts cross to the
+      // other side. If derivation produces a literal-false conjunct, the
+      // join can't yield any rows.
       if (deriveTransitive(node, leftColumns, rightColumns, context.pending)) {
         return makeEmptyValues(node);
       }
     }
 
-    ExprVector leftPending;
-    ExprVector rightPending;
-    ExprVector inFilter;
-    ExprVector above;
     for (ExprCP conjunct : context.pending) {
       const auto& columns = conjunct->columns();
       // Pushable to a side only if every referenced column lives on
@@ -1950,6 +1968,192 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     const auto* call = expr->as<Call>();
     return call->name() == builder().functionNames().equality &&
         call->args().size() == 2 && call->args()[0] == call->args()[1];
+  }
+
+  struct ConstantJoinInput {
+    // Null unless exactly one input is a constant `Values`.
+    const Values* values{nullptr};
+    bool onLeft{false};
+  };
+
+  // An inner join against a constant `Values` restricts its other input to the
+  // values that `Values` holds. Three cases:
+  //   - no rows: nothing joins, so the result is empty.
+  //   - one row: every condition is pinned to a constant, so the join becomes
+  //     a Project of those constants over a Filter on the other input.
+  //   - several rows: the join stays, and each key gains `key IN (values)` on
+  //     the other input.
+  // Returns the replacement for the first two cases. Returns nullptr for the
+  // third, having left its filters in the pending of the input that is not
+  // constant, and when 'node' has no constant input.
+  NodeCP rewriteConstantInputJoin(
+      JoinCP node,
+      const PlanObjectSet& leftColumns,
+      const PlanObjectSet& rightColumns,
+      PushdownContext& context,
+      ExprVector& leftPending,
+      ExprVector& rightPending) {
+    const ConstantJoinInput side = constantSide(node);
+    if (side.values == nullptr) {
+      return nullptr;
+    }
+    if (side.values->cardinality() == 0) {
+      return makeEmptyValues(node);
+    }
+
+    if (side.values->cardinality() > 1) {
+      return restrictOtherInput(
+                 node,
+                 side,
+                 leftColumns,
+                 rightColumns,
+                 context,
+                 side.onLeft ? rightPending : leftPending)
+          ? makeEmptyValues(node)
+          : nullptr;
+    }
+
+    ExprFactory::ExprSubstitution constants;
+    for (size_t i = 0; i < side.values->outputColumns().size(); ++i) {
+      ColumnCP column = side.values->outputColumns()[i];
+      constants.emplace(
+          column,
+          builder().makeLiteral(
+              velox::Variant(side.values->valueAt(0, i)),
+              column->value().type));
+    }
+
+    // The join's own conditions vanish with it, so each becomes a filter on
+    // the other input. Conjuncts above the join need no such care: the Project
+    // below still produces the `Values` columns, now constant, and pushdown
+    // substitutes them on the way down.
+    ExprVector filters;
+    filters.reserve(node->leftKeys().size() + node->filter().size());
+
+    // True if 'conjunct' is always false, leaving the join empty.
+    const auto restate = [&](ExprCP conjunct) {
+      return simplifier_.simplifyFilter(
+          exprs_.replace(conjunct, constants), filters);
+    };
+
+    for (size_t i = 0; i < node->leftKeys().size(); ++i) {
+      if (restate(exprs_.makeEq(node->leftKeys()[i], node->rightKeys()[i]))) {
+        return makeEmptyValues(node);
+      }
+    }
+    for (ExprCP conjunct : node->filter()) {
+      if (restate(conjunct)) {
+        return makeEmptyValues(node);
+      }
+    }
+
+    NodeCP input = side.onLeft ? node->right() : node->left();
+    if (!filters.empty()) {
+      input = builder().make<Filter>({input, std::move(filters)});
+    }
+
+    // The `Values` columns the join output carries become constants; without
+    // any, the other input already produces what the join did.
+    ExprVector exprs;
+    ColumnVector outputColumns;
+    exprs.reserve(node->outputColumns().size());
+    outputColumns.reserve(node->outputColumns().size());
+    bool readsConstant = false;
+    for (ColumnCP column : node->outputColumns()) {
+      const auto constant = constants.find(column);
+      readsConstant |= constant != constants.end();
+      exprs.push_back(constant == constants.end() ? column : constant->second);
+      outputColumns.push_back(column);
+    }
+    if (!readsConstant) {
+      return rewrite(input, context);
+    }
+    return rewrite(
+        builder().make<Project>(
+            {input, std::move(exprs), std::move(outputColumns)}),
+        context);
+  }
+
+  // Adds `key IN (values)` to 'otherInputPending' for each equi-key of 'node'
+  // whose key column comes from the constant input. Derived per key, so with
+  // several keys the filters admit combinations no row of the constant input
+  // has. That is sound, because the join still rejects them. Returns true if a
+  // derived filter can never hold, so no row joins.
+  //
+  // The filters go straight to the other input rather than through
+  // 'context.pending', which crosses to both sides: read off the constant
+  // input, they always hold on it.
+  bool restrictOtherInput(
+      JoinCP node,
+      const ConstantJoinInput& side,
+      const PlanObjectSet& leftColumns,
+      const PlanObjectSet& rightColumns,
+      PushdownContext& context,
+      ExprVector& otherInputPending) {
+    auto [leftKeys, rightKeys] = collectEquiColumnPairs(
+        node, leftColumns, rightColumns, context.pending);
+
+    ExprVector derived;
+    for (size_t i = 0; i < leftKeys.size(); ++i) {
+      ColumnCP valuesKey = side.onLeft ? leftKeys[i] : rightKeys[i];
+      ColumnCP probeKey = side.onLeft ? rightKeys[i] : leftKeys[i];
+      if (simplifier_.simplifyFilter(
+              makeKeyFilter(*side.values, valuesKey, probeKey), derived)) {
+        return true;
+      }
+    }
+    appendAll(otherInputPending, derived);
+    return false;
+  }
+
+  // The join's constant `Values` input, when exactly one input is constant.
+  static ConstantJoinInput constantSide(JoinCP node) {
+    const Values* left = constantInput(node->left());
+    const Values* right = constantInput(node->right());
+    if ((left == nullptr) == (right == nullptr)) {
+      return {};
+    }
+    return left != nullptr ? ConstantJoinInput{left, true}
+                           : ConstantJoinInput{right, false};
+  }
+
+  // Returns 'node' as a `Values` holding folded rows, or nullptr.
+  static const Values* constantInput(NodeCP node) {
+    if (!node->is(NodeType::kValues)) {
+      return nullptr;
+    }
+    const auto* values = node->as<Values>();
+    return values->rows() != nullptr ? values : nullptr;
+  }
+
+  // Returns `probeKey = v` over the single value 'values' holds for
+  // 'valuesKey', or `probeKey IN (v...)` over its distinct values.
+  ExprCP
+  makeKeyFilter(const Values& values, ColumnCP valuesKey, ColumnCP probeKey) {
+    const ColumnVector& outputColumns = values.outputColumns();
+    const auto it =
+        std::find(outputColumns.begin(), outputColumns.end(), valuesKey);
+    VELOX_CHECK(
+        it != outputColumns.end(),
+        "Join key is not a column of the input it reads: {}",
+        valuesKey->toString());
+    const size_t column = it - outputColumns.begin();
+
+    const TypeCP type = valuesKey->value().type;
+    ExprVector distinct;
+    folly::F14FastSet<ExprCP> seen;
+    for (size_t row = 0; row < values.cardinality(); ++row) {
+      ExprCP literal = builder().makeLiteral(
+          velox::Variant(values.valueAt(row, column)), type);
+      if (seen.insert(literal).second) {
+        distinct.push_back(literal);
+      }
+    }
+
+    if (distinct.size() == 1) {
+      return exprs_.makeEq(probeKey, distinct[0]);
+    }
+    return exprs_.makeIn(probeKey, std::move(distinct));
   }
 
   // Derives new pending conjuncts via each cross-side

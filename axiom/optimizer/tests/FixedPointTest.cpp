@@ -129,13 +129,15 @@ TEST_F(FixedPointTest, multipleWorkersRejected) {
 
 TEST_F(FixedPointTest, outerJoinInAnchor) {
   // The anchor outer join remains outer when the step maps NULL to non-NULL.
+  testConnector_->addTable("u", ROW("n", INTEGER()));
+
   auto logicalPlan = parseSelect(
       "WITH RECURSIVE t(n) AS ("
       "  SELECT r.n FROM (VALUES 1) l(k) "
       "  LEFT JOIN (VALUES (2, 2)) r(k, n) ON l.k = r.k "
       "  UNION ALL "
       "  SELECT coalesce(n, 1) FROM t WHERE n IS NULL) "
-      "SELECT t.n FROM t JOIN (VALUES 1) e(n) ON t.n = e.n",
+      "SELECT t.n FROM t JOIN u ON t.n = u.n",
       kTestConnectorId);
 
   auto matcher =
@@ -147,7 +149,7 @@ TEST_F(FixedPointTest, outerJoinInAnchor) {
                           .plan(matchDelta("t", {"n"})
                                     .filter("n IS NULL")
                                     .project({"coalesce(n, 1)"})))
-          .hashJoinInner(matchValues())
+          .hashJoinInner(matchScan("u"))
           .project()
           .build();
   AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
@@ -276,10 +278,14 @@ TEST_F(FixedPointTest, twoRecursionsInJoinRejected) {
 }
 
 TEST_F(FixedPointTest, outerJoinAndFilter) {
+  // A predicate above the fixed point stays there, and still reaches the other
+  // side of the join through the equality.
+  testConnector_->addTable("u", ROW("n", INTEGER()));
+
   auto logicalPlan = parseSelect(
       "WITH RECURSIVE r(n) AS ("
       "VALUES 1 UNION ALL SELECT n + 1 FROM r WHERE n < 10) "
-      "SELECT r.n + 1 FROM r JOIN (VALUES 2) v(n) ON r.n = v.n "
+      "SELECT r.n + 1 FROM r JOIN u ON r.n = u.n "
       "WHERE r.n > 0",
       kTestConnectorId);
 
@@ -292,7 +298,7 @@ TEST_F(FixedPointTest, outerJoinAndFilter) {
                                     .project({"n + 1"})))
           .aliases({"n"})
           .filter("n > 0")
-          .hashJoinInner(matchValues().aliases({"n"}).filter("n > 0"))
+          .hashJoinInner(matchScan("u").aliases({"n"}).filter("n > 0"))
           .project()
           .build();
 

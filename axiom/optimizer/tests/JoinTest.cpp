@@ -2643,6 +2643,84 @@ TEST_P(JoinTest, dphypGreedySnowflake) {
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
+// An inner join against constant rows restricts the other side to the values
+// those rows hold, so each join key gets a filter on the other input. A
+// one-row input restricts to a single value, leaving the join nothing to do.
+TEST_P(JoinTest, constantInput) {
+  testConnector_->addTable("t", ROW({"a", "b"}, INTEGER()));
+
+  // Several rows restrict the key to their values; the join stays to reject
+  // what the filter admits but no row matches.
+  {
+    auto plan = toSingleNodePlan(
+        "SELECT t.a FROM t JOIN (VALUES 1, 3) AS v(k) ON t.a = v.k");
+    AXIOM_ASSERT_PLAN_V2(
+        plan,
+        matchScan("t")
+            .filter("a in (1, 3)")
+            .hashJoinInner(matchValues())
+            .build());
+  }
+
+  // Each key is restricted on its own.
+  {
+    auto plan = toSingleNodePlan(
+        "SELECT t.a FROM t JOIN (VALUES (1, 5), (3, 5)) AS v(k, m) "
+        "ON t.a = v.k AND t.b = v.m");
+    AXIOM_ASSERT_PLAN_V2(
+        plan,
+        matchScan("t")
+            .filter("a in (1, 3) AND b = 5")
+            .hashJoinInner(matchValues())
+            .build());
+  }
+
+  // Nothing equals null, so a key that holds only nulls empties the join.
+  {
+    auto plan = toSingleNodePlan(
+        "SELECT t.a FROM t JOIN (VALUES CAST(NULL AS INTEGER), "
+        "CAST(NULL AS INTEGER)) AS v(k) ON t.a = v.k");
+    AXIOM_ASSERT_PLAN_V2(plan, matchValues().build());
+  }
+
+  // One row leaves an equality and no join.
+  {
+    auto plan = toSingleNodePlan(
+        "SELECT t.a FROM t JOIN (VALUES 1) AS v(k) ON t.a = v.k");
+    AXIOM_ASSERT_PLAN_V2(plan, matchScan("t").filter("a = 1").build());
+  }
+
+  // The equality reaches the pass above the join rather than as a join key.
+  {
+    auto plan = toSingleNodePlan(
+        "SELECT t.a FROM t, (VALUES 1) AS v(k) WHERE t.a = v.k");
+    AXIOM_ASSERT_PLAN_V2(plan, matchScan("t").filter("a = 1").build());
+  }
+
+  // A value the query selects survives as a projected constant.
+  {
+    auto plan = toSingleNodePlan(
+        "SELECT t.a, v.k FROM t JOIN (VALUES 1) AS v(k) ON t.a = v.k");
+    AXIOM_ASSERT_PLAN_V2(
+        plan, matchScan("t").filter("a = 1").project({"a", "1 as k"}).build());
+  }
+
+  // A left join keeps the rows that match nothing.
+  {
+    auto plan = toSingleNodePlan(
+        "SELECT t.a, v.k FROM t LEFT JOIN (VALUES 1) AS v(k) ON t.a = v.k");
+    AXIOM_ASSERT_PLAN_V2(
+        plan, matchScan("t").hashJoinLeft(matchValues()).project().build());
+  }
+
+  // An inequality against the one row restricts the other input too.
+  {
+    auto plan = toSingleNodePlan(
+        "SELECT t.a FROM t JOIN (VALUES 1) AS v(k) ON t.a > v.k");
+    AXIOM_ASSERT_PLAN_V2(plan, matchScan("t").filter("a > 1").build());
+  }
+}
+
 AXIOM_INSTANTIATE_V1_V2(JoinTest);
 
 } // namespace

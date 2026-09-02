@@ -92,6 +92,16 @@ ExprCP ExprFactory::makeEq(ExprCP lhs, ExprCP rhs) {
       builder_.functionNames().equality, {lhs, rhs}, /*specialForm=*/false);
 }
 
+ExprCP ExprFactory::makeIn(ExprCP value, ExprVector list) {
+  VELOX_CHECK(!list.empty());
+  ExprVector arguments;
+  arguments.reserve(list.size() + 1);
+  arguments.push_back(value);
+  arguments.insert(arguments.end(), list.begin(), list.end());
+  return makeBooleanCall(
+      SpecialFormCallNames::kIn, std::move(arguments), /*specialForm=*/true);
+}
+
 ExprCP ExprFactory::makeLessThanOrEqual(ExprCP lhs, ExprCP rhs) {
   const Name name = builder_.functionNames().lte;
   VELOX_USER_CHECK_NOT_NULL(

@@ -677,6 +677,14 @@ class PlanMatcherBuilder {
   PlanMatcherBuilder& broadcast(
       std::optional<axiom::optimizer::FragmentType> producer = std::nullopt);
 
+  /// Matches a broadcast shuffle boundary (see broadcast()) only when
+  /// 'condition' is true; otherwise a no-op.
+  PlanMatcherBuilder& broadcastIf(
+      bool condition,
+      std::optional<axiom::optimizer::FragmentType> producer = std::nullopt) {
+    return condition ? broadcast(producer) : *this;
+  }
+
   /// Matches an arbitrary (round-robin) shuffle boundary in a distributed plan.
   /// Verifies that PartitionedOutputNode::isArbitrary() is true. When
   /// 'producer' is set, also asserts the type of the producer fragment this

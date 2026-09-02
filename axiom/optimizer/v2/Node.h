@@ -972,6 +972,10 @@ class Values : public Node {
   /// `Variant`s or by the logical node.
   size_t cardinality() const;
 
+  /// Value of `outputColumns()[column]` in row 'row'. Only for folded rows,
+  /// i.e. when `rows()` is set.
+  const velox::Variant& valueAt(size_t row, size_t column) const;
+
   std::span<const NodeCP> inputs() const override {
     return {};
   }
