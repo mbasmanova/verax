@@ -1229,6 +1229,42 @@ class Enumerator {
   std::vector<std::unique_ptr<MemoOp>>& enforcementOps_;
 };
 
+// Collects the edges `plan` applies.
+void collectAppliedEdges(MemoOpCP plan, folly::F14FastSet<size_t>& applied) {
+  switch (plan->kind()) {
+    case MemoOpKind::kLeaf:
+      return;
+    case MemoOpKind::kJoin: {
+      const auto* join = plan->as<JoinOp>();
+      applied.insert(join->edgeIndex);
+      applied.insert(join->extraEdges.begin(), join->extraEdges.end());
+      collectAppliedEdges(join->left, applied);
+      collectAppliedEdges(join->right, applied);
+      return;
+    }
+    case MemoOpKind::kUnnest: {
+      const auto* unnest = plan->as<UnnestOp>();
+      applied.insert(unnest->edgeIndex);
+      applied.insert(unnest->extraEdges.begin(), unnest->extraEdges.end());
+      collectAppliedEdges(unnest->input, applied);
+      return;
+    }
+    case MemoOpKind::kExchange:
+      collectAppliedEdges(plan->as<ExchangeOp>()->input, applied);
+      return;
+  }
+}
+
+// Throws unless `plan` enforces every equality the query states.
+void checkEdgesEnforced(const JoinHypergraph& graph, MemoOpCP plan) {
+  if (plan == nullptr) {
+    return;
+  }
+  folly::F14FastSet<size_t> applied;
+  collectAppliedEdges(plan, applied);
+  graph.checkEdgesEnforced(applied);
+}
+
 } // namespace
 
 const MemoOp* DPhyp::enumerate() {
@@ -1256,7 +1292,9 @@ const MemoOp* DPhyp::enumerate() {
   if (budgetExceeded) {
     // The graph is too dense for exhaustive DP; restart greedily.
     memo_.clear();
-    return enumerator.greedy(allRelations);
+    MemoOpCP greedyRoot = enumerator.greedy(allRelations);
+    checkEdgesEnforced(graph_, greedyRoot);
+    return greedyRoot;
   }
 
   const auto rootIt = memo_.find(allRelations);
@@ -1265,7 +1303,9 @@ const MemoOp* DPhyp::enumerate() {
     // The caller falls back to the query's syntactic join order.
     return nullptr;
   }
-  return rootIt->second.cheapest();
+  MemoOpCP root = rootIt->second.cheapest();
+  checkEdgesEnforced(graph_, root);
+  return root;
 }
 
 std::vector<MemoOpCP> DPhyp::enumerate(
@@ -1301,6 +1341,15 @@ std::vector<MemoOpCP> DPhyp::enumerate(
     }
     roots.push_back(root);
   }
+
+  // Components partition the relations, so every edge lies inside one of them
+  // and the roots together must apply all of them.
+  folly::F14FastSet<size_t> applied;
+  for (MemoOpCP root : roots) {
+    collectAppliedEdges(root, applied);
+  }
+  graph_.checkEdgesEnforced(applied);
+
   return roots;
 }
 

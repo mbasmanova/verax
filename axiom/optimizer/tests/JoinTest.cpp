@@ -17,6 +17,7 @@
 #include "axiom/logical_plan/PlanBuilder.h"
 #include "axiom/optimizer/tests/PlanMatcher.h"
 #include "axiom/optimizer/tests/QueryTestBase.h"
+#include "velox/common/base/tests/GTestUtils.h"
 
 namespace facebook::axiom::optimizer {
 namespace {
@@ -166,6 +167,33 @@ TEST_P(JoinTest, derivedCompositeEdgePreservesAllEqualities) {
               .gather()
               .build();
     AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, distributedMatcher);
+  }
+}
+
+// A CTE joined to itself on both of its columns matches each row only with
+// itself, so the query returns one row per CTE row and v1 plans it. v2
+// reordering drops one of the two equalities; until it stops doing so the
+// guard fails the query, which is what this pins.
+//
+// TODO: Move to join.sql once v2 keeps both equalities.
+TEST_P(JoinTest, selfJoinOnEveryColumn) {
+  const auto query =
+      "WITH "
+      "  ids (id) AS (VALUES (1)), "
+      "  labels (id, label) AS (VALUES (1, 'a'), (1, 'b')), "
+      "  extra (id) AS (VALUES (1)), "
+      "  labeled AS ("
+      "    SELECT ids.id, labels.label FROM ids "
+      "    JOIN labels ON labels.id = ids.id "
+      "    LEFT JOIN extra ON extra.id = ids.id) "
+      "SELECT count(*) FROM labeled AS x "
+      "JOIN labeled AS y ON x.id = y.id AND x.label = y.label";
+
+  if (useV2_) {
+    VELOX_ASSERT_THROW(
+        toSingleNodePlan(query), "Plan does not enforce a join equality");
+  } else {
+    ASSERT_NO_THROW(toSingleNodePlan(query));
   }
 }
 
