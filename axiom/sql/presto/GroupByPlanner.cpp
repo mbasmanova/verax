@@ -929,14 +929,25 @@ core::ExprPtr GroupByPlanner::rewriteGroupingMarker(const core::ExprPtr& expr) {
     VELOX_USER_CHECK(
         !columnIndices.empty(),
         "GROUPING() requires at least one column argument");
-    // Bitmask is int64, so at most 63 columns (sign bit excluded).
+    // Presto types GROUPING() by the number of column arguments: the bitmask
+    // is INTEGER while it fits in int32, then BIGINT, with the sign bit
+    // excluded in both cases.
+    constexpr size_t kMaxGroupingArgsInteger = 31;
+    constexpr size_t kMaxGroupingArgsBigint = 63;
+
     VELOX_USER_CHECK_LE(
         columnIndices.size(),
-        63,
-        "GROUPING() supports up to 63 column arguments");
+        kMaxGroupingArgsBigint,
+        "Too many GROUPING() column arguments");
+
+    const auto literal = [&](int64_t value) {
+      return columnIndices.size() <= kMaxGroupingArgsInteger
+          ? Variant(static_cast<int32_t>(value))
+          : Variant(value);
+    };
 
     if (groupingSetsIndices_.size() == 1) {
-      return lp::Lit(static_cast<int64_t>(0)).expr();
+      return lp::Lit(literal(0)).expr();
     }
 
     // MSB = leftmost arg. Bit is 0 when column is present in the
@@ -955,7 +966,7 @@ core::ExprPtr GroupByPlanner::rewriteGroupingMarker(const core::ExprPtr& expr) {
               ~static_cast<int64_t>(1ULL << (columnIndices.size() - 1 - i));
         }
       }
-      bitmaskValues.emplace_back(bitmask);
+      bitmaskValues.push_back(literal(bitmask));
     }
 
     // element_at is 1-indexed; $grouping_set_id is 0-based.

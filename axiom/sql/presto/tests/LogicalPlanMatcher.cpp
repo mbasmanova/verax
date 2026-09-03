@@ -219,16 +219,18 @@ class FilterMatcher : public LogicalPlanMatcherImpl<FilterNode> {
  public:
   FilterMatcher(
       const std::shared_ptr<LogicalPlanMatcher>& inputMatcher,
-      std::string expression)
+      std::string expression,
+      velox::parse::ParseOptions parseOptions)
       : LogicalPlanMatcherImpl<FilterNode>(inputMatcher, nullptr),
-        expression_{std::move(expression)} {}
+        expression_{std::move(expression)},
+        parseOptions_{std::move(parseOptions)} {}
 
  private:
   MatchResult matchDetails(
       const FilterNode& plan,
       const std::unordered_map<std::string, std::string>& symbols)
       const override {
-    velox::parse::DuckSqlExpressionsParser parser;
+    velox::parse::DuckSqlExpressionsParser parser(parseOptions_);
     auto expected = parser.parseScalarOrWindowExpr(expression_);
 
     if (!symbols.empty()) {
@@ -240,6 +242,7 @@ class FilterMatcher : public LogicalPlanMatcherImpl<FilterNode> {
   }
 
   const std::string expression_;
+  const velox::parse::ParseOptions parseOptions_;
 };
 
 class SetMatcher : public LogicalPlanMatcherImpl<SetNode> {
@@ -324,9 +327,11 @@ class ProjectMatcher : public LogicalPlanMatcherImpl<ProjectNode> {
  public:
   ProjectMatcher(
       const std::shared_ptr<LogicalPlanMatcher>& inputMatcher,
-      std::vector<std::string> expressions)
+      std::vector<std::string> expressions,
+      velox::parse::ParseOptions parseOptions)
       : LogicalPlanMatcherImpl<ProjectNode>(inputMatcher, nullptr),
-        expressionStrings_{std::move(expressions)} {}
+        expressionStrings_{std::move(expressions)},
+        parseOptions_{std::move(parseOptions)} {}
 
   ProjectMatcher(
       const std::shared_ptr<LogicalPlanMatcher>& inputMatcher,
@@ -348,9 +353,7 @@ class ProjectMatcher : public LogicalPlanMatcherImpl<ProjectNode> {
     // Inherit aliases captured below so a name bound at a descendant (e.g. an
     // aggregate output) stays resolvable above this projection.
     std::unordered_map<std::string, std::string> newSymbols = symbols;
-    velox::parse::ParseOptions parseOptions;
-    parseOptions.correctWindowFrameDefault = true;
-    velox::parse::DuckSqlExpressionsParser parser(parseOptions);
+    velox::parse::DuckSqlExpressionsParser parser(parseOptions_);
 
     for (auto i = 0; i < numExprs; ++i) {
       const auto& actual = plan.expressionAt(i);
@@ -385,6 +388,7 @@ class ProjectMatcher : public LogicalPlanMatcherImpl<ProjectNode> {
 
   const std::vector<std::string> expressionStrings_;
   const std::vector<ExprApi> expressionApis_;
+  const velox::parse::ParseOptions parseOptions_;
 };
 
 class AggregateMatcher : public LogicalPlanMatcherImpl<AggregateNode> {
@@ -393,11 +397,13 @@ class AggregateMatcher : public LogicalPlanMatcherImpl<AggregateNode> {
       const std::shared_ptr<LogicalPlanMatcher>& inputMatcher,
       std::vector<std::string> groupingKeys,
       std::vector<std::string> aggregates,
-      std::vector<std::vector<int32_t>> groupingSets = {})
+      std::vector<std::vector<int32_t>> groupingSets,
+      velox::parse::ParseOptions parseOptions)
       : LogicalPlanMatcherImpl<AggregateNode>(inputMatcher, nullptr),
         groupingKeys_{std::move(groupingKeys)},
         aggregates_{std::move(aggregates)},
-        groupingSets_{std::move(groupingSets)} {}
+        groupingSets_{std::move(groupingSets)},
+        parseOptions_{std::move(parseOptions)} {}
 
  private:
   MatchResult matchDetails(
@@ -419,7 +425,7 @@ class AggregateMatcher : public LogicalPlanMatcherImpl<AggregateNode> {
     std::unordered_map<std::string, std::string> newSymbols = symbols;
     auto numGroupingKeys = plan.groupingKeys().size();
 
-    velox::parse::DuckSqlExpressionsParser parser;
+    velox::parse::DuckSqlExpressionsParser parser(parseOptions_);
     for (auto i = 0; i < aggregates_.size(); ++i) {
       velox::core::ExprPtr parsed = parser.parseAggregateExpr(aggregates_[i]);
 
@@ -455,6 +461,7 @@ class AggregateMatcher : public LogicalPlanMatcherImpl<AggregateNode> {
   const std::vector<std::string> groupingKeys_;
   const std::vector<std::string> aggregates_;
   const std::vector<std::vector<int32_t>> groupingSets_;
+  const velox::parse::ParseOptions parseOptions_;
 };
 
 class DistinctMatcher : public LogicalPlanMatcherImpl<AggregateNode> {
@@ -522,9 +529,11 @@ class SortMatcher : public LogicalPlanMatcherImpl<SortNode> {
   SortMatcher(
       const std::shared_ptr<LogicalPlanMatcher>& inputMatcher,
       std::vector<std::string> ordering,
-      std::function<void(const LogicalPlanNodePtr&)> onMatch)
+      std::function<void(const LogicalPlanNodePtr&)> onMatch,
+      velox::parse::ParseOptions parseOptions)
       : LogicalPlanMatcherImpl<SortNode>(inputMatcher, std::move(onMatch)),
-        ordering_{std::move(ordering)} {}
+        ordering_{std::move(ordering)},
+        parseOptions_{std::move(parseOptions)} {}
 
  private:
   MatchResult matchDetails(
@@ -535,7 +544,7 @@ class SortMatcher : public LogicalPlanMatcherImpl<SortNode> {
     EXPECT_EQ(actualOrdering.size(), ordering_.size());
     AXIOM_RETURN_IF_FAILURE;
 
-    velox::parse::DuckSqlExpressionsParser parser;
+    velox::parse::DuckSqlExpressionsParser parser(parseOptions_);
     for (size_t i = 0; i < ordering_.size(); ++i) {
       auto expected = parser.parseOrderByExpr(ordering_[i]);
       auto expectedExpr = expected.expr;
@@ -562,6 +571,7 @@ class SortMatcher : public LogicalPlanMatcherImpl<SortNode> {
   }
 
   const std::vector<std::string> ordering_;
+  const velox::parse::ParseOptions parseOptions_;
 };
 
 #undef AXIOM_RETURN_IF_FAILURE
@@ -619,9 +629,10 @@ LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::filter(
 }
 
 LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::filter(
-    const std::string& expression) {
+    const std::string& expression,
+    const velox::parse::ParseOptions& options) {
   VELOX_USER_CHECK_NOT_NULL(matcher_);
-  matcher_ = std::make_shared<FilterMatcher>(matcher_, expression);
+  matcher_ = std::make_shared<FilterMatcher>(matcher_, expression, options);
   return *this;
 }
 
@@ -634,9 +645,10 @@ LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::project(
 }
 
 LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::project(
-    const std::vector<std::string>& expressions) {
+    const std::vector<std::string>& expressions,
+    const velox::parse::ParseOptions& options) {
   VELOX_USER_CHECK_NOT_NULL(matcher_);
-  matcher_ = std::make_shared<ProjectMatcher>(matcher_, expressions);
+  matcher_ = std::make_shared<ProjectMatcher>(matcher_, expressions, options);
   return *this;
 }
 
@@ -659,10 +671,11 @@ LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::aggregate(
 LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::aggregate(
     const std::vector<std::string>& groupingKeys,
     const std::vector<std::string>& aggregates,
-    const std::vector<std::vector<int32_t>>& groupingSets) {
+    const std::vector<std::vector<int32_t>>& groupingSets,
+    const velox::parse::ParseOptions& options) {
   VELOX_USER_CHECK_NOT_NULL(matcher_);
   matcher_ = std::make_shared<AggregateMatcher>(
-      matcher_, groupingKeys, aggregates, groupingSets);
+      matcher_, groupingKeys, aggregates, groupingSets, options);
   return *this;
 }
 
@@ -890,10 +903,11 @@ LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::sort(
 
 LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::sort(
     const std::vector<std::string>& ordering,
-    OnMatchCallback onMatch) {
+    OnMatchCallback onMatch,
+    const velox::parse::ParseOptions& options) {
   VELOX_USER_CHECK_NOT_NULL(matcher_);
-  matcher_ =
-      std::make_shared<SortMatcher>(matcher_, ordering, std::move(onMatch));
+  matcher_ = std::make_shared<SortMatcher>(
+      matcher_, ordering, std::move(onMatch), options);
   return *this;
 }
 

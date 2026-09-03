@@ -16,6 +16,7 @@
 
 #include <fmt/format.h>
 #include <fmt/ranges.h>
+#include <numeric>
 #include "axiom/sql/presto/tests/PrestoParserTestBase.h"
 #include "velox/common/base/tests/GTestUtils.h"
 
@@ -385,13 +386,15 @@ TEST_F(AggregationParserTest, groupingFunction) {
         "element_at([{}], \"$grouping_set_id\" + 1)", fmt::join(bitmasks, ","));
   };
 
+  const parse::ParseOptions kIntegerLiterals{.parseIntegerAsBigint = false};
+
   // GROUPING() with two grouping sets.
   testSelect(
       "SELECT GROUPING(n_regionkey), count(1) FROM nation "
       "GROUP BY GROUPING SETS ((n_regionkey), ())",
       matchScan()
           .aggregate({"n_regionkey"}, {"count(1)"}, {{0}, {}})
-          .project({grouping({0, 1}), "count"})
+          .project({grouping({0, 1}), "count"}, kIntegerLiterals)
           .output());
 
   // GROUPING() inside a window PARTITION BY is rewritten like GROUPING() in
@@ -401,8 +404,10 @@ TEST_F(AggregationParserTest, groupingFunction) {
       "FROM nation GROUP BY GROUPING SETS ((n_regionkey), ())",
       matchScan()
           .aggregate({"n_regionkey"}, {"sum(n_nationkey)"}, {{0}, {}})
-          .project({fmt::format(
-              "sum(sum) OVER (PARTITION BY {})", grouping({0, 1}))})
+          .project(
+              {fmt::format(
+                  "sum(sum) OVER (PARTITION BY {})", grouping({0, 1}))},
+              kIntegerLiterals)
           .output());
 
   // GROUPING() inside a window ORDER BY is rewritten as well.
@@ -412,7 +417,8 @@ TEST_F(AggregationParserTest, groupingFunction) {
       matchScan()
           .aggregate({"n_regionkey"}, {"sum(n_nationkey)"}, {{0}, {}})
           .project(
-              {fmt::format("sum(sum) OVER (ORDER BY {})", grouping({0, 1}))})
+              {fmt::format("sum(sum) OVER (ORDER BY {})", grouping({0, 1}))},
+              kIntegerLiterals)
           .output());
 
   // GROUPING() with two columns, three grouping sets.
@@ -421,7 +427,7 @@ TEST_F(AggregationParserTest, groupingFunction) {
       "GROUP BY GROUPING SETS ((n_regionkey, n_name), (n_regionkey), ())",
       matchScan()
           .aggregate({"n_regionkey", "n_name"}, {"count(1)"}, {{0, 1}, {0}, {}})
-          .project({grouping({0, 1, 3}), "count"})
+          .project({grouping({0, 1, 3}), "count"}, kIntegerLiterals)
           .output());
 
   // GROUPING() in SELECT with other columns (ROLLUP).
@@ -430,7 +436,9 @@ TEST_F(AggregationParserTest, groupingFunction) {
       "FROM nation GROUP BY ROLLUP(n_regionkey, n_name)",
       matchScan()
           .aggregate({"n_regionkey", "n_name"}, {"count(1)"}, {{0, 1}, {0}, {}})
-          .project({"n_regionkey", "n_name", grouping({0, 1, 3}), "count"})
+          .project(
+              {"n_regionkey", "n_name", grouping({0, 1, 3}), "count"},
+              kIntegerLiterals)
           .output());
 
   // Two separate GROUPING() calls (CUBE).
@@ -445,7 +453,8 @@ TEST_F(AggregationParserTest, groupingFunction) {
                "n_name",
                grouping({0, 0, 1, 1}),
                grouping({0, 1, 0, 1}),
-               "count"})
+               "count"},
+              kIntegerLiterals)
           .output());
 
   // GROUPING() with plain GROUP BY resolves to constant 0 (single set).
@@ -455,7 +464,10 @@ TEST_F(AggregationParserTest, groupingFunction) {
       matchScan()
           .aggregate({"n_regionkey"}, {"count(1)"})
           .project({"n_regionkey", "0", "count"})
-          .output());
+          // A single grouping set yields INTEGER, like the multi-set form.
+          .output([](const auto& node) {
+            EXPECT_EQ(*node->outputType()->childAt(1), *INTEGER());
+          }));
 
   VELOX_ASSERT_THROW(
       parseSelect(
@@ -469,7 +481,7 @@ TEST_F(AggregationParserTest, groupingFunction) {
       "FROM nation GROUP BY ROLLUP(n_regionkey)",
       matchScan()
           .aggregate({"n_regionkey"}, {"count(1)"}, {{0}, {}})
-          .project({"n_regionkey", grouping({0, 3}), "count"})
+          .project({"n_regionkey", grouping({0, 3}), "count"}, kIntegerLiterals)
           .output());
 
   // Two columns with the same leaf name across a join stay distinct grouping
@@ -482,7 +494,7 @@ TEST_F(AggregationParserTest, groupingFunction) {
           .join(matchScan("nation").build())
           .filter()
           .aggregate({"n_regionkey", "n_regionkey_2"}, {"count(1)"}, {{0}, {1}})
-          .project({grouping({1, 2}), "count"})
+          .project({grouping({1, 2}), "count"}, kIntegerLiterals)
           .output());
 
   // A qualified GROUPING() argument that is not a grouping key still fails.
@@ -500,7 +512,7 @@ TEST_F(AggregationParserTest, groupingFunction) {
       "GROUP BY GROUPING SETS ((s.x.y), ())",
       matchScan("s")
           .aggregate({"DEREFERENCE(x, y)"}, {"count(1)"}, {{0}, {}})
-          .project({grouping({0, 1}), "count"})
+          .project({grouping({0, 1}), "count"}, kIntegerLiterals)
           .output());
 
   AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
@@ -540,7 +552,7 @@ TEST_F(AggregationParserTest, groupingFunction) {
       "GROUP BY GROUPING SETS ((n_regionkey), ())",
       matchScan()
           .aggregate({"n_regionkey"}, {"count(1)"}, {{0}, {}})
-          .project({grouping({0, 1}), "count"})
+          .project({grouping({0, 1}), "count"}, kIntegerLiterals)
           .output());
 
   // GROUPING() in FILTER clause of aggregate.
@@ -574,6 +586,41 @@ TEST_F(AggregationParserTest, groupingFunction) {
           "SELECT n_regionkey FROM nation n1 "
           "JOIN nation n2 ON GROUPING(n1.n_regionkey) = 0"),
       "not allowed in this context");
+
+  // Past 31 columns the bitmask no longer fits in int32, so it becomes BIGINT.
+  // Past 63 it does not fit at all.
+  {
+    std::vector<std::string> names;
+    names.reserve(64);
+    for (int32_t i = 0; i < 64; ++i) {
+      names.push_back(fmt::format("c{}", i));
+    }
+    connector_->addTable("wide", ROW(names, BIGINT()));
+
+    const auto query = [&](int32_t numColumns) {
+      const auto columns = fmt::to_string(
+          fmt::join(names.begin(), names.begin() + numColumns, ", "));
+      return fmt::format(
+          "SELECT GROUPING({0}), count(1) FROM wide "
+          "GROUP BY GROUPING SETS (({0}), ())",
+          columns);
+    };
+
+    std::vector<std::string> keys(names.begin(), names.begin() + 32);
+    std::vector<int32_t> allKeys(keys.size());
+    std::iota(allKeys.begin(), allKeys.end(), 0);
+
+    // Expected literals parse as BIGINT, which is what the plan holds here.
+    testSelect(
+        query(32),
+        matchScan("wide")
+            .aggregate(keys, {"count(1)"}, {allKeys, {}})
+            .project({grouping({0, (1LL << 32) - 1}), "count"})
+            .output());
+
+    VELOX_ASSERT_THROW(
+        parseSelect(query(64)), "Too many GROUPING() column arguments");
+  }
 }
 
 TEST_F(AggregationParserTest, rollup) {
