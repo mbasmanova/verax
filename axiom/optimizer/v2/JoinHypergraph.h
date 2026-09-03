@@ -21,6 +21,7 @@
 #include <vector>
 
 #include <folly/container/F14Map.h>
+#include <folly/container/F14Set.h>
 
 #include "axiom/optimizer/PlanObject.h"
 #include "axiom/optimizer/QueryGraphContext.h"
@@ -91,6 +92,18 @@ class JoinHypergraph {
   /// `edge.left() ∪ edge.right()`, and every relation referenced
   /// by `edge` or `tes` must already be in `relations()`.
   void addEdge(JoinEdge edge, RelationSet tes);
+
+  /// Throws unless `appliedEdges` — the edges a finished plan applies, indexed
+  /// into `edges()` — enforce every edge's equalities. A plan that drops one
+  /// returns rows the query excludes.
+  ///
+  /// An edge need not appear in `appliedEdges` itself: equality is transitive,
+  /// so applying `a = b` and `b = c` enforces `a = c`.
+  ///
+  /// The closure is position-insensitive, so an edge applied under the
+  /// null-padding side of an outer join is credited even though its equality
+  /// does not hold on the padded rows.
+  void checkEdgesEnforced(const folly::F14FastSet<size_t>& appliedEdges) const;
 
   /// Appends a filter conjunct. `conjunct.relations` must be
   /// a subset of the relations already in `relations()`.

@@ -282,4 +282,60 @@ void JoinHypergraph::addEdge(JoinEdge edge, RelationSet tes) {
   invalidateCoverCaches();
 }
 
+void JoinHypergraph::checkEdgesEnforced(
+    const folly::F14FastSet<size_t>& appliedEdges) const {
+  // Union-find over key expressions. An applied edge that proves its keys
+  // equal merges their classes, so an edge whose keys land in one class is
+  // enforced even where the plan does not apply that edge.
+  folly::F14FastMap<ExprCP, ExprCP> parent;
+  auto find = [&](ExprCP expr) {
+    parent.try_emplace(expr, expr);
+    ExprCP root = expr;
+    while (parent[root] != root) {
+      root = parent[root];
+    }
+    while (expr != root) {
+      ExprCP next = parent[expr];
+      parent[expr] = root;
+      expr = next;
+    }
+    return root;
+  };
+
+  for (size_t index : appliedEdges) {
+    const JoinEdge& edge = edges_[index];
+    if (edge.isUnnest() || !provesKeyEquality(edge.joinType())) {
+      continue;
+    }
+    for (size_t i = 0; i < edge.leftKeys().size(); ++i) {
+      ExprCP left = find(edge.leftKeys()[i]);
+      ExprCP right = find(edge.rightKeys()[i]);
+      if (left != right) {
+        parent[left] = right;
+      }
+    }
+  }
+
+  for (size_t index = 0; index < edges_.size(); ++index) {
+    const JoinEdge& edge = edges_[index];
+    if (edge.isUnnest() || !provesKeyEquality(edge.joinType())) {
+      // An Unnest produces the rows it expands, and an unmatched or
+      // null-padded row has unequal keys, so nothing stands in for these.
+      VELOX_CHECK(
+          appliedEdges.contains(index),
+          "Plan does not apply a join edge: {} {}",
+          index,
+          edge.joinTypeName());
+      continue;
+    }
+    for (size_t i = 0; i < edge.leftKeys().size(); ++i) {
+      VELOX_CHECK(
+          find(edge.leftKeys()[i]) == find(edge.rightKeys()[i]),
+          "Plan does not enforce a join equality: {} = {}",
+          edge.leftKeys()[i]->toString(),
+          edge.rightKeys()[i]->toString());
+    }
+  }
+}
+
 } // namespace facebook::axiom::optimizer::v2
