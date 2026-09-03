@@ -19,6 +19,7 @@
 #include <unordered_map>
 #include "axiom/logical_plan/ExprApi.h"
 #include "axiom/logical_plan/LogicalPlanNode.h"
+#include "velox/parse/ExpressionsParser.h"
 
 namespace facebook::axiom::logical_plan::test {
 
@@ -111,6 +112,14 @@ class LogicalPlanMatcher {
 ///       .tableScan()
 ///       .join(right)
 ///       .project();
+///
+/// Parse options:
+/// -------------
+/// Methods that take expression text parse it with DuckDB and accept
+/// 'options'. Bare integer literals parse as BIGINT, which the constant
+/// comparison tolerates against a plan's INTEGER. That tolerance does not
+/// reach inside a complex constant, so pass '{.parseIntegerAsBigint = false}'
+/// to compare against an INTEGER array.
 class LogicalPlanMatcherBuilder {
  public:
   /// Callback invoked when a node matches. Use to capture or inspect the
@@ -141,7 +150,9 @@ class LogicalPlanMatcherBuilder {
   /// expression is parsed with DuckDB and matched structurally against the
   /// filter expression, so `ExprMatcher` wildcards apply. Supports symbol
   /// rewriting.
-  LogicalPlanMatcherBuilder& filter(const std::string& expression);
+  LogicalPlanMatcherBuilder& filter(
+      const std::string& expression,
+      const velox::parse::ParseOptions& options = {});
 
   /// Matches a ProjectNode.
   LogicalPlanMatcherBuilder& project(OnMatchCallback onMatch = nullptr);
@@ -150,7 +161,8 @@ class LogicalPlanMatcherBuilder {
   /// expression is parsed with DuckDB and matched structurally against
   /// expressionAt(i), so `ExprMatcher` wildcards apply.
   LogicalPlanMatcherBuilder& project(
-      const std::vector<std::string>& expressions);
+      const std::vector<std::string>& expressions,
+      const velox::parse::ParseOptions& options = {});
 
   /// Matches a ProjectNode with the specified ExprApi expressions. Each
   /// expected expression is compared directly against
@@ -168,7 +180,8 @@ class LogicalPlanMatcherBuilder {
   LogicalPlanMatcherBuilder& aggregate(
       const std::vector<std::string>& groupingKeys,
       const std::vector<std::string>& aggregates,
-      const std::vector<std::vector<int32_t>>& groupingSets = {});
+      const std::vector<std::vector<int32_t>>& groupingSets = {},
+      const velox::parse::ParseOptions& options = {});
 
   /// Matches an AggregateNode used for deduplication (no aggregate functions,
   /// no grouping sets, all output columns are grouping keys).
@@ -269,7 +282,8 @@ class LogicalPlanMatcherBuilder {
   /// is a sorting expression in DuckDB SQL syntax.
   LogicalPlanMatcherBuilder& sort(
       const std::vector<std::string>& ordering,
-      OnMatchCallback onMatch = nullptr);
+      OnMatchCallback onMatch = nullptr,
+      const velox::parse::ParseOptions& options = {});
 
   /// Matches any LimitNode.
   LogicalPlanMatcherBuilder& limit(OnMatchCallback onMatch = nullptr);
