@@ -1118,8 +1118,9 @@ class Decorrelator : public NodeRewriter<> {
   }
 
   // Outer Apply is kLeftSemiProject. Currently supports EXISTS shape
-  // (inLhs == nullptr) over kInner cross-join body; mark = markA AND
-  // markB. IN shape and other Join kinds NYI loud.
+  // (inLhs == nullptr) over a kInner body. With nothing pairing the two sides
+  // the mark is markA AND markB; otherwise it is a property of the pair. IN
+  // shape and other Join kinds NYI loud.
   NodeCP joinPeelSemi(
       ApplyCP node,
       NodeCP input,
@@ -1138,9 +1139,13 @@ class Decorrelator : public NodeRewriter<> {
           joinBody->joinTypeName());
     }
 
-    if (!joinPredicate.empty()) {
-      // A predicate ties the two sides together, so existence is not the
-      // conjunction of each side's own.
+    // A predicate ties the two sides together, so existence is not the
+    // conjunction of each side's own. Anything accumulated above the body join
+    // counts: a single-side conjunct is pushed into its side before this pass,
+    // so what remains here reads both. The chain below could not test it
+    // anyway, its first leg being a semi join that forwards the outer's
+    // columns but not the body side's.
+    if (!joinPredicate.empty() || !accumulatedFilter.empty()) {
       return joinPeelSemiInnerWithPredicate(
           node,
           input,
@@ -1191,8 +1196,9 @@ class Decorrelator : public NodeRewriter<> {
     });
   }
 
-  // Outer kLeftSemiProject EXISTS over a body kInner Join carrying a
-  // predicate. The mark asks whether the outer has any (a, b) pair the
+  // Outer kLeftSemiProject EXISTS over a body kInner Join where some predicate
+  // pairs the two sides, whether it came from the join itself or from a filter
+  // above it. The mark asks whether the outer has any (a, b) pair the
   // predicate accepts, which a per-outer `bool_or` over the chain's rows
   // answers. The chain then collapses to the one row per outer the outer
   // Apply's contract calls for.
