@@ -18,6 +18,7 @@
 
 #include "axiom/optimizer/QueryGraph.h"
 #include "axiom/optimizer/Schema.h"
+#include "axiom/optimizer/ToSubfield.h"
 #include "axiom/optimizer/v2/ExprEmitter.h"
 
 namespace facebook::axiom::optimizer::v2 {
@@ -26,6 +27,7 @@ ScanHandle ScanHandle::build(
     const BaseTable& baseTable,
     const ColumnVector& outputColumns,
     const ExprVector& filters,
+    const SubfieldsOf& subfieldsOf,
     const OptimizerSession& session,
     velox::core::ExpressionEvaluator& evaluator,
     ExprVector& rejected) {
@@ -53,7 +55,7 @@ ScanHandle ScanHandle::build(
   readSchema.reserve(numColumns);
   const auto addHandle = [&](ColumnCP column) {
     auto handle = layout->createColumnHandle(
-        connectorSession, column->name(), /*subfields=*/{});
+        connectorSession, column->name(), subfieldsOf(column));
     readSchema.push_back(handle);
     return handle;
   };

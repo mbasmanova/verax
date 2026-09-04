@@ -276,9 +276,6 @@ void Path::subfieldSkyline(BitSet& subfields) {
     return;
   }
 
-  // Expand the ids to fields and remove subfields where there exists a shorter
-  // prefix.
-
   auto ctx = queryCtx();
   bool allFields = false;
   // Groups paths by their size (number of steps - 1). This allows efficient

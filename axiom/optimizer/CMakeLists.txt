@@ -55,6 +55,7 @@ add_library(
   StatsFilterSelectivityEstimator.cpp
   SubfieldTracker.cpp
   ToGraph.cpp
+  ToSubfield.cpp
   ToVelox.cpp
   VeloxHistory.cpp
   WriteStatsBuilder.cpp

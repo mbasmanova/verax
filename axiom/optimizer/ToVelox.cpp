@@ -18,6 +18,7 @@
 #include "axiom/connectors/ConnectorMetadataRegistry.h"
 #include "axiom/optimizer/FunctionRegistry.h"
 #include "axiom/optimizer/Optimization.h"
+#include "axiom/optimizer/ToSubfield.h"
 #include "axiom/optimizer/WriteStatsBuilder.h"
 #include "velox/core/PlanConsistencyChecker.h"
 #include "velox/core/PlanNode.h"
@@ -108,61 +109,11 @@ bool isIdentityProject(
 std::vector<velox::common::Subfield> columnSubfields(
     BaseTableCP table,
     int32_t id) {
-  auto* optimization = queryCtx()->optimization();
-
   const auto columnName = queryCtx()->objectAt(id)->as<Column>()->name();
-
-  PathSet set = table->columnSubfields(id);
-
-  std::vector<velox::common::Subfield> subfields;
-  set.forEachPath([&](PathCP path) {
-    const auto& steps = path->steps();
-    std::vector<std::unique_ptr<velox::common::Subfield::PathElement>> elements;
-    elements.push_back(
-        std::make_unique<velox::common::Subfield::NestedField>(columnName));
-    bool first = true;
-    for (auto& step : steps) {
-      switch (step.kind) {
-        case StepKind::kField:
-          VELOX_CHECK_NOT_NULL(
-              step.field, "Index subfield not suitable for pruning");
-          elements.push_back(
-              std::make_unique<velox::common::Subfield::NestedField>(
-                  step.field));
-          break;
-        case StepKind::kSubscript:
-        case StepKind::kElementAt:
-          if (step.allFields) {
-            elements.push_back(
-                std::make_unique<velox::common::Subfield::AllSubscripts>());
-            break;
-          }
-          if (first &&
-              optimization->options().isMapAsStruct(
-                  table->schemaTable->name(), columnName)) {
-            elements.push_back(
-                std::make_unique<velox::common::Subfield::NestedField>(
-                    step.field ? std::string(step.field)
-                               : fmt::format("{}", step.id)));
-            break;
-          }
-          if (step.field) {
-            elements.push_back(
-                std::make_unique<velox::common::Subfield::StringSubscript>(
-                    step.field));
-            break;
-          }
-          elements.push_back(
-              std::make_unique<velox::common::Subfield::LongSubscript>(
-                  step.id));
-          break;
-      }
-      first = false;
-    }
-    subfields.emplace_back(std::move(elements));
-  });
-
-  return subfields;
+  const bool mapKeysAsFields =
+      queryCtx()->optimization()->options().isMapAsStruct(
+          table->schemaTable->name(), columnName);
+  return toSubfields(columnName, table->columnSubfields(id), mapKeysAsFields);
 }
 
 // On return, *outGather is set to the inserted gather Repartition, or

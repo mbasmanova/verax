@@ -25,6 +25,10 @@
 
 namespace facebook::axiom::optimizer::v2 {
 
+/// Returns the parts of 'column' a query reads, empty for the whole column.
+using SubfieldsOf =
+    std::function<std::vector<velox::common::Subfield>(ColumnCP)>;
+
 /// Connector access for a scanned leaf table: the result of negotiating filter
 /// pushdown with the connector. Made once, by the pushdown pass, and pointed
 /// at by the `Scan` from there on.
@@ -33,10 +37,16 @@ struct ScanHandle {
   /// 'baseTable' and returns the handle it builds. Calls into the connector.
   /// Appends to 'rejected' the conjuncts the connector rejected, which the
   /// caller must apply itself.
+  ///
+  /// 'subfieldsOf' gives the parts of one column the query reads, so a complex
+  /// column can be read in part. Returning none reads the column whole. It is
+  /// asked about every column the read needs, including the ones only a filter
+  /// references, which the caller cannot know in advance.
   static ScanHandle build(
       const BaseTable& baseTable,
       const ColumnVector& outputColumns,
       const ExprVector& filters,
+      const SubfieldsOf& subfieldsOf,
       const OptimizerSession& session,
       velox::core::ExpressionEvaluator& evaluator,
       ExprVector& rejected);
