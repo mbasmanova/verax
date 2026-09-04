@@ -2694,6 +2694,8 @@ bool producesExactlyOneRow(NodeCP node) {
     }
     case NodeType::kEnforceSingleRow:
       return true;
+    case NodeType::kValues:
+      return node->as<Values>()->cardinality() == 1;
     case NodeType::kProject:
       return producesExactlyOneRow(node->as<Project>()->input());
     default:
@@ -3403,10 +3405,13 @@ Translator::tryEvaluateOverDiscreteValues(const Aggregate* aggregate) {
   const ExprVector& filters =
       filter != nullptr ? filter->predicates() : ExprVector{};
   ExprVector rejected;
+  // This handle only asks the connector for its discrete values; nothing reads
+  // through it, so it requests no subfields.
   ScanHandle handle = ScanHandle::build(
       *scan->baseTable(),
       scan->outputColumns(),
       filters,
+      [](ColumnCP) { return std::vector<velox::common::Subfield>{}; },
       session_,
       evaluator_,
       rejected);

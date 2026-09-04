@@ -15,6 +15,8 @@
  */
 
 #include "axiom/optimizer/v2/PushdownAndPrunePass.h"
+#include "axiom/optimizer/ToSubfield.h"
+#include "axiom/optimizer/v2/ColumnAccess.h"
 
 #include "axiom/optimizer/v2/ScanHandle.h"
 
@@ -649,13 +651,30 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       Builder& builder,
       velox::core::ExpressionEvaluator& evaluator,
       const OptimizerSession& session,
-      PushdownAndPrunePass::ConnectorPushdown connectorPushdown)
+      PushdownAndPrunePass::ConnectorPushdown connectorPushdown,
+      const ColumnVector& outputColumns)
       : NodeRewriter(builder),
         exprs_(builder),
         evaluator_(evaluator),
         session_(session),
         connectorPushdown_(connectorPushdown),
-        simplifier_(builder, evaluator) {}
+        simplifier_(builder, evaluator) {
+    // The query returns these, so they are read whole however narrowly an
+    // expression below reads them.
+    for (ColumnCP column : outputColumns) {
+      access_.add(column);
+    }
+  }
+
+  using NodeRewriter::rewrite;
+
+  // Records what each node reads on the way down, so that a node producing a
+  // column is reached after the consumers whose paths it extends, and a Scan
+  // sees the finished access when it negotiates with its connector.
+  NodeCP rewrite(NodeCP node, PushdownContext& context) override {
+    access_.add(*node);
+    return NodeRewriter::rewrite(node, context);
+  }
 
  protected:
   // Filter conjuncts (flattened across AND trees) join `pending`; the
@@ -693,6 +712,10 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       }
     }
 
+    // A conjunct pushed below this Project reads the expressions it was
+    // substituted into, and the projection producing them may not survive.
+    access_.addAll(pushable);
+
     PlanObjectSet outputsKept = context.required;
     outputsKept.unionColumns(blocked);
     ExprVector survivingExprs;
@@ -704,6 +727,12 @@ class Pushdown : public NodeRewriter<PushdownContext> {
         survivingExprs.push_back(node->exprs()[i]);
         survivingOutputs.push_back(node->outputColumns()[i]);
       }
+    }
+
+    // Recorded here, not on the way down: an expression this pass prunes must
+    // not contribute the paths it reads.
+    for (size_t i = 0; i < survivingExprs.size(); ++i) {
+      access_.addProducing(survivingExprs[i], survivingOutputs[i]);
     }
 
     PushdownContext childContext;
@@ -784,6 +813,10 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     const bool emitsRowOnEmptyInput =
         node->groupingKeys().empty() || !node->globalGroupingSets().empty();
     if (emitsRowOnEmptyInput) {
+      for (const auto* aggregate : node->aggregates()) {
+        access_.add(aggregate);
+      }
+
       PushdownContext childContext;
       childContext.required = context.required;
       childContext.required.unionColumns(context.pending);
@@ -841,6 +874,10 @@ class Pushdown : public NodeRewriter<PushdownContext> {
         survivingAggregates.push_back(node->aggregates()[i]);
         survivingOutputs.push_back(outputColumn);
       }
+    }
+
+    for (const auto* aggregate : survivingAggregates) {
+      access_.add(aggregate);
     }
 
     PushdownContext childContext;
@@ -1180,7 +1217,10 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       // A rewrite that duplicated a subtree can present one Scan twice. The
       // connector is asked once, so the second visit must be offering the same
       // predicates and reading no more columns; otherwise its predicates would
-      // be silently dropped, or it would read a column with no handle.
+      // be silently dropped or it would read a column with no handle. The
+      // paths are not compared: access accumulates as the walk descends, so
+      // the second visit legitimately sees a superset of what the handle was
+      // built for.
       VELOX_CHECK(
           it->second.filters == filters,
           "Two reads of one table offer the connector different filters: {}",
@@ -1201,6 +1241,12 @@ class Pushdown : public NodeRewriter<PushdownContext> {
             baseTable,
             outputColumns,
             filters,
+            [this](ColumnCP column) {
+              return toSubfields(
+                  column->name(),
+                  access_.subfieldsOf(column),
+                  /*mapKeysAsFields=*/false);
+            },
             session_,
             evaluator_,
             rejectedHere));
@@ -1839,6 +1885,12 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       override {
     // Filtering seed rows is sound only when `p(step(x))` implies `p(x)`;
     // otherwise, a rejected seed can still produce matching descendants.
+    // The step and convergence subtrees read the recursive state through the
+    // same columns the anchor produces, so their paths must be recorded before
+    // the anchor's scan negotiates; the descent reaches them only afterwards.
+    access_.addSubtree(*node->step());
+    access_.addSubtree(*node->convergence());
+
     PushdownContext anchorContext;
     anchorContext.required.unionObjects(node->outputColumns());
     anchorContext.requiredAbove = anchorContext.required;
@@ -2225,6 +2277,11 @@ class Pushdown : public NodeRewriter<PushdownContext> {
   velox::core::ExpressionEvaluator& evaluator_;
   const OptimizerSession& session_;
   const PushdownAndPrunePass::ConnectorPushdown connectorPushdown_;
+
+  // Which parts of each column the plan reads, accumulated as the rewrite
+  // descends.
+  ColumnAccess access_;
+
   ExprSimplifier simplifier_;
 
   // Outcome of one negotiation with the connector.
@@ -2249,7 +2306,7 @@ NodeCP PushdownAndPrunePass::run(
     velox::core::ExpressionEvaluator& evaluator,
     const OptimizerSession& session,
     ConnectorPushdown connectorPushdown) {
-  Pushdown pass{builder, evaluator, session, connectorPushdown};
+  Pushdown pass{builder, evaluator, session, connectorPushdown, outputColumns};
   PushdownContext context;
   context.required = PlanObjectSet::fromObjects(outputColumns);
   context.requiredAbove = context.required;

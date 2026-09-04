@@ -131,7 +131,8 @@ constexpr float kDefaultCallCost = 5;
 struct FunctionMetadata {
   bool processSubfields() const {
     return subfieldArg.has_value() || !fieldIndexForArg.empty() ||
-        isArrayConstructor || isMapConstructor || valuePathToArgPath;
+        isArrayConstructor || isMapConstructor || isRowConstructor ||
+        valuePathToArgPath;
   }
 
   const LambdaInfo* lambdaInfo(int32_t index) const {
@@ -158,6 +159,11 @@ struct FunctionMetadata {
   /// If key 'k' in result is accessed, then the argument that corresponds to
   /// this key is accessed.
   bool isMapConstructor{false};
+
+  /// If true, then access of field 'i' in result means that argument 'i' is
+  /// accessed. False for a function that builds a row from something other
+  /// than one argument per field, such as a map and a list of keys.
+  bool isRowConstructor{false};
 
   /// If ordinal fieldIndexForArg_[i] is accessed, then argument argOrdinal_[i]
   /// is accessed.

@@ -21,6 +21,7 @@ add_library(
   AggregateRecovery.cpp
   AlgebraicProperties.cpp
   Builder.cpp
+  ColumnAccess.cpp
   CostModel.cpp
   DecorrelatePass.cpp
   DPhyp.cpp

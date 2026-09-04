@@ -106,15 +106,16 @@ struct OptimizerOptions : public velox::config::ConfigProvider {
   int32_t parallelProjectWidth{kParallelProjectWidthDefault};
 
   /// Produces skyline subfield sets of complex type columns as top level
-  /// columns in table scan.
+  /// columns in table scan. v1 only: v2 always pushes subfields down.
   bool pushdownSubfields{kPushdownSubfieldsDefault};
 
   /// Makes all maps for which a known subset of keys is accessed to
-  /// be projected out as structs.
+  /// be projected out as structs. v1 only: v2 reads the subfields where they
+  /// stand and produces no derived columns.
   bool allMapsAsStruct{kAllMapsAsStructDefault};
 
   /// Map from table name to list of map columns to be read as structs unless
-  /// the whole map is accessed as a map.
+  /// the whole map is accessed as a map. v1 only, as for 'allMapsAsStruct'.
   folly::F14FastMap<std::string, std::vector<std::string>> mapAsStruct;
 
   /// A query whose scans are estimated to read at most this many rows in total

@@ -2063,6 +2063,15 @@ PlanMatcherBuilder& PlanMatcherBuilder::tableScan(
   return *this;
 }
 
+PlanMatcherBuilder& PlanMatcherBuilder::tableScan(
+    const std::string& tableName,
+    OnMatchCallback onMatch) {
+  VELOX_USER_CHECK_NULL(matcher_);
+  matcher_ = std::make_shared<TableScanMatcher>(tableName);
+  matcher_->setOnMatch(std::move(onMatch));
+  return *this;
+}
+
 PlanMatcherBuilder& PlanMatcherBuilder::hiveScan(
     const std::string& tableName,
     common::SubfieldFilters subfieldFilters,

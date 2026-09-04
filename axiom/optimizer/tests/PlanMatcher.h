@@ -288,6 +288,16 @@ class PlanMatcherBuilder {
       const std::string& tableName,
       const RowTypePtr& outputType);
 
+  /// Matches a TableScan node with the specified table name and invokes
+  /// 'onMatch' with it. Lets a test assert something the matchers do not
+  /// cover — a column handle's required subfields, say — on one scan of a
+  /// plan that has several.
+  /// @param tableName The expected table name.
+  /// @param onMatch Invoked with the matched scan node.
+  PlanMatcherBuilder& tableScan(
+      const std::string& tableName,
+      OnMatchCallback onMatch);
+
   /// Matches a Hive TableScan node with the specified table name, subfield
   /// filters, and optional remaining filter.
   /// @param tableName The name of the table.

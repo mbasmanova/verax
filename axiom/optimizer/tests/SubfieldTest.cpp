@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <gmock/gmock.h>
 #include "axiom/connectors/hive/HiveMetadataConfig.h"
 #include "axiom/connectors/hive/LocalTableMetadata.h"
 #include "axiom/logical_plan/PlanBuilder.h"
@@ -115,24 +116,29 @@ class SubfieldTest : public HiveQueriesTestBase,
 
   void SetUp() override {
     HiveQueriesTestBase::SetUp();
+
+    optimizerOptions_ = OptimizerOptions{};
+    optimizerOptions_.traceFlags = FLAGS_optimizer_trace;
+
     switch (GetParam()) {
       case 1:
-        optimizerOptions_ = OptimizerOptions();
+        optimizerOptions_.pushdownSubfields = false;
         break;
       case 2:
-        optimizerOptions_ = OptimizerOptions{};
         optimizerOptions_.pushdownSubfields = true;
         break;
       case 3:
-        optimizerOptions_ = OptimizerOptions{};
         optimizerOptions_.pushdownSubfields = true;
         optimizerOptions_.mapAsStruct["features"] = {
             "float_features", "id_list_features", "id_score_list_features"};
         break;
+      case 4:
+        // `pushdownSubfields` and `mapAsStruct` are v1-only options.
+        useV2_ = true;
+        break;
       default:
         FAIL();
     }
-    optimizerOptions_.traceFlags = FLAGS_optimizer_trace;
   }
 
   void declareGenies() {
@@ -347,35 +353,72 @@ class SubfieldTest : public HiveQueriesTestBase,
 
     SCOPED_TRACE(scanNode->toString(true, true));
 
+    verifyRequiredSubfields(*scanNode, expectedSubfields);
+  }
+
+  using HiveQueriesTestBase::matchHiveScan;
+
+  // Matches a scan of 'table' that reads exactly 'subfields' of each of its
+  // columns. Use when a plan has more than one scan, so that each is checked
+  // where the matcher names it.
+  static core::PlanMatcherBuilder matchHiveScan(
+      const std::string& table,
+      folly::F14FastMap<std::string, std::vector<std::string>> subfields) {
+    return core::PlanMatcherBuilder().tableScan(
+        table,
+        [subfields = std::move(subfields)](const core::PlanNodePtr& scan) {
+          verifyRequiredSubfields(*scan, subfields);
+        });
+  }
+
+  // Asserts the subfields each column of 'scanNode' is read with.
+  static void verifyRequiredSubfields(
+      const core::PlanNode& scanNode,
+      const folly::F14FastMap<std::string, std::vector<std::string>>&
+          expectedSubfields) {
     const auto& assignments =
-        dynamic_cast<const core::TableScanNode*>(scanNode)->assignments();
+        dynamic_cast<const core::TableScanNode&>(scanNode).assignments();
     ASSERT_EQ(assignments.size(), expectedSubfields.size());
 
-    for (const auto& [_, handle] : assignments) {
-      auto hiveHandle =
+    for (const auto& [_, columnHandle] : assignments) {
+      const auto* handle =
           dynamic_cast<const velox::connector::hive::HiveColumnHandle*>(
-              handle.get());
-      ASSERT_TRUE(hiveHandle != nullptr);
+              columnHandle.get());
+      ASSERT_TRUE(handle != nullptr);
 
-      const auto& name = hiveHandle->name();
-      const auto& subfields = hiveHandle->requiredSubfields();
-
-      auto it = expectedSubfields.find(name);
+      const auto& name = handle->name();
+      const auto it = expectedSubfields.find(name);
       ASSERT_TRUE(it != expectedSubfields.end())
           << "Unexpected column: " << name;
-      const auto& expected = it->second;
 
-      ASSERT_EQ(subfields.size(), expected.size()) << hiveHandle->toString();
-
-      for (auto i = 0; i < subfields.size(); ++i) {
-        EXPECT_EQ(
-            subfields[i].toString(), fmt::format("{}{}", name, expected[i]));
+      // Required subfields are a set: the order a column handle lists them in
+      // is not part of the contract.
+      std::vector<std::string> actualNames;
+      for (const auto& subfield : handle->requiredSubfields()) {
+        actualNames.push_back(subfield.toString());
       }
+      std::vector<std::string> expectedNames;
+      for (const auto& suffix : it->second) {
+        expectedNames.push_back(fmt::format("{}{}", name, suffix));
+      }
+      EXPECT_THAT(
+          actualNames, testing::UnorderedElementsAreArray(expectedNames))
+          << handle->toString();
     }
   }
 
   static core::PlanNodePtr extractPlanNode(const PlanAndStats& plan) {
     return plan.plan->fragments().at(0).fragment.planNode;
+  }
+
+  // Creates table 't' with one array column, long enough for the paths these
+  // tests name.
+  void createArrayTable() {
+    createTable(
+        "t",
+        {makeRowVector(
+            {"a"},
+            {makeArrayVectorFromJson<int64_t>({"[1, 2, 3]", "[4, 5, 6]"})})});
   }
 
   std::vector<velox::RowVectorPtr> createFeaturesTable(FeatureOptions& opts) {
@@ -405,20 +448,22 @@ class SubfieldTest : public HiveQueriesTestBase,
 };
 
 TEST_P(SubfieldTest, structs) {
-  auto structType =
-      ROW({"s1", "s2", "s3"},
-          {BIGINT(), ROW({"s2s1"}, {BIGINT()}), ARRAY(BIGINT())});
-  auto rowType = ROW({"s", "i"}, {structType, BIGINT()});
+  auto rowType = ROW({
+      {"s",
+       ROW({
+           {"s1", BIGINT()},
+           {"s2", ROW({{"s2s1", BIGINT()}})},
+           {"s3", ARRAY(BIGINT())},
+       })},
+      {"i", BIGINT()},
+  });
   auto vectors = makeVectors(rowType, 1, 1);
   createTable("structs", vectors);
 
   {
     // Dereference struct fields by name.
-    auto logicalPlan = lp::PlanBuilder(makeContext(), /*enableCoercions=*/true)
-                           .tableScan("structs", rowType->names())
-                           .project({"s.s1 as s1", "s.s3[1]"})
-                           .filter("s1 < 10")
-                           .build();
+    auto logicalPlan =
+        parseSelect("SELECT s.s1, s.s3[1] FROM structs WHERE s.s1 < 10");
     auto fragmentedPlan = planVelox(logicalPlan);
 
     // t2.s = HiveColumnHandle [... requiredSubfields: [ s.s1 s.s3[1] ]]
@@ -456,6 +501,11 @@ TEST_P(SubfieldTest, structs) {
 }
 
 TEST_P(SubfieldTest, anonymousStructs) {
+  if (useV2_) {
+    GTEST_SKIP() << "v2 does not rewrite a field read of a constructed row "
+                    "into the argument that supplies it";
+  }
+
   auto rowType = ROW({"a", "b", "c"}, {BIGINT(), BIGINT(), ARRAY(BIGINT())});
   auto vectors = makeVectors(rowType, 1, 1);
   createTable("anon_structs", vectors);
@@ -496,6 +546,10 @@ TEST_P(SubfieldTest, anonymousStructs) {
 }
 
 TEST_P(SubfieldTest, anonymousStructTableScan) {
+  if (useV2_) {
+    GTEST_SKIP() << "v2 reads an unnamed struct field whole";
+  }
+
   // Simulate filtering or projection on a table scan column with unnamed struct
   // fields and verify that Axiom throws the "Index subfield not suitable for
   // pruning" error as expected.
@@ -529,6 +583,10 @@ TEST_P(SubfieldTest, anonymousStructTableScan) {
 }
 
 TEST_P(SubfieldTest, genie) {
+  if (useV2_) {
+    GTEST_SKIP() << "v2 does not explode a function result into subfields";
+  }
+
   createFeaturesTable();
 
   declareGenies();
@@ -616,7 +674,11 @@ TEST_P(SubfieldTest, genie) {
 TEST_P(SubfieldTest, maps) {
   auto vectors = createFeaturesTable();
 
-  testMakeRowFromMap();
+  if (!useV2_) {
+    // make_row_from_map has no Velox implementation; only v1 removes it
+    // before execution.
+    testMakeRowFromMap();
+  }
 
   {
     lp::PlanBuilder::Context ctx(kHiveConnectorId, kDefaultSchema);
@@ -663,14 +725,13 @@ TEST_P(SubfieldTest, maps) {
         });
   }
   {
-    auto logicalPlan = lp::PlanBuilder(makeContext())
-                           .tableScan("features")
-                           .project(
-                               {"float_features[10000::int] as ff",
-                                "id_score_list_features[200800::int] as sc1",
-                                "id_list_features as idlf"})
-                           .project({"sc1[1::BIGINT] + 1::REAL as score"})
-                           .build();
+    auto logicalPlan = parseSelect(
+        "SELECT sc1[1] + 1e0 AS score FROM ("
+        "  SELECT float_features[10000] AS ff,"
+        "         id_score_list_features[200800] AS sc1,"
+        "         id_list_features AS idlf"
+        "  FROM features"
+        ")");
 
     auto plan = extractPlanNode(planVelox(logicalPlan));
     verifyRequiredSubfields(
@@ -681,36 +742,36 @@ TEST_P(SubfieldTest, maps) {
   }
 
   {
-    auto logicalPlan = lp::PlanBuilder(makeContext())
-                           .tableScan("features")
-                           .project(
-                               {"float_features[10100::int] as ff",
-                                "id_score_list_features[200800::int] as sc1",
-                                "id_list_features as idlf",
-                                "uid"})
-                           .project(
-                               {"sc1[1::BIGINT] + 1::REAL as score",
-                                "idlf[cast(uid % 100 as INTEGER)] as any"})
-                           .build();
+    auto logicalPlan = parseSelect(
+        "SELECT sc1[1] + 1e0 AS score, idlf[CAST(uid % 100 AS INTEGER)] AS any "
+        "FROM ("
+        "  SELECT float_features[10100] AS ff,"
+        "         id_score_list_features[200800] AS sc1,"
+        "         id_list_features AS idlf,"
+        "         uid"
+        "  FROM features"
+        ")");
 
     auto plan = extractPlanNode(planVelox(logicalPlan));
+    // A wildcard with nothing below it reads the whole map. v1 says so with
+    // an explicit `[*]`, v2 by asking for no subfield at all.
+    const std::vector<std::string> everyKey =
+        useV2_ ? std::vector<std::string>{} : std::vector<std::string>{"[*]"};
     verifyRequiredSubfields(
         plan,
         {
             {"uid", {}},
             {"id_score_list_features", {subfield("200800", "[1]")}},
-            {"id_list_features", {"[*]"}},
+            {"id_list_features", everyKey},
         });
   }
 
   {
-    auto builder =
-        lp::PlanBuilder(makeContext())
-            .tableScan("features")
-            .project(
-                {"transform(id_list_features[201800::int], x -> x + 1) as ids"});
+    auto logicalPlan = parseSelect(
+        "SELECT transform(id_list_features[201800], x -> x + 1) AS ids "
+        "FROM features");
 
-    auto result = runVelox(builder.build());
+    auto result = runVelox(logicalPlan);
     auto expected = extractAndIncrementIdList(vectors, 201800);
     assertEqualResults(expected, result.results);
   }
@@ -721,28 +782,28 @@ TEST_P(SubfieldTest, cardinality) {
 
   // cardinality(m) requires the whole map.
   {
-    auto logicalPlan = lp::PlanBuilder(makeContext())
-                           .tableScan("features")
-                           .project({"cardinality(float_features) as n"})
-                           .build();
+    auto logicalPlan =
+        parseSelect("SELECT cardinality(float_features) AS n FROM features");
     auto plan = extractPlanNode(planVelox(logicalPlan));
     verifyRequiredSubfields(plan, {{"float_features", {}}});
   }
 
   // cardinality(m) and m[k] on the same column: the whole map is required.
   {
-    auto logicalPlan = lp::PlanBuilder(makeContext())
-                           .tableScan("features")
-                           .project(
-                               {"cardinality(float_features) as n",
-                                "float_features[10100::int] as v"})
-                           .build();
+    auto logicalPlan = parseSelect(
+        "SELECT cardinality(float_features) AS n, float_features[10100] AS v "
+        "FROM features");
     auto plan = extractPlanNode(planVelox(logicalPlan));
     verifyRequiredSubfields(plan, {{"float_features", {}}});
   }
 }
 
 TEST_P(SubfieldTest, parallelExpr) {
+  if (useV2_) {
+    GTEST_SKIP() << "v2 does not split an expression across parallel "
+                    "projections";
+  }
+
   FeatureOptions opts;
   const auto vectors = createFeaturesTable(opts);
   const auto rowType = vectors[0]->rowType();
@@ -801,48 +862,218 @@ TEST_P(SubfieldTest, unnest) {
           {makeNestedArrayVectorFromJson<int64_t>(
               {"[[1, 2], [3, 4]]", "[]"})})});
 
-  auto logicalPlan = lp::PlanBuilder(makeContext())
-                         .tableScan("t_unnest")
-                         .unnest({"a[1]"})
-                         .map({"a[3]"})
-                         .build();
+  auto logicalPlan = parseSelect(
+      "SELECT u, a[3] FROM t_unnest CROSS JOIN UNNEST(a[1]) AS t(u)");
 
-  auto plan = toSingleNodePlan(logicalPlan);
-
-  auto matcher = core::PlanMatcherBuilder()
-                     .tableScan()
+  auto matcher = matchHiveScan("t_unnest", {{"a", {"[1]", "[3]"}}})
                      .project()
                      .unnest()
                      .project()
                      .build();
-  AXIOM_ASSERT_PLAN(plan, matcher);
 
-  verifyRequiredSubfields(plan, {{"a", {"[1]", "[3]"}}});
+  AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
+}
+
+TEST_P(SubfieldTest, aggregateMaskAndOrderKeys) {
+  createTable(
+      "t_agg",
+      {makeRowVector(
+          {"a", "b", "c"},
+          {
+              makeArrayVectorFromJson<int64_t>({"[1, 2]", "[1, 2, 3]"}),
+              makeArrayVectorFromJson<int64_t>({"[10, 20]", "[10, 20, 30]"}),
+              makeArrayVectorFromJson<int64_t>({"[5, 6]", "[5, 6, 7]"}),
+          })});
+
+  // A FILTER mask and an ORDER BY key narrow the scan to the same subfields an
+  // argument does.
+  auto logicalPlan = parseSelect(
+      "SELECT array_agg(a[1] ORDER BY c[1]) FILTER (WHERE b[1] > 0) "
+      "FROM t_agg");
+
+  auto matcher =
+      matchHiveScan("t_agg", {{"a", {"[1]"}}, {"b", {"[1]"}}, {"c", {"[1]"}}})
+          .project()
+          .aggregation()
+          .build();
+
+  AXIOM_ASSERT_PLAN_V2(toSingleNodePlan(logicalPlan), matcher);
+}
+
+TEST_P(SubfieldTest, recursiveCte) {
+  if (!useV2_) {
+    GTEST_SKIP() << "v1 does not implement recursive plans";
+  }
+
+  createArrayTable();
+
+  auto matchAnchor = [](std::vector<std::string> subfields) {
+    return core::PlanMatcherBuilder()
+        .fixedPoint(
+            core::FixedPointMatch("r").outputState(
+                /*append=*/true,
+                matchHiveScan("t", {{"a", std::move(subfields)}})))
+        .project()
+        .build();
+  };
+
+  {
+    // The anchor passes the column through, so the state holds it whole and
+    // the step's path has to reach the anchor's scan.
+    auto logicalPlan = parseSelect(
+        "WITH RECURSIVE r(a) AS ("
+        "  SELECT a FROM t"
+        "  UNION ALL"
+        "  SELECT a FROM r WHERE a[2] > 0)"
+        " SELECT a[1] FROM r");
+
+    AXIOM_ASSERT_PLAN(
+        toSingleNodePlan(logicalPlan), matchAnchor({"[1]", "[2]"}));
+  }
+
+  {
+    // Several paths in the step all reach the anchor's scan.
+    auto logicalPlan = parseSelect(
+        "WITH RECURSIVE r(a) AS ("
+        "  SELECT a FROM t"
+        "  UNION ALL"
+        "  SELECT a FROM r WHERE a[2] > 0 AND a[3] > 0)"
+        " SELECT a[1] FROM r");
+
+    AXIOM_ASSERT_PLAN(
+        toSingleNodePlan(logicalPlan), matchAnchor({"[1]", "[2]", "[3]"}));
+  }
+
+  {
+    // The anchor projects the subfield itself, so the state holds a scalar and
+    // nothing the step does can widen the scan.
+    auto logicalPlan = parseSelect(
+        "WITH RECURSIVE r(x) AS ("
+        "  SELECT a[1] FROM t"
+        "  UNION ALL"
+        "  SELECT x FROM r WHERE x > 0)"
+        " SELECT x FROM r");
+
+    AXIOM_ASSERT_PLAN(
+        toSingleNodePlan(logicalPlan),
+        core::PlanMatcherBuilder()
+            .fixedPoint(
+                core::FixedPointMatch("r").outputState(
+                    /*append=*/true,
+                    matchHiveScan("t", {{"a", {"[1]"}}}).project()))
+            .project()
+            .build());
+  }
+}
+
+TEST_P(SubfieldTest, pushedFilter) {
+  createArrayTable();
+
+  // The predicate moves below the projection that produced it, so the scan
+  // reads what the predicate takes as well as what the query returns.
+  auto logicalPlan = parseSelect(
+      "SELECT k FROM (SELECT a[1] AS v, a[2] AS k FROM t) WHERE v > 0");
+
+  AXIOM_ASSERT_PLAN_V2(
+      toSingleNodePlan(logicalPlan),
+      matchHiveScan("t", {{"a", {"[1]", "[2]"}}}).project().build());
+}
+
+TEST_P(SubfieldTest, mapOfRow) {
+  auto rowType = ROW({
+      {"m", MAP(VARCHAR(), ROW({{"f1", BIGINT()}, {"f2", BIGINT()}}))},
+  });
+  createTable("t_map_of_row", makeVectors(rowType, 1, 1));
+
+  // A constant map key followed by a field reads one key and one field.
+  auto logicalPlan = parseSelect("SELECT m['x'].f1 FROM t_map_of_row");
+
+  AXIOM_ASSERT_PLAN_V2(
+      toSingleNodePlan(logicalPlan),
+      matchHiveScan("t_map_of_row", {{"m", {"[\"x\"].f1"}}}).project().build());
+}
+
+TEST_P(SubfieldTest, negativeArrayIndex) {
+  if (!useV2_) {
+    GTEST_SKIP() << "v1 incorrectly pushes down `a[-1]`";
+  }
+
+  createArrayTable();
+
+  // An index counted from the end of the array names no prefix, so the whole
+  // array is read.
+  {
+    auto logicalPlan = parseSelect("SELECT element_at(a, -1) FROM t");
+    AXIOM_ASSERT_PLAN(
+        toSingleNodePlan(logicalPlan),
+        matchHiveScan("t", {{"a", {}}}).project().build());
+  }
+
+  {
+    auto logicalPlan = parseSelect("SELECT element_at(a, 2) FROM t");
+    AXIOM_ASSERT_PLAN(
+        toSingleNodePlan(logicalPlan),
+        matchHiveScan("t", {{"a", {"[2]"}}}).project().build());
+  }
+}
+
+TEST_P(SubfieldTest, constructedRow) {
+  createFeaturesTable();
+
+  // A map read through a field of a row the query builds is narrowed to the
+  // key, and the row's other arguments are unaffected.
+  auto logicalPlan = parseSelect(
+      "SELECT r.y[10100] FROM ("
+      "  SELECT ROW(uid AS x, float_features AS y) AS r FROM features"
+      ")");
+
+  // TODO Rewrite a field read of a constructed row into the argument that
+  // supplies it, so v2 also drops the arguments no field reads.
+  folly::F14FastMap<std::string, std::vector<std::string>> expected{
+      {"float_features", {subfield("10100")}}};
+  if (useV2_) {
+    expected.emplace("uid", std::vector<std::string>{});
+  }
+
+  verifyRequiredSubfields(toSingleNodePlan(logicalPlan), expected);
+}
+
+TEST_P(SubfieldTest, wholeColumnAndPath) {
+  createArrayTable();
+
+  // A column the query returns is read whole, however narrowly a predicate
+  // reads it.
+  auto logicalPlan = parseSelect("SELECT a FROM t WHERE a[1] > 0");
+
+  verifyRequiredSubfields(toSingleNodePlan(logicalPlan), {{"a", {}}});
+}
+
+TEST_P(SubfieldTest, unionAll) {
+  createArrayTable();
+
+  // Reading one element of a union's output narrows the scan under each leg.
+  auto logicalPlan = parseSelect(
+      "SELECT a[1] FROM (SELECT a FROM t UNION ALL SELECT a FROM t)");
+
+  auto matchLeg = [] { return matchHiveScan("t", {{"a", {"[1]"}}}); };
+  auto matcher =
+      matchLeg().localPartition({matchLeg().project()}).project().build();
+
+  AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
 }
 
 TEST_P(SubfieldTest, orderBy) {
-  createTable(
-      "t_orderby",
-      {makeRowVector(
-          {"a"}, {makeArrayVectorFromJson<int64_t>({"[1, 2]", "[1, 2, 3]"})})});
+  createArrayTable();
 
-  auto logicalPlan = lp::PlanBuilder(makeContext())
-                         .tableScan("t_orderby")
-                         .orderBy({"a[1]"})
-                         .map({"a[3]"})
-                         .build();
+  auto logicalPlan = parseSelect("SELECT a[3] FROM t ORDER BY a[1]");
 
-  auto plan = toSingleNodePlan(logicalPlan);
-
-  auto matcher = core::PlanMatcherBuilder()
-                     .tableScan()
+  auto matcher = matchHiveScan("t", {{"a", {"[1]", "[3]"}}})
                      .project()
                      .orderBy()
                      .project()
                      .build();
-  AXIOM_ASSERT_PLAN(plan, matcher);
 
-  verifyRequiredSubfields(plan, {{"a", {"[1]", "[3]"}}});
+  AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
 }
 
 TEST_P(SubfieldTest, subquery) {
@@ -871,31 +1102,29 @@ TEST_P(SubfieldTest, subquery) {
 
     auto plan = toSingleNodePlan(logicalPlan);
 
-    auto matcher = matchHiveScan("t_subquery")
+    auto matcher = matchHiveScan("t_subquery", {{"a", {".x", ".y"}}})
                        .project()
                        .hashJoin(matchValues().project())
                        .project()
                        .build();
     AXIOM_ASSERT_PLAN(plan, matcher);
-    verifyRequiredSubfields(plan, {{"a", {".x", ".y"}}});
   }
 
   {
     auto logicalPlan = parseSelect(
-        "SELECT 1 FROM t_subquery WHERE a.x = (SELECT count(*) FROM (VALUES 1, 2, 3) as t(n) WHERE n = a.z)",
+        "SELECT 1 FROM t_subquery "
+        "WHERE a.x = (SELECT count(*) FROM (VALUES 1, 2, 3) as t(n) WHERE n = a.z)",
         kHiveConnectorId);
 
     auto plan = toSingleNodePlan(logicalPlan);
 
-    auto matcher = core::PlanMatcherBuilder()
-                       .tableScan()
+    auto matcher = matchHiveScan("t_subquery", {{"a", {".x", ".z"}}})
                        .project()
-                       .hashJoin(matchValues().aggregation().project())
+                       .hashJoin(matchValues().aggregation().projectIf(!useV2_))
                        .filter()
                        .project()
                        .build();
     AXIOM_ASSERT_PLAN(plan, matcher);
-    verifyRequiredSubfields(plan, {{"a", {".x", ".z"}}});
   }
 }
 
@@ -909,19 +1138,19 @@ TEST_P(SubfieldTest, overAggregation) {
               makeArrayVectorFromJson<int64_t>({"[10, 20]", "[10, 20, 30]"}),
           })});
 
-  auto logicalPlan = lp::PlanBuilder(makeContext())
-                         .tableScan("t")
-                         .aggregate({"a"}, {"array_agg(b) as c"})
-                         .map({"a[2]", "c[1]"})
-                         .build();
+  auto logicalPlan = parseSelect(
+      "SELECT a[2], c[1] FROM ("
+      "  SELECT a, array_agg(b) AS c FROM t GROUP BY a"
+      ")");
 
-  auto plan = toSingleNodePlan(logicalPlan);
+  // A grouping key and an aggregate's argument are both read in full, so
+  // neither element read above narrows the scan.
+  auto matcher = matchHiveScan("t", {{"a", {}}, {"b", {}}})
+                     .aggregation()
+                     .project()
+                     .build();
 
-  auto matcher =
-      core::PlanMatcherBuilder().tableScan().aggregation().project().build();
-  AXIOM_ASSERT_PLAN(plan, matcher);
-
-  verifyRequiredSubfields(plan, {{"a", {}}, {"b", {}}});
+  AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
 }
 
 TEST_P(SubfieldTest, blackbox) {
@@ -955,7 +1184,7 @@ TEST_P(SubfieldTest, blackbox) {
 // DT outputs the full struct — subfield pruning does not propagate
 // across the boundary.
 TEST_P(SubfieldTest, subfieldAcrossDtBoundary) {
-  testConnector_->addTable("t", ROW({"a", "b"}, {BIGINT(), BIGINT()}));
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
 
   auto logicalPlan = parseSelect(
       "WITH s AS ("
@@ -966,13 +1195,8 @@ TEST_P(SubfieldTest, subfieldAcrossDtBoundary) {
       "SELECT a.x, sum(b) FROM s GROUP BY 1",
       kTestConnectorId);
 
-  auto plan = toSingleNodePlan(logicalPlan);
-  ASSERT_NE(nullptr, plan);
-
-  // The inner aggregation groups by the full struct ROW<x,y>. The outer
-  // aggregation groups by a.x and sums b. One project between the
-  // aggregations extracts .x. With subfield pruning propagation, only .x
-  // would cross the boundary.
+  // A grouping key is compared in full, so the whole struct crosses the
+  // aggregation even though only one of its fields is read above.
   auto matcher = core::PlanMatcherBuilder()
                      .tableScan()
                      .project({"row_constructor(a, b) as r"})
@@ -980,30 +1204,54 @@ TEST_P(SubfieldTest, subfieldAcrossDtBoundary) {
                      .project()
                      .singleAggregation()
                      .build();
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
 }
 
 TEST_P(SubfieldTest, leftJoinWithUnmaterializedSubfield) {
-  testConnector_->addTable("t", ROW({"k", "v"}, INTEGER()));
-  testConnector_->addTable(
-      "u",
-      ROW({"k", "m"}, {INTEGER(), MAP(INTEGER(), MAP(INTEGER(), REAL()))}));
+  createFeaturesTable();
 
+  // Reading one level deeper than a projected subfield narrows the scan to
+  // the whole path.
   auto logicalPlan = parseSelect(
-      "SELECT v, nested[1] "
-      "FROM t "
-      "LEFT JOIN (SELECT k, m[100] as nested FROM u) u ON t.k = u.k",
-      kTestConnectorId);
+      "SELECT ff, nested[1] AS score "
+      "FROM (SELECT uid, float_features[10100] AS ff FROM features) l "
+      "LEFT JOIN "
+      "(SELECT uid, id_score_list_features[200800] AS nested FROM features) r "
+      "ON l.uid = r.uid");
 
-  optimizerOptions_.pushdownSubfields = true;
-  VELOX_ASSERT_THROW(
-      toSingleNodePlan(logicalPlan), "Null expression for join column: nested");
+  if (useV2_) {
+    auto matcher =
+        matchHiveScan(
+            "features",
+            {
+                {"uid", {}},
+                {"float_features", {subfield("10100")}},
+            })
+            .project()
+            .hashJoinLeft(
+                matchHiveScan(
+                    "features",
+                    {
+                        {"uid", {}},
+                        {"id_score_list_features", {subfield("200800", "[1]")}},
+                    })
+                    .project())
+            .project()
+            .build();
+
+    AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
+  } else {
+    optimizerOptions_.pushdownSubfields = true;
+    VELOX_ASSERT_THROW(
+        toSingleNodePlan(logicalPlan),
+        "Null expression for join column: nested");
+  }
 }
 
 VELOX_INSTANTIATE_TEST_SUITE_P(
     SubfieldTests,
     SubfieldTest,
-    testing::ValuesIn(std::vector<int32_t>{1, 2, 3}));
+    testing::ValuesIn(std::vector<int32_t>{1, 2, 3, 4}));
 
 } // namespace
 } // namespace facebook::axiom::optimizer

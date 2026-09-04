@@ -293,8 +293,14 @@ class Path {
     mutable_ = false;
   }
 
-  /// Removes elements of 'subfields' where the path has a prefix in
-  /// 'subfields'.
+  /// Reduces 'subfields' to the shortest paths that cover it: drops every path
+  /// that has a prefix in 'subfields', since reading the prefix already reads
+  /// the longer path. Given {m[k].a, m[k].a.b, m[k], s.x}, keeps {m[k], s.x}.
+  ///
+  /// An empty result means the whole column is read and no subfield pruning is
+  /// possible. That happens either because 'subfields' was already empty or
+  /// because it held a zero-step path, which stands for the whole column and
+  /// makes every other path redundant.
   static void subfieldSkyline(BitSet& subfields);
 
  private:
