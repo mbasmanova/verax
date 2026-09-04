@@ -296,17 +296,14 @@ class SubfieldTest : public HiveQueriesTestBase,
 
     const auto plan = toSingleNodePlan(logicalPlan);
 
-    verifyRequiredSubfields(
-        plan, {{"float_features", {subfield("10010"), subfield("10020")}}});
+    auto scan = [this] {
+      return matchHiveScanWithFilter(
+          "features",
+          {{"float_features", {subfield("10010"), subfield("10020")}}},
+          "float_features[10010] + 1 < 10000");
+    };
 
-    auto matcher =
-        matchHiveScan("features", {}, "float_features[10010] + 1 < 10000")
-            .localPartition(
-                matchHiveScan(
-                    "features", {}, "float_features[10010] + 1 < 10000")
-                    .project())
-            .project()
-            .build();
+    auto matcher = scan().localPartition(scan().project()).project().build();
 
     ASSERT_TRUE(matcher->match(plan));
   }
@@ -338,25 +335,23 @@ class SubfieldTest : public HiveQueriesTestBase,
     hiveMetadata().reinitialize();
   }
 
-  // TODO Move to PlanMatcher.
-  static void verifyRequiredSubfields(
-      const core::PlanNodePtr& plan,
-      const folly::F14FastMap<std::string, std::vector<std::string>>&
-          expectedSubfields) {
-    auto* scanNode = core::PlanNode::findFirstNode(
-        plan.get(), [](const core::PlanNode* node) {
-          auto scan = dynamic_cast<const core::TableScanNode*>(node);
-          return scan != nullptr;
-        });
-
-    ASSERT_TRUE(scanNode != nullptr);
-
-    SCOPED_TRACE(scanNode->toString(true, true));
-
-    verifyRequiredSubfields(*scanNode, expectedSubfields);
-  }
-
   using HiveQueriesTestBase::matchHiveScan;
+
+  // Matches a scan of 'table' that reads exactly 'subfields' and carries
+  // exactly 'remainingFilter' as its non-pushed filter.
+  static core::PlanMatcherBuilder matchHiveScanWithFilter(
+      const std::string& table,
+      folly::F14FastMap<std::string, std::vector<std::string>> subfields,
+      const std::string& remainingFilter) {
+    return core::PlanMatcherBuilder().hiveScan(
+        table,
+        /*subfieldFilters=*/{},
+        remainingFilter,
+        /*sampleRate=*/std::nullopt,
+        [subfields = std::move(subfields)](const core::PlanNodePtr& scan) {
+          verifyRequiredSubfields(*scan, subfields);
+        });
+  }
 
   // Matches a scan of 'table' that reads exactly 'subfields' of each of its
   // columns. Use when a plan has more than one scan, so that each is checked
@@ -376,8 +371,7 @@ class SubfieldTest : public HiveQueriesTestBase,
       const core::PlanNode& scanNode,
       const folly::F14FastMap<std::string, std::vector<std::string>>&
           expectedSubfields) {
-    const auto& assignments =
-        dynamic_cast<const core::TableScanNode&>(scanNode).assignments();
+    const auto& assignments = scanNode.as<core::TableScanNode>()->assignments();
     ASSERT_EQ(assignments.size(), expectedSubfields.size());
 
     for (const auto& [_, columnHandle] : assignments) {
@@ -404,10 +398,6 @@ class SubfieldTest : public HiveQueriesTestBase,
           actualNames, testing::UnorderedElementsAreArray(expectedNames))
           << handle->toString();
     }
-  }
-
-  static core::PlanNodePtr extractPlanNode(const PlanAndStats& plan) {
-    return plan.plan->fragments().at(0).fragment.planNode;
   }
 
   // Creates table 't' with one array column, long enough for the paths these
@@ -463,17 +453,19 @@ TEST_P(SubfieldTest, structs) {
     // Dereference struct fields by name.
     auto logicalPlan =
         parseSelect("SELECT s.s1, s.s3[1] FROM structs WHERE s.s1 < 10");
-    auto fragmentedPlan = planVelox(logicalPlan);
-
-    // t2.s = HiveColumnHandle [... requiredSubfields: [ s.s1 s.s3[1] ]]
-    verifyRequiredSubfields(
-        extractPlanNode(fragmentedPlan), {{"s", {".s1", ".s3[1]"}}});
+    AXIOM_ASSERT_PLAN(
+        toSingleNodePlan(logicalPlan),
+        matchHiveScan("structs", {{"s", {".s1", ".s3[1]"}}})
+            .projectIf(optimizerOptions_.pushdownSubfields)
+            .project()
+            .build());
 
     auto referencePlan = PlanBuilder()
                              .tableScan("structs", rowType)
                              .filter("s.s1 < 10")
                              .project({"s.s1", "s.s3[1]"})
                              .planNode();
+    auto fragmentedPlan = planVelox(logicalPlan);
     checkSame(fragmentedPlan, referencePlan);
   }
 
@@ -484,17 +476,19 @@ TEST_P(SubfieldTest, structs) {
                            .project({"s[1] as s1", "s[2].s2s1", "s[3][1]"})
                            .filter("s1 < 10")
                            .build();
-    auto fragmentedPlan = planVelox(logicalPlan);
-
-    verifyRequiredSubfields(
-        extractPlanNode(fragmentedPlan),
-        {{"s", {".s1", ".s2.s2s1", ".s3[1]"}}});
+    AXIOM_ASSERT_PLAN(
+        toSingleNodePlan(logicalPlan),
+        matchHiveScan("structs", {{"s", {".s1", ".s2.s2s1", ".s3[1]"}}})
+            .projectIf(optimizerOptions_.pushdownSubfields)
+            .project()
+            .build());
 
     auto referencePlan = PlanBuilder()
                              .tableScan("structs", rowType)
                              .filter("s.s1 < 10")
                              .project({"s.s1", "(s.s2).s2s1", "s.s3[1]"})
                              .planNode();
+    auto fragmentedPlan = planVelox(logicalPlan);
     checkSame(fragmentedPlan, referencePlan);
   }
 }
@@ -514,15 +508,17 @@ TEST_P(SubfieldTest, anonymousStructs) {
     auto logicalPlan = parseSelect(
         "SELECT row(a, b, c).field0, row(a, b, c)[3][1] FROM anon_structs",
         kHiveConnectorId);
-    auto fragmentedPlan = planVelox(logicalPlan);
-
-    verifyRequiredSubfields(
-        extractPlanNode(fragmentedPlan), {{"a", {}}, {"c", {"[1]"}}});
+    AXIOM_ASSERT_PLAN(
+        toSingleNodePlan(logicalPlan),
+        matchHiveScan("anon_structs", {{"a", {}}, {"c", {"[1]"}}})
+            .project()
+            .build());
 
     auto referencePlan = PlanBuilder()
                              .tableScan("anon_structs", rowType)
                              .project({"a", "c[1]"})
                              .planNode();
+    auto fragmentedPlan = planVelox(logicalPlan);
     checkSame(fragmentedPlan, referencePlan);
   }
 
@@ -531,15 +527,16 @@ TEST_P(SubfieldTest, anonymousStructs) {
     auto logicalPlan = parseSelect(
         "SELECT row(a, b, c).field2[1] FROM anon_structs WHERE row(a, b, c).field0 > 0 ",
         kHiveConnectorId);
-    auto fragmentedPlan = planVelox(logicalPlan);
-
-    verifyRequiredSubfields(extractPlanNode(fragmentedPlan), {{"c", {"[1]"}}});
+    AXIOM_ASSERT_PLAN(
+        toSingleNodePlan(logicalPlan),
+        matchHiveScan("anon_structs", {{"c", {"[1]"}}}).project().build());
 
     auto referencePlan = PlanBuilder()
                              .tableScan("anon_structs", rowType)
                              .filter("a > 0")
                              .project({"c[1]"})
                              .planNode();
+    auto fragmentedPlan = planVelox(logicalPlan);
     checkSame(fragmentedPlan, referencePlan);
   }
 }
@@ -606,14 +603,17 @@ TEST_P(SubfieldTest, genie) {
                  "g.idlf[201600::int] as idl100"})
             .build();
 
-    auto plan = extractPlanNode(planVelox(logicalPlan));
-    verifyRequiredSubfields(
-        plan,
-        {
-            {"uid", {}},
-            {"float_features", {subfield("10200"), subfield("10100")}},
-            {"id_list_features", {subfield("201600")}},
-        });
+    AXIOM_ASSERT_PLAN(
+        toSingleNodePlan(logicalPlan),
+        matchHiveScan(
+            "features",
+            {
+                {"uid", {}},
+                {"float_features", {subfield("10200"), subfield("10100")}},
+                {"id_list_features", {subfield("201600")}},
+            })
+            .project()
+            .build());
   }
 
   // All of genie is returned.
@@ -632,15 +632,18 @@ TEST_P(SubfieldTest, genie) {
                  "cardinality(g[3][200600::int]) as idl100card"})
             .build();
 
-    auto plan = extractPlanNode(planVelox(logicalPlan));
-    verifyRequiredSubfields(
-        plan,
-        {
-            {"uid", {}},
-            {"float_features", {}},
-            {"id_list_features", {}},
-            {"id_score_list_features", {}},
-        });
+    AXIOM_ASSERT_PLAN(
+        toSingleNodePlan(logicalPlan),
+        matchHiveScan(
+            "features",
+            {
+                {"uid", {}},
+                {"float_features", {}},
+                {"id_list_features", {}},
+                {"id_score_list_features", {}},
+            })
+            .project()
+            .build());
   }
 
   // We expect the genie to explode and the filters to be first.
@@ -660,13 +663,17 @@ TEST_P(SubfieldTest, genie) {
             .filter("f10 < 10::REAL and f11 < 10::REAL")
             .build();
 
-    auto plan = extractPlanNode(planVelox(logicalPlan));
-    verifyRequiredSubfields(
-        plan,
-        {
-            {"float_features", {subfield("10100"), subfield("10200")}},
-            {"id_list_features", {subfield("200600")}},
-        });
+    AXIOM_ASSERT_PLAN(
+        toSingleNodePlan(logicalPlan),
+        matchHiveScan(
+            "features",
+            {
+                {"float_features", {subfield("10100"), subfield("10200")}},
+                {"id_list_features", {subfield("200600")}},
+            })
+            .projectIf(optimizerOptions_.pushdownSubfields)
+            .project()
+            .build());
   }
 }
 
@@ -702,8 +709,27 @@ TEST_P(SubfieldTest, maps) {
                  "opt_ff[10200::int] as o20"})
             .build();
 
-    auto plan = extractPlanNode(planVelox(logicalPlan));
-    // TODO Add verification.
+    // Each side of the join narrows its own scan: the build side also reads
+    // the key its filter takes.
+    auto matcher =
+        matchHiveScan(
+            "features",
+            {
+                {"uid", {}},
+                {"float_features", {subfield("10100"), subfield("10200")}},
+            })
+            .projectIf(optimizerOptions_.pushdownSubfields)
+            .hashJoinLeft(matchHiveScan(
+                "features",
+                {
+                    {"uid", {}},
+                    {"float_features",
+                     {subfield("10100"), subfield("10200"), subfield("10300")}},
+                }))
+            .project()
+            .build();
+
+    AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
   }
   {
     auto logicalPlan =
@@ -715,13 +741,17 @@ TEST_P(SubfieldTest, maps) {
                  "id_score_list_features[200800::int][100000::BIGINT]"})
             .build();
 
-    auto plan = extractPlanNode(planVelox(logicalPlan));
-    verifyRequiredSubfields(
-        plan,
-        {
-            {"float_features", {subfield("10100"), subfield("10200")}},
-            {"id_score_list_features", {subfield("200800", "[100000]")}},
-        });
+    AXIOM_ASSERT_PLAN(
+        toSingleNodePlan(logicalPlan),
+        matchHiveScan(
+            "features",
+            {
+                {"float_features", {subfield("10100"), subfield("10200")}},
+                {"id_score_list_features", {subfield("200800", "[100000]")}},
+            })
+            .projectIf(optimizerOptions_.pushdownSubfields)
+            .project()
+            .build());
   }
   {
     auto logicalPlan = parseSelect(
@@ -732,12 +762,16 @@ TEST_P(SubfieldTest, maps) {
         "  FROM features"
         ")");
 
-    auto plan = extractPlanNode(planVelox(logicalPlan));
-    verifyRequiredSubfields(
-        plan,
-        {
-            {"id_score_list_features", {subfield("200800", "[1]")}},
-        });
+    AXIOM_ASSERT_PLAN(
+        toSingleNodePlan(logicalPlan),
+        matchHiveScan(
+            "features",
+            {
+                {"id_score_list_features", {subfield("200800", "[1]")}},
+            })
+            .projectIf(optimizerOptions_.pushdownSubfields)
+            .project()
+            .build());
   }
 
   {
@@ -751,18 +785,22 @@ TEST_P(SubfieldTest, maps) {
         "  FROM features"
         ")");
 
-    auto plan = extractPlanNode(planVelox(logicalPlan));
     // A wildcard with nothing below it reads the whole map. v1 says so with
     // an explicit `[*]`, v2 by asking for no subfield at all.
     const std::vector<std::string> everyKey =
         useV2_ ? std::vector<std::string>{} : std::vector<std::string>{"[*]"};
-    verifyRequiredSubfields(
-        plan,
-        {
-            {"uid", {}},
-            {"id_score_list_features", {subfield("200800", "[1]")}},
-            {"id_list_features", everyKey},
-        });
+    AXIOM_ASSERT_PLAN(
+        toSingleNodePlan(logicalPlan),
+        matchHiveScan(
+            "features",
+            {
+                {"uid", {}},
+                {"id_score_list_features", {subfield("200800", "[1]")}},
+                {"id_list_features", everyKey},
+            })
+            .projectIf(optimizerOptions_.pushdownSubfields)
+            .project()
+            .build());
   }
 
   {
@@ -783,8 +821,9 @@ TEST_P(SubfieldTest, cardinality) {
   {
     auto logicalPlan =
         parseSelect("SELECT cardinality(float_features) AS n FROM features");
-    auto plan = extractPlanNode(planVelox(logicalPlan));
-    verifyRequiredSubfields(plan, {{"float_features", {}}});
+    AXIOM_ASSERT_PLAN(
+        toSingleNodePlan(logicalPlan),
+        matchHiveScan("features", {{"float_features", {}}}).project().build());
   }
 
   // cardinality(m) and m[k] on the same column: the whole map is required.
@@ -792,8 +831,9 @@ TEST_P(SubfieldTest, cardinality) {
     auto logicalPlan = parseSelect(
         "SELECT cardinality(float_features) AS n, float_features[10100] AS v "
         "FROM features");
-    auto plan = extractPlanNode(planVelox(logicalPlan));
-    verifyRequiredSubfields(plan, {{"float_features", {}}});
+    AXIOM_ASSERT_PLAN(
+        toSingleNodePlan(logicalPlan),
+        matchHiveScan("features", {{"float_features", {}}}).project().build());
   }
 }
 
@@ -844,8 +884,9 @@ TEST_P(SubfieldTest, parallelExpr) {
   auto fragmentedPlan = planVelox(logicalPlan);
 
   auto* parallelProject = core::PlanNode::findFirstNode(
-      extractPlanNode(fragmentedPlan).get(), [](const core::PlanNode* node) {
-        return dynamic_cast<const core::ParallelProjectNode*>(node) != nullptr;
+      fragmentedPlan.plan->fragments().at(0).fragment.planNode.get(),
+      [](const core::PlanNode* node) {
+        return node->is<core::ParallelProjectNode>();
       });
 
   ASSERT_TRUE(parallelProject != nullptr);
@@ -1034,7 +1075,9 @@ TEST_P(SubfieldTest, constructedRow) {
     expected.emplace("uid", std::vector<std::string>{});
   }
 
-  verifyRequiredSubfields(toSingleNodePlan(logicalPlan), expected);
+  AXIOM_ASSERT_PLAN(
+      toSingleNodePlan(logicalPlan),
+      matchHiveScan("features", std::move(expected)).project().build());
 }
 
 TEST_P(SubfieldTest, wholeColumnAndPath) {
@@ -1044,7 +1087,8 @@ TEST_P(SubfieldTest, wholeColumnAndPath) {
   // reads it.
   auto logicalPlan = parseSelect("SELECT a FROM t WHERE a[1] > 0");
 
-  verifyRequiredSubfields(toSingleNodePlan(logicalPlan), {{"a", {}}});
+  AXIOM_ASSERT_PLAN(
+      toSingleNodePlan(logicalPlan), matchHiveScan("t", {{"a", {}}}).build());
 }
 
 TEST_P(SubfieldTest, unionAll) {
