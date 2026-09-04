@@ -23,6 +23,7 @@
 
 #include "axiom/connectors/ConnectorMetadataRegistry.h"
 #include "axiom/connectors/tests/TestTableJson.h"
+#include "velox/common/Casts.h"
 #include "velox/exec/HashPartitionFunction.h"
 #include "velox/exec/TableWriter.h"
 #include "velox/tpch/gen/TpchGen.h"
@@ -438,8 +439,7 @@ namespace {
 const TestTable& findTestTableForHandle(
     const velox::connector::ConnectorTableHandlePtr& tableHandle) {
   auto testHandle =
-      std::dynamic_pointer_cast<const TestTableHandle>(tableHandle);
-  VELOX_CHECK(testHandle, "Expected TestTableHandle");
+      velox::checkedPointerCast<const TestTableHandle>(tableHandle);
   auto table = ConnectorMetadataRegistry::get(testHandle->connectorId())
                    ->findTable(testHandle->schemaTableName());
   VELOX_CHECK(table, "Table does not exist: {}", testHandle->name());
@@ -488,10 +488,7 @@ std::shared_ptr<SplitSource> TestSplitManager::getSplitSource(
     folly::F14FastSet<int32_t> selectedBuckets;
     for (const auto& partition : partitions) {
       auto testPartition =
-          std::dynamic_pointer_cast<const TestPartitionHandle>(partition);
-      VELOX_CHECK(
-          testPartition != nullptr,
-          "Bucketed scans require TestPartitionHandle");
+          velox::checkedPointerCast<const TestPartitionHandle>(partition);
       selectedBuckets.insert(testPartition->bucketNumber);
     }
     const auto& bucketIds = testTable.dataBucketIds();
@@ -1015,9 +1012,7 @@ TestDataSource::TestDataSource(
     TablePtr table,
     velox::memory::MemoryPool* pool)
     : outputType_(outputType), pool_(pool) {
-  auto maybeTable = std::dynamic_pointer_cast<const TestTable>(table);
-  VELOX_CHECK(
-      maybeTable, "Table is not a TestTable: {}", table->name().toString());
+  auto maybeTable = velox::checkedPointerCast<const TestTable>(table);
   data_ = maybeTable->data();
 
   auto tableType = table->type();
@@ -1084,9 +1079,7 @@ std::unique_ptr<velox::connector::DataSource> TestConnector::createDataSource(
     const velox::connector::ConnectorTableHandlePtr& tableHandle,
     const velox::connector::ColumnHandleMap& columnHandles,
     velox::connector::ConnectorQueryCtx* connectorQueryCtx) {
-  auto* testHandle = dynamic_cast<const TestTableHandle*>(tableHandle.get());
-  VELOX_CHECK_NOT_NULL(
-      testHandle, "Expected TestTableHandle, got: {}", tableHandle->name());
+  const auto* testHandle = tableHandle->asChecked<TestTableHandle>();
   auto table = metadata_->findTable(testHandle->schemaTableName());
   VELOX_CHECK(
       table,
@@ -1102,9 +1095,7 @@ std::unique_ptr<velox::connector::DataSink> TestConnector::createDataSink(
     velox::connector::ConnectorQueryCtx* connectorQueryCtx,
     velox::connector::CommitStrategy) {
   VELOX_CHECK(tableHandle, "table handle must be non-null");
-  auto* testHandle =
-      dynamic_cast<const TestInsertTableHandle*>(tableHandle.get());
-  VELOX_CHECK_NOT_NULL(testHandle, "Expected TestInsertTableHandle");
+  const auto* testHandle = tableHandle->asChecked<TestInsertTableHandle>();
   auto table = metadata_->findTableInternal(testHandle->tableName());
   VELOX_CHECK(
       table,

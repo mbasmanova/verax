@@ -25,6 +25,7 @@
 #include "axiom/connectors/hive/HiveMetadataConfig.h"
 #include "axiom/connectors/hive/LocalTableMetadata.h"
 #include "axiom/optimizer/JsonUtil.h"
+#include "velox/common/Casts.h"
 #include "velox/common/base/Exceptions.h"
 #include "velox/connectors/Connector.h"
 #include "velox/connectors/hive/HiveConnectorSplit.h"
@@ -303,13 +304,10 @@ std::shared_ptr<SplitSource> LocalHiveSplitManager::getSplitSource(
        tableHandle->name()});
   VELOX_CHECK_NOT_NULL(
       table, "Could not find {} in its ConnectorMetadata", tableHandle->name());
-  auto* layout = dynamic_cast<const LocalHiveTableLayout*>(table->layouts()[0]);
-  VELOX_CHECK_NOT_NULL(layout);
+  const auto* layout = table->layouts()[0]->asChecked<LocalHiveTableLayout>();
 
-  auto* hiveTableHandle =
-      dynamic_cast<const velox::connector::hive::HiveTableHandle*>(
-          tableHandle.get());
-  VELOX_CHECK_NOT_NULL(hiveTableHandle);
+  const auto* hiveTableHandle =
+      tableHandle->asChecked<velox::connector::hive::HiveTableHandle>();
 
   auto selectedFiles =
       filterFilesByTableHandle(layout->files(), *hiveTableHandle);
@@ -361,8 +359,8 @@ folly::coro::Task<SplitBatch> LocalHiveSplitSource::co_getSplits(
         VELOX_CHECK(
             info->bucketNumber.has_value(),
             "Bucketed scan requires bucketNumber on every file");
-        const auto* hivePartitionType = partitionType_->as<HivePartitionType>();
-        VELOX_CHECK_NOT_NULL(hivePartitionType, "Expected HivePartitionType");
+        const auto* hivePartitionType =
+            partitionType_->asChecked<HivePartitionType>();
         groupId =
             hivePartitionType->mapBucketToPartition(info->bucketNumber.value());
       }
@@ -516,8 +514,7 @@ std::pair<int64_t, int64_t> LocalHiveTableLayout::sample(
 
   auto metadataPtr = ConnectorMetadataRegistry::get(connector()->connectorId());
   auto connectorQueryCtx =
-      dynamic_cast<const LocalHiveConnectorMetadata*>(metadataPtr.get())
-          ->connectorQueryCtx();
+      metadataPtr->asChecked<LocalHiveConnectorMetadata>()->connectorQueryCtx();
 
   // Treat unknown row count as "no cap" (scan all selected files).
   const auto numRows = table().numRows();
@@ -526,10 +523,8 @@ std::pair<int64_t, int64_t> LocalHiveTableLayout::sample(
       : std::nullopt;
 
   // Filter files based on $path and $bucket filters from tableHandle.
-  auto* hiveTableHandle =
-      dynamic_cast<const velox::connector::hive::HiveTableHandle*>(
-          tableHandle.get());
-  VELOX_CHECK_NOT_NULL(hiveTableHandle);
+  const auto* hiveTableHandle =
+      tableHandle->asChecked<velox::connector::hive::HiveTableHandle>();
   auto selectedFiles = filterFilesByTableHandle(files_, *hiveTableHandle);
 
   int64_t passingRows = 0;
@@ -578,10 +573,8 @@ LocalHiveTableLayout::co_estimateStats(
     velox::connector::ConnectorTableHandlePtr tableHandle,
     std::vector<std::string> columns,
     const FilterSelectivityEstimator& estimator) const {
-  auto hiveHandle =
-      std::dynamic_pointer_cast<const velox::connector::hive::HiveTableHandle>(
-          tableHandle);
-  VELOX_CHECK_NOT_NULL(hiveHandle, "Expected HiveTableHandle");
+  const auto* hiveHandle =
+      tableHandle->asChecked<velox::connector::hive::HiveTableHandle>();
 
   folly::F14FastMap<std::string, const Column*> partitionColumnsByName;
   for (const auto* column : hivePartitionColumns()) {
@@ -634,10 +627,8 @@ LocalHiveTableLayout::co_metadataCounts(
     velox::connector::ConnectorTableHandlePtr tableHandle,
     std::vector<std::string> groupingColumns,
     std::vector<std::string> columns) const {
-  auto hiveHandle =
-      std::dynamic_pointer_cast<const velox::connector::hive::HiveTableHandle>(
-          tableHandle);
-  VELOX_CHECK_NOT_NULL(hiveHandle, "Expected HiveTableHandle");
+  const auto* hiveHandle =
+      tableHandle->asChecked<velox::connector::hive::HiveTableHandle>();
 
   folly::F14FastMap<std::string, const Column*> partitionColumnsByName;
   for (const auto* column : hivePartitionColumns()) {
@@ -779,10 +770,8 @@ std::unique_ptr<DiscretePredicates> LocalHiveTableLayout::discretePredicates(
     }
   }
 
-  auto hiveHandle =
-      std::dynamic_pointer_cast<const velox::connector::hive::HiveTableHandle>(
-          tableHandle);
-  VELOX_CHECK_NOT_NULL(hiveHandle);
+  const auto* hiveHandle =
+      tableHandle->asChecked<velox::connector::hive::HiveTableHandle>();
   const auto& subfieldFilters = hiveHandle->subfieldFilters();
 
   folly::F14FastMap<std::string_view, const Column*> partitionColumnsByName;
@@ -1720,9 +1709,7 @@ std::optional<int64_t> LocalHiveConnectorMetadata::removePartitions(
   // no reader sees the table between the two.
   std::lock_guard<std::mutex> l(mutex_);
   const auto& table = *handle.table();
-  const auto* layout =
-      dynamic_cast<const HiveTableLayout*>(table.layouts().at(0));
-  VELOX_CHECK_NOT_NULL(layout);
+  const auto* layout = table.layouts().at(0)->asChecked<HiveTableLayout>();
   const fs::path path = tablePath(table.name());
 
   const auto& partitionColumns = layout->hivePartitionColumns();
@@ -1812,13 +1799,10 @@ RowsFuture LocalHiveConnectorMetadata::finishWrite(
     }
   }
   std::lock_guard<std::mutex> l(mutex_);
-  auto hiveHandle =
-      std::dynamic_pointer_cast<const HiveConnectorWriteHandle>(handle);
-  VELOX_CHECK_NOT_NULL(hiveHandle, "expecting a Hive write handle");
-  auto veloxHandle = std::dynamic_pointer_cast<
-      const velox::connector::hive::HiveInsertTableHandle>(
-      handle->veloxHandle());
-  VELOX_CHECK_NOT_NULL(veloxHandle, "expecting a Hive insert handle");
+  const auto* hiveHandle = handle->asChecked<HiveConnectorWriteHandle>();
+  const auto* veloxHandle =
+      handle->veloxHandle()
+          ->asChecked<velox::connector::hive::HiveInsertTableHandle>();
   const auto& targetPath = veloxHandle->locationHandle()->targetPath();
   const auto& writePath = veloxHandle->locationHandle()->writePath();
 
@@ -1884,13 +1868,10 @@ velox::ContinueFuture LocalHiveConnectorMetadata::abortWrite(
   }
 
   std::lock_guard<std::mutex> l(mutex_);
-  auto hiveHandle =
-      std::dynamic_pointer_cast<const HiveConnectorWriteHandle>(handle);
-  VELOX_CHECK_NOT_NULL(hiveHandle, "expecting a Hive write handle");
-  auto veloxHandle = std::dynamic_pointer_cast<
-      const velox::connector::hive::HiveInsertTableHandle>(
-      handle->veloxHandle());
-  VELOX_CHECK_NOT_NULL(veloxHandle, "expecting a Hive insert handle");
+  const auto* hiveHandle = handle->asChecked<HiveConnectorWriteHandle>();
+  const auto* veloxHandle =
+      handle->veloxHandle()
+          ->asChecked<velox::connector::hive::HiveInsertTableHandle>();
   const auto& writePath = veloxHandle->locationHandle()->writePath();
   deleteDirectoryRecursive(writePath);
 

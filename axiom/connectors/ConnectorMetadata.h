@@ -26,6 +26,7 @@
 #include "axiom/logical_plan/LogicalPlanNode.h"
 #include "folly/CppAttributes.h"
 #include "folly/coro/Task.h"
+#include "velox/common/Casts.h"
 #include "velox/connectors/Connector.h"
 #include "velox/type/Subfield.h"
 #include "velox/type/Type.h"
@@ -343,6 +344,12 @@ class PartitionType {
   const T* as() const {
     return dynamic_cast<const T*>(this);
   }
+
+  /// Returns this object as type 'T'. Throws if it is not of that type.
+  template <typename T>
+  const T* asChecked() const {
+    return velox::checkedPointerCast<const T>(this);
+  }
 };
 
 // TODO Move to velox/type/Subfield.h
@@ -656,6 +663,12 @@ class TableLayout {
     return dynamic_cast<const T*>(this);
   }
 
+  /// Returns this object as type 'T'. Throws if it is not of that type.
+  template <typename T>
+  const T* asChecked() const {
+    return velox::checkedPointerCast<const T>(this);
+  }
+
   /// Samples a fraction of rows and applies filters from 'handle'. Returns the
   /// number of rows sampled and the number matching the filters.
   virtual SampleResult sample(
@@ -929,6 +942,12 @@ class Table : public std::enable_shared_from_this<Table> {
     return dynamic_cast<const T*>(this);
   }
 
+  /// Returns this object as type 'T'. Throws if it is not of that type.
+  template <typename T>
+  const T* asChecked() const {
+    return velox::checkedPointerCast<const T>(this);
+  }
+
  private:
   const SchemaTableName name_;
   const velox::RowTypePtr type_;
@@ -1028,6 +1047,12 @@ class ConnectorWriteHandle {
   template <typename T>
   const T* as() const {
     return dynamic_cast<const T*>(this);
+  }
+
+  /// Returns this object as type 'T'. Throws if it is not of that type.
+  template <typename T>
+  const T* asChecked() const {
+    return velox::checkedPointerCast<const T>(this);
   }
 
  protected:
@@ -1440,6 +1465,12 @@ class ConnectorMetadata {
   template <typename T>
   const T* as() const {
     return dynamic_cast<const T*>(this);
+  }
+
+  /// Returns this object as type 'T'. Throws if it is not of that type.
+  template <typename T>
+  const T* asChecked() const {
+    return velox::checkedPointerCast<const T>(this);
   }
 };
 

@@ -18,6 +18,7 @@
 
 #include "axiom/connectors/file/FileHandler.h"
 #include "axiom/connectors/file/core/FileTable.h"
+#include "velox/common/Casts.h"
 #include "velox/common/base/Exceptions.h"
 
 namespace facebook::axiom::connector::file {
@@ -101,8 +102,7 @@ FileConnectorMetadata::SplitManager::getSplitSource(
   VELOX_USER_CHECK(
       !samplePercentage.has_value(),
       "SYSTEM sampling is not supported by this connector");
-  auto* fileHandle = dynamic_cast<const FileTableHandle*>(tableHandle.get());
-  VELOX_CHECK_NOT_NULL(fileHandle, "Expected FileTableHandle");
+  const auto* fileHandle = tableHandle->asChecked<FileTableHandle>();
   // The file list was resolved once during planning (see findTable); reuse it
   // rather than listing the directory again here.
   return std::make_shared<FileSplitSource>(
