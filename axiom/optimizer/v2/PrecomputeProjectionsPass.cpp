@@ -190,7 +190,8 @@ void PrecomputeProjections::addToProject(ExprCP expr, ColumnCP column) {
 // A subexpression moves when it reads at least one column, reads no column from
 // the other side, and is deterministic. The walk moves the highest such node
 // and does not descend into it, so a subexpression moves as a whole rather than
-// piecewise.
+// piecewise. It does not descend into an argument a special form may skip: the
+// branches of `if`, `switch` and `coalesce`, or anything inside a `try`.
 class JoinFilterRewriter {
  public:
   JoinFilterRewriter(
@@ -223,6 +224,12 @@ class JoinFilterRewriter {
 
   // Adds 'column' to the projection of the input that produces it.
   void keep(ColumnCP column);
+
+  // Adds every column 'expr' reads to the projection of the input that
+  // produces it.
+  void keepAll(ExprCP expr) {
+    expr->columns().forEach<Column>([&](ColumnCP column) { keep(column); });
+  }
 
   PrecomputeProjections& leftPrecompute_;
   PrecomputeProjections& rightPrecompute_;
@@ -263,6 +270,31 @@ ExprCP JoinFilterRewriter::rewriteCall(const Call* call) {
     return column;
   }
 
+  const Name name = call->name();
+
+  // `try` catches the error its argument raises; an input would raise it where
+  // nothing catches it.
+  if (name == SpecialFormCallNames::kTry) {
+    keepAll(call);
+    return call;
+  }
+
+  // `if`, `switch` and `coalesce` evaluate their first argument for every row
+  // and the rest only for the rows that one selects.
+  if (name == SpecialFormCallNames::kIf ||
+      name == SpecialFormCallNames::kSwitch ||
+      name == SpecialFormCallNames::kCoalesce) {
+    ExprVector newArgs = call->args();
+    newArgs[0] = rewrite(newArgs[0]);
+    for (size_t i = 1; i < newArgs.size(); ++i) {
+      keepAll(newArgs[i]);
+    }
+    if (newArgs[0] == call->args()[0]) {
+      return call;
+    }
+    return ExprFactory(builder_).rebuildCall(call, std::move(newArgs));
+  }
+
   ExprVector newArgs;
   newArgs.reserve(call->args().size());
   bool changed = false;
@@ -272,7 +304,7 @@ ExprCP JoinFilterRewriter::rewriteCall(const Call* call) {
       // call that binds its arguments. Its columns are the outer ones the body
       // reads -- `Lambda` excludes the bound arguments from that set -- and
       // those still have to reach the join.
-      arg->columns().forEach<Column>([&](ColumnCP column) { keep(column); });
+      keepAll(arg);
       newArgs.push_back(arg);
       continue;
     }

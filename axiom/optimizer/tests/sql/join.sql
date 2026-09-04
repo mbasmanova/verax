@@ -242,6 +242,16 @@ SELECT t1.a, t2.a FROM t t1, t t2, t t3 WHERE t1.a = t3.a AND t1.b < t2.b
 -- error_v2: division by zero
 SELECT t1.a, t2.a FROM t t1, t t2 WHERE t1.b < t2.b AND 1000 / (150 - t1.b) > t2.a
 ----
+-- An untaken IF branch does not raise its error, including when the condition
+-- and that branch read different tables.
+SELECT t1.a, t2.a FROM t t1, t t2 WHERE if(t1.b > 0, true, 1000 / (150 - t2.b) > 0)
+----
+-- TRY catches an error raised by the expression it guards, including when that
+-- expression reads more than one table.
+-- duckdb: VALUES (100, 1), (100, 2)
+SELECT t1.b, t2.a FROM (VALUES (150), (100)) AS t1(b), (VALUES (1), (2)) AS t2(a)
+WHERE try(1000 / (150 - t1.b) > t2.a)
+----
 -- Two parallel equality chains connect t through u to v.
 SELECT v.m
 FROM (
