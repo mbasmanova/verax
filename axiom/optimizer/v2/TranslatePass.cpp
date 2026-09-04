@@ -2173,6 +2173,8 @@ Translated Translator::translateUnnest(
   // doesn't need; always emit unnest-expression outputs and ordinality.
   ColumnVector replicatedColumns;
   replicatedColumns.reserve(inputType.size());
+
+  PlanObjectSet replicated;
   for (size_t i = 0; i < inputType.size(); ++i) {
     const auto& name = inputType.nameOf(i);
     if (!required.contains(name)) {
@@ -2180,8 +2182,13 @@ Translated Translator::translateUnnest(
     }
     auto it = input.scope.find(name);
     VELOX_CHECK(it != input.scope.end());
-    replicatedColumns.push_back(it->second);
-    newScope[name] = it->second;
+
+    ColumnCP column = it->second;
+    if (!replicated.contains(column)) {
+      replicated.add(column);
+      replicatedColumns.push_back(column);
+    }
+    newScope[name] = column;
   }
 
   QGVector<ColumnVector> unnestColumns;

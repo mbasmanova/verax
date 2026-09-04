@@ -279,3 +279,13 @@ FROM (VALUES (1), (2)) AS t(x)
 -- columns holding the same constant.
 SELECT sum(x) OVER (PARTITION BY x, x, a, b ORDER BY x)
 FROM (SELECT y AS x, 'All' AS a, 'All' AS b FROM (VALUES (1), (2), (2)) AS t(y)) AS u
+----
+-- A window aggregate whose argument is computed, over UNNEST of an aggregated
+-- array, with two columns holding the same constant.
+SELECT a, b, sum(v + 1) OVER (PARTITION BY d) AS r
+FROM (
+    SELECT 'All' AS a, 'All' AS b, d, array_agg(i) AS vals
+    FROM (VALUES ('x', 1)) AS s(d, i)
+    GROUP BY d
+) AS t
+CROSS JOIN UNNEST(vals) AS n(v)
