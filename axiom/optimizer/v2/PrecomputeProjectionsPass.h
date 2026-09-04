@@ -64,6 +64,14 @@ class PrecomputeProjectionsPass {
   /// SQL does not define an evaluation order, so that masking is not a
   /// property the optimizer preserves.
   ///
+  /// A special form that decides at runtime which arguments to evaluate is
+  /// different: only it can skip them. `IF`, `CASE` and `COALESCE` evaluate
+  /// their first argument for every row, so that one still moves, but their
+  /// branches stay -- otherwise `IF(a = 1, true, fail('bad'))` would fail even
+  /// where `a = 1`. Nothing moves out of a `TRY`, which would stop catching its
+  /// argument's error. Any of these still moves as a unit when one side
+  /// supplies all of its columns.
+  ///
   /// Returns the original tree unchanged when nothing needs to move.
   static NodeCP run(NodeCP node, Builder& builder);
 };
