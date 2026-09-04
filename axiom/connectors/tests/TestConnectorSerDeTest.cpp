@@ -53,10 +53,8 @@ class TestConnectorSerDeTest : public testing::Test {
     ASSERT_EQ(handle.size(), clone->size());
     ASSERT_EQ(handle.columnHandles().size(), clone->columnHandles().size());
     for (size_t i = 0; i < handle.columnHandles().size(); ++i) {
-      auto* original = dynamic_cast<const TestColumnHandle*>(
-          handle.columnHandles()[i].get());
-      auto* cloned = dynamic_cast<const TestColumnHandle*>(
-          clone->columnHandles()[i].get());
+      const auto* original = handle.columnHandles()[i]->as<TestColumnHandle>();
+      const auto* cloned = clone->columnHandles()[i]->as<TestColumnHandle>();
       ASSERT_NE(original, nullptr);
       ASSERT_NE(cloned, nullptr);
       ASSERT_EQ(original->name(), cloned->name());

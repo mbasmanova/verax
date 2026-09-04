@@ -131,9 +131,8 @@ TEST_F(TpchConnectorMetadataTest, createColumnHandle) {
       /*session=*/nullptr, "orderkey");
   ASSERT_NE(columnHandle, nullptr);
 
-  auto* tpchColumnHandle =
-      dynamic_cast<const velox::connector::tpch::TpchColumnHandle*>(
-          columnHandle.get());
+  const auto* tpchColumnHandle =
+      columnHandle->as<velox::connector::tpch::TpchColumnHandle>();
   ASSERT_NE(tpchColumnHandle, nullptr);
   EXPECT_EQ(tpchColumnHandle->name(), "orderkey");
 }
@@ -143,8 +142,7 @@ TEST_F(TpchConnectorMetadataTest, createTableHandle) {
   ASSERT_NE(table, nullptr);
   const auto& layouts = table->layouts();
   ASSERT_EQ(layouts.size(), 1);
-  auto* tpchLayout =
-      dynamic_cast<const connector::tpch::TpchTableLayout*>(layouts[0]);
+  const auto* tpchLayout = layouts[0]->as<connector::tpch::TpchTableLayout>();
 
   std::vector<velox::connector::ColumnHandlePtr> columnHandles;
   std::vector<velox::core::TypedExprPtr> empty;
@@ -159,9 +157,8 @@ TEST_F(TpchConnectorMetadataTest, createTableHandle) {
       rejectedFilterIndices);
   ASSERT_NE(tableHandle, nullptr);
 
-  auto* tpchTableHandle =
-      dynamic_cast<const velox::connector::tpch::TpchTableHandle*>(
-          tableHandle.get());
+  const auto* tpchTableHandle =
+      tableHandle->as<velox::connector::tpch::TpchTableHandle>();
   ASSERT_NE(tpchTableHandle, nullptr);
 
   EXPECT_EQ(tpchTableHandle->getTable(), tpchLayout->getTpchTable());

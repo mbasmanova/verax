@@ -240,8 +240,7 @@ class HiveScanMatcher : public PlanMatcherImpl<TableScanNode> {
         fmt::format("HiveScanMatcher: {}", plan.toString(true, false)));
 
     const auto* hiveTableHandle =
-        dynamic_cast<const connector::hive::HiveTableHandle*>(
-            plan.tableHandle().get());
+        plan.tableHandle()->as<connector::hive::HiveTableHandle>();
     EXPECT_TRUE(hiveTableHandle != nullptr);
     AXIOM_TEST_RETURN_IF_FAILURE
 
