@@ -2075,10 +2075,14 @@ PlanMatcherBuilder& PlanMatcherBuilder::hiveScan(
     const std::string& tableName,
     common::SubfieldFilters subfieldFilters,
     const std::string& remainingFilter,
-    std::optional<double> sampleRate) {
+    std::optional<double> sampleRate,
+    OnMatchCallback onMatch) {
   VELOX_USER_CHECK_NULL(matcher_);
   matcher_ = std::make_shared<HiveScanMatcher>(
       tableName, std::move(subfieldFilters), remainingFilter, sampleRate);
+  if (onMatch) {
+    matcher_->setOnMatch(std::move(onMatch));
+  }
   return *this;
 }
 

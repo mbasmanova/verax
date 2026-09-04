@@ -307,11 +307,14 @@ class PlanMatcherBuilder {
   /// down into the scan.
   /// @param sampleRate When set, asserts the scan's sample rate equals
   /// this value (Hive's `rand() < k` encoding).
+  /// @param onMatch Invoked with the matched scan node, for assertions the
+  /// matchers do not cover.
   PlanMatcherBuilder& hiveScan(
       const std::string& tableName,
       common::SubfieldFilters subfieldFilters,
       const std::string& remainingFilter = "",
-      std::optional<double> sampleRate = std::nullopt);
+      std::optional<double> sampleRate = std::nullopt,
+      OnMatchCallback onMatch = nullptr);
 
   /// Matches any Values node regardless of type. 'onMatch', if set, is invoked
   /// with the matched Values node.
