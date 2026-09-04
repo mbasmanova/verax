@@ -42,7 +42,7 @@ struct DiscreteLayout {
 };
 
 /// Finds the first layout of 'baseTable' whose discrete-predicate columns cover
-/// every column in 'columns'.
+/// every column in 'columns'. 'columns' must not be empty.
 DiscreteLayout findDiscreteLayout(
     const ColumnVector& columns,
     const BaseTable& baseTable);

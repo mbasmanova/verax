@@ -23,6 +23,9 @@ SELECT max(ds) AS m FROM t UNION ALL SELECT min(ds) AS m FROM t
 -- count() counts rows, not partitions.
 SELECT count(*) FROM t
 ----
+-- An aggregation whose value is never read still produces its single row.
+SELECT count(*) FROM (SELECT max(ds) FROM t)
+----
 -- The folded value restricts the outer scan.
 SELECT v FROM t WHERE ds = (SELECT max(ds) FROM t)
 ----

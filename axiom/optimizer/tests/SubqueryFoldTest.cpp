@@ -304,6 +304,27 @@ TEST_P(SubqueryFoldTest, foldableAggregationOverPartitions) {
         matchHiveScan("pt").singleAggregation({}, {"count(*) as c"}).build());
   }
 
+  // An aggregation whose value is never read emits its single row without
+  // reading the table.
+  {
+    auto plan =
+        toSingleNodePlan("SELECT count(*) FROM (SELECT max(ds) FROM pt)");
+    AXIOM_ASSERT_PLAN_V2(
+        plan,
+        matchValues(velox::ROW({}, {}))
+            .singleAggregation({}, {"count(*) as c"})
+            .build());
+  }
+
+  // An aggregate over a constant reads no column, so the listing holds nothing
+  // that answers it.
+  {
+    auto plan = toSingleNodePlan("SELECT max(1) FROM pt");
+    AXIOM_ASSERT_PLAN_V2(
+        plan,
+        matchHiveScan("pt").singleAggregation({}, {"max(1) as m"}).build());
+  }
+
   // 'x' is not a partition key, so the listing does not hold its values.
   {
     auto plan = toSingleNodePlan("SELECT max(x) FROM pt");

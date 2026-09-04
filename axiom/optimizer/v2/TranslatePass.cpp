@@ -760,6 +760,11 @@ class Translator {
   std::optional<std::vector<velox::Variant>> tryEvaluateOverDiscreteValues(
       const Aggregate* aggregate);
 
+  // Source-less `Values` carrying 'row' as its only row.
+  const Values* makeSingleRowValues(
+      std::vector<velox::Variant> row,
+      ColumnVector outputColumns);
+
   // Translates each lp expression in 'expressions' against 'scope'.
   ExprVector translateAll(
       const std::vector<lp::ExprPtr>& expressions,
@@ -1918,6 +1923,12 @@ Translated Translator::translateAggregate(
   }
 
   if (groupingSets.empty()) {
+    // A global aggregate with no aggregate calls emits one empty row for any
+    // input, including no rows at all, so the input is dead.
+    if (groupingKeys.empty() && keptAggregateIndices.empty()) {
+      return {makeSingleRowValues({}, ColumnVector{}), std::move(newScope)};
+    }
+
     AggregateCP aggNode = builder_.make<Aggregate>(
         {.input = currentInput,
          .groupingKeys = std::move(groupingKeys),
@@ -1925,14 +1936,7 @@ Translated Translator::translateAggregate(
          .outputColumns = std::move(outputColumns)});
     NodeCP node = aggNode;
     if (auto row = tryEvaluateOverDiscreteValues(aggNode)) {
-      std::vector<velox::Variant> rows;
-      rows.push_back(velox::Variant::row(std::move(*row)));
-      node = builder_.makeValues(
-          /*source=*/nullptr,
-          queryCtx()->registerVariant(
-              std::make_unique<velox::Variant>(
-                  velox::Variant::array(std::move(rows)))),
-          aggNode->outputColumns());
+      node = makeSingleRowValues(std::move(*row), aggNode->outputColumns());
     }
     return {
         appendConstantColumns(node, foldedColumns, foldedExprs),
@@ -3358,6 +3362,19 @@ ExprCP Translator::tryScalarFromValues(NodeCP body) {
   return builder_.makeLiteral(velox::Variant(row[values->channels()[0]]), type);
 }
 
+const Values* Translator::makeSingleRowValues(
+    std::vector<velox::Variant> row,
+    ColumnVector outputColumns) {
+  std::vector<velox::Variant> rows;
+  rows.push_back(velox::Variant::row(std::move(row)));
+  return builder_.makeValues(
+      /*source=*/nullptr,
+      queryCtx()->registerVariant(
+          std::make_unique<velox::Variant>(
+              velox::Variant::array(std::move(rows)))),
+      std::move(outputColumns));
+}
+
 std::optional<std::vector<velox::Variant>>
 Translator::tryEvaluateOverDiscreteValues(const Aggregate* aggregate) {
   // A correlated body reads columns of an enclosing scope, which the listing
@@ -3389,6 +3406,9 @@ Translator::tryEvaluateOverDiscreteValues(const Aggregate* aggregate) {
     return std::nullopt;
   }
   const auto* scan = input->as<Scan>();
+  if (scan->outputColumns().empty()) {
+    return std::nullopt;
+  }
 
   // The fold works only when every scanned column is a discrete-predicate
   // column; then the subquery's filters reference only those and can narrow the
