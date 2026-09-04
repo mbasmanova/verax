@@ -407,10 +407,14 @@ Literal* tryFoldConstantDt(DerivedTableP dt) {
     }
   }
 
+  auto* baseTable = dt->tables[0]->as<BaseTable>();
+  if (baseTable->columns.empty()) {
+    return nullptr;
+  }
+
   // The fold works only when every base-table column is a discrete-predicate
   // (e.g. partition) column. The listing enumerates those columns, so the
   // table's filters reference only them and can be pushed into the listing.
-  auto* baseTable = dt->tables[0]->as<BaseTable>();
   auto discreteLayout = findDiscreteLayout(baseTable->columns, *baseTable);
   if (discreteLayout.layout == nullptr) {
     return nullptr;

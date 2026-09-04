@@ -30,6 +30,8 @@ namespace facebook::axiom::optimizer {
 DiscreteLayout findDiscreteLayout(
     const ColumnVector& columns,
     const BaseTable& baseTable) {
+  VELOX_CHECK(!columns.empty());
+
   for (auto* layout : baseTable.schemaTable->connectorTable->layouts()) {
     const auto& discreteColumns = layout->discretePredicateColumns();
     if (discreteColumns.empty()) {
