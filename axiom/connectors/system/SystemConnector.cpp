@@ -22,6 +22,7 @@
 #include <folly/json/json.h>
 
 #include "axiom/connectors/system/SystemConnectorMetadata.h"
+#include "velox/common/Casts.h"
 #include "velox/common/base/Exceptions.h"
 #include "velox/exec/Aggregate.h"
 #include "velox/exec/WindowFunction.h"
@@ -888,9 +889,7 @@ std::unique_ptr<velox::connector::DataSource> SystemConnector::createDataSource(
         connectorQueryCtx->memoryPool());
   }
 
-  auto* systemHandle =
-      dynamic_cast<const SystemTableHandle*>(tableHandle.get());
-  VELOX_CHECK_NOT_NULL(systemHandle, "Expected SystemTableHandle");
+  const auto* systemHandle = tableHandle->asChecked<SystemTableHandle>();
 
   const auto& schemaTableName = systemHandle->schemaTableName();
 

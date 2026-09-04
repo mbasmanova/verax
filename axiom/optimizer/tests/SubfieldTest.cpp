@@ -382,8 +382,7 @@ class SubfieldTest : public HiveQueriesTestBase,
 
     for (const auto& [_, columnHandle] : assignments) {
       const auto* handle =
-          dynamic_cast<const velox::connector::hive::HiveColumnHandle*>(
-              columnHandle.get());
+          columnHandle->as<velox::connector::hive::HiveColumnHandle>();
       ASSERT_TRUE(handle != nullptr);
 
       const auto& name = handle->name();

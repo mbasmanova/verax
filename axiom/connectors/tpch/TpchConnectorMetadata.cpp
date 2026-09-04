@@ -16,6 +16,7 @@
 
 #include "axiom/connectors/tpch/TpchConnectorMetadata.h"
 
+#include "velox/common/Casts.h"
 #include "velox/connectors/Connector.h"
 #include "velox/connectors/tpch/TpchConnector.h"
 #include "velox/connectors/tpch/TpchConnectorSplit.h"
@@ -93,11 +94,8 @@ std::shared_ptr<SplitSource> TpchSplitManager::getSplitSource(
   VELOX_USER_CHECK(
       !samplePercentage.has_value(),
       "SYSTEM sampling is not supported by this connector");
-  auto* tpchTableHandle =
-      dynamic_cast<const velox::connector::tpch::TpchTableHandle*>(
-          tableHandle.get());
-  VELOX_CHECK_NOT_NULL(
-      tpchTableHandle, "Expected TpchTableHandle for TPCH connector");
+  const auto* tpchTableHandle =
+      tableHandle->asChecked<velox::connector::tpch::TpchTableHandle>();
 
   return std::make_shared<TpchSplitSource>(
       tpchTableHandle->getTable(),

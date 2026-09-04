@@ -18,6 +18,7 @@
 
 #include "axiom/connectors/file/FileHandler.h"
 #include "axiom/connectors/file/core/FileTable.h"
+#include "velox/common/Casts.h"
 #include "velox/common/base/Exceptions.h"
 
 namespace facebook::axiom::connector::file {
@@ -27,8 +28,7 @@ std::unique_ptr<velox::connector::DataSource> FileConnector::createDataSource(
     const velox::connector::ConnectorTableHandlePtr& tableHandle,
     const velox::connector::ColumnHandleMap& columnHandles,
     velox::connector::ConnectorQueryCtx* connectorQueryCtx) {
-  auto* fileHandle = dynamic_cast<const FileTableHandle*>(tableHandle.get());
-  VELOX_CHECK_NOT_NULL(fileHandle, "Expected FileTableHandle");
+  const auto* fileHandle = tableHandle->asChecked<FileTableHandle>();
 
   auto& fileHandler = handler(fileHandle->schemaTableName().schema);
   return fileHandler.create(

@@ -150,8 +150,8 @@ TEST_F(ConnectorMetadataRegistryTest, duplicateRegistration) {
   // Duplicate registration is a no-op — first registration wins.
   ConnectorMetadata::registerMetadata("catalog", second);
 
-  auto* result = dynamic_cast<StubConnectorMetadata*>(
-      ConnectorMetadata::metadata("catalog"));
+  const auto* result =
+      ConnectorMetadata::metadata("catalog")->as<StubConnectorMetadata>();
   ASSERT_NE(result, nullptr);
   EXPECT_EQ(result->label(), "first");
 }

@@ -82,7 +82,7 @@ class LocalHiveConnectorMetadataTest
   static const LocalHiveTableLayout* getLayout(const TablePtr& table) {
     auto& layouts = table->layouts();
     EXPECT_EQ(1, layouts.size());
-    auto* layout = dynamic_cast<const LocalHiveTableLayout*>(layouts[0]);
+    const auto* layout = layouts[0]->as<LocalHiveTableLayout>();
     EXPECT_TRUE(layout != nullptr);
     return layout;
   }
@@ -262,7 +262,7 @@ TEST_F(LocalHiveConnectorMetadataTest, basic) {
   fields.push_back(std::move(*c0));
   HashStringAllocator allocator(pool_.get());
   std::vector<std::unique_ptr<StatisticsBuilder>> statsBuilders;
-  auto* localLayout = dynamic_cast<const LocalHiveTableLayout*>(layout);
+  const auto* localLayout = layout->as<LocalHiveTableLayout>();
   ASSERT_NE(localLayout, nullptr);
   auto pair =
       localLayout->sample(tableHandle, 100, fields, &allocator, &statsBuilders);
@@ -274,7 +274,7 @@ TEST_F(LocalHiveConnectorMetadataTest, basic) {
 TEST_F(LocalHiveConnectorMetadataTest, sampleWithPathFilter) {
   auto table = metadata_->findTable({kDefaultSchema, "t"});
   ASSERT_TRUE(table != nullptr);
-  auto* layout = dynamic_cast<const LocalHiveTableLayout*>(table->layouts()[0]);
+  const auto* layout = table->layouts()[0]->as<LocalHiveTableLayout>();
   ASSERT_TRUE(layout != nullptr);
   const auto& files = layout->files();
   ASSERT_GT(files.size(), 1);
@@ -501,8 +501,7 @@ TEST_F(LocalHiveConnectorMetadataTest, addColumn) {
   ASSERT_FALSE(updated->layouts().empty());
 
   // Partition columns should be preserved.
-  auto* layout =
-      dynamic_cast<const LocalHiveTableLayout*>(updated->layouts()[0]);
+  const auto* layout = updated->layouts()[0]->as<LocalHiveTableLayout>();
   ASSERT_NE(layout, nullptr);
   EXPECT_EQ(1, layout->hivePartitionColumns().size());
   EXPECT_EQ("ds", layout->hivePartitionColumns()[0]->name());

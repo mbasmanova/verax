@@ -22,6 +22,7 @@
 #include <folly/String.h>
 #include <algorithm>
 #include <utility>
+#include "velox/common/Casts.h"
 #include "velox/connectors/hive/HiveConnector.h"
 #include "velox/connectors/hive/HiveConnectorSplit.h"
 #include "velox/connectors/hive/HiveConnectorUtil.h"
@@ -172,8 +173,7 @@ HiveTable::HiveTable(
           std::move(options)) {}
 
 std::vector<std::string> HiveTable::ioColumnPriority() const {
-  const auto* hiveLayout = dynamic_cast<const HiveTableLayout*>(layouts()[0]);
-  VELOX_CHECK_NOT_NULL(hiveLayout);
+  const auto* hiveLayout = layouts()[0]->asChecked<HiveTableLayout>();
 
   bool hasDs = false;
   bool hasTs = false;
@@ -495,10 +495,9 @@ std::shared_ptr<velox::connector::hive::LocationHandle> makeLocationHandle(
 velox::common::SubfieldFilters deleteFilters(
     const HiveTableLayout& layout,
     const velox::connector::ConnectorTableHandlePtr& scanHandle) {
-  auto hiveScan =
-      std::dynamic_pointer_cast<const velox::connector::hive::HiveTableHandle>(
-          scanHandle);
-  VELOX_USER_CHECK_NOT_NULL(hiveScan, "DELETE requires a scan of the table");
+  VELOX_USER_CHECK_NOT_NULL(scanHandle, "DELETE requires a scan of the table");
+  const auto* hiveScan =
+      scanHandle->asChecked<velox::connector::hive::HiveTableHandle>();
 
   VELOX_USER_CHECK_NULL(
       hiveScan->remainingFilter(),
@@ -543,8 +542,7 @@ ConnectorWriteHandlePtr HiveConnectorMetadata::beginWrite(
       "Only CREATE/INSERT/DELETE supported, not {}",
       WriteKindName::toName(kind));
 
-  auto* hiveLayout = dynamic_cast<const HiveTableLayout*>(table->layouts()[0]);
-  VELOX_CHECK_NOT_NULL(hiveLayout);
+  const auto* hiveLayout = table->layouts()[0]->asChecked<HiveTableLayout>();
 
   if (kind == WriteKind::kDelete) {
     return makeDeleteWriteHandle(table, deleteFilters(*hiveLayout, scanHandle));
