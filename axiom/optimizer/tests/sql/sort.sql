@@ -37,6 +37,26 @@ FROM (VALUES (1, 10), (2, 5)) x(k, v)
 JOIN (VALUES (1, 200), (2, 300)) y(k, v) ON x.k = y.k
 ORDER BY x.v DESC
 ----
+-- ORDER BY a lambda parameter whose name an output column also uses. The
+-- parameter shadows the output column inside the lambda body.
+-- ordered
+SELECT -a AS s
+FROM (VALUES (1), (2)) t(a)
+ORDER BY filter(array[a], s -> s > -2)
+----
+-- ORDER BY an output alias that shadows an input column of the same name. The
+-- alias wins.
+-- ordered
+SELECT -a AS a FROM (VALUES (1), (2)) t(a) ORDER BY a
+----
+-- ORDER BY a qualified key whose column name an output column also uses. The
+-- key names the input column, not the output one.
+-- ordered
+SELECT v.b AS a
+FROM (VALUES (1, 10), (2, 20)) u(k, a)
+JOIN (VALUES (1, 200), (2, 100)) v(k, b) ON u.k = v.k
+ORDER BY u.a DESC
+----
 -- An enclosing query reads back an output column whose name a sort key over a
 -- different expression also uses.
 SELECT a FROM (

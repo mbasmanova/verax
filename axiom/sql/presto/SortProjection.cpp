@@ -15,9 +15,7 @@
  */
 #include "axiom/sql/presto/SortProjection.h"
 
-#include "folly/container/F14Map.h"
 #include "folly/container/F14Set.h"
-#include "velox/parse/Expressions.h"
 #include "velox/parse/IExpr.h"
 
 namespace axiom::sql::presto {
@@ -27,71 +25,22 @@ namespace lp = facebook::axiom::logical_plan;
 namespace {
 namespace core = facebook::velox::core;
 
-// Indexes the SELECT-list projections by expression and by output name for
-// matching ORDER BY sort keys. A name whose ordinal is 0 is ambiguous —
-// two or more projections share the name but produce different expressions
-// — and using it as a sort key fails. Two projections that share a name
-// but produce equal expressions (e.g. `SELECT t.a, t.a`) do not collide.
+// Indexes the SELECT-list projections by expression for matching ORDER BY
+// sort keys. A sort key naming an output alias had it substituted during
+// translation, so it arrives as that item's expression and matches here.
 struct ProjectionIndex {
   core::ExprMap<size_t> byExpr;
-  folly::F14FastMap<std::string, size_t> byAlias;
+  folly::F14FastSet<std::string> aliases;
 
   explicit ProjectionIndex(const std::vector<lp::ExprApi>& projections) {
-    core::IExprEqual exprEqual;
     for (size_t i = 0; i < projections.size(); ++i) {
       byExpr.emplace(projections[i].expr(), i + 1);
       if (projections[i].alias().has_value()) {
-        auto [iter, inserted] =
-            byAlias.emplace(projections[i].alias().value(), i + 1);
-        if (!inserted && iter->second != 0) {
-          // Two projections share the same output name. This is only
-          // ambiguous if they project different expressions; if both
-          // resolve to the same expression (e.g. `SELECT t.a, t.a`),
-          // either ordinal works for ORDER BY.
-          if (!exprEqual(
-                  projections[iter->second - 1].expr(),
-                  projections[i].expr())) {
-            iter->second = 0;
-          }
-        }
+        aliases.insert(projections[i].alias().value());
       }
     }
   }
 };
-
-// Recursively replaces root FieldAccessExpr nodes that match an output alias
-// with the alias's underlying expression. Throws if the alias is ambiguous.
-core::ExprPtr replaceAliases(
-    const core::ExprPtr& expr,
-    const folly::F14FastMap<std::string, size_t>& aliasMap,
-    const std::vector<lp::ExprApi>& projections) {
-  if (const auto* field = core::FieldAccessExpr::tryAsRootColumn(expr)) {
-    auto alias = aliasMap.find(field->name());
-    if (alias != aliasMap.end()) {
-      VELOX_USER_CHECK_NE(
-          alias->second, 0, "Column is ambiguous: {}", field->name());
-      return projections[alias->second - 1].expr();
-    }
-    return expr;
-  }
-
-  const auto& inputs = expr->inputs();
-  if (inputs.empty()) {
-    return expr;
-  }
-
-  std::vector<core::ExprPtr> newInputs;
-  bool changed = false;
-  for (const auto& input : inputs) {
-    auto newInput = replaceAliases(input, aliasMap, projections);
-    if (newInput.get() != input.get()) {
-      changed = true;
-    }
-    newInputs.push_back(std::move(newInput));
-  }
-
-  return changed ? expr->replaceInputs(std::move(newInputs)) : expr;
-}
 
 // Looks up a single sort key in 'index'. Returns the matching 1-based
 // ordinal, or 0 if not present (caller decides whether to widen or fail).
@@ -100,26 +49,12 @@ core::ExprPtr replaceAliases(
 size_t lookupSortKey(
     const lp::ExprApi& sortKey,
     size_t preResolvedOrdinal,
-    const std::vector<lp::ExprApi>& projections,
     const ProjectionIndex& index) {
   if (preResolvedOrdinal != 0) {
     return preResolvedOrdinal;
   }
 
-  // Only an unqualified name can match a SELECT output name. A qualified key
-  // (`t.a`) names a column of an input relation, so it resolves by expression
-  // below even when two inputs put that name in the output.
-  if (sortKey.alias().has_value() &&
-      core::FieldAccessExpr::tryAsRootColumn(sortKey.expr()) != nullptr) {
-    auto it = index.byAlias.find(sortKey.alias().value());
-    if (it != index.byAlias.end()) {
-      VELOX_USER_CHECK_NE(it->second, 0, "Column is ambiguous: {}", it->first);
-      return it->second;
-    }
-  }
-
-  auto resolved = replaceAliases(sortKey.expr(), index.byAlias, projections);
-  auto it = index.byExpr.find(resolved);
+  auto it = index.byExpr.find(sortKey.expr());
   return it != index.byExpr.end() ? it->second : 0;
 }
 } // namespace
@@ -139,22 +74,20 @@ std::vector<size_t> SortProjection::widenProjections(
 
   // Output names already claimed, by a SELECT item or by a key widened below.
   folly::F14FastSet<std::string> claimedNames;
-  for (const auto& [name, _] : index.byAlias) {
+  for (const auto& name : index.aliases) {
     claimedNames.insert(name);
   }
 
   for (size_t i = 0; i < sortKeyExprs.size(); ++i) {
-    auto ordinal = lookupSortKey(
-        sortKeyExprs[i], preResolvedOrdinals[i], projections, index);
+    auto ordinal =
+        lookupSortKey(sortKeyExprs[i], preResolvedOrdinals[i], index);
     if (ordinal != 0) {
       ordinals.push_back(ordinal);
       continue;
     }
     // Sort key not present in the SELECT list; widen the projection.
-    auto resolved =
-        replaceAliases(sortKeyExprs[i].expr(), index.byAlias, projections);
     ordinal = projections.size() + 1;
-    index.byExpr.emplace(resolved, ordinal);
+    index.byExpr.emplace(sortKeyExprs[i].expr(), ordinal);
 
     // A name another output column already carries would leave both
     // unresolvable, so the column is projected unnamed and trimmed after the
@@ -165,7 +98,7 @@ std::vector<size_t> SortProjection::widenProjections(
       alias = "";
     }
 
-    projections.emplace_back(std::move(resolved), std::move(alias));
+    projections.emplace_back(sortKeyExprs[i].expr(), std::move(alias));
     ordinals.push_back(ordinal);
   }
 
@@ -187,8 +120,8 @@ std::vector<size_t> SortProjection::resolveSortKeys(
   ordinals.reserve(sortKeyExprs.size());
 
   for (size_t i = 0; i < sortKeyExprs.size(); ++i) {
-    auto ordinal = lookupSortKey(
-        sortKeyExprs[i], preResolvedOrdinals[i], projections, index);
+    auto ordinal =
+        lookupSortKey(sortKeyExprs[i], preResolvedOrdinals[i], index);
     if (ordinal == 0) {
       onUnresolved(i);
       VELOX_FAIL("onUnresolved callback must throw");

@@ -25,8 +25,9 @@ namespace axiom::sql::presto {
 
 class SortProjection {
  public:
-  /// Matches sort key expressions against items in the SELECT list, including
-  /// aliased expressions. For unmatched expressions, appends them to
+  /// Matches sort key expressions against items in the SELECT list. A key that
+  /// names an output alias arrives as that item's expression, so matching is by
+  /// expression alone. For unmatched expressions, appends them to
   /// `projections`, widening the projection list. Returns a 1-based ordinal for
   /// each sort key in the widened projection list.
   ///

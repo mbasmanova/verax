@@ -1129,18 +1129,19 @@ class RelationPlanner : public AstVisitor {
     // later items. Populated left-to-right as aliases are encountered.
     // Column names take priority over aliases to preserve backward
     // compatibility (e.g., SELECT a AS b, b FROM t — second b is column b).
-    std::unordered_map<std::string, core::ExprPtr> aliasExprs;
-    std::unordered_set<std::string> columnNames;
+    folly::F14FastMap<std::string, core::ExprPtr> aliasExprs;
+    folly::F14FastSet<std::string> columnNames;
     if (options_.friendlySql) {
       for (const auto& name : builder_->outputNames()) {
         if (name.has_value()) {
           columnNames.insert(name.value());
         }
       }
-      exprPlanner_.setLateralAliases(&aliasExprs, &columnNames);
+      exprPlanner_.setOutputAliases(
+          {.exprs = &aliasExprs, .columnNames = &columnNames});
     }
     SCOPE_EXIT {
-      exprPlanner_.clearLateralAliases();
+      exprPlanner_.clearOutputAliases();
     };
 
     std::vector<lp::ExprApi> exprs;
@@ -1291,7 +1292,7 @@ class RelationPlanner : public AstVisitor {
   }
 
   // Build sort key expressions. Ordinals are resolved to the corresponding
-  // SELECT projection expression so widenProjectionsForSort can match them
+  // SELECT projection expression so the sort key matches its SELECT item
   // by expression identity. COLUMNS() calls are expanded to multiple sort
   // keys. Returns the expanded sort key expressions, pre-resolved ordinals,
   // and sort ordering info (since expansion may produce more keys than
@@ -1311,6 +1312,9 @@ class RelationPlanner : public AstVisitor {
       const std::vector<lp::ExprApi>& projections,
       ExprOptions options) {
     const size_t numSelectItems = projections.size();
+
+    ExpressionPlanner::OutputAliasScope aliasScope{exprPlanner_, projections};
+
     SortKeyExpansion result;
     for (const auto& item : orderBy->sortItems()) {
       const auto& sortExpr = item->sortKey();
