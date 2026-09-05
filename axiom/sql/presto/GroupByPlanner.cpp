@@ -700,6 +700,8 @@ void GroupByPlanner::collectAggregates(
   }
 
   if (orderBy != nullptr) {
+    ExpressionPlanner::OutputAliasScope aliasScope{exprPlanner_, projections_};
+
     const auto& sortItems = orderBy->sortItems();
     for (const auto& item : sortItems) {
       auto expr = exprPlanner_.toExpr(

@@ -1064,14 +1064,25 @@ lp::ExprApi ExpressionPlanner::toExpr(
   switch (node->type()) {
     case NodeType::kIdentifier: {
       auto name = canonicalizeIdentifier(*node->as<Identifier>());
-      // Lateral column alias: resolve to the alias expression if the name
-      // matches an alias and is NOT a known column (columns take priority).
-      if (aliasExprs_ != nullptr) {
-        bool isColumn = columnNames_ != nullptr && columnNames_->contains(name);
-        if (!isColumn) {
-          if (auto it = aliasExprs_->find(name); it != aliasExprs_->end()) {
-            return lp::ExprApi(it->second);
-          }
+      // An output alias resolves to the expression its SELECT item projects,
+      // unless a column of that name outranks it, or a lambda parameter of
+      // that name shadows it. Lambda parameters are searched innermost-first
+      // to match SQL lexical scoping.
+      if (outputAliases_.exprs != nullptr &&
+          !(outputAliases_.columnNames != nullptr &&
+            outputAliases_.columnNames->contains(name)) &&
+          std::find(
+              lambdaParamScope_.rbegin(), lambdaParamScope_.rend(), name) ==
+              lambdaParamScope_.rend()) {
+        AXIOM_PRESTO_SEMANTIC_CHECK(
+            outputAliases_.ambiguous == nullptr ||
+                !outputAliases_.ambiguous->contains(name),
+            node->location(),
+            name,
+            "Column is ambiguous");
+        if (auto it = outputAliases_.exprs->find(name);
+            it != outputAliases_.exprs->end()) {
+          return lp::ExprApi(it->second);
         }
       }
       return lp::Col(name);
@@ -1849,17 +1860,13 @@ lp::ExprApi ExpressionPlanner::planSubquery(
     return it->second;
   }
 
-  // Lateral column aliases belong to the enclosing SELECT block only. Clear
-  // them while the subquery is planned so a bare column reference inside the
-  // subquery resolves against the subquery's own FROM (and then the outer
-  // scope's columns for correlation), not an outer SELECT alias.
-  const auto* savedAliasExprs = aliasExprs_;
-  const auto* savedColumnNames = columnNames_;
-  aliasExprs_ = nullptr;
-  columnNames_ = nullptr;
+  // Output aliases belong to the enclosing SELECT block only. Clear them while
+  // the subquery is planned so a bare column reference inside the subquery
+  // resolves against the subquery's own FROM (and then the outer scope's
+  // columns for correlation), not an outer SELECT alias.
+  const auto savedAliases = std::exchange(outputAliases_, {});
   SCOPE_EXIT {
-    aliasExprs_ = savedAliasExprs;
-    columnNames_ = savedColumnNames;
+    outputAliases_ = savedAliases;
   };
 
   auto result = subqueryPlanner_(query->as<Query>());
@@ -1902,6 +1909,28 @@ lp::ExprApi ExpressionPlanner::planSubquery(
     subqueryCache_.emplace(query, expr);
   }
   return expr;
+}
+
+ExpressionPlanner::OutputAliasScope::OutputAliasScope(
+    ExpressionPlanner& planner,
+    const std::vector<lp::ExprApi>& projections)
+    : planner_{planner}, saved_{planner.outputAliases_} {
+  core::IExprEqual exprEqual;
+  for (const auto& projection : projections) {
+    if (!projection.alias().has_value()) {
+      continue;
+    }
+    auto [it, inserted] =
+        aliasExprs_.emplace(projection.alias().value(), projection.expr());
+    if (!inserted && !exprEqual(it->second, projection.expr())) {
+      ambiguousAliases_.insert(projection.alias().value());
+    }
+  }
+
+  planner_.setOutputAliases(
+      {.exprs = &aliasExprs_,
+       .columnNames = nullptr,
+       .ambiguous = &ambiguousAliases_});
 }
 
 void ExpressionPlanner::pushMarkerScope() {
