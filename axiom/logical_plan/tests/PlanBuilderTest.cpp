@@ -27,6 +27,8 @@ using namespace facebook::velox;
 namespace facebook::axiom::logical_plan {
 namespace {
 
+using Name = PlanBuilder::OutputColumnName;
+
 class PlanBuilderTest : public testing::Test {
  public:
   static void SetUpTestCase() {
@@ -59,8 +61,6 @@ TEST_F(PlanBuilderTest, anonymousOutputNames) {
               ROW({"a"}, BIGINT()), std::vector<Variant>{Variant::row({123LL})})
           .project({"a + 1", "a + 2 as b"});
 
-  using Name = PlanBuilder::OutputColumnName;
-
   EXPECT_EQ(2, builder.numOutput());
   EXPECT_EQ((Name{std::nullopt, "expr"}), builder.findOrAssignOutputNameAt(0));
   EXPECT_EQ((Name{std::nullopt, "b"}), builder.findOrAssignOutputNameAt(1));
@@ -91,7 +91,6 @@ TEST_F(PlanBuilderTest, ambiguousOutputNamesFullOverlap) {
   auto builder =
       buildValues("t").join(buildValues("u"), "t.a = u.a", JoinType::kInner);
 
-  using Name = PlanBuilder::OutputColumnName;
   auto names = builder.findOrAssignOutputNames();
   EXPECT_THAT(
       names,
@@ -124,8 +123,6 @@ TEST_F(PlanBuilderTest, ambiguousOutputNamesPartialOverlap) {
                      .join(buildValues("u"), "t.a = u.a", JoinType::kInner);
 
   auto names = builder.findOrAssignOutputNames();
-
-  using Name = PlanBuilder::OutputColumnName;
 
   // "a" is ambiguous — both tables have it. "c" and "b" are unique.
   EXPECT_THAT(
@@ -162,6 +159,21 @@ TEST_F(PlanBuilderTest, duplicateAliasAllowed) {
     EXPECT_EQ(4, names.size());
     EXPECT_EQ("x", names[2].name);
     EXPECT_TRUE(names[3].name.starts_with("x_"));
+  }
+
+  // The duplicate is a column passed through rather than another projection.
+  {
+    auto builder =
+        makeBuilder()
+            .values(ROW({"a", "b"}, BIGINT()), ValuesNode::Variants{})
+            .as("u")
+            .with({"u.a as a"});
+
+    auto names = builder.findOrAssignOutputNames();
+    EXPECT_EQ(3, names.size());
+    EXPECT_EQ("a", names[0].name);
+    EXPECT_EQ("b", names[1].name);
+    EXPECT_TRUE(names[2].name.starts_with("a_"));
   }
 
   // Lookup on duplicate name fails.
@@ -248,6 +260,21 @@ TEST_F(PlanBuilderTest, emptyAliasAllowed) {
       makeValues(ROW("a", ARRAY(BIGINT())))
           .unnest({Col("a").unnestAs("elem")}, Ordinality().as("")),
       {"a", "elem", ""});
+}
+
+TEST_F(PlanBuilderTest, qualifiedNameAfterAggregate) {
+  auto builder = PlanBuilder()
+                     .values(ROW({"ds", "v"}, BIGINT()), ValuesNode::Variants{})
+                     .as("e")
+                     .aggregate({"ds"}, {"sum(v) as total"});
+
+  // Grouping by 'ds' of relation 'e' leaves the key reachable as 'e.ds' above
+  // the aggregation.
+  EXPECT_NO_THROW(builder.project({"e.ds", "total"}));
+
+  // 'as day' renames the column, so 'e.ds' no longer names it.
+  builder.project({"e.ds as day"});
+  VELOX_ASSERT_THROW(builder.project({"e.ds"}), "Cannot resolve column");
 }
 
 TEST_F(PlanBuilderTest, duplicateAliasThrows) {

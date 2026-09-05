@@ -413,9 +413,16 @@ class AggregateMatcher : public LogicalPlanMatcherImpl<AggregateNode> {
     EXPECT_EQ(groupingKeys_.size(), plan.groupingKeys().size());
     AXIOM_RETURN_IF_FAILURE;
 
+    velox::parse::DuckSqlExpressionsParser parser(parseOptions_);
+
     for (auto i = 0; i < groupingKeys_.size(); ++i) {
-      EXPECT_EQ(groupingKeys_[i], plan.groupingKeys()[i]->toString())
-          << "at grouping key index " << i;
+      auto expected = parser.parseScalarOrWindowExpr(groupingKeys_[i]);
+      if (!symbols.empty()) {
+        expected = rewriteInputNames(expected, symbols);
+      }
+
+      SCOPED_TRACE("grouping key at index " + std::to_string(i));
+      ExprMatcher::match(plan.groupingKeys()[i], expected->dropAlias());
       AXIOM_RETURN_IF_FAILURE;
     }
 
@@ -424,8 +431,6 @@ class AggregateMatcher : public LogicalPlanMatcherImpl<AggregateNode> {
 
     std::unordered_map<std::string, std::string> newSymbols = symbols;
     auto numGroupingKeys = plan.groupingKeys().size();
-
-    velox::parse::DuckSqlExpressionsParser parser(parseOptions_);
     for (auto i = 0; i < aggregates_.size(); ++i) {
       velox::core::ExprPtr parsed = parser.parseAggregateExpr(aggregates_[i]);
 

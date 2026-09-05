@@ -72,11 +72,14 @@ class SubqueryExpr : public core::IExpr {
   }
 
   bool operator==(const IExpr& other) const override {
-    if (!other.is(Kind::kSubquery)) {
+    // Checked cast, not just the kind: a dialect may define another
+    // Kind::kSubquery expression, such as a placeholder for a subquery it has
+    // yet to plan.
+    const auto* otherSubquery = other.as<SubqueryExpr>();
+    if (otherSubquery == nullptr) {
       return false;
     }
 
-    auto* otherSubquery = other.as<SubqueryExpr>();
     // Compare the subquery plan pointers. Two SubqueryExprs are equal if they
     // reference the same logical plan node.
     return subquery_ == otherSubquery->subquery_ &&

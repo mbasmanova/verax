@@ -1303,9 +1303,13 @@ class RelationPlanner : public AstVisitor {
     std::vector<bool> nullsFirst;
   };
 
+  // 'options' must match the options 'projections' were resolved with: a sort
+  // key is matched against them by expression, so a subquery deferred in one
+  // and planned in the other would no longer pair up.
   SortKeyExpansion buildSortKeyExprs(
       const OrderByPtr& orderBy,
-      const std::vector<lp::ExprApi>& projections) {
+      const std::vector<lp::ExprApi>& projections,
+      ExprOptions options) {
     const size_t numSelectItems = projections.size();
     SortKeyExpansion result;
     for (const auto& item : orderBy->sortItems()) {
@@ -1329,7 +1333,7 @@ class RelationPlanner : public AstVisitor {
         result.ascending.push_back(item->isAscending());
         result.nullsFirst.push_back(item->isNullsFirst());
       } else {
-        auto expr = toExpr(sortExpr);
+        auto expr = toExpr(sortExpr, options);
         auto expanded =
             ColumnsExpansion::expand(expr, *builder_, sortExpr->location());
         if (!expanded.empty()) {
@@ -1372,7 +1376,7 @@ class RelationPlanner : public AstVisitor {
     }
 
     const size_t numSelectItems = projections->size();
-    auto expansion = buildSortKeyExprs(orderBy, projections.value());
+    auto expansion = buildSortKeyExprs(orderBy, projections.value(), {});
 
     auto ordinals = SortProjection::widenProjections(
         expansion.sortKeyExprs, expansion.preResolved, projections.value());
@@ -1413,7 +1417,7 @@ class RelationPlanner : public AstVisitor {
 
     std::optional<SortKeyExpansion> sortKeys;
     if (orderBy != nullptr) {
-      sortKeys = buildSortKeyExprs(orderBy, selectExprs);
+      sortKeys = buildSortKeyExprs(orderBy, selectExprs, {});
     }
 
     extractNestedWindows(projections.value());
@@ -1676,6 +1680,10 @@ class RelationPlanner : public AstVisitor {
   void visitQuerySpecification(
       QuerySpecification* node,
       const OrderByPtr& orderBy) {
+    // Deferred-subquery markers belong to this block. The scope nests, so a
+    // subquery body planned from here gets its own.
+    ExpressionPlanner::MarkerScope markers{exprPlanner_};
+
     // FROM t -> builder.tableScan(t)
     processFrom(node->from());
 
@@ -1690,15 +1698,18 @@ class RelationPlanner : public AstVisitor {
     const bool distinct = node->select()->isDistinct();
 
     if (auto groupBy = node->groupBy()) {
-      auto selectExprs =
-          expandSelectExprs(selectItems, {.allowGrouping = true});
+      auto selectExprs = expandSelectExprs(
+          selectItems, {.allowGrouping = true, .deferSubqueries = true});
 
       // Sort keys of a DISTINCT are built here, before GroupByPlanner
       // projects and aggregates: a qualified key like `t.a` names a column of
       // the relation the SELECT list reads from.
       std::optional<SortKeyExpansion> sortKeys;
       if (distinct && orderBy != nullptr) {
-        sortKeys = buildSortKeyExprs(orderBy, selectExprs);
+        sortKeys = buildSortKeyExprs(
+            orderBy,
+            selectExprs,
+            {.allowGrouping = true, .deferSubqueries = true});
       }
 
       // When DISTINCT is also present, skip ORDER BY in the GROUP BY

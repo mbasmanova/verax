@@ -354,6 +354,78 @@ std::vector<std::vector<lp::ExprApi>> crossProductGroupingSets(
 
 constexpr std::string_view kGroupingSetIdColumn = "$grouping_set_id";
 
+// Markers this call site has already planned, keyed by marker. Holds the
+// planned ExprApi, not just its expression, because lp::Subquery names the
+// expression after the subquery's output column and that name is the one a
+// whole-expression marker takes.
+using PlannedMarkers = core::ExprMap<lp::ExprApi>;
+
+// Plans 'expr' if it is a marker, reusing the plan if this call site already
+// made one. Returns nullopt if it is not a marker.
+std::optional<lp::ExprApi> planMarker(
+    const core::ExprPtr& expr,
+    ExpressionPlanner& exprPlanner,
+    PlannedMarkers& planned) {
+  // Only a marker can be in 'planned', and hashing an expression walks all of
+  // its inputs, so look no further than the leaves that could match.
+  if (!expr->is(core::IExpr::Kind::kSubquery)) {
+    return std::nullopt;
+  }
+
+  if (auto it = planned.find(expr); it != planned.end()) {
+    return it->second;
+  }
+
+  auto subquery = exprPlanner.planIfMarker(expr);
+  if (subquery.has_value()) {
+    planned.emplace(expr, *subquery);
+  }
+  return subquery;
+}
+
+// Plans and substitutes every marker under 'expr'. A
+// marker's correlated references bind to the enclosing block's plan as it
+// stands when this runs, so the call site decides that scope: before the
+// AggregateNode is built for its grouping keys, after it for the clauses that
+// read its output.
+//
+// Call sites planning in different scopes must pass different 'planned' maps:
+// one marker can stand for occurrences on both sides of the aggregate, and
+// each side needs its own plan.
+core::ExprPtr planMarkers(
+    const core::ExprPtr& expr,
+    ExpressionPlanner& exprPlanner,
+    PlannedMarkers& planned) {
+  if (auto subquery = planMarker(expr, exprPlanner, planned)) {
+    return subquery->expr();
+  }
+
+  std::vector<core::ExprPtr> newInputs;
+  newInputs.reserve(expr->inputs().size());
+  bool changed{false};
+  for (const auto& input : expr->inputs()) {
+    newInputs.push_back(planMarkers(input, exprPlanner, planned));
+    changed |= newInputs.back().get() != input.get();
+  }
+
+  return changed ? expr->replaceInputs(std::move(newInputs)) : expr;
+}
+
+// As above, and a marker that is the whole expression also keeps the planned
+// subquery's name unless 'item' has one of its own.
+lp::ExprApi planMarkers(
+    const lp::ExprApi& item,
+    ExpressionPlanner& exprPlanner,
+    PlannedMarkers& planned) {
+  if (auto subquery = planMarker(item.expr(), exprPlanner, planned)) {
+    return item.name().has_value() ? lp::ExprApi(subquery->expr(), item.name())
+                                   : *subquery;
+  }
+
+  return lp::ExprApi(
+      planMarkers(item.expr(), exprPlanner, planned), item.name());
+}
+
 const core::CallExpr* FOLLY_NULLABLE asGroupingCall(const core::ExprPtr& expr) {
   if (expr->is(core::IExpr::Kind::kCall)) {
     auto* call = expr->as<core::CallExpr>();
@@ -505,7 +577,8 @@ bool GroupByPlanner::tryPlanGlobalAgg(
   selectExprs.reserve(selectItems.size());
   for (const auto& item : selectItems) {
     auto* singleColumn = item->as<SingleColumn>();
-    auto expr = exprPlanner_.toExpr(singleColumn->expression());
+    auto expr = exprPlanner_.toExpr(
+        singleColumn->expression(), {.deferSubqueries = true});
     if (singleColumn->alias() != nullptr) {
       expr = expr.as(canonicalizeIdentifier(*singleColumn->alias()));
     }
@@ -620,7 +693,8 @@ void GroupByPlanner::collectAggregates(
   }
 
   if (having != nullptr) {
-    lp::ExprApi expr = exprPlanner_.toExpr(having, {.allowGrouping = true});
+    lp::ExprApi expr = exprPlanner_.toExpr(
+        having, {.allowGrouping = true, .deferSubqueries = true});
     findAggregates(expr.expr(), aggregates_, aggregateSet);
     filter_ = expr;
   }
@@ -628,7 +702,8 @@ void GroupByPlanner::collectAggregates(
   if (orderBy != nullptr) {
     const auto& sortItems = orderBy->sortItems();
     for (const auto& item : sortItems) {
-      auto expr = exprPlanner_.toExpr(item->sortKey(), {.allowGrouping = true});
+      auto expr = exprPlanner_.toExpr(
+          item->sortKey(), {.allowGrouping = true, .deferSubqueries = true});
       findAggregates(expr.expr(), aggregates_, aggregateSet);
       sortingKeyExprs_.emplace_back(expr);
     }
@@ -659,7 +734,22 @@ folly::F14FastSet<std::string> outputNamesOf(
 } // namespace
 
 void GroupByPlanner::addAggregate(bool useGroupingSets) {
-  const auto groupingKeyNames = outputNamesOf(groupingKeys_);
+  // The AggregateNode evaluates its grouping keys, so their subqueries are
+  // planned against the scope below it. Only these copies carry the plans:
+  // 'groupingKeys_' keeps the markers, because they key the post-aggregate
+  // rewrite, which has to match a clause above the aggregate holding the
+  // same marker.
+  PlannedMarkers planned;
+
+  std::vector<lp::ExprApi> groupingKeyExprs;
+  groupingKeyExprs.reserve(groupingKeys_.size());
+  for (const auto& key : groupingKeys_) {
+    groupingKeyExprs.push_back(planMarkers(key, exprPlanner_, planned));
+  }
+
+  // Taken from the planned keys: a key that is a subquery is named only once
+  // planned, and that name is what a SELECT alias can shadow.
+  const auto groupingKeyNames = outputNamesOf(groupingKeyExprs);
 
   // SQL lets an aggregate's SELECT alias shadow a grouping-key name with
   // the same text. PlanBuilder rejects this collision when binding the
@@ -678,12 +768,12 @@ void GroupByPlanner::addAggregate(bool useGroupingSets) {
 
   if (useGroupingSets) {
     builder_->aggregate(
-        groupingKeys_,
+        groupingKeyExprs,
         groupingSetsIndices_,
         aggregateExprs,
         std::string(kGroupingSetIdColumn));
   } else {
-    builder_->aggregate(groupingKeys_, aggregateExprs);
+    builder_->aggregate(groupingKeyExprs, aggregateExprs);
   }
 
   auto outputColumns = builder_->findOrAssignOutputNames();
@@ -722,25 +812,26 @@ void GroupByPlanner::rewritePostAggregateExprs() {
     keyInputs.emplace(groupingSetIdCol, groupingSetIdCol);
   }
 
-  if (filter_.has_value()) {
-    filter_ = replaceInputs(
-        filter_.value().expr(),
-        keyInputs,
-        aggregateInputs,
-        [](const core::FieldAccessExpr& expr) {
-          VELOX_USER_FAIL(
-              "HAVING clause cannot reference column: {}", expr.name());
-        });
-  }
-
   // Rewrites an IExpr to reference post-aggregate columns.
   auto rewriteIExpr = [&](const core::ExprPtr& expr) {
     return replaceInputs(expr, keyInputs, aggregateInputs);
   };
 
+  // A marker the substitution leaves behind is a subquery the clause
+  // evaluates for itself rather than one the aggregate already computed, so
+  // it is planned against the aggregate's output. That is also what makes a
+  // correlation to a column that is not a grouping key fail to resolve, as
+  // SQL requires.
+  PlannedMarkers planned;
+  auto substituteAndPlan = [&](const core::ExprPtr& expr) {
+    return planMarkers(rewriteIExpr(expr), exprPlanner_, planned);
+  };
+
   // Project nested window functions (e.g. sum(sum(a)) OVER () inside
-  // sum(a) / sum(sum(a)) OVER ()) and add replacements to keyInputs.
-  projectNestedWindows(rewriteIExpr, keyInputs);
+  // sum(a) / sum(sum(a)) OVER ()) and add replacements to keyInputs. These
+  // reach PlanBuilder here rather than through the rewrite below, so they are
+  // planned, not just substituted.
+  projectNestedWindows(substituteAndPlan, keyInputs);
 
   // Rewrite projections and sorting keys to reference post-aggregate columns.
   // Top-level windows need rewriteWindowExpr to rewrite args and
@@ -753,11 +844,27 @@ void GroupByPlanner::rewritePostAggregateExprs() {
 
   auto rewriteExpr = [&](lp::ExprApi& item) {
     if (item.expr()->is(core::IExpr::Kind::kWindow)) {
-      item = rewriteWindowExpr(item, rewriteIExpr);
+      item = rewriteWindowExpr(item, substituteAndPlan);
     } else {
-      item = lp::ExprApi(rewriteIExpr(item.expr()), item.name());
+      item = lp::ExprApi(substituteAndPlan(item.expr()), item.name());
     }
   };
+
+  // HAVING takes the same two steps as the clauses below, but a column it
+  // cannot resolve is an error rather than a name to leave alone.
+  if (filter_.has_value()) {
+    auto substituted = replaceInputs(
+        filter_.value().expr(),
+        keyInputs,
+        aggregateInputs,
+        [](const core::FieldAccessExpr& expr) {
+          VELOX_USER_FAIL(
+              "HAVING clause cannot reference column: {}", expr.name());
+        });
+    filter_ = lp::ExprApi(
+        planMarkers(std::move(substituted), exprPlanner_, planned),
+        filter_->alias());
+  }
 
   for (auto& item : projections_) {
     rewriteExpr(item);
@@ -870,7 +977,10 @@ lp::ExprApi GroupByPlanner::resolveGroupingExpression(
         "GROUP BY position is not in select list");
     return selectExprs.at(n - 1);
   }
-  return exprPlanner_.toExpr(expr);
+  // Deferred so that a subquery written in both GROUP BY and SELECT is one
+  // marker on both sides, and the SELECT occurrence therefore resolves to
+  // this key's output column.
+  return exprPlanner_.toExpr(expr, {.deferSubqueries = true});
 }
 
 lp::ExprApi GroupByPlanner::resolveWithCache(

@@ -53,7 +53,17 @@ struct ExprOptions {
   /// Whether GROUPING() expressions are allowed. Defaults to false so that
   /// GROUPING() is rejected unless explicitly enabled by the GROUP BY path.
   bool allowGrouping{false};
+
+  /// Whether subqueries are left unplanned, as SubqueryMarkerExpr markers, so
+  /// that they can be planned in the scope their clause is evaluated in. Set
+  /// for what an aggregating block evaluates above its AggregateNode; an
+  /// aggregate call's arguments clear it, the node evaluating them itself.
+  bool deferSubqueries{false};
 };
+
+// Defined in the .cpp: callers reach markers only through
+// 'planIfMarker'.
+class SubqueryMarkerExpr;
 
 /// Translates Presto SQL AST expression nodes into logical plan ExprApi
 /// objects. Handles all expression types (literals, comparisons, arithmetic,
@@ -167,7 +177,44 @@ class ExpressionPlanner {
     columnNames_ = nullptr;
   }
 
+  /// Plans 'expr' against the current scope if it is a marker, and returns
+  /// the planned subquery; returns nullopt if it is not a marker. The result
+  /// carries the name lp::Subquery derives from the subquery's output column.
+  /// The caller decides when to call, and so which scope the subquery's
+  /// correlated references bind to.
+  ///
+  /// Not memoized per marker: one marker can stand for occurrences on both
+  /// sides of an AggregateNode, which need plans bound to different scopes.
+  /// Callers substituting several occurrences in one position memoize.
+  std::optional<lp::ExprApi> planIfMarker(
+      const facebook::velox::core::ExprPtr& expr);
+
+  /// Bounds the lifetime of the markers a query block hands out. Markers are
+  /// shared within one of these and never across, so a block shares none with
+  /// a sibling already planned, and a subquery body none with the block
+  /// around it. Construct one per query block.
+  class [[nodiscard]] MarkerScope {
+   public:
+    explicit MarkerScope(ExpressionPlanner& planner) : planner_{planner} {
+      planner_.pushMarkerScope();
+    }
+
+    ~MarkerScope() {
+      planner_.popMarkerScope();
+    }
+
+    MarkerScope(const MarkerScope&) = delete;
+    MarkerScope& operator=(const MarkerScope&) = delete;
+
+   private:
+    ExpressionPlanner& planner_;
+  };
+
  private:
+  // Start and end of one MarkerScope.
+  void pushMarkerScope();
+  void popMarkerScope();
+
   // Walks an IExpr tree collecting WindowCallExpr nodes. Stops recursion at
   // kWindow nodes (does not descend into window function arguments).
   static void findWindowExprs(
@@ -188,12 +235,12 @@ class ExpressionPlanner {
       ExprOptions options = {});
 
   // Builds an AggregateCallExpr from a FunctionCall AST node that has
-  // DISTINCT, FILTER, or ORDER BY.
+  // DISTINCT, FILTER, or ORDER BY. FILTER and ORDER BY are evaluated by the
+  // AggregateNode, so they translate in the aggregate's own scope.
   lp::ExprApi toAggregateCallExpr(
       const FunctionCall* call,
       const std::string& funcName,
-      const std::vector<lp::ExprApi>& args,
-      ExprOptions options);
+      const std::vector<lp::ExprApi>& args);
 
   // Plans `subquery` via `subqueryPlanner_` and wraps the resulting
   // plan as an `lp::Subquery` expression, caching by AST identity.
@@ -203,7 +250,12 @@ class ExpressionPlanner {
   // as a scalar expression must return exactly one column. EXISTS
   // (which only checks row presence) passes false to skip those
   // checks.
-  lp::ExprApi planSubquery(const SubqueryExpression* subquery, bool scalar);
+  // Returns a SubqueryMarkerExpr instead when 'options' defers subqueries
+  // and the body is not an outer-scope-aggregate lift candidate.
+  lp::ExprApi planSubquery(
+      const SubqueryExpression* subquery,
+      bool scalar,
+      ExprOptions options);
 
   // SQL binds an aggregate to the innermost query block containing all
   // its column references. A scalar subquery body whose aggregates all
@@ -267,6 +319,27 @@ class ExpressionPlanner {
   folly::
       F14FastMap<StatementPtr, lp::ExprApi, SubqueryAstHash, SubqueryAstEqual>
           subqueryCache_;
+
+  // The markers handed out for one subquery text. A scalar use and an EXISTS
+  // use are validated differently, so each gets its own.
+  struct QueryMarkers {
+    std::shared_ptr<const SubqueryMarkerExpr> scalar;
+    std::shared_ptr<const SubqueryMarkerExpr> predicate;
+  };
+
+  // Markers handed out while resolving one block's clauses, so that textually
+  // identical subqueries share one marker and stay one expression for
+  // grouping-key matching. Sharing is safe because a marker binds no names;
+  // each planning of it binds to the scope in place at that point, which is
+  // how one marker can serve occurrences on both sides of an aggregation.
+  // Swapped out by MarkerScope so a nested block starts with none.
+  folly::
+      F14FastMap<StatementPtr, QueryMarkers, SubqueryAstHash, SubqueryAstEqual>
+          markersByQuery_;
+
+  // Markers of the blocks enclosing the one being planned, restored as each
+  // MarkerScope goes out of scope.
+  std::vector<decltype(markersByQuery_)> enclosingMarkers_;
 
   // Lateral column alias mappings. When non-null, Identifier nodes matching
   // a key are resolved to the corresponding expression, unless the name also
