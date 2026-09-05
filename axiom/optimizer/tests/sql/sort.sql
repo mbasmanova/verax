@@ -37,6 +37,15 @@ FROM (VALUES (1, 10), (2, 5)) x(k, v)
 JOIN (VALUES (1, 200), (2, 300)) y(k, v) ON x.k = y.k
 ORDER BY x.v DESC
 ----
+-- An enclosing query reads back an output column whose name a sort key over a
+-- different expression also uses.
+SELECT a FROM (
+  SELECT v.a AS a
+  FROM (VALUES (1, 10), (2, 5)) u(k, a)
+  JOIN (VALUES (1, 200), (2, 300)) v(k, a) ON u.k = v.k
+  ORDER BY u.a DESC
+)
+----
 -- SELECT DISTINCT ordered by a qualified key.
 -- ordered
 SELECT DISTINCT t.a FROM t ORDER BY t.a DESC

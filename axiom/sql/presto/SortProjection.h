@@ -39,7 +39,8 @@ class SortProjection {
   /// (1-based).
   /// @param projections Mutable list of expressions from the SELECT list. This
   /// is where unmatched sort key expressions are appended. All pre-resolved
-  /// ordinals should match to a projection here.
+  /// ordinals should match to a projection here. An appended expression is
+  /// left unnamed when another output column already uses its name.
   static std::vector<size_t> widenProjections(
       const std::vector<facebook::axiom::logical_plan::ExprApi>& sortKeyExprs,
       const std::vector<size_t>& preResolvedOrdinals,
