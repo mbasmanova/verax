@@ -215,8 +215,8 @@ TEST_F(SortParserTest, windowInOrderBy) {
 TEST_F(SortParserTest, ambiguousAlias) {
   connector_->addTable("t", ROW({"a", "b", "c"}, INTEGER()));
 
-  VELOX_ASSERT_THROW(
-      parseSql("SELECT a as b, b FROM t ORDER BY b"), "Column is ambiguous: b");
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      parseSql("SELECT a as b, b FROM t ORDER BY b"), "Column is ambiguous");
 
   testSelect(
       "SELECT a as b, b FROM t ORDER BY c",
@@ -542,9 +542,9 @@ TEST_F(SortParserTest, outputAliasInExpression) {
           .project({"x"})
           .output({"x"}));
 
-  VELOX_ASSERT_THROW(
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
       parseSql("SELECT 1 AS a, a FROM t2 ORDER BY a + 1"),
-      "Column is ambiguous: a");
+      "Column is ambiguous");
 
   testSelect(
       "SELECT 1 AS a, a FROM t2 ORDER BY b + 1",

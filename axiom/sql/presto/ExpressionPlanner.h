@@ -18,6 +18,7 @@
 #include <span>
 
 #include <folly/container/F14Map.h>
+#include <folly/container/F14Set.h>
 #include <functional>
 #include <unordered_map>
 #include <unordered_set>
@@ -158,23 +159,34 @@ class ExpressionPlanner {
   /// Rejects expressions nested deeper than the configured limit.
   lp::ExprApi toExpr(const ExpressionPtr& node, ExprOptions options = {});
 
-  /// Sets alias-to-expression mappings for lateral column alias resolution.
-  /// When set, Identifier nodes matching an alias key are resolved to the
-  /// alias's expression instead of being treated as column references.
-  /// Column names take priority over aliases — if a name exists in both
-  /// 'columnNames' and 'aliasExprs', it is treated as a column reference.
-  void setLateralAliases(
-      const std::unordered_map<std::string, facebook::velox::core::ExprPtr>*
-          aliasExprs,
-      const std::unordered_set<std::string>* columnNames) {
-    aliasExprs_ = aliasExprs;
-    columnNames_ = columnNames;
+  /// The output aliases in effect for one clause's translation. Held as one
+  /// value so saving and restoring cannot miss a field.
+  struct OutputAliases {
+    /// Alias name to the expression the SELECT item projects.
+    const folly::F14FastMap<std::string, facebook::velox::core::ExprPtr>* exprs{
+        nullptr};
+
+    /// Names that stay column references even when they name an alias.
+    /// Lateral column aliases pass it; ORDER BY, where an output alias
+    /// outranks a column of the same name, leaves it null.
+    const folly::F14FastSet<std::string>* columnNames{nullptr};
+
+    /// Alias names several output columns carry with different values. An
+    /// Identifier naming one fails rather than picking a column.
+    const folly::F14FastSet<std::string>* ambiguous{nullptr};
+  };
+
+  /// Sets the aliases an Identifier resolves against. An Identifier naming one
+  /// resolves to the alias's expression rather than to a column. A qualified
+  /// reference is a dereference, never an Identifier, so it always names a
+  /// column of an input relation.
+  void setOutputAliases(const OutputAliases& aliases) {
+    outputAliases_ = aliases;
   }
 
-  /// Clears lateral column alias mappings.
-  void clearLateralAliases() {
-    aliasExprs_ = nullptr;
-    columnNames_ = nullptr;
+  /// Clears output alias mappings.
+  void clearOutputAliases() {
+    outputAliases_ = {};
   }
 
   /// Plans 'expr' against the current scope if it is a marker, and returns
@@ -208,6 +220,29 @@ class ExpressionPlanner {
 
    private:
     ExpressionPlanner& planner_;
+  };
+
+  /// Installs the SELECT output aliases for the duration of the scope, so an
+  /// ORDER BY key naming one resolves to that item's expression rather than to
+  /// a column of an input relation. See 'setOutputAliases'.
+  class [[nodiscard]] OutputAliasScope {
+   public:
+    OutputAliasScope(
+        ExpressionPlanner& planner,
+        const std::vector<lp::ExprApi>& projections);
+
+    ~OutputAliasScope() {
+      planner_.setOutputAliases(saved_);
+    }
+
+    OutputAliasScope(const OutputAliasScope&) = delete;
+    OutputAliasScope& operator=(const OutputAliasScope&) = delete;
+
+   private:
+    ExpressionPlanner& planner_;
+    OutputAliases saved_;
+    folly::F14FastMap<std::string, facebook::velox::core::ExprPtr> aliasExprs_;
+    folly::F14FastSet<std::string> ambiguousAliases_;
   };
 
  private:
@@ -341,12 +376,8 @@ class ExpressionPlanner {
   // MarkerScope goes out of scope.
   std::vector<decltype(markersByQuery_)> enclosingMarkers_;
 
-  // Lateral column alias mappings. When non-null, Identifier nodes matching
-  // a key are resolved to the corresponding expression, unless the name also
-  // appears in columnNames_ (column names take priority).
-  const std::unordered_map<std::string, facebook::velox::core::ExprPtr>*
-      aliasExprs_{nullptr};
-  const std::unordered_set<std::string>* columnNames_{nullptr};
+  // Output aliases the clause being translated resolves names against.
+  OutputAliases outputAliases_;
 
   // Lambda parameters currently in scope. Entries are appended on entering a
   // lambda body and dropped on exit, so the vector grows from outermost
