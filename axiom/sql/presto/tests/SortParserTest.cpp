@@ -310,6 +310,23 @@ TEST_F(SortParserTest, qualifiedSortKeyWithDuplicateOutputNames) {
           .output({"k", "v", "k", "v"}));
 }
 
+// An enclosing query can reference an output column whose name a sort key over
+// a different expression also uses.
+TEST_F(SortParserTest, sortKeyShadowsOutputName) {
+  connector_->addTable("t", ROW({"k", "a"}, INTEGER()));
+
+  testSelect(
+      "SELECT a FROM ("
+      "  SELECT v.a AS a FROM t u JOIN t v ON u.k = v.k ORDER BY u.a DESC)",
+      matchScan()
+          .join(matchScan().build(), {"left_k", "left_a", "right_k", "right_a"})
+          .project({"right_a as out", "left_a as sortKey"})
+          .sort({"sortKey desc"})
+          .project({"out as trimmed"})
+          .project({"trimmed"})
+          .output({"a"}));
+}
+
 // Under SELECT DISTINCT a qualified sort key picks the side of the join it
 // names, even though both sides contribute an output column of that name.
 TEST_F(SortParserTest, distinctQualifiedSortKeyOnJoin) {
