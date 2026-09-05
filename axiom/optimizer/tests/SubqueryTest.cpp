@@ -164,8 +164,11 @@ TEST_P(SubqueryTest, inListWithMixedSubqueries) {
             .nestedLoopJoin(
                 matchHiveScan("region")
                     .singleAggregation({}, {"max(r_regionkey) as max_key"})
-                    .nestedLoopJoin(matchHiveScan("region").singleAggregation(
-                        {}, {"min(r_regionkey_2) as min_key"})),
+                    .nestedLoopJoin(
+                        matchHiveScan("region")
+                            .aliases({"region_key"})
+                            .singleAggregation(
+                                {}, {"min(region_key) as min_key"})),
                 core::JoinType::kInner,
                 "\"in\"(n_regionkey, max_key, min_key)")
             .build());

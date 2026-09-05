@@ -23,6 +23,8 @@ a local directory.
   - `$path` — file path of the data file.
   - `$bucket` — bucket number for bucketed tables.
   - `$file_size` — size of the data file in bytes.
+  - `$row_id` — a row's physical identity, used for row-level deletes. Not
+    implemented yet.
 - Filter pushdown: the optimizer pushes filters down to the connector, which
   evaluates them during scan. This includes partition pruning (skipping
   entire files based on partition key values) and within-file filtering.
