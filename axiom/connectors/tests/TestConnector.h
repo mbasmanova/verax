@@ -920,6 +920,12 @@ class TestConnector : public velox::connector::Connector {
         {std::string(kDefaultSchema), std::string(tableName)});
   }
 
+  void dropTablesIfExists(std::initializer_list<std::string_view> tableNames) {
+    for (auto tableName : tableNames) {
+      dropTableIfExists(tableName);
+    }
+  }
+
   static void registerSerDe();
 
   void addTpchTables();

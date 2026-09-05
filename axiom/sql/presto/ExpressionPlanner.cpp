@@ -42,6 +42,68 @@ namespace axiom::sql::presto {
 
 using namespace facebook::velox;
 
+// Stands in for a subquery until the scope it belongs to exists. Planning a
+// subquery binds its correlated references to physical column names, so one
+// read from a clause evaluated above an AggregateNode has to wait for that
+// node: names taken from the pre-aggregation scope do not exist above it.
+//
+// Invariants:
+// - Carries no plan, and never reaches PlanBuilder. Every marker is planned
+//   through ExpressionPlanner::planIfMarker, at a point where the
+//   builder is on the scope the marker's clause is evaluated in.
+// - A childless leaf of Kind::kSubquery, so expression walks treat it as the
+//   opaque leaf a planned subquery is.
+// - Identity is the AST node, so a marker equals only itself. One subquery
+//   serving as both a grouping key and a SELECT item is therefore one
+//   expression, which the post-aggregate rewrite can replace wholesale with
+//   the key's output column.
+class SubqueryMarkerExpr : public core::IExpr {
+ public:
+  SubqueryMarkerExpr(const SubqueryExpression* subquery, bool scalar)
+      : IExpr(Kind::kSubquery, {}), subquery_{subquery}, scalar_{scalar} {
+    VELOX_CHECK_NOT_NULL(subquery_);
+  }
+
+  const SubqueryExpression* subquery() const {
+    return subquery_;
+  }
+
+  // False for an EXISTS body, which skips the single-column check a scalar
+  // subquery gets. An IN body is planned as scalar.
+  bool scalar() const {
+    return scalar_;
+  }
+
+  std::string toString() const override {
+    return "<subquery marker>";
+  }
+
+  core::ExprPtr replaceInputs(
+      std::vector<core::ExprPtr> newInputs) const override {
+    VELOX_CHECK_EQ(newInputs.size(), 0);
+    return std::make_shared<SubqueryMarkerExpr>(subquery_, scalar_);
+  }
+
+  core::ExprPtr dropAlias() const final {
+    return std::make_shared<SubqueryMarkerExpr>(subquery_, scalar_);
+  }
+
+  bool operator==(const IExpr& other) const override {
+    const auto* otherMarker = other.as<SubqueryMarkerExpr>();
+    return otherMarker != nullptr && subquery_ == otherMarker->subquery_ &&
+        compareAliasAndInputs(other);
+  }
+
+ protected:
+  size_t localHash() const override {
+    return std::hash<const SubqueryExpression*>{}(subquery_);
+  }
+
+ private:
+  const SubqueryExpression* const subquery_;
+  const bool scalar_;
+};
+
 namespace {
 
 // Translates a Presto call already recognized as the metadata aggregate 'kind'
@@ -1084,7 +1146,8 @@ lp::ExprApi ExpressionPlanner::toExpr(
     }
 
     case NodeType::kSubqueryExpression: {
-      return planSubquery(node->as<SubqueryExpression>(), /*scalar=*/true);
+      return planSubquery(
+          node->as<SubqueryExpression>(), /*scalar=*/true, options);
     }
 
     case NodeType::kComparisonExpression: {
@@ -1173,7 +1236,9 @@ lp::ExprApi ExpressionPlanner::toExpr(
     case NodeType::kExistsPredicate: {
       auto* exists = node->as<ExistsPredicate>();
       return lp::Exists(planSubquery(
-          exists->subquery()->as<SubqueryExpression>(), /*scalar=*/false));
+          exists->subquery()->as<SubqueryExpression>(),
+          /*scalar=*/false,
+          options));
     }
 
     case NodeType::kQuantifiedComparisonExpression: {
@@ -1459,10 +1524,20 @@ lp::ExprApi ExpressionPlanner::toExpr(
     case NodeType::kFunctionCall: {
       auto* call = node->as<FunctionCall>();
 
-      auto args = translateArgs(call->arguments(), options);
-
       const auto& funcName = call->name()->suffix();
       const auto lowerFuncName = canonicalizeName(funcName);
+
+      // An aggregate's arguments, FILTER and ORDER BY are evaluated by the
+      // AggregateNode, so the scope they need is the one in place here. Only
+      // what an aggregating block evaluates above that node is deferred.
+      auto argOptions = options;
+      if (call->window() == nullptr &&
+          (exec::getAggregateFunctionEntry(lowerFuncName) != nullptr ||
+           specialAggregateKind(lowerFuncName).has_value())) {
+        argOptions.deferSubqueries = false;
+      }
+
+      auto args = translateArgs(call->arguments(), argOptions);
 
       if (lowerFuncName == "nullif") {
         AXIOM_PRESTO_SEMANTIC_CHECK(
@@ -1481,7 +1556,7 @@ lp::ExprApi ExpressionPlanner::toExpr(
       // DISTINCT / FILTER / ORDER BY modifiers mark an aggregate call.
       if (call->isDistinct() || call->filter() || call->orderBy()) {
         if (exec::getAggregateFunctionEntry(lowerFuncName) != nullptr) {
-          return toAggregateCallExpr(call, funcName, args, options);
+          return toAggregateCallExpr(call, funcName, args);
         }
         // On a scalar function Presto ignores DISTINCT but rejects FILTER and
         // ORDER BY. Match that: DISTINCT falls through to the scalar path
@@ -1737,7 +1812,8 @@ core::ExprPtr wrapAggregatesWithFilter(
 
 lp::ExprApi ExpressionPlanner::planSubquery(
     const SubqueryExpression* subquery,
-    bool scalar) {
+    bool scalar,
+    ExprOptions options) {
   auto query = subquery->query();
 
   if (!query->is(NodeType::kQuery)) {
@@ -1749,6 +1825,22 @@ lp::ExprApi ExpressionPlanner::planSubquery(
 
   VELOX_CHECK_NOT_NULL(
       subqueryPlanner_, "Subquery expressions require a SubqueryPlanner");
+
+  // An outer-scope aggregate lift rewrites the subquery into aggregates of the
+  // enclosing block, which have to reach the AggregateNode being built, so it
+  // cannot be deferred past that node. The lift only runs for a scalar
+  // subquery, so only that case is held back.
+  const bool liftsAggregates =
+      scalar && isOuterScopeAggregateLiftCandidate(query->as<Query>());
+
+  if (options.deferSubqueries && !liftsAggregates) {
+    auto& markers = markersByQuery_[query];
+    auto& marker = scalar ? markers.scalar : markers.predicate;
+    if (marker == nullptr) {
+      marker = std::make_shared<SubqueryMarkerExpr>(subquery, scalar);
+    }
+    return lp::ExprApi(marker);
+  }
 
   // Look up first; if not cached, plan and insert. Do not hold an
   // iterator across subqueryPlanner_ because it may recursively plan
@@ -1810,6 +1902,25 @@ lp::ExprApi ExpressionPlanner::planSubquery(
     subqueryCache_.emplace(query, expr);
   }
   return expr;
+}
+
+void ExpressionPlanner::pushMarkerScope() {
+  enclosingMarkers_.push_back(std::exchange(markersByQuery_, {}));
+}
+
+void ExpressionPlanner::popMarkerScope() {
+  markersByQuery_ = std::move(enclosingMarkers_.back());
+  enclosingMarkers_.pop_back();
+}
+
+std::optional<lp::ExprApi> ExpressionPlanner::planIfMarker(
+    const core::ExprPtr& expr) {
+  const auto* marker = expr->as<SubqueryMarkerExpr>();
+  if (marker == nullptr) {
+    return std::nullopt;
+  }
+
+  return planSubquery(marker->subquery(), marker->scalar(), {});
 }
 
 std::optional<lp::ExprApi> ExpressionPlanner::tryLiftPureOuterAggregate(
@@ -1895,8 +2006,7 @@ std::vector<lp::ExprApi> ExpressionPlanner::translateArgs(
 lp::ExprApi ExpressionPlanner::toAggregateCallExpr(
     const FunctionCall* call,
     const std::string& funcName,
-    const std::vector<lp::ExprApi>& args,
-    ExprOptions /*options*/) {
+    const std::vector<lp::ExprApi>& args) {
   core::ExprPtr filterExpr;
   if (call->filter() != nullptr) {
     filterExpr = toExpr(call->filter(), {}).expr();

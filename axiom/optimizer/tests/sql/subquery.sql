@@ -1249,3 +1249,50 @@ WHERE a > (SELECT max(x) FROM (VALUES (0), (1)) s(x))
     SELECT 1 FROM (VALUES (2), (3)) w(y)
     WHERE y > (SELECT max(x) FROM (VALUES (0), (1)) s(x))
   )
+----
+-- A correlated subquery in a clause evaluated above an aggregation binds to
+-- the grouping key's output column. Both tables name the column 'a', so the
+-- key's name is disambiguated across the aggregation.
+SELECT (SELECT 1 WHERE v.a = 2)
+FROM u, v
+GROUP BY v.a
+----
+-- The same correlation in HAVING.
+SELECT v.a
+FROM u, v
+GROUP BY v.a
+HAVING (SELECT v.a) > 4
+----
+-- And in ORDER BY.
+-- ordered
+SELECT v.a
+FROM u, v
+GROUP BY v.a
+ORDER BY (SELECT v.a) DESC
+----
+-- An aggregate's argument is evaluated by the aggregation, so a correlation
+-- there reads the aggregation's input rather than its output.
+SELECT sum((SELECT v.a))
+FROM u, v
+GROUP BY v.a
+----
+-- The same holds for an aggregate carrying a FILTER, whose predicate the
+-- aggregation also evaluates.
+SELECT sum((SELECT v.a)) FILTER (WHERE (SELECT v.a) > 4)
+FROM u, v
+GROUP BY v.a
+----
+-- A correlated subquery that is both a DISTINCT output and the ORDER BY key
+-- is one expression, so the sort key pairs with the output it sorts.
+-- ordered
+SELECT DISTINCT (SELECT v.a)
+FROM u, v
+GROUP BY v.a
+ORDER BY (SELECT v.a)
+----
+-- A correlation written with the table qualifier resolves against a grouping
+-- key written without one. Single-table, so the key keeps its column name and
+-- the aggregation has to publish the qualified name alongside it.
+SELECT (SELECT 1 WHERE v.a = 2)
+FROM v
+GROUP BY a

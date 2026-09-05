@@ -598,8 +598,15 @@ void PlanBuilder::resolveProjections(
     std::vector<std::string>& outputNames,
     std::vector<ExprPtr>& exprs,
     NameMappings& mappings) {
-  std::unordered_set<std::string> seenColumnIds;
+  // 'with' passes the input's columns through before this runs, so they are
+  // already in 'outputNames' and 'mappings'. A projection that reads one of
+  // them adds a copy, and a name one of them already carries is a duplicate.
+  std::unordered_set<std::string> seenColumnIds{
+      outputNames.begin(), outputNames.end()};
   NameTracker nameTracker(allowAmbiguousOutputNames_, mappings);
+  for (const auto& [id, name] : mappings.uniqueNames()) {
+    nameTracker.track(name);
+  }
 
   // Track all projection names for duplicate detection. For identity
   // projections without explicit aliases (e.g. Col("x") from SELECT *),
@@ -646,19 +653,37 @@ void PlanBuilder::resolveProjections(
       continue;
     }
 
-    if (expr->isInputReference() &&
-        (!alias.has_value() ||
-         alias.value() == expr->as<InputReferenceExpr>()->name())) {
+    const auto* inputReference =
+        expr->isInputReference() ? expr->as<InputReferenceExpr>() : nullptr;
+
+    // The names the input has for the column this projection passes through.
+    const auto inputNames = inputReference != nullptr
+        ? outputMapping_->reverseLookup(inputReference->name())
+        : std::vector<NameMappings::QualifiedName>{};
+
+    // A column reference carries the column's unqualified name as an alias, so
+    // the alias alone does not say whether the user renamed the column or just
+    // referred to it: `p.x` and `x` both alias "x". An alias the input already
+    // uses for the column is a reference, and the column keeps all of the
+    // input's names for it, including the qualified one an expression above
+    // this node may use. Any other alias renames, and replaces them.
+    const bool renames =
+        alias.has_value() &&
+        std::none_of(
+            inputNames.begin(), inputNames.end(), [&](const auto& name) {
+              return name.name == alias.value();
+            });
+
+    if (inputReference != nullptr &&
+        (!alias.has_value() || alias.value() == inputReference->name())) {
       // Identity projection without rename.
-      const auto& id = expr->as<InputReferenceExpr>()->name();
+      const auto& id = inputReference->name();
       if (seenColumnIds.emplace(id).second) {
         outputNames.push_back(id);
-        if (alias.has_value()) {
-          // An explicit alias overrides any name the source exposed for
-          // this column.
+        if (renames) {
           nameTracker.add(alias.value(), outputNames.back());
         } else {
-          for (const auto& name : outputMapping_->reverseLookup(id)) {
+          for (const auto& name : inputNames) {
             nameTracker.add(name, outputNames.back());
           }
         }
@@ -678,7 +703,18 @@ void PlanBuilder::resolveProjections(
       }
     } else if (alias.has_value()) {
       outputNames.push_back(newName(alias.value()));
+
       nameTracker.addNamed(alias.value(), outputNames.back());
+
+      if (!renames) {
+        // The alias restates one of the input's names for the column, so the
+        // qualified ones keep naming it too.
+        for (const auto& name : inputNames) {
+          if (name.alias.has_value()) {
+            nameTracker.add(name, outputNames.back());
+          }
+        }
+      }
     } else {
       outputNames.push_back(newName(kExprHint));
     }

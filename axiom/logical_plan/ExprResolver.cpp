@@ -199,6 +199,9 @@ ExprPtr applyCoercion(
 
     VELOX_CHECK_EQ(subquery->outputType()->size(), 1);
 
+    // TODO: The coerced column takes the name of the one it reads, so the plan
+    // holds two columns of that name with different types, one directly above
+    // the other. Names in a plan tree must be unique.
     return std::make_shared<SubqueryExpr>(std::make_shared<ProjectNode>(
         planNodeIdGenerator->next(),
         subquery,

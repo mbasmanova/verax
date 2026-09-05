@@ -325,7 +325,10 @@ TEST_F(AggregationParserTest, groupByOrdinalWithSelectStar) {
       "SELECT * REPLACE (n_name || '_x' AS n_name) FROM nation GROUP BY 1, 2, 3, 4",
       matchScan()
           .aggregate(
-              {"n_nationkey", "concat(n_name, _x)", "n_regionkey", "n_comment"},
+              {"n_nationkey",
+               "concat(n_name, '_x')",
+               "n_regionkey",
+               "n_comment"},
               {})
           .output());
 }
@@ -511,7 +514,7 @@ TEST_F(AggregationParserTest, groupingFunction) {
       "SELECT GROUPING(s.x.y), count(1) FROM s "
       "GROUP BY GROUPING SETS ((s.x.y), ())",
       matchScan("s")
-          .aggregate({"DEREFERENCE(x, y)"}, {"count(1)"}, {{0}, {}})
+          .aggregate({"x.y"}, {"count(1)"}, {{0}, {}})
           .project({grouping({0, 1}), "count"}, kIntegerLiterals)
           .output());
 
@@ -947,6 +950,89 @@ TEST_F(AggregationParserTest, scalarSubqueryRepeatedInSelectAndGroupBy) {
       matcher);
 }
 
+TEST_F(AggregationParserTest, correlatedSubqueryWithGroupBy) {
+  connector_->addTable("t", ROW("x", INTEGER()));
+  connector_->addTable("u", ROW("x", INTEGER()));
+  SCOPE_EXIT {
+    connector_->dropTablesIfExists({"t", "u"});
+  };
+
+  // Both tables call the column 'x', so the join generates a name for u's.
+  // Capturing it as 'ux' lets the grouping key be asserted without naming it.
+  const auto scanJoinAggregate = [] {
+    return matchScan("t")
+        .join(matchScan("u").build(), {"tx", "ux"})
+        .aggregate({"ux"}, {});
+  };
+
+  // A correlation to a grouping key resolves in SELECT, HAVING and ORDER BY.
+  testSelect(
+      "SELECT (SELECT 1 WHERE u.x = 1) FROM t, u GROUP BY u.x",
+      scanJoinAggregate().project().output());
+  testSelect(
+      "SELECT u.x FROM t, u GROUP BY u.x HAVING (SELECT u.x) = 1",
+      scanJoinAggregate().filter().output());
+  testSelect(
+      "SELECT u.x FROM t, u GROUP BY u.x ORDER BY (SELECT u.x)",
+      scanJoinAggregate().project().sort().project().output());
+
+  // A correlation to a column that is neither a grouping key nor an aggregate
+  // is not allowed.
+  VELOX_ASSERT_THROW(
+      parseSql("SELECT (SELECT 1 WHERE t.x = 1) FROM t, u GROUP BY u.x"),
+      "Cannot resolve column: t");
+}
+
+TEST_F(AggregationParserTest, subqueryEvaluatedByAggregation) {
+  connector_->addTable("t", ROW("x", INTEGER()));
+  connector_->addTable("u", ROW("x", INTEGER()));
+  SCOPE_EXIT {
+    connector_->dropTablesIfExists({"t", "u"});
+  };
+
+  // An aggregate's argument is evaluated by the aggregation, over its input,
+  // so a correlation there reaches the join's columns.
+  testSelect(
+      "SELECT sum((SELECT u.x)) FROM t, u GROUP BY u.x",
+      matchScan("t")
+          .join(matchScan("u").build())
+          .aggregate()
+          .project()
+          .output());
+
+  // So is a grouping key, including one reached by ordinal.
+  testSelect(
+      "SELECT (SELECT 1 WHERE u.x = 1) FROM t, u GROUP BY 1",
+      matchScan("t").join(matchScan("u").build()).aggregate().output());
+
+  // A subquery that is only part of a grouping key is not itself a grouping
+  // key, so SELECT cannot read it.
+  VELOX_ASSERT_THROW(
+      parseSql("SELECT (SELECT u.x) FROM t, u GROUP BY (SELECT u.x) + 1"),
+      "Cannot resolve column: u");
+}
+
+TEST_F(AggregationParserTest, subqueryGroupingKeyOutputName) {
+  connector_->addTable("t", ROW("x", INTEGER()));
+  connector_->addTable("u", ROW("y", INTEGER()));
+  SCOPE_EXIT {
+    connector_->dropTablesIfExists({"t", "u"});
+  };
+
+  // A subquery grouping key is named after the column it selects, both when
+  // the subquery is planned for the key and when the same one is read again
+  // above the aggregation.
+  testSelect(
+      "SELECT (SELECT count(*) AS c FROM u) FROM t GROUP BY 1",
+      matchScan("t").aggregate().output({"c"}));
+  // Both occurrences are one key, fanned back out to two columns, and the
+  // generated names they take are not asserted here.
+  testSelect(
+      "SELECT (SELECT count(*) AS c FROM u), (SELECT count(*) AS c FROM u) "
+      "FROM t GROUP BY 1, 2",
+      matchScan("t").aggregate().project().output({"c", "c"}));
+}
+
 TEST_F(AggregationParserTest, having) {
   auto matcher = matchScan().aggregate().filter().project().output();
 
@@ -1203,8 +1289,7 @@ TEST_F(AggregationParserTest, groupByWithWindowFunction) {
   connector_->addTable("t", ROW({"a", "b"}, BIGINT()));
   connector_->addTable("u", ROW({"a", "c"}, BIGINT()));
   SCOPE_EXIT {
-    connector_->dropTableIfExists("t");
-    connector_->dropTableIfExists("u");
+    connector_->dropTablesIfExists({"t", "u"});
   };
 
   // Window function in SELECT with GROUP BY.
@@ -1556,8 +1641,7 @@ TEST_F(AggregationParserTest, columnCanonicalization) {
     connector_->addTable("t", ROW({"a", "b"}, BIGINT()));
     connector_->addTable("u", ROW({"a", "c"}, BIGINT()));
     SCOPE_EXIT {
-      connector_->dropTableIfExists("t");
-      connector_->dropTableIfExists("u");
+      connector_->dropTablesIfExists({"t", "u"});
     };
 
     testSelect(
