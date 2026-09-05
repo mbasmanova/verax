@@ -251,6 +251,17 @@ TEST_F(PrestoParserTest, schemaQualifiedColumnAccess) {
       parseSql("WITH c AS (SELECT 1 AS a) SELECT default.c.a FROM c"),
       "Cannot resolve column");
 
+  // Set-operation branches are independent scopes, so a relation used in more
+  // than one of them still answers to its schema-qualified name.
+  testSelect(
+      "SELECT default.nation.n_name FROM nation "
+      "UNION ALL "
+      "SELECT default.nation.n_name FROM nation",
+      matchScan()
+          .project()
+          .unionAll(matchScan().project().build())
+          .output({"n_name"}));
+
   // A view's name qualifies its columns the same way a table's does.
   connector_->createView(
       facebook::axiom::SchemaTableName{"default", "nation_view"},
