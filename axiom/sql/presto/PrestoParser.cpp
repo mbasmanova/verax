@@ -1820,16 +1820,23 @@ class RelationPlanner : public AstVisitor {
       lp::SetOperation op,
       const std::shared_ptr<QueryBody>& left,
       const std::shared_ptr<QueryBody>& right) {
-    left->accept(this);
+    // Set-operation branches are independent: each resolves against the
+    // enclosing scope, seeing neither the other's output columns nor the
+    // relations it brings into scope.
+    {
+      auto relationsGuard = scopedRelations();
+      left->accept(this);
+    }
 
     auto leftBuilder = builder_;
     // SQL set-operation output names come from the left input.
     auto leftDisplayNames = std::move(displayNames_.lastNames);
 
-    // Set-operation branches are independent: the right branch resolves against
-    // the enclosing scope, not the left branch's output columns.
     builder_ = newBuilder(leftBuilder->outerScope());
-    right->accept(this);
+    {
+      auto relationsGuard = scopedRelations();
+      right->accept(this);
+    }
     auto rightBuilder = builder_;
 
     builder_ = leftBuilder;
