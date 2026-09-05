@@ -16,6 +16,7 @@
 #include "axiom/sql/presto/SortProjection.h"
 
 #include "folly/container/F14Map.h"
+#include "folly/container/F14Set.h"
 #include "velox/parse/Expressions.h"
 #include "velox/parse/IExpr.h"
 
@@ -136,6 +137,12 @@ std::vector<size_t> SortProjection::widenProjections(
   std::vector<size_t> ordinals;
   ordinals.reserve(sortKeyExprs.size());
 
+  // Output names already claimed, by a SELECT item or by a key widened below.
+  folly::F14FastSet<std::string> claimedNames;
+  for (const auto& [name, _] : index.byAlias) {
+    claimedNames.insert(name);
+  }
+
   for (size_t i = 0; i < sortKeyExprs.size(); ++i) {
     auto ordinal = lookupSortKey(
         sortKeyExprs[i], preResolvedOrdinals[i], projections, index);
@@ -148,7 +155,17 @@ std::vector<size_t> SortProjection::widenProjections(
         replaceAliases(sortKeyExprs[i].expr(), index.byAlias, projections);
     ordinal = projections.size() + 1;
     index.byExpr.emplace(resolved, ordinal);
-    projections.emplace_back(std::move(resolved), sortKeyExprs[i].alias());
+
+    // A name another output column already carries would leave both
+    // unresolvable, so the column is projected unnamed and trimmed after the
+    // sort. Empty, not nullopt: nullopt makes a column reference an identity
+    // projection, which keeps the very name being avoided here.
+    std::optional<std::string> alias{sortKeyExprs[i].alias()};
+    if (alias.has_value() && !claimedNames.insert(alias.value()).second) {
+      alias = "";
+    }
+
+    projections.emplace_back(std::move(resolved), std::move(alias));
     ordinals.push_back(ordinal);
   }
 
