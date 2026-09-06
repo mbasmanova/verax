@@ -23,8 +23,12 @@ a local directory.
   - `$path` — file path of the data file.
   - `$bucket` — bucket number for bucketed tables.
   - `$file_size` — size of the data file in bytes.
-  - `$row_id` — a row's physical identity, used for row-level deletes. Not
-    implemented yet.
+  - `$row_number` — zero-based position of the row within its file.
+  - `$row_group_id` — name of the file the row was read from.
+  - `$row_id` — the two above plus the identity of the table and partition
+    version they are relative to, as one struct. Used for row-level deletes.
+    This connector has no versioning or partition ids, so it fills those fields
+    with zeroes and the table name.
 - Filter pushdown: the optimizer pushes filters down to the connector, which
   evaluates them during scan. This includes partition pruning (skipping
   entire files based on partition key values) and within-file filtering.

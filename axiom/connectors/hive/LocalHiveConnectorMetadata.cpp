@@ -316,6 +316,7 @@ std::shared_ptr<SplitSource> LocalHiveSplitManager::getSplitSource(
       std::move(selectedFiles),
       layout->fileFormat(),
       layout->connector()->connectorId(),
+      tableHandle->name(),
       layout->serdeParameters(),
       partitionType);
 }
@@ -343,6 +344,17 @@ folly::coro::Task<SplitBatch> LocalHiveSplitSource::co_getSplits(
                          .fileFormat(format_)
                          .start(splitWithinFile_ * splitSize)
                          .length(splitSize);
+
+      // $row_group_id names the file, matching the row group the reader puts
+      // in $row_id. This connector has no versioning or partition ids, so the
+      // file and row number carry the whole identity.
+      const auto lastSlash = filePath.rfind('/');
+      builder.infoColumn(
+          HiveTable::kRowGroupId,
+          lastSlash == std::string::npos ? filePath
+                                         : filePath.substr(lastSlash + 1));
+      builder.rowIdProperties(
+          {.metadataVersion = 0, .partitionId = 0, .tableGuid = tableName_});
 
       auto* info = files_[fileIdx_];
       if (info->bucketNumber.has_value()) {

@@ -122,7 +122,7 @@ std::vector<std::unique_ptr<const connector::Column>> makeColumns(
       partitionColumnNames.begin(), partitionColumnNames.end());
 
   std::vector<std::unique_ptr<const connector::Column>> columns;
-  columns.reserve(type->size() + 3 + (bucketed ? 1 : 0));
+  columns.reserve(type->size() + 5 + (bucketed ? 1 : 0));
 
   for (auto i = 0; i < type->size(); i++) {
     const bool isPartitionColumn = partitionColumns.contains(type->nameOf(i));
@@ -153,6 +153,12 @@ std::vector<std::unique_ptr<const connector::Column>> makeColumns(
     columns.emplace_back(
         std::make_unique<connector::Column>(
             HiveTable::kRowId, HiveTable::rowIdType(), /*hidden=*/true));
+    columns.emplace_back(
+        std::make_unique<connector::Column>(
+            HiveTable::kRowNumber, velox::BIGINT(), /*hidden=*/true));
+    columns.emplace_back(
+        std::make_unique<connector::Column>(
+            HiveTable::kRowGroupId, velox::VARCHAR(), /*hidden=*/true));
   }
 
   return columns;
@@ -271,6 +277,9 @@ velox::connector::hive::HiveColumnHandle::ColumnType columnType(
   if (column->hidden()) {
     if (column->name() == HiveTable::kRowId) {
       return velox::connector::hive::HiveColumnHandle::ColumnType::kRowId;
+    }
+    if (column->name() == HiveTable::kRowNumber) {
+      return velox::connector::hive::HiveColumnHandle::ColumnType::kRowIndex;
     }
     return velox::connector::hive::HiveColumnHandle::ColumnType::kSynthesized;
   }

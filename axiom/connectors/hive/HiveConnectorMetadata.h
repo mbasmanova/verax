@@ -107,6 +107,14 @@ class HiveTable : public Table {
   static constexpr auto kBucket = "$bucket";
   static constexpr auto kRowId = "$row_id";
 
+  /// Zero-based position of the row within the file it was read from. Unique
+  /// within a file, not within the table.
+  static constexpr auto kRowNumber = "$row_number";
+
+  /// Identifies the file a row was read from. With kRowNumber it addresses a
+  /// row physically, which is what a row-level delete records.
+  static constexpr auto kRowGroupId = "$row_group_id";
+
   /// Type of kRowId, a contract with the connector's execution side: it takes
   /// a 5-field ROW and addresses the fields by position, filling the first
   /// from the reader and the rest from the split. The two change together.
