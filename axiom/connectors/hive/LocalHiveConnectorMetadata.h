@@ -37,10 +37,12 @@ class LocalHiveSplitSource : public SplitSource {
       std::vector<const FileInfo*> files,
       velox::dwio::common::FileFormat format,
       const std::string& connectorId,
+      std::string tableName,
       std::unordered_map<std::string, std::string> serdeParameters,
       std::shared_ptr<PartitionType> partitionType)
       : format_(format),
         connectorId_(connectorId),
+        tableName_(std::move(tableName)),
         files_(std::move(files)),
         serdeParameters_(std::move(serdeParameters)),
         partitionType_(std::move(partitionType)) {}
@@ -53,6 +55,9 @@ class LocalHiveSplitSource : public SplitSource {
 
   const velox::dwio::common::FileFormat format_;
   const std::string connectorId_;
+  // Stands in for a table-unique id in $row_id. This connector has no
+  // versioning or partition ids, so the file and row number carry the identity.
+  const std::string tableName_;
   std::vector<const FileInfo*> files_;
   const std::unordered_map<std::string, std::string> serdeParameters_;
   // When non-null, used to assign a groupId to each split for bucketed
