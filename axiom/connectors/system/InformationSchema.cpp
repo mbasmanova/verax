@@ -15,7 +15,6 @@
  */
 #include "axiom/connectors/system/InformationSchema.h"
 
-#include <boost/algorithm/string/case_conv.hpp>
 #include "axiom/connectors/ConnectorMetadataRegistry.h"
 #include "axiom/connectors/system/SystemConnector.h"
 #include "velox/core/Expressions.h"
@@ -23,6 +22,7 @@
 #include "velox/type/Filter.h"
 
 namespace facebook::axiom::connector::system {
+
 namespace {
 
 velox::Variant nullVarchar() {
@@ -31,23 +31,6 @@ velox::Variant nullVarchar() {
 
 velox::Variant nullBigint() {
   return velox::Variant::null(velox::TypeKind::BIGINT);
-}
-
-// A type is reported in lower case, e.g. 'bigint'. A decimal is spelled
-// without a space, as a client comparing the text expects.
-std::string dataTypeName(const velox::TypePtr& type) {
-  if (type->isDecimal()) {
-    const auto [precision, scale] = velox::getDecimalPrecisionScale(*type);
-    return fmt::format("decimal({},{})", precision, scale);
-  }
-
-  // A complex type's rendering carries its field names, which lower-casing
-  // would rewrite, so only a scalar's name is lower-cased.
-  if (!type->isPrimitiveType()) {
-    return type->toString();
-  }
-
-  return boost::to_lower_copy(type->toString());
 }
 
 // Number of digits a numeric type holds: the count its range allows for
@@ -94,6 +77,9 @@ struct RowPosition {
   size_t columnIndex{0};
   TablePtr table;
   ViewPtr view;
+
+  // Spelling of the types kColumns reports. Never null while reading.
+  const InformationSchema::TypeNameFormatter* typeName{nullptr};
 
   const std::string& catalog() const {
     return handle->catalog();
@@ -206,8 +192,8 @@ const std::vector<RelationColumn>& columnsColumns() {
       {"data_type",
        velox::VARCHAR(),
        [](const RowPosition& position) {
-         return velox::Variant(
-             dataTypeName(position.rowType()->childAt(position.columnIndex)));
+         return velox::Variant((*position.typeName)(
+             *position.rowType()->childAt(position.columnIndex)));
        }},
       // Comments are not tracked.
       {"comment", velox::VARCHAR(), alwaysNull},
@@ -474,13 +460,14 @@ class InformationSchemaDataSource : public velox::connector::DataSource {
       const velox::RowTypePtr& outputType,
       std::shared_ptr<const InformationSchemaTableHandle> tableHandle,
       const velox::connector::ColumnHandleMap& columnHandles,
-      velox::memory::MemoryPool* pool)
+      velox::memory::MemoryPool* pool,
+      const InformationSchema::TypeNameFormatter& typeName)
       : outputType_{outputType},
         tableHandle_{std::move(tableHandle)},
         relation_{relationColumns(tableHandle_->relation())},
         metadata_{ConnectorMetadataRegistry::get(tableHandle_->catalog())},
         outputColumns_{findOutputColumns(outputType, columnHandles)},
-        position_{.handle = tableHandle_.get()},
+        position_{.handle = tableHandle_.get(), .typeName = &typeName},
         pool_{pool} {}
 
   void addSplit(
@@ -798,13 +785,18 @@ TablePtr InformationSchema::findTable(
   return std::make_shared<InformationSchemaTable>(tableName, schema, serving);
 }
 
+std::string InformationSchema::defaultTypeName(const velox::Type& type) {
+  return type.toString();
+}
+
 std::unique_ptr<velox::connector::DataSource> InformationSchema::makeDataSource(
     const std::shared_ptr<const InformationSchemaTableHandle>& tableHandle,
     const velox::RowTypePtr& outputType,
     const velox::connector::ColumnHandleMap& columnHandles,
-    velox::memory::MemoryPool* pool) {
+    velox::memory::MemoryPool* pool,
+    const TypeNameFormatter& typeName) {
   return std::make_unique<InformationSchemaDataSource>(
-      outputType, tableHandle, columnHandles, pool);
+      outputType, tableHandle, columnHandles, pool, typeName);
 }
 
 } // namespace facebook::axiom::connector::system
