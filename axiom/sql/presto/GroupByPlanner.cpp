@@ -519,11 +519,6 @@ void GroupByPlanner::plan(
   // are included in the project node. Must happen before builder_->project().
   auto sortingKeyOrdinals = resolveSortOrdinals(orderBy);
 
-  // Apply HAVING filter, then project.
-  if (filter_.has_value()) {
-    builder_->filter(filter_.value());
-  }
-
   if (!isIdentityProjection()) {
     builder_->project(projections_);
   }
@@ -829,6 +824,25 @@ void GroupByPlanner::rewritePostAggregateExprs() {
     return planMarkers(rewriteIExpr(expr), exprPlanner_, planned);
   };
 
+  // HAVING takes the same two steps as the clauses below, but a column it
+  // cannot resolve is an error rather than a name to leave alone. It is
+  // applied here, before any window function: a window sees only the groups
+  // HAVING keeps.
+  if (filter_.has_value()) {
+    auto substituted = replaceInputs(
+        filter_.value().expr(),
+        keyInputs,
+        aggregateInputs,
+        [](const core::FieldAccessExpr& expr) {
+          VELOX_USER_FAIL(
+              "HAVING clause cannot reference column: {}", expr.name());
+        });
+    filter_ = lp::ExprApi(
+        planMarkers(std::move(substituted), exprPlanner_, planned),
+        filter_->alias());
+    builder_->filter(filter_.value());
+  }
+
   // Project nested window functions (e.g. sum(sum(a)) OVER () inside
   // sum(a) / sum(sum(a)) OVER ()) and add replacements to keyInputs. These
   // reach PlanBuilder here rather than through the rewrite below, so they are
@@ -851,22 +865,6 @@ void GroupByPlanner::rewritePostAggregateExprs() {
       item = lp::ExprApi(substituteAndPlan(item.expr()), item.name());
     }
   };
-
-  // HAVING takes the same two steps as the clauses below, but a column it
-  // cannot resolve is an error rather than a name to leave alone.
-  if (filter_.has_value()) {
-    auto substituted = replaceInputs(
-        filter_.value().expr(),
-        keyInputs,
-        aggregateInputs,
-        [](const core::FieldAccessExpr& expr) {
-          VELOX_USER_FAIL(
-              "HAVING clause cannot reference column: {}", expr.name());
-        });
-    filter_ = lp::ExprApi(
-        planMarkers(std::move(substituted), exprPlanner_, planned),
-        filter_->alias());
-  }
 
   for (auto& item : projections_) {
     rewriteExpr(item);

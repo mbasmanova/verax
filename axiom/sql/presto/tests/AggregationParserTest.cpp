@@ -76,6 +76,17 @@ TEST_F(AggregationParserTest, aggregateInWindowFrameBound) {
       matchScan("nation").aggregate().project().output());
 }
 
+// HAVING is applied before the window functions, so a window nested in an
+// expression aggregates only the rows HAVING keeps.
+TEST_F(AggregationParserTest, havingBeforeWindow) {
+  connector_->addTable("t", ROW({"a", "b"}, BIGINT()));
+
+  testSelect(
+      "SELECT a, count(*) / sum(count(*)) OVER (PARTITION BY a) "
+      "FROM t GROUP BY a, b HAVING count(*) > 1",
+      matchScan("t").aggregate().filter().project().project().output());
+}
+
 // On a scalar function, DISTINCT is ignored while FILTER and ORDER BY are
 // rejected, matching Presto.
 TEST_F(AggregationParserTest, modifiersOnScalarFunction) {
