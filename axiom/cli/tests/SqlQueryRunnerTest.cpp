@@ -523,8 +523,8 @@ TEST_F(SqlQueryRunnerTest, showCreateTable) {
     EXPECT_EQ(
         ddl,
         "CREATE TABLE test.\"default\".\"t1\" (\n"
-        "   id INTEGER,\n"
-        "   name VARCHAR\n"
+        "   id integer,\n"
+        "   name varchar\n"
         ")");
   }
 
@@ -538,8 +538,8 @@ TEST_F(SqlQueryRunnerTest, showCreateTable) {
     EXPECT_EQ(
         ddl,
         "CREATE TABLE test.\"default\".\"t2\" (\n"
-        "   a INTEGER,\n"
-        "   b VARCHAR\n"
+        "   a integer,\n"
+        "   b varchar\n"
         ")\n"
         "WITH (\n"
         "   hidden = ARRAY['h1', 'h2']\n"

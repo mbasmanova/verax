@@ -862,10 +862,14 @@ velox::RowVectorPtr FunctionsDataSource::buildResults() {
 SystemConnector::SystemConnector(
     const std::string& id,
     const QueryInfoProvider* queryInfoProvider,
-    const SessionPropertiesProvider* sessionPropertiesProvider)
+    const SessionPropertiesProvider* sessionPropertiesProvider,
+    InformationSchema::TypeNameFormatter typeName)
     : Connector(id),
       queryInfoProvider_(queryInfoProvider),
-      sessionPropertiesProvider_(sessionPropertiesProvider) {}
+      sessionPropertiesProvider_(sessionPropertiesProvider),
+      typeName_(std::move(typeName)) {
+  VELOX_CHECK(typeName_, "Type name formatter must be callable");
+}
 
 void SystemConnector::registerSerDe() {
   SystemTableHandle::registerSerDe();
@@ -886,7 +890,8 @@ std::unique_ptr<velox::connector::DataSource> SystemConnector::createDataSource(
         infoSchemaHandle,
         outputType,
         columnHandles,
-        connectorQueryCtx->memoryPool());
+        connectorQueryCtx->memoryPool(),
+        typeName_);
   }
 
   const auto* systemHandle = tableHandle->asChecked<SystemTableHandle>();

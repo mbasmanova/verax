@@ -22,6 +22,7 @@
 #include "axiom/connectors/system/SystemConnectorMetadata.h"
 #include "axiom/optimizer/tests/QueryTestBase.h"
 #include "velox/connectors/ConnectorRegistry.h"
+#include "velox/functions/prestosql/types/PrestoTypes.h"
 #include "velox/vector/tests/utils/VectorTestBase.h"
 
 namespace facebook::axiom::connector::system {
@@ -40,15 +41,7 @@ class InformationSchemaTest : public optimizer::test::QueryTestBase {
     useV2_ = true;
     optimizer::test::QueryTestBase::SetUp();
 
-    systemConnector_ = std::make_shared<SystemConnector>(
-        std::string(kSystemConnectorId),
-        /*queryInfoProvider=*/nullptr,
-        /*sessionPropertiesProvider=*/nullptr);
-    velox::connector::ConnectorRegistry::global().insert(
-        std::string(kSystemConnectorId), systemConnector_);
-    ConnectorMetadataRegistry::global().insert(
-        std::string(kSystemConnectorId),
-        std::make_shared<SystemConnectorMetadata>(systemConnector_.get()));
+    registerSystemConnector(velox::PrestoTypes::displayName);
 
     testConnector_->createView(
         SchemaTableName{kDefaultSchema, "nation_names"},
@@ -63,6 +56,28 @@ class InformationSchemaTest : public optimizer::test::QueryTestBase {
     systemConnector_.reset();
 
     optimizer::test::QueryTestBase::TearDown();
+  }
+
+  // Registers the system connector, replacing one already registered, with
+  // 'typeName' spelling the types information_schema.columns reports.
+  void registerSystemConnector(InformationSchema::TypeNameFormatter typeName) {
+    if (systemConnector_ != nullptr) {
+      ConnectorMetadataRegistry::global().erase(
+          std::string(kSystemConnectorId));
+      velox::connector::ConnectorRegistry::global().erase(
+          std::string(kSystemConnectorId));
+    }
+
+    systemConnector_ = std::make_shared<SystemConnector>(
+        std::string(kSystemConnectorId),
+        /*queryInfoProvider=*/nullptr,
+        /*sessionPropertiesProvider=*/nullptr,
+        std::move(typeName));
+    velox::connector::ConnectorRegistry::global().insert(
+        std::string(kSystemConnectorId), systemConnector_);
+    ConnectorMetadataRegistry::global().insert(
+        std::string(kSystemConnectorId),
+        std::make_shared<SystemConnectorMetadata>(systemConnector_.get()));
   }
 
   std::vector<RowVectorPtr> run(std::string_view sql) {
@@ -92,6 +107,45 @@ TEST_F(InformationSchemaTest, view) {
           makeFlatVector<std::string>({"SELECT n_name FROM nation"}),
           makeNullableFlatVector<std::string>({std::nullopt}),
       }),
+      results.at(0));
+}
+
+TEST_F(InformationSchemaTest, complexColumnTypes) {
+  testConnector_->addTable(
+      "u",
+      ROW(
+          {{"a", ARRAY(REAL())},
+           {"m", MAP(VARCHAR(), BIGINT())},
+           {"r", ROW({{"x", BIGINT()}, {"y", VARCHAR()}})}}));
+
+  auto results =
+      run("SELECT column_name, data_type "
+          "FROM information_schema.columns "
+          "WHERE table_schema = 'default' AND table_name = 'u' "
+          "ORDER BY ordinal_position");
+  velox::test::assertEqualVectors(
+      makeRowVector({
+          makeFlatVector<std::string>({"a", "m", "r"}),
+          makeFlatVector<std::string>(
+              {"array(real)",
+               "map(varchar, bigint)",
+               "row(\"x\" bigint, \"y\" varchar)"}),
+      }),
+      results.at(0));
+}
+
+TEST_F(InformationSchemaTest, customTypeName) {
+  // A dialect that writes types differently registers its own spelling.
+  registerSystemConnector(
+      [](const velox::Type& /*type*/) { return "list(float)"; });
+
+  testConnector_->addTable("v", ROW({{"a", ARRAY(REAL())}}));
+
+  auto results =
+      run("SELECT data_type FROM information_schema.columns "
+          "WHERE table_schema = 'default' AND table_name = 'v'");
+  velox::test::assertEqualVectors(
+      makeRowVector({makeFlatVector<std::string>({"list(float)"})}),
       results.at(0));
 }
 

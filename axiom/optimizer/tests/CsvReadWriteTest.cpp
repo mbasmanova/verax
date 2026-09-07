@@ -70,8 +70,8 @@ TEST_P(CsvReadWriteTest, createTextTable) {
   EXPECT_EQ(
       showCreateTable("text_test"),
       "CREATE TABLE test-hive.\"default\".\"text_test\" (\n"
-      "   id INTEGER,\n"
-      "   name VARCHAR\n"
+      "   id integer,\n"
+      "   name varchar\n"
       ")\n"
       "WITH (\n"
       "   compression_kind = 'none',\n"
@@ -95,8 +95,8 @@ TEST_P(CsvReadWriteTest, createCsvTable) {
   EXPECT_EQ(
       showCreateTable("csv_test"),
       "CREATE TABLE test-hive.\"default\".\"csv_test\" (\n"
-      "   id INTEGER,\n"
-      "   name VARCHAR\n"
+      "   id integer,\n"
+      "   name varchar\n"
       ")\n"
       "WITH (\n"
       "   field.delim = ',',\n"

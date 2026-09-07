@@ -20,6 +20,7 @@
 #include <optional>
 
 #include "axiom/common/SchemaTableName.h"
+#include "axiom/connectors/system/InformationSchema.h"
 #include "velox/connectors/Connector.h"
 
 namespace facebook::axiom::connector::system {
@@ -219,10 +220,16 @@ struct SystemSplit : public velox::connector::ConnectorSplit {
 /// for reading live query metadata and session properties.
 class SystemConnector : public velox::connector::Connector {
  public:
+  /// @param typeName Spelling of the types information_schema.columns
+  /// reports. Defaults to 'InformationSchema::defaultTypeName'; a SQL dialect
+  /// whose clients read these names registers its own, e.g. Presto's
+  /// 'array(real)'.
   SystemConnector(
       const std::string& id,
       const QueryInfoProvider* queryInfoProvider,
-      const SessionPropertiesProvider* sessionPropertiesProvider = nullptr);
+      const SessionPropertiesProvider* sessionPropertiesProvider = nullptr,
+      InformationSchema::TypeNameFormatter typeName =
+          InformationSchema::defaultTypeName);
 
   ~SystemConnector() override = default;
 
@@ -246,6 +253,7 @@ class SystemConnector : public velox::connector::Connector {
  private:
   const QueryInfoProvider* queryInfoProvider_;
   const SessionPropertiesProvider* sessionPropertiesProvider_;
+  const InformationSchema::TypeNameFormatter typeName_;
 };
 
 } // namespace facebook::axiom::connector::system

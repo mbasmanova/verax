@@ -35,6 +35,7 @@ target_link_libraries(
   velox_dwio_common_test_utils
   velox_expression
   velox_function_registry
+  velox_presto_types
   velox_vector_test_lib
   GTest::gmock
   GTest::gtest
