@@ -289,3 +289,12 @@ FROM (
     GROUP BY d
 ) AS t
 CROSS JOIN UNNEST(vals) AS n(v)
+----
+-- HAVING drops a group before the window functions run, so a window nested in
+-- an expression sums only the groups that survive it.
+SELECT a, count(*) AS c,
+    1.0 * count(*) / sum(count(*)) OVER (PARTITION BY a) AS frac
+FROM (VALUES (1, 1), (1, 1), (1, 2),
+             (2, 3), (2, 3), (2, 4)) AS t(a, b)
+GROUP BY a, b
+HAVING count(*) > 1
