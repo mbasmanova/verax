@@ -61,7 +61,7 @@ with all dependencies pre-installed. Dependencies are resolved as `SYSTEM`.
 
 Installs minimal dependencies from the Velox setup scripts:
 
-- **Homebrew packages** (`install_velox_deps_from_brew`): gtest, icu4c,
+- **Homebrew packages** (`install_velox_deps_from_brew`): icu4c,
   libevent, libsodium, lz4, openssl, protobuf, simdjson, snappy, xz,
   xxhash, zstd, bison, flex, ninja, cmake.
 - **Built from source** (`install_gflags`, `install_glog`,

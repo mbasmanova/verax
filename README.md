@@ -321,7 +321,7 @@ Axiom integrates Velox as a Git submodule, referencing a specific commit of the
 Velox repository. The Velox badge at the top of this README shows the current
 commit and how far behind it is from Velox main.
 
-[See what changed since the current Velox commit.](https://github.com/facebookincubator/velox/compare/3ea8fd7bc74e244e21585975a79e58ccf7233b32...main)
+[See what changed since the current Velox commit.](https://github.com/facebookincubator/velox/compare/e527416d7053ed5ce31613b834ea6df1bd3a7862...main)
 <!-- pre-commit check-velox-readme validates the SHA above matches the submodule -->
 
 Advance Velox when your changes depend on code in Velox that
@@ -337,3 +337,44 @@ git add velox
 Build and run tests to ensure everything works. The pre-commit hook will
 automatically update the Velox compare link in this README. Submit a PR, get
 it approved and merged.
+
+### Test Against an Unlanded Velox Change
+
+CI clones the submodule from the URL in `.gitmodules`, so it cannot see a commit
+that only exists in a Velox fork. Testing a Velox pull request against Axiom
+therefore takes four extra steps.
+
+**1. Put the change on a Velox branch and push it to your Velox fork.** Branch
+from Velox main. If an unrelated breakage on main hides the result, pass the
+commit Axiom pins to `git checkout -b` in place of `origin/main` — `git ls-tree
+HEAD velox`, run from the Axiom root, prints it — and accept that the version
+bump goes untested.
+
+```bash
+cd velox
+git fetch origin main
+git checkout -b <velox-test-branch> origin/main
+git cherry-pick <commit>          # or apply the patch
+git push https://github.com/<your-github-user>/velox.git <velox-test-branch>
+cd ..
+```
+
+**2. Record the new submodule commit and point `.gitmodules` at your fork.**
+Step 1 already left the submodule on the commit to record.
+
+```bash
+git add velox
+# Replace facebookincubator/velox with <your-github-user>/velox.
+$EDITOR .gitmodules
+git add .gitmodules
+git commit -m "test: Point Velox at <the change>"
+```
+
+**3. Push the branch to your Axiom fork and open a pull request inside the
+fork**, against the fork's `main`. The workflows run on `pull_request` and on
+pushes to `main` only, so pushing a branch does not start them, and keeping the
+pull request in the fork leaves the experiment off the upstream repository.
+
+**4. Revert the submodule commit and the `.gitmodules` URL** before opening a
+real pull request. The change lands in Velox first; Axiom picks it up the next
+time the version is advanced.
