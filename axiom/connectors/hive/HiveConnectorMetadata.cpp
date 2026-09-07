@@ -117,7 +117,8 @@ std::vector<std::unique_ptr<const connector::Column>> makeColumns(
     const velox::RowTypePtr& type,
     bool bucketed,
     bool includeHiddenColumns,
-    const std::vector<std::string>& partitionColumnNames = {}) {
+    const std::vector<std::string>& partitionColumnNames = {},
+    folly::F14FastMap<std::string, std::string> columnComments = {}) {
   const folly::F14FastSet<std::string> partitionColumns(
       partitionColumnNames.begin(), partitionColumnNames.end());
 
@@ -126,6 +127,7 @@ std::vector<std::unique_ptr<const connector::Column>> makeColumns(
 
   for (auto i = 0; i < type->size(); i++) {
     const bool isPartitionColumn = partitionColumns.contains(type->nameOf(i));
+    auto it = columnComments.find(type->nameOf(i));
     columns.emplace_back(
         std::make_unique<connector::Column>(
             type->nameOf(i),
@@ -134,7 +136,11 @@ std::vector<std::unique_ptr<const connector::Column>> makeColumns(
             /*includeInExplainIo=*/isPartitionColumn,
             /*extraInfo=*/
             isPartitionColumn ? std::optional<std::string>(kPartitionKey)
-                              : std::nullopt));
+                              : std::nullopt,
+            /*comment=*/
+            it == columnComments.end()
+                ? std::nullopt
+                : std::optional<std::string>(std::move(it->second))));
   }
 
   if (includeHiddenColumns) {
@@ -171,14 +177,16 @@ HiveTable::HiveTable(
     bool bucketed,
     bool includeHiddenColumns,
     folly::F14FastMap<std::string, velox::Variant> options,
-    std::vector<std::string> partitionColumnNames)
+    std::vector<std::string> partitionColumnNames,
+    folly::F14FastMap<std::string, std::string> columnComments)
     : Table(
           std::move(name),
           hive::makeColumns(
               type,
               bucketed,
               includeHiddenColumns,
-              partitionColumnNames),
+              partitionColumnNames,
+              std::move(columnComments)),
           std::move(options)) {}
 
 std::vector<std::string> HiveTable::ioColumnPriority() const {

@@ -39,6 +39,7 @@ target_link_libraries(
   axiom_query_id_generator
   velox_connector_registry
   velox_presto_query_config
+  velox_presto_types
   velox_query_config_provider
   axiom_runner_local_runner
   axiom_optimizer_multifragment_plan
@@ -55,7 +56,6 @@ target_link_libraries(
   velox_exec
   velox_exec_test_lib
   velox_function_registry
-  velox_presto_types
   velox_dwio_common
   velox_dwio_parquet_reader
   velox_dwio_native_parquet_reader

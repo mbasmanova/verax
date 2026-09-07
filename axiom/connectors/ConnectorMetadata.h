@@ -179,17 +179,22 @@ class Column {
   /// @param extraInfo What the connector says about the column's role beyond
   /// its name and type, in its own words, e.g. 'partition key'. Reported to a
   /// client as given.
+  /// @param comment The column's description, as the catalog records it.
+  /// Nullopt when the catalog holds none, which a client distinguishes from
+  /// an empty one.
   Column(
       std::string name,
       velox::TypePtr type,
       bool hidden,
       bool includeInExplainIo = false,
-      std::optional<std::string> extraInfo = std::nullopt)
+      std::optional<std::string> extraInfo = std::nullopt,
+      std::optional<std::string> comment = std::nullopt)
       : name_{std::move(name)},
         type_{std::move(type)},
         hidden_{hidden},
         includeInExplainIo_{includeInExplainIo},
         extraInfo_{std::move(extraInfo)},
+        comment_{std::move(comment)},
         defaultValue_{velox::Variant::null(type_->kind())} {
     VELOX_CHECK_NOT_NULL(type_);
     VELOX_CHECK(!name_.empty());
@@ -202,12 +207,14 @@ class Column {
       bool hidden,
       velox::Variant defaultValue,
       bool includeInExplainIo = false,
-      std::optional<std::string> extraInfo = std::nullopt)
+      std::optional<std::string> extraInfo = std::nullopt,
+      std::optional<std::string> comment = std::nullopt)
       : name_{std::move(name)},
         type_{std::move(type)},
         hidden_{hidden},
         includeInExplainIo_{includeInExplainIo},
         extraInfo_{std::move(extraInfo)},
+        comment_{std::move(comment)},
         defaultValue_{std::move(defaultValue)} {
     VELOX_CHECK_NOT_NULL(type_);
     VELOX_CHECK(!name_.empty());
@@ -250,6 +257,12 @@ class Column {
     return defaultValue_;
   }
 
+  /// The column's description, as the catalog records it. std::nullopt when
+  /// the catalog holds none.
+  const std::optional<std::string>& comment() const {
+    return comment_;
+  }
+
   /// What the connector says about the column's role beyond its name and
   /// type, in its own words, e.g. 'partition key'. std::nullopt when it says
   /// nothing.
@@ -281,6 +294,7 @@ class Column {
   const bool hidden_;
   const bool includeInExplainIo_;
   const std::optional<std::string> extraInfo_;
+  const std::optional<std::string> comment_;
   const velox::Variant defaultValue_;
 
   // The latest element added to 'allStats_'.
