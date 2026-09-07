@@ -255,6 +255,7 @@ target_link_libraries(
   axiom_optimizer_tests_sql_test_base
   axiom_optimizer_tests_sql_file
   velox_connector_registry
+  velox_presto_types
   velox_dwio_common_test_utils
   GTest::gtest
 )

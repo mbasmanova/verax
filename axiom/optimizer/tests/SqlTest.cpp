@@ -38,6 +38,7 @@
 #include "velox/dwio/dwrf/RegisterDwrfWriter.h"
 #include "velox/exec/tests/utils/HiveConnectorTestBase.h"
 #include "velox/exec/tests/utils/LocalExchangeSource.h"
+#include "velox/functions/prestosql/types/PrestoTypes.h"
 #include "velox/serializers/PrestoSerializer.h"
 
 namespace facebook::axiom::optimizer::test {
@@ -240,12 +241,15 @@ class SqlTest : public SqlTestBase {
       metadata = suiteConnector_->metadata().get();
     }
 
-    // The system connector serves information_schema for every catalog.
+    // The system connector serves information_schema for every catalog. The
+    // tests are written in Presto SQL, so types are spelled the way the CLI
+    // and Axel spell them.
     suiteSystemConnector_ =
         std::make_shared<connector::system::SystemConnector>(
             std::string(kSystemConnectorId),
             /*queryInfoProvider=*/nullptr,
-            /*sessionPropertiesProvider=*/nullptr);
+            /*sessionPropertiesProvider=*/nullptr,
+            velox::PrestoTypes::displayName);
     velox::connector::ConnectorRegistry::global().insert(
         std::string(kSystemConnectorId), suiteSystemConnector_);
     connector::ConnectorMetadataRegistry::global().insert(

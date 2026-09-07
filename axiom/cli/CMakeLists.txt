@@ -55,6 +55,7 @@ target_link_libraries(
   velox_exec
   velox_exec_test_lib
   velox_function_registry
+  velox_presto_types
   velox_dwio_common
   velox_dwio_parquet_reader
   velox_dwio_native_parquet_reader

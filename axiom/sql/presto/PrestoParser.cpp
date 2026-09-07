@@ -2528,7 +2528,7 @@ SqlStatementPtr parseShowCreateTable(
       ddl << ",\n";
     }
     ddl << "   " << schema->nameOf(i) << " "
-        << PrestoTypes::toSql(schema->childAt(i));
+        << PrestoTypes::displayName(*schema->childAt(i));
   }
   ddl << "\n)";
 

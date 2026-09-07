@@ -15,6 +15,8 @@
  */
 #pragma once
 
+#include <functional>
+
 #include "axiom/connectors/ConnectorMetadata.h"
 
 namespace facebook::axiom::connector::system {
@@ -93,6 +95,17 @@ class InformationSchemaTableHandle
 /// served for one catalog.
 class InformationSchema {
  public:
+  /// Spells a column's type for information_schema.columns.data_type. A SQL
+  /// dialect that writes types differently registers its own; see
+  /// 'SystemConnector'.
+  using TypeNameFormatter = std::function<std::string(const velox::Type&)>;
+
+  /// The default 'TypeNameFormatter': the type as Velox renders it, e.g.
+  /// 'BIGINT', 'ARRAY<REAL>', 'ROW<x:BIGINT,y:VARCHAR>'. A dialect whose
+  /// clients read these names registers a formatter that writes them its own
+  /// way.
+  static std::string defaultTypeName(const velox::Type& type);
+
   /// Prefix under which a catalog's relations live in this connector's schema
   /// namespace: the relations of catalog 'foo' are the tables of schema
   /// '$info_schema@foo', so the catalog whose metadata produces the rows is
@@ -137,11 +150,14 @@ class InformationSchema {
   /// metadata of the catalog it names. Rows come in batches of the size the
   /// scan asks for: a relation may describe many tables, and kColumns returns
   /// a row per column of each.
+  /// @param typeName Spelling of the types kColumns reports. Must outlive the
+  /// returned data source.
   static std::unique_ptr<velox::connector::DataSource> makeDataSource(
       const std::shared_ptr<const InformationSchemaTableHandle>& tableHandle,
       const velox::RowTypePtr& outputType,
       const velox::connector::ColumnHandleMap& columnHandles,
-      velox::memory::MemoryPool* pool);
+      velox::memory::MemoryPool* pool,
+      const TypeNameFormatter& typeName);
 };
 
 } // namespace facebook::axiom::connector::system

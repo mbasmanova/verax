@@ -39,6 +39,7 @@
 #include "velox/dwio/parquet/RegisterParquetWriter.h"
 #include "velox/dwio/text/RegisterTextReader.h"
 #include "velox/dwio/text/RegisterTextWriter.h"
+#include "velox/functions/prestosql/types/PrestoTypes.h"
 
 namespace facebook::axiom {
 
@@ -235,10 +236,13 @@ void Connectors::registerSystemConnector(
   sessionPropertiesProvider_ =
       std::make_unique<SessionConfigPropertiesProvider>(sessionConfig);
 
+  // The CLI speaks Presto SQL, so information_schema spells types the way
+  // Presto does.
   auto connector = std::make_shared<connector::system::SystemConnector>(
       connectorId,
       /*queryInfoProvider=*/nullptr,
-      sessionPropertiesProvider_.get());
+      sessionPropertiesProvider_.get(),
+      velox::PrestoTypes::displayName);
   registerConnector(connector);
   connector::ConnectorMetadataRegistry::global().insert(
       connector->connectorId(),
