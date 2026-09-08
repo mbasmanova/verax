@@ -194,6 +194,84 @@ TEST_P(PlanTest, rejectedFilters) {
   }
 }
 
+TEST_P(PlanTest, booleanSimplification) {
+  if (!useV2_) {
+    GTEST_SKIP() << "Only supported by the V2 optimizer";
+  }
+
+  testConnector_->addTable("numbers", ROW({"a", "b", "c"}, BIGINT()));
+
+  struct TestCase {
+    std::string expression;
+    // Expected filter. std::nullopt means the filter is statically true and is
+    // removed; kFalse and kNull mean it admits no rows.
+    std::optional<std::string> expectedFilter;
+    // Expected projection of the same expression.
+    std::string expectedProjection;
+  };
+
+  const std::string kFalse{"false"};
+  const std::string kNull{"null"};
+
+  // Templated dashboards generate predicates whose branches are selected by
+  // comparing literals, leaving branches that reference columns the query
+  // never needs.
+  std::vector<TestCase> testCases = {
+      {"a > 1 and true", "a > 1", "a > 1"},
+      {"a > 1 or false", "a > 1", "a > 1"},
+      {"a > 1 and false", kFalse, "false"},
+      {"a > 1 or true", std::nullopt, "true"},
+      {"(a > 1 and true) and (b > 2 and true)",
+       "a > 1 and b > 2",
+       "a > 1 and b > 2"},
+      {"('x' in ('x') and a > 1) or ('y' in ('x') and b > 2)",
+       "a > 1",
+       "a > 1"},
+      // A null argument is not dropped. A filter passes only on TRUE, so it
+      // then admits no rows, while a projection keeps the expression.
+      {"a > 1 and cast(null as boolean)", kNull, "a > 1 and null"},
+  };
+
+  for (const auto& [expr, expectedFilter, expectedProjection] : testCases) {
+    {
+      SCOPED_TRACE("Filter: " + expr);
+      auto logicalPlan = lp::PlanBuilder(makeContext())
+                             .tableScan("numbers")
+                             .filter(expr)
+                             .map({"a + 2"})
+                             .build();
+
+      std::shared_ptr<velox::core::PlanMatcher> matcher;
+      if (!expectedFilter.has_value()) {
+        matcher = matchScan("numbers").project().build();
+      } else if (
+          expectedFilter.value() == kFalse || expectedFilter.value() == kNull) {
+        // A filter that folds to a constant admitting no rows leaves nothing
+        // to read, so the scan is replaced with an empty Values.
+        matcher = matchValues().project().build();
+      } else {
+        matcher = matchScan("numbers")
+                      .filter(expectedFilter.value())
+                      .project()
+                      .build();
+      }
+
+      AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
+    }
+
+    {
+      SCOPED_TRACE("Project: " + expr);
+      auto logicalPlan = lp::PlanBuilder(makeContext())
+                             .tableScan("numbers")
+                             .map({expr})
+                             .build();
+
+      auto matcher = matchScan("numbers").project({expectedProjection}).build();
+      AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
+    }
+  }
+}
+
 TEST_P(PlanTest, specialFormConstantFold) {
   testConnector_->addTable("numbers", ROW({"a", "b", "c"}, BIGINT()));
 

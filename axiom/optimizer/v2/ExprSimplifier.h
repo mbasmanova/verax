@@ -61,6 +61,12 @@ class ExprSimplifier {
   bool simplifyFilter(ExprCP predicate, ExprVector& into);
 
  private:
+  // Simplifies an AND or OR call with boolean literal arguments. Returns
+  // `expr` unchanged for any other call. Looks only at the call's own
+  // arguments: callers translate bottom-up, so nested calls are already
+  // simplified.
+  ExprCP tryFoldConjunct(ExprCP expr);
+
   // Folds `expr` to a `Literal` when it has no column refs and the
   // evaluator produces a single constant value. Otherwise returns
   // `expr` unchanged.
