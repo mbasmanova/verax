@@ -180,7 +180,8 @@ class TestTable : public Table {
       const velox::RowTypePtr& hiddenColumns,
       TestConnector* connector,
       const folly::F14FastMap<std::string, velox::Variant>& options,
-      std::optional<TestBucketSpec> bucketSpec = std::nullopt);
+      std::optional<TestBucketSpec> bucketSpec = std::nullopt,
+      folly::F14FastMap<std::string, std::string> columnComments = {});
 
   const std::vector<const TableLayout*>& layouts() const override {
     return layouts_;
@@ -560,11 +561,14 @@ class TestConnectorMetadata : public ConnectorMetadata {
 
   /// Registers a TestTable in the connector metadata. Throws if the name is
   /// already taken. When 'bucketSpec' is set, appended rows are hash-bucketed.
+  /// @param columnComments Descriptions for the named columns, as a catalog
+  /// records them. A column the map does not name has none.
   std::shared_ptr<TestTable> addTable(
       SchemaTableName tableName,
       const velox::RowTypePtr& schema,
       const velox::RowTypePtr& hiddenColumns,
-      std::optional<TestBucketSpec> bucketSpec = std::nullopt);
+      std::optional<TestBucketSpec> bucketSpec = std::nullopt,
+      folly::F14FastMap<std::string, std::string> columnComments = {});
 
   /// Appends data to the table with the specified name.
   void appendData(
@@ -861,19 +865,22 @@ class TestConnector : public velox::connector::Connector {
       SchemaTableName tableName,
       const velox::RowTypePtr& schema,
       const velox::RowTypePtr& hiddenColumns = velox::ROW({}),
-      std::optional<TestBucketSpec> bucketSpec = std::nullopt);
+      std::optional<TestBucketSpec> bucketSpec = std::nullopt,
+      folly::F14FastMap<std::string, std::string> columnComments = {});
 
   /// Convenience overload that uses kDefaultSchema as the schema.
   std::shared_ptr<TestTable> addTable(
       const std::string& name,
       const velox::RowTypePtr& schema,
       const velox::RowTypePtr& hiddenColumns = velox::ROW({}),
-      std::optional<TestBucketSpec> bucketSpec = std::nullopt) {
+      std::optional<TestBucketSpec> bucketSpec = std::nullopt,
+      folly::F14FastMap<std::string, std::string> columnComments = {}) {
     return addTable(
         {std::string(kDefaultSchema), name},
         schema,
         hiddenColumns,
-        std::move(bucketSpec));
+        std::move(bucketSpec),
+        std::move(columnComments));
   }
 
   /// Appends data to the table with the specified name.

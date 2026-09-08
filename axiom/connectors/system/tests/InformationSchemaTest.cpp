@@ -134,6 +134,29 @@ TEST_F(InformationSchemaTest, complexColumnTypes) {
       results.at(0));
 }
 
+TEST_F(InformationSchemaTest, columnComments) {
+  testConnector_->addTable(
+      "u",
+      ROW({"a", "b"}, BIGINT()),
+      /*hiddenColumns=*/ROW({}),
+      /*bucketSpec=*/std::nullopt,
+      {{"a", "the first column"}});
+
+  // A column the catalog describes reports its description; one it does not
+  // reports null, which a client tells apart from an empty description.
+  auto results =
+      run("SELECT column_name, comment FROM information_schema.columns "
+          "WHERE table_schema = 'default' AND table_name = 'u' "
+          "ORDER BY ordinal_position");
+  velox::test::assertEqualVectors(
+      makeRowVector({
+          makeFlatVector<std::string>({"a", "b"}),
+          makeNullableFlatVector<std::string>(
+              {"the first column", std::nullopt}),
+      }),
+      results.at(0));
+}
+
 TEST_F(InformationSchemaTest, customTypeName) {
   // A dialect that writes types differently registers its own spelling.
   registerSystemConnector(

@@ -137,7 +137,8 @@ class HiveTable : public Table {
       bool bucketed,
       bool includeHiddenColumns,
       folly::F14FastMap<std::string, velox::Variant> options,
-      std::vector<std::string> partitionColumnNames = {});
+      std::vector<std::string> partitionColumnNames = {},
+      folly::F14FastMap<std::string, std::string> columnComments = {});
 
   /// Recognizes the ds/ts partition convention and returns those columns
   /// finest-grained first (ts before ds).

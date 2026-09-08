@@ -96,17 +96,24 @@ folly::F14FastSet<std::string> extractExplainIoColumns(
 // includeInExplainIo.
 std::vector<std::unique_ptr<const Column>> makeColumnsWithExplainIo(
     const velox::RowTypePtr& schema,
-    const folly::F14FastSet<std::string>& explainIoColumns) {
+    const folly::F14FastSet<std::string>& explainIoColumns,
+    folly::F14FastMap<std::string, std::string> columnComments) {
   std::vector<std::unique_ptr<const Column>> columns;
   columns.reserve(schema->size());
   for (auto i = 0; i < schema->size(); ++i) {
+    auto it = columnComments.find(schema->nameOf(i));
     columns.push_back(
         std::make_unique<const Column>(
             schema->nameOf(i),
             schema->childAt(i),
             /*hidden=*/false,
             /*includeInExplainIo=*/
-            explainIoColumns.contains(schema->nameOf(i))));
+            explainIoColumns.contains(schema->nameOf(i)),
+            /*extraInfo=*/std::nullopt,
+            /*comment=*/
+            it == columnComments.end()
+                ? std::nullopt
+                : std::optional<std::string>(std::move(it->second))));
   }
   return columns;
 }
@@ -130,9 +137,11 @@ namespace {
 std::vector<std::unique_ptr<const Column>> makeTestTableColumns(
     const velox::RowTypePtr& schema,
     const velox::RowTypePtr& hiddenColumns,
-    const folly::F14FastMap<std::string, velox::Variant>& options) {
+    const folly::F14FastMap<std::string, velox::Variant>& options,
+    folly::F14FastMap<std::string, std::string> columnComments) {
   return appendHiddenColumns(
-      makeColumnsWithExplainIo(schema, extractExplainIoColumns(options)),
+      makeColumnsWithExplainIo(
+          schema, extractExplainIoColumns(options), std::move(columnComments)),
       hiddenColumns);
 }
 
@@ -150,10 +159,15 @@ TestTable::TestTable(
     const velox::RowTypePtr& hiddenColumns,
     TestConnector* connector,
     const folly::F14FastMap<std::string, velox::Variant>& options,
-    std::optional<TestBucketSpec> bucketSpec)
+    std::optional<TestBucketSpec> bucketSpec,
+    folly::F14FastMap<std::string, std::string> columnComments)
     : Table(
           std::move(name),
-          makeTestTableColumns(schema, hiddenColumns, options),
+          makeTestTableColumns(
+              schema,
+              hiddenColumns,
+              options,
+              std::move(columnComments)),
           options),
       connector_(connector),
       collectStatistics_(extractCollectStatistics(options)),
@@ -784,7 +798,8 @@ std::shared_ptr<TestTable> TestConnectorMetadata::addTable(
     SchemaTableName tableName,
     const velox::RowTypePtr& schema,
     const velox::RowTypePtr& hiddenColumns,
-    std::optional<TestBucketSpec> bucketSpec) {
+    std::optional<TestBucketSpec> bucketSpec,
+    folly::F14FastMap<std::string, std::string> columnComments) {
   schemas_.insert(tableName.schema);
   auto table = std::make_shared<TestTable>(
       tableName,
@@ -792,7 +807,8 @@ std::shared_ptr<TestTable> TestConnectorMetadata::addTable(
       hiddenColumns,
       connector_,
       folly::F14FastMap<std::string, velox::Variant>{},
-      std::move(bucketSpec));
+      std::move(bucketSpec),
+      std::move(columnComments));
   auto [it, ok] = tables_.emplace(std::move(tableName), std::move(table));
   VELOX_CHECK(ok, "Table already exists: {}", it->first.toString());
   return it->second;
@@ -1111,9 +1127,14 @@ std::shared_ptr<TestTable> TestConnector::addTable(
     SchemaTableName tableName,
     const velox::RowTypePtr& schema,
     const velox::RowTypePtr& hiddenColumns,
-    std::optional<TestBucketSpec> bucketSpec) {
+    std::optional<TestBucketSpec> bucketSpec,
+    folly::F14FastMap<std::string, std::string> columnComments) {
   return metadata_->addTable(
-      std::move(tableName), schema, hiddenColumns, std::move(bucketSpec));
+      std::move(tableName),
+      schema,
+      hiddenColumns,
+      std::move(bucketSpec),
+      std::move(columnComments));
 }
 
 bool TestConnector::dropTableIfExists(const SchemaTableName& name) {

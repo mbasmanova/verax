@@ -101,6 +101,22 @@ struct RowPosition {
     return table != nullptr || view != nullptr;
   }
 
+  // True when the row describes a view. A view's columns come from its type,
+  // with no connector column behind them.
+  bool isView() const {
+    return view != nullptr;
+  }
+
+  // The column kColumns is describing. Only a table has one, so a caller
+  // checks 'isView' first.
+  const Column& column() const {
+    VELOX_CHECK_NOT_NULL(table, "A view has no columns to describe");
+    const auto& name = rowType()->nameOf(columnIndex);
+    const auto* found = table->findColumn(name);
+    VELOX_CHECK_NOT_NULL(found, "Column not found: {}", name);
+    return *found;
+  }
+
   // Columns of the table being described.
   const velox::RowTypePtr& rowType() const {
     VELOX_CHECK(resolved(), "No table to describe");
@@ -195,23 +211,28 @@ const std::vector<RelationColumn>& columnsColumns() {
          return velox::Variant((*position.typeName)(
              *position.rowType()->childAt(position.columnIndex)));
        }},
-      // Comments are not tracked.
-      {"comment", velox::VARCHAR(), alwaysNull},
+      {"comment",
+       velox::VARCHAR(),
+       [](const RowPosition& position) {
+         if (position.isView()) {
+           // A view's columns carry no description.
+           return nullVarchar();
+         }
+         const auto& comment = position.column().comment();
+         return comment.has_value() ? velox::Variant(comment.value())
+                                    : nullVarchar();
+       }},
       {"extra_info",
        velox::VARCHAR(),
        [](const RowPosition& position) {
-         if (position.table == nullptr) {
+         if (position.isView()) {
            // A view's columns have no connector-assigned role.
            return nullVarchar();
          }
-
          // The connector says what a column's role is, if anything.
-         const auto& name = position.rowType()->nameOf(position.columnIndex);
-         const auto* column = position.table->findColumn(name);
-         VELOX_CHECK_NOT_NULL(column, "Column not found: {}", name);
-         return column->extraInfo().has_value()
-             ? velox::Variant(column->extraInfo().value())
-             : nullVarchar();
+         const auto& extraInfo = position.column().extraInfo();
+         return extraInfo.has_value() ? velox::Variant(extraInfo.value())
+                                      : nullVarchar();
        }},
       {"precision",
        velox::BIGINT(),
