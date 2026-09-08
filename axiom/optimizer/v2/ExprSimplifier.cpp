@@ -116,10 +116,63 @@ bool tryFactorOr(
   return true;
 }
 
+// Returns the value of `expr` if it is a non-null boolean literal.
+std::optional<bool> constantBoolean(ExprCP expr) {
+  if (!expr->is(PlanType::kLiteralExpr)) {
+    return std::nullopt;
+  }
+  const auto& variant = expr->as<Literal>()->literal();
+  if (variant.isNull() || variant.kind() != velox::TypeKind::BOOLEAN) {
+    return std::nullopt;
+  }
+  return variant.value<bool>();
+}
+
 } // namespace
 
 ExprCP ExprSimplifier::simplify(ExprCP expr) {
-  return tryFoldConstant(expr);
+  return tryFoldConjunct(tryFoldConstant(expr));
+}
+
+ExprCP ExprSimplifier::tryFoldConjunct(ExprCP expr) {
+  if (!expr->is(PlanType::kCallExpr)) {
+    return expr;
+  }
+  const auto* call = expr->as<Call>();
+  const bool isAnd = call->name() == SpecialFormCallNames::kAnd;
+  if (!isAnd && call->name() != SpecialFormCallNames::kOr) {
+    return expr;
+  }
+
+  ExprVector remaining;
+  remaining.reserve(call->args().size());
+  for (ExprCP arg : call->args()) {
+    const auto value = constantBoolean(arg);
+    if (!value.has_value()) {
+      remaining.push_back(arg);
+    } else if (value.value() != isAnd) {
+      // AND is false as soon as one argument is false, even if the others are
+      // null or throw; OR is the mirror image.
+      return arg;
+    }
+  }
+
+  if (remaining.size() == call->args().size()) {
+    return expr;
+  }
+  if (remaining.empty()) {
+    return builder_.makeLiteral(
+        velox::Variant(isAnd), toType(velox::BOOLEAN()));
+  }
+  if (remaining.size() == 1) {
+    return remaining.front();
+  }
+  const FunctionSet functions = Call::unionArgFunctions(
+      functionBits(call->name(), /*specialForm=*/true), remaining);
+  // A literal argument is never the one that determined the call's
+  // cardinality, so dropping it leaves `value()` valid.
+  return builder_.makeCall(
+      call->name(), call->value(), std::move(remaining), functions);
 }
 
 bool ExprSimplifier::simplifyFilter(ExprCP predicate, ExprVector& into) {
