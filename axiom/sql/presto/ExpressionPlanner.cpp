@@ -1585,12 +1585,13 @@ lp::ExprApi ExpressionPlanner::toExpr(
       }
 
       // A qualified (multi-part) name denotes a connector-defined SQL-invoked
-      // function. Encode it with a leading '.' so downstream resolution can
-      // distinguish it from a builtin; a plain builtin keeps its bare name.
+      // function; encode it with a leading '.' so downstream resolution can
+      // distinguish it from a builtin, which keeps its bare name. Both are
+      // lower-cased because function names are case-insensitive.
       auto callExpr = lp::Call(
           call->name()->parts().size() > 1
-              ? "." + call->name()->fullyQualifiedName()
-              : funcName,
+              ? canonicalizeName("." + call->name()->fullyQualifiedName())
+              : lowerFuncName,
           args);
 
       if (call->window() != nullptr) {
