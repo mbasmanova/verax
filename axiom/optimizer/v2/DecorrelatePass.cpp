@@ -709,58 +709,59 @@ class Decorrelator : public NodeRewriter<> {
 
     NodeCP leftSide = joinBody->left();
     NodeCP rightSide = joinBody->right();
-    ExprVector applyBFilter;
-    if (joinBody->isLeft()) {
-      applyBFilter = std::move(joinPredicate);
-    }
-    appendAll(applyBFilter, accumulatedFilter);
 
     if (joinBody->isInner()) {
       return joinPeelLeftInner(
-          node, input, leftSide, rightSide, std::move(applyBFilter));
+          node, input, leftSide, rightSide, std::move(accumulatedFilter));
     }
 
-    // Body is kLeft. Chain: applyA over A, then applyB over B with
-    // applyA's output as input. joinPredicate becomes applyB.filter
-    // (the LEFT JOIN's ON condition); kLeft pad on no match preserves
-    // the body LEFT JOIN's semantics.
-
-    ColumnCP applyAIncludeMarker = makeIncludeColumn();
-    NodeCP applyA = makeLeftLeg(
+    return joinPeelLeftOuter(
+        node,
         input,
         leftSide,
+        rightSide,
+        std::move(joinPredicate),
+        std::move(accumulatedFilter));
+  }
+
+  // Outer kLeft over a body kLeft Join. A row the join predicate rejects is
+  // still a body row, the left side preserved with NULL right columns, so
+  // only the predicate rides on applyB. A row the accumulated filter rejects
+  // is not a body row, so the filter decides which rows the per-rn
+  // pad-collapse keeps, and an outer left with none keeps one pad.
+  NodeCP joinPeelLeftOuter(
+      ApplyCP node,
+      NodeCP input,
+      NodeCP leftSide,
+      NodeCP rightSide,
+      ExprVector joinPredicate,
+      ExprVector accumulatedFilter) {
+    ColumnCP rowId = makeIdColumn();
+    NodeCP taggedInput = tagOuterRows(input, rowId);
+
+    // The accumulated filter can cut a multi-row body down to one, so the
+    // scalar bound is checked once after the collapse, not per leg.
+    ColumnCP markA = makeIncludeColumn();
+    NodeCP applyA = makeLeftLeg(
+        taggedInput,
+        leftSide,
         /*filter=*/ExprVector{},
-        node->enforceSingleRow(),
-        applyAIncludeMarker);
+        /*enforceSingleRow=*/false,
+        markA);
 
     NodeCP applyB = makeLeftLeg(
         applyA,
         rightSide,
-        std::move(applyBFilter),
-        node->enforceSingleRow(),
+        std::move(joinPredicate),
+        /*enforceSingleRow=*/false,
         makeIncludeColumn());
 
-    NodeCP decorrelatedChain = rewrite(applyB);
+    NodeCP chain = rewrite(applyB);
 
-    // Final Project: shape to outer Apply's outputColumns. Body is
-    // kLeft, so the inner LEFT JOIN's right-side pad rows are legitimate
-    // body output (left preserved with NULL right cols) and stay
-    // included; applyA's marker alone gates inclusion.
-    ExprCP includeMarker = applyAIncludeMarker;
-    ExprVector finalExprs;
-    finalExprs.reserve(node->outputColumns().size());
-    for (ColumnCP outputColumn : node->outputColumns()) {
-      if (outputColumn == node->includeMarker()) {
-        finalExprs.push_back(includeMarker);
-      } else {
-        finalExprs.push_back(outputColumn);
-      }
-    }
-    return builder().make<Project>({
-        decorrelatedChain,
-        std::move(finalExprs),
-        node->outputColumns(),
-    });
+    ExprCP matched = accumulatedFilter.empty()
+        ? markA
+        : exprFactory_.makeAnd(markA, exprFactory_.andAll(accumulatedFilter));
+    return collapsePadRows(node, input, chain, rowId, matched);
   }
 
   // Outer kLeft over a body kLeftSemiProject: the body emits A's rows plus a
@@ -851,10 +852,10 @@ class Decorrelator : public NodeRewriter<> {
     }
 
     // A body row counts when A matched and the mark filter accepts it.
-    ExprCP matchedExpr = applyAIncludeMarker;
-    for (ExprCP conjunct : markFilter) {
-      matchedExpr = exprFactory_.makeAnd(matchedExpr, conjunct);
-    }
+    ExprCP matchedExpr = markFilter.empty()
+        ? applyAIncludeMarker
+        : exprFactory_.makeAnd(
+              applyAIncludeMarker, exprFactory_.andAll(markFilter));
     return collapsePadRows(node, input, chain, rowId, matchedExpr);
   }
 

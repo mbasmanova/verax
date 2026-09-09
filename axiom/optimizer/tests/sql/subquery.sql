@@ -971,6 +971,12 @@ SELECT t.k,
              (SELECT x FROM v WHERE v.k = t.k) r)
 FROM (VALUES (1), (2)) AS t(k)
 ----
+-- A WHERE above a LEFT JOIN removes rows the join padded, so an outer whose
+-- rows it all rejects reads NULL rather than the padded left value.
+-- error_v1: Nested correlation across subquery boundaries is not supported yet
+SELECT u.a, (SELECT x.a FROM (SELECT a FROM u u2 WHERE u2.a = u.a) x LEFT JOIN v v3 ON v3.a = x.a WHERE v3.a < 0)
+FROM u
+----
 -- Duplicate outer rows with the same correlation value stay
 -- independent: each produces its own result row.
 -- error_v1: Nested correlation across subquery boundaries is not supported yet
