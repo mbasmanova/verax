@@ -15,7 +15,9 @@
  */
 
 #include "axiom/sql/presto/GroupByPlanner.h"
+#include <algorithm>
 #include <set>
+#include <span>
 #include "axiom/sql/presto/ColumnsExpansion.h"
 #include "axiom/sql/presto/PrestoSqlError.h"
 #include "axiom/sql/presto/SortProjection.h"
@@ -98,18 +100,102 @@ lp::ExprApi rewriteWindowExpr(
       item.name());
 }
 
+// Returns true if any of 'names' occurs free in 'expr', that is as a column
+// reference not bound by a lambda within 'expr'. A name is read where it is a
+// column reference, so 's.f' reads 's', not 'f'.
+bool readsAnyOf(const core::IExpr& expr, std::span<const std::string> names) {
+  if (names.empty()) {
+    return false;
+  }
+
+  if (expr.is(core::IExpr::Kind::kFieldAccess)) {
+    const auto* field = expr.as<core::FieldAccessExpr>();
+    if (field->isRootColumn()) {
+      return std::ranges::find(names, field->name()) != names.end();
+    }
+    // A qualified reference reads its root, which the walk below reaches.
+  }
+
+  if (expr.is(core::IExpr::Kind::kLambda)) {
+    // The lambda binds its own arguments, so an occurrence of one inside its
+    // body is that argument, not the name being looked for.
+    const auto* lambda = expr.as<core::LambdaExpr>();
+    std::vector<std::string> notBound;
+    for (const auto& name : names) {
+      if (std::ranges::find(lambda->arguments(), name) ==
+          lambda->arguments().end()) {
+        notBound.push_back(name);
+      }
+    }
+    return readsAnyOf(*lambda->body(), notBound);
+  }
+
+  return std::ranges::any_of(expr.inputs(), [&](const auto& input) {
+    return readsAnyOf(*input, names);
+  });
+}
+
 // Given an expression, and pairs of search-and-replace sub-expressions,
 // produces a new expression with sub-expressions replaced. Uses keyReplacements
 // for grouping keys and aggregateReplacements for aggregates. If
 // 'onUnreplacedLeaf' is provided, invokes the callback for any
 // FieldAccessExpr that is not in the replacement map and whose children were
 // not replaced either. Used to detect invalid column references in HAVING.
+//
+// Descends into lambda bodies. A lambda's arguments bind inside its body, so a
+// replacement whose expression reads one of them stands for something else
+// there: it is not substituted, and a leaf reading one is not reported.
 core::ExprPtr replaceInputs(
     const core::ExprPtr& expr,
     const ExprMap<core::ExprPtr>& keyReplacements,
     const AggregateExprMap& aggregateReplacements,
     const std::function<void(const core::FieldAccessExpr&)>& onUnreplacedLeaf =
-        nullptr) {
+        nullptr);
+
+// Rewrites the body of 'lambda' under the capture rule described on
+// 'replaceInputs'.
+core::ExprPtr replaceLambdaBodyInputs(
+    const core::LambdaExpr& lambda,
+    const ExprMap<core::ExprPtr>& keyReplacements,
+    const AggregateExprMap& aggregateReplacements,
+    const std::function<void(const core::FieldAccessExpr&)>& onUnreplacedLeaf) {
+  const auto& arguments = lambda.arguments();
+
+  ExprMap<core::ExprPtr> bodyKeyReplacements;
+  for (const auto& [key, replacement] : keyReplacements) {
+    if (!readsAnyOf(*key, arguments)) {
+      bodyKeyReplacements.emplace(key, replacement);
+    }
+  }
+
+  AggregateExprMap bodyAggregateReplacements;
+  for (const auto& [aggregate, replacement] : aggregateReplacements) {
+    if (!readsAnyOf(*aggregate, arguments)) {
+      bodyAggregateReplacements.emplace(aggregate, replacement);
+    }
+  }
+
+  std::function<void(const core::FieldAccessExpr&)> onUnreplacedBodyLeaf;
+  if (onUnreplacedLeaf) {
+    onUnreplacedBodyLeaf = [&](const core::FieldAccessExpr& field) {
+      if (!readsAnyOf(field, arguments)) {
+        onUnreplacedLeaf(field);
+      }
+    };
+  }
+
+  return replaceInputs(
+      lambda.body(),
+      bodyKeyReplacements,
+      bodyAggregateReplacements,
+      onUnreplacedBodyLeaf);
+}
+
+core::ExprPtr replaceInputs(
+    const core::ExprPtr& expr,
+    const ExprMap<core::ExprPtr>& keyReplacements,
+    const AggregateExprMap& aggregateReplacements,
+    const std::function<void(const core::FieldAccessExpr&)>& onUnreplacedLeaf) {
   // First try grouping keys.
   auto keyIt = keyReplacements.find(expr);
   if (keyIt != keyReplacements.end()) {
@@ -120,6 +206,18 @@ core::ExprPtr replaceInputs(
   auto aggIt = aggregateReplacements.find(expr);
   if (aggIt != aggregateReplacements.end()) {
     return aggIt->second;
+  }
+
+  // A lambda's body is not one of its inputs.
+  if (expr->is(core::IExpr::Kind::kLambda)) {
+    const auto* lambda = expr->as<core::LambdaExpr>();
+    auto newBody = replaceLambdaBodyInputs(
+        *lambda, keyReplacements, aggregateReplacements, onUnreplacedLeaf);
+    if (newBody.get() == lambda->body().get()) {
+      return expr;
+    }
+    return std::make_shared<core::LambdaExpr>(
+        lambda->arguments(), std::move(newBody));
   }
 
   std::vector<core::ExprPtr> newInputs;

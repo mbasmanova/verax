@@ -980,6 +980,64 @@ TEST_F(AggregationParserTest, scalarSubqueryRepeatedInSelectAndGroupBy) {
       matcher);
 }
 
+// A lambda argument binds the names it reads, so a grouping key that reads one
+// stands for something else inside the body and is not substituted for it.
+TEST_F(AggregationParserTest, groupingKeyInLambdaBody) {
+  // The body reads the grouping key, which is substituted.
+  testSelect(
+      "SELECT n_regionkey AS r, "
+      "transform(ARRAY[1, 2], x -> n_regionkey) AS t "
+      "FROM nation GROUP BY 1",
+      matchScan("nation")
+          .aggregate({"n_regionkey"}, {})
+          .project({"r", "transform(array_constructor(1, 2), x -> r)"})
+          .output({"r", "t"}));
+
+  // The argument shadows the key's name.
+  testSelect(
+      "SELECT n_regionkey AS r, "
+      "transform(ARRAY[1, 2], n_regionkey -> (n_regionkey + 1)) AS t "
+      "FROM nation GROUP BY 1",
+      matchScan("nation")
+          .aggregate({"n_regionkey"}, {})
+          .project(
+              {"r",
+               "transform(array_constructor(1, 2), n_regionkey -> n_regionkey + 1)"})
+          .output({"r", "t"}));
+
+  // The argument appears inside a compound key.
+  testSelect(
+      "SELECT n_regionkey + 1 AS r, "
+      "transform(ARRAY[1, 2], n_regionkey -> (n_regionkey + 1)) AS t "
+      "FROM nation GROUP BY 1",
+      matchScan("nation")
+          .aggregate({"n_regionkey + 1::bigint"}, {})
+          .project(
+              {"r",
+               "transform(array_constructor(1, 2), n_regionkey -> n_regionkey + 1)"})
+          .output({"r", "t"}));
+
+  // A name bound inside the key is not the argument that shares its spelling,
+  // so the key still stands for the same value in the body.
+  testSelect(
+      "SELECT transform(ARRAY[1, 2], x -> n_regionkey) AS r, "
+      "transform(ARRAY[1, 2], x -> transform(ARRAY[1, 2], x -> n_regionkey)) AS t "
+      "FROM nation GROUP BY 1",
+      matchScan("nation")
+          .aggregate(
+              {"transform(array_constructor(1, 2), x -> n_regionkey)"}, {})
+          .project({"r", "transform(array_constructor(1, 2), x -> r)"})
+          .output({"r", "t"}));
+
+  // An aggregate inside a lambda is not the one the query computes per group.
+  VELOX_ASSERT_THROW(
+      parseSql(
+          "SELECT sum(n_regionkey), "
+          "transform(ARRAY[1, 2], n_regionkey -> sum(n_regionkey)) "
+          "FROM nation GROUP BY n_regionkey"),
+      "Scalar function doesn't exist: sum");
+}
+
 TEST_F(AggregationParserTest, correlatedSubqueryWithGroupBy) {
   connector_->addTable("t", ROW("x", INTEGER()));
   connector_->addTable("u", ROW("x", INTEGER()));

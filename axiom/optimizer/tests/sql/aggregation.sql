@@ -137,3 +137,18 @@ SELECT a, array_agg(b ORDER BY b) FILTER (WHERE b < 100) FROM t GROUP BY a
 ----
 -- sum and count do not depend on input order, so the ORDER BY has no effect.
 SELECT sum(b ORDER BY a), count(c ORDER BY b) FROM t
+----
+-- A lambda body reads a grouping key it captures.
+-- duckdb: SELECT a, [a + 10, a + 20] FROM t GROUP BY a
+SELECT a AS g, transform(ARRAY[10, 20], x -> (x + a)) FROM t GROUP BY 1
+----
+-- A lambda argument with the same name as a grouping key shadows it inside
+-- the body, so the body reads the argument.
+-- duckdb: SELECT a, [11, 12] FROM t GROUP BY a
+SELECT a AS g, transform(ARRAY[1, 2], a -> (a + 10)) FROM t GROUP BY 1
+----
+-- An argument binds a bare name, so it does not shadow a struct field that
+-- happens to use that name.
+-- duckdb: SELECT 1, [2, 3]
+SELECT s.f AS g, transform(ARRAY[1, 2], f -> (f + s.f))
+FROM (VALUES (row(1 AS f))) AS v(s) GROUP BY 1
