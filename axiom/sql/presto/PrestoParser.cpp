@@ -528,7 +528,7 @@ class RelationPlanner : public AstVisitor {
   // left side through the builder's outer scope.
   void processLateral(const Lateral& lateral) {
     processQuery(lateral.query()->as<Query>());
-    displayNames_.accumulate(*builder_, /*relationAlias=*/std::nullopt);
+    finishDerivedRelation();
   }
 
   void processQueryBody(const QueryBodyPtr& queryBody) {
@@ -865,12 +865,21 @@ class RelationPlanner : public AstVisitor {
     builder_->as(alias);
   }
 
+  // A query used as a relation exposes only its column names. The relation
+  // aliases used inside it stay inside, so the enclosing query may reuse one.
+  void finishDerivedRelation() {
+    // Output naming reads the names the inner query produced, so it runs
+    // before those names are narrowed to the enclosing query's scope.
+    displayNames_.accumulate(*builder_, /*relationAlias=*/std::nullopt);
+    builder_->clearAliases();
+  }
+
   void processTableSubquery(const TableSubquery& subquery) {
     auto query = subquery.query();
 
     if (query->is(NodeType::kQuery)) {
       processQuery(query->as<Query>());
-      displayNames_.accumulate(*builder_, /*relationAlias=*/std::nullopt);
+      finishDerivedRelation();
       return;
     }
 
