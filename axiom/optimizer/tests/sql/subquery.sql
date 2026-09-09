@@ -971,6 +971,24 @@ SELECT t.k,
              (SELECT x FROM v WHERE v.k = t.k) r)
 FROM (VALUES (1), (2)) AS t(k)
 ----
+-- A correlated scalar subquery over a join that carries the correlation in
+-- its ON clause. Every outer has a matching pair.
+SELECT u.a, (SELECT v2.a FROM v v2 JOIN v v3 ON v3.a = v2.a AND v2.a = u.a * 2)
+FROM u
+----
+-- The same shape where some outers have no matching pair, which reads NULL.
+SELECT u.a, (SELECT v2.a FROM v v2 JOIN v v3 ON v3.a = v2.a AND v2.a = u.a * 4)
+FROM u
+----
+-- Both the ON predicate and a WHERE above the join decide which pairs
+-- contribute.
+SELECT u.a, (SELECT v2.a FROM v v2 JOIN v v3 ON v3.a = v2.a AND v2.a = u.a * 2 WHERE v3.a < 8)
+FROM u
+----
+-- An ON predicate reading only one side still selects the pairs.
+SELECT u.a, (SELECT v2.a FROM v v2 JOIN v v3 ON v3.a = v2.a AND v3.a < 8 AND v2.a = u.a * 2)
+FROM u
+----
 -- A WHERE above a LEFT JOIN removes rows the join padded, so an outer whose
 -- rows it all rejects reads NULL rather than the padded left value.
 -- error_v1: Nested correlation across subquery boundaries is not supported yet

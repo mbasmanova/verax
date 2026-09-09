@@ -220,13 +220,11 @@ match-less outer while keeping every real row:
    real rows survive; a match-less outer keeps its first row (a pad)
    and drops the rest.
 
-This covers the cross-join case (empty Join-node `predicate`): a side
-being empty is exactly the 0-match case, and the collapse reduces the
-duplicate pads to one. A cross-side predicate written as a WHERE above
-the cross join rides in `applyB.filter`, so `anyMatch` correctly
-handles the resulting mixed matches; only a predicate on the Join node
-itself (explicit `JOIN ... ON`) is currently NYI (see §"Cases
-covered").
+A side being empty is exactly the 0-match case, and the collapse
+reduces the duplicate pads to one. A predicate rides in
+`applyB.filter`, whether written on the Join node itself
+(`JOIN ... ON`) or as a WHERE above it, so `anyMatch` correctly
+handles the resulting mixed matches.
 
 ### ESR interaction
 
@@ -249,14 +247,14 @@ Combinations across (outerKind, joinKind):
 | outerKind | joinKind | Status |
 |---|---|---|
 | kLeft (ESR=true) | kInner cross-join | **in scope** (per-rn pad-collapse + `EnforceDistinct(rn)`) |
-| kLeft (ESR=true) | kInner with predicate | designed (per-rn pad-collapse + `EnforceDistinct(rn)`); **NYI loud** in code |
+| kLeft (ESR=true) | kInner with predicate | **in scope** (per-rn pad-collapse + `EnforceDistinct(rn)`) |
 | kLeft (ESR=true) | kLeft | **in scope** |
 | kLeft (ESR=true) | kRight | **in scope** (via swap) |
 | kLeft (ESR=true) | kFull | NYI loud |
 | kLeft (ESR=true) | kLeftSemiProject | **in scope** |
 | kLeft (ESR=true) | kLeftSemiFilter / kAnti | NYI loud |
 | kLeft (ESR=false) | kInner cross-join | **in scope** (per-rn pad-collapse; see §"INNER pad-row drop") |
-| kLeft (ESR=false) | kInner with predicate | designed (per-rn pad-collapse; see §"INNER pad-row drop"); **NYI loud** in code |
+| kLeft (ESR=false) | kInner with predicate | **in scope** (per-rn pad-collapse; see §"INNER pad-row drop") |
 | kLeft (ESR=false) | kLeft / kRight | **in scope** |
 | kLeft (ESR=false) | kFull | NYI loud |
 | kLeft (ESR=false) | kLeftSemiProject | **in scope** |

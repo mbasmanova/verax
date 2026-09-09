@@ -680,10 +680,9 @@ class Decorrelator : public NodeRewriter<> {
     return conjuncts;
   }
 
-  // Outer Apply is kLeft (scalar). Supports a kLeftSemiProject body, a kLeft
-  // body with predicate, and a kInner cross-join body with none. kInner with
-  // a predicate (requires per-rn pad-collapse over matches) and the remaining
-  // kinds NYI loud.
+  // Outer Apply is kLeft (scalar). Supports a kLeftSemiProject body and a
+  // kLeft or kInner body, with or without a predicate. The remaining kinds
+  // NYI loud.
   NodeCP joinPeelLeft(
       ApplyCP node,
       NodeCP input,
@@ -701,18 +700,18 @@ class Decorrelator : public NodeRewriter<> {
           "yet implemented: {}",
           joinBody->joinTypeName());
     }
-    if (joinBody->isInner() && !joinPredicate.empty()) {
-      VELOX_NYI(
-          "Decorrelate joinPeel: outer kLeft over kInner Join with "
-          "predicate not yet implemented (needs per-rn pad-collapse)");
-    }
 
     NodeCP leftSide = joinBody->left();
     NodeCP rightSide = joinBody->right();
 
     if (joinBody->isInner()) {
+      // A row the join predicate rejects is not a body row, and neither is
+      // one the accumulated filter rejects, so both ride on applyB and the
+      // collapse drops what they reject.
+      ExprVector applyBFilter = std::move(joinPredicate);
+      appendAll(applyBFilter, accumulatedFilter);
       return joinPeelLeftInner(
-          node, input, leftSide, rightSide, std::move(accumulatedFilter));
+          node, input, leftSide, rightSide, std::move(applyBFilter));
     }
 
     return joinPeelLeftOuter(
@@ -859,12 +858,12 @@ class Decorrelator : public NodeRewriter<> {
     return collapsePadRows(node, input, chain, rowId, matchedExpr);
   }
 
-  // Outer kLeft over a body kInner cross-join. The leg cascade uses
-  // kLeft legs so outers and left rows survive, but that over-produces
-  // pad rows when one side is empty and the other has >1 rows, which
-  // would duplicate the outer. Restore `outer LEFT JOIN (A x B)`
-  // semantics with a per-rn pad-collapse: keep every real (a, b) row
-  // and, for an outer with no match, keep exactly one pad row. See
+  // Outer kLeft over a body kInner Join. The leg cascade uses kLeft legs
+  // so outers and left rows survive, but that over-produces pad rows: from
+  // an empty side, and from a row applyB's filter rejects. Restore
+  // `outer LEFT JOIN (A JOIN B)` semantics with a per-rn pad-collapse:
+  // keep every real (a, b) row and, for an outer with no match, keep
+  // exactly one pad row. See
   // Decorrelate-join-rules.md §"INNER pad-row drop".
   NodeCP joinPeelLeftInner(
       ApplyCP node,
