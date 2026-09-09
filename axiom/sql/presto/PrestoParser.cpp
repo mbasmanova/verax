@@ -693,6 +693,15 @@ class RelationPlanner : public AstVisitor {
     if (auto hidden = ctes_.hide(name)) {
       const auto& entry = hidden.entry();
       VELOX_CHECK_NOT_NULL(entry.definingScope);
+      VELOX_CHECK_NOT_NULL(entry.siblings);
+
+      // The body sees only the CTEs declared before this one.
+      std::vector<CteScope::Hidden> laterSiblings;
+      laterSiblings.reserve(entry.siblings->size() - entry.index - 1);
+      for (auto i = entry.index + 1; i < entry.siblings->size(); ++i) {
+        laterSiblings.push_back(ctes_.hide((*entry.siblings)[i]));
+      }
+
       const auto& definingScope = *entry.definingScope;
       auto relationsGuard = scopedRelations(&definingScope);
       // The body resolves in the scope where the WITH is written. The relation
@@ -1623,24 +1632,34 @@ class RelationPlanner : public AstVisitor {
       // Names must be unique within a single WITH list. A nested WITH may
       // still reuse an enclosing name -- that is shadowing, handled below.
       std::unordered_set<std::string> namesInList;
+      std::vector<std::string> names;
+      names.reserve(with->queries().size());
       for (const auto& withQuery : with->queries()) {
-        const auto cteName = canonicalizeIdentifier(*withQuery->name());
+        auto cteName = canonicalizeIdentifier(*withQuery->name());
         AXIOM_PRESTO_SEMANTIC_CHECK(
             namesInList.insert(cteName).second,
             withQuery->location(),
             cteName,
             "WITH query name specified more than once: {}",
             cteName);
+        names.push_back(std::move(cteName));
+      }
+
+      auto siblings =
+          std::make_shared<const std::vector<std::string>>(std::move(names));
+      for (size_t i = 0; i < siblings->size(); ++i) {
+        const auto& withQuery = with->queries().at(i);
         // A CTE in a WITH RECURSIVE block is only recursive if its body
         // actually references its own name. Otherwise it's a standard union.
         bool selfReferential = false;
         if (with->isRecursive()) {
           selfReferential = presto::RecursiveCteValidator::referencesCte(
-              *withQuery->query(), cteName);
+              *withQuery->query(), (*siblings)[i]);
         }
         ctes_.bind(
-            cteName,
-            CteScope::Entry{withQuery, selfReferential, definingScope});
+            (*siblings)[i],
+            CteScope::Entry{
+                withQuery, selfReferential, definingScope, siblings, i});
       }
     }
 

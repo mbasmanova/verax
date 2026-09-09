@@ -633,6 +633,13 @@ TEST_F(PrestoParserTest, withMultipleCtes) {
       "     b AS (SELECT * FROM a) "
       "SELECT * FROM b",
       matchScan().project().output({"n_nationkey", "n_name"}));
+
+  // An earlier CTE does not see a later one, so 'nation' is the base table.
+  testSelect(
+      "WITH a AS (SELECT n_name FROM nation), "
+      "     nation AS (SELECT 1 AS k) "
+      "SELECT * FROM a",
+      matchScan().project().output({"n_name"}));
 }
 
 TEST_F(PrestoParserTest, withColumnAliases) {

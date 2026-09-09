@@ -78,6 +78,14 @@ class CteScope {
 
     /// Never null. Shared by every reference to this CTE.
     std::shared_ptr<const DefiningScope> definingScope;
+
+    /// The WITH list this CTE belongs to, in declaration order, shared by
+    /// every entry in that list, and this CTE's position in it. Never null.
+    /// A body sees only the names before its own position, so the ones after
+    /// are hidden while it is translated and a reference to one of them means
+    /// the base table.
+    std::shared_ptr<const std::vector<std::string>> siblings;
+    size_t index{0};
   };
 
   /// Hides a name's in-scope binding for the guard's lifetime, so the
