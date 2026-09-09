@@ -1006,6 +1006,20 @@ TEST_F(AggregationParserTest, correlatedSubqueryWithGroupBy) {
       "SELECT u.x FROM t, u GROUP BY u.x ORDER BY (SELECT u.x)",
       scanJoinAggregate().project().sort().project().output());
 
+  // Both columns are grouping keys, so the bare name is ambiguous while each
+  // alias still names one column. The correlation resolves through the alias.
+  testSelect(
+      "SELECT (SELECT 1 WHERE u.x = 1) FROM t, u GROUP BY t.x, u.x",
+      matchScan("t")
+          .join(matchScan("u").build(), {"tx", "ux"})
+          .aggregate({"tx", "ux"}, {})
+          .project()
+          .output());
+
+  VELOX_ASSERT_THROW(
+      parseSql("SELECT x FROM t, u GROUP BY t.x, u.x"),
+      "Cannot resolve column: x");
+
   // A correlation to a column that is neither a grouping key nor an aggregate
   // is not allowed.
   VELOX_ASSERT_THROW(

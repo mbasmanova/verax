@@ -202,4 +202,31 @@ TEST(NameMappingsTest, chainedMerge) {
   EXPECT_EQ(a.lookup("c", "x"), "x_c");
 }
 
+TEST(NameMappingsTest, markAmbiguous) {
+  NameMappings mappings;
+  mappings.add("x", "x_1");
+  mappings.markAmbiguous({.alias = std::nullopt, .name = "x"});
+
+  EXPECT_EQ(mappings.lookup("x"), std::nullopt);
+
+  // A name that resolved to more than one column resolves to none, whatever
+  // order the columns claiming it are added in.
+  mappings.add("x", "x_2");
+  EXPECT_EQ(mappings.lookup("x"), std::nullopt);
+
+  // Merging in another relation does not reinstate it either.
+  NameMappings other;
+  other.add("x", "x_3");
+  mappings.merge(other);
+  EXPECT_EQ(mappings.lookup("x"), std::nullopt);
+
+  // An unrelated name is unaffected, and 'reset' clears the mark.
+  mappings.add("y", "y_1");
+  EXPECT_EQ(mappings.lookup("y"), "y_1");
+
+  mappings.reset();
+  mappings.add("x", "x_4");
+  EXPECT_EQ(mappings.lookup("x"), "x_4");
+}
+
 } // namespace facebook::axiom::logical_plan

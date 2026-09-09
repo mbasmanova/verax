@@ -127,7 +127,9 @@ class GroupByPlanner {
 
   std::optional<lp::ExprApi> filter_;
   std::vector<lp::ExprApi> sortingKeyExprs_;
-  std::vector<std::string> outputNames_;
+  // Names of the aggregate's output columns, in output order. A column whose
+  // bare name is ambiguous is reachable only through its relation alias.
+  std::vector<lp::PlanBuilder::OutputColumnName> outputColumns_;
 };
 
 } // namespace axiom::sql::presto

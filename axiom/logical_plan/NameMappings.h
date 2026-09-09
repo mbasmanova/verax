@@ -39,10 +39,17 @@ class NameMappings {
   };
 
   /// Adds a mapping from 'name' to 'id'. Throws if 'name' already exists.
+  /// Does nothing if 'name' was marked ambiguous, so a caller may not assume
+  /// that 'name' resolves once this returns.
   void add(const QualifiedName& name, const std::string& id);
 
-  /// Adds a mapping from 'name' to 'id'. Throws if 'name' already exists.
+  /// @overload
   void add(const std::string& name, const std::string& id);
+
+  /// Drops the mapping for 'name' and marks it ambiguous: it names more than
+  /// one column, so it names none. The columns stay in the output, reachable
+  /// by their other names. The mark lasts until 'reset'.
+  void markAmbiguous(const QualifiedName& name);
 
   /// Marks the specified 'id' as hidden. The 'id' must have been added earlier
   /// via 'add' API.
@@ -117,6 +124,7 @@ class NameMappings {
     mappings_.clear();
     reverseIndex_.clear();
     userNames_.clear();
+    ambiguousNames_.clear();
   }
 
  private:
@@ -127,6 +135,11 @@ class NameMappings {
   // Re-derives reverseIndex_ from mappings_.
   void rebuildReverseIndex();
 
+  // Adds a mapping unless 'name' is marked ambiguous. Every insertion into
+  // mappings_ goes through here, so a marked name cannot be reinstated.
+  // Returns true if the mapping was added.
+  bool insert(const QualifiedName& name, const std::string& id);
+
   // Mapping from names to IDs. Unique names may appear twice: w/ and w/o an
   // alias.
   folly::F14FastMap<QualifiedName, std::string, QualifiedNameHasher> mappings_;
@@ -134,6 +147,9 @@ class NameMappings {
   // Inverse of mappings_: each ID maps to the QualifiedName(s) that resolve
   // to it (at most 2: with and without alias). Kept in sync with mappings_.
   folly::F14FastMap<std::string, std::vector<QualifiedName>> reverseIndex_;
+
+  // Names that resolved to more than one column.
+  folly::F14FastSet<QualifiedName, QualifiedNameHasher> ambiguousNames_;
 
   // IDs of hidden columns.
   folly::F14FastSet<std::string> hiddenIds_;
