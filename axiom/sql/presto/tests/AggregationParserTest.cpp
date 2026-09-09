@@ -934,6 +934,13 @@ TEST_F(AggregationParserTest, groupingKeyExpr) {
         "SELECT substr(n_name, 1, 2), count(1) FROM nation GROUP BY 1",
         matcher);
 
+    // A SELECT expression matches a grouping key that spells the function
+    // differently; function names are case-insensitive.
+    testSelect(
+        "SELECT SUBSTR(n_name, 1, 2), count(1) "
+        "FROM nation GROUP BY substr(n_name, 1, 2)",
+        matcher);
+
     testSelect(
         "SELECT r_regionkey IN (SELECT n_regionkey FROM nation), count(1) "
         "FROM region GROUP BY 1",

@@ -68,6 +68,13 @@ TEST_F(SqlFunctionTest, inlines) {
       "SELECT tc.default.identity(n_nationkey + 123) FROM nation",
       matchScan("nation").project({"n_nationkey + 123::bigint"}).output());
 
+  // Capitalization does not change the resolved expression, so a SELECT
+  // expression still matches a grouping key that spells the name differently.
+  testSelect(
+      "SELECT TC.Default.Identity(n_nationkey), count(1) FROM nation "
+      "GROUP BY tc.default.identity(n_nationkey)",
+      matchScan("nation").aggregate().output());
+
   // f(a, b) := a + b
   metadata_->addFunction(
       {"default", "combine"},
