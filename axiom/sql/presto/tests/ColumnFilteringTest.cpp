@@ -273,6 +273,14 @@ TEST_F(ColumnFilteringTest, selectColumnsInExpression) {
           .project({"n_nationkey + 1::bigint", "n_regionkey + 1::bigint"})
           .output());
 
+  // The pseudo-function is recognized whatever capitalization it is written
+  // in.
+  testSelect(
+      "SELECT columns('.*key') + 1 FROM nation",
+      matchScan("nation")
+          .project({"n_nationkey + 1::bigint", "n_regionkey + 1::bigint"})
+          .output());
+
   // Alias applies to all expanded columns.
   testSelect(
       "SELECT COLUMNS('.*key') + 1 AS x FROM nation",

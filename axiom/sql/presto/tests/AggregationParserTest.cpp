@@ -899,6 +899,25 @@ TEST_F(AggregationParserTest, groupingSetsDedup) {
   }
 }
 
+// Function names are case-insensitive, so how a call is spelled does not
+// change the expression it denotes.
+TEST_F(AggregationParserTest, functionNameCase) {
+  // A SELECT expression matches a grouping key spelled differently.
+  testSelect(
+      "SELECT SUBSTR(n_name, 1, 2), count(1) "
+      "FROM nation GROUP BY substr(n_name, 1, 2)",
+      matchScan().aggregate().output());
+
+  // Two spellings of one aggregate are computed once.
+  testSelect(
+      "SELECT SUM(DISTINCT n_nationkey), sum(DISTINCT n_nationkey) "
+      "FROM nation GROUP BY n_regionkey",
+      matchScan()
+          .aggregate({"n_regionkey"}, {"sum(distinct n_nationkey)"})
+          .project()
+          .output());
+}
+
 TEST_F(AggregationParserTest, distinct) {
   {
     auto matcher = matchScan().project().distinct().output();

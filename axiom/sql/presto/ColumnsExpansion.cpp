@@ -49,6 +49,9 @@ core::ExprPtr replaceInputs(
   return changed ? expr->replaceInputs(std::move(newInputs)) : expr;
 }
 
+// Resolved expressions carry canonical, lower-case function names.
+constexpr std::string_view kColumnsFunctionName = "columns";
+
 // Searches an expression tree for COLUMNS('regex') pseudo-function calls.
 // Appends each found call (node pointer + regex pattern) to 'results'.
 void findColumnsCalls(
@@ -56,7 +59,7 @@ void findColumnsCalls(
     std::vector<std::pair<const core::IExpr*, std::string>>& results) {
   if (expr->is(core::IExpr::Kind::kCall)) {
     auto* callExpr = expr->as<core::CallExpr>();
-    if (callExpr->name() == "COLUMNS") {
+    if (callExpr->name() == kColumnsFunctionName) {
       // The grammar guarantees COLUMNS takes a single string literal argument.
       VELOX_CHECK_EQ(callExpr->inputs().size(), 1);
 
