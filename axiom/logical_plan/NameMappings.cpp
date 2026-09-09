@@ -27,17 +27,44 @@ std::string NameMappings::QualifiedName::toString() const {
   return name;
 }
 
-void NameMappings::add(const QualifiedName& name, const std::string& id) {
-  bool ok = mappings_.emplace(name, id).second;
-  VELOX_CHECK(ok, "Duplicate name: {}", name.toString());
+bool NameMappings::insert(const QualifiedName& name, const std::string& id) {
+  if (ambiguousNames_.contains(name)) {
+    return false;
+  }
+  if (!mappings_.emplace(name, id).second) {
+    return false;
+  }
   reverseIndex_[id].push_back(name);
+  return true;
+}
+
+void NameMappings::add(const QualifiedName& name, const std::string& id) {
+  VELOX_CHECK(!mappings_.contains(name), "Duplicate name: {}", name.toString());
+  insert(name, id);
 }
 
 void NameMappings::add(const std::string& name, const std::string& id) {
-  QualifiedName qualified{.alias = {}, .name = name};
-  bool ok = mappings_.emplace(qualified, id).second;
-  VELOX_CHECK(ok, "Duplicate name: {}", name);
-  reverseIndex_[id].push_back(std::move(qualified));
+  add(QualifiedName{.alias = {}, .name = name}, id);
+}
+
+void NameMappings::markAmbiguous(const QualifiedName& name) {
+  ambiguousNames_.insert(name);
+
+  auto it = mappings_.find(name);
+  if (it == mappings_.end()) {
+    return;
+  }
+
+  if (auto entry = reverseIndex_.find(it->second);
+      entry != reverseIndex_.end()) {
+    auto& names = entry->second;
+    std::erase(names, name);
+    if (names.empty()) {
+      reverseIndex_.erase(entry);
+    }
+  }
+
+  mappings_.erase(it);
 }
 
 void NameMappings::markHidden(const std::string& id) {
@@ -125,8 +152,7 @@ void NameMappings::setAlias(const std::string& alias) {
 
   // Every surviving entry gets the new alias.
   for (auto& [name, id] : names) {
-    QualifiedName qualified{.alias = alias, .name = std::move(name)};
-    mappings_.emplace(std::move(qualified), std::move(id));
+    insert(QualifiedName{.alias = alias, .name = std::move(name)}, id);
   }
 
   rebuildReverseIndex();
@@ -156,16 +182,7 @@ void NameMappings::merge(const NameMappings& other) {
       // both sides reuse a relation alias. Referencing a dropped name later
       // fails as unresolved, matching Presto's report-at-reference-time
       // behavior.
-      const auto& existingId = existing->second;
-      if (auto entry = reverseIndex_.find(existingId);
-          entry != reverseIndex_.end()) {
-        auto& names = entry->second;
-        std::erase(names, name);
-        if (names.empty()) {
-          reverseIndex_.erase(entry);
-        }
-      }
-      mappings_.erase(existing);
+      markAmbiguous(name);
     } else if (
         !name.alias.has_value() && leftQualifiedNames.contains(name.name)) {
       // Don't add an unqualified name from the right side if the left side
@@ -173,8 +190,7 @@ void NameMappings::merge(const NameMappings& other) {
       // across joined tables even though the left's unqualified entry was
       // removed by an earlier merge.
     } else {
-      mappings_.emplace(name, id);
-      reverseIndex_[id].push_back(name);
+      insert(name, id);
     }
   }
 

@@ -533,10 +533,14 @@ class NameTracker {
   // Adds a mapping from qualified 'name' (with optional alias) to 'id'. Skips
   // duplicates if allowDuplicates is set.
   void add(const NameMappings::QualifiedName& name, const std::string& id) {
-    if (isDuplicate(name.name)) {
+    if (!name.alias.has_value()) {
+      if (isDuplicate(name.name)) {
+        return;
+      }
+      mappings_.add(name, id);
       return;
     }
-    mappings_.add(name, id);
+    addQualified(name, id);
   }
 
   // Adds mappings from both unqualified 'name' and qualified 'alias.name' to
@@ -546,6 +550,10 @@ class NameTracker {
       const std::string& id,
       const std::optional<std::string>& alias) {
     if (isDuplicate(name)) {
+      if (alias.has_value()) {
+        addQualified(
+            NameMappings::QualifiedName{.alias = alias, .name = name}, id);
+      }
       return;
     }
     addWithAlias(name, id, alias);
@@ -572,6 +580,25 @@ class NameTracker {
     return allowDuplicates_ && duplicates_.contains(name);
   }
 
+  // Adds a qualified 'name', which must carry an alias. A base name repeated
+  // under different aliases stays resolvable through each alias; one alias.name
+  // bound to two columns resolves to neither. Re-adding the column already
+  // named is a no-op.
+  void addQualified(
+      const NameMappings::QualifiedName& name,
+      const std::string& id) {
+    VELOX_CHECK(name.alias.has_value());
+    const std::optional<std::string> existing =
+        mappings_.lookup(name.alias.value(), name.name);
+    if (existing.has_value()) {
+      if (existing.value() != id) {
+        mappings_.markAmbiguous(name);
+      }
+      return;
+    }
+    mappings_.add(name, id);
+  }
+
   // Adds mappings from both unqualified 'name' and qualified 'alias.name' to
   // 'id'. Does not check for duplicates.
   void addWithAlias(
@@ -580,7 +607,7 @@ class NameTracker {
       const std::optional<std::string>& alias) {
     mappings_.add(name, id);
     if (alias.has_value()) {
-      mappings_.add(
+      addQualified(
           NameMappings::QualifiedName{.alias = alias, .name = name}, id);
     }
   }

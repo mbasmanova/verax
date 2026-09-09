@@ -492,7 +492,7 @@ void GroupByPlanner::plan(
   // Walk SELECT, HAVING, and ORDER BY expressions to collect aggregate
   // function calls, then add the Aggregate plan node.
   // Populates: aggregates_, projections_, filter_,
-  //   sortingKeyExprs_, outputNames_.
+  //   sortingKeyExprs_, outputColumns_.
   collectAggregates(selectExprs, having, orderBy);
 
   for (const auto& agg : aggregates_) {
@@ -773,16 +773,7 @@ void GroupByPlanner::addAggregate(bool useGroupingSets) {
     builder_->aggregate(groupingKeyExprs, aggregateExprs);
   }
 
-  auto outputColumns = builder_->findOrAssignOutputNames();
-  outputNames_.clear();
-  outputNames_.reserve(outputColumns.size());
-  for (const auto& column : outputColumns) {
-    VELOX_CHECK(
-        !column.alias.has_value(),
-        "Unexpected ambiguous column after aggregate: {}",
-        column.name);
-    outputNames_.emplace_back(column.name);
-  }
+  outputColumns_ = builder_->findOrAssignOutputNames();
 }
 
 void GroupByPlanner::rewritePostAggregateExprs() {
@@ -791,13 +782,13 @@ void GroupByPlanner::rewritePostAggregateExprs() {
 
   size_t index = 0;
   for (const auto& key : groupingKeys_) {
-    flatInputs_.emplace_back(lp::Col(outputNames_.at(index)));
+    flatInputs_.emplace_back(outputColumns_.at(index).toCol());
     keyInputs.emplace(key.expr(), flatInputs_.back().expr());
     ++index;
   }
 
   for (const auto& agg : aggregates_) {
-    flatInputs_.emplace_back(lp::Col(outputNames_.at(index)));
+    flatInputs_.emplace_back(outputColumns_.at(index).toCol());
     aggregateInputs.emplace(agg.expr(), flatInputs_.back().expr());
     ++index;
   }
@@ -950,7 +941,7 @@ bool GroupByPlanner::isIdentityProjection() const {
     }
 
     const auto& alias = projections_.at(i).alias();
-    if (alias.has_value() && alias.value() != outputNames_.at(i)) {
+    if (alias.has_value() && alias.value() != outputColumns_.at(i).name) {
       return false;
     }
   }
