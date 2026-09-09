@@ -1544,6 +1544,43 @@ TEST_F(PrestoParserTest, duplicateAliases) {
       "Cannot resolve column: u");
 }
 
+// A derived table exposes only column names. The relation aliases used inside
+// it are not visible outside, so the enclosing query may reuse one.
+TEST_F(PrestoParserTest, derivedTableHidesInnerAlias) {
+  auto matcher =
+      matchValues().project().project().unnest().project().output({"a", "b"});
+  testSelect(
+      "SELECT a, t.b "
+      "FROM (SELECT a, b FROM (VALUES (1, ARRAY[10, 20])) AS t(a, b)) "
+      "CROSS JOIN UNNEST(b) AS t(b)",
+      matcher);
+
+  VELOX_ASSERT_THROW(
+      parseSql("SELECT t.a FROM (SELECT a FROM (VALUES 1) AS t(a))"),
+      "Cannot resolve column: t");
+
+  // A column whose unqualified name is ambiguous is reachable only through an
+  // alias inside the derived table, and so not reachable at all outside it.
+  testSelect(
+      "SELECT * FROM "
+      "(SELECT * FROM (VALUES 1) AS t1(a), (VALUES 2) AS t2(a))",
+      matchValues()
+          .project()
+          .join(matchValues().project().build())
+          .output({"a", "a"}));
+
+  VELOX_ASSERT_THROW(
+      parseSql(
+          "SELECT a FROM (SELECT * FROM (VALUES 1) AS t1(a), (VALUES 2) AS t2(a))"),
+      "Cannot resolve column: a");
+
+  VELOX_ASSERT_THROW(
+      parseSql(
+          "SELECT t.a FROM (VALUES 1) AS x(z), "
+          "LATERAL (SELECT a FROM (VALUES 2) AS t(a))"),
+      "Cannot resolve column: t");
+}
+
 // An UNNEST is applied to every row of the other side, which only a CROSS or
 // comma join expresses. Any other join type is rejected whatever its ON clause
 // says, matching Presto.

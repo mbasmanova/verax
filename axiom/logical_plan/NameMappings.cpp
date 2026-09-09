@@ -104,6 +104,14 @@ std::vector<NameMappings::QualifiedName> NameMappings::reverseLookup(
   return names;
 }
 
+void NameMappings::clearAliases() {
+  folly::erase_if(mappings_, [](const auto& entry) {
+    return entry.first.alias.has_value();
+  });
+
+  rebuildReverseIndex();
+}
+
 void NameMappings::setAlias(const std::string& alias) {
   std::vector<std::pair<std::string, std::string>> names;
   for (auto it = mappings_.begin(); it != mappings_.end();) {
@@ -121,8 +129,10 @@ void NameMappings::setAlias(const std::string& alias) {
     mappings_.emplace(std::move(qualified), std::move(id));
   }
 
-  // Rebuild from mappings_ so both surviving unqualified entries and the
-  // newly-added qualified entries appear in reverseIndex_.
+  rebuildReverseIndex();
+}
+
+void NameMappings::rebuildReverseIndex() {
   reverseIndex_.clear();
   for (const auto& [name, id] : mappings_) {
     reverseIndex_[id].push_back(name);
