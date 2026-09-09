@@ -1831,14 +1831,20 @@ PlanBuilder& PlanBuilder::tableWrite(
       // Check input types.
       const auto& schema = table->type();
 
+      // A connector reports canonical column names, so only the user-written
+      // name is reduced by the dialect's identifier rule. A matched column is
+      // recorded under the name the connector uses for it.
       for (auto i = 0; i < columnNames.size(); i++) {
-        const auto& name = columnNames[i];
-        const auto index = schema->getChildIdxIfExists(name);
+        auto& name = columnNames[i];
+        const auto index = schema->getChildIdxIfExists(
+            identifierCanonicalizer_ ? identifierCanonicalizer_(name) : name);
         VELOX_USER_CHECK(
             index.has_value(),
             "Column not found: '{}' in table {}",
             name,
             schemaTableName.toString());
+
+        name = schema->nameOf(index.value());
 
         const auto& inputType = columnExpressions[i]->type();
         const auto& schemaType = schema->childAt(index.value());
