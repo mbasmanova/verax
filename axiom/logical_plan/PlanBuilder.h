@@ -694,6 +694,13 @@ class PlanBuilder {
   /// "alias.column" in subsequent operations.
   PlanBuilder& as(const std::string& alias);
 
+  /// Drops the relation aliases of this builder's own columns, so
+  /// "alias.column" no longer resolves against them. An enclosing query's
+  /// aliases still resolve through the outer scope. A column that was
+  /// reachable only through an alias, because its unqualified name was
+  /// ambiguous, becomes unreferenceable.
+  PlanBuilder& clearAliases();
+
   /// Captures the current name-resolution scope into 'scope' so it can be
   /// passed to an inner PlanBuilder for correlated subqueries.
   ///

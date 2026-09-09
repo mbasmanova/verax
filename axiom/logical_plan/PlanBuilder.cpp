@@ -2015,6 +2015,11 @@ PlanBuilder& PlanBuilder::as(const std::string& alias) {
   return *this;
 }
 
+PlanBuilder& PlanBuilder::clearAliases() {
+  outputMapping_->clearAliases();
+  return *this;
+}
+
 std::string PlanBuilder::newName(const std::string& hint) {
   return nameAllocator_->newName(hint);
 }

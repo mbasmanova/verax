@@ -70,6 +70,12 @@ class NameMappings {
   /// Used in PlanBuilder::as() API.
   void setAlias(const std::string& alias);
 
+  /// Drops all qualified names, leaving only unqualified access. Columns that
+  /// were reachable only through an alias are no longer accessible by name.
+  ///
+  /// Used in PlanBuilder::clearAliases() API.
+  void clearAliases();
+
   /// Merges mappings and user names from 'other' into this. Removes
   /// unqualified access to non-unique names.
   ///
@@ -117,6 +123,9 @@ class NameMappings {
   struct QualifiedNameHasher {
     size_t operator()(const QualifiedName& value) const;
   };
+
+  // Re-derives reverseIndex_ from mappings_.
+  void rebuildReverseIndex();
 
   // Mapping from names to IDs. Unique names may appear twice: w/ and w/o an
   // alias.
