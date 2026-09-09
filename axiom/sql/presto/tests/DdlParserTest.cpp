@@ -48,6 +48,11 @@ TEST_F(DdlParserTest, insertIntoTable) {
     testInsert(
         "INSERT INTO nation(n_nationkey, n_regionkey, n_name) SELECT 100, 2, 'n-100'",
         matcher);
+
+    // The column list names target columns case-insensitively, quoted or not.
+    testInsert(
+        "INSERT INTO nation(N_NationKey, \"n_REGIONKEY\", n_NAME) SELECT 100, 2, 'n-100'",
+        matcher);
   }
 
   // Wrong types.
@@ -55,10 +60,14 @@ TEST_F(DdlParserTest, insertIntoTable) {
       parseSql("INSERT INTO nation SELECT 100, 'n-100', 2, 3"),
       "Wrong column type: INTEGER vs. VARCHAR, column 'n_comment' in table \"default\".\"nation\"");
 
-  // Non-existent target column.
+  // Non-existent target column. The error names it as the user wrote it.
   VELOX_ASSERT_THROW(
       parseSql("INSERT INTO nation(no_such_col) SELECT 1"),
       "Column not found: 'no_such_col' in table \"default\".\"nation\"");
+
+  VELOX_ASSERT_THROW(
+      parseSql("INSERT INTO nation(NoSuchCol) SELECT 1"),
+      "Column not found: 'NoSuchCol' in table \"default\".\"nation\"");
 }
 
 TEST_F(DdlParserTest, deleteFromTable) {

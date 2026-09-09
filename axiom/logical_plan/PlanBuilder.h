@@ -155,12 +155,11 @@ class PlanBuilder {
     /// override this with their dialect's coercer.
     const velox::TypeCoercer* coercer{nullptr};
 
-    /// Optional transform applied to user-facing column names introduced by
-    /// 'tableScan' before they are stored in the name lookup map. SQL
-    /// dialects with case-insensitive identifiers set this to a lowercasing
-    /// function so that case-insensitive references in the query body
-    /// resolve against connector-supplied column names. Defaults to
-    /// identity, leaving names as-is.
+    /// Optional transform applied to user-facing column names before they
+    /// are matched against the names a connector supplies. SQL dialects with
+    /// case-insensitive identifiers set this to a lowercasing function so
+    /// that a reference written in any case resolves. Defaults to identity,
+    /// leaving names as-is.
     std::function<std::string(const std::string&)> identifierCanonicalizer;
 
     explicit Context(
