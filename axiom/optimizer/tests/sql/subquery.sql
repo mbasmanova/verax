@@ -814,6 +814,17 @@ SELECT (SELECT t2.b FROM t t2 WHERE t2.a = t.a) FROM t
 -- error: Expected single row of input. Received 5 rows.
 SELECT (SELECT a FROM u) FROM t
 ----
+-- A disjunct that is always true decides the WHERE on its own, so the EXISTS
+-- beside it settles nothing and every row is counted.
+WITH ids AS (SELECT * FROM (VALUES (1), (2)) AS _(id))
+SELECT count(*) FROM ids
+WHERE 1 = 1 OR EXISTS (SELECT 1 FROM u WHERE u.a = ids.id)
+----
+-- The same, counting distinct values instead of rows.
+WITH ids AS (SELECT * FROM (VALUES (1), (2)) AS _(id))
+SELECT count(DISTINCT ids.id) FROM ids
+WHERE 1 = 1 OR EXISTS (SELECT 1 FROM u WHERE u.a = ids.id)
+----
 -- Correlated EXISTS over a scalar-aggregate body. EXISTS is true iff
 -- the per-outer aggregate produces a row — for count(*) without
 -- HAVING, that's iff u has any matching row.
