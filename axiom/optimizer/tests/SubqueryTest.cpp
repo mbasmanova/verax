@@ -614,6 +614,34 @@ TEST_P(SubqueryTest, correlatedIn) {
   }
 }
 
+TEST_P(SubqueryTest, correlatedExistsOverSemiJoin) {
+  // v1 plans this shape differently; the point here is the v2 plan.
+  if (!useV2_) {
+    GTEST_SKIP();
+  }
+
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
+  testConnector_->addTable("u", ROW({"x", "y"}, BIGINT()));
+  testConnector_->addTable("w", ROW({"p"}, BIGINT()));
+
+  // A correlated EXISTS whose body is itself an existence test plans as
+  // nested semi joins, with no per-outer chain above them.
+  auto query =
+      "SELECT t.a FROM t WHERE EXISTS ("
+      "  SELECT 1 FROM u WHERE u.y = t.b AND u.x IN (SELECT w.p FROM w))";
+  SCOPED_TRACE(query);
+
+  auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+  AXIOM_ASSERT_PLAN_V2(
+      plan,
+      matchScan("t")
+          .hashJoin(
+              matchScan("u").hashJoin(
+                  matchScan("w"), core::JoinType::kLeftSemiFilter),
+              core::JoinType::kLeftSemiFilter)
+          .build());
+}
+
 TEST_P(SubqueryTest, correlatedScalarGroupedWithHaving) {
   // v1 declines a correlation predicate over a column outside the GROUP BY.
   if (!useV2_) {
