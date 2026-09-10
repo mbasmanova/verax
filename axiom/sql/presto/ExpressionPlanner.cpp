@@ -894,14 +894,14 @@ TypePtr tryResolveBuiltinType(const TypeSignaturePtr& type) {
         parameters.emplace_back(parseType(param), fieldName);
       }
     } else if (baseName == "DECIMAL") {
-      AXIOM_PRESTO_SEMANTIC_CHECK_EQ(
-          numParams,
-          static_cast<size_t>(2),
+      AXIOM_PRESTO_SEMANTIC_CHECK(
+          numParams == 1 || numParams == 2,
           type->location(),
           baseName,
-          "DECIMAL expects 2 parameters");
+          "DECIMAL expects 1 or 2 parameters");
       parameters.emplace_back(parseInt(type->parameters().at(0)));
-      parameters.emplace_back(parseInt(type->parameters().at(1)));
+      parameters.emplace_back(
+          numParams == 1 ? 0 : parseInt(type->parameters().at(1)));
     } else if (baseName == "TDIGEST" || baseName == "QDIGEST") {
       AXIOM_PRESTO_SEMANTIC_CHECK_EQ(
           numParams,
