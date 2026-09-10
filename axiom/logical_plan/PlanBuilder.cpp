@@ -1141,25 +1141,42 @@ PlanBuilder& PlanBuilder::unnest(
   static const std::string kKeyHint = "k";
   static const std::string kValueHint = "v";
 
+  std::vector<ExprPtr> exprs;
+  exprs.reserve(unnestExprs.size());
+  size_t numRelationAliases{0};
+  for (const auto& unnestExpr : unnestExprs) {
+    auto expr = resolveScalarTypes(unnestExpr.expr());
+    switch (expr->type()->kind()) {
+      case velox::TypeKind::ARRAY:
+      case velox::TypeKind::MAP:
+        if (unnestExpr.unnestedAliases().empty()) {
+          numRelationAliases += expr->type()->size();
+        }
+        break;
+      default:
+        VELOX_USER_FAIL(
+            "Unsupported type to unnest: {}", expr->type()->toString());
+    }
+    exprs.push_back(std::move(expr));
+  }
+
   // Create new mappings for unnested columns, then merge with existing.
   NameMappings unnestMapping;
   NameTracker tracker(allowAmbiguousOutputNames_, unnestMapping);
 
-  if (unnestAliases.empty()) {
-    for (const auto& unnestExpr : unnestExprs) {
-      tracker.track(unnestExpr.unnestedAliases());
-    }
-  } else {
-    tracker.track(unnestAliases);
+  for (const auto& unnestExpr : unnestExprs) {
+    tracker.track(unnestExpr.unnestedAliases());
+  }
+  for (size_t i = 0; i < numRelationAliases && i < unnestAliases.size(); ++i) {
+    tracker.track(unnestAliases[i]);
   }
 
   if (ordinality.has_value() && ordinality->alias().has_value()) {
     tracker.track(*ordinality->alias());
   }
 
-  size_t index = 0;
+  size_t unnestAliasIndex = 0;
 
-  std::vector<ExprPtr> exprs;
   std::vector<std::vector<std::string>> outputNames;
 
   // A column the query did not name. The relation alias still names it, so
@@ -1183,12 +1200,19 @@ PlanBuilder& PlanBuilder::unnest(
       outputNames.back().emplace_back(newName(name));
       tracker.add(name, outputNames.back().back(), alias);
     }
-    ++index;
   };
 
-  for (const auto& unnestExpr : unnestExprs) {
-    auto expr = resolveScalarTypes(unnestExpr.expr());
-    exprs.push_back(expr);
+  const auto addRelationAliasOrUnnamed = [&](const std::string& hint) {
+    if (unnestAliasIndex < unnestAliases.size()) {
+      addUnnestOutput(unnestAliases[unnestAliasIndex++], hint);
+    } else {
+      addUnnamedUnnestOutput(hint);
+    }
+  };
+
+  for (size_t i = 0; i < unnestExprs.size(); ++i) {
+    const auto& unnestExpr = unnestExprs[i];
+    const auto& expr = exprs[i];
     outputNames.emplace_back();
 
     // Per-expression aliases (unnestedAliases) take priority over per-relation
@@ -1201,11 +1225,8 @@ PlanBuilder& PlanBuilder::unnest(
         if (!aliases.empty()) {
           VELOX_USER_CHECK_EQ(aliases.size(), 1);
           addUnnestOutput(aliases[0], kElementHint);
-        } else if (!unnestAliases.empty()) {
-          VELOX_USER_CHECK_LT(index, unnestAliases.size());
-          addUnnestOutput(unnestAliases[index], kElementHint);
         } else {
-          addUnnamedUnnestOutput(kElementHint);
+          addRelationAliasOrUnnamed(kElementHint);
         }
         break;
 
@@ -1214,19 +1235,14 @@ PlanBuilder& PlanBuilder::unnest(
           VELOX_USER_CHECK_EQ(aliases.size(), 2);
           addUnnestOutput(aliases[0], kKeyHint);
           addUnnestOutput(aliases[1], kValueHint);
-        } else if (!unnestAliases.empty()) {
-          VELOX_USER_CHECK_LT(index, unnestAliases.size());
-          addUnnestOutput(unnestAliases[index], kKeyHint);
-          addUnnestOutput(unnestAliases[index], kValueHint);
         } else {
-          addUnnamedUnnestOutput(kKeyHint);
-          addUnnamedUnnestOutput(kValueHint);
+          addRelationAliasOrUnnamed(kKeyHint);
+          addRelationAliasOrUnnamed(kValueHint);
         }
         break;
 
       default:
-        VELOX_USER_FAIL(
-            "Unsupported type to unnest: {}", expr->type()->toString());
+        VELOX_UNREACHABLE();
     }
   }
 
