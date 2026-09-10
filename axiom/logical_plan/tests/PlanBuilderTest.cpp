@@ -540,6 +540,23 @@ TEST_F(PlanBuilderTest, joinUsingTypeCoercion) {
     ASSERT_TRUE(matcher->match(plan)) << plan->toString();
   }
 
+  // Nested ROW field names are reconciled in join keys and USING outputs.
+  for (const auto joinType : {JoinType::kInner, JoinType::kFull}) {
+    PlanBuilder::Context context;
+    auto [left, right] = makeBuilders(
+        context,
+        ROW("c0", ROW("x", INTEGER())),
+        ROW("c0", ROW("X", INTEGER())));
+
+    auto plan = left.joinUsing(right, {"c0"}, joinType).build();
+
+    VELOX_EXPECT_EQ_TYPES(plan->outputType(), ROW("c0", ROW("", INTEGER())));
+
+    auto matcher =
+        startMatcher().join(startMatcher().build()).project().project().build();
+    ASSERT_TRUE(matcher->match(plan)) << plan->toString();
+  }
+
   // Multiple USING columns with mixed match/mismatch.
   {
     PlanBuilder::Context context;

@@ -197,6 +197,12 @@ SELECT a FROM t WHERE b > 50
 UNION ALL
 SELECT a FROM t WHERE b > 100
 ----
+-- UNION ALL reconciles nested row field names that differ in capitalization.
+-- duckdb: VALUES (ROW(1)), (ROW(2))
+SELECT ROW(1 AS x)
+UNION ALL
+SELECT ROW(2 AS "X")
+----
 -- A leg that selects one column under two names.
 SELECT a AS x, a AS y FROM t WHERE a = 1 AND b = 10
 EXCEPT
