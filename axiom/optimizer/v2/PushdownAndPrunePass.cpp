@@ -906,6 +906,81 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     return maybeWrapFilter(newAggregate, std::move(blocked));
   }
 
+  // True if a conjunct of 'conjuncts' is statically false, so no row passes.
+  bool neverMatches(const ExprVector& conjuncts) {
+    ExprVector kept;
+    for (ExprCP conjunct : conjuncts) {
+      kept.clear();
+      if (simplifier_.simplifyFilter(conjunct, kept)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // A join condition no row satisfies decides the join's answer without a
+  // join: an inner join produces nothing, and an outer join produces its
+  // preserved side with the other side's columns NULL.
+  //
+  // Only a written ON clause reaches here as a false condition. A subquery
+  // whose body is empty is a different shape, still joined against.
+  NodeCP simplifyNeverMatchingJoin(const Join* node, PushdownContext& context) {
+    if (!neverMatches(node->filter())) {
+      return nullptr;
+    }
+
+    NodeCP preserved{nullptr};
+    switch (node->joinType()) {
+      case velox::core::JoinType::kInner:
+        return makeEmptyValues(node);
+      case velox::core::JoinType::kLeft:
+        preserved = node->left();
+        break;
+      case velox::core::JoinType::kRight:
+        preserved = node->right();
+        break;
+      default:
+        // kFull preserves both sides, which is a union rather than one node.
+        // A written ON clause reaches the semi and anti kinds as the body of
+        // a subquery rather than as a join condition, so a false one does not
+        // arrive here.
+        return nullptr;
+    }
+
+    // The preserved side is asked only for the columns it passes through;
+    // the rest of the join's output is NULL.
+    const PlanObjectSet preservedColumns =
+        PlanObjectSet::fromObjects(preserved->outputColumns());
+    ExprVector expressions;
+    expressions.reserve(node->outputColumns().size());
+    PlanObjectSet kept;
+    for (ColumnCP column : node->outputColumns()) {
+      if (preservedColumns.contains(column)) {
+        expressions.push_back(column);
+        kept.add(column);
+      } else {
+        expressions.push_back(builder().makeNull(column->value().type));
+      }
+    }
+
+    PushdownContext preservedContext;
+    preservedContext.required = std::move(kept);
+    preservedContext.requiredAbove = preservedContext.required;
+    preservedContext.nonNullColumns = context.nonNullColumns;
+
+    // The conjuncts waiting above the join read its output columns, some of
+    // them from the side that is gone. They stay above the Project, which is
+    // where the join's output now comes from.
+    ExprVector above = std::move(context.pending);
+    context.pending.clear();
+
+    NodeCP project = builder().make<Project>(
+        {rewrite(preserved, preservedContext),
+         std::move(expressions),
+         node->outputColumns()});
+    return maybeWrapFilter(project, std::move(above));
+  }
+
   // True if nothing reads 'mark': neither a consumer above nor a conjunct
   // still looking for a home here.
   static bool markIsDead(ColumnCP mark, const PushdownContext& context) {
@@ -924,6 +999,10 @@ class Pushdown : public NodeRewriter<PushdownContext> {
   // rules. Neither moves a nondeterministic conjunct into an input, which
   // would evaluate it once for rows the join then multiplies.
   NodeCP rewriteJoin(const Join* node, PushdownContext& context) override {
+    if (NodeCP simplified = simplifyNeverMatchingJoin(node, context)) {
+      return simplified;
+    }
+
     // A kLeftSemiProject keeps every left row and adds a mark, so with the
     // mark read by nobody the join has no effect and its left input stands in
     // its place.
