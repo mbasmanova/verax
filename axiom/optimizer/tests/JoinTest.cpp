@@ -2777,6 +2777,25 @@ TEST_P(JoinTest, neverMatchingCondition) {
   }
 }
 
+// A cluster with more relations than a RelationSet can hold has no hypergraph
+// to enumerate over, and keeps the query's own join order.
+TEST_P(JoinTest, clusterLargerThanRelationSet) {
+  if (!useV2_) {
+    GTEST_SKIP();
+  }
+
+  constexpr int32_t kTables = 66;
+  std::string query = "SELECT d0.a FROM d0";
+  for (int32_t i = 0; i < kTables; ++i) {
+    testConnector_->addTable(fmt::format("d{}", i), ROW({"a"}, BIGINT()));
+    if (i > 0) {
+      query += fmt::format(" LEFT JOIN d{0} ON d0.a = d{0}.a", i);
+    }
+  }
+
+  EXPECT_NO_THROW(toSingleNodePlan(parseSelect(query, kTestConnectorId)));
+}
+
 AXIOM_INSTANTIATE_V1_V2(JoinTest);
 
 } // namespace

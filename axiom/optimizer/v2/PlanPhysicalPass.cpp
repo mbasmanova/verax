@@ -422,6 +422,15 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
       collectCluster(node, cluster, /*dissolveCrossJoins=*/true, opaqueJoins);
     }
 
+    // A RelationSet holds `kMaxRelations` relations, so a larger cluster has
+    // no hypergraph to enumerate over. Keep this join in query order, as an
+    // exhausted enumeration budget does, and let the recursion re-examine
+    // what is below it: joins come off the top until the rest fits, and that
+    // part is enumerated under the usual budget.
+    if (cluster.leaves.size() > RelationSet::kMaxRelations) {
+      return rewriteUnclusteredJoin(node, context);
+    }
+
     std::vector<NodeCP> rewrittenLeaves;
     auto buildGraph = [&]() {
       rewrittenLeaves.clear();
