@@ -26,6 +26,18 @@ SELECT COALESCE(t.a, (SELECT max(a) FROM u))
 FROM t
 GROUP BY COALESCE(t.a, (SELECT max(a) FROM u))
 ----
+-- A correlated EXISTS whose body is itself an existence test keeps the outers
+-- that have a matching row.
+SELECT u.a FROM u
+WHERE EXISTS (SELECT 1 FROM v v2
+              WHERE v2.a = u.a * 2 AND v2.a IN (SELECT v3.a FROM v v3 WHERE v3.a < 8))
+----
+-- The same shape written with a nested EXISTS instead of IN.
+SELECT u.a FROM u
+WHERE EXISTS (SELECT 1 FROM v v2
+              WHERE v2.a = u.a * 2
+                AND EXISTS (SELECT 1 FROM v v3 WHERE v3.a = v2.a AND v3.a < 8))
+----
 -- Scalar subquery and EXISTS over the same inner subquery must produce
 -- distinct columns (a scalar value vs a boolean).
 SELECT (SELECT max(a) FROM u), EXISTS (SELECT max(a) FROM u) FROM t

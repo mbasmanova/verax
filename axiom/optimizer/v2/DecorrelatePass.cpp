@@ -209,6 +209,12 @@ class Decorrelator : public NodeRewriter<> {
       }
 
       if (body->is(NodeType::kJoin)) {
+        if (auto lifted = liftCorrelationAboveJoin(
+                body->as<Join>(), input->outputColumns())) {
+          appendAll(accumulatedFilter, lifted->predicates);
+          body = lifted->body;
+          continue;
+        }
         return joinPeel(node, input, body, accumulatedFilter);
       }
 
@@ -618,6 +624,82 @@ class Decorrelator : public NodeRewriter<> {
         std::move(orderTypes),
         std::move(outputs),
     });
+  }
+
+  // What a lift leaves behind.
+  struct LiftedJoinFilter {
+    // The Join with the lifted conjuncts removed from its sides.
+    NodeCP body;
+    // The lifted conjuncts, to be applied above the Join.
+    ExprVector predicates;
+  };
+
+  // A correlated predicate the body Join keeps on a preserved side filters
+  // that side's rows, so it selects the same rows above the Join. Lifting it
+  // there can leave the body uncorrelated, which the driver then hands to the
+  // terminus without peeling the Join at all. A predicate on a null-supplying
+  // side decides which rows pad and does not lift.
+  std::optional<LiftedJoinFilter> liftCorrelationAboveJoin(
+      JoinCP join,
+      const ColumnVector& outerColumns) {
+    // A conjunct only lifts if it still resolves above the Join, which keeps
+    // only the columns its output names.
+    PlanObjectSet visibleAbove =
+        PlanObjectSet::fromObjects(join->outputColumns());
+    visibleAbove.unionSet(PlanObjectSet::fromObjects(outerColumns));
+
+    ExprVector lifted;
+    auto liftFrom = [&](NodeCP side) {
+      if (!side->is(NodeType::kFilter)) {
+        return side;
+      }
+      const Filter* filter = side->as<Filter>();
+      ExprVector correlated;
+      ExprVector kept;
+      for (ExprCP conjunct : filter->predicates()) {
+        const bool lifts = conjunct->columns().containsAny(outerColumns) &&
+            conjunct->columns().isSubset(visibleAbove);
+        (lifts ? correlated : kept).push_back(conjunct);
+      }
+      if (correlated.empty()) {
+        return side;
+      }
+      appendAll(lifted, correlated);
+      return kept.empty()
+          ? filter->input()
+          : builder().make<Filter>({filter->input(), std::move(kept)});
+    };
+
+    const bool leftIsPreserved =
+        join->isInner() || join->isLeft() || join->isLeftSemiProject();
+    NodeCP left = leftIsPreserved ? liftFrom(join->left()) : join->left();
+    NodeCP right = join->isInner() ? liftFrom(join->right()) : join->right();
+
+    if (lifted.empty()) {
+      return std::nullopt;
+    }
+
+    // Lifting is predicate pushdown in reverse, so it only pays when it
+    // leaves nothing correlated behind: the body then needs no peel at all.
+    // A body still correlated elsewhere keeps its filter where it is.
+    if (!recomputeCorrelations(left, outerColumns).empty() ||
+        !recomputeCorrelations(right, outerColumns).empty()) {
+      return std::nullopt;
+    }
+
+    return LiftedJoinFilter{
+        builder().make<Join>({
+            left,
+            right,
+            join->joinType(),
+            join->leftKeys(),
+            join->rightKeys(),
+            join->filter(),
+            join->nullAware(),
+            join->nullAsValue(),
+            join->outputColumns(),
+        }),
+        std::move(lifted)};
   }
 
   // Peels a Join body operator. Serializes `Apply(L, Join(A, B, ...))`
