@@ -119,6 +119,7 @@ TEST_F(ExpressionParserTest, types) {
   test("'3' as bIgInT", BIGINT());
   test("'2020-01-01' as date", DATE());
   test("null as timestamp", TIMESTAMP());
+  test("1 as decimal(3)", DECIMAL(3, 0));
   test("null as decimal(3, 2)", DECIMAL(3, 2));
   test("null as decimal(33, 10)", DECIMAL(33, 10));
   // DECIMAL without parameters defaults to DECIMAL(38, 0), matching Presto.
