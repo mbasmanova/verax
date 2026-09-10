@@ -614,6 +614,165 @@ TEST_P(SubqueryTest, correlatedIn) {
   }
 }
 
+TEST_P(SubqueryTest, correlatedScalarGroupedWithHaving) {
+  // v1 declines a correlation predicate over a column outside the GROUP BY.
+  if (!useV2_) {
+    GTEST_SKIP();
+  }
+
+  testConnector_->addTable("t", ROW({"a", "b", "c"}, BIGINT()));
+  testConnector_->addTable("u", ROW({"x", "y", "z"}, BIGINT()));
+
+  // The body is scanned once.
+  {
+    auto query =
+        "SELECT (SELECT max(u.x) FROM u WHERE u.y = t.b GROUP BY u.z "
+        "HAVING count(*) > 1) FROM t";
+    SCOPED_TRACE(query);
+
+    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    AXIOM_ASSERT_PLAN_V2(
+        plan,
+        matchScan("t")
+            .assignUniqueId("rn")
+            .hashJoinLeft(
+                matchScan("u")
+                    .singleAggregation({"y", "z"}, {"max(x)", "count() as cnt"})
+                    .filter("cnt > 1")
+                    .project(),
+                {.keys = {{"b = y"}}})
+            .enforceDistinct({"rn"})
+            .project()
+            .build());
+  }
+
+  // With no join key the body is scanned once per outer row, and an outer
+  // whose groups the HAVING all rejects still yields a row.
+  {
+    auto query =
+        "SELECT (SELECT max(u.x) FROM u WHERE u.y > t.b GROUP BY u.z "
+        "HAVING count(*) > 1) FROM t";
+    SCOPED_TRACE(query);
+
+    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    AXIOM_ASSERT_PLAN_V2(
+        plan,
+        matchScan("t")
+            .assignUniqueId("rn")
+            .nestedLoopJoin(
+                matchScan("u").project().aliases(
+                    {std::nullopt, std::nullopt, std::nullopt, "marker"}),
+                core::JoinType::kLeft,
+                "b < y")
+            .singleAggregation(
+                {"rn", "z"},
+                {"max(x) filter (where marker) as m",
+                 "count() filter (where marker) as cnt",
+                 "arbitrary(marker) as realGroup"})
+            .project(
+                {"m",
+                 "rn",
+                 "coalesce(realGroup and cnt > 1, false) as survives"})
+            .window(
+                {"bool_or(survives) OVER (PARTITION BY rn)",
+                 "row_number() OVER (PARTITION BY rn ROWS BETWEEN "
+                 "UNBOUNDED PRECEDING AND CURRENT ROW)"})
+            .aliases(
+                {std::nullopt,
+                 std::nullopt,
+                 std::nullopt,
+                 "any_match",
+                 "pad_rn"})
+            .filter("survives or (not any_match and pad_rn = 1)")
+            .enforceDistinct({"rn"})
+            .project()
+            .build());
+  }
+
+  // A post-aggregation filter reading an outer column is decided per outer
+  // row, so the body is scanned once per outer row even with a join key.
+  {
+    auto query =
+        "SELECT (SELECT s.m FROM (SELECT max(u.x) AS m, count(*) AS c "
+        "FROM u WHERE u.y = t.b GROUP BY u.z) s WHERE s.c > t.a) FROM t";
+    SCOPED_TRACE(query);
+
+    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    AXIOM_ASSERT_PLAN_V2(
+        plan,
+        matchScan("t")
+            .assignUniqueId("rn")
+            .hashJoinLeft(
+                matchScan("u").project().aliases(
+                    {std::nullopt, std::nullopt, std::nullopt, "marker"}),
+                {.keys = {{"b = y"}}})
+            .singleAggregation(
+                {"rn", "z"},
+                {"max(x) filter (where marker) as m",
+                 "count() filter (where marker) as c",
+                 "arbitrary(a) as a",
+                 "arbitrary(marker) as realGroup"})
+            .project(
+                {"m", "rn", "coalesce(realGroup and a < c, false) as survives"})
+            .window(
+                {"bool_or(survives) OVER (PARTITION BY rn)",
+                 "row_number() OVER (PARTITION BY rn ROWS BETWEEN "
+                 "UNBOUNDED PRECEDING AND CURRENT ROW)"})
+            .aliases(
+                {std::nullopt,
+                 std::nullopt,
+                 std::nullopt,
+                 "any_match",
+                 "pad_rn"})
+            .filter("survives or (not any_match and pad_rn = 1)")
+            .enforceDistinct({"rn"})
+            .project()
+            .build());
+  }
+
+  // A non-equi correlation with no post-aggregation filter drops no group,
+  // so no window collapses the rows.
+  {
+    auto query =
+        "SELECT (SELECT count(*) FROM u WHERE u.y < t.b GROUP BY u.z) FROM t";
+    SCOPED_TRACE(query);
+
+    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    AXIOM_ASSERT_PLAN_V2(
+        plan,
+        matchScan("t")
+            .assignUniqueId("rn")
+            .nestedLoopJoin(
+                matchScan("u").project().aliases(
+                    {std::nullopt, std::nullopt, "marker"}),
+                core::JoinType::kLeft,
+                "b > y")
+            .singleAggregation(
+                {"rn", "z"},
+                {"count() filter (where marker) as cnt",
+                 "arbitrary(marker) as realGroup"})
+            .enforceDistinct({"rn"})
+            .project({"if(realGroup, cnt, null)"})
+            .build());
+  }
+
+  // One group per key holds the scalar bound, so nothing asserts it.
+  {
+    auto query =
+        "SELECT (SELECT max(u.x) FROM u WHERE u.y = t.b GROUP BY u.y) FROM t";
+    SCOPED_TRACE(query);
+
+    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    AXIOM_ASSERT_PLAN_V2(
+        plan,
+        matchScan("t")
+            .hashJoinLeft(
+                matchScan("u").singleAggregation({"y"}, {"max(x)"}),
+                {.keys = {{"b = y"}}})
+            .build());
+  }
+}
+
 // Correlated IN subquery where the correlation predicate is an equality
 // on different columns than the IN equality.
 TEST_P(SubqueryTest, correlatedInWithCorrelationFilter) {

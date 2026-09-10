@@ -1584,7 +1584,8 @@ class Decorrelator : public NodeRewriter<> {
     });
   }
 
-  // Aggregate peel (Rule A) for kLeft (Cases 1, 2, 3).
+  // Aggregate peel (Rule A) for kLeft: the body aggregates once per outer
+  // row.
   //
   // Shape:
   //   - Project (strip rn, COALESCE empty-input aggs, reorder)
@@ -1595,10 +1596,26 @@ class Decorrelator : public NodeRewriter<> {
   //         - body  = Project(agg.input, [..., _include := true])
   //         - input = AssignUniqueId(L) → tagged_L
   //
-  // In scope: kind = kLeft; gby empty or non-empty; F_post empty
-  // (accFilter doesn't reference Agg's aggregate-result output cols —
-  // refs to gby output cols are fine, they're pass-through in lifted
-  // Agg).
+  // A non-empty gby leaves an outer one row per group, and F_post drops the
+  // groups it rejects, so an outer it rejects every group of needs a pad row
+  // kept in their place. That collapse sits below the Project. Which pad it
+  // keeps is arbitrary, since they carry the same values, so the row_number
+  // picking one needs no ORDER BY:
+  //
+  //   - Project
+  //     - Filter (accepted, or the first row of an outer with none)
+  //       - Window (row_number and any-match, both over the outer)
+  //         - Project (rowId, real-group marker AND F_post)
+  //           - Aggregate (as above)
+  //
+  // The other two combinations drop no row and go straight from the Aggregate
+  // to the Project, which NULLs the values of a row that does not count: over
+  // an empty gby the aggregate gives an outer one row, and with no F_post
+  // every group is either real or the one pad standing for an outer's
+  // absence.
+  //
+  // In scope: kind = kLeft; gby empty or non-empty; F_post empty or
+  // non-empty.
   //
   // COALESCE for non-NULL empty-input aggregates: applied in final
   // Project. The lifted Agg's aggregate-result output uses a fresh
@@ -1633,15 +1650,25 @@ class Decorrelator : public NodeRewriter<> {
     auto [filterPreConjuncts, filterPostConjuncts] =
         splitFilterPreAndPost(accumulatedFilter, aggregate, numGroupingKeys);
 
-    // Equi-correlated scalar aggregate with no boundary pre-filter, no inner
-    // GROUP BY, and aggregates that don't reference the outer: group the body
-    // once by the correlation key and LEFT JOIN it back to the outer,
-    // aggregating once per key instead of once per outer row. With no inner
-    // GROUP BY the grouped body has one row per correlation key, so the
-    // join-back yields one row per outer. Other correlations use the general
-    // shape below.
-    if (filterPreConjuncts.empty() && numGroupingKeys == 0 &&
-        !aggregateArgsReferenceOuter(aggregate, input->outputColumns())) {
+    // Equi-correlated scalar aggregate with no boundary pre-filter and
+    // aggregates that don't reference the outer: group the body once by the
+    // correlation key and LEFT JOIN it back to the outer, aggregating once
+    // per key instead of once per outer row. Other correlations use the
+    // general shape below.
+    // With an inner GROUP BY the post-aggregation filter runs below the
+    // join-back, where the outer columns are not visible, so one that reads
+    // them takes the general shape instead. Without one it runs above the
+    // join, where they are, and reads whatever it likes.
+    const bool filterPostIsBodyLocal = numGroupingKeys == 0 ||
+        std::none_of(filterPostConjuncts.begin(),
+                     filterPostConjuncts.end(),
+                     [&](ExprCP conjunct) {
+                       return conjunct->columns().containsAny(
+                           input->outputColumns());
+                     });
+
+    if (filterPreConjuncts.empty() && filterPostIsBodyLocal &&
+        !aggregateReferencesOuter(aggregate, input->outputColumns())) {
       if (auto correlation =
               liftEquiCorrelation(aggregate->input(), input->outputColumns())) {
         return aggregatePeelEqui(
@@ -1649,21 +1676,9 @@ class Decorrelator : public NodeRewriter<> {
             input,
             aggregate,
             std::move(*correlation),
-            filterPostConjuncts);
+            filterPostConjuncts,
+            numGroupingKeys);
       }
-    }
-
-    // Case 4 NYI guard: kLeft + non-empty F_post + non-empty gby.
-    // The IF-in-outer-Project shape is correct only when the lifted
-    // Aggregate produces exactly one row per outer (empty gby). With
-    // non-empty gby it produces N rows per outer; IF-in-Project would
-    // emit all N rows with selective NULLs while the original kLeft
-    // Apply over Aggregate with HAVING-style filter drops failing rows
-    // and pads ONCE if all fail. Wrong row counts.
-    if (!filterPostConjuncts.empty() && numGroupingKeys > 0) {
-      VELOX_NYI(
-          "Decorrelate Case 4 (kLeft, Apply.filter non-null with F_post, "
-          "Agg.gby non-empty) is not yet implemented");
     }
 
     // Validator: reject aggregates whose args reference ONLY outer
@@ -1690,7 +1705,12 @@ class Decorrelator : public NodeRewriter<> {
     NodeCP decorrelatedInner = rewrite(innerApply.apply);
 
     auto wraps = buildAggregateWraps(
-        aggregate, numGroupingKeys, /*everyOuterRowHasGroup=*/true);
+        aggregate, numGroupingKeys, /*coalesceEmptyInput=*/false);
+
+    // A grouped body that produced no rows for an outer has no groups, so its
+    // pad group is not a body row however its aggregates read.
+    ColumnCP realGroupMarker =
+        numGroupingKeys > 0 ? makeIncludeColumn() : nullptr;
     NodeCP liftedAggregate = buildLiftedAggregate(
         input,
         aggregate,
@@ -1699,179 +1719,68 @@ class Decorrelator : public NodeRewriter<> {
         innerApply.includeMarker,
         wraps,
         numGroupingKeys,
-        decorrelatedInner);
+        decorrelatedInner,
+        realGroupMarker);
 
     // With an inner GROUP BY the lifted aggregate groups by (rowId, gby keys),
     // so it can emit several rows per outer row; grouping on the rowId alone no
-    // longer guarantees one row per outer. A scalar subquery must raise on the
-    // first outer with more than one group, so assert uniqueness on the rowId.
-    if (node->enforceSingleRow() && numGroupingKeys > 0) {
-      liftedAggregate =
-          enforceScalarSingleRow(liftedAggregate, innerApply.rowIdColumn);
+    // longer guarantees one row per outer.
+    if (numGroupingKeys > 0) {
+      if (filterPostConjuncts.empty()) {
+        // An outer's groups are all real, or are the one pad group standing
+        // for its absence, so no row needs dropping: the pad's values are
+        // NULLed at the final Project and the scalar bound asserted over the
+        // groups.
+        NodeCP enforced = node->enforceSingleRow()
+            ? enforceScalarSingleRow(liftedAggregate, innerApply.rowIdColumn)
+            : liftedAggregate;
+        return buildAggregateFinalProject(
+            node,
+            input,
+            aggregate,
+            wraps,
+            /*valueIsLive=*/realGroupMarker,
+            enforced,
+            numGroupingKeys,
+            /*includeMarkerValue=*/realGroupMarker);
+      }
+
+      // F_post drops the groups it rejects rather than NULLing them, and an
+      // outer left with none keeps one pad. Which rows survive decides the row
+      // count, so the scalar bound is asserted inside the collapse, after it.
+      //
+      // F_post reads the aggregate's own output columns, which the Project
+      // below publishes, so it is applied as written rather than substituted.
+      return collapsePadRows(
+          node,
+          input,
+          buildAggregateRowIdProject(
+              input,
+              aggregate,
+              wraps,
+              liftedAggregate,
+              numGroupingKeys,
+              innerApply.rowIdColumn,
+              realGroupMarker),
+          innerApply.rowIdColumn,
+          exprFactory_.makeAnd(
+              realGroupMarker, exprFactory_.andAll(filterPostConjuncts)));
     }
 
-    ExprCP filterPostSubstituted = buildFilterPostSubstituted(
-        filterPostConjuncts, aggregate, wraps, numGroupingKeys);
-
+    // Every outer has a group here, holding either its body rows or the pad
+    // that stands for none, so every row counts for its outer. F_post runs at
+    // the final Project, over the lifted Aggregate's own outputs, so it is
+    // substituted onto those.
     return buildAggregateFinalProject(
         node,
         input,
         aggregate,
         wraps,
-        filterPostSubstituted,
+        buildFilterPostSubstituted(
+            filterPostConjuncts, aggregate, wraps, numGroupingKeys),
         liftedAggregate,
-        numGroupingKeys);
-  }
-
-  // True if any aggregate's arguments reference an outer (input) column.
-  // Such aggregates need the outer columns visible below the aggregation,
-  // which the grouped join-back form cannot provide.
-  static bool aggregateArgsReferenceOuter(
-      AggregateCP aggregate,
-      const ColumnVector& outerColumns) {
-    for (const auto* call : aggregate->aggregates()) {
-      for (ExprCP argument : call->args()) {
-        if (argument->columns().containsAny(outerColumns)) {
-          return true;
-        }
-      }
-    }
-    return false;
-  }
-
-  // Equi-correlation lifted from an Aggregate's input for the grouped
-  // join-back decorrelation.
-  struct EquiCorrelation {
-    // The aggregate's input with the correlation predicates removed.
-    NodeCP cleanBody;
-    // Equi keys: `leftKeys` over the outer input, `rightKeys` over
-    // `cleanBody`.
-    ExprVector leftKeys;
-    ExprVector rightKeys;
-  };
-
-  // Lifts the equi-correlation out of an Aggregate's input. Succeeds only
-  // when the correlation sits in a Filter chain above a correlation-free
-  // subtree and every correlation conjunct is an equality partitioning
-  // cleanly into an outer-side and a body-side expression; returns nullopt
-  // otherwise.
-  std::optional<EquiCorrelation> liftEquiCorrelation(
-      NodeCP aggregateInput,
-      const ColumnVector& inputColumns) {
-    ExprVector correlation;
-    ExprVector localPredicates;
-    NodeCP base = aggregateInput;
-    while (base->is(NodeType::kFilter)) {
-      const Filter* filter = base->as<Filter>();
-      for (ExprCP conjunct : filter->predicates()) {
-        (conjunct->columns().containsAny(inputColumns) ? correlation
-                                                       : localPredicates)
-            .push_back(conjunct);
-      }
-      base = filter->input();
-    }
-
-    // The subtree below the lifted Filters must be correlation-free, and
-    // there must be at least one correlation conjunct to lift.
-    if (correlation.empty() ||
-        !recomputeCorrelations(base, inputColumns).empty()) {
-      return std::nullopt;
-    }
-
-    JoinCondition::Split split = JoinCondition::splitEquiKeys(
-        correlation,
-        PlanObjectSet::fromObjects(inputColumns),
-        PlanObjectSet::fromObjects(base->outputColumns()));
-    if (!split.residual.empty()) {
-      return std::nullopt;
-    }
-
-    NodeCP cleanBody = localPredicates.empty()
-        ? base
-        : builder().make<Filter>({base, std::move(localPredicates)});
-    return EquiCorrelation{
-        cleanBody, std::move(split.leftKeys), std::move(split.rightKeys)};
-  }
-
-  // Decorrelates an equi-correlated kLeft Aggregate Apply (no inner GROUP
-  // BY) by grouping the (correlation-free) body once by the correlation
-  // key, then LEFT JOINing the result back to the outer on the correlation
-  // equi keys. Empty-input aggregates receive their empty value on outer
-  // rows with no match via the COALESCE in `wraps`; a post-aggregation
-  // filter is applied at the final Project.
-  NodeCP aggregatePeelEqui(
-      ApplyCP node,
-      NodeCP input,
-      AggregateCP aggregate,
-      EquiCorrelation correlation,
-      const ExprVector& filterPostConjuncts) {
-    std::vector<AggregateWrap> wraps = buildAggregateWraps(
-        aggregate, /*numGroupingKeys=*/0, /*everyOuterRowHasGroup=*/false);
-
-    // The correlation keys become the new Aggregate's grouping keys and the
-    // join-back's right keys: reuse the body column for a plain column, mint
-    // a fresh column for a computed key.
-    ColumnVector rightKeyColumns;
-    rightKeyColumns.reserve(correlation.rightKeys.size());
-    for (ExprCP key : correlation.rightKeys) {
-      rightKeyColumns.push_back(
-          key->is(PlanType::kColumnExpr)
-              ? key->as<Column>()
-              : Column::create("__groupingKey", key->value()));
-    }
-
-    // Aggregate output: [correlation key columns, raw aggregate outputs].
-    ColumnVector aggregateOutputColumns;
-    aggregateOutputColumns.reserve(rightKeyColumns.size() + wraps.size());
-    appendAll(aggregateOutputColumns, rightKeyColumns);
-    for (const auto& wrap : wraps) {
-      aggregateOutputColumns.push_back(wrap.liftedOutput);
-    }
-
-    AggregateCallVector aggregates = aggregate->aggregates();
-    NodeCP groupedBody = builder().make<Aggregate>({
-        correlation.cleanBody,
-        std::move(correlation.rightKeys),
-        std::move(aggregates),
-        std::move(aggregateOutputColumns),
-    });
-
-    // LEFT JOIN the grouped body back to the outer on the correlation equi
-    // keys. The output keeps the outer columns and the (raw) aggregate
-    // outputs; the correlation key columns are internal and dropped.
-    ColumnVector joinOutput;
-    joinOutput.reserve(input->outputColumns().size() + wraps.size());
-    appendAll(joinOutput, input->outputColumns());
-    for (const auto& wrap : wraps) {
-      joinOutput.push_back(wrap.liftedOutput);
-    }
-
-    ExprVector rightKeyExprs;
-    appendAll(rightKeyExprs, rightKeyColumns);
-
-    NodeCP join = builder().make<Join>({
-        input,
-        groupedBody,
-        velox::core::JoinType::kLeft,
-        std::move(correlation.leftKeys),
-        std::move(rightKeyExprs),
-        /*filter=*/{},
-        /*nullAware=*/false,
-        /*nullAsValue=*/false,
-        std::move(joinOutput),
-    });
-
-    ExprCP filterPostSubstituted = buildFilterPostSubstituted(
-        filterPostConjuncts, aggregate, wraps, /*numGroupingKeys=*/0);
-
-    return buildAggregateFinalProject(
-        node,
-        input,
-        aggregate,
-        wraps,
-        filterPostSubstituted,
-        join,
-        /*numGroupingKeys=*/0);
+        numGroupingKeys,
+        builder().makeBoolean(true));
   }
 
   // For each aggregate in the original Aggregate, decides what the
@@ -1881,12 +1790,12 @@ class Decorrelator : public NodeRewriter<> {
   // FunctionRegistry: aggregates whose empty value is non-NULL (count,
   // count_if, etc.) need COALESCE; others pass through.
   //
-  // 'everyOuterRowHasGroup' is true when the lifted Aggregate groups by the
-  // outer row id above a kLeft join. An outer row with no matches still forms
-  // a group there, and a masked aggregate over that empty group already
-  // returns its empty-input value, so no COALESCE is needed. Only the
-  // join-back shape, where such an outer row has no group at all and the join
-  // pads it with NULL, needs one.
+  // 'coalesceEmptyInput' restores an aggregate's empty-input value on an outer
+  // row that reaches the final Project with no group behind it. Two shapes do
+  // not need it: one where the lifted Aggregate groups by the outer row id, so
+  // an outer with no matches still forms a group and a masked aggregate over
+  // it already returns that value; and one with an inner GROUP BY, where an
+  // outer with no group read no rows at all and the scalar is NULL.
   //
   // Slot-identity invariant: a Column* must carry the same value
   // across all output positions. For COALESCE-needing aggregates,
@@ -1908,7 +1817,7 @@ class Decorrelator : public NodeRewriter<> {
   std::vector<AggregateWrap> buildAggregateWraps(
       AggregateCP aggregate,
       size_t numGroupingKeys,
-      bool everyOuterRowHasGroup) {
+      bool coalesceEmptyInput) {
     std::vector<AggregateWrap> wraps;
     wraps.reserve(aggregate->aggregates().size());
     const auto* registry = FunctionRegistry::instance();
@@ -1925,7 +1834,7 @@ class Decorrelator : public NodeRewriter<> {
       velox::Variant emptyValue = registry->aggregateResultForEmptyInput(
           aggregateCall->name(), argumentTypes);
 
-      if (everyOuterRowHasGroup || emptyValue.isNull()) {
+      if (!coalesceEmptyInput || emptyValue.isNull()) {
         wraps.push_back({originalOutput, originalOutput});
       } else {
         ColumnCP rawOutput =
@@ -2055,13 +1964,20 @@ class Decorrelator : public NodeRewriter<> {
       ColumnCP includeMarker,
       const std::vector<AggregateWrap>& wraps,
       size_t numGroupingKeys,
-      NodeCP decorrelatedInner) {
+      NodeCP decorrelatedInner,
+      ColumnCP realGroupMarker) {
     AggregateCallVector liftedAggregates =
         recovery.rewriteCountStar(aggregate->aggregates(), includeMarker);
     liftedAggregates =
         recovery.addFilterCondition(liftedAggregates, includeMarker);
     for (ColumnCP outerColumn : input->outputColumns()) {
       liftedAggregates.push_back(makeArbitrary(outerColumn));
+    }
+    // An outer with no body rows contributes one pad row, so a group holds
+    // either only real rows or only that pad: the marker is constant per
+    // group and 'arbitrary' reads it exactly.
+    if (realGroupMarker != nullptr) {
+      liftedAggregates.push_back(makeArbitrary(includeMarker));
     }
 
     ExprVector groupingKeys;
@@ -2084,6 +2000,9 @@ class Decorrelator : public NodeRewriter<> {
       liftedOutputColumns.push_back(wrap.liftedOutput);
     }
     appendAll(liftedOutputColumns, input->outputColumns());
+    if (realGroupMarker != nullptr) {
+      liftedOutputColumns.push_back(realGroupMarker);
+    }
 
     return builder().make<Aggregate>({
         decorrelatedInner,
@@ -2120,45 +2039,329 @@ class Decorrelator : public NodeRewriter<> {
         combined, substitutionSource, substitutionTarget);
   }
 
+  // Projects the lifted Aggregate onto the outer Apply's output columns and
+  // keeps 'rowId', which identifies the outer a row belongs to, and
+  // 'realGroupMarker', which the collapse below reads. Writes no
+  // includeMarker: which rows count is decided by the filter that runs next.
+  //
+  // Only the inner-GROUP BY shape collapses, so 'realGroupMarker' is always a
+  // column here, never null.
+  NodeCP buildAggregateRowIdProject(
+      NodeCP input,
+      AggregateCP aggregate,
+      const std::vector<AggregateWrap>& wraps,
+      NodeCP child,
+      size_t numGroupingKeys,
+      ColumnCP rowId,
+      ColumnCP realGroupMarker) {
+    ExprVector expressions;
+    ColumnVector outputColumns;
+    appendAll(expressions, input->outputColumns());
+    appendAll(outputColumns, input->outputColumns());
+    for (size_t i = 0; i < numGroupingKeys; ++i) {
+      expressions.push_back(aggregate->outputColumns()[i]);
+      outputColumns.push_back(aggregate->outputColumns()[i]);
+    }
+    for (size_t i = 0; i < wraps.size(); ++i) {
+      expressions.push_back(wraps[i].finalExpression);
+      outputColumns.push_back(aggregate->outputColumns()[numGroupingKeys + i]);
+    }
+    expressions.push_back(rowId);
+    outputColumns.push_back(rowId);
+    expressions.push_back(realGroupMarker);
+    outputColumns.push_back(realGroupMarker);
+    return builder().make<Project>({
+        child,
+        std::move(expressions),
+        std::move(outputColumns),
+    });
+  }
+
+  // True if any expression the Aggregate carries — a grouping key, an
+  // aggregate's argument, FILTER mask or order key — reads an outer (input)
+  // column. Such an Aggregate needs the outer columns visible below it, which
+  // the grouped join-back form cannot provide: it aggregates the body alone.
+  static bool aggregateReferencesOuter(
+      AggregateCP aggregate,
+      const ColumnVector& outerColumns) {
+    bool referencesOuter = false;
+    forEachExpressionInNode(aggregate, [&](ExprCP expression) {
+      referencesOuter =
+          referencesOuter || expression->columns().containsAny(outerColumns);
+    });
+    return referencesOuter;
+  }
+
+  // Equi-correlation lifted from an Aggregate's input for the grouped
+  // join-back decorrelation.
+  struct EquiCorrelation {
+    // The aggregate's input with the correlation predicates removed.
+    NodeCP cleanBody;
+    // Equi keys: `leftKeys` over the outer input, `rightKeys` over
+    // `cleanBody`.
+    ExprVector leftKeys;
+    ExprVector rightKeys;
+  };
+
+  // Lifts the equi-correlation out of an Aggregate's input. Succeeds only
+  // when the correlation sits in a Filter chain above a correlation-free
+  // subtree and every correlation conjunct is an equality partitioning
+  // cleanly into an outer-side and a body-side expression; returns nullopt
+  // otherwise.
+  std::optional<EquiCorrelation> liftEquiCorrelation(
+      NodeCP aggregateInput,
+      const ColumnVector& inputColumns) {
+    ExprVector correlation;
+    ExprVector localPredicates;
+    NodeCP base = aggregateInput;
+    while (base->is(NodeType::kFilter)) {
+      const Filter* filter = base->as<Filter>();
+      for (ExprCP conjunct : filter->predicates()) {
+        (conjunct->columns().containsAny(inputColumns) ? correlation
+                                                       : localPredicates)
+            .push_back(conjunct);
+      }
+      base = filter->input();
+    }
+
+    // The subtree below the lifted Filters must be correlation-free, and
+    // there must be at least one correlation conjunct to lift.
+    if (correlation.empty() ||
+        !recomputeCorrelations(base, inputColumns).empty()) {
+      return std::nullopt;
+    }
+
+    JoinCondition::Split split = JoinCondition::splitEquiKeys(
+        correlation,
+        PlanObjectSet::fromObjects(inputColumns),
+        PlanObjectSet::fromObjects(base->outputColumns()));
+    if (!split.residual.empty()) {
+      return std::nullopt;
+    }
+
+    NodeCP cleanBody = localPredicates.empty()
+        ? base
+        : builder().make<Filter>({base, std::move(localPredicates)});
+    return EquiCorrelation{
+        cleanBody, std::move(split.leftKeys), std::move(split.rightKeys)};
+  }
+
+  // Decorrelates an equi-correlated kLeft Aggregate Apply by grouping the
+  // (correlation-free) body once by the correlation key, plus any inner
+  // GROUP BY key, then LEFT JOINing the result back to the outer on the
+  // correlation equi keys.
+  //
+  // Without an inner GROUP BY the grouped body has one row per correlation
+  // key, empty-input aggregates receive their empty value on an outer with no
+  // match via the COALESCE in `wraps`, and a post-aggregation filter reads
+  // that value at the final Project. With one, an outer can match several
+  // groups: the filter selects among them below the join, an outer left with
+  // none reads NULL, and the scalar bound is asserted over the join output.
+  NodeCP aggregatePeelEqui(
+      ApplyCP node,
+      NodeCP input,
+      AggregateCP aggregate,
+      EquiCorrelation correlation,
+      const ExprVector& filterPostConjuncts,
+      size_t numGroupingKeys) {
+    std::vector<AggregateWrap> wraps = buildAggregateWraps(
+        aggregate,
+        numGroupingKeys,
+        /*coalesceEmptyInput=*/numGroupingKeys == 0);
+
+    // The correlation keys become the new Aggregate's grouping keys and the
+    // join-back's right keys: reuse the body column for a plain column, mint
+    // a fresh column for a computed key.
+    ColumnVector rightKeyColumns;
+    rightKeyColumns.reserve(correlation.rightKeys.size());
+    for (ExprCP key : correlation.rightKeys) {
+      // A key the query also groups by is already published under that
+      // grouping key's column; reuse it rather than name the value twice.
+      ColumnCP groupingKeyOutput = nullptr;
+      for (size_t i = 0; i < numGroupingKeys; ++i) {
+        if (aggregate->groupingKeys()[i] == key) {
+          groupingKeyOutput = aggregate->outputColumns()[i];
+          break;
+        }
+      }
+      if (groupingKeyOutput != nullptr) {
+        rightKeyColumns.push_back(groupingKeyOutput);
+      } else {
+        rightKeyColumns.push_back(
+            key->is(PlanType::kColumnExpr)
+                ? key->as<Column>()
+                : Column::create("__groupingKey", key->value()));
+      }
+    }
+
+    // Aggregate output: [correlation keys, inner gby keys, raw aggregates]. A
+    // correlation key the query also groups by is one key, not two.
+    ColumnVector aggregateOutputColumns;
+    aggregateOutputColumns.reserve(
+        rightKeyColumns.size() + numGroupingKeys + wraps.size());
+    appendAll(aggregateOutputColumns, rightKeyColumns);
+
+    ExprVector groupingKeys = std::move(correlation.rightKeys);
+    ColumnVector addedGroupingKeys;
+    PlanObjectSet keyColumns = PlanObjectSet::fromObjects(rightKeyColumns);
+    for (size_t i = 0; i < numGroupingKeys; ++i) {
+      ColumnCP groupingKeyOutput = aggregate->outputColumns()[i];
+      if (keyColumns.contains(groupingKeyOutput)) {
+        continue;
+      }
+      keyColumns.add(groupingKeyOutput);
+      groupingKeys.push_back(aggregate->groupingKeys()[i]);
+      addedGroupingKeys.push_back(groupingKeyOutput);
+    }
+    appendAll(aggregateOutputColumns, addedGroupingKeys);
+
+    for (const auto& wrap : wraps) {
+      aggregateOutputColumns.push_back(wrap.liftedOutput);
+    }
+
+    AggregateCallVector aggregates = aggregate->aggregates();
+    NodeCP groupedBody = builder().make<Aggregate>({
+        .input = correlation.cleanBody,
+        .groupingKeys = std::move(groupingKeys),
+        .aggregates = std::move(aggregates),
+        .outputColumns = std::move(aggregateOutputColumns),
+    });
+
+    // With an inner GROUP BY the filter selects among an outer's groups, so
+    // it runs below the join and a rejected group leaves the outer NULL. A
+    // global aggregate gives an outer one row, which the filter must NULL
+    // rather than drop, so it runs at the final Project.
+    ExprCP filterPostSubstituted = buildFilterPostSubstituted(
+        filterPostConjuncts, aggregate, wraps, numGroupingKeys);
+    if (numGroupingKeys > 0 && filterPostSubstituted != nullptr) {
+      groupedBody = builder().make<Filter>(
+          {groupedBody, ExprVector{filterPostSubstituted}});
+    }
+
+    // With an inner GROUP BY the marker must read NULL for an outer with no
+    // surviving group, so it is sourced from the body and NULLed by the
+    // join's pad. Without one every outer has a row carrying its aggregate's
+    // empty-input value, and that row counts.
+    ColumnCP includeMarker =
+        numGroupingKeys > 0 ? makeIncludeColumn() : nullptr;
+    if (includeMarker != nullptr) {
+      groupedBody = addIncludeMarkerToBody(
+          groupedBody, includeMarker, input->outputColumns());
+    }
+
+    // An outer matches several groups only where the query groups by a key
+    // the join does not match on. The scalar bound is asserted over the
+    // join's output, against a tag on the outer rows.
+    NodeCP joinLeft = input;
+    ColumnCP rowId = nullptr;
+    if (!addedGroupingKeys.empty() && node->enforceSingleRow()) {
+      rowId = makeIdColumn();
+      joinLeft = tagOuterRows(input, rowId);
+    }
+
+    // LEFT JOIN the grouped body back to the outer on the correlation equi
+    // keys. The output keeps the outer columns, the inner gby keys and the
+    // (raw) aggregate outputs; the correlation key columns are internal and
+    // dropped.
+    ColumnVector joinOutput;
+    joinOutput.reserve(
+        input->outputColumns().size() + numGroupingKeys + wraps.size() + 2);
+    appendAll(joinOutput, input->outputColumns());
+    if (rowId != nullptr) {
+      joinOutput.push_back(rowId);
+    }
+    // Every grouping key is projected above, including one shared with a
+    // correlation key: the grouped body publishes it either way.
+    for (size_t i = 0; i < numGroupingKeys; ++i) {
+      joinOutput.push_back(aggregate->outputColumns()[i]);
+    }
+    for (const auto& wrap : wraps) {
+      joinOutput.push_back(wrap.liftedOutput);
+    }
+    if (includeMarker != nullptr) {
+      joinOutput.push_back(includeMarker);
+    }
+
+    ExprVector rightKeyExprs;
+    appendAll(rightKeyExprs, rightKeyColumns);
+
+    NodeCP join = builder().make<Join>({
+        joinLeft,
+        groupedBody,
+        velox::core::JoinType::kLeft,
+        std::move(correlation.leftKeys),
+        std::move(rightKeyExprs),
+        /*filter=*/{},
+        /*nullAware=*/false,
+        /*nullAsValue=*/false,
+        std::move(joinOutput),
+    });
+
+    if (rowId != nullptr) {
+      join = enforceScalarSingleRow(join, rowId);
+    }
+
+    return buildAggregateFinalProject(
+        node,
+        input,
+        aggregate,
+        wraps,
+        numGroupingKeys == 0 ? filterPostSubstituted : nullptr,
+        join,
+        numGroupingKeys,
+        includeMarker != nullptr ? static_cast<ExprCP>(includeMarker)
+                                 : builder().makeBoolean(true));
+  }
+
   // Final Project: shapes `child`'s output to node->outputColumns()
   // (= L.cols ++ gby_cols ++ aggregate_results ++ includeMarker).
   //   - L.cols: pass-through from the input columns (the outer side of
   //     the join-back, or the lifted `arbitrary` outputs).
-  //   - gby_cols: pass-through from the grouping-key outputs.
-  //   - aggregate_results: each `wrap.finalExpression` (pass-through
-  //     or COALESCE), additionally wrapped in IF(F_post_subst, ...,
-  //     NULL) when a post-aggregation filter is present. The IF preserves
-  //     the outer row and nulls the aggregate values when the filter
-  //     fails — kLeft semantics for HAVING-style predicates.
+  //   - gby_cols and aggregate_results: the grouping-key outputs, and each
+  //     `wrap.finalExpression` (pass-through or COALESCE), both wrapped in
+  //     IF('valueIsLive', ..., NULL) where that is given. 'valueIsLive' says
+  //     the body values on a row count for its outer — a substituted F_post
+  //     where a HAVING-style predicate selects among an outer's groups, or
+  //     the real-group marker where the row may be the pad standing for an
+  //     outer that read no rows. Either way the outer row is preserved and
+  //     only what the body would have produced is NULLed, which is kLeft
+  //     semantics. A grouping key is NULLed with the aggregates, since a key
+  //     whose expression is non-NULL over the body's NULLs would otherwise
+  //     publish a value for an outer that read no rows.
+  //   - includeMarker: 'includeMarkerValue'. Literal `true` where every
+  //     outer reaches here with a row of its own, and a marker column
+  //     sourced from the body where a join below can pad an outer, so the
+  //     pad reads NULL.
   NodeCP buildAggregateFinalProject(
       ApplyCP node,
       NodeCP input,
       AggregateCP aggregate,
       const std::vector<AggregateWrap>& wraps,
-      ExprCP filterPostSubstituted,
+      ExprCP valueIsLive,
       NodeCP child,
-      size_t numGroupingKeys) {
+      size_t numGroupingKeys,
+      ExprCP includeMarkerValue) {
+    auto nullUnlessLive = [&](ExprCP expression, TypeCP type) {
+      return valueIsLive == nullptr
+          ? expression
+          : exprFactory_.makeIf(
+                valueIsLive, expression, builder().makeNull(type));
+    };
+
     ExprVector finalExpressions;
     finalExpressions.reserve(node->outputColumns().size());
     appendAll(finalExpressions, input->outputColumns());
     for (size_t i = 0; i < numGroupingKeys; ++i) {
-      finalExpressions.push_back(aggregate->outputColumns()[i]);
+      ColumnCP groupingKeyOutput = aggregate->outputColumns()[i];
+      finalExpressions.push_back(
+          nullUnlessLive(groupingKeyOutput, groupingKeyOutput->value().type));
     }
     for (size_t i = 0; i < wraps.size(); ++i) {
-      ExprCP expression = wraps[i].finalExpression;
-      if (filterPostSubstituted != nullptr) {
-        ColumnCP originalOutput =
-            aggregate->outputColumns()[numGroupingKeys + i];
-        TypeCP type = originalOutput->value().type;
-        expression = exprFactory_.makeIf(
-            filterPostSubstituted, expression, builder().makeNull(type));
-      }
-      finalExpressions.push_back(expression);
+      finalExpressions.push_back(nullUnlessLive(
+          wraps[i].finalExpression,
+          aggregate->outputColumns()[numGroupingKeys + i]->value().type));
     }
-    // includeMarker is `true` for every output row: this level emits one
-    // row per outer (grouped by the per-outer id, or one match per outer
-    // from the join-back), so there are no pad rows to exclude.
-    finalExpressions.push_back(builder().makeBoolean(true));
+    finalExpressions.push_back(includeMarkerValue);
     return builder().make<Project>({
         child,
         std::move(finalExpressions),
@@ -2496,7 +2699,7 @@ class Decorrelator : public NodeRewriter<> {
         aggregate->aggregates(), node->correlationColumns());
 
     auto wraps = buildAggregateWraps(
-        aggregate, numGroupingKeys, /*everyOuterRowHasGroup=*/true);
+        aggregate, numGroupingKeys, /*coalesceEmptyInput=*/false);
 
     AggregateCallVector stage1Aggregates = recovery.rewriteCountStar(
         aggregate->aggregates(), innerApply.includeMarker);
@@ -2685,7 +2888,7 @@ class Decorrelator : public NodeRewriter<> {
         aggregate->aggregates(), node->correlationColumns());
 
     auto wraps = buildAggregateWraps(
-        aggregate, numGroupingKeys, /*everyOuterRowHasGroup=*/true);
+        aggregate, numGroupingKeys, /*coalesceEmptyInput=*/false);
 
     AggregateRecovery recovery(builder(), exprFactory_);
     auto innerApply = buildAggregateInnerApply(
