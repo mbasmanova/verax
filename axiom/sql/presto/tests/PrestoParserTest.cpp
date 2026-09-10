@@ -88,6 +88,47 @@ TEST_F(PrestoParserTest, unnest) {
           matchValues().unnest().output()),
       "Column alias list size does not match");
 
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      parseSelect(
+          "SELECT * FROM (SELECT ARRAY[1] AS a) "
+          "CROSS JOIN UNNEST(a) AS u(x, y)"),
+      "Column alias list size does not match");
+
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      parseSelect(
+          "SELECT * FROM (SELECT MAP(ARRAY[1], ARRAY[2]) AS m) "
+          "CROSS JOIN UNNEST(m) AS u(k)"),
+      "Column alias list size does not match");
+
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      parseSelect(
+          "SELECT * FROM (SELECT ARRAY[1] AS a) "
+          "CROSS JOIN UNNEST(a) WITH ORDINALITY AS u(x)"),
+      "Column alias list size does not match");
+
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      parseSelect(
+          "SELECT * FROM (SELECT MAP(ARRAY[1], ARRAY[2]) AS m, "
+          "ARRAY[ROW(1, 2)] AS a) "
+          "CROSS JOIN UNNEST(m, a) AS u(k)"),
+      "Column alias list size does not match");
+
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      parseSelect(
+          "SELECT * FROM (SELECT ARRAY[ROW(1, 2)] AS a) "
+          "CROSS JOIN UNNEST(a) WITH ORDINALITY AS u(x)"),
+      "Column alias list size does not match");
+
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      parseSelect(
+          "SELECT * FROM (SELECT ARRAY[ROW(1, 2)] AS a) "
+          "CROSS JOIN UNNEST(a) AS u(x, y)"),
+      "Column alias list size does not match");
+  testSelect(
+      "SELECT * FROM (SELECT ARRAY[ROW(1, 2)] AS a) "
+      "CROSS JOIN UNNEST(a) AS u(x)",
+      matchValues().project().unnest().output({"a", "x"}));
+
   testSelect(
       "SELECT * FROM unnest(array[1, 2, 3], array[4, 5]) with ordinality as t(x, y, ord)",
       matchValues().unnest().project().output({"x", "y", "ord"}));
@@ -1852,6 +1893,34 @@ TEST_F(PrestoParserTest, outputNamesPreserveAliasCaseAcrossJoin) {
           "SELECT * FROM ((SELECT 1 AS X) CROSS JOIN (SELECT 2 AS Y)) a"),
       testing::ElementsAre("X", "Y"));
 
+  // A wrapped CROSS JOIN preserves the case of its input and UNNEST output.
+  EXPECT_THAT(
+      outputNames(
+          "SELECT * FROM ((SELECT ARRAY[1] AS A) CROSS JOIN UNNEST(a) AS u(X)) t"),
+      testing::ElementsAre("A", "X"));
+  EXPECT_THAT(
+      outputNames(
+          "SELECT * FROM ((SELECT MAP(ARRAY[1], ARRAY[2]) AS M) "
+          "CROSS JOIN UNNEST(m) AS u(K, V)) t"),
+      testing::ElementsAre("M", "K", "V"));
+  EXPECT_THAT(
+      outputNames(
+          "SELECT * FROM ((SELECT ARRAY[1] AS A) "
+          "CROSS JOIN UNNEST(a) WITH ORDINALITY AS u(X, N)) t"),
+      testing::ElementsAre("A", "X", "N"));
+
+  // Qualified and chained joins preserve each UNNEST column alias's case.
+  EXPECT_THAT(
+      outputNames(
+          "SELECT u.* FROM (SELECT ARRAY[1] AS A) CROSS JOIN UNNEST(a) AS u(X)"),
+      testing::ElementsAre("X"));
+  EXPECT_THAT(
+      outputNames(
+          "SELECT * FROM ((SELECT ARRAY[1] AS A, ARRAY[2] AS B) "
+          "CROSS JOIN UNNEST(a) AS u(X) "
+          "CROSS JOIN UNNEST(b) AS v(Y)) t"),
+      testing::ElementsAre("A", "B", "X", "Y"));
+
   // Alias-qualified star expansion.
   EXPECT_THAT(
       outputNames(
@@ -1879,7 +1948,9 @@ TEST_F(PrestoParserTest, outputNamesPreserveAliasCaseAcrossJoin) {
   // Nested JOIN inside the right leg.
   EXPECT_THAT(
       outputNames(
-          "SELECT * FROM ((SELECT 1 AS X) CROSS JOIN ((SELECT 2 AS Y) CROSS JOIN (SELECT 3 AS Z))) a"),
+          "SELECT * FROM ((SELECT 1 AS X) "
+          "CROSS JOIN ((SELECT 2 AS Y) "
+          "CROSS JOIN (SELECT 3 AS Z))) a"),
       testing::ElementsAre("X", "Y", "Z"));
 }
 

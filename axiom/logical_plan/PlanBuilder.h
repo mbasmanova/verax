@@ -483,9 +483,9 @@ class PlanBuilder {
   /// @param ordinality If set, adds an ordinality column. Must be created
   /// using the Ordinality() factory function.
   /// @param alias Optional alias for the relation produced by unnest.
-  /// @param columnAliases An optional list of aliases for columns produced by
-  /// unnest. The list can be empty or must have a non-empty alias for each
-  /// column.
+  /// @param unnestAliases Aliases to apply in order to columns produced by
+  /// expressions that do not have per-expression aliases. Missing aliases use
+  /// generated names and excess aliases are ignored.
   PlanBuilder& unnest(
       const std::vector<ExprApi>& unnestExprs,
       const std::optional<ExprApi>& ordinality,

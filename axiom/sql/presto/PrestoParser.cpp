@@ -478,9 +478,39 @@ class RelationPlanner : public AstVisitor {
     return std::nullopt;
   }
 
+  void updateUnnestDisplayNames(
+      const AliasedRelation& aliasedRelation,
+      const std::string& relationAlias,
+      std::span<const std::shared_ptr<Identifier>> columnAliases,
+      size_t numInputColumns) {
+    const auto& planNode = builder_->planNode();
+    VELOX_CHECK(
+        planNode->is(lp::NodeKind::kUnnest),
+        "Expected UnnestNode after PlanBuilder::unnest");
+    const auto* unnestNode = planNode->as<lp::UnnestNode>();
+    const auto numOutputColumns = unnestNode->outputType()->size() -
+        unnestNode->onlyInput()->outputType()->size();
+    AXIOM_PRESTO_SEMANTIC_CHECK_EQ(
+        columnAliases.size(),
+        numOutputColumns,
+        aliasedRelation.location(),
+        aliasedRelation.alias()->value(),
+        "Column alias list size does not match the number of output columns");
+
+    VELOX_CHECK_EQ(
+        displayNames_.lastNames.size(), numInputColumns + numOutputColumns);
+    for (size_t i = 0; i < numOutputColumns; ++i) {
+      displayNames_.lastNames[numInputColumns + i] = columnAliases[i]->value();
+    }
+    displayNames_.accumulateFrom(*builder_, relationAlias, numInputColumns);
+  }
+
   void addCrossJoinUnnest(
       const Unnest& unnest,
       const AliasedRelation* aliasedRelation) {
+    const auto numInputColumns =
+        builder_->outputNames(/*includeHiddenColumns=*/false).size();
+
     std::vector<lp::ExprApi> inputs;
     for (const auto& expr : unnest.expressions()) {
       inputs.push_back(toExpr(expr));
@@ -493,26 +523,35 @@ class RelationPlanner : public AstVisitor {
       return lp::Ordinality();
     };
 
-    if (aliasedRelation) {
-      std::vector<std::string> columnNames;
-      columnNames.reserve(aliasedRelation->columnNames().size());
-      for (const auto& name : aliasedRelation->columnNames()) {
-        columnNames.emplace_back(canonicalizeIdentifier(*name));
+    std::optional<std::string> relationAlias;
+    std::span<const std::shared_ptr<Identifier>> columnAliases;
+    if (aliasedRelation != nullptr) {
+      relationAlias = canonicalizeIdentifier(*aliasedRelation->alias());
+      columnAliases = aliasedRelation->columnNames();
+    }
+
+    if (relationAlias.has_value()) {
+      std::vector<std::string> canonicalColumnNames;
+      canonicalColumnNames.reserve(columnAliases.size());
+      for (const auto& name : columnAliases) {
+        canonicalColumnNames.emplace_back(canonicalizeIdentifier(*name));
       }
 
       auto ordinality = toOrdinality();
-      if (ordinality.has_value() && !columnNames.empty()) {
-        ordinality = ordinality->as(columnNames.back());
-        columnNames.pop_back();
+      if (ordinality.has_value() && !canonicalColumnNames.empty()) {
+        ordinality = ordinality->as(canonicalColumnNames.back());
+        canonicalColumnNames.pop_back();
       }
 
-      builder_->unnest(
-          inputs,
-          ordinality,
-          canonicalizeIdentifier(*aliasedRelation->alias()),
-          columnNames);
+      builder_->unnest(inputs, ordinality, relationAlias, canonicalColumnNames);
     } else {
       builder_->unnest(inputs, toOrdinality());
+    }
+
+    displayNames_.captureLastNames(*builder_);
+    if (!columnAliases.empty()) {
+      updateUnnestDisplayNames(
+          *aliasedRelation, *relationAlias, columnAliases, numInputColumns);
     }
   }
 

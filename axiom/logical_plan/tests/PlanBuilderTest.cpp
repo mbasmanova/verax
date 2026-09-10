@@ -310,6 +310,37 @@ TEST_F(PlanBuilderTest, unnestOrdinality) {
       {"a", "elem", "ord"});
 }
 
+TEST_F(PlanBuilderTest, mixedUnnestAliases) {
+  auto plan =
+      PlanBuilder()
+          .values(
+              ROW({"a", "m"}, {ARRAY(BIGINT()), MAP(BIGINT(), BIGINT())}),
+              ValuesNode::Variants{})
+          .unnest(
+              {Col("a").unnestAs("element"), Col("m")},
+              std::nullopt,
+              "u",
+              {"key", "value"})
+          .build();
+
+  EXPECT_THAT(
+      plan->outputType()->names(),
+      testing::ElementsAre("a", "m", "element", "key", "value"));
+}
+
+TEST_F(PlanBuilderTest, unusedUnnestAlias) {
+  PlanBuilder::Context context;
+  auto plan =
+      PlanBuilder(context, /*allowAmbiguousOutputNames=*/true)
+          .values(ROW("a", ARRAY(BIGINT())), ValuesNode::Variants{})
+          .unnest(
+              {Col("a").unnestAs("element")}, std::nullopt, "u", {"element"})
+          .project({Col("element")})
+          .build();
+
+  EXPECT_THAT(plan->outputType()->names(), testing::ElementsAre("element"));
+}
+
 TEST_F(PlanBuilderTest, setOperationTypeCoercion) {
   auto startMatcher = [] { return test::LogicalPlanMatcherBuilder().values(); };
 
