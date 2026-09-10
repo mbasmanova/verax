@@ -897,6 +897,50 @@ CROSS JOIN UNNEST(ARRAY[(SELECT max(a) FROM u WHERE u.a = s.k)]) AS v(x)
 -- error_v1: LIMIT in a correlated scalar subquery is not supported yet
 SELECT u.a, (SELECT t.b FROM t WHERE t.a = u.a + 1 ORDER BY t.b LIMIT 1) FROM u
 ----
+-- A correlated subquery ordering by a column it does not select reads the
+-- first row of that order. Two outers share a key and read the same row, and
+-- an outer matching nothing reads NULL.
+-- error_v1: LIMIT in a correlated scalar subquery is not supported yet
+WITH b(k, x, o) AS (VALUES (1, 'p', 2), (1, 'q', 1), (2, 'r', 5))
+SELECT t.k, (SELECT b.x FROM b WHERE b.k = t.k ORDER BY b.o LIMIT 1)
+FROM (VALUES (1), (2), (3), (1)) AS t(k)
+----
+-- Reversing the order selects the other row.
+-- error_v1: LIMIT in a correlated scalar subquery is not supported yet
+WITH b(k, x, o) AS (VALUES (1, 'p', 2), (1, 'q', 1), (2, 'r', 5))
+SELECT t.k, (SELECT b.x FROM b WHERE b.k = t.k ORDER BY b.o DESC LIMIT 1)
+FROM (VALUES (1), (2), (3)) AS t(k)
+----
+-- An outer the subquery has no row for reads NULL, even where the expression
+-- above it would turn a row into a value.
+-- error_v1: LIMIT in a correlated scalar subquery is not supported yet
+WITH b(k, x) AS (VALUES (1, 'p'), (2, 'q'))
+SELECT t.k,
+       (SELECT s.x IS NULL
+        FROM (SELECT b.x FROM b WHERE b.k = t.k ORDER BY b.x LIMIT 1) s)
+FROM (VALUES (1), (3)) AS t(k)
+----
+-- A NULL correlation key matches no row, so the subquery reads NULL.
+-- error_v1: LIMIT in a correlated scalar subquery is not supported yet
+WITH b(k, x, o) AS (VALUES (1, 'p', 2))
+SELECT t.k, (SELECT b.x FROM b WHERE b.k = t.k ORDER BY b.o LIMIT 1)
+FROM (VALUES (1), (CAST(NULL AS INTEGER))) AS t(k)
+----
+-- A LIMIT above one row is not a scalar bound, so the body ranks to that
+-- many rows per key and the aggregate above reads them all.
+WITH b(k, x, o) AS (VALUES (1, 10, 3), (1, 20, 1), (1, 40, 2))
+SELECT t.k,
+       (SELECT sum(s.x)
+        FROM (SELECT b.x FROM b WHERE b.k = t.k ORDER BY b.o LIMIT 2) s)
+FROM (VALUES (1), (3)) AS t(k)
+----
+-- The same LIMIT under a scalar bound takes the per-outer form instead. Each
+-- key has one row, so the bound holds.
+-- error_v1: LIMIT in a correlated scalar subquery is not supported yet
+WITH b(k, x) AS (VALUES (1, 'p'), (2, 'q'))
+SELECT t.k, (SELECT b.x FROM b WHERE b.k = t.k LIMIT 2)
+FROM (VALUES (1), (2), (3)) AS t(k)
+----
 -- Correlated EXISTS with LIMIT 1 body.
 SELECT u.a FROM u WHERE EXISTS (SELECT 1 FROM t WHERE t.a > u.a LIMIT 1)
 ----
