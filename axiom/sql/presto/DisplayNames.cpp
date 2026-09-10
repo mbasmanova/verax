@@ -85,6 +85,13 @@ void DisplayNames::captureLastNames(const std::vector<SelectItemPtr>& items) {
 void DisplayNames::accumulate(
     const lp::PlanBuilder& builder,
     const std::optional<std::string>& relationAlias) {
+  accumulateFrom(builder, relationAlias, 0);
+}
+
+void DisplayNames::accumulateFrom(
+    const lp::PlanBuilder& builder,
+    const std::optional<std::string>& relationAlias,
+    size_t firstColumn) {
   if (lastNames.empty()) {
     return;
   }
@@ -92,7 +99,7 @@ void DisplayNames::accumulate(
   std::vector<std::optional<std::string>> names =
       builder.outputNames(/*includeHiddenColumns=*/false);
   VELOX_CHECK_EQ(names.size(), lastNames.size());
-  for (size_t i = 0; i < names.size(); ++i) {
+  for (size_t i = firstColumn; i < names.size(); ++i) {
     const auto& name = names[i];
     const auto& display = lastNames[i];
     if (!display.has_value() || !name.has_value()) {

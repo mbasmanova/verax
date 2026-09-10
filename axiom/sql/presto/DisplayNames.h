@@ -93,6 +93,13 @@ struct DisplayNames {
   void accumulate(
       const lp::PlanBuilder& builder,
       const std::optional<std::string>& relationAlias);
+
+  /// Captures display names for 'builder' columns starting at 'firstColumn'.
+  /// Used when a relation appends columns to an existing input.
+  void accumulateFrom(
+      const lp::PlanBuilder& builder,
+      const std::optional<std::string>& relationAlias,
+      size_t firstColumn);
 };
 
 } // namespace axiom::sql::presto
