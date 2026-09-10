@@ -1500,3 +1500,21 @@ ORDER BY (SELECT v.a)
 SELECT (SELECT 1 WHERE v.a = 2)
 FROM v
 GROUP BY a
+----
+-- A subquery in a lambda body reads a value the row already has: it is
+-- evaluated once for the row, and every element of the array sees it. The
+-- smallest 'v.a' is 2, so one element of each array survives. DuckDB rejects
+-- a subquery in a lambda, so the expected rows are stated here.
+-- duckdb: VALUES (1, 1), (2, 1), (3, 1), (4, 1), (5, 1)
+-- error_v1: Unexpected expression: Subquery
+SELECT u.a, cardinality(filter(ARRAY[1, 2, 3], x -> x > (SELECT min(a) FROM v)))
+FROM u
+----
+-- The same where the subquery is correlated to the row: the array survives
+-- whole for the rows whose value 'v' holds, and empties for the rest.
+-- duckdb: VALUES (1, 0), (2, 3), (3, 0), (4, 3), (5, 0)
+-- error_v1: Unexpected expression: Subquery
+SELECT
+  u.a,
+  cardinality(filter(ARRAY[1, 2, 3], x -> EXISTS (SELECT 1 FROM v WHERE v.a = u.a)))
+FROM u

@@ -675,7 +675,10 @@ class Translator {
   ExprCP
   translateDereference(ExprVector args, Name callName, const Value& value);
 
-  ExprCP translateLambda(const lp::LambdaExpr& expr, const Scope& scope);
+  ExprCP translateLambda(
+      const lp::LambdaExpr& expr,
+      const Scope& scope,
+      LiftTarget* liftTarget);
 
   // Joins 'body' into 'target's pending lifts with the body's own top-level
   // filter as the join condition, and replaces them with the result under an
@@ -2907,7 +2910,7 @@ ExprCP Translator::translateExpr(
       return translateSpecialForm(
           *expr.as<lp::SpecialFormExpr>(), scope, liftTarget);
     case lp::ExprKind::kLambda:
-      return translateLambda(*expr.as<lp::LambdaExpr>(), scope);
+      return translateLambda(*expr.as<lp::LambdaExpr>(), scope, liftTarget);
     case lp::ExprKind::kSubquery: {
       // Bare subquery in scalar position. `liftSubquery` decides the
       // lowered shape: uncorrelated → cross-join + EnforceSingleRow
@@ -3175,7 +3178,8 @@ ExprCP Translator::translateDereference(
 
 ExprCP Translator::translateLambda(
     const lp::LambdaExpr& expr,
-    const Scope& scope) {
+    const Scope& scope,
+    LiftTarget* liftTarget) {
   const auto& signature = expr.signature();
 
   // TODO: mint canonical `Column*` per `(arg position, arg type)` so
@@ -3193,10 +3197,11 @@ ExprCP Translator::translateLambda(
     bodyScope[signature->nameOf(i)] = column;
   }
 
-  // Lambdas appear inside higher-order functions; subqueries inside a
-  // lambda body would need lifting above the surrounding higher-order
-  // call's relational input — uncommon and not threaded today.
-  ExprCP body = translateExpr(*expr.body(), bodyScope, /*liftTarget=*/nullptr);
+  // A subquery in the body lifts onto the same target as the higher-order
+  // call itself: it is evaluated once per row, and the body reads the result
+  // as a capture. The arguments are not in scope inside such a subquery, so
+  // it cannot correlate to a value that varies per element.
+  ExprCP body = translateExpr(*expr.body(), bodyScope, liftTarget);
   return make<Lambda>(std::move(args), toType(expr.type()), body);
 }
 
