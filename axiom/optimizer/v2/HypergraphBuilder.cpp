@@ -99,18 +99,25 @@ struct SubtreeRelations {
   RelationSet allRelations;
 };
 
-// Returns the leaf relations and all hypergraph relations below `node`, and
-// records the normalized operands of every Join reached during the walk.
+// Returns the leaf relations and all hypergraph relations below `node`,
+// records the normalized operands of every Join reached during the walk in
+// `inputs`, and records in `unnestSubtrees` what each Unnest's input subtree
+// contributes. That set excludes the Unnest's own relation id, so testing a
+// join's relations against it asks whether the join lies below the Unnest.
+// Every Unnest of the cluster gets an entry, an Unnest of a constant an empty
+// one: the cluster holds no part of its input.
 SubtreeRelations populateJoinInputs(
     NodeCP node,
     const folly::F14FastMap<NodeCP, int8_t>& leafIds,
     const folly::F14FastMap<UnnestCP, int8_t>& unnestIds,
-    folly::F14FastMap<JoinCP, JoinInputs>& inputs) {
+    folly::F14FastMap<JoinCP, JoinInputs>& inputs,
+    folly::F14FastMap<int8_t, RelationSet>& unnestSubtrees) {
   const auto it = leafIds.find(node);
   if (it != leafIds.end()) {
     const RelationSet relation = RelationSet::singleton(it->second);
     return {relation, relation};
   }
+
   if (node->is(NodeType::kUnnest)) {
     const auto* unnest = node->as<Unnest>();
     NodeCP input = unnest->input();
@@ -118,19 +125,23 @@ SubtreeRelations populateJoinInputs(
     // The cluster does not contain the input of an Unnest of a constant, so
     // the Unnest's own relation is all its subtree contributes.
     if (input->outputColumns().empty()) {
+      unnestSubtrees[unnestId] = RelationSet{};
       const RelationSet relation = RelationSet::singleton(unnestId);
       return {relation, relation};
     }
     SubtreeRelations subtree =
-        populateJoinInputs(input, leafIds, unnestIds, inputs);
+        populateJoinInputs(input, leafIds, unnestIds, inputs, unnestSubtrees);
+    unnestSubtrees[unnestId] = subtree.allRelations;
     subtree.allRelations.add(unnestId);
     return subtree;
   }
+
   const auto* join = node->as<Join>();
-  const SubtreeRelations left =
-      populateJoinInputs(join->left(), leafIds, unnestIds, inputs);
-  const SubtreeRelations right =
-      populateJoinInputs(join->right(), leafIds, unnestIds, inputs);
+  const SubtreeRelations left = populateJoinInputs(
+      join->left(), leafIds, unnestIds, inputs, unnestSubtrees);
+  const SubtreeRelations right = populateJoinInputs(
+      join->right(), leafIds, unnestIds, inputs, unnestSubtrees);
+
   // Normalize right-form joins to their left form by swapping operands.
   // kRight, kRightSemiFilter and kRightSemiProject each map to the
   // matching left-form type; the rest of the pipeline never sees a
@@ -411,56 +422,36 @@ void addTransitiveInnerEdges(
   }
 }
 
-} // namespace
+// The TES of an edge: its SES plus what each side's shape forbids reordering
+// past. 'left' and 'right' are the join's operands in normalized order.
+RelationSet expandTes(
+    const RelationSet& ses,
+    NodeCP left,
+    NodeCP right,
+    velox::core::JoinType joinType,
+    const folly::F14FastMap<NodeCP, int8_t>& leafIds,
+    const folly::F14FastMap<JoinCP, JoinInputs>& joinInputs) {
+  RelationSet tes{ses};
+  tes.unionSet(tesExpansion(
+      left, joinType, ses, /*leftSide=*/true, leafIds, joinInputs));
+  tes.unionSet(tesExpansion(
+      right, joinType, ses, /*leftSide=*/false, leafIds, joinInputs));
+  return tes;
+}
 
-JoinHypergraph HypergraphBuilder::build(
+// Admits an Unnest relation per Unnest in 'cluster', in post-order so an input
+// Unnest receives a lower id than one depending on it, and extends
+// 'columnToLeaf' so each Unnest's produced columns resolve to its relation id.
+folly::F14FastMap<UnnestCP, int8_t> addUnnestRelations(
     const JoinCluster& cluster,
-    const std::vector<NodeCP>& rewrittenLeaves,
-    EstimateProvider& estimateProvider) {
-  VELOX_CHECK_LE(
-      cluster.leaves.size(),
-      RelationSet::kMaxRelations,
-      "Cluster has more leaves than RelationSet can represent");
-  VELOX_CHECK_EQ(
-      cluster.leaves.size(),
-      rewrittenLeaves.size(),
-      "rewrittenLeaves must align 1:1 with cluster.leaves");
-
-  JoinHypergraph graph;
-  folly::F14FastMap<ColumnCP, int8_t> columnToLeaf;
-  folly::F14FastMap<NodeCP, int8_t> leafIds;
-  for (size_t i = 0; i < cluster.leaves.size(); ++i) {
-    NodeCP original = cluster.leaves[i];
-    NodeCP rewritten = rewrittenLeaves[i];
-    PlanObjectSet columns;
-    for (const auto* column : rewritten->outputColumns()) {
-      columns.add(column);
-    }
-    const int8_t id = graph.addRelation(
-        rewritten,
-        estimateProvider.estimate(rewritten).cardinality,
-        std::move(columns));
-    VELOX_CHECK(leafIds.emplace(original, id).second, "Duplicate cluster leaf");
-    if (rewritten != original) {
-      VELOX_CHECK(
-          leafIds.emplace(rewritten, id).second,
-          "Duplicate rewritten cluster leaf");
-    }
-    for (const auto* column : rewritten->outputColumns()) {
-      columnToLeaf.emplace(column, id);
-    }
-  }
-
-  // Admit Unnest relations in post-order so input Unnests receive lower ids
-  // than the Unnests that depend on them. Extend the column-resolution map so
-  // each Unnest's produced columns resolve to its relation id.
+    EstimateProvider& estimateProvider,
+    JoinHypergraph& graph,
+    folly::F14FastMap<ColumnCP, int8_t>& columnToLeaf) {
   folly::F14FastMap<UnnestCP, int8_t> unnestIds;
   for (UnnestCP unnest : cluster.unnests) {
     PlanObjectSet producedColumns;
     for (const auto& columnsForExpr : unnest->unnestColumns()) {
-      for (const auto* column : columnsForExpr) {
-        producedColumns.add(column);
-      }
+      producedColumns.unionObjects(columnsForExpr);
     }
     if (unnest->ordinalityColumn() != nullptr) {
       producedColumns.add(unnest->ordinalityColumn());
@@ -480,11 +471,18 @@ JoinHypergraph HypergraphBuilder::build(
       columnToLeaf.emplace(unnest->ordinalityColumn(), id);
     }
   }
+  return unnestIds;
+}
 
-  // Builds each Unnest edge and records the relation ids referenced by the
-  // Unnest input's output columns. These data dependencies determine whether
-  // an outer join must precede or follow the Unnest; they are distinct from the
-  // complete structural subtree membership recorded in `joinInputs` below.
+// Adds an edge per Unnest, from the relations its input's columns read to the
+// Unnest itself, and returns those input relations by Unnest id: the Unnest's
+// data dependencies, which decide whether an outer join must precede or
+// follow it.
+folly::F14FastMap<int8_t, RelationSet> addUnnestEdges(
+    const JoinCluster& cluster,
+    const folly::F14FastMap<UnnestCP, int8_t>& unnestIds,
+    const folly::F14FastMap<ColumnCP, int8_t>& columnToLeaf,
+    JoinHypergraph& graph) {
   folly::F14FastMap<int8_t, RelationSet> unnestInputRelations;
   for (UnnestCP unnest : cluster.unnests) {
     const int8_t id = unnestIds.at(unnest);
@@ -509,9 +507,103 @@ JoinHypergraph HypergraphBuilder::build(
 
     graph.addEdge(JoinEdge::unnest(inputRelations, RelationSet::singleton(id)));
   }
+  return unnestInputRelations;
+}
+
+// Adds to 'tes' the Unnests this outer join must not be reordered past.
+//
+// An Unnest reading an array from the join's null-padded side has to run
+// before the join: after it, the padded row carries a NULL array, which
+// unnests to no rows and drops the row the outer join preserved. Adding the
+// Unnest's relation id to the TES is what pins that order for DPhyp.
+//
+// A join contained in the Unnest's input subtree is one the query unnests the
+// result of, so its own order is join-then-unnest and the barrier, which
+// demands the reverse, does not apply to it. Containment is structural: a
+// projection can drop the columns of a relation the join reads, which is why
+// the Unnest's data dependencies do not answer this.
+void addUnnestBarriers(
+    const JoinInputs& inputs,
+    const folly::F14FastMap<int8_t, RelationSet>& unnestInputRelations,
+    const folly::F14FastMap<int8_t, RelationSet>& unnestSubtrees,
+    RelationSet& tes) {
+  RelationSet nullPaddedSide;
+  if (inputs.joinType == velox::core::JoinType::kLeft) {
+    nullPaddedSide = inputs.rightLeaves;
+  } else if (inputs.joinType == velox::core::JoinType::kFull) {
+    nullPaddedSide = inputs.leftLeaves;
+    nullPaddedSide.unionSet(inputs.rightLeaves);
+  } else {
+    return;
+  }
+
+  RelationSet joinRelations{inputs.leftRelations};
+  joinRelations.unionSet(inputs.rightRelations);
+
+  for (const auto& [unnestId, inputRelations] : unnestInputRelations) {
+    if (joinRelations.isSubset(unnestSubtrees.at(unnestId))) {
+      continue;
+    }
+    if (!nullPaddedSide.hasIntersection(inputRelations)) {
+      continue;
+    }
+    VELOX_CHECK(
+        inputs.leftRelations.contains(unnestId) ||
+            inputs.rightRelations.contains(unnestId),
+        "Unnest must belong to one normalized join side: {}",
+        unnestId);
+    tes.add(unnestId);
+  }
+}
+
+} // namespace
+
+JoinHypergraph HypergraphBuilder::build(
+    const JoinCluster& cluster,
+    const std::vector<NodeCP>& rewrittenLeaves,
+    EstimateProvider& estimateProvider) {
+  VELOX_CHECK_LE(
+      cluster.leaves.size(),
+      RelationSet::kMaxRelations,
+      "Cluster has more leaves than RelationSet can represent");
+  VELOX_CHECK_EQ(
+      cluster.leaves.size(),
+      rewrittenLeaves.size(),
+      "rewrittenLeaves must align 1:1 with cluster.leaves");
+
+  JoinHypergraph graph;
+  folly::F14FastMap<ColumnCP, int8_t> columnToLeaf;
+  folly::F14FastMap<NodeCP, int8_t> leafIds;
+  for (size_t i = 0; i < cluster.leaves.size(); ++i) {
+    NodeCP original = cluster.leaves[i];
+    NodeCP rewritten = rewrittenLeaves[i];
+    PlanObjectSet columns =
+        PlanObjectSet::fromObjects(rewritten->outputColumns());
+    const int8_t id = graph.addRelation(
+        rewritten,
+        estimateProvider.estimate(rewritten).cardinality,
+        std::move(columns));
+    VELOX_CHECK(leafIds.emplace(original, id).second, "Duplicate cluster leaf");
+    if (rewritten != original) {
+      VELOX_CHECK(
+          leafIds.emplace(rewritten, id).second,
+          "Duplicate rewritten cluster leaf");
+    }
+    for (const auto* column : rewritten->outputColumns()) {
+      columnToLeaf.emplace(column, id);
+    }
+  }
+
+  folly::F14FastMap<UnnestCP, int8_t> unnestIds =
+      addUnnestRelations(cluster, estimateProvider, graph, columnToLeaf);
+
+  folly::F14FastMap<int8_t, RelationSet> unnestInputRelations =
+      addUnnestEdges(cluster, unnestIds, columnToLeaf, graph);
 
   folly::F14FastMap<JoinCP, JoinInputs> joinInputs;
-  populateJoinInputs(cluster.root, leafIds, unnestIds, joinInputs);
+  folly::F14FastMap<int8_t, RelationSet> unnestSubtrees;
+  populateJoinInputs(
+      cluster.root, leafIds, unnestIds, joinInputs, unnestSubtrees);
 
   for (JoinCP join : cluster.joins) {
     const auto& inputs = joinInputs.at(join);
@@ -545,21 +637,13 @@ JoinHypergraph HypergraphBuilder::build(
             keyRelationsOrOperand(rightKeys, columnToLeaf, inputs.rightLeaves)};
         RelationSet ses{leftSet};
         ses.unionSet(rightSet);
-        RelationSet tes{ses};
-        tes.unionSet(tesExpansion(
-            join->left(),
-            join->joinType(),
+        const RelationSet tes = expandTes(
             ses,
-            /*leftSide=*/true,
-            leafIds,
-            joinInputs));
-        tes.unionSet(tesExpansion(
+            join->left(),
             join->right(),
             join->joinType(),
-            ses,
-            /*leftSide=*/false,
             leafIds,
-            joinInputs));
+            joinInputs);
         auto [leftTes, rightTes] =
             splitTes(tes, inputs.leftRelations, inputs.rightRelations);
 
@@ -603,60 +687,21 @@ JoinHypergraph HypergraphBuilder::build(
       for (ExprCP conjunct : join->filter()) {
         ses.unionSet(expressionRelations(conjunct, columnToLeaf));
       }
-      RelationSet tes{ses};
-      tes.unionSet(tesExpansion(
-          normalizedLeftChild,
-          inputs.joinType,
+      RelationSet tes = expandTes(
           ses,
-          /*leftSide=*/true,
-          leafIds,
-          joinInputs));
-      tes.unionSet(tesExpansion(
+          normalizedLeftChild,
           normalizedRightChild,
           inputs.joinType,
-          ses,
-          /*leftSide=*/false,
           leafIds,
-          joinInputs));
+          joinInputs);
+
+      addUnnestBarriers(inputs, unnestInputRelations, unnestSubtrees, tes);
 
       // `populateJoinInputs` already applies the same right-form operand swap
-      // as the normalized child selection above.
-      const RelationSet& normalizedLeftRelations = inputs.leftRelations;
-      const RelationSet& normalizedRightRelations = inputs.rightRelations;
-
-      // Outer-join barrier: if an Unnest's input subtree contributes a relation
-      // on this outer join's null-padded side, the unnest edge must fire before
-      // the outer join. Otherwise null-padding flows into UNNEST and rows drop.
-      // Expand TES to include the Unnest relation id so DPhyp pins the order.
-      RelationSet joinRelations{inputs.leftLeaves};
-      joinRelations.unionSet(inputs.rightLeaves);
-      for (const auto& [unnestId, inputRelations] : unnestInputRelations) {
-        // An outer join inside the Unnest's input subtree is already ordered
-        // before the Unnest by the unnest edge. The barrier would demand the
-        // reverse order, which no plan can satisfy when this join is the only
-        // edge co-locating the input relations.
-        if (joinRelations.isSubset(inputRelations)) {
-          continue;
-        }
-        RelationSet nullPaddedSide;
-        if (inputs.joinType == velox::core::JoinType::kLeft) {
-          nullPaddedSide = inputs.rightLeaves;
-        } else if (inputs.joinType == velox::core::JoinType::kFull) {
-          nullPaddedSide = inputs.leftLeaves;
-          nullPaddedSide.unionSet(inputs.rightLeaves);
-        }
-        if (nullPaddedSide.hasIntersection(inputRelations)) {
-          VELOX_CHECK(
-              normalizedLeftRelations.contains(unnestId) ||
-                  normalizedRightRelations.contains(unnestId),
-              "Unnest must belong to one normalized join side: {}",
-              static_cast<int32_t>(unnestId));
-          tes.add(unnestId);
-        }
-      }
-
+      // as the normalized child selection above, so these are in normalized
+      // order.
       auto [leftTes, rightTes] =
-          splitTes(tes, normalizedLeftRelations, normalizedRightRelations);
+          splitTes(tes, inputs.leftRelations, inputs.rightRelations);
 
       // kLeftSemiProject preserves the left side and appends a mark; the
       // Join (and its Apply origin) build outputColumns as
