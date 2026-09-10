@@ -193,6 +193,15 @@ TEST_F(PrestoParserTest, lateralJoin) {
           .project()
           .output());
 
+  // A correlated column may retain the same visible name as the left input.
+  testSelect(
+      "SELECT * FROM (VALUES (1)) t(x) "
+      "CROSS JOIN LATERAL (SELECT x) u",
+      matchValues()
+          .project()
+          .lateralJoin(matchValues().project().build())
+          .output({"x", "x"}));
+
   // A LATERAL body with a FROM clause is a multi-row correlated relation.
   testSelect(
       "SELECT nation.n_nationkey, n FROM nation "

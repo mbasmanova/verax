@@ -682,6 +682,8 @@ void PlanBuilder::resolveProjections(
 
     const auto* inputReference =
         expr->isInputReference() ? expr->as<InputReferenceExpr>() : nullptr;
+    const bool readsLocalInput = inputReference != nullptr &&
+        node_->outputType()->containsChild(inputReference->name());
 
     // The names the input has for the column this projection passes through.
     const auto inputNames = inputReference != nullptr
@@ -701,7 +703,7 @@ void PlanBuilder::resolveProjections(
               return name.name == alias.value();
             });
 
-    if (inputReference != nullptr &&
+    if (readsLocalInput &&
         (!alias.has_value() || alias.value() == inputReference->name())) {
       // Identity projection without rename.
       const auto& id = inputReference->name();
