@@ -5,6 +5,9 @@ SELECT * FROM (VALUES
   (8, ARRAY[30, 10], ARRAY[5], ARRAY[ARRAY[4]]),
   (9, ARRAY[40], ARRAY[6, 7, 8], ARRAY[ARRAY[5, 6]])
 ) AS _(x, ys, zs, nested)
+----
+CREATE TABLE elements AS
+SELECT * FROM (VALUES (10), (40)) AS _(v)
 -- end_setup
 
 -- One row per element of the unnested array; 'x' is replicated.
@@ -82,6 +85,24 @@ JOIN (SELECT s FROM UNNEST(ARRAY[7, 8]) AS u(s)) ON a.x = s
 SELECT a.x, s
 FROM arrays a
 LEFT JOIN (SELECT s FROM UNNEST(ARRAY[7, 8]) AS u(s)) ON a.x = s
+----
+-- An 'x' with no array of its own reads no elements, so it matches none and
+-- keeps a NULL. Every other 'x' whose array holds a listed element reads its
+-- own value back.
+WITH keyed AS (
+  SELECT a.x FROM arrays a, arrays b WHERE a.x = b.x
+),
+joined AS (
+  SELECT keyed.x, s.ys
+  FROM keyed LEFT JOIN (SELECT * FROM arrays WHERE x < 9) s ON s.x = keyed.x
+),
+matched AS (
+  SELECT joined.x FROM joined
+  CROSS JOIN UNNEST(joined.ys) AS _(y)
+  INNER JOIN elements ON elements.v = y
+)
+SELECT joined.x, matched.x AS m
+FROM joined LEFT JOIN matched ON joined.x = matched.x
 ----
 -- A join on both a replicated column and an unnested one, projecting a column
 -- from each side.
