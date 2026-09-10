@@ -906,12 +906,32 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     return maybeWrapFilter(newAggregate, std::move(blocked));
   }
 
+  // True if nothing reads 'mark': neither a consumer above nor a conjunct
+  // still looking for a home here.
+  static bool markIsDead(ColumnCP mark, const PushdownContext& context) {
+    if (context.requiredAbove.contains(mark)) {
+      return false;
+    }
+    return std::none_of(
+        context.pending.begin(), context.pending.end(), [&](ExprCP conjunct) {
+          return conjunct->columns().contains(mark);
+        });
+  }
+
   // Join: demote outer to inner when possible, then route each pending
   // conjunct to one of: left input, right input, join filter, or
   // stay-above. The join's own filter conjuncts are redistributed by the same
   // rules. Neither moves a nondeterministic conjunct into an input, which
   // would evaluate it once for rows the join then multiplies.
   NodeCP rewriteJoin(const Join* node, PushdownContext& context) override {
+    // A kLeftSemiProject keeps every left row and adds a mark, so with the
+    // mark read by nobody the join has no effect and its left input stands in
+    // its place.
+    if (velox::core::isLeftSemiProjectJoin(node->joinType()) &&
+        markIsDead(node->markColumn(), context)) {
+      return rewrite(node->left(), context);
+    }
+
     PlanObjectSet leftColumns =
         PlanObjectSet::fromObjects(node->left()->outputColumns());
     PlanObjectSet rightColumns =
