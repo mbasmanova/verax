@@ -1623,6 +1623,9 @@ TEST_F(PrestoParserTest, outputNames) {
   // Direct SELECT with empty and duplicate aliases.
   test(R"(SELECT 1 as "", 2 as "", 3 as x, 4 as x)", {"", "", "x", "x"});
 
+  // Empty aliases are preserved on aggregate output columns.
+  test(R"(SELECT count(1) AS "")", {""});
+
   // SELECT * from subquery preserves empty and duplicate names.
   test(
       R"(SELECT * FROM (SELECT 1 as "", 2 as "", 3 as x, 4 as x))",

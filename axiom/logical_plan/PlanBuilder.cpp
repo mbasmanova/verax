@@ -1014,17 +1014,25 @@ void PlanBuilder::resolveAggregates(
 
     auto expr = resolveAggregateTypes(aggregate.expr());
 
-    if (aggregate.name().has_value()) {
-      const auto& alias = aggregate.name().value();
-      outputNames.push_back(newName(alias));
-      tracker.add(alias, outputNames.back());
+    const auto& alias = aggregate.name();
+    if (alias.has_value() && !alias->empty()) {
+      outputNames.push_back(newName(*alias));
+      tracker.add(*alias, outputNames.back());
     } else {
+      if (alias.has_value()) {
+        VELOX_USER_CHECK(
+            allowAmbiguousOutputNames_, "Empty column alias is not allowed");
+      }
+
       // Derive the output name from the parse-time call name, canonicalized so
       // it reflects the source function rather than any internal name the
       // resolved expr may carry.
       const auto* call = aggregate.expr()->as<velox::core::CallExpr>();
       VELOX_CHECK_NOT_NULL(call, "Aggregate expression must be a call");
       outputNames.push_back(newName(velox::exec::sanitizeName(call->name())));
+      if (alias.has_value()) {
+        mappings.addUserName(outputNames.back(), "");
+      }
     }
 
     exprs.emplace_back(std::move(expr));
