@@ -113,7 +113,7 @@ ExprPtr makeCoercedRef(
     const std::string& name,
     const velox::TypePtr& targetType) {
   auto ref = makeInputRef(columnType, name);
-  if (targetType != nullptr && !columnType->equivalent(*targetType)) {
+  if (targetType != nullptr && *columnType != *targetType) {
     return applyCoercion(ref, targetType);
   }
   return ref;
@@ -1483,7 +1483,7 @@ std::vector<velox::TypePtr> PlanBuilder::computeCommonTypes(
     auto leftColumnType = leftType->findChild(column.leftId);
     auto rightColumnType = rightType->findChild(column.rightId);
 
-    if (leftColumnType->equivalent(*rightColumnType)) {
+    if (*leftColumnType == *rightColumnType) {
       commonTypes.push_back(nullptr);
       continue;
     }
@@ -1549,7 +1549,7 @@ void PlanBuilder::addJoinUsingProjection(
           joinType == JoinType::kRight ? rightColumnType : leftColumnType;
       exprs.push_back(makeCoercedRef(sourceType, sourceId, commonTypes[i]));
       const bool coerced =
-          commonTypes[i] != nullptr && !sourceType->equivalent(*commonTypes[i]);
+          commonTypes[i] != nullptr && *sourceType != *commonTypes[i];
       outputNames.push_back(coerced ? newName(column.name) : sourceId);
     }
 
@@ -1704,7 +1704,7 @@ void PlanBuilder::coerceSetInputs(std::vector<LogicalPlanNodePtr>& nodes) {
       const auto& currentType = targetTypes[j];
       const auto& nextType = rowType->childAt(j);
 
-      if (currentType->equivalent(*nextType)) {
+      if (*currentType == *nextType) {
         continue;
       }
 
@@ -1731,12 +1731,12 @@ void PlanBuilder::coerceSetInputs(std::vector<LogicalPlanNodePtr>& nodes) {
     for (uint32_t i = 0; i < inputRowType->size(); ++i) {
       const auto& inputType = inputRowType->childAt(i);
       const auto& targetType = targetTypes[i];
-      if (inputType->equivalent(*targetType)) {
+      if (*inputType == *targetType) {
         exprs.push_back(makeInputRef(inputType, inputRowType->nameOf(i)));
       } else {
         needsCast = true;
-        exprs.push_back(
-            makeCoercedRef(inputType, inputRowType->nameOf(i), targetType));
+        exprs.push_back(applyCoercion(
+            makeInputRef(inputType, inputRowType->nameOf(i)), targetType));
         outputNames[i] = newName(inputRowType->nameOf(i));
       }
     }
