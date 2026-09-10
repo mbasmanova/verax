@@ -995,6 +995,119 @@ FROM u
 SELECT u.a, (SELECT x.a FROM (SELECT a FROM u u2 WHERE u2.a = u.a) x LEFT JOIN v v3 ON v3.a = x.a WHERE v3.a < 0)
 FROM u
 ----
+-- A correlated scalar subquery grouped inside, where the HAVING selects one
+-- group for one outer and rejects every group for the other.
+-- error_v1: Correlation predicate references a column not in GROUP BY is not supported yet
+WITH b(k, g, x) AS (VALUES (1, 'a', 10), (1, 'a', 20), (1, 'b', 30), (2, 'c', 40))
+SELECT t.k, (SELECT max(b.x) FROM b WHERE b.k = t.k GROUP BY b.g HAVING count(*) > 1)
+FROM (VALUES (1), (2)) AS t(k)
+----
+-- The HAVING rejects every group of every outer, so each reads NULL.
+-- error_v1: Correlation predicate references a column not in GROUP BY is not supported yet
+WITH b(k, g, x) AS (VALUES (1, 'a', 10), (2, 'b', 20))
+SELECT t.k, (SELECT max(b.x) FROM b WHERE b.k = t.k GROUP BY b.g HAVING count(*) > 1)
+FROM (VALUES (1), (2)) AS t(k)
+----
+-- Grouping by the correlation column itself: one key, not two.
+-- error_v1: Decorrelated aggregated subquery must expose one result column plus one per lifted correlation key
+WITH b(k, x) AS (VALUES (1, 10), (1, 20), (2, 30))
+SELECT t.k, (SELECT max(b.x) FROM b WHERE b.k = t.k GROUP BY b.k HAVING count(*) > 1)
+FROM (VALUES (1), (2)) AS t(k)
+----
+-- An outer with no body rows has no groups, so a HAVING that would accept an
+-- empty group's count must not manufacture one.
+-- error_v1: Correlation predicate references a column not in GROUP BY is not supported yet
+WITH b(k, g) AS (VALUES (5, 'a'))
+SELECT t.k, (SELECT count(*) FROM b WHERE b.k < t.k GROUP BY b.g HAVING count(*) < 5)
+FROM (VALUES (1), (9)) AS t(k)
+----
+-- A subquery that reads the key it correlates and groups on: the key reaches
+-- the outer as the subquery's own value.
+-- error_v1: Decorrelated aggregated subquery must expose one result column plus one per lifted correlation key
+WITH b(k, x) AS (VALUES (1, 10), (1, 20), (2, 30))
+SELECT t.k, (SELECT b.k FROM b WHERE b.k = t.k GROUP BY b.k HAVING count(*) > 1)
+FROM (VALUES (1), (2)) AS t(k)
+----
+-- A computed key that is both the correlation and the grouping key is one
+-- key, published once.
+-- error_v1: Decorrelated aggregated subquery must expose one result column plus one per lifted correlation key
+WITH b(k, x) AS (VALUES (1, 10), (1, 20), (2, 30))
+SELECT t.k, (SELECT max(b.x) FROM b WHERE b.k + 1 = t.k GROUP BY b.k + 1 HAVING count(*) > 1)
+FROM (VALUES (2), (3)) AS t(k)
+----
+-- A grouped subquery reads NULL for an outer it matched no rows of, whether
+-- or not the correlation is an equality: no rows means no groups, not a group
+-- counting zero.
+-- error_v1: Correlation predicate references a column not in GROUP BY is not supported yet
+WITH b(k, g) AS (VALUES (5, 'a'))
+SELECT t.k, (SELECT count(*) FROM b WHERE b.k = t.k GROUP BY b.g)
+FROM (VALUES (1), (5)) AS t(k)
+----
+-- error_v1: Correlation predicate references a column not in GROUP BY is not supported yet
+WITH b(k, g) AS (VALUES (5, 'a'))
+SELECT t.k, (SELECT count(*) FROM b WHERE b.k < t.k GROUP BY b.g)
+FROM (VALUES (1), (9)) AS t(k)
+----
+-- A correlation that is not an equality: one outer has a surviving group, one
+-- has none, and one matches no body rows at all.
+-- error_v1: Correlation predicate references a column not in GROUP BY is not supported yet
+WITH b(k, g, x) AS (VALUES (1, 'a', 10), (1, 'a', 20), (3, 'b', 30))
+SELECT t.k, (SELECT max(b.x) FROM b WHERE b.k < t.k GROUP BY b.g HAVING count(*) > 1)
+FROM (VALUES (1), (2), (4)) AS t(k)
+----
+-- An outer with no matching row reads NULL, and so does an expression over
+-- it that would turn a row into a value.
+-- error_v1: Correlation predicate references a column not in GROUP BY is not supported yet
+WITH b(k, g, x) AS (VALUES (1, 'a', 10), (2, 'b', 20))
+SELECT t.k,
+       (SELECT s.m IS NULL
+        FROM (SELECT max(b.x) AS m FROM b WHERE b.k = t.k GROUP BY b.g) s)
+FROM (VALUES (1), (3)) AS t(k)
+----
+-- A filter above the aggregate compares each group against the outer row it
+-- belongs to. An outer it rejects every group of reads NULL, as does one
+-- with no group.
+-- error_v1: Correlation predicate references a column not in GROUP BY is not supported yet
+WITH b(k, g, x) AS (VALUES (1, 'a', 10), (1, 'a', 20), (2, 'b', 30))
+SELECT t.k,
+       (SELECT s.m
+        FROM (SELECT max(b.x) AS m, count(*) AS c
+              FROM b WHERE b.k = t.k GROUP BY b.g) s
+        WHERE s.c > t.k)
+FROM (VALUES (1), (2), (3)) AS t(k)
+----
+-- A grouping key reading an outer column groups the rows of each outer
+-- separately, yielding one value per outer and NULL where nothing matches.
+-- error_v1: Cannot resolve column name: k
+WITH b(k, g, x) AS (VALUES (1, 10, 100), (1, 10, 200), (2, 30, 300))
+SELECT t.k, (SELECT max(b.x) FROM b WHERE b.k = t.k GROUP BY b.g + t.k)
+FROM (VALUES (1), (3)) AS t(k)
+----
+-- A FILTER mask reading an outer column selects rows against the outer row
+-- they belong to, so the same group reads a different value per outer. v1
+-- fails an internal size check on this shape, which the message below is.
+-- error_v1: (3 vs. 4)
+WITH b(k, g, x) AS (VALUES (1, 10, 100), (1, 10, 200), (2, 30, 300))
+SELECT t.k,
+       (SELECT max(b.x) FILTER (WHERE b.x > t.k) FROM b WHERE b.k = t.k
+        GROUP BY b.g)
+FROM (VALUES (1), (3)) AS t(k)
+----
+-- Several groups for one outer break the scalar contract with no filter to
+-- select among them either.
+-- error_v1: Correlation predicate references a column not in GROUP BY is not supported yet
+-- error_v2: Scalar sub-query has returned multiple rows
+WITH b(k, g, x) AS (VALUES (1, 'a', 10), (1, 'b', 20))
+SELECT t.k, (SELECT max(b.x) FROM b WHERE b.k < t.k GROUP BY b.g)
+FROM (VALUES (2)) AS t(k)
+----
+-- More than one group surviving the HAVING breaks the scalar contract.
+-- error_v1: Correlation predicate references a column not in GROUP BY is not supported yet
+-- error_v2: Scalar sub-query has returned multiple rows
+WITH b(k, g, x) AS (VALUES (1, 'a', 10), (1, 'a', 20), (1, 'b', 30), (1, 'b', 40))
+SELECT t.k, (SELECT max(b.x) FROM b WHERE b.k = t.k GROUP BY b.g HAVING count(*) > 1)
+FROM (VALUES (1)) AS t(k)
+----
 -- Duplicate outer rows with the same correlation value stay
 -- independent: each produces its own result row.
 -- error_v1: Nested correlation across subquery boundaries is not supported yet
