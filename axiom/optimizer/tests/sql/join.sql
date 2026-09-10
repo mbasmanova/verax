@@ -1,5 +1,21 @@
 -- setup_file: common_setup.sql
 
+-- A join condition no row satisfies keeps every left row and reads NULL for
+-- the right side.
+SELECT t1.a, t2.b FROM t t1 LEFT JOIN t t2 ON t1.a = t2.a AND 1 = 2
+----
+-- The same condition on an inner join yields nothing.
+-- count 0
+SELECT t1.a FROM t t1 JOIN t t2 ON t1.a = t2.a AND 1 = 2
+----
+-- A WHERE reading the side that never matches sees the NULLs the outer join
+-- pads with: an IS NULL keeps every row.
+SELECT t1.a FROM t t1 LEFT JOIN t t2 ON t1.a = t2.a AND 1 = 2 WHERE t2.b IS NULL
+----
+-- A comparison against those NULLs keeps none.
+-- count 0
+SELECT t1.a FROM t t1 LEFT JOIN t t2 ON t1.a = t2.a AND 1 = 2 WHERE t2.b > 5
+----
 -- JOIN with UNION ALL subquery.
 SELECT t1.a, t1.b
 FROM t t1 JOIN (SELECT a FROM t WHERE a = 1 UNION ALL SELECT a FROM t WHERE a = 2) t2 ON t1.a = t2.a
