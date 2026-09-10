@@ -2754,6 +2754,29 @@ TEST_P(JoinTest, constantInput) {
   }
 }
 
+// A join condition no row satisfies needs no join: an inner join produces
+// nothing, and an outer join produces its preserved side alone.
+TEST_P(JoinTest, neverMatchingCondition) {
+  if (!useV2_) {
+    GTEST_SKIP();
+  }
+
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
+  testConnector_->addTable("u", ROW({"x", "y"}, BIGINT()));
+
+  {
+    auto plan = toSingleNodePlan(
+        "SELECT t.a, u.y FROM t LEFT JOIN u ON t.a = u.x AND 1 = 2");
+    AXIOM_ASSERT_PLAN_V2(plan, matchScan("t").project({"a", "null"}).build());
+  }
+
+  {
+    auto plan =
+        toSingleNodePlan("SELECT t.a FROM t JOIN u ON t.a = u.x AND 1 = 2");
+    AXIOM_ASSERT_PLAN_V2(plan, matchValues().build());
+  }
+}
+
 AXIOM_INSTANTIATE_V1_V2(JoinTest);
 
 } // namespace
