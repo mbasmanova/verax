@@ -72,6 +72,37 @@ ColumnVector recomputeCorrelations(
   return result;
 }
 
+// True when a Sort sits somewhere in the chain of single-input nodes below
+// 'node'. Such a Sort establishes an order the caller cannot see.
+bool hasSortBelow(NodeCP node) {
+  for (NodeCP below = node; below->inputs().size() == 1;
+       below = below->inputs()[0]) {
+    if (below->is(NodeType::kSort)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// Returns 'node' as a Project when it emits columns of its input unchanged,
+// dropping some but computing and renaming none, and nullptr otherwise. A
+// Project emitting nothing is not pass-through: it keeps only the rows.
+const Project* asPassThroughProject(NodeCP node) {
+  if (!node->is(NodeType::kProject)) {
+    return nullptr;
+  }
+  const Project* project = node->as<Project>();
+  if (project->exprs().empty()) {
+    return nullptr;
+  }
+  for (size_t i = 0; i < project->exprs().size(); ++i) {
+    if (project->exprs()[i] != project->outputColumns()[i]) {
+      return nullptr;
+    }
+  }
+  return project;
+}
+
 // True when a kLeftSemiProject Apply's body Aggregate can be dropped
 // without changing the mark: grouping keys are non-empty and neither
 // the accumulated filter nor `inBodyKey` references any aggregate-
@@ -432,6 +463,10 @@ class Decorrelator : public NodeRewriter<> {
         node->isLeft(),
         "Decorrelate Limit peel: unexpected Apply kind {}",
         node->kind());
+    if (auto equi =
+            limitPeelEqui(node, input, limitBody, count, accumulatedFilter)) {
+      return *equi;
+    }
     return limitPeelLeftWindowed(
         node, input, limitBody, count, accumulatedFilter);
   }
@@ -466,6 +501,187 @@ class Decorrelator : public NodeRewriter<> {
     return rewrite(innerApply);
   }
 
+  // The ORDER BY 'node' establishes, and 'node' without it.
+  struct BodyOrder {
+    // 'node' with the Sort removed, or 'node' itself where there was none.
+    NodeCP body;
+    // The Sort's keys, empty where there was no Sort.
+    ExprVector orderKeys;
+    OrderTypeVector orderTypes;
+  };
+
+  // Takes the ORDER BY off 'node' so a row_number can carry it. Returns
+  // nullopt where a Sort sits below 'node' instead: its order decides which
+  // rows a LIMIT keeps, and a ranking that cannot see it would pick others.
+  static std::optional<BodyOrder> takeSortOrder(NodeCP node) {
+    if (node->is(NodeType::kSort)) {
+      const Sort* sort = node->as<Sort>();
+      return BodyOrder{sort->input(), sort->orderKeys(), sort->orderTypes()};
+    }
+    if (hasSortBelow(node)) {
+      return std::nullopt;
+    }
+    return BodyOrder{node, {}, {}};
+  }
+
+  // Replaces the Sort in 'node' with a ranking over 'partitionKeys', keeping
+  // only the first 'count' rows of each partition. Descends through Projects
+  // that only pass columns through, so the ranking lands where the Sort's keys
+  // are still in scope. With no Sort at all the rows are ranked as they
+  // arrive, which is what an unordered LIMIT asks for. Returns nullopt when a
+  // Sort sits below where the descent reaches, since ranking would then pick
+  // rows in an order that Sort was there to decide.
+  std::optional<NodeCP> rankPerPartition(
+      NodeCP node,
+      const ExprVector& partitionKeys,
+      int64_t count) {
+    if (const Project* project = asPassThroughProject(node)) {
+      auto input = rankPerPartition(project->input(), partitionKeys, count);
+      if (!input.has_value()) {
+        return std::nullopt;
+      }
+      return builder().make<Project>(
+          {*input, project->exprs(), project->outputColumns()});
+    }
+
+    auto order = takeSortOrder(node);
+    if (!order.has_value()) {
+      return std::nullopt;
+    }
+
+    ColumnCP rowNumberColumn = makeIdColumn("__limit_rn");
+    NodeCP windowed = addRowNumberWindow(
+        order->body,
+        partitionKeys,
+        rowNumberColumn,
+        std::move(order->orderKeys),
+        std::move(order->orderTypes));
+
+    const Literal* countLiteral =
+        builder().makeLiteral(velox::Variant(count), toType(velox::BIGINT()));
+    return builder().make<Filter>(
+        {windowed,
+         ExprVector{
+             exprFactory_.makeLessThanOrEqual(rowNumberColumn, countLiteral)}});
+  }
+
+  // What a join-back produced.
+  struct JoinBack {
+    // The LEFT JOIN, with the outer tagged and the scalar bound asserted
+    // where the caller asked for them.
+    NodeCP node;
+
+    // Reads NULL on an outer the body had no row for, or nullptr where the
+    // caller asked for no marker.
+    ColumnCP includeMarker;
+  };
+
+  // LEFT JOINs a correlation-free 'body' back to 'input' on the lifted equi
+  // keys, so the body is read once rather than once per outer row. The join
+  // publishes the outer columns and 'bodyColumns'.
+  //
+  // An outer the body has no row for is padded here, and 'markPads' asks for
+  // a marker the pad reads NULL: sourcing it from the body is what makes the
+  // pad visible above, where a literal would claim the outer had a row.
+  //
+  // 'enforceSingleRow' tags the outer rows and asserts one row each over the
+  // join's output, for a body that can match an outer more than once.
+  JoinBack joinBodyBack(
+      NodeCP input,
+      NodeCP body,
+      const ExprVector& leftKeys,
+      const ExprVector& rightKeys,
+      const ColumnVector& bodyColumns,
+      bool markPads,
+      bool enforceSingleRow) {
+    ColumnCP includeMarker = nullptr;
+    if (markPads) {
+      includeMarker = makeIncludeColumn();
+      body =
+          addIncludeMarkerToBody(body, includeMarker, input->outputColumns());
+    }
+
+    NodeCP joinLeft = input;
+    ColumnCP rowId = nullptr;
+    if (enforceSingleRow) {
+      rowId = makeIdColumn();
+      joinLeft = tagOuterRows(input, rowId);
+    }
+
+    ColumnVector joinOutput;
+    joinOutput.reserve(input->outputColumns().size() + bodyColumns.size() + 2);
+    appendAll(joinOutput, input->outputColumns());
+    if (rowId != nullptr) {
+      joinOutput.push_back(rowId);
+    }
+    appendUnique(joinOutput, bodyColumns);
+    if (includeMarker != nullptr) {
+      joinOutput.push_back(includeMarker);
+    }
+
+    NodeCP join = builder().make<Join>({
+        joinLeft,
+        body,
+        velox::core::JoinType::kLeft,
+        leftKeys,
+        rightKeys,
+        /*filter=*/{},
+        /*nullAware=*/false,
+        /*nullAsValue=*/false,
+        std::move(joinOutput),
+    });
+
+    return JoinBack{
+        rowId != nullptr ? enforceScalarSingleRow(join, rowId) : join,
+        includeMarker};
+  }
+
+  // kLeft over a Limit whose correlation is an equality: rank the body once,
+  // partitioned by the correlation key, and LEFT JOIN it back to the outer.
+  // The body is read once rather than once per outer row. An outer matching
+  // nothing reads NULL, which is what a scalar subquery over no rows means.
+  //
+  // Returns nullopt for the correlations and counts this shape cannot serve,
+  // leaving them to the per-outer form.
+  std::optional<NodeCP> limitPeelEqui(
+      ApplyCP node,
+      NodeCP input,
+      LimitCP limitBody,
+      int64_t count,
+      const ExprVector& accumulatedFilter) {
+    // A filter above the body would have to be applied after the join-back,
+    // and more than one row per outer would still need the scalar bound
+    // asserted; both are left to the per-outer form.
+    if (!accumulatedFilter.empty() || (count > 1 && node->enforceSingleRow())) {
+      return std::nullopt;
+    }
+
+    auto correlation =
+        liftEquiCorrelation(limitBody->input(), input->outputColumns());
+    if (!correlation.has_value()) {
+      return std::nullopt;
+    }
+
+    auto rankedBody =
+        rankPerPartition(correlation->cleanBody, correlation->rightKeys, count);
+    if (!rankedBody.has_value()) {
+      return std::nullopt;
+    }
+
+    // Ranking to `count` rows per key already holds any scalar bound this
+    // shape accepts, so the join needs no assertion of its own.
+    JoinBack back = joinBodyBack(
+        input,
+        *rankedBody,
+        correlation->leftKeys,
+        correlation->rightKeys,
+        limitBody->outputColumns(),
+        /*markPads=*/true,
+        /*enforceSingleRow=*/false);
+
+    return projectApplyOutput(node, back.node, back.includeMarker);
+  }
+
   // kLeft+count>=1: per-outer LIMIT via Window+Filter. Tags input with
   // a per-outer `rn`, decorrelates `Apply(taggedInput, body, kLeft)`,
   // then keeps the first `count` body rows per `rn`. When the outer
@@ -485,15 +701,26 @@ class Decorrelator : public NodeRewriter<> {
     NodeCP taggedInput =
         builder().make<AssignUniqueId>({input, rowNumberPartition});
 
-    NodeCP newBody = limitBody->input();
-    ExprVector windowOrderKeys;
-    OrderTypeVector windowOrderTypes;
-    if (newBody->is(NodeType::kSort)) {
-      SortCP sortBody = newBody->as<Sort>();
-      windowOrderKeys = sortBody->orderKeys();
-      windowOrderTypes = sortBody->orderTypes();
-      newBody = sortBody->input();
+    // Translating `SELECT x ... ORDER BY y` materializes y for the Sort and
+    // prunes it above, so the Sort sits under Projects that only drop columns.
+    NodeCP beneathLimit = limitBody->input();
+    while (const Project* project = asPassThroughProject(beneathLimit)) {
+      beneathLimit = project->input();
     }
+
+    auto order = takeSortOrder(beneathLimit);
+    if (!order.has_value()) {
+      VELOX_NYI(
+          "Decorrelate Limit peel: a Sort under {} does not reach the "
+          "window's ordering",
+          beneathLimit->nodeType());
+    }
+    // Where there was no Sort the Projects descended through above still
+    // belong to the body.
+    NodeCP newBody =
+        order->orderKeys.empty() ? limitBody->input() : order->body;
+    ExprVector windowOrderKeys = std::move(order->orderKeys);
+    OrderTypeVector windowOrderTypes = std::move(order->orderTypes);
     ColumnCP innerIncludeMarker = makeIncludeColumn();
 
     ColumnVector innerOutputColumns;
@@ -525,7 +752,7 @@ class Decorrelator : public NodeRewriter<> {
     ColumnCP rowNumberColumn = makeIdColumn("__limit_rn");
     NodeCP windowed = addRowNumberWindow(
         decorrelatedInner,
-        rowNumberPartition,
+        ExprVector{rowNumberPartition},
         rowNumberColumn,
         std::move(windowOrderKeys),
         std::move(windowOrderTypes));
@@ -546,20 +773,7 @@ class Decorrelator : public NodeRewriter<> {
 
     // Outer Apply's includeMarker is sourced from the inner Apply's
     // includeMarker so per-outer LIMIT preserves the real-vs-pad signal.
-    ExprVector finalExprs;
-    finalExprs.reserve(node->outputColumns().size());
-    for (ColumnCP outputColumn : node->outputColumns()) {
-      if (outputColumn == node->includeMarker()) {
-        finalExprs.push_back(innerIncludeMarker);
-      } else {
-        finalExprs.push_back(outputColumn);
-      }
-    }
-    return builder().make<Project>({
-        enforced,
-        std::move(finalExprs),
-        node->outputColumns(),
-    });
+    return projectApplyOutput(node, enforced, innerIncludeMarker);
   }
 
   // A `row_number()` window function over the default running frame,
@@ -598,13 +812,26 @@ class Decorrelator : public NodeRewriter<> {
     return WindowFunction{call, Frame::wholePartition(), /*ignoreNulls=*/false};
   }
 
+  // Shapes 'child' to the outer Apply's output columns, writing 'marker' where
+  // the includeMarker goes and passing every other column through.
+  NodeCP projectApplyOutput(ApplyCP node, NodeCP child, ExprCP marker) {
+    ExprVector finalExprs;
+    finalExprs.reserve(node->outputColumns().size());
+    for (ColumnCP outputColumn : node->outputColumns()) {
+      finalExprs.push_back(
+          outputColumn == node->includeMarker() ? marker : outputColumn);
+    }
+    return builder().make<Project>(
+        {child, std::move(finalExprs), node->outputColumns()});
+  }
+
   // Wraps 'input' in a Window that emits `row_number() OVER
-  // (PARTITION BY partition [ORDER BY orderKeys])` into
+  // (PARTITION BY partitionKeys [ORDER BY orderKeys])` into
   // 'rowNumberColumn'. Empty 'orderKeys' yields an unordered
   // row_number assignment.
   NodeCP addRowNumberWindow(
       NodeCP input,
-      ColumnCP partition,
+      ExprVector partitionKeys,
       ColumnCP rowNumberColumn,
       ExprVector orderKeys,
       OrderTypeVector orderTypes) {
@@ -619,7 +846,7 @@ class Decorrelator : public NodeRewriter<> {
     return builder().make<Window>({
         input,
         std::move(functions),
-        ExprVector{partition},
+        std::move(partitionKeys),
         std::move(orderKeys),
         std::move(orderTypes),
         std::move(outputs),
@@ -918,18 +1145,7 @@ class Decorrelator : public NodeRewriter<> {
     if (!collapse) {
       // Without a mark filter the mark is a value on an A row rather than a
       // reason to keep or drop it, so applyA's marker alone gates inclusion.
-      ExprVector finalExprs;
-      finalExprs.reserve(node->outputColumns().size());
-      for (ColumnCP outputColumn : node->outputColumns()) {
-        finalExprs.push_back(
-            outputColumn == node->includeMarker() ? applyAIncludeMarker
-                                                  : outputColumn);
-      }
-      return builder().make<Project>({
-          chain,
-          std::move(finalExprs),
-          node->outputColumns(),
-      });
+      return projectApplyOutput(node, chain, applyAIncludeMarker);
     }
 
     // A body row counts when A matched and the mark filter accepts it.
@@ -1742,15 +1958,10 @@ class Decorrelator : public NodeRewriter<> {
     // them takes the general shape instead. Without one it runs above the
     // join, where they are, and reads whatever it likes.
     const bool filterPostIsBodyLocal = numGroupingKeys == 0 ||
-        std::none_of(filterPostConjuncts.begin(),
-                     filterPostConjuncts.end(),
-                     [&](ExprCP conjunct) {
-                       return conjunct->columns().containsAny(
-                           input->outputColumns());
-                     });
+        !readsOuter(filterPostConjuncts, input->outputColumns());
 
     if (filterPreConjuncts.empty() && filterPostIsBodyLocal &&
-        !aggregateReferencesOuter(aggregate, input->outputColumns())) {
+        !readsOuter(aggregate, input->outputColumns())) {
       if (auto correlation =
               liftEquiCorrelation(aggregate->input(), input->outputColumns())) {
         return aggregatePeelEqui(
@@ -2159,25 +2370,35 @@ class Decorrelator : public NodeRewriter<> {
     });
   }
 
-  // True if any expression the Aggregate carries — a grouping key, an
-  // aggregate's argument, FILTER mask or order key — reads an outer (input)
-  // column. Such an Aggregate needs the outer columns visible below it, which
-  // the grouped join-back form cannot provide: it aggregates the body alone.
-  static bool aggregateReferencesOuter(
-      AggregateCP aggregate,
+  // True if any of 'expressions' reads an outer (input) column. Such an
+  // expression can only be evaluated where the outer columns are visible,
+  // which a join-back's body side is not: it reads the body alone.
+  static bool readsOuter(
+      const ExprVector& expressions,
       const ColumnVector& outerColumns) {
-    bool referencesOuter = false;
-    forEachExpressionInNode(aggregate, [&](ExprCP expression) {
-      referencesOuter =
-          referencesOuter || expression->columns().containsAny(outerColumns);
-    });
-    return referencesOuter;
+    return std::any_of(
+        expressions.begin(), expressions.end(), [&](ExprCP expression) {
+          return expression->columns().containsAny(outerColumns);
+        });
   }
 
-  // Equi-correlation lifted from an Aggregate's input for the grouped
-  // join-back decorrelation.
+  // True if any expression a Node carries reads an outer column. Asking the
+  // Node rather than the members a caller happens to think of covers every
+  // place one can hide — an Aggregate's grouping keys, and each aggregate's
+  // arguments, FILTER mask and order keys.
+  static bool readsOuter(NodeCP node, const ColumnVector& outerColumns) {
+    bool readsOuterColumn = false;
+    forEachExpressionInNode(node, [&](ExprCP expression) {
+      readsOuterColumn =
+          readsOuterColumn || expression->columns().containsAny(outerColumns);
+    });
+    return readsOuterColumn;
+  }
+
+  // Equi-correlation lifted from a correlated body, for the join-back
+  // decorrelations.
   struct EquiCorrelation {
-    // The aggregate's input with the correlation predicates removed.
+    // The body with the correlation predicates removed.
     NodeCP cleanBody;
     // Equi keys: `leftKeys` over the outer input, `rightKeys` over
     // `cleanBody`.
@@ -2185,29 +2406,89 @@ class Decorrelator : public NodeRewriter<> {
     ExprVector rightKeys;
   };
 
-  // Lifts the equi-correlation out of an Aggregate's input. Succeeds only
-  // when the correlation sits in a Filter chain above a correlation-free
-  // subtree and every correlation conjunct is an equality partitioning
-  // cleanly into an outer-side and a body-side expression; returns nullopt
-  // otherwise.
-  std::optional<EquiCorrelation> liftEquiCorrelation(
-      NodeCP aggregateInput,
-      const ColumnVector& inputColumns) {
-    ExprVector correlation;
-    ExprVector localPredicates;
-    NodeCP base = aggregateInput;
-    while (base->is(NodeType::kFilter)) {
-      const Filter* filter = base->as<Filter>();
+  // Removes conjuncts reading 'inputColumns' from the Filters of 'node',
+  // collecting them in 'correlation', and returns what is left. Descends
+  // through Sort and through Projects that only pass columns through, since
+  // translating a query leaves those between the operators that carry
+  // predicates. A lifted conjunct becomes a join key, so a rebuilt Project
+  // also carries the columns its body side reads, which that Project may
+  // have pruned.
+  NodeCP liftCorrelationFromBody(
+      NodeCP node,
+      const ColumnVector& inputColumns,
+      ExprVector& correlation) {
+    if (node->is(NodeType::kFilter)) {
+      const Filter* filter = node->as<Filter>();
+      ExprVector kept;
       for (ExprCP conjunct : filter->predicates()) {
-        (conjunct->columns().containsAny(inputColumns) ? correlation
-                                                       : localPredicates)
+        (conjunct->columns().containsAny(inputColumns) ? correlation : kept)
             .push_back(conjunct);
       }
-      base = filter->input();
+      // Classify before descending, so a Project below carries the columns
+      // these conjuncts read, which it may have pruned.
+      NodeCP input =
+          liftCorrelationFromBody(filter->input(), inputColumns, correlation);
+      if (input == filter->input() &&
+          kept.size() == filter->predicates().size()) {
+        return node;
+      }
+      return kept.empty() ? input
+                          : builder().make<Filter>({input, std::move(kept)});
     }
 
-    // The subtree below the lifted Filters must be correlation-free, and
-    // there must be at least one correlation conjunct to lift.
+    if (const Project* project = asPassThroughProject(node)) {
+      NodeCP input =
+          liftCorrelationFromBody(project->input(), inputColumns, correlation);
+      if (input == project->input()) {
+        return node;
+      }
+      // The lifted predicate becomes a join key, so the columns it reads on
+      // the body side have to reach the join. A Project that pruned them is
+      // rebuilt carrying them.
+      ExprVector exprs = project->exprs();
+      ColumnVector outputColumns = project->outputColumns();
+      PlanObjectSet present = PlanObjectSet::fromObjects(outputColumns);
+      PlanObjectSet available =
+          PlanObjectSet::fromObjects(input->outputColumns());
+      for (ExprCP conjunct : correlation) {
+        conjunct->columns().forEach<Column>([&](const Column* column) {
+          if (available.contains(column) && !present.contains(column)) {
+            present.add(column);
+            exprs.push_back(column);
+            outputColumns.push_back(column);
+          }
+        });
+      }
+      return builder().make<Project>(
+          {input, std::move(exprs), std::move(outputColumns)});
+    }
+
+    // A Sort neither adds nor drops rows, so a predicate below it selects the
+    // same rows as one above it.
+    if (node->is(NodeType::kSort)) {
+      const Sort* sort = node->as<Sort>();
+      NodeCP input =
+          liftCorrelationFromBody(sort->input(), inputColumns, correlation);
+      if (input == sort->input()) {
+        return node;
+      }
+      return builder().make<Sort>(
+          {input, sort->orderKeys(), sort->orderTypes()});
+    }
+
+    return node;
+  }
+
+  // Lifts the equi-correlation out of 'body'. Succeeds only when every
+  // correlation conjunct is an equality partitioning cleanly into an
+  // outer-side and a body-side expression, and what remains after removing
+  // them is correlation-free; returns nullopt otherwise.
+  std::optional<EquiCorrelation> liftEquiCorrelation(
+      NodeCP body,
+      const ColumnVector& inputColumns) {
+    ExprVector correlation;
+    NodeCP base = liftCorrelationFromBody(body, inputColumns, correlation);
+
     if (correlation.empty() ||
         !recomputeCorrelations(base, inputColumns).empty()) {
       return std::nullopt;
@@ -2221,11 +2502,8 @@ class Decorrelator : public NodeRewriter<> {
       return std::nullopt;
     }
 
-    NodeCP cleanBody = localPredicates.empty()
-        ? base
-        : builder().make<Filter>({base, std::move(localPredicates)});
     return EquiCorrelation{
-        cleanBody, std::move(split.leftKeys), std::move(split.rightKeys)};
+        base, std::move(split.leftKeys), std::move(split.rightKeys)};
   }
 
   // Decorrelates an equi-correlated kLeft Aggregate Apply by grouping the
@@ -2320,68 +2598,35 @@ class Decorrelator : public NodeRewriter<> {
           {groupedBody, ExprVector{filterPostSubstituted}});
     }
 
-    // With an inner GROUP BY the marker must read NULL for an outer with no
-    // surviving group, so it is sourced from the body and NULLed by the
-    // join's pad. Without one every outer has a row carrying its aggregate's
-    // empty-input value, and that row counts.
-    ColumnCP includeMarker =
-        numGroupingKeys > 0 ? makeIncludeColumn() : nullptr;
-    if (includeMarker != nullptr) {
-      groupedBody = addIncludeMarkerToBody(
-          groupedBody, includeMarker, input->outputColumns());
-    }
-
-    // An outer matches several groups only where the query groups by a key
-    // the join does not match on. The scalar bound is asserted over the
-    // join's output, against a tag on the outer rows.
-    NodeCP joinLeft = input;
-    ColumnCP rowId = nullptr;
-    if (!addedGroupingKeys.empty() && node->enforceSingleRow()) {
-      rowId = makeIdColumn();
-      joinLeft = tagOuterRows(input, rowId);
-    }
-
-    // LEFT JOIN the grouped body back to the outer on the correlation equi
-    // keys. The output keeps the outer columns, the inner gby keys and the
-    // (raw) aggregate outputs; the correlation key columns are internal and
-    // dropped.
-    ColumnVector joinOutput;
-    joinOutput.reserve(
-        input->outputColumns().size() + numGroupingKeys + wraps.size() + 2);
-    appendAll(joinOutput, input->outputColumns());
-    if (rowId != nullptr) {
-      joinOutput.push_back(rowId);
-    }
-    // Every grouping key is projected above, including one shared with a
-    // correlation key: the grouped body publishes it either way.
+    // The join publishes the inner gby keys and the raw aggregate outputs;
+    // the correlation key columns are internal and dropped. Every grouping
+    // key is published, including one shared with a correlation key: the
+    // grouped body carries it either way.
+    ColumnVector bodyColumns;
+    bodyColumns.reserve(numGroupingKeys + wraps.size());
     for (size_t i = 0; i < numGroupingKeys; ++i) {
-      joinOutput.push_back(aggregate->outputColumns()[i]);
+      bodyColumns.push_back(aggregate->outputColumns()[i]);
     }
     for (const auto& wrap : wraps) {
-      joinOutput.push_back(wrap.liftedOutput);
-    }
-    if (includeMarker != nullptr) {
-      joinOutput.push_back(includeMarker);
+      bodyColumns.push_back(wrap.liftedOutput);
     }
 
     ExprVector rightKeyExprs;
     appendAll(rightKeyExprs, rightKeyColumns);
 
-    NodeCP join = builder().make<Join>({
-        joinLeft,
+    // Without an inner GROUP BY every outer has a row carrying its
+    // aggregate's empty-input value, and that row counts, so no marker is
+    // needed. An outer matches several groups only where the query groups by
+    // a key the join does not match on.
+    JoinBack back = joinBodyBack(
+        input,
         groupedBody,
-        velox::core::JoinType::kLeft,
-        std::move(correlation.leftKeys),
-        std::move(rightKeyExprs),
-        /*filter=*/{},
-        /*nullAware=*/false,
-        /*nullAsValue=*/false,
-        std::move(joinOutput),
-    });
-
-    if (rowId != nullptr) {
-      join = enforceScalarSingleRow(join, rowId);
-    }
+        correlation.leftKeys,
+        rightKeyExprs,
+        bodyColumns,
+        /*markPads=*/numGroupingKeys > 0,
+        /*enforceSingleRow=*/!addedGroupingKeys.empty() &&
+            node->enforceSingleRow());
 
     return buildAggregateFinalProject(
         node,
@@ -2389,10 +2634,10 @@ class Decorrelator : public NodeRewriter<> {
         aggregate,
         wraps,
         numGroupingKeys == 0 ? filterPostSubstituted : nullptr,
-        join,
+        back.node,
         numGroupingKeys,
-        includeMarker != nullptr ? static_cast<ExprCP>(includeMarker)
-                                 : builder().makeBoolean(true));
+        back.includeMarker != nullptr ? static_cast<ExprCP>(back.includeMarker)
+                                      : builder().makeBoolean(true));
   }
 
   // Final Project: shapes `child`'s output to node->outputColumns()

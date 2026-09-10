@@ -614,6 +614,57 @@ TEST_P(SubqueryTest, correlatedIn) {
   }
 }
 
+TEST_P(SubqueryTest, correlatedTopNPerOuter) {
+  // v1 declines a LIMIT in a correlated scalar subquery.
+  if (!useV2_) {
+    GTEST_SKIP();
+  }
+
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
+  testConnector_->addTable("u", ROW({"x", "y", "z"}, BIGINT()));
+
+  // The body is ranked once, partitioned by the correlation key, and joined
+  // back: it is read once rather than once per outer row. The body selects
+  // only `x`, so `y` reaching the ranking and the join is the correlation key
+  // carried back through the Project that dropped it.
+  {
+    auto query =
+        "SELECT (SELECT u.x FROM u WHERE u.y = t.b ORDER BY u.z LIMIT 1) "
+        "FROM t";
+    SCOPED_TRACE(query);
+
+    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    AXIOM_ASSERT_PLAN_V2(
+        plan,
+        matchScan("t")
+            .hashJoinLeft(
+                matchScan("u")
+                    .project()
+                    .topNRowNumber({"y"}, {"z"}, 1)
+                    .project(),
+                {.keys = {{"b = y"}}})
+            .build());
+  }
+
+  // A LIMIT above one row under a scalar bound still has to assert that
+  // bound per outer row, so it takes the per-outer form instead.
+  {
+    auto query = "SELECT (SELECT u.x FROM u WHERE u.y = t.b LIMIT 2) FROM t";
+    SCOPED_TRACE(query);
+
+    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    AXIOM_ASSERT_PLAN_V2(
+        plan,
+        matchScan("t")
+            .assignUniqueId("rn")
+            .hashJoinLeft(matchScan("u"), {.keys = {{"b = y"}}})
+            .rowNumber({"rn"}, 2)
+            .enforceDistinct({"rn"})
+            .project()
+            .build());
+  }
+}
+
 TEST_P(SubqueryTest, correlatedExistsOverSemiJoin) {
   // v1 plans this shape differently; the point here is the v2 plan.
   if (!useV2_) {
