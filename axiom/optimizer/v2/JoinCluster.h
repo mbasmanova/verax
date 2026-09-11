@@ -42,6 +42,10 @@ struct JoinCluster {
   std::vector<NodeCP> leaves;
   std::vector<JoinCP> joins;
   std::vector<UnnestCP> unnests;
+
+  /// Predicates of the `Filter` nodes the cluster spans. Each becomes a graph
+  /// conjunct, applied wherever the relations it reads are covered.
+  ExprVector filterPredicates;
 };
 
 } // namespace facebook::axiom::optimizer::v2

@@ -1265,6 +1265,19 @@ class Join : public Node {
     return joinType_ == velox::core::JoinType::kLeftSemiProject;
   }
 
+  /// Which of a join's inputs pass their rows through unchanged.
+  struct PreservedSides {
+    bool left{false};
+    bool right{false};
+  };
+
+  /// Returns which inputs a join of `joinType` passes through unchanged. Such
+  /// a row reaches the output as itself or not at all: the join may drop it --
+  /// a semi join keeps only matching rows, an anti join only non-matching ones
+  /// -- but it never nulls the row's columns and never invents a row the input
+  /// did not have.
+  static PreservedSides preservedSides(velox::core::JoinType joinType);
+
   /// Returns the BOOLEAN mark this semi-project join adds to the preserved
   /// side's columns, which is its last output column. Only semi-project joins
   /// project one.

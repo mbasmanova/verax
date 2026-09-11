@@ -230,28 +230,7 @@ std::optional<MarkFusion> fuseMarkFilter(
 // conjunct is an extra restriction on the join output; this differs from a
 // conjunct in the join's own match condition (see joinFilterTarget).
 bool canPushLeft(velox::core::JoinType joinType, bool leftOnly) {
-  if (!leftOnly) {
-    return false;
-  }
-  switch (joinType) {
-    case velox::core::JoinType::kInner:
-    case velox::core::JoinType::kLeft:
-    case velox::core::JoinType::kLeftSemiFilter:
-    case velox::core::JoinType::kCountingLeftSemiFilter:
-    case velox::core::JoinType::kLeftSemiProject:
-    case velox::core::JoinType::kAnti:
-    case velox::core::JoinType::kCountingAnti:
-      return true;
-    case velox::core::JoinType::kRight:
-    case velox::core::JoinType::kFull:
-    case velox::core::JoinType::kRightSemiFilter:
-    case velox::core::JoinType::kRightSemiProject:
-    case velox::core::JoinType::kRightAnti:
-      return false;
-    case velox::core::JoinType::kNumJoinTypes:
-      break;
-  }
-  VELOX_UNREACHABLE();
+  return leftOnly && Join::preservedSides(joinType).left;
 }
 
 // Returns the cross-side `Column == Column` equi-pairs reachable on
@@ -417,28 +396,7 @@ void blockNondeterministic(ExprVector& pushable, ExprVector& blocked) {
 
 // Mirror of canPushLeft for the right input (from-above conjuncts).
 bool canPushRight(velox::core::JoinType joinType, bool rightOnly) {
-  if (!rightOnly) {
-    return false;
-  }
-  switch (joinType) {
-    case velox::core::JoinType::kInner:
-    case velox::core::JoinType::kRight:
-    case velox::core::JoinType::kRightSemiFilter:
-    case velox::core::JoinType::kRightSemiProject:
-    case velox::core::JoinType::kRightAnti:
-      return true;
-    case velox::core::JoinType::kLeft:
-    case velox::core::JoinType::kFull:
-    case velox::core::JoinType::kLeftSemiFilter:
-    case velox::core::JoinType::kCountingLeftSemiFilter:
-    case velox::core::JoinType::kLeftSemiProject:
-    case velox::core::JoinType::kAnti:
-    case velox::core::JoinType::kCountingAnti:
-      return false;
-    case velox::core::JoinType::kNumJoinTypes:
-      break;
-  }
-  VELOX_UNREACHABLE();
+  return rightOnly && Join::preservedSides(joinType).right;
 }
 
 // Where a conjunct from a join's own match condition (its filter) that
