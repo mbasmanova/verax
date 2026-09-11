@@ -34,14 +34,18 @@ class JoinTest : public test::QueryTestBase,
     return lp::PlanBuilder::Context{kTestConnectorId, kDefaultSchema};
   }
 
-  // Adds an all-BIGINT table whose columns each have `numRows` distinct values.
+  // Adds an all-BIGINT table whose columns each have `numRows` distinct values,
+  // except those named in `numDistinct`.
   void addTableWithStats(
       const std::string& name,
       const std::vector<std::string>& columns,
-      int64_t numRows) {
+      int64_t numRows,
+      const std::unordered_map<std::string, int64_t>& numDistinct = {}) {
     std::unordered_map<std::string, connector::ColumnStatistics> stats;
     for (const auto& column : columns) {
-      stats[column] = {.numDistinct = numRows};
+      const auto it = numDistinct.find(column);
+      stats[column] = {
+          .numDistinct = it != numDistinct.end() ? it->second : numRows};
     }
     testConnector_->addTable(name, ROW(columns, BIGINT()))
         ->setStats(numRows, stats);
@@ -240,6 +244,84 @@ TEST_P(JoinTest, pushdownFilterThroughJoin) {
     auto plan = toSingleNodePlan(logicalPlan);
     AXIOM_ASSERT_PLAN(plan, matcher);
   }
+}
+
+// A filter between two joins does not stop them being reordered.
+TEST_P(JoinTest, filterBetweenJoins) {
+  // 'events' joins 'tags' ten to one, so the outer join alone produces ten
+  // thousand rows, while 'picks' reduces 'events' to three.
+  addTableWithStats("events", {"x", "k"}, 1'000, {{"k", 100}});
+  addTableWithStats("tags", {"bk", "b"}, 1'000, {{"bk", 100}});
+  addTableWithStats("picks", {"tx"}, 3);
+
+  // The predicate admits a null 'b', so it does not turn the outer join inner
+  // and cannot move into either input.
+  {
+    auto query =
+        "SELECT count(*) FROM events LEFT JOIN tags ON events.k = tags.bk "
+        "JOIN picks ON events.x = picks.tx "
+        "WHERE tags.b IS NULL OR tags.b > 5";
+    SCOPED_TRACE(query);
+
+    auto matcher = matchScan("tags")
+                       .hashJoinRight(
+                           matchScan("events").hashJoinInner(
+                               matchScan("picks"), {.keys = {{"x = tx"}}}),
+                           {.keys = {{"bk = k"}}})
+                       .filter("b IS NULL OR b > 5")
+                       .singleAggregation({}, {"count(*)"})
+                       .build();
+
+    AXIOM_ASSERT_PLAN_V2(toSingleNodePlan(query), matcher);
+  }
+
+  // Under a full outer join the predicate reads a side the join null-extends,
+  // so it stays above the join while 'picks' moves across it. 'picks' joins on
+  // the left to keep the full outer join from collapsing to an inner one.
+  {
+    auto query =
+        "SELECT count(*) FROM events FULL OUTER JOIN tags ON events.k = tags.bk "
+        "LEFT JOIN picks ON events.x = picks.tx "
+        "WHERE tags.b IS NULL OR tags.b > 5";
+    SCOPED_TRACE(query);
+
+    auto matcher =
+        matchScan("picks")
+            .hashJoinRight(
+                matchScan("events")
+                    .hashJoin(matchScan("tags"), core::JoinType::kFull)
+                    .filter("b IS NULL OR b > 5"),
+                {.keys = {{"tx = x"}}})
+            .singleAggregation({}, {"count(*)"})
+            .build();
+
+    AXIOM_ASSERT_PLAN_V2(toSingleNodePlan(query), matcher);
+  }
+}
+
+// A non-deterministic predicate between two joins stays where it was written.
+TEST_P(JoinTest, nonDeterministicFilterBetweenJoins) {
+  addTableWithStats("events", {"x", "k"}, 1'000, {{"k", 100}});
+  addTableWithStats("tags", {"bk", "b"}, 1'000, {{"bk", 100}});
+  addTableWithStats("picks", {"tx"}, 3);
+
+  // The semi join cannot duplicate rows, which is what lets the predicate
+  // settle between the two joins.
+  auto query =
+      "SELECT count(*) FROM events JOIN tags ON events.k = tags.bk "
+      "WHERE tags.b > 10000 * rand() "
+      "AND events.x IN (SELECT tx FROM picks)";
+  SCOPED_TRACE(query);
+
+  auto matcher =
+      matchScan("events")
+          .hashJoinInner(matchScan("tags"), {.keys = {{"k = bk"}}})
+          .filter("b::double > 10000.0 * rand()")
+          .hashJoin(matchScan("picks"), core::JoinType::kLeftSemiFilter)
+          .singleAggregation({}, {"count(*)"})
+          .build();
+
+  AXIOM_ASSERT_PLAN_V2(toSingleNodePlan(query), matcher);
 }
 
 TEST_P(JoinTest, hyperEdge) {

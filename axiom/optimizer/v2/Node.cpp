@@ -1560,6 +1560,31 @@ Join::Join(Key key)
   }
 }
 
+Join::PreservedSides Join::preservedSides(velox::core::JoinType joinType) {
+  using JoinType = velox::core::JoinType;
+  switch (joinType) {
+    case JoinType::kInner:
+      return {.left = true, .right = true};
+    case JoinType::kLeft:
+    case JoinType::kLeftSemiFilter:
+    case JoinType::kCountingLeftSemiFilter:
+    case JoinType::kLeftSemiProject:
+    case JoinType::kAnti:
+    case JoinType::kCountingAnti:
+      return {.left = true};
+    case JoinType::kRight:
+    case JoinType::kRightSemiFilter:
+    case JoinType::kRightSemiProject:
+    case JoinType::kRightAnti:
+      return {.right = true};
+    case JoinType::kFull:
+      return {};
+    case JoinType::kNumJoinTypes:
+      break;
+  }
+  VELOX_UNREACHABLE();
+}
+
 ColumnCP Join::markColumn() const {
   VELOX_CHECK(
       projectsMark(joinType_),
