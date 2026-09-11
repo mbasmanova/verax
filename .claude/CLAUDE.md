@@ -87,7 +87,7 @@ for the complete guide. Key rules are summarized below.
 - Avoid redundant comments that repeat what the code already says. Comments should explain *why*, not *what*.
 - Use `// TODO: Description.` for future work. Do not include author's username.
 - Do not duplicate comments between `.h` and `.cpp`. Document the function in the header; the implementation should not repeat the same comment. Duplicated comments diverge over time.
-- Don't leave reasoning-scaffolding comments in committed code. Comments that capture the thought process — naming a sibling function, citing an example from a design discussion ("e.g. for COUNT-style aggregates"), framing the code defensively against an alternative path that was considered and rejected — are useful working notes while writing but rot quickly: they couple to other functions' internals and to ephemeral conversation context that a fresh reader doesn't share. Before committing, delete any comment that names another function and contrasts it ("X does Y; we do Z"), cites a specific operator/aggregate from discussion, describes a path you didn't take, or reads as a running narrative. Keep only comments that describe an invariant the code maintains or a non-obvious constraint a reader must know.
+- Don't leave reasoning-scaffolding comments in committed code. Comments that capture the thought process — naming a sibling function, citing an example from a design discussion ("e.g. for COUNT-style aggregates"), framing the code defensively against an alternative path that was considered and rejected — are useful working notes while writing but rot quickly: they couple to other functions' internals and to ephemeral conversation context that a fresh reader doesn't share. Before committing, delete any comment that names another function and contrasts it ("X does Y; we do Z"), cites a specific operator/aggregate from discussion, describes a path you didn't take, or reads as a running narrative. Keep only comments that describe an invariant the code maintains or a non-obvious constraint a reader must know. A quick check when re-reading a diff: a comment carrying "rather than", "instead of", "would otherwise" or "unreachable", or naming another function in order to contrast with it, is almost always scaffolding.
 - After trimming, re-read the function as a fresh reader and check the *other* failure mode: stripping every comment can leave branches whose intent is no longer visible. A silent `else` to a non-trivial `if/else-if` chain, a state mutation whose justification depends on a downstream call, a deliberate-looking "do nothing" — these usually need a one-line `// why` even after every scaffolding comment is gone. Brevity is not "zero comments"; it is "no comment that doesn't earn its line."
 
 #### Public class docs — readability
@@ -182,6 +182,17 @@ would-I-say-this-aloud test to each):
 - Keep method implementations in `.cpp` except for trivial one-liners.
 - Avoid default arguments when all callers can pass values explicitly.
 - Never use `friend`, `FRIEND_TEST`, or any friend declarations. If a test needs access to private members, redesign the API or test through public methods instead.
+- Never declare a free function in a header. A helper that more than one translation unit needs goes on the class that owns the concept, as a static method — `Join::preservedSides(joinType)`, not `preservedSides(joinType)` at namespace scope. A free function already sitting in a header is not license to add another.
+
+### Optimizer passes
+
+Passes do not depend on each other. A pass must not include another pass's header, or a header that is one pass's implementation detail, to reuse a helper — even a pure one.
+
+A pass-to-pass include makes the pipeline order load-bearing in the type system and turns one pass's internals into another's contract. Two passes that must agree on a fact are also a drift hazard: two copies of the same rule diverge, and a divergence in a soundness rule is a wrong-results bug.
+
+When two passes need the same derived fact, it has to live somewhere neither of them owns. If the fact is a property of a node, the IR layer is the natural home — on the node class, alongside the other derivations. If it is not, it belongs in a component of its own. That component has to stand on its own terms — a coherent thing with a reason to exist, not a home invented to hold a shared helper — and it has to make sense for each pass to depend on it. `Builder` and `ExprFactory` are components of that kind: constructing nodes and constructing expressions are concerns in their own right, and every pass has a reason to depend on them.
+
+A need to share that has no home yet is a signal, not a placement puzzle. If neither the IR nor an existing component fits, the decomposition does not express something the code needs — two passes have grown a common concept that belongs to neither. Work out what that concept is before writing anything.
 
 ## Commit Messages
 
