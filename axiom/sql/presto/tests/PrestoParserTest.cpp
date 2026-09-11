@@ -15,6 +15,7 @@
  */
 
 #include <folly/ScopeGuard.h>
+#include <gmock/gmock.h>
 #include "axiom/connectors/ConnectorMetadataRegistry.h"
 #include "axiom/connectors/system/InformationSchema.h"
 #include "axiom/connectors/system/SystemConnectorMetadata.h"
@@ -1373,6 +1374,51 @@ TEST_F(PrestoParserTest, explainFormat) {
     auto explainStatement = statement->as<ExplainStatement>();
     ASSERT_EQ(explainStatement->format(), ExplainStatement::Format::kText);
   }
+}
+
+TEST_F(PrestoParserTest, explainSettings) {
+  {
+    auto statement = parseSql(
+        "EXPLAIN (TYPE OPTIMIZED WITH (last_pass = 'plan_physical')) "
+        "SELECT * FROM nation");
+    ASSERT_TRUE(statement->isExplain());
+
+    auto* explainStatement = statement->as<ExplainStatement>();
+    EXPECT_EQ(explainStatement->type(), ExplainStatement::Type::kOptimized);
+    EXPECT_THAT(
+        explainStatement->settings(),
+        ::testing::UnorderedElementsAre(
+            std::pair<const std::string, std::string>{
+                "last_pass", "plan_physical"}));
+  }
+
+  // A type without settings carries none.
+  {
+    auto statement = parseSql("EXPLAIN (TYPE OPTIMIZED) SELECT * FROM nation");
+    EXPECT_THAT(
+        statement->as<ExplainStatement>()->settings(), ::testing::IsEmpty());
+  }
+
+  // The parser does not interpret the names, so an unknown one parses.
+  {
+    auto statement = parseSql(
+        "EXPLAIN (TYPE OPTIMIZED WITH (whatever = 'x')) SELECT * FROM nation");
+    EXPECT_THAT(
+        statement->as<ExplainStatement>()->settings(),
+        ::testing::UnorderedElementsAre(
+            std::pair<const std::string, std::string>{"whatever", "x"}));
+  }
+
+  VELOX_ASSERT_USER_THROW(
+      parseSql(
+          "EXPLAIN (TYPE OPTIMIZED WITH (last_pass = 5)) SELECT * FROM nation"),
+      "EXPLAIN setting must be a string: last_pass");
+
+  VELOX_ASSERT_USER_THROW(
+      parseSql(
+          "EXPLAIN (TYPE OPTIMIZED WITH (last_pass = 'a', last_pass = 'b')) "
+          "SELECT * FROM nation"),
+      "Duplicate EXPLAIN setting: last_pass");
 }
 
 TEST_F(PrestoParserTest, explainOptionPrecedence) {

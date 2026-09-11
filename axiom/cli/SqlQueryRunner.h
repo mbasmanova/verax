@@ -587,6 +587,7 @@ class SqlQueryRunner {
       const facebook::axiom::logical_plan::LogicalPlanNodePtr& logicalPlan,
       presto::ExplainStatement::Type type,
       presto::ExplainStatement::Format format,
+      const presto::ExplainStatement::Settings& settings,
       const RunOptions& options,
       QueryTiming& timing,
       std::shared_ptr<facebook::axiom::QueryRuntimeStats> runtimeStats,

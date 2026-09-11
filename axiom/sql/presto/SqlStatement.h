@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <folly/container/F14Map.h>
 #include "axiom/common/CatalogSchemaTableName.h"
 #include "axiom/common/Enums.h"
 #include "axiom/common/SchemaProcedureName.h"
@@ -590,11 +591,17 @@ class ExplainStatement : public SqlStatement {
 
   AXIOM_DECLARE_EMBEDDED_ENUM_NAME(Format);
 
+  /// Settings written as `TYPE <type> WITH (name = 'value')`, keyed by name.
+  /// What a name means, and which types accept one, is for the engine running
+  /// the EXPLAIN to decide; the parser only carries them.
+  using Settings = folly::F14FastMap<std::string, std::string>;
+
   ExplainStatement(
       SqlStatementPtr statement,
       bool analyze,
       Type type,
-      Format format)
+      Format format,
+      Settings settings = {})
       : SqlStatement(
             SqlStatementKind::kExplain,
             statement->views(),
@@ -602,7 +609,8 @@ class ExplainStatement : public SqlStatement {
         statement_{std::move(statement)},
         analyze_{analyze},
         type_{type},
-        format_{format} {}
+        format_{format},
+        settings_{std::move(settings)} {}
 
   const SqlStatementPtr& statement() const {
     return statement_;
@@ -620,11 +628,16 @@ class ExplainStatement : public SqlStatement {
     return format_;
   }
 
+  const Settings& settings() const {
+    return settings_;
+  }
+
  private:
   const SqlStatementPtr statement_;
   const bool analyze_;
   const Type type_;
   const Format format_;
+  const Settings settings_;
 };
 
 /// Wraps a SELECT statement whose logical plan should be optimized to extract

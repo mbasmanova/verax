@@ -318,6 +318,60 @@ TEST_P(ExplainTest, explainCtas) {
   }
 }
 
+// `last_pass` stops the v2 pipeline after the named pass, so the IR is the one
+// that pass produced rather than the finished plan.
+TEST_P(ExplainTest, explainLastPass) {
+  testConnector_->addTpchTables(1);
+
+  if (!useV2_) {
+    VELOX_ASSERT_USER_THROW(
+        run("EXPLAIN (TYPE OPTIMIZED WITH (last_pass = 'translate')) "
+            "SELECT 1 AS x"),
+        "EXPLAIN settings are not supported with v1");
+    return;
+  }
+
+  const std::string query =
+      "SELECT l_orderkey FROM lineitem WHERE l_orderkey < 1000";
+
+  auto afterTranslate =
+      run("EXPLAIN (TYPE OPTIMIZED WITH (last_pass = 'translate')) " + query);
+  ASSERT_TRUE(afterTranslate.message.has_value());
+
+  auto afterEveryPass = run("EXPLAIN (TYPE OPTIMIZED) " + query);
+  ASSERT_TRUE(afterEveryPass.message.has_value());
+
+  // Pushdown gives the scan its connector handle, so the pre-pushdown IR has
+  // none.
+  EXPECT_THAT(
+      afterTranslate.message.value(),
+      ::testing::Not(::testing::HasSubstr("handle:")));
+  EXPECT_THAT(
+      afterEveryPass.message.value(),
+      ::testing::HasSubstr("handle: \"default\".\"lineitem\""));
+
+  // Pass names are matched ignoring case.
+  {
+    auto result =
+        run("EXPLAIN (TYPE OPTIMIZED WITH (last_pass = 'PLAN_PHYSICAL')) "
+            "SELECT 1 AS x");
+    ASSERT_TRUE(result.message.has_value());
+  }
+
+  VELOX_ASSERT_THROW(
+      run("EXPLAIN (TYPE OPTIMIZED WITH (last_pass = 'nosuchpass')) "
+          "SELECT 1 AS x"),
+      "Invalid enum name: NOSUCHPASS");
+
+  VELOX_ASSERT_USER_THROW(
+      run("EXPLAIN (TYPE OPTIMIZED WITH (nosuchsetting = 'x')) SELECT 1 AS x"),
+      "Unrecognized EXPLAIN setting");
+
+  VELOX_ASSERT_USER_THROW(
+      run("EXPLAIN (TYPE LOGICAL WITH (last_pass = 'translate')) SELECT 1 AS x"),
+      "EXPLAIN settings are supported for TYPE OPTIMIZED only");
+}
+
 TEST_P(ExplainTest, explainPopulatesOptimizeTiming) {
   auto runWithTiming = [&](std::string_view sql) {
     QueryTiming timing;

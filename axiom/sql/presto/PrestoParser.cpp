@@ -2329,6 +2329,24 @@ lp::ExprPtr resolveSqlExpression(
   return project->expressionAt(0);
 }
 
+// Reads the `WITH (name = 'value')` settings off an EXPLAIN type option. Values
+// must be string literals; a name given twice is an error rather than a silent
+// last-one-wins.
+ExplainStatement::Settings toExplainSettings(const ExplainType& option) {
+  ExplainStatement::Settings settings;
+  for (const auto& property : option.properties()) {
+    const auto& name = property->name()->value();
+    VELOX_USER_CHECK(
+        property->value()->is(NodeType::kStringLiteral),
+        "EXPLAIN setting must be a string: {}",
+        name);
+    const auto [_, inserted] =
+        settings.emplace(name, property->value()->as<StringLiteral>()->value());
+    VELOX_USER_CHECK(inserted, "Duplicate EXPLAIN setting: {}", name);
+  }
+  return settings;
+}
+
 // Resolves the EXPLAIN options and builds the statement, mirroring Presto: a
 // VALIDATE type wins from any position and over ANALYZE; otherwise the first
 // TYPE and the first FORMAT win; ANALYZE reports the plan it ran and ignores
@@ -2338,10 +2356,12 @@ SqlStatementPtr parseExplain(
     const SqlStatementPtr& sqlStatement) {
   std::optional<ExplainType::Type> explainType;
   std::optional<ExplainFormat::Type> explainFormat;
+  ExplainStatement::Settings settings;
 
   for (const auto& option : explain.options()) {
     if (option->is(NodeType::kExplainType)) {
-      const auto optionType = option->as<ExplainType>()->explainType();
+      const auto* typeOption = option->as<ExplainType>();
+      const auto optionType = typeOption->explainType();
       if (optionType == ExplainType::Type::kValidate) {
         return std::make_shared<ExplainStatement>(
             sqlStatement,
@@ -2351,6 +2371,7 @@ SqlStatementPtr parseExplain(
       }
       if (!explainType.has_value()) {
         explainType = optionType;
+        settings = toExplainSettings(*typeOption);
       }
     } else if (option->is(NodeType::kExplainFormat)) {
       if (!explainFormat.has_value()) {
@@ -2409,7 +2430,7 @@ SqlStatementPtr parseExplain(
   }
 
   return std::make_shared<ExplainStatement>(
-      sqlStatement, /*analyze=*/false, type, format);
+      sqlStatement, /*analyze=*/false, type, format, std::move(settings));
 }
 
 static facebook::axiom::connector::TablePtr findTable(
