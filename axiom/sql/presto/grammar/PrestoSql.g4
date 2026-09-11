@@ -561,7 +561,7 @@ updateAssignment
 
 explainOption
     : FORMAT value=(TEXT | GRAPHVIZ | JSON)                 #explainFormat
-    | TYPE value=(LOGICAL | GRAPH | OPTIMIZED | EXECUTABLE | DISTRIBUTED | VALIDATE | IO)    #explainType
+    | TYPE value=(LOGICAL | GRAPH | OPTIMIZED | EXECUTABLE | DISTRIBUTED | VALIDATE | IO) (WITH properties)?    #explainType
     ;
 
 transactionMode

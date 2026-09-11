@@ -1048,17 +1048,28 @@ class ExplainType : public ExplainOption {
     kIo
   };
 
-  explicit ExplainType(NodeLocation location, Type explainType)
+  ExplainType(
+      NodeLocation location,
+      Type explainType,
+      std::vector<std::shared_ptr<Property>> properties = {})
       : ExplainOption(NodeType::kExplainType, location),
-        explainType_(explainType) {}
+        explainType_(explainType),
+        properties_(std::move(properties)) {}
 
   Type explainType() const {
     return explainType_;
   }
+
+  // The WITH (...) settings qualifying the type, empty when none were given.
+  const std::vector<std::shared_ptr<Property>>& properties() const {
+    return properties_;
+  }
+
   void accept(AstVisitor* visitor) override;
 
  private:
   Type explainType_;
+  std::vector<std::shared_ptr<Property>> properties_;
 };
 
 } // namespace axiom::sql::presto

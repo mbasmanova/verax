@@ -1113,6 +1113,7 @@ SqlQueryRunner::co_runExplainStatement(
       logicalPlan,
       explain.type(),
       explain.format(),
+      explain.settings(),
       options,
       timing,
       runtimeStats,
@@ -1449,10 +1450,39 @@ std::string SqlQueryRunner::runExplainIo(
   return text;
 }
 
+namespace {
+// Reads the pass named by the `last_pass` EXPLAIN setting, or nullopt when
+// there is none. Pass names are matched ignoring case.
+std::optional<optimizer::v2::Optimizer::Pass> explainLastPass(
+    const presto::ExplainStatement::Settings& settings) {
+  static constexpr std::string_view kLastPass = "last_pass";
+
+  for (const auto& setting : settings) {
+    VELOX_USER_CHECK_EQ(
+        setting.first,
+        kLastPass,
+        "Unrecognized EXPLAIN setting. Accepted settings: {}",
+        kLastPass);
+  }
+
+  auto it = settings.find(std::string{kLastPass});
+  if (it == settings.end()) {
+    return std::nullopt;
+  }
+
+  std::string name = it->second;
+  std::transform(name.begin(), name.end(), name.begin(), [](unsigned char ch) {
+    return std::toupper(ch);
+  });
+  return optimizer::v2::Optimizer::toPass(name);
+}
+} // namespace
+
 std::string SqlQueryRunner::runExplain(
     const logical_plan::LogicalPlanNodePtr& logicalPlan,
     presto::ExplainStatement::Type type,
     presto::ExplainStatement::Format format,
+    const presto::ExplainStatement::Settings& settings,
     const RunOptions& options,
     QueryTiming& timing,
     std::shared_ptr<QueryRuntimeStats> runtimeStats,
@@ -1470,6 +1500,10 @@ std::string SqlQueryRunner::runExplain(
             type == presto::ExplainStatement::Type::kGraph,
         "EXPLAIN FORMAT GRAPHVIZ is supported for TYPE LOGICAL and TYPE GRAPH only.");
   }
+
+  VELOX_USER_CHECK(
+      settings.empty() || type == presto::ExplainStatement::Type::kOptimized,
+      "EXPLAIN settings are supported for TYPE OPTIMIZED only.");
 
   switch (type) {
     case presto::ExplainStatement::Type::kLogical:
@@ -1524,15 +1558,18 @@ std::string SqlQueryRunner::runExplain(
         optimizer::MultiFragmentPlan::Options opts;
         opts.maxRemotePartitions = options.numWorkers;
         opts.maxLocalPartitions = options.numDrivers;
+        const auto lastPass = explainLastPass(settings);
         return withOptimizerV2(
             *logicalPlan,
             queryCtx,
             schemaResolver,
             explain,
             [&](auto& optimizer) {
-              return optimizer.debugPlanTo(opts).root->toString();
+              return optimizer.debugPlanTo(opts, lastPass).root->toString();
             });
       }
+      VELOX_USER_CHECK(
+          settings.empty(), "EXPLAIN settings are not supported with v1");
       std::string text;
       auto queryCtx = newQuery(options);
       {
