@@ -578,24 +578,153 @@ void addUnnestBarriers(
   }
 }
 
-} // namespace
+// The graph under construction and the maps edge construction resolves
+// against: which leaf a column comes from, which relation a node is, and what
+// each join's inputs contribute.
+struct EdgeBuilder {
+  JoinHypergraph& graph;
+  const folly::F14FastMap<ColumnCP, int8_t>& columnToLeaf;
+  const folly::F14FastMap<NodeCP, int8_t>& leafIds;
+  const folly::F14FastMap<JoinCP, JoinInputs>& joinInputs;
+  const folly::F14FastMap<int8_t, RelationSet>& unnestInputRelations;
+  const folly::F14FastMap<int8_t, RelationSet>& unnestSubtrees;
 
-JoinHypergraph HypergraphBuilder::build(
+  // Adds the edges of an inner join, and its filter as graph conjuncts.
+  void addInner(JoinCP join, const JoinInputs& inputs) {
+    // Group keys by endpoint relation-pair and emit one edge per group.
+    // Keys sharing an endpoint (a composite key) stay on one edge so
+    // their combined selectivity is preserved; keys with different
+    // endpoints become separate edges, so two relations are not forced
+    // co-located by a single hyperedge.
+    std::map<std::pair<uint64_t, uint64_t>, std::vector<size_t>> keysByEndpoint;
+    for (size_t i = 0; i < join->leftKeys().size(); ++i) {
+      const RelationSet leftKeyRelations{
+          expressionRelations(join->leftKeys()[i], columnToLeaf)};
+      const RelationSet rightKeyRelations{
+          expressionRelations(join->rightKeys()[i], columnToLeaf)};
+      keysByEndpoint[{leftKeyRelations.bits(), rightKeyRelations.bits()}]
+          .push_back(i);
+    }
+
+    for (const auto& [endpoint, keyIndices] : keysByEndpoint) {
+      ExprVector leftKeys;
+      ExprVector rightKeys;
+      for (size_t i : keyIndices) {
+        leftKeys.push_back(join->leftKeys()[i]);
+        rightKeys.push_back(join->rightKeys()[i]);
+      }
+      const RelationSet leftSet{
+          keyRelationsOrOperand(leftKeys, columnToLeaf, inputs.leftLeaves)};
+      const RelationSet rightSet{
+          keyRelationsOrOperand(rightKeys, columnToLeaf, inputs.rightLeaves)};
+      RelationSet ses{leftSet};
+      ses.unionSet(rightSet);
+      const RelationSet tes = expandTes(
+          ses,
+          join->left(),
+          join->right(),
+          join->joinType(),
+          leafIds,
+          joinInputs);
+      auto [leftTes, rightTes] =
+          splitTes(tes, inputs.leftRelations, inputs.rightRelations);
+
+      graph.addEdge(
+          JoinEdge{
+              leftSet,
+              rightSet,
+              leftTes,
+              rightTes,
+              leftKeys,
+              rightKeys,
+              ExprVector{},
+              join->joinType(),
+              /*nullAware=*/false,
+              /*nullAsValue=*/false});
+    }
+
+    for (ExprCP conjunct : join->filter()) {
+      graph.addFilterConjunct(
+          {conjunct, expressionRelations(conjunct, columnToLeaf)});
+    }
+  }
+
+  // Adds the single edge of a non-inner join, normalized to left form.
+  void addOuter(JoinCP join, const JoinInputs& inputs) {
+    // Swap keys when the IR join is a right-form join so the edge's
+    // leftKeys reference the normalized left input.
+    const bool flip = join->joinType() == velox::core::JoinType::kRight ||
+        join->joinType() == velox::core::JoinType::kRightSemiFilter ||
+        join->joinType() == velox::core::JoinType::kRightSemiProject;
+    const ExprVector& edgeLeftKeys =
+        flip ? join->rightKeys() : join->leftKeys();
+    const ExprVector& edgeRightKeys =
+        flip ? join->leftKeys() : join->rightKeys();
+    NodeCP normalizedLeftChild = flip ? join->right() : join->left();
+    NodeCP normalizedRightChild = flip ? join->left() : join->right();
+
+    const RelationSet leftSet{
+        keyRelationsOrOperand(edgeLeftKeys, columnToLeaf, inputs.leftLeaves)};
+    const RelationSet rightSet{
+        keyRelationsOrOperand(edgeRightKeys, columnToLeaf, inputs.rightLeaves)};
+    RelationSet ses{leftSet};
+    ses.unionSet(rightSet);
+    for (ExprCP conjunct : join->filter()) {
+      ses.unionSet(expressionRelations(conjunct, columnToLeaf));
+    }
+    RelationSet tes = expandTes(
+        ses,
+        normalizedLeftChild,
+        normalizedRightChild,
+        inputs.joinType,
+        leafIds,
+        joinInputs);
+
+    addUnnestBarriers(inputs, unnestInputRelations, unnestSubtrees, tes);
+
+    // `populateJoinInputs` already applies the same right-form operand swap
+    // as the normalized child selection above, so these are in normalized
+    // order.
+    auto [leftTes, rightTes] =
+        splitTes(tes, inputs.leftRelations, inputs.rightRelations);
+
+    // kLeftSemiProject preserves the left side and appends a mark; the
+    // Join (and its Apply origin) build outputColumns as
+    // `left.outputColumns ++ mark`, so the mark is the last output
+    // column. Emit reads it back via JoinEdge::markColumn to thread the
+    // mark through reordering. The filtering forms (kLeftSemiFilter /
+    // kAnti) carry no mark.
+    ColumnCP markColumn =
+        inputs.joinType == velox::core::JoinType::kLeftSemiProject
+        ? join->markColumn()
+        : nullptr;
+
+    graph.addEdge(
+        JoinEdge{
+            leftSet,
+            rightSet,
+            leftTes,
+            rightTes,
+            edgeLeftKeys,
+            edgeRightKeys,
+            join->filter(),
+            inputs.joinType,
+            join->nullAware(),
+            join->nullAsValue(),
+            markColumn});
+  }
+};
+
+// Adds one relation per cluster leaf, keyed so that both the original and the
+// rewritten pointer resolve to it, and records which leaf each column comes
+// from.
+void addLeafRelations(
     const JoinCluster& cluster,
     const std::vector<NodeCP>& rewrittenLeaves,
-    EstimateProvider& estimateProvider) {
-  VELOX_CHECK_LE(
-      cluster.leaves.size(),
-      RelationSet::kMaxRelations,
-      "Cluster has more leaves than RelationSet can represent");
-  VELOX_CHECK_EQ(
-      cluster.leaves.size(),
-      rewrittenLeaves.size(),
-      "rewrittenLeaves must align 1:1 with cluster.leaves");
-
-  JoinHypergraph graph;
-  folly::F14FastMap<ColumnCP, int8_t> columnToLeaf;
-  folly::F14FastMap<NodeCP, int8_t> leafIds;
+    EstimateProvider& estimateProvider,
+    JoinHypergraph& graph,
+    folly::F14FastMap<ColumnCP, int8_t>& columnToLeaf,
+    folly::F14FastMap<NodeCP, int8_t>& leafIds) {
   for (size_t i = 0; i < cluster.leaves.size(); ++i) {
     NodeCP original = cluster.leaves[i];
     NodeCP rewritten = rewrittenLeaves[i];
@@ -615,149 +744,17 @@ JoinHypergraph HypergraphBuilder::build(
       columnToLeaf.emplace(column, id);
     }
   }
+}
 
-  folly::F14FastMap<UnnestCP, int8_t> unnestIds =
-      addUnnestRelations(cluster, estimateProvider, graph, columnToLeaf);
-
-  folly::F14FastMap<int8_t, RelationSet> unnestInputRelations =
-      addUnnestEdges(cluster, unnestIds, columnToLeaf, graph);
-
-  folly::F14FastMap<JoinCP, JoinInputs> joinInputs;
-  folly::F14FastMap<int8_t, RelationSet> unnestSubtrees;
-  populateJoinInputs(
-      cluster.root, leafIds, unnestIds, joinInputs, unnestSubtrees);
-
-  for (JoinCP join : cluster.joins) {
-    const auto& inputs = joinInputs.at(join);
-    if (join->isInner()) {
-      // Group keys by endpoint relation-pair and emit one edge per group.
-      // Keys sharing an endpoint (a composite key) stay on one edge so
-      // their combined selectivity is preserved; keys with different
-      // endpoints become separate edges, so two relations are not forced
-      // co-located by a single hyperedge.
-      std::map<std::pair<uint64_t, uint64_t>, std::vector<size_t>>
-          keysByEndpoint;
-      for (size_t i = 0; i < join->leftKeys().size(); ++i) {
-        const RelationSet leftKeyRelations{
-            expressionRelations(join->leftKeys()[i], columnToLeaf)};
-        const RelationSet rightKeyRelations{
-            expressionRelations(join->rightKeys()[i], columnToLeaf)};
-        keysByEndpoint[{leftKeyRelations.bits(), rightKeyRelations.bits()}]
-            .push_back(i);
-      }
-
-      for (const auto& [endpoint, keyIndices] : keysByEndpoint) {
-        ExprVector leftKeys;
-        ExprVector rightKeys;
-        for (size_t i : keyIndices) {
-          leftKeys.push_back(join->leftKeys()[i]);
-          rightKeys.push_back(join->rightKeys()[i]);
-        }
-        const RelationSet leftSet{
-            keyRelationsOrOperand(leftKeys, columnToLeaf, inputs.leftLeaves)};
-        const RelationSet rightSet{
-            keyRelationsOrOperand(rightKeys, columnToLeaf, inputs.rightLeaves)};
-        RelationSet ses{leftSet};
-        ses.unionSet(rightSet);
-        const RelationSet tes = expandTes(
-            ses,
-            join->left(),
-            join->right(),
-            join->joinType(),
-            leafIds,
-            joinInputs);
-        auto [leftTes, rightTes] =
-            splitTes(tes, inputs.leftRelations, inputs.rightRelations);
-
-        graph.addEdge(
-            JoinEdge{
-                leftSet,
-                rightSet,
-                leftTes,
-                rightTes,
-                leftKeys,
-                rightKeys,
-                ExprVector{},
-                join->joinType(),
-                /*nullAware=*/false,
-                /*nullAsValue=*/false});
-      }
-
-      for (ExprCP conjunct : join->filter()) {
-        graph.addFilterConjunct(
-            {conjunct, expressionRelations(conjunct, columnToLeaf)});
-      }
-    } else {
-      // Swap keys when the IR join is a right-form join so the edge's
-      // leftKeys reference the normalized left input.
-      const bool flip = join->joinType() == velox::core::JoinType::kRight ||
-          join->joinType() == velox::core::JoinType::kRightSemiFilter ||
-          join->joinType() == velox::core::JoinType::kRightSemiProject;
-      const ExprVector& edgeLeftKeys =
-          flip ? join->rightKeys() : join->leftKeys();
-      const ExprVector& edgeRightKeys =
-          flip ? join->leftKeys() : join->rightKeys();
-      NodeCP normalizedLeftChild = flip ? join->right() : join->left();
-      NodeCP normalizedRightChild = flip ? join->left() : join->right();
-
-      const RelationSet leftSet{
-          keyRelationsOrOperand(edgeLeftKeys, columnToLeaf, inputs.leftLeaves)};
-      const RelationSet rightSet{keyRelationsOrOperand(
-          edgeRightKeys, columnToLeaf, inputs.rightLeaves)};
-      RelationSet ses{leftSet};
-      ses.unionSet(rightSet);
-      for (ExprCP conjunct : join->filter()) {
-        ses.unionSet(expressionRelations(conjunct, columnToLeaf));
-      }
-      RelationSet tes = expandTes(
-          ses,
-          normalizedLeftChild,
-          normalizedRightChild,
-          inputs.joinType,
-          leafIds,
-          joinInputs);
-
-      addUnnestBarriers(inputs, unnestInputRelations, unnestSubtrees, tes);
-
-      // `populateJoinInputs` already applies the same right-form operand swap
-      // as the normalized child selection above, so these are in normalized
-      // order.
-      auto [leftTes, rightTes] =
-          splitTes(tes, inputs.leftRelations, inputs.rightRelations);
-
-      // kLeftSemiProject preserves the left side and appends a mark; the
-      // Join (and its Apply origin) build outputColumns as
-      // `left.outputColumns ++ mark`, so the mark is the last output
-      // column. Emit reads it back via JoinEdge::markColumn to thread the
-      // mark through reordering. The filtering forms (kLeftSemiFilter /
-      // kAnti) carry no mark.
-      ColumnCP markColumn =
-          inputs.joinType == velox::core::JoinType::kLeftSemiProject
-          ? join->markColumn()
-          : nullptr;
-
-      graph.addEdge(
-          JoinEdge{
-              leftSet,
-              rightSet,
-              leftTes,
-              rightTes,
-              edgeLeftKeys,
-              edgeRightKeys,
-              join->filter(),
-              inputs.joinType,
-              join->nullAware(),
-              join->nullAsValue(),
-              markColumn});
-    }
-  }
-
-  addTransitiveInnerEdges(graph, columnToLeaf);
-
-  // A predicate that reads a side an outer join null-extends takes that edge's
-  // eligibility, so it cannot fire before the padding exists. Edges are
-  // normalized to left form, so no edge carries kRight.
-  for (ExprCP predicate : cluster.filterPredicates) {
+// Adds the cluster's Filter predicates as graph conjuncts. A predicate that
+// reads a side an outer join null-extends takes that edge's eligibility, so it
+// cannot fire before the padding exists. Edges are normalized to left form, so
+// no edge carries kRight.
+void addClusterConjuncts(
+    const ExprVector& predicates,
+    const folly::F14FastMap<ColumnCP, int8_t>& columnToLeaf,
+    JoinHypergraph& graph) {
+  for (ExprCP predicate : predicates) {
     RelationSet relations = expressionRelations(predicate, columnToLeaf);
     for (const auto& edge : graph.edges()) {
       RelationSet extended;
@@ -778,6 +775,59 @@ JoinHypergraph HypergraphBuilder::build(
     }
     graph.addFilterConjunct({predicate, relations});
   }
+}
+
+} // namespace
+
+JoinHypergraph HypergraphBuilder::build(
+    const JoinCluster& cluster,
+    const std::vector<NodeCP>& rewrittenLeaves,
+    EstimateProvider& estimateProvider) {
+  VELOX_CHECK_LE(
+      cluster.leaves.size(),
+      RelationSet::kMaxRelations,
+      "Cluster has more leaves than RelationSet can represent");
+  VELOX_CHECK_EQ(
+      cluster.leaves.size(),
+      rewrittenLeaves.size(),
+      "rewrittenLeaves must align 1:1 with cluster.leaves");
+
+  JoinHypergraph graph;
+  folly::F14FastMap<ColumnCP, int8_t> columnToLeaf;
+  folly::F14FastMap<NodeCP, int8_t> leafIds;
+  addLeafRelations(
+      cluster, rewrittenLeaves, estimateProvider, graph, columnToLeaf, leafIds);
+
+  folly::F14FastMap<UnnestCP, int8_t> unnestIds =
+      addUnnestRelations(cluster, estimateProvider, graph, columnToLeaf);
+
+  folly::F14FastMap<int8_t, RelationSet> unnestInputRelations =
+      addUnnestEdges(cluster, unnestIds, columnToLeaf, graph);
+
+  folly::F14FastMap<JoinCP, JoinInputs> joinInputs;
+  folly::F14FastMap<int8_t, RelationSet> unnestSubtrees;
+  populateJoinInputs(
+      cluster.root, leafIds, unnestIds, joinInputs, unnestSubtrees);
+
+  EdgeBuilder edges{
+      graph,
+      columnToLeaf,
+      leafIds,
+      joinInputs,
+      unnestInputRelations,
+      unnestSubtrees};
+  for (JoinCP join : cluster.joins) {
+    const auto& inputs = joinInputs.at(join);
+    if (join->isInner()) {
+      edges.addInner(join, inputs);
+    } else {
+      edges.addOuter(join, inputs);
+    }
+  }
+
+  addTransitiveInnerEdges(graph, columnToLeaf);
+
+  addClusterConjuncts(cluster.filterPredicates, columnToLeaf, graph);
 
   return graph;
 }
