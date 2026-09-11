@@ -60,6 +60,7 @@ class Printer : public NodeVisitor {
   struct Context : public NodeVisitorContext {
     std::stringstream out;
     size_t indent{0};
+    const NodePrinter::Options* options{nullptr};
   };
 
   // Bumps `ctx.indent` by 2 on construction, restores on destruction.
@@ -396,6 +397,14 @@ class Printer : public NodeVisitor {
       ctx.out << extra;
     }
     ctx.out << " -> " << formatColumns(node.outputColumns()) << '\n';
+
+    if (ctx.options->estimates) {
+      const auto estimate = ctx.options->estimates(&node);
+      if (estimate.cardinality.has_value()) {
+        ctx.out << spaces(ctx.indent + 2)
+                << "Estimate: " << *estimate.cardinality << " rows\n";
+      }
+    }
   }
 
   void visitInputs(const Node& node, Context& ctx) const {
@@ -406,8 +415,9 @@ class Printer : public NodeVisitor {
 
 } // namespace
 
-std::string NodePrinter::toText(NodeCP root) {
+std::string NodePrinter::toText(NodeCP root, const Options& options) {
   Printer::Context ctx;
+  ctx.options = &options;
   root->accept(Printer{}, ctx);
   return ctx.out.str();
 }

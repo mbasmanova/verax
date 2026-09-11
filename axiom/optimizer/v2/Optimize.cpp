@@ -202,9 +202,9 @@ Optimizer::DebugPlan Optimizer::debugPlanTo(
   NodeCP root =
       planTo(pass, PushdownAndPrunePass::ConnectorPushdown::kOffer, &options);
 
-  // Only the leaf-statistics pass leaves estimates a caller can read: the ones
-  // physical planning computes belong to a provider that dies with the pass.
-  if (pass != Pass::kEstimateLeafStats) {
+  // Before leaf statistics are read the numbers are not the ones planning goes
+  // on, so no estimate is offered at all.
+  if (pass.has_value() && *pass < Pass::kEstimateLeafStats) {
     return {root, nullptr};
   }
 
