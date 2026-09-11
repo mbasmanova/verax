@@ -1384,6 +1384,28 @@ std::shared_ptr<velox::core::QueryCtx> SqlQueryRunner::newQuery(
       options.tokenProvider);
 }
 
+template <typename Operation>
+auto SqlQueryRunner::withOptimizerV2(
+    const logical_plan::LogicalPlanNode& logicalPlan,
+    const std::shared_ptr<velox::core::QueryCtx>& queryCtx,
+    const std::shared_ptr<connector::SchemaResolver>& schemaResolver,
+    bool explain,
+    Operation&& operation) {
+  auto resolver = orDefaultSchemaResolver(schemaResolver);
+  auto session = makeOptimizerSession(
+      queryCtx->queryId(),
+      collectConnectorProperties(*sessionConfig_),
+      explain);
+  OptimizerContext optimizerContext(
+      optimizerPool_.get(), session->options().maxPlanObjects);
+  velox::exec::SimpleExpressionEvaluator evaluator(
+      queryCtx.get(), optimizerPool_.get());
+
+  optimizer::v2::Optimizer optimizer(
+      logicalPlan, *resolver, *session, evaluator, queryCtx);
+  return operation(optimizer);
+}
+
 std::string SqlQueryRunner::runExplainIo(
     const presto::SqlStatement& statement,
     const logical_plan::LogicalPlanNodePtr& logicalPlan,
@@ -1402,18 +1424,14 @@ std::string SqlQueryRunner::runExplainIo(
       QueryRuntimeStats::kOptimizeCpuNanos);
 
   if (useOptimizerV2_) {
-    auto resolver = orDefaultSchemaResolver(schemaResolver);
-    auto session = makeOptimizerSession(
-        queryCtx->queryId(),
-        collectConnectorProperties(*sessionConfig_),
-        /*explain=*/true);
-    OptimizerContext optimizerContext(
-        optimizerPool_.get(), session->options().maxPlanObjects);
-    velox::exec::SimpleExpressionEvaluator evaluator(
-        queryCtx.get(), optimizerPool_.get());
-    optimizer::v2::Optimizer optimizer(
-        *logicalPlan, *resolver, *session, evaluator, queryCtx);
-    return optimizer.explainIo(std::move(outputTable));
+    return withOptimizerV2(
+        *logicalPlan,
+        queryCtx,
+        schemaResolver,
+        /*explain=*/true,
+        [&](auto& optimizer) {
+          return optimizer.explainIo(std::move(outputTable));
+        });
   }
   std::string text;
   optimize(
@@ -1496,9 +1514,25 @@ std::string SqlQueryRunner::runExplain(
     }
 
     case presto::ExplainStatement::Type::kOptimized: {
-      VELOX_USER_CHECK(
-          !useOptimizerV2_,
-          "EXPLAIN TYPE OPTIMIZED is not supported with --v2");
+      if (useOptimizerV2_) {
+        auto queryCtx = newQuery(options);
+        PhaseTimer phaseTimer(
+            timing.optimize,
+            runtimeStats.get(),
+            QueryRuntimeStats::kOptimizeWallNanos,
+            QueryRuntimeStats::kOptimizeCpuNanos);
+        optimizer::MultiFragmentPlan::Options opts;
+        opts.maxRemotePartitions = options.numWorkers;
+        opts.maxLocalPartitions = options.numDrivers;
+        return withOptimizerV2(
+            *logicalPlan,
+            queryCtx,
+            schemaResolver,
+            explain,
+            [&](auto& optimizer) {
+              return optimizer.debugPlanTo(opts).root->toString();
+            });
+      }
       std::string text;
       auto queryCtx = newQuery(options);
       {
@@ -2090,34 +2124,29 @@ std::vector<velox::RowVectorPtr> SqlQueryRunner::runShowStatsForQuery(
   std::vector<velox::Variant> data;
 
   if (useOptimizerV2_) {
-    auto queryCtx = newQuery(options);
-    auto session = makeOptimizerSession(
-        queryCtx->queryId(),
-        collectConnectorProperties(*sessionConfig_),
-        /*explain=*/false);
-    OptimizerContext optimizerContext(
-        optimizerPool_.get(), session->options().maxPlanObjects);
-    velox::exec::SimpleExpressionEvaluator evaluator(
-        queryCtx.get(), optimizerPool_.get());
-    auto resolver = orDefaultSchemaResolver(nullptr);
+    // The stats reference optimizer-owned memory, so they are turned into rows
+    // inside the call.
+    data = withOptimizerV2(
+        *logicalPlan,
+        newQuery(options),
+        /*schemaResolver=*/nullptr,
+        /*explain=*/false,
+        [](auto& optimizer) {
+          const auto stats = optimizer.estimateQueryStats();
 
-    const auto stats =
-        optimizer::v2::Optimizer(
-            *logicalPlan, *resolver, *session, evaluator, queryCtx)
-            .estimateQueryStats();
-
-    presto::ShowStatsBuilder builder(roundCardinality(stats.cardinality));
-    for (const auto& column : stats.columns) {
-      builder.addColumn(
-          column.name,
-          *column.type,
-          castOpt<double>(column.nullFraction),
-          roundCardinality(column.distinctCount),
-          /*avgLength=*/std::nullopt,
-          column.min,
-          column.max);
-    }
-    data = builder.rows();
+          presto::ShowStatsBuilder builder(roundCardinality(stats.cardinality));
+          for (const auto& column : stats.columns) {
+            builder.addColumn(
+                column.name,
+                *column.type,
+                castOpt<double>(column.nullFraction),
+                roundCardinality(column.distinctCount),
+                /*avgLength=*/std::nullopt,
+                column.min,
+                column.max);
+          }
+          return builder.rows();
+        });
   } else {
     optimize(
         logicalPlan,

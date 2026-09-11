@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
@@ -25,7 +26,11 @@
 #include "axiom/logical_plan/LogicalPlanNode.h"
 #include "axiom/optimizer/MultiFragmentPlan.h"
 #include "axiom/optimizer/OptimizerSession.h"
+#include "axiom/optimizer/Schema.h"
 #include "axiom/optimizer/ToVelox.h"
+#include "axiom/optimizer/v2/Builder.h"
+#include "axiom/optimizer/v2/EstimateProvider.h"
+#include "axiom/optimizer/v2/PushdownAndPrunePass.h"
 #include "velox/core/Expressions.h"
 #include "velox/core/QueryCtx.h"
 #include "velox/type/Variant.h"
@@ -71,12 +76,13 @@ class Optimizer {
         schemaResolver_{schemaResolver},
         session_{session},
         evaluator_{evaluator},
-        queryCtx_{std::move(queryCtx)} {}
+        queryCtx_{std::move(queryCtx)},
+        schema_{schemaResolver_} {}
 
   /// Lowers the plan to a distributed Velox execution plan (a
   /// `MultiFragmentPlan` of one or more fragments).
   ///
-  /// Stages over a tree IR:
+  /// Passes over a tree IR:
   ///   - Translate — build the tree IR from the logical plan;
   ///   - Decorrelate — rewrite correlated subqueries as joins;
   ///   - LimitAndOrder — fold limits into ordering operators;
@@ -110,20 +116,105 @@ class Optimizer {
       std::optional<CatalogSchemaTableName> outputTable = std::nullopt);
 
   /// Estimates the result statistics of the plan (the estimate behind
-  /// SHOW STATS FOR (<query>)). Runs the shared front end (translate +
-  /// pushdown) and, when the `useFilteredTableStats` option is set,
-  /// EstimateLeafStatsPass, then reads the root estimate via EstimateProvider —
-  /// the v2 analogue of v1 reading the root DerivedTable after logical
-  /// optimization. The returned pointers are valid only for the enclosing
-  /// QueryGraphContext's lifetime.
+  /// SHOW STATS FOR (<query>)). Runs the pipeline through EstimateLeafStats —
+  /// join ordering and Emit are skipped — then reads the root estimate via
+  /// EstimateProvider, the v2 analogue of v1 reading the root DerivedTable
+  /// after logical optimization. The returned pointers are valid only for the
+  /// enclosing QueryGraphContext's lifetime.
   QueryStats estimateQueryStats();
 
+  /// The passes run over the tree IR, in order. `Emit` is absent because it
+  /// produces Velox nodes rather than IR.
+  enum class Pass {
+    kTranslate,
+    kDecorrelate,
+    kLimitAndOrder,
+    kPushdownAndPrune,
+    kFoldMetadataAggregate,
+
+    /// Annotates base tables with connector statistics rather than rewriting
+    /// the tree, so the root it returns is the one the pass before produced.
+    /// Skipped when `useFilteredTableStats` is unset.
+    kEstimateLeafStats,
+
+    kPlanPhysical,
+    kPrecomputeProjections,
+    kExpandAggregate,
+  };
+
+  AXIOM_DECLARE_EMBEDDED_ENUM_NAME(Pass);
+
+  /// Estimates for the nodes of a `DebugPlan`. Empty when the pass did not
+  /// produce them: populated for `kEstimateLeafStats` only, and for later
+  /// passes once the estimates that drive physical planning outlive the pass
+  /// that computes them.
+  using Estimates = std::function<Estimate(NodeCP)>;
+
+  /// The IR at a pass boundary, and what is known about it.
+  struct DebugPlan {
+    NodeCP root;
+    Estimates estimates;
+  };
+
+  /// Returns the IR as the pipeline leaves it: after `pass` when one is given,
+  /// after the last pass otherwise, so a caller wanting the fully optimized IR
+  /// does not name whichever pass currently comes last.
+  ///
+  /// The result is owned by this `Optimizer` and by the `QueryGraphContext` it
+  /// runs under, and is valid while both are alive. That includes `estimates`,
+  /// which reads through state this `Optimizer` holds.
+  ///
+  /// For debugging only, and not a stable API: the pass sequence is internal
+  /// and `Pass` changes with it. Production code calls `optimize`.
+  DebugPlan debugPlanTo(
+      const MultiFragmentPlan::Options& options,
+      std::optional<Pass> pass = std::nullopt);
+
  private:
+  // Runs the pipeline up to and including `pass`, or all of it when `pass` is
+  // unset, and returns the IR as the last pass run left it.
+  // `connectorPushdown` is what PushdownAndPrunePass does with the filters it
+  // lands on a scan. `options` may be null only for a `pass` earlier than
+  // `kPlanPhysical`, the first one that reads them.
+  NodeCP planTo(
+      std::optional<Pass> pass,
+      PushdownAndPrunePass::ConnectorPushdown connectorPushdown,
+      const MultiFragmentPlan::Options* options);
+
+  // One entry point per instance: the passes annotate shared IR objects and
+  // the front end runs once, so a second call would plan over what the first
+  // left behind.
+  void markUsed() {
+    VELOX_CHECK(!used_, "Optimizer is single use: construct one per query");
+    used_ = true;
+  }
+
   const logical_plan::LogicalPlanNode& plan_;
   const connector::SchemaResolver& schemaResolver_;
   const OptimizerSession& session_;
   velox::core::ExpressionEvaluator& evaluator_;
   const std::shared_ptr<velox::core::QueryCtx> queryCtx_;
+
+  // Own the schema and the node factory: the IR points into the schema's
+  // table layouts, and callers of `debugPlanTo` read the IR after the call.
+  Schema schema_;
+  Builder builder_;
+
+  bool used_{false};
+
+  // Estimates for `debugPlanTo`, computed over the IR it returns. Held here so
+  // the lookup it hands back stays valid for this Optimizer's lifetime.
+  std::optional<EstimateProvider> debugEstimates_;
+
+  // The query's output columns and the names to emit them under, as the
+  // translate pass resolved them.
+  ColumnVector outputColumns_;
+  std::vector<std::string> outputNames_;
+
+  // The options physical planning ran under, with the worker count the
+  // optimizer chose. `optimize` emits with these, so the plan and the fragment
+  // count it was made for cannot disagree.
+  MultiFragmentPlan::Options planOptions_;
 };
 
 } // namespace facebook::axiom::optimizer::v2
