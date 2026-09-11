@@ -2961,8 +2961,14 @@ ExplainType::Type toExplainType(PrestoSqlParser::ExplainTypeContext* ctx) {
 std::any AstBuilder::visitExplainType(
     PrestoSqlParser::ExplainTypeContext* ctx) {
   trace("visitExplainType");
-  return std::static_pointer_cast<ExplainOption>(
-      std::make_shared<ExplainType>(getLocation(ctx), toExplainType(ctx)));
+
+  std::vector<std::shared_ptr<Property>> properties;
+  if (ctx->properties() != nullptr) {
+    properties = visitTyped<Property>(ctx->properties()->property());
+  }
+
+  return std::static_pointer_cast<ExplainOption>(std::make_shared<ExplainType>(
+      getLocation(ctx), toExplainType(ctx), std::move(properties)));
 }
 
 std::any AstBuilder::visitIsolationLevel(

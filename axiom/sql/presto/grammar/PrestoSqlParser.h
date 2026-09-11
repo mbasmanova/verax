@@ -3908,6 +3908,8 @@ class PrestoSqlParser : public antlr4::Parser {
     antlr4::tree::TerminalNode* DISTRIBUTED();
     antlr4::tree::TerminalNode* VALIDATE();
     antlr4::tree::TerminalNode* IO();
+    antlr4::tree::TerminalNode* WITH();
+    PropertiesContext* properties();
     virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
     virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
 
