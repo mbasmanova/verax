@@ -16,6 +16,34 @@ SELECT t1.a FROM t t1 LEFT JOIN t t2 ON t1.a = t2.a AND 1 = 2 WHERE t2.b IS NULL
 -- count 0
 SELECT t1.a FROM t t1 LEFT JOIN t t2 ON t1.a = t2.a AND 1 = 2 WHERE t2.b > 5
 ----
+-- A filter between two joins, kept out of both inputs by the outer join's
+-- null padding, still lets the joins be reordered. Only a = 3 finds a match
+-- above 140, so the surviving rows are the null-padded ones: pushing the
+-- predicate into 'r' would keep a = 3 as well.
+-- ordered
+SELECT o.a, o.b
+FROM t o
+LEFT JOIN t r ON o.a = r.a AND r.b > 140
+JOIN t s ON o.b = s.b
+WHERE r.b IS NULL OR r.b > 200
+ORDER BY o.a, o.b
+
+----
+-- The same shape over a full outer join. The predicate admits nulls on the
+-- right side, so the rows the join pads there are kept.
+SELECT count(*), count(o.a), count(r.b)
+FROM t o
+FULL OUTER JOIN t r ON o.a = r.a AND r.b > 140
+LEFT JOIN t s ON o.b = s.b
+WHERE r.b IS NULL OR r.b > 200
+----
+-- The same predicate on the left side, which a full outer join pads as well.
+SELECT count(*), count(o.a), count(r.b)
+FROM t o
+FULL OUTER JOIN t r ON o.a = r.a AND r.b > 140
+LEFT JOIN t s ON o.b = s.b
+WHERE o.b IS NULL OR o.b > 200
+----
 -- JOIN with UNION ALL subquery.
 SELECT t1.a, t1.b
 FROM t t1 JOIN (SELECT a FROM t WHERE a = 1 UNION ALL SELECT a FROM t WHERE a = 2) t2 ON t1.a = t2.a

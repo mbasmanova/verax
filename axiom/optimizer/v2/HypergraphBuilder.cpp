@@ -136,6 +136,17 @@ SubtreeRelations populateJoinInputs(
     return subtree;
   }
 
+  if (node->is(NodeType::kFilter)) {
+    // A Filter the cluster descended through contributes no relation of its
+    // own; its predicates became graph conjuncts.
+    return populateJoinInputs(
+        node->as<Filter>()->input(),
+        leafIds,
+        unnestIds,
+        inputs,
+        unnestSubtrees);
+  }
+
   const auto* join = node->as<Join>();
   const SubtreeRelations left = populateJoinInputs(
       join->left(), leafIds, unnestIds, inputs, unnestSubtrees);
@@ -235,6 +246,17 @@ RelationSet tesExpansion(
         input, parentType, parentSes, leftSide, leafIds, inputs);
   }
 
+  if (node->is(NodeType::kFilter)) {
+    // A Filter contributes no join to reshape over; its predicates are graph
+    // conjuncts, eligible by their own relation sets.
+    return tesExpansion(
+        node->as<Filter>()->input(),
+        parentType,
+        parentSes,
+        leftSide,
+        leafIds,
+        inputs);
+  }
   const auto* childJoin = node->as<Join>();
   const auto& childInputs = inputs.at(childJoin);
 
@@ -731,6 +753,31 @@ JoinHypergraph HypergraphBuilder::build(
   }
 
   addTransitiveInnerEdges(graph, columnToLeaf);
+
+  // A predicate that reads a side an outer join null-extends takes that edge's
+  // eligibility, so it cannot fire before the padding exists. Edges are
+  // normalized to left form, so no edge carries kRight.
+  for (ExprCP predicate : cluster.filterPredicates) {
+    RelationSet relations = expressionRelations(predicate, columnToLeaf);
+    for (const auto& edge : graph.edges()) {
+      RelationSet extended;
+      switch (edge.joinType()) {
+        case velox::core::JoinType::kLeft:
+          extended = edge.rightEligibility();
+          break;
+        case velox::core::JoinType::kFull:
+          extended = edge.leftEligibility();
+          extended.unionSet(edge.rightEligibility());
+          break;
+        default:
+          continue;
+      }
+      if (relations.hasIntersection(extended)) {
+        relations.unionSet(edge.totalEligibility());
+      }
+    }
+    graph.addFilterConjunct({predicate, relations});
+  }
 
   return graph;
 }
