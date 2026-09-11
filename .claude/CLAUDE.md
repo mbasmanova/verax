@@ -174,6 +174,44 @@ would-I-say-this-aloud test to each):
   - Mixed types keep the two-vector form: `ROW({"a", "b"}, {BIGINT(),
     VARCHAR()})`.
 
+### Enums
+
+Every enum declared in a header gets name mapping, added with the enum itself.
+It is not the first caller's job to add it. Use `AXIOM_DECLARE_ENUM_NAME` /
+`AXIOM_DEFINE_ENUM_NAME` for a namespace-scope enum and the `_EMBEDDED_`
+variants for one nested in a class — the two are the same rule, and both
+macros are in `axiom/common/Enums.h`.
+
+The declaration goes in the header next to the enum, the definition in the
+`.cpp` next to a `Names()` function in an anonymous namespace mapping each
+enumerator to its name:
+
+```cpp
+// Schema.h
+enum class Kind { kUnspecified, kPartitioned, ... };
+
+AXIOM_DECLARE_EMBEDDED_ENUM_NAME(Kind);
+```
+
+```cpp
+// Schema.cpp
+namespace {
+const auto& distributionKindNames() {
+  static const folly::F14FastMap<Distribution::Kind, std::string_view> kNames =
+      {
+          {Distribution::Kind::kUnspecified, "UNSPECIFIED"},
+          {Distribution::Kind::kPartitioned, "PARTITIONED"},
+      };
+  return kNames;
+}
+} // namespace
+
+AXIOM_DEFINE_EMBEDDED_ENUM_NAME(Distribution, Kind, distributionKindNames);
+```
+
+A `DECLARE` without its `DEFINE` compiles and links until someone calls
+`toName`, so a missing definition is invisible until it is not.
+
 ### API Design
 
 - Keep the public API surface small.
@@ -319,8 +357,12 @@ undocumented if the name is self-explanatory.
 
 ### Non-trivial implementations in headers
 
-Keep method implementations in `.cpp` except for trivial one-liners. If a
-method body has more than one statement, it belongs in the `.cpp` file.
+Keep method implementations in `.cpp`. A body stays in the header only when it
+needs no types the header does not already have and is short enough that it
+will not churn — a getter, or a two-line check-and-set. Anything that pulls in
+an include, or that a reader has to scroll through, moves. Statement count is
+not the test: moving a two-line guard to the `.cpp` costs a declaration, a
+definition and a jump between files, and saves nothing.
 
 ```cpp
 // ❌ Wrong — multi-statement body in header.
