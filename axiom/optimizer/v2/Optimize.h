@@ -144,10 +144,15 @@ class Optimizer {
 
   AXIOM_DECLARE_EMBEDDED_ENUM_NAME(Pass);
 
-  /// Estimates for the nodes of a `DebugPlan`. Empty when the pass did not
-  /// produce them: populated for `kEstimateLeafStats` only, and for later
-  /// passes once the estimates that drive physical planning outlive the pass
-  /// that computes them.
+  /// Cardinality and column constraints for the nodes of a `DebugPlan`,
+  /// computed the way physical planning computes them — the same
+  /// `EstimateProvider` over the same base statistics, so a leaf reproduces
+  /// exactly and a join subtree is estimated as planning would estimate it.
+  ///
+  /// Empty for a pass before `kEstimateLeafStats`, where the base statistics
+  /// have not been read yet. That is a position in the pipeline, not a
+  /// statement that the pass ran: it is skipped when `useFilteredTableStats`
+  /// is unset, and the estimates then fall back to the table's own statistics.
   using Estimates = std::function<Estimate(NodeCP)>;
 
   /// The IR at a pass boundary, and what is known about it.

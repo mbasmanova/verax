@@ -53,6 +53,7 @@
 #include "axiom/optimizer/Plan.h"
 #include "axiom/optimizer/RelationOpPrinter.h"
 #include "axiom/optimizer/VeloxHistory.h"
+#include "axiom/optimizer/v2/NodePrinter.h"
 #include "axiom/optimizer/v2/Optimize.h"
 #include "axiom/runner/ProgressReporter.h"
 #include "axiom/sql/presto/PrestoParser.h"
@@ -1565,7 +1566,9 @@ std::string SqlQueryRunner::runExplain(
             schemaResolver,
             explain,
             [&](auto& optimizer) {
-              return optimizer.debugPlanTo(opts, lastPass).root->toString();
+              const auto plan = optimizer.debugPlanTo(opts, lastPass);
+              return optimizer::v2::NodePrinter::toText(
+                  plan.root, {.estimates = plan.estimates});
             });
       }
       VELOX_USER_CHECK(

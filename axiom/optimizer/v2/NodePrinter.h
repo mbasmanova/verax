@@ -15,7 +15,9 @@
  */
 #pragma once
 
+#include <functional>
 #include <string>
+#include "axiom/optimizer/v2/EstimateProvider.h"
 #include "axiom/optimizer/v2/Node.h"
 
 namespace facebook::axiom::optimizer::v2 {
@@ -23,9 +25,15 @@ namespace facebook::axiom::optimizer::v2 {
 /// Renders an IR tree as indented text.
 class NodePrinter {
  public:
+  struct Options {
+    /// Supplies the estimate to print under each node. Unset prints none, and
+    /// a node whose cardinality is unknown prints none either way.
+    std::function<Estimate(NodeCP)> estimates;
+  };
+
   /// Returns 'root' as indented text. Columns are shown by their `name()`
   /// (the unique synthetic), not `outputName()`, so identity is visible.
-  static std::string toText(NodeCP root);
+  static std::string toText(NodeCP root, const Options& options = {});
 };
 
 } // namespace facebook::axiom::optimizer::v2

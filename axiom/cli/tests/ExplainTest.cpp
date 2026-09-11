@@ -341,6 +341,14 @@ TEST_P(ExplainTest, explainLastPass) {
   auto afterEveryPass = run("EXPLAIN (TYPE OPTIMIZED) " + query);
   ASSERT_TRUE(afterEveryPass.message.has_value());
 
+  // Estimates appear once leaf statistics have been read, and not before. The
+  // values are checked by hand rather than pinned here.
+  EXPECT_THAT(
+      afterEveryPass.message.value(), ::testing::HasSubstr("Estimate:"));
+  EXPECT_THAT(
+      afterTranslate.message.value(),
+      ::testing::Not(::testing::HasSubstr("Estimate:")));
+
   // Pushdown gives the scan its connector handle, so the pre-pushdown IR has
   // none.
   EXPECT_THAT(
