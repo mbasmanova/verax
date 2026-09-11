@@ -79,6 +79,9 @@ bool isClusterable(const Join* join) {
 // together. The emitter applies a conjunct at a join, never at a leaf, so a
 // predicate taken from a Filter over a single leaf would move up to the first
 // join above, away from the scan pushdown placed it on.
+// `dissolveCrossJoins` and `opaqueJoins` say which joins the cluster takes in:
+// a bare keyless inner join is descended through only when the first is set,
+// and a join named by the second always stays a leaf.
 bool separatesJoins(
     NodeCP node,
     bool dissolveCrossJoins,
@@ -104,30 +107,56 @@ bool separatesJoins(
       join->filter().empty();
 }
 
-void collectCluster(
-    NodeCP node,
-    JoinCluster& cluster,
-    bool dissolveCrossJoins,
-    const folly::F14FastSet<const Join*>& opaqueJoins,
-    bool preserved) {
-  if (node->is(NodeType::kJoin)) {
-    const auto* join = node->as<Join>();
-    if (isClusterable(join) && !opaqueJoins.contains(join)) {
-      cluster.joins.push_back(join);
+// Walks a cluster's subtree, taking each node into the cluster or ending the
+// branch with it as a leaf. `preserved` is false once the walk has entered an
+// input a join above does not preserve, where a node that decides which rows
+// that join sees cannot move.
+class ClusterCollector {
+ public:
+  // `dissolveCrossJoins` and `opaqueJoins` carry the same meaning they have in
+  // `separatesJoins`, and vary independently: the first collection dissolves
+  // cross joins with nothing opaque, and the re-collect that stops dissolving
+  // them may still have nothing opaque.
+  ClusterCollector(
+      JoinCluster& cluster,
+      bool dissolveCrossJoins,
+      const folly::F14FastSet<const Join*>& opaqueJoins)
+      : cluster_{cluster},
+        dissolveCrossJoins_{dissolveCrossJoins},
+        opaqueJoins_{opaqueJoins} {}
+
+  void collect(NodeCP node, bool preserved) {
+    switch (node->nodeType()) {
+      case NodeType::kJoin:
+        if (collectJoin(node->as<Join>(), preserved)) {
+          return;
+        }
+        break;
+      case NodeType::kFilter:
+        if (collectFilter(node->as<Filter>(), preserved)) {
+          return;
+        }
+        break;
+      case NodeType::kUnnest:
+        collectUnnest(node->as<Unnest>(), preserved);
+        return;
+      default:
+        break;
+    }
+    cluster_.leaves.push_back(node);
+  }
+
+ private:
+  // These return true when they took the node into the cluster; an Unnest
+  // always joins it.
+
+  bool collectJoin(JoinCP join, bool preserved) {
+    if (isClusterable(join) && !opaqueJoins_.contains(join)) {
+      cluster_.joins.push_back(join);
       const auto sides = Join::preservedSides(join->joinType());
-      collectCluster(
-          join->left(),
-          cluster,
-          dissolveCrossJoins,
-          opaqueJoins,
-          preserved && sides.left);
-      collectCluster(
-          join->right(),
-          cluster,
-          dissolveCrossJoins,
-          opaqueJoins,
-          preserved && sides.right);
-      return;
+      collect(join->left(), preserved && sides.left);
+      collect(join->right(), preserved && sides.right);
+      return true;
     }
     // A bare keyless inner join (no keys, no filter) is a comma-join cross
     // product. Descend through it so its children join the cluster as
@@ -135,18 +164,16 @@ void collectCluster(
     // them (a spurious cross product that the join graph can avoid). A
     // keyless join that carries a filter is a theta or decorrelated-subquery
     // join; leave it an opaque leaf so its semantics are preserved.
-    if (dissolveCrossJoins && join->isInner() && join->leftKeys().empty() &&
+    if (dissolveCrossJoins_ && join->isInner() && join->leftKeys().empty() &&
         join->filter().empty()) {
-      collectCluster(
-          join->left(), cluster, dissolveCrossJoins, opaqueJoins, preserved);
-      collectCluster(
-          join->right(), cluster, dissolveCrossJoins, opaqueJoins, preserved);
-      return;
+      collect(join->left(), preserved);
+      collect(join->right(), preserved);
+      return true;
     }
+    return false;
   }
 
-  if (node->is(NodeType::kFilter)) {
-    const auto* filter = node->as<Filter>();
+  bool collectFilter(FilterCP filter, bool preserved) {
     // A Filter emits its input's columns, so descending through it leaves the
     // relations unchanged. Three things keep it a leaf: a non-deterministic
     // predicate must run where it was written; a Filter inside an input the
@@ -157,31 +184,31 @@ void collectCluster(
         filter->predicates().begin(),
         filter->predicates().end(),
         [](ExprCP predicate) { return predicate->containsNonDeterministic(); });
-    if (deterministic && preserved &&
-        separatesJoins(filter->input(), dissolveCrossJoins, opaqueJoins)) {
-      appendAll(cluster.filterPredicates, filter->predicates());
-      collectCluster(
-          filter->input(), cluster, dissolveCrossJoins, opaqueJoins, preserved);
-      return;
+    if (!deterministic || !preserved ||
+        !separatesJoins(filter->input(), dissolveCrossJoins_, opaqueJoins_)) {
+      return false;
     }
+    appendAll(cluster_.filterPredicates, filter->predicates());
+    collect(filter->input(), preserved);
+    return true;
   }
 
-  if (node->is(NodeType::kUnnest)) {
-    const auto* unnest = node->as<Unnest>();
+  void collectUnnest(UnnestCP unnest, bool preserved) {
     // An Unnest of a constant, as in UNNEST(ARRAY[1, 2]), reads a subtree that
     // produces no columns. No predicate can reference it, so it is not a
     // relation of the cluster; the Unnest emits it as its own input.
     NodeCP input = unnest->input();
     if (!input->outputColumns().empty()) {
-      collectCluster(
-          input, cluster, dissolveCrossJoins, opaqueJoins, preserved);
+      collect(input, preserved);
     }
     // Preserve JoinCluster's post-order invariant.
-    cluster.unnests.push_back(unnest);
-    return;
+    cluster_.unnests.push_back(unnest);
   }
-  cluster.leaves.push_back(node);
-}
+
+  JoinCluster& cluster_;
+  const bool dissolveCrossJoins_;
+  const folly::F14FastSet<const Join*>& opaqueJoins_;
+};
 
 // A kLeftSemiProject join projects a mark, which is a column of no cluster
 // leaf. Another join in the cluster whose predicate reads that mark has no
@@ -481,12 +508,8 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
 
     JoinCluster cluster;
     cluster.root = node;
-    collectCluster(
-        node,
-        cluster,
-        /*dissolveCrossJoins=*/true,
-        /*opaqueJoins=*/{},
-        /*preserved=*/true);
+    ClusterCollector{cluster, /*dissolveCrossJoins=*/true, /*opaqueJoins=*/{}}
+        .collect(node, /*preserved=*/true);
     if (cluster.joins.empty()) {
       return rewriteUnclusteredJoin(node, context);
     }
@@ -496,12 +519,8 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
     if (!opaqueJoins.empty()) {
       cluster = JoinCluster{};
       cluster.root = node;
-      collectCluster(
-          node,
-          cluster,
-          /*dissolveCrossJoins=*/true,
-          opaqueJoins,
-          /*preserved=*/true);
+      ClusterCollector{cluster, /*dissolveCrossJoins=*/true, opaqueJoins}
+          .collect(node, /*preserved=*/true);
     }
 
     // A RelationSet holds `kMaxRelations` relations, so a larger cluster has
@@ -534,12 +553,8 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
     if (hasEndpointStrandedRelation(graph)) {
       cluster = JoinCluster{};
       cluster.root = node;
-      collectCluster(
-          node,
-          cluster,
-          /*dissolveCrossJoins=*/false,
-          opaqueJoins,
-          /*preserved=*/true);
+      ClusterCollector{cluster, /*dissolveCrossJoins=*/false, opaqueJoins}
+          .collect(node, /*preserved=*/true);
       graph = buildGraph();
     }
 
