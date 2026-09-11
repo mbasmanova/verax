@@ -1307,6 +1307,9 @@ NodeCP PlanPhysicalPass::run(
     const OptimizerOptions& options,
     int32_t numWorkers,
     int32_t numDrivers) {
+  VELOX_USER_CHECK_GE(numWorkers, 1, "numWorkers must be at least 1");
+  VELOX_USER_CHECK_GE(numDrivers, 1, "numDrivers must be at least 1");
+
   PhysicalPlanRewriter rewriter{builder, options, numWorkers, numDrivers};
   return rewriter.rewrite(root);
 }

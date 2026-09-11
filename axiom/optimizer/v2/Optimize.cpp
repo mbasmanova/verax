@@ -23,47 +23,17 @@
 #include "axiom/optimizer/v2/EmitPass.h"
 #include "axiom/optimizer/v2/EstimateLeafStatsPass.h"
 #include "axiom/optimizer/v2/EstimateProvider.h"
+#include "axiom/optimizer/v2/ExpandAggregatePass.h"
 #include "axiom/optimizer/v2/FoldMetadataAggregatePass.h"
 #include "axiom/optimizer/v2/LimitAndOrderPass.h"
-#include "axiom/optimizer/v2/PhysicalPlanAndEmit.h"
+#include "axiom/optimizer/v2/PlanPhysicalPass.h"
+#include "axiom/optimizer/v2/PrecomputeProjectionsPass.h"
 #include "axiom/optimizer/v2/PushdownAndPrunePass.h"
 #include "axiom/optimizer/v2/TranslatePass.h"
 
 namespace facebook::axiom::optimizer::v2 {
 
 namespace {
-
-// Bundles the outputs of the front-end passes shared by full optimization and
-// EXPLAIN (TYPE IO).
-struct FrontendResult {
-  TranslatePass::Result translated;
-  NodeCP pushed;
-};
-
-// Runs the front-end passes shared by `optimize` and `explainIo`. 'schema' and
-// 'builder' must outlive the returned IR.
-FrontendResult translateAndPushdown(
-    const logical_plan::LogicalPlanNode& plan,
-    Schema& schema,
-    velox::core::ExpressionEvaluator& evaluator,
-    Builder& builder,
-    const OptimizerSession& session,
-    const std::shared_ptr<velox::core::QueryCtx>& queryCtx,
-    PushdownAndPrunePass::ConnectorPushdown connectorPushdown) {
-  ConstantPlanRunner constantPlanRunner{queryCtx};
-  auto translated = TranslatePass::run(
-      plan, schema, evaluator, builder, session, constantPlanRunner);
-  NodeCP decorrelated = DecorrelatePass::run(translated.root, builder);
-  NodeCP limited = LimitAndOrderPass::run(decorrelated, builder);
-  NodeCP pushed = PushdownAndPrunePass::run(
-      limited,
-      translated.outputColumns,
-      builder,
-      evaluator,
-      session,
-      connectorPushdown);
-  return {std::move(translated), pushed};
-}
 
 // Collects each Scan's base table and the conjuncts that reach it. Reads them
 // off the `Filter` above the `Scan`, so the caller must have run the pushdown
@@ -134,50 +104,134 @@ int32_t chooseNumWorkers(
 
 } // namespace
 
-PlanAndStats Optimizer::optimize(const MultiFragmentPlan::Options& options) {
-  VELOX_USER_CHECK_GE(
-      options.maxRemotePartitions, 1, "maxRemotePartitions must be at least 1");
-  VELOX_USER_CHECK_GE(
-      options.maxLocalPartitions, 1, "maxLocalPartitions must be at least 1");
+namespace {
+const auto& passNames() {
+  static const folly::F14FastMap<Optimizer::Pass, std::string_view> kNames = {
+      {Optimizer::Pass::kTranslate, "TRANSLATE"},
+      {Optimizer::Pass::kDecorrelate, "DECORRELATE"},
+      {Optimizer::Pass::kLimitAndOrder, "LIMIT_AND_ORDER"},
+      {Optimizer::Pass::kPushdownAndPrune, "PUSHDOWN_AND_PRUNE"},
+      {Optimizer::Pass::kFoldMetadataAggregate, "FOLD_METADATA_AGGREGATE"},
+      {Optimizer::Pass::kEstimateLeafStats, "ESTIMATE_LEAF_STATS"},
+      {Optimizer::Pass::kPlanPhysical, "PLAN_PHYSICAL"},
+      {Optimizer::Pass::kPrecomputeProjections, "PRECOMPUTE_PROJECTIONS"},
+      {Optimizer::Pass::kExpandAggregate, "EXPAND_AGGREGATE"},
+  };
+  return kNames;
+}
+} // namespace
 
-  // Schema is owned here so its `connector::TablePtr`s — and the
-  // `TableLayout`s the IR's `BaseTable` nodes hold raw pointers to —
-  // stay alive through translate, precompute, and emit.
-  Schema schema(schemaResolver_);
+AXIOM_DEFINE_EMBEDDED_ENUM_NAME(Optimizer, Pass, passNames);
 
-  Builder builder;
-  auto frontend = translateAndPushdown(
-      plan_,
-      schema,
-      evaluator_,
-      builder,
-      session_,
-      queryCtx_,
-      PushdownAndPrunePass::ConnectorPushdown::kOffer);
-  NodeCP folded =
-      FoldMetadataAggregatePass::run(frontend.pushed, builder, session_);
-  if (session_.options().useFilteredTableStats) {
-    EstimateLeafStatsPass::run(folded, session_);
+NodeCP Optimizer::planTo(
+    std::optional<Pass> pass,
+    PushdownAndPrunePass::ConnectorPushdown connectorPushdown,
+    const MultiFragmentPlan::Options* options) {
+  ConstantPlanRunner constantPlanRunner{queryCtx_};
+  auto translated = TranslatePass::run(
+      plan_, schema_, evaluator_, builder_, session_, constantPlanRunner);
+  outputColumns_ = translated.outputColumns;
+  outputNames_ = translated.outputNames;
+  if (pass == Pass::kTranslate) {
+    return translated.root;
   }
+
+  NodeCP node = DecorrelatePass::run(translated.root, builder_);
+  if (pass == Pass::kDecorrelate) {
+    return node;
+  }
+
+  node = LimitAndOrderPass::run(node, builder_);
+  if (pass == Pass::kLimitAndOrder) {
+    return node;
+  }
+
+  node = PushdownAndPrunePass::run(
+      node,
+      translated.outputColumns,
+      builder_,
+      evaluator_,
+      session_,
+      connectorPushdown);
+  if (pass == Pass::kPushdownAndPrune) {
+    return node;
+  }
+
+  node = FoldMetadataAggregatePass::run(node, builder_, session_);
+  if (pass == Pass::kFoldMetadataAggregate) {
+    return node;
+  }
+
+  if (session_.options().useFilteredTableStats) {
+    EstimateLeafStatsPass::run(node, session_);
+  }
+  if (pass == Pass::kEstimateLeafStats) {
+    return node;
+  }
+
+  VELOX_CHECK_NOT_NULL(options, "Physical planning needs plan options");
 
   // Decide the width before physical planning, which reads maxRemotePartitions
   // to shape exchanges and to cost broadcasts.
-  MultiFragmentPlan::Options planOptions = options;
-  planOptions.maxRemotePartitions =
-      chooseNumWorkers(folded, session_.options(), options.maxRemotePartitions);
+  planOptions_ = *options;
+  planOptions_.maxRemotePartitions =
+      chooseNumWorkers(node, session_.options(), options->maxRemotePartitions);
 
-  EmitPass::Result emitted = physicalPlanAndEmit(
-      folded,
-      frontend.translated.outputColumns,
-      frontend.translated.outputNames,
-      builder,
+  node = PlanPhysicalPass::run(
+      node,
+      builder_,
+      session_.options(),
+      planOptions_.maxRemotePartitions,
+      planOptions_.maxLocalPartitions);
+  if (pass == Pass::kPlanPhysical) {
+    return node;
+  }
+
+  node = PrecomputeProjectionsPass::run(node, builder_);
+  if (pass == Pass::kPrecomputeProjections) {
+    return node;
+  }
+
+  return ExpandAggregatePass::run(node, builder_);
+}
+
+Optimizer::DebugPlan Optimizer::debugPlanTo(
+    const MultiFragmentPlan::Options& options,
+    std::optional<Pass> pass) {
+  markUsed();
+  NodeCP root =
+      planTo(pass, PushdownAndPrunePass::ConnectorPushdown::kOffer, &options);
+
+  // Only the leaf-statistics pass leaves estimates a caller can read: the ones
+  // physical planning computes belong to a provider that dies with the pass.
+  if (pass != Pass::kEstimateLeafStats) {
+    return {root, nullptr};
+  }
+
+  debugEstimates_.emplace();
+  return {
+      root, [this](NodeCP node) { return debugEstimates_->estimate(node); }};
+}
+
+PlanAndStats Optimizer::optimize(const MultiFragmentPlan::Options& options) {
+  markUsed();
+
+  NodeCP planned = planTo(
+      /*pass=*/std::nullopt,
+      PushdownAndPrunePass::ConnectorPushdown::kOffer,
+      &options);
+
+  EmitPass::Result emitted = EmitPass::run(
+      planned,
+      outputColumns_,
+      outputNames_,
       session_,
       evaluator_,
-      planOptions);
+      planOptions_);
 
   PlanAndStats result;
   result.plan = std::make_shared<MultiFragmentPlan>(
-      std::move(emitted.fragments), planOptions);
+      std::move(emitted.fragments), planOptions_);
   result.plan->checkConsistency(
       /*mayBeEmpty=*/plan_.is(logical_plan::NodeKind::kTableWrite));
   result.finishWrite = std::move(emitted.finishWrite);
@@ -201,52 +255,33 @@ PlanAndStats Optimizer::optimize(const MultiFragmentPlan::Options& options) {
 
 std::string Optimizer::explainIo(
     std::optional<CatalogSchemaTableName> outputTable) {
-  // Schema is owned here so its `connector::TablePtr`s — and the raw pointers
-  // the IR's `BaseTable` nodes hold into them — stay alive for the duration.
-  Schema schema(schemaResolver_);
+  markUsed();
 
-  // Run only the passes that move predicates down to the scans; join ordering
-  // and Emit are not needed to report IO. The pushdown pass does not offer
-  // them to the connector: the report is what the query applies to each table,
-  // not how some connector would read it.
-  Builder builder;
-  auto frontend = translateAndPushdown(
-      plan_,
-      schema,
-      evaluator_,
-      builder,
-      session_,
-      queryCtx_,
-      PushdownAndPrunePass::ConnectorPushdown::kSkip);
+  // The filters are not offered to the connector: the report is what the query
+  // applies to each table, not how some connector would read it.
+  NodeCP pushed = planTo(
+      Pass::kPushdownAndPrune,
+      PushdownAndPrunePass::ConnectorPushdown::kSkip,
+      nullptr);
 
   std::vector<std::pair<BaseTableCP, ExprVector>> tableFilters;
-  collectScans(frontend.pushed, tableFilters);
+  collectScans(pushed, tableFilters);
   return optimizer::explainIo(tableFilters, std::move(outputTable));
 }
 
 QueryStats Optimizer::estimateQueryStats() {
-  // Schema is owned here so its tables — and the raw pointers the IR's
-  // BaseTable nodes hold into them — stay alive while the estimate is read.
-  Schema schema(schemaResolver_);
-  Builder builder;
+  markUsed();
 
-  auto frontend = translateAndPushdown(
-      plan_,
-      schema,
-      evaluator_,
-      builder,
-      session_,
-      queryCtx_,
-      PushdownAndPrunePass::ConnectorPushdown::kOffer);
-  if (session_.options().useFilteredTableStats) {
-    EstimateLeafStatsPass::run(frontend.pushed, session_);
-  }
+  NodeCP root = planTo(
+      Pass::kEstimateLeafStats,
+      PushdownAndPrunePass::ConnectorPushdown::kOffer,
+      nullptr);
 
   EstimateProvider estimateProvider;
-  const Estimate& estimate = estimateProvider.estimate(frontend.pushed);
+  const Estimate& estimate = estimateProvider.estimate(root);
 
-  const auto& columns = frontend.translated.outputColumns;
-  const auto& names = frontend.translated.outputNames;
+  const auto& columns = outputColumns_;
+  const auto& names = outputNames_;
   VELOX_CHECK_EQ(columns.size(), names.size());
 
   QueryStats result;

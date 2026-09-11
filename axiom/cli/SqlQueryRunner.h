@@ -571,6 +571,18 @@ class SqlQueryRunner {
       facebook::axiom::connector::ConnectorProperties connectorProperties,
       bool explain);
 
+  // Runs 'operation' on a v2 Optimizer over 'logicalPlan'. The optimizer's
+  // arena, session and evaluator live for the duration of the call, so
+  // 'operation' must not let the optimizer's output escape it.
+  template <typename Operation>
+  auto withOptimizerV2(
+      const facebook::axiom::logical_plan::LogicalPlanNode& logicalPlan,
+      const std::shared_ptr<facebook::velox::core::QueryCtx>& queryCtx,
+      const std::shared_ptr<facebook::axiom::connector::SchemaResolver>&
+          schemaResolver,
+      bool explain,
+      Operation&& operation);
+
   std::string runExplain(
       const facebook::axiom::logical_plan::LogicalPlanNodePtr& logicalPlan,
       presto::ExplainStatement::Type type,

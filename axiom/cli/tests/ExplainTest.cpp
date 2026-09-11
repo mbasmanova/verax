@@ -282,18 +282,14 @@ TEST_P(ExplainTest, explainCtas) {
         ::testing::HasSubstr("- TableWrite CREATE: -> ROW<rows:BIGINT>"));
   }
 
-  // TYPE OPTIMIZED is v1-only.
-  if (useV2_) {
-    VELOX_ASSERT_THROW(
-        run("EXPLAIN (TYPE OPTIMIZED) CREATE TABLE t AS SELECT 1 AS x"),
-        "EXPLAIN TYPE OPTIMIZED is not supported with --v2");
-  } else {
+  {
     auto result =
         run("EXPLAIN (TYPE OPTIMIZED) CREATE TABLE t AS SELECT 1 AS x");
     ASSERT_TRUE(result.message.has_value());
     EXPECT_THAT(
         result.message.value(),
-        ::testing::HasSubstr("TableWrite [1.00 rows] ->"));
+        ::testing::HasSubstr(
+            useV2_ ? "TableWrite" : "TableWrite [1.00 rows] ->"));
   }
 
   {
@@ -336,12 +332,12 @@ TEST_P(ExplainTest, explainPopulatesOptimizeTiming) {
   // EXPLAIN (TYPE LOGICAL) does not populate optimize timing.
   EXPECT_EQ(0, runWithTiming("EXPLAIN (TYPE LOGICAL) SELECT 1").optimize);
 
-  // TYPE GRAPH and TYPE OPTIMIZED are v1-only; the other EXPLAIN variants
-  // populate optimize timing under both optimizers.
+  // TYPE GRAPH is v1-only; every other EXPLAIN variant populates optimize
+  // timing under both optimizers.
   if (!useV2_) {
     EXPECT_GT(runWithTiming("EXPLAIN (TYPE GRAPH) SELECT 1").optimize, 0);
-    EXPECT_GT(runWithTiming("EXPLAIN (TYPE OPTIMIZED) SELECT 1").optimize, 0);
   }
+  EXPECT_GT(runWithTiming("EXPLAIN (TYPE OPTIMIZED) SELECT 1").optimize, 0);
   EXPECT_GT(runWithTiming("EXPLAIN SELECT 1").optimize, 0);
   EXPECT_GT(runWithTiming("EXPLAIN (TYPE IO) SELECT 1").optimize, 0);
 
@@ -382,7 +378,7 @@ TEST_P(ExplainTest, explainFormatGraphviz) {
         text.message.value(), ::testing::Not(::testing::HasSubstr("digraph")));
   }
 
-  // FORMAT GRAPHVIZ with unsupported TYPE fails (checked before the v2 gate).
+  // FORMAT GRAPHVIZ with an unsupported TYPE fails.
   VELOX_ASSERT_USER_THROW(
       run("EXPLAIN (TYPE OPTIMIZED, FORMAT GRAPHVIZ) SELECT 1 AS x"),
       "EXPLAIN FORMAT GRAPHVIZ is supported for TYPE LOGICAL and TYPE GRAPH only");

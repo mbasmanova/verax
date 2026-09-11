@@ -21,10 +21,10 @@
 
 namespace facebook::axiom::optimizer::v2 {
 
-/// Runs the physical-planning and emit passes over 'root' and returns the emit
-/// result: PlanPhysical -> PrecomputeProjections -> ExpandAggregate -> Emit.
-/// Shared by full optimization and the translate-time constant fold so the two
-/// cannot drift. 'outputColumns' / 'outputNames' pin the emitted output layout.
+/// Runs PlanPhysical -> PrecomputeProjections -> ExpandAggregate over 'root'
+/// and lowers the result to Velox nodes. Lets the translate-time constant fold
+/// make a runnable plan out of an IR subtree without depending on the passes
+/// themselves. 'outputColumns' / 'outputNames' pin the emitted output layout.
 EmitPass::Result physicalPlanAndEmit(
     NodeCP root,
     const ColumnVector& outputColumns,
