@@ -143,7 +143,23 @@ void Console::initialize() {
   FLAGS_logtostderr = FLAGS_debug;
 }
 
-void Console::run() {
+namespace {
+// Tells the user how to reach tables when the session opened without a default
+// schema. Interactive only: scripted runs emit query output and nothing else.
+void printMissingSchemaHint(const SqlQueryRunner& runner) {
+  if (!runner.defaultSchema().empty()) {
+    return;
+  }
+
+  const auto& catalog = runner.defaultConnectorId();
+  std::cout << "Catalog '" << catalog
+            << "' has no default schema. Qualify table names as "
+               "'<schema>.<table>', or run 'use "
+            << catalog << ".<schema>' to set one." << std::endl;
+}
+} // namespace
+
+Console::Outcome Console::run() {
   gflags::CommandLineFlagInfo repeatInfo;
   gflags::GetCommandLineFlagInfo("repeat", &repeatInfo);
 
@@ -157,14 +173,30 @@ void Console::run() {
     interrupt_ = nullptr;
   };
 
+  const bool interactive = isatty(STDIN_FILENO);
+
+  // What follows --init: the REPL when there is no SQL to run instead.
+  const bool entersRepl = FLAGS_query.empty() && interactive;
+
   if (!FLAGS_init.empty()) {
     std::string sql;
     auto success = folly::readFile(FLAGS_init.c_str(), sql);
     VELOX_USER_CHECK(success, "Cannot open init file: {}", FLAGS_init);
-    runMultiple(sql, FLAGS_print_timing, /*showProgress=*/false);
+    if (const auto outcome =
+            runMultiple(sql, FLAGS_print_timing, /*showProgress=*/false);
+        outcome != Outcome::kSucceeded) {
+      // A script cannot act on a half-built session, so stop. A user at a
+      // prompt can: --init may have built something expensive, and the failure
+      // is on screen right above. Say that the setup is incomplete, since a
+      // greeting and a prompt otherwise look like an ordinary start.
+      if (!entersRepl) {
+        return outcome;
+      }
+      std::cerr << "--init did not finish, so the session is only partly set "
+                   "up. Opening the prompt anyway."
+                << std::endl;
+    }
   }
-
-  const bool interactive = isatty(STDIN_FILENO);
 
   // The live progress grid renders on stderr and is erased before results
   // print, so it needs stderr to be a terminal and the runner to report
@@ -183,17 +215,15 @@ void Console::run() {
 
   if (!userSql.empty()) {
     if (repeatInfo.is_default) {
-      runMultiple(
+      return runMultiple(
           userSql,
           FLAGS_print_timing,
           FLAGS_show_live_progress && terminalProgress);
-    } else {
-      // Explicit --repeat: treat the input as a single statement. Skip the
-      // progress grid so its periodic redraws do not perturb the timing this
-      // mode exists to measure.
-      runRepeat(userSql, FLAGS_repeat, FLAGS_print_timing);
     }
-    return;
+    // Explicit --repeat: treat the input as a single statement. Skip the
+    // progress grid so its periodic redraws do not perturb the timing this
+    // mode exists to measure.
+    return runRepeat(userSql, FLAGS_repeat, FLAGS_print_timing);
   }
 
   // No user SQL: enter interactive REPL.
@@ -203,8 +233,13 @@ void Console::run() {
     std::cout << "Axiom SQL. Type statement and end with ;.\n"
                  "Type .help for available commands."
               << std::endl;
+    printMissingSchemaHint(runner_);
   }
   readCommands("SQL> ", interactive || FLAGS_print_timing, terminalProgress);
+
+  // A statement typed into the REPL that fails has already been reported to
+  // the user; it does not make the session itself a failure.
+  return Outcome::kSucceeded;
 }
 
 namespace {
@@ -220,10 +255,8 @@ std::string formatTiming(
 }
 } // namespace
 
-bool Console::runOnce(
-    std::string_view sql,
-    bool printTiming,
-    bool showProgress) {
+Console::Outcome
+Console::runOnce(std::string_view sql, bool printTiming, bool showProgress) {
   QueryCompletionInfo completionInfo;
 
   SqlQueryRunner::RunOptions options{
@@ -282,14 +315,14 @@ bool Console::runOnce(
       std::cout << "Query ID: " << completionInfo.startInfo.queryId << " | "
                 << formatTiming(completionInfo.timing, cpuTiming) << std::endl;
     }
-    return true;
+    return Outcome::kSucceeded;
   } catch (const QueryCancelledError&) {
     // A user cancellation (Ctrl+C) is reported plainly.
     if (progress) {
       progress->clear();
     }
     std::cerr << "Query cancelled." << std::endl;
-    return false;
+    return Outcome::kCancelled;
   } catch (const std::exception&) {
     if (progress) {
       progress->clear();
@@ -302,11 +335,11 @@ bool Console::runOnce(
       std::cerr << "Query ID: " << completionInfo.startInfo.queryId << " | "
                 << formatTiming(completionInfo.timing, cpuTiming) << std::endl;
     }
-    return false;
+    return Outcome::kFailed;
   }
 }
 
-void Console::runMultiple(
+Console::Outcome Console::runMultiple(
     std::string_view sql,
     bool printTiming,
     bool showProgress) {
@@ -317,18 +350,23 @@ void Console::runMultiple(
     if (sqlText.empty()) {
       continue;
     }
-    if (!runOnce(sqlText, printTiming, showProgress)) {
-      return;
+    if (const auto outcome = runOnce(sqlText, printTiming, showProgress);
+        outcome != Outcome::kSucceeded) {
+      return outcome;
     }
   }
+  return Outcome::kSucceeded;
 }
 
-void Console::runRepeat(std::string_view sql, int repeat, bool printTiming) {
+Console::Outcome
+Console::runRepeat(std::string_view sql, int repeat, bool printTiming) {
   for (int i = 0; i < repeat; ++i) {
-    if (!runOnce(sql, printTiming, /*showProgress=*/false)) {
-      return;
+    if (const auto outcome = runOnce(sql, printTiming, /*showProgress=*/false);
+        outcome != Outcome::kSucceeded) {
+      return outcome;
     }
   }
+  return Outcome::kSucceeded;
 }
 
 void Console::readCommands(

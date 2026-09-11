@@ -26,8 +26,8 @@ The examples below use `axiom_sql` for brevity. With Buck, replace
 |------|---------|-------------|
 | `--query` | | SQL text to execute. Supports multiple semicolon-separated statements. If not specified, enters interactive mode. If set to an empty string (`--query ""`), reads semicolon-separated SQL statements from stdin. |
 | `--init` | | Path to a SQL file with semicolon-separated statements to execute on startup before entering interactive mode or running `--query`. |
-| `--catalog` | | Default catalog (connector). If not specified, defaults to `hive` when `--data_path` is set, `tpch` otherwise. |
-| `--schema` | | Default schema. If not specified, defaults to `tiny` for TPC-H and `default` for Hive and Test connectors. |
+| `--catalog` | | Default catalog (connector). If not specified, defaults to `hive` when `--data_path` is set, `tpch` otherwise. Startup fails if the catalog is not registered. |
+| `--schema` | | Default schema. If not specified, defaults to `tiny` for TPC-H and `default` for Hive and Test connectors. Other catalogs, such as `system`, have no default schema: qualify table names as `<schema>.<table>`, or run `use <catalog>.<schema>`. |
 | `--etc_dir` | | Path to a directory of catalog `.properties` files. Mutually exclusive with `--data_path`. External catalogs are not selected automatically; use `--catalog` or fully-qualified names in SQL. |
 | `--data_path` | | Hive specific: root path for Hive-style partitioned data. Registers local Hive connector. Mutually exclusive with `--etc_dir`. |
 | `--data_format` | `parquet` | Hive specific: data format, `parquet`, `dwrf`, or `text`. |
@@ -284,7 +284,8 @@ Query cancelled.
 Cancellation works on every execution path — `--init`, `--query`, piped stdin,
 `--repeat`, and the interactive REPL. In the REPL the prompt returns and the
 session stays alive; on the non-interactive paths the cancelled statement ends
-the run, so any remaining statements or `--repeat` iterations are skipped.
+the run: any remaining statements or `--repeat` iterations are skipped, and the
+CLI exits 130.
 
 At the prompt, with no query running:
 
@@ -297,13 +298,41 @@ At the prompt, with no query running:
 
 | Condition | Exit code |
 |-----------|-----------|
-| Invalid CLI flags (e.g. `--repeat 0`, `--repeat` in interactive mode) | 1 |
-| All statements completed | 0 |
-| One or more statements failed at parse / optimize / execute | 0 |
+| Invalid flags or catalog configuration | 1 |
+| `--query` or piped stdin: every statement succeeded | 0 |
+| `--query` or piped stdin: a statement failed | 1 |
+| `--query` or piped stdin: Ctrl+C cancelled a statement | 130 |
+| `--init` failed, with `--query` or piped stdin to follow | 1, or 130 if Ctrl+C cancelled it |
+| `--init` failed, with the REPL to follow — the prompt still opens | 0 |
+| Interactive REPL: left with `.exit`, `.quit` or Ctrl+D | 0 |
 
-Query failures print `Query failed: ...` to stderr but do not change
-the exit code. Wrap the CLI in shell tooling if you need to detect
-query failure (e.g. grep for `Query failed:` in stderr).
+Bad configuration is rejected before any statement runs and prints a
+single `Error: ...` line to stderr. This covers `--repeat 0`, `--repeat`
+in interactive mode, `--data_path` together with `--etc_dir`, a
+`--catalog` that names an unregistered catalog, and an `--init` file that
+cannot be read.
+
+Once statements start running, a failure prints `Query failed: ...` to
+stderr — `Query cancelled.` if Ctrl+C ended it — and what happens next
+depends on where that statement came from:
+
+- **`--query` or piped stdin** — the run stops there: the statements
+  after it are skipped and the CLI exits 1. Ctrl+C exits 130 instead,
+  the code a shell reports for a process that Ctrl+C ended, so a script
+  can tell a stopped run from a broken one.
+- **Typed at the REPL prompt** — only that statement ends. The prompt
+  returns, the session stays open, and it exits 0 whatever its
+  statements did.
+
+`--init` runs before both, and what a failure in it costs depends on
+what was going to follow. With `--query` or piped stdin, neither runs,
+and the CLI exits as it would for a failure there. With the REPL, the
+prompt opens anyway: `--init` often builds something expensive, and the
+prompt is where the user can look at what went wrong and finish the job
+by hand. The rest of the `--init` file is skipped either way, so the CLI
+says so before the greeting:
+
+    --init did not finish, so the session is only partly set up. Opening the prompt anyway.
 
 ## Query History
 

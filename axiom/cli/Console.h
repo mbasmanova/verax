@@ -43,16 +43,28 @@ class QueryInterruptHandler;
 ///   SqlQueryRunner runner{user, &scheduler};
 ///   Console console{runner};
 ///   console.initialize();
-///   console.run();
+///   const Console::Outcome outcome = console.run();
 /// @endcode
 ///
 /// Invariants:
 /// - `runner` must outlive the Console.
 /// - run() owns process-wide stdin/stdout/stderr while it executes; do not
 ///   write to them concurrently.
-/// - Query failures are caught and printed; only invalid CLI flags throw.
+/// - Query failures are caught and printed, then reported by run()'s return
+///   value; only invalid CLI flags throw.
 class Console {
  public:
+  /// How a run ended, for the caller to turn into an exit status.
+  enum class Outcome {
+    /// Every statement succeeded, or the session ended at the interactive
+    /// prompt, whatever was typed there.
+    kSucceeded,
+    /// A statement failed.
+    kFailed,
+    /// Ctrl+C cancelled a statement.
+    kCancelled,
+  };
+
   explicit Console(SqlQueryRunner& runner);
 
   /// Initializes the CLI with usage message and logging settings.
@@ -62,24 +74,32 @@ class Console {
   /// stdin if non-interactive, otherwise enters the interactive REPL.
   /// Honors `--repeat` for `--query` and piped-stdin paths.
   ///
+  /// Returns how the run ended. A statement from `--init`, `--query` or piped
+  /// stdin that fails or is cancelled ends the run, skipping the statements
+  /// after it, and decides the outcome. A failed or cancelled `--init` still
+  /// opens the interactive prompt, where the user can act on it, and the
+  /// session then ends kSucceeded like any other. Statements typed at the
+  /// prompt are reported the same way and never affect the outcome.
+  ///
   /// Throws VeloxUserError on invalid CLI flags. Query failures during
   /// execution are caught internally and printed to stderr; they do
   /// not throw.
-  void run();
+  Outcome run();
 
  private:
-  // Runs a single SQL statement and prints results/timing. Returns true on
-  // success, false if the query threw. Draws the live progress grid when
-  // 'showProgress' is set.
-  bool runOnce(std::string_view sql, bool printTiming, bool showProgress);
+  // Runs a single SQL statement and prints results/timing. Draws the live
+  // progress grid when 'showProgress' is set.
+  Outcome runOnce(std::string_view sql, bool printTiming, bool showProgress);
 
   // Splits 'sql' into individual statements and runs each one in sequence.
-  // Stops on the first failure. Passes 'showProgress' through to each.
-  void runMultiple(std::string_view sql, bool printTiming, bool showProgress);
+  // Stops at the first that does not succeed and returns its outcome. Passes
+  // 'showProgress' through to each.
+  Outcome
+  runMultiple(std::string_view sql, bool printTiming, bool showProgress);
 
-  // Runs 'sql' (a single SQL statement) 'repeat' times back-to-back.
-  // Stops on the first failure.
-  void runRepeat(std::string_view sql, int repeat, bool printTiming);
+  // Runs 'sql' (a single SQL statement) 'repeat' times back-to-back. Stops at
+  // the first run that does not succeed and returns its outcome.
+  Outcome runRepeat(std::string_view sql, int repeat, bool printTiming);
 
   // Reads and executes commands from standard input in interactive mode.
   // Passes 'showProgress' through to the statements it runs.
