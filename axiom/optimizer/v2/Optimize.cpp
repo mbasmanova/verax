@@ -23,7 +23,6 @@
 #include "axiom/optimizer/v2/EmitPass.h"
 #include "axiom/optimizer/v2/EstimateLeafStatsPass.h"
 #include "axiom/optimizer/v2/EstimateProvider.h"
-#include "axiom/optimizer/v2/ExpandAggregatePass.h"
 #include "axiom/optimizer/v2/FoldMetadataAggregatePass.h"
 #include "axiom/optimizer/v2/LimitAndOrderPass.h"
 #include "axiom/optimizer/v2/PlanPhysicalPass.h"
@@ -115,7 +114,6 @@ const auto& passNames() {
       {Optimizer::Pass::kEstimateLeafStats, "ESTIMATE_LEAF_STATS"},
       {Optimizer::Pass::kPlanPhysical, "PLAN_PHYSICAL"},
       {Optimizer::Pass::kPrecomputeProjections, "PRECOMPUTE_PROJECTIONS"},
-      {Optimizer::Pass::kExpandAggregate, "EXPAND_AGGREGATE"},
   };
   return kNames;
 }
@@ -187,12 +185,7 @@ NodeCP Optimizer::planTo(
     return node;
   }
 
-  node = PrecomputeProjectionsPass::run(node, builder_);
-  if (pass == Pass::kPrecomputeProjections) {
-    return node;
-  }
-
-  return ExpandAggregatePass::run(node, builder_);
+  return PrecomputeProjectionsPass::run(node, builder_);
 }
 
 Optimizer::DebugPlan Optimizer::debugPlanTo(
