@@ -33,6 +33,7 @@
 #include "axiom/optimizer/v2/JoinCluster.h"
 #include "axiom/optimizer/v2/JoinTreeEmitter.h"
 #include "axiom/optimizer/v2/NodeRewriter.h"
+#include "axiom/optimizer/v2/PrecomputeProjections.h"
 
 namespace facebook::axiom::optimizer::v2 {
 
@@ -105,6 +106,225 @@ bool separatesJoins(
   // one still stands between whatever they contribute.
   return dissolveCrossJoins && join->isInner() && join->leftKeys().empty() &&
       join->filter().empty();
+}
+
+// Appends each non-literal column reference in 'args' to 'keys' if not already
+// present, building a MarkDistinct key set as `groupingKeys U
+// aggregate.args()`. Literals contribute nothing.
+ExprVector unionColumnArgs(const ExprVector& keys, const ExprVector& args) {
+  ExprVector merged = keys;
+  PlanObjectSet seen = PlanObjectSet::fromObjects(keys);
+  for (ExprCP arg : args) {
+    if (arg->is(PlanType::kLiteralExpr)) {
+      continue;
+    }
+    VELOX_CHECK(
+        arg->is(PlanType::kColumnExpr),
+        "Expected column or literal aggregate arg: {}",
+        arg->toString());
+    if (seen.contains(arg)) {
+      continue;
+    }
+    seen.add(arg);
+    merged.push_back(arg);
+  }
+  return merged;
+}
+
+// True when every aggregate shares a single distinct signature: all DISTINCT,
+// no FILTER, no ORDER BY, and the same column arguments. Velox then dedups them
+// in one native distinct aggregation pass (aggregates keep `distinct=true`).
+// Any other mix needs MarkDistinct.
+bool canUseNativeDistinct(const AggregateCallVector& aggregates) {
+  std::optional<PlanObjectSet> commonArgs;
+  for (const auto* aggregate : aggregates) {
+    if (!aggregate->isDistinct() || aggregate->condition() != nullptr ||
+        !aggregate->orderKeys().empty()) {
+      return false;
+    }
+    PlanObjectSet columnArgs;
+    for (ExprCP arg : aggregate->args()) {
+      if (!arg->is(PlanType::kLiteralExpr)) {
+        columnArgs.add(arg);
+      }
+    }
+    if (!commonArgs.has_value()) {
+      commonArgs = std::move(columnArgs);
+    } else if (columnArgs != *commonArgs) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// One MarkDistinct group: all distinct aggregates whose key set
+// `(groupingKeys U args)` equals 'keys'. Within a group, each unique FILTER
+// condition gets its own per-mask marker; aggregates with no FILTER share
+// `markers[0]` (the no-mask marker).
+struct MarkDistinctGroup {
+  ExprVector keys;
+  ColumnVector markers;
+  ColumnVector masks;
+  // Maps each FILTER condition to the marker that records first occurrence
+  // among rows where that condition is true. `nullptr` keys the no-mask
+  // marker (`markers[0]`).
+  folly::F14FastMap<ExprCP, ColumnCP> filterToMarker;
+};
+
+struct DistinctExpansion {
+  NodeCP input;
+  AggregateCallVector aggregates;
+};
+
+// Rewrites each aggregate call to read columns: Velox takes a field for an
+// argument, a FILTER mask and an ORDER BY key, and a MarkDistinct key set is
+// built from the args, so they must be columns before the lowering runs.
+// 'precompute' supplies one column per distinct expression, so two aggregates
+// reading the same one share it.
+//
+// A kFinal aggregate's args name the partial's intermediate results, not
+// expressions over the input, so they are left alone.
+AggregateCallVector precomputeAggregateArgs(
+    const AggregateCallVector& aggregates,
+    AggregateStep step,
+    PrecomputeProjections& precompute,
+    Builder& builder) {
+  if (step == AggregateStep::kFinal) {
+    return aggregates;
+  }
+
+  AggregateCallVector result;
+  result.reserve(aggregates.size());
+  for (const auto* aggregate : aggregates) {
+    ExprVector args;
+    args.reserve(aggregate->args().size());
+    for (ExprCP arg : aggregate->args()) {
+      args.push_back(
+          precompute.toColumn(arg, /*alias=*/nullptr, /*allowConstant=*/true));
+    }
+    ExprCP condition = aggregate->condition() != nullptr
+        ? precompute.toColumn(
+              aggregate->condition(), /*alias=*/nullptr, /*allowConstant=*/true)
+        : nullptr;
+    ExprVector orderKeys;
+    orderKeys.reserve(aggregate->orderKeys().size());
+    for (ExprCP key : aggregate->orderKeys()) {
+      orderKeys.push_back(precompute.toColumn(key));
+    }
+    result.push_back(builder.makeAggregate(
+        aggregate->name(),
+        aggregate->value(),
+        std::move(args),
+        aggregate->functions(),
+        aggregate->isDistinct(),
+        condition,
+        aggregate->intermediateType(),
+        std::move(orderKeys),
+        aggregate->orderTypes()));
+  }
+  return result;
+}
+
+// Lowers DISTINCT aggregates. When they share a single distinct signature (see
+// `canUseNativeDistinct`) the aggregates are left as-is for Velox's native
+// distinct aggregation. Otherwise each unique `(groupingKeys U args)` set gets
+// a `MarkDistinct` and its aggregates are rewritten as non-distinct with the
+// marker as their FILTER. Distinct aggregates whose args are all grouping keys
+// are redundant (GROUP BY already dedups) and keep a native distinct flag
+// without a marker.
+//
+// Grouping-set lowering already ran in translate, so the group-id column (if
+// any) is one of the grouping keys and dedup is per grouping set.
+DistinctExpansion expandDistinct(
+    NodeCP input,
+    const ExprVector& groupingKeys,
+    const AggregateCallVector& aggregates,
+    Builder& builder) {
+  if (aggregates.empty() || canUseNativeDistinct(aggregates)) {
+    return {input, aggregates};
+  }
+
+  PlanObjectSet groupingKeySet = PlanObjectSet::fromObjects(groupingKeys);
+  folly::F14VectorMap<PlanObjectSet, MarkDistinctGroup> groups;
+  folly::F14FastMap<const optimizer::Aggregate*, ColumnCP> aggregateToMarker;
+
+  bool anyDistinct = false;
+  for (const auto* aggregate : aggregates) {
+    if (!aggregate->isDistinct()) {
+      continue;
+    }
+    anyDistinct = true;
+
+    ExprVector keys = unionColumnArgs(groupingKeys, aggregate->args());
+    PlanObjectSet keySet = PlanObjectSet::fromObjects(keys);
+    if (keySet == groupingKeySet) {
+      continue;
+    }
+
+    auto [groupIt, isNewGroup] = groups.try_emplace(keySet);
+    auto& group = groupIt->second;
+    if (isNewGroup) {
+      group.keys = std::move(keys);
+      group.markers.push_back(Column::createBoolean("mark"));
+      group.filterToMarker[nullptr] = group.markers.back();
+    }
+
+    ExprCP filter = aggregate->condition();
+    auto [filterIt, isNewFilter] =
+        group.filterToMarker.try_emplace(filter, nullptr);
+    if (isNewFilter) {
+      group.markers.push_back(Column::createBoolean("mark"));
+      filterIt->second = group.markers.back();
+
+      ColumnCP maskColumn = filter->as<Column>();
+      VELOX_CHECK_NOT_NULL(
+          maskColumn,
+          "MarkDistinct mask must be a Column reference; got: {}",
+          filter->toString());
+      group.masks.push_back(maskColumn);
+    }
+    aggregateToMarker[aggregate] = filterIt->second;
+  }
+
+  if (!anyDistinct) {
+    return {input, aggregates};
+  }
+
+  NodeCP currentInput = input;
+  // F14VectorMap iterates in LIFO; reverse to keep insertion order so the
+  // first encountered key set sits closest to the original input.
+  for (auto it = groups.rbegin(); it != groups.rend(); ++it) {
+    auto& group = it->second;
+    ColumnVector outputColumns;
+    outputColumns.reserve(
+        currentInput->outputColumns().size() + group.markers.size());
+    appendAll(outputColumns, currentInput->outputColumns());
+    appendAll(outputColumns, group.markers);
+
+    currentInput = builder.make<MarkDistinct>({
+        currentInput,
+        group.markers,
+        group.keys,
+        group.masks,
+        std::move(outputColumns),
+    });
+  }
+
+  AggregateCallVector newAggregates;
+  newAggregates.reserve(aggregates.size());
+  for (const auto* aggregate : aggregates) {
+    if (auto it = aggregateToMarker.find(aggregate);
+        it != aggregateToMarker.end()) {
+      newAggregates.push_back(
+          aggregate->replaceDistinctAndFilterByMarker(it->second));
+    } else {
+      // Either non-distinct, or distinct whose args are all in `groupingKeys`
+      // (per-group dedup is implicit; Velox handles `distinct=true` natively
+      // for the trivial case).
+      newAggregates.push_back(aggregate);
+    }
+  }
+  return {currentInput, std::move(newAggregates)};
 }
 
 // Walks a cluster's subtree, taking each node into the cluster or ending the
@@ -914,9 +1134,6 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
         node->outputColumns().begin() + keys.size()};
     auto [coLocatedInput, coLocatedKeys] =
         ensureCoLocated(input, keys, keyAliases);
-    if (coLocatedInput == node->input()) {
-      return node;
-    }
     ExprFactory::ExprSubstitution materialized;
     for (size_t i = 0; i < keys.size(); ++i) {
       if (coLocatedKeys[i] != keys[i]) {
@@ -927,10 +1144,32 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
     if (!materialized.empty()) {
       groupingKeys = exprFactory_.replace(groupingKeys, materialized);
     }
+
+    // Every position the aggregate reads becomes a column here rather than in
+    // a later pass: a grouping key is also part of each MarkDistinct key set,
+    // and a Project inserted above the MarkDistinct chain would separate it
+    // from the aggregate that reads its markers. Narrowing, so an input column
+    // that only fed a lifted expression stops here.
+    PrecomputeProjections precompute{
+        coLocatedInput, builder(), /*projectAllInputs=*/false};
+    for (size_t i = 0; i < groupingKeys.size(); ++i) {
+      groupingKeys[i] =
+          precompute.toColumn(groupingKeys[i], node->outputColumns()[i]);
+    }
+    AggregateCallVector precomputedAggregates = precomputeAggregateArgs(
+        node->aggregates(), node->step(), precompute, builder());
+    coLocatedInput = std::move(precompute).node();
+
+    // A distinct aggregate never splits, so this is the only place the
+    // MarkDistinct chain can land: between the co-located input and the
+    // aggregate, above whatever exchange brought the groups together.
+    auto [distinctInput, aggregates] = expandDistinct(
+        coLocatedInput, groupingKeys, precomputedAggregates, builder());
+
     return builder().make<Aggregate>(
-        {.input = coLocatedInput,
+        {.input = distinctInput,
          .groupingKeys = groupingKeys,
-         .aggregates = node->aggregates(),
+         .aggregates = std::move(aggregates),
          .outputColumns = node->outputColumns(),
          .step = node->step(),
          .groupId = node->groupId(),
@@ -1035,10 +1274,25 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
                   finalColumn->value().cardinality}));
     }
 
+    // The partial reads the grouping keys and aggregate args, so it takes them
+    // as columns like any other operator. Its output column for a key is the
+    // final's, which the alias keeps.
+    PrecomputeProjections precompute{
+        input, builder(), /*projectAllInputs=*/false};
+    ExprVector partialKeys;
+    partialKeys.reserve(numKeys);
+    for (size_t i = 0; i < numKeys; ++i) {
+      partialKeys.push_back(
+          precompute.toColumn(node->groupingKeys()[i], finalColumns[i]));
+    }
+    AggregateCallVector partialAggregates = precomputeAggregateArgs(
+        node->aggregates(), AggregateStep::kPartial, precompute, builder());
+    input = std::move(precompute).node();
+
     NodeCP partial = builder().make<Aggregate>(
         {.input = input,
-         .groupingKeys = node->groupingKeys(),
-         .aggregates = node->aggregates(),
+         .groupingKeys = std::move(partialKeys),
+         .aggregates = partialAggregates,
          .outputColumns = std::move(partialColumns),
          .step = AggregateStep::kPartial,
          .groupId = node->groupId(),
@@ -1054,6 +1308,26 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
       finalKeys.push_back(finalColumns[i]);
     }
 
+    // A FILTER is applied by the partial, and its mask column is not among the
+    // partial's outputs, so the final must not carry one.
+    AggregateCallVector finalAggregates;
+    finalAggregates.reserve(node->aggregates().size());
+    for (const auto* aggregate : node->aggregates()) {
+      finalAggregates.push_back(
+          aggregate->condition() == nullptr
+              ? aggregate
+              : builder().makeAggregate(
+                    aggregate->name(),
+                    aggregate->value(),
+                    ExprVector{aggregate->args()},
+                    aggregate->functions(),
+                    aggregate->isDistinct(),
+                    /*condition=*/nullptr,
+                    aggregate->intermediateType(),
+                    ExprVector{aggregate->orderKeys()},
+                    aggregate->orderTypes()));
+    }
+
     // Without a remote exchange the partial and final share one fragment; the
     // final's local repartition (added at emit for numDrivers > 1) co-locates
     // each group's partials on one driver.
@@ -1064,7 +1338,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
     return builder().make<Aggregate>(
         {.input = finalInput,
          .groupingKeys = finalKeys,
-         .aggregates = node->aggregates(),
+         .aggregates = std::move(finalAggregates),
          .outputColumns = finalColumns,
          .step = AggregateStep::kFinal,
          .groupId = node->groupId(),

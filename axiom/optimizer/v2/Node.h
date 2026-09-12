@@ -629,6 +629,14 @@ using AggregateCallVector = QGVector<const optimizer::Aggregate*>;
 /// aggregate, typed by `optimizer::Aggregate::intermediateType()`); `kFinal`
 /// consumes those accumulators and emits the final result. A two-stage
 /// distributed aggregate is `kFinal` over a remote `Exchange` over `kPartial`.
+///
+/// A `kFinal` aggregate's call arguments still name the partial's raw inputs,
+/// which its own input does not produce: it reads the accumulator positionally,
+/// and emit takes only the argument types and any lambda among them, because
+/// the partial may be in another fragment.
+///
+/// TODO: Represent that explicitly rather than leaving arguments that cannot be
+/// evaluated over the node's input.
 using AggregateStep = velox::core::AggregationNode::Step;
 
 /// Groups input rows by `groupingKeys` and computes `aggregates` per

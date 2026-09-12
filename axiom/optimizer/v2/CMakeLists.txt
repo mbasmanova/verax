@@ -28,7 +28,6 @@ add_library(
   EmitPass.cpp
   EstimateLeafStatsPass.cpp
   EstimateProvider.cpp
-  ExpandAggregatePass.cpp
   ExprEmitter.cpp
   ExprFactory.cpp
   ExprSimplifier.cpp
@@ -47,6 +46,7 @@ add_library(
   PhysicalProperties.cpp
   PlanPhysicalPass.cpp
   PlanSet.cpp
+  PrecomputeProjections.cpp
   PrecomputeProjectionsPass.cpp
   PushdownAndPrunePass.cpp
   ScanHandle.cpp

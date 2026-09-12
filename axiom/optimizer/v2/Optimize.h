@@ -93,7 +93,6 @@ class Optimizer {
   ///   - PrecomputeProjections — lift compound expressions into `Project`s
   ///   where
   ///     Velox needs a column or literal;
-  ///   - ExpandAggregate — lower distinct aggregates to `MarkDistinct`;
   ///   - Emit — lower to Velox `PlanNode`s.
   ///
   /// `options.maxRemotePartitions` / `options.maxLocalPartitions` (each >= 1)
@@ -139,7 +138,6 @@ class Optimizer {
 
     kPlanPhysical,
     kPrecomputeProjections,
-    kExpandAggregate,
   };
 
   AXIOM_DECLARE_EMBEDDED_ENUM_NAME(Pass);

@@ -16,6 +16,8 @@
 
 #include "axiom/optimizer/v2/PrecomputeProjectionsPass.h"
 
+#include "axiom/optimizer/v2/PrecomputeProjections.h"
+
 #include <folly/container/F14Map.h>
 #include "axiom/optimizer/PlanUtils.h"
 #include "axiom/optimizer/QueryGraph.h"
@@ -24,32 +26,6 @@
 
 namespace facebook::axiom::optimizer::v2 {
 namespace {
-
-// Builds `Project(exprs -> outColumns)` over `input`, folding into `input` when
-// it is a deterministic Project (substituting the expressions through the
-// child's output->expression map) rather than stacking a second Project. A
-// non-deterministic child is left alone, since a fold could evaluate one of its
-// outputs more than once.
-//
-// TODO: still inline the deterministic outputs when only some are
-// non-deterministic — isolate the non-deterministic ones in a separate Project
-// below and fold the rest.
-NodeCP makeProject(
-    NodeCP input,
-    ExprVector exprs,
-    ColumnVector outColumns,
-    Builder& builder) {
-  if (input->is(NodeType::kProject)) {
-    const auto* child = input->as<Project>();
-    if (child->isDeterministic()) {
-      exprs = ExprFactory(builder).substitute(
-          exprs, child->outputColumns(), child->exprs());
-      input = child->input();
-    }
-  }
-  return builder.make<Project>(
-      {input, std::move(exprs), std::move(outColumns)});
-}
 
 // Returns a new ColumnVector with the first `oldPrefixLength` elements
 // of `oldOutputColumns` replaced by `newPrefix`.
@@ -67,121 +43,6 @@ ColumnVector replacePrefix(
     result.push_back(oldOutputColumns[i]);
   }
   return result;
-}
-
-// Per-consumer builder that lifts compound sub-expressions into a Project
-// inserted between the consumer and its existing input.
-class PrecomputeProjections {
- public:
-  // When `projectAllInputs` is true (the default, for pass-through consumers
-  // like Window/Sort/TopN), the project preserves every input column
-  // alongside the lifted ones. When false (for narrowing consumers like
-  // Aggregate/Unnest/Join), the project outputs only the columns passed to
-  // `toColumn` — so an input column kept solely to feed a lifted expression is
-  // dropped instead of passed through. The caller must `toColumn` every column
-  // the consumer reads.
-  PrecomputeProjections(
-      NodeCP input,
-      Builder& builder,
-      bool projectAllInputs = true);
-
-  // Returns the ExprCP that the consumer should reference in place of
-  // 'expr'. Pass-throughs:
-  //   - 'expr' is a Column: returned unchanged.
-  //   - 'expr' is a Literal and 'allowConstant' is true: returned unchanged.
-  // Otherwise lifts 'expr' into a projected column. If 'alias' is
-  // non-null, that exact Column is used as the projection's output;
-  // otherwise a fresh `__pXX` column is synthesized.
-  ExprCP
-  toColumn(ExprCP expr, ColumnCP alias = nullptr, bool allowConstant = false);
-
-  // Returns the input unchanged if no projections were added, otherwise the
-  // input wrapped in a fresh `Project`. With `projectAllInputs` the project
-  // adds the lifted columns alongside all input columns; without it the
-  // project outputs only the columns passed to `toColumn`.
-  NodeCP node() &&;
-
- private:
-  void addToProject(ExprCP expr, ColumnCP column);
-
-  NodeCP input_;
-  Builder& builder_;
-  const bool projectAllInputs_;
-  ColumnVector outColumns_;
-  ExprVector outExprs_;
-  folly::F14FastMap<ExprCP, ColumnCP> seen_;
-  bool needsProject_{false};
-};
-
-PrecomputeProjections::PrecomputeProjections(
-    NodeCP input,
-    Builder& builder,
-    bool projectAllInputs)
-    : input_(input), builder_(builder), projectAllInputs_(projectAllInputs) {
-  if (!projectAllInputs_) {
-    return;
-  }
-  const auto& inputColumns = input->outputColumns();
-  outColumns_.reserve(inputColumns.size());
-  outExprs_.reserve(inputColumns.size());
-  for (ColumnCP column : inputColumns) {
-    addToProject(column, column);
-  }
-}
-
-ExprCP PrecomputeProjections::toColumn(
-    ExprCP expr,
-    ColumnCP alias,
-    bool allowConstant) {
-  if (allowConstant && expr->is(PlanType::kLiteralExpr)) {
-    return expr;
-  }
-
-  if (expr->is(PlanType::kColumnExpr)) {
-    // In narrowing mode the project is not seeded with the input columns, so a
-    // referenced passthrough column must be added explicitly. This is not a
-    // lifted expression, so it does not by itself require a project.
-    if (!projectAllInputs_ && !seen_.contains(expr)) {
-      addToProject(expr, expr->as<Column>());
-    }
-    return expr;
-  }
-
-  // Lambdas are consumed by their parent higher-order function directly
-  // and cannot be evaluated by a Project node.
-  if (expr->is(PlanType::kLambdaExpr)) {
-    return expr;
-  }
-
-  if (auto it = seen_.find(expr); it != seen_.end()) {
-    return it->second;
-  }
-
-  if (alias != nullptr) {
-    addToProject(expr, alias);
-    needsProject_ = true;
-    return alias;
-  }
-
-  ColumnCP column = Column::create("__p", expr->value());
-  addToProject(expr, column);
-  needsProject_ = true;
-  return column;
-}
-
-NodeCP PrecomputeProjections::node() && {
-  if (!needsProject_) {
-    return input_;
-  }
-  return makeProject(
-      input_, std::move(outExprs_), std::move(outColumns_), builder_);
-}
-
-void PrecomputeProjections::addToProject(ExprCP expr, ColumnCP column) {
-  VELOX_DCHECK(!seen_.contains(expr));
-  seen_.emplace(expr, column);
-  outColumns_.emplace_back(column);
-  outExprs_.emplace_back(expr);
 }
 
 // Moves the single-side parts of a join filter into the inputs. See
@@ -391,64 +252,46 @@ class Rewriter : public NodeRewriter<> {
 NodeCP Rewriter::rewriteAggregate(
     const Aggregate* aggregate,
     NoContext& context) {
-  NodeCP newInput = rewrite(aggregate->input(), context);
-  // An Aggregate reads only its grouping keys and aggregate inputs, so the
-  // lifting project outputs just those — dropping any input column kept solely
-  // to feed a lifted aggregate expression.
-  PrecomputeProjections precompute{
-      newInput, builder(), /*projectAllInputs=*/false};
-
-  ExprVector newGroupingKeys;
-  newGroupingKeys.reserve(aggregate->groupingKeys().size());
-  for (size_t i = 0; i < aggregate->groupingKeys().size(); ++i) {
-    // Reuse the existing output column as the projection alias so the
-    // Aggregate's outputColumns identity is preserved.
-    newGroupingKeys.push_back(precompute.toColumn(
-        aggregate->groupingKeys()[i], aggregate->outputColumns()[i]));
+  // Physical planning materializes every position an Aggregate reads, so there
+  // is nothing to lift here. A kFinal aggregate is exempt: its args name the
+  // partial's raw inputs, which its own input does not produce, and emit reads
+  // only their types and any lambda among them.
+  for (ExprCP key : aggregate->groupingKeys()) {
+    VELOX_CHECK(
+        key->is(PlanType::kColumnExpr),
+        "Aggregate grouping key is not a column: {}",
+        key->toString());
   }
-
-  // A kFinal aggregate's args reference the Partial's raw inputs, which are
-  // absent at the Final's input (it consumes intermediate accumulators), so
-  // leave them untouched rather than precompute them here.
-  AggregateCallVector newAggregates;
-  if (aggregate->step() == AggregateStep::kFinal) {
-    newAggregates = aggregate->aggregates();
-  } else {
-    newAggregates.reserve(aggregate->aggregates().size());
+  if (aggregate->step() != AggregateStep::kFinal) {
     for (const auto* call : aggregate->aggregates()) {
-      ExprVector newArgs;
-      newArgs.reserve(call->args().size());
       for (ExprCP arg : call->args()) {
-        newArgs.push_back(precompute.toColumn(
-            arg, /*alias=*/nullptr, /*allowConstant=*/true));
+        VELOX_CHECK(
+            arg->is(PlanType::kColumnExpr) || arg->is(PlanType::kLiteralExpr) ||
+                arg->is(PlanType::kLambdaExpr),
+            "Aggregate argument is not a column: {}",
+            arg->toString());
       }
-      ExprCP newCondition = call->condition() != nullptr
-          ? precompute.toColumn(
-                call->condition(), /*alias=*/nullptr, /*allowConstant=*/true)
-          : nullptr;
-      ExprVector newOrderKeys;
-      newOrderKeys.reserve(call->orderKeys().size());
+      VELOX_CHECK(
+          call->condition() == nullptr ||
+              call->condition()->is(PlanType::kColumnExpr),
+          "Aggregate FILTER is not a column");
       for (ExprCP key : call->orderKeys()) {
-        newOrderKeys.push_back(precompute.toColumn(key));
+        VELOX_CHECK(
+            key->is(PlanType::kColumnExpr),
+            "Aggregate ORDER BY key is not a column: {}",
+            key->toString());
       }
-      newAggregates.push_back(
-          builder().makeAggregate(
-              call->name(),
-              call->value(),
-              std::move(newArgs),
-              call->functions(),
-              call->isDistinct(),
-              newCondition,
-              call->intermediateType(),
-              std::move(newOrderKeys),
-              call->orderTypes()));
     }
   }
 
+  NodeCP newInput = rewrite(aggregate->input(), context);
+  if (newInput == aggregate->input()) {
+    return aggregate;
+  }
   return builder().make<Aggregate>(
-      {.input = std::move(precompute).node(),
-       .groupingKeys = std::move(newGroupingKeys),
-       .aggregates = std::move(newAggregates),
+      {.input = newInput,
+       .groupingKeys = aggregate->groupingKeys(),
+       .aggregates = aggregate->aggregates(),
        .outputColumns = aggregate->outputColumns(),
        .step = aggregate->step(),
        .groupId = aggregate->groupId(),
@@ -729,7 +572,7 @@ NodeCP Rewriter::rewriteFixedPoint(
     if (branch->outputColumns() == columns) {
       return branch;
     }
-    return makeProject(
+    return PrecomputeProjections::makeProject(
         branch, ExprVector{columns.begin(), columns.end()}, columns, builder());
   };
 
@@ -799,7 +642,8 @@ NodeCP Rewriter::rewriteUnionAll(const UnionAll* unionAll, NoContext& context) {
               toName(column->outputName()), column->value()));
     }
     newInputs.push_back(
-        makeProject(input, std::move(exprs), projectColumns, builder()));
+        PrecomputeProjections::makeProject(
+            input, std::move(exprs), projectColumns, builder()));
     newLegColumns.push_back(std::move(projectColumns));
     changed = true;
   }

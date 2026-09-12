@@ -79,7 +79,7 @@ TEST_P(DistinctAggregationTest, singleDistinctToGroupBy) {
             .distributedAggregation({"b"}, {})
             .distributedAggregation({}, {"count(b)", "covar_pop(b, b)"})
             .build());
-    AXIOM_ASSERT_PLAN_V1(
+    AXIOM_ASSERT_PLAN(
         toSingleNodePlan(logicalPlan),
         matchScan("t")
             .singleAggregation(
@@ -101,7 +101,7 @@ TEST_P(DistinctAggregationTest, singleDistinctToGroupBy) {
             .distributedAggregation({"a"}, {"count(b)"})
             .shuffle()
             .build());
-    AXIOM_ASSERT_PLAN_V1(
+    AXIOM_ASSERT_PLAN(
         toSingleNodePlan(logicalPlan),
         matchScan("t").singleAggregation({"a"}, {"count(DISTINCT b)"}).build());
   }
@@ -121,7 +121,7 @@ TEST_P(DistinctAggregationTest, singleDistinctToGroupBy) {
             .distributedAggregation({"a"}, {"count(b)", "covar_pop(b, b)"})
             .shuffle()
             .build());
-    AXIOM_ASSERT_PLAN_V1(
+    AXIOM_ASSERT_PLAN(
         toSingleNodePlan(logicalPlan),
         matchScan("t")
             .singleAggregation(
@@ -158,7 +158,7 @@ TEST_P(DistinctAggregationTest, singleDistinctToGroupByWithExpressionInputs) {
             .distributedAggregation({"p0"}, {"count(p1)", "sum(p1)"})
             .shuffle()
             .build());
-    AXIOM_ASSERT_PLAN_V1(
+    AXIOM_ASSERT_PLAN(
         toSingleNodePlan(logicalPlan),
         matchScan("t")
             .project({"a + 1 as p0", "b + c as p1"})
@@ -186,7 +186,7 @@ TEST_P(DistinctAggregationTest, singleDistinctToGroupByWithExpressionInputs) {
                 {"a"}, {"covar_pop(b, c)", "covar_samp(c, b)"})
             .shuffle()
             .build());
-    AXIOM_ASSERT_PLAN_V1(
+    AXIOM_ASSERT_PLAN(
         toSingleNodePlan(logicalPlan),
         matchScan("t")
             .singleAggregation(
@@ -209,7 +209,7 @@ TEST_P(DistinctAggregationTest, singleDistinctToGroupByWithExpressionInputs) {
             .distributedAggregation({"b"}, {"covar_pop(b, c)"})
             .shuffle()
             .build());
-    AXIOM_ASSERT_PLAN_V1(
+    AXIOM_ASSERT_PLAN(
         toSingleNodePlan(logicalPlan),
         matchScan("t")
             .singleAggregation({"b"}, {"covar_pop(DISTINCT b, c)"})
@@ -313,7 +313,7 @@ TEST_P(DistinctAggregationTest, singleDistinctToGroupByWithLiterals) {
             .distributedAggregation({"a"}, {"max_by(b, 1)", "min_by(b, 2)"})
             .shuffle()
             .build());
-    AXIOM_ASSERT_PLAN_V1(
+    AXIOM_ASSERT_PLAN(
         toSingleNodePlan(logicalPlan),
         matchScan("t")
             .singleAggregation(
@@ -341,13 +341,40 @@ TEST_P(DistinctAggregationTest, singleDistinctToGroupByWithLiterals) {
             .finalAggregation()
             .shuffle()
             .build());
-    AXIOM_ASSERT_PLAN_V1(
+    AXIOM_ASSERT_PLAN(
         toSingleNodePlan(logicalPlan),
         matchScan("t")
             .singleAggregation(
                 {"a"}, {"count(DISTINCT 1)", "count(DISTINCT 2)"})
             .build());
   }
+}
+
+// A grouping key is part of every MarkDistinct key set, so a compound one has
+// to reach MarkDistinct as a column like any other key.
+TEST_P(DistinctAggregationTest, markDistinctCompoundGroupingKey) {
+  testConnector_->addTable(
+      "t", ROW({"a", "b", "c"}, {BIGINT(), DOUBLE(), DOUBLE()}));
+  SCOPE_EXIT {
+    testConnector_->dropTableIfExists("t");
+  };
+
+  auto logicalPlan =
+      lp::PlanBuilder(makeContext())
+          .tableScan("t")
+          .aggregate({"a + 1"}, {"count(DISTINCT b)", "sum(DISTINCT c)"})
+          .build();
+
+  AXIOM_ASSERT_PLAN_V2(
+      toSingleNodePlan(logicalPlan),
+      matchScan("t")
+          .project({"a + 1 as p0", "b", "c"})
+          .markDistinct({"p0", "b"}, {"m0"})
+          .markDistinct({"p0", "c"}, {"m1"})
+          .singleAggregation(
+              {"p0"},
+              {"count(b) filter (where m0)", "sum(c) filter (where m1)"})
+          .build());
 }
 
 // V1 is better: it plans MarkDistinct distribution before selecting the outer
@@ -1258,7 +1285,7 @@ TEST_P(DistinctAggregationTest, groupingSetsDistinctToGroupBy) {
   // Single-node plan: a single aggregation computes DISTINCT natively.
   {
     auto plan = toSingleNodePlan(logicalPlan);
-    AXIOM_ASSERT_PLAN_V1(
+    AXIOM_ASSERT_PLAN(
         plan,
         matchScan("t")
             .groupId({{"a"}, {}}, {"b"}, "gid")
@@ -1317,7 +1344,7 @@ TEST_P(DistinctAggregationTest, groupingSetsDistinctToMarkDistinct) {
   // natively.
   {
     auto plan = toSingleNodePlan(logicalPlan);
-    AXIOM_ASSERT_PLAN_V1(
+    AXIOM_ASSERT_PLAN(
         plan,
         matchScan("t")
             .groupId({{"a"}, {}}, {"b", "c"}, "gid")
