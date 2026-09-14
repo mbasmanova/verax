@@ -1444,6 +1444,23 @@ WHERE a > (SELECT max(x) FROM (VALUES (0), (1)) s(x))
     WHERE y > (SELECT max(x) FROM (VALUES (0), (1)) s(x))
   )
 ----
+-- A scalar repeated in a nested UNION leg is evaluated separately from the
+-- same scalar in its enclosing UNION leg.
+SELECT c_name AS name FROM (VALUES ('c')) customer(c_name)
+UNION ALL
+SELECT s_name AS name FROM (VALUES ('b')) supplier(s_name)
+WHERE s_name = (
+    SELECT max(r_name) FROM (VALUES ('a'), ('b')) region(r_name))
+  AND s_name IN (
+    SELECT n_name FROM (VALUES ('a'), ('b')) nation(n_name)
+    WHERE n_name = (
+        SELECT max(r_name) FROM (VALUES ('a'), ('b')) region(r_name))
+      AND n_name <= (
+        SELECT max(r_name) FROM (VALUES ('a'), ('b')) region(r_name))
+    UNION ALL
+    SELECT r_name FROM (VALUES ('z')) other_region(r_name)
+  )
+----
 -- An EXISTS subquery whose body reads the same uncorrelated aggregate as the
 -- enclosing filter. Its result is the same for every outer row.
 SELECT a

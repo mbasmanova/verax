@@ -342,6 +342,12 @@ class SubqueryContext {
   // read it.
   bool correlateLifted(ColumnCP column);
 
+  // Prevents lifted-result reuse from reaching targets outside the current
+  // set-operation branch. Reuse within scopes entered after the barrier is
+  // still allowed.
+  void pushLiftedCorrelationBarrier();
+  void popLiftedCorrelationBarrier();
+
   // True if the body in flight has referenced an enclosing scope. A
   // correlation recorded at an outer level is recorded at every level below
   // it, so the innermost entry is the whole set the body can see.
@@ -365,6 +371,9 @@ class SubqueryContext {
   // the pointee belongs to the caller that pushed and outlives the body.
   std::vector<LiftTarget*> liftTargets_;
   std::vector<ColumnVector> correlationsStack_;
+
+  // First lift-target level visible within each active barrier.
+  std::vector<size_t> liftedCorrelationBarriers_;
 };
 
 void SubqueryContext::recordCorrelation(ColumnCP column, size_t level) {
@@ -394,7 +403,10 @@ ColumnCP SubqueryContext::correlateOuter(std::string_view name) {
 }
 
 bool SubqueryContext::correlateLifted(ColumnCP column) {
-  for (size_t i = liftTargets_.size(); i > 0; --i) {
+  const size_t firstVisibleLevel = liftedCorrelationBarriers_.empty()
+      ? 0
+      : liftedCorrelationBarriers_.back();
+  for (size_t i = liftTargets_.size(); i > firstVisibleLevel; --i) {
     if (!liftTargets_[i - 1]->outputs(column)) {
       continue;
     }
@@ -402,6 +414,14 @@ bool SubqueryContext::correlateLifted(ColumnCP column) {
     return true;
   }
   return false;
+}
+
+void SubqueryContext::pushLiftedCorrelationBarrier() {
+  liftedCorrelationBarriers_.push_back(liftTargets_.size());
+}
+
+void SubqueryContext::popLiftedCorrelationBarrier() {
+  liftedCorrelationBarriers_.pop_back();
 }
 
 void SubqueryContext::push(const Scope& outerScope, LiftTarget* liftTarget) {
@@ -2281,6 +2301,13 @@ Translated Translator::buildUnionAll(
   for (const auto& in : inputs) {
     collect(in);
   }
+
+  // Keep scalar-subquery reuse within each union leg. Reusing an enclosing
+  // lift would introduce an outer reference into the leg.
+  subqueries_.pushLiftedCorrelationBarrier();
+  SCOPE_EXIT {
+    subqueries_.popLiftedCorrelationBarrier();
+  };
 
   NodeVector inputNodes;
   inputNodes.reserve(flatInputs.size());
