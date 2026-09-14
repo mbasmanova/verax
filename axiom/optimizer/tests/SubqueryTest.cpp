@@ -504,6 +504,50 @@ TEST_P(SubqueryTest, repeatedUncorrelatedScalar) {
           .build());
 }
 
+TEST_P(SubqueryTest, repeatedUncorrelatedScalarInUnion) {
+  // A repeated uncorrelated scalar is reused within a UNION leg, but evaluated
+  // independently from the enclosing query.
+  auto query =
+      "SELECT n_name FROM nation "
+      "WHERE n_name = (SELECT max(r_name) FROM region) "
+      "AND n_name IN ("
+      "  SELECT n_name FROM nation "
+      "  WHERE n_name = (SELECT max(r_name) FROM region) "
+      "    AND n_name <= (SELECT max(r_name) FROM region) "
+      "  UNION SELECT r_name FROM region)";
+  SCOPED_TRACE(query);
+
+  auto plan = toSingleNodePlan(query);
+  AXIOM_ASSERT_PLAN_V2(
+      plan,
+      matchHiveScan("nation")
+          .aliases({"inner_name"})
+          .hashJoinInner(
+              matchHiveScan("region")
+                  .aliases({"inner_region_name"})
+                  .singleAggregation(
+                      {}, {"max(inner_region_name) as inner_max"}),
+              {.keys = {{"inner_name = inner_max"}},
+               .filter = "inner_name <= inner_max"})
+          .project({"inner_name as union_name"})
+          .localPartition(matchHiveScan("region")
+                              .aliases({"union_region_name"})
+                              .project({"union_region_name as union_name"}))
+          .aliases({"union_name"})
+          .singleAggregation({"union_name"}, {})
+          .hashJoinRightSemiFilter(
+              matchHiveScan("nation")
+                  .aliases({"outer_name"})
+                  .hashJoinInner(
+                      matchHiveScan("region")
+                          .aliases({"outer_region_name"})
+                          .singleAggregation(
+                              {}, {"max(outer_region_name) as outer_max"}),
+                      {.keys = {{"outer_name = outer_max"}}}),
+              {.keys = {{"union_name = outer_name"}}})
+          .build());
+}
+
 TEST_P(SubqueryTest, uncorrelatedScalarPerUnionBranch) {
   // Two UNION branches read the same uncorrelated scalar subquery, one of
   // them from inside another subquery's body. A branch can only read a value
