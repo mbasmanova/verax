@@ -16,9 +16,41 @@
 
 #include "axiom/optimizer/WriteStatsBuilder.h"
 #include "axiom/optimizer/FunctionRegistry.h"
+#include "velox/exec/Aggregate.h"
 #include "velox/exec/AggregateFunctionRegistry.h"
+#include "velox/expression/SignatureBinder.h"
 
 namespace facebook::axiom::optimizer {
+namespace {
+
+using AggregateSignatures =
+    std::vector<velox::exec::AggregateFunctionSignaturePtr>;
+
+AggregateSignatures getAggregateSignatures(const std::string& functionName) {
+  auto signatures = velox::exec::getAggregateFunctionSignatures(functionName);
+  VELOX_CHECK(
+      signatures.has_value(),
+      "Aggregate function is not registered: {}",
+      functionName);
+  return std::move(*signatures);
+}
+
+bool supportsAggregateInputType(
+    const AggregateSignatures& signatures,
+    const velox::TypePtr& inputType) {
+  const std::vector<velox::TypePtr> inputTypes{inputType};
+  for (const auto& signature : signatures) {
+    velox::exec::SignatureBinder binder(
+        *signature, inputTypes, velox::TypeCoercer::defaults());
+    if (binder.tryBind() &&
+        binder.tryResolveType(signature->intermediateType()) != nullptr) {
+      return true;
+    }
+  }
+  return false;
+}
+
+} // namespace
 
 WriteStatsBuilder::WriteStatsBuilder(
     const connector::Table& table,
@@ -35,6 +67,12 @@ WriteStatsBuilder::WriteStatsBuilder(
 
   needsMerge_ = numDrivers > 1 || numWorkers > 1;
   needsFinalMerge_ = numWorkers > 1;
+
+  const auto minSignatures = getAggregateSignatures(statsAggs->min);
+  const auto maxSignatures = getAggregateSignatures(statsAggs->max);
+  const auto countIfSignatures = getAggregateSignatures(statsAggs->countIf);
+  const auto approxDistinctSignatures =
+      getAggregateSignatures(statsAggs->approxDistinct);
 
   // When there are grouping keys, add a count(*) aggregate (no input
   // columns) as the first stats channel to provide exact per-group row
@@ -71,13 +109,26 @@ WriteStatsBuilder::WriteStatsBuilder(
           fmt::format("{}.{}", table.type()->nameOf(i), funcName));
     };
 
+    auto addAggregateIfSupported = [&](const AggregateSignatures& signatures,
+                                       ColumnStatField field,
+                                       const std::string& functionName,
+                                       const velox::TypePtr& returnType) {
+      if (supportsAggregateInputType(signatures, colType)) {
+        mapping.fields.push_back(field);
+        addAggregate(functionName, returnType);
+      }
+    };
+
     mapping.fields.push_back(ColumnStatField::kCount);
     addAggregate(*countName, velox::BIGINT());
 
     switch (colType->kind()) {
       case velox::TypeKind::BOOLEAN:
-        mapping.fields.push_back(ColumnStatField::kCountIf);
-        addAggregate(statsAggs->countIf, velox::BIGINT());
+        addAggregateIfSupported(
+            countIfSignatures,
+            ColumnStatField::kCountIf,
+            statsAggs->countIf,
+            velox::BIGINT());
         break;
 
       case velox::TypeKind::TINYINT:
@@ -89,12 +140,15 @@ WriteStatsBuilder::WriteStatsBuilder(
       case velox::TypeKind::TIMESTAMP:
       case velox::TypeKind::VARCHAR:
       case velox::TypeKind::VARBINARY:
-        mapping.fields.push_back(ColumnStatField::kMin);
-        addAggregate(statsAggs->min, colType);
-        mapping.fields.push_back(ColumnStatField::kMax);
-        addAggregate(statsAggs->max, colType);
-        mapping.fields.push_back(ColumnStatField::kApproxDistinct);
-        addAggregate(statsAggs->approxDistinct, velox::BIGINT());
+        addAggregateIfSupported(
+            minSignatures, ColumnStatField::kMin, statsAggs->min, colType);
+        addAggregateIfSupported(
+            maxSignatures, ColumnStatField::kMax, statsAggs->max, colType);
+        addAggregateIfSupported(
+            approxDistinctSignatures,
+            ColumnStatField::kApproxDistinct,
+            statsAggs->approxDistinct,
+            velox::BIGINT());
         break;
 
       default:
