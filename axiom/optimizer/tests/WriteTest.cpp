@@ -712,6 +712,47 @@ TEST_P(WriteTest, columnStatsAllNulls) {
   }
 }
 
+// Verifies that CTAS collects only statistics supported by each custom type.
+TEST_P(WriteTest, columnStatsCustomTypes) {
+  SCOPE_EXIT {
+    dropTableIfExists("test");
+  };
+
+  runCtas(
+      "CREATE TABLE test AS "
+      "SELECT json_parse('1') AS json_value, "
+      "DATE '2026-01-02' AS date_value FROM nation",
+      25);
+
+  const auto table = hiveMetadata().findTable({kDefaultSchema, "test"});
+  ASSERT_NE(table, nullptr);
+
+  {
+    const auto* column = table->findColumn("json_value");
+    ASSERT_NE(column, nullptr);
+    const auto* stats = column->stats();
+    ASSERT_NE(stats, nullptr);
+
+    EXPECT_EQ(25, stats->numValues);
+    EXPECT_FALSE(stats->min.has_value());
+    EXPECT_FALSE(stats->max.has_value());
+    EXPECT_FALSE(stats->numDistinct.has_value());
+  }
+
+  {
+    const auto* column = table->findColumn("date_value");
+    ASSERT_NE(column, nullptr);
+    const auto* stats = column->stats();
+    ASSERT_NE(stats, nullptr);
+
+    EXPECT_EQ(25, stats->numValues);
+    EXPECT_TRUE(stats->min.has_value());
+    EXPECT_TRUE(stats->max.has_value());
+    ASSERT_TRUE(stats->numDistinct.has_value());
+    EXPECT_EQ(1, stats->numDistinct.value());
+  }
+}
+
 // Verifies that CTAS on partitioned tables stores per-partition stats but
 // does not produce table-level stats.
 TEST_P(WriteTest, columnStatsPartitioned) {
