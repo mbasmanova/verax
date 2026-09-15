@@ -137,7 +137,6 @@ class Optimizer {
     kEstimateLeafStats,
 
     kPlanPhysical,
-    kPrecomputeProjections,
   };
 
   AXIOM_DECLARE_EMBEDDED_ENUM_NAME(Pass);

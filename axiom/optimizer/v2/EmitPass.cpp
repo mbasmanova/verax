@@ -374,6 +374,13 @@ class Emitter {
       const ColumnVector& outputColumns,
       const std::vector<std::string>& outputNames);
 
+  // Returns 'input's 'columns' projected as 'outputNames', reusing 'input'
+  // when it is a projection those columns can be read out of.
+  velox::core::PlanNodePtr projectAs(
+      velox::core::PlanNodePtr input,
+      const ColumnVector& columns,
+      const std::vector<std::string>& outputNames);
+
   // Wraps `input` in a Project that selects `outputColumns` aliased
   // to `outputNames`.
   velox::core::PlanNodePtr wrapWithRenameProject(
@@ -764,8 +771,9 @@ velox::core::PlanNodePtr Emitter::emitRoot(
   velox::core::PlanNodePtr result;
   if (isIdentityLayout(*node, outputColumns, outputNames)) {
     result = emitNode(node);
-    // A scan with a rejected filter emits the filter's columns for the
-    // FilterNode; trim them so they do not leak into the query output.
+    // Velox's Unnest produces a column per unnested value, while the node may
+    // output only some of them, so the emitted node can be the wider of the
+    // two; trim it so the extra columns do not leak into the query output.
     if (result->outputType()->size() > outputColumns.size()) {
       result = projectToColumns(outputColumns, std::move(result));
     }
@@ -1592,21 +1600,56 @@ velox::core::PlanNodePtr Emitter::emitUnnest(const Unnest& unnest) {
       std::move(input));
 }
 
+velox::core::PlanNodePtr Emitter::projectAs(
+    velox::core::PlanNodePtr input,
+    const ColumnVector& columns,
+    const std::vector<std::string>& outputNames) {
+  // Re-emitting a projection's expressions under other names is the same
+  // projection, while each column is read once. A column at two positions
+  // needs a copy of its expression per position.
+  const auto* project = input->as<velox::core::ProjectNode>();
+  auto sourceNames = namesOf(columns);
+  if (project != nullptr && !hasDuplicateNames(sourceNames)) {
+    std::vector<velox::core::TypedExprPtr> projections;
+    projections.reserve(columns.size());
+    for (const auto& name : sourceNames) {
+      const auto index = project->outputType()->getChildIdxIfExists(name);
+      if (!index.has_value()) {
+        projections.clear();
+        break;
+      }
+      projections.push_back(project->projections()[*index]);
+    }
+    if (!projections.empty()) {
+      return std::make_shared<velox::core::ProjectNode>(
+          nextId(),
+          std::vector<std::string>{outputNames},
+          std::move(projections),
+          project->sources()[0]);
+    }
+  }
+  return wrapWithRenameProject(std::move(input), columns, outputNames);
+}
+
 velox::core::PlanNodePtr Emitter::emitUnionAll(const UnionAll& unionNode) {
-  // PrecomputeProjectionsPass has aligned every leg to the union's output
-  // columns (Velox's LocalPartition requires all sources to share one output
-  // type), so this is a plain gather over the emitted legs.
+  // Velox's LocalPartition requires all sources to share one output type,
+  // field names included, so each leg selects the columns feeding the union's
+  // positions and takes the union's names for them.
+  const auto names = namesOf(unionNode.outputColumns());
   std::vector<velox::core::PlanNodePtr> sources;
   sources.reserve(unionNode.inputs().size());
-  for (NodeCP input : unionNode.inputs()) {
+  for (size_t i = 0; i < unionNode.inputs().size(); ++i) {
+    NodeCP input = unionNode.inputs()[i];
+    const ColumnVector& legColumns = unionNode.legColumns()[i];
     velox::core::PlanNodePtr emitted = emit(input);
-    // A leg whose scan carries a rejected filter emits the filter-only columns
-    // for the FilterNode (see emitScan); trim them so every source shares the
-    // union's output type, as emitRoot does for the query output.
-    if (emitted->outputType()->size() > input->outputColumns().size()) {
-      emitted = projectToColumns(input->outputColumns(), std::move(emitted));
+    // Velox's Unnest produces a column per unnested value, while the node may
+    // output only some of them, so the emitted leg can be wider than its node.
+    if (emitted->outputType()->size() == legColumns.size() &&
+        isIdentityLayout(*input, legColumns, names)) {
+      sources.push_back(std::move(emitted));
+      continue;
     }
-    sources.push_back(std::move(emitted));
+    sources.push_back(projectAs(std::move(emitted), legColumns, names));
   }
   return velox::core::LocalPartitionNode::gather(nextId(), std::move(sources));
 }
@@ -2208,7 +2251,7 @@ void validateFixedPointLeaves(const ExecutableFragment& fragment) {
   for (const auto& leafId : root->leafPlanNodeIds()) {
     const auto* leaf = velox::core::PlanNode::findNodeById(root.get(), leafId);
     VELOX_CHECK_NOT_NULL(leaf);
-    if (dynamic_cast<const velox::core::FixedPointNode*>(leaf) != nullptr) {
+    if (leaf->is<velox::core::FixedPointNode>()) {
       ++numFixedPoints;
     }
   }
