@@ -23,6 +23,8 @@
 #include "axiom/optimizer/EstimateMath.h"
 #include "axiom/optimizer/v2/AppendAll.h"
 #include "axiom/optimizer/v2/ExprFactory.h"
+#include "axiom/optimizer/v2/PhysicalJoin.h"
+#include "axiom/optimizer/v2/PrecomputeProjections.h"
 #include "velox/common/base/Exceptions.h"
 
 namespace facebook::axiom::optimizer::v2 {
@@ -242,6 +244,20 @@ void checkAllConjunctsPlaced(const EmitState& state) {
 
 NodeCP emitLeaf(const LeafOp* leaf, EmitState& state) {
   NodeCP node = state.graph.relation(leaf->relationId).node();
+  // An Unnest of a constant reads a subtree that produces no columns, so it is
+  // a relation with nothing below it.
+  if (node->is(NodeType::kUnnest)) {
+    const auto* unnest = node->as<Unnest>();
+    return PhysicalJoin::makeUnnest(
+        {unnest->input(),
+         unnest->unnestExpressions(),
+         unnest->replicatedColumns(),
+         unnest->unnestColumns(),
+         unnest->ordinalityColumn(),
+         unnest->markerColumn(),
+         unnest->outputColumns()},
+        state.builder);
+  }
   // The relation's node reads the table ungrouped. When the plan that won reads
   // it one bucket-group at a time, that is a different read, so it is a
   // different scan.
@@ -313,14 +329,15 @@ Emitted buildUnnest(const UnnestOp* unnest, Emitted input, EmitState& state) {
     outputColumns.push_back(origUnnest->markerColumn());
   }
 
-  NodeCP node = state.builder.make<Unnest>(
+  NodeCP node = PhysicalJoin::makeUnnest(
       {input.node,
        std::move(unnestExpressions),
        std::move(replicatedColumns),
        origUnnest->unnestColumns(),
        origUnnest->ordinalityColumn(),
        origUnnest->markerColumn(),
-       std::move(outputColumns)});
+       std::move(outputColumns)},
+      state.builder);
 
   if (!predicates.empty()) {
     node = state.builder.make<Filter>({node, std::move(predicates)});
@@ -516,7 +533,7 @@ Emitted buildJoin(
     }
   }
 
-  NodeCP node = state.builder.make<Join>(
+  NodeCP node = PhysicalJoin::makeJoin(
       {left.node,
        right.node,
        join->joinType,
@@ -526,7 +543,8 @@ Emitted buildJoin(
        std::move(filter),
        edge.nullAware(),
        edge.nullAsValue(),
-       std::move(outputColumns)});
+       std::move(outputColumns)},
+      state.builder);
   if (!aboveJoin.empty()) {
     node = state.builder.make<Filter>({node, std::move(aboveJoin)});
   }
@@ -568,7 +586,7 @@ Emitted buildReversedAnti(
   auto materialized = merge(probe.materialized, build.materialized);
   const auto substitution =
       merge(collapsedColumns(mergedChildReps(join, state)), materialized);
-  NodeCP rightSemiProject = state.builder.make<Join>(
+  NodeCP rightSemiProject = PhysicalJoin::makeJoin(
       {probe.node,
        build.node,
        velox::core::JoinType::kRightSemiProject,
@@ -577,7 +595,8 @@ Emitted buildReversedAnti(
        rewrite(ExprVector{edge.filter()}, substitution, state),
        edge.nullAware(),
        edge.nullAsValue(),
-       std::move(joinOutput)});
+       std::move(joinOutput)},
+      state.builder);
 
   NodeCP filtered = state.builder.make<Filter>(
       {rightSemiProject, ExprVector{state.exprs.makeNot(mark)}});
@@ -674,8 +693,8 @@ Emitted emitUnnest(
 Emitted emitExchange(const ExchangeOp* exchange, EmitState& state) {
   Emitted input = emitOp(exchange->input, state);
   Partitioning partitioning = exchange->outputPartitioning();
-  auto [keyed, columnKeys] =
-      state.builder.materializeKeys(input.node, partitioning.keys);
+  auto [keyed, columnKeys] = PrecomputeProjections::materializeKeys(
+      input.node, partitioning.keys, state.builder);
   for (size_t i = 0; i < partitioning.keys.size(); ++i) {
     if (columnKeys[i] == partitioning.keys[i]) {
       continue;
