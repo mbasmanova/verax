@@ -1416,11 +1416,9 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
       return builder().make<Sort>(
           {input, node->orderKeys(), node->orderTypes()});
     }
-    auto [sortInput, orderKeys] =
-        builder().materializeKeys(input, node->orderKeys());
     NodeCP partialSort =
-        builder().make<Sort>({sortInput, orderKeys, node->orderTypes()});
-    return gatherMerge(partialSort, orderKeys, node->orderTypes());
+        builder().make<Sort>({input, node->orderKeys(), node->orderTypes()});
+    return gatherMerge(partialSort, node->orderKeys(), node->orderTypes());
   }
 
   // Distributes an EnforceSingleRow (scalar-subquery single-row assertion): it
@@ -1492,16 +1490,14 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
            node->count()});
     }
 
-    auto [topNInput, orderKeys] =
-        builder().materializeKeys(newInput, node->orderKeys());
     NodeCP partial = builder().make<TopN>(
-        {topNInput,
-         orderKeys,
+        {newInput,
+         node->orderKeys(),
          node->orderTypes(),
          /*offset=*/0,
          node->offsetPlusCount()});
     return builder().make<Limit>(
-        {gatherMerge(partial, orderKeys, node->orderTypes()),
+        {gatherMerge(partial, node->orderKeys(), node->orderTypes()),
          node->offset(),
          node->count()});
   }
@@ -1605,9 +1601,6 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
   NodeCP rewriteTableWrite(const TableWrite* node, NoContext& context)
       override {
     NodeCP newInput = rewrite(node->input(), context);
-    // A partition key computed for the shuffle is written from that column
-    // rather than evaluated a second time.
-    ExprFactory::ExprSubstitution materialized;
     if (numWorkers_ > 1 && node->kind() != connector::WriteKind::kDelete) {
       const auto* layout = node->table()->layouts().front();
       const auto& partitionColumns = layout->partitionColumns();
@@ -1638,25 +1631,15 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
         }
         if (!newInput->physicalProperties()
                  .globalPartition.isBucketedCompatibleWith(keys, *targetType)) {
-          auto [keyed, columnKeys] = builder().materializeKeys(newInput, keys);
-          newInput = partitionTo(keyed, columnKeys, targetType);
-          for (size_t i = 0; i < keys.size(); ++i) {
-            if (columnKeys[i] != keys[i]) {
-              materialized.emplace(keys[i], columnKeys[i]);
-            }
-          }
+          newInput = partitionTo(newInput, keys, targetType);
         }
       }
     }
     if (newInput == node->input()) {
       return node;
     }
-    ExprVector columnExprs{node->columnExprs()};
-    if (!materialized.empty()) {
-      columnExprs = exprFactory_.replace(columnExprs, materialized);
-    }
     return builder().make<TableWrite>(
-        {newInput, node->table(), node->kind(), std::move(columnExprs)});
+        {newInput, node->table(), node->kind(), node->columnExprs()});
   }
 
  private:

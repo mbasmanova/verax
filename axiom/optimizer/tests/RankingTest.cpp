@@ -192,8 +192,9 @@ TEST_P(RankingTest, rowNumberWithPartitionAndOrderByAndLimit) {
   auto plan = toSingleNodePlan(sql);
   auto matcher = matchScan("nation")
                      .topNRowNumber({"n_regionkey"}, {"n_name"}, 10)
+                     .projectIf(useV2_, {"n_name", "rn"})
                      .finalLimit(0, 10)
-                     .project({"n_name", "rn"})
+                     .projectIf(!useV2_, {"n_name", "rn"})
                      .build();
   AXIOM_ASSERT_PLAN(plan, matcher);
 
@@ -207,8 +208,9 @@ TEST_P(RankingTest, rowNumberWithPartitionAndOrderByAndLimit) {
                                 .shuffle({"n_regionkey"})
                                 .localPartition({"n_regionkey"})
                                 .topNRowNumber({"n_regionkey"}, {"n_name"}, 10)
+                                .projectIf(useV2_, {"n_name", "rn"})
                                 .distributedLimit(0, 10)
-                                .project({"n_name", "rn"})
+                                .projectIf(!useV2_, {"n_name", "rn"})
                                 .build();
   AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan, distributedMatcher);
 }
@@ -226,8 +228,9 @@ TEST_P(RankingTest, multipleWindowFunctionsWithLimitNoOptimization) {
                      .window(
                          {"row_number() OVER (ORDER BY n_name)",
                           "sum(n_regionkey) OVER (ORDER BY n_name)"})
+                     .projectIf(useV2_, {"n_name", "rn", "s"})
                      .finalLimit(0, 10)
-                     .project({"n_name", "rn", "s"})
+                     .projectIf(!useV2_, {"n_name", "rn", "s"})
                      .build();
   AXIOM_ASSERT_PLAN(plan, matcher);
 
@@ -238,8 +241,9 @@ TEST_P(RankingTest, multipleWindowFunctionsWithLimitNoOptimization) {
                                 .window(
                                     {"row_number() OVER (ORDER BY n_name)",
                                      "sum(n_regionkey) OVER (ORDER BY n_name)"})
+                                .projectIf(useV2_, {"n_name", "rn", "s"})
                                 .localLimit(0, 10)
-                                .project({"n_name", "rn", "s"})
+                                .projectIf(!useV2_, {"n_name", "rn", "s"})
                                 .build();
   AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan, distributedMatcher);
 }
@@ -281,24 +285,25 @@ TEST_P(RankingTest, rankWithLimitWithoutOrderBy) {
       "FROM nation LIMIT 10";
 
   auto plan = toSingleNodePlan(sql);
+  // The partition key is dropped straight after the Window, so the limit
+  // chain carries only what the query returns.
   auto matcher = matchScan("nation")
                      .window({"rank() OVER (PARTITION BY n_regionkey)"})
+                     .projectIf(useV2_, {"n_name", "rn"})
                      .finalLimit(0, 10)
-                     .project({"n_name", "rn"})
+                     .projectIf(!useV2_, {"n_name", "rn"})
                      .build();
   AXIOM_ASSERT_PLAN(plan, matcher);
 
-  // TODO: n_regionkey is carried through the limit chain and gather
-  // unnecessarily. Drop it after the Window once
-  // https://github.com/facebookincubator/velox/issues/16551 is fixed.
   auto distributedPlan = toDistributedPlan(sql);
   auto distributedMatcher =
       matchScan("nation")
           .shuffle({"n_regionkey"})
           .localPartition({"n_regionkey"})
           .window({"rank() OVER (PARTITION BY n_regionkey)"})
+          .projectIf(useV2_, {"n_name", "rn"})
           .distributedLimit(0, 10)
-          .project({"n_name", "rn"})
+          .projectIf(!useV2_, {"n_name", "rn"})
           .build();
   AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan, distributedMatcher);
 }
@@ -360,24 +365,27 @@ TEST_P(RankingTest, computedPartitionKey) {
       ") WHERE rn = 1";
 
   auto plan = toSingleNodePlan(sql);
-  auto matcher =
-      matchScan("nation")
-          .project({"n_name", "n_regionkey", "mod(n_regionkey, 2) as p"})
-          .topNRowNumber({"p"}, {"n_name"}, 1)
-          .project({"n_name"})
-          .build();
+  // v1 also carries the partition key's source column.
+  const std::vector<std::string> precomputed = useV2_
+      ? std::vector<std::string>{"n_name", "mod(n_regionkey, 2) as p"}
+      : std::vector<std::string>{
+            "n_name", "n_regionkey", "mod(n_regionkey, 2) as p"};
+  auto matcher = matchScan("nation")
+                     .project(precomputed)
+                     .topNRowNumber({"p"}, {"n_name"}, 1)
+                     .project({"n_name"})
+                     .build();
   AXIOM_ASSERT_PLAN(plan, matcher);
 
   auto distributedPlan = toDistributedPlan(sql);
-  auto distributedMatcher =
-      matchScan("nation")
-          .project({"n_name", "n_regionkey", "mod(n_regionkey, 2) as p"})
-          .shuffle({"p"})
-          .localPartition({"p"})
-          .topNRowNumber({"p"}, {"n_name"}, 1)
-          .project({"n_name"})
-          .gather()
-          .build();
+  auto distributedMatcher = matchScan("nation")
+                                .project(precomputed)
+                                .shuffle({"p"})
+                                .localPartition({"p"})
+                                .topNRowNumber({"p"}, {"n_name"}, 1)
+                                .project({"n_name"})
+                                .gather()
+                                .build();
   AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan, distributedMatcher);
 }
 
@@ -915,8 +923,9 @@ TEST_P(RankingTest, partitionKeyFilterPartialMatch) {
 TEST_P(RankingTest, denseRankWithRedundantOrderBy) {
   // dense_rank()/rank() OVER (PARTITION BY a, b ORDER BY a) -- the ORDER BY
   // column is also in PARTITION BY, so within a partition all rows tie at
-  // rank 1. The 'rk = 1' predicate matches every row and is dropped; only
-  // the Window remains (no Filter, no TopNRowNumber).
+  // rank 1. The 'rk = 1' predicate matches every row and is dropped, which
+  // leaves nothing reading the window's result, so v2 plans no Window at all.
+  // v1 keeps one, so only v2 is pinned.
   constexpr auto sql =
       "SELECT n_name FROM ("
       "  SELECT n_name, dense_rank() "
@@ -925,23 +934,13 @@ TEST_P(RankingTest, denseRankWithRedundantOrderBy) {
       ") WHERE rk = 1";
 
   auto plan = toSingleNodePlan(sql);
-  auto matcher =
-      matchScan("nation")
-          .window({"dense_rank() OVER (PARTITION BY n_regionkey, n_name)"})
-          .project({"n_name"})
-          .build();
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  auto matcher = matchScan("nation").project({"n_name"}).build();
+  AXIOM_ASSERT_PLAN_V2(plan, matcher);
 
   auto distributedPlan = toDistributedPlan(sql);
   auto distributedMatcher =
-      matchScan("nation")
-          .shuffle({"n_regionkey", "n_name"})
-          .localPartition({"n_regionkey", "n_name"})
-          .window({"dense_rank() OVER (PARTITION BY n_regionkey, n_name)"})
-          .project({"n_name"})
-          .gather()
-          .build();
-  AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan, distributedMatcher);
+      matchScan("nation").project({"n_name"}).gather().build();
+  AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(distributedPlan, distributedMatcher);
 }
 
 TEST_P(RankingTest, projectOnlyRankColumn) {

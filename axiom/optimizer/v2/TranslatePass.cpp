@@ -38,6 +38,7 @@
 #include "axiom/optimizer/v2/JoinCondition.h"
 #include "axiom/optimizer/v2/NodeExpressions.h"
 #include "axiom/optimizer/v2/PhysicalPlanAndEmit.h"
+#include "axiom/optimizer/v2/PrecomputeProjections.h"
 #include "axiom/optimizer/v2/ScanHandle.h"
 #include "velox/exec/Aggregate.h"
 #include "velox/exec/AggregateFunctionRegistry.h"
@@ -287,7 +288,7 @@ void flattenAndConjuncts(
 
 // Resolution context for translating expressions in a fixed scope. Maps
 // output column name to the Column that produces it.
-using Scope = folly::F14FastMap<std::string, ColumnCP>;
+using Scope = folly::F14FastMap<std::string, ExprCP>;
 
 // Populates 'scope' with one entry per field of 'rowType' pointing at the
 // matching Column in 'columns'. 'columns' must align 1:1 with 'rowType'.
@@ -334,7 +335,7 @@ class SubqueryContext {
  public:
   // Resolves 'name' against enclosing scopes, innermost-first, and records
   // the hit as a correlation. Returns nullptr if not found at any level.
-  ColumnCP correlateOuter(std::string_view name);
+  ExprCP correlateOuter(std::string_view name);
 
   // Records 'column', produced by an enclosing scope's lift, as a correlation
   // of every body in flight below the scope that outputs it. Returns false
@@ -363,7 +364,7 @@ class SubqueryContext {
  private:
   // Records 'column', held by the scope at 'level', as a correlation of every
   // body in flight below it.
-  void recordCorrelation(ColumnCP column, size_t level);
+  void recordCorrelation(ExprCP expr, size_t level);
 
   std::vector<const Scope*> outerScopes_;
   // Lift target of the scope enclosing each in-flight body. Held by pointer
@@ -376,20 +377,24 @@ class SubqueryContext {
   std::vector<size_t> liftedCorrelationBarriers_;
 };
 
-void SubqueryContext::recordCorrelation(ColumnCP column, size_t level) {
+void SubqueryContext::recordCorrelation(ExprCP expr, size_t level) {
   VELOX_CHECK_LT(level, correlationsStack_.size());
-  // Every body in flight between the scope holding the column and the
-  // innermost carries it, so each intermediate Apply passes it inwards.
-  for (size_t i = level; i < correlationsStack_.size(); ++i) {
-    correlationsStack_[i].push_back(column);
-  }
+  // An outer name resolving to an expression correlates on the columns it
+  // reads; the body evaluates the expression over them.
+  expr->columns().forEach<Column>([&](ColumnCP column) {
+    // Every body in flight between the scope holding the column and the
+    // innermost carries it, so each intermediate Apply passes it inwards.
+    for (size_t i = level; i < correlationsStack_.size(); ++i) {
+      correlationsStack_[i].push_back(column);
+    }
+  });
 }
 
 bool SubqueryContext::hasCorrelations() const {
   return !correlationsStack_.empty() && !correlationsStack_.back().empty();
 }
 
-ColumnCP SubqueryContext::correlateOuter(std::string_view name) {
+ExprCP SubqueryContext::correlateOuter(std::string_view name) {
   for (size_t i = outerScopes_.size(); i > 0; --i) {
     const Scope& scope = *outerScopes_[i - 1];
     auto found = scope.find(name);
@@ -509,7 +514,8 @@ class Translator {
           it != translated.scope.end(),
           "Output name not found in scope: {}",
           sourceName);
-      outputColumns.push_back(it->second);
+      outputColumns.push_back(
+          materializeColumn(&translated.node, it->second, sourceName));
       outputNames.push_back(outputName);
     }
     return {translated.node, std::move(outputColumns), std::move(outputNames)};
@@ -543,6 +549,26 @@ class Translator {
       const lp::LimitNode& limit,
       const LpNameSet& required);
   Translated translateSort(const lp::SortNode& sort, const LpNameSet& required);
+
+  // See the definitions below.
+  ColumnCP materializeColumn(NodeCP* node, ExprCP expr, std::string_view name);
+
+  ColumnVector narrowToNames(
+      NodeCP* node,
+      const Scope& scope,
+      const std::vector<std::string>& names);
+
+  void narrowToColumns(NodeCP* node, const ColumnVector& columns);
+
+  void materializeScope(NodeCP* node, Scope& scope, const velox::RowType& type);
+
+  ColumnCP
+  columnInScope(NodeCP* node, const Scope& scope, const std::string& name);
+
+  ExprCP materializeInto(
+      PrecomputeProjections& precompute,
+      ExprCP expr,
+      bool allowConstant = false);
 
   // Translates ordering keys, dropping any key that repeats an earlier one. A
   // repeated key cannot refine the order its first occurrence imposes, and
@@ -816,6 +842,10 @@ class Translator {
 
   SubqueryContext subqueries_;
   Schema& schema_;
+  // Column materialized for an expression, consulted before materializing
+  // another.
+  folly::F14FastMap<ExprCP, ColumnCP> materialized_;
+
   Builder& builder_;
   ExprFactory exprFactory_;
   ExprSimplifier simplifier_;
@@ -905,6 +935,32 @@ Translated Translator::translateTableWrite(
         toTypePtr(columnExprs.back()->value().type)->toString());
   }
 
+  // Velox's TableWriteNode writes the columns of its input, positionally, so
+  // the input produces exactly the written values, in table-schema order. Two
+  // positions writing one value each get their own column.
+  // A delete writes no columns.
+  if (!columnExprs.empty()) {
+    ColumnVector writeColumns;
+    writeColumns.reserve(columnExprs.size());
+    PlanObjectSet taken;
+    for (ExprCP columnExpr : columnExprs) {
+      ColumnCP column;
+      if (columnExpr->is(PlanType::kColumnExpr) &&
+          !taken.contains(columnExpr)) {
+        column = columnExpr->as<Column>();
+        taken.add(column);
+      } else {
+        column = Column::create("__write", columnExpr->value());
+      }
+      writeColumns.push_back(column);
+    }
+    if (writeColumns != currentInput->outputColumns()) {
+      currentInput = PrecomputeProjections::makeProject(
+          currentInput, columnExprs, writeColumns, builder_);
+    }
+    columnExprs.assign(writeColumns.begin(), writeColumns.end());
+  }
+
   NodeCP writeNode = builder_.make<TableWrite>(
       {currentInput, connectorTable, kind, std::move(columnExprs)});
 
@@ -977,19 +1033,14 @@ Translated Translator::translateFixedPoint(
   Translated anchor =
       translateNode(*fixedPoint.anchor(), allNames(*anchorType));
 
-  ColumnVector anchorColumns;
+  // A `FixedPoint`'s outputs are its anchor's by pointer identity, so the
+  // anchor produces exactly these columns and nothing else.
+  ColumnVector anchorColumns =
+      narrowToNames(&anchor.node, anchor.scope, anchorType->names());
   Scope anchorScope;
-  anchorColumns.reserve(anchorType->size());
   for (size_t i = 0; i < anchorType->size(); ++i) {
-    const auto& name = anchorType->nameOf(static_cast<uint32_t>(i));
-    auto it = anchor.scope.find(name);
-    VELOX_CHECK(
-        it != anchor.scope.end(),
-        "FixedPoint anchor scope missing column: {}",
-        name);
-    ColumnCP column = it->second;
-    anchorColumns.push_back(column);
-    anchorScope[name] = column;
+    anchorScope[anchorType->nameOf(static_cast<uint32_t>(i))] =
+        anchorColumns[i];
   }
 
   const auto* recursionName = toName(fixedPoint.name());
@@ -1006,6 +1057,10 @@ Translated Translator::translateFixedPoint(
   // Recursive-reference field names may differ from anchor field names.
   Translated step = translateNode(
       *fixedPoint.step(), allNames(*fixedPoint.step()->outputType()));
+  // The step's own output columns are the next iteration's state, so what it
+  // projects is materialized here rather than carried in the scope.
+  narrowToNames(
+      &step.node, step.scope, fixedPoint.step()->outputType()->names());
   // Each recursive reference currently maps back to the same anchor Column*s.
   // Two references would therefore collapse into one relation identity instead
   // of representing independently aliased inputs to a self-join.
@@ -1286,15 +1341,7 @@ Translated Translator::translateProject(
   NodeCP currentInput = maybeWrapInWindow(
       input.node, input.scope, keptExprs, keptNames, windowScope);
 
-  ColumnVector outputColumns;
-  outputColumns.reserve(keptIndices.size());
-  ExprVector translatedExprs;
-  translatedExprs.reserve(keptIndices.size());
   Scope newScope;
-  // Output positions producing the same canonical expression collapse to one
-  // output entry; both LP names still resolve to that Column via `newScope`.
-  folly::F14FastMap<ExprCP, ColumnCP> exprToOutput;
-  exprToOutput.reserve(keptIndices.size());
   for (size_t idx : keptIndices) {
     const auto& name = names[idx];
     ExprCP translatedExpr;
@@ -1307,46 +1354,16 @@ Translated Translator::translateProject(
         translatedExpr = translateExpr(*exprs[idx], input.scope, &target);
       });
     }
-    if (auto seenIt = exprToOutput.find(translatedExpr);
-        seenIt != exprToOutput.end()) {
-      newScope[name] = seenIt->second;
-      continue;
-    }
-    ColumnCP column;
-    if (translatedExpr->is(PlanType::kColumnExpr)) {
-      column = translatedExpr->as<Column>();
-    } else {
-      Name outName = toName(name);
-      column = make<Column>(
-          queryCtx()->newName(outName),
-          /*relation=*/nullptr,
-          translatedExpr->value(),
-          /*alias=*/outName);
-    }
-    exprToOutput.emplace(translatedExpr, column);
-    newScope[name] = column;
-    outputColumns.push_back(column);
-    translatedExprs.push_back(translatedExpr);
+    // A name binds to its expression, so a chain of projections collapses and
+    // the expression is materialized where a consumer needs a column. A
+    // non-deterministic one materializes here instead: every reference to the
+    // name must read one evaluation.
+    newScope[name] = translatedExpr->containsNonDeterministic()
+        ? materializeColumn(&currentInput, translatedExpr, name)
+        : translatedExpr;
   }
 
-  // Identity Project: pass-through outputs in input order. Skip allocating;
-  // `newScope` carries any LP renames.
-  if (outputColumns.size() == currentInput->outputColumns().size()) {
-    bool identity = true;
-    for (size_t i = 0; i < outputColumns.size(); ++i) {
-      if (outputColumns[i] != currentInput->outputColumns()[i]) {
-        identity = false;
-        break;
-      }
-    }
-    if (identity) {
-      return {currentInput, std::move(newScope)};
-    }
-  }
-
-  ProjectCP projectNode = builder_.make<Project>(
-      {currentInput, std::move(translatedExprs), std::move(outputColumns)});
-  return {projectNode, std::move(newScope)};
+  return {currentInput, std::move(newScope)};
 }
 
 OrderType toOrderType(const logical_plan::SortOrder& order) {
@@ -1600,13 +1617,31 @@ NodeCP Translator::maybeWrapInWindow(
   for (const auto& group : groups) {
     const Spec& spec = specs[group.front()];
 
+    // Velox reads a window's keys, its function arguments and a RANGE frame
+    // bound as columns of the input, so they are computed below the Window.
+    PrecomputeProjections precompute{current, builder_};
+    ExprVector partitionKeys = spec.partitionKeys;
+    for (ExprCP& key : partitionKeys) {
+      key = materializeInto(precompute, key);
+    }
+    ExprVector orderKeys = spec.orderKeys;
+    for (ExprCP& key : orderKeys) {
+      key = materializeInto(precompute, key);
+    }
+
+    // A ROWS bound is an offset in rows, which Velox reads as a constant. A
+    // RANGE bound is the boundary value for each row, which it reads from a
+    // column, so that stays a column even when it folds to a literal.
+    auto liftBound = [&](ExprCP value, bool allowConstant) -> ExprCP {
+      return value != nullptr
+          ? materializeInto(precompute, value, allowConstant)
+          : nullptr;
+    };
+
     WindowFunctions functions;
     functions.reserve(group.size());
-    ColumnVector outputColumns;
-    outputColumns.reserve(current->outputColumns().size() + group.size());
-    for (ColumnCP column : current->outputColumns()) {
-      outputColumns.push_back(column);
-    }
+    ColumnVector functionColumns;
+    functionColumns.reserve(group.size());
     for (size_t i : group) {
       const size_t projectIndex = windowIndices[i];
       const auto* windowExpr = projectExprs[projectIndex]->as<lp::WindowExpr>();
@@ -1614,6 +1649,12 @@ NodeCP Translator::maybeWrapInWindow(
       Name windowName = toName(windowExpr->name());
       ExprVector windowArgs = translateAll(
           windowExpr->inputs(), inputScope, /*liftTarget=*/nullptr);
+      for (ExprCP& arg : windowArgs) {
+        arg = precompute.toColumn(
+            arg,
+            /*alias=*/nullptr, /*allowConstant=*/
+            true);
+      }
       // Window functions are non-deterministic with non-default null behavior.
       FunctionSet windowFuncs =
           Call::unionArgFunctions(FunctionSet{}, windowArgs) |
@@ -1623,7 +1664,7 @@ NodeCP Translator::maybeWrapInWindow(
       Frame frame = toFrame(windowExpr->frame(), inputScope);
       // With no ordering every row of a partition is a peer, so a RANGE bound
       // at CURRENT ROW reaches the end of the partition in either direction.
-      if (spec.orderKeys.empty() &&
+      if (orderKeys.empty() &&
           frame.type == lp::WindowExpr::WindowType::kRange) {
         if (frame.startType == lp::WindowExpr::BoundType::kCurrentRow) {
           frame.startType = lp::WindowExpr::BoundType::kUnboundedPreceding;
@@ -1632,20 +1673,33 @@ NodeCP Translator::maybeWrapInWindow(
           frame.endType = lp::WindowExpr::BoundType::kUnboundedFollowing;
         }
       }
+      const bool allowConstant =
+          frame.type == lp::WindowExpr::WindowType::kRows;
+      frame.startValue = liftBound(frame.startValue, allowConstant);
+      frame.endValue = liftBound(frame.endValue, allowConstant);
       functions.push_back(
           WindowFunction{call, frame, windowExpr->ignoreNulls()});
 
       const auto& name = projectNames[projectIndex];
       auto* column = Column::createForSymbol(toName(name), value);
-      outputColumns.push_back(column);
+      functionColumns.push_back(column);
       windowScope[name] = column;
+    }
+
+    // A Window emits its input's columns followed by its function results, so
+    // the prefix is read after the keys and bounds have been materialized.
+    current = std::move(precompute).node();
+    ColumnVector outputColumns = current->outputColumns();
+    outputColumns.reserve(outputColumns.size() + functionColumns.size());
+    for (ColumnCP column : functionColumns) {
+      outputColumns.push_back(column);
     }
 
     current = builder_.make<Window>(
         {current,
          std::move(functions),
-         spec.partitionKeys,
-         spec.orderKeys,
+         std::move(partitionKeys),
+         std::move(orderKeys),
          spec.orderTypes,
          std::move(outputColumns)});
   }
@@ -1687,6 +1741,106 @@ std::pair<ExprVector, OrderTypeVector> Translator::dedupOrdering(
   return {std::move(orderKeys), std::move(orderTypes)};
 }
 
+// Materializes 'expr' through 'precompute' and records the column, so a later
+// boundary reading the same expression reuses it rather than recomputing.
+// Returns 'expr' as a column of '*node', extending '*node' with a `Project`
+// computing it when it is not already a column. A column already materialized
+// for the same expression is reused while it is still in '*node''s output, so
+// a second boundary reading that expression does not compute it again.
+// Successive calls share one `Project`, which `makeProject` folds as each is
+// built over the last.
+ColumnCP Translator::materializeColumn(
+    NodeCP* node,
+    ExprCP expr,
+    std::string_view name) {
+  if (expr->is(PlanType::kColumnExpr)) {
+    return expr->as<Column>();
+  }
+  if (auto it = materialized_.find(expr); it != materialized_.end()) {
+    const auto& outputs = (*node)->outputColumns();
+    if (std::find(outputs.begin(), outputs.end(), it->second) !=
+        outputs.end()) {
+      return it->second;
+    }
+  }
+  PrecomputeProjections precompute{*node, builder_};
+  Name outName = toName(std::string{name});
+  auto* column = make<Column>(
+      queryCtx()->newName(outName),
+      /*relation=*/nullptr,
+      expr->value(),
+      /*alias=*/outName);
+  precompute.toColumn(expr, column);
+  *node = std::move(precompute).node();
+  materialized_.insert_or_assign(expr, column);
+  return column;
+}
+
+// Restricts '*node' to what 'names' resolve to in 'scope', materializing any
+// expressions. For a node whose own `outputColumns` are read as its result --
+// a subquery body, a `UnionAll` leg -- the columns have to be there, not just
+// reachable through the scope.
+ColumnVector Translator::narrowToNames(
+    NodeCP* node,
+    const Scope& scope,
+    const std::vector<std::string>& names) {
+  ColumnVector columns;
+  columns.reserve(names.size());
+  for (const auto& name : names) {
+    auto it = scope.find(name);
+    VELOX_CHECK(it != scope.end(), "Name not in scope: {}", name);
+    columns.push_back(materializeColumn(node, it->second, name));
+  }
+  narrowToColumns(node, columns);
+  return columns;
+}
+
+void Translator::narrowToColumns(NodeCP* node, const ColumnVector& columns) {
+  if (columns == (*node)->outputColumns()) {
+    return;
+  }
+  ExprVector exprs(columns.begin(), columns.end());
+  *node = PrecomputeProjections::makeProject(
+      *node, std::move(exprs), columns, builder_);
+}
+
+// Materializes every expression 'scope' binds, in 'type' order so the new
+// names do not depend on map iteration order.
+void Translator::materializeScope(
+    NodeCP* node,
+    Scope& scope,
+    const velox::RowType& type) {
+  for (const auto& name : type.names()) {
+    auto it = scope.find(name);
+    if (it == scope.end() || it->second->is(PlanType::kColumnExpr)) {
+      continue;
+    }
+    it->second = materializeColumn(node, it->second, name);
+  }
+}
+
+// The Column a leg's scope binds 'name' to. A leg's scope covers every name of
+// its LP outputType, so a miss is a translation bug.
+ColumnCP Translator::columnInScope(
+    NodeCP* node,
+    const Scope& scope,
+    const std::string& name) {
+  auto it = scope.find(name);
+  VELOX_CHECK(it != scope.end(), "Leg scope missing column: {}", name);
+  return materializeColumn(node, it->second, name);
+}
+
+ExprCP Translator::materializeInto(
+    PrecomputeProjections& precompute,
+    ExprCP expr,
+    bool allowConstant) {
+  ExprCP result = precompute.toColumn(expr, /*alias=*/nullptr, allowConstant);
+  if (result != expr && result->is(PlanType::kColumnExpr)) {
+    materialized_.insert_or_assign(expr, result->as<Column>());
+  }
+  return result;
+}
+
 Translated Translator::translateSort(
     const lp::SortNode& sort,
     const LpNameSet& required) {
@@ -1706,8 +1860,16 @@ Translated Translator::translateSort(
         dedupOrdering(sort.ordering(), input.scope, &target);
   });
 
+  // Velox reads a sort key as a column of the input.
+  PrecomputeProjections precompute{currentInput, builder_};
+  for (ExprCP& key : orderKeys) {
+    key = materializeInto(precompute, key);
+  }
+
   SortCP sortNode = builder_.make<Sort>(
-      {currentInput, std::move(orderKeys), std::move(orderTypes)});
+      {std::move(precompute).node(),
+       std::move(orderKeys),
+       std::move(orderTypes)});
   return {sortNode, std::move(input.scope)};
 }
 
@@ -2214,7 +2376,7 @@ Translated Translator::translateUnnest(
     auto it = input.scope.find(name);
     VELOX_CHECK(it != input.scope.end());
 
-    ColumnCP column = it->second;
+    ColumnCP column = materializeColumn(&currentInput, it->second, name);
     if (!replicated.contains(column)) {
       replicated.add(column);
       replicatedColumns.push_back(column);
@@ -2266,14 +2428,6 @@ Translated Translator::translateUnnest(
        /*markerColumn=*/nullptr,
        std::move(outputColumns)});
   return {unnestNode, std::move(newScope)};
-}
-
-// The Column a leg's scope binds 'name' to. A leg's scope covers every name of
-// its LP outputType, so a miss is a translation bug.
-ColumnCP columnInScope(const Scope& scope, const std::string& name) {
-  auto it = scope.find(name);
-  VELOX_CHECK(it != scope.end(), "Leg scope missing column: {}", name);
-  return it->second;
 }
 
 Translated Translator::buildUnionAll(
@@ -2339,8 +2493,8 @@ Translated Translator::buildUnionAll(
       // Resolve LP-name → IR Column* via the leg's scope; the leg's IR
       // `outputColumns` may be narrower than its LP outputType after
       // dup-collapse, but the same Column may legitimately repeat.
-      cols.push_back(
-          columnInScope(translated.scope, in->outputType()->nameOf(j)));
+      cols.push_back(columnInScope(
+          &translated.node, translated.scope, in->outputType()->nameOf(j)));
     }
     legColumns.push_back(std::move(cols));
     inputNodes.push_back(translated.node);
@@ -2413,18 +2567,38 @@ Translated Translator::translateSet(
           : (isDistinct ? velox::core::JoinType::kLeftSemiFilter
                         : velox::core::JoinType::kCountingLeftSemiFilter);
 
-      // Set-op via Join: each leg's columns become join keys, so all of each
-      // leg's outputType is consumed. Resolve each position by name through
-      // the leg's scope: a leg that projects one expression under two names
-      // holds one Column for both (see translateProject), so its IR
-      // `outputColumns` can be narrower than its LP outputType, and the same
-      // Column can legitimately be a key twice.
+      // Set-op via Join: each leg's columns become join keys, so a leg drops
+      // anything else it carries. A counting semi join requires its keys to
+      // cover its inputs' columns, and the distinct variants dedup on the
+      // join's output.
+      //
+      // A leg that projects one expression under two names holds one Column for
+      // both (see translateProject), so a leg can have fewer columns than
+      // outputType positions and the same Column can legitimately be a key
+      // twice.
+      auto narrowLeg = [&](Translated& leg, const velox::RowType& type) {
+        ColumnVector columns;
+        PlanObjectSet seen;
+        for (const auto& name : type.names()) {
+          ColumnCP column = columnInScope(&leg.node, leg.scope, name);
+          // Every name of the leg's type now binds to a column of 'leg.node'.
+          leg.scope[name] = column;
+          if (!seen.contains(column)) {
+            seen.add(column);
+            columns.push_back(column);
+          }
+        }
+        narrowToColumns(&leg.node, columns);
+      };
+
       Translated first = translateNode(*set.inputs().front());
-      NodeCP node = first.node;
       const auto& firstType = *set.inputs().front()->outputType();
+      narrowLeg(first, firstType);
+      NodeCP node = first.node;
       for (size_t i = 1; i < set.inputs().size(); ++i) {
         Translated other = translateNode(*set.inputs()[i]);
         const auto& otherType = *set.inputs()[i]->outputType();
+        narrowLeg(other, otherType);
         VELOX_CHECK_EQ(firstType.size(), otherType.size());
         ExprVector leftKeys;
         ExprVector rightKeys;
@@ -2432,10 +2606,10 @@ Translated Translator::translateSet(
         rightKeys.reserve(firstType.size());
         for (size_t columnIndex = 0; columnIndex < firstType.size();
              ++columnIndex) {
-          leftKeys.push_back(
-              columnInScope(first.scope, firstType.nameOf(columnIndex)));
-          rightKeys.push_back(
-              columnInScope(other.scope, otherType.nameOf(columnIndex)));
+          leftKeys.push_back(columnInScope(
+              &first.node, first.scope, firstType.nameOf(columnIndex)));
+          rightKeys.push_back(columnInScope(
+              &other.node, other.scope, otherType.nameOf(columnIndex)));
         }
         ColumnVector outputColumns{node->outputColumns()};
         node = builder_.make<Join>(
@@ -2450,14 +2624,10 @@ Translated Translator::translateSet(
              std::move(outputColumns)});
       }
 
-      // Output columns are the first leg's, flowing through the Join unchanged.
-      // Resolve each output position by name through the first leg's scope so
-      // positions the leg collapsed to one Column (see translateProject) map
-      // both symbols to that shared Column.
       Scope scope;
       for (size_t i = 0; i < set.outputType()->size(); ++i) {
         scope[set.outputType()->nameOf(i)] =
-            columnInScope(first.scope, firstType.nameOf(i));
+            columnInScope(&first.node, first.scope, firstType.nameOf(i));
       }
 
       if (isDistinct) {
@@ -2562,12 +2732,27 @@ Translated Translator::translateJoin(
   Translated left = translateNode(*join.left(), leftRequired);
   Translated right = translateNode(*join.right(), rightRequired);
 
-  Scope merged = left.scope;
-  for (auto& [name, column] : right.scope) {
-    merged[name] = column;
+  const velox::core::JoinType joinType = toVeloxJoinType(join.joinType());
+
+  // A null-extended side's expressions are computed below the join. Above it
+  // their inputs read NULL on a padded row, which is not the same as the
+  // expression itself being NULL: `ARRAY[a, b]` would read `ARRAY[NULL, NULL]`
+  // where the row should carry NULL. The join's own condition is evaluated
+  // before padding, so it is free to read the expression inline.
+  if (joinType == velox::core::JoinType::kRight ||
+      joinType == velox::core::JoinType::kFull) {
+    materializeScope(&left.node, left.scope, leftType);
+  }
+  if (joinType == velox::core::JoinType::kLeft ||
+      joinType == velox::core::JoinType::kFull) {
+    materializeScope(&right.node, right.scope, rightType);
   }
 
-  const velox::core::JoinType joinType = toVeloxJoinType(join.joinType());
+  Scope merged = left.scope;
+  for (auto& [name, expr] : right.scope) {
+    merged[name] = expr;
+  }
+
   const bool isInner = joinType == velox::core::JoinType::kInner;
   const bool conditionHasSubquery =
       join.condition() != nullptr && containsSubquery(*join.condition());
@@ -2588,7 +2773,10 @@ Translated Translator::translateJoin(
         }
         auto it = scope.find(name);
         VELOX_DCHECK(it != scope.end());
-        requiredColumns.add(it->second);
+        // A name binds to an expression, so the join must output what that
+        // expression reads, not the expression.
+        it->second->columns().forEach<Column>(
+            [&](ColumnCP column) { requiredColumns.add(column); });
       }
     };
     collect(leftType, left.scope);
@@ -2685,8 +2873,8 @@ Translated Translator::translateLateralJoin(
 
   // The ON condition may read either side.
   Scope merged = left.scope;
-  for (auto& [name, column] : right.scope) {
-    merged[name] = column;
+  for (auto& [name, expr] : right.scope) {
+    merged[name] = expr;
   }
 
   ExprVector filter;
@@ -2983,7 +3171,7 @@ ExprCP Translator::translateInputReference(
   if (it != scope.end()) {
     return it->second;
   }
-  if (ColumnCP outer = subqueries_.correlateOuter(name)) {
+  if (ExprCP outer = subqueries_.correlateOuter(name)) {
     return outer;
   }
   VELOX_FAIL("Column not found in scope or outer scopes: {}", name);
@@ -3268,6 +3456,12 @@ ExprCP Translator::liftSubquery(
   ColumnVector correlationColumns = subqueries_.pop();
 
   NodeCP body = inner.node;
+  if (!isExists) {
+    // The body's own output columns are its result, so they must be exactly
+    // what the subquery projects.
+    narrowToNames(
+        &body, inner.scope, subqueryExpr.subquery()->outputType()->names());
+  }
   ColumnCP markColumn = nullptr;
   ColumnCP returnedColumn = nullptr;
   bool enforceSingleRow = false;

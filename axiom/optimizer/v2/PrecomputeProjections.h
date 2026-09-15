@@ -28,8 +28,8 @@ class PrecomputeProjections {
   /// Returns a `Project` computing 'exprs' as 'outColumns' over 'input'. When
   /// 'input' is itself a deterministic `Project`, its expressions are folded
   /// into 'exprs' and it is dropped, rather than stacking a second `Project`.
-  /// A non-deterministic input is left alone, since a fold could evaluate one
-  /// of its outputs more than once.
+  /// A non-deterministic input folds only where 'exprs' read each of its
+  /// outputs at most once, since a fold copies an expression per reference.
   ///
   /// TODO: still inline the deterministic outputs when only some are
   /// non-deterministic -- isolate the non-deterministic ones in a separate

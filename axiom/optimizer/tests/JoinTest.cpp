@@ -927,12 +927,13 @@ TEST_P(JoinTest, crossThanOrderBy) {
   auto query = "SELECT length(n_name) FROM nation, region ORDER BY 1";
   SCOPED_TRACE(query);
 
-  // V2 is better: it eliminates an identity Project above OrderBy.
+  // The Project above the sort renames the computed key to the query's
+  // output name.
   auto matcher = matchScan("nation")
                      .nestedLoopJoin(matchScan("region"))
                      .project({"length(n_name) as l"})
                      .orderBy({"l"})
-                     .projectIf(!useV2_, {"l"})
+                     .project({"l"})
                      .build();
 
   auto logicalPlan = parseSelect(query, kTestConnectorId);
@@ -987,11 +988,10 @@ TEST_P(JoinTest, joinOnClause) {
     auto query = "SELECT * FROM (SELECT t0, 1 FROM t) JOIN u ON t0.a = u0.a";
     SCOPED_TRACE(query);
 
-    // V2 is better: it eliminates an identity Project above the join.
     auto matcher = matchScan("t")
                        .project()
                        .hashJoin(matchScan("u").project())
-                       .projectIf(!useV2_, {"t0", "1", "u0"})
+                       .project({"t0", "1", "u0"})
                        .build();
 
     auto plan = toSingleNodePlan(query);

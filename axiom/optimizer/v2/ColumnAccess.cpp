@@ -297,6 +297,12 @@ bool ColumnAccess::addPathStep(
 }
 
 void ColumnAccess::addCallInputs(const Call* call) {
+  // The arguments are re-rooted here as whole-result reads, so what this adds
+  // depends only on 'call'. A shared subexpression is reached once per path
+  // through the expression, which is exponential in its depth without this.
+  if (!callInputsAdded_.insert(call).second) {
+    return;
+  }
   ExprVector reads(call->args().begin(), call->args().end());
   if (const auto* aggregate = dynamic_cast<const optimizer::Aggregate*>(call)) {
     if (aggregate->condition() != nullptr) {

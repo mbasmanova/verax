@@ -141,6 +141,9 @@ class ColumnAccess {
   // Paths read from each column, before reduction. A column absent here is
   // read whole.
   folly::F14FastMap<ColumnCP, PathSet> byColumn_;
+
+  // Calls whose inputs have been added; see `addCallInputs`.
+  folly::F14FastSet<const Call*> callInputsAdded_;
 };
 
 } // namespace facebook::axiom::optimizer::v2

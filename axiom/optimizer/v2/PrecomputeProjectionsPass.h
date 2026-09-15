@@ -28,13 +28,8 @@ class PrecomputeProjectionsPass {
   /// below are computed by a `Project` inserted between the consumer and its
   /// input, with the consumer rebuilt to reference the projected column.
   ///
-  /// Most positions are moved because Velox demands a `FieldAccessTypedExpr`
+  /// Both positions are moved because Velox demands a `FieldAccessTypedExpr`
   /// (or, where allowed, a constant) there:
-  ///   - Aggregate: grouping keys, aggregate args, FILTER mask, ORDER BY keys
-  ///   - Window: partition keys, order keys, function args, frame bounds
-  ///   - Sort, TopN: order keys
-  ///   - RowNumber: partition keys
-  ///   - TopNRowNumber: partition keys, order keys
   ///   - Unnest: unnest expressions
   ///   - Join: join keys
   ///

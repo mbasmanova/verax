@@ -197,6 +197,21 @@ SELECT a FROM t WHERE b > 50
 UNION ALL
 SELECT a FROM t WHERE b > 100
 ----
+-- INTERSECT where each leg filters on a column absent from the output.
+SELECT a FROM t WHERE b > 50
+INTERSECT
+SELECT a FROM t WHERE b < 100
+----
+-- INTERSECT ALL where a leg filters on an aggregate absent from the output.
+SELECT k FROM (SELECT a AS k, count(*) AS n FROM t GROUP BY 1) WHERE n > 2
+INTERSECT ALL
+SELECT a FROM t WHERE b < 40
+----
+-- INTERSECT where both legs project the same constant.
+SELECT 1 AS num FROM t
+INTERSECT
+SELECT 1 FROM t
+----
 -- UNION ALL reconciles nested row field names that differ in capitalization.
 -- duckdb: VALUES (ROW(1)), (ROW(2))
 SELECT ROW(1 AS x)

@@ -682,10 +682,7 @@ TEST_P(SubqueryTest, correlatedTopNPerOuter) {
         plan,
         matchScan("t")
             .hashJoinLeft(
-                matchScan("u")
-                    .project()
-                    .topNRowNumber({"y"}, {"z"}, 1)
-                    .project(),
+                matchScan("u").topNRowNumber({"y"}, {"z"}, 1).project(),
                 {.keys = {{"b = y"}}})
             .build());
   }

@@ -233,13 +233,13 @@ TEST_P(WindowTest, expressionInputs) {
       ") as s "
       "FROM nation");
 
-  // Precompute project has 6 outputs: 3 pass-through + 3 computed. The
-  // expression n_regionkey + 1 appears once (shared by partition key and frame
-  // end). Use aliases to capture auto-generated names for symbol propagation.
-  // The two optimizers materialize the window's inputs in different order.
+  // The expression n_regionkey + 1 appears once in the precompute project,
+  // shared by the partition key and the frame end. Use aliases to capture
+  // auto-generated names for symbol propagation. The two optimizers
+  // materialize the window's inputs in a different order, and v1 also carries
+  // `n_nationkey`, which only `sumArg` reads.
   const std::vector<std::string> precomputed = useV2_
       ? std::vector<std::string>{
-            "n_nationkey",
             "n_name",
             "n_regionkey",
             "n_regionkey + 1 as partKey",
@@ -343,7 +343,7 @@ TEST_P(WindowTest, windowOnWindowInFrameBounds) {
   auto matcher =
       matchScan("nation")
           .window({"row_number() OVER (ORDER BY n_name) as rn"})
-          .project({"n_name", "n_nationkey", "rn"})
+          .projectIf(!useV2_, {"n_name", "n_nationkey", "rn"})
           .window({"sum(n_nationkey) OVER (ORDER BY n_name "
                    "ROWS BETWEEN rn PRECEDING AND CURRENT ROW) as s"})
           .project({"n_name", "s"})
@@ -432,7 +432,8 @@ TEST_P(WindowTest, nonRedundantOrderByWithPartitionKeys) {
       "sum(n_regionkey) OVER (PARTITION BY n_regionkey ORDER BY n_name) as s "
       "FROM nation ORDER BY n_name LIMIT 10";
 
-  // v2 prunes columns before the TopN, v1 after.
+  // v2 prunes the window's columns before the TopN; both rename the output
+  // above it.
   auto plan = toSingleNodePlan(sql);
   auto window = [] {
     return matchScan("nation").window(
@@ -481,7 +482,7 @@ TEST_P(WindowTest, nonRedundantOrderByWithDifferentKeys) {
     return matchScan("nation").window(
         {"sum(n_regionkey) OVER (ORDER BY n_name)"});
   };
-  auto matcher = useV2_ ? window().project().topN(10).build()
+  auto matcher = useV2_ ? window().project().topN(10).project().build()
                         : window().topN(10).project().build();
   AXIOM_ASSERT_PLAN(plan, matcher);
 
@@ -497,6 +498,7 @@ TEST_P(WindowTest, nonRedundantOrderByWithDifferentKeys) {
                                          .topN(10)
                                          .localMerge()
                                          .finalLimit(0, 10)
+                                         .project()
                                          .build()
                                    : distributedWindow()
                                          .topN(10)
@@ -600,7 +602,7 @@ TEST_P(WindowTest, windowOutputAsGroupByKey) {
   auto matcher =
       matchScan("nation")
           .window({"max(n_regionkey) OVER (ORDER BY n_nationkey) as max_key"})
-          .project()
+          .projectIf(!useV2_)
           .singleAggregation({"n_regionkey", "max_key"}, {"sum(n_nationkey)"})
           .build();
   AXIOM_ASSERT_PLAN(plan, matcher);
