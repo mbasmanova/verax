@@ -128,6 +128,88 @@ TEST_P(ConnectorPushdownTest, nestedAndFlattened) {
       {"a = 1", "b = 2", "c = 3", "s = 'x'"});
 }
 
+// Derived filters include only columns present in every disjunct. The original
+// OR remains to preserve correlations between columns.
+TEST_P(ConnectorPushdownTest, filtersImpliedByOr) {
+  if (!useV2_) {
+    return;
+  }
+
+  const std::string lowRange = "a > 1 and a < 5 and a <> 2 and a <> 3";
+  const std::string highRange = "a > 20 and a < 30 and a <> 21 and a <> 22";
+  const std::string firstMixedShape =
+      "(" + lowRange + ") or (" + highRange + " and b = 20)";
+  const std::string secondMixedShape =
+      "(" + lowRange + " and c = 10) or (" + highRange + ")";
+  const std::vector<std::pair<std::string, std::vector<std::string>>> cases{
+      {
+          "(a = 1 and b = 10) or (a = 2 and b = 20)",
+          {
+              "(a = 1 and b = 10) or (a = 2 and b = 20)",
+              "a = 1 or a = 2",
+              "b = 10 or b = 20",
+          },
+      },
+      {
+          "(a > 1 and a < 5 and b = 10) or "
+          "(a > 20 and a < 30 and b = 20)",
+          {
+              "(a > 1 and a < 5 and b = 10) or "
+              "(a > 20 and a < 30 and b = 20)",
+              "(a > 1 and a < 5) or (a > 20 and a < 30)",
+              "b = 10 or b = 20",
+          },
+      },
+      {
+          "(a = 1 and b = 10) or a = 2",
+          {
+              "(a = 1 and b = 10) or a = 2",
+              "a = 1 or a = 2",
+          },
+      },
+      {
+          "a = 1 or a = 2",
+          {
+              "a = 1 or a = 2",
+          },
+      },
+      {
+          "a = 1 or a = 2 or a = 3",
+          {
+              "a = 1 or a = 2 or a = 3",
+          },
+      },
+      {
+          "(a = 1 or a = 2 or a = 3 or a = 4) and "
+          "((a = 1 and b = 10) or (a = 2 and b = 20) or "
+          "(a = 3 and b = 30) or (a = 4 and b = 40))",
+          {
+              "a = 1 or a = 2 or a = 3 or a = 4",
+              "(a = 1 and b = 10) or (a = 2 and b = 20) or "
+              "(a = 3 and b = 30) or (a = 4 and b = 40)",
+              "\"or\"(\"or\"(b = 10, b = 20), "
+              "\"or\"(b = 30, b = 40))",
+          },
+      },
+      {
+          "(" + firstMixedShape + ") and (" + secondMixedShape + ")",
+          {
+              firstMixedShape,
+              secondMixedShape,
+              "\"or\"("
+              "\"and\"(\"and\"(a > 1, a < 5), "
+              "\"and\"(a <> 2, a <> 3)), "
+              "\"and\"(\"and\"(a > 20, a < 30), "
+              "\"and\"(a <> 21, a <> 22)))",
+          },
+      },
+  };
+  for (const auto& [filter, expected] : cases) {
+    SCOPED_TRACE(filter);
+    matchAll(pushedFilters(filter), expected);
+  }
+}
+
 AXIOM_INSTANTIATE_V1_V2(ConnectorPushdownTest);
 
 } // namespace

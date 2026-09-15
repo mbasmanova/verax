@@ -33,6 +33,7 @@
 #include "axiom/optimizer/v2/AppendAll.h"
 #include "axiom/optimizer/v2/ExprFactory.h"
 #include "axiom/optimizer/v2/ExprSimplifier.h"
+#include "axiom/optimizer/v2/ImpliedFilters.h"
 #include "axiom/optimizer/v2/JoinCondition.h"
 #include "axiom/optimizer/v2/NodeRewriter.h"
 
@@ -306,65 +307,6 @@ std::pair<ColumnVector, ColumnVector> collectEquiColumnPairs(
     addEqualityPair(conjunct);
   }
   return {std::move(leftKeys), std::move(rightKeys)};
-}
-
-// Returns per-side necessary-condition filters derived from `orExpr`:
-// for each side, an OR of the per-disjunct AND-chunks of conjuncts
-// referencing only that side's columns. Returns nullptr for a side
-// when any disjunct contributes no conjunct on that side (the per-
-// side OR would be trivially true), and returns nullptr for both
-// sides when `orExpr` is not an OR call or contains non-deterministic
-// expressions.
-std::pair<ExprCP, ExprCP> deriveSideFiltersFromOr(
-    ExprCP orExpr,
-    const PlanObjectSet& leftColumns,
-    const PlanObjectSet& rightColumns,
-    ExprFactory& factory) {
-  if (!orExpr->is(PlanType::kCallExpr) ||
-      orExpr->as<Call>()->name() != SpecialFormCallNames::kOr) {
-    return {nullptr, nullptr};
-  }
-  if (orExpr->containsNonDeterministic()) {
-    return {nullptr, nullptr};
-  }
-  ExprVector disjuncts = ExprFactory::flattenOr(orExpr);
-  ExprVector leftSideDisjuncts;
-  ExprVector rightSideDisjuncts;
-  bool leftValid = true;
-  bool rightValid = true;
-  for (ExprCP disjunct : disjuncts) {
-    ExprVector conjuncts = ExprFactory::flattenAnd(disjunct);
-    ExprVector leftOnly;
-    ExprVector rightOnly;
-    for (ExprCP conjunct : conjuncts) {
-      const auto& columns = conjunct->columns();
-      if (columns.empty()) {
-        continue;
-      }
-      if (columns.isSubset(leftColumns)) {
-        leftOnly.push_back(conjunct);
-      }
-      if (columns.isSubset(rightColumns)) {
-        rightOnly.push_back(conjunct);
-      }
-    }
-    if (leftOnly.empty()) {
-      leftValid = false;
-    } else if (leftValid) {
-      leftSideDisjuncts.push_back(factory.andAll(leftOnly));
-    }
-    if (rightOnly.empty()) {
-      rightValid = false;
-    } else if (rightValid) {
-      rightSideDisjuncts.push_back(factory.andAll(rightOnly));
-    }
-    if (!leftValid && !rightValid) {
-      return {nullptr, nullptr};
-    }
-  }
-  return {
-      leftValid ? factory.orAll(leftSideDisjuncts) : nullptr,
-      rightValid ? factory.orAll(rightSideDisjuncts) : nullptr};
 }
 
 // Splits `expressions` by whether each one's column set overlaps
@@ -1116,22 +1058,16 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     const bool pushRightSide = newKind == velox::core::JoinType::kInner ||
         newKind == velox::core::JoinType::kLeft;
     if (pushLeftSide || pushRightSide) {
+      ExprVector filters = keptFilter;
+      appendAll(filters, inFilter);
       ExprFactory factory(builder());
-      auto deriveAndPush = [&](ExprCP conjunct) {
-        auto [leftSide, rightSide] = deriveSideFiltersFromOr(
-            conjunct, leftColumns, rightColumns, factory);
-        if (pushLeftSide && leftSide != nullptr) {
-          leftPending.push_back(leftSide);
-        }
-        if (pushRightSide && rightSide != nullptr) {
-          rightPending.push_back(rightSide);
-        }
-      };
-      for (ExprCP conjunct : keptFilter) {
-        deriveAndPush(conjunct);
+      auto [leftFilters, rightFilters] = ImpliedFilters::deriveForJoinInputs(
+          filters, leftColumns, rightColumns, factory);
+      if (pushLeftSide) {
+        appendAll(leftPending, leftFilters);
       }
-      for (ExprCP conjunct : inFilter) {
-        deriveAndPush(conjunct);
+      if (pushRightSide) {
+        appendAll(rightPending, rightFilters);
       }
     }
 
@@ -1265,6 +1201,13 @@ class Pushdown : public NodeRewriter<PushdownContext> {
   NodeCP rewriteScan(const Scan* node, PushdownContext& context) override {
     ExprVector filters = std::move(context.pending);
     context.pending.clear();
+    PlanObjectSet impliedFilterSet;
+    if (connectorPushdown_ == PushdownAndPrunePass::ConnectorPushdown::kOffer) {
+      ExprVector impliedFilters =
+          ImpliedFilters::deriveForColumns(filters, exprs_);
+      impliedFilterSet.unionObjects(impliedFilters);
+      appendAll(filters, impliedFilters);
+    }
 
     ColumnVector survivingOutputs;
     survivingOutputs.reserve(node->outputColumns().size());
@@ -1277,6 +1220,11 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     ExprVector rejected;
     const ScanHandle* handle =
         negotiate(*node->baseTable(), survivingOutputs, filters, rejected);
+    // Implied filters are optional pushdown opportunities because the
+    // original filters that imply them remain in the plan.
+    std::erase_if(rejected, [&](ExprCP filter) {
+      return impliedFilterSet.contains(filter);
+    });
     if (rejected.empty()) {
       return builder().make<Scan>(
           {node->baseTable(), std::move(survivingOutputs), handle});

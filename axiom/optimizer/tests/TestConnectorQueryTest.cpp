@@ -173,6 +173,32 @@ TEST_P(TestConnectorQueryTest, wideOrChainExecutes) {
   exec::test::assertEqualResults(results.results, {expected});
 }
 
+// Wide correlated ORs produce per-column filters without introducing deeply
+// nested expressions.
+TEST_P(TestConnectorQueryTest, wideCorrelatedOrChainExecutes) {
+  auto data = makeRowVector(
+      {"a", "b"},
+      {
+          makeFlatVector<int64_t>({-1, 0, 1, 2}),
+          makeFlatVector<int64_t>({-1, 0, 1, 2}),
+      });
+  testConnector_->addTable("t", data->rowType())->addData(data);
+
+  constexpr uint32_t kWidth = 5'000;
+  std::string sql = "SELECT a, b FROM t WHERE (a = 0 AND b = 0)";
+  for (uint32_t i = 1; i < kWidth; ++i) {
+    sql += fmt::format(" OR (a = {0} AND b = {0})", i);
+  }
+
+  auto expected = makeRowVector({
+      makeFlatVector<int64_t>({0, 1, 2}),
+      makeFlatVector<int64_t>({0, 1, 2}),
+  });
+  auto logicalPlan = parseSelect(sql, kTestConnectorId);
+  auto results = runVelox(logicalPlan, options_);
+  exec::test::assertEqualResults(results.results, {expected});
+}
+
 AXIOM_INSTANTIATE_V1_V2(TestConnectorQueryTest);
 
 } // namespace
