@@ -387,45 +387,6 @@ bool leftEmittedOnlyOnMatch(velox::core::JoinType joinType) {
 
 } // namespace
 
-std::pair<NodeCP, ExprVector> Builder::materializeKeys(
-    NodeCP input,
-    const ExprVector& keys,
-    const ColumnVector& aliases) {
-  if (!aliases.empty()) {
-    VELOX_CHECK_EQ(aliases.size(), keys.size());
-  }
-  if (std::all_of(keys.begin(), keys.end(), [](ExprCP key) {
-        return key->is(PlanType::kColumnExpr);
-      })) {
-    return {input, keys};
-  }
-
-  ExprVector exprs;
-  ColumnVector columns;
-  for (ColumnCP column : input->outputColumns()) {
-    exprs.push_back(column);
-    columns.push_back(column);
-  }
-  ExprVector newKeys;
-  newKeys.reserve(keys.size());
-  for (size_t i = 0; i < keys.size(); ++i) {
-    ExprCP key = keys[i];
-    if (key->is(PlanType::kColumnExpr)) {
-      newKeys.push_back(key);
-      continue;
-    }
-    ColumnCP alias = aliases.empty() ? nullptr : aliases[i];
-    ColumnCP column =
-        alias != nullptr ? alias : Column::create("__p", key->value());
-    exprs.push_back(key);
-    columns.push_back(column);
-    newKeys.push_back(column);
-  }
-  return {
-      make<Project>({input, std::move(exprs), std::move(columns)}),
-      std::move(newKeys)};
-}
-
 void Builder::normalizeKey(Filter::Key& key) {
   dropRepeatedPredicates(key);
 }

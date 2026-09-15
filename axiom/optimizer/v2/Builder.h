@@ -153,24 +153,6 @@ class Builder {
     return functionNames_;
   }
 
-  /// Computes any key in 'keys' that is not already a column, returning
-  /// 'input' wrapped in a `Project` that adds those columns alongside its own,
-  /// and 'keys' with each such key replaced by its column. An `Exchange`
-  /// requires column keys; materializing before the shuffle is placed lets the
-  /// consumer above read the same column instead of computing the value a
-  /// second time. Returns 'input' and 'keys' unchanged when every key is
-  /// already a column.
-  ///
-  /// 'aliases' names the materialized columns positionally; a null entry, or an
-  /// empty vector, mints a fresh name. A caller whose node already publishes
-  /// the key under a column of its own — an `Aggregate` grouping key, which its
-  /// `outputColumns` names — must pass that column, since consumers reference
-  /// the key by it.
-  std::pair<NodeCP, ExprVector> materializeKeys(
-      NodeCP input,
-      const ExprVector& keys,
-      const ColumnVector& aliases = {});
-
   /// Takes ownership of 'handle' and returns a stable pointer to it, for a
   /// `Scan` to point at. Handles are not interned: each one is a separate
   /// negotiation with the connector.

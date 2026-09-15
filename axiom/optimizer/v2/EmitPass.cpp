@@ -804,6 +804,10 @@ velox::core::AggregationNode::Aggregate toVeloxAggregate(
   std::vector<velox::core::TypedExprPtr> inputs;
   inputs.reserve(aggregateExpr.args().size());
   for (ExprCP arg : aggregateExpr.args()) {
+    VELOX_CHECK(
+        arg->is(PlanType::kColumnExpr) || arg->is(PlanType::kLiteralExpr) ||
+            arg->is(PlanType::kLambdaExpr),
+        "Aggregate argument must be a column, literal or lambda");
     inputs.push_back(exprEmitter.toTypedExpr(arg));
   }
 

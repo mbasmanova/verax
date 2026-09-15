@@ -87,7 +87,7 @@ AXIOM_DECLARE_ENUM_NAME(PartitionKind);
 ///     columns the exchange's input produces: whoever places the shuffle
 ///     materializes an expression key first, so the value is computed once
 ///     below the shuffle and read as a column above it (see
-///     `Builder::materializeKeys`).
+///     `PrecomputeProjections::materializeKeys`).
 struct Partitioning {
   PartitionKind kind{PartitionKind::kUnspecified};
 

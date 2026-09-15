@@ -49,6 +49,24 @@ NodeCP PrecomputeProjections::makeProject(
       {input, std::move(exprs), std::move(outColumns)});
 }
 
+std::pair<NodeCP, ExprVector> PrecomputeProjections::materializeKeys(
+    NodeCP input,
+    const ExprVector& keys,
+    Builder& builder,
+    const ColumnVector& aliases) {
+  if (!aliases.empty()) {
+    VELOX_CHECK_EQ(aliases.size(), keys.size());
+  }
+  PrecomputeProjections precompute{input, builder};
+  ExprVector columnKeys;
+  columnKeys.reserve(keys.size());
+  for (size_t i = 0; i < keys.size(); ++i) {
+    columnKeys.push_back(
+        precompute.toColumn(keys[i], aliases.empty() ? nullptr : aliases[i]));
+  }
+  return {std::move(precompute).node(), std::move(columnKeys)};
+}
+
 PrecomputeProjections::PrecomputeProjections(
     NodeCP input,
     Builder& builder,
