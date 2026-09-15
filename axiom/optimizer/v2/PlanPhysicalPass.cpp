@@ -33,6 +33,7 @@
 #include "axiom/optimizer/v2/JoinCluster.h"
 #include "axiom/optimizer/v2/JoinTreeEmitter.h"
 #include "axiom/optimizer/v2/NodeRewriter.h"
+#include "axiom/optimizer/v2/PhysicalJoin.h"
 #include "axiom/optimizer/v2/PrecomputeProjections.h"
 
 namespace facebook::axiom::optimizer::v2 {
@@ -690,10 +691,11 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
         // to one bucket, so it must shuffle-replicate.
         if (nullAware ||
             !coBucketJoinSides(newLeft, newRight, leftKeys, rightKeys)) {
-          std::tie(newLeft, leftKeys) =
-              builder().materializeKeys(newLeft, leftKeys);
+          std::tie(newLeft, leftKeys) = PrecomputeProjections::materializeKeys(
+              newLeft, leftKeys, builder());
           std::tie(newRight, rightKeys) =
-              builder().materializeKeys(newRight, rightKeys);
+              PrecomputeProjections::materializeKeys(
+                  newRight, rightKeys, builder());
           newLeft = partition(newLeft, leftKeys, nullAware && !rightIsBuild);
           newRight = partition(newRight, rightKeys, nullAware && rightIsBuild);
         }
@@ -704,10 +706,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
         newRight = ensureGathered(newRight);
       }
     }
-    if (newLeft == node->left() && newRight == node->right()) {
-      return node;
-    }
-    return builder().make<Join>(
+    return PhysicalJoin::makeJoin(
         {.left = newLeft,
          .right = newRight,
          .joinType = node->joinType(),
@@ -716,7 +715,8 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
          .filter = node->filter(),
          .nullAware = node->nullAware(),
          .nullAsValue = node->nullAsValue(),
-         .outputColumns = node->outputColumns()});
+         .outputColumns = node->outputColumns()},
+        builder());
   }
 
   NodeCP rewriteJoin(const Join* node, NoContext& context) override {
@@ -993,7 +993,8 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
       for (const size_t position : at) {
         shuffleKeys.push_back(keys[position]);
       }
-      auto [keyed, columnKeys] = builder().materializeKeys(side, shuffleKeys);
+      auto [keyed, columnKeys] =
+          PrecomputeProjections::materializeKeys(side, shuffleKeys, builder());
       side = partitionTo(keyed, columnKeys, target);
     };
 
@@ -1054,7 +1055,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
   // needs column keys, so an expression key is computed into one here, and the
   // consumer reads that column rather than computing the value again.
   // 'keyAliases', when set, names any key this materializes; see
-  // Builder::materializeKeys.
+  // PrecomputeProjections::materializeKeys.
   std::pair<NodeCP, ExprVector> ensureCoLocated(
       NodeCP input,
       const ExprVector& keys,
@@ -1077,8 +1078,8 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
       return {grouped, keys};
     }
 
-    auto [keyed, columnKeys] =
-        builder().materializeKeys(input, keys, keyAliases);
+    auto [keyed, columnKeys] = PrecomputeProjections::materializeKeys(
+        input, keys, builder(), keyAliases);
     return {partition(keyed, columnKeys), columnKeys};
   }
 
@@ -1419,6 +1420,19 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
     NodeCP partialSort =
         builder().make<Sort>({input, node->orderKeys(), node->orderTypes()});
     return gatherMerge(partialSort, node->orderKeys(), node->orderTypes());
+  }
+
+  // An Unnest outside any join cluster.
+  NodeCP rewriteUnnest(const Unnest* node, NoContext& context) override {
+    return PhysicalJoin::makeUnnest(
+        {rewrite(node->input(), context),
+         node->unnestExpressions(),
+         node->replicatedColumns(),
+         node->unnestColumns(),
+         node->ordinalityColumn(),
+         node->markerColumn(),
+         node->outputColumns()},
+        builder());
   }
 
   // Distributes an EnforceSingleRow (scalar-subquery single-row assertion): it

@@ -40,6 +40,25 @@ class PrecomputeProjections {
       ColumnVector outColumns,
       Builder& builder);
 
+  /// Computes any key in 'keys' that is not already a column, returning
+  /// 'input' wrapped in a `Project` that adds those columns alongside its own,
+  /// and 'keys' with each such key replaced by its column. An `Exchange`
+  /// requires column keys; materializing before the shuffle is placed lets the
+  /// consumer above read the same column instead of computing the value a
+  /// second time. Returns 'input' and 'keys' unchanged when every key is
+  /// already a column.
+  ///
+  /// 'aliases' names the materialized columns positionally; a null entry, or an
+  /// empty vector, mints a fresh name. A caller whose node already publishes
+  /// the key under a column of its own -- an `Aggregate` grouping key, which
+  /// its `outputColumns` names -- must pass that column, since consumers
+  /// reference the key by it.
+  static std::pair<NodeCP, ExprVector> materializeKeys(
+      NodeCP input,
+      const ExprVector& keys,
+      Builder& builder,
+      const ColumnVector& aliases = {});
+
   // When `projectAllInputs` is true (the default, for pass-through consumers
   // like Window/Sort/TopN), the project preserves every input column
   // alongside the lifted ones. When false (for narrowing consumers like

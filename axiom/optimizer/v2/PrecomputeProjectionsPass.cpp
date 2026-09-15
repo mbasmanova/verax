@@ -18,10 +18,6 @@
 
 #include "axiom/optimizer/v2/PrecomputeProjections.h"
 
-#include <folly/container/F14Map.h>
-#include "axiom/optimizer/PlanUtils.h"
-#include "axiom/optimizer/QueryGraph.h"
-#include "axiom/optimizer/v2/ExprFactory.h"
 #include "axiom/optimizer/v2/NodeRewriter.h"
 
 namespace facebook::axiom::optimizer::v2 {
@@ -34,10 +30,6 @@ class Rewriter : public NodeRewriter<> {
   using NodeRewriter::NodeRewriter;
 
  protected:
-  NodeCP rewriteAggregate(const Aggregate* aggregate, NoContext& context)
-      override;
-  NodeCP rewriteUnnest(const Unnest* unnest, NoContext& context) override;
-  NodeCP rewriteJoin(const Join* join, NoContext& context) override;
   NodeCP rewriteUnionAll(const UnionAll* unionAll, NoContext& context) override;
   NodeCP rewriteFixedPoint(const FixedPoint* fixedPoint, NoContext& context)
       override;
@@ -46,164 +38,6 @@ class Rewriter : public NodeRewriter<> {
         "Apply must be removed by decorrelate before PrecomputeProjections");
   }
 };
-
-NodeCP Rewriter::rewriteAggregate(
-    const Aggregate* aggregate,
-    NoContext& context) {
-  // Physical planning materializes every position an Aggregate reads, so there
-  // is nothing to lift here. A kFinal aggregate is exempt: its args name the
-  // partial's raw inputs, which its own input does not produce, and emit reads
-  // only their types and any lambda among them.
-  for (ExprCP key : aggregate->groupingKeys()) {
-    VELOX_CHECK(
-        key->is(PlanType::kColumnExpr),
-        "Aggregate grouping key is not a column: {}",
-        key->toString());
-  }
-  if (aggregate->step() != AggregateStep::kFinal) {
-    for (const auto* call : aggregate->aggregates()) {
-      for (ExprCP arg : call->args()) {
-        VELOX_CHECK(
-            arg->is(PlanType::kColumnExpr) || arg->is(PlanType::kLiteralExpr) ||
-                arg->is(PlanType::kLambdaExpr),
-            "Aggregate argument is not a column: {}",
-            arg->toString());
-      }
-      VELOX_CHECK(
-          call->condition() == nullptr ||
-              call->condition()->is(PlanType::kColumnExpr),
-          "Aggregate FILTER is not a column");
-      for (ExprCP key : call->orderKeys()) {
-        VELOX_CHECK(
-            key->is(PlanType::kColumnExpr),
-            "Aggregate ORDER BY key is not a column: {}",
-            key->toString());
-      }
-    }
-  }
-
-  NodeCP newInput = rewrite(aggregate->input(), context);
-  if (newInput == aggregate->input()) {
-    return aggregate;
-  }
-  return builder().make<Aggregate>(
-      {.input = newInput,
-       .groupingKeys = aggregate->groupingKeys(),
-       .aggregates = aggregate->aggregates(),
-       .outputColumns = aggregate->outputColumns(),
-       .step = aggregate->step(),
-       .groupId = aggregate->groupId(),
-       .globalGroupingSets = aggregate->globalGroupingSets()});
-}
-
-NodeCP Rewriter::rewriteJoin(const Join* join, NoContext& context) {
-  NodeCP newLeft = rewrite(join->left(), context);
-  NodeCP newRight = rewrite(join->right(), context);
-
-  // A join reads only its keys, filter, and the columns it outputs, so each
-  // side's lifting project outputs just those — dropping any input column kept
-  // solely to feed a lifted join key.
-  PrecomputeProjections leftPrecompute{
-      newLeft, builder(), /*projectAllInputs=*/false};
-  PrecomputeProjections rightPrecompute{
-      newRight, builder(), /*projectAllInputs=*/false};
-  ExprVector newLeftKeys;
-  newLeftKeys.reserve(join->leftKeys().size());
-  for (ExprCP key : join->leftKeys()) {
-    newLeftKeys.push_back(leftPrecompute.toColumn(key));
-  }
-  ExprVector newRightKeys;
-  newRightKeys.reserve(join->rightKeys().size());
-  for (ExprCP key : join->rightKeys()) {
-    newRightKeys.push_back(rightPrecompute.toColumn(key));
-  }
-
-  // A key that was lifted is now computed by the input, so the filter must
-  // read that column rather than compute the same expression per pair.
-  ExprFactory::ExprSubstitution lifted;
-  const auto recordLifted = [&](const ExprVector& keys,
-                                const ExprVector& newKeys) {
-    for (size_t i = 0; i < keys.size(); ++i) {
-      if (newKeys[i] != keys[i]) {
-        lifted.emplace(keys[i], newKeys[i]);
-      }
-    }
-  };
-  recordLifted(join->leftKeys(), newLeftKeys);
-  recordLifted(join->rightKeys(), newRightKeys);
-  ExprFactory factory{builder()};
-  ExprVector joinFilter;
-  joinFilter.reserve(join->filter().size());
-  for (ExprCP conjunct : join->filter()) {
-    joinFilter.push_back(factory.replace(conjunct, lifted));
-  }
-
-  // Keep each side's passthrough columns: those it contributes to the join
-  // output. A column produced by the join itself (e.g. a semijoin mark) belongs
-  // to neither input and is skipped.
-  const auto leftColumns = PlanObjectSet::fromObjects(newLeft->outputColumns());
-  const auto rightColumns =
-      PlanObjectSet::fromObjects(newRight->outputColumns());
-  auto keepPassthrough = [&](ColumnCP column) {
-    if (leftColumns.contains(column)) {
-      leftPrecompute.toColumn(column);
-    } else if (rightColumns.contains(column)) {
-      rightPrecompute.toColumn(column);
-    }
-  };
-  for (ColumnCP column : join->outputColumns()) {
-    keepPassthrough(column);
-  }
-
-  // The single-side parts of a keyless join's filter were moved into the
-  // inputs by pushdown, so every conjunct here just needs its columns kept.
-  ExprVector newFilter = joinFilter;
-  for (ExprCP conjunct : newFilter) {
-    conjunct->columns().forEach<Column>(keepPassthrough);
-  }
-
-  return builder().make<Join>(
-      {std::move(leftPrecompute).node(),
-       std::move(rightPrecompute).node(),
-       join->joinType(),
-       std::move(newLeftKeys),
-       std::move(newRightKeys),
-       std::move(newFilter),
-       join->nullAware(),
-       join->nullAsValue(),
-       join->outputColumns()});
-}
-
-NodeCP Rewriter::rewriteUnnest(const Unnest* unnest, NoContext& context) {
-  NodeCP newInput = rewrite(unnest->input(), context);
-  // An Unnest reads only its unnest expressions and the columns it replicates,
-  // so the lifting project outputs just those — dropping any input column kept
-  // solely to feed a lifted unnest expression.
-  PrecomputeProjections precompute{
-      newInput, builder(), /*projectAllInputs=*/false};
-  // Keep the replicated (passthrough) columns first, before the lifted unnest
-  // expressions, so the project preserves input column order.
-  for (ColumnCP column : unnest->replicatedColumns()) {
-    precompute.toColumn(column);
-  }
-  ExprVector newUnnestExprs;
-  newUnnestExprs.reserve(unnest->unnestExpressions().size());
-  for (ExprCP expr : unnest->unnestExpressions()) {
-    newUnnestExprs.push_back(precompute.toColumn(expr));
-  }
-  newInput = std::move(precompute).node();
-  // Structured fields (replicatedColumns / unnestColumns / ordinalityColumn /
-  // markerColumn) are by Column*; precompute preserves Column identity so they
-  // stay valid.
-  return builder().make<Unnest>(
-      {newInput,
-       std::move(newUnnestExprs),
-       unnest->replicatedColumns(),
-       unnest->unnestColumns(),
-       unnest->ordinalityColumn(),
-       unnest->markerColumn(),
-       unnest->outputColumns()});
-}
 
 NodeCP Rewriter::rewriteFixedPoint(
     const FixedPoint* fixedPoint,
