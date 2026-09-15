@@ -52,16 +52,15 @@ NodeLocation getLocation(antlr4::tree::TerminalNode* terminalNode) {
   return getLocation(terminalNode->getSymbol());
 }
 
-// Remove leading and trailing quotes and unescape doubled single quotes
-// ('' -> ').
-std::string unquote(std::string_view value) {
+// Removes leading and trailing quotes and unescapes doubled quotes.
+std::string unquote(std::string_view value, char quote = '\'') {
   const auto unquoted = value.substr(1, value.length() - 2);
   std::string result;
   result.reserve(unquoted.size());
   for (size_t i = 0; i < unquoted.size(); ++i) {
-    if (unquoted[i] == '\'' && i + 1 < unquoted.size() &&
-        unquoted[i + 1] == '\'') {
-      result.push_back('\'');
+    if (unquoted[i] == quote && i + 1 < unquoted.size() &&
+        unquoted[i + 1] == quote) {
+      result.push_back(quote);
       ++i;
     } else {
       result.push_back(unquoted[i]);
@@ -1297,6 +1296,22 @@ TypeSignaturePtr toTypeSignature(
     PrestoSqlParser::TypeParameterContext* typeParam,
     const std::optional<std::string>& rowFieldName = std::nullopt);
 
+std::string baseTypeName(PrestoSqlParser::BaseTypeContext* ctx) {
+  if (ctx->qualifiedName() == nullptr) {
+    return ctx->getText();
+  }
+
+  std::string result;
+  for (auto* identifier : ctx->qualifiedName()->identifier()) {
+    if (!result.empty()) {
+      result.push_back('.');
+    }
+    const auto text = identifier->getText();
+    result.append(text.front() == '"' ? unquote(text, '"') : text);
+  }
+  return result;
+}
+
 TypeSignaturePtr toTypeSignature(
     PrestoSqlParser::TypeContext* ctx,
     const std::optional<std::string>& rowFieldName = std::nullopt) {
@@ -1306,8 +1321,6 @@ TypeSignaturePtr toTypeSignature(
           getLocation(ctx), "DOUBLE", rowFieldName);
     }
 
-    auto baseName = ctx->baseType()->getText();
-
     std::vector<TypeSignaturePtr> parameters;
     for (const auto& param : ctx->typeParameter()) {
       parameters.push_back(toTypeSignature(param));
@@ -1315,7 +1328,7 @@ TypeSignaturePtr toTypeSignature(
 
     return std::make_shared<TypeSignature>(
         getLocation(ctx),
-        std::move(baseName),
+        baseTypeName(ctx->baseType()),
         std::move(parameters),
         rowFieldName);
   }
@@ -3095,24 +3108,12 @@ std::any AstBuilder::visitRoles(PrestoSqlParser::RolesContext* ctx) {
   return visitChildren("visitRoles", ctx);
 }
 
-static void
-replaceAll(std::string& str, const std::string& from, const std::string& to) {
-  auto pos = str.find(from);
-  while (pos != std::string::npos) {
-    str.replace(pos, from.length(), to);
-    pos = str.find(from, pos + to.length());
-  }
-}
-
 std::any AstBuilder::visitQuotedIdentifier(
     PrestoSqlParser::QuotedIdentifierContext* ctx) {
   trace("visitQuotedIdentifier");
 
-  auto token = ctx->getText();
-  token = token.substr(1, token.size() - 2);
-  replaceAll(token, "\"\"", "\"");
-
-  return std::make_shared<Identifier>(getLocation(ctx), token, true);
+  return std::make_shared<Identifier>(
+      getLocation(ctx), unquote(ctx->getText(), '"'), true);
 }
 
 std::any AstBuilder::visitBackQuotedIdentifier(
