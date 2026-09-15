@@ -186,6 +186,21 @@ TEST_F(AggregationParserTest, innerScopeAggregateNotLifted) {
       "SELECT (SELECT count(n_nationkey) FROM nation WHERE n_nationkey > 0) "
       "FROM nation",
       matchScan().project().output());
+
+  // A dereference of an inner ROW column is not a qualified outer reference.
+  connector_->addTable("struct_table", ROW("r", ROW("x", BIGINT())));
+  testSelect(
+      "SELECT (SELECT max(r.x) FROM struct_table) FROM nation",
+      matchScan().project().output());
+
+  // A correlation to a column unavailable after global aggregation is not
+  // allowed, even when the subquery also contains an inner aggregate.
+  VELOX_ASSERT_THROW(
+      parseSql(
+          "SELECT count(*), "
+          "(SELECT max(r.x) + t.n_nationkey FROM struct_table) "
+          "FROM nation t"),
+      "Cannot resolve column: t");
 }
 
 // Outer-scope aggregate in shapes the lift does not handle is

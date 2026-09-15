@@ -70,6 +70,12 @@ class GroupByPlanner {
       const std::vector<lp::ExprApi>& selectExprs,
       const ExpressionPtr& having,
       const OrderByPtr& orderBy);
+
+  // Adds the Aggregate node and plans expressions evaluated above it.
+  void buildAggregationPlan(
+      const std::vector<lp::ExprApi>& selectExprs,
+      const OrderByPtr& orderBy);
+
   void addAggregate(bool useGroupingSets);
   void rewritePostAggregateExprs();
 
