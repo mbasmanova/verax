@@ -838,9 +838,11 @@ std::optional<lp::ExprApi> tryResolveEnumLiteral(
 }
 
 // Resolves a TypeSignature to a Velox built-in type. Returns nullptr for
-// unknown non-parametric types. Nested types (ARRAY, MAP, etc.) use parseType
-// (declared in the header) which throws on failure.
-TypePtr tryResolveBuiltinType(const TypeSignaturePtr& type) {
+// unknown non-parametric types.
+template <typename Resolver>
+TypePtr tryResolveBuiltinType(
+    const TypeSignaturePtr& type,
+    Resolver&& resolveNestedType) {
   auto baseName = type->baseName();
   std::transform(
       baseName.begin(), baseName.end(), baseName.begin(), [](char c) {
@@ -868,7 +870,7 @@ TypePtr tryResolveBuiltinType(const TypeSignaturePtr& type) {
           type->location(),
           baseName,
           "ARRAY expects 1 parameter");
-      parameters.emplace_back(parseType(type->parameters().at(0)));
+      parameters.emplace_back(resolveNestedType(type->parameters().at(0)));
     } else if (baseName == "MAP") {
       AXIOM_PRESTO_SEMANTIC_CHECK_EQ(
           numParams,
@@ -876,8 +878,8 @@ TypePtr tryResolveBuiltinType(const TypeSignaturePtr& type) {
           type->location(),
           baseName,
           "MAP expects 2 parameters");
-      parameters.emplace_back(parseType(type->parameters().at(0)));
-      parameters.emplace_back(parseType(type->parameters().at(1)));
+      parameters.emplace_back(resolveNestedType(type->parameters().at(0)));
+      parameters.emplace_back(resolveNestedType(type->parameters().at(1)));
     } else if (baseName == "ROW") {
       for (const auto& param : type->parameters()) {
         auto fieldName = param->rowFieldName();
@@ -891,7 +893,7 @@ TypePtr tryResolveBuiltinType(const TypeSignaturePtr& type) {
           }
         }
 
-        parameters.emplace_back(parseType(param), fieldName);
+        parameters.emplace_back(resolveNestedType(param), fieldName);
       }
     } else if (baseName == "DECIMAL") {
       AXIOM_PRESTO_SEMANTIC_CHECK(
@@ -909,7 +911,7 @@ TypePtr tryResolveBuiltinType(const TypeSignaturePtr& type) {
           type->location(),
           baseName,
           "Expects 1 parameter");
-      parameters.emplace_back(parseType(type->parameters().at(0)));
+      parameters.emplace_back(resolveNestedType(type->parameters().at(0)));
     } else {
       AXIOM_PRESTO_SEMANTIC_FAIL(
           type->location(), baseName, "Unknown parametric type");
@@ -995,7 +997,9 @@ std::string canonicalizeIdentifier(const Identifier& identifier) {
 }
 
 TypePtr parseType(const TypeSignaturePtr& type) {
-  auto veloxType = tryResolveBuiltinType(type);
+  auto veloxType = tryResolveBuiltinType(
+      type,
+      [](const TypeSignaturePtr& nestedType) { return parseType(nestedType); });
   AXIOM_PRESTO_SEMANTIC_CHECK(
       veloxType != nullptr,
       type->location(),
@@ -1005,7 +1009,10 @@ TypePtr parseType(const TypeSignaturePtr& type) {
 }
 
 TypePtr ExpressionPlanner::resolveType(const TypeSignaturePtr& type) {
-  auto veloxType = tryResolveBuiltinType(type);
+  auto veloxType =
+      tryResolveBuiltinType(type, [this](const TypeSignaturePtr& nestedType) {
+        return resolveType(nestedType);
+      });
   if (veloxType == nullptr) {
     veloxType = tryConnectorBasedTypeResolution(type->baseName(), typeCache_);
   }

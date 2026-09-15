@@ -145,6 +145,21 @@ TEST_F(EnumLiteralTest, castToEnumType) {
           .project({lp::Cast(statusType_, lp::Col("n_regionkey"))})
           .output());
 
+  testSelect(
+      "SELECT CAST(n_regionkey AS tc.myschema.\"Status\") FROM nation",
+      matchScan()
+          .project({lp::Cast(statusType_, lp::Col("n_regionkey"))})
+          .output());
+
+  testSelect(
+      "SELECT CAST(ROW(n_regionkey) AS "
+      "ROW(value tc.myschema.Status)) FROM nation",
+      matchScan()
+          .project({lp::Cast(
+              ROW("value", statusType_),
+              lp::Call("row_constructor", lp::Col("n_regionkey")))})
+          .output());
+
   // Unknown type in CAST.
   AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
       parseSelect(
