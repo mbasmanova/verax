@@ -49,7 +49,6 @@ add_library(
   PlanSet.cpp
   JoinFilterRewriter.cpp
   PrecomputeProjections.cpp
-  PrecomputeProjectionsPass.cpp
   PushdownAndPrunePass.cpp
   ScanHandle.cpp
   TranslatePass.cpp

@@ -26,7 +26,6 @@
 #include "axiom/optimizer/v2/FoldMetadataAggregatePass.h"
 #include "axiom/optimizer/v2/LimitAndOrderPass.h"
 #include "axiom/optimizer/v2/PlanPhysicalPass.h"
-#include "axiom/optimizer/v2/PrecomputeProjectionsPass.h"
 #include "axiom/optimizer/v2/PushdownAndPrunePass.h"
 #include "axiom/optimizer/v2/TranslatePass.h"
 
@@ -113,7 +112,6 @@ const auto& passNames() {
       {Optimizer::Pass::kFoldMetadataAggregate, "FOLD_METADATA_AGGREGATE"},
       {Optimizer::Pass::kEstimateLeafStats, "ESTIMATE_LEAF_STATS"},
       {Optimizer::Pass::kPlanPhysical, "PLAN_PHYSICAL"},
-      {Optimizer::Pass::kPrecomputeProjections, "PRECOMPUTE_PROJECTIONS"},
   };
   return kNames;
 }
@@ -181,11 +179,7 @@ NodeCP Optimizer::planTo(
       session_.options(),
       planOptions_.maxRemotePartitions,
       planOptions_.maxLocalPartitions);
-  if (pass == Pass::kPlanPhysical) {
-    return node;
-  }
-
-  return PrecomputeProjectionsPass::run(node, builder_);
+  return node;
 }
 
 Optimizer::DebugPlan Optimizer::debugPlanTo(

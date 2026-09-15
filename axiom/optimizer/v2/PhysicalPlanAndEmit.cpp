@@ -17,7 +17,6 @@
 #include "axiom/optimizer/v2/PhysicalPlanAndEmit.h"
 
 #include "axiom/optimizer/v2/PlanPhysicalPass.h"
-#include "axiom/optimizer/v2/PrecomputeProjectionsPass.h"
 
 namespace facebook::axiom::optimizer::v2 {
 
@@ -35,9 +34,8 @@ EmitPass::Result physicalPlanAndEmit(
       session.options(),
       options.maxRemotePartitions,
       options.maxLocalPartitions);
-  NodeCP precomputed = PrecomputeProjectionsPass::run(physicalPlanned, builder);
   return EmitPass::run(
-      precomputed, outputColumns, outputNames, session, evaluator, options);
+      physicalPlanned, outputColumns, outputNames, session, evaluator, options);
 }
 
 } // namespace facebook::axiom::optimizer::v2
