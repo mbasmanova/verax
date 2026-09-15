@@ -614,10 +614,21 @@ TEST_P(PlanTest, filterBreakup) {
         matchHiveScan("lineitem", std::move(lineitemFilters))
             .hashJoin(matchHiveScan(
                 "part",
-                {},
+                common::test::SubfieldFiltersBuilder()
+                    .add(
+                        "p_brand",
+                        exec::in({
+                            "Brand#12",
+                            "Brand#23",
+                            "Brand#34",
+                        }))
+                    .add("p_size", exec::between(1, 15))
+                    .build(),
+                "\"and\"("
                 "\"or\"(\"or\"(\"and\"((p_brand = 'Brand#12' AND p_container LIKE 'SM%'), p_size between 1 and 5), "
                 "           \"and\"((p_brand = 'Brand#23' AND p_container LIKE 'MED%'), p_size between 1 and 10)), "
-                "      \"and\"((p_brand = 'Brand#34' AND p_container LIKE 'LG%'), p_size between 1 and 15))"))
+                "      \"and\"((p_brand = 'Brand#34' AND p_container LIKE 'LG%'), p_size between 1 and 15)), "
+                "\"or\"(\"or\"(p_container LIKE 'SM%', p_container LIKE 'MED%'), p_container LIKE 'LG%'))"))
             .project()
             .singleAggregation()
             .build();

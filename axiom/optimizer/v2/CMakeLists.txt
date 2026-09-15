@@ -33,6 +33,7 @@ add_library(
   ExprSimplifier.cpp
   FoldMetadataAggregatePass.cpp
   HypergraphBuilder.cpp
+  ImpliedFilters.cpp
   JoinCondition.cpp
   JoinFanout.cpp
   JoinHypergraph.cpp
