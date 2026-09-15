@@ -757,6 +757,39 @@ bool Limit::KeyEq::operator()(const Limit* node, const Key& key) const {
   return (*this)(key, node);
 }
 
+namespace {
+
+// Checks a position Velox reads as a channel of the input. 'role' names it in
+// the error.
+void checkColumns(const ExprVector& exprs, std::string_view role) {
+  for (ExprCP expr : exprs) {
+    VELOX_CHECK(
+        expr->is(PlanType::kColumnExpr),
+        "{} must be a column: {}",
+        role,
+        expr->toString());
+  }
+}
+
+} // namespace
+
+bool Node::emitsInputColumns() const {
+  switch (nodeType_) {
+    case NodeType::kSort:
+    case NodeType::kTopN:
+    case NodeType::kWindow:
+    case NodeType::kRowNumber:
+    case NodeType::kTopNRowNumber:
+    case NodeType::kEnforceDistinct:
+    case NodeType::kMarkDistinct:
+    case NodeType::kLimit:
+    case NodeType::kExchange:
+      return true;
+    default:
+      return false;
+  }
+}
+
 Sort::Sort(Key key)
     : Node(
           NodeType::kSort,
@@ -768,6 +801,7 @@ Sort::Sort(Key key)
   VELOX_CHECK_NOT_NULL(input_);
   VELOX_CHECK(!orderKeys_.empty(), "Sort must have at least one order key");
   VELOX_CHECK_EQ(orderKeys_.size(), orderTypes_.size());
+  checkColumns(orderKeys_, "Sort order key");
 }
 
 size_t Sort::KeyHash::operator()(const Sort* node) const {
@@ -806,6 +840,7 @@ TopN::TopN(Key key)
   VELOX_CHECK_NOT_NULL(input_);
   VELOX_CHECK(!orderKeys_.empty(), "TopN must have at least one order key");
   VELOX_CHECK_EQ(orderKeys_.size(), orderTypes_.size());
+  checkColumns(orderKeys_, "TopN order key");
   VELOX_CHECK_GE(offset_, 0);
   VELOX_CHECK_GE(count_, 0);
 }
@@ -1057,6 +1092,7 @@ MarkDistinct::MarkDistinct(Key key)
   VELOX_CHECK_EQ(
       this->outputColumns().size(),
       input_->outputColumns().size() + markers_.size());
+  checkColumns(distinctKeys_, "MarkDistinct distinct key");
 }
 
 size_t MarkDistinct::KeyHash::operator()(const MarkDistinct* node) const {
@@ -1659,6 +1695,19 @@ Window::Window(Key key)
       this->outputColumns().size(),
       input_->outputColumns().size() + functions_.size());
   VELOX_CHECK_EQ(orderKeys_.size(), orderTypes_.size());
+  checkColumns(partitionKeys_, "Window partition key");
+  checkColumns(orderKeys_, "Window order key");
+  for (const auto& function : functions_) {
+    // A ROWS bound is an offset in rows, which Velox reads as a constant.
+    if (function.frame.type != logical_plan::WindowExpr::WindowType::kRange) {
+      continue;
+    }
+    for (ExprCP bound : {function.frame.startValue, function.frame.endValue}) {
+      if (bound != nullptr) {
+        checkColumns({bound}, "Window RANGE frame bound");
+      }
+    }
+  }
 }
 
 size_t Window::KeyHash::operator()(const Window* node) const {
@@ -1726,6 +1775,7 @@ RowNumber::RowNumber(Key key)
   VELOX_CHECK_EQ(
       this->outputColumns().size(),
       input_->outputColumns().size() + (rankColumn_ != nullptr ? 1 : 0));
+  checkColumns(partitionKeys_, "RowNumber partition key");
 }
 
 size_t RowNumber::KeyHash::operator()(const RowNumber* node) const {
@@ -1780,6 +1830,8 @@ TopNRowNumber::TopNRowNumber(Key key)
       rankColumn_(key.rankColumn) {
   VELOX_CHECK_NOT_NULL(input_);
   VELOX_CHECK(!orderKeys_.empty(), "TopNRowNumber must have order keys");
+  checkColumns(partitionKeys_, "TopNRowNumber partition key");
+  checkColumns(orderKeys_, "TopNRowNumber order key");
   VELOX_CHECK_EQ(
       this->outputColumns().size(),
       input_->outputColumns().size() + (rankColumn_ != nullptr ? 1 : 0));
@@ -2126,6 +2178,7 @@ EnforceDistinct::EnforceDistinct(Key key)
       !distinctKeys_.empty(),
       "EnforceDistinct must have at least one distinct key");
   VELOX_CHECK_NOT_NULL(errorMessage_);
+  checkColumns(distinctKeys_, "EnforceDistinct distinct key");
 }
 
 size_t EnforceDistinct::KeyHash::operator()(const EnforceDistinct* node) const {
@@ -2179,17 +2232,8 @@ Exchange::Exchange(Key key)
   // A partition or merge-order key must be a column the input produces:
   // whoever places the shuffle materializes an expression key first, so the
   // value is computed once and the consumer above reads that same column.
-  const auto checkColumns = [](const ExprVector& keys, std::string_view role) {
-    for (ExprCP key : keys) {
-      VELOX_CHECK(
-          key->is(PlanType::kColumnExpr),
-          "Exchange {} must be a column: {}",
-          role,
-          key->toString());
-    }
-  };
-  checkColumns(partitioning_.keys, "partitioning key");
-  checkColumns(partitioning_.orderKeys, "merge order key");
+  checkColumns(partitioning_.keys, "Exchange partitioning key");
+  checkColumns(partitioning_.orderKeys, "Exchange merge order key");
 }
 
 size_t Exchange::KeyHash::operator()(const Exchange* node) const {
@@ -2248,6 +2292,16 @@ TableWrite::TableWrite(Key key)
     VELOX_CHECK(
         !columnExprs_.empty(), "TableWrite must write at least one column");
     VELOX_CHECK_EQ(columnExprs_.size(), table_->type()->size());
+    checkColumns(columnExprs_, "TableWrite column");
+    // Velox reads the input positionally, so a reordering or widening of the
+    // input silently writes the wrong columns.
+    VELOX_CHECK(
+        std::equal(
+            columnExprs_.begin(),
+            columnExprs_.end(),
+            input_->outputColumns().begin(),
+            input_->outputColumns().end()),
+        "TableWrite input does not produce exactly the written columns");
   }
 }
 

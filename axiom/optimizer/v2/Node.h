@@ -124,6 +124,12 @@ class Node : public PlanObject {
     return NodeTypeName::toName(nodeType_);
   }
 
+  /// True when the node emits its input's columns alongside anything it adds,
+  /// so a column it reads but its consumers do not -- a sort key, a window
+  /// function's argument -- cannot be dropped by the node itself. Only a
+  /// `Project` above it can drop one.
+  bool emitsInputColumns() const;
+
   /// Columns produced by this node, in output order.
   const ColumnVector& outputColumns() const {
     return outputColumns_;
@@ -1996,6 +2002,7 @@ class TableWrite : public Node {
     /// Write form (INSERT / CTAS / ...).
     connector::WriteKind kind;
     /// Per-target-column values, 1:1 with the table schema (`table->type()`).
+    /// Each is a column of `input`, which produces exactly these, in order.
     /// Empty for a delete, which writes no columns.
     ExprVector columnExprs;
   };

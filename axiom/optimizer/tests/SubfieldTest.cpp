@@ -1001,7 +1001,6 @@ TEST_P(SubfieldTest, recursiveCte) {
                 core::FixedPointMatch("r").outputState(
                     /*append=*/true,
                     matchHiveScan("t", {{"a", {"[1]"}}}).project()))
-            .project()
             .build());
   }
 }
@@ -1270,7 +1269,6 @@ TEST_P(SubfieldTest, leftJoinWithUnmaterializedSubfield) {
                 {"uid", {}},
                 {"float_features", {subfield("10100")}},
             })
-            .project()
             .hashJoinLeft(
                 matchHiveScan(
                     "features",

@@ -27,7 +27,19 @@ NodeCP PrecomputeProjections::makeProject(
     Builder& builder) {
   if (input->is(NodeType::kProject)) {
     const auto* child = input->as<Project>();
-    if (child->isDeterministic()) {
+    bool foldable = child->isDeterministic();
+    if (!foldable) {
+      PlanObjectSet read;
+      foldable = true;
+      for (ExprCP expr : exprs) {
+        if (!expr->is(PlanType::kColumnExpr) || read.contains(expr)) {
+          foldable = false;
+          break;
+        }
+        read.add(expr);
+      }
+    }
+    if (foldable) {
       exprs = ExprFactory(builder).substitute(
           exprs, child->outputColumns(), child->exprs());
       input = child->input();
@@ -79,6 +91,23 @@ ExprCP PrecomputeProjections::toColumn(
 
   if (auto it = seen_.find(expr); it != seen_.end()) {
     return it->second;
+  }
+
+  // The input may already compute this expression -- a name the query
+  // projects, lifted here for an operator that reads the same value. Read that
+  // column instead of computing it a second time.
+  if (alias == nullptr && input_->is(NodeType::kProject)) {
+    const auto* project = input_->as<Project>();
+    for (size_t i = 0; i < project->exprs().size(); ++i) {
+      if (project->exprs()[i] == expr) {
+        ColumnCP column = project->outputColumns()[i];
+        if (!projectAllInputs_ && !seen_.contains(column)) {
+          addToProject(column, column);
+        }
+        seen_.emplace(expr, column);
+        return column;
+      }
+    }
   }
 
   if (alias != nullptr) {

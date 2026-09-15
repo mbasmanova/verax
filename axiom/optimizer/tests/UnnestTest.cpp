@@ -854,13 +854,11 @@ TEST_P(UnnestTest, leftJoinFilterOnSingleRowSubquery) {
 
   auto logicalPlan = parseSelect(query, kTestConnectorId);
   auto plan = toSingleNodePlan(logicalPlan);
-  // v2 materializes y = x + count in a Project before the join; v1 inlines it
-  // into the join filter.
+  // y = x + count is evaluated in the join filter.
   auto matcher = matchScan("t")
                      .unnest({"a"}, {"b"})
                      .nestedLoopJoin(matchScan("u").singleAggregation(
                          {}, {"count(*) as count"}))
-                     .projectIf(useV2_, {"a", "cast(x as bigint) + count as y"})
                      .hashJoin(matchScan("v"), core::JoinType::kLeft)
                      .build();
   AXIOM_ASSERT_PLAN(plan, matcher);
@@ -887,18 +885,16 @@ TEST_P(UnnestTest, leftJoinFilterOnSingleRowSubquerySmallPreservedSide) {
 
   auto logicalPlan = parseSelect(query, kTestConnectorId);
   auto plan = toSingleNodePlan(logicalPlan);
-  // v2 materializes y = x + count in a Project before the join; v1 inlines it
-  // into the join filter.
-  auto matcher =
-      matchScan("v")
-          .hashJoin(
-              matchScan("t")
-                  .unnest({"a"}, {"b"})
-                  .nestedLoopJoin(matchScan("u").singleAggregation(
-                      {}, {"count(*) as count"}))
-                  .projectIf(useV2_, {"a", "cast(x as bigint) + count as y"}),
-              core::JoinType::kRight)
-          .build();
+  // y = x + count is evaluated in the join filter, with the preserved side
+  // as the build.
+  auto matcher = matchScan("v")
+                     .hashJoin(
+                         matchScan("t")
+                             .unnest({"a"}, {"b"})
+                             .nestedLoopJoin(matchScan("u").singleAggregation(
+                                 {}, {"count(*) as count"})),
+                         core::JoinType::kRight)
+                     .build();
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
@@ -1078,14 +1074,14 @@ TEST_P(UnnestTest, unnestPlacedAboveJoin) {
     return;
   }
 
-  auto makeMatcher = [](bool distributed) {
+  auto makeMatcher = [&](bool distributed) {
     return matchValues()
         .aliases({"k", "data"})
         .hashJoinInner(
             matchScan("s").aliases({"a"}).broadcastIf(distributed),
             {.keys = {{"k = a"}}})
         .unnest({"a"}, {"data"})
-        .project()
+        .projectIf(!useV2_)
         .build();
   };
 

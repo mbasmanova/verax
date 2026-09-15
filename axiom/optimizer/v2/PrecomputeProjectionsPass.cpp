@@ -27,24 +27,6 @@
 namespace facebook::axiom::optimizer::v2 {
 namespace {
 
-// Returns a new ColumnVector with the first `oldPrefixLength` elements
-// of `oldOutputColumns` replaced by `newPrefix`.
-ColumnVector replacePrefix(
-    const ColumnVector& oldOutputColumns,
-    size_t oldPrefixLength,
-    const ColumnVector& newPrefix) {
-  VELOX_DCHECK_LE(oldPrefixLength, oldOutputColumns.size());
-  ColumnVector result;
-  result.reserve(newPrefix.size() + oldOutputColumns.size() - oldPrefixLength);
-  for (ColumnCP column : newPrefix) {
-    result.push_back(column);
-  }
-  for (size_t i = oldPrefixLength; i < oldOutputColumns.size(); ++i) {
-    result.push_back(oldOutputColumns[i]);
-  }
-  return result;
-}
-
 // Lifts compound expressions at restricted operator positions into a Project
 // below the consumer.
 class Rewriter : public NodeRewriter<> {
@@ -54,13 +36,6 @@ class Rewriter : public NodeRewriter<> {
  protected:
   NodeCP rewriteAggregate(const Aggregate* aggregate, NoContext& context)
       override;
-  NodeCP rewriteWindow(const Window* window, NoContext& context) override;
-  NodeCP rewriteRowNumber(const RowNumber* rowNumber, NoContext& context)
-      override;
-  NodeCP rewriteTopNRowNumber(const TopNRowNumber* topN, NoContext& context)
-      override;
-  NodeCP rewriteSort(const Sort* sort, NoContext& context) override;
-  NodeCP rewriteTopN(const TopN* topN, NoContext& context) override;
   NodeCP rewriteUnnest(const Unnest* unnest, NoContext& context) override;
   NodeCP rewriteJoin(const Join* join, NoContext& context) override;
   NodeCP rewriteUnionAll(const UnionAll* unionAll, NoContext& context) override;
@@ -119,159 +94,6 @@ NodeCP Rewriter::rewriteAggregate(
        .step = aggregate->step(),
        .groupId = aggregate->groupId(),
        .globalGroupingSets = aggregate->globalGroupingSets()});
-}
-
-NodeCP Rewriter::rewriteWindow(const Window* window, NoContext& context) {
-  NodeCP newInput = rewrite(window->input(), context);
-  PrecomputeProjections precompute{newInput, builder()};
-
-  ExprVector newPartitionKeys;
-  newPartitionKeys.reserve(window->partitionKeys().size());
-  for (ExprCP key : window->partitionKeys()) {
-    newPartitionKeys.push_back(precompute.toColumn(key));
-  }
-  ExprVector newOrderKeys;
-  newOrderKeys.reserve(window->orderKeys().size());
-  for (ExprCP key : window->orderKeys()) {
-    newOrderKeys.push_back(precompute.toColumn(key));
-  }
-
-  // A ROWS bound is an offset in rows, which Velox reads as a constant. A
-  // RANGE bound is the boundary value for each row, which Velox reads from a
-  // column, so it stays a column even when it folds to a literal — as it does
-  // when the ORDER BY key is constant.
-  auto liftBound = [&](ExprCP value, bool allowConstant) -> ExprCP {
-    return value != nullptr
-        ? precompute.toColumn(value, /*alias=*/nullptr, allowConstant)
-        : nullptr;
-  };
-
-  WindowFunctions newFunctions;
-  newFunctions.reserve(window->functions().size());
-  for (const WindowFunction& windowFunction : window->functions()) {
-    const auto* call = windowFunction.call->as<Call>();
-    ExprVector newArgs;
-    newArgs.reserve(call->args().size());
-    for (ExprCP arg : call->args()) {
-      newArgs.push_back(
-          precompute.toColumn(arg, /*alias=*/nullptr, /*allowConstant=*/true));
-    }
-    auto* newCall = builder().makeCall(
-        call->name(), call->value(), std::move(newArgs), call->functions());
-    const Frame& frame = windowFunction.frame;
-    const bool allowConstant =
-        frame.type == logical_plan::WindowExpr::WindowType::kRows;
-    Frame newFrame{
-        frame.type,
-        frame.startType,
-        liftBound(frame.startValue, allowConstant),
-        frame.endType,
-        liftBound(frame.endValue, allowConstant),
-    };
-    newFunctions.push_back({newCall, newFrame, windowFunction.ignoreNulls});
-  }
-
-  // A Window emits its input's columns followed by its function results, so
-  // materializing a frame bound or an order key extends its output too.
-  const size_t oldPrefixLength = window->input()->outputColumns().size();
-  newInput = std::move(precompute).node();
-  ColumnVector newOutputColumns = replacePrefix(
-      window->outputColumns(), oldPrefixLength, newInput->outputColumns());
-  return builder().make<Window>(
-      {newInput,
-       std::move(newFunctions),
-       std::move(newPartitionKeys),
-       std::move(newOrderKeys),
-       window->orderTypes(),
-       std::move(newOutputColumns)});
-}
-
-NodeCP Rewriter::rewriteRowNumber(
-    const RowNumber* rowNumber,
-    NoContext& context) {
-  NodeCP newInput = rewrite(rowNumber->input(), context);
-  PrecomputeProjections precompute{newInput, builder()};
-
-  ExprVector newPartitionKeys;
-  newPartitionKeys.reserve(rowNumber->partitionKeys().size());
-  for (ExprCP key : rowNumber->partitionKeys()) {
-    newPartitionKeys.push_back(precompute.toColumn(key));
-  }
-
-  // A RowNumber emits its input's columns followed by the row number, so
-  // materializing a key extends its output too.
-  const size_t oldPrefixLength = rowNumber->input()->outputColumns().size();
-  newInput = std::move(precompute).node();
-  ColumnVector newOutputColumns = replacePrefix(
-      rowNumber->outputColumns(), oldPrefixLength, newInput->outputColumns());
-  return builder().make<RowNumber>(
-      {newInput,
-       std::move(newPartitionKeys),
-       rowNumber->limit(),
-       rowNumber->rankColumn(),
-       std::move(newOutputColumns)});
-}
-
-NodeCP Rewriter::rewriteTopNRowNumber(
-    const TopNRowNumber* topN,
-    NoContext& context) {
-  NodeCP newInput = rewrite(topN->input(), context);
-  PrecomputeProjections precompute{newInput, builder()};
-
-  ExprVector newPartitionKeys;
-  newPartitionKeys.reserve(topN->partitionKeys().size());
-  for (ExprCP key : topN->partitionKeys()) {
-    newPartitionKeys.push_back(precompute.toColumn(key));
-  }
-  ExprVector newOrderKeys;
-  newOrderKeys.reserve(topN->orderKeys().size());
-  for (ExprCP key : topN->orderKeys()) {
-    newOrderKeys.push_back(precompute.toColumn(key));
-  }
-
-  const size_t oldPrefixLength = topN->input()->outputColumns().size();
-  newInput = std::move(precompute).node();
-  ColumnVector newOutputColumns = replacePrefix(
-      topN->outputColumns(), oldPrefixLength, newInput->outputColumns());
-  return builder().make<TopNRowNumber>(
-      {newInput,
-       topN->rankFunction(),
-       std::move(newPartitionKeys),
-       std::move(newOrderKeys),
-       topN->orderTypes(),
-       topN->limit(),
-       topN->rankColumn(),
-       std::move(newOutputColumns)});
-}
-
-NodeCP Rewriter::rewriteSort(const Sort* sort, NoContext& context) {
-  NodeCP newInput = rewrite(sort->input(), context);
-  PrecomputeProjections precompute{newInput, builder()};
-  ExprVector newOrderKeys;
-  newOrderKeys.reserve(sort->orderKeys().size());
-  for (ExprCP key : sort->orderKeys()) {
-    newOrderKeys.push_back(precompute.toColumn(key));
-  }
-  return builder().make<Sort>(
-      {std::move(precompute).node(),
-       std::move(newOrderKeys),
-       sort->orderTypes()});
-}
-
-NodeCP Rewriter::rewriteTopN(const TopN* topN, NoContext& context) {
-  NodeCP newInput = rewrite(topN->input(), context);
-  PrecomputeProjections precompute{newInput, builder()};
-  ExprVector newOrderKeys;
-  newOrderKeys.reserve(topN->orderKeys().size());
-  for (ExprCP key : topN->orderKeys()) {
-    newOrderKeys.push_back(precompute.toColumn(key));
-  }
-  return builder().make<TopN>(
-      {std::move(precompute).node(),
-       std::move(newOrderKeys),
-       topN->orderTypes(),
-       topN->offset(),
-       topN->count()});
 }
 
 NodeCP Rewriter::rewriteJoin(const Join* join, NoContext& context) {

@@ -151,8 +151,8 @@ TEST_F(TpchPlanTest, q02) {
           .hashJoinInner(supplierInEurope("r_name_sub", "r_regionkey_sub"))
           .aggregation()
           .hashJoinInner(outerTables)
-          .project()
           .topN()
+          .project()
           .build();
   AXIOM_ASSERT_PLAN(planTpch(2), matcher);
 
@@ -173,8 +173,8 @@ TEST_F(TpchPlanTest, q03) {
                                      .project({"c_custkey"})))
           .project()
           .aggregation()
-          .project()
           .topN()
+          .project()
           .build();
   AXIOM_ASSERT_PLAN(planTpch(3), matcher);
 
@@ -328,8 +328,8 @@ TEST_F(TpchPlanTest, q08) {
           .hashJoinInner(matchScan("nation"))
           .project()
           .aggregation()
-          .project()
           .orderBy()
+          .project()
           .build();
   AXIOM_ASSERT_PLAN(planTpch(8), matcher);
 
@@ -366,6 +366,7 @@ TEST_F(TpchPlanTest, q09Alt) {
           .hashJoinInner(
               matchScan("supplier").hashJoinInner(matchScan("nation")))
           .project()
+          .aliases({"n_name", "o_year", "amount"})
           .singleAggregation({"n_name", "o_year"}, {"sum(amount)"})
           .orderBy({"n_name", "o_year DESC"})
           .project()
@@ -414,8 +415,8 @@ TEST_F(TpchPlanTest, q10) {
                "c_address",
                "c_comment"},
               {"sum(rev) as revenue"})
-          .project()
           .topN(20)
+          .project()
           .build();
   AXIOM_ASSERT_PLAN(planTpch(10), matcher);
 
@@ -511,9 +512,8 @@ TEST_F(TpchPlanTest, q13) {
   // The orders filter sits in the join's ON clause, so it restricts orders
   // before the outer join, not after.
   //
-  // TODO: The inner count keeps its natural name `count` through the plan,
-  // leaving a redundant identity Project above the inner aggregation and a
-  // trailing Project that renames count -> c_count at the very end. The rename
+  // TODO: The inner count keeps its natural name `count` through the plan, so
+  // a trailing Project renames count -> c_count at the very end. The rename
   // should fold into the inner aggregation's output. See Gap 2 in
   // TpchV1V2PlanComparison.md.
   auto matcher =
@@ -522,7 +522,6 @@ TEST_F(TpchPlanTest, q13) {
           .project({"o_orderkey", "o_custkey"})
           .hashJoinRight(matchScan("customer"))
           .singleAggregation({"c_custkey"}, {"count(o_orderkey) as cnt"})
-          .project()
           .singleAggregation({"cnt"}, {"count() as custdist"})
           .orderBy({"custdist DESC", "cnt DESC"})
           .project()
@@ -598,7 +597,6 @@ TEST_F(TpchPlanTest, q15) {
                               "l_extendedprice",
                               "l_discount",
                               "l_shipdate"})
-                      .project()
                       .singleAggregation({}, {"max(total_revenue) as maxRev"})))
           .orderBy({"s_suppkey"})
           .build();

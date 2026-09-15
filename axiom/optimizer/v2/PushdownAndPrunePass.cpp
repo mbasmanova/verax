@@ -16,6 +16,8 @@
 
 #include "axiom/optimizer/v2/PushdownAndPrunePass.h"
 
+#include "axiom/optimizer/v2/PrecomputeProjections.h"
+
 #include "axiom/optimizer/ToSubfield.h"
 #include "axiom/optimizer/v2/ColumnAccess.h"
 #include "axiom/optimizer/v2/JoinFilterRewriter.h"
@@ -634,10 +636,33 @@ class Pushdown : public NodeRewriter<PushdownContext> {
   // sees the finished access when it negotiates with its connector.
   NodeCP rewrite(NodeCP node, PushdownContext& context) override {
     access_.add(*node);
-    return NodeRewriter::rewrite(node, context);
+    return narrowed(NodeRewriter::rewrite(node, context), context);
   }
 
  protected:
+  // Adds the `Project` that `Node::emitsInputColumns` describes, here rather
+  // than at the root, so the column stays out of everything in between.
+  NodeCP narrowed(NodeCP node, const PushdownContext& context) {
+    if (!node->emitsInputColumns()) {
+      return node;
+    }
+    ColumnVector keep;
+    for (ColumnCP column : node->outputColumns()) {
+      if (context.required.contains(column)) {
+        keep.push_back(column);
+      }
+    }
+    // Nothing required reads this node, so the rows themselves are what a
+    // consumer wants -- a semijoin's existence check, say. Narrowing to no
+    // columns at all is not a plan Velox can run.
+    if (keep.empty() || keep.size() == node->outputColumns().size()) {
+      return node;
+    }
+    ExprVector exprs(keep.begin(), keep.end());
+    return PrecomputeProjections::makeProject(
+        node, std::move(exprs), keep, builder());
+  }
+
   // Filter conjuncts (flattened across AND trees) join `pending`; the
   // Filter node itself is dropped.
   NodeCP rewriteFilter(const Filter* node, PushdownContext& context) override {
@@ -1529,46 +1554,10 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     });
   }
 
-  // MarkDistinct: conjuncts referencing only input columns push below.
-  // Conjuncts referencing any output marker stay above — the marker
-  // depends on the full input set, so pre-filtering changes which rows
-  // get marked.
-  NodeCP rewriteMarkDistinct(const MarkDistinct* node, PushdownContext& context)
-      override {
-    const PlanObjectSet markers = PlanObjectSet::fromObjects(node->markers());
-    auto [pushable, blocked] = partition(context.pending, markers);
-    // Drop the whole MarkDistinct when no consumer reads any marker.
-    // Partial-drop is unsafe: the constructor pairs markers with masks
-    // and requires the pairing.
-    PlanObjectSet markersKept = context.required;
-    markersKept.unionColumns(blocked);
-    bool anyMarkerNeeded = false;
-    for (ColumnCP marker : node->markers()) {
-      if (markersKept.contains(marker)) {
-        anyMarkerNeeded = true;
-        break;
-      }
-    }
-    PushdownContext childContext =
-        makeChildContext(std::move(pushable), context);
-    childContext.required.unionColumns(blocked);
-    if (!anyMarkerNeeded) {
-      childContext.requiredAbove = childContext.required;
-      NodeCP newInput = rewrite(node->input(), childContext);
-      return maybeWrapFilter(newInput, std::move(blocked));
-    }
-    childContext.required.unionColumns(node->distinctKeys());
-    childContext.required.unionObjects(node->masks());
-    childContext.requiredAbove = childContext.required;
-    NodeCP newInput = rewrite(node->input(), childContext);
-    NodeCP newNode = (newInput == node->input()) ? static_cast<NodeCP>(node)
-                                                 : builder().make<MarkDistinct>(
-                                                       {newInput,
-                                                        node->markers(),
-                                                        node->distinctKeys(),
-                                                        node->masks(),
-                                                        node->outputColumns()});
-    return maybeWrapFilter(newNode, std::move(blocked));
+  NodeCP rewriteMarkDistinct(
+      const MarkDistinct* /*node*/,
+      PushdownContext& /*context*/) override {
+    VELOX_FAIL("MarkDistinct is added by physical planning, after pushdown");
   }
 
   // Unnest: conjuncts referencing only replicated (pre-unnest) columns

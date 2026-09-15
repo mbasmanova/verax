@@ -869,6 +869,20 @@ TEST_P(WriteTest, ctasValuesNoMerge) {
       {.maxRemotePartitions = 4, .maxLocalPartitions = 4});
 }
 
+// One source value written into two target columns.
+TEST_P(WriteTest, ctasRepeatedValue) {
+  SCOPE_EXIT {
+    dropTableIfExists("test");
+  };
+
+  runCtas(
+      "CREATE TABLE test(a, b) AS SELECT n_nationkey, n_nationkey FROM nation",
+      25);
+
+  auto nationKeys = makeFlatVector<int64_t>(25, folly::identity);
+  checkTableData("test", {makeRowVector({"a", "b"}, {nationKeys, nationKeys})});
+}
+
 TEST_P(WriteTest, ctasBucketedSql) {
   SCOPE_EXIT {
     for (const auto& name : {"test", "more", "same", "fewer"}) {

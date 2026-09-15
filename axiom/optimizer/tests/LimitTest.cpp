@@ -257,13 +257,14 @@ TEST_P(LimitTest, limitAfterOrderBy) {
         "SELECT c FROM (SELECT a + b as c FROM t) ORDER BY c LIMIT {}", limit);
     SCOPED_TRACE(sql);
 
-    // v1 adds a rename-only projection over the TopN output.
+    // The Project above the TopN renames the computed sort key to the
+    // query's output name.
     AXIOM_ASSERT_PLAN(
         toSingleNodePlan(sql),
         matchScan("t")
             .project({"a + b as c"})
             .topN(limit)
-            .projectIf(!useV2_, {"c"})
+            .project({"c"})
             .build());
   }
 }

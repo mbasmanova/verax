@@ -182,30 +182,6 @@ std::shared_ptr<velox::exec::HashPartitionFunctionSpec> makeHashPartitionSpec(
       outputType, toChannels(outputType, keys));
 }
 
-// True when 'values' pass 'input' through unchanged — each value is input
-// column i in order — so the table write can read 'input' directly. The write
-// node names its output columns itself, so a rename-only projection is
-// redundant: this lets the write reuse a source projection (e.g. the SELECT of
-// a CTAS, whose columns may be named `expr`/`expr_0`) instead of stacking one.
-bool writeInputIsIdentity(
-    const velox::RowTypePtr& inputType,
-    const std::vector<velox::core::TypedExprPtr>& values) {
-  if (values.size() != inputType->size()) {
-    return false;
-  }
-  for (size_t i = 0; i < values.size(); ++i) {
-    if (!values[i]->isFieldAccessKind()) {
-      return false;
-    }
-    const auto* field =
-        values[i]->asUnchecked<velox::core::FieldAccessTypedExpr>();
-    if (!field->isInputColumn() || field->name() != inputType->nameOf(i)) {
-      return false;
-    }
-  }
-  return true;
-}
-
 // Walks the single-input chain down from 'node' and returns true if any node on
 // it requires single-threaded execution (a Values source, a gather). Returns
 // false at the first multi-input node (a join), which begins a separate
@@ -2054,16 +2030,6 @@ velox::core::PlanNodePtr Emitter::emitTableWrite(const TableWrite& tableWrite) {
     }
   }
 
-  // Velox's TableWriteNode writes its input's columns, so materialize the write
-  // value expressions as a Project producing the target columns in schema
-  // order. Skip the projection when the input already produces exactly those
-  // columns — otherwise it would shadow a source projection and, for a bucketed
-  // write, land after the bucket exchange instead of before it.
-  auto values = exprEmitter_.toTypedExprs(tableWrite.columnExprs());
-  if (!writeInputIsIdentity(input->outputType(), values)) {
-    input = std::make_shared<velox::core::ProjectNode>(
-        nextId(), table.type()->names(), std::move(values), std::move(input));
-  }
   const auto& inputType = input->outputType();
 
   // A write to a bucketed/partitioned layout repartitions its input on the
@@ -2079,9 +2045,8 @@ velox::core::PlanNodePtr Emitter::emitTableWrite(const TableWrite& tableWrite) {
         /*scaleWriter=*/false,
         connectorPartitionSpec(
             *layout->partitionType(),
-            // 'partitionColumns' name the target schema. 'input' corresponds to
-            // the schema positionally but may carry source names when the write
-            // reuses a source projection, so resolve channels via the schema.
+            // 'partitionColumns' name the target schema, while 'input' carries
+            // optimizer column names, so resolve channels via the schema.
             table.type(),
             partitionColumns,
             /*isLocal=*/true),
