@@ -117,6 +117,53 @@ TEST_F(JoinHypergraphTest, connectivity) {
   ASSERT_NO_THROW(graph.checkConsistency());
 }
 
+// Equalities enforced within a relation participate in the transitive closure
+// used to validate a plan's join equalities.
+TEST_F(JoinHypergraphTest, inputEquality) {
+  ColumnCP leftKey = makeColumn("left_key", velox::BIGINT());
+  ColumnCP rightKey = makeColumn("right_key", velox::BIGINT());
+  ColumnCP firstInputKey = makeColumn("first_input_key", velox::BIGINT());
+  ColumnCP secondInputKey = makeColumn("second_input_key", velox::BIGINT());
+  leftKey->equals(rightKey);
+  leftKey->equals(firstInputKey);
+  leftKey->equals(secondInputKey);
+
+  JoinHypergraph graph;
+  const auto addRelation = [&](const ColumnVector& columns) {
+    NodeCP leaf = builder_->makeEmptyValues(columns);
+    return RelationSet::singleton(graph.addRelation(
+        leaf, 100, PlanObjectSet::fromObjects(leaf->outputColumns())));
+  };
+  const RelationSet left = addRelation({leftKey});
+  const RelationSet right = addRelation({rightKey});
+  const RelationSet input = addRelation({firstInputKey, secondInputKey});
+  const auto addEdge = [&](RelationSet first,
+                           RelationSet second,
+                           ExprCP firstKey,
+                           ExprCP secondKey) {
+    graph.addEdge(
+        JoinEdge{
+            first,
+            second,
+            first,
+            second,
+            ExprVector{firstKey},
+            ExprVector{secondKey},
+            ExprVector{},
+            velox::core::JoinType::kInner,
+            /*nullAware=*/false,
+            /*nullAsValue=*/false});
+  };
+  addEdge(left, input, leftKey, firstInputKey);
+  addEdge(right, input, rightKey, secondInputKey);
+
+  VELOX_ASSERT_THROW(
+      graph.checkEdgesEnforced({0}), "Plan does not enforce a join equality");
+
+  addEdge(left, right, leftKey, rightKey);
+  ASSERT_NO_THROW(graph.checkEdgesEnforced({0, 2}));
+}
+
 // A non-inner join remains pinned to its complete normalized operands even
 // when its keys reference only one relation on each side.
 TEST_F(JoinHypergraphTest, nonInnerEligibility) {

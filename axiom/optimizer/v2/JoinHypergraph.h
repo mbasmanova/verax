@@ -94,7 +94,8 @@ class JoinHypergraph {
   /// returns rows the query excludes.
   ///
   /// An edge need not appear in `appliedEdges` itself: equality is transitive,
-  /// so applying `a = b` and `b = c` enforces `a = c`.
+  /// so applying `a = b` and `b = c` enforces `a = c`. Equalities already
+  /// enforced within an atomic relation also participate in this closure.
   ///
   /// The closure is position-insensitive, so an edge applied under the
   /// null-padding side of an outer join is credited even though its equality
