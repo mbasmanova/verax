@@ -366,10 +366,13 @@ TEST_P(ExplainTest, explainLastPass) {
     ASSERT_TRUE(result.message.has_value());
   }
 
-  VELOX_ASSERT_THROW(
-      run("EXPLAIN (TYPE OPTIMIZED WITH (last_pass = 'nosuchpass')) "
+  // The message names every pass and echoes the value as written.
+  VELOX_ASSERT_USER_THROW(
+      run("EXPLAIN (TYPE OPTIMIZED WITH (last_pass = 'NoSuchPass')) "
           "SELECT 1 AS x"),
-      "Invalid enum name: NOSUCHPASS");
+      "Invalid last_pass value: NoSuchPass. Expected one of (case insensitive): "
+      "TRANSLATE, DECORRELATE, LIMIT_AND_ORDER, PUSHDOWN_AND_PRUNE, "
+      "FOLD_METADATA_AGGREGATE, ESTIMATE_LEAF_STATS, PLAN_PHYSICAL");
 
   VELOX_ASSERT_USER_THROW(
       run("EXPLAIN (TYPE OPTIMIZED WITH (nosuchsetting = 'x')) SELECT 1 AS x"),

@@ -16,7 +16,10 @@
 #pragma once
 
 #include <fmt/format.h>
+#include <algorithm>
+#include <string>
 #include <string_view>
+#include <vector>
 
 #include "folly/container/F14Map.h"
 #include "velox/common/base/Exceptions.h"
@@ -35,6 +38,27 @@ struct Enums {
           emplaced, "Cannot invert a map with duplicate values: {}", value);
     }
     return inverted;
+  }
+
+  /// Returns the names in 'mapping' joined with ", ", ordered by enum value.
+  template <typename EnumType, typename StringType>
+  static std::string joinNames(
+      const folly::F14FastMap<EnumType, StringType>& mapping) {
+    std::vector<std::pair<EnumType, StringType>> valuesAndNames(
+        mapping.begin(), mapping.end());
+    std::sort(
+        valuesAndNames.begin(),
+        valuesAndNames.end(),
+        [](const auto& lhs, const auto& rhs) { return lhs.first < rhs.first; });
+
+    std::string names;
+    for (const auto& [value, name] : valuesAndNames) {
+      if (!names.empty()) {
+        names += ", ";
+      }
+      names += name;
+    }
+    return names;
   }
 };
 
@@ -71,7 +95,9 @@ struct Enums {
 /// In the client code, use FooName::toName(Foo::kFirst) to get the name of the
 /// enum and FooName::toFoo("FIRST") or FooName::tryToFoo("FIRST") to get the
 /// enum value. toFoo throws an exception if input is not a valid name, while
-/// tryToFoo returns a std::nullopt.
+/// tryToFoo returns a std::nullopt. FooName::allNames(), spelled allFooNames()
+/// in the _EMBEDDED_ form, returns every name ordered by enum value and
+/// separated by ", ".
 ///
 /// Use _EMBEDDED_ versions of the macros to define enums embedded in other
 /// classes.
@@ -81,12 +107,13 @@ struct Enums {
     static std::string_view toName(EnumType value);                        \
     static EnumType to##EnumType(std::string_view name);                   \
     static std::optional<EnumType> tryTo##EnumType(std::string_view name); \
+    static std::string allNames();                                         \
   };                                                                       \
   std::ostream& operator<<(std::ostream& os, const EnumType& value);
 
-#define AXIOM_DEFINE_ENUM_NAME(EnumType, Names)                       \
+#define AXIOM_DEFINE_ENUM_NAME(EnumType, NameMap)                     \
   std::string_view EnumType##Name::toName(EnumType value) {           \
-    const auto& names = Names();                                      \
+    const auto& names = NameMap();                                    \
     auto it = names.find(value);                                      \
     VELOX_CHECK(                                                      \
         it != names.end(),                                            \
@@ -98,7 +125,7 @@ struct Enums {
   std::optional<EnumType> EnumType##Name::tryTo##EnumType(            \
       std::string_view name) {                                        \
     static const auto kValues =                                       \
-        ::facebook::axiom::detail::Enums::invertMap(Names());         \
+        ::facebook::axiom::detail::Enums::invertMap(NameMap());       \
                                                                       \
     auto it = kValues.find(name);                                     \
     if (it == kValues.end()) {                                        \
@@ -115,16 +142,21 @@ struct Enums {
     const auto maybeType = EnumType##Name::tryTo##EnumType(name);     \
     VELOX_CHECK(maybeType, "Invalid enum name: {}", name);            \
     return *maybeType;                                                \
+  }                                                                   \
+                                                                      \
+  std::string EnumType##Name::allNames() {                            \
+    return ::facebook::axiom::detail::Enums::joinNames(NameMap());    \
   }
 
-#define AXIOM_DECLARE_EMBEDDED_ENUM_NAME(EnumType)     \
-  static std::string_view toName(EnumType value);      \
-  static EnumType to##EnumType(std::string_view name); \
-  static std::optional<EnumType> tryTo##EnumType(std::string_view name);
+#define AXIOM_DECLARE_EMBEDDED_ENUM_NAME(EnumType)                       \
+  static std::string_view toName(EnumType value);                        \
+  static EnumType to##EnumType(std::string_view name);                   \
+  static std::optional<EnumType> tryTo##EnumType(std::string_view name); \
+  static std::string all##EnumType##Names();
 
-#define AXIOM_DEFINE_EMBEDDED_ENUM_NAME(Class, EnumType, Names)       \
+#define AXIOM_DEFINE_EMBEDDED_ENUM_NAME(Class, EnumType, NameMap)     \
   std::string_view Class::toName(Class::EnumType value) {             \
-    const auto& names = Names();                                      \
+    const auto& names = NameMap();                                    \
     auto it = names.find(value);                                      \
     VELOX_CHECK(                                                      \
         it != names.end(),                                            \
@@ -136,7 +168,7 @@ struct Enums {
   std::optional<Class::EnumType> Class::tryTo##EnumType(              \
       std::string_view name) {                                        \
     static const auto kValues =                                       \
-        ::facebook::axiom::detail::Enums::invertMap(Names());         \
+        ::facebook::axiom::detail::Enums::invertMap(NameMap());       \
                                                                       \
     auto it = kValues.find(name);                                     \
     if (it == kValues.end()) {                                        \
@@ -149,6 +181,10 @@ struct Enums {
     const auto maybeType = Class::tryTo##EnumType(name);              \
     VELOX_CHECK(maybeType, "Invalid enum name: {}", name);            \
     return *maybeType;                                                \
+  }                                                                   \
+                                                                      \
+  std::string Class::all##EnumType##Names() {                         \
+    return ::facebook::axiom::detail::Enums::joinNames(NameMap());    \
   }
 
 /// Helper macros to define fmt formatters
