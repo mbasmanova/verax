@@ -37,8 +37,90 @@ ExprCP combineBalanced(ExprVector expressions, Combine combine) {
   return expressions.front();
 }
 
+template <typename Group>
+struct GroupedProjection {
+  Group group;
+  ExprCP filter;
+  bool matchesSource;
+};
+
+// Projects a boolean expression onto caller-defined groups. An AND combines
+// every constraint available for a group. An OR retains a group only when
+// every branch constrains it. Each node returns at most one projection per
+// group, keeping construction linear in expression size times group count.
+template <typename Group, typename GroupFor>
+std::vector<GroupedProjection<Group>> projectLogicalExpression(
+    ExprCP expression,
+    ExprFactory& factory,
+    const GroupFor& groupFor) {
+  const auto* call =
+      expression->is(PlanType::kCallExpr) ? expression->as<Call>() : nullptr;
+  const bool isAnd =
+      call != nullptr && call->name() == SpecialFormCallNames::kAnd;
+  const bool isOr =
+      call != nullptr && call->name() == SpecialFormCallNames::kOr;
+  if (!isAnd && !isOr) {
+    const auto group = groupFor(expression->columns());
+    if (!group.has_value()) {
+      return {};
+    }
+    return {{*group, expression, true}};
+  }
+
+  struct Accumulator {
+    Group group;
+    ExprVector filters;
+    size_t numMatchedOperands{0};
+    bool childrenMatchSource{true};
+  };
+
+  const ExprVector operands = isAnd ? ExprFactory::flattenAnd(expression)
+                                    : ExprFactory::flattenOr(expression);
+  std::vector<Accumulator> accumulators;
+  folly::F14FastMap<Group, size_t> accumulatorByGroup;
+  for (size_t operandIndex = 0; operandIndex < operands.size();
+       ++operandIndex) {
+    for (const auto& projection : projectLogicalExpression<Group>(
+             operands[operandIndex], factory, groupFor)) {
+      auto it = accumulatorByGroup.find(projection.group);
+      if (it == accumulatorByGroup.end()) {
+        if (isOr && operandIndex > 0) {
+          continue;
+        }
+        it = accumulatorByGroup.emplace(projection.group, accumulators.size())
+                 .first;
+        accumulators.push_back({projection.group});
+      }
+      auto& accumulator = accumulators[it->second];
+      accumulator.filters.push_back(projection.filter);
+      ++accumulator.numMatchedOperands;
+      accumulator.childrenMatchSource &= projection.matchesSource;
+    }
+  }
+
+  std::vector<GroupedProjection<Group>> result;
+  result.reserve(accumulators.size());
+  for (auto& accumulator : accumulators) {
+    if (isOr && accumulator.numMatchedOperands != operands.size()) {
+      continue;
+    }
+    const bool matchesSource =
+        accumulator.numMatchedOperands == operands.size() &&
+        accumulator.childrenMatchSource;
+    const ExprCP filter = isAnd
+        ? combineBalanced(
+              std::move(accumulator.filters),
+              [&](ExprCP lhs, ExprCP rhs) { return factory.makeAnd(lhs, rhs); })
+        : combineBalanced(
+              std::move(accumulator.filters),
+              [&](ExprCP lhs, ExprCP rhs) { return factory.makeOr(lhs, rhs); });
+    result.push_back({accumulator.group, filter, matchesSource});
+  }
+  return result;
+}
+
 // Projects an OR onto caller-defined groups. A group produces a necessary
-// filter only when every disjunct has at least one conjunct in that group.
+// filter only when every disjunct constrains that group.
 template <typename Group, typename GroupFor>
 std::vector<std::pair<Group, ExprCP>> deriveGroupedFiltersFromOr(
     ExprCP orExpr,
@@ -50,78 +132,12 @@ std::vector<std::pair<Group, ExprCP>> deriveGroupedFiltersFromOr(
     return {};
   }
 
-  struct Candidate {
-    Group key;
-    std::vector<ExprVector> conjunctsByDisjunct;
-    bool matchesOriginal;
-  };
-
-  std::vector<Candidate> groups;
-  const ExprVector disjuncts = ExprFactory::flattenOr(orExpr);
-  for (size_t i = 0; i < disjuncts.size(); ++i) {
-    const ExprVector conjuncts = ExprFactory::flattenAnd(disjuncts[i]);
-    folly::F14FastMap<Group, ExprVector> conjunctsByGroup;
-    std::vector<Group> groupOrder;
-    for (ExprCP conjunct : conjuncts) {
-      const auto group = groupFor(conjunct->columns());
-      if (!group.has_value()) {
-        continue;
-      }
-      auto [it, inserted] = conjunctsByGroup.try_emplace(*group);
-      if (inserted && i == 0) {
-        groupOrder.push_back(*group);
-      }
-      it->second.push_back(conjunct);
-    }
-
-    if (i == 0) {
-      groups.reserve(groupOrder.size());
-      for (const Group group : groupOrder) {
-        auto& groupedConjuncts = conjunctsByGroup.at(group);
-        const bool matchesOriginal =
-            groupedConjuncts.size() == conjuncts.size();
-        groups.push_back(
-            {group, {std::move(groupedConjuncts)}, matchesOriginal});
-      }
-      continue;
-    }
-
-    std::erase_if(groups, [&](Candidate& candidate) {
-      const auto groupedConjuncts = conjunctsByGroup.find(candidate.key);
-      if (groupedConjuncts == conjunctsByGroup.end()) {
-        return true;
-      }
-      const bool matchesOriginal =
-          groupedConjuncts->second.size() == conjuncts.size();
-      candidate.conjunctsByDisjunct.push_back(
-          std::move(groupedConjuncts->second));
-      candidate.matchesOriginal &= matchesOriginal;
-      return false;
-    });
-    if (groups.empty()) {
-      return {};
-    }
-  }
-
   std::vector<std::pair<Group, ExprCP>> result;
-  result.reserve(groups.size());
-  for (auto& group : groups) {
-    if (group.matchesOriginal) {
-      result.emplace_back(group.key, orExpr);
-      continue;
-    }
-    ExprVector groupedDisjuncts;
-    groupedDisjuncts.reserve(group.conjunctsByDisjunct.size());
-    for (auto& conjuncts : group.conjunctsByDisjunct) {
-      groupedDisjuncts.push_back(combineBalanced(
-          std::move(conjuncts),
-          [&](ExprCP lhs, ExprCP rhs) { return factory.makeAnd(lhs, rhs); }));
-    }
+  for (const auto& projection :
+       projectLogicalExpression<Group>(orExpr, factory, groupFor)) {
     result.emplace_back(
-        group.key,
-        combineBalanced(
-            std::move(groupedDisjuncts),
-            [&](ExprCP lhs, ExprCP rhs) { return factory.makeOr(lhs, rhs); }));
+        projection.group,
+        projection.matchesSource ? orExpr : projection.filter);
   }
   return result;
 }

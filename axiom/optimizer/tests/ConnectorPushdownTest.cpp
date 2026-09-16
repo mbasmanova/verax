@@ -141,6 +141,14 @@ TEST_P(ConnectorPushdownTest, filtersImpliedByOr) {
       "(" + lowRange + ") or (" + highRange + " and b = 20)";
   const std::string secondMixedShape =
       "(" + lowRange + " and c = 10) or (" + highRange + ")";
+  const std::string nestedAllColumns =
+      "(a = 1 and ((b = 10 and c = 100) or "
+      "(b = 20 and c = 200))) or "
+      "(a = 2 and ((b = 30 and c = 300) or "
+      "(b = 40 and c = 400)))";
+  const std::string nestedPartialColumns =
+      "(a = 1 and (b = 10 or c = 100)) or "
+      "(a = 2 and (b = 20 or c = 200))";
   const std::vector<std::pair<std::string, std::vector<std::string>>> cases{
       {
           "(a = 1 and b = 10) or (a = 2 and b = 20)",
@@ -148,6 +156,24 @@ TEST_P(ConnectorPushdownTest, filtersImpliedByOr) {
               "(a = 1 and b = 10) or (a = 2 and b = 20)",
               "a = 1 or a = 2",
               "b = 10 or b = 20",
+          },
+      },
+      {
+          nestedAllColumns,
+          {
+              nestedAllColumns,
+              "a = 1 or a = 2",
+              "\"or\"(\"or\"(b = 10, b = 20), "
+              "\"or\"(b = 30, b = 40))",
+              "\"or\"(\"or\"(c = 100, c = 200), "
+              "\"or\"(c = 300, c = 400))",
+          },
+      },
+      {
+          nestedPartialColumns,
+          {
+              nestedPartialColumns,
+              "a = 1 or a = 2",
           },
       },
       {
