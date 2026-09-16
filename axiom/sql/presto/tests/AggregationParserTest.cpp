@@ -494,9 +494,10 @@ TEST_F(AggregationParserTest, groupingFunction) {
           .aggregate({"n_regionkey"}, {"count(1)"})
           .project({"n_regionkey", "0", "count"})
           // A single grouping set yields INTEGER, like the multi-set form.
-          .output([](const auto& node) {
-            EXPECT_EQ(*node->outputType()->childAt(1), *INTEGER());
-          }));
+          .output(ROW(
+              {{"n_regionkey", BIGINT()},
+               {"expr", INTEGER()},
+               {"count", BIGINT()}})));
 
   VELOX_ASSERT_THROW(
       parseSelect(

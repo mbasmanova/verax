@@ -529,6 +529,30 @@ class OutputNamesMatcher : public LogicalPlanMatcherImpl<OutputNode> {
   const std::vector<std::string> expectedNames_;
 };
 
+class OutputTypeMatcher : public LogicalPlanMatcherImpl<OutputNode> {
+ public:
+  OutputTypeMatcher(
+      const std::shared_ptr<LogicalPlanMatcher>& inputMatcher,
+      velox::RowTypePtr expectedType)
+      : LogicalPlanMatcherImpl<OutputNode>(inputMatcher, nullptr),
+        expectedType_{std::move(expectedType)} {}
+
+ private:
+  MatchResult matchDetails(
+      const OutputNode& plan,
+      const std::unordered_map<std::string, std::string>& symbols)
+      const override {
+    const auto& type = plan.outputType();
+    EXPECT_TRUE(*expectedType_ == *type)
+        << "Expected " << expectedType_->toString() << ", but got "
+        << type->toString();
+    AXIOM_RETURN_IF_FAILURE;
+    AXIOM_RETURN_RESULT(symbols)
+  }
+
+  const velox::RowTypePtr expectedType_;
+};
+
 class SortMatcher : public LogicalPlanMatcherImpl<SortNode> {
  public:
   SortMatcher(
@@ -952,6 +976,13 @@ LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::output(
     const std::vector<std::string>& expectedNames) {
   VELOX_USER_CHECK_NOT_NULL(matcher_);
   matcher_ = std::make_shared<OutputNamesMatcher>(matcher_, expectedNames);
+  return *this;
+}
+
+LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::output(
+    const velox::RowTypePtr& expectedType) {
+  VELOX_USER_CHECK_NOT_NULL(matcher_);
+  matcher_ = std::make_shared<OutputTypeMatcher>(matcher_, expectedType);
   return *this;
 }
 
