@@ -1481,7 +1481,15 @@ std::optional<optimizer::v2::Optimizer::Pass> explainLastPass(
   std::transform(name.begin(), name.end(), name.begin(), [](unsigned char ch) {
     return std::toupper(ch);
   });
-  return optimizer::v2::Optimizer::toPass(name);
+
+  const auto pass = optimizer::v2::Optimizer::tryToPass(name);
+  VELOX_USER_CHECK(
+      pass.has_value(),
+      "Invalid {} value: {}. Expected one of (case insensitive): {}",
+      kLastPass,
+      it->second,
+      optimizer::v2::Optimizer::allPassNames());
+  return pass;
 }
 } // namespace
 
