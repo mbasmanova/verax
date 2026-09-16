@@ -27,6 +27,7 @@
 #include "velox/expression/ExprConstants.h"
 #include "velox/expression/FunctionSignature.h"
 #include "velox/expression/SignatureBinder.h"
+#include "velox/expression/rpc/AsyncRPCFunctionRegistry.h"
 #include "velox/functions/FunctionRegistry.h"
 #include "velox/parse/Expressions.h"
 #include "velox/vector/VariantToVector.h"
@@ -77,20 +78,64 @@ void applyCoercions(
   }
 }
 
+// Resolves 'name' against the remote inference functions: LLM completion,
+// embedding, model prediction.
+velox::TypePtr tryResolveInferenceFunction(
+    const std::string& name,
+    const std::vector<velox::TypePtr>& argTypes,
+    std::vector<velox::TypePtr>& coercions,
+    const velox::TypeCoercer* coercer) {
+  const auto entry = velox::exec::rpc::AsyncRPCFunctionRegistry::find(name);
+  if (!entry.has_value()) {
+    return nullptr;
+  }
+
+  if (coercer != nullptr) {
+    // The failed scalar attempt may have left entries, and
+    // tryResolveReturnTypeWithCoercions() appends rather than assigns.
+    coercions.clear();
+    if (auto type = velox::exec::tryResolveReturnTypeWithCoercions(
+            entry->signatures, argTypes, coercions, *coercer)) {
+      return type;
+    }
+  } else {
+    for (const auto& signature : entry->signatures) {
+      velox::exec::SignatureBinder binder{
+          *signature, argTypes, velox::TypeCoercer::defaults()};
+      if (binder.tryBind()) {
+        if (auto type = binder.tryResolveReturnType()) {
+          return type;
+        }
+      }
+    }
+  }
+
+  return nullptr;
+}
+
 [[noreturn]] void throwCannotResolveScalarFunction(
     const std::string& name,
     const std::vector<velox::TypePtr>& argTypes) {
   auto allSignatures = velox::getFunctionSignatures();
   auto it = allSignatures.find(name);
-  if (it == allSignatures.end()) {
-    VELOX_USER_FAIL("Scalar function doesn't exist: {}.", name);
-  } else {
+  if (it != allSignatures.end()) {
     const auto& functionSignatures = it->second;
     VELOX_USER_FAIL(
         "Scalar function signature is not supported: {}. Supported signatures: {}.",
         toString(name, argTypes),
         toString(functionSignatures));
   }
+
+  if (const auto entry =
+          velox::exec::rpc::AsyncRPCFunctionRegistry::find(name)) {
+    VELOX_USER_FAIL(
+        "Inference function signature is not supported: {}. "
+        "Supported signatures: {}.",
+        toString(name, argTypes),
+        velox::exec::toString(entry->signatures));
+  }
+
+  VELOX_USER_FAIL("Scalar function doesn't exist: {}.", name);
 }
 
 velox::TypePtr resolveScalarFunction(
@@ -108,6 +153,11 @@ velox::TypePtr resolveScalarFunction(
             velox::resolveFunctionOrCallableSpecialForm(name, argTypes)) {
       return type;
     }
+  }
+
+  if (auto type =
+          tryResolveInferenceFunction(name, argTypes, coercions, coercer)) {
+    return type;
   }
 
   throwCannotResolveScalarFunction(name, argTypes);

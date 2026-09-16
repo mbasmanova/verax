@@ -301,6 +301,10 @@ class LogicalPlanMatcherBuilder {
   LogicalPlanMatcherBuilder& output(
       const std::vector<std::string>& expectedNames);
 
+  /// Matches an OutputNode whose output column names and types are those of
+  /// 'expectedType'.
+  LogicalPlanMatcherBuilder& output(const velox::RowTypePtr& expectedType);
+
   /// Builds and returns the constructed LogicalPlanMatcher.
   std::shared_ptr<LogicalPlanMatcher> build();
 
