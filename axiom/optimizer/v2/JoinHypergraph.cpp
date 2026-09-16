@@ -119,6 +119,50 @@ void JoinHypergraph::addFilterConjunct(FilterConjunct conjunct) {
 
 namespace {
 
+// Tracks the transitive closure of equalities over pointer-identity values.
+// The comparator overload keeps the preferred representative when sets merge.
+template <typename T>
+class EquivalenceClosure {
+ public:
+  void add(T value) {
+    parents_.try_emplace(value, value);
+  }
+
+  T find(T value) {
+    add(value);
+    T root = value;
+    while (parents_[root] != root) {
+      root = parents_[root];
+    }
+    while (value != root) {
+      T next = parents_[value];
+      parents_[value] = root;
+      value = next;
+    }
+    return root;
+  }
+
+  void merge(T left, T right) {
+    merge(left, right, [](T, T) { return false; });
+  }
+
+  template <typename Better>
+  void merge(T left, T right, Better better) {
+    left = find(left);
+    right = find(right);
+    if (left == right) {
+      return;
+    }
+    if (better(right, left)) {
+      std::swap(left, right);
+    }
+    parents_[right] = left;
+  }
+
+ private:
+  folly::F14FastMap<T, T> parents_;
+};
+
 // Whether a join of `joinType` proves its equi-key columns hold equal values
 // on every row it emits, so downstream may substitute either for the other.
 //
@@ -141,17 +185,9 @@ PlanObjectSet JoinHypergraph::coverColumns(const RelationSet& cover) const {
 
 folly::F14FastMap<ColumnCP, ColumnCP> JoinHypergraph::coverColumnReps(
     const RelationSet& cover) const {
-  folly::F14FastMap<ColumnCP, ColumnCP> parent;
-  coverColumns(cover).forEach<Column>(
-      [&](ColumnCP column) { parent[column] = column; });
-
-  auto find = [&](ColumnCP column) {
-    while (parent[column] != column) {
-      parent[column] = parent[parent[column]];
-      column = parent[column];
-    }
-    return column;
-  };
+  const PlanObjectSet columns = coverColumns(cover);
+  EquivalenceClosure<ColumnCP> closure;
+  columns.forEach<Column>([&](ColumnCP column) { closure.add(column); });
 
   auto asColumn = [](ExprCP expr) -> ColumnCP {
     return expr->is(PlanType::kColumnExpr) ? expr->as<Column>() : nullptr;
@@ -193,27 +229,18 @@ folly::F14FastMap<ColumnCP, ColumnCP> JoinHypergraph::coverColumnReps(
     for (size_t i = 0; i < leftKeys.size() && i < rightKeys.size(); ++i) {
       ColumnCP left = asColumn(leftKeys[i]);
       ColumnCP right = asColumn(rightKeys[i]);
-      if (left == nullptr || right == nullptr || !parent.contains(left) ||
-          !parent.contains(right)) {
+      if (left == nullptr || right == nullptr || !columns.contains(left) ||
+          !columns.contains(right)) {
         continue;
       }
-      ColumnCP rootLeft = find(left);
-      ColumnCP rootRight = find(right);
-      if (rootLeft == rootRight) {
-        continue;
-      }
-      if (betterRep(rootRight, rootLeft)) {
-        std::swap(rootLeft, rootRight);
-      }
-      parent[rootRight] = rootLeft;
+      closure.merge(left, right, betterRep);
     }
   }
 
   folly::F14FastMap<ColumnCP, ColumnCP> reps;
-  reps.reserve(parent.size());
-  for (const auto& [column, _] : parent) {
-    reps[column] = find(column);
-  }
+  reps.reserve(columns.size());
+  columns.forEach<Column>(
+      [&](ColumnCP column) { reps[column] = closure.find(column); });
   return reps;
 }
 
@@ -278,23 +305,24 @@ void JoinHypergraph::addEdge(JoinEdge edge) {
 
 void JoinHypergraph::checkEdgesEnforced(
     const folly::F14FastSet<size_t>& appliedEdges) const {
-  // Union-find over key expressions. An applied edge that proves its keys
-  // equal merges their classes, so an edge whose keys land in one class is
-  // enforced even where the plan does not apply that edge.
-  folly::F14FastMap<ExprCP, ExprCP> parent;
-  auto find = [&](ExprCP expr) {
-    parent.try_emplace(expr, expr);
-    ExprCP root = expr;
-    while (parent[root] != root) {
-      root = parent[root];
-    }
-    while (expr != root) {
-      ExprCP next = parent[expr];
-      parent[expr] = root;
-      expr = next;
-    }
-    return root;
-  };
+  EquivalenceClosure<ExprCP> closure;
+
+  // A relation is an already-built input. Columns from one equivalence class
+  // within it have therefore been made equal before any graph edge is applied.
+  for (const auto& relation : relations_) {
+    folly::F14FastMap<EquivalenceP, ColumnCP> representatives;
+    relation.columns().forEach<Column>([&](ColumnCP column) {
+      const EquivalenceP equivalence = column->equivalence();
+      if (equivalence == nullptr) {
+        return;
+      }
+      const auto [it, inserted] =
+          representatives.try_emplace(equivalence, column);
+      if (!inserted) {
+        closure.merge(it->second, column);
+      }
+    });
+  }
 
   for (size_t index : appliedEdges) {
     const JoinEdge& edge = edges_[index];
@@ -302,11 +330,7 @@ void JoinHypergraph::checkEdgesEnforced(
       continue;
     }
     for (size_t i = 0; i < edge.leftKeys().size(); ++i) {
-      ExprCP left = find(edge.leftKeys()[i]);
-      ExprCP right = find(edge.rightKeys()[i]);
-      if (left != right) {
-        parent[left] = right;
-      }
+      closure.merge(edge.leftKeys()[i], edge.rightKeys()[i]);
     }
   }
 
@@ -324,7 +348,7 @@ void JoinHypergraph::checkEdgesEnforced(
     }
     for (size_t i = 0; i < edge.leftKeys().size(); ++i) {
       VELOX_CHECK(
-          find(edge.leftKeys()[i]) == find(edge.rightKeys()[i]),
+          closure.find(edge.leftKeys()[i]) == closure.find(edge.rightKeys()[i]),
           "Plan does not enforce a join equality: {} = {}",
           edge.leftKeys()[i]->toString(),
           edge.rightKeys()[i]->toString());
