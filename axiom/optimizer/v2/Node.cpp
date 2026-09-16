@@ -41,6 +41,7 @@ const auto& nodeTypeNames() {
       {NodeType::kUnionAll, "UnionAll"},
       {NodeType::kJoin, "Join"},
       {NodeType::kWindow, "Window"},
+      {NodeType::kInference, "Inference"},
       {NodeType::kRowNumber, "RowNumber"},
       {NodeType::kTopNRowNumber, "TopNRowNumber"},
       {NodeType::kApply, "Apply"},
@@ -778,6 +779,7 @@ bool Node::emitsInputColumns() const {
     case NodeType::kSort:
     case NodeType::kTopN:
     case NodeType::kWindow:
+    case NodeType::kInference:
     case NodeType::kRowNumber:
     case NodeType::kTopNRowNumber:
     case NodeType::kEnforceDistinct:
@@ -1679,6 +1681,47 @@ bool Join::KeyEq::operator()(const Join* node, const Key& key) const {
   return (*this)(key, node);
 }
 
+Inference::Inference(Key key)
+    : Node(
+          NodeType::kInference,
+          ColumnVector{key.outputColumns},
+          passThroughProperties(key.input)),
+      input_(key.input),
+      call_(key.call),
+      result_(key.result) {
+  VELOX_CHECK_NOT_NULL(input_);
+  VELOX_CHECK_NOT_NULL(call_);
+  VELOX_CHECK_NOT_NULL(result_);
+  VELOX_CHECK_EQ(
+      this->outputColumns().size(), input_->outputColumns().size() + 1);
+}
+
+size_t Inference::KeyHash::operator()(const Inference* node) const {
+  return hashOf(
+      node->input(), node->call(), node->result(), node->outputColumns());
+}
+
+size_t Inference::KeyHash::operator()(const Key& key) const {
+  return hashOf(key.input, key.call, key.result, key.outputColumns);
+}
+
+bool Inference::KeyEq::operator()(const Inference* left, const Inference* right)
+    const {
+  return left->input() == right->input() && left->call() == right->call() &&
+      left->result() == right->result() &&
+      left->outputColumns() == right->outputColumns();
+}
+
+bool Inference::KeyEq::operator()(const Key& key, const Inference* node) const {
+  return key.input == node->input() && key.call == node->call() &&
+      key.result == node->result() &&
+      key.outputColumns == node->outputColumns();
+}
+
+bool Inference::KeyEq::operator()(const Inference* node, const Key& key) const {
+  return (*this)(key, node);
+}
+
 Window::Window(Key key)
     : Node(
           NodeType::kWindow,
@@ -2531,6 +2574,7 @@ V2_DEFINE_ACCEPT(Unnest)
 V2_DEFINE_ACCEPT(UnionAll)
 V2_DEFINE_ACCEPT(Join)
 V2_DEFINE_ACCEPT(Window)
+V2_DEFINE_ACCEPT(Inference)
 V2_DEFINE_ACCEPT(RowNumber)
 V2_DEFINE_ACCEPT(TopNRowNumber)
 V2_DEFINE_ACCEPT(Apply)

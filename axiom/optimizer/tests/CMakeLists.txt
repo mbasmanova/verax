@@ -124,6 +124,7 @@ add_executable(
   FiltersTest.cpp
   FixedPointTest.cpp
   HiveRowIdentityTest.cpp
+  InferenceTest.cpp
   JoinFilterProjectionTest.cpp
   JoinTest.cpp
   LimitTest.cpp
@@ -177,6 +178,7 @@ target_link_libraries(
   axiom_optimizer_tests_query_test_base
   axiom_runner_tests_utils
   axiom_test_connector
+  velox_async_rpc_function_registry
   velox_dwio_text_reader_register
   velox_dwio_text_writer_register
   GTest::gmock

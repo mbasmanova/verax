@@ -817,6 +817,11 @@ class PlanMatcherBuilder {
   PlanMatcherBuilder& enforceDistinct(
       const std::vector<std::string>& distinctKeys);
 
+  /// Matches an inference node evaluating 'call', e.g.
+  /// "text_embedding(comment) as embedding". An alias names the result
+  /// column for downstream matchers.
+  PlanMatcherBuilder& inference(const std::string& call);
+
   /// Matches any Window node regardless of functions or partitioning.
   PlanMatcherBuilder& window();
 

@@ -204,6 +204,8 @@ class Builder {
       return joins_;
     } else if constexpr (std::is_same_v<T, Window>) {
       return windows_;
+    } else if constexpr (std::is_same_v<T, Inference>) {
+      return inferences_;
     } else if constexpr (std::is_same_v<T, RowNumber>) {
       return rowNumbers_;
     } else if constexpr (std::is_same_v<T, TopNRowNumber>) {
@@ -256,6 +258,7 @@ class Builder {
   DedupSet<UnionAll> unions_;
   DedupSet<Join> joins_;
   DedupSet<Window> windows_;
+  DedupSet<Inference> inferences_;
   DedupSet<RowNumber> rowNumbers_;
   DedupSet<TopNRowNumber> topNRowNumbers_;
   DedupSet<Apply> applies_;

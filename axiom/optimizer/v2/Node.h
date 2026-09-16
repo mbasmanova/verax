@@ -49,6 +49,7 @@ enum class NodeType : uint8_t {
   kUnionAll,
   kJoin,
   kWindow,
+  kInference,
   kRowNumber,
   kTopNRowNumber,
   kApply,
@@ -1354,6 +1355,72 @@ struct WindowFunction {
 };
 
 using WindowFunctions = QGVector<WindowFunction>;
+
+/// Evaluates one remote inference call -- an LLM completion, an embedding, a
+/// model prediction -- for every input row. Velox runs such a call in its own
+/// operator, so it cannot stay inside a `Project`. Output schema is the input
+/// columns followed by the call's result column.
+///
+///   Inference(call: text_embedding(comment), result: embedding)
+///
+/// Invariants:
+/// - `call` names a function registered as an inference function, and its
+///   arguments are columns of `input` or literals.
+/// - `outputColumns` is `input`'s columns followed by `result`.
+class Inference : public Node {
+ public:
+  struct Key {
+    /// Input node.
+    NodeCP input;
+    /// The inference call. Arguments are columns of `input` or literals.
+    ExprCP call;
+    /// Column carrying the call's result.
+    ColumnCP result;
+    /// Output columns: `input`'s columns, then `result`.
+    ColumnVector outputColumns;
+  };
+
+  /// Transparent hasher for interning `Inference`s by identity.
+  struct KeyHash {
+    using is_transparent = void;
+    size_t operator()(const Inference* node) const;
+    size_t operator()(const Key& key) const;
+  };
+
+  /// Transparent equality for interning `Inference`s by identity.
+  struct KeyEq {
+    using is_transparent = void;
+    bool operator()(const Inference* left, const Inference* right) const;
+    bool operator()(const Key& key, const Inference* node) const;
+    bool operator()(const Inference* node, const Key& key) const;
+  };
+
+  explicit Inference(Key key);
+
+  NodeCP input() const {
+    return input_;
+  }
+
+  ExprCP call() const {
+    return call_;
+  }
+
+  ColumnCP result() const {
+    return result_;
+  }
+
+  std::span<const NodeCP> inputs() const override {
+    return {&input_, 1};
+  }
+
+  void accept(const NodeVisitor& visitor, NodeVisitorContext& context)
+      const override;
+
+ private:
+  const NodeCP input_;
+  const ExprCP call_;
+  const ColumnCP result_;
+};
 
 /// Evaluates one or more window function calls. Output schema is input
 /// columns followed by one output column per window function.

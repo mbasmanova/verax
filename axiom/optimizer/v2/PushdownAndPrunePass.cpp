@@ -1642,6 +1642,23 @@ class Pushdown : public NodeRewriter<PushdownContext> {
          std::move(newOutputColumns)});
   }
 
+  // Inference: every conjunct stays above, since the common case reads the
+  // call's result.
+  NodeCP rewriteInference(const Inference* node, PushdownContext& context)
+      override {
+    return blockAt(context, [&](PushdownContext& child) -> NodeCP {
+      // The input supplies what the call reads; the result is produced here.
+      child.required.unionColumns(node->call());
+      child.requiredAbove = child.required;
+      NodeCP newInput = rewrite(node->input(), child);
+
+      ColumnVector outputColumns = newInput->outputColumns();
+      outputColumns.push_back(node->result());
+      return builder().make<Inference>(
+          {newInput, node->call(), node->result(), std::move(outputColumns)});
+    });
+  }
+
   // Window: conjuncts whose columns are all direct partition-key
   // columns push below — within a partition those values are
   // constant, so a deterministic conjunct keeps or drops the partition whole.

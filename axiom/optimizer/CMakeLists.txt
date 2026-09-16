@@ -69,6 +69,7 @@ target_link_libraries(
   axiom_logical_plan
   axiom_optimizer_multifragment_plan
   axiom_runner_local_runner
+  velox_async_rpc_function_registry
   velox_connector
 )
 

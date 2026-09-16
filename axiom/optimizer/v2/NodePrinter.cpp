@@ -251,6 +251,15 @@ class Printer : public NodeVisitor {
     visitInputs(node, ctx);
   }
 
+  void visit(const Inference& node, NodeVisitorContext& context)
+      const override {
+    auto& ctx = static_cast<Context&>(context);
+    header(ctx, node);
+    ctx.out << spaces(ctx.indent + 2) << node.result()->toString()
+            << " := " << node.call()->toString() << '\n';
+    visitInputs(node, ctx);
+  }
+
   void visit(const RowNumber& node, NodeVisitorContext& context)
       const override {
     auto& ctx = static_cast<Context&>(context);

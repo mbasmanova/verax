@@ -429,6 +429,11 @@ class Collector : public NodeVisitor {
     }
   }
 
+  void visit(const Inference& node, NodeVisitorContext& context)
+      const override {
+    add(context, node.call());
+  }
+
   void visit(const RowNumber& node, NodeVisitorContext& context)
       const override {
     addAll(context, node.partitionKeys());
