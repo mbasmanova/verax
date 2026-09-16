@@ -286,7 +286,7 @@ class ExpressionPlanner {
   // (which only checks row presence) passes false to skip those
   // checks.
   // Returns a SubqueryMarkerExpr instead when 'options' defers subqueries
-  // and the body is not an outer-scope-aggregate lift candidate.
+  // and the body does not produce a lifted outer-scope aggregate.
   lp::ExprApi planSubquery(
       const SubqueryExpression* subquery,
       bool scalar,

@@ -1845,27 +1845,29 @@ lp::ExprApi ExpressionPlanner::planSubquery(
   VELOX_CHECK_NOT_NULL(
       subqueryPlanner_, "Subquery expressions require a SubqueryPlanner");
 
-  // An outer-scope aggregate lift rewrites the subquery into aggregates of the
-  // enclosing block, which have to reach the AggregateNode being built, so it
-  // cannot be deferred past that node. The lift only runs for a scalar
-  // subquery, so only that case is held back.
-  const bool liftsAggregates =
-      scalar && isOuterScopeAggregateLiftCandidate(query->as<Query>());
-
-  if (options.deferSubqueries && !liftsAggregates) {
+  auto deferSubquery = [&]() -> lp::ExprApi {
     auto& markers = markersByQuery_[query];
     auto& marker = scalar ? markers.scalar : markers.predicate;
     if (marker == nullptr) {
       marker = std::make_shared<SubqueryMarkerExpr>(subquery, scalar);
     }
     return lp::ExprApi(marker);
+  };
+
+  // A lift candidate must be planned in the current scope to determine
+  // whether its aggregate arguments actually reference outer columns.
+  const bool mayLiftAggregates =
+      scalar && isOuterScopeAggregateLiftCandidate(query->as<Query>());
+
+  if (options.deferSubqueries && !mayLiftAggregates) {
+    return deferSubquery();
   }
 
   // Look up first; if not cached, plan and insert. Do not hold an
   // iterator across subqueryPlanner_ because it may recursively plan
   // a subquery that mutates the cache and invalidates iterators.
   if (auto it = subqueryCache_.find(query); it != subqueryCache_.end()) {
-    return it->second;
+    return options.deferSubqueries ? deferSubquery() : it->second;
   }
 
   // Output aliases belong to the enclosing SELECT block only. Clear them while
@@ -1915,6 +1917,9 @@ lp::ExprApi ExpressionPlanner::planSubquery(
   // (now stale) names.
   if (!result.touchedOuterScope) {
     subqueryCache_.emplace(query, expr);
+  }
+  if (options.deferSubqueries) {
+    return deferSubquery();
   }
   return expr;
 }

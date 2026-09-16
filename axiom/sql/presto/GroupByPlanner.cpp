@@ -490,11 +490,15 @@ void GroupByPlanner::plan(
   }
 
   // Walk SELECT, HAVING, and ORDER BY expressions to collect aggregate
-  // function calls, then add the Aggregate plan node.
-  // Populates: aggregates_, projections_, filter_,
-  //   sortingKeyExprs_, outputColumns_.
+  // function calls and expressions evaluated above the aggregate.
   collectAggregates(selectExprs, having, orderBy);
 
+  buildAggregationPlan(selectExprs, orderBy);
+}
+
+void GroupByPlanner::buildAggregationPlan(
+    const std::vector<lp::ExprApi>& selectExprs,
+    const OrderByPtr& orderBy) {
   for (const auto& agg : aggregates_) {
     rejectGroupingInAggregates(agg.expr());
   }
@@ -580,7 +584,12 @@ bool GroupByPlanner::tryPlanGlobalAgg(
     selectExprs.push_back(std::move(expr));
   }
 
-  std::move(*this).plan({}, /*distinct=*/false, selectExprs, having, orderBy);
+  collectAggregates(selectExprs, having, orderBy);
+  if (aggregates_.empty()) {
+    return false;
+  }
+
+  buildAggregationPlan(selectExprs, orderBy);
   return true;
 }
 
