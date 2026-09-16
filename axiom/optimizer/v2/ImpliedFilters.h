@@ -20,9 +20,31 @@
 
 namespace facebook::axiom::optimizer::v2 {
 
-/// Derives necessary filters by projecting every disjunct of an OR onto a
-/// group of columns. For example, `(a = 1 AND b = 10) OR (a = 2 AND b = 20)`
-/// implies both `a = 1 OR a = 2` and `b = 10 OR b = 20`.
+/// Derives deterministic filters implied by OR expressions for individual
+/// columns or join inputs. Within a top-level OR, predicates may be nested
+/// under any combination of AND and OR: AND contributes every constraint for
+/// a group, while OR contributes a group only when every branch constrains it.
+/// A predicate belongs to a column group when it references exactly that
+/// column, and to a join-input group when all its columns come from that input.
+///
+/// For example:
+///
+///     OR
+///     |-- AND
+///     |   |-- a = 1
+///     |   `-- OR
+///     |       |-- b = 10
+///     |       `-- b = 20
+///     `-- AND
+///         |-- a = 2
+///         `-- b = 30
+///
+/// implies:
+///
+///     a = 1 OR a = 2
+///     b = 10 OR b = 20 OR b = 30
+///
+/// Non-deterministic OR expressions are not used to derive filters.
 class ImpliedFilters {
  public:
   /// Derives necessary filters for each join input from `filters`.
