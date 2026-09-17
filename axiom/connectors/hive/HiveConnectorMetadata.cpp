@@ -630,7 +630,7 @@ ConnectorWriteHandlePtr HiveConnectorMetadata::beginWrite(
       std::make_shared<velox::connector::hive::HiveInsertTableHandle>(
           inputColumns,
           makeLocationHandle(
-              tablePath(table->name()),
+              prepareWriteLocation(session, table->name()),
               explain ? std::nullopt : makeStagingDirectory(table->name())),
           storageFormat,
           bucketProperty,

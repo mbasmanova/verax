@@ -231,7 +231,7 @@ void HiveQueriesTestBase::createTableFromFiles(
       /*ifNotExists=*/false,
       /*explain=*/false);
 
-  auto tablePath = hiveMetadata().tablePath({kDefaultSchema, tableName});
+  auto tablePath = localTablePath(tableName);
   for (const auto& filePath : filePaths) {
     auto fileName = std::filesystem::path(filePath).filename().string();
     std::string targetFilePath = fmt::format("{}/{}", tablePath, fileName);
@@ -242,6 +242,10 @@ void HiveQueriesTestBase::createTableFromFiles(
   }
 
   hiveMetadata().reloadTableFromPath({kDefaultSchema, tableName});
+}
+
+std::string HiveQueriesTestBase::localTablePath(std::string_view tableName) {
+  return fmt::format("{}/{}", localDataPath_, tableName);
 }
 
 void HiveQueriesTestBase::runCtas(const std::string& sql) {

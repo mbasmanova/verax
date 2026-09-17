@@ -91,6 +91,9 @@ class HiveQueriesTestBase : public QueryTestBase {
     return *hiveMetadata_;
   }
 
+  /// Returns the local storage path for a table in the default schema.
+  static std::string localTablePath(std::string_view tableName);
+
   /// Hive connector configuration. Entries set before SetUp() are passed to
   /// the connector via setupHiveConnector().
   inline static std::unordered_map<std::string, std::string> hiveConfig_;

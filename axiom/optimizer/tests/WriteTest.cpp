@@ -769,7 +769,7 @@ TEST_P(WriteTest, columnStatsPartitioned) {
   auto table = hiveMetadata().findTable({kDefaultSchema, "test"});
   ASSERT_NE(table, nullptr);
 
-  const auto tablePath = hiveMetadata().tablePath(table->name());
+  const auto tablePath = localTablePath(table->name().table);
 
   // No table-level .stats file for partitioned tables.
   EXPECT_FALSE(std::filesystem::exists(tablePath + "/.stats"));

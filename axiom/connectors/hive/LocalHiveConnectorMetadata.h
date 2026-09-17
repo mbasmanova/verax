@@ -343,9 +343,10 @@ class LocalHiveConnectorMetadata : public HiveConnectorMetadata {
       const ConnectorSessionPtr& session,
       const ConnectorWriteHandlePtr& handle) noexcept override;
 
-  std::string tablePath(const SchemaTableName& tableName) const override {
-    return fmt::format(
-        "{}/{}", hiveMetadataConfig_->localDataPath(), tableName.table);
+  std::string prepareWriteLocation(
+      const ConnectorSessionPtr& /*session*/,
+      const SchemaTableName& tableName) const override {
+    return tablePath(tableName);
   }
 
   std::optional<std::string> makeStagingDirectory(
@@ -381,6 +382,11 @@ class LocalHiveConnectorMetadata : public HiveConnectorMetadata {
   void reloadTableFromPath(const SchemaTableName& tableName);
 
  private:
+  std::string tablePath(const SchemaTableName& tableName) const {
+    return fmt::format(
+        "{}/{}", hiveMetadataConfig_->localDataPath(), tableName.table);
+  }
+
   // Used to lazy initialize this in ensureInitialized() and to implement
   // reinitialize().
   void initialize();

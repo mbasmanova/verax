@@ -88,6 +88,13 @@ class LocalHiveConnectorMetadataTest
     return layout;
   }
 
+  std::string localTablePath(const SchemaTableName& tableName) const {
+    return fmt::format(
+        "{}/{}",
+        metadata_->hiveMetadataConfig()->localDataPath(),
+        tableName.table);
+  }
+
   void compareTableLayout(
       const LocalHiveTableLayout& expected,
       const LocalHiveTableLayout& layout) {
@@ -135,7 +142,7 @@ class LocalHiveConnectorMetadataTest
       const RowVectorPtr& values,
       WriteKind kind,
       dwio::common::FileFormat format) {
-    std::string outputPath = metadata_->tablePath(table->name());
+    std::string outputPath = localTablePath(table->name());
     auto session = makeSession();
     auto handle = metadata_->beginWrite(
         session,
@@ -213,8 +220,8 @@ class LocalHiveConnectorMetadataTest
       const std::unordered_map<std::string, std::optional<std::string>>&
           partitionKeys,
       dwio::common::FileFormat format) {
-    std::string tablePath = metadata_->tablePath({kDefaultSchema, tableName});
-    auto files = getDataFiles(tablePath);
+    std::string path = localTablePath({kDefaultSchema, tableName});
+    auto files = getDataFiles(path);
     auto table = metadata_->findTable({kDefaultSchema, tableName});
     auto results = readFiles(table, files, partitionKeys, format);
     exec::test::assertEqualResults({expectedData}, {results});
@@ -388,7 +395,7 @@ TEST_F(LocalHiveConnectorMetadataTest, createTable) {
   writeToTable(
       table, data, WriteKind::kCreate, dwio::common::FileFormat::PARQUET);
 
-  std::string tablePath = metadata_->tablePath({kDefaultSchema, "test"});
+  std::string tablePath = localTablePath({kDefaultSchema, "test"});
   std::string partition = "2022-09-01";
   std::string path = fmt::format("{}/ds={}", tablePath, partition);
   auto files = getDataFiles(path);
@@ -769,7 +776,7 @@ TEST_F(LocalHiveConnectorMetadataTest, abortCreateWithRetry) {
   auto tableType =
       ROW({{"key1", BIGINT()}, {"key2", BIGINT()}, {"ds", VARCHAR()}});
   auto session = makeSession();
-  std::string tablePath = metadata_->tablePath({kDefaultSchema, "test_abort"});
+  std::string tablePath = localTablePath({kDefaultSchema, "test_abort"});
 
   auto table = metadata_->createTable(
       session,
