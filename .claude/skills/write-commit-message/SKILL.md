@@ -44,6 +44,14 @@ The per-pattern rules below all derive from this principle. If a draft passes th
    - Prefer short sentences. If a sentence has two clauses joined by "so", "because", "but", "even though", "although", or a comma + participle, consider splitting it. Contrastive joiners ("but X", "even though Y") are especially risky when both halves introduce a fact the reader does not already have — pack two new facts into one sentence and the reader stalls. State each rule in its own sentence, then connect them.
    - Avoid stacked abstractions like "left the outer scope advertising the column as X" or "the projection inherits the source's reverseLookup names". Replace with a concrete chain.
    - Avoid compiler/optimizer jargon ("outer reference", "outer scope", "binding context", "name resolution scope") unless the rest of the paragraph already established it. If you must use it, define it inline with a tiny example.
+   - State what is. A sentence built on "no", "not", "nothing", "nobody", "neither", "never" or "without" makes the reader construct the missing thing before they learn the present one. Name what exists and what it does. Negation earns its place when absence is the fact being reported, as in "a call in a lambda body cannot become a node".
+     - ❌ Nothing in the optimizer looked for these functions, so it had nothing to resolve against.
+     - ✅ These functions live in the inference registry, which the optimizer looked past.
+     - ❌ Neither the server nor the CLI links the function libraries.
+     - ✅ The server and the CLI now link the function libraries.
+   - End a sentence on what the reader needs. A trailing contrast leaves them holding the version you rejected, and the clause they must keep is no longer the last thing they read. State the fact and stop. Contrast only where a reader would otherwise apply the wrong rule, and then put the correction last.
+     - ❌ The node reads the call's arguments as columns of its input, not as expressions of the projection above it.
+     - ✅ The node reads the call's arguments as columns of its input.
    - Prefer plain verbs (`used`, `dropped`, `kept`) over jargon verbs (`advertise`, `surface`, `propagate`, `materialize`) unless the jargon is the precise term.
    - Avoid hyphenated compound-noun stacks ("user-written case", "lookup-based fallback", "context-aware resolver"). They require the reader to unpack a modifier chain before getting to the noun. Rewrite as a relative clause ("the case the user wrote") or a single concrete noun.
    - Prefer the word with one obvious meaning in this context. "Case" can mean legal case, match case, or upper/lower case — use "capitalization" when you mean letter case. Similarly: "operator" vs "function", "key" vs "column", "type" vs "kind" — pick the one a SQL reader and a C++ reader both interpret the same way.
@@ -88,6 +96,7 @@ The per-pattern rules below all derive from this principle. If a draft passes th
    - [ ] Reads in ~30 seconds.
    - [ ] Length matches the change. Trivial changes are not padded to standard length; standard changes are not condensed to one line.
    - [ ] Prose clarity: no sentence longer than ~30 words; no stacked abstractions ("X advertising Y", "scope of Z"). Each sentence is parseable on first read.
+   - [ ] Every sentence states what is, and ends on what the reader needs — no leading absence, no trailing contrast.
    - [ ] No comma-separated enumeration of 3+ items inside any sentence — lists go in sub-bullets.
    - [ ] Sentences describing deletions or additions lead with the active verb ("Removes X", "Adds Y").
    - [ ] Test Plan is a non-obvious test strategy, or omitted — never a list of the tests added.
