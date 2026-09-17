@@ -415,8 +415,10 @@ class HiveConnectorMetadata : public ConnectorMetadata {
   virtual void validateOptions(
       const folly::F14FastMap<std::string, velox::Variant>& options) const;
 
-  /// Return the filesystem path for the storage of the specified table.
-  virtual std::string tablePath(const SchemaTableName& tableName) const = 0;
+  /// Prepares and returns the filesystem path for writing the specified table.
+  virtual std::string prepareWriteLocation(
+      const ConnectorSessionPtr& session,
+      const SchemaTableName& tableName) const = 0;
 
   /// Optionally, create a staging directory for the specified table.
   /// This directory, if provided, will be used for insert/delete/update into
