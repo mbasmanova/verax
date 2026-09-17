@@ -1548,6 +1548,40 @@ WindowNode::WindowType toNodeWindowType(core::WindowCallExpr::WindowType type) {
   VELOX_UNREACHABLE();
 }
 
+class InferenceMatcher : public PlanMatcherImpl<core::RPCNode> {
+ public:
+  InferenceMatcher(
+      const std::shared_ptr<PlanMatcher>& matcher,
+      std::string call)
+      : PlanMatcherImpl<core::RPCNode>({matcher}), call_{std::move(call)} {}
+
+  MatchResult matchDetails(
+      const core::RPCNode& plan,
+      const std::unordered_map<std::string, std::string>& symbols)
+      const override {
+    SCOPED_TRACE(plan.toString(true, false));
+
+    auto expected = parseExpr(call_);
+
+    std::unordered_map<std::string, std::string> newSymbols{symbols};
+    if (expected->alias()) {
+      newSymbols[expected->alias().value()] = plan.outputColumn();
+    }
+
+    if (!symbols.empty()) {
+      expected = ExprMatcher::rewriteInputNames(expected, symbols);
+    }
+
+    ExprMatcher::match(plan.call(), expected->dropAlias());
+    AXIOM_TEST_RETURN_IF_FAILURE
+
+    return MatchResult::success(newSymbols);
+  }
+
+ private:
+  const std::string call_;
+};
+
 class WindowMatcher : public PlanMatcherImpl<WindowNode> {
  public:
   explicit WindowMatcher(const std::shared_ptr<PlanMatcher>& matcher)
@@ -2629,6 +2663,12 @@ PlanMatcherBuilder& PlanMatcherBuilder::enforceDistinct(
     const std::vector<std::string>& distinctKeys) {
   VELOX_USER_CHECK_NOT_NULL(matcher_);
   matcher_ = std::make_shared<EnforceDistinctMatcher>(matcher_, distinctKeys);
+  return *this;
+}
+
+PlanMatcherBuilder& PlanMatcherBuilder::inference(const std::string& call) {
+  VELOX_USER_CHECK_NOT_NULL(matcher_);
+  matcher_ = std::make_shared<InferenceMatcher>(matcher_, call);
   return *this;
 }
 

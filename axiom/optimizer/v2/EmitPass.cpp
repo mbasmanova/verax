@@ -241,6 +241,8 @@ class Emitter {
         return emitValues(*node->as<Values>());
       case NodeType::kWindow:
         return emitWindow(*node->as<Window>());
+      case NodeType::kInference:
+        return emitInference(*node->as<Inference>());
       case NodeType::kRowNumber:
         return emitRowNumber(*node->as<RowNumber>());
       case NodeType::kTopNRowNumber:
@@ -418,6 +420,7 @@ class Emitter {
   velox::core::PlanNodePtr emitLimit(const Limit& limit);
   velox::core::PlanNodePtr emitValues(const Values& values);
   velox::core::PlanNodePtr emitWindow(const Window& window);
+  velox::core::PlanNodePtr emitInference(const Inference& node);
   velox::core::PlanNodePtr emitRowNumber(const RowNumber& node);
   velox::core::PlanNodePtr emitTopNRowNumber(const TopNRowNumber& node);
   velox::core::PlanNodePtr emitUnnest(const Unnest& unnest);
@@ -1515,6 +1518,23 @@ velox::core::PlanNodePtr Emitter::emitWindow(const Window& window) {
       std::move(windowFunctions),
       /*inputsSorted=*/false,
       std::move(input));
+}
+
+velox::core::PlanNodePtr Emitter::emitInference(const Inference& node) {
+  velox::core::PlanNodePtr input = emit(node.input());
+
+  velox::core::TypedExprPtr typed = exprEmitter_.toTypedExpr(node.call());
+  auto call =
+      std::dynamic_pointer_cast<const velox::core::CallTypedExpr>(typed);
+  VELOX_CHECK_NOT_NULL(
+      call, "Inference node must hold a call: {}", typed->toString());
+
+  return std::make_shared<velox::core::RPCNode>(
+      nextId(),
+      std::move(input),
+      std::move(call),
+      node.result()->outputName(),
+      makeRowType(node.outputColumns()));
 }
 
 velox::core::PlanNodePtr Emitter::emitRowNumber(const RowNumber& node) {

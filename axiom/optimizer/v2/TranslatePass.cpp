@@ -650,6 +650,11 @@ class Translator {
   Translated translateRecursiveRef(
       const lp::RecursiveReferenceNode& ref,
       const LpNameSet& required);
+  // Lifts 'call' into an `Inference` node on 'liftTarget' and returns the
+  // column carrying its result. Velox evaluates a remote inference call in its
+  // own operator, so it cannot stay inside the expression that reads it.
+  ExprCP liftInferenceCall(const Call* call, LiftTarget* liftTarget);
+
   NodeCP maybeWrapInWindow(
       NodeCP input,
       const Scope& inputScope,
@@ -864,6 +869,15 @@ class Translator {
   // reusable.
   folly::F14FastMap<const lp::LogicalPlanNode*, std::vector<ExprCP>>
       scalarSubqueryColumns_;
+
+  // Result column of every inference call already lifted, so a call appearing
+  // more than once is evaluated once. A column is reusable only where the
+  // lift target can read it.
+  folly::F14FastMap<const Call*, ColumnCP> inferenceColumns_;
+
+  // Depth of lambda bodies being translated. A call inside one runs per
+  // element, so it cannot be lifted to a node.
+  int32_t lambdaDepth_{0};
 
   struct ActiveFixedPoint {
     Name stateName;
@@ -1546,35 +1560,34 @@ NodeCP Translator::maybeWrapInWindow(
     bool operator==(const Spec&) const = default;
   };
   std::vector<Spec> specs(windowIndices.size());
-  for (size_t i = 0; i < windowIndices.size(); ++i) {
-    const auto* windowExpr =
-        projectExprs[windowIndices[i]]->as<lp::WindowExpr>();
-    Spec& spec = specs[i];
-    folly::F14FastSet<ExprCP> seenKeys;
-    spec.partitionKeys.reserve(windowExpr->partitionKeys().size());
-    // Subqueries in window partition / order keys / frame bounds would
-    // need lifting above the Window's input — left as nullptr until
-    // that wiring lands. lp's surface allows them; rare in practice.
-    for (const auto& partitionKey : windowExpr->partitionKeys()) {
-      ExprCP key =
-          translateExpr(*partitionKey, inputScope, /*liftTarget=*/nullptr);
-      if (seenKeys.insert(key).second) {
-        spec.partitionKeys.push_back(key);
+  // A key may hold a subquery or an inference call, which lift onto the
+  // Window's input.
+  input = withLiftTarget(input, [&](LiftTarget& target) {
+    for (size_t i = 0; i < windowIndices.size(); ++i) {
+      const auto* windowExpr =
+          projectExprs[windowIndices[i]]->as<lp::WindowExpr>();
+      Spec& spec = specs[i];
+      folly::F14FastSet<ExprCP> seenKeys;
+      spec.partitionKeys.reserve(windowExpr->partitionKeys().size());
+      for (const auto& partitionKey : windowExpr->partitionKeys()) {
+        ExprCP key = translateExpr(*partitionKey, inputScope, &target);
+        if (seenKeys.insert(key).second) {
+          spec.partitionKeys.push_back(key);
+        }
       }
-    }
 
-    spec.orderKeys.reserve(windowExpr->ordering().size());
-    spec.orderTypes.reserve(windowExpr->ordering().size());
-    for (const auto& field : windowExpr->ordering()) {
-      ExprCP key =
-          translateExpr(*field.expression, inputScope, /*liftTarget=*/nullptr);
-      if (!seenKeys.insert(key).second) {
-        continue;
+      spec.orderKeys.reserve(windowExpr->ordering().size());
+      spec.orderTypes.reserve(windowExpr->ordering().size());
+      for (const auto& field : windowExpr->ordering()) {
+        ExprCP key = translateExpr(*field.expression, inputScope, &target);
+        if (!seenKeys.insert(key).second) {
+          continue;
+        }
+        spec.orderKeys.push_back(key);
+        spec.orderTypes.push_back(toOrderType(field.order));
       }
-      spec.orderKeys.push_back(key);
-      spec.orderTypes.push_back(toOrderType(field.order));
     }
-  }
+  });
 
   // Group windows by their effective spec so each group produces one
   // `Window` node. Multiple groups are chained.
@@ -1647,6 +1660,8 @@ NodeCP Translator::maybeWrapInWindow(
       const auto* windowExpr = projectExprs[projectIndex]->as<lp::WindowExpr>();
       Value value(toType(windowExpr->type()));
       Name windowName = toName(windowExpr->name());
+      // A subquery or inference call here would have to lift onto the
+      // Window's input, which 'precompute' is already assembling.
       ExprVector windowArgs = translateAll(
           windowExpr->inputs(), inputScope, /*liftTarget=*/nullptr);
       for (ExprCP& arg : windowArgs) {
@@ -3192,10 +3207,60 @@ ExprCP Translator::translateCall(
   Value value =
       clampCardinality(Value{toType(expr.type()), maxCardinality(args)});
   Name name = toName(expr.name());
-  FunctionSet funcs =
-      Call::unionArgFunctions(functionBits(name, /*specialForm=*/false), args);
+  FunctionSet ownFunctions = functionBits(name, /*specialForm=*/false);
+  FunctionSet funcs = Call::unionArgFunctions(ownFunctions, args);
   auto* call = builder_.makeCall(name, value, std::move(args), funcs);
+  if (ownFunctions.contains(FunctionSet::kInference)) {
+    return liftInferenceCall(call, liftTarget);
+  }
   return simplifier_.simplify(call);
+}
+
+ExprCP Translator::liftInferenceCall(const Call* call, LiftTarget* liftTarget) {
+  VELOX_USER_CHECK_EQ(
+      lambdaDepth_,
+      0,
+      "Inference function is not supported inside a lambda: {}",
+      call->name());
+  VELOX_USER_CHECK_NOT_NULL(
+      liftTarget,
+      "Inference function is not supported in this position: {}",
+      call->name());
+
+  auto it = inferenceColumns_.find(call);
+  if (it != inferenceColumns_.end() && liftTarget->outputs(it->second)) {
+    return it->second;
+  }
+
+  // A pending lift may supply an argument, so it has to be attached before
+  // the node that reads it.
+  flushLifts(*liftTarget);
+
+  // Velox reads the call's arguments as columns of the node's input, so they
+  // are computed below it.
+  PrecomputeProjections precompute{liftTarget->node, builder_};
+  ExprVector args;
+  args.reserve(call->args().size());
+  for (ExprCP arg : call->args()) {
+    args.push_back(
+        precompute.toColumn(arg, /*alias=*/nullptr, /*allowConstant=*/true));
+  }
+  ExprCP lifted = exprFactory_.rebuildCall(call, args);
+  liftTarget->node = std::move(precompute).node();
+
+  auto* result = make<Column>(
+      queryCtx()->newName(call->name()),
+      /*relation=*/nullptr,
+      lifted->value(),
+      /*alias=*/nullptr);
+
+  ColumnVector outputColumns = liftTarget->node->outputColumns();
+  outputColumns.push_back(result);
+  liftTarget->node = builder_.make<Inference>(
+      {liftTarget->node, lifted, result, std::move(outputColumns)});
+
+  inferenceColumns_[call] = result;
+  return result;
 }
 
 // True if 'expr' is `lp::SpecialFormExpr(kIn, [value, SubqueryExpr])` —
@@ -3210,10 +3275,51 @@ bool isInSubqueryForm(const lp::Expr& expr) {
       sf.inputAt(1)->isSubquery();
 }
 
+namespace {
+
+// True if 'expr' calls a remote inference function anywhere.
+bool hasInferenceCall(const lp::ExprPtr& expr) {
+  if (expr->isCall() &&
+      isInferenceFunction(toName(expr->as<lp::CallExpr>()->name()))) {
+    return true;
+  }
+  return std::ranges::any_of(expr->inputs(), hasInferenceCall);
+}
+
+// Index of the first input 'form' does not evaluate for every row with its
+// errors surfacing: a branch it may skip, or a body whose errors it swallows.
+// Inputs before it are evaluated like any other expression.
+size_t firstGuardedInput(lp::SpecialForm form) {
+  switch (form) {
+    // The condition, and COALESCE's first alternative, always evaluate.
+    case lp::SpecialForm::kCoalesce:
+    case lp::SpecialForm::kIf:
+    case lp::SpecialForm::kSwitch:
+      return 1;
+    case lp::SpecialForm::kTry:
+      return 0;
+    default:
+      return std::numeric_limits<size_t>::max();
+  }
+}
+
+} // namespace
+
 ExprCP Translator::translateSpecialForm(
     const lp::SpecialFormExpr& expr,
     const Scope& scope,
     LiftTarget* liftTarget) {
+  // An inference call becomes a node that runs for every row of its input and
+  // fails the query if it errors, so it cannot sit under a guarded input.
+  for (size_t i = firstGuardedInput(expr.form()); i < expr.inputs().size();
+       ++i) {
+    VELOX_USER_CHECK(
+        !hasInferenceCall(expr.inputAt(i)),
+        "Inference function is not supported under {}: {}",
+        lp::SpecialFormName::toName(expr.form()),
+        expr.inputAt(i)->toString());
+  }
+
   if (expr.form() == lp::SpecialForm::kExists) {
     return translateExists(expr, scope, liftTarget);
   }
@@ -3419,6 +3525,11 @@ ExprCP Translator::translateLambda(
     args.push_back(column);
     bodyScope[signature->nameOf(i)] = column;
   }
+
+  ++lambdaDepth_;
+  SCOPE_EXIT {
+    --lambdaDepth_;
+  };
 
   // A subquery in the body lifts onto the same target as the higher-order
   // call itself: it is evaluated once per row, and the body reads the result

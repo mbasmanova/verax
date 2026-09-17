@@ -333,6 +333,7 @@ Estimate EstimateProvider::compute(NodeCP node) {
     case NodeType::kProject:
     case NodeType::kSort:
     case NodeType::kWindow:
+    case NodeType::kInference:
     case NodeType::kGroupId:
     case NodeType::kMarkDistinct:
     case NodeType::kEnforceSingleRow:

@@ -15,7 +15,9 @@
  */
 
 #include "axiom/optimizer/FunctionRegistry.h"
+
 #include "velox/expression/ExprConstants.h"
+#include "velox/expression/rpc/AsyncRPCFunctionRegistry.h"
 #include "velox/functions/FunctionRegistry.h"
 
 namespace facebook::axiom::optimizer {
@@ -269,6 +271,10 @@ FunctionMetadataCP functionMetadata(std::string_view name) {
   return FunctionRegistry::instance()->metadata(name);
 }
 
+bool isInferenceFunction(Name name) {
+  return velox::exec::rpc::AsyncRPCFunctionRegistry::find(name).has_value();
+}
+
 FunctionSet functionBits(Name name, bool specialForm) {
   if (auto* md = functionMetadata(name)) {
     return md->functionSet;
@@ -278,6 +284,16 @@ FunctionSet functionBits(Name name, bool specialForm) {
 
   if (specialForm) {
     bits = bits | FunctionSet::kNonDefaultNullBehavior;
+  } else if (
+      const auto inference =
+          velox::exec::rpc::AsyncRPCFunctionRegistry::find(name)) {
+    bits = bits | FunctionSet::kInference;
+    if (!inference->metadata.deterministic) {
+      bits = bits | FunctionSet::kNonDeterministic;
+    }
+    if (!inference->metadata.defaultNullBehavior) {
+      bits = bits | FunctionSet::kNonDefaultNullBehavior;
+    }
   } else {
     const auto deterministic = velox::isDeterministic(name);
     VELOX_CHECK(deterministic.has_value(), "Function not found: {}", name);

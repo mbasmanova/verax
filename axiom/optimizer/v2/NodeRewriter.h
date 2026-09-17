@@ -82,6 +82,8 @@ class NodeRewriter {
         return rewriteJoin(node->as<Join>(), context);
       case NodeType::kWindow:
         return rewriteWindow(node->as<Window>(), context);
+      case NodeType::kInference:
+        return rewriteInference(node->as<Inference>(), context);
       case NodeType::kRowNumber:
         return rewriteRowNumber(node->as<RowNumber>(), context);
       case NodeType::kTopNRowNumber:
@@ -267,6 +269,19 @@ class NodeRewriter {
          node->nullAware(),
          node->nullAsValue(),
          node->outputColumns()});
+  }
+
+  virtual NodeCP rewriteInference(const Inference* node, TContext& context) {
+    NodeCP newInput = rewrite(node->input(), context);
+    if (newInput == node->input()) {
+      return node;
+    }
+    // The node emits its input's columns and the call's result, so pruning
+    // the input narrows the output too.
+    ColumnVector outputColumns = newInput->outputColumns();
+    outputColumns.push_back(node->result());
+    return builder_.template make<Inference>(
+        {newInput, node->call(), node->result(), std::move(outputColumns)});
   }
 
   virtual NodeCP rewriteWindow(const Window* node, TContext& context) {

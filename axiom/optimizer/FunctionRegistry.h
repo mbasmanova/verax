@@ -46,6 +46,10 @@ class FunctionSet {
   /// Indicates a window function in the set.
   static constexpr uint64_t kWindow = 1UL << 5;
 
+  /// Indicates a remote inference function in the set. Velox evaluates such a
+  /// call in its own operator, so it cannot stay inside an expression.
+  static constexpr uint64_t kInference = 1UL << 6;
+
   FunctionSet() : set_(0) {}
 
   explicit FunctionSet(uint64_t set) : set_(set) {}
@@ -585,6 +589,10 @@ FunctionMetadataCP functionMetadata(std::string_view name);
 /// 'specialForm' is true, the function is treated as a special form (e.g.
 /// COALESCE, IF, SWITCH).
 FunctionSet functionBits(Name name, bool specialForm);
+
+/// True if 'name' is a remote inference function. Unlike 'functionBits', this
+/// accepts a name that is not a registered function.
+bool isInferenceFunction(Name name);
 
 const std::string& specialForm(logical_plan::SpecialForm specialForm);
 

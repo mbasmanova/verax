@@ -124,6 +124,9 @@ void forEachExpressionInNode(NodeCP node, Visit&& visit) {
         visit(key);
       }
       break;
+    case NodeType::kInference:
+      visit(node->as<Inference>()->call());
+      break;
     case NodeType::kWindow: {
       const Window* window = node->as<Window>();
       for (ExprCP key : window->partitionKeys()) {
