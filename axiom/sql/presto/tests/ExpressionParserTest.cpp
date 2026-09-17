@@ -19,6 +19,7 @@
 #include "axiom/sql/presto/tests/ExprMatcher.h"
 #include "axiom/sql/presto/tests/PrestoParserTestBase.h"
 #include "velox/common/base/tests/GTestUtils.h"
+#include "velox/expression/rpc/AsyncRPCFunctionRegistry.h"
 #include "velox/functions/prestosql/types/QDigestRegistration.h"
 #include "velox/functions/prestosql/types/QDigestType.h"
 #include "velox/functions/prestosql/types/TDigestRegistration.h"
@@ -988,6 +989,65 @@ TEST_F(ExpressionParserTest, dereference) {
   auto expr = parseExpr(
       R"(cast(json_parse('{"foo": 1, "bar": 2}') as row(foo bigint, "BAR" int)).BAR)");
   VELOX_EXPECT_EQ_TYPES(expr->type(), INTEGER());
+}
+
+// A remote inference function resolves to the return type its signature
+// declares.
+TEST_F(ExpressionParserTest, inferenceFunction) {
+  exec::rpc::AsyncRPCFunctionRegistry::registerFunction(
+      "test_inference",
+      []() -> std::shared_ptr<exec::rpc::AsyncRPCFunction> { return nullptr; },
+      {exec::FunctionSignatureBuilder()
+           .returnType("array(real)")
+           .argumentType("varchar")
+           .build(),
+       exec::FunctionSignatureBuilder()
+           .returnType("array(real)")
+           .argumentType("bigint")
+           .build(),
+       exec::FunctionSignatureBuilder()
+           .returnType("array(real)")
+           .argumentType("varchar")
+           .argumentType("varchar")
+           .argumentType("varchar")
+           .build()});
+  SCOPE_EXIT {
+    exec::rpc::AsyncRPCFunctionRegistry::testingClear();
+  };
+
+  testSelect(
+      "SELECT test_inference(n_name) AS embedding FROM nation",
+      matchScan()
+          .project({"test_inference(n_name)"})
+          .output(ROW("embedding", ARRAY(REAL()))));
+
+  // An argument that needs widening resolves against the bigint overload and
+  // carries the cast the coercion asks for.
+  testSelect(
+      "SELECT test_inference(CAST(n_nationkey AS INTEGER)) FROM nation",
+      matchScan()
+          .project(
+              {"test_inference(CAST(CAST(n_nationkey AS INTEGER) AS BIGINT))"})
+          .output());
+
+  testSelect(
+      "SELECT test_inference('a', 'b', 'c') AS e3 FROM nation",
+      matchScan().project({"test_inference('a', 'b', 'c')"}).output());
+
+  // A constant argument resolves like any other; the call is not folded.
+  testSelect(
+      "SELECT test_inference('hello') AS embedding FROM nation",
+      matchScan()
+          .project({"test_inference('hello')"})
+          .output(ROW("embedding", ARRAY(REAL()))));
+
+  VELOX_ASSERT_THROW(
+      parseSelect("SELECT test_inference(n_comment, n_name) FROM nation"),
+      "Inference function signature is not supported: test_inference(VARCHAR, VARCHAR).");
+
+  VELOX_ASSERT_THROW(
+      parseSelect("SELECT not_registered(n_name) FROM nation"),
+      "Scalar function doesn't exist: not_registered.");
 }
 
 TEST_F(ExpressionParserTest, methodCall) {

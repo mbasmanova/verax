@@ -26,6 +26,7 @@ add_library(
 target_link_libraries(
   axiom_logical_plan
   axiom_common
+  velox_async_rpc_function_registry
   velox_type
   velox_serialization
   velox_common_base
