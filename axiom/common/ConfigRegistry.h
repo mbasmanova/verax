@@ -15,6 +15,7 @@
  */
 #pragma once
 
+#include <initializer_list>
 #include <memory>
 #include <string>
 #include <vector>
@@ -28,6 +29,18 @@ namespace facebook::axiom {
 /// shared across sessions. Immutable after assembly.
 class ConfigRegistry {
  public:
+  /// Associates a provider with a name used in diagnostics.
+  struct NamedConfigProvider {
+    std::string_view name;
+    std::shared_ptr<const velox::config::ConfigProvider> provider;
+  };
+
+  /// Combines providers with disjoint property names and retains their
+  /// ownership. At least one provider must be non-null.
+  static std::shared_ptr<velox::config::ConfigProvider> combineProviders(
+      std::string_view prefix,
+      std::initializer_list<NamedConfigProvider> providers);
+
   /// Registers a provider under a namespace prefix. Takes a snapshot
   /// of the provider's properties at registration time; later changes
   /// to the provider's property list are not reflected. Throws if the

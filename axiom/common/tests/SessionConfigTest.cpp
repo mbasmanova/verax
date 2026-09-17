@@ -254,4 +254,31 @@ TEST_F(SessionConfigTest, duplicatePrefix) {
       "Config prefix already registered");
 }
 
+TEST_F(SessionConfigTest, combinedProviderOwnership) {
+  std::weak_ptr<TestConfigProvider> weakProvider;
+  std::shared_ptr<ConfigProvider> combinedProvider;
+  {
+    auto provider = std::make_shared<TestConfigProvider>();
+    weakProvider = provider;
+    combinedProvider =
+        ConfigRegistry::combineProviders("test", {{"execution", provider}});
+  }
+
+  EXPECT_FALSE(weakProvider.expired());
+  combinedProvider.reset();
+  EXPECT_TRUE(weakProvider.expired());
+}
+
+TEST_F(SessionConfigTest, duplicateCombinedProperty) {
+  auto provider = std::make_shared<TestConfigProvider>();
+  VELOX_ASSERT_THROW(
+      ConfigRegistry::combineProviders(
+          "test",
+          {
+              {"execution", provider},
+              {"metadata", provider},
+          }),
+      "Duplicate config property across providers: prefix=test, property=flag_a, providers=execution and metadata");
+}
+
 } // namespace

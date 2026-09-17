@@ -15,12 +15,77 @@
  */
 #include "axiom/common/ConfigRegistry.h"
 
+#include <algorithm>
 #include "velox/common/base/Exceptions.h"
 
 namespace facebook::axiom {
 
 using velox::config::ConfigProperty;
 using velox::config::ConfigProvider;
+
+namespace {
+
+class CombinedConfigProvider : public ConfigProvider {
+ public:
+  CombinedConfigProvider(
+      std::string_view prefix,
+      std::initializer_list<ConfigRegistry::NamedConfigProvider> providers) {
+    for (const auto& entry : providers) {
+      if (entry.provider == nullptr) {
+        continue;
+      }
+      for (auto property : entry.provider->properties()) {
+        const auto [it, inserted] = providersByProperty_.emplace(
+            property.name,
+            ProviderEntry{std::string{entry.name}, entry.provider});
+        VELOX_CHECK(
+            inserted,
+            "Duplicate config property across providers: prefix={}, property={}, providers={} and {}",
+            prefix,
+            property.name,
+            it->second.name,
+            entry.name);
+        properties_.push_back(std::move(property));
+      }
+    }
+  }
+
+  std::vector<ConfigProperty> properties() const override {
+    return properties_;
+  }
+
+  std::string normalize(std::string_view name, std::string_view value)
+      const override {
+    const auto it = providersByProperty_.find(name);
+    VELOX_CHECK(
+        it != providersByProperty_.end(), "Unknown config property: {}", name);
+    return it->second.provider->normalize(name, value);
+  }
+
+ private:
+  struct ProviderEntry {
+    std::string name;
+    std::shared_ptr<const ConfigProvider> provider;
+  };
+
+  std::vector<ConfigProperty> properties_;
+  folly::F14FastMap<std::string, ProviderEntry> providersByProperty_;
+};
+
+} // namespace
+
+// static
+std::shared_ptr<ConfigProvider> ConfigRegistry::combineProviders(
+    std::string_view prefix,
+    std::initializer_list<NamedConfigProvider> providers) {
+  VELOX_CHECK(
+      std::any_of(
+          providers.begin(),
+          providers.end(),
+          [](const auto& provider) { return provider.provider != nullptr; }),
+      "At least one config provider is required");
+  return std::make_shared<CombinedConfigProvider>(prefix, providers);
+}
 
 void ConfigRegistry::add(
     std::string_view prefix,

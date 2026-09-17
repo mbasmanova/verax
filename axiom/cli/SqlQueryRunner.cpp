@@ -125,28 +125,6 @@ class PhaseTimer {
   std::optional<velox::MicrosecondTimer> timer_;
 };
 
-// Wraps a Velox connector's ConfigProvider pointer into an owned
-// ConfigProvider for use with ConfigRegistry. The underlying connector
-// must outlive this wrapper.
-class ConnectorConfigProvider : public velox::config::ConfigProvider {
- public:
-  explicit ConnectorConfigProvider(
-      const velox::config::ConfigProvider* provider)
-      : provider_(provider) {}
-
-  std::vector<velox::config::ConfigProperty> properties() const override {
-    return provider_->properties();
-  }
-
-  std::string normalize(std::string_view name, std::string_view value)
-      const override {
-    return provider_->normalize(name, value);
-  }
-
- private:
-  const velox::config::ConfigProvider* provider_;
-};
-
 // Returns the system's local IANA timezone name. Checks TZ environment variable
 // first, then reads /etc/localtime symlink, falls back to "UTC".
 std::string getLocalTimezone() {
@@ -329,12 +307,33 @@ void SqlQueryRunner::initialize(
           facebook::velox::functions::prestosql::PrestoConfigProvider>());
 
   // Register config providers for connectors that support session properties.
-  for (const auto& [connectorId, connector] :
+  for (const auto& [connectorId, veloxConnector] :
        velox::connector::ConnectorRegistry::global().snapshot()) {
-    if (const auto* provider = connector->configProvider()) {
-      configRegistry_->add(
-          connectorId, std::make_shared<ConnectorConfigProvider>(provider));
+    const auto metadata =
+        connector::ConnectorMetadataRegistry::tryGet(connectorId);
+    std::shared_ptr<const velox::config::ConfigProvider> executionProvider;
+    if (const auto* provider = veloxConnector->configProvider()) {
+      executionProvider = std::shared_ptr<const velox::config::ConfigProvider>(
+          veloxConnector, provider);
     }
+    std::shared_ptr<const velox::config::ConfigProvider> metadataProvider;
+    if (metadata != nullptr) {
+      if (const auto* provider = metadata->configProvider()) {
+        metadataProvider = std::shared_ptr<const velox::config::ConfigProvider>(
+            metadata, provider);
+      }
+    }
+    if (executionProvider == nullptr && metadataProvider == nullptr) {
+      continue;
+    }
+    configRegistry_->add(
+        connectorId,
+        facebook::axiom::ConfigRegistry::combineProviders(
+            connectorId,
+            {
+                {"execution", executionProvider},
+                {"metadata", metadataProvider},
+            }));
   }
 
   sessionConfig_ =
