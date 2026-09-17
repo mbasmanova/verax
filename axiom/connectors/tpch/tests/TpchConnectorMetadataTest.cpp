@@ -204,7 +204,7 @@ CO_TEST_F(TpchConnectorMetadataTest, splitGeneration) {
   CO_ASSERT_NE(table, nullptr);
 
   const auto& layouts = table->layouts();
-  CO_ASSERT_FALSE(layouts.empty());
+  CO_ASSERT_EQ(layouts.size(), 1);
 
   auto splitManager = metadata_->splitManager();
   CO_ASSERT_NE(splitManager, nullptr);
