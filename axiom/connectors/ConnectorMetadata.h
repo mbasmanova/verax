@@ -1220,6 +1220,11 @@ class ConnectorMetadata {
 
   virtual ~ConnectorMetadata() = default;
 
+  /// Returns session properties used by this metadata implementation, if any.
+  virtual const velox::config::ConfigProvider* configProvider() const {
+    return nullptr;
+  }
+
   /// Return a TablePtr given the table name. The returned Table object is
   /// immutable. If updates to the Table object are required, the
   /// ConnectorMetadata is required to drop its reference to the existing Table

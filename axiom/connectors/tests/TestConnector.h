@@ -539,6 +539,27 @@ class TestInsertTableHandle
   const SchemaTableName tableName_;
 };
 
+/// Provides a metadata-owned session property for TestConnector.
+class TestMetadataConfigProvider : public velox::config::ConfigProvider {
+ public:
+  static constexpr std::string_view kMetadataProperty = "metadata_property";
+
+  std::vector<velox::config::ConfigProperty> properties() const override {
+    return {{
+        std::string{kMetadataProperty},
+        velox::config::ConfigPropertyType::kString,
+        "default",
+        "Test-only metadata property.",
+    }};
+  }
+
+  std::string normalize(std::string_view name, std::string_view value)
+      const override {
+    VELOX_CHECK_EQ(name, kMetadataProperty);
+    return "metadata:" + std::string{value};
+  }
+};
+
 /// Contains an in-memory map of TestTables inserted via the addTable
 /// API. Tables are retrieved by name using the findTable API. The
 /// splitManager API returns a TestSplitManager. createColumnHandle
@@ -570,6 +591,11 @@ class TestConnectorMetadata : public ConnectorMetadata {
   explicit TestConnectorMetadata(TestConnector* connector)
       : connector_(connector),
         splitManager_(std::make_unique<TestSplitManager>()) {}
+
+  const velox::config::ConfigProvider* configProvider() const override {
+    static const TestMetadataConfigProvider kProvider;
+    return &kProvider;
+  }
 
   /// Signature of a matcher that, for a given plan subtree, returns
   /// the pushdown roots this connector wants to absorb.

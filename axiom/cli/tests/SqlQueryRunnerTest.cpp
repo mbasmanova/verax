@@ -1143,6 +1143,7 @@ TEST_F(SqlQueryRunnerTest, showSession) {
   auto allNames = fetchNames("SHOW SESSION");
   EXPECT_THAT(allNames, ::testing::Contains("optimizer.sample_joins"));
   EXPECT_THAT(allNames, ::testing::Contains("test.collect_column_statistics"));
+  EXPECT_THAT(allNames, ::testing::Contains("test.metadata_property"));
 
   // SHOW SESSION LIKE filters by prefix.
   {
@@ -1155,6 +1156,7 @@ TEST_F(SqlQueryRunnerTest, showSession) {
     auto names = fetchNames("SHOW SESSION LIKE 'test%'");
     EXPECT_THAT(names, ::testing::Each(::testing::StartsWith("test.")));
     EXPECT_THAT(names, ::testing::Contains("test.collect_column_statistics"));
+    EXPECT_THAT(names, ::testing::Contains("test.metadata_property"));
   }
 
   {
@@ -1189,6 +1191,11 @@ TEST_F(SqlQueryRunnerTest, connectorSessionProperties) {
   VELOX_ASSERT_THROW(
       run("SET SESSION test.collect_column_statistics = 42"),
       "Expected boolean value");
+
+  result = run("SET SESSION test.metadata_property = 'value'");
+  ASSERT_TRUE(result.message.has_value());
+  EXPECT_EQ(*result.message, "Session 'test.metadata_property' set to 'value'");
+  assertSessionProperty("test.metadata_property", "metadata:value", "default");
 }
 
 // Verifies end-to-end flow: SET SESSION for a connector property reaches the
