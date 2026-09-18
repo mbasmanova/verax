@@ -269,51 +269,52 @@ TEST_P(SetTest, unionFlatten) {
 }
 
 TEST_P(SetTest, intersect) {
+  // Distinct cardinalities keep join ordering observable after the same output
+  // filter is propagated to every input.
+  testConnector_->addTable("large", ROW({"large_key", "large_value"}, BIGINT()))
+      ->setStats(
+          10'000,
+          {{"large_key", {.numDistinct = 10'000}},
+           {"large_value", {.numDistinct = 100}}});
+  testConnector_
+      ->addTable("medium", ROW({"medium_key", "medium_value"}, BIGINT()))
+      ->setStats(
+          500,
+          {{"medium_key", {.numDistinct = 500}},
+           {"medium_value", {.numDistinct = 100}}});
+  testConnector_->addTable("small", ROW({"small_key", "small_value"}, BIGINT()))
+      ->setStats(
+          100,
+          {{"small_key", {.numDistinct = 100}},
+           {"small_value", {.numDistinct = 100}}});
+
   lp::PlanBuilder::Context ctx{kTestConnectorId, kDefaultSchema};
-  auto t1 = lp::PlanBuilder(ctx)
-                .tableScan("nation")
-                .filter("n_nationkey < 21")
-                .project({"n_nationkey", "n_regionkey"});
-  auto t2 = lp::PlanBuilder(ctx)
-                .tableScan("nation")
-                .filter("n_nationkey > 11")
-                .project({"n_nationkey", "n_regionkey"});
-  auto t3 = lp::PlanBuilder(ctx)
-                .tableScan("nation")
-                .filter("n_nationkey > 12")
-                .project({"n_nationkey", "n_regionkey"});
+  auto large = lp::PlanBuilder(ctx).tableScan("large");
+  auto medium = lp::PlanBuilder(ctx).tableScan("medium");
+  auto small = lp::PlanBuilder(ctx).tableScan("small");
 
   auto logicalPlan =
       lp::PlanBuilder(ctx)
-          .setOperation(lp::SetOperation::kIntersect, {t1, t2, t3})
-          .project({"n_regionkey + 1 as rk"})
-          .filter("rk % 3 = 1")
+          .setOperation(lp::SetOperation::kIntersect, {large, medium, small})
+          .project({"large_value + 1 as result"})
+          .filter("result % 3 = 1")
           .build();
 
   {
-    // TODO Fix this plan to push down (n_regionkey + 1) % 3
-    // = 1 to all branches of 'intersect'.
-
     auto plan = toSingleNodePlan(logicalPlan);
-    // Aliases bind stable names to each leg's scan output (the non-first scans
-    // of nation are disambiguated). The t1 leg also carries the combined
-    // (regionkey + 1) % 3 = 1 predicate pushed down from above the intersect.
-    auto matchLeg = [](const std::string& filter) {
-      return matchScan("nation")
-          .aliases({"nationkey", "regionkey"})
-          .filter(filter);
+    auto matchLeg = [](const std::string& table, const std::string& value) {
+      return matchScan(table).filter(fmt::format("({} + 1) % 3 = 1", value));
     };
-    auto matcher =
-        matchLeg("nationkey > 11")
-            .hashJoin(
-                matchLeg("nationkey > 12")
-                    .hashJoin(
-                        matchLeg("nationkey < 21 and (regionkey + 1) % 3 = 1"),
-                        core::JoinType::kRightSemiFilter),
-                core::JoinType::kRightSemiFilter)
-            .singleAggregation()
-            .project({"n_regionkey + 1 as rk"})
-            .build();
+    auto matcher = matchLeg("medium", "medium_value")
+                       .hashJoin(
+                           matchLeg("large", "large_value")
+                               .hashJoin(
+                                   matchLeg("small", "small_value"),
+                                   core::JoinType::kLeftSemiFilter),
+                           core::JoinType::kRightSemiFilter)
+                       .singleAggregation()
+                       .project({"large_value + 1 as result"})
+                       .build();
 
     AXIOM_ASSERT_PLAN_V2(plan, matcher);
   }
@@ -386,15 +387,16 @@ TEST_P(SetTest, exceptAll) {
   {
     // Single-node, single-driver: counting anti joins, no aggregation.
     auto plan = toSingleNodePlan(logicalPlan);
-    auto matcher =
-        matchScan("nation")
-            .filter("n_nationkey < 21")
-            .hashJoin(
-                matchBuild("nationkey > 16"), core::JoinType::kCountingAnti)
-            .hashJoin(
-                matchBuild("nationkey <= 5"), core::JoinType::kCountingAnti)
-            .build();
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    auto matcher = matchScan("nation")
+                       .filter("n_nationkey < 21")
+                       .hashJoin(
+                           matchBuild("nationkey > 16 and nationkey < 21"),
+                           core::JoinType::kCountingAnti)
+                       .hashJoin(
+                           matchBuild("nationkey <= 5 and nationkey < 21"),
+                           core::JoinType::kCountingAnti)
+                       .build();
+    AXIOM_ASSERT_PLAN_V2(plan, matcher);
   }
 
   {

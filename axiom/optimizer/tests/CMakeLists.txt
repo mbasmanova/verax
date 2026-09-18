@@ -125,6 +125,7 @@ add_executable(
   FixedPointTest.cpp
   HiveRowIdentityTest.cpp
   InferenceTest.cpp
+  JoinFilterPropagationTest.cpp
   JoinFilterProjectionTest.cpp
   JoinTest.cpp
   LimitTest.cpp

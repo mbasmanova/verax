@@ -42,6 +42,12 @@ namespace {
 
 // Per-call state for the pushdown visitor.
 struct PushdownContext {
+  // In collection mode, the visitor records predicates guaranteed by this
+  // subtree without changing the plan or consulting a connector.
+  bool collectingFilters{false};
+  PlanObjectSet requestedFilterColumns;
+  ExprVector collectedFilters;
+
   // Conjuncts collected from the path above this node that the visitor
   // will try to push further down.
   ExprVector pending;
@@ -349,6 +355,54 @@ bool canPushRight(velox::core::JoinType joinType, bool rightOnly) {
 // references only one input may move.
 enum class FilterTarget { kKeep, kLeft, kRight };
 
+// Describes safe propagation directions and whether every output row matched
+// a row from the other input.
+struct JoinFilterPropagation {
+  bool leftToRight{false};
+  bool rightToLeft{false};
+  bool emitsOnlyMatchedRows{false};
+};
+
+// Returns the directions in which a predicate guaranteed by one input can
+// restrict rows read from the other input.
+JoinFilterPropagation filterPropagation(
+    velox::core::JoinType joinType,
+    bool nullAware) {
+  using JoinType = velox::core::JoinType;
+  switch (joinType) {
+    case JoinType::kInner:
+    case JoinType::kLeftSemiFilter:
+    case JoinType::kCountingLeftSemiFilter:
+    case JoinType::kRightSemiFilter:
+      return {
+          .leftToRight = true,
+          .rightToLeft = true,
+          .emitsOnlyMatchedRows = true,
+      };
+    case JoinType::kLeft:
+      return {.leftToRight = true};
+    case JoinType::kRight:
+      return {.rightToLeft = true};
+    // A NULL on the matching input affects the projected mark or anti result,
+    // even when its key is outside a translated filter's range.
+    case JoinType::kLeftSemiProject:
+      return {.leftToRight = !nullAware};
+    case JoinType::kRightSemiProject:
+      return {.rightToLeft = !nullAware};
+    case JoinType::kAnti:
+      return {.leftToRight = !nullAware};
+    case JoinType::kCountingAnti:
+      return {.leftToRight = true};
+    case JoinType::kRightAnti:
+      return {.rightToLeft = !nullAware};
+    case JoinType::kFull:
+      return {};
+    case JoinType::kNumJoinTypes:
+      break;
+  }
+  VELOX_UNREACHABLE();
+}
+
 // Returns the target for a single-input match conjunct. This differs from
 // canPushLeft/canPushRight, which govern conjuncts arriving from above the
 // join (an extra restriction on the output). A match conjunct may move to:
@@ -577,11 +631,398 @@ class Pushdown : public NodeRewriter<PushdownContext> {
   // column is reached after the consumers whose paths it extends, and a Scan
   // sees the finished access when it negotiates with its connector.
   NodeCP rewrite(NodeCP node, PushdownContext& context) override {
+    if (context.collectingFilters) {
+      collectFilters(node, context);
+      return node;
+    }
     access_.add(*node);
     return narrowed(NodeRewriter::rewrite(node, context), context);
   }
 
  protected:
+  // Predicates guaranteed by each join input and by the join output.
+  struct CollectedJoinFilters {
+    ExprVector leftInput;
+    ExprVector rightInput;
+    ExprVector output;
+  };
+
+  static void appendDistinct(
+      ExprVector& destination,
+      const ExprVector& source) {
+    PlanObjectSet seen = PlanObjectSet::fromObjects(destination);
+    for (ExprCP expression : source) {
+      if (!seen.contains(expression)) {
+        destination.push_back(expression);
+        seen.add(expression);
+      }
+    }
+  }
+
+  static void appendDistinct(ExprVector& destination, ExprCP expression) {
+    if (std::find(destination.begin(), destination.end(), expression) ==
+        destination.end()) {
+      destination.push_back(expression);
+    }
+  }
+
+  // Runs one read-only collection walk and returns its response.
+  ExprVector collectGuaranteedFilters(NodeCP node, PlanObjectSet requested) {
+    PushdownContext context;
+    context.collectingFilters = true;
+    context.requestedFilterColumns = std::move(requested);
+    rewrite(node, context);
+    return std::move(context.collectedFilters);
+  }
+
+  void collectThroughInput(NodeCP input, PushdownContext& context) {
+    PlanObjectSet requested;
+    for (ColumnCP column : input->outputColumns()) {
+      if (context.requestedFilterColumns.contains(column)) {
+        requested.add(column);
+      }
+    }
+    context.collectedFilters =
+        collectGuaranteedFilters(input, std::move(requested));
+  }
+
+  // Produces every requested output-column combination for a filter whose
+  // input columns may each have multiple aliases.
+  static std::vector<ExprFactory::ExprSubstitution> aliasSubstitutions(
+      ExprCP filter,
+      const folly::F14FastMap<ColumnCP, ColumnVector>& outputAliases) {
+    std::vector<ExprFactory::ExprSubstitution> substitutions(1);
+    filter->columns().forEach<Column>([&](ColumnCP inputColumn) {
+      const auto aliasIt = outputAliases.find(inputColumn);
+      VELOX_DCHECK(aliasIt != outputAliases.end());
+
+      auto partial = std::move(substitutions);
+      substitutions.clear();
+      substitutions.reserve(partial.size() * aliasIt->second.size());
+      for (const auto& mapping : partial) {
+        for (ColumnCP outputColumn : aliasIt->second) {
+          auto extended = mapping;
+          extended.emplace(inputColumn, outputColumn);
+          substitutions.push_back(std::move(extended));
+        }
+      }
+    });
+    return substitutions;
+  }
+
+  // Maps predicates through direct column aliases. General expressions are
+  // not invertible, so they form a conservative collection barrier.
+  void collectThroughMapping(
+      NodeCP input,
+      const ExprVector& inputExpressions,
+      const ColumnVector& outputColumns,
+      PushdownContext& context) {
+    folly::F14FastMap<ColumnCP, ColumnVector> outputAliases;
+    PlanObjectSet requestedInputs;
+    for (size_t i = 0; i < outputColumns.size(); ++i) {
+      if (!context.requestedFilterColumns.contains(outputColumns[i]) ||
+          !inputExpressions[i]->is(PlanType::kColumnExpr)) {
+        continue;
+      }
+      ColumnCP inputColumn = inputExpressions[i]->as<Column>();
+      requestedInputs.add(inputColumn);
+      outputAliases[inputColumn].push_back(outputColumns[i]);
+    }
+
+    for (ExprCP filter :
+         collectGuaranteedFilters(input, std::move(requestedInputs))) {
+      for (const auto& mapping : aliasSubstitutions(filter, outputAliases)) {
+        appendDistinct(
+            context.collectedFilters, exprs_.replace(filter, mapping));
+      }
+    }
+  }
+
+  // Returns only predicates present on every union leg after mapping each
+  // leg's columns to the union outputs.
+  void collectFromUnion(const UnionAll* node, PushdownContext& context) {
+    ExprVector common;
+    bool firstInput{true};
+    for (size_t i = 0; i < node->inputs().size(); ++i) {
+      ExprVector inputExpressions(
+          node->legColumns()[i].begin(), node->legColumns()[i].end());
+      PushdownContext inputContext;
+      inputContext.collectingFilters = true;
+      inputContext.requestedFilterColumns = context.requestedFilterColumns;
+      collectThroughMapping(
+          node->inputs()[i],
+          inputExpressions,
+          node->outputColumns(),
+          inputContext);
+      if (firstInput) {
+        common = std::move(inputContext.collectedFilters);
+        firstInput = false;
+      } else {
+        const PlanObjectSet present =
+            PlanObjectSet::fromObjects(inputContext.collectedFilters);
+        std::erase_if(
+            common, [&](ExprCP filter) { return !present.contains(filter); });
+      }
+    }
+    context.collectedFilters = std::move(common);
+  }
+
+  // Collects predicates guaranteed to hold for every row emitted by `node`.
+  void collectFilters(NodeCP node, PushdownContext& context) {
+    switch (node->nodeType()) {
+      case NodeType::kScan:
+      case NodeType::kValues:
+      case NodeType::kWorkingTable:
+        return;
+      case NodeType::kFilter: {
+        const auto* filter = node->as<Filter>();
+        collectThroughInput(filter->input(), context);
+        for (ExprCP predicate : filter->predicates()) {
+          ExprVector conjuncts;
+          ExprFactory::flattenAnd(predicate, conjuncts);
+          for (ExprCP conjunct : conjuncts) {
+            if (!conjunct->containsNonDeterministic() &&
+                !conjunct->columns().empty() &&
+                conjunct->columns().isSubset(context.requestedFilterColumns)) {
+              appendDistinct(context.collectedFilters, conjunct);
+            }
+          }
+        }
+        return;
+      }
+      case NodeType::kProject: {
+        const auto* project = node->as<Project>();
+        collectThroughMapping(
+            project->input(),
+            project->exprs(),
+            project->outputColumns(),
+            context);
+        return;
+      }
+      case NodeType::kAggregate: {
+        const auto* aggregate = node->as<Aggregate>();
+        if (aggregate->groupingKeys().empty() ||
+            !aggregate->globalGroupingSets().empty()) {
+          return;
+        }
+        const size_t numKeys = aggregate->groupingKeys().size();
+        collectThroughMapping(
+            aggregate->input(),
+            aggregate->groupingKeys(),
+            ColumnVector(
+                aggregate->outputColumns().begin(),
+                aggregate->outputColumns().begin() + numKeys),
+            context);
+        return;
+      }
+      case NodeType::kUnionAll:
+        collectFromUnion(node->as<UnionAll>(), context);
+        return;
+      case NodeType::kJoin: {
+        const auto& filters = joinFilters(node->as<Join>());
+        context.collectedFilters = filters.output;
+        std::erase_if(context.collectedFilters, [&](ExprCP filter) {
+          return !filter->columns().isSubset(context.requestedFilterColumns);
+        });
+        return;
+      }
+      case NodeType::kLimit:
+      case NodeType::kSort:
+      case NodeType::kTopN:
+      case NodeType::kMarkDistinct:
+      case NodeType::kUnnest:
+      case NodeType::kWindow:
+      case NodeType::kInference:
+      case NodeType::kRowNumber:
+      case NodeType::kTopNRowNumber:
+      case NodeType::kAssignUniqueId:
+      case NodeType::kEnforceDistinct:
+      case NodeType::kExchange:
+        collectThroughInput(node->inputs().front(), context);
+        return;
+      case NodeType::kGroupId:
+      case NodeType::kApply:
+      case NodeType::kEnforceSingleRow:
+      case NodeType::kTableWrite:
+      case NodeType::kFixedPoint:
+        return;
+    }
+    VELOX_UNREACHABLE();
+  }
+
+  // Places repeated source columns in separate maps so every equivalent
+  // target receives a derived filter.
+  static std::vector<ExprFactory::ExprSubstitution> makeSubstitutions(
+      const ColumnVector& sources,
+      const ColumnVector& targets) {
+    std::vector<ExprFactory::ExprSubstitution> result;
+    folly::F14FastMap<ColumnCP, size_t> nextSubstitution;
+    for (size_t i = 0; i < sources.size(); ++i) {
+      const size_t index = nextSubstitution[sources[i]]++;
+      if (index == result.size()) {
+        result.emplace_back();
+      }
+      result[index].emplace(sources[i], targets[i]);
+    }
+    return result;
+  }
+
+  // Substitutes equivalent join-key columns into deterministic filters.
+  // Returns true if a derived filter simplifies to false.
+  bool deriveFilters(
+      const ExprVector& filters,
+      const ColumnVector& sources,
+      const ColumnVector& targets,
+      ExprVector& derived) {
+    const auto substitutions = makeSubstitutions(sources, targets);
+    for (ExprCP filter : filters) {
+      if (filter->containsNonDeterministic()) {
+        continue;
+      }
+      for (const auto& mapping : substitutions) {
+        ExprCP substituted = exprs_.replace(filter, mapping);
+        if (substituted != filter && !isSelfEquality(substituted) &&
+            simplifier_.simplifyFilter(substituted, derived)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  // Appends derived filters that can be evaluated entirely by one input.
+  void deriveForInput(
+      const ExprVector& filters,
+      const ColumnVector& sourceKeys,
+      const ColumnVector& targetKeys,
+      const PlanObjectSet& targetColumns,
+      ExprVector& targetFilters) {
+    ExprVector derived;
+    if (deriveFilters(filters, sourceKeys, targetKeys, derived)) {
+      appendDistinct(targetFilters, builder().makeBoolean(false));
+      return;
+    }
+    std::erase_if(derived, [&](ExprCP filter) {
+      return filter->columns().empty() ||
+          !filter->columns().isSubset(targetColumns);
+    });
+    appendDistinct(targetFilters, derived);
+  }
+
+  // Caches predicates independently of a caller's requested columns. Map
+  // presence records completion even when all three result vectors are empty.
+  const CollectedJoinFilters& joinFilters(JoinCP node) {
+    const auto found = collectedJoinFilters_.find(node);
+    if (found != collectedJoinFilters_.end()) {
+      return found->second;
+    }
+
+    const PlanObjectSet leftColumns =
+        PlanObjectSet::fromObjects(node->left()->outputColumns());
+    const PlanObjectSet rightColumns =
+        PlanObjectSet::fromObjects(node->right()->outputColumns());
+    auto [leftKeys, rightKeys] =
+        collectEquiColumnPairs(node, leftColumns, rightColumns);
+
+    CollectedJoinFilters collected;
+    collected.leftInput = collectGuaranteedFilters(node->left(), leftColumns);
+    collected.rightInput =
+        collectGuaranteedFilters(node->right(), rightColumns);
+
+    const auto preserved = Join::preservedSides(node->joinType());
+    if (preserved.left) {
+      appendDistinct(collected.output, collected.leftInput);
+    }
+    if (preserved.right) {
+      appendDistinct(collected.output, collected.rightInput);
+    }
+    if (filterPropagation(node->joinType(), node->nullAware())
+            .emitsOnlyMatchedRows) {
+      if (preserved.right) {
+        deriveForInput(
+            collected.leftInput,
+            leftKeys,
+            rightKeys,
+            rightColumns,
+            collected.output);
+      }
+      if (preserved.left) {
+        deriveForInput(
+            collected.rightInput,
+            rightKeys,
+            leftKeys,
+            leftColumns,
+            collected.output);
+      }
+      for (ExprCP filter : node->filter()) {
+        if (!filter->containsNonDeterministic() && !filter->columns().empty()) {
+          appendDistinct(collected.output, filter);
+        }
+      }
+    }
+
+    return collectedJoinFilters_.emplace(node, std::move(collected))
+        .first->second;
+  }
+
+  static void appendInputFilters(
+      const ExprVector& filters,
+      const PlanObjectSet& leftColumns,
+      const PlanObjectSet& rightColumns,
+      ExprVector& leftFilters,
+      ExprVector& rightFilters) {
+    for (ExprCP filter : filters) {
+      if (filter->columns().empty()) {
+        continue;
+      }
+      if (filter->columns().isSubset(leftColumns)) {
+        appendDistinct(leftFilters, filter);
+      } else if (filter->columns().isSubset(rightColumns)) {
+        appendDistinct(rightFilters, filter);
+      }
+    }
+  }
+
+  // Propagates filters only toward an input whose rows the join may discard.
+  void propagateAcrossJoin(
+      JoinCP node,
+      velox::core::JoinType joinType,
+      const PlanObjectSet& leftColumns,
+      const PlanObjectSet& rightColumns,
+      const ExprVector& pending,
+      ExprVector& leftPending,
+      ExprVector& rightPending) {
+    const auto propagation = filterPropagation(joinType, node->nullAware());
+    if (!propagation.leftToRight && !propagation.rightToLeft) {
+      return;
+    }
+
+    auto [leftKeys, rightKeys] =
+        collectEquiColumnPairs(node, leftColumns, rightColumns, pending);
+    if (leftKeys.empty()) {
+      return;
+    }
+
+    const auto& collected = joinFilters(node);
+    ExprVector leftFilters = collected.leftInput;
+    ExprVector rightFilters = collected.rightInput;
+    if (joinType != velox::core::JoinType::kInner) {
+      appendInputFilters(
+          pending, leftColumns, rightColumns, leftFilters, rightFilters);
+    }
+    appendInputFilters(
+        node->filter(), leftColumns, rightColumns, leftFilters, rightFilters);
+
+    if (propagation.rightToLeft) {
+      deriveForInput(
+          rightFilters, rightKeys, leftKeys, leftColumns, leftPending);
+    }
+    if (propagation.leftToRight) {
+      deriveForInput(
+          leftFilters, leftKeys, rightKeys, rightColumns, rightPending);
+    }
+  }
+
   // Adds the `Project` that `Node::emitsInputColumns` describes, here rather
   // than at the root, so the column stays out of everything in between.
   NodeCP narrowed(NodeCP node, const PushdownContext& context) {
@@ -977,6 +1418,15 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     ExprVector rightPending;
     ExprVector inFilter;
     ExprVector above;
+
+    propagateAcrossJoin(
+        node,
+        newKind,
+        leftColumns,
+        rightColumns,
+        context.pending,
+        leftPending,
+        rightPending);
 
     if (newKind == velox::core::JoinType::kInner) {
       if (NodeCP replacement = rewriteConstantInputJoin(
@@ -2273,54 +2723,16 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     if (leftKeys.empty()) {
       return false;
     }
-
-    // A column can be equated to several columns on the other side, as in
-    // `v.b = u.b AND v.b = t.b`, which gives `v.b` two key pairs. A
-    // substitution maps each source once, so a source's n-th pair goes into
-    // the n-th substitution and a conjunct is derived once per substitution,
-    // reaching every equated column.
-    const auto substitutions = [](const ColumnVector& sources,
-                                  const ColumnVector& targets) {
-      std::vector<ExprFactory::ExprSubstitution> result;
-      folly::F14FastMap<ColumnCP, size_t> nth;
-      for (size_t i = 0; i < sources.size(); ++i) {
-        const size_t index = nth[sources[i]]++;
-        if (index == result.size()) {
-          result.emplace_back();
-        }
-        result[index].emplace(sources[i], targets[i]);
-      }
-      return result;
-    };
-
-    const auto toLeft = substitutions(rightKeys, leftKeys);
-    const auto toRight = substitutions(leftKeys, rightKeys);
-
     ExprVector derived;
-    for (ExprCP conjunct : pending) {
-      // A derived twin is a second, independent restriction, so deriving one
-      // from a nondeterministic conjunct rejects rows the query keeps.
-      if (conjunct->containsNonDeterministic()) {
-        continue;
-      }
-      for (const auto& mapping : toLeft) {
-        ExprCP substituted = exprs_.replace(conjunct, mapping);
-        if (substituted != conjunct && !isSelfEquality(substituted) &&
-            simplifier_.simplifyFilter(substituted, derived)) {
-          return true;
-        }
-      }
-      for (const auto& mapping : toRight) {
-        ExprCP substituted = exprs_.replace(conjunct, mapping);
-        if (substituted != conjunct && !isSelfEquality(substituted) &&
-            simplifier_.simplifyFilter(substituted, derived)) {
-          return true;
-        }
-      }
+    if (deriveFilters(pending, rightKeys, leftKeys, derived) ||
+        deriveFilters(pending, leftKeys, rightKeys, derived)) {
+      return true;
     }
-    appendAll(pending, derived);
+    appendDistinct(pending, derived);
     return false;
   }
+
+  folly::F14FastMap<JoinCP, CollectedJoinFilters> collectedJoinFilters_;
 
   ExprFactory exprs_;
   velox::core::ExpressionEvaluator& evaluator_;

@@ -1309,7 +1309,9 @@ TEST_P(JoinTest, fullThenFilter) {
     auto matcher = matchScan("t")
                        .filter("a > 0")
                        .hashJoin(
-                           matchScan("u").project({"x", "y + 1 as z"}),
+                           matchScan("u")
+                               .filterIf(useV2_, "x > 0")
+                               .project({"x", "y + 1 as z"}),
                            core::JoinType::kLeft)
                        .filter("coalesce(z, 1) > 0")
                        .projectIf(!useV2_)
