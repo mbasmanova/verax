@@ -222,6 +222,15 @@ A `DECLARE` without its `DEFINE` compiles and links until someone calls
 - Never use `friend`, `FRIEND_TEST`, or any friend declarations. If a test needs access to private members, redesign the API or test through public methods instead.
 - Never declare a free function in a header. A helper that more than one translation unit needs goes on the class that owns the concept, as a static method — `Join::preservedSides(joinType)`, not `preservedSides(joinType)` at namespace scope. A free function already sitting in a header is not license to add another.
 
+### IR shape
+
+The optimizer IR is a tree — the `Node` docblock states the invariant and what `Builder`'s interning does. Write passes to match it:
+
+- Recurse over inputs directly; each node is reached once.
+- Build test plans through `Builder` from a query, so they have the shape the IR produces.
+
+A node reached from two parents is a bug. Report it rather than working around it.
+
 ### Optimizer passes
 
 Passes do not depend on each other. A pass must not include another pass's header, or a header that is one pass's implementation detail, to reuse a helper — even a pure one.

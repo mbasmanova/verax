@@ -27,10 +27,11 @@
 
 namespace facebook::axiom::optimizer::v2 {
 
-/// Hash-consing factory for tree-IR nodes and selected Expr leaves. Identical
-/// sub-trees produce the same pointer, so identity equality is O(1) and side-
-/// table lookups keyed by node identity hit one canonical entry per logical
-/// sub-tree.
+/// Hash-consing factory for tree-IR nodes and selected Expr leaves. A node's
+/// identity is its kind, its child pointers and its parameters, so the lookup
+/// compares children by pointer rather than walking them. Two sub-trees in
+/// different positions hold different children, so they never collide; a hit
+/// means a rewrite rebuilt a node over the children it already had. See `Node`.
 ///
 /// Everything is interned by pointer: each dedup set stores `const T*` and
 /// recovers identity via `T::KeyHash` / `T::KeyEq`, so a cache hit allocates
