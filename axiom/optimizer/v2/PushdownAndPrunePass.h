@@ -23,8 +23,8 @@
 
 namespace facebook::axiom::optimizer::v2 {
 
-/// Single top-down pass over the tree IR that does two intertwined jobs in one
-/// traversal:
+/// Top-down pass over the tree IR that combines filter pushdown with column
+/// pruning:
 ///
 ///  - Filter pushdown. Each `Filter`'s conjuncts are flattened into a `pending`
 ///    set carried down the tree. At every node, conjuncts the node's rule
@@ -36,9 +36,14 @@ namespace facebook::axiom::optimizer::v2 {
 ///    above still read, and drops the projections, aggregates, window
 ///    functions, and union legs that produce only unused columns.
 ///
-/// Both jobs share one traversal state (the internal `PushdownContext`):
+/// Both jobs share one rewrite state (the internal `PushdownContext`):
 /// `pending` conjuncts, the `required` / `requiredAbove` column sets, and
 /// `nonNullColumns` (columns an ancestor inner join proves non-NULL).
+/// Before rewriting a join, the pass may make one read-only walk over its
+/// inputs to collect predicates guaranteed by those inputs. Nested joins cache
+/// completed collection results, including empty results, so every tree
+/// occurrence is visited at most once for collection and once for rewriting.
+/// Collection neither constructs plan nodes nor consults connectors.
 ///
 /// Notable per-node behavior:
 ///  - Join places each conjunct on the left input, the right input, or the

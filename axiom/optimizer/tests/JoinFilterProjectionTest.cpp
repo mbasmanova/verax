@@ -23,9 +23,8 @@ namespace {
 using namespace velox;
 
 // A join evaluates its filter once per candidate pair, so v2 moves the parts
-// of the filter that read a single side into that side's input, where they are
-// evaluated once per row. v1 leaves the filter intact, so these plans are
-// v2-only.
+// that read a single side into that input, as far below the join as their
+// dependencies and semantics allow.
 class JoinFilterProjectionTest : public test::QueryTestBase {
  protected:
   JoinFilterProjectionTest() {

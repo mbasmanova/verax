@@ -132,6 +132,59 @@ SELECT * FROM (VALUES (1)) t(a) JOIN (VALUES (1)) u(b) ON t.a = u.b AND t.a = u.
 -- Same, with the repeat written in the opposite orientation.
 SELECT * FROM (VALUES (1)) t(a) JOIN (VALUES (1)) u(b) ON t.a = u.b AND u.b = t.a
 ----
+-- A filter below DISTINCT on the preserved side of a LEFT JOIN also restricts
+-- matching rows from the nullable side.
+SELECT d.a, count(u.b)
+FROM (SELECT DISTINCT a FROM t WHERE a >= 2) d
+LEFT JOIN t u ON d.a = u.a
+GROUP BY d.a
+----
+-- The same propagation from the preserved input of a RIGHT JOIN.
+SELECT d.a, count(t.b)
+FROM t
+RIGHT JOIN (SELECT DISTINCT a FROM t WHERE a >= 2) d ON t.a = d.a
+GROUP BY d.a
+----
+-- A FULL JOIN cannot use a predicate from one input to restrict the other.
+SELECT *
+FROM (SELECT * FROM t WHERE a >= 2) t
+FULL JOIN t u ON t.a = u.a
+----
+-- A filter can cross two joins when the first join preserves it on its output.
+SELECT q.a, count(v.b)
+FROM (
+  SELECT d.a, u.a AS x
+  FROM (SELECT DISTINCT a FROM t WHERE a >= 2) d
+  JOIN t u ON d.a = u.a
+) q
+LEFT JOIN t v ON q.x = v.a
+GROUP BY q.a
+----
+-- A filter on the preserved input of a semi join also restricts its matching
+-- input.
+SELECT t.a
+FROM (SELECT * FROM t WHERE a >= 2) t
+WHERE EXISTS (SELECT 1 FROM t u WHERE u.a = t.a)
+----
+-- A filter on the preserved input remains valid when EXISTS produces a mark.
+SELECT t.a, EXISTS (SELECT 1 FROM t u WHERE u.a = t.a) AS matched
+FROM (SELECT * FROM t WHERE a >= 2) t
+----
+-- NOT EXISTS preserves the filter while selecting non-matching rows.
+-- count 0
+SELECT t.a
+FROM (SELECT * FROM t WHERE a >= 2) t
+WHERE NOT EXISTS (SELECT 1 FROM t u WHERE u.a = t.a)
+----
+-- Null-aware marks and anti joins must retain NULLs on the matching input.
+SELECT t.a, t.a IN (SELECT x FROM (VALUES (2), (null)) u(x)) AS matched
+FROM (SELECT * FROM t WHERE a >= 2) t
+----
+-- count 0
+SELECT t.a
+FROM (SELECT * FROM t WHERE a >= 2) t
+WHERE t.a NOT IN (SELECT x FROM (VALUES (2), (null)) u(x))
+----
 -- Same-table equality from equivalence class: a = b is inferred and pushed
 -- as a filter on the left side. Only rows where a = b survive, projecting
 -- (a, b): (1, 1), (3, 3), (5, 5).
