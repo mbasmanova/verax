@@ -105,6 +105,10 @@ using RequiredStates = QGF14FastMap<Name, ColumnVector>;
 /// duplicate columns, and each kind extends or transforms its input schema in a
 /// specific way. See each subclass's docblock for the exact rules.
 ///
+/// The IR is a tree: every node has one parent, and a traversal from the root
+/// reaches each node once. A node reached from two parents is a bug in whatever
+/// produced it.
+///
 /// Instantiate nodes only through a `Builder` (`builder.make<T>(key)`), never
 /// by constructing a subclass directly: `make` hash-conses on the subclass's
 /// nested `Key` struct (its identity — two nodes of a kind intern to the same

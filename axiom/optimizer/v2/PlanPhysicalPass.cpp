@@ -508,41 +508,20 @@ bool satisfies(
   VELOX_UNREACHABLE();
 }
 
-// True when regrouping the scans under 'node' can make it bucketed. Mirrors
-// GroupedScanRewriter's two stopping rules -- only a scan of a bucketed table
-// contributes, and nothing past an exchange does -- but reads the tree instead
-// of rebuilding it, so asking costs no allocation.
-bool hasRegroupableScan(NodeCP node, folly::F14FastMap<NodeCP, bool>& answers) {
+// True when regrouping the scans under 'node' can make it bucketed. Only a scan
+// of a bucketed table contributes, and an exchange ends the search.
+bool hasRegroupableScan(NodeCP node) {
   if (node->is(NodeType::kExchange)) {
     return false;
   }
-  const auto it = answers.find(node);
-  if (it != answers.end()) {
-    return it->second;
-  }
-  bool answer;
   if (node->is(NodeType::kScan)) {
-    answer = node->as<Scan>()->storageBucketing().partitionType != nullptr;
-  } else if (node->is(NodeType::kUnionAll)) {
-    // A union is bucketed only when every leg is.
-    answer = std::ranges::all_of(node->inputs(), [&](NodeCP leg) {
-      return hasRegroupableScan(leg, answers);
-    });
-  } else {
-    answer = std::ranges::any_of(node->inputs(), [&](NodeCP input) {
-      return hasRegroupableScan(input, answers);
-    });
+    return node->as<Scan>()->storageBucketing().partitionType != nullptr;
   }
-  answers.emplace(node, answer);
-  return answer;
-}
-
-// Nodes are interned, so one subtree can hang off several parents -- and the
-// same node can be two legs of one union. Answers are remembered per node so a
-// diamond is walked once and a repeated leg reports what it is.
-bool hasRegroupableScan(NodeCP node) {
-  folly::F14FastMap<NodeCP, bool> answers;
-  return hasRegroupableScan(node, answers);
+  if (node->is(NodeType::kUnionAll)) {
+    // A union is bucketed only when every leg is.
+    return std::ranges::all_of(node->inputs(), hasRegroupableScan);
+  }
+  return std::ranges::any_of(node->inputs(), hasRegroupableScan);
 }
 
 // Rewrites a subtree so every scan of a bucketed table is read one bucket-group
