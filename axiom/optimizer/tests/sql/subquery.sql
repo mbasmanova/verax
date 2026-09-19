@@ -105,6 +105,20 @@ WITH a AS (SELECT (SELECT sum(x) FROM (VALUES (1), (2)) s(x)) AS n),
      b AS (SELECT (SELECT sum(x) FROM (VALUES (1), (2)) s(x)) AS m)
 SELECT n, m FROM a, b
 ----
+-- A scalar subquery body and the query around it read one uncorrelated
+-- scalar. The body reads its own copy, so the FULL JOIN it sits under stays
+-- uncorrelated.
+-- disabled_v1: crashes in join enumeration
+-- duckdb: VALUES (1, 3), (2, 3)
+WITH m AS (SELECT max(x) AS v FROM (VALUES (1), (2), (3)) q(x))
+SELECT
+  t.a,
+  (SELECT count(*)
+   FROM (VALUES (1), (2)) l(x)
+   FULL JOIN (VALUES (1), (3)) r(y) ON l.x = r.y AND r.y < (SELECT v FROM m))
+FROM (VALUES (1), (2)) t(a)
+WHERE t.a < (SELECT v FROM m)
+----
 -- Scalar subquery and EXISTS over the same inner subquery must produce
 -- distinct columns (a scalar value vs a boolean).
 SELECT (SELECT max(a) FROM u), EXISTS (SELECT max(a) FROM u) FROM t
