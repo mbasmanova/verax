@@ -731,6 +731,28 @@ TEST_P(SubqueryTest, correlatedTopNPerOuter) {
             .build());
   }
 
+  // A grouped INNER LATERAL body applies ORDER BY and LIMIT independently for
+  // each outer key, including when the key is absent from SELECT and GROUP BY.
+  {
+    auto query =
+        "SELECT t.a, q.x, q.total FROM t CROSS JOIN LATERAL ("
+        "  SELECT u.x, sum(u.z) AS total FROM u WHERE u.y = t.b "
+        "  GROUP BY u.x ORDER BY total DESC LIMIT 2"
+        ") q";
+    SCOPED_TRACE(query);
+
+    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    AXIOM_ASSERT_PLAN_V2(
+        plan,
+        matchScan("t")
+            .hashJoinInner(
+                matchScan("u")
+                    .singleAggregation({"y", "x"}, {"sum(z) as total"})
+                    .topNRowNumber({"y"}, {"total"}, 2),
+                {.keys = {{"b = y"}}})
+            .build());
+  }
+
   // A LIMIT above one row under a scalar bound still has to assert that
   // bound per outer row, so it takes the per-outer form instead.
   {

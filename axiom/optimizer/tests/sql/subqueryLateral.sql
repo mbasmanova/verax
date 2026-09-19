@@ -34,6 +34,26 @@ SELECT t.x, g.m
 FROM t
 CROSS JOIN LATERAL (SELECT u.a AS m FROM u WHERE u.a < t.x) g
 ----
+-- Correlated CROSS JOIN LATERAL keeps the first two ordered groups for each
+-- matching outer key and drops an outer with no match.
+-- ordered
+-- error_v1: Unsupported PlanNode LATERAL_JOIN
+WITH outer_t(k) AS (VALUES (1), (2), (9)),
+     inner_t(k, bucket, v) AS (
+       VALUES (1, 1, 30), (1, 1, 10), (1, 2, 20), (1, 3, 10), (2, 1, 50), (2, 2, 40)
+     )
+SELECT o.k, g.bucket, g.total
+FROM outer_t o
+CROSS JOIN LATERAL (
+  SELECT i.bucket, sum(i.v) AS total
+  FROM inner_t i
+  WHERE i.k = o.k
+  GROUP BY i.bucket
+  ORDER BY total DESC
+  LIMIT 2
+) g
+ORDER BY o.k, g.total DESC
+----
 -- CROSS JOIN LATERAL whose body produces multiple columns: a body column and
 -- an expression combining the body with an outer column.
 -- error_v1: Unsupported PlanNode LATERAL_JOIN
