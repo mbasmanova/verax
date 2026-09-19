@@ -98,6 +98,13 @@ FROM (
 -- error_v2: Scalar subquery produced more than one row
 SELECT (SELECT x + 1 FROM (VALUES (1), (2)) t(x))
 ----
+-- Two scopes read one uncorrelated scalar subquery and are then joined. Each
+-- scope evaluates it, and the columns the join sees are named apart.
+-- error_v1: Duplicate column name found on join's left and right sides
+WITH a AS (SELECT (SELECT sum(x) FROM (VALUES (1), (2)) s(x)) AS n),
+     b AS (SELECT (SELECT sum(x) FROM (VALUES (1), (2)) s(x)) AS m)
+SELECT n, m FROM a, b
+----
 -- Scalar subquery and EXISTS over the same inner subquery must produce
 -- distinct columns (a scalar value vs a boolean).
 SELECT (SELECT max(a) FROM u), EXISTS (SELECT max(a) FROM u) FROM t
