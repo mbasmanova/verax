@@ -1341,8 +1341,9 @@ class ConnectorMetadata {
   /// do not require it.
   ///
   /// When 'explain' is true, the connector must build and return a valid
-  /// ConnectorWriteHandle for plan display, but must not allocate staging
-  /// directories or acquire resources that need cleanup.
+  /// ConnectorWriteHandle for plan display, but must leave nothing behind: no
+  /// state allocated, reserved or recorded outside the handle, and nothing
+  /// that needs cleanup. The handle's location is not read on this path.
   /// @param scanHandle For a delete, the handle of the scan the rows come
   /// from, carrying the filters the connector absorbed. nullptr for other
   /// write kinds. Fails if the connector cannot delete the rows the handle

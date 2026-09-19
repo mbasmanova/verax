@@ -626,12 +626,19 @@ ConnectorWriteHandlePtr HiveConnectorMetadata::beginWrite(
             std::move(sortedBy));
   }
 
+  // An explained plan is never executed and needs no place to write.
+  // Resolving one is not free: it can leave state behind.
+  auto locationHandle = explain
+      ? makeLocationHandle(/*targetDirectory=*/"",
+                           /*writeDirectory=*/std::nullopt)
+      : makeLocationHandle(
+            prepareWriteLocation(session, table->name()),
+            makeStagingDirectory(table->name()));
+
   auto veloxHandle =
       std::make_shared<velox::connector::hive::HiveInsertTableHandle>(
           inputColumns,
-          makeLocationHandle(
-              prepareWriteLocation(session, table->name()),
-              explain ? std::nullopt : makeStagingDirectory(table->name())),
+          std::move(locationHandle),
           storageFormat,
           bucketProperty,
           compressionKind,
