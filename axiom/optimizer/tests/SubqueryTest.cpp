@@ -2749,9 +2749,24 @@ TEST_P(SubqueryTest, constantFoldingWithoutExecutor) {
   auto logicalPlan =
       parseSelect("SELECT * FROM nation WHERE n_regionkey > (SELECT 1)");
 
-  auto plan = planVelox(
-      logicalPlan, {.maxRemotePartitions = 4, .maxLocalPartitions = 4});
-  EXPECT_EQ(3, plan.plan->fragments().size());
+  // `(SELECT 1)` folds to its literal, so the constant reaches the scan as a
+  // filter and planning completes with a null executor.
+  {
+    auto plan = toSingleNodePlan(logicalPlan);
+    AXIOM_ASSERT_PLAN_V2(
+        plan,
+        matchHiveScan("nation", test::gt("n_regionkey", int64_t{1})).build());
+  }
+
+  {
+    auto plan = planVelox(
+        logicalPlan, {.maxRemotePartitions = 4, .maxLocalPartitions = 4});
+    AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
+        plan.plan,
+        matchHiveScan("nation", test::gt("n_regionkey", int64_t{1}))
+            .gather()
+            .build());
+  }
 }
 
 AXIOM_INSTANTIATE_V1_V2(SubqueryTest);
