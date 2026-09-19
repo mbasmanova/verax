@@ -463,6 +463,9 @@ void registerVariant(const SqlFile& file, const std::string& path) {
       fmt::format("{}/SqlTest_{}", UseV2 ? "V2" : "V1", Name.value);
 
   for (const auto& entry : file.entries) {
+    if (!UseV2 && entry.disabledV1Reason.has_value()) {
+      continue;
+    }
     for (const bool syntacticJoinOrder : {false, true}) {
       auto testName = syntacticJoinOrder
           ? fmt::format("l{}_syntactic", entry.lineNumber)

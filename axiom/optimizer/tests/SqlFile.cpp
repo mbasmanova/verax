@@ -38,6 +38,14 @@ AXIOM_DEFINE_EMBEDDED_ENUM_NAME(QueryEntry, Type, typeNames)
 
 namespace {
 
+// Annotation prefixes that carry a value after the colon.
+constexpr std::string_view kCountPrefix = "count ";
+constexpr std::string_view kErrorPrefix = "error: ";
+constexpr std::string_view kErrorV1Prefix = "error_v1: ";
+constexpr std::string_view kErrorV2Prefix = "error_v2: ";
+constexpr std::string_view kDuckDbPrefix = "duckdb: ";
+constexpr std::string_view kDisabledV1Prefix = "disabled_v1: ";
+
 // Returns leading-whitespace-trimmed view of 'sv'.
 std::string_view ltrim(std::string_view sv) {
   size_t i = 0;
@@ -119,6 +127,11 @@ std::vector<QueryEntry> parseQueries(
       sqlLines.pop_back();
     }
 
+    VELOX_USER_CHECK(
+        !disabled || !current.disabledV1Reason.has_value(),
+        "-- disabled cannot be combined with -- disabled_v1: (line {})",
+        sqlStartLine);
+
     if (!sqlLines.empty() && !disabled) {
       // `-- columns` checks output column names, so it needs a result set from
       // at least one optimizer: reject it only for a count query or one that
@@ -167,18 +180,30 @@ std::vector<QueryEntry> parseQueries(
         current.type = QueryEntry::Type::kOrdered;
       } else if (annotation == "disabled") {
         disabled = true;
-      } else if (annotation.substr(0, 6) == "count ") {
+      } else if (annotation.starts_with(kDisabledV1Prefix)) {
+        VELOX_USER_CHECK(
+            !current.disabledV1Reason.has_value(),
+            "duplicate -- disabled_v1: (line {})",
+            lineNumber);
+        current.disabledV1Reason = annotation.substr(kDisabledV1Prefix.size());
+      } else if (annotation == "disabled_v1") {
+        VELOX_USER_FAIL(
+            "-- disabled_v1 requires a reason, as in "
+            "'-- disabled_v1: wrong results' (line {})",
+            lineNumber);
+      } else if (annotation.starts_with(kCountPrefix)) {
         current.type = QueryEntry::Type::kCount;
-        current.expectedCount = std::stoull(annotation.substr(6));
-      } else if (annotation.substr(0, 7) == "error: ") {
+        current.expectedCount =
+            std::stoull(annotation.substr(kCountPrefix.size()));
+      } else if (annotation.starts_with(kErrorPrefix)) {
         VELOX_USER_CHECK(
             current.expectedErrorV1.empty() && current.expectedErrorV2.empty(),
             "-- error: cannot be combined with -- error_v1:/-- error_v2: (line {})",
             lineNumber);
-        current.expectedError = annotation.substr(7);
+        current.expectedError = annotation.substr(kErrorPrefix.size());
         current.expectedErrorV1 = current.expectedError;
         current.expectedErrorV2 = current.expectedError;
-      } else if (annotation.substr(0, 10) == "error_v1: ") {
+      } else if (annotation.starts_with(kErrorV1Prefix)) {
         VELOX_USER_CHECK(
             current.expectedError.empty(),
             "-- error_v1: cannot be combined with -- error: (line {})",
@@ -187,8 +212,8 @@ std::vector<QueryEntry> parseQueries(
             current.expectedErrorV1.empty(),
             "duplicate -- error_v1: (line {})",
             lineNumber);
-        current.expectedErrorV1 = annotation.substr(10);
-      } else if (annotation.substr(0, 10) == "error_v2: ") {
+        current.expectedErrorV1 = annotation.substr(kErrorV1Prefix.size());
+      } else if (annotation.starts_with(kErrorV2Prefix)) {
         VELOX_USER_CHECK(
             current.expectedError.empty(),
             "-- error_v2: cannot be combined with -- error: (line {})",
@@ -197,9 +222,9 @@ std::vector<QueryEntry> parseQueries(
             current.expectedErrorV2.empty(),
             "duplicate -- error_v2: (line {})",
             lineNumber);
-        current.expectedErrorV2 = annotation.substr(10);
-      } else if (annotation.substr(0, 8) == "duckdb: ") {
-        current.duckDbSql = annotation.substr(8);
+        current.expectedErrorV2 = annotation.substr(kErrorV2Prefix.size());
+      } else if (annotation.starts_with(kDuckDbPrefix)) {
+        current.duckDbSql = annotation.substr(kDuckDbPrefix.size());
       } else if (annotation == "columns") {
         current.checkColumnNames = true;
       }

@@ -58,6 +58,11 @@ struct QueryEntry {
   std::string expectedErrorV1;
   std::string expectedErrorV2;
   bool checkColumnNames{false};
+  /// Set by `-- disabled_v1: <reason>`: the query runs under v2 only, and the
+  /// reason says what v1 does with it — wrong results, or a crash. A v1 that
+  /// fails with a message states it as `-- error_v1:` and keeps running.
+  /// Empty when the query runs under both.
+  std::optional<std::string> disabledV1Reason;
   int32_t lineNumber{0};
 
   /// True if the query expects an error in both optimizers, so no run produces
