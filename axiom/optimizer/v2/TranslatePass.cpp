@@ -802,9 +802,10 @@ class Translator {
       LiftTarget* liftTarget);
 
   // Returns the value a scalar subquery over 'body' produces, when 'body' is a
-  // constant `Values`: its single row's value, or NULL if it has no rows.
-  // Returns nullptr when 'body' is anything else. Fails if 'body' has more than
-  // one row, which no scalar subquery may.
+  // constant `Values` or a `Project` over one: the single row's value, or NULL
+  // if it has no rows. Returns nullptr for any other 'body', and for a
+  // `Project` whose expression is not a literal. Fails if a bare `Values` has
+  // more than one row, which no scalar subquery may.
   ExprCP tryScalarFromValues(NodeCP body);
 
   // Evaluates 'aggregate' from the listed discrete-predicate (e.g. partition)
@@ -3698,15 +3699,35 @@ ExprCP Translator::liftSubquery(
 }
 
 ExprCP Translator::tryScalarFromValues(NodeCP body) {
+  VELOX_CHECK_EQ(body->outputColumns().size(), 1);
+  const TypeCP type = body->outputColumns()[0]->value().type;
+
+  // A Project that computes a constant over a one-row body is that constant,
+  // whatever the body reads.
+  if (body->is(NodeType::kProject)) {
+    const auto* project = body->as<Project>();
+    const NodeCP input = project->input();
+    if (!input->is(NodeType::kValues)) {
+      return nullptr;
+    }
+
+    const size_t numRows = input->as<Values>()->cardinality();
+    if (numRows == 0) {
+      return builder_.makeNull(type);
+    }
+
+    const ExprCP expr = project->exprs()[0];
+    if (numRows == 1 && expr->is(PlanType::kLiteralExpr)) {
+      return expr;
+    }
+    return nullptr;
+  }
+
   if (!body->is(NodeType::kValues)) {
     return nullptr;
   }
 
-  VELOX_CHECK_EQ(body->outputColumns().size(), 1);
-
   const auto* values = body->as<Values>();
-  const TypeCP type = body->outputColumns()[0]->value().type;
-
   const size_t numRows = values->cardinality();
   if (numRows == 0) {
     // A scalar subquery over no rows is SQL NULL.
