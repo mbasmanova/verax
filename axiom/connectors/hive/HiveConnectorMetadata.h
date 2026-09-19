@@ -415,6 +415,10 @@ class HiveConnectorMetadata : public ConnectorMetadata {
   virtual void validateOptions(
       const folly::F14FastMap<std::string, velox::Variant>& options) const;
 
+  /// Fails if 'table' cannot be written. Called for an explained write as well
+  /// as an executed one.
+  virtual void checkTableWritable(const Table& /*table*/) const {}
+
   /// Prepares and returns the filesystem path for writing the specified table.
   virtual std::string prepareWriteLocation(
       const ConnectorSessionPtr& session,

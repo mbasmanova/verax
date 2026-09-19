@@ -564,6 +564,7 @@ ConnectorWriteHandlePtr HiveConnectorMetadata::beginWrite(
           kind == WriteKind::kDelete,
       "Only CREATE/INSERT/DELETE supported, not {}",
       WriteKindName::toName(kind));
+  checkTableWritable(*table);
 
   const auto* hiveLayout = table->layouts()[0]->asChecked<HiveTableLayout>();
 
