@@ -38,6 +38,24 @@ WHERE EXISTS (SELECT 1 FROM v v2
               WHERE v2.a = u.a * 2
                 AND EXISTS (SELECT 1 FROM v v3 WHERE v3.a = v2.a AND v3.a < 8))
 ----
+-- A nested EXISTS covers both an empty correlated left side and a left row
+-- whose nested test finds no match.
+-- error_v1: Failed to place a table
+SELECT outer_u.a FROM (VALUES (0), (1), (2)) outer_u(a)
+WHERE EXISTS (SELECT 1 FROM u left_u
+              WHERE left_u.a = outer_u.a
+                AND NOT EXISTS (SELECT 1 FROM v inner_v WHERE inner_v.a = outer_u.a))
+----
+-- EXISTS over a LEFT JOIN preserves rows whose right side is absent.
+-- error_v1: Cannot resolve column name
+-- duckdb: VALUES (1), (3), (5)
+SELECT outer_u.a FROM u outer_u
+WHERE EXISTS (
+  SELECT 1
+  FROM u left_u LEFT JOIN v right_v ON right_v.a = outer_u.a
+  WHERE right_v.a IS NULL
+)
+----
 -- Scalar subquery and EXISTS over the same inner subquery must produce
 -- distinct columns (a scalar value vs a boolean).
 SELECT (SELECT max(a) FROM u), EXISTS (SELECT max(a) FROM u) FROM t

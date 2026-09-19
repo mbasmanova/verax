@@ -68,12 +68,12 @@ whether `applyB` pads on no-match (kLeft pad) or projects a mark
 
 | `joinKind` | `kindForB` | Outer envelope addition |
 |---|---|---|
-| `kInner` | `kLeft`, or `kLeftSemiProject` under an outer `kLeftSemiProject` | per-rn pad-collapse: drop `applyB` pad rows, keeping exactly one pad per outer with no match — see §"INNER pad-row drop" |
+| `kInner` | `kLeft`, or `kLeftSemiProject` under an outer `kLeftSemiProject` | per-outer pad collapse: drop `applyB` pad rows, keeping exactly one pad per outer with no match — see §"INNER pad-row drop" |
 | `kLeft` | `kLeft` | none — `kLeft` pad maps to `A LEFT JOIN B`'s pad |
 | `kRight` | swap to `kLeft` with sides reversed (`applyA=B, applyB=A`) | none — symmetry |
 | `kFull` | NYI | needs both sides' unmatched rows; tree-only can't express without re-evaluating one side. Loud NYI. |
 | `kLeftSemiFilter` | `kLeftSemiProject` (apply emits per-A mark) | `Filter(mark)` then drop mark; equivalent to A-rows-with-any-matching-B |
-| `kLeftSemiProject` (in body) | `kLeftSemiProject` | mark propagates as a new column; a filter reading that mark gates inclusion and triggers the per-rn pad-collapse — see §"outerKind = kLeft (scalar context)" |
+| `kLeftSemiProject` (in body) | `kLeftSemiProject` | mark propagates as a new column; a filter reading that mark gates inclusion and triggers the per-outer pad collapse — see §"outerKind = kLeft (scalar context)" |
 | `kAnti` | `kLeftSemiProject` | `Filter(NOT mark OR mark IS NULL)` |
 
 (Filter expressions in the envelope use `Builder::makeBoolean` /
@@ -119,7 +119,7 @@ semantics). Body's Join output becomes that row's value(s). Outer's
     gates inclusion. A filter on the mark (`WHERE x IN (...)` inside the
     subquery) selects among body rows, so inclusion becomes
     `COALESCE(applyA.includeMarker AND markFilter, false)` and the chain
-    runs the per-rn pad-collapse of §"INNER pad-row drop" to keep one
+    runs the per-outer pad collapse of §"INNER pad-row drop" to keep one
     pad row for an outer whose body rows the filter all rejected.
     `accumulatedFilter` splits by whether a conjunct reads the mark: the
     rest reference only A and outer columns and ride on `applyA.filter`.
@@ -137,7 +137,7 @@ semantics). Body's Join output becomes that row's value(s). Outer's
     row per outer.
   - Body kInner: leg-wise ESR is wrong — an empty side makes the body
     empty (a valid 0-row scalar → NULL), but a per-leg check fires on
-    the other side's rows. Run the per-rn pad-collapse first, then
+    the other side's rows. Run the per-outer pad collapse first, then
     `EnforceDistinct(rn)` over the collapsed stream; see §"INNER
     pad-row drop."
   - Body kLeftSemiProject: with no mark filter, `applyA` carries the ESR
@@ -163,7 +163,14 @@ produces ≥1 row.
   window over the outer's id answers the mark. One row per outer survives,
   chosen by `padOrdinal = 1`; that is legal because `bool_or` reads the
   whole partition and every remaining output column is an outer column.
-- Body kLeft, kLeftSemiFilter, kLeftSemiProject and kAnti: NYI loud.
+- For a kLeft body, the chained `applyB` is kLeft. A real A row makes the
+  body exist whether B matches or contributes a NULL-padded row. The outer
+  mark is therefore `bool_or(applyA.includeMarker AND accumulatedFilter)`.
+- For a non-null-aware kLeftSemiProject body, the chained `applyB` reproduces
+  the body's mark. The outer mark is
+  `bool_or(applyA.includeMarker AND accumulatedFilter)`, where the accumulated
+  filter may read that body mark.
+- Body kLeftSemiFilter, null-aware kLeftSemiProject and kAnti: NYI loud.
 
 ### outerKind = `kLeftSemiProject` IN (inLhs != nullptr, inBodyKey set)
 
@@ -179,7 +186,7 @@ over them).
   IN check evaluates after the full (L,A,B) tuple is constructed.
 - If `inBodyKey` is a computed expression over both (rare):
   intermediate Project after the chain computes it; then a follow-up
-  per-rn aggregate (`bool_or` over `eq(inLhs, inBodyKey)`) collapses
+  per-outer aggregate (`bool_or` over `eq(inLhs, inBodyKey)`) collapses
   to the mark.
 
 The `nullAware` flag on outer Apply propagates to whichever Apply in
@@ -208,7 +215,7 @@ emit `Σ over A-rows of max(1, matching B)` rows, tagging each with
   duplicates the outer row. (This is the cross-join bug: `|A|>1,
   |B|=0` yields `|A|` pad rows where semantics demand one.)
 
-**Resolution — per-rn pad-collapse.** Restore exactly one pad per
+**Resolution — per-outer pad collapse.** Restore exactly one pad per
 match-less outer while keeping every real row:
 
 1. `rn = AssignUniqueId(L)` at chain bottom (the tagged_L pattern the
@@ -246,21 +253,23 @@ Combinations across (outerKind, joinKind):
 
 | outerKind | joinKind | Status |
 |---|---|---|
-| kLeft (ESR=true) | kInner cross-join | **in scope** (per-rn pad-collapse + `EnforceDistinct(rn)`) |
-| kLeft (ESR=true) | kInner with predicate | **in scope** (per-rn pad-collapse + `EnforceDistinct(rn)`) |
+| kLeft (ESR=true) | kInner cross-join | **in scope** (per-outer pad collapse + `EnforceDistinct(rn)`) |
+| kLeft (ESR=true) | kInner with predicate | **in scope** (per-outer pad collapse + `EnforceDistinct(rn)`) |
 | kLeft (ESR=true) | kLeft | **in scope** |
 | kLeft (ESR=true) | kRight | **in scope** (via swap) |
 | kLeft (ESR=true) | kFull | NYI loud |
 | kLeft (ESR=true) | kLeftSemiProject | **in scope** |
 | kLeft (ESR=true) | kLeftSemiFilter / kAnti | NYI loud |
-| kLeft (ESR=false) | kInner cross-join | **in scope** (per-rn pad-collapse; see §"INNER pad-row drop") |
-| kLeft (ESR=false) | kInner with predicate | **in scope** (per-rn pad-collapse; see §"INNER pad-row drop") |
+| kLeft (ESR=false) | kInner cross-join | **in scope** (per-outer pad collapse; see §"INNER pad-row drop") |
+| kLeft (ESR=false) | kInner with predicate | **in scope** (per-outer pad collapse; see §"INNER pad-row drop") |
 | kLeft (ESR=false) | kLeft / kRight | **in scope** |
 | kLeft (ESR=false) | kFull | NYI loud |
 | kLeft (ESR=false) | kLeftSemiProject | **in scope** |
 | kLeft (ESR=false) | kLeftSemiFilter / kAnti | NYI loud |
 | kLeftSemiProject EXISTS | kInner, with or without predicate | **in scope** (mark composes per §"outerKind = kLeftSemiProject EXISTS") |
-| kLeftSemiProject EXISTS | kLeft / kLeftSemi* / kAnti | NYI loud |
+| kLeftSemiProject EXISTS | kLeft | **in scope** (each left row yields output; reduce with `padOrdinal = 1`) |
+| kLeftSemiProject EXISTS | kLeftSemiProject (not null-aware) | **in scope** (body mark stays available to the accumulated filter) |
+| kLeftSemiProject EXISTS | kLeftSemiFilter / null-aware kLeftSemiProject / kAnti | NYI loud |
 | kLeftSemiProject IN | any non-kFull | **in scope** (IN equi routed per `inBodyKey` reference site) |
 | any | kFull | NYI loud — needs DAG / re-evaluation of one side |
 
