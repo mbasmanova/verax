@@ -541,6 +541,10 @@ int main(int argc, char** argv) {
   registerQueryFile<"sort">();
   registerQueryFile<"subfield">();
   registerQueryFile<"subquery">();
+  registerQueryFile<"subqueryAggregate">();
+  registerQueryFile<"subqueryInBody">();
+  registerQueryFile<"subqueryLateral">();
+  registerQueryFile<"subqueryOuterRef">();
   registerQueryFile<"unionAll">();
   registerQueryFile<"unionAllFlatten">();
   registerQueryFile<"unnest">();
