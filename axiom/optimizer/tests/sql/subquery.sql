@@ -92,6 +92,12 @@ FROM (
     (1, 0)
 ) outer_u(a, b)
 ----
+-- A scalar subquery over more than one row fails, whether or not a projection
+-- sits over the rows.
+-- error_v1: Expected single row of input. Received 2 rows.
+-- error_v2: Scalar subquery produced more than one row
+SELECT (SELECT x + 1 FROM (VALUES (1), (2)) t(x))
+----
 -- Scalar subquery and EXISTS over the same inner subquery must produce
 -- distinct columns (a scalar value vs a boolean).
 SELECT (SELECT max(a) FROM u), EXISTS (SELECT max(a) FROM u) FROM t
