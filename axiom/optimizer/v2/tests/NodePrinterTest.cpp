@@ -28,6 +28,7 @@
 #include "axiom/optimizer/Schema.h"
 #include "axiom/optimizer/v2/Builder.h"
 #include "axiom/optimizer/v2/Node.h"
+#include "axiom/optimizer/v2/NodePrinter.h"
 #include "axiom/optimizer/v2/TranslatePass.h"
 #include "axiom/optimizer/v2/tests/UnitTestBase.h"
 #include "velox/core/QueryCtx.h"
@@ -83,16 +84,27 @@ class NodePrinterTest : public UnitTestBase {
         .root;
   }
 
-  std::vector<std::string> toLines(NodeCP node) {
+  std::vector<std::string> toLines(
+      NodeCP node,
+      const NodePrinter::Options& options = {}) {
     std::vector<std::string> lines;
-    folly::split('\n', node->toString(), lines);
+    folly::split('\n', NodePrinter::toText(node, options), lines);
     return lines;
   }
 
   lp::PlanBuilder singleRow(const std::string& name, int64_t value) {
-    return lp::PlanBuilder(context_).values(
-        ROW(name, velox::BIGINT()),
-        std::vector<velox::Variant>{velox::Variant::row({value})});
+    return values(name, {value});
+  }
+
+  lp::PlanBuilder values(
+      const std::string& name,
+      std::initializer_list<int64_t> values) {
+    std::vector<std::vector<std::string>> rows;
+    rows.reserve(values.size());
+    for (const auto value : values) {
+      rows.push_back({std::to_string(value)});
+    }
+    return lp::PlanBuilder(context_).values({name}, rows);
   }
 
   lp::PlanBuilder::Context context_;
@@ -134,6 +146,50 @@ TEST_F(NodePrinterTest, fixedPoint) {
           Eq("      aggregates: count()"),
           StartsWith(
               "      - WorkingTable[name=counter, readMode=latestDelta] ->"),
+          Eq("")));
+}
+
+TEST_F(NodePrinterTest, unknownEstimate) {
+  const auto node = translate(singleRow("a", 1).build());
+
+  EXPECT_THAT(
+      toLines(
+          node,
+          {.estimates =
+               [](NodeCP) { return Estimate{.cardinality = std::nullopt}; }}),
+      ElementsAre(
+          StartsWith("- Values ->"), Eq("  Estimate: unknown"), Eq("")));
+}
+
+TEST_F(NodePrinterTest, selectivityAndFanout) {
+  EstimateProvider estimateProvider;
+  const NodePrinter::Options options{
+      .estimates = [&](NodeCP node) { return estimateProvider.estimate(node); },
+  };
+
+  const auto filter = translate(values("x", {1, 2}).filter("x > 1").build());
+  EXPECT_THAT(
+      toLines(filter, options),
+      ElementsAre(
+          StartsWith("- Filter ->"),
+          Eq("  Estimate: 1 rows, selectivity: 0.5"),
+          StartsWith("  predicate:"),
+          StartsWith("  - Values ->"),
+          Eq("    Estimate: 2 rows"),
+          Eq("")));
+
+  const auto join = translate(values("left_key", {1, 2})
+                                  .crossJoin(values("right_key", {1, 2, 3}))
+                                  .build());
+  EXPECT_THAT(
+      toLines(join, options),
+      ElementsAre(
+          StartsWith("- Join[INNER] ->"),
+          Eq("  Estimate: 6 rows, left fanout: 3, right fanout: 2"),
+          StartsWith("  - Values ->"),
+          Eq("    Estimate: 2 rows"),
+          StartsWith("  - Values ->"),
+          Eq("    Estimate: 3 rows"),
           Eq("")));
 }
 
