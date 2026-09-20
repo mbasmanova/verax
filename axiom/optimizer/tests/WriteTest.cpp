@@ -33,7 +33,7 @@ void verifyPlanSerde(
     const MultiFragmentPlan& plan,
     velox::memory::MemoryPool* pool) {
   for (const auto& fragment : plan.fragments()) {
-    SCOPED_TRACE(fragment.taskPrefix);
+    SCOPED_TRACE(fragment.fragmentId);
     auto serialized = fragment.fragment.planNode->serialize();
     auto deserialized =
         velox::ISerializable::deserialize<velox::core::PlanNode>(

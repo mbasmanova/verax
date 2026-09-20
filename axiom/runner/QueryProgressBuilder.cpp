@@ -43,12 +43,12 @@ void markFinished(ExecutionStats& stats) {
 std::vector<QueryProgressBuilder::StageTopology>
 QueryProgressBuilder::toStageTopology(
     const std::vector<optimizer::ExecutableFragment>& fragments) {
-  // Map each fragment's task prefix to its index so the exchange inputs (named
-  // by producer task prefix) resolve to stage indexes.
-  folly::F14FastMap<std::string, int32_t> indexByPrefix;
-  indexByPrefix.reserve(fragments.size());
+  // Map each fragment id to its index so the exchange inputs, which name a
+  // producer by id, resolve to stage indexes.
+  folly::F14FastMap<int32_t, int32_t> indexById;
+  indexById.reserve(fragments.size());
   for (size_t i = 0; i < fragments.size(); ++i) {
-    indexByPrefix.emplace(fragments[i].taskPrefix, static_cast<int32_t>(i));
+    indexById.emplace(fragments[i].fragmentId, static_cast<int32_t>(i));
   }
 
   std::vector<StageTopology> stages;
@@ -56,13 +56,13 @@ QueryProgressBuilder::toStageTopology(
   for (size_t i = 0; i < fragments.size(); ++i) {
     StageTopology stage;
     for (const auto& input : fragments[i].inputStages) {
-      const auto it = indexByPrefix.find(input.producerTaskPrefix);
+      const auto it = indexById.find(input.producerFragmentId);
       // Every exchange input must resolve to a known producer fragment.
       VELOX_CHECK(
-          it != indexByPrefix.end(),
-          "Exchange input names an unknown producer task prefix. stage: {}, prefix: {}",
+          it != indexById.end(),
+          "Exchange input names an unknown producer fragment. stage: {}, fragment id: {}",
           i,
-          input.producerTaskPrefix);
+          input.producerFragmentId);
       stage.producers.push_back(it->second);
     }
     stages.push_back(std::move(stage));

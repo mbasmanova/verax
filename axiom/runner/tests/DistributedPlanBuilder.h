@@ -65,7 +65,7 @@ class DistributedPlanBuilder : public velox::exec::test::PlanBuilder {
 
   void addExchange(
       const velox::RowTypePtr& producerType,
-      const std::string& producerPrefix,
+      int32_t producerFragmentId,
       optimizer::ExecutableFragment& fragment);
 
   const optimizer::MultiFragmentPlan::Options& options_;

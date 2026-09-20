@@ -196,14 +196,14 @@ Each fragment is rendered as a box containing three parts, top to bottom:
   `PartitionedOutputNode`) and the estimated row count, e.g.
   `out: hash[k]   ~60,000 rows`. Omitted when the fragment delivers results
   in-process (final fragment with no `PartitionedOutputNode`).
-- **Header row** — `taskPrefix — FragmentType` (and `× width` when the
+- **Header row** — `fragmentId — FragmentType` (and `× width` when the
   fragment has a fixed task count, i.e. `kFixed`).
 - **Body** — the Velox plan tree, indented to preserve structure, with node
   type names only. The root `PartitionedOutputNode` and any `ProjectNode`
   are skipped as structural noise. Selected node types include a short
   detail suffix:
-  - `Exchange: stageN, kind` and `MergeExchange: stageN, kind` — producer
-    task prefix and the producer fragment's distribution kind.
+  - `Exchange: N, kind` and `MergeExchange: N, kind` — producer fragment id
+    and that fragment's distribution kind.
   - `TableScan: name` — the table name from the connector handle.
   - `Limit: N` (or `Limit: N (offset M)` when offset is set).
   - `TopN: N`.
@@ -232,8 +232,8 @@ scheduled:
 
 A directed edge from fragment A to fragment B indicates that A produces input
 for B. The receiving `Exchange` (or `MergeExchange`) row in B's body is
-annotated with the producing task prefix and distribution kind, e.g.
-`Exchange: fragment17, hash`, so each incoming edge can be matched to a
+annotated with the producing fragment id and distribution kind, e.g.
+`Exchange: 17, hash`, so each incoming edge can be matched to a
 specific consumer node.
 
 ## Pre-generated TPC-H Query Graphs

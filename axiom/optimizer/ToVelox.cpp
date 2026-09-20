@@ -969,7 +969,7 @@ velox::core::TypedExprPtr ToVelox::toTypedExprUncached(
 
 ExecutableFragment ToVelox::newFragment() {
   return ExecutableFragment{
-      .taskPrefix = fmt::format("fragment{}", ++stageCounter_),
+      .fragmentId = ++stageCounter_,
       .type = FragmentType::kSource,
   };
 }
@@ -1161,7 +1161,7 @@ velox::core::PlanNodePtr ToVelox::makeOrderBy(
   auto merge = std::make_shared<velox::core::MergeExchangeNode>(
       nextId(), node->outputType(), keys, sortOrder, exchangeSerdeKind_);
 
-  fragment.inputStages.emplace_back(merge->id(), source.taskPrefix);
+  fragment.inputStages.emplace_back(merge->id(), source.fragmentId);
   stages.push_back(std::move(source));
 
   if (!op.isNoLimit() || op.offset > 0) {
@@ -1194,7 +1194,7 @@ velox::core::PlanNodePtr ToVelox::makeOffset(
 
   auto limitNode = addFinalLimit(nextId(), op.offset, op.limit, exchange);
 
-  fragment.inputStages.emplace_back(exchange->id(), source.taskPrefix);
+  fragment.inputStages.emplace_back(exchange->id(), source.fragmentId);
   stages.push_back(std::move(source));
 
   return limitNode;
@@ -1245,7 +1245,7 @@ velox::core::PlanNodePtr ToVelox::makeLimit(
 
   auto finalLimitNode = addFinalLimit(nextId(), op.offset, op.limit, exchange);
 
-  fragment.inputStages.emplace_back(exchange->id(), source.taskPrefix);
+  fragment.inputStages.emplace_back(exchange->id(), source.fragmentId);
   stages.push_back(std::move(source));
 
   return finalLimitNode;
@@ -2097,7 +2097,7 @@ velox::core::PlanNodePtr ToVelox::makeRepartition(
     applyGroupedLeaves(source, *sourceGroupedLeaves);
   }
 
-  fragment.inputStages.emplace_back(exchange->id(), source.taskPrefix);
+  fragment.inputStages.emplace_back(exchange->id(), source.fragmentId);
   stages.push_back(std::move(source));
   return exchange;
 }

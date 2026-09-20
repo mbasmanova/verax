@@ -65,7 +65,7 @@ TEST_P(ExplainTest, showsCardinalityEstimate) {
   using ::testing::StartsWith;
 
   std::vector<::testing::Matcher<std::string>> expected{
-      Eq("Fragment 0: fragment1 SINGLE:"),
+      Eq("Fragment 1: SINGLE:"),
       StartsWith("-- Aggregation[3][SINGLE [l_orderkey] sum := sum("),
       Eq("   Estimate: 249.75 rows"),
       StartsWith("  -- Project[2][expressions: (l_orderkey:BIGINT, "),

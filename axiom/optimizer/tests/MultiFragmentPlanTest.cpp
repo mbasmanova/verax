@@ -68,7 +68,7 @@ class MultiFragmentPlanTest : public testing::Test {
       std::optional<int32_t> numRemotePartitions = std::nullopt,
       const MultiFragmentPlan::Options& options = defaultOptions()) {
     ExecutableFragment fragment;
-    fragment.taskPrefix = "stage0";
+    fragment.fragmentId = 0;
     fragment.type = type;
     fragment.numRemotePartitions = numRemotePartitions;
     fragment.fragment = values();
@@ -102,16 +102,16 @@ TEST_F(MultiFragmentPlanTest, validDistributedPlan) {
   options.remoteOutput = true;
 
   ExecutableFragment producer;
-  producer.taskPrefix = "stage0";
+  producer.fragmentId = 0;
   producer.type = FragmentType::kSource;
   producer.fragment = partitionedOutput(4);
 
   ExecutableFragment consumer;
-  consumer.taskPrefix = "stage1";
+  consumer.fragmentId = 1;
   consumer.type = FragmentType::kFixed;
   consumer.numRemotePartitions = 4;
   consumer.fragment = exchange();
-  consumer.inputStages.emplace_back(consumer.fragment.planNode->id(), "stage0");
+  consumer.inputStages.emplace_back(consumer.fragment.planNode->id(), 0);
 
   auto plan =
       MultiFragmentPlan({std::move(producer), std::move(consumer)}, options);
@@ -167,29 +167,28 @@ TEST_F(MultiFragmentPlanTest, sourceWithWidthHint) {
 
 TEST_F(MultiFragmentPlanTest, missingProducer) {
   ExecutableFragment fragment;
-  fragment.taskPrefix = "stage0";
+  fragment.fragmentId = 0;
   fragment.type = FragmentType::kSingle;
   fragment.fragment = exchange();
-  fragment.inputStages.emplace_back(
-      fragment.fragment.planNode->id(), "nonexistent");
+  fragment.inputStages.emplace_back(fragment.fragment.planNode->id(), 7);
 
   auto plan = MultiFragmentPlan({std::move(fragment)}, defaultOptions());
   VELOX_ASSERT_THROW(
       plan.checkConsistency(/*mayBeEmpty=*/false),
-      "Producer fragment not found: nonexistent, consumer: stage0");
+      "Producer fragment not found: 7, consumer: 0");
 }
 
 TEST_F(MultiFragmentPlanTest, producerNotPartitionedOutput) {
   ExecutableFragment producer;
-  producer.taskPrefix = "stage0";
+  producer.fragmentId = 0;
   producer.type = FragmentType::kSource;
   producer.fragment = values();
 
   ExecutableFragment consumer;
-  consumer.taskPrefix = "stage1";
+  consumer.fragmentId = 1;
   consumer.type = FragmentType::kSingle;
   consumer.fragment = exchange();
-  consumer.inputStages.emplace_back(consumer.fragment.planNode->id(), "stage0");
+  consumer.inputStages.emplace_back(consumer.fragment.planNode->id(), 0);
 
   auto plan = MultiFragmentPlan(
       {std::move(producer), std::move(consumer)}, defaultOptions());
@@ -203,17 +202,17 @@ TEST_F(MultiFragmentPlanTest, lastFragmentIsProducer) {
   options.remoteOutput = true;
 
   ExecutableFragment producer;
-  producer.taskPrefix = "stage1";
+  producer.fragmentId = 1;
   producer.type = FragmentType::kFixed;
   producer.numRemotePartitions = 4;
   producer.fragment = partitionedOutput(4);
 
   ExecutableFragment consumer;
-  consumer.taskPrefix = "stage0";
+  consumer.fragmentId = 0;
   consumer.type = FragmentType::kFixed;
   consumer.numRemotePartitions = 4;
   consumer.fragment = exchange();
-  consumer.inputStages.emplace_back(consumer.fragment.planNode->id(), "stage1");
+  consumer.inputStages.emplace_back(consumer.fragment.planNode->id(), 1);
 
   {
     auto plan = MultiFragmentPlan({consumer, producer}, options);
@@ -233,16 +232,16 @@ TEST_F(MultiFragmentPlanTest, partitionCountMismatch) {
   options.remoteOutput = true;
 
   ExecutableFragment producer;
-  producer.taskPrefix = "stage0";
+  producer.fragmentId = 0;
   producer.type = FragmentType::kSource;
   producer.fragment = partitionedOutput(4);
 
   ExecutableFragment consumer;
-  consumer.taskPrefix = "stage1";
+  consumer.fragmentId = 1;
   consumer.type = FragmentType::kFixed;
   consumer.numRemotePartitions = 8;
   consumer.fragment = exchange();
-  consumer.inputStages.emplace_back(consumer.fragment.planNode->id(), "stage0");
+  consumer.inputStages.emplace_back(consumer.fragment.planNode->id(), 0);
 
   auto plan =
       MultiFragmentPlan({std::move(producer), std::move(consumer)}, options);
@@ -252,15 +251,15 @@ TEST_F(MultiFragmentPlanTest, partitionCountMismatch) {
 
 TEST_F(MultiFragmentPlanTest, broadcastSkipsWidthCheck) {
   ExecutableFragment producer;
-  producer.taskPrefix = "stage0";
+  producer.fragmentId = 0;
   producer.type = FragmentType::kSource;
   producer.fragment = broadcastOutput();
 
   ExecutableFragment consumer;
-  consumer.taskPrefix = "stage1";
+  consumer.fragmentId = 1;
   consumer.type = FragmentType::kSingle;
   consumer.fragment = exchange();
-  consumer.inputStages.emplace_back(consumer.fragment.planNode->id(), "stage0");
+  consumer.inputStages.emplace_back(consumer.fragment.planNode->id(), 0);
 
   auto plan = MultiFragmentPlan(
       {std::move(producer), std::move(consumer)}, defaultOptions());
@@ -299,12 +298,12 @@ TEST_F(MultiFragmentPlanTest, orphanFragment) {
   options.remoteOutput = true;
 
   ExecutableFragment orphan;
-  orphan.taskPrefix = "stage0";
+  orphan.fragmentId = 0;
   orphan.type = FragmentType::kSource;
   orphan.fragment = partitionedOutput(4);
 
   ExecutableFragment output;
-  output.taskPrefix = "stage1";
+  output.fragmentId = 1;
   output.type = FragmentType::kFixed;
   output.numRemotePartitions = 4;
   output.fragment = values();
@@ -313,7 +312,7 @@ TEST_F(MultiFragmentPlanTest, orphanFragment) {
       MultiFragmentPlan({std::move(orphan), std::move(output)}, options);
   VELOX_ASSERT_THROW(
       plan.checkConsistency(/*mayBeEmpty=*/false),
-      "Non-last fragment must be referenced by exactly one consumer: stage0");
+      "Non-last fragment must be referenced by exactly one consumer: 0");
 }
 
 TEST_F(MultiFragmentPlanTest, producerReferencedByMultipleConsumers) {
@@ -321,32 +320,30 @@ TEST_F(MultiFragmentPlanTest, producerReferencedByMultipleConsumers) {
   options.remoteOutput = true;
 
   ExecutableFragment producer;
-  producer.taskPrefix = "stage0";
+  producer.fragmentId = 0;
   producer.type = FragmentType::kSource;
   producer.fragment = partitionedOutput(4);
 
   ExecutableFragment consumerA;
-  consumerA.taskPrefix = "stage1";
+  consumerA.fragmentId = 1;
   consumerA.type = FragmentType::kFixed;
   consumerA.numRemotePartitions = 4;
   consumerA.fragment = exchange();
-  consumerA.inputStages.emplace_back(
-      consumerA.fragment.planNode->id(), "stage0");
+  consumerA.inputStages.emplace_back(consumerA.fragment.planNode->id(), 0);
 
   ExecutableFragment consumerB;
-  consumerB.taskPrefix = "stage2";
+  consumerB.fragmentId = 2;
   consumerB.type = FragmentType::kFixed;
   consumerB.numRemotePartitions = 4;
   consumerB.fragment = exchange();
-  consumerB.inputStages.emplace_back(
-      consumerB.fragment.planNode->id(), "stage0");
+  consumerB.inputStages.emplace_back(consumerB.fragment.planNode->id(), 0);
 
   auto plan = MultiFragmentPlan(
       {std::move(producer), std::move(consumerA), std::move(consumerB)},
       options);
   VELOX_ASSERT_THROW(
       plan.checkConsistency(/*mayBeEmpty=*/false),
-      "Producer fragment referenced by multiple consumers: stage0");
+      "Producer fragment referenced by multiple consumers: 0");
 }
 
 } // namespace

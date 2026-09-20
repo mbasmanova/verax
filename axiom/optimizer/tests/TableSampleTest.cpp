@@ -117,14 +117,14 @@ TEST_P(TableSampleTest, explainShowsSampleRate) {
 
   EXPECT_EQ(
       explain("SYSTEM (50)"),
-      "Fragment 0: fragment1 SINGLE:\n"
+      "Fragment 1: SINGLE:\n"
       "-- TableScan[0][\"default\".\"t\"] -> a:INTEGER, b:INTEGER\n"
       "   sample: 50%\n\n");
 
   // A fractional rate in scientific notation is accepted.
   EXPECT_EQ(
       explain("SYSTEM (1E-1)"),
-      "Fragment 0: fragment1 SINGLE:\n"
+      "Fragment 1: SINGLE:\n"
       "-- TableScan[0][\"default\".\"t\"] -> a:INTEGER, b:INTEGER\n"
       "   sample: 0.1%\n\n");
 }

@@ -518,10 +518,9 @@ class Emitter {
       const std::vector<std::string>& outputNames,
       ExecutableFragment& top);
 
-  // A fresh producer/consumer fragment with a unique task prefix.
+  // A fresh producer/consumer fragment with a unique id.
   ExecutableFragment newFragment() {
-    return ExecutableFragment{
-        .taskPrefix = fmt::format("fragment{}", ++fragmentCounter_)};
+    return ExecutableFragment{.fragmentId = ++fragmentCounter_};
   }
 
   const OptimizerSession& session_;
@@ -1886,7 +1885,7 @@ void Emitter::emitGatheredOutput(
       makeSingleOutput(sourcePlan->outputType(), sourcePlan);
   auto gather = std::make_shared<velox::core::ExchangeNode>(
       nextId(), sourcePlan->outputType(), exchangeSerdeKind_);
-  top.inputStages.emplace_back(gather->id(), source.taskPrefix);
+  top.inputStages.emplace_back(gather->id(), source.fragmentId);
   stages_.push_back(std::move(source));
 
   if (!layoutAboveGather) {
@@ -1992,7 +1991,7 @@ velox::core::PlanNodePtr Emitter::emitExchange(const Exchange& exchange) {
 
   velox::core::PlanNodePtr consumer =
       makeExchangeConsumer(partitioning, outputType);
-  currentFragment_->inputStages.emplace_back(consumer->id(), source.taskPrefix);
+  currentFragment_->inputStages.emplace_back(consumer->id(), source.fragmentId);
 
   // A partitioned exchange feeding the outer fragment is a group-routed leaf
   // there: if that fragment turns out bucketed, the exchange delivers per
@@ -2193,7 +2192,7 @@ velox::core::PlanNodePtr Emitter::emitTableWrite(const TableWrite& tableWrite) {
   auto gather = std::make_shared<velox::core::ExchangeNode>(
       nextId(), result->outputType(), exchangeSerdeKind_);
   rootFragment->inputStages.emplace_back(
-      gather->id(), writerFragment.taskPrefix);
+      gather->id(), writerFragment.fragmentId);
   stages_.push_back(std::move(writerFragment));
 
   if (!statsBuilder.needsFinalMerge()) {

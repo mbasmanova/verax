@@ -166,7 +166,7 @@ TestResult QueryTestBase::runVelox(const core::PlanNodePtr& plan) {
   options.maxLocalPartitions = 1;
   options.queryId = fmt::format("q{}", ++gQueryCounter);
 
-  ExecutableFragment fragment(fmt::format("{}.0", options.queryId));
+  ExecutableFragment fragment{.fragmentId = 0};
   fragment.fragment = core::PlanFragment(plan);
 
   optimizer::PlanAndStats planAndStats = {
