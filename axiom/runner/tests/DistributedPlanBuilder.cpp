@@ -57,25 +57,24 @@ void DistributedPlanBuilder::newFragment(
     fragments_.push_back(std::move(*current_));
   }
 
-  auto taskPrefix =
-      fmt::format("{}.{}", options_.queryId, root_->fragmentCounter_++);
+  const auto fragmentId = root_->fragmentCounter_++;
   if (numRemotePartitions.has_value() && numRemotePartitions.value() > 1) {
     current_ = std::make_unique<optimizer::ExecutableFragment>(
         optimizer::ExecutableFragment{
-            .taskPrefix = std::move(taskPrefix),
+            .fragmentId = fragmentId,
             .type = optimizer::FragmentType::kFixed,
             .numRemotePartitions = numRemotePartitions,
         });
   } else if (numRemotePartitions.has_value()) {
     current_ = std::make_unique<optimizer::ExecutableFragment>(
         optimizer::ExecutableFragment{
-            .taskPrefix = std::move(taskPrefix),
+            .fragmentId = fragmentId,
             .type = optimizer::FragmentType::kSingle,
         });
   } else {
     current_ = std::make_unique<optimizer::ExecutableFragment>(
         optimizer::ExecutableFragment{
-            .taskPrefix = std::move(taskPrefix),
+            .fragmentId = fragmentId,
             .type = optimizer::FragmentType::kSource,
         });
   }
@@ -97,7 +96,7 @@ const TNode* as(const velox::core::PlanNodePtr& node) {
 
 void DistributedPlanBuilder::addExchange(
     const velox::RowTypePtr& producerType,
-    const std::string& producerPrefix,
+    int32_t producerFragmentId,
     optimizer::ExecutableFragment& fragment) {
   exchange(
       producerType,
@@ -105,7 +104,7 @@ void DistributedPlanBuilder::addExchange(
   auto* exchange = as<velox::core::ExchangeNode>(planNode_);
 
   fragment.inputStages.push_back(
-      optimizer::InputStage{exchange->id(), producerPrefix});
+      optimizer::InputStage{exchange->id(), producerFragmentId});
 }
 
 DistributedPlanBuilder& DistributedPlanBuilder::shufflePartitioned(
@@ -117,11 +116,11 @@ DistributedPlanBuilder& DistributedPlanBuilder::shufflePartitioned(
       partitionKeys, numPartitions, replicateNullsAndAny, outputLayout);
   auto* output = as<velox::core::PartitionedOutputNode>(planNode_);
 
-  const auto producerPrefix = current_->taskPrefix;
+  const auto producerFragmentId = current_->fragmentId;
 
   newFragment(numPartitions);
 
-  addExchange(output->outputType(), producerPrefix, *current_);
+  addExchange(output->outputType(), producerFragmentId, *current_);
   return *this;
 }
 
@@ -141,7 +140,7 @@ velox::core::PlanNodePtr DistributedPlanBuilder::shufflePartitionedResult(
       partitionKeys, numPartitions, replicateNullsAndAny, outputLayout);
   auto* output = as<velox::core::PartitionedOutputNode>(planNode_);
 
-  const auto producerPrefix = current_->taskPrefix;
+  const auto producerFragmentId = current_->fragmentId;
 
   newFragment();
 
@@ -164,7 +163,7 @@ velox::core::PlanNodePtr DistributedPlanBuilder::shufflePartitionedResult(
 
   root_->appendFragments(std::move(fragments_));
 
-  addExchange(output->outputType(), producerPrefix, *consumer->current_);
+  addExchange(output->outputType(), producerFragmentId, *consumer->current_);
   return std::move(planNode_);
 }
 
@@ -172,7 +171,7 @@ velox::core::PlanNodePtr DistributedPlanBuilder::shuffleBroadcastResult() {
   partitionedOutputBroadcast();
   auto* output = as<velox::core::PartitionedOutputNode>(planNode_);
 
-  const auto producerPrefix = current_->taskPrefix;
+  const auto producerFragmentId = current_->fragmentId;
   auto result = planNode_;
   newFragment();
 
@@ -187,7 +186,7 @@ velox::core::PlanNodePtr DistributedPlanBuilder::shuffleBroadcastResult() {
 
   root_->appendFragments(std::move(fragments_));
 
-  addExchange(output->outputType(), producerPrefix, *consumer->current_);
+  addExchange(output->outputType(), producerFragmentId, *consumer->current_);
   return std::move(planNode_);
 }
 

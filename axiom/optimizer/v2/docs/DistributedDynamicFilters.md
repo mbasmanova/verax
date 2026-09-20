@@ -222,7 +222,7 @@ placement and rewrites are in `PlanPhysical.cpp`'s `PhysicalPlanRewriter`]**. It
 decides at IR-node granularity: producer node (the join), consumer node (the scan),
 key-column mapping, build distribution, selectivity gate. Emit is then mechanical —
 it translates those chosen IR nodes to their emitted Velox `PlanNodeId`s + fragment
-`taskPrefix` and records the descriptors on `MultiFragmentPlan`, making no
+`fragmentId` and records the descriptors on `MultiFragmentPlan`, making no
 decisions.
 
 ### 4.3 Cross-fragment gate
@@ -240,8 +240,8 @@ A new list of cross-fragment DF descriptors on `MultiFragmentPlan` (analogous to
 `InputStage`, but a control edge rather than a data edge) **[inferred; new
 field]**:
 - DF id;
-- producer node id + producer fragment `taskPrefix`;
-- consumer node id + consumer fragment `taskPrefix`;
+- producer node id + producer fragment `fragmentId`;
+- consumer node id + consumer fragment `fragmentId`;
 - build-key → probe-scan output-channel mapping;
 - build distribution (broadcast vs partitioned), for the completeness condition;
 - filter kind + bloom sizing.
@@ -391,7 +391,7 @@ learns its `dfId` and role from its own node — no separate lookup:
 
 These are new fields on the Velox nodes, set by Axiom's emit. (The
 `MultiFragmentPlan` DF descriptor of §5.1 carries the cross-task wiring —
-producer/consumer fragment `taskPrefix`, build distribution — that the *Runner*
+producer/consumer fragment `fragmentId`, build distribution — that the *Runner*
 needs; the node fields carry what the *operator* needs. The Runner learns the
 producer/consumer task sets by launching them, so nothing DF-related is registered
 on the task at init.)

@@ -33,19 +33,19 @@ namespace velox = facebook::velox;
 using StageTopology = QueryProgressBuilder::StageTopology;
 
 optimizer::ExecutableFragment fragment(
-    const std::string& taskPrefix,
-    const std::vector<std::string>& producerTaskPrefixes) {
+    int32_t fragmentId,
+    const std::vector<int32_t>& producerFragmentIds) {
   std::vector<optimizer::InputStage> inputStages;
-  inputStages.reserve(producerTaskPrefixes.size());
-  for (size_t i = 0; i < producerTaskPrefixes.size(); ++i) {
+  inputStages.reserve(producerFragmentIds.size());
+  for (size_t i = 0; i < producerFragmentIds.size(); ++i) {
     // Each producer feeds its own exchange node, so give every input a distinct
     // consumerNodeId rather than sharing one.
     inputStages.push_back(
-        {.consumerNodeId = taskPrefix + "_exchange_" + std::to_string(i),
-         .producerTaskPrefix = producerTaskPrefixes[i]});
+        {.consumerNodeId = fmt::format("{}_exchange_{}", fragmentId, i),
+         .producerFragmentId = producerFragmentIds[i]});
   }
   return optimizer::ExecutableFragment{
-      .taskPrefix = taskPrefix, .inputStages = std::move(inputStages)};
+      .fragmentId = fragmentId, .inputStages = std::move(inputStages)};
 }
 
 velox::exec::OperatorStats op(
@@ -81,9 +81,7 @@ velox::exec::TaskStats task(
 
 TEST(QueryProgressBuilderTest, toStageTopologyLinearChain) {
   const auto stages = QueryProgressBuilder::toStageTopology(
-      {fragment("leaf", {}),
-       fragment("mid", {"leaf"}),
-       fragment("root", {"mid"})});
+      {fragment(10, {}), fragment(11, {10}), fragment(12, {11})});
 
   ASSERT_EQ(stages.size(), 3);
   EXPECT_TRUE(stages[0].producers.empty());
@@ -96,8 +94,8 @@ TEST(QueryProgressBuilderTest, toStageTopologyThrowsOnUnknownProducer) {
   // plan; the builder fails loudly rather than dropping the edge.
   VELOX_ASSERT_THROW(
       QueryProgressBuilder::toStageTopology(
-          {fragment("a", {}), fragment("b", {"a", "ghost"})}),
-      "Exchange input names an unknown producer task prefix. stage: 1, prefix: ghost");
+          {fragment(10, {}), fragment(11, {10, 99})}),
+      "Exchange input names an unknown producer fragment. stage: 1, fragment id: 99");
 }
 
 TEST(QueryProgressBuilderTest, splitsScanAndShuffleBySourceOperator) {
@@ -283,7 +281,7 @@ TEST(QueryProgressBuilderTest, computeProgressThrowsOnUnclassifiedSource) {
 
 TEST(QueryProgressBuilderTest, multiStageSumsWithResolvedTopology) {
   const auto stages = QueryProgressBuilder::toStageTopology(
-      {fragment("leaf", {}), fragment("root", {"leaf"})});
+      {fragment(10, {}), fragment(11, {10})});
   const std::vector<velox::exec::TaskStats> taskStats = {
       task(
           {.numTotalSplits = 8,

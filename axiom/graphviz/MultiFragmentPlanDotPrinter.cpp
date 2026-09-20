@@ -151,12 +151,12 @@ std::string formatFragmentHeader(const ExecutableFragment& fragment) {
   if (fragment.numRemotePartitions.has_value()) {
     return fmt::format(
         "{} — {} × {}",
-        fragment.taskPrefix,
+        fragment.fragmentId,
         FragmentTypeName::toName(fragment.type),
         fragment.numRemotePartitions.value());
   }
   return fmt::format(
-      "{} — {}", fragment.taskPrefix, FragmentTypeName::toName(fragment.type));
+      "{} — {}", fragment.fragmentId, FragmentTypeName::toName(fragment.type));
 }
 
 // Returns true if 'node' should be omitted from the body. The root
@@ -189,10 +189,10 @@ std::string formatBodyContent(
   return content;
 }
 
-// Per-Exchange producer info: task prefix and the producer fragment's
+// Per-Exchange producer info: producer fragment id and that fragment's
 // output distribution (already formatted, e.g. "hash[k]" or "broadcast").
 struct ExchangeProducer {
-  std::string taskPrefix;
+  int32_t fragmentId;
   std::string distribution;
 };
 
@@ -214,10 +214,10 @@ std::optional<std::string> bodyDetail(
       return std::nullopt;
     }
     if (it->second.distribution.empty()) {
-      return it->second.taskPrefix;
+      return fmt::format("{}", it->second.fragmentId);
     }
     return fmt::format(
-        "{}, {}", it->second.taskPrefix, it->second.distribution);
+        "{}, {}", it->second.fragmentId, it->second.distribution);
   }
   if (const auto* scan =
           dynamic_cast<const velox::core::TableScanNode*>(&node)) {
@@ -265,17 +265,17 @@ void printFragment(
     std::ostream& out,
     int32_t fragmentIndex,
     const ExecutableFragment& fragment,
-    const folly::F14FastMap<std::string, std::string>& producerDistribution,
+    const folly::F14FastMap<int32_t, std::string>& producerDistribution,
     const NodePredictionMap& prediction) {
   ExchangeProducerMap exchangeProducers;
   for (const auto& input : fragment.inputStages) {
-    auto it = producerDistribution.find(input.producerTaskPrefix);
+    auto it = producerDistribution.find(input.producerFragmentId);
     std::string distribution =
         it != producerDistribution.end() ? it->second : std::string{};
     exchangeProducers.emplace(
         input.consumerNodeId,
         ExchangeProducer{
-            .taskPrefix = input.producerTaskPrefix,
+            .fragmentId = input.producerFragmentId,
             .distribution = std::move(distribution),
         });
   }
@@ -318,16 +318,16 @@ void MultiFragmentPlanDotPrinter::print(
   out << "  edge [fontname=\"Helvetica\", color=\"" << kPalette.lines
       << "\"];\n";
 
-  folly::F14FastMap<std::string, int32_t> taskPrefixToIndex;
-  folly::F14FastMap<std::string, std::string> producerDistribution;
+  folly::F14FastMap<int32_t, int32_t> fragmentIdToIndex;
+  folly::F14FastMap<int32_t, std::string> producerDistribution;
   const auto& fragments = plan.fragments();
-  taskPrefixToIndex.reserve(fragments.size());
+  fragmentIdToIndex.reserve(fragments.size());
   producerDistribution.reserve(fragments.size());
   for (int32_t index = 0; index < static_cast<int32_t>(fragments.size());
        ++index) {
     const auto& fragment = fragments[index];
-    taskPrefixToIndex[fragment.taskPrefix] = index;
-    producerDistribution[fragment.taskPrefix] =
+    fragmentIdToIndex[fragment.fragmentId] = index;
+    producerDistribution[fragment.fragmentId] =
         outputDistribution(fragment.fragment.planNode).kind;
   }
 
@@ -341,11 +341,11 @@ void MultiFragmentPlanDotPrinter::print(
        ++index) {
     const auto& fragment = fragments[index];
     for (const auto& input : fragment.inputStages) {
-      const auto producerIt = taskPrefixToIndex.find(input.producerTaskPrefix);
+      const auto producerIt = fragmentIdToIndex.find(input.producerFragmentId);
       VELOX_CHECK(
-          producerIt != taskPrefixToIndex.end(),
-          "Unknown producer task prefix: {}",
-          input.producerTaskPrefix);
+          producerIt != fragmentIdToIndex.end(),
+          "Unknown producer fragment id: {}",
+          input.producerFragmentId);
       out << "  fragment_" << producerIt->second << " -> fragment_" << index
           << ";\n";
     }

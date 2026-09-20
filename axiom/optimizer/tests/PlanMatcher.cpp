@@ -1228,9 +1228,8 @@ const axiom::optimizer::ExecutableFragment* findProducerFragment(
     const PlanMatcher::DistributedMatchContext& context) {
   for (const auto& inputStage : context.currentFragment->inputStages) {
     if (inputStage.consumerNodeId == exchangeNodeId) {
-      auto it = context.taskPrefixToFragmentIndex->find(
-          inputStage.producerTaskPrefix);
-      if (it != context.taskPrefixToFragmentIndex->end()) {
+      auto it = context.fragmentIdToIndex->find(inputStage.producerFragmentId);
+      if (it != context.fragmentIdToIndex->end()) {
         return &context.fragments->at(it->second);
       }
       break;
@@ -1365,7 +1364,7 @@ PlanMatcher::MatchResult ShuffleBoundaryMatcher::match(
   // Match the producer first so its symbols are available for the key lookups
   // below (keys reference producer-fragment column names).
   DistributedMatchContext producerContext{
-      context->fragments, producerFragment, context->taskPrefixToFragmentIndex};
+      context->fragments, producerFragment, context->fragmentIdToIndex};
   auto producerResult = producerMatcher_->match(
       partitionedOutput->sources()[0], symbols, &producerContext);
   if (!producerResult.match) {
@@ -2913,10 +2912,10 @@ bool PlanMatcher::match(const axiom::optimizer::MultiFragmentPlan& plan) const {
     return false;
   }
 
-  // Build mapping from task prefix to fragment index.
-  std::unordered_map<std::string, int32_t> taskPrefixToFragmentIndex;
+  // Build mapping from fragment id to fragment index.
+  std::unordered_map<int32_t, int32_t> fragmentIdToIndex;
   for (int32_t i = 0; i < fragments.size(); ++i) {
-    taskPrefixToFragmentIndex[fragments[i].taskPrefix] = i;
+    fragmentIdToIndex[fragments[i].fragmentId] = i;
   }
 
   // The root fragment is the last one by convention.
@@ -2924,7 +2923,7 @@ bool PlanMatcher::match(const axiom::optimizer::MultiFragmentPlan& plan) const {
 
   // Set up the distributed match context.
   DistributedMatchContext context{
-      &fragments, &rootFragment, &taskPrefixToFragmentIndex};
+      &fragments, &rootFragment, &fragmentIdToIndex};
 
   // Match the root fragment against the matcher.
   return this->match(rootFragment.fragment.planNode, {}, &context).match;

@@ -195,7 +195,7 @@ struct InputStage {
     /// ExchangeNode in the consumer fragment.
     velox::core::PlanNodeId consumerNodeId;
     /// Identifies the producer fragment.
-    std::string producerTaskPrefix;
+    int32_t producerFragmentId;
 };
 
 /// Determines how the runtime decides the task count for a fragment.
@@ -207,7 +207,8 @@ enum class FragmentType {
 };
 
 struct ExecutableFragment {
-    std::string taskPrefix;
+    /// Identifies the fragment within its plan.
+    int32_t fragmentId;
     FragmentType type;
     /// Required for kFixed, optional hint for kSource, nullopt otherwise.
     std::optional<int32_t> numRemotePartitions;
@@ -246,7 +247,7 @@ The runtime determines task count based on `FragmentType`:
 #### Data wiring
 
 Each `InputStage` in a consumer fragment identifies an `ExchangeNode` (by
-plan node ID) and a producer fragment (by task prefix). The runtime must
+plan node ID) and a producer fragment (by id). The runtime must
 connect producer tasks to consumer tasks so that data flows correctly.
 
 The producer fragment's root node is always a `PartitionedOutputNode`.

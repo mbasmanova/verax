@@ -393,18 +393,15 @@ velox::ContinueFuture FinishWrite::abort() && noexcept {
 }
 
 namespace {
-std::string formatFragmentHeader(
-    int32_t index,
-    const ExecutableFragment& fragment) {
+std::string formatFragmentHeader(const ExecutableFragment& fragment) {
   std::string bucketedSuffix;
   if (!fragment.groupedNodes.empty()) {
     bucketedSuffix =
         fmt::format(" bucketed(leaves={})", fragment.groupedNodes.size());
   }
   return fmt::format(
-      "Fragment {}: {} {}{}{}:",
-      index,
-      fragment.taskPrefix,
+      "Fragment {}: {}{}{}:",
+      fragment.fragmentId,
       FragmentTypeName::toName(fragment.type),
       fragment.numRemotePartitions.has_value()
           ? fmt::format(
@@ -420,26 +417,19 @@ std::string MultiFragmentPlan::toString(
         const velox::core::PlanNodeId& nodeId,
         std::string_view indentation,
         std::ostream& out)>& addContext) const {
-  // Map task prefix to fragment index.
-  folly::F14FastMap<std::string, int32_t> taskPrefixToIndex;
-  for (auto i = 0; i < fragments_.size(); ++i) {
-    taskPrefixToIndex[fragments_[i].taskPrefix] = i;
-  }
-
-  // Map plan node to indices of the input fragment.
+  // Map each Exchange node to the fragments producing its input.
   folly::F14FastMap<velox::core::PlanNodeId, std::vector<int32_t>>
-      planNodeToIndices;
+      planNodeToProducers;
   for (const auto& fragment : fragments_) {
     for (const auto& input : fragment.inputStages) {
-      planNodeToIndices[input.consumerNodeId].emplace_back(
-          taskPrefixToIndex[input.producerTaskPrefix]);
+      planNodeToProducers[input.consumerNodeId].emplace_back(
+          input.producerFragmentId);
     }
   }
 
   std::stringstream out;
-  for (auto i = 0; i < fragments_.size(); ++i) {
-    const auto& fragment = fragments_[i];
-    out << formatFragmentHeader(i, fragment) << std::endl;
+  for (const auto& fragment : fragments_) {
+    out << formatFragmentHeader(fragment) << std::endl;
 
     out << fragment.fragment.planNode->toString(
                detailed,
@@ -455,8 +445,8 @@ std::string MultiFragmentPlan::toString(
                    stream << indentation << "sample: " << sampled->second << "%"
                           << std::endl;
                  }
-                 auto it = planNodeToIndices.find(planNodeId);
-                 if (it != planNodeToIndices.end()) {
+                 auto it = planNodeToProducers.find(planNodeId);
+                 if (it != planNodeToProducers.end()) {
                    if (it->second.size() == 1) {
                      stream << indentation << "Input Fragment "
                             << it->second.front() << std::endl;
@@ -474,15 +464,14 @@ std::string MultiFragmentPlan::toString(
 std::string MultiFragmentPlan::toSummaryString(
     velox::core::PlanSummaryOptions options) const {
   std::stringstream out;
-  for (auto i = 0; i < fragments_.size(); ++i) {
-    const auto& fragment = fragments_[i];
-    out << formatFragmentHeader(i, fragment) << std::endl;
+  for (const auto& fragment : fragments_) {
+    out << formatFragmentHeader(fragment) << std::endl;
     out << fragment.fragment.planNode->toSummaryString(options) << std::endl;
     if (!fragment.inputStages.empty()) {
       out << "Inputs: ";
       for (const auto& input : fragment.inputStages) {
         out << fmt::format(
-            " {} <- {} ", input.consumerNodeId, input.producerTaskPrefix);
+            " {} <- {} ", input.consumerNodeId, input.producerFragmentId);
       }
       out << std::endl;
     }
@@ -499,14 +488,14 @@ void checkFragmentTypes(
     int32_t maxRemotePartitions) {
   for (const auto& fragment : fragments) {
     const auto& numRemotePartitions = fragment.numRemotePartitions;
-    const auto& taskPrefix = fragment.taskPrefix;
+    const auto fragmentId = fragment.fragmentId;
 
     switch (fragment.type) {
       case FragmentType::kFixed:
         VELOX_CHECK(
             numRemotePartitions.has_value(),
             "kFixed fragment must have numRemotePartitions set: {}",
-            taskPrefix);
+            fragmentId);
         break;
       case FragmentType::kSingle:
       case FragmentType::kCoordinator:
@@ -514,7 +503,7 @@ void checkFragmentTypes(
             !numRemotePartitions.has_value(),
             "{} fragment must not have numRemotePartitions set: {}",
             FragmentTypeName::toName(fragment.type),
-            taskPrefix);
+            fragmentId);
         break;
       case FragmentType::kSource:
         break;
@@ -525,17 +514,17 @@ void checkFragmentTypes(
           numRemotePartitions.value(),
           0,
           "Fragment numRemotePartitions must be positive: {}",
-          taskPrefix);
+          fragmentId);
       VELOX_CHECK_LE(
           numRemotePartitions.value(),
           maxRemotePartitions,
           "Fragment numRemotePartitions exceeds maxRemotePartitions: {}",
-          taskPrefix);
+          fragmentId);
     }
   }
 }
 
-// Checks producer-consumer linkage: task prefixes are non-empty and unique,
+// Checks producer-consumer linkage: fragment ids are unique,
 // each InputStage references a valid ExchangeNode and an existing producer
 // whose root is a PartitionedOutputNode with matching partition count. Also
 // checks for self-links, that the last fragment is not a producer, that each
@@ -543,12 +532,11 @@ void checkFragmentTypes(
 // referenced.
 void checkProducerConsumerLinkage(
     const std::vector<ExecutableFragment>& fragments) {
-  folly::F14FastMap<std::string, size_t> fragmentIndices;
+  folly::F14FastMap<int32_t, size_t> fragmentIndices;
   for (size_t i = 0; i < fragments.size(); ++i) {
-    const auto& prefix = fragments[i].taskPrefix;
-    VELOX_CHECK(!prefix.empty(), "Fragment task prefix must not be empty");
-    auto [_, inserted] = fragmentIndices.emplace(prefix, i);
-    VELOX_CHECK(inserted, "Duplicate fragment task prefix: {}", prefix);
+    const auto fragmentId = fragments[i].fragmentId;
+    auto [_, inserted] = fragmentIndices.emplace(fragmentId, i);
+    VELOX_CHECK(inserted, "Duplicate fragment id: {}", fragmentId);
   }
 
   folly::F14FastSet<size_t> referencedProducers;
@@ -561,37 +549,37 @@ void checkProducerConsumerLinkage(
           consumerNode,
           "Consumer node not found: {}, fragment: {}",
           inputStage.consumerNodeId,
-          consumer.taskPrefix);
+          consumer.fragmentId);
       VELOX_CHECK_NOT_NULL(
           dynamic_cast<const velox::core::ExchangeNode*>(consumerNode),
           "Consumer node must be an ExchangeNode: {}, fragment: {}",
           inputStage.consumerNodeId,
-          consumer.taskPrefix);
+          consumer.fragmentId);
 
-      auto it = fragmentIndices.find(inputStage.producerTaskPrefix);
+      auto it = fragmentIndices.find(inputStage.producerFragmentId);
       VELOX_CHECK(
           it != fragmentIndices.end(),
           "Producer fragment not found: {}, consumer: {}",
-          inputStage.producerTaskPrefix,
-          consumer.taskPrefix);
+          inputStage.producerFragmentId,
+          consumer.fragmentId);
 
       VELOX_CHECK_NE(
           it->second,
           fragments.size() - 1,
           "Last fragment cannot be a producer: {}",
-          inputStage.producerTaskPrefix);
+          inputStage.producerFragmentId);
 
       VELOX_CHECK_NE(
-          inputStage.producerTaskPrefix,
-          consumer.taskPrefix,
+          inputStage.producerFragmentId,
+          consumer.fragmentId,
           "Fragment cannot be its own producer: {}",
-          consumer.taskPrefix);
+          consumer.fragmentId);
 
       auto [_, isNew] = referencedProducers.insert(it->second);
       VELOX_CHECK(
           isNew,
           "Producer fragment referenced by multiple consumers: {}",
-          inputStage.producerTaskPrefix);
+          inputStage.producerFragmentId);
 
       const auto& producer = fragments[it->second];
       const auto* partitionedOutput =
@@ -600,7 +588,7 @@ void checkProducerConsumerLinkage(
       VELOX_CHECK_NOT_NULL(
           partitionedOutput,
           "Expected PartitionedOutputNode at root of producer fragment: {}",
-          producer.taskPrefix);
+          producer.fragmentId);
 
       if (partitionedOutput->isBroadcast() ||
           partitionedOutput->isArbitrary()) {
@@ -615,8 +603,8 @@ void checkProducerConsumerLinkage(
           partitionedOutput->numPartitions(),
           consumer.numRemotePartitions.value_or(1),
           "Partition count mismatch between producer {} and consumer {}",
-          producer.taskPrefix,
-          consumer.taskPrefix);
+          producer.fragmentId,
+          consumer.fragmentId);
     }
   }
 
@@ -624,7 +612,7 @@ void checkProducerConsumerLinkage(
     VELOX_CHECK(
         referencedProducers.contains(i),
         "Non-last fragment must be referenced by exactly one consumer: {}",
-        fragments[i].taskPrefix);
+        fragments[i].fragmentId);
   }
 }
 
@@ -653,7 +641,7 @@ void checkGroupedNodes(const ExecutableFragment& fragment) {
     VELOX_CHECK(
         leafIds.contains(planNodeId),
         "groupedNodes references a PlanNodeId that is not a leaf TableScan or ExchangeNode in fragment '{}': {}",
-        fragment.taskPrefix,
+        fragment.fragmentId,
         planNodeId);
     if (partitionType == nullptr) {
       continue;
@@ -663,7 +651,7 @@ void checkGroupedNodes(const ExecutableFragment& fragment) {
           commonNumPartitions.value(),
           partitionType->numPartitions(),
           "All non-null groupedNodes entries in a fragment must share numPartitions(): {}",
-          fragment.taskPrefix);
+          fragment.fragmentId);
     } else {
       commonNumPartitions = partitionType->numPartitions();
     }
@@ -682,7 +670,7 @@ void checkLastFragment(
       "Last fragment must be kSingle or kCoordinator "
       "when remoteOutput is false (kSource allowed only with "
       "maxRemotePartitions == 1): {}",
-      last.taskPrefix);
+      last.fragmentId);
 }
 
 } // namespace

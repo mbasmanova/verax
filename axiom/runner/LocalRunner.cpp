@@ -210,16 +210,16 @@ folly::coro::Task<void> co_generateAndDistributeSplits(
 void getTopologicalOrder(
     const std::vector<optimizer::ExecutableFragment>& fragments,
     int32_t index,
-    const folly::F14FastMap<std::string, int32_t>& taskPrefixToIndex,
+    const folly::F14FastMap<int32_t, int32_t>& fragmentIdToIndex,
     std::vector<bool>& visited,
     std::stack<int32_t>& indices) {
   visited[index] = true;
   for (const auto& input : fragments.at(index).inputStages) {
-    if (!visited[taskPrefixToIndex.at(input.producerTaskPrefix)]) {
+    if (!visited[fragmentIdToIndex.at(input.producerFragmentId)]) {
       getTopologicalOrder(
           fragments,
-          taskPrefixToIndex.at(input.producerTaskPrefix),
-          taskPrefixToIndex,
+          fragmentIdToIndex.at(input.producerFragmentId),
+          fragmentIdToIndex,
           visited,
           indices);
     }
@@ -229,16 +229,16 @@ void getTopologicalOrder(
 
 std::vector<optimizer::ExecutableFragment> topologicalSort(
     const std::vector<optimizer::ExecutableFragment>& fragments) {
-  folly::F14FastMap<std::string, int32_t> taskPrefixToIndex;
+  folly::F14FastMap<int32_t, int32_t> fragmentIdToIndex;
   for (auto i = 0; i < fragments.size(); ++i) {
-    taskPrefixToIndex[fragments[i].taskPrefix] = i;
+    fragmentIdToIndex[fragments[i].fragmentId] = i;
   }
 
   std::stack<int32_t> indices;
   std::vector<bool> visited(fragments.size(), false);
   for (auto i = 0; i < fragments.size(); ++i) {
     if (!visited[i]) {
-      getTopologicalOrder(fragments, i, taskPrefixToIndex, visited, indices);
+      getTopologicalOrder(fragments, i, fragmentIdToIndex, visited, indices);
     }
   }
 
@@ -735,8 +735,8 @@ void LocalRunner::makeStages(
     self->cancelTasks();
   };
 
-  // Mapping from task prefix to the stage index and whether it is a broadcast.
-  folly::F14FastMap<std::string, std::pair<int32_t, bool>> stageMap;
+  // Mapping from fragment id to the stage index and whether it is a broadcast.
+  folly::F14FastMap<int32_t, std::pair<int32_t, bool>> stageMap;
   for (auto fragmentIndex = 0; fragmentIndex < fragments_.size() - 1;
        ++fragmentIndex) {
     const auto& fragment = fragments_[fragmentIndex];
@@ -746,7 +746,7 @@ void LocalRunner::makeStages(
       // fire onError before makeStages() finishes building the rest of
       // stages_).
       std::lock_guard<std::mutex> lock(mutex_);
-      stageMap[fragment.taskPrefix] = {
+      stageMap[fragment.fragmentId] = {
           stages_.size(), needsOutputBufferUpdate(fragment.fragment)};
       stages_.emplace_back();
     }
@@ -757,9 +757,9 @@ void LocalRunner::makeStages(
             : 1);
     for (auto i = 0; i < numTasks; ++i) {
       auto taskId = fmt::format(
-          "local://{}/{}.{}",
+          "local://{}/fragment{}.{}",
           params_.queryCtx->queryId(),
-          fragment.taskPrefix,
+          fragment.fragmentId,
           i);
       // Each task in the stage gets a distinct taskUniqueId so AssignUniqueId
       // operators across tasks produce non-overlapping ids. Copy the shared
@@ -825,7 +825,7 @@ void LocalRunner::makeStages(
 
       for (const auto& input : fragment.inputStages) {
         const auto [sourceStage, needsUpdate] =
-            stageMap[input.producerTaskPrefix];
+            stageMap[input.producerFragmentId];
 
         std::vector<std::shared_ptr<velox::exec::RemoteConnectorSplit>>
             sourceSplits;

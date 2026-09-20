@@ -72,8 +72,8 @@ struct InputStage {
   // Id of ExchangeNode in the consumer fragment.
   velox::core::PlanNodeId consumerNodeId;
 
-  /// Task prefix of producer stage.
-  std::string producerTaskPrefix;
+  /// Id of the fragment producing the input.
+  int32_t producerFragmentId;
 };
 
 /// Callbacks to finalize writing to a connector after the query completes.
@@ -144,7 +144,10 @@ AXIOM_DECLARE_ENUM_NAME(FragmentType);
 /// parallel execution. Decisions on number of workers, location
 /// of workers and mode of exchange are up to the runtime.
 struct ExecutableFragment {
-  std::string taskPrefix;
+  /// Identifies the fragment within its plan. Opaque to the optimizer; a
+  /// runtime may use it to name the tasks it starts, but nothing here depends
+  /// on that.
+  int32_t fragmentId;
 
   /// Scheduling type for this fragment.
   FragmentType type;

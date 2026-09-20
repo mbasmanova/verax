@@ -69,7 +69,7 @@ class PlanMatcher {
   struct DistributedMatchContext {
     const std::vector<axiom::optimizer::ExecutableFragment>* fragments;
     const axiom::optimizer::ExecutableFragment* currentFragment;
-    const std::unordered_map<std::string, int32_t>* taskPrefixToFragmentIndex;
+    const std::unordered_map<int32_t, int32_t>* fragmentIdToIndex;
   };
 
   struct MatchResult {

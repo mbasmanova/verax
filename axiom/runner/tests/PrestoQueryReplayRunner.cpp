@@ -166,6 +166,14 @@ struct PlanFragmentInfo {
 
 std::vector<optimizer::ExecutableFragment> createExecutableFragments(
     const folly::F14FastMap<std::string, PlanFragmentInfo>& planFragments) {
+  // The replayed plan identifies fragments by the task prefix logged with each
+  // Presto task; ExecutableFragment identifies them by id, so number them here.
+  folly::F14FastMap<std::string, int32_t> fragmentIds;
+  fragmentIds.reserve(planFragments.size());
+  for (const auto& [taskPrefix, _] : planFragments) {
+    fragmentIds.emplace(taskPrefix, fragmentIds.size());
+  }
+
   std::vector<optimizer::ExecutableFragment> executableFragments;
   for (const auto& [taskPrefix, planFragmentInfo] : planFragments) {
     std::vector<optimizer::InputStage> inputStages;
@@ -173,13 +181,14 @@ std::vector<optimizer::ExecutableFragment> createExecutableFragments(
     for (const auto& [planNodeId, remoteTaskPrefixes] : remoteTaskIdMap) {
       for (const auto& remoteTaskPrefix : remoteTaskPrefixes) {
         inputStages.push_back(
-            optimizer::InputStage{planNodeId, remoteTaskPrefix});
+            optimizer::InputStage{
+                planNodeId, fragmentIds.at(remoteTaskPrefix)});
       }
     }
     if (planFragmentInfo.numWorkers > 1) {
       executableFragments.push_back(
           optimizer::ExecutableFragment{
-              .taskPrefix = taskPrefix,
+              .fragmentId = fragmentIds.at(taskPrefix),
               .type = optimizer::FragmentType::kFixed,
               .numRemotePartitions = planFragmentInfo.numWorkers,
               .fragment = velox::core::PlanFragment{planFragmentInfo.plan},
@@ -188,7 +197,7 @@ std::vector<optimizer::ExecutableFragment> createExecutableFragments(
     } else {
       executableFragments.push_back(
           optimizer::ExecutableFragment{
-              .taskPrefix = taskPrefix,
+              .fragmentId = fragmentIds.at(taskPrefix),
               .type = optimizer::FragmentType::kSingle,
               .fragment = velox::core::PlanFragment{planFragmentInfo.plan},
               .inputStages = std::move(inputStages),
