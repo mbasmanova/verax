@@ -2097,8 +2097,8 @@ class Decorrelator : public NodeRewriter<> {
     });
   }
 
-  // Aggregate peel (Rule A) for kLeft: the body aggregates once per outer
-  // row.
+  // Aggregate peel (Rule A): the body aggregates once per outer row. Supports
+  // kLeft, and kInner where an unfiltered global aggregate guarantees one row.
   //
   // Shape:
   //   - Project (strip rn, COALESCE empty-input aggs, reorder)
@@ -2127,8 +2127,8 @@ class Decorrelator : public NodeRewriter<> {
   // every group is either real or the one pad standing for an outer's
   // absence.
   //
-  // In scope: kind = kLeft; gby empty or non-empty; F_post empty or
-  // non-empty.
+  // In scope: kind = kLeft with gby empty or non-empty and F_post empty or
+  // non-empty; kind = kInner with an empty gby and no accumulated filter.
   //
   // COALESCE for non-NULL empty-input aggregates: applied in final
   // Project. The lifted Agg's aggregate-result output uses a fresh
@@ -2145,12 +2145,13 @@ class Decorrelator : public NodeRewriter<> {
     if (node->isLeftSemiProject()) {
       return aggregatePeelSemi(node, input, body, accumulatedFilter);
     }
-    if (node->isInner()) {
+    if (node->isInner() &&
+        (!aggregate->groupingKeys().empty() || !accumulatedFilter.empty())) {
       VELOX_NYI(
           "Decorrelate: INNER LATERAL over an Aggregate body is not yet "
           "supported");
     }
-    if (!node->isLeft()) {
+    if (!node->isLeft() && !node->isInner()) {
       VELOX_NYI(
           "Decorrelate: Aggregate peel for kind={} not yet supported",
           node->kind());
@@ -2940,7 +2941,8 @@ class Decorrelator : public NodeRewriter<> {
   }
 
   // Final Project: shapes `child`'s output to node->outputColumns()
-  // (= L.cols ++ gby_cols ++ aggregate_results ++ includeMarker).
+  // (= L.cols ++ gby_cols ++ aggregate_results, plus includeMarker for
+  // kLeft).
   //   - L.cols: pass-through from the input columns (the outer side of
   //     the join-back, or the lifted `arbitrary` outputs).
   //   - gby_cols and aggregate_results: the grouping-key outputs, and each
@@ -2954,10 +2956,10 @@ class Decorrelator : public NodeRewriter<> {
   //     semantics. A grouping key is NULLed with the aggregates, since a key
   //     whose expression is non-NULL over the body's NULLs would otherwise
   //     publish a value for an outer that read no rows.
-  //   - includeMarker: 'includeMarkerValue'. Literal `true` where every
-  //     outer reaches here with a row of its own, and a marker column
-  //     sourced from the body where a join below can pad an outer, so the
-  //     pad reads NULL.
+  //   - includeMarker for kLeft: 'includeMarkerValue'. Literal `true` where
+  //     every outer reaches here with a row of its own, and a marker column
+  //     sourced from the body where a join below can pad an outer, so the pad
+  //     reads NULL.
   NodeCP buildAggregateFinalProject(
       ApplyCP node,
       NodeCP input,
@@ -2987,7 +2989,9 @@ class Decorrelator : public NodeRewriter<> {
           wraps[i].finalExpression,
           aggregate->outputColumns()[numGroupingKeys + i]->value().type));
     }
-    finalExpressions.push_back(includeMarkerValue);
+    if (node->isLeft()) {
+      finalExpressions.push_back(includeMarkerValue);
+    }
     return builder().make<Project>({
         child,
         std::move(finalExpressions),
