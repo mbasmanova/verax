@@ -21,6 +21,7 @@
 #include <fmt/ranges.h>
 #include <ranges>
 #include <sstream>
+#include "axiom/optimizer/EstimateMath.h"
 #include "axiom/optimizer/v2/NodeVisitor.h"
 
 namespace facebook::axiom::optimizer::v2 {
@@ -409,10 +410,33 @@ class Printer : public NodeVisitor {
 
     if (ctx.options->estimates) {
       const auto estimate = ctx.options->estimates(&node);
-      if (estimate.cardinality.has_value()) {
-        ctx.out << spaces(ctx.indent + 2)
-                << "Estimate: " << *estimate.cardinality << " rows\n";
+      ctx.out << spaces(ctx.indent + 2) << "Estimate: ";
+      if (!estimate.cardinality.has_value()) {
+        ctx.out << "unknown\n";
+        return;
       }
+
+      ctx.out << *estimate.cardinality << " rows";
+      if (node.is(NodeType::kFilter)) {
+        appendRatio(ctx, "selectivity", estimate.cardinality, node.onlyInput());
+      } else if (node.is(NodeType::kJoin)) {
+        const auto* join = node.as<Join>();
+        appendRatio(ctx, "left fanout", estimate.cardinality, join->left());
+        appendRatio(ctx, "right fanout", estimate.cardinality, join->right());
+      }
+      ctx.out << '\n';
+    }
+  }
+
+  void appendRatio(
+      Context& ctx,
+      std::string_view label,
+      std::optional<float> outputCardinality,
+      NodeCP input) const {
+    const auto inputEstimate = ctx.options->estimates(input);
+    if (const auto ratio =
+            divide(outputCardinality, inputEstimate.cardinality)) {
+      ctx.out << ", " << label << ": " << *ratio;
     }
   }
 

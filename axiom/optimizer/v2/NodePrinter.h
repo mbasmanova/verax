@@ -26,8 +26,8 @@ namespace facebook::axiom::optimizer::v2 {
 class NodePrinter {
  public:
   struct Options {
-    /// Supplies the estimate to print under each node. Unset prints none, and
-    /// a node whose cardinality is unknown prints none either way.
+    /// Supplies the estimate to print under each node. Unset prints none;
+    /// unknown cardinality prints "Estimate: unknown".
     std::function<Estimate(NodeCP)> estimates;
   };
 
