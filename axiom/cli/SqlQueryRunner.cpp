@@ -26,6 +26,7 @@
 #include <folly/coro/Task.h>
 #include <folly/coro/Timeout.h>
 #include <folly/coro/WithCancellation.h>
+#include <folly/json.h>
 #include <folly/system/HardwareConcurrency.h>
 #include <algorithm>
 #include <cmath>
@@ -49,6 +50,7 @@
 #include "axiom/optimizer/ConstantExprEvaluator.h"
 #include "axiom/optimizer/DerivedTablePrinter.h"
 #include "axiom/optimizer/ExplainIo.h"
+#include "axiom/optimizer/MultiFragmentPlanPrinter.h"
 #include "axiom/optimizer/Optimization.h"
 #include "axiom/optimizer/OptimizerOptions.h"
 #include "axiom/optimizer/Plan.h"
@@ -1108,14 +1110,7 @@ SqlQueryRunner::co_runExplainStatement(
     co_return;
   }
   co_yield SqlResultChunk{runExplain(
-      logicalPlan,
-      explain.type(),
-      explain.format(),
-      explain.settings(),
-      options,
-      context,
-      timing,
-      schemaResolver)};
+      logicalPlan, explain, options, context, timing, schemaResolver)};
 }
 
 folly::coro::AsyncGenerator<SqlQueryRunner::SqlResultChunk>
@@ -1490,23 +1485,60 @@ std::optional<optimizer::v2::Optimizer::Pass> explainLastPass(
       optimizer::v2::Optimizer::allPassNames());
   return pass;
 }
+
+// True when the `detail` EXPLAIN setting asks for the plan's fragment graph.
+bool explainSummaryOnly(const presto::ExplainStatement::Settings& settings) {
+  static constexpr std::string_view kDetail = "detail";
+  static constexpr std::string_view kSummary = "summary";
+
+  for (const auto& setting : settings) {
+    VELOX_USER_CHECK_EQ(
+        setting.first,
+        kDetail,
+        "Unrecognized EXPLAIN setting. Accepted settings: {}",
+        kDetail);
+  }
+
+  auto it = settings.find(std::string{kDetail});
+  if (it == settings.end()) {
+    return false;
+  }
+
+  VELOX_USER_CHECK_EQ(
+      it->second,
+      kSummary,
+      "Invalid {} value. Expected: {}",
+      kDetail,
+      kSummary);
+  return true;
+}
+
 } // namespace
 
 std::string SqlQueryRunner::runExplain(
     const logical_plan::LogicalPlanNodePtr& logicalPlan,
-    presto::ExplainStatement::Type type,
-    presto::ExplainStatement::Format format,
-    const presto::ExplainStatement::Settings& settings,
+    const presto::ExplainStatement& explainStatement,
     const RunOptions& options,
     const connector::ConnectorContextPtr& context,
     QueryTiming& timing,
     std::shared_ptr<connector::SchemaResolver> schemaResolver) {
   const bool explain = schemaResolver != nullptr;
 
-  VELOX_USER_CHECK_NE(
-      format,
-      presto::ExplainStatement::Format::kJson,
-      "Unsupported EXPLAIN format: JSON. Supported formats: TEXT, GRAPHVIZ.");
+  const auto type = explainStatement.type();
+  const auto format = explainStatement.format();
+  const auto& settings = explainStatement.settings();
+  const bool summaryOnly =
+      type == presto::ExplainStatement::Type::kExecutable &&
+      explainSummaryOnly(settings);
+
+  VELOX_USER_CHECK(
+      format != presto::ExplainStatement::Format::kJson || summaryOnly,
+      "Unsupported EXPLAIN format: JSON. JSON is supported for "
+      "TYPE EXECUTABLE WITH (detail = 'summary') only.");
+
+  VELOX_USER_CHECK(
+      !summaryOnly || format == presto::ExplainStatement::Format::kJson,
+      "EXPLAIN WITH (detail = 'summary') is supported for FORMAT JSON only.");
 
   if (format == presto::ExplainStatement::Format::kGraphviz) {
     VELOX_USER_CHECK(
@@ -1516,8 +1548,9 @@ std::string SqlQueryRunner::runExplain(
   }
 
   VELOX_USER_CHECK(
-      settings.empty() || type == presto::ExplainStatement::Type::kOptimized,
-      "EXPLAIN settings are supported for TYPE OPTIMIZED only.");
+      settings.empty() || type == presto::ExplainStatement::Type::kOptimized ||
+          type == presto::ExplainStatement::Type::kExecutable,
+      "EXPLAIN settings are supported for TYPE OPTIMIZED and TYPE EXECUTABLE only.");
 
   switch (type) {
     case presto::ExplainStatement::Type::kLogical:
@@ -1640,6 +1673,11 @@ std::string SqlQueryRunner::runExplain(
             nullptr,
             schemaResolver,
             explain);
+      }
+      if (summaryOnly) {
+        return folly::toPrettyJson(
+            optimizer::MultiFragmentPlanPrinter::toGraphJson(
+                *planAndStats.plan));
       }
       return planAndStats.toString();
     }

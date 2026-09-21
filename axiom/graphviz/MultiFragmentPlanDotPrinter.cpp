@@ -219,12 +219,9 @@ std::optional<std::string> bodyDetail(
     return fmt::format(
         "{}, {}", it->second.fragmentId, it->second.distribution);
   }
-  if (const auto* scan =
-          dynamic_cast<const velox::core::TableScanNode*>(&node)) {
-    if (scan->tableHandle() != nullptr) {
-      return scan->tableHandle()->name();
-    }
-    return std::nullopt;
+  if (const auto* scan = node.as<velox::core::TableScanNode>()) {
+    VELOX_CHECK_NOT_NULL(scan->tableHandle(), "Scan has no table handle");
+    return scan->tableHandle()->name();
   }
   if (const auto* limit = dynamic_cast<const velox::core::LimitNode*>(&node)) {
     if (limit->offset() > 0) {
