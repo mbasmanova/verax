@@ -494,6 +494,7 @@ PlanAndStats ToVelox::toVeloxPlan(
     const GroupedLeavesBundle& groupedLeaves) {
   options_ = options;
 
+  stageCounter_ = 0;
   prediction_.clear();
   nodeHistory_.clear();
   relationOpToNodeId_.clear();

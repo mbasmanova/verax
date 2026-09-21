@@ -16,9 +16,15 @@ if(AXIOM_BUILD_TESTING)
   add_subdirectory(tests)
 endif()
 
-add_library(axiom_optimizer_multifragment_plan MultiFragmentPlan.cpp)
+add_library(axiom_optimizer_multifragment_plan MultiFragmentPlan.cpp MultiFragmentPlanPrinter.cpp)
 
-target_link_libraries(axiom_optimizer_multifragment_plan velox_common_base velox_memory velox_core)
+target_link_libraries(
+  axiom_optimizer_multifragment_plan
+  velox_common_base
+  velox_memory
+  velox_core
+  Folly::folly
+)
 
 add_library(
   axiom_optimizer
