@@ -380,7 +380,7 @@ TEST_P(ExplainTest, explainLastPass) {
 
   VELOX_ASSERT_USER_THROW(
       run("EXPLAIN (TYPE LOGICAL WITH (last_pass = 'translate')) SELECT 1 AS x"),
-      "EXPLAIN settings are supported for TYPE OPTIMIZED only");
+      "EXPLAIN settings are supported for TYPE OPTIMIZED and TYPE EXECUTABLE only");
 }
 
 TEST_P(ExplainTest, explainPopulatesOptimizeTiming) {
@@ -452,10 +452,65 @@ TEST_P(ExplainTest, explainFormatGraphviz) {
       run("EXPLAIN (FORMAT GRAPHVIZ) SELECT 1 AS x"),
       "EXPLAIN FORMAT GRAPHVIZ is supported for TYPE LOGICAL and TYPE GRAPH only");
 
-  // FORMAT JSON is rejected.
   VELOX_ASSERT_USER_THROW(
       run("EXPLAIN (FORMAT JSON) SELECT 1 AS x"),
       "Unsupported EXPLAIN format: JSON");
+}
+
+// A distributed count reports the scanning fragment with its table, and the
+// exchange edge into the fragment that gathers the result.
+TEST_P(ExplainTest, fragmentGraph) {
+  testConnector_->addTpchTables(1);
+
+  auto result = runner_->run(
+      "EXPLAIN (TYPE EXECUTABLE WITH (detail = 'summary'), FORMAT JSON) "
+      "SELECT count(*) FROM lineitem",
+      {.numWorkers = 2, .numDrivers = 1});
+  ASSERT_TRUE(result.message.has_value());
+
+  EXPECT_EQ(result.message.value(), R"({
+  "fragments": [
+    {
+      "id": 2,
+      "output": {
+        "consumerFragmentId": 1,
+        "nodeId": "2"
+      },
+      "scans": [
+        {
+          "nodeId": "0",
+          "table": "\"default\".\"lineitem\""
+        }
+      ],
+      "type": "SOURCE"
+    },
+    {
+      "exchanges": [
+        {
+          "nodeId": "3",
+          "producerFragmentId": 2
+        }
+      ],
+      "id": 1,
+      "type": "SINGLE"
+    }
+  ]
+})");
+}
+
+TEST_P(ExplainTest, fragmentGraphErrors) {
+  VELOX_ASSERT_USER_THROW(
+      run("EXPLAIN (TYPE EXECUTABLE WITH (detail = 'summary')) SELECT 1 AS x"),
+      "EXPLAIN WITH (detail = 'summary') is supported for FORMAT JSON only");
+
+  VELOX_ASSERT_USER_THROW(
+      run("EXPLAIN (TYPE EXECUTABLE WITH (detail = 'partial'), FORMAT JSON) "
+          "SELECT 1 AS x"),
+      "Invalid detail value. Expected: summary");
+
+  VELOX_ASSERT_USER_THROW(
+      run("EXPLAIN (TYPE EXECUTABLE WITH (verbosity = 'high')) SELECT 1 AS x"),
+      "Unrecognized EXPLAIN setting. Accepted settings: detail");
 }
 
 INSTANTIATE_TEST_SUITE_P(

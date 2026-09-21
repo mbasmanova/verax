@@ -535,6 +535,11 @@ void checkProducerConsumerLinkage(
   folly::F14FastMap<int32_t, size_t> fragmentIndices;
   for (size_t i = 0; i < fragments.size(); ++i) {
     const auto fragmentId = fragments[i].fragmentId;
+    VELOX_CHECK_GE(fragmentId, 1, "Fragment id must be positive");
+    VELOX_CHECK_LE(
+        fragmentId,
+        static_cast<int32_t>(fragments.size()),
+        "Fragment id exceeds the number of fragments");
     auto [_, inserted] = fragmentIndices.emplace(fragmentId, i);
     VELOX_CHECK(inserted, "Duplicate fragment id: {}", fragmentId);
   }
