@@ -63,9 +63,10 @@ SELECT t.x, g.a, g.b
 FROM t
 CROSS JOIN LATERAL (SELECT u.a AS a, u.a + t.x AS b FROM u WHERE u.a < t.x) g
 ----
+-- CROSS JOIN LATERAL with a global aggregate keeps every outer row, including
+-- one whose correlated input is empty.
 -- error_v1: Unsupported PlanNode LATERAL_JOIN
--- error_v2: INNER LATERAL over an Aggregate body is not yet supported
-WITH t(x) AS (VALUES (1), (2)),
+WITH t(x) AS (VALUES (1), (2), (9)),
      u(a) AS (VALUES (1), (2), (3))
 SELECT t.x, g.c
 FROM t
