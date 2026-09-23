@@ -112,6 +112,20 @@ ExprCP ExprFactory::makeLessThanOrEqual(ExprCP lhs, ExprCP rhs) {
   return makeBooleanCall(name, {lhs, rhs}, /*specialForm=*/false);
 }
 
+ExprCP ExprFactory::makeCardinality(ExprCP value) {
+  const Name name = builder_.functionNames().cardinality;
+  VELOX_USER_CHECK_NOT_NULL(
+      name,
+      "ExprFactory::makeCardinality requires cardinality registered via "
+      "FunctionRegistry::registerCardinality; the active dialect did not "
+      "register it");
+  ExprVector arguments{value};
+  const FunctionSet functions = Call::unionArgFunctions(
+      functionBits(name, /*specialForm=*/false), arguments);
+  return builder_.makeCall(
+      name, Value(toType(velox::BIGINT())), std::move(arguments), functions);
+}
+
 ExprCP ExprFactory::makeSamplePredicate(double fraction) {
   const Name randName = builder_.functionNames().random;
   VELOX_USER_CHECK_NOT_NULL(

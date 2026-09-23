@@ -332,6 +332,7 @@ struct FunctionNames {
   Name negation{nullptr};
   Name elementAt{nullptr};
   Name subscript{nullptr};
+  Name cardinality{nullptr};
   Name lt{nullptr};
   Name lte{nullptr};
   Name gt{nullptr};

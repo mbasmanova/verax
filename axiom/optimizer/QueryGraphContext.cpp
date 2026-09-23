@@ -352,6 +352,10 @@ void QueryGraphContext::populateFunctionNames() {
     functionNames_.subscript = this->toName(subscript.value());
   }
 
+  if (auto cardinality = registry->cardinality()) {
+    functionNames_.cardinality = this->toName(cardinality.value());
+  }
+
   if (auto arbitrary = registry->arbitrary()) {
     functionNames_.arbitrary = this->toName(arbitrary.value());
   }

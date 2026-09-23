@@ -48,6 +48,11 @@ struct PushdownContext {
   PlanObjectSet requestedFilterColumns;
   ExprVector collectedFilters;
 
+  // True if replacing multiple rows that are identical after pruning with one
+  // cannot affect consumers above. Distinct emitted rows and the difference
+  // between zero and one row remain significant.
+  bool mayDropDuplicates{false};
+
   // Conjuncts collected from the path above this node that the visitor
   // will try to push further down.
   ExprVector pending;
@@ -1113,6 +1118,13 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     childContext.required.unionColumns(childContext.pending);
     childContext.nonNullColumns = context.nonNullColumns;
     childContext.consumerDropsExtraColumns = true;
+    childContext.mayDropDuplicates = context.mayDropDuplicates;
+    for (ExprCP expr : survivingExprs) {
+      if (expr->containsNonDeterministic()) {
+        childContext.mayDropDuplicates = false;
+        break;
+      }
+    }
     NodeCP newInput = rewrite(node->input(), childContext);
 
     // Inline a child Project: a Project directly over another Project collapses
@@ -1588,6 +1600,29 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     rightContext.required.unionColumns(rightContext.pending);
     rightContext.nonNullColumns = std::move(childNonNullColumns);
 
+    const auto allDeterministic = [](const ExprVector& expressions) {
+      return std::ranges::none_of(expressions, [](ExprCP expression) {
+        return expression->containsNonDeterministic();
+      });
+    };
+    if (allDeterministic(newLeftKeys) && allDeterministic(newRightKeys) &&
+        allDeterministic(newFilter)) {
+      switch (newKind) {
+        case velox::core::JoinType::kLeftSemiFilter:
+        case velox::core::JoinType::kLeftSemiProject:
+        case velox::core::JoinType::kAnti:
+          rightContext.mayDropDuplicates = true;
+          break;
+        case velox::core::JoinType::kRightSemiFilter:
+        case velox::core::JoinType::kRightSemiProject:
+        case velox::core::JoinType::kRightAnti:
+          leftContext.mayDropDuplicates = true;
+          break;
+        default:
+          break;
+      }
+    }
+
     NodeCP newLeft = rewrite(node->left(), leftContext);
     NodeCP newRight = rewrite(node->right(), rightContext);
 
@@ -2005,13 +2040,43 @@ class Pushdown : public NodeRewriter<PushdownContext> {
 
     ColumnCP survivingMarker = node->markerColumn();
 
+    const bool collapseDuplicates = context.mayDropDuplicates &&
+        builder().functionNames().cardinality != nullptr &&
+        builder().functionNames().lte != nullptr && !node->isOuter() &&
+        blocked.empty() && !outputsKept.hasIntersection(outputOnlyColumns);
+
     PushdownContext childContext =
         makeChildContext(std::move(pushable), context);
     childContext.required.unionColumns(node->unnestExpressions());
     childContext.required.unionObjects(survivingReplicated);
     childContext.required.unionColumns(blocked);
     childContext.requiredAbove = childContext.required;
+    childContext.mayDropDuplicates = collapseDuplicates;
+    // This collapse still evaluates the collection once per input row. A
+    // child collapse could remove input rows and change its evaluation count.
+    for (ExprCP expr : node->unnestExpressions()) {
+      if (expr->containsNonDeterministic()) {
+        childContext.mayDropDuplicates = false;
+        break;
+      }
+    }
     NodeCP newInput = rewrite(node->input(), childContext);
+
+    if (collapseDuplicates) {
+      const auto* one = builder().makeLiteral(
+          velox::Variant(int64_t{1}), toType(velox::BIGINT()));
+      ExprVector nonEmpty;
+      nonEmpty.reserve(node->unnestExpressions().size());
+      // UNNEST pads shorter collections to the longest one, so an input row
+      // produces output exactly when at least one collection is non-empty.
+      for (ExprCP expression : node->unnestExpressions()) {
+        nonEmpty.push_back(exprs_.makeLessThanOrEqual(
+            one, exprs_.makeCardinality(expression)));
+      }
+      NodeCP filtered = builder().make<Filter>(
+          {newInput, ExprVector{exprs_.orAll(nonEmpty)}});
+      return narrowed(filtered, context);
+    }
 
     // Unnest accepts a subset of structured-field outputs as
     // `outputColumns`; drop entries the consumer doesn't need.

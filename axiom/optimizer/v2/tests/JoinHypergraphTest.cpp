@@ -218,6 +218,29 @@ TEST_F(JoinHypergraphTest, nonInnerEligibility) {
   }
 }
 
+TEST_F(JoinHypergraphTest, unsupportedJoinType) {
+  NodeCP left = makeLeaf("left_key");
+  NodeCP right = makeLeaf("right_key");
+  JoinCP root = builder_->make<Join>(Join::Key{
+      .left = left,
+      .right = right,
+      .joinType = velox::core::JoinType::kCountingAnti,
+      .leftKeys = {left->outputColumns().front()},
+      .rightKeys = {right->outputColumns().front()},
+      .outputColumns = left->outputColumns(),
+  });
+  JoinCluster cluster{
+      .root = root,
+      .leaves = {left, right},
+      .joins = {root},
+  };
+  EstimateProvider estimateProvider;
+
+  VELOX_ASSERT_THROW(
+      HypergraphBuilder::build(cluster, cluster.leaves, estimateProvider),
+      "Unsupported join type in join cluster");
+}
+
 // A relation required only for eligibility still belongs to the edge's
 // connected component.
 TEST_F(JoinHypergraphTest, connectedViaEligibility) {
