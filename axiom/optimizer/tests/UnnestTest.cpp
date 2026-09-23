@@ -1052,6 +1052,94 @@ TEST_P(UnnestTest, inSubqueryOverUnnest) {
   AXIOM_ASSERT_DISTRIBUTED_PLAN(distributed.plan, matcher);
 }
 
+// Unused UNNEST outputs affect EXISTS only through whether any collection is
+// non-empty, including through a deterministic projection.
+TEST_P(UnnestTest, unusedOutputUnderExists) {
+  testConnector_->addTable("t", ROW({"t_k", "t_csv"}, VARCHAR()));
+  testConnector_->addTable("u", ROW("u_k", VARCHAR()));
+
+  auto query =
+      "SELECT u_k FROM u "
+      "WHERE NOT EXISTS ("
+      "  SELECT 1 FROM (SELECT trim(t_k) AS k "
+      "  FROM t CROSS JOIN UNNEST(split(t_csv, ','), split(t_csv, ';'))) p "
+      "  WHERE p.k = u_k)";
+  auto logicalPlan = parseSelect(query, kTestConnectorId);
+
+  auto matcher = matchScan("u")
+                     .hashJoinAnti(
+                         matchScan("t")
+                             .filter(
+                                 "cardinality(split(t_csv, ',')) >= 1 OR "
+                                 "cardinality(split(t_csv, ';')) >= 1")
+                             .project({"trim(t_k) AS k"}),
+                         {.keys = {{"u_k = k"}}})
+                     .build();
+
+  AXIOM_ASSERT_PLAN_V2(toSingleNodePlan(logicalPlan), matcher);
+}
+
+// A non-deterministic collection collapses, but an earlier UNNEST must remain
+// so the collection is evaluated once per expanded row.
+TEST_P(UnnestTest, nondeterministicCollectionUnderExists) {
+  testConnector_->addTable(
+      "t",
+      ROW({"t_k", "t_items", "t_other"},
+          {INTEGER(), ARRAY(INTEGER()), ARRAY(INTEGER())}));
+  testConnector_->addTable("u", ROW("u_k", INTEGER()));
+
+  const auto query = R"(
+      SELECT u_k
+      FROM u
+      WHERE NOT EXISTS (
+        SELECT 1
+        FROM t
+        CROSS JOIN UNNEST(t_items)
+        CROSS JOIN UNNEST(filter(t_other, item -> random() < 0.5))
+        WHERE t_k = u_k
+      )
+  )";
+  auto logicalPlan = parseSelect(query, kTestConnectorId);
+
+  auto matcher =
+      matchScan("u")
+          .hashJoinAnti(
+              matchScan("t")
+                  .unnest({"t_k", "t_other"}, {"t_items"})
+                  .filter(
+                      "1 <= cardinality(filter(t_other, item -> random() < "
+                      "0.5))"),
+              {.keys = {{"u_k = t_k"}}})
+          .build();
+
+  AXIOM_ASSERT_PLAN_V2(toSingleNodePlan(logicalPlan), matcher);
+}
+
+// Both inputs' UNNESTs contribute to INTERSECT ALL multiplicity and stay below
+// the counting join.
+TEST_P(UnnestTest, countingJoinMultiplicity) {
+  testConnector_->addTable(
+      "t", ROW({"t_k", "t_items"}, {INTEGER(), ARRAY(INTEGER())}));
+  testConnector_->addTable(
+      "u", ROW({"u_k", "u_items"}, {INTEGER(), ARRAY(INTEGER())}));
+
+  auto query =
+      "SELECT t_k FROM t CROSS JOIN UNNEST(t_items) "
+      "INTERSECT ALL "
+      "SELECT u_k FROM u CROSS JOIN UNNEST(u_items)";
+  auto logicalPlan = parseSelect(query, kTestConnectorId);
+
+  auto matcher = matchScan("t")
+                     .unnest({"t_k"}, {"t_items"})
+                     .hashJoin(
+                         matchScan("u").unnest({"u_k"}, {"u_items"}),
+                         core::JoinType::kCountingLeftSemiFilter,
+                         {.keys = {{"t_k = u_k"}}})
+                     .build();
+
+  AXIOM_ASSERT_PLAN_V2(toSingleNodePlan(logicalPlan), matcher);
+}
+
 // An expansion goes above a join that does not read what it produces, so the
 // join runs on the rows before they multiply.
 TEST_P(UnnestTest, unnestPlacedAboveJoin) {

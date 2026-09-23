@@ -126,6 +126,30 @@ WHERE EXISTS (
   FROM (VALUES (ARRAY[8, 5])) AS m(data) CROSS JOIN UNNEST(data) AS t(e)
   WHERE e > a.x)
 ----
+-- The projected subquery does not expose the unnested value, but NOT EXISTS
+-- still observes whether UNNEST produces a row. A NULL collection produces no
+-- row.
+SELECT k
+FROM (VALUES ('a'), ('b'), ('c')) AS u(k)
+WHERE NOT EXISTS (
+  SELECT 1
+  FROM (
+    SELECT trim(k) AS projected_k
+    FROM (VALUES ('a', 'x,y'), ('b', NULL)) AS p(k, csv)
+    CROSS JOIN UNNEST(split(csv, ',')) AS t(item)
+  ) p
+  WHERE p.projected_k = u.k)
+----
+-- INTERSECT ALL counts the rows produced by UNNEST on both inputs.
+-- duckdb: VALUES (1)
+SELECT k
+FROM (VALUES (1, ARRAY[10, 20])) AS t(k, items)
+CROSS JOIN UNNEST(items)
+INTERSECT ALL
+SELECT k
+FROM (VALUES (1, ARRAY[30])) AS u(k, items)
+CROSS JOIN UNNEST(items)
+----
 -- Returns the innermost element that matches the joined value 1.
 SELECT c
 FROM arrays AS t

@@ -532,12 +532,19 @@ folly::F14FastMap<int8_t, RelationSet> addUnnestEdges(
   return unnestInputRelations;
 }
 
-// Adds to 'tes' the Unnests this outer join must not be reordered past.
+// Adds to 'tes' the Unnests this non-inner join must not be reordered past.
 //
 // An Unnest reading an array from the join's null-padded side has to run
 // before the join: after it, the padded row carries a NULL array, which
 // unnests to no rows and drops the row the outer join preserved. Adding the
 // Unnest's relation id to the TES is what pins that order for DPhyp.
+//
+// An Unnest in a semi or anti join's existence side also has to run first.
+// Below the join its rows collapse to presence or absence; above the join they
+// would instead duplicate or drop rows from the preserved side.
+//
+// A counting semi join implements multiset intersection, so an Unnest on either
+// side must run first: its row count is part of the join result.
 //
 // A join contained in the Unnest's input subtree is one the query unnests the
 // result of, so its own order is join-then-unnest and the barrier, which
@@ -550,11 +557,21 @@ void addUnnestBarriers(
     const folly::F14FastMap<int8_t, RelationSet>& unnestSubtrees,
     RelationSet& tes) {
   RelationSet nullPaddedSide;
+  bool rightSideDeterminesExistence{false};
+  bool bothSidesDetermineMultiplicity{false};
   if (inputs.joinType == velox::core::JoinType::kLeft) {
     nullPaddedSide = inputs.rightLeaves;
   } else if (inputs.joinType == velox::core::JoinType::kFull) {
     nullPaddedSide = inputs.leftLeaves;
     nullPaddedSide.unionSet(inputs.rightLeaves);
+  } else if (
+      inputs.joinType == velox::core::JoinType::kLeftSemiFilter ||
+      inputs.joinType == velox::core::JoinType::kLeftSemiProject ||
+      inputs.joinType == velox::core::JoinType::kAnti) {
+    rightSideDeterminesExistence = true;
+  } else if (
+      inputs.joinType == velox::core::JoinType::kCountingLeftSemiFilter) {
+    bothSidesDetermineMultiplicity = true;
   } else {
     return;
   }
@@ -566,7 +583,15 @@ void addUnnestBarriers(
     if (joinRelations.isSubset(unnestSubtrees.at(unnestId))) {
       continue;
     }
-    if (!nullPaddedSide.hasIntersection(inputRelations)) {
+    const bool readsNullPaddedSide =
+        nullPaddedSide.hasIntersection(inputRelations);
+    const bool determinesExistence = rightSideDeterminesExistence &&
+        inputs.rightRelations.contains(unnestId);
+    const bool determinesMultiplicity = bothSidesDetermineMultiplicity &&
+        (inputs.leftRelations.contains(unnestId) ||
+         inputs.rightRelations.contains(unnestId));
+    if (!readsNullPaddedSide && !determinesExistence &&
+        !determinesMultiplicity) {
       continue;
     }
     VELOX_CHECK(
@@ -651,6 +676,16 @@ struct EdgeBuilder {
 
   // Adds the single edge of a non-inner join, normalized to left form.
   void addOuter(JoinCP join, const JoinInputs& inputs) {
+    VELOX_CHECK(
+        inputs.joinType == velox::core::JoinType::kLeft ||
+            inputs.joinType == velox::core::JoinType::kFull ||
+            inputs.joinType == velox::core::JoinType::kLeftSemiFilter ||
+            inputs.joinType == velox::core::JoinType::kLeftSemiProject ||
+            inputs.joinType == velox::core::JoinType::kAnti ||
+            inputs.joinType == velox::core::JoinType::kCountingLeftSemiFilter,
+        "Unsupported join type in join cluster: {}",
+        join->joinTypeName());
+
     // Swap keys when the IR join is a right-form join so the edge's
     // leftKeys reference the normalized left input.
     const bool flip = join->joinType() == velox::core::JoinType::kRight ||

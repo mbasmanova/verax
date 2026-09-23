@@ -77,6 +77,9 @@ class ExprFactory {
   /// Builds `lhs <= rhs`.
   ExprCP makeLessThanOrEqual(ExprCP lhs, ExprCP rhs);
 
+  /// Builds `cardinality(value)`.
+  ExprCP makeCardinality(ExprCP value);
+
   /// Builds the BERNOULLI sampling predicate `rand() < fraction`, where
   /// 'fraction' is in [0, 1). The `rand()` call is non-deterministic, so it is
   /// re-evaluated per row.
