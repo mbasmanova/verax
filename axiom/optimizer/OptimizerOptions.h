@@ -57,6 +57,8 @@ struct OptimizerOptions : public velox::config::ConfigProvider {
       "small_query_max_scan_rows";
   static constexpr std::string_view kSmallQueryNumWorkers =
       "small_query_num_workers";
+  static constexpr std::string_view kHashPartitionCount =
+      "hash_partition_count";
   static constexpr std::string_view kMinColumnarChannelsForCompactRow =
       "min_columnar_channels_for_compact_row";
   static constexpr std::string_view kRecursionLimit = "recursion_limit";
@@ -67,6 +69,7 @@ struct OptimizerOptions : public velox::config::ConfigProvider {
   // and properties().
   static constexpr int64_t kSmallQueryMaxScanRowsDefault = 0;
   static constexpr int32_t kSmallQueryNumWorkersDefault = 1;
+  static constexpr int32_t kHashPartitionCountDefault = 0;
   static constexpr int32_t kMinColumnarChannelsForCompactRowDefault = 1'000;
   static constexpr int32_t kParallelProjectWidthDefault = 1;
   static constexpr int32_t kGreedyJoinThresholdDefault = 5;
@@ -130,6 +133,18 @@ struct OptimizerOptions : public velox::config::ConfigProvider {
   /// The worker count a small query runs on, capped by the count the caller
   /// supplied.
   int32_t smallQueryNumWorkers{kSmallQueryNumWorkersDefault};
+
+  /// The number of tasks a hash-partitioned stage runs, capped by the worker
+  /// count the caller supplied. 0, the default, uses that worker count.
+  /// Bucketed stages keep the bucket count. v2 only.
+  int32_t hashPartitionCount{kHashPartitionCountDefault};
+
+  /// Tasks a hash-partitioned stage runs given 'numWorkers' available:
+  /// 'hashPartitionCount' capped by 'numWorkers', or 'numWorkers' when unset.
+  int32_t hashStageTasks(int32_t numWorkers) const {
+    return hashPartitionCount > 0 ? std::min(hashPartitionCount, numWorkers)
+                                  : numWorkers;
+  }
 
   /// Uses CompactRow serialization for internal exchanges whose Presto
   /// encoding has at least this many columnar channels.

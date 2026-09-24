@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
 #include "axiom/optimizer/tests/HiveQueriesTestBase.h"
@@ -58,6 +59,19 @@ class QueryWidthTest : public test::HiveQueriesTestBase {
 
   static int32_t maxRemotePartitions(const PlanAndStats& result) {
     return result.plan->options().maxRemotePartitions;
+  }
+
+  // Task counts of the plan's hash-partitioned stages, after checking that
+  // every producer partitions to its consumer's count.
+  static std::vector<int32_t> hashStageWidths(const PlanAndStats& result) {
+    result.plan->checkConsistency(/*mayBeEmpty=*/false);
+    std::vector<int32_t> widths;
+    for (const auto& fragment : result.plan->fragments()) {
+      if (fragment.type == FragmentType::kFixed) {
+        widths.push_back(fragment.numRemotePartitions.value());
+      }
+    }
+    return widths;
   }
 
   // Sums the raw-input estimates the optimizer recorded for the plan's scans,
@@ -150,6 +164,26 @@ TEST_F(QueryWidthTest, narrowWidth) {
     options.smallQueryNumWorkers = kWorkersAvailable * 2;
     EXPECT_EQ(maxRemotePartitions(plan(sql, options)), kWorkersAvailable);
   }
+}
+
+// A hash-partitioned stage runs hash_partition_count tasks, capped by the
+// workers available. Unset, it runs one per worker.
+TEST_F(QueryWidthTest, hashPartitionCount) {
+  const std::string_view sql =
+      "SELECT n_regionkey, count(*) FROM nation GROUP BY 1";
+
+  OptimizerOptions options;
+  EXPECT_THAT(
+      hashStageWidths(plan(sql, options)),
+      testing::ElementsAre(kWorkersAvailable));
+
+  options.hashPartitionCount = 2;
+  EXPECT_THAT(hashStageWidths(plan(sql, options)), testing::ElementsAre(2));
+
+  options.hashPartitionCount = kWorkersAvailable * 2;
+  EXPECT_THAT(
+      hashStageWidths(plan(sql, options)),
+      testing::ElementsAre(kWorkersAvailable));
 }
 
 } // namespace

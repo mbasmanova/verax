@@ -36,11 +36,13 @@ DPhyp::DPhyp(
     const CostModel& costModel,
     int64_t enumerationBudget,
     int32_t numWorkers,
+    int32_t hashStageTasks,
     int64_t broadcastSizeLimit)
     : graph_{graph},
       costModel_{costModel},
       enumerationBudget_{enumerationBudget},
       numWorkers_{numWorkers},
+      hashStageTasks_{hashStageTasks},
       broadcastSizeLimit_{broadcastSizeLimit} {
   VELOX_CHECK_GE(
       graph_.relations().size(),
@@ -188,6 +190,7 @@ class Enumerator {
       folly::F14NodeMap<RelationSet, PlanSet>& memo,
       int64_t enumerationBudget,
       int32_t numWorkers,
+      int32_t hashStageTasks,
       int64_t broadcastSizeLimit,
       std::vector<std::unique_ptr<MemoOp>>& enforcementOps)
       : graph_{graph},
@@ -195,6 +198,7 @@ class Enumerator {
         memo_{memo},
         budget_{enumerationBudget},
         numWorkers_{numWorkers},
+        hashStageTasks_{hashStageTasks},
         broadcastSizeLimit_{broadcastSizeLimit},
         enforcementOps_{enforcementOps} {}
 
@@ -918,11 +922,34 @@ class Enumerator {
     return it->second.bestBucketed(coverKeys);
   }
 
-  // Cheapest plan for `cover` broadcast to all tasks. Null when `cover` has no
+  // Tasks in the stage whose rows are 'partitioning': a bucketed stage runs one
+  // per bucket group, a stage fed by a hash exchange runs 'hashStageTasks_',
+  // and a gathered stage runs one. Anything else is a scan stage, which runs
+  // as many tasks as its splits allow, up to the worker count.
+  int32_t stageTasks(const Partitioning& partitioning) const {
+    switch (partitioning.kind) {
+      case PartitionKind::kPartitioned:
+        return partitioning.partitionType != nullptr
+            ? partitioning.partitionType->numPartitions()
+            : hashStageTasks_;
+      case PartitionKind::kGather:
+        return 1;
+      case PartitionKind::kUnspecified:
+      case PartitionKind::kBroadcast:
+      case PartitionKind::kArbitrary:
+        return numWorkers_;
+    }
+    VELOX_UNREACHABLE();
+  }
+
+  // Cheapest plan for `cover` broadcast to every task of the stage the probe
+  // runs in, whose rows are 'probePartitioning'. Null when `cover` has no
   // costable plan, or when its estimated size exceeds the broadcast limit (it
   // would not fit in each task's memory) — the caller then relies on the
   // co-partition candidate.
-  MemoOpCP broadcastChild(RelationSet cover) {
+  MemoOpCP broadcastChild(
+      RelationSet cover,
+      const Partitioning& probePartitioning) {
     const auto it = memo_.find(cover);
     if (it == memo_.end()) {
       return nullptr;
@@ -936,7 +963,8 @@ class Enumerator {
     }
     Cost cost = base->cost;
     cost.cost = add(
-        base->cost.cost, costModel_.broadcastCost(base, graph_, numWorkers_));
+        base->cost.cost,
+        costModel_.broadcastCost(base, graph_, stageTasks(probePartitioning)));
     return makeExchange(base, Partitioning::globalBroadcast(), cost);
   }
 
@@ -1187,7 +1215,8 @@ class Enumerator {
     // its preserved (left) side, so its build is preserved and cannot be
     // broadcast.
     if (canBroadcastBuild(joinType) && !reversedAnti) {
-      MemoOpCP broadcastBuild = broadcastChild(right->cover());
+      MemoOpCP broadcastBuild =
+          broadcastChild(right->cover(), left->outputPartitioning());
       if (broadcastBuild != nullptr) {
         addJoinCandidate(
             left,
@@ -1285,6 +1314,8 @@ class Enumerator {
   EnumerationBudget budget_;
   // Target task count; > 1 enables remote-exchange candidate generation.
   const int32_t numWorkers_;
+  // Task count of a hash-partitioned stage.
+  const int32_t hashStageTasks_;
   // Max estimated build size a broadcast candidate may replicate; <= 0
   // disables.
   const int64_t broadcastSizeLimit_;
@@ -1344,6 +1375,7 @@ const MemoOp* DPhyp::enumerate() {
       memo_,
       enumerationBudget_,
       numWorkers_,
+      hashStageTasks_,
       broadcastSizeLimit_,
       enforcementOps_};
   const bool budgetExceeded = enumerator.solve();
@@ -1381,6 +1413,7 @@ std::vector<MemoOpCP> DPhyp::enumerate(
       memo_,
       enumerationBudget_,
       numWorkers_,
+      hashStageTasks_,
       broadcastSizeLimit_,
       enforcementOps_};
 

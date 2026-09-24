@@ -210,6 +210,10 @@ class Emitter {
         exprEmitter_{evaluator.pool()},
         options_{options} {}
 
+  int32_t hashPartitionCount() const {
+    return session_.options().hashStageTasks(options_.maxRemotePartitions);
+  }
+
   velox::core::PlanNodePtr emit(NodeCP node) {
     auto plan = emitNode(node);
     recordPrediction(node, plan);
@@ -1805,10 +1809,13 @@ std::optional<FragmentType> fragmentTypeContribution(NodeCP node) {
 // parallelism collapses to one task. A nullopt contribution (no split source
 // below -- no scan, only exchanges and/or values) is single-task regardless of
 // output partitioning: kSource requires connector splits to drive its task
-// count, so the fallback is kSingle.
+// count, so the fallback is kSingle. A kFixed fragment reads a hash exchange
+// and runs 'hashPartitionCount' tasks; a grouped fragment's bucket count
+// replaces it later.
 void decideFragmentType(
     std::optional<FragmentType> contribution,
     int32_t maxRemotePartitions,
+    int32_t hashPartitionCount,
     ExecutableFragment& fragment) {
   if (maxRemotePartitions == 1) {
     fragment.type = FragmentType::kSingle;
@@ -1816,7 +1823,7 @@ void decideFragmentType(
   }
   fragment.type = contribution.value_or(FragmentType::kSingle);
   if (fragment.type == FragmentType::kFixed) {
-    fragment.numRemotePartitions = maxRemotePartitions;
+    fragment.numRemotePartitions = hashPartitionCount;
   }
 }
 
@@ -1825,10 +1832,12 @@ void decideFragmentType(
 void decideFragmentType(
     NodeCP node,
     int32_t maxRemotePartitions,
+    int32_t hashPartitionCount,
     ExecutableFragment& fragment) {
   decideFragmentType(
       maxRemotePartitions == 1 ? std::nullopt : fragmentTypeContribution(node),
       maxRemotePartitions,
+      hashPartitionCount,
       fragment);
 }
 
@@ -1889,7 +1898,8 @@ void Emitter::emitGatheredOutput(
       layoutAboveGather && rootProject != nullptr ? rootProject->input() : root;
 
   ExecutableFragment source = newFragment();
-  decideFragmentType(belowRoot, options_.maxRemotePartitions, source);
+  decideFragmentType(
+      belowRoot, options_.maxRemotePartitions, hashPartitionCount(), source);
   velox::core::PlanNodePtr sourcePlan = layoutAboveGather
       ? emitChildFragment(belowRoot, source)
       : emitInFragment(
@@ -1941,8 +1951,8 @@ velox::core::PlanNodePtr Emitter::makeExchangeProducer(
       // connector's partition function so rows land in the same groups as that
       // side. Planning coarsened it to the worker count, so its partition count
       // is the consumer fragment's numRemotePartitions. Otherwise standard
-      // Velox hash over maxRemotePartitions partitions.
-      int32_t numPartitions = options_.maxRemotePartitions;
+      // Velox hash over the hash stage's task count.
+      int32_t numPartitions = hashPartitionCount();
       velox::core::PartitionFunctionSpecPtr spec;
       if (partitioning.partitionType != nullptr) {
         numPartitions = partitioning.partitionType->numPartitions();
@@ -1999,7 +2009,11 @@ velox::core::PlanNodePtr Emitter::emitExchange(const Exchange& exchange) {
 
   // Producer fragment: the exchange's input, capped with a PartitionedOutput.
   ExecutableFragment source = newFragment();
-  decideFragmentType(exchange.input(), options_.maxRemotePartitions, source);
+  decideFragmentType(
+      exchange.input(),
+      options_.maxRemotePartitions,
+      hashPartitionCount(),
+      source);
   velox::core::PlanNodePtr sourcePlan =
       emitChildFragment(exchange.input(), source);
   const auto outputType = sourcePlan->outputType();
@@ -2091,7 +2105,10 @@ velox::core::PlanNodePtr Emitter::emitTableWrite(const TableWrite& tableWrite) {
   if (distributed) {
     writerFragment = newFragment();
     decideFragmentType(
-        tableWrite.input(), options_.maxRemotePartitions, writerFragment);
+        tableWrite.input(),
+        options_.maxRemotePartitions,
+        hashPartitionCount(),
+        writerFragment);
     rootGroupedLeaves = std::move(groupedLeaves_);
     groupedLeaves_.clear();
     currentFragment_ = &writerFragment;
@@ -2359,14 +2376,16 @@ std::vector<ExecutableFragment> Emitter::emitFragments(
       // multi-worker source, kCoordinator for a coordinator-only scan, kSingle
       // at maxRemotePartitions == 1 or when there is no split source below).
       currentFragment_ = &top;
-      decideFragmentType(rootType, options_.maxRemotePartitions, top);
+      decideFragmentType(
+          rootType, options_.maxRemotePartitions, hashPartitionCount(), top);
       outputProjection = emitRoot(root, outputColumns, outputNames);
       top.fragment.planNode = makeClientOutput(outputProjection);
     } else if (gatherForOutput) {
       emitGatheredOutput(root, outputColumns, outputNames, top);
     } else {
       currentFragment_ = &top;
-      decideFragmentType(rootType, options_.maxRemotePartitions, top);
+      decideFragmentType(
+          rootType, options_.maxRemotePartitions, hashPartitionCount(), top);
       top.fragment.planNode = emitRoot(root, outputColumns, outputNames);
     }
   }

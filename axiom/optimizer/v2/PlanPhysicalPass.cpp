@@ -803,6 +803,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
         costModel,
         options_.dphypEnumerationBudget,
         numWorkers_,
+        options_.hashStageTasks(numWorkers_),
         options_.broadcastSizeLimit};
     if (components.size() == 1) {
       MemoOpCP root = dphyp.enumerate();
