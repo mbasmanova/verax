@@ -89,6 +89,19 @@ TEST_F(DomainTest, uniteOverlapping) {
   ASSERT_EQ(result.ranges().size(), 1);
 }
 
+TEST_F(DomainTest, subtract) {
+  auto excluded = Domain::greaterThanOrEqual(Variant(int64_t{10}))
+                      .intersect(Domain::lessThanOrEqual(Variant(int64_t{20})));
+
+  auto result = Domain::notNull().subtract(excluded);
+  ASSERT_FALSE(result.nullsAllowed());
+  ASSERT_EQ(result.ranges().size(), 2);
+  EXPECT_EQ(result.ranges()[0].high()->value, Variant(int64_t{10}));
+  EXPECT_FALSE(result.ranges()[0].highInclusive());
+  EXPECT_EQ(result.ranges()[1].low()->value, Variant(int64_t{20}));
+  EXPECT_FALSE(result.ranges()[1].lowInclusive());
+}
+
 TEST_F(DomainTest, nulls) {
   auto onlyNull = Domain::onlyNull();
   ASSERT_TRUE(onlyNull.nullsAllowed());

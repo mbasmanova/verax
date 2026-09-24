@@ -114,10 +114,10 @@ TEST_P(ConnectorPushdownTest, inList) {
   expectPushed("a in (5, 5)", {"a = 5"});
 }
 
-// Predicates are not combined across conjuncts: a connector may receive several
-// predicates on the same column and must handle them.
+// Predicates that cannot be combined remain separate, so a connector must
+// handle several predicates on the same column.
 TEST_P(ConnectorPushdownTest, duplicateColumnPredicates) {
-  expectPushed("a = 1 and a = 2", {"a = 1", "a = 2"});
+  expectPushed("s > 'a' and s < 'z'", {"s > 'a'", "s < 'z'"});
 }
 
 // A top-level conjunction is flattened: each leaf predicate is a separate
@@ -154,26 +154,24 @@ TEST_P(ConnectorPushdownTest, filtersImpliedByOr) {
           "(a = 1 and b = 10) or (a = 2 and b = 20)",
           {
               "(a = 1 and b = 10) or (a = 2 and b = 20)",
-              "a = 1 or a = 2",
-              "b = 10 or b = 20",
+              "a in (1, 2)",
+              "b in (10, 20)",
           },
       },
       {
           nestedAllColumns,
           {
               nestedAllColumns,
-              "a = 1 or a = 2",
-              "\"or\"(\"or\"(b = 10, b = 20), "
-              "\"or\"(b = 30, b = 40))",
-              "\"or\"(\"or\"(c = 100, c = 200), "
-              "\"or\"(c = 300, c = 400))",
+              "a in (1, 2)",
+              "b in (10, 20, 30, 40)",
+              "c in (100, 200, 300, 400)",
           },
       },
       {
           nestedPartialColumns,
           {
               nestedPartialColumns,
-              "a = 1 or a = 2",
+              "a in (1, 2)",
           },
       },
       {
@@ -183,26 +181,26 @@ TEST_P(ConnectorPushdownTest, filtersImpliedByOr) {
               "(a > 1 and a < 5 and b = 10) or "
               "(a > 20 and a < 30 and b = 20)",
               "(a > 1 and a < 5) or (a > 20 and a < 30)",
-              "b = 10 or b = 20",
+              "b in (10, 20)",
           },
       },
       {
           "(a = 1 and b = 10) or a = 2",
           {
               "(a = 1 and b = 10) or a = 2",
-              "a = 1 or a = 2",
+              "a in (1, 2)",
           },
       },
       {
           "a = 1 or a = 2",
           {
-              "a = 1 or a = 2",
+              "a in (1, 2)",
           },
       },
       {
           "a = 1 or a = 2 or a = 3",
           {
-              "a = 1 or a = 2 or a = 3",
+              "a in (1, 2, 3)",
           },
       },
       {
@@ -210,11 +208,10 @@ TEST_P(ConnectorPushdownTest, filtersImpliedByOr) {
           "((a = 1 and b = 10) or (a = 2 and b = 20) or "
           "(a = 3 and b = 30) or (a = 4 and b = 40))",
           {
-              "a = 1 or a = 2 or a = 3 or a = 4",
+              "a in (1, 2, 3, 4)",
               "(a = 1 and b = 10) or (a = 2 and b = 20) or "
               "(a = 3 and b = 30) or (a = 4 and b = 40)",
-              "\"or\"(\"or\"(b = 10, b = 20), "
-              "\"or\"(b = 30, b = 40))",
+              "b in (10, 20, 30, 40)",
           },
       },
       {

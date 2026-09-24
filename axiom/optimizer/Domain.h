@@ -134,6 +134,12 @@ class Domain {
   /// OR: union of two domains.
   Domain unite(const Domain& other) const;
 
+  /// Returns values present in this domain but not in 'other'.
+  Domain subtract(const Domain& other) const;
+
+  /// Returns true if both domains contain the same values.
+  bool operator==(const Domain& other) const;
+
   /// Returns true if this domain is unconstrained (all non-null values match).
   /// Ignores nullsAllowed since a null-only constraint is not useful for IO.
   bool isAll() const;
@@ -156,9 +162,15 @@ class Domain {
   // Sorts ranges by low bound and merges overlapping/adjacent ranges.
   static std::vector<Range> normalize(std::vector<Range> ranges);
 
+  Domain complement() const;
+
   bool nullsAllowed_;
   std::vector<Range> ranges_;
 };
+
+/// Returns the complete non-null domain of a primitive integral type, or
+/// std::nullopt for other types.
+std::optional<Domain> integralTypeDomain(const velox::Type& type);
 
 class Expr;
 using ExprCP = const Expr*;
@@ -174,6 +186,7 @@ using ExprCP = const Expr*;
 ///   - IS NULL(column)
 ///   - AND(expr, expr, ...) — intersects children
 ///   - OR(expr, expr, ...) — unites children
+///   - NOT(expr)
 std::optional<Domain> exprToDomain(ExprCP expr);
 
 } // namespace facebook::axiom::optimizer

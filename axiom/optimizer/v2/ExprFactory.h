@@ -71,11 +71,23 @@ class ExprFactory {
   /// Builds `lhs = rhs`.
   ExprCP makeEq(ExprCP lhs, ExprCP rhs);
 
+  /// Builds `lhs < rhs`.
+  ExprCP makeLessThan(ExprCP lhs, ExprCP rhs);
+
   /// Builds `value IN (list...)`. 'list' must not be empty.
   ExprCP makeIn(ExprCP value, ExprVector list);
 
   /// Builds `lhs <= rhs`.
   ExprCP makeLessThanOrEqual(ExprCP lhs, ExprCP rhs);
+
+  /// Builds `lhs > rhs`.
+  ExprCP makeGreaterThan(ExprCP lhs, ExprCP rhs);
+
+  /// Builds `lhs >= rhs`.
+  ExprCP makeGreaterThanOrEqual(ExprCP lhs, ExprCP rhs);
+
+  /// Builds `value BETWEEN lower AND upper`.
+  ExprCP makeBetween(ExprCP value, ExprCP lower, ExprCP upper);
 
   /// Builds `cardinality(value)`.
   ExprCP makeCardinality(ExprCP value);

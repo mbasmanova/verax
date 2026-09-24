@@ -450,14 +450,26 @@ TEST_P(ExplainIoTest, columnConstraints) {
           "   WHERE ds <> 'foo'"),
       noConstraints);
 
-  // NOT BETWEEN (parsed as not(between(...))) is unconvertible and drops the
-  // column, same as other negations.
+  // NOT BETWEEN produces two exclusive ranges.
   ASSERT_EQ(
       getJson(
           "EXPLAIN (TYPE IO) "
           "SELECT * FROM t "
           "   WHERE ds NOT BETWEEN '2026-03-01' AND '2026-03-31'"),
-      noConstraints);
+      makeTable(makeConstraint(
+          "ds",
+          "VARCHAR",
+          R"({
+            "nullsAllowed": false,
+            "ranges": [
+              {
+                "high": {"value": "2026-03-01", "bound": "BELOW"}
+              },
+              {
+                "low": {"value": "2026-03-31", "bound": "ABOVE"}
+              }
+            ]
+          })")));
 
   // BETWEEN with low > high is an empty range, so the whole table is excluded.
   ASSERT_EQ(
