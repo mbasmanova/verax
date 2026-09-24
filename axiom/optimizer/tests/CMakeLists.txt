@@ -116,6 +116,7 @@ add_executable(
   DeleteTest.cpp
   DerivedTablePrinterTest.cpp
   DomainTest.cpp
+  ExchangeSerdeTest.cpp
   ExprMatcherTest.cpp
   ExistencePushdownTest.cpp
   FilterPushdownTest.cpp

@@ -1183,12 +1183,14 @@ class ShuffleBoundaryMatcher : public PlanMatcher {
       std::optional<ShuffleType> type = std::nullopt,
       std::vector<std::string> keys = {},
       std::optional<bool> replicateNullsAndAny = std::nullopt,
-      std::optional<axiom::optimizer::FragmentType> producerType = std::nullopt)
+      std::optional<axiom::optimizer::FragmentType> producerType = std::nullopt,
+      std::optional<std::string> serdeKind = std::nullopt)
       : producerMatcher_(std::move(producerMatcher)),
         type_(type),
         keys_(std::move(keys)),
         replicateNullsAndAny_(replicateNullsAndAny),
-        producerType_(producerType) {
+        producerType_(producerType),
+        serdeKind_(std::move(serdeKind)) {
     VELOX_CHECK(
         keys_.empty() || type == ShuffleType::kPartitioned ||
             type == ShuffleType::kOrdered,
@@ -1219,6 +1221,8 @@ class ShuffleBoundaryMatcher : public PlanMatcher {
   const std::optional<bool> replicateNullsAndAny_;
   // When set, the expected type of the producer fragment this boundary closes.
   const std::optional<axiom::optimizer::FragmentType> producerType_;
+  // When set, the serialization format on both sides of the boundary.
+  const std::optional<std::string> serdeKind_;
 };
 
 // Returns the producer fragment for the given Exchange node, or nullptr if not
@@ -1242,7 +1246,8 @@ const axiom::optimizer::ExecutableFragment* findProducerFragment(
 // ordered shuffle, a plain Exchange otherwise.
 void verifyShuffleConsumer(
     const PlanNodePtr& plan,
-    std::optional<ShuffleType> type) {
+    std::optional<ShuffleType> type,
+    const std::optional<std::string>& serdeKind) {
   if (type == ShuffleType::kOrdered) {
     EXPECT_TRUE(plan->is<MergeExchangeNode>())
         << "Expected MergeExchange at shuffle boundary, but got "
@@ -1252,6 +1257,11 @@ void verifyShuffleConsumer(
         << "Expected Exchange at shuffle boundary, but got "
         << plan->toString(false, false);
   }
+  AXIOM_TEST_RETURN_IF_FAILURE_VOID
+
+  if (serdeKind.has_value()) {
+    EXPECT_EQ(plan->as<ExchangeNode>()->serdeKind(), *serdeKind);
+  }
 }
 
 // Verifies the producer PartitionedOutput's kind matches the shuffle type and
@@ -1259,7 +1269,8 @@ void verifyShuffleConsumer(
 void verifyShuffleProducer(
     const PartitionedOutputNode& producer,
     std::optional<ShuffleType> type,
-    std::optional<bool> replicateNullsAndAny) {
+    std::optional<bool> replicateNullsAndAny,
+    const std::optional<std::string>& serdeKind) {
   if (type.has_value()) {
     switch (type.value()) {
       case ShuffleType::kBroadcast:
@@ -1292,6 +1303,9 @@ void verifyShuffleProducer(
 
   if (replicateNullsAndAny.has_value()) {
     EXPECT_EQ(producer.isReplicateNullsAndAny(), replicateNullsAndAny.value());
+  }
+  if (serdeKind.has_value()) {
+    EXPECT_EQ(producer.serdeKind(), *serdeKind);
   }
 }
 
@@ -1335,7 +1349,7 @@ PlanMatcher::MatchResult ShuffleBoundaryMatcher::match(
       "Cannot match PlanMatcher with shuffle boundaries against a single "
       "PlanNodePtr. Use match(MultiFragmentPlan) for distributed plans.");
 
-  verifyShuffleConsumer(plan, type_);
+  verifyShuffleConsumer(plan, type_, serdeKind_);
   AXIOM_TEST_RETURN_IF_FAILURE
 
   const auto* producerFragment = findProducerFragment(plan->id(), *context);
@@ -1358,7 +1372,8 @@ PlanMatcher::MatchResult ShuffleBoundaryMatcher::match(
       << fragmentPlan->toString(false, false);
   AXIOM_TEST_RETURN_IF_FAILURE
 
-  verifyShuffleProducer(*partitionedOutput, type_, replicateNullsAndAny_);
+  verifyShuffleProducer(
+      *partitionedOutput, type_, replicateNullsAndAny_, serdeKind_);
   AXIOM_TEST_RETURN_IF_FAILURE
 
   // Match the producer first so its symbols are available for the key lookups
@@ -1434,10 +1449,12 @@ class PartitionedOutputMatcher : public PlanMatcherImpl<PartitionedOutputNode> {
   PartitionedOutputMatcher(
       std::shared_ptr<PlanMatcher> matcher,
       PartitionedOutputNode::Kind kind,
-      int32_t numPartitions)
+      int32_t numPartitions,
+      std::optional<std::string> serdeKind = std::nullopt)
       : PlanMatcherImpl<PartitionedOutputNode>({std::move(matcher)}),
         kind_(kind),
-        numPartitions_(numPartitions) {}
+        numPartitions_(numPartitions),
+        serdeKind_(std::move(serdeKind)) {}
 
   MatchResult matchDetails(
       const PartitionedOutputNode& node,
@@ -1448,12 +1465,17 @@ class PartitionedOutputMatcher : public PlanMatcherImpl<PartitionedOutputNode> {
     AXIOM_TEST_RETURN_IF_FAILURE
     EXPECT_EQ(node.numPartitions(), numPartitions_);
     AXIOM_TEST_RETURN_IF_FAILURE
+    if (serdeKind_.has_value()) {
+      EXPECT_EQ(node.serdeKind(), *serdeKind_);
+      AXIOM_TEST_RETURN_IF_FAILURE
+    }
     return MatchResult::success(symbols);
   }
 
  private:
   const PartitionedOutputNode::Kind kind_;
   const int32_t numPartitions_;
+  const std::optional<std::string> serdeKind_;
 };
 
 class AssignUniqueIdMatcher : public PlanMatcherImpl<AssignUniqueIdNode> {
@@ -2453,12 +2475,35 @@ PlanMatcherBuilder& PlanMatcherBuilder::partitionedOutputSingle() {
   return *this;
 }
 
+PlanMatcherBuilder& PlanMatcherBuilder::partitionedOutputSingle(
+    const std::string& serdeKind) {
+  VELOX_USER_CHECK_NOT_NULL(matcher_);
+  matcher_ = std::make_shared<PartitionedOutputMatcher>(
+      matcher_, PartitionedOutputNode::Kind::kPartitioned, 1, serdeKind);
+  return *this;
+}
+
 PlanMatcherBuilder& PlanMatcherBuilder::shuffle(
     const std::vector<std::string>& keys,
     bool replicateNullsAndAny) {
   VELOX_USER_CHECK_NOT_NULL(matcher_);
   matcher_ = std::make_shared<ShuffleBoundaryMatcher>(
       matcher_, ShuffleType::kPartitioned, keys, replicateNullsAndAny);
+  return *this;
+}
+
+PlanMatcherBuilder& PlanMatcherBuilder::shuffle(
+    const std::vector<std::string>& keys,
+    const std::string& serdeKind,
+    bool replicateNullsAndAny) {
+  VELOX_USER_CHECK_NOT_NULL(matcher_);
+  matcher_ = std::make_shared<ShuffleBoundaryMatcher>(
+      matcher_,
+      ShuffleType::kPartitioned,
+      keys,
+      replicateNullsAndAny,
+      std::nullopt,
+      serdeKind);
   return *this;
 }
 
@@ -2536,6 +2581,18 @@ PlanMatcherBuilder& PlanMatcherBuilder::gather(
       std::vector<std::string>{},
       std::nullopt,
       producer);
+  return *this;
+}
+
+PlanMatcherBuilder& PlanMatcherBuilder::gather(const std::string& serdeKind) {
+  VELOX_USER_CHECK_NOT_NULL(matcher_);
+  matcher_ = std::make_shared<ShuffleBoundaryMatcher>(
+      matcher_,
+      ShuffleType::kGather,
+      std::vector<std::string>{},
+      std::nullopt,
+      std::nullopt,
+      serdeKind);
   return *this;
 }
 

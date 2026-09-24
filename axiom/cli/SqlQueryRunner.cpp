@@ -75,6 +75,7 @@
 #include "velox/functions/prestosql/registration/RegistrationFunctions.h"
 #include "velox/functions/prestosql/window/WindowFunctionsRegistration.h"
 #include "velox/parse/TypeResolver.h"
+#include "velox/serializers/CompactRowSerializer.h"
 #include "velox/serializers/PrestoSerializer.h"
 #include "velox/type/tz/TimeZoneMap.h"
 
@@ -269,6 +270,7 @@ void SqlQueryRunner::initialize(
       velox::serializer::presto::PrestoVectorSerde::registerVectorSerde();
     }
     velox::serializer::presto::PrestoVectorSerde::tryRegisterNamedVectorSerde();
+    velox::serializer::CompactRowVectorSerde::tryRegisterNamedVectorSerde();
   });
 
   static std::atomic<int32_t> kCounter{0};

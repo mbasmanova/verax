@@ -108,6 +108,14 @@ std::vector<ConfigProperty> buildProperties(
           "Workers a small query runs on, capped by the number available.",
       },
       {
+          std::string(OptimizerOptions::kMinColumnarChannelsForCompactRow),
+          ConfigPropertyType::kInteger,
+          std::to_string(
+              OptimizerOptions::kMinColumnarChannelsForCompactRowDefault),
+          "Minimum number of Presto columnar encoding channels at which "
+          "internal exchanges use CompactRow serialization. Must be >= 1.",
+      },
+      {
           std::string(OptimizerOptions::kParallelProjectWidth),
           ConfigPropertyType::kInteger,
           std::to_string(OptimizerOptions::kParallelProjectWidthDefault),
@@ -212,7 +220,9 @@ std::string OptimizerOptions::normalize(
     // Throws if 'value' is not a valid capacity string (e.g. "100MB").
     velox::config::toCapacity(
         std::string(value), velox::config::CapacityUnit::BYTE);
-  } else if (name == kRecursionLimit || name == kMaxPlanObjects) {
+  } else if (
+      name == kRecursionLimit || name == kMaxPlanObjects ||
+      name == kMinColumnarChannelsForCompactRow) {
     parsePositiveInt(name, value);
   }
   return std::string(value);
@@ -267,6 +277,9 @@ OptimizerOptions OptimizerOptions::from(
   setBool(kEnableReducingExistences, options.enableReducingExistences);
   setLong(kSmallQueryMaxScanRows, options.smallQueryMaxScanRows);
   setInt(kSmallQueryNumWorkers, options.smallQueryNumWorkers);
+  setPositiveInt(
+      kMinColumnarChannelsForCompactRow,
+      options.minColumnarChannelsForCompactRow);
   setInt(kParallelProjectWidth, options.parallelProjectWidth);
   setPositiveInt(kMaxPlanObjects, options.maxPlanObjects);
   setInt(kGreedyJoinThreshold, options.greedyJoinThreshold);

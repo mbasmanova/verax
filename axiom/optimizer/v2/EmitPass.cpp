@@ -33,6 +33,7 @@
 #include "velox/core/TableWriteTraits.h"
 #include "velox/exec/HashPartitionFunction.h"
 #include "velox/expression/ExprConstants.h"
+#include "velox/serializers/CompactRowSerializer.h"
 #include "velox/serializers/PrestoSerializer.h"
 
 namespace facebook::axiom::optimizer::v2 {
@@ -445,6 +446,15 @@ class Emitter {
 
   velox::RowTypePtr makeRowType(const ColumnVector& columns) const;
 
+  const std::string& chooseExchangeSerdeKind(
+      const velox::RowType& outputType) const {
+    return velox::serializer::presto::PrestoVectorSerde::
+                estimateColumnarChannels(outputType) >=
+            session_.options().minColumnarChannelsForCompactRow
+        ? velox::serializer::CompactRowVectorSerde::name()
+        : velox::serializer::presto::PrestoVectorSerde::name();
+  }
+
   // Emits 'exchange's input as a producer fragment ending in a
   // `PartitionedOutput`, and returns the consumer-side `ExchangeNode` for the
   // current fragment, wiring the `InputStage` between them.
@@ -470,9 +480,19 @@ class Emitter {
   // single destination.
   velox::core::PlanNodePtr makeSingleOutput(
       const velox::RowTypePtr& outputType,
-      const velox::core::PlanNodePtr& sourcePlan) {
+      const velox::core::PlanNodePtr& sourcePlan,
+      const std::string& serdeKind) {
     return velox::core::PartitionedOutputNode::single(
-        nextId(), outputType, exchangeSerdeKind_, sourcePlan);
+        nextId(), outputType, serdeKind, sourcePlan);
+  }
+
+  // Builds the query result boundary in the client-compatible wire format.
+  velox::core::PlanNodePtr makeClientOutput(
+      const velox::core::PlanNodePtr& sourcePlan) {
+    return makeSingleOutput(
+        sourcePlan->outputType(),
+        sourcePlan,
+        velox::serializer::presto::PrestoVectorSerde::name());
   }
 
   // Builds the consumer-side exchange node for 'partitioning' — a
@@ -530,11 +550,6 @@ class Emitter {
   // `maxLocalPartitions` for the recursive subtree and restores it afterwards.
   MultiFragmentPlan::Options options_;
   int32_t nextNodeId_{0};
-
-  // The exchange serialization format for remote
-  // `PartitionedOutput`/`Exchange`.
-  const std::string exchangeSerdeKind_{
-      velox::serializer::presto::PrestoVectorSerde::name()};
 
   // Producer fragments collected as `ir.Exchange`es are lowered; the root
   // fragment is appended last by `emitFragments`.
@@ -1881,10 +1896,11 @@ void Emitter::emitGatheredOutput(
             source, [&] { return emitRoot(root, outputColumns, outputNames); });
   currentFragment_ = &top;
 
+  const auto& serdeKind = chooseExchangeSerdeKind(*sourcePlan->outputType());
   source.fragment.planNode =
-      makeSingleOutput(sourcePlan->outputType(), sourcePlan);
+      makeSingleOutput(sourcePlan->outputType(), sourcePlan, serdeKind);
   auto gather = std::make_shared<velox::core::ExchangeNode>(
-      nextId(), sourcePlan->outputType(), exchangeSerdeKind_);
+      nextId(), sourcePlan->outputType(), serdeKind);
   top.inputStages.emplace_back(gather->id(), source.fragmentId);
   stages_.push_back(std::move(source));
 
@@ -1903,19 +1919,20 @@ velox::core::PlanNodePtr Emitter::makeExchangeProducer(
     const Partitioning& partitioning,
     const velox::RowTypePtr& outputType,
     const velox::core::PlanNodePtr& sourcePlan) {
+  const auto& serdeKind = chooseExchangeSerdeKind(*outputType);
   switch (partitioning.kind) {
     case PartitionKind::kBroadcast:
       return velox::core::PartitionedOutputNode::broadcast(
           nextId(),
           /*numPartitions=*/1,
           outputType,
-          exchangeSerdeKind_,
+          serdeKind,
           sourcePlan);
     case PartitionKind::kGather:
-      return makeSingleOutput(outputType, sourcePlan);
+      return makeSingleOutput(outputType, sourcePlan, serdeKind);
     case PartitionKind::kArbitrary:
       return velox::core::PartitionedOutputNode::arbitrary(
-          nextId(), outputType, exchangeSerdeKind_, sourcePlan);
+          nextId(), outputType, serdeKind, sourcePlan);
     case PartitionKind::kPartitioned: {
       auto fields =
           toFieldAccessList(partitioning.keys, "Exchange partition key");
@@ -1941,7 +1958,7 @@ velox::core::PlanNodePtr Emitter::makeExchangeProducer(
       if (numPartitions == 1) {
         // A connector partitioning that scales to one destination (e.g. a
         // single-bucket table) needs no partition function: gather to one task.
-        return makeSingleOutput(outputType, sourcePlan);
+        return makeSingleOutput(outputType, sourcePlan, serdeKind);
       }
 
       std::vector<velox::core::TypedExprPtr> keys(fields.begin(), fields.end());
@@ -1953,7 +1970,7 @@ velox::core::PlanNodePtr Emitter::makeExchangeProducer(
           partitioning.replicateNullsAndAny,
           std::move(spec),
           outputType,
-          exchangeSerdeKind_,
+          serdeKind,
           sourcePlan);
     }
     case PartitionKind::kUnspecified:
@@ -1964,16 +1981,17 @@ velox::core::PlanNodePtr Emitter::makeExchangeProducer(
 velox::core::PlanNodePtr Emitter::makeExchangeConsumer(
     const Partitioning& partitioning,
     const velox::RowTypePtr& outputType) {
+  const auto& serdeKind = chooseExchangeSerdeKind(*outputType);
   if (partitioning.kind == PartitionKind::kGather &&
       !partitioning.orderKeys.empty()) {
     // Order-preserving gather: the consumer merges the sorted per-task streams.
     auto [sortingKeys, sortingOrders] = toSortingKeys(
         partitioning.orderKeys, partitioning.orderTypes, "Merge exchange key");
     return std::make_shared<velox::core::MergeExchangeNode>(
-        nextId(), outputType, sortingKeys, sortingOrders, exchangeSerdeKind_);
+        nextId(), outputType, sortingKeys, sortingOrders, serdeKind);
   }
   return std::make_shared<velox::core::ExchangeNode>(
-      nextId(), outputType, exchangeSerdeKind_);
+      nextId(), outputType, serdeKind);
 }
 
 velox::core::PlanNodePtr Emitter::emitExchange(const Exchange& exchange) {
@@ -2185,12 +2203,13 @@ velox::core::PlanNodePtr Emitter::emitTableWrite(const TableWrite& tableWrite) {
 
   // Gather each worker's intermediate stats to the single root fragment.
   finalizeGroupedLeaves(writerFragment);
+  const auto& serdeKind = chooseExchangeSerdeKind(*result->outputType());
   writerFragment.fragment.planNode =
-      makeSingleOutput(result->outputType(), result);
+      makeSingleOutput(result->outputType(), result, serdeKind);
   currentFragment_ = rootFragment;
   groupedLeaves_ = std::move(rootGroupedLeaves);
   auto gather = std::make_shared<velox::core::ExchangeNode>(
-      nextId(), result->outputType(), exchangeSerdeKind_);
+      nextId(), result->outputType(), serdeKind);
   rootFragment->inputStages.emplace_back(
       gather->id(), writerFragment.fragmentId);
   stages_.push_back(std::move(writerFragment));
@@ -2314,8 +2333,7 @@ std::vector<ExecutableFragment> Emitter::emitFragments(
     }
     if (options_.remoteOutput) {
       outputProjection = writePlan;
-      top.fragment.planNode =
-          makeSingleOutput(writePlan->outputType(), writePlan);
+      top.fragment.planNode = makeClientOutput(writePlan);
     } else {
       top.fragment.planNode = writePlan;
     }
@@ -2343,8 +2361,7 @@ std::vector<ExecutableFragment> Emitter::emitFragments(
       currentFragment_ = &top;
       decideFragmentType(rootType, options_.maxRemotePartitions, top);
       outputProjection = emitRoot(root, outputColumns, outputNames);
-      top.fragment.planNode =
-          makeSingleOutput(outputProjection->outputType(), outputProjection);
+      top.fragment.planNode = makeClientOutput(outputProjection);
     } else if (gatherForOutput) {
       emitGatheredOutput(root, outputColumns, outputNames, top);
     } else {
