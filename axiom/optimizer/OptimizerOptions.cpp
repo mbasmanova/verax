@@ -108,6 +108,13 @@ std::vector<ConfigProperty> buildProperties(
           "Workers a small query runs on, capped by the number available.",
       },
       {
+          std::string(OptimizerOptions::kHashPartitionCount),
+          ConfigPropertyType::kInteger,
+          std::to_string(OptimizerOptions::kHashPartitionCountDefault),
+          "Tasks a hash-partitioned stage runs, capped by the number of "
+          "workers available. 0 uses all available workers.",
+      },
+      {
           std::string(OptimizerOptions::kMinColumnarChannelsForCompactRow),
           ConfigPropertyType::kInteger,
           std::to_string(
@@ -208,6 +215,10 @@ std::string OptimizerOptions::normalize(
     auto workers = std::stoi(std::string(value));
     VELOX_USER_CHECK_GE(
         workers, 1, "small_query_num_workers must be >= 1: {}", value);
+  } else if (name == kHashPartitionCount) {
+    auto count = std::stoi(std::string(value));
+    VELOX_USER_CHECK_GE(
+        count, 0, "hash_partition_count must be >= 0: {}", value);
   } else if (name == kParallelProjectWidth) {
     auto width = std::stoi(std::string(value));
     VELOX_USER_CHECK_GE(
@@ -277,6 +288,7 @@ OptimizerOptions OptimizerOptions::from(
   setBool(kEnableReducingExistences, options.enableReducingExistences);
   setLong(kSmallQueryMaxScanRows, options.smallQueryMaxScanRows);
   setInt(kSmallQueryNumWorkers, options.smallQueryNumWorkers);
+  setInt(kHashPartitionCount, options.hashPartitionCount);
   setPositiveInt(
       kMinColumnarChannelsForCompactRow,
       options.minColumnarChannelsForCompactRow);

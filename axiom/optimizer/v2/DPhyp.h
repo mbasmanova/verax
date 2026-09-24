@@ -46,14 +46,18 @@ class DPhyp {
   /// unlimited. See `OptimizerOptions::dphypEnumerationBudget`. `numWorkers` is
   /// the target task count: when > 1 the enumeration generates remote-exchange
   /// (repartition / broadcast) candidates; at 1 it stays single-fragment.
-  /// `broadcastSizeLimit` caps the estimated build size a broadcast candidate
-  /// may replicate to every task (bytes); <= 0 disables the limit. See
+  /// `hashStageTasks` is the task count of a hash-partitioned stage; a
+  /// broadcast into one is costed at that count. See
+  /// `OptimizerOptions::hashStageTasks`. `broadcastSizeLimit` caps the
+  /// estimated build size a broadcast candidate may replicate to every task
+  /// (bytes); <= 0 disables the limit. See
   /// `OptimizerOptions::broadcastSizeLimit`.
   DPhyp(
       const JoinHypergraph& graph,
       const CostModel& costModel,
       int64_t enumerationBudget,
       int32_t numWorkers,
+      int32_t hashStageTasks,
       int64_t broadcastSizeLimit);
 
   /// Runs the enumeration and returns the root `MemoOp` for the full relation
@@ -75,6 +79,7 @@ class DPhyp {
   const CostModel& costModel_;
   const int64_t enumerationBudget_;
   const int32_t numWorkers_;
+  const int32_t hashStageTasks_;
   const int64_t broadcastSizeLimit_;
   folly::F14NodeMap<RelationSet, PlanSet> memo_;
 

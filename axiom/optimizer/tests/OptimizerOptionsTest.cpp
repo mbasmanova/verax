@@ -50,6 +50,7 @@ TEST(OptimizerOptionsTest, codeDefaults) {
   EXPECT_EQ(getDefault(props, OptimizerOptions::kBroadcastSizeLimit), "100MB");
   EXPECT_EQ(getDefault(props, OptimizerOptions::kSmallQueryMaxScanRows), "0");
   EXPECT_EQ(getDefault(props, OptimizerOptions::kSmallQueryNumWorkers), "1");
+  EXPECT_EQ(getDefault(props, OptimizerOptions::kHashPartitionCount), "0");
 }
 
 TEST(OptimizerOptionsTest, configOverrides) {
@@ -72,6 +73,7 @@ TEST(OptimizerOptionsTest, from) {
       // Above int32, since row counts on real tables exceed it.
       {std::string(OptimizerOptions::kSmallQueryMaxScanRows), "5000000000"},
       {std::string(OptimizerOptions::kSmallQueryNumWorkers), "2"},
+      {std::string(OptimizerOptions::kHashPartitionCount), "64"},
   };
   auto options = OptimizerOptions::from(props);
 
@@ -79,6 +81,7 @@ TEST(OptimizerOptionsTest, from) {
   EXPECT_EQ(options.parallelProjectWidth, 8);
   EXPECT_EQ(options.smallQueryMaxScanRows, 5'000'000'000);
   EXPECT_EQ(options.smallQueryNumWorkers, 2);
+  EXPECT_EQ(options.hashPartitionCount, 64);
   EXPECT_EQ(options.traceFlags, 5);
   EXPECT_EQ(options.broadcastSizeLimit, 5LL << 30);
   EXPECT_FALSE(options.syntacticJoinOrder);
@@ -109,6 +112,9 @@ TEST(OptimizerOptionsTest, normalizeRejectsInvalidValues) {
   VELOX_ASSERT_THROW(
       options.normalize(OptimizerOptions::kSmallQueryNumWorkers, "0"),
       "small_query_num_workers must be >= 1");
+  VELOX_ASSERT_THROW(
+      options.normalize(OptimizerOptions::kHashPartitionCount, "-1"),
+      "hash_partition_count must be >= 0");
 }
 
 TEST(OptimizerOptionsTest, recursionLimit) {
