@@ -57,6 +57,8 @@ struct OptimizerOptions : public velox::config::ConfigProvider {
       "small_query_max_scan_rows";
   static constexpr std::string_view kSmallQueryNumWorkers =
       "small_query_num_workers";
+  static constexpr std::string_view kMinColumnarChannelsForCompactRow =
+      "min_columnar_channels_for_compact_row";
   static constexpr std::string_view kRecursionLimit = "recursion_limit";
   static constexpr std::string_view kMaxPlanObjects = "max_plan_objects";
   static constexpr std::string_view kTraceFlags = "trace_flags";
@@ -65,6 +67,7 @@ struct OptimizerOptions : public velox::config::ConfigProvider {
   // and properties().
   static constexpr int64_t kSmallQueryMaxScanRowsDefault = 0;
   static constexpr int32_t kSmallQueryNumWorkersDefault = 1;
+  static constexpr int32_t kMinColumnarChannelsForCompactRowDefault = 1'000;
   static constexpr int32_t kParallelProjectWidthDefault = 1;
   static constexpr int32_t kGreedyJoinThresholdDefault = 5;
   // 100 MB. The string form is the user-facing default and accepts capacity
@@ -127,6 +130,11 @@ struct OptimizerOptions : public velox::config::ConfigProvider {
   /// The worker count a small query runs on, capped by the count the caller
   /// supplied.
   int32_t smallQueryNumWorkers{kSmallQueryNumWorkersDefault};
+
+  /// Uses CompactRow serialization for internal exchanges whose Presto
+  /// encoding has at least this many columnar channels.
+  int32_t minColumnarChannelsForCompactRow{
+      kMinColumnarChannelsForCompactRowDefault};
 
   /// Enable join order sampling during optimization.
   bool sampleJoins{kSampleJoinsDefault};
