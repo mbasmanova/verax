@@ -635,11 +635,22 @@ class PlanMatcherBuilder {
   /// Matches a PartitionedOutput node with a single partition.
   PlanMatcherBuilder& partitionedOutputSingle();
 
+  /// Matches a single-partition output using 'serdeKind'.
+  PlanMatcherBuilder& partitionedOutputSingle(const std::string& serdeKind);
+
   /// Adds a single-partition PartitionedOutput matcher (see
   /// partitionedOutputSingle()) only when 'condition' is true; otherwise a
   /// no-op.
   PlanMatcherBuilder& partitionedOutputSingleIf(bool condition) {
     return condition ? partitionedOutputSingle() : *this;
+  }
+
+  /// Adds a single-partition output using 'serdeKind' only when 'condition' is
+  /// true; otherwise a no-op.
+  PlanMatcherBuilder& partitionedOutputSingleIf(
+      bool condition,
+      const std::string& serdeKind) {
+    return condition ? partitionedOutputSingle(serdeKind) : *this;
   }
 
   /// Marks a shuffle boundary with verification of partition keys.
@@ -649,6 +660,13 @@ class PlanMatcherBuilder {
   /// flag on the PartitionedOutput node.
   PlanMatcherBuilder& shuffle(
       const std::vector<std::string>& keys,
+      bool replicateNullsAndAny = false);
+
+  /// Marks a partitioned shuffle boundary and verifies its serialization
+  /// format.
+  PlanMatcherBuilder& shuffle(
+      const std::vector<std::string>& keys,
+      const std::string& serdeKind,
       bool replicateNullsAndAny = false);
 
   /// Like shuffle(keys), additionally asserting the type of the producer
@@ -713,6 +731,9 @@ class PlanMatcherBuilder {
   /// rejected.
   PlanMatcherBuilder& gather(
       std::optional<axiom::optimizer::FragmentType> producer = std::nullopt);
+
+  /// Matches a gather boundary and verifies both sides use 'serdeKind'.
+  PlanMatcherBuilder& gather(const std::string& serdeKind);
 
   /// Matches any Limit node regardless of offset, count, or partial/final step.
   PlanMatcherBuilder& limit();
