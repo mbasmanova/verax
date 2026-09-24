@@ -818,15 +818,12 @@ class TableLayout {
   ///   in(column, ARRAY[...]), or as variadic arguments, in(column, v1, v2,
   ///   ...). A connector should handle both forms.
   ///
-  /// Predicates are NOT combined across conjuncts: 'filters' may contain
-  /// several predicates on the same column (e.g. a = 1 and a = 2), which the
-  /// connector must handle. The optimizer does not fold redundant or
-  /// contradictory same-column predicates.
+  /// The optimizer may combine predicates on the same column, but 'filters'
+  /// may still contain several predicates on one column. A connector must
+  /// handle both forms.
   ///
   /// TODO: Unify the two IN encodings into the varargs form and remove the
   /// ARRAY encoding.
-  /// TODO: Simplify redundant or contradictory same-column predicates before
-  /// pushdown.
   virtual velox::connector::ConnectorTableHandlePtr createTableHandle(
       const ConnectorSessionPtr& session,
       std::vector<velox::connector::ColumnHandlePtr> columnHandles,

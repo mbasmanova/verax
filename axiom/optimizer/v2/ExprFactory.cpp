@@ -92,6 +92,11 @@ ExprCP ExprFactory::makeEq(ExprCP lhs, ExprCP rhs) {
       builder_.functionNames().equality, {lhs, rhs}, /*specialForm=*/false);
 }
 
+ExprCP ExprFactory::makeLessThan(ExprCP lhs, ExprCP rhs) {
+  return makeBooleanCall(
+      builder_.functionNames().lt, {lhs, rhs}, /*specialForm=*/false);
+}
+
 ExprCP ExprFactory::makeIn(ExprCP value, ExprVector list) {
   VELOX_CHECK(!list.empty());
   ExprVector arguments;
@@ -110,6 +115,23 @@ ExprCP ExprFactory::makeLessThanOrEqual(ExprCP lhs, ExprCP rhs) {
       "via FunctionRegistry::registerLessThanOrEqual; the active dialect did "
       "not register it");
   return makeBooleanCall(name, {lhs, rhs}, /*specialForm=*/false);
+}
+
+ExprCP ExprFactory::makeGreaterThan(ExprCP lhs, ExprCP rhs) {
+  return makeBooleanCall(
+      builder_.functionNames().gt, {lhs, rhs}, /*specialForm=*/false);
+}
+
+ExprCP ExprFactory::makeGreaterThanOrEqual(ExprCP lhs, ExprCP rhs) {
+  return makeBooleanCall(
+      builder_.functionNames().gte, {lhs, rhs}, /*specialForm=*/false);
+}
+
+ExprCP ExprFactory::makeBetween(ExprCP value, ExprCP lower, ExprCP upper) {
+  return makeBooleanCall(
+      builder_.functionNames().between,
+      {value, lower, upper},
+      /*specialForm=*/false);
 }
 
 ExprCP ExprFactory::makeCardinality(ExprCP value) {

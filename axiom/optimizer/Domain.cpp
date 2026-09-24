@@ -17,7 +17,9 @@
 #include "axiom/optimizer/Domain.h"
 
 #include <algorithm>
+#include <limits>
 
+#include "axiom/optimizer/PlanUtils.h"
 #include "axiom/optimizer/QueryGraph.h"
 #include "axiom/optimizer/QueryGraphContext.h"
 
@@ -255,6 +257,49 @@ Domain Domain::unite(const Domain& other) const {
   return Domain(newNullsAllowed, normalize(std::move(combined)));
 }
 
+Domain Domain::subtract(const Domain& other) const {
+  return intersect(other.complement());
+}
+
+Domain Domain::complement() const {
+  std::vector<Range> result;
+  std::optional<Bound> low;
+  for (const auto& range : ranges_) {
+    if (range.low().has_value()) {
+      result.emplace_back(
+          low, Bound{range.low()->value, !range.low()->inclusive});
+    }
+    if (!range.high().has_value()) {
+      return Domain(!nullsAllowed_, std::move(result));
+    }
+    low = Bound{range.high()->value, !range.high()->inclusive};
+  }
+  result.emplace_back(std::move(low), std::nullopt);
+  return Domain(!nullsAllowed_, std::move(result));
+}
+
+bool Domain::operator==(const Domain& other) const {
+  if (nullsAllowed_ != other.nullsAllowed_ ||
+      ranges_.size() != other.ranges_.size()) {
+    return false;
+  }
+  for (size_t i = 0; i < ranges_.size(); ++i) {
+    const auto sameBound = [](const std::optional<Bound>& lhs,
+                              const std::optional<Bound>& rhs) {
+      if (lhs.has_value() != rhs.has_value()) {
+        return false;
+      }
+      return !lhs.has_value() ||
+          (lhs->inclusive == rhs->inclusive && lhs->value == rhs->value);
+    };
+    if (!sameBound(ranges_[i].low(), other.ranges_[i].low()) ||
+        !sameBound(ranges_[i].high(), other.ranges_[i].high())) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool Domain::isAll() const {
   return ranges_.size() == 1 && !ranges_[0].low() && !ranges_[0].high();
 }
@@ -288,7 +333,130 @@ std::vector<Range> Domain::normalize(std::vector<Range> ranges) {
   return result;
 }
 
+std::optional<Domain> integralTypeDomain(const velox::Type& type) {
+  if (type.isDate() || type.isIntervalDayTime() || type.isIntervalYearMonth() ||
+      type.isDecimal() || type.isTime()) {
+    return std::nullopt;
+  }
+
+  int64_t minimum;
+  int64_t maximum;
+  switch (type.kind()) {
+    case velox::TypeKind::TINYINT:
+      minimum = std::numeric_limits<int8_t>::min();
+      maximum = std::numeric_limits<int8_t>::max();
+      break;
+    case velox::TypeKind::SMALLINT:
+      minimum = std::numeric_limits<int16_t>::min();
+      maximum = std::numeric_limits<int16_t>::max();
+      break;
+    case velox::TypeKind::INTEGER:
+      minimum = std::numeric_limits<int32_t>::min();
+      maximum = std::numeric_limits<int32_t>::max();
+      break;
+    case velox::TypeKind::BIGINT:
+      minimum = std::numeric_limits<int64_t>::min();
+      maximum = std::numeric_limits<int64_t>::max();
+      break;
+    default:
+      return std::nullopt;
+  }
+  return Domain::greaterThanOrEqual(velox::Variant(minimum))
+      .intersect(Domain::lessThanOrEqual(velox::Variant(maximum)));
+}
+
 namespace {
+
+enum class PredicateResult { kTrue, kFalse };
+
+PredicateResult opposite(PredicateResult result) {
+  return result == PredicateResult::kTrue ? PredicateResult::kFalse
+                                          : PredicateResult::kTrue;
+}
+
+ColumnCP domainColumn(ExprCP expr) {
+  if (expr->is(PlanType::kColumnExpr)) {
+    return expr->as<Column>();
+  }
+  if (!expr->is(PlanType::kCallExpr)) {
+    return nullptr;
+  }
+
+  const auto* call = expr->as<Call>();
+  if ((call->name() != SpecialFormCallNames::kCast &&
+       call->name() != SpecialFormCallNames::kTryCast) ||
+      call->args().size() != 1) {
+    return nullptr;
+  }
+
+  const auto* column = domainColumn(call->args().front());
+  if (column == nullptr ||
+      !integralTypeDomain(*column->value().type).has_value() ||
+      !integralTypeDomain(*expr->value().type).has_value() ||
+      column->value().type->cppSizeInBytes() >
+          expr->value().type->cppSizeInBytes()) {
+    return nullptr;
+  }
+  return column;
+}
+
+Domain nonNullDomain(ColumnCP column) {
+  auto domain = integralTypeDomain(*column->value().type);
+  return domain.has_value() ? std::move(*domain) : Domain::notNull();
+}
+
+std::optional<velox::Variant> normalizeLiteral(
+    ColumnCP column,
+    const velox::Variant& literal) {
+  if (literal.isNull() ||
+      !integralTypeDomain(*column->value().type).has_value()) {
+    return literal;
+  }
+  switch (literal.kind()) {
+    case velox::TypeKind::TINYINT:
+    case velox::TypeKind::SMALLINT:
+    case velox::TypeKind::INTEGER:
+    case velox::TypeKind::BIGINT:
+      return velox::Variant(integerValue(&literal));
+    default:
+      return std::nullopt;
+  }
+}
+
+std::optional<Domain> comparisonDomain(
+    ColumnCP column,
+    Name functionName,
+    const velox::Variant& literal,
+    PredicateResult result) {
+  auto value = normalizeLiteral(column, literal);
+  if (!value.has_value()) {
+    return std::nullopt;
+  }
+  if (value->isNull()) {
+    return Domain::none();
+  }
+
+  const auto& functionNames = queryCtx()->functionNames();
+  std::optional<Domain> trueValues;
+  if (functionName == functionNames.equality) {
+    trueValues = Domain::singleValue(std::move(*value));
+  } else if (functionName == functionNames.lt) {
+    trueValues = Domain::lessThan(std::move(*value));
+  } else if (functionName == functionNames.lte) {
+    trueValues = Domain::lessThanOrEqual(std::move(*value));
+  } else if (functionName == functionNames.gt) {
+    trueValues = Domain::greaterThan(std::move(*value));
+  } else if (functionName == functionNames.gte) {
+    trueValues = Domain::greaterThanOrEqual(std::move(*value));
+  } else {
+    return std::nullopt;
+  }
+
+  const auto validValues = nonNullDomain(column);
+  trueValues = trueValues->intersect(validValues);
+  return result == PredicateResult::kTrue ? std::move(*trueValues)
+                                          : validValues.subtract(*trueValues);
+}
 
 // Returns the exclusive upper bound for all strings that start with 'prefix':
 // increments the last byte below 0xFF and drops the bytes after it. Returns
@@ -333,104 +501,126 @@ std::optional<Domain> likePatternToDomain(const velox::Variant& pattern) {
   return domain;
 }
 
-} // namespace
-
-std::optional<Domain> exprToDomain(ExprCP expr) {
+std::optional<Domain>
+exprToDomain(ExprCP expr, ColumnCP column, PredicateResult result) {
   if (!expr->is(PlanType::kCallExpr)) {
     return std::nullopt;
   }
 
-  auto* call = expr->as<Call>();
-  auto funcName = call->name();
-
-  // AND: intersect all children.
-  if (funcName == SpecialFormCallNames::kAnd) {
-    Domain result = Domain::all();
-    for (auto* arg : call->args()) {
-      if (auto argDomain = exprToDomain(arg)) {
-        result = result.intersect(*argDomain);
-      } else {
-        return std::nullopt;
-      }
-    }
-    return result;
-  }
-
-  // OR: unite all children.
-  if (funcName == SpecialFormCallNames::kOr) {
-    Domain result = Domain::none();
-    for (auto* arg : call->args()) {
-      if (auto argDomain = exprToDomain(arg)) {
-        result = result.unite(*argDomain);
-      } else {
-        return std::nullopt;
-      }
-    }
-    return result;
-  }
-
+  const auto* call = expr->as<Call>();
+  const auto& args = call->args();
+  const auto name = call->name();
   const auto& functionNames = queryCtx()->functionNames();
 
-  // IS NULL.
-  if (funcName == functionNames.isNull) {
-    return Domain::onlyNull();
+  if (name == functionNames.negation && args.size() == 1) {
+    return exprToDomain(args.front(), column, opposite(result));
   }
 
-  // IN(col, val1, val2, ...).
-  if (funcName == SpecialFormCallNames::kIn) {
-    std::vector<velox::Variant> values;
-    for (size_t i = 1; i < call->args().size(); ++i) {
-      if (call->args()[i]->is(PlanType::kLiteralExpr)) {
-        values.push_back(call->args()[i]->as<Literal>()->literal());
-      } else {
+  if (name == SpecialFormCallNames::kAnd || name == SpecialFormCallNames::kOr) {
+    if (args.empty()) {
+      return std::nullopt;
+    }
+    const bool intersect = (name == SpecialFormCallNames::kAnd) ==
+        (result == PredicateResult::kTrue);
+    auto domain = exprToDomain(args.front(), column, result);
+    if (!domain.has_value()) {
+      return std::nullopt;
+    }
+    for (size_t i = 1; i < args.size(); ++i) {
+      auto next = exprToDomain(args[i], column, result);
+      if (!next.has_value()) {
         return std::nullopt;
       }
+      domain = intersect ? domain->intersect(*next) : domain->unite(*next);
     }
-    return Domain::in(std::move(values));
+    return domain;
   }
 
-  // BETWEEN(col, low, high) maps to the closed range [low, high].
-  if (funcName == functionNames.between && call->args().size() == 3 &&
-      call->args()[0]->is(PlanType::kColumnExpr) &&
-      call->args()[1]->is(PlanType::kLiteralExpr) &&
-      call->args()[2]->is(PlanType::kLiteralExpr)) {
-    const auto& low = call->args()[1]->as<Literal>()->literal();
-    const auto& high = call->args()[2]->as<Literal>()->literal();
-    return Domain::greaterThanOrEqual(low).intersect(
-        Domain::lessThanOrEqual(high));
+  if (name == functionNames.isNull && args.size() == 1 &&
+      domainColumn(args.front()) == column) {
+    return result == PredicateResult::kTrue ? Domain::onlyNull()
+                                            : nonNullDomain(column);
   }
 
-  // LIKE(col, pattern) with a literal prefix maps to a prefix range. The 3-arg
-  // form with an ESCAPE character is not interpreted and falls through.
-  if (funcName == functionNames.like && call->args().size() == 2 &&
-      call->args()[0]->is(PlanType::kColumnExpr) &&
-      call->args()[1]->is(PlanType::kLiteralExpr)) {
-    return likePatternToDomain(call->args()[1]->as<Literal>()->literal());
+  if (name == SpecialFormCallNames::kIn && args.size() >= 2 &&
+      domainColumn(args.front()) == column) {
+    std::vector<velox::Variant> values;
+    bool hasNull{false};
+    for (size_t i = 1; i < args.size(); ++i) {
+      if (!args[i]->is(PlanType::kLiteralExpr)) {
+        return std::nullopt;
+      }
+      auto value = normalizeLiteral(column, args[i]->as<Literal>()->literal());
+      if (!value.has_value()) {
+        return std::nullopt;
+      }
+      if (value->isNull()) {
+        hasNull = true;
+      } else {
+        values.push_back(std::move(*value));
+      }
+    }
+    auto trueValues =
+        Domain::in(std::move(values)).intersect(nonNullDomain(column));
+    if (result == PredicateResult::kTrue) {
+      return trueValues;
+    }
+    return hasNull ? Domain::none()
+                   : nonNullDomain(column).subtract(trueValues);
   }
 
-  // Comparison of a column with a literal: eq, lt, lte, gt, gte.
-  if (call->args().size() == 2 && call->args()[0]->is(PlanType::kColumnExpr) &&
-      call->args()[1]->is(PlanType::kLiteralExpr)) {
-    const auto& literalValue = call->args()[1]->as<Literal>()->literal();
-    if (funcName == functionNames.equality) {
-      return Domain::singleValue(literalValue);
+  if (name == functionNames.between && args.size() == 3 &&
+      domainColumn(args[0]) == column && args[1]->is(PlanType::kLiteralExpr) &&
+      args[2]->is(PlanType::kLiteralExpr)) {
+    auto lower = comparisonDomain(
+        column, functionNames.gte, args[1]->as<Literal>()->literal(), result);
+    auto upper = comparisonDomain(
+        column, functionNames.lte, args[2]->as<Literal>()->literal(), result);
+    if (!lower.has_value() || !upper.has_value()) {
+      return std::nullopt;
     }
-    if (funcName == functionNames.lt) {
-      return Domain::lessThan(literalValue);
-    }
-    if (funcName == functionNames.lte) {
-      return Domain::lessThanOrEqual(literalValue);
-    }
-    if (funcName == functionNames.gt) {
-      return Domain::greaterThan(literalValue);
-    }
-    if (funcName == functionNames.gte) {
-      return Domain::greaterThanOrEqual(literalValue);
-    }
+    return result == PredicateResult::kTrue ? lower->intersect(*upper)
+                                            : lower->unite(*upper);
   }
 
-  // Unrecognized expression.
+  if (name == functionNames.like && result == PredicateResult::kTrue &&
+      args.size() == 2 && domainColumn(args[0]) == column &&
+      args[1]->is(PlanType::kLiteralExpr)) {
+    return likePatternToDomain(args[1]->as<Literal>()->literal());
+  }
+
+  if (args.size() != 2) {
+    return std::nullopt;
+  }
+  if (domainColumn(args[0]) == column && args[1]->is(PlanType::kLiteralExpr)) {
+    return comparisonDomain(
+        column, name, args[1]->as<Literal>()->literal(), result);
+  }
+  if (domainColumn(args[1]) == column && args[0]->is(PlanType::kLiteralExpr)) {
+    Name reversed = name;
+    if (reversed == functionNames.lt) {
+      reversed = functionNames.gt;
+    } else if (reversed == functionNames.lte) {
+      reversed = functionNames.gte;
+    } else if (reversed == functionNames.gt) {
+      reversed = functionNames.lt;
+    } else if (reversed == functionNames.gte) {
+      reversed = functionNames.lte;
+    }
+    return comparisonDomain(
+        column, reversed, args[0]->as<Literal>()->literal(), result);
+  }
   return std::nullopt;
+}
+
+} // namespace
+
+std::optional<Domain> exprToDomain(ExprCP expr) {
+  if (expr->columns().size() != 1) {
+    return std::nullopt;
+  }
+  return exprToDomain(
+      expr, expr->columns().onlyObject<Column>(), PredicateResult::kTrue);
 }
 
 } // namespace facebook::axiom::optimizer

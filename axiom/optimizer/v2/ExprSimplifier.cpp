@@ -16,9 +16,10 @@
 
 #include "axiom/optimizer/v2/ExprSimplifier.h"
 
+#include <algorithm>
+#include "axiom/optimizer/Domain.h"
 #include "axiom/optimizer/FunctionRegistry.h"
 #include "axiom/optimizer/QueryGraph.h"
-#include "axiom/optimizer/v2/AppendAll.h"
 #include "axiom/optimizer/v2/ExprEmitter.h"
 #include "axiom/optimizer/v2/ExprFactory.h"
 #include "velox/expression/ConstantExpr.h"
@@ -128,6 +129,151 @@ std::optional<bool> constantBoolean(ExprCP expr) {
   return variant.value<bool>();
 }
 
+velox::Variant typedIntegralValue(TypeCP type, int64_t value) {
+  switch (type->kind()) {
+    case velox::TypeKind::TINYINT:
+      return velox::Variant(static_cast<int8_t>(value));
+    case velox::TypeKind::SMALLINT:
+      return velox::Variant(static_cast<int16_t>(value));
+    case velox::TypeKind::INTEGER:
+      return velox::Variant(static_cast<int32_t>(value));
+    case velox::TypeKind::BIGINT:
+      return velox::Variant(value);
+    default:
+      VELOX_UNREACHABLE();
+  }
+}
+
+ExprCP makeIntegralLiteral(Builder& builder, ColumnCP column, int64_t value) {
+  return builder.makeLiteral(
+      typedIntegralValue(column->value().type, value), column->value().type);
+}
+
+ExprCP rangeBoundToFilter(
+    Builder& builder,
+    ExprFactory& factory,
+    ColumnCP column,
+    const Bound& bound,
+    bool isLower,
+    int64_t typeLimit) {
+  const auto value = bound.value.value<int64_t>();
+  if (bound.inclusive && value == typeLimit) {
+    return nullptr;
+  }
+  auto* literal = makeIntegralLiteral(builder, column, value);
+  if (isLower) {
+    return bound.inclusive ? factory.makeGreaterThanOrEqual(column, literal)
+                           : factory.makeGreaterThan(column, literal);
+  }
+  return bound.inclusive ? factory.makeLessThanOrEqual(column, literal)
+                         : factory.makeLessThan(column, literal);
+}
+
+ExprCP nonNullDomainToFilter(
+    Builder& builder,
+    ExprFactory& factory,
+    ColumnCP column,
+    const Domain& domain,
+    const Domain& nonNullValues) {
+  const auto& ranges = domain.ranges();
+  const bool allSingleValues =
+      std::all_of(ranges.begin(), ranges.end(), [](const Range& range) {
+        return range.isSingleValue();
+      });
+  if (allSingleValues) {
+    ExprVector values;
+    values.reserve(ranges.size());
+    for (const auto& range : ranges) {
+      values.push_back(builder.makeLiteral(
+          typedIntegralValue(
+              column->value().type, range.low()->value.value<int64_t>()),
+          column->value().type));
+    }
+    return values.size() == 1 ? factory.makeEq(column, values.front())
+                              : factory.makeIn(column, std::move(values));
+  }
+
+  ExprVector disjuncts;
+  disjuncts.reserve(ranges.size());
+  const auto minimum =
+      nonNullValues.ranges().front().low()->value.value<int64_t>();
+  const auto maximum =
+      nonNullValues.ranges().front().high()->value.value<int64_t>();
+  for (const auto& range : ranges) {
+    if (range.low().has_value() && range.high().has_value() &&
+        range.lowInclusive() && range.highInclusive() &&
+        range.low()->value.value<int64_t>() != minimum &&
+        range.high()->value.value<int64_t>() != maximum) {
+      disjuncts.push_back(factory.makeBetween(
+          column,
+          makeIntegralLiteral(
+              builder, column, range.low()->value.value<int64_t>()),
+          makeIntegralLiteral(
+              builder, column, range.high()->value.value<int64_t>())));
+      continue;
+    }
+
+    ExprVector bounds;
+    if (range.low().has_value()) {
+      if (auto* filter = rangeBoundToFilter(
+              builder,
+              factory,
+              column,
+              *range.low(),
+              /*isLower=*/true,
+              minimum)) {
+        bounds.push_back(filter);
+      }
+    }
+    if (range.high().has_value()) {
+      if (auto* filter = rangeBoundToFilter(
+              builder,
+              factory,
+              column,
+              *range.high(),
+              /*isLower=*/false,
+              maximum)) {
+        bounds.push_back(filter);
+      }
+    }
+    VELOX_CHECK(!bounds.empty());
+    disjuncts.push_back(factory.andAll(bounds));
+  }
+  return factory.orAll(disjuncts);
+}
+
+ExprCP domainToFilter(Builder& builder, ColumnCP column, Domain domain) {
+  const auto nonNullValues = *integralTypeDomain(*column->value().type);
+  const auto allValues = nonNullValues.unite(Domain::onlyNull());
+  domain = domain.intersect(allValues);
+  if (domain == allValues) {
+    return nullptr;
+  }
+
+  ExprFactory factory(builder);
+  const auto nonNullResult = domain.intersect(Domain::notNull());
+  ExprCP nonNullFilter{nullptr};
+  if (nonNullResult == nonNullValues) {
+    nonNullFilter = factory.makeNot(factory.makeIsNull(column));
+  } else if (!nonNullResult.isNone()) {
+    const auto excluded = nonNullValues.subtract(nonNullResult);
+    if (excluded.ranges().size() < nonNullResult.ranges().size()) {
+      nonNullFilter = factory.makeNot(nonNullDomainToFilter(
+          builder, factory, column, excluded, nonNullValues));
+    } else {
+      nonNullFilter = nonNullDomainToFilter(
+          builder, factory, column, nonNullResult, nonNullValues);
+    }
+  }
+
+  if (!domain.nullsAllowed()) {
+    return nonNullFilter;
+  }
+  ExprCP nullFilter = factory.makeIsNull(column);
+  return nonNullFilter == nullptr ? nullFilter
+                                  : factory.makeOr(nullFilter, nonNullFilter);
+}
+
 } // namespace
 
 ExprCP ExprSimplifier::simplify(ExprCP expr) {
@@ -177,8 +323,8 @@ ExprCP ExprSimplifier::tryFoldConjunct(ExprCP expr) {
 
 bool ExprSimplifier::simplifyFilter(ExprCP predicate, ExprVector& into) {
   ExprVector flattened = ExprFactory::flattenAnd(predicate);
-  ExprVector surviving;
-  surviving.reserve(flattened.size());
+  ExprVector candidates;
+  candidates.reserve(flattened.size());
   for (ExprCP conjunct : flattened) {
     ExprCP simplified = simplify(conjunct);
     if (simplified->is(PlanType::kLiteralExpr)) {
@@ -194,15 +340,61 @@ bool ExprSimplifier::simplifyFilter(ExprCP predicate, ExprVector& into) {
       continue;
     }
     ExprCP residual = nullptr;
-    if (tryFactorOr(builder_, simplified, surviving, &residual)) {
+    if (tryFactorOr(builder_, simplified, candidates, &residual)) {
       if (residual != nullptr) {
-        surviving.push_back(residual);
+        candidates.push_back(residual);
       }
       continue;
     }
-    surviving.push_back(simplified);
+    candidates.push_back(simplified);
   }
-  appendAll(into, surviving);
+
+  struct ColumnDomain {
+    Domain values;
+    size_t outputIndex;
+  };
+  folly::F14FastMap<ColumnCP, ColumnDomain> domains;
+  ExprVector surviving;
+  surviving.reserve(candidates.size());
+  for (ExprCP candidate : candidates) {
+    if (candidate->columns().size() != 1) {
+      surviving.push_back(candidate);
+      continue;
+    }
+    const auto* column = candidate->columns().onlyObject<Column>();
+    if (!integralTypeDomain(*column->value().type).has_value()) {
+      surviving.push_back(candidate);
+      continue;
+    }
+    auto domain = exprToDomain(candidate);
+    if (!domain.has_value()) {
+      surviving.push_back(candidate);
+      continue;
+    }
+
+    auto it = domains.find(column);
+    if (it == domains.end()) {
+      domains.emplace(
+          column, ColumnDomain{std::move(*domain), surviving.size()});
+      surviving.push_back(nullptr);
+    } else {
+      it->second.values = it->second.values.intersect(*domain);
+    }
+  }
+
+  for (const auto& [column, domain] : domains) {
+    if (domain.values.isNone()) {
+      return true;
+    }
+    surviving[domain.outputIndex] =
+        domainToFilter(builder_, column, domain.values);
+  }
+
+  for (ExprCP expr : surviving) {
+    if (expr != nullptr) {
+      into.push_back(expr);
+    }
+  }
   return false;
 }
 

@@ -456,9 +456,11 @@ FilterTarget joinFilterTarget(
 // A single-ranking-function `Window` that a specialized ranking node can
 // replace, with the per-partition row cap that applies to it.
 struct RankFusion {
-  // The `rankColumn <op> n` conjunct consumed as the cap, or null when the cap
-  // came from a bound above the Window or there is no cap.
-  ExprCP predicate;
+  // The conjunct consumed as the cap, or null when the cap came from a bound
+  // above the Window or there is no cap.
+  ExprCP consumedPredicate;
+  // The part of a consumed predicate that does not constrain the upper bound.
+  ExprCP remainingPredicate;
   // The window function's output column (the rank value).
   ColumnCP rankColumn;
   velox::core::TopNRowNumberNode::RankFunction rankFunction;
@@ -467,6 +469,59 @@ struct RankFusion {
   std::optional<int32_t> limit;
 };
 
+std::optional<RankFusion> rankFusionFromPredicate(
+    ExprCP predicate,
+    ColumnCP rankColumn,
+    velox::core::TopNRowNumberNode::RankFunction rankFunction,
+    const FunctionNames& names,
+    ExprFactory& exprs) {
+  if (!predicate->is(PlanType::kCallExpr)) {
+    return std::nullopt;
+  }
+  const Call* comparison = predicate->as<Call>();
+  const auto& args = comparison->args();
+  if (args.empty() || args[0] != rankColumn) {
+    return std::nullopt;
+  }
+
+  const Name name = comparison->name();
+  ExprCP remainingPredicate{nullptr};
+  int64_t bound;
+  if (name == names.between && args.size() == 3 &&
+      args[1]->is(PlanType::kLiteralExpr) &&
+      args[2]->is(PlanType::kLiteralExpr)) {
+    const int64_t lower = integerValue(&args[1]->as<Literal>()->literal());
+    bound = integerValue(&args[2]->as<Literal>()->literal());
+    if (lower > 1) {
+      remainingPredicate = exprs.makeGreaterThanOrEqual(rankColumn, args[1]);
+    }
+  } else if (args.size() == 2 && args[1]->is(PlanType::kLiteralExpr)) {
+    bound = integerValue(&args[1]->as<Literal>()->literal());
+  } else {
+    return std::nullopt;
+  }
+
+  int64_t limit;
+  if ((name == names.lte || name == names.between) && bound > 0) {
+    limit = bound;
+  } else if (name == names.lt && bound > 1) {
+    limit = bound - 1;
+  } else if (name == names.equality && bound == 1) {
+    limit = 1;
+  } else {
+    return std::nullopt;
+  }
+  if (limit > std::numeric_limits<int32_t>::max()) {
+    return std::nullopt;
+  }
+  return RankFusion{
+      predicate,
+      remainingPredicate,
+      rankColumn,
+      rankFunction,
+      static_cast<int32_t>(limit)};
+}
+
 // Returns the specialization for a single ranking function (row_number / rank /
 // dense_rank), taking its cap from a 'pending' conjunct on the rank column or
 // from 'rankLimit'.
@@ -474,7 +529,8 @@ std::optional<RankFusion> detectRankFusion(
     const Window* node,
     const ExprVector& pending,
     std::optional<int32_t> rankLimit,
-    const FunctionNames& names) {
+    const FunctionNames& names,
+    ExprFactory& exprs) {
   if (node->functions().size() != 1) {
     return std::nullopt;
   }
@@ -507,47 +563,31 @@ std::optional<RankFusion> detectRankFusion(
   }
 
   for (ExprCP conjunct : pending) {
-    if (!conjunct->is(PlanType::kCallExpr)) {
-      continue;
+    if (auto fusion = rankFusionFromPredicate(
+            conjunct, rankColumn, rankFunction, names, exprs)) {
+      return fusion;
     }
-    const Call* comparison = conjunct->as<Call>();
-    if (comparison->args().size() != 2 || comparison->args()[0] != rankColumn ||
-        !comparison->args()[1]->is(PlanType::kLiteralExpr)) {
-      continue;
-    }
-    const int64_t bound =
-        integerValue(&comparison->args()[1]->as<Literal>()->literal());
-    const Name name = comparison->name();
-    int64_t limit;
-    if (name == names.lte && bound > 0) {
-      limit = bound;
-    } else if (name == names.lt && bound > 1) {
-      limit = bound - 1;
-    } else if (name == names.equality && bound == 1) {
-      limit = 1;
-    } else {
-      continue;
-    }
-    if (limit > std::numeric_limits<int32_t>::max()) {
-      continue;
-    }
-    return RankFusion{
-        conjunct, rankColumn, rankFunction, static_cast<int32_t>(limit)};
   }
 
   if (ordered) {
     // A `Limit` above bounds every partition just as a rank predicate would.
     if (rankLimit.has_value()) {
-      return RankFusion{
-          /*predicate=*/nullptr, rankColumn, rankFunction, rankLimit};
+      return RankFusion{/*consumedPredicate=*/nullptr,
+                        /*remainingPredicate=*/nullptr,
+                        rankColumn,
+                        rankFunction,
+                        rankLimit};
     }
     // An unbounded ordered ranking still has to sort each partition.
     return std::nullopt;
   }
   // An unordered row_number numbers rows as they arrive, so it specializes with
   // or without a bound.
-  return RankFusion{
-      /*predicate=*/nullptr, rankColumn, rankFunction, /*limit=*/std::nullopt};
+  return RankFusion{/*consumedPredicate=*/nullptr,
+                    /*remainingPredicate=*/nullptr,
+                    rankColumn,
+                    rankFunction,
+                    /*limit=*/std::nullopt};
 }
 
 // With no ORDER BY every row of a partition ties, so `rank` and `dense_rank`
@@ -1688,8 +1728,22 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     context.pending.clear();
     PlanObjectSet impliedFilterSet;
     if (connectorPushdown_ == PushdownAndPrunePass::ConnectorPushdown::kOffer) {
-      ExprVector impliedFilters =
-          ImpliedFilters::deriveForColumns(filters, exprs_);
+      ExprVector impliedFilters;
+      for (ExprCP derivedFilter :
+           ImpliedFilters::deriveForColumns(filters, exprs_)) {
+        if (simplifier_.simplifyFilter(derivedFilter, impliedFilters)) {
+          return makeEmptyValues(node);
+        }
+      }
+
+      PlanObjectSet offeredFilterSet = PlanObjectSet::fromObjects(filters);
+      std::erase_if(impliedFilters, [&](ExprCP filter) {
+        if (offeredFilterSet.contains(filter)) {
+          return true;
+        }
+        offeredFilterSet.add(filter);
+        return false;
+      });
       impliedFilterSet.unionObjects(impliedFilters);
       appendAll(filters, impliedFilters);
     }
@@ -2184,7 +2238,11 @@ class Pushdown : public NodeRewriter<PushdownContext> {
   // pruned.
   NodeCP rewriteWindow(const Window* node, PushdownContext& context) override {
     const std::optional<RankFusion> fusion = detectRankFusion(
-        node, context.pending, context.rankLimit, builder().functionNames());
+        node,
+        context.pending,
+        context.rankLimit,
+        builder().functionNames(),
+        exprs_);
 
     PlanObjectSet partitionKeyColumns;
     for (ExprCP key : node->partitionKeys()) {
@@ -2200,7 +2258,10 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     ExprVector pushable;
     ExprVector blocked;
     for (ExprCP conjunct : context.pending) {
-      if (fusion && conjunct == fusion->predicate) {
+      if (fusion && conjunct == fusion->consumedPredicate) {
+        if (fusion->remainingPredicate != nullptr) {
+          blocked.push_back(fusion->remainingPredicate);
+        }
         continue;
       }
       // A predicate that every row satisfies selects nothing away.

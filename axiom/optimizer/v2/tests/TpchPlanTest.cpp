@@ -609,7 +609,7 @@ TEST_F(TpchPlanTest, q15) {
 TEST_F(TpchPlanTest, q16) {
   const auto partFilter =
       "\"and\"(p_brand <> 'Brand#45', p_type not like 'MEDIUM POLISHED%', "
-      "         p_size in (49, 14, 23, 45, 19, 3, 36, 9))";
+      "         p_size in (3, 9, 14, 19, 23, 36, 45, 49))";
 
   auto matcher = matchScan("partsupp")
                      .hashJoinInner(matchScan("part").filter(partFilter))
