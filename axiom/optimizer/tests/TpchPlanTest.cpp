@@ -267,27 +267,36 @@ TEST_F(TpchPlanTest, q06) {
 
 TEST_F(TpchPlanTest, q07) {
   // agg((
-  //   (lineitem INNER (supplier INNER nation))
+  //   (supplier INNER nation)
   //   INNER
-  //   (orders INNER (customer INNER nation))
+  //   (
+  //     (lineitem LEFT SEMI (FILTER) (supplier INNER nation))
+  //     INNER
+  //     (orders INNER (customer INNER nation))
+  //   )
   // ))
   auto matcher =
-      matchScan("lineitem")
-          .filter("l_shipdate between date '1995-01-01' and date '1996-12-31'")
+      matchScan("supplier")
           .hashJoinInner(
-              matchScan("supplier")
-                  .hashJoinInner(
-                      matchScan("nation")
-                          .aliases({std::nullopt, "supp_nation"})
-                          .filter(
-                              "supp_nation = 'FRANCE' or supp_nation = 'GERMANY'")))
-          .hashJoinInner(matchScan("orders").hashJoinInner(
-              matchScan("customer")
-                  .hashJoinInner(
-                      matchScan("nation")
-                          .aliases({std::nullopt, "cust_nation"})
-                          .filter(
-                              "cust_nation = 'GERMANY' or cust_nation = 'FRANCE'"))))
+              matchScan("nation")
+                  .aliases({std::nullopt, "supp_nation"})
+                  .filter("supp_nation = 'FRANCE' or supp_nation = 'GERMANY'"))
+          .hashJoinInner(
+              matchScan("lineitem")
+                  .filter(
+                      "l_shipdate between date '1995-01-01' and date '1996-12-31'")
+                  .hashJoinLeftSemiFilter(
+                      matchScan("supplier")
+                          .hashJoinInner(matchScan("nation").filter(
+                              "n_name = 'FRANCE' or n_name = 'GERMANY'"))
+                          .project())
+                  .hashJoinInner(matchScan("orders").hashJoinInner(
+                      matchScan("customer")
+                          .hashJoinInner(
+                              matchScan("nation")
+                                  .aliases({std::nullopt, "cust_nation"})
+                                  .filter(
+                                      "cust_nation = 'GERMANY' or cust_nation = 'FRANCE'")))))
           .filter(
               "(supp_nation = 'FRANCE' and cust_nation = 'GERMANY') or "
               "(supp_nation = 'GERMANY' and cust_nation = 'FRANCE')")

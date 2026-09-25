@@ -15,6 +15,7 @@
  */
 
 #include <algorithm>
+#include <limits>
 
 #include "axiom/optimizer/EstimateMath.h"
 #include "axiom/optimizer/Filters.h"
@@ -188,13 +189,13 @@ Value clampCardinality(const Value& value) {
 namespace {
 
 // Computes the maximum cardinality for an integer range: 1 + (max - min).
-// The 1.0 literal forces double arithmetic, avoiding signed integer overflow
-// when the range spans a large portion of the integer domain.
 template <velox::TypeKind KIND>
 float rangeCardinality(VariantCP minPtr, VariantCP maxPtr) {
-  auto upperVal = maxPtr->value<KIND>();
-  auto lowerVal = minPtr->value<KIND>();
-  return 1.0 + upperVal - lowerVal;
+  const auto upper = static_cast<long double>(maxPtr->value<KIND>());
+  const auto lower = static_cast<long double>(minPtr->value<KIND>());
+  return static_cast<float>(std::min(
+      1.0L + upper - lower,
+      static_cast<long double>(std::numeric_limits<float>::max())));
 }
 
 } // namespace
