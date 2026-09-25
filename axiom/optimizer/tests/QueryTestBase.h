@@ -24,6 +24,7 @@
 #include "axiom/optimizer/RelationOp.h"
 #include "axiom/optimizer/VeloxHistory.h"
 #include "axiom/optimizer/tests/PlanMatcher.h"
+#include "axiom/optimizer/v2/Optimize.h"
 #include "axiom/runner/LocalRunner.h"
 #include "velox/common/base/ConcurrentRuntimeStatWriter.h"
 #include "velox/exec/tests/utils/HiveConnectorTestBase.h"
@@ -233,6 +234,14 @@ class QueryTestBase : public velox::exec::test::HiveConnectorTestBase {
   void verifyOptimization(
       const logical_plan::LogicalPlanNode& logicalPlan,
       const std::function<void(Optimization&)>& callback,
+      const std::optional<OptimizerOptions>& optimizerOptions = std::nullopt);
+
+  /// Runs v2 through 'pass' and invokes 'callback' while the resulting tree IR
+  /// and its QueryGraphContext remain alive.
+  void verifyOptimization(
+      const logical_plan::LogicalPlanNode& logicalPlan,
+      v2::Optimizer::Pass pass,
+      const std::function<void(v2::NodeCP)>& callback,
       const std::optional<OptimizerOptions>& optimizerOptions = std::nullopt);
 
   std::shared_ptr<velox::core::QueryCtx>& getQueryCtx();
