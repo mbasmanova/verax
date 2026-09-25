@@ -32,36 +32,25 @@ using velox::common::DoubleRange;
 using velox::common::FilterKind;
 using velox::common::FloatRange;
 
-// Registers, in the query arena, a Variant of 'kind' built from a numeric
-// bound; nullptr for kinds without a numeric bound. Registration gives stable
-// storage for the detail:: range math.
-VariantCP registerNumericBound(velox::TypeKind kind, double value) {
+template <typename T>
+VariantCP registerIntegerBound(int64_t value) {
+  VELOX_CHECK_GE(value, static_cast<int64_t>(std::numeric_limits<T>::min()));
+  VELOX_CHECK_LE(value, static_cast<int64_t>(std::numeric_limits<T>::max()));
+  return registerVariant(velox::Variant::create<T>(static_cast<T>(value)));
+}
+
+VariantCP registerIntegerBound(velox::TypeKind kind, int64_t value) {
   switch (kind) {
     case velox::TypeKind::TINYINT:
-      return registerVariant(
-          velox::Variant::create<velox::TypeKind::TINYINT>(
-              static_cast<int8_t>(value)));
+      return registerIntegerBound<int8_t>(value);
     case velox::TypeKind::SMALLINT:
-      return registerVariant(
-          velox::Variant::create<velox::TypeKind::SMALLINT>(
-              static_cast<int16_t>(value)));
+      return registerIntegerBound<int16_t>(value);
     case velox::TypeKind::INTEGER:
-      return registerVariant(
-          velox::Variant::create<velox::TypeKind::INTEGER>(
-              static_cast<int32_t>(value)));
+      return registerIntegerBound<int32_t>(value);
     case velox::TypeKind::BIGINT:
-      return registerVariant(
-          velox::Variant::create<velox::TypeKind::BIGINT>(
-              static_cast<int64_t>(value)));
-    case velox::TypeKind::REAL:
-      return registerVariant(
-          velox::Variant::create<velox::TypeKind::REAL>(
-              static_cast<float>(value)));
-    case velox::TypeKind::DOUBLE:
-      return registerVariant(
-          velox::Variant::create<velox::TypeKind::DOUBLE>(value));
+      return registerIntegerBound<int64_t>(value);
     default:
-      return nullptr;
+      VELOX_UNREACHABLE();
   }
 }
 
@@ -86,11 +75,46 @@ std::optional<Selectivity> rangeFilter(
   return selectivity;
 }
 
-// Selectivity and refined Value of an IN list of 'listSize' distinct values.
+bool isWithinBounds(const Value& value, VariantCP candidate) {
+  return (value.min == nullptr || !(*candidate < *value.min)) &&
+      (value.max == nullptr || !(*value.max < *candidate));
+}
+
+// Estimates an integral point or IN-list filter from NDV after removing values
+// outside the column's known range.
+std::optional<Selectivity> integerValuesFilter(
+    const Value& value,
+    const std::vector<int64_t>& values,
+    Value& refined) {
+  VariantCP lower{nullptr};
+  VariantCP upper{nullptr};
+  double numValues{0};
+  for (const auto integerValue : values) {
+    auto* candidate = registerIntegerBound(value.type->kind(), integerValue);
+    if (!isWithinBounds(value, candidate)) {
+      continue;
+    }
+    lower = lower == nullptr || *candidate < *lower ? candidate : lower;
+    upper = upper == nullptr || *upper < *candidate ? candidate : upper;
+    ++numValues;
+  }
+
+  if (numValues == 0) {
+    refined = Value(value.type, 0);
+    refined.nullFraction = 0;
+    refined.nullable = false;
+    return Selectivity::likelyZero(value.nullFraction.value_or(0));
+  }
+
+  auto selectivity = detail::inListSelectivity(value, numValues);
+  refined = detail::refineRange(value, lower, upper, numValues);
+  return selectivity;
+}
+
 std::optional<Selectivity>
-inListFilter(const Value& value, double listSize, Value& refined) {
-  auto selectivity = detail::inListSelectivity(value, listSize);
-  refined = detail::refineRange(value, nullptr, nullptr, listSize);
+valuesFilter(const Value& value, double numValues, Value& refined) {
+  auto selectivity = detail::inListSelectivity(value, numValues);
+  refined = detail::refineRange(value, nullptr, nullptr, numValues);
   return selectivity;
 }
 
@@ -103,6 +127,18 @@ std::optional<Selectivity> commonFilterSelectivity(
   refined = value;
   const double nullFraction = value.nullFraction.value_or(0);
   const auto kind = value.type->kind();
+
+  if (!value.type->isPrimitiveType()) {
+    switch (filter.kind()) {
+      case FilterKind::kAlwaysTrue:
+      case FilterKind::kAlwaysFalse:
+      case FilterKind::kIsNull:
+      case FilterKind::kIsNotNull:
+        break;
+      default:
+        return Selectivity::noRange(nullFraction);
+    }
+  }
 
   switch (filter.kind()) {
     case FilterKind::kAlwaysTrue:
@@ -126,12 +162,16 @@ std::optional<Selectivity> commonFilterSelectivity(
 
     case FilterKind::kBigintRange: {
       const auto& range = static_cast<const BigintRange&>(filter);
-      VariantCP lower = range.lower() == std::numeric_limits<int64_t>::min()
+      if (range.isSingleValue()) {
+        return integerValuesFilter(value, {range.lower()}, refined);
+      }
+
+      VariantCP lower = range.lowerUnbounded()
           ? nullptr
-          : registerNumericBound(kind, static_cast<double>(range.lower()));
-      VariantCP upper = range.upper() == std::numeric_limits<int64_t>::max()
+          : registerIntegerBound(kind, range.lower());
+      VariantCP upper = range.upperUnbounded()
           ? nullptr
-          : registerNumericBound(kind, static_cast<double>(range.upper()));
+          : registerIntegerBound(kind, range.upper());
       return rangeFilter(value, lower, upper, refined);
     }
 
@@ -139,10 +179,10 @@ std::optional<Selectivity> commonFilterSelectivity(
       const auto& range = static_cast<const DoubleRange&>(filter);
       VariantCP lower = range.lowerUnbounded()
           ? nullptr
-          : registerNumericBound(kind, range.lower());
+          : registerVariant(velox::Variant::create<double>(range.lower()));
       VariantCP upper = range.upperUnbounded()
           ? nullptr
-          : registerNumericBound(kind, range.upper());
+          : registerVariant(velox::Variant::create<double>(range.upper()));
       return rangeFilter(value, lower, upper, refined);
     }
 
@@ -150,10 +190,10 @@ std::optional<Selectivity> commonFilterSelectivity(
       const auto& range = static_cast<const FloatRange&>(filter);
       VariantCP lower = range.lowerUnbounded()
           ? nullptr
-          : registerNumericBound(kind, range.lower());
+          : registerVariant(velox::Variant::create<float>(range.lower()));
       VariantCP upper = range.upperUnbounded()
           ? nullptr
-          : registerNumericBound(kind, range.upper());
+          : registerVariant(velox::Variant::create<float>(range.upper()));
       return rangeFilter(value, lower, upper, refined);
     }
 
@@ -169,21 +209,19 @@ std::optional<Selectivity> commonFilterSelectivity(
     }
 
     case FilterKind::kBigintValuesUsingHashTable:
-      return inListFilter(
+      return integerValuesFilter(
           value,
-          static_cast<const BigintValuesUsingHashTable&>(filter)
-              .values()
-              .size(),
+          static_cast<const BigintValuesUsingHashTable&>(filter).values(),
           refined);
 
     case FilterKind::kBigintValuesUsingBitmask:
-      return inListFilter(
+      return integerValuesFilter(
           value,
-          static_cast<const BigintValuesUsingBitmask&>(filter).values().size(),
+          static_cast<const BigintValuesUsingBitmask&>(filter).values(),
           refined);
 
     case FilterKind::kBytesValues:
-      return inListFilter(
+      return valuesFilter(
           value,
           static_cast<const BytesValues&>(filter).values().size(),
           refined);

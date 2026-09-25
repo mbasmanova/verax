@@ -1264,6 +1264,9 @@ std::unordered_map<std::string, connector::ColumnStatistics> tpchColumnStats(
   auto asInt32 = [](int32_t value) { return velox::Variant(value); };
   auto asInt64 = [](int64_t value) { return velox::Variant(value); };
   auto asDouble = [](double value) { return velox::Variant(value); };
+  auto asString = [](const char* value) {
+    return velox::Variant(std::string{value});
+  };
   auto date = [](const char* text) {
     return velox::Variant(velox::DATE()->toDays(text));
   };
@@ -1272,12 +1275,12 @@ std::unordered_map<std::string, connector::ColumnStatistics> tpchColumnStats(
     case Table::TBL_REGION:
       return {
           {"r_regionkey", ranged(5, asInt64(0), asInt64(4))},
-          {"r_name", distinct(5)},
+          {"r_name", ranged(5, asString("AFRICA"), asString("MIDDLE EAST"))},
           {"r_comment", distinct(5)}};
     case Table::TBL_NATION:
       return {
           {"n_nationkey", ranged(25, asInt64(0), asInt64(24))},
-          {"n_name", distinct(25)},
+          {"n_name", ranged(25, asString("ALGERIA"), asString("VIETNAM"))},
           {"n_regionkey", ranged(5, asInt64(0), asInt64(4))},
           {"n_comment", distinct(25)}};
     case Table::TBL_SUPPLIER:
@@ -1295,11 +1298,17 @@ std::unordered_map<std::string, connector::ColumnStatistics> tpchColumnStats(
       return {
           {"p_partkey", ranged(partRows, asInt64(1), asInt64(partRows))},
           {"p_name", distinct(partRows)},
-          {"p_mfgr", distinct(5)},
-          {"p_brand", distinct(25)},
-          {"p_type", distinct(150)},
+          {"p_mfgr",
+           ranged(5, asString("Manufacturer#1"), asString("Manufacturer#5"))},
+          {"p_brand", ranged(25, asString("Brand#11"), asString("Brand#55"))},
+          {"p_type",
+           ranged(
+               150,
+               asString("ECONOMY ANODIZED BRASS"),
+               asString("STANDARD POLISHED TIN"))},
           {"p_size", ranged(50, asInt32(1), asInt32(50))},
-          {"p_container", distinct(40)},
+          {"p_container",
+           ranged(40, asString("JUMBO BAG"), asString("WRAP PKG"))},
           {"p_retailprice",
            ranged(partRows, asDouble(901.0), asDouble(2098.99))},
           {"p_comment", distinct(partRows)}};
@@ -1321,7 +1330,8 @@ std::unordered_map<std::string, connector::ColumnStatistics> tpchColumnStats(
           {"c_phone", distinct(customerRows)},
           {"c_acctbal",
            ranged(customerRows, asDouble(-999.99), asDouble(9999.99))},
-          {"c_mktsegment", distinct(5)},
+          {"c_mktsegment",
+           ranged(5, asString("AUTOMOBILE"), asString("MACHINERY"))},
           {"c_comment", distinct(customerRows)}};
     case Table::TBL_ORDERS:
       return {
@@ -1329,11 +1339,12 @@ std::unordered_map<std::string, connector::ColumnStatistics> tpchColumnStats(
           // Only about two thirds of customers place orders.
           {"o_custkey",
            ranged(2 * customerRows / 3, asInt64(1), asInt64(customerRows))},
-          {"o_orderstatus", distinct(3)},
+          {"o_orderstatus", ranged(3, asString("F"), asString("P"))},
           {"o_totalprice",
            ranged(ordersRows, asDouble(857.71), asDouble(600000.0))},
           {"o_orderdate", ranged(2406, date("1992-01-01"), date("1998-08-02"))},
-          {"o_orderpriority", distinct(5)},
+          {"o_orderpriority",
+           ranged(5, asString("1-URGENT"), asString("5-LOW"))},
           {"o_clerk", distinct(std::max<int64_t>(1, 1000 * scaleFactor))},
           {"o_shippriority", distinct(1)},
           {"o_comment", distinct(ordersRows)}};
@@ -1349,15 +1360,16 @@ std::unordered_map<std::string, connector::ColumnStatistics> tpchColumnStats(
            ranged(lineitemRows, asDouble(901.0), asDouble(104949.5))},
           {"l_discount", ranged(11, asDouble(0.0), asDouble(0.10))},
           {"l_tax", ranged(9, asDouble(0.0), asDouble(0.08))},
-          {"l_returnflag", distinct(3)},
-          {"l_linestatus", distinct(2)},
+          {"l_returnflag", ranged(3, asString("A"), asString("R"))},
+          {"l_linestatus", ranged(2, asString("F"), asString("O"))},
           {"l_shipdate", ranged(2526, date("1992-01-02"), date("1998-12-01"))},
           {"l_commitdate",
            ranged(2466, date("1992-01-31"), date("1998-10-31"))},
           {"l_receiptdate",
            ranged(2554, date("1992-01-03"), date("1998-12-31"))},
-          {"l_shipinstruct", distinct(4)},
-          {"l_shipmode", distinct(7)},
+          {"l_shipinstruct",
+           ranged(4, asString("COLLECT COD"), asString("TAKE BACK RETURN"))},
+          {"l_shipmode", ranged(7, asString("AIR"), asString("TRUCK"))},
           {"l_comment", distinct(lineitemRows)}};
   }
   VELOX_UNREACHABLE();
