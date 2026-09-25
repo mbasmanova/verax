@@ -973,7 +973,7 @@ TEST_P(SetTest, unionAllWithDistinctAndCountStar) {
         plan,
         matchScan("t")
             .singleAggregation({"a"}, {})
-            .project({})
+            .project(std::vector<std::string>{})
             .localPartition(matchValues(ROW({})))
             .singleAggregation({}, {"count(*) as c"})
             .build());
@@ -993,7 +993,7 @@ TEST_P(SetTest, unionAllWithDistinctAndCountStar) {
         plan,
         matchScan("t")
             .singleAggregation({"a"}, {})
-            .project({})
+            .project(std::vector<std::string>{})
             .localPartition({matchValues(ROW({})), matchValues(ROW({}))})
             .singleAggregation({}, {"count(*) as c"})
             .build());
@@ -1013,7 +1013,7 @@ TEST_P(SetTest, unionAllWithDistinctAndCountStar) {
         plan,
         matchScan("t")
             .singleAggregation({"a"}, {})
-            .project({})
+            .project(std::vector<std::string>{})
             .localPartition(matchValues(ROW({})))
             .singleAggregation({}, {"count(*) as cnt"})
             .filter("cnt > 0")

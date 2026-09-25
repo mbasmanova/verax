@@ -61,6 +61,8 @@ struct OptimizerOptions : public velox::config::ConfigProvider {
       "hash_partition_count";
   static constexpr std::string_view kMinColumnarChannelsForCompactRow =
       "min_columnar_channels_for_compact_row";
+  static constexpr std::string_view kMaxDuplicatedLiteralBytes =
+      "max_duplicated_literal_bytes";
   static constexpr std::string_view kRecursionLimit = "recursion_limit";
   static constexpr std::string_view kMaxPlanObjects = "max_plan_objects";
   static constexpr std::string_view kTraceFlags = "trace_flags";
@@ -71,6 +73,8 @@ struct OptimizerOptions : public velox::config::ConfigProvider {
   static constexpr int32_t kSmallQueryNumWorkersDefault = 1;
   static constexpr int32_t kHashPartitionCountDefault = 0;
   static constexpr int32_t kMinColumnarChannelsForCompactRowDefault = 1'000;
+  static constexpr std::string_view kMaxDuplicatedLiteralBytesDefault = "64KB";
+  static constexpr int64_t kMaxDuplicatedLiteralBytesDefaultValue = 64LL << 10;
   static constexpr int32_t kParallelProjectWidthDefault = 1;
   static constexpr int32_t kGreedyJoinThresholdDefault = 5;
   // 100 MB. The string form is the user-facing default and accepts capacity
@@ -150,6 +154,10 @@ struct OptimizerOptions : public velox::config::ConfigProvider {
   /// encoding has at least this many columnar channels.
   int32_t minColumnarChannelsForCompactRow{
       kMinColumnarChannelsForCompactRowDefault};
+
+  /// Maximum estimated size of redundant literal copies in a Project. Above
+  /// this limit, v2 extracts the literal into a lower Project for reuse.
+  int64_t maxDuplicatedLiteralBytes{kMaxDuplicatedLiteralBytesDefaultValue};
 
   /// Enable join order sampling during optimization.
   bool sampleJoins{kSampleJoinsDefault};

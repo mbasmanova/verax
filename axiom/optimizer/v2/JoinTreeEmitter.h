@@ -25,6 +25,8 @@
 
 namespace facebook::axiom::optimizer::v2 {
 
+class ExprSimplifier;
+
 /// Translates the `MemoOp` tree DPhyp produced back into an IR
 /// `Join` tree by walking bottom-up: each `LeafOp` resolves to the
 /// relation's IR node; each `JoinOp` calls `Builder::make<Join>` with
@@ -45,7 +47,8 @@ class JoinTreeEmitter {
       MemoOpCP root,
       const JoinHypergraph& graph,
       const ColumnVector& rootOutputColumns,
-      Builder& builder);
+      Builder& builder,
+      ExprSimplifier& simplifier);
 
   /// Emits a cross-product combine of independently planned connected
   /// components. Each component subtree is emitted, then the components
@@ -63,6 +66,7 @@ class JoinTreeEmitter {
       const JoinHypergraph& graph,
       const ColumnVector& rootOutputColumns,
       Builder& builder,
+      ExprSimplifier& simplifier,
       int32_t numWorkers);
 };
 

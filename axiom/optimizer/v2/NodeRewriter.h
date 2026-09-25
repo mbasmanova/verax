@@ -138,8 +138,10 @@ class NodeRewriter {
     if (newInput == node->input()) {
       return node;
     }
-    return PrecomputeProjections::makeProject(
-        newInput, node->exprs(), node->outputColumns(), builder_);
+    ExprVector exprs = node->exprs();
+    PrecomputeProjections::inlineInputProject(newInput, exprs, builder_);
+    return builder_.template make<Project>(
+        {newInput, std::move(exprs), node->outputColumns()});
   }
 
   virtual NodeCP rewriteLimit(const Limit* node, TContext& context) {

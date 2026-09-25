@@ -425,6 +425,16 @@ core::ExprPtr ExprMatcher::rewriteInputNames(
     const std::unordered_map<std::string, std::string>& mapping) {
   return core::ExprRewriter::rewrite(
       expr, [&](const core::ExprPtr& e) -> core::ExprPtr {
+        if (e->is(IExpr::Kind::kLambda)) {
+          const auto* lambda = e->as<LambdaExpr>();
+          auto bodyMapping = mapping;
+          for (const auto& argument : lambda->arguments()) {
+            bodyMapping.erase(argument);
+          }
+          return std::make_shared<LambdaExpr>(
+              lambda->arguments(),
+              rewriteInputNames(lambda->body(), bodyMapping));
+        }
         if (const auto* field = core::FieldAccessExpr::tryAsRootColumn(e)) {
           auto it = mapping.find(field->name());
           if (it != mapping.end()) {

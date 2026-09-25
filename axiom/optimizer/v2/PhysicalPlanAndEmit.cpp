@@ -31,6 +31,7 @@ EmitPass::Result physicalPlanAndEmit(
   NodeCP physicalPlanned = PlanPhysicalPass::run(
       root,
       builder,
+      evaluator,
       session.options(),
       options.maxRemotePartitions,
       options.maxLocalPartitions);

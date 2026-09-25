@@ -21,6 +21,8 @@
 
 namespace facebook::axiom::optimizer::v2 {
 
+class ExprSimplifier;
+
 /// Builds the operators of a join cluster in the form Velox executes: every
 /// key position is a column of the operator's input, computed by a `Project`
 /// below it.
@@ -35,12 +37,14 @@ class PhysicalJoin {
   /// rewritten to read that column rather than evaluate the same expression
   /// per pair. Each side's projection outputs only what the join reads, so an
   /// input column kept solely to feed a key stops below it.
-  static NodeCP makeJoin(Join::Key key, Builder& builder);
+  static NodeCP
+  makeJoin(Join::Key key, Builder& builder, ExprSimplifier& simplifier);
 
   /// Returns an `Unnest` reading each unnested value as a column, computed by
   /// a `Project` below it. That projection outputs only the replicated columns
   /// and the unnested values.
-  static NodeCP makeUnnest(Unnest::Key key, Builder& builder);
+  static NodeCP
+  makeUnnest(Unnest::Key key, Builder& builder, ExprSimplifier& simplifier);
 };
 
 } // namespace facebook::axiom::optimizer::v2

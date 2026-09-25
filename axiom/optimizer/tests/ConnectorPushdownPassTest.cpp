@@ -116,8 +116,7 @@ class ConnectorPushdownPassTest : public optimizer::test::QueryTestBase {
       std::string_view tableName = "t",
       std::string_view aggregate = "sum(b)") {
     return parseSelect(
-        std::string{"SELECT a, "} + std::string{aggregate} + " FROM " +
-            std::string{tableName} + " GROUP BY a",
+        fmt::format("SELECT a, {} FROM {} GROUP BY a", aggregate, tableName),
         kTestConnectorId);
   }
 
@@ -195,11 +194,9 @@ TEST_F(ConnectorPushdownPassTest, positionalOutput) {
       makeFlatVector<int64_t>({100}),
   });
   virtualTable->addData(expected);
-
-  auto logicalPlan = aggregatePlan("t", "sum(b) as s");
   setWholeSubtreeReplacement(virtualTable);
 
-  checkSame(logicalPlan, {expected});
+  checkSame(aggregatePlan("t", "sum(b) as s"), {expected});
 }
 
 TEST_F(ConnectorPushdownPassTest, workerSelection) {
@@ -209,7 +206,6 @@ TEST_F(ConnectorPushdownPassTest, workerSelection) {
       testConnector_->addTable("small_result", ROW({"key", "total"}, BIGINT()));
   virtualTable->setStats(1, {});
 
-  auto logicalPlan = aggregatePlan();
   setWholeSubtreeReplacement(virtualTable);
 
   // The source exceeds the small-query threshold, but its replacement does
@@ -217,8 +213,9 @@ TEST_F(ConnectorPushdownPassTest, workerSelection) {
   OptimizerOptions options;
   options.smallQueryMaxScanRows = 10;
   options.smallQueryNumWorkers = 1;
+
   const auto result = planVelox(
-      logicalPlan,
+      aggregatePlan(),
       {.maxRemotePartitions = 4, .maxLocalPartitions = 2},
       options);
   EXPECT_EQ(result.plan->options().maxRemotePartitions, 1);
@@ -252,9 +249,8 @@ TEST_F(ConnectorPushdownPassTest, schemaResolver) {
         co_return std::vector<PushdownRoot>{};
       });
 
-  auto logicalPlan = aggregatePlan();
   planVelox(
-      logicalPlan,
+      aggregatePlan(),
       resolver,
       {.maxRemotePartitions = 1, .maxLocalPartitions = 1});
 
@@ -289,12 +285,6 @@ TEST_F(ConnectorPushdownPassTest, crossConnectorJoin) {
   auto replacement =
       testConnector_->addTable("virt_q", ROW({"key", "total"}, BIGINT()));
 
-  auto logicalPlan = parseSelect(
-      "SELECT p.a, p.b, q.c, q.sd "
-      "FROM probe.default.p p "
-      "JOIN (SELECT c, sum(d) AS sd FROM q GROUP BY c) q ON p.a = q.c",
-      kTestConnectorId);
-
   testMetadata_->setPushdownMatcher([&, replacement](const Node& subtree) {
     EXPECT_TRUE(containsScanFromConnector(&subtree, kTestConnectorId));
     EXPECT_FALSE(
@@ -302,11 +292,18 @@ TEST_F(ConnectorPushdownPassTest, crossConnectorJoin) {
     const auto* aggregate = requireNodeOfType(&subtree, NodeType::kAggregate);
     return std::vector<PushdownRoot>{{aggregate, replacement}};
   });
+
   bool probeCalled = false;
   probe.metadata->setPushdownMatcher([&](const Node&) {
     probeCalled = true;
     return std::vector<PushdownRoot>{};
   });
+
+  auto logicalPlan = parseSelect(
+      "SELECT p.a, p.b, q.c, q.sd "
+      "FROM probe.default.p p "
+      "JOIN (SELECT c, sum(d) AS sd FROM q GROUP BY c) q ON p.a = q.c",
+      kTestConnectorId);
 
   AXIOM_ASSERT_PLAN(
       toSingleNodePlan(logicalPlan),
@@ -326,17 +323,18 @@ TEST_F(ConnectorPushdownPassTest, duplicateSourceNames) {
   });
   virtualTable->addData(expected);
 
-  auto logicalPlan = parseSelect(
-      "SELECT l.a AS left_a, r.a AS right_a "
-      "FROM left_table l JOIN right_table r ON l.k = r.k",
-      kTestConnectorId);
   testMetadata_->setPushdownMatcher(
       [virtualTable = std::move(virtualTable)](const Node& subtree) {
         const auto* join = requireNodeOfType(&subtree, NodeType::kJoin);
         return std::vector<PushdownRoot>{{join, virtualTable}};
       });
 
-  checkSame(logicalPlan, {expected});
+  checkSame(
+      parseSelect(
+          "SELECT l.a AS left_a, r.a AS right_a "
+          "FROM left_table l JOIN right_table r ON l.k = r.k",
+          kTestConnectorId),
+      {expected});
 }
 
 TEST_F(ConnectorPushdownPassTest, independentConnectors) {
@@ -396,14 +394,13 @@ TEST_F(ConnectorPushdownPassTest, bareScan) {
   testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
   auto replacement =
       testConnector_->addTable("u", ROW({"first", "second"}, BIGINT()));
-  auto logicalPlan = aggregatePlan();
 
   testMetadata_->setPushdownMatcher([replacement](const Node& subtree) {
     const auto* scan = requireNodeOfType(&subtree, NodeType::kScan);
     return std::vector<PushdownRoot>{{scan, replacement}};
   });
 
-  VELOX_ASSERT_THROW(toSingleNodePlan(logicalPlan), "cannot be a Scan");
+  VELOX_ASSERT_THROW(toSingleNodePlan(aggregatePlan()), "cannot be a Scan");
 }
 
 TEST_F(ConnectorPushdownPassTest, ineligiblePlans) {
@@ -441,8 +438,6 @@ TEST_F(ConnectorPushdownPassTest, recursiveAnchor) {
   auto replacement =
       testConnector_->addTable("virt_seed", ROW("value", BIGINT()));
 
-  auto logicalPlan = recursivePlan();
-
   testMetadata_->setPushdownMatcher([replacement](const Node& subtree) {
     const auto* fixedPoint = subtree.as<FixedPoint>();
     return std::vector<PushdownRoot>{{fixedPoint->anchor(), replacement}};
@@ -466,7 +461,7 @@ TEST_F(ConnectorPushdownPassTest, recursiveAnchor) {
                      .aliases({"n"})
                      .project({"n"})
                      .build();
-  AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
+  AXIOM_ASSERT_PLAN(toSingleNodePlan(recursivePlan()), matcher);
 }
 
 TEST_F(ConnectorPushdownPassTest, recursiveRoots) {
@@ -533,20 +528,24 @@ TEST_F(ConnectorPushdownPassTest, strictDescendant) {
   auto replacement =
       testConnector_->addTable("virt_agg", ROW({"key", "total"}, BIGINT()));
 
-  auto planWithFilterDependingOnAggregate = parseSelect(
-      "SELECT a, s FROM (SELECT a, sum(b) AS s FROM t GROUP BY a) "
-      "WHERE s > 10",
-      kTestConnectorId);
-
   testMetadata_->setPushdownMatcher([replacement](const Node& subtree) {
     const auto* aggregate = requireNodeOfType(&subtree, NodeType::kAggregate);
     EXPECT_NE(&subtree, aggregate);
     return std::vector<PushdownRoot>{{aggregate, replacement}};
   });
 
-  auto plan = toSingleNodePlan(planWithFilterDependingOnAggregate);
-  auto matcher = matchScan("virt_agg").project().filter("s > 10").build();
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN(
+      toSingleNodePlan(parseSelect(
+          "SELECT a, s FROM (SELECT a, sum(b) AS s FROM t GROUP BY a) "
+          "WHERE s > 10",
+          kTestConnectorId)),
+      matchScan("virt_agg").project().filter("s > 10").build());
+
+  AXIOM_ASSERT_PLAN(
+      toSingleNodePlan(parseSelect(
+          "SELECT s + 1 FROM (SELECT a, sum(b) AS s FROM t GROUP BY a)",
+          kTestConnectorId)),
+      matchScan("virt_agg").project().build());
 }
 
 TEST_F(ConnectorPushdownPassTest, disjointRoots) {
@@ -556,12 +555,6 @@ TEST_F(ConnectorPushdownPassTest, disjointRoots) {
       testConnector_->addTable("virt_left", ROW({"key", "total"}, BIGINT()));
   auto rightReplacement =
       testConnector_->addTable("virt_right", ROW({"key", "total"}, BIGINT()));
-
-  auto logicalPlan = parseSelect(
-      "SELECT l.a, l.sb, r.c, r.sd "
-      "FROM (SELECT a, sum(b) AS sb FROM t GROUP BY a) l "
-      "JOIN (SELECT c, sum(d) AS sd FROM u GROUP BY c) r ON l.a = r.c",
-      kTestConnectorId);
 
   testMetadata_->setPushdownMatcher([leftReplacement,
                                      rightReplacement](const Node& subtree) {
@@ -574,11 +567,18 @@ TEST_F(ConnectorPushdownPassTest, disjointRoots) {
     };
   });
 
-  auto plan = toSingleNodePlan(logicalPlan);
-  auto buildMatcher = matchScan("virt_right").project();
-  auto matcher =
-      matchScan("virt_left").project().hashJoin(buildMatcher).build();
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  auto logicalPlan = parseSelect(
+      "SELECT l.a, l.sb, r.c, r.sd "
+      "FROM (SELECT a, sum(b) AS sb FROM t GROUP BY a) l "
+      "JOIN (SELECT c, sum(d) AS sd FROM u GROUP BY c) r ON l.a = r.c",
+      kTestConnectorId);
+
+  AXIOM_ASSERT_PLAN(
+      toSingleNodePlan(logicalPlan),
+      matchScan("virt_left")
+          .project()
+          .hashJoin(matchScan("virt_right").project())
+          .build());
 }
 
 TEST_F(ConnectorPushdownPassTest, outsideRoot) {
@@ -586,10 +586,6 @@ TEST_F(ConnectorPushdownPassTest, outsideRoot) {
   testConnector_->addTable("t", ROW("a", BIGINT()));
   otherConnector.connector->addTable("u", ROW("b", BIGINT()));
 
-  auto logicalPlan = parseSelect(
-      "(SELECT a FROM t LIMIT 10) "
-      "UNION ALL (SELECT b FROM other.default.u LIMIT 10)",
-      kTestConnectorId);
   auto stolen = testConnector_->addTable("stolen", ROW("value", BIGINT()));
   folly::coro::Baton outsideReady;
   std::atomic<NodeCP> outside{nullptr};
@@ -609,7 +605,11 @@ TEST_F(ConnectorPushdownPassTest, outsideRoot) {
       });
 
   VELOX_ASSERT_THROW(
-      toSingleNodePlan(logicalPlan), "outside the offered subtree");
+      toSingleNodePlan(parseSelect(
+          "(SELECT a FROM t LIMIT 10) "
+          "UNION ALL (SELECT b FROM other.default.u LIMIT 10)",
+          kTestConnectorId)),
+      "outside the offered subtree");
 }
 
 TEST_F(ConnectorPushdownPassTest, invalidVirtualTables) {

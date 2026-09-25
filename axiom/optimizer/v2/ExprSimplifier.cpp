@@ -277,7 +277,34 @@ ExprCP domainToFilter(Builder& builder, ColumnCP column, Domain domain) {
 } // namespace
 
 ExprCP ExprSimplifier::simplify(ExprCP expr) {
-  return tryFoldConjunct(tryFoldConstant(expr));
+  if (const auto it = simplified_.find(expr); it != simplified_.end()) {
+    return it->second;
+  }
+
+  const ExprCP original = expr;
+  if (expr->is(PlanType::kCallExpr)) {
+    const auto* call = expr->as<Call>();
+    ExprVector args;
+    args.reserve(call->args().size());
+    bool changed = false;
+    for (ExprCP arg : call->args()) {
+      ExprCP simplified = simplify(arg);
+      changed |= simplified != arg;
+      args.push_back(simplified);
+    }
+    if (changed) {
+      expr = ExprFactory(builder_).rebuildCall(call, std::move(args));
+    }
+  } else if (expr->is(PlanType::kLambdaExpr)) {
+    const auto* lambda = expr->as<Lambda>();
+    ExprCP body = simplify(lambda->body());
+    if (body != lambda->body()) {
+      expr = make<Lambda>(lambda->args(), lambda->value().type, body);
+    }
+  }
+  expr = tryFoldConjunct(tryFoldConstant(expr));
+  simplified_.emplace(original, expr);
+  return expr;
 }
 
 ExprCP ExprSimplifier::tryFoldConjunct(ExprCP expr) {
@@ -313,12 +340,9 @@ ExprCP ExprSimplifier::tryFoldConjunct(ExprCP expr) {
   if (remaining.size() == 1) {
     return remaining.front();
   }
-  const FunctionSet functions = Call::unionArgFunctions(
-      functionBits(call->name(), /*specialForm=*/true), remaining);
   // A literal argument is never the one that determined the call's
   // cardinality, so dropping it leaves `value()` valid.
-  return builder_.makeCall(
-      call->name(), call->value(), std::move(remaining), functions);
+  return ExprFactory(builder_).rebuildCall(call, std::move(remaining));
 }
 
 bool ExprSimplifier::simplifyFilter(ExprCP predicate, ExprVector& into) {

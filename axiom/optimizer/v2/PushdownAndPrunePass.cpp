@@ -1088,7 +1088,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     }
     ExprVector exprs(keep.begin(), keep.end());
     return PrecomputeProjections::makeProject(
-        node, std::move(exprs), keep, builder());
+        node, std::move(exprs), keep, builder(), simplifier_);
   }
 
   // Filter conjuncts (flattened across AND trees) join `pending`; the
@@ -1167,25 +1167,13 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     }
     NodeCP newInput = rewrite(node->input(), childContext);
 
-    // Inline a child Project: a Project directly over another Project collapses
-    // into one by substituting this Project's expressions through the child's
-    // output->expression map. Skipped when the child has a non-deterministic
-    // expression, since a parent that references such an output more than once
-    // would evaluate it multiple times.
-    //
-    // TODO: still inline the deterministic outputs when only some are
-    // non-deterministic — isolate the non-deterministic ones in a separate
-    // Project below and fold the rest.
-    if (newInput->is(NodeType::kProject)) {
-      const auto* childProject = newInput->as<Project>();
-      if (childProject->isDeterministic()) {
-        survivingExprs = exprs_.substitute(
-            survivingExprs,
-            childProject->outputColumns(),
-            childProject->exprs());
-        newInput = childProject->input();
-      }
-    }
+    NodeCP newProject = PrecomputeProjections::makeProject(
+        newInput,
+        std::move(survivingExprs),
+        std::move(survivingOutputs),
+        builder(),
+        simplifier_);
+    const auto* project = newProject->as<Project>();
 
     // Drop the Project when its surviving outputs are a pure pass-through of
     // the (rewritten) input's output columns. Pushdown can make a Project
@@ -1193,25 +1181,19 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     // to a semi-filter no longer emits the mark this Project dropped. An
     // empty-output Project is never identity: it eliminates all columns (the
     // semi-join EXISTS gate), which the input does not guarantee on its own.
-    const ColumnVector& inputColumns = newInput->outputColumns();
+    const ColumnVector& inputColumns = project->input()->outputColumns();
+    const auto& projectExprs = project->exprs();
+    const auto& projectOutputs = project->outputColumns();
     bool isIdentity{
-        !survivingOutputs.empty() &&
-        survivingOutputs.size() == inputColumns.size()};
-    for (size_t i = 0; isIdentity && i < survivingOutputs.size(); ++i) {
-      isIdentity = survivingOutputs[i] == inputColumns[i] &&
-          survivingExprs[i] == inputColumns[i];
+        !projectOutputs.empty() &&
+        projectOutputs.size() == inputColumns.size()};
+    for (size_t i = 0; isIdentity && i < projectOutputs.size(); ++i) {
+      isIdentity = projectOutputs[i] == inputColumns[i] &&
+          projectExprs[i] == inputColumns[i];
     }
 
-    NodeCP newProject;
     if (isIdentity) {
-      newProject = newInput;
-    } else if (
-        newInput == node->input() &&
-        survivingExprs.size() == node->exprs().size()) {
-      newProject = node;
-    } else {
-      newProject = builder().make<Project>(
-          {newInput, std::move(survivingExprs), std::move(survivingOutputs)});
+      newProject = project->input();
     }
     return maybeWrapFilter(newProject, std::move(blocked));
   }
@@ -1672,9 +1654,9 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     // broadcast rather than the columns it reads.
     if (newLeftKeys.empty() && !newFilter.empty()) {
       PrecomputeProjections leftPrecompute{
-          newLeft, builder(), /*projectAllInputs=*/false};
+          newLeft, builder(), simplifier_, /*projectAllInputs=*/false};
       PrecomputeProjections rightPrecompute{
-          newRight, builder(), /*projectAllInputs=*/false};
+          newRight, builder(), simplifier_, /*projectAllInputs=*/false};
       const auto leftColumns =
           PlanObjectSet::fromObjects(newLeft->outputColumns());
       const auto rightColumns =

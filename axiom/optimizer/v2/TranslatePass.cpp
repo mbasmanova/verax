@@ -984,7 +984,7 @@ Translated Translator::translateTableWrite(
     }
     if (writeColumns != currentInput->outputColumns()) {
       currentInput = PrecomputeProjections::makeProject(
-          currentInput, columnExprs, writeColumns, builder_);
+          currentInput, columnExprs, writeColumns, builder_, simplifier_);
     }
     columnExprs.assign(writeColumns.begin(), writeColumns.end());
   }
@@ -1648,7 +1648,7 @@ NodeCP Translator::maybeWrapInWindow(
 
     // Velox reads a window's keys, its function arguments and a RANGE frame
     // bound as columns of the input, so they are computed below the Window.
-    PrecomputeProjections precompute{current, builder_};
+    PrecomputeProjections precompute{current, builder_, simplifier_};
     ExprVector partitionKeys = spec.partitionKeys;
     for (ExprCP& key : partitionKeys) {
       key = materializeInto(precompute, key);
@@ -1794,7 +1794,7 @@ ColumnCP Translator::materializeColumn(
       return it->second;
     }
   }
-  PrecomputeProjections precompute{*node, builder_};
+  PrecomputeProjections precompute{*node, builder_, simplifier_};
   Name outName = toName(std::string{name});
   auto* column = columnForSymbol(outName, expr->value());
   precompute.toColumn(expr, column);
@@ -1828,7 +1828,7 @@ void Translator::narrowToColumns(NodeCP* node, const ColumnVector& columns) {
   }
   ExprVector exprs(columns.begin(), columns.end());
   *node = PrecomputeProjections::makeProject(
-      *node, std::move(exprs), columns, builder_);
+      *node, std::move(exprs), columns, builder_, simplifier_);
 }
 
 // Materializes every expression 'scope' binds, in 'type' order so the new
@@ -1888,7 +1888,7 @@ Translated Translator::translateSort(
   });
 
   // Velox reads a sort key as a column of the input.
-  PrecomputeProjections precompute{currentInput, builder_};
+  PrecomputeProjections precompute{currentInput, builder_, simplifier_};
   for (ExprCP& key : orderKeys) {
     key = materializeInto(precompute, key);
   }
@@ -3267,7 +3267,7 @@ ExprCP Translator::liftInferenceCall(const Call* call, LiftTarget* liftTarget) {
 
   // Velox reads the call's arguments as columns of the node's input, so they
   // are computed below it.
-  PrecomputeProjections precompute{liftTarget->node, builder_};
+  PrecomputeProjections precompute{liftTarget->node, builder_, simplifier_};
   ExprVector args;
   args.reserve(call->args().size());
   for (ExprCP arg : call->args()) {

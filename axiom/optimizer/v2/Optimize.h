@@ -92,10 +92,8 @@ class Optimizer {
   ///   - ConnectorPushdown — negotiate native connector subtrees;
   ///   - EstimateLeafStats — populate base-table cardinalities from the
   ///   connector;
-  ///   - PlanPhysical — cost-based join order and distribution;
-  ///   - PrecomputeProjections — lift compound expressions into `Project`s
-  ///   where
-  ///     Velox needs a column or literal;
+  ///   - PlanPhysical — cost-based join order and distribution, materializing
+  ///     compound expressions where Velox needs a column;
   ///   - Emit — lower to Velox `PlanNode`s.
   ///
   /// `options.maxRemotePartitions` / `options.maxLocalPartitions` (each >= 1)

@@ -43,6 +43,10 @@ AXIOM_DECLARE_ENUM_NAME(ColumnNaming);
 /// handle construction.
 class ExprEmitter {
  public:
+  /// Maps tree-IR expressions to fields that hold their precomputed values.
+  using ReplacementMap =
+      folly::F14FastMap<ExprCP, velox::core::FieldAccessTypedExprPtr>;
+
   /// 'pool' backs constant vectors materialized during lowering (e.g. the
   /// array constant of an IN list); it must outlive the emitted plan.
   explicit ExprEmitter(velox::memory::MemoryPool* pool) : pool_{pool} {}
@@ -58,6 +62,12 @@ class ExprEmitter {
       const ExprVector& exprs,
       ColumnNaming naming = ColumnNaming::kOutputName);
 
+  /// Lowers each expression while replacing mapped subexpressions with fields.
+  std::vector<velox::core::TypedExprPtr> toTypedExprs(
+      const ExprVector& exprs,
+      const ReplacementMap& replacements,
+      ColumnNaming naming = ColumnNaming::kOutputName);
+
   /// Returns the conjunction of 'predicates'. Calls toTypedExpr() on each
   /// predicate, wraps with an `and` Velox call if more than one.
   /// 'predicates' must be non-empty.
@@ -71,8 +81,11 @@ class ExprEmitter {
   using ExprCache = folly::F14FastMap<ExprCP, velox::core::TypedExprPtr>;
 
   // Lowers 'expr', reusing 'cache' for already-lowered subexpressions.
-  velox::core::TypedExprPtr
-  toTypedExpr(ExprCP expr, ColumnNaming naming, ExprCache& cache);
+  velox::core::TypedExprPtr toTypedExpr(
+      ExprCP expr,
+      ColumnNaming naming,
+      ExprCache& cache,
+      const ReplacementMap& replacements);
 
   // Lowers a `Call`. 'args' are the already-lowered arguments.
   velox::core::TypedExprPtr callToTypedExpr(

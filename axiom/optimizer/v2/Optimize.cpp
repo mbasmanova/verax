@@ -192,6 +192,7 @@ NodeCP Optimizer::planTo(
   node = PlanPhysicalPass::run(
       node,
       builder_,
+      evaluator_,
       session_.options(),
       planOptions_.maxRemotePartitions,
       planOptions_.maxLocalPartitions);

@@ -123,6 +123,16 @@ std::vector<ConfigProperty> buildProperties(
           "internal exchanges use CompactRow serialization. Must be >= 1.",
       },
       {
+          std::string(OptimizerOptions::kMaxDuplicatedLiteralBytes),
+          ConfigPropertyType::kString,
+          std::string(OptimizerOptions::kMaxDuplicatedLiteralBytesDefault),
+          "Maximum estimated size of redundant literal copies in a Project. "
+          "When this limit is exceeded, v2 extracts the literal into a lower "
+          "Project and reuses the resulting column. This avoids duplicating "
+          "constants in serialized plans and during expression evaluation. "
+          "Specify as a capacity string.",
+      },
+      {
           std::string(OptimizerOptions::kParallelProjectWidth),
           ConfigPropertyType::kInteger,
           std::to_string(OptimizerOptions::kParallelProjectWidthDefault),
@@ -227,7 +237,8 @@ std::string OptimizerOptions::normalize(
     auto threshold = std::stoi(std::string(value));
     VELOX_USER_CHECK_GE(
         threshold, 1, "greedy_join_threshold must be >= 1: {}", value);
-  } else if (name == kBroadcastSizeLimit) {
+  } else if (
+      name == kBroadcastSizeLimit || name == kMaxDuplicatedLiteralBytes) {
     // Throws if 'value' is not a valid capacity string (e.g. "100MB").
     velox::config::toCapacity(
         std::string(value), velox::config::CapacityUnit::BYTE);
@@ -292,6 +303,7 @@ OptimizerOptions OptimizerOptions::from(
   setPositiveInt(
       kMinColumnarChannelsForCompactRow,
       options.minColumnarChannelsForCompactRow);
+  setCapacity(kMaxDuplicatedLiteralBytes, options.maxDuplicatedLiteralBytes);
   setInt(kParallelProjectWidth, options.parallelProjectWidth);
   setPositiveInt(kMaxPlanObjects, options.maxPlanObjects);
   setInt(kGreedyJoinThreshold, options.greedyJoinThreshold);

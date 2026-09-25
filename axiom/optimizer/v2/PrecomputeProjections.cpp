@@ -17,13 +17,13 @@
 #include "axiom/optimizer/v2/PrecomputeProjections.h"
 
 #include "axiom/optimizer/v2/ExprFactory.h"
+#include "axiom/optimizer/v2/ExprSimplifier.h"
 
 namespace facebook::axiom::optimizer::v2 {
 
-NodeCP PrecomputeProjections::makeProject(
-    NodeCP input,
-    ExprVector exprs,
-    ColumnVector outColumns,
+void PrecomputeProjections::inlineInputProject(
+    NodeCP& input,
+    ExprVector& exprs,
     Builder& builder) {
   if (input->is(NodeType::kProject)) {
     const auto* child = input->as<Project>();
@@ -45,6 +45,18 @@ NodeCP PrecomputeProjections::makeProject(
       input = child->input();
     }
   }
+}
+
+NodeCP PrecomputeProjections::makeProject(
+    NodeCP input,
+    ExprVector exprs,
+    ColumnVector outColumns,
+    Builder& builder,
+    ExprSimplifier& simplifier) {
+  inlineInputProject(input, exprs, builder);
+  for (ExprCP& expr : exprs) {
+    expr = simplifier.simplify(expr);
+  }
   return builder.make<Project>(
       {input, std::move(exprs), std::move(outColumns)});
 }
@@ -53,11 +65,12 @@ std::pair<NodeCP, ExprVector> PrecomputeProjections::materializeKeys(
     NodeCP input,
     const ExprVector& keys,
     Builder& builder,
+    ExprSimplifier& simplifier,
     const ColumnVector& aliases) {
   if (!aliases.empty()) {
     VELOX_CHECK_EQ(aliases.size(), keys.size());
   }
-  PrecomputeProjections precompute{input, builder};
+  PrecomputeProjections precompute{input, builder, simplifier};
   ExprVector columnKeys;
   columnKeys.reserve(keys.size());
   for (size_t i = 0; i < keys.size(); ++i) {
@@ -70,8 +83,12 @@ std::pair<NodeCP, ExprVector> PrecomputeProjections::materializeKeys(
 PrecomputeProjections::PrecomputeProjections(
     NodeCP input,
     Builder& builder,
+    ExprSimplifier& simplifier,
     bool projectAllInputs)
-    : input_(input), builder_(builder), projectAllInputs_(projectAllInputs) {
+    : input_(input),
+      builder_(builder),
+      simplifier_(simplifier),
+      projectAllInputs_(projectAllInputs) {
   if (!projectAllInputs_) {
     return;
   }
@@ -145,7 +162,11 @@ NodeCP PrecomputeProjections::node() && {
     return input_;
   }
   return PrecomputeProjections::makeProject(
-      input_, std::move(outExprs_), std::move(outColumns_), builder_);
+      input_,
+      std::move(outExprs_),
+      std::move(outColumns_),
+      builder_,
+      simplifier_);
 }
 
 void PrecomputeProjections::addToProject(ExprCP expr, ColumnCP column) {

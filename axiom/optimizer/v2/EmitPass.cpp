@@ -70,9 +70,15 @@ velox::RowVectorPtr selectChannels(
       full->pool(), rowType, full->nulls(), full->size(), std::move(children));
 }
 
-velox::core::FieldAccessTypedExprPtr toFieldAccess(ColumnCP column) {
+velox::core::FieldAccessTypedExprPtr toFieldAccess(
+    const velox::TypePtr& type,
+    std::string_view name) {
   return std::make_shared<velox::core::FieldAccessTypedExpr>(
-      toTypePtr(column->value().type), column->outputName());
+      type, std::string{name});
+}
+
+velox::core::FieldAccessTypedExprPtr toFieldAccess(ColumnCP column) {
+  return toFieldAccess(toTypePtr(column->value().type), column->outputName());
 }
 
 // Emits 'expr' as a `FieldAccessTypedExpr`, failing with a role-specific
@@ -379,6 +385,15 @@ class Emitter {
       velox::core::PlanNodePtr input,
       const Project& project,
       const ColumnVector& outputColumns,
+      const std::vector<std::string>& outputNames);
+
+  // Emits a Project, materializing large shared literals below it. Current
+  // Velox plan serialization expands shared expression nodes, and expression
+  // evaluation does not reuse constants across Project expressions. This lower
+  // Project can go away when both preserve that sharing.
+  velox::core::PlanNodePtr emitProjectOver(
+      velox::core::PlanNodePtr input,
+      const ExprVector& exprs,
       const std::vector<std::string>& outputNames);
 
   // Returns 'input's 'columns' projected as 'outputNames', reusing 'input'
@@ -689,14 +704,162 @@ velox::core::PlanNodePtr Emitter::emitFilter(const Filter& filter) {
       nextId(), exprEmitter_.makeAnd(filter.predicates()), std::move(input));
 }
 
-velox::core::PlanNodePtr Emitter::emitProject(const Project& project) {
-  velox::core::PlanNodePtr input = emit(project.input());
-  auto typedExprs = exprEmitter_.toTypedExprs(project.exprs());
+namespace {
+
+template <typename Visitor>
+void forEachExprChild(ExprCP expr, Visitor&& visitor) {
+  if (expr->is(PlanType::kCallExpr)) {
+    for (ExprCP arg : expr->as<Call>()->args()) {
+      visitor(arg);
+    }
+  } else if (expr->is(PlanType::kLambdaExpr)) {
+    visitor(expr->as<Lambda>()->body());
+  }
+}
+
+void addSaturated(uint64_t increment, uint64_t& value) {
+  const uint64_t max = std::numeric_limits<uint64_t>::max();
+  value = increment > max - value ? max : value + increment;
+}
+
+// Counts serialized occurrences by propagating root-to-node path counts
+// through the expression DAG in topological order.
+template <typename ToLiteral>
+std::vector<std::pair<LiteralCP, uint64_t>> countLiteralReferences(
+    const ExprVector& exprs,
+    ToLiteral&& toLiteral) {
+  folly::F14FastSet<ExprCP> visited;
+  std::vector<ExprCP> postorder;
+  std::vector<LiteralCP> literals;
+  std::function<void(ExprCP)> visit = [&](ExprCP expr) {
+    if (!visited.insert(expr).second) {
+      return;
+    }
+    if (LiteralCP literal = toLiteral(expr)) {
+      literals.push_back(literal);
+    }
+    forEachExprChild(expr, visit);
+    postorder.push_back(expr);
+  };
+  for (ExprCP expr : exprs) {
+    visit(expr);
+  }
+
+  folly::F14FastMap<ExprCP, uint64_t> references;
+  for (ExprCP expr : exprs) {
+    addSaturated(1, references[expr]);
+  }
+  for (auto it = postorder.rbegin(); it != postorder.rend(); ++it) {
+    const uint64_t numReferences = references.at(*it);
+    forEachExprChild(*it, [&](ExprCP child) {
+      addSaturated(numReferences, references[child]);
+    });
+  }
+
+  std::vector<std::pair<LiteralCP, uint64_t>> result;
+  result.reserve(literals.size());
+  for (LiteralCP literal : literals) {
+    result.emplace_back(literal, references.at(literal));
+  }
+  return result;
+}
+
+struct SharedLiteral {
+  LiteralCP literal;
+  velox::core::TypedExprPtr typedExpr;
+};
+
+// Returns an emitted literal when its duplicate copies exceed the configured
+// limit. Returns nullopt otherwise.
+std::optional<SharedLiteral> tryMakeSharedLiteral(
+    LiteralCP literal,
+    uint64_t numReferences,
+    uint64_t maxDuplicatedBytes,
+    ExprEmitter& exprEmitter) {
+  if (numReferences < 2) {
+    return std::nullopt;
+  }
+
+  const uint64_t numDuplicateCopies = numReferences - 1;
+  const uint64_t maxLiteralBytes = maxDuplicatedBytes / numDuplicateCopies;
+  if (literal->literal().estimateValueSize() <= maxLiteralBytes) {
+    return std::nullopt;
+  }
+  return SharedLiteral{literal, exprEmitter.toTypedExpr(literal)};
+}
+
+std::vector<SharedLiteral> findSharedLiterals(
+    const ExprVector& exprs,
+    uint64_t maxDuplicatedBytes,
+    ExprEmitter& exprEmitter) {
+  std::vector<SharedLiteral> literals;
+  for (const auto& [literal, numReferences] :
+       countLiteralReferences(exprs, [](ExprCP expr) {
+         if (expr->is(PlanType::kLiteralExpr) &&
+             !expr->value().type->isFixedWidth()) {
+           return expr->as<Literal>();
+         }
+         return LiteralCP{nullptr};
+       })) {
+    if (auto sharedLiteral = tryMakeSharedLiteral(
+            literal, numReferences, maxDuplicatedBytes, exprEmitter)) {
+      literals.push_back(std::move(*sharedLiteral));
+    }
+  }
+  return literals;
+}
+
+} // namespace
+
+velox::core::PlanNodePtr Emitter::emitProjectOver(
+    velox::core::PlanNodePtr input,
+    const ExprVector& exprs,
+    const std::vector<std::string>& outputNames) {
+  auto sharedLiterals = findSharedLiterals(
+      exprs, session_.options().maxDuplicatedLiteralBytes, exprEmitter_);
+
+  if (sharedLiterals.empty()) {
+    return std::make_shared<velox::core::ProjectNode>(
+        nextId(),
+        outputNames,
+        exprEmitter_.toTypedExprs(exprs),
+        std::move(input));
+  }
+
+  const auto& inputType = input->outputType();
+  std::vector<std::string> literalNames = inputType->names();
+  std::vector<velox::core::TypedExprPtr> literalExprs;
+  literalExprs.reserve(inputType->size() + sharedLiterals.size());
+  for (size_t i = 0; i < inputType->size(); ++i) {
+    literalExprs.push_back(
+        toFieldAccess(inputType->childAt(i), inputType->nameOf(i)));
+  }
+
+  ExprEmitter::ReplacementMap replacements;
+  for (auto& sharedLiteral : sharedLiterals) {
+    std::string name{queryCtx()->newName("__shared_literal_")};
+    literalNames.push_back(name);
+    literalExprs.push_back(std::move(sharedLiteral.typedExpr));
+    replacements.emplace(
+        sharedLiteral.literal,
+        toFieldAccess(toTypePtr(sharedLiteral.literal->value().type), name));
+  }
+
+  input = std::make_shared<velox::core::ProjectNode>(
+      nextId(),
+      std::move(literalNames),
+      std::move(literalExprs),
+      std::move(input));
   return std::make_shared<velox::core::ProjectNode>(
       nextId(),
-      namesOf(project.outputColumns()),
-      std::move(typedExprs),
+      outputNames,
+      exprEmitter_.toTypedExprs(exprs, replacements),
       std::move(input));
+}
+
+velox::core::PlanNodePtr Emitter::emitProject(const Project& project) {
+  return emitProjectOver(
+      emit(project.input()), project.exprs(), namesOf(project.outputColumns()));
 }
 
 velox::core::PlanNodePtr Emitter::emitRootProjectOver(
@@ -706,8 +869,8 @@ velox::core::PlanNodePtr Emitter::emitRootProjectOver(
     const std::vector<std::string>& outputNames) {
   const auto& projectColumns = project.outputColumns();
   const auto& projectExprs = project.exprs();
-  std::vector<velox::core::TypedExprPtr> typedExprs;
-  typedExprs.reserve(outputColumns.size());
+  ExprVector exprs;
+  exprs.reserve(outputColumns.size());
   for (ColumnCP column : outputColumns) {
     const auto it =
         std::find(projectColumns.begin(), projectColumns.end(), column);
@@ -716,13 +879,9 @@ velox::core::PlanNodePtr Emitter::emitRootProjectOver(
         "Output column not produced by root Project: {}",
         column->outputName());
     const size_t index = std::distance(projectColumns.begin(), it);
-    typedExprs.push_back(exprEmitter_.toTypedExpr(projectExprs[index]));
+    exprs.push_back(projectExprs[index]);
   }
-  return std::make_shared<velox::core::ProjectNode>(
-      nextId(),
-      std::vector<std::string>{outputNames},
-      std::move(typedExprs),
-      std::move(input));
+  return emitProjectOver(std::move(input), exprs, outputNames);
 }
 
 velox::core::PlanNodePtr Emitter::emitRootProject(

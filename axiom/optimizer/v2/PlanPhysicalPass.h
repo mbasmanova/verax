@@ -20,6 +20,10 @@
 #include "axiom/optimizer/v2/Builder.h"
 #include "axiom/optimizer/v2/Node.h"
 
+namespace facebook::velox::core {
+class ExpressionEvaluator;
+} // namespace facebook::velox::core
+
 namespace facebook::axiom::optimizer::v2 {
 
 /// Turns the logical tree into a distributed physical plan.
@@ -49,9 +53,11 @@ class PlanPhysicalPass {
   /// exchange to bring each group to one driver, so it two-stages (partial →
   /// local exchange → final). `numWorkers` and `numDrivers` are per-plan
   /// properties, not `OptimizerOptions` fields, so they are passed separately.
+  /// `evaluator` folds constants exposed while projection expressions merge.
   static NodeCP run(
       NodeCP root,
       Builder& builder,
+      velox::core::ExpressionEvaluator& evaluator,
       const OptimizerOptions& options,
       int32_t numWorkers,
       int32_t numDrivers);
