@@ -18,15 +18,13 @@
 #include <fmt/format.h>
 #include <gtest/gtest.h>
 #include <functional>
-#include "axiom/connectors/ConnectorMetadataRegistry.h"
-#include "axiom/connectors/tests/TestConnector.h"
+#include <type_traits>
 #include "axiom/optimizer/Optimization.h"
 #include "axiom/optimizer/OptimizerOptions.h"
 #include "axiom/optimizer/QueryGraph.h"
 #include "axiom/optimizer/StatsFilterSelectivityEstimator.h"
-#include "axiom/optimizer/tests/HiveQueriesTestBase.h"
+#include "axiom/optimizer/tests/QueryTestBase.h"
 #include "velox/common/base/tests/GTestUtils.h"
-#include "velox/exec/tests/utils/HiveConnectorTestBase.h"
 #include "velox/expression/ExprToSubfieldFilter.h"
 #include "velox/type/Filter.h"
 
@@ -42,15 +40,22 @@ namespace {
 // floating-point arithmetic and statistical approximations.
 constexpr double kTolerance = 0.001;
 
-// Specifies expected filter results for a SQL condition on an integer column.
-// Optional fields are only verified when set.
+// Describes a SQL filter, its optional pushed-down representation and expected
+// estimate.
+template <typename T>
 struct FilterTestCase {
+  std::string name;
   std::string condition;
+  velox::common::FilterPtr pushedDownFilter;
   std::optional<double> expectedSelectivity;
-  std::optional<int64_t> expectedMin;
-  std::optional<int64_t> expectedMax;
+  std::optional<T> expectedMin;
+  std::optional<T> expectedMax;
   std::optional<double> expectedCardinality;
+  double cardinalityTolerance{kTolerance};
 };
+
+using IntegerFilterTestCase = FilterTestCase<int64_t>;
+using StringFilterTestCase = FilterTestCase<std::string>;
 
 template <typename T>
 Value makeValue(float cardinality, T min, T max, float nullFraction = 0.0) {
@@ -80,18 +85,10 @@ Selectivity columnComparisonSelectivity(
   return *selectivity;
 }
 
-class FiltersTest : public test::HiveQueriesTestBase {
+class FiltersTest : public test::QueryTestBase {
  protected:
-  static void SetUpTestCase() {
-    HiveQueriesTestBase::SetUpTestCase();
-    createTpchTables(
-        {velox::tpch::Table::TBL_NATION,
-         velox::tpch::Table::TBL_LINEITEM,
-         velox::tpch::Table::TBL_ORDERS});
-  }
-
-  static void TearDownTestCase() {
-    HiveQueriesTestBase::TearDownTestCase();
+  void configureTestConnector() override {
+    testConnector_->addTpchTables(0.1);
   }
 
   // Runs the callback with a QueryGraphContext set up.
@@ -112,7 +109,7 @@ class FiltersTest : public test::HiveQueriesTestBase {
   void verifyQueryGraph(
       std::string_view sql,
       const std::function<void(DerivedTableCP)>& callback,
-      const std::string& connectorId = exec::test::kHiveConnectorId) {
+      const std::string& connectorId = kTestConnectorId) {
     auto logicalPlan = parseSelect(sql, connectorId);
 
     verifyOptimization(*logicalPlan, [&](Optimization& optimization) {
@@ -237,76 +234,145 @@ class FiltersTest : public test::HiveQueriesTestBase {
     }
   }
 
-  // Parses SQL, extracts filters for 'tableName', computes selectivity with
-  // constraint updates, and invokes 'verify' with the selectivity and updated
-  // constraint for the filtered column (left side of the first filter). Also
-  // runs the TypedExpr estimator differential check on the same filters.
+  // Parses SQL, estimates its filters and runs the TypedExpr estimator
+  // differential check. A three-argument verifier also receives the original
+  // value of the filter's sole input column.
+  template <typename Verify>
   void verifyFilter(
       std::string_view sql,
       std::string_view tableName,
-      const std::function<void(const Selectivity&, const Value&)>& verify) {
-    auto logicalPlan = parseSelect(sql, exec::test::kHiveConnectorId);
+      Verify&& verify,
+      std::string_view connectorId = kTestConnectorId) {
+    constexpr bool kNeedsInputValue = std::
+        is_invocable_v<Verify, const Selectivity&, const Value&, const Value&>;
+    static_assert(
+        kNeedsInputValue ||
+        std::is_invocable_v<Verify, const Selectivity&, const Value&>);
+
+    auto logicalPlan = parseSelect(sql, std::string{connectorId});
     verifyOptimization(*logicalPlan, [&](Optimization& optimization) {
       auto allFilters = getAllFilters(optimization.rootDt(), tableName);
       ASSERT_FALSE(allFilters.empty());
 
       auto constraints = makeSchemaConstraints(allFilters);
+      int32_t constraintId;
+      std::optional<Value> inputValue;
+      if constexpr (kNeedsInputValue) {
+        const auto& columns = allFilters[0]->columns();
+        ASSERT_EQ(columns.size(), 1);
+        constraintId = columns.onlyObject<Column>()->id();
+
+        auto it = constraints.find(constraintId);
+        ASSERT_NE(it, constraints.end());
+        inputValue = it->second;
+      } else {
+        auto* call = allFilters[0]->as<Call>();
+        constraintId = call->args()[0]->id();
+      }
+
       auto selectivity = conjunctsSelectivity(constraints, allFilters, true);
       ASSERT_TRUE(selectivity.has_value());
 
-      auto* call = allFilters[0]->as<Call>();
-      auto columnId = call->args()[0]->id();
-
-      auto it = constraints.find(columnId);
+      auto it = constraints.find(constraintId);
       ASSERT_NE(it, constraints.end());
-      verify(*selectivity, it->second);
+      if constexpr (kNeedsInputValue) {
+        verify(*selectivity, it->second, *inputValue);
+      } else {
+        verify(*selectivity, it->second);
+      }
 
       verifyEstimatorAgrees(
           optimization, allFilters, *selectivity, constraints);
     });
   }
 
-  // Runs a list of FilterTestCases against 'tableName', verifying whichever
-  // expected fields are set.
+  template <typename T>
+  static void verifyFilterEstimate(
+      const FilterTestCase<T>& testCase,
+      double selectivity,
+      const Value& constraint) {
+    if (testCase.expectedSelectivity.has_value()) {
+      EXPECT_NEAR(selectivity, *testCase.expectedSelectivity, kTolerance);
+    }
+
+    if (testCase.expectedMin.has_value()) {
+      ASSERT_NE(constraint.min, nullptr);
+      EXPECT_EQ(constraint.min->value<T>(), *testCase.expectedMin);
+    }
+
+    if (testCase.expectedMax.has_value()) {
+      ASSERT_NE(constraint.max, nullptr);
+      EXPECT_EQ(constraint.max->value<T>(), *testCase.expectedMax);
+    }
+
+    if (testCase.expectedCardinality.has_value()) {
+      EXPECT_NEAR(
+          constraint.cardinality.value(),
+          *testCase.expectedCardinality,
+          testCase.cardinalityTolerance);
+    }
+  }
+
+  // Verifies each SQL condition and its optional pushed-down representation.
+  template <typename T>
   void verifyFilterTestCases(
       std::string_view tableName,
-      const std::vector<FilterTestCase>& testCases) {
+      const std::vector<FilterTestCase<T>>& testCases,
+      std::string_view connectorId = kTestConnectorId) {
     for (const auto& testCase : testCases) {
-      SCOPED_TRACE("Testing condition: " + testCase.condition);
-
+      SCOPED_TRACE(
+          testCase.name.empty()
+              ? testCase.condition
+              : fmt::format("{}: {}", testCase.name, testCase.condition));
       auto sql = fmt::format(
           "SELECT * FROM {} WHERE {}", tableName, testCase.condition);
+      auto verifySqlEstimate = [&](const Selectivity& selectivity,
+                                   const Value& constraint) {
+        SCOPED_TRACE("SQL expression");
+        verifyFilterEstimate(testCase, selectivity.trueFraction, constraint);
+      };
+
+      if (testCase.pushedDownFilter == nullptr) {
+        verifyFilter(sql, tableName, verifySqlEstimate, connectorId);
+        continue;
+      }
+
       verifyFilter(
           sql,
           tableName,
-          [&](const Selectivity& selectivity, const Value& constraint) {
-            if (testCase.expectedSelectivity.has_value()) {
-              EXPECT_NEAR(
-                  selectivity.trueFraction,
-                  *testCase.expectedSelectivity,
-                  kTolerance);
-            }
+          [&](const Selectivity& selectivity,
+              const Value& constraint,
+              const Value& inputValue) {
+            verifySqlEstimate(selectivity, constraint);
 
-            if (testCase.expectedMin.has_value()) {
-              ASSERT_NE(constraint.min, nullptr);
-              EXPECT_EQ(
-                  constraint.min->value<int64_t>(), *testCase.expectedMin);
-            }
-
-            if (testCase.expectedMax.has_value()) {
-              ASSERT_NE(constraint.max, nullptr);
-              EXPECT_EQ(
-                  constraint.max->value<int64_t>(), *testCase.expectedMax);
-            }
-
-            if (testCase.expectedCardinality.has_value()) {
-              EXPECT_NEAR(
-                  constraint.cardinality.value(),
-                  *testCase.expectedCardinality,
-                  kTolerance);
-            }
-          });
+            SCOPED_TRACE("Pushed-down filter");
+            verifyPushedDownFilter(
+                inputValue,
+                *testCase.pushedDownFilter,
+                [&](double filterSelectivity, const Value& filterConstraint) {
+                  verifyFilterEstimate(
+                      testCase, filterSelectivity, filterConstraint);
+                });
+          },
+          connectorId);
     }
+  }
+
+  void verifyPushedDownFilter(
+      const Value& inputValue,
+      const velox::common::Filter& filter,
+      const std::function<void(double, const Value&)>& verify) {
+    folly::F14FastMap<std::string, const velox::common::Filter*> filters{
+        {"c", &filter}};
+    folly::F14FastMap<std::string, connector::TypedColumnStatistics>
+        columnStats{{"c", {inputValue.type, toColumnStatistics(inputValue)}}};
+
+    const auto estimate =
+        StatsFilterSelectivityEstimator{}.estimate(filters, columnStats);
+    verify(
+        estimate.selectivity,
+        Value::fromColumnStatistics(
+            inputValue.type, estimate.columnStats.at("c")));
   }
 };
 
@@ -600,8 +666,7 @@ TEST_F(FiltersTest, rangeSelectivity) {
   verifyFilter(
       "SELECT l_shipdate, l_partkey, l_suppkey "
       "FROM lineitem "
-      // TODO Replace with BETWEEN once it is supported.
-      "WHERE l_shipdate >= CAST('1995-01-01' AS date) AND l_shipdate <= CAST('1995-06-01' AS date) "
+      "WHERE l_shipdate BETWEEN CAST('1995-01-01' AS date) AND CAST('1995-06-01' AS date) "
       "   AND l_partkey < 10000 AND l_suppkey > 10",
       "lineitem",
       [](const Selectivity& selectivity, const Value&) {
@@ -613,57 +678,14 @@ TEST_F(FiltersTest, rangeSelectivity) {
   // cardinality=25). Ranges [2, 15] AND [5, 20] should combine to [5, 15].
   verifyFilterTestCases(
       "nation",
-      {
+      std::vector<IntegerFilterTestCase>{
           // 11 values in [5, 15] out of 25.
-          {.condition =
-               // TODO Replace with BETWEEN once it is supported.
-           "n_nationkey >= 2 AND n_nationkey <= 15 "
-           "AND n_nationkey >= 5 AND n_nationkey <= 20",
+          {.condition = "n_nationkey BETWEEN 2 AND 15 "
+                        "AND n_nationkey BETWEEN 5 AND 20",
            .expectedSelectivity = 11.0 / 25,
            .expectedMin = 5,
            .expectedMax = 15},
       });
-}
-
-TEST_F(FiltersTest, rangeCardinalityMaxMin) {
-  static constexpr auto kTestConnectorId = "test_range_overflow";
-
-  auto testConnector =
-      std::make_shared<connector::TestConnector>(kTestConnectorId);
-  velox::connector::registerConnector(testConnector);
-  connector::ConnectorMetadataRegistry::global().insert(
-      kTestConnectorId, testConnector->metadata());
-
-  SCOPE_EXIT {
-    connector::ConnectorMetadataRegistry::global().erase(kTestConnectorId);
-    velox::connector::unregisterConnector(kTestConnectorId);
-  };
-
-  testConnector->addTable("t_overflow", ROW({"x"}, BIGINT()));
-  testConnector->setStats(
-      "t_overflow",
-      10'000,
-      {{"x",
-        {.nonNull = true,
-         .min = velox::Variant::create<int64_t>(
-             std::numeric_limits<int64_t>::min()),
-         .max = velox::Variant::create<int64_t>(
-             std::numeric_limits<int64_t>::max()),
-         .numDistinct = 1000}}});
-
-  verifyQueryGraph(
-      "SELECT * FROM t_overflow WHERE x > 0",
-      [&](DerivedTableCP rootDt) {
-        auto allFilters = getAllFilters(rootDt, "t_overflow");
-        ASSERT_FALSE(allFilters.empty());
-
-        auto constraints = makeSchemaConstraints(allFilters);
-        auto selectivity = conjunctsSelectivity(constraints, allFilters, true);
-        ASSERT_TRUE(selectivity.has_value());
-
-        EXPECT_NEAR(selectivity->trueFraction, 0.5, 0.1);
-      },
-      kTestConnectorId);
 }
 
 // A stats bound whose kind disagrees with the column type is a connector
@@ -684,131 +706,230 @@ TEST_F(FiltersTest, statsBoundKindMismatchRejected) {
   });
 }
 
-// A VARCHAR column with no min/max statistics and a range filter estimates a
-// selectivity in [0, 1] rather than failing.
-TEST_F(FiltersTest, commonFilterVarcharColumnWithoutBounds) {
-  withContext([&]() {
-    connector::ColumnStatistics stats;
-    stats.nonNull = true;
-    stats.numDistinct = 100;
+TEST_F(FiltersTest, equalitySelectivity) {
+  // n_nationkey is BIGINT with min=0, max=24, cardinality=25.
+  // 1 value out of 25.
+  verifyFilterTestCases(
+      "nation",
+      std::vector<IntegerFilterTestCase>{
+          {
+              .condition = "n_nationkey = 10",
+              .pushedDownFilter = velox::exec::equal(10),
+              .expectedSelectivity = 1.0 / 25,
+              .expectedMin = 10,
+              .expectedMax = 10,
+              .expectedCardinality = 1.0,
+          },
+          {
+              .condition = "n_nationkey = 0",
+              .pushedDownFilter = velox::exec::equal(0),
+              .expectedSelectivity = 1.0 / 25,
+              .expectedMin = 0,
+              .expectedMax = 0,
+              .expectedCardinality = 1.0,
+          },
+          {
+              .condition = "n_nationkey = 24",
+              .pushedDownFilter = velox::exec::equal(24),
+              .expectedSelectivity = 1.0 / 25,
+              .expectedMin = 24,
+              .expectedMax = 24,
+              .expectedCardinality = 1.0,
+          },
+      });
+}
 
-    auto filter = velox::exec::between("a", "z");
+TEST_F(FiltersTest, inListSelectivity) {
+  // n_nationkey is BIGINT with min=0, max=24, cardinality=25.
+  verifyFilterTestCases(
+      "nation",
+      std::vector<IntegerFilterTestCase>{
+          // 3 values out of 25.
+          {
+              .condition = "n_nationkey IN (1, 2, 3)",
+              .pushedDownFilter =
+                  velox::common::createBigintValues({1, 2, 3}, false),
+              .expectedSelectivity = 3.0 / 25,
+              .expectedMin = 1,
+              .expectedMax = 3,
+          },
+          // 4 values out of 25.
+          {
+              .condition = "n_nationkey IN (5, 10, 15, 20)",
+              .pushedDownFilter =
+                  velox::common::createBigintValues({5, 10, 15, 20}, false),
+              .expectedSelectivity = 4.0 / 25,
+              .expectedMin = 5,
+              .expectedMax = 20,
+          },
+      });
+}
 
-    folly::F14FastMap<std::string, const velox::common::Filter*> filters{
-        {"c", filter.get()}};
-    folly::F14FastMap<std::string, connector::TypedColumnStatistics>
-        columnStats{{"c", {toType(VARCHAR()), stats}}};
+TEST_F(FiltersTest, integerFilterEdgeCases) {
+  constexpr int64_t kMin = 10;
+  // Integers above 2^53 cannot all be represented exactly as double.
+  constexpr int64_t kMax = (int64_t{1} << 53) + 3;
+  constexpr int64_t kMidpoint = kMin + (kMax - kMin) / 2;
+  const connector::ColumnStatistics sparseStats{
+      .nonNull = true,
+      .min = velox::Variant::create<int64_t>(kMin),
+      .max = velox::Variant::create<int64_t>(kMax),
+      .numDistinct = 6};
+  const connector::ColumnStatistics fullRangeStats{
+      .nonNull = true,
+      .min =
+          velox::Variant::create<int64_t>(std::numeric_limits<int64_t>::min()),
+      .max =
+          velox::Variant::create<int64_t>(std::numeric_limits<int64_t>::max()),
+      .numDistinct = 1'000};
 
-    StatsFilterSelectivityEstimator estimator;
-    auto estimate = estimator.estimate(filters, columnStats);
-    EXPECT_GE(estimate.selectivity, 0.0);
-    EXPECT_LE(estimate.selectivity, 1.0);
-  });
+  testConnector_->addTable("t", ROW({"c", "d"}, BIGINT()))
+      ->setStats(10'000, {{"c", sparseStats}, {"d", fullRangeStats}});
+
+  verifyFilterTestCases(
+      "t",
+      std::vector<IntegerFilterTestCase>{
+          {
+              .condition = fmt::format("c = {}", kMax),
+              .pushedDownFilter = velox::exec::equal(kMax),
+              .expectedSelectivity = 1.0 / 6,
+              .expectedMin = kMax,
+              .expectedMax = kMax,
+              .expectedCardinality = 1.0,
+          },
+          {
+              .condition = fmt::format("c IN ({}, 100, {})", kMin, kMax + 1),
+              .pushedDownFilter = velox::common::createBigintValues(
+                  {kMin, 100, kMax + 1}, false),
+              .expectedSelectivity = 2.0 / 6,
+              .expectedMin = kMin,
+              .expectedMax = 100,
+              .expectedCardinality = 2.0,
+          },
+          {
+              .condition = fmt::format("c = {}", kMax + 1),
+              .pushedDownFilter = velox::exec::equal(kMax + 1),
+              .expectedSelectivity = Selectivity::kLikelyZero,
+          },
+          {
+              .condition = fmt::format("c BETWEEN {} AND {}", kMin, kMidpoint),
+              .pushedDownFilter = velox::exec::between(kMin, kMidpoint),
+              .expectedSelectivity = 0.5,
+              .expectedMin = kMin,
+              .expectedMax = kMidpoint,
+              .expectedCardinality = 3.0,
+          },
+          {
+              .condition = "d > 0",
+              .pushedDownFilter = velox::exec::greaterThan(0),
+              .expectedSelectivity = 0.5,
+              .expectedMin = 1,
+              .expectedMax = std::numeric_limits<int64_t>::max(),
+              .expectedCardinality = 500,
+          },
+      },
+      kTestConnectorId);
 }
 
 TEST_F(FiltersTest, strictInequalityIntegerBounds) {
   // n_nationkey is BIGINT with min=0, max=24, cardinality=25.
   verifyFilterTestCases(
       "nation",
-      {
+      std::vector<IntegerFilterTestCase>{
           // Strict lower and upper bounds are adjusted for integers.
           {.condition = "n_nationkey > 2 AND n_nationkey < 22",
+           .pushedDownFilter = velox::exec::between(3, 21),
            .expectedMin = 3,
            .expectedMax = 21},
           // Non-strict bounds are not adjusted.
           {.condition = "n_nationkey >= 2 AND n_nationkey <= 22",
+           .pushedDownFilter = velox::exec::between(2, 22),
            .expectedMin = 2,
            .expectedMax = 22},
           // Mixed: strict lower, non-strict upper.
           {.condition = "n_nationkey > 2 AND n_nationkey <= 15",
+           .pushedDownFilter = velox::exec::between(3, 15),
            .expectedMin = 3,
            .expectedMax = 15},
           // Mixed: non-strict lower, strict upper.
           {.condition = "n_nationkey >= 5 AND n_nationkey < 20",
+           .pushedDownFilter = velox::exec::between(5, 19),
            .expectedMin = 5,
            .expectedMax = 19},
           // Only strict lower bound.
           {.condition = "n_nationkey > 10",
+           .pushedDownFilter = velox::exec::greaterThan(10),
            .expectedMin = 11,
            .expectedMax = 24},
           // Only strict upper bound.
-          {.condition = "n_nationkey < 10", .expectedMin = 0, .expectedMax = 9},
+          {.condition = "n_nationkey < 10",
+           .pushedDownFilter = velox::exec::lessThan(10),
+           .expectedMin = 0,
+           .expectedMax = 9},
           // Strict lower bound at column minimum (> 0 on column with min=0).
-          {.condition = "n_nationkey > 0", .expectedMin = 1, .expectedMax = 24},
+          {.condition = "n_nationkey > 0",
+           .pushedDownFilter = velox::exec::greaterThan(0),
+           .expectedMin = 1,
+           .expectedMax = 24},
       });
 }
 
-TEST_F(FiltersTest, strictInequalityStringBounds) {
-  struct StringFilterTestCase {
-    std::string condition;
-    double expectedSelectivity;
-    std::string expectedMin;
-    std::string expectedMax;
-    float expectedCardinality;
-  };
-
-  // Strict inequalities on VARCHAR do not adjust bounds.
-  verifyFilter(
-      "SELECT * FROM nation WHERE n_name > 'B' AND n_name < 'P'",
-      "nation",
-      [](const Selectivity& selectivity, const Value& constraint) {
-        EXPECT_GE(selectivity.trueFraction, 0.0);
-        EXPECT_LE(selectivity.trueFraction, 1.0);
-
-        ASSERT_NE(constraint.min, nullptr);
-        EXPECT_EQ(constraint.min->value<std::string>(), "B");
-
-        ASSERT_NE(constraint.max, nullptr);
-        EXPECT_EQ(constraint.max->value<std::string>(), "P");
-      });
-
-  // String range selectivity with VARCHAR bounds. n_name has 25 values with
-  // 22 distinct first characters (first-character approximation).
+TEST_F(FiltersTest, varcharRangeSelectivity) {
+  // String range selectivity uses a first-character approximation. n_name
+  // spans 22 characters from A through V.
   std::vector<StringFilterTestCase> testCases = {
+      // Strict inequalities do not adjust string bounds.
+      {
+          .name = "exclusive range",
+          .condition = "n_name > 'B' AND n_name < 'P'",
+          .pushedDownFilter = velox::exec::betweenExclusive("B", "P"),
+          .expectedMin = "B",
+          .expectedMax = "P",
+      },
       // Different first characters: 6 letters in ['B', 'G'] out of 22.
       {
-          "n_name >= 'B' AND n_name <= 'P' AND n_name >= 'A' AND n_name <= 'G'",
-          6.0 / 22,
-          "B",
-          "G",
-          6.8f,
+          .name = "overlapping ranges",
+          .condition =
+              "n_name >= 'B' AND n_name <= 'P' AND n_name >= 'A' AND n_name <= 'G'",
+          .pushedDownFilter = velox::exec::between("B", "G"),
+          .expectedSelectivity = 6.0 / 22,
+          .expectedMin = "B",
+          .expectedMax = "G",
+          .expectedCardinality = 6.8f,
+          .cardinalityTolerance = 1.0,
       },
       // Same first character. The first-character approximation would give 0,
       // but the floor ensures a small positive estimate.
       {
-          "n_name >= 'BRAZIL' AND n_name <= 'BRITAIN'",
-          1.0 / 22,
-          "BRAZIL",
-          "BRITAIN",
-          1.0f,
+          .name = "same-prefix range",
+          .condition = "n_name >= 'BRAZIL' AND n_name <= 'BRITAIN'",
+          .pushedDownFilter = velox::exec::between("BRAZIL", "BRITAIN"),
+          .expectedSelectivity = 1.0 / 22,
+          .expectedMin = "BRAZIL",
+          .expectedMax = "BRITAIN",
+          .expectedCardinality = 1.0f,
+          .cardinalityTolerance = 1.0,
       },
   };
 
-  for (const auto& testCase : testCases) {
-    SCOPED_TRACE("Testing condition: " + testCase.condition);
+  verifyFilterTestCases("nation", testCases);
 
-    auto sql = fmt::format("SELECT * FROM nation WHERE {}", testCase.condition);
-    verifyFilter(
-        sql,
-        "nation",
-        [&](const Selectivity& selectivity, const Value& constraint) {
-          EXPECT_NEAR(
-              selectivity.trueFraction,
-              testCase.expectedSelectivity,
-              kTolerance);
-
-          ASSERT_NE(constraint.min, nullptr);
-          EXPECT_EQ(constraint.min->value<std::string>(), testCase.expectedMin);
-
-          ASSERT_NE(constraint.max, nullptr);
-          EXPECT_EQ(constraint.max->value<std::string>(), testCase.expectedMax);
-
-          EXPECT_NEAR(
-              constraint.cardinality.value(),
-              testCase.expectedCardinality,
-              1.0f);
-        });
-  }
+  testConnector_->addTable("t", ROW("c", VARCHAR()))
+      ->setStats(1'000, {{"c", {.nonNull = true, .numDistinct = 100}}});
+  verifyFilterTestCases(
+      "t",
+      std::vector<StringFilterTestCase>{
+          {
+              .name = "missing bounds",
+              .condition = "c BETWEEN 'a' AND 'z'",
+              .pushedDownFilter = velox::exec::between("a", "z"),
+              .expectedSelectivity = Selectivity::kNoRange,
+              .expectedMin = "a",
+              .expectedMax = "z",
+              .expectedCardinality = 10,
+          },
+      },
+      kTestConnectorId);
 }
 
 TEST_F(FiltersTest, contradictoryFilters) {
@@ -824,8 +945,8 @@ TEST_F(FiltersTest, contradictoryFilters) {
       "n_nationkey IN (1, 2, 3) AND n_nationkey IN (10, 11, 12)",
       "n_nationkey IN (50, 100)",
       "n_nationkey > 10 AND n_nationkey < 5",
-      // TODO Replace with BETWEEN once it is supported.
-      "n_nationkey >= 1 AND n_nationkey <= 3 AND n_nationkey >= 10 AND n_nationkey <= 13",
+      "n_nationkey BETWEEN 10 AND 5",
+      "n_nationkey BETWEEN 1 AND 3 AND n_nationkey BETWEEN 10 AND 13",
       // Strict inequality at column max (n_nationkey has max=24). After
       // adjusting strict bound for integer type, lower becomes 25 > upper 24.
       "n_nationkey > 24",
@@ -846,58 +967,6 @@ TEST_F(FiltersTest, contradictoryFilters) {
           EXPECT_EQ(constraint.max, nullptr);
         });
   }
-}
-
-TEST_F(FiltersTest, equalitySelectivity) {
-  // n_nationkey is BIGINT with min=0, max=24, cardinality=25.
-  // 1 value out of 25.
-  verifyFilterTestCases(
-      "nation",
-      {
-          {
-              .condition = "n_nationkey = 10",
-              .expectedSelectivity = 1.0 / 25,
-              .expectedMin = 10,
-              .expectedMax = 10,
-              .expectedCardinality = 1.0,
-          },
-          {
-              .condition = "n_nationkey = 0",
-              .expectedSelectivity = 1.0 / 25,
-              .expectedMin = 0,
-              .expectedMax = 0,
-              .expectedCardinality = 1.0,
-          },
-          {
-              .condition = "n_nationkey = 24",
-              .expectedSelectivity = 1.0 / 25,
-              .expectedMin = 24,
-              .expectedMax = 24,
-              .expectedCardinality = 1.0,
-          },
-      });
-}
-
-TEST_F(FiltersTest, inListSelectivity) {
-  // n_nationkey is BIGINT with min=0, max=24, cardinality=25.
-  verifyFilterTestCases(
-      "nation",
-      {
-          // 3 values out of 25.
-          {
-              .condition = "n_nationkey IN (1, 2, 3)",
-              .expectedSelectivity = 3.0 / 25,
-              .expectedMin = 1,
-              .expectedMax = 3,
-          },
-          // 4 values out of 25.
-          {
-              .condition = "n_nationkey IN (5, 10, 15, 20)",
-              .expectedSelectivity = 4.0 / 25,
-              .expectedMin = 5,
-              .expectedMax = 20,
-          },
-      });
 }
 
 TEST_F(FiltersTest, doubleRangeSelectivity) {
@@ -935,7 +1004,7 @@ TEST_F(FiltersTest, orSelectivity) {
   // P(OR) = 1 - product of (1 - P(each disjunct)).
   verifyFilterTestCases(
       "nation",
-      {
+      std::vector<IntegerFilterTestCase>{
           // P(< 5) = 5/25, P(> 20) = 4/25.
           {.condition = "n_nationkey < 5 OR n_nationkey > 20",
            .expectedSelectivity = 1.0 - (1.0 - 5.0 / 25) * (1.0 - 4.0 / 25)},
@@ -956,7 +1025,7 @@ TEST_F(FiltersTest, notSelectivity) {
   // n_nationkey is BIGINT with min=0, max=24, cardinality=25.
   verifyFilterTestCases(
       "nation",
-      {
+      std::vector<IntegerFilterTestCase>{
           // NOT(P(= 10)) = 1 - 1/25.
           {.condition = "NOT(n_nationkey = 10)",
            .expectedSelectivity = 1.0 - 1.0 / 25},
@@ -972,16 +1041,14 @@ TEST_F(FiltersTest, notSelectivity) {
 TEST_F(FiltersTest, unsupportedExpressions) {
   verifyFilterTestCases(
       "nation",
-      {
+      std::vector<IntegerFilterTestCase>{
           // The <> operator is not normalized to NOT(eq) and is treated as an
           // unknown function, receiving default selectivity kLikelyTrue. This
           // differs from NOT(n_nationkey = 10) which correctly computes
           // 1 - 1/25 = 0.96.
           {.condition = "n_nationkey <> 10",
            .expectedSelectivity = Selectivity::kLikelyTrue},
-          // BETWEEN is not yet supported and is treated as an unknown function.
-          // Use x >= lower AND x <= upper for better estimates.
-          {.condition = "n_nationkey BETWEEN 5 AND 15",
+          {.condition = "n_nationkey BETWEEN n_regionkey AND 10",
            .expectedSelectivity = Selectivity::kLikelyTrue},
       });
 }
@@ -990,7 +1057,7 @@ TEST_F(FiltersTest, multiColumnConjuncts) {
   // n_nationkey is BIGINT with min=0, max=24, cardinality=25.
   verifyFilterTestCases(
       "nation",
-      {
+      std::vector<IntegerFilterTestCase>{
           // P(n_nationkey > 10) = 14/25, combined with P(n_name > 'M')
           // estimated
           // from string range statistics.
@@ -1062,7 +1129,7 @@ TEST_F(FiltersTest, inListWithRangeBounds) {
   // the range, then computes selectivity from the pruned list size.
   verifyFilterTestCases(
       "nation",
-      {
+      std::vector<IntegerFilterTestCase>{
           // IN (1, 5, 10, 20) AND n_nationkey > 3 prunes to (5, 10, 20).
           {
               .condition = "n_nationkey IN (1, 5, 10, 20) AND n_nationkey > 3",
@@ -1080,7 +1147,7 @@ TEST_F(FiltersTest, inListWithRangeBounds) {
           // IN (1, 5, 10, 20) AND > 3 AND < 15 prunes to (5, 10).
           {
               .condition =
-                  "n_nationkey IN (1, 5, 10, 20) AND n_nationkey > 3 AND n_nationkey < 15",
+                  "n_nationkey IN (1, 5, 10, 20) AND n_nationkey BETWEEN 4 AND 14",
               .expectedSelectivity = 2.0 / 25,
               .expectedMin = 5,
               .expectedMax = 10,
@@ -1094,7 +1161,7 @@ TEST_F(FiltersTest, overlappingInLists) {
   // are kept.
   verifyFilterTestCases(
       "nation",
-      {
+      std::vector<IntegerFilterTestCase>{
           // IN (1,2,3,4) AND IN (3,4,5,6) → intersection is (3, 4).
           {
               .condition =
@@ -1120,7 +1187,7 @@ TEST_F(FiltersTest, equalityWithRange) {
   // selectivity (1/cardinality) but bounds are tightened.
   verifyFilterTestCases(
       "nation",
-      {
+      std::vector<IntegerFilterTestCase>{
           // x = 5 AND x >= 3: non-contradictory, equality wins.
           {
               .condition = "n_nationkey = 5 AND n_nationkey >= 3",
@@ -1131,8 +1198,7 @@ TEST_F(FiltersTest, equalityWithRange) {
           },
           // x = 10 AND x > 5 AND x < 20: non-contradictory, equality wins.
           {
-              .condition =
-                  "n_nationkey = 10 AND n_nationkey > 5 AND n_nationkey < 20",
+              .condition = "n_nationkey = 10 AND n_nationkey BETWEEN 5 AND 20",
               .expectedSelectivity = 1.0 / 25,
               .expectedMin = 10,
               .expectedMax = 10,
@@ -1142,21 +1208,7 @@ TEST_F(FiltersTest, equalityWithRange) {
 }
 
 TEST_F(FiltersTest, cardinalityBasedSelectivity) {
-  // TestConnector creates columns without min/max statistics, triggering
-  // cardinality-based selectivity instead of range-based.
-  static constexpr auto kTestConnectorId = "test_filters";
-
-  auto testConnector =
-      std::make_shared<connector::TestConnector>(kTestConnectorId);
-  velox::connector::registerConnector(testConnector);
-  connector::ConnectorMetadataRegistry::global().insert(
-      kTestConnectorId, testConnector->metadata());
-
-  SCOPE_EXIT {
-    connector::ConnectorMetadataRegistry::global().erase(kTestConnectorId);
-    velox::connector::unregisterConnector(kTestConnectorId);
-  };
-
+  // Missing min/max statistics use NDV-based selectivity.
   constexpr int64_t kCardinality = 100;
   constexpr float kNullPct = 10.0;
   constexpr float kNullFraction = kNullPct / 100.0;
@@ -1166,14 +1218,13 @@ TEST_F(FiltersTest, cardinalityBasedSelectivity) {
 
   constexpr uint64_t kNumRows = 1000;
 
-  testConnector->addTable("t", ROW({"a", "b"}, BIGINT()));
-  testConnector->setStats(
-      "t",
-      kNumRows,
-      {
-          {"a", {.nullPct = kNullPct, .numDistinct = kCardinality}},
-          {"b", {.nullPct = kNullPct, .numDistinct = kCardinality}},
-      });
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()))
+      ->setStats(
+          kNumRows,
+          {
+              {"a", {.nullPct = kNullPct, .numDistinct = kCardinality}},
+              {"b", {.nullPct = kNullPct, .numDistinct = kCardinality}},
+          });
 
   auto verify = [&](std::string_view condition,
                     double expectedSelectivity,

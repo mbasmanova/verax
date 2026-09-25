@@ -161,6 +161,12 @@ class SelectivityEngine {
       detail::RangeConstraints& rangeConstraints,
       double nullFraction);
 
+  // Adds the inclusive bounds of a BETWEEN expression.
+  std::optional<Selectivity> processBetweenClause(
+      Expr expr,
+      detail::RangeConstraints& rangeConstraints,
+      double nullFraction);
+
   // Creates a refined constraint Value for a column by tightening bounds and
   // adjusting cardinality. Only used when the Policy maintains constraints.
   Value makeConstraint(
@@ -731,6 +737,7 @@ std::optional<Selectivity> SelectivityEngine<Policy>::conjunctsSelectivity(
   folly::F14FastMap<typename Policy::ColumnKey, std::vector<Expr>>
       rangeConditions;
   std::vector<Expr> otherConditions;
+  const auto& functionNames = queryCtx()->functionNames();
 
   for (const auto& arg : conjuncts) {
     if (policy_.isCall(arg)) {
@@ -739,6 +746,10 @@ std::optional<Selectivity> SelectivityEngine<Policy>::conjunctsSelectivity(
 
       if (detail::isComparisonOperator(argFuncName) &&
           policy_.isLiteral(argArgs[1])) {
+        rangeConditions[policy_.columnKey(argArgs[0])].push_back(arg);
+      } else if (
+          argFuncName == functionNames.between && argArgs.size() == 3 &&
+          policy_.isLiteral(argArgs[1]) && policy_.isLiteral(argArgs[2])) {
         rangeConditions[policy_.columnKey(argArgs[0])].push_back(arg);
       } else if (argFuncName == SpecialFormCallNames::kIn) {
         rangeConditions[policy_.columnKey(argArgs[0])].push_back(arg);
@@ -887,6 +898,14 @@ std::optional<Selectivity> SelectivityEngine<Policy>::callSelectivity(
     return rangeSelectivity(singleExpr, updateConstraints);
   }
 
+  if (funcName == fn.between) {
+    VELOX_CHECK_EQ(args.size(), 3, "BETWEEN must have exactly 3 arguments");
+    if (policy_.isLiteral(args[1]) && policy_.isLiteral(args[2])) {
+      std::array<Expr, 1> singleExpr = {expr};
+      return rangeSelectivity(singleExpr, updateConstraints);
+    }
+  }
+
   if (detail::isComparisonOperator(funcName)) {
     // Column-vs-literal comparison: reuse the range machinery.
     if (args.size() >= 2 && policy_.isLiteral(args[1])) {
@@ -1031,6 +1050,32 @@ std::optional<Selectivity> SelectivityEngine<Policy>::processRangeBound(
          *rangeConstraints.lower < *bound)) {
       rangeConstraints.lower = bound;
     }
+  }
+
+  return std::nullopt;
+}
+
+template <SelectivityPolicy Policy>
+std::optional<Selectivity> SelectivityEngine<Policy>::processBetweenClause(
+    Expr expr,
+    detail::RangeConstraints& rangeConstraints,
+    double nullFraction) {
+  auto args = policy_.args(expr);
+  VELOX_CHECK_EQ(args.size(), 3, "BETWEEN must have exactly 3 arguments");
+  VELOX_DCHECK(policy_.isLiteral(args[1]));
+  VELOX_DCHECK(policy_.isLiteral(args[2]));
+
+  const auto& lower = policy_.literal(args[1]);
+  const auto& upper = policy_.literal(args[2]);
+  if (lower.isNull() || upper.isNull()) {
+    return Selectivity::zero(nullFraction);
+  }
+
+  if (rangeConstraints.lower == nullptr || *rangeConstraints.lower < lower) {
+    rangeConstraints.lower = &lower;
+  }
+  if (rangeConstraints.upper == nullptr || upper < *rangeConstraints.upper) {
+    rangeConstraints.upper = &upper;
   }
 
   return std::nullopt;
@@ -1212,6 +1257,8 @@ std::optional<Selectivity> SelectivityEngine<Policy>::rangeSelectivity(
     } else if (detail::isRangeBoundOperator(funcName)) {
       earlyReturn =
           processRangeBound(expr, funcName, rangeConstraints, nullFraction);
+    } else if (funcName == fn.between) {
+      earlyReturn = processBetweenClause(expr, rangeConstraints, nullFraction);
     }
 
     if (earlyReturn.has_value()) {
