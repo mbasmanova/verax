@@ -2265,6 +2265,13 @@ PlanMatcherBuilder& PlanMatcherBuilder::project() {
   return *this;
 }
 
+PlanMatcherBuilder& PlanMatcherBuilder::project(OnMatchCallback onMatch) {
+  VELOX_USER_CHECK_NOT_NULL(matcher_);
+  matcher_ = std::make_shared<ProjectMatcher>(matcher_);
+  matcher_->setOnMatch(std::move(onMatch));
+  return *this;
+}
+
 PlanMatcherBuilder& PlanMatcherBuilder::project(
     const std::vector<std::string>& expressions,
     const parse::ParseOptions& options) {

@@ -51,6 +51,8 @@ TEST(OptimizerOptionsTest, codeDefaults) {
   EXPECT_EQ(getDefault(props, OptimizerOptions::kSmallQueryMaxScanRows), "0");
   EXPECT_EQ(getDefault(props, OptimizerOptions::kSmallQueryNumWorkers), "1");
   EXPECT_EQ(getDefault(props, OptimizerOptions::kHashPartitionCount), "0");
+  EXPECT_EQ(
+      getDefault(props, OptimizerOptions::kMaxDuplicatedLiteralBytes), "64KB");
 }
 
 TEST(OptimizerOptionsTest, configOverrides) {
@@ -74,6 +76,7 @@ TEST(OptimizerOptionsTest, from) {
       {std::string(OptimizerOptions::kSmallQueryMaxScanRows), "5000000000"},
       {std::string(OptimizerOptions::kSmallQueryNumWorkers), "2"},
       {std::string(OptimizerOptions::kHashPartitionCount), "64"},
+      {std::string(OptimizerOptions::kMaxDuplicatedLiteralBytes), "1MB"},
   };
   auto options = OptimizerOptions::from(props);
 
@@ -82,6 +85,7 @@ TEST(OptimizerOptionsTest, from) {
   EXPECT_EQ(options.smallQueryMaxScanRows, 5'000'000'000);
   EXPECT_EQ(options.smallQueryNumWorkers, 2);
   EXPECT_EQ(options.hashPartitionCount, 64);
+  EXPECT_EQ(options.maxDuplicatedLiteralBytes, 1LL << 20);
   EXPECT_EQ(options.traceFlags, 5);
   EXPECT_EQ(options.broadcastSizeLimit, 5LL << 30);
   EXPECT_FALSE(options.syntacticJoinOrder);
@@ -98,6 +102,15 @@ TEST(OptimizerOptionsTest, broadcastSizeLimitDefaultsAgree) {
       OptimizerOptions::kBroadcastSizeLimitDefaultBytes);
 }
 
+TEST(OptimizerOptionsTest, maxDuplicatedLiteralBytesDefaultsAgree) {
+  auto options = OptimizerOptions::from(
+      {{std::string(OptimizerOptions::kMaxDuplicatedLiteralBytes),
+        std::string(OptimizerOptions::kMaxDuplicatedLiteralBytesDefault)}});
+  EXPECT_EQ(
+      options.maxDuplicatedLiteralBytes,
+      OptimizerOptions::kMaxDuplicatedLiteralBytesDefaultValue);
+}
+
 TEST(OptimizerOptionsTest, normalizeRejectsInvalidValues) {
   OptimizerOptions options;
   VELOX_ASSERT_THROW(
@@ -105,6 +118,9 @@ TEST(OptimizerOptionsTest, normalizeRejectsInvalidValues) {
       "parallel_project_width must be >= 1");
   VELOX_ASSERT_THROW(
       options.normalize(OptimizerOptions::kBroadcastSizeLimit, "100"),
+      "Invalid capacity string");
+  VELOX_ASSERT_THROW(
+      options.normalize(OptimizerOptions::kMaxDuplicatedLiteralBytes, "100"),
       "Invalid capacity string");
   VELOX_ASSERT_THROW(
       options.normalize(OptimizerOptions::kSmallQueryMaxScanRows, "-1"),

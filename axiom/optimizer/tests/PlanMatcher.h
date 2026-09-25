@@ -385,6 +385,9 @@ class PlanMatcherBuilder {
   /// Matches any Project node regardless of expressions.
   PlanMatcherBuilder& project();
 
+  /// Matches any Project node and invokes 'onMatch' with it.
+  PlanMatcherBuilder& project(OnMatchCallback onMatch);
+
   /// Adds a Project matcher (see project()) only when 'condition' is true;
   /// otherwise a no-op.
   PlanMatcherBuilder& projectIf(bool condition) {

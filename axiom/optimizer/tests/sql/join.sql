@@ -492,3 +492,14 @@ SELECT a FROM (VALUES (1), (2), (3)) AS t(a)
 WHERE NOT EXISTS (
   SELECT 1 FROM (VALUES (1, 1), (null, 1), (1, null), (2, 2)) AS u(x, y)
   WHERE u.x = t.a AND u.y = t.a)
+----
+-- A one-row map used as a broadcast column by multiple lookups.
+-- duckdb: SELECT a, 10000 + a, 10001 + a FROM t
+WITH lookup(keys, map_values) AS (
+  VALUES (
+    sequence(1, 10000),
+    sequence(10001, 20000)
+  )
+)
+SELECT a, map(keys, map_values)[a], map(keys, map_values)[a + 1]
+FROM t CROSS JOIN lookup

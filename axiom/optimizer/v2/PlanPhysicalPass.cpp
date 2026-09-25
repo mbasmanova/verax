@@ -29,6 +29,7 @@
 #include "axiom/optimizer/v2/DPhyp.h"
 #include "axiom/optimizer/v2/EstimateProvider.h"
 #include "axiom/optimizer/v2/ExprFactory.h"
+#include "axiom/optimizer/v2/ExprSimplifier.h"
 #include "axiom/optimizer/v2/HypergraphBuilder.h"
 #include "axiom/optimizer/v2/JoinCluster.h"
 #include "axiom/optimizer/v2/JoinTreeEmitter.h"
@@ -591,6 +592,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
  public:
   PhysicalPlanRewriter(
       Builder& builder,
+      ExprSimplifier& simplifier,
       const OptimizerOptions& options,
       int32_t numWorkers,
       int32_t numDrivers)
@@ -598,7 +600,8 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
         options_{options},
         numWorkers_{numWorkers},
         numDrivers_{numDrivers},
-        exprFactory_{builder} {}
+        exprFactory_{builder},
+        simplifier_{simplifier} {}
 
   // Re-exposes the rewrite(NodeCP) overload hidden by the override below.
   using NodeRewriter<>::rewrite;
@@ -615,6 +618,15 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
     return rewritten;
   }
 
+  NodeCP rewriteProject(const Project* node, NoContext& context) override {
+    NodeCP input = rewrite(node->input(), context);
+    if (input == node->input()) {
+      return node;
+    }
+    return PrecomputeProjections::makeProject(
+        input, node->exprs(), node->outputColumns(), builder(), simplifier_);
+  }
+
  protected:
   NodeCP rewriteFixedPoint(const FixedPoint* node, NoContext& context)
       override {
@@ -623,6 +635,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
     static constexpr int32_t kRecursiveNumDrivers = 1;
     PhysicalPlanRewriter singleThreaded{
         builder(),
+        simplifier_,
         options_,
         /*numWorkers=*/1,
         /*numDrivers=*/kRecursiveNumDrivers};
@@ -671,10 +684,10 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
         if (nullAware ||
             !coBucketJoinSides(newLeft, newRight, leftKeys, rightKeys)) {
           std::tie(newLeft, leftKeys) = PrecomputeProjections::materializeKeys(
-              newLeft, leftKeys, builder());
+              newLeft, leftKeys, builder(), simplifier_);
           std::tie(newRight, rightKeys) =
               PrecomputeProjections::materializeKeys(
-                  newRight, rightKeys, builder());
+                  newRight, rightKeys, builder(), simplifier_);
           newLeft = partition(newLeft, leftKeys, nullAware && !rightIsBuild);
           newRight = partition(newRight, rightKeys, nullAware && rightIsBuild);
         }
@@ -695,7 +708,8 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
          .nullAware = node->nullAware(),
          .nullAsValue = node->nullAsValue(),
          .outputColumns = node->outputColumns()},
-        builder());
+        builder(),
+        simplifier_);
   }
 
   NodeCP rewriteJoin(const Join* node, NoContext& context) override {
@@ -813,14 +827,19 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
         return rewriteUnclusteredJoin(node, context);
       }
       return JoinTreeEmitter::emit(
-          root, graph, node->outputColumns(), builder());
+          root, graph, node->outputColumns(), builder(), simplifier_);
     }
     const std::vector<MemoOpCP> roots = dphyp.enumerate(components);
     if (roots.empty()) {
       return rewriteUnclusteredJoin(node, context);
     }
     return JoinTreeEmitter::emitComponents(
-        roots, graph, node->outputColumns(), builder(), numWorkers_);
+        roots,
+        graph,
+        node->outputColumns(),
+        builder(),
+        simplifier_,
+        numWorkers_);
   }
 
   // Remote exchanges that unconditionally establish a partitioning on 'input'.
@@ -973,8 +992,8 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
       for (const size_t position : at) {
         shuffleKeys.push_back(keys[position]);
       }
-      auto [keyed, columnKeys] =
-          PrecomputeProjections::materializeKeys(side, shuffleKeys, builder());
+      auto [keyed, columnKeys] = PrecomputeProjections::materializeKeys(
+          side, shuffleKeys, builder(), simplifier_);
       side = partitionTo(keyed, columnKeys, target);
     };
 
@@ -1059,7 +1078,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
     }
 
     auto [keyed, columnKeys] = PrecomputeProjections::materializeKeys(
-        input, keys, builder(), keyAliases);
+        input, keys, builder(), simplifier_, keyAliases);
     return {partition(keyed, columnKeys), columnKeys};
   }
 
@@ -1132,7 +1151,10 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
     // from the aggregate that reads its markers. Narrowing, so an input column
     // that only fed a lifted expression stops here.
     PrecomputeProjections precompute{
-        coLocatedInput, builder(), /*projectAllInputs=*/false};
+        coLocatedInput,
+        builder(),
+        simplifier_,
+        /*projectAllInputs=*/false};
     for (size_t i = 0; i < groupingKeys.size(); ++i) {
       groupingKeys[i] =
           precompute.toColumn(groupingKeys[i], node->outputColumns()[i]);
@@ -1259,7 +1281,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
     // as columns like any other operator. Its output column for a key is the
     // final's, which the alias keeps.
     PrecomputeProjections precompute{
-        input, builder(), /*projectAllInputs=*/false};
+        input, builder(), simplifier_, /*projectAllInputs=*/false};
     ExprVector partialKeys;
     partialKeys.reserve(numKeys);
     for (size_t i = 0; i < numKeys; ++i) {
@@ -1412,7 +1434,8 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
          node->ordinalityColumn(),
          node->markerColumn(),
          node->outputColumns()},
-        builder());
+        builder(),
+        simplifier_);
   }
 
   // Distributes an EnforceSingleRow (scalar-subquery single-row assertion): it
@@ -1643,6 +1666,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
   const int32_t numWorkers_;
   const int32_t numDrivers_;
   ExprFactory exprFactory_;
+  ExprSimplifier& simplifier_;
 
   // Shared across all clusters of this query so a leaf (or hash-consed
   // duplicate) subtree is estimated once.
@@ -1657,13 +1681,16 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
 NodeCP PlanPhysicalPass::run(
     NodeCP root,
     Builder& builder,
+    velox::core::ExpressionEvaluator& evaluator,
     const OptimizerOptions& options,
     int32_t numWorkers,
     int32_t numDrivers) {
   VELOX_USER_CHECK_GE(numWorkers, 1, "numWorkers must be at least 1");
   VELOX_USER_CHECK_GE(numDrivers, 1, "numDrivers must be at least 1");
 
-  PhysicalPlanRewriter rewriter{builder, options, numWorkers, numDrivers};
+  ExprSimplifier simplifier{builder, evaluator};
+  PhysicalPlanRewriter rewriter{
+      builder, simplifier, options, numWorkers, numDrivers};
   return rewriter.rewrite(root);
 }
 

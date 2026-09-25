@@ -21,9 +21,14 @@
 
 namespace facebook::axiom::optimizer::v2 {
 
-NodeCP PhysicalJoin::makeJoin(Join::Key key, Builder& builder) {
-  PrecomputeProjections left{key.left, builder, /*projectAllInputs=*/false};
-  PrecomputeProjections right{key.right, builder, /*projectAllInputs=*/false};
+NodeCP PhysicalJoin::makeJoin(
+    Join::Key key,
+    Builder& builder,
+    ExprSimplifier& simplifier) {
+  PrecomputeProjections left{
+      key.left, builder, simplifier, /*projectAllInputs=*/false};
+  PrecomputeProjections right{
+      key.right, builder, simplifier, /*projectAllInputs=*/false};
 
   ExprFactory::ExprSubstitution lifted;
   const auto liftKeys = [&](ExprVector& keys, PrecomputeProjections& side) {
@@ -71,9 +76,12 @@ NodeCP PhysicalJoin::makeJoin(Join::Key key, Builder& builder) {
   return builder.make<Join>(std::move(key));
 }
 
-NodeCP PhysicalJoin::makeUnnest(Unnest::Key key, Builder& builder) {
+NodeCP PhysicalJoin::makeUnnest(
+    Unnest::Key key,
+    Builder& builder,
+    ExprSimplifier& simplifier) {
   PrecomputeProjections precompute{
-      key.input, builder, /*projectAllInputs=*/false};
+      key.input, builder, simplifier, /*projectAllInputs=*/false};
   // Replicated columns first, so the projection preserves input column order.
   for (ColumnCP column : key.replicatedColumns) {
     precompute.toColumn(column);

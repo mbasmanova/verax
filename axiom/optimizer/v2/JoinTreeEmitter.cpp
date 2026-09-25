@@ -90,14 +90,19 @@ ExprVector takeReadyConjuncts(
 }
 
 struct EmitState {
-  EmitState(const JoinHypergraph& graph, Builder& builder)
+  EmitState(
+      const JoinHypergraph& graph,
+      Builder& builder,
+      ExprSimplifier& simplifier)
       : graph{graph},
         builder{builder},
+        simplifier{simplifier},
         exprs{builder},
         fired(graph.filterConjuncts().size(), false) {}
 
   const JoinHypergraph& graph;
   Builder& builder;
+  ExprSimplifier& simplifier;
   ExprFactory exprs;
   std::vector<bool> fired;
 };
@@ -256,7 +261,8 @@ NodeCP emitLeaf(const LeafOp* leaf, EmitState& state) {
          unnest->ordinalityColumn(),
          unnest->markerColumn(),
          unnest->outputColumns()},
-        state.builder);
+        state.builder,
+        state.simplifier);
   }
   // The relation's node reads the table ungrouped. When the plan that won reads
   // it one bucket-group at a time, that is a different read, so it is a
@@ -337,7 +343,8 @@ Emitted buildUnnest(const UnnestOp* unnest, Emitted input, EmitState& state) {
        origUnnest->ordinalityColumn(),
        origUnnest->markerColumn(),
        std::move(outputColumns)},
-      state.builder);
+      state.builder,
+      state.simplifier);
 
   if (!predicates.empty()) {
     node = state.builder.make<Filter>({node, std::move(predicates)});
@@ -544,7 +551,8 @@ Emitted buildJoin(
        edge.nullAware(),
        edge.nullAsValue(),
        std::move(outputColumns)},
-      state.builder);
+      state.builder,
+      state.simplifier);
   if (!aboveJoin.empty()) {
     node = state.builder.make<Filter>({node, std::move(aboveJoin)});
   }
@@ -596,7 +604,8 @@ Emitted buildReversedAnti(
        edge.nullAware(),
        edge.nullAsValue(),
        std::move(joinOutput)},
-      state.builder);
+      state.builder,
+      state.simplifier);
 
   NodeCP filtered = state.builder.make<Filter>(
       {rightSemiProject, ExprVector{state.exprs.makeNot(mark)}});
@@ -694,7 +703,7 @@ Emitted emitExchange(const ExchangeOp* exchange, EmitState& state) {
   Emitted input = emitOp(exchange->input, state);
   Partitioning partitioning = exchange->outputPartitioning();
   auto [keyed, columnKeys] = PrecomputeProjections::materializeKeys(
-      input.node, partitioning.keys, state.builder);
+      input.node, partitioning.keys, state.builder, state.simplifier);
   for (size_t i = 0; i < partitioning.keys.size(); ++i) {
     if (columnKeys[i] == partitioning.keys[i]) {
       continue;
@@ -732,9 +741,10 @@ NodeCP JoinTreeEmitter::emit(
     MemoOpCP root,
     const JoinHypergraph& graph,
     const ColumnVector& rootOutputColumns,
-    Builder& builder) {
+    Builder& builder,
+    ExprSimplifier& simplifier) {
   VELOX_CHECK_NOT_NULL(root);
-  EmitState state{graph, builder};
+  EmitState state{graph, builder, simplifier};
   NodeCP result{nullptr};
   switch (root->kind()) {
     case MemoOpKind::kLeaf:
@@ -761,12 +771,13 @@ NodeCP JoinTreeEmitter::emitComponents(
     const JoinHypergraph& graph,
     const ColumnVector& rootOutputColumns,
     Builder& builder,
+    ExprSimplifier& simplifier,
     int32_t numWorkers) {
   VELOX_CHECK_GE(
       componentRoots.size(),
       2,
       "emitComponents requires at least two components");
-  EmitState state{graph, builder};
+  EmitState state{graph, builder, simplifier};
 
   // Emit each component subtree first, sharing one `fired` vector so a
   // cross-component conjunct is placed once, at a fold below.

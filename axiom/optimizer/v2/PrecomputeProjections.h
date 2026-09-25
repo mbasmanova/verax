@@ -21,24 +21,29 @@
 
 namespace facebook::axiom::optimizer::v2 {
 
+class ExprSimplifier;
+
 /// Per-consumer builder that lifts compound sub-expressions into a Project
 /// inserted between the consumer and its existing input.
 class PrecomputeProjections {
  public:
-  /// Returns a `Project` computing 'exprs' as 'outColumns' over 'input'. When
-  /// 'input' is itself a deterministic `Project`, its expressions are folded
-  /// into 'exprs' and it is dropped, rather than stacking a second `Project`.
-  /// A non-deterministic input folds only where 'exprs' read each of its
-  /// outputs at most once, since a fold copies an expression per reference.
+  /// Inlines an input `Project` into 'exprs' when it is deterministic. A
+  /// non-deterministic input is inlined only when 'exprs' read each output at
+  /// most once. Leaves 'input' and 'exprs' unchanged otherwise.
   ///
-  /// TODO: still inline the deterministic outputs when only some are
-  /// non-deterministic -- isolate the non-deterministic ones in a separate
-  /// `Project` below and fold the rest.
+  /// TODO: Still inline the deterministic outputs when only some are
+  /// non-deterministic by isolating the latter in a separate `Project`.
+  static void
+  inlineInputProject(NodeCP& input, ExprVector& exprs, Builder& builder);
+
+  /// Returns a `Project` computing 'exprs' as 'outColumns' over 'input' after
+  /// inlining a safe input `Project` and simplifying the resulting expressions.
   static NodeCP makeProject(
       NodeCP input,
       ExprVector exprs,
       ColumnVector outColumns,
-      Builder& builder);
+      Builder& builder,
+      ExprSimplifier& simplifier);
 
   /// Computes any key in 'keys' that is not already a column, returning
   /// 'input' wrapped in a `Project` that adds those columns alongside its own,
@@ -57,6 +62,7 @@ class PrecomputeProjections {
       NodeCP input,
       const ExprVector& keys,
       Builder& builder,
+      ExprSimplifier& simplifier,
       const ColumnVector& aliases = {});
 
   // When `projectAllInputs` is true (the default, for pass-through consumers
@@ -69,6 +75,7 @@ class PrecomputeProjections {
   PrecomputeProjections(
       NodeCP input,
       Builder& builder,
+      ExprSimplifier& simplifier,
       bool projectAllInputs = true);
 
   // Returns the ExprCP that the consumer should reference in place of
@@ -92,6 +99,7 @@ class PrecomputeProjections {
 
   NodeCP input_;
   Builder& builder_;
+  ExprSimplifier& simplifier_;
   const bool projectAllInputs_;
   ColumnVector outColumns_;
   ExprVector outExprs_;

@@ -2876,6 +2876,94 @@ TEST_P(JoinTest, constantInput) {
   }
 }
 
+// Repeated lookups into a one-row map share one materialized map.
+TEST_P(JoinTest, mapJoin) {
+  testConnector_->addTable("t", ROW("a", BIGINT()));
+
+  auto matchMapProject = [&]() {
+    return matchScan("t")
+        .project([](const core::PlanNodePtr& node) {
+          const auto& projections =
+              node->as<core::ProjectNode>()->projections();
+          ASSERT_EQ(projections.size(), 2);
+          ASSERT_TRUE(projections[0]->isFieldAccessKind());
+          EXPECT_TRUE(
+              projections[0]
+                  ->asUnchecked<core::FieldAccessTypedExpr>()
+                  ->isInputColumn());
+          EXPECT_TRUE(projections[1]->isConstantKind());
+          EXPECT_EQ(projections[1]->type()->kind(), TypeKind::MAP);
+        })
+        .aliases({std::nullopt, "m"});
+  };
+
+  const std::string valuesClause =
+      " (VALUES (sequence(1, 10000), sequence(10001, 20000))) ";
+
+  const std::string lookupMap = fmt::format(
+      "WITH lookup(m) AS (SELECT map(keys, map_values) FROM {} AS _(keys, map_values)) ",
+      valuesClause);
+
+  const std::string fromClause = " FROM t CROSS JOIN lookup";
+
+  for (
+      const auto& sql : {
+          // Construct the same map independently in two result expressions.
+          fmt::format(
+              "WITH lookup(keys, map_values) AS {} "
+              "SELECT a, map(keys, map_values)[a], map(keys, map_values)[a + 1]",
+              valuesClause),
+          // Refer twice to the map constructed by the CTE.
+          lookupMap + "SELECT a, m[a], m[a + 1]",
+          // Mix inline construction with an equivalent map from the CTE.
+          fmt::format(
+              "WITH lookup(keys, map_values) AS {}"
+              "SELECT a, "
+              "    map(sequence(1, 10000), sequence(10001, 20000))[a], "
+              "    map(keys, map_values)[a + 1]",
+              valuesClause),
+      }) {
+    const std::string query = sql + fromClause;
+    SCOPED_TRACE(query);
+    const auto logicalPlan = parseSelect(query, kTestConnectorId);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(logicalPlan),
+        matchMapProject().project({"a", "m[a]", "m[a + 1]"}).build());
+
+    const auto previousBytes = optimizerOptions_.maxDuplicatedLiteralBytes;
+    SCOPE_EXIT {
+      optimizerOptions_.maxDuplicatedLiteralBytes = previousBytes;
+    };
+    optimizerOptions_.maxDuplicatedLiteralBytes = 1LL << 30;
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(logicalPlan), matchScan("t").project().build());
+  }
+
+  {
+    const auto logicalPlan = parseSelect(
+        lookupMap + "SELECT m[a], transform(ARRAY[a + 1], x -> m[x]) " +
+            fromClause,
+        kTestConnectorId);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(logicalPlan),
+        matchMapProject()
+            .project({"m[a]", "transform(ARRAY[a + 1], x -> m[x])"})
+            .build());
+  }
+
+  {
+    const auto logicalPlan = parseSelect(
+        lookupMap + "SELECT sum(m[a]), sum(m[a + 1])" + fromClause,
+        kTestConnectorId);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(logicalPlan),
+        matchMapProject()
+            .project({"m[a] AS x", "m[a + 1] AS y"})
+            .singleAggregation({}, {"sum(x)", "sum(y)"})
+            .build());
+  }
+}
+
 // A join condition no row satisfies needs no join: an inner join produces
 // nothing, and an outer join produces its preserved side alone.
 TEST_P(JoinTest, neverMatchingCondition) {

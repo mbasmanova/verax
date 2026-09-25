@@ -16,6 +16,8 @@
 
 #pragma once
 
+#include <folly/container/F14Map.h>
+
 #include "axiom/optimizer/v2/Builder.h"
 #include "velox/core/ExpressionEvaluator.h"
 #include "velox/vector/ComplexVector.h"
@@ -62,9 +64,7 @@ class ExprSimplifier {
 
  private:
   // Simplifies an AND or OR call with boolean literal arguments. Returns
-  // `expr` unchanged for any other call. Looks only at the call's own
-  // arguments: callers translate bottom-up, so nested calls are already
-  // simplified.
+  // `expr` unchanged for any other call. Its arguments are already simplified.
   ExprCP tryFoldConjunct(ExprCP expr);
 
   // Folds `expr` to a `Literal` when it has no column refs and the
@@ -74,6 +74,7 @@ class ExprSimplifier {
 
   Builder& builder_;
   velox::core::ExpressionEvaluator& evaluator_;
+  folly::F14FastMap<ExprCP, ExprCP> simplified_;
 
   // Reusable single empty row, the input for evaluate().
   velox::RowVectorPtr emptyInput_;
