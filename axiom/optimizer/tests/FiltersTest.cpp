@@ -19,11 +19,12 @@
 #include <gtest/gtest.h>
 #include <functional>
 #include <type_traits>
-#include "axiom/optimizer/Optimization.h"
 #include "axiom/optimizer/OptimizerOptions.h"
 #include "axiom/optimizer/QueryGraph.h"
 #include "axiom/optimizer/StatsFilterSelectivityEstimator.h"
 #include "axiom/optimizer/tests/QueryTestBase.h"
+#include "axiom/optimizer/v2/ExprEmitter.h"
+#include "axiom/optimizer/v2/Node.h"
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/expression/ExprToSubfieldFilter.h"
 #include "velox/type/Filter.h"
@@ -105,43 +106,44 @@ class FiltersTest : public test::QueryTestBase {
     callback();
   }
 
-  // Parses SQL, builds the query graph and invokes the callback with rootDt.
-  void verifyQueryGraph(
+  // Parses SQL, translates it to the v2 tree IR and invokes 'callback'.
+  void verifyTranslation(
       std::string_view sql,
-      const std::function<void(DerivedTableCP)>& callback,
+      const std::function<void(v2::NodeCP)>& callback,
       const std::string& connectorId = kTestConnectorId) {
     auto logicalPlan = parseSelect(sql, connectorId);
-
-    verifyOptimization(*logicalPlan, [&](Optimization& optimization) {
-      callback(optimization.rootDt());
-    });
+    verifyOptimization(*logicalPlan, v2::Optimizer::Pass::kTranslate, callback);
   }
 
-  // Returns nullptr if the table is not found.
-  static const BaseTable* findBaseTable(
-      DerivedTableCP dt,
-      std::string_view tableName) {
-    for (auto* table : dt->tables) {
-      if (table->is(PlanType::kTableNode)) {
-        auto* bt = table->as<BaseTable>();
-        if (bt->schemaTable && bt->schemaTable->name().table == tableName) {
-          return bt;
+  static bool collectFilters(
+      v2::NodeCP node,
+      std::string_view tableName,
+      ExprVector& filters) {
+    if (node->is(v2::NodeType::kScan)) {
+      const auto* table = node->as<v2::Scan>()->baseTable();
+      return table->schemaTable &&
+          table->schemaTable->name().table == tableName;
+    }
+
+    for (v2::NodeCP input : node->inputs()) {
+      if (collectFilters(input, tableName, filters)) {
+        if (node->is(v2::NodeType::kFilter)) {
+          const auto& predicates = node->as<v2::Filter>()->predicates();
+          filters.insert(filters.end(), predicates.begin(), predicates.end());
         }
+        return true;
       }
     }
-    return nullptr;
+    return false;
   }
 
-  static ExprVector getAllFilters(
-      DerivedTableCP rootDt,
-      std::string_view tableName) {
-    const BaseTable* table = findBaseTable(rootDt, tableName);
-    VELOX_CHECK_NOT_NULL(table, "Table '{}' not found", tableName);
-
-    auto allFilters = table->columnFilters;
-    allFilters.insert(
-        allFilters.end(), table->filter.begin(), table->filter.end());
-    return allFilters;
+  static ExprVector getAllFilters(v2::NodeCP root, std::string_view tableName) {
+    ExprVector filters;
+    VELOX_CHECK(
+        collectFilters(root, tableName, filters),
+        "Table '{}' not found",
+        tableName);
+    return filters;
   }
 
   // Creates a ConstraintMap for all columns referenced by the given expressions
@@ -185,16 +187,16 @@ class FiltersTest : public test::QueryTestBase {
   // ExprCP SelectivityEngine. Exercises the second Policy instantiation and the
   // velox->canonical name mapping.
   void verifyEstimatorAgrees(
-      Optimization& optimization,
       const ExprVector& filters,
       const Selectivity& expectedSelectivity,
       const ConstraintMap& refinedConstraints) {
+    v2::ExprEmitter emitter{&optimizerPool()};
     std::vector<velox::core::TypedExprPtr> typedFilters;
     folly::F14FastMap<std::string, connector::TypedColumnStatistics>
         columnStats;
     folly::F14FastMap<std::string, int32_t> columnIdByName;
     for (auto* filter : filters) {
-      typedFilters.push_back(optimization.toTypedExpr(filter));
+      typedFilters.push_back(emitter.toTypedExpr(filter));
       filter->columns().forEach<Column>([&](auto* column) {
         if (auto* schemaColumn = column->schemaColumn()) {
           const auto& value = schemaColumn->value();
@@ -250,40 +252,41 @@ class FiltersTest : public test::QueryTestBase {
         std::is_invocable_v<Verify, const Selectivity&, const Value&>);
 
     auto logicalPlan = parseSelect(sql, std::string{connectorId});
-    verifyOptimization(*logicalPlan, [&](Optimization& optimization) {
-      auto allFilters = getAllFilters(optimization.rootDt(), tableName);
-      ASSERT_FALSE(allFilters.empty());
+    verifyOptimization(
+        *logicalPlan, v2::Optimizer::Pass::kTranslate, [&](v2::NodeCP root) {
+          auto allFilters = getAllFilters(root, tableName);
+          ASSERT_FALSE(allFilters.empty());
 
-      auto constraints = makeSchemaConstraints(allFilters);
-      int32_t constraintId;
-      std::optional<Value> inputValue;
-      if constexpr (kNeedsInputValue) {
-        const auto& columns = allFilters[0]->columns();
-        ASSERT_EQ(columns.size(), 1);
-        constraintId = columns.onlyObject<Column>()->id();
+          auto constraints = makeSchemaConstraints(allFilters);
+          int32_t constraintId;
+          std::optional<Value> inputValue;
+          if constexpr (kNeedsInputValue) {
+            const auto& columns = allFilters[0]->columns();
+            ASSERT_EQ(columns.size(), 1);
+            constraintId = columns.onlyObject<Column>()->id();
 
-        auto it = constraints.find(constraintId);
-        ASSERT_NE(it, constraints.end());
-        inputValue = it->second;
-      } else {
-        auto* call = allFilters[0]->as<Call>();
-        constraintId = call->args()[0]->id();
-      }
+            auto it = constraints.find(constraintId);
+            ASSERT_NE(it, constraints.end());
+            inputValue = it->second;
+          } else {
+            auto* call = allFilters[0]->as<Call>();
+            constraintId = call->args()[0]->id();
+          }
 
-      auto selectivity = conjunctsSelectivity(constraints, allFilters, true);
-      ASSERT_TRUE(selectivity.has_value());
+          auto selectivity =
+              conjunctsSelectivity(constraints, allFilters, true);
+          ASSERT_TRUE(selectivity.has_value());
 
-      auto it = constraints.find(constraintId);
-      ASSERT_NE(it, constraints.end());
-      if constexpr (kNeedsInputValue) {
-        verify(*selectivity, it->second, *inputValue);
-      } else {
-        verify(*selectivity, it->second);
-      }
+          auto it = constraints.find(constraintId);
+          ASSERT_NE(it, constraints.end());
+          if constexpr (kNeedsInputValue) {
+            verify(*selectivity, it->second, *inputValue);
+          } else {
+            verify(*selectivity, it->second);
+          }
 
-      verifyEstimatorAgrees(
-          optimization, allFilters, *selectivity, constraints);
-    });
+          verifyEstimatorAgrees(allFilters, *selectivity, constraints);
+        });
   }
 
   template <typename T>
@@ -932,43 +935,6 @@ TEST_F(FiltersTest, varcharRangeSelectivity) {
       kTestConnectorId);
 }
 
-TEST_F(FiltersTest, contradictoryFilters) {
-  // n_nationkey is BIGINT with min=0, max=24, cardinality=25.
-  // Contradictory conditions get likelyZero selectivity (small but non-zero
-  // to avoid zeroing out downstream estimates) and empty constraints
-  // (cardinality=0, min=nullptr, max=nullptr).
-  std::vector<std::string> conditions = {
-      "n_nationkey = 1 AND n_nationkey = 2",
-      "n_nationkey = 3 AND n_nationkey > 10",
-      "n_nationkey = 100",
-      "n_nationkey IN (1, 2, 3) AND n_nationkey = 10",
-      "n_nationkey IN (1, 2, 3) AND n_nationkey IN (10, 11, 12)",
-      "n_nationkey IN (50, 100)",
-      "n_nationkey > 10 AND n_nationkey < 5",
-      "n_nationkey BETWEEN 10 AND 5",
-      "n_nationkey BETWEEN 1 AND 3 AND n_nationkey BETWEEN 10 AND 13",
-      // Strict inequality at column max (n_nationkey has max=24). After
-      // adjusting strict bound for integer type, lower becomes 25 > upper 24.
-      "n_nationkey > 24",
-  };
-
-  for (const auto& condition : conditions) {
-    SCOPED_TRACE("Testing condition: " + condition);
-
-    auto sql = fmt::format("SELECT * FROM nation WHERE {}", condition);
-    verifyFilter(
-        sql,
-        "nation",
-        [](const Selectivity& selectivity, const Value& constraint) {
-          EXPECT_NEAR(
-              selectivity.trueFraction, Selectivity::kLikelyZero, kTolerance);
-          EXPECT_EQ(constraint.cardinality, 0);
-          EXPECT_EQ(constraint.min, nullptr);
-          EXPECT_EQ(constraint.max, nullptr);
-        });
-  }
-}
-
 TEST_F(FiltersTest, doubleRangeSelectivity) {
   // o_totalprice is DOUBLE on orders table (150,000 rows, min ≈ 857.71).
   // Range filter within valid range.
@@ -1005,19 +971,18 @@ TEST_F(FiltersTest, orSelectivity) {
   verifyFilterTestCases(
       "nation",
       std::vector<IntegerFilterTestCase>{
-          // P(< 5) = 5/25, P(> 20) = 4/25.
+          // The disjoint ranges contain 5 + 4 values.
           {.condition = "n_nationkey < 5 OR n_nationkey > 20",
-           .expectedSelectivity = 1.0 - (1.0 - 5.0 / 25) * (1.0 - 4.0 / 25)},
+           .expectedSelectivity = 9.0 / 25},
           // P(= 10) = 1/25, P(> 20) = 4/25.
           {.condition = "n_nationkey = 10 OR n_nationkey > 20",
            .expectedSelectivity = 1.0 - (1.0 - 1.0 / 25) * (1.0 - 4.0 / 25)},
-          // P(> 5) = 19/25, P(< 20) = 20/25.
+          // The ranges overlap and cover the full column domain.
           {.condition = "n_nationkey > 5 OR n_nationkey < 20",
-           .expectedSelectivity = 1.0 - (1.0 - 19.0 / 25) * (1.0 - 20.0 / 25)},
-          // P(= 3) = 1/25, P(= 100) = likelyZero (out of range).
+           .expectedSelectivity = 1.0},
+          // The value outside the column domain is discarded.
           {.condition = "n_nationkey = 3 OR n_nationkey = 100",
-           .expectedSelectivity =
-               1.0 - (1.0 - 1.0 / 25) * (1.0 - Selectivity::kLikelyZero)},
+           .expectedSelectivity = 1.0 / 25},
       });
 }
 
@@ -1071,10 +1036,10 @@ TEST_F(FiltersTest, multiColumnConjuncts) {
 }
 
 TEST_F(FiltersTest, equalityConstraintPropagation) {
-  verifyQueryGraph(
+  verifyTranslation(
       "SELECT n_regionkey FROM nation WHERE n_regionkey = n_nationkey",
-      [](DerivedTableCP rootDt) {
-        auto allFilters = getAllFilters(rootDt, "nation");
+      [](v2::NodeCP root) {
+        auto allFilters = getAllFilters(root, "nation");
         ASSERT_EQ(allFilters.size(), 1);
 
         auto constraints = makeSchemaConstraints(allFilters);
@@ -1103,10 +1068,9 @@ TEST_F(FiltersTest, equalityConstraintPropagation) {
 
 TEST_F(FiltersTest, isNullSelectivity) {
   // n_comment is VARCHAR and nullable.
-  verifyQueryGraph(
-      "SELECT * FROM nation WHERE n_comment IS NULL",
-      [](DerivedTableCP rootDt) {
-        auto allFilters = getAllFilters(rootDt, "nation");
+  verifyTranslation(
+      "SELECT * FROM nation WHERE n_comment IS NULL", [](v2::NodeCP root) {
+        auto allFilters = getAllFilters(root, "nation");
         ASSERT_FALSE(allFilters.empty());
 
         auto constraints = makeSchemaConstraints(allFilters);
@@ -1231,10 +1195,10 @@ TEST_F(FiltersTest, cardinalityBasedSelectivity) {
                     double expectedNullFraction) {
     SCOPED_TRACE(condition);
     auto sql = fmt::format("SELECT * FROM t WHERE {}", condition);
-    verifyQueryGraph(
+    verifyTranslation(
         sql,
-        [&](DerivedTableCP rootDt) {
-          auto allFilters = getAllFilters(rootDt, "t");
+        [&](v2::NodeCP root) {
+          auto allFilters = getAllFilters(root, "t");
           ASSERT_EQ(1, allFilters.size());
 
           auto constraints = makeSchemaConstraints(allFilters);

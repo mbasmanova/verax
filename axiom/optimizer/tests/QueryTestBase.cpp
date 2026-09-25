@@ -295,6 +295,41 @@ void QueryTestBase::verifyOptimization(
   callback(optimization);
 }
 
+void QueryTestBase::verifyOptimization(
+    const logical_plan::LogicalPlanNode& logicalPlan,
+    v2::Optimizer::Pass pass,
+    const std::function<void(v2::NodeCP)>& callback,
+    const std::optional<OptimizerOptions>& optimizerOptions) {
+  auto& veloxQueryCtx = getQueryCtx();
+
+  HashStringAllocator allocator(optimizerPool_.get());
+  auto context = std::make_unique<optimizer::QueryGraphContext>(
+      allocator, OptimizerOptions::kMaxPlanObjectsDefault);
+  optimizer::queryCtx() = context.get();
+  SCOPE_EXIT {
+    optimizer::queryCtx() = nullptr;
+  };
+
+  exec::SimpleExpressionEvaluator evaluator(
+      veloxQueryCtx.get(), optimizerPool_.get());
+  connector::SchemaResolver schemaResolver{
+      connector::ConnectorMetadataRegistry::global()};
+  auto connectorContext = std::make_shared<connector::ConnectorContext>(
+      veloxQueryCtx->queryId(),
+      "test",
+      connectorSessionProperties_,
+      connectorStatWriterProvider());
+  auto session = makeOptimizerSession(
+      connectorContext,
+      optimizerOptions.value_or(optimizerOptions_),
+      statsWriter_);
+  v2::Optimizer optimizer{
+      logicalPlan, schemaResolver, *session, evaluator, veloxQueryCtx};
+  const auto debugPlan = optimizer.debugPlanTo(
+      {.maxRemotePartitions = 1, .maxLocalPartitions = 1}, pass);
+  callback(debugPlan.root);
+}
+
 optimizer::PlanAndStats QueryTestBase::planVelox(
     const logical_plan::LogicalPlanNodePtr& plan,
     const MultiFragmentPlan::Options& options,
