@@ -211,6 +211,103 @@ TEST_P(JoinTest, expressionJoinKey) {
   AXIOM_ASSERT_PLAN_V2(toSingleNodePlan(query), matcher);
 }
 
+// Repartitioning on a subset of join keys reuses an expression key computed
+// for the earlier shuffle.
+TEST_P(JoinTest, repeatedJoinKey) {
+  addTableWithStats("t", {"t_k", "t_x"}, 25);
+  addTableWithStats("u", {"u_k"}, 150'000);
+  addTableWithStats("v", {"k", "x"}, 10'000);
+
+  auto query =
+      "SELECT t_k, u_k, k "
+      "FROM t "
+      "LEFT JOIN v ON t_k + 1 = k AND t_x = x "
+      "LEFT JOIN u ON t_k + 1 = u_k";
+  SCOPED_TRACE(query);
+
+  const auto logicalPlan = parseSelect(query, kTestConnectorId);
+  AXIOM_ASSERT_PLAN_V2(
+      toSingleNodePlan(logicalPlan),
+      matchScan("u")
+          .hashJoinRight(
+              matchScan("v")
+                  .hashJoinRight(
+                      matchScan("t").project({"t_k + 1 as k1", "t_x", "t_k"}),
+                      {.keys = {{"k = k1", "x = t_x"}}})
+                  .aliases({"k", "t_k"})
+                  .project({"t_k + 1 as k2", "t_k", "k"}),
+              {.keys = {{"u_k = k2"}}})
+          .project({"t_k", "u_k", "k"})
+          .build());
+
+  AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
+      planVelox(logicalPlan).plan,
+      matchScan("u")
+          .shuffle({"u_k"})
+          .hashJoinRight(
+              matchScan("v")
+                  .shuffle({"k", "x"})
+                  .hashJoinRight(
+                      matchScan("t")
+                          .project({"t_k", "t_x", "t_k + 1 as k1"})
+                          .shuffle({"k1", "t_x"}),
+                      {.keys = {{"k = k1", "x = t_x"}}})
+                  .shuffle({"k1"}),
+              {.keys = {{"u_k = k1"}}})
+          .project({"t_k", "u_k", "k"})
+          .gather()
+          .build());
+}
+
+// A key expression over a null-extended side is reevaluated above the join.
+TEST_P(JoinTest, nullExtendedJoinKey) {
+  addTableWithStats("t", {"t_k"}, 150'000);
+  addTableWithStats("u", {"u_k"}, 25);
+  addTableWithStats("v", {"k"}, 10'000);
+  optimizerOptions_.broadcastSizeLimit = 1;
+
+  auto query =
+      "SELECT t_k, u_k, k "
+      "FROM t "
+      "LEFT JOIN u ON t_k = coalesce(u_k, 0) "
+      "JOIN v ON coalesce(u_k, 0) = k";
+  SCOPED_TRACE(query);
+
+  const auto logicalPlan = parseSelect(query, kTestConnectorId);
+  AXIOM_ASSERT_PLAN_V2(
+      toSingleNodePlan(logicalPlan),
+      matchScan("t")
+          .hashJoinLeft(
+              matchScan("u").project({"coalesce(u_k, 0) as first_key", "u_k"}),
+              {.keys = {{"t_k = first_key"}},
+               .outputColumnNames = {{"t_k", "u_k"}}})
+          .project({"coalesce(u_k, 0) as second_key", "t_k", "u_k"})
+          .hashJoinInner(
+              matchScan("v"),
+              {.keys = {{"second_key = k"}},
+               .outputColumnNames = {{"t_k", "u_k", "k"}}})
+          .build());
+
+  AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
+      planVelox(logicalPlan).plan,
+      matchScan("t")
+          .shuffle({"t_k"})
+          .hashJoinLeft(
+              matchScan("u")
+                  .project({"u_k", "coalesce(u_k, 0) as first_key"})
+                  .shuffle({"first_key"}),
+              {.keys = {{"t_k = first_key"}},
+               .outputColumnNames = {{"t_k", "u_k"}}})
+          .project({"t_k", "u_k", "coalesce(u_k, 0) as second_key"})
+          .shuffle({"second_key"})
+          .hashJoinInner(
+              matchScan("v").shuffle({"k"}),
+              {.keys = {{"second_key = k"}},
+               .outputColumnNames = {{"t_k", "u_k", "k"}}})
+          .gather()
+          .build());
+}
+
 TEST_P(JoinTest, pushdownFilterThroughJoin) {
   testConnector_->addTable("t", ROW({"t_id", "t_data"}, BIGINT()));
   testConnector_->addTable("u", ROW({"u_id", "u_data"}, BIGINT()));
