@@ -69,7 +69,8 @@ TEST_F(DeleteTest, partitionPredicates) {
       "SELECT n_nationkey, n_nationkey % 3 AS pk, n_nationkey % 2 AS qk "
       "FROM nation");
 
-  // A predicate no partition satisfies removes nothing.
+  // A predicate no partition satisfies is proven empty by metadata and
+  // removes nothing.
   EXPECT_EQ(0, runDelete("DELETE FROM test WHERE pk IN (7, 8)"));
   EXPECT_EQ(25, runCount("FROM test"));
 

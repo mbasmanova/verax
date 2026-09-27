@@ -39,7 +39,9 @@ Defined in `ConnectorMetadata.h`:
 
 ```cpp
 struct FilteredTableStats {
+  bool isKnownEmpty{false};
   uint64_t numRows{0};
+  std::optional<uint64_t> numRawInputRows;
   std::vector<ColumnStatistics> columnStats;
 };
 
@@ -52,6 +54,10 @@ virtual folly::coro::Task<std::optional<FilteredTableStats>> co_estimateStats(
 
 The default implementation returns `std::nullopt`, meaning the connector does
 not support stats estimation. Connectors opt in by overriding.
+
+`isKnownEmpty` is an exact metadata result: the connector sets it only when the
+accepted filters provably match no rows. An estimated `numRows` of zero does
+not imply emptiness.
 
 **Parameters:**
 - `tableHandle` -- the connector reads its accepted filters from it, in whatever
@@ -187,4 +193,9 @@ fold.
 - **`FilteredTableStatsTest`**
   (`axiom/optimizer/tests/FilteredTableStatsTest.cpp`): end-to-end tests forcing
   the `co_estimateStats` path (`noFilter`, `dataFilter`, `partitionFilter`,
-  `partitionAndDataFilter`).
+  `partitionAndDataFilter`), exact-empty plan rewrites, and timing metrics.
+- **`partitionFold.sql`** (`axiom/optimizer/tests/sql/partitionFold.sql`):
+  end-to-end result checks for exact-empty partition filters.
+- **Prism partition-stat tests**
+  (`fb_axiom/connectors/prism/tests/`): exact-empty results from unsatisfiable
+  filters and partition listings with no matches.

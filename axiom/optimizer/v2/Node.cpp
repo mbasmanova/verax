@@ -1204,6 +1204,11 @@ size_t Values::cardinality() const {
   return source_ != nullptr ? source_->cardinality() : 0;
 }
 
+bool Values::isSingleRowNoColumns(NodeCP node) {
+  return node->is(NodeType::kValues) && node->outputColumns().empty() &&
+      node->as<Values>()->cardinality() == 1;
+}
+
 size_t Values::KeyHash::operator()(const Values* node) const {
   return hashOf(
       node->source(), node->rows(), node->outputColumns(), node->channels());
@@ -1631,6 +1636,34 @@ Join::PreservedSides Join::preservedSides(velox::core::JoinType joinType) {
       return {.right = true};
     case JoinType::kFull:
       return {};
+    case JoinType::kNumJoinTypes:
+      break;
+  }
+  VELOX_UNREACHABLE();
+}
+
+bool Join::isKnownEmpty(
+    velox::core::JoinType joinType,
+    bool leftIsKnownEmpty,
+    bool rightIsKnownEmpty) {
+  using JoinType = velox::core::JoinType;
+  switch (joinType) {
+    case JoinType::kInner:
+    case JoinType::kLeftSemiFilter:
+    case JoinType::kCountingLeftSemiFilter:
+    case JoinType::kRightSemiFilter:
+      return leftIsKnownEmpty || rightIsKnownEmpty;
+    case JoinType::kLeft:
+    case JoinType::kLeftSemiProject:
+    case JoinType::kAnti:
+    case JoinType::kCountingAnti:
+      return leftIsKnownEmpty;
+    case JoinType::kRight:
+    case JoinType::kRightSemiProject:
+    case JoinType::kRightAnti:
+      return rightIsKnownEmpty;
+    case JoinType::kFull:
+      return leftIsKnownEmpty && rightIsKnownEmpty;
     case JoinType::kNumJoinTypes:
       break;
   }

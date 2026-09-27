@@ -21,7 +21,10 @@
 
 namespace facebook::axiom::optimizer::v2 {
 
-/// Annotates base tables with connector filtered-table statistics.
+class Builder;
+
+/// Applies connector filtered-table statistics and removes proven-empty
+/// subtrees.
 class EstimateLeafStatsPass {
  public:
   /// For each Scan reachable from 'root', calls
@@ -33,8 +36,11 @@ class EstimateLeafStatsPass {
   /// the `useFilteredTableStats` option; when it does not run, or a connector
   /// returns no stats for a table, that table's `filteredCardinality` stays 0
   /// and `EstimateProvider` falls back to constraint-based selectivity.
-  /// 'session' supplies connector sessions.
-  static void run(NodeCP root, const OptimizerSession& session);
+  /// When connector metadata proves that a scan is empty, propagates that fact
+  /// upward and materializes Values where the fact cannot propagate farther or
+  /// at the root. 'session' supplies connector sessions.
+  static NodeCP
+  run(NodeCP root, Builder& builder, const OptimizerSession& session);
 };
 
 } // namespace facebook::axiom::optimizer::v2

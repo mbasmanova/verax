@@ -21,9 +21,9 @@ MultiFragmentPlan of Velox plan nodes
 ```
 
 `Translate` produces the Node IR. Every stage through `PlanPhysical` consumes
-and returns that IR, except `EstimateLeafStats`, which annotates shared table
-and column objects in place. `Emit` lowers the finished IR and is therefore not
-an `Optimizer::Pass` boundary.
+and returns that IR. `EstimateLeafStats` also annotates shared table and column
+objects in place. `Emit` lowers the finished IR and is therefore not an
+`Optimizer::Pass` boundary.
 
 ## Quick reference
 
@@ -35,7 +35,7 @@ an `Optimizer::Pass` boundary.
 | `PushdownAndPrune` | Top-down decisions, bottom-up rebuild | Pushes predicates, prunes columns and computations, simplifies joins and ranking, and rewrites expressions using facts learned below | Filter reaches scan; outer join -> inner join; unused output disappears |
 | `FoldMetadataAggregate` | Bottom-up | Resolves aggregates that a connector can answer from metadata | Metadata count over `Scan` -> `Values`, or an equivalent aggregate that scans rows |
 | `ConnectorPushdown` | Bottom-up discovery, then substitution | Offers maximal connector-local subtrees and replaces accepted roots | Relational subtree -> scan of a connector-provided virtual table |
-| `EstimateLeafStats` | Visits `Scan` nodes and annotates their leaves | Fetches post-filter connector statistics for each scan | Base-table row count and column min/max/NDV become available |
+| `EstimateLeafStats` | Scan collection, then bottom-up rewrite | Fetches post-filter connector statistics and removes subtrees proven empty | Base-table estimates become available; an empty inner-join input removes the join |
 | `PlanPhysical` | Bottom-up with join enumeration | Chooses join order and data distribution and inserts exchanges | Logical join cluster -> costed join tree; global operators -> distributed stages |
 | `Emit` | Node IR -> `MultiFragmentPlan` | Lowers IR nodes and exchanges into executable Velox plan nodes and fragments | User-visible output layout and executable fragments |
 
@@ -178,7 +178,12 @@ subtree pushdown. The requests run concurrently. The pass annotates:
 - `BaseTable::filteredCardinality` with the post-filter row count.
 - Each column value with min, max, and NDV statistics.
 
-The pass changes metadata attached to the IR rather than its tree shape.
+When a connector proves that accepted filters match no rows, the pass also
+propagates emptiness upward. Operators that cannot produce rows from empty
+input disappear. An `EnforceSingleRow` becomes one `Values` row of NULLs. An
+operator that must still execute, such as a global aggregation, remains with an
+empty `Values` input.
+
 `EstimateProvider` uses these annotations during physical planning and falls
 back to constraint-based estimates when connector statistics are unavailable.
 It is `EstimateProvider`, not this pass, that derives estimates for intermediate

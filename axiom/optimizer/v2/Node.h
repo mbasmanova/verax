@@ -999,6 +999,10 @@ class Values : public Node {
   /// `Variant`s or by the logical node.
   size_t cardinality() const;
 
+  /// Returns whether 'node' is a Values node containing one row and no
+  /// columns.
+  static bool isSingleRowNoColumns(NodeCP node);
+
   /// Value of `outputColumns()[column]` in row 'row'. Only for folded rows,
   /// i.e. when `rows()` is set.
   const velox::Variant& valueAt(size_t row, size_t column) const;
@@ -1304,6 +1308,12 @@ class Join : public Node {
   /// -- but it never nulls the row's columns and never invents a row the input
   /// did not have.
   static PreservedSides preservedSides(velox::core::JoinType joinType);
+
+  /// Returns whether empty inputs imply an empty join result.
+  static bool isKnownEmpty(
+      velox::core::JoinType joinType,
+      bool leftIsKnownEmpty,
+      bool rightIsKnownEmpty);
 
   /// Returns the BOOLEAN mark this semi-project join adds to the preserved
   /// side's columns, which is its last output column. Only semi-project joins

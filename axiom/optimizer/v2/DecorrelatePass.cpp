@@ -172,17 +172,6 @@ bool isNullOnPadRows(ExprCP expr, const PlanObjectSet& bodyColumns) {
       !expr->containsFunction(FunctionSet::kNonDefaultNullBehavior);
 }
 
-// True if `node` is a `Values` with one row and no columns — what the FROM of
-// a subquery that selects only from an UNNEST lowers to. Joining with it
-// neither adds columns nor changes cardinality.
-bool isSingleEmptyRowValues(NodeCP node) {
-  if (!node->is(NodeType::kValues)) {
-    return false;
-  }
-  const Values* values = node->as<Values>();
-  return values->outputColumns().empty() && values->cardinality() == 1;
-}
-
 // Decorrelate pass implementation. The per-Apply loop:
 // recompute `correlationColumns` from body; if empty, hit terminus;
 // otherwise dispatch a peel rule by body's outermost operator and
@@ -1982,7 +1971,7 @@ class Decorrelator : public NodeRewriter<> {
         "A kLeftSemiProject Apply does not assert a single row");
 
     const Unnest* unnestBody = body->as<Unnest>();
-    if (!isSingleEmptyRowValues(unnestBody->input())) {
+    if (!Values::isSingleRowNoColumns(unnestBody->input())) {
       VELOX_NYI(
           "Decorrelate unnestPeel: EXISTS over an Unnest of a relation is not "
           "yet implemented; only over the subquery's own row is");
@@ -3122,7 +3111,7 @@ class Decorrelator : public NodeRewriter<> {
       const ExprVector& filter) {
     // A body that is one empty row contributes nothing to join, so the
     // Apply is its input.
-    if (filter.empty() && isSingleEmptyRowValues(body)) {
+    if (filter.empty() && Values::isSingleRowNoColumns(body)) {
       return input;
     }
 

@@ -15,8 +15,12 @@
  */
 
 #include "axiom/optimizer/v2/EstimateLeafStatsPass.h"
+#include "axiom/optimizer/v2/Builder.h"
+#include "axiom/optimizer/v2/NodeRewriter.h"
+#include "axiom/optimizer/v2/PrecomputeProjections.h"
 #include "axiom/optimizer/v2/ScanHandle.h"
 
+#include <folly/container/F14Set.h>
 #include "folly/coro/BlockingWait.h"
 #include "folly/coro/Collect.h"
 
@@ -56,12 +60,12 @@ void applyColumnStats(
 // the connector's post-filter row count. A nullopt result (the connector does
 // not support stats) leaves filteredCardinality at 0 so downstream estimation
 // falls back to constraint-based selectivity.
-void applyFilteredStats(
+bool applyFilteredStats(
     const Scan& scan,
     const std::vector<ColumnCP>& statColumns,
     const std::optional<connector::FilteredTableStats>& stats) {
   if (!stats.has_value()) {
-    return;
+    return false;
   }
 
   auto* baseTable = const_cast<BaseTable*>(scan.baseTable());
@@ -78,15 +82,255 @@ void applyFilteredStats(
   // numRows is post-filter for the filters the connector took; the refused
   // ones are estimated at the Filter above the scan.
   baseTable->filteredCardinality = std::max<float>(1, stats->numRows);
+  return stats->isKnownEmpty;
 }
+
+// Carries a proven-empty result from a child to its parent.
+struct KnownEmptyContext {
+  bool isKnownEmpty{false};
+};
+
+// Propagates proven-empty scans through operators and materializes Values where
+// the fact cannot propagate farther or at the root.
+class KnownEmptyRewriter : public NodeRewriter<KnownEmptyContext> {
+ public:
+  KnownEmptyRewriter(
+      Builder& builder,
+      folly::F14FastSet<ScanCP> knownEmptyScans)
+      : NodeRewriter(builder), knownEmptyScans_(std::move(knownEmptyScans)) {}
+
+ protected:
+  NodeCP rewriteScan(const Scan* node, KnownEmptyContext& context) override {
+    context.isKnownEmpty |= knownEmptyScans_.contains(node);
+    return node;
+  }
+
+  NodeCP rewriteValues(const Values* node, KnownEmptyContext& context)
+      override {
+    context.isKnownEmpty |= node->cardinality() == 0;
+    return node;
+  }
+
+  NodeCP rewriteAggregate(const Aggregate* node, KnownEmptyContext& context)
+      override {
+    KnownEmptyContext childContext;
+    NodeCP newInput = rewrite(node->input(), childContext);
+    if (childContext.isKnownEmpty) {
+      const bool emitsRowOnEmptyInput =
+          node->groupingKeys().empty() || !node->globalGroupingSets().empty();
+      if (!emitsRowOnEmptyInput) {
+        context.isKnownEmpty = true;
+        return node;
+      }
+      newInput = makeEmptyValues(node->input());
+    }
+    if (newInput == node->input()) {
+      return node;
+    }
+    return builder().make<Aggregate>(
+        {.input = newInput,
+         .groupingKeys = node->groupingKeys(),
+         .aggregates = node->aggregates(),
+         .outputColumns = node->outputColumns(),
+         .step = node->step(),
+         .groupId = node->groupId(),
+         .globalGroupingSets = node->globalGroupingSets()});
+  }
+
+  NodeCP rewriteJoin(const Join* node, KnownEmptyContext& context) override {
+    KnownEmptyContext leftContext;
+    KnownEmptyContext rightContext;
+    NodeCP newLeft = rewrite(node->left(), leftContext);
+    NodeCP newRight = rewrite(node->right(), rightContext);
+    if (Join::isKnownEmpty(
+            node->joinType(),
+            leftContext.isKnownEmpty,
+            rightContext.isKnownEmpty)) {
+      context.isKnownEmpty = true;
+      return node;
+    }
+    if (leftContext.isKnownEmpty) {
+      newLeft = makeEmptyValues(node->left());
+    }
+    if (rightContext.isKnownEmpty) {
+      newRight = makeEmptyValues(node->right());
+    }
+    if (newLeft == node->left() && newRight == node->right()) {
+      return node;
+    }
+    if (node->joinType() == velox::core::JoinType::kInner &&
+        node->leftKeys().empty() && node->filter().empty()) {
+      if (Values::isSingleRowNoColumns(newLeft)) {
+        return projectColumns(
+            newRight, node->outputColumns(), node->outputColumns());
+      }
+      if (Values::isSingleRowNoColumns(newRight)) {
+        return projectColumns(
+            newLeft, node->outputColumns(), node->outputColumns());
+      }
+    }
+    return builder().make<Join>(
+        {newLeft,
+         newRight,
+         node->joinType(),
+         node->leftKeys(),
+         node->rightKeys(),
+         node->filter(),
+         node->nullAware(),
+         node->nullAsValue(),
+         node->outputColumns()});
+  }
+
+  NodeCP rewriteUnionAll(const UnionAll* node, KnownEmptyContext& context)
+      override {
+    NodeVector newInputs;
+    newInputs.reserve(node->inputs().size());
+    QGVector<ColumnVector> newLegColumns;
+    newLegColumns.reserve(node->legColumns().size());
+    bool changed{false};
+    for (size_t i = 0; i < node->inputs().size(); ++i) {
+      NodeCP input = node->inputs()[i];
+      KnownEmptyContext childContext;
+      NodeCP newInput = rewrite(input, childContext);
+      if (childContext.isKnownEmpty) {
+        changed = true;
+        continue;
+      }
+      changed |= newInput != input;
+      newInputs.push_back(newInput);
+      newLegColumns.push_back(node->legColumns()[i]);
+    }
+
+    if (newInputs.empty()) {
+      context.isKnownEmpty = true;
+      return node;
+    }
+
+    if (newInputs.size() == 1) {
+      return projectColumns(
+          newInputs.front(), newLegColumns.front(), node->outputColumns());
+    }
+
+    return changed ? builder().make<UnionAll>(
+                         {std::move(newInputs),
+                          std::move(newLegColumns),
+                          node->outputColumns()})
+                   : static_cast<NodeCP>(node);
+  }
+
+  NodeCP rewriteEnforceSingleRow(
+      const EnforceSingleRow* node,
+      KnownEmptyContext& /*context*/) override {
+    KnownEmptyContext childContext;
+    NodeCP newInput = rewrite(node->input(), childContext);
+    if (childContext.isKnownEmpty) {
+      return makeNullRowValues(node);
+    }
+    return newInput == node->input()
+        ? static_cast<NodeCP>(node)
+        : builder().make<EnforceSingleRow>({newInput});
+  }
+
+  NodeCP rewriteTableWrite(
+      const TableWrite* node,
+      KnownEmptyContext& /*context*/) override {
+    KnownEmptyContext childContext;
+    NodeCP newInput = rewrite(node->input(), childContext);
+    if (childContext.isKnownEmpty) {
+      newInput = makeEmptyValues(node->input());
+    }
+    return newInput == node->input()
+        ? static_cast<NodeCP>(node)
+        : builder().make<TableWrite>(
+              {newInput, node->table(), node->kind(), node->columnExprs()});
+  }
+
+  NodeCP rewriteFixedPoint(const FixedPoint* node, KnownEmptyContext& context)
+      override {
+    KnownEmptyContext anchorContext;
+    NodeCP newAnchor = rewrite(node->anchor(), anchorContext);
+    if (anchorContext.isKnownEmpty) {
+      context.isKnownEmpty = true;
+      return node;
+    }
+
+    KnownEmptyContext stepContext;
+    NodeCP newStep = rewrite(node->step(), stepContext);
+    if (stepContext.isKnownEmpty) {
+      return newAnchor;
+    }
+    if (newStep->requiredStates() != node->step()->requiredStates()) {
+      newStep = node->step();
+    }
+
+    KnownEmptyContext convergenceContext;
+    NodeCP newConvergence = rewrite(node->convergence(), convergenceContext);
+    if (newConvergence->requiredStates() !=
+        node->convergence()->requiredStates()) {
+      newConvergence = node->convergence();
+    }
+
+    if (newAnchor == node->anchor() && newStep == node->step() &&
+        newConvergence == node->convergence()) {
+      return node;
+    }
+    return builder().make<FixedPoint>({
+        .anchor = newAnchor,
+        .step = newStep,
+        .convergence = newConvergence,
+        .name = node->name(),
+        .outputColumns = node->outputColumns(),
+        .maxIterations = node->maxIterations(),
+        .recursiveNumDrivers = node->recursiveNumDrivers(),
+    });
+  }
+
+ private:
+  // Projects 'inputColumns' onto 'outputColumns', composing an input Project
+  // when present.
+  NodeCP projectColumns(
+      NodeCP input,
+      const ColumnVector& inputColumns,
+      const ColumnVector& outputColumns) {
+    if (input->outputColumns() == outputColumns &&
+        inputColumns == outputColumns) {
+      return input;
+    }
+    ExprVector expressions(inputColumns.begin(), inputColumns.end());
+    PrecomputeProjections::inlineInputProject(input, expressions, builder());
+    return builder().make<Project>(
+        {input, std::move(expressions), outputColumns});
+  }
+
+  NodeCP makeEmptyValues(NodeCP node) {
+    return builder().makeEmptyValues(node->outputColumns());
+  }
+
+  // Returns one row containing a typed NULL for each output column of 'node'.
+  NodeCP makeNullRowValues(NodeCP node) {
+    std::vector<velox::Variant> row;
+    row.reserve(node->outputColumns().size());
+    for (ColumnCP column : node->outputColumns()) {
+      row.push_back(velox::Variant::null(column->value().type->kind()));
+    }
+
+    return builder().makeSingleRowValues(std::move(row), node->outputColumns());
+  }
+
+  // Scans whose accepted filters were proven to match no rows.
+  const folly::F14FastSet<ScanCP> knownEmptyScans_;
+};
 
 } // namespace
 
-void EstimateLeafStatsPass::run(NodeCP root, const OptimizerSession& session) {
+NodeCP EstimateLeafStatsPass::run(
+    NodeCP root,
+    Builder& builder,
+    const OptimizerSession& session) {
   std::vector<ScanCP> scans;
   collectScans(root, scans);
 
-  // One stats request per distinct base table.
+  // One stats request per scan.
   struct TableTask {
     ScanCP scan;
     std::vector<ColumnCP> statColumns;
@@ -128,7 +372,7 @@ void EstimateLeafStatsPass::run(NodeCP root, const OptimizerSession& session) {
   }
 
   if (requests.empty()) {
-    return;
+    return root;
   }
 
   // No optimizer-time executor is available, so the requests run inline. They
@@ -141,9 +385,22 @@ void EstimateLeafStatsPass::run(NodeCP root, const OptimizerSession& session) {
       OptimizerMetrics::kEstimateStatsWallNanos,
       std::chrono::steady_clock::now() - estimateStart);
 
+  folly::F14FastSet<ScanCP> knownEmptyScans;
   for (size_t i = 0; i < tasks.size(); ++i) {
-    applyFilteredStats(*tasks[i].scan, tasks[i].statColumns, results[i]);
+    if (applyFilteredStats(*tasks[i].scan, tasks[i].statColumns, results[i])) {
+      knownEmptyScans.insert(tasks[i].scan);
+    }
   }
+  if (knownEmptyScans.empty()) {
+    return root;
+  }
+
+  KnownEmptyContext context;
+  NodeCP rewritten =
+      KnownEmptyRewriter{builder, std::move(knownEmptyScans)}.rewrite(
+          root, context);
+  return context.isKnownEmpty ? builder.makeEmptyValues(root->outputColumns())
+                              : rewritten;
 }
 
 } // namespace facebook::axiom::optimizer::v2

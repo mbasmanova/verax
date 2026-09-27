@@ -474,6 +474,10 @@ struct SampleResult {
 
 /// Result of estimating filtered table statistics from the connector.
 struct FilteredTableStats {
+  /// True only when metadata proves that the accepted filters match no rows.
+  /// An estimated 'numRows' of zero does not establish this property.
+  bool isKnownEmpty{false};
+
   /// Estimated row count after applying the filters the connector accepted into
   /// the table handle.
   uint64_t numRows{0};

@@ -30,6 +30,19 @@ Builder::Builder() : functionNames_{queryCtx()->functionNames()} {
   }
 }
 
+const Values* Builder::makeSingleRowValues(
+    std::vector<velox::Variant> row,
+    ColumnVector outputColumns) {
+  std::vector<velox::Variant> rows;
+  rows.push_back(velox::Variant::row(std::move(row)));
+  return makeValues(
+      /*source=*/nullptr,
+      queryCtx()->registerVariant(
+          std::make_unique<velox::Variant>(
+              velox::Variant::array(std::move(rows)))),
+      std::move(outputColumns));
+}
+
 namespace {
 
 // Returns true if `args` should be swapped to put a literal on the

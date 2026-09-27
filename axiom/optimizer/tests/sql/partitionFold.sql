@@ -23,6 +23,44 @@ SELECT max(ds) AS m FROM t UNION ALL SELECT min(ds) AS m FROM t
 -- count() counts rows, not partitions.
 SELECT count(*) FROM t
 ----
+-- count 0
+SELECT u.d
+FROM u
+JOIN t ON u.d = t.ds
+WHERE t.ds = '1900-01-01'
+----
+-- A LEFT JOIN preserves its non-empty side when the other side has no
+-- matching partitions.
+SELECT u.d, t.v
+FROM u
+LEFT JOIN (
+  SELECT v, ds
+  FROM t
+  WHERE ds = '1900-01-01'
+) t ON u.d = t.ds
+----
+SELECT count(*) FROM t WHERE ds = '1900-01-01'
+----
+-- An empty UNION ALL branch contributes no rows.
+SELECT v FROM t WHERE ds = '1900-01-01'
+UNION ALL
+SELECT 1 FROM u
+----
+-- A scalar subquery over no matching partitions produces NULL.
+SELECT (SELECT v FROM t WHERE ds = '1900-01-01')
+----
+-- An empty recursive step leaves the anchor row.
+-- error_v1: Fixed-point (recursive) plan execution is not yet implemented
+WITH RECURSIVE r(n) AS (
+  VALUES (1)
+  UNION ALL
+  SELECT n + 1
+  FROM r
+  JOIN t ON t.v = r.n
+  WHERE t.ds = '1900-01-01'
+)
+SELECT n FROM r
+----
 -- An aggregation whose value is never read still produces its single row.
 SELECT count(*) FROM (SELECT max(ds) FROM t)
 ----
