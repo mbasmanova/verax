@@ -10,9 +10,9 @@
 - *`Decorrelate-design-rationale.md` — alternatives considered, rejected paths.*
 
 The driver is the loop that turns each `Apply` node into a `Join`. The
-per-op rules (Filter, Project, Aggregate, Limit, Join, AssignUniqueId)
-describe HOW to peel one body operator; the driver describes WHICH
-rule fires WHEN, how state is maintained between peels, and when
+per-op rules (Filter, Project, Aggregate, Limit, Join, AssignUniqueId,
+EnforceDistinct) describe HOW to peel one body operator; the driver describes
+WHICH rule fires WHEN, how state is maintained between peels, and when
 iteration terminates.
 
 ## Mental model
@@ -92,6 +92,7 @@ Dispatch by `body`'s outermost operator:
 | `Limit`           | `Decorrelate-limit-rules.md`                      |
 | `Join`            | `Decorrelate-join-rules.md`                       |
 | `AssignUniqueId`  | lift above Apply; recurse on inner Apply over child |
+| `EnforceDistinct` | `Decorrelate-enforce-single-row.md` §"Nested scalar subquery" |
 | anything else     | `VELOX_NYI` ("correlated reference inside …")     |
 
 There is no leaf fast-path: when body is `Scan` / `Values` (or any
