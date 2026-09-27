@@ -246,6 +246,10 @@ class Decorrelator : public NodeRewriter<> {
         return unnestPeel(node, input, body, accumulatedFilter);
       }
 
+      if (body->is(NodeType::kEnforceDistinct)) {
+        return enforceDistinctPeel(node, input, body, accumulatedFilter);
+      }
+
       VELOX_NYI(
           "Correlated reference inside a {} branch is not supported yet",
           body->nodeType());
@@ -2084,6 +2088,97 @@ class Decorrelator : public NodeRewriter<> {
         std::move(finalExprs),
         node->outputColumns(),
     });
+  }
+
+  // Peels an EnforceDistinct body operator by lifting it above Apply. Each key
+  // must be the id column of an AssignUniqueId below, which identifies a body
+  // row but can repeat across outer rows, and can be NULL on a pad row.
+  // The lifted check also keys on a per-outer-row id, so it counts the rows of
+  // one outer row.
+  //
+  // The columns produced above those AssignUniqueIds are the values the check
+  // vouches for. A predicate that reads one must see only rows that passed the
+  // check, so it applies above the check; an outer whose rows it all rejects
+  // keeps one pad row. The other predicates join below.
+  NodeCP enforceDistinctPeel(
+      ApplyCP node,
+      NodeCP input,
+      NodeCP body,
+      ExprVector accumulatedFilter) {
+    if (!node->isLeft()) {
+      VELOX_NYI(
+          "Decorrelate: Apply over an EnforceDistinct body is not yet "
+          "supported for kind: {}",
+          node->kindName());
+    }
+    EnforceDistinctCP enforceDistinct = body->as<EnforceDistinct>();
+    NodeCP newBody = enforceDistinct->input();
+
+    PlanObjectSet checkedColumns =
+        PlanObjectSet::fromObjects(newBody->outputColumns());
+    for (ExprCP key : enforceDistinct->distinctKeys()) {
+      AssignUniqueIdCP keySource = findAssignUniqueId(newBody, key);
+      VELOX_CHECK_NOT_NULL(
+          keySource,
+          "EnforceDistinct key is not a unique id: {}",
+          key->toString());
+      checkedColumns.eraseAll(keySource->outputColumns());
+    }
+
+    ExprVector joinFilter;
+    ExprVector checkedFilter;
+    for (ExprCP conjunct : accumulatedFilter) {
+      (conjunct->columns().hasIntersection(checkedColumns) ? checkedFilter
+                                                           : joinFilter)
+          .push_back(conjunct);
+    }
+
+    ColumnCP outerRowId = makeIdColumn();
+    NodeCP taggedInput = tagOuterRows(input, outerRowId);
+
+    // With 'checkedFilter', the outer's single-row check applies after it, in
+    // 'collapsePadRows'.
+    ColumnCP innerIncludeMarker = makeIncludeColumn();
+    NodeCP innerApply = makeLeftLeg(
+        taggedInput,
+        newBody,
+        std::move(joinFilter),
+        /*enforceSingleRow=*/checkedFilter.empty() && node->enforceSingleRow(),
+        innerIncludeMarker);
+    ExprVector distinctKeys = enforceDistinct->distinctKeys();
+    distinctKeys.push_back(outerRowId);
+    NodeCP enforced = builder().make<EnforceDistinct>({
+        rewrite(innerApply),
+        std::move(distinctKeys),
+        enforceDistinct->errorMessage(),
+    });
+
+    if (!checkedFilter.empty()) {
+      return collapsePadRows(
+          node,
+          input,
+          enforced,
+          outerRowId,
+          exprFactory_.makeAnd(
+              innerIncludeMarker, exprFactory_.andAll(checkedFilter)));
+    }
+
+    return projectApplyOutput(node, enforced, innerIncludeMarker);
+  }
+
+  // Returns the AssignUniqueId in the tree rooted at 'node' whose id column is
+  // 'key', or nullptr if there is none.
+  static AssignUniqueIdCP findAssignUniqueId(NodeCP node, ExprCP key) {
+    if (node->is(NodeType::kAssignUniqueId) &&
+        node->as<AssignUniqueId>()->idColumn() == key) {
+      return node->as<AssignUniqueId>();
+    }
+    for (NodeCP child : node->inputs()) {
+      if (AssignUniqueIdCP found = findAssignUniqueId(child, key)) {
+        return found;
+      }
+    }
+    return nullptr;
   }
 
   // Aggregate peel (Rule A): the body aggregates once per outer row. Supports

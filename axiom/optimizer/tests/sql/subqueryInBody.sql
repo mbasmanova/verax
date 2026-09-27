@@ -47,6 +47,44 @@ FROM t
 SELECT t.a, (SELECT u.a FROM u WHERE u.a > t.a AND u.a IN (SELECT v.a FROM v)) AS b
 FROM t
 ----
+-- A correlated subquery whose WHERE compares with a single-value subquery
+-- correlated to its own FROM rows. Several outer rows share each FROM row,
+-- and outer rows with no FROM row read NULL.
+SELECT t.a,
+  (SELECT DISTINCT u.a FROM u
+   WHERE u.a = t.a AND u.a = (SELECT v.a FROM v WHERE v.a = u.a)) AS b
+FROM t
+----
+-- The inner single-value subquery returns several rows for a `u` row that
+-- some `t` row matches.
+-- error: Scalar sub-query has returned multiple rows
+SELECT t.a,
+  (SELECT DISTINCT u.a FROM u
+   WHERE u.a = t.a AND u.a < (SELECT v.a FROM v WHERE v.a > u.a)) AS b
+FROM t
+----
+-- The same, where the comparison holds for only one of the inner subquery's
+-- rows: it still returns several.
+-- error: Scalar sub-query has returned multiple rows
+SELECT t.a,
+  (SELECT DISTINCT u.a FROM u
+   WHERE u.a = t.a AND u.a + 1 = (SELECT v.a FROM v WHERE v.a > u.a)) AS b
+FROM t
+----
+-- The inner single-value subquery in the SELECT list, where no predicate
+-- reads its value.
+SELECT t.a,
+  (SELECT DISTINCT (SELECT v.a FROM v WHERE v.a = u.a) FROM u
+   WHERE u.a = t.a) AS b
+FROM t
+----
+-- The same, where the inner subquery returns several rows.
+-- error: Scalar sub-query has returned multiple rows
+SELECT t.a,
+  (SELECT DISTINCT (SELECT v.a FROM v WHERE v.a > u.a) FROM u
+   WHERE u.a = t.a) AS b
+FROM t
+----
 -- EXISTS whose body joins a correlated relation to another under an ON
 -- predicate: existence is a property of the pair, not of either side.
 -- error_v1: Nested correlation across subquery boundaries is not supported yet

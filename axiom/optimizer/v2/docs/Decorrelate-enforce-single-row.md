@@ -102,6 +102,46 @@ per-outer cardinality (Filter peel: predicates absorbed into
 Apply.filter, applied at the join boundary before ESR; Project peel:
 no cardinality change). ESR rides through unchanged.
 
+## Nested scalar subquery — `EnforceDistinct` in body
+
+A scalar subquery inside another correlated subquery is decorrelated first,
+so the outer Apply's body holds the lowering above: `EnforceDistinct` keyed
+on the id of an `AssignUniqueId` below it.
+
+```sql
+SELECT t.a,
+  (SELECT DISTINCT u.a FROM u
+   WHERE u.a = t.a AND u.a = (SELECT v.a FROM v WHERE v.a = u.a))
+FROM t
+```
+
+The peel lifts `EnforceDistinct` above the Apply:
+
+```
+- EnforceDistinct (distinctKeys = [rn, outer_rn])
+  - Apply (kLeft, filter = predicates not reading checked columns)  ← recurses
+    - input = AssignUniqueId(L) → adds outer_rn
+    - body  = EnforceDistinct's input
+```
+
+- **`outer_rn` makes the check per outer row.** `rn` identifies a body
+  row, but it can repeat across outer rows (the body's `AssignUniqueId` is
+  renumbered only if it is itself peeled), and it can be NULL on a pad row.
+  Keying on `outer_rn` as well counts the rows of one outer row and keeps the
+  pad rows of different outers apart.
+- **Predicates reading checked columns apply above the check.** The checked
+  columns are the body columns produced above the key's `AssignUniqueId`:
+  the scalar's value. A predicate that reads them must see only rows that
+  passed the check; below it, it could drop the extra rows of a scalar that
+  returns several and hide the error. Such predicates filter above the
+  check, and an outer whose rows they all reject keeps one pad row, the
+  collapse `collapsePadRows` performs. The outer's own `enforceSingleRow`
+  then applies after that filter.
+
+Only `kLeft` is supported; other kinds fail with `VELOX_NYI`. The
+lowering keys every `EnforceDistinct` on an `AssignUniqueId` id, which the
+peel checks.
+
 ## What this rule does NOT do
 
 - **Detect mid-iteration redundancy.** If body becomes an Aggregate
