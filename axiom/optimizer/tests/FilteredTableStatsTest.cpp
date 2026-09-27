@@ -32,7 +32,8 @@ class FilteredTableStatsTest : public test::HiveQueriesTestBase,
  protected:
   static void SetUpTestCase() {
     test::HiveQueriesTestBase::SetUpTestCase();
-    createTpchTables({velox::tpch::Table::TBL_NATION});
+    createTpchTables(
+        {velox::tpch::Table::TBL_NATION, velox::tpch::Table::TBL_REGION});
   }
 
   void SetUp() override {
@@ -43,6 +44,9 @@ class FilteredTableStatsTest : public test::HiveQueriesTestBase,
         "CREATE TABLE t WITH (partitioned_by = ARRAY['k']) AS "
         "SELECT n_nationkey as a, CAST(n_nationkey % 3 AS INTEGER) as k "
         "FROM nation");
+    // Exclude setup planning from the per-query timing assertions.
+    statsWriter_.clear();
+    connectorStatsWriter_.clear();
   }
 
   void TearDown() override {
@@ -115,6 +119,40 @@ TEST_P(FilteredTableStatsTest, partitionFilter) {
       kCardinalityTolerance);
 }
 
+// A partition filter that matches no partitions eliminates scans while
+// preserving each parent operator's empty-input semantics.
+TEST_P(FilteredTableStatsTest, emptyPartition) {
+  for (
+      const auto& [query, matcher] : std::vector<
+          std::pair<std::string_view, std::shared_ptr<core::PlanMatcher>>>{
+          {
+              "SELECT n_name FROM nation JOIN t ON n_nationkey = a WHERE k = 7",
+              matchValues(makeRowVector({makeFlatVector<std::string>({})}))
+                  .build(),
+          },
+          {
+              "SELECT count(*) AS c FROM t WHERE k = 7",
+              matchValues(makeRowVector(ROW({}, {}), 0))
+                  .singleAggregation({}, {"count(*) as c"})
+                  .build(),
+          },
+          {
+              "SELECT (SELECT a FROM t WHERE k = 7)",
+              matchValues(makeRowVector({makeNullableFlatVector<int64_t>(
+                              {std::nullopt})}))
+                  .build(),
+          },
+          {
+              "SELECT a AS x FROM t WHERE k = 7 "
+              "UNION ALL SELECT r_regionkey AS x FROM region",
+              matchHiveScan("region").project({"r_regionkey as x"}).build(),
+          },
+      }) {
+    SCOPED_TRACE(query);
+    AXIOM_ASSERT_PLAN_V2(toSingleNodePlan(query), matcher);
+  }
+}
+
 // Verifies that a partition key filter combined with a data column filter
 // first prunes by partition, then applies data filter selectivity.
 TEST_P(FilteredTableStatsTest, partitionAndDataFilter) {
@@ -146,24 +184,7 @@ TEST_P(FilteredTableStatsTest, joinKeyWithZeroDistinctValues) {
       kCardinalityTolerance);
 }
 
-AXIOM_INSTANTIATE_V1_V2(FilteredTableStatsTest);
-// Each optimizer drives its own estimate fan-out, so both are checked.
-class EstimateStatsTimingTest : public test::HiveQueriesTestBase,
-                                public testing::WithParamInterface<bool> {
- protected:
-  static void SetUpTestCase() {
-    test::HiveQueriesTestBase::SetUpTestCase();
-    createTpchTables(
-        {velox::tpch::Table::TBL_NATION, velox::tpch::Table::TBL_REGION});
-  }
-
-  void SetUp() override {
-    test::HiveQueriesTestBase::SetUp();
-    useV2_ = GetParam();
-  }
-};
-
-TEST_P(EstimateStatsTimingTest, optimizerTimesTheEstimateFanOut) {
+TEST_P(FilteredTableStatsTest, estimateTiming) {
   // Both tables are estimated in one fan-out, so a per-call timer records two
   // samples where a fan-out timer records one.
   planVelox(parseSelect(
@@ -180,7 +201,7 @@ TEST_P(EstimateStatsTimingTest, optimizerTimesTheEstimateFanOut) {
       std::string(OptimizerMetrics::kEstimateStatsWallNanos)));
 }
 
-TEST_P(EstimateStatsTimingTest, optimizerTimesTableLookups) {
+TEST_P(FilteredTableStatsTest, tableLookupTiming) {
   // The repeat reference is served from the Schema's cache and not sampled.
   planVelox(parseSelect(
       "SELECT a.n_name FROM nation a, nation b WHERE a.n_regionkey = b.n_regionkey"));
@@ -192,7 +213,7 @@ TEST_P(EstimateStatsTimingTest, optimizerTimesTableLookups) {
   EXPECT_EQ(wallNanos->second.count, 1);
 }
 
-AXIOM_INSTANTIATE_V1_V2(EstimateStatsTimingTest);
+AXIOM_INSTANTIATE_V1_V2(FilteredTableStatsTest);
 
 } // namespace
 } // namespace facebook::axiom::optimizer

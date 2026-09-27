@@ -205,6 +205,7 @@ FilteredTableStats estimateStatsFromPartitionStats(
     const std::vector<PartitionFilter>& partitionFilters,
     const std::vector<const Column*>& requestedColumns) {
   uint64_t totalRows{0};
+  size_t numMatchingPartitions{0};
   std::vector<ColumnStatistics> mergedColumnStats;
   for (const auto& partition : partitionStats) {
     bool matched = true;
@@ -227,6 +228,7 @@ FilteredTableStats estimateStatsFromPartitionStats(
       continue;
     }
 
+    ++numMatchingPartitions;
     totalRows += partition.numRows;
     mergeColumnStats(mergedColumnStats, partition.columnStats);
   }
@@ -260,7 +262,9 @@ FilteredTableStats estimateStatsFromPartitionStats(
   }
 
   return FilteredTableStats{
-      .numRows = totalRows, .columnStats = std::move(columnStats)};
+      .isKnownEmpty = !partitionStats.empty() && numMatchingPartitions == 0,
+      .numRows = totalRows,
+      .columnStats = std::move(columnStats)};
 }
 
 // Iterates over a precomputed set of partition-key tuples.

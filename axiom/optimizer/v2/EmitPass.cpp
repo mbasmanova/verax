@@ -2227,13 +2227,28 @@ velox::connector::ConnectorTableHandlePtr Emitter::deletedRowsHandle(
 }
 
 velox::core::PlanNodePtr Emitter::emitTableWrite(const TableWrite& tableWrite) {
+  const bool isDelete = tableWrite.kind() == connector::WriteKind::kDelete;
+
+  // A DELETE over an empty input removes no rows. It reports a zero count
+  // without starting a write.
+  if (isDelete && tableWrite.input()->is(NodeType::kValues) &&
+      tableWrite.input()->as<Values>()->cardinality() == 0) {
+    return std::make_shared<velox::core::ValuesNode>(
+        nextId(),
+        std::vector<velox::RowVectorPtr>{
+            std::static_pointer_cast<velox::RowVector>(
+                velox::BaseVector::createFromVariants(
+                    makeRowType(tableWrite.outputColumns()),
+                    {velox::Variant::row({velox::Variant(int64_t{0})})},
+                    evaluator_.pool()))});
+  }
+
   const auto& table = *tableWrite.table();
   auto* layout = table.layouts().front();
   const auto& connectorId = layout->connector()->connectorId();
   auto metadata = connector::ConnectorMetadataRegistry::get(connectorId);
   auto connectorSession = session_.context()->sessionFor(connectorId);
 
-  const bool isDelete = tableWrite.kind() == connector::WriteKind::kDelete;
   auto handle = metadata->beginWrite(
       connectorSession,
       table.shared_from_this(),

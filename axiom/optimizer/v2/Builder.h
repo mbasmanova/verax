@@ -144,6 +144,11 @@ class Builder {
         {source, rows, std::move(outputColumns), std::move(channels)});
   }
 
+  /// Source-less `Values` carrying 'row' as its only row.
+  const Values* makeSingleRowValues(
+      std::vector<velox::Variant> row,
+      ColumnVector outputColumns);
+
   /// `Values` node carrying zero rows with the given output schema.
   /// Used to replace subtrees a rewrite proved produce no rows.
   const Values* makeEmptyValues(ColumnVector outputColumns) {
