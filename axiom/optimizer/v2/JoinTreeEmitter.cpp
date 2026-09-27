@@ -186,6 +186,32 @@ void retainVisible(ExprFactory::ExprSubstitution& substitution, NodeCP node) {
   }
 }
 
+// Discards saved expressions whose value may change when their input is
+// null-extended. Generated columns used only by discarded substitutions do not
+// need to cross the join.
+void invalidateNullExtended(
+    ExprFactory::ExprSubstitution& materialized,
+    const ExprFactory::ExprSubstitution& inputMaterialized,
+    ColumnVector& outputColumns,
+    const PlanObjectSet& coverColumns) {
+  PlanObjectSet invalidatedColumns;
+  for (const auto& [expr, column] : inputMaterialized) {
+    if (expr->containsFunction(FunctionSet::kNonDefaultNullBehavior)) {
+      materialized.erase(expr);
+      invalidatedColumns.add(column);
+    }
+  }
+
+  PlanObjectSet retainedColumns{coverColumns};
+  for (const auto& [expr, column] : materialized) {
+    retainedColumns.add(column);
+  }
+  std::erase_if(outputColumns, [&](ColumnCP column) {
+    return invalidatedColumns.contains(column) &&
+        !retainedColumns.contains(column);
+  });
+}
+
 // True when an equivalence collapse replaced one of `targets` by a
 // representative, so the emitting node cannot carry the target name itself.
 bool hasCollapsedTarget(
@@ -499,23 +525,35 @@ Emitted buildJoin(
   }
 
   auto materialized = merge(left.materialized, right.materialized);
-  const auto substitution =
-      merge(collapsedColumns(mergedChildReps(join, state)), materialized);
-  leftKeys = rewrite(leftKeys, substitution, state);
-  rightKeys = rewrite(rightKeys, substitution, state);
-  filter = rewrite(filter, substitution, state);
+  const auto childReps = collapsedColumns(mergedChildReps(join, state));
+  const auto beforeJoin = merge(childReps, materialized);
+  leftKeys = rewrite(leftKeys, beforeJoin, state);
+  rightKeys = rewrite(rightKeys, beforeJoin, state);
+  filter = rewrite(filter, beforeJoin, state);
+
+  const auto preservedSides = Join::preservedSides(join->joinType);
+  const PlanObjectSet coverColumns = state.graph.coverColumns(join->cover());
+  if (!preservedSides.left) {
+    invalidateNullExtended(
+        materialized, left.materialized, outputColumns, coverColumns);
+  }
+  if (!preservedSides.right) {
+    invalidateNullExtended(
+        materialized, right.materialized, outputColumns, coverColumns);
+  }
+  const auto afterJoin = merge(childReps, materialized);
   // A non-inner join applies its edge filter as the join condition. Conjuncts
   // newly eligible at this cover and filter-edge equalities run above the
   // join; putting them in a non-inner condition would null-pad rejected rows
   // instead of dropping them.
   ExprVector aboveJoin =
-      filterEdgeEqualities(join->filterEdges, substitution, state);
+      filterEdgeEqualities(join->filterEdges, afterJoin, state);
   if (!isInner) {
     appendAll(
         aboveJoin,
         rewrite(
             takeReadyConjuncts(state.graph, join->cover(), state.fired),
-            substitution,
+            afterJoin,
             state));
   }
 
@@ -696,24 +734,25 @@ Emitted emitUnnest(
       std::move(result), rootReps, *rootOutputColumns, state);
 }
 
-// A shuffle partitions on columns of the row it shuffles, so an expression key
-// is computed on the producer side and recorded, letting the consumer above
-// read that column instead of evaluating the expression again.
+// A shuffle partitions on columns of the row it shuffles. Reuse columns its
+// input already materialized, then compute and record the remaining keys.
 Emitted emitExchange(const ExchangeOp* exchange, EmitState& state) {
   Emitted input = emitOp(exchange->input, state);
+  const auto& logicalKeys = exchange->outputPartitioning().keys;
   Partitioning partitioning = exchange->outputPartitioning();
+  partitioning.keys = rewrite(logicalKeys, input.materialized, state);
   auto [keyed, columnKeys] = PrecomputeProjections::materializeKeys(
       input.node, partitioning.keys, state.builder, state.simplifier);
-  for (size_t i = 0; i < partitioning.keys.size(); ++i) {
+  for (size_t i = 0; i < logicalKeys.size(); ++i) {
     if (columnKeys[i] == partitioning.keys[i]) {
       continue;
     }
     const bool inserted =
-        input.materialized.emplace(partitioning.keys[i], columnKeys[i]).second;
+        input.materialized.emplace(logicalKeys[i], columnKeys[i]).second;
     VELOX_CHECK(
         inserted,
         "Key already materialized below: {}",
-        partitioning.keys[i]->toString());
+        logicalKeys[i]->toString());
   }
   partitioning.keys = std::move(columnKeys);
   NodeCP node = state.builder.make<Exchange>({keyed, std::move(partitioning)});
