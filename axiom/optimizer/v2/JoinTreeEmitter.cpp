@@ -696,24 +696,25 @@ Emitted emitUnnest(
       std::move(result), rootReps, *rootOutputColumns, state);
 }
 
-// A shuffle partitions on columns of the row it shuffles, so an expression key
-// is computed on the producer side and recorded, letting the consumer above
-// read that column instead of evaluating the expression again.
+// A shuffle partitions on columns of the row it shuffles. Reuse columns its
+// input already materialized, then compute and record the remaining keys.
 Emitted emitExchange(const ExchangeOp* exchange, EmitState& state) {
   Emitted input = emitOp(exchange->input, state);
+  const auto& logicalKeys = exchange->outputPartitioning().keys;
   Partitioning partitioning = exchange->outputPartitioning();
+  partitioning.keys = rewrite(logicalKeys, input.materialized, state);
   auto [keyed, columnKeys] = PrecomputeProjections::materializeKeys(
       input.node, partitioning.keys, state.builder, state.simplifier);
-  for (size_t i = 0; i < partitioning.keys.size(); ++i) {
+  for (size_t i = 0; i < logicalKeys.size(); ++i) {
     if (columnKeys[i] == partitioning.keys[i]) {
       continue;
     }
     const bool inserted =
-        input.materialized.emplace(partitioning.keys[i], columnKeys[i]).second;
+        input.materialized.emplace(logicalKeys[i], columnKeys[i]).second;
     VELOX_CHECK(
         inserted,
         "Key already materialized below: {}",
-        partitioning.keys[i]->toString());
+        logicalKeys[i]->toString());
   }
   partitioning.keys = std::move(columnKeys);
   NodeCP node = state.builder.make<Exchange>({keyed, std::move(partitioning)});
