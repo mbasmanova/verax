@@ -761,7 +761,6 @@ TEST_F(TpchPlanTest, q20) {
                                      .filter("n_name = 'CANADA'")
                                      .project({"n_nationkey"})))
           .orderBy()
-          .project()
           .build();
   AXIOM_ASSERT_PLAN(planTpch(20), matcher);
 
@@ -832,7 +831,7 @@ TEST_F(TpchPlanTest, q22) {
                           .filter("c_acctbal > 0.0 and " + countryFilter)
                           .project({"c_acctbal"})
                           .aggregation()))
-          .aliases({std::nullopt, std::nullopt, std::nullopt, "mark"})
+          .aliases({std::nullopt, std::nullopt, "mark"})
           .filter("not(mark)")
           .project()
           .aggregation()

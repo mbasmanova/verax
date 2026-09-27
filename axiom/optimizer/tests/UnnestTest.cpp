@@ -1169,7 +1169,7 @@ TEST_P(UnnestTest, unnestPlacedAboveJoin) {
             matchScan("s").aliases({"a"}).broadcastIf(distributed),
             {.keys = {{"k = a"}}})
         .unnest({"a"}, {"data"})
-        .projectIf(!useV2_)
+        .project({"a", "e"})
         .build();
   };
 
