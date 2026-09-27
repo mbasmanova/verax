@@ -13,6 +13,15 @@ SELECT * FROM (VALUES (10), (40)) AS _(v)
 -- One row per element of the unnested array; 'x' is replicated.
 SELECT x, y FROM arrays CROSS JOIN UNNEST(ys) AS _(y)
 ----
+-- The same where the aliased UNNEST is wrapped in parentheses and aliased
+-- again. DuckDB rejects the syntax, so state the rows directly.
+-- duckdb: VALUES (7, 10), (7, 20), (7, 30), (8, 30), (8, 10), (9, 40)
+SELECT x, u.y FROM arrays CROSS JOIN (UNNEST(ys) AS _(y)) AS u
+----
+-- The outer alias's column list renames the unnested column.
+-- duckdb: VALUES (7, 10), (7, 20), (7, 30), (8, 30), (8, 10), (9, 40)
+SELECT x, u.z FROM arrays CROSS JOIN (UNNEST(ys) AS _(y)) AS u(z)
+----
 -- The unnested expression is computed before unnesting.
 SELECT x, y FROM arrays CROSS JOIN UNNEST(array_distinct(ys)) AS _(y)
 ----
