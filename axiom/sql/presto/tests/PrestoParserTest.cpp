@@ -159,6 +159,26 @@ TEST_F(PrestoParserTest, unnest) {
         matcher);
   }
 
+  // An aliased UNNEST in parentheses under a second alias unnests each row of
+  // the left side, so its arguments read the left side's columns.
+  testSelect(
+      "SELECT n_nationkey, u.x FROM nation "
+      "CROSS JOIN (unnest(array[n_nationkey, n_regionkey]) as t(x)) AS u",
+      matchScan().unnest().project().output({"n_nationkey", "x"}));
+
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      parseSelect(
+          "SELECT * FROM nation "
+          "CROSS JOIN (unnest(array[n_nationkey]) as t(x)) AS u(a, b)"),
+      "Column alias list size does not match");
+
+  // An inner column list must fit even when an outer one overrides it.
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      parseSelect(
+          "SELECT * FROM nation "
+          "CROSS JOIN (unnest(array[n_nationkey]) as t(x, y)) AS u(a)"),
+      "Column alias list size does not match");
+
   // Cross join unnest with ordinality alias.
   testSelect(
       "SELECT * FROM nation cross join unnest(array[n_nationkey]) with ordinality as t(x, ord)",
@@ -232,6 +252,22 @@ TEST_F(PrestoParserTest, lateralJoin) {
           "SELECT n_nationkey FROM nation "
           "RIGHT JOIN LATERAL (SELECT n_nationkey AS d) AS x ON true"),
       "LATERAL is only supported with CROSS, INNER, or LEFT JOIN");
+
+  // A LATERAL in parentheses under a second alias is still LATERAL.
+  testSelect(
+      "SELECT n_nationkey, d FROM nation "
+      "CROSS JOIN (LATERAL (SELECT n_nationkey + 1 AS d) AS x) AS y",
+      matchScan("nation")
+          .lateralJoin(matchValues().project().build())
+          .project()
+          .output());
+
+  // Without LATERAL, the right side cannot read the left side's columns.
+  VELOX_ASSERT_THROW(
+      parseSql(
+          "SELECT n_nationkey, d FROM nation "
+          "CROSS JOIN (SELECT n_nationkey + 1 AS d) AS x"),
+      "Cannot resolve column");
 }
 
 TEST_F(PrestoParserTest, qualifiedColumnAccess) {

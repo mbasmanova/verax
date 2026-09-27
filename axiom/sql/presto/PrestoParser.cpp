@@ -458,43 +458,32 @@ class RelationPlanner : public AstVisitor {
     folly::assume_unreachable();
   }
 
-  static std::optional<std::pair<const Unnest*, const AliasedRelation*>>
-  tryGetUnnest(const RelationPtr& relation) {
-    if (relation->is(NodeType::kAliasedRelation)) {
-      const auto* aliasedRelation = relation->as<AliasedRelation>();
-      if (aliasedRelation->relation()->is(NodeType::kUnnest)) {
-        return std::make_pair(
-            aliasedRelation->relation()->as<Unnest>(), aliasedRelation);
-      }
-      return std::nullopt;
-    }
+  // A relation under any number of aliases, as in `(UNNEST(a) AS t(x)) AS u`.
+  struct PeeledRelation {
+    // The relation under all the aliases.
+    const Relation* relation{nullptr};
+    // The aliases over 'relation', outermost first. The outermost names the
+    // relation; the outermost with a column list names its columns.
+    std::vector<const AliasedRelation*> aliases;
+  };
 
-    if (relation->is(NodeType::kUnnest)) {
-      return std::make_pair(relation->as<Unnest>(), nullptr);
+  static PeeledRelation peelAliases(const RelationPtr& relation) {
+    PeeledRelation result;
+    const Relation* current = relation.get();
+    while (current->is(NodeType::kAliasedRelation)) {
+      const auto* aliasedRelation = current->as<AliasedRelation>();
+      result.aliases.push_back(aliasedRelation);
+      current = aliasedRelation->relation().get();
     }
-
-    return std::nullopt;
+    result.relation = current;
+    return result;
   }
 
   void updateUnnestDisplayNames(
-      const AliasedRelation& aliasedRelation,
       const std::string& relationAlias,
       std::span<const std::shared_ptr<Identifier>> columnAliases,
-      size_t numInputColumns) {
-    const auto& planNode = builder_->planNode();
-    VELOX_CHECK(
-        planNode->is(lp::NodeKind::kUnnest),
-        "Expected UnnestNode after PlanBuilder::unnest");
-    const auto* unnestNode = planNode->as<lp::UnnestNode>();
-    const auto numOutputColumns = unnestNode->outputType()->size() -
-        unnestNode->onlyInput()->outputType()->size();
-    AXIOM_PRESTO_SEMANTIC_CHECK_EQ(
-        columnAliases.size(),
-        numOutputColumns,
-        aliasedRelation.location(),
-        aliasedRelation.alias()->value(),
-        "Column alias list size does not match the number of output columns");
-
+      size_t numInputColumns,
+      size_t numOutputColumns) {
     VELOX_CHECK_EQ(
         displayNames_.lastNames.size(), numInputColumns + numOutputColumns);
     for (size_t i = 0; i < numOutputColumns; ++i) {
@@ -503,9 +492,9 @@ class RelationPlanner : public AstVisitor {
     displayNames_.accumulateFrom(*builder_, relationAlias, numInputColumns);
   }
 
-  void addCrossJoinUnnest(
-      const Unnest& unnest,
-      const AliasedRelation* aliasedRelation) {
+  void addCrossJoinUnnest(const PeeledRelation& unnestRelation) {
+    const Unnest& unnest = *unnestRelation.relation->as<Unnest>();
+    const auto& aliases = unnestRelation.aliases;
     const auto numInputColumns =
         builder_->outputNames(/*includeHiddenColumns=*/false).size();
 
@@ -522,10 +511,15 @@ class RelationPlanner : public AstVisitor {
     };
 
     std::optional<std::string> relationAlias;
+    if (!aliases.empty()) {
+      relationAlias = canonicalizeIdentifier(*aliases.front()->alias());
+    }
     std::span<const std::shared_ptr<Identifier>> columnAliases;
-    if (aliasedRelation != nullptr) {
-      relationAlias = canonicalizeIdentifier(*aliasedRelation->alias());
-      columnAliases = aliasedRelation->columnNames();
+    for (const auto* alias : aliases) {
+      if (!alias->columnNames().empty()) {
+        columnAliases = alias->columnNames();
+        break;
+      }
     }
 
     if (relationAlias.has_value()) {
@@ -546,19 +540,31 @@ class RelationPlanner : public AstVisitor {
       builder_->unnest(inputs, toOrdinality());
     }
 
+    const auto& planNode = builder_->planNode();
+    VELOX_CHECK(
+        planNode->is(lp::NodeKind::kUnnest),
+        "Expected UnnestNode after PlanBuilder::unnest");
+    const auto* unnestNode = planNode->as<lp::UnnestNode>();
+    const auto numOutputColumns = unnestNode->outputType()->size() -
+        unnestNode->onlyInput()->outputType()->size();
+    // Every column list must fit, including one an outer list overrides.
+    for (const auto* alias : aliases) {
+      if (!alias->columnNames().empty()) {
+        AXIOM_PRESTO_SEMANTIC_CHECK_EQ(
+            alias->columnNames().size(),
+            numOutputColumns,
+            alias->location(),
+            alias->alias()->value(),
+            "Column alias list size does not match the number of output "
+            "columns");
+      }
+    }
+
     displayNames_.captureLastNames(*builder_);
     if (!columnAliases.empty()) {
       updateUnnestDisplayNames(
-          *aliasedRelation, *relationAlias, columnAliases, numInputColumns);
+          *relationAlias, columnAliases, numInputColumns, numOutputColumns);
     }
-  }
-
-  static bool isLateral(const RelationPtr& relation) {
-    if (relation->is(NodeType::kAliasedRelation)) {
-      return relation->as<AliasedRelation>()->relation()->is(
-          NodeType::kLateral);
-    }
-    return relation->is(NodeType::kLateral);
   }
 
   // Plans a LATERAL relation's body, which may reference the enclosing join's
@@ -951,7 +957,10 @@ class RelationPlanner : public AstVisitor {
   void processJoin(const Join& join) {
     processFrom(join.left());
 
-    if (auto unnest = tryGetUnnest(join.right())) {
+    // Aliases, however nested, do not change whether the right side is an
+    // UNNEST or a LATERAL.
+    const PeeledRelation right = peelAliases(join.right());
+    if (right.relation->is(NodeType::kUnnest)) {
       // The unnest is applied to every row of the left side, which is what a
       // CROSS or comma join means; there is no join node to carry an ON
       // condition. Presto rejects every other join type here, whatever the
@@ -962,14 +971,15 @@ class RelationPlanner : public AstVisitor {
           join.location(),
           "UNNEST",
           "UNNEST on other than the right side of CROSS JOIN is not supported");
-      addCrossJoinUnnest(*unnest->first, unnest->second);
+      addCrossJoinUnnest(right);
       return;
     }
 
     // A LATERAL right side may reference the left. The right is planned with
     // the left's scope as its outer scope, so the correlation resolves; a
     // LateralJoinNode records the dependency for the optimizer to decorrelate.
-    const bool lateral = isLateral(join.right());
+    // Any other right side sees only the enclosing query's scope.
+    const bool lateral = right.relation->is(NodeType::kLateral);
     const auto joinType = toJoinType(join.joinType());
     if (lateral) {
       AXIOM_PRESTO_SEMANTIC_CHECK(
@@ -982,7 +992,7 @@ class RelationPlanner : public AstVisitor {
     auto leftBuilder = builder_;
     auto leftScope = leftBuilder->scope();
 
-    builder_ = newBuilder(leftScope);
+    builder_ = newBuilder(lateral ? leftScope : leftBuilder->outerScope());
     processFrom(join.right());
 
     // 'lastNames' now holds only the right leg's names; its size no
