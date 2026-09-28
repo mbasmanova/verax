@@ -273,6 +273,12 @@ void checkAllConjunctsPlaced(const EmitState& state) {
       "Filter conjuncts were not all placed; required relations exceed the emitted cover");
 }
 
+void checkRootOutput(NodeCP root, const ColumnVector& expected) {
+  VELOX_CHECK(
+      std::ranges::equal(root->outputColumns(), expected),
+      "Emitted join tree must preserve root output columns");
+}
+
 NodeCP emitLeaf(const LeafOp* leaf, EmitState& state) {
   NodeCP node = state.graph.relation(leaf->relationId).node();
   // An Unnest of a constant reads a subtree that produces no columns, so it is
@@ -380,13 +386,25 @@ Emitted buildUnnest(const UnnestOp* unnest, Emitted input, EmitState& state) {
   return {node, std::move(input.materialized)};
 }
 
-// Narrows `outputColumns` for semi/anti joins, which emit only the semi'd
-// side's columns (plus the mark for the project forms); inner/outer emit both
-// sides. Keys off the orientation-resolved `joinType`, so a left-form and its
-// build-side-flipped right form (operands swapped) yield identical output
-// columns. Returns std::nullopt for inner/outer (caller's columns are correct).
+ColumnVector columnsFromInput(const ColumnVector& outputColumns, NodeCP input) {
+  const auto inputColumns = PlanObjectSet::fromObjects(input->outputColumns());
+  ColumnVector columns;
+  for (ColumnCP column : outputColumns) {
+    if (inputColumns.contains(column)) {
+      columns.push_back(column);
+    }
+  }
+  return columns;
+}
+
+// Narrows `outputColumns` for semi/anti joins to columns from the semi'd side,
+// plus the mark for the project forms. Keys off the orientation-resolved
+// `joinType`, so a left-form and its build-side-flipped right form (operands
+// swapped) yield identical output columns. Returns std::nullopt for
+// inner/outer (caller's columns are correct).
 std::optional<ColumnVector> narrowSemiAntiOutput(
     velox::core::JoinType joinType,
+    const ColumnVector& outputColumns,
     NodeCP leftNode,
     NodeCP rightNode,
     ColumnCP markColumn) {
@@ -394,23 +412,23 @@ std::optional<ColumnVector> narrowSemiAntiOutput(
   switch (joinType) {
     case JoinType::kLeftSemiFilter:
     case JoinType::kAnti:
+      return columnsFromInput(outputColumns, leftNode);
     // A counting semi join is its own mirror, so the semi'd side is the probe
-    // in either orientation.
+    // in either orientation. It keeps the probe keys until the demanded output
+    // can restore a name from the equated build key.
     case JoinType::kCountingLeftSemiFilter:
-      // Semi'd side is the probe (left) input.
       return ColumnVector{leftNode->outputColumns()};
     case JoinType::kRightSemiFilter:
-      // Flipped semijoin: semi'd side is the build (right) input.
-      return ColumnVector{rightNode->outputColumns()};
+      return columnsFromInput(outputColumns, rightNode);
     case JoinType::kLeftSemiProject: {
-      ColumnVector columns{leftNode->outputColumns()};
+      ColumnVector columns = columnsFromInput(outputColumns, leftNode);
       if (markColumn != nullptr) {
         columns.push_back(markColumn);
       }
       return columns;
     }
     case JoinType::kRightSemiProject: {
-      ColumnVector columns{rightNode->outputColumns()};
+      ColumnVector columns = columnsFromInput(outputColumns, rightNode);
       if (markColumn != nullptr) {
         columns.push_back(markColumn);
       }
@@ -431,7 +449,7 @@ NodeCP projectDemanded(
     const ExprVector& rightKeys,
     EmitState& state) {
   const auto emitted = PlanObjectSet::fromObjects(node->outputColumns());
-  if (emitted.containsAll(demanded)) {
+  if (node->outputColumns() == demanded) {
     return node;
   }
   VELOX_CHECK_EQ(leftKeys.size(), rightKeys.size());
@@ -485,7 +503,11 @@ Emitted buildJoin(
     demanded = outputColumns;
   }
   if (auto narrowed = narrowSemiAntiOutput(
-          join->joinType, left.node, right.node, edge.markColumn())) {
+          join->joinType,
+          outputColumns,
+          left.node,
+          right.node,
+          edge.markColumn())) {
     outputColumns = std::move(*narrowed);
   }
 
@@ -619,10 +641,11 @@ Emitted buildReversedAnti(
     const JoinOp* join,
     const Emitted& probe,
     const Emitted& build,
+    const ColumnVector& outputColumns,
     EmitState& state) {
   const auto& edge = state.graph.edges()[join->edgeIndex];
 
-  const ColumnVector antiOutput{build.node->outputColumns()};
+  const ColumnVector antiOutput = columnsFromInput(outputColumns, build.node);
   ColumnCP mark = Column::createBoolean("mark");
   ColumnVector joinOutput{antiOutput};
   joinOutput.push_back(mark);
@@ -661,56 +684,49 @@ Emitted buildReversedAnti(
   return {node, std::move(materialized)};
 }
 
-// Re-materializes the demanded names on a cluster root whose equivalence
-// collapse replaced some of them by a representative. Callers test
-// `hasCollapsedTarget` first.
-Emitted restoreRootTargets(
+// Restores the cluster root's exact output schema. An equivalence collapse may
+// require binding a target name to its representative; a filter above a join
+// may only require dropping its temporary input columns.
+Emitted restoreRootOutput(
     Emitted result,
     const folly::F14FastMap<ColumnCP, ColumnCP>& rootReps,
     const ColumnVector& rootOutputColumns,
     EmitState& state) {
+  if (result.node->outputColumns() == rootOutputColumns) {
+    return result;
+  }
   result.node = restoreTargets(result.node, rootReps, rootOutputColumns, state);
   retainVisible(result.materialized, result.node);
   return result;
 }
 
 // Emits a join op and everything below it. `rootOutputColumns` is non-null only
-// for the cluster root, whose output must be exactly those columns; an
-// equivalence collapse that dropped a target in favor of its representative is
-// undone by a Project on top.
+// for the cluster root, whose exact output is restored by a Project when
+// necessary.
 Emitted emitJoin(
     const JoinOp* join,
     EmitState& state,
     const ColumnVector* rootOutputColumns) {
   Emitted left = emitOp(join->left, state);
   Emitted right = emitOp(join->right, state);
-  if (join->reversedAnti) {
-    return buildReversedAnti(join, left, right, state);
-  }
+
+  const auto buildWithOutput = [&](ColumnVector outputColumns) {
+    return join->reversedAnti
+        ? buildReversedAnti(join, left, right, outputColumns, state)
+        : buildJoin(join, left, right, std::move(outputColumns), state);
+  };
 
   if (rootOutputColumns == nullptr) {
-    return buildJoin(
-        join,
-        left,
-        right,
-        coverNarrowedColumns(state.graph, join->cover(), left.node, right.node),
-        state);
+    return buildWithOutput(coverNarrowedColumns(
+        state.graph, join->cover(), left.node, right.node));
   }
 
   const auto rootReps = state.graph.coverColumnReps(join->cover());
-  if (!hasCollapsedTarget(rootReps, *rootOutputColumns)) {
-    return buildJoin(
-        join, left, right, ColumnVector{*rootOutputColumns}, state);
-  }
-
-  return restoreRootTargets(
-      buildJoin(
-          join,
-          left,
-          right,
-          coverNarrowedColumns(
-              state.graph, join->cover(), left.node, right.node),
-          state),
+  ColumnVector outputColumns = hasCollapsedTarget(rootReps, *rootOutputColumns)
+      ? coverNarrowedColumns(state.graph, join->cover(), left.node, right.node)
+      : ColumnVector{*rootOutputColumns};
+  return restoreRootOutput(
+      buildWithOutput(std::move(outputColumns)),
       rootReps,
       *rootOutputColumns,
       state);
@@ -727,10 +743,7 @@ Emitted emitUnnest(
     return result;
   }
   const auto rootReps = state.graph.coverColumnReps(unnest->cover());
-  if (!hasCollapsedTarget(rootReps, *rootOutputColumns)) {
-    return result;
-  }
-  return restoreRootTargets(
+  return restoreRootOutput(
       std::move(result), rootReps, *rootOutputColumns, state);
 }
 
@@ -801,6 +814,7 @@ NodeCP JoinTreeEmitter::emit(
       VELOX_UNREACHABLE("Join-tree root cannot be an exchange");
   }
   VELOX_CHECK_NOT_NULL(result);
+  checkRootOutput(result, rootOutputColumns);
   checkAllConjunctsPlaced(state);
   return result;
 }
@@ -900,6 +914,7 @@ NodeCP JoinTreeEmitter::emitComponents(
     result = restoreTargets(result, rootReps, rootOutputColumns, state);
   }
 
+  checkRootOutput(result, rootOutputColumns);
   checkAllConjunctsPlaced(state);
   return result;
 }

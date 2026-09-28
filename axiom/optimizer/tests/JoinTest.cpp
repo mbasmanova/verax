@@ -211,6 +211,41 @@ TEST_P(JoinTest, expressionJoinKey) {
   AXIOM_ASSERT_PLAN_V2(toSingleNodePlan(query), matcher);
 }
 
+// Semi and anti joins emit only requested columns from the preserved input.
+TEST_P(JoinTest, semiAntiJoinOutput) {
+  addTableWithStats("t", {"t_k", "value"}, 10'000);
+  addTableWithStats("u", {"u_k", "value"}, 100);
+
+  {
+    auto query = "SELECT t.value FROM t WHERE t_k IN (SELECT u_k FROM u)";
+    SCOPED_TRACE(query);
+
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(query),
+        matchScan("t")
+            .hashJoinLeftSemiFilter(
+                matchScan("u"),
+                {.keys = {{"t_k = u_k"}}, .outputColumnNames = {{"value"}}})
+            .build());
+  }
+
+  {
+    auto query =
+        "SELECT u.value FROM u "
+        "WHERE NOT EXISTS (SELECT 1 FROM t WHERE t_k = u_k)";
+    SCOPED_TRACE(query);
+
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(query),
+        matchScan("t")
+            .hashJoinRightSemiProject(matchScan("u"), {.keys = {{"t_k = u_k"}}})
+            .aliases({"value", "matched"})
+            .filter("NOT matched")
+            .project({"value"})
+            .build());
+  }
+}
+
 // Repartitioning on a subset of join keys reuses an expression key computed
 // for the earlier shuffle.
 TEST_P(JoinTest, repeatedJoinKey) {
@@ -400,6 +435,7 @@ TEST_P(JoinTest, filterBetweenJoins) {
                                matchScan("picks"), {.keys = {{"x = tx"}}}),
                            {.keys = {{"bk = k"}}})
                        .filter("b IS NULL OR b > 5")
+                       .project(std::vector<std::string>{})
                        .singleAggregation({}, {"count(*)"})
                        .build();
 
