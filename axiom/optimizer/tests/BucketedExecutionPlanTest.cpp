@@ -1152,6 +1152,7 @@ TEST_P(BucketedExecutionTest, joinKeysMustCorrespondToBucketing) {
   addBucketedTable("jk_u", {"j"}, 8, schema);
 
   optimizerOptions_.syntacticJoinOrder = true;
+  optimizerOptions_.broadcastSizeLimit = 0;
   SCOPE_EXIT {
     optimizerOptions_.syntacticJoinOrder = false;
   };
@@ -1159,7 +1160,8 @@ TEST_P(BucketedExecutionTest, joinKeysMustCorrespondToBucketing) {
       "SELECT a.v, b.v FROM jk_t a JOIN jk_u b ON a.k = b.k AND a.j = b.j",
       kTestConnectorId));
   if (useV2_) {
-    // Neither side's bucketing covers both keys, so both shuffle.
+    // Neither side's bucketing covers both keys, so both shuffle when
+    // broadcast is disabled.
     AXIOM_ASSERT_DISTRIBUTED_PLAN(
         plan.plan,
         matchScan("jk_t")

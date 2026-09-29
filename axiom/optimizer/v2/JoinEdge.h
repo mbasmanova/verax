@@ -25,26 +25,6 @@
 
 namespace facebook::axiom::optimizer::v2 {
 
-/// Whether the build (right) side of a join with `joinType` may be broadcast.
-///
-/// A side may be broadcast only if it is not *preserved* by the join — i.e. its
-/// rows are emitted only on a match, never on their own account. Broadcasting
-/// replicates a side to every task while the other side stays partitioned, so a
-/// preserved side must be the partitioned one or its rows would be emitted on
-/// every task. The right side is preserved by RIGHT / FULL outer joins and by
-/// right semi joins; for those the build cannot be broadcast, and the mirror
-/// orientation broadcasts the other side instead.
-///
-/// A counting join is excluded because its result depends on a per-key count
-/// over the whole build input: a broadcast copy would give every task the full
-/// count, so a key could be emitted once per task.
-inline bool canBroadcastBuild(velox::core::JoinType joinType) {
-  using velox::core::JoinType;
-  return joinType == JoinType::kInner || joinType == JoinType::kLeft ||
-      joinType == JoinType::kLeftSemiFilter ||
-      joinType == JoinType::kLeftSemiProject || joinType == JoinType::kAnti;
-}
-
 /// A hyperedge in a join cluster's hypergraph. For join edges,
 /// `leftEndpoints()` and `rightEndpoints()` are the relation sets directly
 /// referenced by the corresponding key expressions. `leftEligibility()` and

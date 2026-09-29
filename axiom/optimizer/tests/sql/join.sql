@@ -85,6 +85,23 @@ FROM (VALUES (1), (2)) AS t(t_k)
 RIGHT JOIN (VALUES (1), (3), (NULL)) AS u(u_k) ON t_k = u_k
 
 ----
+-- An inner join with the smaller input written first returns all matching
+-- rows and does not match NULL keys.
+-- ordered
+SELECT t_k, u_k
+FROM (VALUES (1), (3), (NULL)) AS u(u_k)
+JOIN (VALUES (1), (2), (3), (4), (NULL)) AS t(t_k) ON u_k = t_k
+ORDER BY t_k, u_k
+
+----
+-- A RIGHT theta join preserves unmatched right rows, including a NULL key.
+-- ordered
+SELECT t_k, u_k
+FROM (VALUES (NULL), (2)) AS u(u_k)
+RIGHT JOIN (VALUES (1), (3), (NULL)) AS t(t_k) ON u_k < t_k
+ORDER BY t_k NULLS LAST, u_k NULLS LAST
+
+----
 -- Both operand orders return the available key for every FULL join row.
 SELECT coalesce(t_k, u_k), coalesce(u_k, t_k)
 FROM (VALUES (1), (2), (NULL)) AS t(t_k)

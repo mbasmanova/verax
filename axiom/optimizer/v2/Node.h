@@ -1246,6 +1246,10 @@ class Join : public Node {
     /// Output columns, each drawn from the left or right input; semi / anti
     /// joins draw only from the preserved side. Pruned to what consumers need.
     ColumnVector outputColumns;
+
+    /// Exchanges the left and right inputs, equi-keys, and join type of an
+    /// inner or outer join. Preserves the filter, null semantics, and output.
+    void swapInputs();
   };
 
   /// Transparent hasher for interning `Join`s by identity.
@@ -1309,6 +1313,16 @@ class Join : public Node {
   /// -- but it never nulls the row's columns and never invents a row the input
   /// did not have.
   static PreservedSides preservedSides(velox::core::JoinType joinType);
+
+  /// Returns the equivalent join type when the left and right inputs are
+  /// exchanged. Fails for join types that have no mirrored representation.
+  static velox::core::JoinType swapType(velox::core::JoinType joinType);
+
+  /// Returns whether replicating the right input while leaving the left input
+  /// partitioned preserves results. Output rows must be tied to individual
+  /// left rows, and counting joins are excluded because their build counts
+  /// must be consumed once across all left partitions.
+  static bool canBroadcastBuild(velox::core::JoinType joinType);
 
   /// Returns whether empty inputs imply an empty join result.
   static bool isKnownEmpty(

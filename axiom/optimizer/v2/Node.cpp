@@ -1564,6 +1564,53 @@ Join::PreservedSides Join::preservedSides(velox::core::JoinType joinType) {
   VELOX_UNREACHABLE();
 }
 
+void Join::Key::swapInputs() {
+  VELOX_CHECK(
+      joinType == velox::core::JoinType::kInner ||
+          joinType == velox::core::JoinType::kLeft ||
+          joinType == velox::core::JoinType::kRight ||
+          joinType == velox::core::JoinType::kFull,
+      "Join inputs cannot be exchanged while preserving output: {}",
+      velox::core::JoinTypeName::toName(joinType));
+  std::swap(left, right);
+  std::swap(leftKeys, rightKeys);
+  joinType = Join::swapType(joinType);
+}
+
+velox::core::JoinType Join::swapType(velox::core::JoinType joinType) {
+  using JoinType = velox::core::JoinType;
+  switch (joinType) {
+    case JoinType::kInner:
+    case JoinType::kFull:
+    // Multiset intersection: exchanging the operands yields the same operation.
+    case JoinType::kCountingLeftSemiFilter:
+      return joinType;
+    case JoinType::kLeft:
+      return JoinType::kRight;
+    case JoinType::kRight:
+      return JoinType::kLeft;
+    case JoinType::kLeftSemiFilter:
+      return JoinType::kRightSemiFilter;
+    case JoinType::kRightSemiFilter:
+      return JoinType::kLeftSemiFilter;
+    case JoinType::kLeftSemiProject:
+      return JoinType::kRightSemiProject;
+    case JoinType::kRightSemiProject:
+      return JoinType::kLeftSemiProject;
+    default:
+      VELOX_UNREACHABLE(
+          "Join type has no swapped representation: {}",
+          velox::core::JoinTypeName::toName(joinType));
+  }
+}
+
+bool Join::canBroadcastBuild(velox::core::JoinType joinType) {
+  using JoinType = velox::core::JoinType;
+  return joinType == JoinType::kInner || joinType == JoinType::kLeft ||
+      joinType == JoinType::kLeftSemiFilter ||
+      joinType == JoinType::kLeftSemiProject || joinType == JoinType::kAnti;
+}
+
 bool Join::isKnownEmpty(
     velox::core::JoinType joinType,
     bool leftIsKnownEmpty,

@@ -27,15 +27,20 @@ namespace facebook::axiom::optimizer::v2 {
 
 /// Cardinality and per-column constraints of an IR subtree whose shape is
 /// fixed (a join-cluster leaf or barrier subtree, not a set reordered by
-/// DPhyp). `cardinality` is the estimated row count; `constraints` holds the
-/// refined per-column `Value` (ndv, min/max, null/true fraction) keyed by
-/// `expr->id()`, so a downstream join's fanout uses post-filter NDV rather
-/// than base-table NDV. Columns absent from `constraints` fall back to
-/// `Column::value()`.
+/// DPhyp). `cardinality` is the estimated row count. `maxCardinality` retains
+/// a usable input or limit bound when the point estimate is unknown.
+/// `constraints` holds the refined per-column `Value` (ndv, min/max,
+/// null/true fraction) keyed by `expr->id()`, so a downstream join's fanout
+/// uses post-filter NDV rather than base-table NDV. Columns absent from
+/// `constraints` fall back to `Column::value()`.
 struct Estimate {
   /// Estimated row count; nullopt when unknown. A missing input statistic
   /// propagates rather than being replaced by a concrete fallback.
   std::optional<float> cardinality;
+
+  /// Maximum estimated row count when an operator has no point estimate but
+  /// its semantics bound the output by an input or limit.
+  std::optional<float> maxCardinality;
 
   /// Refined per-column `Value` (ndv, min/max, null/true fraction) keyed by
   /// `expr->id()`. Columns absent here fall back to `Column::value()`.
