@@ -51,7 +51,7 @@ class DPhyp {
   /// broadcast into one is costed at that count. See
   /// `OptimizerOptions::hashStageTasks`. `broadcastSizeLimit` caps the
   /// estimated build size a broadcast candidate may replicate to every task
-  /// (bytes); <= 0 disables the limit. See
+  /// (bytes); <= 0 disables broadcast. See
   /// `OptimizerOptions::broadcastSizeLimit`. `builder` interns the expressions
   /// that describe a candidate's output partitioning.
   DPhyp(

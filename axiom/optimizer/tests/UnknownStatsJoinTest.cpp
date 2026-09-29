@@ -22,9 +22,7 @@ namespace {
 
 using namespace velox;
 
-// When a join-key NDV is missing the join cost is unknown, so the optimizer
-// falls back to the query's syntactic join order instead of a cost-based one.
-// 't' is large and 'u' is small; 'k' is the join key.
+// Exercises join planning when table cardinality or join-key NDV is missing.
 class UnknownStatsJoinTest : public test::QueryTestBase,
                              public ::testing::WithParamInterface<bool> {
  protected:
@@ -49,33 +47,217 @@ class UnknownStatsJoinTest : public test::QueryTestBase,
   }
 };
 
-TEST_P(UnknownStatsJoinTest, singleJoin) {
-  testConnector_->addTable("t", ROW({"a", "k"}, BIGINT()))
-      ->setStats(1'000'000, {{"k", {.numDistinct = 1'000'000}}});
-  testConnector_->addTable("u", ROW({"b", "k"}, BIGINT()))
-      ->setStats(1'000, {{"k", {.numDistinct = 1'000}}});
+TEST_P(UnknownStatsJoinTest, automaticFallback) {
+  testConnector_->addTable("t", ROW("t_k", BIGINT()))
+      ->setStats(1'000'000, {{"t_k", {.numDistinct = 1'000'000}}});
+  testConnector_->addTable("u", ROW("u_k", BIGINT()))->setStats(1'000, {});
+  testConnector_->addTable("v", ROW("k", BIGINT()))
+      ->setStats(100'000, {{"k", {.numDistinct = 100'000}}});
 
-  auto matchJoin = [&](const std::string& probe, const std::string& build) {
-    return matchScan(probe)
-        .hashJoinInner(matchScan(build))
-        .aggregation()
-        .build();
-  };
+  for (const auto& [from, innerBuild, outerBuild] : {
+           std::tuple{"t JOIN u ON t_k = u_k JOIN v ON u_k = k", "u", "v"},
+           std::tuple{"t JOIN v ON t_k = k JOIN u ON u_k = k", "v", "u"},
+       }) {
+    const auto query = fmt::format("SELECT count(*) FROM {}", from);
+    SCOPED_TRACE(query);
+    AXIOM_ASSERT_PLAN_V2(
+        plan(query),
+        matchScan("t")
+            .hashJoinInner(matchScan(innerBuild))
+            .hashJoinInner(matchScan(outerBuild))
+            .singleAggregation({}, {"count(*)"})
+            .build());
+  }
+}
 
-  const auto query = "SELECT count(*) FROM u JOIN t ON t.k = u.k";
-  const auto altQuery = "SELECT count(*) FROM t JOIN u ON t.k = u.k";
+// A join with unknown key NDV uses input sizes to choose its build orientation.
+// A non-preserved build is broadcast when it fits the limit.
+TEST_P(UnknownStatsJoinTest, broadcastEquiJoin) {
+  testConnector_->addTable("t", ROW("t_k", BIGINT()))
+      ->setStats(1'000'000, {{"t_k", {.numDistinct = 1'000'000}}});
+  testConnector_->addTable("u", ROW("u_k", BIGINT()))->setStats(1'000, {});
 
-  // With statistics the build side is chosen by size, so both join orders build
-  // the smaller 'u'.
-  AXIOM_ASSERT_PLAN(plan(query), matchJoin("t", "u"));
-  AXIOM_ASSERT_PLAN(plan(altQuery), matchJoin("t", "u"));
+  for (const auto& [from, joinType] : {
+           std::pair{"t JOIN u ON t_k = u_k", core::JoinType::kInner},
+           std::pair{"u JOIN t ON t_k = u_k", core::JoinType::kInner},
+           std::pair{"t LEFT JOIN u ON t_k = u_k", core::JoinType::kLeft},
+           std::pair{"u RIGHT JOIN t ON t_k = u_k", core::JoinType::kLeft},
+       }) {
+    const auto query = fmt::format("SELECT count(*) FROM {}", from);
+    SCOPED_TRACE(query);
 
-  // Drop 'u's column NDV, leaving only its row count. The join cost is now
-  // unknown, so each query falls back to its syntactic join order.
-  testConnector_->setStats("u", 1'000, {});
+    const auto logicalPlan = parseSelect(query, kTestConnectorId);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(logicalPlan),
+        matchScan("t")
+            .hashJoin(matchScan("u"), joinType)
+            .singleAggregation({}, {"count(*)"})
+            .build());
 
-  AXIOM_ASSERT_PLAN(plan(query), matchJoin("u", "t"));
-  AXIOM_ASSERT_PLAN(plan(altQuery), matchJoin("t", "u"));
+    AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
+        planVelox(logicalPlan).plan,
+        matchScan("t")
+            .hashJoin(matchScan("u").broadcast(), joinType)
+            .distributedAggregation({}, {"count(*)"})
+            .build());
+  }
+
+  for (const auto from : {
+           "u LEFT JOIN t ON t_k = u_k",
+           "t RIGHT JOIN u ON t_k = u_k",
+       }) {
+    const auto query = fmt::format("SELECT count(*) FROM {}", from);
+    SCOPED_TRACE(query);
+
+    const auto logicalPlan = parseSelect(query, kTestConnectorId);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(logicalPlan),
+        matchScan("t")
+            .hashJoinRight(matchScan("u"))
+            .singleAggregation({}, {"count(*)"})
+            .build());
+    AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
+        planVelox(logicalPlan).plan,
+        matchScan("t")
+            .shuffle({"t_k"})
+            .hashJoinRight(matchScan("u").shuffle({"u_k"}))
+            .distributedAggregation({}, {"count(*)"})
+            .build());
+  }
+
+  for (const auto& [predicate, joinType] : {
+           std::pair{
+               "EXISTS (SELECT 1 FROM u WHERE u_k = t_k)",
+               core::JoinType::kLeftSemiFilter},
+           std::pair{
+               "NOT EXISTS (SELECT 1 FROM u WHERE u_k = t_k)",
+               core::JoinType::kAnti},
+       }) {
+    const auto query =
+        fmt::format("SELECT count(*) FROM t WHERE {}", predicate);
+    SCOPED_TRACE(query);
+
+    const auto logicalPlan = parseSelect(query, kTestConnectorId);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(logicalPlan),
+        matchScan("t")
+            .hashJoin(matchScan("u"), joinType, {.nullAware = false})
+            .singleAggregation({}, {"count(*)"})
+            .build());
+
+    AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
+        planVelox(logicalPlan).plan,
+        matchScan("t")
+            .hashJoin(
+                matchScan("u").broadcast(), joinType, {.nullAware = false})
+            .distributedAggregation({}, {"count(*)"})
+            .build());
+  }
+
+  {
+    const auto plan = parseSelect(
+        "SELECT t_k FROM t WHERE t_k NOT IN (SELECT u_k FROM u)",
+        kTestConnectorId);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(plan),
+        matchScan("t")
+            .hashJoin(
+                matchScan("u"),
+                core::JoinType::kAnti,
+                {.nullAware = true, .keys = {{"t_k = u_k"}}})
+            .build());
+    AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
+        planVelox(plan).plan,
+        matchScan("t")
+            .hashJoin(
+                matchScan("u").broadcast(),
+                core::JoinType::kAnti,
+                {.nullAware = true, .keys = {{"t_k = u_k"}}})
+            .gather()
+            .build());
+  }
+
+  // The broadcast limit changes distribution without changing build
+  // orientation.
+  for (const auto broadcastSizeLimit : {0, 1}) {
+    SCOPED_TRACE(broadcastSizeLimit);
+    optimizerOptions_.broadcastSizeLimit = broadcastSizeLimit;
+    const auto logicalPlan = parseSelect(
+        "SELECT count(*) FROM u JOIN t ON t_k = u_k", kTestConnectorId);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(logicalPlan),
+        matchScan("t")
+            .hashJoinInner(matchScan("u"))
+            .singleAggregation({}, {"count(*)"})
+            .build());
+    AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
+        planVelox(logicalPlan).plan,
+        matchScan("t")
+            .shuffle({"t_k"})
+            .hashJoinInner(matchScan("u").shuffle({"u_k"}))
+            .distributedAggregation({}, {"count(*)"})
+            .build());
+  }
+}
+
+// A keyless join broadcasts one side whenever its semantics allow it. Size
+// estimates choose the build orientation, but do not determine whether to
+// broadcast because there is no partitioned alternative.
+TEST_P(UnknownStatsJoinTest, broadcastThetaJoin) {
+  testConnector_->addTable("t", ROW("t_k", BIGINT()))
+      ->setStats(1'000'000, {{"t_k", {.numDistinct = 1'000'000}}});
+  testConnector_->addTable("u", ROW("u_k", BIGINT()))->setStats(1'000, {});
+
+  const auto writtenRightJoinPlan = parseSelect(
+      "SELECT count(t_k + u_k) FROM t RIGHT JOIN u ON t_k < u_k",
+      kTestConnectorId);
+  AXIOM_ASSERT_PLAN_V2(
+      toSingleNodePlan(writtenRightJoinPlan),
+      matchScan("t")
+          .nestedLoopJoin(matchScan("u"), core::JoinType::kRight, "t_k < u_k")
+          .project({"t_k + u_k as sum"})
+          .singleAggregation({}, {"count(sum)"})
+          .build());
+
+  for (const auto broadcastSizeLimit : {0, 1}) {
+    SCOPED_TRACE(broadcastSizeLimit);
+    optimizerOptions_.broadcastSizeLimit = broadcastSizeLimit;
+    const auto logicalPlan = parseSelect(
+        "SELECT count(t_k + u_k) FROM u CROSS JOIN t", kTestConnectorId);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(logicalPlan),
+        matchScan("t")
+            .nestedLoopJoin(matchScan("u"))
+            .project({"u_k + t_k as sum"})
+            .singleAggregation({}, {"count(sum)"})
+            .build());
+    AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
+        planVelox(logicalPlan).plan,
+        matchScan("t")
+            .nestedLoopJoin(matchScan("u").broadcast())
+            .project({"u_k + t_k as sum"})
+            .distributedAggregation({}, {"count(sum)"})
+            .build());
+
+    const auto swappedRightJoinPlan = parseSelect(
+        "SELECT count(t_k + u_k) FROM u RIGHT JOIN t ON u_k < t_k",
+        kTestConnectorId);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(swappedRightJoinPlan),
+        matchScan("t")
+            .nestedLoopJoin(matchScan("u"), core::JoinType::kLeft, "u_k < t_k")
+            .project({"u_k + t_k as sum"})
+            .singleAggregation({}, {"count(sum)"})
+            .build());
+    AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
+        planVelox(swappedRightJoinPlan).plan,
+        matchScan("t")
+            .nestedLoopJoin(
+                matchScan("u").broadcast(), core::JoinType::kLeft, "u_k < t_k")
+            .project({"u_k + t_k as sum"})
+            .distributedAggregation({}, {"count(sum)"})
+            .build());
+  }
 }
 
 // The fallback is per derived table: an unknown-cost join does not disable
@@ -93,14 +275,9 @@ TEST_P(UnknownStatsJoinTest, twoJoins) {
       "FROM (SELECT u.k AS k FROM t JOIN u ON u.k = t.k WHERE rand() < 0.1) AS s "
       "   JOIN v ON s.k = v.k";
 
-  // 'innerProbe'/'innerBuild' are the probe and build of the inner (u JOIN t)
-  // join; the outer join always builds 'v'.
-  auto matchPlan = [&](const std::string& innerProbe,
-                       const std::string& innerBuild) {
-    return matchScan(innerProbe)
-        .hashJoinInner(matchScan(innerBuild))
-        .filterIf(!useV2_)
-        .hashJoinInner(matchScan("v"))
+  auto matchPlan = []() {
+    return matchScan("v")
+        .hashJoinInner(matchScan("t").hashJoinInner(matchScan("u")))
         .aggregation()
         .build();
   };
@@ -109,28 +286,29 @@ TEST_P(UnknownStatsJoinTest, twoJoins) {
       ->setStats(1'000'000, {{"k", {.numDistinct = 1'000'000}}});
   testConnector_->addTable("u", ROW({"b", "k"}, BIGINT()))
       ->setStats(1'000, {{"k", {.numDistinct = 1'000}}});
-  testConnector_->addTable("v", ROW({"c", "k"}, BIGINT()));
+  testConnector_->addTable("v", ROW({"c", "k"}, BIGINT()))
+      ->setStats(100'000, {});
 
-  // 't' and 'u' are statted; 'v' has no statistics. The inner join is still
-  // cost-ordered and builds the smaller 'u'.
-  AXIOM_ASSERT_PLAN(plan(query), matchPlan("t", "u"));
-  AXIOM_ASSERT_PLAN(plan(altQuery), matchPlan("t", "u"));
-
-  // Drop 't's column NDV. The inner join cost is now unknown, so it falls back
-  // to its syntactic order.
-  testConnector_->setStats("t", 1'000'000, {});
-
-  AXIOM_ASSERT_PLAN(plan(query), matchPlan("u", "t"));
-  AXIOM_ASSERT_PLAN(plan(altQuery), matchPlan("t", "u"));
+  // 'v' has no key NDV. The inner join is still cost-ordered and builds the
+  // smaller 'u'.
+  AXIOM_ASSERT_PLAN_V2(plan(query), matchPlan());
+  AXIOM_ASSERT_PLAN_V2(plan(altQuery), matchPlan());
 }
-// A base table with no statistics at all must fall back to syntactic join
-// order, not crash on the unknown cardinality.
+
+// A base table with no statistics produces the same deterministic build
+// orientation regardless of operand order.
 TEST_P(UnknownStatsJoinTest, joinWithUnknownTableCardinality) {
   testConnector_->addTable("t", ROW({"a", "k"}, BIGINT()))
       ->setStats(1'000'000, {{"k", {.numDistinct = 1'000'000}}});
-  testConnector_->addTable("u", ROW({"b", "k"}, BIGINT()));
+  testConnector_->addTable(
+      "u",
+      ROW({"b", "k"}, BIGINT()),
+      {
+          {std::string{connector::TestConnectorMetadata::kCollectStatistics},
+           Variant(false)},
+      });
 
-  auto matchJoin = [&](const std::string& probe, const std::string& build) {
+  auto matchJoin = [](const std::string& probe, const std::string& build) {
     return matchScan(probe)
         .hashJoinInner(matchScan(build))
         .aggregation()
@@ -140,8 +318,10 @@ TEST_P(UnknownStatsJoinTest, joinWithUnknownTableCardinality) {
   const auto query = "SELECT count(*) FROM u JOIN t ON t.k = u.k";
   const auto altQuery = "SELECT count(*) FROM t JOIN u ON t.k = u.k";
 
-  AXIOM_ASSERT_PLAN(plan(query), matchJoin("u", "t"));
-  AXIOM_ASSERT_PLAN(plan(altQuery), matchJoin("t", "u"));
+  for (const auto sql : {query, altQuery}) {
+    SCOPED_TRACE(sql);
+    AXIOM_ASSERT_PLAN_V2(plan(sql), matchJoin("u", "t"));
+  }
 }
 
 // Two large tables join only through 'v'; the fallback must hash-join through
@@ -234,51 +414,6 @@ TEST_P(UnknownStatsJoinTest, crossJoinWhenNoEquiPartner) {
           .nestedLoopJoin(matchScan("w"))
           .aggregation()
           .build());
-}
-
-// The join sampler must tolerate an unknown build-side cardinality.
-TEST_P(UnknownStatsJoinTest, sampledJoinWithUnknownCardinality) {
-  optimizerOptions_.sampleJoins = true;
-
-  testConnector_->addTable("t", ROW({"a", "k"}, BIGINT()))
-      ->setStats(1'000'000, {{"k", {.numDistinct = 1'000'000}}});
-  testConnector_->addTable("u", ROW({"b", "k"}, BIGINT()));
-
-  auto matchJoin = [&](const std::string& probe, const std::string& build) {
-    return matchScan(probe)
-        .hashJoinInner(matchScan(build))
-        .aggregation()
-        .build();
-  };
-
-  AXIOM_ASSERT_PLAN(
-      plan("SELECT count(*) FROM u JOIN t ON t.k = u.k"), matchJoin("u", "t"));
-}
-
-// Enabling sampleJoins must not change the chosen plan when a side has
-// unknown cardinality.
-TEST_P(UnknownStatsJoinTest, sampledJoinMatchesUnsampledOnUnknownCardinality) {
-  testConnector_->addTable("t", ROW({"a", "k"}, BIGINT()))
-      ->setStats(1'000'000, {{"k", {.numDistinct = 1'000'000}}});
-  testConnector_->addTable("u", ROW({"b", "k"}, BIGINT()));
-
-  auto matchJoin = [&](const std::string& probe, const std::string& build) {
-    return matchScan(probe)
-        .hashJoinInner(matchScan(build))
-        .aggregation()
-        .build();
-  };
-
-  const auto query = "SELECT count(*) FROM u JOIN t ON t.k = u.k";
-  const auto altQuery = "SELECT count(*) FROM t JOIN u ON t.k = u.k";
-
-  AXIOM_ASSERT_PLAN(plan(query), matchJoin("u", "t"));
-  AXIOM_ASSERT_PLAN(plan(altQuery), matchJoin("t", "u"));
-
-  optimizerOptions_.sampleJoins = true;
-
-  AXIOM_ASSERT_PLAN(plan(query), matchJoin("u", "t"));
-  AXIOM_ASSERT_PLAN(plan(altQuery), matchJoin("t", "u"));
 }
 
 AXIOM_INSTANTIATE_V1_V2(UnknownStatsJoinTest);

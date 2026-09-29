@@ -92,34 +92,6 @@ RelationSet neighborhood(
   return result;
 }
 
-// Returns the join type for the same join with operands swapped.
-velox::core::JoinType flipJoinType(velox::core::JoinType kind) {
-  switch (kind) {
-    case velox::core::JoinType::kInner:
-    case velox::core::JoinType::kFull:
-    // Multiset intersection: exchanging the operands yields the same operation.
-    case velox::core::JoinType::kCountingLeftSemiFilter:
-      return kind;
-    case velox::core::JoinType::kLeft:
-      return velox::core::JoinType::kRight;
-    case velox::core::JoinType::kRight:
-      return velox::core::JoinType::kLeft;
-    case velox::core::JoinType::kLeftSemiFilter:
-      return velox::core::JoinType::kRightSemiFilter;
-    case velox::core::JoinType::kRightSemiFilter:
-      return velox::core::JoinType::kLeftSemiFilter;
-    case velox::core::JoinType::kLeftSemiProject:
-      return velox::core::JoinType::kRightSemiProject;
-    case velox::core::JoinType::kRightSemiProject:
-      return velox::core::JoinType::kLeftSemiProject;
-    default:
-      // kAnti is single-orientation; it has no reversed JoinType spelling.
-      VELOX_UNREACHABLE(
-          "Unsupported join type for orientation flip: {}",
-          velox::core::JoinTypeName::toName(kind));
-  }
-}
-
 // True if the edge's right (build-on-the-preserved-side) orientation is a
 // valid Velox plan. Both the kRightSemiProject build-side flip of a
 // kLeftSemiProject and the reversed-anti lowering (kRightSemiProject +
@@ -807,7 +779,7 @@ class Enumerator {
     // Filter edges are equalities evaluated above the output, so they are
     // carried unchanged into either orientation.
     const auto leftTypeForSubgraph =
-        forward ? edge.joinType() : flipJoinType(edge.joinType());
+        forward ? edge.joinType() : Join::swapType(edge.joinType());
     considerCandidate(
         leftPlan,
         rightPlan,
@@ -821,7 +793,7 @@ class Enumerator {
         rightPlan,
         leftPlan,
         edgeIndex,
-        flipJoinType(leftTypeForSubgraph),
+        Join::swapType(leftTypeForSubgraph),
         combined,
         /*reversedAnti=*/false,
         std::move(keyEdges),
@@ -962,7 +934,8 @@ class Enumerator {
     if (base == nullptr) {
       return nullptr;
     }
-    if (!costModel_.broadcastFits(base, graph_, broadcastSizeLimit_)) {
+    if (!CostModel::broadcastSizeIfFits(base, graph_, broadcastSizeLimit_)
+             .has_value()) {
       return nullptr;
     }
     Cost cost = base->cost;
@@ -1259,7 +1232,7 @@ class Enumerator {
     // side would emit its rows on every task. A reversed anti join builds on
     // its preserved (left) side, so its build is preserved and cannot be
     // broadcast.
-    if (canBroadcastBuild(joinType) && !reversedAnti) {
+    if (Join::canBroadcastBuild(joinType) && !reversedAnti) {
       MemoOpCP broadcastBuild =
           broadcastChild(right->cover(), left->outputPartitioning());
       if (broadcastBuild != nullptr) {

@@ -969,6 +969,12 @@ class TestConnector : public velox::connector::Connector {
         std::move(columnComments));
   }
 
+  /// Registers a TestTable in the default schema with connector table options.
+  std::shared_ptr<TestTable> addTable(
+      const std::string& name,
+      const velox::RowTypePtr& schema,
+      const folly::F14FastMap<std::string, velox::Variant>& options);
+
   /// Appends data to the table with the specified name.
   void appendData(
       const SchemaTableName& tableName,

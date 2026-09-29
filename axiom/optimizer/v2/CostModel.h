@@ -39,6 +39,21 @@ class CostModel {
  public:
   virtual ~CostModel() = default;
 
+  /// Returns the estimated output bytes when `cardinality` is known and fits
+  /// `limitBytes`, or nullopt otherwise. Returns nullopt for a non-positive
+  /// limit.
+  static std::optional<float> broadcastSizeIfFits(
+      std::optional<float> cardinality,
+      float rowBytes,
+      int64_t limitBytes);
+
+  /// Returns the estimated output bytes when `op` fits `limitBytes`, or nullopt
+  /// otherwise.
+  static std::optional<float> broadcastSizeIfFits(
+      MemoOpCP op,
+      const JoinHypergraph& graph,
+      int64_t limitBytes);
+
   /// Returns the cost (and output cardinality) of executing the plan
   /// rooted at `op`. `graph` provides access to the relations and
   /// edges referenced by leaves and joins.
@@ -57,14 +72,6 @@ class CostModel {
       MemoOpCP op,
       const JoinHypergraph& graph,
       int32_t numWorkers) const = 0;
-
-  /// True if `op`'s estimated output fits `limitBytes`, so each task can hold a
-  /// full broadcast copy. Unknown cardinality is not broadcastable. A
-  /// non-positive `limitBytes` disables the limit (always fits).
-  virtual bool broadcastFits(
-      MemoOpCP op,
-      const JoinHypergraph& graph,
-      int64_t limitBytes) const = 0;
 };
 
 /// Default cost model used when callers don't supply one. Costs leaves at their
@@ -103,12 +110,6 @@ class DefaultCostModel : public CostModel {
       MemoOpCP op,
       const JoinHypergraph& graph,
       int32_t numWorkers) const override;
-
-  /// True when `cardinality × output row bytes` is within `limitBytes`.
-  bool broadcastFits(
-      MemoOpCP op,
-      const JoinHypergraph& graph,
-      int64_t limitBytes) const override;
 
  private:
   EstimateProvider& estimateProvider_;
