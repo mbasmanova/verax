@@ -29,7 +29,7 @@ using namespace facebook::velox;
 // data is generated and the optimizer plans at any scale instantly. Queries
 // whose v2 plan already matches v1's optimal shape carry a full matcher; the
 // rest assert only that planning succeeds, with the remaining gaps tracked in
-// `axiom/optimizer/v2/docs/TpchV1V2PlanComparison.md`. Result correctness is
+// `axiom/optimizer/docs/TpchV1V2PlanComparison.md`. Result correctness is
 // checked separately in `TpchResultTest`.
 class TpchPlanTest : public optimizer::test::QueryTestBase {
  protected:

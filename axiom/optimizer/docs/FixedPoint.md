@@ -53,7 +53,7 @@ point; `LogicalPlan` is the dialect-agnostic input, so a fixed point is also
 constructible directly through `PlanBuilder::fixedPoint`. Cypher is the intended
 next surface: variable-length patterns are currently planned by inline-expanding
 UNIONs for a fixed hop count (see
-[UnionAllPlanning.md](../../docs/UnionAllPlanning.md)), and a fixed point
+[UnionAllPlanning.md](UnionAllPlanning.md)), and a fixed point
 replaces that unrolling.
 
 ## End-to-end mapping

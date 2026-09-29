@@ -141,7 +141,7 @@ Both are no-ops for cost and correctness — the join order, build/probe sides, 
 
 Not an active gap at sf1: v2 (and v1) join `lineitem ⋈ part` first, so the selective `part` filter reduces `lineitem` to the green-parts subset early. v2 scans 6M → 319k `lineitem` rows via the `part` dynamic filter (sf1, EXPLAIN ANALYZE) — the optimal reduction. The order is robust to the `like` estimate because `part` (200k) is far smaller than `lineitem` (6M), so building `part` and probing `lineitem` is correct by size regardless of the estimate. Both the `like` form and an estimable-filter variant (`p_size <= 3`) are locked in `TpchPlanTest`; with the accurate estimate the planner additionally makes `partsupp` the top probe, a cost-driven refinement of the top-level shape that the `like` estimate does not reach.
 
-The underlying gap — the `like` estimator defaults to non-selective (~80%, `Selectivity::likelyTrue()`; see [FilterSelectivity.md](../../docs/FilterSelectivity.md)) vs the true ~5% — only manifests at sf0.1, where the FK-key mismatch inflates `lineitem ⋈ supplier` selectivity enough to flip the order to the worse supplier-first plan. At sf1 it does not reproduce.
+The underlying gap — the `like` estimator defaults to non-selective (~80%, `Selectivity::likelyTrue()`; see [FilterSelectivity.md](FilterSelectivity.md)) vs the true ~5% — only manifests at sf0.1, where the FK-key mismatch inflates `lineitem ⋈ supplier` selectivity enough to flip the order to the worse supplier-first plan. At sf1 it does not reproduce.
 
 ## Reproduction
 

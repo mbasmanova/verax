@@ -1,7 +1,7 @@
 # Optimizer v2 Pass Cheat Sheet
 
 This page maps an optimization to the pass that owns it. The source of truth
-for pass order is `Optimizer::planTo` in `Optimize.cpp`.
+for pass order is `Optimizer::planTo` in `v2/Optimize.cpp`.
 
 ## Pipeline
 
@@ -189,7 +189,7 @@ back to constraint-based estimates when connector statistics are unavailable.
 It is `EstimateProvider`, not this pass, that derives estimates for intermediate
 nodes. The entire pass is gated by `useFilteredTableStats`.
 
-See [Cardinality estimation](../../docs/CardinalityEstimation.md).
+See [Cardinality estimation](CardinalityEstimation.md).
 
 ### 8. PlanPhysical
 
@@ -223,7 +223,7 @@ Other physical planning:
   shuffle.
 - Repartitions table writes on the target layout when required.
 
-See [Distributed execution](../../docs/DistributedExecution.md) and
+See [Distributed execution](DistributedExecution.md) and
 [Join enumeration scaling](JoinEnumerationScaling.md).
 
 ### 9. Emit
@@ -277,5 +277,5 @@ rewrite. Estimates appear starting at `ESTIMATE_LEAF_STATS`. Use
   boundaries.
 
 For related debugging and test workflows, see
-[Debugging tips](../../docs/DebuggingTips.md) and
-[Optimizer testing](../../docs/Testing.md).
+[Debugging tips](DebuggingTips.md) and
+[Optimizer testing](Testing.md).

@@ -1,8 +1,10 @@
 # Cardinality Estimation: Known Gaps
 
+> **Legacy.** This document describes the v1 optimizer, built on `DerivedTable`, which is being retired. For the current optimizer, see the [pass cheat sheet](../OptimizerPasses.md).
+
 This document catalogs known flaws and missing pieces in how the optimizer
 estimates statistics, and the direction we intend to take for each. It is a
-companion to [CardinalityEstimation.md](CardinalityEstimation.md), which
+companion to [CardinalityEstimation.md](../CardinalityEstimation.md), which
 describes how estimation works today; this doc is about where it is wrong and
 what "right" looks like.
 

@@ -23,7 +23,7 @@ namespace {
 using namespace velox;
 
 // Tests for the existence pushdown optimization described in
-// docs/ExistencePushdown.md.
+// docs/v1/ExistencePushdown.md.
 class ExistencePushdownTest : public test::QueryTestBase,
                               public ::testing::WithParamInterface<bool> {
  protected:

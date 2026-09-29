@@ -1,5 +1,7 @@
 # Existence Pushdown into Derived Tables
 
+> **Legacy.** This document describes the v1 optimizer, built on `DerivedTable`, which is being retired. For the current optimizer, see the [pass cheat sheet](../OptimizerPasses.md).
+
 This document describes the optimization that pushes existence semijoins inside
 derived tables (subqueries) to reduce cardinality before aggregation.
 

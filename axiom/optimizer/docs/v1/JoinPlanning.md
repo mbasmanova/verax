@@ -1,5 +1,7 @@
 # Join Planning: Control Flow and State Management
 
+> **Legacy.** This document describes the v1 optimizer, built on `DerivedTable`, which is being retired. For the current optimizer, see the [pass cheat sheet](../OptimizerPasses.md).
+
 This document describes the control flow and state management in
 `Optimization::makeJoins`, the core algorithm for join order enumeration.
 

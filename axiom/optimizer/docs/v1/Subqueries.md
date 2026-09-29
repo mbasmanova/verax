@@ -1,5 +1,7 @@
 # Subquery Implementation in Axiom Optimizer
 
+> **Legacy.** This document describes the v1 optimizer, built on `DerivedTable`, which is being retired. For the current optimizer, see the [pass cheat sheet](../OptimizerPasses.md).
+
 This document describes how subqueries are implemented in the Axiom optimizer,
 including the data structures, processing flow, optimization techniques, and
 current limitations.

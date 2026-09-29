@@ -483,5 +483,5 @@ is a bug introduced by a different commit.
 ## Key Documentation
 
 - [SQL Parser](../axiom/sql/presto/README.md) — Architecture, scoping, PlanBuilder design, testing conventions.
-- [Optimizer](../axiom/optimizer/README.md) — Query graph data structure and terminology.
+- [Optimizer](../axiom/optimizer/README.md) — Optimizer overview, documentation index, and terminology.
 - [Testing](../axiom/optimizer/docs/Testing.md) — PlanMatcher, SqlTest, and test organization guidelines.

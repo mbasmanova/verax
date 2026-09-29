@@ -69,7 +69,7 @@ using WindowPlanCP = const WindowPlan*;
 ///   8. OFFSET and LIMIT (limit)
 ///   9. WRITE (create/insert/delete/update)
 ///
-/// See docs/DerivedTableLayers.md for the layered column ownership model
+/// See docs/v1/DerivedTableLayers.md for the layered column ownership model
 /// and dependency rules validated by checkConsistency.
 struct DerivedTable : public TableObject {
   DerivedTable() : TableObject{PlanType::kDerivedTableNode} {}
