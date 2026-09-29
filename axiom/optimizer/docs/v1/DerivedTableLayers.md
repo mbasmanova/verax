@@ -1,5 +1,7 @@
 # DerivedTable Layers
 
+> **Legacy.** This document describes the v1 optimizer, built on `DerivedTable`, which is being retired. For the current optimizer, see the [pass cheat sheet](../OptimizerPasses.md).
+
 A DerivedTable (DT) represents a query block. Internally it has a layered
 structure that mirrors SQL's logical order of operations. Each layer can
 consume columns from lower layers and produce new columns.

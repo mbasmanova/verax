@@ -1,5 +1,7 @@
 # History-Based Optimization (HBO) Design Proposal
 
+> **Legacy.** This document describes the v1 optimizer, built on `DerivedTable`, which is being retired. For the current optimizer, see the [pass cheat sheet](../OptimizerPasses.md).
+
 *February 17, 2026*
 
 ## Overview
@@ -7,7 +9,7 @@
 ### Why HBO?
 
 The optimizer estimates cardinalities using table statistics and heuristics
-(see [CardinalityEstimation.md](CardinalityEstimation.md)). These estimates can
+(see [CardinalityEstimation.md](../CardinalityEstimation.md)). These estimates can
 be inaccurate when:
 
 - **Correlation between columns** — predicates on correlated columns compound
@@ -761,7 +763,7 @@ Verify that recording and retrieval work end-to-end:
 
 1. **Per-column constraints.** Operators above a matched subtree need per-column
    constraints — NDV, null fraction, min/max — to estimate their own
-   cardinalities (see [CardinalityEstimation.md](CardinalityEstimation.md)).
+   cardinalities (see [CardinalityEstimation.md](../CardinalityEstimation.md)).
    For example, a `GROUP BY status` above a matched scan needs `ndv(status)`;
    a `JOIN ON cust_id = id` needs `ndv(cust_id)` and `nullFraction(cust_id)`.
    Without these, the optimizer falls back to base table statistics, losing

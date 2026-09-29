@@ -7,7 +7,7 @@
 -- gets flattened into the parent. The tests verify that column reconstruction
 -- during flattening preserves correctness.
 --
--- See docs/DerivedTableLayers.md for the DT layer model.
+-- See docs/v1/DerivedTableLayers.md for the DT layer model.
 
 -- Layer 2: Outer join — LEFT JOIN produces nullable columns.
 WITH t AS (

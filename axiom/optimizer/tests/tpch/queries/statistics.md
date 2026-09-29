@@ -153,7 +153,7 @@ values contain `green`. In q9 the `like` default (~0.8 × table) over-estimates
 `p_name like '%green%'` at ≈16,000 vs the true ~1,075, so the optimizer joins
 `supplier` before the more selective `part` (a suboptimal order). See the q9
 analysis in
-[../../../v2/docs/TpchV1V2PlanComparison.md](../../../v2/docs/TpchV1V2PlanComparison.md).
+[../../../docs/TpchV1V2PlanComparison.md](../../../docs/TpchV1V2PlanComparison.md).
 
 Each row gives the filter's true selectivity and an **estimable substitute** of
 similar selectivity — a range over a uniform column (or a key range) the optimizer

@@ -1,5 +1,7 @@
 # Memoization of Partial Plans
 
+> **Legacy.** This document describes the v1 optimizer, built on `DerivedTable`, which is being retired. For the current optimizer, see the [pass cheat sheet](../OptimizerPasses.md).
+
 This document describes the memoization mechanism used during plan enumeration
 to avoid redundant work.
 

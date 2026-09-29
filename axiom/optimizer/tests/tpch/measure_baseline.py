@@ -18,7 +18,7 @@ Two separate phases, so presentation can be iterated without re-measuring:
 
   measure  — slow. Runs the Axiom CLI many times and writes raw per-run samples
              to a JSON file. Implements the procedure in
-             ``axiom/optimizer/v2/docs/TpchV1V2PlanComparison.md``.
+             ``axiom/optimizer/docs/TpchV1V2PlanComparison.md``.
   present  — fast. Reads the JSON and writes the Markdown baseline (medians,
              %-diff, noise bands). Re-run freely to tweak layout.
 

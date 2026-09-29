@@ -1,5 +1,7 @@
 # Window functions
 
+> **Legacy.** This document describes the v1 optimizer, built on `DerivedTable`, which is being retired. For the current optimizer, see the [pass cheat sheet](../OptimizerPasses.md).
+
 ## Overview
 
 Window functions compute values across a set of rows related to the current
@@ -29,7 +31,7 @@ Two window functions share the same specification when they have identical
 partition keys and identical order keys (same columns, same order, same sort
 directions).
 
-See [Named WINDOW Clause](../../sql/presto/docs/PrestoSqlExtensions.md#named-window-clause)
+See [Named WINDOW Clause](../../../sql/presto/docs/PrestoSqlExtensions.md#named-window-clause)
 for the SQL syntax and semantics of named window specifications.
 
 ## Planning Algorithm

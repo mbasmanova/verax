@@ -1,13 +1,13 @@
 # Distributed (Cross-Fragment) Dynamic Filters
 
 *Design for optimizer-assisted dynamic filters that cross exchange boundaries.
-Companion to [DistributedPlanning.md](DistributedPlanning.md) and the runtime
-contract in [../../docs/DistributedExecution.md](../../docs/DistributedExecution.md).
+Companion to the runtime contract in
+[DistributedExecution.md](DistributedExecution.md).
 The plan of record forward-referenced by
 [TpchV1V2PlanComparison.md](TpchV1V2PlanComparison.md)'s "Dynamic-filter
 dependence" section.*
 
-Provenance tags per [HowWeWork.md](HowWeWork.md): **[verified: file:line]**,
+Provenance tags: **[verified: file:line]**,
 **[inferred]**, **[unverified]**. Anything unmarked is verified-grade.
 
 ## 1. Motivation and scope
@@ -217,8 +217,8 @@ following the same rules any filter on the key columns would follow:
 The decision lives in **`PlanPhysical`** (`PhysicalPlanRewriter`), which has all
 three inputs it needs: join selectivity and build-size estimates (the memo / cost
 model) and the placed `ir.Exchange` nodes (so the walk can tell whether the path
-from join to scan crosses one) **[verified: DistributedPlanning.md §10–11 — exchange
-placement and rewrites are in `PlanPhysical.cpp`'s `PhysicalPlanRewriter`]**. It
+from join to scan crosses one) **[verified: exchange
+placement and rewrites are in `v2/PlanPhysicalPass.cpp`'s `PhysicalPlanRewriter`]**. It
 decides at IR-node granularity: producer node (the join), consumer node (the scan),
 key-column mapping, build distribution, selectivity gate. Emit is then mechanical —
 it translates those chosen IR nodes to their emitted Velox `PlanNodeId`s + fragment
@@ -481,8 +481,7 @@ three through `LocalRunner`.
 
 ### 10.1 Velox seam + Runner aggregation (unit)
 
-Two standalone contracts (the [HowWeWork.md](HowWeWork.md) exception for standalone
-algorithms).
+Two standalone contracts.
 
 **Velox `Task` calls** — with a stub Runner and a small `HashProbe`→`TableScan`
 pipeline:
