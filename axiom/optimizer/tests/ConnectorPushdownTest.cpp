@@ -14,11 +14,12 @@
  * limitations under the License.
  */
 
+#include <fmt/core.h>
 #include <folly/ScopeGuard.h>
 #include <gtest/gtest.h>
 
 #include "axiom/connectors/tests/TestConnector.h"
-#include "axiom/logical_plan/PlanBuilder.h"
+#include "axiom/logical_plan/ExprApi.h"
 #include "axiom/optimizer/tests/ExprMatcher.h"
 #include "axiom/optimizer/tests/QueryTestBase.h"
 #include "velox/parse/ExpressionsParser.h"
@@ -44,9 +45,10 @@ class ConnectorPushdownTest : public QueryTestBase,
         ROW({"a", "b", "c", "s"}, {BIGINT(), BIGINT(), BIGINT(), VARCHAR()}));
   }
 
-  // Optimizes 'scan t where <filter>' and returns the conjuncts
-  // createTableHandle received.
-  std::vector<core::TypedExprPtr> pushedFilters(const std::string& filter) {
+  // Optimizes 'logicalPlan' and returns the conjuncts createTableHandle
+  // received.
+  std::vector<core::TypedExprPtr> pushedFilters(
+      const lp::LogicalPlanNodePtr& logicalPlan) {
     std::vector<core::TypedExprPtr> createHandle;
     testConnector_->setOnCreateTableHandle(
         [&](const std::vector<core::TypedExprPtr>& filters) {
@@ -56,20 +58,30 @@ class ConnectorPushdownTest : public QueryTestBase,
       testConnector_->setOnCreateTableHandle(nullptr);
     };
 
-    lp::PlanBuilder::Context context(kTestConnectorId, kDefaultSchema);
-    auto logicalPlan =
-        lp::PlanBuilder(context).tableScan("t").filter(filter).build();
     toSingleNodePlan(logicalPlan);
 
     return createHandle;
   }
 
+  // Optimizes 'scan t where <filter>'.
+  std::vector<core::TypedExprPtr> pushedFilters(std::string_view filter) {
+    return pushedFilters(parseSelect(
+        fmt::format("SELECT * FROM t WHERE {}", filter), kTestConnectorId));
+  }
+
   // Asserts the pushed conjuncts structurally match 'expected' (each an
   // expression in SQL syntax).
   void expectPushed(
-      const std::string& filter,
-      const std::vector<std::string>& expected) {
-    SCOPED_TRACE("filter: " + filter);
+      std::string_view filter,
+      std::initializer_list<std::string> expected) {
+    SCOPED_TRACE(fmt::format("filter: {}", filter));
+    matchAll(pushedFilters(filter), std::vector<std::string>(expected));
+  }
+
+  void expectPushed(
+      std::string_view filter,
+      std::initializer_list<core::ExprPtr> expected) {
+    SCOPED_TRACE(fmt::format("filter: {}", filter));
     matchAll(pushedFilters(filter), expected);
   }
 
@@ -79,6 +91,16 @@ class ConnectorPushdownTest : public QueryTestBase,
     ASSERT_EQ(actual.size(), expected.size());
     for (size_t i = 0; i < actual.size(); ++i) {
       core::ExprMatcher::match(actual[i], parser_.parseExpr(expected[i]));
+    }
+  }
+
+  void matchAll(
+      const std::vector<core::TypedExprPtr>& actual,
+      std::initializer_list<core::ExprPtr> expected) {
+    ASSERT_EQ(actual.size(), expected.size());
+    size_t index{0};
+    for (const auto& expression : expected) {
+      core::ExprMatcher::match(actual[index++], expression);
     }
   }
 
@@ -114,6 +136,28 @@ TEST_P(ConnectorPushdownTest, inList) {
   expectPushed("a in (5, 5)", {"a = 5"});
 }
 
+// A singleton row-valued IN becomes independently pushable field equalities.
+TEST_P(ConnectorPushdownTest, singleRowIn) {
+  if (!useV2_) {
+    return;
+  }
+
+  expectPushed("(a, b) IN ((1, 2))", {"a = 1", "b = 2"});
+  expectPushed("(a, b) IN ((1, 2), (1, 2))", {"a = 1", "b = 2"});
+
+  AXIOM_ASSERT_PLAN_V2(
+      toSingleNodePlan(parseSelect(
+          "SELECT * FROM t WHERE (a, b) IN ((1, NULL))", kTestConnectorId)),
+      matchValues().build());
+
+  expectPushed(
+      "(a, b) IN ((1, 2), NULL)",
+      {lp::In(
+           lp::Call("row_constructor", lp::Col("a"), lp::Col("b")),
+           lp::Call("any"))
+           .expr()});
+}
+
 // Predicates that cannot be combined remain separate, so a connector must
 // handle several predicates on the same column.
 TEST_P(ConnectorPushdownTest, duplicateColumnPredicates) {
@@ -142,10 +186,8 @@ TEST_P(ConnectorPushdownTest, filtersImpliedByOr) {
   const std::string secondMixedShape =
       "(" + lowRange + " and c = 10) or (" + highRange + ")";
   const std::string nestedAllColumns =
-      "(a = 1 and ((b = 10 and c = 100) or "
-      "(b = 20 and c = 200))) or "
-      "(a = 2 and ((b = 30 and c = 300) or "
-      "(b = 40 and c = 400)))";
+      "(a = 1 and ((b = 10 and c = 100) or (b = 20 and c = 200))) or "
+      "(a = 2 and ((b = 30 and c = 300) or (b = 40 and c = 400)))";
   const std::string nestedPartialColumns =
       "(a = 1 and (b = 10 or c = 100)) or "
       "(a = 2 and (b = 20 or c = 200))";
@@ -178,8 +220,8 @@ TEST_P(ConnectorPushdownTest, filtersImpliedByOr) {
           "(a > 1 and a < 5 and b = 10) or "
           "(a > 20 and a < 30 and b = 20)",
           {
-              "(a > 1 and a < 5 and b = 10) or "
-              "(a > 20 and a < 30 and b = 20)",
+              "\"and\"(a > 1, a < 5, b = 10) or "
+              "\"and\"(a > 20, a < 30, b = 20)",
               "(a > 1 and a < 5) or (a > 20 and a < 30)",
               "b in (10, 20)",
           },
@@ -209,21 +251,19 @@ TEST_P(ConnectorPushdownTest, filtersImpliedByOr) {
           "(a = 3 and b = 30) or (a = 4 and b = 40))",
           {
               "a in (1, 2, 3, 4)",
-              "(a = 1 and b = 10) or (a = 2 and b = 20) or "
-              "(a = 3 and b = 30) or (a = 4 and b = 40)",
+              "\"or\"(a = 1 and b = 10, a = 2 and b = 20, a = 3 and b = 30, a = 4 and b = 40)",
               "b in (10, 20, 30, 40)",
           },
       },
       {
           "(" + firstMixedShape + ") and (" + secondMixedShape + ")",
           {
-              firstMixedShape,
-              secondMixedShape,
-              "\"or\"("
-              "\"and\"(\"and\"(a > 1, a < 5), "
-              "\"and\"(a <> 2, a <> 3)), "
-              "\"and\"(\"and\"(a > 20, a < 30), "
-              "\"and\"(a <> 21, a <> 22)))",
+              "\"and\"(a > 1, a < 5, a <> 2, a <> 3) or "
+              "\"and\"(a > 20, a < 30, a <> 21, a <> 22, b = 20)",
+              "\"and\"(a > 1, a < 5, a <> 2, a <> 3, c = 10) or "
+              "\"and\"(a > 20, a < 30, a <> 21, a <> 22)",
+              "\"and\"(a > 1 and a < 5, a <> 2 and a <> 3) or "
+              "\"and\"(a > 20 and a < 30, a <> 21 and a <> 22)",
           },
       },
   };
