@@ -39,6 +39,12 @@ namespace facebook::axiom::optimizer::v2 {
 /// Both jobs share one rewrite state (the internal `PushdownContext`):
 /// `pending` conjuncts, the `required` / `requiredAbove` column sets, and
 /// `nonNullColumns` (columns an ancestor inner join proves non-NULL).
+/// On the way back up, an inner join may replace a right key column with its
+/// equal left key and remove the right key from its output. Every ancestor must
+/// apply these replacements to the expressions and column lists it retains.
+/// Boundaries with a fixed schema restore the original column identities with
+/// a `Project`; these currently include the plan root, `TableWrite` inputs, and
+/// each `FixedPoint` branch.
 /// Before rewriting a join, the pass may make one read-only walk over its
 /// inputs to collect predicates guaranteed by those inputs. Nested joins cache
 /// completed collection results, including empty results, so every tree

@@ -577,6 +577,79 @@ TEST_P(AggregationTest, rightJoinPartitioning) {
   }
 }
 
+// An inner join makes its keys equal, so grouping on either key reuses the
+// join's partitioning.
+TEST_P(AggregationTest, innerJoinPartitioning) {
+  testConnector_->addTable("t", ROW("a", BIGINT()));
+  testConnector_->addTable("u", ROW("b", BIGINT()));
+  optimizerOptions_.broadcastSizeLimit = 0;
+
+  // Grouping on either key while counting the left key: both read the left
+  // key, which is all the join outputs.
+  for (const std::string key : {"a", "b"}) {
+    const auto sql = fmt::format(
+        "SELECT {}, count(a) FROM t JOIN u ON a = b GROUP BY 1", key);
+    SCOPED_TRACE(sql);
+    const auto logicalPlan = parseSelect(sql, kTestConnectorId);
+    const auto aggregate = fmt::format("count({}) as count", key);
+
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(logicalPlan, /*numDrivers=*/4),
+        matchScan("t")
+            .hashJoinInner(
+                matchScan("u"),
+                {.keys = {{"a = b"}}, .outputColumnNames = {{"a"}}})
+            .projectIf(key == "b", {"a as b"})
+            .localAggregation({key}, {aggregate})
+            .build());
+
+    AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
+        planVelox(logicalPlan).plan,
+        matchScan("t")
+            .shuffle({"a"})
+            .hashJoinInner(
+                matchScan("u").shuffle({"b"}),
+                {.keys = {{"a = b"}}, .outputColumnNames = {{"a"}}})
+            .projectIf(key == "b", {"a as b"})
+            .partialAggregation({key}, {aggregate})
+            .localPartition({key})
+            .finalAggregation({key}, {"count(count) as count"})
+            .gather()
+            .build());
+  }
+
+  {
+    // Equal grouping keys are grouped once.
+    const auto logicalPlan = parseSelect(
+        "SELECT a, b, count(*) FROM t JOIN u ON a = b GROUP BY 1, 2",
+        kTestConnectorId);
+
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(logicalPlan, /*numDrivers=*/4),
+        matchScan("t")
+            .hashJoinInner(
+                matchScan("u"),
+                {.keys = {{"a = b"}}, .outputColumnNames = {{"a"}}})
+            .localAggregation({"a"}, {"count(*) as count"})
+            .project({"a", "a as b", "count"})
+            .build());
+
+    AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
+        planVelox(logicalPlan).plan,
+        matchScan("t")
+            .shuffle({"a"})
+            .hashJoinInner(
+                matchScan("u").shuffle({"b"}),
+                {.keys = {{"a = b"}}, .outputColumnNames = {{"a"}}})
+            .partialAggregation({"a"}, {"count(*) as count"})
+            .localPartition({"a"})
+            .finalAggregation({"a"}, {"count(count) as count"})
+            .project({"a", "a as b", "count"})
+            .gather()
+            .build());
+  }
+}
+
 TEST_P(AggregationTest, bucketedAggregation) {
   // Table 't' bucketed on 'k' with ~100 rows per (k, g) group, so grouping by
   // [k, g] reduces cardinality ~100x.

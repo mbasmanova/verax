@@ -557,7 +557,7 @@ TEST_P(SubqueryTest, repeatedUncorrelatedScalarInUnion) {
       "AND n_name IN ("
       "  SELECT n_name FROM nation "
       "  WHERE n_name = (SELECT max(r_name) FROM region) "
-      "    AND n_name <= (SELECT max(r_name) FROM region) "
+      "    AND n_comment <= (SELECT max(r_name) FROM region) "
       "  UNION SELECT r_name FROM region)";
   SCOPED_TRACE(query);
 
@@ -565,14 +565,14 @@ TEST_P(SubqueryTest, repeatedUncorrelatedScalarInUnion) {
   AXIOM_ASSERT_PLAN_V2(
       plan,
       matchHiveScan("nation")
-          .aliases({"inner_name"})
+          .aliases({"inner_name", "inner_comment"})
           .hashJoinInner(
               matchHiveScan("region")
                   .aliases({"inner_region_name"})
                   .singleAggregation(
                       {}, {"max(inner_region_name) as inner_max"}),
               {.keys = {{"inner_name = inner_max"}},
-               .filter = "inner_name <= inner_max"})
+               .filter = "inner_name >= inner_comment"})
           .project({"inner_name as union_name"})
           .localPartition(matchHiveScan("region")
                               .aliases({"union_region_name"})
@@ -1113,20 +1113,23 @@ TEST_P(SubqueryTest, multiTableInSubquery) {
 
   auto query =
       "SELECT * FROM t JOIN u ON t.a = u.c "
-      "WHERE ROW(t.a, u.c) IN (SELECT ROW(e, f) FROM v)";
+      "WHERE ROW(t.b, u.d) IN (SELECT ROW(e, f) FROM v)";
 
   // The ROW expression over two tables becomes the left key of a semi-join.
   // The inner join is computed first, then the semi-join filters rows.
   auto matcher =
       matchScan("t")
           .hashJoin(matchScan("u"), velox::core::JoinType::kInner)
-          .project()
+          .project({"row_constructor(b, d) as key", "a", "b", "d"})
           .hashJoin(
-              matchScan("v").project(), velox::core::JoinType::kLeftSemiFilter)
+              matchScan("v").project({"row_constructor(e, f) as lookup"}),
+              velox::core::JoinType::kLeftSemiFilter,
+              {.keys = {{"key = lookup"}}})
+          .project({"a", "b", "a", "d"})
           .build();
 
   auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V2(plan, matcher);
 }
 
 TEST_P(SubqueryTest, correlatedScalar) {
@@ -2216,6 +2219,14 @@ TEST_P(SubqueryTest, innerJoinOnSubquery) {
                            matchHiveScan("supplier")
                                .singleAggregation({}, {"min(s_nationkey)"}),
                            velox::core::JoinType::kInner)
+                       .project(
+                           {"n_nationkey",
+                            "n_name",
+                            "n_regionkey",
+                            "n_comment",
+                            "n_regionkey",
+                            "r_name",
+                            "r_comment"})
                        .build();
 
     auto plan = toSingleNodePlan(query);

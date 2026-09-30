@@ -484,7 +484,10 @@ TEST_P(PlanTest, multipleConnectors) {
           .build();
   auto plan = toSingleNodePlan(logicalPlan);
 
-  auto matcher = matchScan("table1").hashJoin(matchScan("table2")).build();
+  auto matcher = matchScan("table1")
+                     .hashJoin(matchScan("table2"))
+                     .projectIf(useV2_, {"a", "a"})
+                     .build();
 
   AXIOM_ASSERT_PLAN(plan, matcher);
 }

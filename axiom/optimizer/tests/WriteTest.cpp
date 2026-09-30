@@ -883,6 +883,23 @@ TEST_P(WriteTest, ctasRepeatedValue) {
   checkTableData("test", {makeRowVector({"a", "b"}, {nationKeys, nationKeys})});
 }
 
+// Equal inner-join keys remain separate columns in the written table.
+TEST_P(WriteTest, ctasJoinKeys) {
+  SCOPE_EXIT {
+    dropTableIfExists("test");
+  };
+
+  runCtas(
+      "CREATE TABLE test AS "
+      "SELECT t_k, u_k "
+      "FROM (VALUES (1), (2)) AS t(t_k) "
+      "JOIN (VALUES (1), (2)) AS u(u_k) ON t_k = u_k",
+      2);
+
+  auto keys = makeFlatVector<int32_t>({1, 2});
+  checkTableData("test", {makeRowVector({"t_k", "u_k"}, {keys, keys})});
+}
+
 TEST_P(WriteTest, ctasBucketedSql) {
   SCOPE_EXIT {
     for (const auto& name : {"test", "more", "same", "fewer"}) {

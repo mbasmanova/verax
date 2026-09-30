@@ -179,11 +179,9 @@ listed separately after the list.
 
 4. **Column-pointer identity is shared.** The anchor, the working table, and the
    fixed-point output refer to the same `Column*` objects for the recursive
-   state, which invariant 2 enforces. It is also why output pruning is deferred:
-   dropping or renaming a fixed-point output column would break the identity the
-   step relies on. Pruning the state is possible, but only as one coordinated
-   rewrite of the output, all three branches, and every `WorkingTable` — see the
-   TODO in `TranslatePass::translateFixedPoint`.
+   state, which invariant 2 enforces. A pass may rewrite columns within a branch
+   as long as it restores these identities at the branch boundary before
+   rebuilding the `FixedPoint`.
 
 5. **One BOOLEAN convergence column.** The convergence plan must produce exactly
    one BOOLEAN column. Any single-column BOOLEAN subtree that reads the state is
@@ -222,8 +220,9 @@ enforces them — a hand-built node may violate them.
 - **PushdownAndPrune** — an outer filter is not pushed into the anchor, and the
   anchor and step keep `nonNullColumns` empty; otherwise `demoteOuterToInner`
   could drop null-padded seed rows whose step descendants become non-null via
-  `coalesce`. Output pruning is deferred to preserve column identity
-  (invariant 4).
+  `coalesce`. The pass may replace a right inner-join key within a branch; it
+  restores every branch's original output columns before rebuilding the
+  `FixedPoint` (invariant 4).
 
 - **LimitAndOrder** — `FixedPoint` and `WorkingTable` are limit barriers. An
   outer `LIMIT` or ordering cannot be pushed across the loop boundary.

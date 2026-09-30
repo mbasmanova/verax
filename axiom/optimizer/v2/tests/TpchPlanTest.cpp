@@ -346,20 +346,19 @@ TEST_F(TpchPlanTest, q09) {
 TEST_F(TpchPlanTest, q09Alt) {
   // q9 with `p_name like '%green%'` replaced by the estimable `p_size <= 3`
   // (~6%, similar selectivity). With an accurate estimate the optimizer reduces
-  // lineitem by the selective part first: part ⋈ partsupp builds, lineitem
-  // probes on the composite (l_partkey, l_suppkey) = (ps_partkey, ps_suppkey)
-  // key, then orders and supplier ⋈ nation join above.
+  // lineitem by the selective part first: part ⋈ partsupp stays small enough
+  // to join supplier before it builds for lineitem's composite key. Orders and
+  // nation join after lineitem has been reduced.
   auto matcher =
       matchScan("orders")
           .hashJoinInner(
               matchScan("lineitem")
-                  .hashJoinInner(
-                      matchScan("partsupp")
-                          .hashJoinInner(matchScan("part")
-                                             .filter("p_size <= 3")
-                                             .project({"p_partkey"}))))
-          .hashJoinInner(
-              matchScan("supplier").hashJoinInner(matchScan("nation")))
+                  .hashJoinInner(matchScan("partsupp")
+                                     .hashJoinInner(matchScan("part")
+                                                        .filter("p_size <= 3")
+                                                        .project({"p_partkey"}))
+                                     .hashJoinInner(matchScan("supplier"))))
+          .hashJoinInner(matchScan("nation"))
           .project()
           .aliases({"n_name", "o_year", "amount"})
           .singleAggregation({"n_name", "o_year"}, {"sum(amount)"})
