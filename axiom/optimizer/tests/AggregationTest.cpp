@@ -887,6 +887,43 @@ TEST_P(AggregationTest, mask) {
       distributedMatcher);
 }
 
+TEST_P(AggregationTest, ifToMask) {
+  testConnector_->addTable("t", ROW({"a", "b", "c"}, BIGINT()));
+
+  auto logicalPlan = lp::PlanBuilder(makeContext())
+                         .tableScan("t")
+                         .project(
+                             {"if(b > 0, a, null) as x",
+                              "if(c > 0, a, null) as y",
+                              "if(b > 0, c, null) as w",
+                              "b",
+                              "if(b > 0, a, null) as z"})
+                         .aggregate(
+                             {},
+                             {"sum(x)",
+                              "sum(y) FILTER (WHERE b < 100)",
+                              "sum(w)",
+                              "array_agg(z)"})
+                         .build();
+
+  AXIOM_ASSERT_PLAN_V2(
+      toSingleNodePlan(logicalPlan),
+      matchScan("t")
+          .project(
+              {"a",
+               "b > 0 as m1",
+               "b < 100 AND c > 0 as m2",
+               "c",
+               "if(b > 0, a, null) as p"})
+          .singleAggregation(
+              {},
+              {"sum(a) FILTER (WHERE m1)",
+               "sum(a) FILTER (WHERE m2)",
+               "sum(c) FILTER (WHERE m1)",
+               "array_agg(p)"})
+          .build());
+}
+
 TEST_P(AggregationTest, distinctAggregate) {
   auto logicalPlan = lp::PlanBuilder(makeContext())
                          .tableScan("nation")

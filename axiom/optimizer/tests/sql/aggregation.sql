@@ -135,5 +135,15 @@ SELECT a, array_agg(b ORDER BY b DESC) FROM t GROUP BY a
 -- FILTER and ORDER BY on the same aggregate.
 SELECT a, array_agg(b ORDER BY b) FILTER (WHERE b < 100) FROM t GROUP BY a
 ----
+-- Conditional aggregate inputs, including an existing FILTER and an aggregate
+-- for which NULL is a value rather than a skipped row.
+-- duckdb: SELECT sum(IF(b > 50, a, NULL)), sum(IF(b > 50, c, NULL)), sum(IF(b > 100, a, NULL)) FILTER (WHERE a <> 3), array_agg(IF(b > 140, a, NULL) ORDER BY b) FROM t
+SELECT
+  sum(IF(b > 50, a)),
+  sum(IF(b > 50, c)),
+  sum(IF(b > 100, a, NULL)) FILTER (WHERE a <> 3),
+  array_agg(IF(b > 140, a, NULL) ORDER BY b)
+FROM t
+----
 -- sum and count do not depend on input order, so the ORDER BY has no effect.
 SELECT sum(b ORDER BY a), count(c ORDER BY b) FROM t
