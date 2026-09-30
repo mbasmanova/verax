@@ -81,7 +81,8 @@ class PrecomputeProjections {
   // Returns the ExprCP that the consumer should reference in place of
   // 'expr'. Pass-throughs:
   //   - 'expr' is a Column and 'alias' is null or has the same output name:
-  //     returned unchanged.
+  //     returned unchanged. Without `projectAllInputs` and with 'alias' null,
+  //     it is returned as the alias an earlier call projected it under.
   //   - 'expr' is a Literal and 'allowConstant' is true: returned unchanged.
   // Otherwise lifts 'expr' into a projected column. If 'alias' is
   // non-null, that exact Column is used as the projection's output;
