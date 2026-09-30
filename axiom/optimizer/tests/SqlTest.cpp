@@ -196,10 +196,13 @@ void runSetupStatement(
 template <FileName Name, bool UseV2>
 class SqlTest : public SqlTestBase {
  public:
-  SqlTest(QueryEntry entry, bool syntacticJoinOrder)
+  SqlTest(QueryEntry entry, bool syntacticJoinOrder, bool singleNode)
       : entry_(std::move(entry)) {
     this->syntacticJoinOrder_ = syntacticJoinOrder;
     this->useV2_ = UseV2;
+    if (singleNode) {
+      this->numWorkers_ = 1;
+    }
   }
 
   // Uses SetUpTestCase / TearDownTestCase rather than the modern
@@ -478,7 +481,10 @@ connector::hive::LocalHiveConnectorMetadata*
 // 'V1/SqlTest_<name>' or 'V2/SqlTest_<name>' (per UseV2). Each query runs under
 // both cost-based (default) and syntactic join ordering.
 template <FileName Name, bool UseV2>
-void registerVariant(const SqlFile& file, const std::string& path) {
+void registerVariant(
+    const SqlFile& file,
+    const std::string& path,
+    bool singleNode) {
   SqlTest<Name, UseV2>::setupStatements = file.setupStatements;
   SqlTest<Name, UseV2>::connectorKind = file.connector;
   if (const auto it = file.directives.find("pushdown_table");
@@ -504,8 +510,10 @@ void registerVariant(const SqlFile& file, const std::string& path) {
           path.c_str(),
           entry.lineNumber,
           [capturedEntry = entry,
-           syntacticJoinOrder]() -> SqlTest<Name, UseV2>* {
-            return new SqlTest<Name, UseV2>(capturedEntry, syntacticJoinOrder);
+           syntacticJoinOrder,
+           singleNode]() -> SqlTest<Name, UseV2>* {
+            return new SqlTest<Name, UseV2>(
+                capturedEntry, syntacticJoinOrder, singleNode);
           });
     }
   }
@@ -515,7 +523,7 @@ void registerVariant(const SqlFile& file, const std::string& path) {
 // v2 suites by default; when 'v2Only' is set, registers only the v2 suite (for
 // features not yet wired in the v1 optimizer).
 template <FileName Name>
-void registerQueryFile(bool v2Only = false) {
+void registerQueryFile(bool v2Only = false, bool singleNode = false) {
   const std::string baseName = Name.value;
   const auto path = getTestFilePath(fmt::format("sql/{}.sql", baseName));
 
@@ -546,9 +554,9 @@ void registerQueryFile(bool v2Only = false) {
       path);
 
   if (!v2Only) {
-    registerVariant<Name, false>(file, path);
+    registerVariant<Name, false>(file, path, singleNode);
   }
-  registerVariant<Name, true>(file, path);
+  registerVariant<Name, true>(file, path, singleNode);
 }
 
 } // namespace
@@ -571,6 +579,8 @@ int main(int argc, char** argv) {
   registerQueryFile<"datetime">();
   registerQueryFile<"distinctAggregation">();
   registerQueryFile<"filterPushdown">();
+  registerQueryFile<"fixedPoint">(
+      /*v2Only=*/true, /*singleNode=*/true);
   registerQueryFile<"groupingsets">();
   registerQueryFile<"informationSchema">(/*v2Only=*/true);
   registerQueryFile<"join">();

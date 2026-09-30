@@ -258,6 +258,42 @@ TEST_F(LocalRunnerTest, count) {
   EXPECT_EQ(Runner::State::kFinished, localRunner->state());
 }
 
+TEST_F(LocalRunnerTest, fixedPoint) {
+  optimizer::MultiFragmentPlan::Options options = {
+      .queryId = makeQueryId(),
+      .maxRemotePartitions = 1,
+      .maxLocalPartitions = 2,
+  };
+  auto schema = velox::ROW("n", velox::BIGINT());
+  auto initialPlan =
+      PlanBuilder(idGenerator_, pool_.get())
+          .values({makeRowVector({"n"}, {makeFlatVector<int64_t>({1})})})
+          .planNode();
+  auto step = PlanBuilder(idGenerator_, pool_.get())
+                  .stateSource("r", schema)
+                  .filter("n < 5")
+                  .project({"n + 1 AS n"});
+
+  test::DistributedPlanBuilder builder(options, idGenerator_, pool_.get());
+  builder
+      .fixedPoint(
+          velox::core::VectorState("r", schema, /*append=*/true)
+              .initial(initialPlan),
+          step,
+          velox::core::ConvergenceConfig::whenDeltaEmpty(/*maxIterations=*/10))
+      .orderBy({"n"}, /*isPartial=*/false);
+  auto localRunner = makeRunner(builder.build());
+
+  std::vector<int64_t> values;
+  localRunner->drain([&](const velox::RowVectorPtr& batch) {
+    const auto* vector = batch->childAt(0)->as<velox::SimpleVector<int64_t>>();
+    for (velox::vector_size_t i = 0; i < batch->size(); ++i) {
+      values.push_back(vector->valueAt(i));
+    }
+  });
+  EXPECT_EQ(values, std::vector<int64_t>({1, 2, 3, 4, 5}));
+}
+
 // execute() yields all result batches and reports kFinished on completion.
 TEST_F(LocalRunnerTest, execute) {
   auto join = makeJoinPlan();

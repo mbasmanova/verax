@@ -22,6 +22,7 @@
 #include <folly/coro/BlockingWait.h>
 #include <folly/coro/Coroutine.h>
 #include <folly/coro/Task.h>
+#include <folly/executors/CPUThreadPoolExecutor.h>
 #include <stack>
 #include "axiom/connectors/ConnectorMetadata.h"
 #include "axiom/connectors/ConnectorMetadataRegistry.h"
@@ -29,6 +30,7 @@
 #include "velox/common/file/FileSystems.h"
 #include "velox/common/time/Timer.h"
 #include "velox/exec/Exchange.h"
+#include "velox/exec/FixedPointLoop.h"
 #include "velox/exec/PlanNodeStats.h"
 
 namespace facebook::axiom::runner {
@@ -286,6 +288,12 @@ LocalRunner::LocalRunner(
   VELOX_CHECK_NOT_NULL(session_);
   VELOX_CHECK_NOT_NULL(splitSourceFactory_);
   VELOX_CHECK(!finishWrite_ || params_.outputPool != nullptr);
+  if (!fragments_.empty()) {
+    VELOX_CHECK_LE(
+        fragments_.back().numRemotePartitions.value_or(1),
+        1,
+        "Last fragment must be single-task");
+  }
 }
 
 LocalRunner::~LocalRunner() {
@@ -461,6 +469,34 @@ velox::RowVectorPtr LocalRunner::makeWriteResult(std::optional<int64_t> rows) {
       std::vector<velox::VectorPtr>{std::move(child)});
 }
 
+const velox::exec::FixedPointOptions* LocalRunner::prepareFixedPointOptions() {
+  if (!velox::exec::FixedPointLoop::claims(
+          fragments_.back().fragment, /*fixedPointOptions=*/nullptr)) {
+    return nullptr;
+  }
+
+  fixedPointOptions_ = std::make_unique<velox::exec::FixedPointOptions>();
+  if (!params_.serialExecution) {
+    fixedPointExecutor_ =
+        std::make_unique<folly::CPUThreadPoolExecutor>(/*numThreads=*/1);
+    fixedPointOptions_->orchestrationExecutor = fixedPointExecutor_.get();
+  }
+  fixedPointOptions_->producerLocation =
+      [](const std::string& /*rootWorkerTaskId*/,
+         const std::string& workerAddress,
+         int32_t iteration,
+         size_t planIndex) {
+        auto id = fmt::format(
+            "local://{}.it{}.p{}", workerAddress, iteration, planIndex);
+        return velox::exec::ProducerLocation{.taskId = id, .exchangeUri = id};
+      };
+  fixedPointOptions_->subTaskId = [](const std::string& workerTaskId,
+                                     int64_t counter) {
+    return fmt::format("{}.sub{}", workerTaskId, counter);
+  };
+  return fixedPointOptions_.get();
+}
+
 void LocalRunner::start() {
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -480,11 +516,7 @@ void LocalRunner::start() {
   params_.planNode = fragments_.back().fragment.planNode;
   params_.serialExecution = !params_.queryCtx->isExecutorSupplied();
 
-  VELOX_CHECK_LE(
-      fragments_.back().numRemotePartitions.value_or(1),
-      1,
-      "Last fragment must be single-task");
-
+  params_.fixedPointOptions = prepareFixedPointOptions();
   auto cursor = velox::exec::TaskCursor::create(params_);
   makeStages(cursor->task());
 
