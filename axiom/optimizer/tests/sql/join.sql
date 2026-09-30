@@ -764,6 +764,13 @@ FROM t o
 FULL OUTER JOIN t r ON o.a = r.a AND r.b > 140
 GROUP BY 1
 ----
+-- Join the coalesced key from a full join that has an additional key.
+SELECT coalesce(t1.a, t2.a) AS k
+FROM t t1
+FULL OUTER JOIN t t2 ON t1.a = t2.a AND t1.b = t2.b
+JOIN t t3 ON coalesce(t1.a, t2.a) = t3.a
+ORDER BY 1
+----
 -- A right join grouped by its preserved right key.
 SELECT preserved.a, count(*)
 FROM t_large matching
