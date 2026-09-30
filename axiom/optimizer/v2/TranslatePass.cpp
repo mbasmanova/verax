@@ -704,13 +704,13 @@ class Translator {
       const Scope& scope,
       LiftTarget* liftTarget);
 
-  // Normalizes an IN list. Folds a single-element IN to equality (`a IN (b)` ->
-  // `a = b`, `a IN (NULL)` -> null boolean literal). For a multi-element
-  // constant list, drops duplicate constants from 'args' in place and returns a
-  // folded equality when a single distinct constant remains. Returns nullptr to
-  // let the caller build the (deduplicated) IN through the generic path,
-  // leaving 'args' unchanged when a multi-element list has any non-constant
-  // element.
+  // Normalizes an IN list. Folds a single-element scalar IN to equality and a
+  // row constructor compared with a row literal to field equalities. A null
+  // element folds to a null boolean literal. For a multi-element constant list,
+  // drops duplicate constants from 'args' in place and applies the same folding
+  // when one distinct constant remains. Returns nullptr to let the caller build
+  // the (deduplicated) IN through the generic path, leaving 'args' unchanged
+  // when a multi-element list has any non-constant element.
   ExprCP normalizeInList(ExprVector& args);
 
   // Translates a DEREFERENCE special form, resolving a varchar field name to a
@@ -3437,9 +3437,7 @@ ExprCP Translator::translateSpecialForm(
     }
   }
 
-  // Normalize an IN list: a single element folds to equality (`x IN (a)` is
-  // `x = a`) and a constant list drops duplicates (`x IN (a, a)` is `x IN
-  // (a)`).
+  // Normalize a singleton comparison and deduplicate a constant IN list.
   if (expr.form() == lp::SpecialForm::kIn) {
     if (ExprCP folded = normalizeInList(args)) {
       return folded;
@@ -3503,16 +3501,40 @@ ExprCP Translator::translateExists(
 ExprCP Translator::normalizeInList(ExprVector& args) {
   VELOX_CHECK_GE(args.size(), 2);
 
-  // Single-element folding is sound in three-valued logic: `a IN (b)` and
-  // `a = b` agree on true, false, and null. The null-literal case folds to a
-  // constant (rather than `eq(a, null)`) so the surrounding expression can fold
-  // further without materializing the column.
+  // A single-element scalar IN has equality's three-valued semantics. A null
+  // literal folds directly so the surrounding expression can fold further
+  // without materializing the column.
   auto foldSingleElement = [&](ExprCP element) -> ExprCP {
     if (element->is(PlanType::kLiteralExpr) &&
         element->as<Literal>()->literal().isNull()) {
       return builder_.makeLiteral(
           velox::Variant::null(velox::TypeKind::BOOLEAN),
           toType(velox::BOOLEAN()));
+    }
+
+    // Rewrite '(a, b) IN ((1, 2))' as 'a = 1 AND b = 2'.
+    if (args[0]->is(PlanType::kCallExpr) &&
+        element->is(PlanType::kLiteralExpr)) {
+      CallCP rowConstructor = args[0]->as<Call>();
+      const auto* metadata = rowConstructor->metadata();
+      const auto& literal = element->as<Literal>()->literal();
+      if (metadata != nullptr && metadata->isRowConstructor &&
+          literal.kind() == velox::TypeKind::ROW) {
+        const auto& fields = literal.row();
+        const auto& rowType = element->value().type;
+        VELOX_CHECK_EQ(rowConstructor->args().size(), fields.size());
+        VELOX_CHECK_EQ(rowType->size(), fields.size());
+
+        ExprVector equalities;
+        equalities.reserve(fields.size());
+        for (size_t i = 0; i < fields.size(); ++i) {
+          equalities.push_back(exprFactory_.makeEq(
+              rowConstructor->args()[i],
+              builder_.makeLiteral(
+                  velox::Variant(fields[i]), rowType->childAt(i).get())));
+        }
+        return simplifier_.simplify(exprFactory_.andAll(equalities));
+      }
     }
     return simplifier_.simplify(exprFactory_.makeEq(args[0], element));
   };
