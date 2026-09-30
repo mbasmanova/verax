@@ -704,14 +704,19 @@ class Translator {
       const Scope& scope,
       LiftTarget* liftTarget);
 
-  // Normalizes an IN list. Folds a single-element scalar IN to equality and a
-  // row constructor compared with a row literal to field equalities. A null
-  // element folds to a null boolean literal. For a multi-element constant list,
-  // drops duplicate constants from 'args' in place and applies the same folding
-  // when one distinct constant remains. Returns nullptr to let the caller build
-  // the (deduplicated) IN through the generic path, leaving 'args' unchanged
-  // when a multi-element list has any non-constant element.
+  // Normalizes an IN list. Unwraps one-field row constructors, folds a
+  // single-element scalar IN to equality and a row constructor compared with a
+  // row literal to field equalities. A null element folds to a null boolean
+  // literal. For a multi-element constant list, drops duplicate constants from
+  // 'args' in place and applies the same folding when one distinct constant
+  // remains. Returns nullptr to let the caller build the (deduplicated) IN
+  // through the generic path, leaving 'args' unchanged when a multi-element
+  // list has any non-constant element.
   ExprCP normalizeInList(ExprVector& args);
+
+  // Returns scalar IN arguments for a one-field row IN, or nullopt when the
+  // expression cannot be unwrapped.
+  std::optional<ExprVector> unwrapSingleFieldRowIn(const ExprVector& args);
 
   // Translates a DEREFERENCE special form, resolving a varchar field name to a
   // numeric field index against the input row type.
@@ -3501,6 +3506,11 @@ ExprCP Translator::translateExists(
 ExprCP Translator::normalizeInList(ExprVector& args) {
   VELOX_CHECK_GE(args.size(), 2);
 
+  if (auto scalarArgs = unwrapSingleFieldRowIn(args)) {
+    args = std::move(*scalarArgs);
+    return normalizeInList(args);
+  }
+
   // A single-element scalar IN has equality's three-valued semantics. A null
   // literal folds directly so the surrounding expression can fold further
   // without materializing the column.
@@ -3516,10 +3526,10 @@ ExprCP Translator::normalizeInList(ExprVector& args) {
     if (args[0]->is(PlanType::kCallExpr) &&
         element->is(PlanType::kLiteralExpr)) {
       CallCP rowConstructor = args[0]->as<Call>();
-      const auto* metadata = rowConstructor->metadata();
       const auto& literal = element->as<Literal>()->literal();
-      if (metadata != nullptr && metadata->isRowConstructor &&
-          literal.kind() == velox::TypeKind::ROW) {
+      if (rowConstructor->isRowConstructor()) {
+        VELOX_DCHECK_EQ(literal.kind(), velox::TypeKind::ROW);
+
         const auto& fields = literal.row();
         const auto& rowType = element->value().type;
         VELOX_CHECK_EQ(rowConstructor->args().size(), fields.size());
@@ -3569,6 +3579,56 @@ ExprCP Translator::normalizeInList(ExprVector& args) {
   }
   args = std::move(deduped);
   return nullptr;
+}
+
+namespace {
+
+CallCP asSingleFieldRowConstructor(ExprCP expr) {
+  if (!expr->is(PlanType::kCallExpr)) {
+    return nullptr;
+  }
+  const auto* call = expr->as<Call>();
+  if (call->args().size() != 1 || !call->isRowConstructor()) {
+    return nullptr;
+  }
+  return call;
+}
+
+} // namespace
+
+std::optional<ExprVector> Translator::unwrapSingleFieldRowIn(
+    const ExprVector& args) {
+  const auto* rowConstructor = asSingleFieldRowConstructor(args[0]);
+  if (rowConstructor == nullptr) {
+    return std::nullopt;
+  }
+
+  ExprCP field = rowConstructor->args()[0];
+  const TypeCP fieldType = field->value().type;
+  ExprVector scalarArgs{field};
+  scalarArgs.reserve(args.size());
+  for (size_t i = 1; i < args.size(); ++i) {
+    if (args[i]->is(PlanType::kLiteralExpr)) {
+      const auto& literalValue = args[i]->as<Literal>()->literal();
+      if (literalValue.isNull()) {
+        scalarArgs.push_back(builder_.makeLiteral(
+            velox::Variant::null(fieldType->kind()), fieldType));
+      } else {
+        VELOX_DCHECK_EQ(literalValue.kind(), velox::TypeKind::ROW);
+        VELOX_DCHECK_EQ(literalValue.row().size(), 1);
+        scalarArgs.push_back(builder_.makeLiteral(
+            velox::Variant(literalValue.row()[0]), fieldType));
+      }
+      continue;
+    }
+
+    const auto* candidate = asSingleFieldRowConstructor(args[i]);
+    if (candidate == nullptr) {
+      return std::nullopt;
+    }
+    scalarArgs.push_back(candidate->args()[0]);
+  }
+  return scalarArgs;
 }
 
 ExprCP Translator::translateDereference(

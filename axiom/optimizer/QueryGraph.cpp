@@ -151,6 +151,10 @@ Call::Call(
   }
 }
 
+bool Call::isRowConstructor() const {
+  return metadata_ != nullptr && metadata_->isRowConstructor;
+}
+
 std::string Call::toString() const {
   std::stringstream out;
   out << name_ << "(";

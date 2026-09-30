@@ -107,6 +107,10 @@ ExprCP ExprFactory::makeIn(ExprCP value, ExprVector list) {
       SpecialFormCallNames::kIn, std::move(arguments), /*specialForm=*/true);
 }
 
+ExprCP ExprFactory::makeLiteral(velox::Variant value, TypeCP type) {
+  return builder_.makeLiteral(std::move(value), type);
+}
+
 ExprCP ExprFactory::makeLessThanOrEqual(ExprCP lhs, ExprCP rhs) {
   const Name name = builder_.functionNames().lte;
   VELOX_USER_CHECK_NOT_NULL(

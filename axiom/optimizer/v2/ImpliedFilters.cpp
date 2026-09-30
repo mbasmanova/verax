@@ -142,6 +142,75 @@ std::vector<std::pair<Group, ExprCP>> deriveGroupedFiltersFromOr(
   return result;
 }
 
+// `(a, b) IN ((1, 10), (2, 20))` implies `a IN (1, 2)` and
+// `b IN (10, 20)`. A NULL list element or field cannot make the original
+// predicate true and therefore contributes no value to a necessary filter.
+std::vector<std::pair<ColumnCP, ExprCP>> deriveColumnFiltersFromRowIn(
+    ExprCP expression,
+    ExprFactory& factory) {
+  if (!expression->is(PlanType::kCallExpr)) {
+    return {};
+  }
+
+  const auto* inCall = expression->as<Call>();
+  if (inCall->name() != SpecialFormCallNames::kIn ||
+      inCall->args().size() < 3 ||
+      !inCall->args()[0]->is(PlanType::kCallExpr)) {
+    return {};
+  }
+
+  const auto* rowConstructor = inCall->args()[0]->as<Call>();
+  if (!rowConstructor->isRowConstructor()) {
+    return {};
+  }
+
+  const size_t numFields = rowConstructor->args().size();
+  if (numFields < 2) {
+    return {};
+  }
+  std::vector<ExprVector> values(numFields);
+  std::vector<folly::F14FastSet<ExprCP>> seen(numFields);
+  for (size_t i = 1; i < inCall->args().size(); ++i) {
+    if (!inCall->args()[i]->is(PlanType::kLiteralExpr)) {
+      return {};
+    }
+
+    const auto& literal = inCall->args()[i]->as<Literal>()->literal();
+    if (literal.isNull()) {
+      continue;
+    }
+    VELOX_DCHECK_EQ(literal.kind(), velox::TypeKind::ROW);
+    const auto& fields = literal.row();
+    VELOX_DCHECK_EQ(fields.size(), numFields);
+    for (size_t field = 0; field < numFields; ++field) {
+      if (fields[field].isNull()) {
+        continue;
+      }
+      ExprCP value = factory.makeLiteral(
+          velox::Variant(fields[field]),
+          rowConstructor->args()[field]->value().type);
+      if (seen[field].insert(value).second) {
+        values[field].push_back(value);
+      }
+    }
+  }
+
+  std::vector<std::pair<ColumnCP, ExprCP>> result;
+  for (size_t field = 0; field < numFields; ++field) {
+    ExprCP fieldExpression = rowConstructor->args()[field];
+    const auto& columns = fieldExpression->columns();
+    if (fieldExpression->containsNonDeterministic() || columns.size() != 1 ||
+        values[field].empty()) {
+      continue;
+    }
+    ExprCP filter = values[field].size() == 1
+        ? factory.makeEq(fieldExpression, values[field][0])
+        : factory.makeIn(fieldExpression, std::move(values[field]));
+    result.emplace_back(columns.onlyObject<Column>(), filter);
+  }
+  return result;
+}
+
 enum class InputSide { kLeft, kRight };
 
 // Compares AND and OR expressions after flattening nested calls of the same
@@ -226,15 +295,18 @@ ExprVector ImpliedFilters::deriveForColumns(
 
   ExprVector result;
   for (ExprCP original : filters) {
-    for (const auto& [column, filter] : deriveGroupedFiltersFromOr<ColumnCP>(
-             original,
-             factory,
-             [](const PlanObjectSet& columns) -> std::optional<ColumnCP> {
-               if (columns.size() != 1) {
-                 return std::nullopt;
-               }
-               return columns.onlyObject<Column>();
-             })) {
+    auto derived = deriveGroupedFiltersFromOr<ColumnCP>(
+        original,
+        factory,
+        [](const PlanObjectSet& columns) -> std::optional<ColumnCP> {
+          if (columns.size() != 1) {
+            return std::nullopt;
+          }
+          return columns.onlyObject<Column>();
+        });
+    auto rowIn = deriveColumnFiltersFromRowIn(original, factory);
+    derived.insert(derived.end(), rowIn.begin(), rowIn.end());
+    for (const auto& [column, filter] : derived) {
       if (!uniqueFilters.emplace(filter).second) {
         continue;
       }

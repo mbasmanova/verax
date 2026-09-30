@@ -20,12 +20,12 @@
 
 namespace facebook::axiom::optimizer::v2 {
 
-/// Derives deterministic filters implied by OR expressions for individual
-/// columns or join inputs. Within a top-level OR, predicates may be nested
-/// under any combination of AND and OR: AND contributes every constraint for
-/// a group, while OR contributes a group only when every branch constrains it.
-/// A predicate belongs to a column group when it references exactly that
-/// column, and to a join-input group when all its columns come from that input.
+/// Derives deterministic filters implied by predicates for individual columns
+/// or join inputs. Within a top-level OR, predicates may be nested under any
+/// combination of AND and OR: AND contributes every constraint for a group,
+/// while OR contributes a group only when every branch constrains it. A
+/// predicate belongs to a column group when it references exactly that column,
+/// and to a join-input group when all its columns come from that input.
 ///
 /// For example:
 ///
@@ -44,7 +44,11 @@ namespace facebook::axiom::optimizer::v2 {
 ///     a = 1 OR a = 2
 ///     b = 10 OR b = 20 OR b = 30
 ///
-/// Non-deterministic OR expressions are not used to derive filters.
+/// A row predicate `(a, b) IN ((1, 10), (2, 20))` similarly implies
+/// `a IN (1, 2)` and `b IN (10, 20)`. These filters do not preserve the
+/// correlation between fields; callers must retain the original predicate.
+///
+/// Non-deterministic expressions are excluded from derived filters.
 class ImpliedFilters {
  public:
   /// Derives necessary filters for each join input from `filters`.
@@ -54,7 +58,8 @@ class ImpliedFilters {
       const PlanObjectSet& rightColumns,
       ExprFactory& factory);
 
-  /// Derives new necessary single-column filters from ORs in `filters`.
+  /// Derives new necessary single-column filters from ORs and row-valued INs
+  /// in `filters`.
   static ExprVector deriveForColumns(
       const ExprVector& filters,
       ExprFactory& factory);

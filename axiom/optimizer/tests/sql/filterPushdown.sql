@@ -35,15 +35,23 @@ WHERE
   OR
   (t.a = 2 AND ((u.x = 30 AND u.y = 300) OR (u.x = 40 AND u.y = 400)))
 ----
--- duckdb: VALUES (1, true, NULL, true), (2, false, NULL, NULL), (3, NULL, NULL, NULL), (4, false, false, NULL), (5, NULL, NULL, NULL)
+-- duckdb: VALUES (1, true, NULL, true, true, true), (2, false, NULL, NULL, false, true), (3, NULL, NULL, NULL, NULL, true), (4, false, false, NULL, NULL, NULL), (5, NULL, NULL, NULL, NULL, NULL), (6, false, false, NULL, false, NULL)
 -- Row-valued IN preserves three-valued semantics when a row field or list
 -- element is NULL.
 WITH t(id, a, b) AS (
-  VALUES (1, 1, 2), (2, 1, 3), (3, 1, NULL), (4, 2, NULL), (5, NULL, 2)
+  VALUES
+    (1, 1, 2),
+    (2, 1, 3),
+    (3, 1, NULL),
+    (4, 2, NULL),
+    (5, NULL, 2),
+    (6, 2, 2)
 )
 SELECT
   id,
   (a, b) IN ((1, 2)),
   (a, b) IN ((1, NULL)),
-  (a, b) IN ((1, 2), NULL)
+  (a, b) IN ((1, 2), NULL),
+  (a, b) IN ((1, 2), (2, 3)),
+  ROW(a) IN (ROW(1), NULL)
 FROM t

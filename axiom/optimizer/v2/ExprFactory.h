@@ -77,6 +77,9 @@ class ExprFactory {
   /// Builds `value IN (list...)`. 'list' must not be empty.
   ExprCP makeIn(ExprCP value, ExprVector list);
 
+  /// Builds a literal of 'type'.
+  ExprCP makeLiteral(velox::Variant value, TypeCP type);
+
   /// Builds `lhs <= rhs`.
   ExprCP makeLessThanOrEqual(ExprCP lhs, ExprCP rhs);
 
