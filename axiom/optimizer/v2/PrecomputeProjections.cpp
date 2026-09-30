@@ -123,10 +123,23 @@ ExprCP PrecomputeProjections::toColumn(
     }
 
     // In narrowing mode the project is not seeded with the input columns, so a
-    // referenced passthrough column must be added explicitly. This is not a
-    // lifted expression, so it does not by itself require a project.
-    if (!projectAllInputs_ && !seen_.contains(expr)) {
-      addToProject(expr, column);
+    // referenced passthrough column must be added explicitly. A column already
+    // projected under another name is read under that name, unless the caller
+    // needs this one. This is not a lifted expression, so it does not by itself
+    // require a project.
+    if (!projectAllInputs_) {
+      const auto it = seen_.find(expr);
+      if (it == seen_.end()) {
+        addToProject(expr, column);
+      } else if (it->second != column) {
+        if (alias == nullptr) {
+          return it->second;
+        }
+        if (std::ranges::find(outColumns_, column) == outColumns_.end()) {
+          outColumns_.push_back(column);
+          outExprs_.push_back(expr);
+        }
+      }
     }
     return expr;
   }

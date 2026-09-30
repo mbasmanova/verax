@@ -129,6 +129,20 @@ LEFT JOIN (VALUES (NULL), (1), (3)) AS u(u_k) ON t_k = u_k
 GROUP BY 1
 
 ----
+-- Groups by the COALESCE of the join keys while counting the left key.
+SELECT coalesce(t_k, u_k) AS user_rid, count(t_k)
+FROM (VALUES (NULL), (1), (2)) AS t(t_k)
+LEFT JOIN (VALUES (NULL), (1), (3)) AS u(u_k) ON t_k = u_k
+GROUP BY 1
+
+----
+-- Groups by both the COALESCE of the join keys and the left key.
+SELECT coalesce(t_k, u_k) AS user_rid, t_k, count(*)
+FROM (VALUES (NULL), (1), (2)) AS t(t_k)
+LEFT JOIN (VALUES (NULL), (1), (3)) AS u(u_k) ON t_k = u_k
+GROUP BY 1, 2
+
+----
 -- ROLLUP can null the two join keys independently.
 SELECT coalesce(t_k, u_k), grouping(u_k), grouping(t_k), count(*)
 FROM (VALUES (NULL), (1), (2)) AS t(t_k)
