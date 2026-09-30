@@ -93,16 +93,19 @@ struct EmitState {
   EmitState(
       const JoinHypergraph& graph,
       Builder& builder,
-      ExprSimplifier& simplifier)
+      ExprSimplifier& simplifier,
+      JoinTreeEmitter::JoinFactory joinFactory)
       : graph{graph},
         builder{builder},
         simplifier{simplifier},
+        joinFactory{joinFactory},
         exprs{builder},
         fired(graph.filterConjuncts().size(), false) {}
 
   const JoinHypergraph& graph;
   Builder& builder;
   ExprSimplifier& simplifier;
+  JoinTreeEmitter::JoinFactory joinFactory;
   ExprFactory exprs;
   std::vector<bool> fired;
 };
@@ -600,7 +603,7 @@ Emitted buildJoin(
     }
   }
 
-  NodeCP node = PhysicalJoin::makeJoin(
+  NodeCP node = state.joinFactory(
       {left.node,
        right.node,
        join->joinType,
@@ -610,9 +613,7 @@ Emitted buildJoin(
        std::move(filter),
        edge.nullAware(),
        edge.nullAsValue(),
-       std::move(outputColumns)},
-      state.builder,
-      state.simplifier);
+       std::move(outputColumns)});
   if (!aboveJoin.empty()) {
     node = state.builder.make<Filter>({node, std::move(aboveJoin)});
   }
@@ -655,7 +656,7 @@ Emitted buildReversedAnti(
   auto materialized = merge(probe.materialized, build.materialized);
   const auto substitution =
       merge(collapsedColumns(mergedChildReps(join, state)), materialized);
-  NodeCP marked = PhysicalJoin::makeJoin(
+  NodeCP marked = state.joinFactory(
       {probe.node,
        build.node,
        JoinOp::emittedJoinType(join->joinType, join->reversedAnti),
@@ -664,9 +665,7 @@ Emitted buildReversedAnti(
        rewrite(ExprVector{edge.filter()}, substitution, state),
        edge.nullAware(),
        edge.nullAsValue(),
-       std::move(joinOutput)},
-      state.builder,
-      state.simplifier);
+       std::move(joinOutput)});
 
   NodeCP filtered = state.builder.make<Filter>(
       {marked, ExprVector{state.exprs.makeNot(mark)}});
@@ -795,8 +794,21 @@ NodeCP JoinTreeEmitter::emit(
     const ColumnVector& rootOutputColumns,
     Builder& builder,
     ExprSimplifier& simplifier) {
+  const auto joinFactory = [&](Join::Key key) {
+    return PhysicalJoin::makeJoin(std::move(key), builder, simplifier);
+  };
+  return emit(root, graph, rootOutputColumns, builder, simplifier, joinFactory);
+}
+
+NodeCP JoinTreeEmitter::emit(
+    MemoOpCP root,
+    const JoinHypergraph& graph,
+    const ColumnVector& rootOutputColumns,
+    Builder& builder,
+    ExprSimplifier& simplifier,
+    JoinFactory joinFactory) {
   VELOX_CHECK_NOT_NULL(root);
-  EmitState state{graph, builder, simplifier};
+  EmitState state{graph, builder, simplifier, joinFactory};
   NodeCP result{nullptr};
   switch (root->kind()) {
     case MemoOpKind::kLeaf:
@@ -826,11 +838,37 @@ NodeCP JoinTreeEmitter::emitComponents(
     Builder& builder,
     ExprSimplifier& simplifier,
     int32_t numWorkers) {
+  const auto joinFactory = [&](Join::Key key) {
+    return PhysicalJoin::makeJoin(std::move(key), builder, simplifier);
+  };
+  const auto crossJoinFactory = [&](Join::Key key) {
+    return builder.make<Join>(std::move(key));
+  };
+  return emitComponents(
+      componentRoots,
+      graph,
+      rootOutputColumns,
+      builder,
+      simplifier,
+      numWorkers,
+      joinFactory,
+      crossJoinFactory);
+}
+
+NodeCP JoinTreeEmitter::emitComponents(
+    const std::vector<MemoOpCP>& componentRoots,
+    const JoinHypergraph& graph,
+    const ColumnVector& rootOutputColumns,
+    Builder& builder,
+    ExprSimplifier& simplifier,
+    int32_t numWorkers,
+    JoinFactory joinFactory,
+    JoinFactory crossJoinFactory) {
   VELOX_CHECK_GE(
       componentRoots.size(),
       2,
       "emitComponents requires at least two components");
-  EmitState state{graph, builder, simplifier};
+  EmitState state{graph, builder, simplifier, joinFactory};
 
   // Emit each component subtree first, sharing one `fired` vector so a
   // cross-component conjunct is placed once, at a fold below.
@@ -895,7 +933,7 @@ NodeCP JoinTreeEmitter::emitComponents(
         : coverNarrowedColumns(state.graph, cover, result, build);
     const auto substitution =
         merge(collapsedColumns(graph.coverColumnReps(cover)), materialized);
-    result = builder.make<Join>(
+    result = crossJoinFactory(
         {result,
          build,
          velox::core::JoinType::kInner,

@@ -18,6 +18,8 @@
 
 #include <vector>
 
+#include <folly/Function.h>
+
 #include "axiom/optimizer/v2/Builder.h"
 #include "axiom/optimizer/v2/DPhyp.h"
 #include "axiom/optimizer/v2/JoinHypergraph.h"
@@ -27,10 +29,10 @@ namespace facebook::axiom::optimizer::v2 {
 
 class ExprSimplifier;
 
-/// Translates the `MemoOp` tree DPhyp produced back into an IR
-/// `Join` tree by walking bottom-up: each `LeafOp` resolves to the
-/// relation's IR node; each `JoinOp` calls `Builder::make<Join>` with
-/// the edge's keys/filter and the chosen child plans.
+/// Translates the `MemoOp` tree DPhyp produced back into an IR `Join` tree by
+/// walking bottom-up: each `LeafOp` resolves to the relation's IR node; each
+/// `JoinOp` constructs a Join from the edge's keys/filter and the chosen child
+/// plans.
 ///
 /// Intermediate Joins carry the lossless union of their children's
 /// columns. The root Join carries exactly `rootOutputColumns` so
@@ -39,6 +41,10 @@ class ExprSimplifier;
 /// relations underneath.
 class JoinTreeEmitter {
  public:
+  /// Constructs one emitted join. A caller may add physical distribution while
+  /// constructing the node.
+  using JoinFactory = folly::FunctionRef<NodeCP(Join::Key)>;
+
   /// Emits the tree-IR for the join tree DPhyp chose, rooted at the memo
   /// entry `root`. `rootOutputColumns` are the columns the result must expose
   /// (see class comment); `graph` supplies each memo op's relation and edge,
@@ -49,6 +55,15 @@ class JoinTreeEmitter {
       const ColumnVector& rootOutputColumns,
       Builder& builder,
       ExprSimplifier& simplifier);
+
+  /// Emits the tree using `joinFactory` to construct each Join step.
+  static NodeCP emit(
+      MemoOpCP root,
+      const JoinHypergraph& graph,
+      const ColumnVector& rootOutputColumns,
+      Builder& builder,
+      ExprSimplifier& simplifier,
+      JoinFactory joinFactory);
 
   /// Emits a cross-product combine of independently planned connected
   /// components. Each component subtree is emitted, then the components
@@ -68,6 +83,18 @@ class JoinTreeEmitter {
       Builder& builder,
       ExprSimplifier& simplifier,
       int32_t numWorkers);
+
+  /// Emits the component trees using `joinFactory` within each component and
+  /// `crossJoinFactory` to combine components.
+  static NodeCP emitComponents(
+      const std::vector<MemoOpCP>& componentRoots,
+      const JoinHypergraph& graph,
+      const ColumnVector& rootOutputColumns,
+      Builder& builder,
+      ExprSimplifier& simplifier,
+      int32_t numWorkers,
+      JoinFactory joinFactory,
+      JoinFactory crossJoinFactory);
 };
 
 } // namespace facebook::axiom::optimizer::v2

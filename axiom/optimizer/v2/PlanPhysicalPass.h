@@ -35,12 +35,12 @@ class PlanPhysicalPass {
   /// operators, inserting remote exchanges so each operator's input satisfies
   /// its required partitioning.
   ///
-  /// Automatic fallbacks for cross joins, theta and decorrelated-subquery
-  /// joins, joins whose keys do not resolve to leaf columns, and clusters DPhyp
-  /// cannot cost keep the written join tree while choosing the build side from
-  /// available size estimates. At `numWorkers > 1`, they get a valid
-  /// distributed input combination through broadcast, repartition, or gather
-  /// exchanges.
+  /// Automatic fallbacks preserve operators that cannot be safely reordered.
+  /// When DPhyp cannot cost an inner-join cluster, the fallback retains
+  /// relation order except that it takes an equi-joinable relation before
+  /// introducing a cross join. Available size estimates choose the build side.
+  /// At `numWorkers > 1`, broadcast, repartition, or gather exchanges provide a
+  /// valid distributed input combination.
   ///
   /// When `options.syntacticJoinOrder` is true, cost-based reordering is
   /// disabled and every join keeps both the tree and input orientation written

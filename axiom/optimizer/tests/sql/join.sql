@@ -94,6 +94,21 @@ JOIN (VALUES (1), (2), (3), (4), (NULL)) AS t(t_k) ON u_k = t_k
 ORDER BY t_k, u_k
 
 ----
+-- Two inputs connected only through a third can join through that input.
+SELECT t_k, u_k, k
+FROM (VALUES (1), (2)) AS t(t_k)
+CROSS JOIN (VALUES (1), (3)) AS u(u_k)
+JOIN (VALUES (1), (2), (3)) AS v(k) ON t_k = k AND u_k = k
+
+----
+-- An equality that needs columns from both earlier inputs is still applied.
+SELECT t_k, u_k, k
+FROM (VALUES (1, 10), (2, 20)) AS t(t_k, t_c)
+CROSS JOIN (VALUES (1, 1), (2, 2)) AS u(u_k, u_c)
+JOIN (VALUES (1, 11), (2, 99)) AS v(k, c)
+  ON t_k = k AND u_k = k AND t_c + u_c = c
+
+----
 -- A RIGHT theta join preserves unmatched right rows, including a NULL key.
 -- ordered
 SELECT t_k, u_k

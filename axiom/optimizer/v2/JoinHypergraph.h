@@ -22,6 +22,7 @@
 
 #include <folly/container/F14Map.h>
 #include <folly/container/F14Set.h>
+#include <folly/small_vector.h>
 
 #include "axiom/optimizer/PlanObject.h"
 #include "axiom/optimizer/QueryGraphContext.h"
@@ -61,6 +62,20 @@ struct FilterConjunct {
 ///     `[0, relations().size())`.
 class JoinHypergraph {
  public:
+  struct CrossingEdge {
+    /// Index into `edges()`.
+    size_t index;
+    /// True when the edge's left eligibility side is in the left input.
+    bool leftToRight;
+  };
+
+  struct CrossingEdges {
+    /// Edges whose eligibility sides split cleanly across the two inputs.
+    folly::small_vector<CrossingEdge, 4> joinEdges;
+    /// Inner edges covered by both inputs that must be applied as filters.
+    std::vector<size_t> filterEdges;
+  };
+
   /// Constructs a Relation with the next assigned id and adds it
   /// to the hypergraph. Returns the assigned id.
   int8_t addRelation(
@@ -162,6 +177,19 @@ class JoinHypergraph {
   const std::vector<JoinEdge>& edges() const {
     return edges_;
   }
+
+  /// Classifies the edges covered by `left` and `right` that cross their
+  /// boundary. Returns nullopt when an edge straddles the boundary and cannot
+  /// be applied as an inner filter above the join.
+  std::optional<CrossingEdges> crossingEdges(
+      const RelationSet& left,
+      const RelationSet& right) const;
+
+  /// Returns `edgeIndices` in edge-index order after removing inner equi-join
+  /// edges whose key equalities are already implied by earlier edges. Each
+  /// input must have already applied the first edge for every equivalence class
+  /// it contains, making same-class columns within that input equal.
+  std::vector<size_t> canonicalKeyEdges(std::vector<size_t> edgeIndices) const;
 
   /// Returns the set of relations reachable from `seed` by repeatedly
   /// following edges whose eligibility sides are entirely within `bound`.
