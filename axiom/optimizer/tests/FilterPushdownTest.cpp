@@ -120,7 +120,8 @@ TEST_P(FilterPushdownTest, throughJoin) {
   // itself. 'joinFilter' is the predicate as v2 normalizes it.
   for (const auto& [filter, joinFilter] :
        std::vector<std::pair<const char*, const char*>>{
-           {"n_nationkey < r_regionkey", "n_nationkey < r_regionkey"},
+           {"length(n_name) < length(r_name)",
+            "length(n_name) < length(r_name)"},
            {"cardinality(filter(array[n_name], n -> n = r_name)) > 0",
             "cardinality(filter(array[n_name], n -> r_name = n)) > 0"},
        }) {

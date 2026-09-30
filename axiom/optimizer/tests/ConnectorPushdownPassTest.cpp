@@ -303,7 +303,10 @@ TEST_F(ConnectorPushdownPassTest, crossConnectorJoin) {
 
   AXIOM_ASSERT_PLAN(
       toSingleNodePlan(logicalPlan),
-      matchScan("p").hashJoin(matchScan("virt_q").project()).build());
+      matchScan("p")
+          .hashJoin(matchScan("virt_q").project())
+          .project({"a", "b", "a", "sd"})
+          .build());
 
   EXPECT_FALSE(probeCalled);
 }
@@ -358,6 +361,7 @@ TEST_F(ConnectorPushdownPassTest, independentConnectors) {
             matchScan("virt_p")
                 .project()
                 .hashJoin(matchScan("virt_q").project())
+                .project({"a", "sb", "a", "sd"})
                 .build());
       },
       [&](connector::TestConnectorMetadata* metadata, const Node& subtree) {
@@ -554,7 +558,7 @@ TEST_F(ConnectorPushdownPassTest, disjointRoots) {
 
   testMetadata_->setPushdownMatcher([leftReplacement,
                                      rightReplacement](const Node& subtree) {
-    const auto inputs = subtree.inputs();
+    const auto inputs = requireNodeOfType(&subtree, NodeType::kJoin)->inputs();
     const auto* leftAgg = requireNodeOfType(inputs[0], NodeType::kAggregate);
     const auto* rightAgg = requireNodeOfType(inputs[1], NodeType::kAggregate);
     return std::vector<PushdownRoot>{
@@ -574,6 +578,7 @@ TEST_F(ConnectorPushdownPassTest, disjointRoots) {
       matchScan("virt_left")
           .project()
           .hashJoin(matchScan("virt_right").project())
+          .project({"a", "sb", "a", "sd"})
           .build());
 }
 

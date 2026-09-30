@@ -99,21 +99,6 @@ struct PushdownContext {
   ExprFactory::ExprSubstitution outputRewrites;
 };
 
-// Drops rewrites whose expressions cannot be evaluated from 'outputColumns'.
-void retainVisibleRewrites(
-    ExprFactory::ExprSubstitution& rewrites,
-    const ColumnVector& outputColumns) {
-  const auto outputSet = PlanObjectSet::fromObjects(outputColumns);
-  for (auto it = rewrites.begin(); it != rewrites.end();) {
-    if (!outputSet.containsColumns(it->first) ||
-        !outputSet.containsColumns(it->second)) {
-      it = rewrites.erase(it);
-    } else {
-      ++it;
-    }
-  }
-}
-
 // Adds 'from' to 'into'. The same expression may be discovered through more
 // than one child only when both discoveries choose the same replacement.
 void mergeRewrites(
@@ -157,6 +142,138 @@ ExprVector applyRewrites(
   return rewritten;
 }
 
+// Resolves rewrite chains, then drops rewrites whose replacement cannot be
+// evaluated from 'outputColumns'. The replaced expression may be gone: a join
+// drops a column it replaces.
+void retainVisibleRewrites(
+    ExprFactory& exprs,
+    ExprFactory::ExprSubstitution& rewrites,
+    const ColumnVector& outputColumns) {
+  const auto outputSet = PlanObjectSet::fromObjects(outputColumns);
+  ExprFactory::ExprSubstitution visible;
+  for (const auto& [source, target] : rewrites) {
+    ExprCP replacement = applyRewrites(exprs, target, rewrites);
+    if (outputSet.containsColumns(replacement)) {
+      visible.emplace(source, replacement);
+    }
+  }
+  rewrites = std::move(visible);
+}
+
+// Returns the column that 'rewrites' replace 'column' by, or 'column' itself.
+ColumnCP replacementColumn(
+    ExprFactory& exprs,
+    ColumnCP column,
+    const ExprFactory::ExprSubstitution& rewrites) {
+  ExprCP rewritten = applyRewrites(exprs, column, rewrites);
+  return rewritten->isColumn() ? rewritten->as<Column>() : column;
+}
+
+// Removes repeated grouping keys and their corresponding output columns.
+// @param keys On input, the grouping expressions. On output, the same
+// expressions with repeated keys removed after their first occurrence.
+// @param outputs On input, the full aggregate-node outputs: the first
+// 'keys.size()' entries correspond 1:1 to 'keys', and the remaining entries
+// are aggregate results. On output, columns paired with repeated keys are
+// removed; the aggregate-result columns are unchanged.
+// @return A mapping from each removed output to the output retained for the
+// same grouping key.
+ExprFactory::ExprSubstitution dropDuplicateGroupingKeys(
+    ExprVector& keys,
+    ColumnVector& outputs) {
+  VELOX_DCHECK_GE(outputs.size(), keys.size());
+  ExprFactory::ExprSubstitution dropped;
+  folly::F14FastMap<ExprCP, ColumnCP> keyToOutput;
+  ExprVector uniqueKeys;
+  ColumnVector uniqueOutputs;
+  for (size_t i = 0; i < keys.size(); ++i) {
+    const auto [it, inserted] = keyToOutput.emplace(keys[i], outputs[i]);
+    if (inserted) {
+      uniqueKeys.push_back(keys[i]);
+      uniqueOutputs.push_back(outputs[i]);
+    } else {
+      dropped.emplace(outputs[i], it->second);
+    }
+  }
+  if (!dropped.empty()) {
+    uniqueOutputs.insert(
+        uniqueOutputs.end(), outputs.begin() + keys.size(), outputs.end());
+    keys = std::move(uniqueKeys);
+    outputs = std::move(uniqueOutputs);
+  }
+  return dropped;
+}
+
+// Drops order keys that repeat an earlier key, preserving the first key's
+// order because later occurrences cannot refine it.
+void dropDuplicateOrderKeys(
+    ExprVector& orderKeys,
+    OrderTypeVector& orderTypes) {
+  VELOX_DCHECK_EQ(orderKeys.size(), orderTypes.size());
+  ExprVector uniqueKeys;
+  OrderTypeVector uniqueTypes;
+  uniqueKeys.reserve(orderKeys.size());
+  uniqueTypes.reserve(orderTypes.size());
+  folly::F14FastSet<ExprCP> seen;
+  for (size_t i = 0; i < orderKeys.size(); ++i) {
+    if (seen.insert(orderKeys[i]).second) {
+      uniqueKeys.push_back(orderKeys[i]);
+      uniqueTypes.push_back(orderTypes[i]);
+    }
+  }
+  orderKeys = std::move(uniqueKeys);
+  orderTypes = std::move(uniqueTypes);
+}
+
+// Returns 'columns' with each column replaced as 'replacementColumn' does.
+// With 'dropDuplicates', a replacement already in the list is not added again.
+ColumnVector rewriteColumns(
+    ExprFactory& exprs,
+    const ColumnVector& columns,
+    const ExprFactory::ExprSubstitution& rewrites,
+    bool dropDuplicates) {
+  ColumnVector result;
+  result.reserve(columns.size());
+  PlanObjectSet added;
+  for (ColumnCP column : columns) {
+    ColumnCP rewritten = replacementColumn(exprs, column, rewrites);
+    if (dropDuplicates && added.contains(rewritten)) {
+      continue;
+    }
+    added.add(rewritten);
+    result.push_back(rewritten);
+  }
+  return result;
+}
+
+// Restores a node boundary's original column identities and order after its
+// input rewrites equivalent columns away.
+NodeCP restoreOutputColumns(
+    Builder& builder,
+    ExprFactory& exprs,
+    NodeCP input,
+    const ColumnVector& outputColumns,
+    const ExprFactory::ExprSubstitution& rewrites) {
+  if (input->outputColumns() == outputColumns) {
+    return input;
+  }
+
+  const auto inputSet = PlanObjectSet::fromObjects(input->outputColumns());
+  ExprVector expressions;
+  expressions.reserve(outputColumns.size());
+  for (ColumnCP output : outputColumns) {
+    ColumnCP inputColumn = inputSet.contains(output)
+        ? output
+        : replacementColumn(exprs, output, rewrites);
+    VELOX_CHECK(
+        inputSet.contains(inputColumn),
+        "Cannot restore output column after rewrite: {}",
+        output->toString());
+    expressions.push_back(inputColumn);
+  }
+  return builder.make<Project>({input, std::move(expressions), outputColumns});
+}
+
 // Rebuilds an aggregate call whose inputs contain a rewrite source.
 optimizer::AggregateCP applyRewrites(
     ExprFactory& exprs,
@@ -166,6 +283,8 @@ optimizer::AggregateCP applyRewrites(
   ExprVector arguments = applyRewrites(exprs, aggregate->args(), rewrites);
   ExprCP condition = applyRewrites(exprs, aggregate->condition(), rewrites);
   ExprVector orderKeys = applyRewrites(exprs, aggregate->orderKeys(), rewrites);
+  OrderTypeVector orderTypes = aggregate->orderTypes();
+  dropDuplicateOrderKeys(orderKeys, orderTypes);
   optimizer::AggregateCP fallback = aggregate->fallback();
   if (fallback != nullptr) {
     fallback = applyRewrites(exprs, builder, fallback, rewrites);
@@ -192,7 +311,7 @@ optimizer::AggregateCP applyRewrites(
       condition,
       aggregate->intermediateType(),
       std::move(orderKeys),
-      aggregate->orderTypes(),
+      std::move(orderTypes),
       aggregate->specialKind(),
       fallback);
 }
@@ -213,11 +332,12 @@ AggregateCallVector applyRewrites(
 // Moves the child's identities upward when all referenced columns remain
 // visible in the rebuilt output.
 NodeCP propagateVisibleRewrites(
+    ExprFactory& exprs,
     PushdownContext& parent,
     PushdownContext& child,
     NodeCP output) {
   parent.outputRewrites = std::move(child.outputRewrites);
-  retainVisibleRewrites(parent.outputRewrites, output->outputColumns());
+  retainVisibleRewrites(exprs, parent.outputRewrites, output->outputColumns());
   return output;
 }
 
@@ -1210,9 +1330,18 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     if (!node->emitsInputColumns()) {
       return node;
     }
+    // A required column may have been replaced below; the parent reads its
+    // replacement instead.
+    PlanObjectSet required = context.required;
+    for (const auto& [source, _] : context.outputRewrites) {
+      if (source->isColumn() && context.required.contains(source)) {
+        required.add(replacementColumn(
+            exprs_, source->as<Column>(), context.outputRewrites));
+      }
+    }
     ColumnVector keep;
     for (ColumnCP column : node->outputColumns()) {
-      if (context.required.contains(column)) {
+      if (required.contains(column)) {
         keep.push_back(column);
       }
     }
@@ -1333,7 +1462,10 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       newProject = project->input();
     }
     return propagateVisibleRewrites(
-        context, childContext, maybeWrapFilter(newProject, std::move(blocked)));
+        exprs_,
+        context,
+        childContext,
+        maybeWrapFilter(newProject, std::move(blocked)));
   }
 
   // Aggregate: conjuncts referencing only grouping-key outputs push below
@@ -1382,6 +1514,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
                  .groupId = node->groupId(),
                  .globalGroupingSets = node->globalGroupingSets()});
       return propagateVisibleRewrites(
+          exprs_,
           context,
           childContext,
           maybeWrapFilter(newAggregate, std::move(context.pending)));
@@ -1441,9 +1574,16 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     ExprVector groupingKeys = node->groupingKeys();
     applyOutputRewrites(childContext, groupingKeys, survivingAggregates);
 
+    ExprFactory::ExprSubstitution duplicateKeyOutputs =
+        dropDuplicateGroupingKeys(groupingKeys, survivingOutputs);
+    if (!duplicateKeyOutputs.empty()) {
+      blocked = applyRewrites(exprs_, blocked, duplicateKeyOutputs);
+    }
+
     const bool unchanged = newInput == node->input() &&
         survivingAggregates == node->aggregates() &&
-        groupingKeys == node->groupingKeys();
+        groupingKeys == node->groupingKeys() &&
+        survivingOutputs == node->outputColumns();
     NodeCP newAggregate = unchanged
         ? static_cast<NodeCP>(node)
         : builder().make<Aggregate>(
@@ -1454,10 +1594,13 @@ class Pushdown : public NodeRewriter<PushdownContext> {
                .step = node->step(),
                .groupId = node->groupId(),
                .globalGroupingSets = node->globalGroupingSets()});
-    return propagateVisibleRewrites(
+    NodeCP result = propagateVisibleRewrites(
+        exprs_,
         context,
         childContext,
         maybeWrapFilter(newAggregate, std::move(blocked)));
+    mergeRewrites(context.outputRewrites, duplicateKeyOutputs);
+    return result;
   }
 
   // True if a conjunct of 'conjuncts' is statically false, so no row passes.
@@ -1533,7 +1676,10 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     NodeCP project = builder().make<Project>(
         {newPreserved, std::move(expressions), node->outputColumns()});
     return propagateVisibleRewrites(
-        context, preservedContext, maybeWrapFilter(project, std::move(above)));
+        exprs_,
+        context,
+        preservedContext,
+        maybeWrapFilter(project, std::move(above)));
   }
 
   // True if nothing reads 'mark': neither a consumer above nor a conjunct
@@ -1812,6 +1958,8 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     if (!outputRewrites.empty()) {
       newFilter = applyRewrites(exprs_, newFilter, outputRewrites);
       above = applyRewrites(exprs_, above, outputRewrites);
+      newOutputColumns = rewriteColumns(
+          exprs_, newOutputColumns, outputRewrites, /*dropDuplicates=*/true);
     }
 
     // A cross join's filter is evaluated per pair of rows, so the parts of it
@@ -1853,7 +2001,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
         (newLeft == node->left() && newRight == node->right() &&
          newFilter == node->filter() && newKind == node->joinType() &&
          newLeftKeys == node->leftKeys() && newRightKeys == node->rightKeys() &&
-         newOutputColumns.size() == node->outputColumns().size())
+         newOutputColumns == node->outputColumns())
         ? static_cast<NodeCP>(node)
         : builder().make<Join>(
               {newLeft,
@@ -1866,7 +2014,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
                node->nullAsValue(),
                std::move(newOutputColumns)});
     NodeCP result = maybeWrapFilter(newJoin, std::move(above));
-    retainVisibleRewrites(outputRewrites, result->outputColumns());
+    retainVisibleRewrites(exprs_, outputRewrites, result->outputColumns());
     context.outputRewrites = std::move(outputRewrites);
     return result;
   }
@@ -2088,12 +2236,14 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     context.consumerDropsExtraColumns = false;
     NodeCP newInput = rewrite(node->input(), context);
     ExprVector orderKeys = node->orderKeys();
+    OrderTypeVector orderTypes = node->orderTypes();
     applyOutputRewrites(context, orderKeys);
+    dropDuplicateOrderKeys(orderKeys, orderTypes);
     if (newInput == node->input() && orderKeys == node->orderKeys()) {
       return node;
     }
     return builder().make<Sort>(
-        {newInput, std::move(orderKeys), node->orderTypes()});
+        {newInput, std::move(orderKeys), std::move(orderTypes)});
   }
 
   // Returns true when 'node' already emits rows in the order 'keys' / 'types'
@@ -2157,7 +2307,9 @@ class Pushdown : public NodeRewriter<PushdownContext> {
 
       NodeCP newInput = rewrite(node->input(), empty);
       ExprVector orderKeys = node->orderKeys();
+      OrderTypeVector orderTypes = node->orderTypes();
       applyOutputRewrites(empty, orderKeys);
+      dropDuplicateOrderKeys(orderKeys, orderTypes);
 
       // A Window over a single partition emits its rows in order-key order, so
       // a TopN asking for that same order only has to count rows.
@@ -2176,7 +2328,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       return builder().make<TopN>(
           {newInput,
            std::move(orderKeys),
-           node->orderTypes(),
+           std::move(orderTypes),
            node->offset(),
            node->count()});
     });
@@ -2307,7 +2459,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       NodeCP filtered = builder().make<Filter>(
           {newInput, ExprVector{exprs_.orAll(nonEmpty)}});
       return propagateVisibleRewrites(
-          context, childContext, narrowed(filtered, context));
+          exprs_, context, childContext, narrowed(filtered, context));
     }
 
     // Unnest accepts a subset of structured-field outputs as
@@ -2319,10 +2471,21 @@ class Pushdown : public NodeRewriter<PushdownContext> {
         survivingOutputs.push_back(column);
       }
     }
+    survivingReplicated = rewriteColumns(
+        exprs_,
+        survivingReplicated,
+        childContext.outputRewrites,
+        /*dropDuplicates=*/true);
+    survivingOutputs = rewriteColumns(
+        exprs_,
+        survivingOutputs,
+        childContext.outputRewrites,
+        /*dropDuplicates=*/true);
 
     const bool unchanged = newInput == node->input() &&
         unnestExpressions == node->unnestExpressions() &&
-        survivingOutputs.size() == node->outputColumns().size();
+        survivingReplicated == node->replicatedColumns() &&
+        survivingOutputs == node->outputColumns();
     NodeCP newNode = unchanged ? static_cast<NodeCP>(node)
                                : builder().make<Unnest>(
                                      {newInput,
@@ -2333,7 +2496,10 @@ class Pushdown : public NodeRewriter<PushdownContext> {
                                       survivingMarker,
                                       std::move(survivingOutputs)});
     return propagateVisibleRewrites(
-        context, childContext, maybeWrapFilter(newNode, std::move(blocked)));
+        exprs_,
+        context,
+        childContext,
+        maybeWrapFilter(newNode, std::move(blocked)));
   }
 
   // UnionAll: each leg receives the same conjuncts rewritten in terms
@@ -2369,7 +2535,6 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       for (size_t i : keptPositions) {
         newLegCols.push_back(legColumns[i]);
       }
-      newLegColumns.push_back(newLegCols);
 
       PushdownContext legContext;
       legContext.pending = std::move(legPending);
@@ -2380,6 +2545,11 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       NodeCP newLeg = rewrite(node->inputs()[legIndex], legContext);
       changed |= (newLeg != node->inputs()[legIndex]);
       newInputs.push_back(newLeg);
+      newLegColumns.push_back(rewriteColumns(
+          exprs_,
+          newLegCols,
+          legContext.outputRewrites,
+          /*dropDuplicates=*/false));
     }
     context.pending.clear();
     context.outputRewrites.clear();
@@ -2402,11 +2572,13 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       child.requiredAbove = child.required;
       child.nonNullColumns = context.nonNullColumns;
       NodeCP newInput = rewrite(node->input(), child);
+      ExprCP call = node->call();
+      applyOutputRewrites(child, call);
 
       ColumnVector outputColumns = newInput->outputColumns();
       outputColumns.push_back(node->result());
       return builder().make<Inference>(
-          {newInput, node->call(), node->result(), std::move(outputColumns)});
+          {newInput, call, node->result(), std::move(outputColumns)});
     });
   }
 
@@ -2485,7 +2657,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       result = pruneWindowFunctions(
           node, childContext, outputsKept, std::move(blocked));
     }
-    return propagateVisibleRewrites(context, childContext, result);
+    return propagateVisibleRewrites(exprs_, context, childContext, result);
   }
 
   // Replaces a single-ranking-function Window with the node that computes it
@@ -2503,7 +2675,9 @@ class Pushdown : public NodeRewriter<PushdownContext> {
         rewrite(node->input(), childContext), childContext.required);
     ExprVector partitionKeys = node->partitionKeys();
     ExprVector orderKeys = node->orderKeys();
+    OrderTypeVector orderTypes = node->orderTypes();
     applyOutputRewrites(childContext, partitionKeys, orderKeys, blocked);
+    dropDuplicateOrderKeys(orderKeys, orderTypes);
 
     // Emit the rank column only when a consumer above still needs it.
     const ColumnCP rankColumn =
@@ -2535,7 +2709,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
            fusion.rankFunction,
            std::move(partitionKeys),
            std::move(orderKeys),
-           node->orderTypes(),
+           std::move(orderTypes),
            fusion.limit.value(),
            rankColumn,
            std::move(newOutputColumns)});
@@ -2597,8 +2771,10 @@ class Pushdown : public NodeRewriter<PushdownContext> {
 
     ExprVector partitionKeys = node->partitionKeys();
     ExprVector orderKeys = node->orderKeys();
+    OrderTypeVector orderTypes = node->orderTypes();
     applyOutputRewrites(
         childContext, partitionKeys, orderKeys, blocked, survivingFunctions);
+    dropDuplicateOrderKeys(orderKeys, orderTypes);
 
     // With every function pruned the node computes nothing and emits its
     // input's columns.
@@ -2621,7 +2797,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
                                         std::move(survivingFunctions),
                                         std::move(partitionKeys),
                                         std::move(orderKeys),
-                                        node->orderTypes(),
+                                        std::move(orderTypes),
                                         std::move(newOutputColumns)});
     return maybeWrapFilter(newWindow, std::move(blocked));
   }
@@ -2660,7 +2836,10 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       NodeCP newInput = rewrite(node->input(), childContext);
       applyOutputRewrites(childContext, blocked);
       return propagateVisibleRewrites(
-          context, childContext, maybeWrapFilter(newInput, std::move(blocked)));
+          exprs_,
+          context,
+          childContext,
+          maybeWrapFilter(newInput, std::move(blocked)));
     }
 
     NodeCP newInput = rewrite(node->input(), childContext);
@@ -2669,7 +2848,10 @@ class Pushdown : public NodeRewriter<PushdownContext> {
         ? static_cast<NodeCP>(node)
         : builder().make<AssignUniqueId>({newInput, node->idColumn()});
     return propagateVisibleRewrites(
-        context, childContext, maybeWrapFilter(newNode, std::move(blocked)));
+        exprs_,
+        context,
+        childContext,
+        maybeWrapFilter(newNode, std::move(blocked)));
   }
 
   NodeCP rewriteEnforceDistinct(
@@ -2692,7 +2874,10 @@ class Pushdown : public NodeRewriter<PushdownContext> {
         : builder().make<EnforceDistinct>(
               {newInput, std::move(distinctKeys), node->errorMessage()});
     return propagateVisibleRewrites(
-        context, childContext, maybeWrapFilter(newNode, std::move(pending)));
+        exprs_,
+        context,
+        childContext,
+        maybeWrapFilter(newNode, std::move(pending)));
   }
 
   // A write is the plan root: nothing consumes its row-count output, so the
@@ -2711,7 +2896,20 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     // wider input.
     child.consumerDropsExtraColumns =
         node->kind() == connector::WriteKind::kDelete;
-    return NodeRewriter::rewriteTableWrite(node, child);
+    NodeCP newInput = rewrite(node->input(), child);
+    if (!child.consumerDropsExtraColumns) {
+      newInput = restoreOutputColumns(
+          builder(),
+          exprs_,
+          newInput,
+          node->input()->outputColumns(),
+          child.outputRewrites);
+    }
+    if (newInput == node->input()) {
+      return node;
+    }
+    return builder().make<TableWrite>(
+        {newInput, node->table(), node->kind(), node->columnExprs()});
   }
 
   // Pending predicates must remain above the fixed point because pushing them
@@ -2731,9 +2929,12 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     anchorContext.required.unionObjects(node->outputColumns());
     anchorContext.requiredAbove = anchorContext.required;
     NodeCP newAnchor = rewrite(node->anchor(), anchorContext);
-    VELOX_CHECK(
-        std::ranges::equal(newAnchor->outputColumns(), node->outputColumns()),
-        "FixedPoint anchor output columns must retain pointer identity after pushdown");
+    newAnchor = restoreOutputColumns(
+        builder(),
+        exprs_,
+        newAnchor,
+        node->outputColumns(),
+        anchorContext.outputRewrites);
 
     // Required columns use step output identities because they may differ from
     // anchor output identities. The working table carries no outer null
@@ -2742,6 +2943,12 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     stepContext.required.unionObjects(node->step()->outputColumns());
     stepContext.requiredAbove = stepContext.required;
     NodeCP newStep = rewrite(node->step(), stepContext);
+    newStep = restoreOutputColumns(
+        builder(),
+        exprs_,
+        newStep,
+        node->step()->outputColumns(),
+        stepContext.outputRewrites);
 
     // Convergence is an independent Boolean subplan. Seed only its root output;
     // each operator adds its expression dependencies while WorkingTable keeps
@@ -2751,6 +2958,12 @@ class Pushdown : public NodeRewriter<PushdownContext> {
         node->convergence()->outputColumns());
     convergenceContext.requiredAbove = convergenceContext.required;
     NodeCP newConvergence = rewrite(node->convergence(), convergenceContext);
+    newConvergence = restoreOutputColumns(
+        builder(),
+        exprs_,
+        newConvergence,
+        node->convergence()->outputColumns(),
+        convergenceContext.outputRewrites);
 
     NodeCP fixedPoint = node;
     if (newAnchor != node->anchor() || newStep != node->step() ||
@@ -2774,8 +2987,11 @@ class Pushdown : public NodeRewriter<PushdownContext> {
   }
 
  private:
-  // Adds the COALESCE identities established by a join. Inner and one-sided
-  // outer joins select one key; full joins canonicalize the operand order.
+  // Adds the identities established by a join's equi-keys:
+  //   - Inner: COALESCE of a key pair is the left key, and a right key column
+  //     is its left key column.
+  //   - Left and right: COALESCE of a key pair is the preserved side's key.
+  //   - Full: COALESCE of a key pair takes a canonical operand order.
   // A key that can be null-padded must evaluate to NULL on a null input.
   void addJoinKeyRewrites(
       velox::core::JoinType joinType,
@@ -2828,6 +3044,12 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       ExprCP selected = selectLeft ? leftKey : rightKey;
       addRewrite(exprs_.makeCoalesce(leftKey, rightKey), selected);
       addRewrite(exprs_.makeCoalesce(rightKey, leftKey), selected);
+
+      // A right key equated with several left keys keeps the first.
+      if (joinType == velox::core::JoinType::kInner && leftKey->isColumn() &&
+          rightKey->isColumn()) {
+        rewrites.emplace(rightKey, leftKey);
+      }
     }
   }
 
@@ -2905,7 +3127,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     ExprVector blocked = std::move(context.pending);
     applyOutputRewrites(empty, blocked);
     return propagateVisibleRewrites(
-        context, empty, maybeWrapFilter(recursed, std::move(blocked)));
+        exprs_, context, empty, maybeWrapFilter(recursed, std::move(blocked)));
   }
 
   // Routes each pending conjunct to either the input (pushable) or a
@@ -3208,7 +3430,14 @@ NodeCP PushdownAndPrunePass::run(
   PushdownContext context;
   context.required = PlanObjectSet::fromObjects(outputColumns);
   context.requiredAbove = context.required;
-  return pass.rewrite(root, context);
+  NodeCP result = pass.rewrite(root, context);
+
+  if (context.outputRewrites.empty()) {
+    return result;
+  }
+  ExprFactory exprs{builder};
+  return restoreOutputColumns(
+      builder, exprs, result, outputColumns, context.outputRewrites);
 }
 
 } // namespace facebook::axiom::optimizer::v2

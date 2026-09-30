@@ -72,6 +72,35 @@ TEST_F(FixedPointTest, recursiveCte) {
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
+// An anchor preserves separate recursive-state columns for equal join keys.
+TEST_F(FixedPointTest, joinKeyState) {
+  testConnector_->addTable("t", ROW("t_k", BIGINT()));
+  testConnector_->addTable("u", ROW("u_k", BIGINT()));
+
+  const auto query =
+      "WITH RECURSIVE r(t_k, u_k) AS ("
+      "  SELECT t_k, u_k FROM t JOIN u ON t_k = u_k "
+      "  UNION ALL "
+      "  SELECT t_k + 1, u_k + 1 FROM r WHERE t_k < 10) "
+      "SELECT t_k, u_k FROM r";
+  SCOPED_TRACE(query);
+
+  AXIOM_ASSERT_PLAN_V2(
+      toSingleNodePlan(parseSelect(query, kTestConnectorId)),
+      core::PlanMatcherBuilder()
+          .fixedPoint(matchFixedPoint("r")
+                          .outputState(
+                              /*append=*/true,
+                              matchScan("t")
+                                  .hashJoinInner(
+                                      matchScan("u"), {.keys = {{"t_k = u_k"}}})
+                                  .project({"t_k", "t_k as u_k"}))
+                          .plan(matchDelta("r", {"t_k", "u_k"})
+                                    .filter("t_k < 10")
+                                    .project({"t_k + 1", "u_k + 1"})))
+          .build());
+}
+
 TEST_F(FixedPointTest, singleDriverStep) {
   auto counter = singleRow("n", 1);
   auto recursiveStep = lp::PlanBuilder(context_)

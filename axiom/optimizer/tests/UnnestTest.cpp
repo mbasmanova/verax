@@ -1168,8 +1168,8 @@ TEST_P(UnnestTest, unnestPlacedAboveJoin) {
         .hashJoinInner(
             matchScan("s").aliases({"a"}).broadcastIf(distributed),
             {.keys = {{"k = a"}}})
-        .unnest({"a"}, {"data"})
-        .project({"a", "e"})
+        .unnest({"k"}, {"data"})
+        .project({"k", "e"})
         .build();
   };
 

@@ -127,15 +127,20 @@ Pruning and simplification work:
   consumes compatible rank bounds.
 - Replaces an `Unnest` with a non-empty-input test when duplicate rows and
   unnested outputs are irrelevant to the consumer.
-- Rewrites `coalesce(left_key, right_key)` using equi-join semantics. Inner and
-  one-sided outer joins select one key; full joins canonicalize operand order.
-  Null-padded key expressions must return NULL on NULL input. `GroupId` stops
-  these identities because grouping sets can null the keys independently.
+- Rewrites expressions using equi-join semantics. An inner join replaces its
+  right key column with the equal left key and removes the right key from its
+  output. Inner and one-sided outer joins replace
+  `coalesce(left_key, right_key)` with one key; full joins canonicalize operand
+  order. Null-padded key expressions must return NULL on NULL input. `GroupId`
+  stops these identities because grouping sets can null the keys independently.
 
-The COALESCE identities are discovered while the tree is rebuilt upward.
-Predicate routing and column pruning for that traversal have already happened,
-so a newly simplified expression may leave an extra column or miss another
-pushdown opportunity. A second run can recover those opportunities if needed.
+These identities are discovered while the tree is rebuilt upward. Each parent
+rewrites its expressions and column lists before propagating the identities.
+The plan root, `TableWrite` input, and each `FixedPoint` branch restore their
+original column layout with a `Project`. Predicate routing and column pruning
+for that traversal have already happened, so a newly simplified expression may
+leave an extra column or miss another pushdown opportunity. A second run can
+recover those opportunities if needed.
 
 ### 5. FoldMetadataAggregate
 

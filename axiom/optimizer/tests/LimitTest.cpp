@@ -298,7 +298,10 @@ TEST_P(LimitTest, zeroLimit) {
   AXIOM_ASSERT_PLAN(
       toSingleNodePlan(
           "SELECT * FROM t, (SELECT * FROM u LIMIT 0) s WHERE a = x"),
-      matchScan("t").hashJoin(matchValues(), core::JoinType::kInner).build());
+      matchScan("t")
+          .hashJoin(matchValues(), core::JoinType::kInner)
+          .projectIf(useV2_, {"a", "a"})
+          .build());
 }
 
 AXIOM_INSTANTIATE_V1_V2(LimitTest);

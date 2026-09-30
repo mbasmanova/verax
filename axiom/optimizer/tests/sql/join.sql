@@ -158,6 +158,42 @@ LEFT JOIN (VALUES (NULL), (1), (3)) AS u(u_k) ON t_k = u_k
 GROUP BY 1, 2
 
 ----
+-- Groups by the right key of an inner join while counting the left key.
+SELECT u_k, count(t_k)
+FROM (VALUES (NULL), (1), (2), (2)) AS t(t_k)
+JOIN (VALUES (NULL), (1), (2), (3)) AS u(u_k) ON t_k = u_k
+GROUP BY u_k
+
+----
+-- Returns both keys of an inner join.
+SELECT t_k, u_k
+FROM (VALUES (NULL), (1), (2), (2)) AS t(t_k)
+JOIN (VALUES (NULL), (1), (2), (3)) AS u(u_k) ON t_k = u_k
+
+----
+-- Returns every key from a chain of inner joins.
+SELECT t_k, u_k, k
+FROM (VALUES (1), (2)) AS v(k)
+JOIN (
+  (VALUES (1), (2)) AS t(t_k)
+  JOIN (VALUES (1), (2)) AS u(u_k) ON t_k = u_k
+) ON k = u_k
+
+----
+-- Groups by both keys of an inner join.
+SELECT u_k, t_k, count(*)
+FROM (VALUES (NULL), (1), (2), (2)) AS t(t_k)
+JOIN (VALUES (NULL), (1), (2), (3)) AS u(u_k) ON t_k = u_k
+GROUP BY u_k, t_k
+
+----
+-- ROLLUP keeps equal inner-join keys as separate grouping dimensions.
+SELECT u_k, t_k, grouping(u_k), grouping(t_k), count(*)
+FROM (VALUES (NULL), (1), (2), (2)) AS t(t_k)
+JOIN (VALUES (NULL), (1), (2), (3)) AS u(u_k) ON t_k = u_k
+GROUP BY ROLLUP(u_k, t_k)
+
+----
 -- ROLLUP can null the two join keys independently.
 SELECT coalesce(t_k, u_k), grouping(u_k), grouping(t_k), count(*)
 FROM (VALUES (NULL), (1), (2)) AS t(t_k)

@@ -82,6 +82,28 @@ TEST_F(InferenceTest, singleCall) {
   AXIOM_ASSERT_PLAN_V2(plan, matcher);
 }
 
+// An inference call can read an equivalent inner-join key after the join
+// drops that key from its output.
+TEST_F(InferenceTest, joinKey) {
+  testConnector_->addTable("t", ROW("t_k", VARCHAR()));
+  testConnector_->addTable("u", ROW("u_k", VARCHAR()));
+
+  const auto query =
+      "SELECT test_inference(u_k) AS embedding "
+      "FROM t JOIN u ON t_k = u_k";
+  SCOPED_TRACE(query);
+
+  AXIOM_ASSERT_PLAN_V2(
+      toSingleNodePlan(query),
+      matchScan("t")
+          .hashJoinInner(
+              matchScan("u"),
+              {.keys = {{"t_k = u_k"}}, .outputColumnNames = {{"t_k"}}})
+          .inference("test_inference(t_k) as embedding")
+          .project({"embedding"})
+          .build());
+}
+
 // A special form holds a call in any input every row reaches.
 TEST_F(InferenceTest, underSpecialForm) {
   auto plan = toSingleNodePlan(

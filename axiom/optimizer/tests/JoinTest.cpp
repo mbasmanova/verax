@@ -76,104 +76,77 @@ TEST_P(JoinTest, derivedCompositeEdgePreservesAllEqualities) {
               {"l", {.numDistinct = 10}},
           });
 
-  // V2 is better: it joins the two small tables using all applicable equality
-  // keys, then uses that result as the build side when joining the million-row
-  // u. V1 carries u through both joins.
+  // The two small tables join using all applicable equality keys, then serve
+  // as the build side when joining the million-row u.
   {
-    SCOPED_TRACE("all reordered join keys are inferred");
     const auto query =
         "SELECT v.m "
-        "FROM t "
-        "JOIN u ON t.a = u.x AND t.b = u.y "
+        "FROM u "
+        "JOIN t ON u.x = t.a AND u.y = t.b "
         "JOIN v ON u.x = v.k AND u.y = v.l";
+    SCOPED_TRACE(query);
     const auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
-    const auto matcher = useV2_
-        ? matchScan("u")
-              .hashJoinInner(
-                  matchScan("t").hashJoinInner(
-                      matchScan("v"), {.keys = {{"a = k", "b = l"}}}),
-                  {.keys = {{"x = a", "y = b"}}})
-              .build()
-        : matchScan("u")
-              .hashJoinInner(matchScan("t"), {.keys = {{"x = a", "y = b"}}})
-              .hashJoinInner(matchScan("v"), {.keys = {{"a = k", "b = l"}}})
-              .build();
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V2(
+        plan,
+        matchScan("u")
+            .hashJoinInner(
+                matchScan("t").hashJoinInner(
+                    matchScan("v"), {.keys = {{"a = k", "b = l"}}}),
+                {.keys = {{"x = a", "y = b"}}})
+            .build());
 
     optimizerOptions_.broadcastSizeLimit = 1;
     const auto distributedPlan =
         planVelox(parseSelect(query, kTestConnectorId));
-    const auto distributedMatcher = useV2_
-        ? matchScan("u")
-              .shuffle({"x", "y"})
-              .hashJoinInner(
-                  matchScan("t")
-                      .shuffle({"a", "b"})
-                      .hashJoinInner(
-                          matchScan("v").shuffle({"k", "l"}),
-                          {.keys = {{"a = k", "b = l"}}}),
-                  {.keys = {{"x = a", "y = b"}}})
-              .gather()
-              .build()
-        : matchScan("u")
-              .shuffle({"x", "y"})
-              .hashJoinInner(
-                  matchScan("t").shuffle({"a", "b"}),
-                  {.keys = {{"x = a", "y = b"}}})
-              .hashJoinInner(
-                  matchScan("v").shuffle({"k", "l"}),
-                  {.keys = {{"a = k", "b = l"}}})
-              .gather()
-              .build();
-    AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, distributedMatcher);
+    AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
+        distributedPlan.plan,
+        matchScan("u")
+            .shuffle({"x", "y"})
+            .hashJoinInner(
+                matchScan("t")
+                    .shuffle({"a", "b"})
+                    .hashJoinInner(
+                        matchScan("v").shuffle({"k", "l"}),
+                        {.keys = {{"a = k", "b = l"}}}),
+                {.keys = {{"x = a", "y = b"}}})
+            .gather()
+            .build());
   }
 
   {
-    SCOPED_TRACE("partially overlapping equality classes");
     const auto query =
         "SELECT v.m "
-        "FROM t "
-        "JOIN u ON t.a = u.x "
+        "FROM u "
+        "JOIN t ON u.x = t.a "
         "JOIN v ON u.x = v.k AND t.b = v.l";
+    SCOPED_TRACE(query);
     const auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
-    const auto matcher = useV2_
-        ? matchScan("u")
-              .hashJoinInner(
-                  matchScan("t").hashJoinInner(
-                      matchScan("v"), {.keys = {{"b = l", "a = k"}}}),
-                  {.keys = {{"x = a"}}})
-              .build()
-        : matchScan("u")
-              .hashJoinInner(matchScan("v"), {.keys = {{"x = k"}}})
-              .hashJoinInner(matchScan("t"), {.keys = {{"x = a", "l = b"}}})
-              .build();
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V2(
+        plan,
+        matchScan("u")
+            .hashJoinInner(
+                matchScan("t").hashJoinInner(
+                    matchScan("v"), {.keys = {{"b = l", "a = k"}}}),
+                {.keys = {{"x = a"}}})
+            .build());
 
     optimizerOptions_.broadcastSizeLimit = 1;
     const auto distributedPlan =
         planVelox(parseSelect(query, kTestConnectorId));
-    const auto distributedMatcher = useV2_
-        ? matchScan("u")
-              .shuffle({"x"})
-              .hashJoinInner(
-                  matchScan("t")
-                      .shuffle({"b", "a"})
-                      .hashJoinInner(
-                          matchScan("v").shuffle({"l", "k"}),
-                          {.keys = {{"b = l", "a = k"}}})
-                      .shuffle({"a"}),
-                  {.keys = {{"x = a"}}})
-              .gather()
-              .build()
-        : matchScan("u")
-              .shuffle({"x"})
-              .hashJoinInner(
-                  matchScan("v").shuffle({"k"}), {.keys = {{"x = k"}}})
-              .hashJoinInner(
-                  matchScan("t").shuffle({"a"}), {.keys = {{"x = a", "l = b"}}})
-              .gather()
-              .build();
-    AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, distributedMatcher);
+    AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
+        distributedPlan.plan,
+        matchScan("u")
+            .shuffle({"x"})
+            .hashJoinInner(
+                matchScan("t")
+                    .shuffle({"b", "a"})
+                    .hashJoinInner(
+                        matchScan("v").shuffle({"l", "k"}),
+                        {.keys = {{"b = l", "a = k"}}})
+                    .shuffle({"a"}),
+                {.keys = {{"x = a"}}})
+            .gather()
+            .build());
   }
 }
 
@@ -365,6 +338,7 @@ TEST_P(JoinTest, pushdownFilterThroughJoin) {
             .filter("t_data IS NULL")
             .hashJoin(
                 matchScan("u").filter("u_data IS NULL"), core::JoinType::kInner)
+            .projectIf(useV2_, {"t_id", "t_data", "t_id as u_id", "u_data"})
             .build();
     auto plan = toSingleNodePlan(logicalPlan);
     AXIOM_ASSERT_PLAN(plan, matcher);
@@ -509,6 +483,16 @@ TEST_P(JoinTest, hyperEdge) {
   auto matcher = matchScan("t")
                      .hashJoin(matchScan("u"), core::JoinType::kInner)
                      .hashJoin(matchScan("v"), core::JoinType::kLeft)
+                     .projectIf(
+                         useV2_,
+                         {"t_id",
+                          "t_key",
+                          "t_data",
+                          "t_id as u_id",
+                          "u_key",
+                          "u_data",
+                          "v_key",
+                          "v_data"})
                      .build();
   auto plan = toSingleNodePlan(logicalPlan);
   AXIOM_ASSERT_PLAN(plan, matcher);
@@ -592,6 +576,7 @@ TEST_P(JoinTest, joinWithFilterOverLimit) {
             .finalLimit(0, 100)
             .filter("b > 50")
             .hashJoin(matchScan("u").finalLimit(0, 50).filter("y < 100"))
+            .projectIf(useV2_, {"a", "b", "c", "a as x", "y", "z"})
             .build();
 
     AXIOM_ASSERT_PLAN(plan, matcher);
@@ -617,6 +602,7 @@ TEST_P(JoinTest, joinWithTopNOnBothSides) {
   auto matcher = matchScan("t")
                      .topN(10)
                      .hashJoin(matchScan("u").topN(5), core::JoinType::kInner)
+                     .projectIf(useV2_, {"a", "b", "a as x", "y"})
                      .build();
 
   AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
@@ -649,10 +635,12 @@ TEST_P(JoinTest, outerJoinWithInnerJoin) {
 
     auto plan = toSingleNodePlan(logicalPlan);
 
-    auto matcher = startMatcher("u")
-                       .hashJoinInner(startMatcher("v"))
-                       .hashJoinRight(startMatcher("t").filter("b > 50"))
-                       .build();
+    auto matcher =
+        startMatcher("u")
+            .hashJoinInner(startMatcher("v"))
+            .hashJoinRight(startMatcher("t").filter("b > 50"))
+            .project({"a", "b", "c", "x", "y", "z", "x as vx", "vy", "vz"})
+            .build();
 
     AXIOM_ASSERT_PLAN_V2(plan, matcher);
   }
@@ -678,12 +666,14 @@ TEST_P(JoinTest, outerJoinWithInnerJoin) {
                            .build();
 
     auto plan = toSingleNodePlan(logicalPlan);
-    // V2 is better: it pushes the filter below join and eliminates an identity
-    // Project above the outer join.
-    auto matcher = startMatcher("u")
-                       .hashJoinInner(startMatcher("v").filter())
-                       .hashJoinRight(startMatcher("t").filter().aggregation())
-                       .build();
+    // V2 pushes the filter below the join and restores `vx` from the equal key
+    // `x` after the outer join.
+    auto matcher =
+        startMatcher("u")
+            .hashJoinInner(startMatcher("v").filter())
+            .hashJoinRight(startMatcher("t").filter().aggregation())
+            .project({"a", "b", "sum", "x", "y", "z", "x as vx", "vy", "vz"})
+            .build();
 
     AXIOM_ASSERT_PLAN_V2(plan, matcher);
   }
@@ -1227,6 +1217,7 @@ TEST_P(JoinTest, crossJoin) {
     auto matcher = matchScan("t")
                        .hashJoin(matchScan("u"))
                        .nestedLoopJoin(matchScan("v"))
+                       .projectIf(useV2_, {"a", "b", "a as x", "y", "n", "m"})
                        .build();
 
     auto plan = toSingleNodePlan(logicalPlan);
@@ -1740,14 +1731,15 @@ TEST_P(JoinTest, leftThenFilter) {
         "WHERE z > 0";
     SCOPED_TRACE(query);
 
-    // V2 is better: it materializes `z` before join fanout so that it
-    // eliminates the output-reconstruction Project after the join.
+    // V2 materializes `z` before join fanout and restores `x` from the equal
+    // key `a` after the join.
     auto matcher = matchScan("t")
                        .hashJoin(
                            matchScan("u")
                                .filter("y + 1 > 0")
                                .projectIf(useV2_, {"x", "y + 1 as z"}),
                            core::JoinType::kInner)
+                       .projectIf(useV2_, {"a", "b", "c", "a as x", "z"})
                        .projectIf(!useV2_, {"a", "b", "c", "x", "y + 1 as z"})
                        .build();
 
@@ -1762,14 +1754,15 @@ TEST_P(JoinTest, leftThenFilter) {
         "WHERE coalesce(z, 1) > 0 AND z > 0";
     SCOPED_TRACE(query);
 
-    // V2 is better: it materializes `z` before join fanout so that it
-    // eliminates the output-reconstruction Project after the join.
+    // V2 materializes `z` before join fanout and restores `x` from the equal
+    // key `a` after the join.
     auto matcher = matchScan("t")
                        .hashJoin(
                            matchScan("u")
                                .filter("coalesce(y + 1, 1) > 0 AND y + 1 > 0")
                                .projectIf(useV2_, {"x", "y + 1 as z"}),
                            core::JoinType::kInner)
+                       .projectIf(useV2_, {"a", "b", "c", "a as x", "z"})
                        .projectIf(!useV2_, {"a", "b", "c", "x", "y + 1 as z"})
                        .build();
 
@@ -1812,8 +1805,8 @@ TEST_P(JoinTest, leftThenFilter) {
         "WHERE z > 0";
     SCOPED_TRACE(query);
 
-    // V2 is better: it materializes `z` before join fanout so that it
-    // eliminates the output-reconstruction Project after the join.
+    // V2 materializes `z` before join fanout and restores `x` from the equal
+    // key `a` after sorting.
     auto matcher = matchScan("u")
                        .filter("y + 1 > 0")
                        .project({"x", "y + 1 as z"})
@@ -1843,6 +1836,7 @@ TEST_P(JoinTest, leftThenFilter) {
                            core::JoinType::kInner)
                        .projectIf(!useV2_, {"y + 1 as z", "a", "b", "c", "x"})
                        .orderBy()
+                       .projectIf(useV2_, {"a", "b", "c", "a as x", "z"})
                        .projectIf(!useV2_, {"a", "b", "c", "x", "z"})
                        .build();
 
@@ -1868,6 +1862,7 @@ TEST_P(JoinTest, leftThenFilter) {
                   matchScan("u").filter("x > y"),
                   core::JoinType::kInner,
                   {.filter = "a > y"})
+              .project({"a", "b", "c", "a as x", "y"})
               .build()
         : matchScan("t")
               .hashJoin(matchScan("u"), core::JoinType::kInner)
@@ -2007,8 +2002,8 @@ TEST_P(JoinTest, fullThenFilter) {
         "WHERE z > 0 AND a > 0";
     SCOPED_TRACE(query);
 
-    // V2 is better: it derives `x > 0` on u, materializes `z` before the join,
-    // and eliminates the output-reconstruction Project after the join.
+    // V2 derives `x > 0` on u, materializes `z` before the join, and restores
+    // `x` from the equal key `a` after the join.
     auto matcher =
         matchScan("t")
             .filter("a > 0")
@@ -2017,6 +2012,7 @@ TEST_P(JoinTest, fullThenFilter) {
                     .filter(useV2_ ? "y + 1 > 0 AND x > 0" : "y + 1 > 0")
                     .projectIf(useV2_, {"x", "y + 1 as z"}),
                 core::JoinType::kInner)
+            .projectIf(useV2_, {"a", "b", "c", "a as x", "z"})
             .projectIf(!useV2_)
             .build();
 
@@ -2041,6 +2037,7 @@ TEST_P(JoinTest, fullThenFilter) {
                   matchScan("u").filter("x > y"),
                   core::JoinType::kInner,
                   {.filter = "a > y"})
+              .project({"a", "b", "c", "a as x", "y"})
               .build()
         : matchScan("t")
               .hashJoin(matchScan("u"), core::JoinType::kInner)
@@ -2602,12 +2599,10 @@ TEST_P(JoinTest, impliedFilterNonPropagation) {
         "WHERE t.a = u.x AND t.a = cast(random() * 100 as bigint)";
     SCOPED_TRACE(query);
 
-    // TODO: Place the key-reconstruction Project after the filter, so it runs
-    // on the surviving rows only.
     auto matcher = matchScan("t")
                        .hashJoinInner(matchScan("u"))
-                       .projectIf(useV2_, {"a", "b", "a as x", "y"})
                        .filter("a = cast(random() * 100.0 as bigint)")
+                       .projectIf(useV2_, {"a", "b", "a as x", "y"})
                        .build();
 
     auto plan = toSingleNodePlan(query);
