@@ -65,14 +65,6 @@ void dropTrailingWildcards(std::vector<Step>& steps) {
   }
 }
 
-// True when field 'i' of 'call' is its argument 'i'. A function that builds a
-// row some other way -- from a map and a list of keys, say -- declares its own
-// mapping and is not decomposed here.
-bool isRowConstructor(const Call* call) {
-  const auto* metadata = call->metadata();
-  return metadata != nullptr && metadata->isRowConstructor;
-}
-
 // Splits 'tail' by its leading field step, so each argument of a constructed
 // row is visited with the paths read from the field it supplies. A path that
 // does not start with a field reads the row itself, which reads every
@@ -169,7 +161,7 @@ void ColumnAccess::addSteps(
   }
 
   const auto* call = expr->as<Call>();
-  if (isRowConstructor(call) && addRowConstructor(call, steps, tail)) {
+  if (call->isRowConstructor() && addRowConstructor(call, steps, tail)) {
     return;
   }
 

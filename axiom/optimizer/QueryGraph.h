@@ -394,6 +394,9 @@ class Call : public Expr {
     return metadata_;
   }
 
+  /// Returns true if this call constructs a row.
+  bool isRowConstructor() const;
+
   /// Non-owning identity view for interning a `Call` by content. Holds only
   /// what defines identity: function name, result type (distinguishes CAST-like
   /// forms that share name + args), and args by pointer.

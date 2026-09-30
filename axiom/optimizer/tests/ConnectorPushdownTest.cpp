@@ -22,7 +22,6 @@
 #include "axiom/logical_plan/ExprApi.h"
 #include "axiom/optimizer/tests/ExprMatcher.h"
 #include "axiom/optimizer/tests/QueryTestBase.h"
-#include "velox/parse/ExpressionsParser.h"
 
 namespace facebook::axiom::optimizer::test {
 namespace {
@@ -78,33 +77,14 @@ class ConnectorPushdownTest : public QueryTestBase,
     matchAll(pushedFilters(filter), std::vector<std::string>(expected));
   }
 
-  void expectPushed(
-      std::string_view filter,
-      std::initializer_list<core::ExprPtr> expected) {
-    SCOPED_TRACE(fmt::format("filter: {}", filter));
-    matchAll(pushedFilters(filter), expected);
-  }
-
   void matchAll(
       const std::vector<core::TypedExprPtr>& actual,
       const std::vector<std::string>& expected) {
     ASSERT_EQ(actual.size(), expected.size());
     for (size_t i = 0; i < actual.size(); ++i) {
-      core::ExprMatcher::match(actual[i], parser_.parseExpr(expected[i]));
+      core::ExprMatcher::match(actual[i], lp::Sql(expected[i]).expr());
     }
   }
-
-  void matchAll(
-      const std::vector<core::TypedExprPtr>& actual,
-      std::initializer_list<core::ExprPtr> expected) {
-    ASSERT_EQ(actual.size(), expected.size());
-    size_t index{0};
-    for (const auto& expression : expected) {
-      core::ExprMatcher::match(actual[index++], expression);
-    }
-  }
-
-  parse::DuckSqlExpressionsParser parser_;
 };
 
 // Equality is canonicalized with the column as the first argument, regardless
@@ -149,13 +129,33 @@ TEST_P(ConnectorPushdownTest, singleRowIn) {
       toSingleNodePlan(parseSelect(
           "SELECT * FROM t WHERE (a, b) IN ((1, NULL))", kTestConnectorId)),
       matchValues().build());
+}
+
+// A multi-row IN exposes the values for each field while retaining the
+// original predicate to preserve correlations between fields.
+TEST_P(ConnectorPushdownTest, multiRowIn) {
+  if (!useV2_) {
+    return;
+  }
+
+  {
+    const std::string rowIn = R"("in"(row_constructor(a, b), "any"()))";
+
+    expectPushed(
+        "(a, b) IN ((1, 2), (3, 4))", {rowIn, "a IN (1, 3)", "b IN (2, 4)"});
+    expectPushed(
+        "(a, b) IN ((1, 2), (1, 3), NULL)", {rowIn, "a = 1", "b IN (2, 3)"});
+    expectPushed(
+        "(a, b) IN ((1, NULL), (2, 3))", {rowIn, "a IN (1, 2)", "b = 3"});
+    expectPushed("(a, b) IN ((1, 2), NULL)", {rowIn, "a = 1", "b = 2"});
+  }
 
   expectPushed(
-      "(a, b) IN ((1, 2), NULL)",
-      {lp::In(
-           lp::Call("row_constructor", lp::Col("a"), lp::Col("b")),
-           lp::Call("any"))
-           .expr()});
+      "(random(), b) IN ((DOUBLE '1', 2), (DOUBLE '3', 4))",
+      {R"("in"(row_constructor(random(), b), "any"()))", "b IN (2, 4)"});
+
+  expectPushed("ROW(a) IN (ROW(1), ROW(2))", {"a IN (1, 2)"});
+  expectPushed("ROW(a) IN (ROW(1), NULL)", {"a = 1"});
 }
 
 // Predicates that cannot be combined remain separate, so a connector must
