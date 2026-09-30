@@ -64,6 +64,29 @@ bool keepsBothInputs(velox::core::JoinType joinType) {
       joinType == velox::core::JoinType::kFull;
 }
 
+// Positions in 'keys' of the connector partition keys, or nullopt when the
+// partitioning is absent or is not on a subset of 'keys'.
+std::optional<std::vector<size_t>> keyPositions(
+    MemoOpCP plan,
+    const ExprVector& keys) {
+  if (plan == nullptr) {
+    return std::nullopt;
+  }
+  std::vector<size_t> positions;
+  const auto& partitioning = plan->outputPartitioning();
+  positions.reserve(partitioning.keys.size());
+  for (ExprCP partitionKey : partitioning.keys) {
+    const auto it = std::find_if(keys.begin(), keys.end(), [&](ExprCP key) {
+      return key->sameOrEqual(*partitionKey);
+    });
+    if (it == keys.end()) {
+      return std::nullopt;
+    }
+    positions.push_back(it - keys.begin());
+  }
+  return positions;
+}
+
 // Returns the minimum relation id from each reachable opposite hyperedge side,
 // provided the whole side is outside both `set` and `forbidden`. The minimum is
 // DPhyp's canonical seed for growing that side without emitting duplicates.
@@ -771,15 +794,15 @@ class Enumerator {
     return bestOnPartitioning(cover, std::move(required));
   }
 
-  // Cheapest plan for `cover` already connector-bucketed on `keys`, or null
-  // when `cover` is unmemoized or has no such plan.
+  // Cheapest plan for `cover` already connector-bucketed on a non-empty
+  // subset of `keys`, or null when `cover` is unmemoized or has no such plan.
   MemoOpCP bucketedOn(RelationSet cover, const ExprVector& keys) {
     const auto it = memo_.find(cover);
     if (it == memo_.end()) {
       return nullptr;
     }
     const ExprVector coverKeys = keysInCoverSchema(keys, cover);
-    if (MemoOpCP bucketed = it->second.bestBucketed(coverKeys)) {
+    if (MemoOpCP bucketed = it->second.bestBucketedOnSubset(coverKeys)) {
       return bucketed;
     }
 
@@ -799,7 +822,7 @@ class Enumerator {
       return nullptr;
     }
     Partitioning storageBucketing = node->as<Scan>()->storageBucketing();
-    if (!storageBucketing.isBucketedOn(coverKeys)) {
+    if (!storageBucketing.coLocates(coverKeys)) {
       return nullptr;
     }
     // Coarsened to the worker count, like every other grouped read: the memo
@@ -813,7 +836,7 @@ class Enumerator {
     it->second.addPlan(std::move(grouped), graph_, costModel_);
     // Read back rather than keeping the pointer: addPlan drops a plan an
     // existing one dominates, and enumeration asks for this cover repeatedly.
-    return it->second.bestBucketed(coverKeys);
+    return it->second.bestBucketedOnSubset(coverKeys);
   }
 
   // Tasks in the stage whose rows are 'partitioning': a bucketed stage runs one
@@ -984,6 +1007,11 @@ class Enumerator {
       return;
     }
 
+    const auto leftAt =
+        keyPositions(leftBucketed, keysInCoverSchema(leftKeys, left->cover()));
+    const auto rightAt = keyPositions(
+        rightBucketed, keysInCoverSchema(rightKeys, right->cover()));
+
     const auto add = [&](MemoOpCP leftChild, MemoOpCP rightChild) {
       addJoinCandidate(
           leftChild,
@@ -1005,35 +1033,49 @@ class Enumerator {
     };
 
     if (leftBucketed != nullptr && rightBucketed != nullptr) {
-      const auto* leftType = leftBucketed->outputPartitioning().partitionType;
-      const auto* rightType = rightBucketed->outputPartitioning().partitionType;
-      const auto* folded = queryCtx()->copartitionedType(leftType, rightType);
-      if (folded == nullptr) {
-        return;
+      if (leftAt.has_value() && leftAt == rightAt) {
+        const auto* leftType = leftBucketed->outputPartitioning().partitionType;
+        const auto* rightType =
+            rightBucketed->outputPartitioning().partitionType;
+        const auto* folded = queryCtx()->copartitionedType(leftType, rightType);
+        // Both sides are kept only when the partitioning they agree on runs at
+        // the width they already run at. Otherwise one side is repartitioned
+        // onto the other's grid below, which rebuilds it at that width.
+        if (folded != nullptr &&
+            folded->numPartitions() == leftType->numPartitions() &&
+            folded->numPartitions() == rightType->numPartitions()) {
+          add(leftBucketed, rightBucketed);
+          return;
+        }
       }
-      // Both sides are kept only when the partitioning they agree on runs at
-      // the width they already run at. Otherwise one side is repartitioned
-      // onto the other's grid below, which rebuilds it at that width.
-      if (folded->numPartitions() == leftType->numPartitions() &&
-          folded->numPartitions() == rightType->numPartitions()) {
-        add(leftBucketed, rightBucketed);
-        return;
-      }
+      // Otherwise, try each one-sided candidate.
     }
 
     if (leftBucketed != nullptr) {
+      VELOX_DCHECK(leftAt.has_value());
+      ExprVector alignedRightKeys;
+      alignedRightKeys.reserve(leftAt->size());
+      for (const size_t position : *leftAt) {
+        alignedRightKeys.push_back(rightKeys[position]);
+      }
       const auto* leftType = leftBucketed->outputPartitioning().partitionType;
       MemoOpCP rightAligned =
-          repartitionedTo(right->cover(), rightKeys, leftType);
+          repartitionedTo(right->cover(), alignedRightKeys, leftType);
       if (rightAligned != nullptr) {
         add(leftBucketed, rightAligned);
       }
     }
 
     if (rightBucketed != nullptr) {
+      VELOX_DCHECK(rightAt.has_value());
+      ExprVector alignedLeftKeys;
+      alignedLeftKeys.reserve(rightAt->size());
+      for (const size_t position : *rightAt) {
+        alignedLeftKeys.push_back(leftKeys[position]);
+      }
       const auto* rightType = rightBucketed->outputPartitioning().partitionType;
       MemoOpCP leftAligned =
-          repartitionedTo(left->cover(), leftKeys, rightType);
+          repartitionedTo(left->cover(), alignedLeftKeys, rightType);
       if (leftAligned != nullptr) {
         add(leftAligned, rightBucketed);
       }

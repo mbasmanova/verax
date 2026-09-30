@@ -1659,25 +1659,6 @@ bool supportsCoalesceKey(TypeCP type) {
   return true;
 }
 
-// Whether 'partitioning' hash-partitions positionally on 'keys'. Null
-// replication puts a null-keyed row on every partition, so it establishes no
-// partitioning on the key.
-bool isPartitionedOnKeys(
-    const Partitioning& partitioning,
-    const ExprVector& keys) {
-  if (partitioning.kind != PartitionKind::kPartitioned ||
-      partitioning.replicateNullsAndAny ||
-      partitioning.keys.size() != keys.size()) {
-    return false;
-  }
-  for (size_t i = 0; i < keys.size(); ++i) {
-    if (!partitioning.keys[i]->sameOrEqual(*keys[i])) {
-      return false;
-    }
-  }
-  return true;
-}
-
 // The partitioning a full join retains. Both inputs must be co-partitioned on
 // the pairs they join on, so that the coalesce of a pair holds the value that
 // placed every output row.
@@ -1692,8 +1673,11 @@ Partitioning fullJoinPartitioning(
   if (leftKeys.empty()) {
     return {};
   }
-  if (!isPartitionedOnKeys(leftPartitioning, leftKeys) ||
-      !isPartitionedOnKeys(rightPartitioning, rightKeys)) {
+  if (leftPartitioning.kind != PartitionKind::kPartitioned ||
+      rightPartitioning.kind != PartitionKind::kPartitioned ||
+      leftPartitioning.replicateNullsAndAny ||
+      rightPartitioning.replicateNullsAndAny ||
+      leftPartitioning.keys.size() != rightPartitioning.keys.size()) {
     return {};
   }
   // A connector-bucketed side and a standard-hash side are not co-located.
@@ -1711,10 +1695,22 @@ Partitioning fullJoinPartitioning(
   }
 
   ExprVector keys;
-  keys.reserve(leftKeys.size());
-  for (size_t i = 0; i < leftKeys.size(); ++i) {
-    const ExprCP leftKey = leftKeys[i];
-    const ExprCP rightKey = rightKeys[i];
+  keys.reserve(leftPartitioning.keys.size());
+  // Map each pair of co-partitioned keys to the same join equality.
+  for (size_t i = 0; i < leftPartitioning.keys.size(); ++i) {
+    std::optional<size_t> joinKeyIndex;
+    for (size_t j = 0; j < leftKeys.size(); ++j) {
+      if (leftPartitioning.keys[i]->sameOrEqual(*leftKeys[j]) &&
+          rightPartitioning.keys[i]->sameOrEqual(*rightKeys[j])) {
+        joinKeyIndex = j;
+        break;
+      }
+    }
+    if (!joinKeyIndex.has_value()) {
+      return {};
+    }
+    const ExprCP leftKey = leftKeys[*joinKeyIndex];
+    const ExprCP rightKey = rightKeys[*joinKeyIndex];
     // Null padding must make the missing side's key NULL so that the coalesce
     // selects the key from the row's surviving side.
     if (leftKey->containsFunction(FunctionSet::kNonDefaultNullBehavior) ||

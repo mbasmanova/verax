@@ -89,11 +89,10 @@ class PlanSet {
   /// Cheapest plan regardless of partitioning, or nullptr when empty.
   MemoOpCP cheapest() const;
 
-  /// Cheapest plan whose output is connector-bucketed (`kPartitioned` with a
-  /// non-null `partitionType`) on exactly `keys`, or nullptr when none. Used by
-  /// the co-bucketed join strategy to find an input that can join co-located
-  /// without a shuffle.
-  MemoOpCP bestBucketed(const ExprVector& keys) const;
+  /// Cheapest connector-bucketed plan whose partition keys are a non-empty
+  /// subset of 'keys', or nullptr when none. Callers aligning two inputs must
+  /// verify that their partition keys map to corresponding key positions.
+  MemoOpCP bestBucketedOnSubset(const ExprVector& keys) const;
 
   /// Output cardinality of this relation set — a relation-set fact, identical
   /// across the set's plans. nullopt when empty or unknown.

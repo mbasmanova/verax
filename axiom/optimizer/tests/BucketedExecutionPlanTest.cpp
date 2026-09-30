@@ -116,6 +116,8 @@ TEST_P(BucketedExecutionTest, join) {
   addBucketedTable("j_orders", {"customer_id"}, 128);
   addBucketedTable(
       "j_customers", {"id"}, 128, ROW({"id", "name"}, {BIGINT(), VARCHAR()}));
+  addBucketedTable("j_subset_t", {"t_k"}, 128, ROW({"t_k", "t_j"}, BIGINT()));
+  addBucketedTable("j_subset_u", {"u_k"}, 128, ROW({"u_k", "u_j"}, BIGINT()));
 
   {
     auto plan = planDistributed(parseSelect(
@@ -127,6 +129,30 @@ TEST_P(BucketedExecutionTest, join) {
         matchScan("j_customers")
             .hashJoinInner(matchScan("j_orders"))
             .projectIf(useV2_)
+            .fragment({.width = 4, .bucketedScans = 2})
+            .gather()
+            .build());
+  }
+
+  {
+    SCOPED_TRACE("Inputs are bucketed on a subset of join keys");
+    const auto logicalPlan = parseSelect(
+        "SELECT t_k FROM j_subset_t JOIN j_subset_u "
+        "ON t_k = u_k AND t_j = u_j",
+        kTestConnectorId);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(logicalPlan, /*numDrivers=*/4),
+        matchScan("j_subset_t")
+            .hashJoinInner(
+                matchScan("j_subset_u"), {.keys = {{"t_k = u_k", "t_j = u_j"}}})
+            .build());
+
+    const auto plan = planDistributed(logicalPlan);
+    AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
+        plan.plan,
+        matchScan("j_subset_t")
+            .hashJoinInner(
+                matchScan("j_subset_u"), {.keys = {{"t_k = u_k", "t_j = u_j"}}})
             .fragment({.width = 4, .bucketedScans = 2})
             .gather()
             .build());
@@ -929,36 +955,104 @@ TEST_P(BucketedExecutionTest, bucketedAggThenBucketedJoin) {
 }
 
 TEST_P(BucketedExecutionTest, fullJoinCoBucketed) {
-  addBucketedTable("fj_left", {"customer_id"}, 16);
-  addBucketedTable(
-      "fj_right", {"id"}, 16, ROW({"id", "name"}, {BIGINT(), VARCHAR()}));
-  const auto logicalPlan = parseSelect(
-      "SELECT coalesce(customer_id, id) AS k, COUNT(*) AS cnt "
-      "FROM fj_left FULL OUTER JOIN fj_right ON customer_id = id "
-      "GROUP BY 1",
-      kTestConnectorId);
-  // The full join states the bucketing both sides share on the coalesce of
-  // its key pair, so the aggregation above it needs no shuffle.
-  AXIOM_ASSERT_PLAN_V2(
-      toSingleNodePlan(logicalPlan, /*numDrivers=*/4),
-      matchScan("fj_left")
-          .hashJoinFull(matchScan("fj_right"), {.keys = {{"customer_id = id"}}})
-          .project({"coalesce(customer_id, id) as k"})
-          .localAggregation({"k"}, {"count(*) as cnt"})
-          .build());
+  addBucketedTable("t", {"t_k"}, 16, ROW({"t_k", "t_j"}, BIGINT()));
+  addBucketedTable("u", {"u_k"}, 16, ROW({"u_k", "u_j"}, BIGINT()));
+  addBucketedTable("u_mismatch", {"u_j"}, 16, ROW({"u_k", "u_j"}, BIGINT()));
+  addUnbucketedTable("u_plain", ROW({"u_k", "u_j"}, BIGINT()));
 
-  const auto plan = planDistributed(logicalPlan);
-  AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
-      plan.plan,
-      matchScan("fj_left")
-          .hashJoinFull(matchScan("fj_right"), {.keys = {{"customer_id = id"}}})
-          .project({"coalesce(customer_id, id) as k"})
-          .partialAggregation({"k"}, {"count(*) as cnt"})
-          .localPartition({"k"})
-          .finalAggregation({"k"}, {"count(cnt) as cnt"})
-          .fragment({.width = 4, .bucketedScans = 2})
-          .gather()
-          .build());
+  {
+    SCOPED_TRACE("Full join on bucket keys");
+    const auto logicalPlan = parseSelect(
+        "SELECT coalesce(t_k, u_k) AS k, COUNT(*) AS cnt "
+        "FROM t FULL OUTER JOIN u ON t_k = u_k GROUP BY 1",
+        kTestConnectorId);
+    // The full join retains the bucketing both sides share on the coalesce of
+    // its key pair, so the aggregation above it needs no shuffle.
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(logicalPlan, /*numDrivers=*/4),
+        matchScan("t")
+            .hashJoinFull(matchScan("u"), {.keys = {{"t_k = u_k"}}})
+            .project({"coalesce(t_k, u_k) as k"})
+            .localAggregation({"k"}, {"count(*) as cnt"})
+            .build());
+
+    const auto plan = planDistributed(logicalPlan);
+    AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
+        plan.plan,
+        matchScan("t")
+            .hashJoinFull(matchScan("u"), {.keys = {{"t_k = u_k"}}})
+            .project({"coalesce(t_k, u_k) as k"})
+            .partialAggregation({"k"}, {"count(*) as cnt"})
+            .localPartition({"k"})
+            .finalAggregation({"k"}, {"count(cnt) as cnt"})
+            .fragment({.width = 4, .bucketedScans = 2})
+            .gather()
+            .build());
+  }
+
+  {
+    SCOPED_TRACE("Bucket keys belong to different join equalities");
+    const auto logicalPlan = parseSelect(
+        "SELECT coalesce(t_k, u_k) AS k "
+        "FROM t FULL OUTER JOIN u_mismatch u "
+        "ON t_k = u_k AND t_j = u_j",
+        kTestConnectorId);
+    // Bucketing on opposite equality pairs does not co-locate matching rows,
+    // so one input must be realigned.
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(logicalPlan, /*numDrivers=*/4),
+        matchScan("t")
+            .hashJoinFull(
+                matchScan("u_mismatch"), {.keys = {{"t_k = u_k", "t_j = u_j"}}})
+            .project({"coalesce(t_k, u_k) as k"})
+            .build());
+
+    const auto plan = planDistributed(logicalPlan);
+    AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
+        plan.plan,
+        matchScan("t")
+            .hashJoinFull(
+                matchScan("u_mismatch").shuffle({"u_k"}),
+                {.keys = {{"t_k = u_k", "t_j = u_j"}}})
+            .project({"coalesce(t_k, u_k) as k"})
+            .fragment({.width = 4, .bucketedScans = 1, .bucketedExchanges = 1})
+            .gather()
+            .build());
+  }
+
+  {
+    SCOPED_TRACE("Only the left input is bucketed on a join key");
+    const auto logicalPlan = parseSelect(
+        "SELECT coalesce(t_k, u_k) AS k, COUNT(*) AS cnt "
+        "FROM t FULL OUTER JOIN u_plain u "
+        "ON t_j = u_j AND t_k = u_k GROUP BY 1",
+        kTestConnectorId);
+    // The unbucketed side is aligned on the corresponding key despite the ON
+    // clause order, and the aggregation reuses the full join's partitioning.
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(logicalPlan, /*numDrivers=*/4),
+        matchScan("t")
+            .hashJoinFull(
+                matchScan("u_plain"), {.keys = {{"t_j = u_j", "t_k = u_k"}}})
+            .project({"coalesce(t_k, u_k) as k"})
+            .localAggregation({"k"}, {"count(*) as cnt"})
+            .build());
+
+    const auto plan = planDistributed(logicalPlan);
+    AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
+        plan.plan,
+        matchScan("t")
+            .hashJoinFull(
+                matchScan("u_plain").shuffle({"u_k"}),
+                {.keys = {{"t_j = u_j", "t_k = u_k"}}})
+            .project({"coalesce(t_k, u_k) as k"})
+            .partialAggregation({"k"}, {"count(*) as cnt"})
+            .localPartition({"k"})
+            .finalAggregation({"k"}, {"count(cnt) as cnt"})
+            .fragment({.width = 4, .bucketedScans = 1, .bucketedExchanges = 1})
+            .gather()
+            .build());
+  }
 }
 
 TEST_P(BucketedExecutionTest, bucketedAggThenBroadcastJoin) {
@@ -1102,14 +1196,16 @@ TEST_P(BucketedExecutionTest, incompatibleBucketingOnManyWorkers) {
       kTestConnectorId));
 
   if (useV2_) {
-    // No pairing is possible, and the smaller side is cheap to replicate, so
-    // the join broadcasts it and neither table is read grouped.
+    // The original bucketings cannot be paired, so the smaller side is
+    // repartitioned to the larger side's bucketing.
     AXIOM_ASSERT_DISTRIBUTED_PLAN(
         plan.plan,
         matchScan("s_incompat_a")
-            .hashJoinInner(matchScan("s_incompat_b").broadcast())
+            .hashJoinInner(matchScan("s_incompat_b")
+                               .aliases({"customer_id"})
+                               .shuffle({"customer_id"}))
             .project()
-            .notBucketed()
+            .fragment({.width = 4, .bucketedScans = 1, .bucketedExchanges = 1})
             .gather()
             .build());
   }
