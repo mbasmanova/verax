@@ -83,9 +83,6 @@ const Estimate& EstimateProvider::estimate(NodeCP node) {
     return it->second;
   }
   Estimate result = compute(node);
-  if (!result.maxCardinality.has_value()) {
-    result.maxCardinality = result.cardinality;
-  }
   capNdvAtCardinality(node->outputColumns(), result);
 
   // A node's cardinality estimate should never be non-finite; estimate
@@ -141,7 +138,6 @@ Estimate EstimateProvider::compute(NodeCP node) {
           ? std::optional<float>{sel->trueFraction}
           : std::nullopt;
       result.cardinality = maxOf(1.0f, mul(input.cardinality, selectivity));
-      result.maxCardinality = input.maxCardinality;
       return result;
     }
 
@@ -161,7 +157,6 @@ Estimate EstimateProvider::compute(NodeCP node) {
           product = mul(product, value(input.constraints, key).cardinality);
         }
         result.cardinality = maxOf(1.0f, minOf(input.cardinality, product));
-        result.maxCardinality = input.maxCardinality;
       }
       // An aggregate emits one row per group, so each output column has at most
       // `cardinality` distinct values. Derive the output-column NDVs so a
@@ -192,9 +187,6 @@ Estimate EstimateProvider::compute(NodeCP node) {
       const float limitCount =
           std::max(1.0f, static_cast<float>(limit->count()));
       result.cardinality = minOf(input.cardinality, limitCount);
-      result.maxCardinality = input.maxCardinality.has_value()
-          ? std::min(*input.maxCardinality, limitCount)
-          : limitCount;
       return result;
     }
 
@@ -206,9 +198,6 @@ Estimate EstimateProvider::compute(NodeCP node) {
       const float limitCount =
           std::max(1.0f, static_cast<float>(topN->count()));
       result.cardinality = minOf(input.cardinality, limitCount);
-      result.maxCardinality = input.maxCardinality.has_value()
-          ? std::min(*input.maxCardinality, limitCount)
-          : limitCount;
       return result;
     }
 
@@ -227,14 +216,11 @@ Estimate EstimateProvider::compute(NodeCP node) {
       // Sum of children. Unknown propagates: an unknown child cardinality
       // makes the union cardinality unknown.
       std::optional<float> total{0.0f};
-      std::optional<float> maxTotal{0.0f};
       for (NodeCP input : node->inputs()) {
         const auto& inputEstimate = estimate(input);
         total = add(total, inputEstimate.cardinality);
-        maxTotal = add(maxTotal, inputEstimate.maxCardinality);
       }
       result.cardinality = maxOf(1.0f, total);
-      result.maxCardinality = maxOf(1.0f, maxTotal);
       return result;
     }
 
@@ -308,7 +294,6 @@ Estimate EstimateProvider::compute(NodeCP node) {
       Estimate result;
       result.constraints = input.constraints;
       result.cardinality = input.cardinality;
-      result.maxCardinality = input.maxCardinality;
       if (!limit.has_value() || !capsPartition) {
         return result;
       }
@@ -318,7 +303,7 @@ Estimate EstimateProvider::compute(NodeCP node) {
         numPartitions =
             mul(numPartitions, value(input.constraints, key).cardinality);
       }
-      // An unknown partition count leaves the input's cardinality as the bound.
+      // An unknown partition count leaves the input cardinality unchanged.
       if (numPartitions.has_value()) {
         result.cardinality = maxOf(
             1.0f,
@@ -346,23 +331,10 @@ Estimate EstimateProvider::compute(NodeCP node) {
       return result;
     }
 
-    case NodeType::kGroupId: {
-      const auto* groupId = node->as<GroupId>();
-      const auto& input = estimate(groupId->input());
-      Estimate result;
-      result.cardinality = input.cardinality;
-      result.maxCardinality =
-          mul(input.maxCardinality,
-              static_cast<float>(groupId->groupingSets().size()));
-      result.constraints = input.constraints;
-      return result;
-    }
-
     case NodeType::kEnforceSingleRow: {
       const auto& input = estimate(node->inputs()[0]);
       Estimate result;
       result.cardinality = input.cardinality;
-      result.maxCardinality = 1;
       result.constraints = input.constraints;
       return result;
     }
@@ -375,6 +347,7 @@ Estimate EstimateProvider::compute(NodeCP node) {
     case NodeType::kMarkDistinct:
     case NodeType::kAssignUniqueId:
     case NodeType::kEnforceDistinct:
+    case NodeType::kGroupId:
     case NodeType::kExchange:
     case NodeType::kApply: {
       const auto inputs = node->inputs();
@@ -384,7 +357,6 @@ Estimate EstimateProvider::compute(NodeCP node) {
       const auto& input = estimate(inputs[0]);
       Estimate result;
       result.cardinality = input.cardinality;
-      result.maxCardinality = input.maxCardinality;
       result.constraints = input.constraints;
       return result;
     }
