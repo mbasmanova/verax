@@ -16,6 +16,7 @@
 
 #include "axiom/optimizer/v2/JoinHypergraph.h"
 
+#include <algorithm>
 #include <utility>
 
 #include "velox/common/base/Exceptions.h"
@@ -57,6 +58,82 @@ int8_t JoinHypergraph::addUnnestRelation(
   const int8_t id = addRelation(node, cardinality, std::move(columns));
   unnestRelationIds_.add(id);
   return id;
+}
+
+std::optional<JoinHypergraph::CrossingEdges> JoinHypergraph::crossingEdges(
+    const RelationSet& left,
+    const RelationSet& right) const {
+  RelationSet combined{left};
+  combined.unionSet(right);
+  CrossingEdges result;
+  for (size_t edgeIndex{0}; edgeIndex < edges_.size(); ++edgeIndex) {
+    const auto& edge = edges_[edgeIndex];
+    const RelationSet edgeRelations = edge.totalEligibility();
+    if (edgeRelations.isSubset(left) || edgeRelations.isSubset(right) ||
+        !edgeRelations.isSubset(combined)) {
+      continue;
+    }
+
+    const bool forward = edge.leftEligibility().isSubset(left) &&
+        edge.rightEligibility().isSubset(right);
+    const bool reverse = edge.leftEligibility().isSubset(right) &&
+        edge.rightEligibility().isSubset(left);
+    if (forward || reverse) {
+      result.joinEdges.push_back({edgeIndex, forward});
+    } else if (
+        !edge.isUnnest() && edge.joinType() == velox::core::JoinType::kInner) {
+      result.filterEdges.push_back(edgeIndex);
+    } else {
+      return std::nullopt;
+    }
+  }
+  return result;
+}
+
+std::vector<size_t> JoinHypergraph::canonicalKeyEdges(
+    std::vector<size_t> edgeIndices) const {
+  std::ranges::sort(edgeIndices);
+  folly::F14FastSet<EquivalenceP> seenClasses;
+  const auto pairClass = [](const JoinEdge& edge,
+                            size_t keyIndex) -> EquivalenceP {
+    ExprCP left = edge.leftKeys()[keyIndex];
+    ExprCP right = edge.rightKeys()[keyIndex];
+    if (!left->isColumn() || !right->isColumn()) {
+      return nullptr;
+    }
+    const EquivalenceP equivalenceClass = left->as<Column>()->equivalence();
+    return equivalenceClass == right->as<Column>()->equivalence()
+        ? equivalenceClass
+        : nullptr;
+  };
+
+  std::vector<size_t> result;
+  result.reserve(edgeIndices.size());
+  for (size_t edgeIndex : edgeIndices) {
+    const JoinEdge& edge = edges_[edgeIndex];
+    VELOX_CHECK(
+        edge.joinType() == velox::core::JoinType::kInner && !edge.isUnnest(),
+        "Canonical key edge is not a plain inner join: {}",
+        edge.joinTypeName());
+    bool redundant{!edge.leftKeys().empty()};
+    for (size_t i = 0; i < edge.leftKeys().size(); ++i) {
+      const EquivalenceP equivalenceClass = pairClass(edge, i);
+      if (equivalenceClass == nullptr ||
+          !seenClasses.contains(equivalenceClass)) {
+        redundant = false;
+      }
+    }
+    if (redundant) {
+      continue;
+    }
+    result.push_back(edgeIndex);
+    for (size_t i = 0; i < edge.leftKeys().size(); ++i) {
+      if (const EquivalenceP equivalenceClass = pairClass(edge, i)) {
+        seenClasses.insert(equivalenceClass);
+      }
+    }
+  }
+  return result;
 }
 
 RelationSet JoinHypergraph::connectedComponent(

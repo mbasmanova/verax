@@ -225,7 +225,7 @@ class Enumerator {
     initLeaves(component);
     // A join touching a relation of unknown cardinality has unknown cardinality
     // too, so a component with any such relation can never be assembled. Bail
-    // before doing merge work; the caller falls back to syntactic order.
+    // before doing merge work; the caller selects a fallback plan.
     bool allCardinalitiesKnown = true;
     component.forEach([&](int32_t id) {
       if (graph_.expandedRelationIds().contains(id)) {
@@ -280,7 +280,7 @@ class Enumerator {
           continue;
         }
         // No remaining fragment pair produces a valid costable join. The
-        // caller falls back to syntactic order.
+        // caller selects a fallback plan.
         return nullptr;
       }
       fragments[bestLeft] = bestCombined;
@@ -442,46 +442,16 @@ class Enumerator {
     if (budget_.consume()) {
       return;
     }
-    RelationSet combined{subgraph};
-    combined.unionSet(complement);
-
-    // Collect every edge crossing this partition (TES-covered). Standard
-    // DPhyp applies all predicates connecting the two subgraphs at the join;
-    // with a cyclic join graph more than one edge can cross.
-    folly::small_vector<std::pair<size_t, bool>, 4> crossing;
-    // Inner edges whose two sides do not split across this partition. They
-    // cannot be join keys here, but an inner join keeps every column they
-    // read, so the emitter applies them above it rather than losing the
-    // partition.
-    std::vector<size_t> filterEdges;
-    for (size_t edgeIndex{0}; edgeIndex < graph_.edges().size(); ++edgeIndex) {
-      const auto& edge = graph_.edges()[edgeIndex];
-      const RelationSet edgeTes = edge.totalEligibility();
-      if (edgeTes.isSubset(subgraph) || edgeTes.isSubset(complement)) {
-        continue;
-      }
-      if (!edgeTes.isSubset(combined)) {
-        continue;
-      }
-
-      const bool forward = edge.leftEligibility().isSubset(subgraph) &&
-          edge.rightEligibility().isSubset(complement);
-      const bool reverse = edge.leftEligibility().isSubset(complement) &&
-          edge.rightEligibility().isSubset(subgraph);
-      if (!forward && !reverse) {
-        if (!edge.isUnnest() &&
-            edge.joinType() == velox::core::JoinType::kInner) {
-          filterEdges.push_back(edgeIndex);
-          continue;
-        }
-        return;
-      }
-      crossing.push_back({edgeIndex, forward});
-    }
-
-    if (crossing.empty()) {
+    auto crossing = graph_.crossingEdges(subgraph, complement);
+    if (!crossing.has_value()) {
       return;
     }
+    if (crossing->joinEdges.empty()) {
+      return;
+    }
+    RelationSet combined{subgraph};
+    combined.unionSet(complement);
+    auto filterEdges = std::move(crossing->filterEdges);
 
     // Filter edges are evaluated above the primary operator and may reference
     // either input. A semi or anti join discards one input's columns, so its
@@ -491,13 +461,13 @@ class Enumerator {
       return filterEdges.empty() || edge.isUnnest() ||
           keepsBothInputs(edge.joinType());
     };
-    if (crossing.size() == 1) {
-      if (!canApplyFilterEdges(crossing[0].first)) {
+    if (crossing->joinEdges.size() == 1) {
+      if (!canApplyFilterEdges(crossing->joinEdges[0].index)) {
         return;
       }
       applyCrossingEdge(
-          crossing[0].first,
-          crossing[0].second,
+          crossing->joinEdges[0].index,
+          crossing->joinEdges[0].leftToRight,
           subgraph,
           complement,
           combined,
@@ -514,8 +484,8 @@ class Enumerator {
     // above means. Two such edges have no single well-defined step and fall
     // through to the check below.
     std::optional<size_t> specialPosition;
-    for (size_t i = 0; i < crossing.size(); ++i) {
-      const auto& edge = graph_.edges()[crossing[i].first];
+    for (size_t i = 0; i < crossing->joinEdges.size(); ++i) {
+      const auto& edge = graph_.edges()[crossing->joinEdges[i].index];
       if (!edge.isUnnest() &&
           edge.joinType() == velox::core::JoinType::kInner) {
         continue;
@@ -528,11 +498,11 @@ class Enumerator {
     }
 
     if (specialPosition.has_value()) {
-      const size_t specialEdge = crossing[*specialPosition].first;
-      filterEdges.reserve(filterEdges.size() + crossing.size() - 1);
-      for (size_t i = 0; i < crossing.size(); ++i) {
+      const size_t specialEdge = crossing->joinEdges[*specialPosition].index;
+      filterEdges.reserve(filterEdges.size() + crossing->joinEdges.size() - 1);
+      for (size_t i = 0; i < crossing->joinEdges.size(); ++i) {
         if (i != *specialPosition) {
-          filterEdges.push_back(crossing[i].first);
+          filterEdges.push_back(crossing->joinEdges[i].index);
         }
       }
       if (!canApplyFilterEdges(specialEdge)) {
@@ -540,7 +510,7 @@ class Enumerator {
       }
       applyCrossingEdge(
           specialEdge,
-          crossing[*specialPosition].second,
+          crossing->joinEdges[*specialPosition].leftToRight,
           subgraph,
           complement,
           combined,
@@ -553,7 +523,8 @@ class Enumerator {
     // keys. Reaching here with an Unnest or a non-inner edge means two or more
     // of them cross, which has no single well-defined step; fail rather than
     // drop a predicate.
-    for (const auto& [edgeIndex, _] : crossing) {
+    for (const auto& crossingEdge : crossing->joinEdges) {
+      const size_t edgeIndex = crossingEdge.index;
       const auto& edge = graph_.edges()[edgeIndex];
       VELOX_CHECK(
           edge.joinType() == velox::core::JoinType::kInner && !edge.isUnnest(),
@@ -561,73 +532,20 @@ class Enumerator {
           edge.joinTypeName(),
           edge.isUnnest());
     }
-    std::sort(
-        crossing.begin(), crossing.end(), [](const auto& lhs, const auto& rhs) {
-          return lhs.first < rhs.first;
-        });
-
-    // Drop an edge whose every key pair equates two columns of an equivalence
-    // class a kept edge already covers: it expresses a transitive equality the
-    // kept edges enforce (closure can add several same-class edges across one
-    // partition), so it would only add redundant join keys. Each side already
-    // equates its same-class columns (the class's first edge was applied when
-    // the side was built), so the dropped equality still holds. The
-    // lowest-index edge of each class is kept, which is deterministic.
-    //
-    // A pair equating a column with an expression asserts an equality no class
-    // carries, so its edge stays.
-    folly::F14FastSet<EquivalenceP> seenClasses;
-    const auto keyClass = [](ExprCP key) -> EquivalenceP {
-      return key->isColumn() ? key->as<Column>()->equivalence() : nullptr;
-    };
-    const auto pairClass = [&](const JoinEdge& joinEdge,
-                               size_t keyIndex) -> EquivalenceP {
-      const EquivalenceP equivalenceClass =
-          keyClass(joinEdge.leftKeys()[keyIndex]);
-      return equivalenceClass == keyClass(joinEdge.rightKeys()[keyIndex])
-          ? equivalenceClass
-          : nullptr;
-    };
-    const auto coveredBySeen = [&](const JoinEdge& joinEdge) {
-      if (joinEdge.leftKeys().empty()) {
-        return false;
-      }
-      for (size_t i = 0; i < joinEdge.leftKeys().size(); ++i) {
-        const EquivalenceP equivalenceClass = pairClass(joinEdge, i);
-        if (equivalenceClass == nullptr ||
-            !seenClasses.contains(equivalenceClass)) {
-          return false;
-        }
-      }
-      return true;
-    };
-    const auto markClasses = [&](const JoinEdge& joinEdge) {
-      for (size_t i = 0; i < joinEdge.leftKeys().size(); ++i) {
-        if (const EquivalenceP equivalenceClass = pairClass(joinEdge, i)) {
-          seenClasses.insert(equivalenceClass);
-        }
-      }
-    };
-
     MemoOpCP leftPlan = cheapestPlan(subgraph);
     MemoOpCP rightPlan = cheapestPlan(complement);
     if (leftPlan == nullptr || rightPlan == nullptr) {
       return;
     }
 
-    const size_t primary{crossing.front().first};
-    markClasses(graph_.edges()[primary]);
-    std::vector<size_t> keyEdges;
-    keyEdges.reserve(crossing.size() - 1);
-    for (size_t i = 1; i < crossing.size(); ++i) {
-      const size_t edgeIndex = crossing[i].first;
-      const JoinEdge& edge = graph_.edges()[edgeIndex];
-      if (coveredBySeen(edge)) {
-        continue;
-      }
-      markClasses(edge);
-      keyEdges.push_back(edgeIndex);
+    std::vector<size_t> edgeIndices;
+    edgeIndices.reserve(crossing->joinEdges.size());
+    for (const auto& crossingEdge : crossing->joinEdges) {
+      edgeIndices.push_back(crossingEdge.index);
     }
+    edgeIndices = graph_.canonicalKeyEdges(std::move(edgeIndices));
+    const size_t primary{edgeIndices.front()};
+    std::vector<size_t> keyEdges{edgeIndices.begin() + 1, edgeIndices.end()};
     considerCandidate(
         leftPlan,
         rightPlan,
@@ -1462,7 +1380,7 @@ std::vector<MemoOpCP> DPhyp::enumerate(
     }
     if (root == nullptr) {
       // A component has no valid costable plan. Signal whole-cluster fallback
-      // to syntactic order by returning empty.
+      // by returning empty.
       return {};
     }
     roots.push_back(root);

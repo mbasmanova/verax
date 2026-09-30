@@ -65,7 +65,7 @@ class DPhyp {
 
   /// Runs the enumeration and returns the root `MemoOp` for the full relation
   /// set, or nullptr when no valid costable plan was produced. A nullptr
-  /// return tells the caller to fall back to the query's syntactic join order.
+  /// return tells the caller to use its automatic fallback.
   MemoOpCP enumerate();
 
   /// Runs enumeration once and returns the optimal plan for each
@@ -74,7 +74,7 @@ class DPhyp {
   /// the hypergraph is disconnected (genuine cross products); the caller
   /// combines the per-component plans with cross joins. Returns an empty
   /// vector when any component has no valid costable plan, telling the caller
-  /// to fall back to syntactic order.
+  /// to use its automatic fallback.
   std::vector<MemoOpCP> enumerate(const std::vector<RelationSet>& components);
 
  private:

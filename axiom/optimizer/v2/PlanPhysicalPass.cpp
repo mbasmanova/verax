@@ -22,6 +22,7 @@
 #include <vector>
 
 #include <folly/container/F14Map.h>
+#include <folly/container/F14Set.h>
 
 #include "axiom/connectors/ConnectorMetadata.h"
 #include "axiom/optimizer/PlanUtils.h"
@@ -31,6 +32,7 @@
 #include "axiom/optimizer/v2/EstimateProvider.h"
 #include "axiom/optimizer/v2/ExprFactory.h"
 #include "axiom/optimizer/v2/ExprSimplifier.h"
+#include "axiom/optimizer/v2/FallbackJoinPlanner.h"
 #include "axiom/optimizer/v2/HypergraphBuilder.h"
 #include "axiom/optimizer/v2/JoinCluster.h"
 #include "axiom/optimizer/v2/JoinTreeEmitter.h"
@@ -884,16 +886,17 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
         options_.broadcastSizeLimit};
     if (components.size() == 1) {
       MemoOpCP root = dphyp.enumerate();
-      // Enumeration found no valid costable plan; keep the cluster's tree.
+      // Enumeration found no valid costable plan; retain query order while
+      // postponing avoidable cross joins.
       if (root == nullptr) {
-        return rewriteFallbackJoin(node, context);
+        return rewriteFallbackCluster(node, graph, components, context);
       }
       return JoinTreeEmitter::emit(
           root, graph, node->outputColumns(), builder(), simplifier_);
     }
     const std::vector<MemoOpCP> roots = dphyp.enumerate(components);
     if (roots.empty()) {
-      return rewriteFallbackJoin(node, context);
+      return rewriteFallbackCluster(node, graph, components, context);
     }
     return JoinTreeEmitter::emitComponents(
         roots,
@@ -902,6 +905,40 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
         builder(),
         simplifier_,
         numWorkers_);
+  }
+
+  NodeCP rewriteFallbackCluster(
+      const Join* node,
+      const JoinHypergraph& graph,
+      const std::vector<RelationSet>& components,
+      NoContext& context) {
+    FallbackJoinPlanner fallbackPlanner{graph};
+    const std::vector<MemoOpCP> roots = fallbackPlanner.build(components);
+    if (roots.empty()) {
+      return rewriteFallbackJoin(node, context);
+    }
+    const auto joinFactory = [&](Join::Key join) {
+      return makePhysicalJoin(chooseBuildSide(std::move(join)));
+    };
+    if (roots.size() == 1) {
+      return JoinTreeEmitter::emit(
+          roots.front(),
+          graph,
+          node->outputColumns(),
+          builder(),
+          simplifier_,
+          joinFactory);
+    }
+    // 'joinFactory' adds the required distribution, including for cross joins.
+    return JoinTreeEmitter::emitComponents(
+        roots,
+        graph,
+        node->outputColumns(),
+        builder(),
+        simplifier_,
+        /*numWorkers=*/1,
+        joinFactory,
+        joinFactory);
   }
 
   // Remote exchanges that unconditionally establish a partitioning on 'input'.
