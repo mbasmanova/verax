@@ -1439,6 +1439,33 @@ Frame Translator::toFrame(
   };
 }
 
+namespace {
+
+// Returns 'expr' as IF(condition, value[, NULL]), or nullptr for any other
+// expression.
+CallCP ifValueOrNull(ExprCP expr) {
+  if (!expr->is(PlanType::kCallExpr)) {
+    return nullptr;
+  }
+  CallCP call = expr->as<Call>();
+  if (call->name() != SpecialFormCallNames::kIf) {
+    return nullptr;
+  }
+  const auto& args = call->args();
+  const auto numArgs = args.size();
+  if (numArgs == 2) {
+    return call;
+  }
+  VELOX_DCHECK_EQ(numArgs, 3);
+  ExprCP elseExpr = args[2];
+  return elseExpr->is(PlanType::kLiteralExpr) &&
+          elseExpr->as<Literal>()->literal().isNull()
+      ? call
+      : nullptr;
+}
+
+} // namespace
+
 const optimizer::Aggregate* Translator::toAggregateCall(
     const lp::AggregateExpr& aggregateExpr,
     const Scope& scope,
@@ -1491,17 +1518,37 @@ const optimizer::Aggregate* Translator::toAggregateCall(
   ExprCP condition = aggregateExpr.filter() != nullptr
       ? translateExpr(*aggregateExpr.filter(), scope, liftTarget)
       : nullptr;
-  // Drop a constant-true FILTER (it masks nothing). A false or null mask stays
-  // as a literal condition, folded to the empty-set result during assembly.
-  if (condition != nullptr && isConstantTrue(condition)) {
-    condition = nullptr;
-  }
 
   Value value(toType(aggregateExpr.type()));
 
   Name aggName = toName(aggregateExpr.name());
   const auto& metadata =
       velox::exec::getAggregateFunctionMetadata(aggregateExpr.name());
+
+  // An aggregate that ignores rows with a null argument can consume the
+  // selected value directly and use the IF condition as its mask. Translated
+  // arguments include expressions bound through projection aliases.
+  if (metadata.ignoreNullInputs) {
+    for (ExprCP& argument : arguments) {
+      CallCP ifCall = ifValueOrNull(argument);
+      if (ifCall == nullptr) {
+        continue;
+      }
+      condition = condition == nullptr
+          ? ifCall->args()[0]
+          : exprFactory_.makeAnd(condition, ifCall->args()[0]);
+      argument = ifCall->args()[1];
+    }
+    if (condition != nullptr) {
+      condition = simplifier_.simplify(condition);
+    }
+  }
+
+  // Drop a constant-true FILTER (it masks nothing). A false or null mask stays
+  // as a literal condition, folded to the empty-set result during assembly.
+  if (condition != nullptr && isConstantTrue(condition)) {
+    condition = nullptr;
+  }
 
   // Only an order-sensitive aggregate reads its ORDER BY, so only that ordering
   // is translated.
