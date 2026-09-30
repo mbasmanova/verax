@@ -202,10 +202,10 @@ Join planning:
 - Finds maximal clusters of reorderable equi-joins.
 - Uses DPhyp and the cost model to choose join order, build side, and
   distribution.
-- Falls back to greedy enumeration when the DPhyp budget is exhausted and to
-  query order when no valid costed plan is available.
-- Keeps non-reorderable cross, theta, and decorrelated-subquery joins in their
-  written shape while still assigning valid distributed inputs.
+- Falls back to greedy enumeration when the DPhyp budget is exhausted.
+- Keeps the written join tree when no valid costed plan is available or a join
+  is not reorderable. These automatic fallbacks still choose the build side
+  and assign valid distributed inputs.
 - Uses broadcast, hash partitioning, gather, or grouped reads from bucketed
   tables according to join semantics and cost.
 

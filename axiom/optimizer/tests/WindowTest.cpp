@@ -721,12 +721,12 @@ TEST_P(WindowTest, leftJoinWithWindowOrderingByRightSideColumn) {
       "LEFT JOIN u ON u.x = t.x "
       "WHERE t.x = u.x");
 
-  auto matcher = matchScan("t")
-                     .hashJoin(matchScan("u"), core::JoinType::kInner)
+  auto matcher = matchScan("u")
+                     .hashJoinInner(matchScan("t"))
                      .window({"row_number() OVER (ORDER BY y)"})
                      .project()
                      .build();
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V2(plan, matcher);
 }
 
 // A deterministic predicate on a partition key keeps or drops a partition

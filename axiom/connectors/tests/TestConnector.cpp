@@ -1231,6 +1231,22 @@ std::shared_ptr<TestTable> TestConnector::addTable(
       std::move(columnComments));
 }
 
+std::shared_ptr<TestTable> TestConnector::addTable(
+    const std::string& name,
+    const velox::RowTypePtr& schema,
+    const folly::F14FastMap<std::string, velox::Variant>& options) {
+  const SchemaTableName tableName{std::string(kDefaultSchema), name};
+  metadata_->createTable(
+      nullptr,
+      tableName,
+      schema,
+      options,
+      /*ifNotExists=*/false,
+      /*explain=*/false);
+  return std::static_pointer_cast<TestTable>(
+      metadata_->findTableInternal(tableName));
+}
+
 bool TestConnector::dropTableIfExists(const SchemaTableName& name) {
   return metadata_->dropTableIfExists(name);
 }

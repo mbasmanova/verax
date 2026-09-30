@@ -604,14 +604,12 @@ TEST_P(SetTest, joinWithUnionAll) {
   auto logicalPlan = parseSelect(sql);
   auto plan = toSingleNodePlan(logicalPlan);
 
-  auto matcher =
-      matchScan("t")
-          .hashJoin(
-              matchScan("u").localPartition(matchScan("v").project()),
-              core::JoinType::kInner)
-          .build();
+  auto matcher = matchScan("u")
+                     .localPartition(matchScan("v").project())
+                     .hashJoinInner(matchScan("t"))
+                     .build();
 
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V2(plan, matcher);
 }
 
 // Verifies that filtering a UNION ALL works when two columns in a child branch
@@ -984,17 +982,16 @@ TEST_P(SetTest, unionDistinctWithUnnestMultipleReferences) {
   // The two SELECT items reference the same scalar subquery, which is
   // planned once and joined once; the outer Project emits the join's
   // single output column twice (one per SELECT item).
-  auto matcher =
-      matchValues()
-          .nestedLoopJoin(matchScan("t")
-                              .unnest()
-                              .project()
-                              .localPartition(matchScan("t").project())
-                              .distinct()
-                              .singleAggregation({}, {"count(*) as cnt"}))
-          .project({"cnt", "cnt"})
-          .build();
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  auto matcher = matchScan("t")
+                     .unnest()
+                     .project()
+                     .localPartition(matchScan("t").project())
+                     .distinct()
+                     .singleAggregation({}, {"count(*) as cnt"})
+                     .nestedLoopJoin(matchValues())
+                     .project({"cnt", "cnt"})
+                     .build();
+  AXIOM_ASSERT_PLAN_V2(plan, matcher);
 }
 
 TEST_P(SetTest, unionAllWithDistinctAndCountStar) {

@@ -35,15 +35,16 @@ class PlanPhysicalPass {
   /// operators, inserting remote exchanges so each operator's input satisfies
   /// its required partitioning.
   ///
-  /// Cross joins, theta and decorrelated-subquery joins, and joins whose keys
-  /// do not resolve to leaf columns keep their written shape; at
-  /// `numWorkers > 1` they still get a valid distributed input combination
-  /// (broadcast build).
+  /// Automatic fallbacks for cross joins, theta and decorrelated-subquery
+  /// joins, joins whose keys do not resolve to leaf columns, and clusters DPhyp
+  /// cannot cost keep the written join tree while choosing the build side from
+  /// available size estimates. At `numWorkers > 1`, they get a valid
+  /// distributed input combination through broadcast, repartition, or gather
+  /// exchanges.
   ///
   /// When `options.syntacticJoinOrder` is true, cost-based reordering is
-  /// disabled and every join keeps the order written in the query. The same
-  /// query-order fallback also kicks in per cluster when DPhyp produces no
-  /// valid costable plan.
+  /// disabled and every join keeps both the tree and input orientation written
+  /// in the query.
   /// `options.dphypEnumerationBudget` caps DPhyp's enumeration before it falls
   /// back to greedy join ordering; <= 0 means unlimited. `numWorkers` is the
   /// target task count; when > 1 the walk generates remote-exchange candidates

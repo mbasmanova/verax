@@ -24,6 +24,7 @@
 #include <folly/container/F14Map.h>
 
 #include "axiom/connectors/ConnectorMetadata.h"
+#include "axiom/optimizer/PlanUtils.h"
 #include "axiom/optimizer/v2/AppendAll.h"
 #include "axiom/optimizer/v2/CostModel.h"
 #include "axiom/optimizer/v2/DPhyp.h"
@@ -657,66 +658,128 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
     });
   }
 
-  // Rebuilds a join that DPhyp does not plan (non-clusterable cross / theta /
-  // decorrelated-subquery joins, and the syntactic-order / uncostable
-  // fallbacks) with its children rewritten, giving it a valid distributed input
-  // combination at numWorkers>1:
-  //   - keyed: co-partition both sides on the join keys (semi/anti
-  //   correctness),
-  //   - keyless with a broadcastable build: broadcast the build (cross /
-  //   theta),
-  //   - keyless, build not broadcastable (right / full): gather both sides.
-  NodeCP rewriteUnclusteredJoin(const Join* node, NoContext& context) {
-    NodeCP newLeft = rewrite(node->left(), context);
-    NodeCP newRight = rewrite(node->right(), context);
-    ExprVector leftKeys{node->leftKeys()};
-    ExprVector rightKeys{node->rightKeys()};
+  // Returns estimated output bytes, or nullopt when no useful cardinality is
+  // available.
+  std::optional<float> estimatedSize(NodeCP node) {
+    const auto& estimate = estimateProvider_.estimate(node);
+    const auto cardinality = estimate.cardinality.has_value()
+        ? estimate.cardinality
+        : estimate.maxCardinality;
+    if (!cardinality.has_value()) {
+      return std::nullopt;
+    }
+    return *cardinality * std::max<float>(1, byteSize(node->outputColumns()));
+  }
+
+  // Chooses the build side of inner, left, and right joins from input sizes,
+  // preferring a known size over an unknown size, then the smaller known size.
+  // A distributed keyless left or right join instead puts its non-preserved
+  // input on the build side so that input can be broadcast.
+  Join::Key chooseBuildSide(Join::Key join) {
+    if (numWorkers_ > 1 && join.leftKeys.empty()) {
+      if (join.joinType == velox::core::JoinType::kLeft) {
+        return join;
+      }
+      if (join.joinType == velox::core::JoinType::kRight) {
+        join.swapInputs();
+        return join;
+      }
+    }
+
+    if (join.joinType != velox::core::JoinType::kInner &&
+        join.joinType != velox::core::JoinType::kLeft &&
+        join.joinType != velox::core::JoinType::kRight) {
+      return join;
+    }
+
+    const auto leftSize = estimatedSize(join.left);
+    const auto rightSize = estimatedSize(join.right);
+    if (leftSize.has_value() &&
+        (!rightSize.has_value() || *leftSize < *rightSize)) {
+      join.swapInputs();
+    }
+    return join;
+  }
+
+  // Returns whether 'node' fits the per-worker broadcast limit.
+  bool broadcastFits(NodeCP node) {
+    return CostModel::broadcastSizeIfFits(
+               estimateProvider_.estimate(node).cardinality,
+               byteSize(node->outputColumns()),
+               options_.broadcastSizeLimit)
+        .has_value();
+  }
+
+  // Rewrites both inputs and copies the join properties.
+  Join::Key rewriteJoinInputs(const Join* node, NoContext& context) {
+    return {
+        .left = rewrite(node->left(), context),
+        .right = rewrite(node->right(), context),
+        .joinType = node->joinType(),
+        .leftKeys = node->leftKeys(),
+        .rightKeys = node->rightKeys(),
+        .filter = node->filter(),
+        .nullAware = node->nullAware(),
+        .nullAsValue = node->nullAsValue(),
+        .outputColumns = node->outputColumns(),
+    };
+  }
+
+  // Adds the exchanges required by a join outside DPhyp and translates it.
+  NodeCP makePhysicalJoin(Join::Key join) {
     if (numWorkers_ > 1) {
-      if (!node->leftKeys().empty()) {
-        // A null-aware anti/semi join (NOT IN / IN) needs the existence side's
-        // null keys on every probe partition. canBroadcastBuild is true exactly
-        // when the right side is the non-preserved (existence) side.
-        const bool nullAware = node->nullAware();
-        const bool rightIsBuild = canBroadcastBuild(node->joinType());
+      if (!join.leftKeys.empty()) {
         // A bucketed side co-locates the join with no full shuffle. Not for
         // null-aware anti/semi: a bucketed existence side confines a null key
         // to one bucket, so it must shuffle-replicate.
-        if (nullAware ||
-            !coBucketJoinSides(newLeft, newRight, leftKeys, rightKeys)) {
-          std::tie(newLeft, leftKeys) = PrecomputeProjections::materializeKeys(
-              newLeft, leftKeys, builder(), simplifier_);
-          std::tie(newRight, rightKeys) =
+        if (join.nullAware ||
+            !coBucketJoinSides(
+                join.left, join.right, join.leftKeys, join.rightKeys)) {
+          std::tie(join.left, join.leftKeys) =
               PrecomputeProjections::materializeKeys(
-                  newRight, rightKeys, builder(), simplifier_);
-          newLeft = partition(newLeft, leftKeys, nullAware && !rightIsBuild);
-          newRight = partition(newRight, rightKeys, nullAware && rightIsBuild);
+                  join.left, join.leftKeys, builder(), simplifier_);
+          std::tie(join.right, join.rightKeys) =
+              PrecomputeProjections::materializeKeys(
+                  join.right, join.rightKeys, builder(), simplifier_);
+          const bool useBroadcast = Join::canBroadcastBuild(join.joinType) &&
+              broadcastFits(join.right);
+          if (useBroadcast) {
+            join.right = broadcast(join.right);
+          } else {
+            // A partitioned null-aware anti/semi join sends null keys from its
+            // existence side to every probe partition.
+            const bool rightIsBuild = Join::canBroadcastBuild(join.joinType);
+            join.left = partition(
+                join.left, join.leftKeys, join.nullAware && !rightIsBuild);
+            join.right = partition(
+                join.right, join.rightKeys, join.nullAware && rightIsBuild);
+          }
         }
-      } else if (canBroadcastBuild(node->joinType())) {
-        newRight = broadcast(newRight);
       } else {
-        newLeft = ensureGathered(newLeft);
-        newRight = ensureGathered(newRight);
+        if (Join::canBroadcastBuild(join.joinType)) {
+          join.right = broadcast(join.right);
+        } else {
+          join.left = ensureGathered(join.left);
+          join.right = ensureGathered(join.right);
+        }
       }
     }
-    return PhysicalJoin::makeJoin(
-        {.left = newLeft,
-         .right = newRight,
-         .joinType = node->joinType(),
-         .leftKeys = leftKeys,
-         .rightKeys = rightKeys,
-         .filter = node->filter(),
-         .nullAware = node->nullAware(),
-         .nullAsValue = node->nullAsValue(),
-         .outputColumns = node->outputColumns()},
-        builder(),
-        simplifier_);
+    return PhysicalJoin::makeJoin(std::move(join), builder(), simplifier_);
+  }
+
+  // Keeps the written join tree while choosing the build side automatically.
+  NodeCP rewriteFallbackJoin(const Join* node, NoContext& context) {
+    return makePhysicalJoin(chooseBuildSide(rewriteJoinInputs(node, context)));
   }
 
   NodeCP rewriteJoin(const Join* node, NoContext& context) override {
-    // Syntactic mode keeps every join in query order: rebuild the subtree
-    // as written, with no clustering or cost-based reordering.
-    if (options_.syntacticJoinOrder || !isClusterable(node)) {
-      return rewriteUnclusteredJoin(node, context);
+    // Syntactic mode keeps every join in query order, including its input
+    // orientation.
+    if (options_.syntacticJoinOrder) {
+      return makePhysicalJoin(rewriteJoinInputs(node, context));
+    }
+    if (!isClusterable(node)) {
+      return rewriteFallbackJoin(node, context);
     }
 
     JoinCluster cluster;
@@ -724,7 +787,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
     ClusterCollector{cluster, /*dissolveCrossJoins=*/true, /*opaqueJoins=*/{}}
         .collect(node, /*preserved=*/true);
     if (cluster.joins.empty()) {
-      return rewriteUnclusteredJoin(node, context);
+      return rewriteFallbackJoin(node, context);
     }
 
     const folly::F14FastSet<const Join*> opaqueJoins =
@@ -737,12 +800,11 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
     }
 
     // A RelationSet holds `kMaxRelations` relations, so a larger cluster has
-    // no hypergraph to enumerate over. Keep this join in query order, as an
-    // exhausted enumeration budget does, and let the recursion re-examine
-    // what is below it: joins come off the top until the rest fits, and that
-    // part is enumerated under the usual budget.
+    // no hypergraph to enumerate over. Keep this join tree and let the
+    // recursion re-examine what is below it: joins come off the top until the
+    // rest fits, and that part is enumerated under the usual budget.
     if (cluster.leaves.size() > RelationSet::kMaxRelations) {
-      return rewriteUnclusteredJoin(node, context);
+      return rewriteFallbackJoin(node, context);
     }
 
     std::vector<NodeCP> rewrittenLeaves;
@@ -822,17 +884,16 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
         options_.broadcastSizeLimit};
     if (components.size() == 1) {
       MemoOpCP root = dphyp.enumerate();
-      // Enumeration found no valid costable plan; keep the cluster in query
-      // order.
+      // Enumeration found no valid costable plan; keep the cluster's tree.
       if (root == nullptr) {
-        return rewriteUnclusteredJoin(node, context);
+        return rewriteFallbackJoin(node, context);
       }
       return JoinTreeEmitter::emit(
           root, graph, node->outputColumns(), builder(), simplifier_);
     }
     const std::vector<MemoOpCP> roots = dphyp.enumerate(components);
     if (roots.empty()) {
-      return rewriteUnclusteredJoin(node, context);
+      return rewriteFallbackJoin(node, context);
     }
     return JoinTreeEmitter::emitComponents(
         roots,
