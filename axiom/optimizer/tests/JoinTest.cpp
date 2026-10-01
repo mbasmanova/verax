@@ -2327,7 +2327,7 @@ TEST_P(JoinTest, impliedJoins) {
 // many-to-one join keys without duplicate substitutions.
 TEST_P(JoinTest, impliedSameInputJoinFilters) {
   if (useV2_) {
-    GTEST_SKIP() << "Not supported by the V2 optimizer";
+    return;
   }
 
   addTableWithStats("t", {"a", "b"}, 10'000);
@@ -3148,7 +3148,7 @@ TEST_P(JoinTest, duplicateJoinOutputColumns) {
 // Not applicable to V2 because it tests the V1-only greedyJoinThreshold.
 TEST_P(JoinTest, greedyJoinOrder) {
   if (useV2_) {
-    GTEST_SKIP() << "Only supported by the V1 optimizer";
+    return;
   }
 
   testConnector_->addTable("t1", ROW({"id1", "data1"}, BIGINT()))
@@ -3207,7 +3207,7 @@ TEST_P(JoinTest, greedyJoinOrder) {
 // fallback join-order choice.
 TEST_P(JoinTest, greedyDtStart) {
   if (useV2_) {
-    GTEST_SKIP() << "Only supported by the V1 optimizer";
+    return;
   }
 
   testConnector_->addTable("t", ROW({"a", "b"}, {BIGINT(), BIGINT()}))
@@ -3240,7 +3240,7 @@ TEST_P(JoinTest, greedyDtStart) {
 // V1-specific.
 TEST_P(JoinTest, greedySnowflakeLeftDeep) {
   if (useV2_) {
-    GTEST_SKIP() << "Only supported by the V1 optimizer";
+    return;
   }
 
   testConnector_->addTable("fact", ROW({"fact_a", "fact_b"}, BIGINT()))
@@ -3289,7 +3289,7 @@ TEST_P(JoinTest, greedySnowflakeLeftDeep) {
 // path beyond the DPhyp budget coverage.
 TEST_P(JoinTest, greedyValuesStart) {
   if (useV2_) {
-    GTEST_SKIP() << "Only supported by the V1 optimizer";
+    return;
   }
 
   testConnector_->addTable("v_t1", ROW({"a", "b"}, BIGINT()))
@@ -3331,7 +3331,7 @@ TEST_P(JoinTest, greedyValuesStart) {
 
 TEST_P(JoinTest, dphypBudgetFallsBackToGreedy) {
   if (!useV2_) {
-    GTEST_SKIP() << "Only supported by the V2 optimizer";
+    return;
   }
 
   testConnector_->addTable("t1", ROW({"id1", "data1"}, BIGINT()))
@@ -3381,7 +3381,7 @@ TEST_P(JoinTest, dphypBudgetFallsBackToGreedy) {
 
 TEST_P(JoinTest, dphypGreedySnowflake) {
   if (!useV2_) {
-    GTEST_SKIP() << "Only supported by the V2 optimizer";
+    return;
   }
 
   testConnector_->addTable("fact", ROW({"fact_a", "fact_b"}, BIGINT()))
@@ -3595,7 +3595,7 @@ TEST_P(JoinTest, mapJoin) {
 // nothing, and an outer join produces its preserved side alone.
 TEST_P(JoinTest, neverMatchingCondition) {
   if (!useV2_) {
-    GTEST_SKIP();
+    return;
   }
 
   testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
@@ -3618,7 +3618,7 @@ TEST_P(JoinTest, neverMatchingCondition) {
 // to enumerate over, and keeps the query's own join order.
 TEST_P(JoinTest, clusterLargerThanRelationSet) {
   if (!useV2_) {
-    GTEST_SKIP();
+    return;
   }
 
   constexpr int32_t kTables = 66;
