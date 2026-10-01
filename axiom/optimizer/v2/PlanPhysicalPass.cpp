@@ -35,6 +35,7 @@
 #include "axiom/optimizer/v2/FallbackJoinPlanner.h"
 #include "axiom/optimizer/v2/HypergraphBuilder.h"
 #include "axiom/optimizer/v2/JoinCluster.h"
+#include "axiom/optimizer/v2/JoinPartitioning.h"
 #include "axiom/optimizer/v2/JoinTreeEmitter.h"
 #include "axiom/optimizer/v2/NodeRewriter.h"
 #include "axiom/optimizer/v2/PhysicalJoin.h"
@@ -728,11 +729,11 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
   NodeCP makePhysicalJoin(Join::Key join) {
     if (numWorkers_ > 1) {
       if (!join.leftKeys.empty()) {
-        // A bucketed side co-locates the join with no full shuffle. Not for
-        // null-aware anti/semi: a bucketed existence side confines a null key
-        // to one bucket, so it must shuffle-replicate.
+        // An already partitioned side can co-locate the join without a full
+        // shuffle. Not for null-aware anti/semi: an existence side confines a
+        // null key to one partition, so it must shuffle-replicate.
         if (join.nullAware ||
-            !coBucketJoinSides(
+            !coPartitionJoinSides(
                 join.left, join.right, join.leftKeys, join.rightKeys)) {
           std::tie(join.left, join.leftKeys) =
               PrecomputeProjections::materializeKeys(
@@ -972,9 +973,8 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
       NodeCP input,
       const ExprVector& keys,
       const connector::PartitionType* targetType) {
-    Partitioning partitioning = Partitioning::globalHash(keys);
-    partitioning.partitionType = targetType;
-    return builder().make<Exchange>({input, std::move(partitioning)});
+    return builder().make<Exchange>(
+        {input, Partitioning::globalConnectorHash(keys, targetType)});
   }
 
   // Follows single-input nodes down to a scan and returns the bucketing its
@@ -994,128 +994,96 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
     return node->as<Scan>()->storageBucketing().partitionType;
   }
 
-  // Where 'node's bucket columns sit in 'keys', or nullopt when it is not
-  // bucketed or a bucket column is not among them. A join pairs leftKeys[i]
-  // with rightKeys[i], so equal positions on both sides mean their bucketings
-  // line up column for column, whatever order the query wrote the keys in.
-  //
-  // A key repeated in 'keys' reports its first position. Since a pair is taken
-  // only when both sides report the same positions, and the join equates the
-  // keys at those positions, the two bucketings still agree value for value;
-  // picking the first of several equal keys can only cost a pairing, never
-  // make a wrong one.
-  static std::optional<std::vector<size_t>> bucketKeyPositions(
-      NodeCP node,
+  // Describes a side partitioned on join keys.
+  struct PartitioningOffer {
+    // Input plan providing the partitioning.
+    NodeCP node;
+
+    // The input's partitioning expressed in join-key positions.
+    JoinPartitioning partitioning;
+  };
+
+  // The side itself when already partitioned on some of 'keys', else a grouped
+  // read of its table by them; nullopt when neither exists. A repeated join key
+  // uses its first position. Two offers match only when both report the same
+  // positions, whose key pairs the join equates. Choosing the first of several
+  // equal keys can miss an optimization but cannot misalign matching rows.
+  std::optional<PartitioningOffer> partitioningOffer(
+      NodeCP side,
       const ExprVector& keys) {
+    NodeCP node = side->physicalProperties().globalPartition.coLocates(keys)
+        ? side
+        : groupedRead(side, keys, Alignment::kCoLocated);
     if (node == nullptr) {
       return std::nullopt;
     }
-    const auto& partition = node->physicalProperties().globalPartition;
-    if (partition.partitionType == nullptr || partition.keys.empty()) {
+    auto partitioning = JoinPartitioning::from(
+        node->physicalProperties().globalPartition, keys);
+    if (!partitioning.has_value()) {
       return std::nullopt;
     }
-    std::vector<size_t> positions;
-    positions.reserve(partition.keys.size());
-    for (ExprCP partitionKey : partition.keys) {
-      const auto it = std::find_if(keys.begin(), keys.end(), [&](ExprCP key) {
-        return key->sameOrEqual(*partitionKey);
-      });
-      if (it == keys.end()) {
-        return std::nullopt;
-      }
-      positions.push_back(it - keys.begin());
-    }
-    return positions;
+    return PartitioningOffer{node, std::move(*partitioning)};
   }
 
-  // The connector bucketing 'node' produces, or null when it has none. A null
-  // 'node' is the ordinary case of a side with no grouped read to offer.
-  static const connector::PartitionType* bucketingAt(NodeCP node) {
-    return node == nullptr
-        ? nullptr
-        : node->physicalProperties().globalPartition.partitionType;
-  }
-
-  // Co-locates a keyed join on the sides' bucketing instead of shuffling both.
-  // A side qualifies when it is already bucketed on its keys or its table can
-  // be read grouped by them. Both qualify and copartition: keep both. One
-  // qualifies: align the other to its connector partitioning. Neither, or two
-  // that do not copartition: returns false and the caller shuffles.
+  // Co-locates a keyed join on an input's existing partitioning. Matching
+  // offers are kept. Otherwise, one offer is kept and the other side is moved
+  // onto it, preferring connector bucketing over plain hash. Returns false only
+  // when neither side is already partitioned or can be read grouped.
   // Updates 'left'/'right' and, where a side is repartitioned to the other's
-  // bucketing, 'leftKeys'/'rightKeys': that shuffle needs column keys, so an
-  // expression key is computed first and the join reads that column.
-  bool coBucketJoinSides(
+  // partitioning, 'leftKeys'/'rightKeys': that shuffle needs column keys, so
+  // an expression key is computed first and the join reads that column.
+  bool coPartitionJoinSides(
       NodeCP& left,
       NodeCP& right,
       ExprVector& leftKeys,
       ExprVector& rightKeys) {
-    // What a side can offer: itself when already bucketed on keys the join
-    // uses, else a grouped read of its table by them, else nothing. Which of
-    // the join's keys, and in what order, is settled below — a side's bucketing
-    // follows its table, not the order the query wrote the join in.
-    const auto offer = [&](NodeCP side, const ExprVector& keys) -> NodeCP {
-      return side->physicalProperties().globalPartition.coLocates(keys)
-          ? side
-          : groupedRead(side, keys, Alignment::kCoLocated);
-    };
-
-    const NodeCP leftOffer = offer(left, leftKeys);
-    const auto leftAt = bucketKeyPositions(leftOffer, leftKeys);
+    const auto leftOffer = partitioningOffer(left, leftKeys);
 
     // Building the right side's offer is wasted when its table's bucketing
     // could not meet the left's anyway.
-    const auto* leftType = bucketingAt(leftOffer);
     const auto* rightStorage = leafStorageBucketing(right);
     // Skip only when the right side's table is known not to meet the left's.
     // A null answer means unknown — its subtree is not a single table — and
     // then it must be built and judged on its own partitioning.
-    const bool worthBuilding = leftType == nullptr || rightStorage == nullptr ||
-        leftType->copartition(*rightStorage) != nullptr;
-    const NodeCP rightOffer = worthBuilding ? offer(right, rightKeys) : nullptr;
-    const auto rightAt = bucketKeyPositions(rightOffer, rightKeys);
-    const auto* rightType = bucketingAt(rightOffer);
+    const bool worthBuilding = !leftOffer.has_value() ||
+        leftOffer->partitioning.partitionType == nullptr ||
+        rightStorage == nullptr ||
+        leftOffer->partitioning.partitionType->copartition(*rightStorage) !=
+            nullptr;
+    const auto rightOffer =
+        worthBuilding ? partitioningOffer(right, rightKeys) : std::nullopt;
 
-    // Repartitions the side that has nothing to offer onto the other's
-    // bucketing, on the keys that correspond to the other's bucket columns.
-    // That shuffle needs column keys, so an expression key is computed first
-    // and the join then reads that column.
+    // Repartitions one side onto an offer using the corresponding join keys.
     const auto alignTo = [&](NodeCP& side,
                              ExprVector& keys,
-                             const std::vector<size_t>& at,
-                             const connector::PartitionType* target) {
-      ExprVector shuffleKeys;
-      shuffleKeys.reserve(at.size());
-      for (const size_t position : at) {
-        shuffleKeys.push_back(keys[position]);
-      }
+                             const PartitioningOffer& offer) {
+      const ExprVector shuffleKeys = offer.partitioning.correspondingKeys(keys);
       auto [keyed, columnKeys] = PrecomputeProjections::materializeKeys(
           side, shuffleKeys, builder(), simplifier_);
-      side = partitionTo(keyed, columnKeys, target);
+      side = offer.partitioning.partitionType == nullptr
+          ? partition(keyed, columnKeys)
+          : partitionTo(keyed, columnKeys, offer.partitioning.partitionType);
     };
 
-    if (leftAt.has_value() && rightAt.has_value()) {
-      // Equal positions mean bucket column i of one side joins bucket column i
-      // of the other; unequal ones would send matching rows to different tasks.
-      // Both sides are kept only when the partitioning they agree on runs at
-      // the width they already run at; otherwise the caller shuffles.
-      const auto* folded = queryCtx()->copartitionedType(leftType, rightType);
-      if (*leftAt != *rightAt || folded == nullptr ||
-          folded->numPartitions() != leftType->numPartitions() ||
-          folded->numPartitions() != rightType->numPartitions()) {
-        return false;
+    if (leftOffer.has_value() && rightOffer.has_value()) {
+      if (leftOffer->partitioning.coPartitionsWith(rightOffer->partitioning)) {
+        left = leftOffer->node;
+        right = rightOffer->node;
+        return true;
       }
-      left = leftOffer;
-      right = rightOffer;
+    }
+    const bool keepLeft = leftOffer.has_value() &&
+        (!rightOffer.has_value() ||
+         leftOffer->partitioning.partitionType != nullptr ||
+         rightOffer->partitioning.partitionType == nullptr);
+    if (keepLeft) {
+      left = leftOffer->node;
+      alignTo(right, rightKeys, *leftOffer);
       return true;
     }
-    if (leftAt.has_value()) {
-      left = leftOffer;
-      alignTo(right, rightKeys, *leftAt, leftType);
-      return true;
-    }
-    if (rightAt.has_value()) {
-      right = rightOffer;
-      alignTo(left, leftKeys, *rightAt, rightType);
+    if (rightOffer.has_value()) {
+      right = rightOffer->node;
+      alignTo(left, leftKeys, *rightOffer);
       return true;
     }
     return false;
@@ -1732,18 +1700,20 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
         // Reading the source by its own bucketing can deliver rows already
         // grouped the way the target is written, which saves the shuffle.
         if (!newInput->physicalProperties()
-                 .globalPartition.isBucketedCompatibleWith(keys, *targetType)) {
+                 .globalPartition.satisfiesWritePartitioning(
+                     keys, *targetType)) {
           if (NodeCP grouped =
                   groupedRead(newInput, keys, Alignment::kExactKeys)) {
             if (grouped->physicalProperties()
-                    .globalPartition.isBucketedCompatibleWith(
+                    .globalPartition.satisfiesWritePartitioning(
                         keys, *targetType)) {
               newInput = grouped;
             }
           }
         }
         if (!newInput->physicalProperties()
-                 .globalPartition.isBucketedCompatibleWith(keys, *targetType)) {
+                 .globalPartition.satisfiesWritePartitioning(
+                     keys, *targetType)) {
           newInput = partitionTo(newInput, keys, targetType);
         }
       }

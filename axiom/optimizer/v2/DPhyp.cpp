@@ -27,6 +27,7 @@
 #include "axiom/optimizer/EstimateMath.h"
 #include "axiom/optimizer/QueryGraph.h"
 #include "axiom/optimizer/v2/CostModel.h"
+#include "axiom/optimizer/v2/JoinPartitioning.h"
 #include "velox/common/base/Exceptions.h"
 
 namespace facebook::axiom::optimizer::v2 {
@@ -62,29 +63,6 @@ bool keepsBothInputs(velox::core::JoinType joinType) {
       joinType == velox::core::JoinType::kLeft ||
       joinType == velox::core::JoinType::kRight ||
       joinType == velox::core::JoinType::kFull;
-}
-
-// Positions in 'keys' of the connector partition keys, or nullopt when the
-// partitioning is absent or is not on a subset of 'keys'.
-std::optional<std::vector<size_t>> keyPositions(
-    MemoOpCP plan,
-    const ExprVector& keys) {
-  if (plan == nullptr) {
-    return std::nullopt;
-  }
-  std::vector<size_t> positions;
-  const auto& partitioning = plan->outputPartitioning();
-  positions.reserve(partitioning.keys.size());
-  for (ExprCP partitionKey : partitioning.keys) {
-    const auto it = std::find_if(keys.begin(), keys.end(), [&](ExprCP key) {
-      return key->sameOrEqual(*partitionKey);
-    });
-    if (it == keys.end()) {
-      return std::nullopt;
-    }
-    positions.push_back(it - keys.begin());
-  }
-  return positions;
 }
 
 // Returns the minimum relation id from each reachable opposite hyperedge side,
@@ -788,22 +766,25 @@ class Enumerator {
       RelationSet cover,
       const ExprVector& keys,
       const connector::PartitionType* targetType) {
-    Partitioning required =
-        Partitioning::globalHash(keysInCoverSchema(keys, cover));
-    required.partitionType = targetType;
-    return bestOnPartitioning(cover, std::move(required));
+    return bestOnPartitioning(
+        cover,
+        Partitioning::globalConnectorHash(
+            keysInCoverSchema(keys, cover), targetType));
   }
 
-  // Cheapest plan for `cover` already connector-bucketed on a non-empty
-  // subset of `keys`, or null when `cover` is unmemoized or has no such plan.
-  MemoOpCP bucketedOn(RelationSet cover, const ExprVector& keys) {
+  // Plans for `cover` partitioned on a subset of `keys`. May add a grouped
+  // scan when the memo has no connector-bucketed alternative.
+  PlanSet::PartitioningAlternatives partitioningsOn(
+      RelationSet cover,
+      const ExprVector& keys) {
     const auto it = memo_.find(cover);
     if (it == memo_.end()) {
-      return nullptr;
+      return {};
     }
     const ExprVector coverKeys = keysInCoverSchema(keys, cover);
-    if (MemoOpCP bucketed = it->second.bestBucketedOnSubset(coverKeys)) {
-      return bucketed;
+    auto alternatives = it->second.partitioningsOnSubsets(coverKeys);
+    if (!alternatives.connectorBucketed.empty()) {
+      return alternatives;
     }
 
     // Nothing in the memo is bucketed on these keys, but a single relation
@@ -814,16 +795,16 @@ class Enumerator {
     // bucketed side, so this is never reached with one worker.
     VELOX_DCHECK_GT(numWorkers_, 1);
     if (cover.size() != 1) {
-      return nullptr;
+      return alternatives;
     }
     const int32_t relationId = cover.min();
     const NodeCP node = graph_.relation(relationId).node();
     if (!node->is(NodeType::kScan)) {
-      return nullptr;
+      return alternatives;
     }
     Partitioning storageBucketing = node->as<Scan>()->storageBucketing();
     if (!storageBucketing.coLocates(coverKeys)) {
-      return nullptr;
+      return alternatives;
     }
     // Coarsened to the worker count, like every other grouped read: the memo
     // costs and compares the read the plan will actually run.
@@ -836,7 +817,7 @@ class Enumerator {
     it->second.addPlan(std::move(grouped), graph_, costModel_);
     // Read back rather than keeping the pointer: addPlan drops a plan an
     // existing one dominates, and enumeration asks for this cover repeatedly.
-    return it->second.bestBucketedOnSubset(coverKeys);
+    return it->second.partitioningsOnSubsets(coverKeys);
   }
 
   // Tasks in the stage whose rows are 'partitioning': a bucketed stage runs one
@@ -986,11 +967,103 @@ class Enumerator {
     memo_[combined].addPlan(std::move(candidate), graph_, costModel_);
   }
 
-  // Adds join candidates that avoid shuffling the bucketed side(s): both sides
-  // co-located when both are bucketed, or the unbucketed side repartitioned to
-  // the bucketed side's connector partitioning. When the join has a preserved
-  // side, the output keeps that side's keys and the compatible bucket type.
-  void addCoBucketedCandidate(
+  // Adds a distributed candidate and derives the partitioning its join
+  // exposes from its enforced children.
+  void addDistributedJoinCandidate(
+      MemoOpCP left,
+      MemoOpCP right,
+      size_t edgeIndex,
+      velox::core::JoinType joinType,
+      RelationSet combined,
+      bool reversedAnti,
+      const std::vector<size_t>& keyEdges,
+      const std::vector<size_t>& filterEdges,
+      const ExprVector& leftKeys,
+      const ExprVector& rightKeys) {
+    addJoinCandidate(
+        left,
+        right,
+        edgeIndex,
+        joinType,
+        combined,
+        reversedAnti,
+        keyEdges,
+        filterEdges,
+        candidateOutputPartitioning(
+            left,
+            right,
+            joinType,
+            reversedAnti,
+            leftKeys,
+            rightKeys,
+            combined));
+  }
+
+  // Memo plan and the positions of its partition keys among the join keys.
+  struct MemoPartitioningOffer {
+    // Memo plan providing the partitioning.
+    MemoOpCP plan;
+
+    // The plan's partitioning expressed in join-key positions.
+    JoinPartitioning partitioning;
+  };
+
+  // Cheapest memo offers for each distinct reusable partitioning.
+  struct MemoPartitioningOffers {
+    // Cheapest plan for each reusable standard-hash partitioning.
+    std::vector<MemoPartitioningOffer> hash;
+
+    // Cheapest plan for each reusable connector partitioning.
+    std::vector<MemoPartitioningOffer> connector;
+
+    bool empty() const {
+      return hash.empty() && connector.empty();
+    }
+  };
+
+  // Collects the distinct partitionings that can be retained for this join
+  // side. Multiple memo plans with the same partitioning contribute only the
+  // cheapest offer.
+  MemoPartitioningOffers partitioningOffers(
+      MemoOpCP plan,
+      const ExprVector& keys) {
+    const auto alternatives = partitioningsOn(plan->cover(), keys);
+    const ExprVector coverKeys = keysInCoverSchema(keys, plan->cover());
+    const auto makeOffers = [&](const std::vector<MemoOpCP>& plans) {
+      std::vector<MemoPartitioningOffer> result;
+      result.reserve(plans.size());
+      for (MemoOpCP candidate : plans) {
+        auto partitioning =
+            JoinPartitioning::from(candidate->outputPartitioning(), coverKeys);
+        VELOX_CHECK(
+            partitioning.has_value(),
+            "A reusable partitioning must map to the join keys");
+        const auto same =
+            std::find_if(result.begin(), result.end(), [&](const auto& offer) {
+              return offer.partitioning.keyPositions ==
+                  partitioning->keyPositions &&
+                  offer.partitioning.partitionType ==
+                  partitioning->partitionType;
+            });
+        if (same == result.end()) {
+          result.push_back({candidate, std::move(*partitioning)});
+        } else if (*candidate->cost.cost < *same->plan->cost.cost) {
+          *same = {candidate, std::move(*partitioning)};
+        }
+      }
+      return result;
+    };
+    return {
+        makeOffers(alternatives.standardHash),
+        makeOffers(alternatives.connectorBucketed),
+    };
+  }
+
+  // Adds candidates that retain a side's compatible partitioning and align
+  // only the other side. Hash offers cover a subset or permutation of the join
+  // keys; connector offers additionally require compatible bucket functions
+  // and widths before both can be kept.
+  void addCoPartitionedCandidate(
       MemoOpCP left,
       MemoOpCP right,
       const ExprVector& leftKeys,
@@ -1000,20 +1073,15 @@ class Enumerator {
       RelationSet combined,
       bool reversedAnti,
       const std::vector<size_t>& keyEdges,
-      const std::vector<size_t>& filterEdges) {
-    MemoOpCP leftBucketed = bucketedOn(left->cover(), leftKeys);
-    MemoOpCP rightBucketed = bucketedOn(right->cover(), rightKeys);
-    if (leftBucketed == nullptr && rightBucketed == nullptr) {
+      const std::vector<size_t>& filterEdges,
+      const std::vector<MemoPartitioningOffer>& leftOffers,
+      const std::vector<MemoPartitioningOffer>& rightOffers) {
+    if (leftOffers.empty() && rightOffers.empty()) {
       return;
     }
 
-    const auto leftAt =
-        keyPositions(leftBucketed, keysInCoverSchema(leftKeys, left->cover()));
-    const auto rightAt = keyPositions(
-        rightBucketed, keysInCoverSchema(rightKeys, right->cover()));
-
     const auto add = [&](MemoOpCP leftChild, MemoOpCP rightChild) {
-      addJoinCandidate(
+      addDistributedJoinCandidate(
           leftChild,
           rightChild,
           edgeIndex,
@@ -1022,63 +1090,39 @@ class Enumerator {
           reversedAnti,
           keyEdges,
           filterEdges,
-          candidateOutputPartitioning(
-              leftChild,
-              rightChild,
-              joinType,
-              reversedAnti,
-              leftKeys,
-              rightKeys,
-              combined));
+          leftKeys,
+          rightKeys);
     };
 
-    if (leftBucketed != nullptr && rightBucketed != nullptr) {
-      if (leftAt.has_value() && leftAt == rightAt) {
-        const auto* leftType = leftBucketed->outputPartitioning().partitionType;
-        const auto* rightType =
-            rightBucketed->outputPartitioning().partitionType;
-        const auto* folded = queryCtx()->copartitionedType(leftType, rightType);
-        // Both sides are kept only when the partitioning they agree on runs at
-        // the width they already run at. Otherwise one side is repartitioned
-        // onto the other's grid below, which rebuilds it at that width.
-        if (folded != nullptr &&
-            folded->numPartitions() == leftType->numPartitions() &&
-            folded->numPartitions() == rightType->numPartitions()) {
-          add(leftBucketed, rightBucketed);
-          return;
+    for (const auto& leftOffer : leftOffers) {
+      for (const auto& rightOffer : rightOffers) {
+        if (leftOffer.partitioning.coPartitionsWith(rightOffer.partitioning)) {
+          add(leftOffer.plan, rightOffer.plan);
         }
       }
-      // Otherwise, try each one-sided candidate.
     }
 
-    if (leftBucketed != nullptr) {
-      VELOX_DCHECK(leftAt.has_value());
-      ExprVector alignedRightKeys;
-      alignedRightKeys.reserve(leftAt->size());
-      for (const size_t position : *leftAt) {
-        alignedRightKeys.push_back(rightKeys[position]);
+    const auto addAligned = [&](bool keepLeft,
+                                const MemoPartitioningOffer& keptOffer) {
+      const ExprVector& movedKeys = keepLeft ? rightKeys : leftKeys;
+      const ExprVector alignedKeys =
+          keptOffer.partitioning.correspondingKeys(movedKeys);
+      const RelationSet movedCover = keepLeft ? right->cover() : left->cover();
+      const auto* partitionType =
+          keptOffer.plan->outputPartitioning().partitionType;
+      MemoOpCP aligned = partitionType == nullptr
+          ? repartitioned(movedCover, alignedKeys, false)
+          : repartitionedTo(movedCover, alignedKeys, partitionType);
+      if (aligned != nullptr) {
+        add(keepLeft ? keptOffer.plan : aligned,
+            keepLeft ? aligned : keptOffer.plan);
       }
-      const auto* leftType = leftBucketed->outputPartitioning().partitionType;
-      MemoOpCP rightAligned =
-          repartitionedTo(right->cover(), alignedRightKeys, leftType);
-      if (rightAligned != nullptr) {
-        add(leftBucketed, rightAligned);
-      }
+    };
+    for (const auto& leftOffer : leftOffers) {
+      addAligned(true, leftOffer);
     }
-
-    if (rightBucketed != nullptr) {
-      VELOX_DCHECK(rightAt.has_value());
-      ExprVector alignedLeftKeys;
-      alignedLeftKeys.reserve(rightAt->size());
-      for (const size_t position : *rightAt) {
-        alignedLeftKeys.push_back(leftKeys[position]);
-      }
-      const auto* rightType = rightBucketed->outputPartitioning().partitionType;
-      MemoOpCP leftAligned =
-          repartitionedTo(left->cover(), alignedLeftKeys, rightType);
-      if (leftAligned != nullptr) {
-        add(leftAligned, rightBucketed);
-      }
+    for (const auto& rightOffer : rightOffers) {
+      addAligned(false, rightOffer);
     }
   }
 
@@ -1114,7 +1158,7 @@ class Enumerator {
     // which would shuffle two single-task inputs apart; cost decides.
     if (left->outputPartitioning().is(PartitionKind::kGather) &&
         right->outputPartitioning().is(PartitionKind::kGather)) {
-      addJoinCandidate(
+      addDistributedJoinCandidate(
           left,
           right,
           edgeIndex,
@@ -1123,14 +1167,8 @@ class Enumerator {
           reversedAnti,
           keyEdges,
           filterEdges,
-          candidateOutputPartitioning(
-              left,
-              right,
-              joinType,
-              reversedAnti,
-              leftKeys,
-              rightKeys,
-              combined));
+          leftKeys,
+          rightKeys);
     }
 
     if (!leftKeys.empty()) {
@@ -1141,16 +1179,11 @@ class Enumerator {
       // keys on every probe partition; the existence side is the edge's right
       // operand, which may be either physical child depending on orientation.
       const auto& edge = graph_.edges()[edgeIndex];
-      const bool existenceOnLeft =
-          edge.nullAware() && edge.rightEligibility().isSubset(left->cover());
-      const bool existenceOnRight =
-          edge.nullAware() && edge.rightEligibility().isSubset(right->cover());
-      MemoOpCP leftPart =
-          repartitioned(left->cover(), leftKeys, existenceOnLeft);
-      MemoOpCP rightPart =
-          repartitioned(right->cover(), rightKeys, existenceOnRight);
-      if (leftPart != nullptr && rightPart != nullptr) {
-        addJoinCandidate(
+      const auto addPartitioned = [&](MemoOpCP leftPart, MemoOpCP rightPart) {
+        if (leftPart == nullptr || rightPart == nullptr) {
+          return;
+        }
+        addDistributedJoinCandidate(
             leftPart,
             rightPart,
             edgeIndex,
@@ -1159,21 +1192,25 @@ class Enumerator {
             reversedAnti,
             keyEdges,
             filterEdges,
-            candidateOutputPartitioning(
-                leftPart,
-                rightPart,
-                joinType,
-                reversedAnti,
-                leftKeys,
-                rightKeys,
-                combined));
-      }
-
-      // Skipped for null-aware anti/semi: a connector-bucketed existence side
-      // confines a null key to one bucket, so probe rows in other buckets would
-      // miss it — those need the replicating shuffle or broadcast strategies.
-      if (!edge.nullAware()) {
-        addCoBucketedCandidate(
+            leftKeys,
+            rightKeys);
+      };
+      if (edge.nullAware()) {
+        // Reusing connector bucketing would confine an existence-side null to
+        // one bucket, so probe rows in other buckets would miss it.
+        const bool existenceOnLeft =
+            edge.rightEligibility().isSubset(left->cover());
+        const bool existenceOnRight =
+            edge.rightEligibility().isSubset(right->cover());
+        MemoOpCP leftPart =
+            repartitioned(left->cover(), leftKeys, existenceOnLeft);
+        MemoOpCP rightPart =
+            repartitioned(right->cover(), rightKeys, existenceOnRight);
+        addPartitioned(leftPart, rightPart);
+      } else {
+        const auto leftOffers = partitioningOffers(left, leftKeys);
+        const auto rightOffers = partitioningOffers(right, rightKeys);
+        addCoPartitionedCandidate(
             left,
             right,
             leftKeys,
@@ -1183,7 +1220,33 @@ class Enumerator {
             combined,
             reversedAnti,
             keyEdges,
-            filterEdges);
+            filterEdges,
+            leftOffers.hash,
+            rightOffers.hash);
+        addCoPartitionedCandidate(
+            left,
+            right,
+            leftKeys,
+            rightKeys,
+            edgeIndex,
+            joinType,
+            combined,
+            reversedAnti,
+            keyEdges,
+            filterEdges,
+            leftOffers.connector,
+            rightOffers.connector);
+
+        // Under the current cost model, retaining an offer cannot cost more
+        // than shuffling that side, while the other side pays the same shuffle
+        // in either candidate.
+        // TODO: Restore the shuffle-both candidate when costing accounts for
+        // skew from reusing a subset of the join keys.
+        if (leftOffers.empty() && rightOffers.empty()) {
+          MemoOpCP leftPart = repartitioned(left->cover(), leftKeys, false);
+          MemoOpCP rightPart = repartitioned(right->cover(), rightKeys, false);
+          addPartitioned(leftPart, rightPart);
+        }
       }
     }
 
@@ -1196,7 +1259,7 @@ class Enumerator {
       MemoOpCP broadcastBuild =
           broadcastChild(right->cover(), left->outputPartitioning());
       if (broadcastBuild != nullptr) {
-        addJoinCandidate(
+        addDistributedJoinCandidate(
             left,
             broadcastBuild,
             edgeIndex,
@@ -1205,14 +1268,8 @@ class Enumerator {
             reversedAnti,
             keyEdges,
             filterEdges,
-            candidateOutputPartitioning(
-                left,
-                broadcastBuild,
-                joinType,
-                reversedAnti,
-                leftKeys,
-                rightKeys,
-                combined));
+            leftKeys,
+            rightKeys);
       }
     }
   }

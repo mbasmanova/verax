@@ -1473,6 +1473,223 @@ TEST_P(JoinTest, rightJoinPartitioning) {
           .build());
 }
 
+TEST_P(JoinTest, joinKeepsPartitioningOffer) {
+  addTableWithStats("t", {"a", "b"}, 10'000);
+  addTableWithStats("u", {"x"}, 100);
+  addTableWithStats("v", {"k", "l"}, 10);
+  optimizerOptions_.broadcastSizeLimit = 1;
+
+  const auto query =
+      "SELECT * FROM t LEFT JOIN u ON a = x "
+      "LEFT JOIN v ON a = k AND b = l";
+  const auto logicalPlan = parseSelect(query, kTestConnectorId);
+
+  AXIOM_ASSERT_PLAN_V2(
+      toSingleNodePlan(logicalPlan),
+      matchScan("t")
+          .hashJoinLeft(matchScan("u"), {.keys = {{"a = x"}}})
+          .hashJoinLeft(matchScan("v"), {.keys = {{"a = k", "b = l"}}})
+          .build());
+
+  // The first join offers hash(a) to the wider parent join. Keeping it and
+  // shuffling only v on k dominates shuffling both sides on (a, b) and (k, l)
+  // under the current cost model.
+  AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
+      planVelox(logicalPlan).plan,
+      matchScan("t")
+          .shuffle({"a"})
+          .hashJoinLeft(matchScan("u").shuffle({"x"}), {.keys = {{"a = x"}}})
+          .hashJoinLeft(
+              matchScan("v").shuffle({"k"}), {.keys = {{"a = k", "b = l"}}})
+          .gather()
+          .build());
+}
+
+TEST_P(JoinTest, joinReusesSubsetPartitioning) {
+  addTableWithStats("t", {"a", "b"}, 10'000);
+  addTableWithStats("u", {"x"}, 100);
+  addTableWithStats("v", {"k", "l"}, 10);
+  addTableWithStats("w", {"m"}, 5);
+  optimizerOptions_.broadcastSizeLimit = 1;
+
+  // DPhyp reuses partitioning from either side of a wider join. These LEFT
+  // joins form one costable cluster; the fallback planner is not involved.
+
+  {
+    const auto query =
+        "SELECT t.a FROM (t LEFT JOIN u ON a = x) "
+        "LEFT JOIN (v LEFT JOIN w ON k = m) ON a = k AND b = l";
+    SCOPED_TRACE(query);
+    const auto logicalPlan = parseSelect(query, kTestConnectorId);
+
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(logicalPlan),
+        matchScan("t")
+            .hashJoinLeft(matchScan("u"), {.keys = {{"a = x"}}})
+            .hashJoinLeft(
+                matchScan("v").hashJoinLeft(
+                    matchScan("w"), {.keys = {{"k = m"}}}),
+                {.keys = {{"a = k", "b = l"}}})
+            .build());
+
+    AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
+        planVelox(logicalPlan).plan,
+        matchScan("t")
+            .shuffle({"a"})
+            .hashJoinLeft(matchScan("u").shuffle({"x"}), {.keys = {{"a = x"}}})
+            .hashJoinLeft(
+                matchScan("v").shuffle({"k"}).hashJoinLeft(
+                    matchScan("w").shuffle({"m"}), {.keys = {{"k = m"}}}),
+                {.keys = {{"a = k", "b = l"}}})
+            .gather()
+            .build());
+  }
+
+  {
+    const auto query =
+        "SELECT t.a FROM (t LEFT JOIN u ON a = x) "
+        "LEFT JOIN (v LEFT JOIN w ON l = m) ON a = k AND b = l";
+    SCOPED_TRACE(query);
+    const auto logicalPlan = parseSelect(query, kTestConnectorId);
+
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(logicalPlan),
+        matchScan("t")
+            .hashJoinLeft(matchScan("u"), {.keys = {{"a = x"}}})
+            .hashJoinLeft(
+                matchScan("v").hashJoinLeft(
+                    matchScan("w"), {.keys = {{"l = m"}}}),
+                {.keys = {{"a = k", "b = l"}}})
+            .build());
+
+    AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
+        planVelox(logicalPlan).plan,
+        matchScan("t")
+            .shuffle({"a"})
+            .hashJoinLeft(matchScan("u").shuffle({"x"}), {.keys = {{"a = x"}}})
+            .hashJoinLeft(
+                matchScan("v")
+                    .shuffle({"l"})
+                    .hashJoinLeft(
+                        matchScan("w").shuffle({"m"}), {.keys = {{"l = m"}}})
+                    .shuffle({"k"}),
+                {.keys = {{"a = k", "b = l"}}})
+            .gather()
+            .build());
+  }
+}
+
+TEST_P(JoinTest, nullAwareJoinUsesReplicatingShuffle) {
+  addTableWithStats("t", {"a"}, 10'000);
+  addTableWithStats("u", {"x"}, 1'000);
+  addTableWithStats("v", {"k"}, 100);
+  optimizerOptions_.broadcastSizeLimit = 1;
+
+  const auto query =
+      "SELECT t.a FROM (t JOIN u ON a = x) "
+      "WHERE a NOT IN (SELECT k FROM v)";
+  const auto logicalPlan = parseSelect(query, kTestConnectorId);
+
+  AXIOM_ASSERT_PLAN_V2(
+      toSingleNodePlan(logicalPlan),
+      matchScan("t")
+          .hashJoinInner(matchScan("u"), {.keys = {{"a = x"}}})
+          .hashJoinAnti(
+              matchScan("v"), {.nullAware = true, .keys = {{"a = k"}}})
+          .build());
+
+  // The ordinary join already produces hash(a), but the null-aware join still
+  // repartitions its existence side with null replication.
+  AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
+      planVelox(logicalPlan).plan,
+      matchScan("t")
+          .shuffle({"a"})
+          .hashJoinInner(matchScan("u").shuffle({"x"}), {.keys = {{"a = x"}}})
+          .hashJoinAnti(
+              matchScan("v").shuffle({"k"}, /*replicateNullsAndAny=*/true),
+              {.nullAware = true, .keys = {{"a = k"}}})
+          .gather()
+          .build());
+}
+
+TEST_P(JoinTest, syntacticJoinAlignsPartitioning) {
+  addTableWithStats("sp_t", {"a", "p"}, 10'000);
+  addTableWithStats("sp_u", {"b"}, 1'000);
+  addTableWithStats("sp_v", {"c", "q"}, 100);
+  addTableWithStats("sp_x", {"d"}, 10);
+  optimizerOptions_.syntacticJoinOrder = true;
+  optimizerOptions_.broadcastSizeLimit = 0;
+
+  // Syntactic planning aligns one side to the other's reusable subset or
+  // permutation of the parent join keys.
+  {
+    const auto query =
+        "SELECT sp_t.a "
+        "FROM (sp_t JOIN sp_u ON a = b) "
+        "JOIN (sp_v JOIN sp_x ON c = d) ON a = c";
+    SCOPED_TRACE(query);
+    const auto logicalPlan = parseSelect(query, kTestConnectorId);
+
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(logicalPlan),
+        matchScan("sp_t")
+            .hashJoinInner(matchScan("sp_u"), {.keys = {{"a = b"}}})
+            .hashJoinInner(
+                matchScan("sp_v").hashJoinInner(
+                    matchScan("sp_x"), {.keys = {{"c = d"}}}),
+                {.keys = {{"a = c"}}})
+            .build());
+
+    AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
+        planVelox(logicalPlan).plan,
+        matchScan("sp_t")
+            .shuffle({"a"})
+            .hashJoinInner(
+                matchScan("sp_u").shuffle({"b"}), {.keys = {{"a = b"}}})
+            .hashJoinInner(
+                matchScan("sp_v").shuffle({"c"}).hashJoinInner(
+                    matchScan("sp_x").shuffle({"d"}), {.keys = {{"c = d"}}}),
+                {.keys = {{"a = c"}}})
+            .gather()
+            .build());
+  }
+
+  {
+    const auto query =
+        "SELECT sp_t.a "
+        "FROM (sp_t JOIN sp_u ON a = b) "
+        "JOIN (sp_v JOIN sp_x ON q = d) ON a = c AND p = q";
+    SCOPED_TRACE(query);
+    const auto logicalPlan = parseSelect(query, kTestConnectorId);
+
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(logicalPlan),
+        matchScan("sp_t")
+            .hashJoinInner(matchScan("sp_u"), {.keys = {{"a = b"}}})
+            .hashJoinInner(
+                matchScan("sp_v").hashJoinInner(
+                    matchScan("sp_x"), {.keys = {{"q = d"}}}),
+                {.keys = {{"a = c", "p = q"}}})
+            .build());
+
+    AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
+        planVelox(logicalPlan).plan,
+        matchScan("sp_t")
+            .shuffle({"a"})
+            .hashJoinInner(
+                matchScan("sp_u").shuffle({"b"}), {.keys = {{"a = b"}}})
+            .hashJoinInner(
+                matchScan("sp_v")
+                    .shuffle({"q"})
+                    .hashJoinInner(
+                        matchScan("sp_x").shuffle({"d"}), {.keys = {{"q = d"}}})
+                    .shuffle({"c"}),
+                {.keys = {{"a = c", "p = q"}}})
+            .gather()
+            .build());
+  }
+}
+
 TEST_P(JoinTest, fullJoinPartitioning) {
   // The key names sort opposite their creation order, so producer and consumer
   // canonicalization must still agree.
