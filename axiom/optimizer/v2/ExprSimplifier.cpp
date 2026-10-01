@@ -299,12 +299,84 @@ ExprCP ExprSimplifier::simplify(ExprCP expr) {
     const auto* lambda = expr->as<Lambda>();
     ExprCP body = simplify(lambda->body());
     if (body != lambda->body()) {
-      expr = make<Lambda>(lambda->args(), lambda->value().type, body);
+      expr = ExprFactory(builder_).rebuildLambda(lambda, body);
     }
   }
   expr = tryFoldConjunct(tryFoldConstant(expr));
   simplified_.emplace(original, expr);
   return expr;
+}
+
+bool ExprSimplifier::isKnownNonNull(
+    ExprCP expr,
+    const PlanObjectSet& nonNullColumns) const {
+  if (expr->is(PlanType::kColumnExpr)) {
+    return nonNullColumns.contains(expr);
+  }
+  if (expr->is(PlanType::kLiteralExpr)) {
+    return !expr->as<Literal>()->literal().isNull();
+  }
+  if (expr->is(PlanType::kCallExpr) &&
+      expr->as<Call>()->name() == SpecialFormCallNames::kCoalesce) {
+    return std::ranges::any_of(expr->as<Call>()->args(), [&](ExprCP argument) {
+      return isKnownNonNull(argument, nonNullColumns);
+    });
+  }
+  return false;
+}
+
+ExprCP ExprSimplifier::simplify(
+    ExprCP expr,
+    const PlanObjectSet& nonNullColumns) const {
+  if (expr->is(PlanType::kFieldExpr)) {
+    const auto* field = expr->as<Field>();
+    const auto* base = simplify(field->base(), nonNullColumns);
+    return base == field->base()
+        ? expr
+        : ExprFactory(builder_).rebuildField(field, base);
+  }
+  if (expr->is(PlanType::kLambdaExpr)) {
+    const auto* lambda = expr->as<Lambda>();
+    const auto* body = simplify(lambda->body(), nonNullColumns);
+    return body == lambda->body()
+        ? expr
+        : ExprFactory(builder_).rebuildLambda(lambda, body);
+  }
+  if (expr->isNot(PlanType::kCallExpr)) {
+    return expr;
+  }
+
+  const auto* call = expr->as<Call>();
+  ExprVector rewrittenArgs;
+  bool changed = false;
+  const bool isCoalesce = call->name() == SpecialFormCallNames::kCoalesce;
+  for (size_t i = 0; i < call->args().size(); ++i) {
+    ExprCP argument = call->args()[i];
+    const auto* simplified = simplify(argument, nonNullColumns);
+    if (simplified != argument && !changed) {
+      changed = true;
+      rewrittenArgs.reserve(call->args().size());
+      rewrittenArgs.insert(
+          rewrittenArgs.end(), call->args().begin(), call->args().begin() + i);
+    }
+    if (changed) {
+      rewrittenArgs.push_back(simplified);
+    }
+    if (isCoalesce && isKnownNonNull(simplified, nonNullColumns)) {
+      if (i == 0) {
+        return simplified;
+      }
+      if (i + 1 < call->args().size() && !changed) {
+        changed = true;
+        rewrittenArgs.assign(
+            call->args().begin(), call->args().begin() + i + 1);
+      }
+      break;
+    }
+  }
+  return changed
+      ? ExprFactory(builder_).rebuildCall(call, std::move(rewrittenArgs))
+      : expr;
 }
 
 ExprCP ExprSimplifier::tryFoldConjunct(ExprCP expr) {
