@@ -89,6 +89,13 @@ AXIOM_DECLARE_ENUM_NAME(PartitionKind);
 ///     below the shuffle and read as a column above it (see
 ///     `PrecomputeProjections::materializeKeys`).
 struct Partitioning {
+  /// A partition function shared by compatible partitionings. A null
+  /// `connectorType` denotes standard hash partitioning.
+  struct CommonType {
+    /// Connector partition function, or null for standard hash.
+    const connector::PartitionType* connectorType;
+  };
+
   PartitionKind kind{PartitionKind::kUnspecified};
 
   /// Connector-specific partition function, or null for standard Velox hash.
@@ -138,6 +145,25 @@ struct Partitioning {
       const ExprVector& keys,
       bool replicateNullsAndAny = false);
 
+  /// A global hash partitioning on `keys` using a connector partition
+  /// function.
+  static Partitioning globalConnectorHash(
+      const ExprVector& keys,
+      const connector::PartitionType* partitionType);
+
+  /// Returns the partition function a union of `left` and `right` retains, or
+  /// nullopt when the inputs cannot share a partitioning. The result may use a
+  /// coarser width than either input.
+  static std::optional<CommonType> commonUnionPartitionType(
+      const connector::PartitionType* left,
+      const connector::PartitionType* right);
+
+  /// Returns the partition function two join inputs share at their current
+  /// widths, or nullopt when keeping both inputs would not co-partition them.
+  static std::optional<CommonType> commonJoinPartitionType(
+      const connector::PartitionType* left,
+      const connector::PartitionType* right);
+
   /// A global gather (all rows on one task) partitioning.
   static Partitioning globalGather();
 
@@ -173,12 +199,18 @@ struct Partitioning {
   bool isBucketedOn(const ExprVector& otherKeys) const;
 
   /// True when this is bucketed on `otherKeys` (see `isBucketedOn`) with a
-  /// partitioning that copartitions with `targetType` at this bucketing's own
-  /// partition count — i.e. its rows already reach a `targetType`-bucketed
-  /// consumer or write target with no reshuffle.
-  bool isBucketedCompatibleWith(
+  /// partitioning whose rows can be written to an equal or finer `targetType`
+  /// with exactly one writer per target bucket.
+  bool satisfiesWritePartitioning(
       const ExprVector& otherKeys,
       const connector::PartitionType& targetType) const;
+
+ private:
+  /// Returns the cached partition function shared by `left` and `right`, or
+  /// nullopt when they cannot be paired.
+  static std::optional<CommonType> commonPartitionType(
+      const connector::PartitionType* left,
+      const connector::PartitionType* right);
 };
 
 /// Kind of a per-driver local property.

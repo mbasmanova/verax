@@ -67,6 +67,15 @@ class PlanSet {
     Cost cost;
   };
 
+  /// Reusable partitioned plans classified by partition-function family.
+  struct PartitioningAlternatives {
+    /// Connector-bucketed plans on subsets or permutations of the keys.
+    std::vector<MemoOpCP> connectorBucketed;
+
+    /// Standard-hash plans on subsets or permutations of the keys.
+    std::vector<MemoOpCP> standardHash;
+  };
+
   /// Inserts `candidate`, keeping the set non-dominated: drops `candidate` if
   /// an existing plan dominates it (cheaper even after a shuffle to convert
   /// into `candidate`'s partitioning), and drops any existing plan `candidate`
@@ -89,10 +98,10 @@ class PlanSet {
   /// Cheapest plan regardless of partitioning, or nullptr when empty.
   MemoOpCP cheapest() const;
 
-  /// Cheapest connector-bucketed plan whose partition keys are a non-empty
-  /// subset of 'keys', or nullptr when none. Callers aligning two inputs must
-  /// verify that their partition keys map to corresponding key positions.
-  MemoOpCP bestBucketedOnSubset(const ExprVector& keys) const;
+  /// Plans partitioned on a non-empty subset or permutation of 'keys', grouped
+  /// by connector bucketing versus standard hash. Null-replicating plans cannot
+  /// be reused by an ordinary join.
+  PartitioningAlternatives partitioningsOnSubsets(const ExprVector& keys) const;
 
   /// Output cardinality of this relation set — a relation-set fact, identical
   /// across the set's plans. nullopt when empty or unknown.

@@ -1373,18 +1373,12 @@ Partitioning unionGlobalPartition(const UnionAll::Key& key) {
         return {};
       }
     }
-    if (representative == nullptr || part.partitionType == nullptr) {
-      // Standard hash is compatible only with standard hash.
-      if (representative != part.partitionType) {
-        return {};
-      }
-    } else {
-      auto compatible = representative->copartition(*part.partitionType);
-      if (compatible == nullptr) {
-        return {};
-      }
-      representative = queryCtx()->registerPartitionType(std::move(compatible));
+    const auto common = Partitioning::commonUnionPartitionType(
+        representative, part.partitionType);
+    if (!common.has_value()) {
+      return {};
     }
+    representative = common->connectorType;
   }
   return Partitioning{
       .kind = PartitionKind::kPartitioned,
@@ -1680,18 +1674,10 @@ Partitioning fullJoinPartitioning(
       leftPartitioning.keys.size() != rightPartitioning.keys.size()) {
     return {};
   }
-  // A connector-bucketed side and a standard-hash side are not co-located.
-  if ((leftPartitioning.partitionType == nullptr) !=
-      (rightPartitioning.partitionType == nullptr)) {
+  const auto partitionType = Partitioning::commonJoinPartitionType(
+      leftPartitioning.partitionType, rightPartitioning.partitionType);
+  if (!partitionType.has_value()) {
     return {};
-  }
-  const connector::PartitionType* partitionType{nullptr};
-  if (leftPartitioning.partitionType != nullptr) {
-    partitionType = queryCtx()->copartitionedType(
-        leftPartitioning.partitionType, rightPartitioning.partitionType);
-    if (partitionType == nullptr) {
-      return {};
-    }
   }
 
   ExprVector keys;
@@ -1727,7 +1713,7 @@ Partitioning fullJoinPartitioning(
   }
 
   Partitioning result = Partitioning::globalHash(keys);
-  result.partitionType = partitionType;
+  result.partitionType = partitionType->connectorType;
   return result;
 }
 
@@ -1776,11 +1762,12 @@ Partitioning Join::outputPartitioning(
   }
 
   if (output.partitionType != nullptr && other.partitionType != nullptr) {
-    output.partitionType = queryCtx()->copartitionedType(
+    const auto commonType = Partitioning::commonJoinPartitionType(
         output.partitionType, other.partitionType);
-    if (output.partitionType == nullptr) {
+    if (!commonType.has_value()) {
       return {};
     }
+    output.partitionType = commonType->connectorType;
   }
 
   if (outputColumns.containsAll(output.keys)) {

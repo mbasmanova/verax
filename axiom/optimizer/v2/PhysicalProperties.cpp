@@ -68,6 +68,47 @@ Partitioning Partitioning::globalHash(
       .replicateNullsAndAny = replicateNullsAndAny};
 }
 
+Partitioning Partitioning::globalConnectorHash(
+    const ExprVector& keys,
+    const connector::PartitionType* partitionType) {
+  VELOX_DCHECK_NOT_NULL(partitionType);
+  return Partitioning{
+      .kind = PartitionKind::kPartitioned,
+      .partitionType = partitionType,
+      .keys = keys,
+      .scope = PropertyScope::kGlobal,
+  };
+}
+
+std::optional<Partitioning::CommonType> Partitioning::commonPartitionType(
+    const connector::PartitionType* left,
+    const connector::PartitionType* right) {
+  if (left == nullptr || right == nullptr) {
+    return left == right ? std::optional<CommonType>{{nullptr}} : std::nullopt;
+  }
+  const auto* common = queryCtx()->copartitionedType(left, right);
+  return common == nullptr ? std::nullopt : std::optional<CommonType>{{common}};
+}
+
+std::optional<Partitioning::CommonType> Partitioning::commonUnionPartitionType(
+    const connector::PartitionType* left,
+    const connector::PartitionType* right) {
+  return commonPartitionType(left, right);
+}
+
+std::optional<Partitioning::CommonType> Partitioning::commonJoinPartitionType(
+    const connector::PartitionType* left,
+    const connector::PartitionType* right) {
+  const auto common = commonPartitionType(left, right);
+  if (!common.has_value() || common->connectorType == nullptr) {
+    return common;
+  }
+  return common->connectorType->numPartitions() == left->numPartitions() &&
+          common->connectorType->numPartitions() == right->numPartitions()
+      ? common
+      : std::nullopt;
+}
+
 Partitioning Partitioning::globalGather() {
   return Partitioning{
       .kind = PartitionKind::kGather, .scope = PropertyScope::kGlobal};
@@ -119,15 +160,15 @@ bool Partitioning::isBucketedOn(const ExprVector& otherKeys) const {
   return true;
 }
 
-bool Partitioning::isBucketedCompatibleWith(
+bool Partitioning::satisfiesWritePartitioning(
     const ExprVector& otherKeys,
     const connector::PartitionType& targetType) const {
   if (!isBucketedOn(otherKeys)) {
     return false;
   }
-  const auto compatible = partitionType->copartition(targetType);
-  return compatible != nullptr &&
-      compatible->numPartitions() == partitionType->numPartitions();
+  const auto common = commonPartitionType(partitionType, &targetType);
+  return common.has_value() &&
+      common->connectorType->numPartitions() == partitionType->numPartitions();
 }
 
 bool Partitioning::sameClassAs(const Partitioning& other) const {
