@@ -744,10 +744,12 @@ TEST_P(SubqueryTest, correlatedTopNPerOuter) {
     auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
     AXIOM_ASSERT_PLAN_V2(
         plan,
-        matchScan("u")
-            .singleAggregation({"y", "x"}, {"sum(z) as total"})
-            .topNRowNumber({"y"}, {"total DESC"}, 2)
-            .hashJoinInner(matchScan("t"), {.keys = {{"y = b"}}})
+        matchScan("t")
+            .hashJoinInner(
+                matchScan("u")
+                    .singleAggregation({"y", "x"}, {"sum(z) as total"})
+                    .topNRowNumber({"y"}, {"total DESC"}, 2),
+                {.keys = {{"b = y"}}})
             .build());
   }
 
@@ -981,9 +983,10 @@ TEST_P(SubqueryTest, correlatedScalarGroupedWithHaving) {
     auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
     AXIOM_ASSERT_PLAN_V2(
         plan,
-        matchScan("u")
-            .singleAggregation({"y"}, {"max(x)"})
-            .hashJoinRight(matchScan("t"), {.keys = {{"y = b"}}})
+        matchScan("t")
+            .hashJoinLeft(
+                matchScan("u").singleAggregation({"y"}, {"max(x)"}),
+                {.keys = {{"b = y"}}})
             .build());
   }
 }

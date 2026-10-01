@@ -284,9 +284,9 @@ TEST_P(UnknownStatsJoinTest, twoJoins) {
   AXIOM_ASSERT_PLAN_V2(plan(altQuery), matchPlan());
 }
 
-// A base table with no statistics produces the same deterministic build
-// orientation regardless of operand order.
-TEST_P(UnknownStatsJoinTest, joinWithUnknownTableCardinality) {
+// When one input has no point estimate, the join keeps its written orientation:
+// the right input builds.
+TEST_P(UnknownStatsJoinTest, unknownCardinality) {
   testConnector_->addTable("t", ROW({"a", "k"}, BIGINT()))
       ->setStats(1'000'000, {{"k", {.numDistinct = 1'000'000}}});
   testConnector_->addTable(
@@ -304,13 +304,25 @@ TEST_P(UnknownStatsJoinTest, joinWithUnknownTableCardinality) {
         .build();
   };
 
-  const auto query = "SELECT count(*) FROM u JOIN t ON t.k = u.k";
-  const auto altQuery = "SELECT count(*) FROM t JOIN u ON t.k = u.k";
-
-  for (const auto sql : {query, altQuery}) {
+  for (const auto& [sql, probe, build] : {
+           std::tuple{"SELECT count(*) FROM u JOIN t ON t.k = u.k", "u", "t"},
+           std::tuple{"SELECT count(*) FROM t JOIN u ON t.k = u.k", "t", "u"},
+       }) {
     SCOPED_TRACE(sql);
-    AXIOM_ASSERT_PLAN_V2(plan(sql), matchJoin("u", "t"));
+    AXIOM_ASSERT_PLAN_V2(plan(sql), matchJoin(probe, build));
   }
+
+  // Limit gives the unknown input an upper bound but no point estimate.
+  const auto query =
+      "SELECT count(*) FROM t "
+      "JOIN (SELECT * FROM u LIMIT 10000000) s ON t.k = s.k";
+  SCOPED_TRACE(query);
+  AXIOM_ASSERT_PLAN_V2(
+      plan(query),
+      matchScan("t")
+          .hashJoinInner(matchScan("u").finalLimit(0, 10'000'000))
+          .aggregation()
+          .build());
 }
 
 TEST_P(UnknownStatsJoinTest, crossJoinFallback) {

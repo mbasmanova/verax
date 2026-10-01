@@ -660,21 +660,18 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
     });
   }
 
-  // Returns estimated output bytes, or nullopt when no useful cardinality is
-  // available.
+  // Returns output bytes from a point cardinality estimate, or nullopt when the
+  // estimate is unavailable.
   std::optional<float> estimatedSize(NodeCP node) {
-    const auto& estimate = estimateProvider_.estimate(node);
-    const auto cardinality = estimate.cardinality.has_value()
-        ? estimate.cardinality
-        : estimate.maxCardinality;
+    const auto cardinality = estimateProvider_.estimate(node).cardinality;
     if (!cardinality.has_value()) {
       return std::nullopt;
     }
     return *cardinality * std::max<float>(1, byteSize(node->outputColumns()));
   }
 
-  // Chooses the build side of inner, left, and right joins from input sizes,
-  // preferring a known size over an unknown size, then the smaller known size.
+  // Chooses the build side of inner, left, and right joins when both inputs
+  // have point estimates. Otherwise keeps the written orientation.
   // A distributed keyless left or right join instead puts its non-preserved
   // input on the build side so that input can be broadcast.
   Join::Key chooseBuildSide(Join::Key join) {
@@ -696,8 +693,8 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
 
     const auto leftSize = estimatedSize(join.left);
     const auto rightSize = estimatedSize(join.right);
-    if (leftSize.has_value() &&
-        (!rightSize.has_value() || *leftSize < *rightSize)) {
+    if (leftSize.has_value() && rightSize.has_value() &&
+        *leftSize < *rightSize) {
       join.swapInputs();
     }
     return join;

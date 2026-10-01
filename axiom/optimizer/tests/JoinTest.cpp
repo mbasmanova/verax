@@ -613,10 +613,6 @@ TEST_P(JoinTest, outerJoinWithInnerJoin) {
   testConnector_->addTable("v", ROW({"vx", "vy", "vz"}, BIGINT()));
   testConnector_->addTable("u", ROW({"x", "y", "z"}, BIGINT()));
 
-  auto startMatcher = [&](const auto& tableName) {
-    return matchScan(tableName);
-  };
-
   {
     SCOPED_TRACE("left join with inner join on right");
 
@@ -636,9 +632,9 @@ TEST_P(JoinTest, outerJoinWithInnerJoin) {
     auto plan = toSingleNodePlan(logicalPlan);
 
     auto matcher =
-        startMatcher("u")
-            .hashJoinInner(startMatcher("v"))
-            .hashJoinRight(startMatcher("t").filter("b > 50"))
+        matchScan("t")
+            .filter("b > 50")
+            .hashJoinLeft(matchScan("u").hashJoinInner(matchScan("v")))
             .project({"a", "b", "c", "x", "y", "z", "x as vx", "vy", "vz"})
             .build();
 
@@ -669,9 +665,10 @@ TEST_P(JoinTest, outerJoinWithInnerJoin) {
     // V2 pushes the filter below the join and restores `vx` from the equal key
     // `x` after the outer join.
     auto matcher =
-        startMatcher("u")
-            .hashJoinInner(startMatcher("v").filter())
-            .hashJoinRight(startMatcher("t").filter().aggregation())
+        matchScan("t")
+            .filter()
+            .aggregation()
+            .hashJoinLeft(matchScan("u").hashJoinInner(matchScan("v").filter()))
             .project({"a", "b", "sum", "x", "y", "z", "x as vx", "vy", "vz"})
             .build();
 
@@ -1787,12 +1784,12 @@ TEST_P(JoinTest, leftThenFilter) {
 
     // V2 is better: it materializes `z` once and reuses the alias instead of
     // expanding `y + 1` again after the join.
-    auto matcher = matchScan("u")
-                       .filter("y + 1 > 0")
-                       .project({"x", "y + 1 as z"})
-                       .hashJoinInner(matchScan("t"))
-                       .project({"z * 2"})
-                       .build();
+    auto matcher =
+        matchScan("t")
+            .hashJoinInner(
+                matchScan("u").filter("y + 1 > 0").project({"x", "y + 1 as z"}))
+            .project({"z * 2"})
+            .build();
 
     auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN_V2(plan, matcher);
@@ -1807,12 +1804,12 @@ TEST_P(JoinTest, leftThenFilter) {
 
     // V2 materializes `z` before join fanout and restores `x` from the equal
     // key `a` after sorting.
-    auto matcher = matchScan("u")
-                       .filter("y + 1 > 0")
-                       .project({"x", "y + 1 as z"})
-                       .hashJoinInner(matchScan("t"))
-                       .aggregation()
-                       .build();
+    auto matcher =
+        matchScan("t")
+            .hashJoinInner(
+                matchScan("u").filter("y + 1 > 0").project({"x", "y + 1 as z"}))
+            .aggregation()
+            .build();
 
     auto plan = toSingleNodePlan(query);
     AXIOM_ASSERT_PLAN_V2(plan, matcher);
@@ -3061,14 +3058,14 @@ TEST_P(JoinTest, leftToInnerWithAggregation) {
 
   // V2 is better: it derives `a > 0` on t, materializes the cast once before
   // DISTINCT, and eliminates the V1 output-reconstruction Projects.
-  auto matcher = matchScan("u")
-                     .filter("x > 0")
-                     .project()
-                     .unnest()
-                     .project({"x", "cast(y as REAL) as c"})
-                     .hashJoinInner(matchScan("t").filter("a > 0"))
-                     .distinct()
-                     .build();
+  auto matcher =
+      matchScan("t")
+          .filter("a > 0")
+          .hashJoinInner(
+              matchScan("u").filter("x > 0").project().unnest().project(
+                  {"x", "cast(y as REAL) as c"}))
+          .distinct()
+          .build();
 
   AXIOM_ASSERT_PLAN_V2(plan, matcher);
 }
@@ -3134,13 +3131,12 @@ TEST_P(JoinTest, duplicateJoinOutputColumns) {
 
     auto plan = toSingleNodePlan(query);
 
-    // V2 drops the filter-only `a` column before the join and builds from the
-    // narrower `t` input.
-    auto matcher = matchScan("u")
-                       .aliases({"k", "b", "a"})
-                       .filter("a = 1")
-                       .project({"k", "b"})
-                       .hashJoinInner(matchScan("t"))
+    // V2 drops the filter-only `a` column before the join.
+    auto matcher = matchScan("t")
+                       .hashJoinInner(matchScan("u")
+                                          .aliases({"k", "b", "a"})
+                                          .filter("a = 1")
+                                          .project({"k", "b"}))
                        .distinct()
                        .project({"b as x", "b as y"})
                        .build();
@@ -3442,8 +3438,9 @@ TEST_P(JoinTest, constantInput) {
         "SELECT t.a FROM t JOIN (VALUES 1, 3) AS v(k) ON t.a = v.k");
     AXIOM_ASSERT_PLAN_V2(
         plan,
-        matchValues()
-            .hashJoinInner(matchScan("t").filter("a in (1, 3)"))
+        matchScan("t")
+            .filter("a in (1, 3)")
+            .hashJoinInner(matchValues())
             .build());
   }
 
@@ -3454,8 +3451,9 @@ TEST_P(JoinTest, constantInput) {
         "ON t.a = v.k AND t.b = v.m");
     AXIOM_ASSERT_PLAN_V2(
         plan,
-        matchValues()
-            .hashJoinInner(matchScan("t").filter("a in (1, 3) AND b = 5"))
+        matchScan("t")
+            .filter("a in (1, 3) AND b = 5")
+            .hashJoinInner(matchValues())
             .build());
   }
 
