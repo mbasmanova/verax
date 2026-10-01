@@ -28,6 +28,16 @@ SELECT a + b AS x, a + b AS y, count(1) AS c1, count(1) AS c2 FROM t GROUP BY 1,
 -- p equals q on every row and there is one row per distinct a.
 SELECT a + 1 AS p, 1 + a AS q FROM t GROUP BY 1, 2
 ----
+-- A constant grouping key is preserved in the output.
+SELECT a, 'foo', count(*) FROM t GROUP BY a, 'foo'
+----
+-- Multiple constant grouping keys over non-empty input produce one group.
+SELECT 'foo', 'bar', count(*) FROM t GROUP BY 'foo', 'bar'
+----
+-- Multiple constant grouping keys over empty input produce no groups.
+-- count 0
+SELECT 'foo', 'bar', count(*) FROM t WHERE false GROUP BY 'foo', 'bar'
+----
 -- Dedup: column used in both GROUP BY and aggregate.
 SELECT a + b AS x, a + b AS y, count(a + b) AS z FROM t GROUP BY 1, 2
 ----

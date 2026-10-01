@@ -62,6 +62,41 @@ TEST_P(AggregationTest, dedupGroupingKeysAndAggregates) {
   }
 }
 
+TEST_P(AggregationTest, constantGroupingKeys) {
+  testConnector_->addTable("cg_t", ROW({"a", "b"}, BIGINT()));
+
+  {
+    SCOPED_TRACE("Variable and constant grouping keys");
+    const auto logicalPlan = parseSelect(
+        "SELECT a, b, label, count(*) AS c "
+        "FROM (SELECT a, b, 'foo' AS label FROM cg_t) "
+        "GROUP BY 1, 2, 3",
+        kTestConnectorId);
+
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(logicalPlan),
+        matchScan("cg_t")
+            .singleAggregation({"a", "b"}, {"count(*) as c"})
+            .project({"a", "b", R"('foo' as label)", "c"})
+            .build());
+  }
+
+  {
+    SCOPED_TRACE("Only constant grouping keys");
+    const auto logicalPlan = parseSelect(
+        "SELECT 'foo' AS x, 'bar' AS y, count(*) AS c FROM cg_t GROUP BY 1, 2",
+        kTestConnectorId);
+
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(logicalPlan),
+        matchScan("cg_t")
+            .project({R"('foo' as x)"})
+            .singleAggregation({"x"}, {"count(*) as c"})
+            .project({"x", R"('bar' as y)", "c"})
+            .build());
+  }
+}
+
 TEST_P(AggregationTest, duplicatesBetweenGroupAndAggregate) {
   testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
 

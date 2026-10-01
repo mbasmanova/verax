@@ -585,15 +585,17 @@ class Translator {
 
   // Translates 'aggregate''s grouping keys into 'keys' and the columns they are
   // published under into 'columns', binding every grouping-key name in 'scope'.
-  // Keys that translate to one expression are kept once and the other names
-  // read the surviving column; grouping sets keep every key, since the set
-  // indices are positional.
+  // Redundant constant keys are returned in 'projectedColumns' and
+  // 'projectedExprs' for restoration above the aggregate. Grouping sets keep
+  // every key, since the set indices are positional.
   void translateGroupingKeys(
       const lp::AggregateNode& aggregate,
       const Scope& inputScope,
       NodeCP& currentInput,
       ExprVector& keys,
       ColumnVector& columns,
+      ColumnVector& projectedColumns,
+      ExprVector& projectedExprs,
       Scope& scope);
 
   // Lowers GROUPING SETS / ROLLUP / CUBE to a GroupId plus a plain aggregate
@@ -2055,21 +2057,34 @@ void Translator::translateGroupingKeys(
     NodeCP& currentInput,
     ExprVector& keys,
     ColumnVector& columns,
+    ColumnVector& projectedColumns,
+    ExprVector& projectedExprs,
     Scope& scope) {
   const auto& names = aggregate.outputNames();
   const auto& keyExpressions = aggregate.groupingKeys();
   const bool hasGroupingSets = !aggregate.groupingSets().empty();
+
+  ExprVector translatedKeys;
+  translatedKeys.reserve(keyExpressions.size());
+  for (const auto& keyExpression : keyExpressions) {
+    ExprCP key{nullptr};
+    currentInput = withLiftTarget(currentInput, [&](LiftTarget& target) {
+      key = translateExpr(*keyExpression, inputScope, &target);
+    });
+    translatedKeys.push_back(key);
+  }
+
+  const bool hasNonConstant = std::ranges::any_of(
+      translatedKeys,
+      [](ExprCP key) { return !key->is(PlanType::kLiteralExpr); });
 
   folly::F14FastMap<ExprCP, ColumnCP> keyToOutput;
   if (!hasGroupingSets) {
     keyToOutput.reserve(keyExpressions.size());
   }
 
-  for (size_t i = 0; i < keyExpressions.size(); ++i) {
-    ExprCP keyExpr{nullptr};
-    currentInput = withLiftTarget(currentInput, [&](LiftTarget& target) {
-      keyExpr = translateExpr(*keyExpressions[i], inputScope, &target);
-    });
+  for (size_t i = 0; i < translatedKeys.size(); ++i) {
+    ExprCP keyExpr = translatedKeys[i];
     if (!hasGroupingSets) {
       const auto it = keyToOutput.find(keyExpr);
       if (it != keyToOutput.end()) {
@@ -2095,6 +2110,12 @@ void Translator::translateGroupingKeys(
       keyToOutput.emplace(keyExpr, column);
     }
     scope[names[i]] = column;
+    if (!hasGroupingSets && keyExpr->is(PlanType::kLiteralExpr) &&
+        (hasNonConstant || !keys.empty())) {
+      projectedColumns.push_back(column);
+      projectedExprs.push_back(keyExpr);
+      continue;
+    }
     keys.push_back(keyExpr);
     columns.push_back(column);
   }
@@ -2138,6 +2159,8 @@ Translated Translator::translateAggregate(
   outputColumns.reserve(
       numGroupingKeys + keptAggregateIndices.size() + groupIdSlots);
   Scope newScope;
+  ColumnVector projectedColumns;
+  ExprVector projectedExprs;
 
   NodeCP currentInput = input.node;
   translateGroupingKeys(
@@ -2146,14 +2169,13 @@ Translated Translator::translateAggregate(
       currentInput,
       groupingKeys,
       outputColumns,
+      projectedColumns,
+      projectedExprs,
       newScope);
 
   // Aggregates whose FILTER folded to constant false/null see the empty set;
   // their output is the aggregate's empty-input value, materialized by a
   // Project above the aggregation.
-  ColumnVector foldedColumns;
-  ExprVector foldedExprs;
-
   AggregateCallVector aggregates;
   aggregates.reserve(keptAggregateIndices.size());
   folly::F14FastMap<const optimizer::Aggregate*, ColumnCP> aggregateToOutput;
@@ -2171,8 +2193,8 @@ Translated Translator::translateAggregate(
         aggregateCall->condition()->is(PlanType::kLiteralExpr)) {
       auto* column =
           columnForSymbol(toName(aggregateName), aggregateCall->value());
-      foldedColumns.push_back(column);
-      foldedExprs.push_back(emptySetResult(aggregateCall));
+      projectedColumns.push_back(column);
+      projectedExprs.push_back(emptySetResult(aggregateCall));
       newScope[aggregateName] = column;
       continue;
     }
@@ -2209,7 +2231,7 @@ Translated Translator::translateAggregate(
           std::move(*row), aggNode->outputColumns());
     }
     return {
-        appendConstantColumns(node, foldedColumns, foldedExprs),
+        appendConstantColumns(node, projectedColumns, projectedExprs),
         std::move(newScope)};
   }
 
@@ -2221,7 +2243,7 @@ Translated Translator::translateAggregate(
       currentInput,
       newScope);
   return {
-      appendConstantColumns(aggNode, foldedColumns, foldedExprs),
+      appendConstantColumns(aggNode, projectedColumns, projectedExprs),
       std::move(newScope)};
 }
 
