@@ -232,6 +232,45 @@ TEST_P(BucketedExecutionTest, join) {
           .build());
 }
 
+TEST_P(BucketedExecutionTest, joinChoosesBucketing) {
+  addBucketedTable("mixed_bucketed", {"customer_id"}, 128);
+  addUnbucketedTable("mixed_hash", ROW({"id", "value"}, BIGINT()), 50'000);
+  optimizerOptions_.broadcastSizeLimit = 1;
+
+  const auto logicalPlan = parseSelect(
+      "SELECT customer_id "
+      "FROM mixed_bucketed JOIN "
+      "(SELECT id FROM mixed_hash GROUP BY id) grouped "
+      "ON customer_id = id",
+      kTestConnectorId);
+
+  AXIOM_ASSERT_PLAN_V2(
+      toSingleNodePlan(logicalPlan),
+      matchScan("mixed_bucketed")
+          .hashJoinInner(
+              matchScan("mixed_hash").singleAggregation({"id"}, {}),
+              {.keys = {{"customer_id = id"}}})
+          .build());
+
+  // The grouped side offers standard hash partitioning, while the scan offers
+  // connector bucketing. Moving the smaller grouped side keeps the bucketed
+  // scan in place.
+  AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
+      planDistributed(logicalPlan).plan,
+      matchScan("mixed_bucketed")
+          .hashJoinInner(
+              matchScan("mixed_hash")
+                  .partialAggregation({"id"}, {})
+                  .shuffle({"id"})
+                  .localPartition({"id"})
+                  .finalAggregation({"id"}, {})
+                  .shuffle({"id"}),
+              {.keys = {{"customer_id = id"}}})
+          .fragment({.width = 4, .bucketedScans = 1, .bucketedExchanges = 1})
+          .gather()
+          .build());
+}
+
 TEST_P(BucketedExecutionTest, semijoin) {
   addBucketedTable("sj_orders", {"customer_id"}, 128);
   addBucketedTable(
@@ -1249,27 +1288,67 @@ TEST_P(BucketedExecutionTest, joinKeysMustCorrespondToBucketing) {
 
   optimizerOptions_.syntacticJoinOrder = true;
   optimizerOptions_.broadcastSizeLimit = 0;
-  SCOPE_EXIT {
-    optimizerOptions_.syntacticJoinOrder = false;
-  };
-  auto plan = planDistributed(parseSelect(
-      "SELECT a.v, b.v FROM jk_t a JOIN jk_u b ON a.k = b.k AND a.j = b.j",
-      kTestConnectorId));
-  if (useV2_) {
-    // Neither side's bucketing covers both keys, so both shuffle when
-    // broadcast is disabled.
-    AXIOM_ASSERT_DISTRIBUTED_PLAN(
-        plan.plan,
-        matchScan("jk_t")
-            .shuffle({"k", "j"})
-            // The right side's columns are renamed by the join, so only the
-            // boundary is asserted there.
-            .hashJoinInner(matchScan("jk_u").shuffle())
-            .notBucketed()
-            .gather()
-            .project()
-            .build());
-  }
+  const auto logicalPlan = parseSelect(
+      "SELECT a.v AS a_v, b.v AS b_v FROM jk_t a JOIN jk_u b "
+      "ON a.k = b.k AND a.j = b.j",
+      kTestConnectorId);
+
+  AXIOM_ASSERT_PLAN_V2(
+      toSingleNodePlan(logicalPlan),
+      matchScan("jk_t")
+          .hashJoinInner(
+              matchScan("jk_u").aliases({"k_0", "j_1", "v_2"}),
+              {.keys = {{"k = k_0", "j = j_1"}}})
+          .project({"v as a_v", "v_2 as b_v"})
+          .build());
+
+  // Keep one bucketing and move the other side onto the corresponding key.
+  AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
+      planDistributed(logicalPlan).plan,
+      matchScan("jk_t")
+          .hashJoinInner(
+              matchScan("jk_u").aliases({"k_0", "j_1", "v_2"}).shuffle({"k_0"}),
+              {.keys = {{"k = k_0", "j = j_1"}}})
+          .project({"v as a_v", "v_2 as b_v"})
+          .fragment({.width = 4, .bucketedScans = 1, .bucketedExchanges = 1})
+          .gather()
+          .build());
+}
+
+TEST_P(BucketedExecutionTest, joinKeepsBucketedSide) {
+  addUnbucketedTable("mixed_t", ROW("a", BIGINT()));
+  addUnbucketedTable("mixed_u", ROW("b", BIGINT()));
+  addBucketedTable("mixed_w", {"k"}, 8, ROW("k", BIGINT()));
+
+  optimizerOptions_.syntacticJoinOrder = true;
+  optimizerOptions_.broadcastSizeLimit = 0;
+  const auto logicalPlan = parseSelect(
+      "SELECT * FROM mixed_t JOIN mixed_u ON a = b "
+      "JOIN mixed_w ON a = k",
+      kTestConnectorId);
+
+  // The second join keeps mixed_w's connector bucketing and moves the
+  // unbucketed first join onto it.
+  AXIOM_ASSERT_PLAN_V2(
+      toSingleNodePlan(logicalPlan),
+      matchScan("mixed_t")
+          .hashJoinInner(matchScan("mixed_u"), {.keys = {{"a = b"}}})
+          .hashJoinInner(matchScan("mixed_w"), {.keys = {{"a = k"}}})
+          .project({"a", "a as b", "a as k"})
+          .build());
+
+  AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
+      planDistributed(logicalPlan).plan,
+      matchScan("mixed_t")
+          .shuffle({"a"})
+          .hashJoinInner(
+              matchScan("mixed_u").shuffle({"b"}), {.keys = {{"a = b"}}})
+          .shuffle({"a"})
+          .hashJoinInner(matchScan("mixed_w"), {.keys = {{"a = k"}}})
+          .project({"a", "a as b", "a as k"})
+          .fragment({.width = 4, .bucketedScans = 1, .bucketedExchanges = 1})
+          .gather()
+          .build());
 }
 
 // A join's keys are written in the query's order, its tables' bucketing in

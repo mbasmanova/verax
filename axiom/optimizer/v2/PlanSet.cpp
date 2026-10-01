@@ -193,16 +193,20 @@ MemoOpCP PlanSet::cheapest() const {
   return result;
 }
 
-MemoOpCP PlanSet::bestBucketedOnSubset(const ExprVector& keys) const {
-  MemoOpCP result{nullptr};
+PlanSet::PartitioningAlternatives PlanSet::partitioningsOnSubsets(
+    const ExprVector& keys) const {
+  PartitioningAlternatives result;
   for (const auto& plan : plans_) {
     const auto& partitioning = plan->outputPartitioning();
-    if (!plan->cost.cost.has_value() || partitioning.partitionType == nullptr ||
-        !partitioning.coLocates(keys)) {
+    if (!plan->cost.cost.has_value() ||
+        partitioning.kind != PartitionKind::kPartitioned ||
+        partitioning.replicateNullsAndAny || !partitioning.coLocates(keys)) {
       continue;
     }
-    if (result == nullptr || *plan->cost.cost < *result->cost.cost) {
-      result = plan.get();
+    if (partitioning.partitionType != nullptr) {
+      result.connectorBucketed.push_back(plan.get());
+    } else {
+      result.standardHash.push_back(plan.get());
     }
   }
   return result;
