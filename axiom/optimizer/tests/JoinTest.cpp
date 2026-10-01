@@ -316,6 +316,67 @@ TEST_P(JoinTest, nullExtendedJoinKey) {
           .build());
 }
 
+TEST_P(JoinTest, nonNullJoinKey) {
+  addTableWithStats("large_table", {"a"}, 10'000);
+  addTableWithStats("medium_table", {"x"}, 1'000);
+  addTableWithStats("small_table", {"k"}, 100);
+  optimizerOptions_.broadcastSizeLimit = 1;
+
+  {
+    SCOPED_TRACE("Top-level COALESCE");
+    const auto logicalPlan = parseSelect(
+        "SELECT t.a, v.k "
+        "FROM (large_table t JOIN medium_table u ON coalesce(t.a, 0) = u.x) "
+        "LEFT JOIN small_table v ON coalesce(u.x, 0) = v.k",
+        kTestConnectorId);
+
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(logicalPlan),
+        matchScan("large_table")
+            .project({"coalesce(a, 0) as key", "a"})
+            .hashJoinInner(matchScan("medium_table"), {.keys = {{"key = x"}}})
+            .hashJoinLeft(matchScan("small_table"), {.keys = {{"x = k"}}})
+            .build());
+
+    AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
+        planVelox(logicalPlan).plan,
+        matchScan("large_table")
+            .project({"a", "coalesce(a, 0) as key"})
+            .shuffle({"key"})
+            .hashJoinInner(
+                matchScan("medium_table")
+                    .shuffle({"x"})
+                    .hashJoinLeft(
+                        matchScan("small_table").shuffle({"k"}),
+                        {.keys = {{"x = k"}}}),
+                {.keys = {{"key = x"}}})
+            .gather()
+            .build());
+  }
+
+  {
+    SCOPED_TRACE("Nested COALESCE");
+    const auto query =
+        "SELECT t.a, v.k "
+        "FROM (large_table t JOIN medium_table u ON coalesce(t.a, 0) = u.x) "
+        "LEFT JOIN small_table v ON coalesce(t.a, u.x, 0) + 1 = v.k";
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(query),
+        matchScan("large_table")
+            .project({"coalesce(a, 0) as first_key", "a"})
+            .hashJoinInner(
+                matchScan("medium_table"),
+                {.keys = {{"first_key = x"}},
+                 .outputColumnNames = {{"a", "x"}}})
+            .project({"coalesce(a, x) + 1 as second_key", "a"})
+            .hashJoinLeft(
+                matchScan("small_table"),
+                {.keys = {{"second_key = k"}},
+                 .outputColumnNames = {{"a", "k"}}})
+            .build());
+  }
+}
+
 TEST_P(JoinTest, pushdownFilterThroughJoin) {
   testConnector_->addTable("t", ROW({"t_id", "t_data"}, BIGINT()));
   testConnector_->addTable("u", ROW({"u_id", "u_data"}, BIGINT()));

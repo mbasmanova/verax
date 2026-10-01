@@ -24,9 +24,8 @@
 
 namespace facebook::axiom::optimizer::v2 {
 
-/// Reduces expressions to simpler equivalent forms — today constant
-/// folding of column-free expressions; algebraic and boolean identities
-/// (`a + 0 → a`, `true AND f → f`, …) plug in as the rule set grows.
+/// Reduces expressions to simpler equivalent forms using constant folding and
+/// contextual facts supplied by a plan pass.
 ///
 /// `evaluator` must outlive this `ExprSimplifier` and any IR it
 /// produces: folded constants register `Variant`s in the
@@ -41,6 +40,13 @@ class ExprSimplifier {
   /// Returns the simplified `expr`, or `expr` unchanged if no rule
   /// applies.
   ExprCP simplify(ExprCP expr);
+
+  /// Returns whether `expr` cannot produce NULL when `nonNullColumns` are
+  /// known to be non-null.
+  bool isKnownNonNull(ExprCP expr, const PlanObjectSet& nonNullColumns) const;
+
+  /// Simplifies `expr` using columns known to be non-null.
+  ExprCP simplify(ExprCP expr, const PlanObjectSet& nonNullColumns) const;
 
   /// Evaluates a column-free `expr` to a single value. Places no determinism
   /// or constant-ness requirement on `expr`: for contexts like VALUES where an

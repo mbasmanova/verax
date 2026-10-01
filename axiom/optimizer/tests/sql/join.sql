@@ -94,6 +94,36 @@ JOIN (VALUES (1), (2), (3), (4), (NULL)) AS t(t_k) ON u_k = t_k
 ORDER BY t_k, u_k
 
 ----
+-- An inner join key is non-null in rows consumed by a subsequent outer join.
+SELECT t.a, v.k
+FROM (VALUES (NULL), (1)) AS t(a)
+JOIN (VALUES (0), (1)) AS u(x) ON coalesce(t.a, 0) = u.x
+LEFT JOIN (VALUES (0), (1), (2)) AS v(k) ON coalesce(u.x, 0) = v.k
+
+----
+-- NULL keys matched by INTERSECT remain nullable in a subsequent join.
+SELECT i.x, v.k
+FROM (
+  SELECT x FROM (VALUES (NULL), (1)) AS a(x)
+  INTERSECT
+  SELECT x FROM (VALUES (NULL), (1)) AS b(x)
+) AS i
+LEFT JOIN (VALUES (0), (1)) AS v(k) ON coalesce(i.x, 0) = v.k
+
+----
+-- An empty scalar subquery supplies NULL to a subsequent join key.
+SELECT s.x, v.k
+FROM (SELECT (SELECT 1 FROM t WHERE a = 999) AS x) AS s
+LEFT JOIN (VALUES (0), (1)) AS v(k) ON coalesce(s.x, 0) = v.k
+
+----
+-- An outer join makes a non-null input column nullable in subsequent joins.
+SELECT t.a, u.x, v.k
+FROM (VALUES (1)) AS t(a)
+LEFT JOIN (VALUES (2)) AS u(x) ON t.a = u.x
+LEFT JOIN (VALUES (0)) AS v(k) ON coalesce(u.x, 0) = v.k
+
+----
 -- Two inputs connected only through a third can join through that input.
 SELECT t_k, u_k, k
 FROM (VALUES (1), (2)) AS t(t_k)

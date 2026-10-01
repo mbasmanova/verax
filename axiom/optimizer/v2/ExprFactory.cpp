@@ -289,7 +289,7 @@ ExprCP replaceInLambda(
   if (newBody == lambda->body()) {
     return lambda;
   }
-  return make<Lambda>(lambda->args(), lambda->value().type, newBody);
+  return factory.rebuildLambda(lambda, newBody);
 }
 
 ExprFactory::ExprSubstitution toSubstitution(
@@ -362,6 +362,10 @@ ExprCP ExprFactory::rebuildField(const Field* field, ExprCP base) {
     return make<Field>(field->value().type, base, field->field());
   }
   return make<Field>(field->value().type, base, field->index());
+}
+
+ExprCP ExprFactory::rebuildLambda(const Lambda* lambda, ExprCP body) {
+  return make<Lambda>(lambda->args(), lambda->value().type, body);
 }
 
 ExprCP ExprFactory::rebuildCall(const Call* call, ExprVector args) {
