@@ -838,3 +838,15 @@ SELECT outer_table.a, count(*)
 FROM t outer_table
 WHERE outer_table.a NOT IN (SELECT k FROM t_large)
 GROUP BY outer_table.a
+----
+-- A right join with an empty null-supplying side emits every preserved row,
+-- padded with nulls, before the aggregation.
+SELECT preserved.a, missing.y, count(*)
+FROM (
+  SELECT *
+  FROM (VALUES (1, 10)) AS empty_side(x, y)
+  WHERE false
+) missing
+RIGHT JOIN (VALUES (1), (2)) AS preserved(a)
+  ON missing.x = preserved.a
+GROUP BY 1, 2

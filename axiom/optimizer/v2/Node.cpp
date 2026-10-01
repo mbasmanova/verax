@@ -1468,14 +1468,10 @@ bool UnionAll::KeyEq::operator()(const UnionAll* node, const Key& key) const {
   return (*this)(key, node);
 }
 
-namespace {
-// Semi-project joins pass the preserved side through and add a mark saying
-// whether the other side had a match.
-bool projectsMark(velox::core::JoinType joinType) {
+bool Join::projectsMark(velox::core::JoinType joinType) {
   return joinType == velox::core::JoinType::kLeftSemiProject ||
       joinType == velox::core::JoinType::kRightSemiProject;
 }
-} // namespace
 
 Join::Join(Key key, Builder& builder)
     : Node(

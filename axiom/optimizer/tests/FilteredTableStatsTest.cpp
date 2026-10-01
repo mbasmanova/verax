@@ -147,6 +147,34 @@ TEST_P(FilteredTableStatsTest, emptyPartition) {
               "UNION ALL SELECT r_regionkey AS x FROM region",
               matchHiveScan("region").project({"r_regionkey as x"}).build(),
           },
+          {
+              "SELECT v.a, r_regionkey "
+              "FROM (SELECT a FROM t WHERE k = 7) v "
+              "RIGHT JOIN region ON v.a = r_regionkey",
+              matchHiveScan("region").project({"null", "r_regionkey"}).build(),
+          },
+          {
+              "SELECT v.a, p.r "
+              "FROM (SELECT a FROM t WHERE k = 7) v "
+              "RIGHT JOIN (SELECT r_regionkey + 1 AS r FROM region) p "
+              "ON v.a = p.r",
+              matchHiveScan("region")
+                  .project({"null", "r_regionkey + 1 as r"})
+                  .build(),
+          },
+          {
+              "SELECT r_regionkey, "
+              "r_regionkey IN (SELECT a FROM t WHERE k = 7) AS present "
+              "FROM region",
+              matchHiveScan("region")
+                  .project({"r_regionkey", "false as present"})
+                  .build(),
+          },
+          {
+              "SELECT r_regionkey FROM region "
+              "WHERE r_regionkey NOT IN (SELECT a FROM t WHERE k = 7)",
+              matchHiveScan("region").build(),
+          },
       }) {
     SCOPED_TRACE(query);
     AXIOM_ASSERT_PLAN_V2(toSingleNodePlan(query), matcher);

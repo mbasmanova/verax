@@ -1330,6 +1330,9 @@ class Join : public Node {
       bool leftIsKnownEmpty,
       bool rightIsKnownEmpty);
 
+  /// Returns whether a join adds a boolean match column to its preserved side.
+  static bool projectsMark(velox::core::JoinType joinType);
+
   /// Derives a join's output partitioning from both inputs. Inputs that both
   /// sit on one task keep that, whatever the join type. Otherwise a join keeps
   /// a preserved side's partitioning when every output row carries that side's

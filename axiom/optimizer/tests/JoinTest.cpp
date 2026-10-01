@@ -3892,6 +3892,83 @@ TEST_P(JoinTest, neverMatchingCondition) {
   }
 }
 
+// An empty input the join does not preserve matches nothing, so the join
+// reduces to its other input: outer joins pad with nulls, a semi-project mark
+// is false, and an anti join keeps every row.
+TEST_P(JoinTest, emptyNonPreservedInput) {
+  if (!useV2_) {
+    return;
+  }
+
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
+  testConnector_->addTable("u", ROW({"x", "y"}, BIGINT()));
+  testConnector_->addTable("d", ROW({"x", "y"}, DOUBLE()));
+
+  for (const auto& [query, projections] :
+       std::vector<std::pair<std::string_view, std::vector<std::string>>>{
+           {
+               "SELECT t.a, v.y FROM t "
+               "LEFT JOIN (SELECT * FROM u WHERE false) v ON t.a = v.x",
+               {"a", "null"},
+           },
+           {
+               "SELECT v.y, p.c FROM (SELECT a + 1 AS c FROM t) p "
+               "LEFT JOIN (SELECT * FROM u WHERE false) v ON p.c = v.x",
+               {"null", "a + 1 as c"},
+           },
+           {
+               "SELECT t.a, v.y FROM (SELECT * FROM u WHERE false) v "
+               "RIGHT JOIN t ON t.a = v.x",
+               {"a", "null"},
+           },
+           {
+               "SELECT t.a, v.y FROM t "
+               "FULL JOIN (SELECT * FROM u WHERE false) v ON t.a = v.x",
+               {"a", "null"},
+           },
+           {
+               "SELECT t.a, t.a IN (SELECT x FROM u WHERE false) FROM t",
+               {"a", "false"},
+           },
+           {
+               "SELECT t.a FROM t "
+               "WHERE t.a NOT IN (SELECT x FROM u WHERE false)",
+               {},
+           },
+       }) {
+    SCOPED_TRACE(query);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(query),
+        matchScan("t").projectIf(!projections.empty(), projections).build());
+  }
+
+  {
+    const auto query =
+        "SELECT p.c + p.c AS twice "
+        "FROM (SELECT rand() AS c FROM t) p "
+        "WHERE p.c NOT IN (SELECT x FROM d WHERE false)";
+    SCOPED_TRACE(query);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(query),
+        matchScan("t")
+            .project({"rand() as c"})
+            .project({"c + c as twice"})
+            .build());
+  }
+
+  // Rewrites filters above the join that reference the eliminated input.
+  {
+    const auto query =
+        "SELECT t.a FROM t "
+        "LEFT JOIN (SELECT * FROM u WHERE false) v ON t.a = v.x "
+        "WHERE v.y IS NULL";
+    SCOPED_TRACE(query);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(query),
+        matchScan("t").filter("is_null(null)").build());
+  }
+}
+
 // A cluster with more relations than a RelationSet can hold has no hypergraph
 // to enumerate over, and keeps the query's own join order.
 TEST_P(JoinTest, clusterLargerThanRelationSet) {

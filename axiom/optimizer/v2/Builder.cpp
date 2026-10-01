@@ -43,6 +43,25 @@ const Values* Builder::makeSingleRowValues(
       std::move(outputColumns));
 }
 
+ExprVector Builder::paddedExpressions(
+    const ColumnVector& inputColumns,
+    const ColumnVector& outputColumns,
+    bool falsePadding) {
+  const auto inputSet = PlanObjectSet::fromObjects(inputColumns);
+  ExprVector expressions;
+  expressions.reserve(outputColumns.size());
+  for (ColumnCP column : outputColumns) {
+    if (inputSet.contains(column)) {
+      expressions.push_back(column);
+    } else if (falsePadding) {
+      expressions.push_back(makeBoolean(false));
+    } else {
+      expressions.push_back(makeNull(column->value().type));
+    }
+  }
+  return expressions;
+}
+
 namespace {
 
 // Returns true if `args` should be swapped to put a literal on the

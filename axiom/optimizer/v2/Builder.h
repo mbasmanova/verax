@@ -139,6 +139,14 @@ class Builder {
     return makeLiteral(velox::Variant::null(type->kind()), type);
   }
 
+  /// Returns expressions that project `inputColumns` to `outputColumns`.
+  /// Missing outputs are false when `falsePadding` is true and typed nulls
+  /// otherwise.
+  ExprVector paddedExpressions(
+      const ColumnVector& inputColumns,
+      const ColumnVector& outputColumns,
+      bool falsePadding);
+
   /// `Values` that emits every column of its underlying data, i.e. with
   /// identity channels (see `Values::Key`). Pruning is done only in
   /// PushdownAndPrunePass, which builds the narrowed channels directly.
