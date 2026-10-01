@@ -166,6 +166,9 @@ class ExprFactory {
   /// `Builder::makeCall` so hash-consing stays canonical.
   ExprCP rebuildCall(const Call* call, ExprVector args);
 
+  /// Returns `lambda` with its body replaced by `body`.
+  ExprCP rebuildLambda(const Lambda* lambda, ExprCP body);
+
   /// Returns `field` with its base replaced by 'base', preserving whether
   /// the field is named or positional. `Field` is arena-allocated rather
   /// than hash-consed, so this goes through `make`.
