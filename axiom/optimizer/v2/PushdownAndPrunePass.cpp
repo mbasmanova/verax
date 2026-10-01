@@ -262,14 +262,14 @@ NodeCP restoreOutputColumns(
   ExprVector expressions;
   expressions.reserve(outputColumns.size());
   for (ColumnCP output : outputColumns) {
-    ColumnCP inputColumn = inputSet.contains(output)
+    ExprCP inputExpr = inputSet.contains(output)
         ? output
-        : replacementColumn(exprs, output, rewrites);
+        : applyRewrites(exprs, output, rewrites);
     VELOX_CHECK(
-        inputSet.contains(inputColumn),
+        inputSet.containsColumns(inputExpr),
         "Cannot restore output column after rewrite: {}",
         output->toString());
-    expressions.push_back(inputColumn);
+    expressions.push_back(inputExpr);
   }
   return builder.make<Project>({input, std::move(expressions), outputColumns});
 }
@@ -1752,15 +1752,14 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       return nullptr;
     }
 
-    NodeCP preserved{nullptr};
+    bool leftContributesNoRows{false};
     switch (node->joinType()) {
       case velox::core::JoinType::kInner:
         return makeEmptyValues(node);
       case velox::core::JoinType::kLeft:
-        preserved = node->left();
         break;
       case velox::core::JoinType::kRight:
-        preserved = node->right();
+        leftContributesNoRows = true;
         break;
       default:
         // kFull preserves both sides, which is a union rather than one node.
@@ -1769,43 +1768,15 @@ class Pushdown : public NodeRewriter<PushdownContext> {
         // arrive here.
         return nullptr;
     }
-
-    // The preserved side is asked only for the columns it passes through;
-    // the rest of the join's output is NULL.
-    const PlanObjectSet preservedColumns =
-        PlanObjectSet::fromObjects(preserved->outputColumns());
-    ExprVector expressions;
-    expressions.reserve(node->outputColumns().size());
-    PlanObjectSet kept;
-    for (ColumnCP column : node->outputColumns()) {
-      if (preservedColumns.contains(column)) {
-        expressions.push_back(column);
-        kept.add(column);
-      } else {
-        expressions.push_back(builder().makeNull(column->value().type));
-      }
-    }
-
-    PushdownContext preservedContext;
-    preservedContext.required = std::move(kept);
-    preservedContext.requiredAbove = preservedContext.required;
-    preservedContext.nonNullColumns = context.nonNullColumns;
-
-    // The conjuncts waiting above the join read its output columns, some of
-    // them from the side that is gone. They stay above the Project, which is
-    // where the join's output now comes from.
-    ExprVector above = std::move(context.pending);
-    context.pending.clear();
-
-    NodeCP newPreserved = rewrite(preserved, preservedContext);
-    applyOutputRewrites(preservedContext, expressions, above);
-    NodeCP project = builder().make<Project>(
-        {newPreserved, std::move(expressions), node->outputColumns()});
-    return propagateVisibleRewrites(
-        exprs_,
-        context,
-        preservedContext,
-        maybeWrapFilter(project, std::move(above)));
+    NodeCP remaining = leftContributesNoRows ? node->right() : node->left();
+    auto expressions = builder().paddedExpressions(
+        remaining->outputColumns(),
+        node->outputColumns(),
+        /*falsePadding=*/false);
+    return rewrite(
+        builder().make<Project>(
+            {remaining, std::move(expressions), node->outputColumns()}),
+        context);
   }
 
   // True if nothing reads 'mark': neither a consumer above nor a conjunct
@@ -2238,6 +2209,33 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       above = applyRewrites(exprs_, above, outputRewrites);
       newOutputColumns = rewriteColumns(
           exprs_, newOutputColumns, outputRewrites, /*dropDuplicates=*/true);
+    }
+
+    const auto isEmpty = [](NodeCP input) {
+      return input->is(NodeType::kValues) &&
+          input->as<Values>()->cardinality() == 0;
+    };
+    const bool leftIsEmpty = isEmpty(newLeft);
+    if (leftIsEmpty != isEmpty(newRight)) {
+      NodeCP remaining = leftIsEmpty ? newRight : newLeft;
+      if (!Join::isKnownEmpty(newKind, leftIsEmpty, !leftIsEmpty)) {
+        const auto expressions = builder().paddedExpressions(
+            remaining->outputColumns(),
+            newOutputColumns,
+            /*falsePadding=*/Join::projectsMark(newKind));
+        ExprFactory::ExprSubstitution projectionRewrites;
+        for (size_t i = 0; i < newOutputColumns.size(); ++i) {
+          if (newOutputColumns[i] != expressions[i]) {
+            projectionRewrites.emplace(newOutputColumns[i], expressions[i]);
+          }
+        }
+        mergeRewrites(outputRewrites, projectionRewrites);
+        above = applyRewrites(exprs_, above, outputRewrites);
+        NodeCP result = maybeWrapFilter(remaining, std::move(above));
+        retainVisibleRewrites(exprs_, outputRewrites, result->outputColumns());
+        context.outputRewrites = std::move(outputRewrites);
+        return result;
+      }
     }
 
     // A cross join's filter is evaluated per pair of rows, so the parts of it

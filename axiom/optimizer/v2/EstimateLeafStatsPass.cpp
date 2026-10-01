@@ -15,6 +15,9 @@
  */
 
 #include "axiom/optimizer/v2/EstimateLeafStatsPass.h"
+
+#include <algorithm>
+
 #include "axiom/optimizer/v2/Builder.h"
 #include "axiom/optimizer/v2/NodeRewriter.h"
 #include "axiom/optimizer/v2/PrecomputeProjections.h"
@@ -148,6 +151,15 @@ class KnownEmptyRewriter : public NodeRewriter<KnownEmptyContext> {
             rightContext.isKnownEmpty)) {
       context.isKnownEmpty = true;
       return node;
+    }
+    if (leftContext.isKnownEmpty != rightContext.isKnownEmpty) {
+      NodeCP remaining = leftContext.isKnownEmpty ? newRight : newLeft;
+      auto expressions = builder().paddedExpressions(
+          remaining->outputColumns(),
+          node->outputColumns(),
+          /*falsePadding=*/Join::projectsMark(node->joinType()));
+      return projectExpressions(
+          remaining, std::move(expressions), node->outputColumns());
     }
     if (leftContext.isKnownEmpty) {
       newLeft = makeEmptyValues(node->left());
@@ -286,20 +298,31 @@ class KnownEmptyRewriter : public NodeRewriter<KnownEmptyContext> {
   }
 
  private:
-  // Projects 'inputColumns' onto 'outputColumns', composing an input Project
-  // when present.
+  // Projects 'expressions' onto 'outputColumns', composing an input Project
+  // when safe and removing an identity Project.
+  NodeCP projectExpressions(
+      NodeCP input,
+      ExprVector expressions,
+      const ColumnVector& outputColumns) {
+    PrecomputeProjections::inlineInputProject(input, expressions, builder());
+    if (input->outputColumns() == outputColumns &&
+        std::equal(
+            expressions.begin(), expressions.end(), outputColumns.begin())) {
+      return input;
+    }
+    return builder().make<Project>(
+        {input, std::move(expressions), outputColumns});
+  }
+
+  // Projects 'inputColumns' onto 'outputColumns'.
   NodeCP projectColumns(
       NodeCP input,
       const ColumnVector& inputColumns,
       const ColumnVector& outputColumns) {
-    if (input->outputColumns() == outputColumns &&
-        inputColumns == outputColumns) {
-      return input;
-    }
-    ExprVector expressions(inputColumns.begin(), inputColumns.end());
-    PrecomputeProjections::inlineInputProject(input, expressions, builder());
-    return builder().make<Project>(
-        {input, std::move(expressions), outputColumns});
+    return projectExpressions(
+        input,
+        ExprVector(inputColumns.begin(), inputColumns.end()),
+        outputColumns);
   }
 
   NodeCP makeEmptyValues(NodeCP node) {
