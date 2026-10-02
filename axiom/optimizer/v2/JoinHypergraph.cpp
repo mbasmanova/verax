@@ -334,6 +334,7 @@ PlanObjectSet JoinHypergraph::coverOutputColumns(
       neededAbove.unionColumns(edge.leftKeys());
       neededAbove.unionColumns(edge.rightKeys());
       neededAbove.unionColumns(edge.filter());
+      neededAbove.unionObjects(edge.sourceColumns());
       if (edge.isUnnest()) {
         // An Unnest not yet applied reads what it expands from below.
         neededAbove.unionColumns(relation(edge.rightEndpoints().min())
@@ -343,6 +344,20 @@ PlanObjectSet JoinHypergraph::coverOutputColumns(
       }
     }
   }
+  // A demanded column produced at a value-changing join boundary requires
+  // the corresponding source below that edge. Repeat because nested outer
+  // joins can form a chain of output-to-source mappings.
+  size_t previousSize;
+  do {
+    previousSize = neededAbove.size();
+    for (const auto& edge : edges_) {
+      for (size_t i = 0; i < edge.outputColumns().size(); ++i) {
+        if (neededAbove.contains(edge.outputColumns()[i])) {
+          neededAbove.add(edge.sourceColumns()[i]);
+        }
+      }
+    }
+  } while (neededAbove.size() != previousSize);
   for (const auto& conjunct : filterConjuncts_) {
     if (!conjunct.relations.isSubset(cover)) {
       neededAbove.unionColumns(conjunct.expr);
@@ -350,6 +365,17 @@ PlanObjectSet JoinHypergraph::coverOutputColumns(
   }
   PlanObjectSet demand = coverColumns(cover);
   demand.intersect(neededAbove);
+  for (const auto& edge : edges_) {
+    if (!edge.totalEligibility().isSubset(cover)) {
+      continue;
+    }
+    for (size_t i = 0; i < edge.outputColumns().size(); ++i) {
+      if (edge.outputColumns()[i] != edge.sourceColumns()[i] &&
+          neededAbove.contains(edge.outputColumns()[i])) {
+        demand.add(edge.outputColumns()[i]);
+      }
+    }
+  }
 
   // Collapse each demanded column to its equivalence representative, so a group
   // of provably-equal columns contributes a single output column.

@@ -27,6 +27,24 @@ SELECT COALESCE(t.a, (SELECT max(a) FROM u))
 FROM t
 GROUP BY COALESCE(t.a, (SELECT max(a) FROM u))
 ----
+-- A constant computed beside an empty scalar subquery keeps its value when
+-- the subquery computes the same constant before producing its null row.
+SELECT (SELECT 0 FROM v WHERE a > 100) AS scalar_value, 0 AS outer_value
+----
+-- A scalar correlated only to a pending scalar lift pads its own value with
+-- NULL without changing the equal constant computed beside it.
+SELECT
+  (SELECT 100 FROM u WHERE u.a = (SELECT 200 FROM v LIMIT 1)) AS scalar_value,
+  100 AS outer_value
+----
+-- A scalar used by another scalar keeps its value through the empty-result
+-- padding boundary.
+SELECT (
+  SELECT (SELECT min(v.a) FROM v)
+  FROM u
+  WHERE u.a = (SELECT min(v.a) FROM v)
+)
+----
 -- A correlated EXISTS whose body is itself an existence test keeps the outers
 -- that have a matching row.
 SELECT u.a FROM u

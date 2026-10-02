@@ -1195,8 +1195,9 @@ class UnionAll : public Node {
 using UnionAllCP = const UnionAll*;
 
 /// Joins two inputs by `joinType` with paired equi-keys plus an optional
-/// residual `filter`. `outputColumns` projects columns from the inputs; see the
-/// field doc.
+/// residual `filter`. `sourceColumns[i]` supplies `outputColumns[i]`. They are
+/// normally the same identity. A null-extended input instead has fresh output
+/// identities so facts about its input values cannot escape above the join.
 ///
 /// Example: `SELECT * FROM t INNER JOIN u ON t.a = u.a AND t.b > u.b`
 /// translates to:
@@ -1243,9 +1244,17 @@ class Join : public Node {
     bool nullAware{false};
     /// Treats NULL == NULL as true on equi-keys (INTERSECT / EXCEPT).
     bool nullAsValue{false};
-    /// Output columns, each drawn from the left or right input; semi / anti
-    /// joins draw only from the preserved side. Pruned to what consumers need.
+    /// Output schema, pruned to what consumers need. Preserved inputs normally
+    /// keep their column identities; null-extended inputs use fresh columns.
     ColumnVector outputColumns;
+    /// Input columns supplying `outputColumns`, positionally aligned. Empty is
+    /// shorthand for `outputColumns` when every output passes through.
+    ColumnVector sourceColumns;
+
+    /// Returns the explicit sources, or the outputs for a pass-through schema.
+    const ColumnVector& effectiveSourceColumns() const {
+      return sourceColumns.empty() ? outputColumns : sourceColumns;
+    }
 
     /// Exchanges the left and right inputs, equi-keys, and join type of an
     /// inner or outer join. Preserves the filter, null semantics, and output.
@@ -1301,6 +1310,11 @@ class Join : public Node {
     return joinType_ == velox::core::JoinType::kLeftSemiProject;
   }
 
+  /// Input columns supplying the output columns, positionally aligned.
+  const ColumnVector& sourceColumns() const {
+    return sourceColumns_;
+  }
+
   /// Which of a join's inputs pass their rows through unchanged.
   struct PreservedSides {
     bool left{false};
@@ -1313,6 +1327,13 @@ class Join : public Node {
   /// -- but it never nulls the row's columns and never invents a row the input
   /// did not have.
   static PreservedSides preservedSides(velox::core::JoinType joinType);
+
+  /// Returns whether `source` comes from an input preserved by `joinType`.
+  static bool preservesSource(
+      velox::core::JoinType joinType,
+      ColumnCP source,
+      const PlanObjectSet& leftColumns,
+      const PlanObjectSet& rightColumns);
 
   /// Returns the equivalent join type when the left and right inputs are
   /// exchanged. Fails for join types that have no mirrored representation.
@@ -1351,6 +1372,8 @@ class Join : public Node {
   /// partitioning, compatible connector bucket types are folded and every key
   /// must remain expressible on the output. An inner join can replace a dropped
   /// column key with a surviving member of its equality class.
+  /// `joinOutputColumns` maps `joinSourceColumns` into the identities visible
+  /// above a NULL-extending join.
   static Partitioning outputPartitioning(
       velox::core::JoinType joinType,
       const Partitioning& leftPartitioning,
@@ -1358,6 +1381,8 @@ class Join : public Node {
       const ExprVector& leftKeys,
       const ExprVector& rightKeys,
       const PlanObjectSet& outputColumns,
+      const ColumnVector& joinOutputColumns,
+      const ColumnVector& joinSourceColumns,
       Builder& builder);
 
   /// Returns the BOOLEAN mark this semi-project join adds to the preserved
@@ -1400,6 +1425,7 @@ class Join : public Node {
   const ExprVector filter_;
   const bool nullAware_;
   const bool nullAsValue_;
+  const ColumnVector sourceColumns_;
 };
 
 using JoinCP = const Join*;
@@ -1801,6 +1827,15 @@ class Apply : public Node {
     ColumnCP includeMarker;
     /// Output columns; per-kind layout in the class doc.
     ColumnVector outputColumns;
+    /// Columns supplying `outputColumns`, positionally aligned. Body columns
+    /// padded by `kLeft` map to fresh output identities. Empty is shorthand
+    /// for `outputColumns`.
+    ColumnVector sourceColumns;
+
+    /// Returns the explicit sources, or the outputs for a pass-through schema.
+    const ColumnVector& effectiveSourceColumns() const {
+      return sourceColumns.empty() ? outputColumns : sourceColumns;
+    }
   };
 
   /// Transparent hasher for interning `Apply`s by identity.
@@ -1880,6 +1915,14 @@ class Apply : public Node {
     return inLhs_ != nullptr;
   }
 
+  /// Columns supplying the output columns, positionally aligned.
+  const ColumnVector& sourceColumns() const {
+    return sourceColumns_;
+  }
+
+  /// Returns the output positionally supplied by `source`.
+  ColumnCP outputForSource(ColumnCP source) const;
+
   std::span<const NodeCP> inputs() const override {
     return inputs_;
   }
@@ -1897,20 +1940,22 @@ class Apply : public Node {
   const ExprCP inLhs_;
   const ExprCP inBodyKey_;
   const ColumnCP includeMarker_;
+  const ColumnVector sourceColumns_;
 };
 
 using ApplyCP = const Apply*;
 
-/// Asserts the input contains at most one row and passes it through unchanged;
-/// an empty input yields a single all-NULL row, and more than one row raises an
-/// error. Does not change the schema: `outputColumns()` are the input's columns
-/// unchanged (the same `Column` pointers). Used to enforce the 0-or-1-row
-/// cardinality of an uncorrelated scalar subquery.
+/// Asserts the input contains at most one row. An empty input yields a single
+/// all-NULL row, so its outputs have fresh identities mapped positionally to
+/// the input columns. More than one row raises an error. Used to enforce the
+/// 0-or-1-row cardinality of an uncorrelated scalar subquery.
 class EnforceSingleRow : public Node {
  public:
   struct Key {
     /// Input node.
     NodeCP input;
+    /// Fresh outputs, positionally aligned with the input.
+    ColumnVector outputColumns;
   };
 
   /// Transparent hasher for interning `EnforceSingleRow`s by identity.
@@ -1933,6 +1978,11 @@ class EnforceSingleRow : public Node {
 
   NodeCP input() const {
     return input_;
+  }
+
+  /// Input columns supplying the output columns, positionally aligned.
+  const ColumnVector& sourceColumns() const {
+    return input_->outputColumns();
   }
 
   std::span<const NodeCP> inputs() const override {
@@ -2287,7 +2337,9 @@ using WorkingTableCP = const WorkingTable*;
 ///
 /// Requires:
 /// - `anchor`, `step`, `convergence`, and `name` are non-null.
-/// - `outputColumns` equal `anchor->outputColumns()` by pointer identity.
+/// - `sourceColumns` equal `anchor->outputColumns()` by pointer identity.
+/// - `outputColumns` are fresh and positionally type-compatible with
+///   `sourceColumns`.
 /// - `step` output is type-compatible with `anchor` output.
 /// - `anchor->requiredStates()` is empty: the anchor reads no recursive state.
 /// - `step` and `convergence` each require exactly `name`, with columns
@@ -2306,8 +2358,11 @@ class FixedPoint : public Node {
     NodeCP convergence;
     /// Identifies the recursive state represented by this fixed point.
     Name name;
-    /// Shares `Column*` identity with the anchor output.
+    /// Fresh recursive-state output columns.
     ColumnVector outputColumns;
+    /// Anchor columns supplying the initial state, positionally aligned with
+    /// `outputColumns`.
+    ColumnVector sourceColumns;
     /// Maximum number of recursive iterations.
     int32_t maxIterations;
     /// Driver width chosen by physical planning for step and convergence.
@@ -2349,6 +2404,11 @@ class FixedPoint : public Node {
     return name_;
   }
 
+  /// Anchor columns supplying the initial recursive state.
+  const ColumnVector& sourceColumns() const {
+    return sourceColumns_;
+  }
+
   int32_t maxIterations() const {
     return maxIterations_;
   }
@@ -2370,6 +2430,7 @@ class FixedPoint : public Node {
  private:
   const std::array<NodeCP, 3> inputs_;
   const Name name_;
+  const ColumnVector sourceColumns_;
   const int32_t maxIterations_;
   const std::optional<int32_t> recursiveNumDrivers_;
 };

@@ -45,21 +45,35 @@ class JoinHypergraphTest : public UnitTestBase {
   JoinCP
   makeEquiJoin(NodeCP left, NodeCP right, velox::core::JoinType joinType) {
     using velox::core::JoinType;
-    ColumnVector outputColumns;
+    ColumnVector sourceColumns;
     switch (joinType) {
       case JoinType::kRightSemiFilter:
-        outputColumns = right->outputColumns();
+        sourceColumns = right->outputColumns();
         break;
       case JoinType::kRightSemiProject:
-        outputColumns = right->outputColumns();
-        outputColumns.push_back(makeColumn("mark", velox::BOOLEAN()));
+        sourceColumns = right->outputColumns();
+        sourceColumns.push_back(makeColumn("mark", velox::BOOLEAN()));
         break;
       default:
-        outputColumns = left->outputColumns();
-        outputColumns.insert(
-            outputColumns.end(),
+        sourceColumns = left->outputColumns();
+        sourceColumns.insert(
+            sourceColumns.end(),
             right->outputColumns().begin(),
             right->outputColumns().end());
+    }
+    ColumnVector outputColumns = sourceColumns;
+    const PlanObjectSet leftColumns =
+        PlanObjectSet::fromObjects(left->outputColumns());
+    const PlanObjectSet rightColumns =
+        PlanObjectSet::fromObjects(right->outputColumns());
+    for (size_t i = 0; i < sourceColumns.size(); ++i) {
+      ColumnCP source = sourceColumns[i];
+      const bool sourcePreserved =
+          Join::preservesSource(joinType, source, leftColumns, rightColumns);
+      if (!sourcePreserved &&
+          (leftColumns.contains(source) || rightColumns.contains(source))) {
+        outputColumns[i] = Column::createForNullExtendedValue(source);
+      }
     }
     return builder_->make<Join>(Join::Key{
         .left = left,
@@ -68,6 +82,7 @@ class JoinHypergraphTest : public UnitTestBase {
         .leftKeys = {left->outputColumns().front()},
         .rightKeys = {right->outputColumns().front()},
         .outputColumns = std::move(outputColumns),
+        .sourceColumns = std::move(sourceColumns),
     });
   }
 };
@@ -97,7 +112,10 @@ TEST_F(JoinHypergraphTest, connectivity) {
           ExprVector{},
           velox::core::JoinType::kInner,
           /*nullAware=*/false,
-          /*nullAsValue=*/false});
+          /*nullAsValue=*/false,
+          /*markColumn=*/nullptr,
+          /*outputColumns=*/{},
+          /*sourceColumns=*/{}});
   VELOX_ASSERT_THROW(graph.checkConsistency(), "not connected");
 
   RelationSet cSet;
@@ -113,7 +131,10 @@ TEST_F(JoinHypergraphTest, connectivity) {
           ExprVector{},
           velox::core::JoinType::kInner,
           /*nullAware=*/false,
-          /*nullAsValue=*/false});
+          /*nullAsValue=*/false,
+          /*markColumn=*/nullptr,
+          /*outputColumns=*/{},
+          /*sourceColumns=*/{}});
   ASSERT_NO_THROW(graph.checkConsistency());
 }
 
@@ -152,7 +173,10 @@ TEST_F(JoinHypergraphTest, inputEquality) {
             ExprVector{},
             velox::core::JoinType::kInner,
             /*nullAware=*/false,
-            /*nullAsValue=*/false});
+            /*nullAsValue=*/false,
+            /*markColumn=*/nullptr,
+            /*outputColumns=*/{},
+            /*sourceColumns=*/{}});
   };
   addEdge(left, input, leftKey, firstInputKey);
   addEdge(right, input, rightKey, secondInputKey);
@@ -264,7 +288,10 @@ TEST_F(JoinHypergraphTest, connectedViaEligibility) {
           ExprVector{},
           velox::core::JoinType::kInner,
           /*nullAware=*/false,
-          /*nullAsValue=*/false});
+          /*nullAsValue=*/false,
+          /*markColumn=*/nullptr,
+          /*outputColumns=*/{},
+          /*sourceColumns=*/{}});
 
   RelationSet allRelations{aSet};
   allRelations.unionSet(rightEligibility);

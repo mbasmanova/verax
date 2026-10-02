@@ -18,7 +18,9 @@
 
 #include "axiom/connectors/ConnectorMetadata.h"
 #include "axiom/optimizer/Schema.h"
+#include "axiom/optimizer/v2/AppendAll.h"
 #include "axiom/optimizer/v2/Builder.h"
+#include "axiom/optimizer/v2/ExprFactory.h"
 #include "axiom/optimizer/v2/KeyHash.h"
 #include "axiom/optimizer/v2/NodePrinter.h"
 #include "axiom/optimizer/v2/NodeVisitor.h"
@@ -1473,6 +1475,16 @@ bool Join::projectsMark(velox::core::JoinType joinType) {
       joinType == velox::core::JoinType::kRightSemiProject;
 }
 
+bool Join::preservesSource(
+    velox::core::JoinType joinType,
+    ColumnCP source,
+    const PlanObjectSet& leftColumns,
+    const PlanObjectSet& rightColumns) {
+  const auto preserved = preservedSides(joinType);
+  return (preserved.left && leftColumns.contains(source)) ||
+      (preserved.right && rightColumns.contains(source));
+}
+
 Join::Join(Key key, Builder& builder)
     : Node(
           NodeType::kJoin,
@@ -1485,6 +1497,8 @@ Join::Join(Key key, Builder& builder)
                   key.leftKeys,
                   key.rightKeys,
                   PlanObjectSet::fromObjects(key.outputColumns),
+                  key.outputColumns,
+                  key.effectiveSourceColumns(),
                   builder),
               .local = joinLocal(key.joinType, key.left, key.outputColumns)}),
       inputs_{key.left, key.right},
@@ -1493,10 +1507,39 @@ Join::Join(Key key, Builder& builder)
       rightKeys_(std::move(key.rightKeys)),
       filter_(std::move(key.filter)),
       nullAware_(key.nullAware),
-      nullAsValue_(key.nullAsValue) {
+      nullAsValue_(key.nullAsValue),
+      sourceColumns_(key.effectiveSourceColumns()) {
   VELOX_CHECK_NOT_NULL(inputs_[0]);
   VELOX_CHECK_NOT_NULL(inputs_[1]);
   VELOX_CHECK_EQ(leftKeys_.size(), rightKeys_.size());
+  VELOX_CHECK_EQ(sourceColumns_.size(), outputColumns().size());
+  const PlanObjectSet leftColumns =
+      PlanObjectSet::fromObjects(inputs_[0]->outputColumns());
+  const PlanObjectSet rightColumns =
+      PlanObjectSet::fromObjects(inputs_[1]->outputColumns());
+  PlanObjectSet available = leftColumns;
+  available.unionSet(rightColumns);
+  for (size_t i = 0; i < sourceColumns_.size(); ++i) {
+    if ((joinType_ == velox::core::JoinType::kLeftSemiProject ||
+         joinType_ == velox::core::JoinType::kRightSemiProject) &&
+        i + 1 == sourceColumns_.size()) {
+      VELOX_CHECK(
+          sourceColumns_[i] == outputColumns()[i],
+          "Join mark output must supply itself");
+      continue;
+    }
+    VELOX_CHECK(
+        available.contains(sourceColumns_[i]),
+        "Join source column must come from an input. Output: {}. Source: {}",
+        outputColumns()[i]->toString(),
+        sourceColumns_[i]->toString());
+    const bool sourcePreserved = preservesSource(
+        joinType_, sourceColumns_[i], leftColumns, rightColumns);
+    VELOX_CHECK(
+        sourcePreserved || outputColumns()[i] != sourceColumns_[i],
+        "A null-extended Join output must have a fresh identity: {}",
+        outputColumns()[i]->toString());
+  }
   if (nullAware_) {
     VELOX_CHECK(
         joinType_ == velox::core::JoinType::kAnti ||
@@ -1658,6 +1701,8 @@ Partitioning fullJoinPartitioning(
     const ExprVector& leftKeys,
     const ExprVector& rightKeys,
     const PlanObjectSet& outputColumns,
+    const ColumnVector& joinOutputColumns,
+    const ColumnVector& joinSourceColumns,
     Builder& builder) {
   // A keyless full join has no pair to coalesce, so nothing places its rows.
   if (leftKeys.empty()) {
@@ -1678,6 +1723,9 @@ Partitioning fullJoinPartitioning(
 
   ExprVector keys;
   keys.reserve(leftPartitioning.keys.size());
+  ExprFactory exprs{builder};
+  ExprVector joinOutputExpressions;
+  appendAll(joinOutputExpressions, joinOutputColumns);
   // Map each pair of co-partitioned keys to the same join equality.
   for (size_t i = 0; i < leftPartitioning.keys.size(); ++i) {
     std::optional<size_t> joinKeyIndex;
@@ -1691,8 +1739,10 @@ Partitioning fullJoinPartitioning(
     if (!joinKeyIndex.has_value()) {
       return {};
     }
-    const ExprCP leftKey = leftKeys[*joinKeyIndex];
-    const ExprCP rightKey = rightKeys[*joinKeyIndex];
+    const ExprCP leftKey = exprs.substitute(
+        leftKeys[*joinKeyIndex], joinSourceColumns, joinOutputExpressions);
+    const ExprCP rightKey = exprs.substitute(
+        rightKeys[*joinKeyIndex], joinSourceColumns, joinOutputExpressions);
     // Null padding must make the missing side's key NULL so that the coalesce
     // selects the key from the row's surviving side.
     if (leftKey->containsFunction(FunctionSet::kNonDefaultNullBehavior) ||
@@ -1722,6 +1772,8 @@ Partitioning Join::outputPartitioning(
     const ExprVector& leftKeys,
     const ExprVector& rightKeys,
     const PlanObjectSet& outputColumns,
+    const ColumnVector& joinOutputColumns,
+    const ColumnVector& joinSourceColumns,
     Builder& builder) {
   VELOX_CHECK_EQ(leftKeys.size(), rightKeys.size());
 
@@ -1740,6 +1792,8 @@ Partitioning Join::outputPartitioning(
         leftKeys,
         rightKeys,
         outputColumns,
+        joinOutputColumns,
+        joinSourceColumns,
         builder);
   }
 
@@ -1808,6 +1862,7 @@ size_t Join::KeyHash::operator()(const Join* node) const {
       node->rightKeys(),
       node->filter(),
       node->outputColumns(),
+      node->sourceColumns(),
       node->nullAware(),
       node->nullAsValue());
 }
@@ -1821,6 +1876,7 @@ size_t Join::KeyHash::operator()(const Key& key) const {
       key.rightKeys,
       key.filter,
       key.outputColumns,
+      key.effectiveSourceColumns(),
       key.nullAware,
       key.nullAsValue);
 }
@@ -1833,7 +1889,8 @@ bool Join::KeyEq::operator()(const Join* left, const Join* right) const {
       left->filter() == right->filter() &&
       left->nullAware() == right->nullAware() &&
       left->nullAsValue() == right->nullAsValue() &&
-      left->outputColumns() == right->outputColumns();
+      left->outputColumns() == right->outputColumns() &&
+      left->sourceColumns() == right->sourceColumns();
 }
 
 bool Join::KeyEq::operator()(const Key& key, const Join* node) const {
@@ -1842,7 +1899,8 @@ bool Join::KeyEq::operator()(const Key& key, const Join* node) const {
       key.rightKeys == node->rightKeys() && key.filter == node->filter() &&
       key.nullAware == node->nullAware() &&
       key.nullAsValue == node->nullAsValue() &&
-      key.outputColumns == node->outputColumns();
+      key.outputColumns == node->outputColumns() &&
+      key.effectiveSourceColumns() == node->sourceColumns();
 }
 
 bool Join::KeyEq::operator()(const Join* node, const Key& key) const {
@@ -2116,9 +2174,11 @@ Apply::Apply(Key key)
       markColumn_(key.markColumn),
       inLhs_(key.inLhs),
       inBodyKey_(key.inBodyKey),
-      includeMarker_(key.includeMarker) {
+      includeMarker_(key.includeMarker),
+      sourceColumns_(key.effectiveSourceColumns()) {
   VELOX_CHECK_NOT_NULL(inputs_[0]);
   VELOX_CHECK_NOT_NULL(inputs_[1]);
+  VELOX_CHECK_EQ(sourceColumns_.size(), outputColumns().size());
 
   // Allowed kinds at Apply: correlated scalar / LEFT lateral (kLeft),
   // CROSS/INNER lateral (kInner), and EXISTS/IN (kLeftSemiProject).
@@ -2186,10 +2246,17 @@ Apply::Apply(Key key)
   // A body column that already appears in input.outputColumns by
   // Column* identity occupies a single output slot.
   const auto& inputCols = inputs_[0]->outputColumns();
+  VELOX_CHECK_GE(
+      outputColumns().size(),
+      inputCols.size(),
+      "Apply.outputColumns shorter than input.outputColumns");
   for (size_t i = 0; i < inputCols.size(); ++i) {
     VELOX_CHECK(
         outputColumns()[i] == inputCols[i],
         "Apply.outputColumns prefix must match input.outputColumns");
+    VELOX_CHECK(
+        sourceColumns_[i] == inputCols[i],
+        "Apply.sourceColumns prefix must match input.outputColumns");
   }
   if (isLeft || isInner) {
     // kLeft ends with the includeMarker slot; kInner has no marker.
@@ -2205,17 +2272,39 @@ Apply::Apply(Key key)
         inputs_[1]->outputColumns().size(),
         "Apply body-col slot count exceeds body's outputColumns");
     PlanObjectSet seen = PlanObjectSet::fromObjects(inputCols);
+    PlanObjectSet seenSources = seen;
+    ColumnVector bodySources;
+    for (ColumnCP source : inputs_[1]->outputColumns()) {
+      if (!seenSources.contains(source)) {
+        bodySources.push_back(source);
+        seenSources.add(source);
+      }
+    }
+    VELOX_CHECK_EQ(
+        bodySlots,
+        bodySources.size(),
+        "Apply body-col slots must cover unique body.outputColumns");
     for (size_t i = 0; i < bodySlots; ++i) {
       ColumnCP column = outputColumns()[inputCols.size() + i];
       VELOX_CHECK(
           !seen.contains(column),
           "Apply.outputColumns body cols must be unique vs input and each other");
       seen.add(column);
+      VELOX_CHECK(
+          sourceColumns_[inputCols.size() + i] == bodySources[i],
+          "Apply.sourceColumns body cols must match body.outputColumns");
+      VELOX_CHECK(
+          !isLeft || column != bodySources[i],
+          "A null-extended Apply output must have a fresh identity: {}",
+          column->toString());
     }
     if (isLeft) {
       VELOX_CHECK(
           outputColumns().back() == includeMarker_,
           "Apply.outputColumns must end with includeMarker for kLeft");
+      VELOX_CHECK(
+          sourceColumns_.back() == includeMarker_,
+          "Apply.sourceColumns must end with includeMarker for kLeft");
     }
   } else {
     VELOX_CHECK_EQ(
@@ -2225,7 +2314,19 @@ Apply::Apply(Key key)
     VELOX_CHECK(
         outputColumns().back() == markColumn_,
         "Apply.outputColumns must end with markColumn for kLeftSemiProject");
+    VELOX_CHECK(
+        sourceColumns_.back() == markColumn_,
+        "Apply.sourceColumns must end with markColumn for kLeftSemiProject");
   }
+}
+
+ColumnCP Apply::outputForSource(ColumnCP source) const {
+  const auto it = std::ranges::find(sourceColumns_, source);
+  VELOX_CHECK(
+      it != sourceColumns_.end(),
+      "Apply source column is absent: {}",
+      source->toString());
+  return outputColumns()[it - sourceColumns_.begin()];
 }
 
 size_t Apply::KeyHash::operator()(const Apply* node) const {
@@ -2240,7 +2341,8 @@ size_t Apply::KeyHash::operator()(const Apply* node) const {
       node->inLhs(),
       node->inBodyKey(),
       node->includeMarker(),
-      node->outputColumns());
+      node->outputColumns(),
+      node->sourceColumns());
 }
 
 size_t Apply::KeyHash::operator()(const Key& key) const {
@@ -2255,7 +2357,8 @@ size_t Apply::KeyHash::operator()(const Key& key) const {
       key.inLhs,
       key.inBodyKey,
       key.includeMarker,
-      key.outputColumns);
+      key.outputColumns,
+      key.effectiveSourceColumns());
 }
 
 bool Apply::KeyEq::operator()(const Apply* left, const Apply* right) const {
@@ -2267,7 +2370,8 @@ bool Apply::KeyEq::operator()(const Apply* left, const Apply* right) const {
       left->inLhs() == right->inLhs() &&
       left->inBodyKey() == right->inBodyKey() &&
       left->includeMarker() == right->includeMarker() &&
-      left->outputColumns() == right->outputColumns();
+      left->outputColumns() == right->outputColumns() &&
+      left->sourceColumns() == right->sourceColumns();
 }
 
 bool Apply::KeyEq::operator()(const Key& key, const Apply* node) const {
@@ -2278,7 +2382,8 @@ bool Apply::KeyEq::operator()(const Key& key, const Apply* node) const {
       key.markColumn == node->markColumn() && key.inLhs == node->inLhs() &&
       key.inBodyKey == node->inBodyKey() &&
       key.includeMarker == node->includeMarker() &&
-      key.outputColumns == node->outputColumns();
+      key.outputColumns == node->outputColumns() &&
+      key.effectiveSourceColumns() == node->sourceColumns();
 }
 
 bool Apply::KeyEq::operator()(const Apply* node, const Key& key) const {
@@ -2343,31 +2448,45 @@ bool AssignUniqueId::KeyEq::operator()(
 EnforceSingleRow::EnforceSingleRow(Key key)
     : Node(
           NodeType::kEnforceSingleRow,
-          ColumnVector{key.input->outputColumns()},
-          passThroughProperties(key.input)),
+          ColumnVector{key.outputColumns},
+          PhysicalProperties{
+              .globalPartition = projectGlobalPartition(
+                  key.input,
+                  ExprVector{
+                      key.input->outputColumns().begin(),
+                      key.input->outputColumns().end()},
+                  key.outputColumns)}),
       input_(key.input) {
   VELOX_CHECK_NOT_NULL(input_);
+  VELOX_CHECK_EQ(outputColumns().size(), input_->outputColumns().size());
+  for (size_t i = 0; i < outputColumns().size(); ++i) {
+    VELOX_CHECK(
+        outputColumns()[i] != input_->outputColumns()[i],
+        "EnforceSingleRow outputs must have fresh identities");
+  }
 }
 
 size_t EnforceSingleRow::KeyHash::operator()(
     const EnforceSingleRow* node) const {
-  return hashOf(node->input());
+  return hashOf(node->input(), node->outputColumns());
 }
 
 size_t EnforceSingleRow::KeyHash::operator()(const Key& key) const {
-  return hashOf(key.input);
+  return hashOf(key.input, key.outputColumns);
 }
 
 bool EnforceSingleRow::KeyEq::operator()(
     const EnforceSingleRow* left,
     const EnforceSingleRow* right) const {
-  return left->input() == right->input();
+  return left->input() == right->input() &&
+      left->outputColumns() == right->outputColumns();
 }
 
 bool EnforceSingleRow::KeyEq::operator()(
     const Key& key,
     const EnforceSingleRow* node) const {
-  return key.input == node->input();
+  return key.input == node->input() &&
+      key.outputColumns == node->outputColumns();
 }
 
 bool EnforceSingleRow::KeyEq::operator()(
@@ -2620,6 +2739,7 @@ FixedPoint::FixedPoint(const Key& key)
     : Node(NodeType::kFixedPoint, ColumnVector{key.outputColumns}, {}),
       inputs_{key.anchor, key.step, key.convergence},
       name_(key.name),
+      sourceColumns_(key.sourceColumns),
       maxIterations_(key.maxIterations),
       recursiveNumDrivers_(key.recursiveNumDrivers) {
   VELOX_CHECK_NOT_NULL(inputs_[0]);
@@ -2632,8 +2752,19 @@ FixedPoint::FixedPoint(const Key& key)
       !recursiveNumDrivers_.has_value() || *recursiveNumDrivers_ == 1,
       "FixedPoint recursiveNumDrivers must be one when set");
   VELOX_CHECK(
-      std::ranges::equal(outputColumns(), inputs_[0]->outputColumns()),
-      "FixedPoint output columns must match anchor by pointer identity");
+      std::ranges::equal(sourceColumns_, inputs_[0]->outputColumns()),
+      "FixedPoint source columns must match anchor by pointer identity");
+  VELOX_CHECK_EQ(sourceColumns_.size(), outputColumns().size());
+  for (size_t i = 0; i < outputColumns().size(); ++i) {
+    VELOX_CHECK(
+        outputColumns()[i] != sourceColumns_[i],
+        "FixedPoint output must have a fresh identity: {}",
+        outputColumns()[i]->toString());
+    VELOX_CHECK(
+        outputColumns()[i]->value().type->equivalent(
+            *sourceColumns_[i]->value().type),
+        "FixedPoint output column type must match its source");
+  }
 
   const auto& anchorCols = inputs_[0]->outputColumns();
   const auto& stepCols = inputs_[1]->outputColumns();
@@ -2680,6 +2811,7 @@ size_t FixedPoint::KeyHash::operator()(const FixedPoint* node) const {
       node->convergence(),
       node->name(),
       node->outputColumns(),
+      node->sourceColumns(),
       node->maxIterations(),
       node->recursiveNumDrivers().has_value(),
       node->recursiveNumDrivers().value_or(0));
@@ -2692,6 +2824,7 @@ size_t FixedPoint::KeyHash::operator()(const Key& key) const {
       key.convergence,
       key.name,
       key.outputColumns,
+      key.sourceColumns,
       key.maxIterations,
       key.recursiveNumDrivers.has_value(),
       key.recursiveNumDrivers.value_or(0));
@@ -2704,6 +2837,7 @@ bool FixedPoint::KeyEq::operator()(
       left->convergence() == right->convergence() &&
       left->name() == right->name() &&
       left->outputColumns() == right->outputColumns() &&
+      left->sourceColumns() == right->sourceColumns() &&
       left->maxIterations() == right->maxIterations() &&
       left->recursiveNumDrivers() == right->recursiveNumDrivers();
 }
@@ -2713,6 +2847,7 @@ bool FixedPoint::KeyEq::operator()(const Key& key, const FixedPoint* node)
   return key.anchor == node->anchor() && key.step == node->step() &&
       key.convergence == node->convergence() && key.name == node->name() &&
       key.outputColumns == node->outputColumns() &&
+      key.sourceColumns == node->sourceColumns() &&
       key.maxIterations == node->maxIterations() &&
       key.recursiveNumDrivers == node->recursiveNumDrivers();
 }

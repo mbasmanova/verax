@@ -65,6 +65,36 @@ ColumnCP Column::createForSymbol(Name symbol, const Value& value) {
 }
 
 // static
+ColumnCP Column::createForNullExtendedValue(ColumnCP source) {
+  Value value = source->value();
+  value.trueFraction.reset();
+  value.nullFraction.reset();
+  value.nullable = true;
+  const Name outputName = toName(source->outputName());
+  return make<Column>(
+      queryCtx()->newName(outputName),
+      /*relation=*/nullptr,
+      value,
+      /*alias=*/outputName,
+      /*nameInTable=*/nullptr,
+      source->topColumn(),
+      source->path());
+}
+
+// static
+ColumnCP Column::createWithUnknownValue(ColumnCP source) {
+  const Name outputName = toName(source->outputName());
+  return make<Column>(
+      queryCtx()->newName(outputName),
+      /*relation=*/nullptr,
+      Value(source->value().type),
+      /*alias=*/outputName,
+      /*nameInTable=*/nullptr,
+      source->topColumn(),
+      source->path());
+}
+
+// static
 ColumnCP Column::createBoolean(std::string_view prefix) {
   return create(prefix, Value(toType(velox::BOOLEAN()), /*cardinality=*/2));
 }

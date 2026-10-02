@@ -553,6 +553,13 @@ class Translator {
 
   void materializeScope(NodeCP* node, Scope& scope, const velox::RowType& type);
 
+  // Rebinds exact column bindings in `scope` from `sources` to the aligned
+  // fresh `outputs` created by a value-changing node.
+  void rebindScope(
+      Scope& scope,
+      const ColumnVector& sources,
+      const ColumnVector& outputs);
+
   ColumnCP
   columnInScope(NodeCP* node, const Scope& scope, const std::string& name);
 
@@ -730,13 +737,13 @@ class Translator {
       const Scope& scope,
       LiftTarget* liftTarget);
 
-  // Joins 'body' into 'target's pending lifts with the body's own top-level
-  // filter as the join condition, and replaces them with the result under an
-  // EnforceSingleRow. Returns false, changing nothing, when the body's shape
-  // keeps the filter from moving onto the join, leaving the caller to build
-  // an Apply. The caller establishes that the body reads pending-lift columns
-  // and nothing else from outside.
-  bool tryJoinIntoPendingLifts(NodeCP body, LiftTarget& target);
+  // Joins a scalar body that reads only pending lifts into those lifts. Returns
+  // the body's output at the new boundary, or nullptr when the body shape
+  // cannot be joined.
+  ColumnCP tryJoinIntoPendingLifts(
+      NodeCP body,
+      ColumnCP returnedColumn,
+      LiftTarget& target);
 
   // Creates the Column a translated logical-plan node outputs under 'symbol'.
   // Names it after 'symbol', except while re-translating a subquery plan an
@@ -1055,22 +1062,23 @@ Translated Translator::translateFixedPoint(
       !activeFixedPoint_.has_value(),
       "Nested FixedPoint translation is not yet implemented");
 
-  // Every recursive state read shares the anchor's Column* identities. Pruning
-  // must therefore choose one ordered subset and rewrite the fixed-point
-  // output, anchor, step, convergence, and every WorkingTable consistently.
+  // Every recursive state read shares the FixedPoint output identities.
+  // Pruning must therefore choose one ordered subset and rewrite the
+  // fixed-point output, step, convergence, and every WorkingTable
+  // consistently, while retaining the aligned anchor sources.
   // TODO: Implement this coordinated FixedPoint state-schema pruning.
   const auto& anchorType = fixedPoint.anchor()->outputType();
   Translated anchor =
       translateNode(*fixedPoint.anchor(), allNames(*anchorType));
 
-  // A `FixedPoint`'s outputs are its anchor's by pointer identity, so the
-  // anchor produces exactly these columns and nothing else.
   ColumnVector anchorColumns =
       narrowToNames(&anchor.node, anchor.scope, anchorType->names());
+  ColumnVector stateColumns;
+  stateColumns.reserve(anchorColumns.size());
   Scope anchorScope;
   for (size_t i = 0; i < anchorType->size(); ++i) {
-    anchorScope[anchorType->nameOf(static_cast<uint32_t>(i))] =
-        anchorColumns[i];
+    stateColumns.push_back(Column::createWithUnknownValue(anchorColumns[i]));
+    anchorScope[anchorType->nameOf(static_cast<uint32_t>(i))] = stateColumns[i];
   }
 
   const auto* recursionName = toName(fixedPoint.name());
@@ -1078,7 +1086,7 @@ Translated Translator::translateFixedPoint(
       activeFixedPoint_,
       ActiveFixedPoint{
           .stateName = recursionName,
-          .stateColumns = anchorColumns,
+          .stateColumns = stateColumns,
       });
   SCOPE_EXIT {
     activeFixedPoint_ = std::move(previousFixedPoint);
@@ -1108,7 +1116,8 @@ Translated Translator::translateFixedPoint(
           .step = step.node,
           .convergence = convergence,
           .name = recursionName,
-          .outputColumns = std::move(anchorColumns),
+          .outputColumns = std::move(stateColumns),
+          .sourceColumns = std::move(anchorColumns),
           .maxIterations = session_.options().recursionLimit,
           .recursiveNumDrivers = std::nullopt,
       }),
@@ -1892,6 +1901,22 @@ void Translator::materializeScope(
       continue;
     }
     it->second = materializeColumn(node, it->second, name);
+  }
+}
+
+void Translator::rebindScope(
+    Scope& scope,
+    const ColumnVector& sources,
+    const ColumnVector& outputs) {
+  VELOX_CHECK_EQ(sources.size(), outputs.size());
+  for (auto& [name, expr] : scope) {
+    if (!expr->isColumn()) {
+      continue;
+    }
+    const auto it = std::ranges::find(sources, expr->as<Column>());
+    if (it != sources.end()) {
+      expr = outputs[it - sources.begin()];
+    }
   }
 }
 
@@ -2881,14 +2906,31 @@ Translated Translator::translateJoin(
   }
 
   ColumnVector outputColumns;
+  ColumnVector sourceColumns;
+  ColumnVector boundarySources;
+  ColumnVector boundaryOutputs;
+  const auto preserved = Join::preservedSides(joinType);
+  const bool extendsLeft = !preserved.left;
+  const bool extendsRight = !preserved.right;
+  auto appendOutput = [&](ColumnCP source, bool nullExtended) {
+    sourceColumns.push_back(source);
+    if (nullExtended) {
+      ColumnCP output = Column::createForNullExtendedValue(source);
+      outputColumns.push_back(output);
+      boundarySources.push_back(source);
+      boundaryOutputs.push_back(output);
+    } else {
+      outputColumns.push_back(source);
+    }
+  };
   for (ColumnCP column : left.node->outputColumns()) {
     if (liftConditionAbove || requiredColumns.contains(column)) {
-      outputColumns.push_back(column);
+      appendOutput(column, extendsLeft);
     }
   }
   for (ColumnCP column : right.node->outputColumns()) {
     if (liftConditionAbove || requiredColumns.contains(column)) {
-      outputColumns.push_back(column);
+      appendOutput(column, extendsRight);
     }
   }
 
@@ -2902,7 +2944,8 @@ Translated Translator::translateJoin(
          /*filter=*/ExprVector{},
          /*nullAware=*/false,
          /*nullAsValue=*/false,
-         std::move(outputColumns)});
+         std::move(outputColumns),
+         std::move(sourceColumns)});
     return maybeWrapInFilter(joinNode, *join.condition(), std::move(merged));
   }
 
@@ -2937,6 +2980,8 @@ Translated Translator::translateJoin(
         PlanObjectSet::fromObjects(right.node->outputColumns()));
   }
 
+  rebindScope(merged, boundarySources, boundaryOutputs);
+
   JoinCP joinNode = builder_.make<Join>(
       {left.node,
        right.node,
@@ -2946,7 +2991,8 @@ Translated Translator::translateJoin(
        std::move(split.residual),
        /*nullAware=*/false,
        /*nullAsValue=*/false,
-       std::move(outputColumns)});
+       std::move(outputColumns),
+       std::move(sourceColumns)});
   return {joinNode, std::move(merged)};
 }
 
@@ -2968,6 +3014,15 @@ Translated Translator::translateLateralJoin(
     correlationColumns = subqueries_.pop();
   });
 
+  // CROSS / INNER JOIN LATERAL -> kInner (outers with no body row are
+  // dropped, no pad rows). LEFT JOIN LATERAL -> kLeft (NULL-padded).
+  const velox::core::JoinType kind = join.joinType() == lp::JoinType::kLeft
+      ? velox::core::JoinType::kLeft
+      : velox::core::JoinType::kInner;
+  if (kind == velox::core::JoinType::kLeft) {
+    materializeScope(&right.node, right.scope, *join.right()->outputType());
+  }
+
   // The ON condition may read either side.
   Scope merged = left.scope;
   for (auto& [name, expr] : right.scope) {
@@ -2984,19 +3039,33 @@ Translated Translator::translateLateralJoin(
     filter = ExprFactory::flattenAnd(condition);
   }
 
-  // CROSS / INNER JOIN LATERAL -> kInner (outers with no body row are
-  // dropped, no pad rows). LEFT JOIN LATERAL -> kLeft (NULL-padded).
-  const velox::core::JoinType kind = join.joinType() == lp::JoinType::kLeft
-      ? velox::core::JoinType::kLeft
-      : velox::core::JoinType::kInner;
-
   ColumnVector outputColumns = left.node->outputColumns();
-  appendUnique(outputColumns, right.node->outputColumns());
+  ColumnVector sourceColumns = outputColumns;
+  ColumnVector boundarySources;
+  ColumnVector boundaryOutputs;
+  PlanObjectSet seen = PlanObjectSet::fromObjects(outputColumns);
+  for (ColumnCP source : right.node->outputColumns()) {
+    if (seen.contains(source)) {
+      continue;
+    }
+    seen.add(source);
+    sourceColumns.push_back(source);
+    ColumnCP output = kind == velox::core::JoinType::kLeft
+        ? Column::createForNullExtendedValue(source)
+        : source;
+    outputColumns.push_back(output);
+    if (output != source) {
+      boundarySources.push_back(source);
+      boundaryOutputs.push_back(output);
+    }
+  }
   ColumnCP includeMarker = nullptr;
   if (kind == velox::core::JoinType::kLeft) {
     includeMarker = Column::createBoolean("_include");
     outputColumns.push_back(includeMarker);
+    sourceColumns.push_back(includeMarker);
   }
+  rebindScope(merged, boundarySources, boundaryOutputs);
 
   auto* apply = builder_.make<Apply>(
       {left.node,
@@ -3009,7 +3078,8 @@ Translated Translator::translateLateralJoin(
        /*inLhs=*/nullptr,
        /*inBodyKey=*/nullptr,
        includeMarker,
-       std::move(outputColumns)});
+       std::move(outputColumns),
+       std::move(sourceColumns)});
   return {apply, std::move(merged)};
 }
 
@@ -3100,32 +3170,45 @@ void checkApplyInput(NodeCP applyInput, ExprCP inLhs) {
       inLhs->toString());
 }
 
-bool Translator::tryJoinIntoPendingLifts(NodeCP body, LiftTarget& target) {
+ColumnCP Translator::tryJoinIntoPendingLifts(
+    NodeCP body,
+    ColumnCP returnedColumn,
+    LiftTarget& target) {
   if (!body->is(NodeType::kFilter)) {
-    return false;
+    return nullptr;
   }
 
   const Filter* filter = body->as<Filter>();
   NodeCP child = filter->input();
-
   const auto pendingLiftColumns =
       PlanObjectSet::fromObjects(target.pendingLifts->outputColumns());
-  // A pending-lift column read below the filter cannot be supplied by the
-  // join.
+  // The join cannot supply a pending-lift value read below its right input's
+  // filter.
   if (readsAny(child, pendingLiftColumns)) {
-    return false;
+    return nullptr;
   }
 
   auto split = JoinCondition::splitEquiKeys(
       filter->predicates(),
       pendingLiftColumns,
       PlanObjectSet::fromObjects(child->outputColumns()));
-
-  ColumnVector joinOutput = target.pendingLifts->outputColumns();
-  appendUnique(joinOutput, child->outputColumns());
-  // kLeft because the pending lifts carry values other references read. An
-  // inner join would drop their row when the body has no match, and the
-  // EnforceSingleRow above would then null every column, not just the body's.
+  ColumnVector sourceColumns = target.pendingLifts->outputColumns();
+  appendUnique(sourceColumns, child->outputColumns());
+  ColumnVector outputColumns = target.pendingLifts->outputColumns();
+  outputColumns.reserve(sourceColumns.size());
+  ColumnCP boundaryResult = nullptr;
+  for (ColumnCP source : sourceColumns) {
+    if (pendingLiftColumns.contains(source)) {
+      continue;
+    }
+    ColumnCP output = Column::createForNullExtendedValue(source);
+    outputColumns.push_back(output);
+    if (source == returnedColumn) {
+      boundaryResult = output;
+    }
+  }
+  VELOX_CHECK_NOT_NULL(boundaryResult);
+  // Preserve the single pending-lift row when the scalar body has no match.
   NodeCP join = builder_.make<Join>({
       target.pendingLifts,
       child,
@@ -3135,10 +3218,15 @@ bool Translator::tryJoinIntoPendingLifts(NodeCP body, LiftTarget& target) {
       std::move(split.residual),
       /*nullAware=*/false,
       /*nullAsValue=*/false,
-      std::move(joinOutput),
+      std::move(outputColumns),
+      std::move(sourceColumns),
   });
-  target.pendingLifts = builder_.make<EnforceSingleRow>({join});
-  return true;
+  target.pendingLifts = builder_.make<EnforceDistinct>({
+      join,
+      ExprVector{builder_.makeBoolean(true)},
+      toName("Scalar sub-query has returned multiple rows"),
+  });
+  return boundaryResult;
 }
 
 ColumnVector Translator::makeOutputColumns(
@@ -3807,9 +3895,12 @@ ExprCP Translator::liftSubquery(
       // Uncorrelated scalar: cross-join with the body, which must yield a
       // single row. Wrap it in EnforceSingleRow unless it already provably
       // produces exactly one row, in which case the guard is a no-op.
-      NodeCP wrapped = producesExactlyOneRow(body)
-          ? body
-          : builder_.make<EnforceSingleRow>({body});
+      NodeCP wrapped = body;
+      if (!producesExactlyOneRow(body)) {
+        returnedColumn = Column::createForNullExtendedValue(returnedColumn);
+        wrapped = builder_.make<EnforceSingleRow>(
+            {body, ColumnVector{returnedColumn}});
+      }
 
       liftTarget->pendingLifts = liftTarget->pendingLifts == nullptr
           ? wrapped
@@ -3836,13 +3927,12 @@ ExprCP Translator::liftSubquery(
 
   const bool ontoPendingLifts =
       readsOnlyPendingLifts(*liftTarget, correlationColumns, isIn);
-  // The body reads only single-row pending-lift values, so when its filter can
-  // carry them onto a join there is nothing per-row left to apply.
-  if (ontoPendingLifts && enforceSingleRow &&
-      tryJoinIntoPendingLifts(body, *liftTarget)) {
-    return returnedColumn;
+  if (ontoPendingLifts && enforceSingleRow) {
+    if (ColumnCP boundaryResult =
+            tryJoinIntoPendingLifts(body, returnedColumn, *liftTarget)) {
+      return boundaryResult;
+    }
   }
-
   if (!ontoPendingLifts) {
     flushLifts(*liftTarget);
   }
@@ -3857,16 +3947,31 @@ ExprCP Translator::liftSubquery(
   //                      ++ unique(body.outputColumns) ++ includeMarker
   //   kLeftSemiProject : input.outputColumns ++ markColumn
   ColumnVector outputColumns = applyInput->outputColumns();
+  ColumnVector sourceColumns = outputColumns;
   if (isSemi) {
     outputColumns.push_back(markColumn);
+    sourceColumns.push_back(markColumn);
   } else {
-    appendUnique(outputColumns, body->outputColumns());
+    PlanObjectSet seen = PlanObjectSet::fromObjects(outputColumns);
+    for (ColumnCP source : body->outputColumns()) {
+      if (seen.contains(source)) {
+        continue;
+      }
+      seen.add(source);
+      sourceColumns.push_back(source);
+      ColumnCP output = Column::createForNullExtendedValue(source);
+      outputColumns.push_back(output);
+      if (source == returnedColumn) {
+        returnedColumn = output;
+      }
+    }
   }
 
   ColumnCP includeMarker = nullptr;
   if (kind == velox::core::JoinType::kLeft) {
     includeMarker = Column::createBoolean("_include");
     outputColumns.push_back(includeMarker);
+    sourceColumns.push_back(includeMarker);
   }
 
   auto* apply = builder_.make<Apply>(
@@ -3880,7 +3985,8 @@ ExprCP Translator::liftSubquery(
        inLhs,
        inBodyKey,
        includeMarker,
-       std::move(outputColumns)});
+       std::move(outputColumns),
+       std::move(sourceColumns)});
   applyInput = apply;
   return returnedColumn;
 }

@@ -176,6 +176,15 @@ class Column : public Expr {
   /// named column; synthetic columns use `create`.
   static ColumnCP createForSymbol(Name symbol, const Value& value);
 
+  /// Creates a fresh identity for a NULL-extending boundary. Preserves
+  /// subfield provenance and facts about non-null values, and clears facts
+  /// affected by added NULLs.
+  static ColumnCP createForNullExtendedValue(ColumnCP source);
+
+  /// Creates a fresh identity with the same emitted name, type and subfield
+  /// provenance, and unknown value facts.
+  static ColumnCP createWithUnknownValue(ColumnCP source);
+
   /// Synthesizes a `BOOLEAN` column with cardinality 2 (the two valid
   /// boolean values). Convenience for the recurring pattern of
   /// creating eligibility / marker columns in rewrites; equivalent to

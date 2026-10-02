@@ -1351,6 +1351,15 @@ velox::core::PlanNodePtr Emitter::emitJoin(const Join& join) {
   velox::core::PlanNodePtr left = emit(join.left());
   velox::core::PlanNodePtr right = emit(join.right());
 
+  const auto sourceNames = namesOf(join.sourceColumns());
+  const auto outputNames = namesOf(join.outputColumns());
+  const auto finishJoin = [&](velox::core::PlanNodePtr plan) {
+    return sourceNames == outputNames
+        ? std::move(plan)
+        : wrapWithRenameProject(
+              std::move(plan), join.sourceColumns(), outputNames);
+  };
+
   // PrecomputeProjections guarantees each key is a FieldAccess-shaped
   // Column ref by this point.
   velox::core::TypedExprPtr filter;
@@ -1366,18 +1375,19 @@ velox::core::PlanNodePtr Emitter::emitJoin(const Join& join) {
       left = addLocalPartitionForCountingJoin(std::move(left), leftKeys);
     }
 
-    return std::make_shared<velox::core::HashJoinNode>(
-        nextId(),
-        join.joinType(),
-        join.nullAware(),
-        std::move(leftKeys),
-        std::move(rightKeys),
-        filter,
-        std::move(left),
-        std::move(right),
-        makeRowType(join.outputColumns()),
-        /*useHashTableCache=*/false,
-        join.nullAsValue());
+    return finishJoin(
+        std::make_shared<velox::core::HashJoinNode>(
+            nextId(),
+            join.joinType(),
+            join.nullAware(),
+            std::move(leftKeys),
+            std::move(rightKeys),
+            filter,
+            std::move(left),
+            std::move(right),
+            makeRowType(join.sourceColumns()),
+            /*useHashTableCache=*/false,
+            join.nullAsValue()));
   }
 
   const auto joinType = join.joinType();
@@ -1390,17 +1400,18 @@ velox::core::PlanNodePtr Emitter::emitJoin(const Join& join) {
     VELOX_CHECK(
         !join.nullAware(),
         "Null-aware kAnti/kLeftSemiFilter without equi-keys is not supported");
-    return emitSemiAntiViaLeftSemiProject(
-        join, std::move(left), std::move(right), filter);
+    return finishJoin(emitSemiAntiViaLeftSemiProject(
+        join, std::move(left), std::move(right), filter));
   }
 
-  return std::make_shared<velox::core::NestedLoopJoinNode>(
-      nextId(),
-      joinType,
-      filter,
-      std::move(left),
-      std::move(right),
-      makeRowType(join.outputColumns()));
+  return finishJoin(
+      std::make_shared<velox::core::NestedLoopJoinNode>(
+          nextId(),
+          joinType,
+          filter,
+          std::move(left),
+          std::move(right),
+          makeRowType(join.sourceColumns())));
 }
 
 velox::core::PlanNodePtr Emitter::emitSemiAntiViaLeftSemiProject(

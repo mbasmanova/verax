@@ -177,11 +177,11 @@ listed separately after the list.
    final projection may allocate fresh canonical ids from the shared
    `NameAllocator`, so an identity check would spuriously fail.
 
-4. **Column-pointer identity is shared.** The anchor, the working table, and the
-   fixed-point output refer to the same `Column*` objects for the recursive
-   state, which invariant 2 enforces. A pass may rewrite columns within a branch
-   as long as it restores these identities at the branch boundary before
-   rebuilding the `FixedPoint`.
+4. **Recursive-state identity is explicit.** The fixed-point output and working
+   table share `outputColumns`; the anchor supplies the initial values through
+   the positionally aligned `sourceColumns`. A pass may rewrite columns within
+   a branch as long as it restores both boundary schemas before rebuilding the
+   `FixedPoint`.
 
 5. **One BOOLEAN convergence column.** The convergence plan must produce exactly
    one BOOLEAN column. Any single-column BOOLEAN subtree that reads the state is

@@ -246,7 +246,7 @@ ColumnVector rewriteColumns(
   return result;
 }
 
-// Restores a node boundary's original column identities and order after its
+// Restores a fixed internal boundary's column identities and order after its
 // input rewrites equivalent columns away.
 NodeCP restoreOutputColumns(
     Builder& builder,
@@ -534,6 +534,51 @@ velox::core::JoinType demoteOuterToInner(
       break;
   }
   VELOX_UNREACHABLE();
+}
+
+// Maps fresh join outputs to the input columns that supply them.
+ExprFactory::ExprSubstitution joinOutputSources(const Join* join) {
+  ExprFactory::ExprSubstitution rewrites;
+  for (size_t i = 0; i < join->outputColumns().size(); ++i) {
+    if (join->outputColumns()[i] != join->sourceColumns()[i]) {
+      rewrites.emplace(join->outputColumns()[i], join->sourceColumns()[i]);
+    }
+  }
+  return rewrites;
+}
+
+// Returns the output-to-source mappings made valid when `joinType` preserves
+// a side the original join null-extended.
+ExprFactory::ExprSubstitution demotedJoinOutputs(
+    const Join* join,
+    velox::core::JoinType joinType,
+    const PlanObjectSet& leftColumns,
+    const PlanObjectSet& rightColumns) {
+  ExprFactory::ExprSubstitution rewrites;
+  for (size_t i = 0; i < join->outputColumns().size(); ++i) {
+    ColumnCP source = join->sourceColumns()[i];
+    const bool originallyPreserved = Join::preservesSource(
+        join->joinType(), source, leftColumns, rightColumns);
+    const bool nowPreserved =
+        Join::preservesSource(joinType, source, leftColumns, rightColumns);
+    if (!originallyPreserved && nowPreserved &&
+        join->outputColumns()[i] != source) {
+      rewrites.emplace(join->outputColumns()[i], source);
+    }
+  }
+  return rewrites;
+}
+
+// Rewrites a set of columns through `rewrites`.
+PlanObjectSet rewriteColumnSet(
+    ExprFactory& exprs,
+    const PlanObjectSet& columns,
+    const ExprFactory::ExprSubstitution& rewrites) {
+  PlanObjectSet result;
+  columns.forEach<Column>([&](ColumnCP column) {
+    result.add(replacementColumn(exprs, column, rewrites));
+  });
+  return result;
 }
 
 // Result of fusing a consuming mark filter into a kLeftSemiProject
@@ -1567,24 +1612,30 @@ class Pushdown : public NodeRewriter<PushdownContext> {
         simplifier_);
     const auto* project = newProject->as<Project>();
 
-    // Drop the Project when its surviving outputs are a pure pass-through of
-    // the (rewritten) input's output columns. Pushdown can make a Project
-    // identity by pruning columns below it — e.g. a semi-project join fused
-    // to a semi-filter no longer emits the mark this Project dropped. An
-    // empty-output Project is never identity: it eliminates all columns (the
-    // semi-join EXISTS gate), which the input does not guarantee on its own.
-    const ColumnVector& inputColumns = project->input()->outputColumns();
+    // A Project over every input column changes names or layout, not values.
+    // Propagate its identities upward and let consumers use the input columns
+    // directly. A Project that prunes columns must preserve that narrower
+    // boundary.
     const auto& projectExprs = project->exprs();
     const auto& projectOutputs = project->outputColumns();
-    bool isIdentity{
+    ExprFactory::ExprSubstitution projectRewrites;
+    bool preservesAllInputColumns{
         !projectOutputs.empty() &&
-        projectOutputs.size() == inputColumns.size()};
-    for (size_t i = 0; isIdentity && i < projectOutputs.size(); ++i) {
-      isIdentity = projectOutputs[i] == inputColumns[i] &&
-          projectExprs[i] == inputColumns[i];
+        projectOutputs.size() == project->input()->outputColumns().size()};
+    for (size_t i = 0; preservesAllInputColumns && i < projectOutputs.size();
+         ++i) {
+      preservesAllInputColumns = projectExprs[i]->isColumn();
+      if (preservesAllInputColumns && projectOutputs[i] != projectExprs[i]) {
+        projectRewrites.emplace(projectOutputs[i], projectExprs[i]);
+      }
     }
+    preservesAllInputColumns = preservesAllInputColumns &&
+        PlanObjectSet::fromObjects(projectExprs)
+            .containsAll(project->input()->outputColumns());
 
-    if (isIdentity) {
+    if (preservesAllInputColumns) {
+      mergeRewrites(childContext.outputRewrites, projectRewrites);
+      blocked = applyRewrites(exprs_, blocked, projectRewrites);
       newProject = project->input();
     }
     return propagateVisibleRewrites(
@@ -1987,7 +2038,9 @@ class Pushdown : public NodeRewriter<PushdownContext> {
   // Simplifies each key using non-null facts from its input and records
   // substitutions introduced by the simplified key pairs.
   void simplifyJoinKeys(
+      const Join* node,
       velox::core::JoinType joinType,
+      const ExprFactory::ExprSubstitution& demotionRewrites,
       RewrittenJoinInputs& join) {
     const auto& leftNonNull = nonNullOutput_.get(join.left);
     for (ExprCP& key : join.leftKeys) {
@@ -1997,8 +2050,25 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     for (ExprCP& key : join.rightKeys) {
       key = simplifier_.simplify(key, rightNonNull);
     }
+    auto visibleRewrites = demotionRewrites;
+    mergeRewrites(visibleRewrites, join.outputRewrites);
+    ColumnVector sources;
+    sources.reserve(node->sourceColumns().size());
+    for (ColumnCP source : node->sourceColumns()) {
+      sources.push_back(replacementColumn(exprs_, source, join.outputRewrites));
+    }
+    ExprVector outputs;
+    appendAll(outputs, node->outputColumns());
+    outputs = applyRewrites(exprs_, outputs, visibleRewrites);
+    ExprFactory::ExprSubstitution sourceToOutput;
+    for (size_t i = 0; i < sources.size(); ++i) {
+      sourceToOutput.emplace(sources[i], outputs[i]);
+    }
     addJoinKeyRewrites(
-        joinType, join.leftKeys, join.rightKeys, join.outputRewrites);
+        joinType,
+        applyRewrites(exprs_, join.leftKeys, sourceToOutput),
+        applyRewrites(exprs_, join.rightKeys, sourceToOutput),
+        join.outputRewrites);
   }
 
   // Precomputes a cross join's filter expressions on their respective inputs.
@@ -2006,7 +2076,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       NodeCP& left,
       NodeCP& right,
       ExprVector& filter,
-      const ColumnVector& outputColumns) {
+      const ColumnVector& sourceColumns) {
     if (!filter.empty()) {
       PrecomputeProjections leftPrecompute{
           left, builder(), simplifier_, /*projectAllInputs=*/false};
@@ -2019,7 +2089,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
 
       // Add pass-through columns before computed filter expressions to
       // preserve the join's output order in each projection.
-      for (ColumnCP column : outputColumns) {
+      for (ColumnCP column : sourceColumns) {
         if (leftColumns.contains(column)) {
           leftPrecompute.toColumn(column);
         } else if (rightColumns.contains(column)) {
@@ -2045,6 +2115,13 @@ class Pushdown : public NodeRewriter<PushdownContext> {
   // kind's match semantics. Neither path moves a nondeterministic conjunct
   // into an input, which would evaluate it once for rows the join multiplies.
   NodeCP rewriteJoin(const Join* node, PushdownContext& context) override {
+    for (size_t i = 0; i < node->outputColumns().size(); ++i) {
+      if (node->outputColumns()[i] != node->sourceColumns()[i]) {
+        access_.addProducing(
+            node->sourceColumns()[i], node->outputColumns()[i]);
+      }
+    }
+
     if (NodeCP simplified = simplifyNeverMatchingJoin(node, context)) {
       return simplified;
     }
@@ -2068,6 +2145,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     ColumnCP fusedMark{nullptr};
     bool fusedNullAware{false};
     velox::core::JoinType newKind;
+    ExprFactory::ExprSubstitution demotionRewrites;
     if (auto fusion =
             fuseMarkFilter(node, context.pending, context.requiredAbove)) {
       newKind = fusion->joinType;
@@ -2083,12 +2161,19 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       }
       context.pending = std::move(remaining);
     } else {
+      const auto sourceRewrites = joinOutputSources(node);
       newKind = demoteOuterToInner(
           node->joinType(),
-          context.pending,
-          context.nonNullColumns,
+          applyRewrites(exprs_, context.pending, sourceRewrites),
+          rewriteColumnSet(exprs_, context.nonNullColumns, sourceRewrites),
           leftColumns,
           rightColumns);
+      demotionRewrites =
+          demotedJoinOutputs(node, newKind, leftColumns, rightColumns);
+      if (!demotionRewrites.empty()) {
+        context.pending =
+            applyRewrites(exprs_, context.pending, demotionRewrites);
+      }
     }
 
     ExprVector leftPending;
@@ -2143,16 +2228,21 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     PlanObjectSet outputsKept = context.requiredAbove;
     outputsKept.unionColumns(above);
     ColumnVector newOutputColumns;
+    ColumnVector newSourceColumns;
     newOutputColumns.reserve(node->outputColumns().size());
-    for (ColumnCP column : node->outputColumns()) {
+    newSourceColumns.reserve(node->sourceColumns().size());
+    for (size_t i = 0; i < node->outputColumns().size(); ++i) {
+      ColumnCP column = node->outputColumns()[i];
       // Drop the fused mark: its only consumer was the conjunct that just
       // became the filtering join's semantics.
       if (column != fusedMark && outputsKept.contains(column)) {
-        newOutputColumns.push_back(column);
+        newOutputColumns.push_back(
+            replacementColumn(exprs_, column, demotionRewrites));
+        newSourceColumns.push_back(node->sourceColumns()[i]);
       }
     }
 
-    PlanObjectSet sideRequired = PlanObjectSet::fromObjects(newOutputColumns);
+    PlanObjectSet sideRequired = PlanObjectSet::fromObjects(newSourceColumns);
     sideRequired.unionColumns(newLeftKeys);
     sideRequired.unionColumns(newRightKeys);
     sideRequired.unionColumns(newFilter);
@@ -2162,7 +2252,8 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     // can be demoted. A key side contributes its columns only when
     // its expression has default null behavior — otherwise null
     // values can leak through it.
-    PlanObjectSet childNonNullColumns = context.nonNullColumns;
+    PlanObjectSet childNonNullColumns =
+        rewriteColumnSet(exprs_, context.nonNullColumns, demotionRewrites);
     if (newKind == velox::core::JoinType::kInner) {
       auto addIfDefaultNull = [&](ExprCP key) {
         if (!hasNonDefaultNullBehavior(key)) {
@@ -2197,20 +2288,47 @@ class Pushdown : public NodeRewriter<PushdownContext> {
         std::move(newLeftKeys),
         std::move(newRightKeys),
         std::move(newFilter));
-    simplifyJoinKeys(newKind, rewritten);
+    simplifyJoinKeys(node, newKind, demotionRewrites, rewritten);
     NodeCP newLeft = rewritten.left;
     NodeCP newRight = rewritten.right;
     newLeftKeys = std::move(rewritten.leftKeys);
     newRightKeys = std::move(rewritten.rightKeys);
     newFilter = std::move(rewritten.filter);
-    auto outputRewrites = std::move(rewritten.outputRewrites);
+    auto outputRewrites = std::move(demotionRewrites);
+    mergeRewrites(outputRewrites, rewritten.outputRewrites);
     if (!outputRewrites.empty()) {
       newFilter = applyRewrites(exprs_, newFilter, outputRewrites);
       above = applyRewrites(exprs_, above, outputRewrites);
-      newOutputColumns = rewriteColumns(
-          exprs_, newOutputColumns, outputRewrites, /*dropDuplicates=*/true);
+      ColumnVector rewrittenOutputs;
+      ColumnVector rewrittenSources;
+      ExprFactory::ExprSubstitution boundaryRewrites;
+      PlanObjectSet addedOutputs;
+      for (size_t i = 0; i < newOutputColumns.size(); ++i) {
+        const ColumnCP previousOutput = newOutputColumns[i];
+        const ColumnCP previousSource = newSourceColumns[i];
+        ColumnCP output =
+            replacementColumn(exprs_, newOutputColumns[i], outputRewrites);
+        ColumnCP source =
+            replacementColumn(exprs_, newSourceColumns[i], outputRewrites);
+        if (previousOutput != previousSource &&
+            (source != previousSource ||
+             previousOutput->outputName() != source->outputName())) {
+          output = Column::createForNullExtendedValue(source);
+          boundaryRewrites.emplace(previousOutput, output);
+        }
+        if (addedOutputs.contains(output)) {
+          continue;
+        }
+        addedOutputs.add(output);
+        rewrittenOutputs.push_back(output);
+        rewrittenSources.push_back(source);
+      }
+      mergeRewrites(outputRewrites, boundaryRewrites);
+      newFilter = applyRewrites(exprs_, newFilter, boundaryRewrites);
+      above = applyRewrites(exprs_, above, boundaryRewrites);
+      newOutputColumns = std::move(rewrittenOutputs);
+      newSourceColumns = std::move(rewrittenSources);
     }
-
     const auto isEmpty = [](NodeCP input) {
       return input->is(NodeType::kValues) &&
           input->as<Values>()->cardinality() == 0;
@@ -2221,7 +2339,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       if (!Join::isKnownEmpty(newKind, leftIsEmpty, !leftIsEmpty)) {
         const auto expressions = builder().paddedExpressions(
             remaining->outputColumns(),
-            newOutputColumns,
+            newSourceColumns,
             /*falsePadding=*/Join::projectsMark(newKind));
         ExprFactory::ExprSubstitution projectionRewrites;
         for (size_t i = 0; i < newOutputColumns.size(); ++i) {
@@ -2243,14 +2361,15 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     // here, before distribution is chosen, the moved value is what gets
     // broadcast rather than the columns it reads.
     if (newLeftKeys.empty()) {
-      precomputeCrossJoinFilter(newLeft, newRight, newFilter, newOutputColumns);
+      precomputeCrossJoinFilter(newLeft, newRight, newFilter, newSourceColumns);
     }
 
     NodeCP newJoin =
         (newLeft == node->left() && newRight == node->right() &&
          newFilter == node->filter() && newKind == node->joinType() &&
          newLeftKeys == node->leftKeys() && newRightKeys == node->rightKeys() &&
-         newOutputColumns == node->outputColumns())
+         newOutputColumns == node->outputColumns() &&
+         newSourceColumns == node->sourceColumns())
         ? static_cast<NodeCP>(node)
         : builder().make<Join>(
               {newLeft,
@@ -2261,7 +2380,8 @@ class Pushdown : public NodeRewriter<PushdownContext> {
                std::move(newFilter),
                fusedMark != nullptr ? fusedNullAware : node->nullAware(),
                node->nullAsValue(),
-               std::move(newOutputColumns)});
+               std::move(newOutputColumns),
+               std::move(newSourceColumns)});
     NodeCP result = maybeWrapFilter(newJoin, std::move(above));
     retainVisibleRewrites(exprs_, outputRewrites, result->outputColumns());
     context.outputRewrites = std::move(outputRewrites);
@@ -2920,8 +3040,10 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       ExprVector blocked) {
     childContext.required.unionColumns(childContext.pending);
     childContext.requiredAbove = childContext.required;
-    NodeCP newInput = dropColumnsForWindow(
-        rewrite(node->input(), childContext), childContext.required);
+    NodeCP newInput = rewrite(node->input(), childContext);
+    const PlanObjectSet rewrittenRequired = rewriteColumnSet(
+        exprs_, childContext.required, childContext.outputRewrites);
+    newInput = dropColumnsForWindow(newInput, rewrittenRequired);
     ExprVector partitionKeys = node->partitionKeys();
     ExprVector orderKeys = node->orderKeys();
     OrderTypeVector orderTypes = node->orderTypes();
@@ -3015,8 +3137,10 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     }
     childContext.required.unionColumns(childContext.pending);
     childContext.requiredAbove = childContext.required;
-    NodeCP newInput = dropColumnsForWindow(
-        rewrite(node->input(), childContext), childContext.required);
+    NodeCP newInput = rewrite(node->input(), childContext);
+    const PlanObjectSet rewrittenRequired = rewriteColumnSet(
+        exprs_, childContext.required, childContext.outputRewrites);
+    newInput = dropColumnsForWindow(newInput, rewrittenRequired);
 
     ExprVector partitionKeys = node->partitionKeys();
     ExprVector orderKeys = node->orderKeys();
@@ -3060,7 +3184,41 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       const EnforceSingleRow* node,
       PushdownContext& context) override {
     return blockAt(context, [&](PushdownContext& empty) {
-      return NodeRewriter::rewriteEnforceSingleRow(node, empty);
+      ColumnVector outputColumns;
+      ColumnVector sourceColumns;
+      for (size_t i = 0; i < node->outputColumns().size(); ++i) {
+        if (empty.required.contains(node->outputColumns()[i])) {
+          outputColumns.push_back(node->outputColumns()[i]);
+          sourceColumns.push_back(node->sourceColumns()[i]);
+        }
+      }
+
+      empty.required = PlanObjectSet::fromObjects(sourceColumns);
+      empty.requiredAbove = empty.required;
+      NodeCP newInput = rewrite(node->input(), empty);
+
+      ExprVector sourceExpressions;
+      appendAll(sourceExpressions, sourceColumns);
+      applyOutputRewrites(empty, sourceExpressions);
+      empty.outputRewrites.clear();
+
+      if (std::ranges::equal(sourceExpressions, newInput->outputColumns())) {
+        // Keep the value-changing boundary on the rewritten sources and make
+        // its fresh outputs visible to consumers above it.
+        for (size_t i = 0; i < sourceColumns.size(); ++i) {
+          const ColumnCP source = newInput->outputColumns()[i];
+          if (source != sourceColumns[i]) {
+            const ColumnCP output = Column::createForNullExtendedValue(source);
+            empty.outputRewrites.emplace(outputColumns[i], output);
+            outputColumns[i] = output;
+          }
+        }
+      } else {
+        newInput = builder().make<Project>(
+            {newInput, std::move(sourceExpressions), sourceColumns});
+      }
+      return builder().make<EnforceSingleRow>(
+          {newInput, std::move(outputColumns)});
     });
   }
 
@@ -3168,21 +3326,23 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       override {
     // Filtering seed rows is sound only when `p(step(x))` implies `p(x)`;
     // otherwise, a rejected seed can still produce matching descendants.
-    // The step and convergence subtrees read the recursive state through the
-    // same columns the anchor produces, so their paths must be recorded before
-    // the anchor's scan negotiates; the descent reaches them only afterwards.
+    // Record the step and convergence paths before the anchor's scan
+    // negotiates; the descent reaches them only afterwards.
     access_.addSubtree(*node->step());
     access_.addSubtree(*node->convergence());
+    for (size_t i = 0; i < node->outputColumns().size(); ++i) {
+      access_.addProducing(node->sourceColumns()[i], node->outputColumns()[i]);
+    }
 
     PushdownContext anchorContext;
-    anchorContext.required.unionObjects(node->outputColumns());
+    anchorContext.required.unionObjects(node->sourceColumns());
     anchorContext.requiredAbove = anchorContext.required;
     NodeCP newAnchor = rewrite(node->anchor(), anchorContext);
     newAnchor = restoreOutputColumns(
         builder(),
         exprs_,
         newAnchor,
-        node->outputColumns(),
+        node->sourceColumns(),
         anchorContext.outputRewrites);
 
     // Required columns use step output identities because they may differ from
@@ -3223,6 +3383,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
           .convergence = newConvergence,
           .name = node->name(),
           .outputColumns = node->outputColumns(),
+          .sourceColumns = node->sourceColumns(),
           .maxIterations = node->maxIterations(),
           .recursiveNumDrivers = node->recursiveNumDrivers(),
       });
@@ -3669,7 +3830,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
 
 } // namespace
 
-NodeCP PushdownAndPrunePass::run(
+PushdownAndPrunePass::Result PushdownAndPrunePass::run(
     NodeCP root,
     const ColumnVector& outputColumns,
     Builder& builder,
@@ -3682,12 +3843,24 @@ NodeCP PushdownAndPrunePass::run(
   context.requiredAbove = context.required;
   NodeCP result = pass.rewrite(root, context);
 
-  if (context.outputRewrites.empty()) {
-    return result;
-  }
   ExprFactory exprs{builder};
-  return restoreOutputColumns(
-      builder, exprs, result, outputColumns, context.outputRewrites);
+  ColumnVector rewrittenOutputs;
+  rewrittenOutputs.reserve(outputColumns.size());
+  for (ColumnCP output : outputColumns) {
+    ExprCP replacement = applyRewrites(exprs, output, context.outputRewrites);
+    if (!replacement->isColumn()) {
+      return {
+          restoreOutputColumns(
+              builder, exprs, result, outputColumns, context.outputRewrites),
+          outputColumns,
+      };
+    }
+    rewrittenOutputs.push_back(replacement->as<Column>());
+  }
+  return {
+      result,
+      std::move(rewrittenOutputs),
+  };
 }
 
 } // namespace facebook::axiom::optimizer::v2

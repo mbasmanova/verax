@@ -69,6 +69,32 @@ ColumnVector coverNarrowedColumns(
   return columns;
 }
 
+// Adds fresh outputs at the join boundary that defines their values.
+ColumnVector joinOutputColumns(
+    const JoinOp* join,
+    const JoinHypergraph& graph,
+    NodeCP left,
+    NodeCP right) {
+  ColumnVector columns =
+      coverNarrowedColumns(graph, join->cover(), left, right);
+  const PlanObjectSet needed = graph.coverOutputColumns(join->cover());
+  const auto& edge = graph.edges()[join->edgeIndex];
+  for (size_t i = 0; i < edge.outputColumns().size(); ++i) {
+    ColumnCP output = edge.outputColumns()[i];
+    if (!needed.contains(output) ||
+        std::ranges::find(columns, output) != columns.end()) {
+      continue;
+    }
+    const auto source = std::ranges::find(columns, edge.sourceColumns()[i]);
+    if (source == columns.end()) {
+      columns.push_back(output);
+    } else {
+      *source = output;
+    }
+  }
+  return columns;
+}
+
 // Returns each not-yet-placed conjunct whose required relations are
 // a subset of `cover`. Marks the returned conjuncts in `fired`.
 ExprVector takeReadyConjuncts(
@@ -593,6 +619,13 @@ Emitted buildJoin(
     for (ColumnCP column : outputColumns) {
       present.add(column);
     }
+    for (size_t i = 0; i < edge.outputColumns().size(); ++i) {
+      ColumnCP output = edge.outputColumns()[i];
+      if (extraColumns.contains(output) && !present.contains(output)) {
+        outputColumns.push_back(output);
+        present.add(output);
+      }
+    }
     for (NodeCP side : {left.node, right.node}) {
       for (ColumnCP column : side->outputColumns()) {
         if (extraColumns.contains(column) && !present.contains(column)) {
@@ -601,6 +634,29 @@ Emitted buildJoin(
         }
       }
     }
+  }
+
+  ColumnVector sourceColumns;
+  PlanObjectSet inputColumns =
+      PlanObjectSet::fromObjects(left.node->outputColumns());
+  inputColumns.unionObjects(right.node->outputColumns());
+  sourceColumns.reserve(outputColumns.size());
+  for (ColumnCP output : outputColumns) {
+    const auto it = std::ranges::find(edge.outputColumns(), output);
+    ColumnCP source =
+        inputColumns.contains(output) || it == edge.outputColumns().end()
+        ? output
+        : edge.sourceColumns()[it - edge.outputColumns().begin()];
+    VELOX_CHECK(
+        inputColumns.contains(source) ||
+            (it != edge.outputColumns().end() && source == output),
+        "Join output source is not emitted by either input: {}",
+        source->toString());
+    if (const auto mapped = beforeJoin.find(source);
+        mapped != beforeJoin.end()) {
+      source = mapped->second->as<Column>();
+    }
+    sourceColumns.push_back(source);
   }
 
   NodeCP node = state.joinFactory(
@@ -613,7 +669,8 @@ Emitted buildJoin(
        std::move(filter),
        edge.nullAware(),
        edge.nullAsValue(),
-       std::move(outputColumns)});
+       std::move(outputColumns),
+       std::move(sourceColumns)});
   if (!aboveJoin.empty()) {
     node = state.builder.make<Filter>({node, std::move(aboveJoin)});
   }
@@ -716,13 +773,13 @@ Emitted emitJoin(
   };
 
   if (rootOutputColumns == nullptr) {
-    return buildWithOutput(coverNarrowedColumns(
-        state.graph, join->cover(), left.node, right.node));
+    return buildWithOutput(
+        joinOutputColumns(join, state.graph, left.node, right.node));
   }
 
   const auto rootReps = state.graph.coverColumnReps(join->cover());
   ColumnVector outputColumns = hasCollapsedTarget(rootReps, *rootOutputColumns)
-      ? coverNarrowedColumns(state.graph, join->cover(), left.node, right.node)
+      ? joinOutputColumns(join, state.graph, left.node, right.node)
       : ColumnVector{*rootOutputColumns};
   return restoreRootOutput(
       buildWithOutput(std::move(outputColumns)),
@@ -931,6 +988,18 @@ NodeCP JoinTreeEmitter::emitComponents(
     ColumnVector columns = (isLast && !collapsed)
         ? ColumnVector{rootOutputColumns}
         : coverNarrowedColumns(state.graph, cover, result, build);
+    PlanObjectSet inputColumns =
+        PlanObjectSet::fromObjects(result->outputColumns());
+    inputColumns.unionObjects(build->outputColumns());
+    ColumnVector sourceColumns;
+    sourceColumns.reserve(columns.size());
+    for (ColumnCP output : columns) {
+      VELOX_CHECK(
+          inputColumns.contains(output),
+          "Cross join output is not emitted by either input: {}",
+          output->toString());
+      sourceColumns.push_back(output);
+    }
     const auto substitution =
         merge(collapsedColumns(graph.coverColumnReps(cover)), materialized);
     result = crossJoinFactory(
@@ -945,7 +1014,8 @@ NodeCP JoinTreeEmitter::emitComponents(
              state),
          /*nullAware=*/false,
          /*nullAsValue=*/false,
-         std::move(columns)});
+         std::move(columns),
+         std::move(sourceColumns)});
   }
 
   if (collapsed) {

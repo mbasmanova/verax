@@ -278,7 +278,8 @@ class LimitAndOrderRewriter : public NodeRewriter<LimitContext> {
                node->filter(),
                node->nullAware(),
                node->nullAsValue(),
-               node->outputColumns()});
+               node->outputColumns(),
+               node->sourceColumns()});
     return materialize(pending, newJoin);
   }
 
