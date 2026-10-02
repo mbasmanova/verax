@@ -270,7 +270,8 @@ class NodeRewriter {
          node->filter(),
          node->nullAware(),
          node->nullAsValue(),
-         node->outputColumns()});
+         node->outputColumns(),
+         node->sourceColumns()});
   }
 
   virtual NodeCP rewriteInference(const Inference* node, TContext& context) {
@@ -348,7 +349,8 @@ class NodeRewriter {
          node->inLhs(),
          node->inBodyKey(),
          node->includeMarker(),
-         node->outputColumns()});
+         node->outputColumns(),
+         node->sourceColumns()});
   }
 
   virtual NodeCP rewriteEnforceSingleRow(
@@ -358,7 +360,8 @@ class NodeRewriter {
     if (newInput == node->input()) {
       return node;
     }
-    return builder_.template make<EnforceSingleRow>({newInput});
+    return builder_.template make<EnforceSingleRow>(
+        {newInput, node->outputColumns()});
   }
 
   virtual NodeCP rewriteAssignUniqueId(
@@ -419,6 +422,7 @@ class NodeRewriter {
         .convergence = newConvergence,
         .name = node->name(),
         .outputColumns = node->outputColumns(),
+        .sourceColumns = node->sourceColumns(),
         .maxIterations = node->maxIterations(),
         .recursiveNumDrivers = node->recursiveNumDrivers(),
     });

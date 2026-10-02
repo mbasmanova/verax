@@ -436,17 +436,17 @@ class ClusterCollector {
   const folly::F14FastSet<const Join*>& opaqueJoins_;
 };
 
-// A kLeftSemiProject join projects a mark, which is a column of no cluster
-// leaf. Another join in the cluster whose predicate reads that mark has no
-// relation set to resolve it against, so the producing join stays an opaque
-// leaf and the mark becomes one of that leaf's columns.
-folly::F14FastSet<const Join*> markProducersReadInCluster(
+// Keeps a join opaque when another join predicate reads a fresh value it
+// produces. A Filter predicate remains guarded by the producing outer edge's
+// eligibility and can participate in reordering. A semi-project mark has no
+// source relation, so any predicate that reads it keeps its producer opaque.
+folly::F14FastSet<const Join*> valueProducersReadInCluster(
     const JoinCluster& cluster) {
-  PlanObjectSet predicateColumns;
+  PlanObjectSet joinPredicateColumns;
   for (JoinCP join : cluster.joins) {
     auto add = [&](const ExprVector& exprs) {
       for (ExprCP expr : exprs) {
-        predicateColumns.unionSet(expr->columns());
+        joinPredicateColumns.unionSet(expr->columns());
       }
     };
     add(join->leftKeys());
@@ -455,6 +455,7 @@ folly::F14FastSet<const Join*> markProducersReadInCluster(
   }
   // A predicate the cluster took from a Filter resolves against the same
   // relations, so a mark it reads also keeps its producer opaque.
+  PlanObjectSet predicateColumns = joinPredicateColumns;
   for (ExprCP predicate : cluster.filterPredicates) {
     predicateColumns.unionSet(predicate->columns());
   }
@@ -464,6 +465,14 @@ folly::F14FastSet<const Join*> markProducersReadInCluster(
     if (join->isLeftSemiProject() &&
         predicateColumns.contains(join->markColumn())) {
       opaqueJoins.insert(join);
+      continue;
+    }
+    for (size_t i = 0; i < join->outputColumns().size(); ++i) {
+      if (join->outputColumns()[i] != join->sourceColumns()[i] &&
+          joinPredicateColumns.contains(join->outputColumns()[i])) {
+        opaqueJoins.insert(join);
+        break;
+      }
     }
   }
   return opaqueJoins;
@@ -656,6 +665,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
         .convergence = convergence,
         .name = node->name(),
         .outputColumns = node->outputColumns(),
+        .sourceColumns = node->sourceColumns(),
         .maxIterations = node->maxIterations(),
         .recursiveNumDrivers = kRecursiveNumDrivers,
     });
@@ -722,6 +732,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
         .nullAware = node->nullAware(),
         .nullAsValue = node->nullAsValue(),
         .outputColumns = node->outputColumns(),
+        .sourceColumns = node->sourceColumns(),
     };
   }
 
@@ -791,7 +802,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
     }
 
     const folly::F14FastSet<const Join*> opaqueJoins =
-        markProducersReadInCluster(cluster);
+        valueProducersReadInCluster(cluster);
     if (!opaqueJoins.empty()) {
       cluster = JoinCluster{};
       cluster.root = node;
@@ -1511,7 +1522,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
     if (input == node->input()) {
       return node;
     }
-    return builder().make<EnforceSingleRow>({input});
+    return builder().make<EnforceSingleRow>({input, node->outputColumns()});
   }
 
   // EnforceDistinct asserts at most one row per distinct key across all input.

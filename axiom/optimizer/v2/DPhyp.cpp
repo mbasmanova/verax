@@ -917,12 +917,14 @@ class Enumerator {
       MemoOpCP right,
       velox::core::JoinType joinType,
       bool reversedAnti,
+      size_t edgeIndex,
       const ExprVector& leftKeys,
       const ExprVector& rightKeys,
       RelationSet combined) {
     const ExprVector leftCoverKeys = keysInCoverSchema(leftKeys, left->cover());
     const ExprVector rightCoverKeys =
         keysInCoverSchema(rightKeys, right->cover());
+    const auto& edge = graph_.edges()[edgeIndex];
     return Join::outputPartitioning(
         JoinOp::emittedJoinType(joinType, reversedAnti),
         left->outputPartitioning(),
@@ -930,6 +932,8 @@ class Enumerator {
         leftCoverKeys,
         rightCoverKeys,
         graph_.coverOutputColumns(combined),
+        edge.outputColumns(),
+        edge.sourceColumns(),
         builder_);
   }
 
@@ -994,6 +998,7 @@ class Enumerator {
             right,
             joinType,
             reversedAnti,
+            edgeIndex,
             leftKeys,
             rightKeys,
             combined));

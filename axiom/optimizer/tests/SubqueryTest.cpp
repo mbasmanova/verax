@@ -858,7 +858,7 @@ TEST_P(SubqueryTest, correlatedScalarGroupedWithHaving) {
                 matchScan("u")
                     .singleAggregation({"y", "z"}, {"max(x)", "count() as cnt"})
                     .filter("cnt > 1")
-                    .project(),
+                    .project({"y", "max"}),
                 {.keys = {{"b = y"}}})
             .enforceDistinct({"rn"})
             .project()
@@ -1950,7 +1950,7 @@ TEST_P(SubqueryTest, nonEquiCorrelatedScalarThenCorrelatedExists) {
                              "count(*) filter (where marker) as cnt",
                              "arbitrary(r_regionkey) as r_regionkey",
                          })
-                     .project()
+                     .project({"r_regionkey", "cnt"})
                      .nestedLoopJoin(
                          matchHiveScan("supplier"),
                          velox::core::JoinType::kLeftSemiProject)
@@ -1980,7 +1980,7 @@ TEST_P(SubqueryTest, nonEquiCorrelatedThenUncorrelatedScalar) {
               "r_regionkey < n_regionkey")
           .singleAggregation(
               {"unique_id"}, {"count(*) filter (where marker) as cnt"})
-          .project()
+          .project({"cnt"})
           .nestedLoopJoin(
               matchHiveScan("supplier")
                   .singleAggregation({}, {"max(s_suppkey) as max_key"}))

@@ -440,7 +440,10 @@ void addTransitiveInnerEdges(
             ExprVector{},
             velox::core::JoinType::kInner,
             /*nullAware=*/false,
-            /*nullAsValue=*/false});
+            /*nullAsValue=*/false,
+            /*markColumn=*/nullptr,
+            /*outputColumns=*/{},
+            /*sourceColumns=*/{}});
   }
 }
 
@@ -665,7 +668,10 @@ struct EdgeBuilder {
               ExprVector{},
               join->joinType(),
               /*nullAware=*/false,
-              /*nullAsValue=*/false});
+              /*nullAsValue=*/false,
+              /*markColumn=*/nullptr,
+              /*outputColumns=*/{},
+              /*sourceColumns=*/{}});
     }
 
     for (ExprCP conjunct : join->filter()) {
@@ -746,7 +752,9 @@ struct EdgeBuilder {
             inputs.joinType,
             join->nullAware(),
             join->nullAsValue(),
-            markColumn});
+            markColumn,
+            join->outputColumns(),
+            join->sourceColumns()});
   }
 };
 
@@ -779,6 +787,29 @@ void addLeafRelations(
       columnToLeaf.emplace(column, id);
     }
   }
+}
+
+// Resolves a fresh join output to the relation supplying its value. Filter
+// eligibility still includes the join that creates the value, so the mapping
+// identifies its relation without allowing the filter below NULL padding.
+void addJoinOutputRelations(
+    const JoinCluster& cluster,
+    folly::F14FastMap<ColumnCP, int8_t>& columnToLeaf) {
+  bool changed;
+  do {
+    changed = false;
+    for (JoinCP join : cluster.joins) {
+      for (size_t i = 0; i < join->outputColumns().size(); ++i) {
+        const auto source = columnToLeaf.find(join->sourceColumns()[i]);
+        if (source != columnToLeaf.end()) {
+          const int8_t sourceRelation = source->second;
+          changed |=
+              columnToLeaf.emplace(join->outputColumns()[i], sourceRelation)
+                  .second;
+        }
+      }
+    }
+  } while (changed);
 }
 
 // Adds the cluster's Filter predicates as graph conjuncts. A predicate that
@@ -832,6 +863,7 @@ JoinHypergraph HypergraphBuilder::build(
   folly::F14FastMap<NodeCP, int8_t> leafIds;
   addLeafRelations(
       cluster, rewrittenLeaves, estimateProvider, graph, columnToLeaf, leafIds);
+  addJoinOutputRelations(cluster, columnToLeaf);
 
   folly::F14FastMap<UnnestCP, int8_t> unnestIds =
       addUnnestRelations(cluster, estimateProvider, graph, columnToLeaf);

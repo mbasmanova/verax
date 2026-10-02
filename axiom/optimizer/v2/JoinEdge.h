@@ -38,7 +38,8 @@ namespace facebook::axiom::optimizer::v2 {
 ///   - Non-inner equi-join (outer, semi, or anti). `filter` carries conjuncts
 ///     bound to this edge because moving them can change null-padding or
 ///     existence semantics. `nullAware` and `nullAsValue` carry Velox null
-///     semantics.
+///     semantics. `outputColumns` and `sourceColumns` preserve the original
+///     join's positional output mapping through enumeration.
 ///   - Unnest. Built by `JoinEdge::unnest`. Its endpoint and eligibility sides
 ///     are identical: `leftEndpoints()` covers the relations whose subtree
 ///     feeds the Unnest and `rightEndpoints()` is the single Unnest relation.
@@ -57,6 +58,7 @@ namespace facebook::axiom::optimizer::v2 {
 ///     right.
 ///   - Equi-join flavors: `leftKeys.size() == rightKeys.size()` and
 ///     is non-empty.
+///   - `outputColumns.size() == sourceColumns.size()`.
 ///   - Unnest flavor: `leftKeys` / `rightKeys` / `filter` empty;
 ///     `joinType == kInner`.
 class JoinEdge {
@@ -72,7 +74,9 @@ class JoinEdge {
       velox::core::JoinType joinType,
       bool nullAware,
       bool nullAsValue,
-      ColumnCP markColumn = nullptr)
+      ColumnCP markColumn,
+      ColumnVector outputColumns,
+      ColumnVector sourceColumns)
       : leftEndpoints_{std::move(leftEndpoints)},
         rightEndpoints_{std::move(rightEndpoints)},
         leftEligibility_{std::move(leftEligibility)},
@@ -83,7 +87,9 @@ class JoinEdge {
         joinType_{joinType},
         nullAware_{nullAware},
         nullAsValue_{nullAsValue},
-        markColumn_{markColumn} {
+        markColumn_{markColumn},
+        outputColumns_{std::move(outputColumns)},
+        sourceColumns_{std::move(sourceColumns)} {
     VELOX_CHECK(!leftEndpoints_.empty());
     VELOX_CHECK(!rightEndpoints_.empty());
     VELOX_CHECK(!leftEndpoints_.hasIntersection(rightEndpoints_));
@@ -93,6 +99,7 @@ class JoinEdge {
     VELOX_CHECK(leftEndpoints_.isSubset(leftEligibility_));
     VELOX_CHECK(rightEndpoints_.isSubset(rightEligibility_));
     VELOX_CHECK_EQ(leftKeys_.size(), rightKeys_.size());
+    VELOX_CHECK_EQ(outputColumns_.size(), sourceColumns_.size());
     VELOX_CHECK(
         !leftKeys_.empty(), "Equi-join edge must carry at least one key pair");
     VELOX_CHECK(
@@ -181,6 +188,16 @@ class JoinEdge {
     return markColumn_;
   }
 
+  /// Original join outputs aligned with `sourceColumns()`.
+  const ColumnVector& outputColumns() const {
+    return outputColumns_;
+  }
+
+  /// Input columns supplying `outputColumns()`.
+  const ColumnVector& sourceColumns() const {
+    return sourceColumns_;
+  }
+
  private:
   // Builds an unnest edge; see the `unnest` factory.
   JoinEdge(RelationSet left, RelationSet right)
@@ -208,6 +225,10 @@ class JoinEdge {
   // The mark/exists column produced by a kLeftSemiProject join;
   // nullptr otherwise. Populated in Phase 2.
   ColumnCP markColumn_{nullptr};
+  // Original join outputs defined at this edge.
+  ColumnVector outputColumns_;
+  // Input columns supplying `outputColumns_`, positionally aligned.
+  ColumnVector sourceColumns_;
   bool isUnnest_{false};
 };
 

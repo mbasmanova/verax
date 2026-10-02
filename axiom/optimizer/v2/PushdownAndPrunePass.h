@@ -42,9 +42,10 @@ namespace facebook::axiom::optimizer::v2 {
 /// On the way back up, an inner join may replace a right key column with its
 /// equal left key and remove the right key from its output. Every ancestor must
 /// apply these replacements to the expressions and column lists it retains.
-/// Boundaries with a fixed schema restore the original column identities with
-/// a `Project`; these currently include the plan root, `TableWrite` inputs, and
-/// each `FixedPoint` branch.
+/// Boundaries with a fixed internal schema restore the original column
+/// identities with a `Project`; these include `TableWrite` inputs and each
+/// `FixedPoint` branch. Root substitutions are returned to the pipeline as its
+/// new output schema.
 /// Before rewriting a join, the pass may make one read-only walk over its
 /// inputs to collect predicates guaranteed by those inputs. Nested joins cache
 /// completed collection results, including empty results, so every tree
@@ -78,6 +79,14 @@ namespace facebook::axiom::optimizer::v2 {
 /// rewrite running after this pass sees the nodes the query will run.
 class PushdownAndPrunePass {
  public:
+  /// Rewritten root and its user-visible output columns.
+  struct Result {
+    /// Rewritten plan root.
+    NodeCP root;
+    /// Output layout after applying substitutions made by the pass.
+    ColumnVector outputColumns;
+  };
+
   /// Whether the conjuncts that reach a `Scan` are offered to the connector.
   enum class ConnectorPushdown {
     /// Offer them; the `Scan` comes out pointing at the resulting handle.
@@ -96,7 +105,7 @@ class PushdownAndPrunePass {
   /// @param outputColumns The user-visible output layout. `root` may produce
   /// more columns than this -- Emit trims them -- and pruning uses this, not
   /// `root`'s schema, to decide what the query actually needs.
-  static NodeCP run(
+  static Result run(
       NodeCP root,
       const ColumnVector& outputColumns,
       Builder& builder,

@@ -156,7 +156,7 @@ class KnownEmptyRewriter : public NodeRewriter<KnownEmptyContext> {
       NodeCP remaining = leftContext.isKnownEmpty ? newRight : newLeft;
       auto expressions = builder().paddedExpressions(
           remaining->outputColumns(),
-          node->outputColumns(),
+          node->sourceColumns(),
           /*falsePadding=*/Join::projectsMark(node->joinType()));
       return projectExpressions(
           remaining, std::move(expressions), node->outputColumns());
@@ -190,7 +190,8 @@ class KnownEmptyRewriter : public NodeRewriter<KnownEmptyContext> {
          node->filter(),
          node->nullAware(),
          node->nullAsValue(),
-         node->outputColumns()});
+         node->outputColumns(),
+         node->sourceColumns()});
   }
 
   NodeCP rewriteUnionAll(const UnionAll* node, KnownEmptyContext& context)
@@ -240,7 +241,7 @@ class KnownEmptyRewriter : public NodeRewriter<KnownEmptyContext> {
     }
     return newInput == node->input()
         ? static_cast<NodeCP>(node)
-        : builder().make<EnforceSingleRow>({newInput});
+        : builder().make<EnforceSingleRow>({newInput, node->outputColumns()});
   }
 
   NodeCP rewriteTableWrite(
@@ -292,6 +293,7 @@ class KnownEmptyRewriter : public NodeRewriter<KnownEmptyContext> {
         .convergence = newConvergence,
         .name = node->name(),
         .outputColumns = node->outputColumns(),
+        .sourceColumns = node->sourceColumns(),
         .maxIterations = node->maxIterations(),
         .recursiveNumDrivers = node->recursiveNumDrivers(),
     });

@@ -186,6 +186,12 @@ SELECT coalesce(t_k, u_k) AS user_rid, t_k, count(*)
 FROM (VALUES (NULL), (1), (2)) AS t(t_k)
 LEFT JOIN (VALUES (NULL), (1), (3)) AS u(u_k) ON t_k = u_k
 GROUP BY 1, 2
+----
+-- A constant computed above a full join keeps its value on rows where the
+-- join null-extends an equal constant computed by one input.
+SELECT padded.v, preserved.k, 0 AS above
+FROM (SELECT k, 0 AS v FROM (VALUES (1)) AS input(k)) AS padded
+FULL JOIN (VALUES (2)) AS preserved(k) ON padded.k = preserved.k
 
 ----
 -- Groups by the right key of an inner join while counting the left key.

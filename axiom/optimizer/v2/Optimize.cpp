@@ -150,13 +150,15 @@ NodeCP Optimizer::planTo(
     return node;
   }
 
-  node = PushdownAndPrunePass::run(
+  auto pushed = PushdownAndPrunePass::run(
       node,
       translated.outputColumns,
       builder_,
       evaluator_,
       session_,
       connectorPushdown);
+  node = pushed.root;
+  outputColumns_ = std::move(pushed.outputColumns);
   if (pass == Pass::kPushdownAndPrune) {
     return node;
   }

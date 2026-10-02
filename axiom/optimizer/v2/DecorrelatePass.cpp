@@ -138,19 +138,6 @@ bool canElideBodyAggregate(
   return true;
 }
 
-// Appends each element of `src` to `dst` unless `dst` already
-// contains it.
-template <typename Dst, typename Src>
-void appendUnique(Dst& dst, const Src& src) {
-  PlanObjectSet seen = PlanObjectSet::fromObjects(dst);
-  for (auto&& element : src) {
-    if (!seen.contains(element)) {
-      seen.add(element);
-      dst.push_back(element);
-    }
-  }
-}
-
 // Returns nullptr if `expr` is null; otherwise delegates to
 // `ExprFactory::substitute`.
 ExprCP substituteOrNull(
@@ -257,6 +244,84 @@ class Decorrelator : public NodeRewriter<> {
   }
 
  private:
+  // Positionally aligned output and source schemas for an Apply boundary.
+  struct ApplyColumns {
+    // Columns visible above the Apply.
+    ColumnVector outputs;
+    // Columns supplying `outputs` from the Apply inputs.
+    ColumnVector sources;
+    // `outputs` widened to expressions for source-to-output substitution.
+    ExprVector outputExpressions;
+  };
+
+  // Creates an Apply schema, assigning fresh identities to a kLeft body's
+  // null-extended outputs.
+  ApplyColumns applyColumns(
+      NodeCP input,
+      NodeCP body,
+      velox::core::JoinType kind,
+      ColumnCP markColumn,
+      ColumnCP includeMarker) {
+    ColumnVector sources = input->outputColumns();
+    ColumnVector outputs = sources;
+    if (kind == velox::core::JoinType::kLeftSemiProject) {
+      VELOX_CHECK_NOT_NULL(markColumn);
+      VELOX_CHECK_NULL(includeMarker);
+      sources.push_back(markColumn);
+      outputs.push_back(markColumn);
+    } else {
+      VELOX_CHECK_NULL(markColumn);
+      for (ColumnCP source : body->outputColumns()) {
+        if (std::ranges::find(sources, source) == sources.end()) {
+          sources.push_back(source);
+          outputs.push_back(
+              kind == velox::core::JoinType::kLeft
+                  ? Column::createForNullExtendedValue(source)
+                  : source);
+        }
+      }
+      if (kind == velox::core::JoinType::kLeft) {
+        VELOX_CHECK_NOT_NULL(includeMarker);
+        sources.push_back(includeMarker);
+        outputs.push_back(includeMarker);
+      } else {
+        VELOX_CHECK_EQ(kind, velox::core::JoinType::kInner);
+        VELOX_CHECK_NULL(includeMarker);
+      }
+    }
+    ExprVector outputExpressions;
+    appendAll(outputExpressions, outputs);
+    return {
+        std::move(outputs),
+        std::move(sources),
+        std::move(outputExpressions),
+    };
+  }
+
+  // Rewrites every expression carried by an aggregate call across a column
+  // boundary.
+  AggregateCallVector substituteAggregates(
+      const AggregateCallVector& aggregates,
+      const ColumnVector& sources,
+      const ExprVector& targets) {
+    AggregateCallVector result;
+    result.reserve(aggregates.size());
+    for (const optimizer::Aggregate* aggregate : aggregates) {
+      result.push_back(
+          builder().makeAggregate(
+              aggregate->name(),
+              aggregate->value(),
+              exprFactory_.substitute(aggregate->args(), sources, targets),
+              aggregate->functions(),
+              aggregate->isDistinct(),
+              exprFactory_.substitute(aggregate->condition(), sources, targets),
+              aggregate->intermediateType(),
+              exprFactory_.substitute(aggregate->orderKeys(), sources, targets),
+              aggregate->orderTypes()));
+    }
+    return result;
+  }
+
   // Project peel (Rule A) for non-semi kinds (kLeft, kInner): Project
   // lifts above Apply. Apply's body becomes Project's child; the lifted
   // Project above the decorrelated inner Apply reproduces the original
@@ -290,14 +355,12 @@ class Decorrelator : public NodeRewriter<> {
     // Build inner Apply with body = Project's child. Inner Apply
     // inherits the outer's includeMarker. Body cols that alias input
     // cols by identity collapse to a single slot.
-    ColumnVector innerOutputColumns;
-    innerOutputColumns.reserve(
-        input->outputColumns().size() + newBody->outputColumns().size() + 1);
-    appendAll(innerOutputColumns, input->outputColumns());
-    appendUnique(innerOutputColumns, newBody->outputColumns());
-    if (hasMarker) {
-      innerOutputColumns.push_back(node->includeMarker());
-    }
+    ApplyColumns innerColumns = applyColumns(
+        input,
+        newBody,
+        node->kind(),
+        /*markColumn=*/nullptr,
+        hasMarker ? node->includeMarker() : nullptr);
 
     // Recompute correlations for the inner body. Project peel may have
     // lifted outer-column refs out of body (into the lifted Project
@@ -316,7 +379,8 @@ class Decorrelator : public NodeRewriter<> {
         node->inLhs(),
         node->inBodyKey(),
         node->includeMarker(),
-        std::move(innerOutputColumns),
+        innerColumns.outputs,
+        innerColumns.sources,
     });
 
     // Recurse: continue peeling whatever's in newBody, or hit terminus.
@@ -346,7 +410,10 @@ class Decorrelator : public NodeRewriter<> {
       }
       liftedSeen.add(outputColumn);
       ExprCP expr = projectBody->exprs()[i];
-      if (hasMarker && !isNullOnPadRows(expr, bodyColumns)) {
+      const bool nullOnPad = isNullOnPadRows(expr, bodyColumns);
+      expr = exprFactory_.substitute(
+          expr, innerColumns.sources, innerColumns.outputExpressions);
+      if (hasMarker && !nullOnPad) {
         // kLeft: NULL out exprs a pad row would otherwise give a value.
         const Literal* nullLiteral = builder().makeNull(expr->value().type);
         liftedExprs.push_back(
@@ -570,6 +637,10 @@ class Decorrelator : public NodeRewriter<> {
     // Reads NULL on a padded left-join row, or nullptr for an inner join or
     // where the caller asked for no marker.
     ColumnCP includeMarker;
+
+    // Maps the body's columns to the identities published by the join.
+    ColumnVector bodySources;
+    ColumnVector bodyOutputs;
   };
 
   // Joins a correlation-free 'body' back to 'input' on the lifted equi keys,
@@ -583,23 +654,26 @@ class Decorrelator : public NodeRewriter<> {
   // 'enforceSingleRow' tags the outer rows and asserts one row each over the
   // join's output, for a body that can match an outer more than once.
   JoinBack joinBodyBack(
+      ApplyCP apply,
       NodeCP input,
       NodeCP body,
       velox::core::JoinType joinType,
       const ExprVector& leftKeys,
       const ExprVector& rightKeys,
-      const ColumnVector& bodyColumns,
+      ColumnVector bodySources,
+      ColumnVector bodyOutputs,
       bool markPads,
       bool enforceSingleRow) {
     VELOX_CHECK(
         joinType == velox::core::JoinType::kInner ||
         joinType == velox::core::JoinType::kLeft);
     VELOX_CHECK(!markPads || joinType == velox::core::JoinType::kLeft);
-    ColumnCP includeMarker = nullptr;
+    VELOX_CHECK_EQ(bodySources.size(), bodyOutputs.size());
+    ColumnCP includeMarkerSource = nullptr;
     if (markPads) {
-      includeMarker = makeIncludeColumn();
-      body =
-          addIncludeMarkerToBody(body, includeMarker, input->outputColumns());
+      includeMarkerSource = makeIncludeSource(apply->includeMarker());
+      body = addIncludeMarkerToBody(
+          body, includeMarkerSource, input->outputColumns());
     }
 
     NodeCP joinLeft = input;
@@ -609,15 +683,13 @@ class Decorrelator : public NodeRewriter<> {
       joinLeft = tagOuterRows(input, rowId);
     }
 
-    ColumnVector joinOutput;
-    joinOutput.reserve(input->outputColumns().size() + bodyColumns.size() + 2);
-    appendAll(joinOutput, input->outputColumns());
-    if (rowId != nullptr) {
-      joinOutput.push_back(rowId);
-    }
-    appendUnique(joinOutput, bodyColumns);
-    if (includeMarker != nullptr) {
-      joinOutput.push_back(includeMarker);
+    ColumnVector joinSources = joinLeft->outputColumns();
+    ColumnVector joinOutput = joinSources;
+    appendAll(joinSources, bodySources);
+    appendAll(joinOutput, bodyOutputs);
+    if (includeMarkerSource != nullptr) {
+      joinSources.push_back(includeMarkerSource);
+      joinOutput.push_back(apply->includeMarker());
     }
 
     NodeCP join = builder().make<Join>({
@@ -630,11 +702,15 @@ class Decorrelator : public NodeRewriter<> {
         /*nullAware=*/false,
         /*nullAsValue=*/false,
         std::move(joinOutput),
+        std::move(joinSources),
     });
 
     return JoinBack{
         rowId != nullptr ? enforceScalarSingleRow(join, rowId) : join,
-        includeMarker};
+        includeMarkerSource != nullptr ? apply->includeMarker() : nullptr,
+        std::move(bodySources),
+        std::move(bodyOutputs),
+    };
   }
 
   // kLeft or kInner over a Limit whose correlation is an equality: rank the
@@ -672,17 +748,27 @@ class Decorrelator : public NodeRewriter<> {
 
     // Ranking to `count` rows per key already holds any scalar bound this
     // shape accepts, so the join needs no assertion of its own.
+    ColumnVector bodyOutputs;
+    bodyOutputs.reserve(limitBody->outputColumns().size());
+    for (ColumnCP source : limitBody->outputColumns()) {
+      bodyOutputs.push_back(node->outputForSource(source));
+    }
     JoinBack back = joinBodyBack(
+        node,
         input,
         *rankedBody,
         node->kind(),
         correlation->leftKeys,
         correlation->rightKeys,
         limitBody->outputColumns(),
+        std::move(bodyOutputs),
         /*markPads=*/node->isLeft(),
         /*enforceSingleRow=*/false);
 
-    return projectApplyOutput(node, back.node, back.includeMarker);
+    ExprVector visibleColumns;
+    appendAll(visibleColumns, node->outputColumns());
+    return projectApplyOutput(
+        node, back.node, back.includeMarker, std::move(visibleColumns));
   }
 
   // kLeft+count>=1: per-outer LIMIT via Window+Filter. Tags input with
@@ -726,13 +812,12 @@ class Decorrelator : public NodeRewriter<> {
     OrderTypeVector windowOrderTypes = std::move(order->orderTypes);
     ColumnCP innerIncludeMarker = makeIncludeColumn();
 
-    ColumnVector innerOutputColumns;
-    innerOutputColumns.reserve(
-        taggedInput->outputColumns().size() + newBody->outputColumns().size() +
-        1);
-    appendAll(innerOutputColumns, taggedInput->outputColumns());
-    appendUnique(innerOutputColumns, newBody->outputColumns());
-    innerOutputColumns.push_back(innerIncludeMarker);
+    ApplyColumns innerColumns = applyColumns(
+        taggedInput,
+        newBody,
+        velox::core::JoinType::kLeft,
+        /*markColumn=*/nullptr,
+        innerIncludeMarker);
 
     ColumnVector innerCorrelations =
         recomputeCorrelations(newBody, taggedInput->outputColumns());
@@ -748,7 +833,8 @@ class Decorrelator : public NodeRewriter<> {
         /*inLhs=*/nullptr,
         /*inBodyKey=*/nullptr,
         innerIncludeMarker,
-        std::move(innerOutputColumns),
+        innerColumns.outputs,
+        innerColumns.sources,
     });
     NodeCP decorrelatedInner = rewrite(innerApply);
 
@@ -776,7 +862,12 @@ class Decorrelator : public NodeRewriter<> {
 
     // Outer Apply's includeMarker is sourced from the inner Apply's
     // includeMarker so per-outer LIMIT preserves the real-vs-pad signal.
-    return projectApplyOutput(node, enforced, innerIncludeMarker);
+    ExprVector visibleColumns;
+    appendAll(visibleColumns, node->sourceColumns());
+    visibleColumns = exprFactory_.substitute(
+        visibleColumns, innerColumns.sources, innerColumns.outputExpressions);
+    return projectApplyOutput(
+        node, enforced, innerIncludeMarker, std::move(visibleColumns));
   }
 
   // A `row_number()` window function over the default running frame,
@@ -817,12 +908,18 @@ class Decorrelator : public NodeRewriter<> {
 
   // Shapes 'child' to the outer Apply's output columns, writing 'marker' where
   // the includeMarker goes and passing every other column through.
-  NodeCP projectApplyOutput(ApplyCP node, NodeCP child, ExprCP marker) {
+  NodeCP projectApplyOutput(
+      ApplyCP node,
+      NodeCP child,
+      ExprCP marker,
+      ExprVector visibleColumns) {
+    VELOX_CHECK_EQ(visibleColumns.size(), node->outputColumns().size());
     ExprVector finalExprs;
     finalExprs.reserve(node->outputColumns().size());
-    for (ColumnCP outputColumn : node->outputColumns()) {
+    for (size_t i = 0; i < node->outputColumns().size(); ++i) {
+      ColumnCP outputColumn = node->outputColumns()[i];
       finalExprs.push_back(
-          outputColumn == node->includeMarker() ? marker : outputColumn);
+          outputColumn == node->includeMarker() ? marker : visibleColumns[i]);
     }
     return builder().make<Project>(
         {child, std::move(finalExprs), node->outputColumns()});
@@ -928,6 +1025,7 @@ class Decorrelator : public NodeRewriter<> {
             join->nullAware(),
             join->nullAsValue(),
             join->outputColumns(),
+            join->sourceColumns(),
         }),
         std::move(lifted)};
   }
@@ -1013,24 +1111,19 @@ class Decorrelator : public NodeRewriter<> {
           joinBody->joinTypeName());
     }
 
-    NodeCP leftSide = joinBody->left();
-    NodeCP rightSide = joinBody->right();
-
     if (joinBody->isInner()) {
       // A row the join predicate rejects is not a body row, and neither is
       // one the accumulated filter rejects, so both ride on applyB and the
       // collapse drops what they reject.
       ExprVector applyBFilter = std::move(joinPredicate);
       appendAll(applyBFilter, accumulatedFilter);
-      return joinPeelLeftInner(
-          node, input, leftSide, rightSide, std::move(applyBFilter));
+      return joinPeelLeftInner(node, input, joinBody, std::move(applyBFilter));
     }
 
     return joinPeelLeftOuter(
         node,
         input,
-        leftSide,
-        rightSide,
+        joinBody,
         std::move(joinPredicate),
         std::move(accumulatedFilter));
   }
@@ -1043,10 +1136,11 @@ class Decorrelator : public NodeRewriter<> {
   NodeCP joinPeelLeftOuter(
       ApplyCP node,
       NodeCP input,
-      NodeCP leftSide,
-      NodeCP rightSide,
+      JoinCP joinBody,
       ExprVector joinPredicate,
       ExprVector accumulatedFilter) {
+    NodeCP leftSide = joinBody->left();
+    NodeCP rightSide = joinBody->right();
     ColumnCP rowId = makeIdColumn();
     NodeCP taggedInput = tagOuterRows(input, rowId);
 
@@ -1059,6 +1153,10 @@ class Decorrelator : public NodeRewriter<> {
         /*filter=*/ExprVector{},
         /*enforceSingleRow=*/false,
         markA);
+    ExprVector applyAOutputs;
+    appendAll(applyAOutputs, applyA->outputColumns());
+    joinPredicate = exprFactory_.substitute(
+        joinPredicate, applyA->as<Apply>()->sourceColumns(), applyAOutputs);
 
     NodeCP applyB = makeLeftLeg(
         applyA,
@@ -1067,12 +1165,28 @@ class Decorrelator : public NodeRewriter<> {
         /*enforceSingleRow=*/false,
         makeIncludeColumn());
 
+    ExprVector visibleColumns;
+    appendAll(visibleColumns, node->sourceColumns());
+    ExprVector joinSources;
+    appendAll(joinSources, joinBody->sourceColumns());
+    visibleColumns = exprFactory_.substitute(
+        visibleColumns, joinBody->outputColumns(), joinSources);
+    visibleColumns = exprFactory_.substitute(
+        visibleColumns, applyA->as<Apply>()->sourceColumns(), applyAOutputs);
+    ExprVector applyBOutputs;
+    appendAll(applyBOutputs, applyB->outputColumns());
+    visibleColumns = exprFactory_.substitute(
+        visibleColumns, applyB->as<Apply>()->sourceColumns(), applyBOutputs);
+
     NodeCP chain = rewrite(applyB);
 
     ExprCP matched = accumulatedFilter.empty()
         ? markA
         : exprFactory_.makeAnd(markA, exprFactory_.andAll(accumulatedFilter));
-    return collapsePadRows(node, input, chain, rowId, matched);
+    matched =
+        exprFactory_.substitute(matched, node->sourceColumns(), visibleColumns);
+    return collapsePadRows(
+        node, input, chain, rowId, matched, std::move(visibleColumns));
   }
 
   // Outer kLeft over a body kLeftSemiProject: the body emits A's rows plus a
@@ -1137,18 +1251,41 @@ class Decorrelator : public NodeRewriter<> {
         std::move(rowFilter),
         collapse ? false : node->enforceSingleRow(),
         applyAIncludeMarker);
+    ExprVector applyAOutputs;
+    appendAll(applyAOutputs, applyA->outputColumns());
+    applyBFilter = exprFactory_.substitute(
+        applyBFilter, applyA->as<Apply>()->sourceColumns(), applyAOutputs);
+    inLhs = substituteOrNull(
+        exprFactory_,
+        inLhs,
+        applyA->as<Apply>()->sourceColumns(),
+        applyAOutputs);
 
     // Semi projection is one row in, one row out, so A's rows are neither
     // multiplied nor dropped by the existence test.
     NodeCP applyB = makeSemiLeg(
         applyA, rightSide, std::move(applyBFilter), mark, inLhs, inBodyKey);
 
+    ExprVector visibleColumns;
+    appendAll(visibleColumns, node->sourceColumns());
+    ExprVector joinSources;
+    appendAll(joinSources, joinBody->sourceColumns());
+    visibleColumns = exprFactory_.substitute(
+        visibleColumns, joinBody->outputColumns(), joinSources);
+    visibleColumns = exprFactory_.substitute(
+        visibleColumns, applyA->as<Apply>()->sourceColumns(), applyAOutputs);
+    ExprVector applyBOutputs;
+    appendAll(applyBOutputs, applyB->outputColumns());
+    visibleColumns = exprFactory_.substitute(
+        visibleColumns, applyB->as<Apply>()->sourceColumns(), applyBOutputs);
+
     NodeCP chain = rewrite(applyB);
 
     if (!collapse) {
       // Without a mark filter the mark is a value on an A row rather than a
       // reason to keep or drop it, so applyA's marker alone gates inclusion.
-      return projectApplyOutput(node, chain, applyAIncludeMarker);
+      return projectApplyOutput(
+          node, chain, applyAIncludeMarker, std::move(visibleColumns));
     }
 
     // A body row counts when A matched and the mark filter accepts it.
@@ -1156,7 +1293,10 @@ class Decorrelator : public NodeRewriter<> {
         ? applyAIncludeMarker
         : exprFactory_.makeAnd(
               applyAIncludeMarker, exprFactory_.andAll(markFilter));
-    return collapsePadRows(node, input, chain, rowId, matchedExpr);
+    matchedExpr = exprFactory_.substitute(
+        matchedExpr, node->sourceColumns(), visibleColumns);
+    return collapsePadRows(
+        node, input, chain, rowId, matchedExpr, std::move(visibleColumns));
   }
 
   // Outer kLeft over a body kInner Join. The leg cascade uses kLeft legs
@@ -1169,9 +1309,10 @@ class Decorrelator : public NodeRewriter<> {
   NodeCP joinPeelLeftInner(
       ApplyCP node,
       NodeCP input,
-      NodeCP leftSide,
-      NodeCP rightSide,
+      JoinCP joinBody,
       ExprVector applyBFilter) {
+    NodeCP leftSide = joinBody->left();
+    NodeCP rightSide = joinBody->right();
     ColumnCP rowId = makeIdColumn();
     NodeCP taggedInput = tagOuterRows(input, rowId);
 
@@ -1185,6 +1326,10 @@ class Decorrelator : public NodeRewriter<> {
         /*filter=*/ExprVector{},
         /*enforceSingleRow=*/false,
         markA);
+    ExprVector applyAOutputs;
+    appendAll(applyAOutputs, applyA->outputColumns());
+    applyBFilter = exprFactory_.substitute(
+        applyBFilter, applyA->as<Apply>()->sourceColumns(), applyAOutputs);
 
     ColumnCP markB = makeIncludeColumn();
     NodeCP applyB = makeLeftLeg(
@@ -1194,11 +1339,29 @@ class Decorrelator : public NodeRewriter<> {
         /*enforceSingleRow=*/false,
         markB);
 
+    ExprVector visibleColumns;
+    appendAll(visibleColumns, node->sourceColumns());
+    ExprVector joinSources;
+    appendAll(joinSources, joinBody->sourceColumns());
+    visibleColumns = exprFactory_.substitute(
+        visibleColumns, joinBody->outputColumns(), joinSources);
+    visibleColumns = exprFactory_.substitute(
+        visibleColumns, applyA->as<Apply>()->sourceColumns(), applyAOutputs);
+    ExprVector applyBOutputs;
+    appendAll(applyBOutputs, applyB->outputColumns());
+    visibleColumns = exprFactory_.substitute(
+        visibleColumns, applyB->as<Apply>()->sourceColumns(), applyBOutputs);
+
     NodeCP chain = rewrite(applyB);
 
     // A real body row requires both sides to match.
     return collapsePadRows(
-        node, input, chain, rowId, exprFactory_.makeAnd(markA, markB));
+        node,
+        input,
+        chain,
+        rowId,
+        exprFactory_.makeAnd(markA, markB),
+        std::move(visibleColumns));
   }
 
   // Reduces 'chain' to the outer Apply's contract: every row 'matchedExpr'
@@ -1210,7 +1373,9 @@ class Decorrelator : public NodeRewriter<> {
       NodeCP input,
       NodeCP chain,
       ColumnCP rowId,
-      ExprCP matchedExpr) {
+      ExprCP matchedExpr,
+      ExprVector visibleColumns) {
+    VELOX_CHECK_EQ(visibleColumns.size(), node->outputColumns().size());
     PerOuterMatch perOuter = markPerOuter(chain, rowId, matchedExpr);
     ColumnCP matched = perOuter.matched;
 
@@ -1236,16 +1401,20 @@ class Decorrelator : public NodeRewriter<> {
         PlanObjectSet::fromObjects(input->outputColumns());
     ExprVector finalExprs;
     finalExprs.reserve(node->outputColumns().size());
-    for (ColumnCP outputColumn : node->outputColumns()) {
+    for (size_t i = 0; i < node->outputColumns().size(); ++i) {
+      ColumnCP outputColumn = node->outputColumns()[i];
       if (outputColumn == node->includeMarker()) {
         finalExprs.push_back(matched);
-      } else if (outerColumns.contains(outputColumn)) {
-        finalExprs.push_back(outputColumn);
       } else {
-        finalExprs.push_back(exprFactory_.makeIf(
-            matched,
-            outputColumn,
-            builder().makeNull(outputColumn->value().type)));
+        ExprCP visibleColumn = visibleColumns[i];
+        if (outerColumns.contains(node->sourceColumns()[i])) {
+          finalExprs.push_back(visibleColumn);
+        } else {
+          finalExprs.push_back(exprFactory_.makeIf(
+              matched,
+              visibleColumn,
+              builder().makeNull(outputColumn->value().type)));
+        }
       }
     }
     return builder().make<Project>({
@@ -1277,12 +1446,12 @@ class Decorrelator : public NodeRewriter<> {
       bool enforceSingleRow,
       ColumnCP marker) {
     ColumnCP includeMarker = marker ? marker : makeIncludeColumn();
-    ColumnVector outputs;
-    outputs.reserve(
-        input->outputColumns().size() + body->outputColumns().size() + 1);
-    appendAll(outputs, input->outputColumns());
-    appendUnique(outputs, body->outputColumns());
-    outputs.push_back(includeMarker);
+    ApplyColumns columns = applyColumns(
+        input,
+        body,
+        velox::core::JoinType::kLeft,
+        /*markColumn=*/nullptr,
+        includeMarker);
 
     return builder().make<Apply>({
         input,
@@ -1295,7 +1464,8 @@ class Decorrelator : public NodeRewriter<> {
         /*inLhs=*/nullptr,
         /*inBodyKey=*/nullptr,
         includeMarker,
-        std::move(outputs),
+        std::move(columns.outputs),
+        std::move(columns.sources),
     });
   }
 
@@ -1400,7 +1570,8 @@ class Decorrelator : public NodeRewriter<> {
   NodeCP projectApplyMark(ApplyCP node, NodeCP input, ExprCP mark) {
     ExprVector finalExprs;
     finalExprs.reserve(node->outputColumns().size());
-    for (ColumnCP outputColumn : node->outputColumns()) {
+    for (size_t i = 0; i < node->outputColumns().size(); ++i) {
+      ColumnCP outputColumn = node->outputColumns()[i];
       if (outputColumn == node->markColumn()) {
         finalExprs.push_back(mark);
       } else {
@@ -1722,6 +1893,11 @@ class Decorrelator : public NodeRewriter<> {
         input, joinBody->left(), std::move(filterSplit.leftAndOuter));
     ExprVector applyBFilter = std::move(joinPredicate);
     appendAll(applyBFilter, filterSplit.rightDependent);
+    ApplyCP leftApply = chain.leftApply->as<Apply>();
+    ExprVector leftApplyOutputs;
+    appendAll(leftApplyOutputs, leftApply->outputColumns());
+    applyBFilter = exprFactory_.substitute(
+        applyBFilter, leftApply->sourceColumns(), leftApplyOutputs);
 
     ColumnCP inMark = makeMarkColumn("_join_chain_in");
     NodeCP applyB = makeSemiLeg(
@@ -1753,6 +1929,12 @@ class Decorrelator : public NodeRewriter<> {
         splitJoinChainFilters(accumulatedFilter, joinBody);
     SemiJoinChainHead chain = makeSemiJoinChainHead(
         input, joinBody->left(), std::move(filterSplit.leftAndOuter));
+
+    ApplyCP leftApply = chain.leftApply->as<Apply>();
+    ExprVector leftApplyOutputs;
+    appendAll(leftApplyOutputs, leftApply->outputColumns());
+    joinPredicate = exprFactory_.substitute(
+        joinPredicate, leftApply->sourceColumns(), leftApplyOutputs);
 
     if (filterSplit.rightDependent.empty()) {
       // Both supported joins emit at least one row per left row. Their
@@ -1795,9 +1977,16 @@ class Decorrelator : public NodeRewriter<> {
 
     // Evaluating the post-join filter in the mark keeps the pad row that
     // produces false when no body row qualifies.
+    ExprVector applyBOutputs;
+    appendAll(applyBOutputs, applyB->outputColumns());
+    ExprVector rightDependent = exprFactory_.substitute(
+        filterSplit.rightDependent,
+        leftApply->sourceColumns(),
+        leftApplyOutputs);
+    rightDependent = exprFactory_.substitute(
+        rightDependent, applyB->as<Apply>()->sourceColumns(), applyBOutputs);
     ExprCP matchedExpr = exprFactory_.makeAnd(
-        chain.leftIncludeMarker,
-        exprFactory_.andAll(filterSplit.rightDependent));
+        chain.leftIncludeMarker, exprFactory_.andAll(rightDependent));
 
     return collapseToSemiMark(
         node, rewrite(applyB), chain.outerRowId, matchedExpr);
@@ -1822,6 +2011,11 @@ class Decorrelator : public NodeRewriter<> {
 
     ExprVector applyBFilter = std::move(joinPredicate);
     appendAll(applyBFilter, filterSplit.rightDependent);
+    ApplyCP leftApply = chain.leftApply->as<Apply>();
+    ExprVector leftApplyOutputs;
+    appendAll(leftApplyOutputs, leftApply->outputColumns());
+    applyBFilter = exprFactory_.substitute(
+        applyBFilter, leftApply->sourceColumns(), leftApplyOutputs);
 
     ColumnCP markB = makeMarkColumn("_join_chain_markB");
     NodeCP applyB = makeSemiLeg(
@@ -1914,11 +2108,12 @@ class Decorrelator : public NodeRewriter<> {
       }
     }
 
-    ColumnVector innerOutputColumns;
-    innerOutputColumns.reserve(
-        input->outputColumns().size() + newBody->outputColumns().size());
-    appendAll(innerOutputColumns, input->outputColumns());
-    appendUnique(innerOutputColumns, newBody->outputColumns());
+    ApplyColumns innerColumns = applyColumns(
+        input,
+        newBody,
+        node->kind(),
+        node->markColumn(),
+        node->includeMarker());
 
     NodeCP innerApply = builder().make<Apply>({
         input,
@@ -1931,7 +2126,8 @@ class Decorrelator : public NodeRewriter<> {
         node->inLhs(),
         node->inBodyKey(),
         node->includeMarker(),
-        std::move(innerOutputColumns),
+        std::move(innerColumns.outputs),
+        std::move(innerColumns.sources),
     });
 
     NodeCP decorrelatedInner = rewrite(innerApply);
@@ -2031,24 +2227,8 @@ class Decorrelator : public NodeRewriter<> {
     ColumnCP innerIncludeMarker =
         node->isLeft() ? makeIncludeColumn() : nullptr;
 
-    ColumnVector innerOutputColumns;
-    innerOutputColumns.reserve(
-        input->outputColumns().size() +
-        (node->isLeftSemiProject() ? 1 : newBody->outputColumns().size() + 1));
-    appendAll(innerOutputColumns, input->outputColumns());
-    if (node->isLeftSemiProject()) {
-      innerOutputColumns.push_back(node->markColumn());
-    } else {
-      PlanObjectSet innerSeen =
-          PlanObjectSet::fromObjects(input->outputColumns());
-      for (ColumnCP column : newBody->outputColumns()) {
-        if (!innerSeen.contains(column)) {
-          innerSeen.add(column);
-          innerOutputColumns.push_back(column);
-        }
-      }
-      innerOutputColumns.push_back(innerIncludeMarker);
-    }
+    ApplyColumns innerColumns = applyColumns(
+        input, newBody, node->kind(), node->markColumn(), innerIncludeMarker);
 
     ColumnVector innerCorrelations =
         recomputeCorrelations(newBody, input->outputColumns());
@@ -2064,7 +2244,8 @@ class Decorrelator : public NodeRewriter<> {
         node->inLhs(),
         node->inBodyKey(),
         innerIncludeMarker,
-        std::move(innerOutputColumns),
+        innerColumns.outputs,
+        innerColumns.sources,
     });
     NodeCP decorrelatedInner = rewrite(innerApply);
 
@@ -2076,13 +2257,16 @@ class Decorrelator : public NodeRewriter<> {
     // the outer's (kLeft only).
     ExprVector finalExprs;
     finalExprs.reserve(node->outputColumns().size());
-    for (ColumnCP outputColumn : node->outputColumns()) {
+    for (size_t i = 0; i < node->outputColumns().size(); ++i) {
+      ColumnCP outputColumn = node->outputColumns()[i];
       if (node->isLeft() && outputColumn == node->includeMarker()) {
         finalExprs.push_back(innerIncludeMarker);
       } else {
-        finalExprs.push_back(outputColumn);
+        finalExprs.push_back(node->sourceColumns()[i]);
       }
     }
+    finalExprs = exprFactory_.substitute(
+        finalExprs, innerColumns.sources, innerColumns.outputExpressions);
     return builder().make<Project>({
         withId,
         std::move(finalExprs),
@@ -2145,25 +2329,38 @@ class Decorrelator : public NodeRewriter<> {
         std::move(joinFilter),
         /*enforceSingleRow=*/checkedFilter.empty() && node->enforceSingleRow(),
         innerIncludeMarker);
-    ExprVector distinctKeys = enforceDistinct->distinctKeys();
+    ApplyCP leg = innerApply->as<Apply>();
+    ExprVector legOutputs;
+    appendAll(legOutputs, leg->outputColumns());
+    ExprVector distinctKeys = exprFactory_.substitute(
+        enforceDistinct->distinctKeys(), leg->sourceColumns(), legOutputs);
     distinctKeys.push_back(outerRowId);
+    NodeCP decorrelatedInner = rewrite(innerApply);
     NodeCP enforced = builder().make<EnforceDistinct>({
-        rewrite(innerApply),
+        decorrelatedInner,
         std::move(distinctKeys),
         enforceDistinct->errorMessage(),
     });
+    ExprVector visibleColumns;
+    appendAll(visibleColumns, node->sourceColumns());
+    visibleColumns = exprFactory_.substitute(
+        visibleColumns, leg->sourceColumns(), legOutputs);
 
     if (!checkedFilter.empty()) {
+      checkedFilter = exprFactory_.substitute(
+          checkedFilter, leg->sourceColumns(), legOutputs);
       return collapsePadRows(
           node,
           input,
           enforced,
           outerRowId,
           exprFactory_.makeAnd(
-              innerIncludeMarker, exprFactory_.andAll(checkedFilter)));
+              innerIncludeMarker, exprFactory_.andAll(checkedFilter)),
+          std::move(visibleColumns));
     }
 
-    return projectApplyOutput(node, enforced, innerIncludeMarker);
+    return projectApplyOutput(
+        node, enforced, innerIncludeMarker, std::move(visibleColumns));
   }
 
   // Returns the AssignUniqueId in the tree rooted at 'node' whose id column is
@@ -2313,7 +2510,9 @@ class Decorrelator : public NodeRewriter<> {
         wraps,
         numGroupingKeys,
         decorrelatedInner,
-        realGroupMarker);
+        realGroupMarker,
+        innerApply.sources,
+        innerApply.outputs);
 
     // With an inner GROUP BY the lifted aggregate groups by (rowId, gby keys),
     // so it can emit several rows per outer row; grouping on the rowId alone no
@@ -2335,7 +2534,9 @@ class Decorrelator : public NodeRewriter<> {
             /*valueIsLive=*/realGroupMarker,
             enforced,
             numGroupingKeys,
-            /*includeMarkerValue=*/realGroupMarker);
+            /*includeMarkerValue=*/realGroupMarker,
+            /*boundarySources=*/{},
+            /*boundaryOutputs=*/{});
       }
 
       // F_post drops the groups it rejects rather than NULLing them, and an
@@ -2344,6 +2545,8 @@ class Decorrelator : public NodeRewriter<> {
       //
       // F_post reads the aggregate's own output columns, which the Project
       // below publishes, so it is applied as written rather than substituted.
+      ExprVector visibleColumns;
+      appendAll(visibleColumns, node->sourceColumns());
       return collapsePadRows(
           node,
           input,
@@ -2357,7 +2560,8 @@ class Decorrelator : public NodeRewriter<> {
               realGroupMarker),
           innerApply.rowIdColumn,
           exprFactory_.makeAnd(
-              realGroupMarker, exprFactory_.andAll(filterPostConjuncts)));
+              realGroupMarker, exprFactory_.andAll(filterPostConjuncts)),
+          std::move(visibleColumns));
     }
 
     // Every outer has a group here, holding either its body rows or the pad
@@ -2373,7 +2577,9 @@ class Decorrelator : public NodeRewriter<> {
             filterPostConjuncts, aggregate, wraps, numGroupingKeys),
         liftedAggregate,
         numGroupingKeys,
-        builder().makeBoolean(true));
+        builder().makeBoolean(true),
+        /*boundarySources=*/{},
+        /*boundaryOutputs=*/{});
   }
 
   // For each aggregate in the original Aggregate, decides what the
@@ -2481,6 +2687,10 @@ class Decorrelator : public NodeRewriter<> {
     NodeCP apply;
     ColumnCP rowIdColumn;
     ColumnCP includeMarker;
+    // Columns read below the inner Apply boundary.
+    ColumnVector sources;
+    // Aligned expressions visible above the inner Apply boundary.
+    ExprVector outputs;
   };
 
   // Builds the inner Apply (kLeft, filter = F_pre) over
@@ -2502,19 +2712,12 @@ class Decorrelator : public NodeRewriter<> {
     // Fresh includeMarker per inner Apply.
     ColumnCP includeMarker = makeIncludeColumn();
 
-    ColumnVector innerOutputColumns;
-    innerOutputColumns.reserve(
-        taggedInput->outputColumns().size() + body->outputColumns().size() + 1);
-    appendAll(innerOutputColumns, taggedInput->outputColumns());
-    PlanObjectSet bodySeen =
-        PlanObjectSet::fromObjects(taggedInput->outputColumns());
-    for (ColumnCP column : body->outputColumns()) {
-      if (!bodySeen.contains(column)) {
-        bodySeen.add(column);
-        innerOutputColumns.push_back(column);
-      }
-    }
-    innerOutputColumns.push_back(includeMarker);
+    ApplyColumns innerColumns = applyColumns(
+        taggedInput,
+        body,
+        velox::core::JoinType::kLeft,
+        /*markColumn=*/nullptr,
+        includeMarker);
 
     ColumnVector innerCorrelations =
         recomputeCorrelations(body, taggedInput->outputColumns());
@@ -2530,9 +2733,16 @@ class Decorrelator : public NodeRewriter<> {
         /*inLhs=*/nullptr,
         /*inBodyKey=*/nullptr,
         includeMarker,
-        std::move(innerOutputColumns),
+        innerColumns.outputs,
+        innerColumns.sources,
     });
-    return {applyNode, rowIdColumn, includeMarker};
+    return {
+        applyNode,
+        rowIdColumn,
+        includeMarker,
+        std::move(innerColumns.sources),
+        std::move(innerColumns.outputExpressions),
+    };
   }
 
   // Builds the lifted Aggregate above the decorrelated inner Apply.
@@ -2558,9 +2768,13 @@ class Decorrelator : public NodeRewriter<> {
       const std::vector<AggregateWrap>& wraps,
       size_t numGroupingKeys,
       NodeCP decorrelatedInner,
-      ColumnCP realGroupMarker) {
-    AggregateCallVector liftedAggregates =
-        recovery.rewriteCountStar(aggregate->aggregates(), includeMarker);
+      ColumnCP realGroupMarker,
+      const ColumnVector& boundarySources,
+      const ExprVector& boundaryOutputs) {
+    AggregateCallVector liftedAggregates = substituteAggregates(
+        aggregate->aggregates(), boundarySources, boundaryOutputs);
+    liftedAggregates =
+        recovery.rewriteCountStar(liftedAggregates, includeMarker);
     liftedAggregates =
         recovery.addFilterCondition(liftedAggregates, includeMarker);
     for (ColumnCP outerColumn : input->outputColumns()) {
@@ -2576,7 +2790,10 @@ class Decorrelator : public NodeRewriter<> {
     ExprVector groupingKeys;
     groupingKeys.reserve(1 + numGroupingKeys);
     groupingKeys.push_back(rowIdColumn);
-    appendAll(groupingKeys, aggregate->groupingKeys());
+    appendAll(
+        groupingKeys,
+        exprFactory_.substitute(
+            aggregate->groupingKeys(), boundarySources, boundaryOutputs));
 
     // outputColumns positional contract:
     //   [groupingKeys (rowId, gby_cols),
@@ -3002,12 +3219,17 @@ class Decorrelator : public NodeRewriter<> {
     // needed. An outer matches several groups only where the query groups by
     // a key the join does not match on.
     JoinBack back = joinBodyBack(
+        node,
         input,
         groupedBody,
         velox::core::JoinType::kLeft,
         correlation.leftKeys,
         rightKeyExprs,
         bodyColumns,
+        ColumnVector{
+            node->outputColumns().begin() + input->outputColumns().size(),
+            node->outputColumns().begin() + input->outputColumns().size() +
+                bodyColumns.size()},
         /*markPads=*/numGroupingKeys > 0,
         /*enforceSingleRow=*/grouping.hasNonCorrelationGroupingKey &&
             node->enforceSingleRow());
@@ -3021,7 +3243,9 @@ class Decorrelator : public NodeRewriter<> {
         back.node,
         numGroupingKeys,
         back.includeMarker != nullptr ? static_cast<ExprCP>(back.includeMarker)
-                                      : builder().makeBoolean(true));
+                                      : builder().makeBoolean(true),
+        back.bodySources,
+        back.bodyOutputs);
   }
 
   // Final Project: shapes `child`'s output to node->outputColumns()
@@ -3052,8 +3276,20 @@ class Decorrelator : public NodeRewriter<> {
       ExprCP valueIsLive,
       NodeCP child,
       size_t numGroupingKeys,
-      ExprCP includeMarkerValue) {
+      ExprCP includeMarkerValue,
+      const ColumnVector& boundarySources,
+      const ColumnVector& boundaryOutputs) {
+    const ExprVector boundaryExpressions{
+        boundaryOutputs.begin(), boundaryOutputs.end()};
+    auto atBoundary = [&](ExprCP expression) {
+      return boundarySources.empty()
+          ? expression
+          : exprFactory_.substitute(
+                expression, boundarySources, boundaryExpressions);
+    };
+    valueIsLive = valueIsLive == nullptr ? nullptr : atBoundary(valueIsLive);
     auto nullUnlessLive = [&](ExprCP expression, TypeCP type) {
+      expression = atBoundary(expression);
       return valueIsLive == nullptr
           ? expression
           : exprFactory_.makeIf(
@@ -3074,7 +3310,7 @@ class Decorrelator : public NodeRewriter<> {
           aggregate->outputColumns()[numGroupingKeys + i]->value().type));
     }
     if (node->isLeft()) {
-      finalExpressions.push_back(includeMarkerValue);
+      finalExpressions.push_back(atBoundary(includeMarkerValue));
     }
     return builder().make<Project>({
         child,
@@ -3127,8 +3363,9 @@ class Decorrelator : public NodeRewriter<> {
 
   NodeCP
   terminusLeft(ApplyCP apply, NodeCP input, NodeCP body, ExprVector filter) {
+    ColumnCP includeMarkerSource = makeIncludeSource(apply->includeMarker());
     NodeCP markedBody = addIncludeMarkerToBody(
-        body, apply->includeMarker(), input->outputColumns());
+        body, includeMarkerSource, input->outputColumns());
 
     if (!apply->enforceSingleRow()) {
       // Plain LEFT JOIN terminus: no per-outer cardinality assertion.
@@ -3136,6 +3373,8 @@ class Decorrelator : public NodeRewriter<> {
           filter,
           PlanObjectSet::fromObjects(input->outputColumns()),
           PlanObjectSet::fromObjects(markedBody->outputColumns()));
+      ColumnVector joinSources = apply->sourceColumns();
+      joinSources.back() = includeMarkerSource;
       return builder().make<Join>({
           input,
           markedBody,
@@ -3146,6 +3385,7 @@ class Decorrelator : public NodeRewriter<> {
           /*nullAware=*/false,
           /*nullAsValue=*/false,
           apply->outputColumns(),
+          std::move(joinSources),
       });
     }
 
@@ -3160,12 +3400,21 @@ class Decorrelator : public NodeRewriter<> {
 
     // Build LEFT JOIN; output carries taggedInput.cols ++ markedBody.cols
     // (i.e., input.cols + idColumn + body.cols + includeMarker).
-    ColumnVector joinOutput;
-    joinOutput.reserve(
+    ColumnVector joinSources;
+    joinSources.reserve(
         taggedInput->outputColumns().size() +
         markedBody->outputColumns().size());
-    appendAll(joinOutput, taggedInput->outputColumns());
-    appendAll(joinOutput, markedBody->outputColumns());
+    appendAll(joinSources, taggedInput->outputColumns());
+    appendAll(joinSources, markedBody->outputColumns());
+    ColumnVector joinOutput = taggedInput->outputColumns();
+    joinOutput.reserve(joinSources.size());
+    for (ColumnCP source : markedBody->outputColumns()) {
+      if (source == includeMarkerSource) {
+        joinOutput.push_back(apply->includeMarker());
+        continue;
+      }
+      joinOutput.push_back(apply->outputForSource(source));
+    }
 
     JoinCondition::Split split = JoinCondition::splitEquiKeys(
         filter,
@@ -3180,7 +3429,8 @@ class Decorrelator : public NodeRewriter<> {
         std::move(split.residual),
         /*nullAware=*/false,
         /*nullAsValue=*/false,
-        std::move(joinOutput),
+        joinOutput,
+        joinSources,
     });
 
     NodeCP enforced = enforceScalarSingleRow(join, idColumn);
@@ -3227,6 +3477,7 @@ class Decorrelator : public NodeRewriter<> {
         /*nullAware=*/false,
         /*nullAsValue=*/false,
         apply->outputColumns(),
+        apply->sourceColumns(),
     });
   }
 
@@ -3415,8 +3666,10 @@ class Decorrelator : public NodeRewriter<> {
     auto wraps = buildAggregateWraps(
         aggregate, numGroupingKeys, /*coalesceEmptyInput=*/false);
 
-    AggregateCallVector stage1Aggregates = recovery.rewriteCountStar(
-        aggregate->aggregates(), innerApply.includeMarker);
+    AggregateCallVector stage1Aggregates = substituteAggregates(
+        aggregate->aggregates(), innerApply.sources, innerApply.outputs);
+    stage1Aggregates =
+        recovery.rewriteCountStar(stage1Aggregates, innerApply.includeMarker);
     stage1Aggregates =
         recovery.addFilterCondition(stage1Aggregates, innerApply.includeMarker);
     for (ColumnCP outerColumn : input->outputColumns()) {
@@ -3432,7 +3685,10 @@ class Decorrelator : public NodeRewriter<> {
     ExprVector stage1GroupingKeys;
     stage1GroupingKeys.reserve(1 + numGroupingKeys);
     stage1GroupingKeys.push_back(innerApply.rowIdColumn);
-    appendAll(stage1GroupingKeys, aggregate->groupingKeys());
+    appendAll(
+        stage1GroupingKeys,
+        exprFactory_.substitute(
+            aggregate->groupingKeys(), innerApply.sources, innerApply.outputs));
 
     ColumnVector stage1OutputColumns;
     stage1OutputColumns.reserve(
@@ -3614,8 +3870,10 @@ class Decorrelator : public NodeRewriter<> {
     //   aggregates   = user aggs FILTER(_include)
     //                + arbitrary(L.col) for each outer col
     //                + arbitrary(_include) AS padPresent   [Path 2 only]
-    AggregateCallVector stage1Aggregates = recovery.rewriteCountStar(
-        aggregate->aggregates(), innerApply.includeMarker);
+    AggregateCallVector stage1Aggregates = substituteAggregates(
+        aggregate->aggregates(), innerApply.sources, innerApply.outputs);
+    stage1Aggregates =
+        recovery.rewriteCountStar(stage1Aggregates, innerApply.includeMarker);
     stage1Aggregates =
         recovery.addFilterCondition(stage1Aggregates, innerApply.includeMarker);
     for (ColumnCP outerColumn : input->outputColumns()) {
@@ -3635,7 +3893,10 @@ class Decorrelator : public NodeRewriter<> {
     ExprVector stage1GroupingKeys;
     stage1GroupingKeys.reserve(1 + numGroupingKeys);
     stage1GroupingKeys.push_back(innerApply.rowIdColumn);
-    appendAll(stage1GroupingKeys, aggregate->groupingKeys());
+    appendAll(
+        stage1GroupingKeys,
+        exprFactory_.substitute(
+            aggregate->groupingKeys(), innerApply.sources, innerApply.outputs));
 
     ColumnVector stage1OutputColumns;
     stage1OutputColumns.reserve(
@@ -3877,6 +4138,14 @@ class Decorrelator : public NodeRewriter<> {
   // includeMarker. See `Apply::Key::includeMarker`.
   static ColumnCP makeIncludeColumn() {
     return Column::createBoolean("_include");
+  }
+
+  // Creates the input identity for a join's null-extended marker under the
+  // output marker's emitted name.
+  static ColumnCP makeIncludeSource(ColumnCP output) {
+    return Column::createForSymbol(
+        toName(output->outputName()),
+        Value(toType(velox::BOOLEAN()), /*cardinality=*/2));
   }
 
   // Wraps `input` in an `EnforceDistinct` that asserts at most one row

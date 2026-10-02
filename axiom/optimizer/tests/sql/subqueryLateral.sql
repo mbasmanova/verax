@@ -263,6 +263,18 @@ GROUP BY a
 SELECT u.a, cardinality(filter(ARRAY[1, 2, 3], x -> x > (SELECT min(a) FROM v)))
 FROM u
 ----
+-- A constant above a left lateral join keeps its value on an outer row where
+-- the body computes the same constant before producing a null-padded row.
+-- duckdb: VALUES (1, NULL, 0), (2, NULL, 0)
+-- error_v1: Unsupported PlanNode LATERAL_JOIN
+WITH outer_rows(a) AS (VALUES (1), (2)),
+     body_rows(b) AS (VALUES (5))
+SELECT outer_rows.a, body.c, 0 AS above
+FROM outer_rows
+LEFT JOIN LATERAL (
+  SELECT 0 AS c FROM body_rows WHERE b = outer_rows.a
+) body ON true
+----
 -- The same where the subquery is correlated to the row: the array survives
 -- whole for the rows whose value 'v' holds, and empties for the rest.
 -- duckdb: VALUES (1, 0), (2, 3), (3, 0), (4, 3), (5, 0)

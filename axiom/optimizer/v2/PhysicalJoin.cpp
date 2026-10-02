@@ -25,6 +25,7 @@ NodeCP PhysicalJoin::makeJoin(
     Join::Key key,
     Builder& builder,
     ExprSimplifier& simplifier) {
+  key.sourceColumns = key.effectiveSourceColumns();
   PrecomputeProjections left{
       key.left, builder, simplifier, /*projectAllInputs=*/false};
   PrecomputeProjections right{
@@ -64,7 +65,7 @@ NodeCP PhysicalJoin::makeJoin(
       right.toColumn(column);
     }
   };
-  for (ColumnCP column : key.outputColumns) {
+  for (ColumnCP column : key.sourceColumns) {
     keep(column);
   }
   for (ExprCP conjunct : key.filter) {
