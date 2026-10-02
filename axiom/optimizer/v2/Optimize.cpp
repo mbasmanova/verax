@@ -16,8 +16,11 @@
 
 #include "axiom/optimizer/v2/Optimize.h"
 
+#include <glog/logging.h>
+
 #include "axiom/optimizer/ConstantFold.h"
 #include "axiom/optimizer/ExplainIo.h"
+#include "axiom/optimizer/OptimizerMetrics.h"
 #include "axiom/optimizer/v2/Builder.h"
 #include "axiom/optimizer/v2/ConnectorPushdownPass.h"
 #include "axiom/optimizer/v2/DecorrelatePass.h"
@@ -120,6 +123,25 @@ const auto& passNames() {
 } // namespace
 
 AXIOM_DEFINE_EMBEDDED_ENUM_NAME(Optimizer, Pass, passNames);
+
+Optimizer::~Optimizer() {
+  if (!used_) {
+    return;
+  }
+  // A destructor must not throw, and this one also runs while a planning
+  // failure unwinds. The application's stat writer may throw, so a failed
+  // write loses the sample instead.
+  try {
+    auto& statsWriter = session_.statsWriter();
+    statsWriter.addCount(
+        OptimizerMetrics::kPlanObjects,
+        static_cast<int64_t>(queryCtx()->numPlanObjects()));
+    statsWriter.addBytes(
+        OptimizerMetrics::kArenaBytes, queryCtx()->arenaBytes());
+  } catch (const std::exception& e) {
+    LOG(WARNING) << "Failed to record planning memory stats: " << e.what();
+  }
+}
 
 NodeCP Optimizer::planTo(
     std::optional<Pass> pass,

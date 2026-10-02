@@ -62,8 +62,8 @@ struct QueryStats {
 };
 
 /// Runs the v2 optimizer over a single logical plan. Construct with the plan
-/// and its resolution context, then call one entry point. Must be constructed
-/// and used with an active QueryGraphContext.
+/// and its resolution context, then call one entry point. Must be constructed,
+/// used and destroyed with an active QueryGraphContext.
 class Optimizer {
  public:
   Optimizer(
@@ -78,6 +78,11 @@ class Optimizer {
         evaluator_{evaluator},
         queryCtx_{std::move(queryCtx)},
         schema_{schemaResolver_, session_.statsWriter()} {}
+
+  /// Records the query's plan-object count and arena size into the session's
+  /// stat writer (OptimizerMetrics::kPlanObjects, kArenaBytes) if an entry
+  /// point ran, whether planning succeeded or failed.
+  ~Optimizer();
 
   /// Lowers the plan to a distributed Velox execution plan (a
   /// `MultiFragmentPlan` of one or more fragments).
