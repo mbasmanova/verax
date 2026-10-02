@@ -16,6 +16,7 @@
 
 #include "axiom/optimizer/SelectivityEngine.h"
 
+#include <algorithm>
 #include <limits>
 
 #include "velox/type/Filter.h"
@@ -31,6 +32,11 @@ using velox::common::BytesValues;
 using velox::common::DoubleRange;
 using velox::common::FilterKind;
 using velox::common::FloatRange;
+using velox::common::NegatedBigintRange;
+using velox::common::NegatedBigintValuesUsingBitmask;
+using velox::common::NegatedBigintValuesUsingHashTable;
+using velox::common::NegatedBytesRange;
+using velox::common::NegatedBytesValues;
 
 template <typename T>
 VariantCP registerIntegerBound(int64_t value) {
@@ -116,6 +122,38 @@ valuesFilter(const Value& value, double numValues, Value& refined) {
   auto selectivity = detail::inListSelectivity(value, numValues);
   refined = detail::refineRange(value, nullptr, nullptr, numValues);
   return selectivity;
+}
+
+// Selectivity of a negated filter: the non-null rows its positive form rejects,
+// plus the null rows when the filter passes nulls. The refined value keeps the
+// column's statistics with the null share of the passing rows.
+template <typename NegatedFilter>
+std::optional<Selectivity> negatedFilter(
+    const velox::common::Filter& filter,
+    const Value& value,
+    Value& refined) {
+  Value positiveRefined{value};
+  const auto positiveSelectivity = commonFilterSelectivity(
+      *static_cast<const NegatedFilter&>(filter).getNonNegated(),
+      value,
+      positiveRefined);
+  if (!positiveSelectivity.has_value()) {
+    return std::nullopt;
+  }
+
+  const bool nullAllowed = filter.testNull();
+  const double nullFraction = value.nullFraction.value_or(0);
+  const double nonNullTrue =
+      std::max(0.0, 1.0 - nullFraction - positiveSelectivity->trueFraction);
+  const double trueFraction = nonNullTrue + (nullAllowed ? nullFraction : 0.0);
+  refined = value;
+  if (nullAllowed && trueFraction > 0) {
+    refined.nullFraction = nullFraction / trueFraction;
+  } else {
+    refined.nullFraction = 0;
+    refined.nullable = false;
+  }
+  return Selectivity{trueFraction, 0.0};
 }
 
 } // namespace
@@ -226,9 +264,26 @@ std::optional<Selectivity> commonFilterSelectivity(
           static_cast<const BytesValues&>(filter).values().size(),
           refined);
 
+    case FilterKind::kNegatedBigintRange:
+      return negatedFilter<NegatedBigintRange>(filter, value, refined);
+
+    case FilterKind::kNegatedBigintValuesUsingHashTable:
+      return negatedFilter<NegatedBigintValuesUsingHashTable>(
+          filter, value, refined);
+
+    case FilterKind::kNegatedBigintValuesUsingBitmask:
+      return negatedFilter<NegatedBigintValuesUsingBitmask>(
+          filter, value, refined);
+
+    case FilterKind::kNegatedBytesRange:
+      return negatedFilter<NegatedBytesRange>(filter, value, refined);
+
+    case FilterKind::kNegatedBytesValues:
+      return negatedFilter<NegatedBytesValues>(filter, value, refined);
+
     default:
-      // Negated filters, multi-ranges, bloom filters, hugeint/timestamp ranges
-      // and bool values are not modeled; use a neutral default.
+      // Multi-ranges, bloom filters, hugeint ranges and values, timestamp
+      // ranges and bool values are not modeled; use a neutral default.
       return Selectivity::unknown(nullFraction);
   }
 }
