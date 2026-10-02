@@ -20,8 +20,8 @@
 
 namespace facebook::axiom {
 
-/// The names of the timings the optimizer takes around its own connector
-/// calls.
+/// The names of the metrics the optimizer records into its session's stat
+/// writer.
 struct OptimizerMetrics {
   /// Covers waiting for the connector statistics requests the optimizer issues
   /// per table, and stops when the last one returns. Nests inside the optimize
@@ -34,6 +34,14 @@ struct OptimizerMetrics {
   /// count is below the number of table references in the query. Nests inside
   /// the optimize phase timing.
   static constexpr std::string_view kFindTableWallNanos{"findTableWallNanos"};
+
+  /// Number of plan objects the query created, the count that
+  /// OptimizerOptions::maxPlanObjects caps. One sample per planned query.
+  static constexpr std::string_view kPlanObjects{"planObjects"};
+
+  /// Bytes the planning arena holds when planning ends, including freed
+  /// allocations it keeps for reuse. One sample per planned query.
+  static constexpr std::string_view kArenaBytes{"arenaBytes"};
 };
 
 } // namespace facebook::axiom

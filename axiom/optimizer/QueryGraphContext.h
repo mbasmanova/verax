@@ -390,6 +390,17 @@ class QueryGraphContext {
     return static_cast<int32_t>(objects_.size() - 1);
   }
 
+  /// Returns the number of plan objects created so far.
+  size_t numPlanObjects() const {
+    return objects_.size();
+  }
+
+  /// Returns the bytes the arena holds, including freed allocations it keeps
+  /// for reuse.
+  int64_t arenaBytes() const {
+    return allocator_.retainedSize();
+  }
+
   /// Allocates 'size' bytes from the arena of 'this', aligned to
   /// kArenaAlignment. The allocation lives until free() is called on it or
   /// the arena is destroyed.
