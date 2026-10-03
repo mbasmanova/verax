@@ -21,6 +21,10 @@
 #include "axiom/optimizer/ToSubfield.h"
 #include "axiom/optimizer/v2/ColumnAccess.h"
 #include "axiom/optimizer/v2/JoinFilterRewriter.h"
+#include "axiom/optimizer/v2/JoinPredicatePlacement.h"
+#include "axiom/optimizer/v2/MarkFilterFusion.h"
+#include "axiom/optimizer/v2/OuterJoinReduction.h"
+#include "axiom/optimizer/v2/PlanSubstitutions.h"
 
 #include "axiom/optimizer/v2/ScanHandle.h"
 
@@ -34,7 +38,6 @@
 #include "axiom/optimizer/v2/ExprFactory.h"
 #include "axiom/optimizer/v2/ExprSimplifier.h"
 #include "axiom/optimizer/v2/ImpliedFilters.h"
-#include "axiom/optimizer/v2/JoinCondition.h"
 #include "axiom/optimizer/v2/NodeRewriter.h"
 
 #include <folly/container/F14Set.h>
@@ -96,78 +99,8 @@ struct PushdownContext {
 
   // Expression identities established by joins in this subtree. A parent
   // applies them while rebuilding on the way back up.
-  ExprFactory::ExprSubstitution outputRewrites;
+  PlanSubstitutions outputSubstitutions;
 };
-
-// Adds 'from' to 'into'. The same expression may be discovered through more
-// than one child only when both discoveries choose the same replacement.
-void mergeRewrites(
-    ExprFactory::ExprSubstitution& into,
-    const ExprFactory::ExprSubstitution& from) {
-  for (const auto& [source, target] : from) {
-    const auto [it, inserted] = into.emplace(source, target);
-    VELOX_CHECK(
-        inserted || it->second == target,
-        "Conflicting rewrites for expression: {}",
-        source->toString());
-  }
-}
-
-// Repeats replacement because rebuilding a parent expression can expose the
-// same identity again at a different nesting level.
-ExprCP applyRewrites(
-    ExprFactory& exprs,
-    ExprCP expression,
-    const ExprFactory::ExprSubstitution& rewrites) {
-  folly::F14FastSet<ExprCP> visited;
-  while (visited.insert(expression).second) {
-    ExprCP rewritten = exprs.replace(expression, rewrites);
-    if (rewritten == expression) {
-      return expression;
-    }
-    expression = rewritten;
-  }
-  VELOX_FAIL("Join-key expression rewrites did not converge");
-}
-
-ExprVector applyRewrites(
-    ExprFactory& exprs,
-    const ExprVector& expressions,
-    const ExprFactory::ExprSubstitution& rewrites) {
-  ExprVector rewritten;
-  rewritten.reserve(expressions.size());
-  for (ExprCP expression : expressions) {
-    rewritten.push_back(applyRewrites(exprs, expression, rewrites));
-  }
-  return rewritten;
-}
-
-// Resolves rewrite chains, then drops rewrites whose replacement cannot be
-// evaluated from 'outputColumns'. The replaced expression may be gone: a join
-// drops a column it replaces.
-void retainVisibleRewrites(
-    ExprFactory& exprs,
-    ExprFactory::ExprSubstitution& rewrites,
-    const ColumnVector& outputColumns) {
-  const auto outputSet = PlanObjectSet::fromObjects(outputColumns);
-  ExprFactory::ExprSubstitution visible;
-  for (const auto& [source, target] : rewrites) {
-    ExprCP replacement = applyRewrites(exprs, target, rewrites);
-    if (outputSet.containsColumns(replacement)) {
-      visible.emplace(source, replacement);
-    }
-  }
-  rewrites = std::move(visible);
-}
-
-// Returns the column that 'rewrites' replace 'column' by, or 'column' itself.
-ColumnCP replacementColumn(
-    ExprFactory& exprs,
-    ColumnCP column,
-    const ExprFactory::ExprSubstitution& rewrites) {
-  ExprCP rewritten = applyRewrites(exprs, column, rewrites);
-  return rewritten->isColumn() ? rewritten->as<Column>() : column;
-}
 
 // Removes repeated grouping keys and their corresponding output columns.
 // @param keys On input, the grouping expressions. On output, the same
@@ -178,11 +111,11 @@ ColumnCP replacementColumn(
 // removed; the aggregate-result columns are unchanged.
 // @return A mapping from each removed output to the output retained for the
 // same grouping key.
-ExprFactory::ExprSubstitution dropDuplicateGroupingKeys(
+PlanSubstitutions dropDuplicateGroupingKeys(
     ExprVector& keys,
     ColumnVector& outputs) {
   VELOX_DCHECK_GE(outputs.size(), keys.size());
-  ExprFactory::ExprSubstitution dropped;
+  PlanSubstitutions dropped;
   folly::F14FastMap<ExprCP, ColumnCP> keyToOutput;
   ExprVector uniqueKeys;
   ColumnVector uniqueOutputs;
@@ -192,7 +125,7 @@ ExprFactory::ExprSubstitution dropDuplicateGroupingKeys(
       uniqueKeys.push_back(keys[i]);
       uniqueOutputs.push_back(outputs[i]);
     } else {
-      dropped.emplace(outputs[i], it->second);
+      dropped.add(outputs[i], it->second);
     }
   }
   if (!dropped.empty()) {
@@ -225,18 +158,28 @@ void dropDuplicateOrderKeys(
   orderTypes = std::move(uniqueTypes);
 }
 
-// Returns 'columns' with each column replaced as 'replacementColumn' does.
+// Applies a column-to-column substitution. Other substitutions cannot appear
+// in a ColumnVector and leave the column unchanged.
+ColumnCP rewriteColumn(
+    ExprFactory& exprs,
+    ColumnCP column,
+    const PlanSubstitutions& substitutions) {
+  ExprCP rewritten = substitutions.apply(column, exprs);
+  return rewritten->isColumn() ? rewritten->as<Column>() : column;
+}
+
+// Returns 'columns' with each column rewritten by 'substitutions'.
 // With 'dropDuplicates', a replacement already in the list is not added again.
 ColumnVector rewriteColumns(
     ExprFactory& exprs,
     const ColumnVector& columns,
-    const ExprFactory::ExprSubstitution& rewrites,
+    const PlanSubstitutions& substitutions,
     bool dropDuplicates) {
   ColumnVector result;
   result.reserve(columns.size());
   PlanObjectSet added;
   for (ColumnCP column : columns) {
-    ColumnCP rewritten = replacementColumn(exprs, column, rewrites);
+    ColumnCP rewritten = rewriteColumn(exprs, column, substitutions);
     if (dropDuplicates && added.contains(rewritten)) {
       continue;
     }
@@ -246,99 +189,15 @@ ColumnVector rewriteColumns(
   return result;
 }
 
-// Restores a fixed internal boundary's output expressions, column identities,
-// and order after rewriting its input.
-NodeCP restoreOutputColumns(
-    Builder& builder,
-    ExprFactory& exprs,
-    ExprSimplifier& simplifier,
-    NodeCP input,
-    const ColumnVector& outputColumns,
-    const ExprFactory::ExprSubstitution& rewrites) {
-  const auto inputSet = PlanObjectSet::fromObjects(input->outputColumns());
-  ExprVector expressions;
-  expressions.reserve(outputColumns.size());
-  for (ColumnCP output : outputColumns) {
-    ExprCP inputExpr = applyRewrites(exprs, output, rewrites);
-    VELOX_CHECK(
-        inputSet.containsColumns(inputExpr),
-        "Cannot restore output column after rewrite: {}",
-        output->toString());
-    expressions.push_back(inputExpr);
-  }
-  if (input->outputColumns() == outputColumns &&
-      std::equal(
-          expressions.begin(), expressions.end(), outputColumns.begin())) {
-    return input;
-  }
-  return PrecomputeProjections::makeProject(
-      input, std::move(expressions), outputColumns, builder, simplifier);
-}
-
-// Rebuilds an aggregate call whose inputs contain a rewrite source.
-optimizer::AggregateCP applyRewrites(
-    ExprFactory& exprs,
-    Builder& builder,
-    optimizer::AggregateCP aggregate,
-    const ExprFactory::ExprSubstitution& rewrites) {
-  ExprVector arguments = applyRewrites(exprs, aggregate->args(), rewrites);
-  ExprCP condition = applyRewrites(exprs, aggregate->condition(), rewrites);
-  ExprVector orderKeys = applyRewrites(exprs, aggregate->orderKeys(), rewrites);
-  OrderTypeVector orderTypes = aggregate->orderTypes();
-  dropDuplicateOrderKeys(orderKeys, orderTypes);
-  optimizer::AggregateCP fallback = aggregate->fallback();
-  if (fallback != nullptr) {
-    fallback = applyRewrites(exprs, builder, fallback, rewrites);
-  }
-  if (arguments == aggregate->args() && condition == aggregate->condition() &&
-      orderKeys == aggregate->orderKeys() &&
-      fallback == aggregate->fallback()) {
-    return aggregate;
-  }
-  FunctionSet functions = Call::unionArgFunctions(FunctionSet{}, arguments);
-  if (aggregate->functions().contains(
-          FunctionSet::kIgnoreDuplicatesAggregate)) {
-    functions = functions | FunctionSet::kIgnoreDuplicatesAggregate;
-  }
-  if (aggregate->functions().contains(FunctionSet::kOrderSensitiveAggregate)) {
-    functions = functions | FunctionSet::kOrderSensitiveAggregate;
-  }
-  return builder.makeAggregate(
-      aggregate->name(),
-      aggregate->value(),
-      std::move(arguments),
-      functions,
-      aggregate->isDistinct(),
-      condition,
-      aggregate->intermediateType(),
-      std::move(orderKeys),
-      std::move(orderTypes),
-      aggregate->specialKind(),
-      fallback);
-}
-
-AggregateCallVector applyRewrites(
-    ExprFactory& exprs,
-    Builder& builder,
-    const AggregateCallVector& aggregates,
-    const ExprFactory::ExprSubstitution& rewrites) {
-  AggregateCallVector rewritten;
-  rewritten.reserve(aggregates.size());
-  for (const auto* aggregate : aggregates) {
-    rewritten.push_back(applyRewrites(exprs, builder, aggregate, rewrites));
-  }
-  return rewritten;
-}
-
 // Moves the child's identities upward when all referenced columns remain
 // visible in the rebuilt output.
-NodeCP propagateVisibleRewrites(
+NodeCP propagateVisibleSubstitutions(
     ExprFactory& exprs,
     PushdownContext& parent,
     PushdownContext& child,
     NodeCP output) {
-  parent.outputRewrites = std::move(child.outputRewrites);
-  retainVisibleRewrites(exprs, parent.outputRewrites, output->outputColumns());
+  parent.outputSubstitutions = std::move(child.outputSubstitutions);
+  parent.outputSubstitutions.retainVisible(output->outputColumns(), exprs);
   return output;
 }
 
@@ -471,280 +330,16 @@ class NonNullOutput {
   folly::F14NodeMap<NodeCP, PlanObjectSet> cache_;
 };
 
-// Returns true if `conjunct` references at least one column in
-// `columns` and contains no non-default-null-behavior sub-expression.
-// Conservative — a true result implies null-rejection; a false result
-// does not imply the opposite.
-bool isNullRejecting(ExprCP conjunct, const PlanObjectSet& columns) {
-  return conjunct->columns().hasIntersection(columns) &&
-      !hasNonDefaultNullBehavior(conjunct);
-}
-
-// Returns the demoted join kind if a pending conjunct or an
-// ancestor-proven non-NULL column rejects nulls on the
-// null-padded side(s), otherwise `joinType` unchanged.
-velox::core::JoinType demoteOuterToInner(
-    velox::core::JoinType joinType,
-    const ExprVector& pending,
-    const PlanObjectSet& nonNullColumns,
-    const PlanObjectSet& leftColumns,
-    const PlanObjectSet& rightColumns) {
-  auto anyRejects = [&](const PlanObjectSet& columns) {
-    for (ExprCP conjunct : pending) {
-      if (isNullRejecting(conjunct, columns)) {
-        return true;
-      }
-    }
-    return columns.hasIntersection(nonNullColumns);
-  };
-  switch (joinType) {
-    case velox::core::JoinType::kLeft:
-      return anyRejects(rightColumns) ? velox::core::JoinType::kInner
-                                      : joinType;
-    case velox::core::JoinType::kRight:
-      return anyRejects(leftColumns) ? velox::core::JoinType::kInner : joinType;
-    case velox::core::JoinType::kFull: {
-      // A predicate that rejects nulls on one input eliminates the rows in
-      // which that input is null-padded, i.e. the other input's unmatched
-      // rows. So only the referenced input stays row-preserving: left ->
-      // LEFT, right -> RIGHT, both -> INNER.
-      const bool rejectsLeft = anyRejects(leftColumns);
-      const bool rejectsRight = anyRejects(rightColumns);
-      if (rejectsLeft && rejectsRight) {
-        return velox::core::JoinType::kInner;
-      }
-      if (rejectsLeft) {
-        return velox::core::JoinType::kLeft;
-      }
-      if (rejectsRight) {
-        return velox::core::JoinType::kRight;
-      }
-      return joinType;
-    }
-    case velox::core::JoinType::kInner:
-    case velox::core::JoinType::kLeftSemiFilter:
-    case velox::core::JoinType::kCountingLeftSemiFilter:
-    case velox::core::JoinType::kLeftSemiProject:
-    case velox::core::JoinType::kRightSemiFilter:
-    case velox::core::JoinType::kRightSemiProject:
-    case velox::core::JoinType::kRightAnti:
-    case velox::core::JoinType::kAnti:
-    case velox::core::JoinType::kCountingAnti:
-      return joinType;
-    case velox::core::JoinType::kNumJoinTypes:
-      break;
-  }
-  VELOX_UNREACHABLE();
-}
-
-// Maps fresh join outputs to the input columns that supply them.
-ExprFactory::ExprSubstitution joinOutputSources(const Join* join) {
-  ExprFactory::ExprSubstitution rewrites;
-  for (size_t i = 0; i < join->outputColumns().size(); ++i) {
-    if (join->outputColumns()[i] != join->sourceColumns()[i]) {
-      rewrites.emplace(join->outputColumns()[i], join->sourceColumns()[i]);
-    }
-  }
-  return rewrites;
-}
-
-// Returns the output-to-source mappings made valid when `joinType` preserves
-// a side the original join null-extended.
-ExprFactory::ExprSubstitution demotedJoinOutputs(
-    const Join* join,
-    velox::core::JoinType joinType,
-    const PlanObjectSet& leftColumns,
-    const PlanObjectSet& rightColumns) {
-  ExprFactory::ExprSubstitution rewrites;
-  for (size_t i = 0; i < join->outputColumns().size(); ++i) {
-    ColumnCP source = join->sourceColumns()[i];
-    const bool originallyPreserved = Join::preservesSource(
-        join->joinType(), source, leftColumns, rightColumns);
-    const bool nowPreserved =
-        Join::preservesSource(joinType, source, leftColumns, rightColumns);
-    if (!originallyPreserved && nowPreserved &&
-        join->outputColumns()[i] != source) {
-      rewrites.emplace(join->outputColumns()[i], source);
-    }
-  }
-  return rewrites;
-}
-
-// Rewrites a set of columns through `rewrites`.
+// Replaces columns according to `substitutions`.
 PlanObjectSet rewriteColumnSet(
     ExprFactory& exprs,
     const PlanObjectSet& columns,
-    const ExprFactory::ExprSubstitution& rewrites) {
+    const PlanSubstitutions& substitutions) {
   PlanObjectSet result;
   columns.forEach<Column>([&](ColumnCP column) {
-    result.add(replacementColumn(exprs, column, rewrites));
+    result.add(rewriteColumn(exprs, column, substitutions));
   });
   return result;
-}
-
-// Result of fusing a consuming mark filter into a kLeftSemiProject
-// join. `joinType` is the filtering type the join switches to; `conjunct`
-// is the pending conjunct that gets consumed (removed from `pending`).
-struct MarkFusion {
-  velox::core::JoinType joinType;
-  ExprCP conjunct;
-};
-
-// Returns true if `expr` is syntactically `not(arg)`.
-bool isNot(ExprCP expr, ExprCP& arg) {
-  if (!expr->is(PlanType::kCallExpr)) {
-    return false;
-  }
-  const Call* call = expr->as<Call>();
-  if (call->name() != toName(FunctionRegistry::instance()->negation()) ||
-      call->args().size() != 1) {
-    return false;
-  }
-  arg = call->args()[0];
-  return true;
-}
-
-// Attempts to fuse a consuming mark filter on a `kLeftSemiProject` join
-// into a filtering `kLeftSemiFilter` / `kAnti`. Returns the fusion when a
-// pending conjunct is syntactically exactly the mark (→ kLeftSemiFilter)
-// or exactly `not(mark)` (→ kAnti), and the mark is dead above except for
-// that conjunct. Returns nullopt otherwise (leaving the join a
-// kLeftSemiProject).
-//
-// Correctness preconditions, all required:
-//  - Shape: the conjunct is exactly `mark` or `not(mark)`; a conjunct
-//    that merely references the mark (`mark IS NULL`, `mark OR x`,
-//    `coalesce(mark, false)`) is not a semi/anti and must not fuse.
-//  - Three-valued mark: the kLeftSemiProject mark is three-valued for
-//    null-aware IN. `Filter(not(mark))` keeps exactly `mark = false`
-//    rows, which is correct NOT IN by 3VL. The match is against the raw
-//    conjunct, preserving the negated nullable mark's null behavior.
-//  - Liveness: the mark must not be required by any consumer other than
-//    the fused conjunct. The mark is a fresh column produced only by this
-//    join, so its consumers are pending conjuncts (the fused one plus any
-//    others, checked here) and consumers strictly above carried in
-//    `requiredAbove`. A mark live above is not fused: dropping it would
-//    leave a dangling output-column demand.
-std::optional<MarkFusion> fuseMarkFilter(
-    JoinCP node,
-    const ExprVector& pending,
-    const PlanObjectSet& requiredAbove) {
-  if (node->joinType() != velox::core::JoinType::kLeftSemiProject) {
-    return std::nullopt;
-  }
-  ColumnCP mark = node->markColumn();
-  VELOX_CHECK_NOT_NULL(mark);
-
-  // A consumer strictly above keeps the mark live; fusion drops it.
-  if (requiredAbove.contains(mark)) {
-    return std::nullopt;
-  }
-
-  ExprCP fused{nullptr};
-  velox::core::JoinType fusedType{};
-  for (ExprCP conjunct : pending) {
-    if (conjunct == mark) {
-      fused = conjunct;
-      fusedType = velox::core::JoinType::kLeftSemiFilter;
-      break;
-    }
-    ExprCP negated{nullptr};
-    if (isNot(conjunct, negated) && negated == mark) {
-      fused = conjunct;
-      fusedType = velox::core::JoinType::kAnti;
-      break;
-    }
-  }
-  if (fused == nullptr) {
-    return std::nullopt;
-  }
-
-  // Any other pending conjunct that references the mark keeps it live.
-  for (ExprCP conjunct : pending) {
-    if (conjunct != fused && conjunct->columns().contains(mark)) {
-      return std::nullopt;
-    }
-  }
-  return MarkFusion{fusedType, fused};
-}
-
-// Returns true if a `leftOnly` conjunct that arrived from above the join
-// may be pushed to the left input of a join of `joinType`. An above-join
-// conjunct is an extra restriction on the join output; this differs from a
-// conjunct in the join's own match condition (see joinFilterTarget).
-bool canPushLeft(velox::core::JoinType joinType, bool leftOnly) {
-  return leftOnly && Join::preservedSides(joinType).left;
-}
-
-// Returns the cross-side `Column == Column` equi-pairs reachable on
-// `node` — either explicitly via `leftKeys`/`rightKeys` or as
-// `eq(Column, Column)` conjuncts in the join's filter or in
-// `extraConjuncts`, which a caller uses to include the pending conjuncts: a
-// `WHERE` equality reaches this pass as a pending conjunct and only becomes
-// the join's condition once the pass routes it there. Pairs are distinct;
-// the same equality may be written more than once. The returned pair has
-// equal-length `first` (left columns) and `second` (right columns) vectors.
-std::pair<ColumnVector, ColumnVector> collectEquiColumnPairs(
-    JoinCP node,
-    const PlanObjectSet& leftColumns,
-    const PlanObjectSet& rightColumns,
-    const ExprVector& extraConjuncts = {}) {
-  ColumnVector leftKeys;
-  ColumnVector rightKeys;
-
-  auto addPair = [&](ColumnCP left, ColumnCP right) {
-    for (size_t i = 0; i < leftKeys.size(); ++i) {
-      if (leftKeys[i] == left && rightKeys[i] == right) {
-        return;
-      }
-    }
-    leftKeys.push_back(left);
-    rightKeys.push_back(right);
-  };
-
-  for (size_t i = 0; i < node->leftKeys().size(); ++i) {
-    ExprCP leftKey = node->leftKeys()[i];
-    ExprCP rightKey = node->rightKeys()[i];
-    if (leftKey->is(PlanType::kColumnExpr) &&
-        rightKey->is(PlanType::kColumnExpr)) {
-      addPair(leftKey->as<Column>(), rightKey->as<Column>());
-    }
-  }
-
-  const Name equalityName = toName(FunctionRegistry::instance()->equality());
-  const auto addEqualityPair = [&](ExprCP conjunct) {
-    if (!conjunct->is(PlanType::kCallExpr)) {
-      return;
-    }
-    const Call* call = conjunct->as<Call>();
-    if (call->name() != equalityName) {
-      return;
-    }
-    ExprCP first = call->args()[0];
-    ExprCP second = call->args()[1];
-    if (!first->is(PlanType::kColumnExpr) ||
-        !second->is(PlanType::kColumnExpr)) {
-      return;
-    }
-    ColumnCP firstColumn = first->as<Column>();
-    ColumnCP secondColumn = second->as<Column>();
-    if (leftColumns.contains(firstColumn) &&
-        rightColumns.contains(secondColumn)) {
-      addPair(firstColumn, secondColumn);
-    } else if (
-        leftColumns.contains(secondColumn) &&
-        rightColumns.contains(firstColumn)) {
-      addPair(secondColumn, firstColumn);
-    }
-  };
-
-  for (ExprCP conjunct : node->filter()) {
-    addEqualityPair(conjunct);
-  }
-  for (ExprCP conjunct : extraConjuncts) {
-    addEqualityPair(conjunct);
-  }
-  return {std::move(leftKeys), std::move(rightKeys)};
 }
 
 // Splits `expressions` by whether each one's column set overlaps
@@ -776,108 +371,6 @@ void blockNondeterministic(ExprVector& pushable, ExprVector& blocked) {
     blocked.push_back(conjunct);
     return true;
   });
-}
-
-// Mirror of canPushLeft for the right input (from-above conjuncts).
-bool canPushRight(velox::core::JoinType joinType, bool rightOnly) {
-  return rightOnly && Join::preservedSides(joinType).right;
-}
-
-// Where a conjunct from a join's own match condition (its filter) that
-// references only one input may move.
-enum class FilterTarget { kKeep, kLeft, kRight };
-
-// Describes safe propagation directions and whether every output row matched
-// a row from the other input.
-struct JoinFilterPropagation {
-  bool leftToRight{false};
-  bool rightToLeft{false};
-  bool emitsOnlyMatchedRows{false};
-};
-
-// Returns the directions in which a predicate guaranteed by one input can
-// restrict rows read from the other input.
-JoinFilterPropagation filterPropagation(
-    velox::core::JoinType joinType,
-    bool nullAware) {
-  using JoinType = velox::core::JoinType;
-  switch (joinType) {
-    case JoinType::kInner:
-    case JoinType::kLeftSemiFilter:
-    case JoinType::kCountingLeftSemiFilter:
-    case JoinType::kRightSemiFilter:
-      return {
-          .leftToRight = true,
-          .rightToLeft = true,
-          .emitsOnlyMatchedRows = true,
-      };
-    case JoinType::kLeft:
-      return {.leftToRight = true};
-    case JoinType::kRight:
-      return {.rightToLeft = true};
-    // A NULL on the matching input affects the projected mark or anti result,
-    // even when its key is outside a translated filter's range.
-    case JoinType::kLeftSemiProject:
-      return {.leftToRight = !nullAware};
-    case JoinType::kRightSemiProject:
-      return {.rightToLeft = !nullAware};
-    case JoinType::kAnti:
-      return {.leftToRight = !nullAware};
-    case JoinType::kCountingAnti:
-      return {.leftToRight = true};
-    case JoinType::kRightAnti:
-      return {.rightToLeft = !nullAware};
-    case JoinType::kFull:
-      return {};
-    case JoinType::kNumJoinTypes:
-      break;
-  }
-  VELOX_UNREACHABLE();
-}
-
-// Returns the target for a single-input match conjunct. This differs from
-// canPushLeft/canPushRight, which govern conjuncts arriving from above the
-// join (an extra restriction on the output). A match conjunct may move to:
-//  - kInner: either referenced input.
-//  - kLeft / kRight: only the non-preserved input; pushing the preserved
-//    input would drop rows that must be NULL-padded.
-//  - semi / anti: only the existence-check input. Pre-filtering the match
-//    rows preserves which output rows have (semi) or lack (anti) a match.
-//    The output side is row-preserving for anti / project / counting, so
-//    pushing a conjunct into it would drop rows that must survive.
-//  - kFull: neither.
-FilterTarget joinFilterTarget(
-    velox::core::JoinType joinType,
-    bool leftOnly,
-    bool rightOnly) {
-  switch (joinType) {
-    case velox::core::JoinType::kInner:
-      if (leftOnly) {
-        return FilterTarget::kLeft;
-      }
-      return rightOnly ? FilterTarget::kRight : FilterTarget::kKeep;
-    case velox::core::JoinType::kLeft:
-      return rightOnly ? FilterTarget::kRight : FilterTarget::kKeep;
-    case velox::core::JoinType::kRight:
-      return leftOnly ? FilterTarget::kLeft : FilterTarget::kKeep;
-    case velox::core::JoinType::kFull:
-      return FilterTarget::kKeep;
-    // Existence-check input is the right side for these.
-    case velox::core::JoinType::kLeftSemiFilter:
-    case velox::core::JoinType::kCountingLeftSemiFilter:
-    case velox::core::JoinType::kLeftSemiProject:
-    case velox::core::JoinType::kAnti:
-    case velox::core::JoinType::kCountingAnti:
-      return rightOnly ? FilterTarget::kRight : FilterTarget::kKeep;
-    // ...and the left side for right-semi and right-anti.
-    case velox::core::JoinType::kRightSemiFilter:
-    case velox::core::JoinType::kRightSemiProject:
-    case velox::core::JoinType::kRightAnti:
-      return leftOnly ? FilterTarget::kLeft : FilterTarget::kKeep;
-    case velox::core::JoinType::kNumJoinTypes:
-      break;
-  }
-  VELOX_UNREACHABLE();
 }
 
 // A single-ranking-function `Window` that a specialized ranking node can
@@ -1394,8 +887,8 @@ class Pushdown : public NodeRewriter<PushdownContext> {
         PlanObjectSet::fromObjects(node->left()->outputColumns());
     const PlanObjectSet rightColumns =
         PlanObjectSet::fromObjects(node->right()->outputColumns());
-    auto [leftKeys, rightKeys] =
-        collectEquiColumnPairs(node, leftColumns, rightColumns);
+    auto [leftKeys, rightKeys] = JoinPredicatePlacement::equiColumnPairs(
+        node, leftColumns, rightColumns, {});
 
     CollectedJoinFilters collected;
     collected.leftInput = collectGuaranteedFilters(node->left(), leftColumns);
@@ -1409,7 +902,8 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     if (preserved.right) {
       appendDistinct(collected.output, collected.rightInput);
     }
-    if (filterPropagation(node->joinType(), node->nullAware())
+    if (JoinPredicatePlacement::filterPropagation(
+            node->joinType(), node->nullAware())
             .emitsOnlyMatchedRows) {
       if (preserved.right) {
         deriveForInput(
@@ -1465,13 +959,14 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       const ExprVector& pending,
       ExprVector& leftPending,
       ExprVector& rightPending) {
-    const auto propagation = filterPropagation(joinType, node->nullAware());
+    const auto propagation =
+        JoinPredicatePlacement::filterPropagation(joinType, node->nullAware());
     if (!propagation.leftToRight && !propagation.rightToLeft) {
       return;
     }
 
-    auto [leftKeys, rightKeys] =
-        collectEquiColumnPairs(node, leftColumns, rightColumns, pending);
+    auto [leftKeys, rightKeys] = JoinPredicatePlacement::equiColumnPairs(
+        node, leftColumns, rightColumns, pending);
     if (leftKeys.empty()) {
       return;
     }
@@ -1505,12 +1000,8 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     // A required column may have been replaced below; the parent reads its
     // replacement instead.
     PlanObjectSet required = context.required;
-    for (const auto& [source, _] : context.outputRewrites) {
-      if (source->isColumn() && context.required.contains(source)) {
-        required.add(replacementColumn(
-            exprs_, source->as<Column>(), context.outputRewrites));
-      }
-    }
+    rewriteColumnSet(exprs_, context.required, context.outputSubstitutions)
+        .forEach<Column>([&](ColumnCP column) { required.add(column); });
     ColumnVector keep;
     for (ColumnCP column : node->outputColumns()) {
       if (required.contains(column)) {
@@ -1580,15 +1071,14 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       }
     }
 
-    ExprFactory::ExprSubstitution constants;
+    PlanSubstitutions constants;
     for (ExprCP predicate : pushable) {
       if (const auto equality = exprs_.literalEquality(predicate)) {
-        constants.insert_or_assign(equality->first, equality->second);
+        constants.set(equality->first, equality->second);
       }
     }
     for (ExprCP& expression : survivingExprs) {
-      expression =
-          simplifier_.simplify(applyRewrites(exprs_, expression, constants));
+      expression = simplifier_.simplify(constants.apply(expression, exprs_));
     }
 
     // Recorded here, not on the way down: an expression this pass prunes must
@@ -1614,7 +1104,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       }
     }
     NodeCP newInput = rewrite(node->input(), childContext);
-    applyOutputRewrites(childContext, survivingExprs, blocked);
+    applyOutputSubstitutions(childContext, survivingExprs, blocked);
 
     NodeCP newProject = PrecomputeProjections::makeProject(
         newInput,
@@ -1630,7 +1120,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     // boundary.
     const auto& projectExprs = project->exprs();
     const auto& projectOutputs = project->outputColumns();
-    ExprFactory::ExprSubstitution projectRewrites;
+    PlanSubstitutions projectSubstitutions;
     bool preservesAllInputColumns{
         !projectOutputs.empty() &&
         projectOutputs.size() == project->input()->outputColumns().size()};
@@ -1638,7 +1128,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
          ++i) {
       preservesAllInputColumns = projectExprs[i]->isColumn();
       if (preservesAllInputColumns && projectOutputs[i] != projectExprs[i]) {
-        projectRewrites.emplace(projectOutputs[i], projectExprs[i]);
+        projectSubstitutions.add(projectOutputs[i], projectExprs[i]);
       }
     }
     preservesAllInputColumns = preservesAllInputColumns &&
@@ -1646,11 +1136,11 @@ class Pushdown : public NodeRewriter<PushdownContext> {
             .containsAll(project->input()->outputColumns());
 
     if (preservesAllInputColumns) {
-      mergeRewrites(childContext.outputRewrites, projectRewrites);
-      blocked = applyRewrites(exprs_, blocked, projectRewrites);
+      childContext.outputSubstitutions.merge(projectSubstitutions);
+      blocked = projectSubstitutions.apply(blocked, exprs_);
       newProject = project->input();
     }
-    return propagateVisibleRewrites(
+    return propagateVisibleSubstitutions(
         exprs_,
         context,
         childContext,
@@ -1690,7 +1180,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       childContext.nonNullColumns = context.nonNullColumns;
       NodeCP newInput = rewrite(node->input(), childContext);
       AggregateCallVector aggregates = node->aggregates();
-      applyOutputRewrites(childContext, aggregates);
+      applyOutputSubstitutions(childContext, aggregates);
       NodeCP newAggregate =
           (newInput == node->input() && aggregates == node->aggregates())
           ? static_cast<NodeCP>(node)
@@ -1702,7 +1192,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
                  .step = node->step(),
                  .groupId = node->groupId(),
                  .globalGroupingSets = node->globalGroupingSets()});
-      return propagateVisibleRewrites(
+      return propagateVisibleSubstitutions(
           exprs_,
           context,
           childContext,
@@ -1761,12 +1251,12 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     NodeCP newInput = rewrite(node->input(), childContext);
 
     ExprVector groupingKeys = node->groupingKeys();
-    applyOutputRewrites(childContext, groupingKeys, survivingAggregates);
+    applyOutputSubstitutions(childContext, groupingKeys, survivingAggregates);
 
-    ExprFactory::ExprSubstitution duplicateKeyOutputs =
+    PlanSubstitutions duplicateKeyOutputs =
         dropDuplicateGroupingKeys(groupingKeys, survivingOutputs);
     if (!duplicateKeyOutputs.empty()) {
-      blocked = applyRewrites(exprs_, blocked, duplicateKeyOutputs);
+      blocked = duplicateKeyOutputs.apply(blocked, exprs_);
     }
 
     const bool unchanged = newInput == node->input() &&
@@ -1783,12 +1273,12 @@ class Pushdown : public NodeRewriter<PushdownContext> {
                .step = node->step(),
                .groupId = node->groupId(),
                .globalGroupingSets = node->globalGroupingSets()});
-    NodeCP result = propagateVisibleRewrites(
+    NodeCP result = propagateVisibleSubstitutions(
         exprs_,
         context,
         childContext,
         maybeWrapFilter(newAggregate, std::move(blocked)));
-    mergeRewrites(context.outputRewrites, duplicateKeyOutputs);
+    context.outputSubstitutions.merge(duplicateKeyOutputs);
     return result;
   }
 
@@ -1854,110 +1344,6 @@ class Pushdown : public NodeRewriter<PushdownContext> {
         });
   }
 
-  // Groups join predicates by the plan boundary where they will be evaluated.
-  struct RoutedJoinPredicates {
-    ExprVector leftInputPredicates;
-    ExprVector rightInputPredicates;
-    ExprVector leftKeys;
-    ExprVector rightKeys;
-    ExprVector joinPredicates;
-    ExprVector aboveJoinPredicates;
-  };
-
-  // Routes predicates to the inputs, join condition, or above the join, and
-  // extracts new equi-join keys from predicates that stay on an inner join.
-  RoutedJoinPredicates routeJoinPredicates(
-      const Join* node,
-      velox::core::JoinType joinType,
-      const PlanObjectSet& leftColumns,
-      const PlanObjectSet& rightColumns,
-      const ExprVector& pending,
-      ExprVector leftInputPredicates,
-      ExprVector rightInputPredicates) {
-    RoutedJoinPredicates result{
-        .leftInputPredicates = std::move(leftInputPredicates),
-        .rightInputPredicates = std::move(rightInputPredicates),
-        .leftKeys = node->leftKeys(),
-        .rightKeys = node->rightKeys(),
-    };
-    ExprVector joinCandidates;
-
-    for (ExprCP conjunct : pending) {
-      const auto& columns = conjunct->columns();
-      // An empty column set is a subset of both inputs. A constant belongs to
-      // neither input and remains at the join boundary.
-      const bool leftOnly = !columns.empty() && columns.isSubset(leftColumns);
-      const bool rightOnly = !columns.empty() && columns.isSubset(rightColumns);
-
-      // Keep one evaluation per join output instead of sharing one evaluation
-      // across every output produced by an input row.
-      if (conjunct->containsNonDeterministic() && (leftOnly || rightOnly)) {
-        result.aboveJoinPredicates.push_back(conjunct);
-      } else if (canPushLeft(joinType, leftOnly)) {
-        result.leftInputPredicates.push_back(conjunct);
-      } else if (canPushRight(joinType, rightOnly)) {
-        result.rightInputPredicates.push_back(conjunct);
-      } else if (joinType == velox::core::JoinType::kInner) {
-        joinCandidates.push_back(conjunct);
-      } else {
-        result.aboveJoinPredicates.push_back(conjunct);
-      }
-    }
-
-    result.joinPredicates.reserve(node->filter().size());
-    for (ExprCP conjunct : node->filter()) {
-      // Keeping a conjunct on the join is valid regardless of which inputs it
-      // references; only moving it into an input requires classification.
-      if (conjunct->containsNonDeterministic()) {
-        result.joinPredicates.push_back(conjunct);
-        continue;
-      }
-      const auto& columns = conjunct->columns();
-      const bool leftOnly = !columns.empty() && columns.isSubset(leftColumns);
-      const bool rightOnly = !columns.empty() && columns.isSubset(rightColumns);
-      switch (joinFilterTarget(joinType, leftOnly, rightOnly)) {
-        case FilterTarget::kLeft:
-          result.leftInputPredicates.push_back(conjunct);
-          break;
-        case FilterTarget::kRight:
-          result.rightInputPredicates.push_back(conjunct);
-          break;
-        case FilterTarget::kKeep:
-          result.joinPredicates.push_back(conjunct);
-          break;
-      }
-    }
-
-    // An implied predicate may move only to an outer join's non-preserved
-    // input, where filtering cannot remove a row the join must retain.
-    const bool pushLeft = joinType == velox::core::JoinType::kInner ||
-        joinType == velox::core::JoinType::kRight;
-    const bool pushRight = joinType == velox::core::JoinType::kInner ||
-        joinType == velox::core::JoinType::kLeft;
-    if (pushLeft || pushRight) {
-      ExprVector filters = result.joinPredicates;
-      appendAll(filters, joinCandidates);
-      ExprFactory factory(builder());
-      auto [leftFilters, rightFilters] = ImpliedFilters::deriveForJoinInputs(
-          filters, leftColumns, rightColumns, factory);
-      if (pushLeft) {
-        appendAll(result.leftInputPredicates, leftFilters);
-      }
-      if (pushRight) {
-        appendAll(result.rightInputPredicates, rightFilters);
-      }
-    }
-
-    if (!joinCandidates.empty()) {
-      JoinCondition::Split split = JoinCondition::splitEquiKeys(
-          joinCandidates, leftColumns, rightColumns);
-      appendAll(result.leftKeys, split.leftKeys);
-      appendAll(result.rightKeys, split.rightKeys);
-      appendAll(result.joinPredicates, split.residual);
-    }
-    return result;
-  }
-
   // Builds the context for one join input from the columns and predicates the
   // join requires from that input.
   static PushdownContext makeJoinInputContext(
@@ -2015,7 +1401,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     ExprVector leftKeys;
     ExprVector rightKeys;
     ExprVector filter;
-    ExprFactory::ExprSubstitution outputRewrites;
+    PlanSubstitutions outputSubstitutions;
   };
 
   // Rewrites both inputs and updates join expressions for any columns the
@@ -2033,16 +1419,15 @@ class Pushdown : public NodeRewriter<PushdownContext> {
         .leftKeys = std::move(leftKeys),
         .rightKeys = std::move(rightKeys),
         .filter = std::move(filter),
-        .outputRewrites = std::move(leftContext.outputRewrites),
+        .outputSubstitutions = std::move(leftContext.outputSubstitutions),
     };
-    mergeRewrites(result.outputRewrites, rightContext.outputRewrites);
-    if (!result.outputRewrites.empty()) {
+    result.outputSubstitutions.merge(rightContext.outputSubstitutions);
+    if (!result.outputSubstitutions.empty()) {
       result.leftKeys =
-          applyRewrites(exprs_, result.leftKeys, result.outputRewrites);
+          result.outputSubstitutions.apply(result.leftKeys, exprs_);
       result.rightKeys =
-          applyRewrites(exprs_, result.rightKeys, result.outputRewrites);
-      result.filter =
-          applyRewrites(exprs_, result.filter, result.outputRewrites);
+          result.outputSubstitutions.apply(result.rightKeys, exprs_);
+      result.filter = result.outputSubstitutions.apply(result.filter, exprs_);
     }
     return result;
   }
@@ -2052,7 +1437,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
   void simplifyJoinKeys(
       const Join* node,
       velox::core::JoinType joinType,
-      const ExprFactory::ExprSubstitution& demotionRewrites,
+      const PlanSubstitutions& reductionSubstitutions,
       RewrittenJoinInputs& join) {
     const auto& leftNonNull = nonNullOutput_.get(join.left);
     for (ExprCP& key : join.leftKeys) {
@@ -2062,25 +1447,28 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     for (ExprCP& key : join.rightKeys) {
       key = simplifier_.simplify(key, rightNonNull);
     }
-    auto visibleRewrites = demotionRewrites;
-    mergeRewrites(visibleRewrites, join.outputRewrites);
+    PlanSubstitutions visibleSubstitutions{reductionSubstitutions};
+    visibleSubstitutions.merge(join.outputSubstitutions);
     ColumnVector sources;
     sources.reserve(node->sourceColumns().size());
     for (ColumnCP source : node->sourceColumns()) {
-      sources.push_back(replacementColumn(exprs_, source, join.outputRewrites));
+      sources.push_back(
+          rewriteColumn(exprs_, source, join.outputSubstitutions));
     }
     ExprVector outputs;
     appendAll(outputs, node->outputColumns());
-    outputs = applyRewrites(exprs_, outputs, visibleRewrites);
-    ExprFactory::ExprSubstitution sourceToOutput;
+    outputs = visibleSubstitutions.apply(outputs, exprs_);
+    PlanSubstitutions sourceToOutput;
     for (size_t i = 0; i < sources.size(); ++i) {
-      sourceToOutput.emplace(sources[i], outputs[i]);
+      // Equal join outputs can resolve to the same source. Use the first output
+      // as their canonical representative.
+      sourceToOutput.addIfAbsent(sources[i], outputs[i]);
     }
-    addJoinKeyRewrites(
+    addJoinKeySubstitutions(
         joinType,
-        applyRewrites(exprs_, join.leftKeys, sourceToOutput),
-        applyRewrites(exprs_, join.rightKeys, sourceToOutput),
-        join.outputRewrites);
+        sourceToOutput.apply(join.leftKeys, exprs_),
+        sourceToOutput.apply(join.rightKeys, exprs_),
+        join.outputSubstitutions);
   }
 
   // Precomputes a cross join's filter expressions on their respective inputs.
@@ -2126,10 +1514,10 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     velox::core::JoinType joinType;
     ColumnCP fusedMark{nullptr};
     bool fusedNullAware{false};
-    ExprFactory::ExprSubstitution demotionRewrites;
+    PlanSubstitutions reductionSubstitutions;
   };
 
-  // Applies mark fusion or outer-join demotion and updates pending predicates
+  // Applies mark fusion or outer-join reduction and updates pending predicates
   // for the selected join semantics.
   PreparedJoin prepareJoin(
       const Join* node,
@@ -2137,8 +1525,8 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       const PlanObjectSet& leftColumns,
       const PlanObjectSet& rightColumns) {
     PreparedJoin result{.joinType = node->joinType()};
-    if (auto fusion =
-            fuseMarkFilter(node, context.pending, context.requiredAbove)) {
+    if (auto fusion = MarkFilterFusion::fuse(
+            node, context.pending, context.requiredAbove)) {
       result.joinType = fusion->joinType;
       result.fusedMark = node->markColumn();
       // A filtering semi join is never null-aware. An anti join retains the
@@ -2156,18 +1544,18 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       return result;
     }
 
-    const auto sourceRewrites = joinOutputSources(node);
-    result.joinType = demoteOuterToInner(
+    const auto sourceSubstitutions = OuterJoinReduction::outputSources(node);
+    result.joinType = OuterJoinReduction::reduce(
         node->joinType(),
-        applyRewrites(exprs_, context.pending, sourceRewrites),
-        rewriteColumnSet(exprs_, context.nonNullColumns, sourceRewrites),
+        sourceSubstitutions.apply(context.pending, exprs_),
+        rewriteColumnSet(exprs_, context.nonNullColumns, sourceSubstitutions),
         leftColumns,
         rightColumns);
-    result.demotionRewrites =
-        demotedJoinOutputs(node, result.joinType, leftColumns, rightColumns);
-    if (!result.demotionRewrites.empty()) {
+    result.reductionSubstitutions = OuterJoinReduction::reducedOutputs(
+        node, result.joinType, leftColumns, rightColumns);
+    if (!result.reductionSubstitutions.empty()) {
       context.pending =
-          applyRewrites(exprs_, context.pending, result.demotionRewrites);
+          result.reductionSubstitutions.apply(context.pending, exprs_);
     }
     return result;
   }
@@ -2185,7 +1573,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       const Join* node,
       const PushdownContext& context,
       const PreparedJoin& prepared,
-      RoutedJoinPredicates& routed) {
+      JoinPredicatePlacement::Routed& routed) {
     PrunedJoin result{.above = std::move(routed.aboveJoinPredicates)};
     PlanObjectSet outputsKept = context.requiredAbove;
     outputsKept.unionColumns(result.above);
@@ -2196,7 +1584,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       // The fused conjunct was the mark's only consumer.
       if (column != prepared.fusedMark && outputsKept.contains(column)) {
         result.outputColumns.push_back(
-            replacementColumn(exprs_, column, prepared.demotionRewrites));
+            rewriteColumn(exprs_, column, prepared.reductionSubstitutions));
         result.sourceColumns.push_back(node->sourceColumns()[i]);
       }
     }
@@ -2209,7 +1597,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       const Join* node,
       const PushdownContext& context,
       PreparedJoin& prepared,
-      RoutedJoinPredicates routed,
+      JoinPredicatePlacement::Routed routed,
       const PrunedJoin& pruned) {
     PlanObjectSet sideRequired =
         PlanObjectSet::fromObjects(pruned.sourceColumns);
@@ -2220,7 +1608,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     // Equi-keys of an inner join prove their default-null-behavior inputs
     // non-NULL, which may let a descendant outer join become inner.
     PlanObjectSet childNonNullColumns = rewriteColumnSet(
-        exprs_, context.nonNullColumns, prepared.demotionRewrites);
+        exprs_, context.nonNullColumns, prepared.reductionSubstitutions);
     if (prepared.joinType == velox::core::JoinType::kInner) {
       auto addIfDefaultNull = [&](ExprCP key) {
         if (!hasNonDefaultNullBehavior(key)) {
@@ -2257,38 +1645,39 @@ class Pushdown : public NodeRewriter<PushdownContext> {
         std::move(routed.rightKeys),
         std::move(routed.joinPredicates));
     simplifyJoinKeys(
-        node, prepared.joinType, prepared.demotionRewrites, rewritten);
-    mergeRewrites(prepared.demotionRewrites, rewritten.outputRewrites);
-    rewritten.outputRewrites = std::move(prepared.demotionRewrites);
+        node, prepared.joinType, prepared.reductionSubstitutions, rewritten);
+    PlanSubstitutions reductionSubstitutions{
+        std::move(prepared.reductionSubstitutions)};
+    reductionSubstitutions.merge(rewritten.outputSubstitutions);
+    rewritten.outputSubstitutions = std::move(reductionSubstitutions);
     return rewritten;
   }
 
   // Applies child substitutions to the join boundary and preserves fresh
   // identities for null-extended outputs whose sources changed.
   void repairJoinBoundary(RewrittenJoinInputs& rewritten, PrunedJoin& pruned) {
-    if (rewritten.outputRewrites.empty()) {
+    if (rewritten.outputSubstitutions.empty()) {
       return;
     }
     rewritten.filter =
-        applyRewrites(exprs_, rewritten.filter, rewritten.outputRewrites);
-    pruned.above =
-        applyRewrites(exprs_, pruned.above, rewritten.outputRewrites);
+        rewritten.outputSubstitutions.apply(rewritten.filter, exprs_);
+    pruned.above = rewritten.outputSubstitutions.apply(pruned.above, exprs_);
     ColumnVector rewrittenOutputs;
     ColumnVector rewrittenSources;
-    ExprFactory::ExprSubstitution boundaryRewrites;
+    PlanSubstitutions boundarySubstitutions;
     PlanObjectSet addedOutputs;
     for (size_t i = 0; i < pruned.outputColumns.size(); ++i) {
       const ColumnCP previousOutput = pruned.outputColumns[i];
       const ColumnCP previousSource = pruned.sourceColumns[i];
-      ColumnCP output = replacementColumn(
-          exprs_, pruned.outputColumns[i], rewritten.outputRewrites);
-      ColumnCP source = replacementColumn(
-          exprs_, pruned.sourceColumns[i], rewritten.outputRewrites);
+      ColumnCP output = rewriteColumn(
+          exprs_, pruned.outputColumns[i], rewritten.outputSubstitutions);
+      ColumnCP source = rewriteColumn(
+          exprs_, pruned.sourceColumns[i], rewritten.outputSubstitutions);
       if (previousOutput != previousSource &&
           (source != previousSource ||
            previousOutput->outputName() != source->outputName())) {
         output = Column::createForNullExtendedValue(source);
-        boundaryRewrites.emplace(previousOutput, output);
+        boundarySubstitutions.add(previousOutput, output);
       }
       if (addedOutputs.contains(output)) {
         continue;
@@ -2297,10 +1686,9 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       rewrittenOutputs.push_back(output);
       rewrittenSources.push_back(source);
     }
-    mergeRewrites(rewritten.outputRewrites, boundaryRewrites);
-    rewritten.filter =
-        applyRewrites(exprs_, rewritten.filter, boundaryRewrites);
-    pruned.above = applyRewrites(exprs_, pruned.above, boundaryRewrites);
+    rewritten.outputSubstitutions.merge(boundarySubstitutions);
+    rewritten.filter = boundarySubstitutions.apply(rewritten.filter, exprs_);
+    pruned.above = boundarySubstitutions.apply(pruned.above, exprs_);
     pruned.outputColumns = std::move(rewrittenOutputs);
     pruned.sourceColumns = std::move(rewrittenSources);
   }
@@ -2328,15 +1716,14 @@ class Pushdown : public NodeRewriter<PushdownContext> {
         remaining->outputColumns(),
         pruned.sourceColumns,
         /*falsePadding=*/Join::projectsMark(prepared.joinType));
-    ExprFactory::ExprSubstitution projectionRewrites;
+    PlanSubstitutions projectionSubstitutions;
     for (size_t i = 0; i < pruned.outputColumns.size(); ++i) {
       if (pruned.outputColumns[i] != expressions[i]) {
-        projectionRewrites.emplace(pruned.outputColumns[i], expressions[i]);
+        projectionSubstitutions.add(pruned.outputColumns[i], expressions[i]);
       }
     }
-    mergeRewrites(rewritten.outputRewrites, projectionRewrites);
-    pruned.above =
-        applyRewrites(exprs_, pruned.above, rewritten.outputRewrites);
+    rewritten.outputSubstitutions.merge(projectionSubstitutions);
+    pruned.above = rewritten.outputSubstitutions.apply(pruned.above, exprs_);
     return remaining;
   }
 
@@ -2381,20 +1768,20 @@ class Pushdown : public NodeRewriter<PushdownContext> {
   }
 
   // Restores predicates above the replacement and publishes its visible
-  // output rewrites to the parent.
+  // output substitutions to the parent.
   NodeCP finishJoin(
       NodeCP replacement,
       RewrittenJoinInputs& rewritten,
       PrunedJoin& pruned,
       PushdownContext& context) {
     NodeCP result = maybeWrapFilter(replacement, std::move(pruned.above));
-    retainVisibleRewrites(
-        exprs_, rewritten.outputRewrites, result->outputColumns());
-    context.outputRewrites = std::move(rewritten.outputRewrites);
+    rewritten.outputSubstitutions.retainVisible(
+        result->outputColumns(), exprs_);
+    context.outputSubstitutions = std::move(rewritten.outputSubstitutions);
     return result;
   }
 
-  // Join: demote outer to inner when possible, then route each pending
+  // Join: reduce outer to inner when possible, then route each pending
   // conjunct to one of: left input, right input, join filter, or
   // stay-above. The join's own filter conjuncts move according to the join
   // kind's match semantics. Neither path moves a nondeterministic conjunct
@@ -2456,14 +1843,15 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       }
     }
 
-    auto routed = routeJoinPredicates(
+    auto routed = JoinPredicatePlacement::route(
         node,
         prepared.joinType,
         leftColumns,
         rightColumns,
         context.pending,
         std::move(leftPending),
-        std::move(rightPending));
+        std::move(rightPending),
+        builder());
     context.pending.clear();
     auto pruned = pruneJoin(node, context, prepared, routed);
     auto rewritten =
@@ -2694,7 +2082,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     NodeCP newInput = rewrite(node->input(), context);
     ExprVector orderKeys = node->orderKeys();
     OrderTypeVector orderTypes = node->orderTypes();
-    applyOutputRewrites(context, orderKeys);
+    applyOutputSubstitutions(context, orderKeys);
     dropDuplicateOrderKeys(orderKeys, orderTypes);
     if (newInput == node->input() && orderKeys == node->orderKeys()) {
       return node;
@@ -2765,7 +2153,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       NodeCP newInput = rewrite(node->input(), empty);
       ExprVector orderKeys = node->orderKeys();
       OrderTypeVector orderTypes = node->orderTypes();
-      applyOutputRewrites(empty, orderKeys);
+      applyOutputSubstitutions(empty, orderKeys);
       dropDuplicateOrderKeys(orderKeys, orderTypes);
 
       // A Window over a single partition emits its rows in order-key order, so
@@ -2804,10 +2192,10 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       NodeCP newInput = rewrite(node->input(), empty);
       ExprVector groupingKeys = node->groupingKeys();
       ExprVector aggregationInputs = node->aggregationInputs();
-      applyOutputRewrites(empty, groupingKeys, aggregationInputs);
+      applyOutputSubstitutions(empty, groupingKeys, aggregationInputs);
 
       // Grouping sets can null the two sides of an identity independently.
-      empty.outputRewrites.clear();
+      empty.outputSubstitutions.clear();
       if (newInput == node->input() && groupingKeys == node->groupingKeys() &&
           aggregationInputs == node->aggregationInputs()) {
         return static_cast<NodeCP>(node);
@@ -2900,7 +2288,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     }
     NodeCP newInput = rewrite(node->input(), childContext);
     ExprVector unnestExpressions = node->unnestExpressions();
-    applyOutputRewrites(childContext, unnestExpressions, blocked);
+    applyOutputSubstitutions(childContext, unnestExpressions, blocked);
 
     if (collapseDuplicates) {
       const auto* one = builder().makeLiteral(
@@ -2915,7 +2303,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       }
       NodeCP filtered = builder().make<Filter>(
           {newInput, ExprVector{exprs_.orAll(nonEmpty)}});
-      return propagateVisibleRewrites(
+      return propagateVisibleSubstitutions(
           exprs_, context, childContext, narrowed(filtered, context));
     }
 
@@ -2931,12 +2319,12 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     survivingReplicated = rewriteColumns(
         exprs_,
         survivingReplicated,
-        childContext.outputRewrites,
+        childContext.outputSubstitutions,
         /*dropDuplicates=*/true);
     survivingOutputs = rewriteColumns(
         exprs_,
         survivingOutputs,
-        childContext.outputRewrites,
+        childContext.outputSubstitutions,
         /*dropDuplicates=*/true);
 
     const bool unchanged = newInput == node->input() &&
@@ -2952,7 +2340,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
                                       survivingOrdinality,
                                       survivingMarker,
                                       std::move(survivingOutputs)});
-    return propagateVisibleRewrites(
+    return propagateVisibleSubstitutions(
         exprs_,
         context,
         childContext,
@@ -3005,11 +2393,11 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       newLegColumns.push_back(rewriteColumns(
           exprs_,
           newLegCols,
-          legContext.outputRewrites,
+          legContext.outputSubstitutions,
           /*dropDuplicates=*/false));
     }
     context.pending.clear();
-    context.outputRewrites.clear();
+    context.outputSubstitutions.clear();
     if (!changed) {
       return node;
     }
@@ -3030,7 +2418,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       child.nonNullColumns = context.nonNullColumns;
       NodeCP newInput = rewrite(node->input(), child);
       ExprCP call = node->call();
-      applyOutputRewrites(child, call);
+      applyOutputSubstitutions(child, call);
 
       ColumnVector outputColumns = newInput->outputColumns();
       outputColumns.push_back(node->result());
@@ -3114,7 +2502,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       result = pruneWindowFunctions(
           node, childContext, outputsKept, std::move(blocked));
     }
-    return propagateVisibleRewrites(exprs_, context, childContext, result);
+    return propagateVisibleSubstitutions(exprs_, context, childContext, result);
   }
 
   // Replaces a single-ranking-function Window with the node that computes it
@@ -3130,12 +2518,12 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     childContext.requiredAbove = childContext.required;
     NodeCP newInput = rewrite(node->input(), childContext);
     const PlanObjectSet rewrittenRequired = rewriteColumnSet(
-        exprs_, childContext.required, childContext.outputRewrites);
+        exprs_, childContext.required, childContext.outputSubstitutions);
     newInput = dropColumnsForWindow(newInput, rewrittenRequired);
     ExprVector partitionKeys = node->partitionKeys();
     ExprVector orderKeys = node->orderKeys();
     OrderTypeVector orderTypes = node->orderTypes();
-    applyOutputRewrites(childContext, partitionKeys, orderKeys, blocked);
+    applyOutputSubstitutions(childContext, partitionKeys, orderKeys, blocked);
     dropDuplicateOrderKeys(orderKeys, orderTypes);
 
     // Emit the rank column only when a consumer above still needs it.
@@ -3227,13 +2615,13 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     childContext.requiredAbove = childContext.required;
     NodeCP newInput = rewrite(node->input(), childContext);
     const PlanObjectSet rewrittenRequired = rewriteColumnSet(
-        exprs_, childContext.required, childContext.outputRewrites);
+        exprs_, childContext.required, childContext.outputSubstitutions);
     newInput = dropColumnsForWindow(newInput, rewrittenRequired);
 
     ExprVector partitionKeys = node->partitionKeys();
     ExprVector orderKeys = node->orderKeys();
     OrderTypeVector orderTypes = node->orderTypes();
-    applyOutputRewrites(
+    applyOutputSubstitutions(
         childContext, partitionKeys, orderKeys, blocked, survivingFunctions);
     dropDuplicateOrderKeys(orderKeys, orderTypes);
 
@@ -3287,8 +2675,8 @@ class Pushdown : public NodeRewriter<PushdownContext> {
 
       ExprVector sourceExpressions;
       appendAll(sourceExpressions, sourceColumns);
-      applyOutputRewrites(empty, sourceExpressions);
-      empty.outputRewrites.clear();
+      applyOutputSubstitutions(empty, sourceExpressions);
+      empty.outputSubstitutions.clear();
 
       if (std::ranges::equal(sourceExpressions, newInput->outputColumns())) {
         // Keep the value-changing boundary on the rewritten sources and make
@@ -3297,7 +2685,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
           const ColumnCP source = newInput->outputColumns()[i];
           if (source != sourceColumns[i]) {
             const ColumnCP output = Column::createForNullExtendedValue(source);
-            empty.outputRewrites.emplace(outputColumns[i], output);
+            empty.outputSubstitutions.add(outputColumns[i], output);
             outputColumns[i] = output;
           }
         }
@@ -3329,8 +2717,8 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     childContext.requiredAbove = childContext.required;
     if (!outputsKept.contains(node->idColumn())) {
       NodeCP newInput = rewrite(node->input(), childContext);
-      applyOutputRewrites(childContext, blocked);
-      return propagateVisibleRewrites(
+      applyOutputSubstitutions(childContext, blocked);
+      return propagateVisibleSubstitutions(
           exprs_,
           context,
           childContext,
@@ -3338,11 +2726,11 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     }
 
     NodeCP newInput = rewrite(node->input(), childContext);
-    applyOutputRewrites(childContext, blocked);
+    applyOutputSubstitutions(childContext, blocked);
     NodeCP newNode = (newInput == node->input())
         ? static_cast<NodeCP>(node)
         : builder().make<AssignUniqueId>({newInput, node->idColumn()});
-    return propagateVisibleRewrites(
+    return propagateVisibleSubstitutions(
         exprs_,
         context,
         childContext,
@@ -3362,13 +2750,13 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     NodeCP newInput = rewrite(node->input(), childContext);
     ExprVector distinctKeys = node->distinctKeys();
     ExprVector pending = std::move(context.pending);
-    applyOutputRewrites(childContext, distinctKeys, pending);
+    applyOutputSubstitutions(childContext, distinctKeys, pending);
     NodeCP newNode =
         (newInput == node->input() && distinctKeys == node->distinctKeys())
         ? static_cast<NodeCP>(node)
         : builder().make<EnforceDistinct>(
               {newInput, std::move(distinctKeys), node->errorMessage()});
-    return propagateVisibleRewrites(
+    return propagateVisibleSubstitutions(
         exprs_,
         context,
         childContext,
@@ -3393,13 +2781,12 @@ class Pushdown : public NodeRewriter<PushdownContext> {
         node->kind() == connector::WriteKind::kDelete;
     NodeCP newInput = rewrite(node->input(), child);
     if (!child.consumerDropsExtraColumns) {
-      newInput = restoreOutputColumns(
-          builder(),
-          exprs_,
-          simplifier_,
+      newInput = child.outputSubstitutions.restore(
           newInput,
           node->input()->outputColumns(),
-          child.outputRewrites);
+          exprs_,
+          builder(),
+          simplifier_);
     }
     if (newInput == node->input()) {
       return node;
@@ -3427,13 +2814,8 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     anchorContext.required.unionObjects(node->sourceColumns());
     anchorContext.requiredAbove = anchorContext.required;
     NodeCP newAnchor = rewrite(node->anchor(), anchorContext);
-    newAnchor = restoreOutputColumns(
-        builder(),
-        exprs_,
-        simplifier_,
-        newAnchor,
-        node->sourceColumns(),
-        anchorContext.outputRewrites);
+    newAnchor = anchorContext.outputSubstitutions.restore(
+        newAnchor, node->sourceColumns(), exprs_, builder(), simplifier_);
 
     // Required columns use step output identities because they may differ from
     // anchor output identities. The working table carries no outer null
@@ -3442,13 +2824,8 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     stepContext.required.unionObjects(node->step()->outputColumns());
     stepContext.requiredAbove = stepContext.required;
     NodeCP newStep = rewrite(node->step(), stepContext);
-    newStep = restoreOutputColumns(
-        builder(),
-        exprs_,
-        simplifier_,
-        newStep,
-        node->step()->outputColumns(),
-        stepContext.outputRewrites);
+    newStep = stepContext.outputSubstitutions.restore(
+        newStep, node->step()->outputColumns(), exprs_, builder(), simplifier_);
 
     // Convergence is an independent Boolean subplan. Seed only its root output;
     // each operator adds its expression dependencies while WorkingTable keeps
@@ -3458,13 +2835,12 @@ class Pushdown : public NodeRewriter<PushdownContext> {
         node->convergence()->outputColumns());
     convergenceContext.requiredAbove = convergenceContext.required;
     NodeCP newConvergence = rewrite(node->convergence(), convergenceContext);
-    newConvergence = restoreOutputColumns(
-        builder(),
-        exprs_,
-        simplifier_,
+    newConvergence = convergenceContext.outputSubstitutions.restore(
         newConvergence,
         node->convergence()->outputColumns(),
-        convergenceContext.outputRewrites);
+        exprs_,
+        builder(),
+        simplifier_);
 
     NodeCP fixedPoint = node;
     if (newAnchor != node->anchor() || newStep != node->step() ||
@@ -3495,21 +2871,17 @@ class Pushdown : public NodeRewriter<PushdownContext> {
   //   - Left and right: COALESCE of a key pair is the preserved side's key.
   //   - Full: COALESCE of a key pair takes a canonical operand order.
   // A key that can be null-padded must evaluate to NULL on a null input.
-  void addJoinKeyRewrites(
+  void addJoinKeySubstitutions(
       velox::core::JoinType joinType,
       const ExprVector& leftKeys,
       const ExprVector& rightKeys,
-      ExprFactory::ExprSubstitution& rewrites) {
+      PlanSubstitutions& substitutions) {
     VELOX_CHECK_EQ(leftKeys.size(), rightKeys.size());
     const auto addRewrite = [&](ExprCP source, ExprCP target) {
       if (source == target) {
         return;
       }
-      const auto [it, inserted] = rewrites.emplace(source, target);
-      VELOX_CHECK(
-          inserted || it->second == target,
-          "Conflicting rewrites for expression: {}",
-          source->toString());
+      substitutions.add(source, target);
     };
 
     if (joinType == velox::core::JoinType::kFull) {
@@ -3550,7 +2922,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       // A right key equated with several left keys keeps the first.
       if (joinType == velox::core::JoinType::kInner && leftKey->isColumn() &&
           rightKey->isColumn()) {
-        rewrites.emplace(rightKey, leftKey);
+        substitutions.addIfAbsent(rightKey, leftKey);
       }
     }
   }
@@ -3573,42 +2945,42 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     return child;
   }
 
-  void applyOutputRewrites(
-      const ExprFactory::ExprSubstitution& rewrites,
+  void applyOutputSubstitutions(
+      const PlanSubstitutions& substitutions,
       ExprCP& expression) {
-    expression = applyRewrites(exprs_, expression, rewrites);
+    expression = substitutions.apply(expression, exprs_);
   }
 
-  void applyOutputRewrites(
-      const ExprFactory::ExprSubstitution& rewrites,
+  void applyOutputSubstitutions(
+      const PlanSubstitutions& substitutions,
       ExprVector& expressions) {
-    expressions = applyRewrites(exprs_, expressions, rewrites);
+    expressions = substitutions.apply(expressions, exprs_);
   }
 
-  void applyOutputRewrites(
-      const ExprFactory::ExprSubstitution& rewrites,
+  void applyOutputSubstitutions(
+      const PlanSubstitutions& substitutions,
       AggregateCallVector& aggregates) {
-    aggregates = applyRewrites(exprs_, builder(), aggregates, rewrites);
+    aggregates = substitutions.apply(aggregates, exprs_, builder());
   }
 
-  void applyOutputRewrites(
-      const ExprFactory::ExprSubstitution& rewrites,
+  void applyOutputSubstitutions(
+      const PlanSubstitutions& substitutions,
       WindowFunctions& functions) {
     for (auto& function : functions) {
-      applyOutputRewrites(rewrites, function.call);
-      applyOutputRewrites(rewrites, function.frame.startValue);
-      applyOutputRewrites(rewrites, function.frame.endValue);
+      applyOutputSubstitutions(substitutions, function.call);
+      applyOutputSubstitutions(substitutions, function.frame.startValue);
+      applyOutputSubstitutions(substitutions, function.frame.endValue);
     }
   }
 
   template <typename... Rewritable>
-  void applyOutputRewrites(
+  void applyOutputSubstitutions(
       const PushdownContext& child,
       Rewritable&... expressions) {
-    if (child.outputRewrites.empty()) {
+    if (child.outputSubstitutions.empty()) {
       return;
     }
-    (applyOutputRewrites(child.outputRewrites, expressions), ...);
+    (applyOutputSubstitutions(child.outputSubstitutions, expressions), ...);
   }
 
   // Invokes `recurse` with an empty-pending context — letting the
@@ -3627,8 +2999,8 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     empty.requiredAbove = empty.required;
     NodeCP recursed = recurse(empty);
     ExprVector blocked = std::move(context.pending);
-    applyOutputRewrites(empty, blocked);
-    return propagateVisibleRewrites(
+    applyOutputSubstitutions(empty, blocked);
+    return propagateVisibleSubstitutions(
         exprs_, context, empty, maybeWrapFilter(recursed, std::move(blocked)));
   }
 
@@ -3743,11 +3115,11 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     filters.reserve(node->leftKeys().size() + node->filter().size());
 
     // True if 'conjunct' is always false, leaving the join empty.
-    ExprFactory::ExprSubstitution filterConstants;
+    PlanSubstitutions filterConstants;
     const auto restate = [&](ExprCP conjunct) {
       ExprCP restated = exprs_.replace(conjunct, constants);
       if (const auto equality = exprs_.literalEquality(restated)) {
-        filterConstants.insert_or_assign(equality->first, equality->second);
+        filterConstants.set(equality->first, equality->second);
       }
       return simplifier_.simplifyFilter(restated, filters);
     };
@@ -3787,9 +3159,8 @@ class Pushdown : public NodeRewriter<PushdownContext> {
               builder().make<Project>(
                   {input, std::move(exprs), std::move(outputColumns)}),
               context);
-    mergeRewrites(context.outputRewrites, filterConstants);
-    retainVisibleRewrites(
-        exprs_, context.outputRewrites, result->outputColumns());
+    context.outputSubstitutions.merge(filterConstants);
+    context.outputSubstitutions.retainVisible(result->outputColumns(), exprs_);
     return result;
   }
 
@@ -3809,7 +3180,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       const PlanObjectSet& rightColumns,
       PushdownContext& context,
       ExprVector& otherInputPending) {
-    auto [leftKeys, rightKeys] = collectEquiColumnPairs(
+    auto [leftKeys, rightKeys] = JoinPredicatePlacement::equiColumnPairs(
         node, leftColumns, rightColumns, context.pending);
 
     ExprVector derived;
@@ -3886,8 +3257,8 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       const PlanObjectSet& leftColumns,
       const PlanObjectSet& rightColumns,
       ExprVector& pending) {
-    auto [leftKeys, rightKeys] =
-        collectEquiColumnPairs(node, leftColumns, rightColumns);
+    auto [leftKeys, rightKeys] = JoinPredicatePlacement::equiColumnPairs(
+        node, leftColumns, rightColumns, {});
     if (leftKeys.empty()) {
       return false;
     }
@@ -3947,16 +3318,11 @@ PushdownAndPrunePass::Result PushdownAndPrunePass::run(
   ColumnVector rewrittenOutputs;
   rewrittenOutputs.reserve(outputColumns.size());
   for (ColumnCP output : outputColumns) {
-    ExprCP replacement = applyRewrites(exprs, output, context.outputRewrites);
+    ExprCP replacement = context.outputSubstitutions.apply(output, exprs);
     if (!replacement->isColumn()) {
       return {
-          restoreOutputColumns(
-              builder,
-              exprs,
-              simplifier,
-              result,
-              outputColumns,
-              context.outputRewrites),
+          context.outputSubstitutions.restore(
+              result, outputColumns, exprs, builder, simplifier),
           outputColumns,
       };
     }

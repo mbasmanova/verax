@@ -38,20 +38,24 @@ add_library(
   ImpliedFilters.cpp
   JoinCondition.cpp
   JoinFanout.cpp
+  JoinFilterRewriter.cpp
   JoinHypergraph.cpp
   JoinPartitioning.cpp
+  JoinPredicatePlacement.cpp
   JoinTreeEmitter.cpp
   LimitAndOrderPass.cpp
+  MarkFilterFusion.cpp
   MemoOp.cpp
   Node.cpp
   NodePrinter.cpp
   Optimize.cpp
+  OuterJoinReduction.cpp
   PhysicalJoin.cpp
   PhysicalPlanAndEmit.cpp
   PhysicalProperties.cpp
   PlanPhysicalPass.cpp
   PlanSet.cpp
-  JoinFilterRewriter.cpp
+  PlanSubstitutions.cpp
   PrecomputeProjections.cpp
   PushdownAndPrunePass.cpp
   ScanHandle.cpp

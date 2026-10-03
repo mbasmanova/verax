@@ -218,7 +218,7 @@ enforces them — a hand-built node may violate them.
   output (invariant 3).
 
 - **PushdownAndPrune** — an outer filter is not pushed into the anchor, and the
-  anchor and step keep `nonNullColumns` empty; otherwise `demoteOuterToInner`
+  anchor and step keep `nonNullColumns` empty; otherwise `OuterJoinReduction`
   could drop null-padded seed rows whose step descendants become non-null via
   `coalesce`. The pass may replace a right inner-join key within a branch; it
   restores every branch's original output columns before rebuilding the

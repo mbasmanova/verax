@@ -903,7 +903,7 @@ TEST_P(BucketedExecutionTest, innerJoinChainFuses) {
 // Same shape with a LEFT join. In V1 the outer join forms no equivalence, so t
 // cannot bucket-align with the chain and joins across a remote exchange
 // (regression guard for if outer joins ever start forming equivalences). V2
-// demotes the LEFT to INNER and fuses, so v1 asserts the shuffled shape and v2
+// reduces the LEFT to INNER and fuses, so v1 asserts the shuffled shape and v2
 // the co-location property.
 TEST_P(BucketedExecutionTest, leftJoinChainDoesNotFuse) {
   addBucketedTable("t", {"k"}, 16, ROW({"k"}, BIGINT()));
@@ -916,7 +916,7 @@ TEST_P(BucketedExecutionTest, leftJoinChainDoesNotFuse) {
       "WHERE t.k = sub.k";
 
   // V1 keeps the LEFT JOIN (its outer null-padding forms no equivalence), so t
-  // can't bucket-align and joins across a remote exchange. V2 demotes the LEFT
+  // can't bucket-align and joins across a remote exchange. V2 reduces the LEFT
   // to INNER (the outer t.k = v.k rejects null v.k) and co-buckets all three,
   // in syntactic order t ⋈ (u ⋈ v).
   optimizerOptions_.syntacticJoinOrder = true;
@@ -945,7 +945,7 @@ TEST_P(BucketedExecutionTest, leftJoinChainDoesNotFuse) {
   }
 
   // Under cost-based ordering v1 still keeps the LEFT (broadcasting t); v2
-  // demotes and co-buckets all three as (t ⋈ u) ⋈ v.
+  // reduces and co-buckets all three as (t ⋈ u) ⋈ v.
   optimizerOptions_.syntacticJoinOrder = false;
   auto reorderedPlan = planDistributed(parseSelect(sql, kTestConnectorId)).plan;
   if (!useV2_) {

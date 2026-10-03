@@ -798,7 +798,7 @@ TEST_P(JoinTest, outerJoinWithInnerJoin) {
 // becomes inner: the padded rows form one partition, and the inner join
 // drops all of it. The query returns the same rows either way, so only the plan
 // shows it.
-TEST_P(JoinTest, demotionScope) {
+TEST_P(JoinTest, outerJoinReductionScope) {
   testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
   testConnector_->addTable("u", ROW({"x", "y"}, BIGINT()));
   testConnector_->addTable("v", ROW("p", BIGINT()));
