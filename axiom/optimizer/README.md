@@ -47,6 +47,36 @@ Testing and debugging:
 Fanout
 : Join fanout or one-to-many join refers to a situation where one row in a table joins to multiple rows in another table. This means the number of rows in the joined result set can be greater than the number of rows in the primary (left) table.
 
+Outer join reduction
+: Replacing an outer join with one that preserves fewer inputs.
+
+The possible reductions are:
+
+- Full join to left or right join.
+- Left or right join to inner join.
+
+A reduction applies when a predicate above the join rejects its NULL-padded
+rows. For example, this query:
+
+```sql
+SELECT *
+FROM t
+LEFT JOIN u ON t.k = u.k
+WHERE u.v > 0
+```
+
+can run as:
+
+```sql
+SELECT *
+FROM t
+INNER JOIN u ON t.k = u.k
+WHERE u.v > 0
+```
+
+The filter rejects every row whose `u` side is NULL-padded, so changing the
+join type does not change the result.
+
 Theta join
 : A join whose condition relates the two inputs with something other than key equality, e.g. `t.a < u.b`. With no equi-keys to hash on, it runs as a nested loop join. In a distributed plan, one input is broadcast; a full join gathers both inputs onto one task.
 

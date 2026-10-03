@@ -51,7 +51,7 @@ struct AlgebraicProperties {
   ///
   /// Conditional entries (those the paper marks "+ if predicate
   /// rejects nulls") are collapsed to false. The precondition that
-  /// makes this sound is that `PushdownAndPrune` already demotes
+  /// makes this sound is that `PushdownAndPrune` already reduces
   /// any outer join whose ancestor predicates reject nulls on its
   /// null-padded side, so the conditional rows never apply within
   /// a cluster.

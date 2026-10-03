@@ -54,7 +54,7 @@ namespace facebook::axiom::optimizer::v2 {
 ///
 /// Notable per-node behavior:
 ///  - Join places each conjunct on the left input, the right input, or the
-///    join itself, and demotes an outer join to inner (or full to left/right)
+///    join itself, and reduces an outer join to inner (or full to left/right)
 ///    when a pending conjunct or a proven-non-NULL column rejects nulls on a
 ///    padded side. It also fuses a consuming mark filter into a
 ///    `kLeftSemiProject` join. A cross join also moves the single-side parts of
