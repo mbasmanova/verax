@@ -100,3 +100,6 @@ SELECT * FROM (VALUES
   (2.5, element_at(transform(sequence(1, 3), x -> x + 1), 3), random() >= 0),
 )
 ----
+-- CASE without ELSE returns NULL when no condition matches.
+SELECT CASE WHEN a > 0 THEN 1 END FROM t
+----

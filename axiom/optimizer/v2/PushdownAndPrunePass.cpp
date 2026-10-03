@@ -246,32 +246,33 @@ ColumnVector rewriteColumns(
   return result;
 }
 
-// Restores a fixed internal boundary's column identities and order after its
-// input rewrites equivalent columns away.
+// Restores a fixed internal boundary's output expressions, column identities,
+// and order after rewriting its input.
 NodeCP restoreOutputColumns(
     Builder& builder,
     ExprFactory& exprs,
+    ExprSimplifier& simplifier,
     NodeCP input,
     const ColumnVector& outputColumns,
     const ExprFactory::ExprSubstitution& rewrites) {
-  if (input->outputColumns() == outputColumns) {
-    return input;
-  }
-
   const auto inputSet = PlanObjectSet::fromObjects(input->outputColumns());
   ExprVector expressions;
   expressions.reserve(outputColumns.size());
   for (ColumnCP output : outputColumns) {
-    ExprCP inputExpr = inputSet.contains(output)
-        ? output
-        : applyRewrites(exprs, output, rewrites);
+    ExprCP inputExpr = applyRewrites(exprs, output, rewrites);
     VELOX_CHECK(
         inputSet.containsColumns(inputExpr),
         "Cannot restore output column after rewrite: {}",
         output->toString());
     expressions.push_back(inputExpr);
   }
-  return builder.make<Project>({input, std::move(expressions), outputColumns});
+  if (input->outputColumns() == outputColumns &&
+      std::equal(
+          expressions.begin(), expressions.end(), outputColumns.begin())) {
+    return input;
+  }
+  return PrecomputeProjections::makeProject(
+      input, std::move(expressions), outputColumns, builder, simplifier);
 }
 
 // Rebuilds an aggregate call whose inputs contain a rewrite source.
@@ -1577,6 +1578,17 @@ class Pushdown : public NodeRewriter<PushdownContext> {
         survivingExprs.push_back(node->exprs()[i]);
         survivingOutputs.push_back(node->outputColumns()[i]);
       }
+    }
+
+    ExprFactory::ExprSubstitution constants;
+    for (ExprCP predicate : pushable) {
+      if (const auto equality = exprs_.literalEquality(predicate)) {
+        constants.insert_or_assign(equality->first, equality->second);
+      }
+    }
+    for (ExprCP& expression : survivingExprs) {
+      expression =
+          simplifier_.simplify(applyRewrites(exprs_, expression, constants));
     }
 
     // Recorded here, not on the way down: an expression this pass prunes must
@@ -3308,6 +3320,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       newInput = restoreOutputColumns(
           builder(),
           exprs_,
+          simplifier_,
           newInput,
           node->input()->outputColumns(),
           child.outputRewrites);
@@ -3341,6 +3354,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     newAnchor = restoreOutputColumns(
         builder(),
         exprs_,
+        simplifier_,
         newAnchor,
         node->sourceColumns(),
         anchorContext.outputRewrites);
@@ -3355,6 +3369,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     newStep = restoreOutputColumns(
         builder(),
         exprs_,
+        simplifier_,
         newStep,
         node->step()->outputColumns(),
         stepContext.outputRewrites);
@@ -3370,6 +3385,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     newConvergence = restoreOutputColumns(
         builder(),
         exprs_,
+        simplifier_,
         newConvergence,
         node->convergence()->outputColumns(),
         convergenceContext.outputRewrites);
@@ -3651,9 +3667,13 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     filters.reserve(node->leftKeys().size() + node->filter().size());
 
     // True if 'conjunct' is always false, leaving the join empty.
+    ExprFactory::ExprSubstitution filterConstants;
     const auto restate = [&](ExprCP conjunct) {
-      return simplifier_.simplifyFilter(
-          exprs_.replace(conjunct, constants), filters);
+      ExprCP restated = exprs_.replace(conjunct, constants);
+      if (const auto equality = exprs_.literalEquality(restated)) {
+        filterConstants.insert_or_assign(equality->first, equality->second);
+      }
+      return simplifier_.simplifyFilter(restated, filters);
     };
 
     for (size_t i = 0; i < node->leftKeys().size(); ++i) {
@@ -3685,13 +3705,16 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       exprs.push_back(constant == constants.end() ? column : constant->second);
       outputColumns.push_back(column);
     }
-    if (!readsConstant) {
-      return rewrite(input, context);
-    }
-    return rewrite(
-        builder().make<Project>(
-            {input, std::move(exprs), std::move(outputColumns)}),
-        context);
+    NodeCP result = !readsConstant
+        ? rewrite(input, context)
+        : rewrite(
+              builder().make<Project>(
+                  {input, std::move(exprs), std::move(outputColumns)}),
+              context);
+    mergeRewrites(context.outputRewrites, filterConstants);
+    retainVisibleRewrites(
+        exprs_, context.outputRewrites, result->outputColumns());
+    return result;
   }
 
   // Adds `key IN (values)` to 'otherInputPending' for each equi-key of 'node'
@@ -3844,6 +3867,7 @@ PushdownAndPrunePass::Result PushdownAndPrunePass::run(
   NodeCP result = pass.rewrite(root, context);
 
   ExprFactory exprs{builder};
+  ExprSimplifier simplifier{builder, evaluator};
   ColumnVector rewrittenOutputs;
   rewrittenOutputs.reserve(outputColumns.size());
   for (ColumnCP output : outputColumns) {
@@ -3851,7 +3875,12 @@ PushdownAndPrunePass::Result PushdownAndPrunePass::run(
     if (!replacement->isColumn()) {
       return {
           restoreOutputColumns(
-              builder, exprs, result, outputColumns, context.outputRewrites),
+              builder,
+              exprs,
+              simplifier,
+              result,
+              outputColumns,
+              context.outputRewrites),
           outputColumns,
       };
     }

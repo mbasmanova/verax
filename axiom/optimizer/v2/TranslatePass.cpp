@@ -661,6 +661,30 @@ class Translator {
       const std::vector<lp::ExprPtr>& projectExprs,
       const std::vector<std::string>& projectNames,
       Scope& windowScope);
+
+  // Flattens nested UNION ALL inputs and UNION inputs whose duplicate removal
+  // is provided by an ancestor.
+  std::vector<lp::LogicalPlanNodePtr> flattenUnionInputs(
+      const std::vector<lp::LogicalPlanNodePtr>& inputs,
+      bool dedupAbove) const;
+
+  // Translates the retained positional outputs of each union input.
+  std::vector<Translated> translateUnionInputs(
+      const std::vector<lp::LogicalPlanNodePtr>& inputs,
+      const std::vector<size_t>& keptPositions);
+
+  // Returns the literal shared by every input at `position`, or nullptr.
+  static ExprCP commonUnionLiteral(
+      const std::vector<lp::LogicalPlanNodePtr>& inputs,
+      const std::vector<Translated>& translatedInputs,
+      size_t position);
+
+  // Returns the literal bound to `type`'s output at `position`, or nullptr.
+  static ExprCP literalInScope(
+      const Translated& input,
+      const velox::RowType& type,
+      size_t position);
+
   // `dedupAbove` says the caller dedups the result, which subsumes a nested
   // UNION's own dedup and so allows flattening such a leg.
   Translated buildUnionAll(
@@ -672,10 +696,17 @@ class Translator {
   // Translates `predicateExpr` against `scope` (lifting any subqueries
   // above `input` via Apply) and lowers it onto `input`. Returns an
   // empty `Values` of `input`'s schema when the predicate is
-  // statically `false`, `input` unchanged when statically `true`, or
-  // a `Filter` otherwise. `scope` is returned unchanged.
-  Translated
-  maybeWrapInFilter(NodeCP input, const lp::Expr& predicateExpr, Scope scope);
+  // statically `false`, `input` unchanged when statically `true`, or a
+  // `Filter` otherwise. When `propagateConstants` is true, output names fixed
+  // by equality predicates bind to their literals in the returned scope.
+  Translated maybeWrapInFilter(
+      NodeCP input,
+      const lp::Expr& predicateExpr,
+      Scope scope,
+      bool propagateConstants);
+
+  // Rebinds scope expressions fixed by equality predicates to their literals.
+  void propagateFilterConstants(const ExprVector& predicates, Scope& scope);
 
   // Translates an lp expression against 'scope'. If the expression
   // contains an `lp::SubqueryExpr` (bare, or wrapped in
@@ -1279,7 +1310,10 @@ Translated Translator::translateFilter(
   }
   if (noSubquery.empty() || withSubquery.empty()) {
     return maybeWrapInFilter(
-        input.node, *filter.predicate(), std::move(input.scope));
+        input.node,
+        *filter.predicate(),
+        std::move(input.scope),
+        /*propagateConstants=*/true);
   }
 
   // Translates 'conjuncts' and accumulates simplified results.
@@ -1304,6 +1338,7 @@ Translated Translator::translateFilter(
         builder_.makeEmptyValues(input.node->outputColumns()),
         std::move(input.scope)};
   }
+  propagateFilterConstants(*innerConjuncts, input.scope);
   NodeCP inner = innerConjuncts->empty()
       ? input.node
       : builder_.make<Filter>({input.node, std::move(*innerConjuncts)});
@@ -1317,6 +1352,7 @@ Translated Translator::translateFilter(
         builder_.makeEmptyValues(inner->outputColumns()),
         std::move(input.scope)};
   }
+  propagateFilterConstants(*outerConjuncts, input.scope);
   if (outerConjuncts->empty()) {
     return {inner, std::move(input.scope)};
   }
@@ -1328,7 +1364,8 @@ Translated Translator::translateFilter(
 Translated Translator::maybeWrapInFilter(
     NodeCP input,
     const lp::Expr& predicateExpr,
-    Scope scope) {
+    Scope scope,
+    bool propagateConstants) {
   ExprCP predicate{nullptr};
   input = withLiftTarget(input, [&](LiftTarget& target) {
     predicate = translateExpr(predicateExpr, scope, &target);
@@ -1343,8 +1380,28 @@ Translated Translator::maybeWrapInFilter(
     return {input, std::move(scope)};
   }
 
+  if (propagateConstants) {
+    propagateFilterConstants(conjuncts, scope);
+  }
+
   return {
       builder_.make<Filter>({input, std::move(conjuncts)}), std::move(scope)};
+}
+
+void Translator::propagateFilterConstants(
+    const ExprVector& predicates,
+    Scope& scope) {
+  for (ExprCP predicate : predicates) {
+    const auto equality = exprFactory_.literalEquality(predicate);
+    if (!equality.has_value()) {
+      continue;
+    }
+    for (auto& entry : scope) {
+      if (entry.second == equality->first) {
+        entry.second = equality->second;
+      }
+    }
+  }
 }
 
 Translated Translator::translateProject(
@@ -2113,7 +2170,8 @@ void Translator::translateGroupingKeys(
     if (!hasGroupingSets) {
       const auto it = keyToOutput.find(keyExpr);
       if (it != keyToOutput.end()) {
-        scope[names[i]] = it->second;
+        scope[names[i]] =
+            keyExpr->is(PlanType::kLiteralExpr) ? keyExpr : it->second;
         continue;
       }
     }
@@ -2134,7 +2192,12 @@ void Translator::translateGroupingKeys(
     if (!hasGroupingSets) {
       keyToOutput.emplace(keyExpr, column);
     }
-    scope[names[i]] = column;
+    const bool constantAboveAggregation = keyExpr->is(PlanType::kLiteralExpr) &&
+        (!hasGroupingSets ||
+         std::ranges::all_of(aggregate.groupingSets(), [&](const auto& set) {
+           return std::ranges::find(set, i) != set.end();
+         }));
+    scope[names[i]] = constantAboveAggregation ? keyExpr : column;
     if (!hasGroupingSets && keyExpr->is(PlanType::kLiteralExpr) &&
         (hasNonConstant || !keys.empty())) {
       projectedColumns.push_back(column);
@@ -2553,14 +2616,12 @@ Translated Translator::translateUnnest(
   return {unnestNode, std::move(newScope)};
 }
 
-Translated Translator::buildUnionAll(
+std::vector<lp::LogicalPlanNodePtr> Translator::flattenUnionInputs(
     const std::vector<lp::LogicalPlanNodePtr>& inputs,
-    const velox::RowTypePtr& outputType,
-    const LpNameSet& required,
-    bool dedupAbove) {
+    bool dedupAbove) const {
   // Legs align positionally with the union's outputType at every level, so a
   // flattened leg maps to the same kept positions as a direct one.
-  std::vector<lp::LogicalPlanNodePtr> flatInputs;
+  std::vector<lp::LogicalPlanNodePtr> result;
   std::function<void(const lp::LogicalPlanNodePtr&)> collect =
       [&](const lp::LogicalPlanNodePtr& node) {
         if (node->kind() == lp::NodeKind::kSet) {
@@ -2573,10 +2634,75 @@ Translated Translator::buildUnionAll(
             return;
           }
         }
-        flatInputs.push_back(node);
+        result.push_back(node);
       };
-  for (const auto& in : inputs) {
-    collect(in);
+  for (const auto& input : inputs) {
+    collect(input);
+  }
+  return result;
+}
+
+std::vector<Translated> Translator::translateUnionInputs(
+    const std::vector<lp::LogicalPlanNodePtr>& inputs,
+    const std::vector<size_t>& keptPositions) {
+  std::vector<Translated> result;
+  result.reserve(inputs.size());
+  for (const auto& input : inputs) {
+    // Each leg's required-set is the kept union output names, mapped to that
+    // leg's positional outputType names (legs align 1:1 with the union's
+    // outputType by SQL semantics).
+    LpNameSet legRequired;
+    legRequired.reserve(keptPositions.size());
+    for (size_t position : keptPositions) {
+      legRequired.insert(input->outputType()->nameOf(position));
+    }
+    result.push_back(translateNode(*input, legRequired));
+  }
+  return result;
+}
+
+ExprCP Translator::commonUnionLiteral(
+    const std::vector<lp::LogicalPlanNodePtr>& inputs,
+    const std::vector<Translated>& translatedInputs,
+    size_t position) {
+  ExprCP result{nullptr};
+  for (size_t i = 0; i < translatedInputs.size(); ++i) {
+    ExprCP literal =
+        literalInScope(translatedInputs[i], *inputs[i]->outputType(), position);
+    if (literal == nullptr) {
+      return nullptr;
+    }
+    if (result == nullptr) {
+      result = literal;
+    } else if (result != literal) {
+      return nullptr;
+    }
+  }
+  return result;
+}
+
+ExprCP Translator::literalInScope(
+    const Translated& input,
+    const velox::RowType& type,
+    size_t position) {
+  const auto it = input.scope.find(type.nameOf(position));
+  VELOX_CHECK(it != input.scope.end());
+  return it->second->is(PlanType::kLiteralExpr) ? it->second : nullptr;
+}
+
+Translated Translator::buildUnionAll(
+    const std::vector<lp::LogicalPlanNodePtr>& inputs,
+    const velox::RowTypePtr& outputType,
+    const LpNameSet& required,
+    bool dedupAbove) {
+  const auto flatInputs = flattenUnionInputs(inputs, dedupAbove);
+
+  std::vector<size_t> keptPositions;
+  keptPositions.reserve(outputType->size());
+  for (size_t i = 0; i < outputType->size(); ++i) {
+    if (required.contains(outputType->nameOf(i))) {
+      keptPositions.push_back(i);
+    }
   }
 
   // Keep scalar-subquery reuse within each union leg. Reusing an enclosing
@@ -2585,55 +2711,37 @@ Translated Translator::buildUnionAll(
   SCOPE_EXIT {
     subqueries_.popLiftedCorrelationBarrier();
   };
+  auto translatedInputs = translateUnionInputs(flatInputs, keptPositions);
 
-  NodeVector inputNodes;
-  inputNodes.reserve(flatInputs.size());
-  QGVector<ColumnVector> legColumns;
-  legColumns.reserve(flatInputs.size());
-  // Union output positions parent doesn't require are dropped from the union
-  // node entirely. Build a list of kept positions once and reuse it for every
-  // leg's column mapping.
-  std::vector<size_t> keptPositions;
-  keptPositions.reserve(outputType->size());
-  for (size_t j = 0; j < outputType->size(); ++j) {
-    if (required.contains(outputType->nameOf(j))) {
-      keptPositions.push_back(j);
-    }
-  }
-  for (const auto& in : flatInputs) {
-    // Each leg's required-set is the kept union output names, mapped to that
-    // leg's positional outputType names (legs align 1:1 with the union's
-    // outputType by SQL semantics).
-    LpNameSet legRequired;
-    legRequired.reserve(keptPositions.size());
-    for (size_t j : keptPositions) {
-      legRequired.insert(in->outputType()->nameOf(j));
-    }
-    Translated translated = translateNode(*in, legRequired);
-    ColumnVector cols;
-    cols.reserve(keptPositions.size());
-    for (size_t j : keptPositions) {
-      // Resolve LP-name → IR Column* via the leg's scope; the leg's IR
-      // `outputColumns` may be narrower than its LP outputType after
-      // dup-collapse, but the same Column may legitimately repeat.
-      cols.push_back(columnInScope(
-          &translated.node, translated.scope, in->outputType()->nameOf(j)));
-    }
-    legColumns.push_back(std::move(cols));
-    inputNodes.push_back(translated.node);
-  }
+  QGVector<ColumnVector> legColumns(flatInputs.size());
   Scope scope;
   ColumnVector outputColumns;
   outputColumns.reserve(keptPositions.size());
-  for (size_t k = 0; k < keptPositions.size(); ++k) {
-    const size_t j = keptPositions[k];
+  for (size_t j : keptPositions) {
+    const ExprCP commonLiteral =
+        commonUnionLiteral(flatInputs, translatedInputs, j);
+    if (commonLiteral != nullptr && !dedupAbove) {
+      scope[outputType->nameOf(j)] = commonLiteral;
+      continue;
+    }
+
+    for (size_t i = 0; i < translatedInputs.size(); ++i) {
+      // Resolve LP-name → IR Column* via the leg's scope; the leg's IR
+      // `outputColumns` may be narrower than its LP outputType after
+      // dup-collapse, but the same Column may legitimately repeat.
+      legColumns[i].push_back(columnInScope(
+          &translatedInputs[i].node,
+          translatedInputs[i].scope,
+          flatInputs[i]->outputType()->nameOf(j)));
+    }
+
     // The union output NDV is the max of the legs' NDVs: a lower bound on the
     // true union NDV (which can be up to their sum), order-independent, and
     // known as long as any leg has an NDV. A known NDV lets the cost model rank
     // a join on a union key instead of dropping it as uncostable.
     std::optional<float> cardinality;
     for (const auto& legCols : legColumns) {
-      const auto legNdv = legCols[k]->value().cardinality;
+      const auto legNdv = legCols.back()->value().cardinality;
       if (legNdv.has_value()) {
         cardinality =
             cardinality.has_value() ? std::max(*cardinality, *legNdv) : *legNdv;
@@ -2642,7 +2750,14 @@ Translated Translator::buildUnionAll(
     Value value(toType(outputType->childAt(j)), cardinality);
     auto* column = columnForSymbol(toName(outputType->nameOf(j)), value);
     outputColumns.push_back(column);
-    scope[outputType->nameOf(j)] = column;
+    scope[outputType->nameOf(j)] =
+        commonLiteral != nullptr ? commonLiteral : static_cast<ExprCP>(column);
+  }
+
+  NodeVector inputNodes;
+  inputNodes.reserve(translatedInputs.size());
+  for (auto& input : translatedInputs) {
+    inputNodes.push_back(input.node);
   }
   UnionAllCP unionNode = builder_.make<UnionAll>(
       {std::move(inputNodes), std::move(legColumns), std::move(outputColumns)});
@@ -2666,14 +2781,12 @@ Translated Translator::translateSet(
           allNames(*set.outputType()),
           /*dedupAbove=*/true);
       const ColumnVector& cols = all.node->outputColumns();
-      Scope newScope;
-      populateScope(*set.outputType(), cols, newScope);
       AggregateCP aggNode = builder_.make<Aggregate>(
           {all.node,
            ExprVector{cols.begin(), cols.end()},
            AggregateCallVector{},
            ColumnVector{cols}});
-      return {aggNode, std::move(newScope)};
+      return {aggNode, std::move(all.scope)};
     }
     case lp::SetOperation::kIntersect:
     case lp::SetOperation::kIntersectAll:
@@ -2715,13 +2828,27 @@ Translated Translator::translateSet(
 
       Translated first = translateNode(*set.inputs().front());
       const auto& firstType = *set.inputs().front()->outputType();
+      std::vector<ExprCP> outputConstants(firstType.size(), nullptr);
+      for (size_t i = 0; i < firstType.size(); ++i) {
+        outputConstants[i] = literalInScope(first, firstType, i);
+      }
       narrowLeg(first, firstType);
       NodeCP node = first.node;
       for (size_t i = 1; i < set.inputs().size(); ++i) {
         Translated other = translateNode(*set.inputs()[i]);
         const auto& otherType = *set.inputs()[i]->outputType();
-        narrowLeg(other, otherType);
         VELOX_CHECK_EQ(firstType.size(), otherType.size());
+        if (!isAnti) {
+          for (size_t columnIndex = 0; columnIndex < otherType.size();
+               ++columnIndex) {
+            if (outputConstants[columnIndex] != nullptr) {
+              continue;
+            }
+            outputConstants[columnIndex] =
+                literalInScope(other, otherType, columnIndex);
+          }
+        }
+        narrowLeg(other, otherType);
         ExprVector leftKeys;
         ExprVector rightKeys;
         leftKeys.reserve(firstType.size());
@@ -2748,8 +2875,10 @@ Translated Translator::translateSet(
 
       Scope scope;
       for (size_t i = 0; i < set.outputType()->size(); ++i) {
-        scope[set.outputType()->nameOf(i)] =
-            columnInScope(&first.node, first.scope, firstType.nameOf(i));
+        scope[set.outputType()->nameOf(i)] = outputConstants[i] != nullptr
+            ? outputConstants[i]
+            : static_cast<ExprCP>(
+                  columnInScope(&first.node, first.scope, firstType.nameOf(i)));
       }
 
       if (isDistinct) {
@@ -2946,7 +3075,11 @@ Translated Translator::translateJoin(
          /*nullAsValue=*/false,
          std::move(outputColumns),
          std::move(sourceColumns)});
-    return maybeWrapInFilter(joinNode, *join.condition(), std::move(merged));
+    return maybeWrapInFilter(
+        joinNode,
+        *join.condition(),
+        std::move(merged),
+        /*propagateConstants=*/true);
   }
 
   JoinCondition::Split split;
@@ -2974,8 +3107,12 @@ Translated Translator::translateJoin(
           "not supported");
     }
 
+    auto conjuncts = ExprFactory::flattenAnd(condition);
+    if (isInner) {
+      propagateFilterConstants(conjuncts, merged);
+    }
     split = JoinCondition::splitEquiKeys(
-        ExprFactory::flattenAnd(condition),
+        std::move(conjuncts),
         PlanObjectSet::fromObjects(left.node->outputColumns()),
         PlanObjectSet::fromObjects(right.node->outputColumns()));
   }

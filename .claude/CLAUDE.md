@@ -468,6 +468,35 @@ is a bug introduced by a different commit.
   PlanBuilder, and runner are dialect-agnostic — do not introduce
   dialect-specific terms in these layers.
 
+### Optimizer Principles
+
+Build general capabilities:
+
+- A production query motivates a change and serves as its test. It does not
+  define the change's scope. Design the capability for every operator and plan
+  shape it applies to, rather than the least code that makes the motivating
+  query plan well.
+- Choose the design that handles the general case cleanly over the smallest
+  diff. A narrow fix leaves sibling cases broken for someone else to find.
+
+Invariants. These hold across the optimizer. Rely on them. Do not write code that guards
+against their violation, and do not ask for such code in designs or reviews. A
+violation is a bug in the code that owns the invariant; fix it there.
+
+- `Builder::canonicalizeCall` (`axiom/optimizer/v2/Builder.h`) puts every
+  binary call in `reversibleFunctions_` into canonical order when it is built:
+  a literal goes on the right; otherwise the lower-id expression goes on the
+  left. Match `column = literal`; do not also check `literal = column`.
+- Translate rewrites a single-element `IN` as equality. Treat `x IN (c)` as
+  `x = c`.
+- Before handling an alternative form of an expression, find the normalization
+  that produces the form you rely on. If a non-canonical form reaches your code,
+  fix the normalization.
+- If `a = b`, the optimizer may substitute one for the other. `-0.0` vs `0.0`
+  and different zones of equal `TIMESTAMP WITH TIME ZONE` values are
+  representation differences, not correctness issues. Do not add per-type
+  guards to substitutions, and do not raise these cases in designs or reviews.
+
 ## Directory Structure
 
 | Directory | Description |

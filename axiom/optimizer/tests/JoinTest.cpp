@@ -501,6 +501,62 @@ TEST_P(JoinTest, filterBetweenJoins) {
   }
 }
 
+TEST_P(JoinTest, constantOnNullProducingSide) {
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
+  testConnector_->addTable("u", ROW({"x", "y"}, BIGINT()));
+
+  {
+    // The constant originates in the right input's scope.
+    const auto query =
+        "SELECT CASE WHEN u.y = 1 THEN 10 ELSE t.b END "
+        "FROM t LEFT JOIN (SELECT x, y FROM u WHERE y = 1) u "
+        "ON t.a = u.x";
+    SCOPED_TRACE(query);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(query),
+        matchScan("t")
+            .hashJoinLeft(
+                matchScan("u").filter("y = 1").project({"x", "1 as y"}),
+                {.keys = {{"a = x"}}, .outputColumnNames = {{"b", "y"}}})
+            .project({"if(y = 1, 10, b)"})
+            .build());
+  }
+
+  {
+    // The constant originates in the outer join condition.
+    const auto query =
+        "SELECT CASE WHEN u.y = 1 THEN 10 ELSE t.b END "
+        "FROM t LEFT JOIN u ON t.a = u.x AND u.y = 1";
+    SCOPED_TRACE(query);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(query),
+        matchScan("t")
+            .hashJoinLeft(
+                matchScan("u").filter("y = 1"),
+                {.keys = {{"a = x"}}, .outputColumnNames = {{"b", "y"}}})
+            .project({"if(y = 1, 10, b)"})
+            .build());
+  }
+}
+
+TEST_P(JoinTest, constantInInnerJoinCondition) {
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
+  testConnector_->addTable("u", ROW({"x", "y"}, BIGINT()));
+
+  const auto query =
+      "SELECT CASE WHEN u.y = 1 THEN 10 ELSE t.b END "
+      "FROM t JOIN u ON t.a = u.x AND u.y = 1";
+  SCOPED_TRACE(query);
+  AXIOM_ASSERT_PLAN_V2(
+      toSingleNodePlan(query),
+      matchScan("t")
+          .hashJoinInner(
+              matchScan("u").filter("y = 1").project({"x"}),
+              {.keys = {{"a = x"}}})
+          .project({"10"})
+          .build());
+}
+
 // A non-deterministic predicate between two joins stays where it was written.
 TEST_P(JoinTest, nonDeterministicFilterBetweenJoins) {
   addTableWithStats("events", {"x", "k"}, 1'000, {{"k", 100}});
@@ -3747,14 +3803,16 @@ TEST_P(JoinTest, constantInput) {
   {
     auto plan = toSingleNodePlan(
         "SELECT t.a FROM t JOIN (VALUES 1) AS v(k) ON t.a = v.k");
-    AXIOM_ASSERT_PLAN_V2(plan, matchScan("t").filter("a = 1").build());
+    AXIOM_ASSERT_PLAN_V2(
+        plan, matchScan("t").filter("a = 1").project({"1"}).build());
   }
 
   // The equality reaches the pass above the join rather than as a join key.
   {
     auto plan = toSingleNodePlan(
         "SELECT t.a FROM t, (VALUES 1) AS v(k) WHERE t.a = v.k");
-    AXIOM_ASSERT_PLAN_V2(plan, matchScan("t").filter("a = 1").build());
+    AXIOM_ASSERT_PLAN_V2(
+        plan, matchScan("t").filter("a = 1").project({"1"}).build());
   }
 
   // A value the query selects survives as a projected constant.
@@ -3762,7 +3820,23 @@ TEST_P(JoinTest, constantInput) {
     auto plan = toSingleNodePlan(
         "SELECT t.a, v.k FROM t JOIN (VALUES 1) AS v(k) ON t.a = v.k");
     AXIOM_ASSERT_PLAN_V2(
-        plan, matchScan("t").filter("a = 1").project({"a", "1 as k"}).build());
+        plan, matchScan("t").filter("a = 1").project({"1", "1"}).build());
+  }
+
+  // A scalar-subquery equality propagates its constant into expressions above
+  // the join.
+  {
+    auto plan = toSingleNodePlan("SELECT a + 1 FROM t WHERE a = (SELECT 1)");
+    AXIOM_ASSERT_PLAN_V2(
+        plan, matchScan("t").filter("a = 1").project({"2"}).build());
+  }
+
+  // A selected key becomes a literal while the query's output identities and
+  // order stay fixed.
+  {
+    auto plan = toSingleNodePlan("SELECT a, b FROM t WHERE a = (SELECT 1)");
+    AXIOM_ASSERT_PLAN_V2(
+        plan, matchScan("t").filter("a = 1").project({"1", "b"}).build());
   }
 
   // A left join keeps the rows that match nothing.

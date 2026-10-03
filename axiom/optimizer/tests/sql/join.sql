@@ -187,6 +187,25 @@ FROM (VALUES (NULL), (1), (2)) AS t(t_k)
 LEFT JOIN (VALUES (NULL), (1), (3)) AS u(u_k) ON t_k = u_k
 GROUP BY 1, 2
 ----
+-- A filter on an outer join's null-producing side does not hold for padded
+-- rows above the join.
+SELECT CASE WHEN matching.b = 10 THEN 1 ELSE preserved.b END
+FROM t preserved
+LEFT JOIN (SELECT a, b FROM t WHERE b = 10) matching
+  ON preserved.a = matching.a
+----
+-- A constant in an outer join condition does not hold for padded rows above
+-- the join.
+SELECT CASE WHEN matching.b = 10 THEN 1 ELSE preserved.b END
+FROM t preserved
+LEFT JOIN t matching
+  ON preserved.a = matching.a AND matching.b = 10
+----
+-- A constant from an inner join condition holds above the join.
+SELECT CASE WHEN matching.b = 10 THEN 1 ELSE preserved.b END
+FROM t preserved
+JOIN t matching ON preserved.a = matching.a AND matching.b = 10
+----
 -- A constant computed above a full join keeps its value on rows where the
 -- join null-extends an equal constant computed by one input.
 SELECT padded.v, preserved.k, 0 AS above

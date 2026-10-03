@@ -51,6 +51,8 @@ While building expressions and nodes, it performs normalization and early
 simplification:
 
 - Folds calls whose arguments are literals and simplifies filter conjuncts.
+- Propagates literals fixed by filter equalities through projections, grouping
+  keys, and set operations when their semantics preserve the equality.
 - Replaces a filter that is always false or NULL with empty `Values`.
 - Normalizes `IN` lists, including duplicate constants and single-value lists.
 - Removes duplicate ordering keys that cannot refine an order.
@@ -119,6 +121,8 @@ Predicate work:
 
 Pruning and simplification work:
 
+- Simplifies node expressions with constants fixed by predicates pushed below
+  the node before determining which input columns they require.
 - Removes unused project expressions, aggregate calls, window functions,
   unique IDs, and unused outputs from other nodes.
 - Replaces constant-false filters and joins with the appropriate empty or

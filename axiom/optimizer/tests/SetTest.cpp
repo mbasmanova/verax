@@ -15,6 +15,7 @@
  */
 
 #include <fmt/format.h>
+#include <gmock/gmock.h>
 
 #include "axiom/logical_plan/PlanBuilder.h"
 #include "axiom/optimizer/tests/PlanMatcher.h"
@@ -78,6 +79,201 @@ TEST_P(SetTest, unionAll) {
                      .build();
 
   AXIOM_ASSERT_PLAN(plan, matcher);
+}
+
+TEST_P(SetTest, constantOutputs) {
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
+  testConnector_->addTable("u", ROW({"a", "b"}, BIGINT()));
+
+  {
+    // UNION ALL keeps only the nonconstant output as its row carrier.
+    const auto query =
+        "SELECT x, y "
+        "FROM ("
+        "  SELECT a AS x, b AS y FROM t WHERE a = 1 "
+        "  UNION ALL "
+        "  SELECT a, b FROM u WHERE a = 1"
+        ")";
+    SCOPED_TRACE(query);
+    auto logicalPlan = parseSelect(query);
+    verifyOptimization(
+        *logicalPlan, v2::Optimizer::Pass::kTranslate, [](v2::NodeCP root) {
+          const auto* node =
+              v2::Node::findFirstNode(root, [](v2::NodeCP candidate) {
+                return candidate->is(v2::NodeType::kUnionAll);
+              });
+          ASSERT_NE(node, nullptr);
+          const auto* unionAll = node->as<v2::UnionAll>();
+          EXPECT_THAT(unionAll->outputColumns(), testing::SizeIs(1));
+          EXPECT_THAT(
+              unionAll->legColumns(), testing::Each(testing::SizeIs(1)));
+        });
+  }
+
+  {
+    // UNION ALL needs no physical output when every output is constant.
+    const auto query =
+        "SELECT x "
+        "FROM ("
+        "  SELECT a AS x FROM t WHERE a = 1 "
+        "  UNION ALL "
+        "  SELECT a FROM u WHERE a = 1"
+        ")";
+    SCOPED_TRACE(query);
+    auto logicalPlan = parseSelect(query);
+    verifyOptimization(
+        *logicalPlan, v2::Optimizer::Pass::kTranslate, [](v2::NodeCP root) {
+          const auto* node =
+              v2::Node::findFirstNode(root, [](v2::NodeCP candidate) {
+                return candidate->is(v2::NodeType::kUnionAll);
+              });
+          ASSERT_NE(node, nullptr);
+          const auto* unionAll = node->as<v2::UnionAll>();
+          EXPECT_THAT(unionAll->outputColumns(), testing::IsEmpty());
+          EXPECT_THAT(
+              unionAll->legColumns(), testing::Each(testing::IsEmpty()));
+        });
+  }
+
+  {
+    // UNION ALL propagates a constant shared by every input.
+    const auto query =
+        "SELECT CASE WHEN x = 1 THEN 10 ELSE y END "
+        "FROM ("
+        "  SELECT a AS x, b AS y FROM t WHERE a = 1 "
+        "  UNION ALL "
+        "  SELECT a, b FROM u WHERE a = 1"
+        ")";
+    SCOPED_TRACE(query);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(parseSelect(query)),
+        matchScan("t")
+            .filter("a = 1")
+            .projectNone()
+            .localPartition(matchScan("u")
+                                .aliases({"right_a"})
+                                .filter("right_a = 1")
+                                .projectNone())
+            .project({"10"})
+            .build());
+  }
+
+  {
+    // UNION ALL does not propagate constants that differ between inputs.
+    const auto query =
+        "SELECT CASE WHEN x = 1 THEN 10 ELSE y END "
+        "FROM ("
+        "  SELECT a AS x, b AS y FROM t WHERE a = 1 "
+        "  UNION ALL "
+        "  SELECT a, b FROM u WHERE a = 2"
+        ")";
+    SCOPED_TRACE(query);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(parseSelect(query)),
+        matchScan("t")
+            .filter("a = 1")
+            .project({"1 as x", "b as y"})
+            .localPartition(matchScan("u")
+                                .aliases({"right_b", "right_a"})
+                                .filter("right_a = 2")
+                                .project({"2", "right_b"}))
+            .project({"if(x = 1, 10, y)"})
+            .build());
+  }
+
+  {
+    // INTERSECT propagates a constant from its left input.
+    const auto query =
+        "SELECT CASE WHEN x = 1 THEN 10 ELSE y END "
+        "FROM ("
+        "  SELECT a AS x, b AS y FROM t WHERE a = 1 "
+        "  INTERSECT "
+        "  SELECT a, b FROM u"
+        ")";
+    SCOPED_TRACE(query);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(parseSelect(query)),
+        matchScan("t")
+            .filter("a = 1")
+            .project({"1 as x", "b"})
+            .hashJoin(
+                matchScan("u").aliases({"right_a", "right_b"}),
+                core::JoinType::kLeftSemiFilter)
+            .singleAggregation({"x", "b"}, {})
+            .project({"10"})
+            .build());
+  }
+
+  {
+    // INTERSECT propagates a constant from its right input.
+    const auto query =
+        "SELECT CASE WHEN x = 1 THEN 10 ELSE y END "
+        "FROM ("
+        "  SELECT a AS x, b AS y FROM t "
+        "  INTERSECT "
+        "  SELECT a, b FROM u WHERE a = 1"
+        ")";
+    SCOPED_TRACE(query);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(parseSelect(query)),
+        matchScan("t")
+            .hashJoin(
+                matchScan("u")
+                    .aliases({"right_b", "right_a"})
+                    .filter("right_a = 1")
+                    .project({"1", "right_b"}),
+                core::JoinType::kLeftSemiFilter)
+            .singleAggregation({"a", "b"}, {})
+            .project({"10"})
+            .build());
+  }
+
+  {
+    // EXCEPT propagates a constant from its left input.
+    const auto query =
+        "SELECT CASE WHEN x = 1 THEN 10 ELSE y END "
+        "FROM ("
+        "  SELECT a AS x, b AS y FROM t WHERE a = 1 "
+        "  EXCEPT "
+        "  SELECT a, b FROM u"
+        ")";
+    SCOPED_TRACE(query);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(parseSelect(query)),
+        matchScan("t")
+            .filter("a = 1")
+            .project({"1 as x", "b"})
+            .hashJoin(
+                matchScan("u").aliases({"right_a", "right_b"}),
+                core::JoinType::kAnti)
+            .singleAggregation({"x", "b"}, {})
+            .project({"10"})
+            .build());
+  }
+
+  {
+    // EXCEPT does not propagate a constant from its right input.
+    const auto query =
+        "SELECT CASE WHEN x = 1 THEN 10 ELSE y END "
+        "FROM ("
+        "  SELECT a AS x, b AS y FROM t "
+        "  EXCEPT "
+        "  SELECT a, b FROM u WHERE a = 1"
+        ")";
+    SCOPED_TRACE(query);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(parseSelect(query)),
+        matchScan("t")
+            .hashJoin(
+                matchScan("u")
+                    .aliases({"right_b", "right_a"})
+                    .filter("right_a = 1")
+                    .project({"1", "right_b"}),
+                core::JoinType::kAnti)
+            .singleAggregation({"a", "b"}, {})
+            .project({"if(a = 1, 10, b)"})
+            .build());
+  }
 }
 
 TEST_P(SetTest, lambdaFilterPushdownThroughUnionAll) {

@@ -3264,10 +3264,11 @@ class Decorrelator : public NodeRewriter<> {
   //     semantics. A grouping key is NULLed with the aggregates, since a key
   //     whose expression is non-NULL over the body's NULLs would otherwise
   //     publish a value for an outer that read no rows.
-  //   - includeMarker for kLeft: 'includeMarkerValue'. Literal `true` where
-  //     every outer reaches here with a row of its own, and a marker column
-  //     sourced from the body where a join below can pad an outer, so the pad
-  //     reads NULL.
+  //   - includeMarker for kLeft: 'includeMarkerValue', additionally gated by
+  //     'valueIsLive' where a post-aggregate filter can reject the body row.
+  //     The value is literal `true` where every outer reaches here with a row
+  //     of its own, and a marker column sourced from the body where a join
+  //     below can pad an outer, so the pad reads NULL.
   NodeCP buildAggregateFinalProject(
       ApplyCP node,
       NodeCP input,
@@ -3310,7 +3311,11 @@ class Decorrelator : public NodeRewriter<> {
           aggregate->outputColumns()[numGroupingKeys + i]->value().type));
     }
     if (node->isLeft()) {
-      finalExpressions.push_back(atBoundary(includeMarkerValue));
+      ExprCP includeMarker = atBoundary(includeMarkerValue);
+      if (valueIsLive != nullptr) {
+        includeMarker = exprFactory_.makeAnd(includeMarker, valueIsLive);
+      }
+      finalExpressions.push_back(includeMarker);
     }
     return builder().make<Project>({
         child,

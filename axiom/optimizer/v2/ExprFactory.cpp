@@ -92,6 +92,19 @@ ExprCP ExprFactory::makeEq(ExprCP lhs, ExprCP rhs) {
       builder_.functionNames().equality, {lhs, rhs}, /*specialForm=*/false);
 }
 
+std::optional<std::pair<ExprCP, ExprCP>> ExprFactory::literalEquality(
+    ExprCP expr) const {
+  if (expr->isNot(PlanType::kCallExpr)) {
+    return std::nullopt;
+  }
+  const auto* call = expr->as<Call>();
+  if (call->name() != builder_.functionNames().equality ||
+      call->args()[1]->isNot(PlanType::kLiteralExpr)) {
+    return std::nullopt;
+  }
+  return std::pair{call->args()[0], call->args()[1]};
+}
+
 ExprCP ExprFactory::makeLessThan(ExprCP lhs, ExprCP rhs) {
   return makeBooleanCall(
       builder_.functionNames().lt, {lhs, rhs}, /*specialForm=*/false);

@@ -388,6 +388,11 @@ class PlanMatcherBuilder {
   /// Matches any Project node and invokes 'onMatch' with it.
   PlanMatcherBuilder& project(OnMatchCallback onMatch);
 
+  /// Matches a Project node with no output columns.
+  PlanMatcherBuilder& projectNone() {
+    return project(std::vector<std::string>{});
+  }
+
   /// Adds a Project matcher (see project()) only when 'condition' is true;
   /// otherwise a no-op.
   PlanMatcherBuilder& projectIf(bool condition) {

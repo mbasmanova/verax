@@ -112,7 +112,8 @@ TEST_P(FilterPushdownTest, redundantCast) {
 
 TEST_P(FilterPushdownTest, distinctFromDomain) {
   auto assertFilter = [&](const std::string& predicate,
-                          std::unique_ptr<common::Filter> filter) {
+                          std::unique_ptr<common::Filter> filter,
+                          const std::vector<std::string>& projections = {}) {
     SCOPED_TRACE(predicate);
     auto plan = toSingleNodePlan(
         parseSelect(fmt::format("SELECT * FROM orders WHERE {}", predicate)));
@@ -120,6 +121,7 @@ TEST_P(FilterPushdownTest, distinctFromDomain) {
         matchHiveScan(
             "orders",
             common::test::singleSubfieldFilter("o_orderkey", std::move(filter)))
+            .projectIf(useV2_ && !projections.empty(), projections)
             .build();
     AXIOM_ASSERT_PLAN_V2(plan, matcher);
   };
@@ -127,7 +129,18 @@ TEST_P(FilterPushdownTest, distinctFromDomain) {
   assertFilter("o_orderkey IS DISTINCT FROM NULL", exec::isNotNull());
   assertFilter("o_orderkey IS NOT DISTINCT FROM NULL", exec::isNull());
   assertFilter("o_orderkey IS DISTINCT FROM 1", exec::notEqual(1, true));
-  assertFilter("o_orderkey IS NOT DISTINCT FROM 1", exec::equal(1));
+  assertFilter(
+      "o_orderkey IS NOT DISTINCT FROM 1",
+      exec::equal(1),
+      {"1",
+       "o_custkey",
+       "o_orderstatus",
+       "o_totalprice",
+       "o_orderdate",
+       "o_orderpriority",
+       "o_clerk",
+       "o_shippriority",
+       "o_comment"});
 }
 
 TEST_P(FilterPushdownTest, throughJoin) {
@@ -245,7 +258,10 @@ TEST_P(FilterPushdownTest, inListWithDuplicates) {
                          .build();
 
   auto plan = toSingleNodePlan(logicalPlan);
-  auto matcher = matchHiveScan("nation", test::eq("n_nationkey", 5LL)).build();
+  auto matcher =
+      matchHiveScan("nation", test::eq("n_nationkey", 5LL))
+          .projectIf(useV2_, {"5", "n_name", "n_regionkey", "n_comment"})
+          .build();
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
@@ -261,7 +277,10 @@ TEST_P(FilterPushdownTest, orWithSubsumedDisjunct) {
                          .build();
 
   auto plan = toSingleNodePlan(logicalPlan);
-  auto matcher = matchHiveScan("nation", test::eq("n_regionkey", 1LL)).build();
+  auto matcher =
+      matchHiveScan("nation", test::eq("n_regionkey", 1LL))
+          .projectIf(useV2_, {"n_nationkey", "n_name", "1", "n_comment"})
+          .build();
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
