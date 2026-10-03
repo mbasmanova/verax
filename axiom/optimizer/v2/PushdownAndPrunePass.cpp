@@ -2020,7 +2020,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
 
   // Rewrites both inputs and updates join expressions for any columns the
   // rewritten inputs replaced.
-  RewrittenJoinInputs rewriteJoinInputs(
+  RewrittenJoinInputs rewriteJoinInputNodes(
       const Join* node,
       PushdownContext& leftContext,
       PushdownContext& rightContext,
@@ -2121,6 +2121,279 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     }
   }
 
+  // Holds the join semantics selected before predicates are routed.
+  struct PreparedJoin {
+    velox::core::JoinType joinType;
+    ColumnCP fusedMark{nullptr};
+    bool fusedNullAware{false};
+    ExprFactory::ExprSubstitution demotionRewrites;
+  };
+
+  // Applies mark fusion or outer-join demotion and updates pending predicates
+  // for the selected join semantics.
+  PreparedJoin prepareJoin(
+      const Join* node,
+      PushdownContext& context,
+      const PlanObjectSet& leftColumns,
+      const PlanObjectSet& rightColumns) {
+    PreparedJoin result{.joinType = node->joinType()};
+    if (auto fusion =
+            fuseMarkFilter(node, context.pending, context.requiredAbove)) {
+      result.joinType = fusion->joinType;
+      result.fusedMark = node->markColumn();
+      // A filtering semi join is never null-aware. An anti join retains the
+      // null-aware semantics of NOT IN.
+      result.fusedNullAware =
+          result.joinType == velox::core::JoinType::kAnti && node->nullAware();
+      ExprVector remaining;
+      remaining.reserve(context.pending.size() - 1);
+      for (ExprCP conjunct : context.pending) {
+        if (conjunct != fusion->conjunct) {
+          remaining.push_back(conjunct);
+        }
+      }
+      context.pending = std::move(remaining);
+      return result;
+    }
+
+    const auto sourceRewrites = joinOutputSources(node);
+    result.joinType = demoteOuterToInner(
+        node->joinType(),
+        applyRewrites(exprs_, context.pending, sourceRewrites),
+        rewriteColumnSet(exprs_, context.nonNullColumns, sourceRewrites),
+        leftColumns,
+        rightColumns);
+    result.demotionRewrites =
+        demotedJoinOutputs(node, result.joinType, leftColumns, rightColumns);
+    if (!result.demotionRewrites.empty()) {
+      context.pending =
+          applyRewrites(exprs_, context.pending, result.demotionRewrites);
+    }
+    return result;
+  }
+
+  // Holds the join boundary that remains after output pruning.
+  struct PrunedJoin {
+    ExprVector above;
+    ColumnVector outputColumns;
+    ColumnVector sourceColumns;
+  };
+
+  // Keeps outputs demanded by consumers and by predicates that remain above
+  // the join. Join keys and filter columns are demanded only of the children.
+  PrunedJoin pruneJoin(
+      const Join* node,
+      const PushdownContext& context,
+      const PreparedJoin& prepared,
+      RoutedJoinPredicates& routed) {
+    PrunedJoin result{.above = std::move(routed.aboveJoinPredicates)};
+    PlanObjectSet outputsKept = context.requiredAbove;
+    outputsKept.unionColumns(result.above);
+    result.outputColumns.reserve(node->outputColumns().size());
+    result.sourceColumns.reserve(node->sourceColumns().size());
+    for (size_t i = 0; i < node->outputColumns().size(); ++i) {
+      const ColumnCP column = node->outputColumns()[i];
+      // The fused conjunct was the mark's only consumer.
+      if (column != prepared.fusedMark && outputsKept.contains(column)) {
+        result.outputColumns.push_back(
+            replacementColumn(exprs_, column, prepared.demotionRewrites));
+        result.sourceColumns.push_back(node->sourceColumns()[i]);
+      }
+    }
+    return result;
+  }
+
+  // Rewrites both join inputs with the requirements established by routing
+  // and pruning, then simplifies the rewritten join keys.
+  RewrittenJoinInputs rewriteJoinChildren(
+      const Join* node,
+      const PushdownContext& context,
+      PreparedJoin& prepared,
+      RoutedJoinPredicates routed,
+      const PrunedJoin& pruned) {
+    PlanObjectSet sideRequired =
+        PlanObjectSet::fromObjects(pruned.sourceColumns);
+    sideRequired.unionColumns(routed.leftKeys);
+    sideRequired.unionColumns(routed.rightKeys);
+    sideRequired.unionColumns(routed.joinPredicates);
+
+    // Equi-keys of an inner join prove their default-null-behavior inputs
+    // non-NULL, which may let a descendant outer join become inner.
+    PlanObjectSet childNonNullColumns = rewriteColumnSet(
+        exprs_, context.nonNullColumns, prepared.demotionRewrites);
+    if (prepared.joinType == velox::core::JoinType::kInner) {
+      auto addIfDefaultNull = [&](ExprCP key) {
+        if (!hasNonDefaultNullBehavior(key)) {
+          childNonNullColumns.unionColumns(key);
+        }
+      };
+      for (size_t i = 0; i < routed.leftKeys.size(); ++i) {
+        addIfDefaultNull(routed.leftKeys[i]);
+        addIfDefaultNull(routed.rightKeys[i]);
+      }
+    }
+
+    PushdownContext leftContext = makeJoinInputContext(
+        std::move(routed.leftInputPredicates),
+        sideRequired,
+        childNonNullColumns);
+    PushdownContext rightContext = makeJoinInputContext(
+        std::move(routed.rightInputPredicates),
+        sideRequired,
+        std::move(childNonNullColumns));
+    allowJoinInputDeduplication(
+        prepared.joinType,
+        routed.leftKeys,
+        routed.rightKeys,
+        routed.joinPredicates,
+        leftContext,
+        rightContext);
+
+    auto rewritten = rewriteJoinInputNodes(
+        node,
+        leftContext,
+        rightContext,
+        std::move(routed.leftKeys),
+        std::move(routed.rightKeys),
+        std::move(routed.joinPredicates));
+    simplifyJoinKeys(
+        node, prepared.joinType, prepared.demotionRewrites, rewritten);
+    mergeRewrites(prepared.demotionRewrites, rewritten.outputRewrites);
+    rewritten.outputRewrites = std::move(prepared.demotionRewrites);
+    return rewritten;
+  }
+
+  // Applies child substitutions to the join boundary and preserves fresh
+  // identities for null-extended outputs whose sources changed.
+  void repairJoinBoundary(RewrittenJoinInputs& rewritten, PrunedJoin& pruned) {
+    if (rewritten.outputRewrites.empty()) {
+      return;
+    }
+    rewritten.filter =
+        applyRewrites(exprs_, rewritten.filter, rewritten.outputRewrites);
+    pruned.above =
+        applyRewrites(exprs_, pruned.above, rewritten.outputRewrites);
+    ColumnVector rewrittenOutputs;
+    ColumnVector rewrittenSources;
+    ExprFactory::ExprSubstitution boundaryRewrites;
+    PlanObjectSet addedOutputs;
+    for (size_t i = 0; i < pruned.outputColumns.size(); ++i) {
+      const ColumnCP previousOutput = pruned.outputColumns[i];
+      const ColumnCP previousSource = pruned.sourceColumns[i];
+      ColumnCP output = replacementColumn(
+          exprs_, pruned.outputColumns[i], rewritten.outputRewrites);
+      ColumnCP source = replacementColumn(
+          exprs_, pruned.sourceColumns[i], rewritten.outputRewrites);
+      if (previousOutput != previousSource &&
+          (source != previousSource ||
+           previousOutput->outputName() != source->outputName())) {
+        output = Column::createForNullExtendedValue(source);
+        boundaryRewrites.emplace(previousOutput, output);
+      }
+      if (addedOutputs.contains(output)) {
+        continue;
+      }
+      addedOutputs.add(output);
+      rewrittenOutputs.push_back(output);
+      rewrittenSources.push_back(source);
+    }
+    mergeRewrites(rewritten.outputRewrites, boundaryRewrites);
+    rewritten.filter =
+        applyRewrites(exprs_, rewritten.filter, boundaryRewrites);
+    pruned.above = applyRewrites(exprs_, pruned.above, boundaryRewrites);
+    pruned.outputColumns = std::move(rewrittenOutputs);
+    pruned.sourceColumns = std::move(rewrittenSources);
+  }
+
+  // Removes a join when exactly one rewritten input contributes no rows and
+  // the join preserves the other input.
+  NodeCP eliminateEmptyJoinInput(
+      const PreparedJoin& prepared,
+      RewrittenJoinInputs& rewritten,
+      PrunedJoin& pruned) {
+    const auto isEmpty = [](NodeCP input) {
+      return input->is(NodeType::kValues) &&
+          input->as<Values>()->cardinality() == 0;
+    };
+    const bool leftIsEmpty = isEmpty(rewritten.left);
+    if (leftIsEmpty == isEmpty(rewritten.right)) {
+      return nullptr;
+    }
+    const NodeCP remaining = leftIsEmpty ? rewritten.right : rewritten.left;
+    if (Join::isKnownEmpty(prepared.joinType, leftIsEmpty, !leftIsEmpty)) {
+      return nullptr;
+    }
+
+    const auto expressions = builder().paddedExpressions(
+        remaining->outputColumns(),
+        pruned.sourceColumns,
+        /*falsePadding=*/Join::projectsMark(prepared.joinType));
+    ExprFactory::ExprSubstitution projectionRewrites;
+    for (size_t i = 0; i < pruned.outputColumns.size(); ++i) {
+      if (pruned.outputColumns[i] != expressions[i]) {
+        projectionRewrites.emplace(pruned.outputColumns[i], expressions[i]);
+      }
+    }
+    mergeRewrites(rewritten.outputRewrites, projectionRewrites);
+    pruned.above =
+        applyRewrites(exprs_, pruned.above, rewritten.outputRewrites);
+    return remaining;
+  }
+
+  // Builds the rewritten join after both inputs and its boundary are final.
+  NodeCP buildJoin(
+      const Join* node,
+      const PreparedJoin& prepared,
+      RewrittenJoinInputs& rewritten,
+      PrunedJoin& pruned) {
+    // A cross join's filter is evaluated per pair of rows. Precompute the
+    // parts that read one side before distribution is chosen, so the computed
+    // value is what gets broadcast.
+    if (rewritten.leftKeys.empty()) {
+      precomputeCrossJoinFilter(
+          rewritten.left,
+          rewritten.right,
+          rewritten.filter,
+          pruned.sourceColumns);
+    }
+
+    return (rewritten.left == node->left() &&
+            rewritten.right == node->right() &&
+            rewritten.filter == node->filter() &&
+            prepared.joinType == node->joinType() &&
+            rewritten.leftKeys == node->leftKeys() &&
+            rewritten.rightKeys == node->rightKeys() &&
+            pruned.outputColumns == node->outputColumns() &&
+            pruned.sourceColumns == node->sourceColumns())
+        ? static_cast<NodeCP>(node)
+        : builder().make<Join>(
+              {rewritten.left,
+               rewritten.right,
+               prepared.joinType,
+               std::move(rewritten.leftKeys),
+               std::move(rewritten.rightKeys),
+               std::move(rewritten.filter),
+               prepared.fusedMark != nullptr ? prepared.fusedNullAware
+                                             : node->nullAware(),
+               node->nullAsValue(),
+               std::move(pruned.outputColumns),
+               std::move(pruned.sourceColumns)});
+  }
+
+  // Restores predicates above the replacement and publishes its visible
+  // output rewrites to the parent.
+  NodeCP finishJoin(
+      NodeCP replacement,
+      RewrittenJoinInputs& rewritten,
+      PrunedJoin& pruned,
+      PushdownContext& context) {
+    NodeCP result = maybeWrapFilter(replacement, std::move(pruned.above));
+    retainVisibleRewrites(
+        exprs_, rewritten.outputRewrites, result->outputColumns());
+    context.outputRewrites = std::move(rewritten.outputRewrites);
+    return result;
+  }
+
   // Join: demote outer to inner when possible, then route each pending
   // conjunct to one of: left input, right input, join filter, or
   // stay-above. The join's own filter conjuncts move according to the join
@@ -2146,61 +2419,26 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       return rewrite(node->left(), context);
     }
 
-    PlanObjectSet leftColumns =
+    const PlanObjectSet leftColumns =
         PlanObjectSet::fromObjects(node->left()->outputColumns());
-    PlanObjectSet rightColumns =
+    const PlanObjectSet rightColumns =
         PlanObjectSet::fromObjects(node->right()->outputColumns());
 
-    // Fuse a consuming mark filter on a kLeftSemiProject into a filtering
-    // kLeftSemiFilter / kAnti, dropping the mark. kLeftSemiFilter is never
-    // null-aware; kAnti carries the node's flag (true for NOT IN).
-    ColumnCP fusedMark{nullptr};
-    bool fusedNullAware{false};
-    velox::core::JoinType newKind;
-    ExprFactory::ExprSubstitution demotionRewrites;
-    if (auto fusion =
-            fuseMarkFilter(node, context.pending, context.requiredAbove)) {
-      newKind = fusion->joinType;
-      fusedMark = node->markColumn();
-      fusedNullAware =
-          newKind == velox::core::JoinType::kAnti && node->nullAware();
-      ExprVector remaining;
-      remaining.reserve(context.pending.size() - 1);
-      for (ExprCP conjunct : context.pending) {
-        if (conjunct != fusion->conjunct) {
-          remaining.push_back(conjunct);
-        }
-      }
-      context.pending = std::move(remaining);
-    } else {
-      const auto sourceRewrites = joinOutputSources(node);
-      newKind = demoteOuterToInner(
-          node->joinType(),
-          applyRewrites(exprs_, context.pending, sourceRewrites),
-          rewriteColumnSet(exprs_, context.nonNullColumns, sourceRewrites),
-          leftColumns,
-          rightColumns);
-      demotionRewrites =
-          demotedJoinOutputs(node, newKind, leftColumns, rightColumns);
-      if (!demotionRewrites.empty()) {
-        context.pending =
-            applyRewrites(exprs_, context.pending, demotionRewrites);
-      }
-    }
+    auto prepared = prepareJoin(node, context, leftColumns, rightColumns);
 
     ExprVector leftPending;
     ExprVector rightPending;
 
     propagateAcrossJoin(
         node,
-        newKind,
+        prepared.joinType,
         leftColumns,
         rightColumns,
         context.pending,
         leftPending,
         rightPending);
 
-    if (newKind == velox::core::JoinType::kInner) {
+    if (prepared.joinType == velox::core::JoinType::kInner) {
       if (NodeCP replacement = rewriteConstantInputJoin(
               node,
               leftColumns,
@@ -2220,184 +2458,22 @@ class Pushdown : public NodeRewriter<PushdownContext> {
 
     auto routed = routeJoinPredicates(
         node,
-        newKind,
+        prepared.joinType,
         leftColumns,
         rightColumns,
         context.pending,
         std::move(leftPending),
         std::move(rightPending));
     context.pending.clear();
-    leftPending = std::move(routed.leftInputPredicates);
-    rightPending = std::move(routed.rightInputPredicates);
-    ExprVector newLeftKeys = std::move(routed.leftKeys);
-    ExprVector newRightKeys = std::move(routed.rightKeys);
-    ExprVector newFilter = std::move(routed.joinPredicates);
-    ExprVector above = std::move(routed.aboveJoinPredicates);
-
-    // The join's own output is what consumers above demand plus columns
-    // read by a Filter fused above it; keys and filter columns are
-    // demanded of the children via `sideRequired`.
-    PlanObjectSet outputsKept = context.requiredAbove;
-    outputsKept.unionColumns(above);
-    ColumnVector newOutputColumns;
-    ColumnVector newSourceColumns;
-    newOutputColumns.reserve(node->outputColumns().size());
-    newSourceColumns.reserve(node->sourceColumns().size());
-    for (size_t i = 0; i < node->outputColumns().size(); ++i) {
-      ColumnCP column = node->outputColumns()[i];
-      // Drop the fused mark: its only consumer was the conjunct that just
-      // became the filtering join's semantics.
-      if (column != fusedMark && outputsKept.contains(column)) {
-        newOutputColumns.push_back(
-            replacementColumn(exprs_, column, demotionRewrites));
-        newSourceColumns.push_back(node->sourceColumns()[i]);
-      }
+    auto pruned = pruneJoin(node, context, prepared, routed);
+    auto rewritten =
+        rewriteJoinChildren(node, context, prepared, std::move(routed), pruned);
+    repairJoinBoundary(rewritten, pruned);
+    NodeCP replacement = eliminateEmptyJoinInput(prepared, rewritten, pruned);
+    if (replacement == nullptr) {
+      replacement = buildJoin(node, prepared, rewritten, pruned);
     }
-
-    PlanObjectSet sideRequired = PlanObjectSet::fromObjects(newSourceColumns);
-    sideRequired.unionColumns(newLeftKeys);
-    sideRequired.unionColumns(newRightKeys);
-    sideRequired.unionColumns(newFilter);
-
-    // For inner joins, expose columns proven non-NULL by this
-    // join's equi-keys as hints to descendants so a deeper outer
-    // can be demoted. A key side contributes its columns only when
-    // its expression has default null behavior — otherwise null
-    // values can leak through it.
-    PlanObjectSet childNonNullColumns =
-        rewriteColumnSet(exprs_, context.nonNullColumns, demotionRewrites);
-    if (newKind == velox::core::JoinType::kInner) {
-      auto addIfDefaultNull = [&](ExprCP key) {
-        if (!hasNonDefaultNullBehavior(key)) {
-          childNonNullColumns.unionColumns(key);
-        }
-      };
-      for (size_t i = 0; i < newLeftKeys.size(); ++i) {
-        addIfDefaultNull(newLeftKeys[i]);
-        addIfDefaultNull(newRightKeys[i]);
-      }
-    }
-
-    // Demand from above each side excludes the conjuncts pushed into that
-    // side's `pending`; it is exactly `sideRequired` (this join's kept
-    // outputs, keys, and filter columns).
-    PushdownContext leftContext = makeJoinInputContext(
-        std::move(leftPending), sideRequired, childNonNullColumns);
-    PushdownContext rightContext = makeJoinInputContext(
-        std::move(rightPending), sideRequired, std::move(childNonNullColumns));
-    allowJoinInputDeduplication(
-        newKind,
-        newLeftKeys,
-        newRightKeys,
-        newFilter,
-        leftContext,
-        rightContext);
-
-    auto rewritten = rewriteJoinInputs(
-        node,
-        leftContext,
-        rightContext,
-        std::move(newLeftKeys),
-        std::move(newRightKeys),
-        std::move(newFilter));
-    simplifyJoinKeys(node, newKind, demotionRewrites, rewritten);
-    NodeCP newLeft = rewritten.left;
-    NodeCP newRight = rewritten.right;
-    newLeftKeys = std::move(rewritten.leftKeys);
-    newRightKeys = std::move(rewritten.rightKeys);
-    newFilter = std::move(rewritten.filter);
-    auto outputRewrites = std::move(demotionRewrites);
-    mergeRewrites(outputRewrites, rewritten.outputRewrites);
-    if (!outputRewrites.empty()) {
-      newFilter = applyRewrites(exprs_, newFilter, outputRewrites);
-      above = applyRewrites(exprs_, above, outputRewrites);
-      ColumnVector rewrittenOutputs;
-      ColumnVector rewrittenSources;
-      ExprFactory::ExprSubstitution boundaryRewrites;
-      PlanObjectSet addedOutputs;
-      for (size_t i = 0; i < newOutputColumns.size(); ++i) {
-        const ColumnCP previousOutput = newOutputColumns[i];
-        const ColumnCP previousSource = newSourceColumns[i];
-        ColumnCP output =
-            replacementColumn(exprs_, newOutputColumns[i], outputRewrites);
-        ColumnCP source =
-            replacementColumn(exprs_, newSourceColumns[i], outputRewrites);
-        if (previousOutput != previousSource &&
-            (source != previousSource ||
-             previousOutput->outputName() != source->outputName())) {
-          output = Column::createForNullExtendedValue(source);
-          boundaryRewrites.emplace(previousOutput, output);
-        }
-        if (addedOutputs.contains(output)) {
-          continue;
-        }
-        addedOutputs.add(output);
-        rewrittenOutputs.push_back(output);
-        rewrittenSources.push_back(source);
-      }
-      mergeRewrites(outputRewrites, boundaryRewrites);
-      newFilter = applyRewrites(exprs_, newFilter, boundaryRewrites);
-      above = applyRewrites(exprs_, above, boundaryRewrites);
-      newOutputColumns = std::move(rewrittenOutputs);
-      newSourceColumns = std::move(rewrittenSources);
-    }
-    const auto isEmpty = [](NodeCP input) {
-      return input->is(NodeType::kValues) &&
-          input->as<Values>()->cardinality() == 0;
-    };
-    const bool leftIsEmpty = isEmpty(newLeft);
-    if (leftIsEmpty != isEmpty(newRight)) {
-      NodeCP remaining = leftIsEmpty ? newRight : newLeft;
-      if (!Join::isKnownEmpty(newKind, leftIsEmpty, !leftIsEmpty)) {
-        const auto expressions = builder().paddedExpressions(
-            remaining->outputColumns(),
-            newSourceColumns,
-            /*falsePadding=*/Join::projectsMark(newKind));
-        ExprFactory::ExprSubstitution projectionRewrites;
-        for (size_t i = 0; i < newOutputColumns.size(); ++i) {
-          if (newOutputColumns[i] != expressions[i]) {
-            projectionRewrites.emplace(newOutputColumns[i], expressions[i]);
-          }
-        }
-        mergeRewrites(outputRewrites, projectionRewrites);
-        above = applyRewrites(exprs_, above, outputRewrites);
-        NodeCP result = maybeWrapFilter(remaining, std::move(above));
-        retainVisibleRewrites(exprs_, outputRewrites, result->outputColumns());
-        context.outputRewrites = std::move(outputRewrites);
-        return result;
-      }
-    }
-
-    // A cross join's filter is evaluated per pair of rows, so the parts of it
-    // reading one side move into that side (see `JoinFilterRewriter`). Running
-    // here, before distribution is chosen, the moved value is what gets
-    // broadcast rather than the columns it reads.
-    if (newLeftKeys.empty()) {
-      precomputeCrossJoinFilter(newLeft, newRight, newFilter, newSourceColumns);
-    }
-
-    NodeCP newJoin =
-        (newLeft == node->left() && newRight == node->right() &&
-         newFilter == node->filter() && newKind == node->joinType() &&
-         newLeftKeys == node->leftKeys() && newRightKeys == node->rightKeys() &&
-         newOutputColumns == node->outputColumns() &&
-         newSourceColumns == node->sourceColumns())
-        ? static_cast<NodeCP>(node)
-        : builder().make<Join>(
-              {newLeft,
-               newRight,
-               newKind,
-               std::move(newLeftKeys),
-               std::move(newRightKeys),
-               std::move(newFilter),
-               fusedMark != nullptr ? fusedNullAware : node->nullAware(),
-               node->nullAsValue(),
-               std::move(newOutputColumns),
-               std::move(newSourceColumns)});
-    NodeCP result = maybeWrapFilter(newJoin, std::move(above));
-    retainVisibleRewrites(exprs_, outputRewrites, result->outputColumns());
-    context.outputRewrites = std::move(outputRewrites);
-    return result;
+    return finishJoin(replacement, rewritten, pruned, context);
   }
 
   // Scan: pending conjuncts reach the table, and the connector decides which
