@@ -992,15 +992,100 @@ TEST_F(FiltersTest, notSelectivity) {
       "nation",
       std::vector<IntegerFilterTestCase>{
           // NOT(P(= 10)) = 1 - 1/25.
-          {.condition = "NOT(n_nationkey = 10)",
-           .expectedSelectivity = 1.0 - 1.0 / 25},
+          {
+              .condition = "NOT(n_nationkey = 10)",
+              .pushedDownFilter =
+                  std::make_unique<velox::common::NegatedBigintRange>(
+                      10, 10, /*nullAllowed=*/false),
+              .expectedSelectivity = 1.0 - 1.0 / 25,
+          },
           // NOT(P(= 100)) = 1 - likelyZero (100 is out of range).
-          {.condition = "NOT(n_nationkey = 100)",
-           .expectedSelectivity = 1.0 - Selectivity::kLikelyZero},
+          {
+              .condition = "NOT(n_nationkey = 100)",
+              .pushedDownFilter =
+                  std::make_unique<velox::common::NegatedBigintRange>(
+                      100, 100, /*nullAllowed=*/false),
+              .expectedSelectivity = 1.0 - Selectivity::kLikelyZero,
+          },
           // NOT IN with 3 in-range values (2, 7, 8) and 1 out-of-range (100).
-          {.condition = "n_nationkey NOT IN (2, 7, 8, 100)",
-           .expectedSelectivity = 1.0 - 3.0 / 25},
+          {
+              .condition = "n_nationkey NOT IN (2, 7, 8, 100)",
+              .pushedDownFilter = velox::common::createNegatedBigintValues(
+                  {2, 7, 8, 100}, /*nullAllowed=*/false),
+              .expectedSelectivity = 1.0 - 3.0 / 25,
+          },
+          // The same 3 in-range values with a far out-of-range one, which the
+          // pushed-down filter stores in a hash table rather than a bitmask.
+          {
+              .condition = "n_nationkey NOT IN (2, 7, 8, 1000000)",
+              .pushedDownFilter = velox::common::createNegatedBigintValues(
+                  {2, 7, 8, 1'000'000}, /*nullAllowed=*/false),
+              .expectedSelectivity = 1.0 - 3.0 / 25,
+          },
       });
+
+  // n_name is VARCHAR with cardinality=25. NOT IN with 2 values.
+  verifyFilterTestCases(
+      "nation",
+      std::vector<StringFilterTestCase>{
+          {
+              .condition = "n_name NOT IN ('FRANCE', 'EGYPT')",
+              .pushedDownFilter =
+                  std::make_unique<velox::common::NegatedBytesValues>(
+                      std::vector<std::string>{"FRANCE", "EGYPT"},
+                      /*nullAllowed=*/false),
+              .expectedSelectivity = 1.0 - 2.0 / 25,
+          },
+      });
+}
+
+// A negated string range keeps the non-null rows its positive range rejects.
+TEST_F(FiltersTest, negatedBytesRange) {
+  withContext([&]() {
+    constexpr double kNullFraction = 0.1;
+    const auto value = makeValue<std::string>(100, "a", "z", kNullFraction);
+    const velox::common::BytesRange positive{
+        "c", false, false, "m", false, false, /*nullAllowed=*/false};
+    const velox::common::NegatedBytesRange negated{
+        "c", false, false, "m", false, false, /*nullAllowed=*/false};
+
+    double positiveSelectivity{0};
+    verifyPushedDownFilter(
+        value, positive, [&](double selectivity, const Value&) {
+          positiveSelectivity = selectivity;
+        });
+    ASSERT_GT(positiveSelectivity, 0.0);
+    verifyPushedDownFilter(
+        value, negated, [&](double selectivity, const Value&) {
+          EXPECT_NEAR(
+              selectivity,
+              1.0 - kNullFraction - positiveSelectivity,
+              kTolerance);
+        });
+  });
+}
+
+// A negated filter that passes nulls keeps every null row plus the non-null
+// rows outside the rejected value, and the refined statistics report the null
+// share of the rows that pass.
+TEST_F(FiltersTest, negatedFilterPassingNulls) {
+  withContext([&]() {
+    constexpr double kNullFraction = 0.2;
+    const auto value = makeValue<int64_t>(25, 0, 24, kNullFraction);
+    const velox::common::NegatedBigintRange filter{
+        10, 10, /*nullAllowed=*/true};
+
+    const double expected =
+        (1.0 - kNullFraction) * (1.0 - 1.0 / 25) + kNullFraction;
+    verifyPushedDownFilter(
+        value, filter, [&](double selectivity, const Value& refined) {
+          EXPECT_NEAR(selectivity, expected, kTolerance);
+          EXPECT_NEAR(
+              refined.nullFraction.value(),
+              kNullFraction / expected,
+              kTolerance);
+        });
+  });
 }
 
 TEST_F(FiltersTest, unsupportedExpressions) {

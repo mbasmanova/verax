@@ -52,7 +52,7 @@ struct EffectiveBounds;
 /// Estimates a single-column velox common::Filter over a column with statistics
 /// 'value'. Returns selectivity in [0, 1] and writes the refined column
 /// statistics (for rows passing the filter) to 'refined'. Filter kinds outside
-/// the modeled set (negated, multi-range, bloom, hugeint/timestamp) return a
+/// the modeled set (multi-range, bloom, hugeint, timestamp, bool) return a
 /// default selectivity. This is the common::Filter counterpart of the templated
 /// Expr engine and shares its range/IN/refinement math via the detail::
 /// primitives.
