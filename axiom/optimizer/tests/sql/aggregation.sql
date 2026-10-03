@@ -157,3 +157,14 @@ FROM t
 ----
 -- sum and count do not depend on input order, so the ORDER BY has no effect.
 SELECT sum(b ORDER BY a), count(c ORDER BY b) FROM t
+----
+-- A filtered grouping key remains fixed above an aggregation.
+SELECT CASE WHEN a = 1 THEN 10 ELSE 20 END FROM t WHERE a = 1 GROUP BY a
+----
+-- A filtered key remains fixed when every grouping set contains it.
+SELECT CASE WHEN a = 1 THEN 10 ELSE 20 END
+FROM t WHERE a = 1 GROUP BY GROUPING SETS ((a, b), (a))
+----
+-- A grouping set that omits the filtered key emits NULL for that key.
+SELECT CASE WHEN a = 1 THEN 10 ELSE 20 END
+FROM t WHERE a = 1 GROUP BY GROUPING SETS ((a), ())

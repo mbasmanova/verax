@@ -326,7 +326,7 @@ TEST_P(PlanTest, specialFormConstantFold) {
     }
 
     auto plan = toSingleNodePlan(logicalPlan);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V2(plan, matcher);
   }
 
   std::vector<TestCase> projectTestCases = {
@@ -346,8 +346,14 @@ TEST_P(PlanTest, specialFormConstantFold) {
       {"(2 + 3) * 4", "20"},
       {"if(a > b, 1 + 2, c)", "if(a > b, 3, c)"},
       {"if(a > b, 1 + 2, 3 + 4)", "if(a > b, 3, 7)"},
+      {"if(true, a, b + 1)", "a"},
+      {"if(true, a, 1 / 0)", "a"},
+      {"if(false, a + 1, b)", "b"},
+      {"if(false, 1 / 0, b)", "b"},
+      {"if(cast(null as boolean), a + 1, b)", "b"},
       {"case when a > 0 then 5 + 5 else b + 1 end",
        "case when a > 0 then 10 else b + 1 end"},
+      {"case when false then a + 1 when true then b else c + 1 end", "b"},
       {"try(10 / 1)", "10"},
       {"try_cast(1 as BIGINT)", "1"},
       // A same-type cast over a column is dropped, for CAST and TRY_CAST alike.
@@ -369,8 +375,68 @@ TEST_P(PlanTest, specialFormConstantFold) {
         matchScan("numbers").project({expected.value(), "a", "b"}).build();
 
     auto plan = toSingleNodePlan(logicalPlan);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V2(plan, matcher);
   }
+}
+
+TEST_P(PlanTest, substituteFilterConstants) {
+  testConnector_->addTable(
+      "items",
+      ROW({"id", "field_name", "version_name", "first_value", "values_arr"},
+          {BIGINT(), VARCHAR(), VARCHAR(), VARCHAR(), ARRAY(BIGINT())}));
+
+  const auto logicalPlan = parseSelect(
+      "SELECT id, field_name, version_name, "
+      "CASE WHEN first_value = '' THEN null "
+      "WHEN version_name = 'other' AND cardinality(values_arr) > 1 THEN null "
+      "WHEN field_name = 'Brand' THEN null ELSE first_value END AS value "
+      "FROM items WHERE field_name = 'Gender' "
+      "AND version_name IN ('gender')",
+      kTestConnectorId);
+
+  AXIOM_ASSERT_PLAN_V2(
+      toSingleNodePlan(logicalPlan),
+      matchScan(
+          "items",
+          ROW({"id", "first_value", "field_name", "version_name"},
+              {BIGINT(), VARCHAR(), VARCHAR(), VARCHAR()}))
+          .filter("field_name = 'Gender' AND version_name = 'gender'")
+          .project({
+              "id",
+              "'Gender'",
+              "'gender'",
+              "case when first_value = '' then null else first_value end",
+          })
+          .build());
+}
+
+TEST_P(PlanTest, substitutePushedFilterConstants) {
+  testConnector_->addTable(
+      "projected_items",
+      ROW({"id", "field_name", "values_arr"},
+          {BIGINT(), VARCHAR(), ARRAY(BIGINT())}));
+
+  const auto logicalPlan = parseSelect(
+      "SELECT value FROM ("
+      "SELECT field_name AS name, "
+      "CASE WHEN field_name = 'Brand' THEN cardinality(values_arr) "
+      "ELSE 0 END AS value FROM projected_items "
+      "UNION ALL "
+      "SELECT field_name, "
+      "CASE WHEN field_name = 'Brand' THEN cardinality(values_arr) "
+      "ELSE 0 END FROM projected_items) WHERE name = 'Gender'",
+      kTestConnectorId);
+
+  const auto matchLeg = [&]() {
+    return matchScan("projected_items", ROW("field_name", VARCHAR()))
+        .aliases({"field_name"})
+        .filter("field_name = 'Gender'")
+        .project({"0"});
+  };
+
+  AXIOM_ASSERT_PLAN_V2(
+      toSingleNodePlan(logicalPlan),
+      matchLeg().localPartition(matchLeg()).build());
 }
 
 // Verifies that func(..., null, ...) is folded to null for

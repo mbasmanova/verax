@@ -284,6 +284,13 @@ ExprCP ExprSimplifier::simplify(ExprCP expr) {
   const ExprCP original = expr;
   if (expr->is(PlanType::kCallExpr)) {
     const auto* call = expr->as<Call>();
+    if (call->name() == SpecialFormCallNames::kIf ||
+        call->name() == SpecialFormCallNames::kSwitch) {
+      expr = simplifyConditional(call);
+      expr = tryFoldConjunct(tryFoldConstant(expr));
+      simplified_.emplace(original, expr);
+      return expr;
+    }
     ExprVector args;
     args.reserve(call->args().size());
     bool changed = false;
@@ -305,6 +312,41 @@ ExprCP ExprSimplifier::simplify(ExprCP expr) {
   expr = tryFoldConjunct(tryFoldConstant(expr));
   simplified_.emplace(original, expr);
   return expr;
+}
+
+ExprCP ExprSimplifier::simplifyConditional(const Call* call) {
+  ExprVector args;
+  args.reserve(call->args().size());
+  const size_t numConditionalArgs = call->args().size() / 2 * 2;
+  ExprCP elseResult{nullptr};
+  for (size_t i = 0; i < numConditionalArgs; i += 2) {
+    ExprCP condition = simplify(call->args()[i]);
+    if (condition->is(PlanType::kLiteralExpr)) {
+      const auto& value = condition->as<Literal>()->literal();
+      VELOX_CHECK_EQ(value.kind(), velox::TypeKind::BOOLEAN);
+      if (value.isNull() || !value.value<bool>()) {
+        continue;
+      }
+
+      elseResult = simplify(call->args()[i + 1]);
+      break;
+    }
+
+    args.push_back(condition);
+    args.push_back(simplify(call->args()[i + 1]));
+  }
+
+  if (elseResult == nullptr) {
+    elseResult = call->args().size() % 2 == 1
+        ? simplify(call->args().back())
+        : builder_.makeNull(call->value().type);
+  }
+
+  if (args.empty()) {
+    return elseResult;
+  }
+  args.push_back(elseResult);
+  return ExprFactory(builder_).rebuildCall(call, std::move(args));
 }
 
 bool ExprSimplifier::isKnownNonNull(

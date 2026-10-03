@@ -249,3 +249,21 @@ SELECT i.a, i.b, t.c FROM (
   INTERSECT ALL
   SELECT a, b FROM t WHERE b <= 50
 ) i JOIN t ON t.b = i.b WHERE i.a = 1
+----
+-- Equal constants from every UNION ALL leg remain fixed above the union.
+SELECT CASE WHEN x = 1 THEN 10 ELSE y END FROM (
+  SELECT a AS x, b AS y FROM t WHERE a = 1
+  UNION ALL
+  SELECT a, b FROM t WHERE a = 1)
+----
+-- A constant from either INTERSECT input holds for every output row.
+SELECT CASE WHEN x = 1 THEN 10 ELSE y END FROM (
+  SELECT a AS x, b AS y FROM t
+  INTERSECT
+  SELECT a, b FROM t WHERE a = 1)
+----
+-- EXCEPT output is a subset of its left input.
+SELECT CASE WHEN x = 1 THEN 10 ELSE y END FROM (
+  SELECT a AS x, b AS y FROM t WHERE a = 1
+  EXCEPT
+  SELECT a, b FROM t WHERE b > 100)

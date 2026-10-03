@@ -92,7 +92,61 @@ TEST_P(AggregationTest, constantGroupingKeys) {
         matchScan("cg_t")
             .project({R"('foo' as x)"})
             .singleAggregation({"x"}, {"count(*) as c"})
-            .project({"x", R"('bar' as y)", "c"})
+            .project({R"('foo' as x)", R"('bar' as y)", "c"})
+            .build());
+  }
+
+  {
+    SCOPED_TRACE("Filtered grouping key referenced above aggregation");
+    const auto logicalPlan = parseSelect(
+        "SELECT CASE WHEN a = 1 THEN 10 ELSE 20 END AS x "
+        "FROM cg_t WHERE a = 1 GROUP BY a",
+        kTestConnectorId);
+
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(logicalPlan),
+        matchScan("cg_t", ROW("a", BIGINT()))
+            .filter("a = 1")
+            .project({"1 as a"})
+            .singleAggregation({"a"}, {})
+            .project({"10"})
+            .build());
+  }
+
+  {
+    SCOPED_TRACE("Every grouping set contains filtered key");
+    const auto logicalPlan = parseSelect(
+        "SELECT CASE WHEN a = 1 THEN 10 ELSE 20 END AS x "
+        "FROM cg_t WHERE a = 1 "
+        "GROUP BY GROUPING SETS ((a, b), (a))",
+        kTestConnectorId);
+
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(logicalPlan),
+        matchScan("cg_t")
+            .filter("a = 1")
+            .project({"b", "1 as fixed_a"})
+            .groupId({{"fixed_a", "b"}, {"fixed_a"}}, {}, "group_id")
+            .singleAggregation({"fixed_a", "b", "group_id"}, {})
+            .project({"10"})
+            .build());
+  }
+
+  {
+    SCOPED_TRACE("Grouping set omits filtered key");
+    const auto logicalPlan = parseSelect(
+        "SELECT CASE WHEN a = 1 THEN 10 ELSE 20 END AS x "
+        "FROM cg_t WHERE a = 1 GROUP BY GROUPING SETS ((a), ())",
+        kTestConnectorId);
+
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(logicalPlan),
+        matchScan("cg_t", ROW("a", BIGINT()))
+            .filter("a = 1")
+            .project({"1 as fixed_a"})
+            .groupId({{"fixed_a"}, {}}, {}, "group_id")
+            .singleAggregation({"fixed_a", "group_id"}, {})
+            .project({"if(fixed_a = 1, 10, 20)"})
             .build());
   }
 }

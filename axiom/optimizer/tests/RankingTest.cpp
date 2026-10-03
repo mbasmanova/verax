@@ -560,7 +560,10 @@ TEST_P(RankingTest, filterOnRowNumberEquals1) {
       ") WHERE rn = 1";
 
   auto plan = toSingleNodePlan(sql);
-  auto matcher = matchScan("nation").topNRowNumber({}, {"n_name"}, 1).build();
+  auto matcher = matchScan("nation")
+                     .topNRowNumber({}, {"n_name"}, 1)
+                     .projectIf(useV2_, {"n_name", "1"})
+                     .build();
   AXIOM_ASSERT_PLAN(plan, matcher);
 
   auto distributedPlan = toDistributedPlan(sql);
@@ -568,6 +571,7 @@ TEST_P(RankingTest, filterOnRowNumberEquals1) {
                                 .gather()
                                 .localGather()
                                 .topNRowNumber({}, {"n_name"}, 1)
+                                .projectIf(useV2_, {"n_name", "1"})
                                 .build();
   AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan, distributedMatcher);
 }
@@ -785,6 +789,7 @@ TEST_P(RankingTest, partitionKeyFilterPushdown) {
           .filter("n_regionkey = 2")
           .window(
               {"row_number() OVER (PARTITION BY n_regionkey ORDER BY n_name)"})
+          .projectIf(useV2_, {"n_name", "2", "rn"})
           .build();
   AXIOM_ASSERT_PLAN(plan, matcher);
 
@@ -796,6 +801,7 @@ TEST_P(RankingTest, partitionKeyFilterPushdown) {
           .localPartition({"n_regionkey"})
           .window(
               {"row_number() OVER (PARTITION BY n_regionkey ORDER BY n_name)"})
+          .projectIf(useV2_, {"n_name", "2", "rn"})
           .gather()
           .build();
   AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan, distributedMatcher);
@@ -816,6 +822,7 @@ TEST_P(RankingTest, nonPartitionKeyFilterStaysAbove) {
           .window(
               {"row_number() OVER (PARTITION BY n_regionkey ORDER BY n_name)"})
           .filter("n_name = 'FRANCE'")
+          .projectIf(useV2_, {"'FRANCE'", "n_regionkey", "rn"})
           .build();
   AXIOM_ASSERT_PLAN(plan, matcher);
 
@@ -827,6 +834,7 @@ TEST_P(RankingTest, nonPartitionKeyFilterStaysAbove) {
           .window(
               {"row_number() OVER (PARTITION BY n_regionkey ORDER BY n_name)"})
           .filter("n_name = 'FRANCE'")
+          .projectIf(useV2_, {"'FRANCE'", "n_regionkey", "rn"})
           .gather()
           .build();
   AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan, distributedMatcher);
@@ -859,6 +867,7 @@ TEST_P(RankingTest, partitionKeyFilterWithMultipleWindows) {
           .window(
               {"row_number() OVER (PARTITION BY n_regionkey ORDER BY n_name)"})
           .window({"count() OVER (PARTITION BY n_regionkey)"})
+          .projectIf(useV2_, {"n_name", "2", "rn", "cnt"})
           .build();
   AXIOM_ASSERT_PLAN(plan, matcher);
 
@@ -872,6 +881,7 @@ TEST_P(RankingTest, partitionKeyFilterWithMultipleWindows) {
               {"row_number() OVER (PARTITION BY n_regionkey ORDER BY n_name)"})
           .localPartition({"n_regionkey"})
           .window({"count() OVER (PARTITION BY n_regionkey)"})
+          .projectIf(useV2_, {"n_name", "2", "rn", "cnt"})
           .gather()
           .build();
   AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan, distributedMatcher);
@@ -902,6 +912,7 @@ TEST_P(RankingTest, partitionKeyFilterPartialMatch) {
               {"row_number() OVER (PARTITION BY n_regionkey ORDER BY n_name)"})
           .window({"count() OVER ()"})
           .filter("n_regionkey = 2")
+          .projectIf(useV2_, {"n_name", "2", "rn", "cnt"})
           .build();
   AXIOM_ASSERT_PLAN(plan, matcher);
 
@@ -916,6 +927,7 @@ TEST_P(RankingTest, partitionKeyFilterPartialMatch) {
           .localGather()
           .window({"count() OVER ()"})
           .filter("n_regionkey = 2")
+          .projectIf(useV2_, {"n_name", "2", "rn", "cnt"})
           .build();
   AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan, distributedMatcher);
 }
@@ -957,7 +969,7 @@ TEST_P(RankingTest, projectOnlyRankColumn) {
   auto plan = toSingleNodePlan(sql);
   auto matcher = matchScan("nation")
                      .topNRowNumber({"n_regionkey"}, {"n_name"}, 1)
-                     .project({"rn"})
+                     .project({useV2_ ? "1" : "rn"})
                      .build();
   AXIOM_ASSERT_PLAN(plan, matcher);
 }

@@ -2032,6 +2032,11 @@ class GroupIdMatcher : public PlanMatcherImpl<GroupIdNode> {
     for (const auto& info : plan.groupingKeyInfos()) {
       if (!aggInputNames.contains(info.input->name())) {
         newSymbols[info.input->name()] = info.output;
+        for (const auto& [alias, input] : symbols) {
+          if (input == info.input->name()) {
+            newSymbols[alias] = info.output;
+          }
+        }
       }
     }
 
@@ -2063,6 +2068,9 @@ class GroupIdMatcher : public PlanMatcherImpl<GroupIdNode> {
         for (auto j = 0; j < expectedSet.size(); ++j) {
           // Resolve input column name → output key name via groupingKeyInfos.
           auto expected = expectedSet[j];
+          if (const auto it = symbols.find(expected); it != symbols.end()) {
+            expected = it->second;
+          }
           for (const auto& info : plan.groupingKeyInfos()) {
             if (info.input->name() == expected) {
               expected = info.output;

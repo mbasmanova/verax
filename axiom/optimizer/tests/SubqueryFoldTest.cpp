@@ -65,8 +65,12 @@ TEST_P(SubqueryFoldTest, foldable) {
     return parseSelect(sql, kTestConnectorId);
   };
 
-  auto matchFilter = [&](const std::string& filter) {
-    return matchScan("t").filter(filter).build();
+  auto matchFilter = [&](const std::string& filter,
+                         const std::vector<std::string>& projections = {}) {
+    return matchScan("t")
+        .filter(filter)
+        .projectIf(useV2_ && !projections.empty(), projections)
+        .build();
   };
 
   {
@@ -74,7 +78,8 @@ TEST_P(SubqueryFoldTest, foldable) {
         parseSql("SELECT * FROM t WHERE ds = (SELECT max(ds) FROM t)");
 
     auto plan = toSingleNodePlan(logicalPlan);
-    AXIOM_ASSERT_PLAN(plan, matchFilter("ds = '2025-11-03'"));
+    AXIOM_ASSERT_PLAN(
+        plan, matchFilter("ds = '2025-11-03'", {"a", "'2025-11-03'"}));
   }
 
   {
@@ -82,7 +87,8 @@ TEST_P(SubqueryFoldTest, foldable) {
         parseSql("SELECT * FROM t WHERE ds = (SELECT min(ds) FROM t)");
 
     auto plan = toSingleNodePlan(logicalPlan);
-    AXIOM_ASSERT_PLAN(plan, matchFilter("ds = '2025-10-29'"));
+    AXIOM_ASSERT_PLAN(
+        plan, matchFilter("ds = '2025-10-29'", {"a", "'2025-10-29'"}));
   }
 
   {
@@ -90,7 +96,8 @@ TEST_P(SubqueryFoldTest, foldable) {
         "SELECT * FROM t WHERE ds = (SELECT max(ds) FROM t WHERE ds < '2025-11-02')");
 
     auto plan = toSingleNodePlan(logicalPlan);
-    AXIOM_ASSERT_PLAN(plan, matchFilter("ds = '2025-11-01'"));
+    AXIOM_ASSERT_PLAN(
+        plan, matchFilter("ds = '2025-11-01'", {"a", "'2025-11-01'"}));
   }
 
   {
@@ -98,20 +105,19 @@ TEST_P(SubqueryFoldTest, foldable) {
         "SELECT * FROM t WHERE ds = (SELECT max(ds) FROM t WHERE ds like '%-10-%')");
 
     auto plan = toSingleNodePlan(logicalPlan);
-    AXIOM_ASSERT_PLAN(plan, matchFilter("ds = '2025-10-31'"));
+    AXIOM_ASSERT_PLAN(
+        plan, matchFilter("ds = '2025-10-31'", {"a", "'2025-10-31'"}));
   }
 
   {
     auto logicalPlan = parseSql(
         "SELECT * FROM t WHERE ds = (SELECT max(ds) FROM t WHERE ds < '2025-01-01')");
 
-    auto plan = toSingleNodePlan(logicalPlan);
-
     // The subquery is empty, so max(ds) folds to null and `ds = null` is always
     // null. v2 proves the predicate unsatisfiable and prunes to an empty
     // relation; v1 keeps a constant-null filter over the scan.
     auto matcher = useV2_ ? matchValues().build() : matchFilter("null");
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
   }
 
   // IN list with a foldable subquery and a literal. The subquery is
@@ -140,7 +146,7 @@ TEST_P(SubqueryFoldTest, foldable) {
     auto logicalPlan = parseSql(
         "SELECT * FROM t WHERE a = (SELECT y FROM (VALUES 1) AS v(y))");
     auto plan = toSingleNodePlan(logicalPlan);
-    AXIOM_ASSERT_PLAN_V2(plan, matchFilter("a = 1"));
+    AXIOM_ASSERT_PLAN_V2(plan, matchFilter("a = 1", {"1", "ds"}));
   }
 
   // A subquery over a multi-row VALUES cannot be a scalar and is rejected.

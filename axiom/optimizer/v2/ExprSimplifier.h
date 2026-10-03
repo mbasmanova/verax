@@ -69,6 +69,11 @@ class ExprSimplifier {
   bool simplifyFilter(ExprCP predicate, ExprVector& into);
 
  private:
+  // Simplifies IF and SWITCH in evaluation order, skipping result expressions
+  // whose literal conditions cannot select them.
+  // For example, IF(true, a, 1 / 0) simplifies to 'a'.
+  ExprCP simplifyConditional(const Call* call);
+
   // Simplifies an AND or OR call with boolean literal arguments. Returns
   // `expr` unchanged for any other call. Its arguments are already simplified.
   ExprCP tryFoldConjunct(ExprCP expr);
