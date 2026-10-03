@@ -40,10 +40,12 @@ std::shared_ptr<arrow::Buffer> toArrowIpc(
     return outputBuffer;
   }
 
-  // Flatten dictionary encoding to avoid null dictionary pointers in
-  // ArrowArray when exporting complex types like MAP<BIGINT, ARRAY<BIGINT>>
-  // from map_zip_with results.
-  const ArrowOptions options{.flattenDictionary = true};
+  // PySpark does not support Arrow's run-end encoding. Dictionary flattening
+  // avoids null dictionary pointers in complex outputs.
+  const ArrowOptions options{
+      .flattenDictionary = true,
+      .flattenConstant = true,
+  };
 
   // Get schema from the first vector (assuming all vectors have the same
   // schema)
