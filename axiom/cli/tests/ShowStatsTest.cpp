@@ -56,6 +56,9 @@ TEST_P(ShowStatsTest, tableAndQuery) {
       // avg_length: 3 for z (array); NULL for the rest.
       makeNullableFlatVector<int64_t>(
           {std::nullopt, std::nullopt, std::nullopt, 3, std::nullopt}),
+      // avg_size_in_bytes: 48 for z (array); NULL for fixed-width columns.
+      makeNullableFlatVector<int64_t>(
+          {std::nullopt, std::nullopt, std::nullopt, 48, std::nullopt}),
       // low_value.
       makeNullableFlatVector<std::string>(
           {std::nullopt, "1", "0", std::nullopt, "2"}),
@@ -80,8 +83,9 @@ TEST_P(ShowStatsTest, tableAndQuery) {
       makeNullableFlatVector<int64_t>({std::nullopt, 100, 7, std::nullopt, 75}),
       // avg_length: not tracked by the optimizer.
       makeNullConstant(TypeKind::BIGINT, 5),
-      expected->childAt(5), // low_value.
-      expected->childAt(6), // high_value.
+      expected->childAt(5), // avg_size_in_bytes.
+      expected->childAt(6), // low_value.
+      expected->childAt(7), // high_value.
   });
 
   result = run("SHOW STATS FOR (SELECT * FROM t)");
@@ -113,6 +117,9 @@ TEST_P(ShowStatsTest, queryWithFilter) {
       makeNullableFlatVector<int64_t>({std::nullopt, 50, 7, std::nullopt, 50}),
       // avg_length: not tracked by the optimizer.
       makeNullConstant(TypeKind::BIGINT, 5),
+      // avg_size_in_bytes: 48 for z (array); NULL for fixed-width columns.
+      makeNullableFlatVector<int64_t>(
+          {std::nullopt, std::nullopt, std::nullopt, 48, std::nullopt}),
       // low_value: x tightened to 51.
       makeNullableFlatVector<std::string>(
           {std::nullopt, "51", "0", std::nullopt, "2"}),

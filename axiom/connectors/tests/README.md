@@ -36,7 +36,8 @@ The Test connector is designed for three use cases:
 - `INSERT INTO`.
 - `DROP TABLE`.
 - Automatic statistics collection: per-column NDV, min/max, null percentage,
-  and max length are computed incrementally as data is added.
+  max and average length, and average size in bytes of variable-width values
+  are computed incrementally as data is added.
 - User-specified statistics: row counts and per-column stats can be set
   explicitly without adding actual data, enabling optimizer testing with
   controlled cost estimates (see [Setting Statistics Without Data](#setting-statistics-without-data)).

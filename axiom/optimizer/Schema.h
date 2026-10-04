@@ -101,6 +101,10 @@ struct Value {
   /// is unknown.
   std::optional<float> nullFraction;
 
+  /// Average size of a variable-width value per row in bytes, including nested
+  /// children. nullopt when unknown and for fixed-width types.
+  std::optional<float> avgSizeInBytes;
+
   /// True if nulls may occur. 'false' means that plans that allow no nulls may
   /// be generated.
   bool nullable{true};

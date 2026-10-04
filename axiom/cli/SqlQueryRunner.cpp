@@ -2148,11 +2148,11 @@ std::optional<To> castOpt(const std::optional<From>& value) {
   return std::nullopt;
 }
 
-// Rounds an optional cardinality estimate to an integer count, preserving
-// nullopt for an unknown cardinality.
-std::optional<int64_t> roundCardinality(std::optional<float> cardinality) {
-  if (cardinality.has_value()) {
-    return std::llround(*cardinality);
+// Rounds an optional estimate to an integer, preserving nullopt for an unknown
+// estimate.
+std::optional<int64_t> roundEstimate(std::optional<float> estimate) {
+  if (estimate.has_value()) {
+    return std::llround(*estimate);
   }
   return std::nullopt;
 }
@@ -2184,14 +2184,15 @@ std::vector<velox::RowVectorPtr> SqlQueryRunner::runShowStatsForQuery(
         [](auto& optimizer) {
           const auto stats = optimizer.estimateQueryStats();
 
-          presto::ShowStatsBuilder builder(roundCardinality(stats.cardinality));
+          presto::ShowStatsBuilder builder(roundEstimate(stats.cardinality));
           for (const auto& column : stats.columns) {
             builder.addColumn(
                 column.name,
                 *column.type,
                 castOpt<double>(column.nullFraction),
-                roundCardinality(column.distinctCount),
+                roundEstimate(column.distinctCount),
                 /*avgLength=*/std::nullopt,
+                roundEstimate(column.avgSizeInBytes),
                 column.min,
                 column.max);
           }
@@ -2204,8 +2205,7 @@ std::vector<velox::RowVectorPtr> SqlQueryRunner::runShowStatsForQuery(
         options,
         context,
         [&](const optimizer::DerivedTable& rootDt) {
-          presto::ShowStatsBuilder builder(
-              roundCardinality(rootDt.cardinality()));
+          presto::ShowStatsBuilder builder(roundEstimate(rootDt.cardinality()));
 
           for (const auto* column : rootDt.columns) {
             const auto& value = column->value();
@@ -2214,8 +2214,9 @@ std::vector<velox::RowVectorPtr> SqlQueryRunner::runShowStatsForQuery(
                 column->outputName(),
                 *value.type,
                 castOpt<double>(value.nullFraction),
-                roundCardinality(value.cardinality),
+                roundEstimate(value.cardinality),
                 /*avgLength=*/std::nullopt,
+                roundEstimate(value.avgSizeInBytes),
                 value.min,
                 value.max);
           }
