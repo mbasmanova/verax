@@ -1191,7 +1191,8 @@ struct BaseTable : public TableObject {
   /// connector: filters it resolves from metadata without reading are already
   /// reflected, filters it evaluates on rows it has read are not. See
   /// `connector::FilteredTableStats::numRawInputRows` for the full definition.
-  /// nullopt when the connector does not report it.
+  /// Scaled by 'sampledPercentage' when the scan is sampled. nullopt when the
+  /// connector does not report it.
   std::optional<uint64_t> numRawInputRows;
 
   SubfieldSet controlSubfields;

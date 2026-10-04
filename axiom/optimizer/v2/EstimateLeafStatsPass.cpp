@@ -17,6 +17,7 @@
 #include "axiom/optimizer/v2/EstimateLeafStatsPass.h"
 
 #include <algorithm>
+#include <cmath>
 
 #include "axiom/optimizer/v2/Builder.h"
 #include "axiom/optimizer/v2/NodeRewriter.h"
@@ -74,6 +75,12 @@ bool applyFilteredStats(
   auto* baseTable = const_cast<BaseTable*>(scan.baseTable());
 
   baseTable->numRawInputRows = stats->numRawInputRows;
+  // TABLESAMPLE SYSTEM keeps each split with this probability.
+  if (baseTable->numRawInputRows.has_value() &&
+      baseTable->sampledPercentage.has_value()) {
+    baseTable->numRawInputRows = static_cast<uint64_t>(std::llround(
+        *baseTable->numRawInputRows * (*baseTable->sampledPercentage / 100.0)));
+  }
 
   if (!stats->columnStats.empty()) {
     VELOX_CHECK_EQ(stats->columnStats.size(), statColumns.size());
