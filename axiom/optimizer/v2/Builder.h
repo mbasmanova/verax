@@ -160,6 +160,11 @@ class Builder {
         {source, rows, std::move(outputColumns), std::move(channels)});
   }
 
+  /// Source-less `Values` carrying the given row Variants.
+  const Values* makeValues(
+      std::vector<velox::Variant> rows,
+      ColumnVector outputColumns);
+
   /// Source-less `Values` carrying 'row' as its only row.
   const Values* makeSingleRowValues(
       std::vector<velox::Variant> row,

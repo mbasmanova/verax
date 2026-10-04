@@ -1,11 +1,14 @@
 -- connector: hive
 -- setup
-CREATE TABLE t (v BIGINT, ds VARCHAR) WITH (partitioned_by = ARRAY['ds'])
+CREATE TABLE t (v BIGINT, ds VARCHAR, k BIGINT) WITH (
+  partitioned_by = ARRAY['ds', 'k']
+)
 ----
 INSERT INTO t VALUES
-  (1, '2025-01-01'),
-  (2, '2025-01-02'),
-  (3, '2025-01-02')
+  (1, '2025-01-01', 0),
+  (2, '2025-01-02', 1),
+  (3, '2025-01-03', 0),
+  (4, '2025-01-03', 0)
 ----
 CREATE TABLE u (d VARCHAR)
 ----
@@ -16,6 +19,19 @@ INSERT INTO u VALUES ('2025-01-01'), ('2025-01-02'), ('2025-01-03')
 SELECT max(ds) FROM t
 ----
 SELECT max(ds), min(ds) FROM t
+----
+-- DISTINCT reads each partition value once, regardless of its row count.
+-- ordered
+SELECT DISTINCT ds FROM t ORDER BY ds
+----
+-- DISTINCT returns no rows when no partition value matches the filter.
+-- count 0
+SELECT DISTINCT ds FROM t WHERE ds > '2026'
+----
+-- Grouping and a duplicate-insensitive aggregate are answered together from
+-- the partition listing.
+-- ordered
+SELECT k, max(ds) FROM t GROUP BY k ORDER BY k
 ----
 -- Each UNION ALL branch is answered on its own.
 SELECT max(ds) AS m FROM t UNION ALL SELECT min(ds) AS m FROM t

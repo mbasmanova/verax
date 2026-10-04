@@ -858,10 +858,10 @@ class Translator {
   ExprCP tryScalarFromValues(NodeCP body);
 
   // Evaluates 'aggregate' from the listed discrete-predicate (e.g. partition)
-  // values, returning one Variant per output column, or nullopt when it is not
-  // foldable: it must be a global aggregation whose aggregates all ignore
-  // duplicate inputs, over an optional Filter over a Scan of only
-  // discrete-predicate columns, on a connector that can list them.
+  // values, returning one row Variant per result row, or nullopt when it is not
+  // foldable: its aggregates must all ignore duplicate inputs, and its input
+  // must be an optional Filter over a Scan of only discrete-predicate columns
+  // on a connector that can list them.
   std::optional<std::vector<velox::Variant>> tryEvaluateOverDiscreteValues(
       const Aggregate* aggregate);
 
@@ -2314,9 +2314,8 @@ Translated Translator::translateAggregate(
          .aggregates = std::move(aggregates),
          .outputColumns = std::move(outputColumns)});
     NodeCP node = aggNode;
-    if (auto row = tryEvaluateOverDiscreteValues(aggNode)) {
-      node = builder_.makeSingleRowValues(
-          std::move(*row), aggNode->outputColumns());
+    if (auto rows = tryEvaluateOverDiscreteValues(aggNode)) {
+      node = builder_.makeValues(std::move(*rows), aggNode->outputColumns());
     }
     return {
         appendConstantColumns(node, projectedColumns, projectedExprs),
@@ -4187,12 +4186,9 @@ Translator::tryEvaluateOverDiscreteValues(const Aggregate* aggregate) {
     return std::nullopt;
   }
 
-  if (!aggregate->groupingKeys().empty()) {
-    return std::nullopt;
-  }
-
   // The fold aggregates a per-partition value list, so each aggregate must
   // ignore duplicate inputs (e.g. max/min) or be over distinct inputs.
+  // Grouping itself also ignores duplicate input rows.
   for (const optimizer::Aggregate* call : aggregate->aggregates()) {
     if (!call->functions().contains(FunctionSet::kIgnoreDuplicatesAggregate) &&
         !call->isDistinct()) {
@@ -4253,12 +4249,8 @@ Translator::tryEvaluateOverDiscreteValues(const Aggregate* aggregate) {
   // and Aggregate specs. The Filter re-applies every conjunct; one the listing
   // already reflects removes nothing the second time.
   auto values = toValues(*discretePredicates);
-  const Values* valuesNode = builder_.makeValues(
-      /*source=*/nullptr,
-      queryCtx()->registerVariant(
-          std::make_unique<velox::Variant>(
-              velox::Variant::array(std::move(values)))),
-      scan->outputColumns());
+  const Values* valuesNode =
+      builder_.makeValues(std::move(values), scan->outputColumns());
 
   NodeCP foldInput = valuesNode;
   if (filter != nullptr) {
@@ -4294,11 +4286,11 @@ Translator::tryEvaluateOverDiscreteValues(const Aggregate* aggregate) {
   VELOX_CHECK_EQ(
       emitted.fragments.size(), 1, "Constant fold must produce one fragment");
 
-  auto row = constantPlanRunner_.run(emitted.fragments.front().fragment);
-  // The plan aggregates a Values with no grouping keys, so it emits one row
-  // even when the filter below leaves nothing.
-  VELOX_CHECK(row.has_value(), "Constant-fold plan produced no row");
-  return row;
+  auto rows = constantPlanRunner_.run(emitted.fragments.front().fragment);
+  if (aggregate->groupingKeys().empty()) {
+    VELOX_CHECK_EQ(rows.size(), 1, "Global aggregation must produce one row");
+  }
+  return rows;
 }
 
 } // namespace

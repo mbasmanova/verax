@@ -289,6 +289,55 @@ TEST_P(SubqueryFoldTest, foldableAggregationOverPartitions) {
             .build());
   }
 
+  // A grouping-only aggregation is answered from the distinct partition
+  // values.
+  {
+    auto plan = toSingleNodePlan("SELECT DISTINCT ds FROM pt");
+    AXIOM_ASSERT_PLAN_V2(
+        plan,
+        matchValues(
+            makeRowVector({makeFlatVector<std::string>({"0", "1", "2"})}))
+            .build());
+  }
+
+  // Grouping removes duplicate values from different partitions.
+  {
+    auto plan = toSingleNodePlan("SELECT DISTINCT k FROM pt");
+    AXIOM_ASSERT_PLAN_V2(
+        plan,
+        matchValues(makeRowVector({makeFlatVector<int32_t>({0, 1})})).build());
+  }
+
+  // A filter on one partition column restricts the distinct values of
+  // another partition column.
+  {
+    auto plan = toSingleNodePlan("SELECT DISTINCT ds FROM pt WHERE k = 0");
+    AXIOM_ASSERT_PLAN_V2(
+        plan,
+        matchValues(makeRowVector({makeFlatVector<std::string>({"0", "2"})}))
+            .build());
+  }
+
+  // DISTINCT returns no rows when no partition value matches the filter.
+  {
+    auto plan = toSingleNodePlan("SELECT DISTINCT ds FROM pt WHERE ds > '2'");
+    AXIOM_ASSERT_PLAN_V2(
+        plan,
+        matchValues(makeRowVector({makeFlatVector<std::string>({})})).build());
+  }
+
+  // Grouping and a duplicate-insensitive aggregate are answered together
+  // from the partition listing.
+  {
+    auto plan = toSingleNodePlan("SELECT k, max(ds) FROM pt GROUP BY k");
+    AXIOM_ASSERT_PLAN_V2(
+        plan,
+        matchValues(makeRowVector(
+                        {makeFlatVector<int32_t>({0, 1}),
+                         makeFlatVector<std::string>({"2", "1"})}))
+            .build());
+  }
+
   // Each UNION ALL branch folds on its own.
   {
     auto plan = toSingleNodePlan(
