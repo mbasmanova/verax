@@ -59,14 +59,14 @@ class ConstantPlanRunner {
       : queryCtx_{std::move(queryCtx)} {}
 
   /// Runs 'fragment' serially in the caller's thread (velox Task in kSerial
-  /// mode) and returns its single result row, one Variant per output column,
-  /// or nullopt when it produced no row. 'fragment' must have no split-driven
-  /// sources and must produce at most one row.
-  std::optional<std::vector<velox::Variant>> run(
+  /// mode) and returns all result rows as row Variants. 'fragment' must have no
+  /// split-driven sources.
+  std::vector<velox::Variant> run(
       const velox::core::PlanFragment& fragment) const;
 
-  /// run() for a 'fragment' of one column, returning that column's value, or
-  /// nullopt when it produced no row. Fails if 'fragment' has another shape.
+  /// Runs a 'fragment' that produces at most one row of one column, returning
+  /// that column's value, or nullopt when it produced no row. Fails if
+  /// 'fragment' has another shape.
   std::optional<velox::Variant> runScalar(
       const velox::core::PlanFragment& fragment) const;
 
