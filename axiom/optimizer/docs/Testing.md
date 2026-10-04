@@ -130,7 +130,7 @@ testConnector_->addTable("large_table", ROW({"x", "y"}, BIGINT()))
          {"y", {.min = 100LL, .max = 10'000LL, .numDistinct = 8'000}}});
 ```
 
-With these statistics, the optimizer will reliably choose to broadcast `small_table` and use `large_table` as the probe side. Available `ColumnStatistics` fields include `min`, `max`, `numDistinct`, `nullPct`, and `maxLength`.
+With these statistics, the optimizer will reliably choose to broadcast `small_table` and use `large_table` as the probe side. Available `ColumnStatistics` fields include `min`, `max`, `numDistinct`, `nullPct`, `maxLength`, `avgLength`, and `avgSizeInBytes`.
 
 Note: `setStats` provides statistics only — no actual data. These tables can be used in PlanMatcher tests (plan shape verification) but not in SqlTest (correctness verification, which requires actual data).
 

@@ -70,6 +70,7 @@ Value& Value::operator=(const Value& other) {
   cardinality = other.cardinality;
   trueFraction = other.trueFraction;
   nullFraction = other.nullFraction;
+  avgSizeInBytes = other.avgSizeInBytes;
   nullable = other.nullable;
   return *this;
 }
@@ -78,13 +79,9 @@ float Value::byteSize() const {
   if (type->isFixedWidth()) {
     return static_cast<float>(type->cppSizeInBytes());
   }
-  switch (type->kind()) {
-      // TODO: Use avgLength from connector stats to replace this hardcoded
-      // estimate. Needed for strings, arrays, and maps to properly estimate
-      // memory usage and shuffle volume.
-    default:
-      return 16;
-  }
+  // Assumed size of a variable-width value the connector reports no size for.
+  constexpr float kDefaultVariableWidthSize{16};
+  return avgSizeInBytes.value_or(kDefaultVariableWidthSize);
 }
 
 std::string Value::toString() const {
@@ -118,6 +115,10 @@ std::string Value::toString() const {
     out << " nullFraction=?";
   } else if (*nullFraction != 0) {
     out << " nullFraction=" << *nullFraction;
+  }
+
+  if (avgSizeInBytes.has_value()) {
+    out << " avgSizeInBytes=" << *avgSizeInBytes;
   }
 
   out << ">";
@@ -171,6 +172,7 @@ Value Value::fromColumnStatistics(
   value.max =
       stats.max.has_value() ? registerVariant(stats.max.value()) : nullptr;
   value.nullFraction = stats.nullPct / 100.0f;
+  value.avgSizeInBytes = stats.avgSizeInBytes;
   value.nullable = !stats.nonNull;
   // The connector must report bounds whose kind matches the column type.
   if (value.min != nullptr) {

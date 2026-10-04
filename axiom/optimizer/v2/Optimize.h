@@ -48,6 +48,9 @@ struct QueryColumnStats {
   std::optional<float> nullFraction;
   /// Estimated number of distinct values; nullopt when unknown.
   std::optional<float> distinctCount;
+  /// Average size of a variable-width value per row in bytes; nullopt when
+  /// unknown and for fixed-width types.
+  std::optional<float> avgSizeInBytes;
   /// Min/max bounds, or nullptr when no bound is known.
   const velox::Variant* min;
   const velox::Variant* max;

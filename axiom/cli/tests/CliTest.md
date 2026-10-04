@@ -61,13 +61,13 @@ $ $CLI --query "CREATE TABLE test.default.t(a int, b int, c int); SELECT * FROM 
 Created table: "default"."t"
 (0 rows in 0 batches)
 
-----------+-------------+----------------+-----------------------+------------+-----------+-----------
-row_count | column_name | nulls_fraction | distinct_values_count | avg_length | low_value | high_value
-----------+-------------+----------------+-----------------------+------------+-----------+-----------
-        0 | null        |           null |                  null |       null | null      | null
-     null | a           |           null |                  null |       null | null      | null
-     null | b           |           null |                  null |       null | null      | null
-     null | c           |           null |                  null |       null | null      | null
+----------+-------------+----------------+-----------------------+------------+-------------------+-----------+-----------
+row_count | column_name | nulls_fraction | distinct_values_count | avg_length | avg_size_in_bytes | low_value | high_value
+----------+-------------+----------------+-----------------------+------------+-------------------+-----------+-----------
+        0 | null        |           null |                  null |       null |              null | null      | null
+     null | a           |           null |                  null |       null |              null | null      | null
+     null | b           |           null |                  null |       null |              null | null      | null
+     null | c           |           null |                  null |       null |              null | null      | null
 (4 rows in 1 batches)
 
 ```
@@ -89,12 +89,12 @@ a | b
 1 | 2
 (1 rows in 1 batches)
 
-----------+-------------+----------------+-----------------------+------------+-----------+-----------
-row_count | column_name | nulls_fraction | distinct_values_count | avg_length | low_value | high_value
-----------+-------------+----------------+-----------------------+------------+-----------+-----------
-        1 | null        |           null |                  null |       null | null      | null
-     null | a           |              0 |                     1 |       null | 1         | 1
-     null | b           |              0 |                     1 |       null | 2         | 2
+----------+-------------+----------------+-----------------------+------------+-------------------+-----------+-----------
+row_count | column_name | nulls_fraction | distinct_values_count | avg_length | avg_size_in_bytes | low_value | high_value
+----------+-------------+----------------+-----------------------+------------+-------------------+-----------+-----------
+        1 | null        |           null |                  null |       null |              null | null      | null
+     null | a           |              0 |                     1 |       null |              null | 1         | 1
+     null | b           |              0 |                     1 |       null |              null | 2         | 2
 (3 rows in 1 batches)
 
 ```

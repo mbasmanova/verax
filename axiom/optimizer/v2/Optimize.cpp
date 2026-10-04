@@ -324,6 +324,7 @@ QueryStats Optimizer::estimateQueryStats() {
          .type = columnValue.type,
          .nullFraction = columnValue.nullFraction,
          .distinctCount = columnValue.cardinality,
+         .avgSizeInBytes = columnValue.avgSizeInBytes,
          .min = columnValue.min,
          .max = columnValue.max});
   }
