@@ -50,6 +50,8 @@ TEST(OptimizerOptionsTest, codeDefaults) {
   EXPECT_EQ(getDefault(props, OptimizerOptions::kBroadcastSizeLimit), "100MB");
   EXPECT_EQ(getDefault(props, OptimizerOptions::kSmallQueryMaxScanRows), "0");
   EXPECT_EQ(getDefault(props, OptimizerOptions::kSmallQueryNumWorkers), "1");
+  EXPECT_EQ(getDefault(props, OptimizerOptions::kSmallQueryMaxSplits), "0");
+  EXPECT_EQ(getDefault(props, OptimizerOptions::kSmallQueryMaxScanBytes), "0B");
   EXPECT_EQ(getDefault(props, OptimizerOptions::kHashPartitionCount), "0");
   EXPECT_EQ(
       getDefault(props, OptimizerOptions::kMaxDuplicatedLiteralBytes), "64KB");
@@ -75,6 +77,8 @@ TEST(OptimizerOptionsTest, from) {
       // Above int32, since row counts on real tables exceed it.
       {std::string(OptimizerOptions::kSmallQueryMaxScanRows), "5000000000"},
       {std::string(OptimizerOptions::kSmallQueryNumWorkers), "2"},
+      {std::string(OptimizerOptions::kSmallQueryMaxSplits), "1000"},
+      {std::string(OptimizerOptions::kSmallQueryMaxScanBytes), "10GB"},
       {std::string(OptimizerOptions::kHashPartitionCount), "64"},
       {std::string(OptimizerOptions::kMaxDuplicatedLiteralBytes), "1MB"},
   };
@@ -84,6 +88,8 @@ TEST(OptimizerOptionsTest, from) {
   EXPECT_EQ(options.parallelProjectWidth, 8);
   EXPECT_EQ(options.smallQueryMaxScanRows, 5'000'000'000);
   EXPECT_EQ(options.smallQueryNumWorkers, 2);
+  EXPECT_EQ(options.smallQueryMaxSplits, 1'000);
+  EXPECT_EQ(options.smallQueryMaxScanBytes, 10LL << 30);
   EXPECT_EQ(options.hashPartitionCount, 64);
   EXPECT_EQ(options.maxDuplicatedLiteralBytes, 1LL << 20);
   EXPECT_EQ(options.traceFlags, 5);
@@ -128,6 +134,9 @@ TEST(OptimizerOptionsTest, normalizeRejectsInvalidValues) {
   VELOX_ASSERT_THROW(
       options.normalize(OptimizerOptions::kSmallQueryNumWorkers, "0"),
       "small_query_num_workers must be >= 1");
+  VELOX_ASSERT_THROW(
+      options.normalize(OptimizerOptions::kSmallQueryMaxSplits, "-1"),
+      "small_query_max_splits must be >= 0");
   VELOX_ASSERT_THROW(
       options.normalize(OptimizerOptions::kHashPartitionCount, "-1"),
       "hash_partition_count must be >= 0");

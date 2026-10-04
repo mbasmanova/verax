@@ -16,6 +16,8 @@
 
 #pragma once
 
+#include <cmath>
+#include <limits>
 #include <span>
 
 #include "axiom/logical_plan/LogicalPlanNode.h"
@@ -1194,6 +1196,32 @@ struct BaseTable : public TableObject {
   /// Scaled by 'sampledPercentage' when the scan is sampled. nullopt when the
   /// connector does not report it.
   std::optional<uint64_t> numRawInputRows;
+
+  /// Estimated size in bytes of a row the scan of this table reads, as reported
+  /// by the connector; see
+  /// `connector::FilteredTableStats::numRawInputBytesPerRow`. nullopt when the
+  /// connector does not report it.
+  std::optional<float> numRawInputBytesPerRow;
+
+  /// Estimated number of splits the scan of this table produces, as reported
+  /// by the connector; see `connector::FilteredTableStats::numSplits`. Scaled
+  /// by 'sampledPercentage' when the scan is sampled. nullopt when the
+  /// connector does not report it.
+  std::optional<uint64_t> numSplits;
+
+  /// Estimated bytes the scan of this table reads: 'numRawInputRows' times
+  /// 'numRawInputBytesPerRow', rounded up and capped at the uint64_t maximum.
+  /// nullopt when either is unknown.
+  std::optional<uint64_t> numRawInputBytes() const {
+    if (!numRawInputRows.has_value() || !numRawInputBytesPerRow.has_value()) {
+      return std::nullopt;
+    }
+    const double bytes = std::ceil(
+        static_cast<double>(*numRawInputRows) * *numRawInputBytesPerRow);
+    constexpr auto kMax = std::numeric_limits<uint64_t>::max();
+    return bytes >= static_cast<double>(kMax) ? kMax
+                                              : static_cast<uint64_t>(bytes);
+  }
 
   SubfieldSet controlSubfields;
 

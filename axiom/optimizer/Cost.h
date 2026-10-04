@@ -16,28 +16,12 @@
 
 #pragma once
 
+#include "axiom/optimizer/NodePrediction.h"
 #include "axiom/optimizer/RelationOp.h"
 #include "velox/connectors/Connector.h"
 #include "velox/core/ITypedExpr.h"
 
 namespace facebook::axiom::optimizer {
-
-/// Record the history data for a tracked PlanNode.
-struct NodePrediction {
-  /// Estimated result cardinality. An optimizer operator may lower to several
-  /// Velox nodes; the entry is keyed by the outermost one, whose output is the
-  /// operator's result.
-  float cardinality{0};
-
-  /// For a table scan, the estimated rows it reads, as reported by the
-  /// connector; see `connector::FilteredTableStats::numRawInputRows`. Unset for
-  /// every other node, and for a connector that does not report it.
-  std::optional<uint64_t> numRawInputRows;
-
-  /// Returns a human-readable summary of the estimate for annotating plan
-  /// output.
-  std::string toString() const;
-};
 
 /// Interface to historical query cost and cardinality
 /// information. There is one long lived instance per

@@ -19,12 +19,15 @@
 #include "axiom/connectors/tests/TestConnectorContext.h"
 #include "axiom/runner/tests/LocalRunnerTestBase.h"
 #include "velox/common/base/tests/GTestUtils.h"
+#include "velox/common/testutil/TempDirectoryPath.h"
 #include "velox/connectors/hive/HivePartitionFunction.h"
 #include "velox/exec/tests/utils/AssertQueryBuilder.h"
 #include "velox/exec/tests/utils/PlanBuilder.h"
 
+#include <folly/coro/BlockingWait.h>
 #include <folly/init/Init.h>
 #include <filesystem>
+#include <fstream>
 
 using namespace facebook::velox;
 using namespace facebook::axiom::connector;
@@ -669,6 +672,27 @@ TEST_F(LocalHiveConnectorMetadataTest, addColumnExplain) {
       /*ifNotExists=*/false,
       /*explain=*/true);
   EXPECT_FALSE(explainMissing.has_value());
+}
+
+// An empty data file produces no splits.
+TEST_F(LocalHiveConnectorMetadataTest, emptyFile) {
+  auto dir = velox::common::testutil::TempDirectoryPath::create();
+  const FileInfo empty{.path = dir->getPath() + "/empty"};
+  const FileInfo nonEmpty{.path = dir->getPath() + "/non_empty"};
+  std::ofstream{empty.path};
+  std::ofstream{nonEmpty.path} << "x";
+
+  LocalHiveSplitSource source(
+      {&empty, &nonEmpty},
+      dwio::common::FileFormat::DWRF,
+      "test",
+      "t",
+      /*serdeParameters=*/{},
+      /*partitionType=*/nullptr);
+  auto batch = folly::coro::blockingWait(source.co_getSplits(10));
+  folly::coro::blockingWait(source.co_close());
+  EXPECT_EQ(batch.splits.size(), 1);
+  EXPECT_TRUE(batch.noMoreSplits);
 }
 
 TEST_F(LocalHiveConnectorMetadataTest, createEmptyTable) {

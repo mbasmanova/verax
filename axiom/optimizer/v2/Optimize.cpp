@@ -16,6 +16,9 @@
 
 #include "axiom/optimizer/v2/Optimize.h"
 
+#include <functional>
+#include <limits>
+
 #include <glog/logging.h>
 
 #include "axiom/optimizer/ConstantFold.h"
@@ -62,42 +65,58 @@ void collectScans(
   }
 }
 
-// Sums the rows the scans under 'node' are estimated to read. One unknown
+// Sums 'estimate', a BaseTable member or accessor giving a per-scan count such
+// as rows read, splits or bytes read, over the scans under 'node'. One unknown
 // makes the total unknown: summing the rest would under-size the query by
-// however much the unknown table reads. Each use of a table in a query has its
-// own BaseTable, so no scan is counted twice.
-std::optional<uint64_t> totalRawInputRows(NodeCP node) {
+// however much the unknown table contributes. Each use of a table in a query
+// has its own BaseTable, so no scan is counted twice.
+template <typename Estimate>
+std::optional<uint64_t> totalOverScans(NodeCP node, Estimate estimate) {
   if (node->is(NodeType::kScan)) {
-    return node->as<Scan>()->baseTable()->numRawInputRows;
+    return std::invoke(estimate, node->as<Scan>()->baseTable());
   }
 
   uint64_t total{0};
   for (NodeCP input : node->inputs()) {
-    const auto rows = totalRawInputRows(input);
-    if (!rows.has_value()) {
+    const auto count = totalOverScans(input, estimate);
+    if (!count.has_value()) {
       return std::nullopt;
     }
-    total += *rows;
+    // Saturates: a total that wraps around would pass any limit.
+    total = std::numeric_limits<uint64_t>::max() - total < *count
+        ? std::numeric_limits<uint64_t>::max()
+        : total + *count;
   }
 
   return total;
 }
 
+// Returns whether the total of 'estimate' over the scans under 'node' is known
+// and at most 'limit'. A limit of 0 or less always holds.
+template <typename Estimate>
+bool withinLimit(NodeCP node, Estimate estimate, int64_t limit) {
+  if (limit <= 0) {
+    return true;
+  }
+  const auto total = totalOverScans(node, estimate);
+  return total.has_value() && *total <= static_cast<uint64_t>(limit);
+}
+
 // Returns the workers to run the query rooted at 'node' on:
 // 'smallQueryNumWorkers' when its scans are estimated to read at most
-// 'smallQueryMaxScanRows', and 'maxWorkers' otherwise. Never returns more than
-// 'maxWorkers'.
+// 'smallQueryMaxScanRows', to produce at most 'smallQueryMaxSplits' and to read
+// at most 'smallQueryMaxScanBytes', and 'maxWorkers' otherwise. Never returns
+// more than 'maxWorkers'.
 int32_t chooseNumWorkers(
     NodeCP node,
     const OptimizerOptions& options,
     int32_t maxWorkers) {
-  if (options.smallQueryMaxScanRows <= 0) {
-    return maxWorkers;
-  }
-
-  const auto numRawInputRows = totalRawInputRows(node);
-  if (!numRawInputRows.has_value() ||
-      *numRawInputRows > static_cast<uint64_t>(options.smallQueryMaxScanRows)) {
+  if (options.smallQueryMaxScanRows <= 0 ||
+      !withinLimit(
+          node, &BaseTable::numRawInputRows, options.smallQueryMaxScanRows) ||
+      !withinLimit(node, &BaseTable::numSplits, options.smallQueryMaxSplits) ||
+      !withinLimit(
+          node, &BaseTable::numRawInputBytes, options.smallQueryMaxScanBytes)) {
     return maxWorkers;
   }
 
@@ -208,10 +227,14 @@ NodeCP Optimizer::planTo(
   VELOX_CHECK_NOT_NULL(options, "Physical planning needs plan options");
 
   // Decide the width before physical planning, which reads maxRemotePartitions
-  // to shape exchanges and to cost broadcasts.
+  // to shape exchanges and to cost broadcasts. A write keeps the full width:
+  // one that reads little can still need more memory than one worker has, as in
+  // an aggregation into many groups.
   planOptions_ = *options;
-  planOptions_.maxRemotePartitions =
-      chooseNumWorkers(node, session_.options(), options->maxRemotePartitions);
+  if (!plan_.is(logical_plan::NodeKind::kTableWrite)) {
+    planOptions_.maxRemotePartitions = chooseNumWorkers(
+        node, session_.options(), options->maxRemotePartitions);
+  }
 
   node = PlanPhysicalPass::run(
       node,

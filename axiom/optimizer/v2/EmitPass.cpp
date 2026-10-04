@@ -40,6 +40,20 @@ namespace facebook::axiom::optimizer::v2 {
 
 namespace {
 
+// Size in bytes of a row of 'columns', or nullopt when the size of a
+// variable-width column is unknown.
+std::optional<float> rowSize(const ColumnVector& columns) {
+  float size{0};
+  for (ColumnCP column : columns) {
+    const auto& value = column->value();
+    if (!value.type->isFixedWidth() && !value.avgSizeInBytes.has_value()) {
+      return std::nullopt;
+    }
+    size += value.byteSize();
+  }
+  return size;
+}
+
 // True when `channels` selects every data column in order (no pruning).
 bool isIdentityChannels(
     const QGVector<velox::column_index_t>& channels,
@@ -298,13 +312,21 @@ class Emitter {
     }
 
     std::optional<uint64_t> numRawInputRows;
+    std::optional<float> numRawInputBytesPerRow;
+    std::optional<uint64_t> numSplits;
     if (node->is(NodeType::kScan)) {
-      numRawInputRows = node->as<Scan>()->baseTable()->numRawInputRows;
+      const auto* baseTable = node->as<Scan>()->baseTable();
+      numRawInputRows = baseTable->numRawInputRows;
+      numRawInputBytesPerRow = baseTable->numRawInputBytesPerRow;
+      numSplits = baseTable->numSplits;
     }
 
     prediction_[plan->id()] = NodePrediction{
         .cardinality = *estimate.cardinality,
-        .numRawInputRows = numRawInputRows};
+        .numRawInputRows = numRawInputRows,
+        .numRawInputBytesPerRow = numRawInputBytesPerRow,
+        .numSplits = numSplits,
+        .numOutputBytesPerRow = rowSize(node->outputColumns())};
   }
 
   // Whether every key of `inner` is also a key of `outer`.
@@ -945,12 +967,9 @@ velox::core::PlanNodePtr Emitter::emitRoot(
     NodeCP node,
     const ColumnVector& outputColumns,
     const std::vector<std::string>& outputNames) {
-  // Emit via emitNode, not emit, so the root's estimate is recorded once below
-  // against the outermost node (the trim/rename projection when one wraps it),
-  // rather than also against the inner node emit() would key it to.
   velox::core::PlanNodePtr result;
   if (isIdentityLayout(*node, outputColumns, outputNames)) {
-    result = emitNode(node);
+    result = emit(node);
     // Velox's Unnest produces a column per unnested value, while the node may
     // output only some of them, so the emitted node can be the wider of the
     // two; trim it so the extra columns do not leak into the query output.
@@ -959,13 +978,10 @@ velox::core::PlanNodePtr Emitter::emitRoot(
     }
   } else if (node->is(NodeType::kProject)) {
     result = emitRootProject(*node->as<Project>(), outputColumns, outputNames);
+    recordPrediction(node, result);
   } else {
-    result = wrapWithRenameProject(emitNode(node), outputColumns, outputNames);
+    result = wrapWithRenameProject(emit(node), outputColumns, outputNames);
   }
-
-  // A trim or rename projection is cardinality-neutral, so the root's estimate
-  // annotates whichever node ends up outermost, so EXPLAIN shows it on top.
-  recordPrediction(node, result);
   return result;
 }
 

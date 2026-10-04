@@ -503,6 +503,13 @@ struct FilteredTableStats {
   /// is what those files hold.
   std::optional<uint64_t> numRawInputRows;
 
+  /// Estimated size in bytes of a row the scan reads: the columns it produces
+  /// and those only its filters read. std::nullopt when unknown.
+  std::optional<float> numRawInputBytesPerRow;
+
+  /// Estimated number of splits the scan produces. std::nullopt when unknown.
+  std::optional<uint64_t> numSplits;
+
   /// Per-column statistics corresponding 1:1 to the 'columns' parameter of
   /// co_estimateStats. Either empty (no column stats available) or has the
   /// same size as 'columns', in the same order.

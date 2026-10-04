@@ -21,23 +21,51 @@ namespace facebook::axiom::optimizer {
 
 namespace {
 
-void collectScans(const velox::core::PlanNode& node, folly::dynamic& scans) {
+// The estimate fields of a node's prediction. See toGraphJson.
+folly::dynamic toJson(const NodePrediction& prediction) {
+  folly::dynamic estimate = folly::dynamic::object;
+  if (prediction.numRawInputRows.has_value()) {
+    estimate["rawInputRows"] =
+        static_cast<int64_t>(*prediction.numRawInputRows);
+  }
+  if (prediction.numRawInputBytesPerRow.has_value()) {
+    estimate["rawInputBytesPerRow"] = *prediction.numRawInputBytesPerRow;
+  }
+  if (prediction.numSplits.has_value()) {
+    estimate["splits"] = static_cast<int64_t>(*prediction.numSplits);
+  }
+  estimate["outputRows"] = prediction.cardinality;
+  if (prediction.numOutputBytesPerRow.has_value()) {
+    estimate["outputBytesPerRow"] = *prediction.numOutputBytesPerRow;
+  }
+  return estimate;
+}
+
+void collectScans(
+    const velox::core::PlanNode& node,
+    const NodePredictionMap* prediction,
+    folly::dynamic& scans) {
   if (const auto* scan = node.as<velox::core::TableScanNode>()) {
     VELOX_CHECK_NOT_NULL(scan->tableHandle(), "Scan has no table handle");
     folly::dynamic entry = folly::dynamic::object;
     entry["nodeId"] = scan->id();
     entry["table"] = scan->tableHandle()->name();
+    if (prediction != nullptr) {
+      if (auto it = prediction->find(scan->id()); it != prediction->end()) {
+        entry["estimate"] = toJson(it->second);
+      }
+    }
     scans.push_back(std::move(entry));
   }
   for (const auto& source : node.sources()) {
-    collectScans(*source, scans);
+    collectScans(*source, prediction, scans);
   }
 }
 
-} // namespace
-
-folly::dynamic MultiFragmentPlanPrinter::toGraphJson(
-    const MultiFragmentPlan& plan) {
+// Renders 'plan', with estimates from 'prediction' unless it is null.
+folly::dynamic toGraph(
+    const MultiFragmentPlan& plan,
+    const NodePredictionMap* prediction) {
   // InputStage names the producer, so invert the edges once to find each
   // fragment's consumer.
   folly::F14FastMap<int32_t, int32_t> consumerOf;
@@ -57,7 +85,7 @@ folly::dynamic MultiFragmentPlanPrinter::toGraphJson(
     }
 
     folly::dynamic scans = folly::dynamic::array;
-    collectScans(*fragment.fragment.planNode, scans);
+    collectScans(*fragment.fragment.planNode, prediction, scans);
     if (!scans.empty()) {
       entry["scans"] = std::move(scans);
     }
@@ -87,6 +115,19 @@ folly::dynamic MultiFragmentPlanPrinter::toGraphJson(
   }
 
   return folly::dynamic::object("fragments", std::move(fragments));
+}
+
+} // namespace
+
+folly::dynamic MultiFragmentPlanPrinter::toGraphJson(
+    const MultiFragmentPlan& plan,
+    const NodePredictionMap& prediction) {
+  return toGraph(plan, &prediction);
+}
+
+folly::dynamic MultiFragmentPlanPrinter::toGraphJson(
+    const MultiFragmentPlan& plan) {
+  return toGraph(plan, nullptr);
 }
 
 } // namespace facebook::axiom::optimizer

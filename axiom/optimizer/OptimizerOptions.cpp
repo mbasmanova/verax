@@ -96,16 +96,35 @@ std::vector<ConfigProperty> buildProperties(
           std::string(OptimizerOptions::kSmallQueryMaxScanRows),
           ConfigPropertyType::kInteger,
           std::to_string(OptimizerOptions::kSmallQueryMaxScanRowsDefault),
-          "A query whose scans are estimated to read at most this many rows in "
-          "total is small and runs on 'small_query_num_workers' workers. A "
-          "query that reads more, or whose scans report no estimate, runs on "
-          "all available workers. 0 disables.",
+          "A SELECT query whose scans are estimated to read at most this many "
+          "rows in total is small and runs on 'small_query_num_workers' "
+          "workers. A query that reads more, or whose scans report no "
+          "estimate, runs on all available workers. 0 disables.",
       },
       {
           std::string(OptimizerOptions::kSmallQueryNumWorkers),
           ConfigPropertyType::kInteger,
           std::to_string(OptimizerOptions::kSmallQueryNumWorkersDefault),
           "Workers a small query runs on, capped by the number available.",
+      },
+      {
+          std::string(OptimizerOptions::kSmallQueryMaxSplits),
+          ConfigPropertyType::kInteger,
+          std::to_string(OptimizerOptions::kSmallQueryMaxSplitsDefault),
+          "A small query's scans must also produce at most this many splits "
+          "in total. A query whose scans report no split estimate is then not "
+          "small. Applies only when small_query_max_scan_rows is set. 0 "
+          "disables the limit.",
+      },
+      {
+          std::string(OptimizerOptions::kSmallQueryMaxScanBytes),
+          ConfigPropertyType::kString,
+          std::string(OptimizerOptions::kSmallQueryMaxScanBytesDefault),
+          "A small query's scans must also read at most this many bytes in "
+          "total, as a capacity string (e.g. \"10GB\"). A scan reads its rows "
+          "times its bytes per row. A query whose scans report no bytes-per-row "
+          "estimate is then not small. Applies only when "
+          "small_query_max_scan_rows is set. \"0B\" disables the limit.",
       },
       {
           std::string(OptimizerOptions::kHashPartitionCount),
@@ -223,6 +242,10 @@ std::string OptimizerOptions::normalize(
     auto rows = std::stoll(std::string(value));
     VELOX_USER_CHECK_GE(
         rows, 0, "small_query_max_scan_rows must be >= 0: {}", value);
+  } else if (name == kSmallQueryMaxSplits) {
+    auto splits = std::stoll(std::string(value));
+    VELOX_USER_CHECK_GE(
+        splits, 0, "small_query_max_splits must be >= 0: {}", value);
   } else if (name == kSmallQueryNumWorkers) {
     auto workers = std::stoi(std::string(value));
     VELOX_USER_CHECK_GE(
@@ -240,7 +263,8 @@ std::string OptimizerOptions::normalize(
     VELOX_USER_CHECK_GE(
         threshold, 1, "greedy_join_threshold must be >= 1: {}", value);
   } else if (
-      name == kBroadcastSizeLimit || name == kMaxDuplicatedLiteralBytes) {
+      name == kBroadcastSizeLimit || name == kMaxDuplicatedLiteralBytes ||
+      name == kSmallQueryMaxScanBytes) {
     // Throws if 'value' is not a valid capacity string (e.g. "100MB").
     velox::config::toCapacity(
         std::string(value), velox::config::CapacityUnit::BYTE);
@@ -301,6 +325,8 @@ OptimizerOptions OptimizerOptions::from(
   setBool(kEnableReducingExistences, options.enableReducingExistences);
   setLong(kSmallQueryMaxScanRows, options.smallQueryMaxScanRows);
   setInt(kSmallQueryNumWorkers, options.smallQueryNumWorkers);
+  setLong(kSmallQueryMaxSplits, options.smallQueryMaxSplits);
+  setCapacity(kSmallQueryMaxScanBytes, options.smallQueryMaxScanBytes);
   setInt(kHashPartitionCount, options.hashPartitionCount);
   setPositiveInt(
       kMinColumnarChannelsForCompactRow,
