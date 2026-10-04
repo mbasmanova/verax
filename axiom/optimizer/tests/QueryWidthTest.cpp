@@ -112,6 +112,26 @@ TEST_F(QueryWidthTest, scan) {
   }
 }
 
+// TABLESAMPLE SYSTEM keeps each split with the sample probability, so a sampled
+// scan is sized by the rows it is expected to read.
+TEST_F(QueryWidthTest, tablesample) {
+  const std::string_view sql =
+      "SELECT n_nationkey FROM nation TABLESAMPLE SYSTEM (20)";
+  const int64_t sampledRows = kNationRows / 5;
+
+  {
+    const auto result = plan(sql, narrowingAt(sampledRows));
+    EXPECT_EQ(scanRawInputRows(result), sampledRows);
+    EXPECT_EQ(maxRemotePartitions(result), 1);
+  }
+
+  {
+    const auto result = plan(sql, narrowingAt(sampledRows - 1));
+    EXPECT_EQ(scanRawInputRows(result), sampledRows);
+    EXPECT_EQ(maxRemotePartitions(result), kWorkersAvailable);
+  }
+}
+
 // A query reading several tables is sized by their total.
 TEST_F(QueryWidthTest, join) {
   const std::string_view sql =
