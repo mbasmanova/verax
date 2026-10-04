@@ -35,6 +35,12 @@ const Values* Builder::makeSingleRowValues(
     ColumnVector outputColumns) {
   std::vector<velox::Variant> rows;
   rows.push_back(velox::Variant::row(std::move(row)));
+  return makeValues(std::move(rows), std::move(outputColumns));
+}
+
+const Values* Builder::makeValues(
+    std::vector<velox::Variant> rows,
+    ColumnVector outputColumns) {
   return makeValues(
       /*source=*/nullptr,
       queryCtx()->registerVariant(

@@ -97,14 +97,16 @@ std::optional<velox::Variant> ConstantPlanRunner::runScalar(
       fragment.planNode->outputType()->size(),
       1,
       "runScalar needs a fragment of one column");
-  auto row = run(fragment);
-  if (!row.has_value()) {
+  auto rows = run(fragment);
+  if (rows.empty()) {
     return std::nullopt;
   }
-  return std::move((*row)[0]);
+  VELOX_CHECK_EQ(
+      rows.size(), 1, "Constant-fold plan produced more than one row");
+  return rows.front().row()[0];
 }
 
-std::optional<std::vector<velox::Variant>> ConstantPlanRunner::run(
+std::vector<velox::Variant> ConstantPlanRunner::run(
     const velox::core::PlanFragment& fragment) const {
   // Serial mode runs in the caller's thread, so the query's own QueryCtx works
   // directly -- no executor, cache, or config of its own is needed.
@@ -116,23 +118,15 @@ std::optional<std::vector<velox::Variant>> ConstantPlanRunner::run(
       velox::exec::Task::ExecutionMode::kSerial);
 
   // Serial mode runs the whole pipeline in this thread. 'fragment' has no
-  // split-driven source and at most one row, so next() yields at most one
-  // non-empty single-row batch.
-  velox::RowVectorPtr result;
+  // split-driven source, so next() needs no split coordination.
+  std::vector<velox::Variant> rows;
   while (auto batch = task->next()) {
-    if (batch->size() == 0) {
-      continue;
+    rows.reserve(rows.size() + batch->size());
+    for (velox::vector_size_t i = 0; i < batch->size(); ++i) {
+      rows.emplace_back(batch->variantAt(i));
     }
-    VELOX_CHECK_NULL(result, "Constant-fold plan produced more than one row");
-    VELOX_CHECK_EQ(
-        batch->size(), 1, "Constant-fold plan produced more than one row");
-    result = batch;
   }
-
-  if (result == nullptr) {
-    return std::nullopt;
-  }
-  return result->variantAt(0).row();
+  return rows;
 }
 
 } // namespace facebook::axiom::optimizer
