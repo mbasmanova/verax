@@ -42,10 +42,6 @@ DEFINE_string(
     etc_dir,
     "",
     "Path to a directory of connector .properties files. Mutually exclusive with `--data_path`.");
-DEFINE_uint64(
-    split_target_bytes,
-    16 << 20,
-    "Approx bytes covered by one split");
 
 DEFINE_int32(max_rows, 100, "Max number of printed result rows");
 
@@ -262,7 +258,6 @@ Console::runOnce(std::string_view sql, bool printTiming, bool showProgress) {
   SqlQueryRunner::RunOptions options{
       .numWorkers = FLAGS_num_workers,
       .numDrivers = FLAGS_num_drivers,
-      .splitTargetBytes = FLAGS_split_target_bytes,
       .debugMode = FLAGS_debug,
       .onComplete =
           [&](const QueryCompletionInfo& info) { completionInfo = info; },

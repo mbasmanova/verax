@@ -28,7 +28,6 @@
 
 DEFINE_int32(num_workers, 4, "Number of in-process workers");
 DEFINE_int32(num_drivers, 4, "Number of drivers per worker");
-DEFINE_int64(split_target_bytes, 16 << 20, "Approx bytes covered by one split");
 
 using namespace ::facebook;
 
