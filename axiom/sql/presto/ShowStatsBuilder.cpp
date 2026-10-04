@@ -51,6 +51,7 @@ ShowStatsBuilder::ShowStatsBuilder(std::optional<int64_t> rowCount) {
           kNullDouble,
           kNullBigint,
           kNullBigint,
+          kNullBigint,
           kNullVarchar,
           kNullVarchar,
       }));
@@ -62,6 +63,7 @@ ShowStatsBuilder& ShowStatsBuilder::addColumn(
     std::optional<double> nullsFraction,
     std::optional<int64_t> distinctCount,
     std::optional<int64_t> avgLength,
+    std::optional<int64_t> avgSizeInBytes,
     const Variant* min,
     const Variant* max) {
   auto lowValue = (min != nullptr && !min->isNull())
@@ -78,6 +80,7 @@ ShowStatsBuilder& ShowStatsBuilder::addColumn(
           toVariant(nullsFraction),
           toVariant(distinctCount),
           toVariant(avgLength),
+          toVariant(avgSizeInBytes),
           lowValue,
           highValue,
       }));
@@ -92,6 +95,7 @@ const RowTypePtr& ShowStatsBuilder::outputType() {
           "nulls_fraction",
           "distinct_values_count",
           "avg_length",
+          "avg_size_in_bytes",
           "low_value",
           "high_value",
       },
@@ -99,6 +103,7 @@ const RowTypePtr& ShowStatsBuilder::outputType() {
           BIGINT(),
           VARCHAR(),
           DOUBLE(),
+          BIGINT(),
           BIGINT(),
           BIGINT(),
           VARCHAR(),

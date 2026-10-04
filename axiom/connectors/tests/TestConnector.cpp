@@ -406,6 +406,9 @@ void TestTable::addData(
 
 void TestTable::ColumnTracker::append(const velox::BaseVector& vector) {
   const auto& childType = vector.type();
+  if (!childType->isFixedWidth()) {
+    totalSizeInBytes += vector.estimateFlatSize();
+  }
 
   for (auto i = 0; i < vector.size(); ++i) {
     if (vector.isNullAt(i)) {
@@ -464,6 +467,10 @@ std::unique_ptr<ColumnStatistics> TestTable::ColumnTracker::toColumnStatistics(
     if (numNonNull > 0) {
       stats->avgLength = totalLength / numNonNull;
     }
+  }
+
+  if (!type->isFixedWidth() && totalRows > 0) {
+    stats->avgSizeInBytes = totalSizeInBytes / totalRows;
   }
 
   return stats;

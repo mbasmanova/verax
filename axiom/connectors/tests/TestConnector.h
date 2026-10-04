@@ -244,7 +244,8 @@ class TestTable : public Table {
   /// Appends a RowVector to the table's data. Each appended vector generates
   /// a separate TestConnectorSplit. Data is copied into the table's internal
   /// memory pool. When 'collectColumnStatistics' is true, computes per-column
-  /// statistics incrementally (numDistinct, min/max, nullPct, maxLength);
+  /// statistics incrementally (numDistinct, min/max, nullPct, maxLength,
+  /// avgLength, avgSizeInBytes);
   /// `collect_statistics = false` on the table overrides the argument and
   /// collects none. Cannot be combined with setStats on the same table. For
   /// bucketed tables, each non-empty bucket of the input becomes one entry in
@@ -281,6 +282,8 @@ class TestTable : public Table {
     std::optional<velox::Variant> max;
     int64_t totalLength{0};
     int32_t maxLength{0};
+    // In-memory size of all values of a variable-width column.
+    int64_t totalSizeInBytes{0};
   };
 
   velox::connector::Connector* connector_;

@@ -1215,6 +1215,7 @@ TEST_F(SqlQueryRunnerTest, connectorSessionPropertyEffect) {
           "nulls_fraction",
           "distinct_values_count",
           "avg_length",
+          "avg_size_in_bytes",
           "low_value",
           "high_value",
       },
@@ -1222,6 +1223,7 @@ TEST_F(SqlQueryRunnerTest, connectorSessionPropertyEffect) {
           BIGINT(),
           VARCHAR(),
           DOUBLE(),
+          BIGINT(),
           BIGINT(),
           BIGINT(),
           VARCHAR(),
@@ -1239,8 +1241,8 @@ TEST_F(SqlQueryRunnerTest, connectorSessionPropertyEffect) {
     auto expected = BaseVector::createFromVariants(
         statsType,
         {
-            Variant::row({10LL, null, null, null, null, null, null}),
-            Variant::row({null, "x", 0.0, 10LL, null, "1", "10"}),
+            Variant::row({10LL, null, null, null, null, null, null, null}),
+            Variant::row({null, "x", 0.0, 10LL, null, null, "1", "10"}),
         },
         pool());
 
@@ -1261,8 +1263,8 @@ TEST_F(SqlQueryRunnerTest, connectorSessionPropertyEffect) {
     auto expected = BaseVector::createFromVariants(
         statsType,
         {
-            Variant::row({10LL, null, null, null, null, null, null}),
-            Variant::row({null, "x", null, null, null, null, null}),
+            Variant::row({10LL, null, null, null, null, null, null, null}),
+            Variant::row({null, "x", null, null, null, null, null, null}),
         },
         pool());
 

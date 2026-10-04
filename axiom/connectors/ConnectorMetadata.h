@@ -98,6 +98,11 @@ struct ColumnStatistics {
   /// Average count of characters/bytes/elements/key-value pairs.
   std::optional<int32_t> avgLength;
 
+  /// Average size of the column's value per row in bytes, including nested
+  /// children. Null rows count toward the average. Not populated for
+  /// fixed-width types, whose size comes from the type.
+  std::optional<int32_t> avgSizeInBytes;
+
   /// Estimated number of distinct values. Not specified for complex types.
   std::optional<int64_t> numDistinct;
 

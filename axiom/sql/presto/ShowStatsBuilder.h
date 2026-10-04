@@ -37,6 +37,8 @@ namespace axiom::sql::presto {
 ///   distinct_values_count (BIGINT) - number of distinct values.
 ///   avg_length (BIGINT) - average length in bytes for varchar and varbinary;
 ///     average number of elements for arrays and maps.
+///   avg_size_in_bytes (BIGINT) - average size of a variable-width value per
+///     row in bytes, including nested children; NULL for fixed-width types.
 ///   low_value (VARCHAR) - minimum value formatted as string.
 ///   high_value (VARCHAR) - maximum value formatted as string.
 class ShowStatsBuilder {
@@ -54,6 +56,7 @@ class ShowStatsBuilder {
       std::optional<double> nullsFraction,
       std::optional<int64_t> distinctCount,
       std::optional<int64_t> avgLength,
+      std::optional<int64_t> avgSizeInBytes,
       const facebook::velox::Variant* min,
       const facebook::velox::Variant* max);
 

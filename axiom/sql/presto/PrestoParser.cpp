@@ -2736,6 +2736,7 @@ SqlStatementPtr parseShowStats(
     std::optional<double> nullsFraction;
     std::optional<int64_t> distinctCount;
     std::optional<int64_t> avgLength;
+    std::optional<int64_t> avgSizeInBytes;
     const Variant* min{nullptr};
     const Variant* max{nullptr};
 
@@ -2745,6 +2746,7 @@ SqlStatementPtr parseShowStats(
         distinctCount = static_cast<int64_t>(stats->numDistinct.value());
       }
       avgLength = stats->avgLength;
+      avgSizeInBytes = stats->avgSizeInBytes;
       if (stats->min.has_value()) {
         min = &stats->min.value();
       }
@@ -2759,6 +2761,7 @@ SqlStatementPtr parseShowStats(
         nullsFraction,
         distinctCount,
         avgLength,
+        avgSizeInBytes,
         min,
         max);
   }
