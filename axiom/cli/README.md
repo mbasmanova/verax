@@ -31,7 +31,6 @@ The examples below use `axiom_sql` for brevity. With Buck, replace
 | `--etc_dir` | | Path to a directory of catalog `.properties` files. Mutually exclusive with `--data_path`. External catalogs are not selected automatically; use `--catalog` or fully-qualified names in SQL. |
 | `--data_path` | | Hive specific: root path for Hive-style partitioned data. Registers local Hive connector. Mutually exclusive with `--etc_dir`. |
 | `--data_format` | `parquet` | Hive specific: data format, `parquet`, `dwrf`, or `text`. |
-| `--split_target_bytes` | `16MB` | Hive specific: approximate bytes per split. |
 | `--num_workers` | `1` | Number of in-process workers. |
 | `--num_drivers` | `1` | Number of drivers per worker (parallelism). |
 | `--v1` | `false` | Route queries through the legacy v1 optimizer. `EXPLAIN (type graph)` is supported only under v1. |
