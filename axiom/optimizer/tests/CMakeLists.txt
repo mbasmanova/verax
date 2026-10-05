@@ -154,8 +154,8 @@ if(AXIOM_BUILD_TESTING)
     TableSampleTest.cpp
     FeatureGen.cpp
     Genies.cpp
-    BucketedExecutionPlanTest.cpp
-    HiveBucketedExecutionPlanTest.cpp
+    BucketedExecutionTest.cpp
+    HiveBucketedExecutionTest.cpp
     TestConnectorQueryTest.cpp
     TpchConnectorQueryTest.cpp
     UnionAllTest.cpp

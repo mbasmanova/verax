@@ -254,6 +254,73 @@ TEST_P(HiveBucketedExecutionTest, rightJoinPartitioning) {
           .build());
 }
 
+// An outer join between an unbucketed input and two compatibly bucketed inputs
+// returns every matching row when the bucket counts differ.
+TEST_P(HiveBucketedExecutionTest, joinRepartitionedAndBucketedInputs) {
+  if (!useV2_) {
+    return;
+  }
+
+  const auto tableQuery = [](std::string_view name, int32_t multiplier) {
+    return fmt::format(
+        "SELECT k AS {0}_key, k * {1} AS {0}_value "
+        "FROM UNNEST(sequence(1, 16)) AS _(k)",
+        name,
+        multiplier);
+  };
+  createRegularTable("p", tableQuery("p", 10));
+  createBucketedTable("b16", 16, {"b16_key"}, tableQuery("b16", 100));
+  createBucketedTable("b8", 8, {"b8_key"}, tableQuery("b8", 1'000));
+  optimizerOptions_.broadcastSizeLimit = 0;
+
+  const auto logicalPlan = parseSelect(
+      "SELECT b16_key, p_value, b8_value "
+      "FROM p RIGHT JOIN b16 ON p_key = b16_key "
+      "JOIN b8 ON b16_key = b8_key AND (p_key IS NULL OR p_value < b8_value)");
+
+  AXIOM_ASSERT_PLAN(
+      toSingleNodePlan(logicalPlan),
+      matchHiveScan("p")
+          .hashJoinRight(matchHiveScan("b16"), {.keys = {{"p_key = b16_key"}}})
+          .hashJoinInner(
+              matchHiveScan("b8"),
+              {
+                  .keys = {{"b16_key = b8_key"}},
+                  .filter = "is_null(p_key) OR p_value < b8_value",
+              })
+          .project({"b16_key", "p_value", "b8_value"})
+          .build());
+
+  auto distributedPlan = planDistributed(logicalPlan, 3);
+  AXIOM_ASSERT_DISTRIBUTED_PLAN(
+      distributedPlan.plan,
+      matchHiveScan("p")
+          .shuffle({"p_key"})
+          .hashJoinRight(matchHiveScan("b16"), {.keys = {{"p_key = b16_key"}}})
+          .hashJoinInner(
+              matchHiveScan("b8"),
+              {
+                  .keys = {{"b16_key = b8_key"}},
+                  .filter = "is_null(p_key) OR p_value < b8_value",
+              })
+          .project({"b16_key", "p_value", "b8_value"})
+          .fragment({.width = 3, .bucketedScans = 2, .bucketedExchanges = 1})
+          .gather()
+          .build());
+
+  // TODO: Extend SqlTest to configure worker count and optimizer options, then
+  // move this result check to bucketedExecution.sql.
+  const auto expected = makeRowVector({
+      makeFlatVector<int64_t>(16, [](vector_size_t row) { return row + 1; }),
+      makeFlatVector<int64_t>(
+          16, [](vector_size_t row) { return (row + 1) * 10; }),
+      makeFlatVector<int64_t>(
+          16, [](vector_size_t row) { return (row + 1) * 1'000; }),
+  });
+  const auto result = runFragmentedPlan(distributedPlan);
+  exec::test::assertEqualResults({expected}, result.results);
+}
+
 TEST_P(HiveBucketedExecutionTest, semijoin) {
   createBucketedTable(
       "t", 16, {"c_nationkey"}, "SELECT c_custkey, c_nationkey FROM customer");
@@ -270,7 +337,7 @@ TEST_P(HiveBucketedExecutionTest, semijoin) {
     auto plan = planDistributed(logicalPlan);
     // v2 plans IN as a null-aware kLeftSemiProject and shuffles+replicates
     // rather than co-bucketing; its shape is asserted in
-    // BucketedExecutionPlanTest, and its results are checked below.
+    // BucketedExecutionTest, and its results are checked below.
     if (!useV2_) {
       AXIOM_ASSERT_DISTRIBUTED_PLAN(
           plan.plan,
