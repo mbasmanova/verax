@@ -16,6 +16,7 @@
 
 #include "axiom/connectors/hive/LocalTableMetadata.h"
 
+#include <cmath>
 #include <fstream>
 
 #include <folly/Conv.h>
@@ -55,6 +56,9 @@ folly::dynamic columnStatsToJson(const ColumnStatistics& stats) {
   if (stats.avgLength.has_value()) {
     json["avgLength"] = stats.avgLength.value();
   }
+  if (stats.avgSizeInBytes.has_value()) {
+    json["avgSizeInBytes"] = stats.avgSizeInBytes.value();
+  }
   return json;
 }
 
@@ -88,6 +92,9 @@ ColumnStatistics columnStatsFromJson(const folly::dynamic& json) {
   }
   if (json.count("avgLength")) {
     stats.avgLength = json["avgLength"].asInt();
+  }
+  if (json.count("avgSizeInBytes")) {
+    stats.avgSizeInBytes = json["avgSizeInBytes"].asInt();
   }
   return stats;
 }
@@ -123,27 +130,78 @@ void mergeColumnStatsValues(
   }
 }
 
-void mergeColumnStats(
-    std::vector<ColumnStatistics>& existing,
-    const std::vector<ColumnStatistics>& incoming) {
-  folly::F14FastMap<std::string, size_t> nameToIndex;
-  for (size_t i = 0; i < existing.size(); ++i) {
-    nameToIndex[existing[i].name] = i;
+// Returns the total size in bytes of a column over 'numRows' rows, or
+// std::nullopt when unknown. A side with no rows has size 0, and so does a
+// side that lacks the column (null 'stats'), since its values are all null.
+std::optional<double> totalSizeInBytes(
+    const ColumnStatistics* stats,
+    uint64_t numRows) {
+  if (stats == nullptr || numRows == 0) {
+    return 0;
   }
-
-  for (const auto& stats : incoming) {
-    auto it = nameToIndex.find(stats.name);
-    if (it == nameToIndex.end()) {
-      nameToIndex[stats.name] = existing.size();
-      existing.push_back(stats);
-      continue;
-    }
-
-    mergeColumnStatsValues(existing[it->second], stats);
+  if (!stats->avgSizeInBytes.has_value()) {
+    return std::nullopt;
   }
+  return static_cast<double>(*stats->avgSizeInBytes) * numRows;
+}
+
+// Averages the avgSizeInBytes of two sides weighted by row count. A null side
+// does not have the column. The result is unknown unless at least one side
+// measured the size.
+std::optional<int32_t> mergeAvgSizeInBytes(
+    const ColumnStatistics* lhs,
+    uint64_t lhsNumRows,
+    const ColumnStatistics* rhs,
+    uint64_t rhsNumRows) {
+  const auto measured = [](const ColumnStatistics* stats) {
+    return stats != nullptr && stats->avgSizeInBytes.has_value();
+  };
+  if (!measured(lhs) && !measured(rhs)) {
+    return std::nullopt;
+  }
+  const std::optional<double> lhsSize = totalSizeInBytes(lhs, lhsNumRows);
+  const std::optional<double> rhsSize = totalSizeInBytes(rhs, rhsNumRows);
+  const auto numRows = lhsNumRows + rhsNumRows;
+  if (!lhsSize.has_value() || !rhsSize.has_value() || numRows == 0) {
+    return std::nullopt;
+  }
+  return static_cast<int32_t>(
+      std::llround((*lhsSize + *rhsSize) / static_cast<double>(numRows)));
 }
 
 } // namespace
+
+void PersistedStats::merge(
+    uint64_t otherNumRows,
+    const std::vector<ColumnStatistics>& otherColumns) {
+  folly::F14FastMap<std::string_view, const ColumnStatistics*> unmatched;
+  for (const auto& column : otherColumns) {
+    unmatched[column.name] = &column;
+  }
+
+  for (auto& column : columns) {
+    const auto it = unmatched.find(column.name);
+    const auto* otherColumn = it == unmatched.end() ? nullptr : it->second;
+    const auto avgSizeInBytes =
+        mergeAvgSizeInBytes(&column, numRows, otherColumn, otherNumRows);
+    if (otherColumn != nullptr) {
+      mergeColumnStatsValues(column, *otherColumn);
+      unmatched.erase(it);
+    }
+    column.avgSizeInBytes = avgSizeInBytes;
+  }
+
+  for (const auto& otherColumn : otherColumns) {
+    if (!unmatched.contains(otherColumn.name)) {
+      continue;
+    }
+    auto& column = columns.emplace_back(otherColumn);
+    column.avgSizeInBytes =
+        mergeAvgSizeInBytes(nullptr, numRows, &otherColumn, otherNumRows);
+  }
+
+  numRows += otherNumRows;
+}
 
 std::optional<PersistedStats> PersistedStats::read(
     const std::string& directory) {
@@ -168,9 +226,8 @@ std::optional<PersistedStats> PersistedStats::read(
 void PersistedStats::write(const std::string& directory, PersistedStats stats) {
   auto existing = PersistedStats::read(directory);
   if (existing.has_value()) {
-    stats.numRows += existing->numRows;
-    mergeColumnStats(existing->columns, stats.columns);
-    stats.columns = std::move(existing->columns);
+    existing->merge(stats.numRows, stats.columns);
+    stats = std::move(existing.value());
   }
 
   const auto file = statsPath(directory);

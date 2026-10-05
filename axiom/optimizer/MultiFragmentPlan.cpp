@@ -21,6 +21,8 @@
 #include <folly/container/F14Map.h>
 #include <folly/container/F14Set.h>
 
+#include <cmath>
+
 namespace facebook::axiom::optimizer {
 
 namespace {
@@ -115,11 +117,12 @@ SplitWriteResults splitWriteResults(
 
 // Extracts stat field values from 'statsVector' for all rows into
 // 'stats[startRow + i][column]'. Casts the vector once and iterates all rows.
-// Null values are skipped — they occur for min/max/approx_distinct when all
-// input values are null.
+// A null value means all input values are null. 'rowCounts' holds the number
+// of rows in each group.
 void extractStatField(
     ColumnStatField field,
     const velox::VectorPtr& statsVector,
+    const std::vector<int64_t>& rowCounts,
     std::vector<std::vector<connector::ColumnStatistics>>& stats,
     velox::vector_size_t startRow,
     size_t column) {
@@ -157,6 +160,19 @@ void extractStatField(
       }
       break;
     }
+    case ColumnStatField::kSumDataSize: {
+      auto* values = statsVector->asUnchecked<velox::SimpleVector<int64_t>>();
+      for (auto i = 0; i < numRows; ++i) {
+        const auto numGroupRows = rowCounts[startRow + i];
+        if (numGroupRows == 0) {
+          continue;
+        }
+        const int64_t totalSize = values->isNullAt(i) ? 0 : values->valueAt(i);
+        stats[startRow + i][column].avgSizeInBytes = static_cast<int32_t>(
+            std::llround(static_cast<double>(totalSize) / numGroupRows));
+      }
+      break;
+    }
     case ColumnStatField::kCountIf: {
       auto* values = statsVector->asUnchecked<velox::SimpleVector<int64_t>>();
       for (auto i = 0; i < numRows; ++i) {
@@ -175,12 +191,14 @@ void extractStatField(
 
 // Extracts per-group column statistics from stats rows. Each row represents
 // one group (e.g. one partition for partitioned tables, or one row for
-// unpartitioned tables).
+// unpartitioned tables). 'rowCounts' holds the number of rows in each group.
 std::vector<std::vector<connector::ColumnStatistics>> extractPerGroupStats(
     const WriteStatsMapping& statsMapping,
     const std::vector<velox::RowVectorPtr>& statsRows,
-    int32_t firstStatsChannel) {
+    int32_t firstStatsChannel,
+    const std::vector<int64_t>& rowCounts) {
   const auto totalRows = countRows(statsRows);
+  VELOX_CHECK_EQ(rowCounts.size(), totalRows);
 
   std::vector<std::vector<connector::ColumnStatistics>> result(totalRows);
   for (auto& groupStats : result) {
@@ -203,7 +221,12 @@ std::vector<std::vector<connector::ColumnStatistics>> extractPerGroupStats(
       for (const auto& statsRow : statsRows) {
         VELOX_CHECK_LT(channel, statsRow->childrenSize());
         extractStatField(
-            field, statsRow->childAt(channel), result, resultRow, column);
+            field,
+            statsRow->childAt(channel),
+            rowCounts,
+            result,
+            resultRow,
+            column);
         resultRow += statsRow->size();
       }
       ++channel;
@@ -257,12 +280,47 @@ velox::RowVectorPtr extractGroupingKeys(
   return result;
 }
 
+// Returns the number of rows written, summed over the row counts the writers
+// report in 'dataRows'.
+int64_t countWrittenRows(const std::vector<velox::RowVectorPtr>& dataRows) {
+  int64_t numRows{0};
+  for (const auto& dataRow : dataRows) {
+    auto* values =
+        dataRow->childAt(velox::core::TableWriteTraits::kRowCountChannel)
+            ->asUnchecked<velox::SimpleVector<int64_t>>();
+    for (auto i = 0; i < dataRow->size(); ++i) {
+      if (!values->isNullAt(i)) {
+        numRows += values->valueAt(i);
+      }
+    }
+  }
+  return numRows;
+}
+
+// Returns the values of 'channel' across all 'statsRows'.
+std::vector<int64_t> readRowCounts(
+    const std::vector<velox::RowVectorPtr>& statsRows,
+    int32_t channel) {
+  std::vector<int64_t> rowCounts;
+  rowCounts.reserve(countRows(statsRows));
+  for (const auto& statsRow : statsRows) {
+    VELOX_CHECK_LT(channel, statsRow->childrenSize());
+    auto* values =
+        statsRow->childAt(channel)->asUnchecked<velox::SimpleVector<int64_t>>();
+    for (auto i = 0; i < statsRow->size(); ++i) {
+      rowCounts.push_back(values->valueAt(i));
+    }
+  }
+  return rowCounts;
+}
+
 std::pair<
     velox::RowVectorPtr,
     std::vector<std::vector<connector::ColumnStatistics>>>
 extractStats(
     const WriteStatsMapping& statsMapping,
-    const std::vector<velox::RowVectorPtr>& statsRows) {
+    const std::vector<velox::RowVectorPtr>& statsRows,
+    const std::vector<velox::RowVectorPtr>& dataRows) {
   VELOX_CHECK(!statsRows.empty());
 
   // The stats output layout is:
@@ -271,27 +329,35 @@ extractStats(
   // When there are grouping keys, a count(*) aggregate occupies the first
   // stats channel (right after grouping keys) providing exact per-group
   // row counts. This channel is included in groupingKeys (not in
-  // per-column stats).
-  const auto firstGroupingKeyChannel =
-      velox::core::TableWriteTraits::kStatsChannel;
-  // Number of channels to include in groupingKeys: partition keys + row count.
-  const auto numGroupingKeyChannels =
-      statsMapping.numGroupingKeys + (statsMapping.numGroupingKeys > 0 ? 1 : 0);
-  const auto firstStatsChannel =
-      firstGroupingKeyChannel + static_cast<int32_t>(numGroupingKeyChannels);
+  // per-column stats). Without grouping keys there is a single group, whose
+  // row count is the number of rows written.
+  constexpr auto kStatsChannel = velox::core::TableWriteTraits::kStatsChannel;
 
   if (statsMapping.numGroupingKeys == 0) {
+    VELOX_CHECK_EQ(countRows(statsRows), 1);
     return {
         nullptr,
-        extractPerGroupStats(statsMapping, statsRows, firstStatsChannel)};
+        extractPerGroupStats(
+            statsMapping,
+            statsRows,
+            kStatsChannel,
+            {countWrittenRows(dataRows)})};
   }
+
+  const auto rowCountChannel =
+      kStatsChannel + static_cast<int32_t>(statsMapping.numGroupingKeys);
 
   auto groupingKeyNames = statsMapping.groupingKeyNames;
   groupingKeyNames.push_back("$row_count");
 
   return {
-      extractGroupingKeys(statsRows, numGroupingKeyChannels, groupingKeyNames),
-      extractPerGroupStats(statsMapping, statsRows, firstStatsChannel)};
+      extractGroupingKeys(
+          statsRows, statsMapping.numGroupingKeys + 1, groupingKeyNames),
+      extractPerGroupStats(
+          statsMapping,
+          statsRows,
+          rowCountChannel + 1,
+          readRowCounts(statsRows, rowCountChannel))};
 }
 
 const auto& columnStatFieldNames() {
@@ -301,6 +367,7 @@ const auto& columnStatFieldNames() {
       {ColumnStatField::kMin, "MIN"},
       {ColumnStatField::kMax, "MAX"},
       {ColumnStatField::kApproxDistinct, "APPROX_DISTINCT"},
+      {ColumnStatField::kSumDataSize, "SUM_DATA_SIZE"},
   };
   return kNames;
 }
@@ -375,7 +442,8 @@ connector::RowsFuture FinishWrite::commit(
     return metadata_->finishWrite(session_, handle_, dataRows, nullptr, {});
   }
 
-  auto [partitionKeys, partitionStats] = extractStats(statsMapping_, statsRows);
+  auto [partitionKeys, partitionStats] =
+      extractStats(statsMapping_, statsRows, dataRows);
   return metadata_->finishWrite(
       session_,
       handle_,

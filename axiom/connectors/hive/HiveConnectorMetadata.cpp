@@ -255,6 +255,23 @@ HiveTableLayout::HiveTableLayout(
   VELOX_CHECK_EQ(sortedByColumns.size(), sortOrder.size());
 }
 
+velox::RowTypePtr HiveTableLayout::dataColumns() const {
+  const auto& type = rowType();
+  std::vector<std::string> names;
+  std::vector<velox::TypePtr> types;
+  for (size_t i = 0; i < type->size(); ++i) {
+    const auto& name = type->nameOf(i);
+    const bool isPartitionColumn = std::ranges::any_of(
+        hivePartitionColumns_,
+        [&](const Column* column) { return column->name() == name; });
+    if (!isPartitionColumn) {
+      names.push_back(name);
+      types.push_back(type->childAt(i));
+    }
+  }
+  return velox::ROW(std::move(names), std::move(types));
+}
+
 // static
 velox::Variant HiveTableLayout::partitionValueToVariant(
     std::string_view value,
