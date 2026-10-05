@@ -28,6 +28,19 @@ tests next to related existing tests, not at the end of the file. Group
 tests by topic (e.g., place `tryCast` next to `types`, `notBetween` next
 to `ifClause` which uses `between`).
 
+A new case of a behavior that already has a test extends that test. A new
+stat, field or variant goes into the existing test, which then asserts all of
+the behavior's outputs, including the new one.
+
+When a test already runs the code through its real path, such as an
+end-to-end or query test, extend that test. Inputs built by hand can describe
+states the real path never produces, and a test on them pins behavior that
+does not exist.
+
+A bug fix in code that has no tests adds tests for the whole behavior that
+code implements. The bug shows that coverage is missing, and one case for the
+bug leaves the rest of the behavior untested.
+
 Prefer gtest container matchers over individual assertions:
 
 ```cpp
@@ -329,6 +342,22 @@ class SortProjection {
   static void sortAndTrim(...);
 };
 ```
+
+### Duplicating existing logic
+
+Before writing a helper or a block of more than a few lines, find where the
+concept already lives and call it. Search for the data being computed, not
+only for a function name. When the existing code is private to another file
+or class, move it to the class that owns the concept and call it from both
+places.
+
+This applies to tests. A test helper calls the production code for anything
+production already computes, and a new check reuses the helpers and fixtures
+its test file already has.
+
+Copies drift apart. A drifted copy of a rule in production code is a
+wrong-results bug, and a drifted copy in a test checks something production
+no longer does.
 
 ### One-letter and abbreviated variable names
 
