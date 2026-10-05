@@ -21,6 +21,31 @@
 --
 -- Window functions.
 
+-- Constants inferred from a join do not partition or order rows. Removing the
+-- ordering key preserves its RANGE UNBOUNDED PRECEDING to CURRENT ROW frame.
+-- ordered
+SELECT
+  t.b,
+  sum(t.b) OVER (PARTITION BY t.a) AS partition_sum,
+  sum(t.b) OVER (ORDER BY t.a, t.b) AS ordered_sum
+FROM t
+JOIN (VALUES (BIGINT '1')) AS v(k) ON t.a = v.k
+ORDER BY t.b
+----
+-- Literal keys are also removed when a bounded ranking is specialized.
+-- ordered
+SELECT b, rn
+FROM (
+  SELECT
+    t.b,
+    row_number() OVER (PARTITION BY t.a ORDER BY t.a, t.b) AS rn
+  FROM t
+  JOIN (VALUES (BIGINT '1')) AS v(k) ON t.a = v.k
+)
+WHERE rn <= 2
+ORDER BY b
+----
+
 -- row_number with partition and order.
 SELECT a, b, row_number() OVER (PARTITION BY a ORDER BY b) AS rn FROM t
 ----

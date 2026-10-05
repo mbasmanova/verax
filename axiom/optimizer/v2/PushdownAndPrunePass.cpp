@@ -158,6 +158,25 @@ void dropDuplicateOrderKeys(
   orderTypes = std::move(uniqueTypes);
 }
 
+// Literal keys cannot divide rows into different partitions or establish an
+// ordering. Removes them while keeping order keys paired with their types.
+void dropLiteralWindowKeys(
+    ExprVector& partitionKeys,
+    ExprVector& orderKeys,
+    OrderTypeVector& orderTypes) {
+  std::erase_if(partitionKeys, [](ExprCP key) {
+    return key->is(PlanType::kLiteralExpr);
+  });
+
+  VELOX_DCHECK_EQ(orderKeys.size(), orderTypes.size());
+  for (size_t i = orderKeys.size(); i > 0; --i) {
+    if (orderKeys[i - 1]->is(PlanType::kLiteralExpr)) {
+      orderKeys.erase(orderKeys.begin() + i - 1);
+      orderTypes.erase(orderTypes.begin() + i - 1);
+    }
+  }
+}
+
 // Applies a column-to-column substitution. Other substitutions cannot appear
 // in a ColumnVector and leave the column unchanged.
 ColumnCP rewriteColumn(
@@ -2524,6 +2543,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     ExprVector orderKeys = node->orderKeys();
     OrderTypeVector orderTypes = node->orderTypes();
     applyOutputSubstitutions(childContext, partitionKeys, orderKeys, blocked);
+    dropLiteralWindowKeys(partitionKeys, orderKeys, orderTypes);
     dropDuplicateOrderKeys(orderKeys, orderTypes);
 
     // Emit the rank column only when a consumer above still needs it.
@@ -2623,6 +2643,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     OrderTypeVector orderTypes = node->orderTypes();
     applyOutputSubstitutions(
         childContext, partitionKeys, orderKeys, blocked, survivingFunctions);
+    dropLiteralWindowKeys(partitionKeys, orderKeys, orderTypes);
     dropDuplicateOrderKeys(orderKeys, orderTypes);
 
     // With every function pruned the node computes nothing and emits its
