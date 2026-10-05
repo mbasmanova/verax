@@ -180,11 +180,13 @@ class Column : public Expr {
 
   /// Creates a fresh identity for a NULL-extending boundary. Preserves
   /// subfield provenance and facts about non-null values, and clears facts
-  /// affected by added NULLs.
+  /// affected by added NULLs. Keeps the source's output name because the source
+  /// is visible below the boundary and this column replaces it above.
   static ColumnCP createForNullExtendedValue(ColumnCP source);
 
   /// Creates a fresh identity with the same emitted name, type and subfield
-  /// provenance, and unknown value facts.
+  /// provenance, and unknown value facts. The source is visible below the
+  /// value-changing boundary and this column replaces it above.
   static ColumnCP createWithUnknownValue(ColumnCP source);
 
   /// Synthesizes a `BOOLEAN` column with cardinality 2 (the two valid

@@ -1673,7 +1673,8 @@ class Pushdown : public NodeRewriter<PushdownContext> {
   }
 
   // Applies child substitutions to the join boundary and preserves fresh
-  // identities for null-extended outputs whose sources changed.
+  // identities for null-extended outputs whose sources changed. If several
+  // outputs resolve to one source, they share one fresh boundary column.
   void repairJoinBoundary(RewrittenJoinInputs& rewritten, PrunedJoin& pruned) {
     if (rewritten.outputSubstitutions.empty()) {
       return;
@@ -1685,6 +1686,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     ColumnVector rewrittenSources;
     PlanSubstitutions boundarySubstitutions;
     PlanObjectSet addedOutputs;
+    folly::F14FastMap<ColumnCP, ColumnCP> nullExtendedOutputs;
     for (size_t i = 0; i < pruned.outputColumns.size(); ++i) {
       const ColumnCP previousOutput = pruned.outputColumns[i];
       const ColumnCP previousSource = pruned.sourceColumns[i];
@@ -1692,11 +1694,17 @@ class Pushdown : public NodeRewriter<PushdownContext> {
           exprs_, pruned.outputColumns[i], rewritten.outputSubstitutions);
       ColumnCP source = rewriteColumn(
           exprs_, pruned.sourceColumns[i], rewritten.outputSubstitutions);
-      if (previousOutput != previousSource &&
-          (source != previousSource ||
-           previousOutput->outputName() != source->outputName())) {
-        output = Column::createForNullExtendedValue(source);
-        boundarySubstitutions.add(previousOutput, output);
+      if (previousOutput != previousSource) {
+        auto [it, inserted] = nullExtendedOutputs.try_emplace(source, output);
+        if (inserted &&
+            (source != previousSource ||
+             previousOutput->outputName() != source->outputName())) {
+          it->second = Column::createForNullExtendedValue(source);
+        }
+        output = it->second;
+        if (output != previousOutput) {
+          boundarySubstitutions.add(previousOutput, output);
+        }
       }
       if (addedOutputs.contains(output)) {
         continue;
