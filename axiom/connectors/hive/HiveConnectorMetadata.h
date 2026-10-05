@@ -189,6 +189,10 @@ class HiveTableLayout : public TableLayout {
     return hivePartitionColumns_;
   }
 
+  /// Returns the columns stored in data files: rowType() without the Hive
+  /// partition columns.
+  velox::RowTypePtr dataColumns() const;
+
   /// Converts a Hive partition-key string to a Variant of 'type'. Fails for a
   /// type that cannot appear as a partition key.
   static velox::Variant partitionValueToVariant(

@@ -706,7 +706,8 @@ TEST_P(HiveBucketedExecutionTest, bucketCountsThatScaleDifferently) {
       "u",
       2,
       {"c_nationkey"},
-      "SELECT DISTINCT c_nationkey, cast(c_nationkey AS varchar) AS label FROM customer");
+      "SELECT DISTINCT c_nationkey, "
+      "rpad(cast(c_nationkey AS varchar), 100, 'x') AS label FROM customer");
   createRegularTable("v", "SELECT c_custkey, c_nationkey FROM customer");
 
   // The unbucketed table is shuffled onto the wider table's buckets.

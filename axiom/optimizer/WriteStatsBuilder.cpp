@@ -73,6 +73,8 @@ WriteStatsBuilder::WriteStatsBuilder(
   const auto countIfSignatures = getAggregateSignatures(statsAggs->countIf);
   const auto approxDistinctSignatures =
       getAggregateSignatures(statsAggs->approxDistinct);
+  const auto sumDataSizeSignatures =
+      getAggregateSignatures(statsAggs->sumDataSize);
 
   // When there are grouping keys, add a count(*) aggregate (no input
   // columns) as the first stats channel to provide exact per-group row
@@ -153,6 +155,14 @@ WriteStatsBuilder::WriteStatsBuilder(
 
       default:
         break;
+    }
+
+    if (!colType->isFixedWidth()) {
+      addAggregateIfSupported(
+          sumDataSizeSignatures,
+          ColumnStatField::kSumDataSize,
+          statsAggs->sumDataSize,
+          velox::BIGINT());
     }
 
     statsMapping_.columns.push_back(std::move(mapping));
