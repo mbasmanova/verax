@@ -124,6 +124,22 @@ LEFT JOIN (VALUES (2)) AS u(x) ON t.a = u.x
 LEFT JOIN (VALUES (0)) AS v(k) ON coalesce(u.x, 0) = v.k
 
 ----
+-- A null-extended output remains available when an inner join below it
+-- equates its source to a different column.
+WITH
+  t(k, a) AS (VALUES (0, 'x'), (1, 'y'), (2, 'z')),
+  u(k, z) AS (VALUES (0, 'x'), (1, 'y')),
+  s AS (
+    SELECT t.k, u.z
+    FROM u
+    JOIN t ON u.z = t.a
+  )
+SELECT t.k, count(s.z)
+FROM t
+LEFT JOIN s ON t.k = s.k
+GROUP BY t.k
+
+----
 -- Two inputs connected only through a third can join through that input.
 SELECT t_k, u_k, k
 FROM (VALUES (1), (2)) AS t(t_k)

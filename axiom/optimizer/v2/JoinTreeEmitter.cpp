@@ -647,15 +647,15 @@ Emitted buildJoin(
         inputColumns.contains(output) || it == edge.outputColumns().end()
         ? output
         : edge.sourceColumns()[it - edge.outputColumns().begin()];
+    if (const auto mapped = beforeJoin.find(source);
+        mapped != beforeJoin.end()) {
+      source = mapped->second->as<Column>();
+    }
     VELOX_CHECK(
         inputColumns.contains(source) ||
             (it != edge.outputColumns().end() && source == output),
         "Join output source is not emitted by either input: {}",
         source->toString());
-    if (const auto mapped = beforeJoin.find(source);
-        mapped != beforeJoin.end()) {
-      source = mapped->second->as<Column>();
-    }
     sourceColumns.push_back(source);
   }
 
