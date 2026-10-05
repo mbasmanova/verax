@@ -16,6 +16,8 @@
 
 #include "axiom/optimizer/tests/QueryTestBase.h"
 
+#include <fmt/format.h>
+
 namespace facebook::axiom::optimizer {
 namespace {
 
@@ -68,6 +70,32 @@ TEST_P(WindowTest, partitionBy) {
           .project({"n_name", "n_regionkey", "s"})
           .build();
   AXIOM_ASSERT_PLAN(plan, matcher);
+}
+
+TEST_P(WindowTest, constantKeysAfterJoin) {
+  for (const auto& [windowClause, expectedWindow] : {
+           std::pair{
+               "PARTITION BY n.n_regionkey",
+               "sum(n_nationkey) OVER () as total"},
+           std::pair{
+               "ORDER BY n.n_regionkey, n.n_nationkey",
+               "sum(n_nationkey) OVER (ORDER BY n_nationkey) as total"},
+       }) {
+    const std::string query = fmt::format(
+        "SELECT n.n_nationkey, sum(n.n_nationkey) OVER ({}) AS total "
+        "FROM nation n JOIN (VALUES BIGINT '1') v(k) "
+        "ON n.n_regionkey = v.k",
+        windowClause);
+    SCOPED_TRACE(query);
+
+    auto plan = toSingleNodePlan(query);
+    auto matcher = matchScan("nation")
+                       .filter("n_regionkey = 1")
+                       .window({expectedWindow})
+                       .project({"n_nationkey", "total"})
+                       .build();
+    AXIOM_ASSERT_PLAN_V2(plan, matcher);
+  }
 }
 
 TEST_P(WindowTest, multipleFunctionsSameSpec) {
