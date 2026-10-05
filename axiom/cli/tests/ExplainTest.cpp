@@ -15,6 +15,7 @@
  */
 
 #include <folly/String.h>
+#include <folly/json/json.h>
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
@@ -458,8 +459,9 @@ TEST_P(ExplainTest, explainFormatGraphviz) {
       "Unsupported EXPLAIN format: JSON");
 }
 
-// A distributed count reports the scanning fragment with its table, and the
-// exchange edge into the fragment that gathers the result.
+// A distributed count reports the scanning fragment with its table and the
+// optimizer's estimates for the scan, and the exchange edge into the fragment
+// that gathers the result. Only v2 estimates row sizes.
 TEST_P(ExplainTest, fragmentGraph) {
   testConnector_->addTpchTables(1);
 
@@ -469,34 +471,63 @@ TEST_P(ExplainTest, fragmentGraph) {
       {.numWorkers = 2, .numDrivers = 1});
   ASSERT_TRUE(result.message.has_value());
 
-  EXPECT_EQ(result.message.value(), R"({
+  const std::string outputBytesPerRow =
+      useV2_ ? "\n            \"outputBytesPerRow\": 0," : "";
+  EXPECT_EQ(
+      result.message.value(),
+      fmt::format(
+          R"({{
   "fragments": [
-    {
+    {{
       "id": 2,
-      "output": {
+      "output": {{
         "consumerFragmentId": 1,
         "nodeId": "2"
-      },
+      }},
       "scans": [
-        {
+        {{
+          "estimate": {{{}
+            "outputRows": 6001215
+          }},
           "nodeId": "0",
           "table": "\"default\".\"lineitem\""
-        }
+        }}
       ],
       "type": "SOURCE"
-    },
-    {
+    }},
+    {{
       "exchanges": [
-        {
+        {{
           "nodeId": "3",
           "producerFragmentId": 2
-        }
+        }}
       ],
       "id": 1,
       "type": "SINGLE"
-    }
+    }}
   ]
-})");
+}})",
+          outputBytesPerRow));
+}
+
+// A query that only scans and renames columns plans the rename above the scan.
+// The scan still reports its estimates.
+TEST_P(ExplainTest, fragmentGraphRootScan) {
+  if (!useV2_) {
+    return;
+  }
+  testConnector_->addTpchTables(1);
+
+  auto result = runner_->run(
+      "EXPLAIN (TYPE EXECUTABLE WITH (detail = 'summary'), FORMAT JSON) "
+      "SELECT l_orderkey AS k FROM lineitem",
+      {.numWorkers = 2, .numDrivers = 1});
+  ASSERT_TRUE(result.message.has_value());
+
+  const auto graph = folly::parseJson(result.message.value());
+  const auto& scan = graph["fragments"][0]["scans"][0];
+  ASSERT_TRUE(scan.count("estimate")) << result.message.value();
+  EXPECT_EQ(scan["estimate"]["outputRows"].asInt(), 6'001'215);
 }
 
 TEST_P(ExplainTest, fragmentGraphErrors) {

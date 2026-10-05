@@ -46,26 +46,81 @@ buck run axiom/cli:cli -- \
 
 ### EXPLAIN variants
 
-The `EXPLAIN` command supports several output types via `EXPLAIN (TYPE <type>) <query>`:
+The CLI uses the v2 optimizer by default; `--v1` selects v1. `EXPLAIN (TYPE
+<type>) <query>` shows the query at a stage of planning:
 
-| Command | Output | Description |
-|---------|--------|-------------|
-| `EXPLAIN <query>` | Velox plan | The default output — a distributed execution plan with Velox operators. Same as `EXPLAIN (TYPE EXECUTABLE)` |
-| `EXPLAIN (TYPE LOGICAL) <query>` | Logical plan | The unoptimized logical plan tree (the output of `PrestoParser`) |
-| `EXPLAIN (TYPE GRAPH) <query>` | Query graph | The output of `ToGraph` — parsed query structure with tables, joins, filters, and aggregations |
-| `EXPLAIN (TYPE OPTIMIZED) <query>` | Physical plan | The output of `Optimization::bestPlan` — the optimized logical plan before translation to Velox |
-| `EXPLAIN (TYPE EXECUTABLE) <query>` | Velox plan | The distributed execution plan with Velox operators (same as default `EXPLAIN`) |
-| `EXPLAIN (TYPE DISTRIBUTED) <query>` | Velox plan | Alias for `EXECUTABLE` |
-| `EXPLAIN ANALYZE <query>` | Velox plan + stats | Runs the query and shows the execution plan with runtime statistics (row counts, timings, custom operator stats). Use `--debug` flag for custom operator stats |
+| Command | Output |
+|---------|--------|
+| `EXPLAIN (TYPE LOGICAL) <query>` | The logical plan the parser produces, before optimization |
+| `EXPLAIN (TYPE OPTIMIZED) <query>` | The optimizer's Node IR after its last pass, `PLAN_PHYSICAL`, with estimates |
+| `EXPLAIN (TYPE OPTIMIZED WITH (last_pass = '<pass>')) <query>` | The Node IR after the named pass |
+| `EXPLAIN <query>` | The distributed Velox plan. Same as `EXPLAIN (TYPE EXECUTABLE)` and `EXPLAIN (TYPE DISTRIBUTED)` |
+| `EXPLAIN (TYPE IO) <query>` | JSON listing the tables the query reads and writes, with constraints on their partition columns |
+| `EXPLAIN (TYPE VALIDATE) <query>` | Succeeds when the query parses and resolves |
+| `EXPLAIN ANALYZE <query>` | Runs the query and shows the Velox plan with runtime statistics (row counts, timings, custom operator stats). Use `--debug` for custom operator stats |
 
-The types correspond to stages of the query compilation pipeline:
-1. **LOGICAL** — SQL parsed into a logical plan tree
-2. **GRAPH** — Logical plan converted into a query graph (input to the optimizer)
-3. **OPTIMIZED** — Optimizer produces the best physical plan
-4. **EXECUTABLE** — Physical plan translated to Velox operators for execution
+The v2 passes, in the order `Optimizer::planTo` (`v2/Optimize.cpp`) runs them:
 
-For the v2 pass order and the `last_pass` setting used to inspect intermediate
-IR, see [Optimizer v2 Pass Cheat Sheet](OptimizerPasses.md).
+1. `TRANSLATE`
+2. `DECORRELATE`
+3. `LIMIT_AND_ORDER`
+4. `PUSHDOWN_AND_PRUNE`
+5. `FOLD_METADATA_AGGREGATE`
+6. `CONNECTOR_PUSHDOWN`
+7. `ESTIMATE_LEAF_STATS` — estimates appear from here on.
+8. `PLAN_PHYSICAL`
+
+To find the pass that introduced a node or rewrite, compare the IR after
+adjacent passes. [Optimizer v2 Pass Cheat Sheet](OptimizerPasses.md) describes
+what each pass does.
+
+Under v1:
+
+- `TYPE OPTIMIZED` prints the output of `Optimization::bestPlan`.
+- `TYPE GRAPH` prints the query graph `ToGraph` builds. v2 rejects it.
+- `last_pass` is not supported.
+
+### Fragment graph as JSON
+
+`EXPLAIN (TYPE EXECUTABLE WITH (detail = 'summary'), FORMAT JSON) <query>`
+prints the shape of the distributed plan instead of its operators: the
+fragments, the tables each scans with the optimizer's estimates, and the
+exchanges between fragments.
+
+```json
+{
+  "fragments": [
+    {
+      "id": 2,
+      "type": "SOURCE",
+      "scans": [
+        {
+          "nodeId": "0",
+          "table": "lineitem",
+          "estimate": {
+            "rawInputRows": 600572,
+            "rawInputBytesPerRow": 16,
+            "splits": 1,
+            "outputRows": 490263,
+            "outputBytesPerRow": 16
+          }
+        }
+      ],
+      "output": {"nodeId": "1", "consumerFragmentId": 1}
+    },
+    {
+      "id": 1,
+      "type": "SINGLE",
+      "exchanges": [{"nodeId": "2", "producerFragmentId": 2}]
+    }
+  ]
+}
+```
+
+This is the output for `SELECT l_orderkey, l_quantity FROM lineitem WHERE
+l_quantity > 10` on TPC-H scale factor 0.1 with `--num_workers 4`, reformatted
+for reading. The fields are defined
+in `MultiFragmentPlanPrinter::toGraphJson` (`axiom/optimizer/MultiFragmentPlanPrinter.h`).
 
 ### TPC-H Data Directories
 
@@ -125,14 +180,14 @@ buck run axiom/cli:cli -- \
   --query "EXPLAIN $(cat axiom/optimizer/tests/tpch/queries/q5.sql)"
 ```
 
-To view the query graph instead:
+To view the optimizer's IR after a pass instead:
 
 ```bash
 buck run axiom/cli:cli -- \
   --data_path /home/$USER/tpch/sf0.1/ \
   --num-workers 1 \
   --num-drivers 1 \
-  --query "EXPLAIN (type graph) $(cat axiom/optimizer/tests/tpch/queries/q5.sql)"
+  --query "EXPLAIN (TYPE OPTIMIZED WITH (last_pass = 'pushdown_and_prune')) $(cat axiom/optimizer/tests/tpch/queries/q5.sql)"
 ```
 
 ## 2. Adding Debug Logging
@@ -152,34 +207,41 @@ are always visible regardless of logging configuration.
 To see logs for passing tests, use `--print-passing-details`:
 
 ```bash
-buck test axiom/optimizer/tests:tpch_plan -- q5 --print-passing-details
+buck test axiom/optimizer/v2/tests:tpch_plan -- q05 --print-passing-details
 ```
 
 **Warning:** Remove all debug logging before committing!
 
 ## 3. TPC-H Query Tests
 
-`TpchPlanTest` tests all 22 TPC-H queries. For each query, the test verifies:
+Two tests cover the 22 TPC-H queries:
 
-1. **Query results** — `checkTpchSql(n)` executes the query and compares results against a reference Velox plan
-2. **Single-node plan shape** — `AXIOM_ASSERT_PLAN(plan, matcher)` validates the optimized plan structure matches expected patterns
-3. **Multi-node plan generation** — `ASSERT_NO_THROW(planVelox(parseTpchSql(n)))` confirms the optimizer can successfully generate a distributed plan
+- **`axiom/optimizer/v2/tests:tpch_plan`** asserts the single-node plan shape
+  the v2 optimizer produces. It injects statistics through
+  `TestConnector::addTpchTables`, so it generates no data and plans at any
+  scale instantly. Queries whose v2 plan does not yet match v1's assert only
+  that planning succeeds; `TpchV1V2PlanComparison.md` tracks the gaps.
+- **`axiom/optimizer/tests:tpch_result`** runs each query on generated data
+  under both optimizers and compares the results with a reference plan.
 
 ### Running TPC-H tests
 
 ```bash
-# Run all 22 TPC-H query tests
-buck test axiom/optimizer/tests:tpch_plan
+# Plan shapes under v2.
+buck test axiom/optimizer/v2/tests:tpch_plan
 
-# Run a specific query test
-buck test axiom/optimizer/tests:tpch_plan -- q5
+# One query.
+buck test axiom/optimizer/v2/tests:tpch_plan -- q05
+
+# Results under both optimizers.
+buck test axiom/optimizer/tests:tpch_result
 ```
 
-### Regenerating plan files
+### v1 plan tests and snapshots
 
-The `tpch/plans` directory is checked into the repo and contains a snapshot of the TPC-H single-node plans. These files are useful for reviewing expected plan shapes, but they are not used directly by the tests.
-
-`DISABLED_makePlans` generates files in the `tpch/plans` directory.
+`axiom/optimizer/tests:tpch_plan` asserts the v1 plan shapes. Its
+`DISABLED_makePlans` regenerates the v1 plan snapshots in the `tpch/plans`
+directory, which are for reviewing plan shapes and are not used by the tests.
 Each `.plans` file contains:
 
 - **Query graph** — `DerivedTable::toString()` output showing the parsed query structure with tables, joins, filters, and aggregations
@@ -187,7 +249,7 @@ Each `.plans` file contains:
 - **Optimized plan** — `RelationOp::toString()` output, the full optimized logical plan with all operators
 - **Executable Velox plan** — `MultiFragmentPlan::toString()` output, the distributed execution plan with Velox operators
 
-To regenerate all plan files after changing the optimizer, run from the `fbcode` directory:
+To regenerate them, run from the `fbcode` directory:
 
 ```bash
 cd fbcode

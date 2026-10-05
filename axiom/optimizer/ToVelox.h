@@ -30,9 +30,6 @@ namespace facebook::axiom::optimizer {
 /// canonical summary of the node and its inputs.
 using NodeHistoryMap = folly::F14FastMap<velox::core::PlanNodeId, std::string>;
 
-using NodePredictionMap =
-    folly::F14FastMap<velox::core::PlanNodeId, NodePrediction>;
-
 /// Maps a source column name to its user-requested output name for the
 /// final projection in toVeloxPlan. Resolved eagerly because column
 /// pruning invalidates the original ordinals.

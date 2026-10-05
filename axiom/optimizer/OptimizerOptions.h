@@ -57,6 +57,10 @@ struct OptimizerOptions : public velox::config::ConfigProvider {
       "small_query_max_scan_rows";
   static constexpr std::string_view kSmallQueryNumWorkers =
       "small_query_num_workers";
+  static constexpr std::string_view kSmallQueryMaxSplits =
+      "small_query_max_splits";
+  static constexpr std::string_view kSmallQueryMaxScanBytes =
+      "small_query_max_scan_bytes";
   static constexpr std::string_view kHashPartitionCount =
       "hash_partition_count";
   static constexpr std::string_view kMinColumnarChannelsForCompactRow =
@@ -71,6 +75,8 @@ struct OptimizerOptions : public velox::config::ConfigProvider {
   // and properties().
   static constexpr int64_t kSmallQueryMaxScanRowsDefault = 0;
   static constexpr int32_t kSmallQueryNumWorkersDefault = 1;
+  static constexpr int64_t kSmallQueryMaxSplitsDefault = 0;
+  static constexpr std::string_view kSmallQueryMaxScanBytesDefault = "0B";
   static constexpr int32_t kHashPartitionCountDefault = 0;
   static constexpr int32_t kMinColumnarChannelsForCompactRowDefault = 1'000;
   static constexpr std::string_view kMaxDuplicatedLiteralBytesDefault = "64KB";
@@ -128,15 +134,28 @@ struct OptimizerOptions : public velox::config::ConfigProvider {
   /// the whole map is accessed as a map. v1 only, as for 'allMapsAsStruct'.
   folly::F14FastMap<std::string, std::vector<std::string>> mapAsStruct;
 
-  /// A query whose scans are estimated to read at most this many rows in total
-  /// is small. A query that reads more, or whose scans report no estimate,
-  /// keeps the worker count the caller supplied. 0, the default, disables the
-  /// decision.
+  /// A SELECT query whose scans are estimated to read at most this many rows in
+  /// total is small. A query that reads more, or whose scans report no
+  /// estimate, keeps the worker count the caller supplied.
+  /// 0, the default, disables the decision.
   int64_t smallQueryMaxScanRows{kSmallQueryMaxScanRowsDefault};
 
   /// The worker count a small query runs on, capped by the count the caller
   /// supplied.
   int32_t smallQueryNumWorkers{kSmallQueryNumWorkersDefault};
+
+  /// A small query's scans must also produce at most this many splits in
+  /// total. A query whose scans report no split estimate is then not small.
+  /// Applies only when 'smallQueryMaxScanRows' enables the decision. 0, the
+  /// default, disables the limit.
+  int64_t smallQueryMaxSplits{kSmallQueryMaxSplitsDefault};
+
+  /// A small query's scans must also read at most this many bytes in total.
+  /// A scan reads its rows times its bytes per row. A query whose scans report
+  /// no bytes-per-row estimate is then not small. Applies only when
+  /// 'smallQueryMaxScanRows' enables the decision. 0, the default, disables the
+  /// limit.
+  int64_t smallQueryMaxScanBytes{0};
 
   /// The number of tasks a hash-partitioned stage runs, capped by the worker
   /// count the caller supplied. 0, the default, uses that worker count.

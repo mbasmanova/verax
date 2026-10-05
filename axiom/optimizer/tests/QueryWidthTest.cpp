@@ -69,23 +69,34 @@ class QueryWidthTest : public test::HiveQueriesTestBase {
     return widths;
   }
 
-  // Sums the raw-input estimates the optimizer recorded for the plan's scans,
-  // which is what the width decision reads. nullopt when no scan reported one.
-  static std::optional<uint64_t> scanRawInputRows(const PlanAndStats& result) {
+  // Sums a per-scan estimate the optimizer recorded for the plan's scans, which
+  // is what the width decision reads. nullopt when no scan reported one.
+  static std::optional<uint64_t> scanTotal(
+      const PlanAndStats& result,
+      std::optional<uint64_t> NodePrediction::* estimate) {
     std::optional<uint64_t> total;
     for (const auto& [id, prediction] : result.prediction) {
-      if (prediction.numRawInputRows.has_value()) {
-        total = total.value_or(0) + *prediction.numRawInputRows;
+      if ((prediction.*estimate).has_value()) {
+        total = total.value_or(0) + *(prediction.*estimate);
       }
     }
     return total;
+  }
+
+  static std::optional<uint64_t> scanRawInputRows(const PlanAndStats& result) {
+    return scanTotal(result, &NodePrediction::numRawInputRows);
+  }
+
+  static std::optional<uint64_t> scanSplits(const PlanAndStats& result) {
+    return scanTotal(result, &NodePrediction::numSplits);
   }
 };
 
 // A query narrows when the rows its scan is estimated to read are at most the
 // threshold, which is inclusive. A threshold of zero disables the decision.
 // The decision follows what the query reads, so an aggregation over a scan
-// behaves like the scan alone.
+// behaves like the scan alone. Only SELECT queries narrow: the same scan in an
+// INSERT keeps the full width.
 TEST_F(QueryWidthTest, scan) {
   for (const std::string_view sql :
        {"SELECT n_nationkey FROM nation",
@@ -110,6 +121,13 @@ TEST_F(QueryWidthTest, scan) {
       EXPECT_EQ(maxRemotePartitions(result), kWorkersAvailable);
     }
   }
+
+  runCtas("CREATE TABLE nation_copy AS SELECT * FROM nation");
+  const auto result = planVelox(
+      parseInsert("INSERT INTO nation_copy SELECT * FROM nation"),
+      {.maxRemotePartitions = kWorkersAvailable, .maxLocalPartitions = 2},
+      narrowingAt(kNationRows));
+  EXPECT_EQ(maxRemotePartitions(result), kWorkersAvailable);
 }
 
 // TABLESAMPLE SYSTEM keeps each split with the sample probability, so a sampled
@@ -150,6 +168,51 @@ TEST_F(QueryWidthTest, join) {
     EXPECT_EQ(scanRawInputRows(result), bothTables);
     EXPECT_EQ(maxRemotePartitions(result), kWorkersAvailable);
   }
+}
+
+// With a split limit, a query also narrows only when its scans produce at most
+// that many splits in total.
+TEST_F(QueryWidthTest, splits) {
+  const std::string_view scan = "SELECT n_nationkey FROM nation";
+  const std::string_view join =
+      "SELECT n_name, r_name FROM nation, region "
+      "WHERE n_regionkey = r_regionkey";
+
+  auto options = narrowingAt(kNationRows + kRegionRows);
+  options.smallQueryMaxSplits = 1;
+
+  {
+    const auto result = plan(scan, options);
+    EXPECT_EQ(scanSplits(result), 1);
+    EXPECT_EQ(maxRemotePartitions(result), 1);
+  }
+
+  {
+    const auto result = plan(join, options);
+    EXPECT_EQ(scanSplits(result), 2);
+    EXPECT_EQ(maxRemotePartitions(result), kWorkersAvailable);
+  }
+}
+
+// With a bytes limit, a query also narrows only when its scans read at most
+// that many bytes in total, each its rows times its bytes per row. A scan whose
+// row size is unknown, here one reading a VARCHAR column, keeps the query at
+// full width.
+TEST_F(QueryWidthTest, scanBytes) {
+  const std::string_view sql = "SELECT n_nationkey FROM nation";
+  const int64_t nationKeyBytes = kNationRows * sizeof(int64_t);
+
+  auto options = narrowingAt(kNationRows);
+  options.smallQueryMaxScanBytes = nationKeyBytes;
+  EXPECT_EQ(maxRemotePartitions(plan(sql, options)), 1);
+
+  options.smallQueryMaxScanBytes = nationKeyBytes - 1;
+  EXPECT_EQ(maxRemotePartitions(plan(sql, options)), kWorkersAvailable);
+
+  options.smallQueryMaxScanBytes = 1'000'000;
+  EXPECT_EQ(
+      maxRemotePartitions(plan("SELECT n_name FROM nation", options)),
+      kWorkersAvailable);
 }
 
 // Narrowing on a partial total would under-size a query by however much the

@@ -54,20 +54,24 @@ class FilteredTableStatsTest : public test::HiveQueriesTestBase,
     test::HiveQueriesTestBase::TearDown();
   }
 
-  // Returns the cardinality the optimizer estimates for 'sql'. Sampling is off
-  // so the estimate comes from co_estimateStats.
-  float estimatedCardinality(const std::string& sql) {
+  // Plans 'sql' on one node. Sampling is off so estimates come from
+  // co_estimateStats.
+  PlanAndStats plan(const std::string& sql) {
     auto logicalPlan = parseSelect(sql, velox::exec::test::kHiveConnectorId);
 
     OptimizerOptions optimizerOptions;
     optimizerOptions.sampleJoins = false;
     optimizerOptions.sampleFilters = false;
 
-    auto planAndStats = planVelox(
+    return planVelox(
         logicalPlan,
         {.maxRemotePartitions = 1, .maxLocalPartitions = 1},
         std::move(optimizerOptions));
+  }
 
+  // Returns the cardinality the optimizer estimates for 'sql'.
+  float estimatedCardinality(const std::string& sql) {
+    auto planAndStats = plan(sql);
     const auto& root = planAndStats.plan->fragments().back().fragment.planNode;
     auto it = planAndStats.prediction.find(root->id());
     VELOX_CHECK(
@@ -84,6 +88,27 @@ TEST_P(FilteredTableStatsTest, noFilter) {
       estimatedCardinality("SELECT n_nationkey, n_name FROM nation"),
       25,
       kCardinalityTolerance);
+}
+
+// The estimated size of a scan's output row counts fixed-width columns by
+// type, and is unknown when a variable-width column has no size statistic.
+TEST_P(FilteredTableStatsTest, rowSize) {
+  if (!useV2_) {
+    return;
+  }
+  auto scanRowSize = [&](const std::string& sql) {
+    auto planAndStats = plan(sql);
+    for (const auto& [id, prediction] : planAndStats.prediction) {
+      if (prediction.numRawInputRows.has_value()) {
+        return prediction.numOutputBytesPerRow;
+      }
+    }
+    VELOX_FAIL("No scan estimate: {}", sql);
+  };
+
+  EXPECT_EQ(scanRowSize("SELECT n_nationkey, n_regionkey FROM nation"), 16);
+  EXPECT_EQ(
+      scanRowSize("SELECT n_nationkey, n_name FROM nation"), std::nullopt);
 }
 
 // Verifies that a filter on a data column reduces cardinality, using

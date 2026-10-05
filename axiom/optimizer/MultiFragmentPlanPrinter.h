@@ -18,6 +18,7 @@
 
 #include <folly/dynamic.h>
 #include "axiom/optimizer/MultiFragmentPlan.h"
+#include "axiom/optimizer/NodePrediction.h"
 
 namespace facebook::axiom::optimizer {
 
@@ -50,6 +51,29 @@ class MultiFragmentPlanPrinter {
   /// 'numRemotePartitions' is reported for kFixed fragments, which are the only
   /// ones that have it. 'scans' and 'exchanges' are each omitted when empty.
   static folly::dynamic toGraphJson(const MultiFragmentPlan& plan);
+
+  /// Returns the graph of toGraphJson(plan) with the optimizer's estimates for
+  /// each scan, from its entry in 'prediction':
+  ///
+  ///   {"nodeId": "0", "table": "tiny.nation",
+  ///    "estimate": {
+  ///      "rawInputRows": 25,
+  ///      "rawInputBytesPerRow": 16,
+  ///      "splits": 1,
+  ///      "outputRows": 25,
+  ///      "outputBytesPerRow": 8}}
+  ///
+  /// 'estimate' is omitted for a scan with no entry, and each field is omitted
+  /// when unknown:
+  ///   - 'rawInputRows': rows the scan reads, before the filters it evaluates.
+  ///   - 'rawInputBytesPerRow': uncompressed bytes per row it reads, for the
+  ///     columns it produces and those only its filters read.
+  ///   - 'splits': splits it produces.
+  ///   - 'outputRows': rows it produces.
+  ///   - 'outputBytesPerRow': uncompressed bytes per row it produces.
+  static folly::dynamic toGraphJson(
+      const MultiFragmentPlan& plan,
+      const NodePredictionMap& prediction);
 };
 
 } // namespace facebook::axiom::optimizer
