@@ -47,51 +47,6 @@ LocalHiveSplitManager::co_listPartitions(
 
 namespace {
 
-// Merges 'source' into 'target': sums numValues, takes min of mins, max of
-// maxes, and max of numDistinct.
-void mergeColumnStatsValues(
-    ColumnStatistics& target,
-    const ColumnStatistics& source) {
-  target.numValues += source.numValues;
-
-  if (source.min.has_value()) {
-    if (!target.min.has_value() || source.min.value() < target.min.value()) {
-      target.min = source.min;
-    }
-  }
-  if (source.max.has_value()) {
-    if (!target.max.has_value() || target.max.value() < source.max.value()) {
-      target.max = source.max;
-    }
-  }
-
-  if (source.numDistinct.has_value()) {
-    target.numDistinct =
-        std::max(target.numDistinct.value_or(0), source.numDistinct.value());
-  }
-}
-
-// Merges a vector of column stats into an existing vector, matching by name.
-void mergeColumnStats(
-    std::vector<ColumnStatistics>& existing,
-    const std::vector<ColumnStatistics>& incoming) {
-  folly::F14FastMap<std::string, size_t> nameToIndex;
-  for (size_t i = 0; i < existing.size(); ++i) {
-    nameToIndex[existing[i].name] = i;
-  }
-
-  for (const auto& stats : incoming) {
-    auto it = nameToIndex.find(stats.name);
-    if (it == nameToIndex.end()) {
-      nameToIndex[stats.name] = existing.size();
-      existing.push_back(stats);
-      continue;
-    }
-
-    mergeColumnStatsValues(existing[it->second], stats);
-  }
-}
-
 // Extracts the leading digits after the last '/' in the file path.
 int32_t extractDigitsAfterLastSlash(std::string_view path) {
   size_t lastSlashPos = path.find_last_of('/');
@@ -204,9 +159,8 @@ FilteredTableStats estimateStatsFromPartitionStats(
     const std::vector<PartitionStats>& partitionStats,
     const std::vector<PartitionFilter>& partitionFilters,
     const std::vector<const Column*>& requestedColumns) {
-  uint64_t totalRows{0};
   size_t numMatchingPartitions{0};
-  std::vector<ColumnStatistics> mergedColumnStats;
+  PersistedStats merged;
   for (const auto& partition : partitionStats) {
     bool matched = true;
     for (const auto& partitionFilter : partitionFilters) {
@@ -229,14 +183,13 @@ FilteredTableStats estimateStatsFromPartitionStats(
     }
 
     ++numMatchingPartitions;
-    totalRows += partition.numRows;
-    mergeColumnStats(mergedColumnStats, partition.columnStats);
+    merged.merge(partition.numRows, partition.columnStats);
   }
 
   // Filter to only the requested columns and fill in missing ones.
   folly::F14FastMap<std::string, size_t> statsNameToIndex;
-  for (size_t i = 0; i < mergedColumnStats.size(); ++i) {
-    statsNameToIndex[mergedColumnStats[i].name] = i;
+  for (size_t i = 0; i < merged.columns.size(); ++i) {
+    statsNameToIndex[merged.columns[i].name] = i;
   }
 
   std::vector<ColumnStatistics> columnStats;
@@ -244,11 +197,11 @@ FilteredTableStats estimateStatsFromPartitionStats(
   for (const auto* column : requestedColumns) {
     auto it = statsNameToIndex.find(column->name());
     if (it != statsNameToIndex.end()) {
-      auto& stats = mergedColumnStats[it->second];
-      if (totalRows > 0) {
+      auto& stats = merged.columns[it->second];
+      if (merged.numRows > 0) {
         stats.nullPct = 100.0f *
-            static_cast<float>(totalRows - stats.numValues) /
-            static_cast<float>(totalRows);
+            static_cast<float>(merged.numRows - stats.numValues) /
+            static_cast<float>(merged.numRows);
       }
       columnStats.push_back(std::move(stats));
     } else {
@@ -256,14 +209,14 @@ FilteredTableStats estimateStatsFromPartitionStats(
       // after existing partitions were written). All values are null.
       ColumnStatistics stats;
       stats.name = column->name();
-      stats.nullPct = totalRows > 0 ? 100.0f : 0.0f;
+      stats.nullPct = merged.numRows > 0 ? 100.0f : 0.0f;
       columnStats.push_back(std::move(stats));
     }
   }
 
   return FilteredTableStats{
       .isKnownEmpty = !partitionStats.empty() && numMatchingPartitions == 0,
-      .numRows = totalRows,
+      .numRows = merged.numRows,
       .columnStats = std::move(columnStats)};
 }
 

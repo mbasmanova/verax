@@ -67,6 +67,13 @@ struct PersistedStats {
   /// Per-column statistics (min, max, numValues, numDistinct, etc.).
   std::vector<ColumnStatistics> columns;
 
+  /// Merges stats of 'otherNumRows' more rows, whose column stats are
+  /// 'otherColumns', into 'this'. A column missing from one side counts as
+  /// all null there.
+  void merge(
+      uint64_t otherNumRows,
+      const std::vector<ColumnStatistics>& otherColumns);
+
   /// Reads persisted stats from the .stats file in 'directory'. Returns
   /// std::nullopt if the file doesn't exist.
   static std::optional<PersistedStats> read(const std::string& directory);

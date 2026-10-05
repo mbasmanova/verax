@@ -227,6 +227,12 @@ struct StatsAggregates {
   /// using HyperLogLog. Applicable to all comparable types (numeric, date,
   /// timestamp, varchar, varbinary). Not used for array, map, or row.
   std::string approxDistinct;
+
+  /// Takes x of any type and returns bigint: the total size in bytes of the
+  /// non-null values of x, including nested children; null when all values
+  /// are null. Used for variable-width types to estimate the average size of
+  /// a column's values, so an approximate size is acceptable.
+  std::string sumDataSize;
 };
 
 class FunctionRegistry {

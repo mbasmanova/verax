@@ -533,6 +533,12 @@ TEST_P(WriteTest, insertSql) {
 // INSERT into a bucketed table where the column feeding the bucket column is
 // named differently from the target column.
 TEST_P(WriteTest, insertBucketedSql) {
+  // V1 does not merge the write statistics of an unpartitioned table into one
+  // row.
+  if (!useV2_) {
+    return;
+  }
+
   SCOPE_EXIT {
     dropTableIfExists("test");
   };
@@ -618,23 +624,26 @@ TEST_P(WriteTest, ctasSql) {
 }
 
 // Verifies that CTAS and INSERT on unpartitioned tables populate per-column
-// stats (count, min, max, numDistinct) and that INSERT merges with existing
-// stats.
+// stats (count, min, max, numDistinct, average size of variable-width values)
+// and that INSERT merges with existing stats.
 TEST_P(WriteTest, columnStatsUnpartitioned) {
   SCOPE_EXIT {
     dropTableIfExists("test");
   };
 
-  // CTAS: create an unpartitioned table with integer and double columns.
+  // CTAS: create an unpartitioned table with integer, double and varchar
+  // columns.
   runCtas(
       "CREATE TABLE test AS "
-      "SELECT n_nationkey AS x, n_nationkey * 1.5 AS y "
+      "SELECT n_nationkey AS x, n_nationkey * 1.5 AS y, "
+      "CAST(n_nationkey AS VARCHAR) AS s "
       "FROM nation WHERE n_nationkey < 10",
       10);
 
   auto verifyStats = [&](int64_t expectedNumValues,
                          int64_t expectedMinX,
-                         int64_t expectedMaxX) {
+                         int64_t expectedMaxX,
+                         int32_t expectedAvgSizeS) {
     auto table = hiveMetadata().findTable({kDefaultSchema, "test"});
     ASSERT_TRUE(table != nullptr);
 
@@ -652,6 +661,7 @@ TEST_P(WriteTest, columnStatsUnpartitioned) {
       EXPECT_EQ(expectedMaxX, stats->max->value<int64_t>());
       ASSERT_TRUE(stats->numDistinct.has_value());
       EXPECT_GT(stats->numDistinct.value(), 0);
+      EXPECT_FALSE(stats->avgSizeInBytes.has_value());
     }
 
     // Double column 'y'.
@@ -665,24 +675,39 @@ TEST_P(WriteTest, columnStatsUnpartitioned) {
       ASSERT_TRUE(stats->min.has_value());
       ASSERT_TRUE(stats->max.has_value());
     }
+
+    // Varchar column 's'. Each value counts its characters plus a 4-byte
+    // offset.
+    {
+      const auto* column = table->findColumn("s");
+      ASSERT_TRUE(column != nullptr);
+      const auto* stats = column->stats();
+      ASSERT_TRUE(stats != nullptr);
+
+      EXPECT_EQ(expectedNumValues, stats->numValues);
+      EXPECT_EQ(expectedAvgSizeS, stats->avgSizeInBytes);
+    }
   };
 
-  verifyStats(10, 0, 9);
+  // Keys 0 to 9 are 1 character, so 5 bytes.
+  verifyStats(10, 0, 9, 5);
 
   // INSERT more data. Stats should be merged (counts summed, min/max
   // extended).
   {
     auto logicalPlan = parseInsert(
         "INSERT INTO test "
-        "SELECT n_nationkey, n_nationkey * 1.5 "
+        "SELECT n_nationkey, n_nationkey * 1.5, CAST(n_nationkey AS VARCHAR) "
         "FROM nation WHERE n_nationkey >= 10");
     checkWrittenRows(runVelox(logicalPlan), 15);
   }
 
-  verifyStats(25, 0, 24);
+  // Keys 10 to 24 are 6 bytes: (10 * 5 + 15 * 6) / 25 = 5.6.
+  verifyStats(25, 0, 24, 6);
 }
 
-// Verifies that all-null columns produce zero count and no min/max/ndv.
+// Verifies that all-null columns produce zero count, no min/max/ndv, and an
+// average size of 0 for a variable-width column.
 TEST_P(WriteTest, columnStatsAllNulls) {
   SCOPE_EXIT {
     dropTableIfExists("test");
@@ -690,14 +715,15 @@ TEST_P(WriteTest, columnStatsAllNulls) {
 
   runCtas(
       "CREATE TABLE test AS "
-      "SELECT CAST(null AS INTEGER) AS x, CAST(null AS DOUBLE) AS y "
+      "SELECT CAST(null AS INTEGER) AS x, CAST(null AS DOUBLE) AS y, "
+      "CAST(null AS VARCHAR) AS s "
       "FROM nation",
       25);
 
   auto table = hiveMetadata().findTable({kDefaultSchema, "test"});
   ASSERT_NE(table, nullptr);
 
-  for (const auto& columnName : {"x", "y"}) {
+  for (const auto& columnName : {"x", "y", "s"}) {
     SCOPED_TRACE(columnName);
     const auto* column = table->findColumn(columnName);
     ASSERT_NE(column, nullptr);
@@ -710,6 +736,45 @@ TEST_P(WriteTest, columnStatsAllNulls) {
     ASSERT_TRUE(stats->numDistinct.has_value());
     EXPECT_EQ(0, stats->numDistinct.value());
   }
+
+  EXPECT_EQ(0, table->findColumn("s")->stats()->avgSizeInBytes);
+}
+
+// Verifies that INSERT into a table created empty populates per-column stats.
+TEST_P(WriteTest, columnStatsEmptyTable) {
+  SCOPE_EXIT {
+    dropTableIfExists("test");
+  };
+
+  runCtas(
+      "CREATE TABLE test AS SELECT * FROM (VALUES (1, 'ab')) AS t(x, s) "
+      "WHERE false",
+      0);
+
+  {
+    auto logicalPlan =
+        parseInsert("INSERT INTO test VALUES (1, 'abcdef'), (2, 'ab')");
+    checkWrittenRows(runVelox(logicalPlan), 2);
+  }
+
+  const auto table = hiveMetadata().findTable({kDefaultSchema, "test"});
+  ASSERT_NE(table, nullptr);
+
+  const auto* x = table->findColumn("x")->stats();
+  ASSERT_NE(x, nullptr);
+  EXPECT_EQ(2, x->numValues);
+  EXPECT_EQ(velox::Variant(1), x->min);
+  EXPECT_EQ(velox::Variant(2), x->max);
+  EXPECT_EQ(2, x->numDistinct);
+  EXPECT_FALSE(x->avgSizeInBytes.has_value());
+
+  // Each value counts its characters plus a 4-byte offset: 'abcdef' is 10
+  // bytes and 'ab' is 6.
+  const auto* s = table->findColumn("s")->stats();
+  ASSERT_NE(s, nullptr);
+  EXPECT_EQ(2, s->numValues);
+  EXPECT_EQ(2, s->numDistinct);
+  EXPECT_EQ(8, s->avgSizeInBytes);
 }
 
 // Verifies that CTAS collects only statistics supported by each custom type.

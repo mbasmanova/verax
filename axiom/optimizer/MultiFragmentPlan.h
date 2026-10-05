@@ -32,6 +32,7 @@ enum class ColumnStatField {
   kMin,
   kMax,
   kApproxDistinct,
+  kSumDataSize,
 };
 
 AXIOM_DECLARE_ENUM_NAME(ColumnStatField);

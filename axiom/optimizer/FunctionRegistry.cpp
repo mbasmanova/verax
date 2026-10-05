@@ -108,11 +108,13 @@ bool FunctionRegistry::registerStatsAggregates(StatsAggregates aggregates) {
   VELOX_USER_CHECK(!aggregates.max.empty());
   VELOX_USER_CHECK(!aggregates.countIf.empty());
   VELOX_USER_CHECK(!aggregates.approxDistinct.empty());
+  VELOX_USER_CHECK(!aggregates.sumDataSize.empty());
   if (statsAggregates_.has_value()) {
     return statsAggregates_->min == aggregates.min &&
         statsAggregates_->max == aggregates.max &&
         statsAggregates_->countIf == aggregates.countIf &&
-        statsAggregates_->approxDistinct == aggregates.approxDistinct;
+        statsAggregates_->approxDistinct == aggregates.approxDistinct &&
+        statsAggregates_->sumDataSize == aggregates.sumDataSize;
   }
   statsAggregates_ = std::move(aggregates);
   return true;
@@ -464,6 +466,7 @@ void FunctionRegistry::registerPrestoFunctions(std::string_view prefix) {
       .max = fullName("max"),
       .countIf = fullName("count_if"),
       .approxDistinct = fullName("approx_distinct"),
+      .sumDataSize = fullName("sum_data_size_for_stats"),
   });
 
   registry->registerAggregateEmptyResultResolver(

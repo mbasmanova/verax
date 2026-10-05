@@ -90,8 +90,9 @@ TEST_P(FilteredTableStatsTest, noFilter) {
       kCardinalityTolerance);
 }
 
-// The estimated size of a scan's output row counts fixed-width columns by
-// type, and is unknown when a variable-width column has no size statistic.
+// The estimated size of a scan's output row counts fixed-width columns by type
+// and variable-width columns by the average size their table's writes
+// recorded.
 TEST_P(FilteredTableStatsTest, rowSize) {
   if (!useV2_) {
     return;
@@ -107,8 +108,10 @@ TEST_P(FilteredTableStatsTest, rowSize) {
   };
 
   EXPECT_EQ(scanRowSize("SELECT n_nationkey, n_regionkey FROM nation"), 16);
-  EXPECT_EQ(
-      scanRowSize("SELECT n_nationkey, n_name FROM nation"), std::nullopt);
+
+  // Each name counts its characters plus a 4-byte offset: the 25 names have
+  // 177 characters, so (177 + 25 * 4) / 25 rounds to 11 bytes.
+  EXPECT_EQ(scanRowSize("SELECT n_nationkey, n_name FROM nation"), 8 + 11);
 }
 
 // Verifies that a filter on a data column reduces cardinality, using
