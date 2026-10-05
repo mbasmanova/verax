@@ -325,6 +325,15 @@ CROSS JOIN UNNEST(t.items) _(r)
 JOIN (VALUES (1, 10), (1, 20)) u(c, k) ON u.k = r.k AND u.c = 1
 JOIN (VALUES (1, 10)) v(c, k) ON v.k = u.k AND v.c = 1
 ----
+-- A RIGHT JOIN preserves equal columns from its NULL-padded input.
+-- duckdb: SELECT NULL::BIGINT, NULL::BIGINT, a FROM t CROSS JOIN UNNEST(ARRAY[1, 2, 3])
+SELECT t.b, u.b, v.a
+FROM t JOIN t AS u ON t.b = u.b
+RIGHT JOIN (
+    SELECT a, b
+    FROM t CROSS JOIN UNNEST(ARRAY[1, 2, 3]) AS _(x)
+) v ON t.a = v.b
+----
 -- Chained LEFT JOINs with same-named columns and GROUP BY.
 -- a.ds must group by a's column, not c's.
 SELECT a.ds
