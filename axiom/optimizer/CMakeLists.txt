@@ -16,7 +16,12 @@ if(AXIOM_BUILD_TESTING OR AXIOM_BUILD_TEST_UTILS)
   add_subdirectory(tests)
 endif()
 
-add_library(axiom_optimizer_multifragment_plan MultiFragmentPlan.cpp MultiFragmentPlanPrinter.cpp)
+add_library(
+  axiom_optimizer_multifragment_plan
+  MultiFragmentPlan.cpp
+  MultiFragmentPlanPrinter.cpp
+  NodePrediction.cpp
+)
 
 target_link_libraries(
   axiom_optimizer_multifragment_plan

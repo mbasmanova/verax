@@ -1665,7 +1665,7 @@ std::string SqlQueryRunner::runExplain(
       if (summaryOnly) {
         return folly::toPrettyJson(
             optimizer::MultiFragmentPlanPrinter::toGraphJson(
-                *planAndStats.plan));
+                *planAndStats.plan, planAndStats.prediction));
       }
       return planAndStats.toString();
     }

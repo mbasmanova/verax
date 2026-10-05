@@ -60,6 +60,19 @@ void applyColumnStats(
       Value::fromColumnStatistics(existing.type, stats);
 }
 
+// Scales 'count', a number of rows or splits a scan of 'baseTable' produces
+// without sampling, by its TABLESAMPLE SYSTEM rate, which keeps each split
+// with that probability.
+std::optional<uint64_t> sampled(
+    const BaseTable& baseTable,
+    std::optional<uint64_t> count) {
+  if (!count.has_value() || !baseTable.sampledPercentage.has_value()) {
+    return count;
+  }
+  return static_cast<uint64_t>(
+      std::llround(*count * (*baseTable.sampledPercentage / 100.0)));
+}
+
 // Applies one base table's connector stats result. Sets filteredCardinality to
 // the connector's post-filter row count. A nullopt result (the connector does
 // not support stats) leaves filteredCardinality at 0 so downstream estimation
@@ -74,13 +87,9 @@ bool applyFilteredStats(
 
   auto* baseTable = const_cast<BaseTable*>(scan.baseTable());
 
-  baseTable->numRawInputRows = stats->numRawInputRows;
-  // TABLESAMPLE SYSTEM keeps each split with this probability.
-  if (baseTable->numRawInputRows.has_value() &&
-      baseTable->sampledPercentage.has_value()) {
-    baseTable->numRawInputRows = static_cast<uint64_t>(std::llround(
-        *baseTable->numRawInputRows * (*baseTable->sampledPercentage / 100.0)));
-  }
+  baseTable->numRawInputRows = sampled(*baseTable, stats->numRawInputRows);
+  baseTable->numRawInputBytesPerRow = stats->numRawInputBytesPerRow;
+  baseTable->numSplits = sampled(*baseTable, stats->numSplits);
 
   if (!stats->columnStats.empty()) {
     VELOX_CHECK_EQ(stats->columnStats.size(), statColumns.size());

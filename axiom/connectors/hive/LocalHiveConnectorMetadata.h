@@ -49,6 +49,10 @@ class LocalHiveSplitSource : public SplitSource {
 
   folly::coro::Task<SplitBatch> co_getSplits(uint32_t maxSplitCount) override;
 
+  /// Returns the number of splits the source makes for a file of 'fileSize'
+  /// bytes.
+  static uint64_t numSplits(uint64_t fileSize);
+
  private:
   // Target number of bytes per split when partitioning files.
   static constexpr uint64_t kFileBytesPerSplit{128ULL << 20U};

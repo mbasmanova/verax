@@ -332,6 +332,10 @@ T ceil2(T x, T y) {
 }
 } // namespace
 
+uint64_t LocalHiveSplitSource::numSplits(uint64_t fileSize) {
+  return ceil2<uint64_t>(fileSize, kFileBytesPerSplit);
+}
+
 folly::coro::Task<SplitBatch> LocalHiveSplitSource::co_getSplits(
     uint32_t maxSplitCount) {
   SplitBatch batch;
@@ -339,8 +343,10 @@ folly::coro::Task<SplitBatch> LocalHiveSplitSource::co_getSplits(
   while (batch.splits.size() < limit && fileIdx_ < files_.size()) {
     const auto& filePath = files_[fileIdx_]->path;
     const auto fileSize = fs::file_size(filePath);
-    int64_t splitsPerFile = ceil2<uint64_t>(fileSize, kFileBytesPerSplit);
-    const int64_t splitSize = ceil2<uint64_t>(fileSize, splitsPerFile);
+    const auto splitsPerFile = static_cast<int64_t>(numSplits(fileSize));
+    // An empty file has no splits.
+    const int64_t splitSize =
+        splitsPerFile == 0 ? 0 : ceil2<uint64_t>(fileSize, splitsPerFile);
     while (splitWithinFile_ < splitsPerFile && batch.splits.size() < limit) {
       auto builder = velox::connector::hive::HiveConnectorSplitBuilder(filePath)
                          .connectorId(connectorId_)
@@ -639,6 +645,34 @@ LocalHiveTableLayout::co_estimateStats(
     // A table with no partition statistics estimates zero rows; reporting that
     // as the rows read would understate the scan rather than leave it unknown.
     stats.numRawInputRows = stats.numRows;
+  }
+  uint64_t numSplits{0};
+  for (const auto* file : filterFilesByTableHandle(files_, *hiveHandle)) {
+    numSplits += LocalHiveSplitSource::numSplits(fs::file_size(file->path));
+  }
+  stats.numSplits = numSplits;
+  // The scan reads from files the columns it produces and those only its
+  // filters read. Without size statistics, a row has a known size only when
+  // all of them are fixed-width.
+  std::vector<const Column*> readColumns;
+  for (const auto& name : columns) {
+    if (!partitionColumnsByName.contains(name)) {
+      readColumns.push_back(table().findColumn(name));
+    }
+  }
+  for (const auto* column : nonPartitionFilterColumns(*hiveHandle)) {
+    if (std::find(columns.begin(), columns.end(), column->name()) ==
+        columns.end()) {
+      readColumns.push_back(column);
+    }
+  }
+  stats.numRawInputBytesPerRow = 0;
+  for (const auto* column : readColumns) {
+    if (!column->type()->isFixedWidth()) {
+      stats.numRawInputBytesPerRow = std::nullopt;
+      break;
+    }
+    *stats.numRawInputBytesPerRow += column->type()->cppSizeInBytes();
   }
   foldNonPartitionFilterStats(*hiveHandle, estimator, stats);
   trimColumnStats(stats, columns.size());
