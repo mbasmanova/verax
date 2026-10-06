@@ -80,6 +80,7 @@ class Builder {
     // After construction, so `inputs()` is available and the set allocates in
     // this node's `QueryGraphContext`.
     node->primeRequiredStates();
+    checkGlobalPartition(node);
     dedup.insert(node);
     return node;
   }
@@ -205,6 +206,10 @@ class Builder {
   // reads the equivalence classes this records.
   void normalizeKey(Join::Key& key);
   void normalizeKey(Filter::Key& key);
+
+  // In debug builds, checks that 'node's partitioning rule applied to its
+  // inputs' partitionings reproduces the partitioning it was constructed with.
+  void checkGlobalPartition(NodeCP node);
 
   template <typename T>
   auto& setFor() {

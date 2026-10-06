@@ -34,6 +34,7 @@ add_library(
   ExprSimplifier.cpp
   FallbackJoinPlanner.cpp
   FoldMetadataAggregatePass.cpp
+  GroupedRead.cpp
   HypergraphBuilder.cpp
   ImpliedFilters.cpp
   JoinCondition.cpp
