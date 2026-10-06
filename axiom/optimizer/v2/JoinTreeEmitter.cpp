@@ -23,6 +23,7 @@
 #include "axiom/optimizer/EstimateMath.h"
 #include "axiom/optimizer/v2/AppendAll.h"
 #include "axiom/optimizer/v2/ExprFactory.h"
+#include "axiom/optimizer/v2/GroupedRead.h"
 #include "axiom/optimizer/v2/PhysicalJoin.h"
 #include "axiom/optimizer/v2/PrecomputeProjections.h"
 #include "velox/common/base/Exceptions.h"
@@ -120,10 +121,12 @@ struct EmitState {
       const JoinHypergraph& graph,
       Builder& builder,
       ExprSimplifier& simplifier,
+      int32_t numWorkers,
       JoinTreeEmitter::JoinFactory joinFactory)
       : graph{graph},
         builder{builder},
         simplifier{simplifier},
+        numWorkers{numWorkers},
         joinFactory{joinFactory},
         exprs{builder},
         fired(graph.filterConjuncts().size(), false) {}
@@ -131,6 +134,7 @@ struct EmitState {
   const JoinHypergraph& graph;
   Builder& builder;
   ExprSimplifier& simplifier;
+  const int32_t numWorkers;
   JoinTreeEmitter::JoinFactory joinFactory;
   ExprFactory exprs;
   std::vector<bool> fired;
@@ -325,21 +329,20 @@ NodeCP emitLeaf(const LeafOp* leaf, EmitState& state) {
         state.builder,
         state.simplifier);
   }
-  // The relation's node reads the table ungrouped. When the plan that won reads
-  // it one bucket-group at a time, that is a different read, so it is a
-  // different scan.
-  const auto* partitionType = leaf->outputPartitioning().partitionType;
-  if (partitionType != nullptr && node->is(NodeType::kScan)) {
-    const auto* scan = node->as<Scan>();
-    if (scan->groupedPartitionType() != partitionType) {
-      return state.builder.make<Scan>(
-          {.baseTable = scan->baseTable(),
-           .outputColumns = scan->outputColumns(),
-           .scanHandle = scan->scanHandle(),
-           .groupedPartitionType = partitionType});
-    }
+  // The relation's node reads its tables ungrouped. When the plan that won
+  // reads them one bucket-group at a time, that is a different read, so the
+  // relation is rebuilt over different scans. A leaf without a connector
+  // partitioning asks for the node as it is.
+  const Partitioning& partitioning = leaf->outputPartitioning();
+  if (partitioning.partitionType == nullptr ||
+      partitioning == node->physicalProperties().globalPartition) {
+    return node;
   }
-  return node;
+  NodeCP grouped = GroupedRead::rewrite(node, state.numWorkers, state.builder);
+  VELOX_CHECK(
+      grouped->physicalProperties().globalPartition == partitioning,
+      "A grouped read must have the partitioning the join plan chose");
+  return grouped;
 }
 
 // Builds a new `Unnest` IR node over the plan `unnest` expands.
@@ -850,11 +853,19 @@ NodeCP JoinTreeEmitter::emit(
     const JoinHypergraph& graph,
     const ColumnVector& rootOutputColumns,
     Builder& builder,
-    ExprSimplifier& simplifier) {
+    ExprSimplifier& simplifier,
+    int32_t numWorkers) {
   const auto joinFactory = [&](Join::Key key) {
     return PhysicalJoin::makeJoin(std::move(key), builder, simplifier);
   };
-  return emit(root, graph, rootOutputColumns, builder, simplifier, joinFactory);
+  return emit(
+      root,
+      graph,
+      rootOutputColumns,
+      builder,
+      simplifier,
+      numWorkers,
+      joinFactory);
 }
 
 NodeCP JoinTreeEmitter::emit(
@@ -863,9 +874,10 @@ NodeCP JoinTreeEmitter::emit(
     const ColumnVector& rootOutputColumns,
     Builder& builder,
     ExprSimplifier& simplifier,
+    int32_t numWorkers,
     JoinFactory joinFactory) {
   VELOX_CHECK_NOT_NULL(root);
-  EmitState state{graph, builder, simplifier, joinFactory};
+  EmitState state{graph, builder, simplifier, numWorkers, joinFactory};
   NodeCP result{nullptr};
   switch (root->kind()) {
     case MemoOpKind::kLeaf:
@@ -925,7 +937,7 @@ NodeCP JoinTreeEmitter::emitComponents(
       componentRoots.size(),
       2,
       "emitComponents requires at least two components");
-  EmitState state{graph, builder, simplifier, joinFactory};
+  EmitState state{graph, builder, simplifier, numWorkers, joinFactory};
 
   // Emit each component subtree first, sharing one `fired` vector so a
   // cross-component conjunct is placed once, at a fold below.

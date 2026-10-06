@@ -33,6 +33,7 @@
 #include "axiom/optimizer/v2/ExprFactory.h"
 #include "axiom/optimizer/v2/ExprSimplifier.h"
 #include "axiom/optimizer/v2/FallbackJoinPlanner.h"
+#include "axiom/optimizer/v2/GroupedRead.h"
 #include "axiom/optimizer/v2/HypergraphBuilder.h"
 #include "axiom/optimizer/v2/JoinCluster.h"
 #include "axiom/optimizer/v2/JoinPartitioning.h"
@@ -522,85 +523,6 @@ bool satisfies(
   VELOX_UNREACHABLE();
 }
 
-// True when regrouping the scans under 'node' can make it bucketed. Only a scan
-// of a bucketed table contributes, and an exchange ends the search.
-bool hasRegroupableScan(NodeCP node) {
-  if (node->is(NodeType::kExchange)) {
-    return false;
-  }
-  if (node->is(NodeType::kScan)) {
-    return node->as<Scan>()->storageBucketing().partitionType != nullptr;
-  }
-  if (node->is(NodeType::kUnionAll)) {
-    // A union is bucketed only when every leg is.
-    return std::ranges::all_of(node->inputs(), hasRegroupableScan);
-  }
-  return std::ranges::any_of(node->inputs(), hasRegroupableScan);
-}
-
-// Rewrites a subtree so every scan of a bucketed table is read one bucket-group
-// at a time. Nodes above are rebuilt by the base rewriter, which re-derives
-// their partitioning from the new inputs.
-class GroupedScanRewriter : public NodeRewriter<> {
- public:
-  GroupedScanRewriter(Builder& builder, int32_t numWorkers)
-      : NodeRewriter<>(builder), numWorkers_{numWorkers} {}
-
-  // True when at least one scan was read grouped.
-  bool regrouped() const {
-    return regrouped_;
-  }
-
- protected:
-  // Past an exchange the rows are redistributed, so how the source was read
-  // cannot help this consumer; leave that subtree alone.
-  NodeCP rewriteExchange(const Exchange* node, NoContext& /*context*/)
-      override {
-    return node;
-  }
-
-  // A union is bucketed only when every leg is, so one ungroupable leg forfeits
-  // it for all of them. Checking that first keeps the groupable legs from being
-  // rebuilt only to be thrown away.
-  NodeCP rewriteUnionAll(const UnionAll* node, NoContext& context) override {
-    for (NodeCP leg : node->inputs()) {
-      if (!hasRegroupableScan(leg)) {
-        return node;
-      }
-    }
-    return NodeRewriter<>::rewriteUnionAll(node, context);
-  }
-
-  NodeCP rewriteScan(const Scan* node, NoContext& /*context*/) override {
-    // Whether this bucketing is any use to the consumer is not decided here —
-    // the keys it asked for may belong to another leg or another side of a
-    // join. A table with no bucketing at all is left alone, so a subtree that
-    // could never be grouped rebuilds to itself and allocates nothing.
-    const Partitioning available = node->storageBucketing();
-    if (available.partitionType == nullptr) {
-      return node;
-    }
-    // Coarsened to the worker count here so the plan carries the group count
-    // it will run with, and two scans that scale alike stay one node.
-    NodeCP grouped = builder().make<Scan>(
-        {.baseTable = node->baseTable(),
-         .outputColumns = node->outputColumns(),
-         .scanHandle = node->scanHandle(),
-         .groupedPartitionType = queryCtx()->scaledPartitionType(
-             available.partitionType, numWorkers_)});
-    // A scan already read this way interns back to itself, and then this
-    // rewrite changed nothing.
-    if (grouped != node) {
-      regrouped_ = true;
-    }
-    return grouped;
-  }
-
- private:
-  const int32_t numWorkers_;
-  bool regrouped_{false};
-};
-
 class PhysicalPlanRewriter : public NodeRewriter<> {
  public:
   PhysicalPlanRewriter(
@@ -901,7 +823,12 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
         return rewriteFallbackCluster(node, graph, components, context);
       }
       return JoinTreeEmitter::emit(
-          root, graph, node->outputColumns(), builder(), simplifier_);
+          root,
+          graph,
+          node->outputColumns(),
+          builder(),
+          simplifier_,
+          numWorkers_);
     }
     const std::vector<MemoOpCP> roots = dphyp.enumerate(components);
     if (roots.empty()) {
@@ -936,6 +863,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
           node->outputColumns(),
           builder(),
           simplifier_,
+          numWorkers_,
           joinFactory);
     }
     // 'joinFactory' adds the required distribution, including for cross joins.
@@ -1271,32 +1199,20 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
   }
 
   // Returns 'input' with every scan under it read one bucket-group at a time,
-  // when that makes the result meet 'alignment' on 'keys'; null otherwise.
-  //
-  // Which operators carry a scan's bucketing upward is not decided here: the
-  // subtree is rebuilt and each node derives its own partitioning, so a join
-  // keeps its probe's, a union keeps what its legs agree on, and anything that
-  // redistributes keeps nothing. The answer is then read off the rebuilt root.
-  //
-  // Nodes are interned, so rebuilding one over unchanged inputs returns the
-  // node itself; only a scan that is actually regrouped, and its ancestors,
-  // are new.
+  // when that makes the result meet 'alignment' on 'keys'; null otherwise. The
+  // subtree is rebuilt only when the answer is yes.
   NodeCP
   groupedRead(NodeCP input, const ExprVector& keys, Alignment alignment) {
     if (numWorkers_ == 1 || keys.empty()) {
       return nullptr;
     }
-
-    GroupedScanRewriter rewriter{builder(), numWorkers_};
-    NoContext context;
-    NodeCP grouped = rewriter.rewrite(input, context);
-    if (!rewriter.regrouped()) {
+    if (!satisfies(
+            GroupedRead::partitioning(input, numWorkers_, builder()),
+            keys,
+            alignment)) {
       return nullptr;
     }
-    return satisfies(
-               grouped->physicalProperties().globalPartition, keys, alignment)
-        ? grouped
-        : nullptr;
+    return GroupedRead::rewrite(input, numWorkers_, builder());
   }
 
   // True when 'input' is not already arranged so that rows agreeing on 'keys'

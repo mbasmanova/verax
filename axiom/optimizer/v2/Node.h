@@ -20,6 +20,7 @@
 #include <functional>
 #include <optional>
 #include <span>
+#include <vector>
 
 #include <folly/CppAttributes.h>
 
@@ -170,6 +171,19 @@ class Node : public PlanObject {
   static NodeCP FOLLY_NULLABLE
   findFirstNode(NodeCP root, const std::function<bool(NodeCP)>& predicate);
 
+  /// The global partitionings of 'nodes', in order.
+  static std::vector<Partitioning> globalPartitions(
+      std::span<const NodeCP> nodes);
+
+  /// Global partitioning this node's output would have if its inputs had
+  /// 'inputPartitions', positional with `inputs()`, with the node's own keys,
+  /// expressions and columns. Applied to the inputs' own partitionings it gives
+  /// `physicalProperties().globalPartition`. 'builder' interns any expression
+  /// the partitioning keys need.
+  virtual Partitioning globalPartition(
+      std::span<const Partitioning> inputPartitions,
+      Builder& builder) const = 0;
+
   /// Double-dispatch hook for `NodeVisitor`.
   virtual void accept(const NodeVisitor& visitor, NodeVisitorContext& context)
       const = 0;
@@ -294,9 +308,18 @@ class Scan : public Node {
   /// `groupedPartitionType` is the one the plan chose.
   Partitioning storageBucketing() const;
 
+  /// Global partitioning this scan has when read one bucket-group at a time by
+  /// 'partitionType', a coarsening of its table's bucketing.
+  Partitioning groupedPartition(
+      const connector::PartitionType* partitionType) const;
+
   std::span<const NodeCP> inputs() const override {
     return {};
   }
+
+  Partitioning globalPartition(
+      std::span<const Partitioning> inputPartitions,
+      Builder& builder) const override;
 
   void accept(const NodeVisitor& visitor, NodeVisitorContext& context)
       const override;
@@ -351,6 +374,10 @@ class Filter : public Node {
   std::span<const NodeCP> inputs() const override {
     return {&input_, 1};
   }
+
+  Partitioning globalPartition(
+      std::span<const Partitioning> inputPartitions,
+      Builder& builder) const override;
 
   void accept(const NodeVisitor& visitor, NodeVisitorContext& context)
       const override;
@@ -416,6 +443,10 @@ class Project : public Node {
   std::span<const NodeCP> inputs() const override {
     return {&input_, 1};
   }
+
+  Partitioning globalPartition(
+      std::span<const Partitioning> inputPartitions,
+      Builder& builder) const override;
 
   void accept(const NodeVisitor& visitor, NodeVisitorContext& context)
       const override;
@@ -483,6 +514,10 @@ class Limit : public Node {
     return {&input_, 1};
   }
 
+  Partitioning globalPartition(
+      std::span<const Partitioning> inputPartitions,
+      Builder& builder) const override;
+
   void accept(const NodeVisitor& visitor, NodeVisitorContext& context)
       const override;
 
@@ -540,6 +575,10 @@ class Sort : public Node {
   std::span<const NodeCP> inputs() const override {
     return {&input_, 1};
   }
+
+  Partitioning globalPartition(
+      std::span<const Partitioning> inputPartitions,
+      Builder& builder) const override;
 
   void accept(const NodeVisitor& visitor, NodeVisitorContext& context)
       const override;
@@ -622,6 +661,10 @@ class TopN : public Node {
   std::span<const NodeCP> inputs() const override {
     return {&input_, 1};
   }
+
+  Partitioning globalPartition(
+      std::span<const Partitioning> inputPartitions,
+      Builder& builder) const override;
 
   void accept(const NodeVisitor& visitor, NodeVisitorContext& context)
       const override;
@@ -747,6 +790,10 @@ class Aggregate : public Node {
     return {&input_, 1};
   }
 
+  Partitioning globalPartition(
+      std::span<const Partitioning> inputPartitions,
+      Builder& builder) const override;
+
   void accept(const NodeVisitor& visitor, NodeVisitorContext& context)
       const override;
 
@@ -840,6 +887,10 @@ class GroupId : public Node {
     return {&input_, 1};
   }
 
+  Partitioning globalPartition(
+      std::span<const Partitioning> inputPartitions,
+      Builder& builder) const override;
+
   void accept(const NodeVisitor& visitor, NodeVisitorContext& context)
       const override;
 
@@ -924,6 +975,10 @@ class MarkDistinct : public Node {
   std::span<const NodeCP> inputs() const override {
     return {&input_, 1};
   }
+
+  Partitioning globalPartition(
+      std::span<const Partitioning> inputPartitions,
+      Builder& builder) const override;
 
   void accept(const NodeVisitor& visitor, NodeVisitorContext& context)
       const override;
@@ -1011,6 +1066,10 @@ class Values : public Node {
   std::span<const NodeCP> inputs() const override {
     return {};
   }
+
+  Partitioning globalPartition(
+      std::span<const Partitioning> inputPartitions,
+      Builder& builder) const override;
 
   void accept(const NodeVisitor& visitor, NodeVisitorContext& context)
       const override;
@@ -1115,6 +1174,10 @@ class Unnest : public Node {
     return {&input_, 1};
   }
 
+  Partitioning globalPartition(
+      std::span<const Partitioning> inputPartitions,
+      Builder& builder) const override;
+
   void accept(const NodeVisitor& visitor, NodeVisitorContext& context)
       const override;
 
@@ -1183,6 +1246,10 @@ class UnionAll : public Node {
   const QGVector<ColumnVector>& legColumns() const {
     return legColumns_;
   }
+
+  Partitioning globalPartition(
+      std::span<const Partitioning> inputPartitions,
+      Builder& builder) const override;
 
   void accept(const NodeVisitor& visitor, NodeVisitorContext& context)
       const override;
@@ -1414,6 +1481,10 @@ class Join : public Node {
     return inputs_;
   }
 
+  Partitioning globalPartition(
+      std::span<const Partitioning> inputPartitions,
+      Builder& builder) const override;
+
   void accept(const NodeVisitor& visitor, NodeVisitorContext& context)
       const override;
 
@@ -1506,6 +1577,10 @@ class Inference : public Node {
     return {&input_, 1};
   }
 
+  Partitioning globalPartition(
+      std::span<const Partitioning> inputPartitions,
+      Builder& builder) const override;
+
   void accept(const NodeVisitor& visitor, NodeVisitorContext& context)
       const override;
 
@@ -1576,6 +1651,10 @@ class Window : public Node {
     return {&input_, 1};
   }
 
+  Partitioning globalPartition(
+      std::span<const Partitioning> inputPartitions,
+      Builder& builder) const override;
+
   void accept(const NodeVisitor& visitor, NodeVisitorContext& context)
       const override;
 
@@ -1644,6 +1723,10 @@ class RowNumber : public Node {
   std::span<const NodeCP> inputs() const override {
     return {&input_, 1};
   }
+
+  Partitioning globalPartition(
+      std::span<const Partitioning> inputPartitions,
+      Builder& builder) const override;
 
   void accept(const NodeVisitor& visitor, NodeVisitorContext& context)
       const override;
@@ -1735,6 +1818,10 @@ class TopNRowNumber : public Node {
   std::span<const NodeCP> inputs() const override {
     return {&input_, 1};
   }
+
+  Partitioning globalPartition(
+      std::span<const Partitioning> inputPartitions,
+      Builder& builder) const override;
 
   void accept(const NodeVisitor& visitor, NodeVisitorContext& context)
       const override;
@@ -1927,6 +2014,10 @@ class Apply : public Node {
     return inputs_;
   }
 
+  Partitioning globalPartition(
+      std::span<const Partitioning> inputPartitions,
+      Builder& builder) const override;
+
   void accept(const NodeVisitor& visitor, NodeVisitorContext& context)
       const override;
 
@@ -1989,6 +2080,10 @@ class EnforceSingleRow : public Node {
     return {&input_, 1};
   }
 
+  Partitioning globalPartition(
+      std::span<const Partitioning> inputPartitions,
+      Builder& builder) const override;
+
   void accept(const NodeVisitor& visitor, NodeVisitorContext& context)
       const override;
 
@@ -2038,6 +2133,10 @@ class AssignUniqueId : public Node {
   std::span<const NodeCP> inputs() const override {
     return {&input_, 1};
   }
+
+  Partitioning globalPartition(
+      std::span<const Partitioning> inputPartitions,
+      Builder& builder) const override;
 
   void accept(const NodeVisitor& visitor, NodeVisitorContext& context)
       const override;
@@ -2100,6 +2199,10 @@ class EnforceDistinct : public Node {
     return {&input_, 1};
   }
 
+  Partitioning globalPartition(
+      std::span<const Partitioning> inputPartitions,
+      Builder& builder) const override;
+
   void accept(const NodeVisitor& visitor, NodeVisitorContext& context)
       const override;
 
@@ -2161,6 +2264,10 @@ class Exchange : public Node {
   std::span<const NodeCP> inputs() const override {
     return {&input_, 1};
   }
+
+  Partitioning globalPartition(
+      std::span<const Partitioning> inputPartitions,
+      Builder& builder) const override;
 
   void accept(const NodeVisitor& visitor, NodeVisitorContext& context)
       const override;
@@ -2227,6 +2334,10 @@ class TableWrite : public Node {
   std::span<const NodeCP> inputs() const override {
     return {&input_, 1};
   }
+
+  Partitioning globalPartition(
+      std::span<const Partitioning> inputPartitions,
+      Builder& builder) const override;
 
   void accept(const NodeVisitor& visitor, NodeVisitorContext& context)
       const override;
@@ -2299,6 +2410,10 @@ class WorkingTable : public Node {
   std::span<const NodeCP> inputs() const override {
     return {};
   }
+
+  Partitioning globalPartition(
+      std::span<const Partitioning> inputPartitions,
+      Builder& builder) const override;
 
   void accept(const NodeVisitor& visitor, NodeVisitorContext& context)
       const override;
@@ -2420,6 +2535,10 @@ class FixedPoint : public Node {
   std::span<const NodeCP> inputs() const override {
     return inputs_;
   }
+
+  Partitioning globalPartition(
+      std::span<const Partitioning> inputPartitions,
+      Builder& builder) const override;
 
   void accept(const NodeVisitor& visitor, NodeVisitorContext& context)
       const override;

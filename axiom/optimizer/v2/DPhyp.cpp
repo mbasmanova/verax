@@ -20,6 +20,7 @@
 #include <utility>
 #include <vector>
 
+#include <folly/container/F14Map.h>
 #include <folly/container/F14Set.h>
 #include <folly/small_vector.h>
 
@@ -27,6 +28,7 @@
 #include "axiom/optimizer/EstimateMath.h"
 #include "axiom/optimizer/QueryGraph.h"
 #include "axiom/optimizer/v2/CostModel.h"
+#include "axiom/optimizer/v2/GroupedRead.h"
 #include "axiom/optimizer/v2/JoinPartitioning.h"
 #include "velox/common/base/Exceptions.h"
 
@@ -788,36 +790,40 @@ class Enumerator {
     }
 
     // Nothing in the memo is bucketed on these keys, but a single relation
-    // whose storage is bucketed on them can be read that way. Reading it so
-    // costs no more and saves the shuffle, so it is preferred rather than
-    // offered for costing. A grouped read only pays off against a shuffle, and
-    // considerCandidate takes the single-fragment path before it asks for a
-    // bucketed side, so this is never reached with one worker.
+    // whose bucketed tables, read grouped, co-locate them can be read that way.
+    // Reading it so costs no more and saves the shuffle, so it is preferred
+    // rather than offered for costing. A grouped read only pays off against a
+    // shuffle, and considerCandidate takes the single-fragment path before it
+    // asks for a bucketed side, so this is never reached with one worker.
     VELOX_DCHECK_GT(numWorkers_, 1);
     if (cover.size() != 1) {
       return alternatives;
     }
     const int32_t relationId = cover.min();
-    const NodeCP node = graph_.relation(relationId).node();
-    if (!node->is(NodeType::kScan)) {
+    const Partitioning& groupedPartition = groupedRelationPartition(relationId);
+    if (!groupedPartition.coLocates(coverKeys)) {
       return alternatives;
     }
-    Partitioning storageBucketing = node->as<Scan>()->storageBucketing();
-    if (!storageBucketing.coLocates(coverKeys)) {
-      return alternatives;
-    }
-    // Coarsened to the worker count, like every other grouped read: the memo
-    // costs and compares the read the plan will actually run.
-    storageBucketing.partitionType = queryCtx()->scaledPartitionType(
-        storageBucketing.partitionType, numWorkers_);
 
     auto grouped = std::make_unique<LeafOp>(
-        Cost{}, static_cast<int8_t>(relationId), std::move(storageBucketing));
+        Cost{}, static_cast<int8_t>(relationId), groupedPartition);
     grouped->cost = costModel_.cost(grouped.get(), graph_);
     it->second.addPlan(std::move(grouped), graph_, costModel_);
     // Read back rather than keeping the pointer: addPlan drops a plan an
     // existing one dominates, and enumeration asks for this cover repeatedly.
     return it->second.partitioningsOnSubsets(coverKeys);
+  }
+
+  // Partitioning relation 'relationId' has when its bucketed tables are read
+  // grouped. Computed once per relation: enumeration asks for the same
+  // relation under many key sets.
+  const Partitioning& groupedRelationPartition(int32_t relationId) {
+    auto [it, inserted] = groupedPartitions_.try_emplace(relationId);
+    if (inserted) {
+      it->second = GroupedRead::partitioning(
+          graph_.relation(relationId).node(), numWorkers_, builder_);
+    }
+    return it->second;
   }
 
   // Tasks in the stage whose rows are 'partitioning': a bucketed stage runs one
@@ -1370,6 +1376,8 @@ class Enumerator {
   const int64_t broadcastSizeLimit_;
   // Owner of enforcement exchanges created during candidate generation.
   std::vector<std::unique_ptr<MemoOp>>& enforcementOps_;
+  // Grouped-read partitioning per relation; see groupedRelationPartition.
+  folly::F14FastMap<int32_t, Partitioning> groupedPartitions_;
 };
 
 // Collects the edges `plan` applies.

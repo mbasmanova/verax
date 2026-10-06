@@ -432,6 +432,16 @@ bool leftEmittedOnlyOnMatch(velox::core::JoinType joinType) {
 
 } // namespace
 
+void Builder::checkGlobalPartition([[maybe_unused]] NodeCP node) {
+#ifndef NDEBUG
+  VELOX_CHECK(
+      node->globalPartition(Node::globalPartitions(node->inputs()), *this) ==
+          node->physicalProperties().globalPartition,
+      "Partitioning rule disagrees with the constructed partitioning: {}",
+      node->nodeTypeName());
+#endif
+}
+
 void Builder::normalizeKey(Filter::Key& key) {
   dropRepeatedPredicates(key);
 }

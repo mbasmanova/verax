@@ -211,6 +211,33 @@ TEST_P(BucketedExecutionTest, join) {
     }
   }
 
+  {
+    SCOPED_TRACE("Computed column on the null-supplying side");
+    const auto logicalPlan = parseSelect(
+        "SELECT * FROM j_orders "
+        "LEFT JOIN (SELECT id, lower(name) AS name FROM j_customers) c "
+        "  ON j_orders.customer_id = c.id",
+        kTestConnectorId);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(logicalPlan, /*numDrivers=*/4),
+        matchScan("j_customers")
+            .project()
+            .hashJoinRight(matchScan("j_orders"))
+            .project()
+            .build());
+
+    const auto plan = planDistributed(logicalPlan);
+    AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
+        plan.plan,
+        matchScan("j_customers")
+            .project()
+            .hashJoinRight(matchScan("j_orders"))
+            .project()
+            .fragment({.width = 4, .bucketedScans = 2})
+            .gather()
+            .build());
+  }
+
   testConnector_->addTable(
       "j_unbucketed", ROW({"id", "label"}, {BIGINT(), VARCHAR()}));
   testConnector_->setStats(

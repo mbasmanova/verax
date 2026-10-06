@@ -72,6 +72,16 @@ const auto& workingTableReadModeNames() {
 AXIOM_DEFINE_ENUM_NAME(NodeType, nodeTypeNames);
 AXIOM_DEFINE_ENUM_NAME(WorkingTableReadMode, workingTableReadModeNames);
 
+std::vector<Partitioning> Node::globalPartitions(
+    std::span<const NodeCP> nodes) {
+  std::vector<Partitioning> partitions;
+  partitions.reserve(nodes.size());
+  for (NodeCP node : nodes) {
+    partitions.push_back(node->physicalProperties().globalPartition);
+  }
+  return partitions;
+}
+
 std::string Node::toString() const {
   return NodePrinter::toText(this);
 }
@@ -158,10 +168,9 @@ LocalPropertyVector retainedLocal(NodeCP input, const ColumnVector& columns) {
 // long as every partition key does. A dropped key leaves the output with no
 // expressible partitioning.
 Partitioning retainedGlobalPartition(
-    NodeCP input,
+    const Partitioning& inputPartition,
     const ColumnVector& columns) {
-  Partitioning partition =
-      input->physicalProperties().globalPartition.dropOrder();
+  Partitioning partition = inputPartition.dropOrder();
   const auto columnSet = PlanObjectSet::fromObjects(columns);
   for (ExprCP key : partition.keys) {
     if (!key->columns().isSubset(columnSet)) {
@@ -306,6 +315,13 @@ LocalPropertyVector joinLocal(
   return {};
 }
 
+// Partitioning of an operator that keeps every row on the task it arrived on:
+// the input's, minus its merge order, which belonged to the gather it came from
+// (see `Partitioning::dropOrder`).
+Partitioning inheritedPartition(const Partitioning& inputPartition) {
+  return inputPartition.dropOrder();
+}
+
 // Properties an operator inherits when it neither repartitions nor changes
 // which rows exist in a way that breaks them: the input's distribution (minus
 // its merge order, which belonged to the gather it came from — see
@@ -315,7 +331,7 @@ LocalPropertyVector joinLocal(
 PhysicalProperties passThroughProperties(NodeCP input) {
   const PhysicalProperties& props = input->physicalProperties();
   return PhysicalProperties{
-      .globalPartition = props.globalPartition.dropOrder(),
+      .globalPartition = inheritedPartition(props.globalPartition),
       .local = props.local,
       .unique = props.unique};
 }
@@ -326,7 +342,7 @@ PhysicalProperties passThroughProperties(NodeCP input) {
 PhysicalProperties rankedProperties(NodeCP input) {
   const PhysicalProperties& props = input->physicalProperties();
   return PhysicalProperties{
-      .globalPartition = props.globalPartition.dropOrder(),
+      .globalPartition = inheritedPartition(props.globalPartition),
       .unique = props.unique};
 }
 
@@ -342,7 +358,7 @@ PhysicalProperties sortedProperties(
     const OrderTypeVector& orderTypes) {
   const PhysicalProperties& props = input->physicalProperties();
   return PhysicalProperties{
-      .globalPartition = props.globalPartition.dropOrder(),
+      .globalPartition = inheritedPartition(props.globalPartition),
       .local = sortedLocal(orderKeys, orderTypes),
       .unique = props.unique};
 }
@@ -355,11 +371,9 @@ PhysicalProperties sortedProperties(
 // inside a computed expression — drops the partition to unspecified. Gather and
 // unspecified pass through unchanged.
 Partitioning projectGlobalPartition(
-    NodeCP input,
+    const Partitioning& partitioning,
     const ExprVector& exprs,
     const ColumnVector& outputColumns) {
-  const Partitioning& partitioning =
-      input->physicalProperties().globalPartition;
   if (partitioning.kind != PartitionKind::kPartitioned) {
     return partitioning.dropOrder();
   }
@@ -419,11 +433,9 @@ ExprCP survivingEquiKey(ExprCP key, const PlanObjectSet& outputColumns) {
 // preserve one. `groupingColumns` are the output columns holding the grouping
 // values, aligned with `groupingKeys`.
 Partitioning aggregateInputPartition(
-    NodeCP input,
+    const Partitioning& inputPartition,
     const ExprVector& groupingKeys,
     const ColumnVector& groupingColumns) {
-  const Partitioning& inputPartition =
-      input->physicalProperties().globalPartition;
   if (inputPartition.kind != PartitionKind::kPartitioned) {
     return inputPartition.dropOrder();
   }
@@ -441,17 +453,31 @@ Partitioning aggregateInputPartition(
   return result;
 }
 
-// Output partitioning of a complete (single / final) aggregation: a global
-// aggregate gathers to one task; otherwise the input's partitioning
-// re-expressed on the output (see `aggregateInputPartition`).
-Partitioning aggregateGlobalPartition(
-    NodeCP input,
+// Output partitioning of an aggregation. A partial keeps its input's
+// partitioning re-expressed on the output (see `aggregateInputPartition`), even
+// with no grouping keys. A complete (single / final) global aggregate gathers
+// to one task; a grouped one re-expresses its input's partitioning like a
+// partial. 'groupingColumns' are the leading output columns, aligned with
+// 'groupingKeys'.
+Partitioning aggregatePartition(
+    AggregateStep step,
+    const Partitioning& inputPartition,
     const ExprVector& groupingKeys,
     const ColumnVector& groupingColumns) {
-  if (groupingKeys.empty()) {
+  if (step != AggregateStep::kPartial && groupingKeys.empty()) {
     return Partitioning::globalGather();
   }
-  return aggregateInputPartition(input, groupingKeys, groupingColumns);
+  return aggregateInputPartition(inputPartition, groupingKeys, groupingColumns);
+}
+
+// The leading output columns of an aggregation, which hold the grouping values
+// aligned one-to-one with its grouping keys.
+ColumnVector aggregateGroupingColumns(
+    const ColumnVector& outputColumns,
+    size_t numGroupingKeys) {
+  return ColumnVector{
+      outputColumns.begin(),
+      outputColumns.begin() + static_cast<ptrdiff_t>(numGroupingKeys)};
 }
 
 // Partitioning of 'partitionType' expressed over 'outputColumns': the
@@ -498,8 +524,11 @@ Partitioning bucketPartition(
 // Output partitioning of a scan: what the plan chose to read it by, not what
 // its table affords. Unspecified for an ordinary read, so nothing downstream
 // inherits a partitioning the plan does not rely on.
-Partitioning scanGlobalPartition(const Scan::Key& key) {
-  const connector::TableLayout* layout = key.baseTable->layout();
+Partitioning scanGlobalPartition(
+    BaseTableCP baseTable,
+    const ColumnVector& outputColumns,
+    const connector::PartitionType* groupedPartitionType) {
+  const connector::TableLayout* layout = baseTable->layout();
   // A coordinator-only layout's data lives solely on the coordinator, so its
   // scan produces a single partition there. Model that as a gather (single
   // partition, like Values); the coordinator placement itself is a separate
@@ -507,16 +536,26 @@ Partitioning scanGlobalPartition(const Scan::Key& key) {
   if (layout->runsOnCoordinator()) {
     return Partitioning::globalGather();
   }
-  return bucketPartition(layout, key.outputColumns, key.groupedPartitionType);
+  return bucketPartition(layout, outputColumns, groupedPartitionType);
 }
 
 } // namespace
+
+Partitioning Scan::globalPartition(
+    std::span<const Partitioning> /*inputPartitions*/,
+    Builder& /*builder*/) const {
+  return physicalProperties().globalPartition;
+}
 
 Scan::Scan(Key key)
     : Node(
           NodeType::kScan,
           ColumnVector{key.outputColumns},
-          PhysicalProperties{.globalPartition = scanGlobalPartition(key)}),
+          PhysicalProperties{
+              .globalPartition = scanGlobalPartition(
+                  key.baseTable,
+                  key.outputColumns,
+                  key.groupedPartitionType)}),
       baseTable_(key.baseTable),
       scanHandle_(key.scanHandle),
       groupedPartitionType_(key.groupedPartitionType) {
@@ -543,6 +582,11 @@ size_t Scan::KeyHash::operator()(const Scan* node) const {
       node->outputColumns(),
       node->scanHandle(),
       node->groupedPartitionType());
+}
+
+Partitioning Scan::groupedPartition(
+    const connector::PartitionType* partitionType) const {
+  return scanGlobalPartition(baseTable_, outputColumns(), partitionType);
 }
 
 Partitioning Scan::storageBucketing() const {
@@ -577,6 +621,12 @@ bool Scan::KeyEq::operator()(const Scan* node, const Key& key) const {
   return (*this)(key, node);
 }
 
+Partitioning Filter::globalPartition(
+    std::span<const Partitioning> inputPartitions,
+    Builder& /*builder*/) const {
+  return inheritedPartition(inputPartitions[0]);
+}
+
 Filter::Filter(Key key)
     : Node(
           NodeType::kFilter,
@@ -609,13 +659,19 @@ bool Filter::KeyEq::operator()(const Filter* filter, const Key& key) const {
   return (*this)(key, filter);
 }
 
+Partitioning Project::globalPartition(
+    std::span<const Partitioning> inputPartitions,
+    Builder& /*builder*/) const {
+  return projectGlobalPartition(inputPartitions[0], exprs_, outputColumns());
+}
+
 Project::Project(Key key)
     : Node(
           NodeType::kProject,
           ColumnVector{key.outputColumns},
           PhysicalProperties{
               .globalPartition = projectGlobalPartition(
-                  key.input,
+                  key.input->physicalProperties().globalPartition,
                   key.exprs,
                   key.outputColumns),
               .local = retainedLocal(key.input, key.outputColumns),
@@ -656,6 +712,12 @@ bool Project::KeyEq::operator()(const Key& key, const Project* node) const {
 
 bool Project::KeyEq::operator()(const Project* node, const Key& key) const {
   return (*this)(key, node);
+}
+
+Partitioning Limit::globalPartition(
+    std::span<const Partitioning> inputPartitions,
+    Builder& /*builder*/) const {
+  return inheritedPartition(inputPartitions[0]);
 }
 
 Limit::Limit(Key key)
@@ -727,6 +789,12 @@ bool Node::emitsInputColumns() const {
   }
 }
 
+Partitioning Sort::globalPartition(
+    std::span<const Partitioning> inputPartitions,
+    Builder& /*builder*/) const {
+  return inheritedPartition(inputPartitions[0]);
+}
+
 Sort::Sort(Key key)
     : Node(
           NodeType::kSort,
@@ -762,6 +830,12 @@ bool Sort::KeyEq::operator()(const Key& key, const Sort* node) const {
 
 bool Sort::KeyEq::operator()(const Sort* node, const Key& key) const {
   return (*this)(key, node);
+}
+
+Partitioning TopN::globalPartition(
+    std::span<const Partitioning> inputPartitions,
+    Builder& /*builder*/) const {
+  return inheritedPartition(inputPartitions[0]);
 }
 
 TopN::TopN(Key key)
@@ -826,15 +900,16 @@ PhysicalProperties aggregateProperties(const Aggregate::Key& key) {
   // The grouping values are materialized as the leading output columns, aligned
   // one-to-one with `groupingKeys`; properties are expressed over those output
   // columns, not the (possibly computed) grouping-key expressions.
-  ColumnVector groupingColumns;
-  groupingColumns.reserve(key.groupingKeys.size());
-  for (size_t i = 0; i < key.groupingKeys.size(); ++i) {
-    groupingColumns.push_back(key.outputColumns[i]);
-  }
+  const ColumnVector groupingColumns =
+      aggregateGroupingColumns(key.outputColumns, key.groupingKeys.size());
+  const Partitioning globalPartition = aggregatePartition(
+      key.step,
+      key.input->physicalProperties().globalPartition,
+      key.groupingKeys,
+      groupingColumns);
   if (key.step == AggregateStep::kPartial) {
     return PhysicalProperties{
-        .globalPartition = aggregateInputPartition(
-            key.input, key.groupingKeys, groupingColumns),
+        .globalPartition = globalPartition,
         .local = groupedLocal(groupingColumns)};
   }
   // An aggregate emits one row per distinct grouping-key combination, so the
@@ -842,8 +917,7 @@ PhysicalProperties aggregateProperties(const Aggregate::Key& key) {
   // single global row, unique on the empty set; a grouping-set aggregate's
   // group-id is one of the keys, so distinct key sets stay distinct).
   return PhysicalProperties{
-      .globalPartition = aggregateGlobalPartition(
-          key.input, key.groupingKeys, groupingColumns),
+      .globalPartition = globalPartition,
       .local = groupedLocal(groupingColumns),
       .unique = {UniqueKeySet{
           .columns = PlanObjectSet::fromObjects(groupingColumns),
@@ -851,6 +925,16 @@ PhysicalProperties aggregateProperties(const Aggregate::Key& key) {
 }
 
 } // namespace
+
+Partitioning Aggregate::globalPartition(
+    std::span<const Partitioning> inputPartitions,
+    Builder& /*builder*/) const {
+  return aggregatePartition(
+      step_,
+      inputPartitions[0],
+      groupingKeys_,
+      aggregateGroupingColumns(outputColumns(), groupingKeys_.size()));
+}
 
 Aggregate::Aggregate(Key key)
     : Node(
@@ -920,6 +1004,12 @@ bool Aggregate::KeyEq::operator()(const Key& key, const Aggregate* node) const {
 
 bool Aggregate::KeyEq::operator()(const Aggregate* node, const Key& key) const {
   return (*this)(key, node);
+}
+
+Partitioning GroupId::globalPartition(
+    std::span<const Partitioning> /*inputPartitions*/,
+    Builder& /*builder*/) const {
+  return {};
 }
 
 GroupId::GroupId(Key key)
@@ -1007,6 +1097,12 @@ bool GroupId::KeyEq::operator()(const GroupId* node, const Key& key) const {
   return (*this)(key, node);
 }
 
+Partitioning MarkDistinct::globalPartition(
+    std::span<const Partitioning> inputPartitions,
+    Builder& /*builder*/) const {
+  return inheritedPartition(inputPartitions[0]);
+}
+
 MarkDistinct::MarkDistinct(Key key)
     : Node(
           NodeType::kMarkDistinct,
@@ -1066,6 +1162,12 @@ bool MarkDistinct::KeyEq::operator()(const Key& key, const MarkDistinct* node)
 bool MarkDistinct::KeyEq::operator()(const MarkDistinct* node, const Key& key)
     const {
   return (*this)(key, node);
+}
+
+Partitioning Values::globalPartition(
+    std::span<const Partitioning> /*inputPartitions*/,
+    Builder& /*builder*/) const {
+  return Partitioning::globalGather();
 }
 
 Values::Values(Key key)
@@ -1155,13 +1257,20 @@ bool Values::KeyEq::operator()(const Values* node, const Key& key) const {
   return (*this)(key, node);
 }
 
+Partitioning Unnest::globalPartition(
+    std::span<const Partitioning> inputPartitions,
+    Builder& /*builder*/) const {
+  return retainedGlobalPartition(inputPartitions[0], replicatedColumns());
+}
+
 Unnest::Unnest(Key key)
     : Node(
           NodeType::kUnnest,
           ColumnVector{key.outputColumns},
           PhysicalProperties{
-              .globalPartition =
-                  retainedGlobalPartition(key.input, key.replicatedColumns),
+              .globalPartition = retainedGlobalPartition(
+                  key.input->physicalProperties().globalPartition,
+                  key.replicatedColumns),
               .local = retainedLocal(key.input, key.replicatedColumns)}),
       input_(key.input),
       unnestExpressions_(std::move(key.unnestExpressions)),
@@ -1318,11 +1427,13 @@ namespace {
 //    — reused as a query-lifetime pointer.
 //  - Unspecified otherwise, so the union then distributes its legs
 //    independently.
-Partitioning unionGlobalPartition(const UnionAll::Key& key) {
+Partitioning unionGlobalPartition(
+    std::span<const Partitioning> legPartitions,
+    const QGVector<ColumnVector>& allLegColumns,
+    const ColumnVector& outputColumns) {
   bool allGathered = true;
-  for (const auto* input : key.inputs) {
-    if (!input->physicalProperties().globalPartition.is(
-            PartitionKind::kGather)) {
+  for (const Partitioning& legPartition : legPartitions) {
+    if (!legPartition.is(PartitionKind::kGather)) {
       allGathered = false;
       break;
     }
@@ -1338,21 +1449,20 @@ Partitioning unionGlobalPartition(const UnionAll::Key& key) {
   // The two kinds never co-partition with each other.
   const connector::PartitionType* representative = nullptr;
   ExprVector outputKeys;
-  for (size_t leg = 0; leg < key.inputs.size(); ++leg) {
-    const Partitioning& part =
-        key.inputs[leg]->physicalProperties().globalPartition;
+  for (size_t leg = 0; leg < legPartitions.size(); ++leg) {
+    const Partitioning& part = legPartitions[leg];
     if (part.kind != PartitionKind::kPartitioned) {
       return {};
     }
     // Map each leg partition key to the union output column at the same index.
-    const ColumnVector& legColumns = key.legColumns[leg];
+    const ColumnVector& legColumns = allLegColumns[leg];
     ExprVector legOutputKeys;
     legOutputKeys.reserve(part.keys.size());
     for (ExprCP legKey : part.keys) {
       ExprCP mapped = nullptr;
       for (size_t i = 0; i < legColumns.size(); ++i) {
         if (legColumns[i] == legKey) {
-          mapped = key.outputColumns[i];
+          mapped = outputColumns[i];
           break;
         }
       }
@@ -1391,11 +1501,21 @@ Partitioning unionGlobalPartition(const UnionAll::Key& key) {
 
 } // namespace
 
+Partitioning UnionAll::globalPartition(
+    std::span<const Partitioning> inputPartitions,
+    Builder& /*builder*/) const {
+  return unionGlobalPartition(inputPartitions, legColumns_, outputColumns());
+}
+
 UnionAll::UnionAll(Key key)
     : Node(
           NodeType::kUnionAll,
           ColumnVector{key.outputColumns},
-          PhysicalProperties{.globalPartition = unionGlobalPartition(key)}),
+          PhysicalProperties{
+              .globalPartition = unionGlobalPartition(
+                  Node::globalPartitions(key.inputs),
+                  key.legColumns,
+                  key.outputColumns)}),
       inputs_(std::move(key.inputs)),
       legColumns_(std::move(key.legColumns)) {
   VELOX_CHECK_GE(inputs_.size(), 2, "UnionAll requires at least two inputs");
@@ -1483,6 +1603,21 @@ bool Join::preservesSource(
   const auto preserved = preservedSides(joinType);
   return (preserved.left && leftColumns.contains(source)) ||
       (preserved.right && rightColumns.contains(source));
+}
+
+Partitioning Join::globalPartition(
+    std::span<const Partitioning> inputPartitions,
+    Builder& builder) const {
+  return outputPartitioning(
+      joinType_,
+      inputPartitions[0],
+      inputPartitions[1],
+      leftKeys_,
+      rightKeys_,
+      PlanObjectSet::fromObjects(outputColumns()),
+      outputColumns(),
+      sourceColumns_,
+      builder);
 }
 
 Join::Join(Key key, Builder& builder)
@@ -1907,6 +2042,12 @@ bool Join::KeyEq::operator()(const Join* node, const Key& key) const {
   return (*this)(key, node);
 }
 
+Partitioning Inference::globalPartition(
+    std::span<const Partitioning> inputPartitions,
+    Builder& /*builder*/) const {
+  return inheritedPartition(inputPartitions[0]);
+}
+
 Inference::Inference(Key key)
     : Node(
           NodeType::kInference,
@@ -1946,6 +2087,12 @@ bool Inference::KeyEq::operator()(const Key& key, const Inference* node) const {
 
 bool Inference::KeyEq::operator()(const Inference* node, const Key& key) const {
   return (*this)(key, node);
+}
+
+Partitioning Window::globalPartition(
+    std::span<const Partitioning> inputPartitions,
+    Builder& /*builder*/) const {
+  return inheritedPartition(inputPartitions[0]);
 }
 
 Window::Window(Key key)
@@ -2028,6 +2175,12 @@ bool Window::KeyEq::operator()(const Window* node, const Key& key) const {
   return (*this)(key, node);
 }
 
+Partitioning RowNumber::globalPartition(
+    std::span<const Partitioning> inputPartitions,
+    Builder& /*builder*/) const {
+  return inheritedPartition(inputPartitions[0]);
+}
+
 RowNumber::RowNumber(Key key)
     : Node(
           NodeType::kRowNumber,
@@ -2083,6 +2236,12 @@ bool RowNumber::KeyEq::operator()(const Key& key, const RowNumber* node) const {
 
 bool RowNumber::KeyEq::operator()(const RowNumber* node, const Key& key) const {
   return (*this)(key, node);
+}
+
+Partitioning TopNRowNumber::globalPartition(
+    std::span<const Partitioning> inputPartitions,
+    Builder& /*builder*/) const {
+  return inheritedPartition(inputPartitions[0]);
 }
 
 TopNRowNumber::TopNRowNumber(Key key)
@@ -2162,6 +2321,12 @@ bool TopNRowNumber::KeyEq::operator()(const Key& key, const TopNRowNumber* node)
 bool TopNRowNumber::KeyEq::operator()(const TopNRowNumber* node, const Key& key)
     const {
   return (*this)(key, node);
+}
+
+Partitioning Apply::globalPartition(
+    std::span<const Partitioning> /*inputPartitions*/,
+    Builder& /*builder*/) const {
+  return {};
 }
 
 Apply::Apply(Key key)
@@ -2402,13 +2567,19 @@ ColumnVector withIdColumn(const ColumnVector& columns, ColumnCP idColumn) {
 }
 } // namespace
 
+Partitioning AssignUniqueId::globalPartition(
+    std::span<const Partitioning> inputPartitions,
+    Builder& /*builder*/) const {
+  return inheritedPartition(inputPartitions[0]);
+}
+
 AssignUniqueId::AssignUniqueId(Key key)
     : Node(
           NodeType::kAssignUniqueId,
           withIdColumn(key.input->outputColumns(), key.idColumn),
           PhysicalProperties{
-              .globalPartition =
-                  key.input->physicalProperties().globalPartition.dropOrder(),
+              .globalPartition = inheritedPartition(
+                  key.input->physicalProperties().globalPartition),
               .local = groupedLocal(key.idColumn),
               .unique = globalUniqueKey(key.idColumn)}),
       input_(key.input),
@@ -2445,13 +2616,23 @@ bool AssignUniqueId::KeyEq::operator()(
   return (*this)(key, node);
 }
 
+Partitioning EnforceSingleRow::globalPartition(
+    std::span<const Partitioning> inputPartitions,
+    Builder& /*builder*/) const {
+  return projectGlobalPartition(
+      inputPartitions[0],
+      ExprVector{
+          input_->outputColumns().begin(), input_->outputColumns().end()},
+      outputColumns());
+}
+
 EnforceSingleRow::EnforceSingleRow(Key key)
     : Node(
           NodeType::kEnforceSingleRow,
           ColumnVector{key.outputColumns},
           PhysicalProperties{
               .globalPartition = projectGlobalPartition(
-                  key.input,
+                  key.input->physicalProperties().globalPartition,
                   ExprVector{
                       key.input->outputColumns().begin(),
                       key.input->outputColumns().end()},
@@ -2493,6 +2674,12 @@ bool EnforceSingleRow::KeyEq::operator()(
     const EnforceSingleRow* node,
     const Key& key) const {
   return (*this)(key, node);
+}
+
+Partitioning EnforceDistinct::globalPartition(
+    std::span<const Partitioning> inputPartitions,
+    Builder& /*builder*/) const {
+  return inheritedPartition(inputPartitions[0]);
 }
 
 EnforceDistinct::EnforceDistinct(Key key)
@@ -2539,6 +2726,12 @@ bool EnforceDistinct::KeyEq::operator()(
     const EnforceDistinct* node,
     const Key& key) const {
   return (*this)(key, node);
+}
+
+Partitioning Exchange::globalPartition(
+    std::span<const Partitioning> /*inputPartitions*/,
+    Builder& /*builder*/) const {
+  return physicalProperties().globalPartition;
 }
 
 Exchange::Exchange(Key key)
@@ -2605,6 +2798,12 @@ bool Exchange::KeyEq::operator()(const Exchange* node, const Key& key) const {
   return (*this)(key, node);
 }
 
+Partitioning TableWrite::globalPartition(
+    std::span<const Partitioning> /*inputPartitions*/,
+    Builder& /*builder*/) const {
+  return {};
+}
+
 TableWrite::TableWrite(Key key)
     : Node(
           NodeType::kTableWrite,
@@ -2665,6 +2864,12 @@ bool TableWrite::KeyEq::operator()(const Key& key, const TableWrite* node)
 bool TableWrite::KeyEq::operator()(const TableWrite* node, const Key& key)
     const {
   return (*this)(key, node);
+}
+
+Partitioning WorkingTable::globalPartition(
+    std::span<const Partitioning> /*inputPartitions*/,
+    Builder& /*builder*/) const {
+  return {};
 }
 
 WorkingTable::WorkingTable(const Key& key)
@@ -2734,6 +2939,12 @@ void checkBranchReadsState(
 }
 
 } // namespace
+
+Partitioning FixedPoint::globalPartition(
+    std::span<const Partitioning> /*inputPartitions*/,
+    Builder& /*builder*/) const {
+  return {};
+}
 
 FixedPoint::FixedPoint(const Key& key)
     : Node(NodeType::kFixedPoint, ColumnVector{key.outputColumns}, {}),

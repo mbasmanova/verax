@@ -48,13 +48,15 @@ class JoinTreeEmitter {
   /// Emits the tree-IR for the join tree DPhyp chose, rooted at the memo
   /// entry `root`. `rootOutputColumns` are the columns the result must expose
   /// (see class comment); `graph` supplies each memo op's relation and edge,
-  /// and `builder` hash-conses the emitted nodes.
+  /// and `builder` hash-conses the emitted nodes. `numWorkers` coarsens the
+  /// bucketing of a relation the plan reads grouped (see `GroupedRead`).
   static NodeCP emit(
       MemoOpCP root,
       const JoinHypergraph& graph,
       const ColumnVector& rootOutputColumns,
       Builder& builder,
-      ExprSimplifier& simplifier);
+      ExprSimplifier& simplifier,
+      int32_t numWorkers);
 
   /// Emits the tree using `joinFactory` to construct each Join step.
   static NodeCP emit(
@@ -63,6 +65,7 @@ class JoinTreeEmitter {
       const ColumnVector& rootOutputColumns,
       Builder& builder,
       ExprSimplifier& simplifier,
+      int32_t numWorkers,
       JoinFactory joinFactory);
 
   /// Emits a cross-product combine of independently planned connected
