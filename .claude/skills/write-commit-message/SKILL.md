@@ -80,6 +80,8 @@ The per-pattern rules below all derive from this principle. If a draft passes th
 
      Short fragments (a single column name, a flag, a 2-3-word error name) stay inline.
    - A list inside a sentence forces the reader to parse it while holding the stem, so pull it out once it runs to three items, or once the items grow long enough that the stem is gone by the end — two clauses of a dozen words each already qualify. Sub-bullets carry a list whose items each matter. A list whose items carry no weight individually becomes a category: "the positions a call may appear in" replaces naming all five.
+   - Never chain two examples in one sentence ("X simplifies to Y, and Z to W"). Short before/after examples go in a bullet list, one per line, written as `before -> after`. An example that spans lines, such as a query or a plan, goes in its own fenced block: the before block, a short line saying what changed, then the after block.
+   - Use backticks only where the text would misread without them: an identifier that is also an English word (`required`, `filter`), or an expression whose operators blend into the sentence. Function names, file paths and examples set apart in a list read fine without them.
    - For deletions and additions, lead with the active verb: "Removes the foo helper — no longer needed." not "The foo helper is no longer needed and is removed." Easier to skim and locate.
    - When in doubt, read the paragraph aloud. If you pause mid-sentence to decode it, split or simplify it.
 
@@ -89,8 +91,8 @@ The per-pattern rules below all derive from this principle. If a draft passes th
    - [ ] Para 1 has a concrete anchor (example, error message, before/after).
    - [ ] Mechanism is one concept, not a diff retrace with sibling-function names.
    - [ ] No reasoning journey (alternatives considered, sibling reused, layered fixes).
-   - [ ] Code symbols in plain backticks; never `` \`escaped\` ``.
-   - [ ] Each paragraph is ONE long line. No hard wrap at 72/80 columns. Bullet lists in the test plan are the exception.
+   - [ ] Backticks only where the text would misread without them; plain, never `` \`escaped\` ``.
+   - [ ] Each paragraph is ONE long line. No hard wrap at 72/80 columns. Bullet lists are the exception.
    - [ ] No "tests pass" / "N tests pass" / "CI green".
    - [ ] Every factual claim verified against the diff, not recalled.
    - [ ] Reads in ~30 seconds.
@@ -98,6 +100,7 @@ The per-pattern rules below all derive from this principle. If a draft passes th
    - [ ] Prose clarity: no sentence longer than ~30 words; no stacked abstractions ("X advertising Y", "scope of Z"). Each sentence is parseable on first read.
    - [ ] Every sentence states what is, and ends on what the reader needs — no leading absence, no trailing contrast.
    - [ ] No list inside a sentence — three or more items, or items long enough to lose the stem, go in sub-bullets or collapse into a category.
+   - [ ] Examples are bulleted `before -> after`, or fenced blocks when they span lines; never woven into a sentence.
    - [ ] Sentences describing deletions or additions lead with the active verb ("Removes X", "Adds Y").
    - [ ] Test Plan is a non-obvious test strategy, or omitted — never a list of the tests added.
    - [ ] Every sentence passes the would-I-say-this-aloud test. No defensive citations (file:line, enum value lists), no claims restated at a different abstraction level, no symbol-by-symbol cleanup recitations.
