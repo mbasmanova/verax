@@ -257,6 +257,16 @@ bool provesKeyEquality(velox::core::JoinType joinType) {
 PlanObjectSet JoinHypergraph::coverColumns(const RelationSet& cover) const {
   PlanObjectSet columns;
   cover.forEach([&](int32_t id) { columns.unionSet(relation(id).columns()); });
+  for (const auto& edge : edges_) {
+    if (!edge.totalEligibility().isSubset(cover)) {
+      continue;
+    }
+    for (size_t i = 0; i < edge.outputColumns().size(); ++i) {
+      if (edge.outputColumns()[i] != edge.sourceColumns()[i]) {
+        columns.add(edge.outputColumns()[i]);
+      }
+    }
+  }
   return columns;
 }
 
@@ -365,17 +375,6 @@ PlanObjectSet JoinHypergraph::coverOutputColumns(
   }
   PlanObjectSet demand = coverColumns(cover);
   demand.intersect(neededAbove);
-  for (const auto& edge : edges_) {
-    if (!edge.totalEligibility().isSubset(cover)) {
-      continue;
-    }
-    for (size_t i = 0; i < edge.outputColumns().size(); ++i) {
-      if (edge.outputColumns()[i] != edge.sourceColumns()[i] &&
-          neededAbove.contains(edge.outputColumns()[i])) {
-        demand.add(edge.outputColumns()[i]);
-      }
-    }
-  }
 
   // Collapse each demanded column to its equivalence representative, so a group
   // of provably-equal columns contributes a single output column.
