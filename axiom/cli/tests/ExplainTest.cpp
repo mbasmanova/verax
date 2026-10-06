@@ -459,60 +459,124 @@ TEST_P(ExplainTest, explainFormatGraphviz) {
       "Unsupported EXPLAIN format: JSON");
 }
 
-// A distributed count reports the scanning fragment with its table and the
-// optimizer's estimates for the scan, and the exchange edge into the fragment
-// that gathers the result. Only v2 estimates row sizes.
-TEST_P(ExplainTest, fragmentGraph) {
+// A distributed count reports each fragment's control nodes: the scan and
+// partial aggregation, and the final aggregation over the exchange that
+// gathers their results.
+TEST_P(ExplainTest, summaryJson) {
   testConnector_->addTpchTables(1);
 
   auto result = runner_->run(
-      "EXPLAIN (TYPE EXECUTABLE WITH (detail = 'summary'), FORMAT JSON) "
-      "SELECT count(*) FROM lineitem",
+      "EXPLAIN (TYPE EXECUTABLE WITH (detail = 'summary', estimates = 'false'), "
+      "FORMAT JSON) SELECT count(*) FROM lineitem",
       {.numWorkers = 2, .numDrivers = 1});
   ASSERT_TRUE(result.message.has_value());
 
-  const std::string outputBytesPerRow =
-      useV2_ ? "\n            \"outputBytesPerRow\": 0," : "";
   EXPECT_EQ(
       result.message.value(),
-      fmt::format(
-          R"({{
+      R"({
   "fragments": [
-    {{
+    {
       "id": 2,
-      "output": {{
+      "output": {
         "consumerFragmentId": 1,
         "nodeId": "2"
-      }},
-      "scans": [
-        {{
-          "estimate": {{{}
-            "outputRows": 6001215
-          }},
-          "nodeId": "0",
-          "table": "\"default\".\"lineitem\""
-        }}
+      },
+      "tree": [
+        {
+          "children": [
+            {
+              "kind": "Scan",
+              "nodeId": "0",
+              "table": "\"default\".\"lineitem\""
+            }
+          ],
+          "kind": "Agg",
+          "nodeId": "1",
+          "numGroupingKeys": 0,
+          "step": "PARTIAL"
+        }
       ],
       "type": "SOURCE"
-    }},
-    {{
-      "exchanges": [
-        {{
-          "nodeId": "3",
-          "producerFragmentId": 2
-        }}
-      ],
+    },
+    {
       "id": 1,
+      "tree": [
+        {
+          "children": [
+            {
+              "distribution": "gather",
+              "kind": "Exchange",
+              "nodeId": "3",
+              "producerFragmentId": 2
+            }
+          ],
+          "kind": "Agg",
+          "nodeId": "4",
+          "numGroupingKeys": 0,
+          "step": "FINAL"
+        }
+      ],
       "type": "SINGLE"
-    }}
+    }
   ]
-}})",
-          outputBytesPerRow));
+})");
+}
+
+// The text summary is one tree across fragments: at a shuffle it continues
+// into the fragment the shuffle reads. Estimates go on their own lines,
+// indented twice as deep as a child.
+TEST_P(ExplainTest, summaryText) {
+  testConnector_->addTpchTables(1);
+
+  const std::string query =
+      "EXPLAIN (TYPE EXECUTABLE WITH (detail = 'summary'{})) "
+      "SELECT count(*) FROM lineitem";
+
+  auto result = runner_->run(
+      fmt::format(fmt::runtime(query), ", estimates = 'false'"),
+      {.numWorkers = 2, .numDrivers = 1});
+  ASSERT_TRUE(result.message.has_value());
+  EXPECT_EQ(
+      result.message.value(),
+      "Agg (FINAL) global\n"
+      "  Gather F2 (SOURCE) → F1\n"
+      "    Agg (PARTIAL) global\n"
+      "      Scan \"default\".\"lineitem\"\n");
+
+  result = runner_->run(
+      fmt::format(fmt::runtime(query), ""), {.numWorkers = 2, .numDrivers = 1});
+  ASSERT_TRUE(result.message.has_value());
+  EXPECT_EQ(
+      result.message.value(),
+      "Agg (FINAL) global\n"
+      "    Estimate: 1 rows\n"
+      "  Gather F2 (SOURCE) → F1\n"
+      "      Estimate: 1 rows\n"
+      "    Agg (PARTIAL) global\n"
+      "        Estimate: 1 rows\n"
+      "      Scan \"default\".\"lineitem\"\n"
+      "          Estimate: 6,001,215 rows\n");
+
+  // UNION ALL gathers its legs in one local exchange.
+  result = runner_->run(
+      "EXPLAIN (TYPE EXECUTABLE WITH (detail = 'summary', estimates = 'false')) "
+      "SELECT count(*) FROM (SELECT o_orderkey AS k FROM orders "
+      "UNION ALL SELECT l_orderkey AS k FROM lineitem)",
+      {.numWorkers = 2, .numDrivers = 1});
+  ASSERT_TRUE(result.message.has_value());
+  EXPECT_EQ(
+      result.message.value(),
+      "Agg (FINAL) global\n"
+      "  Gather F2 (SOURCE) → F1\n"
+      "    Agg (PARTIAL) global\n"
+      "      UnionAll\n"
+      "        Scan \"default\".\"orders\"\n"
+      "        Scan \"default\".\"lineitem\"\n");
 }
 
 // A query that only scans and renames columns plans the rename above the scan.
 // The scan still reports its estimates.
-TEST_P(ExplainTest, fragmentGraphRootScan) {
+TEST_P(ExplainTest, summaryJsonRootScan) {
   if (!useV2_) {
     return;
   }
@@ -525,16 +589,13 @@ TEST_P(ExplainTest, fragmentGraphRootScan) {
   ASSERT_TRUE(result.message.has_value());
 
   const auto graph = folly::parseJson(result.message.value());
-  const auto& scan = graph["fragments"][0]["scans"][0];
+  const auto& scan = graph["fragments"][0]["tree"][0];
+  ASSERT_EQ(scan["kind"].asString(), "Scan") << result.message.value();
   ASSERT_TRUE(scan.count("estimate")) << result.message.value();
   EXPECT_EQ(scan["estimate"]["outputRows"].asInt(), 6'001'215);
 }
 
-TEST_P(ExplainTest, fragmentGraphErrors) {
-  VELOX_ASSERT_USER_THROW(
-      run("EXPLAIN (TYPE EXECUTABLE WITH (detail = 'summary')) SELECT 1 AS x"),
-      "EXPLAIN WITH (detail = 'summary') is supported for FORMAT JSON only");
-
+TEST_P(ExplainTest, summaryErrors) {
   VELOX_ASSERT_USER_THROW(
       run("EXPLAIN (TYPE EXECUTABLE WITH (detail = 'partial'), FORMAT JSON) "
           "SELECT 1 AS x"),
@@ -542,7 +603,16 @@ TEST_P(ExplainTest, fragmentGraphErrors) {
 
   VELOX_ASSERT_USER_THROW(
       run("EXPLAIN (TYPE EXECUTABLE WITH (verbosity = 'high')) SELECT 1 AS x"),
-      "Unrecognized EXPLAIN setting. Accepted settings: detail");
+      "Unrecognized EXPLAIN setting. Accepted settings: detail, estimates");
+
+  VELOX_ASSERT_USER_THROW(
+      run("EXPLAIN (TYPE EXECUTABLE WITH (estimates = 'false')) SELECT 1 AS x"),
+      "EXPLAIN setting estimates requires detail = 'summary'");
+
+  VELOX_ASSERT_USER_THROW(
+      run("EXPLAIN (TYPE EXECUTABLE WITH (detail = 'summary', "
+          "estimates = 'no')) SELECT 1 AS x"),
+      "Invalid estimates value. Expected: true or false");
 }
 
 INSTANTIATE_TEST_SUITE_P(

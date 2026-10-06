@@ -1474,31 +1474,52 @@ std::optional<optimizer::v2::Optimizer::Pass> explainLastPass(
   return pass;
 }
 
-// True when the `detail` EXPLAIN setting asks for the plan's fragment graph.
-bool explainSummaryOnly(const presto::ExplainStatement::Settings& settings) {
+// The `detail` and `estimates` EXPLAIN settings. `detail = 'summary'` asks
+// for the plan's fragment graph and control-node tree; `estimates`, which only
+// applies to it, says whether they carry the optimizer's estimates.
+struct ExplainSummarySettings {
+  bool summary{false};
+  bool estimates{true};
+};
+
+ExplainSummarySettings explainSummarySettings(
+    const presto::ExplainStatement::Settings& settings) {
   static constexpr std::string_view kDetail = "detail";
   static constexpr std::string_view kSummary = "summary";
+  static constexpr std::string_view kEstimates = "estimates";
 
   for (const auto& setting : settings) {
-    VELOX_USER_CHECK_EQ(
-        setting.first,
+    VELOX_USER_CHECK(
+        setting.first == kDetail || setting.first == kEstimates,
+        "Unrecognized EXPLAIN setting. Accepted settings: {}, {}",
         kDetail,
-        "Unrecognized EXPLAIN setting. Accepted settings: {}",
-        kDetail);
+        kEstimates);
   }
 
-  auto it = settings.find(std::string{kDetail});
-  if (it == settings.end()) {
-    return false;
+  ExplainSummarySettings result;
+  if (auto it = settings.find(std::string{kDetail}); it != settings.end()) {
+    VELOX_USER_CHECK_EQ(
+        it->second,
+        kSummary,
+        "Invalid {} value. Expected: {}",
+        kDetail,
+        kSummary);
+    result.summary = true;
   }
-
-  VELOX_USER_CHECK_EQ(
-      it->second,
-      kSummary,
-      "Invalid {} value. Expected: {}",
-      kDetail,
-      kSummary);
-  return true;
+  if (auto it = settings.find(std::string{kEstimates}); it != settings.end()) {
+    VELOX_USER_CHECK(
+        result.summary,
+        "EXPLAIN setting {} requires {} = '{}'",
+        kEstimates,
+        kDetail,
+        kSummary);
+    VELOX_USER_CHECK(
+        it->second == "true" || it->second == "false",
+        "Invalid {} value. Expected: true or false",
+        kEstimates);
+    result.estimates = it->second == "true";
+  }
+  return result;
 }
 
 } // namespace
@@ -1515,18 +1536,14 @@ std::string SqlQueryRunner::runExplain(
   const auto type = explainStatement.type();
   const auto format = explainStatement.format();
   const auto& settings = explainStatement.settings();
-  const bool summaryOnly =
-      type == presto::ExplainStatement::Type::kExecutable &&
-      explainSummaryOnly(settings);
+  const auto summary = type == presto::ExplainStatement::Type::kExecutable
+      ? explainSummarySettings(settings)
+      : ExplainSummarySettings{};
 
   VELOX_USER_CHECK(
-      format != presto::ExplainStatement::Format::kJson || summaryOnly,
+      format != presto::ExplainStatement::Format::kJson || summary.summary,
       "Unsupported EXPLAIN format: JSON. JSON is supported for "
       "TYPE EXECUTABLE WITH (detail = 'summary') only.");
-
-  VELOX_USER_CHECK(
-      !summaryOnly || format == presto::ExplainStatement::Format::kJson,
-      "EXPLAIN WITH (detail = 'summary') is supported for FORMAT JSON only.");
 
   if (format == presto::ExplainStatement::Format::kGraphviz) {
     VELOX_USER_CHECK(
@@ -1662,10 +1679,18 @@ std::string SqlQueryRunner::runExplain(
             schemaResolver,
             explain);
       }
-      if (summaryOnly) {
-        return folly::toPrettyJson(
-            optimizer::MultiFragmentPlanPrinter::toGraphJson(
-                *planAndStats.plan, planAndStats.prediction));
+      if (summary.summary) {
+        using Printer = optimizer::MultiFragmentPlanPrinter;
+        const auto& plan = *planAndStats.plan;
+        if (format == presto::ExplainStatement::Format::kJson) {
+          return folly::toPrettyJson(
+              summary.estimates
+                  ? Printer::toSummaryJson(plan, planAndStats.prediction)
+                  : Printer::toSummaryJson(plan));
+        }
+        return summary.estimates
+            ? Printer::toSummaryText(plan, planAndStats.prediction)
+            : Printer::toSummaryText(plan);
       }
       return planAndStats.toString();
     }
