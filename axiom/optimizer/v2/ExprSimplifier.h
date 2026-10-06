@@ -37,8 +37,19 @@ class ExprSimplifier {
   ExprSimplifier(Builder& builder, velox::core::ExpressionEvaluator& evaluator)
       : builder_(builder), evaluator_(evaluator) {}
 
-  /// Returns the simplified `expr`, or `expr` unchanged if no rule
-  /// applies.
+  /// Returns `expr` simplified bottom-up, or `expr` itself when no rule
+  /// applies. Rules:
+  ///  - IF and SWITCH drop the branches whose literal conditions cannot select
+  ///    them, in evaluation order: IF(true, a, 1 / 0) -> a.
+  ///  - COALESCE drops NULL literal arguments, and a single remaining argument
+  ///    replaces the call: coalesce(NULL, a) -> a.
+  ///  - A call with default null behavior and a NULL literal argument becomes
+  ///    NULL: a + NULL -> NULL.
+  ///  - A call that reads no columns and that Velox compiles to a constant
+  ///    becomes that literal: 1 + 2 -> 3. A call whose evaluation fails is
+  ///    kept, so the error surfaces at execution.
+  ///  - AND and OR drop boolean literals that do not decide them and become
+  ///    the literal that does: a AND true -> a, a OR true -> true.
   ExprCP simplify(ExprCP expr);
 
   /// Returns whether `expr` cannot produce NULL when `nonNullColumns` are
