@@ -135,8 +135,10 @@ class JoinHypergraph {
     return targetColumns_;
   }
 
-  /// Union of the output columns of every relation in `cover` — the columns a
-  /// subplan over `cover` can supply.
+  /// The columns a subplan over `cover` can supply: the output columns of every
+  /// relation in `cover`, plus each output of an edge within `cover` that
+  /// differs from its source column, the copy a join makes of a column it
+  /// null-extends.
   PlanObjectSet coverColumns(const RelationSet& cover) const;
 
   /// Maps each column of `cover` to the representative of its equivalence group

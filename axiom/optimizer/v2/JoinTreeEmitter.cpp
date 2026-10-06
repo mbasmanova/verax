@@ -33,9 +33,9 @@ namespace facebook::axiom::optimizer::v2 {
 namespace {
 
 // Appends the columns of `side` that a node over `cover` emits: those `needed`
-// demands, plus any column produced by no relation in `cover` (e.g. a semijoin
-// mark synthesized below, or a key a shuffle materialized), which is outside
-// the demand universe and is always kept.
+// demands, plus any column outside `coverColumns` (e.g. a semijoin mark
+// synthesized below, or a key a shuffle materialized). Demand never names such
+// a column, so it is always kept.
 void appendNarrowed(
     ColumnVector& columns,
     NodeCP side,
@@ -53,10 +53,7 @@ void appendNarrowed(
 // equi-group to one representative — exactly the set the cost model charges
 // for, so the executed plan matches its estimated width. The one exception is
 // a join carrying filter edges, which keeps both columns of each so the
-// filter above it can read them. Left-then-right order is preserved. A column
-// produced by no relation in `cover` (e.g. a semijoin mark synthesized below,
-// or a key a shuffle materialized) is outside the demand universe and is always
-// kept.
+// filter above it can read them. Left-then-right order is preserved.
 ColumnVector coverNarrowedColumns(
     const JoinHypergraph& graph,
     const RelationSet& cover,

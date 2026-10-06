@@ -52,6 +52,16 @@ FULL OUTER JOIN t r ON o.a = r.a AND r.b > 140
 LEFT JOIN t s ON o.b = s.b
 WHERE o.b IS NULL OR o.b > 200
 ----
+-- An IS NULL filter on a column two nested left joins pad keeps only the row
+-- the outer join pads.
+SELECT t.k
+FROM (VALUES (1), (2)) AS t(k)
+LEFT JOIN (
+  (VALUES (1)) AS u(k) LEFT JOIN (VALUES (1)) AS v(k) ON u.k = v.k
+) ON t.k = u.k
+JOIN (VALUES (1), (2)) AS w(k) ON w.k = t.k
+WHERE v.k IS NULL
+----
 -- JOIN with UNION ALL subquery.
 SELECT t1.a, t1.b
 FROM t t1 JOIN (SELECT a FROM t WHERE a = 1 UNION ALL SELECT a FROM t WHERE a = 2) t2 ON t1.a = t2.a
