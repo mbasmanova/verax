@@ -459,20 +459,24 @@ TEST_P(PlanTest, nullPropagation) {
       // has non-default null behavior.
       {"coalesce(a, b) + null", "null"},
       // Non-default-null-behavior function: null is NOT propagated.
-      {"coalesce(a, null)", "coalesce(a, null)"},
+      {"if(a > 0, b, null)", "if(a > 0, b, null)"},
   };
 
   for (const auto& [expr, expected] : testCases) {
-    SCOPED_TRACE("Expression: " + expr);
-    auto logicalPlan = lp::PlanBuilder(makeCoercingContext())
-                           .tableScan("t")
-                           .project({expr, "a", "b"})
-                           .build();
+    SCOPED_TRACE(expr);
+    auto plan = toSingleNodePlan(parseSelect(
+        fmt::format("SELECT {}, a, b FROM t", expr), kTestConnectorId));
+    AXIOM_ASSERT_PLAN(
+        plan, matchScan("t").project({expected, "a", "b"}).build());
+  }
 
-    auto matcher = matchScan("t").project({expected, "a", "b"}).build();
-
-    auto plan = toSingleNodePlan(logicalPlan);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+  // A null argument of coalesce never supplies the result, so it is dropped.
+  for (const auto* expr : {"coalesce(a, null)", "coalesce(null, a)"}) {
+    SCOPED_TRACE(expr);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(parseSelect(
+            fmt::format("SELECT {} + b FROM t", expr), kTestConnectorId)),
+        matchScan("t").project({"a + b"}).build());
   }
 }
 

@@ -276,6 +276,15 @@ ExprCP domainToFilter(Builder& builder, ColumnCP column, Domain domain) {
 
 } // namespace
 
+namespace {
+
+bool isNullLiteral(ExprCP expr) {
+  return expr->is(PlanType::kLiteralExpr) &&
+      expr->as<Literal>()->literal().isNull();
+}
+
+} // namespace
+
 ExprCP ExprSimplifier::simplify(ExprCP expr) {
   if (const auto it = simplified_.find(expr); it != simplified_.end()) {
     return it->second;
@@ -291,15 +300,23 @@ ExprCP ExprSimplifier::simplify(ExprCP expr) {
       simplified_.emplace(original, expr);
       return expr;
     }
+    const bool isCoalesce = call->name() == SpecialFormCallNames::kCoalesce;
     ExprVector args;
     args.reserve(call->args().size());
     bool changed = false;
     for (ExprCP arg : call->args()) {
       ExprCP simplified = simplify(arg);
       changed |= simplified != arg;
+      // A null argument of coalesce never supplies the result.
+      if (isCoalesce && isNullLiteral(simplified)) {
+        changed = true;
+        continue;
+      }
       args.push_back(simplified);
     }
-    if (changed) {
+    if (isCoalesce && args.size() <= 1) {
+      expr = args.empty() ? builder_.makeNull(call->value().type) : args[0];
+    } else if (changed) {
       expr = ExprFactory(builder_).rebuildCall(call, std::move(args));
     }
   } else if (expr->is(PlanType::kLambdaExpr)) {
@@ -401,6 +418,18 @@ ExprCP ExprSimplifier::simplify(
       rewrittenArgs.insert(
           rewrittenArgs.end(), call->args().begin(), call->args().begin() + i);
     }
+    // A null argument of coalesce never supplies the result.
+    if (isCoalesce && isNullLiteral(simplified)) {
+      if (!changed) {
+        changed = true;
+        rewrittenArgs.reserve(call->args().size());
+        rewrittenArgs.insert(
+            rewrittenArgs.end(),
+            call->args().begin(),
+            call->args().begin() + i);
+      }
+      continue;
+    }
     if (changed) {
       rewrittenArgs.push_back(simplified);
     }
@@ -416,9 +445,14 @@ ExprCP ExprSimplifier::simplify(
       break;
     }
   }
-  return changed
-      ? ExprFactory(builder_).rebuildCall(call, std::move(rewrittenArgs))
-      : expr;
+  if (!changed) {
+    return expr;
+  }
+  if (isCoalesce && rewrittenArgs.size() <= 1) {
+    return rewrittenArgs.empty() ? builder_.makeNull(call->value().type)
+                                 : rewrittenArgs.front();
+  }
+  return ExprFactory(builder_).rebuildCall(call, std::move(rewrittenArgs));
 }
 
 ExprCP ExprSimplifier::tryFoldConjunct(ExprCP expr) {
