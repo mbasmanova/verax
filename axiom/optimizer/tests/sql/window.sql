@@ -362,6 +362,19 @@ SELECT count(*) OVER (ORDER BY max(d) RANGE BETWEEN INTERVAL '1' DAY PRECEDING A
 FROM (VALUES (DATE '2025-01-01', 1), (DATE '2025-01-02', 2), (DATE '2025-01-03', 3)) AS t(d, n)
 GROUP BY d
 ----
+-- A RANGE offset must not be negative or NULL.
+-- error: Window frame offset value must not be negative or null
+SELECT count(*) OVER (ORDER BY x RANGE BETWEEN -1 PRECEDING AND CURRENT ROW) FROM (VALUES 1, 2, 3) AS t(x)
+----
+-- error: Window frame offset value must not be negative or null
+SELECT count(*) OVER (ORDER BY x DESC RANGE BETWEEN CURRENT ROW AND CAST(NULL AS INTEGER) FOLLOWING) FROM (VALUES 1, 2, 3) AS t(x)
+----
+-- error: Window frame offset value must not be negative or null
+SELECT count(*) OVER (ORDER BY d RANGE BETWEEN INTERVAL -'1' DAY PRECEDING AND CURRENT ROW) FROM (VALUES DATE '2025-01-01') AS t(d)
+----
+-- error: Window frame offset value must not be negative or null
+SELECT count(*) OVER (ORDER BY x RANGE BETWEEN o PRECEDING AND CURRENT ROW) FROM (VALUES (1, 1), (2, -1), (3, 2)) AS t(x, o)
+----
 -- A RANGE offset frame whose ORDER BY key is a constant. Every row is a peer,
 -- so the frame covers the whole partition.
 SELECT array_agg(a) OVER (ORDER BY a RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING)

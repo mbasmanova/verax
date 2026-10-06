@@ -2165,6 +2165,59 @@ lp::WindowSpec ExpressionPlanner::convertWindow(
   return convertWindowParts(window, options, definition);
 }
 
+namespace {
+
+// Returns true if 'offset' is a literal that is neither NULL nor negative.
+bool isValidFrameOffsetLiteral(const lp::ExprApi& offset) {
+  if (!offset.expr()->is(core::IExpr::Kind::kConstant)) {
+    return false;
+  }
+  const auto& value = offset.expr()->as<core::ConstantExpr>()->value();
+  if (value.isNull()) {
+    return false;
+  }
+  switch (value.kind()) {
+    case TypeKind::TINYINT:
+      return value.value<int8_t>() >= 0;
+    case TypeKind::SMALLINT:
+      return value.value<int16_t>() >= 0;
+    case TypeKind::INTEGER:
+      return value.value<int32_t>() >= 0;
+    case TypeKind::BIGINT:
+      return value.value<int64_t>() >= 0;
+    case TypeKind::HUGEINT:
+      return value.value<int128_t>() >= 0;
+    case TypeKind::REAL:
+      return value.value<float>() >= 0;
+    case TypeKind::DOUBLE:
+      return value.value<double>() >= 0;
+    default:
+      return false;
+  }
+}
+
+// Wraps a RANGE frame offset so that a NULL or negative value fails the query.
+// The window operator reads only the bound value computed from the offset, so
+// nothing downstream can check it. 'offset - offset' is a zero of the
+// offset's type, numeric or interval.
+lp::ExprApi checkFrameOffset(const lp::ExprApi& offset) {
+  if (isValidFrameOffsetLiteral(offset)) {
+    return offset;
+  }
+  return lp::Call(
+      "if",
+      lp::Call(
+          "or",
+          lp::Call("is_null", offset),
+          lp::Call("lt", offset, lp::Call("minus", offset, offset))),
+      lp::Call(
+          "fail",
+          lp::Lit("Window frame offset value must not be negative or null")),
+      offset);
+}
+
+} // namespace
+
 lp::WindowSpec ExpressionPlanner::convertWindowParts(
     const std::shared_ptr<Window>& window,
     ExprOptions options,
@@ -2233,7 +2286,8 @@ lp::WindowSpec ExpressionPlanner::convertWindowParts(
             boundType == core::WindowCallExpr::BoundType::kPreceding;
         const std::string functionName =
             (isPreceding == ascending) ? "minus" : "plus";
-        bound = lp::Call(functionName, lp::ExprApi(orderKey), bound.value());
+        bound = lp::Call(
+            functionName, lp::ExprApi(orderKey), checkFrameOffset(*bound));
       };
 
       rewriteBound(startValue, startType);
