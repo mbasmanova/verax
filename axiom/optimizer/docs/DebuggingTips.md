@@ -80,12 +80,37 @@ Under v1:
 - `TYPE GRAPH` prints the query graph `ToGraph` builds. v2 rejects it.
 - `last_pass` is not supported.
 
-### Fragment graph as JSON
+### Plan summary
 
-`EXPLAIN (TYPE EXECUTABLE WITH (detail = 'summary'), FORMAT JSON) <query>`
-prints the shape of the distributed plan instead of its operators: the
-fragments, the tables each scans with the optimizer's estimates, and the
-exchanges between fragments.
+`EXPLAIN (TYPE EXECUTABLE WITH (detail = 'summary')) <query>` prints the shape
+of the distributed plan instead of its operators: one indented tree of its
+scans, joins, aggregations, exchanges and other control nodes, root on top. At
+an exchange the tree continues into the fragment it reads.
+
+```
+Gather F2 (FIXED, 4 workers) → F1
+  Agg (FINAL) 1 key
+      Estimate: 25 rows
+    Shuffle F3 (SOURCE) → F2
+        Estimate: 25 rows
+      Agg (PARTIAL) 1 key
+          Estimate: 25 rows
+        HashJoin (INNER) 1 key
+            Estimate: 15,000 rows
+          Scan customer
+              Estimate: 15,000 rows
+          Broadcast F4 (SOURCE) → F3
+              Estimate: 25 rows
+            Scan nation
+                Estimate: 25 rows
+```
+
+This is `SELECT n_name, count(*) FROM customer, nation WHERE c_nationkey =
+n_nationkey GROUP BY n_name` on TPC-H scale factor 0.1 with `--num_workers 4`.
+`estimates = 'false'` leaves out the estimate lines.
+
+`FORMAT JSON` gives the same nodes per fragment, with where each fragment's
+output goes:
 
 ```json
 {
@@ -93,8 +118,9 @@ exchanges between fragments.
     {
       "id": 2,
       "type": "SOURCE",
-      "scans": [
+      "tree": [
         {
+          "kind": "Scan",
           "nodeId": "0",
           "table": "lineitem",
           "estimate": {
@@ -111,16 +137,23 @@ exchanges between fragments.
     {
       "id": 1,
       "type": "SINGLE",
-      "exchanges": [{"nodeId": "2", "producerFragmentId": 2}]
+      "tree": [
+        {
+          "kind": "Exchange",
+          "nodeId": "2",
+          "distribution": "gather",
+          "producerFragmentId": 2
+        }
+      ]
     }
   ]
 }
 ```
 
 This is the output for `SELECT l_orderkey, l_quantity FROM lineitem WHERE
-l_quantity > 10` on TPC-H scale factor 0.1 with `--num_workers 4`, reformatted
-for reading. The fields are defined
-in `MultiFragmentPlanPrinter::toGraphJson` (`axiom/optimizer/MultiFragmentPlanPrinter.h`).
+l_quantity > 10` on the same data, reformatted for reading. The fields are
+defined in `MultiFragmentPlanPrinter::toSummaryJson`
+(`axiom/optimizer/MultiFragmentPlanPrinter.h`).
 
 ### TPC-H Data Directories
 

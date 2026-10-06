@@ -29,6 +29,7 @@ target_link_libraries(
   velox_memory
   velox_core
   Folly::folly
+  fmt::fmt
 )
 
 add_library(

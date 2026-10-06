@@ -25,21 +25,40 @@ namespace facebook::axiom::optimizer {
 /// Renders a MultiFragmentPlan as JSON.
 class MultiFragmentPlanPrinter {
  public:
-  /// Returns the graph of the plan: the fragments, the tables each scans and
-  /// the exchanges connecting them.
+  /// Returns the plan's fragments, each with its control nodes and where its
+  /// output goes.
   ///
   ///   {
   ///     "fragments": [
-  ///       {"id": 3, "type": "SOURCE",
-  ///        "scans": [{"nodeId": "0", "table": "tiny.nation"}],
-  ///        "output": {"nodeId": "2", "consumerFragmentId": 2}},
-  ///       {"id": 2, "type": "FIXED", "numRemotePartitions": 4,
-  ///        "exchanges": [{"nodeId": "3", "producerFragmentId": 3}],
-  ///        "output": {"nodeId": "5", "consumerFragmentId": 1}},
+  ///       {"id": 2, "type": "SOURCE",
+  ///        "tree": [
+  ///          {"nodeId": "1", "kind": "Agg", "step": "PARTIAL",
+  ///           "numGroupingKeys": 0,
+  ///           "children": [
+  ///             {"nodeId": "0", "kind": "Scan", "table": "tiny.nation"}]}],
+  ///        "output": {"nodeId": "2", "consumerFragmentId": 1}},
   ///       {"id": 1, "type": "SINGLE",
-  ///        "exchanges": [{"nodeId": "6", "producerFragmentId": 2}]}
+  ///        "tree": [
+  ///          {"nodeId": "4", "kind": "Agg", "step": "FINAL",
+  ///           "numGroupingKeys": 0,
+  ///           "children": [
+  ///             {"nodeId": "3", "kind": "Exchange",
+  ///              "distribution": "gather", "producerFragmentId": 2}]}]}
   ///     ]
   ///   }
+  ///
+  /// 'tree' is the fragment's control nodes, nested, root first; see
+  /// toSummaryText for which nodes these are. Each node has 'nodeId', 'kind'
+  /// and, when it has inputs, 'children'. Depending on the kind it also has:
+  ///   - Scan: 'table'.
+  ///   - Join: 'algorithm', 'joinType', 'numJoinKeys'. The algorithm is one
+  ///     of HashJoin, MergeJoin, IndexLookupJoin, NestedLoopJoin, SpatialJoin.
+  ///   - Agg: 'step', 'numGroupingKeys'.
+  ///   - Exchange: 'producerFragmentId', the fragment it reads, and
+  ///     'distribution', how that fragment's output reaches it: hash, gather,
+  ///     broadcast or arbitrary. That fragment's tree is in its own entry.
+  ///   - Window: 'numPartitionKeys', 'numOrderKeys'.
+  ///   - TopN, Limit: 'count'.
   ///
   /// 'output' describes the fragment's PartitionedOutputNode, which serializes
   /// results for a reader on another worker: 'consumerFragmentId' names the
@@ -49,13 +68,13 @@ class MultiFragmentPlanPrinter {
   /// MultiFragmentPlan::Options::remoteOutput is set.
   ///
   /// 'numRemotePartitions' is reported for kFixed fragments, which are the only
-  /// ones that have it. 'scans' and 'exchanges' are each omitted when empty.
-  static folly::dynamic toGraphJson(const MultiFragmentPlan& plan);
+  /// ones that have it.
+  static folly::dynamic toSummaryJson(const MultiFragmentPlan& plan);
 
-  /// Returns the graph of toGraphJson(plan) with the optimizer's estimates for
-  /// each scan, from its entry in 'prediction':
+  /// Returns toSummaryJson(plan) with the optimizer's estimate on each tree
+  /// node that has an entry in 'prediction':
   ///
-  ///   {"nodeId": "0", "table": "tiny.nation",
+  ///   {"nodeId": "0", "kind": "Scan", "table": "tiny.nation",
   ///    "estimate": {
   ///      "rawInputRows": 25,
   ///      "rawInputBytesPerRow": 16,
@@ -63,15 +82,49 @@ class MultiFragmentPlanPrinter {
   ///      "outputRows": 25,
   ///      "outputBytesPerRow": 8}}
   ///
-  /// 'estimate' is omitted for a scan with no entry, and each field is omitted
-  /// when unknown:
-  ///   - 'rawInputRows': rows the scan reads, before the filters it evaluates.
-  ///   - 'rawInputBytesPerRow': uncompressed bytes per row it reads, for the
-  ///     columns it produces and those only its filters read.
-  ///   - 'splits': splits it produces.
-  ///   - 'outputRows': rows it produces.
+  /// 'estimate' is omitted for a node with no entry, and each field is
+  /// omitted when unknown:
+  ///   - 'rawInputRows': rows a scan reads, before the filters it evaluates.
+  ///   - 'rawInputBytesPerRow': uncompressed bytes per row a scan reads, for
+  ///     the columns it produces and those only its filters read.
+  ///   - 'splits': splits a scan produces.
+  ///   - 'outputRows': rows the node produces.
   ///   - 'outputBytesPerRow': uncompressed bytes per row it produces.
-  static folly::dynamic toGraphJson(
+  static folly::dynamic toSummaryJson(
+      const MultiFragmentPlan& plan,
+      const NodePredictionMap& prediction);
+
+  /// Returns the plan as one indented tree of its control nodes, root on top.
+  /// At an exchange the tree continues into the fragment it reads:
+  ///
+  ///   Agg (FINAL) global
+  ///     Gather F2 (FIXED, 4 workers) → F1
+  ///       Agg (PARTIAL) global
+  ///         HashJoin (INNER) 1 key
+  ///           Scan "default"."lineitem"
+  ///           Broadcast F3 (SOURCE) → F2
+  ///             Scan "default"."orders"
+  ///
+  /// An exchange line says how rows move (Shuffle for hash partitioning,
+  /// otherwise Gather, Broadcast or Arbitrary) and names the fragment it reads
+  /// with its type and, unless it is a SOURCE fragment, the number of workers
+  /// that run it.
+  ///
+  /// Control nodes are scans, joins, aggregations, exchanges, unions (a local
+  /// exchange or an exchange with two or more inputs, and MixedUnion),
+  /// windows, and TopN, OrderBy, Limit, RowNumber, TopNRowNumber, GroupId,
+  /// MarkDistinct, EnforceDistinct, Unnest, EnforceSingleRow, TableWrite and
+  /// Values. Keys are given as counts.
+  static std::string toSummaryText(const MultiFragmentPlan& plan);
+
+  /// Returns toSummaryText(plan) with the optimizer's estimate for each node
+  /// that has one, on its own line indented twice as deep as a child:
+  ///
+  ///   HashJoin (INNER) 1 key
+  ///       Estimate: 1,200 rows
+  ///     Scan "default"."orders"
+  ///         Estimate: 15,000 rows
+  static std::string toSummaryText(
       const MultiFragmentPlan& plan,
       const NodePredictionMap& prediction);
 };
