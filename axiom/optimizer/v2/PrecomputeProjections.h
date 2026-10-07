@@ -38,6 +38,8 @@ class PrecomputeProjections {
 
   /// Returns a `Project` computing 'exprs' as 'outColumns' over 'input' after
   /// inlining a safe input `Project` and simplifying the resulting expressions.
+  /// Returns a `Values` instead when every expression is a column of an input
+  /// `Values`.
   static NodeCP makeProject(
       NodeCP input,
       ExprVector exprs,

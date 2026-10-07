@@ -20,6 +20,7 @@
 #include <cmath>
 
 #include "axiom/optimizer/EstimateMath.h"
+#include "axiom/optimizer/JoinConstraints.h"
 #include "axiom/optimizer/QueryGraph.h"
 #include "axiom/optimizer/v2/Cost.h"
 #include "axiom/optimizer/v2/JoinFanout.h"
@@ -259,6 +260,26 @@ Estimate EstimateProvider::compute(NodeCP node) {
           join->filter(),
           result.constraints);
       result.cardinality = maxOf(1.0f, cardinality);
+      JoinConstraints::refineInnerKeys(
+          join->joinType(),
+          join->leftKeys(),
+          join->rightKeys(),
+          result.constraints);
+      // Consumers read the join's output columns, which may differ from its
+      // source columns. An outer join's null-extended outputs do not share
+      // their sources' constraints.
+      for (size_t i = 0; join->isInner() && i < join->outputColumns().size();
+           ++i) {
+        ColumnCP source = join->sourceColumns()[i];
+        ColumnCP output = join->outputColumns()[i];
+        if (output == source) {
+          continue;
+        }
+        if (const auto it = result.constraints.find(source->id());
+            it != result.constraints.end()) {
+          result.constraints.insert_or_assign(output->id(), it->second);
+        }
+      }
       return result;
     }
 

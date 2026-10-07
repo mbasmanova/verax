@@ -16,6 +16,8 @@
 
 #include "axiom/optimizer/v2/ExprSimplifier.h"
 
+#include "axiom/optimizer/PlanUtils.h"
+
 #include <algorithm>
 #include "axiom/optimizer/Domain.h"
 #include "axiom/optimizer/FunctionRegistry.h"
@@ -276,15 +278,6 @@ ExprCP domainToFilter(Builder& builder, ColumnCP column, Domain domain) {
 
 } // namespace
 
-namespace {
-
-bool isNullLiteral(ExprCP expr) {
-  return expr->is(PlanType::kLiteralExpr) &&
-      expr->as<Literal>()->literal().isNull();
-}
-
-} // namespace
-
 ExprCP ExprSimplifier::simplify(ExprCP expr) {
   if (const auto it = simplified_.find(expr); it != simplified_.end()) {
     return it->second;
@@ -308,7 +301,7 @@ ExprCP ExprSimplifier::simplify(ExprCP expr) {
       ExprCP simplified = simplify(arg);
       changed |= simplified != arg;
       // A null argument of coalesce never supplies the result.
-      if (isCoalesce && isNullLiteral(simplified)) {
+      if (isCoalesce && isConstantNull(simplified)) {
         changed = true;
         continue;
       }
@@ -419,7 +412,7 @@ ExprCP ExprSimplifier::simplify(
           rewrittenArgs.end(), call->args().begin(), call->args().begin() + i);
     }
     // A null argument of coalesce never supplies the result.
-    if (isCoalesce && isNullLiteral(simplified)) {
+    if (isCoalesce && isConstantNull(simplified)) {
       if (!changed) {
         changed = true;
         rewrittenArgs.reserve(call->args().size());
@@ -443,6 +436,16 @@ ExprCP ExprSimplifier::simplify(
             call->args().begin(), call->args().begin() + i + 1);
       }
       break;
+    }
+  }
+  if (call->name() == builder_.functionNames().equality) {
+    ExprCP lhs = changed ? rewrittenArgs[0] : call->args()[0];
+    ExprCP rhs = changed ? rewrittenArgs[1] : call->args()[1];
+    // A complex value can hold NULL elements, which make its equality NULL.
+    if (lhs == rhs && lhs->value().type->isPrimitiveType() &&
+        !lhs->containsNonDeterministic() &&
+        isKnownNonNull(lhs, nonNullColumns)) {
+      return builder_.makeBoolean(true);
     }
   }
   if (!changed) {

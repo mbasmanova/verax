@@ -248,7 +248,7 @@ TEST_P(PlanTest, booleanSimplification) {
           expectedFilter.value() == kFalse || expectedFilter.value() == kNull) {
         // A filter that folds to a constant admitting no rows leaves nothing
         // to read, so the scan is replaced with an empty Values.
-        matcher = matchValues().project().build();
+        matcher = matchValues().build();
       } else {
         matcher = matchScan("numbers")
                       .filter(expectedFilter.value())
@@ -320,7 +320,7 @@ TEST_P(PlanTest, specialFormConstantFold) {
         useV2_ && (expected.value() == kFalse || expected.value() == kNull)) {
       // A filter that folds to a constant admitting no rows leaves nothing to
       // read, so the scan is replaced with an empty Values.
-      matcher = matchValues().project().build();
+      matcher = matchValues().build();
     } else {
       matcher = matchScan("numbers").filter(expected.value()).project().build();
     }
@@ -431,12 +431,12 @@ TEST_P(PlanTest, substitutePushedFilterConstants) {
     return matchScan("projected_items", ROW("field_name", VARCHAR()))
         .aliases({"field_name"})
         .filter("field_name = 'Gender'")
-        .project({"0"});
+        .projectNone();
   };
 
   AXIOM_ASSERT_PLAN_V2(
       toSingleNodePlan(logicalPlan),
-      matchLeg().localPartition(matchLeg()).build());
+      matchLeg().localPartition(matchLeg()).project({"0 as value"}).build());
 }
 
 // Verifies that func(..., null, ...) is folded to null for
@@ -503,7 +503,7 @@ TEST_P(PlanTest, inList) {
   {
     auto logicalPlan = scan().filter("4 in (1, 2, 3)").map({"a + 2"}).build();
 
-    auto matcher = matchValues().project().build();
+    auto matcher = matchValues().build();
 
     auto plan = toSingleNodePlan(logicalPlan);
     AXIOM_ASSERT_PLAN_V2(plan, matcher);

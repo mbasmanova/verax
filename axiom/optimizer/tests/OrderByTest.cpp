@@ -76,6 +76,13 @@ TEST_P(OrderByTest, orderByOfUnreadRowsDrops) {
           .build());
 }
 
+TEST_P(OrderByTest, constantOrderBy) {
+  AXIOM_ASSERT_PLAN_V2(
+      toSingleNodePlan(parseSelect(
+          "SELECT n_name FROM nation ORDER BY length('xx')", kTestConnectorId)),
+      matchScan("nation").build());
+}
+
 TEST_P(OrderByTest, unreadTopN) {
   // Nothing reads a column of the rows an ORDER BY with LIMIT keeps, so only
   // their count is observable, and a plain limit keeps the same count.

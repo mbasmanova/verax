@@ -470,7 +470,7 @@ TEST_P(JoinTest, filterBetweenJoins) {
                                matchScan("picks"), {.keys = {{"x = tx"}}}),
                            {.keys = {{"bk = k"}}})
                        .filter("b IS NULL OR b > 5")
-                       .project(std::vector<std::string>{})
+                       .projectNone()
                        .singleAggregation({}, {"count(*)"})
                        .build();
 
@@ -555,6 +555,354 @@ TEST_P(JoinTest, constantInInnerJoinCondition) {
               {.keys = {{"a = x"}}})
           .project({"10"})
           .build());
+}
+
+TEST_P(JoinTest, constantInnerJoinKeys) {
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
+  testConnector_->addTable("u", ROW({"x", "y"}, BIGINT()));
+
+  {
+    const auto query =
+        "SELECT t.b, u.y "
+        "FROM (SELECT * FROM t WHERE a = 1) t "
+        "JOIN (SELECT * FROM u WHERE x = 1) u ON a = x";
+    SCOPED_TRACE(query);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(query),
+        matchScan("t")
+            .filter("a = 1")
+            .project({"b"})
+            .nestedLoopJoin(matchScan("u").filter("x = 1").project({"y"}))
+            .build());
+  }
+
+  {
+    const auto query =
+        "SELECT t.b, u.y "
+        "FROM (SELECT * FROM t WHERE a = 1) t "
+        "JOIN (SELECT * FROM u WHERE x = 2) u ON a = x";
+    SCOPED_TRACE(query);
+    AXIOM_ASSERT_PLAN_V2(toSingleNodePlan(query), matchValues().build());
+  }
+}
+
+TEST_P(JoinTest, constantOuterJoinKeys) {
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
+  testConnector_->addTable("u", ROW({"x", "y"}, BIGINT()));
+
+  {
+    const auto query =
+        "SELECT t.b, u.y "
+        "FROM (SELECT * FROM t WHERE a = 1) t "
+        "LEFT JOIN (SELECT * FROM u WHERE x = 2) u ON a = x";
+    SCOPED_TRACE(query);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(query),
+        matchScan("t").filter("a = 1").project({"b", "null"}).build());
+  }
+
+  {
+    const auto query =
+        "SELECT t.b, u.y "
+        "FROM (SELECT * FROM t WHERE a = 1) t "
+        "RIGHT JOIN (SELECT * FROM u WHERE x = 2) u ON a = x";
+    SCOPED_TRACE(query);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(query),
+        matchScan("u").filter("x = 2").project({"null", "y"}).build());
+  }
+
+  {
+    const auto query =
+        "SELECT t.b, v.k FROM t "
+        "LEFT JOIN (VALUES CAST(NULL AS BIGINT)) AS v(k) ON t.a = v.k";
+    SCOPED_TRACE(query);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(query), matchScan("t").project({"b", "null"}).build());
+  }
+}
+
+TEST_P(JoinTest, constantFullOuterJoinKeys) {
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
+  testConnector_->addTable("u", ROW({"x", "y"}, BIGINT()));
+
+  {
+    const auto query =
+        "SELECT t.b, u.y "
+        "FROM (SELECT * FROM t WHERE a = 1) t "
+        "FULL JOIN (SELECT * FROM u WHERE x = 1) u ON a = x";
+    SCOPED_TRACE(query);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(query),
+        matchScan("t")
+            .filter("a = 1")
+            .project({"b"})
+            .nestedLoopJoin(
+                matchScan("u").filter("x = 1").project({"y"}),
+                core::JoinType::kFull)
+            .build());
+  }
+
+  {
+    const auto query =
+        "SELECT t.b, u.y "
+        "FROM (SELECT * FROM t WHERE a = 1) t "
+        "FULL JOIN (SELECT * FROM u WHERE x = 2) u ON a = x";
+    SCOPED_TRACE(query);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(query),
+        matchScan("t")
+            .filter("a = 1")
+            .project({"b", "null"})
+            .localPartition(
+                matchScan("u").filter("x = 2").project({"null", "y"}))
+            .build());
+  }
+
+  {
+    const auto query =
+        "SELECT t.b, v.k FROM t "
+        "FULL JOIN (VALUES CAST(NULL AS BIGINT)) AS v(k) ON t.a = v.k";
+    SCOPED_TRACE(query);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(query),
+        matchScan("t")
+            .project({"b", "null as k"})
+            .localPartition(matchValues(makeRowVector(
+                {"b", "k"},
+                {makeNullableFlatVector<int64_t>({std::nullopt}),
+                 makeNullableFlatVector<int64_t>({std::nullopt})})))
+            .build());
+  }
+
+  {
+    const auto query =
+        "SELECT t.b, u.y "
+        "FROM (SELECT * FROM t WHERE false) t "
+        "FULL JOIN u ON a = x";
+    SCOPED_TRACE(query);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(query), matchScan("u").project({"null", "y"}).build());
+  }
+
+  {
+    const auto query =
+        "SELECT t.b, u.y "
+        "FROM (SELECT * FROM t WHERE false) t "
+        "FULL JOIN (SELECT * FROM u WHERE false) u ON a = x";
+    SCOPED_TRACE(query);
+    AXIOM_ASSERT_PLAN_V2(toSingleNodePlan(query), matchValues().build());
+  }
+}
+
+TEST_P(JoinTest, constantSemiFilterJoinKeys) {
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
+  testConnector_->addTable("u", ROW({"x", "y"}, BIGINT()));
+
+  {
+    const auto query =
+        "SELECT b FROM t WHERE a IN (SELECT x FROM u WHERE x = 1)";
+    SCOPED_TRACE(query);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(query),
+        matchScan("t")
+            .filter("a = 1")
+            .nestedLoopJoin(
+                matchScan("u").filter("x = 1").projectNone(),
+                core::JoinType::kLeftSemiProject)
+            .aliases({"b", "mark"})
+            .filter("mark")
+            .project({"b"})
+            .build());
+  }
+
+  {
+    const auto query =
+        "SELECT b FROM (SELECT * FROM t WHERE a = 1) t "
+        "WHERE a IN (SELECT x FROM u)";
+    SCOPED_TRACE(query);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(query),
+        matchScan("t")
+            .filter("a = 1")
+            .project({"b"})
+            .nestedLoopJoin(
+                matchScan("u").filter("x = 1"),
+                core::JoinType::kLeftSemiProject)
+            .aliases({"b", "mark"})
+            .filter("mark")
+            .project({"b"})
+            .build());
+  }
+
+  {
+    const auto query =
+        "SELECT b FROM (SELECT * FROM t WHERE a = 1) t "
+        "WHERE a IN (SELECT x FROM u WHERE x = 1)";
+    SCOPED_TRACE(query);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(query),
+        matchScan("t")
+            .filter("a = 1")
+            .project({"b"})
+            .nestedLoopJoin(
+                matchScan("u").filter("x = 1").projectNone(),
+                core::JoinType::kLeftSemiProject)
+            .aliases({"b", "mark"})
+            .filter("mark")
+            .project({"b"})
+            .build());
+  }
+
+  for (const std::string& query : {
+           "SELECT b FROM (SELECT * FROM t WHERE a = 1) t "
+           "WHERE a IN (SELECT x FROM u WHERE x = 2)",
+           "SELECT b FROM t WHERE a IN ("
+           "SELECT x FROM (VALUES CAST(NULL AS BIGINT)) AS build(x))",
+           "SELECT b FROM t WHERE a IN (SELECT x FROM u WHERE false)",
+       }) {
+    SCOPED_TRACE(query);
+    AXIOM_ASSERT_PLAN_V2(toSingleNodePlan(query), matchValues().build());
+  }
+}
+
+TEST_P(JoinTest, constantSemiProjectJoinKeys) {
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
+  testConnector_->addTable("u", ROW({"x", "y"}, BIGINT()));
+
+  const auto query = "SELECT b, a IN (SELECT x FROM u WHERE x = 1) FROM t";
+  SCOPED_TRACE(query);
+  AXIOM_ASSERT_PLAN_V2(
+      toSingleNodePlan(query),
+      matchScan("t")
+          .nestedLoopJoin(
+              matchScan("u").filter("x = 1").projectNone(),
+              core::JoinType::kLeftSemiProject)
+          .aliases({"b", "a", "has_rows"})
+          .project({"b", "if(has_rows, a = 1, false)"})
+          .build());
+
+  {
+    const auto emptyBuild =
+        "SELECT b, a IN (SELECT x FROM u WHERE false) FROM t";
+    SCOPED_TRACE(emptyBuild);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(emptyBuild),
+        matchScan("t").project({"b", "false"}).build());
+  }
+
+  {
+    const auto nullBuildKey =
+        "SELECT b, a IN ("
+        "SELECT x FROM (VALUES CAST(NULL AS BIGINT)) AS build(x)) FROM t";
+    SCOPED_TRACE(nullBuildKey);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(nullBuildKey),
+        matchScan("t").project({"b", "null"}).build());
+  }
+
+  {
+    const auto nullProbeKey =
+        "SELECT b, CAST(NULL AS BIGINT) IN (SELECT x FROM u) FROM t";
+    SCOPED_TRACE(nullProbeKey);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(nullProbeKey),
+        matchScan("t")
+            .nestedLoopJoin(matchScan("u"), core::JoinType::kLeftSemiProject)
+            .aliases({"b", "has_rows"})
+            .project({"b", "if(has_rows, null, false)"})
+            .build());
+  }
+
+  {
+    const auto constantProbeKey =
+        "SELECT b, a IN (SELECT x FROM u) FROM t WHERE a = 1";
+    SCOPED_TRACE(constantProbeKey);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(constantProbeKey),
+        matchScan("t")
+            .filter("a = 1")
+            .project({"1", "b"})
+            .aliases({"probe_key", "b"})
+            .hashJoin(
+                matchScan("u").filter("x = 1 OR x IS NULL"),
+                core::JoinType::kLeftSemiProject,
+                {.keys = {{"probe_key = x"}}})
+            .aliases({"b", "mark"})
+            .project({"b", "mark"})
+            .build());
+  }
+}
+
+TEST_P(JoinTest, constantAntiJoinKeys) {
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
+  testConnector_->addTable("u", ROW({"x", "y"}, BIGINT()));
+
+  {
+    const auto constantBuildKey =
+        "SELECT b FROM t WHERE a NOT IN (SELECT x FROM u WHERE x = 1)";
+    SCOPED_TRACE(constantBuildKey);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(constantBuildKey),
+        matchScan("t")
+            .project({"b", "a = 1 OR a IS NULL"})
+            .aliases({"b", "condition"})
+            .nestedLoopJoin(
+                matchScan("u").filter("x = 1").projectNone(),
+                core::JoinType::kLeftSemiProject,
+                "condition")
+            .aliases({"b", "mark"})
+            .filter("not(mark)")
+            .project({"b"})
+            .build());
+  }
+
+  {
+    const auto constantProbeKey =
+        "SELECT b FROM t WHERE a = 1 AND a NOT IN (SELECT x FROM u)";
+    SCOPED_TRACE(constantProbeKey);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(constantProbeKey),
+        matchScan("t")
+            .filter("a = 1")
+            .project({"b"})
+            .nestedLoopJoin(
+                matchScan("u").filter("x = 1 OR x IS NULL"),
+                core::JoinType::kLeftSemiProject)
+            .aliases({"b", "mark"})
+            .filter("not(mark)")
+            .project({"b"})
+            .build());
+  }
+
+  {
+    const auto nullBuildKey =
+        "SELECT b FROM t WHERE a NOT IN ("
+        "SELECT x FROM (VALUES CAST(NULL AS BIGINT)) AS build(x))";
+    SCOPED_TRACE(nullBuildKey);
+    AXIOM_ASSERT_PLAN_V2(toSingleNodePlan(nullBuildKey), matchValues().build());
+  }
+
+  {
+    const auto nullProbeKey =
+        "SELECT b FROM t WHERE CAST(NULL AS BIGINT) NOT IN (SELECT x FROM u)";
+    SCOPED_TRACE(nullProbeKey);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(nullProbeKey),
+        matchScan("t")
+            .nestedLoopJoin(matchScan("u"), core::JoinType::kLeftSemiProject)
+            .aliases({"b", "mark"})
+            .filter("not(mark)")
+            .project({"b"})
+            .build());
+  }
+
+  {
+    const auto emptyBuild =
+        "SELECT b FROM t WHERE a NOT IN (SELECT x FROM u WHERE false)";
+    SCOPED_TRACE(emptyBuild);
+    AXIOM_ASSERT_PLAN_V2(toSingleNodePlan(emptyBuild), matchScan("t").build());
+  }
 }
 
 // A non-deterministic predicate between two joins stays where it was written.
@@ -1355,6 +1703,17 @@ TEST_P(JoinTest, crossJoin) {
     ASSERT_NO_THROW(planVelox(logicalPlan));
   }
 
+  {
+    auto logicalPlan = parseSelect(
+        "SELECT s FROM (SELECT a, sum(b) AS s FROM t GROUP BY a), (SELECT 1)",
+        kTestConnectorId);
+
+    auto matcher = matchScan("t").aggregation().project({"s"}).build();
+
+    auto plan = toSingleNodePlan(logicalPlan);
+    AXIOM_ASSERT_PLAN_V2(plan, matcher);
+  }
+
   // Cross join with a subquery that looks like single-row, but may not be. The
   // subquery is not ignored.
   {
@@ -1933,18 +2292,16 @@ TEST_P(JoinTest, crossThanOrderBy) {
   auto query = "SELECT length(n_name) FROM nation, region ORDER BY 1";
   SCOPED_TRACE(query);
 
-  // The Project above the sort renames the computed key to the query's
-  // output name.
-  auto matcher = matchScan("nation")
-                     .nestedLoopJoin(matchScan("region"))
-                     .project({"length(n_name) as l"})
-                     .orderBy({"l"})
-                     .project({"l"})
-                     .build();
-
   auto logicalPlan = parseSelect(query, kTestConnectorId);
   auto plan = toSingleNodePlan(logicalPlan);
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN(
+      plan,
+      matchScan("nation")
+          .nestedLoopJoin(matchScan("region"))
+          .project({"length(n_name) as l"})
+          .orderBy({"l"})
+          .project({"l"})
+          .build());
 
   ASSERT_NO_THROW(planVelox(logicalPlan));
 }
@@ -1964,14 +2321,21 @@ TEST_P(JoinTest, filterPushdownThroughCrossJoinUnnest) {
   }
 
   {
+    const parse::ParseOptions options = {.parseIntegerAsBigint = false};
     auto query =
         "SELECT * FROM (VALUES row(row(1, 2))) as t(x), UNNEST(array[1,2,3]) WHERE x.field0 > 0";
     SCOPED_TRACE(query);
 
-    auto matcher = matchValues().filter().project().unnest().project().build();
+    auto matcher =
+        matchValues(
+            makeRowVector({"data"}, {makeArrayVector<int32_t>({{1, 2, 3}})}))
+            .unnest({}, {"data"})
+            .aliases({"e"})
+            .project({"row(1, 2) as x", "e"}, options)
+            .build();
 
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V2(plan, matcher);
   }
 }
 
@@ -2508,8 +2872,6 @@ TEST_P(JoinTest, leftJoinOnClausePushdown) {
   }
 }
 
-// TODO: Assert the V2 plan after it supports constant-false outer-join
-// elimination.
 TEST_P(JoinTest, constantFalseOuterJoinElimination) {
   testConnector_->addTable("t", ROW({"a", "b", "c"}, BIGINT()));
   testConnector_->addTable("u", ROW({"x", "y"}, BIGINT()));
@@ -2525,7 +2887,7 @@ TEST_P(JoinTest, constantFalseOuterJoinElimination) {
         matchScan("t").project({"a", "b", "c", "null", "null"}).build();
 
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN(plan, matcher);
   }
 
   // Constant false ON conjunct (1 > 2) means no left rows can ever match.
@@ -2539,7 +2901,7 @@ TEST_P(JoinTest, constantFalseOuterJoinElimination) {
         matchScan("u").project({"null", "null", "null", "x", "y"}).build();
 
     auto plan = toSingleNodePlan(query);
-    AXIOM_ASSERT_PLAN_V1(plan, matcher);
+    AXIOM_ASSERT_PLAN(plan, matcher);
   }
 }
 
@@ -3845,7 +4207,7 @@ TEST_P(JoinTest, constantInput) {
     auto plan = toSingleNodePlan(
         "SELECT t.a, v.k FROM t LEFT JOIN (VALUES 1) AS v(k) ON t.a = v.k");
     AXIOM_ASSERT_PLAN_V2(
-        plan, matchScan("t").hashJoinLeft(matchValues()).project().build());
+        plan, matchScan("t").project({"a", "if(a = 1, 1, null) as k"}).build());
   }
 
   // An inequality against the one row restricts the other input too.
@@ -4038,9 +4400,7 @@ TEST_P(JoinTest, emptyNonPreservedInput) {
         "LEFT JOIN (SELECT * FROM u WHERE false) v ON t.a = v.x "
         "WHERE v.y IS NULL";
     SCOPED_TRACE(query);
-    AXIOM_ASSERT_PLAN_V2(
-        toSingleNodePlan(query),
-        matchScan("t").filter("is_null(null)").build());
+    AXIOM_ASSERT_PLAN_V2(toSingleNodePlan(query), matchScan("t").build());
   }
 }
 

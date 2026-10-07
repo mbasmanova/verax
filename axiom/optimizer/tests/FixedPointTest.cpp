@@ -67,7 +67,6 @@ TEST_F(FixedPointTest, recursiveCte) {
                                     .filter("n < 10")
                                     .project({"n + 1"}))
                           .convergeOnEmpty({.maxIterations = kRecursionLimit}))
-          .project()
           .build();
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
@@ -132,11 +131,8 @@ TEST_F(FixedPointTest, outerLimit) {
       "SELECT n FROM counter LIMIT 5",
       kTestConnectorId);
 
-  auto matcher = core::PlanMatcherBuilder()
-                     .fixedPoint()
-                     .finalLimit(0, 5)
-                     .project()
-                     .build();
+  auto matcher =
+      core::PlanMatcherBuilder().fixedPoint().finalLimit(0, 5).build();
   AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
 }
 
@@ -166,18 +162,17 @@ TEST_F(FixedPointTest, outerJoinInAnchor) {
       "SELECT t.n FROM t JOIN u ON t.n = u.n",
       kTestConnectorId);
 
-  auto matcher =
-      core::PlanMatcherBuilder()
-          .fixedPoint(matchFixedPoint("t")
-                          .outputState(
-                              /*append=*/true,
-                              matchValues().hashJoinRight(matchValues()))
-                          .plan(matchDelta("t", {"n"})
-                                    .filter("n IS NULL")
-                                    .project({"coalesce(n, 1)"})))
-          .hashJoinInner(matchScan("u"))
-          .project()
-          .build();
+  auto matcher = core::PlanMatcherBuilder()
+                     .fixedPoint(matchFixedPoint("t")
+                                     .outputState(
+                                         /*append=*/true, matchValues())
+                                     .plan(matchDelta("t", {"n"})
+                                               .filter("n IS NULL")
+                                               .project({"coalesce(n, 1)"})))
+                     .aliases({"n"})
+                     .hashJoinInner(matchScan("u"))
+                     .project({"n"})
+                     .build();
   AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
 }
 
@@ -197,7 +192,6 @@ TEST_F(FixedPointTest, outerFilter) {
                                     .project({"n + 1"})))
           .aliases({"n"})
           .filter("n > 15")
-          .project()
           .build();
   AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
 }
@@ -221,7 +215,7 @@ TEST_F(FixedPointTest, outerSelectsOneColumn) {
                             .filter("n < 10")
                             .project({"n + 1", "carried"}))
                   .convergeOnEmpty({.stateColumns = {{"n", "carried"}}}))
-          .project({"c0 as n"})
+          .project({"n"})
           .build();
   AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
 }
@@ -247,20 +241,20 @@ TEST_F(FixedPointTest, siblingRecursions) {
 
   auto matcher =
       core::PlanMatcherBuilder()
-          .fixedPoint(
-              matchFixedPoint("r2")
-                  .outputState(
-                      /*append=*/true,
-                      core::PlanMatcherBuilder().fixedPoint(
-                          matchFixedPoint("r1")
-                              .outputState(/*append=*/true, matchValues())
-                              .plan(matchDelta("r1", {"a"})
-                                        .filter("a < 3")
-                                        .project({"a + 1"}))))
-                  .plan(matchDelta("r2", {"b"})
-                            .filter("b < 30")
-                            .project({"b + 10"})))
-          .project()
+          .fixedPoint(matchFixedPoint("r2")
+                          .outputState(
+                              /*append=*/true,
+                              core::PlanMatcherBuilder().fixedPoint(
+                                  matchFixedPoint("r1")
+                                      .outputState(
+                                          /*append=*/true, matchValues())
+                                      .plan(matchDelta("r1", {"a"})
+                                                .filter("a < 3")
+                                                .project({"a + 1"}))))
+                          .plan(matchDelta("r2", {"b"})
+                                    .filter("b < 30")
+                                    .project({"b + 10"})))
+          .project({"a as b"})
           .build();
 
   AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
@@ -325,7 +319,7 @@ TEST_F(FixedPointTest, outerJoinAndFilter) {
           .aliases({"n"})
           .filter("n > 0")
           .hashJoinInner(matchScan("u").aliases({"n"}).filter("n > 0"))
-          .project()
+          .project({"n + 1"})
           .build();
 
   AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);

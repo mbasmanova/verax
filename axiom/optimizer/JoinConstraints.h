@@ -48,6 +48,15 @@ struct JoinConstraints {
       bool rightOptional,
       ConstraintMap& constraints);
 
+  /// Refines the keys of an inner join for a 'constraints' map that holds only
+  /// refined columns: seeds each key with its current `Value`, then applies
+  /// `updateKeys`. Other join types leave 'constraints' unchanged.
+  static void refineInnerKeys(
+      velox::core::JoinType joinType,
+      const ExprVector& left,
+      const ExprVector& right,
+      ConstraintMap& constraints);
+
   /// Marks optional-side payload (non-key) columns nullable with the given
   /// null fraction.
   static void updatePayload(

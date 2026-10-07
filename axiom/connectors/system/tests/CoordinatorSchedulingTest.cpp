@@ -127,7 +127,7 @@ TEST_F(CoordinatorSchedulingTest, unionWithValues) {
 
   auto matcher = PlanMatcherBuilder()
                      .tableScan("runtime.queries")
-                     .localPartition(matchValues().project())
+                     .localPartition(matchValues())
                      .output(FragmentType::kCoordinator)
                      .build();
   AXIOM_ASSERT_DISTRIBUTED_PLAN(plan, matcher);

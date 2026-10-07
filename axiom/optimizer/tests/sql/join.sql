@@ -213,6 +213,12 @@ FROM (VALUES (NULL), (1), (2)) AS t(t_k)
 LEFT JOIN (VALUES (NULL), (1), (3)) AS u(u_k) ON t_k = u_k
 GROUP BY 1, 2
 ----
+-- A one-row constant null-supplying side becomes a conditional value.
+SELECT t.a, v.k
+FROM (VALUES (1), (2)) AS t(a)
+LEFT JOIN (VALUES (1)) AS v(k) ON t.a = v.k
+ORDER BY 1
+----
 -- A filter on an outer join's null-producing side does not hold for padded
 -- rows above the join.
 SELECT CASE WHEN matching.b = 10 THEN 1 ELSE preserved.b END
@@ -685,6 +691,9 @@ JOIN (VALUES (1, 2)) AS b (k, v) ON s.k = b.k
 -- Cross join where one relation has no equi-predicate and is connected
 -- only by an inequality: the theta predicate must still be applied.
 SELECT t1.a, t2.a FROM t t1, t t2, t t3 WHERE t1.a = t3.a AND t1.b < t2.b
+----
+-- Cross join with an unused constant row over an aggregation.
+SELECT s FROM (SELECT a, sum(b) AS s FROM t GROUP BY a), (SELECT 1)
 ----
 -- A join filter discards an error raised by one conjunct for a row that
 -- another conjunct evaluates to false. v2 computes 1000 / (150 - t1.b) in the

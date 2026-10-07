@@ -682,6 +682,14 @@ Project::Project(Key key)
   VELOX_CHECK_EQ(this->outputColumns().size(), exprs_.size());
 }
 
+bool Project::isConstantRow() const {
+  return input()->is(NodeType::kValues) &&
+      input()->as<Values>()->cardinality() == 1 &&
+      std::ranges::all_of(exprs_, [](ExprCP expr) {
+           return expr->is(PlanType::kLiteralExpr);
+         });
+}
+
 bool Project::isDeterministic() const {
   for (ExprCP expr : exprs_) {
     if (expr->containsNonDeterministic()) {
@@ -1125,6 +1133,9 @@ MarkDistinct::MarkDistinct(Key key)
   VELOX_CHECK_EQ(
       this->outputColumns().size(),
       input_->outputColumns().size() + markers_.size());
+  VELOX_CHECK(
+      !distinctKeys_.empty(),
+      "MarkDistinct must have at least one distinct key");
   checkColumns(distinctKeys_, "MarkDistinct distinct key");
 }
 
@@ -1225,6 +1236,10 @@ size_t Values::cardinality() const {
     return rows_->array().size();
   }
   return source_ != nullptr ? source_->cardinality() : 0;
+}
+
+bool Values::isEmpty(NodeCP node) {
+  return node->is(NodeType::kValues) && node->as<Values>()->cardinality() == 0;
 }
 
 bool Values::isSingleRowNoColumns(NodeCP node) {
@@ -1880,8 +1895,8 @@ Partitioning fullJoinPartitioning(
         rightKeys[*joinKeyIndex], joinSourceColumns, joinOutputExpressions);
     // Null padding must make the missing side's key NULL so that the coalesce
     // selects the key from the row's surviving side.
-    if (leftKey->containsFunction(FunctionSet::kNonDefaultNullBehavior) ||
-        rightKey->containsFunction(FunctionSet::kNonDefaultNullBehavior) ||
+    if (leftKey->containsNonDefaultNullBehavior() ||
+        rightKey->containsNonDefaultNullBehavior() ||
         leftKey->value().type != rightKey->value().type ||
         !supportsCoalesceKey(leftKey->value().type)) {
       return {};
@@ -2117,6 +2132,14 @@ Window::Window(Key key)
     // A ROWS bound is an offset in rows, which Velox reads as a constant.
     if (function.frame.type != logical_plan::WindowExpr::WindowType::kRange) {
       continue;
+    }
+    // A RANGE offset bound is compared against the one ORDER BY key.
+    if (function.frame.startValue != nullptr ||
+        function.frame.endValue != nullptr) {
+      VELOX_CHECK_EQ(
+          orderKeys_.size(),
+          1,
+          "Window RANGE frame with an offset bound requires exactly one order key");
     }
     for (ExprCP bound : {function.frame.startValue, function.frame.endValue}) {
       if (bound != nullptr) {

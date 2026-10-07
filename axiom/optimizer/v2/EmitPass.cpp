@@ -905,6 +905,21 @@ velox::core::PlanNodePtr Emitter::emitProjectOver(
 }
 
 velox::core::PlanNodePtr Emitter::emitProject(const Project& project) {
+  if (project.isConstantRow()) {
+    std::vector<velox::Variant> row;
+    row.reserve(project.exprs().size());
+    for (ExprCP expr : project.exprs()) {
+      row.push_back(expr->as<Literal>()->literal());
+    }
+    std::vector<velox::RowVectorPtr> rowVectors{
+        std::static_pointer_cast<velox::RowVector>(
+            velox::BaseVector::createFromVariants(
+                makeRowType(project.outputColumns()),
+                {velox::Variant::row(std::move(row))},
+                evaluator_.pool()))};
+    return std::make_shared<velox::core::ValuesNode>(
+        nextId(), std::move(rowVectors));
+  }
   return emitProjectOver(
       emit(project.input()), project.exprs(), namesOf(project.outputColumns()));
 }
@@ -1849,33 +1864,86 @@ velox::core::PlanNodePtr Emitter::emitUnnest(const Unnest& unnest) {
       std::move(input));
 }
 
+namespace {
+
+// Returns the index in 'type' of each of 'names'.
+std::vector<velox::column_index_t> childIndices(
+    const velox::RowType& type,
+    const std::vector<std::string>& names) {
+  std::vector<velox::column_index_t> indices;
+  indices.reserve(names.size());
+  for (const auto& name : names) {
+    const auto index = type.getChildIdxIfExists(name);
+    VELOX_CHECK(index.has_value(), "Column not found in input: {}", name);
+    indices.push_back(*index);
+  }
+  return indices;
+}
+
+// Returns the rows of 'values' with the columns at 'indices', named
+// 'outputNames'.
+std::vector<velox::RowVectorPtr> selectColumns(
+    const velox::core::ValuesNode& values,
+    const std::vector<velox::column_index_t>& indices,
+    const std::vector<std::string>& outputNames) {
+  std::vector<velox::TypePtr> types;
+  types.reserve(indices.size());
+  for (auto index : indices) {
+    types.push_back(values.outputType()->childAt(index));
+  }
+  auto rowType =
+      velox::ROW(std::vector<std::string>{outputNames}, std::move(types));
+  std::vector<velox::RowVectorPtr> rows;
+  rows.reserve(values.values().size());
+  for (const auto& vector : values.values()) {
+    std::vector<velox::VectorPtr> children;
+    children.reserve(indices.size());
+    for (auto index : indices) {
+      children.push_back(vector->childAt(index));
+    }
+    rows.push_back(
+        std::make_shared<velox::RowVector>(
+            vector->pool(),
+            rowType,
+            nullptr,
+            vector->size(),
+            std::move(children)));
+  }
+  return rows;
+}
+
+} // namespace
+
 velox::core::PlanNodePtr Emitter::projectAs(
     velox::core::PlanNodePtr input,
     const ColumnVector& columns,
     const std::vector<std::string>& outputNames) {
+  const auto sourceNames = namesOf(columns);
   // Re-emitting a projection's expressions under other names is the same
   // projection, while each column is read once. A column at two positions
   // needs a copy of its expression per position.
-  const auto* project = input->as<velox::core::ProjectNode>();
-  auto sourceNames = namesOf(columns);
-  if (project != nullptr && !hasDuplicateNames(sourceNames)) {
+  if (const auto* project = input->as<velox::core::ProjectNode>();
+      project != nullptr && !hasDuplicateNames(sourceNames)) {
     std::vector<velox::core::TypedExprPtr> projections;
-    projections.reserve(columns.size());
-    for (const auto& name : sourceNames) {
-      const auto index = project->outputType()->getChildIdxIfExists(name);
-      if (!index.has_value()) {
-        projections.clear();
-        break;
-      }
-      projections.push_back(project->projections()[*index]);
+    projections.reserve(sourceNames.size());
+    for (auto index : childIndices(*project->outputType(), sourceNames)) {
+      projections.push_back(project->projections()[index]);
     }
-    if (!projections.empty()) {
-      return std::make_shared<velox::core::ProjectNode>(
-          nextId(),
-          std::vector<std::string>{outputNames},
-          std::move(projections),
-          project->sources()[0]);
-    }
+    return std::make_shared<velox::core::ProjectNode>(
+        nextId(),
+        std::vector<std::string>{outputNames},
+        std::move(projections),
+        project->sources()[0]);
+  }
+  // Selecting and renaming columns of a Values is the same rows under other
+  // names.
+  if (const auto* values = input->as<velox::core::ValuesNode>()) {
+    return std::make_shared<velox::core::ValuesNode>(
+        nextId(),
+        selectColumns(
+            *values,
+            childIndices(*values->outputType(), sourceNames),
+            outputNames));
   }
   return wrapWithRenameProject(std::move(input), columns, outputNames);
 }

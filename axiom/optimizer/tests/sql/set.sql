@@ -267,3 +267,32 @@ SELECT CASE WHEN x = 1 THEN 10 ELSE y END FROM (
   SELECT a AS x, b AS y FROM t WHERE a = 1
   EXCEPT
   SELECT a, b FROM t WHERE b > 100)
+----
+-- A column from the empty side of an outer join is NULL on every row, in each
+-- set operation.
+SELECT v.x FROM t
+LEFT JOIN (SELECT a AS x FROM t WHERE false) AS v ON t.a = v.x
+UNION
+SELECT 1
+----
+-- duckdb: SELECT CAST(NULL AS BIGINT) FROM t
+SELECT v.x FROM t
+LEFT JOIN (SELECT a AS x FROM t WHERE false) AS v ON t.a = v.x
+EXCEPT ALL
+SELECT 1
+----
+SELECT v.x FROM t
+LEFT JOIN (SELECT a AS x FROM t WHERE false) AS v ON t.a = v.x
+INTERSECT ALL
+SELECT NULL
+----
+SELECT v.x FROM t
+LEFT JOIN (SELECT a AS x FROM t WHERE false) AS v ON t.a = v.x
+INTERSECT
+SELECT NULL
+----
+-- INTERSECT compares NULL keys as values.
+SELECT CAST(NULL AS BIGINT) AS x FROM t
+INTERSECT
+SELECT CAST(NULL AS BIGINT) AS x FROM t
+----

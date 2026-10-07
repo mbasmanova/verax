@@ -338,16 +338,18 @@ TEST_P(SubqueryFoldTest, foldableAggregationOverPartitions) {
             .build());
   }
 
-  // Each UNION ALL branch folds on its own.
+  // Each UNION ALL branch folds on its own, and the value both branches share
+  // is computed once above the union.
   {
     auto plan = toSingleNodePlan(
         "SELECT max(ds) AS m FROM pt UNION ALL SELECT max(ds) AS m FROM pt");
 
-    auto foldedValue = makeRowVector({makeFlatVector<std::string>({"2"})});
+    auto emptyRow = makeRowVector(ROW({}), 1);
     AXIOM_ASSERT_PLAN_V2(
         plan,
-        matchValues(foldedValue)
-            .localPartition({matchValues(foldedValue).project()})
+        matchValues(emptyRow)
+            .localPartition({matchValues(emptyRow)})
+            .project({"'2' as m"})
             .build());
   }
 

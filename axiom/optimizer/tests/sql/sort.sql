@@ -1,5 +1,10 @@
 -- setup_file: common_setup.sql
 
+-- A constant ordering key does not affect the rows or their multiplicity.
+SELECT count(*)
+FROM (SELECT b FROM t ORDER BY length('xx'))
+----
+
 -- Table t(a BIGINT, b BIGINT, c DOUBLE) with 15 rows across 3 splits:
 --   a |   b |    c
 --  ---+-----+------
@@ -81,3 +86,19 @@ ORDER BY y.v DESC
 -- SELECT DISTINCT with GROUP BY, ordered by a qualified key.
 -- ordered
 SELECT DISTINCT t.a, count(1) FROM t GROUP BY t.a ORDER BY t.a DESC
+----
+-- An ORDER BY key from the empty side of an outer join is NULL on every row.
+-- ordered
+SELECT t.b, v.x
+FROM t
+LEFT JOIN (SELECT a AS x FROM t WHERE false) AS v ON t.a = v.x
+ORDER BY v.x, t.b
+----
+-- The same, with a LIMIT.
+-- ordered
+SELECT t.b, v.x
+FROM t
+LEFT JOIN (SELECT a AS x FROM t WHERE false) AS v ON t.a = v.x
+ORDER BY v.x, t.b
+LIMIT 3
+----

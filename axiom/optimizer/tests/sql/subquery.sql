@@ -21,6 +21,80 @@ SELECT a, b FROM t WHERE a IN ((SELECT max(a) FROM t), 1)
 -- IN list with two scalar subqueries.
 SELECT a, b FROM t WHERE a IN ((SELECT max(a) FROM t), (SELECT min(a) FROM t))
 ----
+-- Equal constant semi-join keys retain the probe rows when the build has rows.
+SELECT b
+FROM (VALUES (1, 10), (1, 20)) AS probe(a, b)
+WHERE a IN (SELECT x FROM (VALUES (1), (1)) AS build(x))
+----
+-- A constant build key filters the probe key before the existence test.
+SELECT b
+FROM (VALUES (1, 10), (2, 20)) AS probe(a, b)
+WHERE a IN (SELECT x FROM (VALUES (1), (1)) AS build(x))
+----
+-- Distinct constant semi-join keys cannot match.
+-- count 0
+SELECT b
+FROM (VALUES (1, 10), (1, 20)) AS probe(a, b)
+WHERE a IN (SELECT x FROM (VALUES (2), (2)) AS build(x))
+----
+-- A NULL constant semi-join key cannot produce a true IN result.
+-- count 0
+SELECT b
+FROM (VALUES (1, 10), (1, 20)) AS probe(a, b)
+WHERE a IN (
+  SELECT x FROM (VALUES (CAST(NULL AS INTEGER))) AS build(x)
+)
+----
+-- A null-aware marker is false when its build is empty.
+SELECT a, a IN (
+  SELECT x FROM (VALUES (1)) AS build(x) WHERE false
+)
+FROM (VALUES (1), (CAST(NULL AS INTEGER))) AS probe(a)
+----
+-- A NULL build key makes a nonmatching marker NULL when the build has rows.
+SELECT a, a IN (
+  SELECT x FROM (VALUES (CAST(NULL AS INTEGER))) AS build(x)
+)
+FROM (VALUES (1), (CAST(NULL AS INTEGER))) AS probe(a)
+----
+-- A NULL probe key is NULL when the build has rows.
+SELECT CAST(NULL AS INTEGER) IN (
+  SELECT x FROM (VALUES (1), (2)) AS build(x)
+)
+----
+-- A constant non-NULL probe keeps build NULLs, which make a miss NULL.
+SELECT a IN (
+  SELECT a FROM u WHERE a = 2
+  UNION ALL
+  SELECT CAST(NULL AS BIGINT)
+)
+FROM t
+WHERE a = 1
+----
+-- NOT IN keeps every probe row when its build is empty, including NULL.
+SELECT a, a NOT IN (
+  SELECT x FROM (VALUES (1)) AS build(x) WHERE false
+)
+FROM (VALUES (1), (CAST(NULL AS INTEGER))) AS probe(a)
+----
+-- A constant non-NULL build key rejects an equal probe, keeps a distinct
+-- probe, and leaves a NULL probe unknown.
+SELECT a, a NOT IN (
+  SELECT x FROM (VALUES (1)) AS build(x)
+)
+FROM (VALUES (1), (2), (CAST(NULL AS INTEGER))) AS probe(a)
+----
+-- A NULL build key makes every NOT IN result unknown when the build has rows.
+SELECT a, a NOT IN (
+  SELECT x FROM (VALUES (CAST(NULL AS INTEGER))) AS build(x)
+)
+FROM (VALUES (1), (CAST(NULL AS INTEGER))) AS probe(a)
+----
+-- A constant non-NULL probe keeps build NULLs, which make a miss unknown.
+SELECT 2 NOT IN (
+  SELECT x FROM (VALUES (1), (CAST(NULL AS INTEGER))) AS build(x)
+)
+----
 -- Same scalar subquery in both SELECT and GROUP BY must resolve as a single
 -- grouping key.
 SELECT COALESCE(t.a, (SELECT max(a) FROM u))

@@ -57,6 +57,28 @@ NodeCP PrecomputeProjections::makeProject(
   for (ExprCP& expr : exprs) {
     expr = simplifier.simplify(expr);
   }
+  if (input->is(NodeType::kValues)) {
+    // Selecting and renaming columns of a Values is a Values over the same
+    // data.
+    const auto* values = input->as<Values>();
+    const auto& inputColumns = values->outputColumns();
+    QGVector<velox::column_index_t> channels;
+    channels.reserve(exprs.size());
+    for (ExprCP expr : exprs) {
+      const auto it = std::find(inputColumns.begin(), inputColumns.end(), expr);
+      if (it == inputColumns.end()) {
+        break;
+      }
+      channels.push_back(values->channels()[it - inputColumns.begin()]);
+    }
+    if (channels.size() == exprs.size()) {
+      return builder.make<Values>(
+          {values->source(),
+           values->rows(),
+           std::move(outColumns),
+           std::move(channels)});
+    }
+  }
   return builder.make<Project>(
       {input, std::move(exprs), std::move(outColumns)});
 }

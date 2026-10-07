@@ -290,18 +290,14 @@ TEST_P(LimitTest, zeroLimit) {
     }
   }
 
-  // Operators above the empty Values node are preserved.
+  // A global aggregate manufactures its row over the empty input.
   AXIOM_ASSERT_PLAN(
       toSingleNodePlan("SELECT count(*) FROM (SELECT * FROM t LIMIT 0)"),
       matchValues().singleAggregation({}, {"count(*) as cnt"}).build());
 
-  AXIOM_ASSERT_PLAN(
-      toSingleNodePlan(
-          "SELECT * FROM t, (SELECT * FROM u LIMIT 0) s WHERE a = x"),
-      matchScan("t")
-          .hashJoin(matchValues(), core::JoinType::kInner)
-          .projectIf(useV2_, {"a", "a"})
-          .build());
+  const auto emptyJoinPlan = toSingleNodePlan(
+      "SELECT * FROM t, (SELECT * FROM u LIMIT 0) s WHERE a = x");
+  AXIOM_ASSERT_PLAN_V2(emptyJoinPlan, matchValues().build());
 }
 
 AXIOM_INSTANTIATE_V1_V2(LimitTest);
