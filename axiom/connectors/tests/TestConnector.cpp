@@ -857,6 +857,10 @@ velox::connector::ConnectorTableHandlePtr TestTableLayout::createTableHandle(
     std::vector<int32_t>& rejectedFilterIndices,
     velox::RowTypePtr /* dataColumns */,
     std::optional<LookupKeys> lookupKeys) const {
+  VELOX_CHECK(
+      supportsScan() || lookupKeys.has_value(),
+      "Lookup-only table layout requires lookup keys: {}",
+      label());
   auto* testConnector = dynamic_cast<TestConnector*>(connector());
   VELOX_CHECK_NOT_NULL(testConnector);
   if (const auto& inspector = testConnector->onCreateTableHandle()) {
