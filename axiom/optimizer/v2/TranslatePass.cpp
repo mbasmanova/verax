@@ -38,6 +38,7 @@
 #include "axiom/optimizer/v2/ExprSimplifier.h"
 #include "axiom/optimizer/v2/JoinCondition.h"
 #include "axiom/optimizer/v2/NodeExpressions.h"
+#include "axiom/optimizer/v2/NodeSimplifier.h"
 #include "axiom/optimizer/v2/PhysicalPlanAndEmit.h"
 #include "axiom/optimizer/v2/PrecomputeProjections.h"
 #include "axiom/optimizer/v2/ScanHandle.h"
@@ -447,6 +448,7 @@ class Translator {
         builder_(builder),
         exprFactory_(builder),
         simplifier_(builder, evaluator),
+        nodeSimplifier_(builder, simplifier_),
         evaluator_(evaluator),
         session_(session),
         constantPlanRunner_(constantPlanRunner) {}
@@ -544,6 +546,10 @@ class Translator {
   // See the definitions below.
   ColumnCP materializeColumn(NodeCP* node, ExprCP expr, std::string_view name);
 
+  // Applies node simplification facts to every expression published by a
+  // translated scope.
+  void applySubstitutions(const PlanSubstitutions& substitutions, Scope& scope);
+
   ColumnVector narrowToNames(
       NodeCP* node,
       const Scope& scope,
@@ -592,17 +598,12 @@ class Translator {
 
   // Translates 'aggregate''s grouping keys into 'keys' and the columns they are
   // published under into 'columns', binding every grouping-key name in 'scope'.
-  // Redundant constant keys are returned in 'projectedColumns' and
-  // 'projectedExprs' for restoration above the aggregate. Grouping sets keep
-  // every key, since the set indices are positional.
   void translateGroupingKeys(
       const lp::AggregateNode& aggregate,
       const Scope& inputScope,
       NodeCP& currentInput,
       ExprVector& keys,
       ColumnVector& columns,
-      ColumnVector& projectedColumns,
-      ExprVector& projectedExprs,
       Scope& scope);
 
   // Lowers GROUPING SETS / ROLLUP / CUBE to a GroupId plus a plain aggregate
@@ -619,12 +620,6 @@ class Translator {
   // the aggregate's empty-input value from the function registry.
   ExprCP emptySetResult(const optimizer::Aggregate* call);
 
-  // Wraps 'node' in a Project appending 'columns' (each defined by the matching
-  // expr) to its outputs. Returns 'node' unchanged when 'columns' is empty.
-  NodeCP appendConstantColumns(
-      NodeCP node,
-      const ColumnVector& columns,
-      const ExprVector& exprs);
   Translated translateValues(
       const lp::ValuesNode& values,
       const LpNameSet& required);
@@ -633,6 +628,10 @@ class Translator {
       const LpNameSet& required);
   Translated translateSet(const lp::SetNode& set, const LpNameSet& required);
   Translated translateJoin(const lp::JoinNode& join, const LpNameSet& required);
+
+  // Builds a simplified Join and applies its equivalences to the output scope.
+  Translated simplifyJoin(Join::Key key, Scope scope);
+
   Translated translateLateralJoin(
       const lp::LateralJoinNode& join,
       const LpNameSet& required);
@@ -673,18 +672,6 @@ class Translator {
       const std::vector<lp::LogicalPlanNodePtr>& inputs,
       const std::vector<size_t>& keptPositions);
 
-  // Returns the literal shared by every input at `position`, or nullptr.
-  static ExprCP commonUnionLiteral(
-      const std::vector<lp::LogicalPlanNodePtr>& inputs,
-      const std::vector<Translated>& translatedInputs,
-      size_t position);
-
-  // Returns the literal bound to `type`'s output at `position`, or nullptr.
-  static ExprCP literalInScope(
-      const Translated& input,
-      const velox::RowType& type,
-      size_t position);
-
   // `dedupAbove` says the caller dedups the result, which subsumes a nested
   // UNION's own dedup and so allows flattening such a leg.
   Translated buildUnionAll(
@@ -702,6 +689,14 @@ class Translator {
   Translated maybeWrapInFilter(
       NodeCP input,
       const lp::Expr& predicateExpr,
+      Scope scope,
+      bool propagateConstants);
+
+  // Builds a simplified Filter and publishes any resulting constants through
+  // its scope.
+  Translated simplifyFilter(
+      NodeCP input,
+      ExprVector predicates,
       Scope scope,
       bool propagateConstants);
 
@@ -901,6 +896,7 @@ class Translator {
   Builder& builder_;
   ExprFactory exprFactory_;
   ExprSimplifier simplifier_;
+  NodeSimplifier nodeSimplifier_;
   velox::core::ExpressionEvaluator& evaluator_;
   const OptimizerSession& session_;
   const ConstantPlanRunner& constantPlanRunner_;
@@ -1029,8 +1025,13 @@ Translated Translator::translateTableWrite(
     columnExprs.assign(writeColumns.begin(), writeColumns.end());
   }
 
-  NodeCP writeNode = builder_.make<TableWrite>(
-      {currentInput, connectorTable, kind, std::move(columnExprs)});
+  auto write = nodeSimplifier_.make(
+      TableWrite::Key{
+          currentInput, connectorTable, kind, std::move(columnExprs)},
+      {currentInput, {}},
+      /*originalOutputs=*/{});
+  VELOX_CHECK(!write.empty());
+  NodeCP writeNode = write.node;
 
   // The single output column is the written row count.
   Scope scope;
@@ -1046,11 +1047,14 @@ NodeCP Translator::makeWorkingTable() {
       activeFixedPoint_.has_value(),
       "WorkingTable requires an enclosing FixedPoint");
   const auto& enclosing = *activeFixedPoint_;
-  return builder_.make<WorkingTable>({
-      .name = enclosing.stateName,
-      .outputColumns = enclosing.stateColumns,
-      .readMode = WorkingTableReadMode::kLatestDelta,
-  });
+  return nodeSimplifier_
+      .make(
+          WorkingTable::Key{
+              .name = enclosing.stateName,
+              .outputColumns = enclosing.stateColumns,
+              .readMode = WorkingTableReadMode::kLatestDelta,
+          })
+      .node;
 }
 
 NodeCP Translator::makeEmptyDeltaConvergence() {
@@ -1067,23 +1071,34 @@ NodeCP Translator::makeEmptyDeltaConvergence() {
       {});
   ColumnCP countColumn =
       Column::create("__converged_count", Value(toType(velox::BIGINT())));
-  NodeCP aggregation = builder_.make<Aggregate>({
-      .input = workingTable,
-      .groupingKeys = {},
-      .aggregates = {count},
-      .outputColumns = {countColumn},
-      .step = AggregateStep::kSingle,
-  });
+  auto aggregation = nodeSimplifier_.make(
+      Aggregate::Key{
+          .input = workingTable,
+          .groupingKeys = {},
+          .aggregates = {count},
+          .outputColumns = {countColumn},
+          .step = AggregateStep::kSingle,
+      },
+      {workingTable, {}});
+  VELOX_CHECK(!aggregation.empty());
   ExprCP zero =
       builder_.makeLiteral(velox::Variant(int64_t{0}), toType(velox::BIGINT()));
   ExprCP convergedExpr = exprFactory_.makeEq(countColumn, zero);
   ColumnCP convergedColumn =
       Column::create("converged", Value(toType(velox::BOOLEAN())));
-  return builder_.make<Project>({
-      .input = aggregation,
-      .exprs = {convergedExpr},
-      .outputColumns = {convergedColumn},
-  });
+  NodeCP aggregationNode = aggregation.node;
+  auto projected = nodeSimplifier_.make(
+      Project::Key{
+          .input = aggregationNode,
+          .exprs = {convergedExpr},
+          .outputColumns = {convergedColumn},
+      },
+      std::move(aggregation));
+  VELOX_CHECK(!projected.empty());
+  ColumnVector outputColumns{convergedColumn};
+  nodeSimplifier_.restoreOutputLayout(
+      projected.node, outputColumns, projected.substitutions);
+  return projected.node;
 }
 
 Translated Translator::translateFixedPoint(
@@ -1140,9 +1155,8 @@ Translated Translator::translateFixedPoint(
       activeFixedPoint_->numReferences);
 
   NodeCP convergence = makeEmptyDeltaConvergence();
-
-  return {
-      builder_.make<FixedPoint>({
+  auto result = nodeSimplifier_.make(
+      FixedPoint::Key{
           .anchor = anchor.node,
           .step = step.node,
           .convergence = convergence,
@@ -1151,8 +1165,12 @@ Translated Translator::translateFixedPoint(
           .sourceColumns = std::move(anchorColumns),
           .maxIterations = session_.options().recursionLimit,
           .recursiveNumDrivers = std::nullopt,
-      }),
-      std::move(anchorScope)};
+      },
+      {anchor.node, {}},
+      {step.node, {}},
+      {convergence, {}});
+  applySubstitutions(result.substitutions, anchorScope);
+  return {nodeSimplifier_.materialize(result), std::move(anchorScope)};
 }
 
 Translated Translator::translateRecursiveRef(
@@ -1278,8 +1296,10 @@ Translated Translator::translateScan(
     outputColumns.push_back(column);
     scope[outName] = column;
   }
-  ScanCP scanNode = builder_.make<Scan>({baseTable, std::move(outputColumns)});
-  return {scanNode, std::move(scope)};
+  auto simplified =
+      nodeSimplifier_.make(Scan::Key{baseTable, std::move(outputColumns)});
+  applySubstitutions(simplified.substitutions, scope);
+  return {simplified.node, std::move(scope)};
 }
 
 Translated Translator::translateFilter(
@@ -1320,11 +1340,12 @@ Translated Translator::translateFilter(
   // Returns nullopt if any conjunct simplifies to constant false.
   auto translateConjuncts =
       [&](const std::vector<const lp::Expr*>& conjuncts,
+          const Scope& scope,
           LiftTarget* liftTarget) -> std::optional<ExprVector> {
     ExprVector result;
     result.reserve(conjuncts.size());
     for (const auto* conjunct : conjuncts) {
-      ExprCP translated = translateExpr(*conjunct, input.scope, liftTarget);
+      ExprCP translated = translateExpr(*conjunct, scope, liftTarget);
       if (simplifier_.simplifyFilter(translated, result)) {
         return std::nullopt;
       }
@@ -1332,33 +1353,33 @@ Translated Translator::translateFilter(
     return result;
   };
 
-  auto innerConjuncts = translateConjuncts(noSubquery, /*liftTarget=*/nullptr);
+  auto innerConjuncts =
+      translateConjuncts(noSubquery, input.scope, /*liftTarget=*/nullptr);
   if (!innerConjuncts.has_value()) {
     return {
         builder_.makeEmptyValues(input.node->outputColumns()),
         std::move(input.scope)};
   }
-  propagateFilterConstants(*innerConjuncts, input.scope);
-  NodeCP inner = innerConjuncts->empty()
-      ? input.node
-      : builder_.make<Filter>({input.node, std::move(*innerConjuncts)});
+  Translated inner = simplifyFilter(
+      input.node,
+      std::move(*innerConjuncts),
+      std::move(input.scope),
+      /*propagateConstants=*/true);
 
   std::optional<ExprVector> outerConjuncts;
-  inner = withLiftTarget(inner, [&](LiftTarget& target) {
-    outerConjuncts = translateConjuncts(withSubquery, &target);
+  inner.node = withLiftTarget(inner.node, [&](LiftTarget& target) {
+    outerConjuncts = translateConjuncts(withSubquery, inner.scope, &target);
   });
   if (!outerConjuncts.has_value()) {
     return {
-        builder_.makeEmptyValues(inner->outputColumns()),
-        std::move(input.scope)};
+        builder_.makeEmptyValues(inner.node->outputColumns()),
+        std::move(inner.scope)};
   }
-  propagateFilterConstants(*outerConjuncts, input.scope);
-  if (outerConjuncts->empty()) {
-    return {inner, std::move(input.scope)};
-  }
-  return {
-      builder_.make<Filter>({inner, std::move(*outerConjuncts)}),
-      std::move(input.scope)};
+  return simplifyFilter(
+      inner.node,
+      std::move(*outerConjuncts),
+      std::move(inner.scope),
+      /*propagateConstants=*/true);
 }
 
 Translated Translator::maybeWrapInFilter(
@@ -1371,21 +1392,26 @@ Translated Translator::maybeWrapInFilter(
     predicate = translateExpr(predicateExpr, scope, &target);
   });
 
-  ExprVector conjuncts;
-  if (simplifier_.simplifyFilter(predicate, conjuncts)) {
+  return simplifyFilter(
+      input, {predicate}, std::move(scope), propagateConstants);
+}
+
+Translated Translator::simplifyFilter(
+    NodeCP input,
+    ExprVector predicates,
+    Scope scope,
+    bool propagateConstants) {
+  auto simplified = nodeSimplifier_.make(
+      Filter::Key{input, std::move(predicates)}, {input, {}});
+  applySubstitutions(simplified.substitutions, scope);
+  if (simplified.empty()) {
     return {builder_.makeEmptyValues(input->outputColumns()), std::move(scope)};
   }
-
-  if (conjuncts.empty()) {
-    return {input, std::move(scope)};
+  if (propagateConstants && simplified.node->is(NodeType::kFilter)) {
+    propagateFilterConstants(
+        simplified.node->as<Filter>()->predicates(), scope);
   }
-
-  if (propagateConstants) {
-    propagateFilterConstants(conjuncts, scope);
-  }
-
-  return {
-      builder_.make<Filter>({input, std::move(conjuncts)}), std::move(scope)};
+  return {simplified.node, std::move(scope)};
 }
 
 void Translator::propagateFilterConstants(
@@ -1765,13 +1791,7 @@ NodeCP Translator::maybeWrapInWindow(
     // bound as columns of the input, so they are computed below the Window.
     PrecomputeProjections precompute{current, builder_, simplifier_};
     ExprVector partitionKeys = spec.partitionKeys;
-    for (ExprCP& key : partitionKeys) {
-      key = materializeInto(precompute, key);
-    }
     ExprVector orderKeys = spec.orderKeys;
-    for (ExprCP& key : orderKeys) {
-      key = materializeInto(precompute, key);
-    }
 
     // A ROWS bound is an offset in rows, which Velox reads as a constant. A
     // RANGE bound is the boundary value for each row, which it reads from a
@@ -1808,17 +1828,6 @@ NodeCP Translator::maybeWrapInWindow(
       auto* call = builder_.makeCall(
           windowName, value, std::move(windowArgs), windowFuncs);
       Frame frame = toFrame(windowExpr->frame(), inputScope);
-      // With no ordering every row of a partition is a peer, so a RANGE bound
-      // at CURRENT ROW reaches the end of the partition in either direction.
-      if (orderKeys.empty() &&
-          frame.type == lp::WindowExpr::WindowType::kRange) {
-        if (frame.startType == lp::WindowExpr::BoundType::kCurrentRow) {
-          frame.startType = lp::WindowExpr::BoundType::kUnboundedPreceding;
-        }
-        if (frame.endType == lp::WindowExpr::BoundType::kCurrentRow) {
-          frame.endType = lp::WindowExpr::BoundType::kUnboundedFollowing;
-        }
-      }
       const bool allowConstant =
           frame.type == lp::WindowExpr::WindowType::kRows;
       frame.startValue = liftBound(frame.startValue, allowConstant);
@@ -1841,13 +1850,17 @@ NodeCP Translator::maybeWrapInWindow(
       outputColumns.push_back(column);
     }
 
-    current = builder_.make<Window>(
-        {current,
-         std::move(functions),
-         std::move(partitionKeys),
-         std::move(orderKeys),
-         spec.orderTypes,
-         std::move(outputColumns)});
+    auto simplified = nodeSimplifier_.make(
+        Window::Key{
+            current,
+            std::move(functions),
+            std::move(partitionKeys),
+            std::move(orderKeys),
+            spec.orderTypes,
+            std::move(outputColumns)},
+        {current, {}});
+    applySubstitutions(simplified.substitutions, windowScope);
+    current = nodeSimplifier_.materialize(simplified);
   }
   return current;
 }
@@ -1862,9 +1875,10 @@ Translated Translator::translateLimit(
   }
   // Limit is a pass-through with no expressions of its own.
   Translated input = translateNode(*limit.onlyInput(), required);
-  LimitCP limitNode =
-      builder_.make<Limit>({input.node, limit.offset(), limit.count()});
-  return {limitNode, std::move(input.scope)};
+  auto simplified = nodeSimplifier_.make(
+      Limit::Key{input.node, limit.offset(), limit.count()}, {input.node, {}});
+  applySubstitutions(simplified.substitutions, input.scope);
+  return {nodeSimplifier_.materialize(simplified), std::move(input.scope)};
 }
 
 std::pair<ExprVector, OrderTypeVector> Translator::dedupOrdering(
@@ -1918,6 +1932,18 @@ ColumnCP Translator::materializeColumn(
   return column;
 }
 
+void Translator::applySubstitutions(
+    const PlanSubstitutions& substitutions,
+    Scope& scope) {
+  if (substitutions.empty()) {
+    return;
+  }
+  for (auto& [name, expression] : scope) {
+    expression =
+        simplifier_.simplify(substitutions.apply(expression, exprFactory_));
+  }
+}
+
 // Restricts '*node' to what 'names' resolve to in 'scope', materializing any
 // expressions. For a node whose own `outputColumns` are read as its result --
 // a subquery body, a `UnionAll` leg -- the columns have to be there, not just
@@ -1926,14 +1952,33 @@ ColumnVector Translator::narrowToNames(
     NodeCP* node,
     const Scope& scope,
     const std::vector<std::string>& names) {
+  // An empty input stays an empty Values with the narrowed columns.
+  const bool empty = Values::isEmpty(*node);
   ColumnVector columns;
+  ExprVector exprs;
   columns.reserve(names.size());
+  exprs.reserve(names.size());
+  PlanObjectSet seen;
   for (const auto& name : names) {
     auto it = scope.find(name);
     VELOX_CHECK(it != scope.end(), "Name not in scope: {}", name);
-    columns.push_back(materializeColumn(node, it->second, name));
+    ColumnCP column = empty && !it->second->isColumn()
+        ? columnForSymbol(toName(name), it->second->value())
+        : materializeColumn(node, it->second, name);
+    exprs.push_back(column);
+    // Names bound to one column still need distinct output columns.
+    if (seen.contains(column)) {
+      column = columnForSymbol(toName(name), column->value());
+    }
+    seen.add(column);
+    columns.push_back(column);
   }
-  narrowToColumns(node, columns);
+  if (columns != (*node)->outputColumns()) {
+    *node = empty
+        ? builder_.makeEmptyValues(columns)
+        : PrecomputeProjections::makeProject(
+              *node, std::move(exprs), columns, builder_, simplifier_);
+  }
   return columns;
 }
 
@@ -2018,17 +2063,11 @@ Translated Translator::translateSort(
         dedupOrdering(sort.ordering(), input.scope, &target);
   });
 
-  // Velox reads a sort key as a column of the input.
-  PrecomputeProjections precompute{currentInput, builder_, simplifier_};
-  for (ExprCP& key : orderKeys) {
-    key = materializeInto(precompute, key);
-  }
-
-  SortCP sortNode = builder_.make<Sort>(
-      {std::move(precompute).node(),
-       std::move(orderKeys),
-       std::move(orderTypes)});
-  return {sortNode, std::move(input.scope)};
+  auto simplified = nodeSimplifier_.make(
+      Sort::Key{currentInput, std::move(orderKeys), std::move(orderTypes)},
+      {currentInput, {}});
+  applySubstitutions(simplified.substitutions, input.scope);
+  return {simplified.node, std::move(input.scope)};
 }
 
 double Translator::extractSamplePercentage(const lp::Expr& percentage) {
@@ -2089,9 +2128,11 @@ Translated Translator::translateSample(
     }
     case lp::SampleNode::SampleMethod::kBernoulli: {
       ExprCP predicate = exprFactory_.makeSamplePredicate(percentage / 100.0);
-      NodeCP filtered =
-          builder_.make<Filter>({input.node, ExprVector{predicate}});
-      return {filtered, std::move(input.scope)};
+      return simplifyFilter(
+          input.node,
+          {predicate},
+          std::move(input.scope),
+          /*propagateConstants=*/false);
     }
   }
   VELOX_UNREACHABLE();
@@ -2111,36 +2152,12 @@ ExprCP Translator::emptySetResult(const optimizer::Aggregate* call) {
       : builder_.makeLiteral(std::move(emptyValue), call->value().type);
 }
 
-NodeCP Translator::appendConstantColumns(
-    NodeCP node,
-    const ColumnVector& columns,
-    const ExprVector& exprs) {
-  if (columns.empty()) {
-    return node;
-  }
-  ExprVector projectExprs;
-  ColumnVector projectColumns;
-  const auto& nodeOutputs = node->outputColumns();
-  projectExprs.reserve(nodeOutputs.size() + columns.size());
-  projectColumns.reserve(nodeOutputs.size() + columns.size());
-  for (ColumnCP column : nodeOutputs) {
-    projectExprs.push_back(column);
-    projectColumns.push_back(column);
-  }
-  appendAll(projectExprs, exprs);
-  appendAll(projectColumns, columns);
-  return builder_.make<Project>(
-      {node, std::move(projectExprs), std::move(projectColumns)});
-}
-
 void Translator::translateGroupingKeys(
     const lp::AggregateNode& aggregate,
     const Scope& inputScope,
     NodeCP& currentInput,
     ExprVector& keys,
     ColumnVector& columns,
-    ColumnVector& projectedColumns,
-    ExprVector& projectedExprs,
     Scope& scope) {
   const auto& names = aggregate.outputNames();
   const auto& keyExpressions = aggregate.groupingKeys();
@@ -2156,10 +2173,6 @@ void Translator::translateGroupingKeys(
     translatedKeys.push_back(key);
   }
 
-  const bool hasNonConstant = std::ranges::any_of(
-      translatedKeys,
-      [](ExprCP key) { return !key->is(PlanType::kLiteralExpr); });
-
   folly::F14FastMap<ExprCP, ColumnCP> keyToOutput;
   if (!hasGroupingSets) {
     keyToOutput.reserve(keyExpressions.size());
@@ -2172,6 +2185,8 @@ void Translator::translateGroupingKeys(
       if (it != keyToOutput.end()) {
         scope[names[i]] =
             keyExpr->is(PlanType::kLiteralExpr) ? keyExpr : it->second;
+        keys.push_back(keyExpr);
+        columns.push_back(it->second);
         continue;
       }
     }
@@ -2198,12 +2213,6 @@ void Translator::translateGroupingKeys(
            return std::ranges::find(set, i) != set.end();
          }));
     scope[names[i]] = constantAboveAggregation ? keyExpr : column;
-    if (!hasGroupingSets && keyExpr->is(PlanType::kLiteralExpr) &&
-        (hasNonConstant || !keys.empty())) {
-      projectedColumns.push_back(column);
-      projectedExprs.push_back(keyExpr);
-      continue;
-    }
     keys.push_back(keyExpr);
     columns.push_back(column);
   }
@@ -2247,8 +2256,6 @@ Translated Translator::translateAggregate(
   outputColumns.reserve(
       numGroupingKeys + keptAggregateIndices.size() + groupIdSlots);
   Scope newScope;
-  ColumnVector projectedColumns;
-  ExprVector projectedExprs;
 
   NodeCP currentInput = input.node;
   translateGroupingKeys(
@@ -2257,8 +2264,6 @@ Translated Translator::translateAggregate(
       currentInput,
       groupingKeys,
       outputColumns,
-      projectedColumns,
-      projectedExprs,
       newScope);
 
   // Aggregates whose FILTER folded to constant false/null see the empty set;
@@ -2279,11 +2284,7 @@ Translated Translator::translateAggregate(
     // empty-set result.
     if (aggregateCall->condition() != nullptr &&
         aggregateCall->condition()->is(PlanType::kLiteralExpr)) {
-      auto* column =
-          columnForSymbol(toName(aggregateName), aggregateCall->value());
-      projectedColumns.push_back(column);
-      projectedExprs.push_back(emptySetResult(aggregateCall));
-      newScope[aggregateName] = column;
+      newScope[aggregateName] = emptySetResult(aggregateCall);
       continue;
     }
     if (auto it = aggregateToOutput.find(aggregateCall);
@@ -2308,18 +2309,36 @@ Translated Translator::translateAggregate(
           std::move(newScope)};
     }
 
-    AggregateCP aggNode = builder_.make<Aggregate>(
-        {.input = currentInput,
-         .groupingKeys = std::move(groupingKeys),
-         .aggregates = std::move(aggregates),
-         .outputColumns = std::move(outputColumns)});
-    NodeCP node = aggNode;
-    if (auto rows = tryEvaluateOverDiscreteValues(aggNode)) {
-      node = builder_.makeValues(std::move(*rows), aggNode->outputColumns());
+    auto simplified = nodeSimplifier_.make(
+        Aggregate::Key{
+            .input = currentInput,
+            .groupingKeys = std::move(groupingKeys),
+            .aggregates = std::move(aggregates),
+            .outputColumns = std::move(outputColumns)},
+        {currentInput, {}});
+    applySubstitutions(simplified.substitutions, newScope);
+    if (simplified.empty()) {
+      return {nodeSimplifier_.materialize(simplified), std::move(newScope)};
     }
-    return {
-        appendConstantColumns(node, projectedColumns, projectedExprs),
-        std::move(newScope)};
+    NodeCP node = simplified.node;
+    const auto* aggNode = node->as<Aggregate>();
+    if (auto rows = tryEvaluateOverDiscreteValues(aggNode)) {
+      const Values* valuesNode =
+          builder_.makeValues(std::move(*rows), aggNode->outputColumns());
+      auto valuesResult = nodeSimplifier_.make(
+          Values::Key{
+              valuesNode->source(),
+              valuesNode->rows(),
+              valuesNode->outputColumns(),
+              valuesNode->channels(),
+          });
+      applySubstitutions(valuesResult.substitutions, newScope);
+      node = valuesResult.empty()
+          ? static_cast<NodeCP>(
+                builder_.makeEmptyValues(aggNode->outputColumns()))
+          : valuesResult.node;
+    }
+    return {node, std::move(newScope)};
   }
 
   NodeCP aggNode = lowerGroupingSets(
@@ -2329,9 +2348,7 @@ Translated Translator::translateAggregate(
       outputColumns,
       currentInput,
       newScope);
-  return {
-      appendConstantColumns(aggNode, projectedColumns, projectedExprs),
-      std::move(newScope)};
+  return {aggNode, std::move(newScope)};
 }
 
 NodeCP Translator::lowerGroupingSets(
@@ -2386,7 +2403,7 @@ NodeCP Translator::lowerGroupingSets(
     }
   }
 
-  NodeCP groupIdInput = currentInput;
+  NodeSimplifier::SimplifiedNode groupIdInput{currentInput, {}};
   if (!materializedExprs.empty()) {
     PlanObjectSet passthrough = aggInputSet;
     for (ExprCP keyExpr : groupingKeys) {
@@ -2402,8 +2419,10 @@ NodeCP Translator::lowerGroupingSets(
     }
     appendAll(projectExprs, materializedExprs);
     appendAll(projectColumns, materializedColumns);
-    groupIdInput = builder_.make<Project>(
-        {currentInput, std::move(projectExprs), std::move(projectColumns)});
+    groupIdInput = nodeSimplifier_.make(
+        Project::Key{
+            currentInput, std::move(projectExprs), std::move(projectColumns)},
+        {currentInput, {}});
   }
 
   ExprVector aggregationInputs = aggInputSet.toObjects<Expr>();
@@ -2430,14 +2449,17 @@ NodeCP Translator::lowerGroupingSets(
     setsCopy.emplace_back(set.begin(), set.end());
   }
 
-  NodeCP groupIdNode = builder_.make<GroupId>(
-      {groupIdInput,
-       groupIdInputKeys,
-       aggregationInputs,
-       setsCopy,
-       keyOutputColumns,
-       groupIdColumn,
-       groupIdOutputs});
+  NodeCP groupIdInputNode = groupIdInput.node;
+  auto simplifiedGroupId = nodeSimplifier_.make(
+      GroupId::Key{
+          groupIdInputNode,
+          groupIdInputKeys,
+          aggregationInputs,
+          setsCopy,
+          keyOutputColumns,
+          groupIdColumn,
+          groupIdOutputs},
+      std::move(groupIdInput));
 
   // Aggregate keys: the GroupId key output columns plus the group-id column.
   ExprVector aggGroupingKeys;
@@ -2462,15 +2484,19 @@ NodeCP Translator::lowerGroupingSets(
   aggOutputColumns.push_back(groupIdColumn);
   appendAll(aggOutputColumns, aggResultColumns);
 
-  AggregateCP aggNode = builder_.make<Aggregate>(
-      {.input = groupIdNode,
-       .groupingKeys = std::move(aggGroupingKeys),
-       .aggregates = std::move(aggregates),
-       .outputColumns = std::move(aggOutputColumns),
-       .step = AggregateStep::kSingle,
-       .groupId = aggGroupId,
-       .globalGroupingSets = std::move(globalGroupingSets)});
-  return aggNode;
+  NodeCP groupIdNode = simplifiedGroupId.node;
+  auto simplifiedAggregate = nodeSimplifier_.make(
+      Aggregate::Key{
+          .input = groupIdNode,
+          .groupingKeys = std::move(aggGroupingKeys),
+          .aggregates = std::move(aggregates),
+          .outputColumns = std::move(aggOutputColumns),
+          .step = AggregateStep::kSingle,
+          .groupId = aggGroupId,
+          .globalGroupingSets = std::move(globalGroupingSets)},
+      std::move(simplifiedGroupId));
+  applySubstitutions(simplifiedAggregate.substitutions, newScope);
+  return nodeSimplifier_.materialize(simplifiedAggregate);
 }
 
 std::vector<velox::Variant> Translator::evaluateExprRowsToVariants(
@@ -2510,9 +2536,19 @@ Translated Translator::translateValues(
 
   const lp::ValuesNode* passthrough =
       evaluatedRows == nullptr ? &values : nullptr;
-  ValuesCP valuesNode =
-      builder_.makeValues(passthrough, evaluatedRows, std::move(outputColumns));
-  return {valuesNode, std::move(scope)};
+  QGVector<velox::column_index_t> channels(outputColumns.size());
+  std::iota(channels.begin(), channels.end(), 0);
+  auto simplified = nodeSimplifier_.make(
+      Values::Key{
+          passthrough, evaluatedRows, outputColumns, std::move(channels)});
+  applySubstitutions(simplified.substitutions, scope);
+
+  // TranslatePass callers do not propagate a null node yet. Preserve the
+  // established concrete representation at this boundary until they do.
+  if (simplified.empty()) {
+    simplified.node = builder_.makeEmptyValues(std::move(outputColumns));
+  }
+  return {simplified.node, std::move(scope)};
 }
 
 Translated Translator::translateUnnest(
@@ -2551,6 +2587,7 @@ Translated Translator::translateUnnest(
   // doesn't need; always emit unnest-expression outputs and ordinality.
   ColumnVector replicatedColumns;
   replicatedColumns.reserve(inputType.size());
+  PlanSubstitutions inputSubstitutions;
 
   PlanObjectSet replicated;
   for (size_t i = 0; i < inputType.size(); ++i) {
@@ -2561,7 +2598,11 @@ Translated Translator::translateUnnest(
     auto it = input.scope.find(name);
     VELOX_CHECK(it != input.scope.end());
 
-    ColumnCP column = materializeColumn(&currentInput, it->second, name);
+    ExprCP expression = it->second;
+    ColumnCP column = materializeColumn(&currentInput, expression, name);
+    if (expression->is(PlanType::kLiteralExpr)) {
+      inputSubstitutions.add(column, expression);
+    }
     if (!replicated.contains(column)) {
       replicated.add(column);
       replicatedColumns.push_back(column);
@@ -2604,15 +2645,18 @@ Translated Translator::translateUnnest(
     outputColumns.push_back(ordinalityColumn);
   }
 
-  UnnestCP unnestNode = builder_.make<Unnest>(
-      {currentInput,
-       std::move(unnestExprs),
-       std::move(replicatedColumns),
-       std::move(unnestColumns),
-       ordinalityColumn,
-       /*markerColumn=*/nullptr,
-       std::move(outputColumns)});
-  return {unnestNode, std::move(newScope)};
+  auto simplified = nodeSimplifier_.make(
+      Unnest::Key{
+          currentInput,
+          std::move(unnestExprs),
+          std::move(replicatedColumns),
+          std::move(unnestColumns),
+          ordinalityColumn,
+          /*markerColumn=*/nullptr,
+          std::move(outputColumns)},
+      {currentInput, std::move(inputSubstitutions)});
+  applySubstitutions(simplified.substitutions, newScope);
+  return {nodeSimplifier_.materialize(simplified), std::move(newScope)};
 }
 
 std::vector<lp::LogicalPlanNodePtr> Translator::flattenUnionInputs(
@@ -2660,35 +2704,6 @@ std::vector<Translated> Translator::translateUnionInputs(
   return result;
 }
 
-ExprCP Translator::commonUnionLiteral(
-    const std::vector<lp::LogicalPlanNodePtr>& inputs,
-    const std::vector<Translated>& translatedInputs,
-    size_t position) {
-  ExprCP result{nullptr};
-  for (size_t i = 0; i < translatedInputs.size(); ++i) {
-    ExprCP literal =
-        literalInScope(translatedInputs[i], *inputs[i]->outputType(), position);
-    if (literal == nullptr) {
-      return nullptr;
-    }
-    if (result == nullptr) {
-      result = literal;
-    } else if (result != literal) {
-      return nullptr;
-    }
-  }
-  return result;
-}
-
-ExprCP Translator::literalInScope(
-    const Translated& input,
-    const velox::RowType& type,
-    size_t position) {
-  const auto it = input.scope.find(type.nameOf(position));
-  VELOX_CHECK(it != input.scope.end());
-  return it->second->is(PlanType::kLiteralExpr) ? it->second : nullptr;
-}
-
 Translated Translator::buildUnionAll(
     const std::vector<lp::LogicalPlanNodePtr>& inputs,
     const velox::RowTypePtr& outputType,
@@ -2713,25 +2728,25 @@ Translated Translator::buildUnionAll(
   auto translatedInputs = translateUnionInputs(flatInputs, keptPositions);
 
   QGVector<ColumnVector> legColumns(flatInputs.size());
+  std::vector<PlanSubstitutions> legSubstitutions(flatInputs.size());
   Scope scope;
   ColumnVector outputColumns;
   outputColumns.reserve(keptPositions.size());
   for (size_t j : keptPositions) {
-    const ExprCP commonLiteral =
-        commonUnionLiteral(flatInputs, translatedInputs, j);
-    if (commonLiteral != nullptr && !dedupAbove) {
-      scope[outputType->nameOf(j)] = commonLiteral;
-      continue;
-    }
-
     for (size_t i = 0; i < translatedInputs.size(); ++i) {
       // Resolve LP-name → IR Column* via the leg's scope; the leg's IR
       // `outputColumns` may be narrower than its LP outputType after
       // dup-collapse, but the same Column may legitimately repeat.
-      legColumns[i].push_back(columnInScope(
-          &translatedInputs[i].node,
-          translatedInputs[i].scope,
-          flatInputs[i]->outputType()->nameOf(j)));
+      const auto& name = flatInputs[i]->outputType()->nameOf(j);
+      const auto it = translatedInputs[i].scope.find(name);
+      VELOX_CHECK(it != translatedInputs[i].scope.end());
+      ExprCP expression = it->second;
+      ColumnCP column =
+          materializeColumn(&translatedInputs[i].node, expression, name);
+      legColumns[i].push_back(column);
+      if (expression->is(PlanType::kLiteralExpr)) {
+        legSubstitutions[i].add(column, expression);
+      }
     }
 
     // The union output NDV is the max of the legs' NDVs: a lower bound on the
@@ -2749,18 +2764,30 @@ Translated Translator::buildUnionAll(
     Value value(toType(outputType->childAt(j)), cardinality);
     auto* column = columnForSymbol(toName(outputType->nameOf(j)), value);
     outputColumns.push_back(column);
-    scope[outputType->nameOf(j)] =
-        commonLiteral != nullptr ? commonLiteral : static_cast<ExprCP>(column);
+    scope[outputType->nameOf(j)] = column;
   }
 
   NodeVector inputNodes;
+  std::vector<NodeSimplifier::SimplifiedNode> simplifiedInputs;
   inputNodes.reserve(translatedInputs.size());
-  for (auto& input : translatedInputs) {
+  simplifiedInputs.reserve(translatedInputs.size());
+  for (size_t i = 0; i < translatedInputs.size(); ++i) {
+    auto& input = translatedInputs[i];
     inputNodes.push_back(input.node);
+    simplifiedInputs.push_back({input.node, std::move(legSubstitutions[i])});
   }
-  UnionAllCP unionNode = builder_.make<UnionAll>(
-      {std::move(inputNodes), std::move(legColumns), std::move(outputColumns)});
-  return {unionNode, std::move(scope)};
+  ColumnVector emptyOutputColumns = outputColumns;
+  auto simplified = nodeSimplifier_.make(
+      UnionAll::Key{
+          std::move(inputNodes),
+          std::move(legColumns),
+          std::move(outputColumns)},
+      std::move(simplifiedInputs));
+  applySubstitutions(simplified.substitutions, scope);
+  if (simplified.empty()) {
+    simplified.node = builder_.makeEmptyValues(std::move(emptyOutputColumns));
+  }
+  return {simplified.node, std::move(scope)};
 }
 
 // Set-op outputs reuse the upstream `Column*`s (left side for
@@ -2780,12 +2807,15 @@ Translated Translator::translateSet(
           allNames(*set.outputType()),
           /*dedupAbove=*/true);
       const ColumnVector& cols = all.node->outputColumns();
-      AggregateCP aggNode = builder_.make<Aggregate>(
-          {all.node,
-           ExprVector{cols.begin(), cols.end()},
-           AggregateCallVector{},
-           ColumnVector{cols}});
-      return {aggNode, std::move(all.scope)};
+      auto simplified = nodeSimplifier_.make(
+          Aggregate::Key{
+              all.node,
+              ExprVector{cols.begin(), cols.end()},
+              AggregateCallVector{},
+              ColumnVector{cols}},
+          {all.node, {}});
+      applySubstitutions(simplified.substitutions, all.scope);
+      return {nodeSimplifier_.materialize(simplified), std::move(all.scope)};
     }
     case lp::SetOperation::kIntersect:
     case lp::SetOperation::kIntersectAll:
@@ -2813,8 +2843,15 @@ Translated Translator::translateSet(
       auto narrowLeg = [&](Translated& leg, const velox::RowType& type) {
         ColumnVector columns;
         PlanObjectSet seen;
+        PlanSubstitutions substitutions;
         for (const auto& name : type.names()) {
-          ColumnCP column = columnInScope(&leg.node, leg.scope, name);
+          const auto it = leg.scope.find(name);
+          VELOX_CHECK(it != leg.scope.end());
+          ExprCP expression = it->second;
+          ColumnCP column = materializeColumn(&leg.node, expression, name);
+          if (expression->is(PlanType::kLiteralExpr)) {
+            substitutions.add(column, expression);
+          }
           // Every name of the leg's type now binds to a column of 'leg.node'.
           leg.scope[name] = column;
           if (!seen.contains(column)) {
@@ -2823,31 +2860,19 @@ Translated Translator::translateSet(
           }
         }
         narrowToColumns(&leg.node, columns);
+        return NodeSimplifier::SimplifiedNode{
+            leg.node, std::move(substitutions)};
       };
 
       Translated first = translateNode(*set.inputs().front());
       const auto& firstType = *set.inputs().front()->outputType();
-      std::vector<ExprCP> outputConstants(firstType.size(), nullptr);
-      for (size_t i = 0; i < firstType.size(); ++i) {
-        outputConstants[i] = literalInScope(first, firstType, i);
-      }
-      narrowLeg(first, firstType);
-      NodeCP node = first.node;
+      auto simplified = narrowLeg(first, firstType);
+      const ColumnVector setOutputColumns = first.node->outputColumns();
       for (size_t i = 1; i < set.inputs().size(); ++i) {
         Translated other = translateNode(*set.inputs()[i]);
         const auto& otherType = *set.inputs()[i]->outputType();
         VELOX_CHECK_EQ(firstType.size(), otherType.size());
-        if (!isAnti) {
-          for (size_t columnIndex = 0; columnIndex < otherType.size();
-               ++columnIndex) {
-            if (outputConstants[columnIndex] != nullptr) {
-              continue;
-            }
-            outputConstants[columnIndex] =
-                literalInScope(other, otherType, columnIndex);
-          }
-        }
-        narrowLeg(other, otherType);
+        auto otherSimplified = narrowLeg(other, otherType);
         ExprVector leftKeys;
         ExprVector rightKeys;
         leftKeys.reserve(firstType.size());
@@ -2859,37 +2884,48 @@ Translated Translator::translateSet(
           rightKeys.push_back(columnInScope(
               &other.node, other.scope, otherType.nameOf(columnIndex)));
         }
-        ColumnVector outputColumns{node->outputColumns()};
-        node = builder_.make<Join>(
-            {node,
-             other.node,
-             joinType,
-             std::move(leftKeys),
-             std::move(rightKeys),
-             /*filter=*/ExprVector{},
-             /*nullAware=*/false,
-             /*nullAsValue=*/true,
-             std::move(outputColumns)});
+        NodeCP joinedNode = simplified.node;
+        simplified = nodeSimplifier_.make(
+            Join::Key{
+                joinedNode,
+                other.node,
+                joinType,
+                std::move(leftKeys),
+                std::move(rightKeys),
+                /*filter=*/ExprVector{},
+                /*nullAware=*/false,
+                /*nullAsValue=*/true,
+                setOutputColumns},
+            std::move(simplified),
+            std::move(otherSimplified));
       }
 
       Scope scope;
       for (size_t i = 0; i < set.outputType()->size(); ++i) {
-        scope[set.outputType()->nameOf(i)] = outputConstants[i] != nullptr
-            ? outputConstants[i]
-            : static_cast<ExprCP>(
-                  columnInScope(&first.node, first.scope, firstType.nameOf(i)));
+        scope[set.outputType()->nameOf(i)] =
+            first.scope.at(firstType.nameOf(i));
+      }
+      applySubstitutions(simplified.substitutions, scope);
+
+      if (simplified.empty()) {
+        return {builder_.makeEmptyValues(setOutputColumns), std::move(scope)};
       }
 
       if (isDistinct) {
-        const ColumnVector& outputColumns = node->outputColumns();
-        AggregateCP aggNode = builder_.make<Aggregate>(
-            {node,
-             ExprVector{outputColumns.begin(), outputColumns.end()},
-             AggregateCallVector{},
-             outputColumns});
-        return {aggNode, std::move(scope)};
+        NodeCP setNode = simplified.node;
+        const ColumnVector& outputColumns = setNode->outputColumns();
+        simplified = nodeSimplifier_.make(
+            Aggregate::Key{
+                setNode,
+                ExprVector{outputColumns.begin(), outputColumns.end()},
+                AggregateCallVector{},
+                outputColumns},
+            std::move(simplified));
+        applySubstitutions(simplified.substitutions, scope);
+        VELOX_CHECK(!simplified.empty());
+        return {simplified.node, std::move(scope)};
       }
-      return {node, std::move(scope)};
+      return {simplified.node, std::move(scope)};
     }
   }
   VELOX_UNREACHABLE();
@@ -3063,7 +3099,7 @@ Translated Translator::translateJoin(
   }
 
   if (liftConditionAbove) {
-    JoinCP joinNode = builder_.make<Join>(
+    Translated joined = simplifyJoin(
         {left.node,
          right.node,
          joinType,
@@ -3073,11 +3109,12 @@ Translated Translator::translateJoin(
          /*nullAware=*/false,
          /*nullAsValue=*/false,
          std::move(outputColumns),
-         std::move(sourceColumns)});
+         std::move(sourceColumns)},
+        std::move(merged));
     return maybeWrapInFilter(
-        joinNode,
+        joined.node,
         *join.condition(),
-        std::move(merged),
+        std::move(joined.scope),
         /*propagateConstants=*/true);
   }
 
@@ -3118,7 +3155,7 @@ Translated Translator::translateJoin(
 
   rebindScope(merged, boundarySources, boundaryOutputs);
 
-  JoinCP joinNode = builder_.make<Join>(
+  return simplifyJoin(
       {left.node,
        right.node,
        joinType,
@@ -3128,8 +3165,21 @@ Translated Translator::translateJoin(
        /*nullAware=*/false,
        /*nullAsValue=*/false,
        std::move(outputColumns),
-       std::move(sourceColumns)});
-  return {joinNode, std::move(merged)};
+       std::move(sourceColumns)},
+      std::move(merged));
+}
+
+Translated Translator::simplifyJoin(Join::Key key, Scope scope) {
+  NodeCP left = key.left;
+  NodeCP right = key.right;
+  ColumnVector emptyOutputColumns = key.outputColumns;
+  auto simplified =
+      nodeSimplifier_.make(std::move(key), {left, {}}, {right, {}});
+  applySubstitutions(simplified.substitutions, scope);
+  if (simplified.empty()) {
+    simplified.node = builder_.makeEmptyValues(std::move(emptyOutputColumns));
+  }
+  return {simplified.node, std::move(scope)};
 }
 
 Translated Translator::translateLateralJoin(
@@ -3203,20 +3253,29 @@ Translated Translator::translateLateralJoin(
   }
   rebindScope(merged, boundarySources, boundaryOutputs);
 
-  auto* apply = builder_.make<Apply>(
-      {left.node,
-       right.node,
-       std::move(correlationColumns),
-       kind,
-       std::move(filter),
-       /*enforceSingleRow=*/false,
-       /*markColumn=*/nullptr,
-       /*inLhs=*/nullptr,
-       /*inBodyKey=*/nullptr,
-       includeMarker,
-       std::move(outputColumns),
-       std::move(sourceColumns)});
-  return {apply, std::move(merged)};
+  const ColumnVector emptyOutputColumns = outputColumns;
+  auto simplified = nodeSimplifier_.make(
+      Apply::Key{
+          left.node,
+          right.node,
+          std::move(correlationColumns),
+          kind,
+          std::move(filter),
+          /*enforceSingleRow=*/false,
+          /*markColumn=*/nullptr,
+          /*inLhs=*/nullptr,
+          /*inBodyKey=*/nullptr,
+          includeMarker,
+          std::move(outputColumns),
+          std::move(sourceColumns),
+      },
+      {left.node, {}},
+      {right.node, {}});
+  applySubstitutions(simplified.substitutions, merged);
+  if (simplified.empty()) {
+    simplified.node = builder_.makeEmptyValues(emptyOutputColumns);
+  }
+  return {simplified.node, std::move(merged)};
 }
 
 // Returns true if 'node' provably produces exactly one row. An EnforceSingleRow
@@ -3333,6 +3392,7 @@ ColumnCP Translator::tryJoinIntoPendingLifts(
   ColumnVector outputColumns = target.pendingLifts->outputColumns();
   outputColumns.reserve(sourceColumns.size());
   ColumnCP boundaryResult = nullptr;
+  size_t boundaryResultIndex{0};
   for (ColumnCP source : sourceColumns) {
     if (pendingLiftColumns.contains(source)) {
       continue;
@@ -3341,27 +3401,39 @@ ColumnCP Translator::tryJoinIntoPendingLifts(
     outputColumns.push_back(output);
     if (source == returnedColumn) {
       boundaryResult = output;
+      boundaryResultIndex = outputColumns.size() - 1;
     }
   }
   VELOX_CHECK_NOT_NULL(boundaryResult);
   // Preserve the single pending-lift row when the scalar body has no match.
-  NodeCP join = builder_.make<Join>({
-      target.pendingLifts,
-      child,
-      velox::core::JoinType::kLeft,
-      std::move(split.leftKeys),
-      std::move(split.rightKeys),
-      std::move(split.residual),
-      /*nullAware=*/false,
-      /*nullAsValue=*/false,
-      std::move(outputColumns),
-      std::move(sourceColumns),
-  });
-  target.pendingLifts = builder_.make<EnforceDistinct>({
-      join,
-      ExprVector{builder_.makeBoolean(true)},
-      toName("Scalar sub-query has returned multiple rows"),
-  });
+  auto simplified = nodeSimplifier_.make(
+      Join::Key{
+          target.pendingLifts,
+          child,
+          velox::core::JoinType::kLeft,
+          std::move(split.leftKeys),
+          std::move(split.rightKeys),
+          std::move(split.residual),
+          /*nullAware=*/false,
+          /*nullAsValue=*/false,
+          outputColumns,
+          std::move(sourceColumns),
+      },
+      {target.pendingLifts, {}},
+      {child, {}});
+  VELOX_CHECK(!simplified.empty());
+  nodeSimplifier_.restoreOutputLayout(
+      simplified.node, outputColumns, simplified.substitutions);
+  boundaryResult = outputColumns[boundaryResultIndex];
+  auto distinct = nodeSimplifier_.make(
+      EnforceDistinct::Key{
+          simplified.node,
+          ExprVector{builder_.makeBoolean(true)},
+          toName("Scalar sub-query has returned multiple rows"),
+      },
+      {simplified.node, {}});
+  VELOX_CHECK(!distinct.empty());
+  target.pendingLifts = distinct.node;
   return boundaryResult;
 }
 
@@ -3399,11 +3471,17 @@ ColumnCP Translator::aliasIfNameCollides(
     ColumnCP alias = Column::create(
         std::string(returnedColumn->name()) + "__lift",
         returnedColumn->value());
-    body = builder_.make<Project>({
-        body,
-        ExprVector{returnedColumn},
-        ColumnVector{alias},
-    });
+    const ColumnVector outputColumns{alias};
+    auto projected = nodeSimplifier_.make(
+        Project::Key{body, ExprVector{returnedColumn}, outputColumns},
+        {body, {}});
+    body = projected.empty() ? nodeSimplifier_.materialize(projected)
+                             : projected.substitutions.restore(
+                                   projected.node,
+                                   outputColumns,
+                                   exprFactory_,
+                                   builder_,
+                                   simplifier_);
     return alias;
   }
   return returnedColumn;
@@ -3412,17 +3490,21 @@ ColumnCP Translator::aliasIfNameCollides(
 NodeCP Translator::crossJoin(NodeCP left, NodeCP right) {
   ColumnVector output = left->outputColumns();
   appendUnique(output, right->outputColumns());
-  return builder_.make<Join>({
-      left,
-      right,
-      velox::core::JoinType::kInner,
-      /*leftKeys=*/{},
-      /*rightKeys=*/{},
-      /*filter=*/ExprVector{},
-      /*nullAware=*/false,
-      /*nullAsValue=*/false,
-      std::move(output),
-  });
+  auto simplified = nodeSimplifier_.make(
+      Join::Key{
+          left,
+          right,
+          velox::core::JoinType::kInner,
+          /*leftKeys=*/{},
+          /*rightKeys=*/{},
+          /*filter=*/ExprVector{},
+          /*nullAware=*/false,
+          /*nullAsValue=*/false,
+          std::move(output),
+      },
+      {left, {}},
+      {right, {}});
+  return nodeSimplifier_.materialize(simplified);
 }
 
 void Translator::flushLifts(LiftTarget& target) {
@@ -3581,8 +3663,11 @@ ExprCP Translator::liftInferenceCall(const Call* call, LiftTarget* liftTarget) {
 
   ColumnVector outputColumns = liftTarget->node->outputColumns();
   outputColumns.push_back(result);
-  liftTarget->node = builder_.make<Inference>(
-      {liftTarget->node, lifted, result, std::move(outputColumns)});
+  auto inference = nodeSimplifier_.make(
+      Inference::Key{
+          liftTarget->node, lifted, result, std::move(outputColumns)},
+      {liftTarget->node, {}});
+  liftTarget->node = nodeSimplifier_.materialize(inference);
 
   inferenceColumns_[call] = result;
   return result;
@@ -4033,9 +4118,13 @@ ExprCP Translator::liftSubquery(
       // produces exactly one row, in which case the guard is a no-op.
       NodeCP wrapped = body;
       if (!producesExactlyOneRow(body)) {
+        const ColumnVector sourceColumns{returnedColumn};
         returnedColumn = Column::createForNullExtendedValue(returnedColumn);
-        wrapped = builder_.make<EnforceSingleRow>(
-            {body, ColumnVector{returnedColumn}});
+        auto singleRow = nodeSimplifier_.make(
+            EnforceSingleRow::Key{body, ColumnVector{returnedColumn}},
+            {body, {}, sourceColumns});
+        VELOX_CHECK(!singleRow.empty());
+        wrapped = singleRow.node;
       }
 
       liftTarget->pendingLifts = liftTarget->pendingLifts == nullptr
@@ -4110,21 +4199,25 @@ ExprCP Translator::liftSubquery(
     sourceColumns.push_back(includeMarker);
   }
 
-  auto* apply = builder_.make<Apply>(
-      {applyInput,
-       body,
-       std::move(correlationColumns),
-       kind,
-       /*filter=*/ExprVector{},
-       enforceSingleRow,
-       markColumn,
-       inLhs,
-       inBodyKey,
-       includeMarker,
-       std::move(outputColumns),
-       std::move(sourceColumns)});
-  applyInput = apply;
-  return returnedColumn;
+  auto simplified = nodeSimplifier_.make(
+      Apply::Key{
+          applyInput,
+          body,
+          std::move(correlationColumns),
+          kind,
+          /*filter=*/ExprVector{},
+          enforceSingleRow,
+          markColumn,
+          inLhs,
+          inBodyKey,
+          includeMarker,
+          std::move(outputColumns),
+          std::move(sourceColumns),
+      },
+      {applyInput, {}},
+      {body, {}});
+  applyInput = nodeSimplifier_.materialize(simplified);
+  return simplified.substitutions.apply(returnedColumn, exprFactory_);
 }
 
 ExprCP Translator::tryScalarFromValues(NodeCP body) {
@@ -4252,20 +4345,38 @@ Translator::tryEvaluateOverDiscreteValues(const Aggregate* aggregate) {
   const Values* valuesNode =
       builder_.makeValues(std::move(values), scan->outputColumns());
 
-  NodeCP foldInput = valuesNode;
+  auto foldInput = nodeSimplifier_.make(
+      Values::Key{
+          valuesNode->source(),
+          valuesNode->rows(),
+          valuesNode->outputColumns(),
+          valuesNode->channels(),
+      });
   if (filter != nullptr) {
-    foldInput = builder_.make<Filter>({valuesNode, filter->predicates()});
+    foldInput = nodeSimplifier_.make(
+        Filter::Key{valuesNode, filter->predicates()}, std::move(foldInput));
   }
-  const Aggregate* foldAggregate = builder_.make<Aggregate>(
-      {.input = foldInput,
-       .groupingKeys = aggregate->groupingKeys(),
-       .aggregates = aggregate->aggregates(),
-       .outputColumns = aggregate->outputColumns(),
-       .step = aggregate->step(),
-       .groupId = aggregate->groupId(),
-       .globalGroupingSets = aggregate->globalGroupingSets()});
-
-  const ColumnVector& outputColumns = foldAggregate->outputColumns();
+  NodeCP foldInputNode = foldInput.node;
+  auto foldAggregate = nodeSimplifier_.make(
+      Aggregate::Key{
+          .input = foldInputNode,
+          .groupingKeys = aggregate->groupingKeys(),
+          .aggregates = aggregate->aggregates(),
+          .outputColumns = aggregate->outputColumns(),
+          .step = aggregate->step(),
+          .groupId = aggregate->groupId(),
+          .globalGroupingSets = aggregate->globalGroupingSets(),
+      },
+      std::move(foldInput));
+  const ColumnVector outputColumns = aggregate->outputColumns();
+  NodeCP foldPlan = foldAggregate.empty()
+      ? builder_.makeEmptyValues(outputColumns)
+      : foldAggregate.substitutions.restore(
+            foldAggregate.node,
+            outputColumns,
+            exprFactory_,
+            builder_,
+            simplifier_);
   std::vector<std::string> outputNames;
   outputNames.reserve(outputColumns.size());
   for (ColumnCP column : outputColumns) {
@@ -4276,7 +4387,7 @@ Translator::tryEvaluateOverDiscreteValues(const Aggregate* aggregate) {
   // then run it. It has a Values source and no Scan, so single-node options
   // suffice.
   EmitPass::Result emitted = physicalPlanAndEmit(
-      foldAggregate,
+      foldPlan,
       outputColumns,
       outputNames,
       builder_,

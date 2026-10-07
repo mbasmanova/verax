@@ -91,8 +91,8 @@ TEST_P(WindowTest, constantKeysAfterJoin) {
     auto plan = toSingleNodePlan(query);
     auto matcher = matchScan("nation")
                        .filter("n_regionkey = 1")
+                       .project({"n_nationkey"})
                        .window({expectedWindow})
-                       .project({"n_nationkey", "total"})
                        .build();
     AXIOM_ASSERT_PLAN_V2(plan, matcher);
   }
@@ -270,9 +270,9 @@ TEST_P(WindowTest, expressionInputs) {
       ? std::vector<std::string>{
             "n_name",
             "n_regionkey",
+            "n_nationkey * 2 as sumArg",
             "n_regionkey + 1 as partKey",
             "upper(n_name) as orderKey",
-            "n_nationkey * 2 as sumArg",
         }
       : std::vector<std::string>{
             "n_nationkey",
@@ -287,7 +287,7 @@ TEST_P(WindowTest, expressionInputs) {
           .project(precomputed)
           .window({"sum(sumArg) OVER (PARTITION BY partKey ORDER BY orderKey "
                    "ROWS BETWEEN n_regionkey PRECEDING AND partKey FOLLOWING)"})
-          .project()
+          .project({"n_name", "s"})
           .build();
   AXIOM_ASSERT_PLAN(plan, matcher);
 }

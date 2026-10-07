@@ -211,7 +211,7 @@ FROM (VALUES (1), (2)) AS t(k)
 -- A cross join that yields more than one row for an outer is a
 -- scalar-subquery cardinality violation.
 -- error_v1: Nested correlation across subquery boundaries is not supported yet
--- error_v2: Scalar sub-query has returned multiple rows
+-- error_v2: Expected single row of input
 WITH u(k, x) AS (VALUES (1, 10), (1, 20)),
      v(k, x) AS (VALUES (1, 100), (1, 200))
 SELECT t.k,
@@ -356,14 +356,14 @@ FROM (VALUES (1), (3)) AS t(k)
 -- Several groups for one outer break the scalar contract with no filter to
 -- select among them either.
 -- error_v1: Correlation predicate references a column not in GROUP BY is not supported yet
--- error_v2: Scalar sub-query has returned multiple rows
+-- error_v2: Expected single row of input
 WITH b(k, g, x) AS (VALUES (1, 'a', 10), (1, 'b', 20))
 SELECT t.k, (SELECT max(b.x) FROM b WHERE b.k < t.k GROUP BY b.g)
 FROM (VALUES (2)) AS t(k)
 ----
 -- More than one group surviving the HAVING breaks the scalar contract.
 -- error_v1: Correlation predicate references a column not in GROUP BY is not supported yet
--- error_v2: Scalar sub-query has returned multiple rows
+-- error_v2: Expected single row of input
 WITH b(k, g, x) AS (VALUES (1, 'a', 10), (1, 'a', 20), (1, 'b', 30), (1, 'b', 40))
 SELECT t.k, (SELECT max(b.x) FROM b WHERE b.k = t.k GROUP BY b.g HAVING count(*) > 1)
 FROM (VALUES (1)) AS t(k)

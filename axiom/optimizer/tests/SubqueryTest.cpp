@@ -179,31 +179,28 @@ TEST_P(SubqueryTest, uncorrelatedInConstantLeftSide) {
   auto query = "SELECT 1 IN (SELECT r_regionkey FROM region)";
   SCOPED_TRACE(query);
 
-  // v1 makes the one-row build side by cross-joining two one-row relations,
-  // which is wasted work this pins only because v1 still emits it.
-  auto constantSide = useV2_ ? matchValues().project({"1"})
-                             : matchValues().nestedLoopJoin(matchValues());
-  auto matcher = matchHiveScan("region")
-                     .hashJoin(
-                         constantSide,
-                         velox::core::JoinType::kRightSemiProject,
-                         {.nullAware = true})
-                     .project()
-                     .build();
+  auto matcher =
+      matchHiveScan("region")
+          .filter("r_regionkey IS NULL OR r_regionkey = 1")
+          .hashJoin(
+              matchValues(makeRowVector({makeFlatVector<int64_t>({1})})),
+              velox::core::JoinType::kRightSemiProject,
+              {.nullAware = true})
+          .project()
+          .build();
 
   auto plan = toSingleNodePlan(query);
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V2(plan, matcher);
 
   // The join preserves its build side, so that side is partitioned rather
   // than replicated to every worker.
-  auto distributedConstantSide = useV2_
-      ? matchValues().project({"1"}).shuffle()
-      : matchValues().nestedLoopJoin(matchValues().broadcast()).shuffle();
   auto distributedMatcher =
       matchHiveScan("region")
+          .filter("r_regionkey IS NULL OR r_regionkey = 1")
           .shuffle({"r_regionkey"}, /*replicateNullsAndAny=*/true)
           .hashJoin(
-              distributedConstantSide,
+              matchValues(makeRowVector({makeFlatVector<int64_t>({1})}))
+                  .shuffle(),
               velox::core::JoinType::kRightSemiProject,
               {.nullAware = true})
           .project()
@@ -211,7 +208,7 @@ TEST_P(SubqueryTest, uncorrelatedInConstantLeftSide) {
           .build();
 
   auto distributedPlan = planVelox(parseSelect(query));
-  AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, distributedMatcher);
+  AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(distributedPlan.plan, distributedMatcher);
 }
 
 TEST_P(SubqueryTest, correlatedExists) {
@@ -2431,20 +2428,12 @@ TEST_P(SubqueryTest, leftJoinFilterWithNonDefaultNullEquality) {
       "WHERE b.y = TRY(a.x)";
   SCOPED_TRACE(query);
 
-  // The join keeps 'a.x = b.y' as its key while 'b.y = TRY(a.x)' stays a
-  // post-join filter.
-  auto matcher = matchValues()
-                     .aliases({"x"})
-                     .hashJoin(
-                         matchValues().aliases({"y"}),
-                         core::JoinType::kLeft,
-                         {.keys = {{"x = y"}}})
-                     .filter("eq(y, try(x))")
-                     .project({"x"})
-                     .build();
-
+  // The constant inputs fold the join and its post-join filter.
   auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V2(
+      plan,
+      matchValues(makeRowVector({"x"}, {makeFlatVector<int32_t>({1})}))
+          .build());
 }
 
 TEST_P(SubqueryTest, rightJoinOnSubquery) {
@@ -2611,20 +2600,19 @@ TEST_P(SubqueryTest, nestedInSubqueries) {
   // as its left key. The optimizer wraps the inner semi-join in a child DT
   // so the outer semi-join references the child DT, not the current DT.
   auto query =
-      "SELECT IF(flag IN (SELECT 1), 'y', 'n') "
+      "SELECT IF(flag IN (SELECT r_regionkey FROM region), 'y', 'n') "
       "FROM ("
       " SELECT IF(n_regionkey IN (SELECT r_regionkey FROM region), 1, 0) AS flag "
       " FROM nation"
       ") t";
 
-  auto matcher = matchHiveScan("nation")
+  auto inner = matchHiveScan("nation").hashJoin(
+      matchHiveScan("region"),
+      velox::core::JoinType::kLeftSemiProject,
+      {.nullAware = true});
+  auto matcher = inner.project()
                      .hashJoin(
                          matchHiveScan("region"),
-                         velox::core::JoinType::kLeftSemiProject,
-                         {.nullAware = true})
-                     .project()
-                     .hashJoin(
-                         matchValues().project(),
                          velox::core::JoinType::kLeftSemiProject,
                          {.nullAware = true})
                      .project()
@@ -2632,7 +2620,7 @@ TEST_P(SubqueryTest, nestedInSubqueries) {
 
   SCOPED_TRACE(query);
   auto plan = toSingleNodePlan(query);
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V2(plan, matcher);
 }
 
 // EXISTS (SELECT 1 WHERE <condition>) with no FROM clause is equivalent to

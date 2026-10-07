@@ -22,6 +22,10 @@
 -- ordered
 SELECT a, b FROM t ORDER BY b LIMIT 3
 ----
+-- LIMIT over an input known to have no rows.
+-- count 0
+SELECT * FROM (SELECT a FROM t WHERE false) LIMIT 5
+----
 -- ORDER BY an expression that is not in the select list, with LIMIT.
 -- ordered
 SELECT * FROM t ORDER BY b + c DESC LIMIT 3

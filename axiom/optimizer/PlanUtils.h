@@ -86,6 +86,12 @@ inline bool isConstantFalse(ExprCP expr) {
   return isConstantBool(expr, false);
 }
 
+/// Returns true if `expr` is a NULL literal.
+inline bool isConstantNull(ExprCP expr) {
+  return expr->is(PlanType::kLiteralExpr) &&
+      expr->as<Literal>()->literal().isNull();
+}
+
 std::string conjunctsToString(const ExprVector& conjuncts);
 
 std::string orderByToString(

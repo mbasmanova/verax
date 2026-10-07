@@ -228,7 +228,7 @@ void invalidateNullExtended(
     const PlanObjectSet& coverColumns) {
   PlanObjectSet invalidatedColumns;
   for (const auto& [expr, column] : inputMaterialized) {
-    if (expr->containsFunction(FunctionSet::kNonDefaultNullBehavior)) {
+    if (expr->containsNonDefaultNullBehavior()) {
       materialized.erase(expr);
       invalidatedColumns.add(column);
     }

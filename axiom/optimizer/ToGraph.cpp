@@ -1184,16 +1184,10 @@ ExprCP ToGraph::makeNullConstant(const velox::TypePtr& type) {
 
 namespace {
 
-// Returns true if 'expr' is a null literal.
-bool isNullLiteral(ExprCP expr) {
-  return expr->is(PlanType::kLiteralExpr) &&
-      expr->as<Literal>()->literal().isNull();
-}
-
 // Returns true if any element of 'exprs' is a null literal.
 bool hasNullLiteral(const ExprVector& exprs) {
   return std::any_of(exprs.begin(), exprs.end(), [](ExprCP expr) {
-    return isNullLiteral(expr);
+    return isConstantNull(expr);
   });
 }
 

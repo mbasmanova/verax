@@ -384,6 +384,12 @@ FROM (SELECT 1 AS a FROM (VALUES (1), (2), (3)) AS t(x)) AS u(a)
 SELECT array_agg(x) OVER (ORDER BY (1 + 1) RANGE BETWEEN 1 PRECEDING AND 1 FOLLOWING)
 FROM (VALUES (1), (2)) AS t(x)
 ----
+-- The same, with the ORDER BY key from the empty side of an outer join, where
+-- it is NULL on every row.
+SELECT t.b, count(*) OVER (ORDER BY v.x RANGE BETWEEN 1 PRECEDING AND CURRENT ROW) AS c
+FROM t
+LEFT JOIN (SELECT a AS x FROM t WHERE false) AS v ON t.a = v.x
+----
 -- Repeated partition keys: a literally duplicated column and two distinct
 -- columns holding the same constant.
 SELECT sum(x) OVER (PARTITION BY x, x, a, b ORDER BY x)
@@ -407,3 +413,35 @@ FROM (VALUES (1, 1), (1, 1), (1, 2),
              (2, 3), (2, 3), (2, 4)) AS t(a, b)
 GROUP BY a, b
 HAVING count(*) > 1
+----
+-- Window keys from the empty side of an outer join are NULL on every row.
+SELECT t.b, count(*) OVER (PARTITION BY v.x) AS c
+FROM t
+LEFT JOIN (SELECT a AS x FROM t WHERE false) AS v ON t.a = v.x
+----
+SELECT t.b, sum(t.b) OVER (ORDER BY v.x, t.b ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS s
+FROM t
+LEFT JOIN (SELECT a AS x FROM t WHERE false) AS v ON t.a = v.x
+----
+SELECT t.b, row_number() OVER (PARTITION BY v.x ORDER BY t.b) AS rn
+FROM t
+LEFT JOIN (SELECT a AS x FROM t WHERE false) AS v ON t.a = v.x
+----
+SELECT *
+FROM (
+  SELECT t.b, row_number() OVER (PARTITION BY t.a ORDER BY v.x, t.b) AS rn
+  FROM t
+  LEFT JOIN (SELECT a AS x FROM t WHERE false) AS v ON t.a = v.x
+)
+WHERE rn <= 1
+----
+-- A constant ORDER BY key makes every row in a partition tie at rank 1. The
+-- rank predicate must not turn this into a one-row-per-partition limit.
+SELECT *
+FROM (
+  SELECT t.b, rank() OVER (PARTITION BY t.a ORDER BY v.x) AS r
+  FROM t
+  LEFT JOIN (SELECT a AS x FROM t WHERE false) AS v ON t.a = v.x
+)
+WHERE r <= 1
+----

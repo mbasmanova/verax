@@ -127,7 +127,7 @@ TEST_P(AggregationTest, constantGroupingKeys) {
             .filter("a = 1")
             .project({"b", "1 as fixed_a"})
             .groupId({{"fixed_a", "b"}, {"fixed_a"}}, {}, "group_id")
-            .singleAggregation({"fixed_a", "b", "group_id"}, {})
+            .singleAggregation({"b", "group_id"}, {})
             .project({"10"})
             .build());
   }
@@ -680,7 +680,6 @@ TEST_P(AggregationTest, innerJoinPartitioning) {
         "SELECT {}, count(a) FROM t JOIN u ON a = b GROUP BY 1", key);
     SCOPED_TRACE(sql);
     const auto logicalPlan = parseSelect(sql, kTestConnectorId);
-    const auto aggregate = fmt::format("count({}) as count", key);
 
     AXIOM_ASSERT_PLAN_V2(
         toSingleNodePlan(logicalPlan, /*numDrivers=*/4),
@@ -688,8 +687,8 @@ TEST_P(AggregationTest, innerJoinPartitioning) {
             .hashJoinInner(
                 matchScan("u"),
                 {.keys = {{"a = b"}}, .outputColumnNames = {{"a"}}})
-            .projectIf(key == "b", {"a as b"})
-            .localAggregation({key}, {aggregate})
+            .localAggregation({"a"}, {"count(a) as count"})
+            .projectIf(key == "b", {"a as b", "count"})
             .build());
 
     AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
@@ -699,10 +698,10 @@ TEST_P(AggregationTest, innerJoinPartitioning) {
             .hashJoinInner(
                 matchScan("u").shuffle({"b"}),
                 {.keys = {{"a = b"}}, .outputColumnNames = {{"a"}}})
-            .projectIf(key == "b", {"a as b"})
-            .partialAggregation({key}, {aggregate})
-            .localPartition({key})
-            .finalAggregation({key}, {"count(count) as count"})
+            .partialAggregation({"a"}, {"count(a) as count"})
+            .localPartition({"a"})
+            .finalAggregation({"a"}, {"count(count) as count"})
+            .projectIf(key == "b", {"a as b", "count"})
             .gather()
             .build());
   }

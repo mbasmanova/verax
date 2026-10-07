@@ -23,7 +23,7 @@ namespace {
 // column from `columns` is NULL.
 bool isNullRejecting(ExprCP conjunct, const PlanObjectSet& columns) {
   return conjunct->columns().hasIntersection(columns) &&
-      !conjunct->containsFunction(FunctionSet::kNonDefaultNullBehavior);
+      !conjunct->containsNonDefaultNullBehavior();
 }
 
 } // namespace

@@ -71,6 +71,9 @@ class ExprFactory {
   /// Builds `lhs = rhs`.
   ExprCP makeEq(ExprCP lhs, ExprCP rhs);
 
+  /// Builds `lhs IS NOT DISTINCT FROM rhs`.
+  ExprCP makeNotDistinctFrom(ExprCP lhs, ExprCP rhs);
+
   /// Returns the non-literal and literal sides of a canonical equality, or
   /// nullopt for any other expression.
   std::optional<std::pair<ExprCP, ExprCP>> literalEquality(ExprCP expr) const;
@@ -165,8 +168,8 @@ class ExprFactory {
       const ExprVector& targets);
 
   /// Returns `call` with its arguments replaced by 'args', preserving
-  /// the name, value and special-form-ness and recomputing the
-  /// `FunctionSet` from the new arguments. Goes through
+  /// the name, value and conservative `FunctionSet`, including function kinds
+  /// that are not registered as scalar functions. Goes through
   /// `Builder::makeCall` so hash-consing stays canonical.
   ExprCP rebuildCall(const Call* call, ExprVector args);
 

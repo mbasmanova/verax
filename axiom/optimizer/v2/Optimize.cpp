@@ -218,7 +218,8 @@ NodeCP Optimizer::planTo(
   }
 
   if (session_.options().useFilteredTableStats) {
-    node = EstimateLeafStatsPass::run(node, builder_, session_);
+    node = EstimateLeafStatsPass::run(
+        node, outputColumns_, builder_, evaluator_, session_);
   }
   if (pass == Pass::kEstimateLeafStats) {
     return node;

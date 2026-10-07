@@ -164,6 +164,40 @@ NodeCP PlanSubstitutions::restore(
     ExprFactory& exprs,
     Builder& builder,
     ExprSimplifier& simplifier) const {
+  const auto restoreSingleRow = [&](const ExprVector& values) -> NodeCP {
+    std::vector<velox::Variant> row;
+    row.reserve(outputColumns.size());
+    for (ColumnCP output : outputColumns) {
+      const auto it = std::find(
+          input->outputColumns().begin(), input->outputColumns().end(), output);
+      ExprCP replacement = it == input->outputColumns().end()
+          ? apply(output, exprs)
+          : apply(values[it - input->outputColumns().begin()], exprs);
+      replacement = simplifier.simplify(replacement);
+      if (!replacement->is(PlanType::kLiteralExpr)) {
+        return nullptr;
+      }
+      row.push_back(replacement->as<Literal>()->literal());
+    }
+    return builder.makeSingleRowValues(std::move(row), outputColumns);
+  };
+  if (input->is(NodeType::kProject)) {
+    const auto* project = input->as<Project>();
+    if (project->input()->is(NodeType::kValues) &&
+        project->input()->as<Values>()->cardinality() == 1) {
+      if (NodeCP restored = restoreSingleRow(project->exprs())) {
+        return restored;
+      }
+    }
+  } else if (
+      input->is(NodeType::kValues) && input->as<Values>()->cardinality() == 1) {
+    if (NodeCP restored = restoreSingleRow(
+            ExprVector{
+                input->outputColumns().begin(),
+                input->outputColumns().end()})) {
+      return restored;
+    }
+  }
   const auto inputSet = PlanObjectSet::fromObjects(input->outputColumns());
   ExprVector expressions;
   expressions.reserve(outputColumns.size());

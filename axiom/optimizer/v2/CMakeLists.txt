@@ -49,6 +49,7 @@ add_library(
   MemoOp.cpp
   Node.cpp
   NodePrinter.cpp
+  NodeSimplifier.cpp
   Optimize.cpp
   OuterJoinReduction.cpp
   PhysicalJoin.cpp

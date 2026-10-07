@@ -159,7 +159,12 @@ TEST_F(NodePrinterTest, unknownEstimate) {
           {.estimates =
                [](NodeCP) { return Estimate{.cardinality = std::nullopt}; }}),
       ElementsAre(
-          StartsWith("- Values ->"), Eq("  Estimate: unknown"), Eq("")));
+          StartsWith("- Project ->"),
+          Eq("  Estimate: unknown"),
+          HasSubstr(":= 1"),
+          StartsWith("  - Values ->"),
+          Eq("    Estimate: unknown"),
+          Eq("")));
 }
 
 TEST_F(NodePrinterTest, selectivityAndFanout) {

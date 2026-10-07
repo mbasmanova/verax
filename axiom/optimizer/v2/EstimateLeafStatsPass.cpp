@@ -20,8 +20,9 @@
 #include <cmath>
 
 #include "axiom/optimizer/v2/Builder.h"
+#include "axiom/optimizer/v2/ExprSimplifier.h"
 #include "axiom/optimizer/v2/NodeRewriter.h"
-#include "axiom/optimizer/v2/PrecomputeProjections.h"
+#include "axiom/optimizer/v2/NodeSimplifier.h"
 #include "axiom/optimizer/v2/ScanHandle.h"
 
 #include <folly/container/F14Set.h>
@@ -104,260 +105,395 @@ bool applyFilteredStats(
   return stats->isKnownEmpty;
 }
 
-// Carries a proven-empty result from a child to its parent.
-struct KnownEmptyContext {
-  bool isKnownEmpty{false};
+// Carries a simplified result from a child to its parent.
+struct SimplifiedNodeContext {
+  NodeSimplifier::SimplifiedNode result;
 };
 
-// Propagates proven-empty scans through operators and materializes Values where
-// the fact cannot propagate farther or at the root.
-class KnownEmptyRewriter : public NodeRewriter<KnownEmptyContext> {
+// Applies the common node simplification rules bottom-up, seeding the walk with
+// scans that connector metadata proved empty.
+class EmptyScanSimplifier : public NodeRewriter<SimplifiedNodeContext> {
  public:
-  KnownEmptyRewriter(
+  using NodeRewriter::rewrite;
+
+  EmptyScanSimplifier(
       Builder& builder,
+      NodeSimplifier& simplifier,
       folly::F14FastSet<ScanCP> knownEmptyScans)
-      : NodeRewriter(builder), knownEmptyScans_(std::move(knownEmptyScans)) {}
+      : NodeRewriter(builder),
+        simplifier_(simplifier),
+        knownEmptyScans_(std::move(knownEmptyScans)) {}
+
+  NodeSimplifier::SimplifiedNode rewrite(NodeCP node) {
+    SimplifiedNodeContext context;
+    NodeRewriter::rewrite(node, context);
+    return std::move(context.result);
+  }
 
  protected:
-  NodeCP rewriteScan(const Scan* node, KnownEmptyContext& context) override {
-    context.isKnownEmpty |= knownEmptyScans_.contains(node);
-    return node;
-  }
-
-  NodeCP rewriteValues(const Values* node, KnownEmptyContext& context)
+  NodeCP rewriteScan(const Scan* node, SimplifiedNodeContext& context)
       override {
-    context.isKnownEmpty |= node->cardinality() == 0;
-    return node;
+    return setResult(
+        node,
+        knownEmptyScans_.contains(node)
+            ? NodeSimplifier::SimplifiedNode{}
+            : NodeSimplifier::SimplifiedNode{node, {}},
+        context);
   }
 
-  NodeCP rewriteAggregate(const Aggregate* node, KnownEmptyContext& context)
+  NodeCP rewriteValues(const Values* node, SimplifiedNodeContext& context)
       override {
-    KnownEmptyContext childContext;
-    NodeCP newInput = rewrite(node->input(), childContext);
-    if (childContext.isKnownEmpty) {
-      const bool emitsRowOnEmptyInput =
-          node->groupingKeys().empty() || !node->globalGroupingSets().empty();
-      if (!emitsRowOnEmptyInput) {
-        context.isKnownEmpty = true;
-        return node;
-      }
-      newInput = makeEmptyValues(node->input());
-    }
-    if (newInput == node->input()) {
-      return node;
-    }
-    return builder().make<Aggregate>(
-        {.input = newInput,
-         .groupingKeys = node->groupingKeys(),
-         .aggregates = node->aggregates(),
-         .outputColumns = node->outputColumns(),
-         .step = node->step(),
-         .groupId = node->groupId(),
-         .globalGroupingSets = node->globalGroupingSets()});
+    return setResult(
+        node,
+        simplifier_.make(
+            {node->source(),
+             node->rows(),
+             node->outputColumns(),
+             node->channels()}),
+        context);
   }
 
-  NodeCP rewriteJoin(const Join* node, KnownEmptyContext& context) override {
-    KnownEmptyContext leftContext;
-    KnownEmptyContext rightContext;
-    NodeCP newLeft = rewrite(node->left(), leftContext);
-    NodeCP newRight = rewrite(node->right(), rightContext);
-    if (Join::isKnownEmpty(
-            node->joinType(),
-            leftContext.isKnownEmpty,
-            rightContext.isKnownEmpty)) {
-      context.isKnownEmpty = true;
-      return node;
-    }
-    if (leftContext.isKnownEmpty != rightContext.isKnownEmpty) {
-      NodeCP remaining = leftContext.isKnownEmpty ? newRight : newLeft;
-      auto expressions = builder().paddedExpressions(
-          remaining->outputColumns(),
-          node->sourceColumns(),
-          /*falsePadding=*/Join::projectsMark(node->joinType()));
-      return projectExpressions(
-          remaining, std::move(expressions), node->outputColumns());
-    }
-    if (leftContext.isKnownEmpty) {
-      newLeft = makeEmptyValues(node->left());
-    }
-    if (rightContext.isKnownEmpty) {
-      newRight = makeEmptyValues(node->right());
-    }
-    if (newLeft == node->left() && newRight == node->right()) {
-      return node;
-    }
-    if (node->joinType() == velox::core::JoinType::kInner &&
-        node->leftKeys().empty() && node->filter().empty()) {
-      if (Values::isSingleRowNoColumns(newLeft)) {
-        return projectColumns(
-            newRight, node->outputColumns(), node->outputColumns());
-      }
-      if (Values::isSingleRowNoColumns(newRight)) {
-        return projectColumns(
-            newLeft, node->outputColumns(), node->outputColumns());
-      }
-    }
-    return builder().make<Join>(
-        {newLeft,
-         newRight,
-         node->joinType(),
-         node->leftKeys(),
-         node->rightKeys(),
-         node->filter(),
-         node->nullAware(),
-         node->nullAsValue(),
-         node->outputColumns(),
-         node->sourceColumns()});
-  }
-
-  NodeCP rewriteUnionAll(const UnionAll* node, KnownEmptyContext& context)
+  NodeCP rewriteFilter(const Filter* node, SimplifiedNodeContext& context)
       override {
-    NodeVector newInputs;
-    newInputs.reserve(node->inputs().size());
-    QGVector<ColumnVector> newLegColumns;
-    newLegColumns.reserve(node->legColumns().size());
-    bool changed{false};
-    for (size_t i = 0; i < node->inputs().size(); ++i) {
-      NodeCP input = node->inputs()[i];
-      KnownEmptyContext childContext;
-      NodeCP newInput = rewrite(input, childContext);
-      if (childContext.isKnownEmpty) {
-        changed = true;
-        continue;
-      }
-      changed |= newInput != input;
-      newInputs.push_back(newInput);
-      newLegColumns.push_back(node->legColumns()[i]);
-    }
+    return unary(node, context, [&](auto input) {
+      return simplifier_.make(
+          Filter::Key{node->input(), node->predicates()}, std::move(input));
+    });
+  }
 
-    if (newInputs.empty()) {
-      context.isKnownEmpty = true;
-      return node;
-    }
+  NodeCP rewriteProject(const Project* node, SimplifiedNodeContext& context)
+      override {
+    return unary(node, context, [&](auto input) {
+      return simplifier_.make(
+          Project::Key{node->input(), node->exprs(), node->outputColumns()},
+          std::move(input));
+    });
+  }
 
-    if (newInputs.size() == 1) {
-      return projectColumns(
-          newInputs.front(), newLegColumns.front(), node->outputColumns());
-    }
+  NodeCP rewriteLimit(const Limit* node, SimplifiedNodeContext& context)
+      override {
+    return unary(node, context, [&](auto input) {
+      return simplifier_.make(
+          Limit::Key{node->input(), node->offset(), node->count()},
+          std::move(input));
+    });
+  }
 
-    return changed ? builder().make<UnionAll>(
-                         {std::move(newInputs),
-                          std::move(newLegColumns),
-                          node->outputColumns()})
-                   : static_cast<NodeCP>(node);
+  NodeCP rewriteSort(const Sort* node, SimplifiedNodeContext& context)
+      override {
+    return unary(node, context, [&](auto input) {
+      return simplifier_.make(
+          Sort::Key{node->input(), node->orderKeys(), node->orderTypes()},
+          std::move(input));
+    });
+  }
+
+  NodeCP rewriteTopN(const TopN* node, SimplifiedNodeContext& context)
+      override {
+    return unary(node, context, [&](auto input) {
+      return simplifier_.make(
+          TopN::Key{
+              node->input(),
+              node->orderKeys(),
+              node->orderTypes(),
+              node->offset(),
+              node->count()},
+          std::move(input));
+    });
+  }
+
+  NodeCP rewriteAggregate(const Aggregate* node, SimplifiedNodeContext& context)
+      override {
+    return unary(node, context, [&](auto input) {
+      return simplifier_.make(
+          Aggregate::Key{
+              .input = node->input(),
+              .groupingKeys = node->groupingKeys(),
+              .aggregates = node->aggregates(),
+              .outputColumns = node->outputColumns(),
+              .step = node->step(),
+              .groupId = node->groupId(),
+              .globalGroupingSets = node->globalGroupingSets()},
+          std::move(input));
+    });
+  }
+
+  NodeCP rewriteGroupId(const GroupId* node, SimplifiedNodeContext& context)
+      override {
+    return unary(node, context, [&](auto input) {
+      return simplifier_.make(
+          GroupId::Key{
+              node->input(),
+              node->groupingKeys(),
+              node->aggregationInputs(),
+              node->groupingSets(),
+              node->groupingKeyColumns(),
+              node->groupId(),
+              node->outputColumns()},
+          std::move(input));
+    });
+  }
+
+  NodeCP rewriteMarkDistinct(
+      const MarkDistinct* node,
+      SimplifiedNodeContext& context) override {
+    return unary(node, context, [&](auto input) {
+      return simplifier_.make(
+          MarkDistinct::Key{
+              node->input(),
+              node->markers(),
+              node->distinctKeys(),
+              node->masks(),
+              node->outputColumns()},
+          std::move(input));
+    });
+  }
+
+  NodeCP rewriteUnnest(const Unnest* node, SimplifiedNodeContext& context)
+      override {
+    return unary(node, context, [&](auto input) {
+      return simplifier_.make(
+          Unnest::Key{
+              node->input(),
+              node->unnestExpressions(),
+              node->replicatedColumns(),
+              node->unnestColumns(),
+              node->ordinalityColumn(),
+              node->markerColumn(),
+              node->outputColumns()},
+          std::move(input));
+    });
+  }
+
+  NodeCP rewriteJoin(const Join* node, SimplifiedNodeContext& context)
+      override {
+    auto left = rewriteChild(node->left());
+    auto right = rewriteChild(node->right());
+    return setResult(
+        node,
+        simplifier_.make(
+            Join::Key{
+                node->left(),
+                node->right(),
+                node->joinType(),
+                node->leftKeys(),
+                node->rightKeys(),
+                node->filter(),
+                node->nullAware(),
+                node->nullAsValue(),
+                node->outputColumns(),
+                node->sourceColumns()},
+            std::move(left),
+            std::move(right)),
+        context);
+  }
+
+  NodeCP rewriteUnionAll(const UnionAll* node, SimplifiedNodeContext& context)
+      override {
+    std::vector<NodeSimplifier::SimplifiedNode> inputs;
+    inputs.reserve(node->inputs().size());
+    for (NodeCP input : node->inputs()) {
+      inputs.push_back(rewriteChild(input));
+    }
+    return setResult(
+        node,
+        simplifier_.make(
+            UnionAll::Key{
+                NodeVector(node->inputs().begin(), node->inputs().end()),
+                node->legColumns(),
+                node->outputColumns()},
+            std::move(inputs)),
+        context);
+  }
+
+  NodeCP rewriteWindow(const Window* node, SimplifiedNodeContext& context)
+      override {
+    return unary(node, context, [&](auto input) {
+      return simplifier_.make(
+          Window::Key{
+              node->input(),
+              node->functions(),
+              node->partitionKeys(),
+              node->orderKeys(),
+              node->orderTypes(),
+              node->outputColumns()},
+          std::move(input));
+    });
+  }
+
+  NodeCP rewriteInference(const Inference* node, SimplifiedNodeContext& context)
+      override {
+    return unary(node, context, [&](auto input) {
+      return simplifier_.make(
+          Inference::Key{
+              node->input(),
+              node->call(),
+              node->result(),
+              node->outputColumns()},
+          std::move(input));
+    });
+  }
+
+  NodeCP rewriteRowNumber(const RowNumber* node, SimplifiedNodeContext& context)
+      override {
+    return unary(node, context, [&](auto input) {
+      return simplifier_.make(
+          RowNumber::Key{
+              node->input(),
+              node->partitionKeys(),
+              node->limit(),
+              node->rankColumn(),
+              node->outputColumns()},
+          std::move(input));
+    });
+  }
+
+  NodeCP rewriteTopNRowNumber(
+      const TopNRowNumber* node,
+      SimplifiedNodeContext& context) override {
+    return unary(node, context, [&](auto input) {
+      return simplifier_.make(
+          TopNRowNumber::Key{
+              node->input(),
+              node->rankFunction(),
+              node->partitionKeys(),
+              node->orderKeys(),
+              node->orderTypes(),
+              node->limit(),
+              node->rankColumn(),
+              node->outputColumns()},
+          std::move(input));
+    });
+  }
+
+  NodeCP rewriteApply(const Apply* node, SimplifiedNodeContext& context)
+      override {
+    auto input = rewriteChild(node->input());
+    auto body = rewriteChild(node->body());
+    return setResult(
+        node,
+        simplifier_.make(
+            Apply::Key{
+                node->input(),
+                node->body(),
+                node->correlationColumns(),
+                node->kind(),
+                node->filter(),
+                node->enforceSingleRow(),
+                node->markColumn(),
+                node->inLhs(),
+                node->inBodyKey(),
+                node->includeMarker(),
+                node->outputColumns(),
+                node->sourceColumns()},
+            std::move(input),
+            std::move(body)),
+        context);
   }
 
   NodeCP rewriteEnforceSingleRow(
       const EnforceSingleRow* node,
-      KnownEmptyContext& /*context*/) override {
-    KnownEmptyContext childContext;
-    NodeCP newInput = rewrite(node->input(), childContext);
-    if (childContext.isKnownEmpty) {
-      return makeNullRowValues(node);
-    }
-    return newInput == node->input()
-        ? static_cast<NodeCP>(node)
-        : builder().make<EnforceSingleRow>({newInput, node->outputColumns()});
+      SimplifiedNodeContext& context) override {
+    return unary(node, context, [&](auto input) {
+      input.originalColumns = node->input()->outputColumns();
+      return simplifier_.make(
+          EnforceSingleRow::Key{node->input(), node->outputColumns()},
+          std::move(input));
+    });
   }
 
   NodeCP rewriteTableWrite(
       const TableWrite* node,
-      KnownEmptyContext& /*context*/) override {
-    KnownEmptyContext childContext;
-    NodeCP newInput = rewrite(node->input(), childContext);
-    if (childContext.isKnownEmpty) {
-      newInput = makeEmptyValues(node->input());
-    }
-    return newInput == node->input()
-        ? static_cast<NodeCP>(node)
-        : builder().make<TableWrite>(
-              {newInput, node->table(), node->kind(), node->columnExprs()});
-  }
-
-  NodeCP rewriteFixedPoint(const FixedPoint* node, KnownEmptyContext& context)
-      override {
-    KnownEmptyContext anchorContext;
-    NodeCP newAnchor = rewrite(node->anchor(), anchorContext);
-    if (anchorContext.isKnownEmpty) {
-      context.isKnownEmpty = true;
-      return node;
-    }
-
-    KnownEmptyContext stepContext;
-    NodeCP newStep = rewrite(node->step(), stepContext);
-    if (stepContext.isKnownEmpty) {
-      return newAnchor;
-    }
-    if (newStep->requiredStates() != node->step()->requiredStates()) {
-      newStep = node->step();
-    }
-
-    KnownEmptyContext convergenceContext;
-    NodeCP newConvergence = rewrite(node->convergence(), convergenceContext);
-    if (newConvergence->requiredStates() !=
-        node->convergence()->requiredStates()) {
-      newConvergence = node->convergence();
-    }
-
-    if (newAnchor == node->anchor() && newStep == node->step() &&
-        newConvergence == node->convergence()) {
-      return node;
-    }
-    return builder().make<FixedPoint>({
-        .anchor = newAnchor,
-        .step = newStep,
-        .convergence = newConvergence,
-        .name = node->name(),
-        .outputColumns = node->outputColumns(),
-        .sourceColumns = node->sourceColumns(),
-        .maxIterations = node->maxIterations(),
-        .recursiveNumDrivers = node->recursiveNumDrivers(),
+      SimplifiedNodeContext& context) override {
+    return unary(node, context, [&](auto input) {
+      return simplifier_.make(
+          TableWrite::Key{
+              node->input(), node->table(), node->kind(), node->columnExprs()},
+          std::move(input),
+          node->outputColumns());
     });
   }
 
+  NodeCP rewriteAssignUniqueId(
+      const AssignUniqueId* node,
+      SimplifiedNodeContext& context) override {
+    return unary(node, context, [&](auto input) {
+      return simplifier_.make(
+          AssignUniqueId::Key{node->input(), node->idColumn()},
+          std::move(input));
+    });
+  }
+
+  NodeCP rewriteEnforceDistinct(
+      const EnforceDistinct* node,
+      SimplifiedNodeContext& context) override {
+    return unary(node, context, [&](auto input) {
+      return simplifier_.make(
+          EnforceDistinct::Key{
+              node->input(), node->distinctKeys(), node->errorMessage()},
+          std::move(input));
+    });
+  }
+
+  NodeCP rewriteExchange(
+      const Exchange* /*node*/,
+      SimplifiedNodeContext& /*context*/) override {
+    VELOX_UNREACHABLE("EstimateLeafStats runs before physical planning");
+  }
+
+  NodeCP rewriteWorkingTable(
+      const WorkingTable* node,
+      SimplifiedNodeContext& context) override {
+    return setResult(node, NodeSimplifier::SimplifiedNode{node, {}}, context);
+  }
+
+  NodeCP rewriteFixedPoint(
+      const FixedPoint* node,
+      SimplifiedNodeContext& context) override {
+    auto anchor = rewriteChild(node->anchor());
+    auto step = rewriteChild(node->step());
+    auto convergence = rewriteChild(node->convergence());
+    return setResult(
+        node,
+        simplifier_.make(
+            FixedPoint::Key{
+                .anchor = node->anchor(),
+                .step = node->step(),
+                .convergence = node->convergence(),
+                .name = node->name(),
+                .outputColumns = node->outputColumns(),
+                .sourceColumns = node->sourceColumns(),
+                .maxIterations = node->maxIterations(),
+                .recursiveNumDrivers = node->recursiveNumDrivers(),
+            },
+            std::move(anchor),
+            std::move(step),
+            std::move(convergence)),
+        context);
+  }
+
  private:
-  // Projects 'expressions' onto 'outputColumns', composing an input Project
-  // when safe and removing an identity Project.
-  NodeCP projectExpressions(
-      NodeCP input,
-      ExprVector expressions,
-      const ColumnVector& outputColumns) {
-    PrecomputeProjections::inlineInputProject(input, expressions, builder());
-    if (input->outputColumns() == outputColumns &&
-        std::equal(
-            expressions.begin(), expressions.end(), outputColumns.begin())) {
-      return input;
-    }
-    return builder().make<Project>(
-        {input, std::move(expressions), outputColumns});
+  template <typename TNode, typename TMake>
+  NodeCP unary(const TNode* node, SimplifiedNodeContext& context, TMake make) {
+    return setResult(node, make(rewriteChild(node->input())), context);
   }
 
-  // Projects 'inputColumns' onto 'outputColumns'.
-  NodeCP projectColumns(
-      NodeCP input,
-      const ColumnVector& inputColumns,
-      const ColumnVector& outputColumns) {
-    return projectExpressions(
-        input,
-        ExprVector(inputColumns.begin(), inputColumns.end()),
-        outputColumns);
+  NodeSimplifier::SimplifiedNode rewriteChild(NodeCP node) {
+    SimplifiedNodeContext context;
+    NodeRewriter::rewrite(node, context);
+    return std::move(context.result);
   }
 
-  NodeCP makeEmptyValues(NodeCP node) {
-    return builder().makeEmptyValues(node->outputColumns());
+  NodeCP setResult(
+      NodeCP original,
+      NodeSimplifier::SimplifiedNode result,
+      SimplifiedNodeContext& context) {
+    NodeCP rewritten = result.empty() ? original : result.node;
+    context.result = std::move(result);
+    return rewritten;
   }
 
-  // Returns one row containing a typed NULL for each output column of 'node'.
-  NodeCP makeNullRowValues(NodeCP node) {
-    std::vector<velox::Variant> row;
-    row.reserve(node->outputColumns().size());
-    for (ColumnCP column : node->outputColumns()) {
-      row.push_back(velox::Variant::null(column->value().type->kind()));
-    }
-
-    return builder().makeSingleRowValues(std::move(row), node->outputColumns());
-  }
-
+  NodeSimplifier& simplifier_;
   // Scans whose accepted filters were proven to match no rows.
   const folly::F14FastSet<ScanCP> knownEmptyScans_;
 };
@@ -366,7 +502,9 @@ class KnownEmptyRewriter : public NodeRewriter<KnownEmptyContext> {
 
 NodeCP EstimateLeafStatsPass::run(
     NodeCP root,
+    ColumnVector& outputColumns,
     Builder& builder,
+    velox::core::ExpressionEvaluator& evaluator,
     const OptimizerSession& session) {
   std::vector<ScanCP> scans;
   collectScans(root, scans);
@@ -436,12 +574,17 @@ NodeCP EstimateLeafStatsPass::run(
     return root;
   }
 
-  KnownEmptyContext context;
-  NodeCP rewritten =
-      KnownEmptyRewriter{builder, std::move(knownEmptyScans)}.rewrite(
-          root, context);
-  return context.isKnownEmpty ? builder.makeEmptyValues(root->outputColumns())
-                              : rewritten;
+  ExprSimplifier expressionSimplifier{builder, evaluator};
+  NodeSimplifier nodeSimplifier{builder, expressionSimplifier};
+  auto simplified =
+      EmptyScanSimplifier{builder, nodeSimplifier, std::move(knownEmptyScans)}
+          .rewrite(root);
+  if (simplified.empty()) {
+    return builder.makeEmptyValues(outputColumns);
+  }
+  nodeSimplifier.restoreOutputLayout(
+      simplified.node, outputColumns, simplified.substitutions);
+  return simplified.node;
 }
 
 } // namespace facebook::axiom::optimizer::v2

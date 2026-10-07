@@ -156,7 +156,7 @@ ExprCP substituteOrNull(
 // already and needs no includeMarker guard.
 bool isNullOnPadRows(ExprCP expr, const PlanObjectSet& bodyColumns) {
   return expr->columns().hasIntersection(bodyColumns) &&
-      !expr->containsFunction(FunctionSet::kNonDefaultNullBehavior);
+      !expr->containsNonDefaultNullBehavior();
 }
 
 // Decorrelate pass implementation. The per-Apply loop:

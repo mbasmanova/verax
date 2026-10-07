@@ -925,10 +925,10 @@ TEST_P(WriteTest, ctasValuesNoMerge) {
   runCtas(
       "CREATE TABLE test(a, b, c) AS SELECT 1, 0.123, 'foo'",
       1,
-      [](const auto& plan) {
+      [this](const auto& plan) {
         ASSERT_EQ(1, plan.fragments().size());
 
-        auto matcher = matchValues().project().tableWrite().build();
+        auto matcher = matchValues().projectIf(!useV2_).tableWrite().build();
         AXIOM_ASSERT_PLAN(nodeAt(plan, 0), matcher);
       },
       {.maxRemotePartitions = 4, .maxLocalPartitions = 4});

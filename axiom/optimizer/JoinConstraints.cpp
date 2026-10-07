@@ -243,6 +243,27 @@ void JoinConstraints::updateKeys(
   }
 }
 
+void JoinConstraints::refineInnerKeys(
+    velox::core::JoinType joinType,
+    const ExprVector& left,
+    const ExprVector& right,
+    ConstraintMap& constraints) {
+  if (joinType != velox::core::JoinType::kInner) {
+    return;
+  }
+  for (const ExprVector* keys : {&left, &right}) {
+    for (ExprCP key : *keys) {
+      constraints.try_emplace(key->id(), value(constraints, key));
+    }
+  }
+  updateKeys(
+      left,
+      right,
+      /*leftOptional=*/false,
+      /*rightOptional=*/false,
+      constraints);
+}
+
 void JoinConstraints::updatePayload(
     const ColumnVector& columns,
     const ExprVector& keys,

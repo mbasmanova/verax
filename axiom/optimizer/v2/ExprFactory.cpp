@@ -92,6 +92,16 @@ ExprCP ExprFactory::makeEq(ExprCP lhs, ExprCP rhs) {
       builder_.functionNames().equality, {lhs, rhs}, /*specialForm=*/false);
 }
 
+ExprCP ExprFactory::makeNotDistinctFrom(ExprCP lhs, ExprCP rhs) {
+  const Name name = builder_.functionNames().distinctFrom;
+  VELOX_USER_CHECK_NOT_NULL(
+      name,
+      "ExprFactory::makeNotDistinctFrom requires distinct-from registered via "
+      "FunctionRegistry::registerDistinctFrom; the active dialect did not "
+      "register it");
+  return makeNot(makeBooleanCall(name, {lhs, rhs}, /*specialForm=*/false));
+}
+
 std::optional<std::pair<ExprCP, ExprCP>> ExprFactory::literalEquality(
     ExprCP expr) const {
   if (expr->isNot(PlanType::kCallExpr)) {
@@ -382,9 +392,8 @@ ExprCP ExprFactory::rebuildLambda(const Lambda* lambda, ExprCP body) {
 }
 
 ExprCP ExprFactory::rebuildCall(const Call* call, ExprVector args) {
-  const bool specialForm = SpecialFormCallNames::isSpecialForm(call->name());
   const FunctionSet functions =
-      Call::unionArgFunctions(functionBits(call->name(), specialForm), args);
+      Call::unionArgFunctions(call->functions(), args);
   return builder_.makeCall(
       call->name(), call->value(), std::move(args), functions);
 }

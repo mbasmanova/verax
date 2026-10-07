@@ -80,6 +80,12 @@ class Expr : public PlanObject {
     return containsFunction(FunctionSet::kNonDeterministic);
   }
 
+  /// True if 'this' contains a function that does not return NULL for every
+  /// NULL input, such as coalesce or IS NULL.
+  bool containsNonDefaultNullBehavior() const {
+    return containsFunction(FunctionSet::kNonDefaultNullBehavior);
+  }
+
   /// True if 'this' contains any function from 'set'. See FunctionSet.
   virtual bool containsFunction(uint64_t /*set*/) const {
     return false;

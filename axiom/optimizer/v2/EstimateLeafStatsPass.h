@@ -18,6 +18,7 @@
 
 #include "axiom/optimizer/OptimizerSession.h"
 #include "axiom/optimizer/v2/Node.h"
+#include "velox/core/ExpressionEvaluator.h"
 
 namespace facebook::axiom::optimizer::v2 {
 
@@ -39,8 +40,12 @@ class EstimateLeafStatsPass {
   /// When connector metadata proves that a scan is empty, propagates that fact
   /// upward and materializes Values where the fact cannot propagate farther or
   /// at the root. 'session' supplies connector sessions.
-  static NodeCP
-  run(NodeCP root, Builder& builder, const OptimizerSession& session);
+  static NodeCP run(
+      NodeCP root,
+      ColumnVector& outputColumns,
+      Builder& builder,
+      velox::core::ExpressionEvaluator& evaluator,
+      const OptimizerSession& session);
 };
 
 } // namespace facebook::axiom::optimizer::v2

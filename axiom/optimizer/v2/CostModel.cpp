@@ -21,6 +21,7 @@
 #include "axiom/optimizer/Cost.h"
 #include "axiom/optimizer/EstimateMath.h"
 #include "axiom/optimizer/Filters.h"
+#include "axiom/optimizer/JoinConstraints.h"
 #include "axiom/optimizer/Schema.h"
 #include "axiom/optimizer/v2/JoinFanout.h"
 #include "velox/common/base/Exceptions.h"
@@ -334,6 +335,8 @@ joinEstimate(const JoinOp& join, const JoinHypergraph& graph, BySetMap& bySet) {
   cardinality = applyFilterEdges(
       cardinality, join.filterEdges, graph, result.constraints);
   result.cardinality = maxOf(1.0f, cardinality);
+  JoinConstraints::refineInnerKeys(
+      edge.joinType(), edge.leftKeys(), edge.rightKeys(), result.constraints);
   return bySet.emplace(cover, std::move(result)).first->second;
 }
 

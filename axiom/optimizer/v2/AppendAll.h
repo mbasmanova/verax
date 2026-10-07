@@ -15,6 +15,8 @@
  */
 #pragma once
 
+#include "axiom/optimizer/PlanObject.h"
+
 namespace facebook::axiom::optimizer::v2 {
 
 /// Appends every element of `src` to `dst`. Used to concatenate
@@ -23,6 +25,22 @@ namespace facebook::axiom::optimizer::v2 {
 template <typename Dst, typename Src>
 void appendAll(Dst& dst, const Src& src) {
   dst.insert(dst.end(), src.begin(), src.end());
+}
+
+/// Returns `columns` as expressions without changing their identities.
+inline ExprVector toExprs(const ColumnVector& columns) {
+  return ExprVector(columns.begin(), columns.end());
+}
+
+/// Returns `expressions` as columns. Fails if any expression is not a column.
+inline ColumnVector toColumns(const ExprVector& expressions) {
+  ColumnVector columns;
+  columns.reserve(expressions.size());
+  for (ExprCP expression : expressions) {
+    VELOX_CHECK(expression->isColumn());
+    columns.push_back(expression->as<Column>());
+  }
+  return columns;
 }
 
 /// Returns a new vector containing the first `count` elements of `src`.

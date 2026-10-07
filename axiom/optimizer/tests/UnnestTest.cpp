@@ -177,8 +177,8 @@ TEST_P(UnnestTest, unnest) {
                            .build();
 
     auto plan = toSingleNodePlan(logicalPlan);
-    auto matcher = matchValues().project().unnest().build();
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    auto matcher = matchValues().unnest().build();
+    AXIOM_ASSERT_PLAN_V2(plan, matcher);
   }
   {
     SCOPED_TRACE("unnest array and map");
@@ -193,8 +193,8 @@ TEST_P(UnnestTest, unnest) {
                            .build();
 
     auto plan = toSingleNodePlan(logicalPlan);
-    auto matcher = matchValues().project().unnest().project({"v", "e"}).build();
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    auto matcher = matchValues().unnest().project({"v", "e"}).build();
+    AXIOM_ASSERT_PLAN_V2(plan, matcher);
   }
 }
 
@@ -690,7 +690,6 @@ TEST_P(UnnestTest, join) {
 }
 
 TEST_P(UnnestTest, ordinality) {
-  const parse::ParseOptions options = {.parseIntegerAsBigint = false};
   {
     auto query =
         "SELECT a, b, c FROM unnest(array[1, 2, 3], array[4, 5]) WITH ORDINALITY AS t(a, b, c)";
@@ -699,15 +698,16 @@ TEST_P(UnnestTest, ordinality) {
     auto logicalPlan = parseSelect(query, kTestConnectorId);
 
     // Two arrays are unnested with ordinality column.
-    auto matcher =
-        matchValues()
-            .project({"array[1, 2, 3] as foo", "array[4, 5] as bar"}, options)
-            .unnest({}, {"foo", "bar"}, "ordinality")
-            .project({"e", "e_0", "ordinality"})
-            .build();
+    auto matcher = matchValues(makeRowVector(
+                                   {"foo", "bar"},
+                                   {makeArrayVector<int32_t>({{1, 2, 3}}),
+                                    makeArrayVector<int32_t>({{4, 5}})}))
+                       .unnest({}, {"foo", "bar"}, "ordinality")
+                       .project({"e", "e_0", "ordinality"})
+                       .build();
 
     auto plan = toSingleNodePlan(logicalPlan);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V2(plan, matcher);
   }
   {
     auto query =
@@ -717,15 +717,16 @@ TEST_P(UnnestTest, ordinality) {
     auto logicalPlan = parseSelect(query, kTestConnectorId);
 
     // Ordinality column is pruned because it's not used.
-    auto matcher =
-        matchValues()
-            .project({"array[1, 2, 3] as foo", "array[4, 5] as bar"}, options)
-            .unnest({}, {"foo", "bar"}, std::nullopt)
-            .project({"e", "e_0"})
-            .build();
+    auto matcher = matchValues(makeRowVector(
+                                   {"foo", "bar"},
+                                   {makeArrayVector<int32_t>({{1, 2, 3}}),
+                                    makeArrayVector<int32_t>({{4, 5}})}))
+                       .unnest({}, {"foo", "bar"}, std::nullopt)
+                       .project({"e", "e_0"})
+                       .build();
 
     auto plan = toSingleNodePlan(logicalPlan);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V2(plan, matcher);
   }
   {
     auto query =
@@ -735,15 +736,16 @@ TEST_P(UnnestTest, ordinality) {
     auto logicalPlan = parseSelect(query, kTestConnectorId);
 
     // Ordinality column is pruned because it's not used.
-    auto matcher =
-        matchValues()
-            .project({"array[1, 2, 3] as foo", "array[4, 5] as bar"}, options)
-            .unnest({}, {"foo", "bar"}, std::nullopt)
-            .project({"1"})
-            .build();
+    auto matcher = matchValues(makeRowVector(
+                                   {"foo", "bar"},
+                                   {makeArrayVector<int32_t>({{1, 2, 3}}),
+                                    makeArrayVector<int32_t>({{4, 5}})}))
+                       .unnest({}, {"foo", "bar"}, std::nullopt)
+                       .project({"1"})
+                       .build();
 
     auto plan = toSingleNodePlan(logicalPlan);
-    AXIOM_ASSERT_PLAN(plan, matcher);
+    AXIOM_ASSERT_PLAN_V2(plan, matcher);
   }
 }
 
@@ -936,8 +938,6 @@ TEST_P(UnnestTest, manyUnnestsCardinalityOverflow) {
 // A join whose other side unnests a constant array, which reads no columns of
 // the query. The unnest stays on its own side of the join.
 TEST_P(UnnestTest, joinWithConstantUnnest) {
-  const parse::ParseOptions options = {.parseIntegerAsBigint = false};
-
   auto query =
       "SELECT a FROM (VALUES 1, 2) AS t(a) "
       "JOIN (SELECT s FROM UNNEST(ARRAY[1, 2]) AS u(s)) ON a = s";
@@ -945,13 +945,12 @@ TEST_P(UnnestTest, joinWithConstantUnnest) {
 
   auto logicalPlan = parseSelect(query, kTestConnectorId);
 
-  AXIOM_ASSERT_PLAN(
+  AXIOM_ASSERT_PLAN_V2(
       toSingleNodePlan(logicalPlan),
-      matchValues()
-          .project({"array[1, 2] as arr"}, options)
+      matchValues(makeRowVector({"arr"}, {makeArrayVector<int32_t>({{1, 2}})}))
           .unnest({}, {"arr"}, std::nullopt)
           .aliases({"e"})
-          .filterIf(useV2_, "e in (1, 2)")
+          .filter("e in (1, 2)")
           .hashJoinInner(matchValues().aliases({"k"}), {.keys = {{"e = k"}}})
           .project({"k as a"})
           .build());
@@ -960,8 +959,6 @@ TEST_P(UnnestTest, joinWithConstantUnnest) {
 // A join between two constant unnests, where no table or values relation takes
 // part.
 TEST_P(UnnestTest, joinOfConstantUnnests) {
-  const parse::ParseOptions options = {.parseIntegerAsBigint = false};
-
   auto query =
       "SELECT e FROM (SELECT s AS e FROM UNNEST(ARRAY[1, 2]) AS u(s)) "
       "JOIN (SELECT s AS f FROM UNNEST(ARRAY[2, 3]) AS v(s)) ON e = f";
@@ -969,14 +966,13 @@ TEST_P(UnnestTest, joinOfConstantUnnests) {
 
   auto logicalPlan = parseSelect(query, kTestConnectorId);
 
-  AXIOM_ASSERT_PLAN(
+  AXIOM_ASSERT_PLAN_V2(
       toSingleNodePlan(logicalPlan),
-      matchValues()
-          .project({"array[1, 2] as arr"}, options)
+      matchValues(makeRowVector({"arr"}, {makeArrayVector<int32_t>({{1, 2}})}))
           .unnest({}, {"arr"}, std::nullopt)
           .hashJoinInner(
-              matchValues()
-                  .project({"array[2, 3] as arr2"}, options)
+              matchValues(
+                  makeRowVector({"arr2"}, {makeArrayVector<int32_t>({{2, 3}})}))
                   .unnest({}, {"arr2"}, std::nullopt)
                   .aliases({"f"}),
               {.keys = {{"e = f"}}})
@@ -987,8 +983,6 @@ TEST_P(UnnestTest, joinOfConstantUnnests) {
 // unnested one. Only the replicated equality can be a hash join key, so the
 // two optimizers place the unnest on opposite sides of the join.
 TEST_P(UnnestTest, joinEdgeCrossingWithUnnest) {
-  const parse::ParseOptions options = {.parseIntegerAsBigint = false};
-
   testConnector_->addTable("u", ROW({"k", "m"}, INTEGER()))
       ->setStats(1, {{"k", {.numDistinct = 1}}, {"m", {.numDistinct = 1}}});
 
@@ -1000,27 +994,18 @@ TEST_P(UnnestTest, joinEdgeCrossingWithUnnest) {
 
   auto logicalPlan = parseSelect(query, kTestConnectorId);
 
-  auto matcher = useV2_
-      ? matchValues()
-            .aliases({"a", "arr"})
-            .hashJoinInner(
-                matchScan("u").aliases({"k", "m"}), {.keys = {{"a = k"}}})
-            .unnest({"a", "m"}, {"arr"})
-            .aliases({"a", "m", "e"})
-            .filter("eq(e, m)")
-            .project()
-            .build()
-      : matchValues()
-            .aliases({"a", "arr"})
-            .unnest({"a"}, {"arr"})
-            .aliases({"a", "e"})
-            .hashJoinInner(
-                matchScan("u").aliases({"k", "m"}),
-                {.keys = {{"a = k", "e = m"}}})
-            .project()
-            .build();
+  auto matcher =
+      matchValues()
+          .aliases({"arr"})
+          .unnest({}, {"arr"})
+          .aliases({"e"})
+          .hashJoinInner(
+              matchScan("u").aliases({"m", "k"}).filter("k = 1").project({"m"}),
+              {.keys = {{"e = m"}}})
+          .project({"1 as a", "e", "1 as k"})
+          .build();
 
-  AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
+  AXIOM_ASSERT_PLAN_V2(toSingleNodePlan(logicalPlan), matcher);
 }
 
 // An IN subquery whose source unnests a column of another relation. The IN
@@ -1035,21 +1020,12 @@ TEST_P(UnnestTest, inSubqueryOverUnnest) {
 
   auto logicalPlan = parseSelect(query, kTestConnectorId);
 
-  auto matcher = matchValues()
-                     .aliases({"data"})
-                     .unnest({}, {"data"})
-                     .aliases({"e"})
-                     .hashJoinRightSemiFilter(
-                         matchValues().aliases({"a"}), {.keys = {{"e = a"}}})
-                     .project({"a"})
-                     .build();
-
-  AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
+  AXIOM_ASSERT_PLAN_V2(toSingleNodePlan(logicalPlan), matchValues().build());
 
   // Two single-row inputs stay on one task, so distributing changes nothing.
   auto distributed = planVelox(
       logicalPlan, {.maxRemotePartitions = 4, .maxLocalPartitions = 4});
-  AXIOM_ASSERT_DISTRIBUTED_PLAN(distributed.plan, matcher);
+  AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(distributed.plan, matchValues().build());
 }
 
 // Unused UNNEST outputs affect EXISTS only through whether any collection is
@@ -1164,12 +1140,13 @@ TEST_P(UnnestTest, unnestPlacedAboveJoin) {
 
   auto makeMatcher = [&](bool distributed) {
     return matchValues()
-        .aliases({"k", "data"})
-        .hashJoinInner(
-            matchScan("s").aliases({"a"}).broadcastIf(distributed),
-            {.keys = {{"k = a"}}})
-        .unnest({"k"}, {"data"})
-        .project({"k", "e"})
+        .aliases({"data"})
+        .unnest({}, {"data"})
+        .aliases({"e"})
+        .nestedLoopJoin(
+            matchScan("s").filter("a = 1").projectNone().broadcastIf(
+                distributed))
+        .project({"1 as a", "e"})
         .build();
   };
 

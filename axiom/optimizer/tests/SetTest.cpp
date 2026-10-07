@@ -95,19 +95,17 @@ TEST_P(SetTest, constantOutputs) {
         "  SELECT a, b FROM u WHERE a = 1"
         ")";
     SCOPED_TRACE(query);
-    auto logicalPlan = parseSelect(query);
-    verifyOptimization(
-        *logicalPlan, v2::Optimizer::Pass::kTranslate, [](v2::NodeCP root) {
-          const auto* node =
-              v2::Node::findFirstNode(root, [](v2::NodeCP candidate) {
-                return candidate->is(v2::NodeType::kUnionAll);
-              });
-          ASSERT_NE(node, nullptr);
-          const auto* unionAll = node->as<v2::UnionAll>();
-          EXPECT_THAT(unionAll->outputColumns(), testing::SizeIs(1));
-          EXPECT_THAT(
-              unionAll->legColumns(), testing::Each(testing::SizeIs(1)));
-        });
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(parseSelect(query)),
+        matchScan("t")
+            .filter("a = 1")
+            .project({"b as y"})
+            .localPartition(matchScan("u")
+                                .aliases({"right_b", "right_a"})
+                                .filter("right_a = 1")
+                                .project({"right_b as y"}))
+            .project({"1 as x", "y"})
+            .build());
   }
 
   {
@@ -120,19 +118,17 @@ TEST_P(SetTest, constantOutputs) {
         "  SELECT a FROM u WHERE a = 1"
         ")";
     SCOPED_TRACE(query);
-    auto logicalPlan = parseSelect(query);
-    verifyOptimization(
-        *logicalPlan, v2::Optimizer::Pass::kTranslate, [](v2::NodeCP root) {
-          const auto* node =
-              v2::Node::findFirstNode(root, [](v2::NodeCP candidate) {
-                return candidate->is(v2::NodeType::kUnionAll);
-              });
-          ASSERT_NE(node, nullptr);
-          const auto* unionAll = node->as<v2::UnionAll>();
-          EXPECT_THAT(unionAll->outputColumns(), testing::IsEmpty());
-          EXPECT_THAT(
-              unionAll->legColumns(), testing::Each(testing::IsEmpty()));
-        });
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(parseSelect(query)),
+        matchScan("t")
+            .filter("a = 1")
+            .projectNone()
+            .localPartition(matchScan("u")
+                                .aliases({"right_a"})
+                                .filter("right_a = 1")
+                                .projectNone())
+            .project({"1 as x"})
+            .build());
   }
 
   {
@@ -195,11 +191,15 @@ TEST_P(SetTest, constantOutputs) {
         toSingleNodePlan(parseSelect(query)),
         matchScan("t")
             .filter("a = 1")
-            .project({"1 as x", "b"})
+            .project({"b"})
             .hashJoin(
-                matchScan("u").aliases({"right_a", "right_b"}),
-                core::JoinType::kLeftSemiFilter)
-            .singleAggregation({"x", "b"}, {})
+                matchScan("u")
+                    .aliases({"right_b", "right_a"})
+                    .filter("right_a = 1")
+                    .project({"right_b"}),
+                core::JoinType::kLeftSemiFilter,
+                {.keys = {{"b = right_b"}}})
+            .singleAggregation({"b"}, {})
             .project({"10"})
             .build());
   }
@@ -217,13 +217,16 @@ TEST_P(SetTest, constantOutputs) {
     AXIOM_ASSERT_PLAN_V2(
         toSingleNodePlan(parseSelect(query)),
         matchScan("t")
+            .filter("a = 1")
+            .project({"b"})
             .hashJoin(
                 matchScan("u")
                     .aliases({"right_b", "right_a"})
                     .filter("right_a = 1")
-                    .project({"1", "right_b"}),
-                core::JoinType::kLeftSemiFilter)
-            .singleAggregation({"a", "b"}, {})
+                    .project({"right_b"}),
+                core::JoinType::kLeftSemiFilter,
+                {.keys = {{"b = right_b"}}})
+            .singleAggregation({"b"}, {})
             .project({"10"})
             .build());
   }
@@ -242,11 +245,15 @@ TEST_P(SetTest, constantOutputs) {
         toSingleNodePlan(parseSelect(query)),
         matchScan("t")
             .filter("a = 1")
-            .project({"1 as x", "b"})
+            .project({"b"})
             .hashJoin(
-                matchScan("u").aliases({"right_a", "right_b"}),
-                core::JoinType::kAnti)
-            .singleAggregation({"x", "b"}, {})
+                matchScan("u")
+                    .aliases({"right_b", "right_a"})
+                    .filter("right_a = 1")
+                    .project({"right_b"}),
+                core::JoinType::kAnti,
+                {.keys = {{"b = right_b"}}})
+            .singleAggregation({"b"}, {})
             .project({"10"})
             .build());
   }
@@ -268,10 +275,90 @@ TEST_P(SetTest, constantOutputs) {
                 matchScan("u")
                     .aliases({"right_b", "right_a"})
                     .filter("right_a = 1")
-                    .project({"1", "right_b"}),
-                core::JoinType::kAnti)
+                    .project({"right_b"}),
+                core::JoinType::kAnti,
+                {.keys = {{"b = right_b"}}, .filter = "a = 1"})
             .singleAggregation({"a", "b"}, {})
             .project({"if(a = 1, 10, b)"})
+            .build());
+  }
+
+  {
+    // INTERSECT ALL filters a nonconstant build key to a constant probe key
+    // and counts only by the remaining key.
+    const auto query =
+        "SELECT CASE WHEN x = 1 THEN 10 ELSE y END "
+        "FROM ("
+        "  SELECT a AS x, b AS y FROM t WHERE a = 1 "
+        "  INTERSECT ALL "
+        "  SELECT a, b FROM u"
+        ")";
+    SCOPED_TRACE(query);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(parseSelect(query)),
+        matchScan("t")
+            .filter("a = 1")
+            .project({"b"})
+            .hashJoin(
+                matchScan("u")
+                    .aliases({"right_b", "right_a"})
+                    .filter("right_a = 1")
+                    .project({"right_b"}),
+                core::JoinType::kCountingLeftSemiFilter,
+                {.keys = {{"b = right_b"}}})
+            .project({"10"})
+            .build());
+  }
+
+  {
+    // INTERSECT ALL filters a nonconstant probe key to a constant build key.
+    const auto query =
+        "SELECT CASE WHEN x = 1 THEN 10 ELSE y END "
+        "FROM ("
+        "  SELECT a AS x, b AS y FROM t "
+        "  INTERSECT ALL "
+        "  SELECT a, b FROM u WHERE a = 1"
+        ")";
+    SCOPED_TRACE(query);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(parseSelect(query)),
+        matchScan("t")
+            .filter("a = 1")
+            .project({"b"})
+            .hashJoin(
+                matchScan("u")
+                    .aliases({"right_b", "right_a"})
+                    .filter("right_a = 1")
+                    .project({"right_b"}),
+                core::JoinType::kCountingLeftSemiFilter,
+                {.keys = {{"b = right_b"}}})
+            .project({"10"})
+            .build());
+  }
+
+  {
+    // EXCEPT ALL filters a nonconstant build key to a constant probe key.
+    const auto query =
+        "SELECT CASE WHEN x = 1 THEN 10 ELSE y END "
+        "FROM ("
+        "  SELECT a AS x, b AS y FROM t WHERE a = 1 "
+        "  EXCEPT ALL "
+        "  SELECT a, b FROM u"
+        ")";
+    SCOPED_TRACE(query);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(parseSelect(query)),
+        matchScan("t")
+            .filter("a = 1")
+            .project({"b"})
+            .hashJoin(
+                matchScan("u")
+                    .aliases({"right_b", "right_a"})
+                    .filter("right_a = 1")
+                    .project({"right_b"}),
+                core::JoinType::kCountingAnti,
+                {.keys = {{"b = right_b"}}})
+            .project({"10"})
             .build());
   }
 }
@@ -822,7 +909,8 @@ TEST_P(SetTest, filterOnDuplicateConstantInUnionAll) {
 
   // Constant filters ('x' <> '' and 'y' <> '') are folded and eliminated.
   auto buildMatcher = [&] {
-    return matchValues().project().localPartition(matchValues().project());
+    return matchValues().projectIf(!useV2_).localPartition(
+        matchValues().projectIf(!useV2_));
   };
 
   auto plan = toSingleNodePlan(logicalPlan);
@@ -840,11 +928,10 @@ TEST_P(SetTest, filterOnDuplicateConstantInUnionAll) {
 TEST_P(SetTest, unionDistinctOverGatherInputs) {
   auto logicalPlan = parseSelect("SELECT 1 AS k UNION SELECT 2");
 
-  AXIOM_ASSERT_PLAN(
+  AXIOM_ASSERT_PLAN_V2(
       toSingleNodePlan(logicalPlan),
       matchValues()
-          .project()
-          .localPartition(matchValues().project())
+          .localPartition(matchValues())
           .singleAggregation({"k"}, {})
           .build());
 
@@ -936,7 +1023,7 @@ TEST_P(SetTest, filterOnDuplicateColumnInUnionAll) {
     auto matcher = matchScan("t")
                        .filter("x > 0")
                        .project()
-                       .localPartition(matchValues().project())
+                       .localPartition(matchValues().projectIf(!useV2_))
                        .build();
     AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
   }
@@ -1175,16 +1262,15 @@ TEST_P(SetTest, unionDistinctWithUnnestMultipleReferences) {
 
   auto plan = toSingleNodePlan(parseSelect(query));
 
-  // The two SELECT items reference the same scalar subquery, which is
-  // planned once and joined once; the outer Project emits the join's
-  // single output column twice (one per SELECT item).
+  // The two SELECT items reference the same scalar subquery, which is planned
+  // once. The one-row, no-column outer input disappears, and the outer Project
+  // emits the scalar's single output column twice (one per SELECT item).
   auto matcher = matchScan("t")
                      .unnest()
                      .project()
                      .localPartition(matchScan("t").project())
                      .distinct()
                      .singleAggregation({}, {"count(*) as cnt"})
-                     .nestedLoopJoin(matchValues())
                      .project({"cnt", "cnt"})
                      .build();
   AXIOM_ASSERT_PLAN_V2(plan, matcher);
@@ -1205,7 +1291,7 @@ TEST_P(SetTest, unionAllWithDistinctAndCountStar) {
         plan,
         matchScan("t")
             .singleAggregation({"a"}, {})
-            .project(std::vector<std::string>{})
+            .projectNone()
             .localPartition(matchValues(ROW({})))
             .singleAggregation({}, {"count(*) as c"})
             .build());
@@ -1225,7 +1311,7 @@ TEST_P(SetTest, unionAllWithDistinctAndCountStar) {
         plan,
         matchScan("t")
             .singleAggregation({"a"}, {})
-            .project(std::vector<std::string>{})
+            .projectNone()
             .localPartition({matchValues(ROW({})), matchValues(ROW({}))})
             .singleAggregation({}, {"count(*) as c"})
             .build());
@@ -1245,7 +1331,7 @@ TEST_P(SetTest, unionAllWithDistinctAndCountStar) {
         plan,
         matchScan("t")
             .singleAggregation({"a"}, {})
-            .project(std::vector<std::string>{})
+            .projectNone()
             .localPartition(matchValues(ROW({})))
             .singleAggregation({}, {"count(*) as cnt"})
             .filter("cnt > 0")

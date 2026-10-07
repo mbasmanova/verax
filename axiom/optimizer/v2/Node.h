@@ -440,6 +440,10 @@ class Project : public Node {
   /// semantics.
   bool isDeterministic() const;
 
+  /// True when this computes one constant row: every expression is a literal
+  /// and the input is a Values with one row.
+  bool isConstantRow() const;
+
   std::span<const NodeCP> inputs() const override {
     return {&input_, 1};
   }
@@ -1058,6 +1062,9 @@ class Values : public Node {
   /// Returns whether 'node' is a Values node containing one row and no
   /// columns.
   static bool isSingleRowNoColumns(NodeCP node);
+
+  /// True if 'node' is a Values with no rows.
+  static bool isEmpty(NodeCP node);
 
   /// Value of `outputColumns()[column]` in row 'row'. Only for folded rows,
   /// i.e. when `rows()` is set.
