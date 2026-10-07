@@ -372,15 +372,12 @@ applied in the final projection produced by `build()`.
 
 ### Step 6: Tests
 
-Add tests in the appropriate file under `tests/`:
+A parser change is tested in `tests/`, which is split into files by feature.
+Add a test to the file for its feature, for example:
 
-| File | Scope |
-|------|-------|
-| `PrestoParserTest.cpp` | General queries |
-| `ExpressionParserTest.cpp` | Expression-level features |
-| `AggregationParserTest.cpp` | Aggregation features |
-| `DdlParserTest.cpp` | DDL statements |
-| `TableExtractorTest.cpp` | Table reference extraction |
+- `ExpressionParserTest.cpp` — expressions.
+- `AggregationParserTest.cpp` — aggregation.
+- `SortParserTest.cpp` — ORDER BY.
 
 All test classes extend `PrestoParserTestBase`, which registers Presto
 functions and creates a `TestConnector` pre-populated with TPC-H table
@@ -422,7 +419,7 @@ auto matcher = matchScan().limit(0, 10);
 auto matcher = matchScan().project({"plus(n_regionkey, 1:INTEGER)"});
 
 // Verify values output type.
-auto matcher = matchValues(ROW({"a"}, {INTEGER()}));
+auto matcher = matchValues(ROW("a", INTEGER()));
 ```
 
 When a common verification pattern keeps appearing in `onMatch` callbacks,
@@ -478,6 +475,19 @@ matchScan()
     .output();
 ```
 
+#### Error tests
+
+A statement the parser rejects is tested with
+`AXIOM_EXPECT_PRESTO_SYNTAX_ERROR` or `AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR`
+from `ExpectPrestoSqlError.h`. Each checks the error kind and a substring of
+the message:
+
+```cpp
+AXIOM_EXPECT_PRESTO_SYNTAX_ERROR(
+    parseSql("SELECT * FROM nation FOR VERSION AS OF 8"),
+    "Table version (time travel) is not supported yet");
+```
+
 #### Running tests
 
 ```bash
@@ -487,32 +497,6 @@ buck test fbcode//axiom/sql/presto/tests:
 # CMake
 ctest --test-dir _build/debug -R axiom_sql_presto
 ```
-
-**Note:** The test framework is incomplete. Matchers currently verify the
-shape of the plan (which node types appear in which order) but lack support
-for tight verification of node properties. An `ExprMatcher` for matching
-expression trees is missing, and most plan node types need typed overloads
-on `LogicalPlanMatcherBuilder` (only `limit`, `project`, and `values` have
-them today). Contributions to close these gaps are welcome.
-
-## Known Gaps and Limitations
-
-- **ORDER BY cannot reference FROM columns not in SELECT (without GROUP BY).**
-  In standard SQL, `SELECT x FROM t ORDER BY z` is valid — ORDER BY can
-  reference any column from the FROM clause, not just the SELECT list. Axiom
-  handles this correctly in the GROUP BY path (`GroupByPlanner` appends extra
-  projections for ORDER BY expressions and drops them after sorting), but in
-  the non-GROUP BY path `addOrderBy()` runs after `addProject()`, which
-  narrows the scope to only the SELECT list columns. Referencing a FROM
-  column not in SELECT will fail with "Cannot resolve column".
-
-- **ORDER BY cannot reference un-aliased expressions in SELECT.**
-  In standard SQL, `SELECT a + b FROM t ORDER BY a + b` is valid — ORDER BY
-  can reference expressions that also appear in the SELECT list even if these
-  columns are not projected outside of the expression. Axiom currently only
-  propagates projected columns to ORDER BY, not expressions, so this query
-  will fail with "Cannot resolve column" if "a" and "b" are not projected
-  outside of the expression. Expressions are aliased as "expr_0", etc.
 
 [SLL]: https://www.antlr.org/api/Java/org/antlr/v4/runtime/atn/PredictionMode.html "SLL — Simple LL. A faster but less powerful prediction mode that ignores the parser call stack (full context). Falls back to LL on ambiguity."
 [LL]: https://en.wikipedia.org/wiki/LL_parser "LL — a top-down parsing strategy that reads input Left-to-right and produces a Leftmost derivation"
