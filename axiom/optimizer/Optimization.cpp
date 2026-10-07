@@ -106,6 +106,9 @@ void Optimization::estimateLeafSelectivity(BaseTable& baseTable) {
   if (!estimatedBaseTables_.insert(baseTable.id()).second) {
     return;
   }
+  if (!baseTable.layout()->supportsScan()) {
+    return;
+  }
   filterUpdated(&baseTable);
   auto tableHandle = toVelox_.leafData(baseTable.id())->handle;
   history_.estimateLeafSelectivity(baseTable, tableHandle);
@@ -163,6 +166,11 @@ void Optimization::estimateAllBaseTableSelectivity(DerivedTable& dt) {
     if (estimatedBaseTables_.contains(baseTable->id())) {
       continue;
     }
+    auto* layout = baseTable->layout();
+    if (!layout->supportsScan()) {
+      estimatedBaseTables_.insert(baseTable->id());
+      continue;
+    }
     filterUpdated(baseTable);
 
     const auto* data = toVelox_.leafData(baseTable->id());
@@ -178,7 +186,6 @@ void Optimization::estimateAllBaseTableSelectivity(DerivedTable& dt) {
       }
     }
 
-    auto* layout = baseTable->schemaTable->connectorTable->layouts()[0];
     auto connectorSession =
         optimizerSession_->context()->sessionFor(layout->connectorId());
     tableTasks.push_back({baseTable, tasks.size(), std::move(columnIndices)});

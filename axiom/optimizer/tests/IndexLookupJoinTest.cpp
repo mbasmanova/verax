@@ -17,6 +17,7 @@
 #include <gtest/gtest.h>
 
 #include "axiom/optimizer/tests/QueryTestBase.h"
+#include "velox/common/base/tests/GTestUtils.h"
 
 namespace facebook::axiom::optimizer::test {
 namespace {
@@ -25,11 +26,11 @@ using namespace facebook::velox;
 
 // A table that can only be read by key is reachable only through an index
 // lookup. These tests cover the planning and lowering of that shape.
-class IndexLookupJoinTest : public QueryTestBase {
+class IndexLookupJoinTest : public QueryTestBase,
+                            public testing::WithParamInterface<bool> {
  protected:
   void SetUp() override {
-    // TODO: Run under v2 once it plans index lookup joins.
-    useV2_ = false;
+    useV2_ = GetParam();
     QueryTestBase::SetUp();
     testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
     testConnector_->metadata()->addLookupTable(
@@ -37,18 +38,27 @@ class IndexLookupJoinTest : public QueryTestBase {
   }
 };
 
-// The lookup-only table is joined by key without a full scan.
-TEST_F(IndexLookupJoinTest, indexLookup) {
-  const auto plan = toSingleNodePlan(parseSelect(
-      "SELECT * FROM t JOIN lookup ON t.a = lookup.id", kTestConnectorId));
+// V1 plans the required index lookup; v2 rejects its attempted full scan.
+TEST_P(IndexLookupJoinTest, indexLookup) {
+  const auto logicalPlan = parseSelect(
+      "SELECT * FROM t JOIN lookup ON t.a = lookup.id", kTestConnectorId);
+
+  if (useV2_) {
+    VELOX_ASSERT_THROW(
+        toSingleNodePlan(logicalPlan),
+        "Lookup-only table layout requires lookup keys");
+    return;
+  }
 
   AXIOM_ASSERT_PLAN(
-      plan,
+      toSingleNodePlan(logicalPlan),
       matchScan("t")
           .indexLookupJoin(
               matchScan("lookup"), core::JoinType::kInner, {"a = id"})
           .build());
 }
+
+AXIOM_INSTANTIATE_V1_V2(IndexLookupJoinTest);
 
 } // namespace
 } // namespace facebook::axiom::optimizer::test
