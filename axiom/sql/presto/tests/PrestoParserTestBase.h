@@ -128,6 +128,14 @@ class PrestoParserTestBase : public testing::Test {
         .values();
   }
 
+  /// Returns a matcher builder starting with a values node of the given
+  /// output type.
+  static facebook::axiom::logical_plan::test::LogicalPlanMatcherBuilder
+  matchValues(const facebook::velox::RowTypePtr& outputType) {
+    return facebook::axiom::logical_plan::test::LogicalPlanMatcherBuilder()
+        .values(outputType);
+  }
+
   static ParserSessionPtr makeParserSession(ParserOptions options = {}) {
     return std::make_shared<ParserSession>(
         facebook::axiom::connector::makeTestContext(/*queryId=*/"test"),

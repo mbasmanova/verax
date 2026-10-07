@@ -757,9 +757,7 @@ TEST_F(PrestoParserTest, withMultipleCtes) {
 }
 
 TEST_F(PrestoParserTest, withColumnAliases) {
-  auto matcher =
-      lp::test::LogicalPlanMatcherBuilder().values().project().project().output(
-          {"a", "b"});
+  auto matcher = matchValues().project().project().output({"a", "b"});
   testSelect("WITH t(a, b) AS (VALUES (1, 'x')) SELECT a, b FROM t", matcher);
 
   // Mismatched alias-list size is rejected.
@@ -1254,8 +1252,8 @@ TEST_F(PrestoParserTest, structDereferenceInCorrelatedSubquery) {
 TEST_F(PrestoParserTest, values) {
   {
     auto matcher =
-        lp::test::LogicalPlanMatcherBuilder()
-            .values(ROW({"c0", "c1", "c2"}, {INTEGER(), DOUBLE(), VARCHAR()}))
+        matchValues(
+            ROW({{"c0", INTEGER()}, {"c1", DOUBLE()}, {"c2", VARCHAR()}}))
             .output();
 
     testSelect(
@@ -1266,16 +1264,13 @@ TEST_F(PrestoParserTest, values) {
   }
 
   {
-    auto matcher = lp::test::LogicalPlanMatcherBuilder()
-                       .values(ROW({"c0"}, {INTEGER()}))
-                       .output();
+    auto matcher = matchValues(ROW("c0", INTEGER())).output();
     testSelect("SELECT * FROM (VALUES (1), (2), (3), (4))", matcher);
   }
 
   {
-    auto matcher = lp::test::LogicalPlanMatcherBuilder()
-                       .values(ROW({"c0", "c1"}, {REAL(), INTEGER()}))
-                       .output();
+    auto matcher =
+        matchValues(ROW({{"c0", REAL()}, {"c1", INTEGER()}})).output();
     testSelect("SELECT * FROM (VALUES (real '1', 1 + 2))", matcher);
   }
 }
