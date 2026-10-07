@@ -586,6 +586,16 @@ class PlanMatcherBuilder {
     return hashJoin(std::move(rightMatcher), JoinType::kAnti, details);
   }
 
+  /// Matches an IndexLookupJoin node with the specified lookup-side matcher,
+  /// join type, and equi-keys.
+  /// @param lookupMatcher Matcher for the indexed table scan.
+  /// @param joinType Type of join.
+  /// @param keys Equality expressions mapping probe keys to lookup keys.
+  PlanMatcherBuilder& indexLookupJoin(
+      PlanMatcherBuilder lookupMatcher,
+      JoinType joinType,
+      const std::vector<std::string>& keys);
+
   /// Matches a NestedLoopJoin node with the specified right side matcher and
   /// join type.
   /// @param rightMatcher Matcher for the right side of the join.

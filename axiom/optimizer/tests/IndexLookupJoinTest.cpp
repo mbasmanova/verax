@@ -16,77 +16,38 @@
 
 #include <gtest/gtest.h>
 
-#include "axiom/connectors/tests/TestConnector.h"
-#include "axiom/logical_plan/PlanBuilder.h"
 #include "axiom/optimizer/tests/QueryTestBase.h"
 
 namespace facebook::axiom::optimizer::test {
 namespace {
 
 using namespace facebook::velox;
-namespace lp = facebook::axiom::logical_plan;
-
-// Counts the plan nodes of type T anywhere under 'plan'.
-template <typename T>
-int32_t countNodes(const core::PlanNodePtr& plan) {
-  int32_t count = std::dynamic_pointer_cast<const T>(plan) != nullptr ? 1 : 0;
-  for (const auto& source : plan->sources()) {
-    count += countNodes<T>(source);
-  }
-  return count;
-}
-
-template <typename T>
-int32_t countNodes(const optimizer::PlanAndStats& plan) {
-  int32_t count = 0;
-  for (const auto& fragment : plan.plan->fragments()) {
-    count += countNodes<T>(fragment.fragment.planNode);
-  }
-  return count;
-}
 
 // A table that can only be read by key is reachable only through an index
-// lookup. These tests cover the planning and lowering of that shape, which no
-// scannable layout exercises.
+// lookup. These tests cover the planning and lowering of that shape.
 class IndexLookupJoinTest : public QueryTestBase {
  protected:
   void SetUp() override {
     // TODO: Run under v2 once it plans index lookup joins.
     useV2_ = false;
     QueryTestBase::SetUp();
-    testConnector_->addTable("probe", ROW({"a", "b"}, BIGINT()));
+    testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
     testConnector_->metadata()->addLookupTable(
         "lookup", ROW({"id", "v"}, BIGINT()), {"id"});
   }
-
-  // Plans `probe join lookup on probe.a = lookup.id`.
-  optimizer::PlanAndStats planJoin() {
-    lp::PlanBuilder::Context context(kTestConnectorId, kDefaultSchema);
-    auto logicalPlan = lp::PlanBuilder(context)
-                           .tableScan("probe")
-                           .join(
-                               lp::PlanBuilder(context).tableScan("lookup"),
-                               "a = id",
-                               lp::JoinType::kInner)
-                           .build();
-    return planVelox(logicalPlan);
-  }
 };
 
-// The lookup side is joined by key rather than scanned and hash-joined. Before
-// index lookup was lowered, ToVelox dropped the probe input and emitted a plain
-// TableScanNode for the lookup side.
-TEST_F(IndexLookupJoinTest, lowersToIndexLookupJoin) {
-  auto plan = planJoin();
-  EXPECT_EQ(countNodes<core::IndexLookupJoinNode>(plan), 1);
-}
+// The lookup-only table is joined by key without a full scan.
+TEST_F(IndexLookupJoinTest, indexLookup) {
+  const auto plan = toSingleNodePlan(parseSelect(
+      "SELECT * FROM t JOIN lookup ON t.a = lookup.id", kTestConnectorId));
 
-// joinByHash has to decline a build side it cannot scan. Without that, the
-// optimizer plans a build that yields no plan and the failure surfaces far
-// away, as an empty plan set inside the memo.
-TEST_F(IndexLookupJoinTest, doesNotHashJoinALookupOnlyBuildSide) {
-  auto plan = planJoin();
-  EXPECT_EQ(countNodes<core::HashJoinNode>(plan), 0);
+  AXIOM_ASSERT_PLAN(
+      plan,
+      matchScan("t")
+          .indexLookupJoin(
+              matchScan("lookup"), core::JoinType::kInner, {"a = id"})
+          .build());
 }
 
 } // namespace

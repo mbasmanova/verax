@@ -1121,6 +1121,47 @@ class HashJoinMatcher : public PlanMatcherImpl<HashJoinNode> {
   const std::optional<std::vector<std::string>> outputColumnNames_;
 };
 
+class IndexLookupJoinMatcher : public PlanMatcherImpl<IndexLookupJoinNode> {
+ public:
+  IndexLookupJoinMatcher(
+      const std::shared_ptr<PlanMatcher>& probe,
+      const std::shared_ptr<PlanMatcher>& lookup,
+      JoinType joinType,
+      std::vector<std::string> keys)
+      : PlanMatcherImpl<IndexLookupJoinNode>({probe, lookup}),
+        joinType_{joinType},
+        keys_{std::move(keys)} {}
+
+  MatchResult matchDetails(
+      const IndexLookupJoinNode& plan,
+      const std::unordered_map<std::string, std::string>& symbols)
+      const override {
+    SCOPED_TRACE(plan.toString(true, false));
+
+    EXPECT_EQ(
+        JoinTypeName::toName(plan.joinType()), JoinTypeName::toName(joinType_));
+    EXPECT_EQ(plan.leftKeys().size(), keys_.size());
+    AXIOM_TEST_RETURN_IF_FAILURE
+
+    auto resolve = [&](const std::string& name) {
+      const auto it = symbols.find(name);
+      return it != symbols.end() ? it->second : name;
+    };
+    for (size_t i = 0; i < keys_.size(); ++i) {
+      const auto [probeKey, lookupKey] = parseEqualityColumnPair(keys_[i]);
+      EXPECT_EQ(plan.leftKeys()[i]->name(), resolve(probeKey));
+      EXPECT_EQ(plan.rightKeys()[i]->name(), resolve(lookupKey));
+    }
+    AXIOM_TEST_RETURN_IF_FAILURE
+
+    return MatchResult::success(symbols);
+  }
+
+ private:
+  const JoinType joinType_;
+  const std::vector<std::string> keys_;
+};
+
 class NestedLoopJoinMatcher : public PlanMatcherImpl<NestedLoopJoinNode> {
  public:
   NestedLoopJoinMatcher(
@@ -2432,6 +2473,16 @@ PlanMatcherBuilder& PlanMatcherBuilder::hashJoin(
   VELOX_USER_CHECK_NOT_NULL(matcher_);
   matcher_ = std::make_shared<HashJoinMatcher>(
       matcher_, rightMatcher.build(), joinType, details);
+  return *this;
+}
+
+PlanMatcherBuilder& PlanMatcherBuilder::indexLookupJoin(
+    PlanMatcherBuilder lookupMatcher,
+    JoinType joinType,
+    const std::vector<std::string>& keys) {
+  VELOX_USER_CHECK_NOT_NULL(matcher_);
+  matcher_ = std::make_shared<IndexLookupJoinMatcher>(
+      matcher_, lookupMatcher.build(), joinType, keys);
   return *this;
 }
 
