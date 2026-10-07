@@ -24,6 +24,7 @@
 #include "axiom/optimizer/v2/KeyHash.h"
 #include "axiom/optimizer/v2/NodePrinter.h"
 #include "axiom/optimizer/v2/NodeVisitor.h"
+#include "axiom/optimizer/v2/TableAccessHandle.h"
 
 namespace facebook::axiom::optimizer::v2 {
 
@@ -43,6 +44,7 @@ const auto& nodeTypeNames() {
       {NodeType::kUnnest, "Unnest"},
       {NodeType::kUnionAll, "UnionAll"},
       {NodeType::kJoin, "Join"},
+      {NodeType::kIndexLookupJoin, "IndexLookupJoin"},
       {NodeType::kWindow, "Window"},
       {NodeType::kInference, "Inference"},
       {NodeType::kRowNumber, "RowNumber"},
@@ -1747,6 +1749,141 @@ Join::PreservedSides Join::preservedSides(velox::core::JoinType joinType) {
   VELOX_UNREACHABLE();
 }
 
+Partitioning IndexLookupJoin::globalPartition(
+    std::span<const Partitioning> inputPartitions,
+    Builder& /*builder*/) const {
+  return retainedGlobalPartition(inputPartitions[0], outputColumns());
+}
+
+IndexLookupJoin::IndexLookupJoin(Key key)
+    : Node(
+          NodeType::kIndexLookupJoin,
+          ColumnVector{key.outputColumns},
+          PhysicalProperties{
+              .globalPartition = retainedGlobalPartition(
+                  key.probe->physicalProperties().globalPartition,
+                  key.outputColumns)}),
+      probe_(key.probe),
+      lookupTable_(key.lookupTable),
+      index_(key.index),
+      lookupOutputColumns_(std::move(key.lookupOutputColumns)),
+      lookupHandle_(key.lookupHandle),
+      joinType_(key.joinType),
+      probeKeys_(std::move(key.probeKeys)),
+      lookupKeys_(std::move(key.lookupKeys)),
+      filter_(std::move(key.filter)),
+      sourceColumns_(std::move(key.sourceColumns)) {
+  VELOX_CHECK_NOT_NULL(probe_);
+  VELOX_CHECK_NOT_NULL(lookupTable_);
+  VELOX_CHECK_NOT_NULL(index_);
+  VELOX_CHECK_NOT_NULL(lookupHandle_);
+  VELOX_CHECK(
+      joinType_ == velox::core::JoinType::kInner ||
+          joinType_ == velox::core::JoinType::kLeft,
+      "Index lookup supports only inner and left joins");
+  VELOX_CHECK(!probeKeys_.empty());
+  VELOX_CHECK_EQ(probeKeys_.size(), lookupKeys_.size());
+  VELOX_CHECK_EQ(sourceColumns_.size(), outputColumns().size());
+  VELOX_CHECK(index_->distribution.partitionKeys().empty());
+
+  const auto probeColumns = PlanObjectSet::fromObjects(probe_->outputColumns());
+  const auto lookupColumns = PlanObjectSet::fromObjects(lookupOutputColumns_);
+  for (ColumnCP column : lookupOutputColumns_) {
+    VELOX_CHECK(
+        lookupHandle_->columnHandles.contains(column),
+        "Index lookup reads a column the connector handle was not built for: {}",
+        column->name());
+  }
+  PlanObjectSet available{probeColumns};
+  available.unionSet(lookupColumns);
+  for (ExprCP keyExpr : probeKeys_) {
+    VELOX_CHECK(keyExpr->columns().isSubset(probeColumns));
+  }
+  const auto& layoutKeys = index_->layout->lookupKeys();
+  VELOX_CHECK_LE(lookupKeys_.size(), layoutKeys.size());
+  for (size_t i = 0; i < lookupKeys_.size(); ++i) {
+    VELOX_CHECK(lookupKeys_[i]->relation() == lookupTable_);
+    VELOX_CHECK_EQ(lookupKeys_[i]->name(), layoutKeys[i]->name());
+  }
+  for (ExprCP conjunct : filter_) {
+    VELOX_CHECK(conjunct->columns().isSubset(available));
+    PlanObjectSet lookupFilterColumns = conjunct->columns();
+    lookupFilterColumns.intersect(lookupColumns);
+    VELOX_CHECK(
+        lookupFilterColumns.isSubset(
+            PlanObjectSet::fromObjects(sourceColumns_)),
+        "Index lookup filter columns from the lookup table must be join outputs");
+  }
+  for (ColumnCP source : sourceColumns_) {
+    VELOX_CHECK(available.contains(source));
+  }
+}
+
+size_t IndexLookupJoin::KeyHash::operator()(const IndexLookupJoin* node) const {
+  return hashOf(
+      node->probe(),
+      node->lookupTable(),
+      node->index(),
+      node->lookupOutputColumns(),
+      node->lookupHandle(),
+      node->joinType(),
+      node->probeKeys(),
+      node->lookupKeys(),
+      node->filter(),
+      node->outputColumns(),
+      node->sourceColumns());
+}
+
+size_t IndexLookupJoin::KeyHash::operator()(const Key& key) const {
+  return hashOf(
+      key.probe,
+      key.lookupTable,
+      key.index,
+      key.lookupOutputColumns,
+      key.lookupHandle,
+      key.joinType,
+      key.probeKeys,
+      key.lookupKeys,
+      key.filter,
+      key.outputColumns,
+      key.sourceColumns);
+}
+
+bool IndexLookupJoin::KeyEq::operator()(
+    const IndexLookupJoin* left,
+    const IndexLookupJoin* right) const {
+  return left->probe() == right->probe() &&
+      left->lookupTable() == right->lookupTable() &&
+      left->index() == right->index() &&
+      left->lookupOutputColumns() == right->lookupOutputColumns() &&
+      left->lookupHandle() == right->lookupHandle() &&
+      left->joinType() == right->joinType() &&
+      left->probeKeys() == right->probeKeys() &&
+      left->lookupKeys() == right->lookupKeys() &&
+      left->filter() == right->filter() &&
+      left->outputColumns() == right->outputColumns() &&
+      left->sourceColumns() == right->sourceColumns();
+}
+
+bool IndexLookupJoin::KeyEq::operator()(
+    const Key& key,
+    const IndexLookupJoin* node) const {
+  return key.probe == node->probe() && key.lookupTable == node->lookupTable() &&
+      key.index == node->index() &&
+      key.lookupOutputColumns == node->lookupOutputColumns() &&
+      key.lookupHandle == node->lookupHandle() &&
+      key.joinType == node->joinType() && key.probeKeys == node->probeKeys() &&
+      key.lookupKeys == node->lookupKeys() && key.filter == node->filter() &&
+      key.outputColumns == node->outputColumns() &&
+      key.sourceColumns == node->sourceColumns();
+}
+
+bool IndexLookupJoin::KeyEq::operator()(
+    const IndexLookupJoin* node,
+    const Key& key) const {
+  return (*this)(key, node);
+}
+
 void Join::Key::swapInputs() {
   VELOX_CHECK(
       joinType == velox::core::JoinType::kInner ||
@@ -3110,6 +3247,7 @@ V2_DEFINE_ACCEPT(Values)
 V2_DEFINE_ACCEPT(Unnest)
 V2_DEFINE_ACCEPT(UnionAll)
 V2_DEFINE_ACCEPT(Join)
+V2_DEFINE_ACCEPT(IndexLookupJoin)
 V2_DEFINE_ACCEPT(Window)
 V2_DEFINE_ACCEPT(Inference)
 V2_DEFINE_ACCEPT(RowNumber)

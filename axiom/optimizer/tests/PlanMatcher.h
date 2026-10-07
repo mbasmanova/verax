@@ -591,10 +591,13 @@ class PlanMatcherBuilder {
   /// @param lookupMatcher Matcher for the indexed table scan.
   /// @param joinType Type of join.
   /// @param keys Equality expressions mapping probe keys to lookup keys.
+  /// @param filter When set, asserts the residual join filter. Empty asserts no
+  /// filter.
   PlanMatcherBuilder& indexLookupJoin(
       PlanMatcherBuilder lookupMatcher,
       JoinType joinType,
-      const std::vector<std::string>& keys);
+      const std::vector<std::string>& keys,
+      std::optional<std::string> filter = std::nullopt);
 
   /// Matches a NestedLoopJoin node with the specified right side matcher and
   /// join type.

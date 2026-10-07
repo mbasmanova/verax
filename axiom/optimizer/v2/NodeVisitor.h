@@ -49,6 +49,8 @@ class NodeVisitor {
   virtual void visit(const UnionAll& node, NodeVisitorContext& context)
       const = 0;
   virtual void visit(const Join& node, NodeVisitorContext& context) const = 0;
+  virtual void visit(const IndexLookupJoin& node, NodeVisitorContext& context)
+      const = 0;
   virtual void visit(const Window& node, NodeVisitorContext& context) const = 0;
 
   virtual void visit(const Inference& node, NodeVisitorContext& context)

@@ -212,6 +212,17 @@ Estimate EstimateProvider::compute(NodeCP node) {
       return result;
     }
 
+    case NodeType::kIndexLookupJoin: {
+      const auto* join = node->as<IndexLookupJoin>();
+      Estimate result;
+      if (join->joinType() == velox::core::JoinType::kLeft &&
+          join->index()->distribution.numKeysUnique() >=
+              join->lookupKeys().size()) {
+        result.cardinality = estimate(join->probe()).cardinality;
+      }
+      return result;
+    }
+
     case NodeType::kUnionAll: {
       Estimate result;
       // Sum of children. Unknown propagates: an unknown child cardinality

@@ -23,7 +23,7 @@
 #include "axiom/optimizer/v2/ExprSimplifier.h"
 #include "axiom/optimizer/v2/NodeRewriter.h"
 #include "axiom/optimizer/v2/NodeSimplifier.h"
-#include "axiom/optimizer/v2/ScanHandle.h"
+#include "axiom/optimizer/v2/TableAccessHandle.h"
 
 #include <folly/container/F14Set.h>
 #include "folly/coro/BlockingWait.h"
@@ -288,6 +288,29 @@ class EmptyScanSimplifier : public NodeRewriter<SimplifiedNodeContext> {
         context);
   }
 
+  NodeCP rewriteIndexLookupJoin(
+      const IndexLookupJoin* node,
+      SimplifiedNodeContext& context) override {
+    auto probe = rewriteChild(node->probe());
+    return setResult(
+        node,
+        simplifier_.make(
+            IndexLookupJoin::Key{
+                node->probe(),
+                node->lookupTable(),
+                node->index(),
+                node->lookupOutputColumns(),
+                node->lookupHandle(),
+                node->joinType(),
+                node->probeKeys(),
+                node->lookupKeys(),
+                node->filter(),
+                node->outputColumns(),
+                node->sourceColumns()},
+            std::move(probe)),
+        context);
+  }
+
   NodeCP rewriteUnionAll(const UnionAll* node, SimplifiedNodeContext& context)
       override {
     std::vector<NodeSimplifier::SimplifiedNode> inputs;
@@ -524,7 +547,7 @@ NodeCP EstimateLeafStatsPass::run(
 
   for (ScanCP scan : scans) {
     const auto* baseTable = scan->baseTable();
-    const ScanHandle* handle = scan->scanHandle();
+    const TableAccessHandle* handle = scan->scanHandle();
     VELOX_CHECK_NOT_NULL(
         handle, "Filtered-table stats need the connector's read handle");
 

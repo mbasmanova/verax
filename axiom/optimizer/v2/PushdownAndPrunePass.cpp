@@ -25,7 +25,7 @@
 #include "axiom/optimizer/v2/OuterJoinReduction.h"
 #include "axiom/optimizer/v2/PlanSubstitutions.h"
 
-#include "axiom/optimizer/v2/ScanHandle.h"
+#include "axiom/optimizer/v2/TableAccessHandle.h"
 
 #include <limits>
 #include <optional>
@@ -540,6 +540,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
   void collectFilters(NodeCP node, PushdownContext& context) {
     switch (node->nodeType()) {
       case NodeType::kScan:
+      case NodeType::kIndexLookupJoin:
       case NodeType::kValues:
       case NodeType::kWorkingTable:
         return;
@@ -1265,6 +1266,257 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     return result;
   }
 
+  struct IndexLookupSides {
+    NodeCP probeInput;
+    const Scan* lookupScan;
+    ExprVector probeKeys;
+    ExprVector lookupKeyExpressions;
+    ExprVector probePredicates;
+    ExprVector lookupPredicates;
+  };
+
+  std::optional<IndexLookupSides> selectIndexLookupSides(
+      const Join* node,
+      const PreparedJoin& prepared,
+      JoinPredicatePlacement::Routed& routed) {
+    if ((prepared.joinType != velox::core::JoinType::kInner &&
+         prepared.joinType != velox::core::JoinType::kLeft) ||
+        routed.leftKeys.empty()) {
+      return std::nullopt;
+    }
+
+    const auto lookupOnlyScan = [](NodeCP input) -> const Scan* {
+      if (!input->is(NodeType::kScan)) {
+        return nullptr;
+      }
+      const auto* scan = input->as<Scan>();
+      return scan->baseTable()->layout()->supportsScan() ? nullptr : scan;
+    };
+    const Scan* rightLookup = lookupOnlyScan(node->right());
+    const Scan* leftLookup = lookupOnlyScan(node->left());
+    VELOX_USER_CHECK(
+        rightLookup == nullptr || leftLookup == nullptr,
+        "Joining two lookup-only tables is unsupported");
+    const bool lookupOnRight = rightLookup != nullptr;
+    const Scan* lookupScan = lookupOnRight ? rightLookup : leftLookup;
+    if (lookupScan == nullptr ||
+        (!lookupOnRight &&
+         prepared.joinType != velox::core::JoinType::kInner)) {
+      return std::nullopt;
+    }
+
+    const ExprVector& lookupKeyExpressions =
+        lookupOnRight ? routed.rightKeys : routed.leftKeys;
+    if (std::ranges::any_of(lookupKeyExpressions, [](ExprCP key) {
+          return !key->isColumn();
+        })) {
+      return std::nullopt;
+    }
+
+    return IndexLookupSides{
+        .probeInput = lookupOnRight ? node->left() : node->right(),
+        .lookupScan = lookupScan,
+        .probeKeys = lookupOnRight ? std::move(routed.leftKeys)
+                                   : std::move(routed.rightKeys),
+        .lookupKeyExpressions = lookupOnRight ? std::move(routed.rightKeys)
+                                              : std::move(routed.leftKeys),
+        .probePredicates = lookupOnRight
+            ? std::move(routed.leftInputPredicates)
+            : std::move(routed.rightInputPredicates),
+        .lookupPredicates = lookupOnRight
+            ? std::move(routed.rightInputPredicates)
+            : std::move(routed.leftInputPredicates),
+    };
+  }
+
+  void deduplicateLookupKeys(
+      velox::core::JoinType joinType,
+      IndexLookupSides& sides,
+      ExprVector& joinPredicates) {
+    folly::F14FastMap<ColumnCP, ExprCP> firstProbeKey;
+    ExprVector uniqueProbeKeys;
+    ExprVector uniqueLookupKeyExpressions;
+    uniqueProbeKeys.reserve(sides.probeKeys.size());
+    uniqueLookupKeyExpressions.reserve(sides.lookupKeyExpressions.size());
+    for (size_t i = 0; i < sides.lookupKeyExpressions.size(); ++i) {
+      ColumnCP lookupKey = sides.lookupKeyExpressions[i]->as<Column>();
+      auto [it, inserted] =
+          firstProbeKey.try_emplace(lookupKey, sides.probeKeys[i]);
+      if (inserted) {
+        uniqueProbeKeys.push_back(sides.probeKeys[i]);
+        uniqueLookupKeyExpressions.push_back(lookupKey);
+      } else if (joinType == velox::core::JoinType::kInner) {
+        sides.probePredicates.push_back(
+            exprs_.makeEq(sides.probeKeys[i], it->second));
+      } else {
+        joinPredicates.push_back(exprs_.makeEq(sides.probeKeys[i], it->second));
+      }
+    }
+    sides.probeKeys = std::move(uniqueProbeKeys);
+    sides.lookupKeyExpressions = std::move(uniqueLookupKeyExpressions);
+  }
+
+  struct OrderedLookupKeys {
+    ColumnGroupCP index;
+    ColumnVector lookupKeys;
+  };
+
+  OrderedLookupKeys orderLookupKeysForIndex(IndexLookupSides& sides) {
+    ColumnVector lookupKeys;
+    lookupKeys.reserve(sides.lookupKeyExpressions.size());
+    for (ExprCP key : sides.lookupKeyExpressions) {
+      lookupKeys.push_back(key->as<Column>());
+    }
+    const ColumnGroupCP index =
+        sides.lookupScan->baseTable()->schemaTable->columnGroups[0];
+    VELOX_USER_CHECK(
+        index->distribution.partitionKeys().empty(),
+        "Partitioned index lookup is unsupported: {}",
+        index->layout->label());
+    const auto& layoutKeys = index->layout->lookupKeys();
+    VELOX_USER_CHECK_LE(
+        lookupKeys.size(),
+        layoutKeys.size(),
+        "Lookup has more equality keys than the index: {}",
+        index->layout->label());
+
+    ExprVector orderedProbeKeys;
+    ExprVector orderedLookupKeyExpressions;
+    ColumnVector orderedLookupKeys;
+    orderedProbeKeys.reserve(lookupKeys.size());
+    orderedLookupKeyExpressions.reserve(lookupKeys.size());
+    orderedLookupKeys.reserve(lookupKeys.size());
+    for (size_t i = 0; i < lookupKeys.size(); ++i) {
+      const auto key = std::ranges::find_if(lookupKeys, [&](ColumnCP column) {
+        return column->name() == layoutKeys[i]->name();
+      });
+      VELOX_USER_CHECK(
+          key != lookupKeys.end(),
+          "Lookup equality keys must cover an index prefix: {}",
+          index->layout->label());
+      const size_t queryPosition = key - lookupKeys.begin();
+      orderedProbeKeys.push_back(sides.probeKeys[queryPosition]);
+      orderedLookupKeyExpressions.push_back(
+          sides.lookupKeyExpressions[queryPosition]);
+      orderedLookupKeys.push_back(*key);
+    }
+    sides.probeKeys = std::move(orderedProbeKeys);
+    sides.lookupKeyExpressions = std::move(orderedLookupKeyExpressions);
+    return {index, std::move(orderedLookupKeys)};
+  }
+
+  NodeCP tryRewriteIndexLookupJoin(
+      const Join* node,
+      PushdownContext& context,
+      PreparedJoin& prepared,
+      JoinPredicatePlacement::Routed& routed,
+      PrunedJoin& pruned) {
+    auto sides = selectIndexLookupSides(node, prepared, routed);
+    if (!sides.has_value()) {
+      return nullptr;
+    }
+    deduplicateLookupKeys(prepared.joinType, *sides, routed.joinPredicates);
+    auto [index, lookupKeys] = orderLookupKeysForIndex(*sides);
+
+    PlanObjectSet sideRequired =
+        PlanObjectSet::fromObjects(pruned.sourceColumns);
+    sideRequired.unionColumns(sides->probeKeys);
+    sideRequired.unionColumns(sides->lookupKeyExpressions);
+    sideRequired.unionColumns(routed.joinPredicates);
+
+    PlanObjectSet childNonNullColumns = rewriteColumnSet(
+        exprs_, context.nonNullColumns, prepared.reductionSubstitutions);
+    if (prepared.joinType == velox::core::JoinType::kInner) {
+      for (ExprCP probeKey : sides->probeKeys) {
+        if (!probeKey->containsNonDefaultNullBehavior()) {
+          childNonNullColumns.unionColumns(probeKey);
+        }
+      }
+    }
+    PushdownContext probeContext = makeJoinInputContext(
+        std::move(sides->probePredicates),
+        sideRequired,
+        std::move(childNonNullColumns));
+    NodeCP probe = rewrite(sides->probeInput, probeContext);
+
+    ColumnVector lookupOutputs;
+    for (ColumnCP column : sides->lookupScan->outputColumns()) {
+      if (sideRequired.contains(column)) {
+        lookupOutputs.push_back(column);
+      }
+    }
+    const PlanObjectSet visibleLookupOutputs =
+        PlanObjectSet::fromObjects(pruned.sourceColumns);
+    for (ExprCP filter : routed.joinPredicates) {
+      PlanObjectSet lookupFilterColumns = filter->columns();
+      lookupFilterColumns.intersect(
+          PlanObjectSet::fromObjects(sides->lookupScan->outputColumns()));
+      VELOX_USER_CHECK(
+          lookupFilterColumns.isSubset(visibleLookupOutputs),
+          "Index lookup residual filters can reference only lookup columns in the join output");
+    }
+    ExprVector rejected;
+    const TableAccessHandle* handle = builder().takeTableAccessHandle(
+        TableAccessHandle::buildIndexLookup(
+            *sides->lookupScan->baseTable(),
+            lookupOutputs,
+            sides->lookupPredicates,
+            lookupKeys,
+            [this](ColumnCP column) {
+              return toSubfields(
+                  column->name(),
+                  access_.subfieldsOf(column),
+                  /*mapKeysAsFields=*/false);
+            },
+            session_,
+            evaluator_,
+            rejected));
+    VELOX_USER_CHECK(
+        rejected.empty(),
+        "Index lookup does not support connector-rejected filters");
+
+    RewrittenJoinInputs rewritten{
+        .left = probe,
+        .right = sides->lookupScan,
+        .leftKeys = std::move(sides->probeKeys),
+        .rightKeys = std::move(sides->lookupKeyExpressions),
+        .filter = std::move(routed.joinPredicates),
+    };
+    rewritten.outputSubstitutions.merge(prepared.reductionSubstitutions);
+    const PlanObjectSet lookupOutputSet =
+        PlanObjectSet::fromObjects(lookupOutputs);
+    // Lookup columns originate at this node, so their source identities also
+    // represent the values the join produces, including NULL-padded values.
+    for (size_t i = 0; i < pruned.outputColumns.size(); ++i) {
+      if (lookupOutputSet.contains(pruned.sourceColumns[i]) &&
+          pruned.outputColumns[i] != pruned.sourceColumns[i]) {
+        rewritten.outputSubstitutions.add(
+            pruned.outputColumns[i], pruned.sourceColumns[i]);
+        pruned.outputColumns[i] = pruned.sourceColumns[i];
+      }
+    }
+    auto simplified = nodeSimplifier_.make(
+        IndexLookupJoin::Key{
+            probe,
+            sides->lookupScan->baseTable(),
+            index,
+            std::move(lookupOutputs),
+            handle,
+            prepared.joinType,
+            std::move(rewritten.leftKeys),
+            std::move(lookupKeys),
+            std::move(rewritten.filter),
+            std::move(pruned.outputColumns),
+            std::move(pruned.sourceColumns)},
+        {probe,
+         std::move(probeContext.outputSubstitutions),
+         sides->probeInput->outputColumns()});
+    NodeCP replacement = nodeSimplifier_.materialize(simplified);
+    rewritten.outputSubstitutions.merge(simplified.substitutions);
+    pruned.above = rewritten.outputSubstitutions.apply(pruned.above, exprs_);
+    return finishJoin(replacement, rewritten, pruned, context);
+  }
+
   // Rewrites both join inputs with the requirements established by routing
   // and pruning, then simplifies the rewritten join keys.
   RewrittenJoinInputs rewriteJoinChildren(
@@ -1411,6 +1663,10 @@ class Pushdown : public NodeRewriter<PushdownContext> {
         builder());
     context.pending.clear();
     auto pruned = pruneJoin(node, context, prepared, routed);
+    if (NodeCP lookup = tryRewriteIndexLookupJoin(
+            node, context, prepared, routed, pruned)) {
+      return lookup;
+    }
     auto rewritten =
         rewriteJoinChildren(node, context, prepared, std::move(routed), pruned);
     auto simplified = nodeSimplifier_.make(
@@ -1476,7 +1732,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     }
 
     ExprVector rejected;
-    const ScanHandle* handle =
+    const TableAccessHandle* handle =
         negotiate(*node->baseTable(), survivingOutputs, filters, rejected);
     // Implied filters are optional pushdown opportunities because the
     // original filters that imply them remain in the plan.
@@ -1533,7 +1789,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
   // and returns the resulting handle, appending the conjuncts the connector
   // rejected to 'rejected'. Returns null, rejecting everything, when the
   // caller asked for no connector pushdown.
-  const ScanHandle* negotiate(
+  const TableAccessHandle* negotiate(
       const BaseTable& baseTable,
       const ColumnVector& outputColumns,
       const ExprVector& filters,
@@ -1566,8 +1822,8 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       return it->second.handle;
     }
     ExprVector rejectedHere;
-    const ScanHandle* handle = builder().takeScanHandle(
-        ScanHandle::build(
+    const TableAccessHandle* handle = builder().takeTableAccessHandle(
+        TableAccessHandle::buildScan(
             baseTable,
             outputColumns,
             filters,
@@ -2558,7 +2814,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
 
   // Outcome of one negotiation with the connector.
   struct Negotiated {
-    const ScanHandle* handle;
+    const TableAccessHandle* handle;
     // The conjuncts offered, and of those the ones the connector rejected,
     // which the plan applies itself.
     ExprVector filters;

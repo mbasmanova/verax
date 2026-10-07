@@ -336,6 +336,23 @@ TEST_F(ConnectorPushdownPassTest, duplicateSourceNames) {
       {expected});
 }
 
+TEST_F(ConnectorPushdownPassTest, indexLookupJoin) {
+  testConnector_->addTable("t", ROW("a", BIGINT()));
+  testConnector_->addLookupTable("lookup", ROW({"k", "v"}, BIGINT()), {"k"});
+
+  bool offered{false};
+  testMetadata_->setPushdownMatcher([&](const Node& subtree) {
+    offered = true;
+    requireNodeOfType(&subtree, NodeType::kIndexLookupJoin);
+    return std::vector<PushdownRoot>{};
+  });
+
+  toSingleNodePlan(parseSelect(
+      "SELECT t.a, lookup.v FROM t JOIN lookup ON t.a = lookup.k",
+      kTestConnectorId));
+  EXPECT_TRUE(offered);
+}
+
 TEST_F(ConnectorPushdownPassTest, independentConnectors) {
   auto probe = registerScopedConnector("probe");
 

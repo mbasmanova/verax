@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "axiom/optimizer/v2/ScanHandle.h"
+#include "axiom/optimizer/v2/TableAccessHandle.h"
 
 #include "axiom/optimizer/QueryGraph.h"
 #include "axiom/optimizer/Schema.h"
@@ -22,15 +22,17 @@
 #include "axiom/optimizer/v2/ExprEmitter.h"
 
 namespace facebook::axiom::optimizer::v2 {
+namespace {
 
-ScanHandle ScanHandle::build(
+TableAccessHandle buildTableAccess(
     const BaseTable& baseTable,
     const ColumnVector& outputColumns,
     const ExprVector& filters,
     const SubfieldsOf& subfieldsOf,
     const OptimizerSession& session,
     velox::core::ExpressionEvaluator& evaluator,
-    ExprVector& rejected) {
+    ExprVector& rejected,
+    std::optional<connector::LookupKeys> lookupKeys) {
   const auto* layout = baseTable.schemaTable->columnGroups[0]->layout;
   auto connectorSession = session.context()->sessionFor(layout->connectorId());
 
@@ -90,7 +92,9 @@ ScanHandle ScanHandle::build(
           std::move(readSchema),
           evaluator,
           std::move(typedFilters),
-          rejectedFilterIndices);
+          rejectedFilterIndices,
+          /*dataColumns=*/nullptr,
+          std::move(lookupKeys));
 
   // Each rejected index selects a conjunct the caller must apply above the
   // scan; the rest are the connector's responsibility, inside 'tableHandle'.
@@ -114,10 +118,56 @@ ScanHandle ScanHandle::build(
     }
   }
 
-  return ScanHandle{
+  return TableAccessHandle{
       .tableHandle = std::move(tableHandle),
       .columnHandles = std::move(columnHandles),
   };
+}
+
+} // namespace
+
+TableAccessHandle TableAccessHandle::buildScan(
+    const BaseTable& baseTable,
+    const ColumnVector& outputColumns,
+    const ExprVector& filters,
+    const SubfieldsOf& subfieldsOf,
+    const OptimizerSession& session,
+    velox::core::ExpressionEvaluator& evaluator,
+    ExprVector& rejected) {
+  return buildTableAccess(
+      baseTable,
+      outputColumns,
+      filters,
+      subfieldsOf,
+      session,
+      evaluator,
+      rejected,
+      std::nullopt);
+}
+
+TableAccessHandle TableAccessHandle::buildIndexLookup(
+    const BaseTable& baseTable,
+    const ColumnVector& outputColumns,
+    const ExprVector& filters,
+    const ColumnVector& lookupKeys,
+    const SubfieldsOf& subfieldsOf,
+    const OptimizerSession& session,
+    velox::core::ExpressionEvaluator& evaluator,
+    ExprVector& rejected) {
+  connector::LookupKeys connectorKeys;
+  connectorKeys.equalityColumns.reserve(lookupKeys.size());
+  for (ColumnCP key : lookupKeys) {
+    connectorKeys.equalityColumns.emplace_back(key->name());
+  }
+  return buildTableAccess(
+      baseTable,
+      outputColumns,
+      filters,
+      subfieldsOf,
+      session,
+      evaluator,
+      rejected,
+      std::move(connectorKeys));
 }
 
 } // namespace facebook::axiom::optimizer::v2

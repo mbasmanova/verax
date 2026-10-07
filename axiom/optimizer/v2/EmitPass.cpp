@@ -15,7 +15,7 @@
  */
 
 #include "axiom/optimizer/v2/EmitPass.h"
-#include "axiom/optimizer/v2/ScanHandle.h"
+#include "axiom/optimizer/v2/TableAccessHandle.h"
 
 #include <folly/ScopeGuard.h>
 #include <folly/container/F14Set.h>
@@ -260,6 +260,8 @@ class Emitter {
         return emitMarkDistinct(*node->as<MarkDistinct>());
       case NodeType::kJoin:
         return emitJoin(*node->as<Join>());
+      case NodeType::kIndexLookupJoin:
+        return emitIndexLookupJoin(*node->as<IndexLookupJoin>());
       case NodeType::kSort:
         return emitSort(*node->as<Sort>());
       case NodeType::kTopN:
@@ -461,6 +463,7 @@ class Emitter {
   velox::core::PlanNodePtr emitGroupId(const GroupId& groupId);
   velox::core::PlanNodePtr emitMarkDistinct(const MarkDistinct& markDistinct);
   velox::core::PlanNodePtr emitJoin(const Join& join);
+  velox::core::PlanNodePtr emitIndexLookupJoin(const IndexLookupJoin& join);
   velox::core::PlanNodePtr emitSort(const Sort& sort);
   velox::core::PlanNodePtr emitTopN(const TopN& topN);
   velox::core::PlanNodePtr emitLimit(const Limit& limit);
@@ -697,7 +700,7 @@ velox::RowTypePtr Emitter::makeRowType(const ColumnVector& columns) const {
 velox::core::PlanNodePtr Emitter::emitScan(const Scan& scan) {
   VELOX_CHECK_NOT_NULL(
       scan.scanHandle(), "Scan reaches emit without a connector handle");
-  const ScanHandle& handle = *scan.scanHandle();
+  const TableAccessHandle& handle = *scan.scanHandle();
   const ColumnVector& consumerColumns = scan.outputColumns();
   const auto& columnHandles = handle.columnHandles;
   const auto& tableHandle = handle.tableHandle;
@@ -1468,6 +1471,47 @@ velox::core::PlanNodePtr Emitter::emitJoin(const Join& join) {
           std::move(left),
           std::move(right),
           makeRowType(join.sourceColumns())));
+}
+
+velox::core::PlanNodePtr Emitter::emitIndexLookupJoin(
+    const IndexLookupJoin& join) {
+  velox::core::PlanNodePtr probe = emit(join.probe());
+  const auto& handle = *join.lookupHandle();
+
+  velox::connector::ColumnHandleMap assignments;
+  for (ColumnCP column : join.lookupOutputColumns()) {
+    assignments.emplace(column->outputName(), handle.columnHandles.at(column));
+  }
+  auto lookupSource = std::make_shared<velox::core::TableScanNode>(
+      nextId(),
+      makeRowType(join.lookupOutputColumns()),
+      handle.tableHandle,
+      std::move(assignments));
+
+  velox::core::TypedExprPtr filter;
+  if (!join.filter().empty()) {
+    filter = exprEmitter_.makeAnd(join.filter());
+  }
+
+  auto result = std::make_shared<velox::core::IndexLookupJoinNode>(
+      nextId(),
+      join.joinType(),
+      toFieldAccessList(join.probeKeys(), "IndexLookupJoin probeKey"),
+      toFieldAccessList(join.lookupKeys()),
+      /*joinConditions=*/std::vector<velox::core::IndexLookupConditionPtr>{},
+      std::move(filter),
+      /*hasMarker=*/false,
+      /*splitOutput=*/std::nullopt,
+      std::move(probe),
+      std::move(lookupSource),
+      makeRowType(join.sourceColumns()));
+
+  return join.sourceColumns() == join.outputColumns()
+      ? std::move(result)
+      : wrapWithRenameProject(
+            std::move(result),
+            join.sourceColumns(),
+            namesOf(join.outputColumns()));
 }
 
 velox::core::PlanNodePtr Emitter::emitSemiAntiViaLeftSemiProject(

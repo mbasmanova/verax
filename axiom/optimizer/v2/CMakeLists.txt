@@ -60,7 +60,7 @@ add_library(
   PlanSubstitutions.cpp
   PrecomputeProjections.cpp
   PushdownAndPrunePass.cpp
-  ScanHandle.cpp
+  TableAccessHandle.cpp
   TranslatePass.cpp
 )
 

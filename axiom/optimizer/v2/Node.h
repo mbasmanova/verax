@@ -35,7 +35,7 @@
 /// shared `QueryGraphContext`.
 namespace facebook::axiom::optimizer::v2 {
 
-struct ScanHandle;
+struct TableAccessHandle;
 class Builder;
 
 /// Discriminator for Node subtypes.
@@ -53,6 +53,7 @@ enum class NodeType : uint8_t {
   kUnnest,
   kUnionAll,
   kJoin,
+  kIndexLookupJoin,
   kWindow,
   kInference,
   kRowNumber,
@@ -256,7 +257,7 @@ class Scan : public Node {
     /// and after it only when the pass ran with `ConnectorPushdown::kSkip`,
     /// whose result describes IO and cannot be emitted. Part of the scan's
     /// identity.
-    const ScanHandle* scanHandle{nullptr};
+    const TableAccessHandle* scanHandle{nullptr};
 
     /// The partitioning this scan is read with, when physical planning chose to
     /// read the table one bucket-group at a time, already coarsened to the
@@ -290,7 +291,7 @@ class Scan : public Node {
 
   /// The connector's read specification for this scan, including the filters
   /// it evaluates. Null as described on `Key::scanHandle`.
-  const ScanHandle* scanHandle() const {
+  const TableAccessHandle* scanHandle() const {
     return scanHandle_;
   }
 
@@ -326,7 +327,7 @@ class Scan : public Node {
 
  private:
   const BaseTableCP baseTable_;
-  const ScanHandle* const scanHandle_;
+  const TableAccessHandle* const scanHandle_;
   const connector::PartitionType* const groupedPartitionType_;
 };
 
@@ -1507,6 +1508,106 @@ class Join : public Node {
 };
 
 using JoinCP = const Join*;
+
+/// Looks up rows from an indexed table for each row produced by `probe`.
+/// The lookup source is connector access metadata, not an executable input.
+class IndexLookupJoin : public Node {
+ public:
+  struct Key {
+    NodeCP probe;
+    BaseTableCP lookupTable;
+    ColumnGroupCP index;
+    ColumnVector lookupOutputColumns;
+    const TableAccessHandle* lookupHandle;
+    velox::core::JoinType joinType;
+    ExprVector probeKeys;
+    ColumnVector lookupKeys;
+    ExprVector filter;
+    ColumnVector outputColumns;
+    ColumnVector sourceColumns;
+  };
+
+  struct KeyHash {
+    using is_transparent = void;
+    size_t operator()(const IndexLookupJoin* node) const;
+    size_t operator()(const Key& key) const;
+  };
+
+  struct KeyEq {
+    using is_transparent = void;
+    bool operator()(const IndexLookupJoin* left, const IndexLookupJoin* right)
+        const;
+    bool operator()(const Key& key, const IndexLookupJoin* node) const;
+    bool operator()(const IndexLookupJoin* node, const Key& key) const;
+  };
+
+  explicit IndexLookupJoin(Key key);
+
+  NodeCP probe() const {
+    return probe_;
+  }
+
+  BaseTableCP lookupTable() const {
+    return lookupTable_;
+  }
+
+  ColumnGroupCP index() const {
+    return index_;
+  }
+
+  const ColumnVector& lookupOutputColumns() const {
+    return lookupOutputColumns_;
+  }
+
+  const TableAccessHandle* lookupHandle() const {
+    return lookupHandle_;
+  }
+
+  velox::core::JoinType joinType() const {
+    return joinType_;
+  }
+
+  const ExprVector& probeKeys() const {
+    return probeKeys_;
+  }
+
+  const ColumnVector& lookupKeys() const {
+    return lookupKeys_;
+  }
+
+  const ExprVector& filter() const {
+    return filter_;
+  }
+
+  const ColumnVector& sourceColumns() const {
+    return sourceColumns_;
+  }
+
+  std::span<const NodeCP> inputs() const override {
+    return {&probe_, 1};
+  }
+
+  Partitioning globalPartition(
+      std::span<const Partitioning> inputPartitions,
+      Builder& builder) const override;
+
+  void accept(const NodeVisitor& visitor, NodeVisitorContext& context)
+      const override;
+
+ private:
+  const NodeCP probe_;
+  const BaseTableCP lookupTable_;
+  const ColumnGroupCP index_;
+  const ColumnVector lookupOutputColumns_;
+  const TableAccessHandle* const lookupHandle_;
+  const velox::core::JoinType joinType_;
+  const ExprVector probeKeys_;
+  const ColumnVector lookupKeys_;
+  const ExprVector filter_;
+  const ColumnVector sourceColumns_;
+};
+
+using IndexLookupJoinCP = const IndexLookupJoin*;
 
 /// One window function invocation. Frame is per-function (as in Velox
 /// `WindowNode::Function`), so functions sharing a partition / order but

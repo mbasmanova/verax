@@ -159,6 +159,9 @@ class NodeSimplifier {
   /// pairs and inputs.
   SimplifiedNode make(Join::Key key, SimplifiedNode left, SimplifiedNode right);
 
+  /// Builds an IndexLookupJoin after restoring the probe's positional layout.
+  SimplifiedNode make(IndexLookupJoin::Key key, SimplifiedNode probe);
+
   /// Builds an Apply after simplifying its residual filter and fixed body
   /// positions.
   SimplifiedNode

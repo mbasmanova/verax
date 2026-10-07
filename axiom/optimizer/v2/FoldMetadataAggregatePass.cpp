@@ -129,7 +129,7 @@ class Folder : public NodeRewriter<NoContext> {
 
     VELOX_CHECK_NOT_NULL(
         scan->scanHandle(), "Metadata counts need the connector's read handle");
-    const ScanHandle& handle = *scan->scanHandle();
+    const TableAccessHandle& handle = *scan->scanHandle();
 
     auto connectorSession =
         session_.context()->sessionFor(layout->connectorId());

@@ -41,7 +41,7 @@
 #include "axiom/optimizer/v2/NodeSimplifier.h"
 #include "axiom/optimizer/v2/PhysicalPlanAndEmit.h"
 #include "axiom/optimizer/v2/PrecomputeProjections.h"
-#include "axiom/optimizer/v2/ScanHandle.h"
+#include "axiom/optimizer/v2/TableAccessHandle.h"
 #include "velox/exec/Aggregate.h"
 #include "velox/exec/AggregateFunctionRegistry.h"
 
@@ -4320,7 +4320,7 @@ Translator::tryEvaluateOverDiscreteValues(const Aggregate* aggregate) {
   ExprVector rejected;
   // This handle only asks the connector for its discrete values; nothing reads
   // through it, so it requests no subfields.
-  ScanHandle handle = ScanHandle::build(
+  TableAccessHandle handle = TableAccessHandle::buildScan(
       *scan->baseTable(),
       scan->outputColumns(),
       filters,
