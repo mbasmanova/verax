@@ -33,7 +33,7 @@ class JoinFilterPropagationTest : public test::QueryTestBase {
   }
 
   core::PlanNodePtr plan(const std::string& sql) {
-    return toSingleNodePlan(parseSelect(sql, kTestConnectorId));
+    return toSingleNodePlan(parseSelect(sql));
   }
 };
 

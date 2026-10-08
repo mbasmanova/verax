@@ -112,8 +112,7 @@ class ConnectorPushdownPassTest : public optimizer::test::QueryTestBase {
       std::string_view tableName = "t",
       std::string_view aggregate = "sum(b)") {
     return parseSelect(
-        fmt::format("SELECT a, {} FROM {} GROUP BY a", aggregate, tableName),
-        kTestConnectorId);
+        fmt::format("SELECT a, {} FROM {} GROUP BY a", aggregate, tableName));
   }
 
   logical_plan::LogicalPlanNodePtr recursivePlan() {
@@ -121,8 +120,7 @@ class ConnectorPushdownPassTest : public optimizer::test::QueryTestBase {
         "WITH RECURSIVE counter(n) AS ("
         "SELECT max(a) FROM seed "
         "UNION ALL SELECT n - 1 FROM counter WHERE n > 0) "
-        "SELECT n FROM counter",
-        kTestConnectorId);
+        "SELECT n FROM counter");
   }
 
   logical_plan::LogicalPlanNodePtr parseInsert(std::string_view sql) {
@@ -298,8 +296,7 @@ TEST_F(ConnectorPushdownPassTest, crossConnectorJoin) {
   auto logicalPlan = parseSelect(
       "SELECT p.a, p.b, q.c, q.sd "
       "FROM probe.default.p p "
-      "JOIN (SELECT c, sum(d) AS sd FROM q GROUP BY c) q ON p.a = q.c",
-      kTestConnectorId);
+      "JOIN (SELECT c, sum(d) AS sd FROM q GROUP BY c) q ON p.a = q.c");
 
   AXIOM_ASSERT_PLAN(
       toSingleNodePlan(logicalPlan),
@@ -331,8 +328,7 @@ TEST_F(ConnectorPushdownPassTest, duplicateSourceNames) {
   checkSame(
       parseSelect(
           "SELECT l.a AS left_a, r.a AS right_a "
-          "FROM left_table l JOIN right_table r ON l.k = r.k",
-          kTestConnectorId),
+          "FROM left_table l JOIN right_table r ON l.k = r.k"),
       {expected});
 }
 
@@ -347,9 +343,8 @@ TEST_F(ConnectorPushdownPassTest, indexLookupJoin) {
     return std::vector<PushdownRoot>{};
   });
 
-  toSingleNodePlan(parseSelect(
-      "SELECT t.a, lookup.v FROM t JOIN lookup ON t.a = lookup.k",
-      kTestConnectorId));
+  toSingleNodePlan(
+      parseSelect("SELECT t.a, lookup.v FROM t JOIN lookup ON t.a = lookup.k"));
   EXPECT_TRUE(offered);
 }
 
@@ -366,8 +361,7 @@ TEST_F(ConnectorPushdownPassTest, independentConnectors) {
   auto logicalPlan = parseSelect(
       "SELECT p.a, p.sb, q.c, q.sd "
       "FROM (SELECT a, sum(b) AS sb FROM probe.default.p GROUP BY a) p "
-      "JOIN (SELECT c, sum(d) AS sd FROM q GROUP BY c) q ON p.a = q.c",
-      kTestConnectorId);
+      "JOIN (SELECT c, sum(d) AS sd FROM q GROUP BY c) q ON p.a = q.c");
 
   expectConcurrentOffers(
       {probe.metadata, testMetadata_},
@@ -401,8 +395,7 @@ TEST_F(ConnectorPushdownPassTest, concurrentOffers) {
   auto logicalPlan = parseSelect(
       "(SELECT a FROM left_input LIMIT 10) "
       "UNION ALL (SELECT b FROM right_input LIMIT 10) "
-      "UNION ALL (SELECT c FROM other.default.u LIMIT 10)",
-      kTestConnectorId);
+      "UNION ALL (SELECT c FROM other.default.u LIMIT 10)");
   expectConcurrentOffers(
       {testMetadata_}, 2, [&] { toSingleNodePlan(logicalPlan); });
 }
@@ -428,8 +421,8 @@ TEST_F(ConnectorPushdownPassTest, ineligiblePlans) {
     return std::vector<PushdownRoot>{};
   });
 
-  toSingleNodePlan(parseSelect("SELECT * FROM t", kTestConnectorId));
-  toSingleNodePlan(parseSelect("SELECT 1 AS a", kTestConnectorId));
+  toSingleNodePlan(parseSelect("SELECT * FROM t"));
+  toSingleNodePlan(parseSelect("SELECT 1 AS a"));
   EXPECT_EQ(numCalls, 0);
 }
 
@@ -510,9 +503,8 @@ TEST_F(ConnectorPushdownPassTest, conflictingRoots) {
       testConnector_->addTable("second", ROW({"key", "total"}, BIGINT()));
   auto outerTable = testConnector_->addTable("outer", ROW("value", BIGINT()));
 
-  auto logicalPlan = parseSelect(
-      "SELECT a + 1 FROM (SELECT a, sum(b) FROM t GROUP BY a)",
-      kTestConnectorId);
+  auto logicalPlan =
+      parseSelect("SELECT a + 1 FROM (SELECT a, sum(b) FROM t GROUP BY a)");
 
   testMetadata_->setPushdownMatcher([firstTable,
                                      secondTable](const Node& subtree) {
@@ -554,14 +546,12 @@ TEST_F(ConnectorPushdownPassTest, strictDescendant) {
   AXIOM_ASSERT_PLAN(
       toSingleNodePlan(parseSelect(
           "SELECT a, s FROM (SELECT a, sum(b) AS s FROM t GROUP BY a) "
-          "WHERE s > 10",
-          kTestConnectorId)),
+          "WHERE s > 10")),
       matchScan("virt_agg").project().filter("s > 10").build());
 
   AXIOM_ASSERT_PLAN(
       toSingleNodePlan(parseSelect(
-          "SELECT s + 1 FROM (SELECT a, sum(b) AS s FROM t GROUP BY a)",
-          kTestConnectorId)),
+          "SELECT s + 1 FROM (SELECT a, sum(b) AS s FROM t GROUP BY a)")),
       matchScan("virt_agg").project().build());
 }
 
@@ -587,8 +577,7 @@ TEST_F(ConnectorPushdownPassTest, disjointRoots) {
   auto logicalPlan = parseSelect(
       "SELECT l.a, l.sb, r.c, r.sd "
       "FROM (SELECT a, sum(b) AS sb FROM t GROUP BY a) l "
-      "JOIN (SELECT c, sum(d) AS sd FROM u GROUP BY c) r ON l.a = r.c",
-      kTestConnectorId);
+      "JOIN (SELECT c, sum(d) AS sd FROM u GROUP BY c) r ON l.a = r.c");
 
   AXIOM_ASSERT_PLAN(
       toSingleNodePlan(logicalPlan),
@@ -625,8 +614,7 @@ TEST_F(ConnectorPushdownPassTest, outsideRoot) {
   VELOX_ASSERT_THROW(
       toSingleNodePlan(parseSelect(
           "(SELECT a FROM t LIMIT 10) "
-          "UNION ALL (SELECT b FROM other.default.u LIMIT 10)",
-          kTestConnectorId)),
+          "UNION ALL (SELECT b FROM other.default.u LIMIT 10)")),
       "outside the offered subtree");
 }
 

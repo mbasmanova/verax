@@ -39,7 +39,7 @@ class ExchangeSerdeTest : public test::QueryTestBase {
         std::to_string(minChannels),
     }});
     return planVelox(
-        parseSelect(sql, kTestConnectorId),
+        parseSelect(sql),
         {
             .maxRemotePartitions = 2,
             .maxLocalPartitions = 2,

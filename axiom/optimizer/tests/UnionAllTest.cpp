@@ -54,7 +54,7 @@ class UnionAllTest : public test::QueryTestBase,
 // Two scans (kSource + kSource) co-locate in one fragment with a
 // LocalPartition. No remote exchanges.
 TEST_P(UnionAllTest, twoScans) {
-  auto logicalPlan = parseSelect("FROM t UNION ALL FROM u", kTestConnectorId);
+  auto logicalPlan = parseSelect("FROM t UNION ALL FROM u");
 
   {
     auto matcher =
@@ -75,8 +75,7 @@ TEST_P(UnionAllTest, twoScans) {
 // with both incoming hash exchanges.
 TEST_P(UnionAllTest, twoDistincts) {
   auto logicalPlan = parseSelect(
-      "SELECT DISTINCT a FROM t UNION ALL SELECT DISTINCT b FROM u",
-      kTestConnectorId);
+      "SELECT DISTINCT a FROM t UNION ALL SELECT DISTINCT b FROM u");
 
   {
     auto matcher =
@@ -103,8 +102,7 @@ TEST_P(UnionAllTest, twoDistincts) {
 // All single-task legs (kSingle + kSingle) co-locate in one kSingle
 // fragment.
 TEST_P(UnionAllTest, twoValues) {
-  auto logicalPlan =
-      parseSelect("VALUES 1, 2 UNION ALL VALUES 3", kTestConnectorId);
+  auto logicalPlan = parseSelect("VALUES 1, 2 UNION ALL VALUES 3");
 
   {
     auto matcher =
@@ -126,7 +124,7 @@ TEST_P(UnionAllTest, twoValues) {
 // Scan + Values (kSource + kSingle) — Values wrapped in arbitrary, scan
 // hosts the union fragment as kSource.
 TEST_P(UnionAllTest, scanAndValues) {
-  auto logicalPlan = parseSelect("FROM t UNION ALL VALUES 1", kTestConnectorId);
+  auto logicalPlan = parseSelect("FROM t UNION ALL VALUES 1");
 
   {
     auto matcher =
@@ -151,8 +149,8 @@ TEST_P(UnionAllTest, scanAndValues) {
 // grouped into one kSingle sub-union and wrapped in a single arbitrary
 // exchange (one wrap regardless of how many kSingle inputs there are).
 TEST_P(UnionAllTest, scanAndTwoValues) {
-  auto logicalPlan = parseSelect(
-      "FROM t UNION ALL VALUES 1 UNION ALL VALUES 2", kTestConnectorId);
+  auto logicalPlan =
+      parseSelect("FROM t UNION ALL VALUES 1 UNION ALL VALUES 2");
 
   {
     auto matcher = matchScan("t")
@@ -179,8 +177,7 @@ TEST_P(UnionAllTest, scanAndTwoValues) {
 // DISTINCT + Values (kFixed N + kSingle) — DISTINCT hosts the union
 // fragment as kFixed N; Values wrapped in arbitrary.
 TEST_P(UnionAllTest, distinctAndValues) {
-  auto logicalPlan = parseSelect(
-      "SELECT DISTINCT a FROM t UNION ALL VALUES 1", kTestConnectorId);
+  auto logicalPlan = parseSelect("SELECT DISTINCT a FROM t UNION ALL VALUES 1");
 
   {
     auto matcher = matchScan("t")
@@ -206,8 +203,7 @@ TEST_P(UnionAllTest, distinctAndValues) {
 // legs co-locate in one kFixed N fragment with the DISTINCT's hash exchange
 // feeding the same N tasks. No arbitrary wrap.
 TEST_P(UnionAllTest, scanAndDistinct) {
-  auto logicalPlan = parseSelect(
-      "SELECT DISTINCT a FROM t UNION ALL FROM u", kTestConnectorId);
+  auto logicalPlan = parseSelect("SELECT DISTINCT a FROM t UNION ALL FROM u");
 
   {
     auto matcher = matchScan("t")
@@ -234,8 +230,7 @@ TEST_P(UnionAllTest, scanAndDistinctAndValues) {
   auto logicalPlan = parseSelect(
       "FROM t "
       "UNION ALL SELECT DISTINCT b FROM u "
-      "UNION ALL VALUES 1",
-      kTestConnectorId);
+      "UNION ALL VALUES 1");
 
   {
     auto matcher =
@@ -271,8 +266,7 @@ TEST_P(UnionAllTest, scanAndDistinctAndValues) {
 // FINAL agg in a separate kFixed N fragment.
 TEST_P(UnionAllTest, groupByOverTwoScans) {
   auto logicalPlan = parseSelect(
-      "SELECT a, COUNT(*) FROM (FROM t UNION ALL FROM u) GROUP BY a",
-      kTestConnectorId);
+      "SELECT a, COUNT(*) FROM (FROM t UNION ALL FROM u) GROUP BY a");
 
   {
     auto matcher = matchScan("t")
@@ -306,8 +300,7 @@ TEST_P(UnionAllTest, groupByOverTwoDistincts) {
   auto logicalPlan = parseSelect(
       "SELECT a, COUNT(*) FROM ("
       "  SELECT DISTINCT a FROM t UNION ALL SELECT DISTINCT b FROM u"
-      ") GROUP BY a",
-      kTestConnectorId);
+      ") GROUP BY a");
 
   {
     auto matcher =
@@ -348,8 +341,7 @@ TEST_P(UnionAllTest, groupByOverTwoValues) {
   auto logicalPlan = parseSelect(
       "SELECT k, COUNT(*) FROM ("
       "  VALUES 1, 2 UNION ALL VALUES 3"
-      ") AS x(k) GROUP BY k",
-      kTestConnectorId);
+      ") AS x(k) GROUP BY k");
 
   {
     auto matcher = matchValues()
@@ -386,8 +378,7 @@ TEST_P(UnionAllTest, groupByOverScanAndValues) {
   auto logicalPlan = parseSelect(
       "SELECT a, COUNT(*) FROM ("
       "  FROM t UNION ALL VALUES 1"
-      ") GROUP BY a",
-      kTestConnectorId);
+      ") GROUP BY a");
 
   {
     auto matcher = matchScan("t")
@@ -422,8 +413,7 @@ TEST_P(UnionAllTest, groupByOverDistinctAndValues) {
   auto logicalPlan = parseSelect(
       "SELECT a, COUNT(*) FROM ("
       "  SELECT DISTINCT a FROM t UNION ALL VALUES 1"
-      ") GROUP BY a",
-      kTestConnectorId);
+      ") GROUP BY a");
 
   {
     auto matcher = matchScan("t")
@@ -455,8 +445,7 @@ TEST_P(UnionAllTest, groupByOverScanAndDistinct) {
   auto logicalPlan = parseSelect(
       "SELECT a, COUNT(*) FROM ("
       "  FROM t UNION ALL SELECT DISTINCT b FROM u"
-      ") GROUP BY a",
-      kTestConnectorId);
+      ") GROUP BY a");
 
   {
     auto matcher =
@@ -489,8 +478,7 @@ TEST_P(UnionAllTest, groupByOverScanAndDistinctAndValues) {
       "  FROM t "
       "  UNION ALL SELECT DISTINCT b FROM u "
       "  UNION ALL VALUES 1"
-      ") GROUP BY a",
-      kTestConnectorId);
+      ") GROUP BY a");
 
   {
     auto matcher =
@@ -533,8 +521,8 @@ TEST_P(UnionAllTest, groupByOverScanAndDistinctAndValues) {
 // per A1; that fragment's OrderBy is split into PARTIAL+LocalMerge with a
 // merge exchange to the final kSingle fragment.
 TEST_P(UnionAllTest, orderByOverTwoScans) {
-  auto logicalPlan = parseSelect(
-      "SELECT * FROM (FROM t UNION ALL FROM u) ORDER BY a", kTestConnectorId);
+  auto logicalPlan =
+      parseSelect("SELECT * FROM (FROM t UNION ALL FROM u) ORDER BY a");
 
   {
     auto matcher = matchScan("t")
@@ -560,9 +548,8 @@ TEST_P(UnionAllTest, orderByOverTwoScans) {
 // exchange.
 //
 TEST_P(UnionAllTest, orderByOverTwoValues) {
-  auto logicalPlan = parseSelect(
-      "SELECT * FROM (VALUES 1 UNION ALL VALUES 2) ORDER BY 1",
-      kTestConnectorId);
+  auto logicalPlan =
+      parseSelect("SELECT * FROM (VALUES 1 UNION ALL VALUES 2) ORDER BY 1");
 
   {
     auto matcher = matchValues()
@@ -591,8 +578,7 @@ TEST_P(UnionAllTest, orderByOverTwoDistincts) {
   auto logicalPlan = parseSelect(
       "SELECT * FROM ("
       "  SELECT DISTINCT a FROM t UNION ALL SELECT DISTINCT b FROM u"
-      ") ORDER BY a",
-      kTestConnectorId);
+      ") ORDER BY a");
 
   {
     auto matcher =
@@ -629,8 +615,8 @@ TEST_P(UnionAllTest, orderByOverTwoDistincts) {
 // union fragment with the scan; gather above. Same gather count, but extra
 // arbitrary exchange that the design avoids.
 TEST_P(UnionAllTest, orderByOverScanAndValues) {
-  auto logicalPlan = parseSelect(
-      "SELECT * FROM (FROM t UNION ALL VALUES 1) ORDER BY a", kTestConnectorId);
+  auto logicalPlan =
+      parseSelect("SELECT * FROM (FROM t UNION ALL VALUES 1) ORDER BY a");
 
   {
     auto matcher = matchScan("t")
@@ -658,8 +644,7 @@ TEST_P(UnionAllTest, orderByOverScanAndValues) {
 // DISTINCT, instead of co-located in the kSingle final.
 TEST_P(UnionAllTest, orderByOverDistinctAndValues) {
   auto logicalPlan = parseSelect(
-      "SELECT * FROM (SELECT DISTINCT a FROM t UNION ALL VALUES 1) ORDER BY a",
-      kTestConnectorId);
+      "SELECT * FROM (SELECT DISTINCT a FROM t UNION ALL VALUES 1) ORDER BY a");
 
   {
     auto matcher = matchScan("t")
@@ -688,8 +673,7 @@ TEST_P(UnionAllTest, orderByOverDistinctAndValues) {
 // gather above to kSingle final.
 TEST_P(UnionAllTest, orderByOverScanAndDistinct) {
   auto logicalPlan = parseSelect(
-      "SELECT * FROM (FROM t UNION ALL SELECT DISTINCT b FROM u) ORDER BY a",
-      kTestConnectorId);
+      "SELECT * FROM (FROM t UNION ALL SELECT DISTINCT b FROM u) ORDER BY a");
 
   {
     auto matcher =
@@ -726,8 +710,7 @@ TEST_P(UnionAllTest, orderByOverScanAndDistinctAndValues) {
       "SELECT * FROM ("
       "  FROM t "
       "  UNION ALL SELECT DISTINCT b FROM u "
-      "  UNION ALL VALUES 1) ORDER BY a",
-      kTestConnectorId);
+      "  UNION ALL VALUES 1) ORDER BY a");
 
   {
     auto matcher =
@@ -775,8 +758,7 @@ TEST_P(UnionAllTest, broadcastJoinBuildOverUnion) {
   auto logicalPlan = parseSelect(
       "FROM t JOIN ("
       "  FROM v UNION ALL FROM u WHERE b < 0"
-      ") s ON t.a = s.c",
-      kTestConnectorId);
+      ") s ON t.a = s.c");
 
   {
     // v2 merges the equi-join keys (a = c) into one equivalence column, so the
@@ -813,8 +795,7 @@ TEST_P(UnionAllTest, shuffledJoinBuildOverUnion) {
       ->setStats(100'000, {{"c", {.numDistinct = 1'000}}});
 
   auto logicalPlan = parseSelect(
-      "SELECT t.a FROM t JOIN (FROM v UNION ALL FROM u) s ON t.a = s.c",
-      kTestConnectorId);
+      "SELECT t.a FROM t JOIN (FROM v UNION ALL FROM u) s ON t.a = s.c");
 
   {
     auto matcher = matchScan("v")
@@ -859,8 +840,7 @@ TEST_P(UnionAllTest, groupByOverUnionAllWithOrderedLegs) {
       "  (SELECT a FROM t ORDER BY a)"
       "  UNION ALL"
       "  (SELECT b FROM u ORDER BY b)"
-      ") GROUP BY a",
-      kTestConnectorId);
+      ") GROUP BY a");
 
   {
     auto matcher = matchScan("t")

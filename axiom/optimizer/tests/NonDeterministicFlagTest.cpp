@@ -39,7 +39,7 @@ class NonDeterministicFlagTest : public test::QueryTestBase {
   bool isDeterministic(std::string_view expr) {
     auto sql = "SELECT " + std::string(expr) + " AS p FROM t";
     bool result = true;
-    auto plan = parseSelect(sql, kTestConnectorId);
+    auto plan = parseSelect(sql);
     verifyOptimization(*plan, [&](Optimization& opt) {
       const auto& dt = *opt.rootDt();
       ASSERT_EQ(dt.exprs.size(), 1);

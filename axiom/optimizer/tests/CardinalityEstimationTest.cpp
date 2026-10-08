@@ -61,7 +61,7 @@ class CardinalityEstimationTest : public test::QueryTestBase {
   void verifyPlan(
       const std::string& sql,
       const std::function<void(const Plan&)>& callback) {
-    auto logicalPlan = parseSelect(sql, kTestConnectorId);
+    auto logicalPlan = parseSelect(sql);
 
     verifyOptimization(
         *logicalPlan,

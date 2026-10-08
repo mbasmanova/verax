@@ -89,7 +89,7 @@ class InformationSchemaTest : public optimizer::test::QueryTestBase {
   }
 
   std::vector<RowVectorPtr> run(std::string_view sql) {
-    return runVelox(parseSelect(sql, kTestConnectorId)).results;
+    return runVelox(parseSelect(sql)).results;
   }
 
   void registerTpchConnector() {

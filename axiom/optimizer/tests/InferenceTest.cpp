@@ -66,8 +66,7 @@ class InferenceTest : public test::QueryTestBase {
   }
 
   velox::core::PlanNodePtr toSingleNodePlan(std::string_view sql) {
-    return QueryTestBase::toSingleNodePlan(
-        parseSelect(sql, kTestConnectorId), /*numDrivers=*/1);
+    return QueryTestBase::toSingleNodePlan(parseSelect(sql), /*numDrivers=*/1);
   }
 };
 
