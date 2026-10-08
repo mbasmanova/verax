@@ -179,15 +179,14 @@ TEST_P(SubqueryTest, uncorrelatedInConstantLeftSide) {
   auto query = "SELECT 1 IN (SELECT r_regionkey FROM region)";
   SCOPED_TRACE(query);
 
-  auto matcher =
-      matchHiveScan("region")
-          .filter("r_regionkey IS NULL OR r_regionkey = 1")
-          .hashJoin(
-              matchValues(makeRowVector({makeFlatVector<int64_t>({1})})),
-              velox::core::JoinType::kRightSemiProject,
-              {.nullAware = true})
-          .project()
-          .build();
+  auto matcher = matchHiveScan("region")
+                     .filter("r_regionkey IS NULL OR r_regionkey = 1")
+                     .hashJoin(
+                         matchValues<int64_t>({{1}}),
+                         velox::core::JoinType::kRightSemiProject,
+                         {.nullAware = true})
+                     .project()
+                     .build();
 
   auto plan = toSingleNodePlan(query);
   AXIOM_ASSERT_PLAN_V2(plan, matcher);
@@ -199,8 +198,7 @@ TEST_P(SubqueryTest, uncorrelatedInConstantLeftSide) {
           .filter("r_regionkey IS NULL OR r_regionkey = 1")
           .shuffle({"r_regionkey"}, /*replicateNullsAndAny=*/true)
           .hashJoin(
-              matchValues(makeRowVector({makeFlatVector<int64_t>({1})}))
-                  .shuffle(),
+              matchValues<int64_t>({{1}}).shuffle(),
               velox::core::JoinType::kRightSemiProject,
               {.nullAware = true})
           .project()
@@ -2430,10 +2428,7 @@ TEST_P(SubqueryTest, leftJoinFilterWithNonDefaultNullEquality) {
 
   // The constant inputs fold the join and its post-join filter.
   auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
-  AXIOM_ASSERT_PLAN_V2(
-      plan,
-      matchValues(makeRowVector({"x"}, {makeFlatVector<int32_t>({1})}))
-          .build());
+  AXIOM_ASSERT_PLAN_V2(plan, matchValues<int32_t>({"x"}, {{1}}).build());
 }
 
 TEST_P(SubqueryTest, rightJoinOnSubquery) {

@@ -272,21 +272,13 @@ TEST_P(SubqueryFoldTest, foldableAggregationOverPartitions) {
 
   {
     auto plan = toSingleNodePlan("SELECT max(ds) FROM pt");
-    AXIOM_ASSERT_PLAN_V2(
-        plan,
-        matchValues(makeRowVector({makeFlatVector<std::string>({"2"})}))
-            .build());
+    AXIOM_ASSERT_PLAN_V2(plan, matchValues<std::string>({{"2"}}).build());
   }
 
   // Every aggregate is answered from the one listing.
   {
     auto plan = toSingleNodePlan("SELECT max(ds), min(ds) FROM pt");
-    AXIOM_ASSERT_PLAN_V2(
-        plan,
-        matchValues(makeRowVector(
-                        {makeFlatVector<std::string>({"2"}),
-                         makeFlatVector<std::string>({"0"})}))
-            .build());
+    AXIOM_ASSERT_PLAN_V2(plan, matchValues<std::string>({{"2", "0"}}).build());
   }
 
   // A grouping-only aggregation is answered from the distinct partition
@@ -294,18 +286,13 @@ TEST_P(SubqueryFoldTest, foldableAggregationOverPartitions) {
   {
     auto plan = toSingleNodePlan("SELECT DISTINCT ds FROM pt");
     AXIOM_ASSERT_PLAN_V2(
-        plan,
-        matchValues(
-            makeRowVector({makeFlatVector<std::string>({"0", "1", "2"})}))
-            .build());
+        plan, matchValues<std::string>({{"0"}, {"1"}, {"2"}}).build());
   }
 
   // Grouping removes duplicate values from different partitions.
   {
     auto plan = toSingleNodePlan("SELECT DISTINCT k FROM pt");
-    AXIOM_ASSERT_PLAN_V2(
-        plan,
-        matchValues(makeRowVector({makeFlatVector<int32_t>({0, 1})})).build());
+    AXIOM_ASSERT_PLAN_V2(plan, matchValues<int32_t>({{0}, {1}}).build());
   }
 
   // A filter on one partition column restricts the distinct values of
@@ -313,9 +300,7 @@ TEST_P(SubqueryFoldTest, foldableAggregationOverPartitions) {
   {
     auto plan = toSingleNodePlan("SELECT DISTINCT ds FROM pt WHERE k = 0");
     AXIOM_ASSERT_PLAN_V2(
-        plan,
-        matchValues(makeRowVector({makeFlatVector<std::string>({"0", "2"})}))
-            .build());
+        plan, matchValues<std::string>({{"0"}, {"2"}}).build());
   }
 
   // DISTINCT returns no rows when no partition value matches the filter.
