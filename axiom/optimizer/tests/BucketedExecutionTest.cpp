@@ -122,8 +122,7 @@ TEST_P(BucketedExecutionTest, join) {
   {
     auto plan = planDistributed(parseSelect(
         "SELECT * FROM j_orders JOIN j_customers "
-        "ON j_orders.customer_id = j_customers.id",
-        kTestConnectorId));
+        "ON j_orders.customer_id = j_customers.id"));
     AXIOM_ASSERT_DISTRIBUTED_PLAN(
         plan.plan,
         matchScan("j_customers")
@@ -138,8 +137,7 @@ TEST_P(BucketedExecutionTest, join) {
     SCOPED_TRACE("Inputs are bucketed on a subset of join keys");
     const auto logicalPlan = parseSelect(
         "SELECT t_k FROM j_subset_t JOIN j_subset_u "
-        "ON t_k = u_k AND t_j = u_j",
-        kTestConnectorId);
+        "ON t_k = u_k AND t_j = u_j");
     AXIOM_ASSERT_PLAN_V2(
         toSingleNodePlan(logicalPlan, /*numDrivers=*/4),
         matchScan("j_subset_t")
@@ -164,8 +162,7 @@ TEST_P(BucketedExecutionTest, join) {
   {
     auto plan = planDistributed(parseSelect(
         "SELECT * FROM j_orders RIGHT JOIN j_customers "
-        "ON j_orders.customer_id = j_customers.id",
-        kTestConnectorId));
+        "ON j_orders.customer_id = j_customers.id"));
     AXIOM_ASSERT_DISTRIBUTED_PLAN(
         plan.plan,
         matchScan("j_customers")
@@ -179,8 +176,7 @@ TEST_P(BucketedExecutionTest, join) {
   {
     auto plan = planDistributed(parseSelect(
         "SELECT * FROM j_orders FULL OUTER JOIN j_customers "
-        "ON j_orders.customer_id = j_customers.id",
-        kTestConnectorId));
+        "ON j_orders.customer_id = j_customers.id"));
     AXIOM_ASSERT_DISTRIBUTED_PLAN(
         plan.plan,
         matchScan("j_customers")
@@ -193,8 +189,7 @@ TEST_P(BucketedExecutionTest, join) {
   {
     auto plan = planDistributed(parseSelect(
         "SELECT * FROM j_orders LEFT JOIN j_customers "
-        "ON j_orders.customer_id = j_customers.id",
-        kTestConnectorId));
+        "ON j_orders.customer_id = j_customers.id"));
     if (useV2_) {
       AXIOM_ASSERT_DISTRIBUTED_PLAN(
           plan.plan,
@@ -216,8 +211,7 @@ TEST_P(BucketedExecutionTest, join) {
     const auto logicalPlan = parseSelect(
         "SELECT * FROM j_orders "
         "LEFT JOIN (SELECT id, lower(name) AS name FROM j_customers) c "
-        "  ON j_orders.customer_id = c.id",
-        kTestConnectorId);
+        "  ON j_orders.customer_id = c.id");
     AXIOM_ASSERT_PLAN_V2(
         toSingleNodePlan(logicalPlan, /*numDrivers=*/4),
         matchScan("j_customers")
@@ -244,8 +238,7 @@ TEST_P(BucketedExecutionTest, join) {
       "j_unbucketed", 50'000, {{"id", {.numDistinct = 50'000}}});
   auto plan = planDistributed(parseSelect(
       "SELECT * FROM j_orders JOIN j_unbucketed "
-      "ON j_orders.customer_id = j_unbucketed.id",
-      kTestConnectorId));
+      "ON j_orders.customer_id = j_unbucketed.id"));
   // The unbucketed side is shuffled into the bucketed fragment by the bucket
   // function, so it joins the grouped scan without moving it.
   AXIOM_ASSERT_DISTRIBUTED_PLAN(
@@ -268,8 +261,7 @@ TEST_P(BucketedExecutionTest, joinChoosesBucketing) {
       "SELECT customer_id "
       "FROM mixed_bucketed JOIN "
       "(SELECT id FROM mixed_hash GROUP BY id) grouped "
-      "ON customer_id = id",
-      kTestConnectorId);
+      "ON customer_id = id");
 
   AXIOM_ASSERT_PLAN_V2(
       toSingleNodePlan(logicalPlan),
@@ -306,8 +298,7 @@ TEST_P(BucketedExecutionTest, semijoin) {
   {
     auto plan = planDistributed(parseSelect(
         "SELECT * FROM sj_orders WHERE customer_id IN "
-        "(SELECT id FROM sj_customers)",
-        kTestConnectorId));
+        "(SELECT id FROM sj_customers)"));
     // V2 lowers WHERE-`IN` to a null-aware kLeftSemiProject (not
     // kLeftSemiFilter) and rejects bucketing for null-aware existence joins, so
     // it shuffles both sides instead of keeping the probe bucketed (sound, but
@@ -332,8 +323,7 @@ TEST_P(BucketedExecutionTest, semijoin) {
   {
     auto plan = planDistributed(parseSelect(
         "SELECT * FROM sj_orders WHERE customer_id NOT IN "
-        "(SELECT id FROM sj_customers)",
-        kTestConnectorId));
+        "(SELECT id FROM sj_customers)"));
     // V2 rejects bucketing for the null-aware anti join (a bucketed existence
     // side would confine a null key to one bucket) and shuffles both sides with
     // null/any replication instead of co-bucketing. The V2 check is gated off;
@@ -471,8 +461,7 @@ TEST_P(BucketedExecutionTest, aggregation) {
   {
     auto plan = planDistributed(parseSelect(
         "SELECT customer_id, sum(amount) AS total FROM a_orders "
-        "GROUP BY customer_id HAVING sum(amount) > 1000",
-        kTestConnectorId));
+        "GROUP BY customer_id HAVING sum(amount) > 1000"));
     AXIOM_ASSERT_DISTRIBUTED_PLAN(
         plan.plan,
         matchScan("a_orders")
@@ -588,8 +577,7 @@ TEST_P(BucketedExecutionTest, select) {
         500'000);
     auto plan = planDistributed(parseSelect(
         "SELECT * FROM s_down_a JOIN s_down_b "
-        "ON s_down_a.customer_id = s_down_b.customer_id",
-        kTestConnectorId));
+        "ON s_down_a.customer_id = s_down_b.customer_id"));
     AXIOM_ASSERT_DISTRIBUTED_PLAN(
         plan.plan,
         matchScan("s_down_a")
@@ -683,8 +671,7 @@ TEST_P(BucketedExecutionTest, unionall) {
         "  SELECT customer_id, amount FROM u_a"
         "  UNION ALL"
         "  SELECT customer_id, amount FROM u_b"
-        ") GROUP BY customer_id",
-        kTestConnectorId));
+        ") GROUP BY customer_id"));
     // gcd(128, 4) = 4, so both legs are read by the same 4 bucket groups and
     // the union needs no shuffle.
     if (useV2_) {
@@ -723,8 +710,7 @@ TEST_P(BucketedExecutionTest, unionall) {
         "  SELECT customer_id, amount FROM u_diff_cust"
         "  UNION ALL"
         "  SELECT account_id AS customer_id, amount FROM u_diff_acct"
-        ") GROUP BY customer_id",
-        kTestConnectorId));
+        ") GROUP BY customer_id"));
     if (useV2_) {
       AXIOM_ASSERT_DISTRIBUTED_PLAN(
           plan.plan,
@@ -773,8 +759,7 @@ TEST_P(BucketedExecutionTest, mixedJoinOneBucketed) {
 
   auto plan = planDistributed(parseSelect(
       "SELECT * FROM m_orders JOIN m_extras "
-      "ON m_orders.customer_id = m_extras.customer_id",
-      kTestConnectorId));
+      "ON m_orders.customer_id = m_extras.customer_id"));
   AXIOM_ASSERT_DISTRIBUTED_PLAN(
       plan.plan,
       matchScan("m_orders")
@@ -795,8 +780,7 @@ TEST_P(BucketedExecutionTest, mixedJoinTwoBucketedOneNot) {
   auto plan = planDistributed(parseSelect(
       "SELECT * FROM m2_orders "
       "JOIN m2_customers ON m2_orders.customer_id = m2_customers.id "
-      "JOIN m2_extras ON m2_orders.customer_id = m2_extras.customer_id",
-      kTestConnectorId));
+      "JOIN m2_extras ON m2_orders.customer_id = m2_extras.customer_id"));
   AXIOM_ASSERT_DISTRIBUTED_PLAN(
       plan.plan,
       matchScan("m2_customers")
@@ -817,8 +801,7 @@ TEST_P(BucketedExecutionTest, mixedJoinOneBucketedTwoNot) {
   auto plan = planDistributed(parseSelect(
       "SELECT * FROM m3_orders "
       "JOIN m3_extras1 ON m3_orders.customer_id = m3_extras1.customer_id "
-      "JOIN m3_extras2 ON m3_orders.customer_id = m3_extras2.customer_id",
-      kTestConnectorId));
+      "JOIN m3_extras2 ON m3_orders.customer_id = m3_extras2.customer_id"));
   AXIOM_ASSERT_DISTRIBUTED_PLAN(
       plan.plan,
       matchScan("m3_orders")
@@ -837,8 +820,7 @@ TEST_P(BucketedExecutionTest, windowOnBucketKey) {
   auto plan = planDistributed(parseSelect(
       "SELECT customer_id, amount, "
       "row_number() OVER (PARTITION BY customer_id ORDER BY amount) AS rn "
-      "FROM w_orders",
-      kTestConnectorId));
+      "FROM w_orders"));
   // The window partitions by the bucket key, so each partition is already
   // whole on one task.
   AXIOM_ASSERT_DISTRIBUTED_PLAN(
@@ -858,8 +840,7 @@ TEST_P(BucketedExecutionTest, threeWayCoBucketed) {
   auto plan = planDistributed(parseSelect(
       "SELECT * FROM tw_a "
       "JOIN tw_b ON tw_a.customer_id = tw_b.customer_id "
-      "JOIN tw_c ON tw_a.customer_id = tw_c.customer_id",
-      kTestConnectorId));
+      "JOIN tw_c ON tw_a.customer_id = tw_c.customer_id"));
   // Bucket counts 16, 8 and 4 all divide down to a common 4, so all three
   // scans share one fragment with no shuffle.
   AXIOM_ASSERT_DISTRIBUTED_PLAN(
@@ -890,7 +871,7 @@ TEST_P(BucketedExecutionTest, innerJoinChainFuses) {
   // In syntactic order both optimizers co-bucket all three scans into one
   // fragment as t ⋈ (u ⋈ v).
   optimizerOptions_.syntacticJoinOrder = true;
-  auto syntacticPlan = planDistributed(parseSelect(sql, kTestConnectorId)).plan;
+  auto syntacticPlan = planDistributed(parseSelect(sql)).plan;
   AXIOM_ASSERT_DISTRIBUTED_PLAN(
       syntacticPlan,
       matchScan("t")
@@ -905,7 +886,7 @@ TEST_P(BucketedExecutionTest, innerJoinChainFuses) {
   // order — v1 u ⋈ v ⋈ t, v2 (t ⋈ u) ⋈ v — but both co-bucket all three into
   // one fragment.
   optimizerOptions_.syntacticJoinOrder = false;
-  auto reorderedPlan = planDistributed(parseSelect(sql, kTestConnectorId)).plan;
+  auto reorderedPlan = planDistributed(parseSelect(sql)).plan;
   if (!useV2_) {
     AXIOM_ASSERT_DISTRIBUTED_PLAN(
         reorderedPlan,
@@ -947,7 +928,7 @@ TEST_P(BucketedExecutionTest, leftJoinChainDoesNotFuse) {
   // to INNER (the outer t.k = v.k rejects null v.k) and co-buckets all three,
   // in syntactic order t ⋈ (u ⋈ v).
   optimizerOptions_.syntacticJoinOrder = true;
-  auto syntacticPlan = planDistributed(parseSelect(sql, kTestConnectorId)).plan;
+  auto syntacticPlan = planDistributed(parseSelect(sql)).plan;
   if (!useV2_) {
     AXIOM_ASSERT_DISTRIBUTED_PLAN(
         syntacticPlan,
@@ -974,7 +955,7 @@ TEST_P(BucketedExecutionTest, leftJoinChainDoesNotFuse) {
   // Under cost-based ordering v1 still keeps the LEFT (broadcasting t); v2
   // reduces and co-buckets all three as (t ⋈ u) ⋈ v.
   optimizerOptions_.syntacticJoinOrder = false;
-  auto reorderedPlan = planDistributed(parseSelect(sql, kTestConnectorId)).plan;
+  auto reorderedPlan = planDistributed(parseSelect(sql)).plan;
   if (!useV2_) {
     AXIOM_ASSERT_DISTRIBUTED_PLAN(
         reorderedPlan,
@@ -1003,8 +984,7 @@ TEST_P(BucketedExecutionTest, bucketedAggThenBucketedJoin) {
       "SELECT x.customer_id, x.cnt, ab_customers.name FROM ("
       "  SELECT customer_id, COUNT(*) AS cnt FROM ab_orders "
       "  GROUP BY customer_id"
-      ") x JOIN ab_customers ON x.customer_id = ab_customers.id",
-      kTestConnectorId));
+      ") x JOIN ab_customers ON x.customer_id = ab_customers.id"));
   // The aggregation keeps its input's bucketing, so the join above it pairs
   // with the other bucketed table without a shuffle.
   AXIOM_ASSERT_DISTRIBUTED_PLAN(
@@ -1030,8 +1010,7 @@ TEST_P(BucketedExecutionTest, fullJoinCoBucketed) {
     SCOPED_TRACE("Full join on bucket keys");
     const auto logicalPlan = parseSelect(
         "SELECT coalesce(t_k, u_k) AS k, COUNT(*) AS cnt "
-        "FROM t FULL OUTER JOIN u ON t_k = u_k GROUP BY 1",
-        kTestConnectorId);
+        "FROM t FULL OUTER JOIN u ON t_k = u_k GROUP BY 1");
     // The full join retains the bucketing both sides share on the coalesce of
     // its key pair, so the aggregation above it needs no shuffle.
     AXIOM_ASSERT_PLAN_V2(
@@ -1061,8 +1040,7 @@ TEST_P(BucketedExecutionTest, fullJoinCoBucketed) {
     const auto logicalPlan = parseSelect(
         "SELECT coalesce(t_k, u_k) AS k "
         "FROM t FULL OUTER JOIN u_mismatch u "
-        "ON t_k = u_k AND t_j = u_j",
-        kTestConnectorId);
+        "ON t_k = u_k AND t_j = u_j");
     // Bucketing on opposite equality pairs does not co-locate matching rows,
     // so one input must be realigned.
     AXIOM_ASSERT_PLAN_V2(
@@ -1091,8 +1069,7 @@ TEST_P(BucketedExecutionTest, fullJoinCoBucketed) {
     const auto logicalPlan = parseSelect(
         "SELECT coalesce(t_k, u_k) AS k, COUNT(*) AS cnt "
         "FROM t FULL OUTER JOIN u_plain u "
-        "ON t_j = u_j AND t_k = u_k GROUP BY 1",
-        kTestConnectorId);
+        "ON t_j = u_j AND t_k = u_k GROUP BY 1");
     // The unbucketed side is aligned on the corresponding key despite the ON
     // clause order, and the aggregation reuses the full join's partitioning.
     AXIOM_ASSERT_PLAN_V2(
@@ -1131,8 +1108,7 @@ TEST_P(BucketedExecutionTest, bucketedAggThenBroadcastJoin) {
       "SELECT x.customer_id, x.cnt, bc_dim.label FROM ("
       "  SELECT customer_id, COUNT(*) AS cnt FROM bc_orders "
       "  GROUP BY customer_id"
-      ") x JOIN bc_dim ON x.customer_id = bc_dim.customer_id",
-      kTestConnectorId));
+      ") x JOIN bc_dim ON x.customer_id = bc_dim.customer_id"));
   if (useV2_) {
     AXIOM_ASSERT_DISTRIBUTED_PLAN(
         plan.plan,
@@ -1162,8 +1138,7 @@ TEST_P(BucketedExecutionTest, broadcastJoinThenBucketedAgg) {
   auto plan = planDistributed(parseSelect(
       "SELECT bj_orders.customer_id, COUNT(*) "
       "FROM bj_orders JOIN bj_dim ON bj_orders.amount = bj_dim.amount "
-      "GROUP BY bj_orders.customer_id",
-      kTestConnectorId));
+      "GROUP BY bj_orders.customer_id"));
   // The join is on a non-bucket key but its build side is broadcast, so the
   // probe's rows stay put and the aggregation above still reads bj_orders by
   // its buckets.
@@ -1200,8 +1175,7 @@ TEST_P(BucketedExecutionTest, greedyBucketed) {
 
   auto plan = planDistributed(parseSelect(
       "SELECT * FROM g_orders JOIN g_customers "
-      "ON g_orders.customer_id = g_customers.id",
-      kTestConnectorId));
+      "ON g_orders.customer_id = g_customers.id"));
   AXIOM_ASSERT_DISTRIBUTED_PLAN(
       plan.plan,
       matchScan("g_customers")
@@ -1241,7 +1215,7 @@ TEST_P(BucketedExecutionTest, greedyBucketedWithDimensions) {
         " JOIN g_dim_{0} ON g_fact_a.dim_key_{0} = g_dim_{0}.d_id", i);
   }
 
-  auto plan = planDistributed(parseSelect(sql, kTestConnectorId));
+  auto plan = planDistributed(parseSelect(sql));
   expectBucketedFragmentWithWidth(*plan.plan, 4);
 }
 
@@ -1258,8 +1232,7 @@ TEST_P(BucketedExecutionTest, incompatibleBucketingOnManyWorkers) {
 
   auto plan = planDistributed(parseSelect(
       "SELECT * FROM s_incompat_a JOIN s_incompat_b "
-      "ON s_incompat_a.customer_id = s_incompat_b.id",
-      kTestConnectorId));
+      "ON s_incompat_a.customer_id = s_incompat_b.id"));
 
   if (useV2_) {
     // The original bucketings cannot be paired, so the smaller side is
@@ -1290,8 +1263,7 @@ TEST_P(BucketedExecutionTest, incompatibleBucketingOnOneWorker) {
   auto plan = planVelox(
       parseSelect(
           "SELECT * FROM w1_t JOIN w1_u "
-          "ON w1_t.customer_id = w1_u.id",
-          kTestConnectorId),
+          "ON w1_t.customer_id = w1_u.id"),
       {.maxRemotePartitions = 1, .maxLocalPartitions = 4},
       optimizerOptions_);
 
@@ -1317,8 +1289,7 @@ TEST_P(BucketedExecutionTest, joinKeysMustCorrespondToBucketing) {
   optimizerOptions_.broadcastSizeLimit = 0;
   const auto logicalPlan = parseSelect(
       "SELECT a.v AS a_v, b.v AS b_v FROM jk_t a JOIN jk_u b "
-      "ON a.k = b.k AND a.j = b.j",
-      kTestConnectorId);
+      "ON a.k = b.k AND a.j = b.j");
 
   AXIOM_ASSERT_PLAN_V2(
       toSingleNodePlan(logicalPlan),
@@ -1351,8 +1322,7 @@ TEST_P(BucketedExecutionTest, joinKeepsBucketedSide) {
   optimizerOptions_.broadcastSizeLimit = 0;
   const auto logicalPlan = parseSelect(
       "SELECT * FROM mixed_t JOIN mixed_u ON a = b "
-      "JOIN mixed_w ON a = k",
-      kTestConnectorId);
+      "JOIN mixed_w ON a = k");
 
   // The second join keeps mixed_w's connector bucketing and moves the
   // unbucketed first join onto it.
@@ -1390,8 +1360,7 @@ TEST_P(BucketedExecutionTest, joinPairsWhateverOrderTheKeysAreWritten) {
     optimizerOptions_.syntacticJoinOrder = false;
   };
   auto plan = planDistributed(parseSelect(
-      "SELECT a.v, b.v FROM ko_t a JOIN ko_u b ON a.j = b.j AND a.k = b.k",
-      kTestConnectorId));
+      "SELECT a.v, b.v FROM ko_t a JOIN ko_u b ON a.j = b.j AND a.k = b.k"));
   if (useV2_) {
     AXIOM_ASSERT_DISTRIBUTED_PLAN(
         plan.plan,
@@ -1414,8 +1383,7 @@ TEST_P(BucketedExecutionTest, aggregationOverBroadcastJoinOnProbe) {
   addBucketedTable("ap_u", {"j"}, 2, schema, 1'000);
 
   auto plan = planDistributed(parseSelect(
-      "SELECT a.k, count(*) FROM ap_t a JOIN ap_u b ON a.j = b.j GROUP BY a.k",
-      kTestConnectorId));
+      "SELECT a.k, count(*) FROM ap_t a JOIN ap_u b ON a.j = b.j GROUP BY a.k"));
   if (useV2_) {
     AXIOM_ASSERT_DISTRIBUTED_PLAN(
         plan.plan,
@@ -1439,8 +1407,7 @@ TEST_P(BucketedExecutionTest, bucketColumnRenamedByProjection) {
   addBucketedTable("rn_t", {"k"}, 8, schema);
 
   auto plan = planDistributed(parseSelect(
-      "SELECT nk, count(*) FROM (SELECT k AS nk, v FROM rn_t) GROUP BY nk",
-      kTestConnectorId));
+      "SELECT nk, count(*) FROM (SELECT k AS nk, v FROM rn_t) GROUP BY nk"));
   if (useV2_) {
     AXIOM_ASSERT_DISTRIBUTED_PLAN(
         plan.plan,

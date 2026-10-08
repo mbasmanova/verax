@@ -695,7 +695,7 @@ TEST_P(UnnestTest, ordinality) {
         "SELECT a, b, c FROM unnest(array[1, 2, 3], array[4, 5]) WITH ORDINALITY AS t(a, b, c)";
     SCOPED_TRACE(query);
 
-    auto logicalPlan = parseSelect(query, kTestConnectorId);
+    auto logicalPlan = parseSelect(query);
 
     // Two arrays are unnested with ordinality column.
     auto matcher = matchValues(makeRowVector(
@@ -714,7 +714,7 @@ TEST_P(UnnestTest, ordinality) {
         "SELECT a, b FROM unnest(array[1, 2, 3], array[4, 5]) WITH ORDINALITY AS t(a, b, c)";
     SCOPED_TRACE(query);
 
-    auto logicalPlan = parseSelect(query, kTestConnectorId);
+    auto logicalPlan = parseSelect(query);
 
     // Ordinality column is pruned because it's not used.
     auto matcher = matchValues(makeRowVector(
@@ -733,7 +733,7 @@ TEST_P(UnnestTest, ordinality) {
         "SELECT 1 FROM unnest(array[1, 2, 3], array[4, 5]) WITH ORDINALITY AS t(a, b, c)";
     SCOPED_TRACE(query);
 
-    auto logicalPlan = parseSelect(query, kTestConnectorId);
+    auto logicalPlan = parseSelect(query);
 
     // Ordinality column is pruned because it's not used.
     auto matcher = matchValues(makeRowVector(
@@ -757,7 +757,7 @@ TEST_P(UnnestTest, unnestWithFilter) {
   auto query = "SELECT * FROM t, UNNEST(a) AS u(x, y) WHERE b = x";
   SCOPED_TRACE(query);
 
-  auto logicalPlan = parseSelect(query, kTestConnectorId);
+  auto logicalPlan = parseSelect(query);
 
   auto matcher = matchScan("t").unnest().filter("b = x").build();
 
@@ -769,7 +769,7 @@ TEST_P(UnnestTest, multipleTables) {
   testConnector_->addTable("t", ROW({"a"}, ARRAY(BIGINT())));
 
   auto query = "SELECT * FROM t, UNNEST(a, array[1, 2, 3]) AS u(x, y)";
-  auto logicalPlan = parseSelect(query, kTestConnectorId);
+  auto logicalPlan = parseSelect(query);
 
   auto matcher = matchScan("t").project().unnest().build();
 
@@ -783,7 +783,7 @@ TEST_P(UnnestTest, unnestWithJoinAndFilter) {
 
   auto query = "SELECT 1 FROM t, u, UNNEST(a) AS _(n) WHERE x = n";
 
-  auto logicalPlan = parseSelect(query, kTestConnectorId);
+  auto logicalPlan = parseSelect(query);
   auto plan = toSingleNodePlan(logicalPlan);
 
   // The filter n = x must not be converted to a join key between the
@@ -821,7 +821,7 @@ TEST_P(UnnestTest, crossJoinSingleRowAggregateAndUnnest) {
       " CROSS JOIN UNNEST(ids) AS _(n) "
       "WHERE a < c";
 
-  auto logicalPlan = parseSelect(query, kTestConnectorId);
+  auto logicalPlan = parseSelect(query);
   auto plan = toSingleNodePlan(logicalPlan);
 
   // v2 fuses the filter into the join and computes the join condition's
@@ -854,7 +854,7 @@ TEST_P(UnnestTest, leftJoinFilterOnSingleRowSubquery) {
       ") sub "
       "LEFT JOIN v ON sub.a = v.x AND sub.y IS NOT NULL";
 
-  auto logicalPlan = parseSelect(query, kTestConnectorId);
+  auto logicalPlan = parseSelect(query);
   auto plan = toSingleNodePlan(logicalPlan);
   // y = x + count is evaluated in the join filter.
   auto matcher = matchScan("t")
@@ -885,7 +885,7 @@ TEST_P(UnnestTest, leftJoinFilterOnSingleRowSubquerySmallPreservedSide) {
       ") sub "
       "LEFT JOIN v ON sub.a = v.x AND sub.y IS NOT NULL";
 
-  auto logicalPlan = parseSelect(query, kTestConnectorId);
+  auto logicalPlan = parseSelect(query);
   auto plan = toSingleNodePlan(logicalPlan);
   // y = x + count is evaluated in the join filter, with the preserved side
   // as the build.
@@ -910,7 +910,7 @@ TEST_P(UnnestTest, crossJoinUnnestOnWindowFunctionOutput) {
       "  FROM t"
       ") CROSS JOIN UNNEST(sequence(1, n)) AS _(x)";
 
-  auto logicalPlan = parseSelect(query, kTestConnectorId);
+  auto logicalPlan = parseSelect(query);
   auto plan = toSingleNodePlan(logicalPlan);
 
   auto matcher = matchScan("t")
@@ -931,7 +931,7 @@ TEST_P(UnnestTest, manyUnnestsCardinalityOverflow) {
         " CROSS JOIN UNNEST(ARRAY[1, 2, 3, 4, 5]) AS u{}(v{})", i, i);
   }
 
-  auto logicalPlan = parseSelect(sql, kTestConnectorId);
+  auto logicalPlan = parseSelect(sql);
   ASSERT_NO_THROW(toSingleNodePlan(logicalPlan));
 }
 
@@ -943,7 +943,7 @@ TEST_P(UnnestTest, joinWithConstantUnnest) {
       "JOIN (SELECT s FROM UNNEST(ARRAY[1, 2]) AS u(s)) ON a = s";
   SCOPED_TRACE(query);
 
-  auto logicalPlan = parseSelect(query, kTestConnectorId);
+  auto logicalPlan = parseSelect(query);
 
   AXIOM_ASSERT_PLAN_V2(
       toSingleNodePlan(logicalPlan),
@@ -964,7 +964,7 @@ TEST_P(UnnestTest, joinOfConstantUnnests) {
       "JOIN (SELECT s AS f FROM UNNEST(ARRAY[2, 3]) AS v(s)) ON e = f";
   SCOPED_TRACE(query);
 
-  auto logicalPlan = parseSelect(query, kTestConnectorId);
+  auto logicalPlan = parseSelect(query);
 
   AXIOM_ASSERT_PLAN_V2(
       toSingleNodePlan(logicalPlan),
@@ -992,7 +992,7 @@ TEST_P(UnnestTest, joinEdgeCrossingWithUnnest) {
       "JOIN u ON u.k = t.a AND u.m = e";
   SCOPED_TRACE(query);
 
-  auto logicalPlan = parseSelect(query, kTestConnectorId);
+  auto logicalPlan = parseSelect(query);
 
   auto matcher =
       matchValues()
@@ -1018,7 +1018,7 @@ TEST_P(UnnestTest, inSubqueryOverUnnest) {
       "  CROSS JOIN UNNEST(data) AS t(e))";
   SCOPED_TRACE(query);
 
-  auto logicalPlan = parseSelect(query, kTestConnectorId);
+  auto logicalPlan = parseSelect(query);
 
   AXIOM_ASSERT_PLAN_V2(toSingleNodePlan(logicalPlan), matchValues().build());
 
@@ -1040,7 +1040,7 @@ TEST_P(UnnestTest, unusedOutputUnderExists) {
       "  SELECT 1 FROM (SELECT trim(t_k) AS k "
       "  FROM t CROSS JOIN UNNEST(split(t_csv, ','), split(t_csv, ';'))) p "
       "  WHERE p.k = u_k)";
-  auto logicalPlan = parseSelect(query, kTestConnectorId);
+  auto logicalPlan = parseSelect(query);
 
   auto matcher = matchScan("u")
                      .hashJoinAnti(
@@ -1075,7 +1075,7 @@ TEST_P(UnnestTest, nondeterministicCollectionUnderExists) {
         WHERE t_k = u_k
       )
   )";
-  auto logicalPlan = parseSelect(query, kTestConnectorId);
+  auto logicalPlan = parseSelect(query);
 
   auto matcher =
       matchScan("u")
@@ -1103,7 +1103,7 @@ TEST_P(UnnestTest, countingJoinMultiplicity) {
       "SELECT t_k FROM t CROSS JOIN UNNEST(t_items) "
       "INTERSECT ALL "
       "SELECT u_k FROM u CROSS JOIN UNNEST(u_items)";
-  auto logicalPlan = parseSelect(query, kTestConnectorId);
+  auto logicalPlan = parseSelect(query);
 
   auto matcher = matchScan("t")
                      .unnest({"t_k"}, {"t_items"})
@@ -1129,7 +1129,7 @@ TEST_P(UnnestTest, unnestPlacedAboveJoin) {
       "JOIN s ON s.a = m.k";
   SCOPED_TRACE(query);
 
-  auto logicalPlan = parseSelect(query, kTestConnectorId);
+  auto logicalPlan = parseSelect(query);
 
   // v1 expands before the join, so the join reads the multiplied rows. That
   // plan is the worse one and is not checked.
@@ -1178,7 +1178,7 @@ TEST_P(UnnestTest, correlatedExists) {
   auto query =
       "SELECT k, EXISTS (SELECT 1 FROM UNNEST(a) AS u(e) WHERE e > 15) AS m "
       "FROM t";
-  auto logicalPlan = parseSelect(query, kTestConnectorId);
+  auto logicalPlan = parseSelect(query);
 
   if (!useV2_) {
     VELOX_ASSERT_THROW(
@@ -1209,7 +1209,7 @@ TEST_P(UnnestTest, lateralUnnest) {
   auto query =
       "SELECT k, l.e FROM t, LATERAL (SELECT e FROM UNNEST(a) AS u(e) "
       "WHERE e > 15) AS l";
-  auto logicalPlan = parseSelect(query, kTestConnectorId);
+  auto logicalPlan = parseSelect(query);
 
   if (!useV2_) {
     VELOX_ASSERT_THROW(
@@ -1230,7 +1230,7 @@ TEST_P(UnnestTest, inOverCorrelatedUnnest) {
       "t", ROW({"k", "v", "a"}, {BIGINT(), BIGINT(), ARRAY(BIGINT())}));
 
   auto query = "SELECT k, v IN (SELECT e FROM UNNEST(a) AS u(e)) AS m FROM t";
-  auto logicalPlan = parseSelect(query, kTestConnectorId);
+  auto logicalPlan = parseSelect(query);
 
   if (!useV2_) {
     VELOX_ASSERT_THROW(
@@ -1269,7 +1269,7 @@ TEST_P(UnnestTest, lateralUnnestNarrowerOutput) {
 
   auto query =
       "SELECT l.e FROM t, LATERAL (SELECT e FROM UNNEST(a) AS u(e)) AS l";
-  auto logicalPlan = parseSelect(query, kTestConnectorId);
+  auto logicalPlan = parseSelect(query);
 
   if (!useV2_) {
     VELOX_ASSERT_THROW(
@@ -1294,7 +1294,7 @@ TEST_P(UnnestTest, existsOverUnnestOfRelationNotSupported) {
       "FROM t";
 
   VELOX_ASSERT_THROW(
-      toSingleNodePlan(parseSelect(query, kTestConnectorId)),
+      toSingleNodePlan(parseSelect(query)),
       useV2_ ? "EXISTS over an Unnest of a relation is not yet implemented"
              : "Cannot resolve column name: a");
 }
@@ -1309,7 +1309,7 @@ TEST_P(UnnestTest, leftJoinLateralUnnestNotSupported) {
       "(SELECT e FROM UNNEST(a) AS u(e)) AS l ON true";
 
   VELOX_ASSERT_THROW(
-      toSingleNodePlan(parseSelect(query, kTestConnectorId)),
+      toSingleNodePlan(parseSelect(query)),
       useV2_ ? "a kLeft Apply over an Unnest body is not yet implemented"
              : "Unsupported PlanNode LATERAL_JOIN");
 }
@@ -1321,7 +1321,7 @@ TEST_P(UnnestTest, nondeterministicFilterAboveUnnest) {
   testConnector_->addTable("t", ROW({"a", "b"}, {ARRAY(BIGINT()), BIGINT()}));
 
   auto query = "SELECT n FROM t, UNNEST(a) AS _(n) WHERE b > rand()";
-  auto logicalPlan = parseSelect(query, kTestConnectorId);
+  auto logicalPlan = parseSelect(query);
 
   auto matcher = matchScan("t")
                      .unnest({"b"}, {"a"})

@@ -150,7 +150,7 @@ TEST_P(TestConnectorQueryTest, sharedSubexpressionConversion) {
   }
   sql += fmt::format(" SELECT x FROM t{}", kDepth);
 
-  auto logicalPlan = parseSelect(sql, kTestConnectorId);
+  auto logicalPlan = parseSelect(sql);
   ASSERT_NO_THROW(toSingleNodePlan(logicalPlan));
 }
 
@@ -169,7 +169,7 @@ TEST_P(TestConnectorQueryTest, wideOrChainExecutes) {
   }
 
   auto expected = makeRowVector({makeFlatVector<int64_t>({0, 1, 2})});
-  auto logicalPlan = parseSelect(sql, kTestConnectorId);
+  auto logicalPlan = parseSelect(sql);
   auto results = runVelox(logicalPlan, options_);
   exec::test::assertEqualResults(results.results, {expected});
 }
@@ -195,7 +195,7 @@ TEST_P(TestConnectorQueryTest, wideCorrelatedOrChainExecutes) {
       makeFlatVector<int64_t>({0, 1, 2}),
       makeFlatVector<int64_t>({0, 1, 2}),
   });
-  auto logicalPlan = parseSelect(sql, kTestConnectorId);
+  auto logicalPlan = parseSelect(sql);
   auto results = runVelox(logicalPlan, options_);
   exec::test::assertEqualResults(results.results, {expected});
 }

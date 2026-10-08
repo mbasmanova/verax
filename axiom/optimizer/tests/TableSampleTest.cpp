@@ -35,8 +35,7 @@ class TableSampleTest : public test::QueryTestBase,
   }
 
   lp::LogicalPlanNodePtr parseSampledScan(const std::string& sample) {
-    return parseSelect(
-        "SELECT * FROM t TABLESAMPLE " + sample, kTestConnectorId);
+    return parseSelect("SELECT * FROM t TABLESAMPLE " + sample);
   }
 };
 
@@ -99,8 +98,7 @@ TEST_P(TableSampleTest, system) {
   VELOX_ASSERT_THROW(
       planVelox(
           parseSelect(
-              "SELECT * FROM (VALUES (1)) AS v (x) TABLESAMPLE SYSTEM (50)",
-              kTestConnectorId),
+              "SELECT * FROM (VALUES (1)) AS v (x) TABLESAMPLE SYSTEM (50)"),
           {.maxRemotePartitions = 1, .maxLocalPartitions = 1}),
       "TABLESAMPLE SYSTEM is only supported directly over a table");
 }
@@ -137,8 +135,7 @@ TEST_P(TableSampleTest, sampledCardinality) {
 
   auto planSingleNode = [&](const std::string& big) {
     return toSingleNodePlan(parseSelect(
-        "SELECT bk, bv, sv FROM " + big + " JOIN small ON bk = sk",
-        kTestConnectorId));
+        "SELECT bk, bv, sv FROM " + big + " JOIN small ON bk = sk"));
   };
 
   auto matchJoin = [&](const std::string& probe, const std::string& build) {

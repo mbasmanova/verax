@@ -40,13 +40,11 @@ class TpchPlanTest : public optimizer::test::QueryTestBase {
   }
 
   velox::core::PlanNodePtr planTpch(int32_t query) {
-    return toSingleNodePlan(
-        parseSelect(optimizer::test::readTpchSql(query), kTestConnectorId));
+    return toSingleNodePlan(parseSelect(optimizer::test::readTpchSql(query)));
   }
 
   velox::core::PlanNodePtr planTpch(const std::string& name) {
-    return toSingleNodePlan(
-        parseSelect(optimizer::test::readTpchSql(name), kTestConnectorId));
+    return toSingleNodePlan(parseSelect(optimizer::test::readTpchSql(name)));
   }
 
   // Options for a multi-node plan-shape check. numWorkers > 1 splits the plan
@@ -60,9 +58,7 @@ class TpchPlanTest : public optimizer::test::QueryTestBase {
   std::shared_ptr<const MultiFragmentPlan> planTpchMultiNode(
       const MultiNodeOptions& options) {
     return planVelox(
-               parseSelect(
-                   optimizer::test::readTpchSql(options.query),
-                   kTestConnectorId),
+               parseSelect(optimizer::test::readTpchSql(options.query)),
                {
                    .maxRemotePartitions = options.numWorkers,
                    .maxLocalPartitions = options.numDrivers,
@@ -367,8 +363,7 @@ TEST_F(TpchPlanTest, q09Alt) {
           .build();
   AXIOM_ASSERT_PLAN(planTpch("q9_alt"), matcher);
 
-  auto logicalPlan =
-      parseSelect(optimizer::test::readTpchSql("q9_alt"), kTestConnectorId);
+  auto logicalPlan = parseSelect(optimizer::test::readTpchSql("q9_alt"));
   ASSERT_NO_THROW(planVelox(
       logicalPlan, {.maxRemotePartitions = 2, .maxLocalPartitions = 1}));
   ASSERT_NO_THROW(planVelox(
