@@ -1100,7 +1100,11 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
   }
 
   NodeCP rewriteAggregate(const Aggregate* node, NoContext& context) override {
-    NodeCP input = rewrite(node->input(), context);
+    return distributeAggregate(node, rewrite(node->input(), context));
+  }
+
+  // Distributes 'node' over 'input', its physically planned input.
+  NodeCP distributeAggregate(const Aggregate* node, NodeCP input) {
     if (isSplittableAggregate(node)) {
       // Remote two-stage: the input must shuffle across workers to co-locate
       // its groups, so the partial reduces rows before that remote exchange.
@@ -1110,7 +1114,11 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
                 input, node->groupingKeys(), Alignment::kCoLocated)) {
           input = grouped;
         } else {
-          return rewriteAggregateSplit(node, input, /*remoteExchange=*/true);
+          return rewriteAggregateSplit(
+              node,
+              input,
+              /*remoteExchange=*/true,
+              /*partialLimit=*/std::nullopt);
         }
       }
       // Local two-stage: the input is already co-located (e.g. a bucketed
@@ -1120,7 +1128,11 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
       // The local exchange itself is not materialized here — emit inserts it at
       // numDrivers > 1 (local exchanges are implicit).
       if (numDrivers_ > 1) {
-        return rewriteAggregateSplit(node, input, /*remoteExchange=*/false);
+        return rewriteAggregateSplit(
+            node,
+            input,
+            /*remoteExchange=*/false,
+            /*partialLimit=*/std::nullopt);
       }
     }
     // A global () grouping set emits a default row over empty input; a
@@ -1182,6 +1194,16 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
          .globalGroupingSets = node->globalGroupingSets()});
   }
 
+  // True when 'node' is a DISTINCT: an aggregate with grouping keys only.
+  static bool isDistinct(NodeCP node) {
+    if (!node->is(NodeType::kAggregate)) {
+      return false;
+    }
+    const auto* aggregate = node->as<Aggregate>();
+    return aggregate->aggregates().empty() &&
+        !aggregate->groupingKeys().empty();
+  }
+
   // True when 'node' can two-stage into partial + final, independent of whether
   // the exchange between them is remote (numWorkers > 1) or local (numDrivers >
   // 1) — the caller gates on that. Excluded: a DISTINCT aggregate (a per-task
@@ -1241,10 +1263,14 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
   // aggregate (e.g. array_agg) gains nothing and pays an extra hash pass; not
   // splitting it needs a reducing/non-reducing classification that does not yet
   // exist, so that pessimization is deferred.
+  //
+  // With 'partialLimit', the partial's output is limited to that many rows,
+  // and with a remote exchange gathered, so the final runs on one task.
   NodeCP rewriteAggregateSplit(
       const Aggregate* node,
       NodeCP input,
-      bool remoteExchange) {
+      bool remoteExchange,
+      std::optional<int64_t> partialLimit) {
     const size_t numKeys = node->groupingKeys().size();
     const auto& finalColumns = node->outputColumns();
 
@@ -1325,9 +1351,12 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
     // Without a remote exchange the partial and final share one fragment; the
     // final's local repartition (added at emit for numDrivers > 1) co-locates
     // each group's partials on one driver.
-    NodeCP finalInput = !remoteExchange ? partial
-        : finalKeys.empty()             ? gather(partial)
-                                        : partition(partial, finalKeys);
+    if (partialLimit) {
+      partial = builder().make<Limit>({partial, /*offset=*/0, *partialLimit});
+    }
+    NodeCP finalInput = !remoteExchange     ? partial
+        : finalKeys.empty() || partialLimit ? gather(partial)
+                                            : partition(partial, finalKeys);
 
     return builder().make<Aggregate>(
         {.input = finalInput,
@@ -1458,8 +1487,30 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
   // Distributes a LIMIT: at numWorkers>1 a per-task partial keeps the first
   // offset+count rows, the gather brings them to one task, and the full Limit
   // applies offset/count there.
+  //
+  // Over a DISTINCT (an aggregate with grouping keys only) that would split
+  // into partial and final, the partial DISTINCT carries that partial Limit,
+  // and the gathered rows are deduplicated once before the Limit, so the
+  // shuffle on the keys is gone. A partial DISTINCT emits each key the first
+  // time it sees it, so a task or driver stops reading once its limit is met.
   NodeCP rewriteLimit(const Limit* node, NoContext& context) override {
-    NodeCP newInput = rewrite(node->input(), context);
+    const auto* distinct =
+        isDistinct(node->input()) ? node->input()->as<Aggregate>() : nullptr;
+    NodeCP newInput;
+    if (distinct != nullptr) {
+      NodeCP distinctInput = rewrite(distinct->input(), context);
+      const bool remoteExchange = numWorkers_ > 1 &&
+          needsShuffle(distinctInput, distinct->groupingKeys());
+      if (node->isBounded() && (remoteExchange || numDrivers_ > 1)) {
+        NodeCP split = rewriteAggregateSplit(
+            distinct, distinctInput, remoteExchange, node->offsetPlusCount());
+        return builder().make<Limit>({split, node->offset(), node->count()});
+      }
+      newInput = distributeAggregate(distinct, distinctInput);
+    } else {
+      newInput = rewrite(node->input(), context);
+    }
+
     if (numWorkers_ == 1 || isGathered(newInput)) {
       if (newInput == node->input()) {
         return node;
@@ -1469,7 +1520,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
 
     // A partial keeps the first offset + count rows of each task; with no
     // count that is every row, so there is nothing to reduce before the gather.
-    if (node->offsetPlusCount() == std::numeric_limits<int64_t>::max()) {
+    if (!node->isBounded()) {
       return builder().make<Limit>(
           {gather(newInput), node->offset(), node->count()});
     }
