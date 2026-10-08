@@ -2913,13 +2913,12 @@ Translated Translator::translateSet(
 
       if (isDistinct) {
         NodeCP setNode = simplified.node;
-        const ColumnVector& outputColumns = setNode->outputColumns();
         simplified = nodeSimplifier_.make(
             Aggregate::Key{
                 setNode,
-                ExprVector{outputColumns.begin(), outputColumns.end()},
+                ExprVector{setOutputColumns.begin(), setOutputColumns.end()},
                 AggregateCallVector{},
-                outputColumns},
+                setOutputColumns},
             std::move(simplified));
         applySubstitutions(simplified.substitutions, scope);
         VELOX_CHECK(!simplified.empty());
