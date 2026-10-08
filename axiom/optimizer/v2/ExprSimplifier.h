@@ -57,8 +57,8 @@ class ExprSimplifier {
   bool isKnownNonNull(ExprCP expr, const PlanObjectSet& nonNullColumns) const;
 
   /// Simplifies `expr` using columns known to be non-null: COALESCE stops at
-  /// its first non-null argument, and `x = x` is true for a non-null,
-  /// deterministic `x` of a primitive type.
+  /// its first non-null argument, `x IS NULL` is false for a non-null `x`, and
+  /// `x = x` is true for a non-null, deterministic `x` of a primitive type.
   ExprCP simplify(ExprCP expr, const PlanObjectSet& nonNullColumns) const;
 
   /// Evaluates a column-free `expr` to a single value. Places no determinism

@@ -321,51 +321,9 @@ NodeSimplifier::SimplifiedNode NodeSimplifier::make(
     }
   }
 
-  if (input.node->is(NodeType::kValues)) {
-    const auto* values = input.node->as<Values>();
-    if (values->rows() != nullptr) {
-      const auto holdsForEveryRow = [&](ExprCP predicate) {
-        for (size_t row = 0; row < values->cardinality(); ++row) {
-          PlanSubstitutions constants;
-          for (size_t channel = 0; channel < values->outputColumns().size();
-               ++channel) {
-            ColumnCP column = values->outputColumns()[channel];
-            constants.add(
-                column,
-                builder_.makeLiteral(
-                    velox::Variant(values->valueAt(row, channel)),
-                    column->value().type));
-          }
-          ExprVector residual;
-          if (simplifier_.simplifyFilter(
-                  constants.apply(predicate, exprs_), residual) ||
-              !residual.empty()) {
-            return false;
-          }
-        }
-        return true;
-      };
-      std::erase_if(kept, holdsForEveryRow);
-    }
-  }
-
-  NodeCP filterInput = input.node;
-  if (!kept.empty() && filterInput->is(NodeType::kFilter)) {
-    const auto* filter = filterInput->as<Filter>();
-    ExprVector combined = filter->predicates();
-    folly::F14FastSet<ExprCP> seen{combined.begin(), combined.end()};
-    for (ExprCP predicate : kept) {
-      if (seen.insert(predicate).second) {
-        combined.push_back(predicate);
-      }
-    }
-    kept = std::move(combined);
-    filterInput = filter->input();
-  }
-
   NodeCP output = input.node;
   if (!kept.empty()) {
-    output = builder_.make<Filter>({filterInput, std::move(kept)});
+    output = builder_.make<Filter>({input.node, std::move(kept)});
   }
   input.substitutions =
       visibleSubstitutions(std::move(input.substitutions), output);
@@ -400,26 +358,6 @@ NodeSimplifier::SimplifiedNode NodeSimplifier::make(
     keptOutputs.push_back(output);
     if (!expression->isColumn()) {
       outputSubstitutions.addIfAbsent(expression, output);
-    }
-  }
-
-  if (key.input->is(NodeType::kSort)) {
-    const auto* sort = key.input->as<Sort>();
-    PlanObjectSet required;
-    required.unionColumns(keptExpressions);
-    required.unionColumns(sort->orderKeys());
-    ColumnVector retained;
-    for (ColumnCP column : sort->input()->outputColumns()) {
-      if (required.contains(column)) {
-        retained.push_back(column);
-      }
-    }
-    if (retained.size() != sort->input()->outputColumns().size()) {
-      NodeCP narrowedInput = PrecomputeProjections::makeProject(
-          sort->input(), toExprs(retained), retained, builder_, simplifier_);
-      key.input = builder_.make<Sort>(
-          {narrowedInput, sort->orderKeys(), sort->orderTypes()});
-      input.node = key.input;
     }
   }
 
@@ -1421,21 +1359,6 @@ NodeSimplifier::make(Join::Key key, SimplifiedNode left, SimplifiedNode right) {
           /*falsePadding=*/false);
       expressions = input->substitutions.apply(expressions, exprs_);
       NodeCP legInput = input->node;
-      if (legInput->is(NodeType::kProject)) {
-        const auto* project = legInput->as<Project>();
-        const bool isColumnProjection = std::ranges::all_of(
-            project->exprs(),
-            [](ExprCP expression) { return expression->isColumn(); });
-        if (isColumnProjection) {
-          PlanSubstitutions projectionSubstitutions;
-          for (size_t i = 0; i < project->outputColumns().size(); ++i) {
-            projectionSubstitutions.addIfAbsent(
-                project->outputColumns()[i], project->exprs()[i]);
-          }
-          expressions = projectionSubstitutions.apply(expressions, exprs_);
-          legInput = project->input();
-        }
-      }
       ColumnVector outputs;
       outputs.reserve(key.outputColumns.size());
       for (ColumnCP output : key.outputColumns) {
@@ -1535,61 +1458,6 @@ NodeSimplifier::make(Join::Key key, SimplifiedNode left, SimplifiedNode right) {
     rightKey = simplifier_.simplify(rightKey, nonNullOutput.get(right.node));
   }
   VELOX_CHECK_EQ(key.leftKeys.size(), key.rightKeys.size());
-
-  if (key.joinType == velox::core::JoinType::kInner) {
-    const auto constantValues = [](NodeCP input) -> const Values* {
-      if (!input->is(NodeType::kValues)) {
-        return nullptr;
-      }
-      const auto* values = input->as<Values>();
-      return values->rows() != nullptr && values->cardinality() > 1 ? values
-                                                                    : nullptr;
-    };
-    const Values* leftValues = constantValues(left.node);
-    const Values* rightValues = constantValues(right.node);
-    if ((leftValues == nullptr) != (rightValues == nullptr)) {
-      const bool valuesOnLeft = leftValues != nullptr;
-      const Values& values = valuesOnLeft ? *leftValues : *rightValues;
-      ExprVector restrictions;
-      for (size_t i = 0; i < key.leftKeys.size(); ++i) {
-        ExprCP valuesKey = valuesOnLeft ? key.leftKeys[i] : key.rightKeys[i];
-        ExprCP probeKey = valuesOnLeft ? key.rightKeys[i] : key.leftKeys[i];
-        if (!valuesKey->isColumn()) {
-          continue;
-        }
-        const auto& valueColumns = values.outputColumns();
-        const auto it = std::find(
-            valueColumns.begin(), valueColumns.end(), valuesKey->as<Column>());
-        if (it == valueColumns.end()) {
-          continue;
-        }
-        const size_t channel = it - valueColumns.begin();
-        ExprVector distinctValues;
-        folly::F14FastSet<ExprCP> seen;
-        for (size_t row = 0; row < values.cardinality(); ++row) {
-          ExprCP literal = builder_.makeLiteral(
-              velox::Variant(values.valueAt(row, channel)),
-              valuesKey->value().type);
-          if (seen.insert(literal).second) {
-            distinctValues.push_back(literal);
-          }
-        }
-        restrictions.push_back(
-            distinctValues.size() == 1
-                ? exprs_.makeEq(probeKey, distinctValues.front())
-                : exprs_.makeIn(probeKey, std::move(distinctValues)));
-      }
-      if (!restrictions.empty()) {
-        SimplifiedNode& probe = valuesOnLeft ? right : left;
-        NodeCP probeNode = probe.node;
-        probe = make(
-            Filter::Key{probeNode, std::move(restrictions)}, std::move(probe));
-        if (probe.empty()) {
-          return noMatch();
-        }
-      }
-    }
-  }
 
   ExprVector leftKeys;
   ExprVector rightKeys;

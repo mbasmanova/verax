@@ -536,13 +536,59 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     context.collectedFilters = std::move(common);
   }
 
+  // Collects, for each requested column of 'values', the values it holds:
+  // 'column IN (values)', with 'column IS NULL OR' when it also holds NULL.
+  void collectFromValues(const Values& values, PushdownContext& context) {
+    if (values.rows() == nullptr) {
+      return;
+    }
+    const auto& columns = values.outputColumns();
+    for (size_t channel = 0; channel < columns.size(); ++channel) {
+      ColumnCP column = columns[channel];
+      if (!context.requestedFilterColumns.contains(column)) {
+        continue;
+      }
+      ExprVector distinctValues;
+      folly::F14FastSet<ExprCP> seen;
+      bool hasNull{false};
+      for (size_t row = 0; row < values.cardinality(); ++row) {
+        const velox::Variant& value = values.valueAt(row, channel);
+        if (value.isNull()) {
+          hasNull = true;
+          continue;
+        }
+        ExprCP literal =
+            builder().makeLiteral(velox::Variant(value), column->value().type);
+        if (seen.insert(literal).second) {
+          distinctValues.push_back(literal);
+        }
+      }
+      ExprCP inValues = nullptr;
+      if (!distinctValues.empty()) {
+        inValues = distinctValues.size() == 1
+            ? exprs_.makeEq(column, distinctValues.front())
+            : exprs_.makeIn(column, std::move(distinctValues));
+      }
+      ExprCP isNull = hasNull ? exprs_.makeIsNull(column) : nullptr;
+      if (inValues != nullptr || isNull != nullptr) {
+        appendDistinct(
+            context.collectedFilters,
+            inValues == nullptr     ? isNull
+                : isNull == nullptr ? inValues
+                                    : exprs_.makeOr(isNull, inValues));
+      }
+    }
+  }
+
   // Collects predicates guaranteed to hold for every row emitted by `node`.
   void collectFilters(NodeCP node, PushdownContext& context) {
     switch (node->nodeType()) {
       case NodeType::kScan:
       case NodeType::kIndexLookupJoin:
-      case NodeType::kValues:
       case NodeType::kWorkingTable:
+        return;
+      case NodeType::kValues:
+        collectFromValues(*node->as<Values>(), context);
         return;
       case NodeType::kFilter: {
         const auto* filter = node->as<Filter>();
@@ -637,22 +683,30 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     return result;
   }
 
-  // Substitutes equivalent join-key columns into deterministic filters.
-  // Returns true if a derived filter simplifies to false.
+  // Substitutes equivalent join-key columns into deterministic filters. Unless
+  // the join matches NULL to NULL ('nullAsValue'), rows agree on a key only
+  // when it is not NULL, so the targets are non-null in what a derived filter
+  // is about. Returns true if a derived filter simplifies to false.
   bool deriveFilters(
       const ExprVector& filters,
       const ColumnVector& sources,
       const ColumnVector& targets,
+      bool nullAsValue,
       ExprVector& derived) {
     const auto substitutions = makeSubstitutions(sources, targets);
+    const PlanObjectSet nonNullTargets =
+        nullAsValue ? PlanObjectSet{} : PlanObjectSet::fromObjects(targets);
     for (ExprCP filter : filters) {
       if (filter->containsNonDeterministic()) {
         continue;
       }
       for (const auto& mapping : substitutions) {
         ExprCP substituted = exprs_.replace(filter, mapping);
-        if (substituted != filter && !isSelfEquality(substituted) &&
-            simplifier_.simplifyFilter(substituted, derived)) {
+        if (substituted == filter || isSelfEquality(substituted)) {
+          continue;
+        }
+        if (simplifier_.simplifyFilter(
+                simplifier_.simplify(substituted, nonNullTargets), derived)) {
           return true;
         }
       }
@@ -666,9 +720,10 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       const ColumnVector& sourceKeys,
       const ColumnVector& targetKeys,
       const PlanObjectSet& targetColumns,
+      bool nullAsValue,
       ExprVector& targetFilters) {
     ExprVector derived;
-    if (deriveFilters(filters, sourceKeys, targetKeys, derived)) {
+    if (deriveFilters(filters, sourceKeys, targetKeys, nullAsValue, derived)) {
       appendDistinct(targetFilters, builder().makeBoolean(false));
       return;
     }
@@ -715,6 +770,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
             leftKeys,
             rightKeys,
             rightColumns,
+            node->nullAsValue(),
             collected.output);
       }
       if (preserved.left) {
@@ -723,6 +779,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
             rightKeys,
             leftKeys,
             leftColumns,
+            node->nullAsValue(),
             collected.output);
       }
       for (ExprCP filter : node->filter()) {
@@ -785,13 +842,40 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     appendInputFilters(
         node->filter(), leftColumns, rightColumns, leftFilters, rightFilters);
 
+    // A filter an input already guarantees is not added to it again.
     if (propagation.rightToLeft) {
+      ExprVector derived;
       deriveForInput(
-          rightFilters, rightKeys, leftKeys, leftColumns, leftPending);
+          rightFilters,
+          rightKeys,
+          leftKeys,
+          leftColumns,
+          node->nullAsValue(),
+          derived);
+      appendNotGuaranteed(derived, collected.leftInput, leftPending);
     }
     if (propagation.leftToRight) {
+      ExprVector derived;
       deriveForInput(
-          leftFilters, leftKeys, rightKeys, rightColumns, rightPending);
+          leftFilters,
+          leftKeys,
+          rightKeys,
+          rightColumns,
+          node->nullAsValue(),
+          derived);
+      appendNotGuaranteed(derived, collected.rightInput, rightPending);
+    }
+  }
+
+  static void appendNotGuaranteed(
+      const ExprVector& filters,
+      const ExprVector& guaranteed,
+      ExprVector& pending) {
+    for (ExprCP filter : filters) {
+      if (std::find(guaranteed.begin(), guaranteed.end(), filter) ==
+          guaranteed.end()) {
+        appendDistinct(pending, filter);
+      }
     }
   }
 
@@ -1701,6 +1785,9 @@ class Pushdown : public NodeRewriter<PushdownContext> {
   NodeCP rewriteScan(const Scan* node, PushdownContext& context) override {
     ExprVector filters = std::move(context.pending);
     context.pending.clear();
+    if (std::any_of(filters.begin(), filters.end(), isConstantFalse)) {
+      return makeEmptyValues(node);
+    }
     PlanObjectSet impliedFilterSet;
     if (connectorPushdown_ == PushdownAndPrunePass::ConnectorPushdown::kOffer) {
       ExprVector impliedFilters;
@@ -2790,8 +2877,10 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       return false;
     }
     ExprVector derived;
-    if (deriveFilters(pending, rightKeys, leftKeys, derived) ||
-        deriveFilters(pending, leftKeys, rightKeys, derived)) {
+    if (deriveFilters(
+            pending, rightKeys, leftKeys, node->nullAsValue(), derived) ||
+        deriveFilters(
+            pending, leftKeys, rightKeys, node->nullAsValue(), derived)) {
       return true;
     }
     appendDistinct(pending, derived);

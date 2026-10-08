@@ -929,3 +929,11 @@ FROM (
 RIGHT JOIN (VALUES (1), (2)) AS preserved(a)
   ON missing.x = preserved.a
 GROUP BY 1, 2
+----
+-- An inner join against constant rows that include NULL returns the rows
+-- matching the non-null values.
+SELECT t.a, t.b FROM t JOIN (VALUES (1), (3), (NULL)) AS v(k) ON t.a = v.k
+----
+-- Only NULL keys: nothing matches.
+-- count 0
+SELECT t.a FROM t JOIN (VALUES (CAST(NULL AS BIGINT)), (CAST(NULL AS BIGINT))) AS v(k) ON t.a = v.k
