@@ -296,3 +296,23 @@ SELECT CAST(NULL AS BIGINT) AS x FROM t
 INTERSECT
 SELECT CAST(NULL AS BIGINT) AS x FROM t
 ----
+-- A constant absent from the other INTERSECT leg matches nothing.
+-- count 0
+SELECT 100 INTERSECT SELECT a FROM t
+----
+-- A constant present in the other EXCEPT leg cancels.
+-- count 0
+SELECT 1 EXCEPT SELECT a FROM t
+----
+-- EXCEPT compares NULL as a value, so a NULL constant cancels against NULL.
+-- count 0
+SELECT CAST(NULL AS BIGINT) EXCEPT SELECT CAST(NULL AS BIGINT) FROM t
+----
+-- A constant present in the other INTERSECT leg survives.
+-- duckdb: VALUES (1)
+SELECT 1 INTERSECT SELECT a FROM t
+----
+-- A constant absent from the other EXCEPT leg survives.
+-- duckdb: VALUES (100)
+SELECT 100 EXCEPT SELECT a FROM t
+----
