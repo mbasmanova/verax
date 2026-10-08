@@ -195,8 +195,9 @@ TestTable::TestTable(
       bucketSpec_(std::move(bucketSpec)) {
   VELOX_CHECK_NOT_NULL(connector);
   const auto& tableName = this->name().table;
+  std::vector<const Column*> partitionColumns;
+  std::shared_ptr<const PartitionType> partitionType;
   if (bucketSpec_.has_value()) {
-    std::vector<const Column*> partitionColumns;
     std::vector<velox::TypePtr> partitionKeyTypes;
     std::vector<velox::column_index_t> bucketChannels;
     for (const auto& columnName : bucketSpec_->bucketColumns) {
@@ -208,22 +209,15 @@ TestTable::TestTable(
       bucketChannels.push_back(schema->getChildIdx(columnName));
     }
 
-    auto partitionType = std::make_shared<const TestPartitionType>(
+    partitionType = std::make_shared<const TestPartitionType>(
         bucketSpec_->numBuckets, std::move(partitionKeyTypes), schema);
     partitionFunction_ =
         partitionType->makeSpec(bucketChannels, /*constants=*/{}, false)
             ->create(bucketSpec_->numBuckets, /*localExchange=*/false);
-
-    exportedLayout_ = std::make_unique<TestTableLayout>(
-        tableName,
-        this,
-        connector_,
-        allColumns(),
-        std::move(partitionColumns),
-        std::move(partitionType));
-  } else if (auto lookupIt =
-                 options.find(std::string{TestConnectorMetadata::kLookupKeys});
-             lookupIt != options.end()) {
+  }
+  if (auto lookupIt =
+          options.find(std::string{TestConnectorMetadata::kLookupKeys});
+      lookupIt != options.end()) {
     std::vector<const Column*> lookupKeys;
     for (const auto& columnName : lookupIt->second.array<std::string>()) {
       const auto* column = findColumn(columnName);
@@ -232,7 +226,21 @@ TestTable::TestTable(
       lookupKeys.push_back(column);
     }
     exportedLayout_ = std::make_unique<TestTableLayout>(
-        tableName, this, connector_, allColumns(), std::move(lookupKeys));
+        tableName,
+        this,
+        connector_,
+        allColumns(),
+        std::move(lookupKeys),
+        std::move(partitionColumns),
+        std::move(partitionType));
+  } else if (bucketSpec_.has_value()) {
+    exportedLayout_ = std::make_unique<TestTableLayout>(
+        tableName,
+        this,
+        connector_,
+        allColumns(),
+        std::move(partitionColumns),
+        std::move(partitionType));
   } else {
     exportedLayout_ = std::make_unique<TestTableLayout>(
         tableName, this, connector_, allColumns());
@@ -875,7 +883,8 @@ velox::connector::ConnectorTableHandlePtr TestTableLayout::createTableHandle(
 std::shared_ptr<TestTable> TestConnectorMetadata::addLookupTable(
     const std::string& name,
     const velox::RowTypePtr& schema,
-    const std::vector<std::string>& lookupKeyNames) {
+    const std::vector<std::string>& lookupKeyNames,
+    std::optional<TestBucketSpec> bucketSpec) {
   std::vector<velox::Variant> keys;
   keys.reserve(lookupKeyNames.size());
   for (const auto& keyName : lookupKeyNames) {
@@ -890,7 +899,8 @@ std::shared_ptr<TestTable> TestConnectorMetadata::addLookupTable(
       velox::ROW({}),
       connector_,
       folly::F14FastMap<std::string, velox::Variant>{
-          {std::string(kLookupKeys), velox::Variant::array(std::move(keys))}});
+          {std::string(kLookupKeys), velox::Variant::array(std::move(keys))}},
+      std::move(bucketSpec));
   auto [it, ok] = tables_.emplace(std::move(tableName), std::move(table));
   VELOX_CHECK(ok, "Table already exists: {}", it->first.toString());
   return it->second;

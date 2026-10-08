@@ -15,7 +15,7 @@
  */
 
 #include "axiom/optimizer/v2/NodePrinter.h"
-#include "axiom/optimizer/v2/ScanHandle.h"
+#include "axiom/optimizer/v2/TableAccessHandle.h"
 
 #include <fmt/format.h>
 #include <fmt/ranges.h>
@@ -85,7 +85,8 @@ class Printer : public NodeVisitor {
     header(
         ctx, node, fmt::format("[{}]", node.baseTable()->schemaTable->name()));
     const auto pad = spaces(ctx.indent + 2);
-    if (const ScanHandle* handle = node.scanHandle(); handle != nullptr) {
+    if (const TableAccessHandle* handle = node.scanHandle();
+        handle != nullptr) {
       ctx.out << pad << "handle: " << handle->tableHandle->toString() << '\n';
     }
     visitInputs(node, ctx);
@@ -232,6 +233,25 @@ class Printer : public NodeVisitor {
       ctx.out << pad << "leftKeys: " << formatExprs(node.leftKeys()) << '\n';
       ctx.out << pad << "rightKeys: " << formatExprs(node.rightKeys()) << '\n';
     }
+    if (!node.filter().empty()) {
+      ctx.out << pad << "filter: " << formatExprs(node.filter()) << '\n';
+    }
+    visitInputs(node, ctx);
+  }
+
+  void visit(const IndexLookupJoin& node, NodeVisitorContext& context)
+      const override {
+    auto& ctx = static_cast<Context&>(context);
+    header(
+        ctx,
+        node,
+        fmt::format(
+            "[{}, {}]",
+            velox::core::JoinTypeName::toName(node.joinType()),
+            node.lookupTable()->schemaTable->name()));
+    const auto pad = spaces(ctx.indent + 2);
+    ctx.out << pad << "probeKeys: " << formatExprs(node.probeKeys()) << '\n';
+    ctx.out << pad << "lookupKeys: " << formatExprs(node.lookupKeys()) << '\n';
     if (!node.filter().empty()) {
       ctx.out << pad << "filter: " << formatExprs(node.filter()) << '\n';
     }

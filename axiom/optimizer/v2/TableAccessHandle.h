@@ -29,10 +29,8 @@ namespace facebook::axiom::optimizer::v2 {
 using SubfieldsOf =
     std::function<std::vector<velox::common::Subfield>(ColumnCP)>;
 
-/// Connector access for a scanned leaf table: the result of negotiating filter
-/// pushdown with the connector. Made once, by the pushdown pass, and pointed
-/// at by the `Scan` from there on.
-struct ScanHandle {
+/// Connector access for reading a table by scan or index lookup.
+struct TableAccessHandle {
   /// Offers 'filters' to the connector for reading 'outputColumns' of
   /// 'baseTable' and returns the handle it builds. Calls into the connector.
   /// Appends to 'rejected' the conjuncts the connector rejected, which the
@@ -42,10 +40,21 @@ struct ScanHandle {
   /// column can be read in part. Returning none reads the column whole. It is
   /// asked about every column the read needs, including the ones only a filter
   /// references, which the caller cannot know in advance.
-  static ScanHandle build(
+  static TableAccessHandle buildScan(
       const BaseTable& baseTable,
       const ColumnVector& outputColumns,
       const ExprVector& filters,
+      const SubfieldsOf& subfieldsOf,
+      const OptimizerSession& session,
+      velox::core::ExpressionEvaluator& evaluator,
+      ExprVector& rejected);
+
+  /// Builds index-lookup access using equality constraints on 'lookupKeys'.
+  static TableAccessHandle buildIndexLookup(
+      const BaseTable& baseTable,
+      const ColumnVector& outputColumns,
+      const ExprVector& filters,
+      const ColumnVector& lookupKeys,
       const SubfieldsOf& subfieldsOf,
       const OptimizerSession& session,
       velox::core::ExpressionEvaluator& evaluator,

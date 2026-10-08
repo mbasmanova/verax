@@ -23,7 +23,7 @@
 #include "axiom/optimizer/QueryGraph.h"
 #include "axiom/optimizer/QueryGraphContext.h"
 #include "axiom/optimizer/v2/Node.h"
-#include "axiom/optimizer/v2/ScanHandle.h"
+#include "axiom/optimizer/v2/TableAccessHandle.h"
 
 namespace facebook::axiom::optimizer::v2 {
 
@@ -189,8 +189,8 @@ class Builder {
   /// Takes ownership of 'handle' and returns a stable pointer to it, for a
   /// `Scan` to point at. Handles are not interned: each one is a separate
   /// negotiation with the connector.
-  const ScanHandle* takeScanHandle(ScanHandle handle) {
-    return &scanHandles_.emplace_back(std::move(handle));
+  const TableAccessHandle* takeTableAccessHandle(TableAccessHandle handle) {
+    return &tableAccessHandles_.emplace_back(std::move(handle));
   }
 
  private:
@@ -263,6 +263,8 @@ class Builder {
       return workingTables_;
     } else if constexpr (std::is_same_v<T, FixedPoint>) {
       return fixedPoints_;
+    } else if constexpr (std::is_same_v<T, IndexLookupJoin>) {
+      return indexLookupJoins_;
     } else {
       static_assert(sizeof(T) == 0, "No dedup map for this node type");
     }
@@ -294,6 +296,7 @@ class Builder {
   DedupSet<Unnest> unnests_;
   DedupSet<UnionAll> unions_;
   DedupSet<Join> joins_;
+  DedupSet<IndexLookupJoin> indexLookupJoins_;
   DedupSet<Window> windows_;
   DedupSet<Inference> inferences_;
   DedupSet<RowNumber> rowNumbers_;
@@ -312,9 +315,9 @@ class Builder {
   DedupSet<Call> calls_;
   DedupSet<optimizer::Aggregate> aggregateCalls_;
 
-  // Owns the connector handles the IR's `Scan`s point at. A deque so the
-  // pointers stay valid as more are added.
-  std::deque<ScanHandle> scanHandles_;
+  // Owns the connector handles table-access nodes point at. A deque keeps
+  // their pointers valid as more are added.
+  std::deque<TableAccessHandle> tableAccessHandles_;
 };
 
 } // namespace facebook::axiom::optimizer::v2

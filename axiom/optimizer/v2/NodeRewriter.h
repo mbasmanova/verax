@@ -80,6 +80,8 @@ class NodeRewriter {
         return rewriteUnionAll(node->as<UnionAll>(), context);
       case NodeType::kJoin:
         return rewriteJoin(node->as<Join>(), context);
+      case NodeType::kIndexLookupJoin:
+        return rewriteIndexLookupJoin(node->as<IndexLookupJoin>(), context);
       case NodeType::kWindow:
         return rewriteWindow(node->as<Window>(), context);
       case NodeType::kInference:
@@ -270,6 +272,27 @@ class NodeRewriter {
          node->filter(),
          node->nullAware(),
          node->nullAsValue(),
+         node->outputColumns(),
+         node->sourceColumns()});
+  }
+
+  virtual NodeCP rewriteIndexLookupJoin(
+      const IndexLookupJoin* node,
+      TContext& context) {
+    NodeCP probe = rewrite(node->probe(), context);
+    if (probe == node->probe()) {
+      return node;
+    }
+    return builder_.template make<IndexLookupJoin>(
+        {probe,
+         node->lookupTable(),
+         node->index(),
+         node->lookupOutputColumns(),
+         node->lookupHandle(),
+         node->joinType(),
+         node->probeKeys(),
+         node->lookupKeys(),
+         node->filter(),
          node->outputColumns(),
          node->sourceColumns()});
   }

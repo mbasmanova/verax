@@ -118,17 +118,20 @@ class TestTableLayout : public TableLayout {
       Table* table,
       velox::connector::Connector* connector,
       std::vector<const Column*> columns,
-      std::vector<const Column*> lookupKeys)
+      std::vector<const Column*> lookupKeys,
+      std::vector<const Column*> partitionColumns,
+      std::shared_ptr<const PartitionType> partitionType)
       : TableLayout(
             label,
             table,
             connector,
             std::move(columns),
-            /*partitionColumns=*/{},
+            std::move(partitionColumns),
             /*orderColumns=*/{},
             /*sortOrder=*/{},
             std::move(lookupKeys),
-            /*supportsScan=*/false) {}
+            /*supportsScan=*/false),
+        partitionType_(std::move(partitionType)) {}
 
   TestTableLayout(
       const std::string& label,
@@ -657,7 +660,8 @@ class TestConnectorMetadata : public ConnectorMetadata {
   std::shared_ptr<TestTable> addLookupTable(
       const std::string& name,
       const velox::RowTypePtr& schema,
-      const std::vector<std::string>& lookupKeyNames);
+      const std::vector<std::string>& lookupKeyNames,
+      std::optional<TestBucketSpec> bucketSpec = std::nullopt);
 
   /// Appends data to the table with the specified name.
   void appendData(
@@ -977,6 +981,16 @@ class TestConnector : public velox::connector::Connector {
       const std::string& name,
       const velox::RowTypePtr& schema,
       const folly::F14FastMap<std::string, velox::Variant>& options);
+
+  /// Registers a lookup-only table in the default schema.
+  std::shared_ptr<TestTable> addLookupTable(
+      const std::string& name,
+      const velox::RowTypePtr& schema,
+      const std::vector<std::string>& lookupKeyNames,
+      std::optional<TestBucketSpec> bucketSpec = std::nullopt) {
+    return metadata_->addLookupTable(
+        name, schema, lookupKeyNames, std::move(bucketSpec));
+  }
 
   /// Appends data to the table with the specified name.
   void appendData(

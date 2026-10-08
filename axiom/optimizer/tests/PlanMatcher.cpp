@@ -1127,10 +1127,12 @@ class IndexLookupJoinMatcher : public PlanMatcherImpl<IndexLookupJoinNode> {
       const std::shared_ptr<PlanMatcher>& probe,
       const std::shared_ptr<PlanMatcher>& lookup,
       JoinType joinType,
-      std::vector<std::string> keys)
+      std::vector<std::string> keys,
+      std::optional<std::string> filter)
       : PlanMatcherImpl<IndexLookupJoinNode>({probe, lookup}),
         joinType_{joinType},
-        keys_{std::move(keys)} {}
+        keys_{std::move(keys)},
+        filter_{std::move(filter)} {}
 
   MatchResult matchDetails(
       const IndexLookupJoinNode& plan,
@@ -1154,12 +1156,29 @@ class IndexLookupJoinMatcher : public PlanMatcherImpl<IndexLookupJoinNode> {
     }
     AXIOM_TEST_RETURN_IF_FAILURE
 
+    if (filter_.has_value()) {
+      if (filter_->empty()) {
+        EXPECT_EQ(plan.filter(), nullptr);
+      } else {
+        EXPECT_NE(plan.filter(), nullptr);
+        AXIOM_TEST_RETURN_IF_FAILURE
+
+        auto expected = parseExpr(*filter_);
+        if (!symbols.empty()) {
+          expected = ExprMatcher::rewriteInputNames(expected, symbols);
+        }
+        ExprMatcher::match(plan.filter(), expected->dropAlias());
+      }
+      AXIOM_TEST_RETURN_IF_FAILURE
+    }
+
     return MatchResult::success(symbols);
   }
 
  private:
   const JoinType joinType_;
   const std::vector<std::string> keys_;
+  const std::optional<std::string> filter_;
 };
 
 class NestedLoopJoinMatcher : public PlanMatcherImpl<NestedLoopJoinNode> {
@@ -2479,10 +2498,11 @@ PlanMatcherBuilder& PlanMatcherBuilder::hashJoin(
 PlanMatcherBuilder& PlanMatcherBuilder::indexLookupJoin(
     PlanMatcherBuilder lookupMatcher,
     JoinType joinType,
-    const std::vector<std::string>& keys) {
+    const std::vector<std::string>& keys,
+    std::optional<std::string> filter) {
   VELOX_USER_CHECK_NOT_NULL(matcher_);
   matcher_ = std::make_shared<IndexLookupJoinMatcher>(
-      matcher_, lookupMatcher.build(), joinType, keys);
+      matcher_, lookupMatcher.build(), joinType, keys, std::move(filter));
   return *this;
 }
 

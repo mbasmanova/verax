@@ -97,6 +97,19 @@ void forEachExpressionInNode(NodeCP node, Visit&& visit) {
       }
       break;
     }
+    case NodeType::kIndexLookupJoin: {
+      const IndexLookupJoin* join = node->as<IndexLookupJoin>();
+      for (ExprCP key : join->probeKeys()) {
+        visit(key);
+      }
+      for (ColumnCP key : join->lookupKeys()) {
+        visit(key);
+      }
+      for (ExprCP conjunct : join->filter()) {
+        visit(conjunct);
+      }
+      break;
+    }
     case NodeType::kApply: {
       const Apply* apply = node->as<Apply>();
       for (ExprCP conjunct : apply->filter()) {

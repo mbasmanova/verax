@@ -2137,6 +2137,17 @@ NodeSimplifier::make(Join::Key key, SimplifiedNode left, SimplifiedNode right) {
 }
 
 NodeSimplifier::SimplifiedNode NodeSimplifier::make(
+    IndexLookupJoin::Key key,
+    SimplifiedNode probe) {
+  if (probe.empty()) {
+    return emptyResult(std::move(key.outputColumns));
+  }
+  key.probe = restoreExactLayout(
+      probe.node, key.probe->outputColumns(), probe.substitutions);
+  return {builder_.make<IndexLookupJoin>(std::move(key)), {}};
+}
+
+NodeSimplifier::SimplifiedNode NodeSimplifier::make(
     Apply::Key key,
     SimplifiedNode input,
     SimplifiedNode body) {

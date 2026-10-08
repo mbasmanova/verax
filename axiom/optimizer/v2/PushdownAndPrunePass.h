@@ -72,11 +72,14 @@ namespace facebook::axiom::optimizer::v2 {
 ///    this pass, so encountering one is a logic error.
 ///
 /// Post-condition: every conjunct that reaches a `Scan` is offered to the
-/// connector. The ones it takes go into the `ScanHandle` the `Scan` points at.
-/// The ones it rejects stay in a single `Filter` directly above the `Scan`,
-/// which then also outputs the columns they read, narrowed by a `Project` when
-/// nothing above wants them and the consumer is not itself a `Project`. A
-/// rewrite running after this pass sees the nodes the query will run.
+/// connector. The ones it takes go into the `TableAccessHandle` the `Scan`
+/// points at. The ones it rejects stay in a single `Filter` directly above the
+/// `Scan`, which then also outputs the columns they read, narrowed by a
+/// `Project` when nothing above wants them and the consumer is not itself a
+/// `Project`. A lookup-only `Scan` paired with a supported join becomes an
+/// `IndexLookupJoin` whose handle carries its lookup keys; connector-rejected
+/// lookup filters fail planning. A rewrite running after this pass sees the
+/// nodes the query will run.
 class PushdownAndPrunePass {
  public:
   /// Rewritten root and its user-visible output columns.

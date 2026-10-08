@@ -411,6 +411,12 @@ class Collector : public NodeVisitor {
     addAll(context, node.filter());
   }
 
+  void visit(const IndexLookupJoin& node, NodeVisitorContext& context)
+      const override {
+    addAll(context, node.probeKeys());
+    addAll(context, node.filter());
+  }
+
   void visit(const Window& node, NodeVisitorContext& context) const override {
     addAll(context, node.partitionKeys());
     addAll(context, node.orderKeys());

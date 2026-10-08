@@ -1292,8 +1292,9 @@ class ConnectorMetadata {
 
   /// Returns distinct, non-nested roots within `offeredSubtree`
   /// that this connector will execute. The offered subtree is maximal, all of
-  /// its scans use this connector, and calls may run concurrently. Roots cannot
-  /// be scans or writes, and must not depend on unbound recursive state.
+  /// its tables use this connector, and calls may run concurrently. A table may
+  /// be read by a Scan or inside an IndexLookupJoin. Roots cannot be scans or
+  /// writes, and must not depend on unbound recursive state.
   /// Neither offered nor returned node pointers may be retained. `session`
   /// carries query identity and connector properties. Returns empty to decline
   /// pushdown. Called only when `isPushdownSupported()` returns true.

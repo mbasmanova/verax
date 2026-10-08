@@ -32,29 +32,190 @@ class IndexLookupJoinTest : public QueryTestBase,
   void SetUp() override {
     useV2_ = GetParam();
     QueryTestBase::SetUp();
+  }
+
+  void configureTestConnector() override {
     testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
-    testConnector_->metadata()->addLookupTable(
-        "lookup", ROW({"id", "v"}, BIGINT()), {"id"});
+    testConnector_->addTable("u", ROW("x", BIGINT()));
+    testConnector_->addLookupTable(
+        "lookup", ROW({"k1", "k2", "v"}, BIGINT()), {"k1", "k2"});
+    testConnector_->addLookupTable(
+        "partitioned_lookup",
+        ROW({"k", "v"}, BIGINT()),
+        {"k"},
+        connector::TestBucketSpec{{"k"}, 4});
   }
 };
 
-// V1 plans the required index lookup; v2 rejects its attempted full scan.
+// A lookup-only table is joined by key rather than scanned and hash-joined.
 TEST_P(IndexLookupJoinTest, indexLookup) {
-  const auto logicalPlan = parseSelect(
-      "SELECT * FROM t JOIN lookup ON t.a = lookup.id", kTestConnectorId);
+  const auto sql = "SELECT * FROM t JOIN lookup ON t.a = lookup.k1";
+  AXIOM_ASSERT_PLAN(
+      toSingleNodePlan(parseSelect(sql, kTestConnectorId)),
+      matchScan("t")
+          .indexLookupJoin(
+              matchScan("lookup"), core::JoinType::kInner, {"a = k1"})
+          .projectIf(useV2_, {"a", "b", "a as k1", "k2", "v"})
+          .build());
+}
 
-  if (useV2_) {
-    VELOX_ASSERT_THROW(
-        toSingleNodePlan(logicalPlan),
-        "Lookup-only table layout requires lookup keys");
+TEST_P(IndexLookupJoinTest, lookupOnLeft) {
+  if (!useV2_) {
     return;
   }
 
+  const auto sql = "SELECT * FROM lookup JOIN t ON lookup.k1 = t.a";
   AXIOM_ASSERT_PLAN(
-      toSingleNodePlan(logicalPlan),
+      toSingleNodePlan(parseSelect(sql, kTestConnectorId)),
       matchScan("t")
           .indexLookupJoin(
-              matchScan("lookup"), core::JoinType::kInner, {"a = id"})
+              matchScan("lookup"), core::JoinType::kInner, {"a = k1"})
+          .project({"k1", "k2", "v", "k1 as a", "b"})
+          .build());
+}
+
+TEST_P(IndexLookupJoinTest, leftJoin) {
+  if (!useV2_) {
+    return;
+  }
+
+  const auto sql = "SELECT * FROM t LEFT JOIN lookup ON t.a = lookup.k1";
+  AXIOM_ASSERT_PLAN(
+      toSingleNodePlan(parseSelect(sql, kTestConnectorId)),
+      matchScan("t")
+          .indexLookupJoin(
+              matchScan("lookup"), core::JoinType::kLeft, {"a = k1"})
+          .build());
+}
+
+TEST_P(IndexLookupJoinTest, multiKey) {
+  if (!useV2_) {
+    return;
+  }
+
+  const auto sql =
+      "SELECT * FROM t JOIN lookup ON t.a = lookup.k2 AND t.b = lookup.k1";
+  AXIOM_ASSERT_PLAN(
+      toSingleNodePlan(parseSelect(sql, kTestConnectorId)),
+      matchScan("t")
+          .indexLookupJoin(
+              matchScan("lookup"), core::JoinType::kInner, {"b = k1", "a = k2"})
+          .project({"a", "b", "b as k1", "a as k2", "v"})
+          .build());
+}
+
+TEST_P(IndexLookupJoinTest, residualFilter) {
+  if (!useV2_) {
+    return;
+  }
+
+  {
+    const auto sql =
+        "SELECT * FROM t JOIN lookup ON t.a = lookup.k1 AND t.b < lookup.v";
+    SCOPED_TRACE(sql);
+    AXIOM_ASSERT_PLAN(
+        toSingleNodePlan(parseSelect(sql, kTestConnectorId)),
+        matchScan("t")
+            .indexLookupJoin(
+                matchScan("lookup"), core::JoinType::kInner, {"a = k1"})
+            .project({"a", "b", "a as k1", "k2", "v"})
+            .build());
+  }
+
+  {
+    const auto sql =
+        "SELECT t.a FROM t JOIN lookup ON t.a = lookup.k1 AND t.b < lookup.v";
+    SCOPED_TRACE(sql);
+    VELOX_ASSERT_THROW(
+        toSingleNodePlan(parseSelect(sql, kTestConnectorId)),
+        "Index lookup residual filters can reference only lookup columns in "
+        "the join output");
+  }
+}
+
+TEST_P(IndexLookupJoinTest, prefixCoverage) {
+  if (!useV2_) {
+    return;
+  }
+
+  const auto sql = "SELECT * FROM t JOIN lookup ON t.a = lookup.k2";
+  VELOX_ASSERT_THROW(
+      toSingleNodePlan(parseSelect(sql, kTestConnectorId)),
+      "Lookup equality keys must cover an index prefix");
+}
+
+TEST_P(IndexLookupJoinTest, duplicateLookupKey) {
+  if (!useV2_) {
+    return;
+  }
+
+  {
+    const auto sql =
+        "SELECT * FROM t JOIN lookup ON t.a = lookup.k1 AND t.b = lookup.k1";
+    SCOPED_TRACE(sql);
+    AXIOM_ASSERT_PLAN(
+        toSingleNodePlan(parseSelect(sql, kTestConnectorId)),
+        matchScan("t")
+            .filter("a = b")
+            .indexLookupJoin(
+                matchScan("lookup"), core::JoinType::kInner, {"a = k1"})
+            .project({"a", "b", "a as k1", "k2", "v"})
+            .build());
+  }
+
+  {
+    const auto sql =
+        "SELECT * FROM t LEFT JOIN lookup "
+        "ON t.a = lookup.k1 AND t.b = lookup.k1";
+    SCOPED_TRACE(sql);
+    AXIOM_ASSERT_PLAN(
+        toSingleNodePlan(parseSelect(sql, kTestConnectorId)),
+        matchScan("t")
+            .indexLookupJoin(
+                matchScan("lookup"), core::JoinType::kLeft, {"a = k1"}, "a = b")
+            .build());
+  }
+}
+
+TEST_P(IndexLookupJoinTest, partitionedLookupUnsupported) {
+  if (!useV2_) {
+    return;
+  }
+
+  const auto sql =
+      "SELECT * FROM t JOIN partitioned_lookup ON t.a = "
+      "partitioned_lookup.k";
+  VELOX_ASSERT_THROW(
+      toSingleNodePlan(parseSelect(sql, kTestConnectorId)),
+      "Partitioned index lookup is unsupported");
+}
+
+TEST_P(IndexLookupJoinTest, connectorRejectedFilter) {
+  if (!useV2_) {
+    return;
+  }
+
+  const auto sql =
+      "SELECT * FROM t JOIN lookup ON t.a = lookup.k1 WHERE lookup.v > 0";
+  VELOX_ASSERT_THROW(
+      toSingleNodePlan(parseSelect(sql, kTestConnectorId)),
+      "Index lookup does not support connector-rejected filters");
+}
+
+TEST_P(IndexLookupJoinTest, downstreamJoin) {
+  if (!useV2_) {
+    return;
+  }
+
+  const auto sql =
+      "SELECT * FROM (t JOIN lookup ON t.a = lookup.k1) JOIN u ON t.b = u.x";
+  AXIOM_ASSERT_PLAN(
+      toSingleNodePlan(parseSelect(sql, kTestConnectorId)),
+      matchScan("t")
+          .indexLookupJoin(
+              matchScan("lookup"), core::JoinType::kInner, {"a = k1"})
+          .hashJoinInner(matchScan("u"), {.keys = {{"b = x"}}})
+          .project({"a", "b", "a as k1", "k2", "v", "b as x"})
           .build());
 }
 

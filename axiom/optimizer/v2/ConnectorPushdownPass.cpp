@@ -23,7 +23,7 @@
 #include "axiom/optimizer/QueryGraphContext.h"
 #include "axiom/optimizer/Schema.h"
 #include "axiom/optimizer/v2/NodeRewriter.h"
-#include "axiom/optimizer/v2/ScanHandle.h"
+#include "axiom/optimizer/v2/TableAccessHandle.h"
 #include "folly/container/F14Map.h"
 #include "folly/container/F14Set.h"
 #include "folly/coro/BlockingWait.h"
@@ -219,8 +219,8 @@ NodeCP makeReplacementScan(
   }
 
   ExprVector rejected;
-  const ScanHandle* scanHandle = builder.takeScanHandle(
-      ScanHandle::build(
+  const TableAccessHandle* scanHandle = builder.takeTableAccessHandle(
+      TableAccessHandle::buildScan(
           *baseTable,
           scanColumns,
           /*filters=*/{},
@@ -280,6 +280,17 @@ struct NodeConnectorInfo {
   std::vector<ConnectorSubtreeOffer> maximalOffers;
 };
 
+void addTableConnectorInfo(
+    const SchemaTable& schemaTable,
+    const connector::SchemaResolver& schemaResolver,
+    NodeConnectorInfo& info) {
+  info.metadataIds.insert(schemaTable.metadataId());
+  info.connectorIds.insert(std::string(schemaTable.connectorId()));
+  info.pushdownSupported = info.pushdownSupported ||
+      schemaResolver.findMetadata(schemaTable.metadataId())
+          ->isPushdownSupported();
+}
+
 // Collects offers bottom-up. An eligible node subsumes its inputs' offers;
 // otherwise, their maximal offers propagate toward the root.
 NodeConnectorInfo collectConnectorInfo(
@@ -289,12 +300,15 @@ NodeConnectorInfo collectConnectorInfo(
   if (node->is(NodeType::kScan)) {
     const auto* schemaTable = node->as<Scan>()->baseTable()->schemaTable;
     VELOX_CHECK_NOT_NULL(schemaTable);
-    info.metadataIds.insert(schemaTable->metadataId());
-    info.connectorIds.insert(std::string(schemaTable->connectorId()));
-    info.pushdownSupported =
-        schemaResolver.findMetadata(schemaTable->metadataId())
-            ->isPushdownSupported();
+    addTableConnectorInfo(*schemaTable, schemaResolver, info);
     return info;
+  }
+
+  if (node->is(NodeType::kIndexLookupJoin)) {
+    const auto* schemaTable =
+        node->as<IndexLookupJoin>()->lookupTable()->schemaTable;
+    VELOX_CHECK_NOT_NULL(schemaTable);
+    addTableConnectorInfo(*schemaTable, schemaResolver, info);
   }
 
   for (NodeCP input : node->inputs()) {
