@@ -34,12 +34,12 @@ class WindowTest : public test::QueryTestBase,
   velox::core::PlanNodePtr toSingleNodePlan(
       std::string_view sql,
       int32_t numDrivers = 1) {
-    auto logicalPlan = parseSelect(sql, kTestConnectorId);
+    auto logicalPlan = parseSelect(sql);
     return QueryTestBase::toSingleNodePlan(logicalPlan, numDrivers);
   }
 
   MultiFragmentPlanPtr toDistributedPlan(std::string_view sql) {
-    auto logicalPlan = parseSelect(sql, kTestConnectorId);
+    auto logicalPlan = parseSelect(sql);
     return planVelox(logicalPlan).plan;
   }
 };
@@ -405,8 +405,7 @@ TEST_P(WindowTest, distributed) {
   auto logicalPlan = parseSelect(
       "SELECT n_name, "
       "sum(n_nationkey) OVER (PARTITION BY n_regionkey ORDER BY n_name) as s "
-      "FROM nation",
-      kTestConnectorId);
+      "FROM nation");
 
   auto distributedPlan = planVelox(logicalPlan);
 
@@ -431,8 +430,7 @@ TEST_P(WindowTest, distributedMultipleShuffles) {
       "SELECT n_name, "
       "sum(n_nationkey) OVER (PARTITION BY n_regionkey ORDER BY n_name) as s, "
       "row_number() OVER (PARTITION BY n_nationkey ORDER BY n_name) as rn "
-      "FROM nation",
-      kTestConnectorId);
+      "FROM nation");
 
   auto distributedPlan = planVelox(logicalPlan);
 

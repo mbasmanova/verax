@@ -55,8 +55,7 @@ TEST_F(FixedPointTest, recursiveCte) {
   auto logicalPlan = parseSelect(
       "WITH RECURSIVE counter(n) AS ("
       "VALUES 1 UNION ALL SELECT n + 1 FROM counter WHERE n < 10) "
-      "SELECT * FROM counter",
-      kTestConnectorId);
+      "SELECT * FROM counter");
   auto plan = toSingleNodePlan(logicalPlan);
 
   auto matcher =
@@ -85,7 +84,7 @@ TEST_F(FixedPointTest, joinKeyState) {
   SCOPED_TRACE(query);
 
   AXIOM_ASSERT_PLAN_V2(
-      toSingleNodePlan(parseSelect(query, kTestConnectorId)),
+      toSingleNodePlan(parseSelect(query)),
       core::PlanMatcherBuilder()
           .fixedPoint(matchFixedPoint("r")
                           .outputState(
@@ -128,8 +127,7 @@ TEST_F(FixedPointTest, outerLimit) {
   auto logicalPlan = parseSelect(
       "WITH RECURSIVE counter(n) AS ("
       "VALUES 1 UNION ALL SELECT n + 1 FROM counter WHERE n < 20) "
-      "SELECT n FROM counter LIMIT 5",
-      kTestConnectorId);
+      "SELECT n FROM counter LIMIT 5");
 
   auto matcher =
       core::PlanMatcherBuilder().fixedPoint().finalLimit(0, 5).build();
@@ -140,8 +138,7 @@ TEST_F(FixedPointTest, multipleWorkersRejected) {
   auto logicalPlan = parseSelect(
       "WITH RECURSIVE counter(n) AS ("
       "VALUES 1 UNION ALL SELECT n + 1 FROM counter WHERE n < 10) "
-      "SELECT * FROM counter",
-      kTestConnectorId);
+      "SELECT * FROM counter");
 
   VELOX_ASSERT_THROW(
       planVelox(
@@ -159,8 +156,7 @@ TEST_F(FixedPointTest, outerJoinInAnchor) {
       "  LEFT JOIN (VALUES (2, 2)) r(k, n) ON l.k = r.k "
       "  UNION ALL "
       "  SELECT coalesce(n, 1) FROM t WHERE n IS NULL) "
-      "SELECT t.n FROM t JOIN u ON t.n = u.n",
-      kTestConnectorId);
+      "SELECT t.n FROM t JOIN u ON t.n = u.n");
 
   auto matcher = core::PlanMatcherBuilder()
                      .fixedPoint(matchFixedPoint("t")
@@ -180,8 +176,7 @@ TEST_F(FixedPointTest, outerFilter) {
   auto logicalPlan = parseSelect(
       "WITH RECURSIVE counter(n) AS ("
       "VALUES 1 UNION ALL SELECT n + 1 FROM counter WHERE n < 20) "
-      "SELECT n FROM counter WHERE n > 15",
-      kTestConnectorId);
+      "SELECT n FROM counter WHERE n > 15");
 
   auto matcher =
       core::PlanMatcherBuilder()
@@ -203,8 +198,7 @@ TEST_F(FixedPointTest, outerSelectsOneColumn) {
       "WITH RECURSIVE counter(n, carried) AS ("
       "VALUES (1, 7) UNION ALL "
       "SELECT n + 1, carried FROM counter WHERE n < 10) "
-      "SELECT n FROM counter",
-      kTestConnectorId);
+      "SELECT n FROM counter");
 
   auto matcher =
       core::PlanMatcherBuilder()
@@ -236,8 +230,7 @@ TEST_F(FixedPointTest, siblingRecursions) {
       "r1(a) AS (VALUES 0 UNION ALL SELECT a + 1 FROM r1 WHERE a < 3), "
       "r2(b) AS (SELECT a FROM r1 UNION ALL "
       "SELECT b + 10 FROM r2 WHERE b < 30) "
-      "SELECT b FROM r2",
-      kTestConnectorId);
+      "SELECT b FROM r2");
 
   auto matcher =
       core::PlanMatcherBuilder()
@@ -265,8 +258,7 @@ TEST_F(FixedPointTest, twoRecursiveReferencesRejected) {
       "WITH RECURSIVE reach(src, dst) AS ("
       "VALUES (1, 2) UNION ALL "
       "SELECT a.src, b.dst FROM reach a JOIN reach b ON a.dst = b.src) "
-      "SELECT src, dst FROM reach",
-      kTestConnectorId);
+      "SELECT src, dst FROM reach");
 
   VELOX_ASSERT_THROW(
       toSingleNodePlan(logicalPlan),
@@ -277,8 +269,7 @@ TEST_F(FixedPointTest, twoRecursionsInUnionRejected) {
   auto logicalPlan = parseSelect(
       "WITH RECURSIVE r(n) AS ("
       "VALUES 1 UNION ALL SELECT n + 1 FROM r WHERE n < 10) "
-      "SELECT n FROM r UNION ALL SELECT n FROM r",
-      kTestConnectorId);
+      "SELECT n FROM r UNION ALL SELECT n FROM r");
 
   VELOX_ASSERT_THROW(
       toSingleNodePlan(logicalPlan),
@@ -289,8 +280,7 @@ TEST_F(FixedPointTest, twoRecursionsInJoinRejected) {
   auto logicalPlan = parseSelect(
       "WITH RECURSIVE r(n) AS ("
       "VALUES 1 UNION ALL SELECT n + 1 FROM r WHERE n < 10) "
-      "SELECT l.n FROM r l JOIN r r2 ON l.n = r2.n",
-      kTestConnectorId);
+      "SELECT l.n FROM r l JOIN r r2 ON l.n = r2.n");
 
   VELOX_ASSERT_THROW(
       toSingleNodePlan(logicalPlan),
@@ -306,8 +296,7 @@ TEST_F(FixedPointTest, outerJoinAndFilter) {
       "WITH RECURSIVE r(n) AS ("
       "VALUES 1 UNION ALL SELECT n + 1 FROM r WHERE n < 10) "
       "SELECT r.n + 1 FROM r JOIN u ON r.n = u.n "
-      "WHERE r.n > 0",
-      kTestConnectorId);
+      "WHERE r.n > 0");
 
   auto matcher =
       core::PlanMatcherBuilder()

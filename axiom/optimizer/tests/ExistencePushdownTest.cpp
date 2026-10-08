@@ -68,7 +68,7 @@ class ExistencePushdownTest : public test::QueryTestBase,
   using QueryTestBase::toSingleNodePlan;
 
   velox::core::PlanNodePtr toSingleNodePlan(const std::string& sql) {
-    return QueryTestBase::toSingleNodePlan(parseSelect(sql, kTestConnectorId));
+    return QueryTestBase::toSingleNodePlan(parseSelect(sql));
   }
 };
 
@@ -85,8 +85,7 @@ TEST_P(ExistencePushdownTest, innerJoinGroupBy) {
       "SELECT t.a, dt.x, dt.cnt "
       "FROM t "
       "JOIN (SELECT x, COUNT(*) AS cnt FROM u GROUP BY x) dt ON t.a = dt.x "
-      "WHERE t.b < 100",
-      kTestConnectorId);
+      "WHERE t.b < 100");
 
   // Single-node plan.
   auto plan = toSingleNodePlan(logicalPlan);
@@ -129,8 +128,7 @@ TEST_P(ExistencePushdownTest, semiJoin) {
   auto logicalPlan = parseSelect(
       "SELECT * FROM t "
       "WHERE t.b < 100 "
-      "  AND a IN (SELECT x FROM u GROUP BY x HAVING COUNT(*) > 1)",
-      kTestConnectorId);
+      "  AND a IN (SELECT x FROM u GROUP BY x HAVING COUNT(*) > 1)");
 
   // Single-node plan.
   auto plan = toSingleNodePlan(logicalPlan);
@@ -185,8 +183,7 @@ TEST_P(ExistencePushdownTest, leftJoinDtIsOptional) {
       "FROM t "
       "LEFT JOIN (SELECT x, COUNT(*) AS cnt FROM u GROUP BY x) dt "
       "  ON t.a = dt.x "
-      "WHERE t.b < 100",
-      kTestConnectorId);
+      "WHERE t.b < 100");
 
   // Single-node plan.
   auto plan = toSingleNodePlan(logicalPlan);
@@ -226,8 +223,7 @@ TEST_P(ExistencePushdownTest, otherIsDerivedTable) {
   auto logicalPlan = parseSelect(
       "SELECT dt1.x, dt1.cnt, dt2.a "
       "FROM (SELECT x, COUNT(*) AS cnt FROM u GROUP BY x) dt1 "
-      "JOIN (SELECT DISTINCT a FROM v WHERE a < 10) dt2 ON dt1.x = dt2.a",
-      kTestConnectorId);
+      "JOIN (SELECT DISTINCT a FROM v WHERE a < 10) dt2 ON dt1.x = dt2.a");
 
   // Single-node plan.
   auto plan = toSingleNodePlan(logicalPlan);
@@ -271,8 +267,7 @@ TEST_P(ExistencePushdownTest, chainJoin) {
       "FROM (SELECT x, COUNT(*) AS cnt FROM u GROUP BY x) dt "
       "JOIN r ON dt.x = r.a "
       "JOIN s ON r.b = s.a "
-      "WHERE r.b < 100",
-      kTestConnectorId);
+      "WHERE r.b < 100");
 
   // Single-node plan.
   auto plan = toSingleNodePlan(logicalPlan);
@@ -334,8 +329,7 @@ TEST_P(ExistencePushdownTest, multipleTables) {
       "JOIN (SELECT x, y, COUNT(*) AS cnt FROM u GROUP BY x, y) dt "
       "  ON r.a = dt.x "
       "JOIN s ON s.a = dt.y "
-      "WHERE r.b < 100",
-      kTestConnectorId);
+      "WHERE r.b < 100");
 
   // Single-node plan.
   auto plan = toSingleNodePlan(logicalPlan);
@@ -393,8 +387,7 @@ TEST_P(ExistencePushdownTest, partialPush) {
       "FROM t "
       "JOIN (SELECT x, COUNT(*) AS cnt FROM u GROUP BY x) dt ON t.a = dt.x "
       "JOIN r ON dt.cnt = r.a "
-      "WHERE t.b < 100",
-      kTestConnectorId);
+      "WHERE t.b < 100");
 
   // Single-node plan.
   auto plan = toSingleNodePlan(logicalPlan);
@@ -435,8 +428,7 @@ TEST_P(ExistencePushdownTest, distinctSubquery) {
       "SELECT t.a, dt.x "
       "FROM t "
       "JOIN (SELECT DISTINCT x FROM u) dt ON t.a = dt.x "
-      "WHERE t.b < 100",
-      kTestConnectorId);
+      "WHERE t.b < 100");
 
   // Single-node plan.
   auto plan = toSingleNodePlan(logicalPlan);
@@ -479,8 +471,7 @@ TEST_P(ExistencePushdownTest, multiKeyJoin) {
       "FROM t "
       "JOIN (SELECT x, y, COUNT(*) AS cnt FROM u GROUP BY x, y) dt "
       "  ON t.a = dt.x AND t.b = dt.y "
-      "WHERE t.c < 100",
-      kTestConnectorId);
+      "WHERE t.c < 100");
 
   auto plan = toSingleNodePlan(logicalPlan);
 
@@ -523,8 +514,7 @@ TEST_P(ExistencePushdownTest, joinWithFilter) {
       "FROM t "
       "JOIN (SELECT x, COUNT(*) AS cnt FROM u GROUP BY x) dt "
       "  ON t.a = dt.x AND dt.x > t.b "
-      "WHERE t.c < 100",
-      kTestConnectorId);
+      "WHERE t.c < 100");
 
   // Single-node plan.
   auto plan = toSingleNodePlan(logicalPlan);
@@ -566,8 +556,7 @@ TEST_P(ExistencePushdownTest, leftJoinDtIsPreserved) {
   auto logicalPlan = parseSelect(
       "SELECT dt.x, dt.cnt, t.a "
       "FROM (SELECT x, COUNT(*) AS cnt FROM u GROUP BY x) dt "
-      "LEFT JOIN t ON dt.x = t.a",
-      kTestConnectorId);
+      "LEFT JOIN t ON dt.x = t.a");
 
   // Single-node plan.
   auto plan = toSingleNodePlan(logicalPlan);
@@ -603,8 +592,7 @@ TEST_P(ExistencePushdownTest, windowSubquery) {
       "JOIN ("
       "  SELECT x, ROW_NUMBER() OVER (PARTITION BY x ORDER BY y) AS rn FROM u"
       ") dt ON t.a = dt.x "
-      "WHERE t.b < 100",
-      kTestConnectorId);
+      "WHERE t.b < 100");
 
   // Single-node plan.
   auto plan = toSingleNodePlan(logicalPlan);
@@ -648,8 +636,7 @@ TEST_P(ExistencePushdownTest, limitOnFirstDt) {
       "FROM t "
       "JOIN (SELECT x, COUNT(*) AS cnt FROM u GROUP BY x LIMIT 10) dt "
       "  ON t.a = dt.x "
-      "WHERE t.b < 100",
-      kTestConnectorId);
+      "WHERE t.b < 100");
 
   // Single-node plan.
   auto plan = toSingleNodePlan(logicalPlan);
@@ -687,8 +674,7 @@ TEST_P(ExistencePushdownTest, orderByOnFirstDt) {
       "FROM t "
       "JOIN (SELECT x, COUNT(*) AS cnt FROM u GROUP BY x ORDER BY cnt) dt "
       "  ON t.a = dt.x "
-      "WHERE t.b < 100",
-      kTestConnectorId);
+      "WHERE t.b < 100");
 
   // The subquery's ORDER BY is dropped by the dead-sort optimization (the
   // outer join discards order), which unblocks existence pushdown.
@@ -731,8 +717,7 @@ TEST_P(ExistencePushdownTest, aggregateKey) {
       "SELECT t.a, dt.cnt "
       "FROM t "
       "JOIN (SELECT x, COUNT(*) AS cnt FROM u GROUP BY x) dt ON t.a = dt.cnt "
-      "WHERE t.b < 100",
-      kTestConnectorId);
+      "WHERE t.b < 100");
 
   // Single-node plan.
   auto plan = toSingleNodePlan(logicalPlan);
@@ -773,8 +758,7 @@ TEST_P(ExistencePushdownTest, otherIsUnnestDerivedTable) {
       "FROM (SELECT x, COUNT(*) AS cnt FROM u GROUP BY x) dt "
       "JOIN ("
       "  SELECT DISTINCT n FROM t CROSS JOIN UNNEST(ARRAY[a, b]) AS v(n)"
-      ") w ON dt.x = w.n",
-      kTestConnectorId);
+      ") w ON dt.x = w.n");
 
   // Single-node plan.
   auto plan = toSingleNodePlan(logicalPlan);
@@ -826,8 +810,7 @@ TEST_P(ExistencePushdownTest, unnestGroupBy) {
       "  FROM t CROSS JOIN UNNEST(ARRAY[a, b, c]) AS v(n) "
       "  GROUP BY n"
       ") dt ON r.a = dt.n "
-      "WHERE r.b < 100",
-      kTestConnectorId);
+      "WHERE r.b < 100");
 
   // Single-node plan.
   auto plan = toSingleNodePlan(logicalPlan);
@@ -896,8 +879,7 @@ TEST_P(ExistencePushdownTest, windowNonPartitionKey) {
       "JOIN ("
       "  SELECT x, ROW_NUMBER() OVER (ORDER BY y) AS rn FROM u"
       ") dt ON t.a = dt.x "
-      "WHERE t.b < 100",
-      kTestConnectorId);
+      "WHERE t.b < 100");
 
   // Single-node plan.
   auto plan = toSingleNodePlan(logicalPlan);

@@ -65,12 +65,6 @@ class HiveQueriesTestBase : public QueryTestBase {
   /// Returns a schema of a table.
   velox::RowTypePtr getSchema(std::string_view tableName);
 
-  using QueryTestBase::parseSelect;
-
-  logical_plan::LogicalPlanNodePtr parseSelect(std::string_view sql) {
-    return QueryTestBase::parseSelect(sql, velox::exec::test::kHiveConnectorId);
-  }
-
   logical_plan::LogicalPlanNodePtr parseInsert(std::string_view sql);
 
   using QueryTestBase::toSingleNodePlan;

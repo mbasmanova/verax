@@ -85,6 +85,7 @@ void HiveQueriesTestBase::TearDownTestCase() {
 
 void HiveQueriesTestBase::SetUp() {
   test::QueryTestBase::SetUp();
+  defaultConnectorId_ = velox::exec::test::kHiveConnectorId;
 
   setupHiveConnector();
 

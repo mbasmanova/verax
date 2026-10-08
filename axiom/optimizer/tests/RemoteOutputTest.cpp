@@ -36,7 +36,7 @@ class RemoteOutputTest : public test::QueryTestBase,
 TEST_P(RemoteOutputTest, scan) {
   testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
 
-  auto logicalPlan = parseSelect("SELECT * FROM t", kTestConnectorId);
+  auto logicalPlan = parseSelect("SELECT * FROM t");
 
   // Multi-worker with remote output: results stay distributed, each worker
   // wraps output in a PartitionedOutputNode for remote consumption.
@@ -90,7 +90,7 @@ TEST_P(RemoteOutputTest, scan) {
 TEST_P(RemoteOutputTest, globalAggregation) {
   testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
 
-  auto logicalPlan = parseSelect("SELECT sum(b) FROM t", kTestConnectorId);
+  auto logicalPlan = parseSelect("SELECT sum(b) FROM t");
 
   for (bool remoteOutput : {false, true}) {
     SCOPED_TRACE(remoteOutput ? "remoteOutput=true" : "remoteOutput=false");
@@ -110,8 +110,7 @@ TEST_P(RemoteOutputTest, globalAggregation) {
 TEST_P(RemoteOutputTest, groupByAggregation) {
   testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
 
-  auto logicalPlan =
-      parseSelect("SELECT sum(b) FROM t GROUP BY a", kTestConnectorId);
+  auto logicalPlan = parseSelect("SELECT sum(b) FROM t GROUP BY a");
 
   for (bool remoteOutput : {false, true}) {
     SCOPED_TRACE(remoteOutput ? "remoteOutput=true" : "remoteOutput=false");
@@ -137,8 +136,7 @@ TEST_P(RemoteOutputTest, groupByAggregation) {
 TEST_P(RemoteOutputTest, repeatedOutputName) {
   testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
 
-  auto logicalPlan =
-      parseSelect("SELECT a AS x, b AS x FROM t", kTestConnectorId);
+  auto logicalPlan = parseSelect("SELECT a AS x, b AS x FROM t");
 
   for (bool remoteOutput : {false, true}) {
     SCOPED_TRACE(remoteOutput ? "remoteOutput=true" : "remoteOutput=false");
@@ -170,7 +168,7 @@ TEST_P(RemoteOutputTest, repeatedOutputName) {
 TEST_P(RemoteOutputTest, sameColumnTwice) {
   testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
 
-  auto logicalPlan = parseSelect("SELECT a, a FROM t", kTestConnectorId);
+  auto logicalPlan = parseSelect("SELECT a, a FROM t");
 
   for (bool remoteOutput : {false, true}) {
     SCOPED_TRACE(remoteOutput ? "remoteOutput=true" : "remoteOutput=false");

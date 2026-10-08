@@ -78,8 +78,8 @@ TEST_P(OrderByTest, orderByOfUnreadRowsDrops) {
 
 TEST_P(OrderByTest, constantOrderBy) {
   AXIOM_ASSERT_PLAN_V2(
-      toSingleNodePlan(parseSelect(
-          "SELECT n_name FROM nation ORDER BY length('xx')", kTestConnectorId)),
+      toSingleNodePlan(
+          parseSelect("SELECT n_name FROM nation ORDER BY length('xx')")),
       matchScan("nation").build());
 }
 

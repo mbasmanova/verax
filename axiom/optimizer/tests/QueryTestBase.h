@@ -109,6 +109,12 @@ class QueryTestBase : public velox::exec::test::HiveConnectorTestBase {
   /// to attach statistics (e.g. via addTpchTables(scaleFactor)).
   virtual void configureTestConnector();
 
+  /// Parses 'sql' using 'defaultConnectorId_' to resolve unqualified table
+  /// names.
+  logical_plan::LogicalPlanNodePtr parseSelect(std::string_view sql) {
+    return parseSelect(sql, defaultConnectorId_);
+  }
+
   logical_plan::LogicalPlanNodePtr parseSelect(
       std::string_view sql,
       const std::string& defaultConnectorId,
@@ -314,6 +320,9 @@ class QueryTestBase : public velox::exec::test::HiveConnectorTestBase {
   bool useV2_{true};
 
   std::shared_ptr<connector::TestConnector> testConnector_;
+
+  // Connector used by parseSelect(sql). Subclasses may change it in SetUp.
+  std::string defaultConnectorId_{kTestConnectorId};
 
   // Sink for the component sessions this fixture spawns (parser, optimizer,
   // runner). Kept separate from connectorStatsWriter_ so a subclass can assert

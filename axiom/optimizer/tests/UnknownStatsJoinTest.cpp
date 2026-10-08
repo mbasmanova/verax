@@ -32,7 +32,7 @@ class UnknownStatsJoinTest : public test::QueryTestBase,
   }
 
   velox::core::PlanNodePtr plan(const std::string& sql) {
-    return toSingleNodePlan(parseSelect(sql, kTestConnectorId));
+    return toSingleNodePlan(parseSelect(sql));
   }
 };
 
@@ -75,7 +75,7 @@ TEST_P(UnknownStatsJoinTest, broadcastEquiJoin) {
     const auto query = fmt::format("SELECT count(*) FROM {}", from);
     SCOPED_TRACE(query);
 
-    const auto logicalPlan = parseSelect(query, kTestConnectorId);
+    const auto logicalPlan = parseSelect(query);
     AXIOM_ASSERT_PLAN_V2(
         toSingleNodePlan(logicalPlan),
         matchScan("t")
@@ -98,7 +98,7 @@ TEST_P(UnknownStatsJoinTest, broadcastEquiJoin) {
     const auto query = fmt::format("SELECT count(*) FROM {}", from);
     SCOPED_TRACE(query);
 
-    const auto logicalPlan = parseSelect(query, kTestConnectorId);
+    const auto logicalPlan = parseSelect(query);
     AXIOM_ASSERT_PLAN_V2(
         toSingleNodePlan(logicalPlan),
         matchScan("t")
@@ -126,7 +126,7 @@ TEST_P(UnknownStatsJoinTest, broadcastEquiJoin) {
         fmt::format("SELECT count(*) FROM t WHERE {}", predicate);
     SCOPED_TRACE(query);
 
-    const auto logicalPlan = parseSelect(query, kTestConnectorId);
+    const auto logicalPlan = parseSelect(query);
     AXIOM_ASSERT_PLAN_V2(
         toSingleNodePlan(logicalPlan),
         matchScan("t")
@@ -144,9 +144,8 @@ TEST_P(UnknownStatsJoinTest, broadcastEquiJoin) {
   }
 
   {
-    const auto plan = parseSelect(
-        "SELECT t_k FROM t WHERE t_k NOT IN (SELECT u_k FROM u)",
-        kTestConnectorId);
+    const auto plan =
+        parseSelect("SELECT t_k FROM t WHERE t_k NOT IN (SELECT u_k FROM u)");
     AXIOM_ASSERT_PLAN_V2(
         toSingleNodePlan(plan),
         matchScan("t")
@@ -171,8 +170,8 @@ TEST_P(UnknownStatsJoinTest, broadcastEquiJoin) {
   for (const auto broadcastSizeLimit : {0, 1}) {
     SCOPED_TRACE(broadcastSizeLimit);
     optimizerOptions_.broadcastSizeLimit = broadcastSizeLimit;
-    const auto logicalPlan = parseSelect(
-        "SELECT count(*) FROM u JOIN t ON t_k = u_k", kTestConnectorId);
+    const auto logicalPlan =
+        parseSelect("SELECT count(*) FROM u JOIN t ON t_k = u_k");
     AXIOM_ASSERT_PLAN_V2(
         toSingleNodePlan(logicalPlan),
         matchScan("t")
@@ -197,9 +196,8 @@ TEST_P(UnknownStatsJoinTest, broadcastThetaJoin) {
       ->setStats(1'000'000, {{"t_k", {.numDistinct = 1'000'000}}});
   testConnector_->addTable("u", ROW("u_k", BIGINT()))->setStats(1'000, {});
 
-  const auto writtenRightJoinPlan = parseSelect(
-      "SELECT count(t_k + u_k) FROM t RIGHT JOIN u ON t_k < u_k",
-      kTestConnectorId);
+  const auto writtenRightJoinPlan =
+      parseSelect("SELECT count(t_k + u_k) FROM t RIGHT JOIN u ON t_k < u_k");
   AXIOM_ASSERT_PLAN_V2(
       toSingleNodePlan(writtenRightJoinPlan),
       matchScan("t")
@@ -211,8 +209,8 @@ TEST_P(UnknownStatsJoinTest, broadcastThetaJoin) {
   for (const auto broadcastSizeLimit : {0, 1}) {
     SCOPED_TRACE(broadcastSizeLimit);
     optimizerOptions_.broadcastSizeLimit = broadcastSizeLimit;
-    const auto logicalPlan = parseSelect(
-        "SELECT count(t_k + u_k) FROM u CROSS JOIN t", kTestConnectorId);
+    const auto logicalPlan =
+        parseSelect("SELECT count(t_k + u_k) FROM u CROSS JOIN t");
     AXIOM_ASSERT_PLAN_V2(
         toSingleNodePlan(logicalPlan),
         matchScan("t")
@@ -228,9 +226,8 @@ TEST_P(UnknownStatsJoinTest, broadcastThetaJoin) {
             .distributedAggregation({}, {"count(sum)"})
             .build());
 
-    const auto swappedRightJoinPlan = parseSelect(
-        "SELECT count(t_k + u_k) FROM u RIGHT JOIN t ON u_k < t_k",
-        kTestConnectorId);
+    const auto swappedRightJoinPlan =
+        parseSelect("SELECT count(t_k + u_k) FROM u RIGHT JOIN t ON u_k < t_k");
     AXIOM_ASSERT_PLAN_V2(
         toSingleNodePlan(swappedRightJoinPlan),
         matchScan("t")
@@ -426,8 +423,7 @@ TEST_P(UnknownStatsJoinTest, crossJoinFallback) {
 
     optimizerOptions_.syntacticJoinOrder = false;
     AXIOM_ASSERT_PLAN_V2(
-        toSingleNodePlan(
-            parseSelect(query, kTestConnectorId), /*numDrivers=*/4),
+        toSingleNodePlan(parseSelect(query), /*numDrivers=*/4),
         matchScan("t")
             .partialAggregation({"k"}, {"count(*) as n"})
             .localPartition({"k"})
@@ -441,8 +437,7 @@ TEST_P(UnknownStatsJoinTest, crossJoinFallback) {
 
     optimizerOptions_.syntacticJoinOrder = true;
     AXIOM_ASSERT_PLAN_V2(
-        toSingleNodePlan(
-            parseSelect(query, kTestConnectorId), /*numDrivers=*/4),
+        toSingleNodePlan(parseSelect(query), /*numDrivers=*/4),
         matchScan("t")
             .partialAggregation({"k"}, {"count(*) as n"})
             .localPartition({"k"})

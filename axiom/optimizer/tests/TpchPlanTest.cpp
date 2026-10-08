@@ -52,7 +52,7 @@ class TpchPlanTest : public test::QueryTestBase {
   }
 
   lp::LogicalPlanNodePtr parseTpch(int32_t query) {
-    return parseSelect(test::readTpchSql(query), kTestConnectorId);
+    return parseSelect(test::readTpchSql(query));
   }
 
   velox::core::PlanNodePtr planTpch(int32_t query) {
@@ -60,8 +60,7 @@ class TpchPlanTest : public test::QueryTestBase {
   }
 
   velox::core::PlanNodePtr planTpch(const std::string& name) {
-    return toSingleNodePlan(
-        parseSelect(test::readTpchSql(name), kTestConnectorId));
+    return toSingleNodePlan(parseSelect(test::readTpchSql(name)));
   }
 
   // Options for a multi-node plan-shape check. numWorkers > 1 splits the plan
@@ -775,7 +774,7 @@ TEST_F(TpchPlanTest, DISABLED_makePlans) {
         fmt::format("{}/q{}", path, query));
   }
   planVelox(
-      parseSelect(test::readTpchSql("q9_alt"), kTestConnectorId),
+      parseSelect(test::readTpchSql("q9_alt")),
       options,
       /*optimizerOptions=*/std::nullopt,
       fmt::format("{}/q9_alt", path));

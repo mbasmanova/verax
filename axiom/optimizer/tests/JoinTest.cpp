@@ -54,7 +54,7 @@ class JoinTest : public test::QueryTestBase,
   using test::QueryTestBase::toSingleNodePlan;
 
   velox::core::PlanNodePtr toSingleNodePlan(std::string_view sql) {
-    return QueryTestBase::toSingleNodePlan(parseSelect(sql, kTestConnectorId));
+    return QueryTestBase::toSingleNodePlan(parseSelect(sql));
   }
 
   void SetUp() override {
@@ -85,7 +85,7 @@ TEST_P(JoinTest, derivedCompositeEdgePreservesAllEqualities) {
         "JOIN t ON u.x = t.a AND u.y = t.b "
         "JOIN v ON u.x = v.k AND u.y = v.l";
     SCOPED_TRACE(query);
-    const auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    const auto plan = toSingleNodePlan(parseSelect(query));
     AXIOM_ASSERT_PLAN_V2(
         plan,
         matchScan("u")
@@ -96,8 +96,7 @@ TEST_P(JoinTest, derivedCompositeEdgePreservesAllEqualities) {
             .build());
 
     optimizerOptions_.broadcastSizeLimit = 1;
-    const auto distributedPlan =
-        planVelox(parseSelect(query, kTestConnectorId));
+    const auto distributedPlan = planVelox(parseSelect(query));
     AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
         distributedPlan.plan,
         matchScan("u")
@@ -120,7 +119,7 @@ TEST_P(JoinTest, derivedCompositeEdgePreservesAllEqualities) {
         "JOIN t ON u.x = t.a "
         "JOIN v ON u.x = v.k AND t.b = v.l";
     SCOPED_TRACE(query);
-    const auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    const auto plan = toSingleNodePlan(parseSelect(query));
     AXIOM_ASSERT_PLAN_V2(
         plan,
         matchScan("u")
@@ -131,8 +130,7 @@ TEST_P(JoinTest, derivedCompositeEdgePreservesAllEqualities) {
             .build());
 
     optimizerOptions_.broadcastSizeLimit = 1;
-    const auto distributedPlan =
-        planVelox(parseSelect(query, kTestConnectorId));
+    const auto distributedPlan = planVelox(parseSelect(query));
     AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
         distributedPlan.plan,
         matchScan("u")
@@ -233,7 +231,7 @@ TEST_P(JoinTest, repeatedJoinKey) {
       "LEFT JOIN u ON t_k + 1 = u_k";
   SCOPED_TRACE(query);
 
-  const auto logicalPlan = parseSelect(query, kTestConnectorId);
+  const auto logicalPlan = parseSelect(query);
   AXIOM_ASSERT_PLAN_V2(
       toSingleNodePlan(logicalPlan),
       matchScan("u")
@@ -281,7 +279,7 @@ TEST_P(JoinTest, nullExtendedJoinKey) {
       "JOIN v ON coalesce(u_k, 0) = k";
   SCOPED_TRACE(query);
 
-  const auto logicalPlan = parseSelect(query, kTestConnectorId);
+  const auto logicalPlan = parseSelect(query);
   AXIOM_ASSERT_PLAN_V2(
       toSingleNodePlan(logicalPlan),
       matchScan("t")
@@ -327,8 +325,7 @@ TEST_P(JoinTest, nonNullJoinKey) {
     const auto logicalPlan = parseSelect(
         "SELECT t.a, v.k "
         "FROM (large_table t JOIN medium_table u ON coalesce(t.a, 0) = u.x) "
-        "LEFT JOIN small_table v ON coalesce(u.x, 0) = v.k",
-        kTestConnectorId);
+        "LEFT JOIN small_table v ON coalesce(u.x, 0) = v.k");
 
     AXIOM_ASSERT_PLAN_V2(
         toSingleNodePlan(logicalPlan),
@@ -976,7 +973,7 @@ TEST_P(JoinTest, multiRelationJoinKey) {
       "JOIN u ON t.a = u.x "
       "JOIN v ON u.z = v.k AND t.b + u.y = v.l";
   SCOPED_TRACE(query);
-  const auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+  const auto plan = toSingleNodePlan(parseSelect(query));
 
   const auto matcher = matchScan("t")
                            .hashJoinInner(
@@ -1001,7 +998,7 @@ TEST_P(JoinTest, compositeKeyAboveLeftJoin) {
       "FROM (t JOIN u ON t.a = u.e LEFT JOIN w ON t.c = w.i) "
       "JOIN x ON t.a = x.j AND t.b = x.k";
   SCOPED_TRACE(query);
-  const auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+  const auto plan = toSingleNodePlan(parseSelect(query));
 
   // TODO: Expect `b = k` as the only filter predicate; the preceding join
   // already guarantees `a = e`.
@@ -1524,7 +1521,7 @@ TEST_P(JoinTest, joinWithComputedKeys) {
   auto sql =
       "SELECT count(1) FROM nation n RIGHT JOIN region ON coalesce(n_regionkey, 1) = r_regionkey";
 
-  auto logicalPlan = parseSelect(sql, kTestConnectorId);
+  auto logicalPlan = parseSelect(sql);
   {
     auto plan = toSingleNodePlan(logicalPlan);
 
@@ -1577,7 +1574,7 @@ TEST_P(JoinTest, broadcastSizeLimitGatesBroadcast) {
     auto query = fmt::format(
         "SELECT p_key, {} FROM probe JOIN build ON p_key = b_key", buildColumn);
     return planVelox(
-               parseSelect(query, kTestConnectorId),
+               parseSelect(query),
                {.maxRemotePartitions = 4, .maxLocalPartitions = 1},
                options)
         .plan;
@@ -1674,8 +1671,7 @@ TEST_P(JoinTest, crossJoin) {
   }
 
   {
-    auto logicalPlan =
-        parseSelect("SELECT * FROM t, u, v WHERE a = x", kTestConnectorId);
+    auto logicalPlan = parseSelect("SELECT * FROM t, u, v WHERE a = x");
 
     auto matcher = matchScan("t")
                        .hashJoin(matchScan("u"))
@@ -1691,8 +1687,7 @@ TEST_P(JoinTest, crossJoin) {
 
   {
     auto ctx = makeContext();
-    auto logicalPlan = parseSelect(
-        "SELECT * FROM t, (SELECT count(*) FROM u)", kTestConnectorId);
+    auto logicalPlan = parseSelect("SELECT * FROM t, (SELECT count(*) FROM u)");
 
     auto matcher =
         matchScan("t").nestedLoopJoin(matchScan("u").aggregation()).build();
@@ -1705,8 +1700,7 @@ TEST_P(JoinTest, crossJoin) {
 
   {
     auto logicalPlan = parseSelect(
-        "SELECT s FROM (SELECT a, sum(b) AS s FROM t GROUP BY a), (SELECT 1)",
-        kTestConnectorId);
+        "SELECT s FROM (SELECT a, sum(b) AS s FROM t GROUP BY a), (SELECT 1)");
 
     auto matcher = matchScan("t").aggregation().project({"s"}).build();
 
@@ -1718,8 +1712,8 @@ TEST_P(JoinTest, crossJoin) {
   // subquery is not ignored.
   {
     auto ctx = makeContext();
-    auto logicalPlan = parseSelect(
-        "SELECT a FROM t, (SELECT * FROM u LIMIT 1)", kTestConnectorId);
+    auto logicalPlan =
+        parseSelect("SELECT a FROM t, (SELECT * FROM u LIMIT 1)");
 
     auto matcher =
         matchScan("t").nestedLoopJoin(matchScan("u").limit()).build();
@@ -1737,8 +1731,7 @@ TEST_P(JoinTest, unusedSingleRowAggregateCrossJoin) {
   testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
   testConnector_->addTable("u", ROW({"x", "y"}, BIGINT()));
 
-  auto logicalPlan = parseSelect(
-      "SELECT a FROM t, (SELECT count(*) FROM u)", kTestConnectorId);
+  auto logicalPlan = parseSelect("SELECT a FROM t, (SELECT count(*) FROM u)");
 
   auto plan = toSingleNodePlan(logicalPlan);
   AXIOM_ASSERT_PLAN_V1(plan, matchScan("t").build());
@@ -1752,8 +1745,7 @@ TEST_P(JoinTest, leftCrossJoin) {
 
   {
     auto logicalPlan = parseSelect(
-        "SELECT * FROM t LEFT JOIN (SELECT count(*) FROM u) ON 1 = 1",
-        kTestConnectorId);
+        "SELECT * FROM t LEFT JOIN (SELECT count(*) FROM u) ON 1 = 1");
 
     auto matcher =
         matchScan("t")
@@ -1768,8 +1760,7 @@ TEST_P(JoinTest, leftCrossJoin) {
 
   {
     auto logicalPlan = parseSelect(
-        "SELECT * FROM (SELECT count(*) FROM t) LEFT JOIN (SELECT count(*) FROM u) ON 1 = 1",
-        kTestConnectorId);
+        "SELECT * FROM (SELECT count(*) FROM t) LEFT JOIN (SELECT count(*) FROM u) ON 1 = 1");
 
     auto matcher =
         matchScan("t")
@@ -1785,8 +1776,7 @@ TEST_P(JoinTest, leftCrossJoin) {
 
   {
     auto logicalPlan = parseSelect(
-        "SELECT a FROM t LEFT JOIN u ON 1 = 1 WHERE coalesce(x, 1) > 0",
-        kTestConnectorId);
+        "SELECT a FROM t LEFT JOIN u ON 1 = 1 WHERE coalesce(x, 1) > 0");
 
     auto matcher = matchScan("t")
                        .nestedLoopJoin(matchScan("u"), core::JoinType::kLeft)
@@ -1807,7 +1797,7 @@ TEST_P(JoinTest, leftCrossJoin) {
         "SELECT * FROM t LEFT JOIN (SELECT x, y + 1 as z FROM u) ON coalesce(a, x) > 0";
     SCOPED_TRACE(query);
 
-    auto logicalPlan = parseSelect(query, kTestConnectorId);
+    auto logicalPlan = parseSelect(query);
 
     // V2 is better: it preserves the requested output directly and eliminates
     // an identity Project above the join.
@@ -1839,7 +1829,7 @@ TEST_P(JoinTest, rightJoin) {
         "SELECT * FROM t LEFT JOIN (SELECT x, y + 1 as z FROM u) ON a = x";
     SCOPED_TRACE(query);
 
-    auto logicalPlan = parseSelect(query, kTestConnectorId);
+    auto logicalPlan = parseSelect(query);
 
     // V2 is better: it eliminates an identity Project above the right join.
     auto matcher = matchScan("u")
@@ -1862,8 +1852,7 @@ TEST_P(JoinTest, rightJoinPartitioning) {
   const auto logicalPlan = parseSelect(
       "SELECT * "
       "FROM t RIGHT JOIN u ON a = b "
-      "LEFT JOIN v ON b = c AND (a IS NULL OR a < d)",
-      kTestConnectorId);
+      "LEFT JOIN v ON b = c AND (a IS NULL OR a < d)");
 
   // The extra predicate reads 'a' from the first join, forcing the left join
   // to remain above the right join. The parent can then consume the right
@@ -1898,7 +1887,7 @@ TEST_P(JoinTest, joinKeepsPartitioningOffer) {
   const auto query =
       "SELECT * FROM t LEFT JOIN u ON a = x "
       "LEFT JOIN v ON a = k AND b = l";
-  const auto logicalPlan = parseSelect(query, kTestConnectorId);
+  const auto logicalPlan = parseSelect(query);
 
   AXIOM_ASSERT_PLAN_V2(
       toSingleNodePlan(logicalPlan),
@@ -1936,7 +1925,7 @@ TEST_P(JoinTest, joinReusesSubsetPartitioning) {
         "SELECT t.a FROM (t LEFT JOIN u ON a = x) "
         "LEFT JOIN (v LEFT JOIN w ON k = m) ON a = k AND b = l";
     SCOPED_TRACE(query);
-    const auto logicalPlan = parseSelect(query, kTestConnectorId);
+    const auto logicalPlan = parseSelect(query);
 
     AXIOM_ASSERT_PLAN_V2(
         toSingleNodePlan(logicalPlan),
@@ -1966,7 +1955,7 @@ TEST_P(JoinTest, joinReusesSubsetPartitioning) {
         "SELECT t.a FROM (t LEFT JOIN u ON a = x) "
         "LEFT JOIN (v LEFT JOIN w ON l = m) ON a = k AND b = l";
     SCOPED_TRACE(query);
-    const auto logicalPlan = parseSelect(query, kTestConnectorId);
+    const auto logicalPlan = parseSelect(query);
 
     AXIOM_ASSERT_PLAN_V2(
         toSingleNodePlan(logicalPlan),
@@ -2004,7 +1993,7 @@ TEST_P(JoinTest, nullAwareJoinUsesReplicatingShuffle) {
   const auto query =
       "SELECT t.a FROM (t JOIN u ON a = x) "
       "WHERE a NOT IN (SELECT k FROM v)";
-  const auto logicalPlan = parseSelect(query, kTestConnectorId);
+  const auto logicalPlan = parseSelect(query);
 
   AXIOM_ASSERT_PLAN_V2(
       toSingleNodePlan(logicalPlan),
@@ -2044,7 +2033,7 @@ TEST_P(JoinTest, syntacticJoinAlignsPartitioning) {
         "FROM (sp_t JOIN sp_u ON a = b) "
         "JOIN (sp_v JOIN sp_x ON c = d) ON a = c";
     SCOPED_TRACE(query);
-    const auto logicalPlan = parseSelect(query, kTestConnectorId);
+    const auto logicalPlan = parseSelect(query);
 
     AXIOM_ASSERT_PLAN_V2(
         toSingleNodePlan(logicalPlan),
@@ -2076,7 +2065,7 @@ TEST_P(JoinTest, syntacticJoinAlignsPartitioning) {
         "FROM (sp_t JOIN sp_u ON a = b) "
         "JOIN (sp_v JOIN sp_x ON q = d) ON a = c AND p = q";
     SCOPED_TRACE(query);
-    const auto logicalPlan = parseSelect(query, kTestConnectorId);
+    const auto logicalPlan = parseSelect(query);
 
     AXIOM_ASSERT_PLAN_V2(
         toSingleNodePlan(logicalPlan),
@@ -2120,8 +2109,7 @@ TEST_P(JoinTest, fullJoinPartitioning) {
   {
     // The aggregation reuses the full join's coalesced-key partitioning.
     AXIOM_ASSERT_PLAN_V2(
-        toSingleNodePlan(
-            parseSelect(query, kTestConnectorId), /*numDrivers=*/4),
+        toSingleNodePlan(parseSelect(query), /*numDrivers=*/4),
         matchScan("t")
             .hashJoinFull(matchScan("u"), {.keys = {{"z = a"}}})
             .project({"coalesce(z, a) as k"})
@@ -2129,7 +2117,7 @@ TEST_P(JoinTest, fullJoinPartitioning) {
             .build());
 
     AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
-        planVelox(parseSelect(query, kTestConnectorId)).plan,
+        planVelox(parseSelect(query)).plan,
         matchScan("t")
             .shuffle({"z"})
             .hashJoinFull(matchScan("u").shuffle({"a"}), {.keys = {{"z = a"}}})
@@ -2150,8 +2138,7 @@ TEST_P(JoinTest, fullJoinPartitioning) {
     testConnector_->setStats("u", 10'000, {{"a", {.numDistinct = 10'000}}});
 
     AXIOM_ASSERT_PLAN_V2(
-        toSingleNodePlan(
-            parseSelect(query, kTestConnectorId), /*numDrivers=*/4),
+        toSingleNodePlan(parseSelect(query), /*numDrivers=*/4),
         matchScan("u")
             .hashJoinFull(matchScan("t"), {.keys = {{"a = z"}}})
             .project({"coalesce(z, a) as k"})
@@ -2159,7 +2146,7 @@ TEST_P(JoinTest, fullJoinPartitioning) {
             .build());
 
     AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
-        planVelox(parseSelect(query, kTestConnectorId)).plan,
+        planVelox(parseSelect(query)).plan,
         matchScan("u")
             .shuffle({"a"})
             .hashJoinFull(matchScan("t").shuffle({"z"}), {.keys = {{"a = z"}}})
@@ -2184,8 +2171,7 @@ TEST_P(JoinTest, fullJoinGathered) {
       "SELECT coalesce(x, y) AS k, count(*) "
       "FROM (SELECT count(a) AS x FROM t) "
       "FULL OUTER JOIN (SELECT count(b) AS y FROM u) ON x = y "
-      "GROUP BY 1",
-      kTestConnectorId);
+      "GROUP BY 1");
 
   AXIOM_ASSERT_PLAN_V2(
       toSingleNodePlan(logicalPlan, /*numDrivers=*/4),
@@ -2216,8 +2202,7 @@ TEST_P(JoinTest, gatheredProbe) {
   addTableWithStats("t", {"a"}, 10'000);
 
   const auto logicalPlan = parseSelect(
-      "SELECT 1 WHERE NOT EXISTS (SELECT a FROM t GROUP BY a LIMIT 1)",
-      kTestConnectorId);
+      "SELECT 1 WHERE NOT EXISTS (SELECT a FROM t GROUP BY a LIMIT 1)");
 
   const auto matchProbe = [](core::PlanMatcherBuilder build) {
     return matchValues()
@@ -2264,8 +2249,7 @@ TEST_P(JoinTest, fullJoinFloatingPointKey) {
   const auto logicalPlan = parseSelect(
       "SELECT coalesce(a, b) AS k, count(*) "
       "FROM t FULL OUTER JOIN u ON a = b "
-      "GROUP BY 1",
-      kTestConnectorId);
+      "GROUP BY 1");
 
   AXIOM_ASSERT_PLAN_V2(
       toSingleNodePlan(logicalPlan, /*numDrivers=*/4),
@@ -2334,7 +2318,7 @@ TEST_P(JoinTest, crossThanOrderBy) {
   auto query = "SELECT length(n_name) FROM nation, region ORDER BY 1";
   SCOPED_TRACE(query);
 
-  auto logicalPlan = parseSelect(query, kTestConnectorId);
+  auto logicalPlan = parseSelect(query);
   auto plan = toSingleNodePlan(logicalPlan);
   AXIOM_ASSERT_PLAN(
       plan,
@@ -2423,7 +2407,7 @@ TEST_P(JoinTest, leftJoinOverValues) {
                      .project()
                      .build();
 
-  auto logicalPlan = parseSelect(query, kTestConnectorId);
+  auto logicalPlan = parseSelect(query);
 
   {
     auto plan = toSingleNodePlan(logicalPlan);
@@ -4321,7 +4305,7 @@ TEST_P(JoinTest, mapJoin) {
       }) {
     const std::string query = sql + fromClause;
     SCOPED_TRACE(query);
-    const auto logicalPlan = parseSelect(query, kTestConnectorId);
+    const auto logicalPlan = parseSelect(query);
     AXIOM_ASSERT_PLAN_V2(
         toSingleNodePlan(logicalPlan),
         matchMapProject().project({"a", "m[a]", "m[a + 1]"}).build());
@@ -4338,8 +4322,7 @@ TEST_P(JoinTest, mapJoin) {
   {
     const auto logicalPlan = parseSelect(
         lookupMap + "SELECT m[a], transform(ARRAY[a + 1], x -> m[x]) " +
-            fromClause,
-        kTestConnectorId);
+        fromClause);
     AXIOM_ASSERT_PLAN_V2(
         toSingleNodePlan(logicalPlan),
         matchMapProject()
@@ -4348,9 +4331,8 @@ TEST_P(JoinTest, mapJoin) {
   }
 
   {
-    const auto logicalPlan = parseSelect(
-        lookupMap + "SELECT sum(m[a]), sum(m[a + 1])" + fromClause,
-        kTestConnectorId);
+    const auto logicalPlan =
+        parseSelect(lookupMap + "SELECT sum(m[a]), sum(m[a + 1])" + fromClause);
     AXIOM_ASSERT_PLAN_V2(
         toSingleNodePlan(logicalPlan),
         matchMapProject()
@@ -4474,7 +4456,7 @@ TEST_P(JoinTest, clusterLargerThanRelationSet) {
     }
   }
 
-  EXPECT_NO_THROW(toSingleNodePlan(parseSelect(query, kTestConnectorId)));
+  EXPECT_NO_THROW(toSingleNodePlan(parseSelect(query)));
 }
 
 AXIOM_INSTANTIATE_V1_V2(JoinTest);

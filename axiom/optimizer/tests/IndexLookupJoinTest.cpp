@@ -51,7 +51,7 @@ class IndexLookupJoinTest : public QueryTestBase,
 TEST_P(IndexLookupJoinTest, indexLookup) {
   const auto sql = "SELECT * FROM t JOIN lookup ON t.a = lookup.k1";
   AXIOM_ASSERT_PLAN(
-      toSingleNodePlan(parseSelect(sql, kTestConnectorId)),
+      toSingleNodePlan(parseSelect(sql)),
       matchScan("t")
           .indexLookupJoin(
               matchScan("lookup"), core::JoinType::kInner, {"a = k1"})
@@ -66,7 +66,7 @@ TEST_P(IndexLookupJoinTest, lookupOnLeft) {
 
   const auto sql = "SELECT * FROM lookup JOIN t ON lookup.k1 = t.a";
   AXIOM_ASSERT_PLAN(
-      toSingleNodePlan(parseSelect(sql, kTestConnectorId)),
+      toSingleNodePlan(parseSelect(sql)),
       matchScan("t")
           .indexLookupJoin(
               matchScan("lookup"), core::JoinType::kInner, {"a = k1"})
@@ -81,7 +81,7 @@ TEST_P(IndexLookupJoinTest, leftJoin) {
 
   const auto sql = "SELECT * FROM t LEFT JOIN lookup ON t.a = lookup.k1";
   AXIOM_ASSERT_PLAN(
-      toSingleNodePlan(parseSelect(sql, kTestConnectorId)),
+      toSingleNodePlan(parseSelect(sql)),
       matchScan("t")
           .indexLookupJoin(
               matchScan("lookup"), core::JoinType::kLeft, {"a = k1"})
@@ -96,7 +96,7 @@ TEST_P(IndexLookupJoinTest, multiKey) {
   const auto sql =
       "SELECT * FROM t JOIN lookup ON t.a = lookup.k2 AND t.b = lookup.k1";
   AXIOM_ASSERT_PLAN(
-      toSingleNodePlan(parseSelect(sql, kTestConnectorId)),
+      toSingleNodePlan(parseSelect(sql)),
       matchScan("t")
           .indexLookupJoin(
               matchScan("lookup"), core::JoinType::kInner, {"b = k1", "a = k2"})
@@ -114,7 +114,7 @@ TEST_P(IndexLookupJoinTest, residualFilter) {
         "SELECT * FROM t JOIN lookup ON t.a = lookup.k1 AND t.b < lookup.v";
     SCOPED_TRACE(sql);
     AXIOM_ASSERT_PLAN(
-        toSingleNodePlan(parseSelect(sql, kTestConnectorId)),
+        toSingleNodePlan(parseSelect(sql)),
         matchScan("t")
             .indexLookupJoin(
                 matchScan("lookup"), core::JoinType::kInner, {"a = k1"})
@@ -127,7 +127,7 @@ TEST_P(IndexLookupJoinTest, residualFilter) {
         "SELECT t.a FROM t JOIN lookup ON t.a = lookup.k1 AND t.b < lookup.v";
     SCOPED_TRACE(sql);
     VELOX_ASSERT_THROW(
-        toSingleNodePlan(parseSelect(sql, kTestConnectorId)),
+        toSingleNodePlan(parseSelect(sql)),
         "Index lookup residual filters can reference only lookup columns in "
         "the join output");
   }
@@ -140,7 +140,7 @@ TEST_P(IndexLookupJoinTest, prefixCoverage) {
 
   const auto sql = "SELECT * FROM t JOIN lookup ON t.a = lookup.k2";
   VELOX_ASSERT_THROW(
-      toSingleNodePlan(parseSelect(sql, kTestConnectorId)),
+      toSingleNodePlan(parseSelect(sql)),
       "Lookup equality keys must cover an index prefix");
 }
 
@@ -154,7 +154,7 @@ TEST_P(IndexLookupJoinTest, duplicateLookupKey) {
         "SELECT * FROM t JOIN lookup ON t.a = lookup.k1 AND t.b = lookup.k1";
     SCOPED_TRACE(sql);
     AXIOM_ASSERT_PLAN(
-        toSingleNodePlan(parseSelect(sql, kTestConnectorId)),
+        toSingleNodePlan(parseSelect(sql)),
         matchScan("t")
             .filter("a = b")
             .indexLookupJoin(
@@ -169,7 +169,7 @@ TEST_P(IndexLookupJoinTest, duplicateLookupKey) {
         "ON t.a = lookup.k1 AND t.b = lookup.k1";
     SCOPED_TRACE(sql);
     AXIOM_ASSERT_PLAN(
-        toSingleNodePlan(parseSelect(sql, kTestConnectorId)),
+        toSingleNodePlan(parseSelect(sql)),
         matchScan("t")
             .indexLookupJoin(
                 matchScan("lookup"), core::JoinType::kLeft, {"a = k1"}, "a = b")
@@ -186,7 +186,7 @@ TEST_P(IndexLookupJoinTest, partitionedLookupUnsupported) {
       "SELECT * FROM t JOIN partitioned_lookup ON t.a = "
       "partitioned_lookup.k";
   VELOX_ASSERT_THROW(
-      toSingleNodePlan(parseSelect(sql, kTestConnectorId)),
+      toSingleNodePlan(parseSelect(sql)),
       "Partitioned index lookup is unsupported");
 }
 
@@ -198,7 +198,7 @@ TEST_P(IndexLookupJoinTest, connectorRejectedFilter) {
   const auto sql =
       "SELECT * FROM t JOIN lookup ON t.a = lookup.k1 WHERE lookup.v > 0";
   VELOX_ASSERT_THROW(
-      toSingleNodePlan(parseSelect(sql, kTestConnectorId)),
+      toSingleNodePlan(parseSelect(sql)),
       "Index lookup does not support connector-rejected filters");
 }
 
@@ -210,7 +210,7 @@ TEST_P(IndexLookupJoinTest, downstreamJoin) {
   const auto sql =
       "SELECT * FROM (t JOIN lookup ON t.a = lookup.k1) JOIN u ON t.b = u.x";
   AXIOM_ASSERT_PLAN(
-      toSingleNodePlan(parseSelect(sql, kTestConnectorId)),
+      toSingleNodePlan(parseSelect(sql)),
       matchScan("t")
           .indexLookupJoin(
               matchScan("lookup"), core::JoinType::kInner, {"a = k1"})

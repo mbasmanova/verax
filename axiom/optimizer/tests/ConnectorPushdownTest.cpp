@@ -64,8 +64,8 @@ class ConnectorPushdownTest : public QueryTestBase,
 
   // Optimizes 'scan t where <filter>'.
   std::vector<core::TypedExprPtr> pushedFilters(std::string_view filter) {
-    return pushedFilters(parseSelect(
-        fmt::format("SELECT * FROM t WHERE {}", filter), kTestConnectorId));
+    return pushedFilters(
+        parseSelect(fmt::format("SELECT * FROM t WHERE {}", filter)));
   }
 
   // Asserts the pushed conjuncts structurally match 'expected' (each an
@@ -126,8 +126,8 @@ TEST_P(ConnectorPushdownTest, singleRowIn) {
   expectPushed("(a, b) IN ((1, 2), (1, 2))", {"a = 1", "b = 2"});
 
   AXIOM_ASSERT_PLAN_V2(
-      toSingleNodePlan(parseSelect(
-          "SELECT * FROM t WHERE (a, b) IN ((1, NULL))", kTestConnectorId)),
+      toSingleNodePlan(
+          parseSelect("SELECT * FROM t WHERE (a, b) IN ((1, NULL))")),
       matchValues().build());
 }
 
