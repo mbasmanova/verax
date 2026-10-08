@@ -1006,11 +1006,17 @@ NodeCP JoinTreeEmitter::emitComponents(
     NodeCP build = emitted[order[i]].node;
     materialized =
         merge(std::move(materialized), emitted[order[i]].materialized);
-    // A cross product is keyless: broadcast the build so the probe keeps its
+    // A cross product is keyless: replicate the build so the probe keeps its
     // partitioning and a single-task (Values / global-aggregate) or scan build
-    // is isolated in its own fragment instead of co-locating with the probe.
+    // is isolated in its own fragment instead of co-locating with a parallel
+    // probe.
     if (numWorkers > 1) {
-      build = builder.make<Exchange>({build, Partitioning::globalBroadcast()});
+      const Partitioning replicated = Partitioning::globalReplicatedTo(
+          result->physicalProperties().globalPartition);
+      if (!build->physicalProperties().globalPartition.sameClassAs(
+              replicated)) {
+        build = builder.make<Exchange>({build, replicated});
+      }
     }
     cover.unionSet(componentRoots[order[i]]->cover());
     const bool isLast = (i + 1 == order.size());

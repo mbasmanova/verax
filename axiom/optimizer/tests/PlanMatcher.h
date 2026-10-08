@@ -753,6 +753,14 @@ class PlanMatcherBuilder {
   PlanMatcherBuilder& gather(
       std::optional<axiom::optimizer::FragmentType> producer = std::nullopt);
 
+  /// Matches a gather shuffle boundary (see gather()) only when 'condition' is
+  /// true; otherwise a no-op.
+  PlanMatcherBuilder& gatherIf(
+      bool condition,
+      std::optional<axiom::optimizer::FragmentType> producer = std::nullopt) {
+    return condition ? gather(producer) : *this;
+  }
+
   /// Matches a gather boundary and verifies both sides use 'serdeKind'.
   PlanMatcherBuilder& gather(const std::string& serdeKind);
 

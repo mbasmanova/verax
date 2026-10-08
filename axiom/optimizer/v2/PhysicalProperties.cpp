@@ -129,6 +129,11 @@ Partitioning Partitioning::globalBroadcast() {
       .kind = PartitionKind::kBroadcast, .scope = PropertyScope::kGlobal};
 }
 
+Partitioning Partitioning::globalReplicatedTo(const Partitioning& consumer) {
+  return consumer.is(PartitionKind::kGather) ? globalGather()
+                                             : globalBroadcast();
+}
+
 Partitioning Partitioning::globalArbitrary() {
   return Partitioning{
       .kind = PartitionKind::kArbitrary, .scope = PropertyScope::kGlobal};

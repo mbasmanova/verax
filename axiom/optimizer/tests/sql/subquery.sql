@@ -465,3 +465,10 @@ SELECT
     END AS r,
     (SELECT count(*) FROM u WHERE u.a < t.c) AS z
 FROM t
+----
+-- NOT EXISTS over a subquery that runs on one task.
+-- count 0
+SELECT 1 WHERE NOT EXISTS (SELECT a FROM t GROUP BY a LIMIT 1)
+----
+-- The same, over a subquery with no rows.
+SELECT 1 WHERE NOT EXISTS (SELECT a FROM t WHERE a > 100 GROUP BY a LIMIT 1)
