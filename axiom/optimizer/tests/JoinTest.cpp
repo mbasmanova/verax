@@ -1724,8 +1724,6 @@ TEST_P(JoinTest, crossJoin) {
   }
 }
 
-// TODO: Assert the V2 plan after it eliminates unused, provably single-row
-// aggregate cross joins.
 TEST_P(JoinTest, unusedSingleRowAggregateCrossJoin) {
   testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
   testConnector_->addTable("u", ROW({"x", "y"}, BIGINT()));
@@ -1733,7 +1731,7 @@ TEST_P(JoinTest, unusedSingleRowAggregateCrossJoin) {
   auto logicalPlan = parseSelect("SELECT a FROM t, (SELECT count(*) FROM u)");
 
   auto plan = toSingleNodePlan(logicalPlan);
-  AXIOM_ASSERT_PLAN_V1(plan, matchScan("t").build());
+  AXIOM_ASSERT_PLAN(plan, matchScan("t").build());
 
   ASSERT_NO_THROW(planVelox(logicalPlan));
 }

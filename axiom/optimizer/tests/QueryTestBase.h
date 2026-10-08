@@ -339,6 +339,10 @@ class QueryTestBase : public velox::exec::test::HiveConnectorTestBase {
 
   std::shared_ptr<connector::TestConnector> testConnector_;
 
+  // When set, called after each v2 optimizer pass in every planVelox call of
+  // the test. Set it while debugging to inspect the IR between passes.
+  v2::Optimizer::PassCallback afterPass_;
+
   // Connector used by parseSelect(sql). Subclasses may change it in SetUp.
   std::string defaultConnectorId_{kTestConnectorId};
 

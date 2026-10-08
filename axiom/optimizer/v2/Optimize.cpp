@@ -165,7 +165,14 @@ Optimizer::~Optimizer() {
 NodeCP Optimizer::planTo(
     std::optional<Pass> pass,
     PushdownAndPrunePass::ConnectorPushdown connectorPushdown,
-    const MultiFragmentPlan::Options* options) {
+    const MultiFragmentPlan::Options* options,
+    const PassCallback& afterPass) {
+  const auto notifyAfterPass = [&](Pass finishedPass, NodeCP root) {
+    if (afterPass) {
+      afterPass(finishedPass, root);
+    }
+  };
+
   ConstantPlanRunner constantPlanRunner{queryCtx_};
   auto translated = TranslatePass::run(
       plan_,
@@ -177,16 +184,19 @@ NodeCP Optimizer::planTo(
       constantPlanRunner);
   outputColumns_ = translated.outputColumns;
   outputNames_ = translated.outputNames;
+  notifyAfterPass(Pass::kTranslate, translated.root);
   if (pass == Pass::kTranslate) {
     return translated.root;
   }
 
   NodeCP node = DecorrelatePass::run(translated.root, builder_);
+  notifyAfterPass(Pass::kDecorrelate, node);
   if (pass == Pass::kDecorrelate) {
     return node;
   }
 
   node = LimitAndOrderPass::run(node, builder_);
+  notifyAfterPass(Pass::kLimitAndOrder, node);
   if (pass == Pass::kLimitAndOrder) {
     return node;
   }
@@ -200,11 +210,13 @@ NodeCP Optimizer::planTo(
       connectorPushdown);
   node = pushed.root;
   outputColumns_ = std::move(pushed.outputColumns);
+  notifyAfterPass(Pass::kPushdownAndPrune, node);
   if (pass == Pass::kPushdownAndPrune) {
     return node;
   }
 
   node = FoldMetadataAggregatePass::run(node, builder_, session_);
+  notifyAfterPass(Pass::kFoldMetadataAggregate, node);
   if (pass == Pass::kFoldMetadataAggregate) {
     return node;
   }
@@ -212,6 +224,7 @@ NodeCP Optimizer::planTo(
   if (translated.connectorPushdownSupported) {
     node = ConnectorPushdownPass::run(
         node, builder_, schema_, schemaResolver_, session_, evaluator_);
+    notifyAfterPass(Pass::kConnectorPushdown, node);
   }
   if (pass == Pass::kConnectorPushdown) {
     return node;
@@ -220,6 +233,7 @@ NodeCP Optimizer::planTo(
   if (session_.options().useFilteredTableStats) {
     node = EstimateLeafStatsPass::run(
         node, outputColumns_, builder_, evaluator_, session_);
+    notifyAfterPass(Pass::kEstimateLeafStats, node);
   }
   if (pass == Pass::kEstimateLeafStats) {
     return node;
@@ -244,6 +258,7 @@ NodeCP Optimizer::planTo(
       session_.options(),
       planOptions_.maxRemotePartitions,
       planOptions_.maxLocalPartitions);
+  notifyAfterPass(Pass::kPlanPhysical, node);
   return node;
 }
 
@@ -251,8 +266,11 @@ Optimizer::DebugPlan Optimizer::debugPlanTo(
     const MultiFragmentPlan::Options& options,
     std::optional<Pass> pass) {
   markUsed();
-  NodeCP root =
-      planTo(pass, PushdownAndPrunePass::ConnectorPushdown::kOffer, &options);
+  NodeCP root = planTo(
+      pass,
+      PushdownAndPrunePass::ConnectorPushdown::kOffer,
+      &options,
+      /*afterPass=*/nullptr);
 
   // Before leaf statistics are read the numbers are not the ones planning goes
   // on, so no estimate is offered at all.
@@ -266,12 +284,19 @@ Optimizer::DebugPlan Optimizer::debugPlanTo(
 }
 
 PlanAndStats Optimizer::optimize(const MultiFragmentPlan::Options& options) {
+  return optimize(options, /*afterPass=*/nullptr);
+}
+
+PlanAndStats Optimizer::optimize(
+    const MultiFragmentPlan::Options& options,
+    const PassCallback& afterPass) {
   markUsed();
 
   NodeCP planned = planTo(
       /*pass=*/std::nullopt,
       PushdownAndPrunePass::ConnectorPushdown::kOffer,
-      &options);
+      &options,
+      afterPass);
 
   EmitPass::Result emitted = EmitPass::run(
       planned,
@@ -314,7 +339,8 @@ std::string Optimizer::explainIo(
   NodeCP pushed = planTo(
       Pass::kPushdownAndPrune,
       PushdownAndPrunePass::ConnectorPushdown::kSkip,
-      nullptr);
+      /*options=*/nullptr,
+      /*afterPass=*/nullptr);
 
   std::vector<std::pair<BaseTableCP, ExprVector>> tableFilters;
   collectScans(pushed, tableFilters);
@@ -327,7 +353,8 @@ QueryStats Optimizer::estimateQueryStats() {
   NodeCP root = planTo(
       Pass::kEstimateLeafStats,
       PushdownAndPrunePass::ConnectorPushdown::kOffer,
-      nullptr);
+      /*options=*/nullptr,
+      /*afterPass=*/nullptr);
 
   EstimateProvider estimateProvider;
   const Estimate& estimate = estimateProvider.estimate(root);

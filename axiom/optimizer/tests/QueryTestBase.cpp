@@ -399,7 +399,7 @@ optimizer::PlanAndStats QueryTestBase::planVelox(
   if (useV2_) {
     planAndStats =
         v2::Optimizer(*plan, schemaResolver, *session, evaluator, queryCtx)
-            .optimize(options);
+            .optimize(options, afterPass_);
   } else {
     optimizer::Optimization opt(
         session,
