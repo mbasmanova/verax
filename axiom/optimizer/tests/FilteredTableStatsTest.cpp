@@ -166,9 +166,7 @@ TEST_P(FilteredTableStatsTest, emptyPartition) {
           },
           {
               "SELECT (SELECT a FROM t WHERE k = 7)",
-              matchValues(makeRowVector({makeNullableFlatVector<int64_t>(
-                              {std::nullopt})}))
-                  .build(),
+              matchValues<int64_t>({{std::nullopt}}).build(),
           },
           {
               "SELECT a AS x FROM t WHERE k = 7 "

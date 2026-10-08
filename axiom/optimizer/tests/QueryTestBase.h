@@ -288,6 +288,24 @@ class QueryTestBase : public velox::exec::test::HiveConnectorTestBase {
         std::vector<velox::RowVectorPtr>{expected});
   }
 
+  /// Matches a Values node whose rows equal 'rows' (order-insensitive). All
+  /// columns have type T and are named c0, c1, and so on. 'rows' must not be
+  /// empty.
+  template <typename T>
+  velox::core::PlanMatcherBuilder matchValues(
+      const std::vector<std::vector<std::optional<T>>>& rows) {
+    VELOX_CHECK(!rows.empty());
+    return matchValues(makeRowVector(makeColumns(rows[0].size(), rows)));
+  }
+
+  /// Same as above, with column names. 'rows' may be empty.
+  template <typename T>
+  velox::core::PlanMatcherBuilder matchValues(
+      const std::vector<std::string>& names,
+      const std::vector<std::vector<std::optional<T>>>& rows) {
+    return matchValues(makeRowVector(names, makeColumns(names.size(), rows)));
+  }
+
   /// Creates a QueryCtx with the specified query ID.
   std::shared_ptr<velox::core::QueryCtx> makeQueryCtx(
       const std::string& queryId);
@@ -336,6 +354,27 @@ class QueryTestBase : public velox::exec::test::HiveConnectorTestBase {
   connector::StatWriterProvider connectorStatWriterProvider();
 
  private:
+  // Transposes 'rows' into 'numColumns' flat vectors.
+  template <typename T>
+  std::vector<velox::VectorPtr> makeColumns(
+      size_t numColumns,
+      const std::vector<std::vector<std::optional<T>>>& rows) {
+    for (const auto& row : rows) {
+      VELOX_CHECK_EQ(row.size(), numColumns);
+    }
+    std::vector<velox::VectorPtr> columns;
+    columns.reserve(numColumns);
+    for (size_t i = 0; i < numColumns; ++i) {
+      std::vector<std::optional<T>> values;
+      values.reserve(rows.size());
+      for (const auto& row : rows) {
+        values.push_back(row[i]);
+      }
+      columns.push_back(makeNullableFlatVector<T>(values));
+    }
+    return columns;
+  }
+
   std::shared_ptr<velox::memory::MemoryPool> optimizerPool_;
 
   // A QueryCtx created for each compiled query.
