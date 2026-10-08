@@ -677,7 +677,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
           const bool useBroadcast = Join::canBroadcastBuild(join.joinType) &&
               broadcastFits(join.right);
           if (useBroadcast) {
-            join.right = broadcast(join.right);
+            join.right = replicate(join.right, join.left);
           } else {
             // A partitioned null-aware anti/semi join sends null keys from its
             // existence side to every probe partition.
@@ -690,7 +690,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
         }
       } else {
         if (Join::canBroadcastBuild(join.joinType)) {
-          join.right = broadcast(join.right);
+          join.right = replicate(join.right, join.left);
         } else {
           join.left = ensureGathered(join.left);
           join.right = ensureGathered(join.right);
@@ -902,8 +902,14 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
         {input, Partitioning::globalHash(keys, replicateNullsAndAny)});
   }
 
-  NodeCP broadcast(NodeCP input) {
-    return builder().make<Exchange>({input, Partitioning::globalBroadcast()});
+  // Gives every task of the stage that runs 'probe' a full copy of 'build'.
+  NodeCP replicate(NodeCP build, NodeCP probe) {
+    const Partitioning replicated = Partitioning::globalReplicatedTo(
+        probe->physicalProperties().globalPartition);
+    if (build->physicalProperties().globalPartition.sameClassAs(replicated)) {
+      return build;
+    }
+    return builder().make<Exchange>({build, replicated});
   }
 
   // Repartitions 'input' on 'keys' using 'targetType' (a connector

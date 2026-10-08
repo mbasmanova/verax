@@ -177,6 +177,11 @@ struct Partitioning {
   /// A global broadcast (every task receives a full copy) partitioning.
   static Partitioning globalBroadcast();
 
+  /// The partitioning that gives every task of the stage whose rows are
+  /// `consumer` a full copy: a gather when that stage runs on one task, a
+  /// broadcast otherwise.
+  static Partitioning globalReplicatedTo(const Partitioning& consumer);
+
   /// A global arbitrary (round-robin / shared-pool) partitioning.
   static Partitioning globalArbitrary();
 

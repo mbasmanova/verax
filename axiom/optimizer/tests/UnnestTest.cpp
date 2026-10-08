@@ -1138,14 +1138,14 @@ TEST_P(UnnestTest, unnestPlacedAboveJoin) {
     return;
   }
 
+  // The expansion runs on one task, so the scan is gathered to it.
   auto makeMatcher = [&](bool distributed) {
     return matchValues()
         .aliases({"data"})
         .unnest({}, {"data"})
         .aliases({"e"})
         .nestedLoopJoin(
-            matchScan("s").filter("a = 1").projectNone().broadcastIf(
-                distributed))
+            matchScan("s").filter("a = 1").projectNone().gatherIf(distributed))
         .project({"1 as a", "e"})
         .build();
   };

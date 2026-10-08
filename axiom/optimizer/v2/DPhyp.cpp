@@ -846,12 +846,13 @@ class Enumerator {
     VELOX_UNREACHABLE();
   }
 
-  // Cheapest plan for `cover` broadcast to every task of the stage the probe
-  // runs in, whose rows are 'probePartitioning'. Null when `cover` has no
-  // costable plan, or when its estimated size exceeds the broadcast limit (it
-  // would not fit in each task's memory) — the caller then relies on the
-  // co-partition candidate.
-  MemoOpCP broadcastChild(
+  // Cheapest plan for `cover` copied to every task of the stage the probe
+  // runs in, whose rows are 'probePartitioning'. A stage on one task receives
+  // it by a gather, or by no exchange when the plan is already there. Null
+  // when `cover` has no costable plan, or when its estimated size exceeds the
+  // broadcast limit (it would not fit in each task's memory) — the caller then
+  // relies on the co-partition candidate.
+  MemoOpCP replicatedChild(
       RelationSet cover,
       const Partitioning& probePartitioning) {
     const auto it = memo_.find(cover);
@@ -865,6 +866,11 @@ class Enumerator {
     if (!CostModel::broadcastSizeIfFits(base, graph_, broadcastSizeLimit_)
              .has_value()) {
       return nullptr;
+    }
+    const Partitioning replicated =
+        Partitioning::globalReplicatedTo(probePartitioning);
+    if (replicated.is(PartitionKind::kGather)) {
+      return bestOnPartitioning(cover, replicated);
     }
     Cost cost = base->cost;
     cost.cost = add(
@@ -1261,18 +1267,18 @@ class Enumerator {
       }
     }
 
-    // Broadcast the build (right); the probe (left) keeps its partitioning.
-    // Only when the join does not preserve the build — broadcasting a preserved
+    // Replicate the build (right); the probe (left) keeps its partitioning.
+    // Only when the join does not preserve the build — replicating a preserved
     // side would emit its rows on every task. A reversed anti join builds on
     // its preserved (left) side, so its build is preserved and cannot be
-    // broadcast.
+    // replicated.
     if (Join::canBroadcastBuild(joinType) && !reversedAnti) {
-      MemoOpCP broadcastBuild =
-          broadcastChild(right->cover(), left->outputPartitioning());
-      if (broadcastBuild != nullptr) {
+      MemoOpCP replicatedBuild =
+          replicatedChild(right->cover(), left->outputPartitioning());
+      if (replicatedBuild != nullptr) {
         addDistributedJoinCandidate(
             left,
-            broadcastBuild,
+            replicatedBuild,
             edgeIndex,
             joinType,
             combined,

@@ -2210,6 +2210,48 @@ TEST_P(JoinTest, fullJoinGathered) {
           .build());
 }
 
+// A join whose probe sits on one task receives its build on that task, with
+// no exchange when the build is already there.
+TEST_P(JoinTest, gatheredProbe) {
+  addTableWithStats("t", {"a"}, 10'000);
+
+  const auto logicalPlan = parseSelect(
+      "SELECT 1 WHERE NOT EXISTS (SELECT a FROM t GROUP BY a LIMIT 1)",
+      kTestConnectorId);
+
+  const auto matchProbe = [](core::PlanMatcherBuilder build) {
+    return matchValues()
+        .nestedLoopJoin(std::move(build), core::JoinType::kLeftSemiProject)
+        .aliases({"m"})
+        .filter("NOT m")
+        .projectNone()
+        .project({"1"})
+        .build();
+  };
+
+  AXIOM_ASSERT_PLAN_V2(
+      toSingleNodePlan(logicalPlan),
+      matchProbe(matchScan("t").singleAggregation({"a"}, {}).finalLimit(0, 1)));
+
+  AXIOM_ASSERT_PLAN_V2(
+      toSingleNodePlan(logicalPlan, /*numDrivers=*/4),
+      matchProbe(matchScan("t")
+                     .partialAggregation({"a"}, {})
+                     .localLimit(0, 1)
+                     .finalAggregation({"a"}, {})
+                     .finalLimit(0, 1)));
+
+  AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
+      planVelox(logicalPlan).plan,
+      matchProbe(matchScan("t")
+                     .partialAggregation({"a"}, {})
+                     .localLimit(0, 1)
+                     .gather()
+                     .localGather()
+                     .finalAggregation({"a"}, {})
+                     .finalLimit(0, 1)));
+}
+
 // A floating-point key is ineligible: -0.0 and 0.0 compare equal but hash
 // differently, so the coalesce of a pair does not say where a row sits.
 TEST_P(JoinTest, fullJoinFloatingPointKey) {
