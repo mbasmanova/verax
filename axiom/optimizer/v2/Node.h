@@ -515,6 +515,12 @@ class Limit : public Node {
     return count_ >= INT64_MAX - offset_ ? INT64_MAX : offset_ + count_;
   }
 
+  /// True when offsetPlusCount() is finite, so a partial Limit can keep that
+  /// many rows per task.
+  bool isBounded() const {
+    return offsetPlusCount() != INT64_MAX;
+  }
+
   std::span<const NodeCP> inputs() const override {
     return {&input_, 1};
   }

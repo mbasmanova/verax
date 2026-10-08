@@ -104,3 +104,9 @@ SELECT a, b FROM t ORDER BY b DESC OFFSET 12
 -- An offset whose sum with the limit exceeds the maximum int64.
 -- count 0
 SELECT a, b FROM t OFFSET 9223372036854775802 LIMIT 100
+----
+-- DISTINCT with LIMIT returns each key once.
+SELECT count(DISTINCT a), count(*) FROM (SELECT DISTINCT a FROM t LIMIT 2)
+----
+-- Same, with OFFSET.
+SELECT count(DISTINCT a), count(*) FROM (SELECT DISTINCT a FROM t OFFSET 1 LIMIT 5)
