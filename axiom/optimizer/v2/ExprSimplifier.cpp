@@ -438,6 +438,13 @@ ExprCP ExprSimplifier::simplify(
       break;
     }
   }
+
+  if (call->name() == builder_.functionNames().isNull &&
+      isKnownNonNull(
+          changed ? rewrittenArgs[0] : call->args()[0], nonNullColumns)) {
+    return builder_.makeBoolean(false);
+  }
+
   if (call->name() == builder_.functionNames().equality) {
     ExprCP lhs = changed ? rewrittenArgs[0] : call->args()[0];
     ExprCP rhs = changed ? rewrittenArgs[1] : call->args()[1];
@@ -448,6 +455,7 @@ ExprCP ExprSimplifier::simplify(
       return builder_.makeBoolean(true);
     }
   }
+
   if (!changed) {
     return expr;
   }

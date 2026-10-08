@@ -4162,6 +4162,18 @@ TEST_P(JoinTest, constantInput) {
     AXIOM_ASSERT_PLAN_V2(plan, matchValues().build());
   }
 
+  // Nulls among the rows restrict the other side to the non-null values.
+  {
+    auto plan = toSingleNodePlan(
+        "SELECT t.a FROM t JOIN (VALUES 1, 3, NULL) AS v(k) ON t.a = v.k");
+    AXIOM_ASSERT_PLAN_V2(
+        plan,
+        matchScan("t")
+            .filter("a in (1, 3)")
+            .hashJoinInner(matchValues())
+            .build());
+  }
+
   // One row leaves an equality and no join.
   {
     auto plan = toSingleNodePlan(
