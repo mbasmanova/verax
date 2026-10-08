@@ -43,12 +43,12 @@ class LimitTest : public test::QueryTestBase,
   core::PlanNodePtr toSingleNodePlan(
       std::string_view sql,
       int32_t numDrivers = 1) {
-    auto logicalPlan = parseSelect(sql, kTestConnectorId);
+    auto logicalPlan = parseSelect(sql);
     return QueryTestBase::toSingleNodePlan(logicalPlan, numDrivers);
   }
 
   MultiFragmentPlanPtr toDistributedPlan(std::string_view sql) {
-    auto logicalPlan = parseSelect(sql, kTestConnectorId);
+    auto logicalPlan = parseSelect(sql);
     return planVelox(logicalPlan).plan;
   }
 

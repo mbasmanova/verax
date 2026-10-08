@@ -51,8 +51,7 @@ TEST_F(NodePrinterTest, fixedPoint) {
   const auto plan = parseSelect(
       "WITH RECURSIVE counter(n) AS ("
       "SELECT 1 UNION ALL SELECT n + 1 FROM counter WHERE n < 10) "
-      "SELECT n FROM counter",
-      kTestConnectorId);
+      "SELECT n FROM counter");
 
   verifyOptimization(*plan, Optimizer::Pass::kTranslate, [&](NodeCP root) {
     // Names carry NameAllocator ids, so assert structure and drop the tail.
@@ -82,7 +81,7 @@ TEST_F(NodePrinterTest, fixedPoint) {
 }
 
 TEST_F(NodePrinterTest, unknownEstimate) {
-  const auto plan = parseSelect("SELECT 1 AS a", kTestConnectorId);
+  const auto plan = parseSelect("SELECT 1 AS a");
   verifyOptimization(*plan, Optimizer::Pass::kTranslate, [&](NodeCP root) {
     EXPECT_THAT(
         toLines(
@@ -100,8 +99,8 @@ TEST_F(NodePrinterTest, unknownEstimate) {
 }
 
 TEST_F(NodePrinterTest, selectivityAndFanout) {
-  const auto filter = parseSelect(
-      "SELECT * FROM (VALUES 1, 2) AS t(x) WHERE x > 1", kTestConnectorId);
+  const auto filter =
+      parseSelect("SELECT * FROM (VALUES 1, 2) AS t(x) WHERE x > 1");
   verifyOptimization(*filter, Optimizer::Pass::kTranslate, [&](NodeCP root) {
     EstimateProvider estimateProvider;
     EXPECT_THAT(
@@ -120,8 +119,7 @@ TEST_F(NodePrinterTest, selectivityAndFanout) {
 
   const auto join = parseSelect(
       "SELECT * FROM (VALUES 1, 2) AS l(left_key) CROSS JOIN "
-      "(VALUES 1, 2, 3) AS r(right_key)",
-      kTestConnectorId);
+      "(VALUES 1, 2, 3) AS r(right_key)");
   verifyOptimization(*join, Optimizer::Pass::kTranslate, [&](NodeCP root) {
     EstimateProvider estimateProvider;
     EXPECT_THAT(
@@ -141,8 +139,8 @@ TEST_F(NodePrinterTest, selectivityAndFanout) {
 }
 
 TEST_F(NodePrinterTest, indexLookupJoin) {
-  const auto plan = parseSelect(
-      "SELECT * FROM t JOIN lookup ON t.a = lookup.k", kTestConnectorId);
+  const auto plan =
+      parseSelect("SELECT * FROM t JOIN lookup ON t.a = lookup.k");
 
   verifyOptimization(*plan, Optimizer::Pass::kPushdownAndPrune, [&](NodeCP root) {
     EXPECT_THAT(

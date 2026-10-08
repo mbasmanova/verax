@@ -499,8 +499,7 @@ TEST_P(DistinctAggregationTest, markDistinctPreGroupedInput) {
   auto logicalPlan = parseSelect(
       "SELECT q.a, count(DISTINCT q.d), sum(q.z) "
       "FROM (SELECT a, max(b) AS d, sum(c) AS z FROM t GROUP BY a) q "
-      "GROUP BY q.a",
-      kTestConnectorId);
+      "GROUP BY q.a");
 
   AXIOM_ASSERT_PLAN_V2(
       toSingleNodePlan(logicalPlan, /*numDrivers=*/1),

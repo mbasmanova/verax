@@ -64,6 +64,8 @@ class CoordinatorSchedulingTest : public optimizer::test::QueryTestBase {
             systemConnector_.get());
     connector::ConnectorMetadataRegistry::global().insert(
         kSystemConnectorId, systemMetadata_);
+
+    defaultConnectorId_ = kSystemConnectorId;
   }
 
   void TearDown() override {
@@ -74,10 +76,6 @@ class CoordinatorSchedulingTest : public optimizer::test::QueryTestBase {
     systemConnector_.reset();
 
     optimizer::test::QueryTestBase::TearDown();
-  }
-
-  logical_plan::LogicalPlanNodePtr parseSelect(std::string_view sql) {
-    return optimizer::test::QueryTestBase::parseSelect(sql, kSystemConnectorId);
   }
 
   EmptyQueryInfoProvider queryProvider_;

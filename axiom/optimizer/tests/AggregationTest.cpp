@@ -70,8 +70,7 @@ TEST_P(AggregationTest, constantGroupingKeys) {
     const auto logicalPlan = parseSelect(
         "SELECT a, b, label, count(*) AS c "
         "FROM (SELECT a, b, 'foo' AS label FROM cg_t) "
-        "GROUP BY 1, 2, 3",
-        kTestConnectorId);
+        "GROUP BY 1, 2, 3");
 
     AXIOM_ASSERT_PLAN_V2(
         toSingleNodePlan(logicalPlan),
@@ -84,8 +83,7 @@ TEST_P(AggregationTest, constantGroupingKeys) {
   {
     SCOPED_TRACE("Only constant grouping keys");
     const auto logicalPlan = parseSelect(
-        "SELECT 'foo' AS x, 'bar' AS y, count(*) AS c FROM cg_t GROUP BY 1, 2",
-        kTestConnectorId);
+        "SELECT 'foo' AS x, 'bar' AS y, count(*) AS c FROM cg_t GROUP BY 1, 2");
 
     AXIOM_ASSERT_PLAN_V2(
         toSingleNodePlan(logicalPlan),
@@ -100,8 +98,7 @@ TEST_P(AggregationTest, constantGroupingKeys) {
     SCOPED_TRACE("Filtered grouping key referenced above aggregation");
     const auto logicalPlan = parseSelect(
         "SELECT CASE WHEN a = 1 THEN 10 ELSE 20 END AS x "
-        "FROM cg_t WHERE a = 1 GROUP BY a",
-        kTestConnectorId);
+        "FROM cg_t WHERE a = 1 GROUP BY a");
 
     AXIOM_ASSERT_PLAN_V2(
         toSingleNodePlan(logicalPlan),
@@ -118,8 +115,7 @@ TEST_P(AggregationTest, constantGroupingKeys) {
     const auto logicalPlan = parseSelect(
         "SELECT CASE WHEN a = 1 THEN 10 ELSE 20 END AS x "
         "FROM cg_t WHERE a = 1 "
-        "GROUP BY GROUPING SETS ((a, b), (a))",
-        kTestConnectorId);
+        "GROUP BY GROUPING SETS ((a, b), (a))");
 
     AXIOM_ASSERT_PLAN_V2(
         toSingleNodePlan(logicalPlan),
@@ -136,8 +132,7 @@ TEST_P(AggregationTest, constantGroupingKeys) {
     SCOPED_TRACE("Grouping set omits filtered key");
     const auto logicalPlan = parseSelect(
         "SELECT CASE WHEN a = 1 THEN 10 ELSE 20 END AS x "
-        "FROM cg_t WHERE a = 1 GROUP BY GROUPING SETS ((a), ())",
-        kTestConnectorId);
+        "FROM cg_t WHERE a = 1 GROUP BY GROUPING SETS ((a), ())");
 
     AXIOM_ASSERT_PLAN_V2(
         toSingleNodePlan(logicalPlan),
@@ -482,8 +477,7 @@ TEST_P(AggregationTest, rightSemiJoinPartitioning) {
       "SELECT a, count(*) "
       "FROM t "
       "WHERE EXISTS (SELECT 1 FROM u WHERE b = a) "
-      "GROUP BY a",
-      kTestConnectorId);
+      "GROUP BY a");
 
   // EXISTS lowers to a right semi filter that preserves its right input's
   // partitioning, so the aggregation requires no remote shuffle.
@@ -522,8 +516,7 @@ TEST_P(AggregationTest, reversedAntiJoinPartitioning) {
         "SELECT a, count(*) "
         "FROM t "
         "WHERE NOT EXISTS (SELECT 1 FROM u WHERE b = a) "
-        "GROUP BY a",
-        kTestConnectorId);
+        "GROUP BY a");
 
     AXIOM_ASSERT_PLAN_V2(
         toSingleNodePlan(logicalPlan, /*numDrivers=*/4),
@@ -559,8 +552,7 @@ TEST_P(AggregationTest, reversedAntiJoinPartitioning) {
         "SELECT a, count(*) "
         "FROM t "
         "WHERE a NOT IN (SELECT b FROM u) "
-        "GROUP BY a",
-        kTestConnectorId);
+        "GROUP BY a");
 
     AXIOM_ASSERT_PLAN_V2(
         toSingleNodePlan(logicalPlan, /*numDrivers=*/4),
@@ -603,8 +595,7 @@ TEST_P(AggregationTest, rightJoinPartitioning) {
     const auto logicalPlan = parseSelect(
         "SELECT b, count(*) "
         "FROM t RIGHT JOIN u ON a = b "
-        "GROUP BY b",
-        kTestConnectorId);
+        "GROUP BY b");
 
     // The aggregation reuses the right join's partitioning on its preserved
     // right key.
@@ -636,8 +627,7 @@ TEST_P(AggregationTest, rightJoinPartitioning) {
     const auto logicalPlan = parseSelect(
         "SELECT b2, count(*) "
         "FROM t RIGHT JOIN u ON a = b "
-        "GROUP BY b2",
-        kTestConnectorId);
+        "GROUP BY b2");
 
     // The join key does not reach the output, so the join reports no key
     // partitioning and the aggregation shuffles on the grouping key.
@@ -679,7 +669,7 @@ TEST_P(AggregationTest, innerJoinPartitioning) {
     const auto sql = fmt::format(
         "SELECT {}, count(a) FROM t JOIN u ON a = b GROUP BY 1", key);
     SCOPED_TRACE(sql);
-    const auto logicalPlan = parseSelect(sql, kTestConnectorId);
+    const auto logicalPlan = parseSelect(sql);
 
     AXIOM_ASSERT_PLAN_V2(
         toSingleNodePlan(logicalPlan, /*numDrivers=*/4),
@@ -709,8 +699,7 @@ TEST_P(AggregationTest, innerJoinPartitioning) {
   {
     // Equal grouping keys are grouped once.
     const auto logicalPlan = parseSelect(
-        "SELECT a, b, count(*) FROM t JOIN u ON a = b GROUP BY 1, 2",
-        kTestConnectorId);
+        "SELECT a, b, count(*) FROM t JOIN u ON a = b GROUP BY 1, 2");
 
     AXIOM_ASSERT_PLAN_V2(
         toSingleNodePlan(logicalPlan, /*numDrivers=*/4),
@@ -1305,15 +1294,13 @@ TEST_P(AggregationTest, orderInsensitiveOrderByNotTranslated) {
                      .build();
 
   {
-    auto logicalPlan =
-        parseSelect("SELECT sum(a ORDER BY b) FROM t", kTestConnectorId);
+    auto logicalPlan = parseSelect("SELECT sum(a ORDER BY b) FROM t");
     AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
   }
 
   {
-    auto logicalPlan = parseSelect(
-        "SELECT sum(a ORDER BY (SELECT max(x) FROM u)) FROM t",
-        kTestConnectorId);
+    auto logicalPlan =
+        parseSelect("SELECT sum(a ORDER BY (SELECT max(x) FROM u)) FROM t");
     AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
   }
 }

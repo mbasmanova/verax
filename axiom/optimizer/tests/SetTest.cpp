@@ -46,10 +46,6 @@ class SetTest : public test::QueryTestBase,
   void configureTestConnector() override {
     testConnector_->addTpchTables(kScaleFactor);
   }
-
-  lp::LogicalPlanNodePtr parseSelect(std::string_view sql) {
-    return test::QueryTestBase::parseSelect(sql, kTestConnectorId);
-  }
 };
 
 TEST_P(SetTest, unionAll) {

@@ -107,7 +107,7 @@ TEST_P(ValuesTest, expressions) {
 
 TEST_P(ValuesTest, singleExpressionRow) {
   AXIOM_ASSERT_PLAN_V2(
-      toSingleNodePlan(parseSelect("VALUES (1 + 2)", kTestConnectorId)),
+      toSingleNodePlan(parseSelect("VALUES (1 + 2)")),
       matchValues(makeRowVector({makeFlatVector<int32_t>({3})})).build());
 }
 

@@ -34,7 +34,7 @@ class JoinFilterProjectionTest : public test::QueryTestBase {
   }
 
   core::PlanNodePtr plan(const std::string& sql) {
-    return toSingleNodePlan(parseSelect(sql, kTestConnectorId));
+    return toSingleNodePlan(parseSelect(sql));
   }
 };
 
@@ -129,8 +129,7 @@ TEST_F(JoinFilterProjectionTest, oneSidedExpressionComputedBeforeShuffle) {
   };
 
   auto logicalPlan = parseSelect(
-      "SELECT count(*) FROM big, wide WHERE length(wide.name) > big.threshold",
-      kTestConnectorId);
+      "SELECT count(*) FROM big, wide WHERE length(wide.name) > big.threshold");
 
   AXIOM_ASSERT_PLAN(
       toSingleNodePlan(logicalPlan),

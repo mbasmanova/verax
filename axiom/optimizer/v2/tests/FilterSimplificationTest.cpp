@@ -31,8 +31,8 @@ class FilterSimplificationTest : public optimizer::test::QueryTestBase {
   }
 
   core::PlanNodePtr plan(std::string_view filter) {
-    return toSingleNodePlan(parseSelect(
-        "SELECT * FROM t WHERE " + std::string(filter), kTestConnectorId));
+    return toSingleNodePlan(
+        parseSelect("SELECT * FROM t WHERE " + std::string(filter)));
   }
 };
 
