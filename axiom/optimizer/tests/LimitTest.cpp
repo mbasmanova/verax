@@ -109,6 +109,41 @@ TEST_P(LimitTest, offsetAndLimit) {
       matchScan("nation").distributedLimit(5, 10).build());
 }
 
+// DISTINCT with LIMIT plans with no repartitioning on the distinct keys: each
+// task and driver keeps up to offset + count distinct keys, and one driver
+// deduplicates them and applies the limit.
+TEST_P(LimitTest, distinctLimit) {
+  constexpr auto sql =
+      "SELECT DISTINCT n_regionkey FROM nation OFFSET 2 LIMIT 3";
+
+  AXIOM_ASSERT_PLAN_V2(
+      toSingleNodePlan(sql),
+      matchScan("nation")
+          .singleAggregation({"n_regionkey"}, {})
+          .finalLimit(2, 3)
+          .build());
+
+  AXIOM_ASSERT_PLAN_V2(
+      toSingleNodePlan(sql, /*numDrivers=*/4),
+      matchScan("nation")
+          .partialAggregation({"n_regionkey"}, {})
+          .localLimit(0, 5)
+          .finalAggregation({"n_regionkey"}, {})
+          .finalLimit(2, 3)
+          .build());
+
+  AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
+      toDistributedPlan(sql),
+      matchScan("nation")
+          .partialAggregation({"n_regionkey"}, {})
+          .localLimit(0, 5)
+          .gather()
+          .localGather()
+          .finalAggregation({"n_regionkey"}, {})
+          .finalLimit(2, 3)
+          .build());
+}
+
 TEST_P(LimitTest, offsetOnly) {
   constexpr auto sql = "SELECT * FROM nation OFFSET 5";
 

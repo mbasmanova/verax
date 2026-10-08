@@ -1306,6 +1306,28 @@ velox::core::PlanNodePtr Emitter::emitPartialAggregation(
       std::move(input));
 }
 
+// True when 'node' is a remote exchange that gathers to one task.
+bool isGatherExchange(NodeCP node) {
+  return node->is(NodeType::kExchange) &&
+      node->physicalProperties().globalPartition.is(PartitionKind::kGather);
+}
+
+// True when 'node' emits on one driver: a Limit applies its final step on one
+// driver, and a final aggregate over a gather exchange, or over an input that
+// is already on one driver, stays there.
+bool runsOnOneDriver(NodeCP node) {
+  if (node->is(NodeType::kLimit)) {
+    return true;
+  }
+  if (!node->is(NodeType::kAggregate)) {
+    return false;
+  }
+  const auto* aggregate = node->as<Aggregate>();
+  return aggregate->step() == AggregateStep::kFinal &&
+      (isGatherExchange(aggregate->input()) ||
+       runsOnOneDriver(aggregate->input()));
+}
+
 velox::core::PlanNodePtr Emitter::emitFinalAggregation(
     const Aggregate& aggregate) {
   velox::core::PlanNodePtr input = emit(aggregate.input());
@@ -1315,9 +1337,14 @@ velox::core::PlanNodePtr Emitter::emitFinalAggregation(
   // At maxLocalPartitions > 1 the Final's input rows are spread across drivers
   // (read round-robin from a remote exchange, or straight from the Partial in
   // a local-only split), so a local exchange co-partitions each group onto one
-  // driver before the merge.
-  if (options_.maxLocalPartitions > 1) {
-    input = addLocalPartition(std::move(input), groupingKeys);
+  // driver before the merge. Input gathered to one task is merged on one
+  // driver.
+  if (options_.maxLocalPartitions > 1 && !runsOnOneDriver(aggregate.input())) {
+    input = addLocalPartition(
+        std::move(input),
+        isGatherExchange(aggregate.input())
+            ? std::vector<velox::core::FieldAccessTypedExprPtr>{}
+            : groupingKeys);
   }
 
   // The Final's input is the (exchanged) Partial output: grouping keys followed
@@ -1648,15 +1675,11 @@ velox::core::PlanNodePtr Emitter::emitLimit(const Limit& limit) {
   // Velox runs an exact limit single-threaded either way, so the split is
   // worth it only when it keeps work below the limit parallel — above a gather
   // exchange the limit is the whole pipeline.
-  const bool readsGatherExchange = limit.input()->is(NodeType::kExchange) &&
-      limit.input()->physicalProperties().globalPartition.is(
-          PartitionKind::kGather);
+  const bool readsGatherExchange = isGatherExchange(limit.input());
   // A per-driver partial that keeps offset + count rows keeps every row when
   // there is no count, so it would filter nothing.
-  const bool partialReduces =
-      limit.offsetPlusCount() != std::numeric_limits<int64_t>::max();
   if (options_.maxLocalPartitions > 1 && !readsGatherExchange &&
-      partialReduces) {
+      !runsOnOneDriver(limit.input()) && limit.isBounded()) {
     input = std::make_shared<velox::core::LimitNode>(
         nextId(),
         /*offset=*/0,
