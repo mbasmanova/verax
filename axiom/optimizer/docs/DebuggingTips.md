@@ -245,6 +245,25 @@ buck test axiom/optimizer/v2/tests:tpch_plan -- q05 --print-passing-details
 
 **Warning:** Remove all debug logging before committing!
 
+### Printing the IR after each pass
+
+To see how the v2 optimizer transforms a test query, set `afterPass_` in a
+test built on `QueryTestBase`. Every `planVelox` call in that test, including
+the ones behind `toSingleNodePlan`, then calls it after each pass that runs:
+
+```cpp
+afterPass_ = [](v2::Optimizer::Pass pass, v2::NodeCP root) {
+  LOG(ERROR) << "After " << v2::Optimizer::toName(pass) << ":\n"
+             << root->toString();
+};
+```
+
+Run the v2 instance with `--print-passing-details` to see the output. A pass
+that is skipped, such as `CONNECTOR_PUSHDOWN` when no connector supports
+pushdown, is not reported. This is the test-side counterpart of
+`EXPLAIN (TYPE OPTIMIZED WITH (last_pass = '<pass>'))`, and it shows every
+stage in one run.
+
 ## 3. TPC-H Query Tests
 
 Two tests cover the 22 TPC-H queries:

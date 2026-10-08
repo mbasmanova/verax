@@ -139,6 +139,8 @@ class Optimizer {
     kLimitAndOrder,
     kPushdownAndPrune,
     kFoldMetadataAggregate,
+
+    /// Skipped when no connector in the plan supports pushdown.
     kConnectorPushdown,
 
     /// Annotates base tables with connector statistics rather than rewriting
@@ -182,16 +184,31 @@ class Optimizer {
       const MultiFragmentPlan::Options& options,
       std::optional<Pass> pass = std::nullopt);
 
+  /// Called with each `Pass` that runs and the IR it produced. A skipped pass
+  /// is not reported. The IR is valid while this `Optimizer` and its
+  /// `QueryGraphContext` are alive; later passes may annotate the objects it
+  /// shares with the IR they produce.
+  using PassCallback = std::function<void(Pass, NodeCP)>;
+
+  /// Same as `optimize(options)`, and calls `afterPass` after each `Pass` that
+  /// runs. For debugging and tests only, and not a stable API: `Pass` changes
+  /// with the pipeline.
+  PlanAndStats optimize(
+      const MultiFragmentPlan::Options& options,
+      const PassCallback& afterPass);
+
  private:
   // Runs the pipeline up to and including `pass`, or all of it when `pass` is
   // unset, and returns the IR as the last pass run left it.
   // `connectorPushdown` is what PushdownAndPrunePass does with the filters it
   // lands on a scan. `options` may be null only for a `pass` earlier than
-  // `kPlanPhysical`, the first one that reads them.
+  // `kPlanPhysical`, the first one that reads them. `afterPass`, if set, is
+  // called after each pass that runs.
   NodeCP planTo(
       std::optional<Pass> pass,
       PushdownAndPrunePass::ConnectorPushdown connectorPushdown,
-      const MultiFragmentPlan::Options* options);
+      const MultiFragmentPlan::Options* options,
+      const PassCallback& afterPass);
 
   // One entry point per instance: the passes annotate shared IR objects and
   // the front end runs once, so a second call would plan over what the first
