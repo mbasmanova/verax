@@ -665,10 +665,9 @@ TEST_P(JoinTest, constantFullOuterJoinKeys) {
         toSingleNodePlan(query),
         matchScan("t")
             .project({"b", "null as k"})
-            .localPartition(matchValues(makeRowVector(
-                {"b", "k"},
-                {makeNullableFlatVector<int64_t>({std::nullopt}),
-                 makeNullableFlatVector<int64_t>({std::nullopt})})))
+            .localPartition(
+                matchValues<int64_t>(
+                    {"b", "k"}, {{std::nullopt, std::nullopt}}))
             .build());
   }
 

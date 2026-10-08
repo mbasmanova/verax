@@ -73,12 +73,7 @@ TEST_F(MetadataCountsTest, rowCount) {
     auto plan = toSingleNodePlan(
         "SELECT k, approx_count_star() as x FROM t GROUP BY 1");
     AXIOM_ASSERT_PLAN(
-        plan,
-        matchValues(makeRowVector({
-                        makeFlatVector<int64_t>({0, 1, 2}),
-                        makeFlatVector<int64_t>({9, 8, 8}),
-                    }))
-            .build());
+        plan, matchValues<int64_t>({{0, 9}, {1, 8}, {2, 8}}).build());
     EXPECT_THAT(plan->outputType()->names(), ::testing::ElementsAre("k", "x"));
   }
 
@@ -102,19 +97,11 @@ TEST_F(MetadataCountsTest, rowCount) {
 TEST_F(MetadataCountsTest, nullCounts) {
   AXIOM_ASSERT_PLAN(
       toSingleNodePlan("SELECT k, approx_null_count(a) FROM t GROUP BY 1"),
-      matchValues(makeRowVector({
-                      makeFlatVector<int64_t>({0, 1, 2}),
-                      makeFlatVector<int64_t>({9, 0, 0}),
-                  }))
-          .build());
+      matchValues<int64_t>({{0, 9}, {1, 0}, {2, 0}}).build());
 
   AXIOM_ASSERT_PLAN(
       toSingleNodePlan("SELECT k, approx_non_null_count(a) FROM t GROUP BY 1"),
-      matchValues(makeRowVector({
-                      makeFlatVector<int64_t>({0, 1, 2}),
-                      makeFlatVector<int64_t>({0, 8, 8}),
-                  }))
-          .build());
+      matchValues<int64_t>({{0, 0}, {1, 8}, {2, 8}}).build());
 }
 
 TEST_F(MetadataCountsTest, multipleAndDerivedAggregates) {
@@ -123,24 +110,14 @@ TEST_F(MetadataCountsTest, multipleAndDerivedAggregates) {
       toSingleNodePlan(
           "SELECT approx_count_star(), approx_null_count(a), "
           "approx_non_null_count(a) FROM t"),
-      matchValues(makeRowVector({
-                      makeFlatVector<int64_t>({25}),
-                      makeFlatVector<int64_t>({9}),
-                      makeFlatVector<int64_t>({16}),
-                  }))
-          .build());
+      matchValues<int64_t>({{25, 9, 16}}).build());
 
   // An expression over metadata aggregates folds, with the arithmetic left as a
   // projection over the folded counts.
   AXIOM_ASSERT_PLAN(
       toSingleNodePlan(
           "SELECT approx_count_star() - approx_null_count(a) FROM t"),
-      matchValues(makeRowVector({
-                      makeFlatVector<int64_t>({25}),
-                      makeFlatVector<int64_t>({9}),
-                  }))
-          .project({"c0 - c1"})
-          .build());
+      matchValues<int64_t>({{25, 9}}).project({"c0 - c1"}).build());
 }
 
 // --- Not answerable from metadata: falls back to reading the data. ---
@@ -168,7 +145,7 @@ TEST_F(MetadataCountsTest, unionAll) {
   AXIOM_ASSERT_PLAN(
       toSingleNodePlan(
           "SELECT approx_count_star() as x FROM t UNION ALL SELECT sum(a) FROM t"),
-      matchValues(makeRowVector({makeFlatVector<int64_t>({25})}))
+      matchValues<int64_t>({{25}})
           .localPartition({
               matchHiveScan("t")
                   .aliases({"a"})
