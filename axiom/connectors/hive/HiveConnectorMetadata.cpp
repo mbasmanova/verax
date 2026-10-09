@@ -21,6 +21,7 @@
 #include <folly/Conv.h>
 #include <folly/String.h>
 #include <algorithm>
+#include <type_traits>
 #include <utility>
 #include "velox/common/Casts.h"
 #include "velox/connectors/hive/HiveConnector.h"
@@ -28,9 +29,111 @@
 #include "velox/connectors/hive/HiveConnectorUtil.h"
 #include "velox/connectors/hive/TableHandle.h"
 #include "velox/exec/TableWriter.h"
+#include "velox/expression/Expr.h"
 #include "velox/expression/ExprConstants.h"
 
 namespace facebook::axiom::connector::hive {
+
+PartitionValueParsingOptions HiveTableLayout::partitionValueParsingOptions(
+    const velox::connector::hive::FileConfig& config,
+    const velox::config::ConfigBase* session) {
+  return {
+      .timestampMode = config.readTimestampPartitionValueAsLocalTime(session)
+          ? velox::connector::hive::PartitionValue::TimestampMode::kLocalTime
+          : velox::connector::hive::PartitionValue::TimestampMode::kUtc,
+      .dateMode = velox::connector::hive::PartitionValue::DateMode::kIsoString,
+  };
+}
+
+namespace {
+
+template <velox::TypeKind kind>
+velox::VectorPtr makePartitionVector(
+    const velox::TypePtr& type,
+    const std::vector<std::optional<std::string_view>>& values,
+    velox::connector::hive::PartitionValue::TimestampMode timestampMode,
+    velox::connector::hive::PartitionValue::DateMode dateMode,
+    velox::memory::MemoryPool* pool) {
+  using NativeType = typename velox::TypeTraits<kind>::NativeType;
+  auto vector = velox::BaseVector::create<velox::FlatVector<NativeType>>(
+      type, values.size(), pool);
+  for (velox::vector_size_t i = 0; i < values.size(); ++i) {
+    if (!values[i].has_value()) {
+      vector->setNull(i, true);
+      continue;
+    }
+    if constexpr (std::is_same_v<NativeType, velox::StringView>) {
+      vector->set(i, velox::StringView(*values[i]));
+    } else {
+      vector->set(
+          i,
+          velox::connector::hive::PartitionValue::fromString(
+              *values[i], *type, timestampMode, dateMode)
+              .value<NativeType>());
+    }
+  }
+  return vector;
+}
+
+} // namespace
+
+std::vector<velox::vector_size_t> HiveTableLayout::evaluatePartitionFilter(
+    std::span<const PartitionKeyValues> partitions,
+    const velox::RowTypePtr& partitionType,
+    const PartitionValueParsingOptions& parsingOptions,
+    const PartitionFilterEvaluation& filter) {
+  std::vector<std::vector<std::optional<std::string_view>>> columns(
+      partitionType->size(),
+      std::vector<std::optional<std::string_view>>(partitions.size()));
+  for (size_t row = 0; row < partitions.size(); ++row) {
+    for (uint32_t column = 0; column < partitionType->size(); ++column) {
+      const auto& name = partitionType->nameOf(column);
+      const auto value = partitions[row].find(name);
+      VELOX_CHECK(
+          value != partitions[row].end(),
+          "Partition does not contain key: {}",
+          name);
+      columns[column][row] = value->second.has_value()
+          ? std::optional<std::string_view>{*value->second}
+          : std::nullopt;
+    }
+  }
+
+  std::vector<velox::VectorPtr> children;
+  children.reserve(partitionType->size());
+  for (uint32_t i = 0; i < partitionType->size(); ++i) {
+    children.push_back(VELOX_DYNAMIC_SCALAR_TYPE_DISPATCH(
+        makePartitionVector,
+        partitionType->childAt(i)->kind(),
+        partitionType->childAt(i),
+        columns[i],
+        parsingOptions.timestampMode,
+        parsingOptions.dateMode,
+        filter.evaluator.pool()));
+  }
+
+  velox::RowVector input(
+      filter.evaluator.pool(),
+      partitionType,
+      nullptr,
+      partitions.size(),
+      std::move(children));
+  velox::VectorPtr result;
+  filter.evaluator.evaluate(
+      &filter.expression,
+      velox::SelectivityVector(partitions.size()),
+      input,
+      result);
+
+  const auto* values = result->as<velox::SimpleVector<bool>>();
+  std::vector<velox::vector_size_t> matches;
+  for (velox::vector_size_t i = 0; i < partitions.size(); ++i) {
+    if (!result->isNullAt(i) && values->valueAt(i)) {
+      matches.push_back(i);
+    }
+  }
+  return matches;
+}
 
 HivePartitionType::HivePartitionType(
     int32_t numBuckets,

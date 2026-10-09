@@ -37,8 +37,11 @@ namespace facebook::axiom::optimizer::v2 {
 /// none reaches emit, where the kind name is not a Velox aggregate.
 class FoldMetadataAggregatePass {
  public:
-  static NodeCP
-  run(NodeCP root, Builder& builder, const OptimizerSession& session);
+  static NodeCP run(
+      NodeCP root,
+      Builder& builder,
+      const OptimizerSession& session,
+      velox::core::ExpressionEvaluator& evaluator);
 };
 
 } // namespace facebook::axiom::optimizer::v2

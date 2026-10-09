@@ -729,6 +729,8 @@ class TableLayout {
   /// @param session Connector session for the current query.
   /// @param tableHandle Table handle for the table; the connector reads its
   /// accepted filters from it in whatever representation it stored them.
+  /// @param evaluator Query-configured evaluator for accepted expressions that
+  /// the connector evaluates while collecting metadata.
   /// @param columns Names of table columns the optimizer is interested in.
   /// Column names correspond to actual table columns (not synthetic subfield
   /// projections). If the connector provides per-column statistics, it must
@@ -744,6 +746,7 @@ class TableLayout {
   virtual folly::coro::Task<std::optional<FilteredTableStats>> co_estimateStats(
       ConnectorSessionPtr /*session*/,
       velox::connector::ConnectorTableHandlePtr /*tableHandle*/,
+      velox::core::ExpressionEvaluator& /*evaluator*/,
       std::vector<std::string> /*columns*/,
       const FilterSelectivityEstimator& /*estimator*/) const {
     co_return std::nullopt;
@@ -766,6 +769,9 @@ class TableLayout {
   /// @param session Connector session for the current query.
   /// @param tableHandle Table handle carrying the filters pushed via
   /// createTableHandle.
+  /// @param evaluator Engine-owned evaluator configured for the current query.
+  /// The connector may compile and evaluate table-handle predicates during
+  /// this call and must not retain the evaluator.
   /// @param groupingColumns Names of columns to group the counts by, in
   /// output-key order. Empty requests a single global count. The connector
   /// returns std::nullopt if it cannot group by these columns from metadata
@@ -780,6 +786,7 @@ class TableLayout {
   co_metadataCounts(
       ConnectorSessionPtr /*session*/,
       velox::connector::ConnectorTableHandlePtr /*tableHandle*/,
+      velox::core::ExpressionEvaluator& /*evaluator*/,
       std::vector<std::string> /*groupingColumns*/,
       std::vector<std::string> /*columns*/) const {
     co_return std::nullopt;

@@ -79,7 +79,8 @@ double getScaleFactor(const std::string& schema) {
 folly::coro::Task<std::vector<PartitionHandlePtr>>
 TpchSplitManager::co_listPartitions(
     const connector::ConnectorSessionPtr& /*session*/,
-    const velox::connector::ConnectorTableHandlePtr& /*tableHandle*/) {
+    const velox::connector::ConnectorTableHandlePtr& /*tableHandle*/,
+    velox::core::ExpressionEvaluator& /*evaluator*/) {
   co_return std::vector<PartitionHandlePtr>{
       std::make_shared<connector::PartitionHandle>()};
 }

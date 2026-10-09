@@ -113,6 +113,17 @@ class SplitSource {
 class PartitionHandle {
  public:
   virtual ~PartitionHandle() = default;
+
+  template <typename T>
+  const T* as() const {
+    return dynamic_cast<const T*>(this);
+  }
+
+  /// Returns this object as type 'T'. Throws if it is not of that type.
+  template <typename T>
+  const T* asChecked() const {
+    return velox::checkedPointerCast<const T>(this);
+  }
 };
 
 using PartitionHandlePtr = std::shared_ptr<const PartitionHandle>;
@@ -122,10 +133,13 @@ class ConnectorSplitManager {
   virtual ~ConnectorSplitManager() = default;
 
   /// Returns a list of all partitions that match the filters in
-  /// 'tableHandle'. A non-partitioned table returns one partition.
+  /// 'tableHandle'. A non-partitioned table returns one partition. 'evaluator'
+  /// is owned and configured by the query engine, remains valid for this call,
+  /// and must not be retained by the connector.
   virtual folly::coro::Task<std::vector<PartitionHandlePtr>> co_listPartitions(
       const ConnectorSessionPtr& session,
-      const velox::connector::ConnectorTableHandlePtr& tableHandle) = 0;
+      const velox::connector::ConnectorTableHandlePtr& tableHandle,
+      velox::core::ExpressionEvaluator& evaluator) = 0;
 
   /// Returns a SplitSource that covers the contents of 'partitions'. The set
   /// of partitions is exposed separately so that the caller may process them

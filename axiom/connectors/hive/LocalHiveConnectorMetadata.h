@@ -79,7 +79,8 @@ class LocalHiveSplitManager : public ConnectorSplitManager {
 
   folly::coro::Task<std::vector<PartitionHandlePtr>> co_listPartitions(
       const ConnectorSessionPtr& session,
-      const velox::connector::ConnectorTableHandlePtr& tableHandle) override;
+      const velox::connector::ConnectorTableHandlePtr& tableHandle,
+      velox::core::ExpressionEvaluator& evaluator) override;
 
   std::shared_ptr<SplitSource> getSplitSource(
       const ConnectorSessionPtr& session,
@@ -176,6 +177,7 @@ class LocalHiveTableLayout : public HiveTableLayout {
   folly::coro::Task<std::optional<FilteredTableStats>> co_estimateStats(
       ConnectorSessionPtr session,
       velox::connector::ConnectorTableHandlePtr tableHandle,
+      velox::core::ExpressionEvaluator& evaluator,
       std::vector<std::string> columns,
       const FilterSelectivityEstimator& estimator) const override;
 
@@ -189,6 +191,7 @@ class LocalHiveTableLayout : public HiveTableLayout {
   co_metadataCounts(
       ConnectorSessionPtr session,
       velox::connector::ConnectorTableHandlePtr tableHandle,
+      velox::core::ExpressionEvaluator& evaluator,
       std::vector<std::string> groupingColumns,
       std::vector<std::string> columns) const override;
 

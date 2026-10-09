@@ -81,6 +81,10 @@ class ConnectorSession final {
     return it->second;
   }
 
+  const Properties& properties() const {
+    return properties_;
+  }
+
   /// Returns this connector's write handle into the query's stats.
   velox::BaseRuntimeStatWriter& statsWriter() const {
     return *statsWriter_;

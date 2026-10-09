@@ -215,7 +215,7 @@ NodeCP Optimizer::planTo(
     return node;
   }
 
-  node = FoldMetadataAggregatePass::run(node, builder_, session_);
+  node = FoldMetadataAggregatePass::run(node, builder_, session_, evaluator_);
   notifyAfterPass(Pass::kFoldMetadataAggregate, node);
   if (pass == Pass::kFoldMetadataAggregate) {
     return node;
@@ -232,7 +232,7 @@ NodeCP Optimizer::planTo(
 
   if (session_.options().useFilteredTableStats) {
     node = EstimateLeafStatsPass::run(
-        node, outputColumns_, builder_, evaluator_, session_);
+        node, outputColumns_, builder_, evaluator_, queryCtx_, session_);
     notifyAfterPass(Pass::kEstimateLeafStats, node);
   }
   if (pass == Pass::kEstimateLeafStats) {
