@@ -37,7 +37,8 @@ velox::core::TypedExprPtr columnToTypedExpr(
     ColumnCP column,
     ColumnNaming naming) {
   const std::string name = naming == ColumnNaming::kSchemaName
-      ? std::string{column->name()}
+      ? std::string{column->schemaColumn() != nullptr ? column->schemaName()
+                                                     : column->name()}
       : column->outputName();
   return std::make_shared<velox::core::FieldAccessTypedExpr>(
       toTypePtr(column->value().type), name);
