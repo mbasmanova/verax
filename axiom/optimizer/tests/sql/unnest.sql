@@ -76,6 +76,39 @@ FROM arrays a
 CROSS JOIN UNNEST(a.ys) AS _(y)
 JOIN (VALUES (7), (8)) AS u(k) ON u.k = a.x
 ----
+-- An unnest on the preserved side of a LEFT join commutes above the join for
+-- multi-element, empty, and NULL arrays.
+-- duckdb: VALUES (1, 10, 1), (1, 20, 1)
+SELECT t.k, e, u.k
+FROM (VALUES
+  (1, ARRAY[10, 20]),
+  (2, ARRAY[]),
+  (3, NULL)
+) AS t(k, items)
+CROSS JOIN UNNEST(items) AS w(e)
+LEFT JOIN (VALUES (1), (2), (3)) AS u(k) ON t.k = u.k
+----
+-- Preserved-side expansion commutes above a semi join.
+SELECT t.k, e
+FROM (VALUES
+  (1, ARRAY[10, 20]),
+  (2, ARRAY[]),
+  (3, NULL)
+) AS t(k, items)
+CROSS JOIN UNNEST(items) AS u(e)
+WHERE EXISTS (SELECT 1 FROM (VALUES (1), (2), (3)) AS s(k) WHERE s.k = t.k)
+----
+-- Preserved-side expansion commutes above an anti join.
+SELECT t.k, e
+FROM (VALUES
+  (1, ARRAY[10, 20]),
+  (2, ARRAY[]),
+  (3, NULL),
+  (4, ARRAY[30])
+) AS t(k, items)
+CROSS JOIN UNNEST(items) AS u(e)
+WHERE NOT EXISTS (SELECT 1 FROM (VALUES (1)) AS s(k) WHERE s.k = t.k)
+----
 -- Join on an unnested column.
 SELECT a.x, y
 FROM arrays a

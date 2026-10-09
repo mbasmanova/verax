@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include <fmt/format.h>
 #include "axiom/logical_plan/PlanBuilder.h"
 #include "axiom/optimizer/tests/PlanMatcher.h"
 #include "axiom/optimizer/tests/QueryTestBase.h"
@@ -61,6 +62,15 @@ class UnnestTest : public test::QueryTestBase,
   void TearDown() override {
     rowVector_.reset();
     test::QueryTestBase::TearDown();
+  }
+
+  // Adds the input and key tables used by join-placement tests.
+  void addJoinTables(int64_t numRows) {
+    testConnector_
+        ->addTable("t", ROW({"k", "items"}, {INTEGER(), ARRAY(INTEGER())}))
+        ->setStats(numRows, {{"k", {.numDistinct = numRows}}});
+    testConnector_->addTable("u", ROW("k", INTEGER()))
+        ->setStats(numRows, {{"k", {.numDistinct = numRows}}});
   }
 
   RowVectorPtr rowVector_;
@@ -1091,6 +1101,28 @@ TEST_P(UnnestTest, nondeterministicCollectionUnderExists) {
   AXIOM_ASSERT_PLAN_V2(toSingleNodePlan(logicalPlan), matcher);
 }
 
+// A non-deterministic UNNEST expression stays below a multiplying join, so it
+// is evaluated once per row of its written input.
+TEST_P(UnnestTest, nondeterministicBelowJoin) {
+  addJoinTables(10);
+
+  auto query =
+      "SELECT t.k FROM t "
+      "CROSS JOIN UNNEST(filter(items, x -> random() < 0.5)) AS w(e) "
+      "JOIN u ON t.k = u.k";
+
+  auto matcher =
+      matchScan("t")
+          .aliases({"t_k", "items"})
+          .project({"t_k", "filter(items, x -> random() < 0.5) AS filtered"})
+          .unnest({"t_k"}, {"filtered"})
+          .hashJoinInner(
+              matchScan("u").aliases({"u_k"}), {.keys = {{"t_k = u_k"}}})
+          .build();
+
+  AXIOM_ASSERT_PLAN_V2(toSingleNodePlan(parseSelect(query)), matcher);
+}
+
 // Both inputs' UNNESTs contribute to INTERSECT ALL multiplicity and stay below
 // the counting join.
 TEST_P(UnnestTest, countingJoinMultiplicity) {
@@ -1118,7 +1150,7 @@ TEST_P(UnnestTest, countingJoinMultiplicity) {
 
 // An expansion goes above a join that does not read what it produces, so the
 // join runs on the rows before they multiply.
-TEST_P(UnnestTest, unnestPlacedAboveJoin) {
+TEST_P(UnnestTest, innerJoin) {
   testConnector_->addTable("s", ROW("a", INTEGER()))
       ->setStats(1, {{"a", {.numDistinct = 1}}});
 
@@ -1168,6 +1200,186 @@ TEST_P(UnnestTest, unnestPlacedAboveJoin) {
         logicalPlan, {.maxRemotePartitions = 4, .maxLocalPartitions = 4});
     AXIOM_ASSERT_DISTRIBUTED_PLAN(distributed.plan, makeMatcher(true));
   }
+}
+
+// An UNNEST on the preserved side of a LEFT join runs after the join when the
+// join does not read its output.
+TEST_P(UnnestTest, leftJoin) {
+  addJoinTables(10);
+
+  auto query =
+      "SELECT t.k, e, o FROM t "
+      "CROSS JOIN UNNEST(items) WITH ORDINALITY AS w(e, o) "
+      "LEFT JOIN u ON t.k = u.k";
+
+  auto matcher =
+      matchScan("t")
+          .aliases({"t_k", "items"})
+          .hashJoinLeft(
+              matchScan("u").aliases({"u_k"}), {.keys = {{"t_k = u_k"}}})
+          .unnest({"t_k"}, {"items"}, "o")
+          .build();
+
+  AXIOM_ASSERT_PLAN_V2(toSingleNodePlan(parseSelect(query)), matcher);
+}
+
+// A distributed join retains the partitioning key when its expansion moves
+// above the join.
+TEST_P(UnnestTest, distributed) {
+  if (!useV2_) {
+    return;
+  }
+
+  addJoinTables(1'000'000);
+  optimizerOptions_.broadcastSizeLimit = 0;
+
+  const auto logicalPlan = parseSelect(
+      "SELECT t.k, e FROM t "
+      "CROSS JOIN UNNEST(items) AS w(e) "
+      "JOIN u ON t.k = u.k");
+  const auto matcher = matchScan("t")
+                           .aliases({"t_k", "items"})
+                           .shuffle({"t_k"})
+                           .hashJoinInner(
+                               matchScan("u").aliases({"u_k"}).shuffle({"u_k"}),
+                               {.keys = {{"t_k = u_k"}}})
+                           .unnest({"t_k"}, {"items"})
+                           .gather()
+                           .build();
+
+  const auto distributedPlan = planVelox(
+      logicalPlan, {.maxRemotePartitions = 4, .maxLocalPartitions = 4});
+  AXIOM_ASSERT_DISTRIBUTED_PLAN(distributedPlan.plan, matcher);
+}
+
+// Semi and anti joins apply to the input rows before a preserved-side
+// expansion multiplies them.
+TEST_P(UnnestTest, semiAndAnti) {
+  addJoinTables(10);
+
+  for (const bool exists : {true, false}) {
+    SCOPED_TRACE(exists ? "semi" : "anti");
+    const std::string query = fmt::format(
+        "SELECT t.k, e FROM t "
+        "CROSS JOIN UNNEST(items) AS w(e) WHERE {}EXISTS "
+        "(SELECT 1 FROM u WHERE u.k = t.k)",
+        exists ? "" : "NOT ");
+    auto matcher = matchScan("t")
+                       .aliases({"t_k", "items"})
+                       .hashJoin(
+                           matchScan("u").aliases({"u_k"}),
+                           exists ? core::JoinType::kLeftSemiFilter
+                                  : core::JoinType::kAnti,
+                           {.keys = {{"t_k = u_k"}}})
+                       .unnest({"t_k"}, {"items"})
+                       .build();
+
+    AXIOM_ASSERT_PLAN_V2(toSingleNodePlan(parseSelect(query)), matcher);
+  }
+}
+
+// Free expansion is reconstructed above the cross product emitted for
+// disconnected graph components.
+TEST_P(UnnestTest, components) {
+  testConnector_
+      ->addTable("t", ROW({"k", "items"}, {INTEGER(), ARRAY(INTEGER())}))
+      ->setStats(10, {{"k", {.numDistinct = 10}}});
+  testConnector_->addTable("u", ROW("v", INTEGER()))
+      ->setStats(10, {{"v", {.numDistinct = 10}}});
+  testConnector_->addTable("v", ROW("v", INTEGER()))
+      ->setStats(10, {{"v", {.numDistinct = 10}}});
+  testConnector_->addTable("w", ROW("k", INTEGER()))
+      ->setStats(10, {{"k", {.numDistinct = 10}}});
+  testConnector_->addTable("x", ROW("k", INTEGER()))
+      ->setStats(10, {{"k", {.numDistinct = 10}}});
+
+  auto query =
+      "SELECT e, u.v FROM t "
+      "CROSS JOIN UNNEST(items) AS z(e) "
+      "JOIN w ON t.k = w.k "
+      "CROSS JOIN (u JOIN v ON u.v = v.v) "
+      "JOIN x ON t.k = x.k";
+  auto matcher =
+      matchScan("t")
+          .aliases({"t_k", "items"})
+          .hashJoinInner(
+              matchScan("w").aliases({"w_k"}).hashJoinInner(
+                  matchScan("x").aliases({"x_k"}), {.keys = {{"w_k = x_k"}}}),
+              {.keys = {{"t_k = w_k"}}})
+          .nestedLoopJoin(matchScan("u").aliases({"u_v"}).hashJoinInner(
+              matchScan("v").aliases({"v_v"}), {.keys = {{"u_v = v_v"}}}))
+          .unnest({"u_v"}, {"items"})
+          .project({"e", "u_v"})
+          .build();
+
+  AXIOM_ASSERT_PLAN_V2(toSingleNodePlan(parseSelect(query)), matcher);
+}
+
+// Dependent expansions retain producer-before-consumer order above the join.
+TEST_P(UnnestTest, nestedArray) {
+  testConnector_
+      ->addTable("t", ROW({"k", "items"}, {INTEGER(), ARRAY(ARRAY(INTEGER()))}))
+      ->setStats(10, {{"k", {.numDistinct = 10}}});
+  testConnector_->addTable("u", ROW("k", INTEGER()))
+      ->setStats(10, {{"k", {.numDistinct = 10}}});
+
+  auto query =
+      "SELECT e FROM t "
+      "CROSS JOIN UNNEST(items) AS a(inner_items) "
+      "CROSS JOIN UNNEST(inner_items) AS b(e) "
+      "JOIN u ON t.k = u.k";
+
+  auto matcher =
+      matchScan("t")
+          .aliases({"t_k", "items"})
+          .hashJoinInner(
+              matchScan("u").aliases({"u_k"}), {.keys = {{"t_k = u_k"}}})
+          .unnest({}, {"items"})
+          .aliases({"inner_items"})
+          .unnest({}, {"inner_items"})
+          .build();
+
+  AXIOM_ASSERT_PLAN_V2(toSingleNodePlan(parseSelect(query)), matcher);
+}
+
+// An expansion of another expansion's output moves above the join; the
+// producer, whose output the join uses, stays below it.
+TEST_P(UnnestTest, nestedArrayJoin) {
+  testConnector_
+      ->addTable("t", ROW({"k", "items"}, {INTEGER(), ARRAY(ARRAY(INTEGER()))}))
+      ->setStats(10, {{"k", {.numDistinct = 10}}});
+  testConnector_->addTable("u", ROW("n", BIGINT()))
+      ->setStats(10, {{"n", {.numDistinct = 10}}});
+
+  auto query =
+      "SELECT e FROM t "
+      "CROSS JOIN UNNEST(items) AS a(inner_items) "
+      "JOIN u ON cardinality(inner_items) = u.n "
+      "CROSS JOIN UNNEST(inner_items) AS b(e)";
+
+  auto matcher =
+      matchScan("t")
+          .unnest({}, {"items"})
+          .aliases({"inner_items"})
+          .project({"cardinality(inner_items) as n", "inner_items"})
+          .hashJoinInner(
+              matchScan("u").aliases({"u_n"}), {.keys = {{"n = u_n"}}})
+          .unnest({}, {"inner_items"})
+          .build();
+
+  AXIOM_ASSERT_PLAN_V2(toSingleNodePlan(parseSelect(query)), matcher);
+}
+
+// A constant array still expands once for every row from the other input.
+TEST_P(UnnestTest, constantInput) {
+  testConnector_->addTable("t", ROW("k", INTEGER()));
+  auto logicalPlan = parseSelect(
+      "SELECT t.k FROM t "
+      "CROSS JOIN UNNEST(ARRAY[1, 2]) AS u(e)");
+
+  AXIOM_ASSERT_PLAN_V2(
+      toSingleNodePlan(logicalPlan),
+      matchScan("t").project().unnest().project({"k"}).build());
 }
 
 // An UNNEST of the outer row's own array inside a correlated subquery. v1
@@ -1330,6 +1542,32 @@ TEST_P(UnnestTest, nondeterministicFilterAboveUnnest) {
                      .build();
 
   AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
+}
+
+// A join after a long chain of UNNEST operations stays below all free Unnests
+// and remains plannable beyond the hypergraph's relation-count limit.
+TEST_P(UnnestTest, longChain) {
+  constexpr int32_t kNumUnnests{63};
+  testConnector_->addTable("t", ROW({"k", "a"}, {BIGINT(), ARRAY(BIGINT())}))
+      ->setStats(2, {{"k", {.numDistinct = 2}}});
+
+  std::string query = "SELECT t.k FROM t ";
+  for (int32_t i = 0; i < kNumUnnests; ++i) {
+    query += fmt::format("CROSS JOIN UNNEST(t.a) AS u{0}(v{0}) ", i);
+  }
+  query += "JOIN (VALUES 1, 2) AS w(k) ON t.k = w.k";
+
+  auto matcher = matchScan("t").hashJoinInner(
+      matchValues().project({"cast(c0 as bigint)"}));
+  for (int32_t i = 0; i < kNumUnnests; ++i) {
+    matcher.unnest(
+        i + 1 == kNumUnnests ? std::vector<std::string>{"k"}
+                             : std::vector<std::string>{"k", "a"},
+        {"a"});
+  }
+  matcher.project({"k"});
+
+  AXIOM_ASSERT_PLAN_V2(toSingleNodePlan(parseSelect(query)), matcher.build());
 }
 
 AXIOM_INSTANTIATE_V1_V2(UnnestTest);

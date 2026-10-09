@@ -122,7 +122,15 @@ SubtreeRelations populateJoinInputs(
   if (node->is(NodeType::kUnnest)) {
     const auto* unnest = node->as<Unnest>();
     NodeCP input = unnest->input();
-    const int8_t unnestId = unnestIds.at(unnest);
+    const auto unnestIdIt = unnestIds.find(unnest);
+    if (unnestIdIt == unnestIds.end()) {
+      if (input->outputColumns().empty()) {
+        return {};
+      }
+      return populateJoinInputs(
+          input, leafIds, unnestIds, inputs, unnestSubtrees);
+    }
+    const int8_t unnestId = unnestIdIt->second;
     // The cluster does not contain the input of an Unnest of a constant, so
     // the Unnest's own relation is all its subtree contributes.
     if (input->outputColumns().empty()) {
@@ -475,27 +483,15 @@ folly::F14FastMap<UnnestCP, int8_t> addUnnestRelations(
     folly::F14FastMap<ColumnCP, int8_t>& columnToLeaf) {
   folly::F14FastMap<UnnestCP, int8_t> unnestIds;
   for (UnnestCP unnest : cluster.unnests) {
-    PlanObjectSet producedColumns;
-    for (const auto& columnsForExpr : unnest->unnestColumns()) {
-      producedColumns.unionObjects(columnsForExpr);
-    }
-    if (unnest->ordinalityColumn() != nullptr) {
-      producedColumns.add(unnest->ordinalityColumn());
-    }
+    const PlanObjectSet producedColumns = unnest->generatedColumns();
     const std::optional<float> cardinality =
         mul(estimateProvider.estimate(unnest->input()).cardinality,
             kDefaultUnnestFanout);
     const int8_t id =
         graph.addUnnestRelation(unnest, cardinality, producedColumns);
     unnestIds.emplace(unnest, id);
-    for (const auto& columnsForExpr : unnest->unnestColumns()) {
-      for (const auto* column : columnsForExpr) {
-        columnToLeaf.emplace(column, id);
-      }
-    }
-    if (unnest->ordinalityColumn() != nullptr) {
-      columnToLeaf.emplace(unnest->ordinalityColumn(), id);
-    }
+    producedColumns.forEach<Column>(
+        [&](ColumnCP column) { columnToLeaf.emplace(column, id); });
   }
   return unnestIds;
 }
@@ -619,6 +615,7 @@ struct EdgeBuilder {
   const folly::F14FastMap<JoinCP, JoinInputs>& joinInputs;
   const folly::F14FastMap<int8_t, RelationSet>& unnestInputRelations;
   const folly::F14FastMap<int8_t, RelationSet>& unnestSubtrees;
+  const PlanObjectSet& freeUnnestColumns;
 
   // Adds the edges of an inner join, and its filter as graph conjuncts.
   void addInner(JoinCP join, const JoinInputs& inputs) {
@@ -743,6 +740,14 @@ struct EdgeBuilder {
         ? join->markColumn()
         : nullptr;
 
+    ColumnVector outputColumns;
+    ColumnVector sourceColumns;
+    for (size_t i = 0; i < join->outputColumns().size(); ++i) {
+      if (!freeUnnestColumns.contains(join->sourceColumns()[i])) {
+        outputColumns.push_back(join->outputColumns()[i]);
+        sourceColumns.push_back(join->sourceColumns()[i]);
+      }
+    }
     graph.addEdge(
         JoinEdge{
             leftSet,
@@ -756,8 +761,8 @@ struct EdgeBuilder {
             join->nullAware(),
             join->nullAsValue(),
             markColumn,
-            join->outputColumns(),
-            join->sourceColumns()});
+            std::move(outputColumns),
+            std::move(sourceColumns)});
   }
 };
 
@@ -891,7 +896,8 @@ JoinHypergraph HypergraphBuilder::build(
       leafIds,
       joinInputs,
       unnestInputRelations,
-      unnestSubtrees};
+      unnestSubtrees,
+      cluster.freeUnnestColumns};
   for (JoinCP join : cluster.joins) {
     const auto& inputs = joinInputs.at(join);
     if (join->isInner()) {
