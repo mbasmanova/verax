@@ -40,13 +40,13 @@ TableAccessHandle buildTableAccess(
   // only by filters.
   folly::F14FastSet<Name> seenSchemaNames;
   for (ColumnCP column : outputColumns) {
-    seenSchemaNames.insert(column->name());
+    seenSchemaNames.insert(column->schemaName());
   }
   ColumnVector filterOnlyColumns;
   PlanObjectSet filterColumns;
   filterColumns.unionColumns(filters);
   filterColumns.forEach<Column>([&](ColumnCP column) {
-    if (seenSchemaNames.insert(column->name()).second) {
+    if (seenSchemaNames.insert(column->schemaName()).second) {
       filterOnlyColumns.push_back(column);
     }
   });
@@ -56,7 +56,7 @@ TableAccessHandle buildTableAccess(
   readSchema.reserve(numColumns);
   const auto addHandle = [&](ColumnCP column) {
     auto handle = layout->createColumnHandle(
-        connectorSession, column->name(), subfieldsOf(column));
+        connectorSession, column->schemaName(), subfieldsOf(column));
     readSchema.push_back(handle);
     return handle;
   };
@@ -157,7 +157,7 @@ TableAccessHandle TableAccessHandle::buildIndexLookup(
   connector::LookupKeys connectorKeys;
   connectorKeys.equalityColumns.reserve(lookupKeys.size());
   for (ColumnCP key : lookupKeys) {
-    connectorKeys.equalityColumns.emplace_back(key->name());
+    connectorKeys.equalityColumns.emplace_back(key->schemaName());
   }
   return buildTableAccess(
       baseTable,

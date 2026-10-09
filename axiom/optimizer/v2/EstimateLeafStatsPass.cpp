@@ -566,7 +566,7 @@ NodeCP EstimateLeafStatsPass::run(
     for (ColumnCP column : scan->outputColumns()) {
       if (column->topColumn() == nullptr) {
         statColumns.push_back(column);
-        columnNames.emplace_back(column->name());
+        columnNames.emplace_back(column->schemaName());
       }
     }
 

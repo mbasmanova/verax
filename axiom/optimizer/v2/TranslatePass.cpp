@@ -261,15 +261,6 @@ struct LiftTarget {
     return outputContains(node, column) ||
         (pendingLifts != nullptr && outputContains(pendingLifts, column));
   }
-
-  // Columns readable by an expression lifting onto this target.
-  ColumnVector columns() const {
-    ColumnVector all = node->outputColumns();
-    if (pendingLifts != nullptr) {
-      appendUnique(all, pendingLifts->outputColumns());
-    }
-    return all;
-  }
 };
 
 // Walks 'expr' as a top-level AND chain and appends each non-AND leaf
@@ -784,14 +775,6 @@ class Translator {
       float cardinality,
       Scope& scope);
 
-  // Renames a lifted body's single output column when the target already
-  // outputs one of that name, wrapping 'body' in an aliasing Project.
-  // Returns the column the parent expression reads.
-  ColumnCP aliasIfNameCollides(
-      NodeCP& body,
-      ColumnCP returnedColumn,
-      const LiftTarget& target);
-
   // Joins 'right' onto 'left', emitting both sides' columns.
   NodeCP crossJoin(NodeCP left, NodeCP right);
 
@@ -1286,11 +1269,17 @@ Translated Translator::translateScan(
     Name outNameInterned = toName(outName);
     ColumnCP schemaColumn = schemaTable->findColumn(inTableName);
     VELOX_CHECK_NOT_NULL(schemaColumn);
+    // Give each duplicate scan distinct optimizer symbols while retaining the
+    // schema identity used by connector-facing operations.
+    const Name columnName = translatingDuplicate_
+        ? queryCtx()->newName(outNameInterned)
+        : inTableName;
+    const Name outputAlias = translatingDuplicate_ ? nullptr : outNameInterned;
     auto* column = make<Column>(
-        inTableName,
+        columnName,
         baseTable,
         schemaColumn->value(),
-        outNameInterned,
+        outputAlias,
         schemaColumn->name());
     baseTable->columns.push_back(column);
     outputColumns.push_back(column);
@@ -1966,8 +1955,10 @@ ColumnVector Translator::narrowToNames(
         ? columnForSymbol(toName(name), it->second->value())
         : materializeColumn(node, it->second, name);
     exprs.push_back(column);
-    // Names bound to one column still need distinct output columns.
-    if (seen.contains(column)) {
+    // Names bound to one column still need distinct output columns, and so does
+    // a column the node does not produce, such as an outer column a subquery
+    // body returns unchanged.
+    if (seen.contains(column) || !outputContains(*node, column)) {
       column = columnForSymbol(toName(name), column->value());
     }
     seen.add(column);
@@ -3455,37 +3446,6 @@ ColumnCP Translator::columnForSymbol(Name symbol, const Value& value) {
                                : Column::createForSymbol(symbol, value);
 }
 
-ColumnCP Translator::aliasIfNameCollides(
-    NodeCP& body,
-    ColumnCP returnedColumn,
-    const LiftTarget& target) {
-  // The body may project an outer column unchanged, as in
-  // `SELECT (SELECT a) FROM t`, so its output keeps the name the outer
-  // relation already uses.
-  const ColumnVector targetColumns = target.columns();
-  for (ColumnCP column : targetColumns) {
-    if (column->name() != returnedColumn->name()) {
-      continue;
-    }
-    ColumnCP alias = Column::create(
-        std::string(returnedColumn->name()) + "__lift",
-        returnedColumn->value());
-    const ColumnVector outputColumns{alias};
-    auto projected = nodeSimplifier_.make(
-        Project::Key{body, ExprVector{returnedColumn}, outputColumns},
-        {body, {}});
-    body = projected.empty() ? nodeSimplifier_.materialize(projected)
-                             : projected.substitutions.restore(
-                                   projected.node,
-                                   outputColumns,
-                                   exprFactory_,
-                                   builder_,
-                                   simplifier_);
-    return alias;
-  }
-  return returnedColumn;
-}
-
 NodeCP Translator::crossJoin(NodeCP left, NodeCP right) {
   ColumnVector output = left->outputColumns();
   appendUnique(output, right->outputColumns());
@@ -4108,8 +4068,6 @@ ExprCP Translator::liftSubquery(
         return folded;
       }
     }
-
-    returnedColumn = aliasIfNameCollides(body, returnedColumn, *liftTarget);
 
     if (correlationColumns.empty()) {
       // Uncorrelated scalar: cross-join with the body, which must yield a

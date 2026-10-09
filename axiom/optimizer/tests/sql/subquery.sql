@@ -198,6 +198,12 @@ WITH a AS (SELECT (SELECT sum(x) FROM (VALUES (1), (2)) s(x)) AS n),
      b AS (SELECT (SELECT sum(x) FROM (VALUES (1), (2)) s(x)) AS m)
 SELECT n, m FROM a, b
 ----
+-- A scalar subquery can appear both directly and inside another scalar
+-- subquery in the same SELECT list.
+SELECT
+  (SELECT a FROM u ORDER BY a LIMIT 1),
+  (SELECT (SELECT a FROM u ORDER BY a LIMIT 1))
+----
 -- A scalar subquery body and the query around it read one uncorrelated
 -- scalar. The body reads its own copy, so the FULL JOIN it sits under stays
 -- uncorrelated.
