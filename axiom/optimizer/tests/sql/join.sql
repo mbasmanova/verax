@@ -483,6 +483,13 @@ FROM (VALUES (1, 10), (2, 20)) t(a, b)
 FULL JOIN (VALUES (1, 1), (3, 3)) u(x, y) ON a = x
 WHERE a > 0
 ----
+-- A conjunct over both inputs reads a left-input column the query does not
+-- select.
+SELECT b, y
+FROM (VALUES (1, 10), (2, 20)) t(a, b)
+FULL JOIN (VALUES (1, 1), (3, 3)) u(x, y) ON a = x
+WHERE a > 0 AND (a < y OR y IS NULL)
+----
 -- FULL JOIN with null-rejecting conjuncts on both inputs reduces to INNER.
 SELECT a, b, x, y
 FROM (VALUES (1, 10), (2, 20)) t(a, b)
