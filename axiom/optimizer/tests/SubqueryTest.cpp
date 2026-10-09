@@ -700,7 +700,7 @@ TEST_P(SubqueryTest, correlatedIn) {
 TEST_P(SubqueryTest, correlatedTopNPerOuter) {
   // v1 declines a LIMIT in a correlated scalar subquery.
   if (!useV2_) {
-    GTEST_SKIP();
+    return;
   }
 
   testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
@@ -712,8 +712,7 @@ TEST_P(SubqueryTest, correlatedTopNPerOuter) {
   // carried back through the Project that dropped it.
   {
     auto query =
-        "SELECT (SELECT u.x FROM u WHERE u.y = t.b ORDER BY u.z LIMIT 1) "
-        "FROM t";
+        "SELECT (SELECT u.x FROM u WHERE u.y = t.b ORDER BY u.z LIMIT 1) FROM t";
     SCOPED_TRACE(query);
 
     auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
@@ -723,6 +722,24 @@ TEST_P(SubqueryTest, correlatedTopNPerOuter) {
             .topNRowNumber({"y"}, {"z"}, 1)
             .project()
             .hashJoinRight(matchScan("t"), {.keys = {{"y = b"}}})
+            .build());
+  }
+
+  // An expression-valued correlation key is materialized before ranking and
+  // joining it back to the outer input.
+  {
+    auto query = "SELECT (SELECT 1 FROM u WHERE abs(u.y) = t.b LIMIT 1) FROM t";
+    SCOPED_TRACE(query);
+
+    auto plan = toSingleNodePlan(parseSelect(query, kTestConnectorId));
+    AXIOM_ASSERT_PLAN_V2(
+        plan,
+        matchScan("u")
+            .project({"abs(y) as pk"})
+            .rowNumber({"pk"}, 1)
+            .project()
+            .hashJoinRight(matchScan("t"), {.keys = {{"pk = b"}}})
+            .project()
             .build());
   }
 
@@ -770,7 +787,7 @@ TEST_P(SubqueryTest, correlatedTopNPerOuter) {
 TEST_P(SubqueryTest, correlatedExistsOverSemiJoin) {
   // v1 plans this shape differently; the point here is the v2 plan.
   if (!useV2_) {
-    GTEST_SKIP();
+    return;
   }
 
   testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
@@ -797,7 +814,7 @@ TEST_P(SubqueryTest, correlatedExistsOverSemiJoin) {
 
 TEST_P(SubqueryTest, correlatedExistsOverLeftJoin) {
   if (!useV2_) {
-    GTEST_SKIP();
+    return;
   }
 
   testConnector_->addTable("t", ROW("a", BIGINT()));
@@ -831,7 +848,7 @@ TEST_P(SubqueryTest, correlatedExistsOverLeftJoin) {
 TEST_P(SubqueryTest, correlatedScalarGroupedWithHaving) {
   // v1 declines a correlation predicate over a column outside the GROUP BY.
   if (!useV2_) {
-    GTEST_SKIP();
+    return;
   }
 
   testConnector_->addTable("t", ROW({"a", "b", "c"}, BIGINT()));

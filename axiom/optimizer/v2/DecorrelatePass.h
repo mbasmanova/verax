@@ -18,6 +18,7 @@
 
 #include "axiom/optimizer/v2/Builder.h"
 #include "axiom/optimizer/v2/Node.h"
+#include "velox/core/ExpressionEvaluator.h"
 
 namespace facebook::axiom::optimizer::v2 {
 
@@ -30,7 +31,10 @@ class DecorrelatePass {
   /// columns empty), then converts Apply → Join (with optional ESR wrap). Built
   /// up incrementally; out-of-scope sub-cases throw `VELOX_NYI` with a clear
   /// message rather than silently producing wrong results.
-  static NodeCP run(NodeCP root, Builder& builder);
+  static NodeCP run(
+      NodeCP root,
+      Builder& builder,
+      velox::core::ExpressionEvaluator& evaluator);
 };
 
 } // namespace facebook::axiom::optimizer::v2
