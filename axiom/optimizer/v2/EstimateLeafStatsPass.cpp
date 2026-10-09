@@ -19,6 +19,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include <fmt/format.h>
+
 #include "axiom/optimizer/v2/Builder.h"
 #include "axiom/optimizer/v2/ExprSimplifier.h"
 #include "axiom/optimizer/v2/NodeRewriter.h"
@@ -35,6 +37,7 @@
 #include "axiom/optimizer/QueryGraphContext.h"
 #include "axiom/optimizer/Schema.h"
 #include "axiom/optimizer/StatsFilterSelectivityEstimator.h"
+#include "velox/expression/Expr.h"
 
 namespace facebook::axiom::optimizer::v2 {
 
@@ -528,6 +531,7 @@ NodeCP EstimateLeafStatsPass::run(
     ColumnVector& outputColumns,
     Builder& builder,
     velox::core::ExpressionEvaluator& evaluator,
+    const std::shared_ptr<velox::core::QueryCtx>& queryCtx,
     const OptimizerSession& session) {
   std::vector<ScanCP> scans;
   collectScans(root, scans);
@@ -536,6 +540,8 @@ NodeCP EstimateLeafStatsPass::run(
   struct TableTask {
     ScanCP scan;
     std::vector<ColumnCP> statColumns;
+    std::shared_ptr<velox::memory::MemoryPool> evaluatorPool;
+    std::unique_ptr<velox::core::ExpressionEvaluator> evaluator;
   };
   std::vector<TableTask> tasks;
   std::vector<folly::coro::Task<std::optional<connector::FilteredTableStats>>>
@@ -544,7 +550,6 @@ NodeCP EstimateLeafStatsPass::run(
   // Shared helper offered to each connector's co_estimateStats. Outlives the
   // coroutines below, which run under blockingWait before this returns.
   StatsFilterSelectivityEstimator estimator;
-
   for (ScanCP scan : scans) {
     const auto* baseTable = scan->baseTable();
     const TableAccessHandle* handle = scan->scanHandle();
@@ -565,10 +570,21 @@ NodeCP EstimateLeafStatsPass::run(
       }
     }
 
-    tasks.push_back(TableTask{scan, std::move(statColumns)});
+    auto evaluatorPool = queryCtx->pool()->addLeafChild(
+        fmt::format("estimateStats{}", tasks.size()));
+    auto evaluator = std::make_unique<velox::exec::SimpleExpressionEvaluator>(
+        queryCtx.get(), evaluatorPool.get());
+    auto* evaluatorPtr = evaluator.get();
+    tasks.push_back(
+        TableTask{
+            scan,
+            std::move(statColumns),
+            std::move(evaluatorPool),
+            std::move(evaluator)});
     requests.push_back(layout->co_estimateStats(
         std::move(connectorSession),
         handle->tableHandle,
+        *evaluatorPtr,
         std::move(columnNames),
         estimator));
   }

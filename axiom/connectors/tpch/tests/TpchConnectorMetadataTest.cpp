@@ -223,7 +223,7 @@ CO_TEST_F(TpchConnectorMetadataTest, splitGeneration) {
   CO_ASSERT_NE(tableHandle, nullptr);
 
   auto partitions = co_await splitManager->co_listPartitions(
-      /*session=*/nullptr, tableHandle);
+      /*session=*/nullptr, tableHandle, *evaluator);
   CO_ASSERT_EQ(partitions.size(), 1);
 
   auto splitSource = splitManager->getSplitSource(

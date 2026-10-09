@@ -34,8 +34,11 @@ using logical_plan::SpecialAggregateKind;
 
 class Folder : public NodeRewriter<NoContext> {
  public:
-  Folder(Builder& builder, const OptimizerSession& session)
-      : NodeRewriter(builder), session_(session) {}
+  Folder(
+      Builder& builder,
+      const OptimizerSession& session,
+      velox::core::ExpressionEvaluator& evaluator)
+      : NodeRewriter(builder), session_(session), evaluator_(evaluator) {}
 
  protected:
   NodeCP rewriteAggregate(AggregateCP node, NoContext& context) override {
@@ -136,6 +139,7 @@ class Folder : public NodeRewriter<NoContext> {
     auto result = folly::coro::blockingWait(layout->co_metadataCounts(
         std::move(connectorSession),
         handle.tableHandle,
+        evaluator_,
         std::move(groupingColumns),
         std::move(nullCountColumns)));
     if (!result.has_value()) {
@@ -233,6 +237,7 @@ class Folder : public NodeRewriter<NoContext> {
   }
 
   const OptimizerSession& session_;
+  velox::core::ExpressionEvaluator& evaluator_;
 };
 
 } // namespace
@@ -240,8 +245,9 @@ class Folder : public NodeRewriter<NoContext> {
 NodeCP FoldMetadataAggregatePass::run(
     NodeCP root,
     Builder& builder,
-    const OptimizerSession& session) {
-  Folder folder(builder, session);
+    const OptimizerSession& session,
+    velox::core::ExpressionEvaluator& evaluator) {
+  Folder folder(builder, session, evaluator);
   return folder.rewrite(root);
 }
 

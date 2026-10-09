@@ -48,6 +48,7 @@ struct FilteredTableStats {
 virtual folly::coro::Task<std::optional<FilteredTableStats>> co_estimateStats(
     ConnectorSessionPtr session,
     velox::connector::ConnectorTableHandlePtr tableHandle,
+    velox::core::ExpressionEvaluator& evaluator,
     std::vector<std::string> columns,
     const FilterSelectivityEstimator& estimator) const;
 ```

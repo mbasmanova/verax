@@ -118,7 +118,8 @@ class SystemSplitManager : public ConnectorSplitManager {
  public:
   folly::coro::Task<std::vector<PartitionHandlePtr>> co_listPartitions(
       const ConnectorSessionPtr& session,
-      const velox::connector::ConnectorTableHandlePtr& tableHandle) override;
+      const velox::connector::ConnectorTableHandlePtr& tableHandle,
+      velox::core::ExpressionEvaluator& evaluator) override;
 
   std::shared_ptr<SplitSource> getSplitSource(
       const ConnectorSessionPtr& session,

@@ -16,13 +16,32 @@
 
 #pragma once
 
+#include <span>
+#include <string_view>
+
 #include "axiom/connectors/ConnectorMetadata.h"
 #include "folly/CppAttributes.h"
 #include "velox/connectors/hive/HiveConnector.h"
 #include "velox/connectors/hive/HiveDataSink.h"
+#include "velox/connectors/hive/PartitionValue.h"
 #include "velox/dwio/common/Options.h"
 
 namespace facebook::axiom::connector::hive {
+
+using PartitionKeyValues =
+    folly::F14FastMap<std::string, std::optional<std::string>>;
+
+/// Parsing modes for Hive partition values in the current query.
+struct PartitionValueParsingOptions {
+  velox::connector::hive::PartitionValue::TimestampMode timestampMode;
+  velox::connector::hive::PartitionValue::DateMode dateMode;
+};
+
+/// Supplies a compiled partition filter and its engine-owned evaluator.
+struct PartitionFilterEvaluation {
+  velox::core::ExpressionEvaluator& evaluator;
+  velox::exec::ExprSet& expression;
+};
 
 /// Describes a single partition of a Hive table. If the table is
 /// bucketed, this resolves to a single file. If the table is
@@ -31,13 +50,12 @@ namespace facebook::axiom::connector::hive {
 /// this resolves to the directory corresponding to the table.
 struct HivePartitionHandle : public PartitionHandle {
   HivePartitionHandle(
-      folly::F14FastMap<std::string, std::optional<std::string>> partitionKeys,
+      PartitionKeyValues partitionKeys,
       std::optional<int32_t> tableBucketNumber)
       : partitionKeys(std::move(partitionKeys)),
         tableBucketNumber(tableBucketNumber) {}
 
-  const folly::F14FastMap<std::string, std::optional<std::string>>
-      partitionKeys;
+  const PartitionKeyValues partitionKeys;
   const std::optional<int32_t> tableBucketNumber;
 };
 
@@ -180,6 +198,20 @@ class HiveTableLayout : public TableLayout {
       std::vector<const Column*> lookupKeys,
       std::vector<const Column*> hivePartitionedByColumns,
       velox::dwio::common::FileFormat fileFormat);
+
+  /// Evaluates 'filter' once over a batch of partition-key values and returns
+  /// the indices of matching partitions. SQL NULL results do not match.
+  static std::vector<velox::vector_size_t> evaluatePartitionFilter(
+      std::span<const PartitionKeyValues> partitions,
+      const velox::RowTypePtr& partitionType,
+      const PartitionValueParsingOptions& parsingOptions,
+      const PartitionFilterEvaluation& filter);
+
+  /// Resolves partition-value parsing modes with the same FileConfig accessors
+  /// as the file reader.
+  static PartitionValueParsingOptions partitionValueParsingOptions(
+      const velox::connector::hive::FileConfig& config,
+      const velox::config::ConfigBase* session);
 
   velox::dwio::common::FileFormat fileFormat() const {
     return fileFormat_;

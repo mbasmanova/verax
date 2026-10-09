@@ -527,7 +527,8 @@ const TestTable& findTestTableForHandle(
 folly::coro::Task<std::vector<PartitionHandlePtr>>
 TestSplitManager::co_listPartitions(
     const ConnectorSessionPtr& session,
-    const velox::connector::ConnectorTableHandlePtr& tableHandle) {
+    const velox::connector::ConnectorTableHandlePtr& tableHandle,
+    velox::core::ExpressionEvaluator& /*evaluator*/) {
   VELOX_CHECK_NOT_NULL(session);
   if (auto error = session->property(TestConfigProvider::kListPartitionsError);
       error.has_value() && !error->empty()) {

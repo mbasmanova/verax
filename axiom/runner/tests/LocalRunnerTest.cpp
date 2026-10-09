@@ -376,11 +376,12 @@ class PendingSplitSourceFactory : public SplitSourceFactory {
   std::shared_ptr<connector::SplitSource> splitSourceForScan(
       const RunnerSessionPtr& session,
       const velox::core::TableScanNode& scan,
+      velox::core::ExpressionEvaluator& evaluator,
       const std::shared_ptr<connector::PartitionType>& partitionType,
       std::optional<double> samplePercentage) override {
     return std::make_shared<PendingSplitSource>(
         inner_.splitSourceForScan(
-            session, scan, partitionType, samplePercentage),
+            session, scan, evaluator, partitionType, samplePercentage),
         gate_,
         waiting_);
   }

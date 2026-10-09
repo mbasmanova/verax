@@ -18,7 +18,7 @@
 
 #include "axiom/optimizer/OptimizerSession.h"
 #include "axiom/optimizer/v2/Node.h"
-#include "velox/core/ExpressionEvaluator.h"
+#include "velox/core/QueryCtx.h"
 
 namespace facebook::axiom::optimizer::v2 {
 
@@ -45,6 +45,7 @@ class EstimateLeafStatsPass {
       ColumnVector& outputColumns,
       Builder& builder,
       velox::core::ExpressionEvaluator& evaluator,
+      const std::shared_ptr<velox::core::QueryCtx>& queryCtx,
       const OptimizerSession& session);
 };
 
