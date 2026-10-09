@@ -30,18 +30,23 @@ namespace facebook::axiom::optimizer::v2 {
 /// with surrounding IR. `joins` lists every Join in the cluster,
 /// `root` included.
 ///
-/// `unnests` records Unnest IR nodes the cluster collection
-/// descended through. Each becomes its own relation in the
-/// hypergraph, connected to the relations contributed by its input
-/// subtree via an unnest edge. Order is post order, i.e., an input Unnest
-/// appears before any Unnest that consumes its output, so input relations
-/// receive lower ids than the dependent Unnest, as required by DPhyp
-/// enumeration.
+/// `unnests` records Unnest IR nodes the cluster collection descended through.
+/// Classification removes the ones placed above the cluster root; each
+/// remaining Unnest becomes a hypergraph relation connected to its input
+/// relations by an unnest edge. Order is post order, so an input Unnest appears
+/// before any Unnest that consumes its output.
 struct JoinCluster {
   JoinCP root;
   std::vector<NodeCP> leaves;
   std::vector<JoinCP> joins;
   std::vector<UnnestCP> unnests;
+
+  /// Unnests whose row multiplication is observed by a non-inner join above
+  /// them in the written tree. These cannot move above that join.
+  std::vector<UnnestCP> unnestBarriers;
+
+  /// Columns produced by Unnests placed above the cluster root.
+  PlanObjectSet freeUnnestColumns;
 
   /// Predicates of the `Filter` nodes the cluster spans. Each becomes a graph
   /// conjunct, applied wherever the relations it reads are covered.

@@ -1166,6 +1166,10 @@ class Unnest : public Node {
     return unnestColumns_;
   }
 
+  /// Returns columns created by expansion, including optional ordinality and
+  /// marker columns, and excluding replicated input columns.
+  PlanObjectSet generatedColumns() const;
+
   ColumnCP ordinalityColumn() const {
     return ordinalityColumn_;
   }

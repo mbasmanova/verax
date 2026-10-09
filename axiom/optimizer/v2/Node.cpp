@@ -1280,6 +1280,20 @@ Partitioning Unnest::globalPartition(
   return retainedGlobalPartition(inputPartitions[0], replicatedColumns());
 }
 
+PlanObjectSet Unnest::generatedColumns() const {
+  PlanObjectSet columns;
+  for (const auto& perExpression : unnestColumns_) {
+    columns.unionObjects(perExpression);
+  }
+  if (ordinalityColumn_ != nullptr) {
+    columns.add(ordinalityColumn_);
+  }
+  if (markerColumn_ != nullptr) {
+    columns.add(markerColumn_);
+  }
+  return columns;
+}
+
 Unnest::Unnest(Key key)
     : Node(
           NodeType::kUnnest,

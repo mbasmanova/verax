@@ -352,20 +352,20 @@ class ClusterCollector {
         dissolveCrossJoins_{dissolveCrossJoins},
         opaqueJoins_{opaqueJoins} {}
 
-  void collect(NodeCP node, bool preserved) {
+  void collect(NodeCP node, bool preserved, bool unnestMovable) {
     switch (node->nodeType()) {
       case NodeType::kJoin:
-        if (collectJoin(node->as<Join>(), preserved)) {
+        if (collectJoin(node->as<Join>(), preserved, unnestMovable)) {
           return;
         }
         break;
       case NodeType::kFilter:
-        if (collectFilter(node->as<Filter>(), preserved)) {
+        if (collectFilter(node->as<Filter>(), preserved, unnestMovable)) {
           return;
         }
         break;
       case NodeType::kUnnest:
-        collectUnnest(node->as<Unnest>(), preserved);
+        collectUnnest(node->as<Unnest>(), preserved, unnestMovable);
         return;
       default:
         break;
@@ -377,12 +377,24 @@ class ClusterCollector {
   // These return true when they took the node into the cluster; an Unnest
   // always joins it.
 
-  bool collectJoin(JoinCP join, bool preserved) {
+  bool collectJoin(JoinCP join, bool preserved, bool unnestMovable) {
     if (isClusterable(join) && !opaqueJoins_.contains(join)) {
       cluster_.joins.push_back(join);
       const auto sides = Join::preservedSides(join->joinType());
-      collect(join->left(), preserved && sides.left);
-      collect(join->right(), preserved && sides.right);
+      bool leftUnnestMovable = sides.left;
+      bool rightUnnestMovable = sides.right;
+      if (join->joinType() == velox::core::JoinType::kCountingLeftSemiFilter) {
+        leftUnnestMovable = false;
+        rightUnnestMovable = false;
+      }
+      collect(
+          join->left(),
+          preserved && sides.left,
+          unnestMovable && leftUnnestMovable);
+      collect(
+          join->right(),
+          preserved && sides.right,
+          unnestMovable && rightUnnestMovable);
       return true;
     }
     // A bare keyless inner join (no keys, no filter) is a comma-join cross
@@ -393,14 +405,14 @@ class ClusterCollector {
     // join; leave it an opaque leaf so its semantics are preserved.
     if (dissolveCrossJoins_ && join->isInner() && join->leftKeys().empty() &&
         join->filter().empty()) {
-      collect(join->left(), preserved);
-      collect(join->right(), preserved);
+      collect(join->left(), preserved, unnestMovable);
+      collect(join->right(), preserved, unnestMovable);
       return true;
     }
     return false;
   }
 
-  bool collectFilter(FilterCP filter, bool preserved) {
+  bool collectFilter(FilterCP filter, bool preserved, bool unnestMovable) {
     // A Filter emits its input's columns, so descending through it leaves the
     // relations unchanged. Three things keep it a leaf: a non-deterministic
     // predicate must run where it was written; a Filter inside an input the
@@ -416,26 +428,235 @@ class ClusterCollector {
       return false;
     }
     appendAll(cluster_.filterPredicates, filter->predicates());
-    collect(filter->input(), preserved);
+    collect(filter->input(), preserved, unnestMovable);
     return true;
   }
 
-  void collectUnnest(UnnestCP unnest, bool preserved) {
+  void collectUnnest(UnnestCP unnest, bool preserved, bool unnestMovable) {
+    const bool deterministic = std::none_of(
+        unnest->unnestExpressions().begin(),
+        unnest->unnestExpressions().end(),
+        [](ExprCP expression) {
+          return expression->containsNonDeterministic();
+        });
+    if (!deterministic) {
+      cluster_.leaves.push_back(unnest);
+      return;
+    }
     // An Unnest of a constant, as in UNNEST(ARRAY[1, 2]), reads a subtree that
     // produces no columns. No predicate can reference it, so it is not a
     // relation of the cluster; the Unnest emits it as its own input.
     NodeCP input = unnest->input();
     if (!input->outputColumns().empty()) {
-      collect(input, preserved);
+      collect(input, preserved, unnestMovable);
     }
     // Preserve JoinCluster's post-order invariant.
     cluster_.unnests.push_back(unnest);
+    if (!unnestMovable) {
+      cluster_.unnestBarriers.push_back(unnest);
+    }
   }
 
   JoinCluster& cluster_;
   const bool dissolveCrossJoins_;
   const folly::F14FastSet<const Join*>& opaqueJoins_;
 };
+
+// Removes Unnests whose placement is unconstrained from the graph relation
+// list. Walk consumers before producers so a constrained consumer constrains
+// every Unnest that supplies one of its expressions.
+std::vector<UnnestCP> takeFreeUnnests(JoinCluster& cluster) {
+  PlanObjectSet constrainedColumns;
+  for (JoinCP join : cluster.joins) {
+    constrainedColumns.unionColumns(join->leftKeys());
+    constrainedColumns.unionColumns(join->rightKeys());
+    constrainedColumns.unionColumns(join->filter());
+  }
+  constrainedColumns.unionColumns(cluster.filterPredicates);
+
+  const folly::F14FastSet<UnnestCP> barriers{
+      cluster.unnestBarriers.begin(), cluster.unnestBarriers.end()};
+  folly::F14FastSet<UnnestCP> constrained;
+  for (auto it = cluster.unnests.rbegin(); it != cluster.unnests.rend(); ++it) {
+    UnnestCP unnest = *it;
+    // A constant-input Unnest is the only row source on its side of a join.
+    // It cannot be removed from the graph even when no predicate reads the
+    // columns it produces.
+    if (unnest->input()->outputColumns().empty() || barriers.contains(unnest) ||
+        constrainedColumns.hasIntersection(unnest->generatedColumns())) {
+      constrained.insert(unnest);
+      constrainedColumns.unionColumns(unnest->unnestExpressions());
+    }
+  }
+
+  std::vector<UnnestCP> free;
+  std::vector<UnnestCP> remaining;
+  free.reserve(cluster.unnests.size());
+  remaining.reserve(cluster.unnests.size());
+  for (UnnestCP unnest : cluster.unnests) {
+    if (constrained.contains(unnest)) {
+      remaining.push_back(unnest);
+    } else {
+      free.push_back(unnest);
+      cluster.freeUnnestColumns.unionSet(unnest->generatedColumns());
+    }
+  }
+  cluster.unnests = std::move(remaining);
+  return free;
+}
+
+struct CollectedJoinCluster {
+  // Relations and operators retained in the hypergraph.
+  JoinCluster cluster;
+  // Deterministic Unnests reconstructed above the emitted join tree.
+  std::vector<UnnestCP> freeUnnests;
+
+  // Returns whether every retained relation has a RelationSet bit.
+  bool fitsRelationSet() const {
+    return cluster.leaves.size() + cluster.unnests.size() <=
+        RelationSet::kMaxRelations;
+  }
+};
+
+CollectedJoinCluster collectJoinCluster(
+    JoinCP root,
+    bool dissolveCrossJoins,
+    const folly::F14FastSet<const Join*>& opaqueJoins) {
+  JoinCluster cluster;
+  cluster.root = root;
+  ClusterCollector{cluster, dissolveCrossJoins, opaqueJoins}.collect(
+      root, /*preserved=*/true, /*unnestMovable=*/true);
+  std::vector<UnnestCP> freeUnnests = takeFreeUnnests(cluster);
+  return {std::move(cluster), std::move(freeUnnests)};
+}
+
+// Partitions relations into sets closed under every edge's total eligibility.
+// DPhyp enumerates each set independently and emission joins the sets with
+// cross products.
+std::vector<RelationSet> connectedComponents(const JoinHypergraph& graph) {
+  const size_t numRelations = graph.relations().size();
+  std::vector<int32_t> parent(numRelations);
+  std::iota(parent.begin(), parent.end(), 0);
+  auto find = [&](int32_t id) {
+    while (parent[id] != id) {
+      parent[id] = parent[parent[id]];
+      id = parent[id];
+    }
+    return id;
+  };
+  for (const auto& edge : graph.edges()) {
+    int32_t representative{-1};
+    edge.totalEligibility().forEach([&](int32_t id) {
+      if (representative < 0) {
+        representative = id;
+      } else {
+        parent[find(id)] = find(representative);
+      }
+    });
+  }
+
+  std::vector<RelationSet> components;
+  std::vector<int32_t> rootToComponent(numRelations, -1);
+  for (const auto& relation : graph.relations()) {
+    const int32_t root = find(relation.id());
+    if (rootToComponent[root] < 0) {
+      rootToComponent[root] = static_cast<int32_t>(components.size());
+      components.emplace_back();
+    }
+    components[rootToComponent[root]].add(relation.id());
+  }
+  return components;
+}
+
+// One Unnest removed from the hypergraph and reconstructed above its emitted
+// join tree. `replicatedColumns` is the schema required immediately below the
+// Unnest; `outputColumns` is the schema it must expose to the next step.
+struct FreeUnnestStep {
+  // Original logical Unnest supplying expressions and generated columns.
+  UnnestCP unnest;
+  // Columns passed through from the preceding node.
+  ColumnVector replicatedColumns;
+  // Schema exposed to the next reconstruction step.
+  ColumnVector outputColumns;
+};
+
+// Schema contract between graph emission and reconstruction of free Unnests.
+// `graphOutputColumns` is the exact schema demanded from the join graph.
+// `steps` stays in the collector's producer-before-consumer order, so applying
+// it from front to back rebuilds dependent Unnests correctly.
+struct FreeUnnestPlacement {
+  // Schema required from the emitted join graph.
+  ColumnVector graphOutputColumns;
+  // Unnests to rebuild in producer-before-consumer order.
+  std::vector<FreeUnnestStep> steps;
+};
+
+FreeUnnestPlacement planFreeUnnests(
+    const std::vector<UnnestCP>& unnests,
+    const ColumnVector& rootOutputColumns) {
+  ColumnVector required = rootOutputColumns;
+  PlanObjectSet requiredSet = PlanObjectSet::fromObjects(required);
+  std::vector<FreeUnnestStep> steps(unnests.size());
+
+  for (size_t i = unnests.size(); i > 0; --i) {
+    UnnestCP unnest = unnests[i - 1];
+    const PlanObjectSet produced = unnest->generatedColumns();
+    ColumnVector replicated;
+    for (ColumnCP column : required) {
+      if (!produced.contains(column)) {
+        replicated.push_back(column);
+      }
+    }
+
+    ColumnVector output = replicated;
+    for (ColumnCP column : unnest->outputColumns()) {
+      if (produced.contains(column) &&
+          (requiredSet.contains(column) ||
+           column == unnest->ordinalityColumn() ||
+           column == unnest->markerColumn())) {
+        output.push_back(column);
+      }
+    }
+    steps[i - 1] = {unnest, replicated, std::move(output)};
+
+    required = std::move(replicated);
+    requiredSet = PlanObjectSet::fromObjects(required);
+    for (ExprCP expression : unnest->unnestExpressions()) {
+      expression->columns().forEach<Column>([&](ColumnCP column) {
+        if (!requiredSet.contains(column)) {
+          requiredSet.add(column);
+          required.push_back(column);
+        }
+      });
+    }
+  }
+  return {std::move(required), std::move(steps)};
+}
+
+NodeCP placeFreeUnnests(
+    NodeCP input,
+    const FreeUnnestPlacement& placement,
+    const ColumnVector& rootOutputColumns,
+    Builder& builder,
+    ExprSimplifier& simplifier) {
+  for (const auto& step : placement.steps) {
+    input = PhysicalJoin::makeUnnest(
+        {input,
+         step.unnest->unnestExpressions(),
+         step.replicatedColumns,
+         step.unnest->unnestColumns(),
+         step.unnest->ordinalityColumn(),
+         step.unnest->markerColumn(),
+         step.outputColumns},
+        builder,
+        simplifier);
+  }
+  if (input->outputColumns() != rootOutputColumns) {
+    input = builder.make<Project>(
+        {input, toExprs(rootOutputColumns), rootOutputColumns});
+  }
+  return input;
+}
 
 // Keeps a join opaque when another join predicate reads a fresh value it
 // produces. A Filter predicate remains guarded by the producing outer edge's
@@ -705,6 +926,74 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
     return makePhysicalJoin(chooseBuildSide(rewriteJoinInputs(node, context)));
   }
 
+  // Plans a graph with DPhyp, falling back to written-order planning when
+  // enumeration does not produce a root.
+  NodeCP planJoinGraph(
+      const JoinHypergraph& graph,
+      const std::vector<RelationSet>& components,
+      const ColumnVector& outputColumns) {
+    DefaultCostModel costModel{estimateProvider_};
+    DPhyp dphyp{
+        graph,
+        costModel,
+        builder(),
+        options_.dphypEnumerationBudget,
+        numWorkers_,
+        options_.hashStageTasks(numWorkers_),
+        options_.broadcastSizeLimit};
+    std::vector<MemoOpCP> roots;
+    if (components.size() == 1) {
+      if (MemoOpCP root = dphyp.enumerate(); root != nullptr) {
+        roots.push_back(root);
+      }
+    } else {
+      roots = dphyp.enumerate(components);
+    }
+
+    if (roots.size() == 1) {
+      return JoinTreeEmitter::emit(
+          roots.front(),
+          graph,
+          outputColumns,
+          builder(),
+          simplifier_,
+          numWorkers_);
+    }
+    if (!roots.empty()) {
+      return JoinTreeEmitter::emitComponents(
+          roots, graph, outputColumns, builder(), simplifier_, numWorkers_);
+    }
+
+    FallbackJoinPlanner fallbackPlanner{graph};
+    roots = fallbackPlanner.build(components);
+    const auto joinFactory = [&](Join::Key join) {
+      return makePhysicalJoin(chooseBuildSide(std::move(join)));
+    };
+    if (roots.size() == 1) {
+      return JoinTreeEmitter::emit(
+          roots.front(),
+          graph,
+          outputColumns,
+          builder(),
+          simplifier_,
+          numWorkers_,
+          joinFactory);
+    }
+    if (roots.empty()) {
+      return nullptr;
+    }
+    // 'joinFactory' adds distribution to component and cross joins.
+    return JoinTreeEmitter::emitComponents(
+        roots,
+        graph,
+        outputColumns,
+        builder(),
+        simplifier_,
+        /*numWorkers=*/1,
+        joinFactory,
+        joinFactory);
+  }
+
   NodeCP rewriteJoin(const Join* node, NoContext& context) override {
     // Syntactic mode keeps every join in query order, including its input
     // orientation.
@@ -715,40 +1004,36 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
       return rewriteFallbackJoin(node, context);
     }
 
-    JoinCluster cluster;
-    cluster.root = node;
-    ClusterCollector{cluster, /*dissolveCrossJoins=*/true, /*opaqueJoins=*/{}}
-        .collect(node, /*preserved=*/true);
-    if (cluster.joins.empty()) {
+    CollectedJoinCluster collected = collectJoinCluster(
+        node, /*dissolveCrossJoins=*/true, /*opaqueJoins=*/{});
+    if (collected.cluster.joins.empty()) {
       return rewriteFallbackJoin(node, context);
     }
 
     const folly::F14FastSet<const Join*> opaqueJoins =
-        valueProducersReadInCluster(cluster);
+        valueProducersReadInCluster(collected.cluster);
     if (!opaqueJoins.empty()) {
-      cluster = JoinCluster{};
-      cluster.root = node;
-      ClusterCollector{cluster, /*dissolveCrossJoins=*/true, opaqueJoins}
-          .collect(node, /*preserved=*/true);
+      collected =
+          collectJoinCluster(node, /*dissolveCrossJoins=*/true, opaqueJoins);
     }
 
     // A RelationSet holds `kMaxRelations` relations, so a larger cluster has
     // no hypergraph to enumerate over. Keep this join tree and let the
     // recursion re-examine what is below it: joins come off the top until the
     // rest fits, and that part is enumerated under the usual budget.
-    if (cluster.leaves.size() > RelationSet::kMaxRelations) {
+    if (!collected.fitsRelationSet()) {
       return rewriteFallbackJoin(node, context);
     }
 
     std::vector<NodeCP> rewrittenLeaves;
     auto buildGraph = [&]() {
       rewrittenLeaves.clear();
-      rewrittenLeaves.reserve(cluster.leaves.size());
-      for (NodeCP leaf : cluster.leaves) {
+      rewrittenLeaves.reserve(collected.cluster.leaves.size());
+      for (NodeCP leaf : collected.cluster.leaves) {
         rewrittenLeaves.push_back(rewrite(leaf, context));
       }
       return HypergraphBuilder::build(
-          cluster, rewrittenLeaves, estimateProvider_);
+          collected.cluster, rewrittenLeaves, estimateProvider_);
     };
 
     JoinHypergraph graph = buildGraph();
@@ -759,123 +1044,27 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
     // cross-join partner. Clusters that benefit from dissolution have no
     // stranded relation and keep the dissolved form.
     if (hasEndpointStrandedRelation(graph)) {
-      cluster = JoinCluster{};
-      cluster.root = node;
-      ClusterCollector{cluster, /*dissolveCrossJoins=*/false, opaqueJoins}
-          .collect(node, /*preserved=*/true);
+      collected =
+          collectJoinCluster(node, /*dissolveCrossJoins=*/false, opaqueJoins);
+      if (!collected.fitsRelationSet()) {
+        return rewriteFallbackJoin(node, context);
+      }
       graph = buildGraph();
     }
 
-    // Partition the cluster's relations into components, each closed under
-    // every edge's TES: DPhyp can only assemble a relation set once all
-    // relations in a crossing edge's TES are present, so two relations tied
-    // by any edge's TES must land in one component. A dissolved keyless
-    // cross join with no predicate connecting its sides yields separate
-    // components, combined later with cross products. Union-find over TES.
-    const size_t numRelations = graph.relations().size();
-    std::vector<int32_t> parent(numRelations);
-    std::iota(parent.begin(), parent.end(), 0);
-    auto find = [&](int32_t id) {
-      while (parent[id] != id) {
-        parent[id] = parent[parent[id]];
-        id = parent[id];
-      }
-      return id;
-    };
-    for (const auto& edge : graph.edges()) {
-      const RelationSet tes = edge.totalEligibility();
-      int32_t representative = -1;
-      tes.forEach([&](int32_t id) {
-        if (representative < 0) {
-          representative = id;
-        } else {
-          parent[find(id)] = find(representative);
-        }
-      });
-    }
-    std::vector<RelationSet> components;
-    std::vector<int32_t> rootToComponent(numRelations, -1);
-    for (const auto& relation : graph.relations()) {
-      const int32_t root = find(relation.id());
-      if (rootToComponent[root] < 0) {
-        rootToComponent[root] = static_cast<int32_t>(components.size());
-        components.emplace_back();
-      }
-      components[rootToComponent[root]].add(relation.id());
-    }
+    const std::vector<RelationSet> components = connectedComponents(graph);
 
-    graph.setTargetColumns(PlanObjectSet::fromObjects(node->outputColumns()));
-
-    DefaultCostModel costModel{estimateProvider_};
-    DPhyp dphyp{
-        graph,
-        costModel,
-        builder(),
-        options_.dphypEnumerationBudget,
-        numWorkers_,
-        options_.hashStageTasks(numWorkers_),
-        options_.broadcastSizeLimit};
-    if (components.size() == 1) {
-      MemoOpCP root = dphyp.enumerate();
-      // Enumeration found no valid costable plan; retain query order while
-      // postponing avoidable cross joins.
-      if (root == nullptr) {
-        return rewriteFallbackCluster(node, graph, components, context);
-      }
-      return JoinTreeEmitter::emit(
-          root,
-          graph,
-          node->outputColumns(),
-          builder(),
-          simplifier_,
-          numWorkers_);
-    }
-    const std::vector<MemoOpCP> roots = dphyp.enumerate(components);
-    if (roots.empty()) {
-      return rewriteFallbackCluster(node, graph, components, context);
-    }
-    return JoinTreeEmitter::emitComponents(
-        roots,
-        graph,
-        node->outputColumns(),
-        builder(),
-        simplifier_,
-        numWorkers_);
-  }
-
-  NodeCP rewriteFallbackCluster(
-      const Join* node,
-      const JoinHypergraph& graph,
-      const std::vector<RelationSet>& components,
-      NoContext& context) {
-    FallbackJoinPlanner fallbackPlanner{graph};
-    const std::vector<MemoOpCP> roots = fallbackPlanner.build(components);
-    if (roots.empty()) {
+    const FreeUnnestPlacement freePlacement =
+        planFreeUnnests(collected.freeUnnests, node->outputColumns());
+    graph.setTargetColumns(
+        PlanObjectSet::fromObjects(freePlacement.graphOutputColumns));
+    NodeCP joinTree =
+        planJoinGraph(graph, components, freePlacement.graphOutputColumns);
+    if (joinTree == nullptr) {
       return rewriteFallbackJoin(node, context);
     }
-    const auto joinFactory = [&](Join::Key join) {
-      return makePhysicalJoin(chooseBuildSide(std::move(join)));
-    };
-    if (roots.size() == 1) {
-      return JoinTreeEmitter::emit(
-          roots.front(),
-          graph,
-          node->outputColumns(),
-          builder(),
-          simplifier_,
-          numWorkers_,
-          joinFactory);
-    }
-    // 'joinFactory' adds the required distribution, including for cross joins.
-    return JoinTreeEmitter::emitComponents(
-        roots,
-        graph,
-        node->outputColumns(),
-        builder(),
-        simplifier_,
-        /*numWorkers=*/1,
-        joinFactory,
-        joinFactory);
+    return placeFreeUnnests(
+        joinTree, freePlacement, node->outputColumns(), builder(), simplifier_);
   }
 
   // Remote exchanges that unconditionally establish a partitioning on 'input'.
