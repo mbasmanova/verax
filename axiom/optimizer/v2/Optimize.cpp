@@ -189,7 +189,7 @@ NodeCP Optimizer::planTo(
     return translated.root;
   }
 
-  NodeCP node = DecorrelatePass::run(translated.root, builder_);
+  NodeCP node = DecorrelatePass::run(translated.root, builder_, evaluator_);
   notifyAfterPass(Pass::kDecorrelate, node);
   if (pass == Pass::kDecorrelate) {
     return node;

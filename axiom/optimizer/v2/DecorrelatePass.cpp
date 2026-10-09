@@ -20,9 +20,11 @@
 #include "axiom/optimizer/v2/AggregateRecovery.h"
 #include "axiom/optimizer/v2/AppendAll.h"
 #include "axiom/optimizer/v2/ExprFactory.h"
+#include "axiom/optimizer/v2/ExprSimplifier.h"
 #include "axiom/optimizer/v2/JoinCondition.h"
 #include "axiom/optimizer/v2/NodeExpressions.h"
 #include "axiom/optimizer/v2/NodeRewriter.h"
+#include "axiom/optimizer/v2/PrecomputeProjections.h"
 #include "velox/exec/Aggregate.h"
 #include "velox/exec/AggregateFunctionRegistry.h"
 
@@ -165,8 +167,10 @@ bool isNullOnPadRows(ExprCP expr, const PlanObjectSet& bodyColumns) {
 // continue.
 class Decorrelator : public NodeRewriter<> {
  public:
-  explicit Decorrelator(Builder& builder)
-      : NodeRewriter(builder), exprFactory_(builder) {}
+  Decorrelator(Builder& builder, velox::core::ExpressionEvaluator& evaluator)
+      : NodeRewriter(builder),
+        exprFactory_(builder),
+        simplifier_(builder, evaluator) {}
 
  protected:
   NodeCP rewriteApply(ApplyCP node, NoContext& context) override {
@@ -740,8 +744,14 @@ class Decorrelator : public NodeRewriter<> {
       return std::nullopt;
     }
 
+    auto [bodyWithPartitionKeys, partitionKeys] =
+        PrecomputeProjections::materializeKeys(
+            correlation->cleanBody,
+            correlation->rightKeys,
+            builder(),
+            simplifier_);
     auto rankedBody =
-        rankPerPartition(correlation->cleanBody, correlation->rightKeys, count);
+        rankPerPartition(bodyWithPartitionKeys, partitionKeys, count);
     if (!rankedBody.has_value()) {
       return std::nullopt;
     }
@@ -759,7 +769,7 @@ class Decorrelator : public NodeRewriter<> {
         *rankedBody,
         node->kind(),
         correlation->leftKeys,
-        correlation->rightKeys,
+        partitionKeys,
         limitBody->outputColumns(),
         std::move(bodyOutputs),
         /*markPads=*/node->isLeft(),
@@ -4209,12 +4219,16 @@ class Decorrelator : public NodeRewriter<> {
   }
 
   ExprFactory exprFactory_;
+  ExprSimplifier simplifier_;
 };
 
 } // namespace
 
-NodeCP DecorrelatePass::run(NodeCP root, Builder& builder) {
-  Decorrelator rewriter(builder);
+NodeCP DecorrelatePass::run(
+    NodeCP root,
+    Builder& builder,
+    velox::core::ExpressionEvaluator& evaluator) {
+  Decorrelator rewriter(builder, evaluator);
   return rewriter.rewrite(root);
 }
 
