@@ -144,7 +144,8 @@ folly::coro::Task<SplitBatch> SystemSplitSource::co_getSplits(
 folly::coro::Task<std::vector<PartitionHandlePtr>>
 SystemSplitManager::co_listPartitions(
     const ConnectorSessionPtr& /*session*/,
-    const velox::connector::ConnectorTableHandlePtr& /*tableHandle*/) {
+    const velox::connector::ConnectorTableHandlePtr& /*tableHandle*/,
+    velox::core::ExpressionEvaluator& /*evaluator*/) {
   co_return std::vector<PartitionHandlePtr>{
       std::make_shared<PartitionHandle>()};
 }

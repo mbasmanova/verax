@@ -207,8 +207,8 @@ CO_TEST_F(TestConnectorTest, splitManager) {
       nullptr, std::move(columns), *evaluator, empty, rejectedFilterIndices);
 
   auto session = makeSession();
-  auto partitions =
-      co_await splitManager->co_listPartitions(session, tableHandle);
+  auto partitions = co_await splitManager->co_listPartitions(
+      session, tableHandle, *evaluator);
   auto splitSource = splitManager->getSplitSource(
       session,
       tableHandle,
@@ -689,8 +689,9 @@ CO_TEST_F(TestConnectorTest, bucketedTable) {
   auto tableHandle = makeScanHandle(*table->layouts()[0], {"key"});
   auto* splitManager = metadata_->splitManager();
   auto session = makeSession();
+  exec::SimpleExpressionEvaluator evaluator{nullptr, nullptr};
   auto partitions =
-      co_await splitManager->co_listPartitions(session, tableHandle);
+      co_await splitManager->co_listPartitions(session, tableHandle, evaluator);
   EXPECT_EQ(partitions.size(), kNumBuckets);
 
   // Pass a non-null partitionType with numPartitions < numBuckets so the
@@ -756,8 +757,9 @@ CO_TEST_F(TestConnectorTest, bucketedTableNumBucketsExceedsNumRows) {
   }
 
   auto tableHandle = makeScanHandle(*table->layouts()[0], {"key"});
+  exec::SimpleExpressionEvaluator evaluator{nullptr, nullptr};
   auto partitions = co_await metadata_->splitManager()->co_listPartitions(
-      makeSession(), tableHandle);
+      makeSession(), tableHandle, evaluator);
   EXPECT_EQ(partitions.size(), kNumBuckets);
 }
 

@@ -38,7 +38,8 @@ namespace facebook::axiom::connector::hive {
 folly::coro::Task<std::vector<PartitionHandlePtr>>
 LocalHiveSplitManager::co_listPartitions(
     const ConnectorSessionPtr& /*session*/,
-    const velox::connector::ConnectorTableHandlePtr& /*tableHandle*/) {
+    const velox::connector::ConnectorTableHandlePtr& /*tableHandle*/,
+    velox::core::ExpressionEvaluator& /*evaluator*/) {
   // All tables are unpartitioned.
   folly::F14FastMap<std::string, std::optional<std::string>> empty;
   co_return std::vector<PartitionHandlePtr>{
@@ -554,6 +555,7 @@ folly::coro::Task<std::optional<FilteredTableStats>>
 LocalHiveTableLayout::co_estimateStats(
     ConnectorSessionPtr /*session*/,
     velox::connector::ConnectorTableHandlePtr tableHandle,
+    velox::core::ExpressionEvaluator& /*evaluator*/,
     std::vector<std::string> columns,
     const FilterSelectivityEstimator& estimator) const {
   const auto* hiveHandle =
@@ -636,6 +638,7 @@ folly::coro::Task<std::optional<std::vector<MetadataCountGroup>>>
 LocalHiveTableLayout::co_metadataCounts(
     ConnectorSessionPtr /*session*/,
     velox::connector::ConnectorTableHandlePtr tableHandle,
+    velox::core::ExpressionEvaluator& /*evaluator*/,
     std::vector<std::string> groupingColumns,
     std::vector<std::string> columns) const {
   const auto* hiveHandle =

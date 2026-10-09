@@ -86,7 +86,8 @@ bool FileConnectorMetadata::schemaExists(
 folly::coro::Task<std::vector<PartitionHandlePtr>>
 FileConnectorMetadata::SplitManager::co_listPartitions(
     const ConnectorSessionPtr& /*session*/,
-    const velox::connector::ConnectorTableHandlePtr& /*tableHandle*/) {
+    const velox::connector::ConnectorTableHandlePtr& /*tableHandle*/,
+    velox::core::ExpressionEvaluator& /*evaluator*/) {
   co_return std::vector<PartitionHandlePtr>{
       std::make_shared<PartitionHandle>()};
 }

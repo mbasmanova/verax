@@ -32,6 +32,7 @@
 #include "velox/exec/Exchange.h"
 #include "velox/exec/FixedPointLoop.h"
 #include "velox/exec/PlanNodeStats.h"
+#include "velox/expression/Expr.h"
 
 namespace facebook::axiom::runner {
 namespace {
@@ -68,6 +69,7 @@ std::shared_ptr<connector::SplitSource>
 SimpleSplitSourceFactory::splitSourceForScan(
     const RunnerSessionPtr& /* session */,
     const velox::core::TableScanNode& scan,
+    velox::core::ExpressionEvaluator& /*evaluator*/,
     const std::shared_ptr<connector::PartitionType>& /*partitionType*/,
     std::optional<double> samplePercentage) {
   VELOX_USER_CHECK(
@@ -84,6 +86,7 @@ std::shared_ptr<connector::SplitSource>
 ConnectorSplitSourceFactory::splitSourceForScan(
     const RunnerSessionPtr& session,
     const velox::core::TableScanNode& scan,
+    velox::core::ExpressionEvaluator& evaluator,
     const std::shared_ptr<connector::PartitionType>& partitionType,
     std::optional<double> samplePercentage) {
   VELOX_CHECK_NOT_NULL(session);
@@ -96,7 +99,7 @@ ConnectorSplitSourceFactory::splitSourceForScan(
 
   auto listStart = std::chrono::steady_clock::now();
   auto partitions = folly::coro::blockingWait(
-      splitManager->co_listPartitions(connectorSession, handle));
+      splitManager->co_listPartitions(connectorSession, handle, evaluator));
   auto& runnerWriter = session->statsWriter();
   runnerWriter.addTiming(
       LocalRunner::kListPartitionsWallNanos,
@@ -281,6 +284,11 @@ LocalRunner::LocalRunner(
     params_.outputPool =
         params_.queryCtx->pool()->addLeafChild("localRunnerOutput");
   }
+  splitExpressionPool_ =
+      params_.queryCtx->pool()->addLeafChild("splitExpressionEvaluation");
+  splitExpressionEvaluator_ =
+      std::make_unique<velox::exec::SimpleExpressionEvaluator>(
+          params_.queryCtx.get(), splitExpressionPool_.get());
   if (!baseSpillDirectory_.empty()) {
     params_.spillDirectory = baseSpillDirectory_;
   }
@@ -548,7 +556,11 @@ std::shared_ptr<connector::SplitSource> LocalRunner::splitSourceForScan(
     const std::shared_ptr<connector::PartitionType>& partitionType,
     std::optional<double> samplePercentage) {
   return splitSourceFactory_->splitSourceForScan(
-      session, scan, partitionType, samplePercentage);
+      session,
+      scan,
+      *splitExpressionEvaluator_,
+      partitionType,
+      samplePercentage);
 }
 
 void LocalRunner::cancelTasks() {

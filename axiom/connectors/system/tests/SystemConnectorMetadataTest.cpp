@@ -343,7 +343,7 @@ TEST_F(SystemConnectorMetadataTest, splitSource) {
 
   auto* splitManager = metadata_->splitManager();
   auto partitions = folly::coro::blockingWait(
-      splitManager->co_listPartitions(session, tableHandle));
+      splitManager->co_listPartitions(session, tableHandle, evaluator));
   EXPECT_EQ(partitions.size(), 1);
 
   auto splitSource = splitManager->getSplitSource(

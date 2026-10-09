@@ -49,6 +49,7 @@ class SplitSourceFactory {
   virtual std::shared_ptr<connector::SplitSource> splitSourceForScan(
       const RunnerSessionPtr& session,
       const velox::core::TableScanNode& scan,
+      velox::core::ExpressionEvaluator& evaluator,
       const std::shared_ptr<connector::PartitionType>& partitionType,
       std::optional<double> samplePercentage) = 0;
 };
@@ -65,6 +66,7 @@ class SimpleSplitSourceFactory : public SplitSourceFactory {
   std::shared_ptr<connector::SplitSource> splitSourceForScan(
       const RunnerSessionPtr& session,
       const velox::core::TableScanNode& scan,
+      velox::core::ExpressionEvaluator& evaluator,
       const std::shared_ptr<connector::PartitionType>& partitionType,
       std::optional<double> samplePercentage) override;
 
@@ -83,6 +85,7 @@ class ConnectorSplitSourceFactory : public SplitSourceFactory {
   std::shared_ptr<connector::SplitSource> splitSourceForScan(
       const RunnerSessionPtr& session,
       const velox::core::TableScanNode& scan,
+      velox::core::ExpressionEvaluator& evaluator,
       const std::shared_ptr<connector::PartitionType>& partitionType,
       std::optional<double> samplePercentage) override;
 };
@@ -242,6 +245,8 @@ class LocalRunner : public Runner,
   // Keeps the cursor's fixed-point hooks valid for the runner's lifetime.
   std::unique_ptr<velox::exec::FixedPointOptions> fixedPointOptions_;
   velox::exec::CursorParameters params_;
+  std::shared_ptr<velox::memory::MemoryPool> splitExpressionPool_;
+  std::unique_ptr<velox::core::ExpressionEvaluator> splitExpressionEvaluator_;
 
   std::atomic<State> state_{State::kInitialized};
 
