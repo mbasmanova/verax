@@ -188,6 +188,67 @@ TEST_P(UnknownStatsJoinTest, broadcastEquiJoin) {
   }
 }
 
+// A build already partitioned on the key is broadcast when copying it costs
+// less than repartitioning the probe.
+TEST_P(UnknownStatsJoinTest, partitionedBuildDistribution) {
+  testConnector_->addTable("t", ROW("t_k", BIGINT()))->setStats(1'000'000, {});
+  testConnector_->addTable("u", ROW("u_k", BIGINT()))
+      ->setStats(1'000, {{"u_k", {.numDistinct = 1'000}}});
+  testConnector_->addTable("v", ROW("v_k", BIGINT()))->setStats(2'000, {});
+
+  {
+    const auto query =
+        "SELECT count(*) FROM t "
+        "JOIN (SELECT u_k FROM u GROUP BY u_k) ON t_k = u_k";
+    SCOPED_TRACE(query);
+    const auto logicalPlan = parseSelect(query);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(logicalPlan),
+        matchScan("t")
+            .hashJoinInner(matchScan("u").singleAggregation({"u_k"}, {}))
+            .singleAggregation({}, {"count(*)"})
+            .build());
+
+    AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
+        planVelox(logicalPlan).plan,
+        matchScan("t")
+            .hashJoinInner(matchScan("u")
+                               .partialAggregation({"u_k"}, {})
+                               .shuffle({"u_k"})
+                               .localPartition()
+                               .finalAggregation({"u_k"}, {})
+                               .broadcast())
+            .distributedAggregation({}, {"count(*)"})
+            .build());
+  }
+
+  {
+    const auto query =
+        "SELECT count(*) FROM v "
+        "JOIN (SELECT u_k FROM u GROUP BY u_k) ON v_k = u_k";
+    SCOPED_TRACE(query);
+    const auto logicalPlan = parseSelect(query);
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(logicalPlan),
+        matchScan("v")
+            .hashJoinInner(matchScan("u").singleAggregation({"u_k"}, {}))
+            .singleAggregation({}, {"count(*)"})
+            .build());
+
+    AXIOM_ASSERT_DISTRIBUTED_PLAN_V2(
+        planVelox(logicalPlan).plan,
+        matchScan("v")
+            .shuffle({"v_k"})
+            .hashJoinInner(matchScan("u")
+                               .partialAggregation({"u_k"}, {})
+                               .shuffle({"u_k"})
+                               .localPartition()
+                               .finalAggregation({"u_k"}, {}))
+            .distributedAggregation({}, {"count(*)"})
+            .build());
+  }
+}
+
 // A keyless join broadcasts one side whenever its semantics allow it. Size
 // estimates choose the build orientation, but do not determine whether to
 // broadcast because there is no partitioned alternative.
