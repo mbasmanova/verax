@@ -1472,7 +1472,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     orderedLookupKeys.reserve(lookupKeys.size());
     for (size_t i = 0; i < lookupKeys.size(); ++i) {
       const auto key = std::ranges::find_if(lookupKeys, [&](ColumnCP column) {
-        return column->name() == layoutKeys[i]->name();
+        return column->schemaName() == layoutKeys[i]->name();
       });
       VELOX_USER_CHECK(
           key != lookupKeys.end(),
@@ -1548,7 +1548,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
             lookupKeys,
             [this](ColumnCP column) {
               return toSubfields(
-                  column->name(),
+                  column->schemaName(),
                   access_.subfieldsOf(column),
                   /*mapKeysAsFields=*/false);
             },
@@ -1916,7 +1916,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
             filters,
             [this](ColumnCP column) {
               return toSubfields(
-                  column->name(),
+                  column->schemaName(),
                   access_.subfieldsOf(column),
                   /*mapKeysAsFields=*/false);
             },

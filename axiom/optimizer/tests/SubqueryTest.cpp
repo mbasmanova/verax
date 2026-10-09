@@ -600,8 +600,9 @@ TEST_P(SubqueryTest, uncorrelatedScalarPerUnionBranch) {
   SCOPED_TRACE(query);
 
   auto matchMax = []() {
-    return matchHiveScan("region").singleAggregation(
-        {}, {"max(r_regionkey) as max_key"});
+    return matchHiveScan("region")
+        .aliases({"region_key"})
+        .singleAggregation({}, {"max(region_key) as max_key"});
   };
 
   auto plan = toSingleNodePlan(query);

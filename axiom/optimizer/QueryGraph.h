@@ -187,12 +187,14 @@ class Column : public Expr {
   /// Creates a fresh identity for a NULL-extending boundary. Preserves
   /// subfield provenance and facts about non-null values, and clears facts
   /// affected by added NULLs. Keeps the source's output name because the source
-  /// is visible below the boundary and this column replaces it above.
+  /// is visible below the boundary and this column replaces it above. The two
+  /// identities never coexist in one row schema.
   static ColumnCP createForNullExtendedValue(ColumnCP source);
 
   /// Creates a fresh identity with the same emitted name, type and subfield
   /// provenance, and unknown value facts. The source is visible below the
-  /// value-changing boundary and this column replaces it above.
+  /// value-changing boundary and this column replaces it above. The two
+  /// identities never coexist in one row schema.
   static ColumnCP createWithUnknownValue(ColumnCP source);
 
   /// Synthesizes a `BOOLEAN` column with cardinality 2 (the two valid
@@ -219,6 +221,12 @@ class Column : public Expr {
   /// BaseTable.
   ColumnCP schemaColumn() const {
     return schemaColumn_;
+  }
+
+  /// Returns the name of the underlying table column.
+  Name schemaName() const {
+    VELOX_CHECK_NOT_NULL(schemaColumn_);
+    return schemaColumn_->name();
   }
 
   /// Returns column name to use in the Velox plan.
