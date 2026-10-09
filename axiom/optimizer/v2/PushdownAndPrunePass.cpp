@@ -1340,10 +1340,14 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     result.sourceColumns.reserve(node->sourceColumns().size());
     for (size_t i = 0; i < node->outputColumns().size(); ++i) {
       const ColumnCP column = node->outputColumns()[i];
+      // Consumers above name the original output, while the predicates kept
+      // above, rewritten by prepareJoin, name the rewritten one.
+      const ColumnCP rewritten =
+          rewriteColumn(exprs_, column, prepared.reductionSubstitutions);
       // The fused conjunct was the mark's only consumer.
-      if (column != prepared.fusedMark && outputsKept.contains(column)) {
-        result.outputColumns.push_back(
-            rewriteColumn(exprs_, column, prepared.reductionSubstitutions));
+      if (column != prepared.fusedMark &&
+          (outputsKept.contains(column) || outputsKept.contains(rewritten))) {
+        result.outputColumns.push_back(rewritten);
         result.sourceColumns.push_back(node->sourceColumns()[i]);
       }
     }
