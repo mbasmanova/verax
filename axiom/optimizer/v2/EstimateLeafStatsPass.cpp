@@ -139,7 +139,7 @@ class EmptyScanSimplifier : public NodeRewriter<SimplifiedNodeContext> {
     return setResult(
         node,
         knownEmptyScans_.contains(node)
-            ? NodeSimplifier::SimplifiedNode{}
+            ? NodeSimplifier::SimplifiedNode{nullptr, {}, node->outputColumns()}
             : NodeSimplifier::SimplifiedNode{node, {}},
         context);
   }
