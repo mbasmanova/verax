@@ -165,6 +165,12 @@ TEST_P(FilteredTableStatsTest, emptyPartition) {
                   .build(),
           },
           {
+              "SELECT max(a) AS m FROM t WHERE k = 7",
+              matchValues<int64_t>({"a"}, {})
+                  .singleAggregation({}, {"max(a) as m"})
+                  .build(),
+          },
+          {
               "SELECT (SELECT a FROM t WHERE k = 7)",
               matchValues<int64_t>({{std::nullopt}}).build(),
           },
