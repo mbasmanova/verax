@@ -863,6 +863,21 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
         .has_value();
   }
 
+  // Returns whether copying 'build' to every task of the probe's stage moves
+  // fewer bytes than repartitioning 'probe'.
+  bool broadcastMovesLess(NodeCP probe, NodeCP build) {
+    if (!broadcastFits(build)) {
+      return false;
+    }
+    const auto partitionBytes = estimatedSize(probe);
+    const auto buildBytes = estimatedSize(build);
+    return partitionBytes.has_value() && buildBytes.has_value() &&
+        *buildBytes *
+            probe->physicalProperties().globalPartition.numStageTasks(
+                numWorkers_, options_.hashStageTasks(numWorkers_)) <
+        *partitionBytes;
+  }
+
   // Rewrites both inputs and copies the join properties.
   Join::Key rewriteJoinInputs(const Join* node, NoContext& context) {
     return {
@@ -888,7 +903,11 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
         // null key to one partition, so it must shuffle-replicate.
         if (join.nullAware ||
             !coPartitionJoinSides(
-                join.left, join.right, join.leftKeys, join.rightKeys)) {
+                join.left,
+                join.right,
+                join.leftKeys,
+                join.rightKeys,
+                Join::canBroadcastBuild(join.joinType))) {
           std::tie(join.left, join.leftKeys) =
               PrecomputeProjections::materializeKeys(
                   join.left, join.leftKeys, builder(), simplifier_);
@@ -1170,7 +1189,8 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
       NodeCP& left,
       NodeCP& right,
       ExprVector& leftKeys,
-      ExprVector& rightKeys) {
+      ExprVector& rightKeys,
+      bool canBroadcastBuild) {
     const auto leftOffer = partitioningOffer(left, leftKeys);
 
     // Building the right side's offer is wasted when its table's bucketing
@@ -1216,6 +1236,9 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
       return true;
     }
     if (rightOffer.has_value()) {
+      if (canBroadcastBuild && broadcastMovesLess(left, right)) {
+        return false;
+      }
       right = rightOffer->node;
       alignTo(left, leftKeys, *rightOffer);
       return true;

@@ -58,6 +58,22 @@ AXIOM_DEFINE_ENUM_NAME(PropertyScope, propertyScopeNames);
 AXIOM_DEFINE_ENUM_NAME(PartitionKind, partitionKindNames);
 AXIOM_DEFINE_ENUM_NAME(LocalPropertyKind, localPropertyKindNames);
 
+int32_t Partitioning::numStageTasks(int32_t numWorkers, int32_t hashStageTasks)
+    const {
+  switch (kind) {
+    case PartitionKind::kPartitioned:
+      return partitionType != nullptr ? partitionType->numPartitions()
+                                      : hashStageTasks;
+    case PartitionKind::kGather:
+      return 1;
+    case PartitionKind::kUnspecified:
+    case PartitionKind::kBroadcast:
+    case PartitionKind::kArbitrary:
+      return numWorkers;
+  }
+  VELOX_UNREACHABLE();
+}
+
 Partitioning Partitioning::globalHash(
     const ExprVector& keys,
     bool replicateNullsAndAny) {

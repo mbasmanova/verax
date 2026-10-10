@@ -127,6 +127,11 @@ struct Partitioning {
     return kind == other;
   }
 
+  /// Returns the number of tasks in the stage whose rows have this
+  /// partitioning: one for gather, the connector partition count for bucketed
+  /// data, `hashStageTasks` for standard hash, and `numWorkers` otherwise.
+  int32_t numStageTasks(int32_t numWorkers, int32_t hashStageTasks) const;
+
   /// A copy without the merge order (`orderKeys` / `orderTypes`). The merge
   /// order belongs to the gather-merge exchange that produced it; an operator
   /// that inherits a distribution without being that exchange keeps the kind

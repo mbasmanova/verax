@@ -826,26 +826,6 @@ class Enumerator {
     return it->second;
   }
 
-  // Tasks in the stage whose rows are 'partitioning': a bucketed stage runs one
-  // per bucket group, a stage fed by a hash exchange runs 'hashStageTasks_',
-  // and a gathered stage runs one. Anything else is a scan stage, which runs
-  // as many tasks as its splits allow, up to the worker count.
-  int32_t stageTasks(const Partitioning& partitioning) const {
-    switch (partitioning.kind) {
-      case PartitionKind::kPartitioned:
-        return partitioning.partitionType != nullptr
-            ? partitioning.partitionType->numPartitions()
-            : hashStageTasks_;
-      case PartitionKind::kGather:
-        return 1;
-      case PartitionKind::kUnspecified:
-      case PartitionKind::kBroadcast:
-      case PartitionKind::kArbitrary:
-        return numWorkers_;
-    }
-    VELOX_UNREACHABLE();
-  }
-
   // Cheapest plan for `cover` copied to every task of the stage the probe
   // runs in, whose rows are 'probePartitioning'. A stage on one task receives
   // it by a gather, or by no exchange when the plan is already there. Null
@@ -873,9 +853,12 @@ class Enumerator {
       return bestOnPartitioning(cover, replicated);
     }
     Cost cost = base->cost;
-    cost.cost = add(
-        base->cost.cost,
-        costModel_.broadcastCost(base, graph_, stageTasks(probePartitioning)));
+    cost.cost =
+        add(base->cost.cost,
+            costModel_.broadcastCost(
+                base,
+                graph_,
+                probePartitioning.numStageTasks(numWorkers_, hashStageTasks_)));
     return makeExchange(base, Partitioning::globalBroadcast(), cost);
   }
 
