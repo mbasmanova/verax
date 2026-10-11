@@ -15,6 +15,9 @@
  */
 
 #include "axiom/logical_plan/LogicalPlanNode.h"
+
+#include <folly/container/F14Set.h>
+
 #include "axiom/logical_plan/PlanNodeVisitor.h"
 #include "axiom/logical_plan/PlanPrinter.h"
 
@@ -41,6 +44,162 @@ const auto& nodeKindNames() {
       {NodeKind::kLateralJoin, "LATERAL_JOIN"},
   };
   return kNames;
+}
+
+struct TraversalContext {
+  folly::FunctionRef<void(const LogicalPlanNode&)> visit;
+  folly::F14FastSet<const LogicalPlanNode*> visited;
+};
+
+void traversePlan(const LogicalPlanNode& plan, TraversalContext& context);
+
+class TraversalVisitor : public PlanNodeVisitor {
+ public:
+  struct Context : public PlanNodeVisitorContext {
+    explicit Context(TraversalContext& traversal) : traversal{traversal} {}
+
+    TraversalContext& traversal;
+  };
+
+  void visit(const ValuesNode& node, PlanNodeVisitorContext& context)
+      const override {
+    if (const auto* rows = std::get_if<ValuesNode::Exprs>(&node.data())) {
+      for (const auto& row : *rows) {
+        visitExpressions(row, context);
+      }
+    }
+  }
+
+  void visit(const TableScanNode& /*node*/, PlanNodeVisitorContext& /*context*/)
+      const override {}
+
+  void visit(const FilterNode& node, PlanNodeVisitorContext& context)
+      const override {
+    visitExpression(*node.predicate(), context);
+    visitPlanInputs(node, context);
+  }
+
+  void visit(const ProjectNode& node, PlanNodeVisitorContext& context)
+      const override {
+    visitExpressions(node.expressions(), context);
+    visitPlanInputs(node, context);
+  }
+
+  void visit(const AggregateNode& node, PlanNodeVisitorContext& context)
+      const override {
+    visitExpressions(node.groupingKeys(), context);
+    for (const auto& aggregate : node.aggregates()) {
+      visitExpression(*aggregate, context);
+    }
+    visitPlanInputs(node, context);
+  }
+
+  void visit(const JoinNode& node, PlanNodeVisitorContext& context)
+      const override {
+    visitOptionalExpression(node.condition(), context);
+    visitPlanInputs(node, context);
+  }
+
+  void visit(const LateralJoinNode& node, PlanNodeVisitorContext& context)
+      const override {
+    visitOptionalExpression(node.condition(), context);
+    visitPlanInputs(node, context);
+  }
+
+  void visit(const SortNode& node, PlanNodeVisitorContext& context)
+      const override {
+    for (const auto& field : node.ordering()) {
+      visitExpression(*field.expression, context);
+    }
+    visitPlanInputs(node, context);
+  }
+
+  void visit(const LimitNode& node, PlanNodeVisitorContext& context)
+      const override {
+    visitPlanInputs(node, context);
+  }
+
+  void visit(const SetNode& node, PlanNodeVisitorContext& context)
+      const override {
+    visitPlanInputs(node, context);
+  }
+
+  void visit(const UnnestNode& node, PlanNodeVisitorContext& context)
+      const override {
+    visitExpressions(node.unnestExpressions(), context);
+    visitPlanInputs(node, context);
+  }
+
+  void visit(const TableWriteNode& node, PlanNodeVisitorContext& context)
+      const override {
+    visitExpressions(node.columnExpressions(), context);
+    visitPlanInputs(node, context);
+  }
+
+  void visit(const SampleNode& node, PlanNodeVisitorContext& context)
+      const override {
+    visitExpression(*node.percentage(), context);
+    visitPlanInputs(node, context);
+  }
+
+  void visit(const OutputNode& node, PlanNodeVisitorContext& context)
+      const override {
+    visitPlanInputs(node, context);
+  }
+
+  void visit(const FixedPointNode& node, PlanNodeVisitorContext& context)
+      const override {
+    visitPlanInputs(node, context);
+  }
+
+  void visit(
+      const RecursiveReferenceNode& /*node*/,
+      PlanNodeVisitorContext& /*context*/) const override {}
+
+ private:
+  static void visitOptionalExpression(
+      const ExprPtr& expression,
+      PlanNodeVisitorContext& context) {
+    if (expression != nullptr) {
+      visitExpression(*expression, context);
+    }
+  }
+
+  static void visitExpression(
+      const Expr& expression,
+      PlanNodeVisitorContext& context) {
+    auto& traversal = static_cast<Context&>(context).traversal;
+    expression.forEachSubquery([&](const SubqueryExpr& subquery) {
+      traversePlan(*subquery.subquery(), traversal);
+    });
+  }
+
+  static void visitExpressions(
+      const std::vector<ExprPtr>& expressions,
+      PlanNodeVisitorContext& context) {
+    for (const auto& expression : expressions) {
+      visitExpression(*expression, context);
+    }
+  }
+
+  static void visitPlanInputs(
+      const LogicalPlanNode& node,
+      PlanNodeVisitorContext& context) {
+    auto& traversal = static_cast<Context&>(context).traversal;
+    for (const auto& input : node.inputs()) {
+      traversePlan(*input, traversal);
+    }
+  }
+};
+
+void traversePlan(const LogicalPlanNode& plan, TraversalContext& context) {
+  if (!context.visited.insert(&plan).second) {
+    return;
+  }
+  context.visit(plan);
+  const TraversalVisitor visitor;
+  TraversalVisitor::Context visitorContext{context};
+  plan.accept(visitor, visitorContext);
 }
 
 /// Helper to serialize a vector of items to a folly::dynamic array.
@@ -131,6 +290,12 @@ bool equalNodeVectors(
 } // namespace
 
 AXIOM_DEFINE_ENUM_NAME(NodeKind, nodeKindNames)
+
+void LogicalPlanNode::forEachNode(
+    folly::FunctionRef<void(const LogicalPlanNode&)> visit) const {
+  TraversalContext context{visit};
+  traversePlan(*this, context);
+}
 
 bool LogicalPlanNode::operator==(const LogicalPlanNode& other) const {
   if (this == &other) {
