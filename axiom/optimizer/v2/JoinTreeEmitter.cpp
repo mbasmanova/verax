@@ -622,19 +622,19 @@ Emitted buildJoin(
     for (ColumnCP column : outputColumns) {
       present.add(column);
     }
-    for (size_t i = 0; i < edge.outputColumns().size(); ++i) {
-      ColumnCP output = edge.outputColumns()[i];
-      if (extraColumns.contains(output) && !present.contains(output)) {
-        outputColumns.push_back(output);
-        present.add(output);
+    const auto addFilterColumn = [&](ColumnCP column) {
+      if (extraColumns.contains(column) && !present.contains(column)) {
+        const auto mark = std::ranges::find(outputColumns, edge.markColumn());
+        outputColumns.insert(mark, column);
+        present.add(column);
       }
+    };
+    for (size_t i = 0; i < edge.outputColumns().size(); ++i) {
+      addFilterColumn(edge.outputColumns()[i]);
     }
     for (NodeCP side : {left.node, right.node}) {
       for (ColumnCP column : side->outputColumns()) {
-        if (extraColumns.contains(column) && !present.contains(column)) {
-          outputColumns.push_back(column);
-          present.add(column);
-        }
+        addFilterColumn(column);
       }
     }
   }

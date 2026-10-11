@@ -215,6 +215,40 @@ TEST_P(JoinTest, semiAntiJoinOutput) {
             .project({"value"})
             .build());
   }
+
+  // Columns retained for filters precede the semi-project mark.
+  {
+    testConnector_->addTable("z", ROW("k", INTEGER()))
+        ->setStats(10'000, {{"k", {.numDistinct = 3}}});
+
+    const auto query =
+        "SELECT 1 "
+        "FROM (VALUES (1, 1, 3), (4, 5, 6)) AS x(k, a, c) "
+        "JOIN z ON x.k = z.k "
+        "WHERE (a = 1 OR x.k = 2) "
+        "   AND (c IN (SELECT k FROM (VALUES 1, 2) AS _(k)) OR c = 3)";
+    SCOPED_TRACE(query);
+
+    auto semiProject = matchValues()
+                           .aliases({"y_k"})
+                           .hashJoinRightSemiProject(
+                               matchValues()
+                                   .aliases({"x_k", "a", "c"})
+                                   .filter("a = 1 OR x_k = 2"),
+                               {.nullAware = true, .keys = {{"y_k = c"}}})
+                           .aliases({"x_k", "c", "a", "matched"})
+                           .filter("a = 1 OR x_k = 2");
+    AXIOM_ASSERT_PLAN_V2(
+        toSingleNodePlan(query),
+        matchScan("z")
+            .aliases({"z_k"})
+            .filter("z_k IN (1, 4)")
+            .hashJoinInner(std::move(semiProject), {.keys = {{"z_k = x_k"}}})
+            .aliases({"c", "matched"})
+            .filter("matched OR c = 3")
+            .project({"1"})
+            .build());
+  }
 }
 
 // Repartitioning on a subset of join keys reuses an expression key computed
