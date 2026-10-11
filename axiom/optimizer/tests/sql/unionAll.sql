@@ -34,6 +34,24 @@ SELECT * FROM (
 -- UNION ALL mixing DISTINCT subquery with scan.
 SELECT * FROM (SELECT DISTINCT a FROM t) UNION ALL (SELECT a FROM t)
 ----
+-- A repeated output remains valid when one leg is an empty DISTINCT.
+WITH empty_values AS (
+  SELECT
+    CAST(NULL AS VARCHAR) AS a,
+    CAST(NULL AS VARCHAR) AS b,
+    CAST(NULL AS INTEGER) AS x
+  WHERE false
+),
+distinct_empty AS (
+  SELECT DISTINCT a, b, x FROM empty_values
+),
+values_leg(a, b, x) AS (
+  VALUES ('p', 'q', 1), ('r', 's', 2)
+)
+SELECT a, b, x, x AS y FROM distinct_empty
+UNION ALL
+SELECT a, b, x, x AS y FROM values_leg
+----
 -- UNION ALL of DISTINCT (kFixed N) and Values (kSingle).
 SELECT a FROM (
   SELECT DISTINCT a FROM t UNION ALL SELECT 42

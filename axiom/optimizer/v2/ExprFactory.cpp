@@ -342,9 +342,11 @@ ExprFactory::ExprSubstitution toSubstitution(
   ExprFactory::ExprSubstitution mapping;
   mapping.reserve(sources.size());
   for (size_t i = 0; i < sources.size(); ++i) {
-    const bool inserted = mapping.emplace(sources[i], targets[i]).second;
+    const auto [it, inserted] = mapping.emplace(sources[i], targets[i]);
     VELOX_CHECK(
-        inserted, "Duplicate substitution source: {}", sources[i]->toString());
+        inserted || it->second == targets[i],
+        "Conflicting substitution targets for source: {}",
+        sources[i]->toString());
   }
   return mapping;
 }
