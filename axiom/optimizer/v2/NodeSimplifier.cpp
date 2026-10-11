@@ -359,6 +359,7 @@ NodeSimplifier::SimplifiedNode NodeSimplifier::make(
     keptExpressions.push_back(expression);
     keptOutputs.push_back(output);
     if (!expression->isColumn()) {
+      outputSubstitutions.erase(output);
       outputSubstitutions.addIfAbsent(expression, output);
     }
   }
@@ -1828,18 +1829,23 @@ NodeSimplifier::make(Join::Key key, SimplifiedNode left, SimplifiedNode right) {
     keptSources.reserve(sourceColumns.size());
     for (size_t i = 0; i < key.outputColumns.size(); ++i) {
       ExprCP replacement = outputSubstitutions.apply(sourceColumns[i], exprs_);
-      if (replacement->is(PlanType::kLiteralExpr)) {
-        if (key.outputColumns[i] == sourceColumns[i] ||
-            isConstantNull(replacement) || isCounting) {
+      if (!replacement->isColumn()) {
+        if (replacement->is(PlanType::kLiteralExpr) &&
+            (key.outputColumns[i] == sourceColumns[i] ||
+             isConstantNull(replacement) || isCounting)) {
           outputSubstitutions.addIfAbsent(key.outputColumns[i], replacement);
           continue;
         }
         ExprCP leftReplacement =
             left.substitutions.apply(sourceColumns[i], exprs_);
-        NodeCP* input =
-            leftReplacement != sourceColumns[i] ? &left.node : &right.node;
+        SimplifiedNode* input =
+            leftReplacement != sourceColumns[i] ? &left : &right;
         replacement = restoreColumnPositions(
-            *input, ExprVector{sourceColumns[i]}, ExprVector{replacement})[0];
+            input->node,
+            ExprVector{sourceColumns[i]},
+            ExprVector{replacement})[0];
+        input->substitutions.erase(sourceColumns[i]);
+        outputSubstitutions.erase(sourceColumns[i]);
       }
       VELOX_CHECK(replacement->isColumn());
       ColumnCP source = replacement->as<Column>();

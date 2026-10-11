@@ -85,6 +85,11 @@ class PlanSubstitutions {
   /// Sets a substitution, replacing an existing replacement for `source`.
   void set(ExprCP source, ExprCP replacement);
 
+  /// Removes the substitution for `source`.
+  void erase(ExprCP source) {
+    substitutions_.erase(source);
+  }
+
   /// Sets all substitutions from `other`, replacing existing replacements.
   void setAll(const PlanSubstitutions& other);
 

@@ -244,6 +244,73 @@ WHERE a NOT IN (SELECT b FROM (VALUES (2), (CAST(NULL AS INTEGER))) AS r(b))
 SELECT a, a IN (SELECT b FROM (VALUES (2), (CAST(NULL AS INTEGER))) AS r(b)) AS flag
 FROM (VALUES (1), (2), (CAST(NULL AS INTEGER))) AS l(a)
 ----
+-- The same IN expression can be used by multiple aggregates.
+SELECT
+  bool_or(a IN (SELECT 1)),
+  count(*) FILTER (WHERE a IN (SELECT 1))
+FROM (VALUES (1), (2)) AS t(a)
+----
+-- A reused IN subquery remains valid across projections, a window, and an
+-- aggregate.
+WITH ids(id) AS (VALUES (1)),
+source AS (
+  SELECT a AS group_key, b AS order_key, a AS value
+  FROM t
+),
+metadata AS (
+  SELECT
+    group_key,
+    order_key,
+    value,
+    coalesce(value IN (SELECT id FROM ids), false) AS selected
+  FROM source
+),
+grouped AS (
+  SELECT group_key, order_key, bool_or(selected) AS selected
+  FROM metadata
+  GROUP BY 1, 2
+),
+selected_groups AS (
+  SELECT group_key, order_key
+  FROM grouped
+  WHERE selected
+),
+flagged AS (
+  SELECT
+    group_key,
+    order_key,
+    value,
+    CASE WHEN value IN (SELECT id FROM ids) THEN 1 ELSE 0 END AS flag
+  FROM source
+),
+ranked AS (
+  SELECT
+    group_key,
+    order_key,
+    value,
+    CASE
+      WHEN flag = 1 AND value IN (SELECT id FROM ids) AND
+        row_number() OVER (
+          PARTITION BY order_key, flag
+          ORDER BY value) = 1
+        THEN 1
+      ELSE 0
+    END AS first_event
+  FROM flagged
+),
+aggregated AS (
+  SELECT
+    group_key,
+    order_key,
+    min(CASE WHEN first_event = 1 THEN value END) AS value
+  FROM ranked
+  WHERE order_key IN (SELECT order_key FROM selected_groups GROUP BY 1)
+  GROUP BY 1, 2
+)
+SELECT aggregated.value
+FROM selected_groups
+LEFT JOIN aggregated ON selected_groups.order_key = aggregated.order_key
+----
 -- Correlated NOT EXISTS keeps every outer row with no matching subquery row,
 -- including the NULL outer key (whose correlation never matches).
 SELECT a FROM (VALUES (1), (3), (CAST(NULL AS INTEGER))) AS l(a)
