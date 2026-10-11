@@ -59,6 +59,12 @@ void PlanSubstitutions::set(ExprCP source, ExprCP replacement) {
   substitutions_.insert_or_assign(source, replacement);
 }
 
+void PlanSubstitutions::setAll(const PlanSubstitutions& other) {
+  for (const auto& [source, replacement] : other.substitutions_) {
+    set(source, replacement);
+  }
+}
+
 void PlanSubstitutions::addIfAbsent(ExprCP source, ExprCP replacement) {
   substitutions_.emplace(source, replacement);
 }

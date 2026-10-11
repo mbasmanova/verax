@@ -422,6 +422,17 @@ WHERE NOT EXISTS (SELECT 1 FROM t u WHERE u.a = t.a)
 SELECT t.a, t.a IN (SELECT x FROM (VALUES (2), (null)) u(x)) AS matched
 FROM (SELECT * FROM t WHERE a >= 2) t
 ----
+-- A one-row IN input filters the null-producing side of an outer join before
+-- the surviving rows are aggregated.
+SELECT count(DISTINCT id)
+FROM (
+  SELECT d.id
+  FROM (VALUES (1), (2)) AS v(id)
+  LEFT JOIN (VALUES (1, 'match'), (2, 'other')) AS d(id, job)
+    ON d.id = v.id
+  WHERE d.job IN (SELECT x FROM (VALUES ('match')) AS t(x))
+) disputes
+----
 -- count 0
 SELECT t.a
 FROM (SELECT * FROM t WHERE a >= 2) t
