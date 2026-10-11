@@ -197,6 +197,27 @@ SELECT rn FROM (SELECT row_number() OVER () AS rn FROM t) WHERE rn <= 4
 -- Computed PARTITION BY: rows are numbered within the value of the expression.
 SELECT a, b FROM (SELECT a, b, row_number() OVER (PARTITION BY a % 2 ORDER BY b) AS rn FROM t) WHERE rn = 1
 ----
+-- A window result can be left-joined on its partition expression when the
+-- selected columns omit that expression's alias.
+WITH ranked AS (
+  SELECT
+    a,
+    b,
+    a % 2 AS partition_key,
+    row_number() OVER (PARTITION BY a % 2 ORDER BY b) AS rn
+  FROM t
+),
+first_rows AS (
+  SELECT a, b FROM ranked WHERE rn = 1
+),
+partition_counts AS (
+  SELECT a % 2 AS partition_key, count(*) AS num_rows FROM t GROUP BY 1
+)
+SELECT first_rows.a, first_rows.b, partition_counts.num_rows
+FROM first_rows
+LEFT JOIN partition_counts
+  ON partition_counts.partition_key = first_rows.a % 2
+----
 -- RANGE frame with a CURRENT ROW bound and no ORDER BY.
 SELECT a, b, sum(b) OVER (PARTITION BY a RANGE BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING) AS s FROM t
 ----
