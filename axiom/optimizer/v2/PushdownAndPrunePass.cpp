@@ -881,7 +881,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
 
   // Adds the `Project` that `Node::emitsInputColumns` describes, here rather
   // than at the root, so the column stays out of everything in between.
-  NodeCP narrowed(NodeCP node, const PushdownContext& context) {
+  NodeCP narrowed(NodeCP node, PushdownContext& context) {
     if (!node->emitsInputColumns()) {
       return node;
     }
@@ -903,8 +903,11 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       return node;
     }
     ExprVector exprs(keep.begin(), keep.end());
-    return PrecomputeProjections::makeProject(
+    NodeCP narrowedNode = PrecomputeProjections::makeProject(
         node, std::move(exprs), keep, builder(), simplifier_);
+    context.outputSubstitutions.retainVisible(
+        narrowedNode->outputColumns(), exprs_);
+    return narrowedNode;
   }
 
   NodeCP finishSimplifiedNode(
