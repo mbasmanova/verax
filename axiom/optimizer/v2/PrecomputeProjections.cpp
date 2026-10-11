@@ -218,8 +218,12 @@ NodeCP PrecomputeProjections::node() && {
 }
 
 void PrecomputeProjections::addToProject(ExprCP expr, ColumnCP column) {
-  VELOX_DCHECK(!seen_.contains(expr));
-  seen_.emplace(expr, column);
+  const auto it = seen_.find(expr);
+  if (it == seen_.end()) {
+    seen_.emplace(expr, column);
+  } else {
+    VELOX_DCHECK(it->second == column);
+  }
   outColumns_.emplace_back(column);
   outExprs_.emplace_back(expr);
 }
