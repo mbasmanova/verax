@@ -291,6 +291,25 @@ SELECT a, c, sum(b) OVER (PARTITION BY a ORDER BY c RANGE BETWEEN 3e0 PRECEDING 
 -- Partition-key filter pushed below window.
 SELECT * FROM (SELECT a, b, sum(b) OVER (PARTITION BY a) AS s FROM t) WHERE a = 1
 ----
+-- Partition-key filter pushed through stacked windows over a union.
+SELECT s
+FROM (
+  SELECT event_type, sum(x) OVER (PARTITION BY event_type) AS s
+  FROM (
+    SELECT
+      event_type,
+      max(ts_start) OVER (PARTITION BY event_type) + 1 AS x
+    FROM (
+      SELECT event_type, ts_start
+      FROM (VALUES ('turn', 1), ('x', 2)) AS t(event_type, ts_start)
+      UNION ALL
+      SELECT 'busy', ts_start
+      FROM (VALUES ('turn', 1), ('x', 2)) AS t(event_type, ts_start)
+    )
+  )
+)
+WHERE event_type = 'turn'
+----
 -- Non-partition filter stays above window.
 SELECT * FROM (SELECT a, b, sum(b) OVER (PARTITION BY a) AS s FROM t) WHERE s > 40
 ----

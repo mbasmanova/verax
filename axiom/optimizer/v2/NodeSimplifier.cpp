@@ -344,14 +344,16 @@ NodeSimplifier::SimplifiedNode NodeSimplifier::make(
 
   ExprVector keptExpressions;
   ColumnVector keptOutputs;
-  PlanSubstitutions outputSubstitutions;
+  // Project expressions already include input substitutions, so their output
+  // mappings supersede input mappings for reused column identities.
+  PlanSubstitutions outputSubstitutions{std::move(input.substitutions)};
   keptExpressions.reserve(key.exprs.size());
   keptOutputs.reserve(key.outputColumns.size());
   for (size_t i = 0; i < key.exprs.size(); ++i) {
     ExprCP expression = key.exprs[i];
     ColumnCP output = key.outputColumns[i];
     if (expression->is(PlanType::kLiteralExpr)) {
-      outputSubstitutions.add(output, expression);
+      outputSubstitutions.set(output, expression);
       continue;
     }
     keptExpressions.push_back(expression);
@@ -370,7 +372,7 @@ NodeSimplifier::SimplifiedNode NodeSimplifier::make(
     if (isCompleteRename) {
       renamedInputs.add(expression->as<Column>());
       if (keptOutputs[i] != expression) {
-        outputSubstitutions.add(keptOutputs[i], expression);
+        outputSubstitutions.set(keptOutputs[i], expression);
       }
     }
   }
@@ -386,7 +388,6 @@ NodeSimplifier::SimplifiedNode NodeSimplifier::make(
         builder_,
         simplifier_);
   }
-  outputSubstitutions.merge(input.substitutions);
   outputSubstitutions.retainVisible(output->outputColumns(), exprs_);
   return {output, std::move(outputSubstitutions)};
 }
