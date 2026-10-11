@@ -1871,13 +1871,13 @@ NodeSimplifier::make(Join::Key key, SimplifiedNode left, SimplifiedNode right) {
     key.left = left.node;
     key.right = right.node;
   }
-  // Adds what `outputSubstitutions` records for the outputs dropped or renamed
-  // above to a result built from one input.
+  // Join output substitutions already include input substitutions, so they
+  // supersede mappings carried by the surviving input.
   const auto withOutputSubstitutions = [&](SimplifiedNode result) {
     if (!result.empty()) {
       PlanSubstitutions dropped{outputSubstitutions};
       dropped.retainVisible(result.node->outputColumns(), exprs_);
-      result.substitutions.merge(dropped);
+      result.substitutions.setAll(dropped);
     }
     return result;
   };
