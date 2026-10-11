@@ -774,6 +774,11 @@ NodeSimplifier::SimplifiedNode NodeSimplifier::make(
         !seen.insert(partitionKey).second;
   });
 
+  key.outputColumns = input.node->outputColumns();
+  if (key.rankColumn != nullptr) {
+    key.outputColumns.push_back(key.rankColumn);
+  }
+
   NodeCP output = input.node;
   if (key.rankColumn != nullptr || key.limit.has_value()) {
     output = builder_.make<RowNumber>(std::move(key));

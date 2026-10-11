@@ -1,14 +1,20 @@
 -- connector: hive
 -- setup
-CREATE TABLE t (v BIGINT, ds VARCHAR, k BIGINT) WITH (
+CREATE TABLE t (
+  a BIGINT,
+  b BIGINT,
+  c BIGINT,
+  ds VARCHAR,
+  k BIGINT
+) WITH (
   partitioned_by = ARRAY['ds', 'k']
 )
 ----
 INSERT INTO t VALUES
-  (1, '2025-01-01', 0),
-  (2, '2025-01-02', 1),
-  (3, '2025-01-03', 0),
-  (4, '2025-01-03', 0)
+  (1, 10, 100, '2025-01-01', 0),
+  (2, 20, 200, '2025-01-02', 1),
+  (3, 30, 300, '2025-01-03', 0),
+  (4, 40, 400, '2025-01-03', 0)
 ----
 CREATE TABLE u (d VARCHAR)
 ----
@@ -47,10 +53,10 @@ WHERE t.ds = '1900-01-01'
 ----
 -- A LEFT JOIN preserves its non-empty side when the other side has no
 -- matching partitions.
-SELECT u.d, t.v
+SELECT u.d, t.a
 FROM u
 LEFT JOIN (
-  SELECT v, ds
+  SELECT a, ds
   FROM t
   WHERE ds = '1900-01-01'
 ) t ON u.d = t.ds
@@ -58,12 +64,29 @@ LEFT JOIN (
 SELECT count(*) FROM t WHERE ds = '1900-01-01'
 ----
 -- An empty UNION ALL branch contributes no rows.
-SELECT v FROM t WHERE ds = '1900-01-01'
+SELECT a FROM t WHERE ds = '1900-01-01'
 UNION ALL
 SELECT 1 FROM u
 ----
+-- Ranking remains valid when an empty UNION ALL branch is removed.
+WITH ranked AS (
+  SELECT
+    a,
+    row_number() OVER (PARTITION BY b) AS rn
+  FROM (
+    SELECT a, b, c
+    FROM t
+    WHERE ds = '1900-01-01'
+    UNION ALL
+    SELECT *
+    FROM (VALUES (2, 20, 200), (3, 30, 300)) AS x(a, b, c)
+  )
+  WHERE c = 200
+)
+SELECT a FROM ranked WHERE rn <= 2
+----
 -- A scalar subquery over no matching partitions produces NULL.
-SELECT (SELECT v FROM t WHERE ds = '1900-01-01')
+SELECT (SELECT a FROM t WHERE ds = '1900-01-01')
 ----
 -- An empty recursive step leaves the anchor row.
 -- error_v1: Fixed-point (recursive) plan execution is not yet implemented
@@ -72,7 +95,7 @@ WITH RECURSIVE r(n) AS (
   UNION ALL
   SELECT n + 1
   FROM r
-  JOIN t ON t.v = r.n
+  JOIN t ON t.a = r.n
   WHERE t.ds = '1900-01-01'
 )
 SELECT n FROM r
@@ -81,15 +104,15 @@ SELECT n FROM r
 SELECT count(*) FROM (SELECT max(ds) FROM t)
 ----
 -- The folded value restricts the outer scan.
-SELECT v FROM t WHERE ds = (SELECT max(ds) FROM t)
+SELECT a FROM t WHERE ds = (SELECT max(ds) FROM t)
 ----
 -- A filter on a non-partition column is not answerable from the listing.
-SELECT v FROM t WHERE ds = (SELECT max(ds) FROM t WHERE v > 1)
+SELECT a FROM t WHERE ds = (SELECT max(ds) FROM t WHERE a > 1)
 ----
 -- HAVING can reject the aggregate's row, leaving the subquery null, so
 -- nothing matches.
 -- count 0
-SELECT v FROM t WHERE ds = (SELECT max(ds) FROM t HAVING max(ds) > '2030-01-01')
+SELECT a FROM t WHERE ds = (SELECT max(ds) FROM t HAVING max(ds) > '2030-01-01')
 ----
 -- A correlated predicate reads a column the listing does not have.
 SELECT d, (SELECT max(ds) FROM t WHERE t.ds > u.d) AS m FROM u
