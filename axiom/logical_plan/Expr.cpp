@@ -25,6 +25,97 @@
 namespace facebook::axiom::logical_plan {
 
 namespace {
+class SubqueryVisitor : public ExprVisitor {
+ public:
+  struct Context : public ExprVisitorContext {
+    explicit Context(folly::FunctionRef<void(const SubqueryExpr&)> visit)
+        : visit{visit} {}
+
+    folly::FunctionRef<void(const SubqueryExpr&)> visit;
+  };
+
+  void visit(const SubqueryExpr& expr, ExprVisitorContext& context)
+      const override {
+    static_cast<Context&>(context).visit(expr);
+  }
+
+  void visit(const InputReferenceExpr& expr, ExprVisitorContext& context)
+      const override {
+    visitInputs(expr, context);
+  }
+
+  void visit(const ConstantExpr& expr, ExprVisitorContext& context)
+      const override {
+    visitInputs(expr, context);
+  }
+
+  void visit(const CallExpr& expr, ExprVisitorContext& context) const override {
+    visitInputs(expr, context);
+  }
+
+  void visit(const SpecialFormExpr& expr, ExprVisitorContext& context)
+      const override {
+    visitInputs(expr, context);
+  }
+
+  void visit(const AggregateExpr& expr, ExprVisitorContext& context)
+      const override {
+    visitAggregate(expr, context);
+  }
+
+  void visit(const SpecialFormAggExpr& expr, ExprVisitorContext& context)
+      const override {
+    visitAggregate(expr, context);
+    if (expr.fallback() != nullptr) {
+      expr.fallback()->accept(*this, context);
+    }
+  }
+
+  void visit(const WindowExpr& expr, ExprVisitorContext& context)
+      const override {
+    visitExpressions(expr.partitionKeys(), context);
+    visitOrdering(expr.ordering(), context);
+    if (expr.frame().startValue != nullptr) {
+      expr.frame().startValue->accept(*this, context);
+    }
+    if (expr.frame().endValue != nullptr) {
+      expr.frame().endValue->accept(*this, context);
+    }
+    visitInputs(expr, context);
+  }
+
+  void visit(const LambdaExpr& expr, ExprVisitorContext& context)
+      const override {
+    expr.body()->accept(*this, context);
+  }
+
+ private:
+  void visitAggregate(const AggregateExpr& expr, ExprVisitorContext& context)
+      const {
+    if (expr.filter() != nullptr) {
+      expr.filter()->accept(*this, context);
+    }
+    visitOrdering(expr.ordering(), context);
+    visitInputs(expr, context);
+  }
+
+  void visitOrdering(
+      const std::vector<SortingField>& ordering,
+      ExprVisitorContext& context) const {
+    for (const auto& field : ordering) {
+      field.expression->accept(*this, context);
+    }
+  }
+
+  void visitExpressions(
+      const std::vector<ExprPtr>& expressions,
+      ExprVisitorContext& context) const {
+    for (const auto& expression : expressions) {
+      expression->accept(*this, context);
+    }
+  }
+};
+
 const auto& exprKindNames() {
   static const folly::F14FastMap<ExprKind, std::string_view> kNames = {
       {ExprKind::kInputReference, "InputReference"},
@@ -42,6 +133,13 @@ const auto& exprKindNames() {
 } // namespace
 
 AXIOM_DEFINE_ENUM_NAME(ExprKind, exprKindNames);
+
+void Expr::forEachSubquery(
+    folly::FunctionRef<void(const SubqueryExpr&)> visit) const {
+  const SubqueryVisitor visitor;
+  SubqueryVisitor::Context context{visit};
+  accept(visitor, context);
+}
 
 bool Expr::equalNullableExprs(const ExprPtr& lhs, const ExprPtr& rhs) {
   if (lhs == nullptr && rhs == nullptr) {

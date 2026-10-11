@@ -17,6 +17,8 @@
 
 #include <algorithm>
 
+#include <folly/Function.h>
+
 #include "axiom/common/Enums.h"
 #include "velox/common/serialization/Serializable.h"
 #include "velox/type/Variant.h"
@@ -42,6 +44,7 @@ using ExprPtr = std::shared_ptr<const Expr>;
 
 class ExprVisitor;
 class ExprVisitorContext;
+class SubqueryExpr;
 
 /// Base class for all expressions. Every expression has a return type and zero
 /// or more inputs. Leaf nodes like Constant and InputReference have no inputs.
@@ -150,6 +153,10 @@ class Expr : public velox::ISerializable {
 
   virtual void accept(const ExprVisitor& visitor, ExprVisitorContext& context)
       const = 0;
+
+  /// Invokes 'visit' for each subquery nested in this expression.
+  void forEachSubquery(
+      folly::FunctionRef<void(const SubqueryExpr&)> visit) const;
 
   /// Returns true if two expressions are structurally equal.
   bool operator==(const Expr& other) const;

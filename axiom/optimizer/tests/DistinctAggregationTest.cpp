@@ -1294,36 +1294,37 @@ TEST_P(DistinctAggregationTest, groupingSetsDistinctToGroupBy) {
   }
 }
 
-// V1 is better: it produces a valid grouping-set plan. V2 generates duplicate
-// output column `a1` and fails during plan validation.
-// TODO: Allocate collision-proof optimizer-owned output names for GroupId
-// grouping-key outputs in V2 TranslatePass. Afterward, apply the shared V2
-// DISTINCT-to-MarkDistinct physical-planning fix.
 TEST_P(DistinctAggregationTest, groupingSetsDistinctToMarkDistinct) {
   testConnector_->addTable("t", ROW({"a", "b", "c"}, BIGINT()));
   SCOPE_EXIT {
     testConnector_->dropTableIfExists("t");
   };
 
-  auto logicalPlan =
-      lp::PlanBuilder(makeContext())
-          .tableScan("t")
-          .rollup(
-              {"a"},
-              {"count(DISTINCT b) as a0", "sum(DISTINCT c) as a1"},
-              "gid")
-          .build();
+  auto logicalPlan = parseSelect(
+      "SELECT a, count(DISTINCT b) AS a0, sum(DISTINCT c) AS a1 "
+      "FROM t GROUP BY ROLLUP(a)");
 
-  if (useV2_) {
-    EXPECT_THROW(
-        planVelox(logicalPlan, runnerOptions_, optimizerOptions_),
-        VeloxUserError);
-    return;
+  // V2 lowers DISTINCT to MarkDistinct.
+  {
+    auto plan = toSingleNodePlan(logicalPlan);
+    AXIOM_ASSERT_PLAN_V1(
+        plan,
+        matchScan("t")
+            .groupId({{"a"}, {}}, {"b", "c"}, "gid")
+            .singleAggregation(
+                {"a", "gid"},
+                {"count(DISTINCT b) as a0", "sum(DISTINCT c) as a1"})
+            .project({"a", "a0", "a1"})
+            .build());
   }
 
-  // Distributed plan.
   {
     auto plan = planVelox(logicalPlan, runnerOptions_, optimizerOptions_);
+
+    // V2 gathers before MarkDistinct and runs distinct processing on one task.
+    // V1 keeps this work distributed.
+    // TODO: Plan distributed MarkDistinct before gathering for the global
+    // grouping set.
     AXIOM_ASSERT_DISTRIBUTED_PLAN_V1(
         plan.plan,
         matchScan("t")
@@ -1334,23 +1335,8 @@ TEST_P(DistinctAggregationTest, groupingSetsDistinctToMarkDistinct) {
                 {"a", "gid"},
                 {"count(b) filter (where m0) as a0",
                  "sum(c) filter (where m1) as a1"})
-            .project({"a", "a0", "a1", "gid"})
+            .project({"a", "a0", "a1"})
             .gather()
-            .build());
-  }
-
-  // Single-node plan: one kSingle Aggregation computes the DISTINCT aggregates
-  // natively.
-  {
-    auto plan = toSingleNodePlan(logicalPlan);
-    AXIOM_ASSERT_PLAN(
-        plan,
-        matchScan("t")
-            .groupId({{"a"}, {}}, {"b", "c"}, "gid")
-            .singleAggregation(
-                {"a", "gid"},
-                {"count(DISTINCT b) as a0", "sum(DISTINCT c) as a1"})
-            .project({"a", "a0", "a1", "gid"})
             .build());
   }
 }

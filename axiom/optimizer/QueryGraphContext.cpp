@@ -83,6 +83,21 @@ Name toName(std::string_view string) {
   return queryCtx()->toName(string);
 }
 
+void QueryGraphContext::reserveNames(std::span<const std::string> names) {
+  for (const auto& name : names) {
+    reservedNames_.insert(toName(name));
+  }
+}
+
+Name QueryGraphContext::newName(std::string_view prefix) {
+  for (;;) {
+    const Name candidate = toName(fmt::format("{}{}", prefix, ++nameCounter_));
+    if (reservedNames_.insert(candidate).second) {
+      return candidate;
+    }
+  }
+}
+
 const velox::Type* QueryGraphContext::toType(const velox::TypePtr& type) {
   return dedupType(type).get();
 }

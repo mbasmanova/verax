@@ -64,9 +64,8 @@ class PlanNodeVisitorContext;
 /// - The nodes reachable through `inputs()` form a tree: each is the input of
 ///   one other node.
 /// - A subquery's plan hangs off a `SubqueryExpr` rather than off `inputs()`,
-///   and the same plan may be embedded in several of them. A consumer that
-///   walks subquery plans therefore visits one plan more than once, and sees
-///   its names more than once with it.
+///   and the same plan may be embedded in several of them. `forEachNode()`
+///   visits such a shared plan once.
 class LogicalPlanNode : public velox::ISerializable {
  public:
   LogicalPlanNode(
@@ -146,6 +145,10 @@ class LogicalPlanNode : public velox::ISerializable {
   virtual void accept(
       const PlanNodeVisitor& visitor,
       PlanNodeVisitorContext& context) const = 0;
+
+  /// Invokes 'visit' once for each node reachable through inputs or subqueries.
+  void forEachNode(
+      folly::FunctionRef<void(const LogicalPlanNode&)> visit) const;
 
   /// Registers deserializers for all LogicalPlanNode subclasses.
   static void registerSerDe();

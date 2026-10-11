@@ -445,6 +445,10 @@ class Translator {
         constantPlanRunner_(constantPlanRunner) {}
 
   TranslatePass::Result run(const lp::LogicalPlanNode& plan) {
+    plan.forEachNode([](const auto& node) {
+      queryCtx()->reserveNames(node.outputType()->names());
+    });
+
     // The query output is a list of (sourceName, outputName) pairs, one per
     // output position. An OutputNode names them explicitly and may repeat a
     // source column under several output names; a bare plan (no OutputNode)

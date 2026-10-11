@@ -19,7 +19,6 @@
 #include "axiom/graphviz/Html.h"
 #include "axiom/graphviz/Palette.h"
 #include "axiom/logical_plan/ExprPrinter.h"
-#include "axiom/logical_plan/ExprVisitor.h"
 #include "axiom/logical_plan/PlanNodeVisitor.h"
 
 namespace facebook::axiom::graphviz {
@@ -50,76 +49,23 @@ void printHighlightedRow(std::ostream& out, const std::string& text) {
       << "\" ALIGN=\"LEFT\">" << text << "</TD></TR>\n";
 }
 
-// Visitor to collect all subqueries from an expression tree.
-class SubqueryCollector : public ExprVisitor {
- public:
-  struct Context : public ExprVisitorContext {
-    std::vector<const SubqueryExpr*> subqueries;
-  };
-
-  void visit(const InputReferenceExpr&, ExprVisitorContext&) const override {}
-
-  void visit(const CallExpr& expr, ExprVisitorContext& ctx) const override {
-    visitInputs(expr, ctx);
-  }
-
-  void visit(const SpecialFormExpr& expr, ExprVisitorContext& ctx)
-      const override {
-    visitInputs(expr, ctx);
-  }
-
-  void visit(const AggregateExpr& expr, ExprVisitorContext& ctx)
-      const override {
-    visitInputs(expr, ctx);
-    if (expr.filter() != nullptr) {
-      expr.filter()->accept(*this, ctx);
-    }
-  }
-
-  void visit(const SpecialFormAggExpr& expr, ExprVisitorContext& ctx)
-      const override {
-    visitInputs(expr, ctx);
-    if (expr.fallback() != nullptr) {
-      expr.fallback()->accept(*this, ctx);
-    }
-  }
-
-  void visit(const WindowExpr& expr, ExprVisitorContext& ctx) const override {
-    visitInputs(expr, ctx);
-  }
-
-  void visit(const ConstantExpr&, ExprVisitorContext&) const override {}
-
-  void visit(const LambdaExpr& expr, ExprVisitorContext& ctx) const override {
-    if (expr.body() != nullptr) {
-      expr.body()->accept(*this, ctx);
-    }
-  }
-
-  void visit(const SubqueryExpr& expr, ExprVisitorContext& ctx) const override {
-    auto& context = static_cast<Context&>(ctx);
-    context.subqueries.push_back(&expr);
-  }
-};
-
 // Collect all subqueries from an expression.
 std::vector<const SubqueryExpr*> collectSubqueries(const Expr& expr) {
-  SubqueryCollector collector;
-  SubqueryCollector::Context ctx;
-  expr.accept(collector, ctx);
-  return std::move(ctx.subqueries);
+  std::vector<const SubqueryExpr*> subqueries;
+  expr.forEachSubquery(
+      [&](const SubqueryExpr& subquery) { subqueries.push_back(&subquery); });
+  return subqueries;
 }
 
 // Collect all subqueries from a list of expressions.
 std::vector<const SubqueryExpr*> collectSubqueries(
     const std::vector<ExprPtr>& exprs) {
   std::vector<const SubqueryExpr*> result;
-  SubqueryCollector collector;
-  SubqueryCollector::Context ctx;
   for (const auto& expr : exprs) {
-    expr->accept(collector, ctx);
+    expr->forEachSubquery(
+        [&](const SubqueryExpr& subquery) { result.push_back(&subquery); });
   }
-  return std::move(ctx.subqueries);
+  return result;
 }
 
 class DotPrinterVisitor : public PlanNodeVisitor {

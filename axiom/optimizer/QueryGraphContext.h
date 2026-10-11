@@ -520,11 +520,12 @@ class QueryGraphContext {
   std::shared_ptr<const connector::PartitionType> sharedPartitionType(
       const connector::PartitionType* type) const;
 
+  /// Reserves all external names before the first call to `newName()`.
+  void reserveNames(std::span<const std::string> names);
+
   /// Returns a globally unique interned name `{prefix}{N}` within this query
   /// context. Example: `newName("a_")` returns `"a_47"`.
-  Name newName(std::string_view prefix) {
-    return toName(fmt::format("{}{}", prefix, ++nameCounter_));
-  }
+  Name newName(std::string_view prefix);
 
   /// True when the v2 optimizer is driving this query. v2 runs without an
   /// `Optimization` (a v1 construct), so a null `optimization()` marks v2.
@@ -587,6 +588,10 @@ class QueryGraphContext {
       copartitionedTypes_;
 
   uint32_t nameCounter_{0};
+
+  // Names unavailable to newName(), including logical-plan symbols and names
+  // returned by earlier calls.
+  folly::F14FastSet<std::string_view> reservedNames_;
 };
 
 /// Returns a mutable reference to the calling thread's QueryGraphContext.
