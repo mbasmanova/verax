@@ -422,6 +422,13 @@ WHERE NOT EXISTS (SELECT 1 FROM t u WHERE u.a = t.a)
 SELECT t.a, t.a IN (SELECT x FROM (VALUES (2), (null)) u(x)) AS matched
 FROM (SELECT * FROM t WHERE a >= 2) t
 ----
+-- A semi-project keeps columns needed by filters before its mark.
+SELECT 1
+FROM (VALUES (1, 1, 3), (4, 5, 6)) AS x(k, a, c)
+JOIN t_large z ON x.k = z.k
+WHERE (a = 1 OR x.k = 2)
+  AND (c IN (SELECT k FROM (VALUES (1), (2)) AS _(k)) OR c = 3)
+----
 -- A one-row IN input filters the null-producing side of an outer join before
 -- the surviving rows are aggregated.
 SELECT count(DISTINCT id)
