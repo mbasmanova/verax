@@ -1336,6 +1336,9 @@ TEST_P(SetTest, unionAllWithDistinctAndCountStar) {
 }
 
 TEST_P(SetTest, rowSubfieldAccessInUnionAll) {
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
+  testConnector_->addTable("u", ROW({"a", "b"}, BIGINT()));
+
   {
     auto logicalPlan = parseSelect(
         "SELECT x.a FROM ("
@@ -1358,19 +1361,19 @@ TEST_P(SetTest, rowSubfieldAccessInUnionAll) {
   {
     auto logicalPlan = parseSelect(
         "SELECT x[1] FROM ("
-        "  SELECT ROW(1, 2) AS x"
+        "  SELECT ROW(a, b) AS x FROM t"
         "  UNION ALL"
-        "  SELECT ROW(3, 4)"
+        "  SELECT ROW(a, b) FROM u"
         ") WHERE x[1] > 0");
     auto plan = toSingleNodePlan(logicalPlan);
 
     AXIOM_ASSERT_PLAN_V1(
         plan,
-        matchValues(ROW({}))
+        matchScan("t")
             .filter()
-            .project({"row_constructor(1, null)"})
-            .localPartition(matchValues(ROW({})).filter().project(
-                {"row_constructor(3, null)"}))
+            .project({"row_constructor(a, null)"})
+            .localPartition(matchScan("u").aliases({"ua"}).filter().project(
+                {"row_constructor(ua, null)"}))
             .project({"x[1]"})
             .build());
   }
@@ -1379,9 +1382,9 @@ TEST_P(SetTest, rowSubfieldAccessInUnionAll) {
     auto logicalPlan = parseSelect(
         "SELECT y FROM ("
         "  SELECT x[1] AS y FROM ("
-        "    SELECT ROW(1, 2) AS x"
+        "    SELECT ROW(a, b) AS x FROM t"
         "    UNION ALL"
-        "    SELECT ROW(3, 4)"
+        "    SELECT ROW(a, b) FROM u"
         "  )"
         "  UNION ALL"
         "  SELECT 5"
@@ -1390,10 +1393,10 @@ TEST_P(SetTest, rowSubfieldAccessInUnionAll) {
 
     AXIOM_ASSERT_PLAN_V1(
         plan,
-        matchValues(ROW({}))
-            .project({"row_constructor(1, null)"})
-            .localPartition(
-                matchValues(ROW({})).project({"row_constructor(3, null)"}))
+        matchScan("t")
+            .project({"row_constructor(a, null)"})
+            .localPartition(matchScan("u").aliases({"ua"}).project(
+                {"row_constructor(ua, null)"}))
             .project({"x[1]"})
             .localPartition(matchValues(ROW({})).project({"5 as y"}))
             .build());

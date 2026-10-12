@@ -175,6 +175,85 @@ bool ConstantExpr::equalTo(const Expr& other) const {
   return *value_ == *other.as<ConstantExpr>()->value_;
 }
 
+namespace {
+// Returns the rank of an integer type, larger for wider types, or std::nullopt
+// for any other type.
+std::optional<int> integerRank(const velox::Type& type) {
+  if (type == *velox::TINYINT()) {
+    return 0;
+  }
+  if (type == *velox::SMALLINT()) {
+    return 1;
+  }
+  if (type == *velox::INTEGER()) {
+    return 2;
+  }
+  if (type == *velox::BIGINT()) {
+    return 3;
+  }
+  return std::nullopt;
+}
+
+// Returns the value of an integer Variant.
+int64_t integerValue(const velox::Variant& value) {
+  switch (value.kind()) {
+    case velox::TypeKind::TINYINT:
+      return value.value<int8_t>();
+    case velox::TypeKind::SMALLINT:
+      return value.value<int16_t>();
+    case velox::TypeKind::INTEGER:
+      return value.value<int32_t>();
+    case velox::TypeKind::BIGINT:
+      return value.value<int64_t>();
+    default:
+      VELOX_UNREACHABLE();
+  }
+}
+} // namespace
+
+// static
+std::optional<velox::Variant> ConstantExpr::tryConvert(
+    const velox::Variant& value,
+    const velox::TypePtr& from,
+    const velox::TypePtr& to) {
+  if (from->equivalent(*to)) {
+    return value;
+  }
+  if (value.isNull()) {
+    return velox::Variant::null(to->kind());
+  }
+
+  const auto fromRank = integerRank(*from);
+  const auto toRank = integerRank(*to);
+  if (fromRank.has_value() && toRank.has_value() && *fromRank <= *toRank) {
+    const auto integer = integerValue(value);
+    switch (to->kind()) {
+      case velox::TypeKind::SMALLINT:
+        return velox::Variant(static_cast<int16_t>(integer));
+      case velox::TypeKind::INTEGER:
+        return velox::Variant(static_cast<int32_t>(integer));
+      case velox::TypeKind::BIGINT:
+        return velox::Variant(integer);
+      default:
+        VELOX_UNREACHABLE();
+    }
+  }
+
+  if (from->isRow() && to->isRow() && from->size() == to->size()) {
+    std::vector<velox::Variant> fields;
+    fields.reserve(from->size());
+    for (size_t i = 0; i < from->size(); ++i) {
+      auto field = tryConvert(value.row()[i], from->childAt(i), to->childAt(i));
+      if (!field.has_value()) {
+        return std::nullopt;
+      }
+      fields.push_back(std::move(*field));
+    }
+    return velox::Variant::row(std::move(fields));
+  }
+  return std::nullopt;
+}
+
 bool CallExpr::equalTo(const Expr& other) const {
   return name_ == other.as<CallExpr>()->name_;
 }
@@ -712,6 +791,7 @@ const auto& specialFormNames() {
       {SpecialForm::kIn, "IN"},
       {SpecialForm::kExists, "EXISTS"},
       {SpecialForm::kNullIf, "NULLIF"},
+      {SpecialForm::kInArray, "IN_ARRAY"},
   };
   return kNames;
 }
@@ -891,6 +971,31 @@ void validateSwitchInputs(
   }
 }
 
+void validateInArrayInputs(
+    const velox::TypePtr& type,
+    const std::vector<ExprPtr>& inputs) {
+  VELOX_USER_CHECK_EQ(
+      type->kind(),
+      velox::TypeKind::BOOLEAN,
+      "IN_ARRAY expression must return boolean type");
+  VELOX_USER_CHECK_EQ(inputs.size(), 2, "IN_ARRAY must have two inputs");
+
+  const auto& valueType = inputs[0]->type();
+  const auto& valuesType = inputs[1]->type();
+  VELOX_USER_CHECK(
+      valuesType->equivalent(*velox::ARRAY(valueType)),
+      "IN_ARRAY values must be an array of the checked value's type: {} vs {}",
+      valuesType->toString(),
+      valueType->toString());
+
+  VELOX_USER_CHECK(
+      inputs[1]->isConstant(), "IN_ARRAY values must be a constant");
+  const auto& values = *inputs[1]->as<ConstantExpr>()->value();
+  VELOX_USER_CHECK(!values.isNull(), "IN_ARRAY values must not be NULL");
+  VELOX_USER_CHECK(
+      !values.array().empty(), "IN_ARRAY values must not be empty");
+}
+
 void validateInInputs(
     const velox::TypePtr& type,
     const std::vector<ExprPtr>& inputs) {
@@ -976,6 +1081,9 @@ SpecialFormExpr::SpecialFormExpr(
       break;
     case SpecialForm::kIn:
       validateInInputs(type_, inputs_);
+      break;
+    case SpecialForm::kInArray:
+      validateInArrayInputs(type_, inputs_);
       break;
     case SpecialForm::kExists:
       VELOX_USER_CHECK_EQ(inputs_.size(), 1, "EXISTS must have one input");

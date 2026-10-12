@@ -264,6 +264,15 @@ class ConstantExpr : public Expr {
     return value_->isNull();
   }
 
+  /// Converts 'value' from type 'from' to type 'to' when the conversion leaves
+  /// the value unchanged: a NULL, an integer widening (TINYINT to SMALLINT to
+  /// INTEGER to BIGINT), or a ROW of those. Returns std::nullopt for any other
+  /// conversion, which needs CAST semantics.
+  static std::optional<velox::Variant> tryConvert(
+      const velox::Variant& value,
+      const velox::TypePtr& from,
+      const velox::TypePtr& to);
+
   void accept(const ExprVisitor& visitor, ExprVisitorContext& context)
       const override;
 
@@ -491,6 +500,19 @@ enum class SpecialForm {
   /// Example:
   ///   NULLIF(x, 0) => NULL if x = 0, else x
   kNullIf = 12,
+
+  /// Represents IN with the list held as one ARRAY constant. The result
+  /// matches kIn with the same values as a list, including for NULLs. The
+  /// resolver builds it from an IN whose list holds only literals.
+  ///
+  /// Takes exactly two inputs:
+  /// - First input: The expression to check, a single value of type T.
+  /// - Second input: The values to check against: a ConstantExpr of type
+  /// ARRAY(T) that is neither NULL nor empty.
+  ///
+  /// Example:
+  ///   x IN (1, 2, 3) => IN_ARRAY(x, [1, 2, 3])
+  kInArray = 13,
 };
 
 AXIOM_DECLARE_ENUM_NAME(SpecialForm)

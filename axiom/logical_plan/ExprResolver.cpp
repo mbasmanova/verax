@@ -15,6 +15,8 @@
  */
 #include "axiom/logical_plan/ExprResolver.h"
 
+#include <span>
+
 #include <folly/ScopeGuard.h>
 #include <folly/container/F14Map.h>
 
@@ -35,6 +37,11 @@
 namespace facebook::axiom::logical_plan {
 
 namespace {
+
+ExprPtr makeConstantExpr(velox::TypePtr type, velox::Variant value) {
+  return std::make_shared<ConstantExpr>(
+      std::move(type), std::make_shared<velox::Variant>(std::move(value)));
+}
 
 std::string toString(
     const std::string& functionName,
@@ -286,6 +293,119 @@ int64_t toIntegerValue(const ConstantExpr& expr) {
           expr.toString());
   }
 }
+
+// Returns the values of 'literals' as one ARRAY of 'type' when each converts to
+// 'type' unchanged; see ConstantExpr::tryConvert. Returns std::nullopt
+// otherwise.
+std::optional<velox::Variant> tryMakeLiteralArray(
+    const std::vector<const velox::core::ConstantExpr*>& literals,
+    const velox::TypePtr& type) {
+  std::vector<velox::Variant> elements;
+  elements.reserve(literals.size());
+  for (const auto* literal : literals) {
+    auto element =
+        ConstantExpr::tryConvert(literal->value(), literal->type(), type);
+    if (!element.has_value()) {
+      return std::nullopt;
+    }
+    elements.push_back(std::move(*element));
+  }
+  return velox::Variant::array(std::move(elements));
+}
+
+// Resolves 'row[index]' on a ROW value, with a constant 1-based index, as
+// DEREFERENCE with a 0-based index.
+ExprPtr resolveDereference(const std::vector<ExprPtr>& resolvedInputs) {
+  VELOX_USER_CHECK_EQ(2, resolvedInputs.size());
+
+  const auto& rowType = resolvedInputs.at(0)->type()->asRow();
+
+  const auto& fieldExpr = resolvedInputs.at(1);
+  VELOX_USER_CHECK(fieldExpr->isConstant());
+
+  const auto index = toIntegerValue(*fieldExpr->as<ConstantExpr>());
+  VELOX_USER_CHECK_GE(index, 1, "Subscript index must be 1-based");
+  VELOX_USER_CHECK_LE(index, rowType.size(), "Subscript index out of range");
+
+  const auto zeroBasedIndex = static_cast<int32_t>(index - 1);
+
+  std::vector<ExprPtr> newInputs = {
+      resolvedInputs.at(0), makeConstantExpr(velox::INTEGER(), zeroBasedIndex)};
+
+  return std::make_shared<SpecialFormExpr>(
+      rowType.childAt(zeroBasedIndex), SpecialForm::kDereference, newInputs);
+}
+
+// Resolves IN, coercing the checked value and the values in the list to their
+// least common super type.
+ExprPtr resolveIn(
+    std::vector<ExprPtr>& resolvedInputs,
+    const std::shared_ptr<velox::core::PlanNodeIdGenerator>&
+        planNodeIdGenerator,
+    const velox::TypeCoercer* coercer) {
+  if (coercer != nullptr) {
+    VELOX_USER_CHECK_GE(
+        resolvedInputs.size(), 2, "IN must have at least two inputs");
+
+    // The left operand and every value in the list share one type: the
+    // least common super type of all of them.
+    velox::TypePtr type = resolvedInputs.at(0)->type();
+    for (auto i = 1; i < resolvedInputs.size(); ++i) {
+      const auto& newType = resolvedInputs.at(i)->type();
+      velox::TypePtr commonType = coercer->leastCommonSuperType(type, newType);
+      VELOX_USER_CHECK_NOT_NULL(
+          commonType,
+          "All inputs to IN must be coercible to a single type: {} vs. {}",
+          type->toString(),
+          newType->toString());
+      type = std::move(commonType);
+    }
+
+    for (auto& input : resolvedInputs) {
+      if (!input->type()->equivalent(*type)) {
+        input = applyCoercion(input, type, planNodeIdGenerator);
+      }
+    }
+  }
+
+  return std::make_shared<SpecialFormExpr>(
+      velox::BOOLEAN(), SpecialForm::kIn, resolvedInputs);
+}
+
+// Resolves NULLIF, appending a NULL of the arguments' common type.
+ExprPtr resolveNullIf(
+    std::vector<ExprPtr>& resolvedInputs,
+    const velox::TypeCoercer* coercer) {
+  VELOX_USER_CHECK_EQ(
+      resolvedInputs.size(), 2, "NULLIF requires exactly 2 arguments");
+
+  const auto& valueType = resolvedInputs[0]->type();
+  const auto& comparandType = resolvedInputs[1]->type();
+
+  velox::TypePtr commonType;
+  if (valueType->equivalent(*comparandType)) {
+    commonType = valueType;
+  } else {
+    VELOX_USER_CHECK_NOT_NULL(
+        coercer,
+        "NULLIF arguments have different types and implicit coercions are disabled: {} vs {}",
+        valueType->toString(),
+        comparandType->toString());
+    commonType = coercer->leastCommonSuperType(valueType, comparandType);
+    VELOX_USER_CHECK_NOT_NULL(
+        commonType,
+        "Cannot find common type for NULLIF arguments: {} vs {}",
+        valueType->toString(),
+        comparandType->toString());
+  }
+
+  // Append a null literal of the common type to carry the type information.
+  resolvedInputs.push_back(makeConstantExpr(commonType, commonType->kind()));
+
+  return std::make_shared<SpecialFormExpr>(
+      valueType, SpecialForm::kNullIf, resolvedInputs);
+}
+
 } // namespace
 
 ExprPtr tryResolveSpecialForm(
@@ -332,9 +452,7 @@ ExprPtr tryResolveSpecialForm(
     if (resolvedInputs.size() == 2) {
       // Add null ELSE clause.
       const auto& type = resolvedInputs.back()->type();
-      resolvedInputs.emplace_back(
-          std::make_shared<ConstantExpr>(
-              type, std::make_shared<velox::Variant>(type->kind())));
+      resolvedInputs.emplace_back(makeConstantExpr(type, type->kind()));
     }
 
     if (coercer != nullptr) {
@@ -359,58 +477,11 @@ ExprPtr tryResolveSpecialForm(
   }
 
   if (name == "subscript" && resolvedInputs.at(0)->type()->isRow()) {
-    VELOX_USER_CHECK_EQ(2, resolvedInputs.size());
-
-    const auto& rowType = resolvedInputs.at(0)->type()->asRow();
-
-    const auto& fieldExpr = resolvedInputs.at(1);
-    VELOX_USER_CHECK(fieldExpr->isConstant());
-
-    const auto index = toIntegerValue(*fieldExpr->as<ConstantExpr>());
-    VELOX_USER_CHECK_GE(index, 1, "Subscript index must be 1-based");
-    VELOX_USER_CHECK_LE(index, rowType.size(), "Subscript index out of range");
-
-    const auto zeroBasedIndex = static_cast<int32_t>(index - 1);
-
-    std::vector<ExprPtr> newInputs = {
-        resolvedInputs.at(0),
-        std::make_shared<ConstantExpr>(
-            velox::INTEGER(),
-            std::make_shared<velox::Variant>(zeroBasedIndex))};
-
-    return std::make_shared<SpecialFormExpr>(
-        rowType.childAt(zeroBasedIndex), SpecialForm::kDereference, newInputs);
+    return resolveDereference(resolvedInputs);
   }
 
   if (name == "in") {
-    if (coercer != nullptr) {
-      VELOX_USER_CHECK_GE(
-          resolvedInputs.size(), 2, "IN must have at least two inputs");
-
-      // The left operand and every value in the list share one type: the
-      // least common super type of all of them.
-      velox::TypePtr type = resolvedInputs.at(0)->type();
-      for (auto i = 1; i < resolvedInputs.size(); ++i) {
-        const auto& newType = resolvedInputs.at(i)->type();
-        velox::TypePtr commonType =
-            coercer->leastCommonSuperType(type, newType);
-        VELOX_USER_CHECK_NOT_NULL(
-            commonType,
-            "All inputs to IN must be coercible to a single type: {} vs. {}",
-            type->toString(),
-            newType->toString());
-        type = std::move(commonType);
-      }
-
-      for (auto& input : resolvedInputs) {
-        if (!input->type()->equivalent(*type)) {
-          input = applyCoercion(input, type, planNodeIdGenerator);
-        }
-      }
-    }
-
-    return std::make_shared<SpecialFormExpr>(
-        velox::BOOLEAN(), SpecialForm::kIn, resolvedInputs);
+    return resolveIn(resolvedInputs, planNodeIdGenerator, coercer);
   }
 
   if (name == "exists") {
@@ -419,36 +490,7 @@ ExprPtr tryResolveSpecialForm(
   }
 
   if (name == "nullif") {
-    VELOX_USER_CHECK_EQ(
-        resolvedInputs.size(), 2, "NULLIF requires exactly 2 arguments");
-
-    const auto& valueType = resolvedInputs[0]->type();
-    const auto& comparandType = resolvedInputs[1]->type();
-
-    velox::TypePtr commonType;
-    if (valueType->equivalent(*comparandType)) {
-      commonType = valueType;
-    } else {
-      VELOX_USER_CHECK_NOT_NULL(
-          coercer,
-          "NULLIF arguments have different types and implicit coercions are disabled: {} vs {}",
-          valueType->toString(),
-          comparandType->toString());
-      commonType = coercer->leastCommonSuperType(valueType, comparandType);
-      VELOX_USER_CHECK_NOT_NULL(
-          commonType,
-          "Cannot find common type for NULLIF arguments: {} vs {}",
-          valueType->toString(),
-          comparandType->toString());
-    }
-
-    // Append a null literal of the common type to carry the type information.
-    resolvedInputs.push_back(
-        std::make_shared<ConstantExpr>(
-            commonType, std::make_shared<velox::Variant>(commonType->kind())));
-
-    return std::make_shared<SpecialFormExpr>(
-        valueType, SpecialForm::kNullIf, resolvedInputs);
+    return resolveNullIf(resolvedInputs, coercer);
   }
 
   return nullptr;
@@ -743,13 +785,93 @@ ExprPtr ExprResolver::tryFoldSpecialForm(
       arrayElements.push_back(*inputs.at(i)->as<ConstantExpr>()->value());
     }
 
-    auto arrayConstant = std::make_shared<ConstantExpr>(
-        ARRAY(elementType),
-        std::make_shared<velox::Variant>(velox::Variant::array(arrayElements)));
+    auto arrayConstant = makeConstantExpr(
+        ARRAY(elementType), velox::Variant::array(arrayElements));
 
     return tryFoldCall(velox::BOOLEAN(), "in", {inputs[0], arrayConstant});
   }
   return nullptr;
+}
+
+ExprPtr ExprResolver::tryResolveConstantIn(
+    const velox::core::IExpr& expr,
+    const InputNameResolver& inputNameResolver) const {
+  if (!expr.is(velox::core::IExpr::Kind::kCall)) {
+    return nullptr;
+  }
+
+  const auto* call = expr.as<velox::core::CallExpr>();
+  if (velox::exec::sanitizeName(call->name()) != "in" ||
+      call->inputs().size() < 3) {
+    return nullptr;
+  }
+
+  const auto inListValues = std::span(call->inputs()).subspan(1);
+  std::vector<const velox::core::ConstantExpr*> literals;
+  literals.reserve(inListValues.size());
+  for (const auto& input : inListValues) {
+    if (!input->is(velox::core::IExpr::Kind::kConstant)) {
+      return nullptr;
+    }
+    literals.push_back(input->as<velox::core::ConstantExpr>());
+  }
+
+  auto value = resolveScalarTypes(call->inputAt(0), inputNameResolver);
+  auto listInputs = [&]() {
+    std::vector<ExprPtr> inputs{value};
+    inputs.reserve(literals.size() + 1);
+    for (const auto* literal : literals) {
+      inputs.push_back(makeConstantExpr(literal->type(), literal->value()));
+    }
+    return inputs;
+  };
+
+  if (hook_ != nullptr) {
+    if (auto rewritten = hook_("in", listInputs())) {
+      return rewritten;
+    }
+  }
+
+  velox::TypePtr type = value->type();
+  if (coercer_ != nullptr) {
+    for (const auto* literal : literals) {
+      type = coercer_->leastCommonSuperType(type, literal->type());
+      if (type == nullptr) {
+        break;
+      }
+    }
+  }
+
+  // A null 'type' means the inputs have no common type; UNKNOWN means every
+  // input is NULL.
+  if (type != nullptr && type->kind() != velox::TypeKind::UNKNOWN) {
+    if (auto array = tryMakeLiteralArray(literals, type)) {
+      if (!value->type()->equivalent(*type)) {
+        value = applyCoercion(value, type, planNodeIdGenerator_);
+      }
+      ExprPtr values = makeConstantExpr(velox::ARRAY(type), std::move(*array));
+      if (queryCtx_ && value->isConstant()) {
+        if (auto folded =
+                tryFoldCall(velox::BOOLEAN(), "in", {value, values})) {
+          return folded;
+        }
+      }
+      return std::make_shared<SpecialFormExpr>(
+          velox::BOOLEAN(),
+          SpecialForm::kInArray,
+          std::move(value),
+          std::move(values));
+    }
+  }
+
+  // A conversion that changes a value, or a type error: IN with one input per
+  // literal coerces each one, or reports the error.
+  auto inputs = listInputs();
+  auto in = resolveIn(inputs, planNodeIdGenerator_, coercer_);
+  if (auto folded = tryFoldSpecialForm("in", inputs)) {
+    return folded;
+  }
+  return in;
 }
 
 ExprPtr ExprResolver::tryFoldCast(
@@ -986,34 +1108,32 @@ ExprPtr ExprResolver::resolveScalarTypes(
       return std::make_shared<SpecialFormExpr>(
           inputRowType.childAt(index.value()),
           SpecialForm::kDereference,
-          std::vector<ExprPtr>{
-              input,
-              std::make_shared<ConstantExpr>(
-                  velox::VARCHAR(),
-                  std::make_shared<velox::Variant>(
-                      inputRowType.nameOf(index.value())))});
+          input,
+          makeConstantExpr(
+              velox::VARCHAR(), inputRowType.nameOf(index.value())));
     }
 
     const auto ordinal = parseLegacyRowFieldOrdinal(name, inputRowType);
     return std::make_shared<SpecialFormExpr>(
         inputRowType.childAt(ordinal),
         SpecialForm::kDereference,
-        std::vector<ExprPtr>{
-            input,
-            std::make_shared<ConstantExpr>(
-                velox::INTEGER(), std::make_shared<velox::Variant>(ordinal))});
+        input,
+        makeConstantExpr(velox::INTEGER(), ordinal));
   }
 
   if (const auto& constant =
           dynamic_cast<const velox::core::ConstantExpr*>(expr.get())) {
-    return std::make_shared<ConstantExpr>(
-        constant->type(), std::make_shared<velox::Variant>(constant->value()));
+    return makeConstantExpr(constant->type(), constant->value());
   }
 
   if (auto lambdaCall = tryResolveCallWithLambdas(
           std::dynamic_pointer_cast<const velox::core::CallExpr>(expr),
           inputNameResolver)) {
     return lambdaCall;
+  }
+
+  if (auto in = tryResolveConstantIn(*expr, inputNameResolver)) {
+    return in;
   }
 
   std::vector<ExprPtr> inputs;

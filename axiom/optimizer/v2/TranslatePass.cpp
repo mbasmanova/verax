@@ -734,15 +734,15 @@ class Translator {
       const Scope& scope,
       LiftTarget* liftTarget);
 
-  // Normalizes an IN list. Unwraps one-field row constructors, folds a
-  // single-element scalar IN to equality and a row constructor compared with a
-  // row literal to field equalities. A null element folds to a null boolean
-  // literal. For a multi-element constant list, drops duplicate constants from
-  // 'args' in place and applies the same folding when one distinct constant
-  // remains. Returns nullptr to let the caller build the (deduplicated) IN
-  // through the generic path, leaving 'args' unchanged when a multi-element
-  // list has any non-constant element.
+  // Normalizes an IN list. A list of literals takes ExprFactory::makeIn's
+  // form, and a single non-literal element folds to equality. One-field row
+  // constructors compare their field. Returns nullptr to let the caller build
+  // the IN from 'args' through the generic path.
   ExprCP normalizeInList(ExprVector& args);
+
+  // Builds ExprFactory::makeIn over 'values', comparing the field of a
+  // one-field row constructor 'value'.
+  ExprCP makeConstantIn(ExprCP value, std::vector<velox::Variant> values);
 
   // Returns scalar IN arguments for a one-field row IN, or nullopt when the
   // expression cannot be unwrapped.
@@ -3736,7 +3736,11 @@ ExprCP Translator::translateSpecialForm(
     }
   }
 
-  // Normalize a singleton comparison and deduplicate a constant IN list.
+  if (expr.form() == lp::SpecialForm::kInArray) {
+    VELOX_CHECK_EQ(args.size(), 2);
+    return makeConstantIn(args[0], args[1]->as<Literal>()->literal().array());
+  }
+
   if (expr.form() == lp::SpecialForm::kIn) {
     if (ExprCP folded = normalizeInList(args)) {
       return folded;
@@ -3797,87 +3801,11 @@ ExprCP Translator::translateExists(
       liftTarget);
 }
 
-ExprCP Translator::normalizeInList(ExprVector& args) {
-  VELOX_CHECK_GE(args.size(), 2);
-
-  if (auto scalarArgs = unwrapSingleFieldRowIn(args)) {
-    args = std::move(*scalarArgs);
-    return normalizeInList(args);
-  }
-
-  // A single-element scalar IN has equality's three-valued semantics. A null
-  // literal folds directly so the surrounding expression can fold further
-  // without materializing the column.
-  auto foldSingleElement = [&](ExprCP element) -> ExprCP {
-    if (element->is(PlanType::kLiteralExpr) &&
-        element->as<Literal>()->literal().isNull()) {
-      return builder_.makeLiteral(
-          velox::Variant::null(velox::TypeKind::BOOLEAN),
-          toType(velox::BOOLEAN()));
-    }
-
-    // Rewrite '(a, b) IN ((1, 2))' as 'a = 1 AND b = 2'.
-    if (args[0]->is(PlanType::kCallExpr) &&
-        element->is(PlanType::kLiteralExpr)) {
-      CallCP rowConstructor = args[0]->as<Call>();
-      const auto& literal = element->as<Literal>()->literal();
-      if (rowConstructor->isRowConstructor()) {
-        VELOX_DCHECK_EQ(literal.kind(), velox::TypeKind::ROW);
-
-        const auto& fields = literal.row();
-        const auto& rowType = element->value().type;
-        VELOX_CHECK_EQ(rowConstructor->args().size(), fields.size());
-        VELOX_CHECK_EQ(rowType->size(), fields.size());
-
-        ExprVector equalities;
-        equalities.reserve(fields.size());
-        for (size_t i = 0; i < fields.size(); ++i) {
-          equalities.push_back(exprFactory_.makeEq(
-              rowConstructor->args()[i],
-              builder_.makeLiteral(
-                  velox::Variant(fields[i]), rowType->childAt(i).get())));
-        }
-        return simplifier_.simplify(exprFactory_.andAll(equalities));
-      }
-    }
-    return simplifier_.simplify(exprFactory_.makeEq(args[0], element));
-  };
-
-  if (args.size() == 2) {
-    return foldSingleElement(args[1]);
-  }
-
-  // A multi-element list can be deduped and lowered to an array constant only
-  // when every element is a literal.
-  if (!std::all_of(args.begin() + 1, args.end(), [](ExprCP arg) {
-        return arg->is(PlanType::kLiteralExpr);
-      })) {
-    return nullptr;
-  }
-
-  // Equal Literals hash-cons to the same Expr, so dedup by identity.
-  ExprVector deduped;
-  deduped.reserve(args.size());
-  deduped.push_back(args[0]);
-  folly::F14FastSet<ExprCP> seen;
-  seen.reserve(args.size() - 1);
-  for (size_t i = 1; i < args.size(); ++i) {
-    if (seen.insert(args[i]).second) {
-      deduped.push_back(args[i]);
-    }
-  }
-
-  // A list of equal literals (`a IN (5, 5)`) collapses to a single value.
-  if (deduped.size() == 2) {
-    return foldSingleElement(deduped[1]);
-  }
-  args = std::move(deduped);
-  return nullptr;
-}
-
 namespace {
 
-CallCP asSingleFieldRowConstructor(ExprCP expr) {
+// Returns the field of a one-field row constructor, or nullptr for any other
+// expression.
+ExprCP singleRowConstructorField(ExprCP expr) {
   if (!expr->is(PlanType::kCallExpr)) {
     return nullptr;
   }
@@ -3885,42 +3813,80 @@ CallCP asSingleFieldRowConstructor(ExprCP expr) {
   if (call->args().size() != 1 || !call->isRowConstructor()) {
     return nullptr;
   }
-  return call;
+  return call->args()[0];
+}
+
+// Returns the field of a one-field row value. A NULL row has a NULL field.
+velox::Variant singleFieldValue(
+    const velox::Variant& row,
+    velox::TypeKind fieldKind) {
+  return row.isNull() ? velox::Variant::null(fieldKind) : row.row()[0];
 }
 
 } // namespace
 
+ExprCP Translator::normalizeInList(ExprVector& args) {
+  VELOX_CHECK_GE(args.size(), 2);
+  if (std::all_of(args.begin() + 1, args.end(), [](ExprCP arg) {
+        return arg->is(PlanType::kLiteralExpr);
+      })) {
+    std::vector<velox::Variant> values;
+    values.reserve(args.size() - 1);
+    for (size_t i = 1; i < args.size(); ++i) {
+      values.push_back(args[i]->as<Literal>()->literal());
+    }
+    return makeConstantIn(args[0], std::move(values));
+  }
+
+  if (auto scalarArgs = unwrapSingleFieldRowIn(args)) {
+    args = std::move(*scalarArgs);
+    return normalizeInList(args);
+  }
+
+  // A single element has equality's semantics.
+  if (args.size() == 2) {
+    return simplifier_.simplify(exprFactory_.makeEq(args[0], args[1]));
+  }
+  return nullptr;
+}
+
+ExprCP Translator::makeConstantIn(
+    ExprCP value,
+    std::vector<velox::Variant> values) {
+  if (ExprCP field = singleRowConstructorField(value)) {
+    value = field;
+    const auto fieldKind = value->value().type->kind();
+    for (auto& element : values) {
+      element = singleFieldValue(element, fieldKind);
+    }
+  }
+  return simplifier_.simplify(exprFactory_.makeIn(value, std::move(values)));
+}
+
 std::optional<ExprVector> Translator::unwrapSingleFieldRowIn(
     const ExprVector& args) {
-  const auto* rowConstructor = asSingleFieldRowConstructor(args[0]);
-  if (rowConstructor == nullptr) {
+  ExprCP field = singleRowConstructorField(args[0]);
+  if (field == nullptr) {
     return std::nullopt;
   }
 
-  ExprCP field = rowConstructor->args()[0];
   const TypeCP fieldType = field->value().type;
   ExprVector scalarArgs{field};
   scalarArgs.reserve(args.size());
   for (size_t i = 1; i < args.size(); ++i) {
     if (args[i]->is(PlanType::kLiteralExpr)) {
-      const auto& literalValue = args[i]->as<Literal>()->literal();
-      if (literalValue.isNull()) {
-        scalarArgs.push_back(builder_.makeLiteral(
-            velox::Variant::null(fieldType->kind()), fieldType));
-      } else {
-        VELOX_DCHECK_EQ(literalValue.kind(), velox::TypeKind::ROW);
-        VELOX_DCHECK_EQ(literalValue.row().size(), 1);
-        scalarArgs.push_back(builder_.makeLiteral(
-            velox::Variant(literalValue.row()[0]), fieldType));
-      }
+      scalarArgs.push_back(builder_.makeLiteral(
+          singleFieldValue(
+              args[i]->as<Literal>()->literal(), fieldType->kind()),
+          fieldType));
       continue;
     }
 
-    const auto* candidate = asSingleFieldRowConstructor(args[i]);
+    ExprCP candidate = singleRowConstructorField(args[i]);
     if (candidate == nullptr) {
       return std::nullopt;
     }
-    scalarArgs.push_back(candidate->args()[0]);
+    scalarArgs.push_back(candidate);
   }
   return scalarArgs;
 }

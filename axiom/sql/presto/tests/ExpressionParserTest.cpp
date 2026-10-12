@@ -861,16 +861,41 @@ TEST_F(ExpressionParserTest, switch) {
 }
 
 TEST_F(ExpressionParserTest, in) {
-  EXPECT_EQ("IN(1, 2, 3, 4)", parseExpr("1 in (2,3,4)")->toString());
-  EXPECT_EQ("IN(1, 2, 3, 4)", parseExpr("1 IN (2,3,4)")->toString());
+  // A list of literals is IN_ARRAY over one ARRAY constant.
+  EXPECT_EQ("IN_ARRAY(1, [2,3,4])", parseExpr("1 in (2,3,4)")->toString());
+  EXPECT_EQ("IN_ARRAY(1, [2,3,4])", parseExpr("1 IN (2,3,4)")->toString());
 
-  EXPECT_EQ("not(IN(1, 2, 3, 4))", parseExpr("1 not in (2,3,4)")->toString());
-  EXPECT_EQ("not(IN(1, 2, 3, 4))", parseExpr("1 NOT IN (2,3,4)")->toString());
+  EXPECT_EQ(
+      "not(IN_ARRAY(1, [2,3,4]))", parseExpr("1 not in (2,3,4)")->toString());
+  EXPECT_EQ(
+      "not(IN_ARRAY(1, [2,3,4]))", parseExpr("1 NOT IN (2,3,4)")->toString());
 
-  // Coercions.
-  testNationExpr(
-      "n_nationkey in (1, 2, 3)",
-      "IN(n_nationkey, CAST(1 AS BIGINT), CAST(2 AS BIGINT), CAST(3 AS BIGINT))");
+  // Integer literals widen to the widest of them.
+  EXPECT_EQ(
+      "IN_ARRAY(CAST(1 AS BIGINT), [2,3000000000])",
+      parseExpr("1 in (2, 3000000000)")->toString());
+
+  // A NULL takes the type of the other literals.
+  EXPECT_EQ("IN_ARRAY(1, [2,null])", parseExpr("1 in (2, null)")->toString());
+
+  // Rows of literals, field by field.
+  EXPECT_EQ(
+      "IN_ARRAY([1,2], [[1,2],[3,null]])",
+      parseExpr("(1, 2) in ((1, 2), (3, null))")->toString());
+
+  // A single value, or any non-literal value, keeps IN with one input per
+  // value.
+  EXPECT_EQ("IN(1, 2)", parseExpr("1 in (2)")->toString());
+  EXPECT_EQ("IN(1, 2, plus(1, 1))", parseExpr("1 in (2, 1 + 1)")->toString());
+
+  // Coercion converts the values when it leaves them unchanged: integer
+  // widening, NULLs, and rows of those.
+  testNationExpr("n_nationkey in (1, 2, 3)", "IN_ARRAY(n_nationkey, [1,2,3])");
+
+  // Any other conversion keeps IN with one input per value, each cast.
+  EXPECT_EQ(
+      "IN(CAST(1 AS DOUBLE), CAST(1 AS DOUBLE), CAST(2 AS DOUBLE))",
+      parseExpr("cast(1 as double) in (1, 2)")->toString());
 
   // Subquery IN in WHERE clause produces a filter with IN(column, subquery).
   testSelect(
@@ -966,30 +991,22 @@ TEST_F(ExpressionParserTest, subscript) {
   EXPECT_EQ(
       "subscript(array_constructor(1, 2, 3), 1)",
       parseExpr("array[1, 2, 3][1]")->toString());
-  EXPECT_EQ(
-      "DEREFERENCE(row_constructor(1, 2), 1)",
-      parseExpr("row(1, 2)[2]")->toString());
+  EXPECT_EQ("DEREFERENCE([1,2], 1)", parseExpr("row(1, 2)[2]")->toString());
 }
 
 TEST_F(ExpressionParserTest, dereference) {
   // Named field dereference.
   EXPECT_EQ(
-      "DEREFERENCE(CAST(row_constructor(1, 2) AS ROW<a:INTEGER,b:INTEGER>), a)",
+      "DEREFERENCE(CAST([1,2] AS ROW<a:INTEGER,b:INTEGER>), a)",
       parseExpr("cast(row(1, 2) as row(a int, b int)).a")->toString());
 
   // Legacy field name dereference.
+  EXPECT_EQ("DEREFERENCE([1,2], 0)", parseExpr("row(1, 2).field0")->toString());
   EXPECT_EQ(
-      "DEREFERENCE(row_constructor(1, 2), 0)",
-      parseExpr("row(1, 2).field0")->toString());
+      "DEREFERENCE([1,2], 0)", parseExpr("row(1, 2).field000")->toString());
+  EXPECT_EQ("DEREFERENCE([1,2], 1)", parseExpr("row(1, 2).field1")->toString());
   EXPECT_EQ(
-      "DEREFERENCE(row_constructor(1, 2), 0)",
-      parseExpr("row(1, 2).field000")->toString());
-  EXPECT_EQ(
-      "DEREFERENCE(row_constructor(1, 2), 1)",
-      parseExpr("row(1, 2).field1")->toString());
-  EXPECT_EQ(
-      "DEREFERENCE(row_constructor(1, 2), 1)",
-      parseExpr("row(1, 2).field01")->toString());
+      "DEREFERENCE([1,2], 1)", parseExpr("row(1, 2).field01")->toString());
 
   VELOX_ASSERT_THROW(
       parseExpr("row(1, 2).field2"), "Invalid legacy field name: field2");
@@ -1090,7 +1107,7 @@ TEST_F(ExpressionParserTest, methodCall) {
 
   // Dereference without parentheses still works as struct field access.
   EXPECT_EQ(
-      "DEREFERENCE(CAST(row_constructor(1, 2) AS ROW<a:INTEGER,b:INTEGER>), a)",
+      "DEREFERENCE(CAST([1,2] AS ROW<a:INTEGER,b:INTEGER>), a)",
       parseExpr("cast(row(1, 2) as row(a int, b int)).a")->toString());
 }
 

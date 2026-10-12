@@ -153,9 +153,8 @@ std::vector<std::pair<ColumnCP, ExprCP>> deriveColumnFiltersFromRowIn(
   }
 
   const auto* inCall = expression->as<Call>();
-  if (inCall->name() != SpecialFormCallNames::kIn ||
-      inCall->args().size() < 3 ||
-      !inCall->args()[0]->is(PlanType::kCallExpr)) {
+  const auto* inList = inCall->constantInList();
+  if (inList == nullptr || !inCall->args()[0]->is(PlanType::kCallExpr)) {
     return {};
   }
 
@@ -168,29 +167,17 @@ std::vector<std::pair<ColumnCP, ExprCP>> deriveColumnFiltersFromRowIn(
   if (numFields < 2) {
     return {};
   }
-  std::vector<ExprVector> values(numFields);
-  std::vector<folly::F14FastSet<ExprCP>> seen(numFields);
-  for (size_t i = 1; i < inCall->args().size(); ++i) {
-    if (!inCall->args()[i]->is(PlanType::kLiteralExpr)) {
-      return {};
-    }
-
-    const auto& literal = inCall->args()[i]->as<Literal>()->literal();
-    if (literal.isNull()) {
+  std::vector<std::vector<velox::Variant>> values(numFields);
+  for (const auto& row : *inList) {
+    if (row.isNull()) {
       continue;
     }
-    VELOX_DCHECK_EQ(literal.kind(), velox::TypeKind::ROW);
-    const auto& fields = literal.row();
+    VELOX_DCHECK_EQ(row.kind(), velox::TypeKind::ROW);
+    const auto& fields = row.row();
     VELOX_DCHECK_EQ(fields.size(), numFields);
     for (size_t field = 0; field < numFields; ++field) {
-      if (fields[field].isNull()) {
-        continue;
-      }
-      ExprCP value = factory.makeLiteral(
-          velox::Variant(fields[field]),
-          rowConstructor->args()[field]->value().type);
-      if (seen[field].insert(value).second) {
-        values[field].push_back(value);
+      if (!fields[field].isNull()) {
+        values[field].push_back(fields[field]);
       }
     }
   }
@@ -203,10 +190,9 @@ std::vector<std::pair<ColumnCP, ExprCP>> deriveColumnFiltersFromRowIn(
         values[field].empty()) {
       continue;
     }
-    ExprCP filter = values[field].size() == 1
-        ? factory.makeEq(fieldExpression, values[field][0])
-        : factory.makeIn(fieldExpression, std::move(values[field]));
-    result.emplace_back(columns.onlyObject<Column>(), filter);
+    result.emplace_back(
+        columns.onlyObject<Column>(),
+        factory.makeIn(fieldExpression, std::move(values[field])));
   }
   return result;
 }

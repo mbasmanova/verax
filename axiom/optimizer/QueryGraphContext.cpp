@@ -17,6 +17,8 @@
 #include "axiom/optimizer/QueryGraphContext.h"
 
 #include <algorithm>
+
+#include <folly/String.h>
 #include "axiom/optimizer/BitSet.h"
 #include "axiom/optimizer/FunctionRegistry.h"
 #include "axiom/optimizer/QueryGraph.h"
@@ -35,6 +37,28 @@ const auto& stepKindNames() {
 } // namespace
 
 AXIOM_DEFINE_ENUM_NAME(StepKind, stepKindNames);
+
+std::string QueryGraphContext::topPlanObjectTypes(size_t top) const {
+  folly::F14FastMap<PlanType, size_t> counts;
+  for (const auto* object : objects_) {
+    ++counts[object->type()];
+  }
+  std::vector<std::pair<PlanType, size_t>> sorted(counts.begin(), counts.end());
+  top = std::min(top, sorted.size());
+  std::partial_sort(
+      sorted.begin(),
+      sorted.begin() + top,
+      sorted.end(),
+      [](const auto& a, const auto& b) { return a.second > b.second; });
+  std::vector<std::string> parts;
+  parts.reserve(top);
+  for (size_t i = 0; i < top; ++i) {
+    parts.push_back(
+        fmt::format(
+            "{}: {}", PlanTypeName::toName(sorted[i].first), sorted[i].second));
+  }
+  return folly::join(", ", parts);
+}
 
 QueryGraphContext::QueryGraphContext(
     velox::HashStringAllocator& allocator,

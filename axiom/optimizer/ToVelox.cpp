@@ -658,34 +658,41 @@ std::optional<std::vector<velox::Variant>> tryConstantInValues(
     return std::nullopt;
   }
 
-  VELOX_USER_CHECK_GE(call.args().size(), 2);
-
   const auto& args = call.args();
-  if (!std::all_of(args.begin() + 1, args.end(), [](const auto& arg) {
-        return arg->is(PlanType::kLiteralExpr);
-      })) {
-    return std::nullopt;
-  }
+  VELOX_USER_CHECK_GE(args.size(), 2);
 
-  auto elementType = toTypePtr(args[0]->value().type);
-
-  std::vector<velox::Variant> values;
-  values.reserve(args.size() - 1);
-  folly::F14FastSet<velox::Variant, velox::Variant::Hasher> seen;
-  seen.reserve(args.size() - 1);
-  for (size_t i = 1; i < args.size(); ++i) {
-    auto arg = args.at(i);
-    VELOX_USER_CHECK(
-        elementType->equivalent(*arg->value().type),
-        "All elements of the IN list must have the same type got {} and {}",
-        elementType->toString(),
-        arg->value().type->toString());
-    auto& literal = arg->as<Literal>()->literal();
-    if (seen.insert(literal).second) {
-      values.push_back(literal);
+  std::vector<const velox::Variant*> values;
+  if (const auto* inList = call.constantInList()) {
+    values.reserve(inList->size());
+    for (const auto& value : *inList) {
+      values.push_back(&value);
+    }
+  } else {
+    const auto& elementType = *args[0]->value().type;
+    values.reserve(args.size() - 1);
+    for (size_t i = 1; i < args.size(); ++i) {
+      if (!args[i]->is(PlanType::kLiteralExpr)) {
+        return std::nullopt;
+      }
+      VELOX_USER_CHECK(
+          elementType.equivalent(*args[i]->value().type),
+          "All elements of the IN list must have the same type got {} and {}",
+          elementType.toString(),
+          args[i]->value().type->toString());
+      values.push_back(&args[i]->as<Literal>()->literal());
     }
   }
-  return values;
+
+  std::vector<velox::Variant> distinct;
+  distinct.reserve(values.size());
+  folly::F14FastSet<velox::Variant, velox::Variant::Hasher> seen;
+  seen.reserve(values.size());
+  for (const auto* value : values) {
+    if (seen.insert(*value).second) {
+      distinct.push_back(*value);
+    }
+  }
+  return distinct;
 }
 
 velox::core::TypedExprPtr stepToMapSubscript(

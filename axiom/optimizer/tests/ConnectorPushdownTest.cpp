@@ -124,6 +124,7 @@ TEST_P(ConnectorPushdownTest, singleRowIn) {
 
   expectPushed("(a, b) IN ((1, 2))", {"a = 1", "b = 2"});
   expectPushed("(a, b) IN ((1, 2), (1, 2))", {"a = 1", "b = 2"});
+  expectPushed("(a, b) = (1, 2)", {"a = 1", "b = 2"});
 
   AXIOM_ASSERT_PLAN_V2(
       toSingleNodePlan(

@@ -40,8 +40,6 @@
 #include "axiom/optimizer/v2/NodeRewriter.h"
 #include "axiom/optimizer/v2/NodeSimplifier.h"
 
-#include <folly/container/F14Set.h>
-
 namespace facebook::axiom::optimizer::v2 {
 namespace {
 
@@ -548,27 +546,19 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       if (!context.requestedFilterColumns.contains(column)) {
         continue;
       }
-      ExprVector distinctValues;
-      folly::F14FastSet<ExprCP> seen;
+      std::vector<velox::Variant> nonNullValues;
       bool hasNull{false};
       for (size_t row = 0; row < values.cardinality(); ++row) {
         const velox::Variant& value = values.valueAt(row, channel);
         if (value.isNull()) {
           hasNull = true;
-          continue;
-        }
-        ExprCP literal =
-            builder().makeLiteral(velox::Variant(value), column->value().type);
-        if (seen.insert(literal).second) {
-          distinctValues.push_back(literal);
+        } else {
+          nonNullValues.push_back(value);
         }
       }
-      ExprCP inValues = nullptr;
-      if (!distinctValues.empty()) {
-        inValues = distinctValues.size() == 1
-            ? exprs_.makeEq(column, distinctValues.front())
-            : exprs_.makeIn(column, std::move(distinctValues));
-      }
+      ExprCP inValues = nonNullValues.empty()
+          ? nullptr
+          : exprs_.makeIn(column, std::move(nonNullValues));
       ExprCP isNull = hasNull ? exprs_.makeIsNull(column) : nullptr;
       if (inValues != nullptr || isNull != nullptr) {
         appendDistinct(

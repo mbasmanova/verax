@@ -50,6 +50,8 @@ class ExprSimplifier {
   ///    kept, so the error surfaces at execution.
   ///  - AND and OR drop boolean literals that do not decide them and become
   ///    the literal that does: a AND true -> a, a OR true -> true.
+  ///  - Equality between a row constructor and a non-NULL row literal compares
+  ///    field by field: ROW(a, b) = ROW(1, 2) -> a = 1 AND b = 2.
   ExprCP simplify(ExprCP expr);
 
   /// Returns whether `expr` cannot produce NULL when `nonNullColumns` are
@@ -90,6 +92,10 @@ class ExprSimplifier {
   // Simplifies an AND or OR call with boolean literal arguments. Returns
   // `expr` unchanged for any other call. Its arguments are already simplified.
   ExprCP tryFoldConjunct(ExprCP expr);
+
+  // Expands `ROW(a, b) = <row literal>` into `a = <field 0> AND b = <field 1>`.
+  // Returns nullptr for any other expression.
+  ExprCP tryExpandRowEquality(ExprCP expr);
 
   // Folds `expr` to a `Literal` when it has no column refs and the
   // evaluator produces a single constant value. Otherwise returns

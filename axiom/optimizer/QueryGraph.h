@@ -424,6 +424,13 @@ class Call : public Expr {
   /// Returns true if this call constructs a row.
   bool isRowConstructor() const;
 
+  /// Returns the values of an IN over a constant list in the form
+  /// '__in(value, <literal of type ARRAY(T)>)', where 'value' has type T.
+  /// Returns nullptr if this call is not one. In v2, translation and the
+  /// simplifier build every IN over constants in this form, so code that runs
+  /// after translation sees no other form of an IN whose list is all literals.
+  const std::vector<velox::Variant>* constantInList() const;
+
   /// Non-owning identity view for interning a `Call` by content. Holds only
   /// what defines identity: function name, result type (distinguishes CAST-like
   /// forms that share name + args), and args by pointer.
@@ -493,7 +500,9 @@ struct SpecialFormCallNames {
   static const char* kCoalesce;
   static const char* kIf;
   static const char* kSwitch;
+
   static const char* kIn;
+
   static const char* kNullIf;
   static const char* kDereference;
 
@@ -516,6 +525,7 @@ struct SpecialFormCallNames {
       case logical_plan::SpecialForm::kSwitch:
         return SpecialFormCallNames::kSwitch;
       case logical_plan::SpecialForm::kIn:
+      case logical_plan::SpecialForm::kInArray:
         return SpecialFormCallNames::kIn;
       case logical_plan::SpecialForm::kNullIf:
         return SpecialFormCallNames::kNullIf;
