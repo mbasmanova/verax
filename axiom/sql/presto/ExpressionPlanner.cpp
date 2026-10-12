@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <cctype>
 #include <limits>
+#include <span>
 
 #include "axiom/common/SchemaTypeName.h"
 #include "axiom/connectors/ConnectorMetadataRegistry.h"
@@ -1097,6 +1098,25 @@ bool lowersToNotIn(const QuantifiedComparisonExpression& comparison) {
       toSqlString(quantifier));
 }
 
+// Returns 'items' as one ROW constant if each is a constant. Returns
+// std::nullopt otherwise.
+std::optional<lp::ExprApi> tryMakeRowLiteral(
+    const std::vector<lp::ExprApi>& items) {
+  std::vector<TypePtr> types;
+  std::vector<Variant> values;
+  types.reserve(items.size());
+  values.reserve(items.size());
+  for (const auto& item : items) {
+    if (!item.expr()->is(core::IExpr::Kind::kConstant)) {
+      return std::nullopt;
+    }
+    const auto* constant = item.expr()->as<core::ConstantExpr>();
+    types.push_back(constant->type());
+    values.push_back(constant->value());
+  }
+  return lp::Lit(Variant::row(std::move(values)), ROW(std::move(types)));
+}
+
 } // namespace
 
 lp::ExprApi ExpressionPlanner::toExpr(
@@ -1570,6 +1590,9 @@ lp::ExprApi ExpressionPlanner::toExpr(
         items.emplace_back(toExpr(item, options));
       }
 
+      if (auto literal = tryMakeRowLiteral(items)) {
+        return *literal;
+      }
       return lp::Call("row_constructor", items);
     }
 

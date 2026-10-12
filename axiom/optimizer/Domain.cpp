@@ -559,15 +559,12 @@ exprToDomain(ExprCP expr, ColumnCP column, PredicateResult result) {
                                             : nonNullDomain(column);
   }
 
-  if (name == SpecialFormCallNames::kIn && args.size() >= 2 &&
-      domainColumn(args.front()) == column) {
+  if (const auto* inList = call->constantInList();
+      inList != nullptr && domainColumn(args.front()) == column) {
     std::vector<velox::Variant> values;
     bool hasNull{false};
-    for (size_t i = 1; i < args.size(); ++i) {
-      if (!args[i]->is(PlanType::kLiteralExpr)) {
-        return std::nullopt;
-      }
-      auto value = normalizeLiteral(column, args[i]->as<Literal>()->literal());
+    for (const auto& element : *inList) {
+      auto value = normalizeLiteral(column, element);
       if (!value.has_value()) {
         return std::nullopt;
       }

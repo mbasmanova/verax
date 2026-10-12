@@ -249,7 +249,7 @@ TEST_F(PlanPrinterTest, inList) {
   EXPECT_THAT(
       lines,
       testing::ElementsAre(
-          testing::StartsWith("- Filter: IN(a, 1, 5)"),
+          testing::StartsWith("- Filter: IN_ARRAY(a, [1,5])"),
           testing::StartsWith("  - TableScan: test.\"default\".\"test\""),
           testing::Eq("")));
 
@@ -260,9 +260,9 @@ TEST_F(PlanPrinterTest, inList) {
       // clang-format off
       testing::ElementsAre(
           testing::Eq("- FILTER [1]: 2 fields: a BIGINT, b DOUBLE"),
-          testing::Eq("      predicate: IN(a, 1, 5)"),
-          testing::Eq("      expressions: IN: 1, constant: 2, field: 1"),
-          testing::Eq("      constants: BIGINT: 2"),
+          testing::Eq("      predicate: IN_ARRAY(a, [1,5])"),
+          testing::Eq("      expressions: IN_ARRAY: 1, constant: 1, field: 1"),
+          testing::Eq("      constants: ARRAY: 1"),
           testing::Eq("  - TABLE_SCAN [0]: 2 fields: a BIGINT, b DOUBLE"),
           testing::Eq("        table: \"default\".\"test\""),
           testing::Eq("        connector: test"),

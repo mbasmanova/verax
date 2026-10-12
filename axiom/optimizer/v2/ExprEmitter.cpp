@@ -65,41 +65,25 @@ velox::core::TypedExprPtr dereferenceToTypedExpr(
           index->literal().value<velox::TypeKind::INTEGER>()));
 }
 
-// Folds an all-literal IN list into `in(col, ARRAY[...])` with one array
-// constant, so Velox binds the set/bitmask-based InPredicate instead of a
-// per-row variadic compare. Returns nullptr when any element is non-literal,
-// leaving the variadic call. Translate folds every single-element IN to
-// equality, so an IN reaching here has >= 2 elements. `column` is the
-// already-lowered first argument.
+// Lowers an IN over constants, '__in(value, <ARRAY literal>)', to
+// `in(column, ARRAY[...])` with the array as a constant vector, which supports
+// complex element types. Returns nullptr for any other IN.
 velox::core::TypedExprPtr tryLowerConstantIn(
     const Call* call,
     const velox::core::TypedExprPtr& column,
     velox::memory::MemoryPool* pool) {
-  const auto& args = call->args();
-  VELOX_CHECK_GE(args.size(), 3);
-  for (size_t i = 1; i < args.size(); ++i) {
-    if (!args[i]->is(PlanType::kLiteralExpr)) {
-      return nullptr;
-    }
+  if (call->constantInList() == nullptr) {
+    return nullptr;
   }
-
-  const auto elementType = toTypePtr(args[0]->value().type);
-  std::vector<velox::Variant> elements;
-  elements.reserve(args.size() - 1);
-  for (size_t i = 1; i < args.size(); ++i) {
-    elements.push_back(args[i]->as<Literal>()->literal());
-  }
-
-  // Materialize the array through a constant vector, which supports complex
-  // element types.
+  ExprCP list = call->args()[1];
   return std::make_shared<velox::core::CallTypedExpr>(
       velox::BOOLEAN(),
       specialForm(logical_plan::SpecialForm::kIn),
       column,
       std::make_shared<velox::core::ConstantTypedExpr>(
           velox::BaseVector::createConstant(
-              velox::ARRAY(elementType),
-              velox::Variant::array(elements),
+              toTypePtr(list->value().type),
+              list->as<Literal>()->literal(),
               1,
               pool)));
 }
@@ -151,8 +135,6 @@ velox::core::TypedExprPtr ExprEmitter::callToTypedExpr(
     }
 
     if (form == logical_plan::SpecialForm::kIn) {
-      // An all-literal IN list lowers to `in(col, ARRAY[...])`; a list with any
-      // non-literal element stays a variadic call.
       if (auto lowered = tryLowerConstantIn(call, args[0], pool_)) {
         return lowered;
       }

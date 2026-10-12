@@ -32,6 +32,27 @@ namespace facebook::axiom::optimizer::v2 {
 
 namespace {
 
+// Returns the values of IN arguments '[value, list...]' when the list holds one
+// literal of the value's type per value, the form ExprFactory::makeIn folds.
+// Returns std::nullopt otherwise, including for makeIn's own form, whose list
+// is one ARRAY literal.
+std::optional<std::vector<velox::Variant>> literalInValues(
+    const ExprVector& args) {
+  if (args.size() < 2) {
+    return std::nullopt;
+  }
+  std::vector<velox::Variant> values;
+  values.reserve(args.size() - 1);
+  for (size_t i = 1; i < args.size(); ++i) {
+    if (!args[i]->is(PlanType::kLiteralExpr) ||
+        !args[i]->value().type->equivalent(*args[0]->value().type)) {
+      return std::nullopt;
+    }
+    values.push_back(args[i]->as<Literal>()->literal());
+  }
+  return values;
+}
+
 // If `orExpr` is an OR call and its disjuncts share AND-conjuncts,
 // appends those common conjuncts to `common` and sets `*residual` to
 // the rewritten OR (or nullptr when a disjunct was fully subsumed and
@@ -183,16 +204,13 @@ ExprCP nonNullDomainToFilter(
         return range.isSingleValue();
       });
   if (allSingleValues) {
-    ExprVector values;
+    std::vector<velox::Variant> values;
     values.reserve(ranges.size());
     for (const auto& range : ranges) {
-      values.push_back(builder.makeLiteral(
-          typedIntegralValue(
-              column->value().type, range.low()->value.value<int64_t>()),
-          column->value().type));
+      values.push_back(typedIntegralValue(
+          column->value().type, range.low()->value.value<int64_t>()));
     }
-    return values.size() == 1 ? factory.makeEq(column, values.front())
-                              : factory.makeIn(column, std::move(values));
+    return factory.makeIn(column, std::move(values));
   }
 
   ExprVector disjuncts;
@@ -309,6 +327,12 @@ ExprCP ExprSimplifier::simplify(ExprCP expr) {
     }
     if (isCoalesce && args.size() <= 1) {
       expr = args.empty() ? builder_.makeNull(call->value().type) : args[0];
+    } else if (
+        auto values = call->name() == SpecialFormCallNames::kIn
+            ? literalInValues(args)
+            : std::nullopt) {
+      // A list of literals takes ExprFactory::makeIn's form.
+      expr = ExprFactory(builder_).makeIn(args[0], std::move(*values));
     } else if (changed) {
       expr = ExprFactory(builder_).rebuildCall(call, std::move(args));
     }
@@ -319,7 +343,11 @@ ExprCP ExprSimplifier::simplify(ExprCP expr) {
       expr = ExprFactory(builder_).rebuildLambda(lambda, body);
     }
   }
-  expr = tryFoldConjunct(tryFoldConstant(expr));
+  if (ExprCP fieldEqualities = tryExpandRowEquality(expr)) {
+    expr = simplify(fieldEqualities);
+  } else {
+    expr = tryFoldConjunct(tryFoldConstant(expr));
+  }
   simplified_.emplace(original, expr);
   return expr;
 }
@@ -579,6 +607,41 @@ bool ExprSimplifier::simplifyFilter(ExprCP predicate, ExprVector& into) {
     }
   }
   return false;
+}
+
+ExprCP ExprSimplifier::tryExpandRowEquality(ExprCP expr) {
+  if (!expr->is(PlanType::kCallExpr)) {
+    return nullptr;
+  }
+  const auto* call = expr->as<Call>();
+  if (call->name() != builder_.functionNames().equality) {
+    return nullptr;
+  }
+  ExprCP lhs = call->args()[0];
+  ExprCP rhs = call->args()[1];
+  if (!lhs->is(PlanType::kCallExpr) || !rhs->is(PlanType::kLiteralExpr)) {
+    return nullptr;
+  }
+
+  const auto* rowConstructor = lhs->as<Call>();
+  const auto& literal = rhs->as<Literal>()->literal();
+  if (!rowConstructor->isRowConstructor() || literal.isNull()) {
+    return nullptr;
+  }
+
+  const auto& fields = rowConstructor->args();
+  const auto& values = literal.row();
+  const TypeCP type = rhs->value().type;
+  VELOX_CHECK_EQ(fields.size(), values.size());
+
+  ExprFactory factory(builder_);
+  ExprVector equalities;
+  equalities.reserve(fields.size());
+  for (size_t i = 0; i < fields.size(); ++i) {
+    equalities.push_back(factory.makeEq(
+        fields[i], factory.makeLiteral(values[i], type->childAt(i).get())));
+  }
+  return factory.andAll(equalities);
 }
 
 ExprCP ExprSimplifier::tryFoldConstant(ExprCP expr) {

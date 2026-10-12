@@ -185,6 +185,20 @@ bool Call::isRowConstructor() const {
   return metadata_ != nullptr && metadata_->isRowConstructor;
 }
 
+const std::vector<velox::Variant>* Call::constantInList() const {
+  if (name() != SpecialFormCallNames::kIn || args().size() != 2 ||
+      !args()[1]->is(PlanType::kLiteralExpr)) {
+    return nullptr;
+  }
+  const auto* type = args()[1]->value().type;
+  const auto& literal = args()[1]->as<Literal>()->literal();
+  if (!type->isArray() || literal.isNull() ||
+      !type->childAt(0)->equivalent(*args()[0]->value().type)) {
+    return nullptr;
+  }
+  return &literal.array();
+}
+
 std::string Call::toString() const {
   std::stringstream out;
   out << name_ << "(";

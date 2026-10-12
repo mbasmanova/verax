@@ -128,6 +128,9 @@ TEST_F(ExprSerdeTest, specialFormExpr) {
   auto schema =
       velox::ROW({{"cond", velox::BOOLEAN()}, {"x", velox::BIGINT()}});
   testRoundTrip(Call("if", Col("cond"), Lit(1LL), Lit(2LL)), schema);
+  auto inArray = resolve(In(Col("x"), Lit(1LL), Lit(2LL)), schema);
+  ASSERT_EQ(inArray->toString(), "IN_ARRAY(x, [1,2])");
+  testRoundTrip(inArray);
 }
 
 TEST_F(ExprSerdeTest, aggregateExpr) {

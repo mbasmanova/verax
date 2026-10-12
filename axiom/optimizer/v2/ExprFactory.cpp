@@ -17,6 +17,7 @@
 #include "axiom/optimizer/v2/ExprFactory.h"
 
 #include <folly/container/F14Map.h>
+#include <folly/container/F14Set.h>
 
 #include <algorithm>
 
@@ -124,14 +125,24 @@ ExprCP ExprFactory::makeLessThan(ExprCP lhs, ExprCP rhs) {
       builder_.functionNames().lt, {lhs, rhs}, /*specialForm=*/false);
 }
 
-ExprCP ExprFactory::makeIn(ExprCP value, ExprVector list) {
-  VELOX_CHECK(!list.empty());
-  ExprVector arguments;
-  arguments.reserve(list.size() + 1);
-  arguments.push_back(value);
-  arguments.insert(arguments.end(), list.begin(), list.end());
-  return makeBooleanCall(
-      SpecialFormCallNames::kIn, std::move(arguments), /*specialForm=*/true);
+ExprCP ExprFactory::makeIn(ExprCP value, std::vector<velox::Variant> values) {
+  VELOX_CHECK(!values.empty());
+  folly::F14FastSet<velox::Variant, velox::Variant::Hasher> seen;
+  seen.reserve(values.size());
+  std::erase_if(values, [&](const auto& element) {
+    return !seen.insert(element).second;
+  });
+
+  const TypeCP type = value->value().type;
+  if (values.size() > 1) {
+    ExprCP list = makeLiteral(
+        velox::Variant::array(std::move(values)),
+        toType(velox::ARRAY(toTypePtr(type))));
+    return makeBooleanCall(
+        SpecialFormCallNames::kIn, {value, list}, /*specialForm=*/true);
+  }
+
+  return makeEq(value, makeLiteral(std::move(values.front()), type));
 }
 
 ExprCP ExprFactory::makeLiteral(velox::Variant value, TypeCP type) {

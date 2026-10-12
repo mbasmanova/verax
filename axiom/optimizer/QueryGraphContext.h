@@ -386,7 +386,8 @@ class QueryGraphContext {
     VELOX_USER_CHECK_LT(
         objects_.size(),
         maxPlanObjects_,
-        "Query is too complex to plan: it exceeds the plan object limit");
+        "Query is too complex to plan: it exceeds the plan object limit. Most plan objects by type: {}",
+        topPlanObjectTypes(3));
     objects_.push_back(object);
     return static_cast<int32_t>(objects_.size() - 1);
   }
@@ -543,6 +544,10 @@ class QueryGraphContext {
 
   // PlanObjects are stored at the index given by their id.
   std::vector<PlanObjectP> objects_;
+
+  // Returns the 'top' most numerous plan object types and their counts, for
+  // the error newId() raises at the limit.
+  std::string topPlanObjectTypes(size_t top) const;
 
   // See the constructor. Always >= 1, so the comparison in newId() is
   // meaningful; size_t to compare against objects_.size() without a cast.

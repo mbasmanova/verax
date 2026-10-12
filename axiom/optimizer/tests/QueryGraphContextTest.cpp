@@ -315,7 +315,7 @@ TEST_F(QueryGraphContextTest, planObjectLimit) {
 
   VELOX_ASSERT_THROW(
       make<Literal>(value, literal),
-      "Query is too complex to plan: it exceeds the plan object limit");
+      "Query is too complex to plan: it exceeds the plan object limit. Most plan objects by type: LiteralExpr: 8");
 }
 
 } // namespace

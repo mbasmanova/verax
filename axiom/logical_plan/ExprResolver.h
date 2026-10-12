@@ -245,6 +245,16 @@ class ExprResolver {
       const std::string& name,
       const std::vector<ExprPtr>& inputs) const;
 
+  // Resolves 'expr' when it is an IN whose list holds two or more literals.
+  // The function rewrite hook sees it first, as for any call. When every
+  // literal converts to the common type unchanged (see
+  // ConstantExpr::tryConvert), builds IN_ARRAY with one ARRAY constant and no
+  // expression per literal. Otherwise builds IN with one input per literal.
+  // Returns nullptr for any other expression.
+  ExprPtr tryResolveConstantIn(
+      const velox::core::IExpr& expr,
+      const InputNameResolver& inputNameResolver) const;
+
   std::shared_ptr<velox::core::QueryCtx> queryCtx_;
   // Nullable: nullptr means implicit coercions are disabled.
   const velox::TypeCoercer* coercer_;

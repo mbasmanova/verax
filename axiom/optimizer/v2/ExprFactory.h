@@ -81,8 +81,13 @@ class ExprFactory {
   /// Builds `lhs < rhs`.
   ExprCP makeLessThan(ExprCP lhs, ExprCP rhs);
 
-  /// Builds `value IN (list...)`. 'list' must not be empty.
-  ExprCP makeIn(ExprCP value, ExprVector list);
+  /// Builds `value IN (values...)` over constants, with 'values' of the type
+  /// of 'value', in canonical form:
+  /// - Duplicate values are dropped.
+  /// - A single distinct value builds `value = <value>`.
+  /// - Otherwise '__in(value, <ARRAY literal>)'; see Call::constantInList.
+  /// 'values' must not be empty.
+  ExprCP makeIn(ExprCP value, std::vector<velox::Variant> values);
 
   /// Builds a literal of 'type'.
   ExprCP makeLiteral(velox::Variant value, TypeCP type);

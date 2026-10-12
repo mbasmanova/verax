@@ -96,7 +96,7 @@ TEST_F(ExprTest, conjunctInputTypes) {
         .resolveScalarTypes(expr.expr(), inputResolver(schema));
   };
 
-  auto nullLiteral = Lit(Variant::null(TypeKind::UNKNOWN), UNKNOWN());
+  auto nullLiteral = Lit(Variant{}, UNKNOWN());
   const auto* coercer = &velox::TypeCoercer::defaults();
 
   // A null literal input types as UNKNOWN and coerces to boolean.
@@ -119,6 +119,50 @@ TEST_F(ExprTest, conjunctInputTypes) {
   VELOX_ASSERT_THROW(
       resolve(Col("p") && Col("a"), nullptr),
       "All inputs to AND and OR must be boolean");
+}
+
+TEST_F(ExprTest, inArray) {
+  auto schema = ROW({"a", "d"}, {BIGINT(), DOUBLE()});
+  auto resolve = [&](const ExprApi& expr) {
+    return ExprResolver(nullptr, &velox::TypeCoercer::defaults())
+        .resolveScalarTypes(expr.expr(), inputResolver(schema));
+  };
+
+  // A list of literals becomes one ARRAY constant of the common type.
+  auto expr = resolve(In(Col("a"), Lit(1), Lit(2)));
+  EXPECT_EQ(expr->toString(), "IN_ARRAY(a, [1,2])");
+  EXPECT_EQ(*expr->inputAt(1)->type(), *ARRAY(BIGINT()));
+  EXPECT_EQ(
+      resolve(In(Col("a"), Lit(1), Lit(Variant{})))->toString(),
+      "IN_ARRAY(a, [1,null])");
+
+  // A conversion that changes a value coerces each literal.
+  EXPECT_EQ(
+      resolve(In(Col("d"), Lit(1), Lit(2)))->toString(),
+      "IN(d, CAST(1 AS DOUBLE), CAST(2 AS DOUBLE))");
+
+  // A single literal or a non-literal keeps the list.
+  EXPECT_EQ(resolve(In(Col("a"), Lit(int64_t{1})))->toString(), "IN(a, 1)");
+  EXPECT_EQ(
+      resolve(In(Col("a"), Lit(int64_t{1}), Col("a")))->toString(),
+      "IN(a, 1, a)");
+
+  auto makeInArray = [&](Variant values, const TypePtr& type) {
+    return std::make_shared<SpecialFormExpr>(
+        BOOLEAN(),
+        SpecialForm::kInArray,
+        resolve(Col("a")),
+        resolve(Lit(std::move(values), type)));
+  };
+  VELOX_ASSERT_THROW(
+      makeInArray(Variant::array({1, 2}), ARRAY(INTEGER())),
+      "IN_ARRAY values must be an array of the checked value's type");
+  VELOX_ASSERT_THROW(
+      makeInArray(Variant::null(TypeKind::ARRAY), ARRAY(BIGINT())),
+      "IN_ARRAY values must not be NULL");
+  VELOX_ASSERT_THROW(
+      makeInArray(Variant::array(std::vector<Variant>{}), ARRAY(BIGINT())),
+      "IN_ARRAY values must not be empty");
 }
 
 TEST_F(ExprTest, aggregateExprDistinctOrderBy) {
