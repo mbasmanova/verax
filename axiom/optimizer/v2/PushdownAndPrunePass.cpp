@@ -2136,7 +2136,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
               node->outputColumns()},
           {newInput, std::move(empty.outputSubstitutions)});
       empty.outputSubstitutions = std::move(simplified.substitutions);
-      return simplified.node;
+      return nodeSimplifier_.materialize(simplified);
     });
   }
 
