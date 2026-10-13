@@ -178,6 +178,22 @@ SELECT * FROM (SELECT a, b, row_number() OVER (PARTITION BY a ORDER BY b) AS rn 
 -- Filter on ranking function output (rn > N).
 SELECT a, b FROM (SELECT a, b, row_number() OVER (PARTITION BY a ORDER BY b) AS rn FROM t) WHERE rn > 1
 ----
+-- An IN filter selects nonconsecutive row numbers in each partition.
+SELECT a, b, rn
+FROM (
+  SELECT a, b, row_number() OVER (PARTITION BY a ORDER BY b) AS rn
+  FROM t
+) u
+WHERE rn IN (1, 3)
+----
+-- An IN filter includes the constant rank of an unordered partition.
+SELECT a, b, r
+FROM (
+  SELECT a, b, rank() OVER (PARTITION BY a) AS r
+  FROM t
+) u
+WHERE r IN (1, 3)
+----
 -- dense_rank with ORDER BY column also in PARTITION BY + ranking filter. The
 -- ORDER BY is redundant (constant within partition), so dense_rank is always
 -- 1 and 'dr = 1' matches every row.
