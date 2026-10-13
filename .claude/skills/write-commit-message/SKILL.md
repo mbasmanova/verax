@@ -35,7 +35,7 @@ The per-pattern rules below all derive from this principle. If a draft passes th
    **Title**: `[Axiom] type(scope): Description` — capital start, no trailing period, ≤67 chars. Type ∈ {feat, fix, refactor, test, docs}. Scope optional.
 
    Body paragraphs (include only those that carry weight for this change):
-   - **What + why**: lead with user-visible behavior change. Include one concrete example query, error message, or before/after fact. A reader without internals knowledge should get the gist.
+   - **What + why**: when an established invariant explains the bug, state the invariant first, then how the code violates it and how that leads to an observable issue. Otherwise lead with the user-visible behavior change. Include one concrete example query, error message, or before/after fact. A reader without internals knowledge should get the gist.
    - **Mechanism**: the core idea as ONE concept — a new field, a swapped algorithm, an added check, a rewrite step. Skip when the title + "what + why" already conveys it.
    - **Deferred**: name a deliberately-not-done case and how it surfaces (NYI message, follow-up issue). Skip if none.
    - **Test plan**: the only useful content is the test *strategy*, and only when it isn't obvious. Never list the tests or their scenarios — they are in the diff. Default to omitting the Test Plan entirely (unit tests added for the new behavior, or a pure refactor). State the strategy only when a reader couldn't guess it — a manual repro, a CLI run, a fuzzer run, end-to-end exercise; bullets if it spans more than one kind. No pass counts or "CI green" — CI reports that.
@@ -87,7 +87,8 @@ The per-pattern rules below all derive from this principle. If a draft passes th
 
 4. **Self-check before showing** — Walk every item; do not skip any.
    - [ ] Title matches `[Axiom] type(scope): Description`, capital, no period, ≤67 chars.
-   - [ ] Para 1 leads with behavior, not internal symbol names.
+   - [ ] Para 1 leads with observable behavior or an established invariant that explains the bug.
+   - [ ] For an invariant violation, the message connects the expected rule, its violation, and the observable issue.
    - [ ] Para 1 has a concrete anchor (example, error message, before/after).
    - [ ] Mechanism is one concept, not a diff retrace with sibling-function names.
    - [ ] No reasoning journey (alternatives considered, sibling reused, layered fixes).
@@ -118,7 +119,7 @@ These are the patterns drafts most often hit, and that this skill exists to prev
 - **Function-by-function walkthrough** — "In `foo()`, we now do A. In `bar()`, we adjust B." The reviewer reads the diff for that. Collapse into the single mechanism.
 - **Enumerating touched files, classes, or call sites** — "Adopt it in `Foo`, `Bar`, `Baz`, `Qux`, and `Quux`." or "Updated across N call sites." The diff is the source of truth for scope. Naming the touched symbols eats space without informing the reader. Exception: name a specific file only when its role in the change is not obvious from the title (e.g., the test file that needed expectation updates, or the one production file the rest of the diff supports).
 - **Lists embedded in a sentence** — a comma-separated enumeration inside a sentence forces the reader to parse a list while tracking the surrounding clause. Many short items do it ("covers aliases, qualified refs, star expansion, CTE expansion, AliasedRelation, set operations, and global aggregation"), and so do two long ones ("keeps the conjunct above the node when it reads the call's result, and pushes it below when every column it touches comes from the scan"). Fix by either (a) breaking the list out into its own bullet sub-list, or (b) summarizing as a category ("the main alias-resolution scenarios", "a branch the form may skip"). The bullet form scales with item count; the summary form is right when individual items don't carry weight.
-- **Missing big picture** — Diving into internal symbols in paragraph 1. Lead with user-visible behavior; descend into mechanism in paragraph 2.
+- **Missing big picture** — Diving into internal symbols before explaining why they matter. When an established invariant explains the bug, state it and connect its violation to the observable issue. Otherwise lead with user-visible behavior.
 - **Reasoning scaffolding** — "We considered X but chose Y because Z." Belongs in design docs or PR threads, not the commit log.
 - **Hard-wrapped paragraphs** — Hard line breaks at ~70/80 columns render as ragged short lines wherever the message is reflowed.
 - **Listing or pass-counting the tests** — the added cases are in the diff and "All 47 tests pass" is CI's job; both are noise. The Test Plan carries only a non-obvious test strategy (a repro, a CLI run), else omit it.
