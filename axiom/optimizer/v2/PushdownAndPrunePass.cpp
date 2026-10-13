@@ -95,8 +95,9 @@ struct PushdownContext {
   // other output rows read the removed rows. Never inserted into the plan.
   PlanObjectSet nonNullColumns;
 
-  // Expression identities established by joins in this subtree. A parent
-  // applies them while rebuilding on the way back up.
+  // Maps expressions to equivalent replacements established in this subtree.
+  // Parents apply these while rebuilding. Each replacement must be evaluable
+  // from the rewritten subtree's output columns.
   PlanSubstitutions outputSubstitutions;
 };
 
@@ -2431,7 +2432,8 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     NodeCP newInput = rewrite(node->input(), childContext);
     const PlanObjectSet rewrittenRequired = rewriteColumnSet(
         exprs_, childContext.required, childContext.outputSubstitutions);
-    newInput = dropColumnsForWindow(newInput, rewrittenRequired);
+    newInput = dropColumnsForWindow(
+        newInput, rewrittenRequired, childContext.outputSubstitutions);
     applyOutputSubstitutions(childContext, blocked);
 
     // Emit the rank column only when a consumer above still needs it.
@@ -2478,7 +2480,10 @@ class Pushdown : public NodeRewriter<PushdownContext> {
   // Velox's window operators pass every input column through, so a column
   // that only an operator below the window reads would ride through it. Adds
   // a Project that keeps just 'required' when the input has more.
-  NodeCP dropColumnsForWindow(NodeCP input, const PlanObjectSet& required) {
+  NodeCP dropColumnsForWindow(
+      NodeCP input,
+      const PlanObjectSet& required,
+      PlanSubstitutions& substitutions) {
     ExprVector exprs;
     ColumnVector columns;
     for (ColumnCP column : input->outputColumns()) {
@@ -2492,8 +2497,10 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       return input;
     }
 
-    return builder().make<Project>(
-        {input, std::move(exprs), std::move(columns)});
+    NodeCP output =
+        builder().make<Project>({input, std::move(exprs), std::move(columns)});
+    substitutions.retainVisible(output->outputColumns(), exprs_);
+    return output;
   }
 
   // Keeps the Window, dropping the functions no consumer reads.
@@ -2527,7 +2534,8 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     NodeCP newInput = rewrite(node->input(), childContext);
     const PlanObjectSet rewrittenRequired = rewriteColumnSet(
         exprs_, childContext.required, childContext.outputSubstitutions);
-    newInput = dropColumnsForWindow(newInput, rewrittenRequired);
+    newInput = dropColumnsForWindow(
+        newInput, rewrittenRequired, childContext.outputSubstitutions);
 
     // With every function pruned the node computes nothing and emits its
     // input's columns.
