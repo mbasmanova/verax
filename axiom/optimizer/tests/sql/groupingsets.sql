@@ -32,6 +32,12 @@ SELECT a, sum(b) AS s FROM t GROUP BY GROUPING SETS ((a), ())
 -- Global grouping set over empty input emits one default row.
 SELECT a, sum(b) AS s FROM t WHERE a > 1000 GROUP BY ROLLUP(a)
 ----
+-- Each global grouping set emits its default aggregates over empty input.
+SELECT u.k, count(*) AS n, sum(t.v) AS s, GROUPING(u.k) AS g
+FROM (SELECT BIGINT '1' AS v WHERE false) t
+CROSS JOIN UNNEST(ARRAY[1, 2]) AS u(k)
+GROUP BY GROUPING SETS ((u.k), (), ())
+----
 -- A grouping key from the empty side of an outer join is NULL on every row.
 SELECT v.x, t.a, count(*) AS c
 FROM t
