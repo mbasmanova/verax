@@ -210,8 +210,7 @@ AggregateCallVector precomputeAggregateArgs(
           precompute.toColumn(arg, /*alias=*/nullptr, /*allowConstant=*/true));
     }
     ExprCP condition = aggregate->condition() != nullptr
-        ? precompute.toColumn(
-              aggregate->condition(), /*alias=*/nullptr, /*allowConstant=*/true)
+        ? precompute.toColumn(aggregate->condition())
         : nullptr;
     ExprVector orderKeys;
     orderKeys.reserve(aggregate->orderKeys().size());
@@ -374,8 +373,7 @@ class ClusterCollector {
   }
 
  private:
-  // These return true when they took the node into the cluster; an Unnest
-  // always joins it.
+  // These return true when they took the node into the cluster.
 
   bool collectJoin(JoinCP join, bool preserved, bool unnestMovable) {
     if (isClusterable(join) && !opaqueJoins_.contains(join)) {
@@ -439,17 +437,13 @@ class ClusterCollector {
         [](ExprCP expression) {
           return expression->containsNonDeterministic();
         });
-    if (!deterministic) {
+    // A column-free input can contain operators that need physical planning.
+    // Keep the full subtree inside a leaf of the cluster.
+    if (!deterministic || unnest->input()->outputColumns().empty()) {
       cluster_.leaves.push_back(unnest);
       return;
     }
-    // An Unnest of a constant, as in UNNEST(ARRAY[1, 2]), reads a subtree that
-    // produces no columns. No predicate can reference it, so it is not a
-    // relation of the cluster; the Unnest emits it as its own input.
-    NodeCP input = unnest->input();
-    if (!input->outputColumns().empty()) {
-      collect(input, preserved, unnestMovable);
-    }
+    collect(unnest->input(), preserved, unnestMovable);
     // Preserve JoinCluster's post-order invariant.
     cluster_.unnests.push_back(unnest);
     if (!unnestMovable) {
@@ -479,10 +473,7 @@ std::vector<UnnestCP> takeFreeUnnests(JoinCluster& cluster) {
   folly::F14FastSet<UnnestCP> constrained;
   for (auto it = cluster.unnests.rbegin(); it != cluster.unnests.rend(); ++it) {
     UnnestCP unnest = *it;
-    // A constant-input Unnest is the only row source on its side of a join.
-    // It cannot be removed from the graph even when no predicate reads the
-    // columns it produces.
-    if (unnest->input()->outputColumns().empty() || barriers.contains(unnest) ||
+    if (barriers.contains(unnest) ||
         constrainedColumns.hasIntersection(unnest->generatedColumns())) {
       constrained.insert(unnest);
       constrainedColumns.unionColumns(unnest->unnestExpressions());

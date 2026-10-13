@@ -1439,6 +1439,9 @@ class Aggregate : public Call {
     return fallback_;
   }
 
+  /// Returns the typed result for empty input from the function registry.
+  velox::Variant emptyInputResult() const;
+
   /// Returns a copy with isDistinct set to false.
   const Aggregate* dropDistinct() const;
 
