@@ -355,6 +355,12 @@ bool Aggregate::KeyEq::operator()(
   return aggregateIdentityEq(key, aggregate);
 }
 
+velox::Variant Aggregate::emptyInputResult() const {
+  auto result = FunctionRegistry::instance()->aggregateResultForEmptyInput(
+      name(), rawInputType_);
+  return result.isNull() ? velox::Variant::null(value().type->kind()) : result;
+}
+
 std::string Aggregate::toString() const {
   std::stringstream out;
   out << name() << "(";

@@ -195,6 +195,26 @@ TEST_P(AggregationTest, dedupMask) {
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
+TEST_P(AggregationTest, constantFilter) {
+  testConnector_->addTable("t", ROW({"a", "b", "c"}, BIGINT()));
+  testConnector_->addTable("u", ROW({{"a", BIGINT()}, {"b", BOOLEAN()}}));
+
+  const auto logicalPlan = parseSelect(
+      "SELECT t.b, count(v.a) FILTER (WHERE v.b), sum(t.c) FILTER (WHERE v.b IS NULL) "
+      "FROM t "
+      "LEFT JOIN (SELECT * FROM u WHERE a = 2) v ON t.a = v.a "
+      "WHERE t.a = 1 "
+      "GROUP BY 1");
+
+  AXIOM_ASSERT_PLAN_V2(
+      toSingleNodePlan(logicalPlan),
+      matchScan("t")
+          .filter("a = 1")
+          .singleAggregation({"b"}, {"sum(c) as s"})
+          .project({"b", "0", "s"})
+          .build());
+}
+
 TEST_P(AggregationTest, dedupOrderBy) {
   testConnector_->addTable("t", ROW({"a", "b", "c"}, BIGINT()));
 

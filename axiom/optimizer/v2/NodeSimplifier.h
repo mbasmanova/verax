@@ -101,7 +101,8 @@ class NodeSimplifier {
   /// Builds a TopN or a Limit when no order key remains.
   SimplifiedNode make(TopN::Key key, SimplifiedNode input);
 
-  /// Builds an Aggregate after removing redundant grouping keys.
+  /// Builds an Aggregate after removing redundant grouping keys and folding
+  /// constant FILTER conditions.
   SimplifiedNode make(Aggregate::Key key, SimplifiedNode input);
 
   /// Builds a GroupId after simplifying its grouping-key layout.

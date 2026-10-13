@@ -313,8 +313,7 @@ void checkRootOutput(NodeCP root, const ColumnVector& expected) {
 
 NodeCP emitLeaf(const LeafOp* leaf, EmitState& state) {
   NodeCP node = state.graph.relation(leaf->relationId).node();
-  // An Unnest of a constant reads a subtree that produces no columns, so it is
-  // a relation with nothing below it.
+  // An Unnest leaf includes its complete, physically planned input subtree.
   if (node->is(NodeType::kUnnest)) {
     const auto* unnest = node->as<Unnest>();
     return PhysicalJoin::makeUnnest(

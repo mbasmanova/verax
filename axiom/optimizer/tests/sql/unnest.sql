@@ -128,6 +128,28 @@ SELECT a.x, s
 FROM arrays a
 LEFT JOIN (SELECT s FROM UNNEST(ARRAY[7, 8]) AS u(s)) ON a.x = s
 ----
+-- A constant array expands once per group from its table input.
+SELECT t.v
+FROM elements t
+JOIN (
+  SELECT v.y
+  FROM (SELECT 1 FROM arrays WHERE x = 7 GROUP BY 1) u
+  CROSS JOIN UNNEST(ARRAY[10, 40]) v(y)
+) u ON t.v = u.y
+----
+-- A constant array expands once per row from a nested UNNEST.
+SELECT t.v
+FROM elements t
+JOIN (
+  SELECT v.y
+  FROM (
+    SELECT 1
+    FROM arrays
+    CROSS JOIN UNNEST(array_distinct(ys)) u(z)
+  ) u
+  CROSS JOIN UNNEST(ARRAY[10, 40]) v(y)
+) u ON t.v = u.y
+----
 -- A filter between an outer join and an inner join reads the unnested value
 -- the outer join pads.
 SELECT t.k

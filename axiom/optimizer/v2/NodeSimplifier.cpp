@@ -515,12 +515,52 @@ NodeSimplifier::SimplifiedNode NodeSimplifier::make(
     keptLiteral |= groupingKey->is(PlanType::kLiteralExpr);
   }
 
-  appendAll(
-      keptKeyOutputs, std::span(key.outputColumns).subspan(originalNumKeys));
+  AggregateCallVector keptAggregates;
+  for (size_t i = 0; i < key.aggregates.size(); ++i) {
+    const auto* aggregate = key.aggregates[i];
+
+    ExprCP condition = aggregate->condition();
+    if (condition != nullptr) {
+      condition = simplifier_.simplify(condition);
+      if (isConstantNull(condition) || isConstantFalse(condition)) {
+        outputSubstitutions.add(
+            key.outputColumns[originalNumKeys + i],
+            builder_.makeLiteral(
+                aggregate->emptyInputResult(), aggregate->value().type));
+        continue;
+      }
+
+      if (isConstantTrue(condition)) {
+        condition = nullptr;
+      }
+
+      if (condition != aggregate->condition()) {
+        aggregate = builder_.makeAggregate(
+            aggregate->name(),
+            aggregate->value(),
+            ExprVector{aggregate->args()},
+            aggregate->functions(),
+            aggregate->isDistinct(),
+            condition,
+            aggregate->intermediateType(),
+            ExprVector{aggregate->orderKeys()},
+            aggregate->orderTypes(),
+            aggregate->specialKind(),
+            aggregate->fallback());
+      }
+    }
+
+    keptAggregates.push_back(aggregate);
+    keptKeyOutputs.push_back(key.outputColumns[originalNumKeys + i]);
+  }
   key.groupingKeys = std::move(keptKeys);
+  key.aggregates = std::move(keptAggregates);
   key.outputColumns = std::move(keptKeyOutputs);
 
-  NodeCP output = builder_.make<Aggregate>(std::move(key));
+  NodeCP output = key.groupingKeys.empty() && key.aggregates.empty() &&
+          key.globalGroupingSets.empty()
+      ? builder_.makeSingleRowValues({}, ColumnVector{})
+      : static_cast<NodeCP>(builder_.make<Aggregate>(std::move(key)));
   input.substitutions.retainVisible(output->outputColumns(), exprs_);
   outputSubstitutions.merge(input.substitutions);
   outputSubstitutions.retainVisible(output->outputColumns(), exprs_);

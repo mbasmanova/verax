@@ -611,10 +611,6 @@ class Translator {
       NodeCP currentInput,
       Scope& newScope);
 
-  // The result of an aggregate over the empty set (constant false/null FILTER):
-  // the aggregate's empty-input value from the function registry.
-  ExprCP emptySetResult(const optimizer::Aggregate* call);
-
   Translated translateValues(
       const lp::ValuesNode& values,
       const LpNameSet& required);
@@ -2133,20 +2129,6 @@ Translated Translator::translateSample(
   VELOX_UNREACHABLE();
 }
 
-ExprCP Translator::emptySetResult(const optimizer::Aggregate* call) {
-  std::vector<const velox::Type*> argTypes;
-  argTypes.reserve(call->args().size());
-  for (ExprCP arg : call->args()) {
-    argTypes.push_back(arg->value().type);
-  }
-  velox::Variant emptyValue =
-      FunctionRegistry::instance()->aggregateResultForEmptyInput(
-          call->name(), argTypes);
-  return emptyValue.isNull()
-      ? static_cast<ExprCP>(builder_.makeNull(call->value().type))
-      : builder_.makeLiteral(std::move(emptyValue), call->value().type);
-}
-
 void Translator::translateGroupingKeys(
     const lp::AggregateNode& aggregate,
     const Scope& inputScope,
@@ -2279,7 +2261,8 @@ Translated Translator::translateAggregate(
     // empty-set result.
     if (aggregateCall->condition() != nullptr &&
         aggregateCall->condition()->is(PlanType::kLiteralExpr)) {
-      newScope[aggregateName] = emptySetResult(aggregateCall);
+      newScope[aggregateName] = builder_.makeLiteral(
+          aggregateCall->emptyInputResult(), aggregateCall->value().type);
       continue;
     }
     if (auto it = aggregateToOutput.find(aggregateCall);
@@ -2312,7 +2295,7 @@ Translated Translator::translateAggregate(
             .outputColumns = std::move(outputColumns)},
         {currentInput, {}});
     applySubstitutions(simplified.substitutions, newScope);
-    if (simplified.empty()) {
+    if (simplified.empty() || !simplified.node->is(NodeType::kAggregate)) {
       return {nodeSimplifier_.materialize(simplified), std::move(newScope)};
     }
     NodeCP node = simplified.node;

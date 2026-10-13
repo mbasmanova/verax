@@ -59,6 +59,35 @@ SELECT count(a) FILTER (WHERE 1 = 0), sum(a) FILTER (WHERE 1 = 0) FROM t
 -- Constant-null FILTER behaves like false: empty-set aggregate.
 SELECT count(a) FILTER (WHERE cast(null AS boolean)) FROM t
 ----
+-- An unmatched LEFT JOIN makes the aggregate's FILTER null.
+SELECT t.a, min(u.x) FILTER (WHERE u.y), count(u.x) FILTER (WHERE u.y),
+  sum(t.b) FILTER (WHERE u.y IS NULL)
+FROM t
+LEFT JOIN (SELECT a AS x, c > 0 AS y FROM t_no_stats WHERE a = 2) u ON t.a = u.x
+WHERE t.a = 1
+GROUP BY 1
+----
+-- A global aggregate with null FILTERs returns one row of empty-input results.
+SELECT min(u.x) FILTER (WHERE u.y), count(u.x) FILTER (WHERE u.y)
+FROM t
+LEFT JOIN (SELECT a AS x, c > 0 AS y FROM t_no_stats WHERE a = 2) u ON t.a = u.x
+WHERE t.a = 1
+----
+-- Null FILTERs preserve both the keyed group and the global grouping set.
+SELECT t.a, count(u.x) FILTER (WHERE u.y), sum(t.b) FILTER (WHERE u.y IS NULL)
+FROM t
+LEFT JOIN (SELECT a AS x, c > 0 AS y FROM t_no_stats WHERE a = 2) u ON t.a = u.x
+WHERE t.a = 1
+GROUP BY GROUPING SETS ((t.a), ())
+----
+-- A predicate fixes the FILTER to false for every remaining group.
+SELECT b, count(a) FILTER (WHERE a = 2), sum(a) FILTER (WHERE a = 2)
+FROM t WHERE a = 1 GROUP BY b
+----
+-- A predicate fixes one FILTER to false and leaves the other aggregate active.
+SELECT count(a) FILTER (WHERE a = 2), sum(b) FILTER (WHERE a = 1)
+FROM t WHERE a = 1
+----
 -- Empty-set FILTER with GROUP BY: one row per group, count 0 each.
 SELECT b, count(a) FILTER (WHERE false) FROM t GROUP BY b
 ----
