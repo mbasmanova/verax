@@ -30,6 +30,22 @@ A fix that makes a query plan at all is the case that does not need one. There i
 
 ---
 
+### Query Names and Durability
+
+Replace production table, column, CTE, and alias names with generic names.
+Use `t`, `u`, and `v` consistently for tables, CTEs, and relation aliases, and
+simple column names such as `a`, `b`, and `c`.
+
+Aim for tests resilient to future optimizations. Choose queries and data that
+keep the behavior under test observable after predictable simplifications,
+such as constant folding, expression deduplication, and singleton UNNEST
+elimination. Avoid relying on an unrelated missed optimization to reach the
+bug; choose another query.
+Assert results and invariants, and match only plan details central to the
+optimization being tested.
+
+---
+
 ### PlanMatcher: Verifying Plan Shape
 
 PlanMatcher provides a fluent builder API for asserting the structure of an optimized plan. You describe the expected plan from leaf to root (from scan upward), and use `AXIOM_ASSERT_PLAN` to match it against the actual plan. On mismatch, the full plan is printed automatically for debugging.

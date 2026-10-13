@@ -41,6 +41,22 @@ A bug fix in code that has no tests adds tests for the whole behavior that
 code implements. The bug shows that coverage is missing, and one case for the
 bug leaves the rest of the behavior untested.
 
+### Query names and durability
+
+Replace production table, column, CTE, and alias names with generic names.
+Use `t`, `u`, and `v` consistently for tables, CTEs, and relation aliases, and
+simple column names such as `a`, `b`, and `c`.
+
+Aim for tests resilient to future optimizations. Choose queries and data that
+keep the behavior under test observable after predictable simplifications,
+such as constant folding, expression deduplication, and singleton UNNEST
+elimination. Avoid relying on an unrelated missed optimization to reach the
+bug; choose another query.
+Assert results and invariants, and match only plan details central to the
+optimization being tested.
+
+### Assertions
+
 Prefer gtest container matchers over individual assertions:
 
 ```cpp
