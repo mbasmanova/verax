@@ -201,23 +201,27 @@ std::optional<RankFusion> rankFusionFromPredicate(
     return std::nullopt;
   }
   const Call* comparison = predicate->as<Call>();
-  const auto& args = comparison->args();
-  if (args.empty() || args[0] != rankColumn) {
+  const Name name = comparison->name();
+  if (name != names.lte && name != names.lt && name != names.equality &&
+      name != names.between) {
     return std::nullopt;
   }
 
-  const Name name = comparison->name();
+  const auto& args = comparison->args();
+  if (args[0] != rankColumn) {
+    return std::nullopt;
+  }
+
   ExprCP remainingPredicate{nullptr};
   int64_t bound;
-  if (name == names.between && args.size() == 3 &&
-      args[1]->is(PlanType::kLiteralExpr) &&
+  if (name == names.between && args[1]->is(PlanType::kLiteralExpr) &&
       args[2]->is(PlanType::kLiteralExpr)) {
     const int64_t lower = integerValue(&args[1]->as<Literal>()->literal());
     bound = integerValue(&args[2]->as<Literal>()->literal());
     if (lower > 1) {
       remainingPredicate = exprs.makeGreaterThanOrEqual(rankColumn, args[1]);
     }
-  } else if (args.size() == 2 && args[1]->is(PlanType::kLiteralExpr)) {
+  } else if (name != names.between && args[1]->is(PlanType::kLiteralExpr)) {
     bound = integerValue(&args[1]->as<Literal>()->literal());
   } else {
     return std::nullopt;
@@ -342,13 +346,19 @@ bool holdsAtRankOne(
     return false;
   }
   const Call* comparison = conjunct->as<Call>();
-  if (comparison->args().size() != 2 || comparison->args()[0] != rankColumn ||
+  const Name name = comparison->name();
+  if (name != names.equality && name != names.lt && name != names.lte &&
+      name != names.gt && name != names.gte) {
+    return false;
+  }
+
+  if (comparison->args()[0] != rankColumn ||
       !comparison->args()[1]->is(PlanType::kLiteralExpr)) {
     return false;
   }
+
   const int64_t bound =
       integerValue(&comparison->args()[1]->as<Literal>()->literal());
-  const Name name = comparison->name();
   if (name == names.equality) {
     return bound == 1;
   }
