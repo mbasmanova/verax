@@ -42,6 +42,7 @@ const auto& nodeKindNames() {
       {NodeKind::kFixedPoint, "FIXED_POINT"},
       {NodeKind::kRecursiveReference, "RECURSIVE_REFERENCE"},
       {NodeKind::kLateralJoin, "LATERAL_JOIN"},
+      {NodeKind::kGraphMatch, "GRAPH_MATCH"},
   };
   return kNames;
 }
@@ -155,6 +156,15 @@ class TraversalVisitor : public PlanNodeVisitor {
   void visit(
       const RecursiveReferenceNode& /*node*/,
       PlanNodeVisitorContext& /*context*/) const override {}
+
+  void visit(const GraphMatchNode& node, PlanNodeVisitorContext& context)
+      const override {
+    auto& traversal = static_cast<Context&>(context).traversal;
+    node.forEachTablePlan(
+        [&](const LogicalPlanNode& plan) { traversePlan(plan, traversal); });
+    node.forEachExpression(
+        [&](const Expr& expression) { visitExpression(expression, context); });
+  }
 
  private:
   static void visitOptionalExpression(
@@ -355,6 +365,7 @@ void LogicalPlanNode::registerSerDe() {
   registry.Register("LogicalFixedPointNode", FixedPointNode::create);
   registry.Register(
       "LogicalRecursiveReferenceNode", RecursiveReferenceNode::create);
+  registry.Register("LogicalGraphMatchNode", GraphMatchNode::create);
 }
 
 folly::dynamic ValuesNode::serialize() const {
@@ -1571,6 +1582,497 @@ LogicalPlanNodePtr RecursiveReferenceNode::create(
       obj["id"].asString(),
       obj["recursiveName"].asString(),
       deserializeOutputType(obj));
+}
+
+namespace {
+
+using ElementTable = PropertyGraph::ElementTable;
+
+// What GraphMatchNode knows about one named vertex or edge pattern.
+struct NamedElement {
+  GraphPatternTerm::Kind kind{GraphPatternTerm::Kind::kVertex};
+
+  // True if the pattern is under a repetition, so it binds once per
+  // repetition.
+  bool group{false};
+
+  // Element tables the name can match: those every pattern with the name can
+  // match.
+  std::vector<const ElementTable*> tables;
+};
+
+// Returns the data type of 'property' for an element that can match 'tables'.
+// Fails if none of those tables defines it, or if two of them define it with
+// different data types.
+velox::TypePtr propertyType(
+    const std::vector<const ElementTable*>& tables,
+    const std::string& property) {
+  auto type = PropertyGraph::propertyType(tables, property);
+  VELOX_USER_CHECK_NOT_NULL(
+      type,
+      "Property is not defined by any table the element can match: {}",
+      property);
+  return type;
+}
+
+void checkSelector(const GraphPathSelector& selector) {
+  using Kind = GraphPathSelector::Kind;
+  const bool allowsCount = selector.kind == Kind::kAny ||
+      selector.kind == Kind::kShortest ||
+      selector.kind == Kind::kShortestGroups;
+  VELOX_USER_CHECK(
+      allowsCount || !selector.count.has_value(),
+      "Path selector does not take a count: {}",
+      GraphPathSelector::toName(selector.kind));
+  VELOX_USER_CHECK(
+      selector.kind != Kind::kShortest || selector.count.has_value(),
+      "SHORTEST requires a count");
+  if (selector.count.has_value()) {
+    VELOX_USER_CHECK_GT(
+        selector.count.value(), 0, "Path selector count must be positive");
+  }
+}
+
+// Collects the pattern names of a GraphMatchNode's patterns and checks the
+// rules on their use.
+class GraphPatternNameCollector {
+ public:
+  explicit GraphPatternNameCollector(const PropertyGraph& graph)
+      : graph_{graph} {}
+
+  void addPath(const GraphPathPattern& path) {
+    VELOX_USER_CHECK(!path.terms.empty(), "Path pattern has no terms");
+    if (path.selector.has_value()) {
+      checkSelector(path.selector.value());
+    }
+    if (!path.name.empty()) {
+      addPathName(path.name, /*group=*/false);
+    }
+    addTerms(path.terms, /*group=*/false);
+  }
+
+  const folly::F14FastMap<std::string, NamedElement>& elementNames() const {
+    return elementNames_;
+  }
+
+  // Path and subpath names, each mapped to whether it is under a
+  // repetition.
+  const folly::F14FastMap<std::string, bool>& pathNames() const {
+    return pathNames_;
+  }
+
+  // Checks that the ROW inputs of the predicates in 'terms' read properties the
+  // named patterns' tables define, with those data types. Call after adding
+  // every path.
+  void checkPredicates(const std::vector<GraphPatternTermPtr>& terms) const {
+    for (const auto& term : terms) {
+      if (term->predicate() != nullptr) {
+        term->predicate()->forEachInputReference(
+            [&](const InputReferenceExpr& input) { checkInput(input); });
+      }
+      if (term->isSubpath()) {
+        checkPredicates(term->as<GraphSubpathPattern>()->terms());
+      }
+    }
+  }
+
+  // Checks that 'predicate', a condition on a whole match, is BOOLEAN and
+  // reads vertex and edge patterns that are not under a repetition.
+  void checkMatchPredicate(const Expr& predicate) const {
+    VELOX_USER_CHECK_EQ(
+        predicate.type()->kind(),
+        velox::TypeKind::BOOLEAN,
+        "Graph match predicate is not BOOLEAN: {}",
+        predicate.type()->toString());
+    predicate.forEachInputReference([&](const InputReferenceExpr& input) {
+      const auto it = elementNames_.find(input.name());
+      VELOX_USER_CHECK(
+          it != elementNames_.end(),
+          "Graph match predicate reads an unknown pattern name: {}",
+          input.name());
+      VELOX_USER_CHECK(
+          !it->second.group,
+          "Graph match predicate reads a pattern under a repetition: {}",
+          input.name());
+      VELOX_USER_CHECK(
+          input.type()->isRow(),
+          "Graph match predicate reads a pattern name as a non-ROW: {}",
+          input.name());
+      checkInput(input);
+    });
+  }
+
+ private:
+  void addPathName(const std::string& name, bool group) {
+    VELOX_USER_CHECK(
+        !elementNames_.contains(name),
+        "Pattern name is used for both a path and an element: {}",
+        name);
+    VELOX_USER_CHECK(
+        pathNames_.emplace(name, group).second,
+        "Path name is used more than once: {}",
+        name);
+  }
+
+  void addTerms(const std::vector<GraphPatternTermPtr>& terms, bool group) {
+    for (const auto& term : terms) {
+      VELOX_USER_CHECK_NOT_NULL(term, "Path pattern term is null");
+      addTerm(*term, group);
+    }
+  }
+
+  // Adds 'term'. 'group' is true if the term is under a repetition.
+  void addTerm(const GraphPatternTerm& term, bool group) {
+    if (term.isSubpath()) {
+      const auto* subpath = term.as<GraphSubpathPattern>();
+      const bool subpathGroup = group || subpath->repetition().has_value();
+      if (!term.name().empty()) {
+        addPathName(term.name(), subpathGroup);
+      }
+      addTerms(subpath->terms(), subpathGroup);
+      return;
+    }
+
+    const auto& element = *term.as<GraphElementPattern>();
+    const bool elementGroup = group ||
+        (term.kind() == GraphPatternTerm::Kind::kEdge &&
+         term.as<GraphEdgePattern>()->repetition().has_value());
+    checkLabel(element);
+
+    if (!term.name().empty()) {
+      addElementName(
+          element,
+          elementGroup,
+          graph_.matchingTables(
+              element.label().get(),
+              element.kind() == GraphPatternTerm::Kind::kEdge));
+    }
+  }
+
+  // Checks that each field of 'input', which names a vertex or edge pattern,
+  // is a property its tables define with the field's data type.
+  void checkInput(const InputReferenceExpr& input) const {
+    const auto& tables = elementNames_.at(input.name()).tables;
+    const auto& row = input.type()->asRow();
+    for (auto i = 0; i < row.size(); ++i) {
+      const auto& property = row.nameOf(i);
+      const auto type = propertyType(tables, property);
+      VELOX_USER_CHECK(
+          type->equivalent(*row.childAt(i)),
+          "Pattern predicate reads a property with a different data type: "
+          "{}.{}, {} and {}",
+          input.name(),
+          property,
+          row.childAt(i)->toString(),
+          type->toString());
+    }
+  }
+
+  // Checks that every label name in 'element' names a vertex of the graph,
+  // or an edge for an edge pattern.
+  void checkLabel(const GraphElementPattern& element) const {
+    if (element.label() == nullptr) {
+      return;
+    }
+    const bool isVertexPattern =
+        element.kind() == GraphPatternTerm::Kind::kVertex;
+    element.label()->forEachName([&](std::string_view name) {
+      VELOX_USER_CHECK(
+          isVertexPattern ? graph_.isVertex(name) : graph_.isEdge(name),
+          "{} not found in graph: {}",
+          isVertexPattern ? "Vertex" : "Edge",
+          name);
+    });
+  }
+
+  void addElementName(
+      const GraphElementPattern& element,
+      bool group,
+      std::vector<const ElementTable*> tables) {
+    const auto& name = element.name();
+    VELOX_USER_CHECK(
+        !pathNames_.contains(name),
+        "Pattern name is used for both a path and an element: {}",
+        name);
+
+    auto [it, inserted] = elementNames_.emplace(
+        name,
+        NamedElement{.kind = element.kind(), .group = group, .tables = tables});
+    if (inserted) {
+      return;
+    }
+
+    auto& named = it->second;
+    VELOX_USER_CHECK(
+        !named.group && !group,
+        "A pattern name under a repetition is used more than once: {}",
+        name);
+    VELOX_USER_CHECK(
+        named.kind == element.kind(),
+        "Pattern name is used for both a vertex and an edge: {}",
+        name);
+
+    // Every occurrence binds the same element, so it matches only tables all
+    // occurrences can match.
+    std::erase_if(named.tables, [&](const ElementTable* table) {
+      return std::find(tables.begin(), tables.end(), table) == tables.end();
+    });
+  }
+
+  const PropertyGraph& graph_;
+
+  folly::F14FastMap<std::string, NamedElement> elementNames_;
+  folly::F14FastMap<std::string, bool> pathNames_;
+};
+
+// Returns the data type of 'output'.
+velox::TypePtr graphMatchOutputType(
+    const GraphPatternNameCollector& collector,
+    const GraphMatchOutput& output) {
+  const auto& pattern = output.pattern();
+  if (output.kind() == GraphMatchOutput::Kind::kPathLength) {
+    const auto it = collector.pathNames().find(pattern);
+    VELOX_USER_CHECK(
+        it != collector.pathNames().end(),
+        "PATH_LENGTH requires a path or subpath name: {}",
+        pattern);
+    VELOX_USER_CHECK(
+        !it->second,
+        "PATH_LENGTH of a pattern under a repetition is not supported: {}",
+        pattern);
+    return velox::BIGINT();
+  }
+
+  const auto it = collector.elementNames().find(pattern);
+  VELOX_USER_CHECK(
+      it != collector.elementNames().end(),
+      "Graph match output references an unknown pattern name: {}",
+      pattern);
+  const auto& named = it->second;
+  auto type =
+      propertyType(named.tables, output.as<GraphPropertyOutput>()->property());
+  return named.group ? velox::ARRAY(std::move(type)) : type;
+}
+
+// Checks the patterns and outputs of a GraphMatchNode and returns its output
+// type.
+velox::RowTypePtr makeGraphMatchOutputType(
+    const PropertyGraphPtr& graph,
+    const std::vector<GraphPathPattern>& paths,
+    const ExprPtr& predicate,
+    const std::vector<GraphMatchOutputPtr>& outputs,
+    const std::vector<std::string>& outputNames) {
+  VELOX_USER_CHECK_NOT_NULL(graph, "GraphMatchNode has no graph");
+  VELOX_USER_CHECK(!paths.empty(), "GraphMatchNode has no path patterns");
+  VELOX_USER_CHECK(!outputs.empty(), "GraphMatchNode has no outputs");
+  VELOX_USER_CHECK_EQ(
+      outputs.size(),
+      outputNames.size(),
+      "GraphMatchNode outputs and output names are not aligned");
+  UniqueNameChecker::check(outputNames);
+
+  GraphPatternNameCollector collector(*graph);
+  for (const auto& path : paths) {
+    collector.addPath(path);
+  }
+  for (const auto& path : paths) {
+    collector.checkPredicates(path.terms);
+  }
+  if (predicate != nullptr) {
+    collector.checkMatchPredicate(*predicate);
+  }
+
+  std::vector<velox::TypePtr> types;
+  for (const auto& output : outputs) {
+    VELOX_USER_CHECK_NOT_NULL(output, "Graph match output is null");
+    types.push_back(graphMatchOutputType(collector, *output));
+  }
+  return velox::ROW(outputNames, std::move(types));
+}
+
+const auto& graphMatchOutputKindNames() {
+  static const folly::F14FastMap<GraphMatchOutput::Kind, std::string_view>
+      kNames = {
+          {GraphMatchOutput::Kind::kProperty, "PROPERTY"},
+          {GraphMatchOutput::Kind::kPathLength, "PATH_LENGTH"},
+      };
+  return kNames;
+}
+
+} // namespace
+
+AXIOM_DEFINE_EMBEDDED_ENUM_NAME(
+    GraphMatchOutput,
+    Kind,
+    graphMatchOutputKindNames);
+
+GraphMatchOutput::GraphMatchOutput(Kind kind, std::string pattern)
+    : kind_{kind}, pattern_{std::move(pattern)} {
+  VELOX_USER_CHECK(!pattern_.empty(), "Graph match output has no pattern");
+}
+
+bool GraphMatchOutput::operator==(const GraphMatchOutput& other) const {
+  return kind_ == other.kind_ && pattern_ == other.pattern_ && equals(other);
+}
+
+folly::dynamic GraphMatchOutput::serialize() const {
+  folly::dynamic obj = folly::dynamic::object;
+  obj["kind"] = toName(kind_);
+  obj["pattern"] = pattern_;
+  return obj;
+}
+
+// static
+GraphMatchOutputPtr GraphMatchOutput::create(const folly::dynamic& obj) {
+  auto pattern = obj["pattern"].asString();
+  switch (toKind(obj["kind"].asString())) {
+    case Kind::kProperty:
+      return std::make_shared<GraphPropertyOutput>(
+          std::move(pattern), obj["property"].asString());
+    case Kind::kPathLength:
+      return std::make_shared<GraphPathLengthOutput>(std::move(pattern));
+  }
+  VELOX_UNREACHABLE();
+}
+
+GraphPropertyOutput::GraphPropertyOutput(
+    std::string pattern,
+    std::string property)
+    : GraphMatchOutput{Kind::kProperty, std::move(pattern)},
+      property_{std::move(property)} {
+  VELOX_USER_CHECK(!property_.empty(), "Graph property output has no property");
+}
+
+folly::dynamic GraphPropertyOutput::serialize() const {
+  auto obj = GraphMatchOutput::serialize();
+  obj["property"] = property_;
+  return obj;
+}
+
+bool GraphPropertyOutput::equals(const GraphMatchOutput& other) const {
+  return property_ == static_cast<const GraphPropertyOutput&>(other).property_;
+}
+
+GraphMatchNode::GraphMatchNode(
+    std::string id,
+    PropertyGraphPtr graph,
+    std::vector<GraphPathPattern> paths,
+    ExprPtr predicate,
+    std::vector<GraphMatchOutputPtr> outputs,
+    std::vector<std::string> outputNames)
+    : LogicalPlanNode{NodeKind::kGraphMatch, std::move(id), {}, makeGraphMatchOutputType(graph, paths, predicate, outputs, outputNames)},
+      graph_{std::move(graph)},
+      paths_{std::move(paths)},
+      predicate_{std::move(predicate)},
+      outputs_{std::move(outputs)},
+      outputNames_{std::move(outputNames)} {}
+
+void GraphMatchNode::forEachTablePlan(
+    folly::FunctionRef<void(const LogicalPlanNode&)> visit) const {
+  for (const auto& table : graph_->vertexTables()) {
+    visit(*table.plan);
+  }
+  for (const auto& table : graph_->edgeTables()) {
+    visit(*table.plan);
+  }
+}
+
+namespace {
+
+void forEachPredicate(
+    const std::vector<GraphPatternTermPtr>& terms,
+    folly::FunctionRef<void(const Expr&)> visit) {
+  for (const auto& term : terms) {
+    if (term->predicate() != nullptr) {
+      visit(*term->predicate());
+    }
+    if (term->isSubpath()) {
+      forEachPredicate(term->as<GraphSubpathPattern>()->terms(), visit);
+    }
+  }
+}
+
+} // namespace
+
+void GraphMatchNode::forEachExpression(
+    folly::FunctionRef<void(const Expr&)> visit) const {
+  auto visitProperties = [&](const PropertyGraph::ElementTable& table) {
+    for (const auto& [_, expression] : table.properties) {
+      visit(*expression);
+    }
+  };
+  for (const auto& table : graph_->vertexTables()) {
+    visitProperties(table);
+  }
+  for (const auto& table : graph_->edgeTables()) {
+    visitProperties(table);
+  }
+  for (const auto& path : paths_) {
+    forEachPredicate(path.terms, visit);
+  }
+  if (predicate_ != nullptr) {
+    visit(*predicate_);
+  }
+}
+
+void GraphMatchNode::accept(
+    const PlanNodeVisitor& visitor,
+    PlanNodeVisitorContext& context) const {
+  visitor.visit(*this, context);
+}
+
+bool GraphMatchNode::equalTo(const LogicalPlanNode& other) const {
+  const auto* rhs = other.as<GraphMatchNode>();
+  return *graph_ == *rhs->graph_ && paths_ == rhs->paths_ &&
+      Expr::equalNullableExprs(predicate_, rhs->predicate_) &&
+      std::equal(
+          outputs_.begin(),
+          outputs_.end(),
+          rhs->outputs_.begin(),
+          rhs->outputs_.end(),
+          [](const auto& left, const auto& right) {
+            return *left == *right;
+          }) &&
+      outputNames_ == rhs->outputNames_;
+}
+
+folly::dynamic GraphMatchNode::serialize() const {
+  auto obj = serializeBase("LogicalGraphMatchNode");
+  obj["graph"] = graph_->serialize();
+  obj["paths"] = serializeVector(
+      paths_, [](const GraphPathPattern& path) { return path.serialize(); });
+  if (predicate_ != nullptr) {
+    obj["predicate"] = predicate_->serialize();
+  }
+  obj["outputs"] = serializeVector(
+      outputs_,
+      [](const GraphMatchOutputPtr& output) { return output->serialize(); });
+  obj["outputNames"] = velox::ISerializable::serialize(outputNames_);
+  return obj;
+}
+
+// static
+LogicalPlanNodePtr GraphMatchNode::create(
+    const folly::dynamic& obj,
+    void* context) {
+  std::vector<GraphPathPattern> paths;
+  for (const auto& path : obj["paths"]) {
+    paths.push_back(GraphPathPattern::create(path, context));
+  }
+  std::vector<GraphMatchOutputPtr> outputs;
+  for (const auto& output : obj["outputs"]) {
+    outputs.push_back(GraphMatchOutput::create(output));
+  }
+  return std::make_shared<GraphMatchNode>(
+      obj["id"].asString(),
+      PropertyGraph::create(obj["graph"], context),
+      std::move(paths),
+      obj.count("predicate")
+          ? velox::ISerializable::deserialize<Expr>(obj["predicate"], context)
+          : nullptr,
+      std::move(outputs),
+      velox::ISerializable::deserialize<std::vector<std::string>>(
+          obj["outputNames"]));
 }
 
 } // namespace facebook::axiom::logical_plan

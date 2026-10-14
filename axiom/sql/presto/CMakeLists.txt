@@ -37,6 +37,7 @@ add_library(
   ColumnsExpansion.cpp
   DisplayNames.cpp
   ExpressionPlanner.cpp
+  GraphTablePlanner.cpp
   GroupByPlanner.cpp
   IntervalParser.cpp
   RecursiveCteValidator.cpp

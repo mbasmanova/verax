@@ -141,6 +141,16 @@ void Expr::forEachSubquery(
   accept(visitor, context);
 }
 
+void Expr::forEachInputReference(
+    folly::FunctionRef<void(const InputReferenceExpr&)> visit) const {
+  if (isInputReference()) {
+    visit(*as<InputReferenceExpr>());
+  }
+  for (const auto& input : inputs_) {
+    input->forEachInputReference(visit);
+  }
+}
+
 bool Expr::equalNullableExprs(const ExprPtr& lhs, const ExprPtr& rhs) {
   if (lhs == nullptr && rhs == nullptr) {
     return true;

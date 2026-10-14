@@ -18,6 +18,8 @@
 #include "axiom/common/Enums.h"
 #include "axiom/common/SchemaTableName.h"
 #include "axiom/logical_plan/Expr.h"
+#include "axiom/logical_plan/GraphPattern.h"
+#include "axiom/logical_plan/PropertyGraph.h"
 #include "velox/common/serialization/Serializable.h"
 #include "velox/type/Variant.h"
 #include "velox/vector/ComplexVector.h"
@@ -41,6 +43,7 @@ enum class NodeKind {
   kFixedPoint = 13,
   kRecursiveReference = 14,
   kLateralJoin = 15,
+  kGraphMatch = 16,
 };
 
 AXIOM_DECLARE_ENUM_NAME(NodeKind)
@@ -1163,6 +1166,175 @@ class RecursiveReferenceNode : public LogicalPlanNode {
 };
 
 using RecursiveReferenceNodePtr = std::shared_ptr<const RecursiveReferenceNode>;
+
+class GraphMatchOutput;
+using GraphMatchOutputPtr = std::shared_ptr<const GraphMatchOutput>;
+
+/// How a GraphMatchNode computes an output column from a match. Reads the
+/// pattern named 'pattern'.
+class GraphMatchOutput {
+ public:
+  enum class Kind { kProperty, kPathLength };
+
+  AXIOM_DECLARE_EMBEDDED_ENUM_NAME(Kind);
+
+  virtual ~GraphMatchOutput() = default;
+
+  Kind kind() const {
+    return kind_;
+  }
+
+  const std::string& pattern() const {
+    return pattern_;
+  }
+
+  /// Caller must ensure this kind is correct.
+  template <typename T>
+  const T* as() const {
+    static_assert(std::is_base_of_v<GraphMatchOutput, T>);
+    VELOX_DCHECK_NOT_NULL(dynamic_cast<const T*>(this));
+    return static_cast<const T*>(this);
+  }
+
+  bool operator==(const GraphMatchOutput& other) const;
+
+  virtual folly::dynamic serialize() const;
+
+  static GraphMatchOutputPtr create(const folly::dynamic& obj);
+
+ protected:
+  GraphMatchOutput(Kind kind, std::string pattern);
+
+  // Returns true if 'other', of the same kind and pattern, is equal.
+  virtual bool equals(const GraphMatchOutput& other) const = 0;
+
+ private:
+  const Kind kind_;
+  const std::string pattern_;
+};
+
+/// Property 'property' of the vertex or edge a vertex or edge pattern binds:
+/// b.y. If the pattern repeats, an array with one value per repetition.
+class GraphPropertyOutput final : public GraphMatchOutput {
+ public:
+  GraphPropertyOutput(std::string pattern, std::string property);
+
+  const std::string& property() const {
+    return property_;
+  }
+
+  folly::dynamic serialize() const override;
+
+ private:
+  bool equals(const GraphMatchOutput& other) const override;
+
+  const std::string property_;
+};
+
+/// Number of edges in the path a path or subpath pattern matches:
+/// PATH_LENGTH(p). BIGINT.
+class GraphPathLengthOutput final : public GraphMatchOutput {
+ public:
+  explicit GraphPathLengthOutput(std::string pattern)
+      : GraphMatchOutput{Kind::kPathLength, std::move(pattern)} {}
+
+ private:
+  bool equals(const GraphMatchOutput& /*other*/) const override {
+    return true;
+  }
+};
+
+/// Matches path patterns against a property graph and returns one row per
+/// match. A vertex or edge pattern binds one vertex or edge of the graph, and
+/// outputs read properties of the bound elements by pattern name.
+///
+///   (a IS A WHERE a.x = 1) -[e IS B]->{1,3} (b)
+///   outputs: [b.x, e.z], outputNames: [o1, o2]  ->  o1 BIGINT,
+///   o2 ARRAY(DOUBLE)
+///
+/// Term predicates apply while matching, then each path's selector, then
+/// the joins between path patterns that share a pattern name, then
+/// 'predicate'. The node has no inputs: the graph's element tables carry their
+/// own source plans, reached through forEachTablePlan().
+///
+/// Invariants:
+/// - 'graph' is set, and 'paths' and 'outputs' are not empty. 'outputNames'
+///   is aligned with 'outputs', and its names are unique. Each path has
+///   at least one term, and its selector satisfies the invariants
+///   GraphPathSelector lists.
+/// - Every label name in a vertex pattern is a vertex of the graph, and every
+///   label name in an edge pattern is an edge.
+/// - Every property a predicate or output reads is defined by a table the
+///   pattern can match, and all such tables give it the same data type; for a
+///   predicate, the data type its ROW input declares.
+/// - A name under a repetition appears once. A vertex pattern's name is never
+///   reused for an edge pattern. A reused name matches only tables every
+///   pattern with that name can match.
+/// - Path and subpath names are unique and distinct from vertex and edge
+///   pattern names.
+/// - 'predicate' is BOOLEAN and reads vertex and edge patterns that are not
+///   under a repetition.
+/// - A property output reads a vertex or edge pattern. A path length output
+///   reads a path or subpath pattern that is not under a repetition.
+class GraphMatchNode : public LogicalPlanNode {
+ public:
+  GraphMatchNode(
+      std::string id,
+      PropertyGraphPtr graph,
+      std::vector<GraphPathPattern> paths,
+      ExprPtr predicate,
+      std::vector<GraphMatchOutputPtr> outputs,
+      std::vector<std::string> outputNames);
+
+  const PropertyGraphPtr& graph() const {
+    return graph_;
+  }
+
+  const std::vector<GraphPathPattern>& paths() const {
+    return paths_;
+  }
+
+  /// Condition on a whole match, across paths: MATCH ... WHERE. Null if the
+  /// node has none.
+  const ExprPtr& predicate() const {
+    return predicate_;
+  }
+
+  const std::vector<GraphMatchOutputPtr>& outputs() const {
+    return outputs_;
+  }
+
+  /// Names of the output columns, aligned with 'outputs'.
+  const std::vector<std::string>& outputNames() const {
+    return outputNames_;
+  }
+
+  /// Invokes 'visit' for the plan of each element table.
+  void forEachTablePlan(
+      folly::FunctionRef<void(const LogicalPlanNode&)> visit) const;
+
+  /// Invokes 'visit' for each expression the node holds: property expressions,
+  /// term predicates and 'predicate'.
+  void forEachExpression(folly::FunctionRef<void(const Expr&)> visit) const;
+
+  void accept(const PlanNodeVisitor& visitor, PlanNodeVisitorContext& context)
+      const override;
+
+  folly::dynamic serialize() const override;
+
+  static LogicalPlanNodePtr create(const folly::dynamic& obj, void* context);
+
+ private:
+  bool equalTo(const LogicalPlanNode& other) const override;
+
+  const PropertyGraphPtr graph_;
+  const std::vector<GraphPathPattern> paths_;
+  const ExprPtr predicate_;
+  const std::vector<GraphMatchOutputPtr> outputs_;
+  const std::vector<std::string> outputNames_;
+};
+
+using GraphMatchNodePtr = std::shared_ptr<const GraphMatchNode>;
 
 } // namespace facebook::axiom::logical_plan
 

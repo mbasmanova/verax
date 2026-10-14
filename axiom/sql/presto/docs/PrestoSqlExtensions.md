@@ -466,9 +466,11 @@ supports neither.
 
 Graph queries are gated behind the `graphQueries` flag in `ParserOptions`, which
 is off by default. To enable them, set `graphQueries = true`, or use
-`SET SESSION parser.graph_queries = true` at the CLI. Planning is not
-implemented yet: with the flag on, a `GRAPH_TABLE` query parses and then fails
-with "Relation type is not supported yet".
+`SET SESSION parser.graph_queries = true` at the CLI. With the flag on, the
+parser plans a `GRAPH_TABLE` as a GraphMatch logical plan node, which
+`EXPLAIN (TYPE LOGICAL)` shows. The optimizer does not support that node yet,
+so running the query fails with "Unsupported logical plan node kind:
+GRAPH_MATCH".
 
 ```sql
 WITH GRAPH g AS (
@@ -498,6 +500,13 @@ alias, a `KEY`, and its labels:
 - An edge table also has `SOURCE KEY (...) REFERENCES vertex_table (...)` and
   `DESTINATION KEY (...) REFERENCES vertex_table (...)`.
 
+Each label becomes a vertex or an edge of the graph, backed by every table that
+has it. The definition must also satisfy:
+
+- The referenced columns are the vertex table's key, in any order.
+- Every table with a label exposes the same properties for it, and the labels
+  of one table give a shared property name the same expression.
+
 ### Patterns
 
 The pattern syntax follows the GQL grammar (ISO/IEC 39075), whose pattern
@@ -517,7 +526,11 @@ language SQL/PGQ shares.
 
 Several path patterns may be separated by commas. `MATCH ... WHERE` filters
 matches after selection, and `COLUMNS (expr [AS name], ...)` defines the
-output columns.
+output columns. Predicates and columns read a property of a matched vertex or
+edge as `v.property`, and the length of a named path or subpath as
+`path_length(p)`. Elements need not alternate between node and edge patterns:
+adjacent node patterns bind the same node, and an edge with no node pattern
+next to it has an implicit one.
 
 Rules beyond the grammar:
 
@@ -525,6 +538,8 @@ Rules beyond the grammar:
   `(a:Person)` is rejected rather than read as a variable named `a:Person`.
 - An unbounded quantifier (`*`, `+`, `{m,}`) must be in the scope of a selector
   other than `ALL` or a path mode other than `WALK`.
+- `MATCH ... WHERE` cannot read a pattern under a quantifier, and
+  `path_length` cannot read a subpath under a quantifier.
 - Undirected edges (`~[...]~`) and `<-[...]->` are not supported; every edge
   table is directed.
 - Match modes (`REPEATABLE ELEMENTS`, `DIFFERENT EDGES`), `KEEP`, and element

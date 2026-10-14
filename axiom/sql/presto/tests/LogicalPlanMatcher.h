@@ -135,6 +135,15 @@ class LogicalPlanMatcherBuilder {
   /// Matches a TableScanNode with the specified table name.
   LogicalPlanMatcherBuilder& tableScan(const std::string& tableName);
 
+  /// Matches a GraphMatchNode. Must be the first node in the chain (leaf).
+  LogicalPlanMatcherBuilder& graphMatch(OnMatchCallback onMatch = nullptr);
+
+  /// Matches a GraphMatchNode with the specified outputs, each written as
+  /// pattern.property or path_length(pattern). An output followed by
+  /// ' AS alias' names its column for subsequent matchers.
+  LogicalPlanMatcherBuilder& graphMatch(
+      const std::vector<std::string>& outputs);
+
   /// Matches a ValuesNode. Must be the first node in the chain (leaf).
   LogicalPlanMatcherBuilder& values(OnMatchCallback onMatch = nullptr);
 

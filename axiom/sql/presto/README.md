@@ -389,6 +389,15 @@ non-TPC-H schemas add tables via `connector_->addTable()`:
 connector_->addTable("t1", ROW({"id", "a"}, {INTEGER(), VARCHAR()}));
 ```
 
+Tests of syntax behind a parser option set it in the fixture's constructor,
+through `parserOptions_`:
+
+```cpp
+GraphParserTest() {
+  parserOptions_.graphQueries = true;
+}
+```
+
 #### Plan node tests
 
 Most tests verify the shape of the logical plan produced by a SQL query.

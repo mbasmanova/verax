@@ -121,6 +121,14 @@ class PrestoParserTestBase : public testing::Test {
         .tableScan(tableName);
   }
 
+  /// Returns a matcher builder starting with a graph match node with the
+  /// specified outputs. See LogicalPlanMatcherBuilder::graphMatch.
+  static facebook::axiom::logical_plan::test::LogicalPlanMatcherBuilder
+  matchGraph(const std::vector<std::string>& outputs) {
+    return facebook::axiom::logical_plan::test::LogicalPlanMatcherBuilder()
+        .graphMatch(outputs);
+  }
+
   /// Returns a matcher builder starting with a values node.
   static facebook::axiom::logical_plan::test::LogicalPlanMatcherBuilder
   matchValues() {
@@ -144,9 +152,11 @@ class PrestoParserTestBase : public testing::Test {
         std::move(options));
   }
 
-  /// Creates a PrestoParser configured with the test connector.
+  /// Creates a PrestoParser configured with the test connector and
+  /// 'parserOptions_'.
   PrestoParser makeParser() {
-    return PrestoParser(kConnectorId, "default", makeParserSession());
+    return PrestoParser(
+        kConnectorId, "default", makeParserSession(parserOptions_));
   }
 
   /// Creates a PrestoParser with Friendly SQL disabled.
@@ -160,6 +170,9 @@ class PrestoParserTestBase : public testing::Test {
   /// Test connector with TPC-H table schemas. Supports addTable, createView,
   /// and dropView for test-specific customization.
   std::shared_ptr<facebook::axiom::connector::TestConnector> connector_;
+
+  /// Options of the parsers makeParser() creates.
+  ParserOptions parserOptions_;
 };
 
 } // namespace axiom::sql::presto::test
