@@ -26,6 +26,7 @@ if(AXIOM_BUILD_TESTING)
     EnumLiteralTest.cpp
     ExprMatcherTest.cpp
     ExpressionParserTest.cpp
+    IntervalParserTest.cpp
     PrestoSqlErrorTest.cpp
     PrestoParserTest.cpp
     PrestoParserTestBase.cpp

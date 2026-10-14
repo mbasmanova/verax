@@ -18,6 +18,7 @@
 #include <folly/hash/Hash.h>
 #include <optional>
 #include <string>
+#include "axiom/common/Enums.h"
 #include "axiom/sql/presto/ast/AstNode.h"
 
 namespace axiom::sql::presto {
@@ -316,6 +317,8 @@ class IntervalLiteral : public Literal {
   enum class Sign { kPositive, kNegative };
   enum class IntervalField { kYear, kMonth, kDay, kHour, kMinute, kSecond };
 
+  AXIOM_DECLARE_EMBEDDED_ENUM_NAME(IntervalField);
+
   IntervalLiteral(
       NodeLocation location,
       const std::string& value,
@@ -398,3 +401,7 @@ class EnumLiteral : public Literal {
 };
 
 } // namespace axiom::sql::presto
+
+AXIOM_EMBEDDED_ENUM_FORMATTER(
+    axiom::sql::presto::IntervalLiteral,
+    IntervalField);
