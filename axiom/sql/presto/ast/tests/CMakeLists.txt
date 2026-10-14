@@ -12,6 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+add_executable(axiom_sql_presto_ast_builder_test AstBuilderTest.cpp)
+
+add_test(axiom_sql_presto_ast_builder_test axiom_sql_presto_ast_builder_test)
+
+target_link_libraries(
+  axiom_sql_presto_ast_builder_test
+  axiom_sql_presto_ast
+  axiom_sql_presto_syntax_parser
+  GTest::gmock
+  GTest::gtest
+  GTest::gtest_main
+)
+
 add_executable(axiom_sql_presto_ast_equality_test AstEqualityTest.cpp)
 
 add_test(axiom_sql_presto_ast_equality_test axiom_sql_presto_ast_equality_test)

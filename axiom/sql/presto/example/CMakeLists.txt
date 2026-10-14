@@ -18,5 +18,6 @@ target_link_libraries(
   axiom_sql_presto_example
   axiom_sql_presto_ast
   axiom_sql_presto_parser
+  axiom_sql_presto_syntax_parser
   Folly::folly
 )

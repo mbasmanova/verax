@@ -795,6 +795,9 @@ void AstPrinter::visitWith(With* node) {
   for (const auto& query : node->queries()) {
     query->accept(this);
   }
+  for (const auto& graph : node->graphs()) {
+    graph->accept(this);
+  }
   indent_--;
 }
 
@@ -868,6 +871,219 @@ void AstPrinter::visitValues(Values* node) {
   indent_++;
   for (const auto& row : node->rows()) {
     row->accept(this);
+  }
+  indent_--;
+}
+
+namespace {
+
+std::string toString(const LabelExpression& label) {
+  switch (label.kind()) {
+    case LabelExpression::Kind::kName:
+      return label.name()->value();
+    case LabelExpression::Kind::kWildcard:
+      return "%";
+    case LabelExpression::Kind::kNegation:
+      return fmt::format("!{}", toString(*label.operands()[0]));
+    case LabelExpression::Kind::kConjunction:
+    case LabelExpression::Kind::kDisjunction: {
+      std::vector<std::string> operands;
+      for (const auto& operand : label.operands()) {
+        operands.push_back(toString(*operand));
+      }
+      return fmt::format(
+          "({})",
+          fmt::join(
+              operands,
+              label.kind() == LabelExpression::Kind::kConjunction ? " & "
+                                                                  : " | "));
+    }
+  }
+  VELOX_UNREACHABLE();
+}
+
+std::string toString(const GraphQuantifier& quantifier) {
+  return fmt::format(
+      "{{{},{}}}",
+      quantifier.lower,
+      quantifier.upper.has_value() ? std::to_string(quantifier.upper.value())
+                                   : "");
+}
+
+// Returns the selector as written in SQL, e.g. 'SHORTEST 3 GROUP'.
+std::string toString(const PathSelector& selector) {
+  const auto count = selector.count.has_value()
+      ? fmt::format(" {}", selector.count.value())
+      : "";
+  switch (selector.kind) {
+    case PathSelector::Kind::kAll:
+      return "ALL";
+    case PathSelector::Kind::kAny:
+      return fmt::format("ANY{}", count);
+    case PathSelector::Kind::kAnyShortest:
+      return "ANY SHORTEST";
+    case PathSelector::Kind::kAllShortest:
+      return "ALL SHORTEST";
+    case PathSelector::Kind::kShortest:
+      return fmt::format("SHORTEST{}", count);
+    case PathSelector::Kind::kShortestGroups:
+      return fmt::format("SHORTEST{} GROUP", count);
+  }
+  VELOX_UNREACHABLE();
+}
+
+// Appends the variable, label and quantifier of an element, each if set.
+void appendElementDetails(
+    std::ostream& out,
+    const std::shared_ptr<Identifier>& variable,
+    const LabelExpressionPtr& label,
+    const std::optional<GraphQuantifier>& quantifier) {
+  if (variable != nullptr) {
+    out << variable->value();
+  }
+  if (label != nullptr) {
+    out << " IS " << toString(*label);
+  }
+  if (quantifier.has_value()) {
+    out << " " << toString(quantifier.value());
+  }
+}
+
+} // namespace
+
+void AstPrinter::visitGraphTable(GraphTable* node) {
+  printHeader("GraphTable", node, [&](std::ostream& out) {
+    out << node->graph()->fullyQualifiedName();
+  });
+
+  indent_++;
+  for (const auto& path : node->paths()) {
+    path->accept(this);
+  }
+  if (node->where() != nullptr) {
+    printChild("Where", node->where());
+  }
+  for (const auto& column : node->columns()) {
+    column->accept(this);
+  }
+  indent_--;
+}
+
+void AstPrinter::visitPathPattern(PathPattern* node) {
+  printHeader("PathPattern", node, [&](std::ostream& out) {
+    if (node->variable() != nullptr) {
+      out << node->variable()->value() << " = ";
+    }
+    std::vector<std::string> prefix;
+    if (node->selector().has_value()) {
+      prefix.push_back(toString(node->selector().value()));
+    }
+    if (node->mode().has_value()) {
+      prefix.emplace_back(PathModeName::toName(node->mode().value()));
+    }
+    out << fmt::format("{}", fmt::join(prefix, " "));
+  });
+
+  indent_++;
+  for (const auto& element : node->elements()) {
+    element->accept(this);
+  }
+  indent_--;
+}
+
+void AstPrinter::visitNodePattern(NodePattern* node) {
+  printHeader("NodePattern", node, [&](std::ostream& out) {
+    appendElementDetails(out, node->variable(), node->label(), std::nullopt);
+  });
+
+  if (node->where() != nullptr) {
+    indent_++;
+    printChild("Where", node->where());
+    indent_--;
+  }
+}
+
+void AstPrinter::visitEdgePattern(EdgePattern* node) {
+  printHeader("EdgePattern", node, [&](std::ostream& out) {
+    out << EdgePattern::toName(node->direction()) << " ";
+    appendElementDetails(
+        out, node->variable(), node->label(), node->quantifier());
+  });
+
+  if (node->where() != nullptr) {
+    indent_++;
+    printChild("Where", node->where());
+    indent_--;
+  }
+}
+
+void AstPrinter::visitParenthesizedPathPattern(ParenthesizedPathPattern* node) {
+  printHeader("ParenthesizedPathPattern", node, [&](std::ostream& out) {
+    appendElementDetails(out, node->variable(), nullptr, node->quantifier());
+    if (node->mode().has_value()) {
+      out << " " << PathModeName::toName(node->mode().value());
+    }
+    if (node->isOptional()) {
+      out << " ?";
+    }
+  });
+
+  indent_++;
+  for (const auto& element : node->elements()) {
+    element->accept(this);
+  }
+  if (node->where() != nullptr) {
+    printChild("Where", node->where());
+  }
+  indent_--;
+}
+
+void AstPrinter::visitLabelExpression(LabelExpression* node) {
+  printHeader("LabelExpression", node, [&](std::ostream& out) {
+    out << toString(*node);
+  });
+}
+
+void AstPrinter::visitWithGraph(WithGraph* node) {
+  printHeader("WithGraph", node, [&](std::ostream& out) {
+    out << node->name()->value();
+  });
+
+  indent_++;
+  for (const auto& table : node->vertexTables()) {
+    table->accept(this);
+  }
+  for (const auto& table : node->edgeTables()) {
+    table->accept(this);
+  }
+  indent_--;
+}
+
+void AstPrinter::visitGraphElementTable(GraphElementTable* node) {
+  printHeader(
+      node->isEdge() ? "EdgeTable" : "VertexTable",
+      node,
+      [&](std::ostream& out) {
+        out << node->table()->fullyQualifiedName();
+        if (node->alias() != nullptr) {
+          out << " AS " << node->alias()->value();
+        }
+        for (const auto& label : node->labels()) {
+          out << " LABEL "
+              << (label.name != nullptr ? label.name->value() : "DEFAULT");
+        }
+      });
+
+  indent_++;
+  for (const auto& label : node->labels()) {
+    if (label.properties.has_value()) {
+      for (const auto& property : label.properties.value()) {
+        printChild(
+            property.name != nullptr ? std::string_view{property.name->value()}
+                                     : std::string_view{"Property"},
+            property.expression);
+      }
+    }
   }
   indent_--;
 }

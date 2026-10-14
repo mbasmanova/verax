@@ -17,6 +17,7 @@
 
 #include "axiom/sql/presto/ast/AstExpressions.h"
 #include "axiom/sql/presto/ast/AstFunctions.h"
+#include "axiom/sql/presto/ast/AstGraph.h"
 #include "axiom/sql/presto/ast/AstLiterals.h"
 #include "axiom/sql/presto/ast/AstNode.h"
 #include "axiom/sql/presto/ast/AstRelations.h"

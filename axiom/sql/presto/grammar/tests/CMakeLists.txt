@@ -18,8 +18,8 @@ add_test(axiom_sql_presto_grammar_test axiom_sql_presto_grammar_test)
 
 target_link_libraries(
   axiom_sql_presto_grammar_test
-  axiom_sql_presto_grammar
+  axiom_sql_presto_syntax_parser
+  axiom_sql_presto_parser_options
   GTest::gtest
   GTest::gtest_main
-  antlr4_shared
 )

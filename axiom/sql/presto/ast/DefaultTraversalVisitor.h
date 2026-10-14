@@ -166,6 +166,9 @@ class DefaultTraversalVisitor : public AstVisitor {
     for (const auto& query : node->queries()) {
       query->accept(this);
     }
+    for (const auto& graph : node->graphs()) {
+      graph->accept(this);
+    }
   }
 
   void visitWithQuery(WithQuery* node) override {
@@ -271,6 +274,77 @@ class DefaultTraversalVisitor : public AstVisitor {
   void visitValues(Values* node) override {
     for (const auto& row : node->rows()) {
       row->accept(this);
+    }
+  }
+
+  void visitGraphTable(GraphTable* node) override {
+    for (const auto& path : node->paths()) {
+      path->accept(this);
+    }
+    if (node->where()) {
+      node->where()->accept(this);
+    }
+    for (const auto& column : node->columns()) {
+      column->accept(this);
+    }
+  }
+
+  // Graph queries
+  void visitPathPattern(PathPattern* node) override {
+    for (const auto& element : node->elements()) {
+      element->accept(this);
+    }
+  }
+
+  void visitNodePattern(NodePattern* node) override {
+    if (node->label()) {
+      node->label()->accept(this);
+    }
+    if (node->where()) {
+      node->where()->accept(this);
+    }
+  }
+
+  void visitEdgePattern(EdgePattern* node) override {
+    if (node->label()) {
+      node->label()->accept(this);
+    }
+    if (node->where()) {
+      node->where()->accept(this);
+    }
+  }
+
+  void visitParenthesizedPathPattern(ParenthesizedPathPattern* node) override {
+    for (const auto& element : node->elements()) {
+      element->accept(this);
+    }
+    if (node->where()) {
+      node->where()->accept(this);
+    }
+  }
+
+  void visitLabelExpression(LabelExpression* node) override {
+    for (const auto& operand : node->operands()) {
+      operand->accept(this);
+    }
+  }
+
+  void visitWithGraph(WithGraph* node) override {
+    for (const auto& table : node->vertexTables()) {
+      table->accept(this);
+    }
+    for (const auto& table : node->edgeTables()) {
+      table->accept(this);
+    }
+  }
+
+  void visitGraphElementTable(GraphElementTable* node) override {
+    for (const auto& label : node->labels()) {
+      if (label.properties.has_value()) {
+        for (const auto& property : label.properties.value()) {
+          property.expression->accept(this);
+        }
+      }
     }
   }
 

@@ -360,6 +360,11 @@ class PrestoSqlBaseListener : public PrestoSqlListener {
   virtual void enterWith(PrestoSqlParser::WithContext* /*ctx*/) override {}
   virtual void exitWith(PrestoSqlParser::WithContext* /*ctx*/) override {}
 
+  virtual void enterWithElement(
+      PrestoSqlParser::WithElementContext* /*ctx*/) override {}
+  virtual void exitWithElement(
+      PrestoSqlParser::WithElementContext* /*ctx*/) override {}
+
   virtual void enterTableElement(
       PrestoSqlParser::TableElementContext* /*ctx*/) override {}
   virtual void exitTableElement(
@@ -523,6 +528,51 @@ class PrestoSqlBaseListener : public PrestoSqlListener {
   virtual void exitNamedQuery(
       PrestoSqlParser::NamedQueryContext* /*ctx*/) override {}
 
+  virtual void enterNamedGraph(
+      PrestoSqlParser::NamedGraphContext* /*ctx*/) override {}
+  virtual void exitNamedGraph(
+      PrestoSqlParser::NamedGraphContext* /*ctx*/) override {}
+
+  virtual void enterVertexTable(
+      PrestoSqlParser::VertexTableContext* /*ctx*/) override {}
+  virtual void exitVertexTable(
+      PrestoSqlParser::VertexTableContext* /*ctx*/) override {}
+
+  virtual void enterEdgeTable(
+      PrestoSqlParser::EdgeTableContext* /*ctx*/) override {}
+  virtual void exitEdgeTable(
+      PrestoSqlParser::EdgeTableContext* /*ctx*/) override {}
+
+  virtual void enterGraphElementKey(
+      PrestoSqlParser::GraphElementKeyContext* /*ctx*/) override {}
+  virtual void exitGraphElementKey(
+      PrestoSqlParser::GraphElementKeyContext* /*ctx*/) override {}
+
+  virtual void enterEdgeEndpoint(
+      PrestoSqlParser::EdgeEndpointContext* /*ctx*/) override {}
+  virtual void exitEdgeEndpoint(
+      PrestoSqlParser::EdgeEndpointContext* /*ctx*/) override {}
+
+  virtual void enterDefaultGraphLabel(
+      PrestoSqlParser::DefaultGraphLabelContext* /*ctx*/) override {}
+  virtual void exitDefaultGraphLabel(
+      PrestoSqlParser::DefaultGraphLabelContext* /*ctx*/) override {}
+
+  virtual void enterExplicitGraphLabels(
+      PrestoSqlParser::ExplicitGraphLabelsContext* /*ctx*/) override {}
+  virtual void exitExplicitGraphLabels(
+      PrestoSqlParser::ExplicitGraphLabelsContext* /*ctx*/) override {}
+
+  virtual void enterGraphElementProperties(
+      PrestoSqlParser::GraphElementPropertiesContext* /*ctx*/) override {}
+  virtual void exitGraphElementProperties(
+      PrestoSqlParser::GraphElementPropertiesContext* /*ctx*/) override {}
+
+  virtual void enterGraphElementProperty(
+      PrestoSqlParser::GraphElementPropertyContext* /*ctx*/) override {}
+  virtual void exitGraphElementProperty(
+      PrestoSqlParser::GraphElementPropertyContext* /*ctx*/) override {}
+
   virtual void enterSetQuantifier(
       PrestoSqlParser::SetQuantifierContext* /*ctx*/) override {}
   virtual void exitSetQuantifier(
@@ -620,10 +670,170 @@ class PrestoSqlBaseListener : public PrestoSqlListener {
   }
   virtual void exitLateral(PrestoSqlParser::LateralContext* /*ctx*/) override {}
 
+  virtual void enterGraphTable(
+      PrestoSqlParser::GraphTableContext* /*ctx*/) override {}
+  virtual void exitGraphTable(
+      PrestoSqlParser::GraphTableContext* /*ctx*/) override {}
+
   virtual void enterParenthesizedRelation(
       PrestoSqlParser::ParenthesizedRelationContext* /*ctx*/) override {}
   virtual void exitParenthesizedRelation(
       PrestoSqlParser::ParenthesizedRelationContext* /*ctx*/) override {}
+
+  virtual void enterGraphColumn(
+      PrestoSqlParser::GraphColumnContext* /*ctx*/) override {}
+  virtual void exitGraphColumn(
+      PrestoSqlParser::GraphColumnContext* /*ctx*/) override {}
+
+  virtual void enterGraphPattern(
+      PrestoSqlParser::GraphPatternContext* /*ctx*/) override {}
+  virtual void exitGraphPattern(
+      PrestoSqlParser::GraphPatternContext* /*ctx*/) override {}
+
+  virtual void enterPathPattern(
+      PrestoSqlParser::PathPatternContext* /*ctx*/) override {}
+  virtual void exitPathPattern(
+      PrestoSqlParser::PathPatternContext* /*ctx*/) override {}
+
+  virtual void enterPathModePrefix(
+      PrestoSqlParser::PathModePrefixContext* /*ctx*/) override {}
+  virtual void exitPathModePrefix(
+      PrestoSqlParser::PathModePrefixContext* /*ctx*/) override {}
+
+  virtual void enterAllShortestPaths(
+      PrestoSqlParser::AllShortestPathsContext* /*ctx*/) override {}
+  virtual void exitAllShortestPaths(
+      PrestoSqlParser::AllShortestPathsContext* /*ctx*/) override {}
+
+  virtual void enterAnyShortestPath(
+      PrestoSqlParser::AnyShortestPathContext* /*ctx*/) override {}
+  virtual void exitAnyShortestPath(
+      PrestoSqlParser::AnyShortestPathContext* /*ctx*/) override {}
+
+  virtual void enterCountedShortestGroups(
+      PrestoSqlParser::CountedShortestGroupsContext* /*ctx*/) override {}
+  virtual void exitCountedShortestGroups(
+      PrestoSqlParser::CountedShortestGroupsContext* /*ctx*/) override {}
+
+  virtual void enterCountedShortestPaths(
+      PrestoSqlParser::CountedShortestPathsContext* /*ctx*/) override {}
+  virtual void exitCountedShortestPaths(
+      PrestoSqlParser::CountedShortestPathsContext* /*ctx*/) override {}
+
+  virtual void enterAnyPaths(
+      PrestoSqlParser::AnyPathsContext* /*ctx*/) override {}
+  virtual void exitAnyPaths(
+      PrestoSqlParser::AnyPathsContext* /*ctx*/) override {}
+
+  virtual void enterAllPaths(
+      PrestoSqlParser::AllPathsContext* /*ctx*/) override {}
+  virtual void exitAllPaths(
+      PrestoSqlParser::AllPathsContext* /*ctx*/) override {}
+
+  virtual void enterPathMode(
+      PrestoSqlParser::PathModeContext* /*ctx*/) override {}
+  virtual void exitPathMode(
+      PrestoSqlParser::PathModeContext* /*ctx*/) override {}
+
+  virtual void enterPathPatternExpression(
+      PrestoSqlParser::PathPatternExpressionContext* /*ctx*/) override {}
+  virtual void exitPathPatternExpression(
+      PrestoSqlParser::PathPatternExpressionContext* /*ctx*/) override {}
+
+  virtual void enterNodePatternFactor(
+      PrestoSqlParser::NodePatternFactorContext* /*ctx*/) override {}
+  virtual void exitNodePatternFactor(
+      PrestoSqlParser::NodePatternFactorContext* /*ctx*/) override {}
+
+  virtual void enterEdgePatternFactor(
+      PrestoSqlParser::EdgePatternFactorContext* /*ctx*/) override {}
+  virtual void exitEdgePatternFactor(
+      PrestoSqlParser::EdgePatternFactorContext* /*ctx*/) override {}
+
+  virtual void enterParenthesizedPathFactor(
+      PrestoSqlParser::ParenthesizedPathFactorContext* /*ctx*/) override {}
+  virtual void exitParenthesizedPathFactor(
+      PrestoSqlParser::ParenthesizedPathFactorContext* /*ctx*/) override {}
+
+  virtual void enterParenthesizedPathPattern(
+      PrestoSqlParser::ParenthesizedPathPatternContext* /*ctx*/) override {}
+  virtual void exitParenthesizedPathPattern(
+      PrestoSqlParser::ParenthesizedPathPatternContext* /*ctx*/) override {}
+
+  virtual void enterNodePattern(
+      PrestoSqlParser::NodePatternContext* /*ctx*/) override {}
+  virtual void exitNodePattern(
+      PrestoSqlParser::NodePatternContext* /*ctx*/) override {}
+
+  virtual void enterRightEdge(
+      PrestoSqlParser::RightEdgeContext* /*ctx*/) override {}
+  virtual void exitRightEdge(
+      PrestoSqlParser::RightEdgeContext* /*ctx*/) override {}
+
+  virtual void enterLeftEdge(
+      PrestoSqlParser::LeftEdgeContext* /*ctx*/) override {}
+  virtual void exitLeftEdge(
+      PrestoSqlParser::LeftEdgeContext* /*ctx*/) override {}
+
+  virtual void enterAnyDirectionEdge(
+      PrestoSqlParser::AnyDirectionEdgeContext* /*ctx*/) override {}
+  virtual void exitAnyDirectionEdge(
+      PrestoSqlParser::AnyDirectionEdgeContext* /*ctx*/) override {}
+
+  virtual void enterElementPatternFiller(
+      PrestoSqlParser::ElementPatternFillerContext* /*ctx*/) override {}
+  virtual void exitElementPatternFiller(
+      PrestoSqlParser::ElementPatternFillerContext* /*ctx*/) override {}
+
+  virtual void enterLabelExpression(
+      PrestoSqlParser::LabelExpressionContext* /*ctx*/) override {}
+  virtual void exitLabelExpression(
+      PrestoSqlParser::LabelExpressionContext* /*ctx*/) override {}
+
+  virtual void enterLabelTerm(
+      PrestoSqlParser::LabelTermContext* /*ctx*/) override {}
+  virtual void exitLabelTerm(
+      PrestoSqlParser::LabelTermContext* /*ctx*/) override {}
+
+  virtual void enterLabelFactor(
+      PrestoSqlParser::LabelFactorContext* /*ctx*/) override {}
+  virtual void exitLabelFactor(
+      PrestoSqlParser::LabelFactorContext* /*ctx*/) override {}
+
+  virtual void enterLabelName(
+      PrestoSqlParser::LabelNameContext* /*ctx*/) override {}
+  virtual void exitLabelName(
+      PrestoSqlParser::LabelNameContext* /*ctx*/) override {}
+
+  virtual void enterLabelWildcard(
+      PrestoSqlParser::LabelWildcardContext* /*ctx*/) override {}
+  virtual void exitLabelWildcard(
+      PrestoSqlParser::LabelWildcardContext* /*ctx*/) override {}
+
+  virtual void enterParenthesizedLabelExpression(
+      PrestoSqlParser::ParenthesizedLabelExpressionContext* /*ctx*/) override {}
+  virtual void exitParenthesizedLabelExpression(
+      PrestoSqlParser::ParenthesizedLabelExpressionContext* /*ctx*/) override {}
+
+  virtual void enterZeroOrMore(
+      PrestoSqlParser::ZeroOrMoreContext* /*ctx*/) override {}
+  virtual void exitZeroOrMore(
+      PrestoSqlParser::ZeroOrMoreContext* /*ctx*/) override {}
+
+  virtual void enterOneOrMore(
+      PrestoSqlParser::OneOrMoreContext* /*ctx*/) override {}
+  virtual void exitOneOrMore(
+      PrestoSqlParser::OneOrMoreContext* /*ctx*/) override {}
+
+  virtual void enterExactRepetitions(
+      PrestoSqlParser::ExactRepetitionsContext* /*ctx*/) override {}
+  virtual void exitExactRepetitions(
+      PrestoSqlParser::ExactRepetitionsContext* /*ctx*/) override {}
+
+  virtual void enterBoundedRepetitions(
+      PrestoSqlParser::BoundedRepetitionsContext* /*ctx*/) override {}
+  virtual void exitBoundedRepetitions(
+      PrestoSqlParser::BoundedRepetitionsContext* /*ctx*/) override {}
 
   virtual void enterExpression(
       PrestoSqlParser::ExpressionContext* /*ctx*/) override {}

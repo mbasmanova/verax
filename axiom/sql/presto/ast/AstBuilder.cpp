@@ -1252,16 +1252,27 @@ std::any AstBuilder::visitUpdate(PrestoSqlParser::UpdateContext* ctx) {
 
 std::any AstBuilder::visitWith(PrestoSqlParser::WithContext* ctx) {
   trace("visitWith");
-  auto namedQueries = visitTyped<WithQuery>(ctx->namedQuery());
+  std::vector<std::shared_ptr<WithQuery>> namedQueries;
+  std::vector<std::shared_ptr<WithGraph>> graphs;
+  for (auto* element : ctx->withElement()) {
+    if (element->namedQuery() != nullptr) {
+      namedQueries.push_back(visitTyped<WithQuery>(element->namedQuery()));
+    } else {
+      graphs.push_back(visitTyped<WithGraph>(element->namedGraph()));
+    }
+  }
 
   AXIOM_PRESTO_SYNTAX_CHECK(
-      options_.friendlySql || !hasTrailingComma(ctx, namedQueries.size()),
+      options_.friendlySql || !hasTrailingComma(ctx, ctx->withElement().size()),
       getLocation(ctx),
       ",",
       "Trailing commas in WITH clause require Friendly SQL mode.");
 
   return std::make_shared<With>(
-      getLocation(ctx), ctx->RECURSIVE() != nullptr, std::move(namedQueries));
+      getLocation(ctx),
+      ctx->RECURSIVE() != nullptr,
+      std::move(namedQueries),
+      std::move(graphs));
 }
 
 std::any AstBuilder::visitTableElement(
@@ -1717,6 +1728,138 @@ std::any AstBuilder::visitNamedQuery(PrestoSqlParser::NamedQueryContext* ctx) {
       columns);
 }
 
+std::any AstBuilder::visitWithElement(
+    PrestoSqlParser::WithElementContext* /*ctx*/) {
+  VELOX_UNREACHABLE("visitWithElement should not be called directly");
+}
+
+std::any AstBuilder::visitNamedGraph(PrestoSqlParser::NamedGraphContext* ctx) {
+  trace("visitNamedGraph");
+  AXIOM_PRESTO_SYNTAX_CHECK(
+      options_.graphQueries,
+      getLocation(ctx),
+      "GRAPH",
+      "WITH GRAPH requires the graph_queries parser option.");
+
+  return std::make_shared<WithGraph>(
+      getLocation(ctx),
+      visitIdentifier(ctx->name),
+      visitTyped<GraphElementTable>(ctx->vertexTable()),
+      visitTyped<GraphElementTable>(ctx->edgeTable()));
+}
+
+template <typename TContext>
+GraphElementTablePtr AstBuilder::makeElementTable(
+    TContext* ctx,
+    std::optional<EdgeEndpoint> source,
+    std::optional<EdgeEndpoint> destination) {
+  return std::make_shared<GraphElementTable>(
+      getLocation(ctx),
+      getQualifiedName(ctx->qualifiedName()),
+      visitIdentifier(ctx->alias),
+      visitValue<std::vector<IdentifierPtr>>(ctx->graphElementKey()),
+      std::move(source),
+      std::move(destination),
+      visitOptional<std::vector<GraphLabel>>(ctx->graphElementLabels())
+          .value_or(std::vector<GraphLabel>{}));
+}
+
+std::any AstBuilder::visitVertexTable(
+    PrestoSqlParser::VertexTableContext* ctx) {
+  trace("visitVertexTable");
+  return makeElementTable(ctx, std::nullopt, std::nullopt);
+}
+
+std::any AstBuilder::visitEdgeTable(PrestoSqlParser::EdgeTableContext* ctx) {
+  trace("visitEdgeTable");
+  return makeElementTable(
+      ctx,
+      visitValue<EdgeEndpoint>(ctx->source),
+      visitValue<EdgeEndpoint>(ctx->destination));
+}
+
+std::any AstBuilder::visitGraphElementKey(
+    PrestoSqlParser::GraphElementKeyContext* ctx) {
+  trace("visitGraphElementKey");
+  return visitTyped<Identifier>(ctx->identifier());
+}
+
+std::any AstBuilder::visitEdgeEndpoint(
+    PrestoSqlParser::EdgeEndpointContext* ctx) {
+  trace("visitEdgeEndpoint");
+  auto keyColumns =
+      visitValue<std::vector<IdentifierPtr>>(ctx->graphElementKey());
+  auto vertexTable = visitIdentifier(ctx->vertexTableName);
+  auto referencedColumns = visitTyped<Identifier>(ctx->referencedColumns);
+  AXIOM_PRESTO_SYNTAX_CHECK(
+      keyColumns.size() == referencedColumns.size(),
+      getLocation(ctx),
+      ctx->getText(),
+      "Edge endpoint must reference as many columns as its key has: {} vs {}.",
+      keyColumns.size(),
+      referencedColumns.size());
+  return EdgeEndpoint{
+      .keyColumns = std::move(keyColumns),
+      .vertexTable = std::move(vertexTable),
+      .referencedColumns = std::move(referencedColumns),
+  };
+}
+
+std::any AstBuilder::visitDefaultGraphLabel(
+    PrestoSqlParser::DefaultGraphLabelContext* ctx) {
+  trace("visitDefaultGraphLabel");
+  return std::vector<GraphLabel>{{
+      .name = nullptr,
+      .properties =
+          visitValue<std::vector<GraphProperty>>(ctx->graphElementProperties()),
+  }};
+}
+
+std::any AstBuilder::visitExplicitGraphLabels(
+    PrestoSqlParser::ExplicitGraphLabelsContext* ctx) {
+  trace("visitExplicitGraphLabels");
+
+  // Each LABEL is followed by its name and, optionally, its PROPERTIES.
+  std::vector<GraphLabel> labels;
+  for (auto* child : ctx->children) {
+    if (auto* name = dynamic_cast<PrestoSqlParser::IdentifierContext*>(child)) {
+      labels.push_back({.name = visitIdentifier(name)});
+    } else if (
+        auto* properties =
+            dynamic_cast<PrestoSqlParser::GraphElementPropertiesContext*>(
+                child)) {
+      VELOX_CHECK(!labels.empty(), "PROPERTIES must follow a label name");
+      labels.back().properties =
+          visitValue<std::vector<GraphProperty>>(properties);
+    }
+  }
+  return labels;
+}
+
+std::any AstBuilder::visitGraphElementProperties(
+    PrestoSqlParser::GraphElementPropertiesContext* ctx) {
+  trace("visitGraphElementProperties");
+  std::vector<GraphProperty> properties;
+  for (auto* property : ctx->graphElementProperty()) {
+    properties.push_back(visitValue<GraphProperty>(property));
+  }
+  return properties;
+}
+
+std::any AstBuilder::visitGraphElementProperty(
+    PrestoSqlParser::GraphElementPropertyContext* ctx) {
+  trace("visitGraphElementProperty");
+  auto expression = visitTyped<Expression>(ctx->expression());
+  auto name = visitIdentifier(ctx->identifier());
+  AXIOM_PRESTO_SYNTAX_CHECK(
+      name != nullptr || expression->is(NodeType::kIdentifier),
+      getLocation(ctx),
+      ctx->getText(),
+      "A property that is not a column reference requires AS name.");
+  return GraphProperty{
+      .expression = std::move(expression), .name = std::move(name)};
+}
+
 std::any AstBuilder::visitSetQuantifier(
     PrestoSqlParser::SetQuantifierContext* ctx) {
   trace("visitSetQuantifier");
@@ -1837,6 +1980,443 @@ std::any AstBuilder::visitLateral(PrestoSqlParser::LateralContext* ctx) {
   trace("visitLateral");
   return std::static_pointer_cast<Relation>(std::make_shared<Lateral>(
       getLocation(ctx), visitTyped<Statement>(ctx->query())));
+}
+
+namespace {
+
+// True if 'mode' allows unbounded quantifiers in its scope.
+bool modeAllowsUnboundedQuantifiers(const std::optional<PathMode>& mode) {
+  return mode.has_value() && mode.value() != PathMode::kWalk;
+}
+
+// Prefix of a path pattern: an optional selector and an optional path mode.
+struct PathPatternPrefix {
+  std::optional<PathSelector> selector;
+  std::optional<PathMode> mode;
+
+  // True if unbounded quantifiers are allowed in the scope of this prefix.
+  bool allowsUnboundedQuantifiers() const {
+    return (selector.has_value() &&
+            selector->kind != PathSelector::Kind::kAll) ||
+        modeAllowsUnboundedQuantifiers(mode);
+  }
+};
+
+// Variable, label and predicate of a node or edge pattern. Each may be null.
+struct ElementPatternFiller {
+  IdentifierPtr variable;
+  LabelExpressionPtr label;
+  ExpressionPtr where;
+};
+
+// Direction and filler of an edge pattern. An abbreviated edge has an empty
+// filler.
+struct EdgePatternParts {
+  EdgePattern::Direction direction{EdgePattern::Direction::kRight};
+  ElementPatternFiller filler;
+};
+
+int64_t parseCount(antlr4::Token* token, bool friendlySql) {
+  return parseIntegerLiteral(
+      stripDigitSeparators(token->getText(), friendlySql), getLocation(token));
+}
+
+std::optional<int64_t> parseOptionalCount(
+    antlr4::Token* token,
+    bool friendlySql) {
+  if (token == nullptr) {
+    return std::nullopt;
+  }
+  return parseCount(token, friendlySql);
+}
+
+// Parses the number of paths or groups a selector keeps, which is positive.
+std::optional<int64_t> parseSelectorCount(
+    antlr4::Token* token,
+    bool friendlySql) {
+  const auto count = parseOptionalCount(token, friendlySql);
+  AXIOM_PRESTO_SYNTAX_CHECK(
+      !count.has_value() || count.value() > 0,
+      getLocation(token),
+      token->getText(),
+      "Path selector count must be positive.");
+  return count;
+}
+
+} // namespace
+
+std::any AstBuilder::visitGraphTable(PrestoSqlParser::GraphTableContext* ctx) {
+  trace("visitGraphTable");
+  AXIOM_PRESTO_SYNTAX_CHECK(
+      options_.graphQueries,
+      getLocation(ctx),
+      "GRAPH_TABLE",
+      "GRAPH_TABLE requires the graph_queries parser option.");
+
+  auto* pattern = ctx->graphPattern();
+  return std::static_pointer_cast<Relation>(std::make_shared<GraphTable>(
+      getLocation(ctx),
+      getQualifiedName(ctx->qualifiedName()),
+      visitTyped<PathPattern>(pattern->pathPattern()),
+      visitExpression(pattern->where),
+      visitTyped<SingleColumn>(ctx->graphColumn())));
+}
+
+std::any AstBuilder::visitGraphColumn(
+    PrestoSqlParser::GraphColumnContext* ctx) {
+  trace("visitGraphColumn");
+  return std::make_shared<SingleColumn>(
+      getLocation(ctx),
+      visitTyped<Expression>(ctx->expression()),
+      visitIdentifier(ctx->identifier()));
+}
+
+std::any AstBuilder::visitGraphPattern(
+    PrestoSqlParser::GraphPatternContext* /*ctx*/) {
+  VELOX_UNREACHABLE("visitGraphPattern should not be called directly");
+}
+
+std::any AstBuilder::visitPathPattern(
+    PrestoSqlParser::PathPatternContext* ctx) {
+  trace("visitPathPattern");
+  PathPatternPrefix prefix;
+  if (ctx->pathPatternPrefix() != nullptr) {
+    prefix = visitValue<PathPatternPrefix>(ctx->pathPatternPrefix());
+  }
+
+  const bool outerAllowed = unboundedQuantifierAllowed_;
+  unboundedQuantifierAllowed_ = prefix.allowsUnboundedQuantifiers();
+  SCOPE_EXIT {
+    unboundedQuantifierAllowed_ = outerAllowed;
+  };
+
+  return std::make_shared<PathPattern>(
+      getLocation(ctx),
+      visitIdentifier(ctx->variable),
+      prefix.selector,
+      prefix.mode,
+      visitValue<std::vector<PathElementPtr>>(ctx->pathPatternExpression()));
+}
+
+std::any AstBuilder::visitPathModePrefix(
+    PrestoSqlParser::PathModePrefixContext* ctx) {
+  trace("visitPathModePrefix");
+  return PathPatternPrefix{.mode = visitValue<PathMode>(ctx->pathMode())};
+}
+
+std::any AstBuilder::visitAllShortestPaths(
+    PrestoSqlParser::AllShortestPathsContext* ctx) {
+  trace("visitAllShortestPaths");
+  return PathPatternPrefix{
+      .selector = PathSelector{.kind = PathSelector::Kind::kAllShortest},
+      .mode = visitOptional<PathMode>(ctx->pathMode()),
+  };
+}
+
+std::any AstBuilder::visitAnyShortestPath(
+    PrestoSqlParser::AnyShortestPathContext* ctx) {
+  trace("visitAnyShortestPath");
+  return PathPatternPrefix{
+      .selector = PathSelector{.kind = PathSelector::Kind::kAnyShortest},
+      .mode = visitOptional<PathMode>(ctx->pathMode()),
+  };
+}
+
+std::any AstBuilder::visitCountedShortestGroups(
+    PrestoSqlParser::CountedShortestGroupsContext* ctx) {
+  trace("visitCountedShortestGroups");
+  return PathPatternPrefix{
+      .selector =
+          PathSelector{
+              .kind = PathSelector::Kind::kShortestGroups,
+              .count = parseSelectorCount(ctx->count, options_.friendlySql),
+          },
+      .mode = visitOptional<PathMode>(ctx->pathMode()),
+  };
+}
+
+std::any AstBuilder::visitCountedShortestPaths(
+    PrestoSqlParser::CountedShortestPathsContext* ctx) {
+  trace("visitCountedShortestPaths");
+  return PathPatternPrefix{
+      .selector =
+          PathSelector{
+              .kind = PathSelector::Kind::kShortest,
+              .count = parseSelectorCount(ctx->count, options_.friendlySql),
+          },
+      .mode = visitOptional<PathMode>(ctx->pathMode()),
+  };
+}
+
+std::any AstBuilder::visitAnyPaths(PrestoSqlParser::AnyPathsContext* ctx) {
+  trace("visitAnyPaths");
+  return PathPatternPrefix{
+      .selector =
+          PathSelector{
+              .kind = PathSelector::Kind::kAny,
+              .count = parseSelectorCount(ctx->count, options_.friendlySql),
+          },
+      .mode = visitOptional<PathMode>(ctx->pathMode()),
+  };
+}
+
+std::any AstBuilder::visitAllPaths(PrestoSqlParser::AllPathsContext* ctx) {
+  trace("visitAllPaths");
+  return PathPatternPrefix{
+      .selector = PathSelector{.kind = PathSelector::Kind::kAll},
+      .mode = visitOptional<PathMode>(ctx->pathMode()),
+  };
+}
+
+std::any AstBuilder::visitPathMode(PrestoSqlParser::PathModeContext* ctx) {
+  trace("visitPathMode");
+  if (ctx->TRAIL() != nullptr) {
+    return PathMode::kTrail;
+  }
+  if (ctx->ACYCLIC() != nullptr) {
+    return PathMode::kAcyclic;
+  }
+  if (ctx->SIMPLE() != nullptr) {
+    return PathMode::kSimple;
+  }
+  return PathMode::kWalk;
+}
+
+std::any AstBuilder::visitPathPatternExpression(
+    PrestoSqlParser::PathPatternExpressionContext* ctx) {
+  trace("visitPathPatternExpression");
+  return visitTyped<PathElement>(ctx->pathFactor());
+}
+
+std::any AstBuilder::visitNodePatternFactor(
+    PrestoSqlParser::NodePatternFactorContext* ctx) {
+  trace("visitNodePatternFactor");
+  return visitTyped<PathElement>(ctx->nodePattern());
+}
+
+std::any AstBuilder::visitNodePattern(
+    PrestoSqlParser::NodePatternContext* ctx) {
+  trace("visitNodePattern");
+  auto filler = visitValue<ElementPatternFiller>(ctx->elementPatternFiller());
+  return std::static_pointer_cast<PathElement>(std::make_shared<NodePattern>(
+      getLocation(ctx),
+      std::move(filler.variable),
+      std::move(filler.label),
+      std::move(filler.where)));
+}
+
+std::optional<GraphQuantifier> AstBuilder::parseQuantifier(
+    PrestoSqlParser::GraphQuantifierContext* ctx) {
+  if (ctx == nullptr) {
+    return std::nullopt;
+  }
+  auto quantifier = visitValue<GraphQuantifier>(ctx);
+  AXIOM_PRESTO_SYNTAX_CHECK(
+      quantifier.upper.has_value() || unboundedQuantifierAllowed_,
+      getLocation(ctx),
+      ctx->getText(),
+      "Unbounded quantifier requires a selector other than ALL or a path "
+      "mode other than WALK.");
+  return quantifier;
+}
+
+std::any AstBuilder::visitEdgePatternFactor(
+    PrestoSqlParser::EdgePatternFactorContext* ctx) {
+  trace("visitEdgePatternFactor");
+  auto parts = visitValue<EdgePatternParts>(ctx->edgePattern());
+  return std::static_pointer_cast<PathElement>(std::make_shared<EdgePattern>(
+      getLocation(ctx),
+      parts.direction,
+      std::move(parts.filler.variable),
+      std::move(parts.filler.label),
+      std::move(parts.filler.where),
+      parseQuantifier(ctx->graphQuantifier())));
+}
+
+std::any AstBuilder::visitParenthesizedPathFactor(
+    PrestoSqlParser::ParenthesizedPathFactorContext* ctx) {
+  trace("visitParenthesizedPathFactor");
+  auto* path = ctx->parenthesizedPathPattern();
+  auto mode = visitOptional<PathMode>(path->pathMode());
+
+  // The quantifier applies to the subpath, so it is checked in the enclosing
+  // scope. The subpath's own mode extends the scope for its elements.
+  auto quantifier = parseQuantifier(ctx->graphQuantifier());
+
+  const bool outerAllowed = unboundedQuantifierAllowed_;
+  unboundedQuantifierAllowed_ =
+      outerAllowed || modeAllowsUnboundedQuantifiers(mode);
+  SCOPE_EXIT {
+    unboundedQuantifierAllowed_ = outerAllowed;
+  };
+
+  return std::static_pointer_cast<PathElement>(
+      std::make_shared<ParenthesizedPathPattern>(
+          getLocation(ctx),
+          visitIdentifier(path->variable),
+          mode,
+          visitValue<std::vector<PathElementPtr>>(
+              path->pathPatternExpression()),
+          visitExpression(path->where),
+          quantifier,
+          ctx->optional != nullptr));
+}
+
+std::any AstBuilder::visitParenthesizedPathPattern(
+    PrestoSqlParser::ParenthesizedPathPatternContext* /*ctx*/) {
+  VELOX_UNREACHABLE(
+      "visitParenthesizedPathPattern should not be called directly");
+}
+
+std::any AstBuilder::visitRightEdge(PrestoSqlParser::RightEdgeContext* ctx) {
+  trace("visitRightEdge");
+  return EdgePatternParts{
+      .direction = EdgePattern::Direction::kRight,
+      .filler = visitOptional<ElementPatternFiller>(ctx->elementPatternFiller())
+                    .value_or(ElementPatternFiller{}),
+  };
+}
+
+std::any AstBuilder::visitLeftEdge(PrestoSqlParser::LeftEdgeContext* ctx) {
+  trace("visitLeftEdge");
+  return EdgePatternParts{
+      .direction = EdgePattern::Direction::kLeft,
+      .filler = visitOptional<ElementPatternFiller>(ctx->elementPatternFiller())
+                    .value_or(ElementPatternFiller{}),
+  };
+}
+
+std::any AstBuilder::visitAnyDirectionEdge(
+    PrestoSqlParser::AnyDirectionEdgeContext* ctx) {
+  trace("visitAnyDirectionEdge");
+  return EdgePatternParts{
+      .direction = EdgePattern::Direction::kAnyDirection,
+      .filler = visitOptional<ElementPatternFiller>(ctx->elementPatternFiller())
+                    .value_or(ElementPatternFiller{}),
+  };
+}
+
+std::any AstBuilder::visitElementPatternFiller(
+    PrestoSqlParser::ElementPatternFillerContext* ctx) {
+  trace("visitElementPatternFiller");
+
+  // Unquoted Presto identifiers may contain ':', so 'a:Person' lexes as one
+  // name. A quoted name may contain ':' on purpose.
+  const bool quoted = dynamic_cast<PrestoSqlParser::QuotedIdentifierContext*>(
+                          ctx->variable) != nullptr;
+  AXIOM_PRESTO_SYNTAX_CHECK(
+      ctx->variable == nullptr || quoted ||
+          ctx->variable->getText().find(':') == std::string::npos,
+      getLocation(ctx),
+      ctx->variable != nullptr ? ctx->variable->getText() : "",
+      "Labels are written with IS, as in (a IS Person).");
+
+  return ElementPatternFiller{
+      .variable = visitIdentifier(ctx->variable),
+      .label = visitTyped<LabelExpression>(ctx->labelExpression()),
+      .where = visitExpression(ctx->where),
+  };
+}
+
+std::any AstBuilder::visitLabelExpression(
+    PrestoSqlParser::LabelExpressionContext* ctx) {
+  trace("visitLabelExpression");
+  auto operands = visitTyped<LabelExpression>(ctx->labelTerm());
+  if (operands.size() == 1) {
+    return operands[0];
+  }
+  return std::make_shared<LabelExpression>(
+      getLocation(ctx),
+      LabelExpression::Kind::kDisjunction,
+      nullptr,
+      std::move(operands));
+}
+
+std::any AstBuilder::visitLabelTerm(PrestoSqlParser::LabelTermContext* ctx) {
+  trace("visitLabelTerm");
+  auto operands = visitTyped<LabelExpression>(ctx->labelFactor());
+  if (operands.size() == 1) {
+    return operands[0];
+  }
+  return std::make_shared<LabelExpression>(
+      getLocation(ctx),
+      LabelExpression::Kind::kConjunction,
+      nullptr,
+      std::move(operands));
+}
+
+std::any AstBuilder::visitLabelFactor(
+    PrestoSqlParser::LabelFactorContext* ctx) {
+  trace("visitLabelFactor");
+  auto primary = visitTyped<LabelExpression>(ctx->labelPrimary());
+  if (ctx->negation == nullptr) {
+    return primary;
+  }
+  return std::make_shared<LabelExpression>(
+      getLocation(ctx),
+      LabelExpression::Kind::kNegation,
+      nullptr,
+      std::vector<LabelExpressionPtr>{std::move(primary)});
+}
+
+std::any AstBuilder::visitLabelName(PrestoSqlParser::LabelNameContext* ctx) {
+  trace("visitLabelName");
+  return std::make_shared<LabelExpression>(
+      getLocation(ctx),
+      LabelExpression::Kind::kName,
+      visitIdentifier(ctx->identifier()),
+      std::vector<LabelExpressionPtr>{});
+}
+
+std::any AstBuilder::visitLabelWildcard(
+    PrestoSqlParser::LabelWildcardContext* ctx) {
+  trace("visitLabelWildcard");
+  return std::make_shared<LabelExpression>(
+      getLocation(ctx),
+      LabelExpression::Kind::kWildcard,
+      nullptr,
+      std::vector<LabelExpressionPtr>{});
+}
+
+std::any AstBuilder::visitParenthesizedLabelExpression(
+    PrestoSqlParser::ParenthesizedLabelExpressionContext* ctx) {
+  trace("visitParenthesizedLabelExpression");
+  return visitTyped<LabelExpression>(ctx->labelExpression());
+}
+
+std::any AstBuilder::visitZeroOrMore(
+    PrestoSqlParser::ZeroOrMoreContext* /*ctx*/) {
+  trace("visitZeroOrMore");
+  return GraphQuantifier{.lower = 0};
+}
+
+std::any AstBuilder::visitOneOrMore(
+    PrestoSqlParser::OneOrMoreContext* /*ctx*/) {
+  trace("visitOneOrMore");
+  return GraphQuantifier{.lower = 1};
+}
+
+std::any AstBuilder::visitExactRepetitions(
+    PrestoSqlParser::ExactRepetitionsContext* ctx) {
+  trace("visitExactRepetitions");
+  const auto count = parseCount(ctx->exact, options_.friendlySql);
+  return GraphQuantifier{.lower = count, .upper = count};
+}
+
+std::any AstBuilder::visitBoundedRepetitions(
+    PrestoSqlParser::BoundedRepetitionsContext* ctx) {
+  trace("visitBoundedRepetitions");
+  GraphQuantifier quantifier{
+      .lower = parseOptionalCount(ctx->lower, options_.friendlySql).value_or(0),
+      .upper = parseOptionalCount(ctx->upper, options_.friendlySql),
+  };
+  AXIOM_PRESTO_SYNTAX_CHECK(
+      !quantifier.upper.has_value() ||
+          quantifier.lower <= quantifier.upper.value(),
+      getLocation(ctx),
+      ctx->getText(),
+      "Quantifier lower bound must not exceed its upper bound.");
+  return quantifier;
 }
 
 std::any AstBuilder::visitParenthesizedRelation(
@@ -3144,13 +3724,25 @@ std::any AstBuilder::visitQuotedIdentifier(
 std::any AstBuilder::visitBackQuotedIdentifier(
     PrestoSqlParser::BackQuotedIdentifierContext* ctx) {
   trace("visitBackQuotedIdentifier");
-  return visitChildren("visitBackQuotedIdentifier", ctx);
+  AXIOM_PRESTO_SYNTAX_CHECK(
+      false,
+      getLocation(ctx),
+      ctx->getText(),
+      "Backquoted identifiers are not supported. Use double quotes to quote "
+      "identifiers.");
+  VELOX_UNREACHABLE();
 }
 
 std::any AstBuilder::visitDigitIdentifier(
     PrestoSqlParser::DigitIdentifierContext* ctx) {
   trace("visitDigitIdentifier");
-  return visitChildren("visitDigitIdentifier", ctx);
+  AXIOM_PRESTO_SYNTAX_CHECK(
+      false,
+      getLocation(ctx),
+      ctx->getText(),
+      "Identifiers must not start with a digit. Surround the identifier with "
+      "double quotes.");
+  VELOX_UNREACHABLE();
 }
 
 std::any AstBuilder::visitDecimalLiteral(

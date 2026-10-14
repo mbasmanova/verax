@@ -369,6 +369,11 @@ class PrestoSqlBaseVisitor : public PrestoSqlVisitor {
     return visitChildren(ctx);
   }
 
+  virtual std::any visitWithElement(
+      PrestoSqlParser::WithElementContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
   virtual std::any visitTableElement(
       PrestoSqlParser::TableElementContext* ctx) override {
     return visitChildren(ctx);
@@ -535,6 +540,51 @@ class PrestoSqlBaseVisitor : public PrestoSqlVisitor {
     return visitChildren(ctx);
   }
 
+  virtual std::any visitNamedGraph(
+      PrestoSqlParser::NamedGraphContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitVertexTable(
+      PrestoSqlParser::VertexTableContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitEdgeTable(
+      PrestoSqlParser::EdgeTableContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitGraphElementKey(
+      PrestoSqlParser::GraphElementKeyContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitEdgeEndpoint(
+      PrestoSqlParser::EdgeEndpointContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitDefaultGraphLabel(
+      PrestoSqlParser::DefaultGraphLabelContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitExplicitGraphLabels(
+      PrestoSqlParser::ExplicitGraphLabelsContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitGraphElementProperties(
+      PrestoSqlParser::GraphElementPropertiesContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitGraphElementProperty(
+      PrestoSqlParser::GraphElementPropertyContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
   virtual std::any visitSetQuantifier(
       PrestoSqlParser::SetQuantifierContext* ctx) override {
     return visitChildren(ctx);
@@ -633,8 +683,168 @@ class PrestoSqlBaseVisitor : public PrestoSqlVisitor {
     return visitChildren(ctx);
   }
 
+  virtual std::any visitGraphTable(
+      PrestoSqlParser::GraphTableContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
   virtual std::any visitParenthesizedRelation(
       PrestoSqlParser::ParenthesizedRelationContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitGraphColumn(
+      PrestoSqlParser::GraphColumnContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitGraphPattern(
+      PrestoSqlParser::GraphPatternContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitPathPattern(
+      PrestoSqlParser::PathPatternContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitPathModePrefix(
+      PrestoSqlParser::PathModePrefixContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitAllShortestPaths(
+      PrestoSqlParser::AllShortestPathsContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitAnyShortestPath(
+      PrestoSqlParser::AnyShortestPathContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitCountedShortestGroups(
+      PrestoSqlParser::CountedShortestGroupsContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitCountedShortestPaths(
+      PrestoSqlParser::CountedShortestPathsContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitAnyPaths(
+      PrestoSqlParser::AnyPathsContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitAllPaths(
+      PrestoSqlParser::AllPathsContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitPathMode(
+      PrestoSqlParser::PathModeContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitPathPatternExpression(
+      PrestoSqlParser::PathPatternExpressionContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitNodePatternFactor(
+      PrestoSqlParser::NodePatternFactorContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitEdgePatternFactor(
+      PrestoSqlParser::EdgePatternFactorContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitParenthesizedPathFactor(
+      PrestoSqlParser::ParenthesizedPathFactorContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitParenthesizedPathPattern(
+      PrestoSqlParser::ParenthesizedPathPatternContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitNodePattern(
+      PrestoSqlParser::NodePatternContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitRightEdge(
+      PrestoSqlParser::RightEdgeContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitLeftEdge(
+      PrestoSqlParser::LeftEdgeContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitAnyDirectionEdge(
+      PrestoSqlParser::AnyDirectionEdgeContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitElementPatternFiller(
+      PrestoSqlParser::ElementPatternFillerContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitLabelExpression(
+      PrestoSqlParser::LabelExpressionContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitLabelTerm(
+      PrestoSqlParser::LabelTermContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitLabelFactor(
+      PrestoSqlParser::LabelFactorContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitLabelName(
+      PrestoSqlParser::LabelNameContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitLabelWildcard(
+      PrestoSqlParser::LabelWildcardContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitParenthesizedLabelExpression(
+      PrestoSqlParser::ParenthesizedLabelExpressionContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitZeroOrMore(
+      PrestoSqlParser::ZeroOrMoreContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitOneOrMore(
+      PrestoSqlParser::OneOrMoreContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitExactRepetitions(
+      PrestoSqlParser::ExactRepetitionsContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitBoundedRepetitions(
+      PrestoSqlParser::BoundedRepetitionsContext* ctx) override {
     return visitChildren(ctx);
   }
 

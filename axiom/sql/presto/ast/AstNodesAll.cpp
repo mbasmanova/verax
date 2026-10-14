@@ -130,6 +130,16 @@ const auto& nodeTypeNames() {
       {NodeType::kLateral, "Lateral"},
       {NodeType::kUnnest, "Unnest"},
       {NodeType::kValues, "Values"},
+      {NodeType::kGraphTable, "GraphTable"},
+
+      // Graph queries
+      {NodeType::kPathPattern, "PathPattern"},
+      {NodeType::kNodePattern, "NodePattern"},
+      {NodeType::kEdgePattern, "EdgePattern"},
+      {NodeType::kParenthesizedPathPattern, "ParenthesizedPathPattern"},
+      {NodeType::kLabelExpression, "LabelExpression"},
+      {NodeType::kWithGraph, "WithGraph"},
+      {NodeType::kGraphElementTable, "GraphElementTable"},
 
       // Joins
       {NodeType::kJoin, "Join"},
@@ -559,6 +569,20 @@ void SelectColumns::accept(AstVisitor* visitor) {
 
 void With::accept(AstVisitor* visitor) {
   visitor->visitWith(this);
+}
+
+size_t With::hash() const {
+  return folly::hash::hash_combine(
+      std::hash<bool>{}(recursive_),
+      Node::deepHashAll(queries_),
+      Node::deepHashAll(graphs_));
+}
+
+bool With::equals(const Node& other) const {
+  const auto& o = *other.as<With>();
+  return recursive_ == o.recursive_ &&
+      Node::deepEqualAll(queries_, o.queries_) &&
+      Node::deepEqualAll(graphs_, o.graphs_);
 }
 
 void WithQuery::accept(AstVisitor* visitor) {

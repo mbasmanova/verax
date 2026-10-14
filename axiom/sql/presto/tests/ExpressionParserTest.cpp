@@ -852,6 +852,17 @@ TEST_F(ExpressionParserTest, subscript) {
   EXPECT_EQ("DEREFERENCE([1,2], 1)", parseExpr("row(1, 2)[2]")->toString());
 }
 
+TEST_F(ExpressionParserTest, unsupportedIdentifiers) {
+  AXIOM_EXPECT_PRESTO_SYNTAX_ERROR(
+      parseExpr("`a`"),
+      "Backquoted identifiers are not supported. Use double quotes to quote "
+      "identifiers.");
+  AXIOM_EXPECT_PRESTO_SYNTAX_ERROR(
+      parseExpr("1a"),
+      "Identifiers must not start with a digit. Surround the identifier with "
+      "double quotes.");
+}
+
 TEST_F(ExpressionParserTest, dereference) {
   // Named field dereference.
   EXPECT_EQ(

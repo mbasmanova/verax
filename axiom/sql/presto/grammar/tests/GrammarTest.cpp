@@ -14,27 +14,21 @@
  * limitations under the License.
  */
 
-#include <antlr4-runtime.h>
 #include <gtest/gtest.h>
 
-#include "axiom/sql/presto/ast/UpperCaseInputStream.h"
-#include "axiom/sql/presto/grammar/PrestoSqlLexer.h"
-#include "axiom/sql/presto/grammar/PrestoSqlParser.h"
+#include "axiom/sql/presto/ParserOptions.h"
+#include "axiom/sql/presto/PrestoSqlError.h"
+#include "axiom/sql/presto/grammar/SyntaxParser.h"
 
 namespace axiom::sql::presto {
 namespace {
 
 void parseQuery(std::string_view sql, bool isValid = true) {
-  UpperCaseInputStream input(sql);
-  PrestoSqlLexer lexer(&input);
-  antlr4::CommonTokenStream tokens(&lexer);
-  PrestoSqlParser parser(&tokens);
-  parser.singleStatement();
-
+  SyntaxParser parser(sql, ParserOptions::kMaxExpressionDepthDefault);
   if (isValid) {
-    EXPECT_EQ(0, parser.getNumberOfSyntaxErrors()) << "Failed to parse:" << sql;
+    EXPECT_NO_THROW(parser.parse()) << "Failed to parse: " << sql;
   } else {
-    EXPECT_GT(parser.getNumberOfSyntaxErrors(), 0)
+    EXPECT_THROW(parser.parse(), PrestoSqlError)
         << "Should have failed to parse SQL: " << sql;
   }
 }
@@ -102,6 +96,89 @@ TEST(GrammarTest, selectQueries) {
 
 TEST(GrammarTest, invalidQuery) {
   parseQuery("SELECT a INVALID b", /* isValid= */ false);
+}
+
+TEST(GrammarTest, graphQueries) {
+  static const std::vector<std::string> validQueries = {
+      "SELECT * FROM GRAPH_TABLE (g MATCH (a) COLUMNS (a.x))",
+      "SELECT * FROM GRAPH_TABLE (s.g MATCH (a)-(b) COLUMNS (a.x AS c)) t",
+      "SELECT * FROM GRAPH_TABLE (g "
+      "MATCH (a IS A WHERE a.x = 1) -[e IS B WHERE e.y > 0]-> (b), (b) <- (c) "
+      "WHERE a.x < c.x "
+      "COLUMNS (a.x, sum(e.y) AS s, path_length(p)))",
+      // Edge forms.
+      "SELECT * FROM GRAPH_TABLE (g MATCH (a) <-[e]- (b) -[f]- (c) COLUMNS (1))",
+      "SELECT * FROM GRAPH_TABLE (g MATCH ()->()<-()-() COLUMNS (1))",
+      // Label expressions.
+      "SELECT * FROM GRAPH_TABLE (g MATCH (a IS !(A | B) & %) COLUMNS (1))",
+      // Quantifiers, optional subpaths and subpath variables.
+      "SELECT * FROM GRAPH_TABLE (g "
+      "MATCH (a) -[e]->{1,3} (b) -[f]->{2} (c) -[h]->* (d) -[i]->+ (j) "
+      "-[k]->{,4} (l) -[m]->{5,} (n) COLUMNS (1))",
+      "SELECT * FROM GRAPH_TABLE (g "
+      "MATCH (a) (q = TRAIL (x) -> (y) WHERE x.w > 0){1,2} ((y) -> (z))? (b) "
+      "COLUMNS (1))",
+      // Selectors and path modes.
+      "SELECT * FROM GRAPH_TABLE (g "
+      "MATCH p = ANY SHORTEST TRAIL PATH (a)->+(b) COLUMNS (1))",
+      "SELECT * FROM GRAPH_TABLE (g MATCH ALL SHORTEST (a)->(b) COLUMNS (1))",
+      "SELECT * FROM GRAPH_TABLE (g MATCH ANY 3 ACYCLIC (a)->(b) COLUMNS (1))",
+      "SELECT * FROM GRAPH_TABLE (g MATCH SHORTEST 2 (a)->(b) COLUMNS (1))",
+      "SELECT * FROM GRAPH_TABLE (g MATCH SHORTEST GROUPS (a)->(b) COLUMNS (1))",
+      "SELECT * FROM GRAPH_TABLE (g MATCH ALL SIMPLE PATHS (a)->(b) COLUMNS (1))",
+      "SELECT * FROM GRAPH_TABLE (g MATCH WALK (a)->(b) COLUMNS (1))",
+      // Graph definitions.
+      "WITH GRAPH g AS (VERTEX TABLES (t KEY (a))) SELECT 1",
+      "WITH t AS (SELECT 1), GRAPH g AS ("
+      "VERTEX TABLES (t KEY (a) LABEL A PROPERTIES (a, b + 1 AS c), "
+      "s.u AS v KEY (a) PROPERTIES (b)) "
+      "EDGE TABLES (w KEY (a, b) "
+      "SOURCE KEY (a) REFERENCES t (a) DESTINATION KEY (b) REFERENCES v (a) "
+      "LABEL B LABEL C PROPERTIES (c))) "
+      "SELECT * FROM t",
+      // Graph keywords are non-reserved and usable as names.
+      "SELECT path, paths, label, source, destination, edge, vertex, match, "
+      "references, shortest, walk, trail, acyclic, simple FROM t",
+      "SELECT * FROM graph_table",
+      "SELECT graph_table.a FROM t AS graph_table",
+      "WITH graph AS (SELECT 1) SELECT * FROM graph",
+      "WITH graph (a) AS (SELECT 1) SELECT * FROM graph",
+      // '|', '!', '%' and '->' keep their expression meaning.
+      "SELECT a || b, a != b, a % b FROM t",
+      "SELECT x -> x + 1 FROM t",
+      "SELECT a<-1 FROM t",
+  };
+
+  for (const auto& query : validQueries) {
+    SCOPED_TRACE(query);
+    parseQuery(query);
+  }
+
+  static const std::vector<std::string> invalidQueries = {
+      // Quantifier on a node pattern.
+      "SELECT * FROM GRAPH_TABLE (g MATCH (a)* COLUMNS (1))",
+      // Optional edge pattern.
+      "SELECT * FROM GRAPH_TABLE (g MATCH (a) -[e]->? (b) COLUMNS (1))",
+      // Undirected edges.
+      "SELECT * FROM GRAPH_TABLE (g MATCH (a) ~[e]~ (b) COLUMNS (1))",
+      "SELECT * FROM GRAPH_TABLE (g MATCH (a) <-[e]-> (b) COLUMNS (1))",
+      // Double negation without parentheses.
+      "SELECT * FROM GRAPH_TABLE (g MATCH (a IS !!A) COLUMNS (1))",
+      // Quantifier and '?' together.
+      "SELECT * FROM GRAPH_TABLE (g MATCH ((a)->(b))*? COLUMNS (1))",
+      // Missing COLUMNS.
+      "SELECT * FROM GRAPH_TABLE (g MATCH (a))",
+      // Graph definition without a key.
+      "WITH GRAPH g AS (VERTEX TABLES (t)) SELECT 1",
+      // Edge table without a destination.
+      "WITH GRAPH g AS (VERTEX TABLES (t KEY (a)) "
+      "EDGE TABLES (u KEY (a) SOURCE KEY (a) REFERENCES t (a))) SELECT 1",
+  };
+
+  for (const auto& query : invalidQueries) {
+    SCOPED_TRACE(query);
+    parseQuery(query, /*isValid=*/false);
+  }
 }
 
 } // namespace

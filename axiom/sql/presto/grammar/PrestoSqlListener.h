@@ -292,6 +292,9 @@ class PrestoSqlListener : public antlr4::tree::ParseTreeListener {
   virtual void enterWith(PrestoSqlParser::WithContext* ctx) = 0;
   virtual void exitWith(PrestoSqlParser::WithContext* ctx) = 0;
 
+  virtual void enterWithElement(PrestoSqlParser::WithElementContext* ctx) = 0;
+  virtual void exitWithElement(PrestoSqlParser::WithElementContext* ctx) = 0;
+
   virtual void enterTableElement(PrestoSqlParser::TableElementContext* ctx) = 0;
   virtual void exitTableElement(PrestoSqlParser::TableElementContext* ctx) = 0;
 
@@ -426,6 +429,43 @@ class PrestoSqlListener : public antlr4::tree::ParseTreeListener {
   virtual void enterNamedQuery(PrestoSqlParser::NamedQueryContext* ctx) = 0;
   virtual void exitNamedQuery(PrestoSqlParser::NamedQueryContext* ctx) = 0;
 
+  virtual void enterNamedGraph(PrestoSqlParser::NamedGraphContext* ctx) = 0;
+  virtual void exitNamedGraph(PrestoSqlParser::NamedGraphContext* ctx) = 0;
+
+  virtual void enterVertexTable(PrestoSqlParser::VertexTableContext* ctx) = 0;
+  virtual void exitVertexTable(PrestoSqlParser::VertexTableContext* ctx) = 0;
+
+  virtual void enterEdgeTable(PrestoSqlParser::EdgeTableContext* ctx) = 0;
+  virtual void exitEdgeTable(PrestoSqlParser::EdgeTableContext* ctx) = 0;
+
+  virtual void enterGraphElementKey(
+      PrestoSqlParser::GraphElementKeyContext* ctx) = 0;
+  virtual void exitGraphElementKey(
+      PrestoSqlParser::GraphElementKeyContext* ctx) = 0;
+
+  virtual void enterEdgeEndpoint(PrestoSqlParser::EdgeEndpointContext* ctx) = 0;
+  virtual void exitEdgeEndpoint(PrestoSqlParser::EdgeEndpointContext* ctx) = 0;
+
+  virtual void enterDefaultGraphLabel(
+      PrestoSqlParser::DefaultGraphLabelContext* ctx) = 0;
+  virtual void exitDefaultGraphLabel(
+      PrestoSqlParser::DefaultGraphLabelContext* ctx) = 0;
+
+  virtual void enterExplicitGraphLabels(
+      PrestoSqlParser::ExplicitGraphLabelsContext* ctx) = 0;
+  virtual void exitExplicitGraphLabels(
+      PrestoSqlParser::ExplicitGraphLabelsContext* ctx) = 0;
+
+  virtual void enterGraphElementProperties(
+      PrestoSqlParser::GraphElementPropertiesContext* ctx) = 0;
+  virtual void exitGraphElementProperties(
+      PrestoSqlParser::GraphElementPropertiesContext* ctx) = 0;
+
+  virtual void enterGraphElementProperty(
+      PrestoSqlParser::GraphElementPropertyContext* ctx) = 0;
+  virtual void exitGraphElementProperty(
+      PrestoSqlParser::GraphElementPropertyContext* ctx) = 0;
+
   virtual void enterSetQuantifier(
       PrestoSqlParser::SetQuantifierContext* ctx) = 0;
   virtual void exitSetQuantifier(
@@ -506,10 +546,140 @@ class PrestoSqlListener : public antlr4::tree::ParseTreeListener {
   virtual void enterLateral(PrestoSqlParser::LateralContext* ctx) = 0;
   virtual void exitLateral(PrestoSqlParser::LateralContext* ctx) = 0;
 
+  virtual void enterGraphTable(PrestoSqlParser::GraphTableContext* ctx) = 0;
+  virtual void exitGraphTable(PrestoSqlParser::GraphTableContext* ctx) = 0;
+
   virtual void enterParenthesizedRelation(
       PrestoSqlParser::ParenthesizedRelationContext* ctx) = 0;
   virtual void exitParenthesizedRelation(
       PrestoSqlParser::ParenthesizedRelationContext* ctx) = 0;
+
+  virtual void enterGraphColumn(PrestoSqlParser::GraphColumnContext* ctx) = 0;
+  virtual void exitGraphColumn(PrestoSqlParser::GraphColumnContext* ctx) = 0;
+
+  virtual void enterGraphPattern(PrestoSqlParser::GraphPatternContext* ctx) = 0;
+  virtual void exitGraphPattern(PrestoSqlParser::GraphPatternContext* ctx) = 0;
+
+  virtual void enterPathPattern(PrestoSqlParser::PathPatternContext* ctx) = 0;
+  virtual void exitPathPattern(PrestoSqlParser::PathPatternContext* ctx) = 0;
+
+  virtual void enterPathModePrefix(
+      PrestoSqlParser::PathModePrefixContext* ctx) = 0;
+  virtual void exitPathModePrefix(
+      PrestoSqlParser::PathModePrefixContext* ctx) = 0;
+
+  virtual void enterAllShortestPaths(
+      PrestoSqlParser::AllShortestPathsContext* ctx) = 0;
+  virtual void exitAllShortestPaths(
+      PrestoSqlParser::AllShortestPathsContext* ctx) = 0;
+
+  virtual void enterAnyShortestPath(
+      PrestoSqlParser::AnyShortestPathContext* ctx) = 0;
+  virtual void exitAnyShortestPath(
+      PrestoSqlParser::AnyShortestPathContext* ctx) = 0;
+
+  virtual void enterCountedShortestGroups(
+      PrestoSqlParser::CountedShortestGroupsContext* ctx) = 0;
+  virtual void exitCountedShortestGroups(
+      PrestoSqlParser::CountedShortestGroupsContext* ctx) = 0;
+
+  virtual void enterCountedShortestPaths(
+      PrestoSqlParser::CountedShortestPathsContext* ctx) = 0;
+  virtual void exitCountedShortestPaths(
+      PrestoSqlParser::CountedShortestPathsContext* ctx) = 0;
+
+  virtual void enterAnyPaths(PrestoSqlParser::AnyPathsContext* ctx) = 0;
+  virtual void exitAnyPaths(PrestoSqlParser::AnyPathsContext* ctx) = 0;
+
+  virtual void enterAllPaths(PrestoSqlParser::AllPathsContext* ctx) = 0;
+  virtual void exitAllPaths(PrestoSqlParser::AllPathsContext* ctx) = 0;
+
+  virtual void enterPathMode(PrestoSqlParser::PathModeContext* ctx) = 0;
+  virtual void exitPathMode(PrestoSqlParser::PathModeContext* ctx) = 0;
+
+  virtual void enterPathPatternExpression(
+      PrestoSqlParser::PathPatternExpressionContext* ctx) = 0;
+  virtual void exitPathPatternExpression(
+      PrestoSqlParser::PathPatternExpressionContext* ctx) = 0;
+
+  virtual void enterNodePatternFactor(
+      PrestoSqlParser::NodePatternFactorContext* ctx) = 0;
+  virtual void exitNodePatternFactor(
+      PrestoSqlParser::NodePatternFactorContext* ctx) = 0;
+
+  virtual void enterEdgePatternFactor(
+      PrestoSqlParser::EdgePatternFactorContext* ctx) = 0;
+  virtual void exitEdgePatternFactor(
+      PrestoSqlParser::EdgePatternFactorContext* ctx) = 0;
+
+  virtual void enterParenthesizedPathFactor(
+      PrestoSqlParser::ParenthesizedPathFactorContext* ctx) = 0;
+  virtual void exitParenthesizedPathFactor(
+      PrestoSqlParser::ParenthesizedPathFactorContext* ctx) = 0;
+
+  virtual void enterParenthesizedPathPattern(
+      PrestoSqlParser::ParenthesizedPathPatternContext* ctx) = 0;
+  virtual void exitParenthesizedPathPattern(
+      PrestoSqlParser::ParenthesizedPathPatternContext* ctx) = 0;
+
+  virtual void enterNodePattern(PrestoSqlParser::NodePatternContext* ctx) = 0;
+  virtual void exitNodePattern(PrestoSqlParser::NodePatternContext* ctx) = 0;
+
+  virtual void enterRightEdge(PrestoSqlParser::RightEdgeContext* ctx) = 0;
+  virtual void exitRightEdge(PrestoSqlParser::RightEdgeContext* ctx) = 0;
+
+  virtual void enterLeftEdge(PrestoSqlParser::LeftEdgeContext* ctx) = 0;
+  virtual void exitLeftEdge(PrestoSqlParser::LeftEdgeContext* ctx) = 0;
+
+  virtual void enterAnyDirectionEdge(
+      PrestoSqlParser::AnyDirectionEdgeContext* ctx) = 0;
+  virtual void exitAnyDirectionEdge(
+      PrestoSqlParser::AnyDirectionEdgeContext* ctx) = 0;
+
+  virtual void enterElementPatternFiller(
+      PrestoSqlParser::ElementPatternFillerContext* ctx) = 0;
+  virtual void exitElementPatternFiller(
+      PrestoSqlParser::ElementPatternFillerContext* ctx) = 0;
+
+  virtual void enterLabelExpression(
+      PrestoSqlParser::LabelExpressionContext* ctx) = 0;
+  virtual void exitLabelExpression(
+      PrestoSqlParser::LabelExpressionContext* ctx) = 0;
+
+  virtual void enterLabelTerm(PrestoSqlParser::LabelTermContext* ctx) = 0;
+  virtual void exitLabelTerm(PrestoSqlParser::LabelTermContext* ctx) = 0;
+
+  virtual void enterLabelFactor(PrestoSqlParser::LabelFactorContext* ctx) = 0;
+  virtual void exitLabelFactor(PrestoSqlParser::LabelFactorContext* ctx) = 0;
+
+  virtual void enterLabelName(PrestoSqlParser::LabelNameContext* ctx) = 0;
+  virtual void exitLabelName(PrestoSqlParser::LabelNameContext* ctx) = 0;
+
+  virtual void enterLabelWildcard(
+      PrestoSqlParser::LabelWildcardContext* ctx) = 0;
+  virtual void exitLabelWildcard(
+      PrestoSqlParser::LabelWildcardContext* ctx) = 0;
+
+  virtual void enterParenthesizedLabelExpression(
+      PrestoSqlParser::ParenthesizedLabelExpressionContext* ctx) = 0;
+  virtual void exitParenthesizedLabelExpression(
+      PrestoSqlParser::ParenthesizedLabelExpressionContext* ctx) = 0;
+
+  virtual void enterZeroOrMore(PrestoSqlParser::ZeroOrMoreContext* ctx) = 0;
+  virtual void exitZeroOrMore(PrestoSqlParser::ZeroOrMoreContext* ctx) = 0;
+
+  virtual void enterOneOrMore(PrestoSqlParser::OneOrMoreContext* ctx) = 0;
+  virtual void exitOneOrMore(PrestoSqlParser::OneOrMoreContext* ctx) = 0;
+
+  virtual void enterExactRepetitions(
+      PrestoSqlParser::ExactRepetitionsContext* ctx) = 0;
+  virtual void exitExactRepetitions(
+      PrestoSqlParser::ExactRepetitionsContext* ctx) = 0;
+
+  virtual void enterBoundedRepetitions(
+      PrestoSqlParser::BoundedRepetitionsContext* ctx) = 0;
+  virtual void exitBoundedRepetitions(
+      PrestoSqlParser::BoundedRepetitionsContext* ctx) = 0;
 
   virtual void enterExpression(PrestoSqlParser::ExpressionContext* ctx) = 0;
   virtual void exitExpression(PrestoSqlParser::ExpressionContext* ctx) = 0;

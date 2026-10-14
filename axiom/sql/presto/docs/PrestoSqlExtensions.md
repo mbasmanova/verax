@@ -442,20 +442,90 @@ multisets: a row that appears N times in the left and M times in the right
 appears `max(N - M, 0)` times in `EXCEPT ALL` and `min(N, M)` times in
 `INTERSECT ALL`.
 
-## EXPLAIN (TYPE GRAPH)
-
-Outputs the query plan as a graph representation.
-
-**Syntax:**
-```sql
-EXPLAIN (TYPE GRAPH) query
-```
-
 ## EXPLAIN (TYPE OPTIMIZED)
 
-Outputs the optimized physical plan.
+Outputs the optimizer's plan after its last pass, with estimates. `last_pass`
+stops the optimizer after the named pass instead and outputs the plan that pass
+produced. Pass names are matched ignoring case; an unknown name fails with a
+list of the valid ones.
 
 **Syntax:**
 ```sql
 EXPLAIN (TYPE OPTIMIZED) query
+EXPLAIN (TYPE OPTIMIZED WITH (last_pass = 'pass_name')) query
 ```
+
+See `axiom/optimizer/docs/OptimizerPasses.md` for the passes.
+
+## Graph Queries
+
+Axiom parses SQL/PGQ graph queries: `GRAPH_TABLE` in `FROM`, which matches a
+path pattern against a property graph and returns a table, and `WITH GRAPH`, an
+Axiom extension that defines a property graph for one query. Presto Java
+supports neither.
+
+Graph queries are gated behind the `graphQueries` flag in `ParserOptions`, which
+is off by default. To enable them, set `graphQueries = true`, or use
+`SET SESSION parser.graph_queries = true` at the CLI. Planning is not
+implemented yet: with the flag on, a `GRAPH_TABLE` query parses and then fails
+with "Relation type is not supported yet".
+
+```sql
+WITH GRAPH g AS (
+  VERTEX TABLES (t KEY (a) LABEL A PROPERTIES (a, b))
+  EDGE TABLES (u KEY (a, b)
+    SOURCE KEY (a) REFERENCES t (a)
+    DESTINATION KEY (b) REFERENCES t (a)
+    LABEL B))
+SELECT *
+FROM GRAPH_TABLE (g
+  MATCH p = ANY SHORTEST (x IS A WHERE x.a = 1) -[e IS B]->+ (y IS A)
+  WHERE y.b > 0
+  COLUMNS (y.a, path_length(p) AS hops))
+```
+
+### Graph definitions
+
+`WITH GRAPH name AS (VERTEX TABLES (...) EDGE TABLES (...))` defines a graph
+alongside the query's CTEs. Each element table names a table, an optional
+alias, a `KEY`, and its labels:
+
+- `LABEL name` adds a label; a table may have several. Without one, the table
+  has a single label named after the table.
+- `PROPERTIES (expr [AS name], ...)` lists a label's properties. Without it,
+  the label exposes all columns. A property that is not a plain column
+  reference needs `AS name`.
+- An edge table also has `SOURCE KEY (...) REFERENCES vertex_table (...)` and
+  `DESTINATION KEY (...) REFERENCES vertex_table (...)`.
+
+### Patterns
+
+The pattern syntax follows the GQL grammar (ISO/IEC 39075), whose pattern
+language SQL/PGQ shares.
+
+| Construct | Syntax |
+|-----------|--------|
+| Node | `(v IS Label WHERE predicate)`; each part optional |
+| Edge | `-[e IS Label WHERE predicate]->`, `<-[...]-`, `-[...]-`; abbreviated `->`, `<-`, `-` |
+| Label expression | `!`, `&`, `\|`, `%` (any label), parentheses; `!` binds tightest, then `&`, then `\|` |
+| Quantifier | `*`, `+`, `{n}`, `{m,n}` with either bound optional; on an edge or a parenthesized subpath |
+| Optional subpath | `( ... )?` |
+| Subpath | `(q = mode path WHERE predicate)` |
+| Path mode | `WALK`, `TRAIL`, `ACYCLIC`, `SIMPLE`, optionally followed by `PATH` or `PATHS` |
+| Selector | `ANY SHORTEST`, `ALL SHORTEST`, `ANY [k]`, `SHORTEST k`, `SHORTEST [k] GROUP`, `ALL` |
+| Path | `p = selector mode pattern`, each prefix optional |
+
+Several path patterns may be separated by commas. `MATCH ... WHERE` filters
+matches after selection, and `COLUMNS (expr [AS name], ...)` defines the
+output columns.
+
+Rules beyond the grammar:
+
+- Labels are written with `IS`. Presto identifiers may contain `:`, so
+  `(a:Person)` is rejected rather than read as a variable named `a:Person`.
+- An unbounded quantifier (`*`, `+`, `{m,}`) must be in the scope of a selector
+  other than `ALL` or a path mode other than `WALK`.
+- Undirected edges (`~[...]~`) and `<-[...]->` are not supported; every edge
+  table is directed.
+- Match modes (`REPEATABLE ELEMENTS`, `DIFFERENT EDGES`), `KEEP`, and element
+  property specifications (`{k: v}`) are not supported.
