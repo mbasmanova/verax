@@ -17,8 +17,10 @@ add_library(
   Expr.cpp
   ExprPrinter.cpp
   ExprResolver.cpp
+  GraphPattern.cpp
   LogicalPlanNode.cpp
   PlanPrinter.cpp
+  PropertyGraph.cpp
   ReferencedTableCollector.cpp
   ExprApi.cpp
 )
@@ -33,7 +35,14 @@ target_link_libraries(
   Boost::headers
 )
 
-add_library(axiom_logical_plan_builder PlanBuilder.cpp NameAllocator.cpp NameMappings.cpp)
+add_library(
+  axiom_logical_plan_builder
+  GraphBuilder.cpp
+  GraphMatchBuilder.cpp
+  PlanBuilder.cpp
+  NameAllocator.cpp
+  NameMappings.cpp
+)
 
 target_link_libraries(
   axiom_logical_plan_builder

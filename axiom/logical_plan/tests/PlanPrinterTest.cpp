@@ -19,6 +19,8 @@
 #include <gtest/gtest.h>
 #include "axiom/connectors/ConnectorMetadataRegistry.h"
 #include "axiom/connectors/tests/TestConnector.h"
+#include "axiom/logical_plan/GraphBuilder.h"
+#include "axiom/logical_plan/GraphMatchBuilder.h"
 #include "axiom/logical_plan/PlanBuilder.h"
 #include "velox/functions/prestosql/aggregates/RegisterAggregateFunctions.h"
 #include "velox/functions/prestosql/registration/RegistrationFunctions.h"
@@ -1662,6 +1664,43 @@ TEST_F(PlanPrinterTest, fixedPointCounter) {
           testing::StartsWith("  - Project:"),
           testing::HasSubstr(":= plus("),
           testing::StartsWith("    - RecursiveReference: name=t"),
+          testing::Eq("")));
+}
+
+TEST_F(PlanPrinterTest, graphMatch) {
+  auto graph = GraphBuilder(context_, "g")
+                   .vertex("A", {"c"})
+                   .backedBy("test", {"a"})
+                   .edge("B", {})
+                   .backedBy(
+                       "u",
+                       PlanBuilder(context_).tableScan("test"),
+                       {"b"},
+                       {"test", {"a"}},
+                       {"test", {"a"}},
+                       {})
+                   .build();
+  auto plan = PlanBuilder(context_)
+                  .startGraphMatch(graph)
+                  .path("p", GraphPathSelector::anyShortest())
+                  .vertex("x", "A", "x.c = 'Y'")
+                  .rightEdge("e", "B")
+                  .repeats(1, 3)
+                  .vertex("y", "A")
+                  .filter("x.c <> y.c")
+                  .project({"path_length(p) AS hops"})
+                  .endGraphMatch()
+                  .planNode();
+
+  EXPECT_THAT(
+      toLines(plan),
+      testing::ElementsAre(
+          testing::StartsWith("- GraphMatch(graph=g): -> ROW<hops:BIGINT>"),
+          testing::Eq(
+              "    p = ANY_SHORTEST (x IS A WHERE eq(DEREFERENCE(x, c), Y)) "
+              "-[e IS B]->{1,3} (y IS A)"),
+          testing::Eq("    WHERE neq(DEREFERENCE(x, c), DEREFERENCE(y, c))"),
+          testing::Eq("    hops := path_length(p)"),
           testing::Eq("")));
 }
 

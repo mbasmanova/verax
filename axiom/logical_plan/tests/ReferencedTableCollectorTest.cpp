@@ -19,6 +19,8 @@
 #include <gtest/gtest.h>
 #include "axiom/connectors/ConnectorMetadataRegistry.h"
 #include "axiom/connectors/tests/TestConnector.h"
+#include "axiom/logical_plan/GraphBuilder.h"
+#include "axiom/logical_plan/GraphMatchBuilder.h"
 #include "axiom/logical_plan/PlanBuilder.h"
 #include "velox/common/base/tests/GTestUtils.h"
 #include "velox/connectors/ConnectorRegistry.h"
@@ -80,6 +82,11 @@ class ReferencedTableCollectorTest : public testing::Test {
     return PlanBuilder(context_, /*allowAmbiguousOutputNames=*/true);
   }
 
+  // Returns a builder that starts by scanning 'table'.
+  PlanBuilder startScan(const std::string& table) {
+    return planBuilder().tableScan(table);
+  }
+
   static ReferencedTables collect(const LogicalPlanNodePtr& plan) {
     return ReferencedTableCollector::collect(*plan);
   }
@@ -112,7 +119,7 @@ class ReferencedTableCollectorTest : public testing::Test {
 };
 
 TEST_F(ReferencedTableCollectorTest, scanIsAnInputTable) {
-  auto plan = planBuilder().tableScan("orders").build();
+  auto plan = startScan("orders").build();
 
   const auto referenced = collect(plan);
 
@@ -121,35 +128,48 @@ TEST_F(ReferencedTableCollectorTest, scanIsAnInputTable) {
 }
 
 TEST_F(ReferencedTableCollectorTest, joinCollectsBothSides) {
-  auto plan = planBuilder()
-                  .tableScan("orders")
-                  .as("o")
-                  .join(
-                      planBuilder().tableScan("lineitem").as("l"),
-                      "o.id = l.id",
-                      JoinType::kInner)
-                  .build();
-
-  const auto referenced = collect(plan);
+  auto plan =
+      startScan("orders")
+          .as("o")
+          .join(startScan("lineitem").as("l"), "o.id = l.id", JoinType::kInner)
+          .build();
 
   EXPECT_THAT(
-      referenced.inputTables,
+      collect(plan).inputTables,
       UnorderedElementsAre(table("orders"), table("lineitem")));
 }
 
-TEST_F(ReferencedTableCollectorTest, selfJoinCollectsOneTable) {
+// The tables that back a property graph are inputs of a plan that matches it.
+TEST_F(ReferencedTableCollectorTest, graphMatch) {
+  connector_->addTable("t", ROW({"id", "x"}, BIGINT()));
+  connector_->addTable("u", ROW({"a", "b", "y"}, BIGINT()));
+  auto graph = GraphBuilder(context_, "g")
+                   .vertex("V", {"x"})
+                   .backedBy("t", {"id"})
+                   .edge("E", {"y"})
+                   .backedBy("u", "t", {"a"}, "t", {"b"})
+                   .build();
   auto plan = planBuilder()
-                  .tableScan("orders")
-                  .as("o1")
-                  .join(
-                      planBuilder().tableScan("orders").as("o2"),
-                      "o1.id = o2.id",
-                      JoinType::kInner)
+                  .startGraphMatch(graph)
+                  .vertex("p")
+                  .rightEdge("e")
+                  .vertex("q")
+                  .project({"q.x", "e.y"})
+                  .endGraphMatch()
                   .build();
 
-  const auto referenced = collect(plan);
+  EXPECT_THAT(
+      collect(plan).inputTables, UnorderedElementsAre(table("t"), table("u")));
+}
 
-  EXPECT_THAT(referenced.inputTables, UnorderedElementsAre(table("orders")));
+TEST_F(ReferencedTableCollectorTest, selfJoinCollectsOneTable) {
+  auto plan =
+      startScan("orders")
+          .as("o1")
+          .join(startScan("orders").as("o2"), "o1.id = o2.id", JoinType::kInner)
+          .build();
+
+  EXPECT_THAT(collect(plan).inputTables, UnorderedElementsAre(table("orders")));
 }
 
 TEST_F(ReferencedTableCollectorTest, unionCollectsEveryBranchOnce) {
@@ -159,16 +179,13 @@ TEST_F(ReferencedTableCollectorTest, unionCollectsEveryBranchOnce) {
                   .unionAll(planBuilder().tableScan("orders", {"id"}))
                   .build();
 
-  const auto referenced = collect(plan);
-
   EXPECT_THAT(
-      referenced.inputTables,
+      collect(plan).inputTables,
       UnorderedElementsAre(table("orders"), table("lineitem")));
 }
 
 TEST_F(ReferencedTableCollectorTest, sameTableNameInTwoCatalogsStaysApart) {
-  auto plan = planBuilder()
-                  .tableScan("orders")
+  auto plan = startScan("orders")
                   .unionAll(
                       planBuilder().tableScan(
                           std::string(kOtherConnectorId),
@@ -176,48 +193,38 @@ TEST_F(ReferencedTableCollectorTest, sameTableNameInTwoCatalogsStaysApart) {
                           std::string("orders")))
                   .build();
 
-  const auto referenced = collect(plan);
-
   EXPECT_THAT(
-      referenced.inputTables,
+      collect(plan).inputTables,
       UnorderedElementsAre(
           table("orders"), table("orders", kOtherConnectorId)));
 }
 
 TEST_F(ReferencedTableCollectorTest, sameTableNameInTwoSchemasStaysApart) {
-  auto plan = planBuilder()
-                  .tableScan("orders")
+  auto plan = startScan("orders")
                   .unionAll(
                       planBuilder().tableScan(
                           std::string(kOtherSchema), std::string("orders")))
                   .build();
 
-  const auto referenced = collect(plan);
-
   EXPECT_THAT(
-      referenced.inputTables,
+      collect(plan).inputTables,
       UnorderedElementsAre(
           table("orders"), table("orders", kConnectorId, kOtherSchema)));
 }
 
 TEST_F(ReferencedTableCollectorTest, subqueryTableIsAnInputTable) {
-  auto plan =
-      planBuilder()
-          .tableScan("orders")
-          .filter(Exists(Subquery(planBuilder().tableScan("lineitem").build())))
-          .build();
-
-  const auto referenced = collect(plan);
+  auto plan = startScan("orders")
+                  .filter(Exists(Subquery(startScan("lineitem").build())))
+                  .build();
 
   EXPECT_THAT(
-      referenced.inputTables,
+      collect(plan).inputTables,
       UnorderedElementsAre(table("orders"), table("lineitem")));
 }
 
 TEST_F(ReferencedTableCollectorTest, insertSeparatesSourceFromTarget) {
   auto plan =
-      planBuilder()
-          .tableScan("orders")
+      startScan("orders")
           .tableWrite("orders_copy", WriteKind::kInsert, {"id", "amount"})
           .build();
 
@@ -230,7 +237,7 @@ TEST_F(ReferencedTableCollectorTest, insertSeparatesSourceFromTarget) {
 TEST_F(ReferencedTableCollectorTest, deleteTargetIsBothReadAndWritten) {
   // Matches what the Presto parser records for DELETE, where the target is
   // scanned to find the rows to remove.
-  auto plan = planBuilder().tableScan("orders").tableDelete("orders").build();
+  auto plan = startScan("orders").tableDelete("orders").build();
 
   const auto referenced = collect(plan);
 
@@ -242,13 +249,11 @@ TEST_F(ReferencedTableCollectorTest, secondWriteFails) {
   // A write reaches the collector twice only through a subquery, since a node
   // rejects a write as its input.
   auto write =
-      planBuilder()
-          .tableScan("orders")
+      startScan("orders")
           .tableWrite("orders_copy", WriteKind::kInsert, {"id", "amount"})
           .build();
 
-  auto plan = planBuilder()
-                  .tableScan("orders")
+  auto plan = startScan("orders")
                   .filter(Exists(Subquery(write)))
                   .tableWrite("orders", WriteKind::kInsert, {"id", "amount"})
                   .build();

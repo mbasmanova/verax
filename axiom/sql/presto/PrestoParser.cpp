@@ -33,6 +33,7 @@
 #include "axiom/sql/presto/CteScope.h"
 #include "axiom/sql/presto/DisplayNames.h"
 #include "axiom/sql/presto/ExpressionPlanner.h"
+#include "axiom/sql/presto/GraphTablePlanner.h"
 #include "axiom/sql/presto/GroupByPlanner.h"
 #include "axiom/sql/presto/ParserOptions.h"
 #include "axiom/sql/presto/PrestoSqlError.h"
@@ -529,6 +530,8 @@ class RelationPlanner : public AstVisitor {
         return processLateral(*relation->as<Lateral>());
       case NodeType::kJoin:
         return processJoin(*relation->as<Join>());
+      case NodeType::kGraphTable:
+        return processGraphTable(*relation->as<GraphTable>());
       default:
         AXIOM_PRESTO_SYNTAX_FAIL(
             relation->location(),
@@ -684,6 +687,50 @@ class RelationPlanner : public AstVisitor {
       // drops their columns as ambiguous when the join merges them, so no
       // qualified form may appear to resolve.
       ambiguousScopeRelations_.insert(tableName);
+    }
+  }
+
+  // Adds the GraphMatch node 'graphTable' describes, over a graph a WITH
+  // clause in scope defines.
+  void processGraphTable(const GraphTable& graphTable) {
+    const auto& name = *graphTable.graph();
+    const auto it = name.parts().size() == 1
+        ? graphs_.find(canonicalizeName(name.suffix()))
+        : graphs_.end();
+    AXIOM_PRESTO_SEMANTIC_CHECK(
+        it != graphs_.end(),
+        graphTable.location(),
+        name.suffix(),
+        "Property graph not found: {}",
+        name.fullyQualifiedName());
+    GraphTablePlanner(exprPlanner_)
+        .planGraphTable(graphTable, it->second, *builder_);
+    finishDerivedRelation();
+  }
+
+  // Builds the property graphs 'with' defines and puts them in scope.
+  void addGraphs(const With& with) {
+    auto planTable = [&](const GraphElementTable& table) {
+      auto relationsGuard = scopedRelations();
+      auto saved = builder_;
+      SCOPE_EXIT {
+        builder_ = std::move(saved);
+      };
+      builder_ = newBuilder();
+      processTable(table.location(), *table.table());
+      return *builder_;
+    };
+    std::unordered_set<std::string> namesInList;
+    for (const auto& graph : with.graphs()) {
+      auto name = canonicalizeIdentifier(*graph->name());
+      AXIOM_PRESTO_SEMANTIC_CHECK(
+          namesInList.insert(name).second,
+          graph->location(),
+          name,
+          "WITH graph name specified more than once: {}",
+          name);
+      graphs_[name] = GraphTablePlanner(exprPlanner_)
+                          .buildGraph(*graph, context_, planTable);
     }
   }
 
@@ -1504,6 +1551,10 @@ class RelationPlanner : public AstVisitor {
     };
 
     auto scope = ctes_.enterScope();
+    auto savedGraphs = graphs_;
+    SCOPE_EXIT {
+      graphs_ = std::move(savedGraphs);
+    };
     auto savedAccumulatedNames = displayNames_.accumulatedNames;
     SCOPE_EXIT {
       displayNames_.accumulatedNames = std::move(savedAccumulatedNames);
@@ -1554,6 +1605,10 @@ class RelationPlanner : public AstVisitor {
             CteScope::Entry{
                 withQuery, selfReferential, definingScope, siblings, i});
       }
+    }
+
+    if (const auto& with = query->with()) {
+      addGraphs(*with);
     }
 
     const auto& queryBody = query->queryBody();
@@ -1846,6 +1901,11 @@ class RelationPlanner : public AstVisitor {
   folly::F14FastSet<std::string> ambiguousScopeRelations_;
 
   CteScope ctes_;
+
+  // Property graphs WITH clauses define, by name. A graph is visible in the
+  // query that defines it and in the queries nested in it.
+  folly::F14FastMap<std::string, lp::PropertyGraphPtr> graphs_;
+
   ViewMap views_;
   std::unordered_set<facebook::axiom::CatalogSchemaTableName> inputTables_;
 

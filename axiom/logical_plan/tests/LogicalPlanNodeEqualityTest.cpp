@@ -19,6 +19,8 @@
 #include <gtest/gtest.h>
 #include "axiom/logical_plan/Expr.h"
 #include "axiom/logical_plan/ExprApi.h"
+#include "axiom/logical_plan/GraphBuilder.h"
+#include "axiom/logical_plan/GraphMatchBuilder.h"
 #include "axiom/logical_plan/PlanBuilder.h"
 #include "velox/functions/prestosql/aggregates/RegisterAggregateFunctions.h"
 #include "velox/functions/prestosql/registration/RegistrationFunctions.h"
@@ -458,6 +460,37 @@ TEST_F(LogicalPlanNodeEqualityTest, outputNodeEquality) {
       PlanBuilder().values({"x", "y"}, rows).planNode(),
       std::vector<OutputNode::Entry>{{1, "col_x"}, {0, "col_y"}});
   EXPECT_NE(*makeNode(), *outputDifferentIndex);
+}
+
+TEST_F(LogicalPlanNodeEqualityTest, graphMatchNodeEquality) {
+  auto makeNode = [](std::string_view predicate, std::string_view output) {
+    PlanBuilder::Context context;
+    auto graph =
+        GraphBuilder(context, "g")
+            .vertex("T", {"id", "name"})
+            .backedBy(
+                "t",
+                PlanBuilder(context).values(
+                    {"id", "name"},
+                    std::vector<std::vector<std::string>>{{"1", "'x'"}}),
+                {"id"},
+                {})
+            .build();
+    return PlanBuilder(context)
+        .startGraphMatch(graph)
+        .vertex("a", "T", predicate)
+        .project({std::string(output)})
+        .endGraphMatch()
+        .planNode();
+  };
+
+  EXPECT_EQ(*makeNode("a.id > 1", "a.name"), *makeNode("a.id > 1", "a.name"));
+
+  // Different predicate.
+  EXPECT_NE(*makeNode("a.id > 1", "a.name"), *makeNode("a.id > 2", "a.name"));
+
+  // Different output.
+  EXPECT_NE(*makeNode("a.id > 1", "a.name"), *makeNode("a.id > 1", "a.id"));
 }
 
 TEST_F(LogicalPlanNodeEqualityTest, crossKindInequality) {
