@@ -70,6 +70,26 @@ TEST_F(DdlParserTest, insertIntoTable) {
       "Column not found: 'NoSuchCol' in table \"default\".\"nation\"");
 }
 
+TEST_F(DdlParserTest, insertColumnCountMismatch) {
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      parseSql("INSERT INTO nation SELECT 100, 'n-100', 2"),
+      "Insert query has 3 expression(s) but expected 4 target column(s) for table 'nation': 3 vs 4");
+
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      parseSql(
+          "EXPLAIN INSERT INTO default.nation VALUES (100, 'n', 2, 'c', 5)"),
+      "Insert query has 5 expression(s) but expected 4 target column(s) for table 'default.nation': 5 vs 4");
+
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      parseSql("INSERT INTO nation(n_nationkey, n_name) SELECT 100"),
+      "Insert query has 1 expression(s) but expected 2 target column(s) for table 'nation': 1 vs 2");
+
+  AXIOM_EXPECT_PRESTO_SEMANTIC_ERROR(
+      parseSql(
+          "INSERT INTO nation(n_nationkey, n_name) SELECT 100, 'n-100', 2"),
+      "Insert query has 3 expression(s) but expected 2 target column(s) for table 'nation': 3 vs 2");
+}
+
 TEST_F(DdlParserTest, deleteFromTable) {
   {
     auto matcher = matchScan("nation").tableWrite();
