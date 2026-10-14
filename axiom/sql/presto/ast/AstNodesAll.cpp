@@ -245,9 +245,25 @@ const auto& nodeTypeNames() {
   };
   return kNames;
 }
+const auto& intervalFieldNames() {
+  using Field = IntervalLiteral::IntervalField;
+  static const folly::F14FastMap<Field, std::string_view> kNames = {
+      {Field::kYear, "YEAR"},
+      {Field::kMonth, "MONTH"},
+      {Field::kDay, "DAY"},
+      {Field::kHour, "HOUR"},
+      {Field::kMinute, "MINUTE"},
+      {Field::kSecond, "SECOND"},
+  };
+  return kNames;
+}
 } // namespace
 
 AXIOM_DEFINE_ENUM_NAME(NodeType, nodeTypeNames);
+AXIOM_DEFINE_EMBEDDED_ENUM_NAME(
+    IntervalLiteral,
+    IntervalField,
+    intervalFieldNames);
 
 std::string_view toSqlString(ComparisonExpression::Operator op) {
   switch (op) {

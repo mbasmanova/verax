@@ -38,6 +38,7 @@ add_library(
   DisplayNames.cpp
   ExpressionPlanner.cpp
   GroupByPlanner.cpp
+  IntervalParser.cpp
   RecursiveCteValidator.cpp
   SortProjection.cpp
   PrestoParser.cpp
