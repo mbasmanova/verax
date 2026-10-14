@@ -4,10 +4,10 @@
 IR nodes, the invariants each pass must preserve, and what is deliberately
 rejected.*
 
-**Status: planning and lowering only.** This machinery produces a Velox plan for
-a recursive query; it does not run one yet. Distributed recursion, nested
-recursion, multiple recursive references per step, and multiple fixed points per
-execution fragment are rejected — see [Boundaries](#boundaries).
+**Status:** recursive queries plan and run on a single worker. Distributed
+recursion, nested recursion, multiple recursive references per step, and
+multiple fixed points per execution fragment are rejected — see
+[Boundaries](#boundaries).
 
 ## Introduction
 
