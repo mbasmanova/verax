@@ -85,6 +85,12 @@ class PlanNodeVisitor {
     VELOX_NYI("PlanNodeVisitor does not support RecursiveReferenceNode");
   }
 
+  virtual void visit(
+      const GraphMatchNode& /*node*/,
+      PlanNodeVisitorContext& /*context*/) const {
+    VELOX_NYI("PlanNodeVisitor does not support GraphMatchNode");
+  }
+
  protected:
   void visitInputs(const LogicalPlanNode& node, PlanNodeVisitorContext& ctx)
       const {

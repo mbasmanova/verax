@@ -20,6 +20,8 @@
 #include "axiom/connectors/tests/TestConnector.h"
 #include "axiom/logical_plan/Expr.h"
 #include "axiom/logical_plan/ExprApi.h"
+#include "axiom/logical_plan/GraphBuilder.h"
+#include "axiom/logical_plan/GraphMatchBuilder.h"
 #include "axiom/logical_plan/LogicalPlanNode.h"
 #include "axiom/logical_plan/PlanBuilder.h"
 #include "velox/common/serialization/Serializable.h"
@@ -323,6 +325,51 @@ TEST_F(LogicalPlanNodeSerdeTest, fixedPointNode) {
                   .project({"n + 1 as n"})
                   .planNode();
   auto plan = anchor.fixedPoint("t", step).planNode();
+  testRoundTrip(plan);
+}
+
+TEST_F(LogicalPlanNodeSerdeTest, graphMatchNode) {
+  auto graph =
+      GraphBuilder(context_, "g")
+          .vertex("A", {"b", "c"})
+          .backedBy("test_table", {"a"}, {"upper(b) AS c"})
+          .edge("B", {})
+          .backedBy(
+              "u",
+              PlanBuilder(context_).values(
+                  ROW({"s", "d"}, BIGINT()), std::vector<Variant>{}),
+              {"s", "d"},
+              GraphBuilder::Endpoint{.table = "test_table", .columns = {"s"}},
+              GraphBuilder::Endpoint{.table = "test_table", .columns = {"d"}},
+              {})
+          .build();
+
+  // ANY 2 TRAIL (x IS A WHERE x.c = 'Y')
+  //     (q = ACYCLIC -[e IS !B]- (y IS A | %)){0,2} ((z))?
+  //   WHERE x.b <> z.b
+  auto notB = std::make_shared<GraphLabelNegation>(
+      std::make_shared<GraphLabelName>("B"));
+  auto aOrAny = std::make_shared<GraphLabelDisjunction>(
+      std::vector<GraphLabelExpressionPtr>{
+          std::make_shared<GraphLabelName>("A"),
+          std::make_shared<GraphLabelWildcard>()});
+  auto plan = PlanBuilder(context_)
+                  .startGraphMatch(graph)
+                  .path("p", GraphPathSelector::any(2), GraphPathMode::kTrail)
+                  .vertex("x", "A", "x.c = 'Y'")
+                  .startSubpath("q", GraphPathMode::kAcyclic)
+                  .anyEdge("e", notB)
+                  .vertex("y", aOrAny)
+                  .endSubpath()
+                  .repeats(0, 2)
+                  .startSubpath("")
+                  .vertex("z")
+                  .endSubpath()
+                  .optional()
+                  .filter("x.b <> z.b")
+                  .project({"x.b", "path_length(p) AS hops"})
+                  .endGraphMatch()
+                  .planNode();
   testRoundTrip(plan);
 }
 

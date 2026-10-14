@@ -295,6 +295,49 @@ class ValuesMatcher : public LogicalPlanMatcherImpl<ValuesNode> {
   const velox::RowTypePtr outputType_;
 };
 
+class GraphMatchMatcher : public LogicalPlanMatcherImpl<GraphMatchNode> {
+ public:
+  explicit GraphMatchMatcher(std::vector<std::string> outputs)
+      : LogicalPlanMatcherImpl<GraphMatchNode>(nullptr),
+        outputs_{std::move(outputs)} {}
+
+ private:
+  MatchResult matchDetails(
+      const GraphMatchNode& plan,
+      const std::unordered_map<std::string, std::string>& symbols)
+      const override {
+    // An expected output may name its column with ' AS alias' so later
+    // matchers can reference it.
+    std::vector<std::string> expected;
+    std::unordered_map<std::string, std::string> newSymbols = symbols;
+    for (auto i = 0; i < outputs_.size(); ++i) {
+      const auto& output = outputs_[i];
+      const auto as = output.find(" AS ");
+      expected.push_back(output.substr(0, as));
+      if (as != std::string::npos && i < plan.outputNames().size()) {
+        newSymbols[output.substr(as + 4)] = plan.outputNames()[i];
+      }
+    }
+
+    std::vector<std::string> outputs;
+    for (const auto& output : plan.outputs()) {
+      if (output->kind() == GraphMatchOutput::Kind::kPathLength) {
+        outputs.push_back(fmt::format("path_length({})", output->pattern()));
+      } else {
+        outputs.push_back(
+            fmt::format(
+                "{}.{}",
+                output->pattern(),
+                output->as<GraphPropertyOutput>()->property()));
+      }
+    }
+    EXPECT_EQ(expected, outputs);
+    AXIOM_RETURN_RESULT(newSymbols)
+  }
+
+  const std::vector<std::string> outputs_;
+};
+
 class LimitMatcher : public LogicalPlanMatcherImpl<LimitNode> {
  public:
   LimitMatcher(
@@ -630,6 +673,21 @@ LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::tableScan(
     auto scan = std::dynamic_pointer_cast<const TableScanNode>(node);
     EXPECT_EQ(scan->tableName().table, tableName);
   });
+}
+
+LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::graphMatch(
+    OnMatchCallback onMatch) {
+  VELOX_USER_CHECK_NULL(matcher_);
+  matcher_ = std::make_shared<LogicalPlanMatcherImpl<GraphMatchNode>>(
+      std::move(onMatch));
+  return *this;
+}
+
+LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::graphMatch(
+    const std::vector<std::string>& outputs) {
+  VELOX_USER_CHECK_NULL(matcher_);
+  matcher_ = std::make_shared<GraphMatchMatcher>(outputs);
+  return *this;
 }
 
 LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::values(

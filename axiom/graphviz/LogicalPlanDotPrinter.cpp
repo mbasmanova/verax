@@ -397,6 +397,11 @@ class DotPrinterVisitor : public PlanNodeVisitor {
     VELOX_NYI("RecursiveReferenceNode dot printing is not yet implemented");
   }
 
+  void visit(const GraphMatchNode& /*node*/, PlanNodeVisitorContext& /*ctx*/)
+      const override {
+    VELOX_NYI("GraphMatchNode dot printing is not yet implemented");
+  }
+
  private:
   static void printNodeStart(
       std::ostream& out,

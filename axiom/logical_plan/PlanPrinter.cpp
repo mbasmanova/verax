@@ -25,6 +25,115 @@ namespace facebook::axiom::logical_plan {
 
 namespace {
 
+// Returns a pattern term as written in a MATCH clause.
+std::string toText(const GraphPatternTerm& term);
+
+std::string toText(const std::vector<GraphPatternTermPtr>& terms) {
+  std::vector<std::string> parts;
+  parts.reserve(terms.size());
+  for (const auto& term : terms) {
+    parts.push_back(toText(*term));
+  }
+  return folly::join(" ", parts);
+}
+
+std::string toText(const std::optional<GraphRepetition>& repetition) {
+  if (!repetition.has_value()) {
+    return "";
+  }
+  return fmt::format(
+      "{{{},{}}}",
+      repetition->min,
+      repetition->max.has_value() ? std::to_string(repetition->max.value())
+                                  : "");
+}
+
+std::string predicateText(const GraphPatternTerm& term) {
+  return fmt::format("WHERE {}", ExprPrinter::toText(*term.predicate()));
+}
+
+// Returns the name, label and predicate of a vertex or edge pattern.
+std::string elementFiller(const GraphElementPattern& element) {
+  std::vector<std::string> parts;
+  if (!element.name().empty()) {
+    parts.push_back(element.name());
+  }
+  if (element.label() != nullptr) {
+    parts.push_back(fmt::format("IS {}", element.label()->toString()));
+  }
+  if (element.predicate() != nullptr) {
+    parts.push_back(predicateText(element));
+  }
+  return folly::join(" ", parts);
+}
+
+std::string toText(const GraphEdgePattern& edge) {
+  const auto filler = elementFiller(edge);
+  std::string text;
+  switch (edge.direction()) {
+    case GraphEdgePattern::Direction::kRight:
+      text = fmt::format("-[{}]->", filler);
+      break;
+    case GraphEdgePattern::Direction::kLeft:
+      text = fmt::format("<-[{}]-", filler);
+      break;
+    case GraphEdgePattern::Direction::kAnyDirection:
+      text = fmt::format("-[{}]-", filler);
+      break;
+  }
+  return text + toText(edge.repetition());
+}
+
+std::string toText(const GraphSubpathPattern& subpath) {
+  std::vector<std::string> parts;
+  if (!subpath.name().empty()) {
+    parts.push_back(subpath.name() + " =");
+  }
+  if (subpath.mode().has_value()) {
+    parts.push_back(fmt::format("{}", subpath.mode().value()));
+  }
+  parts.push_back(toText(subpath.terms()));
+  if (subpath.predicate() != nullptr) {
+    parts.push_back(predicateText(subpath));
+  }
+  return fmt::format(
+      "({}){}{}",
+      folly::join(" ", parts),
+      subpath.optional() ? "?" : "",
+      toText(subpath.repetition()));
+}
+
+std::string toText(const GraphPatternTerm& term) {
+  switch (term.kind()) {
+    case GraphPatternTerm::Kind::kVertex:
+      return fmt::format("({})", elementFiller(*term.as<GraphVertexPattern>()));
+    case GraphPatternTerm::Kind::kEdge:
+      return toText(*term.as<GraphEdgePattern>());
+    case GraphPatternTerm::Kind::kSubpath:
+      return toText(*term.as<GraphSubpathPattern>());
+  }
+  VELOX_UNREACHABLE();
+}
+
+std::string toText(const GraphPathPattern& path) {
+  std::vector<std::string> prefix;
+  if (!path.name.empty()) {
+    prefix.push_back(path.name + " =");
+  }
+  if (path.selector.has_value()) {
+    std::string selector{GraphPathSelector::toName(path.selector->kind)};
+    if (path.selector->count.has_value()) {
+      selector += fmt::format(" {}", path.selector->count.value());
+    }
+    prefix.push_back(std::move(selector));
+  }
+  if (path.mode.has_value()) {
+    prefix.push_back(fmt::format("{}", path.mode.value()));
+  }
+  prefix.push_back(toText(path.terms));
+  return folly::join(" ", prefix);
+}
+
 class ToTextVisitor : public PlanNodeVisitor {
  public:
   struct Context : public PlanNodeVisitorContext {
@@ -277,6 +386,35 @@ class ToTextVisitor : public PlanNodeVisitor {
     appendNode("RecursiveReference", node, "name=" + node.name(), context);
   }
 
+  void visit(const GraphMatchNode& node, PlanNodeVisitorContext& context)
+      const override {
+    auto& myContext = static_cast<Context&>(context);
+    myContext.out << makeIndent(myContext.indent)
+                  << "- GraphMatch(graph=" << node.graph()->name() << "):";
+    appendOutputType(node, myContext);
+    myContext.out << std::endl;
+
+    const auto indent = makeIndent(myContext.indent + 2);
+    for (const auto& path : node.paths()) {
+      myContext.out << indent << toText(path) << std::endl;
+    }
+    if (node.predicate() != nullptr) {
+      myContext.out << indent << "WHERE "
+                    << ExprPrinter::toText(*node.predicate()) << std::endl;
+    }
+    for (auto i = 0; i < node.outputs().size(); ++i) {
+      const auto& output = *node.outputs()[i];
+      myContext.out << indent << node.outputNames()[i] << " := "
+                    << (output.kind() == GraphMatchOutput::Kind::kPathLength
+                            ? fmt::format("path_length({})", output.pattern())
+                            : fmt::format(
+                                  "{}.{}",
+                                  output.pattern(),
+                                  output.as<GraphPropertyOutput>()->property()))
+                    << std::endl;
+    }
+  }
+
  private:
   static std::string makeIndent(size_t size) {
     return std::string(size * 2, ' ');
@@ -482,6 +620,13 @@ class CollectExprStatsPlanNodeVisitor : public PlanNodeVisitor {
       const RecursiveReferenceNode& /*node*/,
       PlanNodeVisitorContext& /*context*/) const override {
     // Leaf node — nothing to collect.
+  }
+
+  void visit(const GraphMatchNode& node, PlanNodeVisitorContext& context)
+      const override {
+    auto& stats = static_cast<Context&>(context).stats;
+    node.forEachExpression(
+        [&](const Expr& expression) { collectExprStats(expression, stats); });
   }
 
  private:
@@ -856,6 +1001,13 @@ class SummarizeToTextVisitor : public PlanNodeVisitor {
     auto& myContext = static_cast<Context&>(context);
     appendHeader(node, myContext);
     // Leaf node — no inputs to recurse into.
+  }
+
+  void visit(const GraphMatchNode& node, PlanNodeVisitorContext& context)
+      const override {
+    // The summary shows the plan tree. The graph's element tables hang off the
+    // node, not off its inputs, so their source plans are not shown.
+    appendHeader(node, static_cast<Context&>(context));
   }
 
  private:

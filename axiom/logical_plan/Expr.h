@@ -44,6 +44,7 @@ using ExprPtr = std::shared_ptr<const Expr>;
 
 class ExprVisitor;
 class ExprVisitorContext;
+class InputReferenceExpr;
 class SubqueryExpr;
 
 /// Base class for all expressions. Every expression has a return type and zero
@@ -157,6 +158,10 @@ class Expr : public velox::ISerializable {
   /// Invokes 'visit' for each subquery nested in this expression.
   void forEachSubquery(
       folly::FunctionRef<void(const SubqueryExpr&)> visit) const;
+
+  /// Invokes 'visit' for each input reference in this expression.
+  void forEachInputReference(
+      folly::FunctionRef<void(const InputReferenceExpr&)> visit) const;
 
   /// Returns true if two expressions are structurally equal.
   bool operator==(const Expr& other) const;

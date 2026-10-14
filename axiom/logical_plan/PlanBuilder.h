@@ -307,6 +307,14 @@ class PlanBuilder {
       const std::string& tableName,
       bool includeHiddenColumns = false);
 
+  class GraphMatchBuilder;
+
+  /// Starts a leaf GraphMatch node that matches path patterns against
+  /// 'graph'. Add patterns, a condition and outputs to the returned builder,
+  /// then call its endGraphMatch() to continue with this builder. Must be the
+  /// first node in the plan. Defined in GraphMatchBuilder.h.
+  GraphMatchBuilder startGraphMatch(PropertyGraphPtr graph);
+
   /// Removes hidden columns (e.g. $row_id) from the output.
   PlanBuilder& dropHiddenColumns();
 
