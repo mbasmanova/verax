@@ -22,6 +22,8 @@
  * - Add named ROW constructor: ROW(expr AS name, ...).
  * - Friendly SQL: trailing commas in SELECT, FROM-first syntax,
  *   underscores in numeric literals.
+ * - Graph queries: GRAPH_TABLE (SQL/PGQ) in FROM and query-scoped graph
+ *   definitions in WITH (WITH GRAPH name AS (...)).
  */
 
 grammar PrestoSql;
@@ -172,7 +174,12 @@ query
     ;
 
 with
-    : WITH RECURSIVE? namedQuery (',' namedQuery)* ','?
+    : WITH RECURSIVE? withElement (',' withElement)* ','?
+    ;
+
+withElement
+    : namedQuery
+    | namedGraph
     ;
 
 tableElement
@@ -312,6 +319,46 @@ namedQuery
     : name=identifier (columnAliases)? AS '(' query ')'
     ;
 
+namedGraph
+    : GRAPH name=identifier AS '('
+      VERTEX TABLES '(' vertexTable (',' vertexTable)* ')'
+      (EDGE TABLES '(' edgeTable (',' edgeTable)* ')')?
+      ')'
+    ;
+
+vertexTable
+    : qualifiedName (AS alias=identifier)? graphElementKey graphElementLabels?
+    ;
+
+edgeTable
+    : qualifiedName (AS alias=identifier)? graphElementKey
+      SOURCE source=edgeEndpoint
+      DESTINATION destination=edgeEndpoint
+      graphElementLabels?
+    ;
+
+graphElementKey
+    : KEY '(' identifier (',' identifier)* ')'
+    ;
+
+edgeEndpoint
+    : graphElementKey REFERENCES vertexTableName=identifier
+      '(' referencedColumns+=identifier (',' referencedColumns+=identifier)* ')'
+    ;
+
+graphElementLabels
+    : graphElementProperties                                #defaultGraphLabel
+    | (LABEL identifier graphElementProperties?)+          #explicitGraphLabels
+    ;
+
+graphElementProperties
+    : PROPERTIES '(' graphElementProperty (',' graphElementProperty)* ')'
+    ;
+
+graphElementProperty
+    : expression (AS identifier)?
+    ;
+
 setQuantifier
     : DISTINCT
     | ALL
@@ -386,7 +433,96 @@ relationPrimary
     | '(' query ')'                                                   #subqueryRelation
     | UNNEST '(' expression (',' expression)* ')' (WITH ORDINALITY)?  #unnest
     | LATERAL '(' query ')'                                           #lateral
+    | GRAPH_TABLE '(' qualifiedName MATCH graphPattern
+      COLUMNS '(' graphColumn (',' graphColumn)* ')' ')'              #graphTable
     | '(' relation ')'                                                #parenthesizedRelation
+    ;
+
+graphColumn
+    : expression (AS? identifier)?
+    ;
+
+graphPattern
+    : pathPattern (',' pathPattern)* (WHERE where=booleanExpression)?
+    ;
+
+pathPattern
+    : (variable=identifier EQ)? pathPatternPrefix? pathPatternExpression
+    ;
+
+pathPatternPrefix
+    : pathMode (PATH | PATHS)?                                        #pathModePrefix
+    | ALL SHORTEST pathMode? (PATH | PATHS)?                          #allShortestPaths
+    | ANY SHORTEST pathMode? (PATH | PATHS)?                          #anyShortestPath
+    | SHORTEST count=INTEGER_VALUE? pathMode? (PATH | PATHS)?
+      (GROUP | GROUPS)                                                #countedShortestGroups
+    | SHORTEST count=INTEGER_VALUE pathMode? (PATH | PATHS)?          #countedShortestPaths
+    | ANY count=INTEGER_VALUE? pathMode? (PATH | PATHS)?              #anyPaths
+    | ALL pathMode? (PATH | PATHS)?                                   #allPaths
+    ;
+
+pathMode
+    : WALK | TRAIL | ACYCLIC | SIMPLE
+    ;
+
+pathPatternExpression
+    : pathFactor+
+    ;
+
+pathFactor
+    : nodePattern                                                     #nodePatternFactor
+    | edgePattern graphQuantifier?                                    #edgePatternFactor
+    | parenthesizedPathPattern (graphQuantifier | optional='?')?      #parenthesizedPathFactor
+    ;
+
+parenthesizedPathPattern
+    : '(' (variable=identifier EQ)? (pathMode (PATH | PATHS)?)?
+      pathPatternExpression (WHERE where=booleanExpression)? ')'
+    ;
+
+nodePattern
+    : '(' elementPatternFiller ')'
+    ;
+
+// Edge arrows reuse '-', '<' and the lambda token '->' so that 'a<-1' still
+// lexes as 'a < -1'.
+edgePattern
+    : '-' '[' elementPatternFiller ']' '->'                           #rightEdge
+    | '->'                                                            #rightEdge
+    | '<' '-' '[' elementPatternFiller ']' '-'                        #leftEdge
+    | '<' '-'                                                         #leftEdge
+    | '-' '[' elementPatternFiller ']' '-'                            #anyDirectionEdge
+    | '-'                                                             #anyDirectionEdge
+    ;
+
+elementPatternFiller
+    : variable=identifier? (IS labelExpression)? (WHERE where=booleanExpression)?
+    ;
+
+// '!' binds tightest, then '&', then '|'.
+labelExpression
+    : labelTerm ('|' labelTerm)*
+    ;
+
+labelTerm
+    : labelFactor ('&' labelFactor)*
+    ;
+
+labelFactor
+    : negation='!'? labelPrimary
+    ;
+
+labelPrimary
+    : identifier                                                      #labelName
+    | '%'                                                             #labelWildcard
+    | '(' labelExpression ')'                                         #parenthesizedLabelExpression
+    ;
+
+graphQuantifier
+    : '*'                                                             #zeroOrMore
+    | '+'                                                             #oneOrMore
+    | '{' exact=INTEGER_VALUE '}'                                     #exactRepetitions
+    | '{' lower=INTEGER_VALUE? ',' upper=INTEGER_VALUE? '}'           #boundedRepetitions
     ;
 
 expression
@@ -679,33 +815,34 @@ constraintEnforced
 
 nonReserved
     // IMPORTANT: this rule must only contain tokens. Nested rules are not supported. See SqlParser.exitNonReserved
-    : ADD | ADMIN | ALL | ANALYZE | ANY | ARRAY | ASC | AT
+    : ACYCLIC | ADD | ADMIN | ALL | ANALYZE | ANY | ARRAY | ASC | AT
     | BEFORE | BERNOULLI
     | CALL | CALLED | CASCADE | CATALOGS | COLUMN | COLUMNS | COMMENT | COMMIT | COMMITTED | CURRENT | CURRENT_ROLE
-    | DATA | DATE | DAY | DEFINER | DESC | DETERMINISTIC | DISABLED | DISTRIBUTED
-    | ENABLED | ENFORCED | EXECUTABLE | EXCLUDE | EXCLUDING | EXPLAIN | EXTERNAL
+    | DATA | DATE | DAY | DEFINER | DESC | DESTINATION | DETERMINISTIC | DISABLED | DISTRIBUTED
+    | EDGE | ENABLED | ENFORCED | EXECUTABLE | EXCLUDE | EXCLUDING | EXPLAIN | EXTERNAL
     | FETCH | FILTER | FIRST | FOLLOWING | FORMAT | FUNCTION | FUNCTIONS
-    | GRANT | GRANTED | GRANTS | GRAPH | GRAPHVIZ | GROUPS
+    | GRANT | GRANTED | GRANTS | GRAPH | GRAPH_TABLE | GRAPHVIZ | GROUPS
     | HOUR
     | IF | IGNORE | INCLUDING | INPUT | INTERVAL | INVOKER | IO | ISOLATION
     | JSON
     | KEY
-    | LANGUAGE | LAST | LATERAL | LEVEL | LIMIT | LOGICAL
-    | MAP | MATERIALIZED | MINUTE | MONTH
+    | LABEL | LANGUAGE | LAST | LATERAL | LEVEL | LIMIT | LOGICAL
+    | MAP | MATCH | MATERIALIZED | MINUTE | MONTH
     | NAME | NFC | NFD | NFKC | NFKD | NO | NONE | NULLIF | NULLS
     | OF | OFFSET | ONLY | OPTIMIZED | OPTION | ORDINALITY | OUTPUT | OVER
-    | PARTITION | PARTITIONS | POSITION | PRECEDING | PRIMARY | PRIVILEGES | PROPERTIES
-    | RANGE | READ | REFRESH | RELY | RENAME | REPEATABLE | REPLACE | RESET | RESPECT | RESTRICT | RETURN | RETURNS | REVOKE | ROLE | ROLES | ROLLBACK | ROW | ROWS
+    | PARTITION | PARTITIONS | PATH | PATHS | POSITION | PRECEDING | PRIMARY | PRIVILEGES | PROPERTIES
+    | RANGE | READ | REFERENCES | REFRESH | RELY | RENAME | REPEATABLE | REPLACE | RESET | RESPECT | RESTRICT | RETURN | RETURNS | REVOKE | ROLE | ROLES | ROLLBACK | ROW | ROWS
     | SCHEMA | SCHEMAS | SECOND | SECURITY | SERIALIZABLE | SESSION | SET | SETS | SQL
-    | SHOW | SOME | START | STATS | SUBSTRING | SYSTEM | SYSTEM_TIME | SYSTEM_VERSION
-    | TABLES | TABLESAMPLE | TEMPORARY | TEXT | TIME | TIMESTAMP | TO | TRANSACTION | TRUNCATE | TRY_CAST | TYPE
+    | SHOW | SHORTEST | SIMPLE | SOME | SOURCE | START | STATS | SUBSTRING | SYSTEM | SYSTEM_TIME | SYSTEM_VERSION
+    | TABLES | TABLESAMPLE | TEMPORARY | TEXT | TIME | TIMESTAMP | TO | TRAIL | TRANSACTION | TRUNCATE | TRY_CAST | TYPE
     | UNBOUNDED | UNCOMMITTED | UNIQUE | UPDATE | USE | USER
-    | VALIDATE | VERBOSE | VERSION | VIEW
-    | WINDOW | WORK | WRITE
+    | VALIDATE | VERBOSE | VERSION | VERTEX | VIEW
+    | WALK | WINDOW | WORK | WRITE
     | YEAR
     | ZONE
     ;
 
+ACYCLIC: 'ACYCLIC';
 ADD: 'ADD';
 ADMIN: 'ADMIN';
 ALL: 'ALL';
@@ -750,11 +887,13 @@ DEFINER: 'DEFINER';
 DELETE: 'DELETE';
 DESC: 'DESC';
 DESCRIBE: 'DESCRIBE';
+DESTINATION: 'DESTINATION';
 DETERMINISTIC: 'DETERMINISTIC';
 DISABLED: 'DISABLED';
 DISTINCT: 'DISTINCT';
 DISTRIBUTED: 'DISTRIBUTED';
 DROP: 'DROP';
+EDGE: 'EDGE';
 ELSE: 'ELSE';
 ENABLED: 'ENABLED';
 END: 'END';
@@ -784,6 +923,7 @@ GRANT: 'GRANT';
 GRANTED: 'GRANTED';
 GRANTS: 'GRANTS';
 GRAPH: 'GRAPH';
+GRAPH_TABLE: 'GRAPH_TABLE';
 GRAPHVIZ: 'GRAPHVIZ';
 GROUP: 'GROUP';
 GROUPING: 'GROUPING';
@@ -807,6 +947,7 @@ ISOLATION: 'ISOLATION';
 JSON: 'JSON';
 JOIN: 'JOIN';
 KEY: 'KEY';
+LABEL: 'LABEL';
 LANGUAGE: 'LANGUAGE';
 LAST: 'LAST';
 LATERAL: 'LATERAL';
@@ -818,6 +959,7 @@ LOCALTIME: 'LOCALTIME';
 LOCALTIMESTAMP: 'LOCALTIMESTAMP';
 LOGICAL: 'LOGICAL';
 MAP: 'MAP';
+MATCH: 'MATCH';
 MATERIALIZED: 'MATERIALIZED';
 MINUTE: 'MINUTE';
 MONTH: 'MONTH';
@@ -848,6 +990,8 @@ OUTPUT: 'OUTPUT';
 OVER: 'OVER';
 PARTITION: 'PARTITION';
 PARTITIONS: 'PARTITIONS';
+PATH: 'PATH';
+PATHS: 'PATHS';
 POSITION: 'POSITION';
 PRECEDING: 'PRECEDING';
 PREPARE: 'PREPARE';
@@ -857,6 +1001,7 @@ PROPERTIES: 'PROPERTIES';
 RANGE: 'RANGE';
 READ: 'READ';
 RECURSIVE: 'RECURSIVE';
+REFERENCES: 'REFERENCES';
 REFRESH: 'REFRESH';
 RELY: 'RELY';
 RENAME: 'RENAME';
@@ -884,8 +1029,11 @@ SERIALIZABLE: 'SERIALIZABLE';
 SESSION: 'SESSION';
 SET: 'SET';
 SETS: 'SETS';
+SHORTEST: 'SHORTEST';
 SHOW: 'SHOW';
+SIMPLE: 'SIMPLE';
 SOME: 'SOME';
+SOURCE: 'SOURCE';
 SQL: 'SQL';
 START: 'START';
 STATS: 'STATS';
@@ -902,6 +1050,7 @@ THEN: 'THEN';
 TIME: 'TIME';
 TIMESTAMP: 'TIMESTAMP';
 TO: 'TO';
+TRAIL: 'TRAIL';
 TRANSACTION: 'TRANSACTION';
 TRUE: 'TRUE';
 TRUNCATE: 'TRUNCATE';
@@ -921,7 +1070,9 @@ VALIDATE: 'VALIDATE';
 VALUES: 'VALUES';
 VERBOSE: 'VERBOSE';
 VERSION: 'VERSION';
+VERTEX: 'VERTEX';
 VIEW: 'VIEW';
+WALK: 'WALK';
 WHEN: 'WHEN';
 WHERE: 'WHERE';
 WITH: 'WITH';

@@ -27,3 +27,11 @@ add_library(
 )
 
 target_link_libraries(axiom_sql_presto_grammar antlr4_shared)
+
+add_library(axiom_sql_presto_syntax_parser SyntaxParser.cpp)
+
+target_link_libraries(
+  axiom_sql_presto_syntax_parser
+  axiom_sql_presto_grammar
+  axiom_sql_presto_error
+)

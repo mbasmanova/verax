@@ -190,6 +190,23 @@ class AstPrinter : public AstVisitor {
 
   void visitValues(Values* node) override;
 
+  void visitGraphTable(GraphTable* node) override;
+
+  // Graph queries
+  void visitPathPattern(PathPattern* node) override;
+
+  void visitNodePattern(NodePattern* node) override;
+
+  void visitEdgePattern(EdgePattern* node) override;
+
+  void visitParenthesizedPathPattern(ParenthesizedPathPattern* node) override;
+
+  void visitLabelExpression(LabelExpression* node) override;
+
+  void visitWithGraph(WithGraph* node) override;
+
+  void visitGraphElementTable(GraphElementTable* node) override;
+
   // Joins
   void visitJoin(Join* node) override;
 

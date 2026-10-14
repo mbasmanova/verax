@@ -30,6 +30,7 @@ namespace axiom::sql::presto {
 /// Options controlling SQL parsing behavior.
 struct ParserOptions : public facebook::velox::config::ConfigProvider {
   static constexpr std::string_view kFriendlySql = "friendly_sql";
+  static constexpr std::string_view kGraphQueries = "graph_queries";
   static constexpr std::string_view kParseDecimalLiteralAsDouble =
       "parse_decimal_literal_as_double";
   static constexpr std::string_view kMaxExpressionDepth =
@@ -41,6 +42,7 @@ struct ParserOptions : public facebook::velox::config::ConfigProvider {
       "information_schema_connector_id";
 
   static constexpr bool kFriendlySqlDefault = true;
+  static constexpr bool kGraphQueriesDefault = false;
   static constexpr bool kParseDecimalLiteralAsDoubleDefault = true;
   static constexpr uint32_t kMaxExpressionDepthDefault = 1024;
   static constexpr uint32_t kMaxExpressionWidthDefault = 100'000;
@@ -57,6 +59,10 @@ struct ParserOptions : public facebook::velox::config::ConfigProvider {
   /// Enables Friendly SQL extensions inspired by DuckDB: named ROW
   /// constructors, trailing commas, FROM-first syntax, etc.
   bool friendlySql{kFriendlySqlDefault};
+
+  /// Enables graph queries: GRAPH_TABLE in FROM and graph definitions in
+  /// WITH (WITH GRAPH name AS (...)).
+  bool graphQueries{kGraphQueriesDefault};
 
   /// When true, decimal literals (e.g., 1.5) are parsed as DOUBLE. When
   /// false, they are parsed as DECIMAL with precision and scale inferred

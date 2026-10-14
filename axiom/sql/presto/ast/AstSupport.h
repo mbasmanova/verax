@@ -27,6 +27,7 @@ namespace axiom::sql::presto {
 // Forward declarations
 class OrderBy;
 class Query;
+class WithGraph;
 
 // Support Classes
 
@@ -705,10 +706,12 @@ class With : public Node {
   With(
       NodeLocation location,
       bool recursive,
-      const std::vector<std::shared_ptr<WithQuery>>& queries)
+      std::vector<std::shared_ptr<WithQuery>> queries,
+      std::vector<std::shared_ptr<WithGraph>> graphs)
       : Node(NodeType::kWith, location),
         recursive_(recursive),
-        queries_(queries) {}
+        queries_(std::move(queries)),
+        graphs_(std::move(graphs)) {}
 
   bool isRecursive() const {
     return recursive_;
@@ -717,23 +720,22 @@ class With : public Node {
     return queries_;
   }
 
+  /// Graph definitions: WITH GRAPH name AS (...).
+  const std::vector<std::shared_ptr<WithGraph>>& graphs() const {
+    return graphs_;
+  }
+
   void accept(AstVisitor* visitor) override;
 
-  size_t hash() const override {
-    return folly::hash::hash_combine(
-        std::hash<bool>{}(recursive_), Node::deepHashAll(queries_));
-  }
+  size_t hash() const override;
 
  protected:
-  bool equals(const Node& other) const override {
-    const auto& o = *other.as<With>();
-    return recursive_ == o.recursive_ &&
-        Node::deepEqualAll(queries_, o.queries_);
-  }
+  bool equals(const Node& other) const override;
 
  private:
   bool recursive_;
   std::vector<std::shared_ptr<WithQuery>> queries_;
+  std::vector<std::shared_ptr<WithGraph>> graphs_;
 };
 
 // Table Elements

@@ -17,6 +17,7 @@
 #include <gtest/gtest.h>
 #include "axiom/sql/presto/ast/AstExpressions.h"
 #include "axiom/sql/presto/ast/AstFunctions.h"
+#include "axiom/sql/presto/ast/AstGraph.h"
 #include "axiom/sql/presto/ast/AstLiterals.h"
 #include "axiom/sql/presto/ast/AstRelations.h"
 #include "axiom/sql/presto/ast/AstSupport.h"
@@ -1893,9 +1894,15 @@ TEST(AstEqualityTest, withEquals) {
   auto wq1 = std::make_shared<WithQuery>(loc(), name1, query1);
   auto wq2 = std::make_shared<WithQuery>(loc(), name2, query2);
   auto a = std::make_shared<With>(
-      loc(0, 0), false, std::vector<std::shared_ptr<WithQuery>>{wq1});
+      loc(0, 0),
+      false,
+      std::vector<std::shared_ptr<WithQuery>>{wq1},
+      std::vector<std::shared_ptr<WithGraph>>{});
   auto b = std::make_shared<With>(
-      loc(5, 5), false, std::vector<std::shared_ptr<WithQuery>>{wq2});
+      loc(5, 5),
+      false,
+      std::vector<std::shared_ptr<WithQuery>>{wq2},
+      std::vector<std::shared_ptr<WithGraph>>{});
   EXPECT_TRUE(*a == *b);
   EXPECT_EQ(a->hash(), b->hash());
 }
@@ -1906,10 +1913,216 @@ TEST(AstEqualityTest, withNotEqualRecursive) {
       std::make_shared<Query>(loc(), nullptr, makeQuerySpec(emptySelect()));
   auto wq = std::make_shared<WithQuery>(loc(), name, query);
   auto a = std::make_shared<With>(
-      loc(), false, std::vector<std::shared_ptr<WithQuery>>{wq});
+      loc(),
+      false,
+      std::vector<std::shared_ptr<WithQuery>>{wq},
+      std::vector<std::shared_ptr<WithGraph>>{});
   auto b = std::make_shared<With>(
-      loc(), true, std::vector<std::shared_ptr<WithQuery>>{wq});
+      loc(),
+      true,
+      std::vector<std::shared_ptr<WithQuery>>{wq},
+      std::vector<std::shared_ptr<WithGraph>>{});
   EXPECT_FALSE(*a == *b);
+}
+
+IdentifierPtr identifier(std::string_view value) {
+  return std::make_shared<Identifier>(loc(), std::string(value), false);
+}
+
+LabelExpressionPtr labelName(std::string_view value) {
+  return std::make_shared<LabelExpression>(
+      loc(),
+      LabelExpression::Kind::kName,
+      identifier(value),
+      std::vector<LabelExpressionPtr>{});
+}
+
+std::shared_ptr<NodePattern> nodePattern(
+    std::string_view variable,
+    NodeLocation location = loc()) {
+  return std::make_shared<NodePattern>(
+      location, identifier(variable), labelName("A"), nullptr);
+}
+
+std::shared_ptr<EdgePattern> edgePattern(
+    EdgePattern::Direction direction,
+    std::optional<GraphQuantifier> quantifier,
+    NodeLocation location = loc()) {
+  return std::make_shared<EdgePattern>(
+      location, direction, identifier("e"), nullptr, nullptr, quantifier);
+}
+
+std::vector<PathElementPtr> threeElements() {
+  return {
+      nodePattern("a"),
+      edgePattern(EdgePattern::Direction::kRight, std::nullopt),
+      nodePattern("b"),
+  };
+}
+
+TEST(AstEqualityTest, labelExpression) {
+  auto a = std::make_shared<LabelExpression>(
+      loc(0, 0),
+      LabelExpression::Kind::kNegation,
+      nullptr,
+      std::vector<LabelExpressionPtr>{labelName("A")});
+  auto b = std::make_shared<LabelExpression>(
+      loc(5, 5),
+      LabelExpression::Kind::kNegation,
+      nullptr,
+      std::vector<LabelExpressionPtr>{labelName("A")});
+  EXPECT_TRUE(*a == *b);
+  EXPECT_EQ(a->hash(), b->hash());
+  EXPECT_FALSE(*labelName("A") == *labelName("B"));
+}
+
+TEST(AstEqualityTest, nodePattern) {
+  EXPECT_TRUE(*nodePattern("a", loc(0, 0)) == *nodePattern("a", loc(5, 5)));
+  EXPECT_EQ(nodePattern("a")->hash(), nodePattern("a")->hash());
+  EXPECT_FALSE(*nodePattern("a") == *nodePattern("b"));
+}
+
+TEST(AstEqualityTest, edgePattern) {
+  using Direction = EdgePattern::Direction;
+  const GraphQuantifier quantifier{1, 3};
+  auto a = edgePattern(Direction::kRight, quantifier, loc(0, 0));
+  auto b = edgePattern(Direction::kRight, quantifier, loc(5, 5));
+  EXPECT_TRUE(*a == *b);
+  EXPECT_EQ(a->hash(), b->hash());
+  EXPECT_FALSE(*a == *edgePattern(Direction::kLeft, quantifier));
+  EXPECT_FALSE(
+      *a == *edgePattern(Direction::kRight, GraphQuantifier{1, std::nullopt}));
+}
+
+TEST(AstEqualityTest, parenthesizedPathPattern) {
+  auto make = [](bool optional, NodeLocation location) {
+    return std::make_shared<ParenthesizedPathPattern>(
+        location,
+        identifier("q"),
+        PathMode::kTrail,
+        threeElements(),
+        nullptr,
+        std::nullopt,
+        optional);
+  };
+  EXPECT_TRUE(*make(false, loc(0, 0)) == *make(false, loc(5, 5)));
+  EXPECT_EQ(make(false, loc())->hash(), make(false, loc())->hash());
+  EXPECT_FALSE(*make(false, loc()) == *make(true, loc()));
+}
+
+TEST(AstEqualityTest, pathPattern) {
+  auto make = [](std::optional<PathSelector> selector, NodeLocation location) {
+    return std::make_shared<PathPattern>(
+        location, nullptr, selector, std::nullopt, threeElements());
+  };
+  const PathSelector anyShortest{.kind = PathSelector::Kind::kAnyShortest};
+  EXPECT_TRUE(*make(anyShortest, loc(0, 0)) == *make(anyShortest, loc(5, 5)));
+  EXPECT_EQ(make(anyShortest, loc())->hash(), make(anyShortest, loc())->hash());
+  EXPECT_FALSE(*make(anyShortest, loc()) == *make(std::nullopt, loc()));
+}
+
+TEST(AstEqualityTest, graphTable) {
+  auto make = [](ExpressionPtr where, NodeLocation location) {
+    return std::make_shared<GraphTable>(
+        location,
+        std::make_shared<QualifiedName>(loc(), std::vector<std::string>{"g"}),
+        std::vector<PathPatternPtr>{std::make_shared<PathPattern>(
+            loc(), nullptr, std::nullopt, std::nullopt, threeElements())},
+        std::move(where),
+        std::vector<std::shared_ptr<SingleColumn>>{
+            std::make_shared<SingleColumn>(loc(), identifier("x"))});
+  };
+  auto where = std::make_shared<BooleanLiteral>(loc(), true);
+  EXPECT_TRUE(*make(where, loc(0, 0)) == *make(where, loc(5, 5)));
+  EXPECT_EQ(make(where, loc())->hash(), make(where, loc())->hash());
+  EXPECT_FALSE(*make(where, loc()) == *make(nullptr, loc()));
+}
+
+TEST(AstEqualityTest, graphElementTable) {
+  auto make = [](std::vector<GraphLabel> labels, NodeLocation location) {
+    return std::make_shared<GraphElementTable>(
+        location,
+        std::make_shared<QualifiedName>(loc(), std::vector<std::string>{"t"}),
+        nullptr,
+        std::vector<IdentifierPtr>{identifier("a")},
+        std::nullopt,
+        std::nullopt,
+        std::move(labels));
+  };
+  const std::vector<GraphLabel> labels{{.name = identifier("A")}};
+  EXPECT_TRUE(*make(labels, loc(0, 0)) == *make(labels, loc(5, 5)));
+  EXPECT_EQ(make(labels, loc())->hash(), make(labels, loc())->hash());
+  EXPECT_FALSE(*make(labels, loc()) == *make({}, loc()));
+
+  auto withProperty = [](std::string_view column) {
+    return std::vector<GraphLabel>{{
+        .name = identifier("A"),
+        .properties = std::vector<GraphProperty>{{
+            .expression = identifier(column),
+            .name = nullptr,
+        }},
+    }};
+  };
+  EXPECT_TRUE(
+      *make(withProperty("b"), loc()) == *make(withProperty("b"), loc()));
+  EXPECT_EQ(
+      make(withProperty("b"), loc())->hash(),
+      make(withProperty("b"), loc())->hash());
+  EXPECT_FALSE(
+      *make(withProperty("b"), loc()) == *make(withProperty("c"), loc()));
+  EXPECT_FALSE(*make(withProperty("b"), loc()) == *make(labels, loc()));
+
+  auto edgeTable = [](std::string_view sourceVertex) {
+    auto endpoint = [](std::string_view vertex) {
+      return EdgeEndpoint{
+          .keyColumns = {identifier("a")},
+          .vertexTable = identifier(vertex),
+          .referencedColumns = {identifier("a")},
+      };
+    };
+    return std::make_shared<GraphElementTable>(
+        loc(),
+        std::make_shared<QualifiedName>(loc(), std::vector<std::string>{"u"}),
+        nullptr,
+        std::vector<IdentifierPtr>{identifier("a")},
+        endpoint(sourceVertex),
+        endpoint("t"),
+        std::vector<GraphLabel>{});
+  };
+  EXPECT_TRUE(*edgeTable("t") == *edgeTable("t"));
+  EXPECT_EQ(edgeTable("t")->hash(), edgeTable("t")->hash());
+  EXPECT_FALSE(*edgeTable("t") == *edgeTable("v"));
+}
+
+TEST(AstEqualityTest, withGraphs) {
+  auto graph = [](std::string_view name) {
+    return std::make_shared<WithGraph>(
+        loc(),
+        identifier(name),
+        std::vector<GraphElementTablePtr>{std::make_shared<GraphElementTable>(
+            loc(),
+            std::make_shared<QualifiedName>(
+                loc(), std::vector<std::string>{"t"}),
+            nullptr,
+            std::vector<IdentifierPtr>{identifier("a")},
+            std::nullopt,
+            std::nullopt,
+            std::vector<GraphLabel>{})},
+        std::vector<GraphElementTablePtr>{});
+  };
+  EXPECT_TRUE(*graph("g") == *graph("g"));
+  EXPECT_EQ(graph("g")->hash(), graph("g")->hash());
+  EXPECT_FALSE(*graph("g") == *graph("h"));
+
+  auto with = [&](std::string_view name) {
+    return std::make_shared<With>(
+        loc(),
+        false,
+        std::vector<std::shared_ptr<WithQuery>>{},
+        std::vector<std::shared_ptr<WithGraph>>{graph(name)});
+  };
+  EXPECT_TRUE(*with("g") == *with("g"));
+  EXPECT_FALSE(*with("g") == *with("h"));
 }
 
 } // namespace

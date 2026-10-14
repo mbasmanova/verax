@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-add_library(axiom_sql_presto_ast AstBuilder.cpp AstNodesAll.cpp AstPrinter.cpp)
+add_library(axiom_sql_presto_ast AstBuilder.cpp AstGraph.cpp AstNodesAll.cpp AstPrinter.cpp)
 
 target_link_libraries(
   axiom_sql_presto_ast

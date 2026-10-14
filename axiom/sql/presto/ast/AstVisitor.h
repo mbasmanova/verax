@@ -19,6 +19,7 @@
 
 #include "axiom/sql/presto/ast/AstExpressions.h"
 #include "axiom/sql/presto/ast/AstFunctions.h"
+#include "axiom/sql/presto/ast/AstGraph.h"
 #include "axiom/sql/presto/ast/AstLiterals.h"
 #include "axiom/sql/presto/ast/AstNode.h"
 #include "axiom/sql/presto/ast/AstRelations.h"
@@ -352,6 +353,39 @@ class AstVisitor {
   }
 
   virtual void visitValues(Values* node) {
+    defaultVisit(node);
+  }
+
+  virtual void visitGraphTable(GraphTable* node) {
+    defaultVisit(node);
+  }
+
+  // Graph queries
+  virtual void visitPathPattern(PathPattern* node) {
+    defaultVisit(node);
+  }
+
+  virtual void visitNodePattern(NodePattern* node) {
+    defaultVisit(node);
+  }
+
+  virtual void visitEdgePattern(EdgePattern* node) {
+    defaultVisit(node);
+  }
+
+  virtual void visitParenthesizedPathPattern(ParenthesizedPathPattern* node) {
+    defaultVisit(node);
+  }
+
+  virtual void visitLabelExpression(LabelExpression* node) {
+    defaultVisit(node);
+  }
+
+  virtual void visitWithGraph(WithGraph* node) {
+    defaultVisit(node);
+  }
+
+  virtual void visitGraphElementTable(GraphElementTable* node) {
     defaultVisit(node);
   }
 

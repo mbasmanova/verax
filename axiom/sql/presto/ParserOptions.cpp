@@ -39,6 +39,13 @@ std::vector<ConfigProperty> buildProperties(
           "commas, FROM-first syntax, etc.",
       },
       {
+          std::string(ParserOptions::kGraphQueries),
+          ConfigPropertyType::kBoolean,
+          fmt::to_string(ParserOptions::kGraphQueriesDefault),
+          "Enable graph queries: GRAPH_TABLE in FROM and graph definitions in "
+          "WITH.",
+      },
+      {
           std::string(ParserOptions::kParseDecimalLiteralAsDouble),
           ConfigPropertyType::kBoolean,
           fmt::to_string(ParserOptions::kParseDecimalLiteralAsDoubleDefault),
@@ -132,6 +139,7 @@ ParserOptions ParserOptions::from(
 
   ParserOptions options;
   setBool(kFriendlySql, options.friendlySql);
+  setBool(kGraphQueries, options.graphQueries);
   setBool(kParseDecimalLiteralAsDouble, options.parseDecimalLiteralAsDouble);
   setUint32(kMaxExpressionDepth, options.maxExpressionDepth);
   setUint32(kMaxSubqueryDepth, options.maxSubqueryDepth);

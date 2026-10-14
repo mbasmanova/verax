@@ -32,261 +32,281 @@ class PrestoSqlParser : public antlr4::Parser {
     T__6 = 7,
     T__7 = 8,
     T__8 = 9,
-    ENGLISH_TOKEN = 10,
-    ADD = 11,
-    ADMIN = 12,
-    ALL = 13,
-    ALTER = 14,
-    ANALYZE = 15,
-    AND = 16,
-    ANY = 17,
-    ARRAY = 18,
-    AS = 19,
-    ASC = 20,
-    AT = 21,
-    BEFORE = 22,
-    BERNOULLI = 23,
-    BETWEEN = 24,
-    BY = 25,
-    CALL = 26,
-    CALLED = 27,
-    CASCADE = 28,
-    CASE = 29,
-    CAST = 30,
-    CATALOGS = 31,
-    COLUMN = 32,
-    COLUMNS = 33,
-    COMMENT = 34,
-    COMMIT = 35,
-    COMMITTED = 36,
-    CONSTRAINT = 37,
-    CREATE = 38,
-    CROSS = 39,
-    CUBE = 40,
-    CURRENT = 41,
-    CURRENT_DATE = 42,
-    CURRENT_ROLE = 43,
-    CURRENT_TIME = 44,
-    CURRENT_TIMESTAMP = 45,
-    CURRENT_USER = 46,
-    DATA = 47,
-    DATE = 48,
-    DAY = 49,
-    DEALLOCATE = 50,
-    DEFINER = 51,
-    DELETE = 52,
-    DESC = 53,
-    DESCRIBE = 54,
-    DETERMINISTIC = 55,
-    DISABLED = 56,
-    DISTINCT = 57,
-    DISTRIBUTED = 58,
-    DROP = 59,
-    ELSE = 60,
-    ENABLED = 61,
-    END = 62,
-    ENFORCED = 63,
-    ESCAPE = 64,
-    EXCEPT = 65,
-    EXCLUDE = 66,
-    EXCLUDING = 67,
-    EXECUTABLE = 68,
-    EXECUTE = 69,
-    EXISTS = 70,
-    EXPLAIN = 71,
-    EXTRACT = 72,
-    EXTERNAL = 73,
-    FALSE = 74,
-    FETCH = 75,
-    FILTER = 76,
-    FIRST = 77,
-    FOLLOWING = 78,
-    FOR = 79,
-    FORMAT = 80,
-    FROM = 81,
-    FULL = 82,
-    FUNCTION = 83,
-    FUNCTIONS = 84,
-    GRANT = 85,
-    GRANTED = 86,
-    GRANTS = 87,
-    GRAPH = 88,
-    GRAPHVIZ = 89,
-    GROUP = 90,
-    GROUPING = 91,
-    GROUPS = 92,
-    HAVING = 93,
-    HOUR = 94,
-    IF = 95,
-    IGNORE = 96,
-    IN = 97,
-    INCLUDING = 98,
-    INNER = 99,
-    INPUT = 100,
-    INSERT = 101,
-    INTERSECT = 102,
-    INTERVAL = 103,
-    INTO = 104,
-    INVOKER = 105,
-    IO = 106,
-    IS = 107,
-    ISOLATION = 108,
-    JSON = 109,
-    JOIN = 110,
-    KEY = 111,
-    LANGUAGE = 112,
-    LAST = 113,
-    LATERAL = 114,
-    LEFT = 115,
-    LEVEL = 116,
-    LIKE = 117,
-    LIMIT = 118,
-    LOCALTIME = 119,
-    LOCALTIMESTAMP = 120,
-    LOGICAL = 121,
-    MAP = 122,
-    MATERIALIZED = 123,
-    MINUTE = 124,
-    MONTH = 125,
-    NAME = 126,
-    NATURAL = 127,
-    NFC = 128,
-    NFD = 129,
-    NFKC = 130,
-    NFKD = 131,
-    NO = 132,
-    NONE = 133,
-    NORMALIZE = 134,
-    NOT = 135,
-    NULL_LITERAL = 136,
-    NULLIF = 137,
-    NULLS = 138,
-    OF = 139,
-    OFFSET = 140,
-    ON = 141,
-    ONLY = 142,
-    OPTIMIZED = 143,
-    OPTION = 144,
-    OR = 145,
-    ORDER = 146,
-    ORDINALITY = 147,
-    OUTER = 148,
-    OUTPUT = 149,
-    OVER = 150,
-    PARTITION = 151,
-    PARTITIONS = 152,
-    POSITION = 153,
-    PRECEDING = 154,
-    PREPARE = 155,
-    PRIMARY = 156,
-    PRIVILEGES = 157,
-    PROPERTIES = 158,
-    RANGE = 159,
-    READ = 160,
-    RECURSIVE = 161,
-    REFRESH = 162,
-    RELY = 163,
-    RENAME = 164,
-    REPEATABLE = 165,
-    REPLACE = 166,
-    RESET = 167,
-    RESPECT = 168,
-    RESTRICT = 169,
-    RETURN = 170,
-    RETURNS = 171,
-    REVOKE = 172,
-    RIGHT = 173,
-    ROLE = 174,
-    ROLES = 175,
-    ROLLBACK = 176,
-    ROLLUP = 177,
-    ROW = 178,
-    ROWS = 179,
-    SCHEMA = 180,
-    SCHEMAS = 181,
-    SECOND = 182,
-    SECURITY = 183,
-    SELECT = 184,
-    SERIALIZABLE = 185,
-    SESSION = 186,
-    SET = 187,
-    SETS = 188,
-    SHOW = 189,
-    SOME = 190,
-    SQL = 191,
-    START = 192,
-    STATS = 193,
-    SUBSTRING = 194,
-    SYSTEM = 195,
-    SYSTEM_TIME = 196,
-    SYSTEM_VERSION = 197,
-    TABLE = 198,
-    TABLES = 199,
-    TABLESAMPLE = 200,
-    TEMPORARY = 201,
-    TEXT = 202,
-    THEN = 203,
-    TIME = 204,
-    TIMESTAMP = 205,
-    TO = 206,
-    TRANSACTION = 207,
-    TRUE = 208,
-    TRUNCATE = 209,
-    TRY_CAST = 210,
-    TYPE = 211,
-    UESCAPE = 212,
-    UNBOUNDED = 213,
-    UNCOMMITTED = 214,
-    UNION = 215,
-    UNIQUE = 216,
-    UNNEST = 217,
-    UPDATE = 218,
-    USE = 219,
-    USER = 220,
-    USING = 221,
-    VALIDATE = 222,
-    VALUES = 223,
-    VERBOSE = 224,
-    VERSION = 225,
-    VIEW = 226,
-    WHEN = 227,
-    WHERE = 228,
-    WITH = 229,
-    WINDOW = 230,
-    WORK = 231,
-    WRITE = 232,
-    YEAR = 233,
-    ZONE = 234,
-    EQ = 235,
-    NEQ = 236,
-    LT = 237,
-    LTE = 238,
-    GT = 239,
-    GTE = 240,
-    PLUS = 241,
-    MINUS = 242,
-    ASTERISK = 243,
-    SLASH = 244,
-    PERCENT = 245,
-    CONCAT = 246,
-    STRING = 247,
-    UNICODE_STRING = 248,
-    BINARY_LITERAL = 249,
-    INTEGER_VALUE = 250,
-    DECIMAL_VALUE = 251,
-    DOUBLE_VALUE = 252,
-    IDENTIFIER = 253,
-    DIGIT_IDENTIFIER = 254,
-    QUOTED_IDENTIFIER = 255,
-    BACKQUOTED_IDENTIFIER = 256,
-    TIME_WITH_TIME_ZONE = 257,
-    TIMESTAMP_WITH_TIME_ZONE = 258,
-    DOUBLE_PRECISION = 259,
-    SIMPLE_COMMENT = 260,
-    BRACKETED_COMMENT = 261,
-    WS = 262,
-    UNRECOGNIZED = 263,
-    DELIMITER = 264
+    T__9 = 10,
+    T__10 = 11,
+    T__11 = 12,
+    T__12 = 13,
+    T__13 = 14,
+    ENGLISH_TOKEN = 15,
+    ACYCLIC = 16,
+    ADD = 17,
+    ADMIN = 18,
+    ALL = 19,
+    ALTER = 20,
+    ANALYZE = 21,
+    AND = 22,
+    ANY = 23,
+    ARRAY = 24,
+    AS = 25,
+    ASC = 26,
+    AT = 27,
+    BEFORE = 28,
+    BERNOULLI = 29,
+    BETWEEN = 30,
+    BY = 31,
+    CALL = 32,
+    CALLED = 33,
+    CASCADE = 34,
+    CASE = 35,
+    CAST = 36,
+    CATALOGS = 37,
+    COLUMN = 38,
+    COLUMNS = 39,
+    COMMENT = 40,
+    COMMIT = 41,
+    COMMITTED = 42,
+    CONSTRAINT = 43,
+    CREATE = 44,
+    CROSS = 45,
+    CUBE = 46,
+    CURRENT = 47,
+    CURRENT_DATE = 48,
+    CURRENT_ROLE = 49,
+    CURRENT_TIME = 50,
+    CURRENT_TIMESTAMP = 51,
+    CURRENT_USER = 52,
+    DATA = 53,
+    DATE = 54,
+    DAY = 55,
+    DEALLOCATE = 56,
+    DEFINER = 57,
+    DELETE = 58,
+    DESC = 59,
+    DESCRIBE = 60,
+    DESTINATION = 61,
+    DETERMINISTIC = 62,
+    DISABLED = 63,
+    DISTINCT = 64,
+    DISTRIBUTED = 65,
+    DROP = 66,
+    EDGE = 67,
+    ELSE = 68,
+    ENABLED = 69,
+    END = 70,
+    ENFORCED = 71,
+    ESCAPE = 72,
+    EXCEPT = 73,
+    EXCLUDE = 74,
+    EXCLUDING = 75,
+    EXECUTABLE = 76,
+    EXECUTE = 77,
+    EXISTS = 78,
+    EXPLAIN = 79,
+    EXTRACT = 80,
+    EXTERNAL = 81,
+    FALSE = 82,
+    FETCH = 83,
+    FILTER = 84,
+    FIRST = 85,
+    FOLLOWING = 86,
+    FOR = 87,
+    FORMAT = 88,
+    FROM = 89,
+    FULL = 90,
+    FUNCTION = 91,
+    FUNCTIONS = 92,
+    GRANT = 93,
+    GRANTED = 94,
+    GRANTS = 95,
+    GRAPH = 96,
+    GRAPH_TABLE = 97,
+    GRAPHVIZ = 98,
+    GROUP = 99,
+    GROUPING = 100,
+    GROUPS = 101,
+    HAVING = 102,
+    HOUR = 103,
+    IF = 104,
+    IGNORE = 105,
+    IN = 106,
+    INCLUDING = 107,
+    INNER = 108,
+    INPUT = 109,
+    INSERT = 110,
+    INTERSECT = 111,
+    INTERVAL = 112,
+    INTO = 113,
+    INVOKER = 114,
+    IO = 115,
+    IS = 116,
+    ISOLATION = 117,
+    JSON = 118,
+    JOIN = 119,
+    KEY = 120,
+    LABEL = 121,
+    LANGUAGE = 122,
+    LAST = 123,
+    LATERAL = 124,
+    LEFT = 125,
+    LEVEL = 126,
+    LIKE = 127,
+    LIMIT = 128,
+    LOCALTIME = 129,
+    LOCALTIMESTAMP = 130,
+    LOGICAL = 131,
+    MAP = 132,
+    MATCH = 133,
+    MATERIALIZED = 134,
+    MINUTE = 135,
+    MONTH = 136,
+    NAME = 137,
+    NATURAL = 138,
+    NFC = 139,
+    NFD = 140,
+    NFKC = 141,
+    NFKD = 142,
+    NO = 143,
+    NONE = 144,
+    NORMALIZE = 145,
+    NOT = 146,
+    NULL_LITERAL = 147,
+    NULLIF = 148,
+    NULLS = 149,
+    OF = 150,
+    OFFSET = 151,
+    ON = 152,
+    ONLY = 153,
+    OPTIMIZED = 154,
+    OPTION = 155,
+    OR = 156,
+    ORDER = 157,
+    ORDINALITY = 158,
+    OUTER = 159,
+    OUTPUT = 160,
+    OVER = 161,
+    PARTITION = 162,
+    PARTITIONS = 163,
+    PATH = 164,
+    PATHS = 165,
+    POSITION = 166,
+    PRECEDING = 167,
+    PREPARE = 168,
+    PRIMARY = 169,
+    PRIVILEGES = 170,
+    PROPERTIES = 171,
+    RANGE = 172,
+    READ = 173,
+    RECURSIVE = 174,
+    REFERENCES = 175,
+    REFRESH = 176,
+    RELY = 177,
+    RENAME = 178,
+    REPEATABLE = 179,
+    REPLACE = 180,
+    RESET = 181,
+    RESPECT = 182,
+    RESTRICT = 183,
+    RETURN = 184,
+    RETURNS = 185,
+    REVOKE = 186,
+    RIGHT = 187,
+    ROLE = 188,
+    ROLES = 189,
+    ROLLBACK = 190,
+    ROLLUP = 191,
+    ROW = 192,
+    ROWS = 193,
+    SCHEMA = 194,
+    SCHEMAS = 195,
+    SECOND = 196,
+    SECURITY = 197,
+    SELECT = 198,
+    SERIALIZABLE = 199,
+    SESSION = 200,
+    SET = 201,
+    SETS = 202,
+    SHORTEST = 203,
+    SHOW = 204,
+    SIMPLE = 205,
+    SOME = 206,
+    SOURCE = 207,
+    SQL = 208,
+    START = 209,
+    STATS = 210,
+    SUBSTRING = 211,
+    SYSTEM = 212,
+    SYSTEM_TIME = 213,
+    SYSTEM_VERSION = 214,
+    TABLE = 215,
+    TABLES = 216,
+    TABLESAMPLE = 217,
+    TEMPORARY = 218,
+    TEXT = 219,
+    THEN = 220,
+    TIME = 221,
+    TIMESTAMP = 222,
+    TO = 223,
+    TRAIL = 224,
+    TRANSACTION = 225,
+    TRUE = 226,
+    TRUNCATE = 227,
+    TRY_CAST = 228,
+    TYPE = 229,
+    UESCAPE = 230,
+    UNBOUNDED = 231,
+    UNCOMMITTED = 232,
+    UNION = 233,
+    UNIQUE = 234,
+    UNNEST = 235,
+    UPDATE = 236,
+    USE = 237,
+    USER = 238,
+    USING = 239,
+    VALIDATE = 240,
+    VALUES = 241,
+    VERBOSE = 242,
+    VERSION = 243,
+    VERTEX = 244,
+    VIEW = 245,
+    WALK = 246,
+    WHEN = 247,
+    WHERE = 248,
+    WITH = 249,
+    WINDOW = 250,
+    WORK = 251,
+    WRITE = 252,
+    YEAR = 253,
+    ZONE = 254,
+    EQ = 255,
+    NEQ = 256,
+    LT = 257,
+    LTE = 258,
+    GT = 259,
+    GTE = 260,
+    PLUS = 261,
+    MINUS = 262,
+    ASTERISK = 263,
+    SLASH = 264,
+    PERCENT = 265,
+    CONCAT = 266,
+    STRING = 267,
+    UNICODE_STRING = 268,
+    BINARY_LITERAL = 269,
+    INTEGER_VALUE = 270,
+    DECIMAL_VALUE = 271,
+    DOUBLE_VALUE = 272,
+    IDENTIFIER = 273,
+    DIGIT_IDENTIFIER = 274,
+    QUOTED_IDENTIFIER = 275,
+    BACKQUOTED_IDENTIFIER = 276,
+    TIME_WITH_TIME_ZONE = 277,
+    TIMESTAMP_WITH_TIME_ZONE = 278,
+    DOUBLE_PRECISION = 279,
+    SIMPLE_COMMENT = 280,
+    BRACKETED_COMMENT = 281,
+    WS = 282,
+    UNRECOGNIZED = 283,
+    DELIMITER = 284
   };
 
   enum {
@@ -296,95 +316,120 @@ class PrestoSqlParser : public antlr4::Parser {
     RuleStatement = 3,
     RuleQuery = 4,
     RuleWith = 5,
-    RuleTableElement = 6,
-    RuleColumnDefinition = 7,
-    RuleLikeClause = 8,
-    RuleProperties = 9,
-    RuleProperty = 10,
-    RuleSqlParameterDeclaration = 11,
-    RuleRoutineCharacteristics = 12,
-    RuleRoutineCharacteristic = 13,
-    RuleAlterRoutineCharacteristics = 14,
-    RuleAlterRoutineCharacteristic = 15,
-    RuleRoutineBody = 16,
-    RuleReturnStatement = 17,
-    RuleExternalBodyReference = 18,
-    RuleLanguage = 19,
-    RuleDeterminism = 20,
-    RuleNullCallClause = 21,
-    RuleExternalRoutineName = 22,
-    RuleQueryNoWith = 23,
-    RuleQueryTerm = 24,
-    RuleQueryPrimary = 25,
-    RuleSortItem = 26,
-    RuleQuerySpecification = 27,
-    RuleWindowDefinition = 28,
-    RuleGroupBy = 29,
-    RuleGroupingElement = 30,
-    RuleGroupingSet = 31,
-    RuleNamedQuery = 32,
-    RuleSetQuantifier = 33,
-    RuleSelectItem = 34,
-    RuleStarModifiers = 35,
-    RuleExcludeClause = 36,
-    RuleReplaceClause = 37,
-    RuleReplaceItem = 38,
-    RuleRelation = 39,
-    RuleJoinType = 40,
-    RuleJoinCriteria = 41,
-    RuleSampledRelation = 42,
-    RuleSampleType = 43,
-    RuleAliasedRelation = 44,
-    RuleColumnAliases = 45,
-    RuleRelationPrimary = 46,
-    RuleExpression = 47,
-    RuleBooleanExpression = 48,
-    RulePredicate = 49,
-    RuleValueExpression = 50,
-    RulePrimaryExpression = 51,
-    RuleString = 52,
-    RuleNullTreatment = 53,
-    RuleTimeZoneSpecifier = 54,
-    RuleComparisonOperator = 55,
-    RuleComparisonQuantifier = 56,
-    RuleBooleanValue = 57,
-    RuleInterval = 58,
-    RuleIntervalField = 59,
-    RuleNormalForm = 60,
-    RuleTypes = 61,
-    RuleType = 62,
-    RuleTypeParameter = 63,
-    RuleBaseType = 64,
-    RuleWhenClause = 65,
-    RuleFilter = 66,
-    RuleOver = 67,
-    RuleWindowSpecification = 68,
-    RuleWindowFrame = 69,
-    RuleFrameBound = 70,
-    RuleUpdateAssignment = 71,
-    RuleExplainOption = 72,
-    RuleTransactionMode = 73,
-    RuleLevelOfIsolation = 74,
-    RuleCallArgument = 75,
-    RulePrivilege = 76,
-    RuleQualifiedName = 77,
-    RuleTableVersionExpression = 78,
-    RuleTableVersionState = 79,
-    RuleGrantor = 80,
-    RulePrincipal = 81,
-    RuleRoles = 82,
-    RuleIdentifier = 83,
-    RuleNumber = 84,
-    RuleConstraintSpecification = 85,
-    RuleNamedConstraintSpecification = 86,
-    RuleUnnamedConstraintSpecification = 87,
-    RuleConstraintType = 88,
-    RuleConstraintQualifiers = 89,
-    RuleConstraintQualifier = 90,
-    RuleConstraintRely = 91,
-    RuleConstraintEnabled = 92,
-    RuleConstraintEnforced = 93,
-    RuleNonReserved = 94
+    RuleWithElement = 6,
+    RuleTableElement = 7,
+    RuleColumnDefinition = 8,
+    RuleLikeClause = 9,
+    RuleProperties = 10,
+    RuleProperty = 11,
+    RuleSqlParameterDeclaration = 12,
+    RuleRoutineCharacteristics = 13,
+    RuleRoutineCharacteristic = 14,
+    RuleAlterRoutineCharacteristics = 15,
+    RuleAlterRoutineCharacteristic = 16,
+    RuleRoutineBody = 17,
+    RuleReturnStatement = 18,
+    RuleExternalBodyReference = 19,
+    RuleLanguage = 20,
+    RuleDeterminism = 21,
+    RuleNullCallClause = 22,
+    RuleExternalRoutineName = 23,
+    RuleQueryNoWith = 24,
+    RuleQueryTerm = 25,
+    RuleQueryPrimary = 26,
+    RuleSortItem = 27,
+    RuleQuerySpecification = 28,
+    RuleWindowDefinition = 29,
+    RuleGroupBy = 30,
+    RuleGroupingElement = 31,
+    RuleGroupingSet = 32,
+    RuleNamedQuery = 33,
+    RuleNamedGraph = 34,
+    RuleVertexTable = 35,
+    RuleEdgeTable = 36,
+    RuleGraphElementKey = 37,
+    RuleEdgeEndpoint = 38,
+    RuleGraphElementLabels = 39,
+    RuleGraphElementProperties = 40,
+    RuleGraphElementProperty = 41,
+    RuleSetQuantifier = 42,
+    RuleSelectItem = 43,
+    RuleStarModifiers = 44,
+    RuleExcludeClause = 45,
+    RuleReplaceClause = 46,
+    RuleReplaceItem = 47,
+    RuleRelation = 48,
+    RuleJoinType = 49,
+    RuleJoinCriteria = 50,
+    RuleSampledRelation = 51,
+    RuleSampleType = 52,
+    RuleAliasedRelation = 53,
+    RuleColumnAliases = 54,
+    RuleRelationPrimary = 55,
+    RuleGraphColumn = 56,
+    RuleGraphPattern = 57,
+    RulePathPattern = 58,
+    RulePathPatternPrefix = 59,
+    RulePathMode = 60,
+    RulePathPatternExpression = 61,
+    RulePathFactor = 62,
+    RuleParenthesizedPathPattern = 63,
+    RuleNodePattern = 64,
+    RuleEdgePattern = 65,
+    RuleElementPatternFiller = 66,
+    RuleLabelExpression = 67,
+    RuleLabelTerm = 68,
+    RuleLabelFactor = 69,
+    RuleLabelPrimary = 70,
+    RuleGraphQuantifier = 71,
+    RuleExpression = 72,
+    RuleBooleanExpression = 73,
+    RulePredicate = 74,
+    RuleValueExpression = 75,
+    RulePrimaryExpression = 76,
+    RuleString = 77,
+    RuleNullTreatment = 78,
+    RuleTimeZoneSpecifier = 79,
+    RuleComparisonOperator = 80,
+    RuleComparisonQuantifier = 81,
+    RuleBooleanValue = 82,
+    RuleInterval = 83,
+    RuleIntervalField = 84,
+    RuleNormalForm = 85,
+    RuleTypes = 86,
+    RuleType = 87,
+    RuleTypeParameter = 88,
+    RuleBaseType = 89,
+    RuleWhenClause = 90,
+    RuleFilter = 91,
+    RuleOver = 92,
+    RuleWindowSpecification = 93,
+    RuleWindowFrame = 94,
+    RuleFrameBound = 95,
+    RuleUpdateAssignment = 96,
+    RuleExplainOption = 97,
+    RuleTransactionMode = 98,
+    RuleLevelOfIsolation = 99,
+    RuleCallArgument = 100,
+    RulePrivilege = 101,
+    RuleQualifiedName = 102,
+    RuleTableVersionExpression = 103,
+    RuleTableVersionState = 104,
+    RuleGrantor = 105,
+    RulePrincipal = 106,
+    RuleRoles = 107,
+    RuleIdentifier = 108,
+    RuleNumber = 109,
+    RuleConstraintSpecification = 110,
+    RuleNamedConstraintSpecification = 111,
+    RuleUnnamedConstraintSpecification = 112,
+    RuleConstraintType = 113,
+    RuleConstraintQualifiers = 114,
+    RuleConstraintQualifier = 115,
+    RuleConstraintRely = 116,
+    RuleConstraintEnabled = 117,
+    RuleConstraintEnforced = 118,
+    RuleNonReserved = 119
   };
 
   explicit PrestoSqlParser(antlr4::TokenStream* input);
@@ -411,6 +456,7 @@ class PrestoSqlParser : public antlr4::Parser {
   class StatementContext;
   class QueryContext;
   class WithContext;
+  class WithElementContext;
   class TableElementContext;
   class ColumnDefinitionContext;
   class LikeClauseContext;
@@ -438,6 +484,14 @@ class PrestoSqlParser : public antlr4::Parser {
   class GroupingElementContext;
   class GroupingSetContext;
   class NamedQueryContext;
+  class NamedGraphContext;
+  class VertexTableContext;
+  class EdgeTableContext;
+  class GraphElementKeyContext;
+  class EdgeEndpointContext;
+  class GraphElementLabelsContext;
+  class GraphElementPropertiesContext;
+  class GraphElementPropertyContext;
   class SetQuantifierContext;
   class SelectItemContext;
   class StarModifiersContext;
@@ -452,6 +506,22 @@ class PrestoSqlParser : public antlr4::Parser {
   class AliasedRelationContext;
   class ColumnAliasesContext;
   class RelationPrimaryContext;
+  class GraphColumnContext;
+  class GraphPatternContext;
+  class PathPatternContext;
+  class PathPatternPrefixContext;
+  class PathModeContext;
+  class PathPatternExpressionContext;
+  class PathFactorContext;
+  class ParenthesizedPathPatternContext;
+  class NodePatternContext;
+  class EdgePatternContext;
+  class ElementPatternFillerContext;
+  class LabelExpressionContext;
+  class LabelTermContext;
+  class LabelFactorContext;
+  class LabelPrimaryContext;
+  class GraphQuantifierContext;
   class ExpressionContext;
   class BooleanExpressionContext;
   class PredicateContext;
@@ -1727,8 +1797,8 @@ class PrestoSqlParser : public antlr4::Parser {
     WithContext(antlr4::ParserRuleContext* parent, size_t invokingState);
     virtual size_t getRuleIndex() const override;
     antlr4::tree::TerminalNode* WITH();
-    std::vector<NamedQueryContext*> namedQuery();
-    NamedQueryContext* namedQuery(size_t i);
+    std::vector<WithElementContext*> withElement();
+    WithElementContext* withElement(size_t i);
     antlr4::tree::TerminalNode* RECURSIVE();
 
     virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
@@ -1738,6 +1808,21 @@ class PrestoSqlParser : public antlr4::Parser {
   };
 
   WithContext* with();
+
+  class WithElementContext : public antlr4::ParserRuleContext {
+   public:
+    WithElementContext(antlr4::ParserRuleContext* parent, size_t invokingState);
+    virtual size_t getRuleIndex() const override;
+    NamedQueryContext* namedQuery();
+    NamedGraphContext* namedGraph();
+
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  WithElementContext* withElement();
 
   class TableElementContext : public antlr4::ParserRuleContext {
    public:
@@ -2360,6 +2445,193 @@ class PrestoSqlParser : public antlr4::Parser {
 
   NamedQueryContext* namedQuery();
 
+  class NamedGraphContext : public antlr4::ParserRuleContext {
+   public:
+    PrestoSqlParser::IdentifierContext* name = nullptr;
+    NamedGraphContext(antlr4::ParserRuleContext* parent, size_t invokingState);
+    virtual size_t getRuleIndex() const override;
+    antlr4::tree::TerminalNode* GRAPH();
+    antlr4::tree::TerminalNode* AS();
+    antlr4::tree::TerminalNode* VERTEX();
+    std::vector<antlr4::tree::TerminalNode*> TABLES();
+    antlr4::tree::TerminalNode* TABLES(size_t i);
+    std::vector<VertexTableContext*> vertexTable();
+    VertexTableContext* vertexTable(size_t i);
+    IdentifierContext* identifier();
+    antlr4::tree::TerminalNode* EDGE();
+    std::vector<EdgeTableContext*> edgeTable();
+    EdgeTableContext* edgeTable(size_t i);
+
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  NamedGraphContext* namedGraph();
+
+  class VertexTableContext : public antlr4::ParserRuleContext {
+   public:
+    PrestoSqlParser::IdentifierContext* alias = nullptr;
+    VertexTableContext(antlr4::ParserRuleContext* parent, size_t invokingState);
+    virtual size_t getRuleIndex() const override;
+    QualifiedNameContext* qualifiedName();
+    GraphElementKeyContext* graphElementKey();
+    antlr4::tree::TerminalNode* AS();
+    GraphElementLabelsContext* graphElementLabels();
+    IdentifierContext* identifier();
+
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  VertexTableContext* vertexTable();
+
+  class EdgeTableContext : public antlr4::ParserRuleContext {
+   public:
+    PrestoSqlParser::IdentifierContext* alias = nullptr;
+    PrestoSqlParser::EdgeEndpointContext* source = nullptr;
+    PrestoSqlParser::EdgeEndpointContext* destination = nullptr;
+    EdgeTableContext(antlr4::ParserRuleContext* parent, size_t invokingState);
+    virtual size_t getRuleIndex() const override;
+    QualifiedNameContext* qualifiedName();
+    GraphElementKeyContext* graphElementKey();
+    antlr4::tree::TerminalNode* SOURCE();
+    antlr4::tree::TerminalNode* DESTINATION();
+    std::vector<EdgeEndpointContext*> edgeEndpoint();
+    EdgeEndpointContext* edgeEndpoint(size_t i);
+    antlr4::tree::TerminalNode* AS();
+    GraphElementLabelsContext* graphElementLabels();
+    IdentifierContext* identifier();
+
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  EdgeTableContext* edgeTable();
+
+  class GraphElementKeyContext : public antlr4::ParserRuleContext {
+   public:
+    GraphElementKeyContext(
+        antlr4::ParserRuleContext* parent,
+        size_t invokingState);
+    virtual size_t getRuleIndex() const override;
+    antlr4::tree::TerminalNode* KEY();
+    std::vector<IdentifierContext*> identifier();
+    IdentifierContext* identifier(size_t i);
+
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  GraphElementKeyContext* graphElementKey();
+
+  class EdgeEndpointContext : public antlr4::ParserRuleContext {
+   public:
+    PrestoSqlParser::IdentifierContext* vertexTableName = nullptr;
+    PrestoSqlParser::IdentifierContext* identifierContext = nullptr;
+    std::vector<IdentifierContext*> referencedColumns;
+    EdgeEndpointContext(
+        antlr4::ParserRuleContext* parent,
+        size_t invokingState);
+    virtual size_t getRuleIndex() const override;
+    GraphElementKeyContext* graphElementKey();
+    antlr4::tree::TerminalNode* REFERENCES();
+    std::vector<IdentifierContext*> identifier();
+    IdentifierContext* identifier(size_t i);
+
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  EdgeEndpointContext* edgeEndpoint();
+
+  class GraphElementLabelsContext : public antlr4::ParserRuleContext {
+   public:
+    GraphElementLabelsContext(
+        antlr4::ParserRuleContext* parent,
+        size_t invokingState);
+
+    GraphElementLabelsContext() = default;
+    void copyFrom(GraphElementLabelsContext* context);
+    using antlr4::ParserRuleContext::copyFrom;
+
+    virtual size_t getRuleIndex() const override;
+  };
+
+  class DefaultGraphLabelContext : public GraphElementLabelsContext {
+   public:
+    DefaultGraphLabelContext(GraphElementLabelsContext* ctx);
+
+    GraphElementPropertiesContext* graphElementProperties();
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  class ExplicitGraphLabelsContext : public GraphElementLabelsContext {
+   public:
+    ExplicitGraphLabelsContext(GraphElementLabelsContext* ctx);
+
+    std::vector<antlr4::tree::TerminalNode*> LABEL();
+    antlr4::tree::TerminalNode* LABEL(size_t i);
+    std::vector<IdentifierContext*> identifier();
+    IdentifierContext* identifier(size_t i);
+    std::vector<GraphElementPropertiesContext*> graphElementProperties();
+    GraphElementPropertiesContext* graphElementProperties(size_t i);
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  GraphElementLabelsContext* graphElementLabels();
+
+  class GraphElementPropertiesContext : public antlr4::ParserRuleContext {
+   public:
+    GraphElementPropertiesContext(
+        antlr4::ParserRuleContext* parent,
+        size_t invokingState);
+    virtual size_t getRuleIndex() const override;
+    antlr4::tree::TerminalNode* PROPERTIES();
+    std::vector<GraphElementPropertyContext*> graphElementProperty();
+    GraphElementPropertyContext* graphElementProperty(size_t i);
+
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  GraphElementPropertiesContext* graphElementProperties();
+
+  class GraphElementPropertyContext : public antlr4::ParserRuleContext {
+   public:
+    GraphElementPropertyContext(
+        antlr4::ParserRuleContext* parent,
+        size_t invokingState);
+    virtual size_t getRuleIndex() const override;
+    ExpressionContext* expression();
+    antlr4::tree::TerminalNode* AS();
+    IdentifierContext* identifier();
+
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  GraphElementPropertyContext* graphElementProperty();
+
   class SetQuantifierContext : public antlr4::ParserRuleContext {
    public:
     SetQuantifierContext(
@@ -2691,6 +2963,23 @@ class PrestoSqlParser : public antlr4::Parser {
     virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
   };
 
+  class GraphTableContext : public RelationPrimaryContext {
+   public:
+    GraphTableContext(RelationPrimaryContext* ctx);
+
+    antlr4::tree::TerminalNode* GRAPH_TABLE();
+    QualifiedNameContext* qualifiedName();
+    antlr4::tree::TerminalNode* MATCH();
+    GraphPatternContext* graphPattern();
+    antlr4::tree::TerminalNode* COLUMNS();
+    std::vector<GraphColumnContext*> graphColumn();
+    GraphColumnContext* graphColumn(size_t i);
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
   class UnnestContext : public RelationPrimaryContext {
    public:
     UnnestContext(RelationPrimaryContext* ctx);
@@ -2731,6 +3020,536 @@ class PrestoSqlParser : public antlr4::Parser {
   };
 
   RelationPrimaryContext* relationPrimary();
+
+  class GraphColumnContext : public antlr4::ParserRuleContext {
+   public:
+    GraphColumnContext(antlr4::ParserRuleContext* parent, size_t invokingState);
+    virtual size_t getRuleIndex() const override;
+    ExpressionContext* expression();
+    IdentifierContext* identifier();
+    antlr4::tree::TerminalNode* AS();
+
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  GraphColumnContext* graphColumn();
+
+  class GraphPatternContext : public antlr4::ParserRuleContext {
+   public:
+    PrestoSqlParser::BooleanExpressionContext* where = nullptr;
+    GraphPatternContext(
+        antlr4::ParserRuleContext* parent,
+        size_t invokingState);
+    virtual size_t getRuleIndex() const override;
+    std::vector<PathPatternContext*> pathPattern();
+    PathPatternContext* pathPattern(size_t i);
+    antlr4::tree::TerminalNode* WHERE();
+    BooleanExpressionContext* booleanExpression();
+
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  GraphPatternContext* graphPattern();
+
+  class PathPatternContext : public antlr4::ParserRuleContext {
+   public:
+    PrestoSqlParser::IdentifierContext* variable = nullptr;
+    PathPatternContext(antlr4::ParserRuleContext* parent, size_t invokingState);
+    virtual size_t getRuleIndex() const override;
+    PathPatternExpressionContext* pathPatternExpression();
+    antlr4::tree::TerminalNode* EQ();
+    PathPatternPrefixContext* pathPatternPrefix();
+    IdentifierContext* identifier();
+
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  PathPatternContext* pathPattern();
+
+  class PathPatternPrefixContext : public antlr4::ParserRuleContext {
+   public:
+    PathPatternPrefixContext(
+        antlr4::ParserRuleContext* parent,
+        size_t invokingState);
+
+    PathPatternPrefixContext() = default;
+    void copyFrom(PathPatternPrefixContext* context);
+    using antlr4::ParserRuleContext::copyFrom;
+
+    virtual size_t getRuleIndex() const override;
+  };
+
+  class PathModePrefixContext : public PathPatternPrefixContext {
+   public:
+    PathModePrefixContext(PathPatternPrefixContext* ctx);
+
+    PathModeContext* pathMode();
+    antlr4::tree::TerminalNode* PATH();
+    antlr4::tree::TerminalNode* PATHS();
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  class AllShortestPathsContext : public PathPatternPrefixContext {
+   public:
+    AllShortestPathsContext(PathPatternPrefixContext* ctx);
+
+    antlr4::tree::TerminalNode* ALL();
+    antlr4::tree::TerminalNode* SHORTEST();
+    PathModeContext* pathMode();
+    antlr4::tree::TerminalNode* PATH();
+    antlr4::tree::TerminalNode* PATHS();
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  class CountedShortestPathsContext : public PathPatternPrefixContext {
+   public:
+    CountedShortestPathsContext(PathPatternPrefixContext* ctx);
+
+    antlr4::Token* count = nullptr;
+    antlr4::tree::TerminalNode* SHORTEST();
+    antlr4::tree::TerminalNode* INTEGER_VALUE();
+    PathModeContext* pathMode();
+    antlr4::tree::TerminalNode* PATH();
+    antlr4::tree::TerminalNode* PATHS();
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  class CountedShortestGroupsContext : public PathPatternPrefixContext {
+   public:
+    CountedShortestGroupsContext(PathPatternPrefixContext* ctx);
+
+    antlr4::Token* count = nullptr;
+    antlr4::tree::TerminalNode* SHORTEST();
+    antlr4::tree::TerminalNode* GROUP();
+    antlr4::tree::TerminalNode* GROUPS();
+    PathModeContext* pathMode();
+    antlr4::tree::TerminalNode* INTEGER_VALUE();
+    antlr4::tree::TerminalNode* PATH();
+    antlr4::tree::TerminalNode* PATHS();
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  class AnyPathsContext : public PathPatternPrefixContext {
+   public:
+    AnyPathsContext(PathPatternPrefixContext* ctx);
+
+    antlr4::Token* count = nullptr;
+    antlr4::tree::TerminalNode* ANY();
+    PathModeContext* pathMode();
+    antlr4::tree::TerminalNode* INTEGER_VALUE();
+    antlr4::tree::TerminalNode* PATH();
+    antlr4::tree::TerminalNode* PATHS();
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  class AllPathsContext : public PathPatternPrefixContext {
+   public:
+    AllPathsContext(PathPatternPrefixContext* ctx);
+
+    antlr4::tree::TerminalNode* ALL();
+    PathModeContext* pathMode();
+    antlr4::tree::TerminalNode* PATH();
+    antlr4::tree::TerminalNode* PATHS();
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  class AnyShortestPathContext : public PathPatternPrefixContext {
+   public:
+    AnyShortestPathContext(PathPatternPrefixContext* ctx);
+
+    antlr4::tree::TerminalNode* ANY();
+    antlr4::tree::TerminalNode* SHORTEST();
+    PathModeContext* pathMode();
+    antlr4::tree::TerminalNode* PATH();
+    antlr4::tree::TerminalNode* PATHS();
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  PathPatternPrefixContext* pathPatternPrefix();
+
+  class PathModeContext : public antlr4::ParserRuleContext {
+   public:
+    PathModeContext(antlr4::ParserRuleContext* parent, size_t invokingState);
+    virtual size_t getRuleIndex() const override;
+    antlr4::tree::TerminalNode* WALK();
+    antlr4::tree::TerminalNode* TRAIL();
+    antlr4::tree::TerminalNode* ACYCLIC();
+    antlr4::tree::TerminalNode* SIMPLE();
+
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  PathModeContext* pathMode();
+
+  class PathPatternExpressionContext : public antlr4::ParserRuleContext {
+   public:
+    PathPatternExpressionContext(
+        antlr4::ParserRuleContext* parent,
+        size_t invokingState);
+    virtual size_t getRuleIndex() const override;
+    std::vector<PathFactorContext*> pathFactor();
+    PathFactorContext* pathFactor(size_t i);
+
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  PathPatternExpressionContext* pathPatternExpression();
+
+  class PathFactorContext : public antlr4::ParserRuleContext {
+   public:
+    PathFactorContext(antlr4::ParserRuleContext* parent, size_t invokingState);
+
+    PathFactorContext() = default;
+    void copyFrom(PathFactorContext* context);
+    using antlr4::ParserRuleContext::copyFrom;
+
+    virtual size_t getRuleIndex() const override;
+  };
+
+  class NodePatternFactorContext : public PathFactorContext {
+   public:
+    NodePatternFactorContext(PathFactorContext* ctx);
+
+    NodePatternContext* nodePattern();
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  class ParenthesizedPathFactorContext : public PathFactorContext {
+   public:
+    ParenthesizedPathFactorContext(PathFactorContext* ctx);
+
+    antlr4::Token* optional = nullptr;
+    ParenthesizedPathPatternContext* parenthesizedPathPattern();
+    GraphQuantifierContext* graphQuantifier();
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  class EdgePatternFactorContext : public PathFactorContext {
+   public:
+    EdgePatternFactorContext(PathFactorContext* ctx);
+
+    EdgePatternContext* edgePattern();
+    GraphQuantifierContext* graphQuantifier();
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  PathFactorContext* pathFactor();
+
+  class ParenthesizedPathPatternContext : public antlr4::ParserRuleContext {
+   public:
+    PrestoSqlParser::IdentifierContext* variable = nullptr;
+    PrestoSqlParser::BooleanExpressionContext* where = nullptr;
+    ParenthesizedPathPatternContext(
+        antlr4::ParserRuleContext* parent,
+        size_t invokingState);
+    virtual size_t getRuleIndex() const override;
+    PathPatternExpressionContext* pathPatternExpression();
+    antlr4::tree::TerminalNode* EQ();
+    PathModeContext* pathMode();
+    antlr4::tree::TerminalNode* WHERE();
+    IdentifierContext* identifier();
+    BooleanExpressionContext* booleanExpression();
+    antlr4::tree::TerminalNode* PATH();
+    antlr4::tree::TerminalNode* PATHS();
+
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  ParenthesizedPathPatternContext* parenthesizedPathPattern();
+
+  class NodePatternContext : public antlr4::ParserRuleContext {
+   public:
+    NodePatternContext(antlr4::ParserRuleContext* parent, size_t invokingState);
+    virtual size_t getRuleIndex() const override;
+    ElementPatternFillerContext* elementPatternFiller();
+
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  NodePatternContext* nodePattern();
+
+  class EdgePatternContext : public antlr4::ParserRuleContext {
+   public:
+    EdgePatternContext(antlr4::ParserRuleContext* parent, size_t invokingState);
+
+    EdgePatternContext() = default;
+    void copyFrom(EdgePatternContext* context);
+    using antlr4::ParserRuleContext::copyFrom;
+
+    virtual size_t getRuleIndex() const override;
+  };
+
+  class LeftEdgeContext : public EdgePatternContext {
+   public:
+    LeftEdgeContext(EdgePatternContext* ctx);
+
+    antlr4::tree::TerminalNode* LT();
+    std::vector<antlr4::tree::TerminalNode*> MINUS();
+    antlr4::tree::TerminalNode* MINUS(size_t i);
+    ElementPatternFillerContext* elementPatternFiller();
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  class AnyDirectionEdgeContext : public EdgePatternContext {
+   public:
+    AnyDirectionEdgeContext(EdgePatternContext* ctx);
+
+    std::vector<antlr4::tree::TerminalNode*> MINUS();
+    antlr4::tree::TerminalNode* MINUS(size_t i);
+    ElementPatternFillerContext* elementPatternFiller();
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  class RightEdgeContext : public EdgePatternContext {
+   public:
+    RightEdgeContext(EdgePatternContext* ctx);
+
+    antlr4::tree::TerminalNode* MINUS();
+    ElementPatternFillerContext* elementPatternFiller();
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  EdgePatternContext* edgePattern();
+
+  class ElementPatternFillerContext : public antlr4::ParserRuleContext {
+   public:
+    PrestoSqlParser::IdentifierContext* variable = nullptr;
+    PrestoSqlParser::BooleanExpressionContext* where = nullptr;
+    ElementPatternFillerContext(
+        antlr4::ParserRuleContext* parent,
+        size_t invokingState);
+    virtual size_t getRuleIndex() const override;
+    antlr4::tree::TerminalNode* IS();
+    LabelExpressionContext* labelExpression();
+    antlr4::tree::TerminalNode* WHERE();
+    IdentifierContext* identifier();
+    BooleanExpressionContext* booleanExpression();
+
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  ElementPatternFillerContext* elementPatternFiller();
+
+  class LabelExpressionContext : public antlr4::ParserRuleContext {
+   public:
+    LabelExpressionContext(
+        antlr4::ParserRuleContext* parent,
+        size_t invokingState);
+    virtual size_t getRuleIndex() const override;
+    std::vector<LabelTermContext*> labelTerm();
+    LabelTermContext* labelTerm(size_t i);
+
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  LabelExpressionContext* labelExpression();
+
+  class LabelTermContext : public antlr4::ParserRuleContext {
+   public:
+    LabelTermContext(antlr4::ParserRuleContext* parent, size_t invokingState);
+    virtual size_t getRuleIndex() const override;
+    std::vector<LabelFactorContext*> labelFactor();
+    LabelFactorContext* labelFactor(size_t i);
+
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  LabelTermContext* labelTerm();
+
+  class LabelFactorContext : public antlr4::ParserRuleContext {
+   public:
+    antlr4::Token* negation = nullptr;
+    LabelFactorContext(antlr4::ParserRuleContext* parent, size_t invokingState);
+    virtual size_t getRuleIndex() const override;
+    LabelPrimaryContext* labelPrimary();
+
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  LabelFactorContext* labelFactor();
+
+  class LabelPrimaryContext : public antlr4::ParserRuleContext {
+   public:
+    LabelPrimaryContext(
+        antlr4::ParserRuleContext* parent,
+        size_t invokingState);
+
+    LabelPrimaryContext() = default;
+    void copyFrom(LabelPrimaryContext* context);
+    using antlr4::ParserRuleContext::copyFrom;
+
+    virtual size_t getRuleIndex() const override;
+  };
+
+  class ParenthesizedLabelExpressionContext : public LabelPrimaryContext {
+   public:
+    ParenthesizedLabelExpressionContext(LabelPrimaryContext* ctx);
+
+    LabelExpressionContext* labelExpression();
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  class LabelWildcardContext : public LabelPrimaryContext {
+   public:
+    LabelWildcardContext(LabelPrimaryContext* ctx);
+
+    antlr4::tree::TerminalNode* PERCENT();
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  class LabelNameContext : public LabelPrimaryContext {
+   public:
+    LabelNameContext(LabelPrimaryContext* ctx);
+
+    IdentifierContext* identifier();
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  LabelPrimaryContext* labelPrimary();
+
+  class GraphQuantifierContext : public antlr4::ParserRuleContext {
+   public:
+    GraphQuantifierContext(
+        antlr4::ParserRuleContext* parent,
+        size_t invokingState);
+
+    GraphQuantifierContext() = default;
+    void copyFrom(GraphQuantifierContext* context);
+    using antlr4::ParserRuleContext::copyFrom;
+
+    virtual size_t getRuleIndex() const override;
+  };
+
+  class OneOrMoreContext : public GraphQuantifierContext {
+   public:
+    OneOrMoreContext(GraphQuantifierContext* ctx);
+
+    antlr4::tree::TerminalNode* PLUS();
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  class ZeroOrMoreContext : public GraphQuantifierContext {
+   public:
+    ZeroOrMoreContext(GraphQuantifierContext* ctx);
+
+    antlr4::tree::TerminalNode* ASTERISK();
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  class ExactRepetitionsContext : public GraphQuantifierContext {
+   public:
+    ExactRepetitionsContext(GraphQuantifierContext* ctx);
+
+    antlr4::Token* exact = nullptr;
+    antlr4::tree::TerminalNode* INTEGER_VALUE();
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  class BoundedRepetitionsContext : public GraphQuantifierContext {
+   public:
+    BoundedRepetitionsContext(GraphQuantifierContext* ctx);
+
+    antlr4::Token* lower = nullptr;
+    antlr4::Token* upper = nullptr;
+    std::vector<antlr4::tree::TerminalNode*> INTEGER_VALUE();
+    antlr4::tree::TerminalNode* INTEGER_VALUE(size_t i);
+    virtual void enterRule(antlr4::tree::ParseTreeListener* listener) override;
+    virtual void exitRule(antlr4::tree::ParseTreeListener* listener) override;
+
+    virtual std::any accept(antlr4::tree::ParseTreeVisitor* visitor) override;
+  };
+
+  GraphQuantifierContext* graphQuantifier();
 
   class ExpressionContext : public antlr4::ParserRuleContext {
    public:
@@ -4587,6 +5406,7 @@ class PrestoSqlParser : public antlr4::Parser {
    public:
     NonReservedContext(antlr4::ParserRuleContext* parent, size_t invokingState);
     virtual size_t getRuleIndex() const override;
+    antlr4::tree::TerminalNode* ACYCLIC();
     antlr4::tree::TerminalNode* ADD();
     antlr4::tree::TerminalNode* ADMIN();
     antlr4::tree::TerminalNode* ALL();
@@ -4613,9 +5433,11 @@ class PrestoSqlParser : public antlr4::Parser {
     antlr4::tree::TerminalNode* DAY();
     antlr4::tree::TerminalNode* DEFINER();
     antlr4::tree::TerminalNode* DESC();
+    antlr4::tree::TerminalNode* DESTINATION();
     antlr4::tree::TerminalNode* DETERMINISTIC();
     antlr4::tree::TerminalNode* DISABLED();
     antlr4::tree::TerminalNode* DISTRIBUTED();
+    antlr4::tree::TerminalNode* EDGE();
     antlr4::tree::TerminalNode* ENABLED();
     antlr4::tree::TerminalNode* ENFORCED();
     antlr4::tree::TerminalNode* EXECUTABLE();
@@ -4634,6 +5456,7 @@ class PrestoSqlParser : public antlr4::Parser {
     antlr4::tree::TerminalNode* GRANTED();
     antlr4::tree::TerminalNode* GRANTS();
     antlr4::tree::TerminalNode* GRAPH();
+    antlr4::tree::TerminalNode* GRAPH_TABLE();
     antlr4::tree::TerminalNode* GRAPHVIZ();
     antlr4::tree::TerminalNode* GROUPS();
     antlr4::tree::TerminalNode* HOUR();
@@ -4647,6 +5470,7 @@ class PrestoSqlParser : public antlr4::Parser {
     antlr4::tree::TerminalNode* ISOLATION();
     antlr4::tree::TerminalNode* JSON();
     antlr4::tree::TerminalNode* KEY();
+    antlr4::tree::TerminalNode* LABEL();
     antlr4::tree::TerminalNode* LANGUAGE();
     antlr4::tree::TerminalNode* LAST();
     antlr4::tree::TerminalNode* LATERAL();
@@ -4654,6 +5478,7 @@ class PrestoSqlParser : public antlr4::Parser {
     antlr4::tree::TerminalNode* LIMIT();
     antlr4::tree::TerminalNode* LOGICAL();
     antlr4::tree::TerminalNode* MAP();
+    antlr4::tree::TerminalNode* MATCH();
     antlr4::tree::TerminalNode* MATERIALIZED();
     antlr4::tree::TerminalNode* MINUTE();
     antlr4::tree::TerminalNode* MONTH();
@@ -4676,6 +5501,8 @@ class PrestoSqlParser : public antlr4::Parser {
     antlr4::tree::TerminalNode* OVER();
     antlr4::tree::TerminalNode* PARTITION();
     antlr4::tree::TerminalNode* PARTITIONS();
+    antlr4::tree::TerminalNode* PATH();
+    antlr4::tree::TerminalNode* PATHS();
     antlr4::tree::TerminalNode* POSITION();
     antlr4::tree::TerminalNode* PRECEDING();
     antlr4::tree::TerminalNode* PRIMARY();
@@ -4683,6 +5510,7 @@ class PrestoSqlParser : public antlr4::Parser {
     antlr4::tree::TerminalNode* PROPERTIES();
     antlr4::tree::TerminalNode* RANGE();
     antlr4::tree::TerminalNode* READ();
+    antlr4::tree::TerminalNode* REFERENCES();
     antlr4::tree::TerminalNode* REFRESH();
     antlr4::tree::TerminalNode* RELY();
     antlr4::tree::TerminalNode* RENAME();
@@ -4709,7 +5537,10 @@ class PrestoSqlParser : public antlr4::Parser {
     antlr4::tree::TerminalNode* SETS();
     antlr4::tree::TerminalNode* SQL();
     antlr4::tree::TerminalNode* SHOW();
+    antlr4::tree::TerminalNode* SHORTEST();
+    antlr4::tree::TerminalNode* SIMPLE();
     antlr4::tree::TerminalNode* SOME();
+    antlr4::tree::TerminalNode* SOURCE();
     antlr4::tree::TerminalNode* START();
     antlr4::tree::TerminalNode* STATS();
     antlr4::tree::TerminalNode* SUBSTRING();
@@ -4723,6 +5554,7 @@ class PrestoSqlParser : public antlr4::Parser {
     antlr4::tree::TerminalNode* TIME();
     antlr4::tree::TerminalNode* TIMESTAMP();
     antlr4::tree::TerminalNode* TO();
+    antlr4::tree::TerminalNode* TRAIL();
     antlr4::tree::TerminalNode* TRANSACTION();
     antlr4::tree::TerminalNode* TRUNCATE();
     antlr4::tree::TerminalNode* TRY_CAST();
@@ -4736,7 +5568,9 @@ class PrestoSqlParser : public antlr4::Parser {
     antlr4::tree::TerminalNode* VALIDATE();
     antlr4::tree::TerminalNode* VERBOSE();
     antlr4::tree::TerminalNode* VERSION();
+    antlr4::tree::TerminalNode* VERTEX();
     antlr4::tree::TerminalNode* VIEW();
+    antlr4::tree::TerminalNode* WALK();
     antlr4::tree::TerminalNode* WINDOW();
     antlr4::tree::TerminalNode* WORK();
     antlr4::tree::TerminalNode* WRITE();

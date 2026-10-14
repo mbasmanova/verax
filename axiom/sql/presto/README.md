@@ -44,8 +44,9 @@ by ANTLR4 (see `grammar/gen.sh`). The grammar is a copy of Presto's
 `SqlBase.g4` with minor additions (e.g. extra `EXPLAIN` types). `UpperCaseInputStream`
 uppercases characters at the look-ahead level, making keyword matching
 case-insensitive while preserving original casing in identifiers and string
-literals. A two-pass parsing strategy tries [SLL] mode first (fast) and falls
-back to full [LL] mode if needed.
+literals. `SyntaxParser` (`grammar/SyntaxParser.h`) runs this phase with a
+two-pass strategy: it tries [SLL] mode first (fast) and falls back to full
+[LL] mode if needed.
 
 The output is a Concrete Syntax Tree (CST) that mirrors the grammar rules
 one-to-one, including punctuation, keywords and intermediate rule nodes.

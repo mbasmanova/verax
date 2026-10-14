@@ -53,6 +53,7 @@ target_link_libraries(
   axiom_sql_presto_ast
   axiom_sql_presto_error
   axiom_sql_presto_parser_options
+  axiom_sql_presto_syntax_parser
   axiom_system_connector
   velox_common_base
   velox_common_config

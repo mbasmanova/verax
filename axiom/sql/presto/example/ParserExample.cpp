@@ -18,9 +18,7 @@
 #include <iostream>
 #include "axiom/sql/presto/ast/AstBuilder.h"
 #include "axiom/sql/presto/ast/AstPrinter.h"
-#include "axiom/sql/presto/ast/UpperCaseInputStream.h"
-#include "axiom/sql/presto/grammar/PrestoSqlLexer.h"
-#include "axiom/sql/presto/grammar/PrestoSqlParser.h"
+#include "axiom/sql/presto/grammar/SyntaxParser.h"
 
 int main(int argc, char** argv) {
   folly::Init init(&argc, &argv, false);
@@ -32,22 +30,12 @@ int main(int argc, char** argv) {
 
   std::cout << "SQL: " << sql << std::endl;
 
-  UpperCaseInputStream input(sql);
-  PrestoSqlLexer lexer(&input);
-  antlr4::CommonTokenStream tokens(&lexer);
-  PrestoSqlParser parser(&tokens);
+  const ParserOptions options;
+  SyntaxParser syntaxParser(sql, options.maxExpressionDepth);
 
-  auto* queryContext = parser.query();
-
-  if (parser.getNumberOfSyntaxErrors()) {
-    std::cout << "Parse Errors: " << parser.getNumberOfSyntaxErrors()
-              << std::endl;
-    return 1;
-  }
-
-  AstBuilder astBuilder(ParserOptions{});
-  auto query =
-      std::any_cast<std::shared_ptr<Query>>(astBuilder.visit(queryContext));
+  AstBuilder astBuilder(options);
+  auto query = std::any_cast<std::shared_ptr<Statement>>(
+      astBuilder.visit(syntaxParser.parse()));
 
   AstPrinter printer(std::cout);
   query->accept(&printer);

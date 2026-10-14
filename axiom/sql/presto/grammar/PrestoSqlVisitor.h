@@ -226,6 +226,9 @@ class PrestoSqlVisitor : public antlr4::tree::AbstractParseTreeVisitor {
 
   virtual std::any visitWith(PrestoSqlParser::WithContext* context) = 0;
 
+  virtual std::any visitWithElement(
+      PrestoSqlParser::WithElementContext* context) = 0;
+
   virtual std::any visitTableElement(
       PrestoSqlParser::TableElementContext* context) = 0;
 
@@ -320,6 +323,33 @@ class PrestoSqlVisitor : public antlr4::tree::AbstractParseTreeVisitor {
   virtual std::any visitNamedQuery(
       PrestoSqlParser::NamedQueryContext* context) = 0;
 
+  virtual std::any visitNamedGraph(
+      PrestoSqlParser::NamedGraphContext* context) = 0;
+
+  virtual std::any visitVertexTable(
+      PrestoSqlParser::VertexTableContext* context) = 0;
+
+  virtual std::any visitEdgeTable(
+      PrestoSqlParser::EdgeTableContext* context) = 0;
+
+  virtual std::any visitGraphElementKey(
+      PrestoSqlParser::GraphElementKeyContext* context) = 0;
+
+  virtual std::any visitEdgeEndpoint(
+      PrestoSqlParser::EdgeEndpointContext* context) = 0;
+
+  virtual std::any visitDefaultGraphLabel(
+      PrestoSqlParser::DefaultGraphLabelContext* context) = 0;
+
+  virtual std::any visitExplicitGraphLabels(
+      PrestoSqlParser::ExplicitGraphLabelsContext* context) = 0;
+
+  virtual std::any visitGraphElementProperties(
+      PrestoSqlParser::GraphElementPropertiesContext* context) = 0;
+
+  virtual std::any visitGraphElementProperty(
+      PrestoSqlParser::GraphElementPropertyContext* context) = 0;
+
   virtual std::any visitSetQuantifier(
       PrestoSqlParser::SetQuantifierContext* context) = 0;
 
@@ -377,8 +407,100 @@ class PrestoSqlVisitor : public antlr4::tree::AbstractParseTreeVisitor {
 
   virtual std::any visitLateral(PrestoSqlParser::LateralContext* context) = 0;
 
+  virtual std::any visitGraphTable(
+      PrestoSqlParser::GraphTableContext* context) = 0;
+
   virtual std::any visitParenthesizedRelation(
       PrestoSqlParser::ParenthesizedRelationContext* context) = 0;
+
+  virtual std::any visitGraphColumn(
+      PrestoSqlParser::GraphColumnContext* context) = 0;
+
+  virtual std::any visitGraphPattern(
+      PrestoSqlParser::GraphPatternContext* context) = 0;
+
+  virtual std::any visitPathPattern(
+      PrestoSqlParser::PathPatternContext* context) = 0;
+
+  virtual std::any visitPathModePrefix(
+      PrestoSqlParser::PathModePrefixContext* context) = 0;
+
+  virtual std::any visitAllShortestPaths(
+      PrestoSqlParser::AllShortestPathsContext* context) = 0;
+
+  virtual std::any visitAnyShortestPath(
+      PrestoSqlParser::AnyShortestPathContext* context) = 0;
+
+  virtual std::any visitCountedShortestGroups(
+      PrestoSqlParser::CountedShortestGroupsContext* context) = 0;
+
+  virtual std::any visitCountedShortestPaths(
+      PrestoSqlParser::CountedShortestPathsContext* context) = 0;
+
+  virtual std::any visitAnyPaths(PrestoSqlParser::AnyPathsContext* context) = 0;
+
+  virtual std::any visitAllPaths(PrestoSqlParser::AllPathsContext* context) = 0;
+
+  virtual std::any visitPathMode(PrestoSqlParser::PathModeContext* context) = 0;
+
+  virtual std::any visitPathPatternExpression(
+      PrestoSqlParser::PathPatternExpressionContext* context) = 0;
+
+  virtual std::any visitNodePatternFactor(
+      PrestoSqlParser::NodePatternFactorContext* context) = 0;
+
+  virtual std::any visitEdgePatternFactor(
+      PrestoSqlParser::EdgePatternFactorContext* context) = 0;
+
+  virtual std::any visitParenthesizedPathFactor(
+      PrestoSqlParser::ParenthesizedPathFactorContext* context) = 0;
+
+  virtual std::any visitParenthesizedPathPattern(
+      PrestoSqlParser::ParenthesizedPathPatternContext* context) = 0;
+
+  virtual std::any visitNodePattern(
+      PrestoSqlParser::NodePatternContext* context) = 0;
+
+  virtual std::any visitRightEdge(
+      PrestoSqlParser::RightEdgeContext* context) = 0;
+
+  virtual std::any visitLeftEdge(PrestoSqlParser::LeftEdgeContext* context) = 0;
+
+  virtual std::any visitAnyDirectionEdge(
+      PrestoSqlParser::AnyDirectionEdgeContext* context) = 0;
+
+  virtual std::any visitElementPatternFiller(
+      PrestoSqlParser::ElementPatternFillerContext* context) = 0;
+
+  virtual std::any visitLabelExpression(
+      PrestoSqlParser::LabelExpressionContext* context) = 0;
+
+  virtual std::any visitLabelTerm(
+      PrestoSqlParser::LabelTermContext* context) = 0;
+
+  virtual std::any visitLabelFactor(
+      PrestoSqlParser::LabelFactorContext* context) = 0;
+
+  virtual std::any visitLabelName(
+      PrestoSqlParser::LabelNameContext* context) = 0;
+
+  virtual std::any visitLabelWildcard(
+      PrestoSqlParser::LabelWildcardContext* context) = 0;
+
+  virtual std::any visitParenthesizedLabelExpression(
+      PrestoSqlParser::ParenthesizedLabelExpressionContext* context) = 0;
+
+  virtual std::any visitZeroOrMore(
+      PrestoSqlParser::ZeroOrMoreContext* context) = 0;
+
+  virtual std::any visitOneOrMore(
+      PrestoSqlParser::OneOrMoreContext* context) = 0;
+
+  virtual std::any visitExactRepetitions(
+      PrestoSqlParser::ExactRepetitionsContext* context) = 0;
+
+  virtual std::any visitBoundedRepetitions(
+      PrestoSqlParser::BoundedRepetitionsContext* context) = 0;
 
   virtual std::any visitExpression(
       PrestoSqlParser::ExpressionContext* context) = 0;

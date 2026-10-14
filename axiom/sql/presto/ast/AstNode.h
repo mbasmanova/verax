@@ -133,6 +133,16 @@ enum class NodeType {
   kLateral,
   kUnnest,
   kValues,
+  kGraphTable,
+
+  // Graph queries
+  kPathPattern,
+  kNodePattern,
+  kEdgePattern,
+  kParenthesizedPathPattern,
+  kLabelExpression,
+  kWithGraph,
+  kGraphElementTable,
 
   // Joins
   kJoin,

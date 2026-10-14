@@ -291,6 +291,32 @@ class AstBuilder : public PrestoSqlVisitor {
 
   std::any visitNamedQuery(PrestoSqlParser::NamedQueryContext* ctx) override;
 
+  std::any visitWithElement(PrestoSqlParser::WithElementContext* ctx) override;
+
+  std::any visitNamedGraph(PrestoSqlParser::NamedGraphContext* ctx) override;
+
+  std::any visitVertexTable(PrestoSqlParser::VertexTableContext* ctx) override;
+
+  std::any visitEdgeTable(PrestoSqlParser::EdgeTableContext* ctx) override;
+
+  std::any visitGraphElementKey(
+      PrestoSqlParser::GraphElementKeyContext* ctx) override;
+
+  std::any visitEdgeEndpoint(
+      PrestoSqlParser::EdgeEndpointContext* ctx) override;
+
+  std::any visitDefaultGraphLabel(
+      PrestoSqlParser::DefaultGraphLabelContext* ctx) override;
+
+  std::any visitExplicitGraphLabels(
+      PrestoSqlParser::ExplicitGraphLabelsContext* ctx) override;
+
+  std::any visitGraphElementProperties(
+      PrestoSqlParser::GraphElementPropertiesContext* ctx) override;
+
+  std::any visitGraphElementProperty(
+      PrestoSqlParser::GraphElementPropertyContext* ctx) override;
+
   std::any visitSetQuantifier(
       PrestoSqlParser::SetQuantifierContext* ctx) override;
 
@@ -343,6 +369,88 @@ class AstBuilder : public PrestoSqlVisitor {
   std::any visitUnnest(PrestoSqlParser::UnnestContext* ctx) override;
 
   std::any visitLateral(PrestoSqlParser::LateralContext* ctx) override;
+
+  std::any visitGraphTable(PrestoSqlParser::GraphTableContext* ctx) override;
+
+  std::any visitGraphColumn(PrestoSqlParser::GraphColumnContext* ctx) override;
+
+  std::any visitGraphPattern(
+      PrestoSqlParser::GraphPatternContext* ctx) override;
+
+  std::any visitPathPattern(PrestoSqlParser::PathPatternContext* ctx) override;
+
+  std::any visitPathModePrefix(
+      PrestoSqlParser::PathModePrefixContext* ctx) override;
+
+  std::any visitAllShortestPaths(
+      PrestoSqlParser::AllShortestPathsContext* ctx) override;
+
+  std::any visitAnyShortestPath(
+      PrestoSqlParser::AnyShortestPathContext* ctx) override;
+
+  std::any visitCountedShortestGroups(
+      PrestoSqlParser::CountedShortestGroupsContext* ctx) override;
+
+  std::any visitCountedShortestPaths(
+      PrestoSqlParser::CountedShortestPathsContext* ctx) override;
+
+  std::any visitAnyPaths(PrestoSqlParser::AnyPathsContext* ctx) override;
+
+  std::any visitAllPaths(PrestoSqlParser::AllPathsContext* ctx) override;
+
+  std::any visitPathMode(PrestoSqlParser::PathModeContext* ctx) override;
+
+  std::any visitPathPatternExpression(
+      PrestoSqlParser::PathPatternExpressionContext* ctx) override;
+
+  std::any visitNodePatternFactor(
+      PrestoSqlParser::NodePatternFactorContext* ctx) override;
+
+  std::any visitEdgePatternFactor(
+      PrestoSqlParser::EdgePatternFactorContext* ctx) override;
+
+  std::any visitParenthesizedPathFactor(
+      PrestoSqlParser::ParenthesizedPathFactorContext* ctx) override;
+
+  std::any visitParenthesizedPathPattern(
+      PrestoSqlParser::ParenthesizedPathPatternContext* ctx) override;
+
+  std::any visitNodePattern(PrestoSqlParser::NodePatternContext* ctx) override;
+
+  std::any visitRightEdge(PrestoSqlParser::RightEdgeContext* ctx) override;
+
+  std::any visitLeftEdge(PrestoSqlParser::LeftEdgeContext* ctx) override;
+
+  std::any visitAnyDirectionEdge(
+      PrestoSqlParser::AnyDirectionEdgeContext* ctx) override;
+
+  std::any visitElementPatternFiller(
+      PrestoSqlParser::ElementPatternFillerContext* ctx) override;
+
+  std::any visitLabelExpression(
+      PrestoSqlParser::LabelExpressionContext* ctx) override;
+
+  std::any visitLabelTerm(PrestoSqlParser::LabelTermContext* ctx) override;
+
+  std::any visitLabelFactor(PrestoSqlParser::LabelFactorContext* ctx) override;
+
+  std::any visitLabelName(PrestoSqlParser::LabelNameContext* ctx) override;
+
+  std::any visitLabelWildcard(
+      PrestoSqlParser::LabelWildcardContext* ctx) override;
+
+  std::any visitParenthesizedLabelExpression(
+      PrestoSqlParser::ParenthesizedLabelExpressionContext* ctx) override;
+
+  std::any visitZeroOrMore(PrestoSqlParser::ZeroOrMoreContext* ctx) override;
+
+  std::any visitOneOrMore(PrestoSqlParser::OneOrMoreContext* ctx) override;
+
+  std::any visitExactRepetitions(
+      PrestoSqlParser::ExactRepetitionsContext* ctx) override;
+
+  std::any visitBoundedRepetitions(
+      PrestoSqlParser::BoundedRepetitionsContext* ctx) override;
 
   std::any visitParenthesizedRelation(
       PrestoSqlParser::ParenthesizedRelationContext* ctx) override;
@@ -653,18 +761,53 @@ class AstBuilder : public PrestoSqlVisitor {
     return result;
   }
 
+  // Returns the quantifier of an edge or parenthesized path, or nullopt if
+  // 'ctx' is null. Fails if the quantifier is unbounded outside a scope that
+  // allows it.
+  std::optional<GraphQuantifier> parseQuantifier(
+      PrestoSqlParser::GraphQuantifierContext* ctx);
+
+  // Visits a context whose visitor returns a T, such as an enum or a struct.
+  template <typename T, typename TContext>
+  T visitValue(TContext* ctx) {
+    return std::any_cast<T>(visitChecked(ctx));
+  }
+
+  // Like visitValue, but returns nullopt if 'ctx' is null.
+  template <typename T, typename TContext>
+  std::optional<T> visitOptional(TContext* ctx) {
+    if (ctx == nullptr) {
+      return std::nullopt;
+    }
+    return visitValue<T>(ctx);
+  }
+
+  // Builds a vertex table, or an edge table if 'source' and 'destination' are
+  // set, from a vertexTable or edgeTable context.
+  template <typename TContext>
+  GraphElementTablePtr makeElementTable(
+      TContext* ctx,
+      std::optional<EdgeEndpoint> source,
+      std::optional<EdgeEndpoint> destination);
+
   template <typename T, typename TContext>
   std::shared_ptr<T> visitTyped(TContext* ctx) {
     if (ctx == nullptr) {
       return nullptr;
     }
 
+    return std::any_cast<std::shared_ptr<T>>(visitChecked(ctx));
+  }
+
+  // Visits a non-null 'ctx' after checking its nesting depth, indenting the
+  // trace output of its children.
+  std::any visitChecked(antlr4::ParserRuleContext* ctx) {
     checkNestingDepth(ctx);
     ++tracingIndent_;
     SCOPE_EXIT {
       --tracingIndent_;
     };
-    return std::any_cast<std::shared_ptr<T>>(visit(ctx));
+    return visit(ctx);
   }
 
   template <typename TContext>
@@ -719,6 +862,10 @@ class AstBuilder : public PrestoSqlVisitor {
   const ParserOptions options_;
   const bool enableTracing_;
   uint32_t tracingIndent_{0};
+
+  // True while visiting elements in the scope of a selector other than ALL or
+  // a path mode other than WALK, where unbounded quantifiers are allowed.
+  bool unboundedQuantifierAllowed_{false};
 };
 
 } // namespace axiom::sql::presto
