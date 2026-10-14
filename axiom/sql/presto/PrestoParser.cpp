@@ -2908,7 +2908,15 @@ SqlStatementPtr parseInsert(
   insert.query()->accept(&planner);
 
   auto inputColumns = planner.builder().findOrAssignOutputNames();
-  VELOX_CHECK_EQ(inputColumns.size(), columnNames.size());
+  AXIOM_PRESTO_SEMANTIC_CHECK_EQ(
+      inputColumns.size(),
+      columnNames.size(),
+      insert.location(),
+      insert.target()->suffix(),
+      "Insert query has {} expression(s) but expected {} target column(s) for table '{}'",
+      inputColumns.size(),
+      columnNames.size(),
+      insert.target()->fullyQualifiedName());
 
   planner.tableWrite(
       connectorId,
