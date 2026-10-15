@@ -38,25 +38,25 @@ GraphMatchBuilder::GraphMatchBuilder(
     : builder_{builder}, graph_{std::move(graph)} {}
 
 GraphMatchBuilder& GraphMatchBuilder::path(std::string name) {
-  return path(std::move(name), std::nullopt, std::nullopt);
+  return path(std::move(name), GraphPathSelector{}, GraphPathMode::kWalk);
 }
 
 GraphMatchBuilder& GraphMatchBuilder::path(
     std::string name,
     GraphPathSelector selector) {
-  return path(std::move(name), selector, std::nullopt);
+  return path(std::move(name), selector, GraphPathMode::kWalk);
 }
 
 GraphMatchBuilder& GraphMatchBuilder::path(
     std::string name,
     GraphPathMode mode) {
-  return path(std::move(name), std::nullopt, mode);
+  return path(std::move(name), GraphPathSelector{}, mode);
 }
 
 GraphMatchBuilder& GraphMatchBuilder::path(
     std::string name,
-    std::optional<GraphPathSelector> selector,
-    std::optional<GraphPathMode> mode) {
+    GraphPathSelector selector,
+    GraphPathMode mode) {
   flush();
   VELOX_USER_CHECK(
       subpaths_.empty(), "A path cannot start inside an open subpath");
@@ -328,7 +328,7 @@ GraphMatchBuilder& GraphMatchBuilder::optional() {
 
 GraphMatchBuilder& GraphMatchBuilder::startSubpath(
     std::string name,
-    std::optional<GraphPathMode> mode) {
+    GraphPathMode mode) {
   flush();
   if (!name.empty()) {
     pathNames_.insert(name);
@@ -338,7 +338,7 @@ GraphMatchBuilder& GraphMatchBuilder::startSubpath(
 }
 
 GraphMatchBuilder& GraphMatchBuilder::startSubpath(std::string name) {
-  return startSubpath(std::move(name), std::nullopt);
+  return startSubpath(std::move(name), GraphPathMode::kWalk);
 }
 
 GraphMatchBuilder& GraphMatchBuilder::endSubpath() {
@@ -409,35 +409,6 @@ std::optional<ExprApi> GraphMatchBuilder::parse(std::string_view sql) const {
       builder_.sqlParser_->parseScalarOrWindowExpr(std::string(sql)));
 }
 
-namespace {
-
-// Returns the properties an element of 'tables' has: those the tables that
-// define them give one data type, by name.
-velox::RowTypePtr properties(
-    const std::vector<const PropertyGraph::ElementTable*>& tables) {
-  std::map<std::string, velox::TypePtr> types;
-  folly::F14FastSet<std::string> conflicting;
-  for (const auto* table : tables) {
-    for (const auto& [name, expression] : table->properties) {
-      auto [it, inserted] = types.emplace(name, expression->type());
-      if (!inserted && !it->second->equivalent(*expression->type())) {
-        conflicting.insert(name);
-      }
-    }
-  }
-  std::vector<std::string> names;
-  std::vector<velox::TypePtr> children;
-  for (const auto& [name, type] : types) {
-    if (!conflicting.contains(name)) {
-      names.push_back(name);
-      children.push_back(type);
-    }
-  }
-  return velox::ROW(std::move(names), std::move(children));
-}
-
-} // namespace
-
 ExprPtr GraphMatchBuilder::resolve(
     const ExprApi& expr,
     const folly::F14FastSet<std::string>& names) const {
@@ -454,7 +425,7 @@ ExprPtr GraphMatchBuilder::resolve(
             "Pattern predicate reads a name it cannot see: {}",
             name);
         return std::make_shared<InputReferenceExpr>(
-            properties(elementNames_.at(name).tables), name);
+            PropertyGraph::properties(elementNames_.at(name).tables), name);
       });
 }
 

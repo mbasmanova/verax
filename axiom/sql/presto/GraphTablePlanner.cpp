@@ -147,9 +147,9 @@ lp::GraphLabelExpressionPtr toLabel(const LabelExpressionPtr& label) {
   VELOX_UNREACHABLE();
 }
 
-std::optional<lp::GraphPathMode> toMode(const std::optional<PathMode>& mode) {
+lp::GraphPathMode toMode(const std::optional<PathMode>& mode) {
   if (!mode.has_value()) {
-    return std::nullopt;
+    return lp::GraphPathMode::kWalk;
   }
   switch (mode.value()) {
     case PathMode::kWalk:
@@ -164,10 +164,9 @@ std::optional<lp::GraphPathMode> toMode(const std::optional<PathMode>& mode) {
   VELOX_UNREACHABLE();
 }
 
-std::optional<lp::GraphPathSelector> toSelector(
-    const std::optional<PathSelector>& selector) {
+lp::GraphPathSelector toSelector(const std::optional<PathSelector>& selector) {
   if (!selector.has_value()) {
-    return std::nullopt;
+    return lp::GraphPathSelector{};
   }
   using Kind = lp::GraphPathSelector::Kind;
   Kind kind{Kind::kAll};

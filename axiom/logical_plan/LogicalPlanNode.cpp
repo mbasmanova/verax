@@ -1642,9 +1642,7 @@ class GraphPatternNameCollector {
 
   void addPath(const GraphPathPattern& path) {
     VELOX_USER_CHECK(!path.terms.empty(), "Path pattern has no terms");
-    if (path.selector.has_value()) {
-      checkSelector(path.selector.value());
-    }
+    checkSelector(path.selector);
     if (!path.name.empty()) {
       addPathName(path.name, /*group=*/false);
     }

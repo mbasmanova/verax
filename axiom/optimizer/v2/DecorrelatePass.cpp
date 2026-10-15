@@ -880,21 +880,12 @@ class Decorrelator : public NodeRewriter<> {
         node, enforced, innerIncludeMarker, std::move(visibleColumns));
   }
 
-  // A `row_number()` window function over the default running frame,
-  // writing into `rowNumberColumn`.
-  WindowFunction rowNumberWindowFunction(ColumnCP rowNumberColumn) {
-    const auto& rowNumberName = FunctionRegistry::instance()->rowNumber();
-    VELOX_USER_CHECK(
-        rowNumberName.has_value(),
-        "Decorrelate requires row_number registered via "
-        "FunctionRegistry::registerRowNumber");
-    ExprCP call = builder().makeCall(
-        toName(*rowNumberName),
-        rowNumberColumn->value(),
-        ExprVector{},
-        FunctionSet{} | FunctionSet::kNonDeterministic |
-            FunctionSet::kNonDefaultNullBehavior);
-    return WindowFunction{call, Frame::toCurrentRow(), /*ignoreNulls=*/false};
+  // A `row_number()` window function over the default running frame.
+  WindowFunction rowNumberWindowFunction() {
+    return WindowFunction{
+        exprFactory_.makeRowNumber(),
+        Frame::toCurrentRow(),
+        /*ignoreNulls=*/false};
   }
 
   // `bool_or(source)` over the whole partition, reading true when any row of
@@ -946,7 +937,7 @@ class Decorrelator : public NodeRewriter<> {
       ExprVector orderKeys,
       OrderTypeVector orderTypes) {
     WindowFunctions functions;
-    functions.push_back(rowNumberWindowFunction(rowNumberColumn));
+    functions.push_back(rowNumberWindowFunction());
 
     ColumnVector outputs;
     outputs.reserve(input->outputColumns().size() + 1);
@@ -1765,7 +1756,7 @@ class Decorrelator : public NodeRewriter<> {
       ColumnCP padOrdinal) {
     WindowFunctions functions;
     functions.push_back(boolOrWindowFunction(marker));
-    functions.push_back(rowNumberWindowFunction(padOrdinal));
+    functions.push_back(rowNumberWindowFunction());
 
     ColumnVector outputs;
     outputs.reserve(input->outputColumns().size() + 2);

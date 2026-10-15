@@ -89,8 +89,8 @@ std::string toText(const GraphSubpathPattern& subpath) {
   if (!subpath.name().empty()) {
     parts.push_back(subpath.name() + " =");
   }
-  if (subpath.mode().has_value()) {
-    parts.push_back(fmt::format("{}", subpath.mode().value()));
+  if (subpath.mode() != GraphPathMode::kWalk) {
+    parts.push_back(fmt::format("{}", subpath.mode()));
   }
   parts.push_back(toText(subpath.terms()));
   if (subpath.predicate() != nullptr) {
@@ -120,15 +120,15 @@ std::string toText(const GraphPathPattern& path) {
   if (!path.name.empty()) {
     prefix.push_back(path.name + " =");
   }
-  if (path.selector.has_value()) {
-    std::string selector{GraphPathSelector::toName(path.selector->kind)};
-    if (path.selector->count.has_value()) {
-      selector += fmt::format(" {}", path.selector->count.value());
+  if (path.selector.kind != GraphPathSelector::Kind::kAll) {
+    std::string selector{GraphPathSelector::toName(path.selector.kind)};
+    if (path.selector.count.has_value()) {
+      selector += fmt::format(" {}", path.selector.count.value());
     }
     prefix.push_back(std::move(selector));
   }
-  if (path.mode.has_value()) {
-    prefix.push_back(fmt::format("{}", path.mode.value()));
+  if (path.mode != GraphPathMode::kWalk) {
+    prefix.push_back(fmt::format("{}", path.mode));
   }
   prefix.push_back(toText(path.terms));
   return folly::join(" ", prefix);
