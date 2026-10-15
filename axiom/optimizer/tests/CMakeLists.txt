@@ -155,6 +155,7 @@ if(AXIOM_BUILD_TESTING)
     FeatureGen.cpp
     Genies.cpp
     BucketedExecutionTest.cpp
+    ConstantExprEvaluatorTest.cpp
     HiveBucketedExecutionTest.cpp
     TestConnectorQueryTest.cpp
     TpchConnectorQueryTest.cpp

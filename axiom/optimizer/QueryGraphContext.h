@@ -204,6 +204,9 @@ struct Step {
   /// of fields accessed at a child level.
   bool allFields{false};
 
+  /// Returns the index in 'rowType' of the field a kField step reads.
+  int32_t fieldIndex(const velox::RowType& rowType) const;
+
   bool operator==(const Step& other) const;
 
   bool operator<(const Step& other) const;
@@ -669,3 +672,5 @@ class Literal;
 using LiteralCP = const Literal*;
 
 } // namespace facebook::axiom::optimizer
+
+AXIOM_ENUM_FORMATTER(facebook::axiom::optimizer::StepKind);

@@ -399,6 +399,23 @@ class ToGraph {
       const logical_plan::CallExpr* call,
       const FunctionMetadata* metadata);
 
+  // Translates a row constructor whose result is read only by fields. Inputs
+  // no field reads become typed nulls. Returns nullopt when the row is read
+  // whole.
+  std::optional<ExprCP> translateRowConstructor(
+      const logical_plan::SpecialFormExpr* row);
+
+  // Returns a call to 'name' over the inputs of 'expr', translating those in
+  // 'usedArgs', or all if 'allUsed', and replacing the rest with typed nulls.
+  // Records 'exploded', the input expression for each path over the result.
+  ExprCP makeSubfieldCall(
+      const logical_plan::Expr* expr,
+      Name name,
+      FunctionSet functions,
+      const PathSet& usedArgs,
+      bool allUsed,
+      const folly::F14FastMap<PathCP, logical_plan::ExprPtr>& exploded);
+
   // Adds conjuncts combined by any number of enclosing ands from 'input' to
   // 'flat'.
   void translateConjuncts(const logical_plan::ExprPtr& input, ExprVector& flat);
@@ -523,9 +540,10 @@ class ToGraph {
       const logical_plan::ExprPtr& base,
       ColumnCP column);
 
-  PathSet functionSubfields(const logical_plan::CallExpr* call);
+  PathSet functionSubfields(const logical_plan::Expr* expr);
 
-  // Calls translateSubfieldFunction() if not already called.
+  // Returns the expressions for the paths over 'expr', a subfield-decomposable
+  // expression, translating it first if needed. Returns null if it has none.
   SubfieldProjections* FOLLY_NULLABLE
   ensureFunctionSubfields(const logical_plan::ExprPtr& expr);
 
@@ -1001,7 +1019,7 @@ class ToGraph {
 
   /// Expressions corresponding to skyline paths over a subfield decomposable
   /// function.
-  folly::F14FastMap<const logical_plan::CallExpr*, SubfieldProjections>
+  folly::F14FastMap<const logical_plan::Expr*, SubfieldProjections>
       functionSubfields_;
 
   // Every unique path step, expr pair. For paths c.f1.f2 and c.f1.f3 there
@@ -1009,9 +1027,9 @@ class ToGraph {
   // the same c.f1.
   folly::F14FastMap<PathExpr, ExprCP, PathExprHasher> deduppedGetters_;
 
-  // Complex type functions that have been checked for explode and
+  // Subfield-decomposable expressions that have been checked for explode and
   // 'functionSubfields_'.
-  folly::F14FastSet<const logical_plan::CallExpr*> translatedSubfieldFuncs_;
+  folly::F14FastSet<const logical_plan::Expr*> translatedSubfieldFuncs_;
 
   /// If subfield extraction is pushed down, then these give the skyline
   /// subfields for a column for control and payload situations. The same

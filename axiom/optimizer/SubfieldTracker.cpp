@@ -385,6 +385,32 @@ void SubfieldTracker::markSubfields(
     return;
   }
 
+  // A field of a constructed row is one of its inputs. Without a path, every
+  // input is read whole.
+  if (isSpecialForm(expr, lp::SpecialForm::kRowConstructor)) {
+    const auto* path = stepsToPath(steps);
+    auto* fields = isControl ? &controlSubfields_ : &payloadSubfields_;
+    auto& paths =
+        fields->argFields[expr.get()].resultPaths[ResultAccess::kSelf];
+    if (paths.contains(path->id())) {
+      return;
+    }
+    paths.add(path->id());
+
+    if (!steps.empty()) {
+      const auto step = steps.back();
+      const auto index = step.fieldIndex(expr->type()->asRow());
+      steps.pop_back();
+      markSubfields(expr->inputAt(index), steps, isControl, context);
+      steps.push_back(step);
+      return;
+    }
+    for (const auto& input : expr->inputs()) {
+      markSubfields(input, steps, isControl, context);
+    }
+    return;
+  }
+
   if (expr->isCall()) {
     auto name = toName(expr->as<lp::CallExpr>()->name());
     if (name == subscript_ || name == elementAt_) {

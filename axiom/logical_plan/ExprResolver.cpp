@@ -414,8 +414,8 @@ ExprPtr tryResolveSpecialForm(
     const std::shared_ptr<velox::core::PlanNodeIdGenerator>&
         planNodeIdGenerator,
     const velox::TypeCoercer* coercer) {
-  if (name == "and" || name == "or") {
-    const bool isAnd = (name == "and");
+  if (name == velox::expression::kAnd || name == velox::expression::kOr) {
+    const bool isAnd = (name == velox::expression::kAnd);
     const auto form = isAnd ? SpecialForm::kAnd : SpecialForm::kOr;
 
     if (coercer != nullptr) {
@@ -430,12 +430,20 @@ ExprPtr tryResolveSpecialForm(
         velox::BOOLEAN(), form, resolvedInputs);
   }
 
-  if (name == "try") {
+  if (name == velox::expression::kRowConstructor) {
+    std::vector<std::string> names(resolvedInputs.size());
+    return std::make_shared<SpecialFormExpr>(
+        velox::ROW(std::move(names), toTypes(resolvedInputs)),
+        SpecialForm::kRowConstructor,
+        resolvedInputs);
+  }
+
+  if (name == velox::expression::kTry) {
     return std::make_shared<SpecialFormExpr>(
         resolvedInputs.at(0)->type(), SpecialForm::kTry, resolvedInputs);
   }
 
-  if (name == "coalesce") {
+  if (name == velox::expression::kCoalesce) {
     if (coercer != nullptr) {
       return resolveSpecialFormWithCoercions(
           SpecialForm::kCoalesce,
@@ -448,7 +456,7 @@ ExprPtr tryResolveSpecialForm(
         resolvedInputs.at(0)->type(), SpecialForm::kCoalesce, resolvedInputs);
   }
 
-  if (name == "if") {
+  if (name == velox::expression::kIf) {
     if (resolvedInputs.size() == 2) {
       // Add null ELSE clause.
       const auto& type = resolvedInputs.back()->type();
@@ -464,7 +472,7 @@ ExprPtr tryResolveSpecialForm(
         resolvedInputs.at(1)->type(), SpecialForm::kIf, resolvedInputs);
   }
 
-  if (name == "switch") {
+  if (name == velox::expression::kSwitch) {
     if (coercer != nullptr) {
       return resolveSpecialFormWithCoercions(
           SpecialForm::kSwitch,
@@ -480,7 +488,7 @@ ExprPtr tryResolveSpecialForm(
     return resolveDereference(resolvedInputs);
   }
 
-  if (name == "in") {
+  if (name == velox::expression::kIn) {
     return resolveIn(resolvedInputs, planNodeIdGenerator, coercer);
   }
 
@@ -489,7 +497,7 @@ ExprPtr tryResolveSpecialForm(
         velox::BOOLEAN(), SpecialForm::kExists, resolvedInputs);
   }
 
-  if (name == "nullif") {
+  if (name == velox::expression::kNullIf) {
     return resolveNullIf(resolvedInputs, coercer);
   }
 
@@ -1195,18 +1203,12 @@ ExprPtr ExprResolver::resolveScalarTypes(
   }
 
   // Named ROW constructor: ROW(expr1 AS f1, expr2 AS f2, ...).
-  // Resolve child types and produce a row_constructor with named ROW type.
   if (const auto* concat =
           dynamic_cast<const velox::core::ConcatExpr*>(expr.get())) {
-    std::vector<velox::TypePtr> types;
-    types.reserve(inputs.size());
-    for (const auto& input : inputs) {
-      types.push_back(input->type());
-    }
     auto rowType =
-        velox::ROW(folly::copy(concat->fieldNames()), std::move(types));
-    return std::make_shared<CallExpr>(
-        rowType, "row_constructor", std::move(inputs));
+        velox::ROW(folly::copy(concat->fieldNames()), toTypes(inputs));
+    return std::make_shared<SpecialFormExpr>(
+        rowType, SpecialForm::kRowConstructor, std::move(inputs));
   }
 
   VELOX_NYI("Can't resolve {}", expr->toString());

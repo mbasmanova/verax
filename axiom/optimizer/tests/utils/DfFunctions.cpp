@@ -179,8 +179,8 @@ lp::ExprPtr makeNamedRowHook(
     values.push_back(args[i + 1]);
   }
   auto rowType = ROW(std::move(newNames), std::move(types));
-  return std::make_shared<lp::CallExpr>(
-      std::move(rowType), "row_constructor", std::move(values));
+  return std::make_shared<lp::SpecialFormExpr>(
+      std::move(rowType), lp::SpecialForm::kRowConstructor, std::move(values));
 }
 
 std::pair<std::vector<Step>, int32_t> makeNamedRowSubfield(
