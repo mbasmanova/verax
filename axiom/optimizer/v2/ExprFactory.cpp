@@ -190,6 +190,14 @@ ExprCP ExprFactory::makeCardinality(ExprCP value) {
       name, Value(toType(velox::BIGINT())), std::move(arguments), functions);
 }
 
+ExprCP ExprFactory::makeRowConstructor(ExprVector arguments, TypeCP rowType) {
+  const Name name = SpecialFormCallNames::kRowConstructor;
+  const FunctionSet functions = Call::unionArgFunctions(
+      functionBits(name, /*specialForm=*/true), arguments);
+  return builder_.makeCall(
+      name, Value(rowType), std::move(arguments), functions);
+}
+
 ExprCP ExprFactory::makeSamplePredicate(double fraction) {
   const Name randName = builder_.functionNames().random;
   VELOX_USER_CHECK_NOT_NULL(

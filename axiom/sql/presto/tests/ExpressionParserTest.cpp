@@ -1078,7 +1078,7 @@ TEST_F(ExpressionParserTest, lateralColumnAliasNotVisibleInSubquery) {
 
 TEST_F(ExpressionParserTest, row) {
   testNationExpr(
-      "row(n_regionkey, n_name)", "row_constructor(n_regionkey, n_name)");
+      "row(n_regionkey, n_name)", "ROW_CONSTRUCTOR(n_regionkey, n_name)");
 }
 
 TEST_F(ExpressionParserTest, namedRow) {

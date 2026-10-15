@@ -518,6 +518,13 @@ enum class SpecialForm {
   /// Example:
   ///   x IN (1, 2, 3) => IN_ARRAY(x, [1, 2, 3])
   kInArray = 13,
+
+  /// Builds a ROW with one field per input. The output type is a ROW whose
+  /// field types are the input types, in order.
+  ///
+  /// Example:
+  ///   ROW(1, 'a') => ROW_CONSTRUCTOR(1, 'a')
+  kRowConstructor = 14,
 };
 
 AXIOM_DECLARE_ENUM_NAME(SpecialForm)

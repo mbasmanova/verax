@@ -51,6 +51,8 @@ const char* SpecialFormCallNames::kIn = "__in";
 const char* SpecialFormCallNames::kNullIf = "__nullif";
 // static
 const char* SpecialFormCallNames::kDereference = "__dereference";
+// static
+const char* SpecialFormCallNames::kRowConstructor = "__row_constructor";
 
 // static
 ColumnCP Column::createForSymbol(Name symbol, const Value& value) {
@@ -182,7 +184,7 @@ Call::Call(
 }
 
 bool Call::isRowConstructor() const {
-  return metadata_ != nullptr && metadata_->isRowConstructor;
+  return name() == SpecialFormCallNames::kRowConstructor;
 }
 
 const std::vector<velox::Variant>* Call::constantInList() const {

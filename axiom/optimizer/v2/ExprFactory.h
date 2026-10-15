@@ -107,6 +107,9 @@ class ExprFactory {
   /// Builds `cardinality(value)`.
   ExprCP makeCardinality(ExprCP value);
 
+  /// Builds a ROW of type 'rowType' with one field per argument.
+  ExprCP makeRowConstructor(ExprVector arguments, TypeCP rowType);
+
   /// Builds the BERNOULLI sampling predicate `rand() < fraction`, where
   /// 'fraction' is in [0, 1). The `rand()` call is non-deterministic, so it is
   /// re-evaluated per row.

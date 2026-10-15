@@ -336,44 +336,6 @@ const std::string& specialForm(lp::SpecialForm specialForm) {
   return FunctionRegistry::instance()->specialForm(specialForm);
 }
 
-namespace {
-std::pair<std::vector<Step>, int32_t> rowConstructorSubfield(
-    std::span<const Step> steps,
-    const lp::CallExpr& call) {
-  VELOX_CHECK(steps.back().kind == StepKind::kField);
-  auto& step = steps.back();
-  auto idx = step.id;
-  if (step.field) {
-    idx = call.type()->asRow().getChildIdx(step.field);
-  }
-  std::vector<Step> newFields(steps.begin(), steps.end());
-  newFields.pop_back();
-  return std::make_pair(std::move(newFields), idx);
-}
-
-folly::F14FastMap<PathCP, lp::ExprPtr> rowConstructorExplode(
-    const lp::CallExpr* call,
-    std::vector<PathCP>& paths) {
-  folly::F14FastMap<PathCP, lp::ExprPtr> result;
-  for (auto& path : paths) {
-    const auto& steps = path->steps();
-    if (steps.empty()) {
-      return {};
-    }
-    const auto* prefixPath = toPath({steps.data(), 1});
-    auto [it, emplaced] = result.try_emplace(prefixPath);
-    if (!emplaced) {
-      // There already is an expression for this path.
-      continue;
-    }
-    VELOX_CHECK(steps.front().kind == StepKind::kField);
-    auto nth = steps.front().id;
-    it->second = call->inputAt(nth);
-  }
-  return result;
-}
-} // namespace
-
 // static
 void FunctionRegistry::registerPrestoFunctions(std::string_view prefix) {
   auto fullName = [&](std::string_view name) {
@@ -425,17 +387,6 @@ void FunctionRegistry::registerPrestoFunctions(std::string_view prefix) {
     metadata->lambdas.push_back(std::move(info));
     metadata->cost = 20;
     registerFunction(fullName("zip"), std::move(metadata));
-  }
-
-  {
-    auto metadata = std::make_unique<FunctionMetadata>();
-    metadata->valuePathToArgPath = rowConstructorSubfield;
-    metadata->isRowConstructor = true;
-    metadata->explode = rowConstructorExplode;
-    metadata->functionSet = FunctionSet(FunctionSet::kNonDefaultNullBehavior);
-    // Presto row_constructor created without prefix, so we register it without
-    // prefix too.
-    registerFunction("row_constructor", std::move(metadata));
   }
 
   auto* registry = FunctionRegistry::instance();
@@ -499,6 +450,8 @@ void FunctionRegistry::registerPrestoFunctions(std::string_view prefix) {
   registry->registerSpecialForm(lp::SpecialForm::kIn, "in");
   registry->registerSpecialForm(
       lp::SpecialForm::kNullIf, velox::expression::kNullIf);
+  registry->registerSpecialForm(
+      lp::SpecialForm::kRowConstructor, velox::expression::kRowConstructor);
 }
 
 } // namespace facebook::axiom::optimizer

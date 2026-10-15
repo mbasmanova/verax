@@ -366,9 +366,9 @@ void makeLogicalExprs(
   if (!floatExprs.empty()) {
     names.push_back("floats");
     exprs.push_back(
-        std::make_shared<lp::CallExpr>(
+        std::make_shared<lp::SpecialFormExpr>(
             ROW(std::move(floatTypes)),
-            "row_constructor",
+            lp::SpecialForm::kRowConstructor,
             std::move(floatExprs)));
   }
 }

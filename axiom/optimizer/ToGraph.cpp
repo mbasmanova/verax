@@ -953,13 +953,13 @@ ExprCP ToGraph::makeGetter(const Step& step, ExprCP base) {
   }
 }
 
-PathSet ToGraph::functionSubfields(const lp::CallExpr* call) {
+PathSet ToGraph::functionSubfields(const lp::Expr* expr) {
   PathSet subfields;
-  if (auto maybe = payloadSubfields_.findSubfields(call)) {
+  if (auto maybe = payloadSubfields_.findSubfields(expr)) {
     subfields = maybe.value();
   }
 
-  if (auto maybe = controlSubfields_.findSubfields(call)) {
+  if (auto maybe = controlSubfields_.findSubfields(expr)) {
     subfields.unionSet(maybe.value());
   }
 
@@ -968,21 +968,19 @@ PathSet ToGraph::functionSubfields(const lp::CallExpr* call) {
 }
 
 SubfieldProjections* ToGraph::ensureFunctionSubfields(const lp::ExprPtr& expr) {
-  if (expr->isCall()) {
-    const auto* call = expr->as<lp::CallExpr>();
-    if (functionMetadata(velox::exec::sanitizeName(call->name()))) {
-      if (!translatedSubfieldFuncs_.contains(call)) {
-        translateExpr(expr);
-      }
-    }
-
-    auto it = functionSubfields_.find(call);
-    if (it != functionSubfields_.end()) {
-      return &it->second;
-    }
+  const bool decomposable = expr->isCall()
+      ? functionMetadata(
+            velox::exec::sanitizeName(expr->as<lp::CallExpr>()->name())) !=
+          nullptr
+      : isSpecialForm(expr, lp::SpecialForm::kRowConstructor);
+  if (!decomposable) {
+    return nullptr;
   }
-
-  return nullptr;
+  if (!translatedSubfieldFuncs_.contains(expr.get())) {
+    translateExpr(expr);
+  }
+  auto it = functionSubfields_.find(expr.get());
+  return it != functionSubfields_.end() ? &it->second : nullptr;
 }
 
 namespace {
@@ -1247,6 +1245,12 @@ ExprCP ToGraph::translateExpr(const lp::ExprPtr& expr) {
 
   const auto* specialForm =
       expr->isSpecialForm() ? expr->as<lp::SpecialFormExpr>() : nullptr;
+  if (specialForm != nullptr &&
+      specialForm->form() == lp::SpecialForm::kRowConstructor) {
+    if (auto translated = translateRowConstructor(specialForm)) {
+      return translated.value();
+    }
+  }
 
   if (call || specialForm) {
     const auto& inputs = expr->inputs();
@@ -1458,9 +1462,8 @@ std::optional<ExprCP> ToGraph::translateSubfieldFunction(
       }
     }
   } else if (metadata->valuePathToArgPath) {
-    // For functions like row_constructor that use valuePathToArgPath instead
-    // of a static argOrdinal mapping, derive usedArgs from each tracked
-    // subfield path.
+    // For functions that use valuePathToArgPath instead of a static
+    // argOrdinal mapping, derive usedArgs from each tracked subfield path.
     for (const auto& path : paths) {
       const auto& steps = path->steps();
       if (steps.empty()) {
@@ -1476,17 +1479,73 @@ std::optional<ExprCP> ToGraph::translateSubfieldFunction(
     allUsed = true;
   }
 
-  const auto& inputs = call->inputs();
+  auto* name = toName(velox::exec::sanitizeName(call->name()));
+  folly::F14FastMap<PathCP, lp::ExprPtr> exploded;
+  if (metadata->explode) {
+    exploded = metadata->explode(call, paths);
+  }
+  return makeSubfieldCall(
+      call,
+      name,
+      functionBits(name, /*specialForm=*/false),
+      usedArgs,
+      allUsed,
+      exploded);
+}
+
+std::optional<ExprCP> ToGraph::translateRowConstructor(
+    const lp::SpecialFormExpr* row) {
+  translatedSubfieldFuncs_.insert(row);
+
+  auto subfields = functionSubfields(row);
+  if (subfields.empty()) {
+    return std::nullopt;
+  }
+
+  PathSet usedArgs;
+  folly::F14FastMap<PathCP, lp::ExprPtr> exploded;
+  bool readWhole = false;
+  subfields.forEachPath([&](PathCP path) {
+    const auto& steps = path->steps();
+    if (steps.empty()) {
+      readWhole = true;
+      return;
+    }
+    const auto index = steps.front().fieldIndex(row->type()->asRow());
+    usedArgs.add(index);
+    exploded.try_emplace(toPath({steps.data(), 1}), row->inputAt(index));
+  });
+  if (readWhole) {
+    return std::nullopt;
+  }
+
+  const Name name = SpecialFormCallNames::kRowConstructor;
+  return makeSubfieldCall(
+      row,
+      name,
+      functionBits(name, /*specialForm=*/true),
+      usedArgs,
+      /*allUsed=*/false,
+      exploded);
+}
+
+ExprCP ToGraph::makeSubfieldCall(
+    const lp::Expr* expr,
+    Name name,
+    FunctionSet functions,
+    const PathSet& usedArgs,
+    bool allUsed,
+    const folly::F14FastMap<PathCP, lp::ExprPtr>& exploded) {
+  const auto& inputs = expr->inputs();
   ExprVector args(inputs.size());
   std::optional<float> cardinality = 1;
-  FunctionSet funcs;
   for (auto i = 0; i < inputs.size(); ++i) {
     const auto& input = inputs[i];
     if (allUsed || usedArgs.contains(i)) {
       args[i] = translateExpr(input);
       cardinality = maxOf(cardinality, args[i]->value().cardinality);
       if (args[i]->is(PlanType::kCallExpr)) {
-        funcs = funcs | args[i]->as<Call>()->functions();
+        functions = functions | args[i]->as<Call>()->functions();
       }
     } else {
       // Make a null of the type for the unused arg to keep the tree valid.
@@ -1496,34 +1555,19 @@ std::optional<ExprCP> ToGraph::translateSubfieldFunction(
     }
   }
 
-  auto* name = toName(velox::exec::sanitizeName(call->name()));
-  funcs = funcs | functionBits(name, /*specialForm=*/false);
-
-  if (metadata->explode) {
-    auto map = metadata->explode(call, paths);
-    folly::F14FastMap<PathCP, ExprCP> translated;
-    for (const auto& [path, expr] : map) {
-      translated[path] = translateExpr(expr);
-    }
-
-    trace(OptimizerOptions::kPreprocess, [&]() {
-      std::cout << "Explode=" << lp::ExprPrinter::toText(*call) << std::endl;
-      std::cout << "num paths=" << paths.size() << std::endl;
-      std::cout << "translated=" << map.size() << std::endl;
-      if (!translated.empty()) {
-        std::cout << "Set function skyline=" << translated.size() << " "
-                  << map.size() << std::endl;
-      }
-    });
-
-    if (!translated.empty()) {
-      functionSubfields_[call] =
-          SubfieldProjections{.pathToExpr = std::move(translated)};
-    }
+  folly::F14FastMap<PathCP, ExprCP> translated;
+  for (const auto& [path, input] : exploded) {
+    translated[path] = translateExpr(input);
   }
-  auto* callExpr =
-      make<Call>(name, toValue(call->type(), cardinality), args, funcs);
-  return callExpr;
+  trace(OptimizerOptions::kPreprocess, [&]() {
+    std::cout << "Explode=" << lp::ExprPrinter::toText(*expr) << std::endl;
+    std::cout << "translated=" << translated.size() << std::endl;
+  });
+  if (!translated.empty()) {
+    functionSubfields_[expr] =
+        SubfieldProjections{.pathToExpr = std::move(translated)};
+  }
+  return make<Call>(name, toValue(expr->type(), cardinality), args, functions);
 }
 
 void ToGraph::rejectIfReusedNonDeterministic(std::string_view name, ExprCP expr)

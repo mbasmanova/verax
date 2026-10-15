@@ -75,6 +75,10 @@ class ExprTranslator : public lp::ExprVisitor {
         myCtx.veloxExpr = std::make_shared<velox::core::CastTypedExpr>(
             expr.type(), inputs, /*isTryCast=*/true);
         break;
+      case lp::SpecialForm::kRowConstructor:
+        myCtx.veloxExpr = std::make_shared<velox::core::ConcatTypedExpr>(
+            expr.type()->asRow().names(), inputs);
+        break;
       default:
         VELOX_NYI();
     }
