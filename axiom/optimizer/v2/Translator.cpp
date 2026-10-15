@@ -740,8 +740,22 @@ Translated Translator::translateNode(
 Translated Translator::translateScan(
     const lp::TableScanNode& scan,
     const LpNameSet& required) {
-  const auto* schemaTable =
-      schema_.findTable(scan.connectorId(), scan.tableName());
+  std::vector<ScanColumn> columns;
+  for (size_t i = 0; i < scan.columnNames().size(); ++i) {
+    const auto& name = scan.outputType()->nameOf(i);
+    if (required.contains(name)) {
+      columns.push_back(
+          {.schemaName = scan.columnNames()[i], .outputName = name});
+    }
+  }
+  return translateScan(scan.connectorId(), scan.tableName(), columns);
+}
+
+Translated Translator::translateScan(
+    const std::string& connectorId,
+    const SchemaTableName& tableName,
+    const std::vector<ScanColumn>& columns) {
+  const auto* schemaTable = schema_.findTable(connectorId, tableName);
   VELOX_CHECK_NOT_NULL(schemaTable);
   connectorPushdownSupported_ = connectorPushdownSupported_ ||
       schemaResolver_.findMetadata(schemaTable->metadataId())
@@ -753,17 +767,11 @@ Translated Translator::translateScan(
   // connector stats; cardinality estimation falls back to constraint-based
   // selectivity while it is unset.
 
-  const auto& columnNames = scan.columnNames();
-  const auto& outputType = scan.outputType();
   ColumnVector outputColumns;
-  outputColumns.reserve(columnNames.size());
+  outputColumns.reserve(columns.size());
   Scope scope;
-  for (size_t i = 0; i < columnNames.size(); ++i) {
-    const auto& outName = outputType->nameOf(i);
-    if (!required.contains(outName)) {
-      continue;
-    }
-    Name inTableName = toName(columnNames[i]);
+  for (const auto& [schemaName, outName] : columns) {
+    Name inTableName = toName(schemaName);
     Name outNameInterned = toName(outName);
     ColumnCP schemaColumn = schemaTable->findColumn(inTableName);
     VELOX_CHECK_NOT_NULL(schemaColumn);
@@ -924,20 +932,32 @@ Translated Translator::translateProject(
   const auto& exprs = project.expressions();
   VELOX_CHECK_EQ(names.size(), exprs.size());
 
-  // Drop output positions not in `required` and compute the names the kept
-  // expressions read from the child.
-  std::vector<size_t> keptIndices;
-  keptIndices.reserve(names.size());
+  // The names the kept expressions read from the child.
   LpNameSet childRequired;
   for (size_t i = 0; i < names.size(); ++i) {
-    if (!required.contains(names[i])) {
-      continue;
+    if (required.contains(names[i])) {
+      collectUsedNames(*exprs[i], childRequired);
     }
-    keptIndices.push_back(i);
-    collectUsedNames(*exprs[i], childRequired);
   }
+  return translateProject(
+      project, required, translateNode(*project.onlyInput(), childRequired));
+}
 
-  Translated input = translateNode(*project.onlyInput(), childRequired);
+Translated Translator::translateProject(
+    const lp::ProjectNode& project,
+    const LpNameSet& required,
+    Translated input) {
+  const auto& names = project.names();
+  const auto& exprs = project.expressions();
+
+  // Drop output positions not in `required`.
+  std::vector<size_t> keptIndices;
+  keptIndices.reserve(names.size());
+  for (size_t i = 0; i < names.size(); ++i) {
+    if (required.contains(names[i])) {
+      keptIndices.push_back(i);
+    }
+  }
 
   // maybeWrapInWindow only needs the kept window-function exprs.
   std::vector<lp::ExprPtr> keptExprs;
@@ -2223,22 +2243,57 @@ Translated Translator::buildUnionAll(
   };
   auto translatedInputs = translateUnionInputs(flatInputs, keptPositions);
 
-  QGVector<ColumnVector> legColumns(flatInputs.size());
-  std::vector<PlanSubstitutions> legSubstitutions(flatInputs.size());
-  Scope scope;
-  ColumnVector outputColumns;
-  outputColumns.reserve(keptPositions.size());
-  for (size_t j : keptPositions) {
-    for (size_t i = 0; i < translatedInputs.size(); ++i) {
-      // Resolve LP-name → IR Column* via the leg's scope; the leg's IR
+  std::vector<NodeCP> legs;
+  std::vector<ExprVector> legExprs(flatInputs.size());
+  std::vector<std::vector<std::string>> legNames(flatInputs.size());
+  for (size_t i = 0; i < translatedInputs.size(); ++i) {
+    legs.push_back(translatedInputs[i].node);
+    for (size_t j : keptPositions) {
+      // Resolve LP-name → IR expression via the leg's scope; the leg's IR
       // `outputColumns` may be narrower than its LP outputType after
-      // dup-collapse, but the same Column may legitimately repeat.
+      // dup-collapse.
       const auto& name = flatInputs[i]->outputType()->nameOf(j);
       const auto it = translatedInputs[i].scope.find(name);
       VELOX_CHECK(it != translatedInputs[i].scope.end());
-      ExprCP expression = it->second;
-      ColumnCP column =
-          materializeColumn(&translatedInputs[i].node, expression, name);
+      legExprs[i].push_back(it->second);
+      legNames[i].push_back(name);
+    }
+  }
+
+  std::vector<std::string> names;
+  std::vector<velox::TypePtr> types;
+  for (size_t j : keptPositions) {
+    names.push_back(outputType->nameOf(j));
+    types.push_back(outputType->childAt(j));
+  }
+  return makeUnionAll(
+      std::move(legs),
+      legExprs,
+      legNames,
+      names,
+      types,
+      [&](std::string_view name, const Value& value) {
+        return columnForSymbol(toName(std::string{name}), value);
+      });
+}
+
+Translated Translator::makeUnionAll(
+    std::vector<NodeCP> legs,
+    const std::vector<ExprVector>& legExprs,
+    const std::vector<std::vector<std::string>>& legNames,
+    const std::vector<std::string>& names,
+    const std::vector<velox::TypePtr>& types,
+    folly::FunctionRef<ColumnCP(std::string_view name, const Value& value)>
+        makeColumn) {
+  QGVector<ColumnVector> legColumns(legs.size());
+  std::vector<PlanSubstitutions> legSubstitutions(legs.size());
+  Scope scope;
+  ColumnVector outputColumns;
+  outputColumns.reserve(names.size());
+  for (size_t j = 0; j < names.size(); ++j) {
+    for (size_t i = 0; i < legs.size(); ++i) {
+      ExprCP expression = legExprs[i][j];
+      ColumnCP column = materializeColumn(&legs[i], expression, legNames[i][j]);
       legColumns[i].push_back(column);
       if (expression->is(PlanType::kLiteralExpr)) {
         legSubstitutions[i].add(column, expression);
@@ -2257,25 +2312,20 @@ Translated Translator::buildUnionAll(
             cardinality.has_value() ? std::max(*cardinality, *legNdv) : *legNdv;
       }
     }
-    Value value(toType(outputType->childAt(j)), cardinality);
-    auto* column = columnForSymbol(toName(outputType->nameOf(j)), value);
+    auto* column = makeColumn(names[j], Value(toType(types[j]), cardinality));
     outputColumns.push_back(column);
-    scope[outputType->nameOf(j)] = column;
+    scope[names[j]] = column;
   }
 
-  NodeVector inputNodes;
   std::vector<NodeSimplifier::SimplifiedNode> simplifiedInputs;
-  inputNodes.reserve(translatedInputs.size());
-  simplifiedInputs.reserve(translatedInputs.size());
-  for (size_t i = 0; i < translatedInputs.size(); ++i) {
-    auto& input = translatedInputs[i];
-    inputNodes.push_back(input.node);
-    simplifiedInputs.push_back({input.node, std::move(legSubstitutions[i])});
+  simplifiedInputs.reserve(legs.size());
+  for (size_t i = 0; i < legs.size(); ++i) {
+    simplifiedInputs.push_back({legs[i], std::move(legSubstitutions[i])});
   }
   ColumnVector emptyOutputColumns = outputColumns;
   auto simplified = nodeSimplifier_.make(
       UnionAll::Key{
-          std::move(inputNodes),
+          NodeVector(legs.begin(), legs.end()),
           std::move(legColumns),
           std::move(outputColumns)},
       std::move(simplifiedInputs));

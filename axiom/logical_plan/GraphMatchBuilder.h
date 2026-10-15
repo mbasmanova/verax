@@ -65,21 +65,19 @@ class PlanBuilder::GraphMatchBuilder {
 
   GraphMatchBuilder(PlanBuilder& builder, PropertyGraphPtr graph);
 
-  /// Starts an unnamed path pattern with no selector or mode. Patterns added
-  /// before any path() call start one implicitly.
+  /// Starts a path pattern with selector ALL and mode WALK. Patterns added
+  /// before any path() call start an unnamed one implicitly.
   GraphMatchBuilder& path(std::string name);
 
   /// Starts a path pattern: name = selector mode. An empty 'name' leaves the
   /// path unnamed.
-  GraphMatchBuilder& path(
-      std::string name,
-      std::optional<GraphPathSelector> selector,
-      std::optional<GraphPathMode> mode);
+  GraphMatchBuilder&
+  path(std::string name, GraphPathSelector selector, GraphPathMode mode);
 
-  /// @overload Takes a selector and no mode.
+  /// @overload Takes a selector, with mode WALK.
   GraphMatchBuilder& path(std::string name, GraphPathSelector selector);
 
-  /// @overload Takes a mode and no selector.
+  /// @overload Takes a mode, with selector ALL.
   GraphMatchBuilder& path(std::string name, GraphPathMode mode);
 
   /// Adds a vertex pattern to the current path or subpath. A null 'label'
@@ -173,11 +171,9 @@ class PlanBuilder::GraphMatchBuilder {
   GraphMatchBuilder& optional();
 
   /// Starts a subpath in the current path or subpath.
-  GraphMatchBuilder& startSubpath(
-      std::string name,
-      std::optional<GraphPathMode> mode);
+  GraphMatchBuilder& startSubpath(std::string name, GraphPathMode mode);
 
-  /// @overload Takes no mode.
+  /// @overload Takes mode WALK.
   GraphMatchBuilder& startSubpath(std::string name);
 
   /// Ends the innermost subpath, with no predicate.
@@ -221,7 +217,7 @@ class PlanBuilder::GraphMatchBuilder {
   // A subpath started and not yet ended.
   struct OpenSubpath {
     std::string name;
-    std::optional<GraphPathMode> mode;
+    GraphPathMode mode{GraphPathMode::kWalk};
     std::vector<GraphPatternTermPtr> terms;
 
     // Vertex and edge pattern names inside the subpath.
@@ -235,7 +231,7 @@ class PlanBuilder::GraphMatchBuilder {
     GraphLabelExpressionPtr label;
     ExprPtr predicate;
     GraphEdgePattern::Direction direction{GraphEdgePattern::Direction::kRight};
-    std::optional<GraphPathMode> mode;
+    GraphPathMode mode{GraphPathMode::kWalk};
     std::vector<GraphPatternTermPtr> terms;
     std::optional<GraphRepetition> repetition;
     bool optional{false};

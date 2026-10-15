@@ -95,7 +95,8 @@ class PropertyGraph {
     /// Plan that produces the table's rows.
     LogicalPlanNodePtr plan;
 
-    /// Columns of 'plan' that identify a row.
+    /// Columns of 'plan' that identify a row: unique and never null, like a
+    /// primary key.
     std::vector<std::string> keyColumns;
 
     /// Expressions over the columns of 'plan', by property name.
@@ -165,6 +166,11 @@ class PropertyGraph {
   static velox::TypePtr propertyType(
       const std::vector<const ElementTable*>& tables,
       const std::string& property);
+
+  /// Returns the properties an element of 'tables' has, sorted by name: those
+  /// the tables that define them give one data type.
+  static velox::RowTypePtr properties(
+      const std::vector<const ElementTable*>& tables);
 
   bool operator==(const PropertyGraph& other) const;
 

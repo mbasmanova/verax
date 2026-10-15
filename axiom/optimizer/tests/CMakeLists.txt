@@ -153,6 +153,7 @@ if(AXIOM_BUILD_TESTING)
     SyntacticJoinOrderTest.cpp
     TableSampleTest.cpp
     FeatureGen.cpp
+    GraphTableTest.cpp
     Genies.cpp
     BucketedExecutionTest.cpp
     ConstantExprEvaluatorTest.cpp

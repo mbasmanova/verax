@@ -190,6 +190,22 @@ ExprCP ExprFactory::makeCardinality(ExprCP value) {
       name, Value(toType(velox::BIGINT())), std::move(arguments), functions);
 }
 
+ExprCP ExprFactory::makeRowNumber() {
+  const Name name = builder_.functionNames().rowNumber;
+  VELOX_USER_CHECK_NOT_NULL(
+      name,
+      "ExprFactory::makeRowNumber requires row_number registered via "
+      "FunctionRegistry::registerRowNumber; the active dialect did not "
+      "register it");
+  // Window functions are non-deterministic with non-default null behavior.
+  return builder_.makeCall(
+      name,
+      Value(toType(velox::BIGINT())),
+      {},
+      FunctionSet{} | FunctionSet::kNonDeterministic |
+          FunctionSet::kNonDefaultNullBehavior);
+}
+
 ExprCP ExprFactory::makeRowConstructor(ExprVector arguments, TypeCP rowType) {
   const Name name = SpecialFormCallNames::kRowConstructor;
   const FunctionSet functions = Call::unionArgFunctions(

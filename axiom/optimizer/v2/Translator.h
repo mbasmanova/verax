@@ -169,12 +169,33 @@ class Translator {
   Translated translateScan(
       const logical_plan::TableScanNode& scan,
       const LpNameSet& required);
+
+  // A column a scan reads: the name of the column in the table, and the name
+  // the scan's scope binds it to.
+  struct ScanColumn {
+    std::string schemaName;
+    std::string outputName;
+  };
+
+  // Translates a scan of table 'tableName' in connector 'connectorId' that
+  // reads 'columns'.
+  Translated translateScan(
+      const std::string& connectorId,
+      const SchemaTableName& tableName,
+      const std::vector<ScanColumn>& columns);
   Translated translateFilter(
       const logical_plan::FilterNode& filter,
       const LpNameSet& required);
   Translated translateProject(
       const logical_plan::ProjectNode& project,
       const LpNameSet& required);
+
+  // Translates the expressions of 'project' in 'required' over 'input', the
+  // translation of its input.
+  Translated translateProject(
+      const logical_plan::ProjectNode& project,
+      const LpNameSet& required,
+      Translated input);
   Translated translateLimit(
       const logical_plan::LimitNode& limit,
       const LpNameSet& required);
@@ -349,6 +370,19 @@ class Translator {
       const velox::RowTypePtr& outputType,
       const LpNameSet& required,
       bool dedupAbove);
+
+  // Concatenates 'legs'. 'legExprs[i][j]' is the expression leg i produces at
+  // output position j, which leg i materializes as a column named
+  // 'legNames[i][j]'. The result publishes position j under 'names[j]' in a
+  // column 'makeColumn' creates from the position's value of type 'types[j]'.
+  Translated makeUnionAll(
+      std::vector<NodeCP> legs,
+      const std::vector<ExprVector>& legExprs,
+      const std::vector<std::vector<std::string>>& legNames,
+      const std::vector<std::string>& names,
+      const std::vector<velox::TypePtr>& types,
+      folly::FunctionRef<ColumnCP(std::string_view name, const Value& value)>
+          makeColumn);
 
   // Translates `predicateExpr` against `scope` (lifting any subqueries
   // above `input` via Apply) and lowers it onto `input`. Returns an

@@ -423,13 +423,13 @@ class GraphSubpathPattern final : public GraphPatternTerm {
  public:
   GraphSubpathPattern(
       std::string name,
-      std::optional<GraphPathMode> mode,
+      GraphPathMode mode,
       std::vector<GraphPatternTermPtr> terms,
       ExprPtr predicate,
       std::optional<GraphRepetition> repetition,
       bool optional);
 
-  const std::optional<GraphPathMode>& mode() const {
+  GraphPathMode mode() const {
     return mode_;
   }
 
@@ -452,20 +452,21 @@ class GraphSubpathPattern final : public GraphPatternTerm {
  private:
   bool equals(const GraphPatternTerm& other) const override;
 
-  const std::optional<GraphPathMode> mode_;
+  const GraphPathMode mode_;
   const std::vector<GraphPatternTermPtr> terms_;
   const std::optional<GraphRepetition> repetition_;
   const bool optional_;
 };
 
-/// Path pattern: name = selector mode terms. Each prefix is optional.
+/// Path pattern: name = selector mode terms. A path written without a
+/// selector or mode has ALL and WALK.
 struct GraphPathPattern {
   /// Name the pattern gives to the path it matches; 'p' in p = (a)-[e]->(b).
   /// Empty if the pattern has no name.
   std::string name;
 
-  std::optional<GraphPathSelector> selector;
-  std::optional<GraphPathMode> mode;
+  GraphPathSelector selector;
+  GraphPathMode mode{GraphPathMode::kWalk};
   std::vector<GraphPatternTermPtr> terms;
 
   bool operator==(const GraphPathPattern& other) const;

@@ -107,6 +107,9 @@ class ExprFactory {
   /// Builds `cardinality(value)`.
   ExprCP makeCardinality(ExprCP value);
 
+  /// Builds the `row_number()` window function call.
+  ExprCP makeRowNumber();
+
   /// Builds a ROW of type 'rowType' with one field per argument.
   ExprCP makeRowConstructor(ExprVector arguments, TypeCP rowType);
 

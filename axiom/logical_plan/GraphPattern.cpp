@@ -431,10 +431,7 @@ std::optional<GraphRepetition> deserializeRepetition(
   };
 }
 
-std::optional<GraphPathMode> deserializeMode(const folly::dynamic& obj) {
-  if (!obj.count("mode")) {
-    return std::nullopt;
-  }
+GraphPathMode deserializeMode(const folly::dynamic& obj) {
   return GraphPathModeName::toGraphPathMode(obj["mode"].asString());
 }
 
@@ -587,7 +584,7 @@ folly::dynamic GraphEdgePattern::serialize() const {
 
 GraphSubpathPattern::GraphSubpathPattern(
     std::string name,
-    std::optional<GraphPathMode> mode,
+    GraphPathMode mode,
     std::vector<GraphPatternTermPtr> terms,
     ExprPtr predicate,
     std::optional<GraphRepetition> repetition,
@@ -622,9 +619,7 @@ bool GraphSubpathPattern::equals(const GraphPatternTerm& other) const {
 
 folly::dynamic GraphSubpathPattern::serialize() const {
   auto obj = GraphPatternTerm::serialize();
-  if (mode_.has_value()) {
-    obj["mode"] = GraphPathModeName::toName(mode_.value());
-  }
+  obj["mode"] = GraphPathModeName::toName(mode_);
   obj["terms"] = serializeTerms(terms_);
   if (repetition_.has_value()) {
     obj["repetition"] = serializeRepetition(repetition_.value());
@@ -641,17 +636,13 @@ bool GraphPathPattern::operator==(const GraphPathPattern& other) const {
 folly::dynamic GraphPathPattern::serialize() const {
   folly::dynamic obj = folly::dynamic::object;
   obj["name"] = name;
-  if (selector.has_value()) {
-    folly::dynamic selectorObj = folly::dynamic::object;
-    selectorObj["kind"] = GraphPathSelector::toName(selector->kind);
-    if (selector->count.has_value()) {
-      selectorObj["count"] = selector->count.value();
-    }
-    obj["selector"] = std::move(selectorObj);
+  folly::dynamic selectorObj = folly::dynamic::object;
+  selectorObj["kind"] = GraphPathSelector::toName(selector.kind);
+  if (selector.count.has_value()) {
+    selectorObj["count"] = selector.count.value();
   }
-  if (mode.has_value()) {
-    obj["mode"] = GraphPathModeName::toName(mode.value());
-  }
+  obj["selector"] = std::move(selectorObj);
+  obj["mode"] = GraphPathModeName::toName(mode);
   obj["terms"] = serializeTerms(terms);
   return obj;
 }
@@ -660,21 +651,19 @@ folly::dynamic GraphPathPattern::serialize() const {
 GraphPathPattern GraphPathPattern::create(
     const folly::dynamic& obj,
     void* context) {
-  GraphPathPattern path{
+  const auto& selectorObj = obj["selector"];
+  return GraphPathPattern{
       .name = obj["name"].asString(),
+      .selector =
+          GraphPathSelector{
+              .kind = GraphPathSelector::toKind(selectorObj["kind"].asString()),
+              .count = selectorObj.count("count")
+                  ? std::optional<int64_t>(selectorObj["count"].asInt())
+                  : std::nullopt,
+          },
       .mode = deserializeMode(obj),
       .terms = deserializeTerms(obj["terms"], context),
   };
-  if (obj.count("selector")) {
-    const auto& selectorObj = obj["selector"];
-    path.selector = GraphPathSelector{
-        .kind = GraphPathSelector::toKind(selectorObj["kind"].asString()),
-        .count = selectorObj.count("count")
-            ? std::optional<int64_t>(selectorObj["count"].asInt())
-            : std::nullopt,
-    };
-  }
-  return path;
 }
 
 } // namespace facebook::axiom::logical_plan

@@ -335,6 +335,30 @@ std::vector<const PropertyGraph::ElementTable*> PropertyGraph::matchingTables(
 }
 
 // static
+velox::RowTypePtr PropertyGraph::properties(
+    const std::vector<const ElementTable*>& tables) {
+  std::map<std::string, velox::TypePtr> types;
+  folly::F14FastSet<std::string> conflicting;
+  for (const auto* table : tables) {
+    for (const auto& [name, expression] : table->properties) {
+      auto [it, inserted] = types.emplace(name, expression->type());
+      if (!inserted && !it->second->equivalent(*expression->type())) {
+        conflicting.insert(name);
+      }
+    }
+  }
+  std::vector<std::string> names;
+  std::vector<velox::TypePtr> children;
+  for (const auto& [name, type] : types) {
+    if (!conflicting.contains(name)) {
+      names.push_back(name);
+      children.push_back(type);
+    }
+  }
+  return velox::ROW(std::move(names), std::move(children));
+}
+
+// static
 velox::TypePtr PropertyGraph::propertyType(
     const std::vector<const ElementTable*>& tables,
     const std::string& property) {
