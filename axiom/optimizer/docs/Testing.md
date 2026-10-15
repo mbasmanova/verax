@@ -285,7 +285,7 @@ Tests are written as plain `.sql` files. Queries are separated by `----`. Commen
 | `-- error: message` | Expect the query to fail under both optimizers with an error containing `message`. Shorthand for `error_v1` + `error_v2`; cannot be combined with either. |
 | `-- error_v1: message` | Expect the query to fail under the v1 optimizer with an error containing `message`. v2 is verified normally unless it also carries `error_v2`. |
 | `-- error_v2: message` | Expect the query to fail under the v2 optimizer with an error containing `message`. v1 is verified normally unless it also carries `error_v1`. |
-| `-- duckdb: sql` | Use a different SQL for the DuckDB comparison (when Presto and DuckDB syntax differs). |
+| `-- duckdb: sql` | Use a different SQL for the DuckDB comparison (when Presto and DuckDB syntax differs). Comment lines that follow, indented by at least one space after `-- `, continue the SQL. |
 | `-- columns` | Additionally verify that column names match between Axiom and DuckDB. |
 | `-- disabled_v1: reason` | Run this query under v2 only, because v1 answers it wrongly or crashes on it. The reason says which. |
 | `-- disabled` | Skip this query entirely. For use during local development only — do not commit disabled queries. |
@@ -343,8 +343,9 @@ Test tables are declared at the top of the `.sql` file via setup directives. Sta
 | `-- setup_file: relative.sql` | Splice in the contents of another `.sql` file as setup statements. Path is relative to the directory of the file containing the directive. |
 | `-- setup` … `-- end_setup` | Inline block of setup statements. |
 | `-- pushdown_table: table` | For a v2-only TestConnector file, replace each complete connector offer with the named setup table. |
+| `-- define name` … `-- end_define` | Text that replaces each `${name}` in the file's queries and `-- duckdb:` SQL, verbatim. Use it for text every query repeats, such as a `WITH GRAPH` definition. An undefined `${name}` fails the file. |
 
-Both forms can appear any number of times, in any order, before the first query. Setup directives appearing after a query has started are rejected — install all tables first, then write queries.
+These directives can appear any number of times, in any order, before the first query. Directives appearing after a query has started are rejected — install all tables and define all macros first, then write queries. Every `${` in a query starts a macro reference, including inside a string literal.
 
 **Choosing a connector.** By default a file runs against the in-memory `TestConnector`. Add `-- connector: hive` to run against a LocalHive connector instead: setup DDL then executes as real `CREATE TABLE` / `INSERT` / `CTAS` writing DWRF files, partition metadata, and write-time stats to a temp directory — so features that read from partition metadata (e.g. the metadata-count fold) are actually exercised. Use `CREATE TABLE ... WITH (partitioned_by = ARRAY['k'])` for partitioned tables (partition columns come last in the schema).
 

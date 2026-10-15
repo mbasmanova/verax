@@ -1060,23 +1060,17 @@ TEST_P(SubfieldTest, constructedRow) {
   createFeaturesTable();
 
   // A map read through a field of a row the query builds is narrowed to the
-  // key, and the row's other arguments are unaffected.
+  // key, and the row's other arguments are not read.
   auto logicalPlan = parseSelect(
       "SELECT r.y[10100] FROM ("
       "  SELECT ROW(uid AS x, float_features AS y) AS r FROM features"
       ")");
 
-  // TODO Rewrite a field read of a constructed row into the argument that
-  // supplies it, so v2 also drops the arguments no field reads.
-  folly::F14FastMap<std::string, std::vector<std::string>> expected{
-      {"float_features", {subfield("10100")}}};
-  if (useV2_) {
-    expected.emplace("uid", std::vector<std::string>{});
-  }
-
   AXIOM_ASSERT_PLAN(
       toSingleNodePlan(logicalPlan),
-      matchHiveScan("features", std::move(expected)).project().build());
+      matchHiveScan("features", {{"float_features", {subfield("10100")}}})
+          .project()
+          .build());
 }
 
 TEST_P(SubfieldTest, wholeColumnAndPath) {

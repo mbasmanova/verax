@@ -150,6 +150,8 @@ std::vector<QueryEntry> parseQueries(
   int32_t lineNumber = lineOffset - 1;
   int32_t sqlStartLine = 0;
   bool disabled = false;
+  // True while comment lines indented under '-- duckdb:' continue its SQL.
+  bool inDuckDbSql = false;
 
   auto finishEntry = [&]() {
     while (!sqlLines.empty() &&
@@ -158,6 +160,10 @@ std::vector<QueryEntry> parseQueries(
     }
 
     if (!sqlLines.empty()) {
+      VELOX_USER_CHECK(
+          !current.duckDbSql.has_value() || !current.duckDbSql->empty(),
+          "-- duckdb requires a query (line {})",
+          sqlStartLine);
       VELOX_USER_CHECK(
           !disabled || !current.disabledV1Reason.has_value(),
           "-- disabled cannot be combined with -- disabled_v1: (line {})",
@@ -185,6 +191,7 @@ std::vector<QueryEntry> parseQueries(
     sqlLines.clear();
     sqlStartLine = 0;
     disabled = false;
+    inDuckDbSql = false;
   };
 
   while (std::getline(stream, line)) {
@@ -201,10 +208,22 @@ std::vector<QueryEntry> parseQueries(
     if (sqlLines.empty() && line.size() >= 3 && line.substr(0, 3) == "-- ") {
       auto annotation = line.substr(3);
 
+      if (inDuckDbSql && annotation.starts_with(' ')) {
+        std::string continuation{ltrim(annotation)};
+        rtrim(continuation);
+        if (!current.duckDbSql->empty()) {
+          *current.duckDbSql += '\n';
+        }
+        *current.duckDbSql += continuation;
+        continue;
+      }
+      inDuckDbSql = false;
+
       VELOX_USER_CHECK(
           !annotation.starts_with("setup") &&
-              !annotation.starts_with("end_setup"),
-          "Setup directives must appear before the first query (line {}): {}",
+              !annotation.starts_with("end_setup") &&
+              !annotation.starts_with("define ") && annotation != "end_define",
+          "Directives must appear before the first query (line {}): {}",
           lineNumber,
           line);
 
@@ -284,9 +303,8 @@ std::vector<QueryEntry> parseQueries(
             lineNumber);
         current.expectedErrorV2 = std::move(*message);
       } else if (auto sql = directiveValue(annotation, kDuckDbName, ':')) {
-        VELOX_USER_CHECK(
-            !sql->empty(), "-- duckdb requires a query (line {})", lineNumber);
         current.duckDbSql = std::move(*sql);
+        inDuckDbSql = true;
       } else if (annotation == "columns") {
         current.checkColumnNames = true;
       }
@@ -307,6 +325,32 @@ std::vector<QueryEntry> parseQueries(
   return entries;
 }
 
+// Replaces each '${name}' in 'text' with the body of macro 'name'.
+std::string expandMacros(
+    std::string_view text,
+    const std::map<std::string, std::string>& macros) {
+  std::string result;
+  size_t pos{0};
+  while (true) {
+    const auto start = text.find("${", pos);
+    if (start == std::string_view::npos) {
+      result += text.substr(pos);
+      return result;
+    }
+    const auto end = text.find('}', start);
+    VELOX_USER_CHECK(
+        end != std::string_view::npos,
+        "Unterminated macro reference: {}",
+        text.substr(start));
+    const std::string name{text.substr(start + 2, end - start - 2)};
+    const auto it = macros.find(name);
+    VELOX_USER_CHECK(it != macros.end(), "Undefined macro: {}", name);
+    result += text.substr(pos, start - pos);
+    result += it->second;
+    pos = end + 1;
+  }
+}
+
 } // namespace
 
 SqlFile SqlFile::parse(
@@ -322,6 +366,11 @@ SqlFile SqlFile::parse(
   std::string setupBlockBody;
   bool sawNonSetupLine = false;
 
+  // Macros by name, and the macro whose body is being read.
+  std::map<std::string, std::string> macros;
+  std::optional<std::string> macroName;
+  std::string macroBody;
+
   // Precompute the "-- <name>:" prefix for each custom directive so the scan
   // loop doesn't rebuild them per line.
   std::vector<std::pair<std::string, std::string>> customPrefixes;
@@ -331,10 +380,26 @@ SqlFile SqlFile::parse(
   }
 
   // Scan the top of the content for setup directives. Stop at the first
-  // non-directive line outside a setup block.
+  // non-directive line outside a setup or define block.
   while (!sawNonSetupLine && std::getline(stream, line)) {
     const auto lineEnd = static_cast<size_t>(stream.tellg());
     const auto trimmed = ltrim(line);
+
+    if (macroName.has_value()) {
+      if (trimmed == "-- end_define") {
+        rtrim(macroBody);
+        macros.emplace(std::move(*macroName), std::move(macroBody));
+        macroName.reset();
+        macroBody.clear();
+      } else {
+        if (!macroBody.empty()) {
+          macroBody += '\n';
+        }
+        macroBody += line;
+      }
+      bytesConsumed = lineEnd;
+      continue;
+    }
 
     if (inSetupBlock) {
       if (trimmed == "-- end_setup") {
@@ -392,6 +457,16 @@ SqlFile SqlFile::parse(
       continue;
     }
 
+    if (trimmed.starts_with("-- define ")) {
+      auto name = std::string(ltrim(trimmed.substr(10)));
+      rtrim(name);
+      VELOX_USER_CHECK(!name.empty(), "define directive missing name");
+      VELOX_USER_CHECK(!macros.contains(name), "Macro defined twice: {}", name);
+      macroName = std::move(name);
+      bytesConsumed = lineEnd;
+      continue;
+    }
+
     bool capturedCustom = false;
     for (const auto& [prefix, name] : customPrefixes) {
       if (trimmed.starts_with(prefix)) {
@@ -416,6 +491,10 @@ SqlFile SqlFile::parse(
 
   VELOX_USER_CHECK(
       !inSetupBlock, "Unterminated setup block (missing '-- end_setup')");
+  VELOX_USER_CHECK(
+      !macroName.has_value(),
+      "Unterminated define block (missing '-- end_define'): {}",
+      macroName.value_or(""));
 
   // Count consumed lines so query line numbers reflect the original
   // source position.
@@ -428,6 +507,12 @@ SqlFile SqlFile::parse(
 
   result.entries = parseQueries(
       content.substr(bytesConsumed), /*lineOffset=*/consumedLines + 1);
+  for (auto& entry : result.entries) {
+    entry.sql = expandMacros(entry.sql, macros);
+    if (entry.duckDbSql.has_value()) {
+      entry.duckDbSql = expandMacros(*entry.duckDbSql, macros);
+    }
+  }
   return result;
 }
 

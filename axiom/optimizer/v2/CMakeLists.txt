@@ -61,6 +61,7 @@ add_library(
   PrecomputeProjections.cpp
   PushdownAndPrunePass.cpp
   TableAccessHandle.cpp
+  GraphMatchLowering.cpp
   TranslatePass.cpp
   Translator.cpp
 )

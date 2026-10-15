@@ -343,7 +343,9 @@ ExprCP ExprSimplifier::simplify(ExprCP expr) {
       expr = ExprFactory(builder_).rebuildLambda(lambda, body);
     }
   }
-  if (ExprCP fieldEqualities = tryExpandRowEquality(expr)) {
+  if (ExprCP field = tryFoldRowField(expr)) {
+    expr = field;
+  } else if (ExprCP fieldEqualities = tryExpandRowEquality(expr)) {
     expr = simplify(fieldEqualities);
   } else {
     expr = tryFoldConjunct(tryFoldConstant(expr));
@@ -607,6 +609,23 @@ bool ExprSimplifier::simplifyFilter(ExprCP predicate, ExprVector& into) {
     }
   }
   return false;
+}
+
+ExprCP ExprSimplifier::tryFoldRowField(ExprCP expr) {
+  if (!expr->is(PlanType::kCallExpr)) {
+    return nullptr;
+  }
+  const auto* call = expr->as<Call>();
+  if (call->name() != SpecialFormCallNames::kDereference ||
+      !call->args()[0]->is(PlanType::kCallExpr)) {
+    return nullptr;
+  }
+  const auto* row = call->args()[0]->as<Call>();
+  if (!row->isRowConstructor()) {
+    return nullptr;
+  }
+  // A dereference selects its field by an integer literal.
+  return row->args()[integerValue(&call->args()[1]->as<Literal>()->literal())];
 }
 
 ExprCP ExprSimplifier::tryExpandRowEquality(ExprCP expr) {

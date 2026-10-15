@@ -142,6 +142,21 @@ TEST_F(SqlFileTest, duckdb) {
   EXPECT_EQ(entries[0].type, QueryEntry::Type::kResults);
   EXPECT_EQ(entries[0].duckDbSql, std::optional<std::string>("SELECT 1 AS x"));
   EXPECT_EQ(entries[0].sql, "SELECT 1 x");
+
+  // Comment lines indented under '-- duckdb:' continue its SQL, up to the
+  // next annotation or the query.
+  entries = parseQueries(
+      "-- duckdb:\n"
+      "--   VALUES\n"
+      "--     (1, 2),\n"
+      "--     (3, 4)\n"
+      "-- ordered\n"
+      "SELECT 1");
+  ASSERT_THAT(entries, testing::SizeIs(1));
+  EXPECT_EQ(
+      entries[0].duckDbSql,
+      std::optional<std::string>("VALUES\n(1, 2),\n(3, 4)"));
+  EXPECT_EQ(entries[0].type, QueryEntry::Type::kOrdered);
 }
 
 TEST_F(SqlFileTest, disabled) {
@@ -366,6 +381,47 @@ TEST_F(SqlFileTest, setupBlockPreservesQueryAnnotations) {
   EXPECT_EQ(file.entries[0].sql, "SELECT * FROM t ORDER BY a");
 }
 
+// A macro's body replaces each reference to it in queries and in DuckDB SQL.
+TEST_F(SqlFileTest, macros) {
+  auto file = SqlFile::parse(
+      "-- define rows\n"
+      "VALUES\n"
+      "  (1), (2)\n"
+      "-- end_define\n"
+      "-- define one\n"
+      "1\n"
+      "-- end_define\n"
+      "\n"
+      "-- duckdb: SELECT ${one}\n"
+      "SELECT ${one} FROM (${rows}) t(a)",
+      /*baseDir=*/"");
+  ASSERT_THAT(file.entries, testing::SizeIs(1));
+  EXPECT_EQ(file.entries[0].sql, "SELECT 1 FROM (VALUES\n  (1), (2)) t(a)");
+  EXPECT_EQ(file.entries[0].duckDbSql, std::optional<std::string>("SELECT 1"));
+}
+
+TEST_F(SqlFileTest, macroErrors) {
+  VELOX_ASSERT_THROW(
+      SqlFile::parse("SELECT ${missing}", /*baseDir=*/""),
+      "Undefined macro: missing");
+  VELOX_ASSERT_THROW(
+      SqlFile::parse(
+          "-- define a\n1\n-- end_define\n"
+          "-- define a\n2\n-- end_define\n"
+          "SELECT ${a}",
+          /*baseDir=*/""),
+      "Macro defined twice: a");
+  VELOX_ASSERT_THROW(
+      SqlFile::parse("-- define a\n1\nSELECT ${a}", /*baseDir=*/""),
+      "Unterminated define block");
+  VELOX_ASSERT_THROW(
+      SqlFile::parse("SELECT ${a", /*baseDir=*/""),
+      "Unterminated macro reference");
+  VELOX_ASSERT_THROW(
+      SqlFile::parse("-- define \n1\n-- end_define\nSELECT 1", /*baseDir=*/""),
+      "define directive missing name");
+}
+
 TEST_F(SqlFileTest, unterminatedSetupBlock) {
   VELOX_ASSERT_THROW(
       SqlFile::parse(
@@ -416,16 +472,20 @@ TEST_F(SqlFileTest, setupFileRequiresBaseDir) {
 }
 
 TEST_F(SqlFileTest, setupDirectiveAfterFirstQueryIsRejected) {
-  // setup_file appearing after a query has started must be rejected; the
-  // directive would otherwise be silently swallowed as an unknown
-  // annotation.
-  VELOX_ASSERT_THROW(
-      parseQueries(
-          "SELECT 1\n"
-          "----\n"
-          "-- setup_file: extra.sql\n"
-          "SELECT 2"),
-      "Setup directives must appear before the first query");
+  // A setup_file or define appearing after a query has started must be
+  // rejected; the directive would otherwise be silently swallowed as an
+  // unknown annotation.
+  for (const auto* directive : {"-- setup_file: extra.sql", "-- define a"}) {
+    SCOPED_TRACE(directive);
+    VELOX_ASSERT_THROW(
+        parseQueries(
+            "SELECT 1\n"
+            "----\n" +
+            std::string(directive) +
+            "\n"
+            "SELECT 2"),
+        "Directives must appear before the first query");
+  }
 }
 
 TEST_F(SqlFileTest, setupBlockDirectiveAfterFirstQueryIsRejected) {
@@ -437,7 +497,7 @@ TEST_F(SqlFileTest, setupBlockDirectiveAfterFirstQueryIsRejected) {
           "CREATE TABLE u(a BIGINT)\n"
           "-- end_setup\n"
           "SELECT 2"),
-      "Setup directives must appear before the first query");
+      "Directives must appear before the first query");
 }
 
 TEST_F(SqlFileTest, lineNumbersUnaffectedBySetup) {
