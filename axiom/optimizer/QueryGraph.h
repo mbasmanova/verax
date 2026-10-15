@@ -505,6 +505,7 @@ struct SpecialFormCallNames {
 
   static const char* kNullIf;
   static const char* kDereference;
+  static const char* kRowConstructor;
 
   static const char* toCallName(const logical_plan::SpecialForm& form) {
     switch (form) {
@@ -531,6 +532,8 @@ struct SpecialFormCallNames {
         return SpecialFormCallNames::kNullIf;
       case logical_plan::SpecialForm::kDereference:
         return SpecialFormCallNames::kDereference;
+      case logical_plan::SpecialForm::kRowConstructor:
+        return SpecialFormCallNames::kRowConstructor;
       default:
         VELOX_FAIL(
             "No function call name for special form: {}",
@@ -572,6 +575,9 @@ struct SpecialFormCallNames {
     }
     if (name == kDereference) {
       return logical_plan::SpecialForm::kDereference;
+    }
+    if (name == kRowConstructor) {
+      return logical_plan::SpecialForm::kRowConstructor;
     }
 
     return std::nullopt;

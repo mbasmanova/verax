@@ -124,18 +124,16 @@ std::optional<size_t> Translator::GraphMatchLowering::bind(
     if (!table->properties.empty()) {
       std::vector<std::string> names;
       std::vector<velox::TypePtr> types;
-      std::vector<lp::ExprPtr> values;
+      ExprVector fields;
       for (const auto& [property, expression] : table->properties) {
         names.push_back(property);
         types.push_back(expression->type());
-        values.push_back(expression);
+        fields.push_back(translator_.translateExpr(
+            *expression, translated.scope, /*liftTarget=*/nullptr));
       }
-      const lp::CallExpr row(
-          velox::ROW(std::move(names), std::move(types)),
-          "row_constructor",
-          std::move(values));
-      patternScope_[name] = translator_.translateExpr(
-          row, translated.scope, /*liftTarget=*/nullptr);
+      patternScope_[name] = translator_.exprFactory_.makeRowConstructor(
+          std::move(fields),
+          toType(velox::ROW(std::move(names), std::move(types))));
     }
     elementByName_.emplace(name, elements_.size());
   }

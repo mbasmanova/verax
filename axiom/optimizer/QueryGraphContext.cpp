@@ -81,6 +81,7 @@ QueryGraphContext::QueryGraphContext(
   addName(SpecialFormCallNames::kIf);
   addName(SpecialFormCallNames::kSwitch);
   addName(SpecialFormCallNames::kIn);
+  addName(SpecialFormCallNames::kRowConstructor);
 
   populateFunctionNames();
 }
@@ -200,6 +201,12 @@ const velox::Type* toType(const velox::TypePtr& type) {
 
 const velox::TypePtr& toTypePtr(const velox::Type* type) {
   return queryCtx()->toTypePtr(type);
+}
+
+int32_t Step::fieldIndex(const velox::RowType& rowType) const {
+  VELOX_CHECK_EQ(kind, StepKind::kField);
+  return field != nullptr ? rowType.getChildIdx(field)
+                          : static_cast<int32_t>(id);
 }
 
 bool Step::operator==(const Step& other) const {

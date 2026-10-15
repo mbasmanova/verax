@@ -802,6 +802,7 @@ const auto& specialFormNames() {
       {SpecialForm::kExists, "EXISTS"},
       {SpecialForm::kNullIf, "NULLIF"},
       {SpecialForm::kInArray, "IN_ARRAY"},
+      {SpecialForm::kRowConstructor, "ROW_CONSTRUCTOR"},
   };
   return kNames;
 }
@@ -1104,6 +1105,21 @@ SpecialFormExpr::SpecialFormExpr(
     case SpecialForm::kNullIf:
       VELOX_USER_CHECK_EQ(
           inputs_.size(), 3, "NULLIF must have exactly 3 inputs");
+      break;
+    case SpecialForm::kRowConstructor:
+      VELOX_USER_CHECK(
+          type_->isRow(), "ROW_CONSTRUCTOR must return a ROW: {}", type_);
+      VELOX_USER_CHECK_EQ(
+          inputs_.size(),
+          type_->size(),
+          "ROW_CONSTRUCTOR must have one input per field");
+      for (size_t i = 0; i < inputs_.size(); ++i) {
+        VELOX_USER_CHECK(
+            inputs_[i]->type()->equivalent(*type_->childAt(i)),
+            "ROW_CONSTRUCTOR input type must match its field type: {} vs {}",
+            inputs_[i]->type(),
+            type_->childAt(i));
+      }
       break;
   }
 }
