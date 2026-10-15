@@ -728,6 +728,8 @@ Translated Translator::translateNode(
     case lp::NodeKind::kRecursiveReference:
       return translateRecursiveRef(
           *node.as<lp::RecursiveReferenceNode>(), required);
+    case lp::NodeKind::kGraphMatch:
+      return translateGraphMatch(*node.as<lp::GraphMatchNode>(), required);
     default:
       VELOX_NYI(
           "Unsupported logical plan node kind: {}",
@@ -1428,9 +1430,25 @@ void Translator::applySubstitutions(
     return;
   }
   for (auto& [name, expression] : scope) {
-    expression =
-        simplifier_.simplify(substitutions.apply(expression, exprFactory_));
+    expression = substitute(substitutions, expression);
   }
+}
+
+void Translator::applySubstitutions(
+    const PlanSubstitutions& substitutions,
+    ExprVector& exprs) {
+  if (substitutions.empty()) {
+    return;
+  }
+  for (auto& expression : exprs) {
+    expression = substitute(substitutions, expression);
+  }
+}
+
+ExprCP Translator::substitute(
+    const PlanSubstitutions& substitutions,
+    ExprCP expr) {
+  return simplifier_.simplify(substitutions.apply(expr, exprFactory_));
 }
 
 // Restricts '*node' to what 'names' resolve to in 'scope', materializing any
@@ -2942,15 +2960,23 @@ ColumnCP Translator::columnForSymbol(Name symbol, const Value& value) {
 }
 
 NodeCP Translator::crossJoin(NodeCP left, NodeCP right) {
+  return nodeSimplifier_.materialize(innerJoin(left, right, {}, {}));
+}
+
+NodeSimplifier::SimplifiedNode Translator::innerJoin(
+    NodeCP left,
+    NodeCP right,
+    ExprVector leftKeys,
+    ExprVector rightKeys) {
   ColumnVector output = left->outputColumns();
   appendUnique(output, right->outputColumns());
-  auto simplified = nodeSimplifier_.make(
+  return nodeSimplifier_.make(
       Join::Key{
           left,
           right,
           velox::core::JoinType::kInner,
-          /*leftKeys=*/{},
-          /*rightKeys=*/{},
+          std::move(leftKeys),
+          std::move(rightKeys),
           /*filter=*/ExprVector{},
           /*nullAware=*/false,
           /*nullAsValue=*/false,
@@ -2958,7 +2984,6 @@ NodeCP Translator::crossJoin(NodeCP left, NodeCP right) {
       },
       {left, {}},
       {right, {}});
-  return nodeSimplifier_.materialize(simplified);
 }
 
 void Translator::flushLifts(LiftTarget& target) {
@@ -3474,16 +3499,8 @@ ExprCP Translator::liftSubquery(
       isExists ? LpNameSet{} : allNames(*subqueryExpr.subquery()->outputType());
 
   // A subquery's plan is never shared between references: each reference
-  // translates it again. Only the first translation names its columns after
-  // the plan's symbols, since two Columns cannot answer to one name where the
-  // translations meet.
-  const bool duplicate =
-      !translatedSubqueries_.insert(subqueryExpr.subquery().get()).second;
-  const bool wasTranslatingDuplicate =
-      std::exchange(translatingDuplicate_, translatingDuplicate_ || duplicate);
-  SCOPE_EXIT {
-    translatingDuplicate_ = wasTranslatingDuplicate;
-  };
+  // translates it again.
+  auto planGuard = translatingPlan(*subqueryExpr.subquery());
 
   subqueries_.push(outerScope, liftTarget);
   // Reading a lift from an enclosing scope is an outer reference, which

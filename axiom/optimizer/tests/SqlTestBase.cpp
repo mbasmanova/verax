@@ -236,6 +236,8 @@ std::shared_ptr<runner::LocalRunner> SqlTestBase::makeLocalRunnerV2(
 std::shared_ptr<runner::LocalRunner> SqlTestBase::makeRunner(
     std::string_view sql) {
   // Parse SQL to logical plan.
+  ::axiom::sql::presto::ParserOptions parserOptions;
+  parserOptions.graphQueries = true;
   ::axiom::sql::presto::PrestoParser parser(
       connectorId_,
       defaultSchema_,
@@ -243,7 +245,7 @@ std::shared_ptr<runner::LocalRunner> SqlTestBase::makeRunner(
           connector::makeTestContext("test"),
           connector::makeTestStatWriter(),
           connector::Properties{},
-          ::axiom::sql::presto::ParserOptions{}));
+          parserOptions));
   auto statement = parser.parse(sql);
 
   VELOX_CHECK(

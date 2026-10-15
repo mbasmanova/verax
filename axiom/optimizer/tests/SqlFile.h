@@ -118,9 +118,15 @@ struct SqlFile {
   ///       separated by '----'.
   ///   -- end_setup
   ///       Ends an inline setup block.
-  /// Both directive forms may appear any number of times in any order.
+  ///   -- define <name>
+  ///       Begins the body of macro 'name', which ends at '-- end_define'.
+  ///       Each '${name}' in a query or its '-- duckdb:' SQL is replaced
+  ///       with the body verbatim, including inside string literals. A
+  ///       '${name}' inside a macro body is not expanded. A reference to an
+  ///       undefined macro, or a name defined twice, fails the parse.
+  /// Setup directive forms may appear any number of times in any order.
   /// Statements are collected in source order. The first non-directive
-  /// line outside a setup block (including a plain '-- ' comment)
+  /// line outside a setup or define block (including a plain '-- ' comment)
   /// switches the parser to query mode; everything from that line on is
   /// passed to the query parser.
   ///
@@ -132,7 +138,9 @@ struct SqlFile {
   ///   -- error_v1: message  -> v1 expects this error (v2 unaffected)
   ///   -- error_v2: message  -> v2 expects this error (v1 unaffected)
   /// `-- error:` cannot be combined with `-- error_v1:`/`-- error_v2:`.
-  ///   -- duckdb: sql     -> use alternate SQL for DuckDB comparison
+  ///   -- duckdb: sql     -> use alternate SQL for DuckDB comparison. Comment
+  ///                         lines that follow, indented by at least one
+  ///                         space after '-- ', continue the SQL.
   ///   -- columns         -> verify column names match DuckDB
   ///   -- disabled        -> skip this query
   ///   -- disabled_v1: reason -> run under v2 only; the reason states what v1

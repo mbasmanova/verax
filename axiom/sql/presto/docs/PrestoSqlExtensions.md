@@ -468,9 +468,18 @@ Graph queries are gated behind the `graphQueries` flag in `ParserOptions`, which
 is off by default. To enable them, set `graphQueries = true`, or use
 `SET SESSION parser.graph_queries = true` at the CLI. With the flag on, the
 parser plans a `GRAPH_TABLE` as a GraphMatch logical plan node, which
-`EXPLAIN (TYPE LOGICAL)` shows. The optimizer does not support that node yet,
-so running the query fails with "Unsupported logical plan node kind:
-GRAPH_MATCH".
+`EXPLAIN (TYPE LOGICAL)` shows. The v2 optimizer runs patterns whose labels
+each match one element table, with directed edges and no repetition; the v1
+optimizer does not run them. With v2, a query that uses any of these fails
+with an error that names it:
+
+- a selector, or a path mode other than `WALK`;
+- a subpath, a repetition, or an undirected edge;
+- a label that matches several element tables;
+- an edge pattern without a vertex pattern on each side, or two adjacent
+  vertex patterns;
+- a pattern name in a predicate other than in a property reference, or a
+  subquery in a predicate.
 
 ```sql
 WITH GRAPH g AS (

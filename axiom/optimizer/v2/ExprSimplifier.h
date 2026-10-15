@@ -52,6 +52,8 @@ class ExprSimplifier {
   ///    the literal that does: a AND true -> a, a OR true -> true.
   ///  - Equality between a row constructor and a non-NULL row literal compares
   ///    field by field: ROW(a, b) = ROW(1, 2) -> a = 1 AND b = 2.
+  ///  - A field of a row constructor becomes the argument that builds it:
+  ///    ROW(a, b).field0 -> a.
   ExprCP simplify(ExprCP expr);
 
   /// Returns whether `expr` cannot produce NULL when `nonNullColumns` are
@@ -96,6 +98,10 @@ class ExprSimplifier {
   // Expands `ROW(a, b) = <row literal>` into `a = <field 0> AND b = <field 1>`.
   // Returns nullptr for any other expression.
   ExprCP tryExpandRowEquality(ExprCP expr);
+
+  // Folds field `i` of `ROW(a0, a1, ...)` to `ai`. Returns nullptr for any
+  // other expression.
+  ExprCP tryFoldRowField(ExprCP expr);
 
   // Folds `expr` to a `Literal` when it has no column refs and the
   // evaluator produces a single constant value. Otherwise returns

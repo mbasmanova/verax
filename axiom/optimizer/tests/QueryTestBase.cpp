@@ -118,6 +118,8 @@ logical_plan::LogicalPlanNodePtr QueryTestBase::parseSelect(
     std::string_view sql,
     const std::string& defaultConnectorId,
     const std::string& defaultSchema) {
+  ::axiom::sql::presto::ParserOptions parserOptions;
+  parserOptions.graphQueries = true;
   ::axiom::sql::presto::PrestoParser parser(
       defaultConnectorId,
       defaultSchema,
@@ -125,7 +127,7 @@ logical_plan::LogicalPlanNodePtr QueryTestBase::parseSelect(
           connector::makeTestContext("test"),
           connector::makeTestStatWriter(),
           connector::Properties{},
-          ::axiom::sql::presto::ParserOptions{}));
+          parserOptions));
 
   auto statement = parser.parse(sql);
 

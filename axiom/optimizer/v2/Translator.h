@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <folly/ScopeGuard.h>
 #include <folly/container/F14Map.h>
 #include <folly/container/F14Set.h>
 #include "axiom/connectors/SchemaResolver.h"
@@ -188,6 +189,14 @@ class Translator {
   // translated scope.
   void applySubstitutions(const PlanSubstitutions& substitutions, Scope& scope);
 
+  // Applies node simplification facts to each of 'exprs'.
+  void applySubstitutions(
+      const PlanSubstitutions& substitutions,
+      ExprVector& exprs);
+
+  // Returns 'expr' with node simplification facts applied, simplified.
+  ExprCP substitute(const PlanSubstitutions& substitutions, ExprCP expr);
+
   ColumnVector narrowToNames(
       NodeCP* node,
       const Scope& scope,
@@ -287,6 +296,29 @@ class Translator {
   Translated translateRecursiveRef(
       const logical_plan::RecursiveReferenceNode& ref,
       const LpNameSet& required);
+
+  // Lowers a graph match to joins of its element tables' plans on element
+  // identity, with the term predicates and the match predicate above them.
+  Translated translateGraphMatch(
+      const logical_plan::GraphMatchNode& match,
+      const LpNameSet& required);
+
+  class GraphMatchLowering;
+
+  // Records a translation of 'plan' and returns a guard that ends it. A plan
+  // translated more than once, such as a subquery referenced twice or a table
+  // two graph patterns read, names its columns after the plan's symbols only
+  // the first time, since two Columns cannot answer to one name where the
+  // translations meet.
+  auto translatingPlan(const logical_plan::LogicalPlanNode& plan) {
+    const bool duplicate = !translatedPlans_.insert(&plan).second;
+    const bool wasTranslatingDuplicate = std::exchange(
+        translatingDuplicate_, translatingDuplicate_ || duplicate);
+    return folly::makeGuard([this, wasTranslatingDuplicate] {
+      translatingDuplicate_ = wasTranslatingDuplicate;
+    });
+  }
+
   // Lifts 'call' into an `Inference` node on 'liftTarget' and returns the
   // column carrying its result. Velox evaluates a remote inference call in its
   // own operator, so it cannot stay inside the expression that reads it.
@@ -410,9 +442,8 @@ class Translator {
       LiftTarget& target);
 
   // Creates the Column a translated logical-plan node outputs under 'symbol'.
-  // Names it after 'symbol', except while re-translating a subquery plan an
-  // earlier reference already translated, whose columns are named
-  // synthetically.
+  // Names it after 'symbol', except while translating a plan an earlier
+  // reference already translated, whose columns are named synthetically.
   ColumnCP columnForSymbol(Name symbol, const Value& value);
 
   // Builds one fresh Column per field of 'rowType' and populates 'scope' to
@@ -424,6 +455,14 @@ class Translator {
 
   // Joins 'right' onto 'left', emitting both sides' columns.
   NodeCP crossJoin(NodeCP left, NodeCP right);
+
+  // Joins 'right' onto 'left' where 'leftKeys' equal 'rightKeys', emitting
+  // both sides' columns.
+  NodeSimplifier::SimplifiedNode innerJoin(
+      NodeCP left,
+      NodeCP right,
+      ExprVector leftKeys,
+      ExprVector rightKeys);
 
   // Invokes 'translate' with a lift target over 'input', so subqueries in the
   // expressions it translates lift onto that target, and returns 'input' with
@@ -545,11 +584,11 @@ class Translator {
   folly::F14FastMap<const logical_plan::LogicalPlanNode*, std::vector<ExprCP>>
       scalarSubqueryColumns_;
 
-  // Subquery plans translated so far. A plan embedded in several
-  // `SubqueryExpr`s is translated once per reference.
-  folly::F14FastSet<const logical_plan::LogicalPlanNode*> translatedSubqueries_;
+  // Subquery and graph element table plans translated so far. Each reference
+  // to such a plan translates it again.
+  folly::F14FastSet<const logical_plan::LogicalPlanNode*> translatedPlans_;
 
-  // True while translating a plan already in 'translatedSubqueries_'.
+  // True while translating a plan already in 'translatedPlans_'.
   bool translatingDuplicate_{false};
 
   // Result column of every inference call already lifted, so a call appearing
