@@ -62,6 +62,7 @@ add_library(
   PushdownAndPrunePass.cpp
   TableAccessHandle.cpp
   TranslatePass.cpp
+  Translator.cpp
 )
 
 target_link_libraries(
