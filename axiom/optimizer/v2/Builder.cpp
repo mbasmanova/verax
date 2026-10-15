@@ -333,27 +333,6 @@ NodeCP withNewConjuncts(Builder& builder, NodeCP input, ExprVector conjuncts) {
   return builder.make<Filter>({input, std::move(fresh)});
 }
 
-// Returns `input` filtered by an equality between the first of each group in
-// `groups` and every other member, recording each group's members against
-// that first one in `enforced`.
-template <typename Key>
-NodeCP withGroupEqualities(
-    Builder& builder,
-    NodeCP input,
-    const std::vector<std::pair<Key, ColumnVector>>& groups,
-    ColumnAnchors& enforced) {
-  ExprVector conjuncts;
-  ExprFactory factory{builder};
-  for (const auto& [key, columns] : groups) {
-    for (size_t i = 1; i < columns.size(); ++i) {
-      conjuncts.push_back(factory.makeEq(columns[0], columns[i]));
-      enforced[columns[0]] = columns[0];
-      enforced[columns[i]] = columns[0];
-    }
-  }
-  return withNewConjuncts(builder, input, std::move(conjuncts));
-}
-
 // Returns `input` with a filter enforcing the equalities it holds implicitly:
 // two of its columns in one class of `classes` are equal only where every join
 // of that class is applied. Making that explicit keeps it enforced when a
@@ -381,53 +360,18 @@ NodeCP withImpliedEqualities(
     it->second.push_back(column);
   }
 
-  return withGroupEqualities(builder, input, byClass, enforced);
-}
-
-// Returns `input` filtered by the equalities `keys` imply: two keys paired
-// with one and the same key on the other side are equal on every matched row.
-// `pairedKeys` aligns 1:1 with `keys`. Records the columns it made equal in
-// `enforced`.
-NodeCP withKeyImpliedEqualities(
-    Builder& builder,
-    NodeCP input,
-    const ExprVector& pairedKeys,
-    const ExprVector& keys,
-    ColumnAnchors& enforced) {
-  std::vector<std::pair<ColumnCP, ColumnVector>> byPairedKey;
-  for (size_t i = 0; i < keys.size(); ++i) {
-    if (!keys[i]->isColumn() || !pairedKeys[i]->isColumn()) {
-      continue;
+  // Equates the first column of each class with every other, recording each
+  // against that first one in `enforced`.
+  ExprVector conjuncts;
+  ExprFactory factory{builder};
+  for (const auto& [equivalence, columns] : byClass) {
+    for (size_t i = 1; i < columns.size(); ++i) {
+      conjuncts.push_back(factory.makeEq(columns[0], columns[i]));
+      enforced[columns[0]] = columns[0];
+      enforced[columns[i]] = columns[0];
     }
-    ColumnCP paired = pairedKeys[i]->as<Column>();
-    auto it = std::ranges::find_if(
-        byPairedKey, [&](const auto& entry) { return entry.first == paired; });
-    if (it == byPairedKey.end()) {
-      byPairedKey.emplace_back(paired, ColumnVector{});
-      it = byPairedKey.end() - 1;
-    }
-    it->second.push_back(keys[i]->as<Column>());
   }
-
-  return withGroupEqualities(builder, input, byPairedKey, enforced);
-}
-
-// These join types never emit a right row that found no match, so dropping a
-// right row that cannot match is unobservable.
-bool rightEmittedOnlyOnMatch(velox::core::JoinType joinType) {
-  using JoinType = velox::core::JoinType;
-  return joinType == JoinType::kInner || joinType == JoinType::kLeft ||
-      joinType == JoinType::kLeftSemiFilter ||
-      joinType == JoinType::kLeftSemiProject || joinType == JoinType::kAnti;
-}
-
-// The same for the left side. A mark-producing right semi join qualifies: a
-// left row that cannot match sets no mark.
-bool leftEmittedOnlyOnMatch(velox::core::JoinType joinType) {
-  using JoinType = velox::core::JoinType;
-  return joinType == JoinType::kInner || joinType == JoinType::kRight ||
-      joinType == JoinType::kRightSemiFilter ||
-      joinType == JoinType::kRightSemiProject;
+  return withNewConjuncts(builder, input, std::move(conjuncts));
 }
 
 } // namespace
@@ -449,28 +393,9 @@ void Builder::normalizeKey(Filter::Key& key) {
 void Builder::normalizeKey(Join::Key& key) {
   dropRepeatedKeyPairs(key);
 
-  // A derived equality is plain `=`, so it drops a row holding a NULL key.
-  // Where such a row matches, deriving one would change the result.
-  const bool nullKeysMatch = key.nullAsValue || key.nullAware;
-
+  // Only an inner join's output has classes: after another join type these
+  // columns are not equal.
   if (key.joinType != velox::core::JoinType::kInner) {
-    // No class: these columns are not equal in the output. A side whose
-    // unmatched rows are not emitted can still be filtered, since a row
-    // failing an equality the keys imply never matches.
-    if (nullKeysMatch) {
-      return;
-    }
-    ColumnAnchors leftEnforced;
-    ColumnAnchors rightEnforced;
-    if (rightEmittedOnlyOnMatch(key.joinType)) {
-      key.right = withKeyImpliedEqualities(
-          *this, key.right, key.leftKeys, key.rightKeys, rightEnforced);
-    }
-    if (leftEmittedOnlyOnMatch(key.joinType)) {
-      key.left = withKeyImpliedEqualities(
-          *this, key.left, key.rightKeys, key.leftKeys, leftEnforced);
-    }
-    dropEnforcedKeyPairs(key, leftEnforced, rightEnforced);
     return;
   }
 
@@ -487,7 +412,7 @@ void Builder::normalizeKey(Join::Key& key) {
       }
     }
   }
-  if (merged.empty() || nullKeysMatch) {
+  if (merged.empty() || Join::nullKeysMatch(key.nullAware, key.nullAsValue)) {
     return;
   }
 
