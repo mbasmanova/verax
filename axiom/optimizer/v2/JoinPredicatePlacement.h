@@ -66,10 +66,15 @@ class JoinPredicatePlacement {
     bool emitsOnlyMatchedRows{false};
   };
 
-  /// Routes predicates and extracts equi-keys from inner-join predicates.
+  /// Routes predicates and extracts equi-keys from inner-join predicates. Two
+  /// keys of one input paired with the same key of the other imply an equality,
+  /// which goes where a join-condition predicate on that input would, and the
+  /// key pair it makes redundant is dropped. 'nullAware' is the join's, which
+  /// can differ from 'join's when a mark is fused into it.
   static Routed route(
       const Join* join,
       velox::core::JoinType joinType,
+      bool nullAware,
       const PlanObjectSet& leftColumns,
       const PlanObjectSet& rightColumns,
       const ExprVector& pending,

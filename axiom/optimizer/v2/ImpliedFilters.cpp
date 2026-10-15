@@ -231,6 +231,46 @@ bool equivalentModuloLogicalAssociativity(ExprCP lhs, ExprCP rhs) {
 
 } // namespace
 
+ImpliedFilters::KeyEqualities ImpliedFilters::deriveForJoinKeys(
+    const ExprVector& leftKeys,
+    const ExprVector& rightKeys,
+    ExprFactory& factory) {
+  VELOX_CHECK_EQ(leftKeys.size(), rightKeys.size());
+  const auto deterministic = [&](size_t i) {
+    return !leftKeys[i]->containsNonDeterministic() &&
+        !rightKeys[i]->containsNonDeterministic();
+  };
+  const auto addOnce = [](ExprVector& equalities, ExprCP equality) {
+    if (std::ranges::find(equalities, equality) == equalities.end()) {
+      equalities.push_back(equality);
+    }
+  };
+
+  KeyEqualities result;
+  result.redundant.resize(leftKeys.size(), false);
+  std::vector<size_t> kept;
+  for (size_t i = 0; i < leftKeys.size(); ++i) {
+    if (!deterministic(i)) {
+      continue;
+    }
+    const auto earlier = std::ranges::find_if(kept, [&](size_t j) {
+      return leftKeys[j] == leftKeys[i] || rightKeys[j] == rightKeys[i];
+    });
+    if (earlier == kept.end()) {
+      kept.push_back(i);
+      continue;
+    }
+    const size_t j = *earlier;
+    if (leftKeys[j] != leftKeys[i]) {
+      addOnce(result.left, factory.makeEq(leftKeys[j], leftKeys[i]));
+    } else if (rightKeys[j] != rightKeys[i]) {
+      addOnce(result.right, factory.makeEq(rightKeys[j], rightKeys[i]));
+    }
+    result.redundant[i] = true;
+  }
+  return result;
+}
+
 std::pair<ExprVector, ExprVector> ImpliedFilters::deriveForJoinInputs(
     const ExprVector& filters,
     const PlanObjectSet& leftColumns,
