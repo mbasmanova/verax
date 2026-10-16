@@ -70,6 +70,43 @@ SELECT * FROM GRAPH_TABLE (g
   MATCH (a IS Person) -[IS Knows]->{1,3} (a)
   COLUMNS (a.name AS a))
 ----
+-- Whom Alice reaches in zero to two hops: a walk of zero hops ends where it
+-- starts.
+-- duckdb: VALUES ('Alice'), ('Bob'), ('Alice'), ('Carol')
+WITH ${graph}
+SELECT * FROM GRAPH_TABLE (g
+  MATCH (a IS Person WHERE a.name = 'Alice') -[IS Knows]->{0,2} (b IS Person)
+  COLUMNS (b.name AS b))
+----
+-- Whom Alice reaches in zero or one hop.
+-- duckdb: VALUES ('Alice'), ('Bob')
+WITH ${graph}
+SELECT * FROM GRAPH_TABLE (g
+  MATCH (a IS Person WHERE a.name = 'Alice') -[IS Knows]->{0,1} (b IS Person)
+  COLUMNS (b.name AS b))
+----
+-- A walk of zero hops matches only Alice's own row: company 1 shares her key
+-- but is a different vertex.
+-- duckdb: VALUES ('Alice'), ('Acme')
+WITH ${graph}
+SELECT * FROM GRAPH_TABLE (g
+  MATCH (a IS Person WHERE a.name = 'Alice') -[IS WorksAt]->{0,1} (b)
+  COLUMNS (b.name AS b))
+----
+-- Who gets back to themselves in zero to two hops: everyone in zero.
+-- duckdb: VALUES ('Alice'), ('Bob'), ('Carol'), ('Dave'), ('Dave'), ('Alice'), ('Bob'), ('Dave')
+WITH ${graph}
+SELECT * FROM GRAPH_TABLE (g
+  MATCH (a IS Person) -[IS Knows]->{0,2} (a)
+  COLUMNS (a.name AS a))
+----
+-- A repetition of zero hops only.
+-- duckdb: VALUES ('Carol')
+WITH ${graph}
+SELECT * FROM GRAPH_TABLE (g
+  MATCH (a IS Person WHERE a.name = 'Carol') -[IS Knows]->{0,0} (b IS Person)
+  COLUMNS (b.name AS b))
+----
 -- Who reaches Dave in one or two hops: a left-pointing repeated edge walks
 -- from the vertex on its right.
 -- duckdb: VALUES ('Carol'), ('Dave'), ('Bob'), ('Carol'), ('Dave')

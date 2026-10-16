@@ -24,7 +24,9 @@ A condition inside the edge pattern applies to each hop:
 `-[k IS Knows WHERE k.since > 2020]->{1,3}` walks only over edges since 2020.
 Outside its pattern, `k` stands for one value per hop, an array.
 
-A repetition `{1,1}` is a plain edge.
+A walk of zero hops ends at the vertex it starts from: with `{0,n}`, the
+patterns on either side of the repetition also match one vertex. A repetition
+`{1,1}` is a plain edge.
 
 ## The Repeat node
 
@@ -37,16 +39,21 @@ a row of `start` to a row of `end`:
 | `startKeys` | The identity of the vertex the walk leaves from, over `start`. |
 | `hopSourceKeys`, `hopDestinationKeys` | The identities of the vertex a hop leaves from and the one it reaches, over `hop`. |
 | `endKeys` | The identity of the vertex the walk reaches, over `end`, or over `start` when `end` is null. |
-| `minHops`, `maxHops` | The bounds, with `1 <= minHops <= maxHops` and `maxHops >= 2`. |
+| `minHops`, `maxHops` | The bounds, with `0 <= minHops <= maxHops`. Exactly one hop, `{1,1}`, is a plain join. |
 | `outputColumns` | A subset of the columns `start` and `end` output, with the same identities. |
 
 The four key lists line up by position, as a join's keys do. Like a join's
 keys, they are expressions over the inputs' columns.
 
 **Identity.** Two vertex tables can hold the same key, so the identity a walk
-follows includes the table ID wherever a hop can leave from or reach more than
+follows includes the table ID wherever its vertices can come from more than
 one table: as the ID column where it varies, or as a literal. Otherwise it is
-the key alone.
+the key alone. The tables counted are those a hop can leave from or reach, and
+the start's and end's, which a walk of zero hops compares directly.
+
+**Narrowing.** A walk leaves from a table a hop leaves from and reaches a table
+a hop reaches. With `minHops` of 0, the start may also match any table the end
+can, and the end any table the start can.
 
 **Ends.** A walk's endpoints do not fold into the hop: the hop's relation
 carries both end identities, and each endpoint keeps its own relation, or
@@ -82,7 +89,8 @@ its `to` vertex, which merges the two:
 ## LowerRepeat
 
 `LowerRepeatPass` runs after `EstimateLeafStats` and replaces each `Repeat`
-with a `FixedPoint`. It is skipped when translation produced no `Repeat`.
+with a `FixedPoint`, or with joins when no walk has more than one hop. It is
+skipped when translation produced no `Repeat`.
 
 The walk starts from the side with fewer estimated rows: the start, or the end
 when it is present and smaller. Starting from the end is the mirror image, with
@@ -97,10 +105,16 @@ each hop read from its destination to its source. Starting from the start:
   hop's destination, and the hop count grows by one.
 - **Result:** the walks with at least `minHops` hops, joined with the end on
   the current vertex and the end key. Without an end, the walks whose current
-  vertex equals the end key.
+  vertex equals the end key. With `minHops` of 0, the anchor's walks of zero
+  hops are part of the result.
 - **Bound:** `maxIterations = maxHops + 1`. The step adds no rows once every
   walk has `maxHops` hops, and the loop stops on the empty delta one iteration
   later. Reaching `maxIterations` without converging fails the query.
+
+Walks of at most one hop need no loop, so `{0,1}` and `{0,0}` carry no hop
+count. The walks are the anchor for zero hops, the start joined with the hop
+for one, or the `UNION ALL` of the two, and the result joins them with the end
+as above.
 
 The hop appears once in the plan, as the build side of the step's join. Each
 iteration reads only the latest walks. A fixed point runs on a single node

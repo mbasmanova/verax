@@ -3318,9 +3318,10 @@ Repeat::Repeat(const Key& key)
   VELOX_CHECK_EQ(startKeys_.size(), hopSourceKeys_.size());
   VELOX_CHECK_EQ(startKeys_.size(), hopDestinationKeys_.size());
   VELOX_CHECK_EQ(startKeys_.size(), endKeys_.size());
-  VELOX_CHECK_GE(minHops_, 1, "Repeat minHops must be at least one");
+  VELOX_CHECK_GE(minHops_, 0, "Repeat minHops must not be negative");
   VELOX_CHECK_LE(minHops_, maxHops_, "Repeat minHops must not exceed maxHops");
-  VELOX_CHECK_GE(maxHops_, 2, "Repeat of at most one hop is a join");
+  VELOX_CHECK(
+      minHops_ != 1 || maxHops_ != 1, "Repeat of exactly one hop is a join");
   checkKeysRead(startKeys_, start(), "start key");
   checkKeysRead(hopSourceKeys_, hop(), "hop source key");
   checkKeysRead(hopDestinationKeys_, hop(), "hop destination key");

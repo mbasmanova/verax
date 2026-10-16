@@ -218,6 +218,9 @@ vertex, and its hop count.
   other side on the current vertex. A `Repeat` whose walk ends at a row of the
   start keeps the walks whose current vertex is that row.
 
+Walks of at most one hop need no loop: the anchor for zero hops, the side
+joined with the hop for one, or the `UNION ALL` of the two.
+
 The pass runs after `EstimateLeafStats` because it chooses the side by
 estimate, and before `PlanPhysical`, which plans the joins it produces. It is
 skipped when translation produced no `Repeat`.

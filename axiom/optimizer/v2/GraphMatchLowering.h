@@ -196,6 +196,9 @@ class Translator::GraphMatchLowering {
       return isVertex() && std::get<VertexState>(state).numEdgeEnds == 1;
     }
 
+    // Adds the IDs of the tables of its legs to 'ids'.
+    void addTableIdsTo(folly::F14FastSet<int32_t>& ids) const;
+
     // True if the legs give the identity 'end' selects (see Leg::tableId)
     // more than one table ID.
     bool tableIdVaries(std::optional<bool> end) const;
