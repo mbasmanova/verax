@@ -37,7 +37,7 @@ objects in place. `Emit` lowers the finished IR and is therefore not an
 | `FoldMetadataAggregate` | Bottom-up | Resolves aggregates that a connector can answer from metadata | Metadata count over `Scan` -> `Values`, or an equivalent aggregate that scans rows |
 | `ConnectorPushdown` | Bottom-up discovery, then substitution | Offers maximal connector-local subtrees and replaces accepted roots | Relational subtree -> scan of a connector-provided virtual table |
 | `EstimateLeafStats` | Scan collection, then bottom-up rewrite | Fetches post-filter connector statistics and removes subtrees proven empty | Base-table estimates become available; an empty inner-join input removes the join |
-| `LowerRepeat` | Bottom-up | Replaces each `Repeat` with a `FixedPoint` that walks from the side with fewer estimated rows | Repeated graph edge -> anchor, step over the hop, and a join with the other side |
+| `LowerRepeat` | Bottom-up | Replaces each `Repeat` with a `FixedPoint` that walks from the side with fewer estimated rows | Repeated graph pattern -> anchor, step over the hop, and a join with the other side |
 | `PlanPhysical` | Bottom-up with join enumeration | Chooses join order and data distribution and inserts exchanges | Logical join cluster -> costed join tree; global operators -> distributed stages |
 | `Emit` | Node IR -> `MultiFragmentPlan` | Lowers IR nodes and exchanges into executable Velox plan nodes and fragments | User-visible output layout and executable fragments |
 
@@ -204,7 +204,7 @@ See [Cardinality estimation](CardinalityEstimation.md).
 
 ### 8. LowerRepeat
 
-`LowerRepeatPass` replaces each `Repeat`, which a repeated graph edge pattern
+`LowerRepeatPass` replaces each `Repeat`, which a repeated graph pattern
 produces, with a `FixedPoint`. The walk starts from the side with fewer
 estimated rows: the start, or the end when it is present and smaller. The
 state carries the columns of that side the result reads, the walk's current

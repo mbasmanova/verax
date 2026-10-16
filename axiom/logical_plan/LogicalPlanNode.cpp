@@ -1668,7 +1668,7 @@ class GraphPatternNameCollector {
         term->predicate()->forEachInputReference(
             [&](const InputReferenceExpr& input) { checkInput(input); });
       }
-      if (term->isSubpath()) {
+      if (term->is(GraphPatternTerm::Kind::kSubpath)) {
         checkPredicates(term->as<GraphSubpathPattern>()->terms());
       }
     }
@@ -1721,7 +1721,7 @@ class GraphPatternNameCollector {
 
   // Adds 'term'. 'group' is true if the term is under a repetition.
   void addTerm(const GraphPatternTerm& term, bool group) {
-    if (term.isSubpath()) {
+    if (term.is(GraphPatternTerm::Kind::kSubpath)) {
       const auto* subpath = term.as<GraphSubpathPattern>();
       const bool subpathGroup = group || subpath->repetition().has_value();
       if (!term.name().empty()) {
@@ -1732,18 +1732,11 @@ class GraphPatternNameCollector {
     }
 
     const auto& element = *term.as<GraphElementPattern>();
-    const bool elementGroup = group ||
-        (term.kind() == GraphPatternTerm::Kind::kEdge &&
-         term.as<GraphEdgePattern>()->repetition().has_value());
+    const bool elementGroup = group || term.repetition().has_value();
     checkLabel(element);
 
     if (!term.name().empty()) {
-      addElementName(
-          element,
-          elementGroup,
-          graph_.matchingTables(
-              element.label().get(),
-              element.kind() == GraphPatternTerm::Kind::kEdge));
+      addElementName(element, elementGroup, element.matchingTables(graph_));
     }
   }
 
@@ -1772,8 +1765,7 @@ class GraphPatternNameCollector {
     if (element.label() == nullptr) {
       return;
     }
-    const bool isVertexPattern =
-        element.kind() == GraphPatternTerm::Kind::kVertex;
+    const bool isVertexPattern = element.is(GraphPatternTerm::Kind::kVertex);
     element.label()->forEachName([&](std::string_view name) {
       VELOX_USER_CHECK(
           isVertexPattern ? graph_.isVertex(name) : graph_.isEdge(name),
@@ -1984,7 +1976,7 @@ void forEachPredicate(
     if (term->predicate() != nullptr) {
       visit(*term->predicate());
     }
-    if (term->isSubpath()) {
+    if (term->is(GraphPatternTerm::Kind::kSubpath)) {
       forEachPredicate(term->as<GraphSubpathPattern>()->terms(), visit);
     }
   }

@@ -468,14 +468,18 @@ Graph queries are gated behind the `graphQueries` flag in `ParserOptions`, which
 is off by default. To enable them, set `graphQueries = true`, or use
 `SET SESSION parser.graph_queries = true` at the CLI. With the flag on, the
 parser plans a `GRAPH_TABLE` as a GraphMatch logical plan node, which
-`EXPLAIN (TYPE LOGICAL)` shows. The v2 optimizer runs patterns without
-repetition; the v1 optimizer does not run them. With v2, a query that uses
-any of these fails with an error that names it:
+`EXPLAIN (TYPE LOGICAL)` shows. The v2 optimizer runs graph patterns; the v1
+optimizer does not run them. With v2, a query that uses any of these fails
+with an error that names it:
 
 - a path mode other than `WALK`;
-- a subpath or a repetition;
-- an edge pattern without a vertex pattern on each side, or two adjacent
-  vertex patterns;
+- a repetition with no upper bound, or a shortest-path selector on a path
+  with repetition;
+- an optional subpath, or a repeated subpath that starts or ends with an edge
+  pattern;
+- a name inside a repetition read outside it, or `path_length` of a path with
+  repetition;
+- an edge pattern without a vertex pattern on each side;
 - an undirected edge pattern whose name another pattern reuses;
 - a pattern whose tables have keys of different data types or numbers of
   columns, when two edge patterns meet at it, a selector's path starts or ends

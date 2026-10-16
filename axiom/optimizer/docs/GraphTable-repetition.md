@@ -1,8 +1,8 @@
-# Graph Queries — Repeated Edges
+# Graph Queries — Repetition
 
-*How optimizer v2 plans a repeated edge pattern such as `-[IS Knows]->{1,3}`:
-the `Repeat` node, each pass's rule for it, and its lowering to a
-`FixedPoint`. Patterns without repetition are in
+*How optimizer v2 plans a repeated edge pattern such as `-[IS Knows]->{1,3}`,
+or a repeated subpath: the `Repeat` node, each pass's rule for it, and its
+lowering to a `FixedPoint`. Patterns without repetition are in
 [GraphTable-lowering.md](GraphTable-lowering.md); the loop itself is in
 [FixedPoint.md](FixedPoint.md).*
 
@@ -35,7 +35,7 @@ a row of `start` to a row of `end`:
 
 | Field | Meaning |
 |---|---|
-| `start`, `hop`, `end` | The three inputs: the path's patterns before the repetition, joined, with their predicates; the repeated edge's relation, filtered by its own condition; the path's patterns after it. `end` is null when the walk ends at a row of `start`. |
+| `start`, `hop`, `end` | The three inputs: the path's patterns before the repetition, joined, with their predicates; one repetition of the repeated pattern, filtered by its conditions; the path's patterns after it. `end` is null when the walk ends at a row of `start`. |
 | `startKeys` | The identity of the vertex the walk leaves from, over `start`. |
 | `hopSourceKeys`, `hopDestinationKeys` | The identities of the vertex a hop leaves from and the one it reaches, over `hop`. |
 | `endKeys` | The identity of the vertex the walk reaches, over `end`, or over `start` when `end` is null. |
@@ -59,10 +59,33 @@ can, and the end any table the start can.
 carries both end identities, and each endpoint keeps its own relation, or
 reads its identity from another edge it folds into.
 
+## Repeated subpaths
+
+A repeated subpath repeats a pattern with several elements, with a condition
+that can read any of them:
+
+```sql
+MATCH (a IS Person WHERE a.name = 'Alice')
+  ((x IS Person) -[IS Knows]-> (y IS Person) WHERE x.id < y.id){1,3}
+  (b IS Person)
+```
+
+walks one to three `Knows` edges from Alice, each to a person with a larger
+id. The first `x` is `a`, each repetition's `y` is the next one's `x`, and the
+last `y` is `b`.
+
+Its `Repeat` has the subpath's patterns, joined and filtered with their
+conditions and the subpath's, as the hop. A hop leaves from the identity of the
+subpath's first vertex and reaches that of its last. The patterns inside bind
+elements of their own, which no join outside the walk reads, and the start and
+end narrow to the tables of those two vertices as they do to a repeated edge's
+ends. The subpath starts and ends with a vertex pattern, so repetitions meet at
+a vertex.
+
 ## Where the Repeat sits
 
-The lowering joins every connection except the repeated edges. The rest of
-the pattern then falls into connected groups. Each repeated edge becomes a
+The lowering joins every connection except the repeated patterns. The rest of
+the pattern then falls into connected groups. Each repeated pattern becomes a
 `Repeat` from the group that holds its `from` vertex to the group that holds
 its `to` vertex, which merges the two:
 

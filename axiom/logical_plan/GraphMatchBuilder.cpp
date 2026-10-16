@@ -78,13 +78,12 @@ void GraphMatchBuilder::addElement(
   if (name.empty()) {
     return;
   }
-  auto tables = graph_->matchingTables(label.get(), edge);
+  auto tables = edge ? graph_->matchingEdgeTables(label.get())
+                     : graph_->matchingVertexTables(label.get());
   auto [it, inserted] =
       elementNames_.emplace(name, ElementName{.edge = edge, .tables = tables});
   if (!inserted && it->second.edge == edge) {
-    std::erase_if(it->second.tables, [&](const auto* table) {
-      return std::find(tables.begin(), tables.end(), table) == tables.end();
-    });
+    PropertyGraph::intersectTables(it->second.tables, tables);
   }
   for (auto& subpath : subpaths_) {
     subpath.names.insert(name);

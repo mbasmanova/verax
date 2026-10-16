@@ -453,24 +453,19 @@ TEST_F(ConnectorPushdownPassTest, recursiveAnchor) {
     return std::vector<PushdownRoot>{{fixedPoint->anchor(), replacement}};
   });
 
-  auto matcher = core::PlanMatcherBuilder()
-                     .fixedPoint(
-                         core::FixedPointMatch("counter")
-                             .outputState(
-                                 /*append=*/true,
-                                 matchScan("virt_seed")
-                                     .aliases({"value"})
-                                     .project({"value"}))
-                             .plan(
-                                 core::PlanMatcherBuilder()
-                                     .stateSource("counter", /*delta=*/true)
-                                     .aliases({"n"})
-                                     .filter("n > 0")
-                                     .project({"n - 1"}))
-                             .convergeOnEmpty())
-                     .aliases({"n"})
-                     .project({"n"})
-                     .build();
+  auto matcher =
+      matchFixedPoint(
+          startFixedPoint("counter")
+              .outputState(
+                  /*append=*/true,
+                  matchScan("virt_seed").aliases({"value"}).project({"value"}))
+              .plan(matchDelta("counter", {"n"})
+                        .filter("n > 0")
+                        .project({"n - 1"}))
+              .convergeOnEmpty())
+          .aliases({"n"})
+          .project({"n"})
+          .build();
   AXIOM_ASSERT_PLAN(toSingleNodePlan(recursivePlan()), matcher);
 }
 

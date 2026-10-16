@@ -181,6 +181,21 @@ static PlanMatcherBuilder matchScan(const std::string& tableName) {
 }
 ```
 
+The helpers follow one naming rule. A `matchXxx` helper, such as `matchScan`,
+`matchValues`, `matchDelta` or `matchFixedPoint`, returns a
+`PlanMatcherBuilder` that chains on to the nodes above. A `startXxx` helper,
+such as `startFixedPoint`, returns the matcher of one kind of node, which a
+`matchXxx` helper takes:
+
+```cpp
+auto matcher = matchFixedPoint(startFixedPoint("walk")
+                                   .outputState(/*append=*/true, matchScan("t"))
+                                   .plan(matchDelta("walk", {"n"}).filter("n < 3"))
+                                   .convergeOnEmpty({.maxIterations = 5}))
+                   .filter("n > 0")
+                   .build();
+```
+
 ```cpp
 // Broadcast join: small table is broadcast to all nodes
 auto matcher = matchScan("large_table")

@@ -351,42 +351,14 @@ void checkRepetition(const std::optional<GraphRepetition>& repetition) {
       "Repetition minimum exceeds its maximum");
 }
 
-const std::optional<GraphRepetition>& repetitionOf(
-    const GraphPatternTerm& term) {
-  static const std::optional<GraphRepetition> kNone;
-  switch (term.kind()) {
-    case GraphPatternTerm::Kind::kVertex:
-      return kNone;
-    case GraphPatternTerm::Kind::kEdge:
-      return term.as<GraphEdgePattern>()->repetition();
-    case GraphPatternTerm::Kind::kSubpath:
-      return term.as<GraphSubpathPattern>()->repetition();
-  }
-  VELOX_UNREACHABLE();
-}
-
 // Returns true if any term in 'terms', or inside a subpath among them, is
 // repeated.
 bool hasRepeatedTerm(const std::vector<GraphPatternTermPtr>& terms) {
   return std::any_of(terms.begin(), terms.end(), [](const auto& term) {
-    return repetitionOf(*term).has_value() ||
-        (term->isSubpath() &&
+    return term->repetition().has_value() ||
+        (term->is(GraphPatternTerm::Kind::kSubpath) &&
          hasRepeatedTerm(term->template as<GraphSubpathPattern>()->terms()));
   });
-}
-
-// Adds the names of the vertex and edge patterns in 'terms', including those
-// inside subpaths, to 'names'.
-void addElementNames(
-    const std::vector<GraphPatternTermPtr>& terms,
-    folly::F14FastSet<std::string>& names) {
-  for (const auto& term : terms) {
-    if (term->isSubpath()) {
-      addElementNames(term->as<GraphSubpathPattern>()->terms(), names);
-    } else if (!term->name().empty()) {
-      names.insert(term->name());
-    }
-  }
 }
 
 // Checks that the inputs of 'predicate', if set, are ROWs named in 'names'.
@@ -455,6 +427,23 @@ std::vector<GraphPatternTermPtr> deserializeTerms(
 }
 
 } // namespace
+
+const std::optional<GraphRepetition>& GraphPatternTerm::repetition() const {
+  static const std::optional<GraphRepetition> kNone;
+  return kNone;
+}
+
+void GraphPatternTerm::collectElementNames(
+    const std::vector<GraphPatternTermPtr>& terms,
+    folly::F14FastSet<std::string>& names) {
+  for (const auto& term : terms) {
+    if (term->is(Kind::kSubpath)) {
+      collectElementNames(term->as<GraphSubpathPattern>()->terms(), names);
+    } else if (!term->name().empty()) {
+      names.insert(term->name());
+    }
+  }
+}
 
 GraphPatternTerm::GraphPatternTerm(
     Kind kind,
@@ -537,6 +526,12 @@ bool GraphElementPattern::equals(const GraphPatternTerm& other) const {
       label_, static_cast<const GraphElementPattern&>(other).label_);
 }
 
+std::vector<const PropertyGraph::ElementTable*>
+GraphElementPattern::matchingTables(const PropertyGraph& graph) const {
+  return is(Kind::kEdge) ? graph.matchingEdgeTables(label_.get())
+                         : graph.matchingVertexTables(label_.get());
+}
+
 folly::dynamic GraphElementPattern::serialize() const {
   auto obj = GraphPatternTerm::serialize();
   if (label_ != nullptr) {
@@ -607,7 +602,7 @@ GraphSubpathPattern::GraphSubpathPattern(
       "A repeated pattern term cannot be inside another");
 
   folly::F14FastSet<std::string> names;
-  addElementNames(terms_, names);
+  GraphPatternTerm::collectElementNames(terms_, names);
   checkPredicateInputs(this->predicate(), names);
 }
 
