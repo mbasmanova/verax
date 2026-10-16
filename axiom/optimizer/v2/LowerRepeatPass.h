@@ -31,7 +31,11 @@ namespace facebook::axiom::optimizer::v2 {
 ///   becomes the hop's destination, and the hop count grows by one.
 /// - The result keeps the walks with at least `minHops` hops and joins them
 ///   with the end on the current vertex and the end key. Without an end, it
-///   keeps the walks whose current vertex equals the end key.
+///   keeps the walks whose current vertex equals the end key. With `minHops`
+///   of 0, the anchor's walks of zero hops are part of the result.
+///
+/// Walks of at most one hop need no loop: the anchor for zero hops, the side
+/// joined with the hop for one, or the UNION ALL of the two.
 ///
 /// Walking from the end is the mirror image, with each hop read from its
 /// destination to its source.

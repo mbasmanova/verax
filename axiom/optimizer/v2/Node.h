@@ -2691,7 +2691,9 @@ using FixedPointCP = const FixedPoint*;
 /// identify. Each hop is a row of `hop`, from the vertex `hopSourceKeys`
 /// identify to the one `hopDestinationKeys` identify, leaving from the vertex
 /// the previous hop reached. The walk reaches the vertex `endKeys` identify.
-/// Walks that differ only in their hops are distinct rows.
+/// Walks that differ only in their hops are distinct rows. A walk of zero hops
+/// reaches the vertex it leaves from: it pairs a start row and an end row whose
+/// identities are equal.
 ///
 /// For example, the graph pattern `(a IS Person) -[IS Knows]->{1,3} (b)`
 /// becomes a `Repeat` with `a`'s rows as `start`, the Knows rows as `hop`, and
@@ -2705,7 +2707,8 @@ using FixedPointCP = const FixedPoint*;
 /// - The four key lists have one entry per identity column and line up by
 ///   position. `startKeys` read `start`, the hop keys read `hop`, and `endKeys`
 ///   read `end`, or `start` when `end` is null.
-/// - `1 <= minHops <= maxHops` and `maxHops >= 2`: one hop is a plain join.
+/// - `0 <= minHops <= maxHops`, and not `minHops = maxHops = 1`: exactly one
+///   hop is a plain join.
 /// - `outputColumns` are a subset of the columns `start` and `end` output,
 ///   with the same identities, in any order.
 class Repeat : public Node {

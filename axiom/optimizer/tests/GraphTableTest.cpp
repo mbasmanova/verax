@@ -116,6 +116,29 @@ TEST_F(GraphTableTest, repetition) {
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
+// Walks of at most one hop need no loop: the start's rows for zero hops, and
+// the start joined with the edges for one.
+TEST_F(GraphTableTest, upToOneHop) {
+  auto plan = toSingleNodePlan(
+      kPeopleGraph,
+      "MATCH (a IS Person) -[IS Knows]->{0,1} (b IS Person) "
+      "COLUMNS (a.name AS a, b.name AS b)");
+  auto matcher =
+      matchScan("person")
+          .project({"name", "id"})
+          .localPartition(
+              {matchScan("knows")
+                   .hashJoinInner(matchScan("person"), {.keys = {{"src = id"}}})
+                   .project({"name", "dst"})})
+          .aliases({"name", "vertex"})
+          .hashJoinInner(
+              matchScan("person").aliases({"id", "b_name"}),
+              {.keys = {{"vertex = id"}}})
+          .project({"name", "b_name"})
+          .build();
+  AXIOM_ASSERT_PLAN(plan, matcher);
+}
+
 // The end has fewer rows than the start, so the walk leaves from the end and
 // reads each hop from its destination to its source.
 TEST_F(GraphTableTest, repetitionFromEnd) {

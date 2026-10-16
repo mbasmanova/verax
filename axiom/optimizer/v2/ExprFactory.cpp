@@ -136,16 +136,16 @@ ExprCP ExprFactory::makeLessThan(ExprCP lhs, ExprCP rhs) {
       builder_.functionNames().lt, {lhs, rhs}, /*specialForm=*/false);
 }
 
-ExprCP ExprFactory::makeBigintAddition(ExprCP lhs, ExprCP rhs) {
+ExprCP ExprFactory::makeBigintIncrement(ExprCP value) {
   const Name name = builder_.functionNames().bigintAddition;
   VELOX_USER_CHECK_NOT_NULL(
       name,
-      "ExprFactory::makeBigintAddition requires a function registered via "
+      "ExprFactory::makeBigintIncrement requires a function registered via "
       "FunctionRegistry::registerBigintAddition; the active dialect did not register it");
-  VELOX_CHECK_EQ(lhs->value().type->kind(), velox::TypeKind::BIGINT);
-  VELOX_CHECK_EQ(rhs->value().type->kind(), velox::TypeKind::BIGINT);
+  VELOX_CHECK_EQ(value->value().type->kind(), velox::TypeKind::BIGINT);
+  ExprCP one = makeLiteral(velox::Variant(int64_t{1}), value->value().type);
   return makeCall(
-      name, Value(lhs->value().type), {lhs, rhs}, /*specialForm=*/false);
+      name, Value(value->value().type), {value, one}, /*specialForm=*/false);
 }
 
 ExprCP ExprFactory::makeIn(ExprCP value, std::vector<velox::Variant> values) {
