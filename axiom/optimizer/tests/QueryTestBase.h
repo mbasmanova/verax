@@ -259,6 +259,9 @@ class QueryTestBase : public velox::exec::test::HiveConnectorTestBase {
   /// Returns the full path to a test data file in test_data/.
   static std::string getTestDataPath(const std::string& filename);
 
+  // Matcher helpers: matchXxx returns a PlanMatcherBuilder; startXxx returns
+  // the matcher of one kind of node, which a matchXxx takes.
+
   static velox::core::PlanMatcherBuilder matchScan(
       const std::string& tableName) {
     return velox::core::PlanMatcherBuilder().tableScan(
@@ -274,6 +277,34 @@ class QueryTestBase : public velox::exec::test::HiveConnectorTestBase {
 
   static velox::core::PlanMatcherBuilder matchValues() {
     return velox::core::PlanMatcherBuilder().values();
+  }
+
+  /// Matches any FixedPointNode.
+  static velox::core::PlanMatcherBuilder matchFixedPoint() {
+    return velox::core::PlanMatcherBuilder().fixedPoint();
+  }
+
+  /// Matches a FixedPointNode as 'match' describes it.
+  static velox::core::PlanMatcherBuilder matchFixedPoint(
+      velox::core::FixedPointMatch match) {
+    return velox::core::PlanMatcherBuilder().fixedPoint(std::move(match));
+  }
+
+  /// Starts describing a fixed point whose output state entry is
+  /// 'outputStateEntry', for matchFixedPoint().
+  static velox::core::FixedPointMatch startFixedPoint(
+      const std::string& outputStateEntry) {
+    return velox::core::FixedPointMatch(outputStateEntry);
+  }
+
+  /// Matches a read of the rows the previous iteration added to state
+  /// 'stateName', with 'columns' as aliases for its columns.
+  static velox::core::PlanMatcherBuilder matchDelta(
+      const std::string& stateName,
+      const std::vector<std::optional<std::string>>& columns) {
+    return velox::core::PlanMatcherBuilder()
+        .stateSource(stateName, /*delta=*/true)
+        .aliases(columns);
   }
 
   static velox::core::PlanMatcherBuilder matchValues(

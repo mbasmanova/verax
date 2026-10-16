@@ -1,8 +1,8 @@
 # Graph Queries — Lowering Patterns Without Repetition
 
 *How `TranslatePass` lowers a `GraphMatchNode` into joins over the element
-tables. The logical model is in [GraphTable.md](GraphTable.md); repeated edges
-are in [GraphTable-repetition.md](GraphTable-repetition.md).*
+tables. The logical model is in [GraphTable.md](GraphTable.md); repetition is
+in [GraphTable-repetition.md](GraphTable-repetition.md).*
 
 ## Stages
 
@@ -10,7 +10,9 @@ are in [GraphTable-repetition.md](GraphTable-repetition.md).*
 ones settled:
 
 1. **Bind:** binds each pattern name to an element, and records the paths and
-   the edge occurrences between their vertices.
+   the edge occurrences between their vertices. A plain subpath's patterns
+   bind as part of the path, and a vertex pattern right after another binds
+   the same element.
 2. **Narrow:** drops the tables an element cannot match given its neighbors.
 3. **Copy:** an element that several paths with a selector bind gets a copy
    for each of them but the first, since each such path is limited on its own
@@ -25,6 +27,20 @@ ones settled:
    elements and filters them with the other paths' term predicates. Groups
    that share no element join with a cross product, and the node's predicate
    filters the result.
+
+## Subpaths and adjacent vertex patterns
+
+A subpath without repetition only groups patterns: `(a) ((x) -[e]-> (y) WHERE
+x.since > 2020) (b)` matches like `(a) -[e]-> (b)` with the subpath's
+condition applied to each match. Its patterns bind as part of the path, and
+its condition joins the path's term predicates. `path_length` of a named
+subpath counts its edges.
+
+Two vertex patterns next to each other match one vertex, so the second binds
+the first one's element: its name, if any, names that element too, and the
+element keeps only the tables both label expressions match. In
+`(a IS Person) (x WHERE x.name = 'Alice') -[e]-> (b)`, `a` and `x` are one
+vertex, and the edge leaves from it.
 
 ## Element relations
 

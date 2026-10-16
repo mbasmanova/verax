@@ -16,9 +16,11 @@
 #pragma once
 
 #include <folly/Function.h>
+#include <folly/container/F14Set.h>
 
 #include "axiom/common/Enums.h"
 #include "axiom/logical_plan/Expr.h"
+#include "axiom/logical_plan/PropertyGraph.h"
 
 /// Path patterns matched by GraphMatchNode.
 ///
@@ -287,8 +289,8 @@ class GraphPatternTerm {
     return kind_;
   }
 
-  bool isSubpath() const {
-    return kind_ == Kind::kSubpath;
+  bool is(Kind kind) const {
+    return kind_ == kind;
   }
 
   /// Name the term gives to the vertex, edge or subpath it matches, like a
@@ -302,6 +304,16 @@ class GraphPatternTerm {
   const ExprPtr& predicate() const {
     return predicate_;
   }
+
+  /// How many times the term repeats. Unset for a vertex pattern, and for an
+  /// edge pattern or a subpath that matches once.
+  virtual const std::optional<GraphRepetition>& repetition() const;
+
+  /// Adds the names of the vertex and edge patterns in 'terms', including
+  /// those inside subpaths, to 'names'.
+  static void collectElementNames(
+      const std::vector<GraphPatternTermPtr>& terms,
+      folly::F14FastSet<std::string>& names);
 
   /// Caller must ensure this kind is correct.
   template <typename T>
@@ -342,6 +354,12 @@ class GraphElementPattern : public GraphPatternTerm {
   const GraphLabelExpressionPtr& label() const {
     return label_;
   }
+
+  /// Returns the tables of 'graph' the pattern can match: the vertex tables
+  /// for a vertex pattern, or the edge tables for an edge pattern, whose names
+  /// satisfy its label.
+  std::vector<const PropertyGraph::ElementTable*> matchingTables(
+      const PropertyGraph& graph) const;
 
   folly::dynamic serialize() const override;
 
@@ -395,8 +413,7 @@ class GraphEdgePattern final : public GraphElementPattern {
     return direction_;
   }
 
-  /// How many times the edge repeats. Unset matches one edge.
-  const std::optional<GraphRepetition>& repetition() const {
+  const std::optional<GraphRepetition>& repetition() const override {
     return repetition_;
   }
 
@@ -437,8 +454,7 @@ class GraphSubpathPattern final : public GraphPatternTerm {
     return terms_;
   }
 
-  /// How many times the subpath repeats. Unset matches it once.
-  const std::optional<GraphRepetition>& repetition() const {
+  const std::optional<GraphRepetition>& repetition() const override {
     return repetition_;
   }
 

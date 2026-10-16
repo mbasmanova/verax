@@ -948,11 +948,10 @@ TEST_P(SubfieldTest, recursiveCte) {
   createArrayTable();
 
   auto matchAnchor = [](std::vector<std::string> subfields) {
-    return core::PlanMatcherBuilder()
-        .fixedPoint(
-            core::FixedPointMatch("r").outputState(
-                /*append=*/true,
-                matchHiveScan("t", {{"a", std::move(subfields)}})))
+    return matchFixedPoint(
+               startFixedPoint("r").outputState(
+                   /*append=*/true,
+                   matchHiveScan("t", {{"a", std::move(subfields)}})))
         .project()
         .build();
   };
@@ -996,11 +995,9 @@ TEST_P(SubfieldTest, recursiveCte) {
 
     AXIOM_ASSERT_PLAN(
         toSingleNodePlan(logicalPlan),
-        core::PlanMatcherBuilder()
-            .fixedPoint(
-                core::FixedPointMatch("r").outputState(
-                    /*append=*/true,
-                    matchHiveScan("t", {{"a", {"[1]"}}}).project()))
+        matchFixedPoint(startFixedPoint("r").outputState(
+                            /*append=*/true,
+                            matchHiveScan("t", {{"a", {"[1]"}}}).project()))
             .build());
   }
 }

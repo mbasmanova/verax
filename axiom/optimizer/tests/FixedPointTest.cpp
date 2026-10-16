@@ -26,18 +26,6 @@ namespace {
 using namespace facebook::velox;
 namespace lp = facebook::axiom::logical_plan;
 
-core::FixedPointMatch matchFixedPoint(const std::string& name) {
-  return core::FixedPointMatch(name);
-}
-
-core::PlanMatcherBuilder matchDelta(
-    const std::string& name,
-    const std::vector<std::optional<std::string>>& columns) {
-  return core::PlanMatcherBuilder()
-      .stateSource(name, /*delta=*/true)
-      .aliases(columns);
-}
-
 class FixedPointTest : public test::QueryTestBase {
  protected:
   lp::PlanBuilder singleRow(const std::string& name, int64_t value) {
@@ -59,8 +47,7 @@ TEST_F(FixedPointTest, recursiveCte) {
   auto plan = toSingleNodePlan(logicalPlan);
 
   auto matcher =
-      core::PlanMatcherBuilder()
-          .fixedPoint(matchFixedPoint("counter")
+      matchFixedPoint(startFixedPoint("counter")
                           .outputState(/*append=*/true, matchValues())
                           .plan(matchDelta("counter", {"n"})
                                     .filter("n < 10")
@@ -85,17 +72,16 @@ TEST_F(FixedPointTest, joinKeyState) {
 
   AXIOM_ASSERT_PLAN(
       toSingleNodePlan(parseSelect(query)),
-      core::PlanMatcherBuilder()
-          .fixedPoint(matchFixedPoint("r")
-                          .outputState(
-                              /*append=*/true,
-                              matchScan("t")
-                                  .hashJoinInner(
-                                      matchScan("u"), {.keys = {{"t_k = u_k"}}})
-                                  .project({"t_k", "t_k as u_k"}))
-                          .plan(matchDelta("r", {"t_k", "u_k"})
-                                    .filter("t_k < 10")
-                                    .project({"t_k + 1", "u_k + 1"})))
+      matchFixedPoint(
+          startFixedPoint("r")
+              .outputState(
+                  /*append=*/true,
+                  matchScan("t")
+                      .hashJoinInner(matchScan("u"), {.keys = {{"t_k = u_k"}}})
+                      .project({"t_k", "t_k as u_k"}))
+              .plan(matchDelta("r", {"t_k", "u_k"})
+                        .filter("t_k < 10")
+                        .project({"t_k + 1", "u_k + 1"})))
           .build());
 }
 
@@ -112,13 +98,12 @@ TEST_F(FixedPointTest, stepJoin) {
       "SELECT n FROM r");
 
   auto matcher =
-      core::PlanMatcherBuilder()
-          .fixedPoint(matchFixedPoint("r")
-                          .outputState(/*append=*/true, matchValues())
-                          .hashTableState(matchScan("e"))
-                          .plan(matchDelta("r", {"n"})
-                                    .stateHashJoin({"n"})
-                                    .project({"dst"})))
+      matchFixedPoint(
+          startFixedPoint("r")
+              .outputState(/*append=*/true, matchValues())
+              .hashTableState(matchScan("e"))
+              .plan(
+                  matchDelta("r", {"n"}).stateHashJoin({"n"}).project({"dst"})))
           .build();
   AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
 }
@@ -135,8 +120,7 @@ TEST_F(FixedPointTest, singleDriverStep) {
                          .build();
 
   auto matcher =
-      core::PlanMatcherBuilder()
-          .fixedPoint(matchFixedPoint("counter")
+      matchFixedPoint(startFixedPoint("counter")
                           .outputState(/*append=*/true, matchValues())
                           .plan(matchDelta("counter", {"n"})
                                     .filter("n < 10")
@@ -153,8 +137,7 @@ TEST_F(FixedPointTest, outerLimit) {
       "VALUES 1 UNION ALL SELECT n + 1 FROM counter WHERE n < 20) "
       "SELECT n FROM counter LIMIT 5");
 
-  auto matcher =
-      core::PlanMatcherBuilder().fixedPoint().finalLimit(0, 5).build();
+  auto matcher = matchFixedPoint().finalLimit(0, 5).build();
   AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
 }
 
@@ -182,8 +165,7 @@ TEST_F(FixedPointTest, outerJoinInAnchor) {
       "  SELECT coalesce(n, 1) FROM t WHERE n IS NULL) "
       "SELECT t.n FROM t JOIN u ON t.n = u.n");
 
-  auto matcher = core::PlanMatcherBuilder()
-                     .fixedPoint(matchFixedPoint("t")
+  auto matcher = matchFixedPoint(startFixedPoint("t")
                                      .outputState(
                                          /*append=*/true, matchValues())
                                      .plan(matchDelta("t", {"n"})
@@ -203,8 +185,7 @@ TEST_F(FixedPointTest, outerFilter) {
       "SELECT n FROM counter WHERE n > 15");
 
   auto matcher =
-      core::PlanMatcherBuilder()
-          .fixedPoint(matchFixedPoint("counter")
+      matchFixedPoint(startFixedPoint("counter")
                           .outputState(/*append=*/true, matchValues())
                           .plan(matchDelta("counter", {"n"})
                                     .filter("n < 20")
@@ -224,17 +205,15 @@ TEST_F(FixedPointTest, outerSelectsOneColumn) {
       "SELECT n + 1, carried FROM counter WHERE n < 10) "
       "SELECT n FROM counter");
 
-  auto matcher =
-      core::PlanMatcherBuilder()
-          .fixedPoint(
-              matchFixedPoint("counter")
-                  .outputState(/*append=*/true, matchValues())
-                  .plan(matchDelta("counter", {"n", "carried"})
-                            .filter("n < 10")
-                            .project({"n + 1", "carried"}))
-                  .convergeOnEmpty({.stateColumns = {{"n", "carried"}}}))
-          .project({"n"})
-          .build();
+  auto matcher = matchFixedPoint(
+                     startFixedPoint("counter")
+                         .outputState(/*append=*/true, matchValues())
+                         .plan(matchDelta("counter", {"n", "carried"})
+                                   .filter("n < 10")
+                                   .project({"n + 1", "carried"}))
+                         .convergeOnEmpty({.stateColumns = {{"n", "carried"}}}))
+                     .project({"n"})
+                     .build();
   AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
 }
 
@@ -257,20 +236,18 @@ TEST_F(FixedPointTest, siblingRecursions) {
       "SELECT b FROM r2");
 
   auto matcher =
-      core::PlanMatcherBuilder()
-          .fixedPoint(matchFixedPoint("r2")
-                          .outputState(
-                              /*append=*/true,
-                              core::PlanMatcherBuilder().fixedPoint(
-                                  matchFixedPoint("r1")
+      matchFixedPoint(
+          startFixedPoint("r2")
+              .outputState(
+                  /*append=*/true,
+                  matchFixedPoint(startFixedPoint("r1")
                                       .outputState(
                                           /*append=*/true, matchValues())
                                       .plan(matchDelta("r1", {"a"})
                                                 .filter("a < 3")
                                                 .project({"a + 1"}))))
-                          .plan(matchDelta("r2", {"b"})
-                                    .filter("b < 30")
-                                    .project({"b + 10"})))
+              .plan(
+                  matchDelta("r2", {"b"}).filter("b < 30").project({"b + 10"})))
           .project({"a as b"})
           .build();
 
@@ -323,12 +300,10 @@ TEST_F(FixedPointTest, outerJoinAndFilter) {
       "WHERE r.n > 0");
 
   auto matcher =
-      core::PlanMatcherBuilder()
-          .fixedPoint(matchFixedPoint("r")
-                          .outputState(/*append=*/true, matchValues())
-                          .plan(matchDelta("r", {"n"})
-                                    .filter("n < 10")
-                                    .project({"n + 1"})))
+      matchFixedPoint(
+          startFixedPoint("r")
+              .outputState(/*append=*/true, matchValues())
+              .plan(matchDelta("r", {"n"}).filter("n < 10").project({"n + 1"})))
           .aliases({"n"})
           .filter("n > 0")
           .hashJoinInner(matchScan("u").aliases({"n"}).filter("n > 0"))

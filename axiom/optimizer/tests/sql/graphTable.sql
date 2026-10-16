@@ -256,8 +256,8 @@ SELECT * FROM GRAPH_TABLE (g
 --     ('Dave', 'Globex', 'Dave')
 WITH ${graph}
 SELECT * FROM GRAPH_TABLE (g
-  MATCH (a IS Person) -[IS Knows | WorksAt]-> (b) <-[IS Knows | WorksAt]-
-    (c IS Person)
+  MATCH (a IS Person) -[IS Knows | WorksAt]-> (b)
+    <-[IS Knows | WorksAt]- (c IS Person)
   COLUMNS (a.name AS a, b.name AS b, c.name AS c))
 ----
 -- Whom Bob knows or is known by, one path per person: ANY keeps one match per
@@ -319,8 +319,8 @@ SELECT * FROM GRAPH_TABLE (g
 --     ('Bob', 'ROM', 'Bob')
 WITH ${graph}
 SELECT * FROM GRAPH_TABLE (g
-  MATCH (a IS Person) -[IS WorksIn]-> (o IS Office) <-[IS WorksIn]-
-    (b IS Person)
+  MATCH (a IS Person) -[IS WorksIn]-> (o IS Office)
+    <-[IS WorksIn]- (b IS Person)
   COLUMNS (a.name AS a, o.city, b.name AS b))
 ----
 -- Where Alice lives: a second path names her vertex again with a condition.
@@ -329,6 +329,36 @@ WITH ${graph}
 SELECT * FROM GRAPH_TABLE (g
   MATCH (a IS Person) -[IS LivesIn]-> (c IS City), (a WHERE a.name = 'Alice')
   COLUMNS (a.name AS a, c.name AS city))
+----
+-- Adjacent vertex patterns match one vertex: x is the person a stands for.
+-- duckdb: VALUES ('Alice', 'Bob')
+WITH ${graph}
+SELECT * FROM GRAPH_TABLE (g
+  MATCH (a IS Person) (x WHERE x.name = 'Alice') -[IS Knows]-> (b)
+  COLUMNS (a.name AS a, b.name AS b))
+----
+-- Adjacent vertex patterns match only tables both labels match: companies.
+-- duckdb: VALUES ('Acme', 'Alice'), ('Acme', 'Carol'), ('Globex', 'Dave')
+WITH ${graph}
+SELECT * FROM GRAPH_TABLE (g
+  MATCH (v IS Person | Company) (w IS Company) <-[IS WorksAt]- (p)
+  COLUMNS (w.name AS company, p.name AS p))
+----
+-- A subpath's condition applies to its match: whom Bob knows other than Alice.
+-- duckdb: VALUES ('Carol')
+WITH ${graph}
+SELECT * FROM GRAPH_TABLE (g
+  MATCH (a IS Person WHERE a.name = 'Bob')
+    ((x) -[IS Knows]-> (y) WHERE y.name <> 'Alice') (b)
+  COLUMNS (b.name AS b))
+----
+-- The length of a subpath counts its edges.
+-- duckdb: VALUES ('Bob', 1, 2)
+WITH ${graph}
+SELECT * FROM GRAPH_TABLE (g
+  MATCH p = (a IS Person WHERE a.name = 'Alice') (q = -[IS Knows]-> (b IS Person))
+    -[IS LivesIn]-> (c IS City)
+  COLUMNS (b.name AS b, path_length(q) AS q, path_length(p) AS p))
 ----
 -- Who lives in a listed city, paired with every person.
 -- duckdb:

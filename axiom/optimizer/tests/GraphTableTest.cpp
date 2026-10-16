@@ -91,21 +91,56 @@ TEST_F(GraphTableTest, repetition) {
       "MATCH (a IS Person) -[IS Knows]->{1,2} (b IS Person) "
       "COLUMNS (a.name AS a, b.name AS b)");
   auto matcher =
-      velox::core::PlanMatcherBuilder()
-          .fixedPoint(
-              velox::core::FixedPointMatch("walk")
-                  .outputState(
-                      /*append=*/true,
-                      matchScan("person").project({"name", "id", "0"}))
-                  .hashTableState(matchScan("knows"))
-                  .plan(
-                      velox::core::PlanMatcherBuilder()
-                          .stateSource("walk", /*delta=*/true)
-                          .aliases({"name", "vertex", "hops"})
-                          .filter("hops < 2")
-                          .stateHashJoin({"vertex"})
-                          .project({"name", "dst", "hops + 1"}))
-                  .convergeOnEmpty({.maxIterations = 3}))
+      matchFixedPoint(startFixedPoint("walk")
+                          .outputState(
+                              /*append=*/true,
+                              matchScan("person").project({"name", "id", "0"}))
+                          .hashTableState(matchScan("knows"))
+                          .plan(matchDelta("walk", {"name", "vertex", "hops"})
+                                    .filter("hops < 2")
+                                    .stateHashJoin({"vertex"})
+                                    .project({"name", "dst", "hops + 1"}))
+                          .convergeOnEmpty({.maxIterations = 3}))
+          .aliases({"name", "vertex", "hops"})
+          .filter("hops >= 1")
+          .hashJoinInner(
+              matchScan("person").aliases({"id", "b_name"}),
+              {.keys = {{"vertex = id"}}})
+          .project({"name", "b_name"})
+          .build();
+  AXIOM_ASSERT_PLAN(plan, matcher);
+}
+
+// A repeated subpath's hops are one repetition of its pattern, built once as
+// the loop's hash table: the edges joined with the persons at both ends and
+// filtered with the subpath's condition.
+TEST_F(GraphTableTest, repeatedSubpath) {
+  auto plan = toSingleNodePlan(
+      kPeopleGraph,
+      "MATCH "
+      "     (a IS Person) "
+      "     ((x IS Person) -[IS Knows]-> (y IS Person) WHERE x.id < y.id){1,2} "
+      "     (b IS Person) "
+      "COLUMNS (a.name AS a, b.name AS b)");
+  auto matcher =
+      matchFixedPoint(
+          startFixedPoint("walk")
+              .outputState(
+                  /*append=*/true,
+                  matchScan("person").project({"name", "id", "0"}))
+              .hashTableState(matchScan("knows")
+                                  .filter("src < dst")
+                                  .hashJoinInner(
+                                      matchScan("person").aliases({"x_id"}),
+                                      {.keys = {{"src = x_id"}}})
+                                  .hashJoinInner(
+                                      matchScan("person").aliases({"y_id"}),
+                                      {.keys = {{"dst = y_id"}}}))
+              .plan(matchDelta("walk", {"name", "vertex", "hops"})
+                        .filter("hops < 2")
+                        .stateHashJoin({"vertex"})
+                        .project({"name", "dst", "hops + 1"}))
+              .convergeOnEmpty({.maxIterations = 3}))
           .aliases({"name", "vertex", "hops"})
           .filter("hops >= 1")
           .hashJoinInner(
@@ -147,24 +182,20 @@ TEST_F(GraphTableTest, repetitionFromEnd) {
       "MATCH (a IS Person) -[IS Knows]->{1,2} (b IS Person WHERE b.name = 'Dave') "
       "COLUMNS (a.name AS a)");
   auto matcher =
-      velox::core::PlanMatcherBuilder()
-          .fixedPoint(
-              velox::core::FixedPointMatch("walk")
-                  .outputState(
-                      /*append=*/true,
-                      matchScan("person")
-                          .aliases({"id", "name"})
-                          .filter("name = 'Dave'")
-                          .project({"id", "0"}))
-                  .hashTableState(matchScan("knows").project({"dst", "src"}))
-                  .plan(
-                      velox::core::PlanMatcherBuilder()
-                          .stateSource("walk", /*delta=*/true)
-                          .aliases({"vertex", "hops"})
-                          .filter("hops < 2")
-                          .stateHashJoin({"vertex"})
-                          .project({"src", "hops + 1"}))
-                  .convergeOnEmpty({.maxIterations = 3}))
+      matchFixedPoint(
+          startFixedPoint("walk")
+              .outputState(
+                  /*append=*/true,
+                  matchScan("person")
+                      .aliases({"id", "name"})
+                      .filter("name = 'Dave'")
+                      .project({"id", "0"}))
+              .hashTableState(matchScan("knows").project({"dst", "src"}))
+              .plan(matchDelta("walk", {"vertex", "hops"})
+                        .filter("hops < 2")
+                        .stateHashJoin({"vertex"})
+                        .project({"src", "hops + 1"}))
+              .convergeOnEmpty({.maxIterations = 3}))
           .aliases({"vertex", "hops"})
           .filter("hops >= 1")
           .hashJoinInner(
