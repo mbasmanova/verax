@@ -356,6 +356,14 @@ Estimate EstimateProvider::compute(NodeCP node) {
       return result;
     }
 
+    case NodeType::kRepeat: {
+      // The number of walks depends on the graph's degrees and the hop bound,
+      // which leaf statistics do not describe.
+      Estimate result;
+      result.cardinality = std::nullopt;
+      return result;
+    }
+
     case NodeType::kWorkingTable: {
       // Per-iteration frontier size is workload-dependent.
       Estimate result;

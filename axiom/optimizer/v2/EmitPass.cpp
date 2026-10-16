@@ -301,6 +301,8 @@ class Emitter {
         return emitFixedPoint(*node->as<FixedPoint>());
       case NodeType::kWorkingTable:
         return emitWorkingTable(*node->as<WorkingTable>());
+      case NodeType::kRepeat:
+        VELOX_UNREACHABLE("Repeat is lowered before Emit");
     }
     VELOX_UNREACHABLE();
   }

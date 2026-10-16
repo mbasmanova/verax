@@ -23,14 +23,25 @@
 
 namespace facebook::axiom::optimizer::v2 {
 
+ExprCP ExprFactory::makeCall(
+    Name name,
+    Value value,
+    ExprVector arguments,
+    bool specialForm) {
+  const FunctionSet functions =
+      Call::unionArgFunctions(functionBits(name, specialForm), arguments);
+  return builder_.makeCall(name, value, std::move(arguments), functions);
+}
+
 ExprCP ExprFactory::makeBooleanCall(
     Name name,
     ExprVector arguments,
     bool specialForm) {
-  const Value value(toType(velox::BOOLEAN()), 2);
-  const FunctionSet functions =
-      Call::unionArgFunctions(functionBits(name, specialForm), arguments);
-  return builder_.makeCall(name, value, std::move(arguments), functions);
+  return makeCall(
+      name,
+      Value(toType(velox::BOOLEAN()), 2),
+      std::move(arguments),
+      specialForm);
 }
 
 ExprCP ExprFactory::makeAnd(ExprCP lhs, ExprCP rhs) {
@@ -125,6 +136,18 @@ ExprCP ExprFactory::makeLessThan(ExprCP lhs, ExprCP rhs) {
       builder_.functionNames().lt, {lhs, rhs}, /*specialForm=*/false);
 }
 
+ExprCP ExprFactory::makeBigintAddition(ExprCP lhs, ExprCP rhs) {
+  const Name name = builder_.functionNames().bigintAddition;
+  VELOX_USER_CHECK_NOT_NULL(
+      name,
+      "ExprFactory::makeBigintAddition requires a function registered via "
+      "FunctionRegistry::registerBigintAddition; the active dialect did not register it");
+  VELOX_CHECK_EQ(lhs->value().type->kind(), velox::TypeKind::BIGINT);
+  VELOX_CHECK_EQ(rhs->value().type->kind(), velox::TypeKind::BIGINT);
+  return makeCall(
+      name, Value(lhs->value().type), {lhs, rhs}, /*specialForm=*/false);
+}
+
 ExprCP ExprFactory::makeIn(ExprCP value, std::vector<velox::Variant> values) {
   VELOX_CHECK(!values.empty());
   folly::F14FastSet<velox::Variant, velox::Variant::Hasher> seen;
@@ -183,11 +206,8 @@ ExprCP ExprFactory::makeCardinality(ExprCP value) {
       "ExprFactory::makeCardinality requires cardinality registered via "
       "FunctionRegistry::registerCardinality; the active dialect did not "
       "register it");
-  ExprVector arguments{value};
-  const FunctionSet functions = Call::unionArgFunctions(
-      functionBits(name, /*specialForm=*/false), arguments);
-  return builder_.makeCall(
-      name, Value(toType(velox::BIGINT())), std::move(arguments), functions);
+  return makeCall(
+      name, Value(toType(velox::BIGINT())), {value}, /*specialForm=*/false);
 }
 
 ExprCP ExprFactory::makeRowNumber() {
@@ -207,11 +227,11 @@ ExprCP ExprFactory::makeRowNumber() {
 }
 
 ExprCP ExprFactory::makeRowConstructor(ExprVector arguments, TypeCP rowType) {
-  const Name name = SpecialFormCallNames::kRowConstructor;
-  const FunctionSet functions = Call::unionArgFunctions(
-      functionBits(name, /*specialForm=*/true), arguments);
-  return builder_.makeCall(
-      name, Value(rowType), std::move(arguments), functions);
+  return makeCall(
+      SpecialFormCallNames::kRowConstructor,
+      Value(rowType),
+      std::move(arguments),
+      /*specialForm=*/true);
 }
 
 ExprCP ExprFactory::makeSamplePredicate(double fraction) {
@@ -249,23 +269,19 @@ ExprCP ExprFactory::makeIsNull(ExprCP arg) {
 }
 
 ExprCP ExprFactory::makeCoalesce(ExprCP value, ExprCP fallback) {
-  ExprVector arguments{value, fallback};
-  const Name coalesceName = SpecialFormCallNames::kCoalesce;
-  const Value resultValue = value->value();
-  const FunctionSet functions = Call::unionArgFunctions(
-      functionBits(coalesceName, /*specialForm=*/true), arguments);
-  return builder_.makeCall(
-      coalesceName, resultValue, std::move(arguments), functions);
+  return makeCall(
+      SpecialFormCallNames::kCoalesce,
+      value->value(),
+      {value, fallback},
+      /*specialForm=*/true);
 }
 
 ExprCP ExprFactory::makeIf(ExprCP condition, ExprCP thenExpr, ExprCP elseExpr) {
-  ExprVector arguments{condition, thenExpr, elseExpr};
-  const Name ifName = SpecialFormCallNames::kIf;
-  const Value resultValue = thenExpr->value();
-  const FunctionSet functions = Call::unionArgFunctions(
-      functionBits(ifName, /*specialForm=*/true), arguments);
-  return builder_.makeCall(
-      ifName, resultValue, std::move(arguments), functions);
+  return makeCall(
+      SpecialFormCallNames::kIf,
+      thenExpr->value(),
+      {condition, thenExpr, elseExpr},
+      /*specialForm=*/true);
 }
 
 ExprCP ExprFactory::makeSwitch(
@@ -281,12 +297,11 @@ ExprCP ExprFactory::makeSwitch(
   }
   arguments.push_back(elseExpr);
 
-  const Name switchName = SpecialFormCallNames::kSwitch;
-  const Value resultValue = when.front().second->value();
-  const FunctionSet functions = Call::unionArgFunctions(
-      functionBits(switchName, /*specialForm=*/true), arguments);
-  return builder_.makeCall(
-      switchName, resultValue, std::move(arguments), functions);
+  return makeCall(
+      SpecialFormCallNames::kSwitch,
+      when.front().second->value(),
+      std::move(arguments),
+      /*specialForm=*/true);
 }
 
 namespace {

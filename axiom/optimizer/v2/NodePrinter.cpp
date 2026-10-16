@@ -418,6 +418,28 @@ class Printer : public NodeVisitor {
     node.convergence()->accept(*this, ctx);
   }
 
+  void visit(const Repeat& node, NodeVisitorContext& context) const override {
+    auto& ctx = static_cast<Context&>(context);
+    header(ctx, node, fmt::format("[{}..{}]", node.minHops(), node.maxHops()));
+    const auto pad = spaces(ctx.indent + 2);
+    ctx.out << pad << "startKeys: " << formatExprs(node.startKeys()) << '\n';
+    ctx.out << pad << "hopSourceKeys: " << formatExprs(node.hopSourceKeys())
+            << '\n';
+    ctx.out << pad
+            << "hopDestinationKeys: " << formatExprs(node.hopDestinationKeys())
+            << '\n';
+    ctx.out << pad << "endKeys: " << formatExprs(node.endKeys()) << '\n';
+    IndentGuard guard(ctx);
+    ctx.out << spaces(ctx.indent) << "start:\n";
+    node.start()->accept(*this, ctx);
+    ctx.out << spaces(ctx.indent) << "hop:\n";
+    node.hop()->accept(*this, ctx);
+    if (node.end() != nullptr) {
+      ctx.out << spaces(ctx.indent) << "end:\n";
+      node.end()->accept(*this, ctx);
+    }
+  }
+
  private:
   void header(Context& ctx, const Node& node, std::string_view extra = {})
       const {

@@ -15,6 +15,7 @@ Node IR
   -> FoldMetadataAggregate
   -> ConnectorPushdown       (when a connector supports subtree pushdown)
   -> EstimateLeafStats       (when useFilteredTableStats is enabled)
+  -> LowerRepeat             (when the plan has a Repeat)
   -> PlanPhysical
   -> Emit
 MultiFragmentPlan of Velox plan nodes
@@ -36,6 +37,7 @@ objects in place. `Emit` lowers the finished IR and is therefore not an
 | `FoldMetadataAggregate` | Bottom-up | Resolves aggregates that a connector can answer from metadata | Metadata count over `Scan` -> `Values`, or an equivalent aggregate that scans rows |
 | `ConnectorPushdown` | Bottom-up discovery, then substitution | Offers maximal connector-local subtrees and replaces accepted roots | Relational subtree -> scan of a connector-provided virtual table |
 | `EstimateLeafStats` | Scan collection, then bottom-up rewrite | Fetches post-filter connector statistics and removes subtrees proven empty | Base-table estimates become available; an empty inner-join input removes the join |
+| `LowerRepeat` | Bottom-up | Replaces each `Repeat` with a `FixedPoint` that walks from the side with fewer estimated rows | Repeated graph edge -> anchor, step over the hop, and a join with the other side |
 | `PlanPhysical` | Bottom-up with join enumeration | Chooses join order and data distribution and inserts exchanges | Logical join cluster -> costed join tree; global operators -> distributed stages |
 | `Emit` | Node IR -> `MultiFragmentPlan` | Lowers IR nodes and exchanges into executable Velox plan nodes and fragments | User-visible output layout and executable fragments |
 
@@ -200,7 +202,29 @@ nodes. The entire pass is gated by `useFilteredTableStats`.
 
 See [Cardinality estimation](CardinalityEstimation.md).
 
-### 8. PlanPhysical
+### 8. LowerRepeat
+
+`LowerRepeatPass` replaces each `Repeat`, which a repeated graph edge pattern
+produces, with a `FixedPoint`. The walk starts from the side with fewer
+estimated rows: the start, or the end when it is present and smaller. The
+state carries the columns of that side the result reads, the walk's current
+vertex, and its hop count.
+
+- The anchor is that side, with zero hops.
+- The step joins the latest walks that have fewer than the maximum hops with
+  the hop relation, on the current vertex and the hop's source, and moves the
+  current vertex to the hop's destination.
+- The result keeps the walks with at least the minimum hops and joins the
+  other side on the current vertex. A `Repeat` whose walk ends at a row of the
+  start keeps the walks whose current vertex is that row.
+
+The pass runs after `EstimateLeafStats` because it chooses the side by
+estimate, and before `PlanPhysical`, which plans the joins it produces. It is
+skipped when translation produced no `Repeat`.
+
+See [Graph queries — repeated edges](GraphTable-repetition.md).
+
+### 9. PlanPhysical
 
 `PlanPhysicalPass` turns the logical Node IR into a distributed physical tree.
 The optimizer chooses the worker count immediately before this pass, and the
@@ -235,7 +259,7 @@ Other physical planning:
 See [Distributed execution](DistributedExecution.md) and
 [Join enumeration scaling](JoinEnumerationScaling.md).
 
-### 9. Emit
+### 10. Emit
 
 `EmitPass` lowers the physical Node IR to Velox plan nodes. Each IR `Exchange`
 becomes a fragment boundary with a producer and consumer. Emit also restores
@@ -267,6 +291,7 @@ PUSHDOWN_AND_PRUNE
 FOLD_METADATA_AGGREGATE
 CONNECTOR_PUSHDOWN
 ESTIMATE_LEAF_STATS
+LOWER_REPEAT
 PLAN_PHYSICAL
 ```
 
@@ -281,7 +306,9 @@ rewrite. Estimates appear starting at `ESTIMATE_LEAF_STATS`. Use
   filtered-table statistics consult connectors.
 - `ConnectorPushdown` runs before leaf statistics so virtual-table scans can be
   estimated like other scans.
-- `EstimateLeafStats` supplies the base statistics used by `PlanPhysical`.
+- `EstimateLeafStats` supplies the base statistics used by `LowerRepeat` and
+  `PlanPhysical`.
+- `LowerRepeat` replaces every `Repeat` before physical planning.
 - `PlanPhysical` introduces the exchanges that `Emit` turns into fragment
   boundaries.
 

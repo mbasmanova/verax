@@ -775,6 +775,11 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
   }
 
  protected:
+  NodeCP rewriteRepeat(const Repeat* /*node*/, NoContext& /*context*/)
+      override {
+    VELOX_UNREACHABLE("Repeat is lowered before physical planning");
+  }
+
   NodeCP rewriteFixedPoint(const FixedPoint* node, NoContext& context)
       override {
     NodeCP anchor = rewrite(node->anchor(), context);

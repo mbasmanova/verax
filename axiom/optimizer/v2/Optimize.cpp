@@ -32,6 +32,7 @@
 #include "axiom/optimizer/v2/EstimateProvider.h"
 #include "axiom/optimizer/v2/FoldMetadataAggregatePass.h"
 #include "axiom/optimizer/v2/LimitAndOrderPass.h"
+#include "axiom/optimizer/v2/LowerRepeatPass.h"
 #include "axiom/optimizer/v2/PlanPhysicalPass.h"
 #include "axiom/optimizer/v2/PushdownAndPrunePass.h"
 #include "axiom/optimizer/v2/TranslatePass.h"
@@ -135,6 +136,7 @@ const auto& passNames() {
       {Optimizer::Pass::kFoldMetadataAggregate, "FOLD_METADATA_AGGREGATE"},
       {Optimizer::Pass::kConnectorPushdown, "CONNECTOR_PUSHDOWN"},
       {Optimizer::Pass::kEstimateLeafStats, "ESTIMATE_LEAF_STATS"},
+      {Optimizer::Pass::kLowerRepeat, "LOWER_REPEAT"},
       {Optimizer::Pass::kPlanPhysical, "PLAN_PHYSICAL"},
   };
   return kNames;
@@ -236,6 +238,14 @@ NodeCP Optimizer::planTo(
     notifyAfterPass(Pass::kEstimateLeafStats, node);
   }
   if (pass == Pass::kEstimateLeafStats) {
+    return node;
+  }
+
+  if (translated.hasRepeat) {
+    node = LowerRepeatPass::run(node, builder_, evaluator_);
+    notifyAfterPass(Pass::kLowerRepeat, node);
+  }
+  if (pass == Pass::kLowerRepeat) {
     return node;
   }
 

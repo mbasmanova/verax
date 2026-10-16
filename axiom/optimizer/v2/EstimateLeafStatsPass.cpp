@@ -473,6 +473,35 @@ class EmptyScanSimplifier : public NodeRewriter<SimplifiedNodeContext> {
     return setResult(node, NodeSimplifier::SimplifiedNode{node, {}}, context);
   }
 
+  NodeCP rewriteRepeat(const Repeat* node, SimplifiedNodeContext& context)
+      override {
+    auto start = rewriteChild(node->start());
+    auto hop = rewriteChild(node->hop());
+    std::optional<NodeSimplifier::SimplifiedNode> end;
+    if (node->end() != nullptr) {
+      end = rewriteChild(node->end());
+    }
+    return setResult(
+        node,
+        simplifier_.make(
+            Repeat::Key{
+                .start = node->start(),
+                .hop = node->hop(),
+                .end = node->end(),
+                .startKeys = node->startKeys(),
+                .hopSourceKeys = node->hopSourceKeys(),
+                .hopDestinationKeys = node->hopDestinationKeys(),
+                .endKeys = node->endKeys(),
+                .minHops = node->minHops(),
+                .maxHops = node->maxHops(),
+                .outputColumns = node->outputColumns(),
+            },
+            std::move(start),
+            std::move(hop),
+            std::move(end)),
+        context);
+  }
+
   NodeCP rewriteFixedPoint(
       const FixedPoint* node,
       SimplifiedNodeContext& context) override {

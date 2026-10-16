@@ -662,6 +662,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       case NodeType::kEnforceSingleRow:
       case NodeType::kTableWrite:
       case NodeType::kFixedPoint:
+      case NodeType::kRepeat:
         return;
     }
     VELOX_UNREACHABLE();
@@ -2798,6 +2799,93 @@ class Pushdown : public NodeRewriter<PushdownContext> {
         {newConvergence, std::move(convergenceContext.outputSubstitutions)});
     return finishSimplifiedNode(
         std::move(simplified), std::move(context.pending), context);
+  }
+
+  // A Repeat row carries its start row's and end row's columns unchanged, so a
+  // conjunct that reads only one side filters that side. The hop needs only
+  // its keys.
+  NodeCP rewriteRepeat(const Repeat* node, PushdownContext& context) override {
+    const auto startColumns =
+        PlanObjectSet::fromObjects(node->start()->outputColumns());
+    const auto endColumns = node->end() != nullptr
+        ? PlanObjectSet::fromObjects(node->end()->outputColumns())
+        : PlanObjectSet{};
+    ExprVector startPending;
+    ExprVector endPending;
+    ExprVector blocked;
+    for (ExprCP conjunct : context.pending) {
+      const auto& columns = conjunct->columns();
+      if (conjunct->containsNonDeterministic() || columns.empty()) {
+        blocked.push_back(conjunct);
+      } else if (columns.isSubset(startColumns)) {
+        startPending.push_back(conjunct);
+      } else if (node->end() != nullptr && columns.isSubset(endColumns)) {
+        endPending.push_back(conjunct);
+      } else {
+        blocked.push_back(conjunct);
+      }
+    }
+
+    // A side keeps the columns the conjuncts left here read and its keys read.
+    const auto sideContext =
+        [&](ExprVector pending, std::initializer_list<const ExprVector*> keys) {
+          PushdownContext sideContext =
+              makeChildContext(std::move(pending), context);
+          sideContext.required.unionColumns(blocked);
+          for (const ExprVector* sideKeys : keys) {
+            sideContext.required.unionColumns(*sideKeys);
+          }
+          sideContext.requiredAbove = sideContext.required;
+          return sideContext;
+        };
+
+    PushdownContext startContext = node->end() != nullptr
+        ? sideContext(startPending, {&node->startKeys()})
+        : sideContext(startPending, {&node->startKeys(), &node->endKeys()});
+    NodeCP newStart = rewrite(node->start(), startContext);
+
+    PushdownContext hopContext;
+    hopContext.required.unionColumns(node->hopSourceKeys());
+    hopContext.required.unionColumns(node->hopDestinationKeys());
+    hopContext.requiredAbove = hopContext.required;
+    NodeCP newHop = rewrite(node->hop(), hopContext);
+
+    std::optional<NodeSimplifier::SimplifiedNode> end;
+    if (node->end() != nullptr) {
+      PushdownContext endContext = sideContext(endPending, {&node->endKeys()});
+      NodeCP newEnd = rewrite(node->end(), endContext);
+      end = NodeSimplifier::SimplifiedNode{
+          newEnd, std::move(endContext.outputSubstitutions)};
+    }
+
+    // Outputs the columns read above and by the conjuncts left here.
+    PlanObjectSet read = context.required;
+    read.unionColumns(blocked);
+    ColumnVector outputColumns;
+    for (ColumnCP column : node->outputColumns()) {
+      if (read.contains(column)) {
+        outputColumns.push_back(column);
+      }
+    }
+
+    auto simplified = nodeSimplifier_.make(
+        Repeat::Key{
+            .start = node->start(),
+            .hop = node->hop(),
+            .end = node->end(),
+            .startKeys = node->startKeys(),
+            .hopSourceKeys = node->hopSourceKeys(),
+            .hopDestinationKeys = node->hopDestinationKeys(),
+            .endKeys = node->endKeys(),
+            .minHops = node->minHops(),
+            .maxHops = node->maxHops(),
+            .outputColumns = std::move(outputColumns),
+        },
+        {newStart, std::move(startContext.outputSubstitutions)},
+        {newHop, std::move(hopContext.outputSubstitutions)},
+        std::move(end));
+    return finishSimplifiedNode(
+        std::move(simplified), std::move(blocked), context);
   }
 
   NodeCP rewriteWorkingTable(const WorkingTable* node, PushdownContext& context)

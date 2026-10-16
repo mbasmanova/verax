@@ -371,6 +371,19 @@ class FunctionRegistry {
     return statsAggregates_;
   }
 
+  /// Registers function 'name' that returns the sum of two BIGINT arguments.
+  /// The optimizer calls it only where the sum fits in BIGINT, so any
+  /// addition qualifies whatever it does on overflow or for other types:
+  /// Presto's 'plus' and Spark's 'add' both do.
+  /// @return true if successfully registered, false if a different
+  /// 'bigintAddition' function is already registered.
+  bool registerBigintAddition(std::string_view name);
+
+  /// Returns the name of the 'bigintAddition' function.
+  const std::optional<std::string>& bigintAddition() const {
+    return bigintAddition_;
+  }
+
   /// Registers function 'name' that has semantics of Presto's 'lt',
   /// i.e. returns true if left argument is less than right.
   /// @return true if successfully registered, false if a different
@@ -578,6 +591,7 @@ class FunctionRegistry {
   std::optional<std::string> elementAt_;
   std::optional<std::string> subscript_;
   std::optional<std::string> cardinality_;
+  std::optional<std::string> bigintAddition_;
   std::optional<std::string> lessThan_;
   std::optional<std::string> lessThanOrEqual_;
   std::optional<std::string> greaterThan_;

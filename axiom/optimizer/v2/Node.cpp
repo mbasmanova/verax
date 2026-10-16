@@ -57,6 +57,7 @@ const auto& nodeTypeNames() {
       {NodeType::kTableWrite, "TableWrite"},
       {NodeType::kFixedPoint, "FixedPoint"},
       {NodeType::kWorkingTable, "WorkingTable"},
+      {NodeType::kRepeat, "Repeat"},
   };
   return kNames;
 }
@@ -796,6 +797,17 @@ void checkColumns(const ExprVector& exprs, std::string_view role) {
 }
 
 } // namespace
+
+ColumnVector Node::outputsAmong(const ColumnVector& columns) const {
+  const auto produced = PlanObjectSet::fromObjects(outputColumns_);
+  ColumnVector result;
+  for (ColumnCP column : columns) {
+    if (produced.contains(column)) {
+      result.push_back(column);
+    }
+  }
+  return result;
+}
 
 bool Node::emitsInputColumns() const {
   switch (nodeType_) {
@@ -3258,6 +3270,127 @@ bool FixedPoint::KeyEq::operator()(const FixedPoint* node, const Key& key)
   return (*this)(key, node);
 }
 
+namespace {
+
+// The keys read only 'input's columns.
+void checkKeysRead(
+    const ExprVector& keys,
+    NodeCP input,
+    std::string_view role) {
+  const auto columns = PlanObjectSet::fromObjects(input->outputColumns());
+  for (ExprCP key : keys) {
+    VELOX_CHECK(
+        key->columns().isSubset(columns),
+        "Repeat {} must read only its input: {}",
+        role,
+        key->toString());
+  }
+}
+
+NodeVector repeatInputs(const Repeat::Key& key) {
+  NodeVector inputs{key.start, key.hop};
+  if (key.end != nullptr) {
+    inputs.push_back(key.end);
+  }
+  return inputs;
+}
+
+} // namespace
+
+Partitioning Repeat::globalPartition(
+    std::span<const Partitioning> /*inputPartitions*/,
+    Builder& /*builder*/) const {
+  return {};
+}
+
+Repeat::Repeat(const Key& key)
+    : Node(NodeType::kRepeat, ColumnVector{key.outputColumns}, {}),
+      inputs_(repeatInputs(key)),
+      startKeys_(key.startKeys),
+      hopSourceKeys_(key.hopSourceKeys),
+      hopDestinationKeys_(key.hopDestinationKeys),
+      endKeys_(key.endKeys),
+      minHops_(key.minHops),
+      maxHops_(key.maxHops) {
+  VELOX_CHECK_NOT_NULL(start());
+  VELOX_CHECK_NOT_NULL(hop());
+  VELOX_CHECK(!startKeys_.empty(), "Repeat needs an identity");
+  VELOX_CHECK_EQ(startKeys_.size(), hopSourceKeys_.size());
+  VELOX_CHECK_EQ(startKeys_.size(), hopDestinationKeys_.size());
+  VELOX_CHECK_EQ(startKeys_.size(), endKeys_.size());
+  VELOX_CHECK_GE(minHops_, 1, "Repeat minHops must be at least one");
+  VELOX_CHECK_LE(minHops_, maxHops_, "Repeat minHops must not exceed maxHops");
+  VELOX_CHECK_GE(maxHops_, 2, "Repeat of at most one hop is a join");
+  checkKeysRead(startKeys_, start(), "start key");
+  checkKeysRead(hopSourceKeys_, hop(), "hop source key");
+  checkKeysRead(hopDestinationKeys_, hop(), "hop destination key");
+  checkKeysRead(endKeys_, end() != nullptr ? end() : start(), "end key");
+
+  auto available = PlanObjectSet::fromObjects(start()->outputColumns());
+  if (end() != nullptr) {
+    available.unionObjects(end()->outputColumns());
+  }
+  for (ColumnCP column : outputColumns()) {
+    VELOX_CHECK(
+        available.contains(column),
+        "Repeat output must come from start or end: {}",
+        column->toString());
+  }
+}
+
+size_t Repeat::KeyHash::operator()(const Repeat* node) const {
+  return hashOf(
+      node->start(),
+      node->hop(),
+      node->end(),
+      node->startKeys(),
+      node->hopSourceKeys(),
+      node->hopDestinationKeys(),
+      node->endKeys(),
+      node->minHops(),
+      node->maxHops(),
+      node->outputColumns());
+}
+
+size_t Repeat::KeyHash::operator()(const Key& key) const {
+  return hashOf(
+      key.start,
+      key.hop,
+      key.end,
+      key.startKeys,
+      key.hopSourceKeys,
+      key.hopDestinationKeys,
+      key.endKeys,
+      key.minHops,
+      key.maxHops,
+      key.outputColumns);
+}
+
+bool Repeat::KeyEq::operator()(const Repeat* left, const Repeat* right) const {
+  return left->start() == right->start() && left->hop() == right->hop() &&
+      left->end() == right->end() && left->startKeys() == right->startKeys() &&
+      left->hopSourceKeys() == right->hopSourceKeys() &&
+      left->hopDestinationKeys() == right->hopDestinationKeys() &&
+      left->endKeys() == right->endKeys() &&
+      left->minHops() == right->minHops() &&
+      left->maxHops() == right->maxHops() &&
+      left->outputColumns() == right->outputColumns();
+}
+
+bool Repeat::KeyEq::operator()(const Key& key, const Repeat* node) const {
+  return key.start == node->start() && key.hop == node->hop() &&
+      key.end == node->end() && key.startKeys == node->startKeys() &&
+      key.hopSourceKeys == node->hopSourceKeys() &&
+      key.hopDestinationKeys == node->hopDestinationKeys() &&
+      key.endKeys == node->endKeys() && key.minHops == node->minHops() &&
+      key.maxHops == node->maxHops() &&
+      key.outputColumns == node->outputColumns();
+}
+
+bool Repeat::KeyEq::operator()(const Repeat* node, const Key& key) const {
+  return (*this)(key, node);
+}
+
 #define V2_DEFINE_ACCEPT(NodeT)                                               \
   void NodeT::accept(const NodeVisitor& visitor, NodeVisitorContext& context) \
       const {                                                                 \
@@ -3290,6 +3423,7 @@ V2_DEFINE_ACCEPT(Exchange)
 V2_DEFINE_ACCEPT(TableWrite)
 V2_DEFINE_ACCEPT(WorkingTable)
 V2_DEFINE_ACCEPT(FixedPoint)
+V2_DEFINE_ACCEPT(Repeat)
 
 #undef V2_DEFINE_ACCEPT
 

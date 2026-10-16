@@ -46,6 +46,7 @@ add_library(
   JoinSimplifier.cpp
   JoinTreeEmitter.cpp
   LimitAndOrderPass.cpp
+  LowerRepeatPass.cpp
   MarkFilterFusion.cpp
   MemoOp.cpp
   Node.cpp

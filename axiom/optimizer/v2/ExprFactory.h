@@ -81,6 +81,10 @@ class ExprFactory {
   /// Builds `lhs < rhs`.
   ExprCP makeLessThan(ExprCP lhs, ExprCP rhs);
 
+  /// Builds `lhs + rhs` over BIGINTs whose sum fits in BIGINT, the only use
+  /// FunctionRegistry::registerBigintAddition promises.
+  ExprCP makeBigintAddition(ExprCP lhs, ExprCP rhs);
+
   /// Builds `value IN (values...)` over constants, with 'values' of the type
   /// of 'value', in canonical form:
   /// - Duplicate values are dropped.
@@ -227,10 +231,13 @@ class ExprFactory {
   }
 
  private:
-  // Builds a BOOLEAN-typed (cardinality 2) call named `name` over
-  // `arguments`, seeding the `FunctionSet` from the function's own bits
-  // (`specialForm` selects special-form vs registered-function lookup)
-  // OR'd with each argument's.
+  // Builds a call named `name` over `arguments` that returns `value`, seeding
+  // the `FunctionSet` from the function's own bits (`specialForm` selects
+  // special-form vs registered-function lookup) OR'd with each argument's.
+  ExprCP
+  makeCall(Name name, Value value, ExprVector arguments, bool specialForm);
+
+  // Builds a BOOLEAN-typed (cardinality 2) call; see makeCall.
   ExprCP makeBooleanCall(Name name, ExprVector arguments, bool specialForm);
 
   Builder& builder_;

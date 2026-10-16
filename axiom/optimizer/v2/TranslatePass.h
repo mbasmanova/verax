@@ -40,12 +40,14 @@ class TranslatePass {
   /// user-visible output layout, aligned 1:1 with each other. `outputColumns`
   /// may contain duplicate `Column*` entries (e.g., `SELECT v, v`).
   /// `connectorPushdownSupported` is true when at least one referenced
-  /// connector advertises pushdown support.
+  /// connector advertises pushdown support. `hasRepeat` is true when the tree
+  /// holds a `Repeat`.
   struct Result {
     NodeCP root;
     ColumnVector outputColumns;
     std::vector<std::string> outputNames;
     bool connectorPushdownSupported{false};
+    bool hasRepeat{false};
   };
 
   /// Translates 'plan' into a tree-IR plus its user-visible output layout.
