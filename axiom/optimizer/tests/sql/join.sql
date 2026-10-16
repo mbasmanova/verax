@@ -392,6 +392,24 @@ SELECT *
 FROM (SELECT * FROM t WHERE a >= 2) t
 FULL JOIN t u ON t.a = u.a
 ----
+-- A FULL JOIN that the WHERE reduces to an inner join filters through the
+-- coalesced key: once reduced, the condition on p.b and q.b must still apply.
+SELECT count(*)
+FROM (
+  SELECT coalesce(p.a, q.a) AS k, p.b AS pb, q.a AS x, q.b AS qb
+  FROM t p FULL JOIN t q ON p.a = q.a)
+WHERE ((k < 3 AND pb > qb) OR (x < 3 AND qb < 0)) AND pb >= 0 AND qb > 0
+----
+-- Same, with the condition on the left key wrapped in coalesce. A copy through
+-- the keys, simplified with the keys non-null, splits into a condition on q
+-- and one on p.b and q.b; the condition on p.b and q.b must still apply.
+SELECT count(*)
+FROM (
+  SELECT p.a AS pa, p.b AS pb, q.a AS x, q.b AS qb
+  FROM t p FULL JOIN t q ON p.a = q.a)
+WHERE ((coalesce(pa, 0) < 3 AND pb > qb) OR (x < 3 AND qb < 0))
+  AND pb >= 0 AND qb > 0
+----
 -- A filter can cross two joins when the first join preserves it on its output.
 SELECT q.a, count(v.b)
 FROM (

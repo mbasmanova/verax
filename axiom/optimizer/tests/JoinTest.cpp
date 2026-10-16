@@ -236,8 +236,7 @@ TEST_P(JoinTest, semiAntiJoinOutput) {
                                    .aliases({"x_k", "a", "c"})
                                    .filter("a = 1 OR x_k = 2"),
                                {.nullAware = true, .keys = {{"y_k = c"}}})
-                           .aliases({"x_k", "c", "a", "matched"})
-                           .filter("a = 1 OR x_k = 2");
+                           .aliases({"x_k", "c", "matched"});
     AXIOM_ASSERT_PLAN_V2(
         toSingleNodePlan(query),
         matchScan("z")
@@ -2607,14 +2606,14 @@ TEST_P(JoinTest, leftThenFilter) {
         "WHERE a > y";
     SCOPED_TRACE(query);
 
-    // V2 is better: it derives the single-input `x > y` filter and evaluates
-    // `a > y` in the join instead of in a separate post-join Filter.
+    // V2 is better: inside the join a equals x, so `a > y` becomes the
+    // single-input `x > y` below the join, with no filter after it.
     auto matcher = useV2_
         ? matchScan("t")
               .hashJoin(
                   matchScan("u").filter("x > y"),
                   core::JoinType::kInner,
-                  {.filter = "a > y"})
+                  {.filter = ""})
               .project({"a", "b", "c", "a as x", "y"})
               .build()
         : matchScan("t")
@@ -2782,14 +2781,14 @@ TEST_P(JoinTest, fullThenFilter) {
         "WHERE a > y";
     SCOPED_TRACE(query);
 
-    // V2 is better: it derives the single-input `x > y` filter and evaluates
-    // `a > y` in the join instead of in a separate post-join Filter.
+    // V2 is better: inside the join a equals x, so `a > y` becomes the
+    // single-input `x > y` below the join, with no filter after it.
     auto matcher = useV2_
         ? matchScan("t")
               .hashJoin(
                   matchScan("u").filter("x > y"),
                   core::JoinType::kInner,
-                  {.filter = "a > y"})
+                  {.filter = ""})
               .project({"a", "b", "c", "a as x", "y"})
               .build()
         : matchScan("t")
@@ -3222,6 +3221,54 @@ TEST_P(JoinTest, impliedJoinChain) {
                                             .hashJoin(matchScan("t4")))
                               .build();
   AXIOM_ASSERT_PLAN(plan, matcher);
+}
+
+// A condition that reads both join inputs moves to one input when the join
+// keys rewrite it into that input's columns. Inside an inner join the keys are
+// equal, so the join keeps no copy of it.
+TEST_P(JoinTest, conditionThroughJoinKeys) {
+  testConnector_->addTable("t", ROW({"a", "b"}, BIGINT()));
+  testConnector_->addTable("u", ROW({"x", "y"}, BIGINT()));
+  testConnector_->addTable("v", ROW({"k", "m"}, BIGINT()));
+  {
+    auto plan = toSingleNodePlan(
+        "SELECT t.b FROM t JOIN u ON t.a = u.x WHERE t.a < u.y");
+    auto matcher = matchScan("t")
+                       .hashJoinInner(
+                           matchScan("u").filter("x < y").project({"x"}),
+                           {.keys = {{"a = x"}}, .filter = ""})
+                       .build();
+    AXIOM_ASSERT_PLAN_V2(plan, matcher);
+  }
+  {
+    auto plan = toSingleNodePlan(
+        "SELECT t.b FROM t JOIN u ON t.a = u.x JOIN v ON u.y = v.k "
+        "WHERE t.a < v.k");
+    auto matcher =
+        matchScan("t")
+            .hashJoinInner(
+                matchScan("u").filter("x < y"),
+                {.keys = {{"a = x"}}, .filter = ""})
+            .hashJoinInner(matchScan("v"), {.keys = {{"y = k"}}, .filter = ""})
+            .build();
+    AXIOM_ASSERT_PLAN_V2(plan, matcher);
+  }
+  {
+    // The WHERE reduces the FULL join to inner. Its conjuncts then read the
+    // left key for the right one, with the keys non-null, as above a written
+    // inner join: coalesce(t.a, 0) reads as t.a, and a < 3 factors out.
+    auto plan = toSingleNodePlan(
+        "SELECT t.b FROM t FULL JOIN u ON t.a = u.x "
+        "WHERE ((coalesce(t.a, 0) < 3 AND t.b > u.y) "
+        "OR (u.x < 3 AND u.y < 0)) AND t.b >= 0 AND u.y > 0");
+    auto matcher = matchScan("t")
+                       .filter("a < 3 AND b >= 0")
+                       .hashJoinInner(
+                           matchScan("u").filter("x < 3 AND y > 0"),
+                           {.keys = {{"a = x"}}, .filter = "b > y OR y < 0"})
+                       .build();
+    AXIOM_ASSERT_PLAN_V2(plan, matcher);
+  }
 }
 
 // TODO: Assert the V2 plans after transitive inference handles pending

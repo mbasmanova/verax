@@ -684,6 +684,21 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     return result;
   }
 
+  // Adds the column keys of a join to 'nonNull'. Unless the join matches NULL
+  // to NULL ('nullAsValue'), rows agree on a key only when it is not NULL.
+  template <typename Keys>
+  static void
+  addNonNullKeys(const Keys& keys, bool nullAsValue, PlanObjectSet& nonNull) {
+    if (nullAsValue) {
+      return;
+    }
+    for (ExprCP key : keys) {
+      if (key->isColumn()) {
+        nonNull.add(key);
+      }
+    }
+  }
+
   // Substitutes equivalent join-key columns into deterministic filters. Unless
   // the join matches NULL to NULL ('nullAsValue'), rows agree on a key only
   // when it is not NULL, so the targets are non-null in what a derived filter
@@ -695,24 +710,36 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       bool nullAsValue,
       ExprVector& derived) {
     const auto substitutions = makeSubstitutions(sources, targets);
-    const PlanObjectSet nonNullTargets =
-        nullAsValue ? PlanObjectSet{} : PlanObjectSet::fromObjects(targets);
+    PlanObjectSet nonNullTargets;
+    addNonNullKeys(targets, nullAsValue, nonNullTargets);
     for (ExprCP filter : filters) {
-      if (filter->containsNonDeterministic()) {
-        continue;
-      }
       for (const auto& mapping : substitutions) {
-        ExprCP substituted = exprs_.replace(filter, mapping);
-        if (substituted == filter || isSelfEquality(substituted)) {
-          continue;
-        }
-        if (simplifier_.simplifyFilter(
-                simplifier_.simplify(substituted, nonNullTargets), derived)) {
+        if (deriveFilter(filter, mapping, nonNullTargets, derived)) {
           return true;
         }
       }
     }
     return false;
+  }
+
+  // Appends to 'derived' the conjuncts of 'filter' rewritten through
+  // 'mapping', simplified with 'nonNullTargets' non-null. Appends nothing for
+  // a non-deterministic filter or one 'mapping' leaves unchanged. Returns true
+  // if the rewrite simplifies to false.
+  bool deriveFilter(
+      ExprCP filter,
+      const ExprFactory::ExprSubstitution& mapping,
+      const PlanObjectSet& nonNullTargets,
+      ExprVector& derived) {
+    if (filter->containsNonDeterministic()) {
+      return false;
+    }
+    ExprCP substituted = exprs_.replace(filter, mapping);
+    if (substituted == filter || isSelfEquality(substituted)) {
+      return false;
+    }
+    return simplifier_.simplifyFilter(
+        simplifier_.simplify(substituted, nonNullTargets), derived);
   }
 
   // Appends derived filters that can be evaluated entirely by one input.
@@ -1320,7 +1347,38 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       context.pending =
           result.reductionSubstitutions.apply(context.pending, exprs_);
     }
+    if (result.joinType == velox::core::JoinType::kInner &&
+        node->joinType() != velox::core::JoinType::kInner) {
+      canonicalizeThroughKeys(node, context.pending);
+    }
     return result;
+  }
+
+  // Rewrites 'pending' over a join reduced to inner into the form conjuncts
+  // above a written inner join have: each right key reads as its left key, and
+  // the conjuncts are simplified again with the key columns non-null, as
+  // deriveFilters simplifies its copies.
+  void canonicalizeThroughKeys(const Join* node, ExprVector& pending) {
+    // The join is inner once reduced, so kInner gives the rewrite of each
+    // right key column to its left key.
+    PlanSubstitutions keys;
+    nodeSimplifier_.addJoinKeySubstitutions(
+        velox::core::JoinType::kInner,
+        node->leftKeys(),
+        node->rightKeys(),
+        keys);
+    PlanObjectSet nonNullKeys;
+    addNonNullKeys(node->leftKeys(), node->nullAsValue(), nonNullKeys);
+    addNonNullKeys(node->rightKeys(), node->nullAsValue(), nonNullKeys);
+    ExprVector simplified;
+    for (ExprCP conjunct : keys.apply(pending, exprs_)) {
+      if (simplifier_.simplifyFilter(
+              simplifier_.simplify(conjunct, nonNullKeys), simplified)) {
+        pending = {builder().makeBoolean(false)};
+        return;
+      }
+    }
+    pending = std::move(simplified);
   }
 
   // Holds the join boundary that remains after output pruning.
@@ -2894,13 +2952,55 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     if (leftKeys.empty()) {
       return false;
     }
+
+    // Inside the join the keys are equal, so a conjunct rewritten through the
+    // keys is equivalent to it, and so is the AND of the copies the rewrite
+    // simplifies to. A copy helps only when it reads one input. A conjunct
+    // that reads both is redundant when every copy of one rewrite reads one
+    // input.
+    auto readsOneInput = [&](ExprCP conjunct) {
+      const auto& columns = conjunct->columns();
+      return !columns.empty() &&
+          (columns.isSubset(leftColumns) || columns.isSubset(rightColumns));
+    };
+    const auto toLeft = makeSubstitutions(rightKeys, leftKeys);
+    const auto toRight = makeSubstitutions(leftKeys, rightKeys);
+    PlanObjectSet nonNullLeft;
+    addNonNullKeys(leftKeys, node->nullAsValue(), nonNullLeft);
+    PlanObjectSet nonNullRight;
+    addNonNullKeys(rightKeys, node->nullAsValue(), nonNullRight);
+
+    ExprVector kept;
     ExprVector derived;
-    if (deriveFilters(
-            pending, rightKeys, leftKeys, node->nullAsValue(), derived) ||
-        deriveFilters(
-            pending, leftKeys, rightKeys, node->nullAsValue(), derived)) {
-      return true;
+    for (ExprCP conjunct : pending) {
+      ExprVector copies;
+      bool covered{false};
+      for (const auto& [substitutions, nonNullTargets] :
+           {std::pair{&toLeft, &nonNullLeft},
+            std::pair{&toRight, &nonNullRight}}) {
+        for (const auto& mapping : *substitutions) {
+          const size_t begin = copies.size();
+          if (deriveFilter(conjunct, mapping, *nonNullTargets, copies)) {
+            return true;
+          }
+          covered = covered ||
+              (copies.size() > begin &&
+               std::all_of(
+                   copies.begin() + begin, copies.end(), readsOneInput));
+        }
+      }
+
+      if (readsOneInput(conjunct) || !covered) {
+        kept.push_back(conjunct);
+      }
+
+      std::copy_if(
+          copies.begin(),
+          copies.end(),
+          std::back_inserter(derived),
+          readsOneInput);
     }
+    pending = std::move(kept);
     appendDistinct(pending, derived);
     return false;
   }
