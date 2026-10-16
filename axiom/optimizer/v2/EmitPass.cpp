@@ -239,6 +239,9 @@ class Emitter {
   }
 
   velox::core::PlanNodePtr emit(NodeCP node) {
+    if (step_ != nullptr && node->requiredStates().empty()) {
+      return emitStepState(node);
+    }
     auto plan = emitNode(node);
     recordPrediction(node, plan);
     return plan;
@@ -463,6 +466,37 @@ class Emitter {
   velox::core::PlanNodePtr emitGroupId(const GroupId& groupId);
   velox::core::PlanNodePtr emitMarkDistinct(const MarkDistinct& markDistinct);
   velox::core::PlanNodePtr emitJoin(const Join& join);
+
+  // Inside a fixed point's step, emits an inner equi-join whose build side
+  // reads no recursive state as a probe against a hash table built once for
+  // the whole loop. Returns null if 'join' doesn't qualify.
+  velox::core::PlanNodePtr emitStateHashJoin(const Join& join);
+
+  // Declares a hash table over 'build', emitted once, with rows laid out as
+  // 'columns', whose first 'numKeys' are the keys. Returns the state's name.
+  std::string
+  declareHashTable(NodeCP build, const ColumnVector& columns, size_t numKeys);
+
+  // Returns 'probe', a StateHashJoinNode, shaped as 'join's output: applies the
+  // join's filter and projects its source columns to its output names.
+  // 'columns' are the columns the filter can read: the probe's, then the
+  // table's. The table's keys are not in the probe's output, so a reference
+  // to one reads the probe key 'probeKeyOf' maps it to.
+  velox::core::PlanNodePtr finishStateHashJoin(
+      const Join& join,
+      velox::core::PlanNodePtr probe,
+      const ColumnVector& columns,
+      folly::F14FastMap<ColumnCP, ExprCP> probeKeyOf);
+
+  // Inside a fixed point's step, emits 'node', which reads no recursive state,
+  // once as a state's initial plan, and returns a read of that state. The loop
+  // feeds splits only to initial plans, and the rows are the same every
+  // iteration.
+  velox::core::PlanNodePtr emitStepState(NodeCP node);
+
+  // Emits 'node' as an initial plan of the fixed point whose step is being
+  // emitted. It runs once, before the first iteration.
+  velox::core::PlanNodePtr emitInitialPlan(NodeCP node);
   velox::core::PlanNodePtr emitIndexLookupJoin(const IndexLookupJoin& join);
   velox::core::PlanNodePtr emitSort(const Sort& sort);
   velox::core::PlanNodePtr emitTopN(const TopN& topN);
@@ -601,6 +635,19 @@ class Emitter {
   // `maxLocalPartitions` for the recursive subtree and restores it afterwards.
   MultiFragmentPlan::Options options_;
   int32_t nextNodeId_{0};
+
+  // The fixed point whose step is being emitted, with the states that hold
+  // the step's parts that read no recursive state.
+  struct FixedPointStep {
+    std::string stateName;
+    std::vector<velox::core::StateDeclarationPtr> states;
+
+    // Returns a name for the next state.
+    std::string nextStateName() const {
+      return fmt::format("{}_{}", stateName, states.size());
+    }
+  };
+  FixedPointStep* step_{nullptr};
 
   // Producer fragments collected as `ir.Exchange`es are lowered; the root
   // fragment is appended last by `emitFragments`.
@@ -1433,7 +1480,146 @@ velox::core::PlanNodePtr Emitter::emitMarkDistinct(
       std::move(input));
 }
 
+velox::core::PlanNodePtr Emitter::emitStateHashJoin(const Join& join) {
+  if (step_ == nullptr || join.joinType() != velox::core::JoinType::kInner ||
+      join.leftKeys().empty() || join.nullAsValue()) {
+    return nullptr;
+  }
+
+  // One side must read no recursive state, to be built once.
+  const bool rightBuilds = join.right()->requiredStates().empty();
+  if (!rightBuilds && !join.left()->requiredStates().empty()) {
+    return nullptr;
+  }
+
+  NodeCP probe = rightBuilds ? join.left() : join.right();
+  NodeCP build = rightBuilds ? join.right() : join.left();
+  const auto& probeKeys = rightBuilds ? join.leftKeys() : join.rightKeys();
+  const auto& buildKeys = rightBuilds ? join.rightKeys() : join.leftKeys();
+
+  // The table's rows are its keys followed by the build side's other columns.
+  // A table's keys are distinct columns, so a join that repeats a build key
+  // doesn't qualify.
+  ColumnVector buildColumns;
+  folly::F14FastMap<ColumnCP, ExprCP> probeKeyOf;
+  for (size_t i = 0; i < buildKeys.size(); ++i) {
+    VELOX_CHECK(buildKeys[i]->is(PlanType::kColumnExpr));
+    const auto* key = buildKeys[i]->as<Column>();
+    if (!probeKeyOf.emplace(key, probeKeys[i]).second) {
+      return nullptr;
+    }
+    buildColumns.push_back(key);
+  }
+  for (ColumnCP column : build->outputColumns()) {
+    if (!probeKeyOf.contains(column)) {
+      buildColumns.push_back(column);
+    }
+  }
+
+  auto stateName = declareHashTable(build, buildColumns, buildKeys.size());
+
+  auto probePlan = emit(probe);
+  auto names = probePlan->outputType()->names();
+  auto types = probePlan->outputType()->children();
+  for (size_t i = buildKeys.size(); i < buildColumns.size(); ++i) {
+    names.push_back(buildColumns[i]->outputName());
+    types.push_back(toTypePtr(buildColumns[i]->value().type));
+  }
+  std::vector<std::string> probeKeyNames;
+  for (const auto& key : toFieldAccessList(probeKeys, "Join key")) {
+    probeKeyNames.push_back(key->name());
+  }
+  auto plan = std::make_shared<velox::core::StateHashJoinNode>(
+      nextId(),
+      std::move(stateName),
+      std::move(probeKeyNames),
+      velox::ROW(std::move(names), std::move(types)),
+      std::move(probePlan));
+
+  ColumnVector columns = probe->outputColumns();
+  columns.insert(columns.end(), buildColumns.begin(), buildColumns.end());
+  return finishStateHashJoin(
+      join, std::move(plan), columns, std::move(probeKeyOf));
+}
+
+std::string Emitter::declareHashTable(
+    NodeCP build,
+    const ColumnVector& columns,
+    size_t numKeys) {
+  auto plan = emitInitialPlan(build);
+  const auto names = namesOf(columns);
+  if (plan->outputType()->names() != names) {
+    plan = wrapWithRenameProject(std::move(plan), columns, names);
+  }
+  auto stateName = step_->nextStateName();
+  step_->states.push_back(
+      velox::core::HashTableState(
+          stateName,
+          makeRowType(columns),
+          std::vector<std::string>(names.begin(), names.begin() + numKeys))
+          .initial(std::move(plan)));
+  return stateName;
+}
+
+velox::core::PlanNodePtr Emitter::finishStateHashJoin(
+    const Join& join,
+    velox::core::PlanNodePtr probe,
+    const ColumnVector& columns,
+    folly::F14FastMap<ColumnCP, ExprCP> probeKeyOf) {
+  velox::core::PlanNodePtr plan = std::move(probe);
+  const auto project = [&](const ColumnVector& sources,
+                           std::vector<std::string> outputNames) {
+    std::vector<velox::core::TypedExprPtr> projections;
+    projections.reserve(sources.size());
+    for (ColumnCP column : sources) {
+      const auto it = probeKeyOf.find(column);
+      projections.push_back(
+          it == probeKeyOf.end() ? toFieldAccess(column)
+                                 : toFieldAccess(it->second, "Join key"));
+    }
+    return std::make_shared<velox::core::ProjectNode>(
+        nextId(),
+        std::move(outputNames),
+        std::move(projections),
+        std::move(plan));
+  };
+  if (!join.filter().empty()) {
+    plan = project(columns, namesOf(columns));
+    plan = std::make_shared<velox::core::FilterNode>(
+        nextId(), exprEmitter_.makeAnd(join.filter()), std::move(plan));
+    probeKeyOf.clear();
+  }
+  auto outputNames = namesOf(join.outputColumns());
+  if (plan->outputType()->names() == outputNames &&
+      namesOf(join.sourceColumns()) == outputNames) {
+    return plan;
+  }
+  return project(join.sourceColumns(), std::move(outputNames));
+}
+
+velox::core::PlanNodePtr Emitter::emitInitialPlan(NodeCP node) {
+  auto* step = std::exchange(step_, nullptr);
+  SCOPE_EXIT {
+    step_ = step;
+  };
+  return emit(node);
+}
+
+velox::core::PlanNodePtr Emitter::emitStepState(NodeCP node) {
+  auto initialPlan = emitInitialPlan(node);
+  auto schema = initialPlan->outputType();
+  auto stateName = step_->nextStateName();
+  step_->states.push_back(
+      std::make_shared<velox::core::VectorStateDeclaration>(
+          stateName, schema, std::move(initialPlan), /*append=*/false));
+  return std::make_shared<velox::core::StateSourceNode>(
+      nextId(), std::move(stateName), std::move(schema), /*delta=*/false);
+}
+
 velox::core::PlanNodePtr Emitter::emitJoin(const Join& join) {
+  if (auto plan = emitStateHashJoin(join)) {
+    return plan;
+  }
   velox::core::PlanNodePtr left = emit(join.left());
   velox::core::PlanNodePtr right = emit(join.right());
 
@@ -2636,10 +2822,18 @@ velox::core::PlanNodePtr Emitter::emitFixedPoint(const FixedPoint& fixedPoint) {
   SCOPE_EXIT {
     options_.maxLocalPartitions = previousMaxLocalPartitions;
   };
-  auto stepPlan = emit(fixedPoint.step());
+  const std::string stateName{fixedPoint.name()};
+  FixedPointStep step{.stateName = stateName};
+  velox::core::PlanNodePtr stepPlan;
+  {
+    auto* previousStep = std::exchange(step_, &step);
+    SCOPE_EXIT {
+      step_ = previousStep;
+    };
+    stepPlan = emit(fixedPoint.step());
+  }
 
   auto schema = makeRowType(fixedPoint.outputColumns());
-  const std::string stateName{fixedPoint.name()};
 
   auto convergence = velox::core::ConvergenceConfig::converging(
       emit(fixedPoint.convergence()), fixedPoint.maxIterations());
@@ -2648,6 +2842,9 @@ velox::core::PlanNodePtr Emitter::emitFixedPoint(const FixedPoint& fixedPoint) {
   stateDeclarations.push_back(
       std::make_shared<velox::core::VectorStateDeclaration>(
           stateName, schema, std::move(anchorPlan), /*append=*/true));
+  for (auto& state : step.states) {
+    stateDeclarations.push_back(std::move(state));
+  }
   std::vector<velox::core::PlanNodePtr> plans;
   plans.push_back(std::move(stepPlan));
 

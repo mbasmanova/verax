@@ -83,7 +83,7 @@ TEST_F(FixedPointTest, joinKeyState) {
       "SELECT t_k, u_k FROM r";
   SCOPED_TRACE(query);
 
-  AXIOM_ASSERT_PLAN_V2(
+  AXIOM_ASSERT_PLAN(
       toSingleNodePlan(parseSelect(query)),
       core::PlanMatcherBuilder()
           .fixedPoint(matchFixedPoint("r")
@@ -97,6 +97,30 @@ TEST_F(FixedPointTest, joinKeyState) {
                                     .filter("t_k < 10")
                                     .project({"t_k + 1", "u_k + 1"})))
           .build());
+}
+
+// A step's join reads the table through a hash table built once for the loop.
+TEST_F(FixedPointTest, stepJoin) {
+  testConnector_->addTable("e", ROW({"src", "dst"}, BIGINT()));
+
+  auto logicalPlan = parseSelect(
+      "WITH RECURSIVE r(n) AS ("
+      "     SELECT CAST(1 AS BIGINT) "
+      "     UNION ALL "
+      "     SELECT dst FROM r JOIN e ON src = n"
+      ") "
+      "SELECT n FROM r");
+
+  auto matcher =
+      core::PlanMatcherBuilder()
+          .fixedPoint(matchFixedPoint("r")
+                          .outputState(/*append=*/true, matchValues())
+                          .hashTableState(matchScan("e"))
+                          .plan(matchDelta("r", {"n"})
+                                    .stateHashJoin({"n"})
+                                    .project({"dst"})))
+          .build();
+  AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
 }
 
 TEST_F(FixedPointTest, singleDriverStep) {

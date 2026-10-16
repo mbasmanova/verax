@@ -215,6 +215,10 @@ class FixedPointMatch {
   /// named at construction — with the given append mode, and its initial plan.
   FixedPointMatch& outputState(bool append, PlanMatcherBuilder initialPlan);
 
+  /// Matches the next HashTableStateDeclaration, in declaration order, by its
+  /// initial plan.
+  FixedPointMatch& hashTableState(PlanMatcherBuilder initialPlan);
+
   /// Matches the next per-iteration plan — for a recursive CTE, the step — in
   /// call order.
   FixedPointMatch& plan(PlanMatcherBuilder body);
@@ -243,6 +247,10 @@ class FixedPointMatch {
     return states_;
   }
 
+  const std::vector<std::shared_ptr<PlanMatcher>>& hashTableStates() const {
+    return hashTableStates_;
+  }
+
   const std::vector<std::shared_ptr<PlanMatcher>>& plans() const {
     return plans_;
   }
@@ -262,6 +270,7 @@ class FixedPointMatch {
  private:
   std::string outputStateEntry_;
   std::vector<State> states_;
+  std::vector<std::shared_ptr<PlanMatcher>> hashTableStates_;
   std::vector<std::shared_ptr<PlanMatcher>> plans_;
   std::shared_ptr<PlanMatcher> convergence_;
   std::optional<int32_t> maxIterations_;
@@ -337,6 +346,10 @@ class PlanMatcherBuilder {
   /// selects which read: true is the rows the previous iteration produced,
   /// false the entry's full accumulation.
   PlanMatcherBuilder& stateSource(const std::string& stateName, bool delta);
+
+  /// Matches a StateHashJoinNode probing a fixed point's hash table state on
+  /// the columns 'probeKeys'. Supports symbol rewriting from child matchers.
+  PlanMatcherBuilder& stateHashJoin(const std::vector<std::string>& probeKeys);
 
   /// Matches any FixedPointNode.
   PlanMatcherBuilder& fixedPoint();

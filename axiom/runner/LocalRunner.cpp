@@ -29,6 +29,7 @@
 #include "velox/common/base/SpillConfig.h"
 #include "velox/common/file/FileSystems.h"
 #include "velox/common/time/Timer.h"
+#include "velox/core/FixedPointPlanNodes.h"
 #include "velox/exec/Exchange.h"
 #include "velox/exec/FixedPointLoop.h"
 #include "velox/exec/PlanNodeStats.h"
@@ -734,9 +735,17 @@ void gatherScans(
     scans.push_back(scan);
     return;
   }
-  if (auto lookupJoin =
-          std::dynamic_pointer_cast<const velox::core::IndexLookupJoinNode>(
-              plan)) {
+  if (const auto* fixedPoint = plan->as<velox::core::FixedPointNode>()) {
+    // The loop feeds splits to its initial plans, which run once. The plans
+    // it runs each iteration read no splits.
+    for (const auto& declaration : fixedPoint->stateDeclarations()) {
+      if (declaration->initialPlan() != nullptr) {
+        gatherScans(declaration->initialPlan(), scans);
+      }
+    }
+    return;
+  }
+  if (const auto* lookupJoin = plan->as<velox::core::IndexLookupJoinNode>()) {
     // The lookup side is not a driver source: the join operator reads it
     // through an IndexSource. Only a lookup source that asks for splits gets
     // them, and then the operator, not a TableScan, consumes them.

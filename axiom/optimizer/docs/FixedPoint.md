@@ -139,6 +139,8 @@ iterations and is seeded from the anchor.
 | Logical plan | Optimizer v2 IR | Velox plan |
 | --- | --- | --- |
 | `RecursiveReferenceNode[counter]` | `WorkingTable[counter, latestDelta]` | `StateSourceNode(counter, delta=true)` |
+| — | inner equi-join in the step, build side without a `WorkingTable` | `HashTableStateDeclaration` + `StateHashJoinNode` |
+| — | other subtree of the step without a `WorkingTable` | `VectorStateDeclaration` + `StateSourceNode(delta=false)` |
 | anchor branch | anchor branch | `VectorStateDeclaration(counter, append=true)` |
 | — (synthesized in Translate) | `convergence:` `Aggregate count()` -> `Project eq(count, 0)` | `ConvergenceConfig.plans`: `AggregationNode(count)` -> `ProjectNode(count == 0)` |
 
@@ -243,6 +245,12 @@ enforces them — a hand-built node may violate them.
   emitter's options copy for the duration of the recursive subtree, so the
   surrounding query keeps its own parallelism. Restoring parallelism *inside* the
   loop is intended but not shipped.
+
+  Velox delivers splits only to a fixed point's initial plans, so every part
+  of the step that reads no recursive state becomes an initial plan, run once
+  before the first iteration. An inner equi-join's build side becomes a
+  `HashTableStateDeclaration`, probed by a `StateHashJoinNode`. Any other such
+  subtree becomes a `VectorStateDeclaration`, read by a `StateSourceNode`.
 
 ## Boundaries
 

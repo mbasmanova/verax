@@ -339,6 +339,34 @@ class StateSourceMatcher : public PlanMatcherImpl<StateSourceNode> {
   const bool delta_;
 };
 
+class StateHashJoinMatcher : public PlanMatcherImpl<StateHashJoinNode> {
+ public:
+  StateHashJoinMatcher(
+      const std::shared_ptr<PlanMatcher>& matcher,
+      const std::vector<std::string>& probeKeys)
+      : PlanMatcherImpl<StateHashJoinNode>({matcher}), probeKeys_{probeKeys} {}
+
+  MatchResult matchDetails(
+      const StateHashJoinNode& plan,
+      const std::unordered_map<std::string, std::string>& symbols)
+      const override {
+    SCOPED_TRACE(plan.toString(true, false));
+    EXPECT_EQ(plan.probeKeys().size(), probeKeys_.size());
+    AXIOM_TEST_RETURN_IF_FAILURE
+    for (size_t i = 0; i < probeKeys_.size(); ++i) {
+      const auto it = symbols.find(probeKeys_[i]);
+      EXPECT_EQ(
+          plan.probeKeys()[i],
+          it == symbols.end() ? probeKeys_[i] : it->second);
+    }
+    AXIOM_TEST_RETURN_IF_FAILURE
+    return MatchResult::success(symbols);
+  }
+
+ private:
+  const std::vector<std::string> probeKeys_;
+};
+
 class FixedPointMatcher : public PlanMatcherImpl<FixedPointNode> {
  public:
   FixedPointMatcher() = default;
@@ -359,14 +387,20 @@ class FixedPointMatcher : public PlanMatcherImpl<FixedPointNode> {
     AXIOM_TEST_RETURN_IF_FAILURE
 
     const auto& states = match_->states();
-    if (!states.empty()) {
-      EXPECT_EQ(plan.stateDeclarations().size(), states.size());
+    const auto& hashTableStates = match_->hashTableStates();
+    if (!states.empty() || !hashTableStates.empty()) {
+      EXPECT_EQ(
+          plan.stateDeclarations().size(),
+          states.size() + hashTableStates.size());
       AXIOM_TEST_RETURN_IF_FAILURE
     }
     for (const auto& state : states) {
       if (!matchState(plan, state, symbols)) {
         return MatchResult::failure();
       }
+    }
+    if (!matchHashTableStates(plan, symbols)) {
+      return MatchResult::failure();
     }
 
     const auto& plans = match_->plans();
@@ -446,6 +480,34 @@ class FixedPointMatcher : public PlanMatcherImpl<FixedPointNode> {
           .match;
     }
     return true;
+  }
+
+  // Matches the HashTableStateDeclarations, in declaration order, against the
+  // expected initial plans.
+  bool matchHashTableStates(
+      const FixedPointNode& plan,
+      const std::unordered_map<std::string, std::string>& symbols) const {
+    const auto& expected = match_->hashTableStates();
+    size_t index = 0;
+    for (const auto& declaration : plan.stateDeclarations()) {
+      if (dynamic_cast<const HashTableStateDeclaration*>(declaration.get()) ==
+              nullptr ||
+          index == expected.size()) {
+        continue;
+      }
+      EXPECT_NE(declaration->initialPlan(), nullptr)
+          << declaration->name() << " has no initial plan";
+      if (declaration->initialPlan() == nullptr) {
+        return false;
+      }
+      if (!expected[index++]
+               ->match(declaration->initialPlan(), symbols, /*context=*/nullptr)
+               .match) {
+        return false;
+      }
+    }
+    EXPECT_EQ(index, expected.size());
+    return index == expected.size();
   }
 
   const std::optional<FixedPointMatch> match_;
@@ -2273,6 +2335,13 @@ PlanMatcherBuilder& PlanMatcherBuilder::stateSource(
   return *this;
 }
 
+PlanMatcherBuilder& PlanMatcherBuilder::stateHashJoin(
+    const std::vector<std::string>& probeKeys) {
+  VELOX_USER_CHECK_NOT_NULL(matcher_);
+  matcher_ = std::make_shared<StateHashJoinMatcher>(matcher_, probeKeys);
+  return *this;
+}
+
 FixedPointMatch& FixedPointMatch::outputState(
     bool append,
     PlanMatcherBuilder initialPlan) {
@@ -2280,6 +2349,12 @@ FixedPointMatch& FixedPointMatch::outputState(
       {.name = outputStateEntry_,
        .append = append,
        .initialPlan = initialPlan.build()});
+  return *this;
+}
+
+FixedPointMatch& FixedPointMatch::hashTableState(
+    PlanMatcherBuilder initialPlan) {
+  hashTableStates_.push_back(initialPlan.build());
   return *this;
 }
 
