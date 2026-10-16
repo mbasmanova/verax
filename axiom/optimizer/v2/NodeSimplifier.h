@@ -175,6 +175,22 @@ class NodeSimplifier {
       ColumnVector& outputColumns,
       const PlanSubstitutions& substitutions);
 
+  /// Adds to 'substitutions' the expression identities a join's equi-key pairs
+  /// establish over the join's output:
+  /// - Inner: when both keys of a pair are columns, the right key reads as the
+  ///   left key. Coalesce of a key pair reads as the left key.
+  /// - Left or right: coalesce of a key pair reads as the preserved side's key.
+  /// - Full: coalesce of a key pair, in either order, reads as one canonical
+  ///   coalesce.
+  /// For an outer join, a pair whose padded key can be non-NULL over a NULL
+  /// input, such as coalesce, establishes none. Other join types establish
+  /// none.
+  void addJoinKeySubstitutions(
+      velox::core::JoinType joinType,
+      const ExprVector& leftKeys,
+      const ExprVector& rightKeys,
+      PlanSubstitutions& substitutions);
+
  private:
   // Simplifies a join; defined in JoinSimplifier.cpp.
   class JoinSimplifier;
@@ -186,14 +202,6 @@ class NodeSimplifier {
       NodeCP& right,
       ExprVector& filter,
       const ColumnVector& sourceColumns);
-
-  // Adds expression identities established by an inner or outer join's
-  // equi-key pairs.
-  void addJoinKeySubstitutions(
-      velox::core::JoinType joinType,
-      const ExprVector& leftKeys,
-      const ExprVector& rightKeys,
-      PlanSubstitutions& substitutions);
 
   // Applies input substitutions and simplifies each expression.
   ExprVector simplifyExpressions(

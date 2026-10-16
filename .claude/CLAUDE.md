@@ -535,8 +535,17 @@ violation is a bug in the code that owns the invariant; fix it there.
 - Translate rewrites a single-element `IN` as equality. Treat `x IN (c)` as
   `x = c`.
 - Before handling an alternative form of an expression, find the normalization
-  that produces the form you rely on. If a non-canonical form reaches your code,
-  fix the normalization.
+  that produces the form you rely on.
+- Canonical forms decide how much work the optimizer does, not whether its
+  result is correct. Code normalizes once, where a fact becomes known: when an
+  expression is built (argument order, `IN` lists), or when a join makes
+  columns equal (conjuncts above it read one of the equal columns and are
+  simplified using what the join guarantees, such as non-null keys). Later
+  rules match only the canonical form instead of re-deriving every equivalent
+  form on every expression in every pass. So a non-canonical input costs a
+  missed optimization, never a wrong result: a rule that removes or weakens a
+  condition must be correct for any input. If a non-canonical form reaches your
+  code, fix the normalization to recover the optimization.
 - If `a = b`, the optimizer may substitute one for the other. `-0.0` vs `0.0`
   and different zones of equal `TIMESTAMP WITH TIME ZONE` values are
   representation differences, not correctness issues. Do not add per-type
