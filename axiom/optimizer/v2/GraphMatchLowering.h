@@ -133,6 +133,10 @@ class Translator::GraphMatchLowering {
   struct EdgeState {
     // True if an undirected pattern binds it.
     bool undirected{false};
+
+    // True if a repeated pattern binds it. Its relation is the hop of the
+    // walks, which no connection joins.
+    bool repeated{false};
   };
 
   // A vertex or edge that patterns bind.
@@ -225,6 +229,22 @@ class Translator::GraphMatchLowering {
     }
   };
 
+  // A repeated edge pattern: walks of between 'minHops' and 'maxHops' hops over
+  // the edge's relation, from vertex 'from' to vertex 'to'.
+  struct RepeatedEdge {
+    size_t edge{0};
+    size_t from{0};
+    size_t to{0};
+    // True if each hop leaves at the source end of the edge's relation.
+    bool pointsRight{false};
+    int32_t minHops{0};
+    int32_t maxHops{0};
+    // Index of the path the edge pattern is in.
+    size_t path{0};
+    // The edge pattern's own predicates, which each hop satisfies.
+    std::vector<const logical_plan::Expr*> predicates;
+  };
+
   // A path pattern: its selector's limit on matches per pair of endpoints,
   // its endpoint vertices, and its term predicates.
   struct Path {
@@ -264,6 +284,10 @@ class Translator::GraphMatchLowering {
   // Binds the patterns of 'path', the path at 'pathIndex', and records its
   // edge occurrences.
   void addPath(const logical_plan::GraphPathPattern& path, size_t pathIndex);
+
+  // Fails if a predicate or an output reads a repeated edge pattern's name
+  // outside the pattern: there it stands for one value per hop.
+  void checkGroupReads() const;
 
   // Drops the legs that cannot connect to the elements next to them, until
   // no more can be dropped. After it, each vertex table an edge leg
@@ -346,13 +370,42 @@ class Translator::GraphMatchLowering {
   // Connects each edge occurrence to the vertices next to it.
   void connect();
 
+  // Returns the element whose rows hold 'element': the edge a folded vertex
+  // joins inside, or the element itself.
+  size_t holderOf(size_t element) const;
+
   // Returns the groups of elements that connections join, each in the order
   // patterns bind them. A vertex joined inside an edge's legs is in none.
   std::vector<std::vector<size_t>> components() const;
 
   // Returns the columns that identify 'element'. A vertex that folds reads
-  // them from its edge's end.
-  ExprVector identityOf(size_t element) const;
+  // them from its edge's end. With 'withTableId', the table ID comes first
+  // even where it does not vary.
+  ExprVector identityOf(size_t element, bool withTableId) const;
+
+  // Returns the identity 'end' selects of 'element' (see
+  // Element::identity), with the table ID first even where it does not vary
+  // if 'withTableId'.
+  ExprVector identity(
+      const Element& element,
+      std::optional<bool> end,
+      bool withTableId) const;
+
+  // Filters each repeated edge's relation with the edge pattern's own
+  // predicates.
+  void filterHops();
+
+  // Returns the walks of 'repeated' between the rows of 'start', which holds
+  // its 'from' vertex, and 'end', which holds its 'to' vertex. A null 'end'
+  // means 'start' holds both.
+  NodeCP walk(const RepeatedEdge& repeated, NodeCP start, NodeCP end);
+
+  // Returns 'node' joined with the walks whose ends are both in the groups
+  // 'joined' marks. 'groupOf' maps an element to its group.
+  NodeCP walkWithin(
+      NodeCP node,
+      const std::vector<std::optional<size_t>>& groupOf,
+      const std::vector<bool>& joined);
 
   // Returns the paths that bind the elements of 'component', or the vertices
   // that join inside its edges.
@@ -400,8 +453,15 @@ class Translator::GraphMatchLowering {
   // Index in 'elements_' of the element each pattern name binds.
   folly::F14FastMap<std::string, size_t> elementByName_;
 
-  // Edge patterns, in the order paths list them.
+  // Edge patterns, in the order paths list them. A repeated edge pattern is
+  // in 'repeatedEdges_' instead.
   std::vector<EdgeOccurrence> occurrences_;
+
+  // Repeated edge patterns, in the order paths list them.
+  std::vector<RepeatedEdge> repeatedEdges_;
+
+  // True for each repeated edge whose walks are joined.
+  std::vector<bool> walked_;
 
   // Pairs of adjacent elements and the columns they match on.
   std::vector<Connection> connections_;

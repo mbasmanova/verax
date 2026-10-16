@@ -153,6 +153,21 @@ class NodeSimplifier {
       SimplifiedNode step,
       SimplifiedNode convergence);
 
+  /// Builds the convergence branch of a fixed point over state 'stateName'
+  /// with 'stateColumns': true once an iteration produces no rows.
+  NodeCP makeEmptyDeltaConvergence(
+      Name stateName,
+      const ColumnVector& stateColumns);
+
+  /// Builds a Repeat over the simplified inputs. Its keys read them through
+  /// their substitutions, and each side outputs the columns the Repeat
+  /// passes on. An empty input makes the result empty.
+  SimplifiedNode make(
+      Repeat::Key key,
+      SimplifiedNode start,
+      SimplifiedNode hop,
+      std::optional<SimplifiedNode> end);
+
   /// Builds a UnionAll after restoring each leg's positional columns.
   SimplifiedNode make(UnionAll::Key key, std::vector<SimplifiedNode> inputs);
 

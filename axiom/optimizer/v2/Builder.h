@@ -263,6 +263,8 @@ class Builder {
       return workingTables_;
     } else if constexpr (std::is_same_v<T, FixedPoint>) {
       return fixedPoints_;
+    } else if constexpr (std::is_same_v<T, Repeat>) {
+      return repeats_;
     } else if constexpr (std::is_same_v<T, IndexLookupJoin>) {
       return indexLookupJoins_;
     } else {
@@ -309,6 +311,7 @@ class Builder {
   DedupSet<TableWrite> tableWrites_;
   DedupSet<WorkingTable> workingTables_;
   DedupSet<FixedPoint> fixedPoints_;
+  DedupSet<Repeat> repeats_;
 
   // Expr leaves, interned via `makeLiteral` / `makeCall` / `makeAggregate`.
   DedupSet<Literal> literals_;

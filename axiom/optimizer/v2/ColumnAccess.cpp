@@ -476,6 +476,13 @@ class Collector : public NodeVisitor {
   void visit(const FixedPoint& node, NodeVisitorContext& context)
       const override {}
 
+  void visit(const Repeat& node, NodeVisitorContext& context) const override {
+    addAll(context, node.startKeys());
+    addAll(context, node.hopSourceKeys());
+    addAll(context, node.hopDestinationKeys());
+    addAll(context, node.endKeys());
+  }
+
  protected:
   static ColumnAccess& accessOf(NodeVisitorContext& context) {
     return static_cast<CollectContext&>(context).access;

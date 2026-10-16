@@ -148,6 +148,9 @@ class Optimizer {
     /// Skipped when `useFilteredTableStats` is unset.
     kEstimateLeafStats,
 
+    /// Skipped when the plan holds no `Repeat`.
+    kLowerRepeat,
+
     kPlanPhysical,
   };
 

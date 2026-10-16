@@ -336,6 +336,7 @@ struct FunctionNames {
   Name elementAt{nullptr};
   Name subscript{nullptr};
   Name cardinality{nullptr};
+  Name bigintAddition{nullptr};
   Name lt{nullptr};
   Name lte{nullptr};
   Name gt{nullptr};

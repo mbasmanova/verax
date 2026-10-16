@@ -1099,6 +1099,105 @@ NodeSimplifier::SimplifiedNode NodeSimplifier::make(
   return {builder_.make<FixedPoint>(key), {}};
 }
 
+NodeCP NodeSimplifier::makeEmptyDeltaConvergence(
+    Name stateName,
+    const ColumnVector& stateColumns) {
+  NodeCP workingTable = make(
+                            WorkingTable::Key{
+                                .name = stateName,
+                                .outputColumns = stateColumns,
+                                .readMode = WorkingTableReadMode::kLatestDelta,
+                            })
+                            .node;
+  const auto* count = builder_.makeAggregate(
+      builder_.functionNames().count,
+      Value(toType(velox::BIGINT())),
+      {},
+      FunctionSet{},
+      /*isDistinct=*/false,
+      /*condition=*/nullptr,
+      toType(velox::BIGINT()),
+      {},
+      {});
+  ColumnCP countColumn =
+      Column::create("__converged_count", Value(toType(velox::BIGINT())));
+  auto aggregation = make(
+      Aggregate::Key{
+          .input = workingTable,
+          .groupingKeys = {},
+          .aggregates = {count},
+          .outputColumns = {countColumn},
+          .step = AggregateStep::kSingle,
+      },
+      {workingTable, {}});
+  VELOX_CHECK(!aggregation.empty());
+  ExprCP zero =
+      builder_.makeLiteral(velox::Variant(int64_t{0}), toType(velox::BIGINT()));
+  ExprCP convergedExpr = exprs_.makeEq(countColumn, zero);
+  ColumnCP convergedColumn =
+      Column::create("converged", Value(toType(velox::BOOLEAN())));
+  NodeCP aggregationNode = aggregation.node;
+  auto projected = make(
+      Project::Key{
+          .input = aggregationNode,
+          .exprs = {convergedExpr},
+          .outputColumns = {convergedColumn},
+      },
+      std::move(aggregation));
+  VELOX_CHECK(!projected.empty());
+  ColumnVector outputColumns{convergedColumn};
+  restoreOutputLayout(projected.node, outputColumns, projected.substitutions);
+  return projected.node;
+}
+
+NodeSimplifier::SimplifiedNode NodeSimplifier::make(
+    Repeat::Key key,
+    SimplifiedNode start,
+    SimplifiedNode hop,
+    std::optional<SimplifiedNode> end) {
+  if (start.empty() || hop.empty() || (end.has_value() && end->empty())) {
+    return emptyResult(std::move(key.outputColumns));
+  }
+
+  key.startKeys = start.substitutions.apply(key.startKeys, exprs_);
+  key.hopSourceKeys = hop.substitutions.apply(key.hopSourceKeys, exprs_);
+  key.hopDestinationKeys =
+      hop.substitutions.apply(key.hopDestinationKeys, exprs_);
+  key.endKeys = (end.has_value() ? end->substitutions : start.substitutions)
+                    .apply(key.endKeys, exprs_);
+
+  // A side outputs the columns the Repeat passes on from it and the columns
+  // its keys read, restored to their identities where they are missing.
+  const auto sideLayout = [&](NodeCP original,
+                              const SimplifiedNode& side,
+                              std::initializer_list<const ExprVector*> keys) {
+    ColumnVector layout = original->outputsAmong(key.outputColumns);
+    PlanObjectSet keyColumns;
+    for (const ExprVector* sideKeys : keys) {
+      keyColumns.unionColumns(*sideKeys);
+    }
+    keyColumns.eraseAll(layout);
+    keyColumns.forEach<Column>(
+        [&](ColumnCP column) { layout.push_back(column); });
+    const auto available =
+        PlanObjectSet::fromObjects(side.node->outputColumns());
+    const bool complete =
+        std::all_of(layout.begin(), layout.end(), [&](ColumnCP column) {
+          return available.contains(column);
+        });
+    return complete ? side.node
+                    : restoreExactLayout(side.node, layout, side.substitutions);
+  };
+  if (end.has_value()) {
+    key.start = sideLayout(key.start, start, {&key.startKeys});
+    key.end = sideLayout(key.end, *end, {&key.endKeys});
+  } else {
+    key.start = sideLayout(key.start, start, {&key.startKeys, &key.endKeys});
+  }
+  key.hop = hop.node;
+  return {builder_.make<Repeat>(key), {}};
+}
+
 NodeSimplifier::SimplifiedNode NodeSimplifier::make(
     UnionAll::Key key,
     std::vector<SimplifiedNode> inputs) {

@@ -323,12 +323,28 @@ class StateSourceMatcher : public PlanMatcherImpl<StateSourceNode> {
         stateName_{std::move(stateName)},
         delta_{delta} {}
 
+  // The enclosing FixedPointMatch binds the state alias in 'symbols', which
+  // reach a leaf only here: matchDetails sees the symbols of the node's
+  // sources.
+  MatchResult match(
+      const PlanNodePtr& plan,
+      const std::unordered_map<std::string, std::string>& symbols,
+      const DistributedMatchContext* context) const override {
+    if (const auto* source = plan->as<StateSourceNode>()) {
+      SCOPED_TRACE(source->toString(true, false));
+      const auto it = symbols.find(stateName_);
+      EXPECT_EQ(
+          source->stateName(), it == symbols.end() ? stateName_ : it->second);
+      AXIOM_TEST_RETURN_IF_FAILURE
+    }
+    return PlanMatcherImpl<StateSourceNode>::match(plan, symbols, context);
+  }
+
   MatchResult matchDetails(
       const StateSourceNode& plan,
       const std::unordered_map<std::string, std::string>& symbols)
       const override {
     SCOPED_TRACE(plan.toString(true, false));
-    EXPECT_EQ(plan.stateName(), stateName_);
     EXPECT_EQ(plan.delta(), delta_);
     AXIOM_TEST_RETURN_IF_FAILURE
     return MatchResult::success(symbols);
@@ -383,8 +399,9 @@ class FixedPointMatcher : public PlanMatcherImpl<FixedPointNode> {
       return MatchResult::success(symbols);
     }
 
-    EXPECT_EQ(plan.outputStateEntry(), match_->outputStateEntry());
-    AXIOM_TEST_RETURN_IF_FAILURE
+    // The state alias holds within this fixed point's plans.
+    auto stateSymbols = symbols;
+    stateSymbols[match_->outputStateEntry()] = plan.outputStateEntry();
 
     const auto& states = match_->states();
     const auto& hashTableStates = match_->hashTableStates();
@@ -395,11 +412,11 @@ class FixedPointMatcher : public PlanMatcherImpl<FixedPointNode> {
       AXIOM_TEST_RETURN_IF_FAILURE
     }
     for (const auto& state : states) {
-      if (!matchState(plan, state, symbols)) {
+      if (!matchState(plan, state, stateSymbols)) {
         return MatchResult::failure();
       }
     }
-    if (!matchHashTableStates(plan, symbols)) {
+    if (!matchHashTableStates(plan, stateSymbols)) {
       return MatchResult::failure();
     }
 
@@ -409,7 +426,7 @@ class FixedPointMatcher : public PlanMatcherImpl<FixedPointNode> {
       AXIOM_TEST_RETURN_IF_FAILURE
       for (size_t i = 0; i < plans.size(); ++i) {
         if (!plans[i]
-                 ->match(plan.plans()[i], symbols, /*context=*/nullptr)
+                 ->match(plan.plans()[i], stateSymbols, /*context=*/nullptr)
                  .match) {
           return MatchResult::failure();
         }
@@ -422,7 +439,7 @@ class FixedPointMatcher : public PlanMatcherImpl<FixedPointNode> {
       if (!convergence
                ->match(
                    plan.convergenceConfig().plans.front(),
-                   symbols,
+                   stateSymbols,
                    /*context=*/nullptr)
                .match) {
         return MatchResult::failure();
@@ -445,9 +462,11 @@ class FixedPointMatcher : public PlanMatcherImpl<FixedPointNode> {
       const FixedPointNode& plan,
       const FixedPointMatch::State& expected,
       const std::unordered_map<std::string, std::string>& symbols) const {
+    const auto alias = symbols.find(expected.name);
+    const auto& name = alias == symbols.end() ? expected.name : alias->second;
     const StateDeclaration* declaration = nullptr;
     for (const auto& candidate : plan.stateDeclarations()) {
-      if (candidate->name() == expected.name) {
+      if (candidate->name() == name) {
         declaration = candidate.get();
         break;
       }
@@ -458,8 +477,7 @@ class FixedPointMatcher : public PlanMatcherImpl<FixedPointNode> {
       return false;
     }
 
-    const auto* vector =
-        dynamic_cast<const VectorStateDeclaration*>(declaration);
+    const auto* vector = declaration->as<VectorStateDeclaration>();
     EXPECT_NE(vector, nullptr) << expected.name << " is not a vector state";
     if (vector == nullptr) {
       return false;
@@ -490,8 +508,7 @@ class FixedPointMatcher : public PlanMatcherImpl<FixedPointNode> {
     const auto& expected = match_->hashTableStates();
     size_t index = 0;
     for (const auto& declaration : plan.stateDeclarations()) {
-      if (dynamic_cast<const HashTableStateDeclaration*>(declaration.get()) ==
-              nullptr ||
+      if (!declaration->is<HashTableStateDeclaration>() ||
           index == expected.size()) {
         continue;
       }

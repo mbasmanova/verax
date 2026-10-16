@@ -74,6 +74,7 @@ class NodeVisitor {
       const = 0;
   virtual void visit(const FixedPoint& node, NodeVisitorContext& context)
       const = 0;
+  virtual void visit(const Repeat& node, NodeVisitorContext& context) const = 0;
 
  protected:
   void visitInputs(const Node& node, NodeVisitorContext& context) const {

@@ -207,7 +207,9 @@ class FixedPointMatch {
     std::shared_ptr<PlanMatcher> initialPlan;
   };
 
-  /// 'outputStateEntry' is the state entry the fixed point emits.
+  /// 'outputStateEntry' is an alias for the state entry the fixed point emits,
+  /// as a column alias is for a column: it binds to that entry's name in the
+  /// plan, and stateSource() in the body and convergence plans resolves it.
   explicit FixedPointMatch(std::string outputStateEntry)
       : outputStateEntry_{std::move(outputStateEntry)} {}
 
@@ -342,7 +344,8 @@ class PlanMatcherBuilder {
   /// position) so downstream matchers can reference the columns by those names.
   PlanMatcherBuilder& values(const std::vector<RowVectorPtr>& expected);
 
-  /// Matches a StateSourceNode reading fixed-point state 'stateName'. 'delta'
+  /// Matches a StateSourceNode reading fixed-point state 'stateName', an
+  /// alias the enclosing FixedPointMatch binds or the state's name. 'delta'
   /// selects which read: true is the rows the previous iteration produced,
   /// false the entry's full accumulation.
   PlanMatcherBuilder& stateSource(const std::string& stateName, bool delta);
