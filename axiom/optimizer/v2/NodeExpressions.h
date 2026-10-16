@@ -97,6 +97,19 @@ void forEachExpressionInNode(NodeCP node, Visit&& visit) {
       }
       break;
     }
+    case NodeType::kRepeat: {
+      const Repeat* repeat = node->as<Repeat>();
+      for (const auto* keys :
+           {&repeat->startKeys(),
+            &repeat->hopSourceKeys(),
+            &repeat->hopDestinationKeys(),
+            &repeat->endKeys()}) {
+        for (ExprCP key : *keys) {
+          visit(key);
+        }
+      }
+      break;
+    }
     case NodeType::kIndexLookupJoin: {
       const IndexLookupJoin* join = node->as<IndexLookupJoin>();
       for (ExprCP key : join->probeKeys()) {

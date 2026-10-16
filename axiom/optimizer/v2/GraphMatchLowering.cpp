@@ -57,6 +57,44 @@ void checkPropertyReads(const lp::Expr& expr) {
   }
 }
 
+// Returns the repetition of 'term' if it is an edge pattern that repeats other
+// than exactly once, or null. An edge pattern repeated exactly once joins as a
+// plain edge.
+const lp::GraphRepetition* walksRepetition(const lp::GraphPatternTerm& term) {
+  if (term.kind() != lp::GraphPatternTerm::Kind::kEdge) {
+    return nullptr;
+  }
+  const auto& repetition = term.as<lp::GraphEdgePattern>()->repetition();
+  if (!repetition.has_value() ||
+      (repetition->min == 1 && repetition->max == 1)) {
+    return nullptr;
+  }
+  return &*repetition;
+}
+
+[[noreturn]] void failGroupRead(std::string_view name) {
+  VELOX_NYI(
+      "Reading a repeated graph pattern outside its own pattern is not "
+      "supported yet: {}",
+      name);
+}
+
+// Fails if 'expr' reads a pattern name in 'names'.
+void checkNoGroupReads(
+    const lp::Expr& expr,
+    const folly::F14FastSet<std::string>& names) {
+  if (expr.isInputReference() &&
+      names.contains(expr.as<lp::InputReferenceExpr>()->name())) {
+    failGroupRead(expr.as<lp::InputReferenceExpr>()->name());
+  }
+  for (const auto& input : expr.inputs()) {
+    checkNoGroupReads(*input, names);
+  }
+  if (expr.isLambda()) {
+    checkNoGroupReads(*expr.as<lp::LambdaExpr>()->body(), names);
+  }
+}
+
 // Returns the number of matches per pair of endpoints a selector keeps, or
 // nullopt for all. ANY, ANY SHORTEST and SHORTEST k keep up to k. In a path
 // without repetition every match has the same length, so the others keep
@@ -91,6 +129,7 @@ std::optional<Translated> Translator::GraphMatchLowering::lower(
   if (match_.predicate() != nullptr) {
     checkPropertyReads(*match_.predicate());
   }
+  checkGroupReads();
   if (!narrow()) {
     return std::nullopt;
   }
@@ -108,7 +147,9 @@ std::optional<Translated> Translator::GraphMatchLowering::lower(
     }
   }
   bindPatternNames();
+  filterHops();
   connect();
+  walked_.assign(repeatedEdges_.size(), false);
 
   // Paths that share no name join with a cross product: no connection links
   // two components.
@@ -133,6 +174,38 @@ std::optional<Translated> Translator::GraphMatchLowering::lower(
       std::move(conjuncts),
       std::move(scope),
       /*propagateConstants=*/true);
+}
+
+void Translator::GraphMatchLowering::checkGroupReads() const {
+  folly::F14FastSet<std::string> names;
+  for (const auto& path : match_.paths()) {
+    for (const auto& term : path.terms) {
+      if (term->kind() == lp::GraphPatternTerm::Kind::kEdge &&
+          term->as<lp::GraphEdgePattern>()->repetition().has_value() &&
+          !term->name().empty()) {
+        names.insert(term->name());
+      }
+    }
+  }
+  if (names.empty()) {
+    return;
+  }
+  if (match_.predicate() != nullptr) {
+    checkNoGroupReads(*match_.predicate(), names);
+  }
+  for (const auto& path : match_.paths()) {
+    for (const auto& term : path.terms) {
+      if (term->predicate() != nullptr && !names.contains(term->name())) {
+        checkNoGroupReads(*term->predicate(), names);
+      }
+    }
+  }
+  for (const auto& output : match_.outputs()) {
+    if (output->kind() == lp::GraphMatchOutput::Kind::kProperty &&
+        names.contains(output->pattern())) {
+      failGroupRead(output->pattern());
+    }
+  }
 }
 
 void Translator::GraphMatchLowering::copySharedElements() {
@@ -169,6 +242,16 @@ void Translator::GraphMatchLowering::copySharedElements() {
           }
         }
       }
+      for (auto& repeated : repeatedEdges_) {
+        if (repeated.path != path) {
+          continue;
+        }
+        for (auto* element : {&repeated.edge, &repeated.from, &repeated.to}) {
+          if (*element == original) {
+            *element = index;
+          }
+        }
+      }
       auto& pathInfo = paths_[path];
       if (pathInfo.first == original) {
         pathInfo.first = index;
@@ -188,6 +271,11 @@ Translator::GraphMatchLowering::fold() {
       elements_[path.first].needsIdentity = true;
       elements_[path.last].needsIdentity = true;
     }
+  }
+  // A walk joins its ends on their identities.
+  for (const auto& repeated : repeatedEdges_) {
+    elements_[repeated.from].needsIdentity = true;
+    elements_[repeated.to].needsIdentity = true;
   }
   for (const auto& occurrence : occurrences_) {
     for (const auto& end : occurrence.ends()) {
@@ -242,6 +330,16 @@ void Translator::GraphMatchLowering::addPath(
 
   Path& pathInfo = paths_.emplace_back();
   pathInfo.limit = selectorLimit(path.selector);
+  const bool repeats =
+      std::any_of(path.terms.begin(), path.terms.end(), [](const auto& term) {
+        return walksRepetition(*term) != nullptr;
+      });
+  if (repeats && path.selector.kind != lp::GraphPathSelector::Kind::kAny &&
+      path.selector.kind != lp::GraphPathSelector::Kind::kAll) {
+    VELOX_NYI(
+        "Shortest-path selector on a path with repetition is not supported "
+        "yet");
+  }
   if (path.mode != lp::GraphPathMode::kWalk) {
     VELOX_NYI(
         "Graph path mode is not supported yet: {}",
@@ -252,21 +350,23 @@ void Translator::GraphMatchLowering::addPath(
   // it reaches.
   std::optional<size_t> vertex;
   std::optional<EdgeOccurrence> pendingEdge;
+  std::optional<RepeatedEdge> pendingRepeat;
   int64_t numEdges{0};
   for (const auto& term : path.terms) {
     if (term->predicate() != nullptr) {
       checkPropertyReads(*term->predicate());
-      pathInfo.predicates.push_back(term->predicate().get());
+      // A repeated edge pattern's predicate applies to each hop.
+      if (walksRepetition(*term) == nullptr) {
+        pathInfo.predicates.push_back(term->predicate().get());
+      }
     }
     switch (term->kind()) {
       case lp::GraphPatternTerm::Kind::kSubpath:
         VELOX_NYI("Graph subpath patterns are not supported yet");
       case lp::GraphPatternTerm::Kind::kEdge: {
         const auto* edge = term->as<lp::GraphEdgePattern>();
-        if (edge->repetition().has_value()) {
-          VELOX_NYI("Repeated graph edge patterns are not supported yet");
-        }
-        if (!vertex.has_value() || pendingEdge.has_value()) {
+        if (!vertex.has_value() || pendingEdge.has_value() ||
+            pendingRepeat.has_value()) {
           VELOX_NYI(
               "Graph edge pattern without a vertex pattern before it is not "
               "supported yet");
@@ -282,6 +382,30 @@ void Translator::GraphMatchLowering::addPath(
               edge->name());
         }
         edgeAt(index).undirected = undirected;
+        if (const auto* repetition = walksRepetition(*term)) {
+          if (!repetition->max.has_value()) {
+            VELOX_NYI(
+                "Graph edge repetition without an upper bound is not "
+                "supported yet");
+          }
+          if (repetition->min == 0) {
+            VELOX_NYI(
+                "Graph edge repetition with a lower bound of 0 is not "
+                "supported yet");
+          }
+          edgeAt(index).repeated = true;
+          pendingRepeat = RepeatedEdge{
+              .edge = index,
+              .from = *vertex,
+              .pointsRight = edge->direction() != Direction::kLeft,
+              .minHops = static_cast<int32_t>(repetition->min),
+              .maxHops = static_cast<int32_t>(*repetition->max),
+              .path = pathIndex};
+          if (term->predicate() != nullptr) {
+            pendingRepeat->predicates.push_back(term->predicate().get());
+          }
+          break;
+        }
         pendingEdge = EdgeOccurrence{
             .edge = index,
             .from = *vertex,
@@ -291,7 +415,8 @@ void Translator::GraphMatchLowering::addPath(
         break;
       }
       case lp::GraphPatternTerm::Kind::kVertex: {
-        if (vertex.has_value() && !pendingEdge.has_value()) {
+        if (vertex.has_value() && !pendingEdge.has_value() &&
+            !pendingRepeat.has_value()) {
           VELOX_NYI(
               "Adjacent graph vertex patterns are not supported yet: {}",
               term->name());
@@ -307,18 +432,23 @@ void Translator::GraphMatchLowering::addPath(
           occurrences_.push_back(*pendingEdge);
           pendingEdge.reset();
         }
+        if (pendingRepeat.has_value()) {
+          pendingRepeat->to = index;
+          repeatedEdges_.push_back(std::move(*pendingRepeat));
+          pendingRepeat.reset();
+        }
         vertex = index;
         break;
       }
     }
   }
-  if (pendingEdge.has_value()) {
+  if (pendingEdge.has_value() || pendingRepeat.has_value()) {
     VELOX_NYI(
         "Graph edge pattern without a vertex pattern after it is not "
         "supported yet");
   }
   pathInfo.last = vertex.value();
-  if (!path.name.empty()) {
+  if (!path.name.empty() && !repeats) {
     pathLengths_.emplace(path.name, numEdges);
   }
 }
@@ -340,6 +470,17 @@ bool Translator::GraphMatchLowering::narrow() {
       ids.insert(leg.table->id);
     }
     return ids;
+  };
+
+  // Drops the legs of 'vertex' whose table is not in 'referenced'. Returns true
+  // if it dropped any.
+  auto keepReferenced = [](Element& vertex,
+                           const folly::F14FastSet<int32_t>& referenced) {
+    const auto numLegs = vertex.legs.size();
+    std::erase_if(vertex.legs, [&](const Leg& leg) {
+      return !referenced.contains(leg.table->id);
+    });
+    return vertex.legs.size() != numLegs;
   };
 
   bool changed{true};
@@ -367,16 +508,27 @@ bool Translator::GraphMatchLowering::narrow() {
         return false;
       });
 
-      const auto numFromLegs = from.legs.size();
-      std::erase_if(from.legs, [&](const Leg& leg) {
-        return !fromReferenced.contains(leg.table->id);
-      });
-      const auto numToLegs = to.legs.size();
-      std::erase_if(to.legs, [&](const Leg& leg) {
-        return !toReferenced.contains(leg.table->id);
-      });
-      changed = changed || edge.legs.size() != numEdgeLegs ||
-          from.legs.size() != numFromLegs || to.legs.size() != numToLegs;
+      const bool fromChanged = keepReferenced(from, fromReferenced);
+      const bool toChanged = keepReferenced(to, toReferenced);
+      changed = changed || edge.legs.size() != numEdgeLegs || fromChanged ||
+          toChanged;
+    }
+
+    // A walk leaves from a table a hop leaves from and reaches a table a hop
+    // reaches. The hops between visit any table.
+    for (const auto& repeated : repeatedEdges_) {
+      const auto& edge = elements_[repeated.edge];
+      folly::F14FastSet<int32_t> fromReferenced;
+      folly::F14FastSet<int32_t> toReferenced;
+      for (const auto& leg : edge.legs) {
+        fromReferenced.insert(leg.tableId(repeated.pointsRight));
+        toReferenced.insert(leg.tableId(!repeated.pointsRight));
+      }
+      const bool fromChanged =
+          keepReferenced(elements_[repeated.from], fromReferenced);
+      const bool toChanged =
+          keepReferenced(elements_[repeated.to], toReferenced);
+      changed = changed || fromChanged || toChanged;
     }
   }
 
@@ -645,7 +797,9 @@ void Translator::GraphMatchLowering::buildEdge(
   const auto& properties = edge.properties;
 
   // The ends a shared vertex joins on, which the relation outputs, by source.
-  std::array<bool, 2> keepEnd{false, false};
+  // A walk's hops join on both.
+  const bool repeated = std::get<EdgeState>(edge.state).repeated;
+  std::array<bool, 2> keepEnd{repeated, repeated};
   for (const auto& occurrence : occurrences_) {
     if (occurrence.edge != edgeIndex) {
       continue;
@@ -960,27 +1114,27 @@ void Translator::GraphMatchLowering::connect() {
       }
       connections_.push_back(
           {end.vertex,
-           identityOf(end.vertex),
+           identityOf(end.vertex, /*withTableId=*/false),
            occurrence.edge,
            edge.identity(end.source)});
     }
   }
-  // A folded vertex's rows are in the edge it joins inside.
-  auto holder = [&](size_t element) {
-    return elements_[element].folds()
-        ? std::get<VertexState>(elements_[element].state).foldedEdge
-        : element;
-  };
   for (const auto& copy : copies_) {
     connections_.push_back(
-        {holder(copy.original),
-         identityOf(copy.original),
-         holder(copy.copy),
-         identityOf(copy.copy)});
+        {holderOf(copy.original),
+         identityOf(copy.original, /*withTableId=*/false),
+         holderOf(copy.copy),
+         identityOf(copy.copy, /*withTableId=*/false)});
   }
   for (const auto& connection : connections_) {
     VELOX_CHECK_EQ(connection.leftKeys.size(), connection.rightKeys.size());
   }
+}
+
+size_t Translator::GraphMatchLowering::holderOf(size_t element) const {
+  return elements_[element].folds()
+      ? std::get<VertexState>(elements_[element].state).foldedEdge
+      : element;
 }
 
 std::vector<std::vector<size_t>> Translator::GraphMatchLowering::components()
@@ -994,11 +1148,17 @@ std::vector<std::vector<size_t>> Translator::GraphMatchLowering::components()
   for (const auto& connection : connections_) {
     parent[root(connection.leftElement)] = root(connection.rightElement);
   }
+  for (const auto& repeated : repeatedEdges_) {
+    parent[root(holderOf(repeated.from))] = root(holderOf(repeated.to));
+  }
 
+  // A walk's hops join inside the walk.
   std::vector<std::vector<size_t>> components;
   folly::F14FastMap<size_t, size_t> componentByRoot;
   for (size_t i = 0; i < elements_.size(); ++i) {
-    if (elements_[i].node == nullptr) {
+    if (elements_[i].node == nullptr ||
+        (elements_[i].isEdge() &&
+         std::get<EdgeState>(elements_[i].state).repeated)) {
       continue;
     }
     const auto [it, inserted] =
@@ -1011,13 +1171,31 @@ std::vector<std::vector<size_t>> Translator::GraphMatchLowering::components()
   return components;
 }
 
-ExprVector Translator::GraphMatchLowering::identityOf(size_t element) const {
+ExprVector Translator::GraphMatchLowering::identityOf(
+    size_t element,
+    bool withTableId) const {
   const auto& target = elements_[element];
   if (target.folds()) {
     const auto& vertex = std::get<VertexState>(target.state);
-    return elements_[vertex.foldedEdge].identity(vertex.foldedAtSource);
+    return identity(
+        elements_[vertex.foldedEdge], vertex.foldedAtSource, withTableId);
   }
-  return target.identity(/*end=*/std::nullopt);
+  return identity(target, /*end=*/std::nullopt, withTableId);
+}
+
+ExprVector Translator::GraphMatchLowering::identity(
+    const Element& element,
+    std::optional<bool> end,
+    bool withTableId) const {
+  ExprVector exprs = element.identity(end);
+  if (withTableId && !element.tableIdVaries(end)) {
+    exprs.insert(
+        exprs.begin(),
+        translator_.exprFactory_.makeLiteral(
+            velox::Variant(element.legs[0].tableId(end)),
+            toType(velox::INTEGER())));
+  }
+  return exprs;
 }
 
 std::set<size_t> Translator::GraphMatchLowering::componentPaths(
@@ -1048,8 +1226,8 @@ NodeCP Translator::GraphMatchLowering::limitMatches(
     NodeCP node,
     const Path& path) {
   // row_number() OVER (PARTITION BY first, last) <= limit.
-  ExprVector partitionKeys = identityOf(path.first);
-  appendAll(partitionKeys, identityOf(path.last));
+  ExprVector partitionKeys = identityOf(path.first, /*withTableId=*/false);
+  appendAll(partitionKeys, identityOf(path.last, /*withTableId=*/false));
   ColumnCP rank = Column::create("$rank", Value(toType(velox::BIGINT())));
   ColumnVector outputColumns = node->outputColumns();
   outputColumns.push_back(rank);
@@ -1149,15 +1327,37 @@ NodeCP Translator::GraphMatchLowering::join(
 
   NodeCP node = nodes[0];
   joined[0] = true;
+  node = walkWithin(node, groupOf, joined);
   for (size_t step = 1; step < groups.size(); ++step) {
     // The first group not joined yet, preferring one connected to the groups
-    // joined so far.
+    // joined so far, then one a walk reaches.
     std::optional<size_t> next;
     for (const auto& connection : connections_) {
       if (crosses(connection)) {
         const auto left = *groupOf[connection.leftElement];
         next = joined[left] ? *groupOf[connection.rightElement] : left;
         break;
+      }
+    }
+    if (!next.has_value()) {
+      for (size_t i = 0; i < repeatedEdges_.size(); ++i) {
+        const auto& repeated = repeatedEdges_[i];
+        const auto from = groupOf[holderOf(repeated.from)];
+        const auto to = groupOf[holderOf(repeated.to)];
+        if (walked_[i] || !from.has_value() || !to.has_value() ||
+            joined[*from] == joined[*to]) {
+          continue;
+        }
+        node = joined[*from] ? walk(repeated, node, nodes[*to])
+                             : walk(repeated, nodes[*from], node);
+        walked_[i] = true;
+        next = joined[*from] ? *to : *from;
+        break;
+      }
+      if (next.has_value()) {
+        joined[*next] = true;
+        node = walkWithin(node, groupOf, joined);
+        continue;
       }
     }
     if (!next.has_value()) {
@@ -1186,8 +1386,98 @@ NodeCP Translator::GraphMatchLowering::join(
     // The join may replace columns of its inputs, such as a key with the key
     // it equals. Later joins and outputs read the replacements.
     substitute(simplified.substitutions);
+    node = walkWithin(node, groupOf, joined);
   }
   return node;
+}
+
+NodeCP Translator::GraphMatchLowering::walkWithin(
+    NodeCP node,
+    const std::vector<std::optional<size_t>>& groupOf,
+    const std::vector<bool>& joined) {
+  for (size_t i = 0; i < repeatedEdges_.size(); ++i) {
+    const auto& repeated = repeatedEdges_[i];
+    const auto from = groupOf[holderOf(repeated.from)];
+    const auto to = groupOf[holderOf(repeated.to)];
+    if (!walked_[i] && from.has_value() && to.has_value() && joined[*from] &&
+        joined[*to]) {
+      node = walk(repeated, node, /*end=*/nullptr);
+      walked_[i] = true;
+    }
+  }
+  return node;
+}
+
+NodeCP Translator::GraphMatchLowering::walk(
+    const RepeatedEdge& repeated,
+    NodeCP start,
+    NodeCP end) {
+  const auto& hop = elements_[repeated.edge];
+
+  // Two vertex tables can hold the same key, so the identity a walk follows
+  // includes the table ID wherever a hop can leave from or reach more than one
+  // table.
+  folly::F14FastSet<int32_t> tableIds;
+  for (const auto& leg : hop.legs) {
+    tableIds.insert(leg.tableId(/*end=*/true));
+    tableIds.insert(leg.tableId(/*end=*/false));
+  }
+  const bool withTableId = tableIds.size() > 1;
+  ExprVector startKeys = identityOf(repeated.from, withTableId);
+  ExprVector endKeys = identityOf(repeated.to, withTableId);
+  ExprVector hopSourceKeys = identity(hop, repeated.pointsRight, withTableId);
+  ExprVector hopDestinationKeys =
+      identity(hop, !repeated.pointsRight, withTableId);
+  VELOX_CHECK_EQ(startKeys.size(), hopSourceKeys.size());
+  VELOX_CHECK_EQ(endKeys.size(), hopDestinationKeys.size());
+  for (size_t i = 0; i < hopSourceKeys.size(); ++i) {
+    if (!hopSourceKeys[i]->value().type->equivalent(
+            *hopDestinationKeys[i]->value().type)) {
+      VELOX_NYI(
+          "Repeated graph edge pattern whose ends have keys of different "
+          "types is not supported yet: {}",
+          hop.name);
+    }
+  }
+
+  ColumnVector outputColumns = start->outputColumns();
+  if (end != nullptr) {
+    appendAll(outputColumns, end->outputColumns());
+  }
+  translator_.hasRepeat_ = true;
+  return translator_.builder_.make<Repeat>({
+      .start = start,
+      .hop = hop.node,
+      .end = end,
+      .startKeys = std::move(startKeys),
+      .hopSourceKeys = std::move(hopSourceKeys),
+      .hopDestinationKeys = std::move(hopDestinationKeys),
+      .endKeys = std::move(endKeys),
+      .minHops = repeated.minHops,
+      .maxHops = repeated.maxHops,
+      .outputColumns = std::move(outputColumns),
+  });
+}
+
+void Translator::GraphMatchLowering::filterHops() {
+  for (const auto& repeated : repeatedEdges_) {
+    if (repeated.predicates.empty()) {
+      continue;
+    }
+    auto& hop = elements_[repeated.edge];
+    auto conjuncts = translatePredicates(repeated.predicates, repeated.path);
+    const auto hopColumns =
+        PlanObjectSet::fromObjects(hop.node->outputColumns());
+    for (ExprCP conjunct : conjuncts) {
+      if (!conjunct->columns().isSubset(hopColumns)) {
+        VELOX_NYI(
+            "Predicate of a repeated graph edge pattern that reads another "
+            "pattern is not supported yet: {}",
+            hop.name);
+      }
+    }
+    hop.node = filter(hop.node, std::move(conjuncts));
+  }
 }
 
 NodeCP Translator::GraphMatchLowering::filter(
@@ -1250,9 +1540,14 @@ Scope Translator::GraphMatchLowering::outputs(const LpNameSet& required) {
     }
     const auto& output = *outputs[i];
     if (output.kind() == lp::GraphMatchOutput::Kind::kPathLength) {
+      const auto length = pathLengths_.find(output.pattern());
+      if (length == pathLengths_.end()) {
+        VELOX_NYI(
+            "Path length of a path with repetition is not supported yet: {}",
+            output.pattern());
+      }
       scope[names[i]] = translator_.exprFactory_.makeLiteral(
-          velox::Variant(pathLengths_.at(output.pattern())),
-          toType(velox::BIGINT()));
+          velox::Variant(length->second), toType(velox::BIGINT()));
       continue;
     }
     const auto& element = elements_[elementByName_.at(output.pattern())];

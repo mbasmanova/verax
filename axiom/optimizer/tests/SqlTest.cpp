@@ -582,6 +582,8 @@ int main(int argc, char** argv) {
   registerQueryFile<"fixedPoint">(
       /*v2Only=*/true, /*singleNode=*/true);
   registerQueryFile<"graphTable">(/*v2Only=*/true);
+  registerQueryFile<"graphTableRepetition">(
+      /*v2Only=*/true, /*singleNode=*/true);
   registerQueryFile<"groupingsets">();
   registerQueryFile<"informationSchema">(/*v2Only=*/true);
   registerQueryFile<"join">();

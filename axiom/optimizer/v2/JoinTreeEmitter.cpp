@@ -416,17 +416,6 @@ Emitted buildUnnest(const UnnestOp* unnest, Emitted input, EmitState& state) {
   return {node, std::move(input.materialized)};
 }
 
-ColumnVector columnsFromInput(const ColumnVector& outputColumns, NodeCP input) {
-  const auto inputColumns = PlanObjectSet::fromObjects(input->outputColumns());
-  ColumnVector columns;
-  for (ColumnCP column : outputColumns) {
-    if (inputColumns.contains(column)) {
-      columns.push_back(column);
-    }
-  }
-  return columns;
-}
-
 // Narrows `outputColumns` for semi/anti joins to columns from the semi'd side,
 // plus the mark for the project forms. Keys off the orientation-resolved
 // `joinType`, so a left-form and its build-side-flipped right form (operands
@@ -442,23 +431,23 @@ std::optional<ColumnVector> narrowSemiAntiOutput(
   switch (joinType) {
     case JoinType::kLeftSemiFilter:
     case JoinType::kAnti:
-      return columnsFromInput(outputColumns, leftNode);
+      return leftNode->outputsAmong(outputColumns);
     // A counting semi join is its own mirror, so the semi'd side is the probe
     // in either orientation. It keeps the probe keys until the demanded output
     // can restore a name from the equated build key.
     case JoinType::kCountingLeftSemiFilter:
       return ColumnVector{leftNode->outputColumns()};
     case JoinType::kRightSemiFilter:
-      return columnsFromInput(outputColumns, rightNode);
+      return rightNode->outputsAmong(outputColumns);
     case JoinType::kLeftSemiProject: {
-      ColumnVector columns = columnsFromInput(outputColumns, leftNode);
+      ColumnVector columns = leftNode->outputsAmong(outputColumns);
       if (markColumn != nullptr) {
         columns.push_back(markColumn);
       }
       return columns;
     }
     case JoinType::kRightSemiProject: {
-      ColumnVector columns = columnsFromInput(outputColumns, rightNode);
+      ColumnVector columns = rightNode->outputsAmong(outputColumns);
       if (markColumn != nullptr) {
         columns.push_back(markColumn);
       }
@@ -702,7 +691,7 @@ Emitted buildReversedAnti(
     EmitState& state) {
   const auto& edge = state.graph.edges()[join->edgeIndex];
 
-  const ColumnVector antiOutput = columnsFromInput(outputColumns, build.node);
+  const ColumnVector antiOutput = build.node->outputsAmong(outputColumns);
   ColumnCP mark = Column::createBoolean("mark");
   ColumnVector joinOutput{antiOutput};
   joinOutput.push_back(mark);

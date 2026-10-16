@@ -66,6 +66,7 @@ enum class NodeType : uint8_t {
   kTableWrite,
   kFixedPoint,
   kWorkingTable,
+  kRepeat,
 };
 
 AXIOM_DECLARE_ENUM_NAME(NodeType);
@@ -145,6 +146,9 @@ class Node : public PlanObject {
   const ColumnVector& outputColumns() const {
     return outputColumns_;
   }
+
+  /// Returns the entries of 'columns' this node produces, in their order.
+  ColumnVector outputsAmong(const ColumnVector& columns) const;
 
   /// Physical properties of this node's output: per-driver local ordering /
   /// grouping, distribution, and relation-level facts. Derived from the inputs
@@ -2681,6 +2685,121 @@ class FixedPoint : public Node {
 };
 
 using FixedPointCP = const FixedPoint*;
+
+/// Returns one row per walk of between `minHops` and `maxHops` hops from a row
+/// of `start` to a row of `end`. A walk leaves from the vertex `startKeys`
+/// identify. Each hop is a row of `hop`, from the vertex `hopSourceKeys`
+/// identify to the one `hopDestinationKeys` identify, leaving from the vertex
+/// the previous hop reached. The walk reaches the vertex `endKeys` identify.
+/// Walks that differ only in their hops are distinct rows.
+///
+/// For example, the graph pattern `(a IS Person) -[IS Knows]->{1,3} (b)`
+/// becomes a `Repeat` with `a`'s rows as `start`, the Knows rows as `hop`, and
+/// `b`'s rows as `end`, keyed on the person identities.
+///
+/// When the walk ends at a row of `start`, as in `(a) -[e]->{1,3} (a)`, `end`
+/// is null and `endKeys` are columns of `start`.
+///
+/// Requires:
+/// - `start` and `hop` are non-null.
+/// - The four key lists have one entry per identity column and line up by
+///   position. `startKeys` read `start`, the hop keys read `hop`, and `endKeys`
+///   read `end`, or `start` when `end` is null.
+/// - `1 <= minHops <= maxHops` and `maxHops >= 2`: one hop is a plain join.
+/// - `outputColumns` are a subset of the columns `start` and `end` output,
+///   with the same identities, in any order.
+class Repeat : public Node {
+ public:
+  struct Key {
+    NodeCP start;
+    NodeCP hop;
+    /// Null when the walk ends at a row of `start`.
+    NodeCP end;
+    ExprVector startKeys;
+    ExprVector hopSourceKeys;
+    ExprVector hopDestinationKeys;
+    ExprVector endKeys;
+    int32_t minHops;
+    int32_t maxHops;
+    ColumnVector outputColumns;
+  };
+
+  /// Transparent hasher for interning `Repeat`s by identity.
+  struct KeyHash {
+    using is_transparent = void;
+    size_t operator()(const Repeat* node) const;
+    size_t operator()(const Key& key) const;
+  };
+
+  /// Transparent equality for interning `Repeat`s by identity.
+  struct KeyEq {
+    using is_transparent = void;
+    bool operator()(const Repeat* left, const Repeat* right) const;
+    bool operator()(const Key& key, const Repeat* node) const;
+    bool operator()(const Repeat* node, const Key& key) const;
+  };
+
+  explicit Repeat(const Key& key);
+
+  NodeCP start() const {
+    return inputs_[0];
+  }
+
+  NodeCP hop() const {
+    return inputs_[1];
+  }
+
+  /// Null when the walk ends at a row of `start`.
+  NodeCP end() const {
+    return inputs_.size() == 3 ? inputs_[2] : nullptr;
+  }
+
+  const ExprVector& startKeys() const {
+    return startKeys_;
+  }
+
+  const ExprVector& hopSourceKeys() const {
+    return hopSourceKeys_;
+  }
+
+  const ExprVector& hopDestinationKeys() const {
+    return hopDestinationKeys_;
+  }
+
+  const ExprVector& endKeys() const {
+    return endKeys_;
+  }
+
+  int32_t minHops() const {
+    return minHops_;
+  }
+
+  int32_t maxHops() const {
+    return maxHops_;
+  }
+
+  std::span<const NodeCP> inputs() const override {
+    return inputs_;
+  }
+
+  Partitioning globalPartition(
+      std::span<const Partitioning> inputPartitions,
+      Builder& builder) const override;
+
+  void accept(const NodeVisitor& visitor, NodeVisitorContext& context)
+      const override;
+
+ private:
+  const NodeVector inputs_;
+  const ExprVector startKeys_;
+  const ExprVector hopSourceKeys_;
+  const ExprVector hopDestinationKeys_;
+  const ExprVector endKeys_;
+  const int32_t minHops_;
+  const int32_t maxHops_;
+};
+
+using RepeatCP = const Repeat*;
 
 } // namespace facebook::axiom::optimizer::v2
 

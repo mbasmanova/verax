@@ -106,6 +106,8 @@ class NodeRewriter {
         return rewriteWorkingTable(node->as<WorkingTable>(), context);
       case NodeType::kFixedPoint:
         return rewriteFixedPoint(node->as<FixedPoint>(), context);
+      case NodeType::kRepeat:
+        return rewriteRepeat(node->as<Repeat>(), context);
     }
     VELOX_UNREACHABLE();
   }
@@ -448,6 +450,29 @@ class NodeRewriter {
         .sourceColumns = node->sourceColumns(),
         .maxIterations = node->maxIterations(),
         .recursiveNumDrivers = node->recursiveNumDrivers(),
+    });
+  }
+
+  virtual NodeCP rewriteRepeat(const Repeat* node, TContext& context) {
+    NodeCP newStart = rewrite(node->start(), context);
+    NodeCP newHop = rewrite(node->hop(), context);
+    NodeCP newEnd =
+        node->end() != nullptr ? rewrite(node->end(), context) : nullptr;
+    if (newStart == node->start() && newHop == node->hop() &&
+        newEnd == node->end()) {
+      return node;
+    }
+    return builder_.template make<Repeat>({
+        .start = newStart,
+        .hop = newHop,
+        .end = newEnd,
+        .startKeys = node->startKeys(),
+        .hopSourceKeys = node->hopSourceKeys(),
+        .hopDestinationKeys = node->hopDestinationKeys(),
+        .endKeys = node->endKeys(),
+        .minHops = node->minHops(),
+        .maxHops = node->maxHops(),
+        .outputColumns = node->outputColumns(),
     });
   }
 

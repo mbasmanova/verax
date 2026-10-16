@@ -409,6 +409,7 @@ TranslatePass::Result Translator::run(const lp::LogicalPlanNode& plan) {
       std::move(outputColumns),
       std::move(outputNames),
       connectorPushdownSupported_,
+      hasRepeat_,
   };
 }
 
@@ -536,50 +537,6 @@ NodeCP Translator::makeWorkingTable() {
       .node;
 }
 
-NodeCP Translator::makeEmptyDeltaConvergence() {
-  NodeCP workingTable = makeWorkingTable();
-  const auto* count = builder_.makeAggregate(
-      builder_.functionNames().count,
-      Value(toType(velox::BIGINT())),
-      {},
-      FunctionSet{},
-      /*isDistinct=*/false,
-      /*condition=*/nullptr,
-      toType(velox::BIGINT()),
-      {},
-      {});
-  ColumnCP countColumn =
-      Column::create("__converged_count", Value(toType(velox::BIGINT())));
-  auto aggregation = nodeSimplifier_.make(
-      Aggregate::Key{
-          .input = workingTable,
-          .groupingKeys = {},
-          .aggregates = {count},
-          .outputColumns = {countColumn},
-          .step = AggregateStep::kSingle,
-      },
-      {workingTable, {}});
-  VELOX_CHECK(!aggregation.empty());
-  ExprCP zero =
-      builder_.makeLiteral(velox::Variant(int64_t{0}), toType(velox::BIGINT()));
-  ExprCP convergedExpr = exprFactory_.makeEq(countColumn, zero);
-  ColumnCP convergedColumn =
-      Column::create("converged", Value(toType(velox::BOOLEAN())));
-  NodeCP aggregationNode = aggregation.node;
-  auto projected = nodeSimplifier_.make(
-      Project::Key{
-          .input = aggregationNode,
-          .exprs = {convergedExpr},
-          .outputColumns = {convergedColumn},
-      },
-      std::move(aggregation));
-  VELOX_CHECK(!projected.empty());
-  ColumnVector outputColumns{convergedColumn};
-  nodeSimplifier_.restoreOutputLayout(
-      projected.node, outputColumns, projected.substitutions);
-  return projected.node;
-}
-
 Translated Translator::translateFixedPoint(
     const lp::FixedPointNode& fixedPoint,
     const LpNameSet& /*required*/) {
@@ -633,7 +590,8 @@ Translated Translator::translateFixedPoint(
       "Optimizer v2 supports exactly one RecursiveReferenceNode per FixedPoint step: found {}",
       activeFixedPoint_->numReferences);
 
-  NodeCP convergence = makeEmptyDeltaConvergence();
+  NodeCP convergence = nodeSimplifier_.makeEmptyDeltaConvergence(
+      recursionName, activeFixedPoint_->stateColumns);
   auto result = nodeSimplifier_.make(
       FixedPoint::Key{
           .anchor = anchor.node,

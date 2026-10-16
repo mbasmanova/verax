@@ -313,7 +313,6 @@ class Translator {
   // `activeFixedPoint_` rather than from the caller, so every read of one state
   // presents the same `Column*`s by construction.
   NodeCP makeWorkingTable();
-  NodeCP makeEmptyDeltaConvergence();
   Translated translateRecursiveRef(
       const logical_plan::RecursiveReferenceNode& ref,
       const LpNameSet& required);
@@ -594,6 +593,8 @@ class Translator {
   Schema& schema_;
   const connector::SchemaResolver& schemaResolver_;
   bool connectorPushdownSupported_{false};
+  // True once a graph match lowered a repeated pattern to a Repeat.
+  bool hasRepeat_{false};
   // Column materialized for an expression, consulted before materializing
   // another.
   folly::F14FastMap<ExprCP, ColumnCP> materialized_;
