@@ -81,9 +81,9 @@ class ExprFactory {
   /// Builds `lhs < rhs`.
   ExprCP makeLessThan(ExprCP lhs, ExprCP rhs);
 
-  /// Builds `lhs + rhs` over BIGINTs whose sum fits in BIGINT, the only use
-  /// FunctionRegistry::registerBigintAddition promises.
-  ExprCP makeBigintAddition(ExprCP lhs, ExprCP rhs);
+  /// Builds `value + 1` over a BIGINT whose increment fits in BIGINT, the only
+  /// use FunctionRegistry::registerBigintAddition promises.
+  ExprCP makeBigintIncrement(ExprCP value);
 
   /// Builds `value IN (values...)` over constants, with 'values' of the type
   /// of 'value', in canonical form:

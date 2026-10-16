@@ -388,11 +388,6 @@ void Translator::GraphMatchLowering::addPath(
                 "Graph edge repetition without an upper bound is not "
                 "supported yet");
           }
-          if (repetition->min == 0) {
-            VELOX_NYI(
-                "Graph edge repetition with a lower bound of 0 is not "
-                "supported yet");
-          }
           edgeAt(index).repeated = true;
           pendingRepeat = RepeatedEdge{
               .edge = index,
@@ -464,14 +459,6 @@ bool Translator::GraphMatchLowering::narrow() {
     }
   }
 
-  auto tableIds = [](const Element& vertex) {
-    folly::F14FastSet<int32_t> ids;
-    for (const auto& leg : vertex.legs) {
-      ids.insert(leg.table->id);
-    }
-    return ids;
-  };
-
   // Drops the legs of 'vertex' whose table is not in 'referenced'. Returns true
   // if it dropped any.
   auto keepReferenced = [](Element& vertex,
@@ -490,8 +477,10 @@ bool Translator::GraphMatchLowering::narrow() {
       auto& edge = elements_[occurrence.edge];
       auto& from = elements_[occurrence.from];
       auto& to = elements_[occurrence.to];
-      const auto fromIds = tableIds(from);
-      const auto toIds = tableIds(to);
+      folly::F14FastSet<int32_t> fromIds;
+      from.addTableIdsTo(fromIds);
+      folly::F14FastSet<int32_t> toIds;
+      to.addTableIdsTo(toIds);
 
       // The vertex tables the remaining edge legs leave from and reach.
       folly::F14FastSet<int32_t> fromReferenced;
@@ -515,7 +504,9 @@ bool Translator::GraphMatchLowering::narrow() {
     }
 
     // A walk leaves from a table a hop leaves from and reaches a table a hop
-    // reaches. The hops between visit any table.
+    // reaches. The hops between visit any table. A walk of zero hops leaves
+    // from and reaches one vertex, so either end may also match the other's
+    // tables.
     for (const auto& repeated : repeatedEdges_) {
       const auto& edge = elements_[repeated.edge];
       folly::F14FastSet<int32_t> fromReferenced;
@@ -523,6 +514,10 @@ bool Translator::GraphMatchLowering::narrow() {
       for (const auto& leg : edge.legs) {
         fromReferenced.insert(leg.tableId(repeated.pointsRight));
         toReferenced.insert(leg.tableId(!repeated.pointsRight));
+      }
+      if (repeated.minHops == 0) {
+        elements_[repeated.to].addTableIdsTo(fromReferenced);
+        elements_[repeated.from].addTableIdsTo(toReferenced);
       }
       const bool fromChanged =
           keepReferenced(elements_[repeated.from], fromReferenced);
@@ -594,6 +589,13 @@ const std::vector<std::string>& Translator::GraphMatchLowering::Leg::keyColumns(
   const auto* edgeTable = static_cast<const EdgeTable*>(table);
   return *end != reversed ? edgeTable->sourceColumns
                           : edgeTable->destinationColumns;
+}
+
+void Translator::GraphMatchLowering::Element::addTableIdsTo(
+    folly::F14FastSet<int32_t>& ids) const {
+  for (const auto& leg : legs) {
+    ids.insert(leg.table->id);
+  }
 }
 
 bool Translator::GraphMatchLowering::Element::tableIdVaries(
@@ -1415,12 +1417,16 @@ NodeCP Translator::GraphMatchLowering::walk(
   const auto& hop = elements_[repeated.edge];
 
   // Two vertex tables can hold the same key, so the identity a walk follows
-  // includes the table ID wherever a hop can leave from or reach more than one
-  // table.
+  // includes the table ID wherever the walk's vertices can come from more than
+  // one table: the tables a hop leaves from or reaches, and the ends' tables,
+  // which a walk of zero hops compares directly.
   folly::F14FastSet<int32_t> tableIds;
   for (const auto& leg : hop.legs) {
     tableIds.insert(leg.tableId(/*end=*/true));
     tableIds.insert(leg.tableId(/*end=*/false));
+  }
+  for (size_t vertex : {repeated.from, repeated.to}) {
+    elements_[vertex].addTableIdsTo(tableIds);
   }
   const bool withTableId = tableIds.size() > 1;
   ExprVector startKeys = identityOf(repeated.from, withTableId);
@@ -1428,15 +1434,16 @@ NodeCP Translator::GraphMatchLowering::walk(
   ExprVector hopSourceKeys = identity(hop, repeated.pointsRight, withTableId);
   ExprVector hopDestinationKeys =
       identity(hop, !repeated.pointsRight, withTableId);
-  VELOX_CHECK_EQ(startKeys.size(), hopSourceKeys.size());
-  VELOX_CHECK_EQ(endKeys.size(), hopDestinationKeys.size());
-  for (size_t i = 0; i < hopSourceKeys.size(); ++i) {
-    if (!hopSourceKeys[i]->value().type->equivalent(
-            *hopDestinationKeys[i]->value().type)) {
-      VELOX_NYI(
-          "Repeated graph edge pattern whose ends have keys of different "
-          "types is not supported yet: {}",
-          hop.name);
+  for (const ExprVector* keys : {&startKeys, &endKeys, &hopDestinationKeys}) {
+    VELOX_CHECK_EQ(keys->size(), hopSourceKeys.size());
+    for (size_t i = 0; i < hopSourceKeys.size(); ++i) {
+      if (!(*keys)[i]->value().type->equivalent(
+              *hopSourceKeys[i]->value().type)) {
+        VELOX_NYI(
+            "Repeated graph edge pattern whose vertices have keys of "
+            "different types is not supported yet: {}",
+            hop.name);
+      }
     }
   }
 
