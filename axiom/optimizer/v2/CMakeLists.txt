@@ -43,6 +43,7 @@ add_library(
   JoinHypergraph.cpp
   JoinPartitioning.cpp
   JoinPredicatePlacement.cpp
+  JoinSimplifier.cpp
   JoinTreeEmitter.cpp
   LimitAndOrderPass.cpp
   MarkFilterFusion.cpp
@@ -50,6 +51,7 @@ add_library(
   Node.cpp
   NodePrinter.cpp
   NodeSimplifier.cpp
+  NonNullOutput.cpp
   Optimize.cpp
   OuterJoinReduction.cpp
   PhysicalJoin.cpp

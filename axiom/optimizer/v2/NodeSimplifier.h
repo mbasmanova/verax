@@ -176,6 +176,9 @@ class NodeSimplifier {
       const PlanSubstitutions& substitutions);
 
  private:
+  // Simplifies a join; defined in JoinSimplifier.cpp.
+  class JoinSimplifier;
+
   // Precomputes each side-local part of a keyless join filter on the input
   // that supplies it.
   void precomputeCrossJoinFilter(
