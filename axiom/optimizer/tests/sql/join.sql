@@ -962,3 +962,30 @@ SELECT t.a, t.b FROM t JOIN (VALUES (1), (3), (NULL)) AS v(k) ON t.a = v.k
 -- Only NULL keys: nothing matches.
 -- count 0
 SELECT t.a FROM t JOIN (VALUES (CAST(NULL AS BIGINT)), (CAST(NULL AS BIGINT))) AS v(k) ON t.a = v.k
+----
+-- Keys that pair two left columns with one right column, in a left join. Every
+-- left row stays: (1, 1) matches both rows with k = 1, (2, 2) matches one, and
+-- (1, 2), (NULL, NULL) and (3, NULL) match none.
+SELECT l.x, l.y, r.k, r.v
+FROM (VALUES (1, 1), (1, 2), (2, 2), (NULL, NULL), (3, NULL)) AS l(x, y)
+LEFT JOIN (VALUES (1, 'a'), (1, 'b'), (2, 'c'), (NULL, 'd')) AS r(k, v)
+  ON l.x = r.k AND l.y = r.k
+----
+-- The same keys in a right join with the sides swapped.
+SELECT l.k, l.v, r.x, r.y
+FROM (VALUES (1, 'a'), (1, 'b'), (2, 'c'), (NULL, 'd')) AS l(k, v)
+RIGHT JOIN (VALUES (1, 1), (1, 2), (2, 2), (NULL, NULL), (3, NULL)) AS r(x, y)
+  ON l.k = r.x AND l.k = r.y
+----
+-- The same keys in a full join: unmatched rows of both sides stay.
+SELECT l.x, l.y, r.k, r.v
+FROM (VALUES (1, 1), (1, 2), (2, 2), (NULL, NULL), (3, NULL)) AS l(x, y)
+FULL JOIN (VALUES (1, 'a'), (1, 'b'), (2, 'c'), (NULL, 'd'), (4, 'e')) AS r(k, v)
+  ON l.x = r.k AND l.y = r.k
+----
+-- Keys that pair one left column with two right columns, in a full join, with
+-- a right row that repeats.
+SELECT l.x, r.k, r.j
+FROM (VALUES (1), (2), (3), (NULL)) AS l(x)
+FULL JOIN (VALUES (1, 1), (1, 2), (2, 2), (2, 2), (NULL, NULL)) AS r(k, j)
+  ON l.x = r.k AND l.x = r.j

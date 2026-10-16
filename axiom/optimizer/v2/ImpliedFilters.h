@@ -58,6 +58,28 @@ class ImpliedFilters {
       const PlanObjectSet& rightColumns,
       ExprFactory& factory);
 
+  /// Equalities that a join's equi-keys imply between keys of one input, and
+  /// the key pairs they make redundant.
+  struct KeyEqualities {
+    /// Equalities between left keys.
+    ExprVector left;
+    /// Equalities between right keys.
+    ExprVector right;
+    /// Positionally aligned with the keys: whether the pair is redundant given
+    /// the equalities and the pairs that are not.
+    std::vector<bool> redundant;
+  };
+
+  /// Derives the equalities that equi-keys imply: a pair that shares a key with
+  /// an earlier pair is redundant once their other keys are equal, since
+  /// `a = x AND b = x` holds exactly when `a = x AND a = b`. Each redundant
+  /// pair contributes that equality. `leftKeys[i]` pairs with `rightKeys[i]`. A
+  /// pair with a non-deterministic key implies nothing and stays.
+  static KeyEqualities deriveForJoinKeys(
+      const ExprVector& leftKeys,
+      const ExprVector& rightKeys,
+      ExprFactory& factory);
+
   /// Derives new necessary single-column filters from ORs and row-valued INs
   /// in `filters`.
   static ExprVector deriveForColumns(

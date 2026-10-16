@@ -1744,9 +1744,13 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       }
     }
 
+    const bool nullAware = prepared.fusedMark != nullptr
+        ? prepared.fusedNullAware
+        : node->nullAware();
     auto routed = JoinPredicatePlacement::route(
         node,
         prepared.joinType,
+        nullAware,
         leftColumns,
         rightColumns,
         context.pending,
@@ -1769,8 +1773,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
             std::move(rewritten.leftKeys),
             std::move(rewritten.rightKeys),
             std::move(rewritten.filter),
-            prepared.fusedMark != nullptr ? prepared.fusedNullAware
-                                          : node->nullAware(),
+            nullAware,
             node->nullAsValue(),
             std::move(pruned.outputColumns),
             std::move(pruned.sourceColumns)},

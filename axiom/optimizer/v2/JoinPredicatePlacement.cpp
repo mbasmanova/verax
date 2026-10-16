@@ -69,6 +69,40 @@ filterTarget(velox::core::JoinType joinType, bool leftOnly, bool rightOnly) {
   VELOX_UNREACHABLE();
 }
 
+// Places the equalities the keys imply and drops the key pairs they make
+// redundant.
+void placeKeyEqualities(
+    velox::core::JoinType joinType,
+    JoinPredicatePlacement::Routed& routed,
+    Builder& builder) {
+  ExprFactory factory(builder);
+  const auto equalities = ImpliedFilters::deriveForJoinKeys(
+      routed.leftKeys, routed.rightKeys, factory);
+  appendAll(
+      filterTarget(joinType, /*leftOnly=*/true, /*rightOnly=*/false) ==
+              FilterTarget::kLeft
+          ? routed.leftInputPredicates
+          : routed.joinPredicates,
+      equalities.left);
+  appendAll(
+      filterTarget(joinType, /*leftOnly=*/false, /*rightOnly=*/true) ==
+              FilterTarget::kRight
+          ? routed.rightInputPredicates
+          : routed.joinPredicates,
+      equalities.right);
+
+  ExprVector leftKeys;
+  ExprVector rightKeys;
+  for (size_t i = 0; i < routed.leftKeys.size(); ++i) {
+    if (!equalities.redundant[i]) {
+      leftKeys.push_back(routed.leftKeys[i]);
+      rightKeys.push_back(routed.rightKeys[i]);
+    }
+  }
+  routed.leftKeys = std::move(leftKeys);
+  routed.rightKeys = std::move(rightKeys);
+}
+
 } // namespace
 
 JoinPredicatePlacement::FilterPropagation
@@ -173,6 +207,7 @@ std::pair<ColumnVector, ColumnVector> JoinPredicatePlacement::equiColumnPairs(
 JoinPredicatePlacement::Routed JoinPredicatePlacement::route(
     const Join* join,
     velox::core::JoinType joinType,
+    bool nullAware,
     const PlanObjectSet& leftColumns,
     const PlanObjectSet& rightColumns,
     const ExprVector& pending,
@@ -253,6 +288,12 @@ JoinPredicatePlacement::Routed JoinPredicatePlacement::route(
     appendAll(result.leftKeys, split.leftKeys);
     appendAll(result.rightKeys, split.rightKeys);
     appendAll(result.joinPredicates, split.residual);
+  }
+
+  // A counting join counts its matches per key.
+  if (!Join::nullKeysMatch(nullAware, join->nullAsValue()) &&
+      !velox::core::isCountingJoin(joinType)) {
+    placeKeyEqualities(joinType, result, builder);
   }
   return result;
 }

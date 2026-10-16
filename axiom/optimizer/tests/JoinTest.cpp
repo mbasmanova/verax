@@ -3580,19 +3580,12 @@ TEST_P(JoinTest, impliedSameTableEqualityBlockedByLimitDedup) {
       "WHERE lim.a = lim.b";
   SCOPED_TRACE(query);
 
-  auto matcher =
-      matchScan("t")
-          .limit()
-          .filter("a = b")
-          // TODO: v2 keeps the second key. It drops one only where
-          // it derived the filter itself, and here the query
-          // already stated it.
-          .hashJoinInner(
-              matchScan("u"),
-              {.keys = useV2_ ? std::vector<std::string>{"a = x", "b = x"}
-                              : std::vector<std::string>{"a = x"}})
-          .aggregation()
-          .build();
+  auto matcher = matchScan("t")
+                     .limit()
+                     .filter("a = b")
+                     .hashJoinInner(matchScan("u"), {.keys = {{"a = x"}}})
+                     .aggregation()
+                     .build();
 
   auto plan = toSingleNodePlan(query);
   AXIOM_ASSERT_PLAN(plan, matcher);
@@ -3611,19 +3604,41 @@ TEST_P(JoinTest, impliedSameTableEqualityOuterJoin) {
 
   // u.x = t.a AND u.y = t.a implies u.x = u.y, which can be pushed
   // to u's scan since unmatched u rows never appear in the result.
-  auto query = "SELECT count(*) FROM t LEFT JOIN u ON u.x = t.a AND u.y = t.a";
-  SCOPED_TRACE(query);
+  {
+    auto query =
+        "SELECT count(*) FROM t LEFT JOIN u ON u.x = t.a AND u.y = t.a";
+    SCOPED_TRACE(query);
 
-  auto matcher =
-      matchScan("t")
-          .hashJoin(
-              matchScan("u").filter("x = y").projectIf(useV2_, {"x"}),
-              core::JoinType::kLeft)
-          .aggregation()
-          .build();
+    auto matcher =
+        matchScan("t")
+            .hashJoin(
+                matchScan("u").filter("x = y").projectIf(useV2_, {"x"}),
+                core::JoinType::kLeft)
+            .aggregation()
+            .build();
 
-  auto plan = toSingleNodePlan(query);
-  AXIOM_ASSERT_PLAN(plan, matcher);
+    auto plan = toSingleNodePlan(query);
+    AXIOM_ASSERT_PLAN(plan, matcher);
+  }
+
+  // t.a = u.x AND t.b = u.x implies t.a = t.b. Unmatched t rows appear in the
+  // result, so v2 checks it in the join condition.
+  {
+    auto query =
+        "SELECT count(*) FROM t LEFT JOIN u ON t.a = u.x AND t.b = u.x";
+    SCOPED_TRACE(query);
+
+    auto matcher = matchScan("t")
+                       .hashJoin(
+                           matchScan("u"),
+                           core::JoinType::kLeft,
+                           {.keys = {{"a = x"}}, .filter = "a = b"})
+                       .aggregation()
+                       .build();
+
+    auto plan = toSingleNodePlan(query);
+    AXIOM_ASSERT_PLAN_V2(plan, matcher);
+  }
 }
 
 // SEMI join (EXISTS) gets slot-pattern same-table eq synthesis on its
@@ -3692,14 +3707,18 @@ TEST_P(JoinTest, impliedSameTableEqualityFullOuterJoinSkipped) {
       "SELECT count(*) FROM t FULL OUTER JOIN u ON u.x = t.a AND u.y = t.a";
   SCOPED_TRACE(query);
 
-  // u must have no filter — slot synthesis is unsound for FULL OUTER.
+  // u must have no filter — slot synthesis is unsound for FULL OUTER. v2
+  // checks x = y in the join condition instead.
   auto matcher = matchScan("t")
-                     .hashJoin(matchScan("u"), core::JoinType::kFull)
+                     .hashJoin(
+                         matchScan("u"),
+                         core::JoinType::kFull,
+                         {.keys = {{"a = x"}}, .filter = "x = y"})
                      .aggregation()
                      .build();
 
   auto plan = toSingleNodePlan(query);
-  AXIOM_ASSERT_PLAN(plan, matcher);
+  AXIOM_ASSERT_PLAN_V2(plan, matcher);
 }
 
 // Same-table equalities must NOT be inferred for the null-supplying side

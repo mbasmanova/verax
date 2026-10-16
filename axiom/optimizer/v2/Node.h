@@ -1413,6 +1413,14 @@ class Join : public Node {
   /// did not have.
   static PreservedSides preservedSides(velox::core::JoinType joinType);
 
+  /// Returns whether a row holding a NULL key can match: in a NULL-aware
+  /// semi or anti join, or one that treats NULL keys as equal. An equality
+  /// derived from the keys is plain `=`, which drops such a row, so it must
+  /// not be derived for these joins.
+  static bool nullKeysMatch(bool nullAware, bool nullAsValue) {
+    return nullAware || nullAsValue;
+  }
+
   /// Returns whether `source` comes from an input preserved by `joinType`.
   static bool preservesSource(
       velox::core::JoinType joinType,
