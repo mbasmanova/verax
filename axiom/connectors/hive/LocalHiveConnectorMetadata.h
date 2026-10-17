@@ -75,7 +75,8 @@ class LocalHiveConnectorMetadata;
 
 class LocalHiveSplitManager : public ConnectorSplitManager {
  public:
-  explicit LocalHiveSplitManager(LocalHiveConnectorMetadata* /* metadata */) {}
+  explicit LocalHiveSplitManager(LocalHiveConnectorMetadata* metadata)
+      : metadata_{metadata} {}
 
   folly::coro::Task<std::vector<PartitionHandlePtr>> co_listPartitions(
       const ConnectorSessionPtr& session,
@@ -88,6 +89,10 @@ class LocalHiveSplitManager : public ConnectorSplitManager {
       const std::vector<PartitionHandlePtr>& partitions,
       const std::shared_ptr<PartitionType>& partitionType,
       std::optional<double> samplePercentage) override;
+
+ private:
+  // The metadata that owns this split manager.
+  LocalHiveConnectorMetadata* const metadata_;
 };
 
 // Write-time stats for a single partition (or the whole table if
@@ -112,7 +117,7 @@ class LocalHiveTableLayout : public HiveTableLayout {
   LocalHiveTableLayout(
       const std::string& label,
       const Table* table,
-      velox::connector::Connector* connector,
+      const LocalHiveConnectorMetadata& metadata,
       std::vector<const Column*> columns,
       std::optional<int32_t> numBuckets,
       const std::vector<const Column*>& partitioning,
@@ -121,22 +126,7 @@ class LocalHiveTableLayout : public HiveTableLayout {
       std::vector<const Column*> lookupKeys,
       std::vector<const Column*> hivePartitionColumns,
       velox::dwio::common::FileFormat fileFormat,
-      std::shared_ptr<HiveMetadataConfig> hiveMetadataConfig,
-      std::unordered_map<std::string, std::string> serdeParameters = {})
-      : HiveTableLayout(
-            label,
-            table,
-            connector,
-            std::move(columns),
-            numBuckets,
-            partitioning,
-            orderColumns,
-            sortOrder,
-            std::move(lookupKeys),
-            std::move(hivePartitionColumns),
-            fileFormat),
-        hiveMetadataConfig_(std::move(hiveMetadataConfig)),
-        serdeParameters_(std::move(serdeParameters)) {}
+      std::unordered_map<std::string, std::string> serdeParameters = {});
 
   bool supportsSampling() const override {
     return true;
@@ -206,8 +196,8 @@ class LocalHiveTableLayout : public HiveTableLayout {
       velox::connector::ConnectorTableHandlePtr tableHandle) const override;
 
  private:
-  // Configuration for local Hive metadata.
-  std::shared_ptr<HiveMetadataConfig> hiveMetadataConfig_;
+  // The metadata that owns this layout's table.
+  const LocalHiveConnectorMetadata& metadata_;
   std::vector<std::unique_ptr<const FileInfo>> files_;
   std::vector<std::unique_ptr<const FileInfo>> ownedFiles_;
   // Per-partition (or per-table for unpartitioned) write-time stats loaded

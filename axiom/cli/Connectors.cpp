@@ -240,6 +240,7 @@ void Connectors::registerSystemConnector(
   // Presto does.
   auto connector = std::make_shared<connector::system::SystemConnector>(
       connectorId,
+      connector::ConnectorMetadataRegistry::global(),
       /*queryInfoProvider=*/nullptr,
       sessionPropertiesProvider_.get(),
       velox::PrestoTypes::displayName);

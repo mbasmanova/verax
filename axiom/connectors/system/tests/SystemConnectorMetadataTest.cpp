@@ -146,7 +146,10 @@ class SystemConnectorMetadataTest : public ::testing::Test {
     sessionProvider_ = std::make_unique<MockSessionPropertiesProvider>();
 
     connector_ = std::make_shared<SystemConnector>(
-        kSystemCatalog, queryProvider_.get(), sessionProvider_.get());
+        kSystemCatalog,
+        ConnectorMetadataRegistry::global(),
+        queryProvider_.get(),
+        sessionProvider_.get());
     velox::connector::registerConnector(connector_);
 
     metadata_ = std::make_shared<SystemConnectorMetadata>(connector_.get());
@@ -510,6 +513,37 @@ TEST_F(SystemConnectorMetadataTest, schemas) {
   EXPECT_TRUE(metadata_->schemaExists(session, kQueriesTable.schema));
   EXPECT_TRUE(metadata_->schemaExists(session, kSessionPropertiesTable.schema));
   EXPECT_FALSE(metadata_->schemaExists(session, "information_schema"));
+}
+
+// The connector describes the catalogs in the registry it was constructed
+// with, not the process-wide one.
+TEST_F(SystemConnectorMetadataTest, describesItsRegistry) {
+  const std::string catalog{"own_system"};
+  auto registry = ConnectorMetadataRegistry::create();
+  auto connector = std::make_shared<SystemConnector>(
+      catalog, *registry, queryProvider_.get(), sessionProvider_.get());
+  auto metadata = std::make_shared<SystemConnectorMetadata>(connector.get());
+  registry->insert(catalog, metadata);
+
+  auto session = makeSession();
+  EXPECT_THAT(
+      metadata->listSchemaNames(session),
+      testing::UnorderedElementsAre(
+          kQueriesTable.schema,
+          kSessionPropertiesTable.schema,
+          InformationSchema::schemaName(catalog)));
+  EXPECT_NE(
+      metadata->findTable(
+          SchemaTableName{
+              InformationSchema::schemaName(catalog), std::string("columns")}),
+      nullptr);
+
+  // The fixture's catalog is registered only in the process-wide registry.
+  const auto otherSchema = InformationSchema::schemaName(kSystemCatalog);
+  EXPECT_FALSE(metadata->schemaExists(session, otherSchema));
+  EXPECT_EQ(
+      metadata->findTable(SchemaTableName{otherSchema, std::string("columns")}),
+      nullptr);
 }
 
 TEST_F(SystemConnectorMetadataTest, informationSchema) {

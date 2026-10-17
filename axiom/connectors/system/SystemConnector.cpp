@@ -861,10 +861,12 @@ velox::RowVectorPtr FunctionsDataSource::buildResults() {
 
 SystemConnector::SystemConnector(
     const std::string& id,
+    const ConnectorMetadataRegistry::Registry& metadataRegistry,
     const QueryInfoProvider* queryInfoProvider,
     const SessionPropertiesProvider* sessionPropertiesProvider,
     InformationSchema::TypeNameFormatter typeName)
     : Connector(id),
+      metadataRegistry_(metadataRegistry),
       queryInfoProvider_(queryInfoProvider),
       sessionPropertiesProvider_(sessionPropertiesProvider),
       typeName_(std::move(typeName)) {
@@ -891,6 +893,7 @@ std::unique_ptr<velox::connector::DataSource> SystemConnector::createDataSource(
         outputType,
         columnHandles,
         connectorQueryCtx->memoryPool(),
+        metadataRegistry_,
         typeName_);
   }
 

@@ -56,7 +56,10 @@ class CoordinatorSchedulingTest : public optimizer::test::QueryTestBase {
     optimizer::test::QueryTestBase::SetUp();
 
     systemConnector_ = std::make_shared<connector::system::SystemConnector>(
-        kSystemConnectorId, &queryProvider_, &sessionProvider_);
+        kSystemConnectorId,
+        connector::ConnectorMetadataRegistry::global(),
+        &queryProvider_,
+        &sessionProvider_);
     velox::connector::registerConnector(systemConnector_);
 
     systemMetadata_ =

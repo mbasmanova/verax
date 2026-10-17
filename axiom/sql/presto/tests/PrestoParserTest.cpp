@@ -43,6 +43,7 @@ class PrestoParserTest : public PrestoParserTestBase {
 
     systemConnector_ = std::make_shared<connector::system::SystemConnector>(
         kSystemConnectorId,
+        connector::ConnectorMetadataRegistry::global(),
         /*queryInfoProvider=*/nullptr,
         /*sessionPropertiesProvider=*/nullptr);
     connector::ConnectorMetadataRegistry::global().insert(

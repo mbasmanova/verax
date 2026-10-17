@@ -78,6 +78,7 @@ class InformationSchemaTest : public optimizer::test::QueryTestBase {
 
     systemConnector_ = std::make_shared<SystemConnector>(
         std::string(kSystemConnectorId),
+        ConnectorMetadataRegistry::global(),
         /*queryInfoProvider=*/nullptr,
         /*sessionPropertiesProvider=*/nullptr,
         std::move(typeName));

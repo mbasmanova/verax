@@ -18,6 +18,7 @@
 #include <functional>
 
 #include "axiom/connectors/ConnectorMetadata.h"
+#include "axiom/connectors/ConnectorMetadataRegistry.h"
 
 namespace facebook::axiom::connector::system {
 
@@ -154,9 +155,12 @@ class InformationSchema {
   ///
   /// @param serving The connector that serves the relations. Not the catalog
   /// being described, which 'tableName''s schema names.
+  /// @param metadataRegistry The catalogs this information_schema describes.
+  /// Must outlive the returned table.
   static TablePtr findTable(
       const SchemaTableName& tableName,
-      velox::connector::Connector* serving);
+      velox::connector::Connector* serving,
+      const ConnectorMetadataRegistry::Registry& metadataRegistry);
 
   /// Returns a data source reading the relation 'tableHandle' names from the
   /// metadata of the catalog it names. Rows come in batches of the size the
@@ -169,6 +173,7 @@ class InformationSchema {
       const velox::RowTypePtr& outputType,
       const velox::connector::ColumnHandleMap& columnHandles,
       velox::memory::MemoryPool* pool,
+      const ConnectorMetadataRegistry::Registry& metadataRegistry,
       const TypeNameFormatter& typeName);
 };
 
