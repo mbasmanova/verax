@@ -57,19 +57,44 @@ void checkPropertyReads(const lp::Expr& expr) {
   }
 }
 
-// Returns the repetition of 'term' if it is an edge pattern that repeats other
-// than exactly once, or null. An edge pattern repeated exactly once joins as a
-// plain edge.
-const lp::GraphRepetition* walksRepetition(const lp::GraphPatternTerm& term) {
-  if (term.kind() != lp::GraphPatternTerm::Kind::kEdge) {
-    return nullptr;
+// Returns the repetition of 'term' if it is an edge pattern or a subpath that
+// repeats other than exactly once, or null. A pattern repeated exactly once
+// matches like one without repetition.
+const lp::GraphRepetition* walkRepetitionOf(const lp::GraphPatternTerm& term) {
+  const auto& repetition = term.repetition();
+  if (repetition.has_value() &&
+      (repetition->min != 1 || repetition->max != 1)) {
+    return &*repetition;
   }
-  const auto& repetition = term.as<lp::GraphEdgePattern>()->repetition();
-  if (!repetition.has_value() ||
-      (repetition->min == 1 && repetition->max == 1)) {
-    return nullptr;
+  return nullptr;
+}
+
+// Returns true if 'terms', or a plain subpath among them, hold a repetition.
+bool hasWalkRepetition(const std::vector<lp::GraphPatternTermPtr>& terms) {
+  return std::any_of(terms.begin(), terms.end(), [](const auto& term) {
+    if (walkRepetitionOf(*term) != nullptr) {
+      return true;
+    }
+    return term->is(lp::GraphPatternTerm::Kind::kSubpath) &&
+        hasWalkRepetition(
+               term->template as<lp::GraphSubpathPattern>()->terms());
+  });
+}
+
+// Adds to 'names' the names of the patterns in 'terms' under a repetition.
+void collectGroupNames(
+    const std::vector<lp::GraphPatternTermPtr>& terms,
+    folly::F14FastSet<std::string>& names) {
+  for (const auto& term : terms) {
+    const bool repeated = term->repetition().has_value();
+    if (term->is(lp::GraphPatternTerm::Kind::kSubpath)) {
+      const auto& inner = term->as<lp::GraphSubpathPattern>()->terms();
+      repeated ? lp::GraphPatternTerm::collectElementNames(inner, names)
+               : collectGroupNames(inner, names);
+    } else if (repeated && !term->name().empty()) {
+      names.insert(term->name());
+    }
   }
-  return &*repetition;
 }
 
 [[noreturn]] void failGroupRead(std::string_view name) {
@@ -83,9 +108,11 @@ const lp::GraphRepetition* walksRepetition(const lp::GraphPatternTerm& term) {
 void checkNoGroupReads(
     const lp::Expr& expr,
     const folly::F14FastSet<std::string>& names) {
-  if (expr.isInputReference() &&
-      names.contains(expr.as<lp::InputReferenceExpr>()->name())) {
-    failGroupRead(expr.as<lp::InputReferenceExpr>()->name());
+  if (expr.isInputReference()) {
+    const auto& name = expr.as<lp::InputReferenceExpr>()->name();
+    if (names.contains(name)) {
+      failGroupRead(name);
+    }
   }
   for (const auto& input : expr.inputs()) {
     checkNoGroupReads(*input, names);
@@ -147,9 +174,9 @@ std::optional<Translated> Translator::GraphMatchLowering::lower(
     }
   }
   bindPatternNames();
-  filterHops();
   connect();
-  walked_.assign(repeatedEdges_.size(), false);
+  walked_.assign(repetitions_.size(), false);
+  buildHops();
 
   // Paths that share no name join with a cross product: no connection links
   // two components.
@@ -179,13 +206,7 @@ std::optional<Translated> Translator::GraphMatchLowering::lower(
 void Translator::GraphMatchLowering::checkGroupReads() const {
   folly::F14FastSet<std::string> names;
   for (const auto& path : match_.paths()) {
-    for (const auto& term : path.terms) {
-      if (term->kind() == lp::GraphPatternTerm::Kind::kEdge &&
-          term->as<lp::GraphEdgePattern>()->repetition().has_value() &&
-          !term->name().empty()) {
-        names.insert(term->name());
-      }
-    }
+    collectGroupNames(path.terms, names);
   }
   if (names.empty()) {
     return;
@@ -193,12 +214,23 @@ void Translator::GraphMatchLowering::checkGroupReads() const {
   if (match_.predicate() != nullptr) {
     checkNoGroupReads(*match_.predicate(), names);
   }
+  // A repeated pattern's own predicates read its names once per repetition.
+  std::function<void(const std::vector<lp::GraphPatternTermPtr>&)> checkTerms =
+      [&](const auto& terms) {
+        for (const auto& term : terms) {
+          if (term->repetition().has_value()) {
+            continue;
+          }
+          if (term->predicate() != nullptr) {
+            checkNoGroupReads(*term->predicate(), names);
+          }
+          if (term->is(lp::GraphPatternTerm::Kind::kSubpath)) {
+            checkTerms(term->template as<lp::GraphSubpathPattern>()->terms());
+          }
+        }
+      };
   for (const auto& path : match_.paths()) {
-    for (const auto& term : path.terms) {
-      if (term->predicate() != nullptr && !names.contains(term->name())) {
-        checkNoGroupReads(*term->predicate(), names);
-      }
-    }
+    checkTerms(path.terms);
   }
   for (const auto& output : match_.outputs()) {
     if (output->kind() == lp::GraphMatchOutput::Kind::kProperty &&
@@ -222,6 +254,12 @@ void Translator::GraphMatchLowering::copySharedElements() {
         limited = true;
         continue;
       }
+      // A name under a repetition is bound in one path only, so a repetition's
+      // elements are never copied and need no remapping below.
+      VELOX_CHECK(
+          !elements_[original].inRepetition,
+          "Element in a repetition is shared by several paths: {}",
+          elements_[original].name);
       Element copy = elements_[original];
       copy.paths = {path};
       elements_[original].paths.erase(path);
@@ -242,11 +280,11 @@ void Translator::GraphMatchLowering::copySharedElements() {
           }
         }
       }
-      for (auto& repeated : repeatedEdges_) {
-        if (repeated.path != path) {
+      for (auto& repetition : repetitions_) {
+        if (repetition.path != path) {
           continue;
         }
-        for (auto* element : {&repeated.edge, &repeated.from, &repeated.to}) {
+        for (auto* element : {&repetition.from, &repetition.to}) {
           if (*element == original) {
             *element = index;
           }
@@ -272,10 +310,15 @@ Translator::GraphMatchLowering::fold() {
       elements_[path.last].needsIdentity = true;
     }
   }
-  // A walk joins its ends on their identities.
-  for (const auto& repeated : repeatedEdges_) {
-    elements_[repeated.from].needsIdentity = true;
-    elements_[repeated.to].needsIdentity = true;
+  // A walk joins its ends, and the hops of a repeated subpath, on their
+  // identities.
+  for (const auto& repetition : repetitions_) {
+    elements_[repetition.from].needsIdentity = true;
+    elements_[repetition.to].needsIdentity = true;
+    if (!repetition.edge.has_value()) {
+      elements_[repetition.first].needsIdentity = true;
+      elements_[repetition.last].needsIdentity = true;
+    }
   }
   for (const auto& occurrence : occurrences_) {
     for (const auto& end : occurrence.ends()) {
@@ -297,18 +340,16 @@ Translator::GraphMatchLowering::fold() {
 }
 
 size_t Translator::GraphMatchLowering::bind(
-    const lp::GraphElementPattern& pattern,
-    bool edge) {
-  const auto tables = graph_.matchingTables(pattern.label().get(), edge);
+    const lp::GraphElementPattern& pattern) {
+  const bool edge = pattern.is(lp::GraphPatternTerm::Kind::kEdge);
+  const auto tables = pattern.matchingTables(graph_);
   const auto& name = pattern.name();
 
   // A name bound before matches only the tables every pattern with the name
   // matches.
   if (const auto it = elementByName_.find(name); it != elementByName_.end()) {
-    auto& labelTables = elements_[it->second].labelTables;
-    std::erase_if(labelTables, [&](const auto* table) {
-      return std::find(tables.begin(), tables.end(), table) == tables.end();
-    });
+    lp::PropertyGraph::intersectTables(
+        elements_[it->second].labelTables, tables);
     return it->second;
   }
 
@@ -323,17 +364,35 @@ size_t Translator::GraphMatchLowering::bind(
   return elements_.size() - 1;
 }
 
+void Translator::GraphMatchLowering::bindAdjacent(
+    const lp::GraphVertexPattern& pattern,
+    size_t index) {
+  auto& element = elements_[index];
+  lp::PropertyGraph::intersectTables(
+      element.labelTables, pattern.matchingTables(graph_));
+
+  const auto& name = pattern.name();
+  if (name.empty()) {
+    return;
+  }
+  const auto [it, inserted] = elementByName_.emplace(name, index);
+  if (!inserted && it->second != index) {
+    VELOX_NYI(
+        "Adjacent graph vertex patterns whose names bind different vertices "
+        "are not supported yet: {}",
+        name);
+  }
+  if (element.name.empty()) {
+    element.name = name;
+  }
+}
+
 void Translator::GraphMatchLowering::addPath(
     const lp::GraphPathPattern& path,
     size_t pathIndex) {
-  using Direction = lp::GraphEdgePattern::Direction;
-
   Path& pathInfo = paths_.emplace_back();
   pathInfo.limit = selectorLimit(path.selector);
-  const bool repeats =
-      std::any_of(path.terms.begin(), path.terms.end(), [](const auto& term) {
-        return walksRepetition(*term) != nullptr;
-      });
+  const bool repeats = hasWalkRepetition(path.terms);
   if (repeats && path.selector.kind != lp::GraphPathSelector::Kind::kAny &&
       path.selector.kind != lp::GraphPathSelector::Kind::kAll) {
     VELOX_NYI(
@@ -346,106 +405,185 @@ void Translator::GraphMatchLowering::addPath(
         lp::GraphPathModeName::toName(path.mode));
   }
 
-  // The vertex the next edge leaves from, and the edge waiting for the vertex
-  // it reaches.
-  std::optional<size_t> vertex;
-  std::optional<EdgeOccurrence> pendingEdge;
-  std::optional<RepeatedEdge> pendingRepeat;
-  int64_t numEdges{0};
-  for (const auto& term : path.terms) {
-    if (term->predicate() != nullptr) {
-      checkPropertyReads(*term->predicate());
-      // A repeated edge pattern's predicate applies to each hop.
-      if (walksRepetition(*term) == nullptr) {
-        pathInfo.predicates.push_back(term->predicate().get());
-      }
-    }
-    switch (term->kind()) {
-      case lp::GraphPatternTerm::Kind::kSubpath:
-        VELOX_NYI("Graph subpath patterns are not supported yet");
-      case lp::GraphPatternTerm::Kind::kEdge: {
-        const auto* edge = term->as<lp::GraphEdgePattern>();
-        if (!vertex.has_value() || pendingEdge.has_value() ||
-            pendingRepeat.has_value()) {
-          VELOX_NYI(
-              "Graph edge pattern without a vertex pattern before it is not "
-              "supported yet");
-        }
-        const bool undirected = edge->direction() == Direction::kAnyDirection;
-        const bool reused = elementByName_.contains(edge->name());
-        const auto index = bind(*edge, /*edge=*/true);
-        elements_[index].paths.insert(pathIndex);
-        if (reused && (undirected || edgeAt(index).undirected)) {
-          VELOX_NYI(
-              "Undirected graph edge pattern with a reused name is not "
-              "supported yet: {}",
-              edge->name());
-        }
-        edgeAt(index).undirected = undirected;
-        if (const auto* repetition = walksRepetition(*term)) {
-          if (!repetition->max.has_value()) {
-            VELOX_NYI(
-                "Graph edge repetition without an upper bound is not "
-                "supported yet");
-          }
-          edgeAt(index).repeated = true;
-          pendingRepeat = RepeatedEdge{
-              .edge = index,
-              .from = *vertex,
-              .pointsRight = edge->direction() != Direction::kLeft,
-              .minHops = static_cast<int32_t>(repetition->min),
-              .maxHops = static_cast<int32_t>(*repetition->max),
-              .path = pathIndex};
-          if (term->predicate() != nullptr) {
-            pendingRepeat->predicates.push_back(term->predicate().get());
-          }
-          break;
-        }
-        pendingEdge = EdgeOccurrence{
-            .edge = index,
-            .from = *vertex,
-            .pointsRight = edge->direction() != Direction::kLeft,
-            .path = pathIndex};
-        ++numEdges;
-        break;
-      }
-      case lp::GraphPatternTerm::Kind::kVertex: {
-        if (vertex.has_value() && !pendingEdge.has_value() &&
-            !pendingRepeat.has_value()) {
-          VELOX_NYI(
-              "Adjacent graph vertex patterns are not supported yet: {}",
-              term->name());
-        }
-        const auto index =
-            bind(*term->as<lp::GraphVertexPattern>(), /*edge=*/false);
-        elements_[index].paths.insert(pathIndex);
-        if (!vertex.has_value()) {
-          pathInfo.first = index;
-        }
-        if (pendingEdge.has_value()) {
-          pendingEdge->to = index;
-          occurrences_.push_back(*pendingEdge);
-          pendingEdge.reset();
-        }
-        if (pendingRepeat.has_value()) {
-          pendingRepeat->to = index;
-          repeatedEdges_.push_back(std::move(*pendingRepeat));
-          pendingRepeat.reset();
-        }
-        vertex = index;
-        break;
-      }
-    }
-  }
-  if (pendingEdge.has_value() || pendingRepeat.has_value()) {
+  TermCursor cursor{.path = pathIndex, .predicates = &pathInfo.predicates};
+  addTerms(path.terms, cursor);
+  if (cursor.pendingEdge.has_value() || cursor.pendingRepetition.has_value()) {
     VELOX_NYI(
         "Graph edge pattern without a vertex pattern after it is not "
         "supported yet");
   }
-  pathInfo.last = vertex.value();
+  pathInfo.first = cursor.first.value();
+  pathInfo.last = cursor.vertex.value();
   if (!path.name.empty() && !repeats) {
-    pathLengths_.emplace(path.name, numEdges);
+    pathLengths_.emplace(path.name, cursor.numEdges);
   }
+}
+
+void Translator::GraphMatchLowering::addTerms(
+    const std::vector<lp::GraphPatternTermPtr>& terms,
+    TermCursor& cursor) {
+  for (const auto& term : terms) {
+    const auto* repetition = walkRepetitionOf(*term);
+    if (repetition != nullptr && !repetition->max.has_value()) {
+      VELOX_NYI("Graph repetition without an upper bound is not supported yet");
+    }
+    if (term->predicate() != nullptr) {
+      checkPropertyReads(*term->predicate());
+      // A repeated pattern's predicate applies to each hop.
+      if (repetition == nullptr) {
+        cursor.predicates->push_back(term->predicate().get());
+      }
+    }
+    switch (term->kind()) {
+      case lp::GraphPatternTerm::Kind::kVertex:
+        addVertex(*term->as<lp::GraphVertexPattern>(), cursor);
+        break;
+      case lp::GraphPatternTerm::Kind::kEdge:
+        addEdge(*term->as<lp::GraphEdgePattern>(), repetition, cursor);
+        break;
+      case lp::GraphPatternTerm::Kind::kSubpath:
+        addSubpath(*term->as<lp::GraphSubpathPattern>(), repetition, cursor);
+        break;
+    }
+  }
+}
+
+void Translator::GraphMatchLowering::addVertex(
+    const lp::GraphVertexPattern& pattern,
+    TermCursor& cursor) {
+  if (cursor.atVertex()) {
+    bindAdjacent(pattern, *cursor.vertex);
+    return;
+  }
+
+  const auto index = bind(pattern);
+  elements_[index].paths.insert(cursor.path);
+  if (!cursor.vertex.has_value()) {
+    cursor.first = index;
+  }
+  if (cursor.pendingEdge.has_value()) {
+    cursor.pendingEdge->to = index;
+    occurrences_.push_back(*cursor.pendingEdge);
+    cursor.pendingEdge.reset();
+  }
+  if (cursor.pendingRepetition.has_value()) {
+    cursor.pendingRepetition->to = index;
+    repetitions_.push_back(std::move(*cursor.pendingRepetition));
+    cursor.pendingRepetition.reset();
+  }
+  cursor.vertex = index;
+}
+
+void Translator::GraphMatchLowering::addEdge(
+    const lp::GraphEdgePattern& edge,
+    const lp::GraphRepetition* repetition,
+    TermCursor& cursor) {
+  using Direction = lp::GraphEdgePattern::Direction;
+
+  if (!cursor.atVertex()) {
+    VELOX_NYI(
+        "Graph edge pattern without a vertex pattern before it is not "
+        "supported yet");
+  }
+
+  const bool undirected = edge.direction() == Direction::kAnyDirection;
+  const bool reused = elementByName_.contains(edge.name());
+  const auto index = bind(edge);
+  elements_[index].paths.insert(cursor.path);
+
+  if (reused && (undirected || edgeAt(index).undirected)) {
+    VELOX_NYI(
+        "Undirected graph edge pattern with a reused name is not supported "
+        "yet: {}",
+        edge.name());
+  }
+
+  edgeAt(index).undirected = undirected;
+  const bool pointsRight = edge.direction() != Direction::kLeft;
+  if (repetition == nullptr) {
+    cursor.pendingEdge = EdgeOccurrence{
+        .edge = index,
+        .from = *cursor.vertex,
+        .pointsRight = pointsRight,
+        .path = cursor.path};
+    ++cursor.numEdges;
+    return;
+  }
+
+  edgeAt(index).repeated = true;
+  elements_[index].inRepetition = true;
+  cursor.pendingRepetition = Repetition{
+      .from = *cursor.vertex,
+      .edge = index,
+      .pointsRight = pointsRight,
+      .minHops = static_cast<int32_t>(repetition->min),
+      .maxHops = static_cast<int32_t>(*repetition->max),
+      .path = cursor.path};
+  if (edge.predicate() != nullptr) {
+    cursor.pendingRepetition->predicates.push_back(edge.predicate().get());
+  }
+}
+
+void Translator::GraphMatchLowering::addSubpath(
+    const lp::GraphSubpathPattern& subpath,
+    const lp::GraphRepetition* repetition,
+    TermCursor& cursor) {
+  if (subpath.optional()) {
+    VELOX_NYI("Optional graph subpath patterns are not supported yet");
+  }
+  if (subpath.mode() != lp::GraphPathMode::kWalk) {
+    VELOX_NYI(
+        "Graph path mode is not supported yet: {}",
+        lp::GraphPathModeName::toName(subpath.mode()));
+  }
+
+  if (repetition != nullptr) {
+    addRepeatedSubpath(subpath, *repetition, cursor);
+    return;
+  }
+
+  const auto numEdges = cursor.numEdges;
+  addTerms(subpath.terms(), cursor);
+  if (!subpath.name().empty() && !hasWalkRepetition(subpath.terms())) {
+    pathLengths_.emplace(subpath.name(), cursor.numEdges - numEdges);
+  }
+}
+
+void Translator::GraphMatchLowering::addRepeatedSubpath(
+    const lp::GraphSubpathPattern& subpath,
+    const lp::GraphRepetition& repetition,
+    TermCursor& cursor) {
+  const auto& terms = subpath.terms();
+  if (!cursor.atVertex()) {
+    VELOX_NYI(
+        "Repeated graph subpath pattern without a vertex pattern before it "
+        "is not supported yet");
+  }
+  if (!terms.front()->is(lp::GraphPatternTerm::Kind::kVertex) ||
+      !terms.back()->is(lp::GraphPatternTerm::Kind::kVertex)) {
+    VELOX_NYI(
+        "Repeated graph subpath pattern that starts or ends with an edge "
+        "pattern is not supported yet");
+  }
+  // The patterns inside appear once in the match, so they bind new elements.
+  Repetition pending{
+      .from = *cursor.vertex,
+      .minHops = static_cast<int32_t>(repetition.min),
+      .maxHops = static_cast<int32_t>(*repetition.max),
+      .path = cursor.path};
+  if (subpath.predicate() != nullptr) {
+    pending.predicates.push_back(subpath.predicate().get());
+  }
+  const auto numElements = elements_.size();
+  TermCursor inner{.path = cursor.path, .predicates = &pending.predicates};
+  addTerms(terms, inner);
+  pending.first = inner.first.value();
+  pending.last = inner.vertex.value();
+  for (auto i = numElements; i < elements_.size(); ++i) {
+    elements_[i].inRepetition = true;
+    pending.elements.push_back(i);
+  }
+  cursor.pendingRepetition = std::move(pending);
 }
 
 bool Translator::GraphMatchLowering::narrow() {
@@ -459,71 +597,14 @@ bool Translator::GraphMatchLowering::narrow() {
     }
   }
 
-  // Drops the legs of 'vertex' whose table is not in 'referenced'. Returns true
-  // if it dropped any.
-  auto keepReferenced = [](Element& vertex,
-                           const folly::F14FastSet<int32_t>& referenced) {
-    const auto numLegs = vertex.legs.size();
-    std::erase_if(vertex.legs, [&](const Leg& leg) {
-      return !referenced.contains(leg.table->id);
-    });
-    return vertex.legs.size() != numLegs;
-  };
-
   bool changed{true};
   while (changed) {
     changed = false;
     for (const auto& occurrence : occurrences_) {
-      auto& edge = elements_[occurrence.edge];
-      auto& from = elements_[occurrence.from];
-      auto& to = elements_[occurrence.to];
-      folly::F14FastSet<int32_t> fromIds;
-      from.addTableIdsTo(fromIds);
-      folly::F14FastSet<int32_t> toIds;
-      to.addTableIdsTo(toIds);
-
-      // The vertex tables the remaining edge legs leave from and reach.
-      folly::F14FastSet<int32_t> fromReferenced;
-      folly::F14FastSet<int32_t> toReferenced;
-      const auto numEdgeLegs = edge.legs.size();
-      std::erase_if(edge.legs, [&](const Leg& leg) {
-        const auto fromId = leg.tableId(occurrence.pointsRight);
-        const auto toId = leg.tableId(!occurrence.pointsRight);
-        if (!fromIds.contains(fromId) || !toIds.contains(toId)) {
-          return true;
-        }
-        fromReferenced.insert(fromId);
-        toReferenced.insert(toId);
-        return false;
-      });
-
-      const bool fromChanged = keepReferenced(from, fromReferenced);
-      const bool toChanged = keepReferenced(to, toReferenced);
-      changed = changed || edge.legs.size() != numEdgeLegs || fromChanged ||
-          toChanged;
+      changed = narrowAtEdge(occurrence) || changed;
     }
-
-    // A walk leaves from a table a hop leaves from and reaches a table a hop
-    // reaches. The hops between visit any table. A walk of zero hops leaves
-    // from and reaches one vertex, so either end may also match the other's
-    // tables.
-    for (const auto& repeated : repeatedEdges_) {
-      const auto& edge = elements_[repeated.edge];
-      folly::F14FastSet<int32_t> fromReferenced;
-      folly::F14FastSet<int32_t> toReferenced;
-      for (const auto& leg : edge.legs) {
-        fromReferenced.insert(leg.tableId(repeated.pointsRight));
-        toReferenced.insert(leg.tableId(!repeated.pointsRight));
-      }
-      if (repeated.minHops == 0) {
-        elements_[repeated.to].addTableIdsTo(fromReferenced);
-        elements_[repeated.from].addTableIdsTo(toReferenced);
-      }
-      const bool fromChanged =
-          keepReferenced(elements_[repeated.from], fromReferenced);
-      const bool toChanged =
-          keepReferenced(elements_[repeated.to], toReferenced);
-      changed = changed || fromChanged || toChanged;
+    for (const auto& repetition : repetitions_) {
+      changed = narrowAtRepetition(repetition) || changed;
     }
   }
 
@@ -531,6 +612,54 @@ bool Translator::GraphMatchLowering::narrow() {
       elements_.begin(), elements_.end(), [](const Element& element) {
         return element.legs.empty();
       });
+}
+
+bool Translator::GraphMatchLowering::narrowAtEdge(
+    const EdgeOccurrence& occurrence) {
+  auto& edge = elements_[occurrence.edge];
+  auto& from = elements_[occurrence.from];
+  auto& to = elements_[occurrence.to];
+  folly::F14FastSet<int32_t> fromIds;
+  from.collectTableIds(fromIds);
+  folly::F14FastSet<int32_t> toIds;
+  to.collectTableIds(toIds);
+
+  // The vertex tables the remaining edge legs leave from and reach.
+  folly::F14FastSet<int32_t> fromReferenced;
+  folly::F14FastSet<int32_t> toReferenced;
+  const auto numEdgeLegs = edge.legs.size();
+  std::erase_if(edge.legs, [&](const Leg& leg) {
+    const auto fromId = leg.tableId(occurrence.pointsRight);
+    const auto toId = leg.tableId(!occurrence.pointsRight);
+    if (!fromIds.contains(fromId) || !toIds.contains(toId)) {
+      return true;
+    }
+    fromReferenced.insert(fromId);
+    toReferenced.insert(toId);
+    return false;
+  });
+
+  const bool fromChanged = from.keepLegsOf(fromReferenced);
+  const bool toChanged = to.keepLegsOf(toReferenced);
+  return edge.legs.size() != numEdgeLegs || fromChanged || toChanged;
+}
+
+bool Translator::GraphMatchLowering::narrowAtRepetition(
+    const Repetition& repetition) {
+  // A walk leaves from a table a hop leaves from and reaches a table a hop
+  // reaches. The hops between visit any table. A walk of zero hops leaves from
+  // and reaches one vertex, so either end may also match the other's tables.
+  folly::F14FastSet<int32_t> fromReferenced;
+  folly::F14FastSet<int32_t> toReferenced;
+  collectHopTableIds(repetition, fromReferenced, toReferenced);
+  if (repetition.minHops == 0) {
+    elements_[repetition.to].collectTableIds(fromReferenced);
+    elements_[repetition.from].collectTableIds(toReferenced);
+  }
+  const bool fromChanged =
+      elements_[repetition.from].keepLegsOf(fromReferenced);
+  const bool toChanged = elements_[repetition.to].keepLegsOf(toReferenced);
+  return fromChanged || toChanged;
 }
 
 namespace {
@@ -591,14 +720,22 @@ const std::vector<std::string>& Translator::GraphMatchLowering::Leg::keyColumns(
                           : edgeTable->destinationColumns;
 }
 
-void Translator::GraphMatchLowering::Element::addTableIdsTo(
+bool Translator::GraphMatchLowering::Element::keepLegsOf(
+    const folly::F14FastSet<int32_t>& tableIds) {
+  const auto numLegs = legs.size();
+  std::erase_if(
+      legs, [&](const Leg& leg) { return !tableIds.contains(leg.table->id); });
+  return legs.size() != numLegs;
+}
+
+void Translator::GraphMatchLowering::Element::collectTableIds(
     folly::F14FastSet<int32_t>& ids) const {
   for (const auto& leg : legs) {
     ids.insert(leg.table->id);
   }
 }
 
-bool Translator::GraphMatchLowering::Element::tableIdVaries(
+bool Translator::GraphMatchLowering::Element::hasSeveralTables(
     std::optional<bool> end) const {
   return std::any_of(legs.begin(), legs.end(), [&](const Leg& leg) {
     return leg.tableId(end) != legs[0].tableId(end);
@@ -620,14 +757,15 @@ ExprVector Translator::GraphMatchLowering::Element::identity(
 namespace {
 
 // Appends the names and types of the columns that hold the identity 'end'
-// selects (see Leg::tableId): the table ID when it varies, then the key.
+// selects (see Leg::tableId): the table ID when it has several tables, then the
+// key.
 template <typename Element>
 void appendIdentitySchema(
     const Element& element,
     std::optional<bool> end,
     std::vector<std::string>& names,
     std::vector<velox::TypePtr>& types) {
-  if (element.tableIdVaries(end)) {
+  if (element.hasSeveralTables(end)) {
     names.push_back(ColumnNames::tableId(end));
     types.push_back(velox::INTEGER());
   }
@@ -660,7 +798,7 @@ void appendIdentityValues(
     const Scope& scope,
     ExprFactory& factory,
     ExprVector& exprs) {
-  if (element.tableIdVaries(end)) {
+  if (element.hasSeveralTables(end)) {
     exprs.push_back(factory.makeLiteral(
         velox::Variant(leg.tableId(end)), toType(velox::INTEGER())));
   }
@@ -1150,17 +1288,15 @@ std::vector<std::vector<size_t>> Translator::GraphMatchLowering::components()
   for (const auto& connection : connections_) {
     parent[root(connection.leftElement)] = root(connection.rightElement);
   }
-  for (const auto& repeated : repeatedEdges_) {
-    parent[root(holderOf(repeated.from))] = root(holderOf(repeated.to));
+  for (const auto& repetition : repetitions_) {
+    parent[root(holderOf(repetition.from))] = root(holderOf(repetition.to));
   }
 
   // A walk's hops join inside the walk.
   std::vector<std::vector<size_t>> components;
   folly::F14FastMap<size_t, size_t> componentByRoot;
   for (size_t i = 0; i < elements_.size(); ++i) {
-    if (elements_[i].node == nullptr ||
-        (elements_[i].isEdge() &&
-         std::get<EdgeState>(elements_[i].state).repeated)) {
+    if (elements_[i].node == nullptr || elements_[i].inRepetition) {
       continue;
     }
     const auto [it, inserted] =
@@ -1190,7 +1326,7 @@ ExprVector Translator::GraphMatchLowering::identity(
     std::optional<bool> end,
     bool withTableId) const {
   ExprVector exprs = element.identity(end);
-  if (withTableId && !element.tableIdVaries(end)) {
+  if (withTableId && !element.hasSeveralTables(end)) {
     exprs.insert(
         exprs.begin(),
         translator_.exprFactory_.makeLiteral(
@@ -1342,27 +1478,11 @@ NodeCP Translator::GraphMatchLowering::join(
       }
     }
     if (!next.has_value()) {
-      for (size_t i = 0; i < repeatedEdges_.size(); ++i) {
-        const auto& repeated = repeatedEdges_[i];
-        const auto from = groupOf[holderOf(repeated.from)];
-        const auto to = groupOf[holderOf(repeated.to)];
-        if (walked_[i] || !from.has_value() || !to.has_value() ||
-            joined[*from] == joined[*to]) {
-          continue;
-        }
-        node = joined[*from] ? walk(repeated, node, nodes[*to])
-                             : walk(repeated, nodes[*from], node);
-        walked_[i] = true;
-        next = joined[*from] ? *to : *from;
-        break;
-      }
-      if (next.has_value()) {
-        joined[*next] = true;
-        node = walkWithin(node, groupOf, joined);
+      if (auto walked = walkToUnjoined(node, groupOf, joined, nodes)) {
+        joined[walked->second] = true;
+        node = walkWithin(walked->first, groupOf, joined);
         continue;
       }
-    }
-    if (!next.has_value()) {
       next = std::find(joined.begin(), joined.end(), false) - joined.begin();
     }
 
@@ -1393,17 +1513,40 @@ NodeCP Translator::GraphMatchLowering::join(
   return node;
 }
 
+std::optional<std::pair<NodeCP, size_t>>
+Translator::GraphMatchLowering::walkToUnjoined(
+    NodeCP node,
+    const std::vector<std::optional<size_t>>& groupOf,
+    const std::vector<bool>& joined,
+    const std::vector<NodeCP>& nodes) {
+  for (size_t i = 0; i < repetitions_.size(); ++i) {
+    const auto& repetition = repetitions_[i];
+    const auto from = groupOf[holderOf(repetition.from)];
+    const auto to = groupOf[holderOf(repetition.to)];
+    if (walked_[i] || !from.has_value() || !to.has_value() ||
+        joined[*from] == joined[*to]) {
+      continue;
+    }
+    walked_[i] = true;
+    if (joined[*from]) {
+      return std::pair{walk(repetition, node, nodes[*to]), *to};
+    }
+    return std::pair{walk(repetition, nodes[*from], node), *from};
+  }
+  return std::nullopt;
+}
+
 NodeCP Translator::GraphMatchLowering::walkWithin(
     NodeCP node,
     const std::vector<std::optional<size_t>>& groupOf,
     const std::vector<bool>& joined) {
-  for (size_t i = 0; i < repeatedEdges_.size(); ++i) {
-    const auto& repeated = repeatedEdges_[i];
-    const auto from = groupOf[holderOf(repeated.from)];
-    const auto to = groupOf[holderOf(repeated.to)];
+  for (size_t i = 0; i < repetitions_.size(); ++i) {
+    const auto& repetition = repetitions_[i];
+    const auto from = groupOf[holderOf(repetition.from)];
+    const auto to = groupOf[holderOf(repetition.to)];
     if (!walked_[i] && from.has_value() && to.has_value() && joined[*from] &&
         joined[*to]) {
-      node = walk(repeated, node, /*end=*/nullptr);
+      node = walk(repetition, node, /*end=*/nullptr);
       walked_[i] = true;
     }
   }
@@ -1411,42 +1554,10 @@ NodeCP Translator::GraphMatchLowering::walkWithin(
 }
 
 NodeCP Translator::GraphMatchLowering::walk(
-    const RepeatedEdge& repeated,
+    const Repetition& repetition,
     NodeCP start,
     NodeCP end) {
-  const auto& hop = elements_[repeated.edge];
-
-  // Two vertex tables can hold the same key, so the identity a walk follows
-  // includes the table ID wherever the walk's vertices can come from more than
-  // one table: the tables a hop leaves from or reaches, and the ends' tables,
-  // which a walk of zero hops compares directly.
-  folly::F14FastSet<int32_t> tableIds;
-  for (const auto& leg : hop.legs) {
-    tableIds.insert(leg.tableId(/*end=*/true));
-    tableIds.insert(leg.tableId(/*end=*/false));
-  }
-  for (size_t vertex : {repeated.from, repeated.to}) {
-    elements_[vertex].addTableIdsTo(tableIds);
-  }
-  const bool withTableId = tableIds.size() > 1;
-  ExprVector startKeys = identityOf(repeated.from, withTableId);
-  ExprVector endKeys = identityOf(repeated.to, withTableId);
-  ExprVector hopSourceKeys = identity(hop, repeated.pointsRight, withTableId);
-  ExprVector hopDestinationKeys =
-      identity(hop, !repeated.pointsRight, withTableId);
-  for (const ExprVector* keys : {&startKeys, &endKeys, &hopDestinationKeys}) {
-    VELOX_CHECK_EQ(keys->size(), hopSourceKeys.size());
-    for (size_t i = 0; i < hopSourceKeys.size(); ++i) {
-      if (!(*keys)[i]->value().type->equivalent(
-              *hopSourceKeys[i]->value().type)) {
-        VELOX_NYI(
-            "Repeated graph edge pattern whose vertices have keys of "
-            "different types is not supported yet: {}",
-            hop.name);
-      }
-    }
-  }
-
+  auto keys = walkKeys(repetition);
   ColumnVector outputColumns = start->outputColumns();
   if (end != nullptr) {
     appendAll(outputColumns, end->outputColumns());
@@ -1454,36 +1565,103 @@ NodeCP Translator::GraphMatchLowering::walk(
   translator_.hasRepeat_ = true;
   return translator_.builder_.make<Repeat>({
       .start = start,
-      .hop = hop.node,
+      .hop = repetition.hop,
       .end = end,
-      .startKeys = std::move(startKeys),
-      .hopSourceKeys = std::move(hopSourceKeys),
-      .hopDestinationKeys = std::move(hopDestinationKeys),
-      .endKeys = std::move(endKeys),
-      .minHops = repeated.minHops,
-      .maxHops = repeated.maxHops,
+      .startKeys = std::move(keys.start),
+      .hopSourceKeys = std::move(keys.hopSource),
+      .hopDestinationKeys = std::move(keys.hopDestination),
+      .endKeys = std::move(keys.end),
+      .minHops = repetition.minHops,
+      .maxHops = repetition.maxHops,
       .outputColumns = std::move(outputColumns),
   });
 }
 
-void Translator::GraphMatchLowering::filterHops() {
-  for (const auto& repeated : repeatedEdges_) {
-    if (repeated.predicates.empty()) {
-      continue;
-    }
-    auto& hop = elements_[repeated.edge];
-    auto conjuncts = translatePredicates(repeated.predicates, repeated.path);
-    const auto hopColumns =
-        PlanObjectSet::fromObjects(hop.node->outputColumns());
-    for (ExprCP conjunct : conjuncts) {
-      if (!conjunct->columns().isSubset(hopColumns)) {
+Translator::GraphMatchLowering::WalkKeys
+Translator::GraphMatchLowering::walkKeys(const Repetition& repetition) const {
+  // Two vertex tables can hold the same key, so the identity a walk follows
+  // includes the table ID wherever the walk's vertices can come from more than
+  // one table: the tables a hop leaves from or reaches, and the ends' tables,
+  // which a walk of zero hops compares directly.
+  folly::F14FastSet<int32_t> tableIds;
+  collectHopTableIds(repetition, tableIds, tableIds);
+  for (size_t vertex : {repetition.from, repetition.to}) {
+    elements_[vertex].collectTableIds(tableIds);
+  }
+  const bool withTableId = tableIds.size() > 1;
+  WalkKeys keys{
+      .start = identityOf(repetition.from, withTableId),
+      .end = identityOf(repetition.to, withTableId),
+  };
+  if (repetition.edge.has_value()) {
+    const auto& edge = elements_[*repetition.edge];
+    keys.hopSource = identity(edge, repetition.pointsRight, withTableId);
+    keys.hopDestination = identity(edge, !repetition.pointsRight, withTableId);
+  } else {
+    keys.hopSource = identityOf(repetition.first, withTableId);
+    keys.hopDestination = identityOf(repetition.last, withTableId);
+  }
+  for (const ExprVector* other :
+       {&keys.start, &keys.end, &keys.hopDestination}) {
+    VELOX_CHECK_EQ(other->size(), keys.hopSource.size());
+    for (size_t i = 0; i < keys.hopSource.size(); ++i) {
+      if (!(*other)[i]->value().type->equivalent(
+              *keys.hopSource[i]->value().type)) {
         VELOX_NYI(
-            "Predicate of a repeated graph edge pattern that reads another "
-            "pattern is not supported yet: {}",
-            hop.name);
+            "Repeated graph pattern whose vertices have keys of different "
+            "types is not supported yet");
       }
     }
-    hop.node = filter(hop.node, std::move(conjuncts));
+  }
+  return keys;
+}
+
+void Translator::GraphMatchLowering::collectHopTableIds(
+    const Repetition& repetition,
+    folly::F14FastSet<int32_t>& sources,
+    folly::F14FastSet<int32_t>& destinations) const {
+  if (repetition.edge.has_value()) {
+    for (const auto& leg : elements_[*repetition.edge].legs) {
+      sources.insert(leg.tableId(repetition.pointsRight));
+      destinations.insert(leg.tableId(!repetition.pointsRight));
+    }
+    return;
+  }
+  elements_[repetition.first].collectTableIds(sources);
+  elements_[repetition.last].collectTableIds(destinations);
+}
+
+void Translator::GraphMatchLowering::buildHops() {
+  for (auto& repetition : repetitions_) {
+    NodeCP hop{nullptr};
+    if (repetition.edge.has_value()) {
+      hop = elements_[*repetition.edge].node;
+    } else {
+      std::vector<std::vector<size_t>> groups;
+      std::vector<NodeCP> nodes;
+      for (const auto element : repetition.elements) {
+        if (elements_[element].node != nullptr) {
+          groups.push_back({element});
+          nodes.push_back(elements_[element].node);
+        }
+      }
+      hop = join(groups, std::move(nodes));
+    }
+    if (!repetition.predicates.empty()) {
+      auto conjuncts =
+          translatePredicates(repetition.predicates, repetition.path);
+      // A pattern's predicate reads only the names inside the pattern, so the
+      // hop holds every column its conditions read.
+      const auto hopColumns = PlanObjectSet::fromObjects(hop->outputColumns());
+      for (ExprCP conjunct : conjuncts) {
+        VELOX_CHECK(
+            conjunct->columns().isSubset(hopColumns),
+            "Repeated pattern's predicate reads outside the hop: {}",
+            conjunct->toString());
+      }
+      hop = filter(hop, std::move(conjuncts));
+    }
+    repetition.hop = hop;
   }
 }
 

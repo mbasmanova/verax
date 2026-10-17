@@ -28,8 +28,9 @@ namespace facebook::axiom::optimizer::v2 {
 ///
 /// Runs in stages, each reading what the earlier ones settled:
 ///
-/// 1. Bind: binds each pattern name to an element, and records the paths and
-///    the edge occurrences between their vertices.
+/// 1. Bind: binds each pattern name to an element, and records the paths, the
+///    edge occurrences between their vertices, and the repeated patterns. A
+///    vertex pattern right after another binds the same element.
 /// 2. Narrow: drops the tables an element cannot match given its neighbors.
 ///    An element is a union of the remaining legs; an undirected edge has a
 ///    leg per orientation.
@@ -43,11 +44,12 @@ namespace facebook::axiom::optimizer::v2 {
 /// 5. Build: builds each element's relation.
 /// 6. Connect: connects each edge to the unfolded vertices next to it, and
 ///    each copy to its original, on their identities.
-/// 7. Join: joins each path with a selector on its own, filters it with its
-///    term predicates, and limits it to the selector's matches per pair of
-///    endpoints. Then joins the rest of the connected elements and filters
-///    them with the other paths' term predicates. Unconnected groups join
-///    with a cross product, and the match predicate filters the result.
+/// 7. Join: builds each repeated pattern's hops. Joins each path with a
+///    selector on its own, filters it with its term predicates, and limits it
+///    to the selector's matches per pair of endpoints. Then joins the rest of
+///    the connected elements and filters them with the other paths' term
+///    predicates. Unconnected groups join with a cross product, and the match
+///    predicate filters the result.
 ///
 ///   Stage    Reads             Produces
 ///   -------  ----------------  ----------------------------
@@ -58,10 +60,12 @@ namespace facebook::axiom::optimizer::v2 {
 ///                              EdgeState
 ///                              'elementByName_'
 ///                              'occurrences_'
+///                              'repetitions_'
 ///                              'paths_'
 ///                              'pathLengths_'
 ///
 ///   Narrow   'occurrences_'    Element::legs
+///            'repetitions_'
 ///            Element::labelTables
 ///            EdgeState
 ///
@@ -85,6 +89,7 @@ namespace facebook::axiom::optimizer::v2 {
 ///            Element::scope
 ///
 ///   Join     'connections_'    the plan
+///            'repetitions_'    Repetition::hop
 ///            Element::node     Element::scope, substituted
 ///            'paths_'          Element::row, substituted
 ///            Element::row      'connections_', substituted
@@ -173,6 +178,10 @@ class Translator::GraphMatchLowering {
     // predicates. Null for an unnamed element or one without properties.
     ExprCP row{nullptr};
 
+    // True if it is inside a repeated pattern: its rows make the hops of a
+    // walk, which the walk joins.
+    bool inRepetition{false};
+
     // True if its identity is read: a selector partitions on it, or it
     // matches a copy of it. A vertex that joins inside an edge's legs reads
     // its identity from that edge's end.
@@ -197,14 +206,18 @@ class Translator::GraphMatchLowering {
     }
 
     // Adds the IDs of the tables of its legs to 'ids'.
-    void addTableIdsTo(folly::F14FastSet<int32_t>& ids) const;
+    void collectTableIds(folly::F14FastSet<int32_t>& ids) const;
 
-    // True if the legs give the identity 'end' selects (see Leg::tableId)
-    // more than one table ID.
-    bool tableIdVaries(std::optional<bool> end) const;
+    // Drops the legs whose table is not in 'tableIds'. Returns true if it
+    // dropped any.
+    bool keepLegsOf(const folly::F14FastSet<int32_t>& tableIds);
+
+    // True if the identity 'end' selects (see Leg::tableId) can come from more
+    // than one table, so it includes a table ID.
+    bool hasSeveralTables(std::optional<bool> end) const;
 
     // Returns the columns that hold the identity 'end' selects: the table ID
-    // when it varies, then the key.
+    // when it has several tables, then the key.
     ExprVector identity(std::optional<bool> end) const;
   };
 
@@ -232,20 +245,52 @@ class Translator::GraphMatchLowering {
     }
   };
 
-  // A repeated edge pattern: walks of between 'minHops' and 'maxHops' hops over
-  // the edge's relation, from vertex 'from' to vertex 'to'.
-  struct RepeatedEdge {
-    size_t edge{0};
+  // A repeated edge pattern or subpath: walks of between 'minHops' and
+  // 'maxHops' hops from vertex 'from' to vertex 'to'.
+  struct Repetition {
     size_t from{0};
     size_t to{0};
-    // True if each hop leaves at the source end of the edge's relation.
+    // For a repeated edge pattern, the edge whose relation holds the hops, and
+    // true if each hop leaves at the source end of that relation.
+    std::optional<size_t> edge;
     bool pointsRight{false};
+    // For a repeated subpath, the vertices a hop leaves from and reaches, and
+    // the elements inside it.
+    size_t first{0};
+    size_t last{0};
+    std::vector<size_t> elements;
     int32_t minHops{0};
     int32_t maxHops{0};
-    // Index of the path the edge pattern is in.
+    // Index of the path the pattern is in.
     size_t path{0};
-    // The edge pattern's own predicates, which each hop satisfies.
+    // The conditions each hop satisfies: the edge pattern's own, or those of
+    // the subpath and the patterns inside it.
     std::vector<const logical_plan::Expr*> predicates;
+    // The hops: rows of 'edge', or of 'elements' joined.
+    NodeCP hop{nullptr};
+  };
+
+  // Where binding a sequence of path terms stands.
+  struct TermCursor {
+    // Index of the path the terms are in.
+    size_t path{0};
+    // Where the terms' predicates go.
+    std::vector<const logical_plan::Expr*>* predicates{nullptr};
+    // The first vertex bound, and the vertex the next edge leaves from.
+    std::optional<size_t> first;
+    std::optional<size_t> vertex;
+    // The edge or repetition waiting for the vertex it reaches.
+    std::optional<EdgeOccurrence> pendingEdge;
+    std::optional<Repetition> pendingRepetition;
+    // Number of edges bound.
+    int64_t numEdges{0};
+
+    // True if the last term bound is a vertex pattern: the next edge or
+    // repetition leaves from it.
+    bool atVertex() const {
+      return vertex.has_value() && !pendingEdge.has_value() &&
+          !pendingRepetition.has_value();
+    }
   };
 
   // A path pattern: its selector's limit on matches per pair of endpoints,
@@ -282,11 +327,49 @@ class Translator::GraphMatchLowering {
   }
 
   // Returns the element 'pattern' binds.
-  size_t bind(const logical_plan::GraphElementPattern& pattern, bool edge);
+  size_t bind(const logical_plan::GraphElementPattern& pattern);
+
+  // Binds a vertex pattern right after the vertex at 'index' to that vertex.
+  void bindAdjacent(
+      const logical_plan::GraphVertexPattern& pattern,
+      size_t index);
 
   // Binds the patterns of 'path', the path at 'pathIndex', and records its
   // edge occurrences.
   void addPath(const logical_plan::GraphPathPattern& path, size_t pathIndex);
+
+  // Binds 'terms' from where 'cursor' stands, and advances it. A vertex
+  // pattern right after a vertex pattern matches the same vertex.
+  void addTerms(
+      const std::vector<logical_plan::GraphPatternTermPtr>& terms,
+      TermCursor& cursor);
+
+  // Binds a vertex pattern where 'cursor' stands: after an edge or a
+  // repetition, which it ends, or right after a vertex, which it binds to.
+  void addVertex(
+      const logical_plan::GraphVertexPattern& pattern,
+      TermCursor& cursor);
+
+  // Binds an edge pattern after the vertex 'cursor' stands at, as the pending
+  // edge, or as the pending repetition when 'repetition' is set.
+  void addEdge(
+      const logical_plan::GraphEdgePattern& edge,
+      const logical_plan::GraphRepetition* repetition,
+      TermCursor& cursor);
+
+  // Binds a subpath: its patterns join the path where 'cursor' stands, or,
+  // when 'repetition' is set, they make the hops of the pending repetition.
+  void addSubpath(
+      const logical_plan::GraphSubpathPattern& subpath,
+      const logical_plan::GraphRepetition* repetition,
+      TermCursor& cursor);
+
+  // Binds a repeated subpath after the vertex 'cursor' stands at, as the
+  // pending repetition.
+  void addRepeatedSubpath(
+      const logical_plan::GraphSubpathPattern& subpath,
+      const logical_plan::GraphRepetition& repetition,
+      TermCursor& cursor);
 
   // Fails if a predicate or an output reads a repeated edge pattern's name
   // outside the pattern: there it stands for one value per hop.
@@ -297,6 +380,14 @@ class Translator::GraphMatchLowering {
   // references at an end is a leg of the vertex there. Returns false if an
   // element has no legs left.
   bool narrow();
+
+  // Drops the legs of the edge and of the vertices at 'occurrence' that
+  // cannot connect to each other. Returns true if it dropped any.
+  bool narrowAtEdge(const EdgeOccurrence& occurrence);
+
+  // Drops the legs of the vertices at the ends of 'repetition' that a walk
+  // cannot leave from or reach. Returns true if it dropped any.
+  bool narrowAtRepetition(const Repetition& repetition);
 
   // Gives each path with a selector its own copy of each element that an
   // earlier path with a selector binds.
@@ -394,14 +485,44 @@ class Translator::GraphMatchLowering {
       std::optional<bool> end,
       bool withTableId) const;
 
-  // Filters each repeated edge's relation with the edge pattern's own
-  // predicates.
-  void filterHops();
+  // Adds to 'sources' the IDs of the tables a hop of 'repetition' can leave
+  // from, and to 'destinations' those it can reach.
+  void collectHopTableIds(
+      const Repetition& repetition,
+      folly::F14FastSet<int32_t>& sources,
+      folly::F14FastSet<int32_t>& destinations) const;
 
-  // Returns the walks of 'repeated' between the rows of 'start', which holds
+  // Builds each repetition's hops: the edge's relation, or the subpath's
+  // elements joined, filtered with the repetition's predicates.
+  void buildHops();
+
+  // The identities a walk compares, which line up by position: of the vertex
+  // it leaves from, of each hop's ends, and of the vertex it reaches.
+  struct WalkKeys {
+    ExprVector start;
+    ExprVector end;
+    ExprVector hopSource;
+    ExprVector hopDestination;
+  };
+
+  // Returns the identities the walks of 'repetition' compare. Fails if their
+  // types differ.
+  WalkKeys walkKeys(const Repetition& repetition) const;
+
+  // Returns the walks of 'repetition' between the rows of 'start', which holds
   // its 'from' vertex, and 'end', which holds its 'to' vertex. A null 'end'
   // means 'start' holds both.
-  NodeCP walk(const RepeatedEdge& repeated, NodeCP start, NodeCP end);
+  NodeCP walk(const Repetition& repetition, NodeCP start, NodeCP end);
+
+  // Returns 'node', the rows of the groups 'joined' marks, joined with the
+  // walks of a repetition that reaches a group not joined yet, and that group.
+  // Returns nullopt when no repetition does. 'groupOf' maps an element to its
+  // group, and 'nodes' holds each group's rows.
+  std::optional<std::pair<NodeCP, size_t>> walkToUnjoined(
+      NodeCP node,
+      const std::vector<std::optional<size_t>>& groupOf,
+      const std::vector<bool>& joined,
+      const std::vector<NodeCP>& nodes);
 
   // Returns 'node' joined with the walks whose ends are both in the groups
   // 'joined' marks. 'groupOf' maps an element to its group.
@@ -457,13 +578,13 @@ class Translator::GraphMatchLowering {
   folly::F14FastMap<std::string, size_t> elementByName_;
 
   // Edge patterns, in the order paths list them. A repeated edge pattern is
-  // in 'repeatedEdges_' instead.
+  // in 'repetitions_' instead.
   std::vector<EdgeOccurrence> occurrences_;
 
-  // Repeated edge patterns, in the order paths list them.
-  std::vector<RepeatedEdge> repeatedEdges_;
+  // Repeated edge patterns and subpaths, in the order paths list them.
+  std::vector<Repetition> repetitions_;
 
-  // True for each repeated edge whose walks are joined.
+  // True for each repetition whose walks are joined.
   std::vector<bool> walked_;
 
   // Pairs of adjacent elements and the columns they match on.

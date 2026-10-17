@@ -158,6 +158,47 @@ SELECT * FROM GRAPH_TABLE (g
     -[IS Knows]->{2,2} (c IS Person)
   COLUMNS (c.name AS c))
 ----
+-- Whom Alice reaches in one to three hops, each to a person with a larger id:
+-- a repeated subpath's condition reads both ends of each hop.
+-- duckdb: VALUES ('Bob'), ('Carol'), ('Dave')
+WITH ${graph}
+SELECT * FROM GRAPH_TABLE (g
+  MATCH (a IS Person WHERE a.name = 'Alice')
+    ((x IS Person) -[IS Knows]-> (y IS Person) WHERE x.id < y.id){1,3}
+    (b IS Person)
+  COLUMNS (b.name AS b))
+----
+-- Alice's colleagues and their colleagues: each repetition goes through a
+-- company two people work at.
+-- duckdb: VALUES ('Alice'), ('Carol'), ('Alice'), ('Carol'), ('Alice'), ('Carol')
+WITH ${graph}
+SELECT * FROM GRAPH_TABLE (g
+  MATCH (a IS Person WHERE a.name = 'Alice')
+    ((x) -[IS WorksAt]-> (IS Company) <-[IS WorksAt]- (y)){1,2} (b)
+  COLUMNS (b.name AS b))
+----
+-- A repeated subpath matched zero times ends where it starts.
+-- duckdb: VALUES ('Bob'), ('Carol'), ('Dave')
+WITH ${graph}
+SELECT * FROM GRAPH_TABLE (g
+  MATCH (a IS Person WHERE a.name = 'Bob')
+    ((x) -[IS Knows]-> (y) WHERE x.id < y.id){0,2} (b)
+  COLUMNS (b.name AS b))
+----
+-- A name inside a repeated subpath stands for one value per repetition
+-- outside it.
+-- error: Reading a repeated graph pattern outside its own pattern is not supported yet: y
+WITH ${graph}
+SELECT * FROM GRAPH_TABLE (g
+  MATCH (a IS Person) ((x) -[IS Knows]-> (y)){1,2} (b)
+  COLUMNS (y.name))
+----
+-- error: Optional graph subpath patterns are not supported yet
+WITH ${graph}
+SELECT * FROM GRAPH_TABLE (g
+  MATCH (a IS Person) (-[IS WorksAt]-> (c IS Company))?
+  COLUMNS (a.name AS a))
+----
 -- A repeated edge pattern's name stands for one value per hop outside it.
 -- error: Reading a repeated graph pattern outside its own pattern is not supported yet: k
 WITH ${graph}

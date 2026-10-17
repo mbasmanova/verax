@@ -313,25 +313,43 @@ PropertyGraph::PropertyGraph(
   }
 }
 
-std::vector<const PropertyGraph::ElementTable*> PropertyGraph::matchingTables(
-    const GraphLabelExpression* label,
-    bool edges) const {
-  std::vector<const ElementTable*> result;
-  auto add = [&](const ElementTable& table) {
-    if (label == nullptr || label->matches(tableNames_.at(table.id))) {
+namespace {
+
+// Returns the tables among 'tables' whose names in 'tableNames' satisfy
+// 'label', or all of them for a null 'label'.
+template <typename Table>
+std::vector<const PropertyGraph::ElementTable*> matching(
+    const std::vector<Table>& tables,
+    const folly::F14FastMap<int32_t, std::vector<std::string>>& tableNames,
+    const GraphLabelExpression* label) {
+  std::vector<const PropertyGraph::ElementTable*> result;
+  for (const auto& table : tables) {
+    if (label == nullptr || label->matches(tableNames.at(table.id))) {
       result.push_back(&table);
-    }
-  };
-  if (edges) {
-    for (const auto& table : edgeTables_) {
-      add(table);
-    }
-  } else {
-    for (const auto& table : vertexTables_) {
-      add(table);
     }
   }
   return result;
+}
+
+} // namespace
+
+std::vector<const PropertyGraph::ElementTable*>
+PropertyGraph::matchingVertexTables(const GraphLabelExpression* label) const {
+  return matching(vertexTables_, tableNames_, label);
+}
+
+std::vector<const PropertyGraph::ElementTable*>
+PropertyGraph::matchingEdgeTables(const GraphLabelExpression* label) const {
+  return matching(edgeTables_, tableNames_, label);
+}
+
+// static
+void PropertyGraph::intersectTables(
+    std::vector<const ElementTable*>& tables,
+    const std::vector<const ElementTable*>& other) {
+  std::erase_if(tables, [&](const auto* table) {
+    return std::find(other.begin(), other.end(), table) == other.end();
+  });
 }
 
 // static

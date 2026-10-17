@@ -2,7 +2,7 @@
 
 *How Axiom represents a SQL/PGQ graph match in the logical plan and how
 optimizer v2 plans it. The lowering of patterns without repetition is in
-[GraphTable-lowering.md](GraphTable-lowering.md); repeated edges are in
+[GraphTable-lowering.md](GraphTable-lowering.md); repetition is in
 [GraphTable-repetition.md](GraphTable-repetition.md).*
 
 ## Problem
@@ -143,7 +143,7 @@ A graph node for the whole match would duplicate join ordering and pushdown.
 Translate decides which tables each pattern can match, since it has the
 pattern intact.
 
-A repeated edge needs a loop, and the side the loop starts from depends on
+A repeated pattern needs a loop, and the side the loop starts from depends on
 statistics. Translate lowers it to a `Repeat` node, which the passes treat as
 an operator over its inputs; `LowerRepeat` replaces it with a `FixedPoint`
 once leaf statistics are known.
@@ -152,12 +152,14 @@ once leaf statistics are known.
 
 Each fails with an error that names it:
 
-- Repeated subpaths, optional subpaths, and repetition with no upper bound.
+- Optional subpaths, repeated subpaths that start or end with an edge
+  pattern, and repetition with no upper bound.
 - Path modes other than `WALK`, and shortest-path selectors on a path with
   repetition.
-- Reading a repeated edge's name outside its pattern, where it stands for an
+- Reading a name inside a repetition outside it, where it stands for an
   array, and the length of a path with repetition.
-- A repeated edge's own condition that also reads another element.
 - A vertex whose tables have keys of different types where its identity is
   compared.
+- Two vertex patterns next to each other whose names already bind different
+  vertices.
 - References from inside `GRAPH_TABLE` to earlier `FROM` items.

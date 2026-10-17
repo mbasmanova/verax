@@ -145,48 +145,64 @@ class Lowering : public NodeRewriter<NoContext> {
     if (walk.to == nullptr) {
       appendColumnsRead(walk.toKeys, carried);
     }
-    const size_t numCarried = carried.size();
     const size_t numKeys = walk.fromKeys.size();
     const bool loops = repeat.maxHops() > 1;
-
-    ExprVector anchorExprs = toExprs(carried);
-    ColumnVector anchorColumns = carried;
-    for (ExprCP key : walk.fromKeys) {
-      anchorExprs.push_back(key);
-      anchorColumns.push_back(Column::create("walk_vertex", key->value()));
-    }
-    if (loops) {
-      anchorExprs.push_back(bigint(0));
-      anchorColumns.push_back(
-          Column::create("walk_hops", Value(toType(velox::BIGINT()))));
-    }
-    NodeCP anchor = builder().make<Project>(
-        {walk.from, std::move(anchorExprs), anchorColumns});
+    NodeCP anchor = makeAnchor(walk, carried, loops);
+    const auto& anchorColumns = anchor->outputColumns();
 
     WalkState state;
     NodeCP walks{nullptr};
     if (loops) {
       state = WalkState::of(
-          createWithUnknownValues(anchorColumns), numCarried, numKeys);
+          createWithUnknownValues(anchorColumns), carried.size(), numKeys);
       walks = makeFixedPoint(repeat, walk, anchor, anchorColumns, state);
     } else {
       auto [node, columns] =
           makeShortWalks(repeat, walk, anchor, anchorColumns, carried);
       walks = node;
-      state = WalkState::of(std::move(columns), numCarried, numKeys);
+      state = WalkState::of(std::move(columns), carried.size(), numKeys);
     }
+    return makeResult(repeat, walk, walks, state, carried);
+  }
 
+  // Returns the walks of zero hops: 'carried', the vertex 'from' leaves from,
+  // and, when the walks loop, a hop count of 0.
+  NodeCP makeAnchor(const Walk& walk, const ColumnVector& carried, bool loops) {
+    ExprVector exprs = toExprs(carried);
+    ColumnVector columns = carried;
+    for (ExprCP key : walk.fromKeys) {
+      exprs.push_back(key);
+      columns.push_back(Column::create("walk_vertex", key->value()));
+    }
+    if (loops) {
+      exprs.push_back(bigint(0));
+      columns.push_back(
+          Column::create("walk_hops", Value(toType(velox::BIGINT()))));
+    }
+    return builder().make<Project>(
+        {walk.from, std::move(exprs), std::move(columns)});
+  }
+
+  // Returns 'walks' with at least 'minHops' hops, joined with 'to' or ending
+  // at 'from' when 'to' is null, shaped as 'repeat's output. 'carried' are the
+  // columns of 'from' that 'state' carries.
+  NodeCP makeResult(
+      const Repeat& repeat,
+      const Walk& walk,
+      NodeCP walks,
+      const WalkState& state,
+      const ColumnVector& carried) {
     ExprVector predicates;
     if (repeat.minHops() > 0) {
       predicates.push_back(
           exprs_.makeGreaterThanOrEqual(state.hops, bigint(repeat.minHops())));
     }
     PlanSubstitutions toState;
-    for (size_t i = 0; i < numCarried; ++i) {
+    for (size_t i = 0; i < carried.size(); ++i) {
       toState.add(carried[i], state.carried[i]);
     }
     if (walk.to == nullptr) {
-      for (size_t i = 0; i < numKeys; ++i) {
+      for (size_t i = 0; i < state.vertex.size(); ++i) {
         predicates.push_back(exprs_.makeEq(
             state.vertex[i], toState.apply(walk.toKeys[i], exprs_)));
       }

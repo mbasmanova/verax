@@ -154,11 +154,20 @@ class PropertyGraph {
 
   bool isEdge(std::string_view name) const;
 
-  /// Returns the vertex tables, or the edge tables if 'edges' is true, whose
-  /// vertex or edge names satisfy 'label'. A null 'label' matches every table.
-  std::vector<const ElementTable*> matchingTables(
-      const GraphLabelExpression* label,
-      bool edges) const;
+  /// Returns the vertex tables whose vertex names satisfy 'label'. A null
+  /// 'label' matches every table.
+  std::vector<const ElementTable*> matchingVertexTables(
+      const GraphLabelExpression* label) const;
+
+  /// Returns the edge tables whose edge names satisfy 'label'. A null 'label'
+  /// matches every table.
+  std::vector<const ElementTable*> matchingEdgeTables(
+      const GraphLabelExpression* label) const;
+
+  /// Keeps in 'tables' only the tables that 'other' also holds.
+  static void intersectTables(
+      std::vector<const ElementTable*>& tables,
+      const std::vector<const ElementTable*>& other);
 
   /// Returns the data type of 'property' for an element of 'tables', or
   /// nullptr if none of them defines it. Fails if two of them define it with
