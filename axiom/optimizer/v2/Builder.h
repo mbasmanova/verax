@@ -140,6 +140,12 @@ class Builder {
     return makeLiteral(velox::Variant::null(type->kind()), type);
   }
 
+  /// Canonical `Literal` for an empty array of 'arrayType'.
+  const Literal* makeEmptyArray(TypeCP arrayType) {
+    return makeLiteral(
+        velox::Variant::array(std::vector<velox::Variant>{}), arrayType);
+  }
+
   /// Returns expressions that project `inputColumns` to `outputColumns`.
   /// Missing outputs are false when `falsePadding` is true and typed nulls
   /// otherwise.
@@ -184,6 +190,12 @@ class Builder {
   /// equality, without repeated registry lookups.
   const FunctionNames& functionNames() const {
     return functionNames_;
+  }
+
+  /// Interned `Name`s of the internal functions, snapshotted like
+  /// `functionNames()`.
+  const InternalFunctionNames& internalFunctionNames() const {
+    return internalFunctionNames_;
   }
 
   /// Takes ownership of 'handle' and returns a stable pointer to it, for a
@@ -273,6 +285,7 @@ class Builder {
   }
 
   const FunctionNames functionNames_;
+  const InternalFunctionNames internalFunctionNames_;
 
   // Maps a reversible binary function name to its reverse name.
   // Symmetric reversibles (e.g. `eq`) map to themselves; asymmetric

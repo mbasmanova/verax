@@ -120,12 +120,11 @@ bool FunctionRegistry::registerStatsAggregates(StatsAggregates aggregates) {
   return true;
 }
 
-bool FunctionRegistry::registerBigintAddition(std::string_view name) {
-  VELOX_USER_CHECK(!name.empty());
-  if (bigintAddition_.has_value() && bigintAddition_.value() != name) {
+bool FunctionRegistry::registerInternalPrefix(std::string_view prefix) {
+  if (internalPrefix_.has_value() && internalPrefix_.value() != prefix) {
     return false;
   }
-  bigintAddition_ = name;
+  internalPrefix_ = prefix;
   return true;
 }
 
@@ -408,7 +407,6 @@ void FunctionRegistry::registerPrestoFunctions(std::string_view prefix) {
   registry->registerArbitrary(fullName("arbitrary"));
   registry->registerCount(fullName("count"));
   registry->registerBoolOr(fullName("bool_or"));
-  registry->registerBigintAddition(fullName("plus"));
   registry->registerLessThan(fullName("lt"));
   registry->registerLessThanOrEqual(fullName("lte"));
   registry->registerGreaterThan(fullName("gt"));

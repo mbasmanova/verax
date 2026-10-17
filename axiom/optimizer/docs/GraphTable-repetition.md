@@ -40,7 +40,8 @@ a row of `start` to a row of `end`:
 | `hopSourceKeys`, `hopDestinationKeys` | The identities of the vertex a hop leaves from and the one it reaches, over `hop`. |
 | `endKeys` | The identity of the vertex the walk reaches, over `end`, or over `start` when `end` is null. |
 | `minHops`, `maxHops` | The bounds, with `0 <= minHops <= maxHops`. Exactly one hop, `{1,1}`, is a plain join. |
-| `outputColumns`, `sourceColumns` | The outputs and the columns they carry, by position. A column of `start` or `end` keeps its identity; `sourceColumns` is empty when every output is a column of `start` or `end`. With `maxHops` of at most 1, an output can carry a column of `hop`: a fresh column, NULL for a walk of zero hops. |
+| `outputColumns`, `sourceColumns` | The outputs and the columns they carry, by position. A column of `start` or `end` keeps its identity; `sourceColumns` is empty when every output is a column of `start` or `end`. A column of `hop` gives a fresh output: an array of its values on the walk's hops, from start to end, or, with `maxHops` of at most 1, its value, NULL for a walk of zero hops. |
+| `hopCount` | Optional: the output that holds the walk's number of hops. |
 
 The four key lists line up by position, as a join's keys do. Like a join's
 keys, they are expressions over the inputs' columns.
@@ -112,6 +113,26 @@ the hop, so it limits only the matches of one hop. A condition outside the
 subpath that reads its names stays above the `Repeat`, since the names are NULL
 for a walk of zero hops.
 
+## Group variables and path length
+
+A name inside a repetition stands for one element per hop, so a property read
+outside it is an array of the values on the walk's hops, in order from start
+to end, empty for a walk of zero hops:
+
+```sql
+MATCH (a IS Person WHERE a.name = 'Alice')
+  ((x IS Person) -[IS Knows]-> (m IS Person)){1,3} (b IS Person)
+COLUMNS (b.name AS b, m.name AS path)
+```
+
+returns whom Alice reaches and the people the walk passes through, such as
+`('Dave', ['Bob', 'Carol', 'Dave'])`. The `Repeat` outputs an array for each
+property the outputs read.
+
+`path_length(p)` adds to the edges outside repetitions the edges on each walk's
+hops: the walk's hop count times the edges in one hop. Each `Repeat` outputs
+its hop count, which pruning drops when nothing reads it.
+
 ## Nested repetition
 
 A repetition or an optional subpath inside a repeated or optional subpath fails
@@ -165,12 +186,14 @@ when it is present and smaller. Starting from the end is the mirror image, with
 each hop read from its destination to its source. Starting from the start:
 
 - **State:** the columns of the start that the result reads, the walk's
-  current vertex, and its hop count.
-- **Anchor:** the start, with the current vertex set to the start key and zero
-  hops.
+  current vertex, the arrays the result reads, and its hop count.
+- **Anchor:** the start, with the current vertex set to the start key, empty
+  arrays, and zero hops.
 - **Step:** the latest walks with fewer than `maxHops` hops, joined with the hop
   on the current vertex and the hop's source. The current vertex becomes the
-  hop's destination, and the hop count grows by one.
+  hop's destination, each array gains the hop's value, and the hop count grows
+  by one. A walk from the end prepends to the arrays, so they list the hops
+  from start to end either way.
 - **Result:** the walks with at least `minHops` hops, joined with the end on
   the current vertex and the end key. Without an end, the walks whose current
   vertex equals the end key. With `minHops` of 0, the anchor's walks of zero
@@ -179,11 +202,11 @@ each hop read from its destination to its source. Starting from the start:
   walk has `maxHops` hops, and the loop stops on the empty delta one iteration
   later. Reaching `maxIterations` without converging fails the query.
 
-Walks of at most one hop need no loop, so `{0,1}` and `{0,0}` carry no hop
-count. The walks are the anchor for zero hops, the start joined with the hop
-for one, or the `UNION ALL` of the two, and the result joins them with the end
-as above. The hop columns the `Repeat` outputs travel with the walks, as NULL
-in the anchor.
+Walks of at most one hop need no loop, so `{0,1}` and `{0,0}` carry a hop
+count only when the result reads it. The walks are the anchor for zero hops,
+the start joined with the hop for one, or the `UNION ALL` of the two, and the
+result joins them with the end as above. The hop values the `Repeat` outputs
+travel with the walks, as NULL in the anchor.
 
 The hop appears once in the plan, as the build side of the step's join. Each
 iteration reads only the latest walks. With several workers, each task that
@@ -192,10 +215,12 @@ task (see [FixedPoint.md](FixedPoint.md#distributed-execution)). A hop too large
 to broadcast needs the walks repartitioned on the new current vertex each
 iteration, with the hop partitioned on its source; that plan is not built yet.
 
-The hop count is a `BIGINT` that grows by one per step. The lowering adds with
-the function the dialect registers through
-`FunctionRegistry::registerBigintAddition`, which the optimizer calls only
-where the sum fits in `BIGINT`.
+The hop count grows and the arrays gain values through the optimizer's
+internal functions, which belong to no dialect: `bigint_add`, `array_append`
+and `array_prepend`, in `velox/functions/axiom`. A process that runs these
+plans registers them with `velox::functions::axiom::registerFunctions(prefix)`,
+and the process that optimizes them records the prefix with
+`FunctionRegistry::registerInternalPrefix`. A worker needs only Velox.
 
 For `(a IS Person) -[IS Knows]->{1,2} (b IS Person)`, the Velox plan is:
 
@@ -210,7 +235,7 @@ For `(a IS Person) -[IS Knows]->{1,2} (b IS Person)`, the Velox plan is:
           state walk_0 (hash table, key src), initial plan:
             - TableScan knows
           step:
-            - Project [name, dst AS walk_vertex, walk_hops + 1]
+            - Project [name, dst AS walk_vertex, bigint_add(walk_hops, 1)]
               - StateHashJoin [walk_0, probe walk_vertex]
                 - Filter [walk_hops < 2]
                   - StateSource walk (delta)
@@ -256,6 +281,3 @@ result but stops only on an empty delta, and the logical plan exposes neither,
 so Translate never produces them. A visited set that grows
 incrementally also needs mutable keyed state in Velox; without it, the
 anti-join rebuilds a hash table over all reached rows every iteration.
-
-`path_length` of a path with repetition is the literal length of its other
-edges plus the walk's hop count, which the state already carries.

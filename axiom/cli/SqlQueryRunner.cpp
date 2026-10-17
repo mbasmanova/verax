@@ -69,12 +69,12 @@
 #include "velox/core/QueryConfigProvider.h"
 #include "velox/exec/tests/utils/LocalExchangeSource.h"
 #include "velox/expression/Expr.h"
+#include "velox/functions/axiom/Register.h"
 #include "velox/functions/prestosql/PrestoConfigProvider.h"
 #include "velox/functions/prestosql/PrestoQueryConfig.h"
 #include "velox/functions/prestosql/aggregates/RegisterAggregateFunctions.h"
 #include "velox/functions/prestosql/registration/RegistrationFunctions.h"
 #include "velox/functions/prestosql/window/WindowFunctionsRegistration.h"
-#include "velox/parse/TypeResolver.h"
 #include "velox/serializers/CompactRowSerializer.h"
 #include "velox/serializers/PrestoSerializer.h"
 #include "velox/type/tz/TimeZoneMap.h"
@@ -258,9 +258,10 @@ void SqlQueryRunner::initialize(
     velox::functions::prestosql::registerAllScalarFunctions();
     velox::aggregate::prestosql::registerAllAggregateFunctions();
     velox::window::prestosql::registerAllWindowFunctions();
-    velox::parse::registerTypeResolver();
+    velox::functions::axiom::registerFunctions("axiom_");
 
     optimizer::FunctionRegistry::registerPrestoFunctions();
+    optimizer::FunctionRegistry::instance()->registerInternalPrefix("axiom_");
 
     velox::filesystems::registerLocalFileSystem();
 

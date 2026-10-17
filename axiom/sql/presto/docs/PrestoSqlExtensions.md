@@ -477,8 +477,7 @@ with an error that names it:
   with repetition;
 - a repeated or optional subpath that starts or ends with an edge pattern;
 - a repetition or an optional subpath inside a repeated or optional subpath;
-- a name inside a repetition read outside it, or `path_length` of a path with
-  repetition;
+- `path_length` of a named optional subpath;
 - an edge pattern without a vertex pattern on each side;
 - an undirected edge pattern whose name another pattern reuses;
 - a pattern whose tables have keys of different data types or numbers of

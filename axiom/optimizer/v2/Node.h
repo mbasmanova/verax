@@ -2704,9 +2704,15 @@ using FixedPointCP = const FixedPoint*;
 /// - `0 <= minHops <= maxHops`, and not `minHops = maxHops = 1`: exactly one
 ///   hop is a plain join.
 /// - `outputColumns` carry `effectiveSourceColumns()` by position. A source
-///   from `start` or `end` keeps its identity. A source from `hop` is allowed
-///   only when `maxHops` is at most one, as for an optional subpath: it is NULL
-///   for a walk of zero hops, so its output is a fresh column of the same type.
+///   from `start` or `end` keeps its identity. A source from `hop` gives a
+///   fresh output of one of two kinds:
+///   - an array of the source's type: the source's values on the walk's
+///     hops, in order from `start` to `end`, empty for a walk of zero hops, as
+///     for a property of a repeated pattern;
+///   - the source's type, only when `maxHops` is at most one: NULL for a walk
+///     of zero hops, as for a property of an optional subpath.
+/// - `hopCount`, when set, is an output that supplies itself: the walk's number
+///   of hops, a BIGINT.
 class Repeat : public Node {
  public:
   struct Key {
@@ -2724,6 +2730,8 @@ class Repeat : public Node {
     /// Columns of `start`, `end` or `hop` that `outputColumns` carry, by
     /// position. Empty when each output is a column of `start` or `end`.
     ColumnVector sourceColumns;
+    /// The output that holds the walk's number of hops, if any.
+    ColumnCP hopCount{nullptr};
 
     /// Returns the explicit sources, or the outputs for a pass-through schema.
     const ColumnVector& effectiveSourceColumns() const {
@@ -2794,6 +2802,11 @@ class Repeat : public Node {
     return maxHops_;
   }
 
+  /// The output that holds the walk's number of hops, or null.
+  ColumnCP hopCount() const {
+    return hopCount_;
+  }
+
   std::span<const NodeCP> inputs() const override {
     return inputs_;
   }
@@ -2814,6 +2827,7 @@ class Repeat : public Node {
   const int32_t minHops_;
   const int32_t maxHops_;
   const ColumnVector sourceColumns_;
+  const ColumnCP hopCount_;
 };
 
 using RepeatCP = const Repeat*;

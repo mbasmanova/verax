@@ -106,7 +106,7 @@ TEST_F(GraphTableTest, repetition) {
               .plan(matchDelta("walk", {"name", "vertex", "hops"})
                         .filter("hops < 2")
                         .stateHashJoin({"vertex"})
-                        .project({"name", "dst", "hops + 1"}))
+                        .project({"name", "dst", "axiom_bigint_add(hops, 1)"}))
               .convergeOnEmpty({.maxIterations = 3}))
           .aliases({"name", "vertex", "hops"})
           .filter("hops >= 1")
@@ -143,7 +143,7 @@ TEST_F(GraphTableTest, repeatedSubpath) {
               .plan(matchDelta("walk", {"name", "vertex", "hops"})
                         .filter("hops < 2")
                         .stateHashJoin({"vertex"})
-                        .project({"name", "dst", "hops + 1"}))
+                        .project({"name", "dst", "axiom_bigint_add(hops, 1)"}))
               .convergeOnEmpty({.maxIterations = 3}))
           .aliases({"name", "vertex", "hops"})
           .filter("hops >= 1")
@@ -211,8 +211,8 @@ TEST_F(GraphTableTest, optionalSubpath) {
 TEST_F(GraphTableTest, repetitionFromEnd) {
   auto plan = toSingleNodePlan(
       kPeopleGraph,
-      "MATCH (a IS Person) -[IS Knows]->{1,2} (b IS Person WHERE b.name = 'Dave') "
-      "COLUMNS (a.name AS a)");
+      "MATCH (a IS Person) -[k IS Knows]->{1,2} (b IS Person WHERE b.name = 'Dave') "
+      "COLUMNS (a.name AS a, k.src AS sources)");
   auto matcher =
       matchFixedPoint(
           startFixedPoint("walk")
@@ -220,18 +220,21 @@ TEST_F(GraphTableTest, repetitionFromEnd) {
                   /*append=*/true,
                   matchPerson({"id", "name"})
                       .filter("name = 'Dave'")
-                      .project({"id", "0"}))
+                      .project({"id", "[]", "0"}))
               .hashTableState(matchScan("knows").project({"dst", "src"}))
-              .plan(matchDelta("walk", {"vertex", "hops"})
+              .plan(matchDelta("walk", {"vertex", "sources", "hops"})
                         .filter("hops < 2")
                         .stateHashJoin({"vertex"})
-                        .project({"src", "hops + 1"}))
+                        .project(
+                            {"src",
+                             "axiom_array_prepend(src, sources)",
+                             "axiom_bigint_add(hops, 1)"}))
               .convergeOnEmpty({.maxIterations = 3}))
-          .aliases({"vertex", "hops"})
+          .aliases({"vertex", "sources", "hops"})
           .filter("hops >= 1")
           .hashJoinInner(
               matchPerson({"id", "a_name"}), {.keys = {{"vertex = id"}}})
-          .project({"a_name"})
+          .project({"a_name", "sources"})
           .build();
   AXIOM_ASSERT_PLAN(plan, matcher);
 }

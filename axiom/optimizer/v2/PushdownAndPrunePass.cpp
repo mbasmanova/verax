@@ -2792,8 +2792,9 @@ class Pushdown : public NodeRewriter<PushdownContext> {
   // A Repeat row carries its start row's and end row's columns unchanged, so a
   // conjunct that reads only one side filters that side. The hop needs only
   // its keys.
-  // A hop column a Repeat outputs is NULL for a walk of zero hops, so a
-  // conjunct that reads it stays above, as above an outer join.
+  // A column the Repeat computes from the hops -- a hop value, an array of
+  // them, or the hop count -- depends on the walk, so a conjunct that reads it
+  // stays above.
   NodeCP rewriteRepeat(const Repeat* node, PushdownContext& context) override {
     const auto& sources = node->effectiveSourceColumns();
     for (size_t i = 0; i < sources.size(); ++i) {
@@ -2854,6 +2855,10 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     if (node->sourceColumns().empty()) {
       sourceColumns.clear();
     }
+    ColumnCP hopCount =
+        node->hopCount() != nullptr && read.contains(node->hopCount())
+        ? node->hopCount()
+        : nullptr;
 
     PushdownContext hopContext;
     hopContext.required.unionColumns(node->hopSourceKeys());
@@ -2889,6 +2894,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
             .maxHops = node->maxHops(),
             .outputColumns = std::move(outputColumns),
             .sourceColumns = std::move(sourceColumns),
+            .hopCount = hopCount,
         },
         {newStart, std::move(startContext.outputSubstitutions)},
         {newHop, std::move(hopContext.outputSubstitutions)},

@@ -321,7 +321,7 @@ class GraphMatchMatcher : public LogicalPlanMatcherImpl<GraphMatchNode> {
 
     std::vector<std::string> outputs;
     for (const auto& output : plan.outputs()) {
-      if (output->kind() == GraphMatchOutput::Kind::kPathLength) {
+      if (output->is(GraphMatchOutput::Kind::kPathLength)) {
         outputs.push_back(fmt::format("path_length({})", output->pattern()));
       } else {
         outputs.push_back(
