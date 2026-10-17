@@ -33,10 +33,6 @@ class AggregationTest : public test::QueryTestBase,
     useV2_ = GetParam();
     test::QueryTestBase::SetUp();
   }
-
-  lp::PlanBuilder::Context makeContext() const {
-    return lp::PlanBuilder::Context{kTestConnectorId, kDefaultSchema};
-  }
 };
 
 TEST_P(AggregationTest, dedupGroupingKeysAndAggregates) {

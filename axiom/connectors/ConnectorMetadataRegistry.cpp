@@ -51,61 +51,59 @@ ConnectorMetadataRegistry::create(const Registry* parent) {
   return std::make_shared<Registry>(parent);
 }
 
-// static
-std::shared_ptr<ConnectorMetadata> ConnectorMetadataRegistry::tryGet(
-    const QueryCtx& queryCtx,
-    const std::string& connectorId) {
-  return registryFor(queryCtx).find(std::string(connectorId));
-}
-
-// static
-std::shared_ptr<ConnectorMetadata> ConnectorMetadataRegistry::tryGet(
-    const std::string& connectorId) {
-  return global().find(std::string(connectorId));
-}
-
-// static
-std::shared_ptr<ConnectorMetadata> ConnectorMetadataRegistry::get(
-    const QueryCtx& queryCtx,
-    const std::string& connectorId) {
-  auto metadata = tryGet(queryCtx, connectorId);
+std::shared_ptr<ConnectorMetadata> Registry::get(
+    const std::string& connectorId) const {
+  auto metadata = find(connectorId);
   VELOX_CHECK_NOT_NULL(
       metadata, "ConnectorMetadata not registered: {}", connectorId);
   return metadata;
 }
 
-// static
-std::shared_ptr<ConnectorMetadata> ConnectorMetadataRegistry::get(
-    const std::string& connectorId) {
-  auto metadata = tryGet(connectorId);
-  VELOX_CHECK_NOT_NULL(
-      metadata, "ConnectorMetadata not registered: {}", connectorId);
-  return metadata;
-}
-
-namespace {
-
-std::vector<std::string> metadataIds(const Registry& registry) {
-  auto entries = registry.snapshot();
-  auto ids = std::vector<std::string>{};
+std::vector<std::string> Registry::ids() const {
+  auto entries = snapshot();
+  std::vector<std::string> ids;
   ids.reserve(entries.size());
-  for (auto&& [id, _] : entries) {
-    ids.emplace_back(id);
+  for (auto& [id, _] : entries) {
+    ids.push_back(std::move(id));
   }
   return ids;
 }
 
-} // namespace
+// static
+std::shared_ptr<ConnectorMetadata> ConnectorMetadataRegistry::tryGet(
+    const QueryCtx& queryCtx,
+    const std::string& connectorId) {
+  return registryFor(queryCtx).find(connectorId);
+}
+
+// static
+std::shared_ptr<ConnectorMetadata> ConnectorMetadataRegistry::tryGet(
+    const std::string& connectorId) {
+  return global().find(connectorId);
+}
+
+// static
+std::shared_ptr<ConnectorMetadata> ConnectorMetadataRegistry::get(
+    const QueryCtx& queryCtx,
+    const std::string& connectorId) {
+  return registryFor(queryCtx).get(connectorId);
+}
+
+// static
+std::shared_ptr<ConnectorMetadata> ConnectorMetadataRegistry::get(
+    const std::string& connectorId) {
+  return global().get(connectorId);
+}
 
 // static
 std::vector<std::string> ConnectorMetadataRegistry::allMetadataIds(
     const QueryCtx& queryCtx) {
-  return metadataIds(registryFor(queryCtx));
+  return registryFor(queryCtx).ids();
 }
 
 // static
 std::vector<std::string> ConnectorMetadataRegistry::allMetadataIds() {
-  return metadataIds(global());
+  return global().ids();
 }
 
 // static

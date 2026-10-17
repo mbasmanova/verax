@@ -30,7 +30,8 @@ namespace facebook::axiom {
 /// makes one when it decides to run that component, and gives every component
 /// of a query the same context.
 ///
-/// A component reaches a connector through its context:
+/// A component reaches a connector through its session:
+///   auto metadata = session->connectorMetadata(connectorId);
 ///   metadata->beginWrite(session->context()->sessionFor(connectorId), ...);
 ///
 /// Invariants:
@@ -64,6 +65,20 @@ class BaseSession {
   /// Returns the identity of the user who submitted the query.
   const std::string& user() const {
     return context_->user();
+  }
+
+  /// Returns the metadata of 'connectorId' from the query's catalogs. Throws if
+  /// it is not registered.
+  std::shared_ptr<connector::ConnectorMetadata> connectorMetadata(
+      const std::string& connectorId) const {
+    return context_->metadataRegistry().get(connectorId);
+  }
+
+  /// Returns the metadata of 'connectorId' from the query's catalogs, or
+  /// nullptr if it is not registered.
+  std::shared_ptr<connector::ConnectorMetadata> tryConnectorMetadata(
+      const std::string& connectorId) const {
+    return context_->metadataRegistry().find(connectorId);
   }
 
   /// Returns the value of session property 'name' if set for this component,

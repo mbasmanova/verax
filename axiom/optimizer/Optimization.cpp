@@ -19,7 +19,6 @@
 #include <iostream>
 #include <limits>
 #include <utility>
-#include "axiom/connectors/ConnectorMetadataRegistry.h"
 #include "axiom/optimizer/AggregationPlanner.h"
 #include "axiom/optimizer/Filters.h"
 #include "axiom/optimizer/FunctionRegistry.h"
@@ -500,7 +499,7 @@ PlanAndStats Optimization::deprecatedToVeloxPlan(
   velox::exec::SimpleExpressionEvaluator evaluator(veloxQueryCtx.get(), &pool);
 
   auto schemaResolver = std::make_shared<connector::SchemaResolver>(
-      connector::ConnectorMetadataRegistry::global());
+      optimizerSession->context()->metadataRegistry());
 
   VeloxHistory history;
 

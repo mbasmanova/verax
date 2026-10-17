@@ -274,6 +274,7 @@ class SubfieldTest : public HiveQueriesTestBase,
         kDefaultSchema,
         getQueryCtx(),
         resolveDfFunction);
+    ctx.connectorContext = connector::makeTestContext("test");
     auto logicalPlan =
         lp::PlanBuilder(ctx)
             .tableScan("features")
@@ -431,8 +432,8 @@ class SubfieldTest : public HiveQueriesTestBase,
     return createFeaturesTable(opts);
   }
 
-  lp::PlanBuilder::Context makeContext() const {
-    return lp::PlanBuilder::Context{kHiveConnectorId, kDefaultSchema};
+  static lp::PlanBuilder::Context makeContext() {
+    return QueryTestBase::makeContext(kHiveConnectorId);
   }
 };
 
@@ -687,7 +688,7 @@ TEST_P(SubfieldTest, maps) {
   }
 
   {
-    lp::PlanBuilder::Context ctx(kHiveConnectorId, kDefaultSchema);
+    auto ctx = makeContext();
     auto logicalPlan =
         lp::PlanBuilder(ctx)
             .tableScan("features")
@@ -1202,6 +1203,7 @@ TEST_P(SubfieldTest, blackbox) {
 
   lp::PlanBuilder::Context ctx(
       kHiveConnectorId, kDefaultSchema, getQueryCtx(), resolveDfFunction);
+  ctx.connectorContext = connector::makeTestContext("test");
 
   auto logicalPlan =
       lp::PlanBuilder(ctx)

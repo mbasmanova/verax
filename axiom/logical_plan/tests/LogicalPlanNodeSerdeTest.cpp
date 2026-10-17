@@ -18,6 +18,7 @@
 
 #include "axiom/connectors/ConnectorMetadataRegistry.h"
 #include "axiom/connectors/tests/TestConnector.h"
+#include "axiom/connectors/tests/TestConnectorContext.h"
 #include "axiom/logical_plan/Expr.h"
 #include "axiom/logical_plan/ExprApi.h"
 #include "axiom/logical_plan/GraphBuilder.h"
@@ -56,6 +57,7 @@ class LogicalPlanNodeSerdeTest : public testing::Test {
   }
 
   void SetUp() override {
+    context_.connectorContext = connector::makeTestContext("test");
     pool_ = memory::memoryManager()->addLeafPool("test");
     connector_ = std::make_shared<connector::TestConnector>(kTestConnectorId);
     connector_->addTable(

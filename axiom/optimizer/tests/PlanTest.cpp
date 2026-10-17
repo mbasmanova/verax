@@ -49,10 +49,6 @@ class PlanTest : public test::HiveQueriesTestBase,
     test::HiveQueriesTestBase::SetUp();
   }
 
-  lp::PlanBuilder::Context makeContext() const {
-    return lp::PlanBuilder::Context{kTestConnectorId, kDefaultSchema};
-  }
-
   lp::PlanBuilder::Context makeCoercingContext() const {
     auto ctx = makeContext();
     ctx.coercer = &velox::TypeCoercer::defaults();
@@ -98,6 +94,7 @@ TEST_P(PlanTest, rejectedFilters) {
         getQueryCtx(),
         test::resolveDfFunction);
     ctx.coercer = &velox::TypeCoercer::defaults();
+    ctx.connectorContext = connector::makeTestContext("test");
     return lp::PlanBuilder(ctx).tableScan("t");
   };
 
@@ -487,6 +484,7 @@ TEST_P(PlanTest, inList) {
   auto scan = [&]() {
     lp::PlanBuilder::Context context(
         kTestConnectorId, kDefaultSchema, getQueryCtx());
+    context.connectorContext = connector::makeTestContext("test");
     return lp::PlanBuilder(context).tableScan("numbers");
   };
 
@@ -566,8 +564,7 @@ TEST_P(PlanTest, filterToJoinEdge) {
   auto nationType = ROW({"n_regionkey"}, BIGINT());
   auto regionType = ROW({"r_regionkey"}, BIGINT());
 
-  lp::PlanBuilder::Context context(
-      exec::test::kHiveConnectorId, kDefaultSchema);
+  auto context = makeContext(exec::test::kHiveConnectorId);
   auto logicalPlan = lp::PlanBuilder(context)
                          .from({"nation", "region"})
                          .map({"n_regionkey", "r_regionkey"})
@@ -661,8 +658,7 @@ TEST_P(PlanTest, filterBreakup) {
       "                and l_shipinstruct = 'DELIVER IN PERSON'\n"
       "        )\n";
 
-  lp::PlanBuilder::Context context(
-      exec::test::kHiveConnectorId, kDefaultSchema);
+  auto context = makeContext(exec::test::kHiveConnectorId);
   auto logicalPlan =
       lp::PlanBuilder(context)
           .from({"lineitem", "part"})
@@ -779,7 +775,7 @@ TEST_P(PlanTest, values) {
   // We don't check produced plan, only that it results in the same rows as
   // correct exection plan.
   {
-    lp::PlanBuilder::Context ctx(exec::test::kHiveConnectorId, kDefaultSchema);
+    auto ctx = makeContext(exec::test::kHiveConnectorId);
     auto makeLogicalPlan = [&](uint8_t leafType,
                                const std::string& filter,
                                std::string_view alias) {

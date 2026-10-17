@@ -26,6 +26,7 @@
 #include "axiom/logical_plan/ExprApi.h"
 #include "axiom/logical_plan/PlanBuilder.h"
 #include "axiom/sql/presto/ParserOptions.h"
+#include "axiom/sql/presto/ParserSession.h"
 #include "axiom/sql/presto/ast/AstNodesAll.h"
 
 namespace axiom::sql::presto {
@@ -124,21 +125,25 @@ class ExpressionPlanner {
   using RelationQualifierResolver = std::function<std::optional<std::string>(
       std::span<const std::string> parts)>;
 
+  /// 'session' provides the user CURRENT_USER is constant-folded to at
+  /// planning time, and the catalogs connector-defined types are looked up in.
   ExpressionPlanner(
-      std::string user,
+      ParserSessionPtr session,
       SubqueryPlanner subqueryPlanner,
       SortingKeyResolver sortingKeyResolver,
       const ParserOptions& options,
       ShouldDropQualifier shouldDropQualifier = nullptr,
       ColumnResolver columnResolver = nullptr,
       RelationQualifierResolver relationQualifierResolver = nullptr)
-      : user_{std::move(user)},
+      : session_{std::move(session)},
         subqueryPlanner_(std::move(subqueryPlanner)),
         sortingKeyResolver_(std::move(sortingKeyResolver)),
         shouldDropQualifier_(std::move(shouldDropQualifier)),
         columnResolver_(std::move(columnResolver)),
         relationQualifierResolver_(std::move(relationQualifierResolver)),
-        options_{options} {}
+        options_{options} {
+    VELOX_CHECK_NOT_NULL(session_);
+  }
 
   /// Finds WindowCallExpr nodes nested inside non-window expressions.
   /// Skips top-level window projections (where the ExprApi itself is a
@@ -377,9 +382,8 @@ class ExpressionPlanner {
     }
   };
 
-  // Session user used to constant-fold CURRENT_USER at planning time. Empty
-  // when no session context is available; CURRENT_USER translation then fails.
-  const std::string user_;
+  // See the constructor.
+  const ParserSessionPtr session_;
 
   SubqueryPlanner subqueryPlanner_;
   SortingKeyResolver sortingKeyResolver_;
