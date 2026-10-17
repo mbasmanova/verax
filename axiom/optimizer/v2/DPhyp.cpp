@@ -750,6 +750,16 @@ class Enumerator {
     return makeExchange(selection.plan, std::move(required), selection.cost);
   }
 
+  // Cheapest plan for the cover of 'input' gathered to one task, or null when
+  // that cover does not fit the broadcast limit.
+  MemoOpCP gatheredSmall(MemoOpCP input) {
+    if (!CostModel::broadcastSizeIfFits(input, graph_, broadcastSizeLimit_)
+             .has_value()) {
+      return nullptr;
+    }
+    return bestOnPartitioning(input->cover(), Partitioning::globalGather());
+  }
+
   // Cheapest plan for `cover` standard-hash partitioned on `keys`.
   MemoOpCP repartitioned(
       RelationSet cover,
@@ -1153,22 +1163,31 @@ class Enumerator {
 
     const auto [leftKeys, rightKeys] = orientedKeys(left, edgeIndex, keyEdges);
 
-    // Both inputs already sit on one task, so joining them moves no rows and
-    // the result stays there. Offered next to the partitioned strategies below,
-    // which would shuffle two single-task inputs apart; cost decides.
-    if (left->outputPartitioning().is(PartitionKind::kGather) &&
-        right->outputPartitioning().is(PartitionKind::kGather)) {
-      addDistributedJoinCandidate(
-          left,
-          right,
-          edgeIndex,
-          joinType,
-          combined,
-          reversedAnti,
-          keyEdges,
-          filterEdges,
-          leftKeys,
-          rightKeys);
+    // When an input already sits on one task, the join can run there: the other
+    // input, if small enough to move whole, is gathered to it. No row is
+    // replicated, so this holds for every join type, including one that
+    // preserves its build side. Offered next to the partitioned strategies
+    // below, which would shuffle a single-task input apart; cost decides.
+    const bool leftGathered =
+        left->outputPartitioning().is(PartitionKind::kGather);
+    const bool rightGathered =
+        right->outputPartitioning().is(PartitionKind::kGather);
+    if (leftGathered || rightGathered) {
+      MemoOpCP gatheredLeft = leftGathered ? left : gatheredSmall(left);
+      MemoOpCP gatheredRight = rightGathered ? right : gatheredSmall(right);
+      if (gatheredLeft != nullptr && gatheredRight != nullptr) {
+        addDistributedJoinCandidate(
+            gatheredLeft,
+            gatheredRight,
+            edgeIndex,
+            joinType,
+            combined,
+            reversedAnti,
+            keyEdges,
+            filterEdges,
+            leftKeys,
+            rightKeys);
+      }
     }
 
     if (!leftKeys.empty()) {

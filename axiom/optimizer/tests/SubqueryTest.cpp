@@ -191,18 +191,17 @@ TEST_P(SubqueryTest, uncorrelatedInConstantLeftSide) {
   auto plan = toSingleNodePlan(query);
   AXIOM_ASSERT_PLAN_V2(plan, matcher);
 
-  // The join preserves its build side, so that side is partitioned rather
-  // than replicated to every worker.
+  // The constant already sits on one task, so the region rows that can match
+  // it are gathered there and the join runs on that task.
   auto distributedMatcher =
       matchHiveScan("region")
           .filter("r_regionkey IS NULL OR r_regionkey = 1")
-          .shuffle({"r_regionkey"}, /*replicateNullsAndAny=*/true)
+          .gather()
           .hashJoin(
-              matchValues<int64_t>({{1}}).shuffle(),
+              matchValues<int64_t>({{1}}),
               velox::core::JoinType::kRightSemiProject,
               {.nullAware = true})
           .project()
-          .gather()
           .build();
 
   auto distributedPlan = planVelox(parseSelect(query));
