@@ -15,6 +15,7 @@
  */
 
 #include "axiom/optimizer/MultiFragmentPlan.h"
+#include "velox/core/FixedPointPlanNodes.h"
 #include "velox/core/PlanNode.h"
 #include "velox/core/TableWriteTraits.h"
 
@@ -592,6 +593,32 @@ void checkFragmentTypes(
   }
 }
 
+// Returns the node with 'id' in the tree under 'node', including the initial
+// plans of a fixed point, which read their exchanges once before the loop.
+const velox::core::PlanNode* findConsumerNode(
+    const velox::core::PlanNode* node,
+    const velox::core::PlanNodeId& id) {
+  if (node->id() == id) {
+    return node;
+  }
+  if (const auto* fixedPoint = node->as<velox::core::FixedPointNode>()) {
+    for (const auto& declaration : fixedPoint->stateDeclarations()) {
+      if (declaration->initialPlan() != nullptr) {
+        if (const auto* found =
+                findConsumerNode(declaration->initialPlan().get(), id)) {
+          return found;
+        }
+      }
+    }
+  }
+  for (const auto& source : node->sources()) {
+    if (const auto* found = findConsumerNode(source.get(), id)) {
+      return found;
+    }
+  }
+  return nullptr;
+}
+
 // Checks producer-consumer linkage: fragment ids are unique,
 // each InputStage references a valid ExchangeNode and an existing producer
 // whose root is a PartitionedOutputNode with matching partition count. Also
@@ -616,7 +643,7 @@ void checkProducerConsumerLinkage(
 
   for (const auto& consumer : fragments) {
     for (const auto& inputStage : consumer.inputStages) {
-      auto* consumerNode = velox::core::PlanNode::findNodeById(
+      const auto* consumerNode = findConsumerNode(
           consumer.fragment.planNode.get(), inputStage.consumerNodeId);
       VELOX_CHECK_NOT_NULL(
           consumerNode,

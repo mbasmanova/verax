@@ -140,9 +140,11 @@ for one, or the `UNION ALL` of the two, and the result joins them with the end
 as above.
 
 The hop appears once in the plan, as the build side of the step's join. Each
-iteration reads only the latest walks. A fixed point runs on a single node
-today; distributed, the walks would be repartitioned on the new current vertex
-each iteration, and the hop would stay partitioned on its source.
+iteration reads only the latest walks. With several workers, each task that
+reads part of the start runs its own walks, and the hop is broadcast to every
+task (see [FixedPoint.md](FixedPoint.md#distributed-execution)). A hop too large
+to broadcast needs the walks repartitioned on the new current vertex each
+iteration, with the hop partitioned on its source; that plan is not built yet.
 
 The hop count is a `BIGINT` that grows by one per step. The lowering adds with
 the function the dialect registers through
@@ -171,8 +173,8 @@ For `(a IS Person) -[IS Knows]->{1,2} (b IS Person)`, the Velox plan is:
 
 ## Emit and the loop's state
 
-Velox delivers table splits only to a fixed point's initial plans, which run
-once before the first iteration, and to its trailing plan above the loop.
+Velox delivers table splits to a fixed point's initial plans, which run once
+before the first iteration, and to the nodes above the loop, never to the step.
 Emit therefore computes each part of the step that reads no recursive state
 once, as an initial plan, and the step reads the result from loop state:
 
@@ -203,8 +205,9 @@ the same `FixedPoint`:
   a convergence predicate.
 
 These need the fixed point to read the accumulated result and to stop on a
-predicate. Velox and the v2 `FixedPoint` support both; the logical plan does
-not expose them, so Translate never produces them. A visited set that grows
+predicate. Velox supports both. The v2 `FixedPoint` can read the accumulated
+result but stops only on an empty delta, and the logical plan exposes neither,
+so Translate never produces them. A visited set that grows
 incrementally also needs mutable keyed state in Velox; without it, the
 anti-join rebuilds a hash table over all reached rows every iteration.
 

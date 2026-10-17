@@ -546,7 +546,7 @@ Translated Translator::translateFixedPoint(
 
   // Every recursive state read shares the FixedPoint output identities.
   // Pruning must therefore choose one ordered subset and rewrite the
-  // fixed-point output, step, convergence, and every WorkingTable
+  // fixed-point output, step, and every WorkingTable
   // consistently, while retaining the aligned anchor sources.
   // TODO: Implement this coordinated FixedPoint state-schema pruning.
   const auto& anchorType = fixedPoint.anchor()->outputType();
@@ -590,13 +590,10 @@ Translated Translator::translateFixedPoint(
       "Optimizer v2 supports exactly one RecursiveReferenceNode per FixedPoint step: found {}",
       activeFixedPoint_->numReferences);
 
-  NodeCP convergence = nodeSimplifier_.makeEmptyDeltaConvergence(
-      recursionName, activeFixedPoint_->stateColumns);
   auto result = nodeSimplifier_.make(
       FixedPoint::Key{
           .anchor = anchor.node,
           .step = step.node,
-          .convergence = convergence,
           .name = recursionName,
           .outputColumns = std::move(stateColumns),
           .sourceColumns = std::move(anchorColumns),
@@ -604,8 +601,7 @@ Translated Translator::translateFixedPoint(
           .recursiveNumDrivers = std::nullopt,
       },
       {anchor.node, {}},
-      {step.node, {}},
-      {convergence, {}});
+      {step.node, {}});
   applySubstitutions(result.substitutions, anchorScope);
   return {nodeSimplifier_.materialize(result), std::move(anchorScope)};
 }

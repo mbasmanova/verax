@@ -211,7 +211,7 @@ class LocalRunner : public Runner,
   // Builds a single-row vector with 'rows' in a "rows" BIGINT column.
   velox::RowVectorPtr makeWriteResult(std::optional<int64_t> rows);
 
-  // Creates coordinator hooks when the final fragment contains a fixed point.
+  // Creates coordinator hooks when any fragment contains a fixed point.
   const velox::exec::FixedPointOptions* prepareFixedPointOptions();
 
   void start();
@@ -242,7 +242,7 @@ class LocalRunner : public Runner,
   // Runs a fixed point's orchestration separately from the executor used by
   // its iteration tasks. Created only for a plan containing a fixed point.
   std::unique_ptr<folly::CPUThreadPoolExecutor> fixedPointExecutor_;
-  // Keeps the cursor's fixed-point hooks valid for the runner's lifetime.
+  // Keeps the tasks' fixed-point hooks valid for the runner's lifetime.
   std::unique_ptr<velox::exec::FixedPointOptions> fixedPointOptions_;
   velox::exec::CursorParameters params_;
   std::shared_ptr<velox::memory::MemoryPool> splitExpressionPool_;

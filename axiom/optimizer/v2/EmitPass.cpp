@@ -2326,7 +2326,6 @@ std::optional<FragmentType> fragmentTypeContribution(NodeCP node) {
           ? FragmentType::kCoordinator
           : FragmentType::kSource;
     case NodeType::kValues:
-    case NodeType::kFixedPoint:
       return FragmentType::kSingle;
     default: {
       std::optional<FragmentType> result;
@@ -2809,10 +2808,6 @@ velox::core::PlanNodePtr Emitter::emitTableWrite(const TableWrite& tableWrite) {
 }
 
 velox::core::PlanNodePtr Emitter::emitFixedPoint(const FixedPoint& fixedPoint) {
-  if (options_.maxRemotePartitions > 1) {
-    VELOX_NYI("Distributed FixedPoint execution is not yet implemented");
-  }
-
   auto anchorPlan = emit(fixedPoint.anchor());
 
   VELOX_CHECK_EQ(
@@ -2837,8 +2832,8 @@ velox::core::PlanNodePtr Emitter::emitFixedPoint(const FixedPoint& fixedPoint) {
 
   auto schema = makeRowType(fixedPoint.outputColumns());
 
-  auto convergence = velox::core::ConvergenceConfig::converging(
-      emit(fixedPoint.convergence()), fixedPoint.maxIterations());
+  auto convergence = velox::core::ConvergenceConfig::whenDeltaEmpty(
+      fixedPoint.maxIterations());
 
   std::vector<velox::core::StateDeclarationPtr> stateDeclarations;
   stateDeclarations.push_back(

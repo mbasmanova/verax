@@ -19,9 +19,7 @@
 #include "axiom/optimizer/v2/AppendAll.h"
 #include "axiom/optimizer/v2/EstimateProvider.h"
 #include "axiom/optimizer/v2/ExprFactory.h"
-#include "axiom/optimizer/v2/ExprSimplifier.h"
 #include "axiom/optimizer/v2/NodeRewriter.h"
-#include "axiom/optimizer/v2/NodeSimplifier.h"
 #include "axiom/optimizer/v2/PlanSubstitutions.h"
 
 namespace facebook::axiom::optimizer::v2 {
@@ -85,11 +83,8 @@ ExprVector toExprs(const ColumnVector& columns) {
 
 class Lowering : public NodeRewriter<NoContext> {
  public:
-  Lowering(Builder& builder, velox::core::ExpressionEvaluator& evaluator)
-      : NodeRewriter(builder),
-        exprs_(builder),
-        simplifier_(builder, evaluator),
-        nodeSimplifier_(builder, simplifier_) {}
+  explicit Lowering(Builder& builder)
+      : NodeRewriter(builder), exprs_(builder) {}
 
   using NodeRewriter::rewrite;
 
@@ -245,8 +240,6 @@ class Lowering : public NodeRewriter<NoContext> {
     return builder().make<FixedPoint>({
         .anchor = anchor,
         .step = makeStep(repeat, walk, name, state, anchorColumns),
-        .convergence =
-            nodeSimplifier_.makeEmptyDeltaConvergence(name, state.columns),
         .name = name,
         .outputColumns = state.columns,
         .sourceColumns = anchorColumns,
@@ -347,18 +340,13 @@ class Lowering : public NodeRewriter<NoContext> {
   }
 
   ExprFactory exprs_;
-  ExprSimplifier simplifier_;
-  NodeSimplifier nodeSimplifier_;
   EstimateProvider estimates_;
 };
 
 } // namespace
 
-NodeCP LowerRepeatPass::run(
-    NodeCP root,
-    Builder& builder,
-    velox::core::ExpressionEvaluator& evaluator) {
-  return Lowering(builder, evaluator).rewrite(root);
+NodeCP LowerRepeatPass::run(NodeCP root, Builder& builder) {
+  return Lowering(builder).rewrite(root);
 }
 
 } // namespace facebook::axiom::optimizer::v2
