@@ -9,7 +9,8 @@ uses `system`).
 
 It also serves the `information_schema` relations of every other
 catalog, since those describe schemas, tables and columns rather than
-belonging to any one connector.
+belonging to any one connector. The application passes the registry of
+those catalogs when it constructs the connector.
 
 ## Schemas and Tables
 
@@ -105,9 +106,9 @@ catalog only about names a query gives it.
   e.g. `system."$info_schema@hive".columns`, not as a table of the
   catalog it describes. Anything reading a query's referenced tables,
   such as an access check, sees that name.
-- The rows are read through the catalog's globally registered metadata,
-  with a session of this connector rather than of the catalog being
-  described.
+- The rows are read through the catalog's metadata in the registry the
+  connector was constructed with, with a session of this connector rather
+  than of the catalog being described.
 
 The rows come from catalog metadata, which only the coordinator can
 read, so these scans are placed there.
@@ -304,9 +305,9 @@ adapter that reads from `SessionConfig` and passes it as the
 ```
 Registration (startup):
   Application creates provider adapters
-    → passes them to SystemConnector
+    → passes them and its catalog registry to SystemConnector
     → creates SystemConnectorMetadata(connector)
-    → registers both globally
+    → registers both in its registries
 
 Query time:
   SQL "SELECT ... FROM system.metadata.session_properties"

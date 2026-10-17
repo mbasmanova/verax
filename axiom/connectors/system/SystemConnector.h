@@ -220,12 +220,15 @@ struct SystemSplit : public velox::connector::ConnectorSplit {
 /// for reading live query metadata and session properties.
 class SystemConnector : public velox::connector::Connector {
  public:
+  /// @param metadataRegistry The catalogs information_schema describes. Must
+  /// outlive this connector.
   /// @param typeName Spelling of the types information_schema.columns
   /// reports. Defaults to 'InformationSchema::defaultTypeName'; a SQL dialect
   /// whose clients read these names registers its own, e.g. Presto's
   /// 'array(real)'.
   SystemConnector(
       const std::string& id,
+      const ConnectorMetadataRegistry::Registry& metadataRegistry,
       const QueryInfoProvider* queryInfoProvider,
       const SessionPropertiesProvider* sessionPropertiesProvider = nullptr,
       InformationSchema::TypeNameFormatter typeName =
@@ -247,10 +250,16 @@ class SystemConnector : public velox::connector::Connector {
     VELOX_UNSUPPORTED("SystemConnector does not support writes");
   }
 
+  /// Returns the catalogs information_schema describes.
+  const ConnectorMetadataRegistry::Registry& metadataRegistry() const {
+    return metadataRegistry_;
+  }
+
   /// Registers deserialization functions for all system connector types.
   static void registerSerDe();
 
  private:
+  const ConnectorMetadataRegistry::Registry& metadataRegistry_;
   const QueryInfoProvider* queryInfoProvider_;
   const SessionPropertiesProvider* sessionPropertiesProvider_;
   const InformationSchema::TypeNameFormatter typeName_;

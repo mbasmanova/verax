@@ -255,6 +255,7 @@ class SqlTest : public SqlTestBase {
     suiteSystemConnector_ =
         std::make_shared<connector::system::SystemConnector>(
             std::string(kSystemConnectorId),
+            connector::ConnectorMetadataRegistry::global(),
             /*queryInfoProvider=*/nullptr,
             /*sessionPropertiesProvider=*/nullptr,
             velox::PrestoTypes::displayName);
