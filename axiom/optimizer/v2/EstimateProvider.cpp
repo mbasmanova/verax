@@ -347,7 +347,7 @@ Estimate EstimateProvider::compute(NodeCP node) {
     }
 
     case NodeType::kFixedPoint: {
-      // Convergence depth is workload-dependent; single-pass sum would
+      // Iteration depth is workload-dependent; single-pass sum would
       // understate it and skew join placement. Keep cardinality unknown so a
       // join cluster that depends on this estimate is uncostable and falls
       // back to its written join shape at that boundary.

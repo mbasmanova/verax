@@ -481,7 +481,10 @@ velox::RowVectorPtr LocalRunner::makeWriteResult(std::optional<int64_t> rows) {
 }
 
 const velox::exec::FixedPointOptions* LocalRunner::prepareFixedPointOptions() {
-  if (!velox::exec::FixedPointLoop::claims(fragments_.back().fragment)) {
+  if (std::none_of(
+          fragments_.begin(), fragments_.end(), [](const auto& fragment) {
+            return velox::exec::FixedPointLoop::claims(fragment.fragment);
+          })) {
     return nullptr;
   }
 
@@ -827,7 +830,8 @@ void LocalRunner::makeStages(
           velox::exec::ConsumerSupplier{},
           /*memoryArbitrationPriority=*/0,
           makeSpillDiskOptions(baseSpillDirectory_, taskId),
-          onError);
+          onError,
+          fixedPointOptions_.get());
       {
         std::lock_guard<std::mutex> lock(mutex_);
         stages_.back().push_back(task);

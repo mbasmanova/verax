@@ -390,6 +390,56 @@ class FixedPointMatcher : public PlanMatcherImpl<FixedPointNode> {
   explicit FixedPointMatcher(FixedPointMatch match)
       : PlanMatcherImpl<FixedPointNode>{}, match_{std::move(match)} {}
 
+  // Initial plans run in this fixed point's fragment and may read other
+  // fragments through Exchanges, so they match with the distributed context.
+  MatchResult match(
+      const PlanNodePtr& plan,
+      const std::unordered_map<std::string, std::string>& symbols,
+      const DistributedMatchContext* context) const override {
+    auto result =
+        PlanMatcherImpl<FixedPointNode>::match(plan, symbols, context);
+    if (!result.match || !match_.has_value()) {
+      return result;
+    }
+    const auto& fixedPoint = *plan->as<FixedPointNode>();
+    SCOPED_TRACE(fixedPoint.toString(true, false));
+    const auto stateSymbols = stateSymbolsOf(fixedPoint, symbols);
+
+    const auto& states = match_->states();
+    const auto& hashTableStates = match_->hashTableStates();
+    if (!states.empty() || !hashTableStates.empty()) {
+      EXPECT_EQ(
+          fixedPoint.stateDeclarations().size(),
+          states.size() + hashTableStates.size());
+      AXIOM_TEST_RETURN_IF_FAILURE
+    }
+    for (const auto& state : states) {
+      if (!matchState(fixedPoint, state, stateSymbols, context)) {
+        return MatchResult::failure();
+      }
+    }
+    if (!matchHashTableStates(fixedPoint, stateSymbols, context)) {
+      return MatchResult::failure();
+    }
+    return result;
+  }
+
+  int32_t shuffleBoundaryCount() const override {
+    if (!match_.has_value()) {
+      return 0;
+    }
+    int32_t count = 0;
+    for (const auto& state : match_->states()) {
+      if (state.initialPlan != nullptr) {
+        count += state.initialPlan->shuffleBoundaryCount();
+      }
+    }
+    for (const auto& initialPlan : match_->hashTableStates()) {
+      count += initialPlan->shuffleBoundaryCount();
+    }
+    return count;
+  }
+
   MatchResult matchDetails(
       const FixedPointNode& plan,
       const std::unordered_map<std::string, std::string>& symbols)
@@ -398,27 +448,7 @@ class FixedPointMatcher : public PlanMatcherImpl<FixedPointNode> {
     if (!match_.has_value()) {
       return MatchResult::success(symbols);
     }
-
-    // The state alias holds within this fixed point's plans.
-    auto stateSymbols = symbols;
-    stateSymbols[match_->outputStateEntry()] = plan.outputStateEntry();
-
-    const auto& states = match_->states();
-    const auto& hashTableStates = match_->hashTableStates();
-    if (!states.empty() || !hashTableStates.empty()) {
-      EXPECT_EQ(
-          plan.stateDeclarations().size(),
-          states.size() + hashTableStates.size());
-      AXIOM_TEST_RETURN_IF_FAILURE
-    }
-    for (const auto& state : states) {
-      if (!matchState(plan, state, stateSymbols)) {
-        return MatchResult::failure();
-      }
-    }
-    if (!matchHashTableStates(plan, stateSymbols)) {
-      return MatchResult::failure();
-    }
+    const auto stateSymbols = stateSymbolsOf(plan, symbols);
 
     const auto& plans = match_->plans();
     if (!plans.empty()) {
@@ -433,17 +463,9 @@ class FixedPointMatcher : public PlanMatcherImpl<FixedPointNode> {
       }
     }
 
-    if (const auto& convergence = match_->convergencePlan()) {
-      EXPECT_EQ(plan.convergenceConfig().plans.size(), 1);
-      AXIOM_TEST_RETURN_IF_FAILURE
-      if (!convergence
-               ->match(
-                   plan.convergenceConfig().plans.front(),
-                   stateSymbols,
-                   /*context=*/nullptr)
-               .match) {
-        return MatchResult::failure();
-      }
+    if (match_->stopWhenDeltaEmpty()) {
+      EXPECT_TRUE(plan.convergenceConfig().stopWhenDeltaEmpty);
+      EXPECT_TRUE(plan.convergenceConfig().plans.empty());
     }
 
     if (match_->maxIterations().has_value()) {
@@ -458,10 +480,20 @@ class FixedPointMatcher : public PlanMatcherImpl<FixedPointNode> {
   }
 
  private:
+  // The state alias holds within this fixed point's plans.
+  std::unordered_map<std::string, std::string> stateSymbolsOf(
+      const FixedPointNode& plan,
+      const std::unordered_map<std::string, std::string>& symbols) const {
+    auto stateSymbols = symbols;
+    stateSymbols[match_->outputStateEntry()] = plan.outputStateEntry();
+    return stateSymbols;
+  }
+
   bool matchState(
       const FixedPointNode& plan,
       const FixedPointMatch::State& expected,
-      const std::unordered_map<std::string, std::string>& symbols) const {
+      const std::unordered_map<std::string, std::string>& symbols,
+      const DistributedMatchContext* context) const {
     const auto alias = symbols.find(expected.name);
     const auto& name = alias == symbols.end() ? expected.name : alias->second;
     const StateDeclaration* declaration = nullptr;
@@ -494,7 +526,7 @@ class FixedPointMatcher : public PlanMatcherImpl<FixedPointNode> {
         return false;
       }
       return expected.initialPlan
-          ->match(declaration->initialPlan(), symbols, /*context=*/nullptr)
+          ->match(declaration->initialPlan(), symbols, context)
           .match;
     }
     return true;
@@ -504,7 +536,8 @@ class FixedPointMatcher : public PlanMatcherImpl<FixedPointNode> {
   // expected initial plans.
   bool matchHashTableStates(
       const FixedPointNode& plan,
-      const std::unordered_map<std::string, std::string>& symbols) const {
+      const std::unordered_map<std::string, std::string>& symbols,
+      const DistributedMatchContext* context) const {
     const auto& expected = match_->hashTableStates();
     size_t index = 0;
     for (const auto& declaration : plan.stateDeclarations()) {
@@ -518,7 +551,7 @@ class FixedPointMatcher : public PlanMatcherImpl<FixedPointNode> {
         return false;
       }
       if (!expected[index++]
-               ->match(declaration->initialPlan(), symbols, /*context=*/nullptr)
+               ->match(declaration->initialPlan(), symbols, context)
                .match) {
         return false;
       }
@@ -2380,27 +2413,8 @@ FixedPointMatch& FixedPointMatch::plan(PlanMatcherBuilder body) {
   return *this;
 }
 
-namespace {
-// The plan a stop-when-empty loop uses today: count the rows the last
-// iteration wrote and compare to zero. 'stateColumns', when set, pins the
-// columns the delta read presents.
-PlanMatcherBuilder emptyDeltaConvergence(
-    const std::string& stateName,
-    const std::optional<std::vector<std::optional<std::string>>>&
-        stateColumns) {
-  PlanMatcherBuilder builder;
-  builder.stateSource(stateName, /*delta=*/true);
-  if (stateColumns.has_value()) {
-    builder.aliases(*stateColumns);
-  }
-  return builder.singleAggregation({}, {"count(*) as convergence_count"})
-      .project({"convergence_count = 0"});
-}
-} // namespace
-
 FixedPointMatch& FixedPointMatch::convergeOnEmpty(Convergence assertions) {
-  convergence_ =
-      emptyDeltaConvergence(outputStateEntry_, assertions.stateColumns).build();
+  stopWhenDeltaEmpty_ = true;
   errorWhenMaxIterationReached_ = true;
   maxIterations_ = assertions.maxIterations;
   return *this;

@@ -16,7 +16,6 @@
 #pragma once
 
 #include "axiom/optimizer/v2/Builder.h"
-#include "velox/core/ExpressionEvaluator.h"
 
 namespace facebook::axiom::optimizer::v2 {
 
@@ -43,10 +42,7 @@ namespace facebook::axiom::optimizer::v2 {
 /// Runs after leaf statistics are read, so the choice of side uses them.
 class LowerRepeatPass {
  public:
-  static NodeCP run(
-      NodeCP root,
-      Builder& builder,
-      velox::core::ExpressionEvaluator& evaluator);
+  static NodeCP run(NodeCP root, Builder& builder);
 };
 
 } // namespace facebook::axiom::optimizer::v2

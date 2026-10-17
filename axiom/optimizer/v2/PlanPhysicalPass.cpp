@@ -343,15 +343,23 @@ class ClusterCollector {
   // `separatesJoins`, and vary independently: the first collection dissolves
   // cross joins with nothing opaque, and the re-collect that stops dissolving
   // them may still have nothing opaque.
+  // `stopAtStateFree` keeps each subtree that reads no recursive state a
+  // single leaf, so a fixed point's step can replicate it whole.
   ClusterCollector(
       JoinCluster& cluster,
       bool dissolveCrossJoins,
-      const folly::F14FastSet<const Join*>& opaqueJoins)
+      const folly::F14FastSet<const Join*>& opaqueJoins,
+      bool stopAtStateFree)
       : cluster_{cluster},
         dissolveCrossJoins_{dissolveCrossJoins},
-        opaqueJoins_{opaqueJoins} {}
+        opaqueJoins_{opaqueJoins},
+        stopAtStateFree_{stopAtStateFree} {}
 
   void collect(NodeCP node, bool preserved, bool unnestMovable) {
+    if (stopAtStateFree_ && node->requiredStates().empty()) {
+      cluster_.leaves.push_back(node);
+      return;
+    }
     switch (node->nodeType()) {
       case NodeType::kJoin:
         if (collectJoin(node->as<Join>(), preserved, unnestMovable)) {
@@ -454,6 +462,7 @@ class ClusterCollector {
   JoinCluster& cluster_;
   const bool dissolveCrossJoins_;
   const folly::F14FastSet<const Join*>& opaqueJoins_;
+  const bool stopAtStateFree_;
 };
 
 // Removes Unnests whose placement is unconstrained from the graph relation
@@ -512,11 +521,12 @@ struct CollectedJoinCluster {
 CollectedJoinCluster collectJoinCluster(
     JoinCP root,
     bool dissolveCrossJoins,
-    const folly::F14FastSet<const Join*>& opaqueJoins) {
+    const folly::F14FastSet<const Join*>& opaqueJoins,
+    bool stopAtStateFree) {
   JoinCluster cluster;
   cluster.root = root;
-  ClusterCollector{cluster, dissolveCrossJoins, opaqueJoins}.collect(
-      root, /*preserved=*/true, /*unnestMovable=*/true);
+  ClusterCollector{cluster, dissolveCrossJoins, opaqueJoins, stopAtStateFree}
+      .collect(root, /*preserved=*/true, /*unnestMovable=*/true);
   std::vector<UnnestCP> freeUnnests = takeFreeUnnests(cluster);
   return {std::move(cluster), std::move(freeUnnests)};
 }
@@ -737,16 +747,21 @@ bool satisfies(
 
 class PhysicalPlanRewriter : public NodeRewriter<> {
  public:
+  // 'replicate', when set, plans each subtree that reads no recursive state:
+  // a fixed point's step uses it to place such inputs on every task that runs
+  // the loop.
   PhysicalPlanRewriter(
       Builder& builder,
       ExprSimplifier& simplifier,
       const OptimizerOptions& options,
       int32_t numWorkers,
-      int32_t numDrivers)
+      int32_t numDrivers,
+      std::function<NodeCP(NodeCP)> replicate = nullptr)
       : NodeRewriter(builder),
         options_{options},
         numWorkers_{numWorkers},
         numDrivers_{numDrivers},
+        replicate_{std::move(replicate)},
         exprFactory_{builder},
         simplifier_{simplifier} {}
 
@@ -760,7 +775,9 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
     if (it != rewrittenNodes_.end()) {
       return it->second;
     }
-    NodeCP rewritten = NodeRewriter<>::rewrite(node, context);
+    NodeCP rewritten = replicate_ != nullptr && node->requiredStates().empty()
+        ? replicate_(node)
+        : NodeRewriter<>::rewrite(node, context);
     rewrittenNodes_.emplace(node, rewritten);
     return rewritten;
   }
@@ -780,9 +797,26 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
     VELOX_UNREACHABLE("Repeat is lowered before physical planning");
   }
 
+  // The loop runs on the tasks that run its anchor, each over its own anchor
+  // rows, and every subtree of the step that reads no recursive state is
+  // placed whole on each of those tasks. Each loop stops when its own delta is
+  // empty, so the loops together compute the fixed point when each row of the
+  // step derives from one row of the loop state. Otherwise the anchor is
+  // gathered and the loop runs on one task.
   NodeCP rewriteFixedPoint(const FixedPoint* node, NoContext& context)
       override {
     NodeCP anchor = rewrite(node->anchor(), context);
+
+    std::function<NodeCP(NodeCP)> replicate;
+    if (numWorkers_ > 1) {
+      if (!isRowLocal(node->step())) {
+        anchor = ensureGathered(anchor);
+      }
+      replicate = [this, gathered = isGathered(anchor)](NodeCP input) {
+        NodeCP planned = rewrite(input);
+        return gathered ? ensureGathered(planned) : broadcast(planned);
+      };
+    }
 
     static constexpr int32_t kRecursiveNumDrivers = 1;
     PhysicalPlanRewriter singleThreaded{
@@ -790,18 +824,16 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
         simplifier_,
         options_,
         /*numWorkers=*/1,
-        /*numDrivers=*/kRecursiveNumDrivers};
+        /*numDrivers=*/kRecursiveNumDrivers,
+        std::move(replicate)};
     NodeCP step = singleThreaded.rewrite(node->step());
-    NodeCP convergence = singleThreaded.rewrite(node->convergence());
     if (anchor == node->anchor() && step == node->step() &&
-        convergence == node->convergence() &&
         node->recursiveNumDrivers() == kRecursiveNumDrivers) {
       return node;
     }
     return builder().make<FixedPoint>({
         .anchor = anchor,
         .step = step,
-        .convergence = convergence,
         .name = node->name(),
         .outputColumns = node->outputColumns(),
         .sourceColumns = node->sourceColumns(),
@@ -1019,8 +1051,12 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
       return rewriteFallbackJoin(node, context);
     }
 
+    const bool stopAtStateFree = replicate_ != nullptr;
     CollectedJoinCluster collected = collectJoinCluster(
-        node, /*dissolveCrossJoins=*/true, /*opaqueJoins=*/{});
+        node,
+        /*dissolveCrossJoins=*/true,
+        /*opaqueJoins=*/{},
+        stopAtStateFree);
     if (collected.cluster.joins.empty()) {
       return rewriteFallbackJoin(node, context);
     }
@@ -1028,8 +1064,8 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
     const folly::F14FastSet<const Join*> opaqueJoins =
         valueProducersReadInCluster(collected.cluster);
     if (!opaqueJoins.empty()) {
-      collected =
-          collectJoinCluster(node, /*dissolveCrossJoins=*/true, opaqueJoins);
+      collected = collectJoinCluster(
+          node, /*dissolveCrossJoins=*/true, opaqueJoins, stopAtStateFree);
     }
 
     // A RelationSet holds `kMaxRelations` relations, so a larger cluster has
@@ -1059,8 +1095,8 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
     // cross-join partner. Clusters that benefit from dissolution have no
     // stranded relation and keep the dissolved form.
     if (hasEndpointStrandedRelation(graph)) {
-      collected =
-          collectJoinCluster(node, /*dissolveCrossJoins=*/false, opaqueJoins);
+      collected = collectJoinCluster(
+          node, /*dissolveCrossJoins=*/false, opaqueJoins, stopAtStateFree);
       if (!collected.fitsRelationSet()) {
         return rewriteFallbackJoin(node, context);
       }
@@ -1244,6 +1280,56 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
 
   NodeCP arbitrary(NodeCP input) {
     return builder().make<Exchange>({input, Partitioning::globalArbitrary()});
+  }
+
+  NodeCP broadcast(NodeCP input) {
+    return builder().make<Exchange>({input, Partitioning::globalBroadcast()});
+  }
+
+  // True when each output row of 'node' derives from one row of the recursive
+  // state it reads, so 'node' over a union of state shards is the union of
+  // 'node' over each shard.
+  static bool isRowLocal(NodeCP node) {
+    if (node->requiredStates().empty()) {
+      return true;
+    }
+    switch (node->nodeType()) {
+      case NodeType::kWorkingTable:
+        return true;
+      case NodeType::kFilter:
+      case NodeType::kProject:
+      case NodeType::kUnnest:
+        return isRowLocal(node->inputs()[0]);
+      case NodeType::kJoin: {
+        const auto* join = node->as<Join>();
+        const bool stateOnLeft = !join->left()->requiredStates().empty();
+        switch (join->joinType()) {
+          case velox::core::JoinType::kInner:
+            break;
+          case velox::core::JoinType::kLeft:
+          case velox::core::JoinType::kLeftSemiFilter:
+          case velox::core::JoinType::kLeftSemiProject:
+          case velox::core::JoinType::kAnti:
+            if (!stateOnLeft) {
+              return false;
+            }
+            break;
+          case velox::core::JoinType::kRight:
+          case velox::core::JoinType::kRightSemiFilter:
+          case velox::core::JoinType::kRightSemiProject:
+          case velox::core::JoinType::kRightAnti:
+            if (stateOnLeft) {
+              return false;
+            }
+            break;
+          default:
+            return false;
+        }
+        return isRowLocal(stateOnLeft ? join->left() : join->right());
+      }
+      default:
+        return false;
+    }
   }
 
   // True when 'input' already produces all rows on one task.
@@ -1923,6 +2009,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
   // separately.
   const int32_t numWorkers_;
   const int32_t numDrivers_;
+  const std::function<NodeCP(NodeCP)> replicate_;
   ExprFactory exprFactory_;
   ExprSimplifier& simplifier_;
 

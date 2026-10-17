@@ -2564,8 +2564,10 @@ using WorkingTableCP = const WorkingTable*;
 ///   delta = anchor(); result = delta;
 ///   for (iteration = 0; iteration < maxIterations; ++iteration) {
 ///     delta = step(delta);
+///     if (delta is empty) {
+///       break;
+///     }
 ///     result += delta;
-///     if (convergence(delta)) break;
 ///   }
 ///
 /// For example:
@@ -2575,21 +2577,19 @@ using WorkingTableCP = const WorkingTable*;
 ///     UNION ALL
 ///     SELECT n + 1 FROM counter WHERE n < 10)
 ///
-/// translates to `VALUES 1` as the anchor, `n + 1 WHERE n < 10` over a
-/// latest-delta `WorkingTable[counter]` as the step, and `count(*) = 0` over
-/// another latest-delta read as convergence. The fixed point outputs all rows
-/// accumulated from the anchor and successive step deltas.
+/// translates to `VALUES 1` as the anchor and `n + 1 WHERE n < 10` over a
+/// latest-delta `WorkingTable[counter]` as the step. The fixed point outputs
+/// all rows accumulated from the anchor and successive step deltas.
 ///
 /// Requires:
-/// - `anchor`, `step`, `convergence`, and `name` are non-null.
+/// - `anchor`, `step`, and `name` are non-null.
 /// - `sourceColumns` equal `anchor->outputColumns()` by pointer identity.
 /// - `outputColumns` are fresh and positionally type-compatible with
 ///   `sourceColumns`.
 /// - `step` output is type-compatible with `anchor` output.
 /// - `anchor->requiredStates()` is empty: the anchor reads no recursive state.
-/// - `step` and `convergence` each require exactly `name`, with columns
-///   pointer-identical to `outputColumns`.
-/// - `convergence` produces exactly one BOOLEAN column.
+/// - `step` requires exactly `name`, with columns pointer-identical to
+///   `outputColumns`.
 /// - `maxIterations` is at least one.
 /// - `recursiveNumDrivers`, when set by physical planning, is one.
 class FixedPoint : public Node {
@@ -2599,8 +2599,6 @@ class FixedPoint : public Node {
     NodeCP anchor;
     /// Runs iteratively over the working table.
     NodeCP step;
-    /// Produces a single Boolean indicating whether iteration should stop.
-    NodeCP convergence;
     /// Identifies the recursive state represented by this fixed point.
     Name name;
     /// Fresh recursive-state output columns.
@@ -2610,7 +2608,7 @@ class FixedPoint : public Node {
     ColumnVector sourceColumns;
     /// Maximum number of recursive iterations.
     int32_t maxIterations;
-    /// Driver width chosen by physical planning for step and convergence.
+    /// Driver width chosen by physical planning for the step.
     /// Unset in logical IR; currently only one is valid, and emission requires
     /// the physically planned value.
     std::optional<int32_t> recursiveNumDrivers;
@@ -2639,10 +2637,6 @@ class FixedPoint : public Node {
 
   NodeCP step() const {
     return inputs_[1];
-  }
-
-  NodeCP convergence() const {
-    return inputs_[2];
   }
 
   Name name() const {
@@ -2677,7 +2671,7 @@ class FixedPoint : public Node {
   RequiredStates deriveRequiredStates() const override;
 
  private:
-  const std::array<NodeCP, 3> inputs_;
+  const std::array<NodeCP, 2> inputs_;
   const Name name_;
   const ColumnVector sourceColumns_;
   const int32_t maxIterations_;

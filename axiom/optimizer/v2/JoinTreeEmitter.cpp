@@ -178,7 +178,7 @@ ExprFactory::ExprSubstitution collapsedColumns(
   return substitution;
 }
 
-// Returns the union of two substitutions. A key expression reads columns of one
+// Returns the union of two substitutions. A recorded key reads columns of one
 // cover only and sibling covers are disjoint, so the same `ExprCP` cannot be
 // materialized on two sides.
 ExprFactory::ExprSubstitution merge(
@@ -821,7 +821,10 @@ Emitted emitExchange(const ExchangeOp* exchange, EmitState& state) {
   auto [keyed, columnKeys] = PrecomputeProjections::materializeKeys(
       input.node, partitioning.keys, state.builder, state.simplifier);
   for (size_t i = 0; i < logicalKeys.size(); ++i) {
-    if (columnKeys[i] == partitioning.keys[i]) {
+    // A constant key is cheap to compute again, and each side of a join can
+    // compute its own, so only a key that reads columns is recorded.
+    if (columnKeys[i] == partitioning.keys[i] ||
+        logicalKeys[i]->columns().empty()) {
       continue;
     }
     const bool inserted =

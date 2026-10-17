@@ -4,10 +4,10 @@
 IR nodes, the invariants each pass must preserve, and what is deliberately
 rejected.*
 
-**Status:** recursive queries plan and run on a single worker. Distributed
-recursion, nested recursion, multiple recursive references per step, and
-multiple fixed points per execution fragment are rejected — see
-[Boundaries](#boundaries).
+**Status:** recursive queries plan and run on one or more workers — see
+[Distributed execution](#distributed-execution). Nested recursion, multiple
+recursive references per step, and multiple fixed points per execution
+fragment are rejected — see [Boundaries](#boundaries).
 
 ## Introduction
 
@@ -70,13 +70,15 @@ SELECT * FROM counter;
 ```
 
 It maps directly onto the loop above: the anchor is `SELECT 1`, the step is
-`SELECT n + 1 WHERE n < 10`, convergence is `count(*) == 0` over the latest
-delta, and the result is `{1, 2, … 10}`.
+`SELECT n + 1 WHERE n < 10`, the loop stops once an iteration adds no rows, and
+the result is `{1, 2, … 10}`. Every fixed point the optimizer plans stops this
+way; a convergence test of another shape is a Velox capability the optimizer
+does not use.
 
 ### 1. Logical plan
 
-The self-reference is a `RecursiveReferenceNode`. There is no convergence branch
-and no working table yet — Translate introduces both.
+The self-reference is a `RecursiveReferenceNode`. There is no working table
+yet — Translate introduces it.
 
 ```
 - Project                                  (SELECT *)   -> n:INTEGER
@@ -91,9 +93,7 @@ and no working table yet — Translate introduces both.
 
 ### 2. Optimizer v2 IR
 
-The IR tracks internal details that change over time. The default empty-delta
-convergence is expanded into a real subtree so it is optimized like any other
-plan.
+The IR tracks internal details that change over time.
 
 ```
 - FixedPoint[name=counter, maxIterations=1000, recursiveNumDrivers=unplanned] -> c01:INTEGER
@@ -104,12 +104,6 @@ plan.
     expr2 := plus(c01, 1)
     - Filter -> c01:INTEGER
       predicate: lt(c01, 10)
-      - WorkingTable[name=counter, readMode=latestDelta] -> c01:INTEGER
-  convergence:
-  - Project -> converged4:BOOLEAN
-    converged4 := eq(__converged_count3, 0)
-    - Aggregate -> __converged_count3:BIGINT
-      aggregates: count()
       - WorkingTable[name=counter, readMode=latestDelta] -> c01:INTEGER
 ```
 
@@ -128,10 +122,7 @@ iterations and is seeded from the anchor.
         - ProjectNode  n + 1
           - FilterNode  n < 10
             - StateSourceNode[counter, delta=true]                <- latest delta
-      convergence (ConvergenceConfig):
-        - ProjectNode  eq(count, 0) -> converged
-          - AggregationNode  count()
-            - StateSourceNode[counter, delta=true]                <- latest delta
+      convergence: stop when an iteration writes no rows
 ```
 
 ### Cross-layer correspondence
@@ -142,7 +133,7 @@ iterations and is seeded from the anchor.
 | — | inner equi-join in the step, build side without a `WorkingTable` | `HashTableStateDeclaration` + `StateHashJoinNode` |
 | — | other subtree of the step without a `WorkingTable` | `VectorStateDeclaration` + `StateSourceNode(delta=false)` |
 | anchor branch | anchor branch | `VectorStateDeclaration(counter, append=true)` |
-| — (synthesized in Translate) | `convergence:` `Aggregate count()` -> `Project eq(count, 0)` | `ConvergenceConfig.plans`: `AggregationNode(count)` -> `ProjectNode(count == 0)` |
+| — | — | `ConvergenceConfig::whenDeltaEmpty(maxIterations)` |
 
 `WorkingTableReadMode` also has an `kAccumulated` mode, which emits
 `delta=false` — a read of the whole state rather than the last iteration's
@@ -162,15 +153,15 @@ listed separately after the list.
    reference with no enclosing fixed point is rejected in Translate.
 
 2. **Each branch reads the state it should, with the state's own columns.** The
-   anchor must read no recursive state at all; the step and convergence must each
-   read exactly this fixed point's state, with columns pointer-identical to the
-   fixed-point output. `Node::requiredStates()` carries, per node, the recursive
+   anchor must read no recursive state at all; the step must read exactly this
+   fixed point's state, with columns pointer-identical to the fixed-point
+   output. `Node::requiredStates()` carries, per node, the recursive
    states that subtree needs an enclosing `FixedPoint` to provide, each mapped to
    the columns its reads present: the union of its inputs' entries, where a
    `WorkingTable` requires the state it reads and a `FixedPoint` satisfies the
    one it binds. The map is empty for a self-contained subtree, and the
    constructor checks presence *and* column identity with one lookup per branch
-   instead of searching three subtrees. Two reads of one state that disagree on
+   instead of searching the subtrees. Two reads of one state that disagree on
    columns are rejected where they meet. `Builder::make` primes the map once per
    node, so a shared subplan is walked once.
 
@@ -185,15 +176,11 @@ listed separately after the list.
    a branch as long as it restores both boundary schemas before rebuilding the
    `FixedPoint`.
 
-5. **One BOOLEAN convergence column.** The convergence plan must produce exactly
-   one BOOLEAN column. Any single-column BOOLEAN subtree that reads the state is
-   accepted; the constructor does not check how that boolean is computed.
-
-6. **Bounded.** `maxIterations >= 1`. A SQL recursive CTE carries no depth hint of
+5. **Bounded.** `maxIterations >= 1`. A SQL recursive CTE carries no depth hint of
    its own, so it inherits the session `recursion_limit` (default 1000) as a
    safety cap; a shape with its own bound — a `1..5` hop pattern — sets
    `maxIterations` per node instead. Emit builds the `ConvergenceConfig` with
-   `ConvergenceConfig::converging`, which sets
+   `ConvergenceConfig::whenDeltaEmpty`, which sets
    `errorWhenMaxIterationReached`, so a query that has not converged within the
    bound fails rather than returning a partial answer.
 
@@ -204,14 +191,10 @@ enforces them — a hand-built node may violate them.
 
 - **Append-only state.** The loop only adds rows; Emit declares the state
   `append`.
-- **Convergence is an empty delta.** Translate synthesizes `count(*) == 0` over
-  the latest delta as the convergence plan. Invariant 5 admits any one-column
-  BOOLEAN shape, so a future step could supply its own predicate.
 
 ## Per-pass changes
 
-- **Translate** — lowers a recursive CTE into `FixedPoint(anchor, step,
-  convergence)` and synthesizes the convergence plan.
+- **Translate** — lowers a recursive CTE into `FixedPoint(anchor, step)`.
   `translateRecursiveRef` binds each `RecursiveReferenceNode` to the anchor's
   `Column*`s and emits a latest-delta `WorkingTable`.
 
@@ -235,22 +218,48 @@ enforces them — a hand-built node may violate them.
   placement, so a dependent join cluster is left uncostable and falls back to its
   written join shape at that boundary.
 
-- **PlanPhysical** — plans the step and convergence with a nested rewriter
-  pinned to one worker and one driver, and records the result as
-  `recursiveNumDrivers`.
+- **PlanPhysical** — plans the anchor with the query's workers, and the step
+  with a nested rewriter pinned to one worker and one driver, and records the
+  result as `recursiveNumDrivers`. With several workers, each subtree of the
+  step that reads no recursive state is planned with the query's workers and
+  placed on every task that runs the loop — see
+  [Distributed execution](#distributed-execution).
 
-- **Emit** — transcribes the convergence branch already present in the IR into a
-  Velox `ConvergenceConfig`; nothing about *when* to stop is decided at emit. The
-  step and convergence are emitted single-driver by swapping `numDrivers` in the
-  emitter's options copy for the duration of the recursive subtree, so the
-  surrounding query keeps its own parallelism. Restoring parallelism *inside* the
+- **Emit** — emits `ConvergenceConfig::whenDeltaEmpty(maxIterations)`: Velox
+  stops on the row count of the delta it already holds. The step is emitted
+  single-driver by swapping `numDrivers` in the emitter's options copy for the
+  duration of the recursive subtree, so the surrounding query keeps its own
+  parallelism. Restoring parallelism *inside* the
   loop is intended but not shipped.
 
-  Velox delivers splits only to a fixed point's initial plans, so every part
-  of the step that reads no recursive state becomes an initial plan, run once
-  before the first iteration. An inner equi-join's build side becomes a
-  `HashTableStateDeclaration`, probed by a `StateHashJoinNode`. Any other such
-  subtree becomes a `VectorStateDeclaration`, read by a `StateSourceNode`.
+  A fixed point's fragment takes its type from its inputs: a source fragment
+  when its anchor scans a table, a single-task one when the anchor is gathered.
+
+  Velox delivers splits to a fixed point's initial plans and to the nodes above
+  the loop, so every part of the step that reads no recursive state becomes an
+  initial plan, run once before the first iteration. An inner equi-join's build
+  side becomes a `HashTableStateDeclaration`, probed by a `StateHashJoinNode`.
+  Any other such subtree becomes a `VectorStateDeclaration`, read by a
+  `StateSourceNode`.
+
+## Distributed execution
+
+With several workers, the fixed point runs on the tasks that run its anchor,
+each as an independent loop over its own anchor rows. Every subtree of the step
+that reads no recursive state is placed whole on each of those tasks: broadcast
+when the anchor is spread over several tasks, gathered when it is on one. Each
+task's loop stops when its own delta is empty.
+
+The loops together compute the fixed point when each row of the step derives
+from one row of the recursive state: the state flows only through filters,
+projections, unnests, inner joins, and outer, semi and anti joins on the side
+whose rows they keep. Otherwise PlanPhysical gathers the anchor, and the loop runs on one task. The
+fixed point's output has no partitioning, or is gathered when its anchor is.
+
+A step that needs every row of a key on one task, such as a visited-set
+anti-join, needs partitioned loops: the delta repartitioned on a key each
+iteration, and a stop condition that every worker evaluates over all of them.
+Velox supports both; the optimizer does not plan them yet.
 
 ## Boundaries
 
@@ -264,12 +273,6 @@ Each of these is rejected with a specific error rather than mis-planned.
   consumes a logical plan directly rather than only SQL, a two-reference step is
   constructible via `PlanBuilder`, so the rejection lives in the translator, not
   only in the SQL parser.
-
-- **Distributed recursion (`numWorkers > 1`).** The working-table state is shared
-  and mutated across iterations, and the step and convergence run single-driver.
-  Distributing needs coordinated cross-worker state and a distributed
-  convergence test. Emit raises `VELOX_NYI` for any query containing a fixed
-  point at `numWorkers > 1`.
 
 - **Nested recursion and multiple fixed points per fragment.** Two enforcement
   points, not a missing capability: Translate rejects a nested fixed point
@@ -287,8 +290,8 @@ Each of these is rejected with a specific error rather than mis-planned.
 - `optimizer/tests/FixedPointTest.cpp` — SQL-level and `PlanBuilder`-level plan
   assertions via `PlanMatcher`, including every rejection above.
   `FixedPointMatch` describes the parts of a `FixedPointNode` to check: the
-  output state and its initial plan, each per-iteration plan, and the
-  convergence shape and iteration bound.
+  output state and its initial plan, each per-iteration plan, and that the loop
+  stops on an empty delta within its iteration bound.
 - `optimizer/v2/tests/NodePrinterTest.cpp` — the IR printer's rendering of a
   fixed point, built directly through `Builder`.
 

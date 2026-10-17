@@ -3140,24 +3140,33 @@ void checkBranchReadsState(
       states.size());
 }
 
+// The loop runs on the tasks that run the anchor, each over its own rows.
+Partitioning fixedPointPartition(const Partitioning& anchor) {
+  return anchor.is(PartitionKind::kGather) ? Partitioning::globalGather()
+                                           : Partitioning{};
+}
+
 } // namespace
 
 Partitioning FixedPoint::globalPartition(
-    std::span<const Partitioning> /*inputPartitions*/,
+    std::span<const Partitioning> inputPartitions,
     Builder& /*builder*/) const {
-  return {};
+  return fixedPointPartition(inputPartitions[0]);
 }
 
 FixedPoint::FixedPoint(const Key& key)
-    : Node(NodeType::kFixedPoint, ColumnVector{key.outputColumns}, {}),
-      inputs_{key.anchor, key.step, key.convergence},
+    : Node(
+          NodeType::kFixedPoint,
+          ColumnVector{key.outputColumns},
+          {.globalPartition = fixedPointPartition(
+               key.anchor->physicalProperties().globalPartition)}),
+      inputs_{key.anchor, key.step},
       name_(key.name),
       sourceColumns_(key.sourceColumns),
       maxIterations_(key.maxIterations),
       recursiveNumDrivers_(key.recursiveNumDrivers) {
   VELOX_CHECK_NOT_NULL(inputs_[0]);
   VELOX_CHECK_NOT_NULL(inputs_[1]);
-  VELOX_CHECK_NOT_NULL(inputs_[2]);
   VELOX_CHECK_NOT_NULL(name_);
   VELOX_CHECK_GE(
       maxIterations_, 1, "FixedPoint maxIterations must be at least one");
@@ -3194,21 +3203,10 @@ FixedPoint::FixedPoint(const Key& key)
         anchorCols[i]->value().type->toString());
   }
 
-  const auto& convergenceCols = inputs_[2]->outputColumns();
-  VELOX_CHECK_EQ(
-      convergenceCols.size(),
-      1,
-      "FixedPoint convergence must produce exactly one column");
-  VELOX_CHECK_EQ(
-      convergenceCols[0]->value().type->kind(),
-      velox::TypeKind::BOOLEAN,
-      "FixedPoint convergence output must be BOOLEAN");
-
   VELOX_CHECK(
       inputs_[0]->requiredStates().empty(),
       "FixedPoint anchor must not read its working table");
   checkBranchReadsState(inputs_[1], name_, outputColumns(), "step");
-  checkBranchReadsState(inputs_[2], name_, outputColumns(), "convergence");
 }
 
 RequiredStates FixedPoint::deriveRequiredStates() const {
@@ -3221,7 +3219,6 @@ size_t FixedPoint::KeyHash::operator()(const FixedPoint* node) const {
   return hashOf(
       node->anchor(),
       node->step(),
-      node->convergence(),
       node->name(),
       node->outputColumns(),
       node->sourceColumns(),
@@ -3234,7 +3231,6 @@ size_t FixedPoint::KeyHash::operator()(const Key& key) const {
   return hashOf(
       key.anchor,
       key.step,
-      key.convergence,
       key.name,
       key.outputColumns,
       key.sourceColumns,
@@ -3247,7 +3243,6 @@ bool FixedPoint::KeyEq::operator()(
     const FixedPoint* left,
     const FixedPoint* right) const {
   return left->anchor() == right->anchor() && left->step() == right->step() &&
-      left->convergence() == right->convergence() &&
       left->name() == right->name() &&
       left->outputColumns() == right->outputColumns() &&
       left->sourceColumns() == right->sourceColumns() &&
@@ -3258,8 +3253,7 @@ bool FixedPoint::KeyEq::operator()(
 bool FixedPoint::KeyEq::operator()(const Key& key, const FixedPoint* node)
     const {
   return key.anchor == node->anchor() && key.step == node->step() &&
-      key.convergence == node->convergence() && key.name == node->name() &&
-      key.outputColumns == node->outputColumns() &&
+      key.name == node->name() && key.outputColumns == node->outputColumns() &&
       key.sourceColumns == node->sourceColumns() &&
       key.maxIterations == node->maxIterations() &&
       key.recursiveNumDrivers == node->recursiveNumDrivers();

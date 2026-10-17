@@ -436,15 +436,12 @@ class NodeRewriter {
   virtual NodeCP rewriteFixedPoint(const FixedPoint* node, TContext& context) {
     NodeCP newAnchor = rewrite(node->anchor(), context);
     NodeCP newStep = rewrite(node->step(), context);
-    NodeCP newConvergence = rewrite(node->convergence(), context);
-    if (newAnchor == node->anchor() && newStep == node->step() &&
-        newConvergence == node->convergence()) {
+    if (newAnchor == node->anchor() && newStep == node->step()) {
       return node;
     }
     return builder_.template make<FixedPoint>({
         .anchor = newAnchor,
         .step = newStep,
-        .convergence = newConvergence,
         .name = node->name(),
         .outputColumns = node->outputColumns(),
         .sourceColumns = node->sourceColumns(),

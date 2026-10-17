@@ -209,7 +209,7 @@ class FixedPointMatch {
 
   /// 'outputStateEntry' is an alias for the state entry the fixed point emits,
   /// as a column alias is for a column: it binds to that entry's name in the
-  /// plan, and stateSource() in the body and convergence plans resolves it.
+  /// plan, and stateSource() in the body plans resolves it.
   explicit FixedPointMatch(std::string outputStateEntry)
       : outputStateEntry_{std::move(outputStateEntry)} {}
 
@@ -225,16 +225,11 @@ class FixedPointMatch {
   /// call order.
   FixedPointMatch& plan(PlanMatcherBuilder body);
 
-  /// Assertions the convergence plan can carry beyond its shape. Each is
+  /// Assertions about convergence beyond stopping on an empty delta. Each is
   /// checked only when set.
   struct Convergence {
     /// The fixed point's iteration bound.
     std::optional<int32_t> maxIterations;
-
-    /// The state columns the convergence plan reads, in order. A `nullopt`
-    /// element leaves that position unchecked. Set this where a rewrite above
-    /// the fixed point must not narrow the recursive state.
-    std::optional<std::vector<std::optional<std::string>>> stateColumns;
   };
 
   /// Asserts the loop stops once an iteration produces no rows, and that
@@ -257,8 +252,8 @@ class FixedPointMatch {
     return plans_;
   }
 
-  const std::shared_ptr<PlanMatcher>& convergencePlan() const {
-    return convergence_;
+  bool stopWhenDeltaEmpty() const {
+    return stopWhenDeltaEmpty_;
   }
 
   const std::optional<int32_t>& maxIterations() const {
@@ -274,7 +269,7 @@ class FixedPointMatch {
   std::vector<State> states_;
   std::vector<std::shared_ptr<PlanMatcher>> hashTableStates_;
   std::vector<std::shared_ptr<PlanMatcher>> plans_;
-  std::shared_ptr<PlanMatcher> convergence_;
+  bool stopWhenDeltaEmpty_{false};
   std::optional<int32_t> maxIterations_;
   std::optional<bool> errorWhenMaxIterationReached_;
 };

@@ -479,12 +479,14 @@ connector::hive::LocalHiveConnectorMetadata*
 
 // Registers every query in 'file' as an individual gtest test under the suite
 // 'V1/SqlTest_<name>' or 'V2/SqlTest_<name>' (per UseV2). Each query runs under
-// both cost-based (default) and syntactic join ordering.
+// both cost-based (default) and syntactic join ordering, on several workers.
+// With 'singleNodeAndDistributed', each query also runs on one worker as
+// 'l<line>_single_node'.
 template <FileName Name, bool UseV2>
 void registerVariant(
     const SqlFile& file,
     const std::string& path,
-    bool singleNode) {
+    bool singleNodeAndDistributed) {
   SqlTest<Name, UseV2>::setupStatements = file.setupStatements;
   SqlTest<Name, UseV2>::connectorKind = file.connector;
   if (const auto it = file.directives.find("pushdown_table");
@@ -497,33 +499,53 @@ void registerVariant(
   const auto suiteName =
       fmt::format("{}/SqlTest_{}", UseV2 ? "V2" : "V1", Name.value);
 
+  const auto registerTest = [&](const QueryEntry& entry,
+                                const std::string& testName,
+                                bool syntacticJoinOrder,
+                                bool singleNode) {
+    testing::RegisterTest(
+        suiteName.c_str(),
+        testName.c_str(),
+        /*type_param=*/nullptr,
+        /*value_param=*/nullptr,
+        path.c_str(),
+        entry.lineNumber,
+        [capturedEntry = entry,
+         syntacticJoinOrder,
+         singleNode]() -> SqlTest<Name, UseV2>* {
+          return new SqlTest<Name, UseV2>(
+              capturedEntry, syntacticJoinOrder, singleNode);
+        });
+  };
   for (const auto& entry : file.entries) {
-    for (const bool syntacticJoinOrder : {false, true}) {
-      auto testName = syntacticJoinOrder
-          ? fmt::format("l{}_syntactic", entry.lineNumber)
-          : fmt::format("l{}", entry.lineNumber);
-      testing::RegisterTest(
-          suiteName.c_str(),
-          testName.c_str(),
-          /*type_param=*/nullptr,
-          /*value_param=*/nullptr,
-          path.c_str(),
-          entry.lineNumber,
-          [capturedEntry = entry,
-           syntacticJoinOrder,
-           singleNode]() -> SqlTest<Name, UseV2>* {
-            return new SqlTest<Name, UseV2>(
-                capturedEntry, syntacticJoinOrder, singleNode);
-          });
+    registerTest(
+        entry,
+        fmt::format("l{}", entry.lineNumber),
+        /*syntacticJoinOrder=*/false,
+        /*singleNode=*/false);
+    registerTest(
+        entry,
+        fmt::format("l{}_syntactic", entry.lineNumber),
+        /*syntacticJoinOrder=*/true,
+        /*singleNode=*/false);
+    if (singleNodeAndDistributed) {
+      registerTest(
+          entry,
+          fmt::format("l{}_single_node", entry.lineNumber),
+          /*syntacticJoinOrder=*/false,
+          /*singleNode=*/true);
     }
   }
 }
 
 // Parses a .sql file and registers its queries. Registers under both the v1 and
 // v2 suites by default; when 'v2Only' is set, registers only the v2 suite (for
-// features not yet wired in the v1 optimizer).
+// features not yet wired in the v1 optimizer). With 'singleNodeAndDistributed',
+// each query also runs on one worker.
 template <FileName Name>
-void registerQueryFile(bool v2Only = false, bool singleNode = false) {
+void registerQueryFile(
+    bool v2Only = false,
+    bool singleNodeAndDistributed = false) {
   const std::string baseName = Name.value;
   const auto path = getTestFilePath(fmt::format("sql/{}.sql", baseName));
 
@@ -554,9 +576,9 @@ void registerQueryFile(bool v2Only = false, bool singleNode = false) {
       path);
 
   if (!v2Only) {
-    registerVariant<Name, false>(file, path, singleNode);
+    registerVariant<Name, false>(file, path, singleNodeAndDistributed);
   }
-  registerVariant<Name, true>(file, path, singleNode);
+  registerVariant<Name, true>(file, path, singleNodeAndDistributed);
 }
 
 } // namespace
@@ -579,11 +601,11 @@ int main(int argc, char** argv) {
   registerQueryFile<"datetime">();
   registerQueryFile<"distinctAggregation">();
   registerQueryFile<"filterPushdown">();
-  registerQueryFile<"fixedPoint">(
-      /*v2Only=*/true, /*singleNode=*/true);
-  registerQueryFile<"graphTable">(/*v2Only=*/true);
+  registerQueryFile<"fixedPoint">(/*v2Only=*/true);
+  registerQueryFile<"graphTable">(/*v2Only=*/true,
+                                  /*singleNodeAndDistributed=*/true);
   registerQueryFile<"graphTableRepetition">(
-      /*v2Only=*/true, /*singleNode=*/true);
+      /*v2Only=*/true, /*singleNodeAndDistributed=*/true);
   registerQueryFile<"groupingsets">();
   registerQueryFile<"informationSchema">(/*v2Only=*/true);
   registerQueryFile<"join">();
