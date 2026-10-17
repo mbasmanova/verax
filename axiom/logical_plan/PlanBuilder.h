@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include "axiom/connectors/ConnectorContext.h"
 #include "axiom/logical_plan/ExprApi.h"
 #include "axiom/logical_plan/ExprResolver.h"
 #include "axiom/logical_plan/LogicalPlanNode.h"
@@ -162,6 +163,11 @@ class PlanBuilder {
     /// leaving names as-is.
     std::function<std::string(const std::string&)> identifierCanonicalizer;
 
+    /// The query's connector context, used to look up tables. Required for
+    /// tableScan and tableWrite; plans that reference no tables can leave it
+    /// null.
+    connector::ConnectorContextPtr connectorContext;
+
     explicit Context(
         const std::optional<std::string>& defaultConnectorId = std::nullopt,
         const std::optional<std::string>& defaultSchema = std::nullopt,
@@ -225,6 +231,7 @@ class PlanBuilder {
         allowAmbiguousOutputNames_{allowAmbiguousOutputNames},
         coercer_{context.coercer},
         identifierCanonicalizer_{context.identifierCanonicalizer},
+        connectorContext_{context.connectorContext},
         resolver_{
             context.queryCtx,
             context.coercer,
@@ -957,6 +964,11 @@ class PlanBuilder {
       std::vector<AggregateExprPtr>& exprs,
       NameMappings& mappings);
 
+  // Returns the metadata of 'connectorId' from the connector context. Throws if
+  // there is no context.
+  std::shared_ptr<connector::ConnectorMetadata> findMetadata(
+      const std::string& connectorId) const;
+
   // Connector ID used when table names omit the catalog prefix.
   const std::optional<std::string> defaultConnectorId_;
 
@@ -988,6 +1000,9 @@ class PlanBuilder {
   // Optional transform applied to user-facing column names. See
   // Context::identifierCanonicalizer.
   std::function<std::string(const std::string&)> identifierCanonicalizer_;
+
+  // See Context::connectorContext.
+  const connector::ConnectorContextPtr connectorContext_;
 
   // Root of the plan tree built so far. Null before the first leaf node
   // (values or tableScan) is added.

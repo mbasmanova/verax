@@ -19,6 +19,7 @@
 #include <gtest/gtest.h>
 #include "axiom/connectors/ConnectorMetadataRegistry.h"
 #include "axiom/connectors/tests/TestConnector.h"
+#include "axiom/connectors/tests/TestConnectorContext.h"
 #include "axiom/logical_plan/GraphBuilder.h"
 #include "axiom/logical_plan/GraphMatchBuilder.h"
 #include "axiom/logical_plan/PlanBuilder.h"
@@ -47,6 +48,7 @@ class ReferencedTableCollectorTest : public testing::Test {
   }
 
   void SetUp() override {
+    context_.connectorContext = connector::makeTestContext("test");
     functions::prestosql::registerAllScalarFunctions();
     aggregate::prestosql::registerAllAggregateFunctions();
 

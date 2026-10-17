@@ -19,6 +19,7 @@
 #include <gtest/gtest.h>
 #include "axiom/connectors/ConnectorMetadataRegistry.h"
 #include "axiom/connectors/tests/TestConnector.h"
+#include "axiom/connectors/tests/TestConnectorContext.h"
 #include "axiom/logical_plan/GraphBuilder.h"
 #include "axiom/logical_plan/GraphMatchBuilder.h"
 #include "axiom/logical_plan/PlanBuilder.h"
@@ -42,6 +43,7 @@ class PlanPrinterTest : public testing::Test {
   }
 
   void SetUp() override {
+    context_.connectorContext = connector::makeTestContext("test");
     functions::prestosql::registerAllScalarFunctions();
     aggregate::prestosql::registerAllAggregateFunctions();
     window::prestosql::registerAllWindowFunctions();
@@ -1537,6 +1539,7 @@ TEST_F(PlanPrinterTest, tableWrite) {
 
     PlanBuilder::Context context{
         std::string(kTestConnectorId), std::string(kDefaultSchema)};
+    context.connectorContext = context_.connectorContext;
     auto plan = PlanBuilder(context)
                     .tableScan("test", {"a", "b"})
                     .tableWrite(

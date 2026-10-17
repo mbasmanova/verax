@@ -53,7 +53,7 @@ class LimitTest : public test::QueryTestBase,
   }
 
   lp::PlanBuilder scan(const std::string& tableName) {
-    lp::PlanBuilder::Context context{kTestConnectorId, kDefaultSchema};
+    auto context = makeContext();
     return lp::PlanBuilder(context).tableScan(tableName);
   }
 };

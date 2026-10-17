@@ -89,7 +89,7 @@ class TpchPlanTest : public test::QueryTestBase {
 TEST_F(TpchPlanTest, stats) {
   auto verifyStats = [&](const std::string& tableName, int64_t cardinality) {
     SCOPED_TRACE(tableName);
-    lp::PlanBuilder::Context ctx{kTestConnectorId, "default"};
+    auto ctx = makeContext();
     auto logicalPlan = lp::PlanBuilder(ctx).tableScan(tableName).build();
     auto prediction = planVelox(logicalPlan).prediction;
     ASSERT_FALSE(prediction.empty());

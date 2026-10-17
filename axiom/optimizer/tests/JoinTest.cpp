@@ -30,10 +30,6 @@ namespace lp = facebook::axiom::logical_plan;
 class JoinTest : public test::QueryTestBase,
                  public ::testing::WithParamInterface<bool> {
  protected:
-  lp::PlanBuilder::Context makeContext() const {
-    return lp::PlanBuilder::Context{kTestConnectorId, kDefaultSchema};
-  }
-
   // Adds an all-BIGINT table whose columns each have `numRows` distinct values,
   // except those named in `numDistinct`.
   void addTableWithStats(

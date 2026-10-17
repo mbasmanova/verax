@@ -44,9 +44,8 @@ class FilterPushdownTest : public test::HiveQueriesTestBase,
          velox::tpch::Table::TBL_ORDERS});
   }
 
-  lp::PlanBuilder::Context makeContext() const {
-    return lp::PlanBuilder::Context{
-        exec::test::kHiveConnectorId, kDefaultSchema};
+  static lp::PlanBuilder::Context makeContext() {
+    return QueryTestBase::makeContext(exec::test::kHiveConnectorId);
   }
 };
 
@@ -158,7 +157,7 @@ TEST_P(FilterPushdownTest, throughJoin) {
            {"cardinality(filter(array[n_name], n -> n = r_name)) > 0",
             "cardinality(filter(array[n_name], n -> r_name = n)) > 0"},
        }) {
-    lp::PlanBuilder::Context ctx(exec::test::kHiveConnectorId, kDefaultSchema);
+    auto ctx = makeContext();
     auto logicalPlan =
         lp::PlanBuilder(ctx)
             .from({"nation", "region"})
@@ -183,7 +182,7 @@ TEST_P(FilterPushdownTest, throughJoin) {
   // Filter uses columns from only one sides of the join. Expected to be pushed
   // down below the join.
   {
-    lp::PlanBuilder::Context ctx(exec::test::kHiveConnectorId, kDefaultSchema);
+    auto ctx = makeContext();
     auto logicalPlan =
         lp::PlanBuilder(ctx)
             .from({"nation", "region"})
@@ -203,7 +202,7 @@ TEST_P(FilterPushdownTest, throughJoin) {
   }
 
   {
-    lp::PlanBuilder::Context ctx(exec::test::kHiveConnectorId, kDefaultSchema);
+    auto ctx = makeContext();
     auto logicalPlan =
         lp::PlanBuilder(ctx)
             .from({"nation", "region"})
@@ -226,7 +225,7 @@ TEST_P(FilterPushdownTest, throughJoin) {
 
   // Filter on a join key propagates to the other side via the equivalence.
   {
-    lp::PlanBuilder::Context ctx(exec::test::kHiveConnectorId, kDefaultSchema);
+    auto ctx = makeContext();
     auto logicalPlan =
         lp::PlanBuilder(ctx)
             .from({"nation", "region"})
@@ -287,7 +286,7 @@ TEST_P(FilterPushdownTest, orWithSubsumedDisjunct) {
 // Verify that multi-table OR filter with per-table extraction preserves the
 // cross-combination filter.
 TEST_P(FilterPushdownTest, multiTableOrFilter) {
-  lp::PlanBuilder::Context ctx(exec::test::kHiveConnectorId, kDefaultSchema);
+  auto ctx = makeContext();
   auto logicalPlan = lp::PlanBuilder(ctx)
                          .from({"nation", "region"})
                          .filter(

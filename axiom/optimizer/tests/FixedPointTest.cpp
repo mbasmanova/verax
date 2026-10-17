@@ -188,7 +188,7 @@ TEST_F(FixedPointTest, distributed) {
   {
     // SQL rejects an aggregate in the recursive term; a logical plan can
     // have one.
-    lp::PlanBuilder::Context context{kTestConnectorId, kDefaultSchema};
+    auto context = makeContext();
     auto anchor = lp::PlanBuilder(context).tableScan("t").project({"a AS n"});
     auto step = lp::PlanBuilder(context)
                     .recursiveRef("r", anchor)

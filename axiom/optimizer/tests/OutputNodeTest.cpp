@@ -32,10 +32,6 @@ class OutputNodeTest : public test::QueryTestBase,
     useV2_ = GetParam();
     QueryTestBase::SetUp();
   }
-
-  lp::PlanBuilder::Context makeContext() const {
-    return lp::PlanBuilder::Context{kTestConnectorId, kDefaultSchema};
-  }
 };
 
 // Verifies the optimizer honors OutputNode entry shapes documented in

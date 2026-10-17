@@ -42,8 +42,21 @@ namespace facebook::axiom::connector {
 ///   process-wide lookups (e.g., periodic stats reporting).
 class ConnectorMetadataRegistry {
  public:
-  /// Type alias for the scoped metadata registry.
-  using Registry = velox::ScopedRegistry<std::string, ConnectorMetadata>;
+  /// Connector metadata keyed by connector id. Lookups fall back to the parent
+  /// scope, if any. find() returns nullptr for an unregistered id.
+  class Registry
+      : public velox::ScopedRegistry<std::string, ConnectorMetadata> {
+   public:
+    using ScopedRegistry::ScopedRegistry;
+
+    /// Returns the metadata of 'connectorId'. Throws if it is not registered.
+    std::shared_ptr<ConnectorMetadata> get(
+        const std::string& connectorId) const;
+
+    /// Returns the ids of all visible connectors, each once. Local entries
+    /// override the parent's.
+    std::vector<std::string> ids() const;
+  };
 
   /// Registry key for per-query metadata overrides on QueryCtx.
   static constexpr std::string_view kRegistryKey = "connectorMetadata";

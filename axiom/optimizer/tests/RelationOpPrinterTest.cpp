@@ -188,7 +188,9 @@ class RelationOpPrinterTest : public ::testing::Test {
   }
 
   lp::PlanBuilder::Context makeContext() const {
-    return lp::PlanBuilder::Context{kTestConnectorId, kDefaultSchema};
+    lp::PlanBuilder::Context context{kTestConnectorId, kDefaultSchema};
+    context.connectorContext = connector::makeTestContext("test");
+    return context;
   }
 
   const std::shared_ptr<FunctionRegistry> functionRegistry_{

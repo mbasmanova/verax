@@ -40,10 +40,6 @@ class DistinctAggregationTest : public test::QueryTestBase,
     useV2_ = GetParam();
   }
 
-  lp::PlanBuilder::Context makeContext() const {
-    return lp::PlanBuilder::Context{kTestConnectorId, kDefaultSchema};
-  }
-
   MultiFragmentPlan::Options runnerOptions_;
   OptimizerOptions optimizerOptions_;
 };

@@ -160,5 +160,22 @@ TEST(ConnectorContextTest, nullWriterFromProviderFails) {
       context->sessionFor("a"), "Stat writer provider returned null");
 }
 
+// A context holds the registry the application passed.
+TEST(ConnectorContextTest, holdsItsRegistry) {
+  auto registry = ConnectorMetadataRegistry::create();
+  ConnectorContext context(
+      "q1", "user", {}, ConnectorContext::noopStatWriterProvider(), registry);
+
+  EXPECT_EQ(&context.metadataRegistry(), registry.get());
+}
+
+// A context made without a registry holds the process-wide one.
+TEST(ConnectorContextTest, defaultsToProcessWideRegistry) {
+  ConnectorContext context(
+      "q1", "user", {}, ConnectorContext::noopStatWriterProvider());
+
+  EXPECT_EQ(&context.metadataRegistry(), &ConnectorMetadataRegistry::global());
+}
+
 } // namespace
 } // namespace facebook::axiom::connector
