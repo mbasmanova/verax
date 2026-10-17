@@ -81,9 +81,16 @@ class ExprFactory {
   /// Builds `lhs < rhs`.
   ExprCP makeLessThan(ExprCP lhs, ExprCP rhs);
 
-  /// Builds `value + 1` over a BIGINT whose increment fits in BIGINT, the only
-  /// use FunctionRegistry::registerBigintAddition promises.
-  ExprCP makeBigintIncrement(ExprCP value);
+  /// Builds `lhs + rhs` over BIGINTs. Fails on overflow.
+  ExprCP makeBigintAdd(ExprCP lhs, ExprCP rhs);
+
+  /// Builds 'array' with 'element' appended. A NULL element adds a NULL
+  /// entry.
+  ExprCP makeArrayAppend(ExprCP array, ExprCP element);
+
+  /// Builds 'array' with 'element' prepended. A NULL element adds a NULL
+  /// entry.
+  ExprCP makeArrayPrepend(ExprCP element, ExprCP array);
 
   /// Builds `value IN (values...)` over constants, with 'values' of the type
   /// of 'value', in canonical form:
@@ -239,6 +246,14 @@ class ExprFactory {
 
   // Builds a BOOLEAN-typed (cardinality 2) call; see makeCall.
   ExprCP makeBooleanCall(Name name, ExprVector arguments, bool specialForm);
+
+  // Builds a call to the internal function 'name', which 'caller' needs.
+  // Fails when the process registered no internal function prefix.
+  ExprCP makeInternalCall(
+      Name name,
+      std::string_view caller,
+      Value value,
+      ExprVector arguments);
 
   Builder& builder_;
 };

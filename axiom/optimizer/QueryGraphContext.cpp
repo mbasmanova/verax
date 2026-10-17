@@ -410,8 +410,11 @@ void QueryGraphContext::populateFunctionNames() {
     functionNames_.count = this->toName(count.value());
   }
 
-  if (auto bigintAddition = registry->bigintAddition()) {
-    functionNames_.bigintAddition = this->toName(bigintAddition.value());
+  if (auto prefix = registry->internalPrefix()) {
+    internalFunctionNames_.bigintAdd = this->toName(*prefix + "bigint_add");
+    internalFunctionNames_.arrayAppend = this->toName(*prefix + "array_append");
+    internalFunctionNames_.arrayPrepend =
+        this->toName(*prefix + "array_prepend");
   }
 
   if (auto lt = registry->lessThan()) {

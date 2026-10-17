@@ -336,7 +336,6 @@ struct FunctionNames {
   Name elementAt{nullptr};
   Name subscript{nullptr};
   Name cardinality{nullptr};
-  Name bigintAddition{nullptr};
   Name lt{nullptr};
   Name lte{nullptr};
   Name gt{nullptr};
@@ -361,6 +360,17 @@ struct FunctionNames {
   bool isRanking(Name name) const {
     return name == rowNumber || name == rank || name == denseRank;
   }
+};
+
+/// Names of the internal functions: those the optimizer adds to plans to
+/// compute values during execution, as opposed to the functions in
+/// FunctionNames, which it interprets to derive facts. They are the internal
+/// prefix followed by the function's name, and null when the process registered
+/// no prefix.
+struct InternalFunctionNames {
+  Name bigintAdd{nullptr};
+  Name arrayAppend{nullptr};
+  Name arrayPrepend{nullptr};
 };
 
 /// Context for making a query plan. Owns all memory associated to
@@ -464,6 +474,11 @@ class QueryGraphContext {
   /// Returns the function names used for expression analysis.
   const FunctionNames& functionNames() const {
     return functionNames_;
+  }
+
+  /// Returns the names of the internal functions.
+  const InternalFunctionNames& internalFunctionNames() const {
+    return internalFunctionNames_;
   }
 
   /// Returns the interned representation of 'str', i.e. Returns a
@@ -573,6 +588,7 @@ class QueryGraphContext {
   PlanP contextPlan_{nullptr};
   Optimization* optimization_{nullptr};
   FunctionNames functionNames_;
+  InternalFunctionNames internalFunctionNames_;
 
   std::vector<std::unique_ptr<velox::Variant>> allVariants_;
 

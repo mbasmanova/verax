@@ -371,17 +371,18 @@ class FunctionRegistry {
     return statsAggregates_;
   }
 
-  /// Registers function 'name' that returns the sum of two BIGINT arguments.
-  /// The optimizer calls it only where the sum fits in BIGINT, so any
-  /// addition qualifies whatever it does on overflow or for other types:
-  /// Presto's 'plus' and Spark's 'add' both do.
-  /// @return true if successfully registered, false if a different
-  /// 'bigintAddition' function is already registered.
-  bool registerBigintAddition(std::string_view name);
+  /// Records the prefix of the internal functions: those the optimizer adds to
+  /// plans for its own computation, such as the hop count of a graph walk. The
+  /// process registers them with Velox through
+  /// velox::functions::axiom::registerFunctions(prefix). Rewrites that need
+  /// them fail without the prefix.
+  /// @return true if successfully registered, false if a different prefix is
+  /// already registered.
+  bool registerInternalPrefix(std::string_view prefix);
 
-  /// Returns the name of the 'bigintAddition' function.
-  const std::optional<std::string>& bigintAddition() const {
-    return bigintAddition_;
+  /// Returns the prefix of the internal functions.
+  const std::optional<std::string>& internalPrefix() const {
+    return internalPrefix_;
   }
 
   /// Registers function 'name' that has semantics of Presto's 'lt',
@@ -591,7 +592,7 @@ class FunctionRegistry {
   std::optional<std::string> elementAt_;
   std::optional<std::string> subscript_;
   std::optional<std::string> cardinality_;
-  std::optional<std::string> bigintAddition_;
+  std::optional<std::string> internalPrefix_;
   std::optional<std::string> lessThan_;
   std::optional<std::string> lessThanOrEqual_;
   std::optional<std::string> greaterThan_;

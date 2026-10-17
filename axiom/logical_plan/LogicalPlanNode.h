@@ -1184,6 +1184,10 @@ class GraphMatchOutput {
     return kind_;
   }
 
+  bool is(Kind kind) const {
+    return kind_ == kind;
+  }
+
   const std::string& pattern() const {
     return pattern_;
   }

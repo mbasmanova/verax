@@ -185,13 +185,20 @@ SELECT * FROM GRAPH_TABLE (g
     ((x) -[IS Knows]-> (y) WHERE x.id < y.id){0,2} (b)
   COLUMNS (b.name AS b))
 ----
--- A name inside a repeated subpath stands for one value per repetition
--- outside it.
--- error: Reading a repeated graph pattern outside its own pattern is not supported yet: y
+-- A name inside a repeated subpath stands for one element per repetition, so
+-- its properties are arrays: the people each walk from Alice passes through.
+-- duckdb:
+--   VALUES
+--     ('Bob', ['Bob']),
+--     ('Alice', ['Bob', 'Alice']),
+--     ('Carol', ['Bob', 'Carol']),
+--     ('Bob', ['Bob', 'Alice', 'Bob']),
+--     ('Dave', ['Bob', 'Carol', 'Dave'])
 WITH ${graph}
 SELECT * FROM GRAPH_TABLE (g
-  MATCH (a IS Person) ((x) -[IS Knows]-> (y)){1,2} (b)
-  COLUMNS (y.name))
+  MATCH (a IS Person WHERE a.name = 'Alice')
+    ((x IS Person) -[IS Knows]-> (m IS Person)){1,3} (b IS Person)
+  COLUMNS (b.name AS b, m.name AS path))
 ----
 -- Whom Alice reaches in one or two Knows hops, and through whom: an optional
 -- subpath matched zero times leaves its names NULL.
@@ -296,9 +303,83 @@ SELECT * FROM GRAPH_TABLE (g
     (b IS Person)
   COLUMNS (b.name AS b))
 ----
--- A repeated edge pattern's name stands for one value per hop outside it.
--- error: Reading a repeated graph pattern outside its own pattern is not supported yet: k
+-- The company inside each repetition joins inside the WorksAt edges' rows, and
+-- its name is still an array of one value per repetition.
+-- duckdb:
+--   VALUES
+--     ('Alice', ['Acme']),
+--     ('Carol', ['Acme']),
+--     ('Alice', ['Acme', 'Acme']),
+--     ('Carol', ['Acme', 'Acme']),
+--     ('Alice', ['Acme', 'Acme']),
+--     ('Carol', ['Acme', 'Acme'])
 WITH ${graph}
 SELECT * FROM GRAPH_TABLE (g
-  MATCH (a IS Person) -[k IS Knows]->{1,2} (b IS Person)
-  COLUMNS (k.since))
+  MATCH (a IS Person WHERE a.name = 'Alice')
+    ((x) -[IS WorksAt]-> (c IS Company) <-[IS WorksAt]- (y)){1,2} (b)
+  COLUMNS (b.name AS b, c.name AS companies))
+----
+-- A repeated edge pattern's name stands for one edge per hop, so its
+-- properties are arrays, and the path's length counts the hops.
+-- duckdb:
+--   VALUES
+--     ('Bob', [2010], 1),
+--     ('Alice', [2010, 2010], 2),
+--     ('Carol', [2010, 2015], 2)
+WITH ${graph}
+SELECT * FROM GRAPH_TABLE (g
+  MATCH p = (a IS Person WHERE a.name = 'Alice') -[k IS Knows]->{1,2}
+    (b IS Person)
+  COLUMNS (b.name AS b, k.since AS since, path_length(p) AS n))
+----
+-- A walk of zero hops has empty arrays and a length of zero.
+-- duckdb:
+--   VALUES
+--     ('Carol', CAST([] AS INTEGER[]), 0),
+--     ('Dave', [2020], 1),
+--     ('Dave', [2020, 2000], 2)
+WITH ${graph}
+SELECT * FROM GRAPH_TABLE (g
+  MATCH p = (a IS Person WHERE a.name = 'Carol') -[k IS Knows]->{0,2}
+    (b IS Person)
+  COLUMNS (b.name AS b, k.since AS since, path_length(p) AS n))
+----
+-- A repetition of exactly zero hops matches with empty arrays.
+-- duckdb: VALUES ('Carol', CAST([] AS INTEGER[]))
+WITH ${graph}
+SELECT * FROM GRAPH_TABLE (g
+  MATCH (a IS Person WHERE a.name = 'Carol') -[k IS Knows]->{0,0} (b IS Person)
+  COLUMNS (b.name AS b, k.since AS since))
+----
+-- The arrays list the hops from the walk's start to its end, whichever end
+-- the walk is computed from.
+-- duckdb:
+--   VALUES
+--     ('Carol', [2020]),
+--     ('Dave', [2000]),
+--     ('Bob', [2015, 2020]),
+--     ('Carol', [2020, 2000]),
+--     ('Dave', [2000, 2000])
+WITH ${graph}
+SELECT * FROM GRAPH_TABLE (g
+  MATCH (a IS Person) -[k IS Knows]->{1,2} (b IS Person WHERE b.name = 'Dave')
+  COLUMNS (a.name AS a, k.since AS since))
+----
+-- Each hop of a repeated subpath adds the edges inside it to the path's
+-- length.
+-- duckdb:
+--   VALUES ('Alice', 2), ('Carol', 2), ('Alice', 4), ('Carol', 4), ('Dave', 4)
+WITH ${graph}
+SELECT * FROM GRAPH_TABLE (g
+  MATCH p = (a IS Person WHERE a.name = 'Alice')
+    ((x IS Person) -[IS Knows]-> (y IS Person) -[IS Knows]-> (z IS Person)){1,2}
+    (b IS Person)
+  COLUMNS (b.name AS b, path_length(p) AS n))
+----
+-- An optional subpath adds its edges to the path's length when it matches.
+-- duckdb: VALUES ('Alice', 0), ('Bob', 1)
+WITH ${graph}
+SELECT * FROM GRAPH_TABLE (g
+  MATCH p = (a IS Person WHERE a.name = 'Alice')
+    ((x IS Person) -[IS Knows]-> (m IS Person))? (b IS Person)
+  COLUMNS (b.name AS b, path_length(p) AS n))

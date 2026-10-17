@@ -32,6 +32,7 @@
 #include "velox/exec/tests/utils/LocalExchangeSource.h"
 #include "velox/exec/tests/utils/QueryAssertions.h"
 #include "velox/expression/Expr.h"
+#include "velox/functions/axiom/Register.h"
 #include "velox/functions/prestosql/window/WindowFunctionsRegistration.h"
 
 DECLARE_string(data_path);
@@ -54,6 +55,8 @@ void QueryTestBase::SetUpTestCase() {
 
   executor_ = std::make_unique<folly::CPUThreadPoolExecutor>(4);
   optimizer::FunctionRegistry::registerPrestoFunctions();
+  velox::functions::axiom::registerFunctions("axiom_");
+  optimizer::FunctionRegistry::instance()->registerInternalPrefix("axiom_");
 }
 
 // static

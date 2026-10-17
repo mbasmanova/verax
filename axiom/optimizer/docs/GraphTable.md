@@ -157,8 +157,7 @@ Each fails with an error that names it:
 - A repetition or an optional subpath inside a repeated or optional subpath.
 - Path modes other than `WALK`, and shortest-path selectors on a path with
   repetition.
-- Reading a name inside a repetition outside it, where it stands for an
-  array, and the length of a path with repetition.
+- The length of a named optional subpath.
 - A vertex whose tables have keys of different types where its identity is
   compared.
 - Two vertex patterns next to each other whose names already bind different

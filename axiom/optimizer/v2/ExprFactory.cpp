@@ -136,16 +136,44 @@ ExprCP ExprFactory::makeLessThan(ExprCP lhs, ExprCP rhs) {
       builder_.functionNames().lt, {lhs, rhs}, /*specialForm=*/false);
 }
 
-ExprCP ExprFactory::makeBigintIncrement(ExprCP value) {
-  const Name name = builder_.functionNames().bigintAddition;
+ExprCP ExprFactory::makeBigintAdd(ExprCP lhs, ExprCP rhs) {
+  VELOX_CHECK_EQ(lhs->value().type->kind(), velox::TypeKind::BIGINT);
+  VELOX_CHECK_EQ(rhs->value().type->kind(), velox::TypeKind::BIGINT);
+  return makeInternalCall(
+      builder_.internalFunctionNames().bigintAdd,
+      "makeBigintAdd",
+      Value(lhs->value().type),
+      {lhs, rhs});
+}
+
+ExprCP ExprFactory::makeArrayAppend(ExprCP array, ExprCP element) {
+  return makeInternalCall(
+      builder_.internalFunctionNames().arrayAppend,
+      "makeArrayAppend",
+      Value(array->value().type),
+      {array, element});
+}
+
+ExprCP ExprFactory::makeArrayPrepend(ExprCP element, ExprCP array) {
+  return makeInternalCall(
+      builder_.internalFunctionNames().arrayPrepend,
+      "makeArrayPrepend",
+      Value(array->value().type),
+      {element, array});
+}
+
+ExprCP ExprFactory::makeInternalCall(
+    Name name,
+    std::string_view caller,
+    Value value,
+    ExprVector arguments) {
   VELOX_USER_CHECK_NOT_NULL(
       name,
-      "ExprFactory::makeBigintIncrement requires a function registered via "
-      "FunctionRegistry::registerBigintAddition; the active dialect did not register it");
-  VELOX_CHECK_EQ(value->value().type->kind(), velox::TypeKind::BIGINT);
-  ExprCP one = makeLiteral(velox::Variant(int64_t{1}), value->value().type);
+      "ExprFactory::{} requires the internal function prefix: "
+      "FunctionRegistry::registerInternalPrefix",
+      caller);
   return makeCall(
-      name, Value(value->value().type), {value, one}, /*specialForm=*/false);
+      name, std::move(value), std::move(arguments), /*specialForm=*/false);
 }
 
 ExprCP ExprFactory::makeIn(ExprCP value, std::vector<velox::Variant> values) {

@@ -153,10 +153,12 @@ std::optional<int32_t> selectorLimit(const lp::GraphPathSelector& selector) {
 
 std::optional<Translated> Translator::GraphMatchLowering::lower(
     const LpNameSet& required) {
+  recordPropertyReads(required);
   const auto& paths = match_.paths();
   for (size_t i = 0; i < paths.size(); ++i) {
     addPath(paths[i], i);
   }
+  recordPathLengths();
   for (auto& element : elements_) {
     element.properties = lp::PropertyGraph::properties(element.labelTables);
   }
@@ -185,6 +187,7 @@ std::optional<Translated> Translator::GraphMatchLowering::lower(
   bindPatternNames();
   connect();
   walked_.assign(repetitions_.size(), false);
+  hopCounts_.assign(repetitions_.size(), nullptr);
   buildHops();
 
   // Paths that share no name join with a cross product: no connection links
@@ -210,6 +213,26 @@ std::optional<Translated> Translator::GraphMatchLowering::lower(
       std::move(conjuncts),
       std::move(scope),
       /*propagateConstants=*/true);
+}
+
+void Translator::GraphMatchLowering::recordPropertyReads(
+    const LpNameSet& required) {
+  for (size_t i = 0; i < match_.outputs().size(); ++i) {
+    const auto& output = *match_.outputs()[i];
+    if (output.is(lp::GraphMatchOutput::Kind::kProperty) &&
+        required.contains(match_.outputNames()[i])) {
+      propertyReads_[output.pattern()].insert(
+          output.as<lp::GraphPropertyOutput>()->property());
+    }
+  }
+}
+
+void Translator::GraphMatchLowering::recordPathLengths() {
+  for (size_t i = 0; i < repetitions_.size(); ++i) {
+    for (const auto& name : repetitions_[i].lengthNames) {
+      pathLengths_.at(name).repetitions.push_back(i);
+    }
+  }
 }
 
 void Translator::GraphMatchLowering::checkGroupReads() const {
@@ -240,12 +263,6 @@ void Translator::GraphMatchLowering::checkGroupReads() const {
       };
   for (const auto& path : match_.paths()) {
     checkTerms(path.terms);
-  }
-  for (const auto& output : match_.outputs()) {
-    if (output->kind() == lp::GraphMatchOutput::Kind::kProperty &&
-        names.contains(output->pattern())) {
-      failGroupRead(output->pattern());
-    }
   }
 }
 
@@ -415,6 +432,9 @@ void Translator::GraphMatchLowering::addPath(
   }
 
   TermCursor cursor{.path = pathIndex, .predicates = &pathInfo.predicates};
+  if (!path.name.empty()) {
+    cursor.lengthNames.push_back(path.name);
+  }
   addTerms(path.terms, cursor);
   if (cursor.pendingEdge.has_value() || cursor.pendingRepetition.has_value()) {
     VELOX_NYI(
@@ -423,8 +443,8 @@ void Translator::GraphMatchLowering::addPath(
   }
   pathInfo.first = cursor.first.value();
   pathInfo.last = cursor.vertex.value();
-  if (!path.name.empty() && !repeats) {
-    pathLengths_.emplace(path.name, cursor.numEdges);
+  if (!path.name.empty()) {
+    pathLengths_.emplace(path.name, PathLength{.edges = cursor.numEdges});
   }
 }
 
@@ -528,7 +548,8 @@ void Translator::GraphMatchLowering::addEdge(
       .pointsRight = pointsRight,
       .minHops = static_cast<int32_t>(repetition->min),
       .maxHops = static_cast<int32_t>(*repetition->max),
-      .path = cursor.path};
+      .path = cursor.path,
+      .lengthNames = cursor.lengthNames};
   if (edge.predicate() != nullptr) {
     cursor.pendingRepetition->predicates.push_back(edge.predicate().get());
   }
@@ -557,9 +578,14 @@ void Translator::GraphMatchLowering::addSubpath(
   }
 
   const auto numEdges = cursor.numEdges;
+  if (!subpath.name().empty()) {
+    cursor.lengthNames.push_back(subpath.name());
+  }
   addTerms(subpath.terms(), cursor);
-  if (!subpath.name().empty() && !hasWalkRepetition(subpath.terms())) {
-    pathLengths_.emplace(subpath.name(), cursor.numEdges - numEdges);
+  if (!subpath.name().empty()) {
+    cursor.lengthNames.pop_back();
+    pathLengths_.emplace(
+        subpath.name(), PathLength{.edges = cursor.numEdges - numEdges});
   }
 }
 
@@ -602,6 +628,8 @@ void Translator::GraphMatchLowering::addRepeatedSubpath(
   addTerms(terms, inner);
   pending.first = inner.first.value();
   pending.last = inner.vertex.value();
+  pending.edgesPerHop = inner.numEdges;
+  pending.lengthNames = cursor.lengthNames;
   for (auto i = numElements; i < elements_.size(); ++i) {
     elements_[i].inRepetition = true;
     pending.elements.push_back(i);
@@ -634,10 +662,7 @@ bool Translator::GraphMatchLowering::narrow() {
   // A repetition that may walk zero hops and whose hop matches no table walks
   // only zero hops.
   for (auto& repetition : repetitions_) {
-    std::vector<size_t> hopElements = repetition.elements;
-    if (repetition.edge.has_value()) {
-      hopElements.push_back(*repetition.edge);
-    }
+    const auto hopElements = repetition.hopElements();
     if (repetition.minHops == 0 &&
         std::any_of(hopElements.begin(), hopElements.end(), [&](size_t i) {
           return elements_[i].legs.empty();
@@ -1273,14 +1298,22 @@ void Translator::GraphMatchLowering::unionLegs(
 }
 
 void Translator::GraphMatchLowering::bindZeroHopNames() {
-  for (auto& element : elements_) {
-    if (!element.inZeroHops) {
+  for (const auto& repetition : repetitions_) {
+    if (repetition.maxHops != 0) {
       continue;
     }
-    const auto& properties = *element.properties;
-    for (size_t i = 0; i < properties.size(); ++i) {
-      element.scope[properties.nameOf(i)] =
-          translator_.builder_.makeNull(toType(properties.childAt(i)));
+    const auto hopElements = repetition.hopElements();
+    // An optional subpath's names are NULL; a repeated pattern's names stand
+    // for no elements, so their properties are empty arrays.
+    for (const auto i : hopElements) {
+      auto& element = elements_[i];
+      const auto& properties = *element.properties;
+      for (size_t j = 0; j < properties.size(); ++j) {
+        const auto& type = properties.childAt(j);
+        element.scope[properties.nameOf(j)] = repetition.optional
+            ? translator_.builder_.makeNull(toType(type))
+            : translator_.builder_.makeEmptyArray(toType(velox::ARRAY(type)));
+      }
     }
   }
 }
@@ -1590,9 +1623,9 @@ Translator::GraphMatchLowering::walkToUnjoined(
     }
     walked_[i] = true;
     if (joined[*from]) {
-      return std::pair{walk(repetition, node, nodes[*to]), *to};
+      return std::pair{walk(i, node, nodes[*to]), *to};
     }
-    return std::pair{walk(repetition, nodes[*from], node), *from};
+    return std::pair{walk(i, nodes[*from], node), *from};
   }
   return std::nullopt;
 }
@@ -1607,49 +1640,37 @@ NodeCP Translator::GraphMatchLowering::walkWithin(
     const auto to = groupOf[holderOf(repetition.to)];
     if (!walked_[i] && from.has_value() && to.has_value() && joined[*from] &&
         joined[*to]) {
-      node = walk(repetition, node, /*end=*/nullptr);
+      node = walk(i, node, /*end=*/nullptr);
       walked_[i] = true;
     }
   }
   return node;
 }
 
-NodeCP Translator::GraphMatchLowering::walk(
-    const Repetition& repetition,
-    NodeCP start,
-    NodeCP end) {
+NodeCP
+Translator::GraphMatchLowering::walk(size_t index, NodeCP start, NodeCP end) {
+  const auto& repetition = repetitions_[index];
   auto keys = walkKeys(repetition);
-  // A walk of zero hops ends at the vertex it starts from.
   if (repetition.maxHops == 0) {
-    if (end == nullptr) {
-      ExprVector equalities;
-      for (size_t i = 0; i < keys.start.size(); ++i) {
-        equalities.push_back(
-            translator_.exprFactory_.makeEq(keys.start[i], keys.end[i]));
-      }
-      return filter(start, std::move(equalities));
-    }
-    auto simplified = translator_.innerJoin(
-        start, end, std::move(keys.start), std::move(keys.end));
-    NodeCP node = translator_.nodeSimplifier_.materialize(simplified);
-    substitute(simplified.substitutions);
-    return node;
+    hopCounts_[index] = translator_.exprFactory_.makeLiteral(
+        velox::Variant(int64_t{0}), toType(velox::BIGINT()));
+    return walkZeroHops(std::move(keys), start, end);
   }
   ColumnVector outputColumns = start->outputColumns();
   if (end != nullptr) {
     appendAll(outputColumns, end->outputColumns());
   }
-  ColumnVector sourceColumns;
+  ColumnVector sourceColumns = outputColumns;
+
+  ColumnCP hopCount = Column::create("hops", Value(toType(velox::BIGINT())));
+  sourceColumns.push_back(hopCount);
+  outputColumns.push_back(hopCount);
+  hopCounts_[index] = hopCount;
+
   if (repetition.optional) {
-    sourceColumns = outputColumns;
-    PlanSubstitutions hopOutputs;
-    for (ColumnCP column : repetition.hop->outputColumns()) {
-      ColumnCP output = Column::createForNullExtendedValue(column);
-      sourceColumns.push_back(column);
-      outputColumns.push_back(output);
-      hopOutputs.add(column, output);
-    }
-    substitute(hopOutputs);
+    addHopValues(repetition, sourceColumns, outputColumns);
+  } else {
+    addHopLists(repetition, sourceColumns, outputColumns);
   }
   translator_.hasRepeat_ = true;
   return translator_.builder_.make<Repeat>({
@@ -1664,7 +1685,87 @@ NodeCP Translator::GraphMatchLowering::walk(
       .maxHops = repetition.maxHops,
       .outputColumns = std::move(outputColumns),
       .sourceColumns = std::move(sourceColumns),
+      .hopCount = hopCount,
   });
+}
+
+NodeCP Translator::GraphMatchLowering::walkZeroHops(
+    WalkKeys keys,
+    NodeCP start,
+    NodeCP end) {
+  // A walk of zero hops ends at the vertex it starts from.
+  if (end == nullptr) {
+    ExprVector equalities;
+    for (size_t i = 0; i < keys.start.size(); ++i) {
+      equalities.push_back(
+          translator_.exprFactory_.makeEq(keys.start[i], keys.end[i]));
+    }
+    return filter(start, std::move(equalities));
+  }
+  auto simplified = translator_.innerJoin(
+      start, end, std::move(keys.start), std::move(keys.end));
+  NodeCP node = translator_.nodeSimplifier_.materialize(simplified);
+  substitute(simplified.substitutions);
+  return node;
+}
+
+void Translator::GraphMatchLowering::addHopValues(
+    const Repetition& repetition,
+    ColumnVector& sourceColumns,
+    ColumnVector& outputColumns) {
+  PlanSubstitutions hopOutputs;
+  for (ColumnCP column : repetition.hop->outputColumns()) {
+    ColumnCP output = Column::createForNullExtendedValue(column);
+    sourceColumns.push_back(column);
+    outputColumns.push_back(output);
+    hopOutputs.add(column, output);
+  }
+  substitute(hopOutputs);
+}
+
+void Translator::GraphMatchLowering::addHopLists(
+    const Repetition& repetition,
+    ColumnVector& sourceColumns,
+    ColumnVector& outputColumns) {
+  for (const auto i : repetition.hopElements()) {
+    auto& element = elements_[i];
+    const auto reads = propertyReads_.find(element.name);
+    if (element.name.empty() || reads == propertyReads_.end()) {
+      continue;
+    }
+    const auto& properties = *element.properties;
+    for (size_t j = 0; j < properties.size(); ++j) {
+      const auto& name = properties.nameOf(j);
+      if (!reads->second.contains(name)) {
+        continue;
+      }
+      // A named element's properties are columns of its rows, which the hop
+      // outputs.
+      ExprCP value = element.scope.at(name);
+      VELOX_CHECK(value->isColumn(), "Property is not a column: {}", name);
+      ColumnCP output = Column::create(
+          name, Value(toType(velox::ARRAY(properties.childAt(j)))));
+      sourceColumns.push_back(value->as<Column>());
+      outputColumns.push_back(output);
+      element.scope[name] = output;
+    }
+    // Predicates cannot read the name as a whole, so it has no ROW.
+    element.row = nullptr;
+  }
+}
+
+ExprCP Translator::GraphMatchLowering::pathLength(const PathLength& length) {
+  auto& factory = translator_.exprFactory_;
+  ExprCP sum = factory.makeLiteral(
+      velox::Variant(length.edges), toType(velox::BIGINT()));
+  for (const auto i : length.repetitions) {
+    VELOX_CHECK_NOT_NULL(hopCounts_[i]);
+    // A hop of a subpath crosses each of its edges.
+    for (int64_t edge = 0; edge < repetitions_[i].edgesPerHop; ++edge) {
+      sum = factory.makeBigintAdd(sum, hopCounts_[i]);
+    }
+  }
+  return sum;
 }
 
 Translator::GraphMatchLowering::WalkKeys
@@ -1788,6 +1889,11 @@ void Translator::GraphMatchLowering::substitute(
     translator_.applySubstitutions(substitutions, connection.leftKeys);
     translator_.applySubstitutions(substitutions, connection.rightKeys);
   }
+  for (auto& hopCount : hopCounts_) {
+    if (hopCount != nullptr) {
+      hopCount = translator_.substitute(substitutions, hopCount);
+    }
+  }
 }
 
 ExprVector Translator::GraphMatchLowering::translatePredicates(
@@ -1823,15 +1929,14 @@ Scope Translator::GraphMatchLowering::outputs(const LpNameSet& required) {
       continue;
     }
     const auto& output = *outputs[i];
-    if (output.kind() == lp::GraphMatchOutput::Kind::kPathLength) {
+    if (output.is(lp::GraphMatchOutput::Kind::kPathLength)) {
       const auto length = pathLengths_.find(output.pattern());
       if (length == pathLengths_.end()) {
         VELOX_NYI(
-            "Path length of a path with repetition is not supported yet: {}",
+            "Path length of an optional subpath is not supported yet: {}",
             output.pattern());
       }
-      scope[names[i]] = translator_.exprFactory_.makeLiteral(
-          velox::Variant(length->second), toType(velox::BIGINT()));
+      scope[names[i]] = pathLength(length->second);
       continue;
     }
     const auto& element = elements_[elementByName_.at(output.pattern())];

@@ -21,7 +21,9 @@
 
 namespace facebook::axiom::optimizer::v2 {
 
-Builder::Builder() : functionNames_{queryCtx()->functionNames()} {
+Builder::Builder()
+    : functionNames_{queryCtx()->functionNames()},
+      internalFunctionNames_{queryCtx()->internalFunctionNames()} {
   const auto& reversibles = FunctionRegistry::instance()->reversibleFunctions();
   reversibleFunctions_.reserve(reversibles.size() * 2);
   for (const auto& [name, reverseName] : reversibles) {

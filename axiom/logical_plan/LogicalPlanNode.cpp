@@ -1820,7 +1820,7 @@ velox::TypePtr graphMatchOutputType(
     const GraphPatternNameCollector& collector,
     const GraphMatchOutput& output) {
   const auto& pattern = output.pattern();
-  if (output.kind() == GraphMatchOutput::Kind::kPathLength) {
+  if (output.is(GraphMatchOutput::Kind::kPathLength)) {
     const auto it = collector.pathNames().find(pattern);
     VELOX_USER_CHECK(
         it != collector.pathNames().end(),

@@ -34,6 +34,7 @@
 #include "velox/dwio/dwrf/RegisterDwrfWriter.h"
 #include "velox/dwio/parquet/RegisterParquetReader.h"
 #include "velox/dwio/parquet/RegisterParquetWriter.h"
+#include "velox/functions/axiom/Register.h"
 #include "velox/functions/prestosql/aggregates/RegisterAggregateFunctions.h"
 #include "velox/functions/prestosql/registration/RegistrationFunctions.h"
 #include "velox/serializers/PrestoSerializer.h"
@@ -205,6 +206,9 @@ void CollagenMain::registerFunctions() {
   facebook::velox::aggregate::prestosql::registerAllAggregateFunctions();
   facebook::velox::serializer::presto::PrestoVectorSerde::registerVectorSerde();
   facebook::axiom::optimizer::FunctionRegistry::registerPrestoFunctions();
+  facebook::velox::functions::axiom::registerFunctions("axiom_");
+  facebook::axiom::optimizer::FunctionRegistry::instance()
+      ->registerInternalPrefix("axiom_");
 }
 
 } // namespace axiom::collagen

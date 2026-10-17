@@ -405,7 +405,7 @@ class ToTextVisitor : public PlanNodeVisitor {
     for (auto i = 0; i < node.outputs().size(); ++i) {
       const auto& output = *node.outputs()[i];
       myContext.out << indent << node.outputNames()[i] << " := "
-                    << (output.kind() == GraphMatchOutput::Kind::kPathLength
+                    << (output.is(GraphMatchOutput::Kind::kPathLength)
                             ? fmt::format("path_length({})", output.pattern())
                             : fmt::format(
                                   "{}.{}",

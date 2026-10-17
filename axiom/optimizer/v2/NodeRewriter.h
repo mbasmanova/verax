@@ -471,6 +471,7 @@ class NodeRewriter {
         .maxHops = node->maxHops(),
         .outputColumns = node->outputColumns(),
         .sourceColumns = node->sourceColumns(),
+        .hopCount = node->hopCount(),
     });
   }
 

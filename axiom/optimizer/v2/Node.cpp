@@ -3306,7 +3306,8 @@ Repeat::Repeat(const Key& key)
       endKeys_(key.endKeys),
       minHops_(key.minHops),
       maxHops_(key.maxHops),
-      sourceColumns_(key.sourceColumns) {
+      sourceColumns_(key.sourceColumns),
+      hopCount_(key.hopCount) {
   VELOX_CHECK_NOT_NULL(start());
   VELOX_CHECK_NOT_NULL(hop());
   VELOX_CHECK(!startKeys_.empty(), "Repeat needs an identity");
@@ -3331,6 +3332,17 @@ Repeat::Repeat(const Key& key)
   VELOX_CHECK_EQ(sources.size(), outputColumns().size());
   for (size_t i = 0; i < sources.size(); ++i) {
     ColumnCP output = outputColumns()[i];
+    if (output == hopCount_) {
+      VELOX_CHECK(
+          sources[i] == output,
+          "Repeat hop count must supply itself: {}",
+          output->toString());
+      VELOX_CHECK_EQ(
+          output->value().type->kind(),
+          velox::TypeKind::BIGINT,
+          "Repeat hop count must be a BIGINT");
+      continue;
+    }
     if (available.contains(sources[i])) {
       VELOX_CHECK(
           output == sources[i],
@@ -3342,13 +3354,26 @@ Repeat::Repeat(const Key& key)
         hopColumns.contains(sources[i]),
         "Repeat output must come from start, end or hop: {}",
         sources[i]->toString());
-    VELOX_CHECK_LE(
-        maxHops_, 1, "Repeat outputs hop columns only for at most one hop");
+    VELOX_CHECK(output != sources[i], "Repeat output from hop must be fresh");
+    const auto& type = *output->value().type;
+    const auto& sourceType = *sources[i]->value().type;
+    if (type.kind() == velox::TypeKind::ARRAY &&
+        type.childAt(0)->equivalent(sourceType)) {
+      continue;
+    }
     VELOX_CHECK(
-        output != sources[i] &&
-            output->value().type->equivalent(*sources[i]->value().type),
-        "Repeat output from hop must be a fresh column of its type: {}",
+        type.equivalent(sourceType),
+        "Repeat output from hop must be its type or an array of it: {}",
         output->toString());
+    VELOX_CHECK_LE(
+        maxHops_, 1, "Repeat outputs a hop column's value only for one hop");
+  }
+  if (hopCount_ != nullptr) {
+    VELOX_CHECK(
+        std::find(outputColumns().begin(), outputColumns().end(), hopCount_) !=
+            outputColumns().end(),
+        "Repeat hop count must be an output: {}",
+        hopCount_->toString());
   }
 }
 
@@ -3364,7 +3389,8 @@ size_t Repeat::KeyHash::operator()(const Repeat* node) const {
       node->minHops(),
       node->maxHops(),
       node->outputColumns(),
-      node->sourceColumns());
+      node->sourceColumns(),
+      node->hopCount());
 }
 
 size_t Repeat::KeyHash::operator()(const Key& key) const {
@@ -3379,7 +3405,8 @@ size_t Repeat::KeyHash::operator()(const Key& key) const {
       key.minHops,
       key.maxHops,
       key.outputColumns,
-      key.sourceColumns);
+      key.sourceColumns,
+      key.hopCount);
 }
 
 bool Repeat::KeyEq::operator()(const Repeat* left, const Repeat* right) const {
@@ -3391,7 +3418,8 @@ bool Repeat::KeyEq::operator()(const Repeat* left, const Repeat* right) const {
       left->minHops() == right->minHops() &&
       left->maxHops() == right->maxHops() &&
       left->outputColumns() == right->outputColumns() &&
-      left->sourceColumns() == right->sourceColumns();
+      left->sourceColumns() == right->sourceColumns() &&
+      left->hopCount() == right->hopCount();
 }
 
 bool Repeat::KeyEq::operator()(const Key& key, const Repeat* node) const {
@@ -3402,7 +3430,8 @@ bool Repeat::KeyEq::operator()(const Key& key, const Repeat* node) const {
       key.endKeys == node->endKeys() && key.minHops == node->minHops() &&
       key.maxHops == node->maxHops() &&
       key.outputColumns == node->outputColumns() &&
-      key.sourceColumns == node->sourceColumns();
+      key.sourceColumns == node->sourceColumns() &&
+      key.hopCount == node->hopCount();
 }
 
 bool Repeat::KeyEq::operator()(const Repeat* node, const Key& key) const {

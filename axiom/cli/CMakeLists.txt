@@ -39,6 +39,7 @@ target_link_libraries(
   axiom_cli
   axiom_query_id_generator
   velox_connector_registry
+  velox_functions_axiom
   velox_presto_query_config
   velox_presto_types
   velox_query_config_provider
@@ -60,9 +61,6 @@ target_link_libraries(
   velox_dwio_common
   velox_dwio_parquet_reader
   velox_dwio_native_parquet_reader
-  velox_parse_parser
-  velox_parse_expression
-  velox_parse_utils
   Folly::folly
 )
 

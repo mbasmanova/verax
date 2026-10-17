@@ -275,6 +275,21 @@ class Translator::GraphMatchLowering {
     // True for an optional subpath, '( ... )?': its elements are read outside
     // it, and are NULL in a walk of zero hops.
     bool optional{false};
+    // Number of edges in one hop: 1 for an edge pattern, the edges inside for
+    // a subpath.
+    int64_t edgesPerHop{1};
+    // Names of the paths and subpaths the repetition is in, whose lengths
+    // count its hops.
+    std::vector<std::string> lengthNames;
+
+    // Returns the elements one hop binds: the edge, or the elements inside.
+    std::vector<size_t> hopElements() const {
+      std::vector<size_t> result = elements;
+      if (edge.has_value()) {
+        result.push_back(*edge);
+      }
+      return result;
+    }
   };
 
   // Where binding a sequence of path terms stands.
@@ -289,8 +304,10 @@ class Translator::GraphMatchLowering {
     // The edge or repetition waiting for the vertex it reaches.
     std::optional<EdgeOccurrence> pendingEdge;
     std::optional<Repetition> pendingRepetition;
-    // Number of edges bound.
+    // Number of edges bound, outside repetitions.
     int64_t numEdges{0};
+    // Names of the paths and subpaths the terms are in.
+    std::vector<std::string> lengthNames;
 
     // True if the last term bound is a vertex pattern: the next edge or
     // repetition leaves from it.
@@ -307,6 +324,13 @@ class Translator::GraphMatchLowering {
     size_t first{0};
     size_t last{0};
     std::vector<const logical_plan::Expr*> predicates;
+  };
+
+  // The length of a named path or subpath: its edges outside repetitions,
+  // and the repetitions in it, whose hops add to it.
+  struct PathLength {
+    int64_t edges{0};
+    std::vector<size_t> repetitions;
   };
 
   // A vertex table joined inside an edge leg, and its columns by name.
@@ -378,9 +402,16 @@ class Translator::GraphMatchLowering {
       const logical_plan::GraphRepetition& repetition,
       TermCursor& cursor);
 
-  // Fails if a predicate or an output reads a repeated edge pattern's name
-  // outside the pattern: there it stands for one value per hop.
+  // Fails if a predicate reads a name inside a repetition outside it: there it
+  // stands for one element per hop.
   void checkGroupReads() const;
+
+  // Records the properties the outputs in 'required' read, by pattern name.
+  void recordPropertyReads(const LpNameSet& required);
+
+  // Adds each repetition to the lengths of the named paths and subpaths it is
+  // in.
+  void recordPathLengths();
 
   // Drops the legs that cannot connect to the elements next to them, until
   // no more can be dropped. After it, each vertex table an edge leg
@@ -448,7 +479,8 @@ class Translator::GraphMatchLowering {
       const std::vector<std::string>& endColumns,
       const ElementTable& vertexTable);
 
-  // Sets the properties of the elements inside a walk of zero hops to NULL.
+  // Sets the properties of the elements inside a walk of zero hops: NULL for
+  // an optional subpath, empty arrays otherwise.
   void bindZeroHopNames();
 
   // Binds each named element's pattern name to a ROW of its properties.
@@ -519,12 +551,37 @@ class Translator::GraphMatchLowering {
   // identities for a walk of zero hops. Fails if their types differ.
   WalkKeys walkKeys(const Repetition& repetition) const;
 
-  // Returns the walks of 'repetition' between the rows of 'start', which holds
-  // its 'from' vertex, and 'end', which holds its 'to' vertex. A null 'end'
-  // means 'start' holds both. The walks of an optional subpath also output its
-  // elements' columns, which its elements then read. Walks of zero hops are
-  // 'start' joined with 'end' on the vertex's identity.
-  NodeCP walk(const Repetition& repetition, NodeCP start, NodeCP end);
+  // Returns 'length' as an expression: the edges outside repetitions plus the
+  // edges on each walk's hops.
+  ExprCP pathLength(const PathLength& length);
+
+  // Returns the walks of the repetition at 'index' between the rows of 'start',
+  // which holds its 'from' vertex, and 'end', which holds its 'to' vertex. A
+  // null 'end' means 'start' holds both. The walks also output their number of
+  // hops and the properties of the elements inside, which the elements then
+  // read. For an optional subpath, a property is its value on the one hop, NULL
+  // for zero hops. Otherwise it is an array of its values on the hops. Walks of
+  // zero hops are 'start' joined with 'end' on the vertex's identity.
+  NodeCP walk(size_t index, NodeCP start, NodeCP end);
+
+  // Returns the walks of zero hops between 'start' and 'end': 'start' joined
+  // with 'end' on 'keys', or 'start' filtered when 'end' is null.
+  NodeCP walkZeroHops(WalkKeys keys, NodeCP start, NodeCP end);
+
+  // Adds to the walks' outputs each column of the optional subpath's hop: its
+  // value on the one hop, NULL for zero hops. The elements then read these.
+  void addHopValues(
+      const Repetition& repetition,
+      ColumnVector& sourceColumns,
+      ColumnVector& outputColumns);
+
+  // Adds to the walks' outputs an array of each property the outputs read of
+  // an element inside the repetition: its values on the hops. The element then
+  // reads these.
+  void addHopLists(
+      const Repetition& repetition,
+      ColumnVector& sourceColumns,
+      ColumnVector& outputColumns);
 
   // Returns 'node', the rows of the groups 'joined' marks, joined with the
   // walks of a repetition that reaches a group not joined yet, and that group.
@@ -612,8 +669,14 @@ class Translator::GraphMatchLowering {
   // Copies of elements that several paths with a selector bind.
   std::vector<ElementCopy> copies_;
 
-  // Number of edges in each named path.
-  folly::F14FastMap<std::string, int64_t> pathLengths_;
+  // Length of each named path and subpath.
+  folly::F14FastMap<std::string, PathLength> pathLengths_;
+
+  // Number of hops of each walk, by repetition index, once it is walked.
+  std::vector<ExprCP> hopCounts_;
+
+  // The properties the outputs read, by pattern name.
+  folly::F14FastMap<std::string, folly::F14FastSet<std::string>> propertyReads_;
 
   // Path patterns, in the order the node lists them.
   std::vector<Path> paths_;
