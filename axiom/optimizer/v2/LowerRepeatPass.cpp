@@ -38,21 +38,31 @@ struct Walk {
   ExprVector toKeys;
 };
 
-// The walks' columns: the carried columns, the current vertex, and the hop
-// count, in that order. Walks of at most one hop have no hop count.
+// The walks' columns: the carried columns, the current vertex, the values of
+// the hop columns the result reads, and the hop count, in that order. Walks of
+// at most one hop have no hop count; walks that loop read no hop columns.
 struct WalkState {
   ColumnVector columns;
   ColumnVector carried;
   ColumnVector vertex;
+  ColumnVector hopValues;
   ColumnCP hops{nullptr};
 
-  static WalkState of(ColumnVector columns, size_t numCarried, size_t numKeys) {
+  static WalkState of(
+      ColumnVector columns,
+      size_t numCarried,
+      size_t numKeys,
+      size_t numHopValues) {
     WalkState state;
-    state.carried.assign(columns.begin(), columns.begin() + numCarried);
-    state.vertex.assign(
-        columns.begin() + numCarried, columns.begin() + numCarried + numKeys);
-    if (columns.size() > numCarried + numKeys) {
-      state.hops = columns.back();
+    auto it = columns.begin();
+    state.carried.assign(it, it + numCarried);
+    it += numCarried;
+    state.vertex.assign(it, it + numKeys);
+    it += numKeys;
+    state.hopValues.assign(it, it + numHopValues);
+    it += numHopValues;
+    if (it != columns.end()) {
+      state.hops = *it;
     }
     state.columns = std::move(columns);
     return state;
@@ -135,39 +145,55 @@ class Lowering : public NodeRewriter<NoContext> {
   // and shaped as 'repeat's output.
   NodeCP lower(const Repeat& repeat, const Walk& walk) {
     // The walks carry the columns of 'from' the result reads, the current
-    // vertex, and, when they loop, the number of hops so far.
-    ColumnVector carried = walk.from->outputsAmong(repeat.outputColumns());
+    // vertex, the hop columns the result reads, and, when they loop, the
+    // number of hops so far.
+    ColumnVector carried =
+        walk.from->outputsAmong(repeat.effectiveSourceColumns());
     if (walk.to == nullptr) {
       appendColumnsRead(walk.toKeys, carried);
     }
+    const ColumnVector hopColumns =
+        repeat.hop()->outputsAmong(repeat.effectiveSourceColumns());
     const size_t numKeys = walk.fromKeys.size();
     const bool loops = repeat.maxHops() > 1;
-    NodeCP anchor = makeAnchor(walk, carried, loops);
+    NodeCP anchor = makeAnchor(walk, carried, hopColumns, loops);
     const auto& anchorColumns = anchor->outputColumns();
 
     WalkState state;
     NodeCP walks{nullptr};
     if (loops) {
       state = WalkState::of(
-          createWithUnknownValues(anchorColumns), carried.size(), numKeys);
+          createWithUnknownValues(anchorColumns),
+          carried.size(),
+          numKeys,
+          /*numHopValues=*/0);
       walks = makeFixedPoint(repeat, walk, anchor, anchorColumns, state);
     } else {
-      auto [node, columns] =
-          makeShortWalks(repeat, walk, anchor, anchorColumns, carried);
+      auto [node, columns] = makeShortWalks(
+          repeat, walk, anchor, anchorColumns, carried, hopColumns);
       walks = node;
-      state = WalkState::of(std::move(columns), carried.size(), numKeys);
+      state = WalkState::of(
+          std::move(columns), carried.size(), numKeys, hopColumns.size());
     }
-    return makeResult(repeat, walk, walks, state, carried);
+    return makeResult(repeat, walk, walks, state, carried, hopColumns);
   }
 
   // Returns the walks of zero hops: 'carried', the vertex 'from' leaves from,
-  // and, when the walks loop, a hop count of 0.
-  NodeCP makeAnchor(const Walk& walk, const ColumnVector& carried, bool loops) {
+  // NULL for each of 'hopColumns', and, when the walks loop, a hop count of 0.
+  NodeCP makeAnchor(
+      const Walk& walk,
+      const ColumnVector& carried,
+      const ColumnVector& hopColumns,
+      bool loops) {
     ExprVector exprs = toExprs(carried);
     ColumnVector columns = carried;
     for (ExprCP key : walk.fromKeys) {
       exprs.push_back(key);
       columns.push_back(Column::create("walk_vertex", key->value()));
+    }
+    for (ColumnCP column : hopColumns) {
+      exprs.push_back(builder().makeNull(column->value().type));
+      columns.push_back(Column::create("walk_hop", column->value()));
     }
     if (loops) {
       exprs.push_back(bigint(0));
@@ -180,13 +206,14 @@ class Lowering : public NodeRewriter<NoContext> {
 
   // Returns 'walks' with at least 'minHops' hops, joined with 'to' or ending
   // at 'from' when 'to' is null, shaped as 'repeat's output. 'carried' are the
-  // columns of 'from' that 'state' carries.
+  // columns of 'from' and 'hopColumns' those of the hop that 'state' carries.
   NodeCP makeResult(
       const Repeat& repeat,
       const Walk& walk,
       NodeCP walks,
       const WalkState& state,
-      const ColumnVector& carried) {
+      const ColumnVector& carried,
+      const ColumnVector& hopColumns) {
     ExprVector predicates;
     if (repeat.minHops() > 0) {
       predicates.push_back(
@@ -195,6 +222,9 @@ class Lowering : public NodeRewriter<NoContext> {
     PlanSubstitutions toState;
     for (size_t i = 0; i < carried.size(); ++i) {
       toState.add(carried[i], state.carried[i]);
+    }
+    for (size_t i = 0; i < hopColumns.size(); ++i) {
+      toState.add(hopColumns[i], state.hopValues[i]);
     }
     if (walk.to == nullptr) {
       for (size_t i = 0; i < state.vertex.size(); ++i) {
@@ -208,7 +238,8 @@ class Lowering : public NodeRewriter<NoContext> {
 
     if (walk.to != nullptr) {
       ColumnVector joined = state.carried;
-      appendAll(joined, walk.to->outputsAmong(repeat.outputColumns()));
+      appendAll(joined, state.hopValues);
+      appendAll(joined, walk.to->outputsAmong(repeat.effectiveSourceColumns()));
       walks = builder().make<Join>({
           .left = walks,
           .right = walk.to,
@@ -221,8 +252,8 @@ class Lowering : public NodeRewriter<NoContext> {
 
     ExprVector outputExprs;
     outputExprs.reserve(repeat.outputColumns().size());
-    for (ColumnCP column : repeat.outputColumns()) {
-      outputExprs.push_back(toState.apply(column, exprs_));
+    for (ColumnCP source : repeat.effectiveSourceColumns()) {
+      outputExprs.push_back(toState.apply(source, exprs_));
     }
     return builder().make<Project>(
         {walks, std::move(outputExprs), repeat.outputColumns()});
@@ -258,7 +289,8 @@ class Lowering : public NodeRewriter<NoContext> {
       const Walk& walk,
       NodeCP anchor,
       const ColumnVector& anchorColumns,
-      const ColumnVector& carried) {
+      const ColumnVector& carried,
+      const ColumnVector& hopColumns) {
     NodeVector legs{anchor};
     QGVector<ColumnVector> legColumns{anchorColumns};
     if (repeat.maxHops() == 1) {
@@ -268,6 +300,7 @@ class Lowering : public NodeRewriter<NoContext> {
           walk.from,
           walk.fromKeys,
           carried,
+          hopColumns,
           /*hops=*/nullptr,
           anchorColumns);
       legs.push_back(hopped);
@@ -303,24 +336,28 @@ class Lowering : public NodeRewriter<NoContext> {
         extensible,
         toExprs(state.vertex),
         state.carried,
+        /*hopColumns=*/{},
         state.hops,
         anchorColumns);
   }
 
   // Joins 'walks' with the hop on 'vertex' and the hop's source, keeping all of
   // the walks' columns so the join's input needs no projection. Returns the
-  // walks' 'carried' columns, the hop's destination as the current vertex, and
-  // 'hops' plus one when set, as new columns named like 'anchorColumns'.
+  // walks' 'carried' columns, the hop's destination as the current vertex,
+  // 'hopColumns', and 'hops' plus one when set, as new columns named like
+  // 'anchorColumns'.
   NodeCP extendByOneHop(
       const Repeat& repeat,
       const Walk& walk,
       NodeCP walks,
       ExprVector vertex,
       const ColumnVector& carried,
+      const ColumnVector& hopColumns,
       ColumnCP hops,
       const ColumnVector& anchorColumns) {
     ColumnVector joined = walks->outputColumns();
     appendColumnsRead(walk.hopTo, joined);
+    appendColumnsRead(toExprs(hopColumns), joined);
     NodeCP extended = builder().make<Join>({
         .left = walks,
         .right = repeat.hop(),
@@ -332,6 +369,7 @@ class Lowering : public NodeRewriter<NoContext> {
 
     ExprVector exprs = toExprs(carried);
     appendAll(exprs, walk.hopTo);
+    appendAll(exprs, toExprs(hopColumns));
     if (hops != nullptr) {
       exprs.push_back(exprs_.makeBigintIncrement(hops));
     }

@@ -3305,7 +3305,8 @@ Repeat::Repeat(const Key& key)
       hopDestinationKeys_(key.hopDestinationKeys),
       endKeys_(key.endKeys),
       minHops_(key.minHops),
-      maxHops_(key.maxHops) {
+      maxHops_(key.maxHops),
+      sourceColumns_(key.sourceColumns) {
   VELOX_CHECK_NOT_NULL(start());
   VELOX_CHECK_NOT_NULL(hop());
   VELOX_CHECK(!startKeys_.empty(), "Repeat needs an identity");
@@ -3325,11 +3326,29 @@ Repeat::Repeat(const Key& key)
   if (end() != nullptr) {
     available.unionObjects(end()->outputColumns());
   }
-  for (ColumnCP column : outputColumns()) {
+  const auto hopColumns = PlanObjectSet::fromObjects(hop()->outputColumns());
+  const auto& sources = effectiveSourceColumns();
+  VELOX_CHECK_EQ(sources.size(), outputColumns().size());
+  for (size_t i = 0; i < sources.size(); ++i) {
+    ColumnCP output = outputColumns()[i];
+    if (available.contains(sources[i])) {
+      VELOX_CHECK(
+          output == sources[i],
+          "Repeat output from start or end must keep its identity: {}",
+          output->toString());
+      continue;
+    }
     VELOX_CHECK(
-        available.contains(column),
-        "Repeat output must come from start or end: {}",
-        column->toString());
+        hopColumns.contains(sources[i]),
+        "Repeat output must come from start, end or hop: {}",
+        sources[i]->toString());
+    VELOX_CHECK_LE(
+        maxHops_, 1, "Repeat outputs hop columns only for at most one hop");
+    VELOX_CHECK(
+        output != sources[i] &&
+            output->value().type->equivalent(*sources[i]->value().type),
+        "Repeat output from hop must be a fresh column of its type: {}",
+        output->toString());
   }
 }
 
@@ -3344,7 +3363,8 @@ size_t Repeat::KeyHash::operator()(const Repeat* node) const {
       node->endKeys(),
       node->minHops(),
       node->maxHops(),
-      node->outputColumns());
+      node->outputColumns(),
+      node->sourceColumns());
 }
 
 size_t Repeat::KeyHash::operator()(const Key& key) const {
@@ -3358,7 +3378,8 @@ size_t Repeat::KeyHash::operator()(const Key& key) const {
       key.endKeys,
       key.minHops,
       key.maxHops,
-      key.outputColumns);
+      key.outputColumns,
+      key.sourceColumns);
 }
 
 bool Repeat::KeyEq::operator()(const Repeat* left, const Repeat* right) const {
@@ -3369,7 +3390,8 @@ bool Repeat::KeyEq::operator()(const Repeat* left, const Repeat* right) const {
       left->endKeys() == right->endKeys() &&
       left->minHops() == right->minHops() &&
       left->maxHops() == right->maxHops() &&
-      left->outputColumns() == right->outputColumns();
+      left->outputColumns() == right->outputColumns() &&
+      left->sourceColumns() == right->sourceColumns();
 }
 
 bool Repeat::KeyEq::operator()(const Key& key, const Repeat* node) const {
@@ -3379,7 +3401,8 @@ bool Repeat::KeyEq::operator()(const Key& key, const Repeat* node) const {
       key.hopDestinationKeys == node->hopDestinationKeys() &&
       key.endKeys == node->endKeys() && key.minHops == node->minHops() &&
       key.maxHops == node->maxHops() &&
-      key.outputColumns == node->outputColumns();
+      key.outputColumns == node->outputColumns() &&
+      key.sourceColumns == node->sourceColumns();
 }
 
 bool Repeat::KeyEq::operator()(const Repeat* node, const Key& key) const {

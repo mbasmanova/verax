@@ -182,6 +182,10 @@ class Translator::GraphMatchLowering {
     // walk, which the walk joins.
     bool inRepetition{false};
 
+    // True if it is inside a repetition that walks zero hops: it has no rows,
+    // and its properties are NULL.
+    bool inZeroHops{false};
+
     // True if its identity is read: a selector partitions on it, or it
     // matches a copy of it. A vertex that joins inside an edge's legs reads
     // its identity from that edge's end.
@@ -268,6 +272,9 @@ class Translator::GraphMatchLowering {
     std::vector<const logical_plan::Expr*> predicates;
     // The hops: rows of 'edge', or of 'elements' joined.
     NodeCP hop{nullptr};
+    // True for an optional subpath, '( ... )?': its elements are read outside
+    // it, and are NULL in a walk of zero hops.
+    bool optional{false};
   };
 
   // Where binding a sequence of path terms stands.
@@ -364,8 +371,8 @@ class Translator::GraphMatchLowering {
       const logical_plan::GraphRepetition* repetition,
       TermCursor& cursor);
 
-  // Binds a repeated subpath after the vertex 'cursor' stands at, as the
-  // pending repetition.
+  // Binds a repeated or optional subpath after the vertex 'cursor' stands at,
+  // as the pending repetition.
   void addRepeatedSubpath(
       const logical_plan::GraphSubpathPattern& subpath,
       const logical_plan::GraphRepetition& repetition,
@@ -441,6 +448,9 @@ class Translator::GraphMatchLowering {
       const std::vector<std::string>& endColumns,
       const ElementTable& vertexTable);
 
+  // Sets the properties of the elements inside a walk of zero hops to NULL.
+  void bindZeroHopNames();
+
   // Binds each named element's pattern name to a ROW of its properties.
   void bindPatternNames();
 
@@ -505,13 +515,15 @@ class Translator::GraphMatchLowering {
     ExprVector hopDestination;
   };
 
-  // Returns the identities the walks of 'repetition' compare. Fails if their
-  // types differ.
+  // Returns the identities the walks of 'repetition' compare, without hop
+  // identities for a walk of zero hops. Fails if their types differ.
   WalkKeys walkKeys(const Repetition& repetition) const;
 
   // Returns the walks of 'repetition' between the rows of 'start', which holds
   // its 'from' vertex, and 'end', which holds its 'to' vertex. A null 'end'
-  // means 'start' holds both.
+  // means 'start' holds both. The walks of an optional subpath also output its
+  // elements' columns, which its elements then read. Walks of zero hops are
+  // 'start' joined with 'end' on the vertex's identity.
   NodeCP walk(const Repetition& repetition, NodeCP start, NodeCP end);
 
   // Returns 'node', the rows of the groups 'joined' marks, joined with the

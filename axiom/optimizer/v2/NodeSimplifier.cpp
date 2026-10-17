@@ -1090,8 +1090,14 @@ NodeSimplifier::SimplifiedNode NodeSimplifier::make(
     SimplifiedNode start,
     SimplifiedNode hop,
     std::optional<SimplifiedNode> end) {
-  if (start.empty() || hop.empty() || (end.has_value() && end->empty())) {
+  if (start.empty() || (end.has_value() && end->empty()) ||
+      (hop.empty() && key.minHops > 0)) {
     return emptyResult(std::move(key.outputColumns));
+  }
+  // Without hops, only the walks of zero hops remain.
+  if (hop.empty()) {
+    key.maxHops = 0;
+    hop = {builder_.makeEmptyValues(key.hop->outputColumns()), {}};
   }
 
   key.startKeys = start.substitutions.apply(key.startKeys, exprs_);
@@ -1101,12 +1107,12 @@ NodeSimplifier::SimplifiedNode NodeSimplifier::make(
   key.endKeys = (end.has_value() ? end->substitutions : start.substitutions)
                     .apply(key.endKeys, exprs_);
 
-  // A side outputs the columns the Repeat passes on from it and the columns
+  // An input outputs the columns the Repeat passes on from it and the columns
   // its keys read, restored to their identities where they are missing.
   const auto sideLayout = [&](NodeCP original,
                               const SimplifiedNode& side,
                               std::initializer_list<const ExprVector*> keys) {
-    ColumnVector layout = original->outputsAmong(key.outputColumns);
+    ColumnVector layout = original->outputsAmong(key.effectiveSourceColumns());
     PlanObjectSet keyColumns;
     for (const ExprVector* sideKeys : keys) {
       keyColumns.unionColumns(*sideKeys);
@@ -1129,7 +1135,8 @@ NodeSimplifier::SimplifiedNode NodeSimplifier::make(
   } else {
     key.start = sideLayout(key.start, start, {&key.startKeys, &key.endKeys});
   }
-  key.hop = hop.node;
+  key.hop =
+      sideLayout(key.hop, hop, {&key.hopSourceKeys, &key.hopDestinationKeys});
   return {builder_.make<Repeat>(key), {}};
 }
 

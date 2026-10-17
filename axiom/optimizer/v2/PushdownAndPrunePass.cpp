@@ -2792,7 +2792,15 @@ class Pushdown : public NodeRewriter<PushdownContext> {
   // A Repeat row carries its start row's and end row's columns unchanged, so a
   // conjunct that reads only one side filters that side. The hop needs only
   // its keys.
+  // A hop column a Repeat outputs is NULL for a walk of zero hops, so a
+  // conjunct that reads it stays above, as above an outer join.
   NodeCP rewriteRepeat(const Repeat* node, PushdownContext& context) override {
+    const auto& sources = node->effectiveSourceColumns();
+    for (size_t i = 0; i < sources.size(); ++i) {
+      if (node->outputColumns()[i] != sources[i]) {
+        access_.addProducing(sources[i], node->outputColumns()[i]);
+      }
+    }
     const auto startColumns =
         PlanObjectSet::fromObjects(node->start()->outputColumns());
     const auto endColumns = node->end() != nullptr
@@ -2832,9 +2840,31 @@ class Pushdown : public NodeRewriter<PushdownContext> {
         : sideContext(startPending, {&node->startKeys(), &node->endKeys()});
     NodeCP newStart = rewrite(node->start(), startContext);
 
+    // Outputs the columns read above and by the conjuncts left here.
+    PlanObjectSet read = context.required;
+    read.unionColumns(blocked);
+    ColumnVector outputColumns;
+    ColumnVector sourceColumns;
+    for (size_t i = 0; i < sources.size(); ++i) {
+      if (read.contains(node->outputColumns()[i])) {
+        outputColumns.push_back(node->outputColumns()[i]);
+        sourceColumns.push_back(sources[i]);
+      }
+    }
+    if (node->sourceColumns().empty()) {
+      sourceColumns.clear();
+    }
+
     PushdownContext hopContext;
     hopContext.required.unionColumns(node->hopSourceKeys());
     hopContext.required.unionColumns(node->hopDestinationKeys());
+    const auto hopColumns =
+        PlanObjectSet::fromObjects(node->hop()->outputColumns());
+    for (ColumnCP source : sourceColumns) {
+      if (hopColumns.contains(source)) {
+        hopContext.required.add(source);
+      }
+    }
     hopContext.requiredAbove = hopContext.required;
     NodeCP newHop = rewrite(node->hop(), hopContext);
 
@@ -2844,16 +2874,6 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       NodeCP newEnd = rewrite(node->end(), endContext);
       end = NodeSimplifier::SimplifiedNode{
           newEnd, std::move(endContext.outputSubstitutions)};
-    }
-
-    // Outputs the columns read above and by the conjuncts left here.
-    PlanObjectSet read = context.required;
-    read.unionColumns(blocked);
-    ColumnVector outputColumns;
-    for (ColumnCP column : node->outputColumns()) {
-      if (read.contains(column)) {
-        outputColumns.push_back(column);
-      }
     }
 
     auto simplified = nodeSimplifier_.make(
@@ -2868,6 +2888,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
             .minHops = node->minHops(),
             .maxHops = node->maxHops(),
             .outputColumns = std::move(outputColumns),
+            .sourceColumns = std::move(sourceColumns),
         },
         {newStart, std::move(startContext.outputSubstitutions)},
         {newHop, std::move(hopContext.outputSubstitutions)},

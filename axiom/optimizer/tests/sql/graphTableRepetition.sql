@@ -193,11 +193,108 @@ SELECT * FROM GRAPH_TABLE (g
   MATCH (a IS Person) ((x) -[IS Knows]-> (y)){1,2} (b)
   COLUMNS (y.name))
 ----
--- error: Optional graph subpath patterns are not supported yet
+-- Whom Alice reaches in one or two Knows hops, and through whom: an optional
+-- subpath matched zero times leaves its names NULL.
+-- duckdb: VALUES ('Bob', CAST(NULL AS VARCHAR)), ('Alice', 'Bob'), ('Carol', 'Bob')
+WITH ${graph}
+SELECT * FROM GRAPH_TABLE (g
+  MATCH (a IS Person WHERE a.name = 'Alice')
+    ((x IS Person) -[IS Knows]-> (m IS Person))? (v IS Person)
+    -[IS Knows]-> (b IS Person)
+  COLUMNS (b.name AS reached, m.name AS via))
+----
+-- The optional subpath's condition limits only the match of one hop: Alice's
+-- one Knows edge is from 2010.
+-- duckdb: VALUES ('Bob', CAST(NULL AS VARCHAR))
+WITH ${graph}
+SELECT * FROM GRAPH_TABLE (g
+  MATCH (a IS Person WHERE a.name = 'Alice')
+    ((x IS Person) -[k IS Knows]-> (m IS Person) WHERE k.since > 2012)?
+    (v IS Person) -[IS Knows]-> (b IS Person)
+  COLUMNS (b.name AS reached, m.name AS via))
+----
+-- A condition on an optional name outside the subpath keeps only the matches
+-- of one hop, since the name is NULL in the others.
+-- duckdb: VALUES ('Alice', 'Bob'), ('Carol', 'Bob')
+WITH ${graph}
+SELECT * FROM GRAPH_TABLE (g
+  MATCH (a IS Person WHERE a.name = 'Alice')
+    ((x IS Person) -[IS Knows]-> (m IS Person))? (v IS Person)
+    -[IS Knows]-> (b IS Person)
+  WHERE m.name = 'Bob'
+  COLUMNS (b.name AS reached, m.name AS via))
+----
+-- Dave knows himself, so both matches exist: zero hops and one.
+-- duckdb: VALUES ('Dave', CAST(NULL AS VARCHAR)), ('Dave', 'Dave')
+WITH ${graph}
+SELECT * FROM GRAPH_TABLE (g
+  MATCH (a IS Person WHERE a.name = 'Dave')
+    ((x IS Person) -[IS Knows]-> (m IS Person))? (v IS Person)
+    -[IS Knows]-> (b IS Person)
+  COLUMNS (b.name AS reached, m.name AS via))
+----
+-- An optional subpath at the end of a path: Carol, and whom she knows.
+-- duckdb: VALUES ('Carol'), ('Dave')
+WITH ${graph}
+SELECT * FROM GRAPH_TABLE (g
+  MATCH (a IS Person WHERE a.name = 'Carol')
+    ((x IS Person) -[IS Knows]-> (y IS Person))? (b IS Person)
+  COLUMNS (b.name AS b))
+----
+-- An optional subpath that can never match still leaves the match that skips
+-- it.
+-- duckdb: VALUES ('Carol')
+WITH ${graph}
+SELECT * FROM GRAPH_TABLE (g
+  MATCH (a IS Person WHERE a.name = 'Carol')
+    ((x IS Person) -[IS Knows]-> (y IS Person) WHERE 1 = 0)? (b IS Person)
+  COLUMNS (b.name AS b))
+----
+-- So does a repetition with a lower bound of zero.
+-- duckdb: VALUES ('Carol')
+WITH ${graph}
+SELECT * FROM GRAPH_TABLE (g
+  MATCH (a IS Person WHERE a.name = 'Carol')
+    ((x IS Person) -[IS Knows]-> (y IS Person) WHERE 1 = 0){0,2} (b IS Person)
+  COLUMNS (b.name AS b))
+----
+-- WorksAt edges reach companies, so an optional subpath that reaches a person
+-- over one never matches, and the match that skips it remains.
+-- duckdb: VALUES ('Carol', CAST(NULL AS VARCHAR))
+WITH ${graph}
+SELECT * FROM GRAPH_TABLE (g
+  MATCH (a IS Person WHERE a.name = 'Carol')
+    ((x IS Person) -[IS WorksAt]-> (m IS Person))? (b IS Person)
+  COLUMNS (b.name AS b, m.name AS via))
+----
+-- So does a repetition with a lower bound of zero.
+-- duckdb: VALUES ('Carol')
+WITH ${graph}
+SELECT * FROM GRAPH_TABLE (g
+  MATCH (a IS Person WHERE a.name = 'Carol')
+    ((x IS Person) -[IS WorksAt]-> (m IS Person)){0,2} (b IS Person)
+  COLUMNS (b.name AS b))
+----
+-- error: Optional graph subpath pattern that starts or ends with an edge pattern is not supported yet
 WITH ${graph}
 SELECT * FROM GRAPH_TABLE (g
   MATCH (a IS Person) (-[IS WorksAt]-> (c IS Company))?
   COLUMNS (a.name AS a))
+----
+-- error: Optional graph subpath pattern that holds a repetition or an optional subpath is not supported yet
+WITH ${graph}
+SELECT * FROM GRAPH_TABLE (g
+  MATCH (a IS Person)
+    ((x IS Person) -[IS Knows]->{1,2} (y IS Person))? (b IS Person)
+  COLUMNS (b.name AS b))
+----
+-- error: Repeated graph subpath pattern that holds a repetition or an optional subpath is not supported yet
+WITH ${graph}
+SELECT * FROM GRAPH_TABLE (g
+  MATCH (a IS Person)
+    ((x IS Person) ((y IS Person) -[IS Knows]-> (z IS Person))? (w IS Person)){1,2}
+    (b IS Person)
+  COLUMNS (b.name AS b))
 ----
 -- A repeated edge pattern's name stands for one value per hop outside it.
 -- error: Reading a repeated graph pattern outside its own pattern is not supported yet: k
