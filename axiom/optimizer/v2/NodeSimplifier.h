@@ -145,19 +145,10 @@ class NodeSimplifier {
       SimplifiedNode input,
       const ColumnVector& originalOutputs);
 
-  /// Builds a FixedPoint after restoring the anchor, step, and convergence
-  /// layouts. An empty anchor makes the recursive result empty.
-  SimplifiedNode make(
-      FixedPoint::Key key,
-      SimplifiedNode anchor,
-      SimplifiedNode step,
-      SimplifiedNode convergence);
-
-  /// Builds the convergence branch of a fixed point over state 'stateName'
-  /// with 'stateColumns': true once an iteration produces no rows.
-  NodeCP makeEmptyDeltaConvergence(
-      Name stateName,
-      const ColumnVector& stateColumns);
+  /// Builds a FixedPoint after restoring the anchor and step layouts. An empty
+  /// anchor makes the recursive result empty.
+  SimplifiedNode
+  make(FixedPoint::Key key, SimplifiedNode anchor, SimplifiedNode step);
 
   /// Builds a Repeat over the simplified inputs. Its keys read them through
   /// their substitutions, and each side outputs the columns the Repeat

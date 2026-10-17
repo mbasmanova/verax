@@ -1060,17 +1060,13 @@ NodeSimplifier::SimplifiedNode NodeSimplifier::make(
 NodeSimplifier::SimplifiedNode NodeSimplifier::make(
     FixedPoint::Key key,
     SimplifiedNode anchor,
-    SimplifiedNode step,
-    SimplifiedNode convergence) {
+    SimplifiedNode step) {
   if (anchor.empty()) {
     return emptyResult(std::move(key.outputColumns));
   }
 
   const ColumnVector stepColumns =
       step.empty() ? step.originalColumns : key.step->outputColumns();
-  const ColumnVector convergenceColumns = convergence.empty()
-      ? convergence.originalColumns
-      : key.convergence->outputColumns();
   key.anchor =
       restoreExactLayout(anchor.node, key.sourceColumns, anchor.substitutions);
   if (!step.empty() &&
@@ -1086,68 +1082,7 @@ NodeSimplifier::SimplifiedNode NodeSimplifier::make(
     return {key.anchor, std::move(outputSubstitutions)};
   }
   key.step = restoreExactLayout(step.node, stepColumns, step.substitutions);
-  if (!convergence.empty() &&
-      convergence.node->requiredStates() != key.convergence->requiredStates()) {
-    convergence = {key.convergence, {}};
-  }
-  if (convergence.empty()) {
-    key.convergence = builder_.makeEmptyValues(convergenceColumns);
-  } else {
-    key.convergence = restoreExactLayout(
-        convergence.node, convergenceColumns, convergence.substitutions);
-  }
   return {builder_.make<FixedPoint>(key), {}};
-}
-
-NodeCP NodeSimplifier::makeEmptyDeltaConvergence(
-    Name stateName,
-    const ColumnVector& stateColumns) {
-  NodeCP workingTable = make(
-                            WorkingTable::Key{
-                                .name = stateName,
-                                .outputColumns = stateColumns,
-                                .readMode = WorkingTableReadMode::kLatestDelta,
-                            })
-                            .node;
-  const auto* count = builder_.makeAggregate(
-      builder_.functionNames().count,
-      Value(toType(velox::BIGINT())),
-      {},
-      FunctionSet{},
-      /*isDistinct=*/false,
-      /*condition=*/nullptr,
-      toType(velox::BIGINT()),
-      {},
-      {});
-  ColumnCP countColumn =
-      Column::create("__converged_count", Value(toType(velox::BIGINT())));
-  auto aggregation = make(
-      Aggregate::Key{
-          .input = workingTable,
-          .groupingKeys = {},
-          .aggregates = {count},
-          .outputColumns = {countColumn},
-          .step = AggregateStep::kSingle,
-      },
-      {workingTable, {}});
-  VELOX_CHECK(!aggregation.empty());
-  ExprCP zero =
-      builder_.makeLiteral(velox::Variant(int64_t{0}), toType(velox::BIGINT()));
-  ExprCP convergedExpr = exprs_.makeEq(countColumn, zero);
-  ColumnCP convergedColumn =
-      Column::create("converged", Value(toType(velox::BOOLEAN())));
-  NodeCP aggregationNode = aggregation.node;
-  auto projected = make(
-      Project::Key{
-          .input = aggregationNode,
-          .exprs = {convergedExpr},
-          .outputColumns = {convergedColumn},
-      },
-      std::move(aggregation));
-  VELOX_CHECK(!projected.empty());
-  ColumnVector outputColumns{convergedColumn};
-  restoreOutputLayout(projected.node, outputColumns, projected.substitutions);
-  return projected.node;
 }
 
 NodeSimplifier::SimplifiedNode NodeSimplifier::make(

@@ -242,7 +242,7 @@ NodeCP Optimizer::planTo(
   }
 
   if (translated.hasRepeat) {
-    node = LowerRepeatPass::run(node, builder_, evaluator_);
+    node = LowerRepeatPass::run(node, builder_);
     notifyAfterPass(Pass::kLowerRepeat, node);
   }
   if (pass == Pass::kLowerRepeat) {

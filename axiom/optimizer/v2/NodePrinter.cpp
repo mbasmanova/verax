@@ -414,8 +414,6 @@ class Printer : public NodeVisitor {
     node.anchor()->accept(*this, ctx);
     ctx.out << spaces(ctx.indent) << "step:\n";
     node.step()->accept(*this, ctx);
-    ctx.out << spaces(ctx.indent) << "convergence:\n";
-    node.convergence()->accept(*this, ctx);
   }
 
   void visit(const Repeat& node, NodeVisitorContext& context) const override {

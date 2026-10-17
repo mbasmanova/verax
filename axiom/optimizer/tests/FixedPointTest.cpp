@@ -141,16 +141,74 @@ TEST_F(FixedPointTest, outerLimit) {
   AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
 }
 
-TEST_F(FixedPointTest, multipleWorkersRejected) {
-  auto logicalPlan = parseSelect(
-      "WITH RECURSIVE counter(n) AS ("
-      "VALUES 1 UNION ALL SELECT n + 1 FROM counter WHERE n < 10) "
-      "SELECT * FROM counter");
-
-  VELOX_ASSERT_THROW(
-      planVelox(
-          logicalPlan, {.maxRemotePartitions = 2, .maxLocalPartitions = 1}),
-      "Distributed FixedPoint execution is not yet implemented");
+// With several workers, each task that reads the anchor runs its own loop, and
+// the step reads every other input in full. A step whose rows each derive from
+// one row of the loop state allows that. Otherwise the loop runs on one task.
+TEST_F(FixedPointTest, distributed) {
+  testConnector_->addTable("t", ROW("a", BIGINT()));
+  testConnector_->addTable("e", ROW({"src", "dst"}, BIGINT()));
+  {
+    // The anchor is one row, so the loop runs on one task, and the table the
+    // step joins is gathered to it.
+    auto logicalPlan = parseSelect(
+        "WITH RECURSIVE r(n) AS ("
+        "  SELECT CAST(1 AS BIGINT) "
+        "  UNION ALL "
+        "  SELECT dst FROM r JOIN e ON src = n) "
+        "SELECT n FROM r");
+    auto matcher =
+        matchFixedPoint(startFixedPoint("r")
+                            .outputState(/*append=*/true, matchValues())
+                            .hashTableState(matchScan("e").gather())
+                            .plan(matchDelta("r", {"n"})
+                                      .stateHashJoin({"n"})
+                                      .project({"dst"})))
+            .build();
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(planVelox(logicalPlan).plan, matcher);
+  }
+  {
+    auto logicalPlan = parseSelect(
+        "WITH RECURSIVE r(n) AS ("
+        "  SELECT a FROM t "
+        "  UNION ALL "
+        "  SELECT dst FROM r JOIN e ON src = n) "
+        "SELECT n FROM r");
+    auto matcher =
+        matchFixedPoint(startFixedPoint("r")
+                            .outputState(/*append=*/true, matchScan("t"))
+                            .hashTableState(matchScan("e").broadcast())
+                            .plan(matchDelta("r", {"n"})
+                                      .stateHashJoin({"n"})
+                                      .project({"dst"})))
+            .project({"a AS n"})
+            .gather()
+            .build();
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(planVelox(logicalPlan).plan, matcher);
+  }
+  {
+    // SQL rejects an aggregate in the recursive term; a logical plan can
+    // have one.
+    lp::PlanBuilder::Context context{kTestConnectorId, kDefaultSchema};
+    auto anchor = lp::PlanBuilder(context).tableScan("t").project({"a AS n"});
+    auto step = lp::PlanBuilder(context)
+                    .recursiveRef("r", anchor)
+                    .filter("n < 10")
+                    .aggregate({}, {"max(n) AS m"})
+                    .project({"m + 1 AS n"})
+                    .planNode();
+    auto logicalPlan = anchor.fixedPoint("r", step).build();
+    auto matcher =
+        matchFixedPoint(startFixedPoint("r")
+                            .outputState(
+                                /*append=*/true, matchScan("t").gather())
+                            .plan(matchDelta("r", {"n"})
+                                      .filter("n < 10")
+                                      .singleAggregation({}, {"max(n) AS m"})
+                                      .project({"m + 1"})))
+            .project({"a AS n"})
+            .build();
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(planVelox(logicalPlan).plan, matcher);
+  }
 }
 
 TEST_F(FixedPointTest, outerJoinInAnchor) {
@@ -205,15 +263,15 @@ TEST_F(FixedPointTest, outerSelectsOneColumn) {
       "SELECT n + 1, carried FROM counter WHERE n < 10) "
       "SELECT n FROM counter");
 
-  auto matcher = matchFixedPoint(
-                     startFixedPoint("counter")
-                         .outputState(/*append=*/true, matchValues())
-                         .plan(matchDelta("counter", {"n", "carried"})
-                                   .filter("n < 10")
-                                   .project({"n + 1", "carried"}))
-                         .convergeOnEmpty({.stateColumns = {{"n", "carried"}}}))
-                     .project({"n"})
-                     .build();
+  auto matcher =
+      matchFixedPoint(startFixedPoint("counter")
+                          .outputState(/*append=*/true, matchValues())
+                          .plan(matchDelta("counter", {"n", "carried"})
+                                    .filter("n < 10")
+                                    .project({"n + 1", "carried"}))
+                          .convergeOnEmpty())
+          .project({"n"})
+          .build();
   AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
 }
 

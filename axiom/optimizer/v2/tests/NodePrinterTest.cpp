@@ -69,13 +69,6 @@ TEST_F(NodePrinterTest, fixedPoint) {
             StartsWith("      predicate: lt("),
             StartsWith(
                 "      - WorkingTable[name=counter, readMode=latestDelta] ->"),
-            Eq("  convergence:"),
-            StartsWith("  - Project ->"),
-            HasSubstr(":= eq("),
-            StartsWith("    - Aggregate ->"),
-            Eq("      aggregates: count()"),
-            StartsWith(
-                "      - WorkingTable[name=counter, readMode=latestDelta] ->"),
             Eq("")));
   });
 }

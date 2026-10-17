@@ -2753,10 +2753,9 @@ class Pushdown : public NodeRewriter<PushdownContext> {
       override {
     // Filtering seed rows is sound only when `p(step(x))` implies `p(x)`;
     // otherwise, a rejected seed can still produce matching descendants.
-    // Record the step and convergence paths before the anchor's scan
-    // negotiates; the descent reaches them only afterwards.
+    // Record the step's paths before the anchor's scan negotiates; the
+    // descent reaches them only afterwards.
     access_.addSubtree(*node->step());
-    access_.addSubtree(*node->convergence());
     for (size_t i = 0; i < node->outputColumns().size(); ++i) {
       access_.addProducing(node->sourceColumns()[i], node->outputColumns()[i]);
     }
@@ -2774,20 +2773,10 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     stepContext.requiredAbove = stepContext.required;
     NodeCP newStep = rewrite(node->step(), stepContext);
 
-    // Convergence is an independent Boolean subplan. Seed only its root output;
-    // each operator adds its expression dependencies while WorkingTable keeps
-    // the complete recursive-state schema.
-    PushdownContext convergenceContext;
-    convergenceContext.required.unionObjects(
-        node->convergence()->outputColumns());
-    convergenceContext.requiredAbove = convergenceContext.required;
-    NodeCP newConvergence = rewrite(node->convergence(), convergenceContext);
-
     auto simplified = nodeSimplifier_.make(
         FixedPoint::Key{
             .anchor = node->anchor(),
             .step = node->step(),
-            .convergence = node->convergence(),
             .name = node->name(),
             .outputColumns = node->outputColumns(),
             .sourceColumns = node->sourceColumns(),
@@ -2795,8 +2784,7 @@ class Pushdown : public NodeRewriter<PushdownContext> {
             .recursiveNumDrivers = node->recursiveNumDrivers(),
         },
         {newAnchor, std::move(anchorContext.outputSubstitutions)},
-        {newStep, std::move(stepContext.outputSubstitutions)},
-        {newConvergence, std::move(convergenceContext.outputSubstitutions)});
+        {newStep, std::move(stepContext.outputSubstitutions)});
     return finishSimplifiedNode(
         std::move(simplified), std::move(context.pending), context);
   }
