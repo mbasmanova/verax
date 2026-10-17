@@ -495,6 +495,7 @@ class EmptyScanSimplifier : public NodeRewriter<SimplifiedNodeContext> {
                 .minHops = node->minHops(),
                 .maxHops = node->maxHops(),
                 .outputColumns = node->outputColumns(),
+                .sourceColumns = node->sourceColumns(),
             },
             std::move(start),
             std::move(hop),

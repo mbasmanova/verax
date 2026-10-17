@@ -470,6 +470,7 @@ class NodeRewriter {
         .minHops = node->minHops(),
         .maxHops = node->maxHops(),
         .outputColumns = node->outputColumns(),
+        .sourceColumns = node->sourceColumns(),
     });
   }
 

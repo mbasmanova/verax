@@ -475,8 +475,8 @@ with an error that names it:
 - a path mode other than `WALK`;
 - a repetition with no upper bound, or a shortest-path selector on a path
   with repetition;
-- an optional subpath, or a repeated subpath that starts or ends with an edge
-  pattern;
+- a repeated or optional subpath that starts or ends with an edge pattern;
+- a repetition or an optional subpath inside a repeated or optional subpath;
 - a name inside a repetition read outside it, or `path_length` of a path with
   repetition;
 - an edge pattern without a vertex pattern on each side;

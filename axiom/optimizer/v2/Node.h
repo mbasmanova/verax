@@ -2703,8 +2703,10 @@ using FixedPointCP = const FixedPoint*;
 ///   read `end`, or `start` when `end` is null.
 /// - `0 <= minHops <= maxHops`, and not `minHops = maxHops = 1`: exactly one
 ///   hop is a plain join.
-/// - `outputColumns` are a subset of the columns `start` and `end` output,
-///   with the same identities, in any order.
+/// - `outputColumns` carry `effectiveSourceColumns()` by position. A source
+///   from `start` or `end` keeps its identity. A source from `hop` is allowed
+///   only when `maxHops` is at most one, as for an optional subpath: it is NULL
+///   for a walk of zero hops, so its output is a fresh column of the same type.
 class Repeat : public Node {
  public:
   struct Key {
@@ -2719,6 +2721,14 @@ class Repeat : public Node {
     int32_t minHops;
     int32_t maxHops;
     ColumnVector outputColumns;
+    /// Columns of `start`, `end` or `hop` that `outputColumns` carry, by
+    /// position. Empty when each output is a column of `start` or `end`.
+    ColumnVector sourceColumns;
+
+    /// Returns the explicit sources, or the outputs for a pass-through schema.
+    const ColumnVector& effectiveSourceColumns() const {
+      return sourceColumns.empty() ? outputColumns : sourceColumns;
+    }
   };
 
   /// Transparent hasher for interning `Repeat`s by identity.
@@ -2771,6 +2781,15 @@ class Repeat : public Node {
     return minHops_;
   }
 
+  /// Columns of the inputs that `outputColumns()` carry; see `Key`.
+  const ColumnVector& sourceColumns() const {
+    return sourceColumns_;
+  }
+
+  const ColumnVector& effectiveSourceColumns() const {
+    return sourceColumns_.empty() ? outputColumns() : sourceColumns_;
+  }
+
   int32_t maxHops() const {
     return maxHops_;
   }
@@ -2794,6 +2813,7 @@ class Repeat : public Node {
   const ExprVector endKeys_;
   const int32_t minHops_;
   const int32_t maxHops_;
+  const ColumnVector sourceColumns_;
 };
 
 using RepeatCP = const Repeat*;
