@@ -374,7 +374,7 @@ TEST_P(ExplainTest, explainLastPass) {
       "Invalid last_pass value: NoSuchPass. Expected one of (case insensitive): "
       "TRANSLATE, DECORRELATE, LIMIT_AND_ORDER, PUSHDOWN_AND_PRUNE, "
       "FOLD_METADATA_AGGREGATE, CONNECTOR_PUSHDOWN, ESTIMATE_LEAF_STATS, "
-      "PLAN_PHYSICAL");
+      "LOWER_REPEAT, PLAN_PHYSICAL");
 
   VELOX_ASSERT_USER_THROW(
       run("EXPLAIN (TYPE OPTIMIZED WITH (nosuchsetting = 'x')) SELECT 1 AS x"),
