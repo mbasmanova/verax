@@ -48,6 +48,13 @@ class GraphTableTest : public test::QueryTestBase {
         fmt::format("WITH {} SELECT * FROM GRAPH_TABLE (g {})", graph, match)));
   }
 
+  // Matches a scan of kPeopleGraph's person table with 'aliases' for its
+  // columns.
+  static velox::core::PlanMatcherBuilder matchPerson(
+      const std::vector<std::optional<std::string>>& aliases = {}) {
+    return matchScan("person").aliases(aliases);
+  }
+
   // Adds the tables of kPeopleGraph next to TPC-H: 1'000 people, each knowing
   // ten others.
   void configureTestConnector() override {
@@ -91,21 +98,20 @@ TEST_F(GraphTableTest, repetition) {
       "MATCH (a IS Person) -[IS Knows]->{1,2} (b IS Person) "
       "COLUMNS (a.name AS a, b.name AS b)");
   auto matcher =
-      matchFixedPoint(startFixedPoint("walk")
-                          .outputState(
-                              /*append=*/true,
-                              matchScan("person").project({"name", "id", "0"}))
-                          .hashTableState(matchScan("knows"))
-                          .plan(matchDelta("walk", {"name", "vertex", "hops"})
-                                    .filter("hops < 2")
-                                    .stateHashJoin({"vertex"})
-                                    .project({"name", "dst", "hops + 1"}))
-                          .convergeOnEmpty({.maxIterations = 3}))
+      matchFixedPoint(
+          startFixedPoint("walk")
+              .outputState(
+                  /*append=*/true, matchPerson().project({"name", "id", "0"}))
+              .hashTableState(matchScan("knows"))
+              .plan(matchDelta("walk", {"name", "vertex", "hops"})
+                        .filter("hops < 2")
+                        .stateHashJoin({"vertex"})
+                        .project({"name", "dst", "hops + 1"}))
+              .convergeOnEmpty({.maxIterations = 3}))
           .aliases({"name", "vertex", "hops"})
           .filter("hops >= 1")
           .hashJoinInner(
-              matchScan("person").aliases({"id", "b_name"}),
-              {.keys = {{"vertex = id"}}})
+              matchPerson({"id", "b_name"}), {.keys = {{"vertex = id"}}})
           .project({"name", "b_name"})
           .build();
   AXIOM_ASSERT_PLAN(plan, matcher);
@@ -126,16 +132,14 @@ TEST_F(GraphTableTest, repeatedSubpath) {
       matchFixedPoint(
           startFixedPoint("walk")
               .outputState(
-                  /*append=*/true,
-                  matchScan("person").project({"name", "id", "0"}))
-              .hashTableState(matchScan("knows")
-                                  .filter("src < dst")
-                                  .hashJoinInner(
-                                      matchScan("person").aliases({"x_id"}),
-                                      {.keys = {{"src = x_id"}}})
-                                  .hashJoinInner(
-                                      matchScan("person").aliases({"y_id"}),
-                                      {.keys = {{"dst = y_id"}}}))
+                  /*append=*/true, matchPerson().project({"name", "id", "0"}))
+              .hashTableState(
+                  matchScan("knows")
+                      .filter("src < dst")
+                      .hashJoinInner(
+                          matchPerson({"x_id"}), {.keys = {{"src = x_id"}}})
+                      .hashJoinInner(
+                          matchPerson({"y_id"}), {.keys = {{"dst = y_id"}}}))
               .plan(matchDelta("walk", {"name", "vertex", "hops"})
                         .filter("hops < 2")
                         .stateHashJoin({"vertex"})
@@ -144,8 +148,7 @@ TEST_F(GraphTableTest, repeatedSubpath) {
           .aliases({"name", "vertex", "hops"})
           .filter("hops >= 1")
           .hashJoinInner(
-              matchScan("person").aliases({"id", "b_name"}),
-              {.keys = {{"vertex = id"}}})
+              matchPerson({"id", "b_name"}), {.keys = {{"vertex = id"}}})
           .project({"name", "b_name"})
           .build();
   AXIOM_ASSERT_PLAN(plan, matcher);
@@ -159,17 +162,46 @@ TEST_F(GraphTableTest, upToOneHop) {
       "MATCH (a IS Person) -[IS Knows]->{0,1} (b IS Person) "
       "COLUMNS (a.name AS a, b.name AS b)");
   auto matcher =
-      matchScan("person")
+      matchPerson()
           .project({"name", "id"})
           .localPartition(
               {matchScan("knows")
-                   .hashJoinInner(matchScan("person"), {.keys = {{"src = id"}}})
+                   .hashJoinInner(matchPerson(), {.keys = {{"src = id"}}})
                    .project({"name", "dst"})})
           .aliases({"name", "vertex"})
           .hashJoinInner(
-              matchScan("person").aliases({"id", "b_name"}),
-              {.keys = {{"vertex = id"}}})
+              matchPerson({"id", "b_name"}), {.keys = {{"vertex = id"}}})
           .project({"name", "b_name"})
+          .build();
+  AXIOM_ASSERT_PLAN(plan, matcher);
+}
+
+// An optional subpath walks zero or one hop, as {0,1} does, and the walks
+// also carry its names: NULL for zero hops.
+TEST_F(GraphTableTest, optionalSubpath) {
+  auto plan = toSingleNodePlan(
+      kPeopleGraph,
+      "MATCH (a IS Person) ((x IS Person) -[IS Knows]-> (m IS Person))? (b IS Person) "
+      "COLUMNS (b.name AS b, m.name AS via)");
+  auto matcher =
+      matchPerson()
+          .project({"id", "null"})
+          .localPartition({
+              matchPerson({"a_id"})
+                  .hashJoinInner(
+                      matchScan("knows")
+                          .hashJoinInner(
+                              matchPerson({"x_id"}), {.keys = {{"src = x_id"}}})
+                          .hashJoinInner(
+                              matchPerson({"m_id", "m_name"}),
+                              {.keys = {{"dst = m_id"}}}),
+                      {.keys = {{"a_id = src"}}})
+                  .project({"dst", "m_name"}),
+          })
+          .aliases({"vertex", "via"})
+          .hashJoinInner(
+              matchPerson({"b_id", "b_name"}), {.keys = {{"vertex = b_id"}}})
+          .project({"b_name", "via"})
           .build();
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
@@ -186,8 +218,7 @@ TEST_F(GraphTableTest, repetitionFromEnd) {
           startFixedPoint("walk")
               .outputState(
                   /*append=*/true,
-                  matchScan("person")
-                      .aliases({"id", "name"})
+                  matchPerson({"id", "name"})
                       .filter("name = 'Dave'")
                       .project({"id", "0"}))
               .hashTableState(matchScan("knows").project({"dst", "src"}))
@@ -199,8 +230,7 @@ TEST_F(GraphTableTest, repetitionFromEnd) {
           .aliases({"vertex", "hops"})
           .filter("hops >= 1")
           .hashJoinInner(
-              matchScan("person").aliases({"id", "a_name"}),
-              {.keys = {{"vertex = id"}}})
+              matchPerson({"id", "a_name"}), {.keys = {{"vertex = id"}}})
           .project({"a_name"})
           .build();
   AXIOM_ASSERT_PLAN(plan, matcher);

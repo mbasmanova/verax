@@ -152,8 +152,9 @@ once leaf statistics are known.
 
 Each fails with an error that names it:
 
-- Optional subpaths, repeated subpaths that start or end with an edge
-  pattern, and repetition with no upper bound.
+- Repeated or optional subpaths that start or end with an edge pattern, and
+  repetition with no upper bound.
+- A repetition or an optional subpath inside a repeated or optional subpath.
 - Path modes other than `WALK`, and shortest-path selectors on a path with
   repetition.
 - Reading a name inside a repetition outside it, where it stands for an

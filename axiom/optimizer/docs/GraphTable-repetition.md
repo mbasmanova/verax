@@ -40,7 +40,7 @@ a row of `start` to a row of `end`:
 | `hopSourceKeys`, `hopDestinationKeys` | The identities of the vertex a hop leaves from and the one it reaches, over `hop`. |
 | `endKeys` | The identity of the vertex the walk reaches, over `end`, or over `start` when `end` is null. |
 | `minHops`, `maxHops` | The bounds, with `0 <= minHops <= maxHops`. Exactly one hop, `{1,1}`, is a plain join. |
-| `outputColumns` | A subset of the columns `start` and `end` output, with the same identities. |
+| `outputColumns`, `sourceColumns` | The outputs and the columns they carry, by position. A column of `start` or `end` keeps its identity; `sourceColumns` is empty when every output is a column of `start` or `end`. With `maxHops` of at most 1, an output can carry a column of `hop`: a fresh column, NULL for a walk of zero hops. |
 
 The four key lists line up by position, as a join's keys do. Like a join's
 keys, they are expressions over the inputs' columns.
@@ -58,6 +58,14 @@ can, and the end any table the start can.
 **Ends.** A walk's endpoints do not fold into the hop: the hop's relation
 carries both end identities, and each endpoint keeps its own relation, or
 reads its identity from another edge it folds into.
+
+**Empty hop.** A `Repeat` whose hop is empty keeps only its walks of zero hops:
+it is empty when `minHops` is above 0, and becomes `{0,0}` otherwise.
+
+**Zero hops.** A walk of zero hops ends where it starts, so a repetition of
+`{0,0}` lowers to its ends joined on their identity, with the names inside it
+NULL. A repetition with `minHops` of 0 whose hop matches no table lowers the
+same way.
 
 ## Repeated subpaths
 
@@ -82,6 +90,43 @@ end narrow to the tables of those two vertices as they do to a repeated edge's
 ends. The subpath starts and ends with a vertex pattern, so repetitions meet at
 a vertex.
 
+## Optional subpaths
+
+An optional subpath `( ... )?` matches its patterns once or not at all. Its
+names stand for one element, or NULL when it matches zero times:
+
+```sql
+MATCH (a IS Person WHERE a.name = 'Alice')
+  ((x IS Person) -[IS Knows]-> (m IS Person))? (v IS Person)
+  -[IS Knows]-> (b IS Person)
+COLUMNS (b.name AS reached, m.name AS via)
+```
+
+returns whom Alice knows, with `via` NULL, and whom they know, with `via` the
+person in between. Both matches count, so a vertex reachable both ways appears
+twice.
+
+It lowers as a repeated subpath `{0,1}`, and its `Repeat` also outputs the
+hop's columns, which the names inside it read. The subpath's condition filters
+the hop, so it limits only the matches of one hop. A condition outside the
+subpath that reads its names stays above the `Repeat`, since the names are NULL
+for a walk of zero hops.
+
+## Nested repetition
+
+A repetition or an optional subpath inside a repeated or optional subpath fails
+as not supported:
+
+```sql
+MATCH (a IS Person)
+  ((x IS Person) -[IS Knows]->{1,2} (y IS Person))? (b IS Person)
+```
+
+Supporting it means the outer `Repeat`'s hop holds the inner walk: building
+the hop lowers the inner repetition between the subpath's vertices, so the hop
+is itself a `Repeat`, and LowerRepeat turns it into a fixed point inside the
+outer fixed point's step.
+
 ## Where the Repeat sits
 
 The lowering joins every connection except the repeated patterns. The rest of
@@ -104,7 +149,7 @@ its `to` vertex, which merges the two:
 |---|---|
 | `Decorrelate` | Rewrites the inputs. |
 | `LimitAndOrder` | Barrier. |
-| `PushdownAndPrune` | A `Repeat` row carries its start row's and end row's columns unchanged, so a conjunct that reads only one side moves into that side. Prunes the hop to its keys and each side to its keys and the columns read above. |
+| `PushdownAndPrune` | A `Repeat` row carries its start row's and end row's columns unchanged, so a conjunct that reads only one side moves into that side. A conjunct that reads a hop column it outputs stays above. Prunes the hop to its keys and the hop columns read above, and each side to its keys and the columns read above. |
 | `FoldMetadataAggregate` | Rewrites the inputs. |
 | `ConnectorPushdown` | Offers the `Repeat` whole when all its inputs belong to one connector that supports pushdown, otherwise its inputs. |
 | `EstimateLeafStats` | Estimates the inputs. The `Repeat` itself has an unknown cardinality, like `FixedPoint`. |
@@ -137,7 +182,8 @@ each hop read from its destination to its source. Starting from the start:
 Walks of at most one hop need no loop, so `{0,1}` and `{0,0}` carry no hop
 count. The walks are the anchor for zero hops, the start joined with the hop
 for one, or the `UNION ALL` of the two, and the result joins them with the end
-as above.
+as above. The hop columns the `Repeat` outputs travel with the walks, as NULL
+in the anchor.
 
 The hop appears once in the plan, as the build side of the step's join. Each
 iteration reads only the latest walks. With several workers, each task that
