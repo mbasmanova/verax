@@ -119,6 +119,14 @@ void QueryTestBase::TearDown() {
   HiveConnectorTestBase::TearDown();
 }
 
+// static
+logical_plan::PlanBuilder::Context QueryTestBase::makeContext(
+    const std::string& connectorId) {
+  logical_plan::PlanBuilder::Context context{connectorId, kDefaultSchema};
+  context.connectorContext = connector::makeTestContext("test");
+  return context;
+}
+
 logical_plan::LogicalPlanNodePtr QueryTestBase::parseSelect(
     std::string_view sql,
     const std::string& defaultConnectorId,

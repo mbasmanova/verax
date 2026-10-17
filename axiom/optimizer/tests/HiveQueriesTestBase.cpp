@@ -206,8 +206,7 @@ void HiveQueriesTestBase::createEmptyTable(
 void HiveQueriesTestBase::checkTableData(
     const std::string& tableName,
     const std::vector<RowVectorPtr>& expectedData) {
-  lp::PlanBuilder::Context context(
-      exec::test::kHiveConnectorId, kDefaultSchema);
+  auto context = makeContext(exec::test::kHiveConnectorId);
   auto logicalPlan = lp::PlanBuilder(context).tableScan(tableName).build();
 
   checkSameSingleNode(logicalPlan, expectedData);

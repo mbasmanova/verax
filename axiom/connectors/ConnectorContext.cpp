@@ -22,11 +22,19 @@ ConnectorContext::ConnectorContext(
     std::string queryId,
     std::string user,
     ConnectorProperties properties,
-    StatWriterProvider statWriterProvider)
+    StatWriterProvider statWriterProvider,
+    std::shared_ptr<const ConnectorMetadataRegistry::Registry> metadataRegistry)
     : queryId_{std::move(queryId)},
       user_{std::move(user)},
       properties_{std::move(properties)},
-      statWriterProvider_{std::move(statWriterProvider)} {
+      statWriterProvider_{std::move(statWriterProvider)},
+      // The process-wide registry is static, so the pointer does not own it.
+      metadataRegistry_{
+          metadataRegistry
+              ? std::move(metadataRegistry)
+              : std::shared_ptr<const ConnectorMetadataRegistry::Registry>(
+                    std::shared_ptr<void>{},
+                    &ConnectorMetadataRegistry::global())} {
   VELOX_CHECK(
       statWriterProvider_, "ConnectorContext requires a stat writer provider");
 }

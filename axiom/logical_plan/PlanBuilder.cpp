@@ -18,14 +18,11 @@
 #include <numeric>
 #include <vector>
 #include "axiom/connectors/ConnectorMetadata.h"
-#include "axiom/connectors/ConnectorMetadataRegistry.h"
 #include "axiom/logical_plan/NameMappings.h"
 #include "velox/expression/FunctionSignature.h"
 #include "velox/type/TypeCoercer.h"
 
 namespace facebook::axiom::logical_plan {
-
-using connector::ConnectorMetadataRegistry;
 
 PlanBuilder& PlanBuilder::values(
     const velox::RowTypePtr& rowType,
@@ -220,6 +217,15 @@ PlanBuilder& PlanBuilder::tableScan(
       includeHiddenColumns);
 }
 
+std::shared_ptr<connector::ConnectorMetadata> PlanBuilder::findMetadata(
+    const std::string& connectorId) const {
+  VELOX_USER_CHECK_NOT_NULL(
+      connectorContext_,
+      "PlanBuilder::Context::connectorContext is required to look up tables: {}",
+      connectorId);
+  return connectorContext_->metadataRegistry().get(connectorId);
+}
+
 PlanBuilder& PlanBuilder::from(const std::vector<std::string>& tableNames) {
   VELOX_USER_CHECK_NULL(node_, "Table scan node must be the leaf node");
   VELOX_USER_CHECK(!tableNames.empty());
@@ -229,6 +235,7 @@ PlanBuilder& PlanBuilder::from(const std::vector<std::string>& tableNames) {
   Context context{defaultConnectorId_, defaultSchema_};
   context.planNodeIdGenerator = planNodeIdGenerator_;
   context.nameAllocator = nameAllocator_;
+  context.connectorContext = connectorContext_;
 
   for (auto i = 1; i < tableNames.size(); ++i) {
     crossJoin(PlanBuilder(context).tableScan(tableNames.at(i)));
@@ -245,7 +252,7 @@ PlanBuilder& PlanBuilder::tableScan(
   VELOX_USER_CHECK_NULL(node_, "Table scan node must be the leaf node");
 
   SchemaTableName schemaTableName{schemaName, tableName};
-  auto metadata = ConnectorMetadataRegistry::get(connectorId);
+  auto metadata = findMetadata(connectorId);
   auto table = metadata->findTable(schemaTableName);
   VELOX_USER_CHECK_NOT_NULL(
       table, "Table not found: {}", schemaTableName.toString());
@@ -340,7 +347,7 @@ PlanBuilder& PlanBuilder::tableScan(
   VELOX_USER_CHECK_NULL(node_, "Table scan node must be the leaf node");
 
   SchemaTableName schemaTableName{schemaName, tableName};
-  auto metadata = ConnectorMetadataRegistry::get(connectorId);
+  auto metadata = findMetadata(connectorId);
   auto table = metadata->findTable(schemaTableName);
   VELOX_USER_CHECK_NOT_NULL(
       table, "Table not found: {}", schemaTableName.toString());
@@ -1848,7 +1855,7 @@ PlanBuilder& PlanBuilder::tableWrite(
   }
 
   if (kind == WriteKind::kInsert || kind == WriteKind::kDelete) {
-    auto metadata = ConnectorMetadataRegistry::get(connectorId);
+    auto metadata = findMetadata(connectorId);
     auto table = metadata->findTable(schemaTableName);
     VELOX_USER_CHECK_NOT_NULL(
         table, "Table not found: {}", schemaTableName.toString());

@@ -35,10 +35,6 @@ class BucketedExecutionTest : public test::QueryTestBase,
     useV2_ = GetParam();
   }
 
-  lp::PlanBuilder::Context makeContext() const {
-    return lp::PlanBuilder::Context{kTestConnectorId, kDefaultSchema};
-  }
-
   void addBucketedTable(
       const std::string& name,
       const std::vector<std::string>& bucketColumns,

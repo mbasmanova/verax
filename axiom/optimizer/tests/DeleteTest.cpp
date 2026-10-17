@@ -95,8 +95,7 @@ TEST_F(DeleteTest, partitionPredicates) {
 
   // Deleting from a table other than the one scanned fails. SQL cannot express
   // this, so build the plan directly.
-  lp::PlanBuilder::Context context{
-      std::string(velox::exec::test::kHiveConnectorId), kDefaultSchema};
+  auto context = makeContext(velox::exec::test::kHiveConnectorId);
   VELOX_ASSERT_USER_THROW(
       runVelox(
           lp::PlanBuilder(context)

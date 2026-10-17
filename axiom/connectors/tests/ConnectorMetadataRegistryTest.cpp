@@ -113,6 +113,10 @@ TEST_F(ConnectorMetadataRegistryTest, getThrowsOnMissing) {
   VELOX_ASSERT_THROW(
       ConnectorMetadataRegistry::get(*queryCtx, "nonexistent"),
       "ConnectorMetadata not registered: nonexistent");
+
+  VELOX_ASSERT_THROW(
+      ConnectorMetadataRegistry::create()->get("nonexistent"),
+      "ConnectorMetadata not registered: nonexistent");
 }
 
 TEST_F(ConnectorMetadataRegistryTest, allMetadataIds) {
@@ -128,6 +132,9 @@ TEST_F(ConnectorMetadataRegistryTest, allMetadataIds) {
 
   EXPECT_THAT(
       ConnectorMetadataRegistry::allMetadataIds(*queryCtx),
+      testing::UnorderedElementsAre("global-catalog", "query-catalog"));
+  EXPECT_THAT(
+      queryRegistry->ids(),
       testing::UnorderedElementsAre("global-catalog", "query-catalog"));
 
   EXPECT_THAT(

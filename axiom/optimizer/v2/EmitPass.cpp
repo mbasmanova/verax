@@ -2630,7 +2630,7 @@ velox::core::PlanNodePtr Emitter::emitTableWrite(const TableWrite& tableWrite) {
   const auto& table = *tableWrite.table();
   auto* layout = table.layouts().front();
   const auto& connectorId = layout->connector()->connectorId();
-  auto metadata = connector::ConnectorMetadataRegistry::get(connectorId);
+  auto metadata = session_.connectorMetadata(connectorId);
   auto connectorSession = session_.context()->sessionFor(connectorId);
 
   auto handle = metadata->beginWrite(
