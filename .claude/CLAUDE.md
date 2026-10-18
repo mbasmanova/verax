@@ -243,6 +243,12 @@ A `DECLARE` without its `DEFINE` compiles and links until someone calls
 
 ### API Design
 
+Read an API's documented contract before using it. Document preconditions,
+guarantees, ownership, and optional-value semantics at the API declaration.
+When a caller needs an undocumented guarantee, establish it at the owning API
+before relying on it. Producers enforce guarantees; callers handle states the
+contract permits. Implementation behavior alone does not establish a contract.
+
 - Keep the public API surface small.
 - Prefer free functions in `.cpp` (anonymous namespace) over private/static methods declared in the header. The goal is keeping the header small: fewer things in the header means the header changes less often, so fewer downstream translation units recompile. Private members of a file-local class defined entirely in the `.cpp` already satisfy this — the rule doesn't apply to them.
 - Define free functions close to where they are used, not grouped together at the top or bottom of the file.
@@ -515,6 +521,19 @@ is a bug introduced by a different commit.
 
 ### Optimizer Principles
 
+Goal and models:
+
+Optimize as well as the available information, models, and search budget allow.
+Producing the globally best plan for every query is not a requirement.
+
+- Preserve query semantics using explicit, verifiable invariants. Statistical
+  estimates do not provide correctness guarantees.
+- Use coherent cardinality and cost models. Document their assumptions and
+  limitations, and verify their predictions against observed behavior. Costs
+  must account consistently for the work each candidate requires.
+- Choose the best candidate considered under those models. Investigate a poor
+  plan for missing information, model errors, bugs, or unexplored alternatives.
+
 Build general capabilities:
 
 - A production query motivates a change and serves as its test. It does not
@@ -523,6 +542,10 @@ Build general capabilities:
   query plan well.
 - Choose the design that handles the general case cleanly over the smallest
   diff. A narrow fix leaves sibling cases broken for someone else to find.
+- An investigation can uncover a bug or gap worth fixing even when the
+  motivating query's plan stays unchanged. Evaluate the fix by the correctness,
+  estimates, or cost modeling it improves across the cases it applies to, and
+  report its effect on the motivating query separately.
 
 Invariants. These hold across the optimizer. Rely on them. Do not write code that guards
 against their violation, and do not ask for such code in designs or reviews. A
