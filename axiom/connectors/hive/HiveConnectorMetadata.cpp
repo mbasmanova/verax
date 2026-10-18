@@ -21,6 +21,7 @@
 #include <folly/Conv.h>
 #include <folly/String.h>
 #include <algorithm>
+#include <cmath>
 #include <type_traits>
 #include <utility>
 #include "velox/common/Casts.h"
@@ -585,6 +586,82 @@ void trimColumnStats(FilteredTableStats& stats, size_t numColumns) {
   }
 }
 
+namespace {
+
+ColumnStatistics* findColumnStats(
+    FilteredTableStats& stats,
+    std::string_view name) {
+  const auto it =
+      std::ranges::find(stats.columnStats, name, &ColumnStatistics::name);
+  return it == stats.columnStats.end() ? nullptr : &*it;
+}
+
+// Applies bucket selection when it can refine the bucketing key's NDV.
+// Returns true if the filter was applied.
+bool applyBucketFilter(
+    const HiveTableLayout& layout,
+    const velox::common::Filter& filter,
+    const FilterSelectivityEstimator& estimator,
+    FilteredTableStats& stats) {
+  // Hive's partitionColumns() lists bucketing keys. Each value of a single key
+  // maps to one bucket; with multiple keys, this applies to the full tuple.
+  const auto& bucketingKeys = layout.partitionColumns();
+  const auto numBuckets = layout.numBuckets();
+  if (bucketingKeys.size() != 1 || !numBuckets.has_value()) {
+    return false;
+  }
+
+  auto* keyStats = findColumnStats(stats, bucketingKeys[0]->name());
+  if (keyStats == nullptr || !keyStats->numDistinct.has_value()) {
+    return false;
+  }
+
+  auto* bucketStats = findColumnStats(stats, HiveTable::kBucket);
+  // Null bucket IDs indicate unbucketed files whose key NDV is not separate.
+  if (bucketStats == nullptr || bucketStats->nullPct != 0) {
+    return false;
+  }
+
+  // Model one occurrence of each possible bucket ID, including empty buckets.
+  // A filter's selectivity over this synthetic population equals the fraction
+  // of bucket IDs it accepts. Assume uniform hashing when applying that
+  // fraction to both rows and distinct keys.
+  const auto estimate = [&]() {
+    ColumnStatistics domainStats;
+    domainStats.name = HiveTable::kBucket;
+    domainStats.nonNull = true;
+    domainStats.min = velox::Variant(int32_t{0});
+    domainStats.max = velox::Variant(*numBuckets - 1);
+    domainStats.numDistinct = *numBuckets;
+    domainStats.numValues = *numBuckets;
+    const velox::TypePtr bucketType = velox::INTEGER();
+    return estimator.estimate(
+        {{HiveTable::kBucket, &filter}},
+        {{HiveTable::kBucket, {bucketType.get(), domainStats}}});
+  }();
+
+  const auto it = estimate.columnStats.find(HiveTable::kBucket);
+  if (it != estimate.columnStats.end()) {
+    bucketStats->min = it->second.min;
+    bucketStats->max = it->second.max;
+  }
+
+  const auto fraction = estimate.selectivity;
+  if (fraction < 1.0) {
+    const auto scaleDistinct = [fraction](int64_t& numDistinct) {
+      numDistinct = static_cast<int64_t>(std::ceil(numDistinct * fraction));
+    };
+    scaleDistinct(*bucketStats->numDistinct);
+    scaleDistinct(*keyStats->numDistinct);
+  }
+
+  bucketStats->nonNull = bucketStats->nonNull || !filter.testNull();
+  stats.numRows = static_cast<uint64_t>(std::llround(stats.numRows * fraction));
+  return true;
+}
+
+} // namespace
+
 void HiveTableLayout::foldNonPartitionFilterStats(
     const velox::connector::hive::HiveTableHandle& handle,
     const FilterSelectivityEstimator& estimator,
@@ -603,6 +680,12 @@ void HiveTableLayout::foldNonPartitionFilterStats(
     if (!partitionColumnNames.contains(name)) {
       dataFilters.emplace(name, filter.get());
     }
+  }
+
+  const auto it = dataFilters.find(HiveTable::kBucket);
+  if (it != dataFilters.end() &&
+      applyBucketFilter(*this, *it->second, estimator, stats)) {
+    dataFilters.erase(it);
   }
 
   applyFilterEstimates(

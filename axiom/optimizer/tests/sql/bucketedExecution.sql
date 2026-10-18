@@ -67,6 +67,24 @@ SELECT j, count(*), sum(v) FROM t GROUP BY j
 -- duckdb: SELECT k, v FROM b16 WHERE k % 16 BETWEEN 2 AND 5
 SELECT k, v FROM b16 WHERE "$bucket" BETWEEN 2 AND 5
 ----
+-- duckdb: SELECT k, count(*), sum(v) FROM t WHERE k % 8 BETWEEN 1 AND 3 GROUP BY 1
+SELECT k, count(*), sum(v)
+FROM t
+WHERE "$bucket" BETWEEN 1 AND 3
+GROUP BY 1
+----
+-- duckdb: SELECT k, count(*), sum(v) FROM t WHERE k % 8 BETWEEN 1 AND 3 AND k IN (1, 2) GROUP BY 1
+SELECT k, count(*), sum(v)
+FROM t
+WHERE "$bucket" BETWEEN 1 AND 3 AND k IN (1, 2)
+GROUP BY 1
+----
+-- duckdb: SELECT k, count(*) FROM u WHERE k % 16 = 1 GROUP BY 1
+SELECT k, count(*)
+FROM u
+WHERE "$bucket" = 1
+GROUP BY 1
+----
 -- duckdb: SELECT k, CAST(k % 16 AS INTEGER) FROM b16 WHERE k % 16 IN (1, 3)
 SELECT k, "$bucket" FROM b16 WHERE "$bucket" IN (1, 3)
 ----
