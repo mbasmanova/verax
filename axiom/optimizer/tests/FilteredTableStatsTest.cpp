@@ -14,8 +14,11 @@
  * limitations under the License.
  */
 
+#include <fmt/core.h>
 #include <folly/ScopeGuard.h>
 #include <gtest/gtest.h>
+#include <cmath>
+#include <tuple>
 #include "axiom/optimizer/Optimization.h"
 #include "axiom/optimizer/OptimizerMetrics.h"
 #include "axiom/optimizer/tests/HiveQueriesTestBase.h"
@@ -132,9 +135,108 @@ TEST_P(FilteredTableStatsTest, dataFilter) {
 }
 
 TEST_P(FilteredTableStatsTest, bucketFilter) {
+  if (!useV2_) {
+    return;
+  }
+
+  {
+    // Each of the 25 distinct a values appears 25 times.
+    runCtas(
+        "CREATE TABLE u WITH (bucket_count = 8, bucketed_by = ARRAY['a']) AS "
+        "SELECT n_nationkey AS a, r.r_regionkey AS b "
+        "FROM nation, region r, region s");
+    SCOPE_EXIT {
+      hiveMetadata().dropTableIfExists("u");
+    };
+
+    // Scale the distinct key count by the fraction of selected buckets.
+    for (const auto& [condition, bucketFraction, rowFraction] :
+         std::vector<std::tuple<std::string, double, double>>{
+             {"BETWEEN 0 AND 7", 1, 1},
+             {"BETWEEN 2 AND 5", 0.5, 0.5},
+             {"= 2", 0.125, 0.125},
+             {"IN (1, 3)", 0.25, 0.25},
+             {"BETWEEN 2 AND 5 AND b = 1", 0.5, 0.1},
+         }) {
+      {
+        const auto sql =
+            fmt::format("SELECT a FROM u WHERE \"$bucket\" {}", condition);
+        SCOPED_TRACE(sql);
+        EXPECT_NEAR(
+            estimatedCardinality(sql),
+            625 * rowFraction,
+            kCardinalityTolerance);
+      }
+      {
+        const auto sql = fmt::format(
+            "SELECT DISTINCT a FROM u WHERE \"$bucket\" {}", condition);
+        SCOPED_TRACE(sql);
+        EXPECT_EQ(estimatedCardinality(sql), std::ceil(25 * bucketFraction));
+      }
+      {
+        const auto sql = fmt::format(
+            "SELECT \"$bucket\", min(a) FROM u WHERE \"$bucket\" {} GROUP BY 1",
+            condition);
+        SCOPED_TRACE(sql);
+        EXPECT_EQ(estimatedCardinality(sql), 8 * bucketFraction);
+      }
+    }
+
+    // Estimate key predicates within the selected buckets.
+    {
+      const auto sql =
+          "SELECT a FROM u WHERE \"$bucket\" BETWEEN 0 AND 3 AND a = 2";
+      SCOPED_TRACE(sql);
+      EXPECT_NEAR(estimatedCardinality(sql), 25, kCardinalityTolerance);
+    }
+    {
+      const auto sql =
+          "SELECT DISTINCT a FROM u WHERE \"$bucket\" = 1 AND a IN (1, 9)";
+      SCOPED_TRACE(sql);
+      EXPECT_EQ(estimatedCardinality(sql), 2);
+    }
+  }
+
+  // Estimate rows and distinct keys when most buckets are empty.
   runCtas(
       "CREATE TABLE u WITH (bucket_count = 8, bucketed_by = ARRAY['a']) AS "
-      "SELECT n_nationkey AS a, n_name AS b FROM nation");
+      "SELECT * FROM (VALUES (0), (1)) AS t(a)");
+  SCOPE_EXIT {
+    hiveMetadata().dropTableIfExists("u");
+  };
+  for (const auto& [condition, fraction] :
+       std::vector<std::pair<std::string, double>>{
+           {"= 1", 0.125},
+           {"IN (1, 3, 5, 7)", 0.5},
+       }) {
+    {
+      const auto sql =
+          fmt::format("SELECT a FROM u WHERE \"$bucket\" {}", condition);
+      SCOPED_TRACE(sql);
+      // Keep uncertain scan estimates at least one row.
+      EXPECT_EQ(
+          estimatedCardinality(sql),
+          std::max<int64_t>(1, std::llround(2 * fraction)));
+    }
+    {
+      const auto sql = fmt::format(
+          "SELECT DISTINCT a FROM u WHERE \"$bucket\" {}", condition);
+      SCOPED_TRACE(sql);
+      EXPECT_EQ(estimatedCardinality(sql), 1);
+    }
+  }
+}
+
+// Bucket selection preserves each individual key's NDV for composite keys.
+TEST_P(FilteredTableStatsTest, multiKeyBucketFilter) {
+  if (!useV2_) {
+    return;
+  }
+
+  runCtas(
+      "CREATE TABLE u WITH (bucket_count = 8, bucketed_by = ARRAY['a', 'b']) AS "
+      "SELECT n_nationkey AS a, r.r_regionkey AS b "
+      "FROM nation, region r, region s");
   SCOPE_EXIT {
     hiveMetadata().dropTableIfExists("u");
   };
@@ -142,14 +244,21 @@ TEST_P(FilteredTableStatsTest, bucketFilter) {
   for (const auto& [condition, fraction] :
        std::vector<std::pair<std::string, double>>{
            {"BETWEEN 2 AND 5", 0.5},
-           {"= 2", 0.125},
-           {"IN (1, 3)", 0.25},
+           {"BETWEEN 2 AND 5 AND b = 1", 0.1},
        }) {
-    const auto sql =
-        fmt::format("SELECT a FROM u WHERE \"$bucket\" {}", condition);
-    SCOPED_TRACE(sql);
-    EXPECT_NEAR(
-        estimatedCardinality(sql), 25.0 * fraction, kCardinalityTolerance);
+    {
+      const auto sql =
+          fmt::format("SELECT a FROM u WHERE \"$bucket\" {}", condition);
+      SCOPED_TRACE(sql);
+      EXPECT_NEAR(
+          estimatedCardinality(sql), 625 * fraction, kCardinalityTolerance);
+    }
+    {
+      const auto sql = fmt::format(
+          "SELECT DISTINCT a FROM u WHERE \"$bucket\" {}", condition);
+      SCOPED_TRACE(sql);
+      EXPECT_EQ(estimatedCardinality(sql), 25);
+    }
   }
 }
 

@@ -279,6 +279,9 @@ class HiveTableLayout : public TableLayout {
   // column statistics already in 'stats'; a no-op when 'stats' has no column
   // statistics. Shared by connectors that derive a base estimate from partition
   // metadata (e.g. LocalHive, Prism) and own the remaining filters.
+  // For a single bucketing key with known NDV and non-null bucket identities,
+  // applies bucket selection to rows and distinct counts before estimating the
+  // other filters. Otherwise, estimates all filters together.
   void foldNonPartitionFilterStats(
       const velox::connector::hive::HiveTableHandle& handle,
       const FilterSelectivityEstimator& estimator,
