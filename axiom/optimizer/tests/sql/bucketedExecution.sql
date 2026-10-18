@@ -64,6 +64,12 @@ CREATE TABLE plain AS
 -- Grouping on a non-bucket key: the bucketing cannot help.
 SELECT j, count(*), sum(v) FROM t GROUP BY j
 ----
+-- duckdb: SELECT k, v FROM b16 WHERE k % 16 BETWEEN 2 AND 5
+SELECT k, v FROM b16 WHERE "$bucket" BETWEEN 2 AND 5
+----
+-- duckdb: SELECT k, CAST(k % 16 AS INTEGER) FROM b16 WHERE k % 16 IN (1, 3)
+SELECT k, "$bucket" FROM b16 WHERE "$bucket" IN (1, 3)
+----
 -- Two tables bucketed the same way on the join key, counts 8 and 16 (one
 -- divides the other), so the join can pair them without a shuffle.
 SELECT a.k, a.v, b.v FROM t a JOIN u b ON a.k = b.k

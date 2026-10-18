@@ -248,6 +248,23 @@ class LocalHiveConnectorMetadataTest
   std::shared_ptr<LocalHiveConnectorMetadata> metadata_;
 };
 
+// An absent bucket count produces all-null statistics.
+TEST(HiveTableLayoutTest, bucketStats) {
+  for (const auto& [numRows, nullPct] :
+       std::vector<std::pair<uint64_t, float>>{{0, 0}, {10, 100}}) {
+    SCOPED_TRACE(numRows);
+    const auto stats =
+        HiveTableLayout::bucketColumnStats(std::nullopt, numRows);
+    EXPECT_EQ(stats.name, HiveTable::kBucket);
+    EXPECT_EQ(stats.nullPct, nullPct);
+    EXPECT_EQ(stats.numDistinct, 0);
+    EXPECT_EQ(stats.numValues, 0);
+    EXPECT_FALSE(stats.nonNull);
+    EXPECT_FALSE(stats.min.has_value());
+    EXPECT_FALSE(stats.max.has_value());
+  }
+}
+
 TEST_F(LocalHiveConnectorMetadataTest, basic) {
   auto table = metadata_->findTable({kDefaultSchema, "t"});
   ASSERT_TRUE(table != nullptr);

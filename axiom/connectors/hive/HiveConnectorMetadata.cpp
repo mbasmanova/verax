@@ -376,6 +376,26 @@ velox::RowTypePtr HiveTableLayout::dataColumns() const {
 }
 
 // static
+ColumnStatistics HiveTableLayout::bucketColumnStats(
+    std::optional<int32_t> numBuckets,
+    uint64_t numRows) {
+  ColumnStatistics stats;
+  stats.name = HiveTable::kBucket;
+  if (!numBuckets.has_value()) {
+    stats.nullPct = numRows > 0 ? 100.0f : 0.0f;
+    stats.numDistinct = 0;
+    return stats;
+  }
+  VELOX_CHECK_GT(*numBuckets, 0);
+  stats.nonNull = true;
+  stats.min = velox::Variant(int32_t{0});
+  stats.max = velox::Variant(*numBuckets - 1);
+  stats.numDistinct = std::min<uint64_t>(*numBuckets, numRows);
+  stats.numValues = numRows;
+  return stats;
+}
+
+// static
 velox::Variant HiveTableLayout::partitionValueToVariant(
     std::string_view value,
     const velox::Type& type) {
