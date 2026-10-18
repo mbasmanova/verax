@@ -131,6 +131,28 @@ TEST_P(FilteredTableStatsTest, dataFilter) {
       kCardinalityTolerance);
 }
 
+TEST_P(FilteredTableStatsTest, bucketFilter) {
+  runCtas(
+      "CREATE TABLE u WITH (bucket_count = 8, bucketed_by = ARRAY['a']) AS "
+      "SELECT n_nationkey AS a, n_name AS b FROM nation");
+  SCOPE_EXIT {
+    hiveMetadata().dropTableIfExists("u");
+  };
+
+  for (const auto& [condition, fraction] :
+       std::vector<std::pair<std::string, double>>{
+           {"BETWEEN 2 AND 5", 0.5},
+           {"= 2", 0.125},
+           {"IN (1, 3)", 0.25},
+       }) {
+    const auto sql =
+        fmt::format("SELECT a FROM u WHERE \"$bucket\" {}", condition);
+    SCOPED_TRACE(sql);
+    EXPECT_NEAR(
+        estimatedCardinality(sql), 25.0 * fraction, kCardinalityTolerance);
+  }
+}
+
 // Verifies that a partition key filter prunes partitions, resulting in
 // reduced estimated row count from co_estimateStats.
 TEST_P(FilteredTableStatsTest, partitionFilter) {
