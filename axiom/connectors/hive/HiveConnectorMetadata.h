@@ -235,6 +235,14 @@ class HiveTableLayout : public TableLayout {
     return numBuckets_;
   }
 
+  /// Estimates statistics for a bucket identity in [0, numBuckets), assuming
+  /// uniform hashing across buckets. An absent bucket count gives all-null
+  /// statistics. The caller must establish that the scan's files use this
+  /// bucketing to report non-null identities.
+  static ColumnStatistics bucketColumnStats(
+      std::optional<int32_t> numBuckets,
+      uint64_t numRows);
+
   std::shared_ptr<const PartitionType> partitionType() const override {
     return partitionType_;
   }

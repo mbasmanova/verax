@@ -158,7 +158,8 @@ bool hasPartitionStats(
 FilteredTableStats estimateStatsFromPartitionStats(
     const std::vector<PartitionStats>& partitionStats,
     const std::vector<PartitionFilter>& partitionFilters,
-    const std::vector<const Column*>& requestedColumns) {
+    const std::vector<const Column*>& requestedColumns,
+    std::optional<int32_t> numBuckets) {
   size_t numMatchingPartitions{0};
   PersistedStats merged;
   for (const auto& partition : partitionStats) {
@@ -195,6 +196,11 @@ FilteredTableStats estimateStatsFromPartitionStats(
   std::vector<ColumnStatistics> columnStats;
   columnStats.reserve(requestedColumns.size());
   for (const auto* column : requestedColumns) {
+    if (column->name() == HiveTable::kBucket) {
+      columnStats.push_back(
+          HiveTableLayout::bucketColumnStats(numBuckets, merged.numRows));
+      continue;
+    }
     auto it = statsNameToIndex.find(column->name());
     if (it != statsNameToIndex.end()) {
       auto& stats = merged.columns[it->second];
@@ -595,7 +601,8 @@ LocalHiveTableLayout::co_estimateStats(
   // reads is not one the scan produces.
   const auto statsColumnNames =
       withFilterColumns(*hiveHandle, columns, [&](const std::string& name) {
-        return hasPartitionStats(partitionStats_, name);
+        return name == HiveTable::kBucket ||
+            hasPartitionStats(partitionStats_, name);
       });
 
   std::vector<const Column*> statsColumns;
@@ -619,7 +626,7 @@ LocalHiveTableLayout::co_estimateStats(
   }
 
   auto stats = estimateStatsFromPartitionStats(
-      partitionStats_, partitionFilters, statsColumns);
+      partitionStats_, partitionFilters, statsColumns, numBuckets());
   if (!partitionStats_.empty()) {
     // A table with no partition statistics estimates zero rows; reporting that
     // as the rows read would understate the scan rather than leave it unknown.
