@@ -561,7 +561,9 @@ const velox::exec::FixedPointOptions* LocalRunner::prepareFixedPointOptions() {
         };
     fixedPointOptions_->awaitVerdict =
         [verdicts = fixedPointVerdicts_](
-            const velox::exec::WorkerAddress& self, int32_t iteration) {
+            const velox::exec::WorkerAddress& self,
+            int32_t iteration,
+            folly::CancellationToken /*cancel*/) {
           auto verdict = folly::SemiFuture<bool>::makeEmpty();
           verdicts->withVerdict(
               self, iteration, [&](folly::SharedPromise<bool>& promise) {
