@@ -19,7 +19,10 @@ Passes and IR:
 - [Optimizer Passes](docs/OptimizerPasses.md) - Pipeline, pass order, and what each pass owns
 - [Expression Evaluation](docs/ExpressionEvaluation.md) - Where the optimizer may evaluate an expression, and what moving one preserves
 - [Decorrelate](docs/Decorrelate.md) - Removing correlated subqueries; links the rule-specific documents
-- [Fixed Point](docs/FixedPoint.md) - How a recursive query becomes a Velox plan
+- [Fixed Point](docs/FixedPoint.md) - Loops: recursive queries and repeated graph paths, from the logical plan to Velox; why patterns and loops are separate nodes
+- [Graph Queries](docs/GraphTable.md) - GRAPH_TABLE pattern matching: the logical plan node and how optimizer v2 plans it
+  - [Fixed-length patterns](docs/GraphTable-lowering.md) - Planned as joins
+  - [Repeated patterns](docs/GraphTable-repetition.md) - Planned as loops
 - [proposal] [Maps and Arrays as Tables](docs/MapsAndArraysAsTables.md) - Treating map and array columns as relations
 - [Grouping Sets](docs/GroupingSets.md) - Grouping sets, GroupId, and GROUPING()
 

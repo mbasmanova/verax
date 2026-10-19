@@ -146,7 +146,9 @@ pattern intact.
 A repeated pattern needs a loop, and the side the loop starts from depends on
 statistics. Translate lowers it to a `Repeat` node, which the passes treat as
 an operator over its inputs; `LowerRepeat` replaces it with a `FixedPoint`
-once leaf statistics are known.
+once leaf statistics are known. [FixedPoint.md](FixedPoint.md#use-cases)
+explains why a pattern and a loop are separate logical nodes, and maps each use
+case onto them.
 
 ## Not supported yet
 
