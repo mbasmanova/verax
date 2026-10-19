@@ -481,7 +481,9 @@ velox::RowVectorPtr LocalRunner::makeWriteResult(std::optional<int64_t> rows) {
 const velox::exec::FixedPointOptions* LocalRunner::prepareFixedPointOptions() {
   if (std::none_of(
           fragments_.begin(), fragments_.end(), [](const auto& fragment) {
-            return velox::exec::FixedPointLoop::claims(fragment.fragment);
+            return velox::core::PlanNode::findFirstNode<
+                       velox::core::FixedPointNode>(
+                       fragment.fragment.planNode.get()) != nullptr;
           })) {
     return nullptr;
   }
