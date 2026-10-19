@@ -5,7 +5,7 @@ description: Draft a commit message for an Axiom commit. Use when the user asks 
 
 # Write Commit Message
 
-Drafts a commit message that follows the rules in `.claude/CLAUDE.md` (sections "Commit Messages" and "Body length and shape"). The rules there are authoritative — this skill is the workflow for applying them.
+Drafts a commit message for an Axiom change. The title format is in `.claude/CLAUDE.md` ("Commit Messages"). This skill holds the rules for the summary body and the check to run before showing a draft.
 
 ## Guiding principle
 
@@ -17,7 +17,7 @@ The per-pattern rules below all derive from this principle. If a draft passes th
 
 ## Process
 
-1. **Read the rules** — Open `.claude/CLAUDE.md` and re-read the "Commit Messages" and "Body length and shape" sections. Do not draft from memory.
+1. **Read the rules** — Re-read the title format in `.claude/CLAUDE.md` ("Commit Messages") and the rules below. Do not draft from memory.
 
 2. **Gather facts from the diff itself** — Never draft from the conversation alone. The conversation has scaffolding; the diff is the truth.
    - Read the existing commit message (if amending).
@@ -96,6 +96,7 @@ The per-pattern rules below all derive from this principle. If a draft passes th
    - [ ] Each paragraph is ONE long line. No hard wrap at 72/80 columns. Bullet lists are the exception.
    - [ ] No "tests pass" / "N tests pass" / "CI green".
    - [ ] Every factual claim verified against the diff, not recalled.
+   - [ ] References to issue trackers (GitHub issue numbers, internal task IDs) go in the review tool's metadata fields, not in the summary body.
    - [ ] Reads in ~30 seconds.
    - [ ] Length matches the change. Trivial changes are not padded to standard length; standard changes are not condensed to one line.
    - [ ] Prose clarity: no sentence longer than ~30 words; no stacked abstractions ("X advertising Y", "scope of Z"). Each sentence is parseable on first read.
@@ -106,7 +107,7 @@ The per-pattern rules below all derive from this principle. If a draft passes th
    - [ ] Test Plan is a non-obvious test strategy, or omitted — never a list of the tests added.
    - [ ] Every sentence passes the would-I-say-this-aloud test. No defensive citations (file:line, enum value lists), no claims restated at a different abstraction level, no symbol-by-symbol cleanup recitations.
 
-   If any item fails, fix the draft before showing.
+   If any item fails, fix the draft before showing. If unsure about an item, take the stricter reading. Show the result with the draft, as one line of ticked items.
 
 5. **Show the draft** — Present the final draft. Mention any facts you could not verify and want the user to confirm.
 

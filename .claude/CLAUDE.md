@@ -116,7 +116,10 @@ for the complete guide. Key rules are summarized below.
 - Avoid redundant comments that repeat what the code already says. Comments should explain *why*, not *what*.
 - Use `// TODO: Description.` for future work. Do not include author's username.
 - Do not duplicate comments between `.h` and `.cpp`. Document the function in the header; the implementation should not repeat the same comment. Duplicated comments diverge over time.
-- Don't leave reasoning-scaffolding comments in committed code. Comments that capture the thought process — naming a sibling function, citing an example from a design discussion ("e.g. for COUNT-style aggregates"), framing the code defensively against an alternative path that was considered and rejected — are useful working notes while writing but rot quickly: they couple to other functions' internals and to ephemeral conversation context that a fresh reader doesn't share. Before committing, delete any comment that names another function and contrasts it ("X does Y; we do Z"), cites a specific operator/aggregate from discussion, describes a path you didn't take, or reads as a running narrative. Keep only comments that describe an invariant the code maintains or a non-obvious constraint a reader must know. A quick check when re-reading a diff: a comment carrying "rather than", "instead of", "would otherwise" or "unreachable", or naming another function in order to contrast with it, is almost always scaffolding.
+- State an invariant once, where it is owned: the type's doc, the component that guarantees it, or "Optimizer Principles" below for canonical forms. A comment at a use site explains only what is particular to that code. It does not restate or paraphrase a property owned elsewhere — a canonical form, an IR invariant, another component's guarantee. A local statement of a general fact reads as specific to that site, so readers conclude other sites differ or that this code has a limitation, and chase it.
+  - ❌ `// Returns the keys only when every key is one of the state's columns.` — reads as a limitation of this function; it is a fact about canonical form.
+  - ✅ `// The anchor is placed by the same keys, so they must read only the state's columns.` — this function's own reason.
+- Don't leave reasoning-scaffolding comments in committed code. Comments that capture the thought process — naming a sibling function, citing an example from a design discussion ("e.g. for COUNT-style aggregates"), framing the code defensively against an alternative path that was considered and rejected — are useful working notes while writing but rot quickly: they couple to other functions' internals and to ephemeral conversation context that a fresh reader doesn't share. Before committing, delete any comment that names another function and contrasts it ("X does Y; we do Z"), cites a specific operator/aggregate from discussion, describes a path you didn't take, or reads as a running narrative. Keep only comments that describe an invariant this code maintains or a non-obvious constraint particular to it. A quick check when re-reading a diff: a comment carrying "rather than", "instead of", "would otherwise" or "unreachable", or naming another function in order to contrast with it, is almost always scaffolding.
 - After trimming, re-read the function as a fresh reader and check the *other* failure mode: stripping every comment can leave branches whose intent is no longer visible. A silent `else` to a non-trivial `if/else-if` chain, a state mutation whose justification depends on a downstream call, a deliberate-looking "do nothing" — these usually need a one-line `// why` even after every scaffolding comment is gone. Brevity is not "zero comments"; it is "no comment that doesn't earn its line."
 
 #### Public class docs — readability
@@ -279,7 +282,8 @@ A need to share that has no home yet is a signal, not a placement puzzle. If nei
 ## Commit Messages
 
 Draft commit messages with the `write-commit-message` skill
-(`.claude/skills/write-commit-message/`), which applies these rules.
+(`.claude/skills/write-commit-message/`). It holds the rules for the
+summary body and the check to run before showing a draft.
 
 Use conventional commit prefixes with `[Project]` tags:
 
@@ -293,19 +297,6 @@ Format: `[Project] type(scope): Description`
 - Types: `feat`, `fix`, `refactor`, `test`, `docs`
 - Scope is optional, use for subsystem clarity (e.g., `parser`, `optimizer`)
 - Description starts with a capital letter, no trailing period
-
-### Body length and shape
-
-A reviewer should be able to read the message in ~30 seconds and walk away knowing what behavior changed, why, and what is deliberately not done. Aim for the title plus 3-5 short paragraphs:
-
-1. **What changed and why** — one paragraph, with one example query or one before/after fact.
-2. **Mechanism** — one paragraph, the core idea (a new field, a rewrite step, a swapped algorithm). Not a function-by-function walkthrough; the diff is the source of truth.
-3. **Deferred / known limitations** — one short paragraph; name the case and how it surfaces (NYI message, commented-out test, follow-up task). Do not re-explain the design rationale for each deferral.
-4. **Test plan** — the test strategy, and only when it is non-obvious (a manual repro, a CLI run, a fuzzer run). The tests are in the diff — don't list them. Otherwise omit the Test Plan. Don't write "tests pass" — CI reports that.
-
-Avoid the reasoning journey: which sibling function got reused, which alternative paths were considered, which Layer-1 fix enabled which Layer-2 fix. That belongs in the design doc or PR thread, not the commit message. If a section keeps growing past a paragraph, it's usually a hint that the change should be split.
-
-References to issue trackers (GitHub issue numbers, internal task IDs) belong in dedicated metadata fields where your VCS / review tool supports them, not in the summary body. References that don't resolve for an external reader read as noise.
 
 ## Common Mistakes
 
