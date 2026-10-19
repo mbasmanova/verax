@@ -745,23 +745,29 @@ bool satisfies(
   VELOX_UNREACHABLE();
 }
 
+// A fixed point's step runs on one driver per task.
+constexpr int32_t kRecursiveNumDrivers = 1;
+
 class PhysicalPlanRewriter : public NodeRewriter<> {
  public:
   // 'replicate', when set, plans each subtree that reads no recursive state:
-  // a fixed point's step uses it to place such inputs on every task that runs
-  // the loop.
+  // a fixed point's step uses it to place such inputs where the loop needs
+  // them. 'statePartitioning' says where a fixed point's state lives, which
+  // every read of the state in its step carries.
   PhysicalPlanRewriter(
       Builder& builder,
       ExprSimplifier& simplifier,
       const OptimizerOptions& options,
       int32_t numWorkers,
       int32_t numDrivers,
-      std::function<NodeCP(NodeCP)> replicate = nullptr)
+      std::function<NodeCP(NodeCP)> replicate = nullptr,
+      Partitioning statePartitioning = {})
       : NodeRewriter(builder),
         options_{options},
         numWorkers_{numWorkers},
         numDrivers_{numDrivers},
         replicate_{std::move(replicate)},
+        statePartitioning_{std::move(statePartitioning)},
         exprFactory_{builder},
         simplifier_{simplifier} {}
 
@@ -797,35 +803,68 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
     VELOX_UNREACHABLE("Repeat is lowered before physical planning");
   }
 
-  // The loop runs on the tasks that run its anchor, each over its own anchor
-  // rows, and every subtree of the step that reads no recursive state is
-  // placed whole on each of those tasks. Each loop stops when its own delta is
-  // empty, so the loops together compute the fixed point when each row of the
-  // step derives from one row of the loop state. Otherwise the anchor is
-  // gathered and the loop runs on one task.
+  NodeCP rewriteWorkingTable(const WorkingTable* node, NoContext& /*context*/)
+      override {
+    if (node->partitioning() == statePartitioning_) {
+      return node;
+    }
+    return builder().make<WorkingTable>(
+        {.name = node->name(),
+         .outputColumns = node->outputColumns(),
+         .readMode = node->readMode(),
+         .partitioning = statePartitioning_});
+  }
+
+  // With several workers, the loop is one partitioned loop when its step is
+  // not row-local or joins the state with a subtree too large to broadcast,
+  // and the state has keys to partition on (see `planPartitionedLoop`).
+  //
+  // Otherwise each task that runs the anchor loops over its own anchor rows,
+  // with every subtree of the step that reads no recursive state placed whole
+  // on each of those tasks. Each loop stops when its own delta is empty, so the
+  // loops together compute the fixed point when each row of the step derives
+  // from one row of the loop state; when it does not, the anchor is gathered
+  // and the loop runs on one task.
   NodeCP rewriteFixedPoint(const FixedPoint* node, NoContext& context)
       override {
     NodeCP anchor = rewrite(node->anchor(), context);
 
+    if (numWorkers_ > 1 &&
+        (!isRowLocal(node->step()) ||
+         joinsInputTooLargeToBroadcast(node->step()))) {
+      if (auto keys = firstStateKeys(
+              node->step(),
+              PlanObjectSet::fromObjects(node->outputColumns()))) {
+        if (NodeCP loop = planPartitionedLoop(node, anchor, *keys)) {
+          return loop;
+        }
+      }
+    }
+
     std::function<NodeCP(NodeCP)> replicate;
+    Partitioning statePartitioning;
     if (numWorkers_ > 1) {
       if (!isRowLocal(node->step())) {
         anchor = ensureGathered(anchor);
       }
-      replicate = [this, gathered = isGathered(anchor)](NodeCP input) {
+      const bool gathered = isGathered(anchor);
+      replicate = [this, gathered](NodeCP input) {
         NodeCP planned = rewrite(input);
         return gathered ? ensureGathered(planned) : broadcast(planned);
       };
+      if (gathered) {
+        statePartitioning = Partitioning::globalGather();
+      }
     }
 
-    static constexpr int32_t kRecursiveNumDrivers = 1;
     PhysicalPlanRewriter singleThreaded{
         builder(),
         simplifier_,
         options_,
         /*numWorkers=*/1,
         /*numDrivers=*/kRecursiveNumDrivers,
-        std::move(replicate)};
+        std::move(replicate),
+        std::move(statePartitioning)};
     NodeCP step = singleThreaded.rewrite(node->step());
     if (anchor == node->anchor() && step == node->step() &&
         node->recursiveNumDrivers() == kRecursiveNumDrivers) {
@@ -840,6 +879,184 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
         .maxIterations = node->maxIterations(),
         .recursiveNumDrivers = kRecursiveNumDrivers,
     });
+  }
+
+  // Plans 'node' as one loop over all workers, whose step is planned with the
+  // query's workers. 'keys' are the step's first keys, expressions over the
+  // state's columns (see `firstStateKeys`). The anchor is repartitioned on them
+  // so the first iteration finds its rows in place. When every key is a state
+  // column, the state stays hash-partitioned on them: the step's output is
+  // repartitioned on them for the next iteration. Otherwise the state read
+  // claims no partitioning and the step repartitions what it needs. Returns
+  // null when the planned step would move the state other than by hash: the
+  // loop's body then has no single width.
+  NodeCP planPartitionedLoop(
+      const FixedPoint* node,
+      NodeCP anchor,
+      const ExprVector& keys) {
+    // Rewrites the keys over the columns of a branch whose columns line up
+    // with the state's.
+    const auto keysOver = [&](const ColumnVector& branchColumns) {
+      ExprFactory::ExprSubstitution substitution;
+      for (size_t i = 0; i < branchColumns.size(); ++i) {
+        substitution.emplace(node->outputColumns()[i], branchColumns[i]);
+      }
+      return exprFactory_.replace(keys, substitution);
+    };
+    anchor = ensurePartitionedOn(anchor, keysOver(node->sourceColumns()));
+
+    const bool keyedState = std::ranges::all_of(
+        keys, [](ExprCP key) { return key->is(PlanType::kColumnExpr); });
+    PhysicalPlanRewriter partitioned{
+        builder(),
+        simplifier_,
+        options_,
+        numWorkers_,
+        /*numDrivers=*/kRecursiveNumDrivers,
+        [this](NodeCP input) { return rewrite(input); },
+        keyedState ? Partitioning::globalHash(keys) : Partitioning{}};
+    NodeCP step = partitioned.rewrite(node->step());
+    if (keyedState) {
+      step = ensurePartitionedOn(step, keysOver(step->outputColumns()));
+    }
+    if (!movesStateByHash(step)) {
+      return nullptr;
+    }
+
+    return builder().make<FixedPoint>({
+        .anchor = anchor,
+        .step = step,
+        .name = node->name(),
+        .outputColumns = node->outputColumns(),
+        .sourceColumns = node->sourceColumns(),
+        .maxIterations = node->maxIterations(),
+        .recursiveNumDrivers = kRecursiveNumDrivers,
+        .convergence = partitioned.rewrite(emptyDeltaCheck(node)),
+    });
+  }
+
+  // Returns a check over 'node''s latest delta that is true when the delta has
+  // no rows: `count(*) = 0`. Planned with the loop's workers, it counts each
+  // worker's rows and adds up the counts on one task.
+  NodeCP emptyDeltaCheck(const FixedPoint* node) {
+    const auto& functionNames = builder().functionNames();
+    VELOX_USER_CHECK_NOT_NULL(
+        functionNames.count,
+        "A partitioned fixed point needs a count aggregate function");
+    VELOX_USER_CHECK_NOT_NULL(
+        functionNames.equality,
+        "A partitioned fixed point needs an equality function");
+
+    NodeCP delta = builder().make<WorkingTable>(
+        {.name = node->name(),
+         .outputColumns = node->outputColumns(),
+         .readMode = WorkingTableReadMode::kLatestDelta});
+    const TypeCP bigint = toType(velox::BIGINT());
+    const Value oneRow{bigint, 1};
+    ColumnCP numRows = Column::create("num_rows", oneRow);
+    NodeCP count = builder().make<Aggregate>(
+        {.input = delta,
+         .aggregates = {builder().makeAggregate(
+             functionNames.count,
+             oneRow,
+             /*args=*/{},
+             FunctionSet{},
+             /*isDistinct=*/false,
+             /*condition=*/nullptr,
+             /*intermediateType=*/bigint,
+             /*orderKeys=*/{},
+             /*orderTypes=*/{})},
+         .outputColumns = {numRows}});
+    return builder().make<Project>(
+        {count,
+         {exprFactory_.makeEq(
+             numRows,
+             builder().makeLiteral(velox::Variant(int64_t{0}), bigint))},
+         {Column::createBoolean("converged")}});
+  }
+
+  // Returns 'input', with its own columns, hash-partitioned on 'keys',
+  // expressions over its columns.
+  NodeCP ensurePartitionedOn(NodeCP input, const ExprVector& keys) {
+    if (input->physicalProperties().globalPartition.sameClassAs(
+            Partitioning::globalHash(keys))) {
+      return input;
+    }
+    auto [keyed, columnKeys] = PrecomputeProjections::materializeKeys(
+        input, keys, builder(), simplifier_);
+    NodeCP partitioned = partition(keyed, columnKeys);
+    if (partitioned->outputColumns() == input->outputColumns()) {
+      return partitioned;
+    }
+    return builder().make<Project>(
+        {partitioned, toExprs(input->outputColumns()), input->outputColumns()});
+  }
+
+  // Returns the keys of the first operation above the state read that needs
+  // its input partitioned: a join's keys on the state's side, or an
+  // aggregation's grouping keys. The anchor is placed by the same keys, so
+  // they must read only 'stateColumns'; returns nullopt when one reads a column
+  // the step computes, such as an unnest's output.
+  static std::optional<ExprVector> firstStateKeys(
+      NodeCP node,
+      const PlanObjectSet& stateColumns) {
+    NodeCP stateInput = nullptr;
+    for (NodeCP input : node->inputs()) {
+      if (!input->requiredStates().empty()) {
+        stateInput = input;
+      }
+    }
+    if (stateInput == nullptr) {
+      return std::nullopt;
+    }
+    if (auto keys = firstStateKeys(stateInput, stateColumns)) {
+      return keys;
+    }
+
+    const ExprVector* keys = nullptr;
+    if (node->is(NodeType::kJoin)) {
+      const auto* join = node->as<Join>();
+      keys =
+          stateInput == join->left() ? &join->leftKeys() : &join->rightKeys();
+    } else if (node->is(NodeType::kAggregate)) {
+      keys = &node->as<Aggregate>()->groupingKeys();
+    }
+    if (keys == nullptr || keys->empty() ||
+        !stateColumns.containsColumns(*keys)) {
+      return std::nullopt;
+    }
+    return *keys;
+  }
+
+  // True when 'node' joins the recursive state with a subtree that reads no
+  // state and does not fit the broadcast limit.
+  bool joinsInputTooLargeToBroadcast(NodeCP node) {
+    for (NodeCP input : node->inputs()) {
+      if (input->requiredStates().empty()) {
+        if (node->is(NodeType::kJoin) && !broadcastFits(input)) {
+          return true;
+        }
+      } else if (joinsInputTooLargeToBroadcast(input)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // True when every exchange of 'node' that moves rows derived from the state
+  // is a standard hash repartition.
+  static bool movesStateByHash(NodeCP node) {
+    if (node->requiredStates().empty()) {
+      return true;
+    }
+    if (node->is(NodeType::kExchange)) {
+      const auto& partitioning = node->as<Exchange>()->partitioning();
+      if (!partitioning.is(PartitionKind::kPartitioned) ||
+          partitioning.partitionType != nullptr) {
+        return false;
+      }
+    }
+    return std::ranges::all_of(node->inputs(), movesStateByHash);
   }
 
   // Returns output bytes from a point cardinality estimate, or nullopt when the
@@ -2010,6 +2227,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
   const int32_t numWorkers_;
   const int32_t numDrivers_;
   const std::function<NodeCP(NodeCP)> replicate_;
+  const Partitioning statePartitioning_;
   ExprFactory exprFactory_;
   ExprSimplifier& simplifier_;
 

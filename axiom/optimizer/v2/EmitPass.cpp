@@ -239,7 +239,7 @@ class Emitter {
   }
 
   velox::core::PlanNodePtr emit(NodeCP node) {
-    if (step_ != nullptr && node->requiredStates().empty()) {
+    if (fixedPoint_ != nullptr && node->requiredStates().empty()) {
       return emitStepState(node);
     }
     auto plan = emitNode(node);
@@ -545,6 +545,11 @@ class Emitter {
   velox::core::PlanNodePtr emitExchange(const Exchange& exchange);
   velox::core::PlanNodePtr emitTableWrite(const TableWrite& tableWrite);
   velox::core::PlanNodePtr emitFixedPoint(const FixedPoint& fixedPoint);
+
+  // Ends the plan being emitted at 'exchange', which moves rows derived from
+  // the state, and returns the next plan's Exchange.
+  velox::core::PlanNodePtr emitStepExchange(const Exchange& exchange);
+
   velox::core::PlanNodePtr emitWorkingTable(const WorkingTable& workingTable);
 
   // Returns the handle of the scan whose rows 'tableWrite' deletes. Fails if
@@ -557,7 +562,6 @@ class Emitter {
   // destination degrades to a single (gather) output.
   velox::core::PlanNodePtr makeExchangeProducer(
       const Partitioning& partitioning,
-      const velox::RowTypePtr& outputType,
       const velox::core::PlanNodePtr& sourcePlan);
 
   // Builds a producer-side `PartitionedOutput` that gathers 'sourcePlan' to a
@@ -638,18 +642,22 @@ class Emitter {
   MultiFragmentPlan::Options options_;
   int32_t nextNodeId_{0};
 
-  // The fixed point whose step is being emitted, with the states that hold
-  // the step's parts that read no recursive state.
-  struct FixedPointStep {
+  // The fixed point whose step or convergence is being emitted, with the
+  // states that hold their parts that read no recursive state.
+  struct FixedPointEmission {
     std::string stateName;
     std::vector<velox::core::StateDeclarationPtr> states;
+    // The plans cut so far from the step or the convergence being emitted, in
+    // run order. Each ends in the PartitionedOutput of an exchange on the
+    // state's path; the next plan reads it through an Exchange.
+    std::vector<velox::core::PlanNodePtr> cutPlans;
 
     // Returns a name for the next state.
     std::string nextStateName() const {
       return fmt::format("{}_{}", stateName, states.size());
     }
   };
-  FixedPointStep* step_{nullptr};
+  FixedPointEmission* fixedPoint_{nullptr};
 
   // Producer fragments collected as `ir.Exchange`es are lowered; the root
   // fragment is appended last by `emitFragments`.
@@ -1135,10 +1143,8 @@ velox::core::AggregationNode::Aggregate toVeloxFinalAggregate(
     std::string_view intermediateName,
     ExprEmitter& exprEmitter) {
   std::vector<velox::core::TypedExprPtr> inputs;
-  inputs.push_back(
-      std::make_shared<velox::core::FieldAccessTypedExpr>(
-          toTypePtr(aggregateExpr.intermediateType()),
-          std::string{intermediateName}));
+  inputs.push_back(toFieldAccess(
+      toTypePtr(aggregateExpr.intermediateType()), intermediateName));
   for (ExprCP arg : aggregateExpr.args()) {
     if (arg->is(PlanType::kLambdaExpr)) {
       inputs.push_back(exprEmitter.toTypedExpr(arg));
@@ -1483,7 +1489,8 @@ velox::core::PlanNodePtr Emitter::emitMarkDistinct(
 }
 
 velox::core::PlanNodePtr Emitter::emitStateHashJoin(const Join& join) {
-  if (step_ == nullptr || join.joinType() != velox::core::JoinType::kInner ||
+  if (fixedPoint_ == nullptr ||
+      join.joinType() != velox::core::JoinType::kInner ||
       join.leftKeys().empty() || join.nullAsValue()) {
     return nullptr;
   }
@@ -1553,8 +1560,8 @@ std::string Emitter::declareHashTable(
   if (plan->outputType()->names() != names) {
     plan = wrapWithRenameProject(std::move(plan), columns, names);
   }
-  auto stateName = step_->nextStateName();
-  step_->states.push_back(
+  auto stateName = fixedPoint_->nextStateName();
+  fixedPoint_->states.push_back(
       velox::core::HashTableState(
           stateName,
           makeRowType(columns),
@@ -1600,9 +1607,9 @@ velox::core::PlanNodePtr Emitter::finishStateHashJoin(
 }
 
 velox::core::PlanNodePtr Emitter::emitInitialPlan(NodeCP node) {
-  auto* step = std::exchange(step_, nullptr);
+  auto* enclosing = std::exchange(fixedPoint_, nullptr);
   SCOPE_EXIT {
-    step_ = step;
+    fixedPoint_ = enclosing;
   };
   return emit(node);
 }
@@ -1610,8 +1617,8 @@ velox::core::PlanNodePtr Emitter::emitInitialPlan(NodeCP node) {
 velox::core::PlanNodePtr Emitter::emitStepState(NodeCP node) {
   auto initialPlan = emitInitialPlan(node);
   auto schema = initialPlan->outputType();
-  auto stateName = step_->nextStateName();
-  step_->states.push_back(
+  auto stateName = fixedPoint_->nextStateName();
+  fixedPoint_->states.push_back(
       std::make_shared<velox::core::VectorStateDeclaration>(
           stateName, schema, std::move(initialPlan), /*append=*/false));
   return std::make_shared<velox::core::StateSourceNode>(
@@ -1759,8 +1766,7 @@ velox::core::PlanNodePtr Emitter::emitSemiAntiViaLeftSemiProject(
       std::move(right),
       std::move(outputType));
 
-  auto markRef = std::make_shared<velox::core::FieldAccessTypedExpr>(
-      velox::BOOLEAN(), markName);
+  auto markRef = toFieldAccess(velox::BOOLEAN(), markName);
   velox::core::TypedExprPtr markPredicate = markRef;
   if (join.joinType() == velox::core::JoinType::kAnti) {
     markPredicate = std::make_shared<velox::core::CallTypedExpr>(
@@ -2327,6 +2333,10 @@ std::optional<FragmentType> fragmentTypeContribution(NodeCP node) {
           : FragmentType::kSource;
     case NodeType::kValues:
       return FragmentType::kSingle;
+    case NodeType::kFixedPoint:
+      // The loop runs on the tasks that run its anchor; its step and
+      // convergence run in sub-tasks of those tasks.
+      return fragmentTypeContribution(node->as<FixedPoint>()->anchor());
     default: {
       std::optional<FragmentType> result;
       for (NodeCP input : node->inputs()) {
@@ -2469,8 +2479,8 @@ void Emitter::emitGatheredOutput(
 
 velox::core::PlanNodePtr Emitter::makeExchangeProducer(
     const Partitioning& partitioning,
-    const velox::RowTypePtr& outputType,
     const velox::core::PlanNodePtr& sourcePlan) {
+  const auto& outputType = sourcePlan->outputType();
   const auto& serdeKind = chooseExchangeSerdeKind(*outputType);
   switch (partitioning.kind) {
     case PartitionKind::kBroadcast:
@@ -2547,7 +2557,18 @@ velox::core::PlanNodePtr Emitter::makeExchangeConsumer(
       nextId(), outputType, serdeKind);
 }
 
+velox::core::PlanNodePtr Emitter::emitStepExchange(const Exchange& exchange) {
+  velox::core::PlanNodePtr sourcePlan = emit(exchange.input());
+  fixedPoint_->cutPlans.push_back(
+      makeExchangeProducer(exchange.partitioning(), sourcePlan));
+  return makeExchangeConsumer(
+      exchange.partitioning(), sourcePlan->outputType());
+}
+
 velox::core::PlanNodePtr Emitter::emitExchange(const Exchange& exchange) {
+  if (fixedPoint_ != nullptr) {
+    return emitStepExchange(exchange);
+  }
   const auto& partitioning = exchange.partitioning();
 
   // Producer fragment: the exchange's input, capped with a PartitionedOutput.
@@ -2559,13 +2580,10 @@ velox::core::PlanNodePtr Emitter::emitExchange(const Exchange& exchange) {
       source);
   velox::core::PlanNodePtr sourcePlan =
       emitChildFragment(exchange.input(), source);
-  const auto outputType = sourcePlan->outputType();
-
-  source.fragment.planNode =
-      makeExchangeProducer(partitioning, outputType, sourcePlan);
+  source.fragment.planNode = makeExchangeProducer(partitioning, sourcePlan);
 
   velox::core::PlanNodePtr consumer =
-      makeExchangeConsumer(partitioning, outputType);
+      makeExchangeConsumer(partitioning, sourcePlan->outputType());
   fragmentState_.addInputStage(consumer->id(), source.fragmentId);
 
   // A partitioned exchange feeding the outer fragment is a group-routed leaf
@@ -2820,31 +2838,44 @@ velox::core::PlanNodePtr Emitter::emitFixedPoint(const FixedPoint& fixedPoint) {
     options_.maxLocalPartitions = previousMaxLocalPartitions;
   };
   const std::string stateName{fixedPoint.name()};
-  FixedPointStep step{.stateName = stateName};
-  velox::core::PlanNodePtr stepPlan;
+  FixedPointEmission emission{.stateName = stateName};
+  std::vector<velox::core::PlanNodePtr> plans;
+  std::vector<velox::core::PlanNodePtr> partials;
+  velox::core::PlanNodePtr verdict;
   {
-    auto* previousStep = std::exchange(step_, &step);
+    auto* enclosing = std::exchange(fixedPoint_, &emission);
     SCOPE_EXIT {
-      step_ = previousStep;
+      fixedPoint_ = enclosing;
     };
-    stepPlan = emit(fixedPoint.step());
+    auto stepPlan = emit(fixedPoint.step());
+    plans = std::exchange(emission.cutPlans, {});
+    plans.push_back(std::move(stepPlan));
+    if (fixedPoint.convergence() != nullptr) {
+      verdict = emit(fixedPoint.convergence());
+      partials = std::exchange(emission.cutPlans, {});
+    }
   }
 
   auto schema = makeRowType(fixedPoint.outputColumns());
 
-  auto convergence = velox::core::ConvergenceConfig::whenDeltaEmpty(
-      fixedPoint.maxIterations());
+  // A convergence cut at a gather runs its last plan on worker 0 and shares
+  // the answer.
+  const auto maxIterations = fixedPoint.maxIterations();
+  auto convergence = verdict == nullptr
+      ? velox::core::ConvergenceConfig::whenDeltaEmpty(maxIterations)
+      : partials.empty()
+      ? velox::core::ConvergenceConfig::converging(
+            std::move(verdict), maxIterations)
+      : velox::core::ConvergenceConfig::globalVerdict(
+            std::move(partials), std::move(verdict), maxIterations);
 
   std::vector<velox::core::StateDeclarationPtr> stateDeclarations;
   stateDeclarations.push_back(
       std::make_shared<velox::core::VectorStateDeclaration>(
           stateName, schema, std::move(anchorPlan), /*append=*/true));
-  for (auto& state : step.states) {
+  for (auto& state : emission.states) {
     stateDeclarations.push_back(std::move(state));
   }
-  std::vector<velox::core::PlanNodePtr> plans;
-  plans.push_back(std::move(stepPlan));
-
   return std::make_shared<velox::core::FixedPointNode>(
       nextId(),
       std::move(stateDeclarations),

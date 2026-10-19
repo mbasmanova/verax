@@ -32,6 +32,28 @@ WITH RECURSIVE r(n, d) AS (
 )
 SELECT n, d, count(*) FROM r GROUP BY n, d
 ----
+-- A step that joins a table the optimizer cannot size runs as one loop spread
+-- over the workers by the iteration's values.
+WITH RECURSIVE r(n, d) AS (
+  SELECT CAST(1 AS BIGINT), 0
+  UNION ALL
+  SELECT t_no_stats.a % 3 + 1, d + 1
+  FROM r JOIN t_no_stats ON t_no_stats.a = r.n
+  WHERE d < 3
+)
+SELECT n, d, count(*) FROM r GROUP BY n, d
+----
+-- A step whose join key is computed from the iteration's values runs as one
+-- loop that repartitions each iteration's rows on that key.
+WITH RECURSIVE r(n, d) AS (
+  SELECT CAST(0 AS BIGINT), 0
+  UNION ALL
+  SELECT t_no_stats.a % 3, d + 1
+  FROM r JOIN t_no_stats ON t_no_stats.a = r.n + 1
+  WHERE d < 3
+)
+SELECT n, d, count(*) FROM r GROUP BY n, d
+----
 -- A join condition beyond the keys reads the joined table's key and other
 -- columns.
 WITH RECURSIVE r(n, d) AS (

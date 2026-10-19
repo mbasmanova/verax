@@ -463,9 +463,37 @@ class FixedPointMatcher : public PlanMatcherImpl<FixedPointNode> {
       }
     }
 
+    if (match_->partitionedPlans() != nullptr &&
+        !matchPlanChain(
+            plan.plans(), *match_->partitionedPlans(), stateSymbols)) {
+      return MatchResult::failure();
+    }
+
     if (match_->stopWhenDeltaEmpty()) {
       EXPECT_TRUE(plan.convergenceConfig().stopWhenDeltaEmpty);
       EXPECT_TRUE(plan.convergenceConfig().plans.empty());
+    }
+
+    if (match_->stopWhenEmptyEverywhere()) {
+      const auto& convergence = plan.convergenceConfig();
+      EXPECT_FALSE(convergence.stopWhenDeltaEmpty);
+      EXPECT_EQ(convergence.plans.size(), 1);
+      EXPECT_NE(convergence.verdict, nullptr);
+      AXIOM_TEST_RETURN_IF_FAILURE
+      const auto countRows =
+          PlanMatcherBuilder()
+              .stateSource(match_->outputStateEntry(), /*delta=*/true)
+              .partialAggregation()
+              .gather()
+              .finalAggregation()
+              .project()
+              .build();
+      if (!matchPlanChain(
+              {convergence.plans[0], convergence.verdict},
+              *countRows,
+              stateSymbols)) {
+        return MatchResult::failure();
+      }
     }
 
     if (match_->maxIterations().has_value()) {
@@ -480,6 +508,39 @@ class FixedPointMatcher : public PlanMatcherImpl<FixedPointNode> {
   }
 
  private:
+  // Matches 'plans', which run in order with each plan after the first reading
+  // the one before it through an Exchange, against 'chain', whose shuffles mark
+  // those boundaries.
+  static bool matchPlanChain(
+      const std::vector<PlanNodePtr>& plans,
+      const PlanMatcher& chain,
+      const std::unordered_map<std::string, std::string>& symbols) {
+    std::vector<axiom::optimizer::ExecutableFragment> fragments;
+    std::unordered_map<int32_t, int32_t> fragmentIdToIndex;
+    for (int32_t i = 0; i < plans.size(); ++i) {
+      axiom::optimizer::ExecutableFragment fragment{
+          .fragmentId = i, .type = axiom::optimizer::FragmentType::kFixed};
+      fragment.fragment.planNode = plans[i];
+      if (i > 0) {
+        const auto* exchange =
+            PlanNode::findFirstNode<ExchangeNode>(plans[i].get());
+        EXPECT_NE(exchange, nullptr)
+            << "Plan " << i
+            << " reads no Exchange: " << plans[i]->toString(true, true);
+        if (exchange == nullptr) {
+          return false;
+        }
+        fragment.inputStages.push_back(
+            {.consumerNodeId = exchange->id(), .producerFragmentId = i - 1});
+      }
+      fragmentIdToIndex[i] = i;
+      fragments.push_back(std::move(fragment));
+    }
+    const DistributedMatchContext context{
+        &fragments, &fragments.back(), &fragmentIdToIndex};
+    return chain.match(plans.back(), symbols, &context).match;
+  }
+
   // The state alias holds within this fixed point's plans.
   std::unordered_map<std::string, std::string> stateSymbolsOf(
       const FixedPointNode& plan,
@@ -2415,6 +2476,19 @@ FixedPointMatch& FixedPointMatch::plan(PlanMatcherBuilder body) {
 
 FixedPointMatch& FixedPointMatch::convergeOnEmpty(Convergence assertions) {
   stopWhenDeltaEmpty_ = true;
+  errorWhenMaxIterationReached_ = true;
+  maxIterations_ = assertions.maxIterations;
+  return *this;
+}
+
+FixedPointMatch& FixedPointMatch::partitionedPlans(PlanMatcherBuilder body) {
+  partitionedPlans_ = body.build();
+  return *this;
+}
+
+FixedPointMatch& FixedPointMatch::convergeOnEmptyEverywhere(
+    Convergence assertions) {
+  stopWhenEmptyEverywhere_ = true;
   errorWhenMaxIterationReached_ = true;
   maxIterations_ = assertions.maxIterations;
   return *this;

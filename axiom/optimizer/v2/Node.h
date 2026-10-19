@@ -77,12 +77,21 @@ class NodeVisitorContext;
 using NodeCP = const Node*;
 using NodeVector = QGVector<NodeCP>;
 
+/// What a subtree's reads of one recursive state present: the state's columns,
+/// and how the state is placed across workers.
+struct StateRead {
+  ColumnVector columns;
+  Partitioning partitioning;
+
+  bool operator==(const StateRead&) const = default;
+};
+
 /// The recursive states a subtree reads, as carried by
-/// `Node::requiredStates()`: state name to the columns the reads present. Names
-/// are interned, so hashing the pointer is equivalent to hashing the text. In a
+/// `Node::requiredStates()`: state name to what the reads present. Names are
+/// interned, so hashing the pointer is equivalent to hashing the text. In a
 /// valid plan this holds at most one entry; a branch that accumulates more is
 /// rejected by the enclosing `FixedPoint`.
-using RequiredStates = QGF14FastMap<Name, ColumnVector>;
+using RequiredStates = QGF14FastMap<Name, StateRead>;
 
 /// Base class for tree-IR operator nodes. Immutable: every member describing
 /// the node is const and initialized via the constructor. The one exception is
@@ -2498,9 +2507,13 @@ AXIOM_DECLARE_ENUM_NAME(WorkingTableReadMode);
 /// read returns the full recursive result produced through that iteration.
 /// `name` identifies which enclosing fixed-point state to read.
 ///
+/// `partitioning` says where the state lives across workers (see
+/// `FixedPoint`), and the read carries it.
+///
 /// Requires:
 /// - `name` is non-null and identifies the enclosing fixed-point state.
 /// - `outputColumns` share pointer identity with the fixed-point output.
+/// - The keys of `partitioning` are among `outputColumns`.
 class WorkingTable : public Node {
  public:
   struct Key {
@@ -2510,6 +2523,10 @@ class WorkingTable : public Node {
     ColumnVector outputColumns;
     /// Selects the latest iteration's rows or all accumulated rows.
     WorkingTableReadMode readMode;
+    /// Where the state lives across workers: gathered when the loop runs on
+    /// one task, hash-partitioned in a loop partitioned on its state's columns,
+    /// unspecified otherwise. Set by physical planning.
+    Partitioning partitioning;
   };
 
   /// Transparent hasher for interning `WorkingTable`s by identity.
@@ -2537,6 +2554,10 @@ class WorkingTable : public Node {
     return readMode_;
   }
 
+  const Partitioning& partitioning() const {
+    return partitioning_;
+  }
+
   std::span<const NodeCP> inputs() const override {
     return {};
   }
@@ -2554,6 +2575,7 @@ class WorkingTable : public Node {
  private:
   const Name name_;
   const WorkingTableReadMode readMode_;
+  const Partitioning partitioning_;
 };
 
 using WorkingTableCP = const WorkingTable*;
@@ -2581,17 +2603,39 @@ using WorkingTableCP = const WorkingTable*;
 /// latest-delta `WorkingTable[counter]` as the step. The fixed point outputs
 /// all rows accumulated from the anchor and successive step deltas.
 ///
+/// With several workers the loop runs in one of two ways:
+/// - Independent loops: each task that runs the anchor loops over its own
+///   anchor rows and stops when its own delta is empty.
+/// - One partitioned loop: the step repartitions rows across all workers, which
+///   run in lockstep and stop together once no worker's delta has rows.
+/// The step's `WorkingTable` says where the state lives. The output is the
+/// union of the anchor's rows and the step's, partitioned as `UnionAll` would
+/// be over the two.
+///
+/// Without `convergence`, the loop stops once an iteration adds no rows. With
+/// it, the loop stops once `convergence`, which reads the latest delta and
+/// produces one BOOLEAN row, returns true. A partitioned loop needs it: its
+/// workers stop together, on one answer computed from every worker's delta.
+///
 /// Requires:
 /// - `anchor`, `step`, and `name` are non-null.
 /// - `sourceColumns` equal `anchor->outputColumns()` by pointer identity.
 /// - `outputColumns` are fresh and positionally type-compatible with
 ///   `sourceColumns`.
-/// - `step` output is type-compatible with `anchor` output.
+/// - `step` has as many output columns as `anchor`, positionally
+///   type-compatible.
 /// - `anchor->requiredStates()` is empty: the anchor reads no recursive state.
 /// - `step` requires exactly `name`, with columns pointer-identical to
-///   `outputColumns`.
+///   `outputColumns`, through one `WorkingTable`.
 /// - `maxIterations` is at least one.
 /// - `recursiveNumDrivers`, when set by physical planning, is one.
+/// - When the step's `WorkingTable` is gathered or hash-partitioned, `anchor`
+///   and `step` arrive partitioned the same way, on their columns at the
+///   positions of the state's keys.
+/// - `convergence`, when set, reads this fixed point's state as the step does,
+///   through one `WorkingTable`, and outputs one BOOLEAN column.
+/// - A step with an `Exchange` on its path from its `WorkingTable` has a
+///   `convergence`.
 class FixedPoint : public Node {
  public:
   struct Key {
@@ -2612,6 +2656,9 @@ class FixedPoint : public Node {
     /// Unset in logical IR; currently only one is valid, and emission requires
     /// the physically planned value.
     std::optional<int32_t> recursiveNumDrivers;
+    /// Decides after each iteration whether the loop stops; null to stop once
+    /// an iteration adds no rows. Set by physical planning.
+    NodeCP convergence{nullptr};
   };
 
   /// Transparent hasher for interning `FixedPoint`s by identity.
@@ -2637,6 +2684,11 @@ class FixedPoint : public Node {
 
   NodeCP step() const {
     return inputs_[1];
+  }
+
+  /// Null when the loop stops once an iteration adds no rows.
+  NodeCP convergence() const {
+    return inputs_.size() > 2 ? inputs_[2] : nullptr;
   }
 
   Name name() const {
@@ -2671,7 +2723,8 @@ class FixedPoint : public Node {
   RequiredStates deriveRequiredStates() const override;
 
  private:
-  const std::array<NodeCP, 2> inputs_;
+  // The anchor, the step, and the convergence when set.
+  const NodeVector inputs_;
   const Name name_;
   const ColumnVector sourceColumns_;
   const int32_t maxIterations_;
