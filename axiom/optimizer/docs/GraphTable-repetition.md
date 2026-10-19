@@ -133,21 +133,6 @@ property the outputs read.
 hops: the walk's hop count times the edges in one hop. Each `Repeat` outputs
 its hop count, which pruning drops when nothing reads it.
 
-## Nested repetition
-
-A repetition or an optional subpath inside a repeated or optional subpath fails
-as not supported:
-
-```sql
-MATCH (a IS Person)
-  ((x IS Person) -[IS Knows]->{1,2} (y IS Person))? (b IS Person)
-```
-
-Supporting it means the outer `Repeat`'s hop holds the inner walk: building
-the hop lowers the inner repetition between the subpath's vertices, so the hop
-is itself a `Repeat`, and LowerRepeat turns it into a fixed point inside the
-outer fixed point's step.
-
 ## Where the Repeat sits
 
 The lowering joins every connection except the repeated patterns. The rest of
@@ -259,25 +244,39 @@ A join that does not qualify, such as one whose build side repeats a key,
 uses the general form. Emit translates any valid IR; the hash table is how the
 common case avoids rebuilding.
 
-## Path modes and shortest paths
+## Not supported yet
 
-The lowering above covers `WALK`. Restrictive modes and shortest paths extend
-the same `FixedPoint`:
+Each fails with an error that names it; [GraphTable.md](GraphTable.md#not-supported-yet)
+lists every graph query that fails.
 
-- **`TRAIL` and `ACYCLIC`:** the state carries an array of visited edge or
-  vertex identities, and the step keeps only rows that do not revisit one.
-- **`ANY SHORTEST`, `ALL SHORTEST` and unbounded repetition:** the step drops
-  walks whose search state was reached in an earlier iteration, an anti-join
-  against the accumulated result. Without it, a cyclic graph never empties the
-  frontier.
-- **`SHORTEST k`:** the step counts the walks each pair of endpoints already
-  has and drops rows past k.
-- **Single-target shortest path:** the loop stops once the target is reached,
-  a convergence predicate.
+- **A repetition or an optional subpath inside a repeated or optional
+  subpath:**
 
-These need the fixed point to read the accumulated result and to stop on a
-predicate. Velox supports both. The v2 `FixedPoint` can read the accumulated
-result but stops only on an empty delta, and the logical plan exposes neither,
-so Translate never produces them. A visited set that grows
-incrementally also needs mutable keyed state in Velox; without it, the
-anti-join rebuilds a hash table over all reached rows every iteration.
+  ```sql
+  MATCH (a IS Person)
+    ((x IS Person) -[IS Knows]->{1,2} (y IS Person))? (b IS Person)
+  ```
+
+  Supporting it means the outer `Repeat`'s hop holds the inner walk: building
+  the hop lowers the inner repetition between the subpath's vertices, so the
+  hop is itself a `Repeat`, and LowerRepeat turns it into a fixed point inside
+  the outer fixed point's step.
+- **Path modes other than `WALK`, shortest paths, and unbounded repetition.**
+  Each extends the same `FixedPoint`:
+  - **`TRAIL` and `ACYCLIC`:** the state carries an array of visited edge or
+    vertex identities, and the step keeps only rows that revisit none.
+  - **`ANY SHORTEST`, `ALL SHORTEST` and unbounded repetition:** the step drops
+    walks whose search state was reached in an earlier iteration, an anti-join
+    against the accumulated result. On a cyclic graph, that is what empties
+    the frontier.
+  - **`SHORTEST k`:** the step counts the walks each pair of endpoints already
+    has and drops rows past k.
+  - **Single-target shortest path:** the loop stops once the target is
+    reached, a stop condition on the state.
+
+  These read the accumulated result and stop on a condition. Velox supports
+  both. In the v2 IR, a `WorkingTable` can read the accumulated result and
+  `convergence` carries a stop condition; the logical plan exposes neither, so
+  Translate does not produce them. A visited set that grows incrementally also
+  needs mutable keyed state in Velox; the anti-join otherwise rebuilds a hash
+  table over all reached rows every iteration.

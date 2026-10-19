@@ -1,13 +1,14 @@
 # Fixed Point
 
-*How a recursive query becomes a Velox plan: the `FixedPoint` / `WorkingTable`
-IR nodes, the invariants each pass must preserve, and what is deliberately
-rejected.*
+*Loops: recursive queries and repeated graph paths, from the logical plan to
+Velox; the `FixedPoint` / `WorkingTable` IR nodes, the invariants each pass must
+preserve, and what is rejected.*
 
-**Status:** recursive queries plan and run on one or more workers — see
+**Status:** recursive queries and repeated graph patterns plan and run on one
+or more workers — see [Use cases](#use-cases) and
 [Distributed execution](#distributed-execution). Nested recursion, multiple
 recursive references per step, and multiple fixed points per execution
-fragment are rejected — see [Boundaries](#boundaries).
+fragment are rejected — see [Not supported yet](#not-supported-yet).
 
 ## Introduction
 
@@ -27,7 +28,7 @@ while (!convergence(delta)) {
 ```
 
 Reaching `maxIterations` without `convergence` holding is an error, not a
-partial answer — see invariant 6.
+partial answer — see invariant 5.
 
 Three components describe it:
 
@@ -36,25 +37,91 @@ Three components describe it:
 - **`convergence(delta)`** — decides when to terminate.
 
 In practice a **recursion limit** bounds the loop, and further simplifying
-assumptions apply — notably **append-only results**. Several are expandable;
-see [Invariants](#invariants).
+assumptions apply — notably **append-only results**
+(first version; see [Follow-ups](#follow-ups)).
 
-The problems this shape solves:
+## Use cases
 
-| Surface syntax | Underlying computation |
-| --- | --- |
-| SQL `WITH RECURSIVE` | anchor + step, converge on empty delta |
-| Cypher `-[:R*1..n]->` / SQL/PGQ `MATCH` | fixed point over the edge relation, bounded iterations |
-| Reachability / transitive closure | fixed point, UNION ALL step |
-| Shortest path, connected components, PageRank | *general* fixed point (aggregation-in-step, custom convergence) |
+Graph and iterative work reaches the optimizer in two shapes, and each has
+its own logical plan node:
 
-Only the first row is supported today. Recursive CTEs are the narrow SQL entry
-point; `LogicalPlan` is the dialect-agnostic input, so a fixed point is also
-constructible directly through `PlanBuilder::fixedPoint`. Cypher is the intended
-next surface: variable-length patterns are currently planned by inline-expanding
-UNIONs for a fixed hop count (see
-[UnionAllPlanning.md](UnionAllPlanning.md)), and a fixed point
-replaces that unrolling.
+- **A pattern:** which vertices connect to which, along which edges.
+  `GRAPH_TABLE` states it declaratively, and a front-end turns it into a
+  `GraphMatchNode` ([GraphTable.md](GraphTable.md)). Most of a pattern is
+  joins; only a repeated subpath, such as `-[IS Knows]->{1,3}`, iterates.
+- **A loop:** an anchor, a step, and a stop condition. `WITH RECURSIVE` states
+  one, and a front-end that builds logical plans directly can too; either way
+  it becomes a `FixedPointNode`. Iterative algorithms such as PageRank, connected
+  components and k-means are loops too. A recursive query adds new rows each
+  iteration; these refine the same rows instead: a rank per vertex, a
+  component per vertex, a centroid per cluster.
+
+| Use case | Logical plan | Optimizer IR | Velox |
+| --- | --- | --- | --- |
+| `WITH RECURSIVE` | `FixedPointNode` | `FixedPoint` over a `WorkingTable` | `FixedPointNode` |
+| `GRAPH_TABLE` without repetition | `GraphMatchNode` | `Scan`, `Join`, `UnionAll`, `Filter`, `RowNumber`, ... | no loop |
+| `GRAPH_TABLE` with repetition | `GraphMatchNode` | `Repeat`, lowered to `FixedPoint` | `FixedPointNode` |
+| PageRank, connected components, k-means (see [Follow-ups](#follow-ups)) | `FixedPointNode` | `FixedPoint` with replaced state and a `convergence` | `FixedPointNode` |
+
+```mermaid
+%%{init: {"theme": "base", "look": "classic", "themeVariables": {"edgeLabelBackground": "#fcc3a3", "lineColor": "#270f36"}}}%%
+flowchart TD
+  CTE("WITH RECURSIVE (SQL)")
+  ALG("PageRank<br/>Connected Components<br/>K-means")
+  GT("GRAPH_TABLE (SQL)")
+  subgraph Logical["Logical plan"]
+    LFP("FixedPointNode")
+    LGM("GraphMatchNode")
+  end
+  subgraph IR["Optimizer IR"]
+    REP("Repeat")
+    IFP("FixedPoint")
+    REL("Scan<br/>Join<br/>UnionAll<br/>Filter<br/>...")
+  end
+  subgraph Velox
+    VFP("FixedPointNode")
+    VREL("TableScanNode<br/>HashJoinNode<br/>FilterNode<br/>...")
+  end
+  CTE --> LFP
+  ALG -.-> LFP
+  GT --> LGM
+  LFP --> IFP
+  LGM -- "repeated subpath<br/>(Translate pass)" --> REP
+  LGM -- "fixed-length pattern<br/>(Translate pass)" --> REL
+  REP -- "LowerRepeat pass" --> IFP
+  IFP --> VFP
+  REL --> VREL
+
+  classDef input fill:#fcc3a3,stroke:#c76b98,color:#270f36
+  classDef logical fill:#fcc3a3,stroke:#270f36,color:#270f36
+  classDef ir fill:#f09f9c,stroke:#270f36,color:#270f36
+  classDef velox fill:#c76b98,stroke:#270f36,color:#270f36
+  class CTE,ALG,GT input
+  class LFP,LGM logical
+  class REP,IFP,REL ir
+  class VFP,VREL velox
+  style Logical fill:#f09f9c,stroke:#c76b98,color:#270f36
+  style IR fill:#c76b98,stroke:#632b6c,color:#270f36
+  style Velox fill:#632b6c,stroke:#270f36,color:#fcc3a3
+  linkStyle default stroke:#270f36
+```
+
+Two logical nodes keep each shape's intent. A `GraphMatchNode` carries the
+graph and the whole pattern, so Translate can choose the tables each pattern
+matches and hand the joins to join ordering and pushdown. A `FixedPointNode`
+describes the loop itself, so there is nothing more declarative to keep.
+
+The IR keeps a walk visible a little longer
+([GraphTable-repetition.md](GraphTable-repetition.md)):
+
+1. Translate lowers a repeated subpath to a `Repeat`, which names the walk's
+   start, hop and end, and its hop bounds.
+2. The passes up to `EstimateLeafStats` treat the `Repeat` as an operator over
+   those inputs.
+3. `LowerRepeat` turns it into a `FixedPoint` that starts from the side with
+   fewer estimated rows.
+4. From there on, physical planning, Emit and execution see one loop node for
+   every use case.
 
 ## End-to-end mapping
 
@@ -72,8 +139,8 @@ SELECT * FROM counter;
 It maps directly onto the loop above: the anchor is `SELECT 1`, the step is
 `SELECT n + 1 WHERE n < 10`, the loop stops once an iteration adds no rows, and
 the result is `{1, 2, … 10}`. Every fixed point the optimizer plans stops this
-way; a convergence test of another shape is a Velox capability the optimizer
-does not use.
+way; a partitioned loop stops once no worker's iteration adds rows (see
+[Distributed execution](#distributed-execution)).
 
 ### 1. Logical plan
 
@@ -91,7 +158,7 @@ yet — Translate introduces it.
         - RecursiveReference[counter]                    -> n:INTEGER
 ```
 
-### 2. Optimizer v2 IR
+### 2. Optimizer IR
 
 The IR tracks internal details that change over time.
 
@@ -127,18 +194,21 @@ iterations and is seeded from the anchor.
 
 ### Cross-layer correspondence
 
-| Logical plan | Optimizer v2 IR | Velox plan |
+| Logical plan | Optimizer IR | Velox plan |
 | --- | --- | --- |
 | `RecursiveReferenceNode[counter]` | `WorkingTable[counter, latestDelta]` | `StateSourceNode(counter, delta=true)` |
 | — | inner equi-join in the step, build side without a `WorkingTable` | `HashTableStateDeclaration` + `StateHashJoinNode` |
 | — | other subtree of the step without a `WorkingTable` | `VectorStateDeclaration` + `StateSourceNode(delta=false)` |
 | anchor branch | anchor branch | `VectorStateDeclaration(counter, append=true)` |
-| — | — | `ConvergenceConfig::whenDeltaEmpty(maxIterations)` |
+| — | `FixedPoint` without `convergence` | `ConvergenceConfig::whenDeltaEmpty(maxIterations)` |
+| — | `convergence` with a gather `Exchange` | `ConvergenceConfig::globalVerdict`: the plans before the gather run on every worker, the last on worker 0, the task with destination 0 |
+| — | `convergence` without one | `ConvergenceConfig::converging`: the plan runs on every worker |
+| — | `Exchange` on the step's path from its `WorkingTable` | `PartitionedOutput` ending one body plan, `Exchange` starting the next |
 
 `WorkingTableReadMode` also has an `kAccumulated` mode, which emits
 `delta=false` — a read of the whole state rather than the last iteration's
-output. Translate never produces it today; it exists for step shapes that need
-the full result set.
+output. Translate does not produce it; steps that read the whole result, such
+as shortest paths, need it.
 
 ## Invariants
 
@@ -155,15 +225,16 @@ listed separately after the list.
 2. **Each branch reads the state it should, with the state's own columns.** The
    anchor must read no recursive state at all; the step must read exactly this
    fixed point's state, with columns pointer-identical to the fixed-point
-   output. `Node::requiredStates()` carries, per node, the recursive
-   states that subtree needs an enclosing `FixedPoint` to provide, each mapped to
-   the columns its reads present: the union of its inputs' entries, where a
-   `WorkingTable` requires the state it reads and a `FixedPoint` satisfies the
-   one it binds. The map is empty for a self-contained subtree, and the
-   constructor checks presence *and* column identity with one lookup per branch
-   instead of searching the subtrees. Two reads of one state that disagree on
-   columns are rejected where they meet. `Builder::make` primes the map once per
-   node, so a shared subplan is walked once.
+   output. `Node::requiredStates()` carries, per node, the recursive states that
+   subtree needs an enclosing `FixedPoint` to provide, each mapped to what its
+   reads present, the columns and the partitioning: the union of its inputs'
+   entries, where a `WorkingTable` requires the state it reads and a
+   `FixedPoint` satisfies the one it binds. The map is empty for a
+   self-contained subtree, and the constructor checks presence *and* column
+   identity with one lookup per branch instead of searching the subtrees. Two
+   reads of one state that disagree on columns or partitioning are rejected
+   where they meet. `Builder::make` primes the map once per node, so a shared
+   subplan is walked once.
 
 3. **Schema equivalence, not name equality.** Anchor and step output types must
    be equivalent in types and positions, not identical column ids. The step's
@@ -179,61 +250,84 @@ listed separately after the list.
 5. **Bounded.** `maxIterations >= 1`. A SQL recursive CTE carries no depth hint of
    its own, so it inherits the session `recursion_limit` (default 1000) as a
    safety cap; a shape with its own bound — a `1..5` hop pattern — sets
-   `maxIterations` per node instead. Emit builds the `ConvergenceConfig` with
-   `ConvergenceConfig::whenDeltaEmpty`, which sets
-   `errorWhenMaxIterationReached`, so a query that has not converged within the
-   bound fails rather than returning a partial answer.
+   `maxIterations` per node instead. Every `ConvergenceConfig` Emit builds
+   sets `errorWhenMaxIterationReached`, so a query that has not converged
+   within the bound fails rather than returning a partial answer.
+
+6. **The state's placement holds across iterations.** A `WorkingTable`'s
+   `partitioning` says where the state lives: gathered, hash-partitioned on
+   some of its columns, or unspecified. When it is gathered or
+   hash-partitioned, the anchor and the step arrive placed the same way, on
+   their columns at the same positions, so every iteration finds the state
+   where the read says it is. The read's partitioning travels to the
+   `FixedPoint` in `requiredStates()`, next to its columns.
+
+7. **Convergence.** A `FixedPoint` without `convergence` stops once an
+   iteration adds no rows. `convergence`, when set, reads the state as the
+   step does and outputs one BOOLEAN column; the loop stops once it is true.
+   A step with an `Exchange` on its path from its `WorkingTable` has a
+   `convergence`: workers that repartition rows must stop together.
 
 ### Policies the passes impose
 
-These hold for every plan the optimizer produces today, but no constructor check
+These hold for every plan the optimizer produces, but no constructor check
 enforces them — a hand-built node may violate them.
 
 - **Append-only state.** The loop only adds rows; Emit declares the state
   `append`.
 
-## Per-pass changes
+## What each pass does with a fixed point
 
-- **Translate** — lowers a recursive CTE into `FixedPoint(anchor, step)`.
-  `translateRecursiveRef` binds each `RecursiveReferenceNode` to the anchor's
-  `Column*`s and emits a latest-delta `WorkingTable`.
+In pipeline order:
 
-- **PrecomputeProjections** — `rewriteFixedPoint` restores each branch's schema
-  after projection precompute, so the anchor and step keep presenting equivalent
-  output (invariant 3).
+- **Translate** — lowers a recursive CTE into `FixedPoint(anchor, step)`, and
+  each recursive reference in the step into a latest-delta `WorkingTable`. It
+  lowers a graph pattern's fixed-length parts into joins and each repeated
+  subpath into a `Repeat`.
 
-- **PushdownAndPrune** — an outer filter is not pushed into the anchor, and the
-  anchor and step keep `nonNullColumns` empty; otherwise `OuterJoinReduction`
-  could drop null-padded seed rows whose step descendants become non-null via
-  `coalesce`. The pass may replace a right inner-join key within a branch; it
-  restores every branch's original output columns before rebuilding the
-  `FixedPoint` (invariant 4).
+- **LimitAndOrder** — treats `FixedPoint` and `WorkingTable` as limit
+  barriers: a `LIMIT` or an ordering above the loop stays above it.
 
-- **LimitAndOrder** — `FixedPoint` and `WorkingTable` are limit barriers. An
-  outer `LIMIT` or ordering cannot be pushed across the loop boundary.
+- **PushdownAndPrune** — keeps a filter above the loop above it, since a filter
+  on the seed rows can drop rows they lead to that the filter accepts (first
+  version; see [Follow-ups](#follow-ups)). Inside each branch, pushdown and
+  pruning work as usual, and the pass restores each branch's output columns
+  before rebuilding the `FixedPoint` (invariant 4). The branches report no
+  non-null columns, so outer-join reduction keeps a null-padded seed row whose
+  descendants become non-null through `coalesce`.
 
 - **EstimateLeafStats** — `FixedPoint` and `WorkingTable` report unknown
-  cardinality. Convergence depth and per-iteration frontier size are
-  workload-dependent, and a single-pass sum would understate them and skew join
-  placement, so a dependent join cluster is left uncostable and falls back to its
-  written join shape at that boundary.
+  cardinality, so a join cluster that reads a loop keeps its written join shape
+  at that boundary (first version; see [Follow-ups](#follow-ups)).
+
+- **LowerRepeat** — after `EstimateLeafStats`, turns each `Repeat` into a
+  `FixedPoint` that starts from the side with fewer estimated rows
+  ([GraphTable-repetition.md](GraphTable-repetition.md)).
 
 - **PlanPhysical** — plans the anchor with the query's workers, and the step
-  with a nested rewriter pinned to one worker and one driver, and records the
-  result as `recursiveNumDrivers`. With several workers, each subtree of the
-  step that reads no recursive state is planned with the query's workers and
-  placed on every task that runs the loop — see
-  [Distributed execution](#distributed-execution).
+  with one driver, recorded as `recursiveNumDrivers` (first version; see
+  [Follow-ups](#follow-ups)). With several workers it places the loop as
+  independent loops or as one partitioned loop — see [Distributed
+  execution](#distributed-execution). A partitioned loop gets a `convergence`,
+  `count(*) = 0` over the latest delta, planned with the query's workers: each
+  worker counts its rows, and the counts are gathered and added up on one task.
+  A query whose function registry lacks `count` or equality fails.
 
-- **Emit** — emits `ConvergenceConfig::whenDeltaEmpty(maxIterations)`: Velox
-  stops on the row count of the delta it already holds. The step is emitted
-  single-driver by swapping `numDrivers` in the emitter's options copy for the
-  duration of the recursive subtree, so the surrounding query keeps its own
-  parallelism. Restoring parallelism *inside* the
-  loop is intended but not shipped.
+- **Emit** — emits `ConvergenceConfig::whenDeltaEmpty(maxIterations)` for a
+  fixed point without `convergence`: Velox stops on the row count of the delta
+  it already holds. Emit cuts the step at each `Exchange` on its path from the
+  `WorkingTable` into the next body plan, and the `convergence` the same way:
+  the plans before its gather run on every worker, and the last one on worker
+  0, which shares its answer (`ConvergenceConfig::globalVerdict`). Each reads
+  the state once, so its path is a single chain. PlanPhysical placed every
+  exchange, and Emit translates them. Emit gives the step one driver; the
+  surrounding query keeps its own parallelism.
 
-  A fixed point's fragment takes its type from its inputs: a source fragment
-  when its anchor scans a table, a single-task one when the anchor is gathered.
+  A fixed point's fragment takes its type from its anchor alone, since the step
+  and the convergence run in sub-tasks of the anchor's tasks:
+  - a source fragment when the anchor scans a table;
+  - a single-task fragment when the anchor is gathered;
+  - a fixed-width fragment when the anchor is repartitioned.
 
   Velox delivers splits to a fixed point's initial plans and to the nodes above
   the loop, so every part of the step that reads no recursive state becomes an
@@ -244,60 +338,114 @@ enforces them — a hand-built node may violate them.
 
 ## Distributed execution
 
-With several workers, the fixed point runs on the tasks that run its anchor,
-each as an independent loop over its own anchor rows. Every subtree of the step
-that reads no recursive state is placed whole on each of those tasks: broadcast
-when the anchor is spread over several tasks, gathered when it is on one. Each
-task's loop stops when its own delta is empty.
+With several workers, PlanPhysical places a fixed point in one of two ways.
 
-The loops together compute the fixed point when each row of the step derives
-from one row of the recursive state: the state flows only through filters,
-projections, unnests, inner joins, and outer, semi and anti joins on the side
-whose rows they keep. Otherwise PlanPhysical gathers the anchor, and the loop runs on one task. The
-fixed point's output has no partitioning, or is gathered when its anchor is.
+- **Independent loops.** The loop runs on the tasks that run its anchor, each
+  over its own anchor rows. Every subtree of the step that reads no recursive
+  state is placed whole on each of those tasks: broadcast when the anchor is
+  spread over several tasks, gathered when it is on one. Each loop runs on its
+  own and stops when its own delta is empty. The state read is gathered when
+  the anchor is, and unspecified otherwise. This is correct when each row of
+  the step derives from one row of the recursive state, which holds when the
+  state flows only through:
+  - filters, projections and unnests;
+  - inner joins;
+  - outer, semi and anti joins, on the side whose rows they keep.
+- **One partitioned loop.** The step is planned with the query's workers, and
+  repartitions rows across them. The workers run in lockstep and stop
+  together, once no worker's iteration adds rows.
 
-A step that needs every row of a key on one task, such as a visited-set
-anti-join, needs partitioned loops: the delta repartitioned on a key each
-iteration, and a stop condition that every worker evaluates over all of them.
-Velox supports both; the optimizer does not plan them yet.
+PlanPhysical partitions the loop when the step is not row-local, or when it
+joins the state with a subtree that does not fit `broadcast_size_limit`, the
+limit a join's build side must fit to be broadcast. The loop is placed by the
+keys the step first needs: the state's keys in its first join, or the grouping
+keys of its first aggregation, which must read only the state's columns.
 
-## Boundaries
+- The anchor is repartitioned on those keys, evaluated over its columns. That
+  also puts the loop on as many tasks as the step's repartitions have
+  partitions, which the loop's body plans must share.
+- When every key is a state column, the state stays hash-partitioned on them:
+  the `WorkingTable` claims that partitioning, the step's first operation finds
+  the state in place, and the step's output is repartitioned on the keys for
+  the next iteration.
+- Otherwise, as for a key like `r.n + 1`, the `WorkingTable` claims no
+  partitioning, and the step repartitions the delta on the key it computes.
 
-Each of these is rejected with a specific error rather than mis-planned.
+Either way, the usual rules repartition only what the step's operations need: a
+state-free join input on its key, for one. PlanPhysical keeps independent
+loops, or gathers the anchor for a step that is not row-local, when:
+
+- the step has no such keys; or
+- the planned step would move the state other than by a standard hash, since
+  the loop's body plans then would not share one width.
+
+These rules are fixed rather than costed (first version; see
+[Follow-ups](#follow-ups)).
+
+A fixed point's output is the anchor's rows and the step's, so it is
+partitioned as their union is: on the state's keys when the state is
+hash-partitioned, gathered when it is gathered, and unspecified otherwise.
+
+A partitioned loop's tasks are peers: each reads the others' shuffles every
+iteration, and worker 0's verdict reaches the others through the
+application's `FixedPointOptions::publishVerdict` and `awaitVerdict`.
+LocalRunner gives each task of the stage one split per task of the stage on
+the `FixedPointNode`, and carries the verdict in memory.
+
+## Not supported yet
+
+Each of these is rejected with a specific error.
 
 - **Multiple recursive references per step (non-linear recursion).** A step with
   two references would compute `delta ⋈ delta`. The SQL standard and PostgreSQL
   reject a recursive reference appearing more than once; DuckDB evaluates
   `(delta, delta)`. Semi-naive evaluation assumes a single linear reference, so
-  both the semantics and the delta-iteration strategy are undecided. Because v2
-  consumes a logical plan directly rather than only SQL, a two-reference step is
-  constructible via `PlanBuilder`, so the rejection lives in the translator, not
-  only in the SQL parser.
+  both the semantics and the delta-iteration strategy are undecided. The
+  optimizer also accepts logical plans built without the SQL parser, so
+  Translate rejects a step with two references.
 
-- **Nested recursion and multiple fixed points per fragment.** Two enforcement
-  points, not a missing capability: Translate rejects a nested fixed point
-  because `activeFixedPoint_` tracks a single enclosing loop, and Emit's
-  `validateFixedPointLeaves` raises `VELOX_NYI` when more than one
-  `FixedPointNode` appears in *leaf position* within one fragment. Per-loop
-  identity is not the blocker — the interned state `Name` already distinguishes
-  loops end to end, through `WorkingTable`, `FixedPoint`, `RequiredStates`, and
-  the emitted `StateSourceNode` and `VectorStateDeclaration`. Sibling fixed
-  points that are not both fragment leaves already plan today, as
-  `FixedPointTest.siblingRecursions` shows.
+- **Nested recursion and multiple fixed points per fragment.** Translate
+  rejects a fixed point inside another's step, and Emit rejects two fixed
+  points that would run as one fragment's loop. Both are limits of those
+  passes: each loop's state has its own name throughout the IR and the Velox
+  plan. A fixed point inside another's anchor plans.
+
+## Follow-ups
+
+- **Estimates for loops.** `FixedPoint` and `WorkingTable` report unknown
+  cardinality, so joins above a loop keep their written order. A loop's size
+  can be estimated from its step: each iteration's rows times the step's join
+  fan-out, summed over the iterations that `maxIterations`, or a depth filter
+  in the step, allows. The estimate serves every loop, recursive or graph.
+- **Filters into the loop.** A filter above the loop stays above it. A filter
+  on columns the step passes through unchanged gives the same answer for a row
+  and for every row derived from it, so it can also apply inside the anchor
+  and the step.
+- **Parallelism inside an iteration.** Each task runs the step with one
+  driver. Running it with the task's drivers speeds up each iteration.
+- **Costing a loop's placement.** PlanPhysical partitions a loop by fixed
+  rules, on the keys the step needs first. A cost model can weigh one shuffle
+  per iteration against broadcasting a join input or gathering the anchor, and
+  choose the keys.
+- **Iterative algorithms.** A loop accumulates every delta and stops on an
+  empty one. PageRank, connected components and k-means need state that each
+  iteration replaces, and a stop condition computed from the state, such as a
+  change below a threshold. The logical plan and the IR need both; the
+  `convergence` input already carries a stop condition to Velox.
 
 ## Tests
 
-- `optimizer/tests/FixedPointTest.cpp` — SQL-level and `PlanBuilder`-level plan
-  assertions via `PlanMatcher`, including every rejection above.
-  `FixedPointMatch` describes the parts of a `FixedPointNode` to check: the
-  output state and its initial plan, each per-iteration plan, and that the loop
-  stops on an empty delta within its iteration bound.
-- `optimizer/v2/tests/NodePrinterTest.cpp` — the IR printer's rendering of a
-  fixed point, built directly through `Builder`.
+Plan shape and results are tested at different levels:
 
-## References
-
-- D111499361 — [Axiom] feat(optimizer/v2): Plan and lower WITH RECURSIVE queries
-- Workplace post: [*Velox and Axiom for graph queries: a primer*](https://fb.workplace.com/groups/1588734491493342/permalink/2823843241315788/) — motivates the
-  CQL roadmap and introduces recursive CTEs, variable-length patterns, and
-  fixpoint operators.
+- **Plan shape:** `PlanMatcher` tests check each placement, on one worker and
+  on several: independent loops, a loop on one task, and partitioned loops with
+  their body plans and convergence. They also check every rejection in
+  [Not supported yet](#not-supported-yet). `FixedPointTest.cpp` covers
+  recursive queries, and `GraphTableTest.cpp` covers repeated graph patterns.
+- **Results:** the `.sql` files check each query's rows, so a placement that
+  computes the wrong rows fails there.
+  - `fixedPoint.sql` covers recursive queries. It runs each query distributed
+    and compares the rows with DuckDB running the same query.
+  - `graphTableRepetition.sql` covers repeated graph patterns. It runs each
+    query twice, single-node and distributed, and checks the rows listed with
+    the query (DuckDB cannot run `GRAPH_TABLE`).
