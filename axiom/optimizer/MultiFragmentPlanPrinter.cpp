@@ -21,6 +21,7 @@
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 #include <folly/container/F14Set.h>
+#include "velox/core/FixedPointPlanNodes.h"
 #include "velox/core/PlanNode.h"
 
 namespace facebook::axiom::optimizer {
@@ -286,6 +287,20 @@ class ControlNodeVisitor : public velox::core::PlanNodeVisitor {
 
   void visit(const velox::core::MixedUnionNode& node, Ctx& ctx) const override {
     visitUnion(node, estimate(node, ctx), summary(ctx));
+  }
+
+  void visit(const velox::core::FixedPointNode& node, Ctx& ctx) const override {
+    skip(node, ctx);
+  }
+
+  void visit(const velox::core::StateSourceNode& node, Ctx& ctx)
+      const override {
+    skip(node, ctx);
+  }
+
+  void visit(const velox::core::StateHashJoinNode& node, Ctx& ctx)
+      const override {
+    skip(node, ctx);
   }
 
   void visit(const velox::core::PlanNode& node, Ctx& ctx) const override {
