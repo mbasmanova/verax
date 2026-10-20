@@ -30,7 +30,7 @@
 #include "velox/common/time/Timer.h"
 #include "velox/core/FixedPointPlanNodes.h"
 #include "velox/exec/Exchange.h"
-#include "velox/exec/FixedPointLoop.h"
+#include "velox/exec/FixedPointOptions.h"
 #include "velox/exec/PlanNodeStats.h"
 #include "velox/expression/Expr.h"
 
@@ -481,7 +481,9 @@ velox::RowVectorPtr LocalRunner::makeWriteResult(std::optional<int64_t> rows) {
 const velox::exec::FixedPointOptions* LocalRunner::prepareFixedPointOptions() {
   if (std::none_of(
           fragments_.begin(), fragments_.end(), [](const auto& fragment) {
-            return velox::exec::FixedPointLoop::claims(fragment.fragment);
+            return velox::core::PlanNode::findFirstNode<
+                       velox::core::FixedPointNode>(
+                       fragment.fragment.planNode.get()) != nullptr;
           })) {
     return nullptr;
   }
@@ -493,13 +495,13 @@ const velox::exec::FixedPointOptions* LocalRunner::prepareFixedPointOptions() {
     fixedPointOptions_->orchestrationExecutor = fixedPointExecutor_.get();
   }
   fixedPointOptions_->producerLocation =
-      [](const std::string& /*rootWorkerTaskId*/,
-         const std::string& workerAddress,
+      [](const velox::exec::FixedPointOptions::LoopAddress& worker,
          int32_t iteration,
          size_t planIndex) {
         auto id = fmt::format(
-            "local://{}.it{}.p{}", workerAddress, iteration, planIndex);
-        return velox::exec::ProducerLocation{.taskId = id, .exchangeUri = id};
+            "local://{}.it{}.p{}", worker.address, iteration, planIndex);
+        return velox::exec::FixedPointOptions::ProducerLocation{
+            .taskId = id, .exchangeUri = id};
       };
   fixedPointOptions_->subTaskId = [](const std::string& workerTaskId,
                                      int64_t counter) {
