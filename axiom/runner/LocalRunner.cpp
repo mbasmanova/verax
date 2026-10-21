@@ -31,6 +31,7 @@
 #include "velox/core/FixedPointPlanNodes.h"
 #include "velox/exec/Exchange.h"
 #include "velox/exec/FixedPointOptions.h"
+#include "velox/exec/FixedPointSplit.h"
 #include "velox/exec/FixedPointVerdicts.h"
 #include "velox/exec/PlanNodeStats.h"
 #include "velox/expression/Expr.h"
@@ -479,36 +480,24 @@ velox::RowVectorPtr LocalRunner::makeWriteResult(std::optional<int64_t> rows) {
       std::vector<velox::VectorPtr>{std::move(child)});
 }
 
-struct LocalRunner::FixedPointVerdicts {
-  // Maps the id of each task that may run a fixed point to the id of its
-  // stage's worker 0, the stage's task with destination 0.
-  folly::Synchronized<folly::F14FastMap<std::string, std::string>> workerZero;
+namespace {
 
-  // Records that 'taskId' runs in the stage whose worker 0 is
-  // 'workerZeroTaskId'. Called before the task starts.
-  void addTask(std::string taskId, std::string workerZeroTaskId) {
-    workerZero.wlock()->emplace(std::move(taskId), std::move(workerZeroTaskId));
+// Returns the in-process task id of the producer 'planNodeId' of the loop at
+// 'address' in 'iteration'. LocalExchangeSource reads a task by its id, so the
+// same string names the producer and the split reading it.
+std::string producerTaskId(
+    const velox::exec::FixedPointOptions::LoopAddress& address,
+    int32_t iteration,
+    const std::string& planNodeId) {
+  std::string nesting;
+  for (const auto& step : address.nesting) {
+    nesting += fmt::format("/{}.{}", step.planNodeId, step.iteration);
   }
+  return fmt::format(
+      "{}{}.it{}.{}", address.worker, nesting, iteration, planNodeId);
+}
 
-  // Returns the address of worker 0 of the loop at 'self': worker 0's task id
-  // extended by the caller's nesting suffix, as every worker of the loop names
-  // it.
-  velox::exec::FixedPointOptions::LoopAddress workerZeroOf(
-      const velox::exec::FixedPointOptions::LoopAddress& self) const {
-    const auto rootTaskId = workerZero.withRLock([&](const auto& map) {
-      const auto it = map.find(self.rootTaskId);
-      VELOX_CHECK(
-          it != map.end(),
-          "Fixed point task is not part of a stage: {}",
-          self.rootTaskId);
-      return it->second;
-    });
-    return {
-        rootTaskId, rootTaskId + self.address.substr(self.rootTaskId.size())};
-  }
-
-  velox::exec::FixedPointVerdicts verdicts;
-};
+} // namespace
 
 const velox::exec::FixedPointOptions* LocalRunner::prepareFixedPointOptions() {
   if (std::none_of(
@@ -526,32 +515,28 @@ const velox::exec::FixedPointOptions* LocalRunner::prepareFixedPointOptions() {
         std::make_unique<folly::CPUThreadPoolExecutor>(/*numThreads=*/1);
     fixedPointOptions_->orchestrationExecutor = fixedPointExecutor_.get();
 
-    fixedPointVerdicts_ = std::make_shared<FixedPointVerdicts>();
+    auto verdicts = std::make_shared<velox::exec::FixedPointVerdicts>();
     fixedPointOptions_->publishVerdict =
-        [verdicts = fixedPointVerdicts_](
-            const velox::exec::FixedPointOptions::LoopAddress& self,
+        [verdicts](
+            const velox::exec::FixedPointOptions::LoopAddress& workerZero,
             int32_t iteration,
             bool converged) {
-          verdicts->verdicts.publish(
-              verdicts->workerZeroOf(self), iteration, converged);
+          verdicts->publish(workerZero, iteration, converged);
         };
     fixedPointOptions_->awaitVerdict =
-        [verdicts = fixedPointVerdicts_](
-            const velox::exec::FixedPointOptions::LoopAddress& self,
+        [verdicts](
+            const velox::exec::FixedPointOptions::LoopAddress& workerZero,
             int32_t iteration,
             folly::CancellationToken /*cancel*/) {
-          return verdicts->verdicts.get(
-              verdicts->workerZeroOf(self), iteration);
+          return verdicts->get(workerZero, iteration);
         };
   }
-  fixedPointOptions_->producerLocation =
-      [](const velox::exec::FixedPointOptions::LoopAddress& worker,
+  fixedPointOptions_->producerTaskId = producerTaskId;
+  fixedPointOptions_->producerSplit =
+      [](const velox::exec::FixedPointOptions::LoopAddress& peer,
          int32_t iteration,
-         size_t planIndex) {
-        auto id = fmt::format(
-            "local://{}.it{}.p{}", worker.address, iteration, planIndex);
-        return velox::exec::FixedPointOptions::ProducerLocation{
-            .taskId = id, .exchangeUri = id};
+         const std::string& planNodeId) {
+        return remoteSplit(producerTaskId(peer, iteration, planNodeId));
       };
   fixedPointOptions_->subTaskId = [](const std::string& workerTaskId,
                                      int64_t counter) {
@@ -780,22 +765,27 @@ bool needsOutputBufferUpdate(const velox::core::PlanFragment& fragment) {
 }
 
 // The tasks of a partitioned loop's stage are its workers, each reading the
-// others' shuffles every iteration: gives each task one split per task of the
-// stage on the fragment's FixedPointNode.
-void addPeerSplits(
+// others' shuffles every iteration: names them, by their task ids, with a
+// FixedPointSplit on each task's FixedPointNode.
+void addFixedPointSplits(
     const velox::core::PlanFragment& fragment,
     const std::vector<std::shared_ptr<velox::exec::Task>>& stage) {
   const auto* fixedPoint =
       velox::core::PlanNode::findFirstNode<velox::core::FixedPointNode>(
           fragment.planNode.get());
-  if (fixedPoint == nullptr || !fixedPoint->requiresSplits()) {
+  if (fixedPoint == nullptr || !fixedPoint->readsPeers()) {
     return;
   }
+  std::vector<std::string> workers;
+  workers.reserve(stage.size());
   for (const auto& task : stage) {
-    for (const auto& peer : stage) {
-      task->addSplit(
-          fixedPoint->id(), velox::exec::Split(remoteSplit(peer->taskId())));
-    }
+    workers.push_back(task->taskId());
+  }
+  for (const auto& task : stage) {
+    task->addSplit(
+        fixedPoint->id(),
+        velox::exec::Split(
+            std::make_shared<velox::exec::FixedPointSplit>(workers)));
     task->noMoreSplits(fixedPoint->id());
   }
 }
@@ -881,18 +871,12 @@ void LocalRunner::makeStages(
         fragment.type == optimizer::FragmentType::kSource
             ? plan_->options().maxRemotePartitions
             : 1);
-    const auto taskIdOf = [&](int32_t destination) {
-      return fmt::format(
+    for (auto i = 0; i < numTasks; ++i) {
+      auto taskId = fmt::format(
           "local://{}/fragment{}.{}",
           params_.queryCtx->queryId(),
           fragment.fragmentId,
-          destination);
-    };
-    for (auto i = 0; i < numTasks; ++i) {
-      auto taskId = taskIdOf(i);
-      if (fixedPointVerdicts_ != nullptr) {
-        fixedPointVerdicts_->addTask(taskId, taskIdOf(0));
-      }
+          i);
       // Each task in the stage gets a distinct taskUniqueId so AssignUniqueId
       // operators across tasks produce non-overlapping ids. Copy the shared
       // fragment so the per-task value does not leak to sibling tasks.
@@ -920,10 +904,6 @@ void LocalRunner::makeStages(
   {
     std::lock_guard<std::mutex> lock(mutex_);
     stages_.push_back({lastStageTask});
-  }
-  if (fixedPointVerdicts_ != nullptr) {
-    fixedPointVerdicts_->addTask(
-        lastStageTask->taskId(), lastStageTask->taskId());
   }
 
   try {
@@ -987,7 +967,7 @@ void LocalRunner::makeStages(
         }
       }
 
-      addPeerSplits(fragment.fragment, stage);
+      addFixedPointSplits(fragment.fragment, stage);
     }
   } catch (const std::exception&) {
     onError(std::current_exception());
