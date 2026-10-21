@@ -244,6 +244,11 @@ class LocalRunner : public Runner,
   std::unique_ptr<folly::CPUThreadPoolExecutor> fixedPointExecutor_;
   // Keeps the tasks' fixed-point hooks valid for the runner's lifetime.
   std::unique_ptr<velox::exec::FixedPointOptions> fixedPointOptions_;
+  // Carries a partitioned loop's verdicts from its worker 0 to its other
+  // workers. Shared with the hooks in 'fixedPointOptions_'. Null for a plan
+  // without a fixed point, or in serial execution.
+  struct FixedPointVerdicts;
+  std::shared_ptr<FixedPointVerdicts> fixedPointVerdicts_;
   velox::exec::CursorParameters params_;
   std::shared_ptr<velox::memory::MemoryPool> splitExpressionPool_;
   std::unique_ptr<velox::core::ExpressionEvaluator> splitExpressionEvaluator_;
