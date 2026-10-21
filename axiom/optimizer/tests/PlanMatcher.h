@@ -236,6 +236,17 @@ class FixedPointMatch {
   /// reaching the iteration bound before converging fails the query.
   FixedPointMatch& convergeOnEmpty(Convergence assertions = {});
 
+  /// Matches a partitioned loop's per-iteration plans as one chain: each
+  /// shuffle() in 'body' is the boundary between two consecutive plans, which
+  /// the loop runs in that order.
+  FixedPointMatch& partitionedPlans(PlanMatcherBuilder body);
+
+  /// Asserts a partitioned loop stops once an iteration produces no rows on
+  /// any worker: every worker counts the rows of its delta, and worker 0 adds
+  /// up the counts. Also asserts that reaching the iteration bound before
+  /// converging fails the query.
+  FixedPointMatch& convergeOnEmptyEverywhere(Convergence assertions = {});
+
   const std::string& outputStateEntry() const {
     return outputStateEntry_;
   }
@@ -256,6 +267,14 @@ class FixedPointMatch {
     return stopWhenDeltaEmpty_;
   }
 
+  const std::shared_ptr<PlanMatcher>& partitionedPlans() const {
+    return partitionedPlans_;
+  }
+
+  bool stopWhenEmptyEverywhere() const {
+    return stopWhenEmptyEverywhere_;
+  }
+
   const std::optional<int32_t>& maxIterations() const {
     return maxIterations_;
   }
@@ -269,7 +288,9 @@ class FixedPointMatch {
   std::vector<State> states_;
   std::vector<std::shared_ptr<PlanMatcher>> hashTableStates_;
   std::vector<std::shared_ptr<PlanMatcher>> plans_;
+  std::shared_ptr<PlanMatcher> partitionedPlans_;
   bool stopWhenDeltaEmpty_{false};
+  bool stopWhenEmptyEverywhere_{false};
   std::optional<int32_t> maxIterations_;
   std::optional<bool> errorWhenMaxIterationReached_;
 };

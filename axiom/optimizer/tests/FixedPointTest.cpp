@@ -211,6 +211,193 @@ TEST_F(FixedPointTest, distributed) {
   }
 }
 
+// With several workers, a step that needs every row of a key on one task, or
+// that joins a table too large to broadcast, runs as one loop whose state is
+// spread over the workers by a key. Each iteration repartitions what the step
+// produces, and the workers stop together once no worker has new rows.
+TEST_F(FixedPointTest, partitionedLoop) {
+  testConnector_->addTable("t", ROW("a", BIGINT()));
+  testConnector_->addTable("e", ROW({"src", "dst"}, BIGINT()))
+      ->setStats(100'000'000, {});
+  {
+    auto context = makeContext();
+    auto anchor = lp::PlanBuilder(context).tableScan("t").project({"a AS n"});
+    auto logicalPlan = anchor
+                           .fixedPoint(
+                               "r",
+                               lp::PlanBuilder(context)
+                                   .recursiveRef("r", anchor)
+                                   .filter("n < 10")
+                                   .aggregate({"n"}, {})
+                                   .project({"n + 1 AS n"})
+                                   .planNode())
+                           .build();
+    AXIOM_ASSERT_PLAN(
+        toSingleNodePlan(logicalPlan),
+        matchFixedPoint(startFixedPoint("r")
+                            .outputState(/*append=*/true, matchScan("t"))
+                            .plan(matchDelta("r", {"n"})
+                                      .filter("n < 10")
+                                      .singleAggregation({"n"}, {})
+                                      .project({"n + 1"}))
+                            .convergeOnEmpty())
+            .project({"a AS n"})
+            .build());
+
+    auto matcher =
+        matchFixedPoint(startFixedPoint("r")
+                            .outputState(
+                                /*append=*/true, matchScan("t").shuffle({"a"}))
+                            .partitionedPlans(matchDelta("r", {"n"})
+                                                  .filter("n < 10")
+                                                  .singleAggregation({"n"}, {})
+                                                  .project({"n + 1 AS m"})
+                                                  .shuffle({"m"}))
+                            .convergeOnEmptyEverywhere())
+            .project({"a AS n"})
+            .gather()
+            .build();
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(planVelox(logicalPlan).plan, matcher);
+  }
+  {
+    auto logicalPlan = parseSelect(
+        "WITH RECURSIVE r(n) AS ("
+        "  SELECT a FROM t "
+        "  UNION ALL "
+        "  SELECT dst FROM r JOIN e ON src = n) "
+        "SELECT n FROM r");
+    AXIOM_ASSERT_PLAN(
+        toSingleNodePlan(logicalPlan),
+        matchFixedPoint(startFixedPoint("r")
+                            .outputState(/*append=*/true, matchScan("t"))
+                            .hashTableState(matchScan("e"))
+                            .plan(matchDelta("r", {"n"})
+                                      .stateHashJoin({"n"})
+                                      .project({"dst"}))
+                            .convergeOnEmpty())
+            .project({"a AS n"})
+            .build());
+
+    auto matcher =
+        matchFixedPoint(
+            startFixedPoint("r")
+                .outputState(/*append=*/true, matchScan("t").shuffle({"a"}))
+                .hashTableState(matchScan("e").shuffle({"src"}))
+                .partitionedPlans(matchDelta("r", {"n"})
+                                      .stateHashJoin({"n"})
+                                      .project({"dst"})
+                                      .shuffle({"dst"}))
+                .convergeOnEmptyEverywhere())
+            .project({"a AS n"})
+            .gather()
+            .build();
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(planVelox(logicalPlan).plan, matcher);
+  }
+  {
+    // A join key computed from the state leaves the state unpartitioned: each
+    // step repartitions the delta on the key it computes.
+    auto logicalPlan = parseSelect(
+        "WITH RECURSIVE r(n) AS ("
+        "  SELECT a FROM t "
+        "  UNION ALL "
+        "  SELECT dst FROM r JOIN e ON src = n + 1) "
+        "SELECT n FROM r");
+    AXIOM_ASSERT_PLAN(
+        toSingleNodePlan(logicalPlan),
+        matchFixedPoint(startFixedPoint("r")
+                            .outputState(/*append=*/true, matchScan("t"))
+                            .hashTableState(matchScan("e"))
+                            .plan(matchDelta("r", {"n"})
+                                      .project({"n + 1 AS k"})
+                                      .stateHashJoin({"k"})
+                                      .project({"dst"}))
+                            .convergeOnEmpty())
+            .project({"a AS n"})
+            .build());
+
+    auto matcher =
+        matchFixedPoint(startFixedPoint("r")
+                            .outputState(
+                                /*append=*/true,
+                                matchScan("t")
+                                    .project({"a", "a + 1 AS k"})
+                                    .shuffle({"k"})
+                                    .project({"a"}))
+                            .hashTableState(matchScan("e").shuffle({"src"}))
+                            .partitionedPlans(matchDelta("r", {"n"})
+                                                  .project({"n", "n + 1 AS k"})
+                                                  .shuffle({"k"})
+                                                  .stateHashJoin({"k"})
+                                                  .project({"dst"}))
+                            .convergeOnEmptyEverywhere())
+            .project({"a AS n"})
+            .gather()
+            .build();
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(planVelox(logicalPlan).plan, matcher);
+  }
+  {
+    // The join key reads a column the step computes, so the anchor cannot be
+    // placed by it: each task loops over its own anchor rows instead.
+    auto logicalPlan = parseSelect(
+        "WITH RECURSIVE r(n) AS ("
+        "  SELECT a FROM t "
+        "  UNION ALL "
+        "  SELECT dst FROM r CROSS JOIN UNNEST(ARRAY[n, n + 1]) AS u(k) "
+        "  JOIN e ON src = k) "
+        "SELECT n FROM r");
+    auto makeMatcher = [](bool distributed) {
+      return matchFixedPoint(
+                 startFixedPoint("r")
+                     .outputState(/*append=*/true, matchScan("t"))
+                     .hashTableState(matchScan("e").broadcastIf(distributed))
+                     .plan(matchDelta("r", {"n"})
+                               .project()
+                               .unnest()
+                               .stateHashJoin({"k"})
+                               .project({"dst"}))
+                     .convergeOnEmpty())
+          .project({"a AS n"})
+          .gatherIf(distributed)
+          .build();
+    };
+    AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), makeMatcher(false));
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(
+        planVelox(logicalPlan).plan, makeMatcher(true));
+  }
+  {
+    // Grouping on n places the state by n, but the global aggregate then
+    // gathers it, so the loop runs on one task.
+    auto context = makeContext();
+    auto anchor = lp::PlanBuilder(context).tableScan("t").project({"a AS n"});
+    auto logicalPlan = anchor
+                           .fixedPoint(
+                               "r",
+                               lp::PlanBuilder(context)
+                                   .recursiveRef("r", anchor)
+                                   .aggregate({"n"}, {})
+                                   .aggregate({}, {"max(n) AS m"})
+                                   .project({"m + 1 AS n"})
+                                   .planNode())
+                           .build();
+    auto makeMatcher = [](bool distributed) {
+      return matchFixedPoint(
+                 startFixedPoint("r")
+                     .outputState(
+                         /*append=*/true, matchScan("t").gatherIf(distributed))
+                     .plan(matchDelta("r", {"n"})
+                               .singleAggregation({"n"}, {})
+                               .singleAggregation({}, {"max(n) AS m"})
+                               .project({"m + 1"}))
+                     .convergeOnEmpty())
+          .project({"a AS n"})
+          .build();
+    };
+    AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), makeMatcher(false));
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(
+        planVelox(logicalPlan).plan, makeMatcher(true));
+  }
+}
+
 TEST_F(FixedPointTest, outerJoinInAnchor) {
   // The anchor outer join remains outer when the step maps NULL to non-NULL.
   testConnector_->addTable("u", ROW("n", INTEGER()));

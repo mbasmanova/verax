@@ -117,6 +117,47 @@ TEST_F(GraphTableTest, repetition) {
   AXIOM_ASSERT_PLAN(plan, matcher);
 }
 
+// With several workers and edges too large to broadcast, the walks run as one
+// loop spread over the workers by the vertex each walk has reached: the edges
+// are repartitioned on their source, and each step repartitions the walks on
+// the vertex they reach. The end joins the walks where they are.
+TEST_F(GraphTableTest, partitionedRepetition) {
+  optimizerOptions_.broadcastSizeLimit = 0;
+  auto logicalPlan = parseSelect(
+      fmt::format(
+          "WITH {} SELECT * FROM GRAPH_TABLE (g "
+          "MATCH (a IS Person) -[IS Knows]->{{1,2}} (b IS Person) "
+          "COLUMNS (a.name AS a, b.name AS b))",
+          kPeopleGraph));
+  auto matcher =
+      matchFixedPoint(
+          startFixedPoint("walk")
+              .outputState(
+                  /*append=*/true,
+                  matchPerson()
+                      .project({"name", "id AS vertex", "0"})
+                      .shuffle({"vertex"}))
+              .hashTableState(matchScan("knows").shuffle({"src"}))
+              .partitionedPlans(matchDelta("walk", {"name", "vertex", "hops"})
+                                    .filter("hops < 2")
+                                    .stateHashJoin({"vertex"})
+                                    .project(
+                                        {"name",
+                                         "dst AS reached",
+                                         "axiom_bigint_add(hops, 1)"})
+                                    .shuffle({"reached"}))
+              .convergeOnEmptyEverywhere({.maxIterations = 3}))
+          .aliases({"name", "vertex", "hops"})
+          .filter("hops >= 1")
+          .hashJoinInner(
+              matchPerson({"id", "b_name"}).shuffle({"id"}),
+              {.keys = {{"vertex = id"}}})
+          .project({"name", "b_name"})
+          .gather()
+          .build();
+  AXIOM_ASSERT_DISTRIBUTED_PLAN(planVelox(logicalPlan).plan, matcher);
+}
+
 // A repeated subpath's hops are one repetition of its pattern, built once as
 // the loop's hash table: the edges joined with the persons at both ends and
 // filtered with the subpath's condition.
