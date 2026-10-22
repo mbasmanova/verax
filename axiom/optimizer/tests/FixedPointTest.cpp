@@ -113,9 +113,8 @@ TEST_F(FixedPointTest, singleDriverStep) {
   auto recursiveStep = lp::PlanBuilder(context_)
                            .fixedPointState("counter", counter)
                            .filter("n < 10")
-                           .aggregate({}, {"count(*) as n"})
-                           .planNode();
-  auto logicalPlan = counter.fixedPoint("counter", recursiveStep)
+                           .aggregate({}, {"count(*) as n"});
+  auto logicalPlan = counter.recursiveCte("counter", recursiveStep)
                          .aggregate({}, {"count(*)"})
                          .build();
 
@@ -194,9 +193,8 @@ TEST_F(FixedPointTest, distributed) {
                     .fixedPointState("r", anchor)
                     .filter("n < 10")
                     .aggregate({}, {"max(n) AS m"})
-                    .project({"m + 1 AS n"})
-                    .planNode();
-    auto logicalPlan = anchor.fixedPoint("r", step).build();
+                    .project({"m + 1 AS n"});
+    auto logicalPlan = anchor.recursiveCte("r", step).build();
     auto matcher =
         matchFixedPoint(startFixedPoint("r")
                             .outputState(
@@ -223,14 +221,13 @@ TEST_F(FixedPointTest, partitionedLoop) {
     auto context = makeContext();
     auto anchor = lp::PlanBuilder(context).tableScan("t").project({"a AS n"});
     auto logicalPlan = anchor
-                           .fixedPoint(
+                           .recursiveCte(
                                "r",
                                lp::PlanBuilder(context)
                                    .fixedPointState("r", anchor)
                                    .filter("n < 10")
                                    .aggregate({"n"}, {})
-                                   .project({"n + 1 AS n"})
-                                   .planNode())
+                                   .project({"n + 1 AS n"}))
                            .build();
     AXIOM_ASSERT_PLAN(
         toSingleNodePlan(logicalPlan),
@@ -370,14 +367,13 @@ TEST_F(FixedPointTest, partitionedLoop) {
     auto context = makeContext();
     auto anchor = lp::PlanBuilder(context).tableScan("t").project({"a AS n"});
     auto logicalPlan = anchor
-                           .fixedPoint(
+                           .recursiveCte(
                                "r",
                                lp::PlanBuilder(context)
                                    .fixedPointState("r", anchor)
                                    .aggregate({"n"}, {})
                                    .aggregate({}, {"max(n) AS m"})
-                                   .project({"m + 1 AS n"})
-                                   .planNode())
+                                   .project({"m + 1 AS n"}))
                            .build();
     auto makeMatcher = [](bool distributed) {
       return matchFixedPoint(
@@ -562,15 +558,14 @@ TEST_F(FixedPointTest, iterativeLoopRejected) {
   auto anchor = singleRow("n", 1);
   auto step = lp::PlanBuilder(context_)
                   .fixedPointState("counter", anchor)
-                  .project({"n + 1 as n"})
-                  .planNode();
+                  .project({"n + 1 as n"});
   auto makePlan = [&](const lp::LogicalPlanNodePtr& convergence,
                       bool failAtBound) {
     return std::make_shared<lp::FixedPointNode>(
         "fixed_point",
         "counter",
         anchor.planNode(),
-        step,
+        step.planNode(),
         lp::FixedPointNode::OutputMode::kAppend,
         convergence,
         /*maxIterations=*/10,
@@ -596,16 +591,13 @@ TEST_F(FixedPointTest, nestedRecursionRejected) {
   auto inner = singleRow("n", 1);
   auto innerBody = lp::PlanBuilder(context_)
                        .fixedPointState("inner", inner)
-                       .project({"n + 1 as n"})
-                       .planNode();
-  inner.fixedPoint("inner", innerBody);
+                       .project({"n + 1 as n"});
+  inner.recursiveCte("inner", innerBody);
 
   auto outer = singleRow("n", 1);
-  auto outerBody = lp::PlanBuilder(context_)
-                       .fixedPointState("outer", outer)
-                       .unionAll(inner)
-                       .planNode();
-  auto plan = outer.fixedPoint("outer", outerBody).build();
+  auto outerBody =
+      lp::PlanBuilder(context_).fixedPointState("outer", outer).unionAll(inner);
+  auto plan = outer.recursiveCte("outer", outerBody).build();
 
   VELOX_ASSERT_THROW(
       toSingleNodePlan(plan),
@@ -675,16 +667,14 @@ TEST_F(FixedPointTest, pageRank) {
               "rank",
               "out_degree",
               "(rank - previous) * (rank - previous) AS squared_error",
-          })
-          .planNode();
+          });
   auto plan = anchor
-                  .convergingFixedPoint(
+                  .iterateUntil(
                       kRanks,
                       step,
                       state()
                           .aggregate({}, {"sum(squared_error) AS total"})
-                          .project({"coalesce(total, 0.0) < 4e-8"})
-                          .planNode(),
+                          .project({"coalesce(total, 0.0) < 4e-8"}),
                       /*maxIterations=*/100,
                       /*failAtBound=*/false,
                       /*keyColumns=*/{"vertex_id"})
@@ -737,16 +727,14 @@ TEST_F(FixedPointTest, connectedComponents) {
               "v.vertex AS vertex",
               "least(v.label, coalesce(m.label, v.label)) AS label",
               "coalesce(m.label < v.label, false) AS changed",
-          })
-          .planNode();
+          });
   auto plan = anchor
-                  .convergingFixedPoint(
+                  .iterateUntil(
                       kLabels,
                       step,
                       state()
                           .aggregate({}, {"count_if(changed) AS num_changed"})
-                          .project({"num_changed = 0"})
-                          .planNode(),
+                          .project({"num_changed = 0"}),
                       /*maxIterations=*/100,
                       /*failAtBound=*/true,
                       /*keyColumns=*/{"vertex"})
@@ -831,17 +819,15 @@ TEST_F(FixedPointTest, kMeans) {
                "coordinates",
                fmt::format(
                    "{} < 0.0001 AS converged",
-                   distance("coordinates", "previous"))})
-          .planNode();
+                   distance("coordinates", "previous"))});
   auto plan =
       anchor
-          .convergingFixedPoint(
+          .iterateUntil(
               kCentroids,
               step,
               state()
                   .aggregate({}, {"count_if(NOT converged) AS num_moving"})
-                  .project({"num_moving = 0"})
-                  .planNode(),
+                  .project({"num_moving = 0"}),
               /*maxIterations=*/20,
               /*failAtBound=*/false,
               /*keyColumns=*/{"cluster"})

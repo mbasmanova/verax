@@ -853,18 +853,27 @@ class PlanBuilder {
   /// FixedPointNode::recursiveCte). The step must contain at least one
   /// RecursiveReferenceNode named `name`, and anchor and step must produce
   /// equivalent schemas.
-  PlanBuilder& fixedPoint(
-      const std::string& name,
-      const LogicalPlanNodePtr& step);
+  PlanBuilder& recursiveCte(std::string_view name, const PlanBuilder& step);
+
+  /// Wraps the current plan (treated as the anchor) and the step in a
+  /// FixedPointNode named `name` that replaces its state `numIterations` times
+  /// (see FixedPointNode::iterate). `keyColumns` name the anchor's columns that
+  /// form a key of the state, or are empty.
+  PlanBuilder& iterate(
+      std::string_view name,
+      const PlanBuilder& step,
+      int32_t numIterations,
+      const std::vector<std::string>& keyColumns);
 
   /// Wraps the current plan (treated as the anchor), the step and the
   /// convergence plans in a FixedPointNode named `name` that replaces its state
-  /// each iteration (see FixedPointNode::converging). `keyColumns` name the
-  /// anchor's columns that form a key of the state, or are empty.
-  PlanBuilder& convergingFixedPoint(
+  /// each iteration until the convergence is true (see
+  /// FixedPointNode::iterateUntil). `keyColumns` name the anchor's columns that
+  /// form a key of the state, or are empty.
+  PlanBuilder& iterateUntil(
       std::string_view name,
-      const LogicalPlanNodePtr& step,
-      const LogicalPlanNodePtr& convergence,
+      const PlanBuilder& step,
+      const PlanBuilder& convergence,
       int32_t maxIterations,
       bool failAtBound,
       const std::vector<std::string>& keyColumns);

@@ -1652,12 +1652,10 @@ TEST_F(PlanPrinterTest, fixedPointCounter) {
   auto anchor = PlanBuilder(context).values(
       rowType, std::vector<Variant>{Variant::row({1LL})});
 
-  auto step = PlanBuilder(context)
-                  .fixedPointState("t", anchor)
-                  .project({"n + 1 as n"})
-                  .planNode();
+  auto step =
+      PlanBuilder(context).fixedPointState("t", anchor).project({"n + 1 as n"});
 
-  auto plan = anchor.fixedPoint("t", step).build();
+  auto plan = anchor.recursiveCte("t", step).build();
 
   EXPECT_THAT(
       toLines(plan),
@@ -1676,18 +1674,15 @@ TEST_F(PlanPrinterTest, fixedPointReplace) {
 
   auto anchor = PlanBuilder(context).values(
       rowType, std::vector<Variant>{Variant::row({1LL})});
-  auto step = PlanBuilder(context)
-                  .fixedPointState("t", anchor)
-                  .project({"n + 1 as n"})
-                  .planNode();
+  auto step =
+      PlanBuilder(context).fixedPointState("t", anchor).project({"n + 1 as n"});
   auto convergence = PlanBuilder(context)
                          .fixedPointState("t", anchor)
                          .aggregate({}, {"max(n) as m"})
-                         .project({"m >= 10 as done"})
-                         .planNode();
+                         .project({"m >= 10 as done"});
 
   auto plan = anchor
-                  .convergingFixedPoint(
+                  .iterateUntil(
                       "t",
                       step,
                       convergence,
@@ -1771,10 +1766,9 @@ TEST_F(PlanPrinterTest, fixedPointSelfJoin) {
                   .fixedPointState("r", anchor)
                   .as("r1")
                   .join(right, "r1.n = r2.n", JoinType::kInner)
-                  .project({"r1.n as n"})
-                  .planNode();
+                  .project({"r1.n as n"});
 
-  auto plan = anchor.fixedPoint("r", step).build();
+  auto plan = anchor.recursiveCte("r", step).build();
 
   EXPECT_THAT(
       toLines(plan),

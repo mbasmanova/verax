@@ -2353,41 +2353,75 @@ LogicalPlanNodePtr PlanBuilder::build(
   return buildRenameProject();
 }
 
-PlanBuilder& PlanBuilder::fixedPoint(
-    const std::string& name,
-    const LogicalPlanNodePtr& step) {
+namespace {
+
+// Returns the ids of the anchor's columns named 'keyColumns'.
+std::vector<std::string> keyColumnIds(
+    const NameMappings& anchorMapping,
+    const std::vector<std::string>& keyColumns) {
+  std::vector<std::string> ids;
+  ids.reserve(keyColumns.size());
+  for (const auto& column : keyColumns) {
+    auto id = anchorMapping.lookup(column);
+    VELOX_USER_CHECK(
+        id.has_value(), "Key column not found in the anchor: {}", column);
+    ids.push_back(std::move(id.value()));
+  }
+  return ids;
+}
+
+} // namespace
+
+PlanBuilder& PlanBuilder::recursiveCte(
+    std::string_view name,
+    const PlanBuilder& step) {
   VELOX_USER_CHECK_NOT_NULL(
-      node_, "Anchor plan must be set before calling fixedPoint");
-  node_ = FixedPointNode::recursiveCte(nextId(), name, node_, step);
+      node_, "Anchor plan must be set before calling recursiveCte");
+  VELOX_USER_CHECK_NOT_NULL(step.node_, "recursiveCte requires a step plan");
+  node_ = FixedPointNode::recursiveCte(
+      nextId(), std::string(name), node_, step.node_);
   return *this;
 }
 
-PlanBuilder& PlanBuilder::convergingFixedPoint(
+PlanBuilder& PlanBuilder::iterate(
     std::string_view name,
-    const LogicalPlanNodePtr& step,
-    const LogicalPlanNodePtr& convergence,
+    const PlanBuilder& step,
+    int32_t numIterations,
+    const std::vector<std::string>& keyColumns) {
+  VELOX_USER_CHECK_NOT_NULL(
+      node_, "Anchor plan must be set before calling iterate");
+  VELOX_USER_CHECK_NOT_NULL(step.node_, "iterate requires a step plan");
+  node_ = FixedPointNode::iterate(
+      nextId(),
+      std::string(name),
+      node_,
+      step.node_,
+      numIterations,
+      keyColumnIds(*outputMapping_, keyColumns));
+  return *this;
+}
+
+PlanBuilder& PlanBuilder::iterateUntil(
+    std::string_view name,
+    const PlanBuilder& step,
+    const PlanBuilder& convergence,
     int32_t maxIterations,
     bool failAtBound,
     const std::vector<std::string>& keyColumns) {
   VELOX_USER_CHECK_NOT_NULL(
-      node_, "Anchor plan must be set before calling convergingFixedPoint");
-  std::vector<std::string> keyIds;
-  keyIds.reserve(keyColumns.size());
-  for (const auto& column : keyColumns) {
-    auto id = outputMapping_->lookup(column);
-    VELOX_USER_CHECK(
-        id.has_value(), "Key column not found in the anchor: {}", column);
-    keyIds.push_back(std::move(id.value()));
-  }
-  node_ = FixedPointNode::converging(
+      node_, "Anchor plan must be set before calling iterateUntil");
+  VELOX_USER_CHECK_NOT_NULL(step.node_, "iterateUntil requires a step plan");
+  VELOX_USER_CHECK_NOT_NULL(
+      convergence.node_, "iterateUntil requires a convergence plan");
+  node_ = FixedPointNode::iterateUntil(
       nextId(),
       std::string(name),
       node_,
-      step,
-      convergence,
+      step.node_,
+      convergence.node_,
       maxIterations,
       failAtBound,
-      std::move(keyIds));
+      keyColumnIds(*outputMapping_, keyColumns));
   return *this;
 }
 

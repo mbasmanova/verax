@@ -242,8 +242,7 @@ TEST_F(ReferencedTableCollectorTest, fixedPointStepAndConvergenceTables) {
           .fixedPointState("t", anchor)
           .as("t")
           .join(startScan("lineitem").as("l"), "t.id = l.id", JoinType::kInner)
-          .project({"l.id AS id"})
-          .planNode();
+          .project({"l.id AS id"});
   auto convergence =
       planBuilder()
           .fixedPointState("t", anchor)
@@ -251,10 +250,9 @@ TEST_F(ReferencedTableCollectorTest, fixedPointStepAndConvergenceTables) {
           .join(
               startScan("orders_copy").as("c"), "t.id = c.id", JoinType::kInner)
           .aggregate({}, {"count(*) AS n"})
-          .project({"n = 0"})
-          .planNode();
+          .project({"n = 0"});
   auto plan = anchor
-                  .convergingFixedPoint(
+                  .iterateUntil(
                       "t",
                       step,
                       convergence,
