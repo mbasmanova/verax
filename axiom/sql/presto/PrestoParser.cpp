@@ -502,11 +502,11 @@ class RelationPlanner : public AstVisitor {
       auto guard = scopedResetLastNames();
       processQueryBody(unionExpr->right());
     }
-    auto stepNode = builder_->planNode();
+    auto stepBuilder = std::move(builder_);
 
     // Restore builder_ to the anchor and emit the FixedPointNode.
     builder_ = std::move(anchorBuilder);
-    builder_->fixedPoint(/*name=*/cteName, stepNode);
+    builder_->recursiveCte(/*name=*/cteName, *stepBuilder);
   }
 
   void processFrom(const RelationPtr& relation) {

@@ -903,19 +903,16 @@ TEST_F(PlanBuilderTest, fixedPoint) {
                                  .filter("n = src"),
                              /*condition=*/std::nullopt,
                              JoinType::kInner)
-                         .project({"dst AS n"})
-                         .planNode();
-  EXPECT_NO_THROW(PlanBuilder(anchor).fixedPoint("t", lateralStep));
+                         .project({"dst AS n"});
+  EXPECT_NO_THROW(PlanBuilder(anchor).recursiveCte("t", lateralStep));
 
   // Convergence and bound.
-  auto step = PlanBuilder(context)
-                  .fixedPointState("t", anchor)
-                  .project({"n + 1 as n"})
-                  .planNode();
-  auto converging = [&](const LogicalPlanNodePtr& convergence,
+  auto step =
+      PlanBuilder(context).fixedPointState("t", anchor).project({"n + 1 as n"});
+  auto converging = [&](const PlanBuilder& convergence,
                         int32_t maxIterations,
                         const std::vector<std::string>& keyColumns) {
-    return PlanBuilder(anchor).convergingFixedPoint(
+    return PlanBuilder(anchor).iterateUntil(
         "t",
         step,
         convergence,
@@ -927,16 +924,14 @@ TEST_F(PlanBuilderTest, fixedPoint) {
     return PlanBuilder(context)
         .fixedPointState("t", anchor)
         .aggregate({}, {"max(n) as m"})
-        .project(projections)
-        .planNode();
+        .project(projections);
   };
 
   VELOX_ASSERT_USER_THROW(
       converging(
           PlanBuilder(anchor)
               .aggregate({}, {"max(n) as m"})
-              .project({"m >= 10"})
-              .planNode(),
+              .project({"m >= 10"}),
           10,
           {}),
       "FixedPointNode convergence must contain at least one RecursiveReferenceNode named 't'");
@@ -952,6 +947,57 @@ TEST_F(PlanBuilderTest, fixedPoint) {
   VELOX_ASSERT_USER_THROW(
       converging(stateConvergence({"m >= 10"}), 0, {}),
       "FixedPointNode maxIterations must be positive");
+
+  VELOX_ASSERT_USER_THROW(
+      PlanBuilder(anchor).iterateUntil(
+          "t",
+          PlanBuilder(context),
+          stateConvergence({"m >= 10"}),
+          10,
+          false,
+          {}),
+      "iterateUntil requires a step plan");
+  VELOX_ASSERT_USER_THROW(
+      PlanBuilder(anchor).iterateUntil(
+          "t", step, PlanBuilder(context), 10, false, {}),
+      "iterateUntil requires a convergence plan");
+
+  // A read of the state inside a subquery counts.
+  EXPECT_NO_THROW(converging(
+      PlanBuilder(context)
+          .values(ROW({}), std::vector<Variant>{Variant::row({})})
+          .project({Call(
+              "is_null",
+              Subquery(PlanBuilder(context)
+                           .fixedPointState("t", anchor)
+                           .filter("n > 10")
+                           .limit(1)
+                           .project({"n"})
+                           .planNode()))}),
+      10,
+      {}));
+
+  // A loop that replaces its state a fixed number of times.
+  {
+    auto iterating = std::dynamic_pointer_cast<const FixedPointNode>(
+        PlanBuilder(anchor)
+            .iterate("t", step, /*numIterations=*/20, /*keyColumns=*/{"n"})
+            .planNode());
+    EXPECT_EQ(iterating->outputMode(), FixedPointNode::OutputMode::kReplace);
+    EXPECT_EQ(iterating->convergence(), nullptr);
+    EXPECT_EQ(iterating->maxIterations(), 20);
+    EXPECT_FALSE(iterating->failAtBound());
+    EXPECT_THAT(
+        iterating->keyColumns(),
+        testing::ElementsAre(anchor.planNode()->outputType()->nameOf(0)));
+
+    VELOX_ASSERT_USER_THROW(
+        PlanBuilder(anchor).iterate("t", PlanBuilder(context), 20, {}),
+        "iterate requires a step plan");
+    VELOX_ASSERT_USER_THROW(
+        PlanBuilder(anchor).iterate("t", step, 20, {"x"}),
+        "Key column not found in the anchor: x");
+  }
 
   // Key columns.
   auto keyed = std::dynamic_pointer_cast<const FixedPointNode>(
@@ -973,7 +1019,7 @@ TEST_F(PlanBuilderTest, fixedPoint) {
           "fp",
           "t",
           anchor.planNode(),
-          step,
+          step.planNode(),
           FixedPointNode::OutputMode::kAppend,
           /*convergence=*/nullptr,
           /*maxIterations=*/std::nullopt,

@@ -322,24 +322,28 @@ TEST_F(LogicalPlanNodeSerdeTest, tableWriteNode) {
 TEST_F(LogicalPlanNodeSerdeTest, fixedPointNode) {
   auto anchor = PlanBuilder().values(
       ROW("n", BIGINT()), std::vector<Variant>{Variant::row({1LL})});
-  auto step = PlanBuilder()
-                  .fixedPointState("t", anchor)
-                  .project({"n + 1 as n"})
-                  .planNode();
+  auto step =
+      PlanBuilder().fixedPointState("t", anchor).project({"n + 1 as n"});
   auto convergence = PlanBuilder()
                          .fixedPointState("t", anchor)
                          .aggregate({}, {"max(n) as m"})
-                         .project({"m >= 10"})
-                         .planNode();
+                         .project({"m >= 10"});
 
-  testRoundTrip(PlanBuilder(anchor).fixedPoint("t", step).planNode());
+  testRoundTrip(PlanBuilder(anchor).recursiveCte("t", step).planNode());
   testRoundTrip(PlanBuilder(anchor)
-                    .convergingFixedPoint(
+                    .iterateUntil(
                         "t",
                         step,
                         convergence,
                         /*maxIterations=*/100,
                         /*failAtBound=*/false,
+                        /*keyColumns=*/{"n"})
+                    .planNode());
+  testRoundTrip(PlanBuilder(anchor)
+                    .iterate(
+                        "t",
+                        step,
+                        /*numIterations=*/20,
                         /*keyColumns=*/{"n"})
                     .planNode());
 }
