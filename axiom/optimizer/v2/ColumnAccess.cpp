@@ -470,8 +470,15 @@ class Collector : public NodeVisitor {
     addAll(context, node.columnExprs());
   }
 
+  // Each column a read presents is produced from the state column at its
+  // position, so the read's paths are paths of the state's column.
   void visit(const WorkingTable& node, NodeVisitorContext& context)
-      const override {}
+      const override {
+    for (size_t i = 0; i < node.outputColumns().size(); ++i) {
+      accessOf(context).addProducing(
+          node.stateColumns()[i], node.outputColumns()[i]);
+    }
+  }
 
   void visit(const FixedPoint& node, NodeVisitorContext& context)
       const override {}

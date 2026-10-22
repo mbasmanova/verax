@@ -451,6 +451,8 @@ class NodeRewriter {
         .outputColumns = node->outputColumns(),
         .sourceColumns = node->sourceColumns(),
         .maxIterations = node->maxIterations(),
+        .failAtBound = node->failAtBound(),
+        .mode = node->mode(),
         .recursiveNumDrivers = node->recursiveNumDrivers(),
         .convergence = newConvergence,
     });

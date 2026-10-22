@@ -407,10 +407,11 @@ class FixedPointMatcher : public PlanMatcherImpl<FixedPointNode> {
 
     const auto& states = match_->states();
     const auto& hashTableStates = match_->hashTableStates();
-    if (!states.empty() || !hashTableStates.empty()) {
+    const auto& vectorStates = match_->vectorStates();
+    if (!states.empty() || !hashTableStates.empty() || !vectorStates.empty()) {
       EXPECT_EQ(
           fixedPoint.stateDeclarations().size(),
-          states.size() + hashTableStates.size());
+          states.size() + hashTableStates.size() + vectorStates.size());
       AXIOM_TEST_RETURN_IF_FAILURE
     }
     for (const auto& state : states) {
@@ -420,6 +421,13 @@ class FixedPointMatcher : public PlanMatcherImpl<FixedPointNode> {
     }
     if (!matchHashTableStates(fixedPoint, stateSymbols, context)) {
       return MatchResult::failure();
+    }
+    for (const auto& [alias, initialPlan] : vectorStates) {
+      const auto* declaration = findState(fixedPoint, stateSymbols.at(alias));
+      if (!initialPlan->match(declaration->initialPlan(), stateSymbols, context)
+               .match) {
+        return MatchResult::failure();
+      }
     }
     return result;
   }
@@ -496,6 +504,20 @@ class FixedPointMatcher : public PlanMatcherImpl<FixedPointNode> {
       }
     }
 
+    if (match_->convergence() != nullptr) {
+      const auto& convergence = plan.convergenceConfig();
+      EXPECT_FALSE(convergence.stopWhenDeltaEmpty);
+      AXIOM_TEST_RETURN_IF_FAILURE
+      auto convergencePlans = convergence.plans;
+      if (convergence.verdict != nullptr) {
+        convergencePlans.push_back(convergence.verdict);
+      }
+      if (!matchPlanChain(
+              convergencePlans, *match_->convergence(), stateSymbols)) {
+        return MatchResult::failure();
+      }
+    }
+
     if (match_->maxIterations().has_value()) {
       EXPECT_EQ(plan.maxIterations(), *match_->maxIterations());
     }
@@ -541,13 +563,34 @@ class FixedPointMatcher : public PlanMatcherImpl<FixedPointNode> {
     return chain.match(plans.back(), symbols, &context).match;
   }
 
-  // The state alias holds within this fixed point's plans.
+  // The state aliases hold within this fixed point's plans. Each alias of
+  // vectorStates() binds to the next vector state other than the output.
   std::unordered_map<std::string, std::string> stateSymbolsOf(
       const FixedPointNode& plan,
       const std::unordered_map<std::string, std::string>& symbols) const {
     auto stateSymbols = symbols;
     stateSymbols[match_->outputStateEntry()] = plan.outputStateEntry();
+    size_t index = 0;
+    for (const auto& declaration : plan.stateDeclarations()) {
+      if (index < match_->vectorStates().size() &&
+          declaration->is<VectorStateDeclaration>() &&
+          declaration->name() != plan.outputStateEntry()) {
+        stateSymbols[match_->vectorStates()[index++].first] =
+            declaration->name();
+      }
+    }
     return stateSymbols;
+  }
+
+  static const StateDeclaration* findState(
+      const FixedPointNode& plan,
+      const std::string& name) {
+    for (const auto& declaration : plan.stateDeclarations()) {
+      if (declaration->name() == name) {
+        return declaration.get();
+      }
+    }
+    VELOX_FAIL("No state declaration named {}", name);
   }
 
   bool matchState(
@@ -2490,6 +2533,13 @@ FixedPointMatch& FixedPointMatch::hashTableState(
   return *this;
 }
 
+FixedPointMatch& FixedPointMatch::vectorState(
+    std::string alias,
+    PlanMatcherBuilder initialPlan) {
+  vectorStates_.emplace_back(std::move(alias), initialPlan.build());
+  return *this;
+}
+
 FixedPointMatch& FixedPointMatch::plan(PlanMatcherBuilder body) {
   plans_.push_back(body.build());
   return *this;
@@ -2497,7 +2547,16 @@ FixedPointMatch& FixedPointMatch::plan(PlanMatcherBuilder body) {
 
 FixedPointMatch& FixedPointMatch::convergeOnEmpty(Convergence assertions) {
   stopWhenDeltaEmpty_ = true;
-  errorWhenMaxIterationReached_ = true;
+  errorWhenMaxIterationReached_ = assertions.failAtBound.value_or(true);
+  maxIterations_ = assertions.maxIterations;
+  return *this;
+}
+
+FixedPointMatch& FixedPointMatch::converge(
+    PlanMatcherBuilder convergence,
+    Convergence assertions) {
+  convergence_ = convergence.build();
+  errorWhenMaxIterationReached_ = assertions.failAtBound.value_or(true);
   maxIterations_ = assertions.maxIterations;
   return *this;
 }
@@ -2510,7 +2569,7 @@ FixedPointMatch& FixedPointMatch::partitionedPlans(PlanMatcherBuilder body) {
 FixedPointMatch& FixedPointMatch::convergeOnEmptyEverywhere(
     Convergence assertions) {
   stopWhenEmptyEverywhere_ = true;
-  errorWhenMaxIterationReached_ = true;
+  errorWhenMaxIterationReached_ = assertions.failAtBound.value_or(true);
   maxIterations_ = assertions.maxIterations;
   return *this;
 }

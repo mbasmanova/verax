@@ -1064,20 +1064,23 @@ NodeSimplifier::SimplifiedNode NodeSimplifier::make(
 NodeSimplifier::SimplifiedNode NodeSimplifier::make(
     FixedPoint::Key key,
     SimplifiedNode anchor,
-    SimplifiedNode step) {
-  if (anchor.empty()) {
-    return emptyResult(std::move(key.outputColumns));
-  }
-
+    SimplifiedNode step,
+    SimplifiedNode convergence) {
+  // The loop runs its step at least once, and a step can produce rows from an
+  // empty state, so an empty anchor does not make the result empty.
   const ColumnVector stepColumns =
       step.empty() ? step.originalColumns : key.step->outputColumns();
-  key.anchor =
-      restoreExactLayout(anchor.node, key.sourceColumns, anchor.substitutions);
-  if (!step.empty() &&
-      step.node->requiredStates() != key.step->requiredStates()) {
-    step = {key.step, {}};
-  }
+  key.anchor = anchor.node == nullptr
+      ? materialize(anchor)
+      : restoreExactLayout(
+            anchor.node, key.sourceColumns, anchor.substitutions);
+  VELOX_USER_CHECK(
+      step.empty() || step.node->requiredStates().contains(key.name),
+      "FixedPoint step does not depend on the loop's state");
   if (step.empty()) {
+    if (key.mode == FixedPointMode::kReplace) {
+      return emptyResult(std::move(key.outputColumns));
+    }
     VELOX_CHECK_EQ(key.outputColumns.size(), key.sourceColumns.size());
     PlanSubstitutions outputSubstitutions;
     for (size_t i = 0; i < key.outputColumns.size(); ++i) {
@@ -1086,6 +1089,16 @@ NodeSimplifier::SimplifiedNode NodeSimplifier::make(
     return {key.anchor, std::move(outputSubstitutions)};
   }
   key.step = restoreExactLayout(step.node, stepColumns, step.substitutions);
+  if (key.convergence != nullptr) {
+    VELOX_USER_CHECK(
+        !convergence.empty() &&
+            convergence.node->requiredStates().contains(key.name),
+        "FixedPoint convergence does not depend on the loop's state");
+    key.convergence = restoreExactLayout(
+        convergence.node,
+        key.convergence->outputColumns(),
+        convergence.substitutions);
+  }
   return {builder_.make<FixedPoint>(key), {}};
 }
 

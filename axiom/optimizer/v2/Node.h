@@ -23,6 +23,7 @@
 #include <vector>
 
 #include <folly/CppAttributes.h>
+#include <folly/Function.h>
 
 #include "axiom/logical_plan/LogicalPlanNode.h"
 #include "axiom/optimizer/QueryGraph.h"
@@ -78,7 +79,9 @@ using NodeCP = const Node*;
 using NodeVector = QGVector<NodeCP>;
 
 /// What a subtree's reads of one recursive state present: the state's columns,
-/// and how the state is placed across workers.
+/// which are the enclosing fixed point's output columns, and how the state is
+/// placed across workers, over those columns. Every read of one state presents
+/// the same.
 struct StateRead {
   ColumnVector columns;
   Partitioning partitioning;
@@ -1466,6 +1469,10 @@ class Join : public Node {
   /// exchanged. Fails for join types that have no mirrored representation.
   static velox::core::JoinType swapType(velox::core::JoinType joinType);
 
+  /// True when `Key::swapInputs` can exchange the inputs of a join of
+  /// 'joinType' while preserving its output: an inner or outer join.
+  static bool canSwapInputs(velox::core::JoinType joinType);
+
   /// Returns whether replicating the right input while leaving the left input
   /// partitioned preserves results. Output rows must be tied to individual
   /// left rows, and counting joins are excluded because their build counts
@@ -2533,28 +2540,39 @@ AXIOM_DECLARE_ENUM_NAME(WorkingTableReadMode);
 ///
 /// A latest-delta read returns the rows produced by the immediately preceding
 /// anchor or step evaluation, not every row accumulated so far. An accumulated
-/// read returns the full recursive result produced through that iteration.
-/// `name` identifies which enclosing fixed-point state to read.
+/// read returns the full recursive result produced through that iteration. In
+/// a loop that replaces its state, both return the state. `name` identifies
+/// which enclosing fixed-point state to read.
+///
+/// `stateColumns` are the fixed point's output columns. Each read presents
+/// them under its own fresh `outputColumns`, aligned by position, so two reads
+/// of one state are distinct nodes with distinct columns, as two scans of one
+/// table are.
 ///
 /// `partitioning` says where the state lives across workers (see
-/// `FixedPoint`), and the read carries it.
+/// `FixedPoint`), over `stateColumns`. The read's own placement is the same,
+/// over `outputColumns`.
 ///
 /// Requires:
 /// - `name` is non-null and identifies the enclosing fixed-point state.
-/// - `outputColumns` share pointer identity with the fixed-point output.
-/// - The keys of `partitioning` are among `outputColumns`.
+/// - `stateColumns` share pointer identity with the fixed-point output.
+/// - `outputColumns` are fresh, as many as `stateColumns`, with equivalent
+///   types.
+/// - The keys of `partitioning` are among `stateColumns`.
 class WorkingTable : public Node {
  public:
   struct Key {
     /// Identifies the enclosing fixed-point state.
     Name name;
     /// Shares `Column*` identity with the enclosing `FixedPoint` output.
+    ColumnVector stateColumns;
+    /// The columns this read presents, aligned with `stateColumns`.
     ColumnVector outputColumns;
     /// Selects the latest iteration's rows or all accumulated rows.
     WorkingTableReadMode readMode;
-    /// Where the state lives across workers: gathered when the loop runs on
-    /// one task, hash-partitioned in a loop partitioned on its state's columns,
-    /// unspecified otherwise. Set by physical planning.
+    /// Where the state lives across workers, over `stateColumns`: gathered
+    /// when the loop runs on one task, hash-partitioned in a loop partitioned
+    /// on its state's columns, unspecified otherwise. Set by physical planning.
     Partitioning partitioning;
   };
 
@@ -2579,13 +2597,28 @@ class WorkingTable : public Node {
     return name_;
   }
 
+  /// The fixed point's output columns, which `outputColumns()` present by
+  /// position.
+  const ColumnVector& stateColumns() const {
+    return stateColumns_;
+  }
+
   WorkingTableReadMode readMode() const {
     return readMode_;
   }
 
+  /// Where the state lives across workers, over `stateColumns()`. The read's
+  /// own placement, `physicalProperties().globalPartition`, is the same over
+  /// `outputColumns()`.
   const Partitioning& partitioning() const {
     return partitioning_;
   }
+
+  /// Invokes 'visit' for each read of state 'name' under 'node'.
+  static void forEachRead(
+      NodeCP node,
+      Name name,
+      folly::FunctionRef<void(const WorkingTable&)> visit);
 
   std::span<const NodeCP> inputs() const override {
     return {};
@@ -2603,23 +2636,48 @@ class WorkingTable : public Node {
 
  private:
   const Name name_;
+  const ColumnVector stateColumns_;
   const WorkingTableReadMode readMode_;
   const Partitioning partitioning_;
 };
 
 using WorkingTableCP = const WorkingTable*;
 
+/// What a `FixedPoint` returns.
+enum class FixedPointMode : uint8_t {
+  /// The anchor's rows and every iteration's rows, as a recursive CTE does.
+  kAppend,
+  /// The state after the last iteration, as PageRank or k-means do.
+  kReplace,
+};
+
+AXIOM_DECLARE_ENUM_NAME(FixedPointMode);
+
 /// Represents a loop whose `anchor` seeds recursive state and whose `step`
-/// produces one new delta per iteration. For append-only state, the loop is:
+/// computes the next state from it. `mode` selects one of two loops.
+///
+/// kAppend returns every iteration's rows, as a recursive CTE does:
 ///
 ///   delta = anchor(); result = delta;
 ///   for (iteration = 0; iteration < maxIterations; ++iteration) {
 ///     delta = step(delta);
-///     if (delta is empty) {
-///       break;
-///     }
 ///     result += delta;
+///     if (stop(delta)) return result;
 ///   }
+///   if (failAtBound) fail;
+///   return result;
+///
+/// kReplace returns the last state, as PageRank or k-means do:
+///
+///   state = anchor();
+///   for (iteration = 0; iteration < maxIterations; ++iteration) {
+///     state = step(state);
+///     if (stop(state)) return state;
+///   }
+///   if (failAtBound) fail;
+///   return state;
+///
+/// stop(x) is `convergence` over x, or 'x is empty' without one.
 ///
 /// For example:
 ///
@@ -2636,15 +2694,14 @@ using WorkingTableCP = const WorkingTable*;
 /// - Independent loops: each task that runs the anchor loops over its own
 ///   anchor rows and stops when its own delta is empty.
 /// - One partitioned loop: the step repartitions rows across all workers, which
-///   run in lockstep and stop together once no worker's delta has rows.
-/// The step's `WorkingTable` says where the state lives. The output is the
-/// union of the anchor's rows and the step's, partitioned as `UnionAll` would
-/// be over the two.
+///   run in lockstep and stop together, on the loop's `convergence`.
+/// The step's `WorkingTable`s say where the state lives. In either mode, the
+/// output is partitioned as `UnionAll` would be over the anchor's rows and the
+/// step's.
 ///
-/// Without `convergence`, the loop stops once an iteration adds no rows. With
-/// it, the loop stops once `convergence`, which reads the latest delta and
-/// produces one BOOLEAN row, returns true. A partitioned loop needs it: its
-/// workers stop together, on one answer computed from every worker's delta.
+/// `convergence` reads the latest delta, which in kReplace is the state, and
+/// produces one BOOLEAN row. A partitioned loop needs it: its workers stop
+/// together, on one answer computed from every worker's delta.
 ///
 /// Requires:
 /// - `anchor`, `step`, and `name` are non-null.
@@ -2654,16 +2711,18 @@ using WorkingTableCP = const WorkingTable*;
 /// - `step` has as many output columns as `anchor`, positionally
 ///   type-compatible.
 /// - `anchor->requiredStates()` is empty: the anchor reads no recursive state.
-/// - `step` requires exactly `name`, with columns pointer-identical to
-///   `outputColumns`, through one `WorkingTable`.
+/// - `step` requires exactly `name`, with state columns pointer-identical to
+///   `outputColumns`. In kAppend, it reads the state through one
+///   `WorkingTable`.
 /// - `maxIterations` is at least one.
 /// - `recursiveNumDrivers`, when set by physical planning, is one.
-/// - When the step's `WorkingTable` is gathered or hash-partitioned, `anchor`
+/// - When the step's `WorkingTable`s are gathered or hash-partitioned, `anchor`
 ///   and `step` arrive partitioned the same way, on their columns at the
 ///   positions of the state's keys.
-/// - `convergence`, when set, reads this fixed point's state as the step does,
-///   through one `WorkingTable`, and outputs one BOOLEAN column.
-/// - A step with an `Exchange` on its path from its `WorkingTable` has a
+/// - `convergence`, when set, reads this fixed point's state as the step does
+///   and outputs one BOOLEAN column. In kAppend, it reads the state through one
+///   `WorkingTable`.
+/// - A step with an `Exchange` on its path from a `WorkingTable` has a
 ///   `convergence`.
 class FixedPoint : public Node {
  public:
@@ -2681,12 +2740,17 @@ class FixedPoint : public Node {
     ColumnVector sourceColumns;
     /// Maximum number of recursive iterations.
     int32_t maxIterations;
+    /// Whether reaching `maxIterations` before the loop stops fails the query,
+    /// or returns the current result.
+    bool failAtBound{true};
+    /// Whether the loop returns every iteration's rows or the last state.
+    FixedPointMode mode{FixedPointMode::kAppend};
     /// Driver width chosen by physical planning for the step.
     /// Unset in logical IR; currently only one is valid, and emission requires
     /// the physically planned value.
     std::optional<int32_t> recursiveNumDrivers;
     /// Decides after each iteration whether the loop stops; null to stop once
-    /// an iteration adds no rows. Set by physical planning.
+    /// an iteration produces no rows.
     NodeCP convergence{nullptr};
   };
 
@@ -2733,6 +2797,18 @@ class FixedPoint : public Node {
     return maxIterations_;
   }
 
+  bool failAtBound() const {
+    return failAtBound_;
+  }
+
+  FixedPointMode mode() const {
+    return mode_;
+  }
+
+  /// True when 'node' has an Exchange on its path from a read of recursive
+  /// state: the rows of the state move between workers.
+  static bool movesState(NodeCP node);
+
   std::optional<int32_t> recursiveNumDrivers() const {
     return recursiveNumDrivers_;
   }
@@ -2757,6 +2833,8 @@ class FixedPoint : public Node {
   const Name name_;
   const ColumnVector sourceColumns_;
   const int32_t maxIterations_;
+  const bool failAtBound_;
+  const FixedPointMode mode_;
   const std::optional<int32_t> recursiveNumDrivers_;
 };
 
@@ -2918,3 +2996,4 @@ using RepeatCP = const Repeat*;
 
 AXIOM_ENUM_FORMATTER(facebook::axiom::optimizer::v2::NodeType);
 AXIOM_ENUM_FORMATTER(facebook::axiom::optimizer::v2::WorkingTableReadMode);
+AXIOM_ENUM_FORMATTER(facebook::axiom::optimizer::v2::FixedPointMode);

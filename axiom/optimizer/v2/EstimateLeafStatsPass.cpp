@@ -509,6 +509,10 @@ class EmptyScanSimplifier : public NodeRewriter<SimplifiedNodeContext> {
       SimplifiedNodeContext& context) override {
     auto anchor = rewriteChild(node->anchor());
     auto step = rewriteChild(node->step());
+    NodeSimplifier::SimplifiedNode convergence;
+    if (node->convergence() != nullptr) {
+      convergence = rewriteChild(node->convergence());
+    }
     return setResult(
         node,
         simplifier_.make(
@@ -519,10 +523,14 @@ class EmptyScanSimplifier : public NodeRewriter<SimplifiedNodeContext> {
                 .outputColumns = node->outputColumns(),
                 .sourceColumns = node->sourceColumns(),
                 .maxIterations = node->maxIterations(),
+                .failAtBound = node->failAtBound(),
+                .mode = node->mode(),
                 .recursiveNumDrivers = node->recursiveNumDrivers(),
+                .convergence = node->convergence(),
             },
             std::move(anchor),
-            std::move(step)),
+            std::move(step),
+            std::move(convergence)),
         context);
   }
 

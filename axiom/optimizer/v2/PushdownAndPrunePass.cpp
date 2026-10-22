@@ -2755,6 +2755,9 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     // Record the step's paths before the anchor's scan negotiates; the
     // descent reaches them only afterwards.
     access_.addSubtree(*node->step());
+    if (node->convergence() != nullptr) {
+      access_.addSubtree(*node->convergence());
+    }
     for (size_t i = 0; i < node->outputColumns().size(); ++i) {
       access_.addProducing(node->sourceColumns()[i], node->outputColumns()[i]);
     }
@@ -2772,6 +2775,17 @@ class Pushdown : public NodeRewriter<PushdownContext> {
     stepContext.requiredAbove = stepContext.required;
     NodeCP newStep = rewrite(node->step(), stepContext);
 
+    NodeSimplifier::SimplifiedNode newConvergence;
+    if (node->convergence() != nullptr) {
+      PushdownContext convergenceContext;
+      convergenceContext.required.unionObjects(
+          node->convergence()->outputColumns());
+      convergenceContext.requiredAbove = convergenceContext.required;
+      newConvergence = {
+          rewrite(node->convergence(), convergenceContext),
+          std::move(convergenceContext.outputSubstitutions)};
+    }
+
     auto simplified = nodeSimplifier_.make(
         FixedPoint::Key{
             .anchor = node->anchor(),
@@ -2780,10 +2794,14 @@ class Pushdown : public NodeRewriter<PushdownContext> {
             .outputColumns = node->outputColumns(),
             .sourceColumns = node->sourceColumns(),
             .maxIterations = node->maxIterations(),
+            .failAtBound = node->failAtBound(),
+            .mode = node->mode(),
             .recursiveNumDrivers = node->recursiveNumDrivers(),
+            .convergence = node->convergence(),
         },
         {newAnchor, std::move(anchorContext.outputSubstitutions)},
-        {newStep, std::move(stepContext.outputSubstitutions)});
+        {newStep, std::move(stepContext.outputSubstitutions)},
+        std::move(newConvergence));
     return finishSimplifiedNode(
         std::move(simplified), std::move(context.pending), context);
   }

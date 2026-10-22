@@ -397,23 +397,35 @@ class Lowering : public NodeRewriter<NoContext> {
       const WalkState& state,
       const HopColumns& hops,
       const ColumnVector& anchorColumns) {
+    ColumnVector readColumns;
+    readColumns.reserve(state.columns.size());
+    for (ColumnCP column : state.columns) {
+      readColumns.push_back(Column::createWithUnknownValue(column));
+    }
+    const auto read = WalkState::of(
+        readColumns,
+        state.carried.size(),
+        state.vertex.size(),
+        state.hopValues.size(),
+        state.arrays.size());
     NodeCP latest = builder().make<WorkingTable>({
         .name = name,
-        .outputColumns = state.columns,
+        .stateColumns = state.columns,
+        .outputColumns = read.columns,
         .readMode = WorkingTableReadMode::kLatestDelta,
     });
     NodeCP extensible = builder().make<Filter>(
-        {latest, {exprs_.makeLessThan(state.hops, bigint(repeat.maxHops()))}});
+        {latest, {exprs_.makeLessThan(read.hops, bigint(repeat.maxHops()))}});
     return extendByOneHop(
         repeat,
         walk,
         extensible,
-        toExprs(state.vertex),
-        state.carried,
+        toExprs(read.vertex),
+        read.carried,
         /*hopValues=*/{},
         hops.collected,
-        toExprs(state.arrays),
-        state.hops,
+        toExprs(read.arrays),
+        read.hops,
         anchorColumns);
   }
 

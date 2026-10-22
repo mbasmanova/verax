@@ -15,6 +15,15 @@ WITH RECURSIVE r(n) AS (
 )
 SELECT n FROM r
 ----
+-- An empty anchor still runs the step once, which can return rows from an
+-- empty iteration.
+WITH RECURSIVE r(n) AS (
+  SELECT CAST(1 AS BIGINT) WHERE false
+  UNION ALL
+  SELECT c + 1 FROM (SELECT count(*) AS c FROM r) WHERE c = 0
+)
+SELECT n FROM r
+----
 -- A constant above a recursive CTE is computed for every iteration, rather
 -- than reading the equal constant that produced the anchor row.
 WITH RECURSIVE r(n) AS (
