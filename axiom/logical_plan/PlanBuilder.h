@@ -849,18 +849,35 @@ class PlanBuilder {
   }
 
   /// Wraps the current plan (treated as the anchor) and the provided step
-  /// plan in a FixedPointNode named `name`. The step must contain at least one
+  /// plan in a FixedPointNode named `name` that runs as a recursive CTE (see
+  /// FixedPointNode::recursiveCte). The step must contain at least one
   /// RecursiveReferenceNode named `name`, and anchor and step must produce
   /// equivalent schemas.
   PlanBuilder& fixedPoint(
       const std::string& name,
       const LogicalPlanNodePtr& step);
 
-  /// Creates a RecursiveReferenceNode leaf referencing the enclosing
-  /// FixedPointNode named `name`. Schema and name resolution mirror `anchor`,
-  /// with each column id reallocated so multiple references within a step body
-  /// compare as distinct. Must be the first call on a fresh builder.
-  PlanBuilder& recursiveRef(const std::string& name, const PlanBuilder& anchor);
+  /// Wraps the current plan (treated as the anchor), the step and the
+  /// convergence plans in a FixedPointNode named `name` that replaces its state
+  /// each iteration (see FixedPointNode::converging). `keyColumns` name the
+  /// anchor's columns that form a key of the state, or are empty.
+  PlanBuilder& convergingFixedPoint(
+      std::string_view name,
+      const LogicalPlanNodePtr& step,
+      const LogicalPlanNodePtr& convergence,
+      int32_t maxIterations,
+      bool failAtBound,
+      const std::vector<std::string>& keyColumns);
+
+  /// Reads the state of the enclosing FixedPointNode named `name`: the
+  /// anchor's rows on the first iteration, the previous iteration's result
+  /// after that. Creates a RecursiveReferenceNode leaf. `anchor` supplies only
+  /// the state's schema and name resolution; each column id is reallocated so
+  /// multiple reads within one plan compare as distinct. Must be the first
+  /// call on a fresh builder.
+  PlanBuilder& fixedPointState(
+      const std::string& name,
+      const PlanBuilder& anchor);
 
   /// Builds the plan using user-specified names for output columns.
   /// When allowAmbiguousOutputNames is true, creates an OutputNode at the root

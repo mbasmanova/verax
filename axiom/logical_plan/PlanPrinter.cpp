@@ -377,7 +377,21 @@ class ToTextVisitor : public PlanNodeVisitor {
       const override {
     auto& myContext = static_cast<Context&>(context);
     myContext.out << makeIndent(myContext.indent)
-                  << "- FixedPoint(name=" << node.name() << "):";
+                  << "- FixedPoint(name=" << node.name();
+    if (node.outputMode() != FixedPointNode::OutputMode::kAppend) {
+      myContext.out << ", " << FixedPointNode::toName(node.outputMode());
+    }
+    if (node.maxIterations().has_value()) {
+      myContext.out << ", maxIterations=" << node.maxIterations().value();
+    }
+    if (!node.failAtBound()) {
+      myContext.out << ", failAtBound=false";
+    }
+    if (!node.keyColumns().empty()) {
+      myContext.out << ", keyColumns=[" << folly::join(", ", node.keyColumns())
+                    << "]";
+    }
+    myContext.out << "):";
     appendOutputType(node, myContext);
     myContext.out << std::endl;
     appendInputs(node, myContext);

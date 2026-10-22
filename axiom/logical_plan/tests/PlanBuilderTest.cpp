@@ -883,32 +883,103 @@ TEST_F(PlanBuilderTest, conjunctTypeCoercion) {
   }
 }
 
-// A fixed point's step may read the loop's state inside a lateral join's
-// right side.
 TEST_F(PlanBuilderTest, fixedPoint) {
   PlanBuilder::Context context;
   auto anchor = PlanBuilder(context).values(
       ROW("n", BIGINT()), std::vector<Variant>{Variant::row({1LL})});
 
-  // For each edge, the right side reads the state rows at the edge's source.
+  // A step may read the loop's state inside a lateral join's right side: for
+  // each edge, the right side reads the state rows at the edge's source.
   auto edges = PlanBuilder(context).values(
       ROW({"src", "dst"}, BIGINT()),
       std::vector<Variant>{Variant::row({1LL, 2LL})});
+  auto lateralStep = PlanBuilder(edges)
+                         .lateralJoin(
+                             PlanBuilder(
+                                 context,
+                                 /*allowAmbiguousOutputNames=*/false,
+                                 edges.scope())
+                                 .fixedPointState("t", anchor)
+                                 .filter("n = src"),
+                             /*condition=*/std::nullopt,
+                             JoinType::kInner)
+                         .project({"dst AS n"})
+                         .planNode();
+  EXPECT_NO_THROW(PlanBuilder(anchor).fixedPoint("t", lateralStep));
 
-  auto step = PlanBuilder(edges)
-                  .lateralJoin(
-                      PlanBuilder(
-                          context,
-                          /*allowAmbiguousOutputNames=*/false,
-                          edges.scope())
-                          .recursiveRef("t", anchor)
-                          .filter("n = src"),
-                      /*condition=*/std::nullopt,
-                      JoinType::kInner)
-                  .project({"dst AS n"})
+  // Convergence and bound.
+  auto step = PlanBuilder(context)
+                  .fixedPointState("t", anchor)
+                  .project({"n + 1 as n"})
                   .planNode();
+  auto converging = [&](const LogicalPlanNodePtr& convergence,
+                        int32_t maxIterations,
+                        const std::vector<std::string>& keyColumns) {
+    return PlanBuilder(anchor).convergingFixedPoint(
+        "t",
+        step,
+        convergence,
+        maxIterations,
+        /*failAtBound=*/false,
+        keyColumns);
+  };
+  auto stateConvergence = [&](const std::vector<std::string>& projections) {
+    return PlanBuilder(context)
+        .fixedPointState("t", anchor)
+        .aggregate({}, {"max(n) as m"})
+        .project(projections)
+        .planNode();
+  };
 
-  EXPECT_NO_THROW(anchor.fixedPoint("t", step));
+  VELOX_ASSERT_USER_THROW(
+      converging(
+          PlanBuilder(anchor)
+              .aggregate({}, {"max(n) as m"})
+              .project({"m >= 10"})
+              .planNode(),
+          10,
+          {}),
+      "FixedPointNode convergence must contain at least one RecursiveReferenceNode named 't'");
+
+  VELOX_ASSERT_USER_THROW(
+      converging(stateConvergence({"m"}), 10, {}),
+      "FixedPointNode convergence must produce a BOOLEAN column: BIGINT");
+
+  VELOX_ASSERT_USER_THROW(
+      converging(stateConvergence({"m > 0", "m > 1"}), 10, {}),
+      "FixedPointNode convergence must produce one column");
+
+  VELOX_ASSERT_USER_THROW(
+      converging(stateConvergence({"m >= 10"}), 0, {}),
+      "FixedPointNode maxIterations must be positive");
+
+  // Key columns.
+  auto keyed = std::dynamic_pointer_cast<const FixedPointNode>(
+      converging(stateConvergence({"m >= 10"}), 10, {"n"}).planNode());
+  EXPECT_THAT(
+      keyed->keyColumns(),
+      testing::ElementsAre(anchor.planNode()->outputType()->nameOf(0)));
+
+  VELOX_ASSERT_USER_THROW(
+      converging(stateConvergence({"m >= 10"}), 10, {"x"}),
+      "Key column not found in the anchor: x");
+
+  VELOX_ASSERT_USER_THROW(
+      converging(stateConvergence({"m >= 10"}), 10, {"n", "n"}),
+      "FixedPointNode key column appears more than once");
+
+  VELOX_ASSERT_USER_THROW(
+      std::make_shared<FixedPointNode>(
+          "fp",
+          "t",
+          anchor.planNode(),
+          step,
+          FixedPointNode::OutputMode::kAppend,
+          /*convergence=*/nullptr,
+          /*maxIterations=*/std::nullopt,
+          /*failAtBound=*/true,
+          std::vector<std::string>{anchor.planNode()->outputType()->nameOf(0)}),
+      "FixedPointNode keyColumns require replace mode");
 }
 
 } // namespace

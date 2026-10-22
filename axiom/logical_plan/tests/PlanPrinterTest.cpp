@@ -1653,7 +1653,7 @@ TEST_F(PlanPrinterTest, fixedPointCounter) {
       rowType, std::vector<Variant>{Variant::row({1LL})});
 
   auto step = PlanBuilder(context)
-                  .recursiveRef("t", anchor)
+                  .fixedPointState("t", anchor)
                   .project({"n + 1 as n"})
                   .planNode();
 
@@ -1667,6 +1667,49 @@ TEST_F(PlanPrinterTest, fixedPointCounter) {
           testing::StartsWith("  - Project:"),
           testing::HasSubstr(":= plus("),
           testing::StartsWith("    - RecursiveReference: name=t"),
+          testing::Eq("")));
+}
+
+TEST_F(PlanPrinterTest, fixedPointReplace) {
+  auto rowType = ROW("n", BIGINT());
+  PlanBuilder::Context context;
+
+  auto anchor = PlanBuilder(context).values(
+      rowType, std::vector<Variant>{Variant::row({1LL})});
+  auto step = PlanBuilder(context)
+                  .fixedPointState("t", anchor)
+                  .project({"n + 1 as n"})
+                  .planNode();
+  auto convergence = PlanBuilder(context)
+                         .fixedPointState("t", anchor)
+                         .aggregate({}, {"max(n) as m"})
+                         .project({"m >= 10 as done"})
+                         .planNode();
+
+  auto plan = anchor
+                  .convergingFixedPoint(
+                      "t",
+                      step,
+                      convergence,
+                      /*maxIterations=*/100,
+                      /*failAtBound=*/false,
+                      /*keyColumns=*/{"n"})
+                  .build();
+
+  EXPECT_THAT(
+      toLines(plan),
+      testing::ElementsAre(
+          testing::StartsWith(
+              "- FixedPoint(name=t, REPLACE, maxIterations=100, failAtBound=false, keyColumns=[n]):"),
+          testing::StartsWith("  - Values:"),
+          testing::StartsWith("  - Project:"),
+          testing::HasSubstr(":= plus("),
+          testing::StartsWith("    - RecursiveReference: name=t"),
+          testing::StartsWith("  - Project:"),
+          testing::HasSubstr("done := gte(m, 10)"),
+          testing::StartsWith("    - Aggregate()"),
+          testing::HasSubstr("m := max("),
+          testing::StartsWith("      - RecursiveReference: name=t"),
           testing::Eq("")));
 }
 
@@ -1722,10 +1765,10 @@ TEST_F(PlanPrinterTest, fixedPointSelfJoin) {
       rowType, std::vector<Variant>{Variant::row({1LL})});
 
   auto right = PlanBuilder(context, /*allowAmbiguousOutputNames=*/true)
-                   .recursiveRef("r", anchor)
+                   .fixedPointState("r", anchor)
                    .as("r2");
   auto step = PlanBuilder(context, /*allowAmbiguousOutputNames=*/true)
-                  .recursiveRef("r", anchor)
+                  .fixedPointState("r", anchor)
                   .as("r1")
                   .join(right, "r1.n = r2.n", JoinType::kInner)
                   .project({"r1.n as n"})

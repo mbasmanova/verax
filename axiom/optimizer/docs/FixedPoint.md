@@ -404,6 +404,11 @@ Each of these is rejected with a specific error.
   optimizer also accepts logical plans built without the SQL parser, so
   Translate rejects a step with two references.
 
+- **Iterative algorithms.** Translate rejects a fixed point that replaces its
+  state, has a convergence subplan, or returns its result at the bound. The
+  logical plan expresses all three; the IR carries a stop condition but
+  neither of the others.
+
 - **Nested recursion and multiple fixed points per fragment.** Translate
   rejects a fixed point inside another's step, and Emit rejects two fixed
   points that would run as one fragment's loop. Both are limits of those
@@ -427,10 +432,10 @@ Each of these is rejected with a specific error.
   rules, on the keys the step needs first. A cost model can weigh one shuffle
   per iteration against broadcasting a join input or gathering the anchor, and
   choose the keys.
-- **Iterative algorithms.** A loop accumulates every delta and stops on an
-  empty one. PageRank, connected components and k-means need state that each
-  iteration replaces, and a stop condition computed from the state, such as a
-  change below a threshold. The logical plan and the IR need both; the
+- **Iterative algorithms.** PageRank, connected components and k-means need
+  state that each iteration replaces, a stop condition computed from the
+  state, and a bound that keeps the current result. The IR needs replace mode
+  and the bound, and Translate needs to carry the convergence subplan; the
   `convergence` input already carries a stop condition to Velox.
 
 ## Tests
