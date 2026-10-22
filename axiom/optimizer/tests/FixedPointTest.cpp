@@ -155,15 +155,19 @@ TEST_F(FixedPointTest, distributed) {
         "  UNION ALL "
         "  SELECT dst FROM r JOIN e ON src = n) "
         "SELECT n FROM r");
-    auto matcher =
-        matchFixedPoint(startFixedPoint("r")
-                            .outputState(/*append=*/true, matchValues())
-                            .hashTableState(matchScan("e").gather())
-                            .plan(matchDelta("r", {"n"})
-                                      .stateHashJoin({"n"})
-                                      .project({"dst"})))
-            .build();
-    AXIOM_ASSERT_DISTRIBUTED_PLAN(planVelox(logicalPlan).plan, matcher);
+    auto makeMatcher = [](bool distributed) {
+      return matchFixedPoint(
+                 startFixedPoint("r")
+                     .outputState(/*append=*/true, matchValues())
+                     .hashTableState(matchScan("e").gatherIf(distributed))
+                     .plan(matchDelta("r", {"n"})
+                               .stateHashJoin({"n"})
+                               .project({"dst"})))
+          .build();
+    };
+    AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), makeMatcher(false));
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(
+        planVelox(logicalPlan).plan, makeMatcher(true));
   }
   {
     auto logicalPlan = parseSelect(
@@ -172,17 +176,21 @@ TEST_F(FixedPointTest, distributed) {
         "  UNION ALL "
         "  SELECT dst FROM r JOIN e ON src = n) "
         "SELECT n FROM r");
-    auto matcher =
-        matchFixedPoint(startFixedPoint("r")
-                            .outputState(/*append=*/true, matchScan("t"))
-                            .hashTableState(matchScan("e").broadcast())
-                            .plan(matchDelta("r", {"n"})
-                                      .stateHashJoin({"n"})
-                                      .project({"dst"})))
-            .project({"a AS n"})
-            .gather()
-            .build();
-    AXIOM_ASSERT_DISTRIBUTED_PLAN(planVelox(logicalPlan).plan, matcher);
+    auto makeMatcher = [](bool distributed) {
+      return matchFixedPoint(
+                 startFixedPoint("r")
+                     .outputState(/*append=*/true, matchScan("t"))
+                     .hashTableState(matchScan("e").broadcastIf(distributed))
+                     .plan(matchDelta("r", {"n"})
+                               .stateHashJoin({"n"})
+                               .project({"dst"})))
+          .project({"a AS n"})
+          .gatherIf(distributed)
+          .build();
+    };
+    AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), makeMatcher(false));
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(
+        planVelox(logicalPlan).plan, makeMatcher(true));
   }
   {
     // SQL rejects an aggregate in the recursive term; a logical plan can
@@ -195,17 +203,21 @@ TEST_F(FixedPointTest, distributed) {
                     .aggregate({}, {"max(n) AS m"})
                     .project({"m + 1 AS n"});
     auto logicalPlan = anchor.recursiveCte("r", step).build();
-    auto matcher =
-        matchFixedPoint(startFixedPoint("r")
-                            .outputState(
-                                /*append=*/true, matchScan("t").gather())
-                            .plan(matchDelta("r", {"n"})
-                                      .filter("n < 10")
-                                      .singleAggregation({}, {"max(n) AS m"})
-                                      .project({"m + 1"})))
-            .project({"a AS n"})
-            .build();
-    AXIOM_ASSERT_DISTRIBUTED_PLAN(planVelox(logicalPlan).plan, matcher);
+    auto makeMatcher = [](bool distributed) {
+      return matchFixedPoint(
+                 startFixedPoint("r")
+                     .outputState(
+                         /*append=*/true, matchScan("t").gatherIf(distributed))
+                     .plan(matchDelta("r", {"n"})
+                               .filter("n < 10")
+                               .singleAggregation({}, {"max(n) AS m"})
+                               .project({"m + 1"})))
+          .project({"a AS n"})
+          .build();
+    };
+    AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), makeMatcher(false));
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(
+        planVelox(logicalPlan).plan, makeMatcher(true));
   }
 }
 
@@ -394,6 +406,409 @@ TEST_F(FixedPointTest, partitionedLoop) {
   }
 }
 
+// A loop that appends its rows stops on a convergence over the latest delta,
+// or at the bound, where it fails or returns its rows.
+TEST_F(FixedPointTest, appendConvergenceAndBound) {
+  auto anchor = singleRow("n", 1);
+  auto step = lp::PlanBuilder(context_)
+                  .fixedPointState("counter", anchor)
+                  .project({"n + 1 as n"});
+  auto makeLogicalPlan = [&](const lp::LogicalPlanNodePtr& convergence,
+                             bool failAtBound) {
+    return std::make_shared<lp::FixedPointNode>(
+        "fixed_point",
+        "counter",
+        anchor.planNode(),
+        step.planNode(),
+        lp::FixedPointNode::OutputMode::kAppend,
+        convergence,
+        /*maxIterations=*/10,
+        failAtBound,
+        /*keyColumns=*/std::vector<std::string>{});
+  };
+
+  auto numbers = [&](int64_t last) {
+    return makeRowVector(
+        {makeFlatVector<int64_t>(last, [](auto row) { return row + 1; })});
+  };
+
+  {
+    // Stops once the latest delta reaches 10.
+    auto logicalPlan = makeLogicalPlan(
+        lp::PlanBuilder(context_)
+            .fixedPointState("counter", anchor)
+            .aggregate({}, {"max(n) AS m"})
+            .project({"m >= 10"})
+            .planNode(),
+        /*failAtBound=*/true);
+    AXIOM_ASSERT_PLAN(
+        toSingleNodePlan(logicalPlan),
+        matchFixedPoint(
+            startFixedPoint("counter")
+                .outputState(/*append=*/true, matchValues())
+                .plan(matchDelta("counter", {"n"}).project({"n + 1"}))
+                .converge(
+                    matchDelta("counter", {"n"})
+                        .singleAggregation({}, {"max(n)"})
+                        .project(),
+                    {.maxIterations = 10}))
+            .build());
+    checkSame(logicalPlan, {numbers(10)});
+  }
+  {
+    // Returns its rows at the bound.
+    auto logicalPlan = makeLogicalPlan(nullptr, /*failAtBound=*/false);
+    AXIOM_ASSERT_PLAN(
+        toSingleNodePlan(logicalPlan),
+        matchFixedPoint(startFixedPoint("counter").convergeOnEmpty(
+                            {.maxIterations = 10, .failAtBound = false}))
+            .build());
+    checkSame(logicalPlan, {numbers(11)});
+  }
+  {
+    // Fails at the bound.
+    VELOX_ASSERT_THROW(
+        runVelox(makeLogicalPlan(nullptr, /*failAtBound=*/true)),
+        "Fixed point did not converge within 10 iterations");
+  }
+}
+
+// A loop that replaces its state a fixed number of times returns its state at
+// the bound.
+TEST_F(FixedPointTest, fixedIterationCount) {
+  auto anchor = singleRow("n", 1);
+  auto logicalPlan = lp::PlanBuilder(anchor)
+                         .iterate(
+                             "counter",
+                             lp::PlanBuilder(context_)
+                                 .fixedPointState("counter", anchor)
+                                 .project({"n + 1 as n"}),
+                             /*numIterations=*/5,
+                             /*keyColumns=*/{})
+                         .build();
+
+  AXIOM_ASSERT_PLAN(
+      toSingleNodePlan(logicalPlan),
+      matchFixedPoint(
+          startFixedPoint("counter")
+              .outputState(/*append=*/false, matchValues())
+              .plan(matchDelta("counter", {"n"}).project({"n + 1"}))
+              .convergeOnEmpty({.maxIterations = 5, .failAtBound = false}))
+          .build());
+
+  checkSame(logicalPlan, {makeRowVector({makeFlatVector<int64_t>({6})})});
+}
+
+// With several workers, a loop with a convergence and a row-local step runs on
+// one task.
+TEST_F(FixedPointTest, convergenceOnOneTask) {
+  testConnector_->addTable("t", ROW("n", BIGINT()))
+      ->addData(makeRowVector({makeFlatVector<int64_t>({1, 5})}));
+
+  auto context = makeContext();
+  auto anchor = lp::PlanBuilder(context).tableScan("t");
+  auto logicalPlan = lp::PlanBuilder(anchor)
+                         .iterateUntil(
+                             "r",
+                             lp::PlanBuilder(context)
+                                 .fixedPointState("r", anchor)
+                                 .project({"n + 1 AS n"}),
+                             lp::PlanBuilder(context)
+                                 .fixedPointState("r", anchor)
+                                 .aggregate({}, {"max(n) AS m"})
+                                 .project({"m >= 10"}),
+                             /*maxIterations=*/100,
+                             /*failAtBound=*/true,
+                             /*keyColumns=*/{})
+                         .build();
+
+  auto makeMatcher = [](bool distributed) {
+    return matchFixedPoint(
+               startFixedPoint("r")
+                   .outputState(
+                       /*append=*/false, matchScan("t").gatherIf(distributed))
+                   .plan(matchDelta("r", {"n"}).project({"n + 1"}))
+                   .converge(matchDelta("r", {"n"})
+                                 .singleAggregation({}, {"max(n)"})
+                                 .project()))
+        .build();
+  };
+  AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), makeMatcher(false));
+  AXIOM_ASSERT_DISTRIBUTED_PLAN(planVelox(logicalPlan).plan, makeMatcher(true));
+
+  // The loop stops once 5 reaches 10, after five iterations, and returns its
+  // last state.
+  checkSame(logicalPlan, {makeRowVector({makeFlatVector<int64_t>({6, 10})})});
+}
+
+// A partitioned loop gathers its convergence, so every worker stops on one
+// answer, even when the convergence reads one worker's rows.
+TEST_F(FixedPointTest, partitionedConvergence) {
+  testConnector_->addTable("t", ROW("k", BIGINT()))
+      ->addData(makeRowVector({makeFlatVector<int64_t>({1, 2, 3, 4})}));
+
+  auto context = makeContext();
+  auto anchor =
+      lp::PlanBuilder(context).tableScan("t").project({"k", "false AS done"});
+  auto state = [&] {
+    return lp::PlanBuilder(context).fixedPointState("r", anchor);
+  };
+  auto logicalPlan = lp::PlanBuilder(anchor)
+                         .iterateUntil(
+                             "r",
+                             state()
+                                 .aggregate({"k", "done"}, {})
+                                 .project({"k", "true AS done"}),
+                             state().filter("k = 1").project({"done"}),
+                             /*maxIterations=*/10,
+                             /*failAtBound=*/true,
+                             /*keyColumns=*/{})
+                         .build();
+
+  AXIOM_ASSERT_PLAN(
+      toSingleNodePlan(logicalPlan),
+      matchFixedPoint(
+          startFixedPoint("r")
+              .outputState(/*append=*/false, matchScan("t").project())
+              .plan(matchDelta("r", {"k", "done"})
+                        .singleAggregation({"k", "done"}, {})
+                        .project())
+              .converge(
+                  matchDelta("r", {"k", "done"}).filter("k = 1").project(),
+                  {.maxIterations = 10}))
+          .build());
+
+  AXIOM_ASSERT_DISTRIBUTED_PLAN(
+      planVelox(logicalPlan).plan,
+      matchFixedPoint(
+          startFixedPoint("r")
+              .outputState(
+                  /*append=*/false, matchScan("t").project().shuffle())
+              .converge(
+                  matchDelta("r", {"k", "done"})
+                      .filter("k = 1")
+                      .project()
+                      .gather(),
+                  {.maxIterations = 10}))
+          .gather()
+          .build());
+
+  checkSame(
+      logicalPlan,
+      {makeRowVector({
+          makeFlatVector<int64_t>({1, 2, 3, 4}),
+          makeConstant(true, 4),
+      })});
+}
+
+// A step or a convergence that the optimizer proves does not depend on the
+// loop's state fails the query.
+TEST_F(FixedPointTest, stateIndependentBranchRejected) {
+  auto anchor = singleRow("n", 1);
+  auto state = [&] {
+    return lp::PlanBuilder(context_).fixedPointState("counter", anchor);
+  };
+  auto stop = [&] {
+    return state().aggregate({}, {"count(*) AS c"}).project({"c = 0"});
+  };
+  {
+    auto logicalPlan =
+        lp::PlanBuilder(anchor)
+            .iterateUntil(
+                "counter",
+                state().filter("false").unionAll(singleRow("n", 2)),
+                stop(),
+                /*maxIterations=*/10,
+                /*failAtBound=*/false,
+                /*keyColumns=*/{})
+            .build();
+    VELOX_ASSERT_THROW(
+        toSingleNodePlan(logicalPlan),
+        "FixedPoint step does not depend on the loop's state");
+  }
+  {
+    auto logicalPlan = lp::PlanBuilder(anchor)
+                           .iterateUntil(
+                               "counter",
+                               state().project({"n + 1 AS n"}),
+                               state()
+                                   .filter("false")
+                                   .aggregate({}, {"count(*) AS c"})
+                                   .project({"c = 0"}),
+                               /*maxIterations=*/10,
+                               /*failAtBound=*/false,
+                               /*keyColumns=*/{})
+                           .build();
+    VELOX_ASSERT_THROW(
+        toSingleNodePlan(logicalPlan),
+        "FixedPoint convergence does not depend on the loop's state");
+  }
+}
+
+// With several workers, a loop with a convergence runs as one partitioned loop
+// when its step has keys to partition on, even when the step is row-local.
+TEST_F(FixedPointTest, rowLocalConvergencePartitioned) {
+  testConnector_->addTable("t", ROW("a", BIGINT()))
+      ->addData(makeRowVector({makeFlatVector<int64_t>({1, 2})}));
+  testConnector_->addTable("e", ROW({"src", "dst"}, BIGINT()))
+      ->addData(makeRowVector({
+          makeFlatVector<int64_t>({1, 2}),
+          makeFlatVector<int64_t>({2, 3}),
+      }));
+
+  auto context = makeContext();
+  auto anchor = lp::PlanBuilder(context).tableScan("t").project({"a AS n"});
+  auto state = [&] {
+    return lp::PlanBuilder(context).fixedPointState("r", anchor);
+  };
+  auto logicalPlan =
+      lp::PlanBuilder(anchor)
+          .iterateUntil(
+              "r",
+              state()
+                  .join(
+                      lp::PlanBuilder(context).tableScan("e"),
+                      "n = src",
+                      lp::JoinType::kInner)
+                  .project({"dst AS n"}),
+              state().aggregate({}, {"max(n) AS m"}).project({"m >= 3"}),
+              /*maxIterations=*/10,
+              /*failAtBound=*/true,
+              /*keyColumns=*/{})
+          .build();
+
+  AXIOM_ASSERT_PLAN(
+      toSingleNodePlan(logicalPlan),
+      matchFixedPoint(
+          startFixedPoint("r")
+              .outputState(/*append=*/false, matchScan("t"))
+              .hashTableState(matchScan("e"))
+              .plan(
+                  matchDelta("r", {"n"}).stateHashJoin({"n"}).project({"dst"}))
+              .converge(matchDelta("r", {"n"})
+                            .singleAggregation({}, {"max(n)"})
+                            .project()))
+          .project({"a AS n"})
+          .build());
+  AXIOM_ASSERT_DISTRIBUTED_PLAN(
+      planVelox(logicalPlan).plan,
+      matchFixedPoint(
+          startFixedPoint("r")
+              .outputState(/*append=*/false, matchScan("t").shuffle({"a"}))
+              .hashTableState(matchScan("e").shuffle({"src"}))
+              .partitionedPlans(matchDelta("r", {"n"})
+                                    .stateHashJoin({"n"})
+                                    .project({"dst"})
+                                    .shuffle({"dst"}))
+              .converge(matchDelta("r", {"n"})
+                            .partialAggregation({}, {"max(n)"})
+                            .gather()
+                            .finalAggregation()
+                            .project()))
+          .project({"a AS n"})
+          .gather()
+          .build());
+
+  checkSame(logicalPlan, {makeRowVector({makeFlatVector<int64_t>({2, 3})})});
+}
+
+// With several workers, a loop whose step joins on a shuffled input that cannot
+// be the join's probe side runs on one task.
+TEST_F(FixedPointTest, unswappableJoinOnOneTask) {
+  testConnector_->addTable("t", ROW("a", BIGINT()))
+      ->addData(makeRowVector({makeFlatVector<int64_t>({1, 2})}));
+  testConnector_->addTable("e", ROW({"src", "dst"}, BIGINT()))
+      ->addData(makeRowVector({
+          makeFlatVector<int64_t>({1, 2}),
+          makeFlatVector<int64_t>({2, 3}),
+      }));
+
+  auto context = makeContext();
+  auto anchor = lp::PlanBuilder(context).tableScan("t").project({"a AS n"});
+  auto state = [&] {
+    return lp::PlanBuilder(context).fixedPointState("r", anchor);
+  };
+  // Keeps the vertices that some vertex of the state links to.
+  auto logicalPlan =
+      lp::PlanBuilder(anchor)
+          .iterateUntil(
+              "r",
+              state()
+                  .filter(
+                      lp::In(
+                          lp::Col("n"),
+                          lp::Subquery(
+                              state()
+                                  .join(
+                                      lp::PlanBuilder(context).tableScan("e"),
+                                      "n = src",
+                                      lp::JoinType::kInner)
+                                  .aggregate({"dst"}, {})
+                                  .planNode())))
+                  .project({"n + 1 AS n"}),
+              state().aggregate({}, {"max(n) AS m"}).project({"m >= 3"}),
+              /*maxIterations=*/10,
+              /*failAtBound=*/true,
+              /*keyColumns=*/{})
+          .build();
+
+  auto makeMatcher = [](bool distributed) {
+    return matchFixedPoint(
+               startFixedPoint("r")
+                   .outputState(
+                       /*append=*/false, matchScan("t").gatherIf(distributed))
+                   .hashTableState(matchScan("e").gatherIf(distributed)))
+        .project({"a AS n"})
+        .build();
+  };
+  AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), makeMatcher(false));
+  AXIOM_ASSERT_DISTRIBUTED_PLAN(planVelox(logicalPlan).plan, makeMatcher(true));
+  checkSame(logicalPlan, {makeRowVector({makeFlatVector<int64_t>({3})})});
+}
+
+// With an empty anchor, the loop still runs its step, which can produce rows.
+TEST_F(FixedPointTest, emptyAnchor) {
+  auto anchor = lp::PlanBuilder(context_).values(
+      ROW("n", BIGINT()), std::vector<Variant>{});
+  auto state = [&] {
+    return lp::PlanBuilder(context_).fixedPointState("counter", anchor);
+  };
+  auto logicalPlan =
+      lp::PlanBuilder(anchor)
+          .iterateUntil(
+              "counter",
+              state().project({"n + 1 AS n"}).unionAll(singleRow("n", 1)),
+              state().aggregate({}, {"count(*) AS c"}).project({"c > 0"}),
+              /*maxIterations=*/10,
+              /*failAtBound=*/true,
+              /*keyColumns=*/{})
+          .build();
+
+  // The first iteration adds 1 to no rows and unions in 1.
+  checkSame(logicalPlan, {makeRowVector({makeFlatVector<int64_t>({1})})});
+}
+
+// A loop that replaces its state with a step that produces no rows returns no
+// rows.
+TEST_F(FixedPointTest, replaceWithEmptyStep) {
+  auto anchor = singleRow("n", 1);
+  auto state = [&] {
+    return lp::PlanBuilder(context_).fixedPointState("counter", anchor);
+  };
+  auto logicalPlan =
+      lp::PlanBuilder(anchor)
+          .iterateUntil(
+              "counter",
+              state().filter("n > 100"),
+              state().aggregate({}, {"count(*) AS c"}).project({"c = 0"}),
+              /*maxIterations=*/10,
+              /*failAtBound=*/true,
+              /*keyColumns=*/{})
+          .build();
+
+  checkSame(logicalPlan, {makeRowVector({makeFlatVector<int64_t>({})})});
+}
+
 TEST_F(FixedPointTest, outerJoinInAnchor) {
   // The anchor outer join remains outer when the step maps NULL to non-NULL.
   testConnector_->addTable("u", ROW("n", INTEGER()));
@@ -422,7 +837,10 @@ TEST_F(FixedPointTest, outerJoinInAnchor) {
 TEST_F(FixedPointTest, outerFilter) {
   auto logicalPlan = parseSelect(
       "WITH RECURSIVE counter(n) AS ("
-      "VALUES 1 UNION ALL SELECT n + 1 FROM counter WHERE n < 20) "
+      "     VALUES 1 "
+      "     UNION ALL "
+      "     SELECT n + 1 FROM counter WHERE n < 20"
+      ") "
       "SELECT n FROM counter WHERE n > 15");
 
   auto matcher =
@@ -442,8 +860,10 @@ TEST_F(FixedPointTest, outerSelectsOneColumn) {
   // outer query reads only one of them.
   auto logicalPlan = parseSelect(
       "WITH RECURSIVE counter(n, carried) AS ("
-      "VALUES (1, 7) UNION ALL "
-      "SELECT n + 1, carried FROM counter WHERE n < 10) "
+      "     VALUES (1, 7) "
+      "     UNION ALL "
+      "     SELECT n + 1, carried FROM counter WHERE n < 10"
+      ") "
       "SELECT n FROM counter");
 
   auto matcher =
@@ -471,9 +891,8 @@ TEST_F(FixedPointTest, orphanRecursiveReference) {
 TEST_F(FixedPointTest, siblingRecursions) {
   auto logicalPlan = parseSelect(
       "WITH RECURSIVE "
-      "r1(a) AS (VALUES 0 UNION ALL SELECT a + 1 FROM r1 WHERE a < 3), "
-      "r2(b) AS (SELECT a FROM r1 UNION ALL "
-      "SELECT b + 10 FROM r2 WHERE b < 30) "
+      "     r1(a) AS (VALUES 0 UNION ALL SELECT a + 1 FROM r1 WHERE a < 3), "
+      "     r2(b) AS (SELECT a FROM r1 UNION ALL SELECT b + 10 FROM r2 WHERE b < 30) "
       "SELECT b FROM r2");
 
   auto matcher =
@@ -498,8 +917,10 @@ TEST_F(FixedPointTest, siblingRecursions) {
 TEST_F(FixedPointTest, twoRecursiveReferencesRejected) {
   auto logicalPlan = parseSelect(
       "WITH RECURSIVE reach(src, dst) AS ("
-      "VALUES (1, 2) UNION ALL "
-      "SELECT a.src, b.dst FROM reach a JOIN reach b ON a.dst = b.src) "
+      "     VALUES (1, 2) "
+      "     UNION ALL "
+      "     SELECT a.src, b.dst FROM reach a JOIN reach b ON a.dst = b.src"
+      ") "
       "SELECT src, dst FROM reach");
 
   VELOX_ASSERT_THROW(
@@ -509,8 +930,7 @@ TEST_F(FixedPointTest, twoRecursiveReferencesRejected) {
 
 TEST_F(FixedPointTest, twoRecursionsInUnionRejected) {
   auto logicalPlan = parseSelect(
-      "WITH RECURSIVE r(n) AS ("
-      "VALUES 1 UNION ALL SELECT n + 1 FROM r WHERE n < 10) "
+      "WITH RECURSIVE r(n) AS (VALUES 1 UNION ALL SELECT n + 1 FROM r WHERE n < 10) "
       "SELECT n FROM r UNION ALL SELECT n FROM r");
 
   VELOX_ASSERT_THROW(
@@ -521,7 +941,10 @@ TEST_F(FixedPointTest, twoRecursionsInUnionRejected) {
 TEST_F(FixedPointTest, twoRecursionsInJoinRejected) {
   auto logicalPlan = parseSelect(
       "WITH RECURSIVE r(n) AS ("
-      "VALUES 1 UNION ALL SELECT n + 1 FROM r WHERE n < 10) "
+      "     VALUES 1 "
+      "     UNION ALL "
+      "     SELECT n + 1 FROM r WHERE n < 10"
+      ") "
       "SELECT l.n FROM r l JOIN r r2 ON l.n = r2.n");
 
   VELOX_ASSERT_THROW(
@@ -536,8 +959,11 @@ TEST_F(FixedPointTest, outerJoinAndFilter) {
 
   auto logicalPlan = parseSelect(
       "WITH RECURSIVE r(n) AS ("
-      "VALUES 1 UNION ALL SELECT n + 1 FROM r WHERE n < 10) "
-      "SELECT r.n + 1 FROM r JOIN u ON r.n = u.n "
+      "     VALUES 1 "
+      "     UNION ALL "
+      "     SELECT n + 1 FROM r WHERE n < 10"
+      ") "
+      " SELECT r.n + 1 FROM r JOIN u ON r.n = u.n "
       "WHERE r.n > 0");
 
   auto matcher =
@@ -552,39 +978,6 @@ TEST_F(FixedPointTest, outerJoinAndFilter) {
           .build();
 
   AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
-}
-
-TEST_F(FixedPointTest, iterativeLoopRejected) {
-  auto anchor = singleRow("n", 1);
-  auto step = lp::PlanBuilder(context_)
-                  .fixedPointState("counter", anchor)
-                  .project({"n + 1 as n"});
-  auto makePlan = [&](const lp::LogicalPlanNodePtr& convergence,
-                      bool failAtBound) {
-    return std::make_shared<lp::FixedPointNode>(
-        "fixed_point",
-        "counter",
-        anchor.planNode(),
-        step.planNode(),
-        lp::FixedPointNode::OutputMode::kAppend,
-        convergence,
-        /*maxIterations=*/10,
-        failAtBound,
-        /*keyColumns=*/std::vector<std::string>{});
-  };
-
-  VELOX_ASSERT_THROW(
-      toSingleNodePlan(makePlan(
-          lp::PlanBuilder(context_)
-              .fixedPointState("counter", anchor)
-              .aggregate({}, {"max(n) AS m"})
-              .project({"m >= 10"})
-              .planNode(),
-          /*failAtBound=*/true)),
-      "FixedPoint with a convergence subplan is not yet supported");
-  VELOX_ASSERT_THROW(
-      toSingleNodePlan(makePlan(nullptr, /*failAtBound=*/false)),
-      "FixedPoint that returns its result at the bound is not yet supported");
 }
 
 TEST_F(FixedPointTest, nestedRecursionRejected) {
@@ -609,10 +1002,22 @@ TEST_F(FixedPointTest, nestedRecursionRejected) {
 // and an even share of the rank held by vertices with no out-edges, and stops
 // once the total squared change is below N * tolerance^2.
 TEST_F(FixedPointTest, pageRank) {
-  testConnector_->addTable(
-      "vertices", ROW({"vertex_id", "out_degree"}, BIGINT()));
-  testConnector_->addTable(
-      "edges", ROW({"src", "dst", "weight"}, {BIGINT(), BIGINT(), DOUBLE()}));
+  // 1 -> 2, 1 -> 3, 2 -> 3, 3 -> 1; 4 has no out-edges.
+  testConnector_
+      ->addTable("vertices", ROW({"vertex_id", "out_degree"}, BIGINT()))
+      ->addData(makeRowVector({
+          makeFlatVector<int64_t>({1, 2, 3, 4}),
+          makeFlatVector<int64_t>({2, 1, 1, 0}),
+      }));
+  testConnector_
+      ->addTable(
+          "edges",
+          ROW({"src", "dst", "weight"}, {BIGINT(), BIGINT(), DOUBLE()}))
+      ->addData(makeRowVector({
+          makeFlatVector<int64_t>({1, 1, 2, 3}),
+          makeFlatVector<int64_t>({2, 3, 3, 1}),
+          makeFlatVector<double>({0.5, 0.5, 1.0, 1.0}),
+      }));
 
   auto context = makeContext();
   static constexpr auto kRanks = "ranks";
@@ -668,30 +1073,74 @@ TEST_F(FixedPointTest, pageRank) {
               "out_degree",
               "(rank - previous) * (rank - previous) AS squared_error",
           });
-  auto plan = anchor
-                  .iterateUntil(
-                      kRanks,
-                      step,
-                      state()
-                          .aggregate({}, {"sum(squared_error) AS total"})
-                          .project({"coalesce(total, 0.0) < 4e-8"}),
-                      /*maxIterations=*/100,
-                      /*failAtBound=*/false,
-                      /*keyColumns=*/{"vertex_id"})
-                  .project({"vertex_id", "rank"})
-                  .build();
+  auto logicalPlan = anchor
+                         .iterateUntil(
+                             kRanks,
+                             step,
+                             state()
+                                 .aggregate({}, {"sum(squared_error) AS total"})
+                                 .project({"coalesce(total, 0.0) < 4e-8"}),
+                             /*maxIterations=*/100,
+                             /*failAtBound=*/false,
+                             /*keyColumns=*/{"vertex_id"})
+                         .project({"vertex_id", "rank"})
+                         .build();
 
-  VELOX_ASSERT_THROW(
-      toSingleNodePlan(plan),
-      "FixedPoint in replace mode is not yet supported");
+  auto ranks = [&] {
+    return matchDelta(
+        kRanks, {"vertex_id", "rank", "out_degree", "squared_error"});
+  };
+  AXIOM_ASSERT_PLAN(
+      toSingleNodePlan(logicalPlan),
+      matchFixedPoint(
+          startFixedPoint(kRanks)
+              .outputState(/*append=*/false, matchScan("vertices").project())
+              .hashTableState(matchScan("edges"))
+              .plan(
+                  ranks()
+                      .hashJoinLeft(
+                          ranks()
+                              .filter("out_degree > 0")
+                              .stateHashJoin({"vertex_id"})
+                              .project()
+                              .project()
+                              .singleAggregation())
+                      .nestedLoopJoin(ranks().project().singleAggregation())
+                      .project())
+              .converge(
+                  ranks()
+                      .singleAggregation({}, {"sum(squared_error)"})
+                      .project(),
+                  {.maxIterations = 100, .failAtBound = false}))
+          .project()
+          .build());
+
+  // Converges after 15 iterations.
+  checkSame(
+      logicalPlan,
+      {makeRowVector({
+          makeFlatVector<int64_t>({1, 2, 3, 4}),
+          makeFlatVector<double>({
+              0.3693651552827742,
+              0.20454346105795695,
+              0.37847233602375613,
+              0.04761904763551231,
+          }),
+      })});
 }
 
 // Connected components: each iteration lowers every vertex's label to the
 // smallest label among its in-neighbors and stops once no label changes. Only
 // vertices whose label changed in the last iteration send it.
 TEST_F(FixedPointTest, connectedComponents) {
-  testConnector_->addTable("vertices", ROW("vertex", BIGINT()));
-  testConnector_->addTable("edges", ROW({"src", "dst"}, BIGINT()));
+  // Components {1, 2, 3}, {4, 5} and {6}, each edge in both directions.
+  testConnector_->addTable("vertices", ROW("vertex", BIGINT()))
+      ->addData(makeRowVector({makeFlatVector<int64_t>({1, 2, 3, 4, 5, 6})}));
+  testConnector_->addTable("edges", ROW({"src", "dst"}, BIGINT()))
+      ->addData(makeRowVector({
+          makeFlatVector<int64_t>({1, 2, 2, 3, 4, 5}),
+          makeFlatVector<int64_t>({2, 1, 3, 2, 5, 4}),
+      }));
 
   auto context = makeContext();
   static constexpr auto kLabels = "labels";
@@ -728,21 +1177,81 @@ TEST_F(FixedPointTest, connectedComponents) {
               "least(v.label, coalesce(m.label, v.label)) AS label",
               "coalesce(m.label < v.label, false) AS changed",
           });
-  auto plan = anchor
-                  .iterateUntil(
-                      kLabels,
-                      step,
-                      state()
-                          .aggregate({}, {"count_if(changed) AS num_changed"})
-                          .project({"num_changed = 0"}),
-                      /*maxIterations=*/100,
-                      /*failAtBound=*/true,
-                      /*keyColumns=*/{"vertex"})
-                  .build();
+  auto logicalPlan =
+      anchor
+          .iterateUntil(
+              kLabels,
+              step,
+              state()
+                  .aggregate({}, {"count_if(changed) AS num_changed"})
+                  .project({"num_changed = 0"}),
+              /*maxIterations=*/100,
+              /*failAtBound=*/true,
+              /*keyColumns=*/{"vertex"})
+          .build();
 
-  VELOX_ASSERT_THROW(
-      toSingleNodePlan(plan),
-      "FixedPoint in replace mode is not yet supported");
+  auto labels = [&] {
+    return matchDelta(kLabels, {"vertex", "label", "changed"});
+  };
+  AXIOM_ASSERT_PLAN(
+      toSingleNodePlan(logicalPlan),
+      matchFixedPoint(
+          startFixedPoint(kLabels)
+              .outputState(/*append=*/false, matchScan("vertices").project())
+              .hashTableState(matchScan("edges"))
+              .plan(
+                  labels()
+                      .hashJoinLeft(
+                          labels()
+                              .filter("changed")
+                              .stateHashJoin({"vertex"})
+                              .project()
+                              .singleAggregation({"dst"}, {"min(label)"}))
+                      .project())
+              .converge(
+                  labels()
+                      .singleAggregation({}, {"count_if(changed)"})
+                      .project(),
+                  {.maxIterations = 100}))
+          .build());
+
+  // The state stays partitioned on vertex: each worker probes its vertices'
+  // out-edges and shuffles the smallest label it sends to each destination.
+  AXIOM_ASSERT_DISTRIBUTED_PLAN(
+      planVelox(logicalPlan).plan,
+      matchFixedPoint(
+          startFixedPoint(kLabels)
+              .outputState(
+                  /*append=*/false,
+                  matchScan("vertices").project().shuffle({"vertex"}))
+              .hashTableState(matchScan("edges").shuffle({"src"}))
+              .partitionedPlans(
+                  labels()
+                      .filter("changed")
+                      .stateHashJoin({"vertex"})
+                      .project()
+                      .partialAggregation({"dst"}, {"min(label)"})
+                      .shuffle({"dst"})
+                      .finalAggregation()
+                      .hashJoinRight(labels())
+                      .project())
+              .converge(
+                  labels()
+                      .partialAggregation({}, {"count_if(changed)"})
+                      .gather()
+                      .finalAggregation()
+                      .project(),
+                  {.maxIterations = 100}))
+          .gather()
+          .build());
+
+  checkSame(
+      logicalPlan,
+      {makeRowVector({
+          makeFlatVector<int64_t>({1, 2, 3, 4, 5, 6}),
+          makeFlatVector<int64_t>({1, 1, 1, 4, 4, 6}),
+          makeConstant<bool>(false, 6),
+      })});
 }
 
 // KMeans: each iteration assigns every point to its nearest centroid, moves
@@ -750,10 +1259,21 @@ TEST_F(FixedPointTest, connectedComponents) {
 // cluster, and stops once no centroid moves more than a tolerance. Each point
 // is one row that computes its distances to all centroids.
 TEST_F(FixedPointTest, kMeans) {
-  testConnector_->addTable(
-      "points", ROW({"id", "coordinates"}, {BIGINT(), ARRAY(DOUBLE())}));
-  testConnector_->addTable(
-      "seeds", ROW({"cluster", "coordinates"}, {BIGINT(), ARRAY(DOUBLE())}));
+  // Two groups of three points, near (0, 0) and near (10, 10).
+  testConnector_
+      ->addTable("points", ROW({"id", "coords"}, {BIGINT(), ARRAY(DOUBLE())}))
+      ->addData(makeRowVector({
+          makeFlatVector<int64_t>({1, 2, 3, 4, 5, 6}),
+          makeArrayVector<double>(
+              {{0, 0}, {0, 1}, {1, 0}, {10, 10}, {10, 11}, {11, 10}}),
+      }));
+  testConnector_
+      ->addTable(
+          "seeds", ROW({"cluster", "coords"}, {BIGINT(), ARRAY(DOUBLE())}))
+      ->addData(makeRowVector({
+          makeFlatVector<int64_t>({1, 2}),
+          makeArrayVector<double>({{0, 0}, {5, 5}}),
+      }));
 
   auto context = makeContext();
   static constexpr auto kCentroids = "centroids";
@@ -766,7 +1286,7 @@ TEST_F(FixedPointTest, kMeans) {
   };
 
   auto anchor = lp::PlanBuilder(context).tableScan("seeds").project(
-      {"cluster", "coordinates", /*placeholder*/ "false AS converged"});
+      {"cluster", "coords", /*placeholder*/ "false AS converged"});
 
   auto state = [&](std::optional<std::string> alias = std::nullopt) {
     auto builder = lp::PlanBuilder(context).fixedPointState(kCentroids, anchor);
@@ -786,56 +1306,95 @@ TEST_F(FixedPointTest, kMeans) {
                       state()
                           .aggregate(
                               {},
-                              {"array_agg(cluster) AS clusters",
-                               "array_agg(coordinates) AS centers"})
+                              {"array_agg(row_constructor(cluster, coords)) AS centers"})
                           .as("c"))
+                  // The nearest center, the lowest cluster on a tie.
                   .project(
-                      {"c.clusters AS clusters",
-                       "p.coordinates AS coordinates",
-                       fmt::format(
-                           "transform(c.centers, center -> {}) AS distances",
-                           distance("p.coordinates", "center"))})
-                  .project(
-                      {"element_at(clusters, array_position(distances, array_min(distances))) AS cluster",
-                       "coordinates"})
+                      {fmt::format(
+                           "array_min_by(c.centers, center -> row_constructor({}, center[1]))[1] AS cluster",
+                           distance("p.coords", "center[2]")),
+                       "p.coords AS coords"})
                   .aggregate(
                       {"cluster"},
-                      {"vector_sum(coordinates) AS total",
-                       "count(*) AS num_points"})
+                      {"vector_sum(coords) AS total", "count(*) AS num_points"})
                   .project({
                       "cluster",
-                      "transform(total, v -> v / cast(num_points AS DOUBLE)) AS coordinates",
+                      "transform(total, v -> v / cast(num_points AS DOUBLE)) AS coords",
                   })
                   .as("new"),
               "old.cluster = new.cluster",
               lp::JoinType::kLeft)
           .project({
               "old.cluster AS cluster",
-              "coalesce(new.coordinates, old.coordinates) AS coordinates",
-              "old.coordinates AS previous",
+              "coalesce(new.coords, old.coords) AS coords",
+              "old.coords AS previous",
           })
           .project(
               {"cluster",
-               "coordinates",
+               "coords",
                fmt::format(
                    "{} < 0.0001 AS converged",
-                   distance("coordinates", "previous"))});
-  auto plan =
+                   distance("coords", "previous"))});
+  auto logicalPlan =
       anchor
           .iterateUntil(
               kCentroids,
               step,
-              state()
-                  .aggregate({}, {"count_if(NOT converged) AS num_moving"})
-                  .project({"num_moving = 0"}),
+              // Stops at the first centroid that still moves.
+              lp::PlanBuilder(context)
+                  .values(ROW({}), std::vector<Variant>{Variant::row({})})
+                  .project({lp::Call(
+                      "is_null",
+                      lp::Subquery(
+                          state()
+                              .filter("NOT converged")
+                              .limit(1)
+                              .project({"converged"})
+                              .planNode()))}),
               /*maxIterations=*/20,
               /*failAtBound=*/false,
               /*keyColumns=*/{"cluster"})
           .build();
 
-  VELOX_ASSERT_THROW(
-      toSingleNodePlan(plan),
-      "FixedPoint in replace mode is not yet supported");
+  auto centroids = [&] {
+    return matchDelta(kCentroids, {"cluster", "coords", "converged"});
+  };
+  AXIOM_ASSERT_PLAN(
+      toSingleNodePlan(logicalPlan),
+      matchFixedPoint(
+          startFixedPoint(kCentroids)
+              .outputState(/*append=*/false, matchScan("seeds").project())
+              .vectorState("points", matchScan("points"))
+              .plan(
+                  centroids()
+                      .hashJoinLeft(
+                          core::PlanMatcherBuilder()
+                              .stateSource("points", /*delta=*/false)
+                              .nestedLoopJoin(
+                                  centroids().project().singleAggregation())
+                              .project()
+                              .singleAggregation()
+                              .project())
+                      .project())
+              .converge(
+                  centroids()
+                      .filter("NOT converged")
+                      .finalLimit(0, 1)
+                      .project()
+                      .enforceSingleRow()
+                      .project(),
+                  {.maxIterations = 20, .failAtBound = false}))
+          .build());
+
+  // The first iteration moves both centroids to their clusters' means; the
+  // second moves neither.
+  checkSame(
+      logicalPlan,
+      {makeRowVector({
+          makeFlatVector<int64_t>({1, 2}),
+          makeArrayVector<double>({{1.0 / 3, 1.0 / 3}, {31.0 / 3, 31.0 / 3}}),
+          makeConstant(true, 2),
+      })});
 }
 
 } // namespace

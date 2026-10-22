@@ -532,41 +532,18 @@ Translated Translator::translateTableWrite(
   return {writeNode, std::move(scope)};
 }
 
-NodeCP Translator::makeWorkingTable() {
-  VELOX_CHECK(
-      activeFixedPoint_.has_value(),
-      "WorkingTable requires an enclosing FixedPoint");
-  const auto& enclosing = *activeFixedPoint_;
-  return nodeSimplifier_
-      .make(
-          WorkingTable::Key{
-              .name = enclosing.stateName,
-              .outputColumns = enclosing.stateColumns,
-              .readMode = WorkingTableReadMode::kLatestDelta,
-          })
-      .node;
-}
-
 Translated Translator::translateFixedPoint(
     const lp::FixedPointNode& fixedPoint,
     const LpNameSet& /*required*/) {
   VELOX_USER_CHECK(
       !activeFixedPoint_.has_value(),
       "Nested FixedPoint translation is not yet implemented");
-  VELOX_USER_CHECK_EQ(
-      fixedPoint.outputMode(),
-      lp::FixedPointNode::OutputMode::kAppend,
-      "FixedPoint in replace mode is not yet supported");
-  VELOX_USER_CHECK_NULL(
-      fixedPoint.convergence(),
-      "FixedPoint with a convergence subplan is not yet supported");
-  VELOX_USER_CHECK(
-      fixedPoint.failAtBound(),
-      "FixedPoint that returns its result at the bound is not yet supported");
+  const bool replace =
+      fixedPoint.outputMode() == lp::FixedPointNode::OutputMode::kReplace;
 
-  // Every recursive state read shares the FixedPoint output identities.
-  // Pruning must therefore choose one ordered subset and rewrite the
-  // fixed-point output, step, and every WorkingTable
+  // Every read presents all of the state's columns, aligned with the
+  // FixedPoint output. Pruning must therefore choose one ordered subset and
+  // rewrite the fixed-point output, step, and every WorkingTable
   // consistently, while retaining the aligned anchor sources.
   // TODO: Implement this coordinated FixedPoint state-schema pruning.
   const auto& anchorType = fixedPoint.anchor()->outputType();
@@ -601,14 +578,27 @@ Translated Translator::translateFixedPoint(
   // projects is materialized here rather than carried in the scope.
   narrowToNames(
       &step.node, step.scope, fixedPoint.step()->outputType()->names());
-  // Each recursive reference currently maps back to the same anchor Column*s.
-  // Two references would therefore collapse into one relation identity instead
-  // of representing independently aliased inputs to a self-join.
-  VELOX_USER_CHECK_EQ(
-      activeFixedPoint_->numReferences,
-      1,
-      "Optimizer v2 supports exactly one RecursiveReferenceNode per FixedPoint step: found {}",
-      activeFixedPoint_->numReferences);
+  // A loop that appends reads the latest delta once: two reads would compute
+  // delta joined with delta, which semi-naive evaluation does not define.
+  const auto checkOneReference = [&](std::string_view branch) {
+    VELOX_USER_CHECK(
+        replace || activeFixedPoint_->numReferences == 1,
+        "Optimizer v2 supports exactly one RecursiveReferenceNode per FixedPoint {} in append mode: found {}",
+        branch,
+        activeFixedPoint_->numReferences);
+  };
+  checkOneReference("step");
+
+  Translated convergence;
+  if (fixedPoint.convergence() != nullptr) {
+    activeFixedPoint_->numReferences = 0;
+    const auto& convergenceType = fixedPoint.convergence()->outputType();
+    convergence =
+        translateNode(*fixedPoint.convergence(), allNames(*convergenceType));
+    narrowToNames(
+        &convergence.node, convergence.scope, convergenceType->names());
+    checkOneReference("convergence");
+  }
 
   auto result = nodeSimplifier_.make(
       FixedPoint::Key{
@@ -619,10 +609,14 @@ Translated Translator::translateFixedPoint(
           .sourceColumns = std::move(anchorColumns),
           .maxIterations = fixedPoint.maxIterations().value_or(
               session_.options().recursionLimit),
+          .failAtBound = fixedPoint.failAtBound(),
+          .mode = replace ? FixedPointMode::kReplace : FixedPointMode::kAppend,
           .recursiveNumDrivers = std::nullopt,
+          .convergence = convergence.node,
       },
       {anchor.node, {}},
-      {step.node, {}});
+      {step.node, {}},
+      {convergence.node, {}});
   applySubstitutions(result.substitutions, anchorScope);
   return {nodeSimplifier_.materialize(result), std::move(anchorScope)};
 }
@@ -648,22 +642,34 @@ Translated Translator::translateRecursiveRef(
       enclosing.stateColumns.size(),
       "RecursiveReference schema size mismatches enclosing FixedPoint anchor");
 
-  // Scope names come from the reference schema, while the working table's
-  // columns come from the enclosing state.
+  // Scope names come from the reference schema. Each read presents the
+  // enclosing state's columns under fresh ones.
   Scope newScope;
+  ColumnVector readColumns;
+  readColumns.reserve(schema->size());
   for (size_t i = 0; i < schema->size(); ++i) {
-    ColumnCP column = enclosing.stateColumns[i];
+    ColumnCP stateColumn = enclosing.stateColumns[i];
     const auto& refType = schema->childAt(static_cast<uint32_t>(i));
     VELOX_USER_CHECK(
-        refType->equivalent(*column->value().type),
+        refType->equivalent(*stateColumn->value().type),
         "RecursiveReference column {} type does not match enclosing FixedPoint anchor: ref={}, anchor={}",
         i,
         refType->toString(),
-        column->value().type->toString());
-    newScope[schema->nameOf(static_cast<uint32_t>(i))] = column;
+        stateColumn->value().type->toString());
+    readColumns.push_back(Column::createWithUnknownValue(stateColumn));
+    newScope[schema->nameOf(static_cast<uint32_t>(i))] = readColumns.back();
   }
 
-  return {makeWorkingTable(), std::move(newScope)};
+  NodeCP read = nodeSimplifier_
+                    .make(
+                        WorkingTable::Key{
+                            .name = enclosing.stateName,
+                            .stateColumns = enclosing.stateColumns,
+                            .outputColumns = std::move(readColumns),
+                            .readMode = WorkingTableReadMode::kLatestDelta,
+                        })
+                    .node;
+  return {read, std::move(newScope)};
 }
 
 Translated Translator::translateNode(

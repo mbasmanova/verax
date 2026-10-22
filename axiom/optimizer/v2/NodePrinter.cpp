@@ -414,16 +414,20 @@ class Printer : public NodeVisitor {
   void visit(const FixedPoint& node, NodeVisitorContext& context)
       const override {
     auto& ctx = static_cast<Context&>(context);
-    header(
-        ctx,
-        node,
-        fmt::format(
-            "[name={}, maxIterations={}, recursiveNumDrivers={}]",
-            node.name(),
-            node.maxIterations(),
-            node.recursiveNumDrivers().has_value()
-                ? fmt::to_string(*node.recursiveNumDrivers())
-                : "unplanned"));
+    std::string details = fmt::format("[name={}", node.name());
+    if (node.mode() != FixedPointMode::kAppend) {
+      details += fmt::format(", mode={}", node.mode());
+    }
+    details += fmt::format(", maxIterations={}", node.maxIterations());
+    if (!node.failAtBound()) {
+      details += ", failAtBound=false";
+    }
+    details += fmt::format(
+        ", recursiveNumDrivers={}]",
+        node.recursiveNumDrivers().has_value()
+            ? fmt::to_string(*node.recursiveNumDrivers())
+            : "unplanned");
+    header(ctx, node, details);
     IndentGuard guard(ctx);
     ctx.out << spaces(ctx.indent) << "anchor:\n";
     node.anchor()->accept(*this, ctx);

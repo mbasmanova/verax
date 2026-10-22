@@ -325,10 +325,8 @@ class Translator {
   Translated translateFixedPoint(
       const logical_plan::FixedPointNode& fixedPoint,
       const LpNameSet& required);
-  // Reads the enclosing fixed point's state. Takes the columns from
-  // `activeFixedPoint_` rather than from the caller, so every read of one state
-  // presents the same `Column*`s by construction.
-  NodeCP makeWorkingTable();
+  // Reads the enclosing fixed point's state under fresh columns, so two reads
+  // of one state are distinct relations.
   Translated translateRecursiveRef(
       const logical_plan::RecursiveReferenceNode& ref,
       const LpNameSet& required);

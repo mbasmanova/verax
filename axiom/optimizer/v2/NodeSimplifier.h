@@ -152,10 +152,16 @@ class NodeSimplifier {
       SimplifiedNode input,
       const ColumnVector& originalOutputs);
 
-  /// Builds a FixedPoint after restoring the anchor and step layouts. An empty
-  /// anchor makes the recursive result empty.
-  SimplifiedNode
-  make(FixedPoint::Key key, SimplifiedNode anchor, SimplifiedNode step);
+  /// Builds a FixedPoint after restoring the anchor, step and convergence
+  /// layouts. An empty step leaves the anchor's rows in kAppend and no rows in
+  /// kReplace. Fails when the
+  /// simplified step or convergence no longer reads the state. 'convergence'
+  /// is ignored when the key has none.
+  SimplifiedNode make(
+      FixedPoint::Key key,
+      SimplifiedNode anchor,
+      SimplifiedNode step,
+      SimplifiedNode convergence);
 
   /// Builds a Repeat over the simplified inputs. Its keys read them through
   /// their substitutions, and each side outputs the columns the Repeat

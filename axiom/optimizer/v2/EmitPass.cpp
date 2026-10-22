@@ -2712,11 +2712,15 @@ velox::core::PlanNodePtr Emitter::emitFixedPoint(const FixedPoint& fixedPoint) {
             std::move(verdict), maxIterations)
       : velox::core::ConvergenceConfig::globalVerdict(
             std::move(partials), std::move(verdict), maxIterations);
+  convergence.errorWhenMaxIterationReached = fixedPoint.failAtBound();
 
   std::vector<velox::core::StateDeclarationPtr> stateDeclarations;
   stateDeclarations.push_back(
       std::make_shared<velox::core::VectorStateDeclaration>(
-          stateName, schema, std::move(anchorPlan), /*append=*/true));
+          stateName,
+          schema,
+          std::move(anchorPlan),
+          /*append=*/fixedPoint.mode() == FixedPointMode::kAppend));
   for (auto& state : emission.states) {
     stateDeclarations.push_back(std::move(state));
   }

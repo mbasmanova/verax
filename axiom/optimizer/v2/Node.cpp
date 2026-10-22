@@ -70,10 +70,19 @@ const auto& workingTableReadModeNames() {
       };
   return kNames;
 }
+
+const auto& fixedPointModeNames() {
+  static const folly::F14FastMap<FixedPointMode, std::string_view> kNames = {
+      {FixedPointMode::kAppend, "append"},
+      {FixedPointMode::kReplace, "replace"},
+  };
+  return kNames;
+}
 } // namespace
 
 AXIOM_DEFINE_ENUM_NAME(NodeType, nodeTypeNames);
 AXIOM_DEFINE_ENUM_NAME(WorkingTableReadMode, workingTableReadModeNames);
+AXIOM_DEFINE_ENUM_NAME(FixedPointMode, fixedPointModeNames);
 
 std::vector<Partitioning> Node::globalPartitions(
     std::span<const NodeCP> nodes) {
@@ -2059,12 +2068,17 @@ bool IndexLookupJoin::KeyEq::operator()(
   return (*this)(key, node);
 }
 
+// static
+bool Join::canSwapInputs(velox::core::JoinType joinType) {
+  return joinType == velox::core::JoinType::kInner ||
+      joinType == velox::core::JoinType::kLeft ||
+      joinType == velox::core::JoinType::kRight ||
+      joinType == velox::core::JoinType::kFull;
+}
+
 void Join::Key::swapInputs() {
   VELOX_CHECK(
-      joinType == velox::core::JoinType::kInner ||
-          joinType == velox::core::JoinType::kLeft ||
-          joinType == velox::core::JoinType::kRight ||
-          joinType == velox::core::JoinType::kFull,
+      Join::canSwapInputs(joinType),
       "Join inputs cannot be exchanged while preserving output: {}",
       velox::core::JoinTypeName::toName(joinType));
   std::swap(left, right);
@@ -3245,37 +3259,112 @@ bool TableWrite::KeyEq::operator()(const TableWrite* node, const Key& key)
   return (*this)(key, node);
 }
 
+namespace {
+
+// Returns the columns of 'branchColumns' at the positions 'columns' have in
+// 'outputColumns': state columns as a branch whose columns line up with the
+// state's presents them.
+ColumnVector alignedColumns(
+    const ColumnVector& columns,
+    const ColumnVector& outputColumns,
+    const ColumnVector& branchColumns) {
+  ColumnVector result;
+  result.reserve(columns.size());
+  for (ColumnCP column : columns) {
+    const auto it = std::ranges::find(outputColumns, column);
+    VELOX_CHECK(it != outputColumns.end());
+    result.push_back(branchColumns[it - outputColumns.begin()]);
+  }
+  return result;
+}
+
+// Returns 'partitioning', whose keys are among 'stateColumns', over the read's
+// 'outputColumns' at the same positions.
+Partitioning readPartitioning(
+    const Partitioning& partitioning,
+    const ColumnVector& stateColumns,
+    const ColumnVector& outputColumns) {
+  ColumnVector keys;
+  keys.reserve(partitioning.keys.size());
+  for (ExprCP key : partitioning.keys) {
+    VELOX_CHECK(
+        key->is(PlanType::kColumnExpr),
+        "WorkingTable partition keys must be among its state columns: {}",
+        key->toString());
+    keys.push_back(key->as<Column>());
+  }
+  Partitioning result = partitioning;
+  result.keys = toExprs(alignedColumns(keys, stateColumns, outputColumns));
+  return result;
+}
+
+// Checks that the read presents every state column under a fresh one, then
+// returns where it is placed.
+Partitioning readPartitioning(const WorkingTable::Key& key) {
+  VELOX_CHECK_EQ(
+      key.outputColumns.size(),
+      key.stateColumns.size(),
+      "WorkingTable must present every state column");
+  for (size_t i = 0; i < key.outputColumns.size(); ++i) {
+    VELOX_CHECK(
+        key.outputColumns[i] != key.stateColumns[i],
+        "WorkingTable output column must be fresh: {}",
+        key.outputColumns[i]->toString());
+    VELOX_CHECK(
+        key.outputColumns[i]->value().type->equivalent(
+            *key.stateColumns[i]->value().type),
+        "WorkingTable output column type must match its state column: {}",
+        key.outputColumns[i]->toString());
+  }
+  return readPartitioning(
+      key.partitioning, key.stateColumns, key.outputColumns);
+}
+
+} // namespace
+
 Partitioning WorkingTable::globalPartition(
     std::span<const Partitioning> /*inputPartitions*/,
     Builder& /*builder*/) const {
-  return partitioning_;
+  return readPartitioning(partitioning_, stateColumns_, outputColumns());
 }
 
 WorkingTable::WorkingTable(const Key& key)
     : Node(
           NodeType::kWorkingTable,
           ColumnVector{key.outputColumns},
-          {.globalPartition = key.partitioning}),
+          {.globalPartition = readPartitioning(key)}),
       name_(key.name),
+      stateColumns_(key.stateColumns),
       readMode_(key.readMode),
       partitioning_(key.partitioning) {
   VELOX_CHECK_NOT_NULL(name_);
-  const auto columns = PlanObjectSet::fromObjects(outputColumns());
-  for (ExprCP key : partitioning_.keys) {
-    VELOX_CHECK(
-        columns.contains(key),
-        "WorkingTable partition keys must be among its output columns: {}",
-        key->toString());
-  }
 }
 
 RequiredStates WorkingTable::deriveRequiredStates() const {
-  return {{name_, {.columns = outputColumns(), .partitioning = partitioning_}}};
+  return {{name_, {.columns = stateColumns_, .partitioning = partitioning_}}};
+}
+
+// static
+void WorkingTable::forEachRead(
+    NodeCP node,
+    Name name,
+    folly::FunctionRef<void(const WorkingTable&)> visit) {
+  if (!node->requiredStates().contains(name)) {
+    return;
+  }
+  if (node->is(NodeType::kWorkingTable)) {
+    visit(*node->as<WorkingTable>());
+    return;
+  }
+  for (NodeCP input : node->inputs()) {
+    forEachRead(input, name, visit);
+  }
 }
 
 size_t WorkingTable::KeyHash::operator()(const WorkingTable* node) const {
   return hashOf(
       node->name(),
+      node->stateColumns(),
       node->outputColumns(),
       node->readMode(),
       node->partitioning().kind,
@@ -3285,6 +3374,7 @@ size_t WorkingTable::KeyHash::operator()(const WorkingTable* node) const {
 size_t WorkingTable::KeyHash::operator()(const Key& key) const {
   return hashOf(
       key.name,
+      key.stateColumns,
       key.outputColumns,
       key.readMode,
       key.partitioning.kind,
@@ -3295,6 +3385,7 @@ bool WorkingTable::KeyEq::operator()(
     const WorkingTable* left,
     const WorkingTable* right) const {
   return left->name() == right->name() &&
+      left->stateColumns() == right->stateColumns() &&
       left->outputColumns() == right->outputColumns() &&
       left->readMode() == right->readMode() &&
       left->partitioning() == right->partitioning();
@@ -3302,7 +3393,7 @@ bool WorkingTable::KeyEq::operator()(
 
 bool WorkingTable::KeyEq::operator()(const Key& key, const WorkingTable* node)
     const {
-  return key.name == node->name() &&
+  return key.name == node->name() && key.stateColumns == node->stateColumns() &&
       key.outputColumns == node->outputColumns() &&
       key.readMode == node->readMode() &&
       key.partitioning == node->partitioning();
@@ -3331,7 +3422,7 @@ const Partitioning& checkBranchReadsState(
       branchName);
   VELOX_CHECK(
       it->second.columns == stateColumns,
-      "FixedPoint {} WorkingTable columns must match the fixed-point output by pointer identity",
+      "FixedPoint {} WorkingTable state columns must match the fixed-point output by pointer identity",
       branchName);
   VELOX_CHECK_EQ(
       states.size(),
@@ -3344,16 +3435,9 @@ const Partitioning& checkBranchReadsState(
 
 // Returns how many WorkingTable reads of state 'name' 'node' holds.
 int32_t countStateReads(NodeCP node, Name name) {
-  if (!node->requiredStates().contains(name)) {
-    return 0;
-  }
-  if (node->is(NodeType::kWorkingTable)) {
-    return 1;
-  }
   int32_t count = 0;
-  for (NodeCP input : node->inputs()) {
-    count += countStateReads(input, name);
-  }
+  WorkingTable::forEachRead(
+      node, name, [&](const WorkingTable& /*read*/) { ++count; });
   return count;
 }
 
@@ -3364,16 +3448,6 @@ NodeVector fixedPointInputs(const FixedPoint::Key& key) {
     inputs.push_back(key.convergence);
   }
   return inputs;
-}
-
-// True when 'node' has an Exchange on its path from a state read: the rows of
-// the state move between workers.
-bool movesState(NodeCP node) {
-  if (node->requiredStates().empty()) {
-    return false;
-  }
-  return node->is(NodeType::kExchange) ||
-      std::ranges::any_of(node->inputs(), movesState);
 }
 
 // The loop's output is the anchor's rows and the step's, so it is partitioned
@@ -3387,23 +3461,6 @@ Partitioning fixedPointPartition(
   const std::array<Partitioning, 2> legPartitions{anchor, step};
   return unionGlobalPartition(
       legPartitions, {sourceColumns, stepColumns}, outputColumns);
-}
-
-// Returns the columns of 'branchColumns' at the positions 'columns' have in
-// 'outputColumns': state columns as a branch whose columns line up with the
-// state's presents them.
-ColumnVector alignedColumns(
-    const ColumnVector& columns,
-    const ColumnVector& outputColumns,
-    const ColumnVector& branchColumns) {
-  ColumnVector result;
-  result.reserve(columns.size());
-  for (ColumnCP column : columns) {
-    const auto it = std::ranges::find(outputColumns, column);
-    VELOX_CHECK(it != outputColumns.end());
-    result.push_back(branchColumns[it - outputColumns.begin()]);
-  }
-  return result;
 }
 
 // 'branch', whose columns align with the state's, is placed the way 'state'
@@ -3509,6 +3566,8 @@ FixedPoint::FixedPoint(const Key& key)
       name_(key.name),
       sourceColumns_(key.sourceColumns),
       maxIterations_(key.maxIterations),
+      failAtBound_(key.failAtBound),
+      mode_(key.mode),
       recursiveNumDrivers_(key.recursiveNumDrivers) {
   VELOX_CHECK_NOT_NULL(name_);
   VELOX_CHECK_GE(
@@ -3521,10 +3580,12 @@ FixedPoint::FixedPoint(const Key& key)
       "FixedPoint anchor must not read its working table");
   const auto& state =
       checkBranchReadsState(inputs_[1], name_, outputColumns(), "step");
-  VELOX_CHECK_EQ(
-      countStateReads(inputs_[1], name_),
-      1,
-      "FixedPoint step must read its state through one WorkingTable");
+  if (mode_ == FixedPointMode::kAppend) {
+    VELOX_CHECK_EQ(
+        countStateReads(inputs_[1], name_),
+        1,
+        "FixedPoint step must read its state through one WorkingTable");
+  }
   checkPlacedLikeState(
       inputs_[0], sourceColumns_, outputColumns(), state, "anchor");
   checkPlacedLikeState(
@@ -3532,10 +3593,12 @@ FixedPoint::FixedPoint(const Key& key)
 
   if (convergence() != nullptr) {
     checkBranchReadsState(convergence(), name_, outputColumns(), "convergence");
-    VELOX_CHECK_EQ(
-        countStateReads(convergence(), name_),
-        1,
-        "FixedPoint convergence must read its state through one WorkingTable");
+    if (mode_ == FixedPointMode::kAppend) {
+      VELOX_CHECK_EQ(
+          countStateReads(convergence(), name_),
+          1,
+          "FixedPoint convergence must read its state through one WorkingTable");
+    }
     VELOX_CHECK(
         convergence()->requiredStates().at(name_) ==
             inputs_[1]->requiredStates().at(name_),
@@ -3552,6 +3615,15 @@ FixedPoint::FixedPoint(const Key& key)
       "FixedPoint whose step repartitions the state needs a convergence");
 }
 
+// static
+bool FixedPoint::movesState(NodeCP node) {
+  if (node->requiredStates().empty()) {
+    return false;
+  }
+  return node->is(NodeType::kExchange) ||
+      std::ranges::any_of(node->inputs(), movesState);
+}
+
 RequiredStates FixedPoint::deriveRequiredStates() const {
   RequiredStates states = Node::deriveRequiredStates();
   states.erase(name_);
@@ -3566,6 +3638,8 @@ size_t FixedPoint::KeyHash::operator()(const FixedPoint* node) const {
       node->outputColumns(),
       node->sourceColumns(),
       node->maxIterations(),
+      node->failAtBound(),
+      node->mode(),
       node->recursiveNumDrivers().has_value(),
       node->recursiveNumDrivers().value_or(0),
       node->convergence());
@@ -3579,6 +3653,8 @@ size_t FixedPoint::KeyHash::operator()(const Key& key) const {
       key.outputColumns,
       key.sourceColumns,
       key.maxIterations,
+      key.failAtBound,
+      key.mode,
       key.recursiveNumDrivers.has_value(),
       key.recursiveNumDrivers.value_or(0),
       key.convergence);
@@ -3592,6 +3668,8 @@ bool FixedPoint::KeyEq::operator()(
       left->outputColumns() == right->outputColumns() &&
       left->sourceColumns() == right->sourceColumns() &&
       left->maxIterations() == right->maxIterations() &&
+      left->failAtBound() == right->failAtBound() &&
+      left->mode() == right->mode() &&
       left->recursiveNumDrivers() == right->recursiveNumDrivers() &&
       left->convergence() == right->convergence();
 }
@@ -3602,6 +3680,7 @@ bool FixedPoint::KeyEq::operator()(const Key& key, const FixedPoint* node)
       key.name == node->name() && key.outputColumns == node->outputColumns() &&
       key.sourceColumns == node->sourceColumns() &&
       key.maxIterations == node->maxIterations() &&
+      key.failAtBound == node->failAtBound() && key.mode == node->mode() &&
       key.recursiveNumDrivers == node->recursiveNumDrivers() &&
       key.convergence == node->convergence();
 }
