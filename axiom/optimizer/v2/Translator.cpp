@@ -553,6 +553,16 @@ Translated Translator::translateFixedPoint(
   VELOX_USER_CHECK(
       !activeFixedPoint_.has_value(),
       "Nested FixedPoint translation is not yet implemented");
+  VELOX_USER_CHECK_EQ(
+      fixedPoint.outputMode(),
+      lp::FixedPointNode::OutputMode::kAppend,
+      "FixedPoint in replace mode is not yet supported");
+  VELOX_USER_CHECK_NULL(
+      fixedPoint.convergence(),
+      "FixedPoint with a convergence subplan is not yet supported");
+  VELOX_USER_CHECK(
+      fixedPoint.failAtBound(),
+      "FixedPoint that returns its result at the bound is not yet supported");
 
   // Every recursive state read shares the FixedPoint output identities.
   // Pruning must therefore choose one ordered subset and rewrite the
@@ -607,7 +617,8 @@ Translated Translator::translateFixedPoint(
           .name = recursionName,
           .outputColumns = std::move(stateColumns),
           .sourceColumns = std::move(anchorColumns),
-          .maxIterations = session_.options().recursionLimit,
+          .maxIterations = fixedPoint.maxIterations().value_or(
+              session_.options().recursionLimit),
           .recursiveNumDrivers = std::nullopt,
       },
       {anchor.node, {}},

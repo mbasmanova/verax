@@ -235,6 +235,40 @@ TEST_F(ReferencedTableCollectorTest, lateralJoinRightTableIsAnInputTable) {
       UnorderedElementsAre(table("orders"), table("lineitem")));
 }
 
+TEST_F(ReferencedTableCollectorTest, fixedPointStepAndConvergenceTables) {
+  auto anchor = startScan("orders").project({"id"});
+  auto step =
+      planBuilder()
+          .fixedPointState("t", anchor)
+          .as("t")
+          .join(startScan("lineitem").as("l"), "t.id = l.id", JoinType::kInner)
+          .project({"l.id AS id"})
+          .planNode();
+  auto convergence =
+      planBuilder()
+          .fixedPointState("t", anchor)
+          .as("t")
+          .join(
+              startScan("orders_copy").as("c"), "t.id = c.id", JoinType::kInner)
+          .aggregate({}, {"count(*) AS n"})
+          .project({"n = 0"})
+          .planNode();
+  auto plan = anchor
+                  .convergingFixedPoint(
+                      "t",
+                      step,
+                      convergence,
+                      /*maxIterations=*/10,
+                      /*failAtBound=*/false,
+                      /*keyColumns=*/{})
+                  .build();
+
+  EXPECT_THAT(
+      collect(plan).inputTables,
+      UnorderedElementsAre(
+          table("orders"), table("lineitem"), table("orders_copy")));
+}
+
 TEST_F(ReferencedTableCollectorTest, insertSeparatesSourceFromTarget) {
   auto plan =
       startScan("orders")

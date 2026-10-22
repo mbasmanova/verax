@@ -474,18 +474,54 @@ TEST_F(LogicalPlanNodeEqualityTest, output) {
 }
 
 TEST_F(LogicalPlanNodeEqualityTest, fixedPoint) {
-  auto makeNode = [](const std::string& next) {
+  using OutputMode = FixedPointNode::OutputMode;
+  struct Spec {
+    std::string name{"t"};
+    std::string next{"n + 1 as n"};
+    OutputMode outputMode{OutputMode::kReplace};
+    std::string stop{"m >= 10"};
+    std::optional<int32_t> maxIterations{100};
+    bool failAtBound{false};
+    std::vector<std::string> keyColumns;
+  };
+  auto makeNode = [](const Spec& spec) {
     auto anchor = PlanBuilder().values(
         ROW("n", BIGINT()), std::vector<Variant>{Variant::row({1LL})});
-    auto step =
-        PlanBuilder().recursiveRef("t", anchor).project({next}).planNode();
-    return anchor.fixedPoint("t", step).planNode();
+    auto step = PlanBuilder()
+                    .fixedPointState(spec.name, anchor)
+                    .project({spec.next})
+                    .planNode();
+    LogicalPlanNodePtr convergence;
+    if (!spec.stop.empty()) {
+      convergence = PlanBuilder()
+                        .fixedPointState(spec.name, anchor)
+                        .aggregate({}, {"max(n) as m"})
+                        .project({spec.stop})
+                        .planNode();
+    }
+    return std::make_shared<FixedPointNode>(
+        "fp",
+        spec.name,
+        anchor.planNode(),
+        step,
+        spec.outputMode,
+        convergence,
+        spec.maxIterations,
+        spec.failAtBound,
+        spec.keyColumns);
   };
 
-  EXPECT_EQ(*makeNode("n + 1 as n"), *makeNode("n + 1 as n"));
+  EXPECT_EQ(*makeNode({}), *makeNode({}));
 
-  // Different step.
-  EXPECT_NE(*makeNode("n + 1 as n"), *makeNode("n + 2 as n"));
+  EXPECT_NE(*makeNode({}), *makeNode({.name = "u"}));
+  EXPECT_NE(*makeNode({}), *makeNode({.next = "n + 2 as n"}));
+  EXPECT_NE(*makeNode({}), *makeNode({.outputMode = OutputMode::kAppend}));
+  EXPECT_NE(*makeNode({}), *makeNode({.stop = "m >= 20"}));
+  EXPECT_NE(*makeNode({}), *makeNode({.stop = ""}));
+  EXPECT_NE(*makeNode({}), *makeNode({.maxIterations = 50}));
+  EXPECT_NE(*makeNode({}), *makeNode({.maxIterations = std::nullopt}));
+  EXPECT_NE(*makeNode({}), *makeNode({.failAtBound = true}));
+  EXPECT_NE(*makeNode({}), *makeNode({.keyColumns = {"n"}}));
 }
 
 TEST_F(LogicalPlanNodeEqualityTest, graphMatch) {

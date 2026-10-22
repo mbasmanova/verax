@@ -68,7 +68,8 @@ class PlanNodeVisitorContext;
 ///   before the node runs. The nodes reachable through `inputs()` form a tree:
 ///   each is the input of one other node.
 /// - A plan the node runs itself is one of its `nestedPlans()`: a lateral
-///   join's right side, a fixed point's step, a graph match's table plans.
+///   join's right side, a fixed point's step and convergence, a graph match's
+///   table plans.
 /// - A subquery's plan hangs off a `SubqueryExpr`, and the same plan may be
 ///   embedded in several of them.
 /// - `forEachNode()` reaches inputs, nested plans and subquery plans, and
@@ -145,7 +146,7 @@ class LogicalPlanNode : public velox::ISerializable {
   }
 
   /// Plans the node runs itself, besides its inputs: a lateral join's right
-  /// side, a fixed point's step, a graph match's table plans.
+  /// side, a fixed point's step and convergence, a graph match's table plans.
   const std::vector<LogicalPlanNodePtr>& nestedPlans() const {
     return nestedPlans_;
   }
@@ -1099,13 +1100,45 @@ class OutputNode : public LogicalPlanNode {
 
 using OutputNodePtr = std::shared_ptr<const OutputNode>;
 
-/// Iterative fixed-point evaluation node. Models a linear recursive CTE: the
-/// 'anchor', the node's only input, produces the initial rows; the 'step' plan
-/// is re-run on each iteration to produce additional rows. Inside 'step', a
-/// RecursiveReferenceNode with matching 'name' stands for the rows produced
-/// by the previous iteration. The fixed point converges when 'step' returns
-/// no rows; the node emits the UNION ALL of the anchor's rows and every step
-/// iteration's rows.
+/// Iterative fixed-point evaluation node. The 'anchor', the node's only input,
+/// produces the initial state; the 'step' plan computes the next state from
+/// the previous one. Inside 'step' and 'convergence', a RecursiveReferenceNode
+/// with matching 'name' reads the state. 'step' and 'convergence' run once per
+/// iteration. The node runs one of two loops.
+///
+/// kAppend returns every iteration's rows, as a linear recursive CTE does:
+///
+///   delta = anchor;
+///   out = anchor;
+///   for (i = 0; i < maxIterations; ++i) {
+///     delta = step(delta);
+///     out = out UNION ALL delta;
+///     if (stop(delta)) return out;
+///   }
+///   if (failAtBound) fail;
+///   return out;
+///
+/// kReplace returns the last state, as PageRank or KMeans do:
+///
+///   state = anchor;
+///   for (i = 0; i < maxIterations; ++i) {
+///     state = step(state);
+///     if (stop(state)) return state;
+///   }
+///   if (failAtBound) fail;
+///   return state;
+///
+/// stop(x) is the value of 'convergence' over x, or 'x is empty' without one.
+/// 'convergence' produces exactly one row with one non-NULL BOOLEAN column;
+/// any other result fails the query.
+///
+/// The output schema is the anchor's, which is also the state's schema: the
+/// step and every RecursiveReferenceNode produce the same columns.
+///
+/// In kReplace, 'keyColumns' may name a key of the state, such as PageRank's
+/// vertex id: in every iteration, the state has at most one row per key, and
+/// no key column is null. The plan's producer guarantees this; Axiom may rely
+/// on it and does not check it.
 ///
 /// For SQL the mapping is:
 ///
@@ -1116,31 +1149,107 @@ using OutputNodePtr = std::shared_ptr<const OutputNode>;
 ///                                       --   RecursiveReferenceNode named "t"
 ///   )
 ///
+/// with kAppend, no convergence, and the session's recursion limit as a bound
+/// that fails.
 class FixedPointNode : public LogicalPlanNode {
  public:
+  /// What the node returns.
+  enum class OutputMode {
+    /// The anchor's rows and every iteration's rows.
+    kAppend,
+    /// The state after the last iteration.
+    kReplace,
+  };
+
+  AXIOM_DECLARE_EMBEDDED_ENUM_NAME(OutputMode);
+
+  /// @param convergence Decides after each iteration whether the loop stops.
+  /// Null to stop once an iteration produces no rows.
+  /// @param maxIterations Bound on the number of iterations. Unset to use the
+  /// session's recursion limit.
+  /// @param failAtBound Whether reaching the bound before the loop stops fails
+  /// the query, or returns the current result.
+  /// @param keyColumns Names of state columns that form a key of the state.
+  /// Empty when the state declares no key.
+  ///
   /// Requires:
   /// - `name` is non-empty.
   /// - `anchor` does not reference its enclosing fixed-point state.
   /// - `step` contains at least one RecursiveReferenceNode named `name`.
   /// - `anchor` and `step` produce equivalent output schemas.
+  /// - `convergence`, when set, contains at least one RecursiveReferenceNode
+  ///   named `name` and produces one BOOLEAN column.
+  /// - `maxIterations`, when set, is positive.
+  /// - `keyColumns` are distinct columns of the state, and are empty in
+  ///   kAppend.
   FixedPointNode(
       std::string id,
       std::string name,
       LogicalPlanNodePtr anchor,
+      LogicalPlanNodePtr step,
+      OutputMode outputMode,
+      LogicalPlanNodePtr convergence,
+      std::optional<int32_t> maxIterations,
+      bool failAtBound,
+      std::vector<std::string> keyColumns);
+
+  /// Returns a linear recursive CTE: kAppend, stops once an iteration produces
+  /// no rows, and fails at the session's recursion limit.
+  static std::shared_ptr<const FixedPointNode> recursiveCte(
+      std::string id,
+      std::string name,
+      LogicalPlanNodePtr anchor,
       LogicalPlanNodePtr step);
+
+  /// Returns a loop that replaces its state each iteration until 'convergence'
+  /// returns true.
+  static std::shared_ptr<const FixedPointNode> converging(
+      std::string id,
+      std::string name,
+      LogicalPlanNodePtr anchor,
+      LogicalPlanNodePtr step,
+      LogicalPlanNodePtr convergence,
+      int32_t maxIterations,
+      bool failAtBound,
+      std::vector<std::string> keyColumns);
 
   /// Initial (base-case) subplan.
   const LogicalPlanNodePtr& anchor() const {
     return inputs()[0];
   }
 
-  /// Per-iteration subplan.
+  /// Plan that computes the next state.
   const LogicalPlanNodePtr& step() const {
     return nestedPlans()[0];
   }
 
-  /// Name of the recursive relation. RecursiveReferenceNodes inside the step
-  /// match this name to refer to the previous iteration.
+  /// Stop condition, or null to stop once an iteration produces no rows.
+  const LogicalPlanNodePtr& convergence() const {
+    // nestedPlans() holds the step, then the convergence when set.
+    static const LogicalPlanNodePtr kNone;
+    return nestedPlans().size() > 1 ? nestedPlans()[1] : kNone;
+  }
+
+  OutputMode outputMode() const {
+    return outputMode_;
+  }
+
+  /// Unset when the session's recursion limit bounds the loop.
+  std::optional<int32_t> maxIterations() const {
+    return maxIterations_;
+  }
+
+  bool failAtBound() const {
+    return failAtBound_;
+  }
+
+  /// Names of state columns that form a key of the state, or empty.
+  const std::vector<std::string>& keyColumns() const {
+    return keyColumns_;
+  }
+
+  /// Name of the loop's state. RecursiveReferenceNodes inside the step and the
+  /// convergence match this name to read the state.
   const std::string& name() const {
     return name_;
   }
@@ -1156,12 +1265,16 @@ class FixedPointNode : public LogicalPlanNode {
   bool equalTo(const LogicalPlanNode& other) const override;
 
   const std::string name_;
+  const OutputMode outputMode_;
+  const std::optional<int32_t> maxIterations_;
+  const bool failAtBound_;
+  const std::vector<std::string> keyColumns_;
 };
 
 using FixedPointNodePtr = std::shared_ptr<const FixedPointNode>;
 
-/// Leaf placeholder inside the step branch of a FixedPointNode. Represents a
-/// back-reference to the previous iteration's output at execution time.
+/// Leaf inside the step or the convergence of a FixedPointNode that reads the
+/// loop's state.
 /// Identity equality is by node id, not schema, so passes that fold
 /// equal-comparing nodes (memo lookups, plan-tree equality) cannot collapse
 /// two distinct self-references in a step body into one leaf (e.g.
@@ -1372,3 +1485,6 @@ using GraphMatchNodePtr = std::shared_ptr<const GraphMatchNode>;
 
 AXIOM_ENUM_FORMATTER(facebook::axiom::logical_plan::SetOperation);
 AXIOM_ENUM_FORMATTER(facebook::axiom::logical_plan::WriteKind);
+AXIOM_EMBEDDED_ENUM_FORMATTER(
+    facebook::axiom::logical_plan::FixedPointNode,
+    OutputMode);

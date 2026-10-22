@@ -2358,17 +2358,45 @@ PlanBuilder& PlanBuilder::fixedPoint(
     const LogicalPlanNodePtr& step) {
   VELOX_USER_CHECK_NOT_NULL(
       node_, "Anchor plan must be set before calling fixedPoint");
-  VELOX_USER_CHECK_NOT_NULL(step);
-  node_ = std::make_shared<FixedPointNode>(nextId(), name, node_, step);
+  node_ = FixedPointNode::recursiveCte(nextId(), name, node_, step);
   return *this;
 }
 
-PlanBuilder& PlanBuilder::recursiveRef(
+PlanBuilder& PlanBuilder::convergingFixedPoint(
+    std::string_view name,
+    const LogicalPlanNodePtr& step,
+    const LogicalPlanNodePtr& convergence,
+    int32_t maxIterations,
+    bool failAtBound,
+    const std::vector<std::string>& keyColumns) {
+  VELOX_USER_CHECK_NOT_NULL(
+      node_, "Anchor plan must be set before calling convergingFixedPoint");
+  std::vector<std::string> keyIds;
+  keyIds.reserve(keyColumns.size());
+  for (const auto& column : keyColumns) {
+    auto id = outputMapping_->lookup(column);
+    VELOX_USER_CHECK(
+        id.has_value(), "Key column not found in the anchor: {}", column);
+    keyIds.push_back(std::move(id.value()));
+  }
+  node_ = FixedPointNode::converging(
+      nextId(),
+      std::string(name),
+      node_,
+      step,
+      convergence,
+      maxIterations,
+      failAtBound,
+      std::move(keyIds));
+  return *this;
+}
+
+PlanBuilder& PlanBuilder::fixedPointState(
     const std::string& name,
     const PlanBuilder& anchor) {
-  VELOX_USER_CHECK_NULL(node_, "RecursiveRef must be a leaf node");
+  VELOX_USER_CHECK_NULL(node_, "fixedPointState must be a leaf node");
   VELOX_USER_CHECK_NOT_NULL(
-      anchor.node_, "Anchor plan must be set before calling recursiveRef");
+      anchor.node_, "Anchor plan must be set before calling fixedPointState");
   const auto& anchorType = anchor.node_->outputType();
   const auto& anchorMapping = *anchor.outputMapping_;
   // Rebuilds the anchor's mappings under fresh ids so each recursive reference

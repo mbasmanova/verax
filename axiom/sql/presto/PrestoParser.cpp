@@ -495,7 +495,7 @@ class RelationPlanner : public AstVisitor {
 
     // Translate the step on a fresh builder with no outer scope; register
     // the anchor so processTable() resolves self-references via
-    // recursiveRef using the anchor's name mappings.
+    // fixedPointState using the anchor's name mappings.
     builder_ = newBuilder();
     auto anchorGuard = ctes_.pushAnchor(cteName, anchorBuilder.get());
     {
@@ -574,9 +574,9 @@ class RelationPlanner : public AstVisitor {
     // execution does not support DAG plans.
     if (const auto* anchor = ctes_.anchorFor(name)) {
       builder_ = newBuilder();
-      // The recursive-ref name must match the enclosing FixedPointNode's
-      // name so the optimizer wires this self-reference to that loop state.
-      builder_->recursiveRef(name, *anchor);
+      // The state's name must match the enclosing FixedPointNode's name so
+      // the optimizer wires this self-reference to that loop state.
+      builder_->fixedPointState(name, *anchor);
       builder_->as(name);
       displayNames_.accumulate(*builder_, name);
       return true;

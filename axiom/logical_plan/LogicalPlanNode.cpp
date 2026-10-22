@@ -1432,7 +1432,7 @@ namespace {
 
 // Invokes 'visit' for each child plan of 'node' whose recursive references
 // resolve against the same fixed point as 'node'. A nested FixedPointNode's
-// step resolves against that inner loop, so it is skipped.
+// step and convergence resolve against that inner loop, so they are skipped.
 void forEachChildInScope(
     const LogicalPlanNode& node,
     folly::FunctionRef<void(const LogicalPlanNodePtr&)> visit) {
@@ -1494,25 +1494,139 @@ void rejectAnchorRecursiveReference(
 }
 } // namespace
 
+namespace {
+
+std::vector<LogicalPlanNodePtr> iterationPlans(
+    const LogicalPlanNodePtr& step,
+    const LogicalPlanNodePtr& convergence) {
+  if (convergence == nullptr) {
+    return {step};
+  }
+  return {step, convergence};
+}
+
+const auto& outputModeNames() {
+  static const folly::F14FastMap<FixedPointNode::OutputMode, std::string_view>
+      kNames = {
+          {FixedPointNode::OutputMode::kAppend, "APPEND"},
+          {FixedPointNode::OutputMode::kReplace, "REPLACE"},
+      };
+  return kNames;
+}
+
+} // namespace
+
+AXIOM_DEFINE_EMBEDDED_ENUM_NAME(FixedPointNode, OutputMode, outputModeNames);
+
 FixedPointNode::FixedPointNode(
     std::string id,
     std::string name,
     LogicalPlanNodePtr anchor,
-    LogicalPlanNodePtr step)
-    : LogicalPlanNode{NodeKind::kFixedPoint, std::move(id), {anchor}, {step}, anchor->outputType()},
-      name_{std::move(name)} {
+    LogicalPlanNodePtr step,
+    OutputMode outputMode,
+    LogicalPlanNodePtr convergence,
+    std::optional<int32_t> maxIterations,
+    bool failAtBound,
+    std::vector<std::string> keyColumns)
+    : LogicalPlanNode{NodeKind::kFixedPoint, std::move(id), {anchor}, iterationPlans(step, convergence), anchor->outputType()},
+      name_{std::move(name)},
+      outputMode_{outputMode},
+      maxIterations_{maxIterations},
+      failAtBound_{failAtBound},
+      keyColumns_{std::move(keyColumns)} {
   VELOX_USER_CHECK(!name_.empty(), "FixedPointNode name must be non-empty");
+  const auto& stateType = anchor->outputType();
   VELOX_USER_CHECK(
-      anchor->outputType()->equivalent(*step->outputType()),
+      stateType->equivalent(*step->outputType()),
       "Anchor and step branches of FixedPointNode must have equivalent output schemas: {} vs. {}",
-      anchor->outputType()->toString(),
+      stateType->toString(),
       step->outputType()->toString());
 
   rejectAnchorRecursiveReference(anchor, name_);
   VELOX_USER_CHECK(
-      checkRecursiveReferences(step, name_, anchor->outputType()),
+      checkRecursiveReferences(step, name_, stateType),
       "FixedPointNode step must contain at least one RecursiveReferenceNode named '{}'",
       name_);
+
+  if (convergence != nullptr) {
+    VELOX_USER_CHECK(
+        checkRecursiveReferences(convergence, name_, stateType),
+        "FixedPointNode convergence must contain at least one RecursiveReferenceNode named '{}'",
+        name_);
+    const auto& convergenceType = convergence->outputType();
+    VELOX_USER_CHECK_EQ(
+        convergenceType->size(),
+        1,
+        "FixedPointNode convergence must produce one column: {}",
+        convergenceType->toString());
+    VELOX_USER_CHECK(
+        convergenceType->childAt(0)->isBoolean(),
+        "FixedPointNode convergence must produce a BOOLEAN column: {}",
+        convergenceType->childAt(0)->toString());
+  }
+
+  if (maxIterations_.has_value()) {
+    VELOX_USER_CHECK_GT(
+        maxIterations_.value(),
+        0,
+        "FixedPointNode maxIterations must be positive");
+  }
+
+  VELOX_USER_CHECK(
+      keyColumns_.empty() || outputMode_ == OutputMode::kReplace,
+      "FixedPointNode keyColumns require replace mode");
+  folly::F14FastSet<std::string_view> seen;
+  for (const auto& column : keyColumns_) {
+    VELOX_USER_CHECK(
+        stateType->containsChild(column),
+        "FixedPointNode key column not found in the state: {}",
+        column);
+    VELOX_USER_CHECK(
+        seen.insert(column).second,
+        "FixedPointNode key column appears more than once: {}",
+        column);
+  }
+}
+
+// static
+std::shared_ptr<const FixedPointNode> FixedPointNode::recursiveCte(
+    std::string id,
+    std::string name,
+    LogicalPlanNodePtr anchor,
+    LogicalPlanNodePtr step) {
+  return std::make_shared<FixedPointNode>(
+      std::move(id),
+      std::move(name),
+      std::move(anchor),
+      std::move(step),
+      OutputMode::kAppend,
+      /*convergence=*/nullptr,
+      /*maxIterations=*/std::nullopt,
+      /*failAtBound=*/true,
+      /*keyColumns=*/std::vector<std::string>{});
+}
+
+// static
+std::shared_ptr<const FixedPointNode> FixedPointNode::converging(
+    std::string id,
+    std::string name,
+    LogicalPlanNodePtr anchor,
+    LogicalPlanNodePtr step,
+    LogicalPlanNodePtr convergence,
+    int32_t maxIterations,
+    bool failAtBound,
+    std::vector<std::string> keyColumns) {
+  VELOX_USER_CHECK_NOT_NULL(convergence);
+  return std::make_shared<FixedPointNode>(
+      std::move(id),
+      std::move(name),
+      std::move(anchor),
+      std::move(step),
+      OutputMode::kReplace,
+      std::move(convergence),
+      maxIterations,
+      failAtBound,
+      std::move(keyColumns));
 }
 
 void FixedPointNode::accept(
@@ -1525,13 +1639,28 @@ bool FixedPointNode::equalTo(const LogicalPlanNode& other) const {
   // LogicalPlanNode::operator== compares the anchor before delegating here.
   const auto* otherFixedPoint = other.as<FixedPointNode>();
   return equalNodeVectors(nestedPlans(), otherFixedPoint->nestedPlans()) &&
-      name_ == otherFixedPoint->name_;
+      name_ == otherFixedPoint->name_ &&
+      outputMode_ == otherFixedPoint->outputMode_ &&
+      maxIterations_ == otherFixedPoint->maxIterations_ &&
+      failAtBound_ == otherFixedPoint->failAtBound_ &&
+      keyColumns_ == otherFixedPoint->keyColumns_;
 }
 
 folly::dynamic FixedPointNode::serialize() const {
   auto obj = serializeBase("LogicalFixedPointNode");
   obj["recursiveName"] = name_;
   obj["step"] = step()->serialize();
+  if (convergence() != nullptr) {
+    obj["convergence"] = convergence()->serialize();
+  }
+  obj["outputMode"] = toName(outputMode_);
+  if (maxIterations_.has_value()) {
+    obj["maxIterations"] = maxIterations_.value();
+  }
+  obj["failAtBound"] = failAtBound_;
+  if (!keyColumns_.empty()) {
+    obj["keyColumns"] = velox::ISerializable::serialize(keyColumns_);
+  }
   return obj;
 }
 
@@ -1542,11 +1671,30 @@ LogicalPlanNodePtr FixedPointNode::create(
   auto inputs = deserializeNodeInputs(obj, context);
   VELOX_USER_CHECK_EQ(
       inputs.size(), 1, "FixedPointNode requires exactly one input (anchor)");
+  LogicalPlanNodePtr convergence;
+  if (obj.count("convergence")) {
+    convergence = velox::ISerializable::deserialize<LogicalPlanNode>(
+        obj["convergence"], context);
+  }
+  std::optional<int32_t> maxIterations;
+  if (obj.count("maxIterations")) {
+    maxIterations = static_cast<int32_t>(obj["maxIterations"].asInt());
+  }
+  std::vector<std::string> keyColumns;
+  if (obj.count("keyColumns")) {
+    keyColumns = velox::ISerializable::deserialize<std::vector<std::string>>(
+        obj["keyColumns"]);
+  }
   return std::make_shared<FixedPointNode>(
       obj["id"].asString(),
       obj["recursiveName"].asString(),
       std::move(inputs[0]),
-      velox::ISerializable::deserialize<LogicalPlanNode>(obj["step"], context));
+      velox::ISerializable::deserialize<LogicalPlanNode>(obj["step"], context),
+      toOutputMode(obj["outputMode"].asString()),
+      std::move(convergence),
+      maxIterations,
+      obj["failAtBound"].asBool(),
+      std::move(keyColumns));
 }
 
 RecursiveReferenceNode::RecursiveReferenceNode(

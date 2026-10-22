@@ -111,7 +111,7 @@ TEST_F(FixedPointTest, stepJoin) {
 TEST_F(FixedPointTest, singleDriverStep) {
   auto counter = singleRow("n", 1);
   auto recursiveStep = lp::PlanBuilder(context_)
-                           .recursiveRef("counter", counter)
+                           .fixedPointState("counter", counter)
                            .filter("n < 10")
                            .aggregate({}, {"count(*) as n"})
                            .planNode();
@@ -191,7 +191,7 @@ TEST_F(FixedPointTest, distributed) {
     auto context = makeContext();
     auto anchor = lp::PlanBuilder(context).tableScan("t").project({"a AS n"});
     auto step = lp::PlanBuilder(context)
-                    .recursiveRef("r", anchor)
+                    .fixedPointState("r", anchor)
                     .filter("n < 10")
                     .aggregate({}, {"max(n) AS m"})
                     .project({"m + 1 AS n"})
@@ -226,7 +226,7 @@ TEST_F(FixedPointTest, partitionedLoop) {
                            .fixedPoint(
                                "r",
                                lp::PlanBuilder(context)
-                                   .recursiveRef("r", anchor)
+                                   .fixedPointState("r", anchor)
                                    .filter("n < 10")
                                    .aggregate({"n"}, {})
                                    .project({"n + 1 AS n"})
@@ -373,7 +373,7 @@ TEST_F(FixedPointTest, partitionedLoop) {
                            .fixedPoint(
                                "r",
                                lp::PlanBuilder(context)
-                                   .recursiveRef("r", anchor)
+                                   .fixedPointState("r", anchor)
                                    .aggregate({"n"}, {})
                                    .aggregate({}, {"max(n) AS m"})
                                    .project({"m + 1 AS n"})
@@ -465,7 +465,7 @@ TEST_F(FixedPointTest, outerSelectsOneColumn) {
 TEST_F(FixedPointTest, orphanRecursiveReference) {
   auto counter = singleRow("n", 1);
   auto orphan =
-      lp::PlanBuilder(context_).recursiveRef("counter", counter).build();
+      lp::PlanBuilder(context_).fixedPointState("counter", counter).build();
 
   VELOX_ASSERT_THROW(
       toSingleNodePlan(orphan),
@@ -558,17 +558,51 @@ TEST_F(FixedPointTest, outerJoinAndFilter) {
   AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
 }
 
+TEST_F(FixedPointTest, iterativeLoopRejected) {
+  auto anchor = singleRow("n", 1);
+  auto step = lp::PlanBuilder(context_)
+                  .fixedPointState("counter", anchor)
+                  .project({"n + 1 as n"})
+                  .planNode();
+  auto makePlan = [&](const lp::LogicalPlanNodePtr& convergence,
+                      bool failAtBound) {
+    return std::make_shared<lp::FixedPointNode>(
+        "fixed_point",
+        "counter",
+        anchor.planNode(),
+        step,
+        lp::FixedPointNode::OutputMode::kAppend,
+        convergence,
+        /*maxIterations=*/10,
+        failAtBound,
+        /*keyColumns=*/std::vector<std::string>{});
+  };
+
+  VELOX_ASSERT_THROW(
+      toSingleNodePlan(makePlan(
+          lp::PlanBuilder(context_)
+              .fixedPointState("counter", anchor)
+              .aggregate({}, {"max(n) AS m"})
+              .project({"m >= 10"})
+              .planNode(),
+          /*failAtBound=*/true)),
+      "FixedPoint with a convergence subplan is not yet supported");
+  VELOX_ASSERT_THROW(
+      toSingleNodePlan(makePlan(nullptr, /*failAtBound=*/false)),
+      "FixedPoint that returns its result at the bound is not yet supported");
+}
+
 TEST_F(FixedPointTest, nestedRecursionRejected) {
   auto inner = singleRow("n", 1);
   auto innerBody = lp::PlanBuilder(context_)
-                       .recursiveRef("inner", inner)
+                       .fixedPointState("inner", inner)
                        .project({"n + 1 as n"})
                        .planNode();
   inner.fixedPoint("inner", innerBody);
 
   auto outer = singleRow("n", 1);
   auto outerBody = lp::PlanBuilder(context_)
-                       .recursiveRef("outer", outer)
+                       .fixedPointState("outer", outer)
                        .unionAll(inner)
                        .planNode();
   auto plan = outer.fixedPoint("outer", outerBody).build();
@@ -576,6 +610,246 @@ TEST_F(FixedPointTest, nestedRecursionRejected) {
   VELOX_ASSERT_THROW(
       toSingleNodePlan(plan),
       "Nested FixedPoint translation is not yet implemented");
+}
+
+// PageRank as PALM computes it (palm/programs/PageRank.cpp). Each iteration
+// gives every vertex (1 - d) / N plus d times the weighted rank of its in-edges
+// and an even share of the rank held by vertices with no out-edges, and stops
+// once the total squared change is below N * tolerance^2.
+TEST_F(FixedPointTest, pageRank) {
+  testConnector_->addTable(
+      "vertices", ROW({"vertex_id", "out_degree"}, BIGINT()));
+  testConnector_->addTable(
+      "edges", ROW({"src", "dst", "weight"}, {BIGINT(), BIGINT(), DOUBLE()}));
+
+  auto context = makeContext();
+  static constexpr auto kRanks = "ranks";
+
+  // N = 4 vertices, damping factor d = 0.85, tolerance 1e-4.
+  auto anchor = lp::PlanBuilder(context)
+                    .tableScan("vertices")
+                    .project(
+                        {"vertex_id",
+                         "0.25 AS rank",
+                         "out_degree",
+                         /*placeholder*/ "0.0 AS squared_error"});
+
+  auto state = [&](std::optional<std::string> alias = std::nullopt) {
+    auto builder = lp::PlanBuilder(context).fixedPointState(kRanks, anchor);
+    if (alias.has_value()) {
+      builder.as(*alias);
+    }
+    return builder;
+  };
+
+  auto step =
+      state("c")
+          // Weighted rank each vertex receives along its in-edges.
+          .join(
+              state("s")
+                  .filter("s.out_degree > 0")
+                  .join(
+                      lp::PlanBuilder(context).tableScan("edges").as("e"),
+                      "s.vertex_id = e.src",
+                      lp::JoinType::kInner)
+                  .aggregate(
+                      {"e.dst"}, {"sum(s.rank * e.weight) AS inbound_rank"})
+                  .as("i"),
+              "c.vertex_id = i.dst",
+              lp::JoinType::kLeft)
+          // Rank held by vertices with no out-edges, shared evenly by all
+          // vertices.
+          .crossJoin(
+              state()
+                  .aggregate(
+                      {}, {"sum(if(out_degree = 0, rank, 0.0)) AS dangling"})
+                  .as("g"))
+          .project({
+              "c.vertex_id AS vertex_id",
+              "0.0375 + 0.85 * (coalesce(i.inbound_rank, 0.0) + g.dangling / 4.0) AS rank",
+              "c.out_degree AS out_degree",
+              "c.rank AS previous",
+          })
+          .project({
+              "vertex_id",
+              "rank",
+              "out_degree",
+              "(rank - previous) * (rank - previous) AS squared_error",
+          })
+          .planNode();
+  auto plan = anchor
+                  .convergingFixedPoint(
+                      kRanks,
+                      step,
+                      state()
+                          .aggregate({}, {"sum(squared_error) AS total"})
+                          .project({"coalesce(total, 0.0) < 4e-8"})
+                          .planNode(),
+                      /*maxIterations=*/100,
+                      /*failAtBound=*/false,
+                      /*keyColumns=*/{"vertex_id"})
+                  .project({"vertex_id", "rank"})
+                  .build();
+
+  VELOX_ASSERT_THROW(
+      toSingleNodePlan(plan),
+      "FixedPoint in replace mode is not yet supported");
+}
+
+// Connected components: each iteration lowers every vertex's label to the
+// smallest label among its in-neighbors and stops once no label changes. Only
+// vertices whose label changed in the last iteration send it.
+TEST_F(FixedPointTest, connectedComponents) {
+  testConnector_->addTable("vertices", ROW("vertex", BIGINT()));
+  testConnector_->addTable("edges", ROW({"src", "dst"}, BIGINT()));
+
+  auto context = makeContext();
+  static constexpr auto kLabels = "labels";
+
+  auto anchor =
+      lp::PlanBuilder(context)
+          .tableScan("vertices")
+          .project(
+              {"vertex", "vertex AS label", /*placeholder*/ "true AS changed"});
+
+  auto state = [&](std::optional<std::string> alias = std::nullopt) {
+    auto builder = lp::PlanBuilder(context).fixedPointState(kLabels, anchor);
+    if (alias.has_value()) {
+      builder.as(*alias);
+    }
+    return builder;
+  };
+
+  auto step =
+      state("v")
+          .join(
+              state("n")
+                  .filter("n.changed")
+                  .join(
+                      lp::PlanBuilder(context).tableScan("edges").as("e"),
+                      "n.vertex = e.src",
+                      lp::JoinType::kInner)
+                  .aggregate({"e.dst"}, {"min(n.label) AS label"})
+                  .as("m"),
+              "v.vertex = m.dst",
+              lp::JoinType::kLeft)
+          .project({
+              "v.vertex AS vertex",
+              "least(v.label, coalesce(m.label, v.label)) AS label",
+              "coalesce(m.label < v.label, false) AS changed",
+          })
+          .planNode();
+  auto plan = anchor
+                  .convergingFixedPoint(
+                      kLabels,
+                      step,
+                      state()
+                          .aggregate({}, {"count_if(changed) AS num_changed"})
+                          .project({"num_changed = 0"})
+                          .planNode(),
+                      /*maxIterations=*/100,
+                      /*failAtBound=*/true,
+                      /*keyColumns=*/{"vertex"})
+                  .build();
+
+  VELOX_ASSERT_THROW(
+      toSingleNodePlan(plan),
+      "FixedPoint in replace mode is not yet supported");
+}
+
+// KMeans: each iteration assigns every point to its nearest centroid, moves
+// each centroid to the mean of its points, keeps the centroid of an empty
+// cluster, and stops once no centroid moves more than a tolerance. Each point
+// is one row that computes its distances to all centroids.
+TEST_F(FixedPointTest, kMeans) {
+  testConnector_->addTable(
+      "points", ROW({"id", "coordinates"}, {BIGINT(), ARRAY(DOUBLE())}));
+  testConnector_->addTable(
+      "seeds", ROW({"cluster", "coordinates"}, {BIGINT(), ARRAY(DOUBLE())}));
+
+  auto context = makeContext();
+  static constexpr auto kCentroids = "centroids";
+
+  auto distance = [](std::string_view left, std::string_view right) {
+    return fmt::format(
+        "array_sum(zip_with({}, {}, (a, b) -> (a - b) * (a - b)))",
+        left,
+        right);
+  };
+
+  auto anchor = lp::PlanBuilder(context).tableScan("seeds").project(
+      {"cluster", "coordinates", /*placeholder*/ "false AS converged"});
+
+  auto state = [&](std::optional<std::string> alias = std::nullopt) {
+    auto builder = lp::PlanBuilder(context).fixedPointState(kCentroids, anchor);
+    if (alias.has_value()) {
+      builder.as(*alias);
+    }
+    return builder;
+  };
+
+  auto step =
+      state("old")
+          .join(
+              lp::PlanBuilder(context)
+                  .tableScan("points")
+                  .as("p")
+                  .crossJoin(
+                      state()
+                          .aggregate(
+                              {},
+                              {"array_agg(cluster) AS clusters",
+                               "array_agg(coordinates) AS centers"})
+                          .as("c"))
+                  .project(
+                      {"c.clusters AS clusters",
+                       "p.coordinates AS coordinates",
+                       fmt::format(
+                           "transform(c.centers, center -> {}) AS distances",
+                           distance("p.coordinates", "center"))})
+                  .project(
+                      {"element_at(clusters, array_position(distances, array_min(distances))) AS cluster",
+                       "coordinates"})
+                  .aggregate(
+                      {"cluster"},
+                      {"vector_sum(coordinates) AS total",
+                       "count(*) AS num_points"})
+                  .project({
+                      "cluster",
+                      "transform(total, v -> v / cast(num_points AS DOUBLE)) AS coordinates",
+                  })
+                  .as("new"),
+              "old.cluster = new.cluster",
+              lp::JoinType::kLeft)
+          .project({
+              "old.cluster AS cluster",
+              "coalesce(new.coordinates, old.coordinates) AS coordinates",
+              "old.coordinates AS previous",
+          })
+          .project(
+              {"cluster",
+               "coordinates",
+               fmt::format(
+                   "{} < 0.0001 AS converged",
+                   distance("coordinates", "previous"))})
+          .planNode();
+  auto plan =
+      anchor
+          .convergingFixedPoint(
+              kCentroids,
+              step,
+              state()
+                  .aggregate({}, {"count_if(NOT converged) AS num_moving"})
+                  .project({"num_moving = 0"})
+                  .planNode(),
+              /*maxIterations=*/20,
+              /*failAtBound=*/false,
+              /*keyColumns=*/{"cluster"})
+          .build();
+
+  VELOX_ASSERT_THROW(
+      toSingleNodePlan(plan),
+      "FixedPoint in replace mode is not yet supported");
 }
 
 } // namespace

@@ -323,11 +323,25 @@ TEST_F(LogicalPlanNodeSerdeTest, fixedPointNode) {
   auto anchor = PlanBuilder().values(
       ROW("n", BIGINT()), std::vector<Variant>{Variant::row({1LL})});
   auto step = PlanBuilder()
-                  .recursiveRef("t", anchor)
+                  .fixedPointState("t", anchor)
                   .project({"n + 1 as n"})
                   .planNode();
-  auto plan = anchor.fixedPoint("t", step).planNode();
-  testRoundTrip(plan);
+  auto convergence = PlanBuilder()
+                         .fixedPointState("t", anchor)
+                         .aggregate({}, {"max(n) as m"})
+                         .project({"m >= 10"})
+                         .planNode();
+
+  testRoundTrip(PlanBuilder(anchor).fixedPoint("t", step).planNode());
+  testRoundTrip(PlanBuilder(anchor)
+                    .convergingFixedPoint(
+                        "t",
+                        step,
+                        convergence,
+                        /*maxIterations=*/100,
+                        /*failAtBound=*/false,
+                        /*keyColumns=*/{"n"})
+                    .planNode());
 }
 
 TEST_F(LogicalPlanNodeSerdeTest, graphMatchNode) {
@@ -379,7 +393,7 @@ TEST_F(LogicalPlanNodeSerdeTest, recursiveReferenceNode) {
   auto anchor = PlanBuilder().values(
       ROW({"x", "y"}, {BIGINT(), VARCHAR()}),
       std::vector<Variant>{Variant::row({1LL, "a"})});
-  auto ref = PlanBuilder().recursiveRef("cte", anchor).planNode();
+  auto ref = PlanBuilder().fixedPointState("cte", anchor).planNode();
   testRoundTrip(ref);
 }
 
