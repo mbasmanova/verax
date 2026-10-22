@@ -47,19 +47,14 @@ const auto& nodeKindNames() {
   return kNames;
 }
 
-struct TraversalContext {
-  folly::FunctionRef<void(const LogicalPlanNode&)> visit;
-  folly::F14FastSet<const LogicalPlanNode*> visited;
-};
-
-void traversePlan(const LogicalPlanNode& plan, TraversalContext& context);
-
-class TraversalVisitor : public PlanNodeVisitor {
+// Visits the plan of each subquery in a node's expressions.
+class SubqueryPlanVisitor : public PlanNodeVisitor {
  public:
   struct Context : public PlanNodeVisitorContext {
-    explicit Context(TraversalContext& traversal) : traversal{traversal} {}
+    explicit Context(folly::FunctionRef<void(const LogicalPlanNode&)> visit)
+        : visit{visit} {}
 
-    TraversalContext& traversal;
+    folly::FunctionRef<void(const LogicalPlanNode&)> visit;
   };
 
   void visit(const ValuesNode& node, PlanNodeVisitorContext& context)
@@ -77,13 +72,11 @@ class TraversalVisitor : public PlanNodeVisitor {
   void visit(const FilterNode& node, PlanNodeVisitorContext& context)
       const override {
     visitExpression(*node.predicate(), context);
-    visitPlanInputs(node, context);
   }
 
   void visit(const ProjectNode& node, PlanNodeVisitorContext& context)
       const override {
     visitExpressions(node.expressions(), context);
-    visitPlanInputs(node, context);
   }
 
   void visit(const AggregateNode& node, PlanNodeVisitorContext& context)
@@ -92,19 +85,16 @@ class TraversalVisitor : public PlanNodeVisitor {
     for (const auto& aggregate : node.aggregates()) {
       visitExpression(*aggregate, context);
     }
-    visitPlanInputs(node, context);
   }
 
   void visit(const JoinNode& node, PlanNodeVisitorContext& context)
       const override {
     visitOptionalExpression(node.condition(), context);
-    visitPlanInputs(node, context);
   }
 
   void visit(const LateralJoinNode& node, PlanNodeVisitorContext& context)
       const override {
     visitOptionalExpression(node.condition(), context);
-    visitPlanInputs(node, context);
   }
 
   void visit(const SortNode& node, PlanNodeVisitorContext& context)
@@ -112,46 +102,34 @@ class TraversalVisitor : public PlanNodeVisitor {
     for (const auto& field : node.ordering()) {
       visitExpression(*field.expression, context);
     }
-    visitPlanInputs(node, context);
   }
 
   void visit(const LimitNode& node, PlanNodeVisitorContext& context)
-      const override {
-    visitPlanInputs(node, context);
-  }
+      const override {}
 
   void visit(const SetNode& node, PlanNodeVisitorContext& context)
-      const override {
-    visitPlanInputs(node, context);
-  }
+      const override {}
 
   void visit(const UnnestNode& node, PlanNodeVisitorContext& context)
       const override {
     visitExpressions(node.unnestExpressions(), context);
-    visitPlanInputs(node, context);
   }
 
   void visit(const TableWriteNode& node, PlanNodeVisitorContext& context)
       const override {
     visitExpressions(node.columnExpressions(), context);
-    visitPlanInputs(node, context);
   }
 
   void visit(const SampleNode& node, PlanNodeVisitorContext& context)
       const override {
     visitExpression(*node.percentage(), context);
-    visitPlanInputs(node, context);
   }
 
   void visit(const OutputNode& node, PlanNodeVisitorContext& context)
-      const override {
-    visitPlanInputs(node, context);
-  }
+      const override {}
 
   void visit(const FixedPointNode& node, PlanNodeVisitorContext& context)
-      const override {
-    visitPlanInputs(node, context);
-  }
+      const override {}
 
   void visit(
       const RecursiveReferenceNode& /*node*/,
@@ -175,10 +153,9 @@ class TraversalVisitor : public PlanNodeVisitor {
   static void visitExpression(
       const Expr& expression,
       PlanNodeVisitorContext& context) {
-    auto& traversal = static_cast<Context&>(context).traversal;
-    expression.forEachSubquery([&](const SubqueryExpr& subquery) {
-      traversePlan(*subquery.subquery(), traversal);
-    });
+    auto& visit = static_cast<Context&>(context).visit;
+    expression.forEachSubquery(
+        [&](const SubqueryExpr& subquery) { visit(*subquery.subquery()); });
   }
 
   static void visitExpressions(
@@ -188,15 +165,20 @@ class TraversalVisitor : public PlanNodeVisitor {
       visitExpression(*expression, context);
     }
   }
+};
 
-  static void visitPlanInputs(
-      const LogicalPlanNode& node,
-      PlanNodeVisitorContext& context) {
-    auto& traversal = static_cast<Context&>(context).traversal;
-    for (const auto& input : node.inputs()) {
-      traversePlan(*input, traversal);
-    }
-  }
+// Invokes 'visit' for the plan of each subquery in 'node''s expressions.
+void forEachSubqueryPlan(
+    const LogicalPlanNode& node,
+    folly::FunctionRef<void(const LogicalPlanNode&)> visit) {
+  const SubqueryPlanVisitor visitor;
+  SubqueryPlanVisitor::Context context{visit};
+  node.accept(visitor, context);
+}
+
+struct TraversalContext {
+  folly::FunctionRef<void(const LogicalPlanNode&)> visit;
+  folly::F14FastSet<const LogicalPlanNode*> visited;
 };
 
 void traversePlan(const LogicalPlanNode& plan, TraversalContext& context) {
@@ -204,9 +186,12 @@ void traversePlan(const LogicalPlanNode& plan, TraversalContext& context) {
     return;
   }
   context.visit(plan);
-  const TraversalVisitor visitor;
-  TraversalVisitor::Context visitorContext{context};
-  plan.accept(visitor, visitorContext);
+  forEachSubqueryPlan(plan, [&](const LogicalPlanNode& subquery) {
+    traversePlan(subquery, context);
+  });
+  for (const auto& input : plan.inputs()) {
+    traversePlan(*input, context);
+  }
   for (const auto& nested : plan.nestedPlans()) {
     traversePlan(*nested, context);
   }
@@ -1431,30 +1416,32 @@ LogicalPlanNodePtr OutputNode::create(
 namespace {
 
 // Invokes 'visit' for each child plan of 'node' whose recursive references
-// resolve against the same fixed point as 'node'. A nested FixedPointNode's
-// step and convergence resolve against that inner loop, so they are skipped.
+// resolve against the same fixed point as 'node': its inputs, its subqueries'
+// plans and its nested plans. A nested FixedPointNode's step and convergence
+// resolve against that inner loop, so they are skipped.
 void forEachChildInScope(
     const LogicalPlanNode& node,
-    folly::FunctionRef<void(const LogicalPlanNodePtr&)> visit) {
+    folly::FunctionRef<void(const LogicalPlanNode&)> visit) {
   for (const auto& input : node.inputs()) {
-    visit(input);
+    visit(*input);
   }
+  forEachSubqueryPlan(node, visit);
   if (node.is(NodeKind::kFixedPoint)) {
     return;
   }
   for (const auto& nested : node.nestedPlans()) {
-    visit(nested);
+    visit(*nested);
   }
 }
 
 // Checks every RecursiveReferenceNode reachable from 'node': it must name
 // 'name' and carry 'stateSchema'. Returns true if at least one is seen.
 bool checkRecursiveReferences(
-    const LogicalPlanNodePtr& node,
+    const LogicalPlanNode& node,
     const std::string& name,
     const velox::RowTypePtr& stateSchema) {
-  if (node->is(NodeKind::kRecursiveReference)) {
-    const auto* ref = node->as<RecursiveReferenceNode>();
+  if (node.is(NodeKind::kRecursiveReference)) {
+    const auto* ref = node.as<RecursiveReferenceNode>();
     VELOX_USER_CHECK_EQ(
         ref->name(),
         name,
@@ -1468,7 +1455,7 @@ bool checkRecursiveReferences(
     return true;
   }
   bool found{false};
-  forEachChildInScope(*node, [&](const LogicalPlanNodePtr& child) {
+  forEachChildInScope(node, [&](const LogicalPlanNode& child) {
     found |= checkRecursiveReferences(child, name, stateSchema);
   });
   return found;
@@ -1478,17 +1465,17 @@ bool checkRecursiveReferences(
 // 'name'. Used on the anchor, which produces seed rows before any
 // iteration and so cannot reference its own enclosing FixedPointNode.
 void rejectAnchorRecursiveReference(
-    const LogicalPlanNodePtr& node,
+    const LogicalPlanNode& node,
     const std::string& name) {
-  if (node->is(NodeKind::kRecursiveReference)) {
-    const auto* ref = node->as<RecursiveReferenceNode>();
+  if (node.is(NodeKind::kRecursiveReference)) {
+    const auto* ref = node.as<RecursiveReferenceNode>();
     VELOX_USER_CHECK_NE(
         ref->name(),
         name,
         "FixedPointNode anchor must not reference its own state");
     return;
   }
-  forEachChildInScope(*node, [&](const LogicalPlanNodePtr& child) {
+  forEachChildInScope(node, [&](const LogicalPlanNode& child) {
     rejectAnchorRecursiveReference(child, name);
   });
 }
@@ -1535,6 +1522,7 @@ FixedPointNode::FixedPointNode(
       failAtBound_{failAtBound},
       keyColumns_{std::move(keyColumns)} {
   VELOX_USER_CHECK(!name_.empty(), "FixedPointNode name must be non-empty");
+  VELOX_USER_CHECK_NOT_NULL(step, "FixedPointNode requires a step plan");
   const auto& stateType = anchor->outputType();
   VELOX_USER_CHECK(
       stateType->equivalent(*step->outputType()),
@@ -1542,15 +1530,15 @@ FixedPointNode::FixedPointNode(
       stateType->toString(),
       step->outputType()->toString());
 
-  rejectAnchorRecursiveReference(anchor, name_);
+  rejectAnchorRecursiveReference(*anchor, name_);
   VELOX_USER_CHECK(
-      checkRecursiveReferences(step, name_, stateType),
+      checkRecursiveReferences(*step, name_, stateType),
       "FixedPointNode step must contain at least one RecursiveReferenceNode named '{}'",
       name_);
 
   if (convergence != nullptr) {
     VELOX_USER_CHECK(
-        checkRecursiveReferences(convergence, name_, stateType),
+        checkRecursiveReferences(*convergence, name_, stateType),
         "FixedPointNode convergence must contain at least one RecursiveReferenceNode named '{}'",
         name_);
     const auto& convergenceType = convergence->outputType();
@@ -1607,7 +1595,27 @@ std::shared_ptr<const FixedPointNode> FixedPointNode::recursiveCte(
 }
 
 // static
-std::shared_ptr<const FixedPointNode> FixedPointNode::converging(
+std::shared_ptr<const FixedPointNode> FixedPointNode::iterate(
+    std::string id,
+    std::string name,
+    LogicalPlanNodePtr anchor,
+    LogicalPlanNodePtr step,
+    int32_t numIterations,
+    std::vector<std::string> keyColumns) {
+  return std::make_shared<FixedPointNode>(
+      std::move(id),
+      std::move(name),
+      std::move(anchor),
+      std::move(step),
+      OutputMode::kReplace,
+      /*convergence=*/nullptr,
+      numIterations,
+      /*failAtBound=*/false,
+      std::move(keyColumns));
+}
+
+// static
+std::shared_ptr<const FixedPointNode> FixedPointNode::iterateUntil(
     std::string id,
     std::string name,
     LogicalPlanNodePtr anchor,

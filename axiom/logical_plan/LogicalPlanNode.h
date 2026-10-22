@@ -1195,15 +1195,50 @@ class FixedPointNode : public LogicalPlanNode {
 
   /// Returns a linear recursive CTE: kAppend, stops once an iteration produces
   /// no rows, and fails at the session's recursion limit.
+  ///
+  ///   delta = anchor;
+  ///   out = anchor;
+  ///   for (i = 0; i < recursionLimit; ++i) {
+  ///     delta = step(delta);
+  ///     out = out UNION ALL delta;
+  ///     if (delta is empty) return out;
+  ///   }
+  ///   fail;
   static std::shared_ptr<const FixedPointNode> recursiveCte(
       std::string id,
       std::string name,
       LogicalPlanNodePtr anchor,
       LogicalPlanNodePtr step);
 
+  /// Returns a loop that replaces its state 'numIterations' times and returns
+  /// it. Like any loop without a convergence, it stops early if the state
+  /// becomes empty.
+  ///
+  ///   state = anchor;
+  ///   for (i = 0; i < numIterations; ++i) {
+  ///     state = step(state);
+  ///     if (state is empty) return state;
+  ///   }
+  ///   return state;
+  static std::shared_ptr<const FixedPointNode> iterate(
+      std::string id,
+      std::string name,
+      LogicalPlanNodePtr anchor,
+      LogicalPlanNodePtr step,
+      int32_t numIterations,
+      std::vector<std::string> keyColumns);
+
   /// Returns a loop that replaces its state each iteration until 'convergence'
   /// returns true.
-  static std::shared_ptr<const FixedPointNode> converging(
+  ///
+  ///   state = anchor;
+  ///   for (i = 0; i < maxIterations; ++i) {
+  ///     state = step(state);
+  ///     if (convergence(state)) return state;
+  ///   }
+  ///   if (failAtBound) fail;
+  ///   return state;
+  static std::shared_ptr<const FixedPointNode> iterateUntil(
       std::string id,
       std::string name,
       LogicalPlanNodePtr anchor,
