@@ -254,6 +254,9 @@ class ToTextVisitor : public PlanNodeVisitor {
         node.condition() != nullptr ? ExprPrinter::toText(*node.condition())
                                     : "",
         context);
+    for (const auto& plan : node.nestedPlans()) {
+      appendPlan(*plan, static_cast<Context&>(context));
+    }
   }
 
   void visit(const SortNode& node, PlanNodeVisitorContext& context)
@@ -378,6 +381,9 @@ class ToTextVisitor : public PlanNodeVisitor {
     appendOutputType(node, myContext);
     myContext.out << std::endl;
     appendInputs(node, myContext);
+    for (const auto& plan : node.nestedPlans()) {
+      appendPlan(*plan, myContext);
+    }
   }
 
   void visit(
@@ -451,8 +457,15 @@ class ToTextVisitor : public PlanNodeVisitor {
   }
 
   void appendInputs(const LogicalPlanNode& node, Context& context) const {
+    for (const auto& input : node.inputs()) {
+      appendPlan(*input, context);
+    }
+  }
+
+  // Appends 'plan' one level below the current node.
+  void appendPlan(const LogicalPlanNode& plan, Context& context) const {
     context.indent++;
-    PlanNodeVisitor::visitInputs(node, context);
+    plan.accept(*this, context);
     context.indent--;
   }
 };
@@ -566,6 +579,9 @@ class CollectExprStatsPlanNodeVisitor : public PlanNodeVisitor {
       collectExprStats(*node.condition(), stats);
     }
     visitInputs(node, context);
+    for (const auto& plan : node.nestedPlans()) {
+      plan->accept(*this, context);
+    }
   }
 
   void visit(const SortNode& node, PlanNodeVisitorContext& context)
@@ -614,6 +630,9 @@ class CollectExprStatsPlanNodeVisitor : public PlanNodeVisitor {
   void visit(const FixedPointNode& node, PlanNodeVisitorContext& context)
       const override {
     visitInputs(node, context);
+    for (const auto& plan : node.nestedPlans()) {
+      plan->accept(*this, context);
+    }
   }
 
   void visit(
@@ -906,6 +925,9 @@ class SummarizeToTextVisitor : public PlanNodeVisitor {
     }
 
     appendInputs(node, myContext);
+    for (const auto& plan : node.nestedPlans()) {
+      appendPlan(*plan, myContext);
+    }
   }
 
   void visit(const SortNode& node, PlanNodeVisitorContext& context)
@@ -992,7 +1014,11 @@ class SummarizeToTextVisitor : public PlanNodeVisitor {
 
   void visit(const FixedPointNode& node, PlanNodeVisitorContext& context)
       const override {
+    auto& myContext = static_cast<Context&>(context);
     appendNode(node, context);
+    for (const auto& plan : node.nestedPlans()) {
+      appendPlan(*plan, myContext);
+    }
   }
 
   void visit(
@@ -1048,8 +1074,15 @@ class SummarizeToTextVisitor : public PlanNodeVisitor {
   }
 
   void appendInputs(const LogicalPlanNode& node, Context& context) const {
+    for (const auto& input : node.inputs()) {
+      appendPlan(*input, context);
+    }
+  }
+
+  // Appends 'plan' one level below the current node.
+  void appendPlan(const LogicalPlanNode& plan, Context& context) const {
     context.indent++;
-    PlanNodeVisitor::visitInputs(node, context);
+    plan.accept(*this, context);
     context.indent--;
   }
 

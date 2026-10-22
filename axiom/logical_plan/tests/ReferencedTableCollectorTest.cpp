@@ -224,6 +224,17 @@ TEST_F(ReferencedTableCollectorTest, subqueryTableIsAnInputTable) {
       UnorderedElementsAre(table("orders"), table("lineitem")));
 }
 
+TEST_F(ReferencedTableCollectorTest, lateralJoinRightTableIsAnInputTable) {
+  auto plan =
+      startScan("orders")
+          .lateralJoin(startScan("lineitem"), std::nullopt, JoinType::kInner)
+          .build();
+
+  EXPECT_THAT(
+      collect(plan).inputTables,
+      UnorderedElementsAre(table("orders"), table("lineitem")));
+}
+
 TEST_F(ReferencedTableCollectorTest, insertSeparatesSourceFromTarget) {
   auto plan =
       startScan("orders")

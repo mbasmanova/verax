@@ -159,9 +159,6 @@ class TraversalVisitor : public PlanNodeVisitor {
 
   void visit(const GraphMatchNode& node, PlanNodeVisitorContext& context)
       const override {
-    auto& traversal = static_cast<Context&>(context).traversal;
-    node.forEachTablePlan(
-        [&](const LogicalPlanNode& plan) { traversePlan(plan, traversal); });
     node.forEachExpression(
         [&](const Expr& expression) { visitExpression(expression, context); });
   }
@@ -210,6 +207,9 @@ void traversePlan(const LogicalPlanNode& plan, TraversalContext& context) {
   const TraversalVisitor visitor;
   TraversalVisitor::Context visitorContext{context};
   plan.accept(visitor, visitorContext);
+  for (const auto& nested : plan.nestedPlans()) {
+    traversePlan(*nested, context);
+  }
 }
 
 /// Helper to serialize a vector of items to a folly::dynamic array.
@@ -1048,6 +1048,7 @@ bool JoinNode::equalTo(const LogicalPlanNode& other) const {
 
 folly::dynamic LateralJoinNode::serialize() const {
   auto obj = serializeBase("LogicalLateralJoinNode");
+  obj["right"] = right()->serialize();
   obj["joinType"] = JoinTypeName::toName(joinType_);
   if (condition_) {
     obj["condition"] = condition_->serialize();
@@ -1060,7 +1061,7 @@ LogicalPlanNodePtr LateralJoinNode::create(
     const folly::dynamic& obj,
     void* context) {
   auto inputs = deserializeNodeInputs(obj, context);
-  VELOX_CHECK_EQ(inputs.size(), 2);
+  VELOX_CHECK_EQ(inputs.size(), 1);
   ExprPtr condition = nullptr;
   if (obj.count("condition")) {
     condition = deserializeExpr(obj["condition"], context);
@@ -1068,7 +1069,7 @@ LogicalPlanNodePtr LateralJoinNode::create(
   return std::make_shared<LateralJoinNode>(
       obj["id"].asString(),
       inputs[0],
-      inputs[1],
+      velox::ISerializable::deserialize<LogicalPlanNode>(obj["right"], context),
       JoinTypeName::toJoinType(obj["joinType"].asString()),
       std::move(condition));
 }
@@ -1092,7 +1093,8 @@ void LateralJoinNode::accept(
 
 bool LateralJoinNode::equalTo(const LogicalPlanNode& other) const {
   const auto* rhs = other.as<LateralJoinNode>();
-  return joinType_ == rhs->joinType_ &&
+  return equalNodeVectors(nestedPlans(), rhs->nestedPlans()) &&
+      joinType_ == rhs->joinType_ &&
       Expr::equalNullableExprs(condition_, rhs->condition_);
 }
 
@@ -1428,18 +1430,29 @@ LogicalPlanNodePtr OutputNode::create(
 
 namespace {
 
-// Checks every RecursiveReferenceNode reachable from 'node': it must name
-// 'name' and carry 'stateSchema'. Sets *found if at least one matching
-// reference is seen. Does not descend into a nested FixedPointNode, whose
-// recursive references resolve against that inner loop.
-void checkRecursiveReferences(
-    const LogicalPlanNodePtr& node,
-    const std::string& name,
-    const velox::RowTypePtr& stateSchema,
-    bool* found) {
-  if (node == nullptr) {
+// Invokes 'visit' for each child plan of 'node' whose recursive references
+// resolve against the same fixed point as 'node'. A nested FixedPointNode's
+// step resolves against that inner loop, so it is skipped.
+void forEachChildInScope(
+    const LogicalPlanNode& node,
+    folly::FunctionRef<void(const LogicalPlanNodePtr&)> visit) {
+  for (const auto& input : node.inputs()) {
+    visit(input);
+  }
+  if (node.is(NodeKind::kFixedPoint)) {
     return;
   }
+  for (const auto& nested : node.nestedPlans()) {
+    visit(nested);
+  }
+}
+
+// Checks every RecursiveReferenceNode reachable from 'node': it must name
+// 'name' and carry 'stateSchema'. Returns true if at least one is seen.
+bool checkRecursiveReferences(
+    const LogicalPlanNodePtr& node,
+    const std::string& name,
+    const velox::RowTypePtr& stateSchema) {
   if (node->is(NodeKind::kRecursiveReference)) {
     const auto* ref = node->as<RecursiveReferenceNode>();
     VELOX_USER_CHECK_EQ(
@@ -1452,28 +1465,21 @@ void checkRecursiveReferences(
         name,
         ref->outputType()->toString(),
         stateSchema->toString());
-    *found = true;
-    return;
+    return true;
   }
-  if (node->is(NodeKind::kFixedPoint)) {
-    return;
-  }
-  for (const auto& input : node->inputs()) {
-    checkRecursiveReferences(input, name, stateSchema, found);
-  }
+  bool found{false};
+  forEachChildInScope(*node, [&](const LogicalPlanNodePtr& child) {
+    found |= checkRecursiveReferences(child, name, stateSchema);
+  });
+  return found;
 }
 
 // Rejects any RecursiveReferenceNode reachable from 'node' that names
 // 'name'. Used on the anchor, which produces seed rows before any
-// iteration and so cannot reference its own enclosing FixedPointNode. Does
-// not descend into a nested FixedPointNode -- its refs resolve to that inner
-// loop's state.
+// iteration and so cannot reference its own enclosing FixedPointNode.
 void rejectAnchorRecursiveReference(
     const LogicalPlanNodePtr& node,
     const std::string& name) {
-  if (node == nullptr) {
-    return;
-  }
   if (node->is(NodeKind::kRecursiveReference)) {
     const auto* ref = node->as<RecursiveReferenceNode>();
     VELOX_USER_CHECK_NE(
@@ -1482,12 +1488,9 @@ void rejectAnchorRecursiveReference(
         "FixedPointNode anchor must not reference its own state");
     return;
   }
-  if (node->is(NodeKind::kFixedPoint)) {
-    return;
-  }
-  for (const auto& input : node->inputs()) {
-    rejectAnchorRecursiveReference(input, name);
-  }
+  forEachChildInScope(*node, [&](const LogicalPlanNodePtr& child) {
+    rejectAnchorRecursiveReference(child, name);
+  });
 }
 } // namespace
 
@@ -1496,7 +1499,7 @@ FixedPointNode::FixedPointNode(
     std::string name,
     LogicalPlanNodePtr anchor,
     LogicalPlanNodePtr step)
-    : LogicalPlanNode{NodeKind::kFixedPoint, std::move(id), {anchor, step}, anchor->outputType()},
+    : LogicalPlanNode{NodeKind::kFixedPoint, std::move(id), {anchor}, {step}, anchor->outputType()},
       name_{std::move(name)} {
   VELOX_USER_CHECK(!name_.empty(), "FixedPointNode name must be non-empty");
   VELOX_USER_CHECK(
@@ -1506,10 +1509,8 @@ FixedPointNode::FixedPointNode(
       step->outputType()->toString());
 
   rejectAnchorRecursiveReference(anchor, name_);
-  bool found{false};
-  checkRecursiveReferences(step, name_, anchor->outputType(), &found);
   VELOX_USER_CHECK(
-      found,
+      checkRecursiveReferences(step, name_, anchor->outputType()),
       "FixedPointNode step must contain at least one RecursiveReferenceNode named '{}'",
       name_);
 }
@@ -1521,14 +1522,16 @@ void FixedPointNode::accept(
 }
 
 bool FixedPointNode::equalTo(const LogicalPlanNode& other) const {
-  // LogicalPlanNode::operator== compares inputs() before delegating here, so
-  // equalTo only needs to compare the fixed-point metadata.
-  return name_ == other.as<FixedPointNode>()->name_;
+  // LogicalPlanNode::operator== compares the anchor before delegating here.
+  const auto* otherFixedPoint = other.as<FixedPointNode>();
+  return equalNodeVectors(nestedPlans(), otherFixedPoint->nestedPlans()) &&
+      name_ == otherFixedPoint->name_;
 }
 
 folly::dynamic FixedPointNode::serialize() const {
   auto obj = serializeBase("LogicalFixedPointNode");
   obj["recursiveName"] = name_;
+  obj["step"] = step()->serialize();
   return obj;
 }
 
@@ -1538,14 +1541,12 @@ LogicalPlanNodePtr FixedPointNode::create(
     void* context) {
   auto inputs = deserializeNodeInputs(obj, context);
   VELOX_USER_CHECK_EQ(
-      inputs.size(),
-      2,
-      "FixedPointNode requires exactly two inputs (anchor, step)");
+      inputs.size(), 1, "FixedPointNode requires exactly one input (anchor)");
   return std::make_shared<FixedPointNode>(
       obj["id"].asString(),
       obj["recursiveName"].asString(),
       std::move(inputs[0]),
-      std::move(inputs[1]));
+      velox::ISerializable::deserialize<LogicalPlanNode>(obj["step"], context));
 }
 
 RecursiveReferenceNode::RecursiveReferenceNode(
@@ -1943,6 +1944,22 @@ bool GraphPropertyOutput::equals(const GraphMatchOutput& other) const {
   return property_ == static_cast<const GraphPropertyOutput&>(other).property_;
 }
 
+namespace {
+
+std::vector<LogicalPlanNodePtr> tablePlans(const PropertyGraphPtr& graph) {
+  VELOX_USER_CHECK_NOT_NULL(graph);
+  std::vector<LogicalPlanNodePtr> plans;
+  for (const auto& table : graph->vertexTables()) {
+    plans.push_back(table.plan);
+  }
+  for (const auto& table : graph->edgeTables()) {
+    plans.push_back(table.plan);
+  }
+  return plans;
+}
+
+} // namespace
+
 GraphMatchNode::GraphMatchNode(
     std::string id,
     PropertyGraphPtr graph,
@@ -1950,22 +1967,12 @@ GraphMatchNode::GraphMatchNode(
     ExprPtr predicate,
     std::vector<GraphMatchOutputPtr> outputs,
     std::vector<std::string> outputNames)
-    : LogicalPlanNode{NodeKind::kGraphMatch, std::move(id), {}, makeGraphMatchOutputType(graph, paths, predicate, outputs, outputNames)},
+    : LogicalPlanNode{NodeKind::kGraphMatch, std::move(id), {}, tablePlans(graph), makeGraphMatchOutputType(graph, paths, predicate, outputs, outputNames)},
       graph_{std::move(graph)},
       paths_{std::move(paths)},
       predicate_{std::move(predicate)},
       outputs_{std::move(outputs)},
       outputNames_{std::move(outputNames)} {}
-
-void GraphMatchNode::forEachTablePlan(
-    folly::FunctionRef<void(const LogicalPlanNode&)> visit) const {
-  for (const auto& table : graph_->vertexTables()) {
-    visit(*table.plan);
-  }
-  for (const auto& table : graph_->edgeTables()) {
-    visit(*table.plan);
-  }
-}
 
 namespace {
 

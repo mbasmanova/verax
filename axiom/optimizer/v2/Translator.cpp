@@ -96,6 +96,13 @@ void collectUsedNamesInPlan(
       }
       break;
     }
+    case lp::NodeKind::kLateralJoin: {
+      const auto* join = node.as<lp::LateralJoinNode>();
+      if (join->condition() != nullptr) {
+        collectUsedNames(*join->condition(), out);
+      }
+      break;
+    }
     case lp::NodeKind::kSort:
       for (const auto& field : node.as<lp::SortNode>()->ordering()) {
         collectUsedNames(*field.expression, out);
@@ -111,6 +118,9 @@ void collectUsedNamesInPlan(
   }
   for (const auto& input : node.inputs()) {
     collectUsedNamesInPlan(*input, out);
+  }
+  for (const auto& nested : node.nestedPlans()) {
+    collectUsedNamesInPlan(*nested, out);
   }
 }
 

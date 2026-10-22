@@ -248,6 +248,9 @@ class DotPrinterVisitor : public PlanNodeVisitor {
 
     printEdgeToInputs(context.out, node);
     visitInputs(node, ctx);
+
+    printEdge(context.out, node, *node.right());
+    node.right()->accept(*this, ctx);
   }
 
   void visit(const SortNode& node, PlanNodeVisitorContext& ctx) const override {
@@ -434,10 +437,17 @@ class DotPrinterVisitor : public PlanNodeVisitor {
       std::ostream& out,
       const LogicalPlanNode& node) {
     for (const auto& input : node.inputs()) {
-      out << "  " << nodeId(node) << " -> " << nodeId(*input) << " [color=\""
-          << kPalette.lines << "\", penwidth=2];\n";
+      printEdge(out, node, *input);
     }
     out << "\n";
+  }
+
+  static void printEdge(
+      std::ostream& out,
+      const LogicalPlanNode& from,
+      const LogicalPlanNode& to) {
+    out << "  " << nodeId(from) << " -> " << nodeId(to) << " [color=\""
+        << kPalette.lines << "\", penwidth=2];\n";
   }
 
   void renderSubqueryInCluster(
