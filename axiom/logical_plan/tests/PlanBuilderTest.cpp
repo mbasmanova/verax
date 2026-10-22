@@ -883,5 +883,33 @@ TEST_F(PlanBuilderTest, conjunctTypeCoercion) {
   }
 }
 
+// A fixed point's step may read the loop's state inside a lateral join's
+// right side.
+TEST_F(PlanBuilderTest, fixedPoint) {
+  PlanBuilder::Context context;
+  auto anchor = PlanBuilder(context).values(
+      ROW("n", BIGINT()), std::vector<Variant>{Variant::row({1LL})});
+
+  // For each edge, the right side reads the state rows at the edge's source.
+  auto edges = PlanBuilder(context).values(
+      ROW({"src", "dst"}, BIGINT()),
+      std::vector<Variant>{Variant::row({1LL, 2LL})});
+
+  auto step = PlanBuilder(edges)
+                  .lateralJoin(
+                      PlanBuilder(
+                          context,
+                          /*allowAmbiguousOutputNames=*/false,
+                          edges.scope())
+                          .recursiveRef("t", anchor)
+                          .filter("n = src"),
+                      /*condition=*/std::nullopt,
+                      JoinType::kInner)
+                  .project({"dst AS n"})
+                  .planNode();
+
+  EXPECT_NO_THROW(anchor.fixedPoint("t", step));
+}
+
 } // namespace
 } // namespace facebook::axiom::logical_plan

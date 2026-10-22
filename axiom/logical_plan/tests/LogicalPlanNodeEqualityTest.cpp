@@ -45,7 +45,7 @@ class LogicalPlanNodeEqualityTest : public testing::Test {
   test::VectorMaker maker_{pool_.get()};
 };
 
-TEST_F(LogicalPlanNodeEqualityTest, valuesNodeEquality) {
+TEST_F(LogicalPlanNodeEqualityTest, values) {
   std::vector<std::vector<std::string>> rows = {{"1", "10"}, {"2", "20"}};
   auto makeNode = [&rows] {
     return PlanBuilder().values({"x", "y"}, rows).planNode();
@@ -100,7 +100,7 @@ TEST_F(LogicalPlanNodeEqualityTest, valuesNodeEquality) {
   EXPECT_NE(*makeVectorValues(), *valuesNodeDifferent);
 }
 
-TEST_F(LogicalPlanNodeEqualityTest, tableScanNodeEquality) {
+TEST_F(LogicalPlanNodeEqualityTest, tableScan) {
   auto type = ROW({"a", "b"}, {BIGINT(), VARCHAR()});
   auto makeScan = [&](std::string connectorId = "hive",
                       std::string tableName = "t",
@@ -125,7 +125,7 @@ TEST_F(LogicalPlanNodeEqualityTest, tableScanNodeEquality) {
   EXPECT_NE(*makeScan(), *makeScan("hive", "t", {"col_x", "col_y"}));
 }
 
-TEST_F(LogicalPlanNodeEqualityTest, filterNodeEquality) {
+TEST_F(LogicalPlanNodeEqualityTest, filter) {
   std::vector<std::vector<std::string>> rows = {{"1", "10"}, {"2", "20"}};
   auto makeNode = [&rows] {
     return PlanBuilder().values({"x", "y"}, rows).filter("x > 0").planNode();
@@ -148,7 +148,7 @@ TEST_F(LogicalPlanNodeEqualityTest, filterNodeEquality) {
   EXPECT_NE(*makeNode(), *filterDifferentInput);
 }
 
-TEST_F(LogicalPlanNodeEqualityTest, projectNodeEquality) {
+TEST_F(LogicalPlanNodeEqualityTest, project) {
   std::vector<std::vector<std::string>> rows = {{"1", "10"}, {"2", "20"}};
   auto makeNode = [&rows] {
     return PlanBuilder()
@@ -174,7 +174,7 @@ TEST_F(LogicalPlanNodeEqualityTest, projectNodeEquality) {
   EXPECT_NE(*makeNode(), *projectDifferentName);
 }
 
-TEST_F(LogicalPlanNodeEqualityTest, aggregateNodeEquality) {
+TEST_F(LogicalPlanNodeEqualityTest, aggregate) {
   std::vector<std::vector<std::string>> rows = {{"1", "10"}, {"2", "20"}};
   auto makeNode = [&rows] {
     return PlanBuilder()
@@ -200,7 +200,7 @@ TEST_F(LogicalPlanNodeEqualityTest, aggregateNodeEquality) {
   EXPECT_NE(*makeNode(), *aggregateDifferentNames);
 }
 
-TEST_F(LogicalPlanNodeEqualityTest, joinNodeEquality) {
+TEST_F(LogicalPlanNodeEqualityTest, join) {
   std::vector<std::vector<std::string>> rows = {{"1", "10"}, {"2", "20"}};
   std::vector<std::vector<std::string>> rightRows = {{"1", "2"}};
 
@@ -239,7 +239,7 @@ TEST_F(LogicalPlanNodeEqualityTest, joinNodeEquality) {
   EXPECT_EQ(*makeCrossJoin(), *makeCrossJoin());
 }
 
-TEST_F(LogicalPlanNodeEqualityTest, lateralJoinNodeEquality) {
+TEST_F(LogicalPlanNodeEqualityTest, lateralJoin) {
   std::vector<std::vector<std::string>> rows = {{"1", "10"}, {"2", "20"}};
   std::vector<std::vector<std::string>> rightRows = {{"1", "2"}};
 
@@ -265,6 +265,17 @@ TEST_F(LogicalPlanNodeEqualityTest, lateralJoinNodeEquality) {
                          .planNode();
   EXPECT_NE(*makeLateral(), *lateralLeft);
 
+  // Different right side.
+  auto lateralOtherRight =
+      PlanBuilder()
+          .values({"x", "y"}, rows)
+          .lateralJoin(
+              PlanBuilder().values({"a", "b"}, rightRows).filter("b > 0"),
+              "x = a",
+              JoinType::kInner)
+          .planNode();
+  EXPECT_NE(*makeLateral(), *lateralOtherRight);
+
   // No condition (cross) vs with condition.
   auto makeCross = [&rows, &rightRows] {
     return PlanBuilder()
@@ -289,7 +300,7 @@ TEST_F(LogicalPlanNodeEqualityTest, lateralJoinNodeEquality) {
   EXPECT_NE(*makeLateral(), *regularJoin);
 }
 
-TEST_F(LogicalPlanNodeEqualityTest, sortNodeEquality) {
+TEST_F(LogicalPlanNodeEqualityTest, sort) {
   std::vector<std::vector<std::string>> rows = {{"1", "10"}, {"2", "20"}};
   auto makeNode = [&rows] {
     return PlanBuilder().values({"x", "y"}, rows).sort({"x"}).planNode();
@@ -307,7 +318,7 @@ TEST_F(LogicalPlanNodeEqualityTest, sortNodeEquality) {
   EXPECT_NE(*makeNode(), *sortY);
 }
 
-TEST_F(LogicalPlanNodeEqualityTest, limitNodeEquality) {
+TEST_F(LogicalPlanNodeEqualityTest, limit) {
   std::vector<std::vector<std::string>> rows = {{"1", "10"}, {"2", "20"}};
   auto makeNode = [&rows] {
     return PlanBuilder().values({"x", "y"}, rows).limit(0, 10).planNode();
@@ -326,7 +337,7 @@ TEST_F(LogicalPlanNodeEqualityTest, limitNodeEquality) {
   EXPECT_NE(*makeNode(), *limitDifferentOffset);
 }
 
-TEST_F(LogicalPlanNodeEqualityTest, setNodeEquality) {
+TEST_F(LogicalPlanNodeEqualityTest, set) {
   std::vector<std::vector<std::string>> rows = {{"1", "10"}, {"2", "20"}};
   auto makeNode = [&rows] {
     return PlanBuilder()
@@ -345,7 +356,7 @@ TEST_F(LogicalPlanNodeEqualityTest, setNodeEquality) {
   EXPECT_NE(*makeNode(), *setIntersect);
 }
 
-TEST_F(LogicalPlanNodeEqualityTest, unnestNodeEquality) {
+TEST_F(LogicalPlanNodeEqualityTest, unnest) {
   auto makeUnnest = [] {
     return PlanBuilder()
         .values(ROW("arr", ARRAY(BIGINT())), std::vector<Variant>{})
@@ -372,7 +383,7 @@ TEST_F(LogicalPlanNodeEqualityTest, unnestNodeEquality) {
   EXPECT_NE(*makeUnnest(), *unnestDifferentNames);
 }
 
-TEST_F(LogicalPlanNodeEqualityTest, tableWriteNodeEquality) {
+TEST_F(LogicalPlanNodeEqualityTest, tableWrite) {
   auto type = ROW({"x", "y"}, {BIGINT(), BIGINT()});
   auto makeInput = [&type] {
     return std::make_shared<ValuesNode>("1", type, ValuesNode::Variants{});
@@ -409,7 +420,7 @@ TEST_F(LogicalPlanNodeEqualityTest, tableWriteNodeEquality) {
       *makeNode(WriteKind::kInsert, "t", {{"compression", "zstd"}}));
 }
 
-TEST_F(LogicalPlanNodeEqualityTest, sampleNodeEquality) {
+TEST_F(LogicalPlanNodeEqualityTest, sample) {
   std::vector<std::vector<std::string>> rows = {{"1", "10"}, {"2", "20"}};
   auto makeNode = [&rows] {
     return PlanBuilder()
@@ -436,7 +447,7 @@ TEST_F(LogicalPlanNodeEqualityTest, sampleNodeEquality) {
   EXPECT_NE(*makeNode(), *sampleSystem);
 }
 
-TEST_F(LogicalPlanNodeEqualityTest, outputNodeEquality) {
+TEST_F(LogicalPlanNodeEqualityTest, output) {
   std::vector<std::vector<std::string>> rows = {{"1", "10"}, {"2", "20"}};
   auto makeNode = [&rows] {
     return std::make_shared<OutputNode>(
@@ -462,7 +473,22 @@ TEST_F(LogicalPlanNodeEqualityTest, outputNodeEquality) {
   EXPECT_NE(*makeNode(), *outputDifferentIndex);
 }
 
-TEST_F(LogicalPlanNodeEqualityTest, graphMatchNodeEquality) {
+TEST_F(LogicalPlanNodeEqualityTest, fixedPoint) {
+  auto makeNode = [](const std::string& next) {
+    auto anchor = PlanBuilder().values(
+        ROW("n", BIGINT()), std::vector<Variant>{Variant::row({1LL})});
+    auto step =
+        PlanBuilder().recursiveRef("t", anchor).project({next}).planNode();
+    return anchor.fixedPoint("t", step).planNode();
+  };
+
+  EXPECT_EQ(*makeNode("n + 1 as n"), *makeNode("n + 1 as n"));
+
+  // Different step.
+  EXPECT_NE(*makeNode("n + 1 as n"), *makeNode("n + 2 as n"));
+}
+
+TEST_F(LogicalPlanNodeEqualityTest, graphMatch) {
   auto makeNode = [](std::string_view predicate, std::string_view output) {
     PlanBuilder::Context context;
     auto graph =

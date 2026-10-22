@@ -320,6 +320,10 @@ void SubfieldTracker::markFieldAccessed(
     return;
   }
 
+  if (kind == lp::NodeKind::kLateralJoin) {
+    VELOX_NYI("Unsupported PlanNode {}", lp::NodeKindName::toName(kind));
+  }
+
   const auto& sourceInputs = source.planNode->inputs();
   if (sourceInputs.empty()) {
     return;
@@ -611,8 +615,6 @@ void SubfieldTracker::markControl(
     const MarkFieldsAccessedContext& context) {
   const auto kind = node.kind();
 
-  // Reject before the recursion below descends into the correlated body,
-  // where the outer reference cannot resolve against the body's own scope.
   if (kind == lp::NodeKind::kLateralJoin) {
     VELOX_NYI("Unsupported PlanNode {}", lp::NodeKindName::toName(kind));
   }

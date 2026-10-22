@@ -795,13 +795,55 @@ LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::join(
   return *this;
 }
 
+namespace {
+// Matches 'plan', a node's nested plan, starting from the symbols its input
+// captured. Symbols from 'plan' overwrite those of the same name.
+LogicalPlanMatcher::MatchResult matchNestedPlan(
+    const LogicalPlanMatcher& matcher,
+    const LogicalPlanNodePtr& plan,
+    const std::unordered_map<std::string, std::string>& inputSymbols) {
+  auto result = matcher.match(plan, inputSymbols);
+  if (!result.match) {
+    return LogicalPlanMatcher::MatchResult::failure();
+  }
+  auto symbols = inputSymbols;
+  for (const auto& [alias, actualName] : result.symbols) {
+    symbols[alias] = actualName;
+  }
+  return LogicalPlanMatcher::MatchResult::success(std::move(symbols));
+}
+
+// Matches a LateralJoinNode: its input against the left matcher and the plan
+// it runs per left row against the right matcher.
+class LateralJoinMatcher : public LogicalPlanMatcherImpl<LateralJoinNode> {
+ public:
+  LateralJoinMatcher(
+      const std::shared_ptr<LogicalPlanMatcher>& leftMatcher,
+      std::shared_ptr<LogicalPlanMatcher> rightMatcher,
+      std::function<void(const LogicalPlanNodePtr&)> onMatch)
+      : LogicalPlanMatcherImpl<LateralJoinNode>(
+            leftMatcher,
+            std::move(onMatch)),
+        rightMatcher_{std::move(rightMatcher)} {}
+
+ private:
+  MatchResult matchDetails(
+      const LateralJoinNode& plan,
+      const std::unordered_map<std::string, std::string>& symbols)
+      const override {
+    return matchNestedPlan(*rightMatcher_, plan.right(), symbols);
+  }
+
+  const std::shared_ptr<LogicalPlanMatcher> rightMatcher_;
+};
+} // namespace
+
 LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::lateralJoin(
     const std::shared_ptr<LogicalPlanMatcher>& rightMatcher,
     OnMatchCallback onMatch) {
   VELOX_USER_CHECK_NOT_NULL(matcher_);
-  matcher_ = std::make_shared<LogicalPlanMatcherImpl<LateralJoinNode>>(
-      std::vector<std::shared_ptr<LogicalPlanMatcher>>{matcher_, rightMatcher},
-      std::move(onMatch));
+  matcher_ = std::make_shared<LateralJoinMatcher>(
+      matcher_, rightMatcher, std::move(onMatch));
   return *this;
 }
 
@@ -815,20 +857,33 @@ LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::join(
 }
 
 namespace {
-// Matches a FixedPointNode and captures aliases for all output columns.
-class FixedPointAliasMatcher : public LogicalPlanMatcherImpl<FixedPointNode> {
+// Matches a FixedPointNode: its anchor against the input matcher and its step
+// against the step matcher. When 'outputAliases' is non-empty, captures them
+// for all output columns.
+class FixedPointMatcher : public LogicalPlanMatcherImpl<FixedPointNode> {
  public:
-  FixedPointAliasMatcher(
-      const std::vector<std::shared_ptr<LogicalPlanMatcher>>& inputMatchers,
-      std::vector<std::string> outputAliases)
-      : LogicalPlanMatcherImpl<FixedPointNode>(inputMatchers, nullptr),
+  FixedPointMatcher(
+      const std::shared_ptr<LogicalPlanMatcher>& anchorMatcher,
+      std::shared_ptr<LogicalPlanMatcher> stepMatcher,
+      std::vector<std::string> outputAliases,
+      std::function<void(const LogicalPlanNodePtr&)> onMatch)
+      : LogicalPlanMatcherImpl<FixedPointNode>(
+            anchorMatcher,
+            std::move(onMatch)),
+        stepMatcher_{std::move(stepMatcher)},
         outputAliases_{std::move(outputAliases)} {}
 
  private:
   MatchResult matchDetails(
       const FixedPointNode& plan,
-      const std::unordered_map<std::string, std::string>& symbols)
+      const std::unordered_map<std::string, std::string>& anchorSymbols)
       const override {
+    auto stepResult =
+        matchNestedPlan(*stepMatcher_, plan.step(), anchorSymbols);
+    if (!stepResult.match || outputAliases_.empty()) {
+      return stepResult;
+    }
+    auto symbols = stepResult.symbols;
     const auto& outputType = plan.outputType();
     if (outputAliases_.size() != outputType->size()) {
       ADD_FAILURE() << "Expected " << outputAliases_.size()
@@ -836,13 +891,13 @@ class FixedPointAliasMatcher : public LogicalPlanMatcherImpl<FixedPointNode> {
                     << outputType->size();
       return MatchResult::failure();
     }
-    auto newSymbols = symbols;
     for (size_t i = 0; i < outputAliases_.size(); ++i) {
-      newSymbols[outputAliases_[i]] = outputType->nameOf(i);
+      symbols[outputAliases_[i]] = outputType->nameOf(i);
     }
-    return MatchResult::success(newSymbols);
+    return MatchResult::success(std::move(symbols));
   }
 
+  const std::shared_ptr<LogicalPlanMatcher> stepMatcher_;
   const std::vector<std::string> outputAliases_;
 };
 
@@ -894,8 +949,10 @@ LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::fixedPoint(
     const std::shared_ptr<LogicalPlanMatcher>& stepMatcher,
     OnMatchCallback onMatch) {
   VELOX_USER_CHECK_NOT_NULL(matcher_);
-  matcher_ = std::make_shared<LogicalPlanMatcherImpl<FixedPointNode>>(
-      std::vector<std::shared_ptr<LogicalPlanMatcher>>{matcher_, stepMatcher},
+  matcher_ = std::make_shared<FixedPointMatcher>(
+      matcher_,
+      stepMatcher,
+      /*outputAliases=*/std::vector<std::string>{},
       std::move(onMatch));
   return *this;
 }
@@ -904,9 +961,8 @@ LogicalPlanMatcherBuilder& LogicalPlanMatcherBuilder::fixedPoint(
     const std::shared_ptr<LogicalPlanMatcher>& stepMatcher,
     const std::vector<std::string>& outputAliases) {
   VELOX_USER_CHECK_NOT_NULL(matcher_);
-  matcher_ = std::make_shared<FixedPointAliasMatcher>(
-      std::vector<std::shared_ptr<LogicalPlanMatcher>>{matcher_, stepMatcher},
-      outputAliases);
+  matcher_ = std::make_shared<FixedPointMatcher>(
+      matcher_, stepMatcher, outputAliases, /*onMatch=*/nullptr);
   return *this;
 }
 

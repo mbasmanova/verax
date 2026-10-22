@@ -332,6 +332,11 @@ bool hasOuterScopeAggregate(const lp::LogicalPlanNodePtr& plan) {
       return true;
     }
   }
+  for (const auto& nested : plan->nestedPlans()) {
+    if (hasOuterScopeAggregate(nested)) {
+      return true;
+    }
+  }
   return false;
 }
 

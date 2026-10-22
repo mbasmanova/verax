@@ -56,19 +56,23 @@ class PlanNodeVisitorContext;
 
 /// Base class for all logical plan nodes. Every plan node has a unique ID and
 /// zero or more inputs. Leaf nodes like Scan and Values have no inputs. Joins
-/// have two inputs. Union may have many inputs. Most other nodes have just
-/// one input. Every plan node has an output schema (list of names and types
-/// of output columns) expressed as a RowType.
+/// have two inputs; a lateral join has one. Union may have many inputs. Most
+/// other nodes have just one input. Every plan node has an output schema (list
+/// of names and types of output columns) expressed as a RowType.
 ///
 /// Shape of a plan:
 ///
 /// - Column names are unique across the plan, so a name identifies the one
 ///   node that produces it.
-/// - The nodes reachable through `inputs()` form a tree: each is the input of
-///   one other node.
-/// - A subquery's plan hangs off a `SubqueryExpr` rather than off `inputs()`,
-///   and the same plan may be embedded in several of them. `forEachNode()`
-///   visits such a shared plan once.
+/// - A node's inputs are the plans whose rows flow into it, each computed
+///   before the node runs. The nodes reachable through `inputs()` form a tree:
+///   each is the input of one other node.
+/// - A plan the node runs itself is one of its `nestedPlans()`: a lateral
+///   join's right side, a fixed point's step, a graph match's table plans.
+/// - A subquery's plan hangs off a `SubqueryExpr`, and the same plan may be
+///   embedded in several of them.
+/// - `forEachNode()` reaches inputs, nested plans and subquery plans, and
+///   visits a shared plan once.
 class LogicalPlanNode : public velox::ISerializable {
  public:
   LogicalPlanNode(
@@ -76,11 +80,28 @@ class LogicalPlanNode : public velox::ISerializable {
       std::string id,
       std::vector<LogicalPlanNodePtr> inputs,
       velox::RowTypePtr outputType)
+      : LogicalPlanNode{
+            kind,
+            std::move(id),
+            std::move(inputs),
+            /*nestedPlans=*/{},
+            std::move(outputType)} {}
+
+  LogicalPlanNode(
+      NodeKind kind,
+      std::string id,
+      std::vector<LogicalPlanNodePtr> inputs,
+      std::vector<LogicalPlanNodePtr> nestedPlans,
+      velox::RowTypePtr outputType)
       : kind_{kind},
         id_{std::move(id)},
         inputs_{std::move(inputs)},
+        nestedPlans_{std::move(nestedPlans)},
         outputType_{std::move(outputType)} {
     VELOX_USER_CHECK_NOT_NULL(outputType_);
+    for (const auto& plan : nestedPlans_) {
+      VELOX_USER_CHECK_NOT_NULL(plan);
+    }
     for (const auto& input : inputs_) {
       VELOX_USER_CHECK_NOT_NULL(input);
       VELOX_USER_CHECK(
@@ -116,8 +137,17 @@ class LogicalPlanNode : public velox::ISerializable {
     return id_;
   }
 
+  /// Plans whose rows flow into this node, each computed before the node
+  /// runs. Walks that follow `inputs()` visit the plan tree; plans the node
+  /// runs itself are in nestedPlans().
   const std::vector<LogicalPlanNodePtr>& inputs() const {
     return inputs_;
+  }
+
+  /// Plans the node runs itself, besides its inputs: a lateral join's right
+  /// side, a fixed point's step, a graph match's table plans.
+  const std::vector<LogicalPlanNodePtr>& nestedPlans() const {
+    return nestedPlans_;
   }
 
   /// Returns the only input. Throws if there are zero or more than one inputs.
@@ -149,7 +179,8 @@ class LogicalPlanNode : public velox::ISerializable {
       const PlanNodeVisitor& visitor,
       PlanNodeVisitorContext& context) const = 0;
 
-  /// Invokes 'visit' once for each node reachable through inputs or subqueries.
+  /// Invokes 'visit' once for each node reachable through inputs, nested plans
+  /// or subqueries.
   void forEachNode(
       folly::FunctionRef<void(const LogicalPlanNode&)> visit) const;
 
@@ -157,8 +188,8 @@ class LogicalPlanNode : public velox::ISerializable {
   static void registerSerDe();
 
  protected:
-  // Returns true if derived-class-specific fields are equal. Called only when
-  // kind, outputType, and inputs already match.
+  // Returns true if derived-class-specific fields, including nested plans, are
+  // equal. Called only when kind, outputType, and inputs already match.
   virtual bool equalTo(const LogicalPlanNode& other) const = 0;
 
   /// Serializes common base fields (name, id, outputType, inputs).
@@ -167,6 +198,7 @@ class LogicalPlanNode : public velox::ISerializable {
   const NodeKind kind_;
   const std::string id_;
   const std::vector<LogicalPlanNodePtr> inputs_;
+  const std::vector<LogicalPlanNodePtr> nestedPlans_;
   const velox::RowTypePtr outputType_;
 };
 
@@ -558,12 +590,11 @@ class JoinNode : public LogicalPlanNode {
 
 using JoinNodePtr = std::shared_ptr<const JoinNode>;
 
-/// A lateral (dependent) join: for each row of the left input, the right input
+/// A lateral (dependent) join: for each row of the left input, the 'right' plan
 /// is evaluated with that left row's columns in scope, and the results are
-/// joined. Unlike JoinNode, whose two inputs are independent, the RIGHT input
-/// of a lateral join may reference the left input's columns (the correlation);
-/// the left input may not reference the right. The output schema is all left
-/// columns followed by all right columns.
+/// joined. The left side is the node's only input. The right side runs per left
+/// row and may reference the left input's columns (the correlation). The
+/// output schema is all left columns followed by all right columns.
 ///
 /// Only kInner and kLeft are allowed. kRight and kFull would require the right
 /// side to be evaluable independently of the left to preserve unmatched right
@@ -578,7 +609,7 @@ class LateralJoinNode : public LogicalPlanNode {
       const LogicalPlanNodePtr& right,
       JoinType joinType,
       ExprPtr condition)
-      : LogicalPlanNode{NodeKind::kLateralJoin, std::move(id), {left, right}, makeOutputType(left, right)},
+      : LogicalPlanNode{NodeKind::kLateralJoin, std::move(id), {left}, {right}, makeOutputType(left, right)},
         joinType_{joinType},
         condition_{std::move(condition)} {
     VELOX_USER_CHECK(
@@ -593,8 +624,9 @@ class LateralJoinNode : public LogicalPlanNode {
     return inputAt(0);
   }
 
+  /// Plan evaluated for each left row.
   const LogicalPlanNodePtr& right() const {
-    return inputAt(1);
+    return nestedPlans()[0];
   }
 
   JoinType joinType() const {
@@ -1067,9 +1099,9 @@ class OutputNode : public LogicalPlanNode {
 
 using OutputNodePtr = std::shared_ptr<const OutputNode>;
 
-/// Iterative fixed-point evaluation node. Models a linear recursive CTE: an
-/// 'anchor' subplan produces the initial rows; a 'step' subplan is re-run on
-/// each iteration to produce additional rows. Inside 'step', a
+/// Iterative fixed-point evaluation node. Models a linear recursive CTE: the
+/// 'anchor', the node's only input, produces the initial rows; the 'step' plan
+/// is re-run on each iteration to produce additional rows. Inside 'step', a
 /// RecursiveReferenceNode with matching 'name' stands for the rows produced
 /// by the previous iteration. The fixed point converges when 'step' returns
 /// no rows; the node emits the UNION ALL of the anchor's rows and every step
@@ -1104,7 +1136,7 @@ class FixedPointNode : public LogicalPlanNode {
 
   /// Per-iteration subplan.
   const LogicalPlanNodePtr& step() const {
-    return inputs()[1];
+    return nestedPlans()[0];
   }
 
   /// Name of the recursive relation. RecursiveReferenceNodes inside the step
@@ -1259,7 +1291,7 @@ class GraphPathLengthOutput final : public GraphMatchOutput {
 /// Term predicates apply while matching, then each path's selector, then
 /// the joins between path patterns that share a pattern name, then
 /// 'predicate'. The node has no inputs: the graph's element tables carry their
-/// own source plans, reached through forEachTablePlan().
+/// own source plans, which are the node's nested plans.
 ///
 /// Invariants:
 /// - 'graph' is set, and 'paths' and 'outputs' are not empty. 'outputNames'
@@ -1312,10 +1344,6 @@ class GraphMatchNode : public LogicalPlanNode {
   const std::vector<std::string>& outputNames() const {
     return outputNames_;
   }
-
-  /// Invokes 'visit' for the plan of each element table.
-  void forEachTablePlan(
-      folly::FunctionRef<void(const LogicalPlanNode&)> visit) const;
 
   /// Invokes 'visit' for each expression the node holds: property expressions,
   /// term predicates and 'predicate'.
