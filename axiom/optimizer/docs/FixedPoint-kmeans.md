@@ -7,8 +7,8 @@ PageRank is in [FixedPoint-pagerank.md](FixedPoint-pagerank.md).*
 
 **Status:** the logical plan below is built by `FixedPointTest.kMeans`.
 Optimizer v2 plans it and runs it on one worker. With several workers it runs
-on one task until PlanPhysical can place a copy of the state on every worker,
-as the distributed plan below does.
+on one task until PlanPhysical can replicate the state on every worker, as
+the distributed plan below does.
 
 ## One iteration, in SQL
 
@@ -136,23 +136,43 @@ points are large. So:
 
 - **`points` stays where it was scanned,** in memory on the worker that read
   it. Each point is handled on its own, so any worker can hold it.
-- **`centroids` is copied to every worker.** The anchor's rows are
-  broadcast, and every worker computes the same new state each iteration.
+- **`centroids` is replicated on every worker.** The anchor's rows are
+  broadcast, and every worker ends each iteration with the same new state.
+- **Each cluster has an owner,** the worker its `cluster` hashes to. The owner
+  computes the cluster's new centroid.
 
-Rows move between workers once each iteration: each worker sums the points it
-holds by cluster and **broadcasts** these partial sums, one row per cluster.
-Every worker adds up the partials and computes the new centroids itself.
+Rows move between workers twice each iteration:
+
+1. **Each worker's partial sums go to the owners.** Each worker sums the
+   points it holds by cluster and **shuffles** the partial sums on `cluster`:
+   it sends at most one row per cluster.
+2. **Each new centroid goes to every worker.** The owner computes the
+   cluster's mean and **broadcasts** it, so every worker receives each new
+   centroid once.
 
 The diagram shows the Velox plan, one box per fragment, with data flowing up:
 
-<img src="images/fixed_point_kmeans.svg" width="700" alt="K-means: one iteration on each worker">
+![K-means: one iteration on each worker](images/fixed_point_kmeans.svg)
 
-Each worker decides on its own copy, so the convergence needs no gather. That
-holds only while every copy is bit-identical: workers that disagree on
-stopping break the loop's lockstep. Fragment A adds DOUBLE partial sums in the
-order they arrive, which differs between workers, so the copies can differ in
-the last bits. The partial sums need adding in the same order everywhere, for
-example sorted by the worker that sent them.
+Worker 0 decides when to stop: it evaluates the convergence over its replica of
+the state and sends the answer to the other workers, so every worker stops on
+the same iteration. When the loop ends, worker 0 emits its replica as the
+result. Nothing relies on the replicas being identical: workers can compute the
+same floating-point expression differently, for example on machines whose
+CPUs take different SIMD code paths.
+
+Broadcasting the partial sums instead, and finishing the sums on every
+worker, saves one exchange but sends every worker's sums to every worker:
+with 100 workers and 40,000 centroids of 256 dimensions, about 400 GB per
+iteration instead of about 8 GB.
+
+The order of the fragments follows from where the state lives. The first
+fragment of an iteration reads the state, and the last one writes it. With the
+state replicated on every worker, the iteration starts with the step that
+needs every centroid, assigning the points, and ends once every worker has
+every new centroid. A centroid with no points keeps its coordinates: fragment
+A joins the new centroids with the old ones on every worker, after the
+broadcast.
 
 ## What each pass does
 
@@ -161,21 +181,32 @@ example sorted by the worker that sent them.
 - **EstimateLeafStats** reports unknown cardinality for the loop and its
   reads, so the step keeps its written join order.
 - **PlanPhysical** needs a third placement next to independent loops and one
-  partitioned loop: a copy of the state on every worker.
+  partitioned loop: the state replicated on every worker. It plans the step
+  both ways and keeps the one whose exchanges move fewer bytes per iteration.
+  A partitioned loop does not plan for k-means: every point needs every
+  centroid.
   - The anchor is broadcast, and the `WorkingTable` claims that every worker
     holds all of the state.
   - The step's input that reads no state, `points`, stays where its scan
     placed it.
-  - The aggregation by `cluster` is split into partial sums and a broadcast,
-    and its final step adds the partial sums in an order every worker shares.
-  - The convergence is planned on each worker, without a gather.
-  - The loop's output is the same on every worker, so whatever reads it reads
-    one copy.
+  - The aggregation by `cluster` is split into partial sums, a shuffle on
+    `cluster`, and the final sums, and its result is broadcast.
+  - The left join with the old centroids runs after the broadcast, on every
+    worker, with the broadcast rows on its probe side.
+  - The convergence is planned as a local plan over the state, which worker 0
+    runs.
+  - The loop's output comes from worker 0 only.
 
-  Choosing this placement over a partitioned loop needs the state's size: a
-  copy on every worker pays off when the state is small.
-- **Emit** cuts the step at the broadcast into fragments B and A. `points`
-  becomes a `VectorStateDeclaration` filled once before the loop, each read of
-  the state becomes its own `StateSourceNode`, and the convergence becomes
-  `ConvergenceConfig::converging`, which each worker evaluates on its own
-  state.
+  A replicated state plans when the state's size and the size of the broadcast means fit
+  `broadcast_size_limit`. The state keeps the anchor's row count: the step
+  left-joins the old centroids with an aggregation by `cluster`, which is
+  unique on the join key. The means have one row per distinct value of
+  `array_min_by(...)[1]`, at most one per centroid, which needs statistics
+  for the values inside arrays and rows.
+- **Emit** cuts the step at the shuffle and the broadcast into fragments C, B
+  and A. `points` becomes a `VectorStateDeclaration` filled once before the
+  loop, and each read of the state becomes its own `StateSourceNode`. The
+  convergence becomes a verdict that worker 0 computes over its own state and
+  sends to the other workers; Velox needs to allow a verdict with no gather in
+  front of it. The loop's output needs a `FixedPointNode` option to emit the
+  state on worker 0 only.
