@@ -35,6 +35,19 @@ struct OptimizerMetrics {
   /// the optimize phase timing.
   static constexpr std::string_view kFindTableWallNanos{"findTableWallNanos"};
 
+  /// Covers the connector listing the values of partition columns, which the
+  /// optimizer reads to fold an aggregation over them into constants, as in
+  /// `SELECT max(ds) FROM t`. One sample per listing. Nests inside the
+  /// optimize phase timing.
+  static constexpr std::string_view kDiscretePredicatesWallNanos{
+      "discretePredicatesWallNanos"};
+
+  /// Covers the connector answering counts from metadata, which the optimizer
+  /// reads to fold `count(*)` into constants. One sample per request. Nests
+  /// inside the optimize phase timing.
+  static constexpr std::string_view kMetadataCountsWallNanos{
+      "metadataCountsWallNanos"};
+
   /// Number of plan objects the query created, the count that
   /// OptimizerOptions::maxPlanObjects caps. One sample per planned query.
   static constexpr std::string_view kPlanObjects{"planObjects"};

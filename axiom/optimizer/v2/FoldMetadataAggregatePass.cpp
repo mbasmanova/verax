@@ -21,6 +21,7 @@
 #include "folly/coro/BlockingWait.h"
 
 #include "axiom/connectors/ConnectorMetadata.h"
+#include "axiom/optimizer/OptimizerMetrics.h"
 #include "axiom/optimizer/QueryGraph.h"
 #include "axiom/optimizer/QueryGraphContext.h"
 #include "axiom/optimizer/Schema.h"
@@ -136,12 +137,16 @@ class Folder : public NodeRewriter<NoContext> {
 
     auto connectorSession =
         session_.context()->sessionFor(layout->connectorId());
+    const auto countsStart = std::chrono::steady_clock::now();
     auto result = folly::coro::blockingWait(layout->co_metadataCounts(
         std::move(connectorSession),
         handle.tableHandle,
         evaluator_,
         std::move(groupingColumns),
         std::move(nullCountColumns)));
+    session_.statsWriter().addTiming(
+        OptimizerMetrics::kMetadataCountsWallNanos,
+        std::chrono::steady_clock::now() - countsStart);
     if (!result.has_value()) {
       return nullptr;
     }
