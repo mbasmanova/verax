@@ -27,6 +27,7 @@
 #include "axiom/optimizer/Filters.h"
 #include "axiom/optimizer/FunctionRegistry.h"
 #include "axiom/optimizer/MultiFragmentPlan.h"
+#include "axiom/optimizer/OptimizerMetrics.h"
 #include "axiom/optimizer/OptimizerSession.h"
 #include "axiom/optimizer/PlanUtils.h"
 #include "axiom/optimizer/QueryGraph.h"
@@ -3819,8 +3820,12 @@ Translator::tryEvaluateOverDiscreteValues(const Aggregate* aggregate) {
 
   auto connectorSession =
       session_.context()->sessionFor(discreteLayout.layout->connectorId());
+  const auto listingStart = std::chrono::steady_clock::now();
   auto discretePredicates = discreteLayout.layout->discretePredicates(
       connectorSession, discreteLayout.connectorColumns, handle.tableHandle);
+  session_.statsWriter().addTiming(
+      OptimizerMetrics::kDiscretePredicatesWallNanos,
+      std::chrono::steady_clock::now() - listingStart);
   if (discretePredicates == nullptr) {
     return std::nullopt;
   }
