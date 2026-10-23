@@ -112,7 +112,7 @@ Rows move between workers in two places each iteration:
 
 The diagram shows the Velox plan, one box per fragment, with data flowing up:
 
-<img src="images/fixed_point_connected_components.svg" width="700" alt="Connected components: one iteration on each worker">
+![Connected components: one iteration on each worker](images/fixed_point_connected_components.svg)
 
 Each fragment reads at most one exchange, so the plan follows the logical
 plan directly. Fragment A could also skip its join with the state, as

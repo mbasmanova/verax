@@ -7,8 +7,8 @@ plan. The loop node, its invariants and its placement rules are in
 
 **Status:** the logical plan below is built by `FixedPointTest.pageRank`.
 Optimizer v2 plans it and runs it on one worker. With several workers it runs
-on one task until PlanPhysical produces the distributed plan below; the pieces
-that takes are marked as follow-ups in
+on one task until PlanPhysical produces one of the distributed plans below;
+the pieces that takes are marked as follow-ups in
 [What each pass does](#what-each-pass-does).
 
 ## One iteration, in SQL
@@ -114,7 +114,9 @@ it three times in one iteration scans the same batches three times.
 
 ## Distributed execution
 
-With several workers, each worker owns a subset of the vertices and holds the
+A small graph's state fits a broadcast, and replicating the state on every
+worker is cheaper; see [A state that fits a broadcast](#a-state-that-fits-a-broadcast).
+For a larger graph, each worker owns a subset of the vertices and holds the
 data about them:
 
 - **`ranks` is partitioned on `vertex_id`.** Each worker keeps its vertices'
@@ -142,7 +144,7 @@ Rows move between workers in three places each iteration:
 
 The diagram shows the Velox plan, one box per fragment, with data flowing up:
 
-<img src="images/fixed_point_pagerank.svg" width="700" alt="PageRank: one iteration on each worker">
+![PageRank: one iteration on each worker](images/fixed_point_pagerank.svg)
 
 Planned directly from the logical plan, fragment A would compute the new
 rank where the sums from (B) arrive, and would read two exchanges: the
@@ -170,6 +172,23 @@ and the vertex's own row supplies `rank`, `out_degree` and the total. The
 state has one row per vertex, so every vertex appears exactly once, with or
 without in-edges, and fragment A needs no join with the state.
 
+### A state that fits a broadcast
+
+When the ranks fit `broadcast_size_limit`, the state is replicated on every
+worker, as in k-means ([FixedPoint-kmeans.md](FixedPoint-kmeans.md)):
+
+- **`edges` stays where it was scanned.** Each worker joins its replica of the
+  ranks with its share of the edges and **shuffles** the partial sums by
+  `dst`; each sum's owner adds them up and **broadcasts** the result.
+- **The dangling total needs no exchange.** Each worker sums it over its own
+  replica of the state.
+- **Worker 0 decides when to stop** over its replica and sends the verdict to the
+  other workers, and emits the result.
+
+Each body fragment reads one exchange, so this plan needs no rewrite.
+PlanPhysical compares it with the partitioned plan by the bytes each moves
+per iteration.
+
 ## What each pass does
 
 The plan above follows from the rules in
@@ -182,8 +201,10 @@ the additions marked as follow-ups.
   `WorkingTable`, with its own columns.
 - **EstimateLeafStats** reports unknown cardinality for the loop and its
   reads, so the step keeps its written join order.
-- **PlanPhysical** needs to partition the loop: the step aggregates, so it is
-  not row-local. It looks for the keys to partition on along the last input of
+- **PlanPhysical** needs to replicate the state on every worker for a state
+  that fits a broadcast (follow-up *A state replicated on every worker*), and
+  for a larger state needs to partition the loop: the step aggregates, so it
+  is not row-local. It looks for the keys to partition on along the last input of
   the step that reads the state, here the dangling total, which has none, so
   today the loop runs on one task. The distributed plan needs the state
   partitioned on `vertex_id`, the key of the step's first join, with the anchor

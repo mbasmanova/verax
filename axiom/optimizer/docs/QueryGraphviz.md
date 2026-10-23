@@ -63,7 +63,7 @@ buck run axiom/cli:graphviz -- \
   --output plan.svg
 ```
 
-<img src="images/example_logical_plan.svg" width="300" alt="example logical plan">
+![example logical plan](images/example_logical_plan.svg)
 
 ### Generate distributed plan as SVG
 
@@ -74,7 +74,7 @@ buck run axiom/cli:graphviz -- \
   --output plan.svg
 ```
 
-<img src="images/example_distributed_plan.svg" width="120" alt="example distributed plan">
+![example distributed plan](images/example_distributed_plan.svg)
 
 ### Generate DOT file (no rendering)
 
@@ -102,7 +102,7 @@ buck run axiom/cli:graphviz -- \
 
 **TPC-H q5** — 6-way join with filters, aggregation, and ordering.
 
-<img src="../tests/tpch/viz/distributed/q5.svg" width="500" alt="TPC-H q5 distributed plan">
+![TPC-H q5 distributed plan](../tests/tpch/viz/distributed/q5.svg)
 
 ### Use local tables
 

@@ -467,9 +467,10 @@ Each of these is rejected with a specific error.
 - **A broadcast value and a shuffle in one fragment.** A body fragment reads
   at most one exchange. PageRank's new rank needs both the rank arriving
   through the shuffle and a total over all workers that arrives through a
-  broadcast, so the fragment that computes it cannot read both, and with
-  several workers PageRank runs on one task. PlanPhysical needs a rewrite that
-  sends both through one exchange
+  broadcast, so the fragment that computes it cannot read both. Replicating the
+  state on every worker avoids this for a state that fits a broadcast (see
+  below); for a larger state, PlanPhysical needs a rewrite that sends both
+  through one exchange
   ([FixedPoint-pagerank.md](FixedPoint-pagerank.md#distributed-execution)):
   - Cross join the broadcast value with the input that is already in place,
     and send the result through the shuffle with the other input.
@@ -482,19 +483,35 @@ Each of these is rejected with a specific error.
   The plan's producer guarantees this, as a graph's definer guarantees its
   keys ([GraphTable.md](GraphTable.md)). Translate needs to carry the key into
   the IR for this rewrite to rely on it.
-- **A copy of the state on every worker.** K-means' state is a few centroids
-  that every point needs. A copy on every worker lets each worker sum its
-  points by cluster and broadcast the sums, and every worker computes the
-  same new state and decides on its own copy, with no gather
-  ([FixedPoint-kmeans.md](FixedPoint-kmeans.md)). The copies must add the sums
-  in the same order to stay identical. With several workers, k-means runs on
-  one task until PlanPhysical has this placement.
+- **A state replicated on every worker.** K-means' state is a few centroids
+  that every point needs. With the state replicated on every worker, each
+  worker sums its points by cluster and shuffles the sums to each cluster's
+  owner, and the owner broadcasts the cluster's new centroid
+  ([FixedPoint-kmeans.md](FixedPoint-kmeans.md)).
+  - PlanPhysical plans the step both as a partitioned loop and with a
+    replicated state, and keeps the one whose exchanges move fewer bytes per
+    iteration. Connected components keeps its partitioned loop; PageRank and
+    k-means, for which a partitioned loop does not plan, get a replicated
+    state when it fits `broadcast_size_limit`.
+  - Over a replicated input, an operator runs on each worker and its output
+    is replicated; a replicated relation is never repartitioned or gathered,
+    which would count its rows once per worker.
+  - Worker 0 evaluates the convergence over its replica and sends the verdict
+    to the other workers, and emits the loop's output. Nothing relies on the
+    replicas being identical.
+
+  With several workers, PageRank and k-means run on one task until
+  PlanPhysical has this placement.
 - **Estimates for a replaced state.** In replace mode, a read of the state
-  sees the anchor's rows in the first iteration, and PageRank, connected
-  components and k-means keep that many rows in every iteration; a declared
-  key bounds the state to one row per key. Estimating each read as the
-  anchor's output lets PlanPhysical choose a join's build side in the step,
-  and choose a copy of the state on every worker when the state is small.
+  sees the anchor's rows in the first iteration. The state keeps that many
+  rows in every iteration when a path leads from the step's output down to a
+  read of the state through projections, the kept side of a left join whose
+  other side is unique on the join keys, and a cross join whose other side
+  has exactly one row; filters, inner joins with a unique other side, and
+  grouped aggregations keep at most that many. PageRank, connected components
+  and k-means all qualify. Estimating each read as the anchor's output lets
+  PlanPhysical choose a join's build side in the step, and decide whether the
+  state fits a replica on every worker.
 - **The stop decision carried by the step's shuffle.** A partitioned loop
   gathers each worker's part of the convergence on worker 0 and sends the
   verdict back every iteration. The next iteration's first fragment can
