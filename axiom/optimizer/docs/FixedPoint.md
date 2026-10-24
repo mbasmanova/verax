@@ -73,7 +73,11 @@ its own logical plan node:
 flowchart TD
   CTE("WITH RECURSIVE (SQL)")
   ALG("PageRank<br/>Connected Components<br/>K-means")
+  subgraph SQLPP["Presto SQL++"]
+    SQLALG("Iterative algorithms")
+  end
   GT("GRAPH_TABLE (SQL)")
+  CY("Cypher")
   subgraph Logical["Logical plan"]
     LFP("FixedPointNode")
     LGM("GraphMatchNode")
@@ -89,7 +93,9 @@ flowchart TD
   end
   CTE --> LFP
   ALG -.-> LFP
+  SQLALG -.-> LFP
   GT --> LGM
+  CY -.-> LGM
   LFP --> IFP
   LGM -- "repeated subpath<br/>(Translate pass)" --> REP
   LGM -- "fixed-length pattern<br/>(Translate pass)" --> REL
@@ -101,10 +107,15 @@ flowchart TD
   classDef logical fill:#fcc3a3,stroke:#270f36,color:#270f36
   classDef ir fill:#f09f9c,stroke:#270f36,color:#270f36
   classDef velox fill:#c76b98,stroke:#270f36,color:#270f36
-  class CTE,ALG,GT input
+  classDef future fill:#fcc3a3,stroke:#c76b98,color:#270f36,stroke-dasharray:5 5
+  classDef algorithm fill:#a8d5a2,stroke:#2e6b4f,color:#270f36
+  class CTE,GT input
+  class ALG,SQLALG algorithm
+  class CY future
   class LFP,LGM logical
   class REP,IFP,REL ir
   class VFP,VREL velox
+  style SQLPP fill:#fcc3a3,stroke:#c76b98,color:#270f36
   style Logical fill:#f09f9c,stroke:#c76b98,color:#270f36
   style IR fill:#c76b98,stroke:#632b6c,color:#270f36
   style Velox fill:#632b6c,stroke:#270f36,color:#fcc3a3
