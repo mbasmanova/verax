@@ -33,8 +33,9 @@ namespace facebook::axiom::optimizer::v2 {
 /// uses post-filter NDV rather than base-table NDV. Columns absent from
 /// `constraints` fall back to `Column::value()`.
 struct Estimate {
-  /// Estimated row count; nullopt when unknown. A missing input statistic
-  /// propagates rather than being replaced by a concrete fallback.
+  /// Estimated row count; nullopt when unknown, at least 1 when known. A
+  /// missing input statistic propagates rather than being replaced by a
+  /// concrete fallback.
   std::optional<float> cardinality;
 
   /// Refined per-column `Value` (ndv, min/max, null/true fraction) keyed by

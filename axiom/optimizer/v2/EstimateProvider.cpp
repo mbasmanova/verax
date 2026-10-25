@@ -18,10 +18,12 @@
 
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 #include "axiom/optimizer/EstimateMath.h"
 #include "axiom/optimizer/JoinConstraints.h"
 #include "axiom/optimizer/QueryGraph.h"
+#include "axiom/optimizer/UnionConstraints.h"
 #include "axiom/optimizer/v2/Cost.h"
 #include "axiom/optimizer/v2/JoinFanout.h"
 
@@ -76,6 +78,76 @@ void capNdvAtCardinality(const ColumnVector& columns, Estimate& estimate) {
   }
 }
 
+// The number of groups 'key' forms: its distinct values, plus one for its
+// nulls when it has any. An all-null key forms the one null group.
+std::optional<float> groupsOf(const Value& key) {
+  if (key.nullFraction == 1.0f) {
+    return 1.0f;
+  }
+  if (key.nullFraction.has_value() && *key.nullFraction > 0) {
+    return add(key.cardinality, 1.0f);
+  }
+  return key.cardinality;
+}
+
+// The number of groups 'keys' form: the product of each key's groups, capped
+// at 'inputCardinality'. Unknown when any key's NDV or 'inputCardinality' is.
+std::optional<float> estimateNumGroups(
+    const ExprVector& keys,
+    const ConstraintMap& constraints,
+    std::optional<float> inputCardinality) {
+  std::optional<float> product{1.0f};
+  for (ExprCP key : keys) {
+    product = mul(product, groupsOf(value(constraints, key)));
+  }
+  return minOf(inputCardinality, product);
+}
+
+// The statistics of a grouping key's output column, one row per group out of
+// 'numGroups'. The key keeps its values, so its bounds, size and nullability,
+// and its NDV is at most 'numGroups'. Its nulls form one of its own groups.
+// Assumes each of the key's groups pairs with equally many groups of the other
+// keys, so the null fraction is one over the key's groups. The true fraction
+// of a boolean key no longer describes the rows and is unknown.
+Value groupingKeyValue(const Value& key, std::optional<float> numGroups) {
+  // An unknown 'numGroups' bounds nothing.
+  const auto atMostNumGroups = [&](std::optional<float> count) {
+    return numGroups.has_value() ? minOf(count, numGroups) : count;
+  };
+  Value result = key;
+  result.cardinality = atMostNumGroups(key.cardinality);
+  result.trueFraction = std::nullopt;
+  if (key.nullFraction.has_value() && *key.nullFraction > 0) {
+    const std::optional<float> groups = atMostNumGroups(groupsOf(key));
+    result.nullFraction =
+        groups.has_value() ? std::optional<float>{1 / *groups} : std::nullopt;
+  }
+  return result;
+}
+
+// The row count of an outer join that emits each row of its kept side once:
+// the other side is unique on its join keys, so the count holds whatever the
+// key NDVs. Nullopt for any other join.
+std::optional<float> keptRowsOfOuterJoin(
+    const Join& join,
+    std::optional<float> leftCardinality,
+    std::optional<float> rightCardinality) {
+  const Join::Sides emittedOnce = Join::emittedOnceSides(
+      join.joinType(),
+      join.left(),
+      join.right(),
+      join.leftKeys(),
+      join.rightKeys());
+  switch (join.joinType()) {
+    case velox::core::JoinType::kLeft:
+      return emittedOnce.left ? leftCardinality : std::nullopt;
+    case velox::core::JoinType::kRight:
+      return emittedOnce.right ? rightCardinality : std::nullopt;
+    default:
+      return std::nullopt;
+  }
+}
+
 } // namespace
 
 const Estimate& EstimateProvider::estimate(NodeCP node) {
@@ -86,13 +158,19 @@ const Estimate& EstimateProvider::estimate(NodeCP node) {
   Estimate result = compute(node);
   capNdvAtCardinality(node->outputColumns(), result);
 
-  // A node's cardinality estimate should never be non-finite; estimate
-  // arithmetic saturates (see EstimateMath.h). Surface a violation here instead
-  // of letting infinity skew downstream cost comparisons.
-  VELOX_DCHECK(
-      !result.cardinality.has_value() || std::isfinite(*result.cardinality),
-      "Cardinality estimate is not finite. Node: {}",
-      node->nodeType());
+  // A known cardinality estimate is finite, since estimate arithmetic
+  // saturates (see EstimateMath.h), and at least 1.
+  if (result.cardinality.has_value()) {
+    VELOX_CHECK(
+        std::isfinite(*result.cardinality),
+        "Cardinality estimate is not finite. Node: {}",
+        node->nodeTypeName());
+    VELOX_CHECK_GE(
+        *result.cardinality,
+        1.0f,
+        "Cardinality estimate must be at least 1. Node: {}",
+        node->nodeTypeName());
+  }
   return byNode_.emplace(node, std::move(result)).first->second;
 }
 
@@ -150,32 +228,27 @@ Estimate EstimateProvider::compute(NodeCP node) {
       if (groupingKeys.empty()) {
         result.cardinality = 1;
       } else {
-        // Product of per-key NDVs, capped at the input cardinality. Unknown
-        // propagates: if any grouping key's NDV (or the input cardinality) is
-        // unknown, the group count is unknown.
-        std::optional<float> product{1.0f};
-        for (ExprCP key : groupingKeys) {
-          product = mul(product, value(input.constraints, key).cardinality);
-        }
-        result.cardinality = maxOf(1.0f, minOf(input.cardinality, product));
+        result.cardinality = maxOf(
+            1.0f,
+            estimateNumGroups(
+                groupingKeys, input.constraints, input.cardinality));
       }
       // An aggregate emits one row per group, so each output column has at most
-      // `cardinality` distinct values. Derive the output-column NDVs so a
-      // consumer over the aggregate reads a real value rather than the unknown
-      // base NDV: grouping keys keep their input NDV clamped to the group
-      // count; aggregate results (which have no meaningful base NDV) take the
-      // group count. Output columns are the grouping keys, then the aggregates,
-      // positionally.
-      const std::optional<float> groupCount = result.cardinality;
+      // `cardinality` distinct values. Output columns are the grouping keys,
+      // then the aggregates, positionally.
+      const std::optional<float> numGroups = result.cardinality;
       const auto& outputColumns = aggregate->outputColumns();
       for (size_t i = 0; i < outputColumns.size(); ++i) {
-        const std::optional<float> ndv = i < groupingKeys.size()
-            ? minOf(
-                  value(input.constraints, groupingKeys[i]).cardinality,
-                  groupCount)
-            : groupCount;
-        result.constraints.insert_or_assign(
-            outputColumns[i]->id(), Value(outputColumns[i]->value().type, ndv));
+        if (i < groupingKeys.size()) {
+          result.constraints.insert_or_assign(
+              outputColumns[i]->id(),
+              groupingKeyValue(
+                  value(input.constraints, groupingKeys[i]), numGroups));
+        } else {
+          result.constraints.insert_or_assign(
+              outputColumns[i]->id(),
+              Value(outputColumns[i]->value().type, numGroups));
+        }
       }
       return result;
     }
@@ -224,15 +297,29 @@ Estimate EstimateProvider::compute(NodeCP node) {
     }
 
     case NodeType::kUnionAll: {
+      const auto* unionAll = node->as<UnionAll>();
+      const auto inputs = unionAll->inputs();
       Estimate result;
       // Sum of children. Unknown propagates: an unknown child cardinality
       // makes the union cardinality unknown.
       std::optional<float> total{0.0f};
-      for (NodeCP input : node->inputs()) {
-        const auto& inputEstimate = estimate(input);
-        total = add(total, inputEstimate.cardinality);
+      std::vector<std::optional<float>> cardinalities;
+      for (NodeCP input : inputs) {
+        cardinalities.push_back(estimate(input).cardinality);
+        total = add(total, cardinalities.back());
       }
       result.cardinality = maxOf(1.0f, total);
+      const auto& outputColumns = unionAll->outputColumns();
+      for (size_t i = 0; i < outputColumns.size(); ++i) {
+        std::vector<const Value*> inputValues;
+        for (size_t j = 0; j < inputs.size(); ++j) {
+          inputValues.push_back(&value(
+              estimate(inputs[j]).constraints, unionAll->legColumns()[j][i]));
+        }
+        result.constraints.insert_or_assign(
+            outputColumns[i]->id(),
+            UnionConstraints::combine(inputValues, cardinalities));
+      }
       return result;
     }
 
@@ -255,22 +342,28 @@ Estimate EstimateProvider::compute(NodeCP node) {
       mergeConstraints(left.constraints, result.constraints);
       mergeConstraints(right.constraints, result.constraints);
 
-      // Matched-row count is unknown when any join-key NDV is unknown; that
-      // propagates through to the output cardinality.
-      const std::optional<float> matched = JoinFanout::estimateJoinCardinality(
-          left.cardinality,
-          right.cardinality,
-          join->leftKeys(),
-          join->rightKeys(),
-          result.constraints);
-      const std::optional<float> cardinality = JoinFanout::outputCardinality(
-          join->joinType(),
-          left.cardinality,
-          right.cardinality,
-          matched,
-          join->filter(),
-          result.constraints);
-      result.cardinality = maxOf(1.0f, cardinality);
+      result.cardinality =
+          keptRowsOfOuterJoin(*join, left.cardinality, right.cardinality);
+      if (!result.cardinality.has_value()) {
+        // Matched-row count is unknown when any join-key NDV is unknown; that
+        // propagates through to the output cardinality.
+        const std::optional<float> matched =
+            JoinFanout::estimateJoinCardinality(
+                left.cardinality,
+                right.cardinality,
+                join->leftKeys(),
+                join->rightKeys(),
+                result.constraints);
+        result.cardinality = maxOf(
+            1.0f,
+            JoinFanout::outputCardinality(
+                join->joinType(),
+                left.cardinality,
+                right.cardinality,
+                matched,
+                join->filter(),
+                result.constraints));
+      }
       JoinConstraints::refineInnerKeys(
           join->joinType(),
           join->leftKeys(),
@@ -330,11 +423,8 @@ Estimate EstimateProvider::compute(NodeCP node) {
         return result;
       }
 
-      std::optional<float> numPartitions{1.0f};
-      for (ExprCP key : partitionKeys) {
-        numPartitions =
-            mul(numPartitions, value(input.constraints, key).cardinality);
-      }
+      const std::optional<float> numPartitions = estimateNumGroups(
+          partitionKeys, input.constraints, input.cardinality);
       // An unknown partition count leaves the input cardinality unchanged.
       if (numPartitions.has_value()) {
         result.cardinality = maxOf(

@@ -68,6 +68,7 @@ add_library(
   ToGraph.cpp
   ToSubfield.cpp
   ToVelox.cpp
+  UnionConstraints.cpp
   VeloxHistory.cpp
   WriteStatsBuilder.cpp
 )

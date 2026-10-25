@@ -42,7 +42,7 @@ const connector::PartitionType* groupedPartitionType(
 // of a bucketed table contributes, and a global exchange ends the search.
 bool hasRegroupableScan(NodeCP node) {
   if (node->is(NodeType::kExchange) &&
-      node->as<Exchange>()->partitioning().scope == PropertyScope::kGlobal) {
+      node->as<Exchange>()->partitioning().isGlobal()) {
     return false;
   }
   if (node->is(NodeType::kScan)) {
@@ -67,7 +67,7 @@ class GroupedScanRewriter : public NodeRewriter<> {
   // A global exchange ends grouped-read propagation. Rebuild a driver exchange
   // because it preserves task placement.
   NodeCP rewriteExchange(const Exchange* node, NoContext& context) override {
-    if (node->partitioning().scope == PropertyScope::kGlobal) {
+    if (node->partitioning().isGlobal()) {
       return node;
     }
     return NodeRewriter<>::rewriteExchange(node, context);
@@ -97,7 +97,7 @@ class GroupedScanRewriter : public NodeRewriter<> {
          .outputColumns = node->outputColumns(),
          .scanHandle = node->scanHandle(),
          .groupedPartitionType = partitionType,
-         .placed = true});
+         .placement = node->placement()});
   }
 
  private:

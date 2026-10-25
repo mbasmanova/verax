@@ -215,6 +215,30 @@ std::string Call::toString() const {
   return out.str();
 }
 
+namespace {
+Value literalValue(Value value, const velox::Variant* literal) {
+  VELOX_CHECK_NOT_NULL(literal);
+  if (literal->isNull()) {
+    value.nullFraction = 1;
+    return value;
+  }
+  value.nullFraction = 0;
+  value.nullable = false;
+  if (value.type->isPrimitiveType()) {
+    value.min = literal;
+    value.max = literal;
+  }
+  if (value.type->kind() == velox::TypeKind::BOOLEAN) {
+    value.trueFraction = literal->value<bool>() ? 1 : 0;
+  }
+  return value;
+}
+} // namespace
+
+Literal::Literal(const Value& value, const velox::Variant* literal)
+    : Expr(PlanType::kLiteralExpr, literalValue(value, literal)),
+      literal_(literal) {}
+
 size_t Literal::KeyHash::operator()(const Literal* literal) const {
   return velox::bits::hashMix(
       folly::hasher<const velox::Type*>()(literal->value().type),

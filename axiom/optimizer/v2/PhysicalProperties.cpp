@@ -45,11 +45,11 @@ const folly::F14FastMap<PartitionKind, std::string_view>& partitionKindNames() {
   return kNames;
 }
 
-const folly::F14FastMap<LocalPropertyKind, std::string_view>&
-localPropertyKindNames() {
-  static const folly::F14FastMap<LocalPropertyKind, std::string_view> kNames = {
-      {LocalPropertyKind::kGrouped, "Grouped"},
-      {LocalPropertyKind::kSorted, "Sorted"},
+const folly::F14FastMap<DriverOrderKind, std::string_view>&
+driverOrderKindNames() {
+  static const folly::F14FastMap<DriverOrderKind, std::string_view> kNames = {
+      {DriverOrderKind::kGrouped, "Grouped"},
+      {DriverOrderKind::kSorted, "Sorted"},
   };
   return kNames;
 }
@@ -58,7 +58,7 @@ localPropertyKindNames() {
 
 AXIOM_DEFINE_ENUM_NAME(PropertyScope, propertyScopeNames);
 AXIOM_DEFINE_ENUM_NAME(PartitionKind, partitionKindNames);
-AXIOM_DEFINE_ENUM_NAME(LocalPropertyKind, localPropertyKindNames);
+AXIOM_DEFINE_ENUM_NAME(DriverOrderKind, driverOrderKindNames);
 
 int32_t Partitioning::numStageTasks(int32_t numWorkers, int32_t hashStageTasks)
     const {
@@ -223,9 +223,13 @@ bool PhysicalProperties::coLocates(PropertyScope scope, const ExprVector& keys)
     return true;
   }
 
+  if (scope == PropertyScope::kGlobal &&
+      globalPartition.is(PartitionKind::kBroadcast)) {
+    return false;
+  }
   const auto keySet = PlanObjectSet::fromObjects(keys);
-  return std::ranges::any_of(unique, [&](const UniqueKeySet& key) {
-    return key.scope == PropertyScope::kGlobal && key.columns.isSubset(keySet);
+  return std::ranges::any_of(globalUnique, [&](const PlanObjectSet& key) {
+    return key.isSubset(keySet);
   });
 }
 
@@ -252,15 +256,17 @@ void PhysicalProperties::checkReferencesColumns(
   checkPartition(driverPartition);
   // Local orderings / groupings and unique key-sets are columns, not
   // expressions.
-  for (const LocalProperty& property : local) {
+  for (const DriverOrder& property : driverOrder) {
     VELOX_CHECK(
         outputColumns.containsAll(property.columns),
-        "Local property references a column that is not in the node's output");
+        "Driver order references a column that is not in the node's output");
   }
-  for (const UniqueKeySet& keySet : unique) {
-    VELOX_CHECK(
-        keySet.columns.isSubset(outputColumns),
-        "Unique key-set references a column that is not in the node's output");
+  for (const auto* keys : {&globalUnique, &driverUnique}) {
+    for (const PlanObjectSet& key : *keys) {
+      VELOX_CHECK(
+          key.isSubset(outputColumns),
+          "Unique key references a column that is not in the node's output");
+    }
   }
 }
 

@@ -1118,14 +1118,15 @@ velox::core::AggregationNode::Aggregate toVeloxFinalAggregate(
   return out;
 }
 
-// Subset of `groupingKeys` that `local` guarantees are pre-grouped (equal-key
-// rows contiguous), so an aggregation over them can stream rather than build a
-// full hash table. The larger of: the leading `Sorted` run that are grouping
-// keys, and a `Grouped(S)` whose columns are all grouping keys (the whole `S`,
-// since rows are contiguous on the set jointly, not on a bare subset). Empty
-// when nothing is pre-grouped.
+// Subset of `groupingKeys` that 'properties' guarantee are pre-grouped
+// (equal-key rows contiguous within each driver), so an aggregation over them
+// can stream rather than build a full hash table. The largest of: the leading
+// `Sorted` run that are grouping keys; a `Grouped(S)` whose columns are all
+// grouping keys (the whole `S`, since rows are contiguous on the set jointly,
+// not on a bare subset); and a unique key made of grouping keys, whose values
+// occur at most once per driver. Empty when nothing is pre-grouped.
 ExprVector computePreGroupedKeys(
-    const LocalPropertyVector& local,
+    const PhysicalProperties& properties,
     const ExprVector& groupingKeys) {
   if (groupingKeys.empty()) {
     return {};
@@ -1141,9 +1142,19 @@ ExprVector computePreGroupedKeys(
   };
 
   ExprVector best;
-  for (const LocalProperty& property : local) {
+  for (const auto* keys :
+       {&properties.globalUnique, &properties.driverUnique}) {
+    for (const PlanObjectSet& key : *keys) {
+      ColumnVector columns = key.toObjects<Column>();
+      if (std::ranges::all_of(columns, isGroupingKey) &&
+          columns.size() > best.size()) {
+        best = ExprVector{columns.begin(), columns.end()};
+      }
+    }
+  }
+  for (const DriverOrder& property : properties.driverOrder) {
     ExprVector candidate;
-    if (property.kind == LocalPropertyKind::kSorted) {
+    if (property.kind == DriverOrderKind::kSorted) {
       // Sorted on c1..cn implies grouped on any leading prefix; take the
       // leading run of sort keys that are grouping keys.
       for (ColumnCP column : property.columns) {
@@ -1258,8 +1269,7 @@ velox::core::PlanNodePtr Emitter::emitSingleAggregation(
   // instead of building a full hash table.
   auto preGroupedKeys = toFieldAccessList(
       computePreGroupedKeys(
-          aggregate.input()->physicalProperties().local,
-          aggregate.groupingKeys()),
+          aggregate.input()->physicalProperties(), aggregate.groupingKeys()),
       "Pre-grouped key");
 
   auto [names, aggregates] = buildAggregates(aggregate, [&](size_t i) {
@@ -2083,7 +2093,7 @@ velox::core::PlanNodePtr Emitter::emitEnforceDistinct(
   // distinct keys, mirroring how the aggregation derives its pre-grouped keys.
   auto preGroupedKeys = toFieldAccessList(
       computePreGroupedKeys(
-          node.input()->physicalProperties().local, node.distinctKeys()),
+          node.input()->physicalProperties(), node.distinctKeys()),
       "EnforceDistinct pre-grouped key");
   return std::make_shared<velox::core::EnforceDistinctNode>(
       nextId(),
@@ -2133,7 +2143,7 @@ std::optional<FragmentType> mergeFragmentTypes(
 std::optional<FragmentType> fragmentTypeContribution(NodeCP node) {
   if (node->is(NodeType::kExchange)) {
     const auto& partitioning = node->as<Exchange>()->partitioning();
-    if (partitioning.scope == PropertyScope::kDriver) {
+    if (partitioning.isDriver()) {
       return fragmentTypeContribution(node->as<Exchange>()->input());
     }
     switch (partitioning.kind) {
@@ -2208,7 +2218,7 @@ void decideFragmentType(
 const connector::PartitionType* commonFragmentPartitionType(NodeCP node) {
   if (node->is(NodeType::kExchange)) {
     const auto* exchange = node->as<Exchange>();
-    return exchange->partitioning().scope == PropertyScope::kDriver
+    return exchange->partitioning().isDriver()
         ? commonFragmentPartitionType(exchange->input())
         : nullptr;
   }
@@ -2395,7 +2405,7 @@ velox::core::PlanNodePtr Emitter::emitExchange(const Exchange& exchange) {
   }
   const auto& partitioning = exchange.partitioning();
 
-  if (partitioning.scope == PropertyScope::kDriver) {
+  if (partitioning.isDriver()) {
     velox::core::PlanNodePtr input = emit(exchange.input());
     switch (partitioning.kind) {
       case PartitionKind::kGather:
