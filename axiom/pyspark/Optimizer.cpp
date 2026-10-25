@@ -119,7 +119,8 @@ facebook::axiom::optimizer::PlanAndStats optimize(
       queryCtx->queryId(),
       /*user=*/"pyspark-optimizer",
       facebook::axiom::connector::ConnectorProperties{},
-      facebook::axiom::connector::ConnectorContext::noopStatWriterProvider());
+      facebook::axiom::connector::ConnectorContext::noopStatWriterProvider(),
+      facebook::axiom::connector::ConnectorMetadataRegistry::global());
 
   // Fetch connector and set up schema resolver.
   auto connector = velox::connector::getConnector(connectorId);
