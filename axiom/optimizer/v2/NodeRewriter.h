@@ -416,7 +416,8 @@ class NodeRewriter {
     if (newInput == node->input()) {
       return node;
     }
-    return builder_.template make<Exchange>({newInput, node->partitioning()});
+    return builder_.template make<Exchange>(
+        {newInput, node->partitioning(), node->placement()});
   }
 
   virtual NodeCP rewriteTableWrite(const TableWrite* node, TContext& context) {

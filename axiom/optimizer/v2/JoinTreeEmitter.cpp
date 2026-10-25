@@ -121,11 +121,13 @@ struct EmitState {
       Builder& builder,
       ExprSimplifier& simplifier,
       int32_t numWorkers,
+      bool oneDriverPerTask,
       JoinTreeEmitter::JoinFactory joinFactory)
       : graph{graph},
         builder{builder},
         simplifier{simplifier},
         numWorkers{numWorkers},
+        oneDriverPerTask{oneDriverPerTask},
         joinFactory{joinFactory},
         exprs{builder},
         fired(graph.filterConjuncts().size(), false) {}
@@ -134,6 +136,7 @@ struct EmitState {
   Builder& builder;
   ExprSimplifier& simplifier;
   const int32_t numWorkers;
+  const bool oneDriverPerTask;
   JoinTreeEmitter::JoinFactory joinFactory;
   ExprFactory exprs;
   std::vector<bool> fired;
@@ -835,7 +838,10 @@ Emitted emitExchange(const ExchangeOp* exchange, EmitState& state) {
         logicalKeys[i]->toString());
   }
   partitioning.keys = std::move(columnKeys);
-  NodeCP node = state.builder.make<Exchange>({keyed, std::move(partitioning)});
+  const Placement placement =
+      Exchange::placementAfter(keyed, partitioning, state.oneDriverPerTask);
+  NodeCP node =
+      state.builder.make<Exchange>({keyed, std::move(partitioning), placement});
   return {node, std::move(input.materialized)};
 }
 
@@ -862,7 +868,8 @@ NodeCP JoinTreeEmitter::emit(
     const ColumnVector& rootOutputColumns,
     Builder& builder,
     ExprSimplifier& simplifier,
-    int32_t numWorkers) {
+    int32_t numWorkers,
+    bool oneDriverPerTask) {
   const auto joinFactory = [&](Join::Key key) {
     return PhysicalJoin::makeJoin(std::move(key), builder, simplifier);
   };
@@ -873,6 +880,7 @@ NodeCP JoinTreeEmitter::emit(
       builder,
       simplifier,
       numWorkers,
+      oneDriverPerTask,
       joinFactory);
 }
 
@@ -883,9 +891,11 @@ NodeCP JoinTreeEmitter::emit(
     Builder& builder,
     ExprSimplifier& simplifier,
     int32_t numWorkers,
+    bool oneDriverPerTask,
     JoinFactory joinFactory) {
   VELOX_CHECK_NOT_NULL(root);
-  EmitState state{graph, builder, simplifier, numWorkers, joinFactory};
+  EmitState state{
+      graph, builder, simplifier, numWorkers, oneDriverPerTask, joinFactory};
   NodeCP result{nullptr};
   switch (root->kind()) {
     case MemoOpKind::kLeaf:
@@ -914,7 +924,8 @@ NodeCP JoinTreeEmitter::emitComponents(
     const ColumnVector& rootOutputColumns,
     Builder& builder,
     ExprSimplifier& simplifier,
-    int32_t numWorkers) {
+    int32_t numWorkers,
+    bool oneDriverPerTask) {
   const auto joinFactory = [&](Join::Key key) {
     return PhysicalJoin::makeJoin(std::move(key), builder, simplifier);
   };
@@ -928,6 +939,7 @@ NodeCP JoinTreeEmitter::emitComponents(
       builder,
       simplifier,
       numWorkers,
+      oneDriverPerTask,
       joinFactory,
       crossJoinFactory);
 }
@@ -939,13 +951,15 @@ NodeCP JoinTreeEmitter::emitComponents(
     Builder& builder,
     ExprSimplifier& simplifier,
     int32_t numWorkers,
+    bool oneDriverPerTask,
     JoinFactory joinFactory,
     JoinFactory crossJoinFactory) {
   VELOX_CHECK_GE(
       componentRoots.size(),
       2,
       "emitComponents requires at least two components");
-  EmitState state{graph, builder, simplifier, numWorkers, joinFactory};
+  EmitState state{
+      graph, builder, simplifier, numWorkers, oneDriverPerTask, joinFactory};
 
   // Emit each component subtree first, sharing one `fired` vector so a
   // cross-component conjunct is placed once, at a fold below.
@@ -1006,7 +1020,10 @@ NodeCP JoinTreeEmitter::emitComponents(
           result->physicalProperties().globalPartition);
       if (!build->physicalProperties().globalPartition.sameClassAs(
               replicated)) {
-        build = builder.make<Exchange>({build, replicated});
+        build = builder.make<Exchange>(
+            {build,
+             replicated,
+             Exchange::placementAfter(build, replicated, oneDriverPerTask)});
       }
     }
     cover.unionSet(componentRoots[order[i]]->cover());

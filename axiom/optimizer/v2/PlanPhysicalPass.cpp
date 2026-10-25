@@ -307,9 +307,12 @@ DistinctExpansion expandDistinct(
     if (numDrivers > 1 &&
         !currentInput->physicalProperties().coLocates(
             PropertyScope::kDriver, group.keys)) {
+      Partitioning partitioning =
+          Partitioning::hash(PropertyScope::kDriver, group.keys);
+      const Placement placement = Exchange::placementAfter(
+          currentInput, partitioning, /*oneDriverPerTask=*/numDrivers == 1);
       currentInput = builder.make<Exchange>(
-          {currentInput,
-           Partitioning::hash(PropertyScope::kDriver, group.keys)});
+          {currentInput, std::move(partitioning), placement});
     }
     ColumnVector outputColumns;
     outputColumns.reserve(
@@ -758,6 +761,15 @@ bool satisfies(
 // A fixed point's step runs on one driver per task.
 constexpr int32_t kRecursiveNumDrivers = 1;
 
+// How rows run on one task or several, with one driver per task or several.
+Placement placementOf(bool oneTask, bool oneDriverPerTask) {
+  if (oneTask) {
+    return oneDriverPerTask ? Placement::kSingleThread : Placement::kSingleTask;
+  }
+  return oneDriverPerTask ? Placement::kOneDriverPerTask
+                          : Placement::kDistributed;
+}
+
 // A partitioned loop's body runs as a chain of plans, each driven by the
 // exchange that links it to the plan before, and a join is driven by its left
 // input. Puts on the left each join input that reads the exchange.
@@ -805,22 +817,27 @@ class ExchangeProbeRewriter : public NodeRewriter<> {
 
 class PhysicalPlanRewriter : public NodeRewriter<> {
  public:
-  // 'replicate', when set, plans each subtree that reads no recursive state:
-  // a fixed point's step uses it to place such inputs where the loop needs
-  // them. 'statePartitioning' says where a fixed point's state lives, which
-  // every read of the state in its step carries.
+  // 'oneTask' says whether the plan runs on one task. A fixed point's step
+  // plans within a task, so its 'numWorkers' is 1 whatever the plan's task
+  // count; its leaves run on 'numDrivers' drivers per task. 'replicate', when
+  // set, plans each subtree that reads no recursive state: a fixed point's
+  // step uses it to place such inputs where the loop needs them.
+  // 'statePartitioning' says where a fixed point's state lives, which every
+  // read of the state in its step carries.
   PhysicalPlanRewriter(
       Builder& builder,
       ExprSimplifier& simplifier,
       const OptimizerOptions& options,
       int32_t numWorkers,
       int32_t numDrivers,
+      bool oneTask,
       std::function<NodeCP(NodeCP)> replicate = nullptr,
       Partitioning statePartitioning = {})
       : NodeRewriter(builder),
         options_{options},
         numWorkers_{numWorkers},
         numDrivers_{numDrivers},
+        oneTask_{oneTask},
         replicate_{std::move(replicate)},
         statePartitioning_{std::move(statePartitioning)},
         exprFactory_{builder},
@@ -864,7 +881,9 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
          .outputColumns = node->outputColumns(),
          .scanHandle = node->scanHandle(),
          .groupedPartitionType = node->groupedPartitionType(),
-         .placed = true});
+         .placement = placementOf(
+             oneTask_ || node->baseTable()->layout()->runsOnCoordinator(),
+             numDrivers_ == 1)});
   }
 
   NodeCP rewriteValues(const Values* node, NoContext& /*context*/) override {
@@ -873,7 +892,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
          .rows = node->rows(),
          .outputColumns = node->outputColumns(),
          .channels = node->channels(),
-         .placed = true});
+         .placement = placementOf(/*oneTask=*/true, numDrivers_ == 1)});
   }
 
   NodeCP rewriteWorkingTable(const WorkingTable* node, NoContext& /*context*/)
@@ -884,7 +903,9 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
          .outputColumns = node->outputColumns(),
          .readMode = node->readMode(),
          .partitioning = statePartitioning_,
-         .placed = true});
+         .placement = placementOf(
+             oneTask_ || statePartitioning_.is(PartitionKind::kGather),
+             numDrivers_ == 1)});
   }
 
   // With several workers, the loop is one partitioned loop when it cannot run
@@ -933,9 +954,20 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
         anchor = ensureGathered(anchor);
       }
       const bool gathered = isGathered(anchor);
+      // The exchange feeds the step, which runs 'kRecursiveNumDrivers'
+      // drivers per task.
       replicate = [this, gathered](NodeCP input) {
         NodeCP planned = rewrite(input);
-        return gathered ? ensureGathered(planned) : broadcast(planned);
+        // Inlined into the step, the input runs on the step's drivers but is
+        // placed for this plan's, which states less than is true.
+        if (gathered && isGathered(planned)) {
+          return planned;
+        }
+        return exchange(
+            {planned,
+             gathered ? Partitioning::gather(PropertyScope::kGlobal)
+                      : Partitioning::globalBroadcast()},
+            /*oneDriverPerTask=*/kRecursiveNumDrivers == 1);
       };
       if (gathered) {
         statePartitioning = Partitioning::gather(PropertyScope::kGlobal);
@@ -948,6 +980,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
         options_,
         /*numWorkers=*/1,
         /*numDrivers=*/kRecursiveNumDrivers,
+        oneTask_,
         std::move(replicate),
         std::move(statePartitioning)};
     NodeCP step = singleThreaded.rewrite(node->step());
@@ -1005,6 +1038,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
         options_,
         numWorkers_,
         /*numDrivers=*/kRecursiveNumDrivers,
+        oneTask_,
         [this](NodeCP input) { return rewrite(input); },
         keyedState ? Partitioning::hash(PropertyScope::kGlobal, keys)
                    : Partitioning{}};
@@ -1347,6 +1381,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
           builder(),
           simplifier_,
           numWorkers_,
+          /*oneDriverPerTask=*/numDrivers_ == 1,
           joinFactory);
     }
     if (!roots.empty()) {
@@ -1360,6 +1395,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
           builder(),
           simplifier_,
           numWorkers_,
+          /*oneDriverPerTask=*/numDrivers_ == 1,
           joinFactory,
           crossJoinFactory);
     }
@@ -1377,6 +1413,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
           builder(),
           simplifier_,
           numWorkers_,
+          /*oneDriverPerTask=*/numDrivers_ == 1,
           fallbackJoinFactory);
     }
     if (roots.empty()) {
@@ -1390,6 +1427,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
         builder(),
         simplifier_,
         /*numWorkers=*/1,
+        /*oneDriverPerTask=*/numDrivers_ == 1,
         fallbackJoinFactory,
         fallbackJoinFactory);
   }
@@ -1471,10 +1509,22 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
         joinTree, freePlacement, node->outputColumns(), builder(), simplifier_);
   }
 
+  // An exchange by 'key', with the placement of the rows after it, which run
+  // one driver per task when 'oneDriverPerTask'.
+  NodeCP exchange(Exchange::Key key, bool oneDriverPerTask) {
+    key.placement =
+        Exchange::placementAfter(key.input, key.partitioning, oneDriverPerTask);
+    return builder().make<Exchange>(std::move(key));
+  }
+
+  // An exchange by 'key' whose rows run this rewriter's drivers per task.
+  NodeCP exchange(Exchange::Key key) {
+    return exchange(std::move(key), /*oneDriverPerTask=*/numDrivers_ == 1);
+  }
+
   // Remote exchanges that unconditionally establish a partitioning on 'input'.
   NodeCP gather(NodeCP input) {
-    return builder().make<Exchange>(
-        {input, Partitioning::gather(PropertyScope::kGlobal)});
+    return exchange({input, Partitioning::gather(PropertyScope::kGlobal)});
   }
 
   // An order-preserving gather: merges the sorted per-task streams (the input
@@ -1484,7 +1534,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
       NodeCP input,
       const ExprVector& orderKeys,
       const OrderTypeVector& orderTypes) {
-    return builder().make<Exchange>(
+    return exchange(
         {input,
          Partitioning::gatherMerge(
              PropertyScope::kGlobal, orderKeys, orderTypes)});
@@ -1494,7 +1544,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
       NodeCP input,
       const ExprVector& keys,
       bool replicateNullsAndAny = false) {
-    return builder().make<Exchange>(
+    return exchange(
         {input,
          Partitioning::hash(
              PropertyScope::kGlobal, keys, replicateNullsAndAny)});
@@ -1507,7 +1557,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
     if (build->physicalProperties().globalPartition.sameClassAs(replicated)) {
       return build;
     }
-    return builder().make<Exchange>({build, replicated});
+    return exchange({build, replicated});
   }
 
   // Repartitions 'input' on 'keys' using 'targetType' (a connector
@@ -1516,7 +1566,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
       NodeCP input,
       const ExprVector& keys,
       const connector::PartitionType* targetType) {
-    return builder().make<Exchange>(
+    return exchange(
         {input,
          Partitioning::connectorHash(
              PropertyScope::kGlobal, keys, targetType)});
@@ -1639,12 +1689,11 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
   }
 
   NodeCP arbitrary(NodeCP input) {
-    return builder().make<Exchange>(
-        {input, Partitioning::arbitrary(PropertyScope::kGlobal)});
+    return exchange({input, Partitioning::arbitrary(PropertyScope::kGlobal)});
   }
 
   NodeCP driverPartition(NodeCP input, const ExprVector& keys) {
-    return builder().make<Exchange>(
+    return exchange(
         {input,
          keys.empty() ? Partitioning::gather(PropertyScope::kDriver)
                       : Partitioning::hash(PropertyScope::kDriver, keys)});
@@ -1654,7 +1703,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
       NodeCP input,
       const ExprVector& orderKeys,
       const OrderTypeVector& orderTypes) {
-    return builder().make<Exchange>(
+    return exchange(
         {input,
          Partitioning::gatherMerge(
              PropertyScope::kDriver, orderKeys, orderTypes)});
@@ -1679,7 +1728,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
   }
 
   NodeCP broadcast(NodeCP input) {
-    return builder().make<Exchange>({input, Partitioning::globalBroadcast()});
+    return exchange({input, Partitioning::globalBroadcast()});
   }
 
   // True when each output row of 'node' derives from one row of the recursive
@@ -2465,7 +2514,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
           !newInput->physicalProperties()
                .driverPartition.satisfiesWritePartitioning(
                    keys, *layout->partitionType())) {
-        newInput = builder().make<Exchange>(
+        newInput = exchange(
             {newInput,
              Partitioning::connectorHash(
                  PropertyScope::kDriver, keys, layout->partitionType().get())});
@@ -2484,6 +2533,8 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
   // separately.
   const int32_t numWorkers_;
   const int32_t numDrivers_;
+  // True when the plan runs on one task.
+  const bool oneTask_;
   const std::function<NodeCP(NodeCP)> replicate_;
   const Partitioning statePartitioning_;
   ExprFactory exprFactory_;
@@ -2511,7 +2562,12 @@ NodeCP PlanPhysicalPass::run(
 
   ExprSimplifier simplifier{builder, evaluator};
   PhysicalPlanRewriter rewriter{
-      builder, simplifier, options, numWorkers, numDrivers};
+      builder,
+      simplifier,
+      options,
+      numWorkers,
+      numDrivers,
+      /*oneTask=*/numWorkers == 1};
   return rewriter.rewrite(root);
 }
 

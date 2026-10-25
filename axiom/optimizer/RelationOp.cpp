@@ -24,6 +24,7 @@
 #include "axiom/optimizer/QueryGraph.h"
 #include "axiom/optimizer/RelationOpPrinter.h"
 #include "axiom/optimizer/RelationOpVisitor.h"
+#include "axiom/optimizer/UnionConstraints.h"
 #include "velox/common/base/SuccinctPrinter.h"
 #include "velox/expression/ScopedVarSetter.h"
 
@@ -1573,123 +1574,25 @@ void UnionAll::initConstraints() {
   // Output columns are from the first input.
   const auto& outputColumns = columns_;
 
+  std::vector<std::optional<float>> cardinalities;
+  for (const auto& input : inputs) {
+    cardinalities.push_back(input->resultCardinality());
+  }
   for (size_t i = 0; i < outputColumns.size(); ++i) {
-    auto* outputColumn = outputColumns[i];
-
-    // Reads constraint for the i-th column of the given input operator from
-    // the operator's constraint map.
-    auto inputConstraint = [&](size_t inputIndex) -> const Value& {
-      VELOX_CHECK_LT(inputIndex, inputs.size());
-      VELOX_CHECK_LT(i, inputs[inputIndex]->columns().size());
-      const auto* column = inputs[inputIndex]->columns()[i];
-      auto it = inputs[inputIndex]->constraints().find(column->id());
+    std::vector<const Value*> inputValues;
+    for (const auto& input : inputs) {
+      VELOX_CHECK_LT(i, input->columns().size());
+      const auto* column = input->columns()[i];
+      auto it = input->constraints().find(column->id());
       VELOX_CHECK(
-          it != inputs[inputIndex]->constraints().end(),
+          it != input->constraints().end(),
           "Missing constraint for column: {}",
           column->toString());
-      return it->second;
-    };
-
-    // Get constraint from first input as starting point.
-    Value combined = inputConstraint(0);
-    // Row counts and the weighted fraction accumulators are all unknown if any
-    // leg's cardinality or the corresponding fraction is unknown; the helpers
-    // propagate nullopt.
-    std::optional<float> totalRows = inputs[0]->resultCardinality();
-    std::optional<float> weightedNullFraction =
-        mul(combined.nullFraction, totalRows);
-    std::optional<float> weightedTrueFraction =
-        mul(combined.trueFraction, totalRows);
-
-    // Derive min and max across all legs. All-NULL legs contribute no
-    // bound. A leg with unknown bound wipes the combined bound — no later
-    // leg can recover it.
-    auto deriveBound = [&](VariantCP Value::* bound,
-                           const auto& compare) -> VariantCP {
-      VariantCP result = nullptr;
-      for (size_t j = 0; j < inputs.size(); ++j) {
-        const Value& inputValue = inputConstraint(j);
-        if (inputValue.nullFraction == 1.0) {
-          continue;
-        }
-        VariantCP candidate = inputValue.*bound;
-        if (candidate == nullptr) {
-          return nullptr;
-        }
-        if (result == nullptr || compare(*candidate, *result)) {
-          result = candidate;
-        }
-      }
-      return result;
-    };
-    combined.min = deriveBound(
-        &Value::min, [](const auto& a, const auto& b) { return a < b; });
-    combined.max = deriveBound(
-        &Value::max, [](const auto& a, const auto& b) { return b < a; });
-
-    // Combine remaining fields from inputs beyond the first.
-    for (size_t j = 1; j < inputs.size(); ++j) {
-      const Value& inputValue = inputConstraint(j);
-      const std::optional<float> inputRows = inputs[j]->resultCardinality();
-
-      totalRows = add(totalRows, inputRows);
-      weightedNullFraction =
-          add(weightedNullFraction, mul(inputValue.nullFraction, inputRows));
-      weightedTrueFraction =
-          add(weightedTrueFraction, mul(inputValue.trueFraction, inputRows));
-      combined.nullable = combined.nullable || inputValue.nullable;
+      inputValues.push_back(&it->second);
     }
-
-    // Estimate the union NDV by inclusion-exclusion over the legs' ranges. Fold
-    // legs left to right; for each leg subtract the values expected to be
-    // shared with the running range, assuming uniform density within each range
-    // and independence across legs. This keeps the summed NDV for disjoint legs
-    // and discounts the overlap otherwise. A leg without an integer range
-    // contributes its full NDV (the disjoint assumption) and clears the running
-    // range so later legs cannot estimate overlap against it.
-    std::optional<float> unionNdv = inputConstraint(0).cardinality;
-    VariantCP runMin = inputConstraint(0).min;
-    VariantCP runMax = inputConstraint(0).max;
-    for (size_t j = 1; j < inputs.size() && unionNdv.has_value(); ++j) {
-      const Value& leg = inputConstraint(j);
-      if (!leg.cardinality.has_value()) {
-        unionNdv = std::nullopt;
-        break;
-      }
-      const auto runRange = rangeCardinality(combined.type, runMin, runMax);
-      const auto legRange = rangeCardinality(combined.type, leg.min, leg.max);
-      float shared = 0;
-      if (runRange.has_value() && legRange.has_value()) {
-        // All four bounds are set here (rangeCardinality returns a value only
-        // when both of its bounds are). Overlap = [max(mins), min(maxs)].
-        VariantCP overlapMin = *runMin < *leg.min ? leg.min : runMin;
-        VariantCP overlapMax = *leg.max < *runMax ? leg.max : runMax;
-        if (!(*overlapMax < *overlapMin)) {
-          if (const auto overlap =
-                  rangeCardinality(combined.type, overlapMin, overlapMax)) {
-            shared = *overlap * (*unionNdv / *runRange) *
-                (*leg.cardinality / *legRange);
-          }
-        }
-        runMin = *leg.min < *runMin ? leg.min : runMin;
-        runMax = *runMax < *leg.max ? leg.max : runMax;
-      } else {
-        // A leg without an integer range clears the running range so later legs
-        // fall back to the disjoint (summed) assumption.
-        runMin = nullptr;
-        runMax = nullptr;
-      }
-      unionNdv = std::max(
-          std::max(*unionNdv, *leg.cardinality),
-          *unionNdv + *leg.cardinality - shared);
-    }
-    combined.cardinality = unionNdv;
-    // Weighted averages are unknown if the accumulators or row count are
-    // unknown; divide also yields nullopt when totalRows is 0.
-    combined.nullFraction = divide(weightedNullFraction, totalRows);
-    combined.trueFraction = divide(weightedTrueFraction, totalRows);
-
-    constraints_.emplace(outputColumn->id(), combined);
+    constraints_.emplace(
+        outputColumns[i]->id(),
+        UnionConstraints::combine(inputValues, cardinalities));
   }
 }
 

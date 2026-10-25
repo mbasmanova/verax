@@ -50,13 +50,16 @@ class JoinTreeEmitter {
   /// (see class comment); `graph` supplies each memo op's relation and edge,
   /// and `builder` hash-conses the emitted nodes. `numWorkers` coarsens the
   /// bucketing of a relation the plan reads grouped (see `GroupedRead`).
+  /// `oneDriverPerTask` says whether each task runs one driver, which every
+  /// exchange the tree adds states (see `Exchange::placementAfter`).
   static NodeCP emit(
       MemoOpCP root,
       const JoinHypergraph& graph,
       const ColumnVector& rootOutputColumns,
       Builder& builder,
       ExprSimplifier& simplifier,
-      int32_t numWorkers);
+      int32_t numWorkers,
+      bool oneDriverPerTask);
 
   /// Emits the tree using `joinFactory` to construct each Join step.
   static NodeCP emit(
@@ -66,6 +69,7 @@ class JoinTreeEmitter {
       Builder& builder,
       ExprSimplifier& simplifier,
       int32_t numWorkers,
+      bool oneDriverPerTask,
       JoinFactory joinFactory);
 
   /// Emits a cross-product combine of independently planned connected
@@ -85,7 +89,8 @@ class JoinTreeEmitter {
       const ColumnVector& rootOutputColumns,
       Builder& builder,
       ExprSimplifier& simplifier,
-      int32_t numWorkers);
+      int32_t numWorkers,
+      bool oneDriverPerTask);
 
   /// Emits the component trees using `joinFactory` within each component and
   /// `crossJoinFactory` to combine components.
@@ -96,6 +101,7 @@ class JoinTreeEmitter {
       Builder& builder,
       ExprSimplifier& simplifier,
       int32_t numWorkers,
+      bool oneDriverPerTask,
       JoinFactory joinFactory,
       JoinFactory crossJoinFactory);
 };

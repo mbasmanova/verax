@@ -74,6 +74,24 @@ enum class NodeType : uint8_t {
 
 AXIOM_DECLARE_ENUM_NAME(NodeType);
 
+/// How the rows after a node that starts them run: a leaf, or an exchange.
+/// Rows on one task are gathered across tasks, and rows on one driver per task
+/// are gathered across drivers.
+enum class Placement : uint8_t {
+  /// Before PlanPhysical: the node carries relational properties.
+  kUnplaced,
+  /// Several tasks, multiple drivers per task.
+  kDistributed,
+  /// One task with several drivers.
+  kSingleTask,
+  /// Several tasks with one driver each.
+  kOneDriverPerTask,
+  /// One task with one driver.
+  kSingleThread,
+};
+
+AXIOM_DECLARE_ENUM_NAME(Placement);
+
 class Node;
 class NodeVisitor;
 class NodeVisitorContext;
@@ -180,9 +198,14 @@ class Node : public PlanObject {
     return std::holds_alternative<PhysicalProperties>(properties_);
   }
 
-  /// Physical properties of this node's output: per-driver local ordering /
+  /// Physical properties of this node's output: per-driver ordering /
   /// grouping, distribution, and uniqueness at global or driver scope. Derived
   /// from the inputs at construction and immutable. Requires `placed()`.
+  ///
+  /// Placement does not change the relation a subtree computes, so a placed
+  /// node states at global scope every unique key its relational counterpart
+  /// states. A node that exists only once placed, such as an `Exchange` or a
+  /// partial aggregation, has no counterpart.
   const PhysicalProperties& physicalProperties() const;
 
   /// Facts about the relation this node computes, derived from the inputs at
@@ -291,9 +314,8 @@ class Scan : public Node {
     /// execution properties.
     const connector::PartitionType* groupedPartitionType{nullptr};
 
-    /// True when PlanPhysical placed this scan (see `Node::placed()`). Part of
-    /// the scan's identity.
-    bool placed{false};
+    /// Where PlanPhysical placed this scan. Part of the scan's identity.
+    Placement placement{Placement::kUnplaced};
   };
 
   /// Transparent hasher for interning `Scan`s by identity.
@@ -328,6 +350,11 @@ class Scan : public Node {
     return groupedPartitionType_;
   }
 
+  /// See `Key::placement`.
+  Placement placement() const {
+    return placement_;
+  }
+
   /// The bucketing of this scan's table that a plan can exploit, expressed over
   /// the columns this scan outputs. Returns an unspecified partitioning when
   /// the table carries no bucketing, when a bucketing column is not among the
@@ -357,6 +384,7 @@ class Scan : public Node {
   const BaseTableCP baseTable_;
   const TableAccessHandle* const scanHandle_;
   const connector::PartitionType* const groupedPartitionType_;
+  const Placement placement_;
 };
 
 using ScanCP = const Scan*;
@@ -1079,9 +1107,8 @@ class Values : public Node {
     /// output column — Builder::makeValues fills identity for the emit-all
     /// case.
     QGVector<velox::column_index_t> channels;
-    /// True when PlanPhysical placed this node (see `Node::placed()`). Part of
-    /// its identity.
-    bool placed{false};
+    /// Where PlanPhysical placed this node. Part of its identity.
+    Placement placement{Placement::kUnplaced};
   };
 
   /// Transparent hasher for interning `Values`s by identity.
@@ -1114,6 +1141,11 @@ class Values : public Node {
     return channels_;
   }
 
+  /// See `Key::placement`.
+  Placement placement() const {
+    return placement_;
+  }
+
   /// Number of rows this produces, whether they are held as folded row
   /// `Variant`s or by the logical node.
   size_t cardinality() const;
@@ -1144,6 +1176,7 @@ class Values : public Node {
   const logical_plan::ValuesNode* const source_;
   const velox::Variant* const rows_;
   const QGVector<velox::column_index_t> channels_;
+  const Placement placement_;
 };
 
 using ValuesCP = const Values*;
@@ -1452,18 +1485,33 @@ class Join : public Node {
     return sourceColumns_;
   }
 
-  /// Which of a join's inputs pass their rows through unchanged.
-  struct PreservedSides {
+  /// A flag for each of a join's inputs.
+  struct Sides {
     bool left{false};
     bool right{false};
   };
 
-  /// Returns which inputs a join of `joinType` passes through unchanged. Such
-  /// a row reaches the output as itself or not at all: the join may drop it --
-  /// a semi join keeps only matching rows, an anti join only non-matching ones
-  /// -- but it never nulls the row's columns and never invents a row the input
-  /// did not have.
-  static PreservedSides preservedSides(velox::core::JoinType joinType);
+  /// Returns the inputs whose rows reach the output unchanged. The join may
+  /// drop such a row, but it never nulls its columns or invents one.
+  ///   - Inner: both inputs.
+  ///   - Left, left semi, anti and their counting forms: the left input.
+  ///   - Right, right semi and right anti: the right input.
+  ///   - Full: neither.
+  static Sides preservedSides(velox::core::JoinType joinType);
+
+  /// Returns the inputs whose unique keys hold for the join's output: each row
+  /// of the input appears at most once, and no other output row carries its
+  /// columns. An input qualifies when:
+  ///   - the other input has at most one row per join key: in an inner join,
+  ///     or for the kept input of a left or right join;
+  ///   - or the join emits only that input's rows: semi and anti joins.
+  /// Full and counting joins qualify neither input.
+  static Sides emittedOnceSides(
+      velox::core::JoinType joinType,
+      NodeCP left,
+      NodeCP right,
+      const ExprVector& leftKeys,
+      const ExprVector& rightKeys);
 
   /// Returns whether a row holding a NULL key can match: in a NULL-aware
   /// semi or anti join, or one that treats NULL keys as equal. An equality
@@ -2414,6 +2462,10 @@ using EnforceDistinctCP = const EnforceDistinct*;
 ///     `kPartitioned` exchange.
 ///   - Every key in `partitioning.keys` is a `Column`.
 ///   - Every key in `partitioning.orderKeys` is a `Column`.
+///   - `placement` is what `placementAfter` returns for `input` and
+///     `partitioning`.
+///   - A gather's `input` is not already gathered at the exchange's scope.
+///   - A global exchange's `input` is not broadcast: its copies would merge.
 ///
 /// For example, a driver hash exchange co-locates equal keys before a local
 /// aggregate.
@@ -2424,6 +2476,8 @@ class Exchange : public Node {
     NodeCP input;
     /// Partitioning imposed on the output by this exchange.
     Partitioning partitioning;
+    /// How the rows after this exchange run; see `placementAfter`.
+    Placement placement{Placement::kUnplaced};
   };
 
   /// Transparent hasher for interning `Exchange`s by identity.
@@ -2451,6 +2505,23 @@ class Exchange : public Node {
     return partitioning_;
   }
 
+  /// See `Key::placement`.
+  Placement placement() const {
+    return placement_;
+  }
+
+  /// Returns how the rows after an exchange of 'input' by 'partitioning' run.
+  /// 'oneDriverPerTask' says whether the stage runs one driver per task.
+  /// A global exchange decides the tasks: a gather runs on one task, any other
+  /// partitioning on several; it takes the drivers from 'oneDriverPerTask'. A
+  /// driver exchange keeps its input's tasks, one when the input is gathered,
+  /// and decides the drivers: a gather runs on one. A driver exchange requires
+  /// a stage with several drivers per task.
+  static Placement placementAfter(
+      NodeCP input,
+      const Partitioning& partitioning,
+      bool oneDriverPerTask);
+
   std::span<const NodeCP> inputs() const override {
     return {&input_, 1};
   }
@@ -2465,6 +2536,7 @@ class Exchange : public Node {
  private:
   const NodeCP input_;
   const Partitioning partitioning_;
+  const Placement placement_;
 };
 
 using ExchangeCP = const Exchange*;
@@ -2589,9 +2661,8 @@ class WorkingTable : public Node {
     /// when the loop runs on one task, hash-partitioned in a loop partitioned
     /// on its state's columns, unspecified otherwise. Set by physical planning.
     Partitioning partitioning;
-    /// True when PlanPhysical placed this read (see `Node::placed()`). Part of
-    /// its identity.
-    bool placed{false};
+    /// Where PlanPhysical placed this read. Part of its identity.
+    Placement placement{Placement::kUnplaced};
   };
 
   /// Transparent hasher for interning `WorkingTable`s by identity.
@@ -2632,6 +2703,11 @@ class WorkingTable : public Node {
     return partitioning_;
   }
 
+  /// See `Key::placement`.
+  Placement placement() const {
+    return placement_;
+  }
+
   /// Invokes 'visit' for each read of state 'name' under 'node'.
   static void forEachRead(
       NodeCP node,
@@ -2657,6 +2733,7 @@ class WorkingTable : public Node {
   const ColumnVector stateColumns_;
   const WorkingTableReadMode readMode_;
   const Partitioning partitioning_;
+  const Placement placement_;
 };
 
 using WorkingTableCP = const WorkingTable*;
@@ -3015,3 +3092,4 @@ using RepeatCP = const Repeat*;
 AXIOM_ENUM_FORMATTER(facebook::axiom::optimizer::v2::NodeType);
 AXIOM_ENUM_FORMATTER(facebook::axiom::optimizer::v2::WorkingTableReadMode);
 AXIOM_ENUM_FORMATTER(facebook::axiom::optimizer::v2::FixedPointMode);
+AXIOM_ENUM_FORMATTER(facebook::axiom::optimizer::v2::Placement);

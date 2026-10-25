@@ -110,10 +110,11 @@ using EquivalenceP = Equivalence*;
 /// Represents a literal.
 class Literal : public Expr {
  public:
-  Literal(const Value& value, const velox::Variant* literal)
-      : Expr(PlanType::kLiteralExpr, value), literal_(literal) {
-    VELOX_CHECK_NOT_NULL(literal_);
-  }
+  /// Takes the literal's statistics from 'value' and completes them from the
+  /// literal itself: a NULL literal is all nulls; any other has no nulls, a
+  /// primitive one is its own min and max, and a boolean one is all true or
+  /// all false.
+  Literal(const Value& value, const velox::Variant* literal);
 
   const velox::Variant& literal() const {
     return *literal_;

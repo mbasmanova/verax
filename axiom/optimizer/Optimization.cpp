@@ -3958,13 +3958,8 @@ ExprCP Optimization::tryFoldConstant(ExprCP expr) {
     return nullptr;
   }
 
-  Value value(toType(type), 1);
-  auto* registered = registerVariant(std::move(variant));
-  if (type->isPrimitiveType()) {
-    value.min = registered;
-    value.max = registered;
-  }
-  return make<Literal>(value, registered);
+  return make<Literal>(
+      Value(toType(type), 1), registerVariant(std::move(variant)));
 }
 
 velox::Variant Optimization::evaluate(ExprCP expr) {

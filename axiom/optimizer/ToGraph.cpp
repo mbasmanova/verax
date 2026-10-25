@@ -1157,19 +1157,7 @@ ExprCP ToGraph::makeConstant(const lp::ConstantExpr& constant) {
   // temporary, e.g. the null constant built by makeNullConstant).
   const auto* variant = registerVariant(*constant.value());
 
-  Value value(type, 1);
-  if (variant->isNull()) {
-    value.nullFraction = 1.0;
-  } else {
-    value.nullFraction = 0.0;
-    value.nullable = false;
-    if (type->isPrimitiveType()) {
-      value.min = variant;
-      value.max = variant;
-    }
-  }
-
-  auto* literal = make<Literal>(value, variant);
+  auto* literal = make<Literal>(Value(type, 1), variant);
   constantDedup_.insert(literal);
   return literal;
 }

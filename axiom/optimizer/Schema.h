@@ -79,15 +79,15 @@ struct Value {
 
   TypeCP type;
 
-  /// Minimum and maximum values. Applies to orderable types (integers, floats,
-  /// dates, timestamps). Not set for booleans, strings, or complex types.
+  /// Minimum and maximum values. Applies to primitive types; not set for
+  /// complex types.
   /// nullptr means no bound known. Otherwise points to a Variant with an
   /// actual value — never a null-valued Variant, since NULL is not a value
   /// that bounds a range.
   VariantCP min{nullptr};
   VariantCP max{nullptr};
 
-  /// Count of distinct values. Is not exact and is used for estimating
+  /// Count of distinct non-null values. Is not exact and is used for estimating
   /// cardinalities of group bys or joins. nullopt means the NDV is unknown (no
   /// statistic available); callers must not silently treat unknown as a value.
   std::optional<float> cardinality;

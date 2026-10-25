@@ -30,7 +30,7 @@
 /// / shuffle-cost queries live alongside the memo that consumes them.
 ///
 /// The model splits properties by how they behave under distribution:
-///   - per-driver local: ordering and grouping (`LocalProperty`),
+///   - per-driver local: ordering and grouping (`DriverOrder`),
 ///   - distribution: two independent partitioning slots, global and driver
 ///     (`Partitioning` with a `PropertyScope`),
 ///   - relation-level: uniqueness.
@@ -45,7 +45,7 @@ namespace facebook::axiom::optimizer::v2 {
 ///     partitioned does not imply driver partitioned (a remote hash exchange
 ///     feeds drivers round-robin), so both are tracked.
 ///   - Uniqueness is a *lattice*: global uniqueness implies driver (per-driver)
-///     uniqueness but not the reverse, so a key-set stores the single widest
+///     uniqueness but not the reverse, so a key is kept only at the widest
 ///     scope at which it holds.
 enum class PropertyScope : uint8_t {
   kGlobal,
@@ -129,6 +129,16 @@ struct Partitioning {
 
   bool is(PartitionKind other) const {
     return kind == other;
+  }
+
+  /// True for a partitioning across tasks.
+  bool isGlobal() const {
+    return scope == PropertyScope::kGlobal;
+  }
+
+  /// True for a partitioning across the drivers of a task.
+  bool isDriver() const {
+    return scope == PropertyScope::kDriver;
   }
 
   /// Returns the number of tasks in the stage whose rows have this
@@ -234,8 +244,8 @@ struct Partitioning {
       const connector::PartitionType* right);
 };
 
-/// Kind of a per-driver local property.
-enum class LocalPropertyKind : uint8_t {
+/// Kind of a driver order entry.
+enum class DriverOrderKind : uint8_t {
   /// Rows with equal `columns` are contiguous (not necessarily ordered) within
   /// a driver. Equal keys may occur on multiple drivers.
   kGrouped,
@@ -245,72 +255,71 @@ enum class LocalPropertyKind : uint8_t {
   kSorted,
 };
 
-AXIOM_DECLARE_ENUM_NAME(LocalPropertyKind);
+AXIOM_DECLARE_ENUM_NAME(DriverOrderKind);
 
-/// One entry in a relation's ordered list of per-driver local properties. The
-/// list order captures nesting: `[Grouped(P), Sorted(o1, o2)]` means grouped by
-/// the set `P`, and within each group ordered by `o1` then `o2`.
+/// One entry of a relation's driver order: how each driver's stream is grouped
+/// or sorted. The list order captures nesting: `[Grouped(P), Sorted(o1, o2)]`
+/// means grouped by the set `P`, and within each group ordered by `o1` then
+/// `o2`.
 ///
 /// A `kGrouped` entry uses `columns` alone (the grouped set; order among its
 /// members is irrelevant) and leaves `orders` empty. A `kSorted` entry uses
 /// both in parallel: `columns` are the sort keys outermost first, and
 /// `orders[i]` is the direction of `columns[i]`.
 ///
-/// Local properties describe each driver's stream on its own and say nothing
+/// Driver order describes each driver's stream on its own and says nothing
 /// about which driver a row is on; co-location comes from partitioning and
 /// global uniqueness (see `PhysicalProperties::coLocates`). Equality is
 /// grouping equality: NULL equals NULL.
-struct LocalProperty {
-  LocalPropertyKind kind{LocalPropertyKind::kGrouped};
+struct DriverOrder {
+  DriverOrderKind kind{DriverOrderKind::kGrouped};
   ColumnVector columns;
   OrderTypeVector orders;
 };
 
-/// A relation's per-driver local properties, outermost first.
-using LocalPropertyVector = QGVector<LocalProperty>;
-
-/// A set of columns that is unique across the relation — i.e., functionally
-/// determines the row — at `scope`. `columns` is a set (a `PlanObjectSet`) so
-/// consumers can test containment ("is some unique key-set ⊆ the columns I
-/// care about?") directly. Equality is grouping equality: NULL equals NULL, so
-/// at most one row has a NULL key.
-struct UniqueKeySet {
-  PlanObjectSet columns;
-  PropertyScope scope{PropertyScope::kGlobal};
-};
-
-/// Unique key-sets of a relation, each at its own scope.
-using UniqueKeySetVector = QGVector<UniqueKeySet>;
+/// A relation's driver order, outermost first.
+using DriverOrderVector = QGVector<DriverOrder>;
 
 /// The physical properties of one relation — the output of per-operator
 /// derivation and the value the property-aware memo compares. Bundles the three
 /// property categories.
 ///
-/// The two partitioning slots are independent (see `PropertyScope`):
+/// Each property comes once per scope (see `PropertyScope`):
 /// `globalPartition.scope == kGlobal` and `driverPartition.scope == kDriver`.
+///
+/// A unique key is a set of columns that determines the row: no two rows agree
+/// on all of them, with NULL equal to NULL, so at most one row has a NULL key.
+/// The empty set means at most one row.
 struct PhysicalProperties {
-  /// Partitioning across tasks; set by a remote exchange.
+  /// How rows are spread across tasks.
   Partitioning globalPartition{.scope = PropertyScope::kGlobal};
 
-  /// Partitioning across drivers within a task; set by a local exchange.
+  /// How each task's rows are spread across its drivers.
   Partitioning driverPartition{.scope = PropertyScope::kDriver};
 
   /// Per-driver ordering and grouping, outermost first.
-  LocalPropertyVector local;
+  DriverOrderVector driverOrder;
 
-  /// Unique key-sets, relation-level, each scope-tagged.
-  UniqueKeySetVector unique;
+  /// Unique keys across the relation. A broadcast relation keeps them: each
+  /// task holds a full copy, unique within the copy.
+  QGVector<PlanObjectSet> globalUnique;
+
+  /// Keys unique within each driver but not across the relation. A global key
+  /// is unique within each driver too, and is not repeated here.
+  QGVector<PlanObjectSet> driverUnique;
 
   /// Returns true when the partitioning at `scope` or global uniqueness
   /// guarantees equal `keys` occur on one task (`kGlobal`) or one driver
   /// (`kDriver`). Empty `keys` asks whether all rows are on one task or driver.
+  /// A broadcast puts a copy of every row on every task, so global uniqueness
+  /// does not place a key on one task.
   bool coLocates(PropertyScope scope, const ExprVector& keys) const;
 
   /// Checks the invariant that these properties are expressed over the node's
   /// own `outputColumns`. A partitioning's keys and merge order may be computed
   /// expressions (the partition function's input), but every column they depend
   /// on must be an output column, so the partitioning is evaluable here.
-  /// Local-property columns and unique key-sets must themselves be output
+  /// Local-property columns and unique keys must themselves be output
   /// columns. Fails (`VELOX_CHECK`) on violation. Called by the `Node` base
   /// constructor.
   void checkReferencesColumns(const PlanObjectSet& outputColumns) const;

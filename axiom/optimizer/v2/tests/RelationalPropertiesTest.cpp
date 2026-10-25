@@ -155,6 +155,13 @@ TEST_F(RelationalPropertiesTest, join) {
        "RIGHT JOIN (SELECT c, d, count(*) AS n FROM u GROUP BY c, d) u "
        "ON t.a = u.c + 1",
        {{{"c", "d"}}}},
+      // A join key that is not a column does not hide the other side's
+      // unique key.
+      {"SELECT t.a, t.b, u.n "
+       "FROM (SELECT DISTINCT a, b FROM t) t "
+       "LEFT JOIN (SELECT c, count(*) AS n FROM u GROUP BY c) u "
+       "ON t.a = u.c AND t.b = u.n + 1",
+       {{{"a", "b"}}}},
       // The other side may repeat a join key.
       {"SELECT t.a, u.d "
        "FROM (SELECT DISTINCT a FROM t) t "
