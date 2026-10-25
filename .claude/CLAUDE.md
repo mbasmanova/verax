@@ -28,6 +28,8 @@ tests next to related existing tests, not at the end of the file. Group
 tests by topic (e.g., place `tryCast` next to `types`, `notBetween` next
 to `ifClause` which uses `between`).
 
+Test comments should describe **what behavior the test verifies**, not the history that led to writing it or how the implementation happens to work today. The bug story belongs in the commit message and diff/PR description; don't duplicate it into the test code.
+
 A new case of a behavior that already has a test extends that test. A new
 stat, field or variant goes into the existing test, which then asserts all of
 the behavior's outputs, including the new one.
@@ -371,6 +373,16 @@ its test file already has.
 Copies drift apart. A drifted copy of a rule in production code is a
 wrong-results bug, and a drifted copy in a test checks something production
 no longer does.
+
+### Copying a pattern without judging it
+
+An existing instance of a pattern is not a reason to repeat it. Before copying
+one, ask whether it is a good pattern. Compatibility shims, fallbacks and
+workarounds are usually one-offs. One may have been added for a reason
+particular to its site, or added without much thought. Its reason may also be
+long gone, leaving the pattern in place. Start by working out how your code can
+do without the pattern. Copy it only when you cannot, and then justify your
+instance on its own terms. Another instance is never the justification.
 
 ### One-letter and abbreviated variable names
 
