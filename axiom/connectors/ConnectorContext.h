@@ -39,12 +39,12 @@ class ConnectorContext;
 using ConnectorContextPtr = std::shared_ptr<ConnectorContext>;
 
 /// A per-query factory and cache for `ConnectorSession`, parameterized by a
-/// properties map and a writer provider. Also holds the registry of catalogs
-/// the query sees: the one the application passed, or the process-wide registry
-/// if it passed none. `sessionFor()` slices the properties by connector id,
-/// asks the provider for that id's writer, and builds the session once. The
-/// application makes one when a query begins, drops it when the query is
-/// finished with, and gives every component session of that query the same one.
+/// properties map and a writer provider. Also refers to the registry of
+/// catalogs the query sees, which the application owns. `sessionFor()` slices
+/// the properties by connector id, asks the provider for that id's writer, and
+/// builds the session once. The application makes one when a query begins,
+/// drops it when the query is finished with, and gives every component session
+/// of that query the same one.
 ///
 /// A component is handed its property slice and writer directly
 /// (`BaseSession(context, stats.writerFor(kOptimizer), properties)`) while a
@@ -53,11 +53,13 @@ using ConnectorContextPtr = std::shared_ptr<ConnectorContext>;
 ///
 /// Example:
 ///   auto context = std::make_shared<ConnectorContext>(
-///       queryId, user, connectorProperties, statWriterProvider);
+///       queryId, user, connectorProperties, statWriterProvider,
+///       metadataRegistry);
 ///   metadata->beginWrite(context->sessionFor(connectorId), ...);
 ///
 /// Invariants:
 ///   - `statWriterProvider` is non-empty.
+///   - `metadataRegistry` outlives this context.
 ///   - One session per connector id, and the same one for the life of this
 ///     context.
 class ConnectorContext {
@@ -67,8 +69,7 @@ class ConnectorContext {
       std::string user,
       ConnectorProperties properties,
       StatWriterProvider statWriterProvider,
-      std::shared_ptr<const ConnectorMetadataRegistry::Registry>
-          metadataRegistry = nullptr);
+      const ConnectorMetadataRegistry::Registry& metadataRegistry);
 
   ConnectorContext(const ConnectorContext&) = delete;
   ConnectorContext& operator=(const ConnectorContext&) = delete;
@@ -89,7 +90,7 @@ class ConnectorContext {
 
   /// Returns the registry this query looks up connector metadata in.
   const ConnectorMetadataRegistry::Registry& metadataRegistry() const {
-    return *metadataRegistry_;
+    return metadataRegistry_;
   }
 
   /// Returns 'connectorId's session, made on first use. Concurrent callers get
@@ -115,8 +116,7 @@ class ConnectorContext {
   const std::string user_;
   const ConnectorProperties properties_;
   const StatWriterProvider statWriterProvider_;
-  const std::shared_ptr<const ConnectorMetadataRegistry::Registry>
-      metadataRegistry_;
+  const ConnectorMetadataRegistry::Registry& metadataRegistry_;
   // The lock guards the map alone; a session is built under its entry's flag.
   folly::Synchronized<folly::F14FastMap<std::string, std::shared_ptr<Entry>>>
       sessions_;

@@ -43,7 +43,8 @@ ConnectorContextPtr makeContext(
         ++*writerCalls;
         return std::shared_ptr<velox::BaseRuntimeStatWriter>(
             &writer, [](auto*) {});
-      });
+      },
+      ConnectorMetadataRegistry::global());
 }
 
 // Every caller in a query reaches a connector through one session.
@@ -133,7 +134,8 @@ TEST(ConnectorContextTest, sessionIsBuiltAfterAFailedAttempt) {
         }
         return std::shared_ptr<velox::BaseRuntimeStatWriter>(
             &writer, [](auto*) {});
-      });
+      },
+      ConnectorMetadataRegistry::global());
 
   VELOX_ASSERT_THROW(context->sessionFor("a"), "Writer unavailable");
 
@@ -143,7 +145,8 @@ TEST(ConnectorContextTest, sessionIsBuiltAfterAFailedAttempt) {
 // A context without a writer provider has no way to wire a session.
 TEST(ConnectorContextTest, contextRequiresAWriterProvider) {
   VELOX_ASSERT_THROW(
-      ConnectorContext("q1", "user", {}, nullptr),
+      ConnectorContext(
+          "q1", "user", {}, nullptr, ConnectorMetadataRegistry::global()),
       "requires a stat writer provider");
 }
 
@@ -155,26 +158,19 @@ TEST(ConnectorContextTest, nullWriterFromProviderFails) {
       ConnectorProperties{},
       [](std::string_view) -> std::shared_ptr<velox::BaseRuntimeStatWriter> {
         return nullptr;
-      });
+      },
+      ConnectorMetadataRegistry::global());
   VELOX_ASSERT_THROW(
       context->sessionFor("a"), "Stat writer provider returned null");
 }
 
-// A context holds the registry the application passed.
-TEST(ConnectorContextTest, holdsItsRegistry) {
+// A context returns the registry the application passed.
+TEST(ConnectorContextTest, metadataRegistry) {
   auto registry = ConnectorMetadataRegistry::create();
   ConnectorContext context(
-      "q1", "user", {}, ConnectorContext::noopStatWriterProvider(), registry);
+      "q1", "user", {}, ConnectorContext::noopStatWriterProvider(), *registry);
 
   EXPECT_EQ(&context.metadataRegistry(), registry.get());
-}
-
-// A context made without a registry holds the process-wide one.
-TEST(ConnectorContextTest, defaultsToProcessWideRegistry) {
-  ConnectorContext context(
-      "q1", "user", {}, ConnectorContext::noopStatWriterProvider());
-
-  EXPECT_EQ(&context.metadataRegistry(), &ConnectorMetadataRegistry::global());
 }
 
 } // namespace

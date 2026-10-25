@@ -1924,7 +1924,8 @@ connector::ConnectorContextPtr SqlQueryRunner::makeConnectorContext(
       std::string(queryId),
       user_,
       collectConnectorProperties(*sessionConfig_),
-      options.connectorStatWriterProvider);
+      options.connectorStatWriterProvider,
+      ConnectorMetadataRegistry::global());
 }
 
 connector::ConnectorSessionPtr SqlQueryRunner::makeConnectorSession(

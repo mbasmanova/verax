@@ -100,6 +100,16 @@ connector::StatWriterProvider QueryTestBase::connectorStatWriterProvider() {
   };
 }
 
+connector::ConnectorContextPtr QueryTestBase::makeConnectorContext(
+    std::string queryId) {
+  return std::make_shared<connector::ConnectorContext>(
+      std::move(queryId),
+      "test",
+      connectorSessionProperties_,
+      connectorStatWriterProvider(),
+      connector::ConnectorMetadataRegistry::global());
+}
+
 void QueryTestBase::configureTestConnector() {
   testConnector_->addTpchTables();
 }
@@ -248,11 +258,7 @@ PlanCost QueryTestBase::optimizationCost(
       queryCtx.get(), optimizerPool_.get());
   connector::SchemaResolver schemaResolver{
       connector::ConnectorMetadataRegistry::global()};
-  auto connectorContext = std::make_shared<connector::ConnectorContext>(
-      queryCtx->queryId(),
-      "test",
-      connectorSessionProperties_,
-      connectorStatWriterProvider());
+  auto connectorContext = makeConnectorContext(queryCtx->queryId());
   Optimization opt(
       makeOptimizerSession(
           connectorContext,
@@ -290,11 +296,7 @@ void QueryTestBase::verifyOptimization(
       connector::ConnectorMetadataRegistry::global()};
   VeloxHistory history;
 
-  auto connectorContext = std::make_shared<connector::ConnectorContext>(
-      veloxQueryCtx->queryId(),
-      "test",
-      connectorSessionProperties_,
-      connectorStatWriterProvider());
+  auto connectorContext = makeConnectorContext(veloxQueryCtx->queryId());
   Optimization optimization(
       makeOptimizerSession(
           connectorContext,
@@ -332,11 +334,7 @@ void QueryTestBase::verifyOptimization(
       veloxQueryCtx.get(), optimizerPool_.get());
   connector::SchemaResolver schemaResolver{
       connector::ConnectorMetadataRegistry::global()};
-  auto connectorContext = std::make_shared<connector::ConnectorContext>(
-      veloxQueryCtx->queryId(),
-      "test",
-      connectorSessionProperties_,
-      connectorStatWriterProvider());
+  auto connectorContext = makeConnectorContext(veloxQueryCtx->queryId());
   auto session = makeOptimizerSession(
       connectorContext,
       functionRegistry_,
@@ -405,11 +403,7 @@ optimizer::PlanAndStats QueryTestBase::planVelox(
     }
   };
 
-  auto connectorContext = std::make_shared<connector::ConnectorContext>(
-      queryCtx->queryId(),
-      "test",
-      connectorSessionProperties_,
-      connectorStatWriterProvider());
+  auto connectorContext = makeConnectorContext(queryCtx->queryId());
   auto session = makeOptimizerSession(
       connectorContext,
       functionRegistry_,

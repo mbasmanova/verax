@@ -402,6 +402,10 @@ class QueryTestBase : public velox::exec::test::HiveConnectorTestBase {
   connector::StatWriterProvider connectorStatWriterProvider();
 
  private:
+  // Returns a context for 'queryId' with this fixture's connector session
+  // properties and connector stat writer.
+  connector::ConnectorContextPtr makeConnectorContext(std::string queryId);
+
   // Transposes 'rows' into 'numColumns' flat vectors.
   template <typename T>
   std::vector<velox::VectorPtr> makeColumns(

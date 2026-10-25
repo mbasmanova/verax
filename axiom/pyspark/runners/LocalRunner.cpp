@@ -92,7 +92,8 @@ std::vector<velox::RowVectorPtr> LocalRunner::execute(
               /*user=*/"pyspark-runner",
               facebook::axiom::connector::ConnectorProperties{},
               facebook::axiom::connector::ConnectorContext::
-                  noopStatWriterProvider()),
+                  noopStatWriterProvider(),
+              facebook::axiom::connector::ConnectorMetadataRegistry::global()),
           std::make_shared<velox::NoopRuntimeStatWriter>(),
           facebook::axiom::runner::Properties{}),
       plan_,

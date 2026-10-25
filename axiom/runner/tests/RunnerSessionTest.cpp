@@ -38,7 +38,8 @@ TEST(RunnerSessionTest, connectorSessionUsesProviderWriter) {
         EXPECT_EQ(connectorId, "a");
         return std::shared_ptr<velox::BaseRuntimeStatWriter>(
             &connectorWriter, [](auto*) {});
-      });
+      },
+      connector::ConnectorMetadataRegistry::global());
 
   RunnerSession session{
       context,
