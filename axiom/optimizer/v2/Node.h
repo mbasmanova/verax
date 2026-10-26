@@ -1420,6 +1420,17 @@ class Join : public Node {
     /// Input columns supplying `outputColumns`, positionally aligned. Empty is
     /// shorthand for `outputColumns` when every output passes through.
     ColumnVector sourceColumns;
+    /// True when the right input is loop-invariant: it reads no state of the
+    /// enclosing loop, so its hash table is built once before the first
+    /// iteration and every iteration probes it. Requires
+    /// `canBuildLoopInvariant`. Set by physical planning.
+    ///
+    /// Stands in for modeling loop-invariant inputs explicitly: the
+    /// `FixedPoint` would list them, and the step would read them through a
+    /// node, as it reads the loop's state through `WorkingTable`. Move to that
+    /// model when a loop-invariant input needs more than a join's build side,
+    /// such as a second reader or a join type other than inner.
+    bool buildIsLoopInvariant{false};
 
     /// Returns the explicit sources, or the outputs for a pass-through schema.
     const ColumnVector& effectiveSourceColumns() const {
@@ -1536,6 +1547,30 @@ class Join : public Node {
   /// 'joinType' while preserving its output: an inner or outer join.
   static bool canSwapInputs(velox::core::JoinType joinType);
 
+  /// Returns the input of a join in a loop's step that can be loop-invariant
+  /// (see `Key::buildIsLoopInvariant`): in an inner join with keys that treats
+  /// no NULL keys as equal, the input that reads no loop state when the other
+  /// one does. `readsState` says which inputs read a loop's state. At most one
+  /// side is set.
+  ///
+  /// Such an input belongs on the build side: built once, it costs nothing per
+  /// iteration, which no orientation by size beats.
+  static Sides loopInvariantSide(
+      velox::core::JoinType joinType,
+      bool hasKeys,
+      bool nullAsValue,
+      Sides readsState);
+
+  /// Returns whether a join can have `Key::buildIsLoopInvariant`: its right
+  /// input is the side `loopInvariantSide` sets, and its right keys are
+  /// distinct columns, as a hash table's keys are.
+  static bool canBuildLoopInvariant(
+      velox::core::JoinType joinType,
+      const ExprVector& rightKeys,
+      bool nullAsValue,
+      NodeCP left,
+      NodeCP right);
+
   /// Returns whether replicating the right input while leaving the left input
   /// partitioned preserves results. Output rows must be tied to individual
   /// left rows, and counting joins are excluded because their build counts
@@ -1607,6 +1642,11 @@ class Join : public Node {
     return nullAsValue_;
   }
 
+  /// See `Key::buildIsLoopInvariant`.
+  bool buildIsLoopInvariant() const {
+    return buildIsLoopInvariant_;
+  }
+
   std::span<const NodeCP> inputs() const override {
     return inputs_;
   }
@@ -1626,6 +1666,7 @@ class Join : public Node {
   const ExprVector filter_;
   const bool nullAware_;
   const bool nullAsValue_;
+  const bool buildIsLoopInvariant_;
   const ColumnVector sourceColumns_;
 };
 
@@ -2800,6 +2841,7 @@ AXIOM_DECLARE_ENUM_NAME(FixedPointMode);
 ///
 /// Requires:
 /// - `anchor`, `step`, and `name` are non-null.
+/// - `outputColumns` is non-empty.
 /// - `sourceColumns` equal `anchor->outputColumns()` by pointer identity.
 /// - `outputColumns` are fresh and positionally type-compatible with
 ///   `sourceColumns`.

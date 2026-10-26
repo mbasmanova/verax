@@ -36,7 +36,9 @@ class PhysicalJoin {
   /// computed by a `Project` on the side that produces it, and 'key.filter' is
   /// rewritten to read that column rather than evaluate the same expression
   /// per pair. Each side's projection outputs only what the join reads, so an
-  /// input column kept solely to feed a key stops below it.
+  /// input column kept solely to feed a key stops below it. In a loop's step,
+  /// marks the build loop-invariant when it can be (see
+  /// `Join::Key::buildIsLoopInvariant`).
   static NodeCP
   makeJoin(Join::Key key, Builder& builder, ExprSimplifier& simplifier);
 

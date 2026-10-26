@@ -58,6 +58,52 @@ void applySampleRate(const BaseTable& baseTable, Estimate& estimate) {
   estimate.cardinality = std::max(1.0f, *estimate.cardinality * fraction);
 }
 
+// Returns 'estimate' over 'to', where 'to[i]' takes the statistics of
+// 'from[i]'.
+Estimate remap(
+    const Estimate& estimate,
+    const ColumnVector& from,
+    const ColumnVector& to) {
+  VELOX_CHECK_EQ(from.size(), to.size());
+  Estimate result;
+  result.cardinality = estimate.cardinality;
+  for (size_t i = 0; i < from.size(); ++i) {
+    result.constraints.insert_or_assign(
+        to[i]->id(), value(estimate.constraints, from[i]));
+  }
+  return result;
+}
+
+// Combines the estimates of the loop's state after each round, the anchor's
+// first, into one that holds for every iteration: the anchor's row count, and
+// each column combined as a union's column is, except its NDV, which is the
+// largest round's since the state holds one round's values. Every round's row
+// count is known and at most the anchor's.
+Estimate combineRounds(
+    const std::vector<Estimate>& rounds,
+    const ColumnVector& columns) {
+  std::vector<std::optional<float>> cardinalities;
+  cardinalities.reserve(rounds.size());
+  for (const Estimate& round : rounds) {
+    cardinalities.push_back(round.cardinality);
+  }
+
+  Estimate result;
+  result.cardinality = rounds.front().cardinality;
+  for (ColumnCP column : columns) {
+    std::vector<const Value*> values;
+    std::optional<float> largestNdv{0.0f};
+    for (const Estimate& round : rounds) {
+      values.push_back(&value(round.constraints, column));
+      largestNdv = maxOf(largestNdv, values.back()->cardinality);
+    }
+    Value combined = UnionConstraints::combine(values, cardinalities);
+    combined.cardinality = largestNdv;
+    result.constraints.insert_or_assign(column->id(), std::move(combined));
+  }
+  return result;
+}
+
 // Enforces the invariant that a column's NDV cannot exceed the row count. Caps
 // each output column's known NDV at 'estimate.cardinality', materializing a
 // constraint for a column that would otherwise fall back to an uncapped
@@ -151,6 +197,9 @@ std::optional<float> keptRowsOfOuterJoin(
 } // namespace
 
 const Estimate& EstimateProvider::estimate(NodeCP node) {
+  if (parent_ != nullptr && node->requiredStates().empty()) {
+    return parent_->estimate(node);
+  }
   auto it = byNode_.find(node);
   if (it != byNode_.end()) {
     return it->second;
@@ -172,6 +221,57 @@ const Estimate& EstimateProvider::estimate(NodeCP node) {
         node->nodeTypeName());
   }
   return byNode_.emplace(node, std::move(result)).first->second;
+}
+
+const Estimate& EstimateProvider::estimateLoopState(
+    const FixedPoint& loop,
+    NodeCP anchor) {
+  constexpr int32_t kNumRounds = 3;
+
+  const ColumnVector& columns = loop.outputColumns();
+  ColumnCP key = columns.front();
+
+  // A parent's copy would describe the loop under another state of an
+  // enclosing loop, so only this provider's counts.
+  if (const auto it = byLoop_.find(key); it != byLoop_.end()) {
+    return it->second;
+  }
+
+  // A state that is unknown, or that has more rows than the anchor after some
+  // round, is unknown, and the remaining rounds are skipped.
+  const auto estimateState = [&]() -> Estimate {
+    std::vector<Estimate> rounds;
+    rounds.push_back(remap(estimate(anchor), anchor->outputColumns(), columns));
+    const std::optional<float> anchorRows = rounds.front().cardinality;
+    if (!anchorRows.has_value()) {
+      return {};
+    }
+    for (int32_t i = 0; i < kNumRounds; ++i) {
+      // The scratch provider holds this round's state and asks this provider
+      // for the rest: a node that reads no state, and the state of an
+      // enclosing loop.
+      EstimateProvider scratch;
+      scratch.parent_ = this;
+      scratch.byLoop_.emplace(key, rounds.back());
+      rounds.push_back(remap(
+          scratch.estimate(loop.step()),
+          loop.step()->outputColumns(),
+          columns));
+      const std::optional<float> rows = rounds.back().cardinality;
+      if (!rows.has_value() || *rows > *anchorRows) {
+        return {};
+      }
+    }
+    return combineRounds(rounds, columns);
+  };
+  return byLoop_.emplace(key, estimateState()).first->second;
+}
+
+const Estimate* EstimateProvider::findLoopState(ColumnCP key) const {
+  if (const auto it = byLoop_.find(key); it != byLoop_.end()) {
+    return &it->second;
+  }
+  return parent_ != nullptr ? parent_->findLoopState(key) : nullptr;
 }
 
 Estimate EstimateProvider::compute(NodeCP node) {
@@ -437,13 +537,14 @@ Estimate EstimateProvider::compute(NodeCP node) {
     }
 
     case NodeType::kFixedPoint: {
-      // Iteration depth is workload-dependent; single-pass sum would
-      // understate it and skew join placement. Keep cardinality unknown so a
-      // join cluster that depends on this estimate is uncostable and falls
-      // back to its written join shape at that boundary.
-      Estimate result;
-      result.cardinality = std::nullopt;
-      return result;
+      const auto* loop = node->as<FixedPoint>();
+      const Estimate& state = estimateLoopState(*loop, loop->anchor());
+      // An appending loop returns every iteration's rows, and the number of
+      // iterations is unknown.
+      if (loop->mode() == FixedPointMode::kAppend) {
+        return {};
+      }
+      return state;
     }
 
     case NodeType::kRepeat: {
@@ -455,10 +556,17 @@ Estimate EstimateProvider::compute(NodeCP node) {
     }
 
     case NodeType::kWorkingTable: {
-      // Per-iteration frontier size is workload-dependent.
-      Estimate result;
-      result.cardinality = std::nullopt;
-      return result;
+      // An accumulated read is unknown: in an appending loop it returns every
+      // iteration's rows.
+      const auto* read = node->as<WorkingTable>();
+      if (read->readMode() == WorkingTableReadMode::kAccumulated) {
+        return {};
+      }
+      const Estimate* state = findLoopState(read->stateColumns().front());
+      if (state == nullptr) {
+        return {};
+      }
+      return remap(*state, read->stateColumns(), read->outputColumns());
     }
 
     case NodeType::kEnforceSingleRow: {

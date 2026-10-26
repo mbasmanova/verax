@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <fmt/format.h>
 #include <gtest/gtest.h>
 #include "axiom/logical_plan/PlanBuilder.h"
 #include "axiom/optimizer/tests/PlanMatcher.h"
@@ -85,27 +86,43 @@ TEST_F(FixedPointTest, joinKeyState) {
           .build());
 }
 
-// A step's join reads the table through a hash table built once for the loop.
+// A step's join reads the table through a hash table built once for the loop,
+// whichever side of the join the query writes the table on, with or without
+// statistics for the table: 'e' has none, 'f' has them.
 TEST_F(FixedPointTest, stepJoin) {
   testConnector_->addTable("e", ROW({"src", "dst"}, BIGINT()));
+  testConnector_->addTable("f", ROW({"src", "dst"}, BIGINT()))
+      ->setStats(
+          1'000,
+          {
+              {"src", {.numDistinct = 1'000}},
+              {"dst", {.numDistinct = 1'000}},
+          });
 
-  auto logicalPlan = parseSelect(
-      "WITH RECURSIVE r(n) AS ("
-      "     SELECT CAST(1 AS BIGINT) "
-      "     UNION ALL "
-      "     SELECT dst FROM r JOIN e ON src = n"
-      ") "
-      "SELECT n FROM r");
-
-  auto matcher =
-      matchFixedPoint(
-          startFixedPoint("r")
-              .outputState(/*append=*/true, matchValues())
-              .hashTableState(matchScan("e"))
-              .plan(
-                  matchDelta("r", {"n"}).stateHashJoin({"n"}).project({"dst"})))
-          .build();
-  AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
+  for (const std::string table : {"e", "f"}) {
+    auto matcher =
+        matchFixedPoint(startFixedPoint("r")
+                            .outputState(/*append=*/true, matchValues())
+                            .hashTableState(matchScan(table))
+                            .plan(matchDelta("r", {"n"})
+                                      .stateHashJoin({"n"})
+                                      .project({"dst"})))
+            .build();
+    for (const auto& join :
+         {fmt::format("r JOIN {}", table), fmt::format("{} JOIN r", table)}) {
+      SCOPED_TRACE(join);
+      auto logicalPlan = parseSelect(
+          fmt::format(
+              "WITH RECURSIVE r(n) AS ("
+              "     SELECT CAST(1 AS BIGINT) "
+              "     UNION ALL "
+              "     SELECT dst FROM {} ON src = n"
+              ") "
+              "SELECT n FROM r",
+              join));
+      AXIOM_ASSERT_PLAN(toSingleNodePlan(logicalPlan), matcher);
+    }
+  }
 }
 
 TEST_F(FixedPointTest, singleDriverStep) {

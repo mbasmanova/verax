@@ -2103,10 +2103,16 @@ Join::Join(Key key, Builder& builder)
       filter_(std::move(key.filter)),
       nullAware_(key.nullAware),
       nullAsValue_(key.nullAsValue),
+      buildIsLoopInvariant_(key.buildIsLoopInvariant),
       sourceColumns_(key.effectiveSourceColumns()) {
   VELOX_CHECK_NOT_NULL(inputs_[0]);
   VELOX_CHECK_NOT_NULL(inputs_[1]);
   VELOX_CHECK_EQ(leftKeys_.size(), rightKeys_.size());
+  VELOX_CHECK(
+      !buildIsLoopInvariant_ ||
+          canBuildLoopInvariant(
+              joinType_, rightKeys_, nullAsValue_, inputs_[0], inputs_[1]),
+      "Join build cannot be loop-invariant");
   VELOX_CHECK_EQ(sourceColumns_.size(), outputColumns().size());
   const PlanObjectSet leftColumns =
       PlanObjectSet::fromObjects(inputs_[0]->outputColumns());
@@ -2417,6 +2423,41 @@ bool Join::canSwapInputs(velox::core::JoinType joinType) {
       joinType == velox::core::JoinType::kFull;
 }
 
+// static
+Join::Sides Join::loopInvariantSide(
+    velox::core::JoinType joinType,
+    bool hasKeys,
+    bool nullAsValue,
+    Sides readsState) {
+  if (joinType == velox::core::JoinType::kInner && hasKeys && !nullAsValue &&
+      readsState.left != readsState.right) {
+    return {.left = !readsState.left, .right = !readsState.right};
+  }
+  return {};
+}
+
+// static
+bool Join::canBuildLoopInvariant(
+    velox::core::JoinType joinType,
+    const ExprVector& rightKeys,
+    bool nullAsValue,
+    NodeCP left,
+    NodeCP right) {
+  if (!loopInvariantSide(
+           joinType,
+           !rightKeys.empty(),
+           nullAsValue,
+           {.left = !left->requiredStates().empty(),
+            .right = !right->requiredStates().empty()})
+           .right) {
+    return false;
+  }
+  folly::F14FastSet<ExprCP> distinct;
+  return std::ranges::all_of(rightKeys, [&](ExprCP key) {
+    return key->is(PlanType::kColumnExpr) && distinct.insert(key).second;
+  });
+}
+
 void Join::Key::swapInputs() {
   VELOX_CHECK(
       Join::canSwapInputs(joinType),
@@ -2682,7 +2723,8 @@ size_t Join::KeyHash::operator()(const Join* node) const {
       node->outputColumns(),
       node->sourceColumns(),
       node->nullAware(),
-      node->nullAsValue());
+      node->nullAsValue(),
+      node->buildIsLoopInvariant());
 }
 
 size_t Join::KeyHash::operator()(const Key& key) const {
@@ -2696,7 +2738,8 @@ size_t Join::KeyHash::operator()(const Key& key) const {
       key.outputColumns,
       key.effectiveSourceColumns(),
       key.nullAware,
-      key.nullAsValue);
+      key.nullAsValue,
+      key.buildIsLoopInvariant);
 }
 
 bool Join::KeyEq::operator()(const Join* left, const Join* right) const {
@@ -2707,6 +2750,7 @@ bool Join::KeyEq::operator()(const Join* left, const Join* right) const {
       left->filter() == right->filter() &&
       left->nullAware() == right->nullAware() &&
       left->nullAsValue() == right->nullAsValue() &&
+      left->buildIsLoopInvariant() == right->buildIsLoopInvariant() &&
       left->outputColumns() == right->outputColumns() &&
       left->sourceColumns() == right->sourceColumns();
 }
@@ -2717,6 +2761,7 @@ bool Join::KeyEq::operator()(const Key& key, const Join* node) const {
       key.rightKeys == node->rightKeys() && key.filter == node->filter() &&
       key.nullAware == node->nullAware() &&
       key.nullAsValue == node->nullAsValue() &&
+      key.buildIsLoopInvariant == node->buildIsLoopInvariant() &&
       key.outputColumns == node->outputColumns() &&
       key.effectiveSourceColumns() == node->sourceColumns();
 }
@@ -4070,6 +4115,8 @@ FixedPoint::FixedPoint(const Key& key)
       mode_(key.mode),
       recursiveNumDrivers_(key.recursiveNumDrivers) {
   VELOX_CHECK_NOT_NULL(name_);
+  VELOX_CHECK(
+      !outputColumns().empty(), "FixedPoint must have an output column");
   VELOX_CHECK_GE(
       maxIterations_, 1, "FixedPoint maxIterations must be at least one");
   VELOX_CHECK(
