@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "axiom/optimizer/EstimateMath.h"
+#include "axiom/optimizer/ExprEstimator.h"
 #include "axiom/optimizer/JoinConstraints.h"
 #include "axiom/optimizer/QueryGraph.h"
 #include "axiom/optimizer/UnionConstraints.h"
@@ -324,14 +325,20 @@ Estimate EstimateProvider::compute(NodeCP node) {
       const auto* aggregate = node->as<Aggregate>();
       const auto& input = estimate(aggregate->input());
       const auto& groupingKeys = aggregate->groupingKeys();
+      // Each grouping key takes the estimate of its expression over the
+      // input's.
+      ConstraintMap expressions = input.constraints;
+      ExprEstimator estimator{expressions};
+      for (ExprCP key : groupingKeys) {
+        estimator.estimate(key);
+      }
       Estimate result;
       if (groupingKeys.empty()) {
         result.cardinality = 1;
       } else {
         result.cardinality = maxOf(
             1.0f,
-            estimateNumGroups(
-                groupingKeys, input.constraints, input.cardinality));
+            estimateNumGroups(groupingKeys, expressions, input.cardinality));
       }
       // An aggregate emits one row per group, so each output column has at most
       // `cardinality` distinct values. Output columns are the grouping keys,
@@ -342,8 +349,7 @@ Estimate EstimateProvider::compute(NodeCP node) {
         if (i < groupingKeys.size()) {
           result.constraints.insert_or_assign(
               outputColumns[i]->id(),
-              groupingKeyValue(
-                  value(input.constraints, groupingKeys[i]), numGroups));
+              groupingKeyValue(value(expressions, groupingKeys[i]), numGroups));
         } else {
           result.constraints.insert_or_assign(
               outputColumns[i]->id(),
@@ -577,8 +583,24 @@ Estimate EstimateProvider::compute(NodeCP node) {
       return result;
     }
 
+    case NodeType::kProject: {
+      // Each output takes the estimate of its expression over the input's.
+      const auto* project = node->as<Project>();
+      const auto& input = estimate(node->inputs()[0]);
+      Estimate result;
+      result.cardinality = input.cardinality;
+      result.constraints = input.constraints;
+      ConstraintMap expressions = input.constraints;
+      ExprEstimator estimator{expressions};
+      for (size_t i = 0; i < project->exprs().size(); ++i) {
+        result.constraints.insert_or_assign(
+            project->outputColumns()[i]->id(),
+            estimator.estimate(project->exprs()[i]));
+      }
+      return result;
+    }
+
     // Cardinality-neutral operators: pass the input's estimate through.
-    case NodeType::kProject:
     case NodeType::kSort:
     case NodeType::kWindow:
     case NodeType::kInference:

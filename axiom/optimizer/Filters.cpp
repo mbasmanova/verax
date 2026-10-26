@@ -18,6 +18,7 @@
 #include <limits>
 
 #include "axiom/optimizer/EstimateMath.h"
+#include "axiom/optimizer/ExprEstimator.h"
 #include "axiom/optimizer/Filters.h"
 #include "axiom/optimizer/FunctionRegistry.h"
 #include "axiom/optimizer/QueryGraph.h"
@@ -119,54 +120,6 @@ const Value& value(const ConstraintMap& constraints, ExprCP expr) {
     return it->second;
   }
   return expr->value();
-}
-
-Value exprConstraint(ExprCP expr, ConstraintMap& constraints, bool update) {
-  // For leaf expressions (Literal and Column), check if already computed
-  // For non-leaf expressions, if update=true, skip the cache lookup and
-  // recompute
-  bool isLeaf =
-      expr->is(PlanType::kLiteralExpr) || expr->is(PlanType::kColumnExpr);
-
-  if (!update || isLeaf) {
-    auto it = constraints.find(expr->id());
-    if (it != constraints.end()) {
-      return it->second;
-    }
-  }
-
-  Value result = expr->value();
-
-  if (expr->is(PlanType::kFieldExpr)) {
-    // For Field, get value from first arg with cardinality from value(first
-    // arg, constraints)
-    auto* field = expr->as<Field>();
-    Value baseValue = exprConstraint(field->base(), constraints, update);
-    result = expr->value();
-    result.cardinality = baseValue.cardinality;
-  } else if (expr->is(PlanType::kCallExpr)) {
-    auto* call = expr->as<Call>();
-
-    VELOX_CHECK(
-        !call->containsFunction(FunctionSet::kAggregate),
-        "Predicate cannot contain an aggregate function call: {}",
-        call->toString());
-
-    // No functionConstraint: get max cardinality from args. Unknown if any
-    // arg's cardinality is unknown.
-    std::optional<float> maxCardinality = 1.0f;
-    for (auto* arg : call->args()) {
-      Value argValue = exprConstraint(arg, constraints, update);
-      maxCardinality = maxOf(maxCardinality, argValue.cardinality);
-    }
-    result = expr->value();
-    result.cardinality = maxCardinality;
-  }
-
-  // Record the result in constraints
-  constraints.insert_or_assign(expr->id(), clampCardinality(result));
-
-  return result;
 }
 
 // Clamps Value's cardinality to type-specific limits.
@@ -274,7 +227,7 @@ struct ExprSelectivityPolicy {
   }
 
   void seed(ExprCP conjunct) const {
-    exprConstraint(conjunct, constraints, /*update=*/true);
+    ExprEstimator(constraints).estimate(conjunct, /*update=*/true);
   }
 
   void refine(ExprCP expr, const Value& value) const {

@@ -16,6 +16,8 @@
 
 #pragma once
 
+#include <span>
+
 #include <folly/CppAttributes.h>
 #include "axiom/connectors/SchemaResolver.h"
 #include "axiom/optimizer/PlanObject.h"
@@ -74,6 +76,22 @@ struct Value {
   /// result without dictionary or other encoding.
   float byteSize() const;
 
+  /// Returns the statistics of child 'index' of 'type' (see 'children'), or
+  /// nullptr when unknown.
+  const Value* child(uint32_t index) const;
+
+  /// Returns the statistics of field 'index' of a row: the field's child
+  /// statistics where known. The row's NDV bounds the field's, since equal rows
+  /// have equal fields.
+  Value field(uint32_t index) const;
+
+  /// Returns 'children' for a value of 'type' whose child i has the statistics
+  /// '*children[i]', or nullptr where unknown. Copies them into the query
+  /// arena.
+  static const Value* const* makeChildren(
+      TypeCP type,
+      std::span<const Value* const> children);
+
   /// Returns a string representation of this Value.
   std::string toString() const;
 
@@ -108,6 +126,13 @@ struct Value {
   /// True if nulls may occur. 'false' means that plans that allow no nulls may
   /// be generated.
   bool nullable{true};
+
+  /// Statistics of the children of an array, map or row, laid out as
+  /// connector::ColumnStatistics::children: an array's elements, a map's keys
+  /// and values, a row's fields, one per child of 'type'. nullptr when no child
+  /// is known; an entry is nullptr when that child is unknown. Allocated in the
+  /// query arena and immutable, so copies of this Value share them.
+  const Value* const* children{nullptr};
 };
 
 /// Describes order in an order by or index.

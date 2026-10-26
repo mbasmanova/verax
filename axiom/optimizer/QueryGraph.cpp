@@ -193,7 +193,7 @@ const std::vector<velox::Variant>* Call::constantInList() const {
     return nullptr;
   }
   const auto* type = args()[1]->value().type;
-  const auto& literal = args()[1]->as<Literal>()->literal();
+  const auto& literal = literalAt(1);
   if (!type->isArray() || literal.isNull() ||
       !type->childAt(0)->equivalent(*args()[0]->value().type)) {
     return nullptr;

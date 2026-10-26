@@ -77,6 +77,26 @@ class EstimateProviderTest : public optimizer::test::QueryTestBase {
     // No column statistics: every NDV of 'u' is unknown.
     testConnector_->addTable("u", velox::ROW({"c", "d"}, velox::BIGINT()))
         ->setStats(1'000, {});
+    // 500 distinct rows 'r'. Field 'x' has 100 values from 0 to 99; field 'y'
+    // has no statistics.
+    testConnector_
+        ->addTable(
+            "v", velox::ROW({"r"}, {velox::ROW({"x", "y"}, velox::BIGINT())}))
+        ->setStats(
+            1'000,
+            {{"r",
+              {
+                  .numDistinct = 500,
+                  .children =
+                      {
+                          {
+                              .min = velox::Variant(int64_t{0}),
+                              .max = velox::Variant(int64_t{99}),
+                              .numDistinct = 100,
+                          },
+                          {},
+                      },
+              }}});
   }
 
   // Same as the overload below, for the plan 'sql' parses to.
@@ -179,6 +199,19 @@ TEST_F(EstimateProviderTest, filter) {
         EXPECT_EQ(c.cardinality, 1);
         AXIOM_ASSERT_RANGE(c, 5, 5);
         EXPECT_EQ(c.nullFraction, 0);
+      });
+}
+
+TEST_F(EstimateProviderTest, projection) {
+  // A comparison has at most two values, whatever the NDVs it compares.
+  verifyEstimate(
+      "SELECT a = b AS c FROM t",
+      10'000,
+      [&](NodeCP root, const Estimate& estimate) {
+        ASSERT_EQ(1, root->outputColumns().size());
+
+        const Value& c = column(root, estimate, "c");
+        EXPECT_EQ(c.cardinality, 2);
       });
 }
 
@@ -602,6 +635,42 @@ TEST_F(EstimateProviderTest, unionAll) {
         EXPECT_EQ(x.cardinality, 1);
         AXIOM_ASSERT_RANGE(x, 5, 5);
         EXPECT_EQ(x.nullFraction, std::nullopt);
+      });
+}
+
+TEST_F(EstimateProviderTest, rowField) {
+  // A field of a row column takes the statistics the connector reports for it.
+  // A field without an NDV has at most the row's.
+  verifyEstimate(
+      "SELECT r.x AS x, r.y AS y FROM v",
+      1'000,
+      [&](NodeCP root, const Estimate& estimate) {
+        ASSERT_EQ(2, root->outputColumns().size());
+
+        const Value& x = column(root, estimate, "x");
+        EXPECT_EQ(x.cardinality, 100);
+        AXIOM_ASSERT_RANGE(x, 0, 99);
+        EXPECT_EQ(x.nullFraction, 0);
+
+        const Value& y = column(root, estimate, "y");
+        EXPECT_EQ(y.cardinality, 500);
+        AXIOM_ASSERT_NORANGE(y);
+      });
+
+  // A field of a constructed row takes the estimate of the expression it was
+  // built from: 'a' after the filter, 100 values from 0 to 99. 100 groups, one
+  // per value of 'a', the largest NDV among the row's fields.
+  verifyEstimate(
+      "SELECT s[1] AS x "
+      "FROM (SELECT ROW(a, b) AS s FROM t WHERE a < 100 GROUP BY 1)",
+      100,
+      [&](NodeCP root, const Estimate& estimate) {
+        ASSERT_EQ(1, root->outputColumns().size());
+
+        const Value& x = column(root, estimate, "x");
+        EXPECT_EQ(x.cardinality, 100);
+        AXIOM_ASSERT_RANGE(x, 0, 99);
+        EXPECT_EQ(x.nullFraction, 0);
       });
 }
 

@@ -24,6 +24,7 @@
 #include "axiom/optimizer/PlanUtils.h"
 #include "velox/connectors/ConnectorRegistry.h"
 
+#include <algorithm>
 #include <numbers>
 
 namespace facebook::axiom::optimizer {
@@ -72,7 +73,44 @@ Value& Value::operator=(const Value& other) {
   nullFraction = other.nullFraction;
   avgSizeInBytes = other.avgSizeInBytes;
   nullable = other.nullable;
+  children = other.children;
   return *this;
+}
+
+const Value* Value::child(uint32_t index) const {
+  VELOX_CHECK_LT(index, type->size());
+  return children != nullptr ? children[index] : nullptr;
+}
+
+Value Value::field(uint32_t index) const {
+  VELOX_CHECK(type->isRow());
+  const Value* known = child(index);
+  Value result = known != nullptr ? *known : Value(type->childAt(index).get());
+  if (!result.cardinality.has_value()) {
+    result.cardinality = cardinality;
+  } else if (cardinality.has_value()) {
+    result.cardinality = std::min(*result.cardinality, *cardinality);
+  }
+  return result;
+}
+
+// static
+const Value* const* Value::makeChildren(
+    TypeCP type,
+    std::span<const Value* const> children) {
+  VELOX_CHECK_EQ(children.size(), type->size());
+  if (std::ranges::none_of(
+          children, [](const Value* child) { return child != nullptr; })) {
+    return nullptr;
+  }
+  auto** result = reinterpret_cast<const Value**>(
+      queryCtx()->allocate(children.size() * sizeof(const Value*)));
+  for (size_t i = 0; i < children.size(); ++i) {
+    result[i] = children[i] == nullptr
+        ? nullptr
+        : new (queryCtx()->allocate(sizeof(Value))) Value(*children[i]);
+  }
+  return result;
 }
 
 float Value::byteSize() const {
@@ -174,6 +212,20 @@ Value Value::fromColumnStatistics(
   value.nullFraction = stats.nullPct / 100.0f;
   value.avgSizeInBytes = stats.avgSizeInBytes;
   value.nullable = !stats.nonNull;
+  // A flat map may report a child per key, which matches no child of 'type'.
+  if (!stats.children.empty() && stats.children.size() == type->size()) {
+    std::vector<Value> childValues;
+    childValues.reserve(type->size());
+    for (uint32_t i = 0; i < type->size(); ++i) {
+      childValues.push_back(
+          fromColumnStatistics(type->childAt(i).get(), stats.children[i]));
+    }
+    std::vector<const Value*> pointers;
+    for (const Value& child : childValues) {
+      pointers.push_back(&child);
+    }
+    value.children = makeChildren(type, pointers);
+  }
   // The connector must report bounds whose kind matches the column type.
   if (value.min != nullptr) {
     VELOX_CHECK_EQ(

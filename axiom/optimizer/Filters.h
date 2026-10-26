@@ -113,15 +113,6 @@ struct Selectivity {
 /// otherwise returns expr->value().
 const Value& value(const ConstraintMap& constraints, ExprCP expr);
 
-/// Derives constraints for an expression based on its type and arguments.
-/// Records the result in constraints keyed on expr->id().
-/// If update is true, recomputes constraints for non-leaf expressions even if
-/// already cached, and stores the updated constraint.
-Value exprConstraint(
-    ExprCP expr,
-    ConstraintMap& constraints,
-    bool update = false);
-
 /// Clamps Value's cardinality to type-specific limits.
 /// BOOLEAN: max 2, TINYINT: max 256, SMALLINT: max 65536.
 Value clampCardinality(const Value& value);
@@ -135,7 +126,7 @@ rangeCardinality(TypeCP type, VariantCP min, VariantCP max);
 /// Computes selectivity for a conjunction of filter expressions.
 ///
 /// Derives constraints for all expressions in the conjuncts and their
-/// sub-expressions (via exprConstraint). Groups literal-bound comparisons and
+/// sub-expressions (via ExprEstimator). Groups literal-bound comparisons and
 /// IN predicates by left-hand side for combined range analysis; evaluates
 /// everything else individually. Combines selectivities using the independence
 /// assumption.
@@ -144,13 +135,13 @@ rangeCardinality(TypeCP type, VariantCP min, VariantCP max);
 /// semantics (e.g., x = 5 narrows x's min/max to 5 and sets NDV to 1).
 ///
 /// The constraint map may be empty or pre-populated on entry. When empty,
-/// exprConstraint seeds each column's Value from expr->value(). When
+/// ExprEstimator seeds each column's Value from expr->value(). When
 /// pre-populated (e.g., with input operator constraints), existing entries are
 /// used as-is for columns already present; new entries are added for columns
 /// and sub-expressions not yet in the map.
 ///
 /// Note: the map is keyed on expr->id() and will contain entries for all
-/// expression nodes visited by exprConstraint (columns, calls, fields), not
+/// expression nodes visited by ExprEstimator (columns, calls, fields), not
 /// just columns. Callers that iterate the map should match entries against
 /// known column IDs.
 std::optional<Selectivity> conjunctsSelectivity(

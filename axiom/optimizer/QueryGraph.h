@@ -412,6 +412,12 @@ class Call : public Expr {
     return args_[index];
   }
 
+  /// Returns the value of argument 'index', which must be a literal.
+  const velox::Variant& literalAt(size_t index) const {
+    VELOX_CHECK(args_[index]->is(PlanType::kLiteralExpr));
+    return args_[index]->as<Literal>()->literal();
+  }
+
   CPSpan<PlanObject> children() const override {
     return {reinterpret_cast<PlanObjectCP const*>(args_.data()), args_.size()};
   }

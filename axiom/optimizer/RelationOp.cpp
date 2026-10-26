@@ -16,6 +16,7 @@
 
 #include <algorithm>
 
+#include "axiom/optimizer/ExprEstimator.h"
 #include "axiom/optimizer/Filters.h"
 #include "axiom/optimizer/JoinConstraints.h"
 #include "axiom/optimizer/Optimization.h"
@@ -1385,7 +1386,7 @@ Project::Project(
   // columns. Only output columns are added to constraints_.
   ConstraintMap inputConstraints = input_->constraints();
   for (size_t i = 0; i < exprs_.size(); ++i) {
-    Value exprValue = exprConstraint(exprs_[i], inputConstraints);
+    Value exprValue = ExprEstimator(inputConstraints).estimate(exprs_[i]);
     constraints_.emplace(columns_[i]->id(), exprValue);
   }
 
