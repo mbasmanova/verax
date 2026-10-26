@@ -625,7 +625,7 @@ ExprCP ExprSimplifier::tryFoldRowField(ExprCP expr) {
     return nullptr;
   }
   // A dereference selects its field by an integer literal.
-  return row->args()[integerValue(&call->args()[1]->as<Literal>()->literal())];
+  return row->args()[integerValue(&call->literalAt(1))];
 }
 
 ExprCP ExprSimplifier::tryExpandRowEquality(ExprCP expr) {

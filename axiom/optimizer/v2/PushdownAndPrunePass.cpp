@@ -357,8 +357,7 @@ bool holdsAtRankOne(
     return false;
   }
 
-  const int64_t bound =
-      integerValue(&comparison->args()[1]->as<Literal>()->literal());
+  const int64_t bound = integerValue(&comparison->literalAt(1));
   if (name == names.equality) {
     return bound == 1;
   }

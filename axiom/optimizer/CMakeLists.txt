@@ -44,6 +44,7 @@ add_library(
   DerivedTablePrinter.cpp
   Domain.cpp
   ExplainIo.cpp
+  ExprEstimator.cpp
   Filters.cpp
   FunctionRegistry.cpp
   JoinConstraints.cpp

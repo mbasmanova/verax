@@ -55,14 +55,12 @@ velox::core::TypedExprPtr dereferenceToTypedExpr(
     const Call* call,
     const std::vector<velox::core::TypedExprPtr>& args) {
   VELOX_CHECK_EQ(call->args().size(), 2);
-  const auto* index = call->args()[1]->as<Literal>();
-  VELOX_CHECK_NOT_NULL(index);
-  VELOX_CHECK_EQ(index->literal().kind(), velox::TypeKind::INTEGER);
+  const auto& index = call->literalAt(1);
+  VELOX_CHECK_EQ(index.kind(), velox::TypeKind::INTEGER);
   return std::make_shared<velox::core::DereferenceTypedExpr>(
       toTypePtr(call->value().type),
       args[0],
-      static_cast<uint32_t>(
-          index->literal().value<velox::TypeKind::INTEGER>()));
+      static_cast<uint32_t>(index.value<velox::TypeKind::INTEGER>()));
 }
 
 // Lowers an IN over constants, '__in(value, <ARRAY literal>)', to

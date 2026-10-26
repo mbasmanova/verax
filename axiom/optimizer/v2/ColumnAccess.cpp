@@ -28,28 +28,28 @@ namespace {
 // A dereference selector is an ordinal by the time it reaches here, so the
 // field name comes from the struct being read.
 // Returns null for a field with no name, which no subfield can address.
-Name fieldNameAt(ExprCP base, const Literal& selector) {
-  const int32_t ordinal = selector.literal().value<velox::TypeKind::INTEGER>();
+Name fieldNameAt(ExprCP base, const velox::Variant& selector) {
+  const int32_t ordinal = selector.value<velox::TypeKind::INTEGER>();
   const auto& name = base->value().type->asRow().nameOf(ordinal);
   return name.empty() ? nullptr : toName(name);
 }
 
 // Fills in a subscript's key, or marks the step as reaching every entry when
 // the key has a type no subfield can name.
-void setKey(Step& step, const Literal& key) {
-  if (key.literal().isNull()) {
+void setKey(Step& step, const velox::Variant& key) {
+  if (key.isNull()) {
     step.allFields = true;
     return;
   }
-  switch (key.literal().kind()) {
+  switch (key.kind()) {
     case velox::TypeKind::VARCHAR:
-      step.field = toName(key.literal().value<velox::TypeKind::VARCHAR>());
+      step.field = toName(key.value<velox::TypeKind::VARCHAR>());
       return;
     case velox::TypeKind::BIGINT:
     case velox::TypeKind::INTEGER:
     case velox::TypeKind::SMALLINT:
     case velox::TypeKind::TINYINT:
-      step.id = integerValue(&key.literal());
+      step.id = integerValue(&key);
       return;
     default:
       step.allFields = true;
@@ -250,9 +250,9 @@ bool ColumnAccess::addPathStep(
 
   Step step;
   if (call->args()[1]->is(PlanType::kLiteralExpr)) {
-    const auto* key = call->args()[1]->as<Literal>();
+    const auto& key = call->literalAt(1);
     if (isDereference) {
-      Name field = fieldNameAt(operand, *key);
+      Name field = fieldNameAt(operand, key);
       if (field == nullptr) {
         // An unnamed field cannot be addressed, so the struct is read whole.
         addWhole(operand);
@@ -261,7 +261,7 @@ bool ColumnAccess::addPathStep(
       step = {.kind = StepKind::kField, .field = field};
     } else {
       step = {.kind = subscriptKind};
-      setKey(step, *key);
+      setKey(step, key);
       // A non-positive array index counts from the end of the array, which no
       // prefix bound can express, and Velox rejects it outright. Reading every
       // element is the only sound answer.
