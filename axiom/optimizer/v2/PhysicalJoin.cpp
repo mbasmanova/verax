@@ -74,6 +74,8 @@ NodeCP PhysicalJoin::makeJoin(
 
   key.left = std::move(left).node();
   key.right = std::move(right).node();
+  key.buildIsLoopInvariant = Join::canBuildLoopInvariant(
+      key.joinType, key.rightKeys, key.nullAsValue, key.left, key.right);
   return builder.make<Join>(std::move(key));
 }
 

@@ -276,7 +276,8 @@ class NodeRewriter {
          node->nullAware(),
          node->nullAsValue(),
          node->outputColumns(),
-         node->sourceColumns()});
+         node->sourceColumns(),
+         node->buildIsLoopInvariant()});
   }
 
   virtual NodeCP rewriteIndexLookupJoin(

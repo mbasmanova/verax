@@ -32,6 +32,7 @@ add_test(
 
 target_link_libraries(
   axiom_optimizer_v2_test
+  axiom_logical_plan_builder
   axiom_optimizer_v2
   axiom_optimizer_tests_query_test_base
   axiom_optimizer_tests_hive_queries_test_base

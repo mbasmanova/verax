@@ -239,6 +239,9 @@ class Printer : public NodeVisitor {
     if (node.nullAware()) {
       details += ", nullAware";
     }
+    if (node.buildIsLoopInvariant()) {
+      details += ", loop-invariant build";
+    }
     details += ']';
     header(ctx, node, details);
     const auto pad = spaces(ctx.indent + 2);

@@ -549,24 +549,64 @@ class Enumerator {
     edgeIndices = graph_.canonicalKeyEdges(std::move(edgeIndices));
     const size_t primary{edgeIndices.front()};
     std::vector<size_t> keyEdges{edgeIndices.begin() + 1, edgeIndices.end()};
-    considerCandidate(
+    considerOrientations(
         leftPlan,
         rightPlan,
         primary,
         velox::core::JoinType::kInner,
         combined,
-        /*reversedAnti=*/false,
-        keyEdges,
-        filterEdges);
-    considerCandidate(
-        rightPlan,
-        leftPlan,
-        primary,
-        velox::core::JoinType::kInner,
-        combined,
-        /*reversedAnti=*/false,
-        keyEdges,
-        filterEdges);
+        std::move(keyEdges),
+        std::move(filterEdges));
+  }
+
+  // Considers joining 'leftPlan' with 'rightPlan' as 'leftJoinType' and, with
+  // the inputs exchanged, as its swapped type. In a loop's step, only the
+  // orientation that builds a loop-invariant input is considered (see
+  // `Join::loopInvariantSide`).
+  void considerOrientations(
+      MemoOpCP leftPlan,
+      MemoOpCP rightPlan,
+      size_t edgeIndex,
+      velox::core::JoinType leftJoinType,
+      RelationSet combined,
+      std::vector<size_t> keyEdges,
+      std::vector<size_t> filterEdges) {
+    const auto& edge = graph_.edges()[edgeIndex];
+    const Join::Sides loopInvariant = Join::loopInvariantSide(
+        leftJoinType,
+        !edge.leftKeys().empty(),
+        edge.nullAsValue(),
+        {.left = readsState(leftPlan->cover()),
+         .right = readsState(rightPlan->cover())});
+    if (!loopInvariant.left) {
+      considerCandidate(
+          leftPlan,
+          rightPlan,
+          edgeIndex,
+          leftJoinType,
+          combined,
+          /*reversedAnti=*/false,
+          keyEdges,
+          filterEdges);
+    }
+    if (!loopInvariant.right) {
+      considerCandidate(
+          rightPlan,
+          leftPlan,
+          edgeIndex,
+          Join::swapType(leftJoinType),
+          combined,
+          /*reversedAnti=*/false,
+          std::move(keyEdges),
+          std::move(filterEdges));
+    }
+  }
+
+  // True when a relation of 'cover' reads a loop's state.
+  bool readsState(RelationSet cover) const {
+    return cover.anyOf([&](int32_t id) {
+      return !graph_.relation(id).node()->requiredStates().empty();
+    });
   }
 
   // Applies the edge crossing this partition: an Unnest expands the side
@@ -701,22 +741,12 @@ class Enumerator {
     // carried unchanged into either orientation.
     const auto leftTypeForSubgraph =
         forward ? edge.joinType() : Join::swapType(edge.joinType());
-    considerCandidate(
+    considerOrientations(
         leftPlan,
         rightPlan,
         edgeIndex,
         leftTypeForSubgraph,
         combined,
-        /*reversedAnti=*/false,
-        keyEdges,
-        filterEdges);
-    considerCandidate(
-        rightPlan,
-        leftPlan,
-        edgeIndex,
-        Join::swapType(leftTypeForSubgraph),
-        combined,
-        /*reversedAnti=*/false,
         std::move(keyEdges),
         std::move(filterEdges));
   }

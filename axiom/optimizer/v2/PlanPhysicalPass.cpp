@@ -808,6 +808,8 @@ class ExchangeProbeRewriter : public NodeRewriter<> {
         join->outputColumns(),
         join->sourceColumns()};
     key.swapInputs();
+    key.buildIsLoopInvariant = Join::canBuildLoopInvariant(
+        key.joinType, key.rightKeys, key.nullAsValue, key.left, key.right);
     return builder().make<Join>(key);
   }
 
@@ -925,6 +927,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
   NodeCP rewriteFixedPoint(const FixedPoint* node, NoContext& context)
       override {
     NodeCP anchor = rewrite(node->anchor(), context);
+    estimateProvider_.estimateLoopState(*node, anchor);
 
     if (numWorkers_ > 1 &&
         (!isRowLocal(node->step()) || node->convergence() != nullptr ||
@@ -1220,10 +1223,12 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
     return *cardinality * std::max<float>(1, byteSize(node->outputColumns()));
   }
 
-  // Chooses the build side of inner, left, and right joins when both inputs
-  // have point estimates. Otherwise keeps the written orientation.
-  // A distributed keyless left or right join instead puts its non-preserved
-  // input on the build side so that input can be broadcast.
+  // Chooses the build side of inner, left, and right joins. In a loop's step,
+  // a loop-invariant input goes on the build side (see
+  // `Join::loopInvariantSide`). Otherwise the smaller input does when both
+  // inputs have point estimates, and the written orientation stays when not. A
+  // distributed keyless left or right join instead puts its non-preserved input
+  // on the build side so that input can be broadcast.
   Join::Key chooseBuildSide(Join::Key join) {
     if (numWorkers_ > 1 && join.leftKeys.empty()) {
       if (join.joinType == velox::core::JoinType::kLeft) {
@@ -1233,6 +1238,20 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
         join.swapInputs();
         return join;
       }
+    }
+
+    const Join::Sides loopInvariant = Join::loopInvariantSide(
+        join.joinType,
+        !join.leftKeys.empty(),
+        join.nullAsValue,
+        {.left = !join.left->requiredStates().empty(),
+         .right = !join.right->requiredStates().empty()});
+    if (loopInvariant.right) {
+      return join;
+    }
+    if (loopInvariant.left) {
+      join.swapInputs();
+      return join;
     }
 
     if (join.joinType != velox::core::JoinType::kInner &&

@@ -18,6 +18,7 @@
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 
+#include "axiom/logical_plan/PlanBuilder.h"
 #include "axiom/optimizer/tests/QueryTestBase.h"
 #include "axiom/optimizer/v2/EstimateProvider.h"
 
@@ -78,20 +79,28 @@ class EstimateProviderTest : public optimizer::test::QueryTestBase {
         ->setStats(1'000, {});
   }
 
-  // Plans 'sql' to just before and just after physical planning, checks that
-  // the plan's root has 'cardinality' rows at both, and calls 'check' with the
-  // root and its estimate at both: an estimate does not depend on placement.
+  // Same as the overload below, for the plan 'sql' parses to.
   void verifyEstimate(
       std::string_view sql,
       std::optional<float> cardinality,
       const std::function<void(NodeCP root, const Estimate& estimate)>& check) {
     SCOPED_TRACE(sql);
+    verifyEstimate(*parseSelect(sql), cardinality, check);
+  }
+
+  // Plans 'plan' to just before and just after physical planning, checks that
+  // the plan's root has 'cardinality' rows at both, and calls 'check' with the
+  // root and its estimate at both: an estimate does not depend on placement.
+  void verifyEstimate(
+      const logical_plan::LogicalPlanNode& plan,
+      std::optional<float> cardinality,
+      const std::function<void(NodeCP root, const Estimate& estimate)>& check) {
     for (const auto pass :
          {Optimizer::Pass::kLowerRepeat, Optimizer::Pass::kPlanPhysical}) {
       SCOPED_TRACE(
           pass == Optimizer::Pass::kLowerRepeat ? "before placement"
                                                 : "after placement");
-      verifyOptimization(*parseSelect(sql), pass, [&](NodeCP root) {
+      verifyOptimization(plan, pass, [&](NodeCP root) {
         EstimateProvider estimateProvider;
         const Estimate& estimate = estimateProvider.estimate(root);
         EXPECT_EQ(estimate.cardinality, cardinality);
@@ -611,7 +620,8 @@ TEST_F(EstimateProviderTest, values) {
 }
 
 TEST_F(EstimateProviderTest, fixedPoint) {
-  // The number of iterations is unknown, so the row count is too.
+  // A loop that appends returns the rows of every iteration. The number of
+  // iterations is unknown, so the row count is too.
   verifyEstimate(
       "WITH RECURSIVE r(n) AS ("
       "  SELECT 1 "
@@ -627,6 +637,61 @@ TEST_F(EstimateProviderTest, fixedPoint) {
         EXPECT_EQ(n.cardinality, std::nullopt);
         AXIOM_ASSERT_NORANGE(n);
         EXPECT_EQ(n.nullFraction, std::nullopt);
+      });
+
+  // A loop that replaces its state returns its state, which the estimate
+  // describes for every iteration.
+  auto context = makeContext();
+  auto anchor = logical_plan::PlanBuilder(context).tableScan("t", {"a", "b"});
+  // A loop that replaces its state, starting with the rows of 't', with what
+  // 'step' computes from it.
+  const auto loop =
+      [&](const std::function<void(logical_plan::PlanBuilder&)>& step) {
+        auto state =
+            logical_plan::PlanBuilder(context).fixedPointState("s", anchor);
+        step(state);
+        return logical_plan::PlanBuilder(anchor)
+            .iterate("s", state, /*numIterations=*/10, /*keyColumns=*/{})
+            .build();
+      };
+
+  // The step keeps half of the rows the first time and all of them after
+  // that, so the state never has more rows than the anchor: it keeps the
+  // anchor's 10'000 rows. Each column keeps the widest bounds and the largest
+  // NDV the state has in any iteration, the anchor's.
+  verifyEstimate(
+      *loop([](auto& state) { state.filter("a < 500"); }),
+      10'000,
+      [&](NodeCP root, const Estimate& estimate) {
+        ASSERT_EQ(2, root->outputColumns().size());
+
+        const Value& a = column(root, estimate, "a");
+        EXPECT_EQ(a.cardinality, 1'000);
+        AXIOM_ASSERT_RANGE(a, 0, 999);
+        EXPECT_EQ(a.nullFraction, 0);
+
+        const Value& b = column(root, estimate, "b");
+        EXPECT_EQ(b.cardinality, 10);
+        AXIOM_ASSERT_NORANGE(b);
+        EXPECT_EQ(b.nullFraction, 0.5f);
+      });
+
+  // Each row of the state matches 10 rows of 't': the state grows, so its
+  // size is unknown.
+  verifyEstimate(
+      *loop([&](auto& state) {
+        state
+            .join(
+                logical_plan::PlanBuilder(context)
+                    .tableScan("t", {"a"})
+                    .project({"a AS k"}),
+                "a = k",
+                logical_plan::JoinType::kInner)
+            .project({"a", "b"});
+      }),
+      std::nullopt,
+      [&](NodeCP root, const Estimate& /*estimate*/) {
+        ASSERT_EQ(2, root->outputColumns().size());
       });
 }
 

@@ -430,9 +430,8 @@ class Emitter {
   velox::core::PlanNodePtr emitMarkDistinct(const MarkDistinct& markDistinct);
   velox::core::PlanNodePtr emitJoin(const Join& join);
 
-  // Inside a fixed point's step, emits an inner equi-join whose build side
-  // reads no recursive state as a probe against a hash table built once for
-  // the whole loop. Returns null if 'join' doesn't qualify.
+  // Emits a join whose build is loop-invariant as a probe against a hash
+  // table built once for the whole loop. Returns null for any other join.
   velox::core::PlanNodePtr emitStateHashJoin(const Join& join);
 
   // Declares a hash table over 'build', emitted once, with rows laid out as
@@ -1400,34 +1399,21 @@ velox::core::PlanNodePtr Emitter::emitMarkDistinct(
 }
 
 velox::core::PlanNodePtr Emitter::emitStateHashJoin(const Join& join) {
-  if (fixedPoint_ == nullptr ||
-      join.joinType() != velox::core::JoinType::kInner ||
-      join.leftKeys().empty() || join.nullAsValue()) {
+  if (!join.buildIsLoopInvariant()) {
     return nullptr;
   }
 
-  // One side must read no recursive state, to be built once.
-  const bool rightBuilds = join.right()->requiredStates().empty();
-  if (!rightBuilds && !join.left()->requiredStates().empty()) {
-    return nullptr;
-  }
-
-  NodeCP probe = rightBuilds ? join.left() : join.right();
-  NodeCP build = rightBuilds ? join.right() : join.left();
-  const auto& probeKeys = rightBuilds ? join.leftKeys() : join.rightKeys();
-  const auto& buildKeys = rightBuilds ? join.rightKeys() : join.leftKeys();
+  NodeCP probe = join.left();
+  NodeCP build = join.right();
+  const auto& probeKeys = join.leftKeys();
+  const auto& buildKeys = join.rightKeys();
 
   // The table's rows are its keys followed by the build side's other columns.
-  // A table's keys are distinct columns, so a join that repeats a build key
-  // doesn't qualify.
   ColumnVector buildColumns;
   folly::F14FastMap<ColumnCP, ExprCP> probeKeyOf;
   for (size_t i = 0; i < buildKeys.size(); ++i) {
-    VELOX_CHECK(buildKeys[i]->is(PlanType::kColumnExpr));
     const auto* key = buildKeys[i]->as<Column>();
-    if (!probeKeyOf.emplace(key, probeKeys[i]).second) {
-      return nullptr;
-    }
+    probeKeyOf.emplace(key, probeKeys[i]);
     buildColumns.push_back(key);
   }
   for (ColumnCP column : build->outputColumns()) {
