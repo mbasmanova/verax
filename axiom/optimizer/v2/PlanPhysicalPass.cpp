@@ -827,6 +827,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
   PhysicalPlanRewriter(
       Builder& builder,
       ExprSimplifier& simplifier,
+      EstimateProvider& estimateProvider,
       const OptimizerOptions& options,
       int32_t numWorkers,
       int32_t numDrivers,
@@ -841,7 +842,8 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
         replicate_{std::move(replicate)},
         statePartitioning_{std::move(statePartitioning)},
         exprFactory_{builder},
-        simplifier_{simplifier} {}
+        simplifier_{simplifier},
+        estimateProvider_{estimateProvider} {}
 
   // Re-exposes the rewrite(NodeCP) overload hidden by the override below.
   using NodeRewriter<>::rewrite;
@@ -977,6 +979,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
     PhysicalPlanRewriter singleThreaded{
         builder(),
         simplifier_,
+        estimateProvider_,
         options_,
         /*numWorkers=*/1,
         /*numDrivers=*/kRecursiveNumDrivers,
@@ -1035,6 +1038,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
     PhysicalPlanRewriter partitioned{
         builder(),
         simplifier_,
+        estimateProvider_,
         options_,
         numWorkers_,
         /*numDrivers=*/kRecursiveNumDrivers,
@@ -1175,11 +1179,12 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
   }
 
   // True when 'node' joins the recursive state with a subtree that reads no
-  // state and does not fit the broadcast limit.
+  // state and does not fit the broadcast limit, as this plan places that
+  // subtree.
   bool joinsInputTooLargeToBroadcast(NodeCP node) {
     for (NodeCP input : node->inputs()) {
       if (input->requiredStates().empty()) {
-        if (node->is(NodeType::kJoin) && !broadcastFits(input)) {
+        if (node->is(NodeType::kJoin) && !broadcastFits(rewrite(input))) {
           return true;
         }
       } else if (joinsInputTooLargeToBroadcast(input)) {
@@ -2540,9 +2545,8 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
   ExprFactory exprFactory_;
   ExprSimplifier& simplifier_;
 
-  // Shared across all clusters of this query so a leaf (or hash-consed
-  // duplicate) subtree is estimated once.
-  EstimateProvider estimateProvider_;
+  // Owned by the caller; the step rewriters share it.
+  EstimateProvider& estimateProvider_;
 
   // Keys stay valid for the query: Builder owns interned nodes.
   folly::F14FastMap<NodeCP, NodeCP> rewrittenNodes_;
@@ -2554,6 +2558,7 @@ NodeCP PlanPhysicalPass::run(
     NodeCP root,
     Builder& builder,
     velox::core::ExpressionEvaluator& evaluator,
+    EstimateProvider& estimateProvider,
     const OptimizerOptions& options,
     int32_t numWorkers,
     int32_t numDrivers) {
@@ -2564,6 +2569,7 @@ NodeCP PlanPhysicalPass::run(
   PhysicalPlanRewriter rewriter{
       builder,
       simplifier,
+      estimateProvider,
       options,
       numWorkers,
       numDrivers,

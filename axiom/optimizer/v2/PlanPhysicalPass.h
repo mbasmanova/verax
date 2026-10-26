@@ -18,6 +18,7 @@
 
 #include "axiom/optimizer/OptimizerOptions.h"
 #include "axiom/optimizer/v2/Builder.h"
+#include "axiom/optimizer/v2/EstimateProvider.h"
 #include "axiom/optimizer/v2/Node.h"
 
 namespace facebook::velox::core {
@@ -54,11 +55,13 @@ class PlanPhysicalPass {
   /// requires co-location within a task. `numWorkers` and `numDrivers` are
   /// per-plan properties, not `OptimizerOptions` fields, so they are passed
   /// separately. `evaluator` folds constants exposed while projection
-  /// expressions merge.
+  /// expressions merge. `estimateProvider` supplies the estimates behind join
+  /// order, build sides and broadcasts.
   static NodeCP run(
       NodeCP root,
       Builder& builder,
       velox::core::ExpressionEvaluator& evaluator,
+      EstimateProvider& estimateProvider,
       const OptimizerOptions& options,
       int32_t numWorkers,
       int32_t numDrivers);

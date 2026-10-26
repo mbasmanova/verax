@@ -229,11 +229,13 @@ class Emitter {
   Emitter(
       const OptimizerSession& session,
       velox::core::ExpressionEvaluator& evaluator,
+      EstimateProvider& estimateProvider,
       const MultiFragmentPlan::Options& options)
       : session_{session},
         evaluator_{evaluator},
         exprEmitter_{evaluator.pool()},
-        options_{options} {}
+        options_{options},
+        estimateProvider_{estimateProvider} {}
 
   int32_t hashPartitionCount() const {
     return session_.options().hashStageTasks(options_.maxRemotePartitions);
@@ -665,8 +667,8 @@ class Emitter {
   // commit or abort the write. Empty (bool false) for read-only queries.
   FinishWrite finishWrite_;
 
-  // Estimates IR-node cardinality for EXPLAIN, memoized over the emit-time IR.
-  EstimateProvider estimateProvider_;
+  // Estimates IR-node cardinality for EXPLAIN.
+  EstimateProvider& estimateProvider_;
 
   // Per-node estimated cardinality keyed by emitted PlanNodeId; moved out via
   // takePrediction.
@@ -2882,9 +2884,10 @@ EmitPass::Result EmitPass::run(
     const std::vector<std::string>& outputNames,
     const OptimizerSession& session,
     velox::core::ExpressionEvaluator& evaluator,
+    EstimateProvider& estimateProvider,
     const MultiFragmentPlan::Options& options) {
   VELOX_CHECK_EQ(outputColumns.size(), outputNames.size());
-  Emitter emitter(session, evaluator, options);
+  Emitter emitter(session, evaluator, estimateProvider, options);
   auto fragments = emitter.emitFragments(root, outputColumns, outputNames);
   return Result{
       std::move(fragments),

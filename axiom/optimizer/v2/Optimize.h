@@ -156,10 +156,9 @@ class Optimizer {
 
   AXIOM_DECLARE_EMBEDDED_ENUM_NAME(Pass);
 
-  /// Cardinality and column constraints for the nodes of a `DebugPlan`,
-  /// computed the way physical planning computes them — the same
-  /// `EstimateProvider` over the same base statistics, so a leaf reproduces
-  /// exactly and a join subtree is estimated as planning would estimate it.
+  /// Cardinality and column constraints for the nodes of a `DebugPlan`, read
+  /// from the `EstimateProvider` physical planning shares, so a node planning
+  /// estimated shows that same value.
   ///
   /// Empty for a pass before `kEstimateLeafStats`, where the base statistics
   /// have not been read yet. That is a position in the pipeline, not a
@@ -234,9 +233,9 @@ class Optimizer {
 
   bool used_{false};
 
-  // Estimates for `debugPlanTo`, computed over the IR it returns. Held here so
-  // the lookup it hands back stays valid for this Optimizer's lifetime.
-  std::optional<EstimateProvider> debugEstimates_;
+  // Estimates shared by physical planning, Emit, `estimateQueryStats` and
+  // `debugPlanTo`.
+  EstimateProvider estimateProvider_;
 
   // The query's output columns and the names to emit them under, as the
   // translate pass resolved them.

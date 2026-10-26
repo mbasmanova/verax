@@ -28,15 +28,23 @@ EmitPass::Result physicalPlanAndEmit(
     const OptimizerSession& session,
     velox::core::ExpressionEvaluator& evaluator,
     const MultiFragmentPlan::Options& options) {
+  EstimateProvider estimateProvider;
   NodeCP physicalPlanned = PlanPhysicalPass::run(
       root,
       builder,
       evaluator,
+      estimateProvider,
       session.options(),
       options.maxRemotePartitions,
       options.maxLocalPartitions);
   return EmitPass::run(
-      physicalPlanned, outputColumns, outputNames, session, evaluator, options);
+      physicalPlanned,
+      outputColumns,
+      outputNames,
+      session,
+      evaluator,
+      estimateProvider,
+      options);
 }
 
 } // namespace facebook::axiom::optimizer::v2

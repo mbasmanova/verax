@@ -265,6 +265,7 @@ NodeCP Optimizer::planTo(
       node,
       builder_,
       evaluator_,
+      estimateProvider_,
       session_.options(),
       planOptions_.maxRemotePartitions,
       planOptions_.maxLocalPartitions);
@@ -288,9 +289,8 @@ Optimizer::DebugPlan Optimizer::debugPlanTo(
     return {root, nullptr};
   }
 
-  debugEstimates_.emplace();
   return {
-      root, [this](NodeCP node) { return debugEstimates_->estimate(node); }};
+      root, [this](NodeCP node) { return estimateProvider_.estimate(node); }};
 }
 
 PlanAndStats Optimizer::optimize(const MultiFragmentPlan::Options& options) {
@@ -314,6 +314,7 @@ PlanAndStats Optimizer::optimize(
       outputNames_,
       session_,
       evaluator_,
+      estimateProvider_,
       planOptions_);
 
   PlanAndStats result;
@@ -366,8 +367,7 @@ QueryStats Optimizer::estimateQueryStats() {
       /*options=*/nullptr,
       /*afterPass=*/nullptr);
 
-  EstimateProvider estimateProvider;
-  const Estimate& estimate = estimateProvider.estimate(root);
+  const Estimate& estimate = estimateProvider_.estimate(root);
 
   const auto& columns = outputColumns_;
   const auto& names = outputNames_;

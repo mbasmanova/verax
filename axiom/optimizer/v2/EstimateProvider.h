@@ -47,10 +47,9 @@ struct Estimate {
 /// node, using the shared `conjunctsSelectivity` / `JoinConstraints`
 /// primitives.
 ///
-/// One instance is shared across all join clusters of a query (it is keyed
-/// by `NodeCP`, which is globally stable), so a leaf subtree — or a
-/// hash-consed duplicate — is estimated exactly once, and a barrier-subtree
-/// leaf reuses the estimates of the inner cluster it wraps.
+/// One instance can serve every reader of the same IR (it is keyed by
+/// `NodeCP`, which is globally stable), so each node is estimated once. Its
+/// memo stays valid while the statistics of the nodes it read do not change.
 ///
 /// Usage: `const Estimate& e = estimateProvider.estimate(node);`
 class EstimateProvider {
