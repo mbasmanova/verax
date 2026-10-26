@@ -19,6 +19,7 @@
 #include "axiom/optimizer/MultiFragmentPlan.h"
 #include "axiom/optimizer/OptimizerSession.h"
 #include "axiom/optimizer/ToVelox.h"
+#include "axiom/optimizer/v2/EstimateProvider.h"
 #include "axiom/optimizer/v2/Node.h"
 #include "velox/core/Expressions.h"
 #include "velox/core/PlanNode.h"
@@ -47,6 +48,7 @@ class EmitPass {
   /// output into a single root fragment; for `maxRemotePartitions == 1` the
   /// result is one fragment. 'session' supplies the connector session for
   /// table writes. A `Scan` carries the connector handle it is read with.
+  /// 'estimateProvider' supplies the per-node predictions.
   /// Throws VELOX_NYI for unsupported node or expression types.
   static Result run(
       NodeCP root,
@@ -54,6 +56,7 @@ class EmitPass {
       const std::vector<std::string>& outputNames,
       const OptimizerSession& session,
       velox::core::ExpressionEvaluator& evaluator,
+      EstimateProvider& estimateProvider,
       const MultiFragmentPlan::Options& options);
 };
 
