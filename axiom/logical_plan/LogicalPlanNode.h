@@ -1135,10 +1135,16 @@ using OutputNodePtr = std::shared_ptr<const OutputNode>;
 /// The output schema is the anchor's, which is also the state's schema: the
 /// step and every RecursiveReferenceNode produce the same columns.
 ///
-/// In kReplace, 'keyColumns' may name a key of the state, such as PageRank's
-/// vertex id: in every iteration, the state has at most one row per key, and
-/// no key column is null. The plan's producer guarantees this; Axiom may rely
-/// on it and does not check it.
+/// In kReplace, the plan's producer guarantees two things, which Axiom relies
+/// on and does not check:
+/// - 'keyColumns', when set, name a key of the state, such as PageRank's vertex
+///   id: in every iteration, the state has at most one row per key, and no key
+///   column is null.
+/// - The step and 'convergence' give the same result whatever order they read
+///   the state's rows in: they pick no rows without an order, such as with a
+///   LIMIT without ORDER BY or `arbitrary()` over the state. Axiom may run them
+///   on several workers, each over its own copy of the state, whose rows can
+///   arrive in different orders.
 ///
 /// For SQL the mapping is:
 ///

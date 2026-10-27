@@ -445,6 +445,9 @@ class FixedPointMatcher : public PlanMatcherImpl<FixedPointNode> {
     for (const auto& initialPlan : match_->hashTableStates()) {
       count += initialPlan->shuffleBoundaryCount();
     }
+    for (const auto& [_, initialPlan] : match_->vectorStates()) {
+      count += initialPlan->shuffleBoundaryCount();
+    }
     return count;
   }
 
@@ -458,23 +461,23 @@ class FixedPointMatcher : public PlanMatcherImpl<FixedPointNode> {
     }
     const auto stateSymbols = stateSymbolsOf(plan, symbols);
 
+    // Each expected plan with N boundaries matches the next N + 1 plans.
     const auto& plans = match_->plans();
     if (!plans.empty()) {
-      EXPECT_EQ(plan.plans().size(), plans.size());
+      size_t numPlans = 0;
+      for (const auto& expected : plans) {
+        numPlans += expected->shuffleBoundaryCount() + 1;
+      }
+      EXPECT_EQ(plan.plans().size(), numPlans);
       AXIOM_TEST_RETURN_IF_FAILURE
-      for (size_t i = 0; i < plans.size(); ++i) {
-        if (!plans[i]
-                 ->match(plan.plans()[i], stateSymbols, /*context=*/nullptr)
-                 .match) {
+      auto next = plan.plans().begin();
+      for (const auto& expected : plans) {
+        const auto end = next + expected->shuffleBoundaryCount() + 1;
+        if (!matchPlanChain({next, end}, *expected, stateSymbols)) {
           return MatchResult::failure();
         }
+        next = end;
       }
-    }
-
-    if (match_->partitionedPlans() != nullptr &&
-        !matchPlanChain(
-            plan.plans(), *match_->partitionedPlans(), stateSymbols)) {
-      return MatchResult::failure();
     }
 
     if (match_->stopWhenDeltaEmpty()) {
@@ -516,6 +519,23 @@ class FixedPointMatcher : public PlanMatcherImpl<FixedPointNode> {
               convergencePlans, *match_->convergence(), stateSymbols)) {
         return MatchResult::failure();
       }
+    }
+
+    if (match_->workerZeroVerdict() != nullptr) {
+      const auto& convergence = plan.convergenceConfig();
+      EXPECT_FALSE(convergence.stopWhenDeltaEmpty);
+      EXPECT_TRUE(convergence.plans.empty());
+      EXPECT_NE(convergence.verdict, nullptr);
+      AXIOM_TEST_RETURN_IF_FAILURE
+      if (!match_->workerZeroVerdict()
+               ->match(convergence.verdict, stateSymbols, /*context=*/nullptr)
+               .match) {
+        return MatchResult::failure();
+      }
+    }
+
+    if (match_->outputOnWorkerZero()) {
+      EXPECT_TRUE(plan.outputOnWorkerZero());
     }
 
     if (match_->maxIterations().has_value()) {
@@ -2561,8 +2581,17 @@ FixedPointMatch& FixedPointMatch::converge(
   return *this;
 }
 
-FixedPointMatch& FixedPointMatch::partitionedPlans(PlanMatcherBuilder body) {
-  partitionedPlans_ = body.build();
+FixedPointMatch& FixedPointMatch::convergeOnWorkerZero(
+    PlanMatcherBuilder convergence,
+    Convergence assertions) {
+  workerZeroVerdict_ = convergence.build();
+  errorWhenMaxIterationReached_ = assertions.failAtBound.value_or(true);
+  maxIterations_ = assertions.maxIterations;
+  return *this;
+}
+
+FixedPointMatch& FixedPointMatch::outputOnWorkerZero() {
+  outputOnWorkerZero_ = true;
   return *this;
 }
 

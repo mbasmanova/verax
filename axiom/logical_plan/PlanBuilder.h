@@ -858,7 +858,8 @@ class PlanBuilder {
   /// Wraps the current plan (treated as the anchor) and the step in a
   /// FixedPointNode named `name` that replaces its state `numIterations` times
   /// (see FixedPointNode::iterate). `keyColumns` name the anchor's columns that
-  /// form a key of the state, or are empty.
+  /// form a key of the state, or are empty. The step must give the same result
+  /// whatever order it reads the state's rows in (see FixedPointNode).
   PlanBuilder& iterate(
       std::string_view name,
       const PlanBuilder& step,
@@ -869,7 +870,9 @@ class PlanBuilder {
   /// convergence plans in a FixedPointNode named `name` that replaces its state
   /// each iteration until the convergence is true (see
   /// FixedPointNode::iterateUntil). `keyColumns` name the anchor's columns that
-  /// form a key of the state, or are empty.
+  /// form a key of the state, or are empty. The step and the convergence must
+  /// give the same result whatever order they read the state's rows in (see
+  /// FixedPointNode).
   PlanBuilder& iterateUntil(
       std::string_view name,
       const PlanBuilder& step,

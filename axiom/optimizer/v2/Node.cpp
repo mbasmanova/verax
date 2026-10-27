@@ -663,6 +663,10 @@ Partitioning aggregatePartition(
     const Partitioning& inputPartition,
     const ExprVector& groupingKeys,
     const ColumnVector& groupingColumns) {
+  // Each worker aggregates its whole replica, so the output is replicated too.
+  if (inputPartition.is(PartitionKind::kBroadcast)) {
+    return inputPartition.dropOrder();
+  }
   if (step != AggregateStep::kPartial && groupingKeys.empty()) {
     return Partitioning::gather(inputPartition.scope);
   }
@@ -1820,6 +1824,12 @@ Partitioning unionGlobalPartition(
   if (allGathered) {
     return Partitioning::gather(PropertyScope::kGlobal);
   }
+  // Every leg is on every worker, so the union is on every worker too.
+  if (std::ranges::all_of(legPartitions, [](const Partitioning& leg) {
+        return leg.is(PartitionKind::kBroadcast);
+      })) {
+    return Partitioning::globalBroadcast();
+  }
 
   // A partitionType of nullptr is standard hash partitioning; a non-null one is
   // a connector's bucketing. Two legs co-partition on the mapped output keys
@@ -2136,6 +2146,22 @@ Join::Join(Key key, Builder& builder)
           canBuildLoopInvariant(
               joinType_, rightKeys_, nullAsValue_, inputs_[0], inputs_[1]),
       "Join build cannot be loop-invariant");
+  if (placed()) {
+    // An input replicated on every worker joins one that is not only when each
+    // output row is tied to a row of the other input.
+    const bool leftReplicated =
+        inputs_[0]->physicalProperties().globalPartition.is(
+            PartitionKind::kBroadcast);
+    const bool rightReplicated =
+        inputs_[1]->physicalProperties().globalPartition.is(
+            PartitionKind::kBroadcast);
+    VELOX_CHECK(
+        leftReplicated == rightReplicated ||
+            (rightReplicated && canBroadcastBuild(joinType_)) ||
+            (leftReplicated && canBroadcastProbe(joinType_)),
+        "Join cannot keep rows of an input replicated on every worker: {}",
+        joinTypeName());
+  }
   VELOX_CHECK_EQ(sourceColumns_.size(), outputColumns().size());
   const PlanObjectSet leftColumns =
       PlanObjectSet::fromObjects(inputs_[0]->outputColumns());
@@ -2525,6 +2551,14 @@ bool Join::canBroadcastBuild(velox::core::JoinType joinType) {
       joinType == JoinType::kLeftSemiProject || joinType == JoinType::kAnti;
 }
 
+bool Join::canBroadcastProbe(velox::core::JoinType joinType) {
+  using JoinType = velox::core::JoinType;
+  return joinType == JoinType::kInner || joinType == JoinType::kRight ||
+      joinType == JoinType::kRightSemiFilter ||
+      joinType == JoinType::kRightSemiProject ||
+      joinType == JoinType::kRightAnti;
+}
+
 bool Join::isKnownEmpty(
     velox::core::JoinType joinType,
     bool leftIsKnownEmpty,
@@ -2666,6 +2700,12 @@ Partitioning Join::outputPartitioning(
       rightPartitioning.is(PartitionKind::kGather)) {
     return Partitioning::gather(leftPartitioning.scope);
   }
+  // Both inputs are on every worker, so the join runs on each worker over all
+  // the rows and its output is on every worker too.
+  if (leftPartitioning.is(PartitionKind::kBroadcast) &&
+      rightPartitioning.is(PartitionKind::kBroadcast)) {
+    return leftPartitioning.dropOrder();
+  }
 
   if (joinType == velox::core::JoinType::kFull) {
     return fullJoinPartitioning(
@@ -2683,10 +2723,12 @@ Partitioning Join::outputPartitioning(
   if (!preserved.left && !preserved.right) {
     return Partitioning::unspecified(leftPartitioning.scope);
   }
-  const Partitioning& source =
-      preserved.left ? leftPartitioning : rightPartitioning;
-  const Partitioning& other =
-      preserved.left ? rightPartitioning : leftPartitioning;
+  // A left input replicated on every worker joins the right input where the
+  // right input's rows are, so the output follows the right input.
+  const bool fromLeft = preserved.left &&
+      !(preserved.right && leftPartitioning.is(PartitionKind::kBroadcast));
+  const Partitioning& source = fromLeft ? leftPartitioning : rightPartitioning;
+  const Partitioning& other = fromLeft ? rightPartitioning : leftPartitioning;
   Partitioning output = source.dropOrder();
 
   if (output.kind != PartitionKind::kPartitioned) {
@@ -4020,14 +4062,20 @@ Partitioning fixedPointPartition(
     const ColumnVector& sourceColumns,
     const ColumnVector& stepColumns,
     const ColumnVector& outputColumns) {
+  // A replicated state is emitted on worker 0 only, which claims no placement.
+  if (anchor.is(PartitionKind::kBroadcast) &&
+      step.is(PartitionKind::kBroadcast)) {
+    return {};
+  }
   const std::array<Partitioning, 2> legPartitions{anchor, step};
   return unionGlobalPartition(
       legPartitions, {sourceColumns, stepColumns}, outputColumns);
 }
 
 // 'branch', whose columns align with the state's, is placed the way 'state'
-// says the state is: gathered, or hash-partitioned on the aligned keys. The
-// next iteration then finds the state where it expects it.
+// says the state is: gathered, hash-partitioned on the aligned keys, or
+// replicated on every worker. The next iteration then finds the state where it
+// expects it.
 void checkPlacedLikeState(
     NodeCP branch,
     const ColumnVector& branchColumns,
@@ -4051,6 +4099,11 @@ void checkPlacedLikeState(
                 PropertyScope::kGlobal,
                 toExprs(alignedColumns(keys, stateColumns, branchColumns)))),
         "FixedPoint {} must be partitioned like its state",
+        branchName);
+  } else if (state.is(PartitionKind::kBroadcast)) {
+    VELOX_CHECK(
+        placement.is(PartitionKind::kBroadcast),
+        "FixedPoint {} must be replicated like its state",
         branchName);
   }
 }
@@ -4192,6 +4245,14 @@ FixedPoint::FixedPoint(const Key& key)
   VELOX_CHECK(
       convergence() != nullptr || !movesState(inputs_[1]),
       "FixedPoint whose step repartitions the state needs a convergence");
+}
+
+bool FixedPoint::replicatesState() const {
+  bool replicated = false;
+  WorkingTable::forEachRead(step(), name_, [&](const WorkingTable& read) {
+    replicated = read.partitioning().is(PartitionKind::kBroadcast);
+  });
+  return replicated;
 }
 
 // static

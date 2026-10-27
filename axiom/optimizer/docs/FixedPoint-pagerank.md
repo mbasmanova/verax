@@ -6,9 +6,11 @@ plan. The loop node, its invariants and its placement rules are in
 [FixedPoint.md](FixedPoint.md).*
 
 **Status:** the logical plan below is built by `FixedPointTest.pageRank`.
-Optimizer v2 plans it and runs it on one worker. With several workers it runs
-on one task until PlanPhysical produces one of the distributed plans below;
-the pieces that takes are marked as follow-ups in
+Optimizer v2 plans it and runs it on one worker. With several workers it
+replicates the state on every worker when the ranks fit
+`broadcast_size_limit` ([A state that fits a broadcast](#a-state-that-fits-a-broadcast)),
+and otherwise runs on one task until PlanPhysical produces the partitioned
+plan below; the pieces that takes are marked as follow-ups in
 [What each pass does](#what-each-pass-does).
 
 ## One iteration, in SQL
@@ -201,16 +203,15 @@ the additions marked as follow-ups.
   `WorkingTable`, with its own columns.
 - **EstimateLeafStats** reports unknown cardinality for the loop and its
   reads, so the step keeps its written join order.
-- **PlanPhysical** needs to replicate the state on every worker for a state
-  that fits a broadcast (follow-up *A state replicated on every worker*), and
-  for a larger state needs to partition the loop: the step aggregates, so it
-  is not row-local. It looks for the keys to partition on along the last input of
+- **PlanPhysical** replicates the state on every worker when it fits a
+  broadcast. For a larger state it needs to partition the loop: the step
+  aggregates, so it is not row-local. It looks for the keys to partition on along the last input of
   the step that reads the state, here the dangling total, which has none, so
   today the loop runs on one task. The distributed plan needs the state
   partitioned on `vertex_id`, the key of the step's first join, with the anchor
   repartitioned on it. Then:
   - `edges` is partitioned on `src`, next to the state, so the join with it
-    stays on each worker (follow-up *A step input placed next to the state*).
+    stays on each worker.
   - The aggregate by `dst` is shuffled on `vertex_id`.
   - The global aggregate (C) is split into partial sums and a broadcast.
   - `a` is cross joined with the total and sent through the same shuffle,
