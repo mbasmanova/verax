@@ -274,11 +274,11 @@ TEST_F(FixedPointTest, partitionedLoop) {
         matchFixedPoint(startFixedPoint("r")
                             .outputState(
                                 /*append=*/true, matchScan("t").shuffle({"a"}))
-                            .partitionedPlans(matchDelta("r", {"n"})
-                                                  .filter("n < 10")
-                                                  .singleAggregation({"n"}, {})
-                                                  .project({"n + 1 AS m"})
-                                                  .shuffle({"m"}))
+                            .plan(matchDelta("r", {"n"})
+                                      .filter("n < 10")
+                                      .singleAggregation({"n"}, {})
+                                      .project({"n + 1 AS m"})
+                                      .shuffle({"m"}))
                             .convergeOnEmptyEverywhere())
             .project({"a AS n"})
             .gather()
@@ -309,10 +309,10 @@ TEST_F(FixedPointTest, partitionedLoop) {
             startFixedPoint("r")
                 .outputState(/*append=*/true, matchScan("t").shuffle({"a"}))
                 .hashTableState(matchScan("e").shuffle({"src"}))
-                .partitionedPlans(matchDelta("r", {"n"})
-                                      .stateHashJoin({"n"})
-                                      .project({"dst"})
-                                      .shuffle({"dst"}))
+                .plan(matchDelta("r", {"n"})
+                          .stateHashJoin({"n"})
+                          .project({"dst"})
+                          .shuffle({"dst"}))
                 .convergeOnEmptyEverywhere())
             .project({"a AS n"})
             .gather()
@@ -350,11 +350,11 @@ TEST_F(FixedPointTest, partitionedLoop) {
                                     .shuffle({"k"})
                                     .project({"a"}))
                             .hashTableState(matchScan("e").shuffle({"src"}))
-                            .partitionedPlans(matchDelta("r", {"n"})
-                                                  .project({"n", "n + 1 AS k"})
-                                                  .shuffle({"k"})
-                                                  .stateHashJoin({"k"})
-                                                  .project({"dst"}))
+                            .plan(matchDelta("r", {"n"})
+                                      .project({"n", "n + 1 AS k"})
+                                      .shuffle({"k"})
+                                      .stateHashJoin({"k"})
+                                      .project({"dst"}))
                             .convergeOnEmptyEverywhere())
             .project({"a AS n"})
             .gather()
@@ -713,10 +713,10 @@ TEST_F(FixedPointTest, rowLocalConvergencePartitioned) {
           startFixedPoint("r")
               .outputState(/*append=*/false, matchScan("t").shuffle({"a"}))
               .hashTableState(matchScan("e").shuffle({"src"}))
-              .partitionedPlans(matchDelta("r", {"n"})
-                                    .stateHashJoin({"n"})
-                                    .project({"dst"})
-                                    .shuffle({"dst"}))
+              .plan(matchDelta("r", {"n"})
+                        .stateHashJoin({"n"})
+                        .project({"dst"})
+                        .shuffle({"dst"}))
               .converge(matchDelta("r", {"n"})
                             .partialAggregation({}, {"max(n)"})
                             .gather()
@@ -1036,72 +1036,79 @@ TEST_F(FixedPointTest, pageRank) {
           makeFlatVector<double>({0.5, 0.5, 1.0, 1.0}),
       }));
 
-  auto context = makeContext();
   static constexpr auto kRanks = "ranks";
 
-  // N = 4 vertices, damping factor d = 0.85, tolerance 1e-4.
-  auto anchor = lp::PlanBuilder(context)
-                    .tableScan("vertices")
-                    .project(
-                        {"vertex_id",
-                         "0.25 AS rank",
-                         "out_degree",
-                         /*placeholder*/ "0.0 AS squared_error"});
+  // The PageRank loop over the edges in 'edgesTable'.
+  auto pageRank = [&](std::string_view edgesTable) {
+    auto context = makeContext();
 
-  auto state = [&](std::optional<std::string> alias = std::nullopt) {
-    auto builder = lp::PlanBuilder(context).fixedPointState(kRanks, anchor);
-    if (alias.has_value()) {
-      builder.as(*alias);
-    }
-    return builder;
+    // N = 4 vertices, damping factor d = 0.85, tolerance 1e-4.
+    auto anchor = lp::PlanBuilder(context)
+                      .tableScan("vertices")
+                      .project(
+                          {"vertex_id",
+                           "0.25 AS rank",
+                           "out_degree",
+                           /*placeholder*/ "0.0 AS squared_error"});
+
+    auto state = [&](std::optional<std::string> alias = std::nullopt) {
+      auto builder = lp::PlanBuilder(context).fixedPointState(kRanks, anchor);
+      if (alias.has_value()) {
+        builder.as(*alias);
+      }
+      return builder;
+    };
+
+    auto step =
+        state("c")
+            // Weighted rank each vertex receives along its in-edges.
+            .join(
+                state("s")
+                    .filter("s.out_degree > 0")
+                    .join(
+                        lp::PlanBuilder(context)
+                            .tableScan(std::string(edgesTable))
+                            .as("e"),
+                        "s.vertex_id = e.src",
+                        lp::JoinType::kInner)
+                    .aggregate(
+                        {"e.dst"}, {"sum(s.rank * e.weight) AS inbound_rank"})
+                    .as("i"),
+                "c.vertex_id = i.dst",
+                lp::JoinType::kLeft)
+            // Rank held by vertices with no out-edges, shared evenly by all
+            // vertices.
+            .crossJoin(
+                state()
+                    .aggregate(
+                        {}, {"sum(if(out_degree = 0, rank, 0.0)) AS dangling"})
+                    .as("g"))
+            .project({
+                "c.vertex_id AS vertex_id",
+                "0.0375 + 0.85 * (coalesce(i.inbound_rank, 0.0) + g.dangling / 4.0) AS rank",
+                "c.out_degree AS out_degree",
+                "c.rank AS previous",
+            })
+            .project({
+                "vertex_id",
+                "rank",
+                "out_degree",
+                "(rank - previous) * (rank - previous) AS squared_error",
+            });
+    return anchor
+        .iterateUntil(
+            kRanks,
+            step,
+            state()
+                .aggregate({}, {"sum(squared_error) AS total"})
+                .project({"coalesce(total, 0.0) < 4e-8"}),
+            /*maxIterations=*/100,
+            /*failAtBound=*/false,
+            /*keyColumns=*/{"vertex_id"})
+        .project({"vertex_id", "rank"})
+        .build();
   };
-
-  auto step =
-      state("c")
-          // Weighted rank each vertex receives along its in-edges.
-          .join(
-              state("s")
-                  .filter("s.out_degree > 0")
-                  .join(
-                      lp::PlanBuilder(context).tableScan("edges").as("e"),
-                      "s.vertex_id = e.src",
-                      lp::JoinType::kInner)
-                  .aggregate(
-                      {"e.dst"}, {"sum(s.rank * e.weight) AS inbound_rank"})
-                  .as("i"),
-              "c.vertex_id = i.dst",
-              lp::JoinType::kLeft)
-          // Rank held by vertices with no out-edges, shared evenly by all
-          // vertices.
-          .crossJoin(
-              state()
-                  .aggregate(
-                      {}, {"sum(if(out_degree = 0, rank, 0.0)) AS dangling"})
-                  .as("g"))
-          .project({
-              "c.vertex_id AS vertex_id",
-              "0.0375 + 0.85 * (coalesce(i.inbound_rank, 0.0) + g.dangling / 4.0) AS rank",
-              "c.out_degree AS out_degree",
-              "c.rank AS previous",
-          })
-          .project({
-              "vertex_id",
-              "rank",
-              "out_degree",
-              "(rank - previous) * (rank - previous) AS squared_error",
-          });
-  auto logicalPlan = anchor
-                         .iterateUntil(
-                             kRanks,
-                             step,
-                             state()
-                                 .aggregate({}, {"sum(squared_error) AS total"})
-                                 .project({"coalesce(total, 0.0) < 4e-8"}),
-                             /*maxIterations=*/100,
-                             /*failAtBound=*/false,
-                             /*keyColumns=*/{"vertex_id"})
-                         .project({"vertex_id", "rank"})
-                         .build();
+  auto logicalPlan = pageRank("edges");
 
   auto ranks = [&] {
     return matchDelta(
@@ -1132,6 +1139,47 @@ TEST_F(FixedPointTest, pageRank) {
           .project()
           .build());
 
+  testConnector_
+      ->addTable(
+          "large_edges",
+          ROW({"src", "dst", "weight"}, {BIGINT(), BIGINT(), DOUBLE()}))
+      ->setStats(
+          100'000'000,
+          {{"src", {.numDistinct = 4}}, {"dst", {.numDistinct = 4}}});
+  // With edges too large to broadcast, every worker holds all the ranks and
+  // joins them with its own share of the edges. The inbound sums are shuffled
+  // on the destination, and their totals are broadcast to every worker. Worker
+  // 0 decides when to stop and emits the result.
+  AXIOM_ASSERT_DISTRIBUTED_PLAN(
+      planVelox(pageRank("large_edges")).plan,
+      matchFixedPoint(
+          startFixedPoint(kRanks)
+              .outputState(
+                  /*append=*/false, matchScan("vertices").project().broadcast())
+              .hashTableState(matchScan("large_edges"))
+              .plan(
+                  ranks()
+                      .filter("out_degree > 0")
+                      .stateHashJoin({"vertex_id"})
+                      .project()
+                      .project()
+                      .partialAggregation()
+                      .shuffle()
+                      .finalAggregation()
+                      .broadcast()
+                      .hashJoinRight(ranks())
+                      .nestedLoopJoin(ranks().project().singleAggregation())
+                      .project())
+              .convergeOnWorkerZero(
+                  ranks()
+                      .singleAggregation({}, {"sum(squared_error)"})
+                      .project(),
+                  {.maxIterations = 100, .failAtBound = false})
+              .outputOnWorkerZero())
+          .project()
+          .gather()
+          .build());
+
   // Converges after 15 iterations.
   checkSame(
       logicalPlan,
@@ -1159,53 +1207,59 @@ TEST_F(FixedPointTest, connectedComponents) {
           makeFlatVector<int64_t>({2, 1, 3, 2, 5, 4}),
       }));
 
-  auto context = makeContext();
   static constexpr auto kLabels = "labels";
 
-  auto anchor =
-      lp::PlanBuilder(context)
-          .tableScan("vertices")
-          .project(
-              {"vertex", "vertex AS label", /*placeholder*/ "true AS changed"});
+  // The connected-components loop over the edges in 'edgesTable'.
+  auto connectedComponents = [&](std::string_view edgesTable) {
+    auto context = makeContext();
 
-  auto state = [&](std::optional<std::string> alias = std::nullopt) {
-    auto builder = lp::PlanBuilder(context).fixedPointState(kLabels, anchor);
-    if (alias.has_value()) {
-      builder.as(*alias);
-    }
-    return builder;
+    auto anchor = lp::PlanBuilder(context)
+                      .tableScan("vertices")
+                      .project(
+                          {"vertex",
+                           "vertex AS label",
+                           /*placeholder*/ "true AS changed"});
+
+    auto state = [&](std::optional<std::string> alias = std::nullopt) {
+      auto builder = lp::PlanBuilder(context).fixedPointState(kLabels, anchor);
+      if (alias.has_value()) {
+        builder.as(*alias);
+      }
+      return builder;
+    };
+
+    auto step = state("v")
+                    .join(
+                        state("n")
+                            .filter("n.changed")
+                            .join(
+                                lp::PlanBuilder(context)
+                                    .tableScan(std::string(edgesTable))
+                                    .as("e"),
+                                "n.vertex = e.src",
+                                lp::JoinType::kInner)
+                            .aggregate({"e.dst"}, {"min(n.label) AS label"})
+                            .as("m"),
+                        "v.vertex = m.dst",
+                        lp::JoinType::kLeft)
+                    .project({
+                        "v.vertex AS vertex",
+                        "least(v.label, coalesce(m.label, v.label)) AS label",
+                        "coalesce(m.label < v.label, false) AS changed",
+                    });
+    return anchor
+        .iterateUntil(
+            kLabels,
+            step,
+            state()
+                .aggregate({}, {"count_if(changed) AS num_changed"})
+                .project({"num_changed = 0"}),
+            /*maxIterations=*/100,
+            /*failAtBound=*/true,
+            /*keyColumns=*/{"vertex"})
+        .build();
   };
-
-  auto step =
-      state("v")
-          .join(
-              state("n")
-                  .filter("n.changed")
-                  .join(
-                      lp::PlanBuilder(context).tableScan("edges").as("e"),
-                      "n.vertex = e.src",
-                      lp::JoinType::kInner)
-                  .aggregate({"e.dst"}, {"min(n.label) AS label"})
-                  .as("m"),
-              "v.vertex = m.dst",
-              lp::JoinType::kLeft)
-          .project({
-              "v.vertex AS vertex",
-              "least(v.label, coalesce(m.label, v.label)) AS label",
-              "coalesce(m.label < v.label, false) AS changed",
-          });
-  auto logicalPlan =
-      anchor
-          .iterateUntil(
-              kLabels,
-              step,
-              state()
-                  .aggregate({}, {"count_if(changed) AS num_changed"})
-                  .project({"num_changed = 0"}),
-              /*maxIterations=*/100,
-              /*failAtBound=*/true,
-              /*keyColumns=*/{"vertex"})
-          .build();
+  auto logicalPlan = connectedComponents("edges");
 
   auto labels = [&] {
     return matchDelta(kLabels, {"vertex", "label", "changed"});
@@ -1234,33 +1288,44 @@ TEST_F(FixedPointTest, connectedComponents) {
 
   // The state stays partitioned on vertex: each worker probes its vertices'
   // out-edges and shuffles the smallest label it sends to each destination.
-  AXIOM_ASSERT_DISTRIBUTED_PLAN(
-      planVelox(logicalPlan).plan,
-      matchFixedPoint(
-          startFixedPoint(kLabels)
-              .outputState(
-                  /*append=*/false,
-                  matchScan("vertices").project().shuffle({"vertex"}))
-              .hashTableState(matchScan("edges").shuffle({"src"}))
-              .partitionedPlans(
-                  labels()
-                      .filter("changed")
-                      .stateHashJoin({"vertex"})
-                      .project()
-                      .partialAggregation({"dst"}, {"min(label)"})
-                      .shuffle({"dst"})
-                      .finalAggregation()
-                      .hashJoinRight(labels())
-                      .project())
-              .converge(
-                  labels()
-                      .partialAggregation({}, {"count_if(changed)"})
-                      .gather()
-                      .finalAggregation()
-                      .project(),
-                  {.maxIterations = 100}))
-          .gather()
-          .build());
+  // Replicating the state moves the same shuffle and the new labels to every
+  // worker as well, so the partitioned loop wins also when the edges are too
+  // large to broadcast.
+  testConnector_->addTable("large_edges", ROW({"src", "dst"}, BIGINT()))
+      ->setStats(
+          100'000'000,
+          {{"src", {.numDistinct = 6}}, {"dst", {.numDistinct = 6}}});
+  for (std::string_view edgesTable : {"edges", "large_edges"}) {
+    SCOPED_TRACE(edgesTable);
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(
+        planVelox(connectedComponents(edgesTable)).plan,
+        matchFixedPoint(
+            startFixedPoint(kLabels)
+                .outputState(
+                    /*append=*/false,
+                    matchScan("vertices").project().shuffle({"vertex"}))
+                .hashTableState(
+                    matchScan(std::string(edgesTable)).shuffle({"src"}))
+                .plan(
+                    labels()
+                        .filter("changed")
+                        .stateHashJoin({"vertex"})
+                        .project()
+                        .partialAggregation({"dst"}, {"min(label)"})
+                        .shuffle({"dst"})
+                        .finalAggregation()
+                        .hashJoinRight(labels())
+                        .project())
+                .converge(
+                    labels()
+                        .partialAggregation({}, {"count_if(changed)"})
+                        .gather()
+                        .finalAggregation()
+                        .project(),
+                    {.maxIterations = 100}))
+            .gather()
+            .build());
+  }
 
   checkSame(
       logicalPlan,
@@ -1403,6 +1468,41 @@ TEST_F(FixedPointTest, kMeans) {
                   {.maxIterations = 20, .failAtBound = false}))
           .build());
 
+  // With several workers, every worker holds all the centroids. Each assigns
+  // the points it scanned and sums them per cluster; the sums are shuffled on
+  // the cluster, and the new means are broadcast to every worker. Worker 0
+  // decides when to stop and emits the result.
+  AXIOM_ASSERT_DISTRIBUTED_PLAN(
+      planVelox(logicalPlan).plan,
+      matchFixedPoint(
+          startFixedPoint(kCentroids)
+              .outputState(
+                  /*append=*/false, matchScan("seeds").project().broadcast())
+              .vectorState("points", matchScan("points"))
+              .plan(
+                  core::PlanMatcherBuilder()
+                      .stateSource("points", /*delta=*/false)
+                      .nestedLoopJoin(centroids().project().singleAggregation())
+                      .project()
+                      .partialAggregation()
+                      .shuffle()
+                      .finalAggregation()
+                      .project()
+                      .broadcast()
+                      .hashJoinRight(centroids())
+                      .project())
+              .convergeOnWorkerZero(
+                  centroids()
+                      .filter("NOT converged")
+                      .finalLimit(0, 1)
+                      .project()
+                      .enforceSingleRow()
+                      .project(),
+                  {.maxIterations = 20, .failAtBound = false})
+              .outputOnWorkerZero())
+          .gather()
+          .build());
+
   // The first iteration moves both centroids to their clusters' means; the
   // second moves neither.
   checkSame(
@@ -1411,6 +1511,86 @@ TEST_F(FixedPointTest, kMeans) {
           makeFlatVector<int64_t>({1, 2}),
           makeArrayVector<double>({{1.0 / 3, 1.0 / 3}, {31.0 / 3, 31.0 / 3}}),
           makeConstant(true, 2),
+      })});
+}
+
+// A union inside a loop's step whose state every worker holds: a union of
+// state reads is on every worker too, and a union of the state with rows that
+// are not has those rows broadcast. Each point counts once per row of the
+// union that matches its cluster.
+TEST_F(FixedPointTest, unionInReplicatedStep) {
+  testConnector_->addTable("points", ROW("cluster", BIGINT()))
+      ->addData(makeRowVector({makeFlatVector<int64_t>({1, 1, 1, 2, 2, 2})}));
+  testConnector_->addTable("seeds", ROW({"cluster", "n"}, BIGINT()))
+      ->addData(makeRowVector({
+          makeFlatVector<int64_t>({1, 2}),
+          makeFlatVector<int64_t>({0, 0}),
+      }));
+  testConnector_->addTable("extra", ROW("cluster", BIGINT()))
+      ->addData(makeRowVector({makeFlatVector<int64_t>({1})}));
+
+  static constexpr auto kCounts = "counts";
+  // Counts the points of each cluster against the state's clusters united
+  // with the state's clusters again, or with "extra".
+  auto countMatches = [&](bool unionWithState) {
+    auto context = makeContext();
+    auto anchor = lp::PlanBuilder(context).tableScan("seeds");
+    auto state = [&](std::optional<std::string> alias = std::nullopt) {
+      auto builder = lp::PlanBuilder(context).fixedPointState(kCounts, anchor);
+      if (alias.has_value()) {
+        builder.as(*alias);
+      }
+      return builder;
+    };
+    auto other = unionWithState ? state().project({"cluster"})
+                                : lp::PlanBuilder(context).tableScan("extra");
+    auto step =
+        state("old")
+            .join(
+                lp::PlanBuilder(context)
+                    .tableScan("points")
+                    .as("p")
+                    .join(
+                        state().project({"cluster"}).unionAll(other).as("u"),
+                        "p.cluster = u.cluster",
+                        lp::JoinType::kInner)
+                    .aggregate({"p.cluster"}, {"count(*) AS n"})
+                    .as("new"),
+                "old.cluster = new.cluster",
+                lp::JoinType::kLeft)
+            .project({"old.cluster AS cluster", "coalesce(new.n, 0) AS n"});
+    return anchor
+        .iterate(kCounts, step, /*numIterations=*/1, /*keyColumns=*/{"cluster"})
+        .build();
+  };
+
+  // Each worker builds the points it scanned into a hash table once. The
+  // state and "extra" are broadcast to every worker.
+  for (const bool unionWithState : {true, false}) {
+    auto loop =
+        startFixedPoint(kCounts)
+            .outputState(/*append=*/false, matchScan("seeds").broadcast())
+            .hashTableState(matchScan("points"))
+            .outputOnWorkerZero();
+    if (!unionWithState) {
+      loop.vectorState("extra", matchScan("extra").broadcast());
+    }
+    AXIOM_ASSERT_DISTRIBUTED_PLAN(
+        planVelox(countMatches(unionWithState)).plan,
+        matchFixedPoint(loop).gather().build());
+  }
+
+  checkSame(
+      countMatches(true),
+      {makeRowVector({
+          makeFlatVector<int64_t>({1, 2}),
+          makeFlatVector<int64_t>({6, 6}),
+      })});
+  checkSame(
+      countMatches(false),
+      {makeRowVector({
+          makeFlatVector<int64_t>({1, 2}),
+          makeFlatVector<int64_t>({6, 3}),
       })});
 }
 

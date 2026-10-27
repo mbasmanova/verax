@@ -5,10 +5,8 @@ execution to the passes that produce its Velox plan. The loop node, its
 invariants and its placement rules are in [FixedPoint.md](FixedPoint.md);
 PageRank is in [FixedPoint-pagerank.md](FixedPoint-pagerank.md).*
 
-**Status:** the logical plan below is built by `FixedPointTest.kMeans`.
-Optimizer v2 plans it and runs it on one worker. With several workers it runs
-on one task until PlanPhysical can replicate the state on every worker, as
-the distributed plan below does.
+**Status:** the logical plan below is built by `FixedPointTest.kMeans`, and
+optimizer v2 produces the plans below on one worker and on several.
 
 ## One iteration, in SQL
 

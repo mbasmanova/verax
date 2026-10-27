@@ -324,8 +324,8 @@ In pipeline order:
 - **PlanPhysical** — plans the anchor with the query's workers, and the step
   with one driver, recorded as `recursiveNumDrivers` (first version; see
   [Follow-ups](#follow-ups)). With several workers it places the loop as
-  independent loops or as one partitioned loop — see [Distributed
-  execution](#distributed-execution). A partitioned loop plans its
+  independent loops, as one partitioned loop, or with its state replicated on
+  every worker — see [Distributed execution](#distributed-execution). A partitioned loop plans its
   `convergence` with the query's workers, split at a gather into per-worker
   partial results and a verdict on one task. A partitioned loop without one
   gets `count(*) = 0` over the latest delta: each worker counts its rows, and
@@ -342,7 +342,10 @@ In pipeline order:
   the plans before its gather run on every worker, and the last one on worker
   0, which shares its answer (`ConvergenceConfig::globalVerdict`); the
   convergence of a loop on one task runs there
-  (`ConvergenceConfig::converging`). Velox requires each body plan after the
+  (`ConvergenceConfig::converging`). Over a replicated state, worker 0 runs
+  the convergence over its own copy and shares its answer
+  (`ConvergenceConfig::workerZeroVerdict`), and only worker 0 emits the output
+  (`FixedPointNode::outputOnWorkerZero`). Velox requires each body plan after the
   first to read exactly one exchange, as its primary input. PlanPhysical placed
   every exchange, and Emit translates them. Emit declares the state append or
   replace as the fixed point's mode says, and emits each `WorkingTable` as its
@@ -364,7 +367,7 @@ In pipeline order:
 
 ## Distributed execution
 
-With several workers, PlanPhysical places a fixed point in one of two ways.
+With several workers, PlanPhysical places a fixed point in one of three ways.
 
 - **Independent loops.** The loop runs on the tasks that run its anchor, each
   over its own anchor rows. Every subtree of the step that reads no recursive
@@ -386,6 +389,15 @@ With several workers, PlanPhysical places a fixed point in one of two ways.
   repartitions rows across them. The workers run in lockstep and stop
   together, on the loop's `convergence`, or once no worker's iteration adds
   rows when it has none.
+- **One loop with the state replicated on every worker.** The anchor is
+  broadcast, every read of the state holds all of it, and the step is planned
+  with the query's workers; its output is broadcast for the next iteration
+  unless it is replicated already. Worker 0 evaluates the `convergence` over
+  its own copy of the state and sends the verdict to the other workers, and
+  only worker 0 emits the loop's output. In k-means, each worker sums the
+  points it scanned by cluster and shuffles the sums to each cluster's owner,
+  and the owner broadcasts the cluster's new centroid
+  ([FixedPoint-kmeans.md](FixedPoint-kmeans.md)).
 
 PlanPhysical partitions the loop when it cannot run as independent loops,
 because its step is not row-local or it has a `convergence`, or when its step
@@ -415,11 +427,37 @@ loops, or gathers the anchor for a step that is not row-local, when:
 These rules are fixed rather than costed (first version; see
 [Follow-ups](#follow-ups)).
 
+PlanPhysical also plans a loop that replaces its state with the state
+replicated, when the state and every input the step broadcasts fit
+`broadcast_size_limit` and the step moves rows between workers. When both a
+partitioned loop and a replicated state plan, PlanPhysical keeps the one whose
+step and convergence move fewer bytes per iteration, the partitioned loop on a
+tie. Connected components keeps its partitioned loop; PageRank and k-means,
+for which a partitioned loop does not plan, get a replicated state when it
+fits. Planning the step over a replicated state follows these rules:
+
+- An operator over replicated inputs runs on each worker over all the rows,
+  and its output is replicated.
+- A join of a replicated input with a scattered one runs where the scattered
+  rows are when each output row is tied to one scattered row
+  (`Join::canBroadcastBuild`, `Join::canBroadcastProbe`); otherwise the
+  scattered input is broadcast too.
+- A union of replicated and scattered inputs broadcasts the scattered ones.
+- A replicated relation is never repartitioned or gathered, which would count
+  its rows once per worker.
+
+The replicas need not be identical: they can differ in the last bits of
+floating-point values and in the order of their rows. The logical plan's
+producer guarantees that the step and the convergence give the same result
+whatever order they read the state in.
+
 A fixed point's output is the anchor's rows and the step's, so it is
 partitioned as their union is: on the state's keys when the state is
-hash-partitioned, gathered when it is gathered, and unspecified otherwise.
+hash-partitioned, gathered when it is gathered, and unspecified otherwise. A
+replicated state is emitted on worker 0 only, so its output claims no
+placement.
 
-A partitioned loop's tasks are peers: each reads the others' shuffles every
+A distributed loop's tasks are peers: each reads the others' shuffles every
 iteration, and worker 0's verdict reaches the others through the
 application's `FixedPointOptions::publishVerdict` and `awaitVerdict`.
 LocalRunner gives each task of the stage one split per task of the stage on
@@ -468,13 +506,6 @@ Each of these is rejected with a specific error.
   a `RecursiveReferenceNode` at all. Drawing the loop inside its fragment, one
   box per body plan with the exchanges between them, shows where a loop's rows
   move between workers each iteration.
-- **A step input placed next to the state.** A partitioned loop's step often
-  joins the state with an input that stays the same: PageRank joins each
-  vertex's rank with its out-edges. Partitioning that input on the join key,
-  next to the state (edges on `src`, ranks on `vertex_id`), keeps the join on
-  each worker every iteration. Broadcasting the input or shuffling it each
-  iteration costs more, so PlanPhysical needs to choose the input's
-  partitioning together with the state's.
 - **A broadcast value and a shuffle in one fragment.** A body fragment reads
   at most one exchange. PageRank's new rank needs both the rank arriving
   through the shuffle and a total over all workers that arrives through a
@@ -494,25 +525,6 @@ Each of these is rejected with a specific error.
   The plan's producer guarantees this, as a graph's definer guarantees its
   keys ([GraphTable.md](GraphTable.md)). Translate needs to carry the key into
   the IR for this rewrite to rely on it.
-- **A state replicated on every worker.** K-means' state is a few centroids
-  that every point needs. With the state replicated on every worker, each
-  worker sums its points by cluster and shuffles the sums to each cluster's
-  owner, and the owner broadcasts the cluster's new centroid
-  ([FixedPoint-kmeans.md](FixedPoint-kmeans.md)).
-  - PlanPhysical plans the step both as a partitioned loop and with a
-    replicated state, and keeps the one whose exchanges move fewer bytes per
-    iteration. Connected components keeps its partitioned loop; PageRank and
-    k-means, for which a partitioned loop does not plan, get a replicated
-    state when it fits `broadcast_size_limit`.
-  - Over a replicated input, an operator runs on each worker and its output
-    is replicated; a replicated relation is never repartitioned or gathered,
-    which would count its rows once per worker.
-  - Worker 0 evaluates the convergence over its replica and sends the verdict
-    to the other workers, and emits the loop's output. Nothing relies on the
-    replicas being identical.
-
-  With several workers, PageRank and k-means run on one task until
-  PlanPhysical has this placement.
 - **Estimates for a replaced state.** In replace mode, a read of the state
   sees the anchor's rows in the first iteration. The state keeps that many
   rows in every iteration when a path leads from the step's output down to a

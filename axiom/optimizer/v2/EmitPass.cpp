@@ -2154,7 +2154,11 @@ std::optional<FragmentType> fragmentTypeContribution(NodeCP node) {
       return FragmentType::kSingle;
     case NodeType::kFixedPoint:
       // The loop runs on the tasks that run its anchor; its step and
-      // convergence run in sub-tasks of those tasks.
+      // convergence run in sub-tasks of those tasks. A loop over a replicated
+      // state runs on as many tasks as its step's shuffles address.
+      if (node->as<FixedPoint>()->replicatesState()) {
+        return FragmentType::kFixed;
+      }
       return fragmentTypeContribution(node->as<FixedPoint>()->anchor());
     default: {
       std::optional<FragmentType> result;
@@ -2701,10 +2705,14 @@ velox::core::PlanNodePtr Emitter::emitFixedPoint(const FixedPoint& fixedPoint) {
   auto schema = makeRowType(fixedPoint.outputColumns());
 
   // A convergence cut at a gather runs its last plan on worker 0 and shares
-  // the answer.
+  // the answer. Over a replicated state, worker 0 runs the convergence over
+  // its own replica and shares the answer.
   const auto maxIterations = fixedPoint.maxIterations();
+  const bool replicated = fixedPoint.replicatesState();
   auto convergence = verdict == nullptr
       ? velox::core::ConvergenceConfig::whenDeltaEmpty(maxIterations)
+      : replicated ? velox::core::ConvergenceConfig::workerZeroVerdict(
+                         std::move(verdict), maxIterations)
       : partials.empty()
       ? velox::core::ConvergenceConfig::converging(
             std::move(verdict), maxIterations)
@@ -2727,7 +2735,8 @@ velox::core::PlanNodePtr Emitter::emitFixedPoint(const FixedPoint& fixedPoint) {
       std::move(stateDeclarations),
       std::move(plans),
       std::move(convergence),
-      stateName);
+      stateName,
+      /*outputOnWorkerZero=*/replicated);
 }
 
 velox::core::PlanNodePtr Emitter::emitWorkingTable(

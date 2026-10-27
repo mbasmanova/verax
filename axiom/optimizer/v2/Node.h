@@ -1577,6 +1577,13 @@ class Join : public Node {
   /// must be consumed once across all left partitions.
   static bool canBroadcastBuild(velox::core::JoinType joinType);
 
+  /// Returns whether replicating the left input while leaving the right input
+  /// partitioned preserves results, the mirror of `canBroadcastBuild`. Output
+  /// rows must be tied to individual right rows, as in inner, right, right semi
+  /// and right anti joins. A left semi or anti join decides each left row from
+  /// all right rows, which no one worker holds.
+  static bool canBroadcastProbe(velox::core::JoinType joinType);
+
   /// Returns whether empty inputs imply an empty join result.
   static bool isKnownEmpty(
       velox::core::JoinType joinType,
@@ -2831,14 +2838,19 @@ AXIOM_DECLARE_ENUM_NAME(FixedPointMode);
 /// latest-delta `WorkingTable[counter]` as the step. The fixed point outputs
 /// all rows accumulated from the anchor and successive step deltas.
 ///
-/// With several workers the loop runs in one of two ways:
+/// With several workers the loop runs in one of three ways:
 /// - Independent loops: each task that runs the anchor loops over its own
 ///   anchor rows and stops when its own delta is empty.
 /// - One partitioned loop: the step repartitions rows across all workers, which
 ///   run in lockstep and stop together, on the loop's `convergence`.
-/// The step's `WorkingTable`s say where the state lives. In either mode, the
-/// output is partitioned as `UnionAll` would be over the anchor's rows and the
-/// step's.
+/// - One loop with the state replicated on every worker: the step runs on all
+///   workers in lockstep and replicates its output. Worker 0 evaluates the
+///   `convergence` over its own replica and decides for all workers, and only
+///   worker 0 emits the output.
+/// The step's `WorkingTable`s say where the state lives. The output is
+/// partitioned as `UnionAll` would be over the anchor's rows and the step's,
+/// except that a replicated state, emitted on worker 0 only, claims no
+/// placement.
 ///
 /// `convergence` reads the latest delta, which in kReplace is the state, and
 /// produces one BOOLEAN row. A partitioned loop needs it: its workers stop
@@ -2860,7 +2872,8 @@ AXIOM_DECLARE_ENUM_NAME(FixedPointMode);
 /// - `recursiveNumDrivers`, when set by physical planning, is one.
 /// - When the step's `WorkingTable`s are gathered or hash-partitioned, `anchor`
 ///   and `step` arrive partitioned the same way, on their columns at the
-///   positions of the state's keys.
+///   positions of the state's keys. When they are replicated, `anchor` and
+///   `step` arrive replicated.
 /// - `convergence`, when set, reads this fixed point's state as the step does
 ///   and outputs one BOOLEAN column. In kAppend, it reads the state through one
 ///   `WorkingTable`.
@@ -2946,6 +2959,10 @@ class FixedPoint : public Node {
   FixedPointMode mode() const {
     return mode_;
   }
+
+  /// True when every worker holds all of the state: the step's
+  /// `WorkingTable`s are replicated.
+  bool replicatesState() const;
 
   /// True when 'node' has an Exchange on its path from a read of recursive
   /// state: the rows of the state move between workers.

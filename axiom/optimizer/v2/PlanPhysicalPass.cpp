@@ -944,11 +944,25 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
       for (const auto& [readColumn, stateColumn] : readToState) {
         readColumns.add(readColumn);
       }
+      NodeCP partitionedLoop = nullptr;
       if (auto keys = firstStateKeys(node->step(), readColumns)) {
-        if (NodeCP loop = planPartitionedLoop(
-                node, anchor, exprFactory_.replace(*keys, readToState))) {
-          return loop;
-        }
+        partitionedLoop = planPartitionedLoop(
+            node, anchor, exprFactory_.replace(*keys, readToState));
+      }
+      NodeCP replicatedLoop = planReplicatedLoop(node, anchor);
+      if (partitionedLoop != nullptr && replicatedLoop != nullptr) {
+        const auto partitionedBytes = bytesPerIteration(partitionedLoop);
+        const auto replicatedBytes = bytesPerIteration(replicatedLoop);
+        return partitionedBytes.has_value() && replicatedBytes.has_value() &&
+                *replicatedBytes < *partitionedBytes
+            ? replicatedLoop
+            : partitionedLoop;
+      }
+      if (partitionedLoop != nullptr) {
+        return partitionedLoop;
+      }
+      if (replicatedLoop != nullptr) {
+        return replicatedLoop;
       }
     }
 
@@ -1079,6 +1093,110 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
         .recursiveNumDrivers = kRecursiveNumDrivers,
         .convergence = convergence,
     });
+  }
+
+  // Plans 'node' as one loop over all workers with its state replicated on
+  // every worker. The anchor is broadcast, every read of the state holds all of
+  // it, and the step is planned with the query's workers; its output is
+  // broadcast for the next iteration unless it is replicated already. The
+  // convergence is planned over the state with no exchange: worker 0 decides on
+  // its own replica. Returns null when the loop appends to its state, the state
+  // or another input the step broadcasts does not fit `broadcast_size_limit`,
+  // the planned step moves no rows between workers, so that every worker would
+  // repeat the same work, or the convergence moves the state.
+  NodeCP planReplicatedLoop(const FixedPoint* node, NodeCP anchor) {
+    if (node->mode() != FixedPointMode::kReplace || !broadcastFits(node)) {
+      return nullptr;
+    }
+    anchor = exchange({anchor, Partitioning::globalBroadcast()});
+
+    PhysicalPlanRewriter replicated{
+        builder(),
+        simplifier_,
+        estimateProvider_,
+        options_,
+        numWorkers_,
+        /*numDrivers=*/kRecursiveNumDrivers,
+        oneTask_,
+        [this](NodeCP input) { return rewrite(input); },
+        Partitioning::globalBroadcast()};
+    NodeCP step = replicated.rewrite(node->step());
+    if (!step->physicalProperties().globalPartition.is(
+            PartitionKind::kBroadcast)) {
+      step = exchange(
+          {step, Partitioning::globalBroadcast()},
+          /*oneDriverPerTask=*/kRecursiveNumDrivers == 1);
+    }
+    NodeCP convergence = replicated.rewrite(
+        node->convergence() != nullptr ? node->convergence()
+                                       : emptyDeltaCheck(node));
+    if (!FixedPoint::movesState(step) || !broadcastsFit(step) ||
+        FixedPoint::movesState(convergence)) {
+      return nullptr;
+    }
+    ExchangeProbeRewriter probeRewriter{builder()};
+    step = probeRewriter.rewrite(step);
+    if (probeRewriter.unswappable()) {
+      return nullptr;
+    }
+
+    return builder().make<FixedPoint>({
+        .anchor = anchor,
+        .step = step,
+        .name = node->name(),
+        .outputColumns = node->outputColumns(),
+        .sourceColumns = node->sourceColumns(),
+        .maxIterations = node->maxIterations(),
+        .failAtBound = node->failAtBound(),
+        .mode = node->mode(),
+        .recursiveNumDrivers = kRecursiveNumDrivers,
+        .convergence = convergence,
+    });
+  }
+
+  // Returns the bytes the step and the convergence of 'loop', a placed fixed
+  // point, move between workers in each iteration: each exchange of rows
+  // derived from the state moves its input's estimated size, once per worker
+  // for a broadcast. Exchanges of inputs that read no state run once and are
+  // left out. Unknown when an exchanged input's size is.
+  std::optional<float> bytesPerIteration(NodeCP loop) {
+    std::optional<float> total = 0;
+    std::function<void(NodeCP)> visit = [&](NodeCP node) {
+      if (node->is(NodeType::kExchange)) {
+        const auto* exchange = node->as<Exchange>();
+        if (!exchange->input()->requiredStates().empty()) {
+          const auto size = estimatedSize(exchange->input());
+          if (!size.has_value() || !total.has_value()) {
+            total = std::nullopt;
+          } else {
+            *total += exchange->partitioning().is(PartitionKind::kBroadcast)
+                ? *size * numWorkers_
+                : *size;
+          }
+        }
+      }
+      for (NodeCP input : node->inputs()) {
+        visit(input);
+      }
+    };
+    const auto* fixedPoint = loop->as<FixedPoint>();
+    visit(fixedPoint->step());
+    visit(fixedPoint->convergence());
+    return total;
+  }
+
+  // True when every broadcast exchange in 'node' copies an input that fits
+  // `broadcast_size_limit`.
+  bool broadcastsFit(NodeCP node) {
+    if (node->is(NodeType::kExchange)) {
+      const auto* exchange = node->as<Exchange>();
+      if (exchange->partitioning().is(PartitionKind::kBroadcast) &&
+          !broadcastFits(exchange->input())) {
+        return false;
+      }
+    }
+    return std::ranges::all_of(
+        node->inputs(), [&](NodeCP input) { return broadcastsFit(input); });
   }
 
   // Returns a check over 'node''s latest delta that is true when the delta has
@@ -1321,6 +1439,10 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
 
   // Adds the exchanges required by a join outside DPhyp and translates it.
   NodeCP makePhysicalJoin(Join::Key join) {
+    if (numWorkers_ > 1 &&
+        (isReplicated(join.left) || isReplicated(join.right))) {
+      return makeDriverPhysicalJoin(placeReplicatedJoin(std::move(join)));
+    }
     if (numWorkers_ > 1) {
       if (!join.leftKeys.empty()) {
         // An already partitioned side can co-locate the join without a full
@@ -1363,6 +1485,31 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
       }
     }
     return makeDriverPhysicalJoin(std::move(join));
+  }
+
+  // Places a join with an input replicated on every worker. A replicated
+  // build joins a probe where the probe's rows are, when the join preserves no
+  // build rows, and a replicated probe joins a scattered build where the
+  // build's rows are, when the join allows it (see
+  // `Join::canBroadcastProbe`). Otherwise the other input is broadcast too
+  // and the join runs on each worker over both copies.
+  Join::Key placeReplicatedJoin(Join::Key join) {
+    const bool leftReplicated = isReplicated(join.left);
+    const bool rightReplicated = isReplicated(join.right);
+    if ((leftReplicated && rightReplicated) ||
+        (rightReplicated && Join::canBroadcastBuild(join.joinType)) ||
+        (leftReplicated && Join::canBroadcastProbe(join.joinType))) {
+      return join;
+    }
+    NodeCP& scattered = leftReplicated ? join.right : join.left;
+    scattered = exchange({scattered, Partitioning::globalBroadcast()});
+    return join;
+  }
+
+  // True when every task holds all of 'input'.
+  static bool isReplicated(NodeCP input) {
+    return input->physicalProperties().globalPartition.is(
+        PartitionKind::kBroadcast);
   }
 
   // Keeps the written join tree while choosing the build side automatically.
@@ -1811,11 +1958,20 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
         PartitionKind::kGather);
   }
 
+  // True when each task that runs 'input' holds all of its rows: gathered on
+  // one task, or replicated on every task. An operator over such an input runs
+  // on each of those tasks over all the rows, with no exchange.
+  static bool holdsAllRows(NodeCP input) {
+    const auto& partition = input->physicalProperties().globalPartition;
+    return partition.is(PartitionKind::kGather) ||
+        partition.is(PartitionKind::kBroadcast);
+  }
+
   // Ensures all rows reach one task: reuse when 'input' is already gathered,
   // else a remote gather exchange. A no-op at a single worker, where one task
   // already holds all rows.
   NodeCP ensureGathered(NodeCP input) {
-    if (numWorkers_ == 1 || isGathered(input)) {
+    if (numWorkers_ == 1 || holdsAllRows(input)) {
       return input;
     }
     return gather(input);
@@ -1835,7 +1991,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
       NodeCP input,
       const ExprVector& keys,
       const ColumnVector& keyAliases = {}) {
-    if (numWorkers_ == 1 || isGathered(input)) {
+    if (numWorkers_ == 1 || holdsAllRows(input)) {
       return {input, keys};
     }
 
@@ -2015,7 +2171,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
   // partitioned on the keys. Callers that can avoid the shuffle by reading the
   // source grouped ask `groupedRead` after this returns true.
   bool needsShuffle(NodeCP input, const ExprVector& keys) const {
-    if (isGathered(input)) {
+    if (holdsAllRows(input)) {
       return false;
     }
     if (keys.empty()) {
@@ -2209,7 +2365,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
     if (needsDriverMerge) {
       sorted = driverGatherMerge(sorted, node->orderKeys(), node->orderTypes());
     }
-    if (numWorkers_ == 1 || isGathered(input)) {
+    if (numWorkers_ == 1 || holdsAllRows(input)) {
       return sorted;
     }
     return gatherMerge(sorted, node->orderKeys(), node->orderTypes());
@@ -2284,7 +2440,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
       input = rewrite(node->input(), context);
     }
 
-    const bool needsGlobalGather = numWorkers_ > 1 && !isGathered(input);
+    const bool needsGlobalGather = numWorkers_ > 1 && !holdsAllRows(input);
     if (needsGlobalGather && !node->isBounded()) {
       return builder().make<Limit>(
           {gather(input), node->offset(), node->count()});
@@ -2360,7 +2516,7 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
   // rows before the global merge, and the final Limit applies offset/count.
   NodeCP rewriteTopN(const TopN* node, NoContext& context) override {
     NodeCP newInput = rewrite(node->input(), context);
-    const bool needsGlobalGather = numWorkers_ > 1 && !isGathered(newInput);
+    const bool needsGlobalGather = numWorkers_ > 1 && !holdsAllRows(newInput);
     const int64_t taskOffset = needsGlobalGather ? 0 : node->offset();
     const int64_t taskCount =
         needsGlobalGather ? node->offsetPlusCount() : node->count();
@@ -2416,6 +2572,18 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
     }
 
     if (numWorkers_ > 1) {
+      // A leg replicated on every worker unions with the others only where
+      // they are on every worker too, so the others are broadcast. A loop over
+      // a replicated state checks that each broadcast fits.
+      if (std::ranges::any_of(newInputs, isReplicated) &&
+          !std::ranges::all_of(newInputs, isReplicated)) {
+        for (NodeCP& input : newInputs) {
+          if (!isReplicated(input)) {
+            input = exchange({input, Partitioning::globalBroadcast()});
+          }
+        }
+      }
+
       // Keep the legs un-shuffled when they co-bucket: the union derives a
       // bucketed partitioning iff every leg is bucketed on leg columns mapping
       // to the same output columns with copartitionable types, and then all
@@ -2429,7 +2597,8 @@ class PhysicalPlanRewriter : public NodeRewriter<> {
       // the union itself runs as a single task. See DistributedExecution.md
       // section 1.
       if (partition.is(PartitionKind::kPartitioned) ||
-          partition.is(PartitionKind::kGather)) {
+          partition.is(PartitionKind::kGather) ||
+          partition.is(PartitionKind::kBroadcast)) {
         return coalesced;
       }
 

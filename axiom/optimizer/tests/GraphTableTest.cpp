@@ -130,15 +130,14 @@ TEST_F(GraphTableTest, partitionedRepetition) {
           "COLUMNS (a.name AS a, b.name AS b))",
           kPeopleGraph));
   auto matcher =
-      matchFixedPoint(
-          startFixedPoint("walk")
-              .outputState(
-                  /*append=*/true,
-                  matchPerson()
-                      .project({"name", "id AS vertex", "0"})
-                      .shuffle({"vertex"}))
-              .hashTableState(matchScan("knows").shuffle({"src"}))
-              .partitionedPlans(matchDelta("walk", {"name", "vertex", "hops"})
+      matchFixedPoint(startFixedPoint("walk")
+                          .outputState(
+                              /*append=*/true,
+                              matchPerson()
+                                  .project({"name", "id AS vertex", "0"})
+                                  .shuffle({"vertex"}))
+                          .hashTableState(matchScan("knows").shuffle({"src"}))
+                          .plan(matchDelta("walk", {"name", "vertex", "hops"})
                                     .filter("hops < 2")
                                     .stateHashJoin({"vertex"})
                                     .project(
@@ -146,7 +145,7 @@ TEST_F(GraphTableTest, partitionedRepetition) {
                                          "dst AS reached",
                                          "axiom_bigint_add(hops, 1)"})
                                     .shuffle({"reached"}))
-              .convergeOnEmptyEverywhere({.maxIterations = 3}))
+                          .convergeOnEmptyEverywhere({.maxIterations = 3}))
           .aliases({"name", "vertex", "hops"})
           .filter("hops >= 1")
           .hashJoinInner(

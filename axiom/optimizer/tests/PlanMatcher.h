@@ -228,8 +228,11 @@ class FixedPointMatch {
       std::string alias,
       PlanMatcherBuilder initialPlan);
 
-  /// Matches the next per-iteration plan — for a recursive CTE, the step — in
-  /// call order.
+  /// Matches the next per-iteration plans, in call order — for a recursive CTE
+  /// on one task, the step. Each shuffle() or broadcast() in 'body' is the
+  /// boundary between two consecutive plans, which the loop runs in that
+  /// order, the later one reading the earlier through an Exchange. A 'body'
+  /// with no boundary matches one plan.
   FixedPointMatch& plan(PlanMatcherBuilder body);
 
   /// Assertions about convergence beyond how the loop decides to stop.
@@ -252,10 +255,15 @@ class FixedPointMatch {
       PlanMatcherBuilder convergence,
       Convergence assertions = {});
 
-  /// Matches a partitioned loop's per-iteration plans as one chain: each
-  /// shuffle() in 'body' is the boundary between two consecutive plans, which
-  /// the loop runs in that order.
-  FixedPointMatch& partitionedPlans(PlanMatcherBuilder body);
+  /// Matches the convergence of a loop whose state every worker holds: worker
+  /// 0 runs 'convergence' over its own state, with no convergence plans
+  /// before it, and shares the answer.
+  FixedPointMatch& convergeOnWorkerZero(
+      PlanMatcherBuilder convergence,
+      Convergence assertions = {});
+
+  /// Asserts that only worker 0 emits the output state.
+  FixedPointMatch& outputOnWorkerZero();
 
   /// Asserts a partitioned loop stops once an iteration produces no rows on
   /// any worker: every worker counts the rows of its delta, and worker 0 adds
@@ -287,16 +295,20 @@ class FixedPointMatch {
     return stopWhenDeltaEmpty_;
   }
 
-  const std::shared_ptr<PlanMatcher>& partitionedPlans() const {
-    return partitionedPlans_;
-  }
-
   const std::shared_ptr<PlanMatcher>& convergence() const {
     return convergence_;
   }
 
   bool stopWhenEmptyEverywhere() const {
     return stopWhenEmptyEverywhere_;
+  }
+
+  const std::shared_ptr<PlanMatcher>& workerZeroVerdict() const {
+    return workerZeroVerdict_;
+  }
+
+  bool outputOnWorkerZero() const {
+    return outputOnWorkerZero_;
   }
 
   const std::optional<int32_t>& maxIterations() const {
@@ -314,8 +326,9 @@ class FixedPointMatch {
   std::vector<std::pair<std::string, std::shared_ptr<PlanMatcher>>>
       vectorStates_;
   std::vector<std::shared_ptr<PlanMatcher>> plans_;
-  std::shared_ptr<PlanMatcher> partitionedPlans_;
   std::shared_ptr<PlanMatcher> convergence_;
+  std::shared_ptr<PlanMatcher> workerZeroVerdict_;
+  bool outputOnWorkerZero_{false};
   bool stopWhenDeltaEmpty_{false};
   bool stopWhenEmptyEverywhere_{false};
   std::optional<int32_t> maxIterations_;

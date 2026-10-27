@@ -764,6 +764,8 @@ class Enumerator {
   // exists, else the cheapest wrapped in a repartition exchange to `required`.
   // Null when `cover` has no costable plan (e.g. a relation with no stats), so
   // the caller drops the strategy rather than building on an unrankable child.
+  // Null too when that plan is replicated on every worker: repartitioning or
+  // gathering it would copy each row once per worker.
   MemoOpCP bestOnPartitioning(RelationSet cover, Partitioning required) {
     const auto it = memo_.find(cover);
     if (it == memo_.end()) {
@@ -776,6 +778,9 @@ class Enumerator {
     }
     if (selection.plan->outputPartitioning().sameClassAs(required)) {
       return selection.plan;
+    }
+    if (selection.plan->outputPartitioning().is(PartitionKind::kBroadcast)) {
+      return nullptr;
     }
     return makeExchange(selection.plan, std::move(required), selection.cost);
   }
@@ -873,7 +878,8 @@ class Enumerator {
 
   // Cheapest plan for `cover` copied to every task of the stage the probe
   // runs in, whose rows are 'probePartitioning'. A stage on one task receives
-  // it by a gather, or by no exchange when the plan is already there. Null
+  // it by a gather, or by no exchange when the plan is already there. A plan
+  // every worker already holds needs no exchange. Null
   // when `cover` has no costable plan, or when its estimated size exceeds the
   // broadcast limit (it would not fit in each task's memory) — the caller then
   // relies on the co-partition candidate.
@@ -891,6 +897,10 @@ class Enumerator {
     if (!CostModel::broadcastSizeIfFits(base, graph_, broadcastSizeLimit_)
              .has_value()) {
       return nullptr;
+    }
+    if (base->outputPartitioning().is(PartitionKind::kBroadcast) &&
+        !probePartitioning.is(PartitionKind::kGather)) {
+      return base;
     }
     const Partitioning replicated =
         Partitioning::globalReplicatedTo(probePartitioning);
@@ -1214,6 +1224,52 @@ class Enumerator {
         addDistributedJoinCandidate(
             gatheredLeft,
             gatheredRight,
+            edgeIndex,
+            joinType,
+            combined,
+            reversedAnti,
+            keyEdges,
+            filterEdges,
+            leftKeys,
+            rightKeys);
+      }
+    }
+
+    // When an input is replicated on every worker, the other input, if small
+    // enough to copy whole, is broadcast too: the join runs on each worker
+    // over both copies and its output is replicated. Every worker holds every
+    // row of both inputs, so this holds for every join type, including one
+    // that preserves the replicated side.
+    const bool leftReplicated =
+        left->outputPartitioning().is(PartitionKind::kBroadcast);
+    const bool rightReplicated =
+        right->outputPartitioning().is(PartitionKind::kBroadcast);
+    if (leftReplicated || rightReplicated) {
+      const auto broadcast = Partitioning::globalBroadcast();
+      MemoOpCP replicatedLeft =
+          leftReplicated ? left : replicatedChild(left->cover(), broadcast);
+      MemoOpCP replicatedRight =
+          rightReplicated ? right : replicatedChild(right->cover(), broadcast);
+      if (replicatedLeft != nullptr && replicatedRight != nullptr) {
+        addDistributedJoinCandidate(
+            replicatedLeft,
+            replicatedRight,
+            edgeIndex,
+            joinType,
+            combined,
+            reversedAnti,
+            keyEdges,
+            filterEdges,
+            leftKeys,
+            rightKeys);
+      }
+      // A replicated probe joins a scattered build where the build's rows
+      // are (see `Join::canBroadcastProbe`).
+      if (leftReplicated && !rightReplicated &&
+          Join::canBroadcastProbe(joinType) && !reversedAnti) {
+        addDistributedJoinCandidate(
+            left,
+            right,
             edgeIndex,
             joinType,
             combined,
