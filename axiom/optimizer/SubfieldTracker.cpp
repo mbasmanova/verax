@@ -267,8 +267,10 @@ void SubfieldTracker::markFieldAccessed(
     // The source is a lambda arg. We apply the path to the corresponding
     // container arg of the 2nd order function call that has the lambda.
     const auto* metadata = functionMetadata(toName(source.callName));
-    if (metadata != nullptr) {
-      const auto* lambdaInfo = metadata->lambdaInfo(source.lambdaOrdinal);
+    const auto* lambdaInfo = metadata != nullptr
+        ? metadata->lambdaInfo(source.lambdaOrdinal)
+        : nullptr;
+    if (lambdaInfo != nullptr) {
       const auto nth = lambdaInfo->argOrdinal[ordinal];
 
       markSubfields(

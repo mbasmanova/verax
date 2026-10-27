@@ -16,6 +16,8 @@
 
 #include "axiom/functions/prestosql/PrestoFunctions.h"
 
+#include <concepts>
+
 #include <fmt/format.h>
 
 #include "velox/expression/ExprConstants.h"
@@ -26,6 +28,63 @@ using optimizer::FunctionMetadata;
 using optimizer::LambdaArg;
 using optimizer::LambdaInfo;
 namespace lp = facebook::axiom::logical_plan;
+
+namespace {
+
+using DrawnFrom = FunctionMetadata::DrawnFrom;
+
+// Registers the functions whose result values are some of an argument's
+// values.
+void registerDrawnFrom(
+    optimizer::FunctionRegistry& registry,
+    const auto& fullName) {
+  // Registers a function whose every overload draws the same way.
+  const auto add = [&](std::string_view name,
+                       std::same_as<DrawnFrom> auto... drawnFrom) {
+    auto metadata = std::make_unique<FunctionMetadata>();
+    metadata->drawnFrom = [=](auto) {
+      return std::vector<DrawnFrom>{drawnFrom...};
+    };
+    registry.registerFunction(fullName(name), std::move(metadata));
+  };
+
+  for (std::string_view name :
+       {"array_min", "array_max", "array_min_by", "array_max_by"}) {
+    add(name, DrawnFrom::resultValue().drawnFromElement(0));
+  }
+  for (std::string_view name :
+       {"filter", "array_sort", "array_distinct", "slice", "shuffle"}) {
+    add(name, DrawnFrom::resultElement().drawnFromElement(0));
+  }
+  add("map_keys", DrawnFrom::resultElement().drawnFromMapKey(0));
+  add("map_values", DrawnFrom::resultElement().drawnFromMapValue(0));
+
+  // Aggregates draw from their arguments across the group's rows.
+  for (std::string_view name : {"array_agg", "set_agg"}) {
+    add(name, DrawnFrom::resultElement().drawnFromValue(0));
+  }
+  add("map_agg",
+      DrawnFrom::resultMapKey().drawnFromValue(0),
+      DrawnFrom::resultMapValue().drawnFromValue(1));
+  add("arbitrary", DrawnFrom::resultValue().drawnFromValue(0));
+
+  // min(x) returns one of x's values; min(x, n) returns an array of them.
+  // min_by(x, y) and min_by(x, y, n) likewise.
+  for (auto [name, numArgs] :
+       std::initializer_list<std::pair<std::string_view, size_t>>{
+           {"min", 1}, {"max", 1}, {"min_by", 2}, {"max_by", 2}}) {
+    auto metadata = std::make_unique<FunctionMetadata>();
+    metadata->drawnFrom = [numArgs](auto argTypes) {
+      return std::vector<DrawnFrom>{
+          argTypes.size() == numArgs
+              ? DrawnFrom::resultValue().drawnFromValue(0)
+              : DrawnFrom::resultElement().drawnFromValue(0)};
+    };
+    registry.registerFunction(fullName(name), std::move(metadata));
+  }
+}
+
+} // namespace
 
 // static
 void PrestoFunctions::registerAll(
@@ -113,6 +172,8 @@ void PrestoFunctions::registerAll(
          std::span<const velox::Type* const> /*argTypes*/) {
         return velox::Variant::create<velox::TypeKind::BIGINT>(0);
       });
+
+  registerDrawnFrom(registry, fullName);
 
   registry.registerReversibleFunction(fullName("eq"));
   registry.registerReversibleFunction(fullName("lt"), fullName("gt"));

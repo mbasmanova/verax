@@ -353,7 +353,9 @@ Estimate EstimateProvider::compute(NodeCP node) {
         } else {
           result.constraints.insert_or_assign(
               outputColumns[i]->id(),
-              Value(outputColumns[i]->value().type, numGroups));
+              estimator.estimateAggregate(
+                  *aggregate->aggregates()[i - groupingKeys.size()],
+                  numGroups));
         }
       }
       return result;

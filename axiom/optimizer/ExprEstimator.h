@@ -38,6 +38,14 @@ class ExprEstimator {
   /// recorded estimate.
   Value estimate(ExprCP expr, bool update = false);
 
+  /// Returns the estimate of 'aggregate's output, one value per group, given
+  /// the number of groups. The arguments are estimated over the aggregation's
+  /// input. For example, max(x) returns one of x's values, so its NDV, min and
+  /// max are x's (see FunctionMetadata::DrawnFrom).
+  Value estimateAggregate(
+      const Aggregate& aggregate,
+      std::optional<float> numGroups);
+
  private:
   // Returns the estimate of 'call' from its arguments' estimates.
   Value estimateCall(const Call& call, bool update);
