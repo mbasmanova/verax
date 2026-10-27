@@ -213,6 +213,18 @@ TEST_F(EstimateProviderTest, projection) {
         const Value& c = column(root, estimate, "c");
         EXPECT_EQ(c.cardinality, 2);
       });
+
+  // A lambda's inputs are the columns it reads from outside: 'a', 1'000
+  // values.
+  verifyEstimate(
+      "SELECT transform(ARRAY[CAST(1 AS BIGINT)], x -> x + a) AS y FROM t",
+      10'000,
+      [&](NodeCP root, const Estimate& estimate) {
+        ASSERT_EQ(1, root->outputColumns().size());
+
+        const Value& y = column(root, estimate, "y");
+        EXPECT_EQ(y.cardinality, 1'000);
+      });
 }
 
 TEST_F(EstimateProviderTest, aggregate) {
@@ -671,6 +683,53 @@ TEST_F(EstimateProviderTest, rowField) {
         EXPECT_EQ(x.cardinality, 100);
         AXIOM_ASSERT_RANGE(x, 0, 99);
         EXPECT_EQ(x.nullFraction, 0);
+      });
+}
+
+// A function or aggregate whose values are drawn from an argument carries
+// that argument's NDV and range. The grouping key is a field of one of the
+// aggregated rows, whose 'a' has 5 values from 0 to 4, so there are 5 groups.
+TEST_F(EstimateProviderTest, drawnFrom) {
+  verifyEstimate(
+      "SELECT array_min_by(c.centers, x -> abs(x[2] - t.b))[1] AS cluster "
+      "FROM t "
+      "CROSS JOIN (SELECT array_agg(ROW(a, b)) AS centers FROM t WHERE a < 5) c "
+      "GROUP BY 1",
+      5,
+      [&](NodeCP root, const Estimate& estimate) {
+        ASSERT_EQ(1, root->outputColumns().size());
+
+        const Value& cluster = column(root, estimate, "cluster");
+        EXPECT_EQ(cluster.cardinality, 5);
+        AXIOM_ASSERT_RANGE(cluster, 0, 4);
+      });
+
+  // max(x, n) returns an array of x's values.
+  verifyEstimate(
+      "SELECT max(a, 3) AS m FROM t WHERE a < 10",
+      1,
+      [&](NodeCP root, const Estimate& estimate) {
+        ASSERT_EQ(1, root->outputColumns().size());
+
+        const Value* element = column(root, estimate, "m").child(0);
+        ASSERT_NE(element, nullptr);
+        EXPECT_EQ(element->cardinality, 10);
+        AXIOM_ASSERT_RANGE(*element, 0, 9);
+      });
+
+  // An element of a literal array is one of its 3 values, from 1 to 3.
+  verifyEstimate(
+      "SELECT element_at("
+      "  ARRAY[CAST(1 AS BIGINT), CAST(2 AS BIGINT), CAST(3 AS BIGINT)],"
+      "  a % 3 + 1) AS x "
+      "FROM t",
+      10'000,
+      [&](NodeCP root, const Estimate& estimate) {
+        ASSERT_EQ(1, root->outputColumns().size());
+
+        const Value& x = column(root, estimate, "x");
+        EXPECT_EQ(x.cardinality, 3);
+        AXIOM_ASSERT_RANGE(x, 1, 3);
       });
 }
 

@@ -130,8 +130,8 @@ class Call;
 /// call has no metadata and when its metadata leaves the cost at the default.
 constexpr float kDefaultCallCost = 5;
 
-/// Describes functions accepting lambdas and functions with special treatment
-/// of subfields.
+/// Describes functions accepting lambdas, functions with special treatment of
+/// subfields, and where a function's result values come from.
 struct FunctionMetadata {
   bool processSubfields() const {
     return subfieldArg.has_value() || !fieldIndexForArg.empty() ||
@@ -179,9 +179,6 @@ struct FunctionMetadata {
   /// Translates a path over the function result to a path over an argument.
   ValuePathToArgPath valuePathToArgPath;
 
-  /// Bits of FunctionSet for the function.
-  FunctionSet functionSet;
-
   /// Static fixed cost for processing one row.
   float cost{kDefaultCallCost};
 
@@ -194,6 +191,60 @@ struct FunctionMetadata {
       const logical_plan::CallExpr* call,
       std::vector<PathCP>& paths)>
       explode;
+
+  /// Relates a subfield of the result to a subfield of an argument: each
+  /// non-null value of the result's subfield is one of the values of the
+  /// argument's subfield. For an aggregate, the argument's values are taken
+  /// across the group's rows. A subfield is a number: 0 is the value itself;
+  /// for an array, 1 is its elements; for a map, 1 is its keys and 2 its
+  /// values; for a row, i + 1 is field i.
+  ///
+  /// For example, map_values(m) returns an array whose elements are some of
+  /// m's values: DrawnFrom::resultElement().drawnFromMapValue(0).
+  struct DrawnFrom {
+    static DrawnFrom resultValue() {
+      return {.resultSubfield = 0};
+    }
+
+    static DrawnFrom resultElement() {
+      return {.resultSubfield = 1};
+    }
+
+    static DrawnFrom resultMapKey() {
+      return {.resultSubfield = 1};
+    }
+
+    static DrawnFrom resultMapValue() {
+      return {.resultSubfield = 2};
+    }
+
+    DrawnFrom drawnFromValue(uint32_t arg) const {
+      return {resultSubfield, arg, 0};
+    }
+
+    DrawnFrom drawnFromElement(uint32_t arg) const {
+      return {resultSubfield, arg, 1};
+    }
+
+    DrawnFrom drawnFromMapKey(uint32_t arg) const {
+      return {resultSubfield, arg, 1};
+    }
+
+    DrawnFrom drawnFromMapValue(uint32_t arg) const {
+      return {resultSubfield, arg, 2};
+    }
+
+    uint32_t resultSubfield{0};
+    uint32_t arg{0};
+    uint32_t argSubfield{0};
+  };
+
+  using DrawnFromFunction = std::function<std::vector<DrawnFrom>(
+      std::span<const velox::Type* const> argTypes)>;
+
+  /// Returns where the result's values come from for a call with 'argTypes'.
+  /// Unset when nothing is known.
+  DrawnFromFunction drawnFrom;
 };
 
 using FunctionMetadataCP = const FunctionMetadata*;

@@ -303,10 +303,6 @@ bool isInferenceFunction(Name name) {
 }
 
 FunctionSet functionBits(Name name, bool specialForm) {
-  if (auto* md = functionMetadata(name)) {
-    return md->functionSet;
-  }
-
   FunctionSet bits;
 
   if (specialForm) {
@@ -323,7 +319,13 @@ FunctionSet functionBits(Name name, bool specialForm) {
     }
   } else {
     const auto deterministic = velox::isDeterministic(name);
-    VELOX_CHECK(deterministic.has_value(), "Function not found: {}", name);
+    if (!deterministic.has_value()) {
+      // A function known only by its metadata, such as one that translation
+      // rewrites into other expressions.
+      VELOX_CHECK_NOT_NULL(
+          functionMetadata(name), "Function not found: {}", name);
+      return bits;
+    }
     if (!deterministic.value()) {
       bits = bits | FunctionSet::kNonDeterministic;
     }
