@@ -225,6 +225,17 @@ class ControlNodeVisitor : public velox::core::PlanNodeVisitor {
         summary(ctx));
   }
 
+  void visit(const velox::core::VectorSearchJoinNode& node, Ctx& ctx)
+      const override {
+    visitJoin(
+        node,
+        "VectorSearchJoin",
+        node.joinType(),
+        node.leftKeys().size(),
+        estimate(node, ctx),
+        summary(ctx));
+  }
+
   void visit(const velox::core::OrderByNode& node, Ctx& ctx) const override {
     visitOther(node, std::nullopt, estimate(node, ctx), summary(ctx));
   }
