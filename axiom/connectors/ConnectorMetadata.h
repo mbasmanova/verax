@@ -1564,7 +1564,7 @@ class ConnectorMetadata {
   /// @param groupingKeys A RowVector with one row per stats group. Contains
   /// one column per grouping key from ConnectorWriteHandle::statsGroupingKeys,
   /// followed by a "$row_count" BIGINT column with the exact row count per
-  /// group. nullptr when there are no grouping keys.
+  /// group. nullptr when there are no grouping keys or no rows were written.
   /// @param groupStats Per-group column statistics. groupStats[i] contains
   /// per-column statistics for group i, aligned with rows in groupingKeys.
   /// Empty if no stats were collected. Each ColumnStatistics has a 'name'

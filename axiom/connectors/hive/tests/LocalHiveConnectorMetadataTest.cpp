@@ -145,13 +145,16 @@ class LocalHiveConnectorMetadataTest
   /// Write the specified data to the table with a TableWrite operation. The
   /// 'kind' specifies the type of write, for which only kCreate (new table) and
   /// kInsert (existing table) writes are supported. 'format' specifies the
-  /// storage format to write with.
+  /// storage format to write with. A write to a partitioned table reports one
+  /// stats group per partition, as the engine's does (see
+  /// ConnectorMetadata::finishWrite).
   void writeToTable(
       const TablePtr& table,
       const RowVectorPtr& values,
       WriteKind kind,
       dwio::common::FileFormat format) {
     std::string outputPath = localTablePath(table->name());
+    auto groupingKeys = partitionGroups(table, values);
     auto session = makeSession();
     auto handle = metadata_->beginWrite(
         session,
@@ -173,9 +176,30 @@ class LocalHiveConnectorMetadataTest
             session,
             handle,
             std::vector<velox::RowVectorPtr>{result},
-            nullptr,
-            {})
+            groupingKeys,
+            std::vector<std::vector<ColumnStatistics>>(
+                groupingKeys == nullptr ? 0 : groupingKeys->size()))
         .get();
+  }
+
+  // Returns the stats groups of writing 'values' to 'table': for a partitioned
+  // table, one row per partition with its keys and "$row_count". Returns
+  // nullptr for an unpartitioned table.
+  RowVectorPtr partitionGroups(
+      const TablePtr& table,
+      const RowVectorPtr& values) {
+    std::vector<std::string> keys;
+    for (const auto* column : getLayout(table)->hivePartitionColumns()) {
+      keys.push_back(column->name());
+    }
+    if (keys.empty()) {
+      return nullptr;
+    }
+    auto plan = exec::test::PlanBuilder()
+                    .values({values})
+                    .singleAggregation(keys, {"count(1) AS \"$row_count\""})
+                    .planNode();
+    return exec::test::AssertQueryBuilder(plan).copyResults(pool());
   }
 
   /// Read the specified files from the table. All the files must belong to
@@ -816,29 +840,11 @@ TEST_F(LocalHiveConnectorMetadataTest, createEmptyTable) {
       dwio::common::FileFormat::DWRF);
 }
 
+// A table created empty and then inserted into holds and reports the inserted
+// rows, partitioned or not.
 TEST_F(LocalHiveConnectorMetadataTest, createThenInsert) {
   auto tableType =
       ROW({{"key1", BIGINT()}, {"key2", BIGINT()}, {"ds", VARCHAR()}});
-
-  auto session = makeSession();
-  auto staged = metadata_->createTable(
-      session,
-      qualifiedName("test_insert"),
-      tableType,
-      /*options=*/{},
-      /*ifNotExists=*/false,
-      /*explain=*/false);
-  auto handle = metadata_->beginWrite(
-      session,
-      staged,
-      WriteKind::kCreate,
-      /*explain=*/false);
-  metadata_->finishWrite(session, handle, /*writeResults=*/{}, nullptr, {})
-      .get();
-
-  auto created = metadata_->findTable(qualifiedName("test_insert"));
-  compareTableLayout(staged, created);
-
   constexpr int32_t kInsertSize = 1024;
   auto insertData = makeRowVector(
       tableType->names(),
@@ -850,14 +856,42 @@ TEST_F(LocalHiveConnectorMetadataTest, createThenInsert) {
           makeFlatVector<StringView>(
               kInsertSize, [](auto /*row*/) { return "2022-09-01"; }),
       });
-  EXPECT_EQ(insertData->size(), kInsertSize);
-  writeToTable(
-      created, insertData, WriteKind::kInsert, dwio::common::FileFormat::DWRF);
-  compareTableData(
-      "test_insert",
-      insertData,
-      /*partitionKeys=*/{},
-      dwio::common::FileFormat::DWRF);
+
+  auto session = makeSession();
+  TablePtr created;
+  for (const bool partitioned : {false, true}) {
+    SCOPED_TRACE(partitioned);
+    const std::string name =
+        partitioned ? "test_insert_partitioned" : "test_insert";
+    folly::F14FastMap<std::string, velox::Variant> options;
+    if (partitioned) {
+      options.emplace(
+          HiveWriteOptions::kPartitionedBy, velox::Variant::array({"ds"}));
+    }
+    auto staged = folly::coro::blockingWait(metadata_->co_createEmptyTable(
+        session,
+        qualifiedName(name),
+        tableType,
+        options,
+        /*ifNotExists=*/false));
+    created = metadata_->findTable(qualifiedName(name));
+    compareTableLayout(staged, created);
+
+    writeToTable(
+        created,
+        insertData,
+        WriteKind::kInsert,
+        dwio::common::FileFormat::DWRF);
+    EXPECT_EQ(
+        metadata_->findTable(qualifiedName(name))->numRows(), kInsertSize);
+
+    std::unordered_map<std::string, std::optional<std::string>> partitionKeys;
+    if (partitioned) {
+      partitionKeys.emplace("ds", "2022-09-01");
+    }
+    compareTableData(
+        name, insertData, partitionKeys, dwio::common::FileFormat::DWRF);
+  }
 
   VELOX_ASSERT_THROW(
       metadata_->beginWrite(

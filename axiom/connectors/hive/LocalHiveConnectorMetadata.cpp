@@ -1415,7 +1415,10 @@ void LocalHiveConnectorMetadata::loadTableWithWriteTimeStats(
     LocalHiveTableLayout* layout,
     const fs::path& tablePath) {
   std::vector<PartitionStats> allPartitionStats;
-  auto persistedStats = PersistedStats::read(tablePath.string());
+  std::optional<PersistedStats> persistedStats;
+  if (layout->hivePartitionColumns().empty()) {
+    persistedStats = PersistedStats::read(tablePath.string());
+  }
   if (persistedStats.has_value()) {
     // Unpartitioned table: single entry with empty partition keys.
     PartitionStats partitionEntry;
@@ -1834,8 +1837,17 @@ RowsFuture LocalHiveConnectorMetadata::finishWrite(
   deleteDirectoryRecursive(writePath);
 
   // Persist write-time stats. For partitioned tables, write per-partition
-  // .stats files. For unpartitioned tables, write a single .stats file in
-  // the table directory. Merges with existing stats from prior writes.
+  // .stats files, none when the write has no rows. For unpartitioned tables,
+  // write a single .stats file in the table directory. Merges with existing
+  // stats from prior writes.
+  const bool partitioned = !hiveHandle->table()
+                                ->layouts()[0]
+                                ->asChecked<HiveTableLayout>()
+                                ->hivePartitionColumns()
+                                .empty();
+  VELOX_CHECK(
+      !partitioned || groupingKeys != nullptr || rows == 0,
+      "A write to a partitioned table must report its partitions");
   if (groupingKeys != nullptr) {
     VELOX_CHECK_EQ(
         groupStats.size(),
@@ -1861,7 +1873,7 @@ RowsFuture LocalHiveConnectorMetadata::finishWrite(
           fmt::format("{}/{}", targetPath, partitionDirName),
           {static_cast<uint64_t>(partitionRows), std::move(groupStats[i])});
     }
-  } else {
+  } else if (!partitioned) {
     PersistedStats::write(
         targetPath,
         {rows,
