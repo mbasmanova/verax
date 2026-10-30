@@ -468,6 +468,47 @@ connector::TablePtr SqlQueryRunner::createTable(
   return table;
 }
 
+folly::coro::Task<std::string> SqlQueryRunner::co_createVectorIndex(
+    const facebook::axiom::connector::ConnectorContextPtr& context,
+    const presto::CreateVectorIndexStatement& statement,
+    bool explain) {
+  auto metadata = ConnectorMetadataRegistry::get(statement.connectorId());
+
+  auto tableProperties = evaluateProperties(statement.properties());
+  auto indexProperties =
+      connector::VectorIndexProperties::extract(tableProperties);
+
+  const bool created = co_await metadata->co_createVectorIndex(
+      makeConnectorSession(context, statement.connectorId()),
+      statement.indexName(),
+      statement.columns(),
+      std::move(indexProperties),
+      std::move(tableProperties),
+      statement.ifNotExists(),
+      explain);
+  if (!created) {
+    co_return fmt::format(
+        "Vector index already exists: {}", statement.indexName());
+  }
+  co_return fmt::format("Created vector index: {}", statement.indexName());
+}
+
+std::string SqlQueryRunner::dropVectorIndex(
+    const facebook::axiom::connector::ConnectorContextPtr& context,
+    const presto::DropVectorIndexStatement& statement,
+    bool explain) {
+  auto metadata = ConnectorMetadataRegistry::get(statement.connectorId());
+  const bool dropped = metadata->dropVectorIndex(
+      makeConnectorSession(context, statement.connectorId()),
+      statement.indexName(),
+      statement.ifExists(),
+      explain);
+  if (!dropped) {
+    return fmt::format("Vector index doesn't exist: {}", statement.indexName());
+  }
+  return fmt::format("Dropped vector index: {}", statement.indexName());
+}
+
 std::string SqlQueryRunner::dropTable(
     const facebook::axiom::connector::ConnectorContextPtr& context,
     const presto::DropTableStatement& statement) {
@@ -1040,6 +1081,24 @@ SqlQueryRunner::co_runExplainStatement(
         drop->connectorId(),
         drop->tableName())};
     co_return;
+  } else if (statement->isCreateVectorIndex()) {
+    const auto* create = statement->as<presto::CreateVectorIndexStatement>();
+    co_await co_createVectorIndex(context, *create, /*explain=*/true);
+    co_yield SqlResultChunk{fmt::format(
+        "CREATE VECTOR INDEX {}{}.{}",
+        create->ifNotExists() ? "IF NOT EXISTS " : "",
+        create->connectorId(),
+        create->indexName())};
+    co_return;
+  } else if (statement->isDropVectorIndex()) {
+    const auto* drop = statement->as<presto::DropVectorIndexStatement>();
+    dropVectorIndex(context, *drop, /*explain=*/true);
+    co_yield SqlResultChunk{fmt::format(
+        "DROP VECTOR INDEX {}{}.{}",
+        drop->ifExists() ? "IF EXISTS " : "",
+        drop->connectorId(),
+        drop->indexName())};
+    co_return;
   } else if (statement->isAddColumn()) {
     const auto* add = statement->as<presto::AddColumnStatement>();
     addColumn(context, *add, /*explain=*/true);
@@ -1205,6 +1264,20 @@ folly::coro::Task<std::string> SqlQueryRunner::co_runDataDefinitionStatement(
     co_return dropTable(context, *drop);
   }
 
+  if (sqlStatement.isCreateVectorIndex()) {
+    co_return co_await co_createVectorIndex(
+        context,
+        *sqlStatement.as<presto::CreateVectorIndexStatement>(),
+        /*explain=*/false);
+  }
+
+  if (sqlStatement.isDropVectorIndex()) {
+    co_return dropVectorIndex(
+        context,
+        *sqlStatement.as<presto::DropVectorIndexStatement>(),
+        /*explain=*/false);
+  }
+
   if (sqlStatement.isAddColumn()) {
     const auto* add = sqlStatement.as<presto::AddColumnStatement>();
     co_return addColumn(context, *add);
@@ -1318,6 +1391,7 @@ SqlQueryRunner::co_runUnchecked(
   }
 
   if (sqlStatement.isCreateTable() || sqlStatement.isDropTable() ||
+      sqlStatement.isCreateVectorIndex() || sqlStatement.isDropVectorIndex() ||
       sqlStatement.isAddColumn() || sqlStatement.isCreateSchema() ||
       sqlStatement.isDropSchema()) {
     co_yield SqlResultChunk{

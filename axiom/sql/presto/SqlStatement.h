@@ -42,6 +42,8 @@ enum class SqlStatementKind {
   kInsert,
   kDelete,
   kDropTable,
+  kCreateVectorIndex,
+  kDropVectorIndex,
   kCreateSchema,
   kDropSchema,
   kExplain,
@@ -88,6 +90,14 @@ class SqlStatement {
 
   bool isDropTable() const {
     return kind_ == SqlStatementKind::kDropTable;
+  }
+
+  bool isCreateVectorIndex() const {
+    return kind_ == SqlStatementKind::kCreateVectorIndex;
+  }
+
+  bool isDropVectorIndex() const {
+    return kind_ == SqlStatementKind::kDropVectorIndex;
   }
 
   bool isCreateSchema() const {
@@ -387,6 +397,87 @@ class DropTableStatement : public SqlStatement {
  private:
   const std::string connectorId_;
   const facebook::axiom::SchemaTableName tableName_;
+  const bool ifExists_;
+};
+
+/// CREATE VECTOR INDEX. 'columns' are the columns an INSERT into the index
+/// provides (see ConnectorMetadata::co_createVectorIndex).
+class CreateVectorIndexStatement : public SqlStatement {
+ public:
+  CreateVectorIndexStatement(
+      std::string connectorId,
+      facebook::axiom::SchemaTableName indexName,
+      facebook::velox::RowTypePtr columns,
+      std::unordered_map<std::string, facebook::axiom::logical_plan::ExprPtr>
+          properties,
+      bool ifNotExists);
+
+  const std::string& connectorId() const {
+    return connectorId_;
+  }
+
+  const facebook::axiom::SchemaTableName& indexName() const {
+    return indexName_;
+  }
+
+  const facebook::velox::RowTypePtr& columns() const {
+    return columns_;
+  }
+
+  /// Properties of the index and of its tables, unevaluated. See
+  /// CreateTableStatement::properties().
+  const std::unordered_map<std::string, facebook::axiom::logical_plan::ExprPtr>&
+  properties() const {
+    return properties_;
+  }
+
+  bool ifNotExists() const {
+    return ifNotExists_;
+  }
+
+ private:
+  const std::string connectorId_;
+  const facebook::axiom::SchemaTableName indexName_;
+  const facebook::velox::RowTypePtr columns_;
+  const std::unordered_map<std::string, facebook::axiom::logical_plan::ExprPtr>
+      properties_;
+  const bool ifNotExists_;
+};
+
+/// DROP VECTOR INDEX.
+class DropVectorIndexStatement : public SqlStatement {
+ public:
+  DropVectorIndexStatement(
+      std::string connectorId,
+      facebook::axiom::SchemaTableName indexName,
+      bool ifExists)
+      : SqlStatement(
+            SqlStatementKind::kDropVectorIndex,
+            /*views=*/{},
+            facebook::axiom::logical_plan::ReferencedTables{
+                /*inputTables=*/{},
+                facebook::axiom::CatalogSchemaTableName{
+                    connectorId,
+                    indexName}}),
+        connectorId_{std::move(connectorId)},
+        indexName_{std::move(indexName)},
+        ifExists_{ifExists} {}
+
+  const std::string& connectorId() const {
+    return connectorId_;
+  }
+
+  const facebook::axiom::SchemaTableName& indexName() const {
+    return indexName_;
+  }
+
+  bool ifExists() const {
+    return ifExists_;
+  }
+
+ private:
+  const std::string connectorId_;
+  const facebook::axiom::SchemaTableName indexName_;
   const bool ifExists_;
 };
 

@@ -26,6 +26,7 @@
 
 #include <folly/coro/BlockingWait.h>
 #include <folly/init/Init.h>
+#include <gmock/gmock.h>
 #include <filesystem>
 #include <fstream>
 
@@ -246,6 +247,55 @@ class LocalHiveConnectorMetadataTest
       }
     }
     return files;
+  }
+
+  // Creates the vector index 'name' with 'columns' and 'tableProperties'.
+  // Returns false if the index exists and 'ifNotExists' is true.
+  bool createVectorIndex(
+      const std::string& name,
+      const RowTypePtr& columns,
+      bool ifNotExists,
+      bool explain,
+      folly::F14FastMap<std::string, Variant> tableProperties = {
+          {"partitioned_by", Variant::array({Variant("ds")})}}) {
+    return folly::coro::blockingWait(metadata_->co_createVectorIndex(
+        makeSession(),
+        qualifiedName(name),
+        columns,
+        vectorIndexProperties(),
+        std::move(tableProperties),
+        ifNotExists,
+        explain));
+  }
+
+  // Expects that the codec table and index table of the vector index 'name'
+  // do not exist.
+  void expectNoVectorIndexTables(const std::string& name) {
+    EXPECT_EQ(metadata_->findTable(qualifiedName(name + "__codecs")), nullptr);
+    EXPECT_EQ(metadata_->findTable(qualifiedName(name + "__index")), nullptr);
+  }
+
+  static VectorIndexProperties vectorIndexProperties() {
+    return {
+        .metric = common::vectorindex::VectorIndexMetric::kCosine,
+        .indexType = common::vectorindex::VectorIndexType::kIvfFlat,
+        .numClusters = 10,
+        .codecPolicy = VectorIndexCodecPolicy::kShared,
+        .indexOptions = {{"ivf.nlist", "4"}, {"ivf.nprobe", "2"}},
+    };
+  }
+
+  static RowTypePtr vectorIndexColumns() {
+    return ROW(
+        {{"id", BIGINT()}, {"embedding", ARRAY(REAL())}, {"ds", VARCHAR()}});
+  }
+
+  static std::vector<std::string> partitionColumnNames(const TablePtr& table) {
+    std::vector<std::string> names;
+    for (const auto* column : getLayout(table)->hivePartitionColumns()) {
+      names.push_back(column->name());
+    }
+    return names;
   }
 
   RowTypePtr rowType_;
@@ -1025,6 +1075,204 @@ TEST_F(LocalHiveConnectorMetadataTest, dropTableExplain) {
       qualifiedName("test_drop_missing_explain"),
       /*ifExists=*/true,
       /*explain=*/true));
+}
+
+TEST_F(LocalHiveConnectorMetadataTest, createVectorIndex) {
+  auto session = makeSession();
+  const auto name = qualifiedName("test_index");
+  ASSERT_TRUE(createVectorIndex(
+      name.table,
+      vectorIndexColumns(),
+      /*ifNotExists=*/false,
+      /*explain=*/false));
+
+  auto index = metadata_->findVectorIndex(session, name);
+  ASSERT_NE(index, nullptr);
+  EXPECT_EQ(name, index->name);
+  EXPECT_EQ("id", index->idColumn);
+  EXPECT_EQ("embedding", index->embeddingColumn);
+  EXPECT_EQ(vectorIndexProperties(), index->properties);
+
+  const auto codecTableName = qualifiedName("test_index__codecs");
+  const auto indexTableName = qualifiedName("test_index__index");
+  EXPECT_EQ(codecTableName, index->codecTable);
+  EXPECT_EQ(indexTableName, index->indexTable);
+
+  auto codecTable = metadata_->findTable(codecTableName);
+  ASSERT_NE(codecTable, nullptr);
+  VELOX_EXPECT_EQ_TYPES(
+      codecTable->type(),
+      ROW({{"codec", VARBINARY()}, {"ds", VARCHAR()}, {"codec_id", BIGINT()}}));
+  EXPECT_THAT(
+      partitionColumnNames(codecTable), testing::ElementsAre("ds", "codec_id"));
+
+  auto indexTable = metadata_->findTable(indexTableName);
+  ASSERT_NE(indexTable, nullptr);
+  VELOX_EXPECT_EQ_TYPES(
+      indexTable->type(),
+      ROW(
+          {{"codec_id", BIGINT()},
+           {"cluster_id", BIGINT()},
+           {"group_id", BIGINT()},
+           {"local_index", VARBINARY()},
+           {"ds", VARCHAR()}}));
+  EXPECT_THAT(partitionColumnNames(indexTable), testing::ElementsAre("ds"));
+
+  ASSERT_FALSE(createVectorIndex(
+      name.table,
+      vectorIndexColumns(),
+      /*ifNotExists=*/true,
+      /*explain=*/false));
+  VELOX_ASSERT_THROW(
+      createVectorIndex(
+          name.table,
+          vectorIndexColumns(),
+          /*ifNotExists=*/false,
+          /*explain=*/false),
+      "Vector index already exists");
+}
+
+// A table with the name of one of the index's tables fails the create and is
+// left as it is.
+TEST_F(LocalHiveConnectorMetadataTest, createVectorIndexTableExists) {
+  const auto codecTableName = qualifiedName("test_index_exists__codecs");
+  metadata_->createTable(
+      makeSession(),
+      codecTableName,
+      ROW("x", BIGINT()),
+      /*options=*/{},
+      /*ifNotExists=*/false,
+      /*explain=*/false);
+  auto table = metadata_->findTable(codecTableName);
+  ASSERT_NE(table, nullptr);
+
+  for (const bool explain : {true, false}) {
+    SCOPED_TRACE(explain);
+    VELOX_ASSERT_THROW(
+        createVectorIndex(
+            "test_index_exists",
+            vectorIndexColumns(),
+            /*ifNotExists=*/false,
+            explain),
+        "Vector index table already exists: \"default\".\"test_index_exists__codecs\"");
+  }
+  VELOX_EXPECT_EQ_TYPES(
+      metadata_->findTable(codecTableName)->type(), table->type());
+  EXPECT_EQ(
+      metadata_->findTable(qualifiedName("test_index_exists__index")), nullptr);
+}
+
+TEST_F(LocalHiveConnectorMetadataTest, createVectorIndexExplain) {
+  ASSERT_TRUE(createVectorIndex(
+      "test_index_explain",
+      vectorIndexColumns(),
+      /*ifNotExists=*/false,
+      /*explain=*/true));
+  EXPECT_EQ(
+      metadata_->findVectorIndex(
+          makeSession(), qualifiedName("test_index_explain")),
+      nullptr);
+  expectNoVectorIndexTables("test_index_explain");
+}
+
+TEST_F(LocalHiveConnectorMetadataTest, dropVectorIndex) {
+  auto session = makeSession();
+  const auto name = qualifiedName("test_index_drop");
+  ASSERT_TRUE(createVectorIndex(
+      name.table,
+      vectorIndexColumns(),
+      /*ifNotExists=*/false,
+      /*explain=*/false));
+
+  ASSERT_TRUE(metadata_->dropVectorIndex(
+      session, name, /*ifExists=*/false, /*explain=*/true));
+  ASSERT_NE(metadata_->findVectorIndex(session, name), nullptr);
+
+  ASSERT_TRUE(metadata_->dropVectorIndex(
+      session, name, /*ifExists=*/false, /*explain=*/false));
+  EXPECT_EQ(metadata_->findVectorIndex(session, name), nullptr);
+  expectNoVectorIndexTables(name.table);
+
+  ASSERT_FALSE(metadata_->dropVectorIndex(
+      session, name, /*ifExists=*/true, /*explain=*/false));
+  VELOX_ASSERT_THROW(
+      metadata_->dropVectorIndex(
+          session, name, /*ifExists=*/false, /*explain=*/false),
+      "Vector index doesn't exist");
+}
+
+// Bucketing and sorting are not supported.
+TEST_F(LocalHiveConnectorMetadataTest, vectorIndexTableProperties) {
+  for (const auto& properties :
+       std::vector<folly::F14FastMap<std::string, Variant>>{
+           {{"bucketed_by", Variant::array({Variant("ds")})},
+            {"bucket_count", Variant(int32_t{4})}},
+           {{"sorted_by", Variant::array({Variant("ds")})}},
+       }) {
+    SCOPED_TRACE(properties.begin()->first);
+    VELOX_ASSERT_THROW(
+        createVectorIndex(
+            "test_index_properties",
+            vectorIndexColumns(),
+            /*ifNotExists=*/false,
+            /*explain=*/false,
+            properties),
+        "Unsupported table property for a vector index");
+  }
+}
+
+// The index's columns are checked with or without explain: the partition
+// columns must be columns of the index, and the rest a BIGINT id and an
+// ARRAY(REAL) embedding.
+TEST_F(LocalHiveConnectorMetadataTest, invalidVectorIndexColumns) {
+  for (const bool explain : {true, false}) {
+    SCOPED_TRACE(explain);
+    VELOX_ASSERT_THROW(
+        createVectorIndex(
+            "test_index_columns",
+            ROW({{"embedding", ARRAY(REAL())}, {"ds", VARCHAR()}}),
+            /*ifNotExists=*/false,
+            explain),
+        "A vector index must have exactly two columns besides its partition "
+        "columns, a BIGINT id and an ARRAY(REAL) embedding");
+    VELOX_ASSERT_THROW(
+        createVectorIndex(
+            "test_index_columns",
+            ROW(
+                {{"id", BIGINT()},
+                 {"x", BIGINT()},
+                 {"embedding", ARRAY(REAL())},
+                 {"ds", VARCHAR()}}),
+            /*ifNotExists=*/false,
+            explain),
+        "A vector index must have exactly two columns besides its partition "
+        "columns, a BIGINT id and an ARRAY(REAL) embedding");
+    VELOX_ASSERT_THROW(
+        createVectorIndex(
+            "test_index_columns",
+            ROW({{"id", BIGINT()}, {"x", BIGINT()}, {"ds", VARCHAR()}}),
+            /*ifNotExists=*/false,
+            explain),
+        "The embedding column of a vector index must be an ARRAY(REAL): x BIGINT");
+    VELOX_ASSERT_THROW(
+        createVectorIndex(
+            "test_index_columns",
+            ROW(
+                {{"id", VARCHAR()},
+                 {"embedding", ARRAY(REAL())},
+                 {"ds", VARCHAR()}}),
+            /*ifNotExists=*/false,
+            explain),
+        "A vector index must have a BIGINT id column: id VARCHAR, embedding "
+        "ARRAY<REAL>");
+    VELOX_ASSERT_THROW(
+        createVectorIndex(
+            "test_index_columns",
+            ROW({{"id", BIGINT()}, {"embedding", ARRAY(REAL())}}),
+            /*ifNotExists=*/false,
+            explain),
+        "Partition column is not a column of the vector index: ds");
+  }
 }
 
 } // namespace

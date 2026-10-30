@@ -155,6 +155,7 @@ const auto& nodeTypeNames() {
       // DDL Statements
       {NodeType::kCreateTable, "CreateTable"},
       {NodeType::kCreateTableAsSelect, "CreateTableAsSelect"},
+      {NodeType::kCreateVectorIndex, "CreateVectorIndex"},
       {NodeType::kCreateView, "CreateView"},
       {NodeType::kCreateMaterializedView, "CreateMaterializedView"},
       {NodeType::kCreateSchema, "CreateSchema"},
@@ -162,6 +163,7 @@ const auto& nodeTypeNames() {
       {NodeType::kCreateRole, "CreateRole"},
       {NodeType::kCreateType, "CreateType"},
       {NodeType::kDropTable, "DropTable"},
+      {NodeType::kDropVectorIndex, "DropVectorIndex"},
       {NodeType::kDropView, "DropView"},
       {NodeType::kDropMaterializedView, "DropMaterializedView"},
       {NodeType::kDropSchema, "DropSchema"},
@@ -734,6 +736,14 @@ void CreateType::accept(AstVisitor* visitor) {
 
 void DropTable::accept(AstVisitor* visitor) {
   visitor->visitDropTable(this);
+}
+
+void CreateVectorIndex::accept(AstVisitor* visitor) {
+  visitor->visitCreateVectorIndex(this);
+}
+
+void DropVectorIndex::accept(AstVisitor* visitor) {
+  visitor->visitDropVectorIndex(this);
 }
 
 void DropView::accept(AstVisitor* visitor) {

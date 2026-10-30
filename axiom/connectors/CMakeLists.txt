@@ -18,6 +18,7 @@ add_library(
   ConnectorMetadata.cpp
   ConnectorMetadataRegistry.cpp
   SchemaResolver.cpp
+  VectorIndex.cpp
 )
 
 target_link_libraries(
@@ -27,6 +28,7 @@ target_link_libraries(
   velox_memory
   velox_connector
   velox_core
+  velox_vector_index_settings
   Folly::folly
 )
 
