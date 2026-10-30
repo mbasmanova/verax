@@ -497,10 +497,12 @@ class SqlQueryRunner {
     return *sessionConfig_;
   }
 
-  facebook::axiom::connector::TablePtr createTable(
+  /// Runs CREATE TABLE: creates the table and commits it. With 'explain',
+  /// checks the statement without creating the table.
+  folly::coro::Task<facebook::axiom::connector::TablePtr> co_createTable(
       const facebook::axiom::connector::ConnectorContextPtr& context,
       const presto::CreateTableStatement& statement,
-      bool explain = false);
+      bool explain);
 
   facebook::axiom::connector::TablePtr createTable(
       const facebook::axiom::connector::ConnectorContextPtr& context,
@@ -699,7 +701,7 @@ class SqlQueryRunner {
       std::string& planString);
 
   // Executes a CREATE, DROP, or ALTER statement and returns its status message.
-  std::string runDataDefinitionStatement(
+  folly::coro::Task<std::string> co_runDataDefinitionStatement(
       const presto::SqlStatement& statement,
       const facebook::axiom::connector::ConnectorContextPtr& context);
 
