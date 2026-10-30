@@ -91,6 +91,12 @@ TEST_F(DeleteTest, partitionPredicate) {
       runExplain("DELETE FROM test WHERE pk = 1"),
       R"(Metadata write via connector 'hive': drop partitions of "default"."test" matching pk BigintRange: [1, 1] no nulls)");
 
+  // An IN subquery over the partition column selects partitions as well.
+  EXPECT_EQ(
+      runExplain(
+          "DELETE FROM test WHERE pk IN (SELECT pk FROM test WHERE pk > 1)"),
+      R"(Metadata write via connector 'hive': drop partitions of "default"."test" matching pk BigintRange: [2, 2] no nulls)");
+
   // The rows removed are the rows scanned, so a delete reports the table it
   // reads and no output table.
   EXPECT_EQ(
