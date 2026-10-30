@@ -486,6 +486,72 @@ class DropTable : public Statement {
   bool exists_;
 };
 
+/// CREATE VECTOR INDEX name (columns) WITH (properties).
+class CreateVectorIndex : public Statement {
+ public:
+  CreateVectorIndex(
+      NodeLocation location,
+      const std::shared_ptr<QualifiedName>& name,
+      const std::vector<std::shared_ptr<ColumnDefinition>>& columns,
+      bool notExists,
+      const std::vector<std::shared_ptr<Property>>& properties)
+      : Statement(NodeType::kCreateVectorIndex, location),
+        name_(name),
+        columns_(columns),
+        notExists_(notExists),
+        properties_(properties) {}
+
+  const std::shared_ptr<QualifiedName>& name() const {
+    return name_;
+  }
+
+  const std::vector<std::shared_ptr<ColumnDefinition>>& columns() const {
+    return columns_;
+  }
+
+  bool isNotExists() const {
+    return notExists_;
+  }
+
+  const std::vector<std::shared_ptr<Property>>& properties() const {
+    return properties_;
+  }
+
+  void accept(AstVisitor* visitor) override;
+
+ private:
+  std::shared_ptr<QualifiedName> name_;
+  std::vector<std::shared_ptr<ColumnDefinition>> columns_;
+  bool notExists_;
+  std::vector<std::shared_ptr<Property>> properties_;
+};
+
+/// DROP VECTOR INDEX name.
+class DropVectorIndex : public Statement {
+ public:
+  DropVectorIndex(
+      NodeLocation location,
+      const std::shared_ptr<QualifiedName>& name,
+      bool exists)
+      : Statement(NodeType::kDropVectorIndex, location),
+        name_(name),
+        exists_(exists) {}
+
+  const std::shared_ptr<QualifiedName>& name() const {
+    return name_;
+  }
+
+  bool isExists() const {
+    return exists_;
+  }
+
+  void accept(AstVisitor* visitor) override;
+
+ private:
+  std::shared_ptr<QualifiedName> name_;
+  bool exists_;
+};
+
 class DropView : public Statement {
  public:
   DropView(

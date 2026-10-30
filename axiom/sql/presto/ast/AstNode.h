@@ -158,6 +158,7 @@ enum class NodeType {
   // DDL Statements
   kCreateTable,
   kCreateTableAsSelect,
+  kCreateVectorIndex,
   kCreateView,
   kCreateMaterializedView,
   kCreateSchema,
@@ -165,6 +166,7 @@ enum class NodeType {
   kCreateRole,
   kCreateType,
   kDropTable,
+  kDropVectorIndex,
   kDropView,
   kDropMaterializedView,
   kDropSchema,

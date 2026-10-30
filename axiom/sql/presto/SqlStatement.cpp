@@ -33,6 +33,8 @@ const auto& statementKindNames() {
       {SqlStatementKind::kInsert, "INSERT"},
       {SqlStatementKind::kDelete, "DELETE"},
       {SqlStatementKind::kDropTable, "DROP TABLE"},
+      {SqlStatementKind::kCreateVectorIndex, "CREATE VECTOR INDEX"},
+      {SqlStatementKind::kDropVectorIndex, "DROP VECTOR INDEX"},
       {SqlStatementKind::kCreateSchema, "CREATE SCHEMA"},
       {SqlStatementKind::kDropSchema, "DROP SCHEMA"},
       {SqlStatementKind::kExplain, "EXPLAIN"},
@@ -113,6 +115,27 @@ AXIOM_DEFINE_EMBEDDED_ENUM_NAME(ExplainStatement, Format, explainFormatNames);
 
 std::string_view SqlStatement::kindName() const {
   return SqlStatementKindName::toName(kind_);
+}
+
+CreateVectorIndexStatement::CreateVectorIndexStatement(
+    std::string connectorId,
+    facebook::axiom::SchemaTableName indexName,
+    RowTypePtr columns,
+    std::unordered_map<std::string, lp::ExprPtr> properties,
+    bool ifNotExists)
+    : SqlStatement(
+          SqlStatementKind::kCreateVectorIndex,
+          /*views=*/{},
+          lp::ReferencedTables{
+              /*inputTables=*/{},
+              facebook::axiom::CatalogSchemaTableName{connectorId, indexName}}),
+      connectorId_{std::move(connectorId)},
+      indexName_{std::move(indexName)},
+      columns_{std::move(columns)},
+      properties_{std::move(properties)},
+      ifNotExists_{ifNotExists} {
+  checkUniqueColumns(columns_);
+  checkPropertiesLookConstant(properties_);
 }
 
 CreateTableStatement::CreateTableStatement(

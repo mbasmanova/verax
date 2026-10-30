@@ -82,6 +82,16 @@ class PrestoSqlBaseVisitor : public PrestoSqlVisitor {
     return visitChildren(ctx);
   }
 
+  virtual std::any visitCreateVectorIndex(
+      PrestoSqlParser::CreateVectorIndexContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
+  virtual std::any visitDropVectorIndex(
+      PrestoSqlParser::DropVectorIndexContext* ctx) override {
+    return visitChildren(ctx);
+  }
+
   virtual std::any visitInsertInto(
       PrestoSqlParser::InsertIntoContext* ctx) override {
     return visitChildren(ctx);

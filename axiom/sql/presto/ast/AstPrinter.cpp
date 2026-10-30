@@ -1221,6 +1221,24 @@ void AstPrinter::visitDropTable(DropTable* node) {
   });
 }
 
+void AstPrinter::visitCreateVectorIndex(CreateVectorIndex* node) {
+  printHeader("CreateVectorIndex", node, [&](std::ostream& out) {
+    out << node->name()->suffix();
+  });
+
+  indent_++;
+  for (const auto& column : node->columns()) {
+    column->accept(this);
+  }
+  indent_--;
+}
+
+void AstPrinter::visitDropVectorIndex(DropVectorIndex* node) {
+  printHeader("DropVectorIndex", node, [&](std::ostream& out) {
+    out << node->name()->suffix();
+  });
+}
+
 void AstPrinter::visitDropView(DropView* node) {
   defaultVisit(node);
 }

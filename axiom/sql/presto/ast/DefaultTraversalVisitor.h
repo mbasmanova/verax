@@ -534,6 +534,20 @@ class DefaultTraversalVisitor : public AstVisitor {
     }
   }
 
+  void visitCreateVectorIndex(CreateVectorIndex* node) override {
+    node->name()->accept(this);
+    for (const auto& column : node->columns()) {
+      column->accept(this);
+    }
+    for (const auto& property : node->properties()) {
+      property->accept(this);
+    }
+  }
+
+  void visitDropVectorIndex(DropVectorIndex* node) override {
+    node->name()->accept(this);
+  }
+
   void visitDropView(DropView* node) override {
     if (node->viewName()) {
       node->viewName()->accept(this);

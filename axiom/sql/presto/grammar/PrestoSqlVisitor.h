@@ -62,6 +62,12 @@ class PrestoSqlVisitor : public antlr4::tree::AbstractParseTreeVisitor {
   virtual std::any visitDropTable(
       PrestoSqlParser::DropTableContext* context) = 0;
 
+  virtual std::any visitCreateVectorIndex(
+      PrestoSqlParser::CreateVectorIndexContext* context) = 0;
+
+  virtual std::any visitDropVectorIndex(
+      PrestoSqlParser::DropVectorIndexContext* context) = 0;
+
   virtual std::any visitInsertInto(
       PrestoSqlParser::InsertIntoContext* context) = 0;
 

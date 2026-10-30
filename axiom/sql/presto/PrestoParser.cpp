@@ -2965,6 +2965,18 @@ SqlStatementPtr parseCreateTableAsSelect(
       planner.inputTables());
 }
 
+// Returns the name and type of the column 'column' defines.
+std::pair<std::string, TypePtr> parseColumnDefinition(
+    const ColumnDefinition& column) {
+  auto type = parseType(column.columnType());
+  AXIOM_PRESTO_SEMANTIC_CHECK(
+      type != nullptr,
+      column.location(),
+      column.columnType()->baseName(),
+      "Unknown type specifier");
+  return {column.name()->value(), std::move(type)};
+}
+
 SqlStatementPtr parseCreateTable(
     const ParserSessionPtr& session,
     const CreateTable& createTable,
@@ -2982,16 +2994,10 @@ SqlStatementPtr parseCreateTable(
   for (const auto& element : createTable.elements()) {
     switch (element->type()) {
       case NodeType::kColumnDefinition: {
-        auto* columnDef = element->as<ColumnDefinition>();
-        names.push_back(columnDef->name()->value());
-
-        auto type = parseType(columnDef->columnType());
-        AXIOM_PRESTO_SEMANTIC_CHECK(
-            type != nullptr,
-            columnDef->location(),
-            columnDef->columnType()->baseName(),
-            "Unknown type specifier");
-        types.push_back(type);
+        auto [name, type] =
+            parseColumnDefinition(*element->as<ColumnDefinition>());
+        names.push_back(std::move(name));
+        types.push_back(std::move(type));
         break;
       }
       case NodeType::kLikeClause: {
@@ -3068,6 +3074,41 @@ SqlStatementPtr parseDropTable(
 
   return std::make_shared<DropTableStatement>(
       std::move(connectorId), std::move(connectorTable), dropTable.isExists());
+}
+
+SqlStatementPtr parseCreateVectorIndex(
+    const ParserSessionPtr& session,
+    const CreateVectorIndex& createIndex,
+    const std::string& defaultConnectorId,
+    const std::string& defaultSchema) {
+  auto [connectorId, indexName] =
+      toConnectorTable(*createIndex.name(), defaultConnectorId, defaultSchema);
+
+  std::vector<std::string> names;
+  std::vector<TypePtr> types;
+  for (const auto& column : createIndex.columns()) {
+    auto [name, type] = parseColumnDefinition(*column);
+    names.push_back(std::move(name));
+    types.push_back(std::move(type));
+  }
+
+  return std::make_shared<CreateVectorIndexStatement>(
+      std::move(connectorId),
+      std::move(indexName),
+      ROW(std::move(names), std::move(types)),
+      parseTableProperties(session, createIndex.properties()),
+      createIndex.isNotExists());
+}
+
+SqlStatementPtr parseDropVectorIndex(
+    const DropVectorIndex& dropIndex,
+    const std::string& defaultConnectorId,
+    const std::string& defaultSchema) {
+  auto [connectorId, indexName] =
+      toConnectorTable(*dropIndex.name(), defaultConnectorId, defaultSchema);
+
+  return std::make_shared<DropVectorIndexStatement>(
+      std::move(connectorId), std::move(indexName), dropIndex.isExists());
 }
 
 SqlStatementPtr parseAddColumn(
@@ -3523,6 +3564,19 @@ SqlStatementPtr doPlan(
   if (query->is(NodeType::kDropTable)) {
     return parseDropTable(
         *query->as<DropTable>(), defaultConnectorId, defaultSchema);
+  }
+
+  if (query->is(NodeType::kCreateVectorIndex)) {
+    return parseCreateVectorIndex(
+        parserSession,
+        *query->as<CreateVectorIndex>(),
+        defaultConnectorId,
+        defaultSchema);
+  }
+
+  if (query->is(NodeType::kDropVectorIndex)) {
+    return parseDropVectorIndex(
+        *query->as<DropVectorIndex>(), defaultConnectorId, defaultSchema);
   }
 
   if (query->is(NodeType::kAddColumn)) {

@@ -456,6 +456,14 @@ class AstVisitor {
     defaultVisit(node);
   }
 
+  virtual void visitCreateVectorIndex(CreateVectorIndex* node) {
+    defaultVisit(node);
+  }
+
+  virtual void visitDropVectorIndex(DropVectorIndex* node) {
+    defaultVisit(node);
+  }
+
   virtual void visitDropView(DropView* node) {
     defaultVisit(node);
   }
