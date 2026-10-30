@@ -1485,6 +1485,16 @@ class ConnectorMetadata {
     VELOX_UNSUPPORTED();
   }
 
+  /// Creates 'tableName' with no rows and commits it: createTable, then an
+  /// empty create write. Aborts the write if the commit fails. Returns nullptr
+  /// if the table exists and 'ifNotExists' is true.
+  folly::coro::Task<TablePtr> co_createEmptyTable(
+      ConnectorSessionPtr session,
+      SchemaTableName tableName,
+      velox::RowTypePtr rowType,
+      folly::F14FastMap<std::string, velox::Variant> options,
+      bool ifNotExists);
+
   /// Begins the process of a write operation by creating an associated write
   /// handle. This handle must contain a valid physical insert handle for use
   /// with Velox TableWriter. To perform a write operation, first make a

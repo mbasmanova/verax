@@ -393,4 +393,35 @@ std::vector<std::string> ConnectorMetadata::allMetadataIds() {
   return ids;
 }
 
+folly::coro::Task<TablePtr> ConnectorMetadata::co_createEmptyTable(
+    ConnectorSessionPtr session,
+    SchemaTableName tableName,
+    velox::RowTypePtr rowType,
+    folly::F14FastMap<std::string, velox::Variant> options,
+    bool ifNotExists) {
+  auto table = createTable(
+      session, tableName, rowType, options, ifNotExists, /*explain=*/false);
+  if (table == nullptr) {
+    co_return nullptr;
+  }
+  auto handle = beginWrite(
+      session,
+      table,
+      WriteKind::kCreate,
+      /*explain=*/false);
+  auto committed = co_await folly::coro::co_awaitTry(finishWrite(
+      session,
+      handle,
+      /*writeResults=*/{},
+      /*groupingKeys=*/nullptr,
+      /*groupStats=*/{}));
+  if (committed.hasException()) {
+    // Best-effort abort so a failed commit does not leave connector-side state
+    // behind. The commit's error is the one to report.
+    co_await folly::coro::co_awaitTry(abortWrite(session, handle));
+    co_yield folly::coro::co_error(std::move(committed.exception()));
+  }
+  co_return table;
+}
+
 } // namespace facebook::axiom::connector

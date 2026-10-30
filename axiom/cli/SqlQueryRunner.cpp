@@ -408,64 +408,45 @@ void onComplete(
   }
 }
 
+// Evaluates each property, an expression that looks constant, to its value.
+folly::F14FastMap<std::string, velox::Variant> evaluateProperties(
+    const std::unordered_map<std::string, logical_plan::ExprPtr>& properties) {
+  folly::F14FastMap<std::string, velox::Variant> values;
+  for (const auto& [key, value] : properties) {
+    values[key] =
+        optimizer::ConstantExprEvaluator::evaluateConstantExpr(*value);
+  }
+  return values;
+}
+
 } // namespace
 
-connector::TablePtr SqlQueryRunner::createTable(
+folly::coro::Task<connector::TablePtr> SqlQueryRunner::co_createTable(
     const facebook::axiom::connector::ConnectorContextPtr& context,
     const presto::CreateTableStatement& statement,
     bool explain) {
   auto metadata = ConnectorMetadataRegistry::get(statement.connectorId());
 
-  folly::F14FastMap<std::string, velox::Variant> options;
-  for (const auto& [key, value] : statement.properties()) {
-    options[key] =
-        optimizer::ConstantExprEvaluator::evaluateConstantExpr(*value);
-  }
+  auto options = evaluateProperties(statement.properties());
 
   auto session = makeConnectorSession(context, statement.connectorId());
-  auto table = metadata->createTable(
+  if (explain) {
+    co_return metadata->createTable(
+        session,
+        statement.tableName(),
+        statement.tableSchema(),
+        options,
+        statement.ifNotExists(),
+        /*explain=*/true);
+  }
+  auto table = co_await metadata->co_createEmptyTable(
       session,
       statement.tableName(),
       statement.tableSchema(),
-      options,
-      statement.ifNotExists(),
-      explain);
+      std::move(options),
+      statement.ifNotExists());
   VELOX_CHECK(table != nullptr || statement.ifNotExists());
-
-  // Some connectors only stage the table in createTable and commit it in
-  // finishWrite. Run an empty create-write so the table is persisted.
-  if (table != nullptr && !explain) {
-    auto handle = metadata->beginWrite(
-        session,
-        table,
-        connector::WriteKind::kCreate,
-        /*explain=*/false);
-    // TODO: Make the commit timeout configurable (e.g. via a DdlOptions).
-    constexpr std::chrono::seconds kCommitTimeout{60};
-    try {
-      // Await the write so the table is committed, and any failure surfaced,
-      // before returning. The row count is unused for an empty create-write.
-      metadata
-          ->finishWrite(
-              session,
-              handle,
-              /*writeResults=*/{},
-              /*groupingKeys=*/nullptr,
-              /*groupStats=*/{})
-          .get(kCommitTimeout);
-    } catch (...) {
-      // Best-effort abort so a failed commit does not leak connector-side
-      // state; await it so an async connector actually runs the abort. The
-      // original error still propagates.
-      try {
-        metadata->abortWrite(session, handle).get(kCommitTimeout);
-      } catch (...) {
-        // Ignore abort failures; the original error is the useful one.
-      }
-      throw;
-    }
-  }
-  return table;
+  co_return table;
 }
 
 connector::TablePtr SqlQueryRunner::createTable(
@@ -474,11 +455,7 @@ connector::TablePtr SqlQueryRunner::createTable(
     bool explain) {
   auto metadata = ConnectorMetadataRegistry::get(statement.connectorId());
 
-  folly::F14FastMap<std::string, velox::Variant> options;
-  for (const auto& [key, value] : statement.properties()) {
-    options[key] =
-        optimizer::ConstantExprEvaluator::evaluateConstantExpr(*value);
-  }
+  auto options = evaluateProperties(statement.properties());
 
   auto table = metadata->createTable(
       makeConnectorSession(context, statement.connectorId()),
@@ -569,11 +546,7 @@ std::string SqlQueryRunner::createSchema(
     const presto::CreateSchemaStatement& statement) {
   auto metadata = ConnectorMetadataRegistry::get(statement.connectorId());
 
-  folly::F14FastMap<std::string, velox::Variant> properties;
-  for (const auto& [key, value] : statement.properties()) {
-    properties[key] =
-        optimizer::ConstantExprEvaluator::evaluateConstantExpr(*value);
-  }
+  auto properties = evaluateProperties(statement.properties());
 
   metadata->createSchema(
       makeConnectorSession(context, statement.connectorId()),
@@ -1044,7 +1017,7 @@ SqlQueryRunner::co_runExplainStatement(
     logicalPlan = ctas->plan();
   } else if (statement->isCreateTable()) {
     const auto* create = statement->as<presto::CreateTableStatement>();
-    createTable(context, *create, /*explain=*/true);
+    co_await co_createTable(context, *create, /*explain=*/true);
     co_yield SqlResultChunk{fmt::format(
         "CREATE TABLE {}{}.{}",
         create->ifNotExists() ? "IF NOT EXISTS " : "",
@@ -1212,39 +1185,39 @@ SqlQueryRunner::co_runPlanStatement(
   }
 }
 
-std::string SqlQueryRunner::runDataDefinitionStatement(
+folly::coro::Task<std::string> SqlQueryRunner::co_runDataDefinitionStatement(
     const presto::SqlStatement& sqlStatement,
     const facebook::axiom::connector::ConnectorContextPtr& context) {
   if (sqlStatement.isCreateTable()) {
     const auto* create = sqlStatement.as<presto::CreateTableStatement>();
-    auto table = createTable(context, *create);
+    auto table = co_await co_createTable(context, *create, /*explain=*/false);
     if (!table) {
-      return fmt::format(
+      co_return fmt::format(
           "Table already exists: {}.{}",
           create->connectorId(),
           create->tableName());
     }
-    return fmt::format("Created table: {}", create->tableName());
+    co_return fmt::format("Created table: {}", create->tableName());
   }
 
   if (sqlStatement.isDropTable()) {
     const auto* drop = sqlStatement.as<presto::DropTableStatement>();
-    return dropTable(context, *drop);
+    co_return dropTable(context, *drop);
   }
 
   if (sqlStatement.isAddColumn()) {
     const auto* add = sqlStatement.as<presto::AddColumnStatement>();
-    return addColumn(context, *add);
+    co_return addColumn(context, *add);
   }
 
   if (sqlStatement.isCreateSchema()) {
     const auto* create = sqlStatement.as<presto::CreateSchemaStatement>();
-    return createSchema(context, *create);
+    co_return createSchema(context, *create);
   }
 
   if (sqlStatement.isDropSchema()) {
     const auto* drop = sqlStatement.as<presto::DropSchemaStatement>();
-    return dropSchema(context, *drop);
+    co_return dropSchema(context, *drop);
   }
 
   VELOX_UNREACHABLE(
@@ -1347,7 +1320,8 @@ SqlQueryRunner::co_runUnchecked(
   if (sqlStatement.isCreateTable() || sqlStatement.isDropTable() ||
       sqlStatement.isAddColumn() || sqlStatement.isCreateSchema() ||
       sqlStatement.isDropSchema()) {
-    co_yield SqlResultChunk{runDataDefinitionStatement(sqlStatement, context)};
+    co_yield SqlResultChunk{
+        co_await co_runDataDefinitionStatement(sqlStatement, context)};
     co_return;
   }
 
