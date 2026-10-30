@@ -106,6 +106,14 @@ class PrestoParserTestBase : public testing::Test {
       const std::vector<CreateTableStatement::Constraint>& constraints = {});
 
  protected:
+  // Checks that 'actual' has exactly the properties in 'expected', each
+  // printed as its expression text.
+  static void assertProperties(
+      const std::unordered_map<
+          std::string,
+          facebook::axiom::logical_plan::ExprPtr>& actual,
+      const std::unordered_map<std::string, std::string>& expected);
+
   /// Returns a matcher builder starting with a table scan node.
   static facebook::axiom::logical_plan::test::LogicalPlanMatcherBuilder
   matchScan() {

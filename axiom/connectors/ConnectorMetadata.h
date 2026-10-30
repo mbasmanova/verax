@@ -714,7 +714,8 @@ class TableLayout {
   /// Samples a fraction of rows and applies filters from 'handle'. Returns the
   /// number of rows sampled and the number matching the filters.
   virtual SampleResult sample(
-      const velox::connector::ConnectorTableHandlePtr& /*handle*/) const {
+      [[maybe_unused]] const velox::connector::ConnectorTableHandlePtr& handle)
+      const {
     VELOX_UNSUPPORTED("Sampling is not supported for this layout");
   }
 
@@ -747,11 +748,11 @@ class TableLayout {
   /// The default implementation returns std::nullopt, meaning the connector
   /// does not support stats estimation. Connectors opt in by overriding.
   virtual folly::coro::Task<std::optional<FilteredTableStats>> co_estimateStats(
-      ConnectorSessionPtr /*session*/,
-      velox::connector::ConnectorTableHandlePtr /*tableHandle*/,
-      velox::core::ExpressionEvaluator& /*evaluator*/,
-      std::vector<std::string> /*columns*/,
-      const FilterSelectivityEstimator& /*estimator*/) const {
+      [[maybe_unused]] ConnectorSessionPtr session,
+      [[maybe_unused]] velox::connector::ConnectorTableHandlePtr tableHandle,
+      [[maybe_unused]] velox::core::ExpressionEvaluator& evaluator,
+      [[maybe_unused]] std::vector<std::string> columns,
+      [[maybe_unused]] const FilterSelectivityEstimator& estimator) const {
     co_return std::nullopt;
   }
 
@@ -787,11 +788,11 @@ class TableLayout {
   /// std::nullopt.
   virtual folly::coro::Task<std::optional<std::vector<MetadataCountGroup>>>
   co_metadataCounts(
-      ConnectorSessionPtr /*session*/,
-      velox::connector::ConnectorTableHandlePtr /*tableHandle*/,
-      velox::core::ExpressionEvaluator& /*evaluator*/,
-      std::vector<std::string> /*groupingColumns*/,
-      std::vector<std::string> /*columns*/) const {
+      [[maybe_unused]] ConnectorSessionPtr session,
+      [[maybe_unused]] velox::connector::ConnectorTableHandlePtr tableHandle,
+      [[maybe_unused]] velox::core::ExpressionEvaluator& evaluator,
+      [[maybe_unused]] std::vector<std::string> groupingColumns,
+      [[maybe_unused]] std::vector<std::string> columns) const {
     co_return std::nullopt;
   }
 
@@ -979,7 +980,8 @@ class Table : public std::enable_shared_from_this<Table> {
   /// row-level writes of 'kind'.
   ///
   /// The plan produces these columns in this order.
-  virtual std::vector<std::string> rowIdColumns(WriteKind /*kind*/) const {
+  virtual std::vector<std::string> rowIdColumns(
+      [[maybe_unused]] WriteKind kind) const {
     return {};
   }
 
@@ -1399,7 +1401,7 @@ class ConnectorMetadata {
   /// Return a ViewPtr given the view name.
   ///
   /// @return nullptr if view doesn't exist.
-  virtual ViewPtr findView(const SchemaTableName& /*tableName*/) {
+  virtual ViewPtr findView([[maybe_unused]] const SchemaTableName& tableName) {
     return nullptr;
   }
 
@@ -1408,7 +1410,8 @@ class ConnectorMetadata {
   /// this method.
   ///
   /// @return nullptr if the type is not found.
-  virtual velox::TypePtr findType(const SchemaTypeName& /*typeName*/) {
+  virtual velox::TypePtr findType(
+      [[maybe_unused]] const SchemaTypeName& typeName) {
     return nullptr;
   }
 
@@ -1419,7 +1422,7 @@ class ConnectorMetadata {
   ///
   /// @return empty if the function is not found.
   virtual std::vector<SqlFunctionDefinitionPtr> findFunction(
-      const SchemaFunctionName& /*functionName*/) {
+      [[maybe_unused]] const SchemaFunctionName& functionName) {
     return {};
   }
 
@@ -1428,7 +1431,8 @@ class ConnectorMetadata {
   /// one procedure is returned.
   ///
   /// @return nullptr if the procedure is not found.
-  virtual ProcedurePtr findProcedure(const SchemaProcedureName& /*name*/) {
+  virtual ProcedurePtr findProcedure(
+      [[maybe_unused]] const SchemaProcedureName& name) {
     return nullptr;
   }
 
@@ -1446,8 +1450,8 @@ class ConnectorMetadata {
   /// carries query identity and connector properties. Returns empty to decline
   /// pushdown. Called only when `isPushdownSupported()` returns true.
   virtual folly::coro::Task<std::vector<PushdownRoot>> co_pushdown(
-      ConnectorSessionPtr /*session*/,
-      const optimizer::v2::Node& /*offeredSubtree*/) const {
+      [[maybe_unused]] ConnectorSessionPtr session,
+      [[maybe_unused]] const optimizer::v2::Node& offeredSubtree) const {
     co_return {};
   }
 
@@ -1476,12 +1480,13 @@ class ConnectorMetadata {
   /// create directories, write files, or register the table. No cleanup is
   /// needed after an explain call.
   virtual TablePtr createTable(
-      const ConnectorSessionPtr& /*session*/,
-      const SchemaTableName& /*tableName*/,
-      const velox::RowTypePtr& /*rowType*/,
-      const folly::F14FastMap<std::string, velox::Variant>& /*options*/,
-      bool /*ifNotExists*/,
-      bool /*explain*/) {
+      [[maybe_unused]] const ConnectorSessionPtr& session,
+      [[maybe_unused]] const SchemaTableName& tableName,
+      [[maybe_unused]] const velox::RowTypePtr& rowType,
+      [[maybe_unused]] const folly::F14FastMap<std::string, velox::Variant>&
+          options,
+      [[maybe_unused]] bool ifNotExists,
+      [[maybe_unused]] bool explain) {
     VELOX_UNSUPPORTED();
   }
 
@@ -1511,10 +1516,10 @@ class ConnectorMetadata {
   /// state allocated, reserved or recorded outside the handle, and nothing
   /// that needs cleanup. The handle's location is not read on this path.
   virtual ConnectorWriteHandlePtr beginWrite(
-      const ConnectorSessionPtr& /*session*/,
-      const TablePtr& /*table*/,
-      WriteKind /*kind*/,
-      bool /*explain*/) {
+      [[maybe_unused]] const ConnectorSessionPtr& session,
+      [[maybe_unused]] const TablePtr& table,
+      [[maybe_unused]] WriteKind kind,
+      [[maybe_unused]] bool explain) {
     VELOX_UNSUPPORTED();
   }
 
@@ -1591,8 +1596,8 @@ class ConnectorMetadata {
   /// synchronous operation, the connector should perform the abort and return
   /// an already-fulfilled future.
   virtual velox::ContinueFuture abortWrite(
-      const ConnectorSessionPtr& /*session*/,
-      const ConnectorWriteHandlePtr& /*handle*/) noexcept {
+      [[maybe_unused]] const ConnectorSessionPtr& session,
+      [[maybe_unused]] const ConnectorWriteHandlePtr& handle) noexcept {
     return {};
   }
 
@@ -1611,10 +1616,10 @@ class ConnectorMetadata {
   /// When 'explain' is true, the connector must perform the same existence
   /// check (respecting 'ifExists') but must not drop the table.
   virtual bool dropTable(
-      const ConnectorSessionPtr& /*session*/,
-      const SchemaTableName& /*tableName*/,
-      bool /*ifExists*/,
-      bool /*explain*/) {
+      [[maybe_unused]] const ConnectorSessionPtr& session,
+      [[maybe_unused]] const SchemaTableName& tableName,
+      [[maybe_unused]] bool ifExists,
+      [[maybe_unused]] bool explain) {
     VELOX_UNSUPPORTED();
   }
 
@@ -1638,13 +1643,13 @@ class ConnectorMetadata {
   ///                   true).
   ///   - false:        column already existed and 'ifNotExists' is true.
   virtual std::optional<bool> addColumn(
-      const ConnectorSessionPtr& /*session*/,
-      const SchemaTableName& /*tableName*/,
-      const std::string& /*columnName*/,
-      const velox::TypePtr& /*columnType*/,
-      bool /*ifTableExists*/,
-      bool /*ifNotExists*/,
-      bool /*explain*/) {
+      [[maybe_unused]] const ConnectorSessionPtr& session,
+      [[maybe_unused]] const SchemaTableName& tableName,
+      [[maybe_unused]] const std::string& columnName,
+      [[maybe_unused]] const velox::TypePtr& columnType,
+      [[maybe_unused]] bool ifTableExists,
+      [[maybe_unused]] bool ifNotExists,
+      [[maybe_unused]] bool explain) {
     VELOX_UNSUPPORTED();
   }
 

@@ -188,13 +188,7 @@ void PrestoParserTestBase::testCtas(
   auto logicalPlan = ctasStatement->plan();
   ASSERT_TRUE(matcher.build()->match(logicalPlan)) << logicalPlan->toString();
 
-  const auto& actualProperties = ctasStatement->properties();
-  ASSERT_EQ(properties.size(), actualProperties.size());
-
-  for (const auto& [key, value] : properties) {
-    ASSERT_TRUE(actualProperties.contains(key));
-    ASSERT_EQ(lp::ExprPrinter::toText(*actualProperties.at(key)), value);
-  }
+  assertProperties(ctasStatement->properties(), properties);
 }
 
 void PrestoParserTestBase::testCreateTable(
@@ -214,12 +208,7 @@ void PrestoParserTestBase::testCreateTable(
   ASSERT_EQ(createTable->tableName().table, tableName);
   ASSERT_TRUE(*createTable->tableSchema() == *tableSchema);
 
-  const auto& actualProperties = createTable->properties();
-  ASSERT_EQ(properties.size(), actualProperties.size());
-  for (const auto& [key, value] : properties) {
-    ASSERT_TRUE(actualProperties.contains(key));
-    ASSERT_EQ(lp::ExprPrinter::toText(*actualProperties.at(key)), value);
-  }
+  assertProperties(createTable->properties(), properties);
 
   const auto& actualConstraints = createTable->constraints();
   ASSERT_EQ(constraints.size(), actualConstraints.size());
@@ -227,6 +216,17 @@ void PrestoParserTestBase::testCreateTable(
     ASSERT_EQ(constraints[i].name, actualConstraints[i].name);
     ASSERT_EQ(constraints[i].type, actualConstraints[i].type);
     ASSERT_EQ(constraints[i].columns, actualConstraints[i].columns);
+  }
+}
+
+// static
+void PrestoParserTestBase::assertProperties(
+    const std::unordered_map<std::string, lp::ExprPtr>& actual,
+    const std::unordered_map<std::string, std::string>& expected) {
+  ASSERT_EQ(expected.size(), actual.size());
+  for (const auto& [key, value] : expected) {
+    ASSERT_TRUE(actual.contains(key)) << key;
+    ASSERT_EQ(value, lp::ExprPrinter::toText(*actual.at(key))) << key;
   }
 }
 
