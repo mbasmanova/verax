@@ -801,6 +801,39 @@ std::any AstBuilder::visitDropTable(PrestoSqlParser::DropTableContext* ctx) {
       ctx->EXISTS() != nullptr));
 }
 
+std::any AstBuilder::visitCreateVectorIndex(
+    PrestoSqlParser::CreateVectorIndexContext* ctx) {
+  trace("visitCreateVectorIndex");
+
+  std::vector<std::shared_ptr<Property>> properties;
+  if (ctx->properties() != nullptr) {
+    properties = visitTyped<Property>(ctx->properties()->property());
+  }
+
+  std::vector<std::shared_ptr<ColumnDefinition>> columns;
+  for (const auto& column : visitTyped<TableElement>(ctx->columnDefinition())) {
+    columns.push_back(std::static_pointer_cast<ColumnDefinition>(column));
+  }
+
+  return std::static_pointer_cast<Statement>(
+      std::make_shared<CreateVectorIndex>(
+          getLocation(ctx),
+          getQualifiedName(ctx->qualifiedName()),
+          std::move(columns),
+          /*notExists=*/ctx->EXISTS() != nullptr,
+          std::move(properties)));
+}
+
+std::any AstBuilder::visitDropVectorIndex(
+    PrestoSqlParser::DropVectorIndexContext* ctx) {
+  trace("visitDropVectorIndex");
+
+  return std::static_pointer_cast<Statement>(std::make_shared<DropVectorIndex>(
+      getLocation(ctx),
+      getQualifiedName(ctx->qualifiedName()),
+      /*exists=*/ctx->EXISTS() != nullptr));
+}
+
 std::any AstBuilder::visitInsertInto(PrestoSqlParser::InsertIntoContext* ctx) {
   trace("visitInsertInto");
 

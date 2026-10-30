@@ -63,6 +63,10 @@ statement
          (COMMENT string)?
          (WITH properties)?                                            #createTable
     | DROP TABLE (IF EXISTS)? qualifiedName                            #dropTable
+    | CREATE VECTOR INDEX (IF NOT EXISTS)? qualifiedName
+        '(' columnDefinition (',' columnDefinition)* ')'
+        (WITH properties)?                                             #createVectorIndex
+    | DROP VECTOR INDEX (IF EXISTS)? qualifiedName                     #dropVectorIndex
     | INSERT INTO qualifiedName columnAliases? query                   #insertInto
     | DELETE FROM qualifiedName (WHERE booleanExpression)?             #delete
     | TRUNCATE TABLE qualifiedName                                     #truncateTable
@@ -823,7 +827,7 @@ nonReserved
     | FETCH | FILTER | FIRST | FOLLOWING | FORMAT | FUNCTION | FUNCTIONS
     | GRANT | GRANTED | GRANTS | GRAPH | GRAPH_TABLE | GRAPHVIZ | GROUPS
     | HOUR
-    | IF | IGNORE | INCLUDING | INPUT | INTERVAL | INVOKER | IO | ISOLATION
+    | IF | IGNORE | INCLUDING | INDEX | INPUT | INTERVAL | INVOKER | IO | ISOLATION
     | JSON
     | KEY
     | LABEL | LANGUAGE | LAST | LATERAL | LEVEL | LIMIT | LOGICAL
@@ -836,7 +840,7 @@ nonReserved
     | SHOW | SHORTEST | SIMPLE | SOME | SOURCE | START | STATS | SUBSTRING | SYSTEM | SYSTEM_TIME | SYSTEM_VERSION
     | TABLES | TABLESAMPLE | TEMPORARY | TEXT | TIME | TIMESTAMP | TO | TRAIL | TRANSACTION | TRUNCATE | TRY_CAST | TYPE
     | UNBOUNDED | UNCOMMITTED | UNIQUE | UPDATE | USE | USER
-    | VALIDATE | VERBOSE | VERSION | VERTEX | VIEW
+    | VALIDATE | VECTOR | VERBOSE | VERSION | VERTEX | VIEW
     | WALK | WINDOW | WORK | WRITE
     | YEAR
     | ZONE
@@ -934,6 +938,7 @@ IF: 'IF';
 IGNORE: 'IGNORE';
 IN: 'IN';
 INCLUDING: 'INCLUDING';
+INDEX: 'INDEX';
 INNER: 'INNER';
 INPUT: 'INPUT';
 INSERT: 'INSERT';
@@ -1068,6 +1073,7 @@ USER: 'USER';
 USING: 'USING';
 VALIDATE: 'VALIDATE';
 VALUES: 'VALUES';
+VECTOR: 'VECTOR';
 VERBOSE: 'VERBOSE';
 VERSION: 'VERSION';
 VERTEX: 'VERTEX';

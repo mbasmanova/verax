@@ -45,6 +45,7 @@ a local directory.
 - `CREATE TABLE AS SELECT`.
 - `INSERT INTO`.
 - `DROP TABLE`.
+- `CREATE VECTOR INDEX` and `DROP VECTOR INDEX`.
 - Per-column statistics (`.stats` files) are persisted on write for use by
   the optimizer.
 
@@ -332,6 +333,36 @@ INSERT INTO t SELECT * FROM tpch.sf1.lineitem;
 ```sql
 DROP TABLE t;
 ```
+
+### CREATE VECTOR INDEX and DROP VECTOR INDEX
+
+```sql
+CREATE VECTOR INDEX products (id BIGINT, embedding ARRAY(REAL), ds VARCHAR)
+WITH (
+    distance_metric = 'cosine',
+    index_type = 'flat',
+    num_clusters = 1000,
+    partitioned_by = ARRAY['ds']);
+
+DROP VECTOR INDEX products;
+```
+
+Besides the partition columns, an index has exactly two columns: a `BIGINT`
+id and an `ARRAY(REAL)` embedding. Its properties:
+
+- `distance_metric`, required: `cosine`.
+- `index_type`, required: `flat`, `ivf_flat`, `ivf_sq` or `hnsw_sq`.
+- `num_clusters`, required: a positive integer.
+- `codec_policy`, optional: `per_partition` (the default) or `shared`.
+- `index_options`, optional: a `MAP(VARCHAR, VARCHAR)` of local index settings,
+  such as `ivf.nlist`.
+
+Any other property is a table property of both tables. `bucketed_by`,
+`bucket_count` and `sorted_by` are not supported.
+
+The index is stored as two tables, `products__codecs` and `products__index`,
+and a record of its settings in `products.vector_index` in the data
+directory. `DROP VECTOR INDEX` removes the record, then both tables.
 
 ## Statistics
 

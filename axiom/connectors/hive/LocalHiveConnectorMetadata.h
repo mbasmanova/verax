@@ -369,6 +369,28 @@ class LocalHiveConnectorMetadata : public HiveConnectorMetadata {
       bool ifNotExists,
       bool explain) override;
 
+  /// Keeps the index's record as a JSON file next to the tables'
+  /// directories, '<index>.vector_index', and names the tables
+  /// '<index>__codecs' and '<index>__index'.
+  folly::coro::Task<bool> co_createVectorIndex(
+      ConnectorSessionPtr session,
+      SchemaTableName indexName,
+      velox::RowTypePtr columns,
+      VectorIndexProperties properties,
+      folly::F14FastMap<std::string, velox::Variant> tableProperties,
+      bool ifNotExists,
+      bool explain) override;
+
+  VectorIndexPtr findVectorIndex(
+      const ConnectorSessionPtr& session,
+      const SchemaTableName& indexName) override;
+
+  bool dropVectorIndex(
+      const ConnectorSessionPtr& session,
+      const SchemaTableName& indexName,
+      bool ifExists,
+      bool explain) override;
+
   /// Shortcut for dropTable(session, tableName, true, false).
   bool dropTableIfExists(const SchemaTableName& tableName) {
     return dropTable(nullptr, tableName, true, /*explain=*/false);

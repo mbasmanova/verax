@@ -23,6 +23,7 @@
 #include "axiom/common/SchemaTypeName.h"
 #include "axiom/connectors/ConnectorSession.h"
 #include "axiom/connectors/ConnectorSplitManager.h"
+#include "axiom/connectors/VectorIndex.h"
 #include "folly/CppAttributes.h"
 #include "folly/coro/Task.h"
 #include "velox/common/Casts.h"
@@ -1621,6 +1622,49 @@ class ConnectorMetadata {
       [[maybe_unused]] bool ifExists,
       [[maybe_unused]] bool explain) {
     VELOX_UNSUPPORTED();
+  }
+
+  /// Creates a vector index named 'indexName' (see VectorIndex) with its codec
+  /// table and index table, using 'tableProperties' for both tables. Creates
+  /// all of it or none of it. 'columns' are the columns an insert into the
+  /// index provides: the partition columns, which the connector tells from
+  /// 'tableProperties', and exactly two more, a BIGINT id and an ARRAY(REAL)
+  /// embedding. Fails for other columns and for a table property that does
+  /// not apply to the index's tables.
+  ///
+  /// When the index exists, returns false if 'ifNotExists' is true and fails
+  /// otherwise. Returns true when it creates the index. When 'explain' is
+  /// true, performs the same checks but creates nothing.
+  virtual folly::coro::Task<bool> co_createVectorIndex(
+      [[maybe_unused]] ConnectorSessionPtr session,
+      [[maybe_unused]] SchemaTableName indexName,
+      [[maybe_unused]] velox::RowTypePtr columns,
+      [[maybe_unused]] VectorIndexProperties properties,
+      [[maybe_unused]] folly::F14FastMap<std::string, velox::Variant>
+          tableProperties,
+      [[maybe_unused]] bool ifNotExists,
+      [[maybe_unused]] bool explain) {
+    VELOX_USER_FAIL("Vector indexes are not supported by this connector");
+    co_return false;
+  }
+
+  /// Returns the vector index named 'indexName', or nullptr if there is none.
+  virtual VectorIndexPtr findVectorIndex(
+      [[maybe_unused]] const ConnectorSessionPtr& session,
+      [[maybe_unused]] const SchemaTableName& indexName) {
+    return nullptr;
+  }
+
+  /// Drops a vector index with its codec table and index table. If the index
+  /// doesn't exist and 'ifExists' is false, raises an error. Otherwise,
+  /// returns true if the index was dropped and false if it didn't exist. When
+  /// 'explain' is true, performs the same existence check but drops nothing.
+  virtual bool dropVectorIndex(
+      [[maybe_unused]] const ConnectorSessionPtr& session,
+      [[maybe_unused]] const SchemaTableName& indexName,
+      [[maybe_unused]] bool ifExists,
+      [[maybe_unused]] bool explain) {
+    VELOX_USER_FAIL("Vector indexes are not supported by this connector");
   }
 
   /// Adds 'columnName' of 'columnType' to an existing table.

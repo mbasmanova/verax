@@ -99,6 +99,55 @@ row_count | column_name | nulls_fraction | distinct_values_count | avg_length | 
 
 ```
 
+## Create and drop a vector index using local Hive
+
+```scrut
+$ export D=$(mktemp -d)
+```
+
+```scrut
+$ $CLI --data_path $D --query "
+> CREATE VECTOR INDEX products (id BIGINT, embedding ARRAY(REAL), ds VARCHAR)
+> WITH (
+>   distance_metric = 'cosine',
+>   index_type = 'flat',
+>   num_clusters = 10,
+>   partitioned_by = ARRAY['ds'])" 2>/dev/null
+Created vector index: "default"."products"
+```
+
+```scrut
+$ $CLI --data_path $D --query "SHOW TABLES" 2>/dev/null
+----------------
+Table
+----------------
+products__codecs
+products__index
+(2 rows in 1 batches)
+
+```
+
+```scrut
+$ $CLI --data_path $D --query "
+> CREATE VECTOR INDEX IF NOT EXISTS products (id BIGINT, embedding ARRAY(REAL), ds VARCHAR)
+> WITH (
+>   distance_metric = 'cosine',
+>   index_type = 'flat',
+>   num_clusters = 10,
+>   partitioned_by = ARRAY['ds'])" 2>/dev/null
+Vector index already exists: "default"."products"
+```
+
+```scrut
+$ $CLI --data_path $D --query "DROP VECTOR INDEX products" 2>/dev/null; ls $D
+Dropped vector index: "default"."products"
+```
+
+```scrut
+$ $CLI --data_path $D --query "DROP VECTOR INDEX IF EXISTS products" 2>/dev/null
+Vector index doesn't exist: "default"."products"
+```
+
 ## Use --catalog and --schema flags
 
 ```scrut

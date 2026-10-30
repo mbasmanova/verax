@@ -407,6 +407,61 @@ TEST_F(DdlParserTest, dropTable) {
   }
 }
 
+TEST_F(DdlParserTest, vectorIndex) {
+  {
+    auto statement = parseSql(
+        "CREATE VECTOR INDEX t (id BIGINT, embedding ARRAY(REAL), ds VARCHAR) "
+        "WITH (distance_metric = 'cosine', num_clusters = 10, "
+        "partitioned_by = ARRAY['ds'])");
+    ASSERT_TRUE(statement->isCreateVectorIndex());
+
+    const auto* create = statement->as<CreateVectorIndexStatement>();
+    ASSERT_EQ("t", create->indexName().table);
+    VELOX_ASSERT_EQ_TYPES(
+        create->columns(),
+        ROW({
+            {"id", BIGINT()},
+            {"embedding", ARRAY(REAL())},
+            {"ds", VARCHAR()},
+        }));
+    ASSERT_FALSE(create->ifNotExists());
+
+    assertProperties(
+        create->properties(),
+        {
+            {"distance_metric", "cosine"},
+            {"num_clusters", "10"},
+            {"partitioned_by", "array_constructor(ds)"},
+        });
+  }
+
+  {
+    auto statement = parseSql(
+        "CREATE VECTOR INDEX IF NOT EXISTS t (id BIGINT, e ARRAY(REAL))");
+    ASSERT_TRUE(statement->as<CreateVectorIndexStatement>()->ifNotExists());
+  }
+
+  {
+    auto statement = parseSql("DROP VECTOR INDEX t");
+    ASSERT_TRUE(statement->isDropVectorIndex());
+
+    const auto* drop = statement->as<DropVectorIndexStatement>();
+    ASSERT_EQ("t", drop->indexName().table);
+    ASSERT_FALSE(drop->ifExists());
+
+    ASSERT_TRUE(parseSql("DROP VECTOR INDEX IF EXISTS t")
+                    ->as<DropVectorIndexStatement>()
+                    ->ifExists());
+  }
+
+  // 'vector' and 'index' remain usable as names.
+  ASSERT_TRUE(parseSql("SELECT 1 AS vector, 2 AS index")->isSelect());
+
+  VELOX_ASSERT_THROW(
+      parseSql("CREATE VECTOR INDEX t (id BIGINT, ID ARRAY(REAL))"),
+      "Duplicate column name: ID");
+}
+
 TEST_F(DdlParserTest, view) {
   facebook::axiom::SchemaTableName viewName{
       std::string(kDefaultSchema), "view"};

@@ -242,6 +242,10 @@ class AstPrinter : public AstVisitor {
 
   void visitDropTable(DropTable* node) override;
 
+  void visitCreateVectorIndex(CreateVectorIndex* node) override;
+
+  void visitDropVectorIndex(DropVectorIndex* node) override;
+
   void visitDropView(DropView* node) override;
 
   void visitDropMaterializedView(DropMaterializedView* node) override;
