@@ -125,6 +125,46 @@ TEST_F(FixedPointTest, stepJoin) {
   }
 }
 
+// A step that joins two reads of the state sees each read's columns
+// separately.
+TEST_F(FixedPointTest, selfJoinInStep) {
+  testConnector_->addTable("t", ROW({"k", "v"}, BIGINT()))
+      ->addData(makeRowVector({
+          makeFlatVector<int64_t>({1, 2}),
+          makeFlatVector<int64_t>({10, 20}),
+      }));
+
+  auto context = makeContext();
+  auto anchor = lp::PlanBuilder(context).tableScan("t");
+  auto state = [&](std::string_view alias) {
+    return lp::PlanBuilder(context)
+        .fixedPointState("r", anchor)
+        .as(std::string(alias));
+  };
+
+  auto logicalPlan =
+      anchor
+          .iterate(
+              "r",
+              state("x")
+                  .join(state("y"), "x.k = y.k", lp::JoinType::kInner)
+                  .project({"x.k AS k", "x.v + y.v AS v"}),
+              /*numIterations=*/2,
+              /*keyColumns=*/{"k"})
+          .build();
+
+  // The loop plans on one worker and on several.
+  ASSERT_NO_THROW(toSingleNodePlan(logicalPlan));
+  ASSERT_NO_THROW(planVelox(logicalPlan));
+
+  checkSame(
+      logicalPlan,
+      {makeRowVector({
+          makeFlatVector<int64_t>({1, 2}),
+          makeFlatVector<int64_t>({40, 80}),
+      })});
+}
+
 TEST_F(FixedPointTest, singleDriverStep) {
   auto counter = singleRow("n", 1);
   auto recursiveStep = lp::PlanBuilder(context_)

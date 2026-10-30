@@ -711,8 +711,8 @@ Translated Translator::translateRecursiveRef(
       enclosing.stateColumns.size(),
       "RecursiveReference schema size mismatches enclosing FixedPoint anchor");
 
-  // Scope names come from the reference schema. Each read presents the
-  // enclosing state's columns under fresh ones.
+  // Each read presents the enclosing state's columns under the reference's
+  // own symbols, so two reads in one step have distinct names.
   Scope newScope;
   ColumnVector readColumns;
   readColumns.reserve(schema->size());
@@ -725,8 +725,10 @@ Translated Translator::translateRecursiveRef(
         i,
         refType->toString(),
         stateColumn->value().type->toString());
-    readColumns.push_back(Column::createWithUnknownValue(stateColumn));
-    newScope[schema->nameOf(static_cast<uint32_t>(i))] = readColumns.back();
+    const auto& symbol = schema->nameOf(static_cast<uint32_t>(i));
+    readColumns.push_back(
+        columnForSymbol(toName(symbol), Value(stateColumn->value().type)));
+    newScope[symbol] = readColumns.back();
   }
 
   NodeCP read = nodeSimplifier_
