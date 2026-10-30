@@ -594,13 +594,19 @@ class Translator {
   // than one row, which no scalar subquery may.
   ExprCP tryScalarFromValues(NodeCP body);
 
-  // Evaluates 'aggregate' from the listed discrete-predicate (e.g. partition)
-  // values, returning one row Variant per result row, or nullopt when it is not
-  // foldable: its aggregates must all ignore duplicate inputs, and its input
-  // must be an optional Filter over a Scan of only discrete-predicate columns
-  // on a connector that can list them.
+  // Returns `lhs IN (<values>)` when 'body', an uncorrelated IN subquery's
+  // body, has one column whose rows can be listed from discrete-predicate
+  // values (see tryEvaluateOverDiscreteValues), and FALSE when there are none.
+  // Returns nullptr otherwise.
+  ExprCP tryInListFromDiscreteValues(ExprCP lhs, NodeCP body);
+
+  // Evaluates the aggregation 'aggregate' describes from the listed
+  // discrete-predicate (e.g. partition) values, returning one row Variant per
+  // result row, or nullopt when it is not foldable: its aggregates must all
+  // ignore duplicate inputs, and its input must be an optional Filter over a
+  // Scan of only discrete-predicate columns on a connector that can list them.
   std::optional<std::vector<velox::Variant>> tryEvaluateOverDiscreteValues(
-      const Aggregate* aggregate);
+      const Aggregate::Key& aggregate);
 
   // Translates each lp expression in 'expressions' against 'scope'.
   ExprVector translateAll(

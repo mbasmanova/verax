@@ -1941,7 +1941,7 @@ Translated Translator::translateAggregate(
     }
     NodeCP node = simplified.node;
     const auto* aggNode = node->as<Aggregate>();
-    if (auto rows = tryEvaluateOverDiscreteValues(aggNode)) {
+    if (auto rows = tryEvaluateOverDiscreteValues(aggNode->key())) {
       const Values* valuesNode =
           builder_.makeValues(std::move(*rows), aggNode->outputColumns());
       auto valuesResult = nodeSimplifier_.make(
@@ -3683,6 +3683,15 @@ ExprCP Translator::liftSubquery(
     narrowToNames(
         &body, inner.scope, subqueryExpr.subquery()->outputType()->names());
   }
+
+  // An uncorrelated IN over values the connector can list is an IN over those
+  // values. Its constants then reach pushdown like any other IN list.
+  if (inLhs != nullptr && correlationColumns.empty()) {
+    if (ExprCP folded = tryInListFromDiscreteValues(inLhs, body)) {
+      return folded;
+    }
+  }
+
   ColumnCP markColumn = nullptr;
   ColumnCP returnedColumn = nullptr;
   bool enforceSingleRow = false;
@@ -3871,8 +3880,47 @@ ExprCP Translator::tryScalarFromValues(NodeCP body) {
   return builder_.makeLiteral(velox::Variant(row[values->channels()[0]]), type);
 }
 
+ExprCP Translator::tryInListFromDiscreteValues(ExprCP lhs, NodeCP body) {
+  // A body of another width is a user error, which liftSubquery reports.
+  if (body->outputColumns().size() != 1) {
+    return nullptr;
+  }
+  ExprCP value = body->outputColumns()[0];
+
+  // A Project that only narrows the body to its column passes that column
+  // through; group the Project's input by it instead.
+  if (body->is(NodeType::kProject)) {
+    const auto* project = body->as<Project>();
+    if (project->exprs()[0]->isColumn()) {
+      value = project->exprs()[0];
+      body = project->input();
+    }
+  }
+
+  // IN ignores duplicate values, so the body stands for its distinct values.
+  auto rows = tryEvaluateOverDiscreteValues({
+      .input = body,
+      .groupingKeys = {value},
+      .aggregates = {},
+      .outputColumns = {value->as<Column>()},
+  });
+  if (!rows.has_value()) {
+    return nullptr;
+  }
+  if (rows->empty()) {
+    return builder_.makeBoolean(false);
+  }
+
+  std::vector<velox::Variant> values;
+  values.reserve(rows->size());
+  for (const auto& row : *rows) {
+    values.push_back(row.row()[0]);
+  }
+  return makeConstantIn(lhs, std::move(values));
+}
+
 std::optional<std::vector<velox::Variant>>
-Translator::tryEvaluateOverDiscreteValues(const Aggregate* aggregate) {
+Translator::tryEvaluateOverDiscreteValues(const Aggregate::Key& aggregate) {
   // A correlated body reads columns of an enclosing scope, which the listing
   // does not produce.
   if (subqueries_.hasCorrelations()) {
@@ -3882,14 +3930,14 @@ Translator::tryEvaluateOverDiscreteValues(const Aggregate* aggregate) {
   // The fold aggregates a per-partition value list, so each aggregate must
   // ignore duplicate inputs (e.g. max/min) or be over distinct inputs.
   // Grouping itself also ignores duplicate input rows.
-  for (const optimizer::Aggregate* call : aggregate->aggregates()) {
+  for (const optimizer::Aggregate* call : aggregate.aggregates) {
     if (!call->functions().contains(FunctionSet::kIgnoreDuplicatesAggregate) &&
         !call->isDistinct()) {
       return std::nullopt;
     }
   }
 
-  NodeCP input = aggregate->input();
+  NodeCP input = aggregate.input;
   const Filter* filter = nullptr;
   if (input->is(NodeType::kFilter)) {
     filter = input->as<Filter>();
@@ -3961,18 +4009,11 @@ Translator::tryEvaluateOverDiscreteValues(const Aggregate* aggregate) {
         Filter::Key{valuesNode, filter->predicates()}, std::move(foldInput));
   }
   NodeCP foldInputNode = foldInput.node;
-  auto foldAggregate = nodeSimplifier_.make(
-      Aggregate::Key{
-          .input = foldInputNode,
-          .groupingKeys = aggregate->groupingKeys(),
-          .aggregates = aggregate->aggregates(),
-          .outputColumns = aggregate->outputColumns(),
-          .step = aggregate->step(),
-          .groupId = aggregate->groupId(),
-          .globalGroupingSets = aggregate->globalGroupingSets(),
-      },
-      std::move(foldInput));
-  const ColumnVector outputColumns = aggregate->outputColumns();
+  Aggregate::Key foldKey = aggregate;
+  foldKey.input = foldInputNode;
+  auto foldAggregate =
+      nodeSimplifier_.make(std::move(foldKey), std::move(foldInput));
+  const ColumnVector outputColumns = aggregate.outputColumns;
   NodeCP foldPlan = foldAggregate.empty()
       ? builder_.makeEmptyValues(outputColumns)
       : foldAggregate.substitutions.restore(
@@ -4002,7 +4043,7 @@ Translator::tryEvaluateOverDiscreteValues(const Aggregate* aggregate) {
       emitted.fragments.size(), 1, "Constant fold must produce one fragment");
 
   auto rows = constantPlanRunner_.run(emitted.fragments.front().fragment);
-  if (aggregate->groupingKeys().empty()) {
+  if (aggregate.groupingKeys.empty()) {
     VELOX_CHECK_EQ(rows.size(), 1, "Global aggregation must produce one row");
   }
   return rows;

@@ -862,6 +862,9 @@ class Aggregate : public Node {
 
   explicit Aggregate(Key key);
 
+  /// Returns the key this node was built from.
+  Key key() const;
+
   NodeCP input() const {
     return input_;
   }

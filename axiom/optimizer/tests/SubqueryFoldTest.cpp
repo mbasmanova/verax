@@ -43,6 +43,24 @@ class SubqueryFoldTest : public test::HiveQueriesTestBase,
     test::HiveQueriesTestBase::SetUp();
     useV2_ = GetParam();
   }
+
+  void TearDown() override {
+    hiveMetadata().dropTableIfExists("pt");
+    test::HiveQueriesTestBase::TearDown();
+  }
+
+  // Creates the Hive table 'pt' with partition keys 'ds' and 'k' (ds='1' maps
+  // to k=1, other ds to k=0) and data column 'x'. Three partitions:
+  // (ds='0',k=0), (ds='1',k=1), (ds='2',k=0).
+  void createPartitionedTable() {
+    runCtas(
+        "CREATE TABLE pt WITH (partitioned_by = ARRAY['ds', 'k']) AS "
+        "SELECT "
+        "     n_nationkey AS x, "
+        "     CAST(n_nationkey % 3 AS VARCHAR) AS ds, "
+        "     CAST(IF(n_nationkey % 3 = 1, 1, 0) AS INTEGER) AS k "
+        "FROM nation");
+  }
 };
 
 // Folds a scalar aggregate over a TestConnector table's discrete-predicate
@@ -181,18 +199,7 @@ TEST_P(SubqueryFoldTest, foldable) {
 // non-partition column is filtered, and enforcing the max-partitions session
 // property.
 TEST_P(SubqueryFoldTest, foldableHivePartitions) {
-  // Partition keys 'ds' and 'k' (ds='1' maps to k=1, other ds to k=0) and data
-  // column 'x'. Three partitions: (ds='0',k=0), (ds='1',k=1), (ds='2',k=0).
-  runCtas(
-      "CREATE TABLE pt WITH (partitioned_by = ARRAY['ds', 'k']) AS "
-      "SELECT "
-      "     n_nationkey AS x, "
-      "     CAST(n_nationkey % 3 AS VARCHAR) AS ds, "
-      "     CAST(IF(n_nationkey % 3 = 1, 1, 0) AS INTEGER) AS k "
-      "FROM nation");
-  SCOPE_EXIT {
-    hiveMetadata().dropTableIfExists("pt");
-  };
+  createPartitionedTable();
 
   // max(ds) folds to the greatest partition value.
   {
@@ -253,22 +260,50 @@ TEST_P(SubqueryFoldTest, foldableHivePartitions) {
   }
 }
 
+// An uncorrelated IN subquery over partition columns becomes an IN list of the
+// partition values its filters select, which prunes the outer scan.
+TEST_P(SubqueryFoldTest, inSubqueryOverPartitions) {
+  if (!useV2_) {
+    return;
+  }
+
+  createPartitionedTable();
+
+  // Several partitions give an IN list.
+  AXIOM_ASSERT_PLAN(
+      toSingleNodePlan(
+          "SELECT x FROM pt WHERE ds IN (SELECT ds FROM pt WHERE k = 0)"),
+      matchHiveScan("pt", test::in("ds", {"0", "2"})).build());
+
+  // One partition gives an equality.
+  AXIOM_ASSERT_PLAN(
+      toSingleNodePlan(
+          "SELECT x FROM pt WHERE ds IN (SELECT ds FROM pt WHERE k > 0)"),
+      matchHiveScan("pt", test::eq("ds", "1")).build());
+
+  // No partition gives no rows.
+  AXIOM_ASSERT_PLAN(
+      toSingleNodePlan(
+          "SELECT x FROM pt WHERE ds IN (SELECT ds FROM pt WHERE k > 1)"),
+      core::PlanMatcherBuilder().values().build());
+
+  // A filter on the non-partition column 'x' prevents the fold: the subquery is
+  // evaluated normally rather than by listing partitions.
+  AXIOM_ASSERT_PLAN(
+      toSingleNodePlan(
+          "SELECT x FROM pt WHERE ds IN (SELECT ds FROM pt WHERE x > 0)"),
+      matchHiveScan("pt")
+          .hashJoin(
+              matchHiveScan("pt", test::gt("x", int64_t{0})),
+              core::JoinType::kLeftSemiFilter)
+          .build());
+}
+
 // A global aggregation reading only partition columns is answered from the
 // partition listing, with no scan. Aggregates that are sensitive to duplicate
 // inputs, and columns that are not partition keys, are not.
 TEST_P(SubqueryFoldTest, foldableAggregationOverPartitions) {
-  // Partition keys 'ds' and 'k', data column 'x'. Three partitions:
-  // (ds='0',k=0), (ds='1',k=1), (ds='2',k=0).
-  runCtas(
-      "CREATE TABLE pt WITH (partitioned_by = ARRAY['ds', 'k']) AS "
-      "SELECT "
-      "     n_nationkey AS x, "
-      "     CAST(n_nationkey % 3 AS VARCHAR) AS ds, "
-      "     CAST(IF(n_nationkey % 3 = 1, 1, 0) AS INTEGER) AS k "
-      "FROM nation");
-  SCOPE_EXIT {
-    hiveMetadata().dropTableIfExists("pt");
-  };
+  createPartitionedTable();
 
   {
     auto plan = toSingleNodePlan("SELECT max(ds) FROM pt");
