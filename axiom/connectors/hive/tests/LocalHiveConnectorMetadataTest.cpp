@@ -44,6 +44,11 @@ class LocalHiveConnectorMetadataTest
 
   const std::string kDefaultSchema{LocalHiveConnectorMetadata::kDefaultSchema};
 
+  // Returns 'name' in the default schema.
+  SchemaTableName qualifiedName(std::string name) const {
+    return {kDefaultSchema, std::move(name)};
+  }
+
   static void makeAscending(const RowVectorPtr& rows, int32_t& counter) {
     auto ints = rows->childAt(0)->as<FlatVector<int64_t>>();
     for (auto i = 0; i < ints->size(); ++i) {
@@ -222,9 +227,9 @@ class LocalHiveConnectorMetadataTest
       const std::unordered_map<std::string, std::optional<std::string>>&
           partitionKeys,
       dwio::common::FileFormat format) {
-    std::string path = localTablePath({kDefaultSchema, tableName});
+    std::string path = localTablePath(qualifiedName(tableName));
     auto files = getDataFiles(path);
-    auto table = metadata_->findTable({kDefaultSchema, tableName});
+    auto table = metadata_->findTable(qualifiedName(tableName));
     auto results = readFiles(table, files, partitionKeys, format);
     exec::test::assertEqualResults({expectedData}, {results});
   }
@@ -265,7 +270,7 @@ TEST(HiveTableLayoutTest, bucketStats) {
 }
 
 TEST_F(LocalHiveConnectorMetadataTest, basic) {
-  auto table = metadata_->findTable({kDefaultSchema, "t"});
+  auto table = metadata_->findTable(qualifiedName("t"));
   ASSERT_TRUE(table != nullptr);
   auto column = table->findColumn("c0");
   ASSERT_TRUE(column != nullptr);
@@ -313,7 +318,7 @@ TEST_F(LocalHiveConnectorMetadataTest, basic) {
 
 // Verifies that sample() only samples files matching $path filter.
 TEST_F(LocalHiveConnectorMetadataTest, sampleWithPathFilter) {
-  auto table = metadata_->findTable({kDefaultSchema, "t"});
+  auto table = metadata_->findTable(qualifiedName("t"));
   ASSERT_TRUE(table != nullptr);
   const auto* layout = table->layouts()[0]->as<LocalHiveTableLayout>();
   ASSERT_TRUE(layout != nullptr);
@@ -378,7 +383,7 @@ TEST_F(LocalHiveConnectorMetadataTest, createTable) {
   auto session = makeSession();
   auto table = metadata_->createTable(
       session,
-      {kDefaultSchema, "test"},
+      qualifiedName("test"),
       tableType,
       options,
       /*ifNotExists=*/false,
@@ -386,7 +391,7 @@ TEST_F(LocalHiveConnectorMetadataTest, createTable) {
 
   // Table should be findable immediately after createTable, before
   // beginWrite/finishWrite. This is the flow for plain CREATE TABLE (no data).
-  ASSERT_NE(metadata_->findTable({kDefaultSchema, "test"}), nullptr);
+  ASSERT_NE(metadata_->findTable(qualifiedName("test")), nullptr);
 
   constexpr int32_t kTestSize = 2048;
   auto data = makeRowVector(
@@ -426,7 +431,7 @@ TEST_F(LocalHiveConnectorMetadataTest, createTable) {
   writeToTable(
       table, data, WriteKind::kCreate, dwio::common::FileFormat::PARQUET);
 
-  std::string tablePath = localTablePath({kDefaultSchema, "test"});
+  std::string tablePath = localTablePath(qualifiedName("test"));
   std::string partition = "2022-09-01";
   std::string path = fmt::format("{}/ds={}", tablePath, partition);
   auto files = getDataFiles(path);
@@ -457,7 +462,7 @@ TEST_F(LocalHiveConnectorMetadataTest, createTable) {
     EXPECT_TRUE(buckets.contains(i));
   }
 
-  compareTableLayout(table, metadata_->findTable({kDefaultSchema, "test"}));
+  compareTableLayout(table, metadata_->findTable(qualifiedName("test")));
   compareTableData(
       "test", data, {{"ds", partition}}, dwio::common::FileFormat::PARQUET);
 }
@@ -469,7 +474,7 @@ TEST_F(LocalHiveConnectorMetadataTest, invalidSortedBy) {
       [&](const folly::F14FastMap<std::string, velox::Variant>& options) {
         metadata_->createTable(
             makeSession(),
-            {kDefaultSchema, "test"},
+            qualifiedName("test"),
             tableType,
             options,
             /*ifNotExists=*/false,
@@ -500,7 +505,7 @@ TEST_F(LocalHiveConnectorMetadataTest, addColumn) {
   auto session = makeSession();
   auto table = metadata_->createTable(
       session,
-      {kDefaultSchema, "add_col_test"},
+      qualifiedName("add_col_test"),
       tableType,
       options,
       /*ifNotExists=*/false,
@@ -521,7 +526,7 @@ TEST_F(LocalHiveConnectorMetadataTest, addColumn) {
   // Add a column.
   auto added = metadata_->addColumn(
       session,
-      {kDefaultSchema, "add_col_test"},
+      qualifiedName("add_col_test"),
       "score",
       DOUBLE(),
       /*ifTableExists=*/false,
@@ -531,7 +536,7 @@ TEST_F(LocalHiveConnectorMetadataTest, addColumn) {
   EXPECT_TRUE(*added);
 
   // Verify schema has the new column.
-  auto updated = metadata_->findTable({kDefaultSchema, "add_col_test"});
+  auto updated = metadata_->findTable(qualifiedName("add_col_test"));
   ASSERT_NE(updated, nullptr);
   VELOX_EXPECT_EQ_TYPES(
       updated->type(),
@@ -551,7 +556,7 @@ TEST_F(LocalHiveConnectorMetadataTest, addColumn) {
   VELOX_ASSERT_THROW(
       metadata_->addColumn(
           session,
-          {kDefaultSchema, "add_col_test"},
+          qualifiedName("add_col_test"),
           "score",
           INTEGER(),
           /*ifTableExists=*/false,
@@ -562,7 +567,7 @@ TEST_F(LocalHiveConnectorMetadataTest, addColumn) {
   // IF NOT EXISTS on existing column is a no-op.
   auto noOp = metadata_->addColumn(
       session,
-      {kDefaultSchema, "add_col_test"},
+      qualifiedName("add_col_test"),
       "score",
       INTEGER(),
       /*ifTableExists=*/false,
@@ -571,7 +576,7 @@ TEST_F(LocalHiveConnectorMetadataTest, addColumn) {
   ASSERT_TRUE(noOp.has_value());
   EXPECT_FALSE(*noOp);
   VELOX_EXPECT_EQ_TYPES(
-      metadata_->findTable({kDefaultSchema, "add_col_test"})->type(),
+      metadata_->findTable(qualifiedName("add_col_test"))->type(),
       ROW({"id", "name", "score", "ds"},
           {BIGINT(), VARCHAR(), DOUBLE(), VARCHAR()}));
 
@@ -579,7 +584,7 @@ TEST_F(LocalHiveConnectorMetadataTest, addColumn) {
   VELOX_ASSERT_THROW(
       metadata_->addColumn(
           session,
-          {kDefaultSchema, "no_such_table"},
+          qualifiedName("no_such_table"),
           "col",
           BIGINT(),
           /*ifTableExists=*/false,
@@ -590,7 +595,7 @@ TEST_F(LocalHiveConnectorMetadataTest, addColumn) {
   // IF TABLE EXISTS on missing table returns nullopt.
   auto missing = metadata_->addColumn(
       session,
-      {kDefaultSchema, "no_such_table"},
+      qualifiedName("no_such_table"),
       "col",
       BIGINT(),
       /*ifTableExists=*/true,
@@ -599,8 +604,8 @@ TEST_F(LocalHiveConnectorMetadataTest, addColumn) {
   EXPECT_FALSE(missing.has_value());
 
   // Schema persists after reload.
-  metadata_->reloadTableFromPath({kDefaultSchema, "add_col_test"});
-  auto reloaded = metadata_->findTable({kDefaultSchema, "add_col_test"});
+  metadata_->reloadTableFromPath(qualifiedName("add_col_test"));
+  auto reloaded = metadata_->findTable(qualifiedName("add_col_test"));
   ASSERT_NE(reloaded, nullptr);
   VELOX_EXPECT_EQ_TYPES(
       reloaded->type(),
@@ -617,13 +622,13 @@ TEST_F(LocalHiveConnectorMetadataTest, addColumnExplain) {
   auto session = makeSession();
   metadata_->createTable(
       session,
-      {kDefaultSchema, "explain_add_col_test"},
+      qualifiedName("explain_add_col_test"),
       tableType,
       options,
       /*ifNotExists=*/false,
       /*explain=*/false);
 
-  const SchemaTableName tableName{kDefaultSchema, "explain_add_col_test"};
+  const auto tableName = qualifiedName("explain_add_col_test");
 
   auto originalType = metadata_->findTable(tableName)->type();
 
@@ -681,7 +686,7 @@ TEST_F(LocalHiveConnectorMetadataTest, addColumnExplain) {
   VELOX_ASSERT_THROW(
       metadata_->addColumn(
           session,
-          {kDefaultSchema, "no_such_table"},
+          qualifiedName("no_such_table"),
           "col",
           BIGINT(),
           /*ifTableExists=*/false,
@@ -693,7 +698,7 @@ TEST_F(LocalHiveConnectorMetadataTest, addColumnExplain) {
   // (no-op).
   auto explainMissing = metadata_->addColumn(
       session,
-      {kDefaultSchema, "no_such_table"},
+      qualifiedName("no_such_table"),
       "col",
       BIGINT(),
       /*ifTableExists=*/true,
@@ -734,7 +739,7 @@ TEST_F(LocalHiveConnectorMetadataTest, createEmptyTable) {
   auto session = makeSession();
   auto table = metadata_->createTable(
       session,
-      {kDefaultSchema, "test_empty"},
+      qualifiedName("test_empty"),
       tableType,
       /*options=*/{},
       /*ifNotExists=*/false,
@@ -753,8 +758,7 @@ TEST_F(LocalHiveConnectorMetadataTest, createEmptyTable) {
 
   writeToTable(
       table, emptyData, WriteKind::kCreate, dwio::common::FileFormat::DWRF);
-  compareTableLayout(
-      table, metadata_->findTable({kDefaultSchema, "test_empty"}));
+  compareTableLayout(table, metadata_->findTable(qualifiedName("test_empty")));
   compareTableData(
       "test_empty",
       emptyData,
@@ -769,7 +773,7 @@ TEST_F(LocalHiveConnectorMetadataTest, createThenInsert) {
   auto session = makeSession();
   auto staged = metadata_->createTable(
       session,
-      {kDefaultSchema, "test_insert"},
+      qualifiedName("test_insert"),
       tableType,
       /*options=*/{},
       /*ifNotExists=*/false,
@@ -782,7 +786,7 @@ TEST_F(LocalHiveConnectorMetadataTest, createThenInsert) {
   metadata_->finishWrite(session, handle, /*writeResults=*/{}, nullptr, {})
       .get();
 
-  auto created = metadata_->findTable({kDefaultSchema, "test_insert"});
+  auto created = metadata_->findTable(qualifiedName("test_insert"));
   compareTableLayout(staged, created);
 
   constexpr int32_t kInsertSize = 1024;
@@ -821,11 +825,11 @@ TEST_F(LocalHiveConnectorMetadataTest, abortCreateWithRetry) {
   auto tableType =
       ROW({{"key1", BIGINT()}, {"key2", BIGINT()}, {"ds", VARCHAR()}});
   auto session = makeSession();
-  std::string tablePath = localTablePath({kDefaultSchema, "test_abort"});
+  std::string tablePath = localTablePath(qualifiedName("test_abort"));
 
   auto table = metadata_->createTable(
       session,
-      SchemaTableName{kDefaultSchema, "test_abort"},
+      qualifiedName("test_abort"),
       tableType,
       /*options=*/{},
       /*ifNotExists=*/false,
@@ -840,7 +844,7 @@ TEST_F(LocalHiveConnectorMetadataTest, abortCreateWithRetry) {
   VELOX_ASSERT_THROW(
       metadata_->createTable(
           session,
-          SchemaTableName{kDefaultSchema, "test_abort"},
+          qualifiedName("test_abort"),
           tableType,
           /*options=*/{},
           /*ifNotExists=*/false,
@@ -851,7 +855,7 @@ TEST_F(LocalHiveConnectorMetadataTest, abortCreateWithRetry) {
 
   table = metadata_->createTable(
       session,
-      SchemaTableName{kDefaultSchema, "test_abort"},
+      qualifiedName("test_abort"),
       tableType,
       /*options=*/{},
       /*ifNotExists=*/false,
@@ -864,7 +868,7 @@ TEST_F(LocalHiveConnectorMetadataTest, abortCreateWithRetry) {
   metadata_->finishWrite(session, handle, /*writeResults=*/{}, nullptr, {})
       .get();
   EXPECT_TRUE(std::filesystem::exists(tablePath));
-  auto created = metadata_->findTable({kDefaultSchema, "test_abort"});
+  auto created = metadata_->findTable(qualifiedName("test_abort"));
   EXPECT_NE(created, nullptr);
 }
 
@@ -874,7 +878,7 @@ TEST_F(LocalHiveConnectorMetadataTest, createTableIfNotExists) {
 
   auto table = metadata_->createTable(
       session,
-      {kDefaultSchema, "test_ine"},
+      qualifiedName("test_ine"),
       tableType,
       /*options=*/{},
       /*ifNotExists=*/false,
@@ -883,7 +887,7 @@ TEST_F(LocalHiveConnectorMetadataTest, createTableIfNotExists) {
 
   auto table2 = metadata_->createTable(
       session,
-      {kDefaultSchema, "test_ine"},
+      qualifiedName("test_ine"),
       tableType,
       /*options=*/{},
       /*ifNotExists=*/true,
@@ -893,7 +897,7 @@ TEST_F(LocalHiveConnectorMetadataTest, createTableIfNotExists) {
   VELOX_ASSERT_THROW(
       metadata_->createTable(
           session,
-          {kDefaultSchema, "test_ine"},
+          qualifiedName("test_ine"),
           tableType,
           /*options=*/{},
           /*ifNotExists=*/false,
@@ -907,14 +911,14 @@ TEST_F(LocalHiveConnectorMetadataTest, createTableIfNotExistsNewTable) {
 
   auto table = metadata_->createTable(
       session,
-      {kDefaultSchema, "test_ine_new"},
+      qualifiedName("test_ine_new"),
       tableType,
       /*options=*/{},
       /*ifNotExists=*/true,
       /*explain=*/false);
   ASSERT_NE(table, nullptr);
 
-  auto found = metadata_->findTable({kDefaultSchema, "test_ine_new"});
+  auto found = metadata_->findTable(qualifiedName("test_ine_new"));
   ASSERT_NE(found, nullptr);
 }
 
@@ -924,7 +928,7 @@ TEST_F(LocalHiveConnectorMetadataTest, createTableIfNotExistsExplain) {
 
   auto table = metadata_->createTable(
       session,
-      {kDefaultSchema, "test_ine_explain"},
+      qualifiedName("test_ine_explain"),
       tableType,
       /*options=*/{},
       /*ifNotExists=*/false,
@@ -933,7 +937,7 @@ TEST_F(LocalHiveConnectorMetadataTest, createTableIfNotExistsExplain) {
 
   auto explained = metadata_->createTable(
       session,
-      {kDefaultSchema, "test_ine_explain"},
+      qualifiedName("test_ine_explain"),
       tableType,
       /*options=*/{},
       /*ifNotExists=*/true,
@@ -943,15 +947,14 @@ TEST_F(LocalHiveConnectorMetadataTest, createTableIfNotExistsExplain) {
   VELOX_ASSERT_THROW(
       metadata_->createTable(
           session,
-          {kDefaultSchema, "test_ine_explain"},
+          qualifiedName("test_ine_explain"),
           tableType,
           /*options=*/{},
           /*ifNotExists=*/false,
           /*explain=*/true),
       "Table already exists: \"default\".\"test_ine_explain\"");
 
-  ASSERT_NE(
-      metadata_->findTable({kDefaultSchema, "test_ine_explain"}), nullptr);
+  ASSERT_NE(metadata_->findTable(qualifiedName("test_ine_explain")), nullptr);
 }
 
 TEST_F(LocalHiveConnectorMetadataTest, dropTableIfExists) {
@@ -960,7 +963,7 @@ TEST_F(LocalHiveConnectorMetadataTest, dropTableIfExists) {
 
   auto table = metadata_->createTable(
       session,
-      {kDefaultSchema, "test_drop"},
+      qualifiedName("test_drop"),
       tableType,
       /*options=*/{},
       /*ifNotExists=*/false,
@@ -969,22 +972,22 @@ TEST_F(LocalHiveConnectorMetadataTest, dropTableIfExists) {
 
   ASSERT_TRUE(metadata_->dropTable(
       session,
-      {kDefaultSchema, "test_drop"},
+      qualifiedName("test_drop"),
       /*ifExists=*/false,
       /*explain=*/false));
-  ASSERT_EQ(metadata_->findTable({kDefaultSchema, "test_drop"}), nullptr);
+  ASSERT_EQ(metadata_->findTable(qualifiedName("test_drop")), nullptr);
 
   VELOX_ASSERT_THROW(
       metadata_->dropTable(
           session,
-          {kDefaultSchema, "test_drop"},
+          qualifiedName("test_drop"),
           /*ifExists=*/false,
           /*explain=*/false),
       "Table doesn't exist: \"default\".\"test_drop\"");
 
   ASSERT_FALSE(metadata_->dropTable(
       session,
-      {kDefaultSchema, "test_drop"},
+      qualifiedName("test_drop"),
       /*ifExists=*/true,
       /*explain=*/false));
 }
@@ -995,7 +998,7 @@ TEST_F(LocalHiveConnectorMetadataTest, dropTableExplain) {
 
   auto table = metadata_->createTable(
       session,
-      {kDefaultSchema, "test_drop_explain"},
+      qualifiedName("test_drop_explain"),
       tableType,
       /*options=*/{},
       /*ifNotExists=*/false,
@@ -1004,23 +1007,22 @@ TEST_F(LocalHiveConnectorMetadataTest, dropTableExplain) {
 
   ASSERT_TRUE(metadata_->dropTable(
       session,
-      {kDefaultSchema, "test_drop_explain"},
+      qualifiedName("test_drop_explain"),
       /*ifExists=*/false,
       /*explain=*/true));
-  ASSERT_NE(
-      metadata_->findTable({kDefaultSchema, "test_drop_explain"}), nullptr);
+  ASSERT_NE(metadata_->findTable(qualifiedName("test_drop_explain")), nullptr);
 
   VELOX_ASSERT_THROW(
       metadata_->dropTable(
           session,
-          {kDefaultSchema, "test_drop_missing_explain"},
+          qualifiedName("test_drop_missing_explain"),
           /*ifExists=*/false,
           /*explain=*/true),
       "Table doesn't exist: \"default\".\"test_drop_missing_explain\"");
 
   ASSERT_FALSE(metadata_->dropTable(
       session,
-      {kDefaultSchema, "test_drop_missing_explain"},
+      qualifiedName("test_drop_missing_explain"),
       /*ifExists=*/true,
       /*explain=*/true));
 }
