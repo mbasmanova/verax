@@ -34,6 +34,7 @@
 #include "velox/exec/FixedPointSplit.h"
 #include "velox/exec/FixedPointVerdicts.h"
 #include "velox/exec/PlanNodeStats.h"
+#include "velox/exec/tests/utils/LocalExchangeSource.h"
 #include "velox/expression/Expr.h"
 
 namespace facebook::axiom::runner {
@@ -483,8 +484,7 @@ velox::RowVectorPtr LocalRunner::makeWriteResult(std::optional<int64_t> rows) {
 namespace {
 
 // Returns the in-process task id of the producer 'planNodeId' of the loop at
-// 'address' in 'iteration'. LocalExchangeSource reads a task by its id, so the
-// same string names the producer and the split reading it.
+// 'address' in 'iteration'.
 std::string producerTaskId(
     const velox::exec::FixedPointOptions::LoopAddress& address,
     int32_t iteration,
@@ -538,7 +538,9 @@ const velox::exec::FixedPointOptions* LocalRunner::prepareFixedPointOptions() {
       [](const velox::exec::FixedPointOptions::LoopAddress& peer,
          int32_t iteration,
          const std::string& planNodeId) {
-        return remoteSplit(producerTaskId(peer, iteration, planNodeId));
+        return remoteSplit(
+            velox::exec::test::LocalExchangeSource::subTaskLocation(
+                producerTaskId(peer, iteration, planNodeId), peer.worker));
       };
   fixedPointOptions_->subTaskId = [](const std::string& workerTaskId,
                                      int64_t counter) {
