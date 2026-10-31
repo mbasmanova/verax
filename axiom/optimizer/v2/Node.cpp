@@ -1259,6 +1259,18 @@ Partitioning Aggregate::globalPartition(
       aggregateGroupingColumns(outputColumns(), groupingKeys_.size()));
 }
 
+Aggregate::Key Aggregate::key() const {
+  return {
+      .input = input_,
+      .groupingKeys = groupingKeys_,
+      .aggregates = aggregates_,
+      .outputColumns = outputColumns(),
+      .step = step_,
+      .groupId = groupId_,
+      .globalGroupingSets = globalGroupingSets_,
+  };
+}
+
 Aggregate::Aggregate(Key key)
     : Node(
           NodeType::kAggregate,
