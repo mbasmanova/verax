@@ -38,4 +38,5 @@ target_link_libraries(
   velox_dwio_dwrf_writer
   velox_exec
   velox_cursor
+  velox_local_exchange_source
 )
